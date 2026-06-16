@@ -34,6 +34,21 @@ const std::vector<const char*> validationLayers = {
     "VK_LAYER_KHRONOS_validation"
 };
 
+static vk::BlendFactor MapBlendFactorVulkan(uint32_t factor) {
+    switch (factor) {
+        case 0: return vk::BlendFactor::eZero;                  // GR_BLEND_ZERO
+        case 1: return vk::BlendFactor::eSrcAlpha;              // GR_BLEND_SRC_ALPHA
+        case 2: return vk::BlendFactor::eSrcColor;              // GR_BLEND_SRC_COLOR
+        case 3: return vk::BlendFactor::eDstAlpha;              // GR_BLEND_DST_ALPHA
+        case 4: return vk::BlendFactor::eOne;                   // GR_BLEND_ONE
+        case 5: return vk::BlendFactor::eOneMinusSrcAlpha;      // GR_BLEND_ONE_MINUS_SRC_ALPHA
+        case 6: return vk::BlendFactor::eOneMinusSrcColor;      // GR_BLEND_ONE_MINUS_SRC_COLOR
+        case 7: return vk::BlendFactor::eOneMinusDstAlpha;      // GR_BLEND_ONE_MINUS_DST_ALPHA
+        case 15: return vk::BlendFactor::eSrcAlphaSaturate;     // GR_BLEND_ALPHA_SATURATE
+        default: return vk::BlendFactor::eOne;
+    }
+}
+
 const bool enableValidationLayers = false;
 
 bool VulkanBackend::Initialize(const WrapperConfig& config) {
@@ -265,6 +280,16 @@ void VulkanBackend::SetDepthState(uint32_t depthMode, uint32_t compareOp, bool d
 
     if (m_initialized && m_device) {
         GLIDE_LOG(INFO, "Vulkan", "SetDepthState: Recompiling Vulkan pipelines with new depth config...");
+        CreateGraphicsPipelines();
+    }
+}
+
+void VulkanBackend::SetBlendState(uint32_t rgbSrcFactor, uint32_t rgbDstFactor, uint32_t alphaSrcFactor, uint32_t alphaDstFactor) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    SoftwareBackendBase::SetBlendState(rgbSrcFactor, rgbDstFactor, alphaSrcFactor, alphaDstFactor);
+
+    if (m_initialized && m_device) {
+        GLIDE_LOG(INFO, "Vulkan", "SetBlendState: Recompiling Vulkan pipelines with new blending config...");
         CreateGraphicsPipelines();
     }
 }
@@ -794,10 +819,22 @@ bool VulkanBackend::CreateGraphicsPipelines() {
         depthStencil.depthBoundsTestEnable = false;
         depthStencil.stencilTestEnable = false;
 
-        // Color Blending (disabled for simple flat points)
+        // Color Blending
         vk::PipelineColorBlendAttachmentState colorBlendAttachment;
         colorBlendAttachment.colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG | vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA;
-        colorBlendAttachment.blendEnable = false;
+        
+        // Glide default blend state: Src = ONE, Dst = ZERO (blending disabled)
+        if (m_rgbSrcBlend == 4 && m_rgbDstBlend == 0) {
+            colorBlendAttachment.blendEnable = false;
+        } else {
+            colorBlendAttachment.blendEnable = true;
+            colorBlendAttachment.colorBlendOp = vk::BlendOp::eAdd;
+            colorBlendAttachment.srcColorBlendFactor = MapBlendFactorVulkan(m_rgbSrcBlend);
+            colorBlendAttachment.dstColorBlendFactor = MapBlendFactorVulkan(m_rgbDstBlend);
+            colorBlendAttachment.alphaBlendOp = vk::BlendOp::eAdd;
+            colorBlendAttachment.srcAlphaBlendFactor = MapBlendFactorVulkan(m_alphaSrcBlend);
+            colorBlendAttachment.dstAlphaBlendFactor = MapBlendFactorVulkan(m_alphaDstBlend);
+        }
 
         vk::PipelineColorBlendStateCreateInfo colorBlending({}, false, vk::LogicOp::eCopy, 1, &colorBlendAttachment, {0.0f, 0.0f, 0.0f, 0.0f});
 

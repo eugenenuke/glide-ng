@@ -17,6 +17,7 @@ We utilize a Test-Driven Development (TDD) approach, validating our wrapper dire
 | **`test04`** | Shaded Triangles | **`PASS`** (98.97%) | **`PASS`** (99.03%) | **`PASS`** (99.03%) | Smooth Gouraud shaded triangle rendering baseline (Vulkan & GLES GPU native). |
 | **`test05`** | Z-Buffer | **`PASS`** (99.77%) | **`PASS`** (99.77%) | **`PASS`** (99.77%) | Two interpenetrating Gouraud triangles with Z-buffering (Vulkan & GLES GPU native). |
 | **`test06`** | W-Buffer | **`PASS`** (99.77%) | **`PASS`** (99.77%) | **`PASS`** (99.77%) | Eye-space linear W-buffering emulation via GPU vertex shader coordinate overrides. |
+| **`test07`** | Alpha Blend | **`PASS`** (99.77%) | **`PASS`** (99.77%) | **`PASS`** (99.77%) | Alpha blending and translucency via GPU-native blend state pipelines. |
 
 ---
 
@@ -80,3 +81,4 @@ To resolve long-term translation issues and enable true hardware acceleration, w
 9. **OpenGL ES GPU Port Completion (test05):** Fully ported and verified GLES depth-testing support, resolving coordinate space translations to GLES NDC Z and achieving a perfect 100% green pass with 99.77% parity.
 10. **Vulkan GPU Port Completion (test05):** Completed the Vulkan hardware-accelerated depth-testing port, resolving driver-level segmentation faults in Mesa's llvmpipe software rasterizer thread via deferred pipeline resource destruction and driver-native Render Pass LoadOp clears, achieving a perfect 100% green pass with 99.77% parity.
 11. **Eye-Space W-Buffering Emulation (test06):** Fully completed and verified eye-space linear W-buffering emulation across all three backends, solving the lack of native hardware W-buffering on modern GPUs by mathematically mapping $1/W$ to a linear depth value compatible with standard hardware Z-buffers, yielding zero-overhead depth testing at maximum GPU speeds with 99.77% visual parity and zero regressions.
+12. **Alpha Blending & Transparency (test07):** Implemented and verified full GPU-native alpha blending and transparency support across OpenGL ES and Vulkan backends. Mapped Glide enums directly to driver blending factors and implemented dynamic pipeline hot-recompilation (Vulkan) and context state updates (GLES) on blend state changes, achieving 99.77% visual parity with zero regressions.

@@ -591,6 +591,7 @@ void OpenGLESBackend::DrawPoint(const ModernVertex& pt) {
     glBindFramebuffer(GL_FRAMEBUFFER, m_headlessFBO);
     glViewport(0, 0, m_headlessWidth, m_headlessHeight);
     SyncDepthState();
+    ApplyBlendingGLES();
 
     // 3. Bind shader program and upload uniforms
     glUseProgram(m_geomProgram);
@@ -649,6 +650,7 @@ void OpenGLESBackend::DrawLine(const ModernVertex& v0, const ModernVertex& v1) {
     glBindFramebuffer(GL_FRAMEBUFFER, m_headlessFBO);
     glViewport(0, 0, m_headlessWidth, m_headlessHeight);
     SyncDepthState();
+    ApplyBlendingGLES();
 
     // 3. Bind shader program and upload uniforms
     glUseProgram(m_geomProgram);
@@ -719,6 +721,7 @@ void OpenGLESBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
     glBindFramebuffer(GL_FRAMEBUFFER, m_headlessFBO);
     glViewport(0, 0, m_headlessWidth, m_headlessHeight);
     SyncDepthState();
+    ApplyBlendingGLES();
 
     // 3. Bind shader program and upload uniforms
     glUseProgram(m_geomProgram);
@@ -784,6 +787,42 @@ void OpenGLESBackend::SyncDepthState() {
     }
 
     glDepthMask(m_depthMask ? GL_TRUE : GL_FALSE);
+}
+
+static GLenum MapBlendFactorGLES(uint32_t factor) {
+    switch (factor) {
+        case 0: return GL_ZERO;                  // GR_BLEND_ZERO
+        case 1: return GL_SRC_ALPHA;             // GR_BLEND_SRC_ALPHA
+        case 2: return GL_SRC_COLOR;             // GR_BLEND_SRC_COLOR
+        case 3: return GL_DST_ALPHA;             // GR_BLEND_DST_ALPHA
+        case 4: return GL_ONE;                   // GR_BLEND_ONE
+        case 5: return GL_ONE_MINUS_SRC_ALPHA;   // GR_BLEND_ONE_MINUS_SRC_ALPHA
+        case 6: return GL_ONE_MINUS_SRC_COLOR;   // GR_BLEND_ONE_MINUS_SRC_COLOR
+        case 7: return GL_ONE_MINUS_DST_ALPHA;   // GR_BLEND_ONE_MINUS_DST_ALPHA
+        case 15: return GL_SRC_ALPHA_SATURATE;  // GR_BLEND_ALPHA_SATURATE
+        default: return GL_ONE;
+    }
+}
+
+void OpenGLESBackend::SetBlendState(uint32_t rgbSrcFactor, uint32_t rgbDstFactor, uint32_t alphaSrcFactor, uint32_t alphaDstFactor) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    SoftwareBackendBase::SetBlendState(rgbSrcFactor, rgbDstFactor, alphaSrcFactor, alphaDstFactor);
+}
+
+void OpenGLESBackend::ApplyBlendingGLES() {
+    // Glide default blend state: Src = ONE, Dst = ZERO (blending disabled)
+    if (m_rgbSrcBlend == 4 && m_rgbDstBlend == 0) {
+        glDisable(GL_BLEND);
+    } else {
+        glEnable(GL_BLEND);
+        glBlendEquation(GL_FUNC_ADD);
+        glBlendFuncSeparate(
+            MapBlendFactorGLES(m_rgbSrcBlend),
+            MapBlendFactorGLES(m_rgbDstBlend),
+            MapBlendFactorGLES(m_alphaSrcBlend),
+            MapBlendFactorGLES(m_alphaDstBlend)
+        );
+    }
 }
 
 } // namespace GlideWrapper

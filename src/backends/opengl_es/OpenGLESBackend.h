@@ -28,11 +28,13 @@ public:
     void DrawPoint(const ModernVertex& pt) override;
     void DrawLine(const ModernVertex& v0, const ModernVertex& v1) override;
     void DrawTriangle(const ModernVertex& a, const ModernVertex& b, const ModernVertex& c) override;
+    void SetBlendState(uint32_t rgbSrcFactor, uint32_t rgbDstFactor, uint32_t alphaSrcFactor, uint32_t alphaDstFactor) override;
 
 private:
     bool CreateGLContext(void* nativeWindowHandle, uint32_t width, uint32_t height, bool windowed);
     void DestroyGLContext();
     void SyncDepthState();
+    void ApplyBlendingGLES();
 
     // SDL2 & OpenGL ES Context Handles
     void* m_sdlWindow{nullptr};   // SDL_Window*

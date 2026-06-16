@@ -29,6 +29,7 @@ public:
     void ClearBuffer(uint32_t color, uint32_t alpha, float z, uint32_t clearMask) override;
     bool SwapBuffers() override;
     void SetDepthState(uint32_t depthMode, uint32_t compareOp, bool depthMask, int32_t biasLevel) override;
+    void SetBlendState(uint32_t rgbSrcFactor, uint32_t rgbDstFactor, uint32_t alphaSrcFactor, uint32_t alphaDstFactor) override;
     bool ReadLFB(uint32_t srcX, uint32_t srcY, uint32_t srcWidth, uint32_t srcHeight, uint32_t dstStride, void* dstData) override;
     void PollEvents() override;
 
