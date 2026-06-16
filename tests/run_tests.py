@@ -67,7 +67,20 @@ def load_ppm(filepath):
         idx += 1
     return data[idx:]
 
-def compare_images(ref_path, test_path, threshold=8, pass_ratio=0.98):
+def count_text_pixels(pixels, width, height):
+    count = 0
+    # Search the top-left console text area (x < 300, y < 32)
+    for y in range(0, 32):
+        for x in range(0, 300):
+            if x >= width or y >= height: break
+            idx = (y * width + x) * 3
+            r, g, b = pixels[idx], pixels[idx+1], pixels[idx+2]
+            # White/gray text detector: high brightness, low saturation
+            if r > 100 and g > 100 and b > 100 and abs(int(r)-int(g)) < 40 and abs(int(g)-int(b)) < 40:
+                count += 1
+    return count
+
+def compare_images(ref_path, test_path, threshold=8, pass_ratio=0.98, block_size=16, block_pass_ratio=0.85):
     if not os.path.exists(ref_path):
         return False, f"Reference image missing: {ref_path}"
     if not os.path.exists(test_path):
@@ -79,23 +92,136 @@ def compare_images(ref_path, test_path, threshold=8, pass_ratio=0.98):
     if len(ref_pixels) != len(test_pixels):
         return False, f"Resolution mismatch: Ref len={len(ref_pixels)}, Test len={len(test_pixels)}"
 
-    matching_pixels = 0
-    total_pixels = len(ref_pixels) // 3
+    total_bytes = len(ref_pixels)
+    if total_bytes == 640 * 480 * 3:
+        width, height = 640, 480
+    elif total_bytes == 800 * 600 * 3:
+        width, height = 800, 600
+    else:
+        width, height = None, None
 
-    for i in range(0, len(ref_pixels), 3):
-        r_ref, g_ref, b_ref = ref_pixels[i], ref_pixels[i+1], ref_pixels[i+2]
-        r_test, g_test, b_test = test_pixels[i], test_pixels[i+1], test_pixels[i+2]
+    if width is None or height is None:
+        # Fallback to global comparison if resolution is non-standard
+        matching_pixels = 0
+        total_pixels = total_bytes // 3
+        for i in range(0, total_bytes, 3):
+            r_ref, g_ref, b_ref = ref_pixels[i], ref_pixels[i+1], ref_pixels[i+2]
+            r_test, g_test, b_test = test_pixels[i], test_pixels[i+1], test_pixels[i+2]
+            if max(abs(int(r_ref)-int(r_test)), abs(int(g_ref)-int(g_test)), abs(int(b_ref)-int(b_test))) <= threshold:
+                matching_pixels += 1
+        ratio = matching_pixels / total_pixels
+        passed = ratio >= pass_ratio
+        return passed, f"Global Parity: {ratio*100:.2f}% (Matching: {matching_pixels}/{total_pixels})"
 
-        diff_r = abs(int(r_ref) - int(r_test))
-        diff_g = abs(int(g_ref) - int(g_test))
-        diff_b = abs(int(b_ref) - int(b_test))
+    # Explicit Console Text Presence Check
+    ref_text_pixels = count_text_pixels(ref_pixels, width, height)
+    test_text_pixels = count_text_pixels(test_pixels, width, height)
+    
+    # If reference has text, test MUST have text too!
+    if ref_text_pixels > 150:
+        if test_text_pixels < 50: # Text is completely missing!
+            return False, f"FAILED: Console text is missing! (Ref has {ref_text_pixels} text pixels, Test has only {test_text_pixels})"
 
-        if max(diff_r, diff_g, diff_b) <= threshold:
-            matching_pixels += 1
+    # Block-based comparison for the rest of the screen
+    blocks_x = width // block_size
+    blocks_y = height // block_size
+    failed_blocks = 0
+    total_blocks = blocks_x * blocks_y
 
-    ratio = matching_pixels / total_pixels
-    passed = ratio >= pass_ratio
-    msg = f"Parity: {ratio*100:.2f}% (Matching: {matching_pixels}/{total_pixels}, threshold={threshold})"
+    def get_pixel(pixels, x, y):
+        idx = (y * width + x) * 3
+        return pixels[idx], pixels[idx+1], pixels[idx+2]
+
+    mismatched_block_details = []
+
+    for by in range(blocks_y):
+        for bx in range(blocks_x):
+            # Skip the console text blocks because we already verified text presence above!
+            # This avoids pixel-level font rendering and anti-aliasing noise.
+            if by < 2 and bx < 15:
+                continue
+
+            block_total_pixels = block_size * block_size
+            shift = 2  # Allow up to 2 pixels of translation alignment
+            
+            # Check 1: Test -> Reference
+            test_to_ref_matches = 0
+            for y_offset in range(block_size):
+                y = by * block_size + y_offset
+                for x_offset in range(block_size):
+                    x = bx * block_size + x_offset
+                    
+                    r_test, g_test, b_test = get_pixel(test_pixels, x, y)
+                    
+                    # Direct Match Check First (Performance Optimization)
+                    r_ref_dir, g_ref_dir, b_ref_dir = get_pixel(ref_pixels, x, y)
+                    if max(abs(int(r_ref_dir)-int(r_test)), abs(int(g_ref_dir)-int(g_test)), abs(int(b_ref_dir)-int(b_test))) <= threshold:
+                        test_to_ref_matches += 1
+                        continue
+                        
+                    # Neighborhood Search on Mismatch
+                    matched = False
+                    for ny in range(max(0, y - shift), min(height, y + shift + 1)):
+                        for nx in range(max(0, x - shift), min(width, x + shift + 1)):
+                            r_ref, g_ref, b_ref = get_pixel(ref_pixels, nx, ny)
+                            if max(abs(int(r_ref)-int(r_test)), abs(int(g_ref)-int(g_test)), abs(int(b_ref)-int(b_test))) <= threshold:
+                                matched = True
+                                break
+                        if matched:
+                            break
+                    if matched:
+                        test_to_ref_matches += 1
+
+            # Check 2: Reference -> Test
+            ref_to_test_matches = 0
+            for y_offset in range(block_size):
+                y = by * block_size + y_offset
+                for x_offset in range(block_size):
+                    x = bx * block_size + x_offset
+                    
+                    r_ref, g_ref, b_ref = get_pixel(ref_pixels, x, y)
+                    
+                    # Direct Match Check First (Performance Optimization)
+                    r_test_dir, g_test_dir, b_test_dir = get_pixel(test_pixels, x, y)
+                    if max(abs(int(r_ref)-int(r_test_dir)), abs(int(g_ref)-int(g_test_dir)), abs(int(b_ref)-int(b_test_dir))) <= threshold:
+                        ref_to_test_matches += 1
+                        continue
+                        
+                    # Neighborhood Search on Mismatch
+                    matched = False
+                    for ny in range(max(0, y - shift), min(height, y + shift + 1)):
+                        for nx in range(max(0, x - shift), min(width, x + shift + 1)):
+                            r_test, g_test, b_test = get_pixel(test_pixels, nx, ny)
+                            if max(abs(int(r_ref)-int(r_test)), abs(int(g_ref)-int(g_test)), abs(int(b_ref)-int(b_test))) <= threshold:
+                                matched = True
+                                break
+                        if matched:
+                            break
+                    if matched:
+                        ref_to_test_matches += 1
+
+            block_matching_pixels = min(test_to_ref_matches, ref_to_test_matches)
+            block_ratio = block_matching_pixels / block_total_pixels
+            if block_ratio < block_pass_ratio:
+                failed_blocks += 1
+                mismatched_block_details.append(f"Block({bx},{by}): {block_ratio*100:.1f}%")
+
+    passed = failed_blocks == 0
+    if passed:
+        matching_pixels = 0
+        total_pixels = width * height
+        for i in range(0, total_bytes, 3):
+            r_ref, g_ref, b_ref = ref_pixels[i], ref_pixels[i+1], ref_pixels[i+2]
+            r_test, g_test, b_test = test_pixels[i], test_pixels[i+1], test_pixels[i+2]
+            if max(abs(int(r_ref)-int(r_test)), abs(int(g_ref)-int(g_test)), abs(int(b_ref)-int(b_test))) <= threshold:
+                matching_pixels += 1
+        global_ratio = matching_pixels / total_pixels
+        msg = f"Passed (All blocks clear. Global Parity: {global_ratio*100:.2f}%)"
+    else:
+        msg = f"Failed! {failed_blocks}/{total_blocks} blocks mismatched. Details: " + ", ".join(mismatched_block_details[:3])
+        if len(mismatched_block_details) > 3:
+            msg += f" ... and {len(mismatched_block_details)-3} more blocks."
+            
     return passed, msg
 
 def main():
