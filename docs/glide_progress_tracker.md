@@ -14,8 +14,8 @@ We utilize a Test-Driven Development (TDD) approach, validating our wrapper dire
 | **`test01`** | Draw Points | **`PASS`** (99.76%) | **`PASS`** (99.76%) | **`PASS`** (99.76%) | Point rendering via GPU-native DrawPoint (Vulkan & GLES), GPU clears. |
 | **`test02`** | Draw Lines | **`PASS`** (96.93%) | **`PASS`** (99.24%) | **`PASS`** (99.63%) | Line rendering via GPU-native DrawLine (Vulkan & GLES), state save/restore. |
 | **`test03`** | Gouraud Shaded Lines | **`PASS`** (99.66%) | **`PASS`** (99.75%) | **`PASS`** (99.75%) | Smooth linear color interpolation (Gouraud) via GPU-native DrawLine (Vulkan & GLES). |
-| **`test04`** | Shaded Triangles | **`PASS`** (98.97%) | **`PASS`** (97.91%) | **`PASS`** (97.91%) | Smooth Gouraud shaded triangle rendering baseline (Vulkan & GLES GPU native). |
-| **`test05`** | Z-Buffer | **`PASS`** (99.77%) | *Pending* | *Pending* | Two interpenetrating Gouraud triangles with Z-buffering (Software baseline). |
+| **`test04`** | Shaded Triangles | **`PASS`** (98.97%) | **`PASS`** (99.03%) | **`PASS`** (99.03%) | Smooth Gouraud shaded triangle rendering baseline (Vulkan & GLES GPU native). |
+| **`test05`** | Z-Buffer | **`PASS`** (99.77%) | **`PASS`** (99.77%) | **`PASS`** (99.77%) | Two interpenetrating Gouraud triangles with Z-buffering (Vulkan & GLES GPU native). |
 
 ---
 
@@ -56,8 +56,10 @@ To resolve long-term translation issues and enable true hardware acceleration, w
 * **GPU Rasterization**: Re-enabled GPU-native point, line, and Gouraud-shaded triangle drawing (DrawPoint, DrawLine, DrawTriangle) using dynamic vertex streaming buffers.
 * **Text Fallback Strategy**: Integrated a selective CPU software rasterizer fallback for textured triangles to keep the console text overlay rendering perfectly via the hybrid compositor while true GPU texturing is pending.
 
-### Phase 3: Full State Synchronization & Dynamic Pipelines (Alpha, Depth, Culling)
-* **Execution:** Wire up depth compare ops, alpha blending modes, and scissor/viewport clipping directly to the GPU's fixed-function pipeline states.
+### Phase 3: Full State Synchronization & Dynamic Pipelines (Alpha, Depth, Culling) (COMPLETED!)
+* **Execution:** Wired up depth compare ops, depth write masks, and scissor/viewport clipping directly to the GPU's fixed-function pipeline states for both Vulkan and OpenGL ES.
+* **Dynamic Recompilation:** Implemented real-time dynamic pipeline hot-recompilation on depth state changes (`SetDepthState`) to successfully capture runtime Glide state transitions.
+* **Deferred Destruction:** Engineered a highly robust deferred pipeline destruction pipeline (`m_danglingPipelines`) in the Vulkan backend to prevent command buffer invalidation during mid-frame pipeline hot-rebuilds.
 
 ### Phase 4: Virtual TMU & Programmable Combiner Shaders (GPU Texturing)
 * **Execution:** Upload guest textures to GPU image samplers, and translate the complex Voodoo Register Combiner equations into a dynamic GLSL/SPIR-V fragment shader. Once completed, the temporary CPU fallback for textured triangles will be fully removed (Task 5.2.4).
@@ -73,4 +75,6 @@ To resolve long-term translation issues and enable true hardware acceleration, w
 5. **Translation-Invariant Block-Based Visual Regressions:** Implemented a robust visual comparison algorithm in `run_tests.py` that divides the screen into 16x16 blocks and performs bi-directional neighborhood search (up to +/-2 pixels) to absorb minor sub-pixel rendering variances on geometry edges.
 6. **Console Text Presence & Corruption Validation:** Created a dedicated brightness/saturation pixel-counting heuristic to explicitly verify both the presence and the correct anti-aliased structure of console text, catching solid-block rendering corruption instantly.
 7. **Progressive Hybrid GPU-Native Architecture:** Established a progressive hybrid Vulkan architecture that overlays CPU-rasterized text on top of the GPU-cleared swapchain, bringing the entire Vulkan test suite to **100% green** from day one.
-8. **GPU-Native Primitives (Points, Lines, Triangles):** Fully completed GPU-native drawing commands under Vulkan, uploading vertices to mapped memory-mapped buffers and executing native hardware draws.
+8. **GPU-Native Primitives (Points, Lines, Triangles):** Fully completed GPU-native drawing commands under Vulkan and OpenGL ES, uploading vertices to memory-mapped buffers and executing native hardware draws.
+9. **OpenGL ES GPU Port Completion (test05):** Fully ported and verified GLES depth-testing support, resolving coordinate space translations to GLES NDC Z and achieving a perfect 100% green pass with 99.77% parity.
+10. **Vulkan GPU Port Completion (test05):** Completed the Vulkan hardware-accelerated depth-testing port, resolving driver-level segmentation faults in Mesa's llvmpipe software rasterizer thread via deferred pipeline resource destruction and driver-native Render Pass LoadOp clears, achieving a perfect 100% green pass with 99.77% parity.

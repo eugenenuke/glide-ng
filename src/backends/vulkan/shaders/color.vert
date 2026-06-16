@@ -20,7 +20,7 @@ void main() {
     float ndcX = (inPos.x / (pcs.viewportWidth / 2.0)) - 1.0;
     float ndcY = (inPos.y / (pcs.viewportHeight / 2.0)) - 1.0;
 
-    gl_Position = vec4(ndcX, ndcY, 0.0, 1.0);
+    gl_Position = vec4(ndcX, ndcY, inPos.z, 1.0);
     gl_PointSize = 1.0; // Canonical Glide point size (1px)
     fragColor = inColor;
     fragTex = inTex;

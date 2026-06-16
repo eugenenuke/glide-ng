@@ -197,6 +197,11 @@ void VulkanBackend::DetachWindow() {
         m_headlessImageView.reset();
         m_headlessImageMemory.reset();
         m_headlessImage.reset();
+
+        // Explicitly reset depth buffer resources to prevent leaks and shutdown crashes!
+        m_depthImageView.reset();
+        m_depthImageMemory.reset();
+        m_depthImage.reset();
     }
 
     m_windowAttached = false;
@@ -208,14 +213,13 @@ void VulkanBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z, uint32_
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     if (!m_initialized || !m_windowAttached) return;
 
-    // Terminate active render pass if any (clear happens via transfer commands)
+    // Terminate active render pass if any (so next draw starts a new render pass that triggers LoadOp Clear!)
     if (m_inRenderPass) {
         m_commandBuffer->endRenderPass();
         m_inRenderPass = false;
     }
 
     GLIDE_LOG(DEBUG, "Vulkan", "ClearBuffer: color=" << std::hex << color << ", clearMask=" << clearMask);
-
 
     // 1. Call SoftwareBackendBase::ClearBuffer to clear the CPU-side framebuffer!
     SoftwareBackendBase::ClearBuffer(color, alpha, z, clearMask);
@@ -230,9 +234,8 @@ void VulkanBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z, uint32_
         }
     }
 
-    // 2. Clear the GPU image using Vulkan!
-    if (clearMask & 1) { // Clear color
-        // Unpack ARGB8888 to float array (Vulkan expects RGBA floats)
+    // 2. Save clear state and mark pending for GPU LoadOp clears when Render Pass starts!
+    if (clearMask & 1) { // Color clear
         float a = ((color >> 24) & 0xFF) / 255.0f;
         float r = ((color >> 16) & 0xFF) / 255.0f;
         float g = ((color >> 8)  & 0xFF) / 255.0f;
@@ -243,17 +246,23 @@ void VulkanBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z, uint32_
             std::swap(r, b);
         }
 
-        vk::ClearColorValue clearColor(std::array<float, 4>{r, g, b, a});
-        vk::ImageSubresourceRange range(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1);
+        m_clearColorValue = vk::ClearColorValue(std::array<float, 4>{r, g, b, a});
+        m_clearColorPending = true;
+    }
 
-        // Transition layout to TransferDst so we can clear it
-        TransitionImageLayout(m_commandBuffer.get(), m_headlessImage.get(), vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, range);
+    if (clearMask & 2) { // Depth clear
+        m_clearDepthValue = z;
+        m_clearDepthPending = true;
+    }
+}
 
-        // Clear the image on the GPU!
-        m_commandBuffer->clearColorImage(m_headlessImage.get(), vk::ImageLayout::eTransferDstOptimal, &clearColor, 1, &range);
+void VulkanBackend::SetDepthState(uint32_t depthMode, uint32_t compareOp, bool depthMask, int32_t biasLevel) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    SoftwareBackendBase::SetDepthState(depthMode, compareOp, depthMask, biasLevel);
 
-        // Transition layout to ColorAttachmentOptimal so it is ready for our render pass!
-        TransitionImageLayout(m_commandBuffer.get(), m_headlessImage.get(), vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eColorAttachmentOptimal, range);
+    if (m_initialized && m_device) {
+        GLIDE_LOG(INFO, "Vulkan", "SetDepthState: Recompiling Vulkan pipelines with new depth config...");
+        CreateGraphicsPipelines();
     }
 }
 
@@ -271,8 +280,24 @@ bool VulkanBackend::SwapBuffers() {
     }
 
     if (m_headlessMode) {
-        // Terminate active render pass before copying GPU image to host buffer
-        if (m_inRenderPass) {
+        // Terminate active render pass before copying GPU image to host buffer.
+        // If no draw calls were executed (clear-only frame), we must explicitly begin/end a render pass to execute the pending clears!
+        if (!m_inRenderPass) {
+            if (m_clearColorPending || m_clearDepthPending) {
+                std::array<vk::ClearValue, 2> clearValues{};
+                clearValues[0].color = m_clearColorValue;
+                clearValues[1].depthStencil = vk::ClearDepthStencilValue(m_clearDepthValue, 0);
+
+                vk::RenderPassBeginInfo renderPassInfo(m_renderPass.get(), m_headlessFramebuffer.get(),
+                                                     vk::Rect2D({0, 0}, {m_headlessWidth, m_headlessHeight}),
+                                                     static_cast<uint32_t>(clearValues.size()), clearValues.data());
+                m_commandBuffer->beginRenderPass(renderPassInfo, vk::SubpassContents::eInline);
+                m_commandBuffer->endRenderPass();
+
+                m_clearColorPending = false;
+                m_clearDepthPending = false;
+            }
+        } else {
             m_commandBuffer->endRenderPass();
             m_inRenderPass = false;
         }
@@ -307,11 +332,17 @@ bool VulkanBackend::SwapBuffers() {
         
         m_commandBuffer->copyImageToBuffer(m_headlessImage.get(), vk::ImageLayout::eTransferSrcOptimal, m_headlessPixelBuffer.get(), 1, &region);
 
+        // Transition layout back to ColorAttachmentOptimal so the image state is clean for the next frame!
+        TransitionImageLayout(m_commandBuffer.get(), m_headlessImage.get(), vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::eColorAttachmentOptimal, range);
+
         // End and submit GPU commands
         m_commandBuffer->end();
         vk::SubmitInfo submitInfo(0, nullptr, nullptr, 1, &m_commandBuffer.get());
         m_graphicsQueue.submit(submitInfo, {});
         m_device->waitIdle(); // Wait for GPU copy to complete
+
+        // Now it is 100% safe to destroy any pipelines that were recompiled mid-frame!
+        m_danglingPipelines.clear();
 
         // Explicitly invalidate mapped memory range to force CPU cache refresh of GPU copy!
         vk::MappedMemoryRange memRange(m_headlessPixelMemory.get(), 0, VK_WHOLE_SIZE);
@@ -514,38 +545,48 @@ bool VulkanBackend::CreateLogicalDevice() {
 }
 
 bool VulkanBackend::CreateRenderPass() {
-    // Phase 2 Optimization: LoadOp is set to eLoad to preserve the background cleared by clearColorImage,
-    // and layout is set to eTransferSrcOptimal to match our clearing/copying swapchain layouts!
+    // 1. Color Attachment Description
     vk::AttachmentDescription colorAttachment({}, m_colorFormat, vk::SampleCountFlagBits::e1,
-                                            vk::AttachmentLoadOp::eLoad, vk::AttachmentStoreOp::eStore,
+                                            vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore,
                                             vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare,
-                                            vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eColorAttachmentOptimal);
+                                            vk::ImageLayout::eUndefined, vk::ImageLayout::eColorAttachmentOptimal);
 
     vk::AttachmentReference colorRef(0, vk::ImageLayout::eColorAttachmentOptimal);
-    vk::SubpassDescription subpass({}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &colorRef);
+
+    // 2. Depth Attachment Description
+    vk::AttachmentDescription depthAttachment({}, m_depthFormat, vk::SampleCountFlagBits::e1,
+                                            vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore,
+                                            vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare,
+                                            vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthStencilAttachmentOptimal);
+
+    vk::AttachmentReference depthRef(1, vk::ImageLayout::eDepthStencilAttachmentOptimal);
+
+    // 3. Subpass Description (binds both color reference and depth stencil reference)
+    vk::SubpassDescription subpass({}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &colorRef, nullptr, &depthRef);
 
     // Setup subpass dependencies to enforce strict GPU synchronization between clear, draw, and copy stages
     std::array<vk::SubpassDependency, 2> dependencies;
 
-    // Dependency 1: Sync Clear/Transfer writes to Color Attachment input
+    // Dependency 1: Sync Clear/Transfer writes to Color/Depth Attachments
     dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
     dependencies[0].dstSubpass = 0;
-    dependencies[0].srcStageMask = vk::PipelineStageFlagBits::eTransfer | vk::PipelineStageFlagBits::eColorAttachmentOutput;
-    dependencies[0].dstStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput;
-    dependencies[0].srcAccessMask = vk::AccessFlagBits::eTransferWrite | vk::AccessFlagBits::eColorAttachmentWrite;
-    dependencies[0].dstAccessMask = vk::AccessFlagBits::eColorAttachmentWrite | vk::AccessFlagBits::eColorAttachmentRead;
+    dependencies[0].srcStageMask = vk::PipelineStageFlagBits::eTransfer | vk::PipelineStageFlagBits::eColorAttachmentOutput | vk::PipelineStageFlagBits::eEarlyFragmentTests;
+    dependencies[0].dstStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput | vk::PipelineStageFlagBits::eEarlyFragmentTests;
+    dependencies[0].srcAccessMask = vk::AccessFlagBits::eTransferWrite | vk::AccessFlagBits::eColorAttachmentWrite | vk::AccessFlagBits::eDepthStencilAttachmentWrite;
+    dependencies[0].dstAccessMask = vk::AccessFlagBits::eColorAttachmentWrite | vk::AccessFlagBits::eColorAttachmentRead | vk::AccessFlagBits::eDepthStencilAttachmentWrite | vk::AccessFlagBits::eDepthStencilAttachmentRead;
     dependencies[0].dependencyFlags = vk::DependencyFlagBits::eByRegion;
 
-    // Dependency 2: Sync Color Attachment writes to Transfer/Copy reads (in SwapBuffers)
+    // Dependency 2: Sync Color/Depth Attachment writes to Transfer/Copy reads (in SwapBuffers)
     dependencies[1].srcSubpass = 0;
     dependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
-    dependencies[1].srcStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput;
+    dependencies[1].srcStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput | vk::PipelineStageFlagBits::eLateFragmentTests;
     dependencies[1].dstStageMask = vk::PipelineStageFlagBits::eTransfer;
-    dependencies[1].srcAccessMask = vk::AccessFlagBits::eColorAttachmentWrite;
+    dependencies[1].srcAccessMask = vk::AccessFlagBits::eColorAttachmentWrite | vk::AccessFlagBits::eDepthStencilAttachmentWrite;
     dependencies[1].dstAccessMask = vk::AccessFlagBits::eTransferRead;
     dependencies[1].dependencyFlags = vk::DependencyFlagBits::eByRegion;
 
-    vk::RenderPassCreateInfo passInfo({}, 1, &colorAttachment, 1, &subpass, static_cast<uint32_t>(dependencies.size()), dependencies.data());
+    std::array<vk::AttachmentDescription, 2> attachments = { colorAttachment, depthAttachment };
+    vk::RenderPassCreateInfo passInfo({}, static_cast<uint32_t>(attachments.size()), attachments.data(), 1, &subpass, static_cast<uint32_t>(dependencies.size()), dependencies.data());
     m_renderPass = m_device->createRenderPassUnique(passInfo);
     return true;
 }
@@ -570,7 +611,29 @@ bool VulkanBackend::CreateHeadlessRenderTarget(uint32_t width, uint32_t height) 
                                     {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1});
     m_headlessImageView = m_device->createImageViewUnique(viewInfo);
 
-    vk::FramebufferCreateInfo fbInfo({}, m_renderPass.get(), 1, &m_headlessImageView.get(), width, height, 1);
+    // 2. Allocate depth image for hardware depth-testing support
+    vk::ImageCreateInfo depthImageInfo({}, vk::ImageType::e2D, m_depthFormat,
+                                      vk::Extent3D(width, height, 1), 1, 1,
+                                      vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal,
+                                      vk::ImageUsageFlagBits::eDepthStencilAttachment | vk::ImageUsageFlagBits::eTransferDst);
+    m_depthImage = m_device->createImageUnique(depthImageInfo);
+
+    auto depthMemReqs = m_device->getImageMemoryRequirements(m_depthImage.get());
+    uint32_t depthTypeIndex = FindMemoryType(depthMemReqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal);
+    vk::MemoryAllocateInfo depthAllocInfo(depthMemReqs.size, depthTypeIndex);
+    m_depthImageMemory = m_device->allocateMemoryUnique(depthAllocInfo);
+    m_device->bindImageMemory(m_depthImage.get(), m_depthImageMemory.get(), 0);
+
+    vk::ImageViewCreateInfo depthViewInfo({}, m_depthImage.get(), vk::ImageViewType::e2D, m_depthFormat,
+                                         {}, {vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1});
+    m_depthImageView = m_device->createImageViewUnique(depthViewInfo);
+
+    // 3. Create framebuffer with both color and depth attachments
+    std::array<vk::ImageView, 2> attachments = {
+        m_headlessImageView.get(),
+        m_depthImageView.get()
+    };
+    vk::FramebufferCreateInfo fbInfo({}, m_renderPass.get(), static_cast<uint32_t>(attachments.size()), attachments.data(), width, height, 1);
     m_headlessFramebuffer = m_device->createFramebufferUnique(fbInfo);
 
     // Create the CPU staging buffer map
@@ -691,6 +754,32 @@ bool VulkanBackend::CreateGraphicsPipelines() {
         // Multisample Configuration (none)
         vk::PipelineMultisampleStateCreateInfo multisampling({}, vk::SampleCountFlagBits::e1, false, 1.0f, nullptr, false, false);
 
+        // Depth Stencil Configuration based on Glide's active states
+        vk::PipelineDepthStencilStateCreateInfo depthStencil{};
+        if (m_depthMode != 0) {
+            depthStencil.depthTestEnable = true;
+            depthStencil.depthWriteEnable = m_depthMask ? true : false;
+
+            vk::CompareOp op = vk::CompareOp::eLess;
+            switch (m_depthCompareOp) {
+                case 0: op = vk::CompareOp::eNever; break;
+                case 1: op = vk::CompareOp::eLess; break;
+                case 2: op = vk::CompareOp::eEqual; break;
+                case 3: op = vk::CompareOp::eLessOrEqual; break;
+                case 4: op = vk::CompareOp::eGreater; break;
+                case 5: op = vk::CompareOp::eNotEqual; break;
+                case 6: op = vk::CompareOp::eGreaterOrEqual; break;
+                case 7: op = vk::CompareOp::eAlways; break;
+                default: break;
+            }
+            depthStencil.depthCompareOp = op;
+        } else {
+            depthStencil.depthTestEnable = false;
+            depthStencil.depthWriteEnable = false;
+        }
+        depthStencil.depthBoundsTestEnable = false;
+        depthStencil.stencilTestEnable = false;
+
         // Color Blending (disabled for simple flat points)
         vk::PipelineColorBlendAttachmentState colorBlendAttachment;
         colorBlendAttachment.colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG | vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA;
@@ -705,7 +794,7 @@ bool VulkanBackend::CreateGraphicsPipelines() {
 
         // Assemble Graphics Pipeline
         vk::GraphicsPipelineCreateInfo pipelineInfo({}, 2, shaderStages, &vertexInputInfo, &inputAssembly, nullptr, &viewportState,
-                                                   &rasterizer, &multisampling, nullptr, &colorBlending, &dynamicState,
+                                                   &rasterizer, &multisampling, &depthStencil, &colorBlending, &dynamicState,
                                                    m_pipelineLayout.get(), m_renderPass.get(), 0, {}, -1);
 
         // 1. Compile Point Pipeline
@@ -714,7 +803,6 @@ bool VulkanBackend::CreateGraphicsPipelines() {
             GLIDE_LOG(CRITICAL, "Vulkan", "Failed to create Vulkan Point graphics pipeline!");
             return false;
         }
-        m_pointPipeline = std::move(pointResult.value);
 
         // 2. Compile Line Pipeline
         inputAssembly.topology = vk::PrimitiveTopology::eLineList;
@@ -723,7 +811,6 @@ bool VulkanBackend::CreateGraphicsPipelines() {
             GLIDE_LOG(CRITICAL, "Vulkan", "Failed to create Vulkan Line graphics pipeline!");
             return false;
         }
-        m_linePipeline = std::move(lineResult.value);
 
         // 3. Compile Triangle Pipeline
         inputAssembly.topology = vk::PrimitiveTopology::eTriangleList;
@@ -732,6 +819,14 @@ bool VulkanBackend::CreateGraphicsPipelines() {
             GLIDE_LOG(CRITICAL, "Vulkan", "Failed to create Vulkan Triangle graphics pipeline!");
             return false;
         }
+
+        // Defer destruction of old pipelines to the end of the frame to prevent command buffer invalidation!
+        if (m_pointPipeline) m_danglingPipelines.push_back(std::move(m_pointPipeline));
+        if (m_linePipeline) m_danglingPipelines.push_back(std::move(m_linePipeline));
+        if (m_trianglePipeline) m_danglingPipelines.push_back(std::move(m_trianglePipeline));
+
+        m_pointPipeline = std::move(pointResult.value);
+        m_linePipeline = std::move(lineResult.value);
         m_trianglePipeline = std::move(triangleResult.value);
 
         GLIDE_LOG(INFO, "Vulkan", "Vulkan Point, Line & Triangle Graphics Pipelines compiled successfully.");
@@ -758,10 +853,17 @@ void VulkanBackend::DrawPoint(const ModernVertex& pt) {
 
     // 2. Ensure Render Pass is active (lazy initialization)
     if (!m_inRenderPass) {
+        std::array<vk::ClearValue, 2> clearValues{};
+        clearValues[0].color = m_clearColorValue;
+        clearValues[1].depthStencil = vk::ClearDepthStencilValue(m_clearDepthValue, 0);
+
         vk::RenderPassBeginInfo renderPassInfo(m_renderPass.get(), m_headlessFramebuffer.get(),
                                              vk::Rect2D({0, 0}, {m_headlessWidth, m_headlessHeight}),
-                                             0, nullptr);
+                                             static_cast<uint32_t>(clearValues.size()), clearValues.data());
         m_commandBuffer->beginRenderPass(renderPassInfo, vk::SubpassContents::eInline);
+
+        m_clearColorPending = false;
+        m_clearDepthPending = false;
 
         // Configure Dynamic Viewport & Scissor (only need to do once per render pass!)
         vk::Viewport viewport(0.0f, 0.0f, (float)m_headlessWidth, (float)m_headlessHeight, 0.0f, 1.0f);
@@ -838,10 +940,17 @@ void VulkanBackend::DrawLine(const ModernVertex& v1, const ModernVertex& v2) {
 
     // 2. Ensure Render Pass is active (lazy initialization)
     if (!m_inRenderPass) {
+        std::array<vk::ClearValue, 2> clearValues{};
+        clearValues[0].color = m_clearColorValue;
+        clearValues[1].depthStencil = vk::ClearDepthStencilValue(m_clearDepthValue, 0);
+
         vk::RenderPassBeginInfo renderPassInfo(m_renderPass.get(), m_headlessFramebuffer.get(),
                                              vk::Rect2D({0, 0}, {m_headlessWidth, m_headlessHeight}),
-                                             0, nullptr);
+                                             static_cast<uint32_t>(clearValues.size()), clearValues.data());
         m_commandBuffer->beginRenderPass(renderPassInfo, vk::SubpassContents::eInline);
+
+        m_clearColorPending = false;
+        m_clearDepthPending = false;
 
         // Configure Dynamic Viewport & Scissor
         vk::Viewport viewport(0.0f, 0.0f, (float)m_headlessWidth, (float)m_headlessHeight, 0.0f, 1.0f);
@@ -925,10 +1034,17 @@ void VulkanBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b, c
 
     // 2. Ensure Render Pass is active (lazy initialization)
     if (!m_inRenderPass) {
+        std::array<vk::ClearValue, 2> clearValues{};
+        clearValues[0].color = m_clearColorValue;
+        clearValues[1].depthStencil = vk::ClearDepthStencilValue(m_clearDepthValue, 0);
+
         vk::RenderPassBeginInfo renderPassInfo(m_renderPass.get(), m_headlessFramebuffer.get(),
                                              vk::Rect2D({0, 0}, {m_headlessWidth, m_headlessHeight}),
-                                             0, nullptr);
+                                             static_cast<uint32_t>(clearValues.size()), clearValues.data());
         m_commandBuffer->beginRenderPass(renderPassInfo, vk::SubpassContents::eInline);
+
+        m_clearColorPending = false;
+        m_clearDepthPending = false;
 
         // Configure Dynamic Viewport & Scissor
         vk::Viewport viewport(0.0f, 0.0f, (float)m_headlessWidth, (float)m_headlessHeight, 0.0f, 1.0f);

@@ -28,6 +28,7 @@ public:
     // GPU-Driven Clearing & Swapchain Presentation
     void ClearBuffer(uint32_t color, uint32_t alpha, float z, uint32_t clearMask) override;
     bool SwapBuffers() override;
+    void SetDepthState(uint32_t depthMode, uint32_t compareOp, bool depthMask, int32_t biasLevel) override;
     bool ReadLFB(uint32_t srcX, uint32_t srcY, uint32_t srcWidth, uint32_t srcHeight, uint32_t dstStride, void* dstData) override;
     void PollEvents() override;
 
@@ -67,6 +68,12 @@ private:
     vk::UniqueImageView m_headlessImageView;
     vk::UniqueFramebuffer m_headlessFramebuffer;
 
+    // Headless depth attachment resources
+    vk::UniqueImage m_depthImage;
+    vk::UniqueDeviceMemory m_depthImageMemory;
+    vk::UniqueImageView m_depthImageView;
+    vk::Format m_depthFormat{vk::Format::eD32Sfloat};
+
     // Staging buffer to copy GPU image to CPU
     vk::UniqueBuffer m_headlessPixelBuffer;
     vk::UniqueDeviceMemory m_headlessPixelMemory;
@@ -86,6 +93,7 @@ private:
     vk::UniquePipeline m_pointPipeline;
     vk::UniquePipeline m_linePipeline;
     vk::UniquePipeline m_trianglePipeline;
+    std::vector<vk::UniquePipeline> m_danglingPipelines;
 
     // Dynamic Ring Vertex Buffer
     vk::UniqueBuffer m_vertexBuffer;
@@ -96,6 +104,12 @@ private:
     
     // Unified Frame Render Pass State
     bool m_inRenderPass{false};
+
+    // Clear state tracking for Render Pass LoadOp clears
+    vk::ClearColorValue m_clearColorValue{std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f}};
+    float m_clearDepthValue{1.0f};
+    bool m_clearColorPending{false};
+    bool m_clearDepthPending{false};
 };
 
 
