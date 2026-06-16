@@ -119,6 +119,7 @@ add_executable(test_runner
     test05_zbuffer/test05.cpp
     test06_wbuffer/test06.cpp
     test07_blend/test07.cpp
+    test08_fog/test08.cpp
     test10_culling/test10.cpp
     test13_alpha/test13.cpp
     test14_depthbias/test14.cpp

@@ -38,6 +38,11 @@ public:
     void SetCullState(uint32_t cullMode) override;
     void SetClipWindow(uint32_t minX, uint32_t minY, uint32_t maxX, uint32_t maxY) override;
     void SetSstOrigin(uint32_t origin) override;
+    
+    // Milestone 8: Fogging State
+    void SetFogMode(uint32_t mode) override;
+    void SetFogColor(uint32_t color) override;
+    void SetFogTable(const uint8_t* table) override;
 
     // Phase 5: Virtual TMU & Combiner Configurations
     void BindTexture(uint32_t tmu, uint32_t startAddress, uint32_t clampS, uint32_t clampT, uint32_t minFilter, uint32_t magFilter) override;
@@ -85,6 +90,10 @@ protected:
     uint32_t m_clipMaxX{800};
     uint32_t m_clipMaxY{600};
     uint32_t m_sstOrigin{0};      // 0 = GR_ORIGIN_UPPER_LEFT
+    
+    uint32_t m_fogMode{0};
+    uint32_t m_fogColor{0xff000000};
+    uint8_t m_fogTable[64] = {0};
 
     std::vector<float> m_headlessDepthBuffer;
 

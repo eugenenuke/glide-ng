@@ -19,6 +19,7 @@ namespace GlideTest {
     std::unique_ptr<BaseTest> CreateTest05();
     std::unique_ptr<BaseTest> CreateTest06();
     std::unique_ptr<BaseTest> CreateTest07();
+    std::unique_ptr<BaseTest> CreateTest08();
     std::unique_ptr<BaseTest> CreateTest10();
     std::unique_ptr<BaseTest> CreateTest13();
     std::unique_ptr<BaseTest> CreateTest14();
@@ -76,6 +77,7 @@ int main(int argc, char** argv) {
     tests.push_back(GlideTest::CreateTest05());
     tests.push_back(GlideTest::CreateTest06());
     tests.push_back(GlideTest::CreateTest07());
+    tests.push_back(GlideTest::CreateTest08());
     tests.push_back(GlideTest::CreateTest10());
     tests.push_back(GlideTest::CreateTest13());
     tests.push_back(GlideTest::CreateTest14());

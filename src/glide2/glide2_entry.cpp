@@ -7,6 +7,8 @@
 #include "core/TextureManager.h"
 #include <iostream>
 #include <cstring>
+#include <cmath>
+#include <algorithm>
 
 #ifndef __linux__
 #define __linux__
@@ -61,6 +63,9 @@ namespace {
     uint32_t s_clipMinY = 0;
     uint32_t s_clipMaxX = 640;
     uint32_t s_clipMaxY = 480;
+    uint32_t s_fogMode = 0;
+    uint32_t s_fogColor = 0xff000000;
+    uint8_t s_fogTable[64] = {0};
 }
 
 // Opaque state container matching GrState's char padding
@@ -100,6 +105,9 @@ struct GlideWrapperState {
     uint32_t clipMinY;
     uint32_t clipMaxX;
     uint32_t clipMaxY;
+    uint32_t fogMode;
+    uint32_t fogColor;
+    uint8_t fogTable[64];
 };
 
 static_assert(sizeof(GlideWrapperState) <= sizeof(GrState), "GlideWrapperState exceeds GrState footprint!");
@@ -322,6 +330,9 @@ FX_ENTRY void FX_CALL grGlideGetState(GrState* state) {
     ws->clipMinY = s_clipMinY;
     ws->clipMaxX = s_clipMaxX;
     ws->clipMaxY = s_clipMaxY;
+    ws->fogMode = s_fogMode;
+    ws->fogColor = s_fogColor;
+    std::memcpy(ws->fogTable, s_fogTable, sizeof(s_fogTable));
 }
 
 FX_ENTRY void FX_CALL grGlideSetState(const GrState* state) {
@@ -359,6 +370,9 @@ FX_ENTRY void FX_CALL grGlideSetState(const GrState* state) {
     s_clipMinY = ws->clipMinY;
     s_clipMaxX = ws->clipMaxX;
     s_clipMaxY = ws->clipMaxY;
+    s_fogMode = ws->fogMode;
+    s_fogColor = ws->fogColor;
+    std::memcpy(s_fogTable, ws->fogTable, sizeof(s_fogTable));
 
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
         b->SetDepthState(s_depthMode, s_depthCompare, s_depthMask, s_depthBias);
@@ -368,7 +382,10 @@ FX_ENTRY void FX_CALL grGlideSetState(const GrState* state) {
         b->SetCullState(s_cullMode);
         b->SetClipWindow(s_clipMinX, s_clipMinY, s_clipMaxX, s_clipMaxY);
         b->SetConstantColor(s_constantColor);
-        
+        b->SetFogMode(s_fogMode);
+        b->SetFogColor(s_fogColor);
+        b->SetFogTable(s_fogTable);
+
         for (uint32_t tmu = 0; tmu < 2; ++tmu) {
             b->SetTexCombinerMode(tmu, s_texRgbFunc[tmu], s_texRgbFactor[tmu], s_texAlphaFunc[tmu], s_texAlphaFactor[tmu]);
             b->BindTexture(tmu, s_boundTex[tmu], s_clampS[tmu], s_clampT[tmu], s_minFilter[tmu], s_magFilter[tmu]);
@@ -606,6 +623,101 @@ FX_ENTRY FxBool FX_CALL gu3dfGetInfo(const char* filename, Gu3dfInfo* info) {
 FX_ENTRY FxBool FX_CALL gu3dfLoad(const char* filename, Gu3dfInfo* data) {
     GLIDE_LOG(INFO, "Frontend", "gu3dfLoad invoked for: " << (filename ? filename : "unknown"));
     return FXTRUE;
+}
+
+// ==========================================
+// Phase 1: Fogging Entry Points & Utilities
+// ==========================================
+
+static const float tableIndexToW[64] = {
+    1.000000f,      1.142857f,      1.333333f,      1.600000f, 
+    2.000000f,      2.285714f,      2.666667f,      3.200000f, 
+    4.000000f,      4.571429f,      5.333333f,      6.400000f, 
+    8.000000f,      9.142858f,     10.666667f,     12.800000f, 
+    16.000000f,     18.285715f,     21.333334f,     25.600000f, 
+    32.000000f,     36.571430f,     42.666668f,     51.200001f, 
+    64.000000f,     73.142860f,     85.333336f,    102.400002f, 
+    128.000000f,    146.285721f,    170.666672f,    204.800003f, 
+    256.000000f,    292.571442f,    341.333344f,    409.600006f, 
+    512.000000f,    585.142883f,    682.666687f,    819.200012f, 
+    1024.000000f,   1170.285767f,   1365.333374f,   1638.400024f, 
+    2048.000000f,   2340.571533f,   2730.666748f,   3276.800049f, 
+    4096.000000f,   4681.143066f,   5461.333496f,   6553.600098f, 
+    8192.000000f,   9362.286133f,  10922.666992f,  13107.200195f, 
+    16384.000000f,  18724.572266f,  21845.333984f,  26214.400391f, 
+    32768.000000f,  37449.144531f,  43690.667969f,  52428.800781f
+};
+
+FX_ENTRY float FX_CALL guFogTableIndexToW(int i) {
+    if (i < 0) i = 0;
+    if (i >= 64) i = 63;
+    return tableIndexToW[i];
+}
+
+FX_ENTRY void FX_CALL guFogGenerateExp(GrFog_t *fogtable, float density) {
+    if (!fogtable) return;
+    float dp = density * guFogTableIndexToW(63);
+    float scale = 1.0f / (1.0f - std::exp(-dp));
+
+    for (int i = 0; i < 64; ++i) {
+        dp = density * guFogTableIndexToW(i);
+        float f = (1.0f - std::exp(-dp)) * scale;
+        f = std::clamp(f, 0.0f, 1.0f) * 255.0f;
+        fogtable[i] = static_cast<GrFog_t>(f);
+    }
+}
+
+FX_ENTRY void FX_CALL guFogGenerateExp2(GrFog_t *fogtable, float density) {
+    if (!fogtable) return;
+    float dp = density * guFogTableIndexToW(63);
+    float scale = 1.0f / (1.0f - std::exp(-(dp * dp)));
+
+    for (int i = 0; i < 64; ++i) {
+        dp = density * guFogTableIndexToW(i);
+        float f = (1.0f - std::exp(-(dp * dp))) * scale;
+        f = std::clamp(f, 0.0f, 1.0f) * 255.0f;
+        fogtable[i] = static_cast<GrFog_t>(f);
+    }
+}
+
+FX_ENTRY void FX_CALL guFogGenerateLinear(GrFog_t *fogtable, float nearZ, float farZ) {
+    if (!fogtable) return;
+    for (int i = 0; i < 64; ++i) {
+        float world_w = guFogTableIndexToW(i);
+        world_w = std::clamp(world_w, nearZ, farZ);
+        float f = (world_w - nearZ) / (farZ - nearZ);
+        f = std::clamp(f, 0.0f, 1.0f) * 255.0f;
+        fogtable[i] = static_cast<GrFog_t>(f);
+    }
+}
+
+FX_ENTRY void FX_CALL grFogMode(GrFogMode_t mode) {
+    EnsureEngineInitialized();
+    GLIDE_LOG(INFO, "Frontend", "grFogMode invoked: " << mode);
+    s_fogMode = mode & (GR_FOG_WITH_TABLE | GR_FOG_WITH_ITERATED_ALPHA);
+    if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
+        b->SetFogMode(s_fogMode);
+    }
+}
+
+FX_ENTRY void FX_CALL grFogColorValue(GrColor_t fogcolor) {
+    EnsureEngineInitialized();
+    GLIDE_LOG(INFO, "Frontend", "grFogColorValue invoked: " << std::hex << fogcolor << std::dec);
+    s_fogColor = fogcolor;
+    if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
+        b->SetFogColor(s_fogColor);
+    }
+}
+
+FX_ENTRY void FX_CALL grFogTable(const GrFog_t ft[]) {
+    EnsureEngineInitialized();
+    GLIDE_LOG(INFO, "Frontend", "grFogTable invoked.");
+    if (ft) {
+        std::memcpy(s_fogTable, ft, sizeof(s_fogTable));
+        if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
+            b->SetFogTable(s_fogTable);
+        }
+    }
 }
 
 } // extern "C"

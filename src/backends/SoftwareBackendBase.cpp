@@ -105,6 +105,26 @@ void SoftwareBackendBase::SetSstOrigin(uint32_t origin) {
     GLIDE_LOG(INFO, "Rasterizer", "SetSstOrigin: " << origin);
 }
 
+void SoftwareBackendBase::SetFogMode(uint32_t mode) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    m_fogMode = mode;
+    GLIDE_LOG(INFO, "Rasterizer", "SetFogMode: " << mode);
+}
+
+void SoftwareBackendBase::SetFogColor(uint32_t color) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    m_fogColor = color;
+    GLIDE_LOG(INFO, "Rasterizer", "SetFogColor: 0x" << std::hex << color << std::dec);
+}
+
+void SoftwareBackendBase::SetFogTable(const uint8_t* table) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    if (table) {
+        std::memcpy(m_fogTable, table, sizeof(m_fogTable));
+        GLIDE_LOG(INFO, "Rasterizer", "SetFogTable: 64 entries uploaded.");
+    }
+}
+
 void SoftwareBackendBase::BindTexture(uint32_t tmu, uint32_t startAddress, uint32_t clampS, uint32_t clampT, uint32_t minFilter, uint32_t magFilter) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     if (tmu < 2) {
@@ -265,6 +285,24 @@ uint32_t SoftwareBackendBase::EvaluateCombinerColor(const ModernVertex& v) {
 
     return (a << 24) | (r << 16) | (g << 8) | b;
 }
+static const float s_tableIndexToW[64] = {
+    1.000000f,      1.142857f,      1.333333f,      1.600000f, 
+    2.000000f,      2.285714f,      2.666667f,      3.200000f, 
+    4.000000f,      4.571429f,      5.333333f,      6.400000f, 
+    8.000000f,      9.142858f,     10.666667f,     12.800000f, 
+    16.000000f,     18.285715f,     21.333334f,     25.600000f, 
+    32.000000f,     36.571430f,     42.666668f,     51.200001f, 
+    64.000000f,     73.142860f,     85.333336f,    102.400002f, 
+    128.000000f,    146.285721f,    170.666672f,    204.800003f, 
+    256.000000f,    292.571442f,    341.333344f,    409.600006f, 
+    512.000000f,    585.142883f,    682.666687f,    819.200012f, 
+    1024.000000f,   1170.285767f,   1365.333374f,   1638.400024f, 
+    2048.000000f,   2340.571533f,   2730.666748f,   3276.800049f, 
+    4096.000000f,   4681.143066f,   5461.333496f,   6553.600098f, 
+    8192.000000f,   9362.286133f,  10922.666992f,  13107.200195f, 
+    16384.000000f,  18724.572266f,  21845.333984f,  26214.400391f, 
+    32768.000000f,  37449.144531f,  43690.667969f,  52428.800781f
+};
 
 void SoftwareBackendBase::RasterizeSoftwareTriangle(const ModernVertex& a, const ModernVertex& b, const ModernVertex& c) {
     auto edgeFunc = [](const float* p1, const float* p2, const float* p) -> float {
@@ -496,6 +534,44 @@ void SoftwareBackendBase::RasterizeSoftwareTriangle(const ModernVertex& a, const
                 // Only write depth if depth buffering is enabled and depth mask is true
                 if (m_depthMode != 0 && m_depthMask && !m_headlessDepthBuffer.empty()) {
                     m_headlessDepthBuffer[pIdx] = targetDepth;
+                }
+
+                // Milestone 8: Fogging Emulation (with piecewise linear interpolation)
+                if (m_fogMode != 0) {
+                    float eyeW = 1.0f / wVal;
+                    if (eyeW < 1.0f) eyeW = 1.0f;
+
+                    int idx = 0;
+                    for (int i = 0; i < 63; ++i) {
+                        if (s_tableIndexToW[i] < eyeW) {
+                            idx = i;
+                        } else {
+                            break;
+                        }
+                    }
+
+                    float w0 = s_tableIndexToW[idx];
+                    float w1 = s_tableIndexToW[idx + 1];
+                    float f0 = m_fogTable[idx] / 255.0f;
+                    float f1 = m_fogTable[idx + 1] / 255.0f;
+
+                    float t = 0.0f;
+                    if (w1 > w0) {
+                        t = (eyeW - w0) / (w1 - w0);
+                    }
+                    t = std::max(0.0f, std::min(1.0f, t));
+                    float f = f0 * (1.0f - t) + f1 * t;
+
+                    float fogR = ((m_fogColor >> 16) & 0xFF) / 255.0f;
+                    float fogG = ((m_fogColor >> 8)  & 0xFF) / 255.0f;
+                    float fogB = (m_fogColor & 0xFF) / 255.0f;
+                    if (m_pixelFormatOverride == 1) {
+                        std::swap(fogR, fogB);
+                    }
+
+                    red   = red   * (1.0f - f) + fogR * f;
+                    green = green * (1.0f - f) + fogG * f;
+                    blue  = blue  * (1.0f - f) + fogB * f;
                 }
 
                 uint32_t rVal = static_cast<uint32_t>(std::min(255.0f, red * 255.0f + 0.5f));

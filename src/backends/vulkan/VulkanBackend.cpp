@@ -18,19 +18,7 @@ extern "C" {
 
 namespace GlideWrapper {
 
-// Push Constants definition shared across pipeline layout and draw pipelines
-struct PushConstants {
-    float viewportWidth;
-    float viewportHeight;
-    float padding[2];          // Explicitly align constantColor to 16-byte boundary (std140)
-    float constantColor[4];    // RGBA normalized floats
-    uint32_t useConstantColor;  // 1 = true, 0 = false
-    uint32_t useConstantAlpha;  // 1 = true, 0 = false
-    uint32_t depthBufferMode;   // 0 = None, 1 = Z, 2 = W
-    uint32_t alphaTestOp;       // 0..7 (Glide compare ops, 7 = ALWAYS/disabled)
-    float alphaTestRef;         // 0.0 .. 1.0 (normalized reference value)
-    float depthBias;            // Normalized depth bias
-};
+
 
 // Authoritative Vulkan validation layer declarations
 const std::vector<const char*> validationLayers = {
@@ -1048,27 +1036,7 @@ void VulkanBackend::DrawPoint(const ModernVertex& pt) {
     bool useConstAlpha = ((m_alphaCombinerFactor & 0xFFFF) == 1) || (m_alphaCombinerFactor == 1);
 
     PushConstants pcs;
-    pcs.viewportWidth = (float)m_headlessWidth;
-    pcs.viewportHeight = (float)m_headlessHeight;
-    pcs.useConstantColor = useConstColor ? 1 : 0;
-    pcs.useConstantAlpha = useConstAlpha ? 1 : 0;
-    pcs.depthBufferMode = m_depthMode;
-    
-    // Extract and normalize constant color components
-    pcs.constantColor[0] = ((m_constantColor >> 16) & 0xFF) / 255.0f; // R
-    pcs.constantColor[1] = ((m_constantColor >> 8) & 0xFF) / 255.0f;  // G
-    pcs.constantColor[2] = (m_constantColor & 0xFF) / 255.0f;         // B
-    pcs.constantColor[3] = ((m_constantColor >> 24) & 0xFF) / 255.0f; // A
-    if (m_pixelFormatOverride == 1) {
-        std::swap(pcs.constantColor[0], pcs.constantColor[2]);
-    }
-    if (pcs.constantColor[3] < 0.5f) {
-        pcs.constantColor[3] = 1.0f; // Force opaque if alpha is uninitialized/transparent
-    }
-
-    pcs.alphaTestOp = m_alphaTestOp;
-    pcs.alphaTestRef = (float)m_alphaTestRefVal / 255.0f;
-    pcs.depthBias = static_cast<float>(m_depthBiasLevel) / 65535.0f;
+    PopulatePushConstants(pcs, useConstColor, useConstAlpha);
 
     m_commandBuffer->pushConstants<PushConstants>(m_pipelineLayout.get(), vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, pcs);
 
@@ -1122,27 +1090,7 @@ void VulkanBackend::DrawLine(const ModernVertex& v1, const ModernVertex& v2) {
     bool useConstAlpha = ((m_alphaCombinerFactor & 0xFFFF) == 1) || (m_alphaCombinerFactor == 1);
 
     PushConstants pcs;
-    pcs.viewportWidth = (float)m_headlessWidth;
-    pcs.viewportHeight = (float)m_headlessHeight;
-    pcs.useConstantColor = useConstColor ? 1 : 0;
-    pcs.useConstantAlpha = useConstAlpha ? 1 : 0;
-    pcs.depthBufferMode = m_depthMode;
-    
-    // Extract and normalize constant color components
-    pcs.constantColor[0] = ((m_constantColor >> 16) & 0xFF) / 255.0f; // R
-    pcs.constantColor[1] = ((m_constantColor >> 8) & 0xFF) / 255.0f;  // G
-    pcs.constantColor[2] = (m_constantColor & 0xFF) / 255.0f;         // B
-    pcs.constantColor[3] = ((m_constantColor >> 24) & 0xFF) / 255.0f; // A
-    if (m_pixelFormatOverride == 1) {
-        std::swap(pcs.constantColor[0], pcs.constantColor[2]);
-    }
-    if (pcs.constantColor[3] < 0.5f) {
-        pcs.constantColor[3] = 1.0f; // Force opaque if alpha is uninitialized/transparent
-    }
-
-    pcs.alphaTestOp = m_alphaTestOp;
-    pcs.alphaTestRef = (float)m_alphaTestRefVal / 255.0f;
-    pcs.depthBias = static_cast<float>(m_depthBiasLevel) / 65535.0f;
+    PopulatePushConstants(pcs, useConstColor, useConstAlpha);
 
     m_commandBuffer->pushConstants<PushConstants>(m_pipelineLayout.get(), vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, pcs);
 
@@ -1207,27 +1155,7 @@ void VulkanBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b, c
     bool useConstAlpha = ((m_alphaCombinerFactor & 0xFFFF) == 1) || (m_alphaCombinerFactor == 1);
 
     PushConstants pcs;
-    pcs.viewportWidth = (float)m_headlessWidth;
-    pcs.viewportHeight = (float)m_headlessHeight;
-    pcs.useConstantColor = useConstColor ? 1 : 0;
-    pcs.useConstantAlpha = useConstAlpha ? 1 : 0;
-    pcs.depthBufferMode = m_depthMode;
-    
-    // Extract and normalize constant color components
-    pcs.constantColor[0] = ((m_constantColor >> 16) & 0xFF) / 255.0f; // R
-    pcs.constantColor[1] = ((m_constantColor >> 8) & 0xFF) / 255.0f;  // G
-    pcs.constantColor[2] = (m_constantColor & 0xFF) / 255.0f;         // B
-    pcs.constantColor[3] = ((m_constantColor >> 24) & 0xFF) / 255.0f; // A
-    if (m_pixelFormatOverride == 1) {
-        std::swap(pcs.constantColor[0], pcs.constantColor[2]);
-    }
-    if (pcs.constantColor[3] < 0.5f) {
-        pcs.constantColor[3] = 1.0f; // Force opaque if alpha is uninitialized/transparent
-    }
-
-    pcs.alphaTestOp = m_alphaTestOp;
-    pcs.alphaTestRef = (float)m_alphaTestRefVal / 255.0f;
-    pcs.depthBias = static_cast<float>(m_depthBiasLevel) / 65535.0f;
+    PopulatePushConstants(pcs, useConstColor, useConstAlpha);
 
     m_commandBuffer->pushConstants<PushConstants>(m_pipelineLayout.get(), vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, pcs);
 
@@ -1291,6 +1219,55 @@ void VulkanBackend::EnsureRenderPassActive() {
         vk::ClearRect clearRect(vk::Rect2D({0, 0}, {m_headlessWidth, m_headlessHeight}), 0, 1);
         m_commandBuffer->clearAttachments(static_cast<uint32_t>(clears.size()), clears.data(), 1, &clearRect);
         GLIDE_LOG(DEBUG, "Vulkan", "Explicitly cleared " << clears.size() << " attachments inside render pass.");
+    }
+}
+
+void VulkanBackend::PopulatePushConstants(PushConstants& pcs, bool useConstColor, bool useConstAlpha) {
+    pcs.viewportWidth = (float)m_headlessWidth;
+    pcs.viewportHeight = (float)m_headlessHeight;
+    pcs.useConstantColor = useConstColor ? 1 : 0;
+    pcs.useConstantAlpha = useConstAlpha ? 1 : 0;
+    pcs.depthBufferMode = m_depthMode;
+    
+    // Extract and normalize constant color components
+    pcs.constantColor[0] = ((m_constantColor >> 16) & 0xFF) / 255.0f; // R
+    pcs.constantColor[1] = ((m_constantColor >> 8) & 0xFF) / 255.0f;  // G
+    pcs.constantColor[2] = (m_constantColor & 0xFF) / 255.0f;         // B
+    pcs.constantColor[3] = ((m_constantColor >> 24) & 0xFF) / 255.0f; // A
+    if (m_pixelFormatOverride == 1) {
+        std::swap(pcs.constantColor[0], pcs.constantColor[2]);
+    }
+    if (pcs.constantColor[3] < 0.5f) {
+        pcs.constantColor[3] = 1.0f; // Force opaque if alpha is uninitialized/transparent
+    }
+
+    pcs.alphaTestOp = m_alphaTestOp;
+    pcs.alphaTestRef = (float)m_alphaTestRefVal / 255.0f;
+    pcs.depthBias = static_cast<float>(m_depthBiasLevel) / 65535.0f;
+
+    // Milestone 8: Fogging State (packed 128-byte layout)
+    pcs.fogMode = m_fogMode;
+    
+    // Swizzle fog color if format override is active
+    uint32_t packedFogColor = m_fogColor;
+    if (m_pixelFormatOverride == 1) {
+        uint32_t r = (m_fogColor >> 16) & 0xFF;
+        uint32_t g = (m_fogColor >> 8) & 0xFF;
+        uint32_t b = m_fogColor & 0xFF;
+        uint32_t a = (m_fogColor >> 24) & 0xFF;
+        packedFogColor = (a << 24) | (b << 16) | (g << 8) | r;
+    }
+    pcs.fogColor = packedFogColor;
+    pcs.pad1 = 0;
+
+    // Pack 64-entry 8-bit fog table into 16 uint32_t values
+    for (int i = 0; i < 16; ++i) {
+        uint32_t word = 0;
+        word |= static_cast<uint32_t>(m_fogTable[i * 4 + 0]) << 0;
+        word |= static_cast<uint32_t>(m_fogTable[i * 4 + 1]) << 8;
+        word |= static_cast<uint32_t>(m_fogTable[i * 4 + 2]) << 16;
+        word |= static_cast<uint32_t>(m_fogTable[i * 4 + 3]) << 24;
+        pcs.fogTable[i] = word;
     }
 }
 

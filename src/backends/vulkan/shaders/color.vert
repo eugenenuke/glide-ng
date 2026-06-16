@@ -6,6 +6,7 @@ layout(location = 2) in vec4 inTex;
 
 layout(location = 0) out vec4 fragColor;
 layout(location = 1) out vec4 fragTex;
+layout(location = 2) out float fragOOW;
 
 // Viewport and constant-color configuration passed via push constants
 layout(push_constant) uniform PushConstants {
@@ -36,4 +37,5 @@ void main() {
     gl_PointSize = 1.0; // Canonical Glide point size (1px)
     fragColor = inColor;
     fragTex = inTex;
+    fragOOW = inPos.w;
 }

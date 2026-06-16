@@ -7,6 +7,26 @@
 
 namespace GlideWrapper {
 
+// Push Constants definition shared across pipeline layout and draw pipelines (exactly 128 bytes)
+struct PushConstants {
+    float viewportWidth;
+    float viewportHeight;
+    float padding[2];          // Explicitly align constantColor to 16-byte boundary (std140)
+    float constantColor[4];    // RGBA normalized floats
+    uint32_t useConstantColor;  // 1 = true, 0 = false
+    uint32_t useConstantAlpha;  // 1 = true, 0 = false
+    uint32_t depthBufferMode;   // 0 = None, 1 = Z, 2 = W
+    uint32_t alphaTestOp;       // 0..7 (Glide compare ops, 7 = ALWAYS/disabled)
+    float alphaTestRef;         // 0.0 .. 1.0 (normalized reference value)
+    float depthBias;            // Normalized depth bias
+    
+    // Milestone 8: Fogging State (Exactly 128 bytes total)
+    uint32_t fogMode;           // 0 = disabled, otherwise enabled
+    uint32_t fogColor;          // Packed 32-bit ARGB/ABGR color
+    uint32_t pad1;              // Alignment pad
+    uint32_t fogTable[16];      // 64-entry 8-bit fog table packed into 16 uint32_t values
+};
+
 /**
  * @brief Concrete production Vulkan translation engine.
  * Inherits from SoftwareBackendBase to utilize the CPU rasterizer as a progressive migration bridge.
@@ -118,6 +138,7 @@ private:
     // Dynamic Scissor Helper
     vk::Rect2D GetScissorRectVulkan();
     void EnsureRenderPassActive();
+    void PopulatePushConstants(PushConstants& pcs, bool useConstColor, bool useConstAlpha);
 };
 
 

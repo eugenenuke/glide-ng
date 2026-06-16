@@ -43,6 +43,11 @@ public:
     virtual void SetClipWindow(uint32_t minX, uint32_t minY, uint32_t maxX, uint32_t maxY) = 0;
     virtual void SetSstOrigin(uint32_t origin) = 0;
 
+    // Milestone 8: Fogging State
+    virtual void SetFogMode(uint32_t mode) = 0;
+    virtual void SetFogColor(uint32_t color) = 0;
+    virtual void SetFogTable(const uint8_t* table) = 0;
+
     // Linear Framebuffer (LFB) cpu CPU inspection and modification
     virtual void* GetLfbWritePtr() = 0;
     virtual bool ReadLFB(uint32_t srcX, uint32_t srcY, uint32_t srcWidth, uint32_t srcHeight, uint32_t dstStride, void* dstData) = 0;

@@ -38,6 +38,7 @@ private:
     void ApplyBlendingGLES();
     void ApplyScissorGLES();
     void SyncCullStateGLES();
+    void PopulateUniforms();
 
     // SDL2 & OpenGL ES Context Handles
     void* m_sdlWindow{nullptr};   // SDL_Window*

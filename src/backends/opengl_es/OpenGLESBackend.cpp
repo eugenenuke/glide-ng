@@ -498,6 +498,7 @@ layout(location = 1) in vec4 inColor;
 layout(location = 2) in vec4 inTex;
 
 out vec4 fragColor;
+out float fragOOW;
 
 uniform vec2 uViewportSize;
 uniform int uDepthClipOverride;
@@ -526,6 +527,7 @@ void main() {
     gl_Position = vec4(ndcX, ndcY, ndcZ, 1.0);
     gl_PointSize = 1.0; // Canonical Glide point size (1px)
     fragColor = inColor;
+    fragOOW = inPos.w;
 }
 )";
 
@@ -533,6 +535,7 @@ static const char* geomFsSource = R"(#version 300 es
 precision mediump float;
 
 in vec4 fragColor;
+in float fragOOW;
 out vec4 outColor;
 
 uniform vec4 uConstantColor;
@@ -541,10 +544,63 @@ uniform int uUseConstantAlpha;
 uniform int uAlphaTestOp;
 uniform float uAlphaTestRef;
 
+// Milestone 8: Fogging Uniforms
+uniform int uFogMode;
+uniform vec4 uFogColor;
+uniform float uFogTable[64];
+
+const float s_tableIndexToW[64] = float[](
+    1.000000,      1.142857,      1.333333,      1.600000, 
+    2.000000,      2.285714,      2.666667,      3.200000, 
+    4.000000,      4.571429,      5.333333,      6.400000, 
+    8.000000,      9.142858,     10.666667,     12.800000, 
+    16.000000,     18.285715,     21.333334,     25.600000, 
+    32.000000,     36.571430,     42.666668,     51.200001, 
+    64.000000,     73.142860,     85.333336,    102.400002, 
+    128.000000,    146.285721,    170.666672,    204.800003, 
+    256.000000,    292.571442,    341.333344,    409.600006, 
+    512.000000,    585.142883,    682.666687,    819.200012, 
+    1024.000000,   1170.285767,   1365.333374,   1638.400024, 
+    2048.000000,   2340.571533,   2730.666748,   3276.800049, 
+    4096.000000,   4681.143066,   5461.333496,   6553.600098, 
+    8192.000000,   9362.286133,  10922.666992,  13107.200195, 
+    16384.000000,  18724.572266,  21845.333984,  26214.400391, 
+    32768.000000,  37449.144531,  43690.667969,  52428.800781
+);
+
 void main() {
     vec4 col;
     col.rgb = (uUseConstantColor == 1) ? uConstantColor.rgb : fragColor.rgb;
     col.a   = (uUseConstantAlpha == 1) ? uConstantColor.a   : fragColor.a;
+
+    // Milestone 8: Fogging Emulation (applied before alpha testing with linear interpolation)
+    if (uFogMode > 0) {
+        float eyeW = 1.0 / fragOOW;
+        if (eyeW < 1.0) eyeW = 1.0;
+
+        int idx = 0;
+        for (int i = 0; i < 63; ++i) {
+            if (s_tableIndexToW[i] < eyeW) {
+                idx = i;
+            } else {
+                break;
+            }
+        }
+
+        float w0 = s_tableIndexToW[idx];
+        float w1 = s_tableIndexToW[idx + 1];
+        float f0 = uFogTable[idx];
+        float f1 = uFogTable[idx + 1];
+
+        float t = 0.0;
+        if (w1 > w0) {
+            t = (eyeW - w0) / (w1 - w0);
+        }
+        t = clamp(t, 0.0, 1.0);
+
+        float f = mix(f0, f1, t);
+        col.rgb = col.rgb * (1.0 - f) + uFogColor.rgb * f;
+    }
 
     // Emulate legacy 3dfx Glide alpha testing (7 = GR_CMP_ALWAYS / disabled)
     if (uAlphaTestOp != 7) {
@@ -663,32 +719,7 @@ void OpenGLESBackend::DrawPoint(const ModernVertex& pt) {
 
     // 3. Bind shader program and upload uniforms
     glUseProgram(m_geomProgram);
-
-    // Viewport uniform
-    glUniform2f(glGetUniformLocation(m_geomProgram, "uViewportSize"), (float)m_headlessWidth, (float)m_headlessHeight);
-    glUniform1i(glGetUniformLocation(m_geomProgram, "uDepthClipOverride"), (m_depthMode == 0) ? 1 : 0);
-    glUniform1i(glGetUniformLocation(m_geomProgram, "uDepthBufferMode"), m_depthMode);
-
-    // Combiner color state uniforms
-    bool useConstColor = ((m_colorCombinerFactor & 0xFFFF) == 1) || (m_colorCombinerFactor == 1);
-    bool useConstAlpha = ((m_alphaCombinerFactor & 0xFFFF) == 1) || (m_alphaCombinerFactor == 1);
-    glUniform1i(glGetUniformLocation(m_geomProgram, "uUseConstantColor"), useConstColor ? 1 : 0);
-    glUniform1i(glGetUniformLocation(m_geomProgram, "uUseConstantAlpha"), useConstAlpha ? 1 : 0);
-
-    float cr = ((m_constantColor >> 16) & 0xFF) / 255.0f;
-    float cg = ((m_constantColor >> 8)  & 0xFF) / 255.0f;
-    float cb = (m_constantColor         & 0xFF) / 255.0f;
-    float ca = ((m_constantColor >> 24) & 0xFF) / 255.0f;
-    if (m_pixelFormatOverride == 1) {
-        std::swap(cr, cb);
-    }
-    if (ca < 0.5f) ca = 1.0f; // Force opaque if uninitialized
-    glUniform4f(glGetUniformLocation(m_geomProgram, "uConstantColor"), cr, cg, cb, ca);
-
-    // Alpha testing uniforms
-    glUniform1i(glGetUniformLocation(m_geomProgram, "uAlphaTestOp"), (int)m_alphaTestOp);
-    glUniform1f(glGetUniformLocation(m_geomProgram, "uAlphaTestRef"), (float)m_alphaTestRefVal / 255.0f);
-    glUniform1f(glGetUniformLocation(m_geomProgram, "uDepthBias"), static_cast<float>(m_depthBiasLevel) / 65535.0f);
+    PopulateUniforms();
 
     // 4. Bind VAO and issue GLES point draw call
     glBindVertexArray(m_geomVAO);
@@ -737,32 +768,7 @@ void OpenGLESBackend::DrawLine(const ModernVertex& v0, const ModernVertex& v1) {
 
     // 3. Bind shader program and upload uniforms
     glUseProgram(m_geomProgram);
-
-    // Viewport uniform
-    glUniform2f(glGetUniformLocation(m_geomProgram, "uViewportSize"), (float)m_headlessWidth, (float)m_headlessHeight);
-    glUniform1i(glGetUniformLocation(m_geomProgram, "uDepthClipOverride"), (m_depthMode == 0) ? 1 : 0);
-    glUniform1i(glGetUniformLocation(m_geomProgram, "uDepthBufferMode"), m_depthMode);
-
-    // Combiner color state uniforms
-    bool useConstColor = ((m_colorCombinerFactor & 0xFFFF) == 1) || (m_colorCombinerFactor == 1);
-    bool useConstAlpha = ((m_alphaCombinerFactor & 0xFFFF) == 1) || (m_alphaCombinerFactor == 1);
-    glUniform1i(glGetUniformLocation(m_geomProgram, "uUseConstantColor"), useConstColor ? 1 : 0);
-    glUniform1i(glGetUniformLocation(m_geomProgram, "uUseConstantAlpha"), useConstAlpha ? 1 : 0);
-
-    float cr = ((m_constantColor >> 16) & 0xFF) / 255.0f;
-    float cg = ((m_constantColor >> 8)  & 0xFF) / 255.0f;
-    float cb = (m_constantColor         & 0xFF) / 255.0f;
-    float ca = ((m_constantColor >> 24) & 0xFF) / 255.0f;
-    if (m_pixelFormatOverride == 1) {
-        std::swap(cr, cb);
-    }
-    if (ca < 0.5f) ca = 1.0f; // Force opaque if uninitialized
-    glUniform4f(glGetUniformLocation(m_geomProgram, "uConstantColor"), cr, cg, cb, ca);
-
-    // Alpha testing uniforms
-    glUniform1i(glGetUniformLocation(m_geomProgram, "uAlphaTestOp"), (int)m_alphaTestOp);
-    glUniform1f(glGetUniformLocation(m_geomProgram, "uAlphaTestRef"), (float)m_alphaTestRefVal / 255.0f);
-    glUniform1f(glGetUniformLocation(m_geomProgram, "uDepthBias"), static_cast<float>(m_depthBiasLevel) / 65535.0f);
+    PopulateUniforms();
 
     // 4. Bind VAO and issue GLES line draw call
     glBindVertexArray(m_geomVAO);
@@ -822,36 +828,7 @@ void OpenGLESBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
 
     // 3. Bind shader program and upload uniforms
     glUseProgram(m_geomProgram);
-
-    // Viewport uniform
-    glUniform2f(glGetUniformLocation(m_geomProgram, "uViewportSize"), (float)m_headlessWidth, (float)m_headlessHeight);
-    glUniform1i(glGetUniformLocation(m_geomProgram, "uDepthClipOverride"), (m_depthMode == 0) ? 1 : 0);
-    glUniform1i(glGetUniformLocation(m_geomProgram, "uDepthBufferMode"), m_depthMode);
-
-    // Combiner color state uniforms
-    bool useConstColor = ((m_colorCombinerFactor & 0xFFFF) == 1) || (m_colorCombinerFactor == 1);
-    bool useConstAlpha = ((m_alphaCombinerFactor & 0xFFFF) == 1) || (m_alphaCombinerFactor == 1);
-    GLIDE_LOG(DEBUG, "GLES", "Combiner State. useConstColor=" << useConstColor << ", useConstAlpha=" << useConstAlpha << ", constColor=0x" << std::hex << m_constantColor << std::dec);
-    glUniform1i(glGetUniformLocation(m_geomProgram, "uUseConstantColor"), useConstColor ? 1 : 0);
-    glUniform1i(glGetUniformLocation(m_geomProgram, "uUseConstantAlpha"), useConstAlpha ? 1 : 0);
-
-    float cr = ((m_constantColor >> 16) & 0xFF) / 255.0f;
-    float cg = ((m_constantColor >> 8)  & 0xFF) / 255.0f;
-    float cb = (m_constantColor         & 0xFF) / 255.0f;
-    float ca = ((m_constantColor >> 24) & 0xFF) / 255.0f;
-    if (m_pixelFormatOverride == 1) {
-        std::swap(cr, cb);
-    }
-    if (ca < 0.5f) ca = 1.0f; // Force opaque if uninitialized
-    glUniform4f(glGetUniformLocation(m_geomProgram, "uConstantColor"), cr, cg, cb, ca);
-
-    // Alpha testing uniforms
-    GLint locOp = glGetUniformLocation(m_geomProgram, "uAlphaTestOp");
-    GLint locRef = glGetUniformLocation(m_geomProgram, "uAlphaTestRef");
-    GLIDE_LOG(DEBUG, "GLES", "AlphaTest Uniforms. LocOp=" << locOp << " (val=" << (int)m_alphaTestOp << "), LocRef=" << locRef << " (val=" << (float)m_alphaTestRefVal / 255.0f << ")");
-    glUniform1i(locOp, (int)m_alphaTestOp);
-    glUniform1f(locRef, (float)m_alphaTestRefVal / 255.0f);
-    glUniform1f(glGetUniformLocation(m_geomProgram, "uDepthBias"), static_cast<float>(m_depthBiasLevel) / 65535.0f);
+    PopulateUniforms();
 
     // 4. Bind VAO and issue GLES triangle draw call
     glBindVertexArray(m_geomVAO);
@@ -955,6 +932,49 @@ void OpenGLESBackend::SyncCullStateGLES() {
             glCullFace(GL_FRONT); // Culls CW under GL_CW, or CCW under GL_CCW. Maps perfectly!
         }
     }
+}
+
+void OpenGLESBackend::PopulateUniforms() {
+    bool useConstColor = ((m_colorCombinerFactor & 0xFFFF) == 1) || (m_colorCombinerFactor == 1);
+    bool useConstAlpha = ((m_alphaCombinerFactor & 0xFFFF) == 1) || (m_alphaCombinerFactor == 1);
+
+    glUniform2f(glGetUniformLocation(m_geomProgram, "uViewportSize"), (float)m_headlessWidth, (float)m_headlessHeight);
+    glUniform1i(glGetUniformLocation(m_geomProgram, "uDepthClipOverride"), (m_depthMode == 0) ? 1 : 0);
+    glUniform1i(glGetUniformLocation(m_geomProgram, "uDepthBufferMode"), m_depthMode);
+
+    glUniform1i(glGetUniformLocation(m_geomProgram, "uUseConstantColor"), useConstColor ? 1 : 0);
+    glUniform1i(glGetUniformLocation(m_geomProgram, "uUseConstantAlpha"), useConstAlpha ? 1 : 0);
+
+    float cr = ((m_constantColor >> 16) & 0xFF) / 255.0f;
+    float cg = ((m_constantColor >> 8)  & 0xFF) / 255.0f;
+    float cb = (m_constantColor         & 0xFF) / 255.0f;
+    float ca = ((m_constantColor >> 24) & 0xFF) / 255.0f;
+    if (m_pixelFormatOverride == 1) {
+        std::swap(cr, cb);
+    }
+    if (ca < 0.5f) ca = 1.0f;
+    glUniform4f(glGetUniformLocation(m_geomProgram, "uConstantColor"), cr, cg, cb, ca);
+
+    glUniform1i(glGetUniformLocation(m_geomProgram, "uAlphaTestOp"), (int)m_alphaTestOp);
+    glUniform1f(glGetUniformLocation(m_geomProgram, "uAlphaTestRef"), (float)m_alphaTestRefVal / 255.0f);
+    glUniform1f(glGetUniformLocation(m_geomProgram, "uDepthBias"), static_cast<float>(m_depthBiasLevel) / 65535.0f);
+
+    // Milestone 8: Fogging State
+    glUniform1i(glGetUniformLocation(m_geomProgram, "uFogMode"), (int)m_fogMode);
+    
+    float fogR = ((m_fogColor >> 16) & 0xFF) / 255.0f;
+    float fogG = ((m_fogColor >> 8)  & 0xFF) / 255.0f;
+    float fogB = (m_fogColor & 0xFF)        / 255.0f;
+    if (m_pixelFormatOverride == 1) {
+        std::swap(fogR, fogB);
+    }
+    glUniform4f(glGetUniformLocation(m_geomProgram, "uFogColor"), fogR, fogG, fogB, 1.0f);
+
+    float glesFogTable[64];
+    for (int i = 0; i < 64; ++i) {
+        glesFogTable[i] = m_fogTable[i] / 255.0f;
+    }
+    glUniform1fv(glGetUniformLocation(m_geomProgram, "uFogTable"), 64, glesFogTable);
 }
 
 } // namespace GlideWrapper
