@@ -326,9 +326,11 @@ void VulkanBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z, uint32_
 
 void VulkanBackend::SetDepthState(uint32_t depthMode, uint32_t compareOp, bool depthMask, int32_t biasLevel) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    bool stateChanged = (depthMode != m_depthMode) || (compareOp != m_depthCompareOp) || (depthMask != m_depthMask);
+    
     SoftwareBackendBase::SetDepthState(depthMode, compareOp, depthMask, biasLevel);
 
-    if (m_initialized && m_device) {
+    if (stateChanged && m_initialized && m_device) {
         GLIDE_LOG(INFO, "Vulkan", "SetDepthState: Recompiling Vulkan pipelines with new depth config...");
         CreateGraphicsPipelines();
     }
@@ -336,9 +338,12 @@ void VulkanBackend::SetDepthState(uint32_t depthMode, uint32_t compareOp, bool d
 
 void VulkanBackend::SetBlendState(uint32_t rgbSrcFactor, uint32_t rgbDstFactor, uint32_t alphaSrcFactor, uint32_t alphaDstFactor) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    bool stateChanged = (rgbSrcFactor != m_rgbSrcBlend) || (rgbDstFactor != m_rgbDstBlend) ||
+                        (alphaSrcFactor != m_alphaSrcBlend) || (alphaDstFactor != m_alphaDstBlend);
+
     SoftwareBackendBase::SetBlendState(rgbSrcFactor, rgbDstFactor, alphaSrcFactor, alphaDstFactor);
 
-    if (m_initialized && m_device) {
+    if (stateChanged && m_initialized && m_device) {
         GLIDE_LOG(INFO, "Vulkan", "SetBlendState: Recompiling Vulkan pipelines with new blending config...");
         CreateGraphicsPipelines();
     }
@@ -346,9 +351,11 @@ void VulkanBackend::SetBlendState(uint32_t rgbSrcFactor, uint32_t rgbDstFactor, 
 
 void VulkanBackend::SetCullState(uint32_t cullMode) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    bool stateChanged = (cullMode != m_cullMode);
+    
     SoftwareBackendBase::SetCullState(cullMode);
 
-    if (m_initialized && m_device) {
+    if (stateChanged && m_initialized && m_device) {
         GLIDE_LOG(INFO, "Vulkan", "SetCullState: Recompiling Vulkan pipelines with new culling config...");
         CreateGraphicsPipelines();
     }
@@ -362,9 +369,11 @@ void VulkanBackend::SetAlphaTestState(uint32_t compareOp, uint32_t refVal) {
 
 void VulkanBackend::SetSstOrigin(uint32_t origin) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    bool stateChanged = (origin != m_sstOrigin);
+    
     SoftwareBackendBase::SetSstOrigin(origin);
 
-    if (m_initialized && m_device) {
+    if (stateChanged && m_initialized && m_device) {
         GLIDE_LOG(INFO, "Vulkan", "SetSstOrigin: Recompiling Vulkan pipelines with new origin config...");
         CreateGraphicsPipelines();
     }

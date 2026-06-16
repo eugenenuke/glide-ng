@@ -20,7 +20,7 @@ We utilize a Test-Driven Development (TDD) approach, validating our wrapper dire
 | **`test07`** | Alpha Blend | **`PASS`** (99.77%) | **`PASS`** (99.77%) | **`PASS`** (99.77%) | Alpha blending and translucency via GPU-native blend state pipelines. |
 | **`test10`** | Backface Culling | **`PASS`** | **`PASS`** | **`PASS`** | Dynamic front-face winding and culling state (`grCullMode`, `grSstOrigin` coordinate parity). |
 | **`test13`** | Iterated Alpha | **`PASS`** (100.00%) | **`PASS`** (98.07%) | **`PASS`** (98.18%) | Iterated vertex alpha blending combined with constant colors, coordinate origin flipping, and robust CPU text overlay compositing. |
-| **`test14`** | Depth Bias | **`PASS`** (99.26%) | **`PASS`** (99.26%) | **`PASS`** (99.26%) | Two interpenetrating triangles with a dynamically varying depth bias level (`grDepthBiasLevel`) applied to one triangle, emulated via shader-based normalized depth offsets. |
+| **`test14`** | Depth Bias | **`PASS`** (100% Checkpoints)<br>• Frame 0: 99.69%<br>• Frame 15: 99.24%<br>• Frame 115: 99.43% | **`PASS`** (100% Checkpoints)<br>• Frame 0: 99.69%<br>• Frame 15: 99.24%<br>• Frame 115: 99.43% | **`PASS`** (100% Checkpoints)<br>• Frame 0: 99.69%<br>• Frame 15: 99.24%<br>• Frame 115: 99.43% | Triple-checkpoint validation (Zero, Positive, and Negative bias) of interpenetrating Gouraud triangles under dynamic depth biasing (`grDepthBiasLevel`). |
 | **`test15`** | Clip Window | **`PASS`** | **`PASS`** | **`PASS`** | Bounding box scissor clipping and window viewport synchronization (`grClipWindow`). |
 
 ---

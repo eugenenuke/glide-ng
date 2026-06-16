@@ -30,6 +30,7 @@ public:
     // Frame pacing controls
     virtual int GetMaxFrames() const { return 15; } // Let Xvfb/window map completely
     virtual int GetCaptureFrameIndex() const { return 14; } // Frame to dump
+    virtual std::vector<int> GetCaptureFrames() const { return { GetCaptureFrameIndex() }; }
 };
 
 } // namespace GlideTest

@@ -271,6 +271,16 @@ def main():
     test_name = sys.argv[1]
     ensure_dirs()
 
+    # Clean up old test dumps for this specific test in our active backend directory to prevent ghost mismatches
+    test_dir_path = os.path.join(WORKSPACE, TEST_DIR)
+    if os.path.exists(test_dir_path):
+        for f in os.listdir(test_dir_path):
+            if f.startswith(f"{test_name}_mode"):
+                try:
+                    os.remove(os.path.join(test_dir_path, f))
+                except OSError:
+                    pass
+
     # Find existing reference files
     ref_files = [f for f in os.listdir(os.path.join(WORKSPACE, REF_DIR)) if f.startswith(f"{test_name}_mode")]
     

@@ -23,6 +23,9 @@ public:
 
     int GetTotalModes() const override { return 1; }
 
+    int GetMaxFrames() const override { return 120; }
+    std::vector<int> GetCaptureFrames() const override { return { 0, 15, 115 }; }
+
     void SetMode(int modeIndex) override {
         (void)modeIndex; // Only 1 mode
     }

@@ -115,13 +115,13 @@ int main(int argc, char** argv) {
         std::filesystem::create_directories(destDir);
 
         int maxFrames = activeTest->GetMaxFrames();
-        int captureFrame = activeTest->GetCaptureFrameIndex();
+        std::vector<int> captureFrames = activeTest->GetCaptureFrames();
 
         for (int frame = 0; frame < maxFrames; ++frame) {
             if (!activeTest->RenderFrame(frame)) {
                 break;
             }
-            if (frame == captureFrame) {
+            if (std::find(captureFrames.begin(), captureFrames.end(), frame) != captureFrames.end()) {
                 char filename[256];
                 std::snprintf(filename, sizeof(filename), "%s/%s_mode%d_frame%d.ppm",
                              destDir.c_str(), activeTest->GetName().c_str(), m, frame);
