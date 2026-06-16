@@ -37,6 +37,7 @@ TEST_PASS_RATIOS = {
 # Defaults to (15, 2) which covers x < 240, y < 32
 TEST_TEXT_SKIP_BOUNDS = {
     "test10": (40, 2),  # Widen to full screen width for the top 2 rows to cover all console text/headers
+    "test15": (40, 2),  # Widen to full screen width for the top 2 rows to cover all console text/headers
 }
 
 def ensure_dirs():
