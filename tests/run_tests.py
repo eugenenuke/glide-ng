@@ -133,10 +133,12 @@ def compare_images(ref_path, test_path, threshold=8, pass_ratio=None, block_size
     ref_text_pixels = count_text_pixels(ref_pixels, width, height)
     test_text_pixels = count_text_pixels(test_pixels, width, height)
     
-    # If reference has text, test MUST have text too!
+    # If reference has text, test MUST have text too, and it must NOT be corrupted into solid blocks!
     if ref_text_pixels > 150:
         if test_text_pixels < 50: # Text is completely missing!
             return False, f"FAILED: Console text is missing! (Ref has {ref_text_pixels} text pixels, Test has only {test_text_pixels})"
+        if test_text_pixels > 4 * ref_text_pixels: # Text is corrupted (e.g. solid untextured blocks!)
+            return False, f"FAILED: Console text is corrupted/drawn as solid blocks! (Ref has {ref_text_pixels} text pixels, Test has {test_text_pixels} - expected text to not exceed {4 * ref_text_pixels})"
 
     # Explicit Geometry Presence Check (closes the loophole for tiny primitives!)
     ref_geom_pixels = count_geometry_pixels(ref_pixels, width, height, threshold)
