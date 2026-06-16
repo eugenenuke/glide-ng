@@ -28,6 +28,7 @@ public:
     virtual void SetConstantColor(uint32_t color) = 0;
     virtual void SetPixelFormat(uint32_t format) = 0;
     virtual void PollEvents() = 0;
+    virtual void SstIdle() = 0;
 
     // Phase 3: Immediate Primitive Rasterization
     virtual void DrawTriangle(const ModernVertex& a, const ModernVertex& b, const ModernVertex& c) = 0;

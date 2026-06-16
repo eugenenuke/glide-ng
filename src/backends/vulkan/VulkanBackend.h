@@ -35,6 +35,7 @@ public:
     void SetSstOrigin(uint32_t origin) override;
     bool ReadLFB(uint32_t srcX, uint32_t srcY, uint32_t srcWidth, uint32_t srcHeight, uint32_t dstStride, void* dstData) override;
     void PollEvents() override;
+    void SstIdle() override;
 
     // Phase 2: Host-GPU Vertex Buffers & State Pipelines
     void DrawPoint(const ModernVertex& pt) override;

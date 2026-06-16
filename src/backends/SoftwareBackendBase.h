@@ -19,6 +19,7 @@ public:
     void DetachWindow() override = 0;
     bool SwapBuffers() override = 0;
     void PollEvents() override;
+    void SstIdle() override;
 
     // Concrete shared implementations of clearing & state mutations
     void ClearBuffer(uint32_t color, uint32_t alpha, float z, uint32_t clearMask) override;

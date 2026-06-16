@@ -18,6 +18,8 @@ We utilize a Test-Driven Development (TDD) approach, validating our wrapper dire
 | **`test05`** | Z-Buffer | **`PASS`** (99.77%) | **`PASS`** (99.77%) | **`PASS`** (99.77%) | Two interpenetrating Gouraud triangles with Z-buffering (Vulkan & GLES GPU native). |
 | **`test06`** | W-Buffer | **`PASS`** (99.77%) | **`PASS`** (99.77%) | **`PASS`** (99.77%) | Eye-space linear W-buffering emulation via GPU vertex shader coordinate overrides. |
 | **`test07`** | Alpha Blend | **`PASS`** (99.77%) | **`PASS`** (99.77%) | **`PASS`** (99.77%) | Alpha blending and translucency via GPU-native blend state pipelines. |
+| **`test10`** | Backface Culling | **`PASS`** | **`PASS`** | **`PASS`** | Dynamic front-face winding and culling state (`grCullMode`, `grSstOrigin` coordinate parity). |
+| **`test15`** | Clip Window | **`PASS`** | **`PASS`** | **`PASS`** | Bounding box scissor clipping and window viewport synchronization (`grClipWindow`). |
 
 ---
 
@@ -82,3 +84,5 @@ To resolve long-term translation issues and enable true hardware acceleration, w
 10. **Vulkan GPU Port Completion (test05):** Completed the Vulkan hardware-accelerated depth-testing port, resolving driver-level segmentation faults in Mesa's llvmpipe software rasterizer thread via deferred pipeline resource destruction and driver-native Render Pass LoadOp clears, achieving a perfect 100% green pass with 99.77% parity.
 11. **Eye-Space W-Buffering Emulation (test06):** Fully completed and verified eye-space linear W-buffering emulation across all three backends, solving the lack of native hardware W-buffering on modern GPUs by mathematically mapping $1/W$ to a linear depth value compatible with standard hardware Z-buffers, yielding zero-overhead depth testing at maximum GPU speeds with 99.77% visual parity and zero regressions.
 12. **Alpha Blending & Transparency (test07):** Implemented and verified full GPU-native alpha blending and transparency support across OpenGL ES and Vulkan backends. Mapped Glide enums directly to driver blending factors and implemented dynamic pipeline hot-recompilation (Vulkan) and context state updates (GLES) on blend state changes, achieving 99.77% visual parity with zero regressions.
+13. **Backface Culling & Origin Parity (test10):** Implemented and verified engine-wide Y-coordinate coordinate origin flipping (`grSstOrigin`) and backface winding culling (`grCullMode`). Aligned GLES and Vulkan GPU hardware front-face windings with Software culling winding logic, resolving the culling inversion parity bugs.
+14. **Scissor Clipping & Viewport Sync (test15):** Implemented and verified hardware-accelerated scissor clipping (`grClipWindow`) across all backends. Mapped Glide's Y-down scissor box to OpenGL's Y-up screen coordinates inside offscreen FBOs, and isolated the presentation quad pass from the game's active scissor state via explicit disables, yielding perfect, glitch-free interactive clipping.

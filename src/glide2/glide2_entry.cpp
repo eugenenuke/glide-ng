@@ -500,6 +500,13 @@ FX_ENTRY void FX_CALL grSstOrigin(GrOriginLocation_t origin) {
     }
 }
 
+FX_ENTRY void FX_CALL grSstIdle(void) {
+    GLIDE_LOG(INFO, "Frontend", "grSstIdle invoked.");
+    if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
+        b->SstIdle();
+    }
+}
+
 FX_ENTRY void FX_CALL grCullMode(GrCullMode_t mode) {
     GLIDE_LOG(INFO, "Frontend", "grCullMode invoked: " << mode);
     s_cullMode = mode;

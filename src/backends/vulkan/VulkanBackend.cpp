@@ -586,6 +586,14 @@ void VulkanBackend::PollEvents() {
     }
 }
 
+void VulkanBackend::SstIdle() {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    if (m_device) {
+        // Blocks the host CPU until all submitted GPU commands in all queues have finished execution!
+        m_device->waitIdle();
+    }
+}
+
 
 // Private Vulkan Setup Helpers (Identical to before)
 bool VulkanBackend::CreateInstance() {

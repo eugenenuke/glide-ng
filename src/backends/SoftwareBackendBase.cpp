@@ -645,4 +645,9 @@ void SoftwareBackendBase::PollEvents() {
     }
 }
 
+void SoftwareBackendBase::SstIdle() {
+    // Software rasterizer is completely synchronous; all drawing dispatches 
+    // are completed on the host CPU thread during the draw call itself.
+}
+
 } // namespace GlideWrapper

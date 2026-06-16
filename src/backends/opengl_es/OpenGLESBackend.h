@@ -23,6 +23,7 @@ public:
     void DetachWindow() override;
 
     bool SwapBuffers() override;
+    void SstIdle() override;
     void ClearBuffer(uint32_t color, uint32_t alpha, float z, uint32_t clearMask) override;
     bool ReadLFB(uint32_t srcX, uint32_t srcY, uint32_t srcWidth, uint32_t srcHeight, uint32_t dstStride, void* dstData) override;
     void DrawPoint(const ModernVertex& pt) override;
