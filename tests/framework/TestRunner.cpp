@@ -7,6 +7,7 @@
 #include <cstring>
 #include <fstream>
 #include <algorithm>
+#include <filesystem>
 
 // Forward declarations of test factory functions
 namespace GlideTest {
@@ -78,13 +79,25 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    std::string destDir = (mode == "capture") ? "tests/reference_dumps" : "tests/test_dumps";
-
-    std::cout << "Running test: " << activeTest->GetName() << " in mode: " << mode << "\n";
-
     for (int m = 0; m < activeTest->GetTotalModes(); ++m) {
         activeTest->Initialize();
         activeTest->SetMode(m);
+
+        std::string destDir = "tests/test_dumps";
+        if (mode == "capture") {
+            destDir = "tests/reference_dumps";
+        } else {
+            const char* rendererStr = grGetString(GR_RENDERER);
+            std::string renderer = rendererStr ? rendererStr : "";
+            if (renderer.find("OpenGL ES") != std::string::npos) {
+                destDir = "tests/opengl_es_dumps";
+            } else if (renderer.find("Software") != std::string::npos) {
+                destDir = "tests/software_dumps";
+            } else {
+                destDir = "tests/vulkan_dumps";
+            }
+        }
+        std::filesystem::create_directories(destDir);
 
         int maxFrames = activeTest->GetMaxFrames();
         int captureFrame = activeTest->GetCaptureFrameIndex();

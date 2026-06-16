@@ -594,6 +594,7 @@ typedef struct _GrState_s {
 #define GR_VIEWPORT                     0x22
 #define GR_WDEPTH_MIN_MAX               0x23
 #define GR_ZDEPTH_MIN_MAX               0x24
+#endif /* GLIDE3 */
 
 /* stuff for grGetString */
 #define GR_EXTENSION                    0xa0
@@ -601,8 +602,6 @@ typedef struct _GrState_s {
 #define GR_RENDERER                     0xa2
 #define GR_VENDOR                       0xa3
 #define GR_VERSION                      0xa4
-
-#endif
 
 /*
 ** -----------------------------------------------------------------------
@@ -1125,22 +1124,27 @@ grSplash(float x, float y, float width, float height, FxU32 frame);
 #ifdef GLIDE3
 FX_ENTRY FxBool FX_CALL 
 grGet( FxU32 pname, FxU32 plength, FxI32 *params );
+#endif
 
 FX_ENTRY const char * FX_CALL 
 grGetString( FxU32 pname );
 
+#ifdef GLIDE3
 FX_ENTRY FxBool FX_CALL 
 grReset( FxU32 what );
+#endif
 
 FX_ENTRY GrProc FX_CALL
 grGetProcAddress( char *procName );
 
+#ifdef GLIDE3
 FX_ENTRY void FX_CALL 
 grEnable( GrEnableMode_t mode );
 
 FX_ENTRY void FX_CALL 
 grDisable( GrEnableMode_t mode );
-
+#endif
+#ifdef GLIDE3
 FX_ENTRY void FX_CALL 
 grCoordinateSpace( GrCoordinateSpaceMode_t mode );
 
@@ -1149,7 +1153,6 @@ grDepthRange( FxFloat n, FxFloat f );
 
 FX_ENTRY void FX_CALL 
 grViewport( FxI32 x, FxI32 y, FxI32 width, FxI32 height );
-
 #endif
 /*
 ** texture mapping control functions

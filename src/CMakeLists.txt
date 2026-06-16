@@ -9,6 +9,7 @@ add_library(GlideWrapperCore STATIC
     backends/SoftwareBackendBase.cpp
     backends/vulkan/VulkanBackend.cpp
     backends/opengl_es/OpenGLESBackend.cpp
+    backends/software/SoftwareBackend.cpp
 )
 
 # Mandatory when linking a Static library into a Shared library (.so / .dll)

@@ -24,6 +24,9 @@ cmake_install.cmake
 
 # Test suite dynamic dumps
 tests/test_dumps/
+tests/vulkan_dumps/
+tests/opengl_es_dumps/
+tests/software_dumps/
 
 # IDE and system files
 .vscode/

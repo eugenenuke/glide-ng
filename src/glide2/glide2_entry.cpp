@@ -260,6 +260,8 @@ FX_ENTRY const char* FX_CALL grGetString(FxU32 pname) {
         case GR_RENDERER: {
             if (reg.GetConfig().backend == "opengl_es") {
                 return "3dfx glide-ng OpenGL ES Wrapper";
+            } else if (reg.GetConfig().backend == "software") {
+                return "3dfx glide-ng Software Wrapper";
             }
             return "3dfx glide-ng Vulkan Wrapper";
         }

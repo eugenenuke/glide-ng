@@ -13,7 +13,16 @@ RESET = "\033[0m"
 WORKSPACE = "/usr/local/google/home/eianiuk/gemini/3dfx"
 TEST_RUNNER = "./build/bin/test_runner"
 REF_DIR = "tests/reference_dumps"
-TEST_DIR = "tests/test_dumps"
+
+# Dynamically resolve test dumps directory based on active backend
+backend = os.environ.get("GLIDE_BACKEND", "vulkan").lower()
+if backend == "opengl_es":
+    TEST_DIR = "tests/opengl_es_dumps"
+elif backend == "software":
+    TEST_DIR = "tests/software_dumps"
+else:
+    TEST_DIR = "tests/vulkan_dumps"
+
 OPENGLIDE_LIB_DIR = "ext_tests/build_tests/libs/"
 OUR_LIB_DIR = "build/lib/"
 SDL2_PRELOAD = "/usr/lib/x86_64-linux-gnu/libSDL2-2.0.so.0"

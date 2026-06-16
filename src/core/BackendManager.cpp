@@ -1,6 +1,7 @@
 #include "BackendManager.h"
 #include "backends/vulkan/VulkanBackend.h"
 #include "backends/opengl_es/OpenGLESBackend.h"
+#include "backends/software/SoftwareBackend.h"
 
 namespace GlideWrapper {
 
@@ -22,6 +23,8 @@ bool BackendManager::EstablishBackend(const WrapperConfig& config) {
     if (!m_backend) {
         if (config.backend == "opengl_es") {
             m_backend = std::make_unique<OpenGLESBackend>();
+        } else if (config.backend == "software") {
+            m_backend = std::make_unique<SoftwareBackend>();
         } else {
             m_backend = std::make_unique<VulkanBackend>();
         }
