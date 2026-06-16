@@ -793,6 +793,9 @@ void VulkanBackend::DrawPoint(const ModernVertex& pt) {
     pcs.constantColor[1] = ((m_constantColor >> 8) & 0xFF) / 255.0f;  // G
     pcs.constantColor[2] = (m_constantColor & 0xFF) / 255.0f;         // B
     pcs.constantColor[3] = ((m_constantColor >> 24) & 0xFF) / 255.0f; // A
+    if (m_pixelFormatOverride == 1) {
+        std::swap(pcs.constantColor[0], pcs.constantColor[2]);
+    }
     if (pcs.constantColor[3] < 0.5f) {
         pcs.constantColor[3] = 1.0f; // Force opaque if alpha is uninitialized/transparent
     }
@@ -870,6 +873,9 @@ void VulkanBackend::DrawLine(const ModernVertex& v1, const ModernVertex& v2) {
     pcs.constantColor[1] = ((m_constantColor >> 8) & 0xFF) / 255.0f;  // G
     pcs.constantColor[2] = (m_constantColor & 0xFF) / 255.0f;         // B
     pcs.constantColor[3] = ((m_constantColor >> 24) & 0xFF) / 255.0f; // A
+    if (m_pixelFormatOverride == 1) {
+        std::swap(pcs.constantColor[0], pcs.constantColor[2]);
+    }
     if (pcs.constantColor[3] < 0.5f) {
         pcs.constantColor[3] = 1.0f; // Force opaque if alpha is uninitialized/transparent
     }
@@ -954,6 +960,9 @@ void VulkanBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b, c
     pcs.constantColor[1] = ((m_constantColor >> 8) & 0xFF) / 255.0f;  // G
     pcs.constantColor[2] = (m_constantColor & 0xFF) / 255.0f;         // B
     pcs.constantColor[3] = ((m_constantColor >> 24) & 0xFF) / 255.0f; // A
+    if (m_pixelFormatOverride == 1) {
+        std::swap(pcs.constantColor[0], pcs.constantColor[2]);
+    }
     if (pcs.constantColor[3] < 0.5f) {
         pcs.constantColor[3] = 1.0f; // Force opaque if alpha is uninitialized/transparent
     }

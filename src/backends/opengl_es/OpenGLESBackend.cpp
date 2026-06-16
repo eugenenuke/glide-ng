@@ -215,6 +215,10 @@ void OpenGLESBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z, uint3
         float g = ((color >> 8)  & 0xFF) / 255.0f;
         float b = (color         & 0xFF) / 255.0f;
 
+        if (m_pixelFormatOverride == 1) { // ABGR format override
+            std::swap(r, b);
+        }
+
         // Clear with native RGB color (driver BGRA format handles layout mapping)
         glClearColor(r, g, b, a);
         mask |= GL_COLOR_BUFFER_BIT;
@@ -259,6 +263,19 @@ bool OpenGLESBackend::ReadLFB(uint32_t srcX, uint32_t srcY, uint32_t srcWidth, u
     // Read pixels as GL_RGBA (which contains our R/B swapped BGRA-ordered pixels)
     // GLES glReadPixels is synchronous and guarantees the GPU finishes all rendering before returning!
     glReadPixels(0, 0, m_headlessWidth, m_headlessHeight, GL_RGBA, GL_UNSIGNED_BYTE, m_headlessPixelMap);
+
+    // Convert RGBA from GPU glReadPixels to BGRA expected by host staging buffer
+    if (m_headlessPixelMap) {
+        auto* dest = reinterpret_cast<uint32_t*>(m_headlessPixelMap);
+        for (uint32_t i = 0; i < m_headlessWidth * m_headlessHeight; ++i) {
+            uint32_t rgba = dest[i];
+            uint32_t r = rgba & 0xFF;
+            uint32_t g = (rgba >> 8) & 0xFF;
+            uint32_t b = (rgba >> 16) & 0xFF;
+            uint32_t a = (rgba >> 24) & 0xFF;
+            dest[i] = (a << 24) | (r << 16) | (g << 8) | b;
+        }
+    }
 
     // --- STEP 3: Overlay CPU-rendered text/geometry back ---
     if (hasCpuRendering && m_headlessPixelMap) {
@@ -557,6 +574,9 @@ void OpenGLESBackend::DrawPoint(const ModernVertex& pt) {
     float cg = ((m_constantColor >> 8)  & 0xFF) / 255.0f;
     float cb = (m_constantColor         & 0xFF) / 255.0f;
     float ca = ((m_constantColor >> 24) & 0xFF) / 255.0f;
+    if (m_pixelFormatOverride == 1) {
+        std::swap(cr, cb);
+    }
     if (ca < 0.5f) ca = 1.0f; // Force opaque if uninitialized
     glUniform4f(glGetUniformLocation(m_geomProgram, "uConstantColor"), cr, cg, cb, ca);
 
@@ -609,6 +629,9 @@ void OpenGLESBackend::DrawLine(const ModernVertex& v0, const ModernVertex& v1) {
     float cg = ((m_constantColor >> 8)  & 0xFF) / 255.0f;
     float cb = (m_constantColor         & 0xFF) / 255.0f;
     float ca = ((m_constantColor >> 24) & 0xFF) / 255.0f;
+    if (m_pixelFormatOverride == 1) {
+        std::swap(cr, cb);
+    }
     if (ca < 0.5f) ca = 1.0f; // Force opaque if uninitialized
     glUniform4f(glGetUniformLocation(m_geomProgram, "uConstantColor"), cr, cg, cb, ca);
 
@@ -630,6 +653,73 @@ void OpenGLESBackend::DrawLine(const ModernVertex& v0, const ModernVertex& v1) {
     }
 
     checkGLError("DrawLine");
+}
+
+void OpenGLESBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b, const ModernVertex& c) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    if (!m_initialized || !m_windowAttached) return;
+
+    // TODO(Phase4): Remove this temporary CPU software rasterizer fallback once
+    // GPU-native texture mapping is fully implemented in Phase 4.
+    // This fallback ensures that textured console text characters (drawn as textured quads)
+    // are correctly rasterized on the CPU and composited, while flat/Gouraud shaded
+    // triangles (like test04) continue to run 100% natively on the GPU.
+    if (m_boundTexAddress[0] != 0) {
+        SoftwareBackendBase::DrawTriangle(a, b, c);
+        return;
+    }
+
+    GLIDE_LOG(DEBUG, "GLES", "DrawTriangle GPU draw. A: (" << a.pos[0] << ", " << a.pos[1] << "), B: (" << b.pos[0] << ", " << b.pos[1] << "), C: (" << c.pos[0] << ", " << c.pos[1] << ")");
+
+    // 1. Upload all three vertices to dynamic VBO ring buffer
+    glBindBuffer(GL_ARRAY_BUFFER, m_geomVBO);
+    glBufferSubData(GL_ARRAY_BUFFER, m_geomVBOOffset, sizeof(ModernVertex), &a);
+    glBufferSubData(GL_ARRAY_BUFFER, m_geomVBOOffset + sizeof(ModernVertex), sizeof(ModernVertex), &b);
+    glBufferSubData(GL_ARRAY_BUFFER, m_geomVBOOffset + 2 * sizeof(ModernVertex), sizeof(ModernVertex), &c);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+    // 2. Bind offscreen FBO and set state
+    glBindFramebuffer(GL_FRAMEBUFFER, m_headlessFBO);
+    glViewport(0, 0, m_headlessWidth, m_headlessHeight);
+
+    // 3. Bind shader program and upload uniforms
+    glUseProgram(m_geomProgram);
+
+    // Viewport uniform
+    glUniform2f(glGetUniformLocation(m_geomProgram, "uViewportSize"), (float)m_headlessWidth, (float)m_headlessHeight);
+
+    // Combiner color state uniforms
+    bool useConst = ((m_colorCombinerFactor & 0xFFFF) == 1) || (m_colorCombinerFactor == 1);
+    glUniform1i(glGetUniformLocation(m_geomProgram, "uUseConstantColor"), useConst ? 1 : 0);
+
+    float cr = ((m_constantColor >> 16) & 0xFF) / 255.0f;
+    float cg = ((m_constantColor >> 8)  & 0xFF) / 255.0f;
+    float cb = (m_constantColor         & 0xFF) / 255.0f;
+    float ca = ((m_constantColor >> 24) & 0xFF) / 255.0f;
+    if (m_pixelFormatOverride == 1) {
+        std::swap(cr, cb);
+    }
+    if (ca < 0.5f) ca = 1.0f; // Force opaque if uninitialized
+    glUniform4f(glGetUniformLocation(m_geomProgram, "uConstantColor"), cr, cg, cb, ca);
+
+    // 4. Bind VAO and issue GLES triangle draw call
+    glBindVertexArray(m_geomVAO);
+    uint32_t firstVertex = m_geomVBOOffset / sizeof(ModernVertex);
+    glDrawArrays(GL_TRIANGLES, firstVertex, 3);
+
+    // 5. Cleanup state bindings
+    glBindVertexArray(0);
+    glUseProgram(0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    // 6. Advance ring buffer offset
+    m_geomVBOOffset += 3 * sizeof(ModernVertex);
+    if (m_geomVBOOffset + 3 * sizeof(ModernVertex) > m_geomVBOSize) {
+        GLIDE_LOG(WARN, "GLES", "Dynamic Geometry VBO ring buffer wrap-around!");
+        m_geomVBOOffset = 0;
+    }
+
+    checkGLError("DrawTriangle");
 }
 
 } // namespace GlideWrapper
