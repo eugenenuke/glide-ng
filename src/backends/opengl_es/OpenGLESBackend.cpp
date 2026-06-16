@@ -191,6 +191,7 @@ bool OpenGLESBackend::SwapBuffers() {
         glDisable(GL_DEPTH_TEST);
         glDepthMask(GL_FALSE);
         glDisable(GL_BLEND);
+        glDisable(GL_CULL_FACE); // Guarantee presentation quad is never culled by active game culling state!
         
         glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
         checkGLError("SwapBuffers glDrawArrays");
