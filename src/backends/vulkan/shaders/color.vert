@@ -13,6 +13,7 @@ layout(push_constant) uniform PushConstants {
     float viewportHeight;
     vec4 constantColor;
     uint useConstantColor;
+    uint useConstantAlpha;
     uint depthBufferMode; // 0=None, 1=Z, 2=W
 } pcs;
 

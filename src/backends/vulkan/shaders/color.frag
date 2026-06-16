@@ -10,6 +10,7 @@ layout(push_constant) uniform PushConstants {
     float viewportHeight;
     vec4 constantColor;
     uint useConstantColor;
+    uint useConstantAlpha;
     uint depthBufferMode;
     uint alphaTestOp;
     float alphaTestRef;
@@ -17,11 +18,8 @@ layout(push_constant) uniform PushConstants {
 
 void main() {
     vec4 finalColor;
-    if (pcs.useConstantColor == 1) {
-        finalColor = pcs.constantColor;
-    } else {
-        finalColor = fragColor;
-    }
+    finalColor.rgb = (pcs.useConstantColor == 1u) ? pcs.constantColor.rgb : fragColor.rgb;
+    finalColor.a   = (pcs.useConstantAlpha == 1u) ? pcs.constantColor.a   : fragColor.a;
 
     // Emulate legacy 3dfx Glide alpha testing (7 = GR_CMP_ALWAYS / disabled)
     if (pcs.alphaTestOp != 7u) {

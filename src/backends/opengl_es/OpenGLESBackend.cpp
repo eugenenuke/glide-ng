@@ -534,16 +534,14 @@ out vec4 outColor;
 
 uniform vec4 uConstantColor;
 uniform int uUseConstantColor;
+uniform int uUseConstantAlpha;
 uniform int uAlphaTestOp;
 uniform float uAlphaTestRef;
 
 void main() {
     vec4 col;
-    if (uUseConstantColor == 1) {
-        col = uConstantColor;
-    } else {
-        col = fragColor;
-    }
+    col.rgb = (uUseConstantColor == 1) ? uConstantColor.rgb : fragColor.rgb;
+    col.a   = (uUseConstantAlpha == 1) ? uConstantColor.a   : fragColor.a;
 
     // Emulate legacy 3dfx Glide alpha testing (7 = GR_CMP_ALWAYS / disabled)
     if (uAlphaTestOp != 7) {
@@ -669,8 +667,10 @@ void OpenGLESBackend::DrawPoint(const ModernVertex& pt) {
     glUniform1i(glGetUniformLocation(m_geomProgram, "uDepthBufferMode"), m_depthMode);
 
     // Combiner color state uniforms
-    bool useConst = ((m_colorCombinerFactor & 0xFFFF) == 1) || (m_colorCombinerFactor == 1);
-    glUniform1i(glGetUniformLocation(m_geomProgram, "uUseConstantColor"), useConst ? 1 : 0);
+    bool useConstColor = ((m_colorCombinerFactor & 0xFFFF) == 1) || (m_colorCombinerFactor == 1);
+    bool useConstAlpha = ((m_alphaCombinerFactor & 0xFFFF) == 1) || (m_alphaCombinerFactor == 1);
+    glUniform1i(glGetUniformLocation(m_geomProgram, "uUseConstantColor"), useConstColor ? 1 : 0);
+    glUniform1i(glGetUniformLocation(m_geomProgram, "uUseConstantAlpha"), useConstAlpha ? 1 : 0);
 
     float cr = ((m_constantColor >> 16) & 0xFF) / 255.0f;
     float cg = ((m_constantColor >> 8)  & 0xFF) / 255.0f;
@@ -740,8 +740,10 @@ void OpenGLESBackend::DrawLine(const ModernVertex& v0, const ModernVertex& v1) {
     glUniform1i(glGetUniformLocation(m_geomProgram, "uDepthBufferMode"), m_depthMode);
 
     // Combiner color state uniforms
-    bool useConst = ((m_colorCombinerFactor & 0xFFFF) == 1) || (m_colorCombinerFactor == 1);
-    glUniform1i(glGetUniformLocation(m_geomProgram, "uUseConstantColor"), useConst ? 1 : 0);
+    bool useConstColor = ((m_colorCombinerFactor & 0xFFFF) == 1) || (m_colorCombinerFactor == 1);
+    bool useConstAlpha = ((m_alphaCombinerFactor & 0xFFFF) == 1) || (m_alphaCombinerFactor == 1);
+    glUniform1i(glGetUniformLocation(m_geomProgram, "uUseConstantColor"), useConstColor ? 1 : 0);
+    glUniform1i(glGetUniformLocation(m_geomProgram, "uUseConstantAlpha"), useConstAlpha ? 1 : 0);
 
     float cr = ((m_constantColor >> 16) & 0xFF) / 255.0f;
     float cg = ((m_constantColor >> 8)  & 0xFF) / 255.0f;
@@ -822,9 +824,11 @@ void OpenGLESBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
     glUniform1i(glGetUniformLocation(m_geomProgram, "uDepthBufferMode"), m_depthMode);
 
     // Combiner color state uniforms
-    bool useConst = ((m_colorCombinerFactor & 0xFFFF) == 1) || (m_colorCombinerFactor == 1);
-    GLIDE_LOG(DEBUG, "GLES", "Combiner State. useConst=" << useConst << ", constColor=0x" << std::hex << m_constantColor << std::dec);
-    glUniform1i(glGetUniformLocation(m_geomProgram, "uUseConstantColor"), useConst ? 1 : 0);
+    bool useConstColor = ((m_colorCombinerFactor & 0xFFFF) == 1) || (m_colorCombinerFactor == 1);
+    bool useConstAlpha = ((m_alphaCombinerFactor & 0xFFFF) == 1) || (m_alphaCombinerFactor == 1);
+    GLIDE_LOG(DEBUG, "GLES", "Combiner State. useConstColor=" << useConstColor << ", useConstAlpha=" << useConstAlpha << ", constColor=0x" << std::hex << m_constantColor << std::dec);
+    glUniform1i(glGetUniformLocation(m_geomProgram, "uUseConstantColor"), useConstColor ? 1 : 0);
+    glUniform1i(glGetUniformLocation(m_geomProgram, "uUseConstantAlpha"), useConstAlpha ? 1 : 0);
 
     float cr = ((m_constantColor >> 16) & 0xFF) / 255.0f;
     float cg = ((m_constantColor >> 8)  & 0xFF) / 255.0f;

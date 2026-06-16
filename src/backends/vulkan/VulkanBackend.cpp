@@ -25,6 +25,7 @@ struct PushConstants {
     float padding[2];          // Explicitly align constantColor to 16-byte boundary (std140)
     float constantColor[4];    // RGBA normalized floats
     uint32_t useConstantColor;  // 1 = true, 0 = false
+    uint32_t useConstantAlpha;  // 1 = true, 0 = false
     uint32_t depthBufferMode;   // 0 = None, 1 = Z, 2 = W
     uint32_t alphaTestOp;       // 0..7 (Glide compare ops, 7 = ALWAYS/disabled)
     float alphaTestRef;         // 0.0 .. 1.0 (normalized reference value)
@@ -419,6 +420,7 @@ bool VulkanBackend::SwapBuffers() {
         std::vector<uint32_t> cpuRenderingCache(m_headlessWidth * m_headlessHeight, 0);
         const auto* cpuPixels = reinterpret_cast<const uint32_t*>(m_headlessPixelMap);
         bool hasCpuRendering = false;
+        size_t cpuPixelCount = 0;
 
         if (cpuPixels) {
             for (size_t i = 0; i < cpuRenderingCache.size(); ++i) {
@@ -426,9 +428,11 @@ bool VulkanBackend::SwapBuffers() {
                 if ((cpuPixels[i] >> 24) != 0) {
                     cpuRenderingCache[i] = cpuPixels[i];
                     hasCpuRendering = true;
+                    cpuPixelCount++;
                 }
             }
         }
+        GLIDE_LOG(INFO, "Vulkan", "SwapBuffers: Cache CPU pixels phase. Found " << cpuPixelCount << " non-transparent CPU pixels.");
 
         // --- STEP 2: Execute GPU presentation copy ---
         // Manually transition layout from ColorAttachmentOptimal to TransferSrcOptimal before copy!
@@ -503,6 +507,7 @@ bool VulkanBackend::ReadLFB(uint32_t srcX, uint32_t srcY, uint32_t srcWidth, uin
     std::vector<uint32_t> cpuRenderingCache(m_headlessWidth * m_headlessHeight, 0);
     const auto* cpuPixels = reinterpret_cast<const uint32_t*>(m_headlessPixelMap);
     bool hasCpuRendering = false;
+    size_t cpuPixelCount = 0;
 
     if (cpuPixels) {
         for (size_t i = 0; i < cpuRenderingCache.size(); ++i) {
@@ -510,9 +515,11 @@ bool VulkanBackend::ReadLFB(uint32_t srcX, uint32_t srcY, uint32_t srcWidth, uin
             if ((cpuPixels[i] >> 24) != 0) {
                 cpuRenderingCache[i] = cpuPixels[i];
                 hasCpuRendering = true;
+                cpuPixelCount++;
             }
         }
     }
+    GLIDE_LOG(INFO, "Vulkan", "ReadLFB: Cache CPU pixels phase. Found " << cpuPixelCount << " non-transparent CPU pixels.");
 
     // 1. Terminate active render pass if any
     if (m_inRenderPass) {
@@ -1027,12 +1034,14 @@ void VulkanBackend::DrawPoint(const ModernVertex& pt) {
     m_commandBuffer->bindPipeline(vk::PipelineBindPoint::eGraphics, m_pointPipeline.get());
 
     // Determine whether to use constant color or vertex color based on Glide combiner state
-    bool useConst = ((m_colorCombinerFactor & 0xFFFF) == 1) || (m_colorCombinerFactor == 1);
+    bool useConstColor = ((m_colorCombinerFactor & 0xFFFF) == 1) || (m_colorCombinerFactor == 1);
+    bool useConstAlpha = ((m_alphaCombinerFactor & 0xFFFF) == 1) || (m_alphaCombinerFactor == 1);
 
     PushConstants pcs;
     pcs.viewportWidth = (float)m_headlessWidth;
     pcs.viewportHeight = (float)m_headlessHeight;
-    pcs.useConstantColor = useConst ? 1 : 0;
+    pcs.useConstantColor = useConstColor ? 1 : 0;
+    pcs.useConstantAlpha = useConstAlpha ? 1 : 0;
     pcs.depthBufferMode = m_depthMode;
     
     // Extract and normalize constant color components
@@ -1098,12 +1107,14 @@ void VulkanBackend::DrawLine(const ModernVertex& v1, const ModernVertex& v2) {
     m_commandBuffer->bindPipeline(vk::PipelineBindPoint::eGraphics, m_linePipeline.get());
 
     // Determine whether to use constant color or vertex color based on Glide combiner state
-    bool useConst = ((m_colorCombinerFactor & 0xFFFF) == 1) || (m_colorCombinerFactor == 1);
+    bool useConstColor = ((m_colorCombinerFactor & 0xFFFF) == 1) || (m_colorCombinerFactor == 1);
+    bool useConstAlpha = ((m_alphaCombinerFactor & 0xFFFF) == 1) || (m_alphaCombinerFactor == 1);
 
     PushConstants pcs;
     pcs.viewportWidth = (float)m_headlessWidth;
     pcs.viewportHeight = (float)m_headlessHeight;
-    pcs.useConstantColor = useConst ? 1 : 0;
+    pcs.useConstantColor = useConstColor ? 1 : 0;
+    pcs.useConstantAlpha = useConstAlpha ? 1 : 0;
     pcs.depthBufferMode = m_depthMode;
     
     // Extract and normalize constant color components
@@ -1180,12 +1191,14 @@ void VulkanBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b, c
     m_commandBuffer->bindPipeline(vk::PipelineBindPoint::eGraphics, m_trianglePipeline.get());
 
     // Determine whether to use constant color or vertex color based on Glide combiner state
-    bool useConst = ((m_colorCombinerFactor & 0xFFFF) == 1) || (m_colorCombinerFactor == 1);
+    bool useConstColor = ((m_colorCombinerFactor & 0xFFFF) == 1) || (m_colorCombinerFactor == 1);
+    bool useConstAlpha = ((m_alphaCombinerFactor & 0xFFFF) == 1) || (m_alphaCombinerFactor == 1);
 
     PushConstants pcs;
     pcs.viewportWidth = (float)m_headlessWidth;
     pcs.viewportHeight = (float)m_headlessHeight;
-    pcs.useConstantColor = useConst ? 1 : 0;
+    pcs.useConstantColor = useConstColor ? 1 : 0;
+    pcs.useConstantAlpha = useConstAlpha ? 1 : 0;
     pcs.depthBufferMode = m_depthMode;
     
     // Extract and normalize constant color components

@@ -120,6 +120,7 @@ add_executable(test_runner
     test06_wbuffer/test06.cpp
     test07_blend/test07.cpp
     test10_culling/test10.cpp
+    test13_alpha/test13.cpp
     test15_clip/test15.cpp
     "${CMAKE_CURRENT_SOURCE_DIR}/../refs/3dfx-Glide-API/glide2x/cvg/glide/tests/tlib.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/../refs/3dfx-Glide-API/swlibs/fxmisc/linutil.c"
