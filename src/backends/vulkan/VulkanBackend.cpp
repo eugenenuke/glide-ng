@@ -25,7 +25,8 @@ struct PushConstants {
     float padding[2];          // Explicitly align constantColor to 16-byte boundary (std140)
     float constantColor[4];    // RGBA normalized floats
     uint32_t useConstantColor;  // 1 = true, 0 = false
-    float padding2[3];         // Pad entire struct to 16-byte multiple (48 bytes total)
+    uint32_t depthBufferMode;   // 0 = None, 1 = Z, 2 = W
+    float padding2[2];         // Pad entire struct to 16-byte multiple (48 bytes total)
 };
 
 // Authoritative Vulkan validation layer declarations
@@ -902,6 +903,7 @@ void VulkanBackend::DrawPoint(const ModernVertex& pt) {
     pcs.viewportWidth = (float)m_headlessWidth;
     pcs.viewportHeight = (float)m_headlessHeight;
     pcs.useConstantColor = useConst ? 1 : 0;
+    pcs.depthBufferMode = m_depthMode;
     
     // Extract and normalize constant color components
     pcs.constantColor[0] = ((m_constantColor >> 16) & 0xFF) / 255.0f; // R
@@ -989,6 +991,7 @@ void VulkanBackend::DrawLine(const ModernVertex& v1, const ModernVertex& v2) {
     pcs.viewportWidth = (float)m_headlessWidth;
     pcs.viewportHeight = (float)m_headlessHeight;
     pcs.useConstantColor = useConst ? 1 : 0;
+    pcs.depthBufferMode = m_depthMode;
     
     // Extract and normalize constant color components
     pcs.constantColor[0] = ((m_constantColor >> 16) & 0xFF) / 255.0f; // R
@@ -1083,6 +1086,7 @@ void VulkanBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b, c
     pcs.viewportWidth = (float)m_headlessWidth;
     pcs.viewportHeight = (float)m_headlessHeight;
     pcs.useConstantColor = useConst ? 1 : 0;
+    pcs.depthBufferMode = m_depthMode;
     
     // Extract and normalize constant color components
     pcs.constantColor[0] = ((m_constantColor >> 16) & 0xFF) / 255.0f; // R

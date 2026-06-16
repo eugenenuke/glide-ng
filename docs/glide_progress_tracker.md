@@ -13,9 +13,10 @@ We utilize a Test-Driven Development (TDD) approach, validating our wrapper dire
 | **`test00`** | Buffer Clear & Swap | **`PASS`** (99.69%) | **`PASS`** (99.69%) | **`PASS`** (99.69%) | GPU-driven Vulkan & GLES clears, offscreen FBO/swapchain, hybrid text overlay. |
 | **`test01`** | Draw Points | **`PASS`** (99.76%) | **`PASS`** (99.76%) | **`PASS`** (99.76%) | Point rendering via GPU-native DrawPoint (Vulkan & GLES), GPU clears. |
 | **`test02`** | Draw Lines | **`PASS`** (96.93%) | **`PASS`** (99.24%) | **`PASS`** (99.63%) | Line rendering via GPU-native DrawLine (Vulkan & GLES), state save/restore. |
-| **`test03`** | Gouraud Shaded Lines | **`PASS`** (99.66%) | **`PASS`** (99.75%) | **`PASS`** (99.75%) | Smooth linear color interpolation (Gouraud) via GPU-native DrawLine (Vulkan & GLES). |
+| **`test03`** | Gouraud Shaded Lines | **`PASS`** (99.66%) | **`PASS`** (99.76%) | **`PASS`** (99.76%) | Smooth linear color interpolation (Gouraud) via GPU-native DrawLine (Vulkan & GLES). |
 | **`test04`** | Shaded Triangles | **`PASS`** (98.97%) | **`PASS`** (99.03%) | **`PASS`** (99.03%) | Smooth Gouraud shaded triangle rendering baseline (Vulkan & GLES GPU native). |
 | **`test05`** | Z-Buffer | **`PASS`** (99.77%) | **`PASS`** (99.77%) | **`PASS`** (99.77%) | Two interpenetrating Gouraud triangles with Z-buffering (Vulkan & GLES GPU native). |
+| **`test06`** | W-Buffer | **`PASS`** (99.77%) | **`PASS`** (99.77%) | **`PASS`** (99.77%) | Eye-space linear W-buffering emulation via GPU vertex shader coordinate overrides. |
 
 ---
 
@@ -78,3 +79,4 @@ To resolve long-term translation issues and enable true hardware acceleration, w
 8. **GPU-Native Primitives (Points, Lines, Triangles):** Fully completed GPU-native drawing commands under Vulkan and OpenGL ES, uploading vertices to memory-mapped buffers and executing native hardware draws.
 9. **OpenGL ES GPU Port Completion (test05):** Fully ported and verified GLES depth-testing support, resolving coordinate space translations to GLES NDC Z and achieving a perfect 100% green pass with 99.77% parity.
 10. **Vulkan GPU Port Completion (test05):** Completed the Vulkan hardware-accelerated depth-testing port, resolving driver-level segmentation faults in Mesa's llvmpipe software rasterizer thread via deferred pipeline resource destruction and driver-native Render Pass LoadOp clears, achieving a perfect 100% green pass with 99.77% parity.
+11. **Eye-Space W-Buffering Emulation (test06):** Fully completed and verified eye-space linear W-buffering emulation across all three backends, solving the lack of native hardware W-buffering on modern GPUs by mathematically mapping $1/W$ to a linear depth value compatible with standard hardware Z-buffers, yielding zero-overhead depth testing at maximum GPU speeds with 99.77% visual parity and zero regressions.

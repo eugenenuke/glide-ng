@@ -117,6 +117,7 @@ add_executable(test_runner
     test03_shading/test03.cpp
     test04_triangles/test04.cpp
     test05_zbuffer/test05.cpp
+    test06_wbuffer/test06.cpp
     "${CMAKE_CURRENT_SOURCE_DIR}/../refs/3dfx-Glide-API/glide2x/cvg/glide/tests/tlib.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/../refs/3dfx-Glide-API/swlibs/fxmisc/linutil.c"
 )

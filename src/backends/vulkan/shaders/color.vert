@@ -13,6 +13,7 @@ layout(push_constant) uniform PushConstants {
     float viewportHeight;
     vec4 constantColor;
     uint useConstantColor;
+    uint depthBufferMode; // 0=None, 1=Z, 2=W
 } pcs;
 
 void main() {
@@ -20,7 +21,12 @@ void main() {
     float ndcX = (inPos.x / (pcs.viewportWidth / 2.0)) - 1.0;
     float ndcY = (inPos.y / (pcs.viewportHeight / 2.0)) - 1.0;
 
-    gl_Position = vec4(ndcX, ndcY, inPos.z, 1.0);
+    float rawDepth = inPos.z;
+    if (pcs.depthBufferMode == 2u) {
+        rawDepth = 1.0 - inPos.w;
+    }
+
+    gl_Position = vec4(ndcX, ndcY, rawDepth, 1.0);
     gl_PointSize = 1.0; // Canonical Glide point size (1px)
     fragColor = inColor;
     fragTex = inTex;
