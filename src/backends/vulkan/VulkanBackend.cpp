@@ -182,6 +182,7 @@ void VulkanBackend::DetachWindow() {
         m_vertexBuffer.reset();
         m_pointPipeline.reset();
         m_linePipeline.reset();
+        m_trianglePipeline.reset();
         m_pipelineLayout.reset();
         m_vertShaderModule.reset();
         m_fragShaderModule.reset();
@@ -724,7 +725,16 @@ bool VulkanBackend::CreateGraphicsPipelines() {
         }
         m_linePipeline = std::move(lineResult.value);
 
-        GLIDE_LOG(INFO, "Vulkan", "Vulkan Point & Line Graphics Pipelines compiled successfully.");
+        // 3. Compile Triangle Pipeline
+        inputAssembly.topology = vk::PrimitiveTopology::eTriangleList;
+        auto triangleResult = m_device->createGraphicsPipelineUnique({}, pipelineInfo);
+        if (triangleResult.result != vk::Result::eSuccess) {
+            GLIDE_LOG(CRITICAL, "Vulkan", "Failed to create Vulkan Triangle graphics pipeline!");
+            return false;
+        }
+        m_trianglePipeline = std::move(triangleResult.value);
+
+        GLIDE_LOG(INFO, "Vulkan", "Vulkan Point, Line & Triangle Graphics Pipelines compiled successfully.");
         return true;
     } catch (const std::exception& e) {
         GLIDE_LOG(CRITICAL, "Vulkan", "Failed to create Vulkan Graphics Pipelines: " << e.what());
@@ -872,6 +882,90 @@ void VulkanBackend::DrawLine(const ModernVertex& v1, const ModernVertex& v2) {
 
     // 4. Advance ring buffer offset
     m_vertexBufferOffset += 2 * sizeof(ModernVertex);
+}
+
+void VulkanBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b, const ModernVertex& c) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    if (!m_initialized || !m_windowAttached) return;
+
+    // TODO(Phase4): Remove this temporary CPU software rasterizer fallback once
+    // GPU-native texture mapping is fully implemented in Phase 4.
+    // This fallback ensures that textured console text characters (drawn as textured quads)
+    // are correctly rasterized on the CPU and composited, while flat/Gouraud shaded
+    // triangles (like test04) continue to run 100% natively on the GPU.
+    if (m_boundTexAddress[0] != 0) {
+        SoftwareBackendBase::DrawTriangle(a, b, c);
+        return;
+    }
+
+    GLIDE_LOG(DEBUG, "Vulkan", "DrawTriangle GPU draw. A: (" << a.pos[0] << ", " << a.pos[1] << "), B: (" << b.pos[0] << ", " << b.pos[1] << "), C: (" << c.pos[0] << ", " << c.pos[1] << ")");
+
+    // 1. Upload vertices to dynamic ring vertex buffer
+    if (!m_vertexBufferMap) {
+        GLIDE_LOG(CRITICAL, "Vulkan", "Vertex buffer map is null during DrawTriangle!");
+        return;
+    }
+    
+    // Check if we need to wrap the ring buffer before writing three vertices!
+    if (m_vertexBufferOffset + 3 * sizeof(ModernVertex) > m_vertexBufferSize) {
+        GLIDE_LOG(WARN, "Vulkan", "Dynamic Vertex Buffer ring buffer wrap-around during DrawTriangle!");
+        m_vertexBufferOffset = 0;
+    }
+
+    auto* dest = reinterpret_cast<ModernVertex*>(reinterpret_cast<uint8_t*>(m_vertexBufferMap) + m_vertexBufferOffset);
+    dest[0] = a;
+    dest[1] = b;
+    dest[2] = c;
+
+    // 2. Ensure Render Pass is active (lazy initialization)
+    if (!m_inRenderPass) {
+        vk::RenderPassBeginInfo renderPassInfo(m_renderPass.get(), m_headlessFramebuffer.get(),
+                                             vk::Rect2D({0, 0}, {m_headlessWidth, m_headlessHeight}),
+                                             0, nullptr);
+        m_commandBuffer->beginRenderPass(renderPassInfo, vk::SubpassContents::eInline);
+
+        // Configure Dynamic Viewport & Scissor
+        vk::Viewport viewport(0.0f, 0.0f, (float)m_headlessWidth, (float)m_headlessHeight, 0.0f, 1.0f);
+        m_commandBuffer->setViewport(0, 1, &viewport);
+
+        vk::Rect2D scissor({0, 0}, {m_headlessWidth, m_headlessHeight});
+        m_commandBuffer->setScissor(0, 1, &scissor);
+
+        // Bind vertex buffer
+        vk::DeviceSize zeroOffset = 0;
+        m_commandBuffer->bindVertexBuffers(0, 1, &m_vertexBuffer.get(), &zeroOffset);
+
+        m_inRenderPass = true;
+    }
+
+    // Always bind the correct pipeline for this draw call!
+    m_commandBuffer->bindPipeline(vk::PipelineBindPoint::eGraphics, m_trianglePipeline.get());
+
+    // Determine whether to use constant color or vertex color based on Glide combiner state
+    bool useConst = ((m_colorCombinerFactor & 0xFFFF) == 1) || (m_colorCombinerFactor == 1);
+
+    PushConstants pcs;
+    pcs.viewportWidth = (float)m_headlessWidth;
+    pcs.viewportHeight = (float)m_headlessHeight;
+    pcs.useConstantColor = useConst ? 1 : 0;
+    
+    // Extract and normalize constant color components
+    pcs.constantColor[0] = ((m_constantColor >> 16) & 0xFF) / 255.0f; // R
+    pcs.constantColor[1] = ((m_constantColor >> 8) & 0xFF) / 255.0f;  // G
+    pcs.constantColor[2] = (m_constantColor & 0xFF) / 255.0f;         // B
+    pcs.constantColor[3] = ((m_constantColor >> 24) & 0xFF) / 255.0f; // A
+    if (pcs.constantColor[3] < 0.5f) {
+        pcs.constantColor[3] = 1.0f; // Force opaque if alpha is uninitialized/transparent
+    }
+
+    m_commandBuffer->pushConstants<PushConstants>(m_pipelineLayout.get(), vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, pcs);
+
+    // 3. Issue GPU triangle draw call (vertexCount = 3)
+    uint32_t firstVertex = m_vertexBufferOffset / sizeof(ModernVertex);
+    m_commandBuffer->draw(3, 1, firstVertex, 0);
+
+    // 4. Advance ring buffer offset
+    m_vertexBufferOffset += 3 * sizeof(ModernVertex);
 }
 
 } // namespace GlideWrapper

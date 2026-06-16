@@ -34,6 +34,7 @@ public:
     // Phase 2: Host-GPU Vertex Buffers & State Pipelines
     void DrawPoint(const ModernVertex& pt) override;
     void DrawLine(const ModernVertex& v1, const ModernVertex& v2) override;
+    void DrawTriangle(const ModernVertex& a, const ModernVertex& b, const ModernVertex& c) override;
 
 private:
     bool CreateInstance();
@@ -84,6 +85,7 @@ private:
     vk::UniquePipelineLayout m_pipelineLayout;
     vk::UniquePipeline m_pointPipeline;
     vk::UniquePipeline m_linePipeline;
+    vk::UniquePipeline m_trianglePipeline;
 
     // Dynamic Ring Vertex Buffer
     vk::UniqueBuffer m_vertexBuffer;
