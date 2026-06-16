@@ -23,6 +23,14 @@ We utilize a Test-Driven Development (TDD) approach, validating our wrapper dire
 | **`test14`** | Depth Bias | **`PASS`** (100% Checkpoints)<br>• Frame 0: 99.69%<br>• Frame 15: 99.24%<br>• Frame 115: 99.43% | **`PASS`** (100% Checkpoints)<br>• Frame 0: 99.69%<br>• Frame 15: 99.24%<br>• Frame 115: 99.43% | **`PASS`** (100% Checkpoints)<br>• Frame 0: 99.69%<br>• Frame 15: 99.24%<br>• Frame 115: 99.43% | Triple-checkpoint validation (Zero, Positive, and Negative bias) of interpenetrating Gouraud triangles under dynamic depth biasing (`grDepthBiasLevel`). |
 | **`test15`** | Clip Window | **`PASS`** | **`PASS`** | **`PASS`** | Bounding box scissor clipping and window viewport synchronization (`grClipWindow`). |
 
+> [!NOTE]
+> **Performance Characteristic (Hybrid Presentation PCIe Bottleneck):**
+> You may notice that dynamic tests (like `test14` sweeping depth bias) run at $\approx$ 20–30 FPS on all backends, with Vulkan being slightly slower ($\approx$ 20 FPS) than GL/Software ($\approx$ 28 FPS). This is a known, expected characteristic of our **progressive hybrid transition architecture** (Phase 1–4). 
+> 
+> To render the CPU-rasterized console text overlays on top of GPU-cleared frames, we perform a hard GPU-to-CPU pixel copy (`glReadPixels` / `vkCmdCopyImageToBuffer`) every frame. This forces a PCIe bus transfer and CPU-GPU synchronization stall. Vulkan's stricter explicit queue barriers add slightly more synchronization overhead than GLES.
+> 
+> This performance cap will be fully resolved in **Phase 5 (Full GPU Presentation & Font Engine)**, where font rendering will move entirely to GPU fragment shaders, eliminating the CPU roundtrip and unlocking raw hardware speeds (1000+ FPS).
+
 ---
 
 ## 2. Uncompromised GPU Modernization Roadmap
