@@ -487,6 +487,17 @@ bool VulkanBackend::SelectPhysicalDevice() {
         return false;
     }
     m_physicalDevice = devices[0];
+    vk::PhysicalDeviceProperties props = m_physicalDevice.getProperties();
+
+    std::ostringstream logStream;
+    logStream << "\n--- Active Vulkan Execution Adapter ---\n"
+              << "  Adapter     : " << props.deviceName.data() << "\n"
+              << "    API Ver   : " << VK_VERSION_MAJOR(props.apiVersion) << "."
+              << VK_VERSION_MINOR(props.apiVersion) << "." << VK_VERSION_PATCH(props.apiVersion) << "\n"
+              << "    Dev Type  : " << vk::to_string(props.deviceType) << "\n"
+              << "----------------------------------------";
+    GLIDE_LOG(INFO, "Vulkan", logStream.str());
+
     return true;
 }
 

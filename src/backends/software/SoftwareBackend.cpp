@@ -53,11 +53,23 @@ bool SoftwareBackend::AttachWindow(void* nativeWindowHandle, uint32_t width, uin
     // Pre-initialize buffer to opaque black
     std::memset(m_headlessPixelMap, 0, width * height * 4);
 
-    // Format a clean driver details line for our dynamic diagnostics!
-    std::cout << "Info: InitialiseOpenGLWindow(wnd=" << nativeWindowHandle << ", res=" << width << "x" << height << ")\r\n";
-    std::cout << "Info: Software Rasterizer (glide-ng Reference Core)\r\n";
-    std::cout << "Info: Pixel Format RGBA8888 D24S0 nAux 0 nSamples 0 0\r\n";
-    std::cout << "Info: Drawable Size: " << width << "x" << height << "\r\n" << std::flush;
+    unsigned int cores = std::thread::hardware_concurrency();
+    #if defined(__x86_64__) || defined(_M_X64)
+    const char* arch = "x86_64";
+    #elif defined(__arm64__) || defined(__aarch64__) || defined(_M_ARM64)
+    const char* arch = "arm64";
+    #else
+    const char* arch = "Unknown CPU Architecture";
+    #endif
+
+    std::ostringstream logStream;
+    logStream << "\n--- Active Software Execution Adapter ---\n"
+              << "  Adapter     : Host CPU Reference Rasterizer\n"
+              << "    Cores     : " << cores << " Hardware Threads\n"
+              << "    Arch      : " << arch << "\n"
+              << "    Engine    : glide-ng Software Reference Core (v0.1.0)\n"
+              << "------------------------------------------";
+    GLIDE_LOG(INFO, "Software", logStream.str());
 
     m_headlessDepthBuffer.resize(width * height, 0.0f);
     SetClipWindow(0, 0, width, height);
