@@ -458,12 +458,19 @@ layout(location = 2) in vec4 inTex;
 out vec4 fragColor;
 
 uniform vec2 uViewportSize;
+uniform int uDepthClipOverride;
 
 void main() {
     // Convert Glide window-space coordinates to GLES NDC (Y-up)
     float ndcX = (inPos.x / (uViewportSize.x / 2.0)) - 1.0;
     float ndcY = (inPos.y / (uViewportSize.y / 2.0)) - 1.0;
-    float ndcZ = inPos.z * 2.0 - 1.0;
+    
+    float ndcZ;
+    if (uDepthClipOverride == 1) {
+        ndcZ = 0.0; // Force to middle of NDC clip volume if depth testing is disabled (prevents stack garbage clipping)
+    } else {
+        ndcZ = inPos.z * 2.0 - 1.0;
+    }
 
     gl_Position = vec4(ndcX, ndcY, ndcZ, 1.0);
     gl_PointSize = 1.0; // Canonical Glide point size (1px)
@@ -582,6 +589,7 @@ void OpenGLESBackend::DrawPoint(const ModernVertex& pt) {
 
     // Viewport uniform
     glUniform2f(glGetUniformLocation(m_geomProgram, "uViewportSize"), (float)m_headlessWidth, (float)m_headlessHeight);
+    glUniform1i(glGetUniformLocation(m_geomProgram, "uDepthClipOverride"), (m_depthMode == 0) ? 1 : 0);
 
     // Combiner color state uniforms
     bool useConst = ((m_colorCombinerFactor & 0xFFFF) == 1) || (m_colorCombinerFactor == 1);
@@ -638,6 +646,7 @@ void OpenGLESBackend::DrawLine(const ModernVertex& v0, const ModernVertex& v1) {
 
     // Viewport uniform
     glUniform2f(glGetUniformLocation(m_geomProgram, "uViewportSize"), (float)m_headlessWidth, (float)m_headlessHeight);
+    glUniform1i(glGetUniformLocation(m_geomProgram, "uDepthClipOverride"), (m_depthMode == 0) ? 1 : 0);
 
     // Combiner color state uniforms
     bool useConst = ((m_colorCombinerFactor & 0xFFFF) == 1) || (m_colorCombinerFactor == 1);
@@ -706,6 +715,7 @@ void OpenGLESBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
 
     // Viewport uniform
     glUniform2f(glGetUniformLocation(m_geomProgram, "uViewportSize"), (float)m_headlessWidth, (float)m_headlessHeight);
+    glUniform1i(glGetUniformLocation(m_geomProgram, "uDepthClipOverride"), (m_depthMode == 0) ? 1 : 0);
 
     // Combiner color state uniforms
     bool useConst = ((m_colorCombinerFactor & 0xFFFF) == 1) || (m_colorCombinerFactor == 1);

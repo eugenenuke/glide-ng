@@ -42,6 +42,8 @@ bool VulkanBackend::Initialize(const WrapperConfig& config) {
     GLIDE_LOG(INFO, "Vulkan", "Initializing Hybrid hardware Vulkan GPU context...");
     m_config = config;
 
+    Logger::GetInstance().LogHostVulkanCapabilities();
+
     if (!CreateInstance()) return false;
     if (!SelectPhysicalDevice()) return false;
     if (!CreateLogicalDevice()) return false;

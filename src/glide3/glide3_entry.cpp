@@ -63,7 +63,6 @@ FX_ENTRY void FX_CALL grGlideInit(void) {
     GLIDE_LOG(INFO, "Frontend", "grGlideInit (Glide 3.x) invoked.");
     
     // Dump dynamic startup summaries
-    logger.LogHostVulkanCapabilities();
     logger.LogExecutionSummary(reg.GetConfig());
 
     // Establish multi-target Vulkan rendering execution pipeline
