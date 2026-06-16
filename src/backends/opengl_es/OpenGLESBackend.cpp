@@ -16,6 +16,13 @@
 
 namespace GlideWrapper {
 
+static void checkGLError(const char* label) {
+    GLenum err;
+    while ((err = glGetError()) != GL_NO_ERROR) {
+        GLIDE_LOG(CRITICAL, "GLES", "GL Error at " << label << ": 0x" << std::hex << err);
+    }
+}
+
 const char* vsSource = R"(#version 300 es
 layout(location = 0) in vec2 inPos;
 layout(location = 1) in vec2 inTex;
@@ -82,6 +89,42 @@ bool OpenGLESBackend::AttachWindow(void* nativeWindowHandle, uint32_t width, uin
     std::cout << "Info: Pixel Format RGBA8888 D24S0 nAux 0 nSamples 0 0\r\n";
     std::cout << "Info: Drawable Size: " << width << "x" << height << "\r\n" << std::flush;
 
+    // Milestone 1: Setup Offscreen Framebuffer Object (FBO) for GPU-native rendering
+    glGenFramebuffers(1, &m_headlessFBO);
+    glBindFramebuffer(GL_FRAMEBUFFER, m_headlessFBO);
+
+    // Attach our color presentation texture as GL_COLOR_ATTACHMENT0
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, m_glTexture, 0);
+
+    // Allocate and attach depth renderbuffer for hardware Z-testing support
+    glGenRenderbuffers(1, &m_headlessDepthRenderbuffer);
+    glBindRenderbuffer(GL_RENDERBUFFER, m_headlessDepthRenderbuffer);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, width, height);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, m_headlessDepthRenderbuffer);
+
+    // Verify FBO completeness
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+        GLIDE_LOG(CRITICAL, "GLES", "Headless FBO is incomplete!");
+        DestroyGLContext();
+        return false;
+    }
+
+    // Restore default framebuffer binding
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    GLIDE_LOG(INFO, "GLES", "Offscreen Headless FBO & Depth Renderbuffer initialized successfully.");
+
+    // Milestone 3: Compile shaders and allocate dynamic VBO/VAO
+    if (!CreateGeomShaders()) {
+        GLIDE_LOG(CRITICAL, "GLES", "Failed to compile GLES geometry shaders!");
+        DestroyGLContext();
+        return false;
+    }
+    if (!CreateGeomBuffers()) {
+        GLIDE_LOG(CRITICAL, "GLES", "Failed to allocate GLES geometry buffers!");
+        DestroyGLContext();
+        return false;
+    }
+
     // Allocate software staging memory
     m_headlessPixelMap = std::malloc(width * height * 4);
     if (!m_headlessPixelMap) {
@@ -139,6 +182,96 @@ bool OpenGLESBackend::SwapBuffers() {
     }
 
     return true;
+}
+
+void OpenGLESBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z, uint32_t clearMask) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    if (!m_initialized || !m_windowAttached) return;
+
+    // 1. Clear CPU-side framebuffer for progressive hybrid compatibility
+    SoftwareBackendBase::ClearBuffer(color, alpha, z, clearMask);
+
+    // 1.5. Force CPU framebuffer alpha to 0 so background is not cached as hybrid geometry/text!
+    if (clearMask & 1) {
+        auto* pixels = reinterpret_cast<uint32_t*>(m_headlessPixelMap);
+        if (pixels) {
+            for (uint32_t i = 0; i < m_headlessWidth * m_headlessHeight; ++i) {
+                pixels[i] &= 0x00FFFFFF;
+            }
+        }
+    }
+
+    // Bind offscreen FBO
+    glBindFramebuffer(GL_FRAMEBUFFER, m_headlessFBO);
+
+    GLbitfield mask = 0;
+
+    if (clearMask & 0x1) { // Color Clear
+        float a = ((alpha > 0) ? alpha : 255) / 255.0f;
+        float r = ((color >> 16) & 0xFF) / 255.0f;
+        float g = ((color >> 8)  & 0xFF) / 255.0f;
+        float b = (color         & 0xFF) / 255.0f;
+
+        // Clear with native RGB color (driver BGRA format handles layout mapping)
+        glClearColor(r, g, b, a);
+        mask |= GL_COLOR_BUFFER_BIT;
+    }
+
+    if (clearMask & 0x2) { // Depth Clear
+        glClearDepthf(z);
+        mask |= GL_DEPTH_BUFFER_BIT;
+    }
+
+    if (mask != 0) {
+        glClear(mask);
+    }
+
+    // Restore default framebuffer binding
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
+bool OpenGLESBackend::ReadLFB(uint32_t srcX, uint32_t srcY, uint32_t srcWidth, uint32_t srcHeight, uint32_t dstStride, void* dstData) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    if (!m_initialized || !m_windowAttached) return false;
+
+    // --- STEP 1: Cache CPU-rendered text/geometry pixels ---
+    std::vector<uint32_t> cpuRenderingCache(m_headlessWidth * m_headlessHeight, 0);
+    const auto* cpuPixels = reinterpret_cast<const uint32_t*>(m_headlessPixelMap);
+    bool hasCpuRendering = false;
+
+    if (cpuPixels) {
+        for (size_t i = 0; i < cpuRenderingCache.size(); ++i) {
+            // If the pixel is not transparent background (alpha != 0)
+            if ((cpuPixels[i] >> 24) != 0) {
+                cpuRenderingCache[i] = cpuPixels[i];
+                hasCpuRendering = true;
+            }
+        }
+    }
+
+    // --- STEP 2: GPU Readback Flush ---
+    // Bind our offscreen FBO and read pixels directly into m_headlessPixelMap
+    glBindFramebuffer(GL_FRAMEBUFFER, m_headlessFBO);
+    
+    // Read pixels as GL_RGBA (which contains our R/B swapped BGRA-ordered pixels)
+    // GLES glReadPixels is synchronous and guarantees the GPU finishes all rendering before returning!
+    glReadPixels(0, 0, m_headlessWidth, m_headlessHeight, GL_RGBA, GL_UNSIGNED_BYTE, m_headlessPixelMap);
+
+    // --- STEP 3: Overlay CPU-rendered text/geometry back ---
+    if (hasCpuRendering && m_headlessPixelMap) {
+        auto* dest = reinterpret_cast<uint32_t*>(m_headlessPixelMap);
+        for (size_t i = 0; i < cpuRenderingCache.size(); ++i) {
+            if (cpuRenderingCache[i] != 0) {
+                dest[i] = cpuRenderingCache[i];
+            }
+        }
+    }
+
+    // Restore default framebuffer binding
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    // --- STEP 4: Convert and copy to client ---
+    return SoftwareBackendBase::ReadLFB(srcX, srcY, srcWidth, srcHeight, dstStride, dstData);
 }
 
 
@@ -265,6 +398,11 @@ void OpenGLESBackend::DestroyGLContext() {
     if (m_glVBO)     { glDeleteBuffers(1, &m_glVBO); m_glVBO = 0; }
     if (m_glVAO)     { glDeleteVertexArrays(1, &m_glVAO); m_glVAO = 0; }
     if (m_glProgram) { glDeleteProgram(m_glProgram); m_glProgram = 0; }
+    if (m_headlessDepthRenderbuffer) { glDeleteRenderbuffers(1, &m_headlessDepthRenderbuffer); m_headlessDepthRenderbuffer = 0; }
+    if (m_headlessFBO)               { glDeleteFramebuffers(1, &m_headlessFBO); m_headlessFBO = 0; }
+    if (m_geomVBO)     { glDeleteBuffers(1, &m_geomVBO); m_geomVBO = 0; }
+    if (m_geomVAO)     { glDeleteVertexArrays(1, &m_geomVAO); m_geomVAO = 0; }
+    if (m_geomProgram) { glDeleteProgram(m_geomProgram); m_geomProgram = 0; }
 
     if (m_glContext) {
         SDL_GL_DeleteContext(reinterpret_cast<SDL_GLContext>(m_glContext));
@@ -275,6 +413,220 @@ void OpenGLESBackend::DestroyGLContext() {
         m_sdlWindow = nullptr;
     }
     SDL_QuitSubSystem(SDL_INIT_VIDEO);
+}
+
+static const char* geomVsSource = R"(#version 300 es
+layout(location = 0) in vec4 inPos;
+layout(location = 1) in vec4 inColor;
+layout(location = 2) in vec4 inTex;
+
+out vec4 fragColor;
+
+uniform vec2 uViewportSize;
+
+void main() {
+    // Convert Glide window-space coordinates to GLES NDC (Y-up)
+    float ndcX = (inPos.x / (uViewportSize.x / 2.0)) - 1.0;
+    float ndcY = (inPos.y / (uViewportSize.y / 2.0)) - 1.0;
+
+    gl_Position = vec4(ndcX, ndcY, 0.0, 1.0);
+    gl_PointSize = 1.0; // Canonical Glide point size (1px)
+    fragColor = inColor;
+}
+)";
+
+static const char* geomFsSource = R"(#version 300 es
+precision mediump float;
+
+in vec4 fragColor;
+out vec4 outColor;
+
+uniform vec4 uConstantColor;
+uniform int uUseConstantColor;
+
+void main() {
+    vec4 col;
+    if (uUseConstantColor == 1) {
+        col = uConstantColor;
+    } else {
+        col = fragColor;
+    }
+    // Output native RGB color (driver BGRA format handles layout mapping)
+    outColor = col;
+}
+)";
+
+bool OpenGLESBackend::CreateGeomShaders() {
+    auto compileShader = [](GLenum type, const char* src) -> GLuint {
+        GLuint s = glCreateShader(type);
+        glShaderSource(s, 1, &src, nullptr);
+        glCompileShader(s);
+        GLint status;
+        glGetShaderiv(s, GL_COMPILE_STATUS, &status);
+        if (!status) {
+            char log[512];
+            glGetShaderInfoLog(s, 512, nullptr, log);
+            GLIDE_LOG(CRITICAL, "GLES", "Geometry Shader compilation failure: " << log);
+        }
+        return s;
+    };
+
+    GLuint vs = compileShader(GL_VERTEX_SHADER, geomVsSource);
+    GLuint fs = compileShader(GL_FRAGMENT_SHADER, geomFsSource);
+
+    m_geomProgram = glCreateProgram();
+    glAttachShader(m_geomProgram, vs);
+    glAttachShader(m_geomProgram, fs);
+    glLinkProgram(m_geomProgram);
+
+    glDeleteShader(vs);
+    glDeleteShader(fs);
+
+    GLint linkStatus;
+    glGetProgramiv(m_geomProgram, GL_LINK_STATUS, &linkStatus);
+    if (!linkStatus) {
+        char log[512];
+        glGetProgramInfoLog(m_geomProgram, 512, nullptr, log);
+        GLIDE_LOG(CRITICAL, "GLES", "Geometry Program linking failure: " << log);
+        return false;
+    }
+
+    checkGLError("CreateGeomShaders");
+    return true;
+}
+
+bool OpenGLESBackend::CreateGeomBuffers() {
+    glGenVertexArrays(1, &m_geomVAO);
+    glGenBuffers(1, &m_geomVBO);
+
+    glBindVertexArray(m_geomVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, m_geomVBO);
+    
+    // Allocate 1MB dynamic ring buffer
+    glBufferData(GL_ARRAY_BUFFER, m_geomVBOSize, nullptr, GL_DYNAMIC_DRAW);
+
+    // Map ModernVertex attributes:
+    // Location 0: inPos (pos) -> vec4 (16 bytes)
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE, sizeof(ModernVertex), (void*)offsetof(ModernVertex, pos));
+
+    // Location 1: inColor (color) -> vec4 (16 bytes)
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, sizeof(ModernVertex), (void*)offsetof(ModernVertex, color));
+
+    // Location 2: inTex (tex) -> vec4 (16 bytes)
+    glEnableVertexAttribArray(2);
+    glVertexAttribPointer(2, 4, GL_FLOAT, GL_FALSE, sizeof(ModernVertex), (void*)offsetof(ModernVertex, tex));
+
+    glBindVertexArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+    checkGLError("CreateGeomBuffers");
+    return true;
+}
+
+void OpenGLESBackend::DrawPoint(const ModernVertex& pt) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    if (!m_initialized || !m_windowAttached) return;
+
+    GLIDE_LOG(DEBUG, "GLES", "DrawPoint GPU draw. Pos: (" << pt.pos[0] << ", " << pt.pos[1] << ", " << pt.pos[2] << ")");
+
+    // 1. Upload vertex to dynamic VBO ring buffer
+    glBindBuffer(GL_ARRAY_BUFFER, m_geomVBO);
+    glBufferSubData(GL_ARRAY_BUFFER, m_geomVBOOffset, sizeof(ModernVertex), &pt);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+    // 2. Bind offscreen FBO and set state
+    glBindFramebuffer(GL_FRAMEBUFFER, m_headlessFBO);
+    glViewport(0, 0, m_headlessWidth, m_headlessHeight);
+
+    // 3. Bind shader program and upload uniforms
+    glUseProgram(m_geomProgram);
+
+    // Viewport uniform
+    glUniform2f(glGetUniformLocation(m_geomProgram, "uViewportSize"), (float)m_headlessWidth, (float)m_headlessHeight);
+
+    // Combiner color state uniforms
+    bool useConst = ((m_colorCombinerFactor & 0xFFFF) == 1) || (m_colorCombinerFactor == 1);
+    glUniform1i(glGetUniformLocation(m_geomProgram, "uUseConstantColor"), useConst ? 1 : 0);
+
+    float cr = ((m_constantColor >> 16) & 0xFF) / 255.0f;
+    float cg = ((m_constantColor >> 8)  & 0xFF) / 255.0f;
+    float cb = (m_constantColor         & 0xFF) / 255.0f;
+    float ca = ((m_constantColor >> 24) & 0xFF) / 255.0f;
+    if (ca < 0.5f) ca = 1.0f; // Force opaque if uninitialized
+    glUniform4f(glGetUniformLocation(m_geomProgram, "uConstantColor"), cr, cg, cb, ca);
+
+    // 4. Bind VAO and issue GLES point draw call
+    glBindVertexArray(m_geomVAO);
+    uint32_t firstVertex = m_geomVBOOffset / sizeof(ModernVertex);
+    glDrawArrays(GL_POINTS, firstVertex, 1);
+
+    // 5. Cleanup state bindings
+    glBindVertexArray(0);
+    glUseProgram(0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    // 6. Advance ring buffer offset
+    m_geomVBOOffset += sizeof(ModernVertex);
+    if (m_geomVBOOffset + sizeof(ModernVertex) > m_geomVBOSize) {
+        GLIDE_LOG(WARN, "GLES", "Dynamic Geometry VBO ring buffer wrap-around!");
+        m_geomVBOOffset = 0;
+    }
+    checkGLError("DrawPoint");
+}
+
+void OpenGLESBackend::DrawLine(const ModernVertex& v0, const ModernVertex& v1) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    if (!m_initialized || !m_windowAttached) return;
+
+    GLIDE_LOG(DEBUG, "GLES", "DrawLine GPU draw. V0: (" << v0.pos[0] << ", " << v0.pos[1] << "), V1: (" << v1.pos[0] << ", " << v1.pos[1] << ")");
+
+    // 1. Upload both vertices to dynamic VBO ring buffer
+    glBindBuffer(GL_ARRAY_BUFFER, m_geomVBO);
+    glBufferSubData(GL_ARRAY_BUFFER, m_geomVBOOffset, sizeof(ModernVertex), &v0);
+    glBufferSubData(GL_ARRAY_BUFFER, m_geomVBOOffset + sizeof(ModernVertex), sizeof(ModernVertex), &v1);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+    // 2. Bind offscreen FBO and set state
+    glBindFramebuffer(GL_FRAMEBUFFER, m_headlessFBO);
+    glViewport(0, 0, m_headlessWidth, m_headlessHeight);
+
+    // 3. Bind shader program and upload uniforms
+    glUseProgram(m_geomProgram);
+
+    // Viewport uniform
+    glUniform2f(glGetUniformLocation(m_geomProgram, "uViewportSize"), (float)m_headlessWidth, (float)m_headlessHeight);
+
+    // Combiner color state uniforms
+    bool useConst = ((m_colorCombinerFactor & 0xFFFF) == 1) || (m_colorCombinerFactor == 1);
+    glUniform1i(glGetUniformLocation(m_geomProgram, "uUseConstantColor"), useConst ? 1 : 0);
+
+    float cr = ((m_constantColor >> 16) & 0xFF) / 255.0f;
+    float cg = ((m_constantColor >> 8)  & 0xFF) / 255.0f;
+    float cb = (m_constantColor         & 0xFF) / 255.0f;
+    float ca = ((m_constantColor >> 24) & 0xFF) / 255.0f;
+    if (ca < 0.5f) ca = 1.0f; // Force opaque if uninitialized
+    glUniform4f(glGetUniformLocation(m_geomProgram, "uConstantColor"), cr, cg, cb, ca);
+
+    // 4. Bind VAO and issue GLES line draw call
+    glBindVertexArray(m_geomVAO);
+    uint32_t firstVertex = m_geomVBOOffset / sizeof(ModernVertex);
+    glDrawArrays(GL_LINES, firstVertex, 2);
+
+    // 5. Cleanup state bindings
+    glBindVertexArray(0);
+    glUseProgram(0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    // 6. Advance ring buffer offset
+    m_geomVBOOffset += 2 * sizeof(ModernVertex);
+    if (m_geomVBOOffset + 2 * sizeof(ModernVertex) > m_geomVBOSize) {
+        GLIDE_LOG(WARN, "GLES", "Dynamic Geometry VBO ring buffer wrap-around!");
+        m_geomVBOOffset = 0;
+    }
+
+    checkGLError("DrawLine");
 }
 
 } // namespace GlideWrapper
