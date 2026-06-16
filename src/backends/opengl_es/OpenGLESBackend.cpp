@@ -179,6 +179,11 @@ bool OpenGLESBackend::SwapBuffers() {
 
         glUseProgram(m_glProgram);
         glBindVertexArray(m_glVAO);
+        
+        // Disable depth testing/writing so the full-screen quad draws cleanly over the window
+        glDisable(GL_DEPTH_TEST);
+        glDepthMask(GL_FALSE);
+        
         glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
 
         SDL_GL_SwapWindow(reinterpret_cast<SDL_Window*>(m_sdlWindow));
