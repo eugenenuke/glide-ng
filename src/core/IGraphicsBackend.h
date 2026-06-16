@@ -40,6 +40,7 @@ public:
     virtual void SetAlphaTestState(uint32_t compareOp, uint32_t refVal) = 0;
     virtual void SetCullState(uint32_t cullMode) = 0;
     virtual void SetClipWindow(uint32_t minX, uint32_t minY, uint32_t maxX, uint32_t maxY) = 0;
+    virtual void SetSstOrigin(uint32_t origin) = 0;
 
     // Linear Framebuffer (LFB) cpu CPU inspection and modification
     virtual void* GetLfbWritePtr() = 0;

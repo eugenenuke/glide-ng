@@ -477,9 +477,13 @@ TEST_CASE("Architectural Core Validation", "[Architecture]") {
         StandardVert b1{2000.0f, 0.0f, 0.5f, 0.0f, 0.0f, 255.0f, 1.0f, 127.5f, 1.0f, 0.0f, 0.0f, 1.0f};
         StandardVert b2{0.0f, 2000.0f, 0.5f, 0.0f, 0.0f, 255.0f, 1.0f, 127.5f, 1.0f, 0.0f, 0.0f, 1.0f};
         drawTri(&b0, &b1, &b2);
-
         REQUIRE(readLfb(0, 0, 0, 800, 600, 800 * 4, lfbData.data()) == FXTRUE);
-        REQUIRE(lfbData[200 * 800 + 300] == 0x7F7F007F); // Perfect purple mathematical mix!
+        uint32_t blendPixel = lfbData[200 * 800 + 300];
+        REQUIRE((blendPixel & 0xFF00FF00) == 0xBF000000); // 75% Alpha (0xBF), 0 Green
+        uint32_t blendR = (blendPixel >> 16) & 0xFF;
+        uint32_t blendB = blendPixel & 0xFF;
+        REQUIRE((blendR == 0x7F || blendR == 0x80)); // Allow both GPU (0x7F) and CPU (0x80) rounding!
+        REQUIRE((blendB == 0x7F || blendB == 0x80));
 
         // Revert Blend
         blendFunc(4, 0, 4, 0);
@@ -528,40 +532,40 @@ TEST_CASE("Architectural Core Validation", "[Architecture]") {
         depthBufferFunc(1); // GR_CMP_LESS
         depthMask(FXTRUE);
 
-        clearBuf(0xFF000000, 0, 1); // Black, Depth=1.0
+        clearBuf(0xFF000000, 0, 65535); // Black, Depth=1.0 (65535 / 65535.0f)
 
         // Draw deep quad at Z = 0.8 (Should pass because 0.8 < 1.0)
-        StandardVert d0{0.0f, 0.0f, 0.8f, 255.0f, 0.0f, 0.0f, 1.0f, 255.0f, 1.0f, 0.0f, 0.0f, 1.0f}; // Red
-        StandardVert d1{2000.0f, 0.0f, 0.8f, 255.0f, 0.0f, 0.0f, 1.0f, 255.0f, 1.0f, 0.0f, 0.0f, 1.0f};
-        StandardVert d2{0.0f, 2000.0f, 0.8f, 255.0f, 0.0f, 0.0f, 1.0f, 255.0f, 1.0f, 0.0f, 0.0f, 1.0f};
+        StandardVert d0{0.0f, 0.0f, 0.8f, 255.0f, 0.0f, 0.0f, 0.8f, 255.0f, 1.0f, 0.0f, 0.0f, 1.0f}; // Red, ooz = 0.8f
+        StandardVert d1{2000.0f, 0.0f, 0.8f, 255.0f, 0.0f, 0.0f, 0.8f, 255.0f, 1.0f, 0.0f, 0.0f, 1.0f};
+        StandardVert d2{0.0f, 2000.0f, 0.8f, 255.0f, 0.0f, 0.0f, 0.8f, 255.0f, 1.0f, 0.0f, 0.0f, 1.0f};
         drawTri(&d0, &d1, &d2);
         REQUIRE(readLfb(0, 0, 0, 800, 600, 800 * 4, lfbData.data()) == FXTRUE);
-        REQUIRE(lfbData[250 * 800 + 250] == 0xFEFE0000); // Mapped red!
+        REQUIRE(lfbData[250 * 800 + 250] == 0xFFFF0000); // Mapped red (opaque 0xFF)!
 
         // Draw quad at Z = 0.9 (Should be REJECTED because 0.9 is NOT less than 0.8)
-        d0.z = 0.9f; d1.z = 0.9f; d2.z = 0.9f;
+        d0.z = 0.9f; d1.z = 0.9f; d2.z = 0.9f; d0.ooz = 0.9f; d1.ooz = 0.9f; d2.ooz = 0.9f;
         d0.r = 0.0f; d1.r = 0.0f; d2.r = 0.0f; d0.g = 255.0f; d1.g = 255.0f; d2.g = 255.0f; // Yellow
         drawTri(&d0, &d1, &d2);
         REQUIRE(readLfb(0, 0, 0, 800, 600, 800 * 4, lfbData.data()) == FXTRUE);
-        REQUIRE(lfbData[250 * 800 + 250] == 0xFEFE0000); // Remains untouched red!
+        REQUIRE(lfbData[250 * 800 + 250] == 0xFFFF0000); // Remains untouched red!
 
         // 6. Validate Depth Mask (Read-Only Depth Buffer)
         depthMask(FXFALSE); // Read-only depth!
         // Draw closer quad at Z = 0.4 in Blue
-        d0.z = 0.4f; d1.z = 0.4f; d2.z = 0.4f;
+        d0.z = 0.4f; d1.z = 0.4f; d2.z = 0.4f; d0.ooz = 0.4f; d1.ooz = 0.4f; d2.ooz = 0.4f;
         d0.g = 0.0f; d1.g = 0.0f; d2.g = 0.0f; d0.b = 255.0f; d1.b = 255.0f; d2.b = 255.0f; // Blue
         drawTri(&d0, &d1, &d2);
         REQUIRE(readLfb(0, 0, 0, 800, 600, 800 * 4, lfbData.data()) == FXTRUE);
-        REQUIRE(lfbData[250 * 800 + 250] == 0xFE0000FE); // Passes depth (0.4 < 0.8) -> Blue!
+        REQUIRE(lfbData[250 * 800 + 250] == 0xFF0000FF); // Passes depth (0.4 < 0.8) -> Blue (opaque 0xFF)!
 
         // Now draw another quad at Z = 0.5 in Green
         // Since the previous draw had depthMask=FXFALSE, the Z buffer at that pixel is still 0.8!
         // So Z = 0.5 < 0.8 should PASS and overwrite with Green!
-        d0.z = 0.5f; d1.z = 0.5f; d2.z = 0.5f;
+        d0.z = 0.5f; d1.z = 0.5f; d2.z = 0.5f; d0.ooz = 0.5f; d1.ooz = 0.5f; d2.ooz = 0.5f;
         d0.b = 0.0f; d1.b = 0.0f; d2.b = 0.0f; d0.g = 255.0f; d1.g = 255.0f; d2.g = 255.0f; // Green
         drawTri(&d0, &d1, &d2);
         REQUIRE(readLfb(0, 0, 0, 800, 600, 800 * 4, lfbData.data()) == FXTRUE);
-        REQUIRE(lfbData[250 * 800 + 250] == 0xFE00FE00); // Successfully writes Green!
+        REQUIRE(lfbData[250 * 800 + 250] == 0xFF00FF00); // Successfully writes Green (opaque 0xFF)!
 
         // Revert Depth Mode
         depthMask(FXTRUE);

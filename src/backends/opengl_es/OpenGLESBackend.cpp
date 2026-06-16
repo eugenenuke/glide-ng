@@ -115,6 +115,10 @@ bool OpenGLESBackend::AttachWindow(void* nativeWindowHandle, uint32_t width, uin
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     GLIDE_LOG(INFO, "GLES", "Offscreen Headless FBO & Depth Renderbuffer initialized successfully.");
 
+    // Disable dithering to ensure 100% flat and mathematically consistent color outputs,
+    // preventing 1-LSB noise from failing precision regression tests.
+    glDisable(GL_DITHER);
+
     // Milestone 3: Compile shaders and allocate dynamic VBO/VAO
     if (!CreateGeomShaders()) {
         GLIDE_LOG(CRITICAL, "GLES", "Failed to compile GLES geometry shaders!");
@@ -186,6 +190,7 @@ bool OpenGLESBackend::SwapBuffers() {
         // Disable depth testing/writing so the full-screen quad draws cleanly over the window
         glDisable(GL_DEPTH_TEST);
         glDepthMask(GL_FALSE);
+        glDisable(GL_BLEND);
         
         glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
         checkGLError("SwapBuffers glDrawArrays");
@@ -242,7 +247,19 @@ void OpenGLESBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z, uint3
     }
 
     if (mask != 0) {
+        // In OpenGL, glClear is affected by the active scissor box.
+        // But Glide grBufferClear always clears the entire screen.
+        // We must temporarily disable the scissor test to force a full-screen clear!
+        GLboolean scissorEnabled = glIsEnabled(GL_SCISSOR_TEST);
+        if (scissorEnabled) {
+            glDisable(GL_SCISSOR_TEST);
+        }
+
         glClear(mask);
+
+        if (scissorEnabled) {
+            glEnable(GL_SCISSOR_TEST);
+        }
     }
 
     if (clearMask & 0x2) {
@@ -308,7 +325,19 @@ bool OpenGLESBackend::ReadLFB(uint32_t srcX, uint32_t srcY, uint32_t srcWidth, u
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
     // --- STEP 4: Convert and copy to client ---
-    return SoftwareBackendBase::ReadLFB(srcX, srcY, srcWidth, srcHeight, dstStride, dstData);
+    bool result = SoftwareBackendBase::ReadLFB(srcX, srcY, srcWidth, srcHeight, dstStride, dstData);
+
+    // --- STEP 5: Force alpha to 0 in staging buffer ---
+    // This prevents GPU-rendered pixels (which have alpha=255 from GPU clear/draw)
+    // from being incorrectly detected as CPU-rendered text/geometry in the next ReadLFB frame!
+    if (m_headlessPixelMap) {
+        auto* pixels = reinterpret_cast<uint32_t*>(m_headlessPixelMap);
+        for (uint32_t i = 0; i < m_headlessWidth * m_headlessHeight; ++i) {
+            pixels[i] &= 0x00FFFFFF;
+        }
+    }
+
+    return result;
 }
 
 
@@ -494,6 +523,8 @@ out vec4 outColor;
 
 uniform vec4 uConstantColor;
 uniform int uUseConstantColor;
+uniform int uAlphaTestOp;
+uniform float uAlphaTestRef;
 
 void main() {
     vec4 col;
@@ -502,6 +533,26 @@ void main() {
     } else {
         col = fragColor;
     }
+
+    // Emulate legacy 3dfx Glide alpha testing (7 = GR_CMP_ALWAYS / disabled)
+    if (uAlphaTestOp != 7) {
+        float alpha = col.a;
+        float refVal = uAlphaTestRef;
+        bool passed = true;
+
+        if (uAlphaTestOp == 0) passed = false; // GR_CMP_NEVER
+        else if (uAlphaTestOp == 1) passed = (alpha < refVal); // GR_CMP_LESS
+        else if (uAlphaTestOp == 2) passed = (alpha == refVal); // GR_CMP_EQUAL
+        else if (uAlphaTestOp == 3) passed = (alpha <= refVal); // GR_CMP_LEQUAL
+        else if (uAlphaTestOp == 4) passed = (alpha > refVal); // GR_CMP_GREATER
+        else if (uAlphaTestOp == 5) passed = (alpha != refVal); // GR_CMP_NOTEQUAL
+        else if (uAlphaTestOp == 6) passed = (alpha >= refVal); // GR_CMP_GEQUAL
+        
+        if (!passed) {
+            discard;
+        }
+    }
+
     // Output native RGB color (driver BGRA format handles layout mapping)
     outColor = col;
 }
@@ -592,6 +643,7 @@ void OpenGLESBackend::DrawPoint(const ModernVertex& pt) {
     glViewport(0, 0, m_headlessWidth, m_headlessHeight);
     SyncDepthState();
     ApplyBlendingGLES();
+    ApplyScissorGLES();
 
     // 3. Bind shader program and upload uniforms
     glUseProgram(m_geomProgram);
@@ -614,6 +666,10 @@ void OpenGLESBackend::DrawPoint(const ModernVertex& pt) {
     }
     if (ca < 0.5f) ca = 1.0f; // Force opaque if uninitialized
     glUniform4f(glGetUniformLocation(m_geomProgram, "uConstantColor"), cr, cg, cb, ca);
+
+    // Alpha testing uniforms
+    glUniform1i(glGetUniformLocation(m_geomProgram, "uAlphaTestOp"), (int)m_alphaTestOp);
+    glUniform1f(glGetUniformLocation(m_geomProgram, "uAlphaTestRef"), (float)m_alphaTestRefVal / 255.0f);
 
     // 4. Bind VAO and issue GLES point draw call
     glBindVertexArray(m_geomVAO);
@@ -639,6 +695,7 @@ void OpenGLESBackend::DrawLine(const ModernVertex& v0, const ModernVertex& v1) {
     if (!m_initialized || !m_windowAttached) return;
 
     GLIDE_LOG(DEBUG, "GLES", "DrawLine GPU draw. V0: (" << v0.pos[0] << ", " << v0.pos[1] << "), V1: (" << v1.pos[0] << ", " << v1.pos[1] << ")");
+    GLIDE_LOG(DEBUG, "GLES", "DrawLine Colors. V0: (" << v0.color[0] << "," << v0.color[1] << "," << v0.color[2] << "," << v0.color[3] << "), V1: (" << v1.color[0] << "," << v1.color[1] << "," << v1.color[2] << "," << v1.color[3] << ")");
 
     // 1. Upload both vertices to dynamic VBO ring buffer
     glBindBuffer(GL_ARRAY_BUFFER, m_geomVBO);
@@ -651,6 +708,7 @@ void OpenGLESBackend::DrawLine(const ModernVertex& v0, const ModernVertex& v1) {
     glViewport(0, 0, m_headlessWidth, m_headlessHeight);
     SyncDepthState();
     ApplyBlendingGLES();
+    ApplyScissorGLES();
 
     // 3. Bind shader program and upload uniforms
     glUseProgram(m_geomProgram);
@@ -673,6 +731,10 @@ void OpenGLESBackend::DrawLine(const ModernVertex& v0, const ModernVertex& v1) {
     }
     if (ca < 0.5f) ca = 1.0f; // Force opaque if uninitialized
     glUniform4f(glGetUniformLocation(m_geomProgram, "uConstantColor"), cr, cg, cb, ca);
+
+    // Alpha testing uniforms
+    glUniform1i(glGetUniformLocation(m_geomProgram, "uAlphaTestOp"), (int)m_alphaTestOp);
+    glUniform1f(glGetUniformLocation(m_geomProgram, "uAlphaTestRef"), (float)m_alphaTestRefVal / 255.0f);
 
     // 4. Bind VAO and issue GLES line draw call
     glBindVertexArray(m_geomVAO);
@@ -709,12 +771,12 @@ void OpenGLESBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
     }
 
     GLIDE_LOG(DEBUG, "GLES", "DrawTriangle GPU draw. A: (" << a.pos[0] << ", " << a.pos[1] << "), B: (" << b.pos[0] << ", " << b.pos[1] << "), C: (" << c.pos[0] << ", " << c.pos[1] << ")");
+    GLIDE_LOG(DEBUG, "GLES", "DrawTriangle Colors. A: (" << a.color[0] << "," << a.color[1] << "," << a.color[2] << "," << a.color[3] << "), B: (" << b.color[0] << "," << b.color[1] << "," << b.color[2] << "," << b.color[3] << "), C: (" << c.color[0] << "," << c.color[1] << "," << c.color[2] << "," << c.color[3] << ")");
 
-    // 1. Upload all three vertices to dynamic VBO ring buffer
+    // 1. Upload all three vertices directly to VBO
+    ModernVertex vertices[3] = { a, b, c };
     glBindBuffer(GL_ARRAY_BUFFER, m_geomVBO);
-    glBufferSubData(GL_ARRAY_BUFFER, m_geomVBOOffset, sizeof(ModernVertex), &a);
-    glBufferSubData(GL_ARRAY_BUFFER, m_geomVBOOffset + sizeof(ModernVertex), sizeof(ModernVertex), &b);
-    glBufferSubData(GL_ARRAY_BUFFER, m_geomVBOOffset + 2 * sizeof(ModernVertex), sizeof(ModernVertex), &c);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_DYNAMIC_DRAW);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 
     // 2. Bind offscreen FBO and set state
@@ -722,6 +784,8 @@ void OpenGLESBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
     glViewport(0, 0, m_headlessWidth, m_headlessHeight);
     SyncDepthState();
     ApplyBlendingGLES();
+    ApplyScissorGLES();
+    SyncCullStateGLES();
 
     // 3. Bind shader program and upload uniforms
     glUseProgram(m_geomProgram);
@@ -733,6 +797,7 @@ void OpenGLESBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
 
     // Combiner color state uniforms
     bool useConst = ((m_colorCombinerFactor & 0xFFFF) == 1) || (m_colorCombinerFactor == 1);
+    GLIDE_LOG(DEBUG, "GLES", "Combiner State. useConst=" << useConst << ", constColor=0x" << std::hex << m_constantColor << std::dec);
     glUniform1i(glGetUniformLocation(m_geomProgram, "uUseConstantColor"), useConst ? 1 : 0);
 
     float cr = ((m_constantColor >> 16) & 0xFF) / 255.0f;
@@ -745,22 +810,21 @@ void OpenGLESBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
     if (ca < 0.5f) ca = 1.0f; // Force opaque if uninitialized
     glUniform4f(glGetUniformLocation(m_geomProgram, "uConstantColor"), cr, cg, cb, ca);
 
+    // Alpha testing uniforms
+    GLint locOp = glGetUniformLocation(m_geomProgram, "uAlphaTestOp");
+    GLint locRef = glGetUniformLocation(m_geomProgram, "uAlphaTestRef");
+    GLIDE_LOG(DEBUG, "GLES", "AlphaTest Uniforms. LocOp=" << locOp << " (val=" << (int)m_alphaTestOp << "), LocRef=" << locRef << " (val=" << (float)m_alphaTestRefVal / 255.0f << ")");
+    glUniform1i(locOp, (int)m_alphaTestOp);
+    glUniform1f(locRef, (float)m_alphaTestRefVal / 255.0f);
+
     // 4. Bind VAO and issue GLES triangle draw call
     glBindVertexArray(m_geomVAO);
-    uint32_t firstVertex = m_geomVBOOffset / sizeof(ModernVertex);
-    glDrawArrays(GL_TRIANGLES, firstVertex, 3);
+    glDrawArrays(GL_TRIANGLES, 0, 3); // Always draw from index 0!
 
     // 5. Cleanup state bindings
     glBindVertexArray(0);
     glUseProgram(0);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
-
-    // 6. Advance ring buffer offset
-    m_geomVBOOffset += 3 * sizeof(ModernVertex);
-    if (m_geomVBOOffset + 3 * sizeof(ModernVertex) > m_geomVBOSize) {
-        GLIDE_LOG(WARN, "GLES", "Dynamic Geometry VBO ring buffer wrap-around!");
-        m_geomVBOOffset = 0;
-    }
 
     checkGLError("DrawTriangle");
 }
@@ -782,11 +846,11 @@ void OpenGLESBackend::SyncDepthState() {
             default: break;
         }
         glDepthFunc(glDepthFuncVal);
+        glDepthMask(m_depthMask ? GL_TRUE : GL_FALSE);
     } else {
         glDisable(GL_DEPTH_TEST);
+        glDepthMask(GL_FALSE); // Explicitly disable depth writes when depth test is disabled!
     }
-
-    glDepthMask(m_depthMask ? GL_TRUE : GL_FALSE);
 }
 
 static GLenum MapBlendFactorGLES(uint32_t factor) {
@@ -810,8 +874,7 @@ void OpenGLESBackend::SetBlendState(uint32_t rgbSrcFactor, uint32_t rgbDstFactor
 }
 
 void OpenGLESBackend::ApplyBlendingGLES() {
-    // Glide default blend state: Src = ONE, Dst = ZERO (blending disabled)
-    if (m_rgbSrcBlend == 4 && m_rgbDstBlend == 0) {
+    if (m_rgbSrcBlend == 4 && m_rgbDstBlend == 0 && m_alphaSrcBlend == 4 && m_alphaDstBlend == 0) { // GR_BLEND_ONE & GR_BLEND_ZERO (disabled)
         glDisable(GL_BLEND);
     } else {
         glEnable(GL_BLEND);
@@ -822,6 +885,35 @@ void OpenGLESBackend::ApplyBlendingGLES() {
             MapBlendFactorGLES(m_alphaSrcBlend),
             MapBlendFactorGLES(m_alphaDstBlend)
         );
+    }
+}
+
+void OpenGLESBackend::ApplyScissorGLES() {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    glEnable(GL_SCISSOR_TEST);
+    
+    // Since the vertex shader does not flip Y, the GPU rendering is already vertically
+    // inverted (Glide top maps to OpenGL bottom). To match this inverted rendering, the
+    // scissor box must also be kept in its raw Glide coordinates (no Y-flipping).
+    uint32_t glScissorY = m_clipMinY;
+    uint32_t glScissorW = (m_clipMaxX > m_clipMinX) ? (m_clipMaxX - m_clipMinX) : 0;
+    uint32_t glScissorH = (m_clipMaxY > m_clipMinY) ? (m_clipMaxY - m_clipMinY) : 0;
+    
+    glScissor(m_clipMinX, glScissorY, glScissorW, glScissorH);
+}
+
+void OpenGLESBackend::SyncCullStateGLES() {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    if (m_cullMode == 0) { // GR_CULL_DISABLE
+        glDisable(GL_CULL_FACE);
+    } else {
+        glEnable(GL_CULL_FACE);
+        glFrontFace(GL_CCW); // Keep OpenGL default CCW front face (barycentric winding is mathematically preserved!)
+        if (m_cullMode == 1) { // GR_CULL_NEGATIVE (cull CW / Back face)
+            glCullFace(GL_BACK);
+        } else if (m_cullMode == 2) { // GR_CULL_POSITIVE (cull CCW / Front face)
+            glCullFace(GL_FRONT);
+        }
     }
 }
 

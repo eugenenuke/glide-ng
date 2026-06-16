@@ -5,18 +5,42 @@ layout(location = 1) in vec4 fragTex;
 
 layout(location = 0) out vec4 outColor;
 
-// Viewport and constant-color configuration passed via push constants
 layout(push_constant) uniform PushConstants {
     float viewportWidth;
     float viewportHeight;
     vec4 constantColor;
     uint useConstantColor;
+    uint depthBufferMode;
+    uint alphaTestOp;
+    float alphaTestRef;
 } pcs;
 
 void main() {
+    vec4 finalColor;
     if (pcs.useConstantColor == 1) {
-        outColor = pcs.constantColor;
+        finalColor = pcs.constantColor;
     } else {
-        outColor = fragColor;
+        finalColor = fragColor;
     }
+
+    // Emulate legacy 3dfx Glide alpha testing (7 = GR_CMP_ALWAYS / disabled)
+    if (pcs.alphaTestOp != 7u) {
+        float alpha = finalColor.a;
+        float refVal = pcs.alphaTestRef;
+        bool passed = true;
+
+        if (pcs.alphaTestOp == 0u) passed = false; // GR_CMP_NEVER
+        else if (pcs.alphaTestOp == 1u) passed = (alpha < refVal); // GR_CMP_LESS
+        else if (pcs.alphaTestOp == 2u) passed = (alpha == refVal); // GR_CMP_EQUAL
+        else if (pcs.alphaTestOp == 3u) passed = (alpha <= refVal); // GR_CMP_LEQUAL
+        else if (pcs.alphaTestOp == 4u) passed = (alpha > refVal); // GR_CMP_GREATER
+        else if (pcs.alphaTestOp == 5u) passed = (alpha != refVal); // GR_CMP_NOTEQUAL
+        else if (pcs.alphaTestOp == 6u) passed = (alpha >= refVal); // GR_CMP_GEQUAL
+
+        if (!passed) {
+            discard;
+        }
+    }
+
+    outColor = finalColor;
 }

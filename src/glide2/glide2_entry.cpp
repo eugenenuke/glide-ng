@@ -51,9 +51,9 @@ namespace {
     uint32_t s_boundTex[2]      = {0, 0};
 
     uint32_t s_constantColor = 0xFFFFFFFF;
-    uint32_t s_rgbSrcBlend = 1;   // GR_BLEND_ONE
+    uint32_t s_rgbSrcBlend = 4;   // GR_BLEND_ONE
     uint32_t s_rgbDstBlend = 0;   // GR_BLEND_ZERO
-    uint32_t s_alphaSrcBlend = 1;
+    uint32_t s_alphaSrcBlend = 4;
     uint32_t s_alphaDstBlend = 0;
     uint32_t s_cullMode = 0;      // GR_CULL_DISABLE
     uint32_t s_sstOrigin = 0;     // GR_ORIGIN_UPPER_LEFT
@@ -498,6 +498,9 @@ FX_ENTRY void FX_CALL grDepthBiasLevel(FxI16 level) {
 FX_ENTRY void FX_CALL grSstOrigin(GrOriginLocation_t origin) {
     GLIDE_LOG(INFO, "Frontend", "grSstOrigin invoked: " << origin);
     s_sstOrigin = origin;
+    if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
+        b->SetSstOrigin(origin);
+    }
 }
 
 FX_ENTRY void FX_CALL grCullMode(GrCullMode_t mode) {

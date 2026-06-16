@@ -58,6 +58,9 @@ void Logger::Log(LogLevel level, const char* component, const std::string& messa
            << message << "\n";
            
     m_file.flush();
+
+    // Also print to stdout for unit test runner visibility!
+    std::cout << "[" << levelStr << "] [" << component << "] " << message << std::endl;
 }
 
 void Logger::LogExecutionSummary(const WrapperConfig& config) {

@@ -26,7 +26,8 @@ struct PushConstants {
     float constantColor[4];    // RGBA normalized floats
     uint32_t useConstantColor;  // 1 = true, 0 = false
     uint32_t depthBufferMode;   // 0 = None, 1 = Z, 2 = W
-    float padding2[2];         // Pad entire struct to 16-byte multiple (48 bytes total)
+    uint32_t alphaTestOp;       // 0..7 (Glide compare ops, 7 = ALWAYS/disabled)
+    float alphaTestRef;         // 0.0 .. 1.0 (normalized reference value)
 };
 
 // Authoritative Vulkan validation layer declarations
@@ -173,6 +174,23 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width, uint3
     m_commandBuffer->reset({});
     m_commandBuffer->begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
 
+    // One-time layout transition of color and depth images from eUndefined to their optimal layouts
+    GLIDE_LOG(INFO, "Vulkan", "Performing one-time startup layout transitions for render targets...");
+    vk::ImageSubresourceRange colorRange(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1);
+    TransitionImageLayout(m_commandBuffer.get(), m_headlessImage.get(), vk::ImageLayout::eUndefined, vk::ImageLayout::eColorAttachmentOptimal, colorRange);
+
+    vk::ImageSubresourceRange depthRange(vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1);
+    TransitionImageLayout(m_commandBuffer.get(), m_depthImage.get(), vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthStencilAttachmentOptimal, depthRange);
+
+    m_commandBuffer->end();
+    vk::SubmitInfo submitInfo(0, nullptr, nullptr, 1, &m_commandBuffer.get());
+    m_graphicsQueue.submit(submitInfo, {});
+    m_device->waitIdle(); // Block until transitions complete
+
+    // Restart command buffer for frame recording
+    m_commandBuffer->reset({});
+    m_commandBuffer->begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
+
     m_windowAttached = true;
     return true;
 }
@@ -294,6 +312,22 @@ void VulkanBackend::SetBlendState(uint32_t rgbSrcFactor, uint32_t rgbDstFactor, 
     }
 }
 
+void VulkanBackend::SetCullState(uint32_t cullMode) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    SoftwareBackendBase::SetCullState(cullMode);
+
+    if (m_initialized && m_device) {
+        GLIDE_LOG(INFO, "Vulkan", "SetCullState: Recompiling Vulkan pipelines with new culling config...");
+        CreateGraphicsPipelines();
+    }
+}
+
+void VulkanBackend::SetAlphaTestState(uint32_t compareOp, uint32_t refVal) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    SoftwareBackendBase::SetAlphaTestState(compareOp, refVal);
+    // Note: Emulated in fragment shader via push constants. No pipeline recompilation needed!
+}
+
 bool VulkanBackend::SwapBuffers() {
 
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
@@ -312,16 +346,25 @@ bool VulkanBackend::SwapBuffers() {
         // If no draw calls were executed (clear-only frame), we must explicitly begin/end a render pass to execute the pending clears!
         if (!m_inRenderPass) {
             if (m_clearColorPending || m_clearDepthPending) {
-                std::array<vk::ClearValue, 2> clearValues{};
-                clearValues[0].color = m_clearColorValue;
-                clearValues[1].depthStencil = vk::ClearDepthStencilValue(m_clearDepthValue, 0);
-
                 vk::RenderPassBeginInfo renderPassInfo(m_renderPass.get(), m_headlessFramebuffer.get(),
                                                      vk::Rect2D({0, 0}, {m_headlessWidth, m_headlessHeight}),
-                                                     static_cast<uint32_t>(clearValues.size()), clearValues.data());
+                                                     0, nullptr);
                 m_commandBuffer->beginRenderPass(renderPassInfo, vk::SubpassContents::eInline);
-                m_commandBuffer->endRenderPass();
 
+                std::vector<vk::ClearAttachment> clears;
+                if (m_clearColorPending) {
+                    clears.push_back(vk::ClearAttachment(vk::ImageAspectFlagBits::eColor, 0, m_clearColorValue));
+                }
+                if (m_clearDepthPending) {
+                    clears.push_back(vk::ClearAttachment(vk::ImageAspectFlagBits::eDepth, 0, vk::ClearValue(vk::ClearDepthStencilValue(m_clearDepthValue, 0))));
+                }
+                if (!clears.empty()) {
+                    vk::ClearRect clearRect(vk::Rect2D({0, 0}, {m_headlessWidth, m_headlessHeight}), 0, 1);
+                    m_commandBuffer->clearAttachments(static_cast<uint32_t>(clears.size()), clears.data(), 1, &clearRect);
+                    GLIDE_LOG(DEBUG, "Vulkan", "Explicitly cleared " << clears.size() << " attachments in SwapBuffers manual clear.");
+                }
+
+                m_commandBuffer->endRenderPass();
                 m_clearColorPending = false;
                 m_clearDepthPending = false;
             }
@@ -397,6 +440,14 @@ bool VulkanBackend::SwapBuffers() {
         // Reset and begin recording the next frame's commands immediately!
         m_commandBuffer->reset({});
         m_commandBuffer->begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
+
+        // Force alpha to 0 in staging buffer so GPU-rendered pixels are not cached as CPU text in the next frame!
+        if (m_headlessPixelMap) {
+            auto* pixels = reinterpret_cast<uint32_t*>(m_headlessPixelMap);
+            for (uint32_t i = 0; i < m_headlessWidth * m_headlessHeight; ++i) {
+                pixels[i] &= 0x00FFFFFF;
+            }
+        }
     }
 
     return true;
@@ -467,7 +518,17 @@ bool VulkanBackend::ReadLFB(uint32_t srcX, uint32_t srcY, uint32_t srcWidth, uin
     TransitionImageLayout(m_commandBuffer.get(), m_headlessImage.get(), vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::eColorAttachmentOptimal, range);
 
     // 8. Now call the base class ReadLFB to copy the synchronized pixels to the client buffer!
-    return SoftwareBackendBase::ReadLFB(srcX, srcY, srcWidth, srcHeight, dstStride, dstData);
+    bool result = SoftwareBackendBase::ReadLFB(srcX, srcY, srcWidth, srcHeight, dstStride, dstData);
+
+    // 9. Force alpha to 0 in the staging buffer so GPU-rendered pixels are not cached as CPU text in the next ReadLFB!
+    if (m_headlessPixelMap) {
+        auto* pixels = reinterpret_cast<uint32_t*>(m_headlessPixelMap);
+        for (uint32_t i = 0; i < m_headlessWidth * m_headlessHeight; ++i) {
+            pixels[i] &= 0x00FFFFFF;
+        }
+    }
+
+    return result;
 }
 
 void VulkanBackend::PollEvents() {
@@ -586,17 +647,17 @@ bool VulkanBackend::CreateLogicalDevice() {
 bool VulkanBackend::CreateRenderPass() {
     // 1. Color Attachment Description
     vk::AttachmentDescription colorAttachment({}, m_colorFormat, vk::SampleCountFlagBits::e1,
-                                            vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore,
+                                            vk::AttachmentLoadOp::eLoad, vk::AttachmentStoreOp::eStore,
                                             vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare,
-                                            vk::ImageLayout::eUndefined, vk::ImageLayout::eColorAttachmentOptimal);
+                                            vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eColorAttachmentOptimal);
 
     vk::AttachmentReference colorRef(0, vk::ImageLayout::eColorAttachmentOptimal);
 
     // 2. Depth Attachment Description
     vk::AttachmentDescription depthAttachment({}, m_depthFormat, vk::SampleCountFlagBits::e1,
-                                            vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore,
+                                            vk::AttachmentLoadOp::eLoad, vk::AttachmentStoreOp::eStore,
                                             vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare,
-                                            vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthStencilAttachmentOptimal);
+                                            vk::ImageLayout::eDepthStencilAttachmentOptimal, vk::ImageLayout::eDepthStencilAttachmentOptimal);
 
     vk::AttachmentReference depthRef(1, vk::ImageLayout::eDepthStencilAttachmentOptimal);
 
@@ -787,7 +848,15 @@ bool VulkanBackend::CreateGraphicsPipelines() {
         vk::PipelineViewportStateCreateInfo viewportState({}, 1, nullptr, 1, nullptr);
 
         // Rasterization Configuration (Dynamic Depth Clamping prevents out-of-bounds Z clipping!)
-        vk::PipelineRasterizationStateCreateInfo rasterizer({}, m_depthClampEnabled, false, vk::PolygonMode::eFill, vk::CullModeFlagBits::eNone,
+        vk::CullModeFlags vkCullMode = vk::CullModeFlagBits::eNone;
+        switch (m_cullMode) {
+            case 0: vkCullMode = vk::CullModeFlagBits::eNone; break;  // GR_CULL_DISABLE
+            case 1: vkCullMode = vk::CullModeFlagBits::eBack; break;   // GR_CULL_NEGATIVE (cull CCW / Back face)
+            case 2: vkCullMode = vk::CullModeFlagBits::eFront; break;  // GR_CULL_POSITIVE (cull CW / Front face)
+            default: break;
+        }
+
+        vk::PipelineRasterizationStateCreateInfo rasterizer({}, m_depthClampEnabled, false, vk::PolygonMode::eFill, vkCullMode,
                                                            vk::FrontFace::eClockwise, false, 0.0f, 0.0f, 0.0f, 1.0f);
 
         // Multisample Configuration (none)
@@ -823,18 +892,13 @@ bool VulkanBackend::CreateGraphicsPipelines() {
         vk::PipelineColorBlendAttachmentState colorBlendAttachment;
         colorBlendAttachment.colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG | vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA;
         
-        // Glide default blend state: Src = ONE, Dst = ZERO (blending disabled)
-        if (m_rgbSrcBlend == 4 && m_rgbDstBlend == 0) {
-            colorBlendAttachment.blendEnable = false;
-        } else {
-            colorBlendAttachment.blendEnable = true;
-            colorBlendAttachment.colorBlendOp = vk::BlendOp::eAdd;
-            colorBlendAttachment.srcColorBlendFactor = MapBlendFactorVulkan(m_rgbSrcBlend);
-            colorBlendAttachment.dstColorBlendFactor = MapBlendFactorVulkan(m_rgbDstBlend);
-            colorBlendAttachment.alphaBlendOp = vk::BlendOp::eAdd;
-            colorBlendAttachment.srcAlphaBlendFactor = MapBlendFactorVulkan(m_alphaSrcBlend);
-            colorBlendAttachment.dstAlphaBlendFactor = MapBlendFactorVulkan(m_alphaDstBlend);
-        }
+        colorBlendAttachment.blendEnable = true;
+        colorBlendAttachment.colorBlendOp = vk::BlendOp::eAdd;
+        colorBlendAttachment.srcColorBlendFactor = MapBlendFactorVulkan(m_rgbSrcBlend);
+        colorBlendAttachment.dstColorBlendFactor = MapBlendFactorVulkan(m_rgbDstBlend);
+        colorBlendAttachment.alphaBlendOp = vk::BlendOp::eAdd;
+        colorBlendAttachment.srcAlphaBlendFactor = MapBlendFactorVulkan(m_alphaSrcBlend);
+        colorBlendAttachment.dstAlphaBlendFactor = MapBlendFactorVulkan(m_alphaDstBlend);
 
         vk::PipelineColorBlendStateCreateInfo colorBlending({}, false, vk::LogicOp::eCopy, 1, &colorBlendAttachment, {0.0f, 0.0f, 0.0f, 0.0f});
 
@@ -903,32 +967,7 @@ void VulkanBackend::DrawPoint(const ModernVertex& pt) {
     *dest = pt;
 
     // 2. Ensure Render Pass is active (lazy initialization)
-    if (!m_inRenderPass) {
-        std::array<vk::ClearValue, 2> clearValues{};
-        clearValues[0].color = m_clearColorValue;
-        clearValues[1].depthStencil = vk::ClearDepthStencilValue(m_clearDepthValue, 0);
-
-        vk::RenderPassBeginInfo renderPassInfo(m_renderPass.get(), m_headlessFramebuffer.get(),
-                                             vk::Rect2D({0, 0}, {m_headlessWidth, m_headlessHeight}),
-                                             static_cast<uint32_t>(clearValues.size()), clearValues.data());
-        m_commandBuffer->beginRenderPass(renderPassInfo, vk::SubpassContents::eInline);
-
-        m_clearColorPending = false;
-        m_clearDepthPending = false;
-
-        // Configure Dynamic Viewport & Scissor (only need to do once per render pass!)
-        vk::Viewport viewport(0.0f, 0.0f, (float)m_headlessWidth, (float)m_headlessHeight, 0.0f, 1.0f);
-        m_commandBuffer->setViewport(0, 1, &viewport);
-
-        vk::Rect2D scissor({0, 0}, {m_headlessWidth, m_headlessHeight});
-        m_commandBuffer->setScissor(0, 1, &scissor);
-
-        // Bind the vertex buffer ONCE at offset 0 for the entire render pass!
-        vk::DeviceSize zeroOffset = 0;
-        m_commandBuffer->bindVertexBuffers(0, 1, &m_vertexBuffer.get(), &zeroOffset);
-
-        m_inRenderPass = true;
-    }
+    EnsureRenderPassActive();
 
     // Always bind the correct pipeline for this draw call!
     m_commandBuffer->bindPipeline(vk::PipelineBindPoint::eGraphics, m_pointPipeline.get());
@@ -953,6 +992,9 @@ void VulkanBackend::DrawPoint(const ModernVertex& pt) {
     if (pcs.constantColor[3] < 0.5f) {
         pcs.constantColor[3] = 1.0f; // Force opaque if alpha is uninitialized/transparent
     }
+
+    pcs.alphaTestOp = m_alphaTestOp;
+    pcs.alphaTestRef = (float)m_alphaTestRefVal / 255.0f;
 
     m_commandBuffer->pushConstants<PushConstants>(m_pipelineLayout.get(), vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, pcs);
 
@@ -991,32 +1033,7 @@ void VulkanBackend::DrawLine(const ModernVertex& v1, const ModernVertex& v2) {
     dest[1] = v2;
 
     // 2. Ensure Render Pass is active (lazy initialization)
-    if (!m_inRenderPass) {
-        std::array<vk::ClearValue, 2> clearValues{};
-        clearValues[0].color = m_clearColorValue;
-        clearValues[1].depthStencil = vk::ClearDepthStencilValue(m_clearDepthValue, 0);
-
-        vk::RenderPassBeginInfo renderPassInfo(m_renderPass.get(), m_headlessFramebuffer.get(),
-                                             vk::Rect2D({0, 0}, {m_headlessWidth, m_headlessHeight}),
-                                             static_cast<uint32_t>(clearValues.size()), clearValues.data());
-        m_commandBuffer->beginRenderPass(renderPassInfo, vk::SubpassContents::eInline);
-
-        m_clearColorPending = false;
-        m_clearDepthPending = false;
-
-        // Configure Dynamic Viewport & Scissor
-        vk::Viewport viewport(0.0f, 0.0f, (float)m_headlessWidth, (float)m_headlessHeight, 0.0f, 1.0f);
-        m_commandBuffer->setViewport(0, 1, &viewport);
-
-        vk::Rect2D scissor({0, 0}, {m_headlessWidth, m_headlessHeight});
-        m_commandBuffer->setScissor(0, 1, &scissor);
-
-        // Bind vertex buffer
-        vk::DeviceSize zeroOffset = 0;
-        m_commandBuffer->bindVertexBuffers(0, 1, &m_vertexBuffer.get(), &zeroOffset);
-
-        m_inRenderPass = true;
-    }
+    EnsureRenderPassActive();
 
     // Always bind the correct pipeline for this draw call!
     m_commandBuffer->bindPipeline(vk::PipelineBindPoint::eGraphics, m_linePipeline.get());
@@ -1041,6 +1058,9 @@ void VulkanBackend::DrawLine(const ModernVertex& v1, const ModernVertex& v2) {
     if (pcs.constantColor[3] < 0.5f) {
         pcs.constantColor[3] = 1.0f; // Force opaque if alpha is uninitialized/transparent
     }
+
+    pcs.alphaTestOp = m_alphaTestOp;
+    pcs.alphaTestRef = (float)m_alphaTestRefVal / 255.0f;
 
     m_commandBuffer->pushConstants<PushConstants>(m_pipelineLayout.get(), vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, pcs);
 
@@ -1067,6 +1087,9 @@ void VulkanBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b, c
     }
 
     GLIDE_LOG(DEBUG, "Vulkan", "DrawTriangle GPU draw. A: (" << a.pos[0] << ", " << a.pos[1] << "), B: (" << b.pos[0] << ", " << b.pos[1] << "), C: (" << c.pos[0] << ", " << c.pos[1] << ")");
+    GLIDE_LOG(INFO, "Vulkan", "DrawTriangle Alpha Debug: Vertex 0 Alpha = " << a.color[3]
+              << ", AlphaTestOp = " << m_alphaTestOp
+              << ", RefVal = " << m_alphaTestRefVal);
 
     // 1. Upload vertices to dynamic ring vertex buffer
     if (!m_vertexBufferMap) {
@@ -1086,32 +1109,7 @@ void VulkanBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b, c
     dest[2] = c;
 
     // 2. Ensure Render Pass is active (lazy initialization)
-    if (!m_inRenderPass) {
-        std::array<vk::ClearValue, 2> clearValues{};
-        clearValues[0].color = m_clearColorValue;
-        clearValues[1].depthStencil = vk::ClearDepthStencilValue(m_clearDepthValue, 0);
-
-        vk::RenderPassBeginInfo renderPassInfo(m_renderPass.get(), m_headlessFramebuffer.get(),
-                                             vk::Rect2D({0, 0}, {m_headlessWidth, m_headlessHeight}),
-                                             static_cast<uint32_t>(clearValues.size()), clearValues.data());
-        m_commandBuffer->beginRenderPass(renderPassInfo, vk::SubpassContents::eInline);
-
-        m_clearColorPending = false;
-        m_clearDepthPending = false;
-
-        // Configure Dynamic Viewport & Scissor
-        vk::Viewport viewport(0.0f, 0.0f, (float)m_headlessWidth, (float)m_headlessHeight, 0.0f, 1.0f);
-        m_commandBuffer->setViewport(0, 1, &viewport);
-
-        vk::Rect2D scissor({0, 0}, {m_headlessWidth, m_headlessHeight});
-        m_commandBuffer->setScissor(0, 1, &scissor);
-
-        // Bind vertex buffer
-        vk::DeviceSize zeroOffset = 0;
-        m_commandBuffer->bindVertexBuffers(0, 1, &m_vertexBuffer.get(), &zeroOffset);
-
-        m_inRenderPass = true;
-    }
+    EnsureRenderPassActive();
 
     // Always bind the correct pipeline for this draw call!
     m_commandBuffer->bindPipeline(vk::PipelineBindPoint::eGraphics, m_trianglePipeline.get());
@@ -1137,6 +1135,9 @@ void VulkanBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b, c
         pcs.constantColor[3] = 1.0f; // Force opaque if alpha is uninitialized/transparent
     }
 
+    pcs.alphaTestOp = m_alphaTestOp;
+    pcs.alphaTestRef = (float)m_alphaTestRefVal / 255.0f;
+
     m_commandBuffer->pushConstants<PushConstants>(m_pipelineLayout.get(), vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, pcs);
 
     // 3. Issue GPU triangle draw call (vertexCount = 3)
@@ -1145,6 +1146,61 @@ void VulkanBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b, c
 
     // 4. Advance ring buffer offset
     m_vertexBufferOffset += 3 * sizeof(ModernVertex);
+}
+
+vk::Rect2D VulkanBackend::GetScissorRectVulkan() {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    uint32_t vkScissorY = m_clipMinY;
+    if (m_sstOrigin == 1) { // GR_ORIGIN_LOWER_LEFT is 1 (bottom-left)
+        // Flip Y to top-left coordinate system of Vulkan
+        vkScissorY = m_headlessHeight - m_clipMaxY;
+    }
+    uint32_t vkScissorW = (m_clipMaxX > m_clipMinX) ? (m_clipMaxX - m_clipMinX) : 0;
+    uint32_t vkScissorH = (m_clipMaxY > m_clipMinY) ? (m_clipMaxY - m_clipMinY) : 0;
+
+    vk::Offset2D offset(static_cast<int32_t>(m_clipMinX), static_cast<int32_t>(vkScissorY));
+    vk::Extent2D extent(vkScissorW, vkScissorH);
+    return vk::Rect2D(offset, extent);
+}
+
+void VulkanBackend::EnsureRenderPassActive() {
+    if (m_inRenderPass) return;
+
+    // Begin render pass with eLoad (no automatic clear)
+    vk::RenderPassBeginInfo renderPassInfo(m_renderPass.get(), m_headlessFramebuffer.get(),
+                                         vk::Rect2D({0, 0}, {m_headlessWidth, m_headlessHeight}),
+                                         0, nullptr); // 0 clear values since we use eLoad!
+    m_commandBuffer->beginRenderPass(renderPassInfo, vk::SubpassContents::eInline);
+
+    // Configure Dynamic Viewport & Scissor
+    vk::Viewport viewport(0.0f, 0.0f, (float)m_headlessWidth, (float)m_headlessHeight, 0.0f, 1.0f);
+    m_commandBuffer->setViewport(0, 1, &viewport);
+
+    vk::Rect2D scissor = GetScissorRectVulkan();
+    m_commandBuffer->setScissor(0, 1, &scissor);
+
+    // Bind vertex buffer
+    vk::DeviceSize zeroOffset = 0;
+    m_commandBuffer->bindVertexBuffers(0, 1, &m_vertexBuffer.get(), &zeroOffset);
+
+    m_inRenderPass = true;
+
+    // Perform explicit clears using vkCmdClearAttachments if pending!
+    std::vector<vk::ClearAttachment> clears;
+    if (m_clearColorPending) {
+        clears.push_back(vk::ClearAttachment(vk::ImageAspectFlagBits::eColor, 0, m_clearColorValue));
+        m_clearColorPending = false;
+    }
+    if (m_clearDepthPending) {
+        clears.push_back(vk::ClearAttachment(vk::ImageAspectFlagBits::eDepth, 0, vk::ClearValue(vk::ClearDepthStencilValue(m_clearDepthValue, 0))));
+        m_clearDepthPending = false;
+    }
+
+    if (!clears.empty()) {
+        vk::ClearRect clearRect(vk::Rect2D({0, 0}, {m_headlessWidth, m_headlessHeight}), 0, 1);
+        m_commandBuffer->clearAttachments(static_cast<uint32_t>(clears.size()), clears.data(), 1, &clearRect);
+        GLIDE_LOG(DEBUG, "Vulkan", "Explicitly cleared " << clears.size() << " attachments inside render pass.");
+    }
 }
 
 } // namespace GlideWrapper

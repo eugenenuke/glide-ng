@@ -41,13 +41,13 @@ public:
 
         GrVertex vtxA, vtxB, vtxC;
         vtxA.x = tlScaleX(0.3f); vtxA.y = tlScaleY(0.3f);
-        vtxA.r = 255.0f; vtxA.g = 0.0f; vtxA.b = 0.0f;
+        vtxA.r = 255.0f; vtxA.g = 0.0f; vtxA.b = 0.0f; vtxA.a = 255.0f;
 
         vtxB.x = tlScaleX(0.8f); vtxB.y = tlScaleY(0.4f);
-        vtxB.r = 0.0f; vtxB.g = 255.0f; vtxB.b = 0.0f;
+        vtxB.r = 0.0f; vtxB.g = 255.0f; vtxB.b = 0.0f; vtxB.a = 255.0f;
 
         vtxC.x = tlScaleX(0.5f); vtxC.y = tlScaleY(0.8f);
-        vtxC.r = 0.0f; vtxC.g = 0.0f; vtxC.b = 255.0f;
+        vtxC.r = 0.0f; vtxC.g = 0.0f; vtxC.b = 255.0f; vtxC.a = 255.0f;
 
         grDrawTriangle(&vtxA, &vtxB, &vtxC);
 

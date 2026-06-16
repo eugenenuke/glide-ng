@@ -357,6 +357,9 @@ FX_ENTRY void FX_CALL grDepthBiasLevel(FxI32 level) {
 
 FX_ENTRY void FX_CALL grSstOrigin(GrOriginLocation_t origin) {
     GLIDE_LOG(INFO, "Frontend", "grSstOrigin (Glide 3.x) invoked: " << origin);
+    if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
+        b->SetSstOrigin(origin);
+    }
 }
 
 FX_ENTRY void FX_CALL grCullMode(GrCullMode_t mode) {

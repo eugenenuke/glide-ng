@@ -36,6 +36,7 @@ public:
     void SetAlphaTestState(uint32_t compareOp, uint32_t refVal) override;
     void SetCullState(uint32_t cullMode) override;
     void SetClipWindow(uint32_t minX, uint32_t minY, uint32_t maxX, uint32_t maxY) override;
+    void SetSstOrigin(uint32_t origin) override;
 
     // Phase 5: Virtual TMU & Combiner Configurations
     void BindTexture(uint32_t tmu, uint32_t startAddress, uint32_t clampS, uint32_t clampT, uint32_t minFilter, uint32_t magFilter) override;
@@ -68,9 +69,9 @@ protected:
     bool m_depthMask{true};
     int32_t m_depthBiasLevel{0};
 
-    uint32_t m_rgbSrcBlend{1};    // 1 = ONE (GR_BLEND_ONE)
+    uint32_t m_rgbSrcBlend{4};    // 4 = ONE (GR_BLEND_ONE)
     uint32_t m_rgbDstBlend{0};    // 0 = ZERO (GR_BLEND_ZERO)
-    uint32_t m_alphaSrcBlend{1};
+    uint32_t m_alphaSrcBlend{4};
     uint32_t m_alphaDstBlend{0};
 
     uint32_t m_alphaTestOp{7};    // 7 = ALWAYS (GR_CMP_ALWAYS)
@@ -82,6 +83,7 @@ protected:
     uint32_t m_clipMinY{0};
     uint32_t m_clipMaxX{800};
     uint32_t m_clipMaxY{600};
+    uint32_t m_sstOrigin{0};      // 0 = GR_ORIGIN_UPPER_LEFT
 
     std::vector<float> m_headlessDepthBuffer;
 

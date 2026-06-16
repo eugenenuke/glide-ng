@@ -35,6 +35,8 @@ private:
     void DestroyGLContext();
     void SyncDepthState();
     void ApplyBlendingGLES();
+    void ApplyScissorGLES();
+    void SyncCullStateGLES();
 
     // SDL2 & OpenGL ES Context Handles
     void* m_sdlWindow{nullptr};   // SDL_Window*

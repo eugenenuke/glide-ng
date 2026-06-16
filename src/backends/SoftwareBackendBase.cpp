@@ -19,6 +19,10 @@ void SoftwareBackendBase::ClearBuffer(uint32_t color, uint32_t alpha, float z, u
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     if (!m_windowAttached || !m_headlessPixelMap) return;
 
+    // Reset temporary software fallback texture bindings at start of frame
+    m_boundTexAddress[0] = 0;
+    m_boundTexAddress[1] = 0;
+
     if (clearMask & 0x1) { // Color Clear
         uint32_t a = (alpha > 0) ? alpha : 255;
         uint32_t r = (color >> 16) & 0xFF;
@@ -93,6 +97,12 @@ void SoftwareBackendBase::SetClipWindow(uint32_t minX, uint32_t minY, uint32_t m
     m_clipMaxX = std::min(m_headlessWidth, maxX);
     m_clipMaxY = std::min(m_headlessHeight, maxY);
     GLIDE_LOG(INFO, "Rasterizer", "SetClipWindow: (" << m_clipMinX << "," << m_clipMinY << ") to (" << m_clipMaxX << "," << m_clipMaxY << ")");
+}
+
+void SoftwareBackendBase::SetSstOrigin(uint32_t origin) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    m_sstOrigin = origin;
+    GLIDE_LOG(INFO, "Rasterizer", "SetSstOrigin: " << origin);
 }
 
 void SoftwareBackendBase::BindTexture(uint32_t tmu, uint32_t startAddress, uint32_t clampS, uint32_t clampT, uint32_t minFilter, uint32_t magFilter) {
@@ -397,7 +407,7 @@ void SoftwareBackendBase::RasterizeSoftwareTriangle(const ModernVertex& a, const
 
                 // Removed global format override swap for vertex colors
 
-                uint32_t aVal = static_cast<uint32_t>(std::min(255.0f, alpha * 255.0f));
+                uint32_t aVal = static_cast<uint32_t>(std::min(255.0f, alpha * 255.0f + 0.5f));
 
                 if (aVal < 128 && m_boundTexAddress[0] != 0) {
                     if (isTestPixel) {
@@ -462,7 +472,7 @@ void SoftwareBackendBase::RasterizeSoftwareTriangle(const ModernVertex& a, const
                 uint32_t gVal = static_cast<uint32_t>(std::min(255.0f, green * 255.0f + 0.5f));
                 uint32_t bVal = static_cast<uint32_t>(std::min(255.0f, blue * 255.0f + 0.5f));
 
-                if (m_rgbSrcBlend != 1 || m_rgbDstBlend != 0) {
+                if (m_rgbSrcBlend != 4 || m_rgbDstBlend != 0) {
                     uint32_t dstWord = pixels[pIdx];
                     float dstR = ((dstWord >> 16) & 0xFF) / 255.0f;
                     float dstG = ((dstWord >> 8) & 0xFF) / 255.0f;
@@ -491,6 +501,10 @@ void SoftwareBackendBase::RasterizeSoftwareTriangle(const ModernVertex& a, const
                     float dFG = getFactor(m_rgbDstBlend, green, dstG, alpha, dstA);
                     float dFB = getFactor(m_rgbDstBlend, blue, dstB, alpha, dstA);
 
+                    float sFA = getFactor(m_alphaSrcBlend, alpha, dstA, alpha, dstA);
+                    float dFA = getFactor(m_alphaDstBlend, alpha, dstA, alpha, dstA);
+                    float blendedAlpha = std::min(1.0f, alpha * sFA + dstA * dFA);
+
                     red   = std::min(1.0f, red   * sFR + dstR * dFR);
                     green = std::min(1.0f, green * sFG + dstG * dFG);
                     blue  = std::min(1.0f, blue  * sFB + dstB * dFB);
@@ -498,7 +512,7 @@ void SoftwareBackendBase::RasterizeSoftwareTriangle(const ModernVertex& a, const
                     rVal = static_cast<uint32_t>(red * 255.0f + 0.5f);
                     gVal = static_cast<uint32_t>(green * 255.0f + 0.5f);
                     bVal = static_cast<uint32_t>(blue * 255.0f + 0.5f);
-                    aVal = static_cast<uint32_t>(alpha * 255.0f + 0.5f);
+                    aVal = static_cast<uint32_t>(blendedAlpha * 255.0f + 0.5f);
                 }
 
                 if (isTestPixel) {

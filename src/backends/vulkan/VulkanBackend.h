@@ -30,6 +30,8 @@ public:
     bool SwapBuffers() override;
     void SetDepthState(uint32_t depthMode, uint32_t compareOp, bool depthMask, int32_t biasLevel) override;
     void SetBlendState(uint32_t rgbSrcFactor, uint32_t rgbDstFactor, uint32_t alphaSrcFactor, uint32_t alphaDstFactor) override;
+    void SetCullState(uint32_t cullMode) override;
+    void SetAlphaTestState(uint32_t compareOp, uint32_t refVal) override;
     bool ReadLFB(uint32_t srcX, uint32_t srcY, uint32_t srcWidth, uint32_t srcHeight, uint32_t dstStride, void* dstData) override;
     void PollEvents() override;
 
@@ -111,6 +113,9 @@ private:
     float m_clearDepthValue{1.0f};
     bool m_clearColorPending{false};
     bool m_clearDepthPending{false};
+    // Dynamic Scissor Helper
+    vk::Rect2D GetScissorRectVulkan();
+    void EnsureRenderPassActive();
 };
 
 

@@ -2,6 +2,8 @@
 #include "core/Logger.h"
 #include <cstring>
 #include <iostream>
+#include <cmath>
+#include <algorithm>
 
 namespace GlideWrapper {
 
@@ -119,6 +121,15 @@ ModernVertex VertexLayout::DecodeVertex(const void* gameVertex) const {
         float a = 255.0f;
         std::memcpy(&a, rawBytes + m_offsetA, sizeof(float));
         v.color[3] = a / 255.0f;
+    }
+
+    // Sanitize and clamp color channels to prevent NaN/Inf driver crashes and garbage pixels
+    for (int i = 0; i < 4; ++i) {
+        if (std::isnan(v.color[i]) || std::isinf(v.color[i])) {
+            v.color[i] = 1.0f;
+        } else {
+            v.color[i] = std::max(0.0f, std::min(1.0f, v.color[i]));
+        }
     }
 
     // Parse TMU0 Texture Coordinates (S, T)

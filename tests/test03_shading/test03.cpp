@@ -41,10 +41,10 @@ public:
 
         GrVertex vtxA, vtxB;
         vtxA.x = tlScaleX(0.0f); vtxA.y = tlScaleY(0.0f);
-        vtxA.r = 255.0f; vtxA.g = 0.0f; vtxA.b = 0.0f;
+        vtxA.r = 255.0f; vtxA.g = 0.0f; vtxA.b = 0.0f; vtxA.a = 255.0f;
 
         vtxB.x = tlScaleX(1.0f); vtxB.y = tlScaleY(1.0f);
-        vtxB.r = 0.0f; vtxB.g = 255.0f; vtxB.b = 0.0f;
+        vtxB.r = 0.0f; vtxB.g = 255.0f; vtxB.b = 0.0f; vtxB.a = 255.0f;
 
         grDrawLine(&vtxA, &vtxB);
 
