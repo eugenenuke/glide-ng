@@ -80,6 +80,21 @@ def count_text_pixels(pixels, width, height):
                 count += 1
     return count
 
+def count_geometry_pixels(pixels, width, height, threshold=8):
+    # Sample background color from bottom-right corner to be clear-color independent!
+    bg_idx = ((height - 5) * width + (width - 5)) * 3
+    bg_r, bg_g, bg_b = pixels[bg_idx], pixels[bg_idx+1], pixels[bg_idx+2]
+    
+    count = 0
+    # Scan the active geometry region (below y=48 console text boundary)
+    for y in range(48, height):
+        for x in range(0, width):
+            idx = (y * width + x) * 3
+            r, g, b = pixels[idx], pixels[idx+1], pixels[idx+2]
+            if max(abs(int(r)-int(bg_r)), abs(int(g)-int(bg_g)), abs(int(b)-int(bg_b))) > threshold:
+                count += 1
+    return count
+
 def compare_images(ref_path, test_path, threshold=8, pass_ratio=0.98, block_size=16, block_pass_ratio=0.85):
     if not os.path.exists(ref_path):
         return False, f"Reference image missing: {ref_path}"
@@ -121,6 +136,15 @@ def compare_images(ref_path, test_path, threshold=8, pass_ratio=0.98, block_size
     if ref_text_pixels > 150:
         if test_text_pixels < 50: # Text is completely missing!
             return False, f"FAILED: Console text is missing! (Ref has {ref_text_pixels} text pixels, Test has only {test_text_pixels})"
+
+    # Explicit Geometry Presence Check (closes the loophole for tiny primitives!)
+    ref_geom_pixels = count_geometry_pixels(ref_pixels, width, height, threshold)
+    test_geom_pixels = count_geometry_pixels(test_pixels, width, height, threshold)
+    
+    # If reference expects rendering in the geometry region, test must render it!
+    if ref_geom_pixels > 30:
+        if test_geom_pixels < 5: # Geometry is completely missing!
+            return False, f"FAILED: Rendered geometry is missing! (Ref has {ref_geom_pixels} geometry pixels, Test has only {test_geom_pixels})"
 
     # Block-based comparison for the rest of the screen
     blocks_x = width // block_size
