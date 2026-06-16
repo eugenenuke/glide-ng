@@ -207,10 +207,10 @@ void SoftwareBackendBase::DrawPoint(const ModernVertex& pt) {
 }
 
 uint32_t SoftwareBackendBase::EvaluateCombinerColor(const ModernVertex& v) {
-    uint32_t a = static_cast<uint32_t>(v.color[3] * 255.0f);
-    uint32_t r = static_cast<uint32_t>(v.color[0] * 255.0f);
-    uint32_t g = static_cast<uint32_t>(v.color[1] * 255.0f);
-    uint32_t b = static_cast<uint32_t>(v.color[2] * 255.0f);
+    uint32_t a = static_cast<uint32_t>(v.color[3] * 255.0f + 0.5f);
+    uint32_t r = static_cast<uint32_t>(v.color[0] * 255.0f + 0.5f);
+    uint32_t g = static_cast<uint32_t>(v.color[1] * 255.0f + 0.5f);
+    uint32_t b = static_cast<uint32_t>(v.color[2] * 255.0f + 0.5f);
 
     uint32_t colorLocal = m_colorCombinerFactor & 0xFFFF;
     if (colorLocal == 1 || m_colorCombinerFactor == 1) { // CONSTANT
@@ -317,8 +317,8 @@ void SoftwareBackendBase::RasterizeSoftwareTriangle(const ModernVertex& a, const
                 float a1 = b(p01, 24) * (1.0f - fx) + b(p11, 24) * fx;
                 float resA = a0 * (1.0f - fy) + a1 * fy;
 
-                return (static_cast<uint32_t>(resA) << 24) | (static_cast<uint32_t>(resR) << 16) |
-                       (static_cast<uint32_t>(resG) << 8)  | static_cast<uint32_t>(resB);
+                return (static_cast<uint32_t>(resA + 0.5f) << 24) | (static_cast<uint32_t>(resR + 0.5f) << 16) |
+                   (static_cast<uint32_t>(resG + 0.5f) << 8)  | static_cast<uint32_t>(resB + 0.5f);
             };
 
             return mix(c00, c10, c01, c11, fU, fV);
@@ -458,9 +458,9 @@ void SoftwareBackendBase::RasterizeSoftwareTriangle(const ModernVertex& a, const
                     m_headlessDepthBuffer[pIdx] = targetDepth;
                 }
 
-                uint32_t rVal = static_cast<uint32_t>(std::min(255.0f, red * 255.0f));
-                uint32_t gVal = static_cast<uint32_t>(std::min(255.0f, green * 255.0f));
-                uint32_t bVal = static_cast<uint32_t>(std::min(255.0f, blue * 255.0f));
+                uint32_t rVal = static_cast<uint32_t>(std::min(255.0f, red * 255.0f + 0.5f));
+                uint32_t gVal = static_cast<uint32_t>(std::min(255.0f, green * 255.0f + 0.5f));
+                uint32_t bVal = static_cast<uint32_t>(std::min(255.0f, blue * 255.0f + 0.5f));
 
                 if (m_rgbSrcBlend != 1 || m_rgbDstBlend != 0) {
                     uint32_t dstWord = pixels[pIdx];
@@ -495,10 +495,10 @@ void SoftwareBackendBase::RasterizeSoftwareTriangle(const ModernVertex& a, const
                     green = std::min(1.0f, green * sFG + dstG * dFG);
                     blue  = std::min(1.0f, blue  * sFB + dstB * dFB);
 
-                    rVal = static_cast<uint32_t>(red * 255.0f);
-                    gVal = static_cast<uint32_t>(green * 255.0f);
-                    bVal = static_cast<uint32_t>(blue * 255.0f);
-                    aVal = static_cast<uint32_t>(alpha * 255.0f);
+                    rVal = static_cast<uint32_t>(red * 255.0f + 0.5f);
+                    gVal = static_cast<uint32_t>(green * 255.0f + 0.5f);
+                    bVal = static_cast<uint32_t>(blue * 255.0f + 0.5f);
+                    aVal = static_cast<uint32_t>(alpha * 255.0f + 0.5f);
                 }
 
                 if (isTestPixel) {
@@ -549,9 +549,9 @@ bool SoftwareBackendBase::ReadLFB(uint32_t srcX, uint32_t srcY, uint32_t srcWidt
                 if (readX >= m_headlessWidth) break;
 
                 uint32_t pWord = pixels[readY * m_headlessWidth + readX];
-                uint16_t r = ((pWord >> 16) & 0xFF) * 31 / 255;
-                uint16_t g = ((pWord >> 8)  & 0xFF) * 63 / 255;
-                uint16_t b = (pWord         & 0xFF) * 31 / 255;
+                uint16_t r = (((pWord >> 16) & 0xFF) * 31 + 127) / 255;
+                uint16_t g = (((pWord >> 8)  & 0xFF) * 63 + 127) / 255;
+                uint16_t b = ((pWord         & 0xFF) * 31 + 127) / 255;
                 uint16_t c16 = (r << 11) | (g << 5) | b;
                 destRow16[x] = c16;
             }

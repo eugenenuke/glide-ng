@@ -13,8 +13,9 @@ We utilize a Test-Driven Development (TDD) approach, validating our wrapper dire
 | **`test00`** | Buffer Clear & Swap | **`PASS`** (99.69%) | **`PASS`** (99.69%) | **`PASS`** (99.69%) | GPU-driven Vulkan & GLES clears, offscreen FBO/swapchain, hybrid text overlay. |
 | **`test01`** | Draw Points | **`PASS`** (99.76%) | **`PASS`** (99.76%) | **`PASS`** (99.76%) | Point rendering via GPU-native DrawPoint (Vulkan & GLES), GPU clears. |
 | **`test02`** | Draw Lines | **`PASS`** (96.93%) | **`PASS`** (99.24%) | **`PASS`** (99.63%) | Line rendering via GPU-native DrawLine (Vulkan & GLES), state save/restore. |
-| **`test03`** | Gouraud Shaded Lines | **`PASS`** (99.65%) | **`PASS`** (99.75%) | **`PASS`** (99.75%) | Smooth linear color interpolation (Gouraud) via GPU-native DrawLine (Vulkan & GLES). |
-| **`test04`** | Shaded Triangles | **`PASS`** (97.57%) | **`PASS`** (97.91%) | **`PASS`** (97.91%) | Smooth Gouraud shaded triangle rendering baseline (Vulkan & GLES GPU native). |
+| **`test03`** | Gouraud Shaded Lines | **`PASS`** (99.66%) | **`PASS`** (99.75%) | **`PASS`** (99.75%) | Smooth linear color interpolation (Gouraud) via GPU-native DrawLine (Vulkan & GLES). |
+| **`test04`** | Shaded Triangles | **`PASS`** (98.97%) | **`PASS`** (97.91%) | **`PASS`** (97.91%) | Smooth Gouraud shaded triangle rendering baseline (Vulkan & GLES GPU native). |
+| **`test05`** | Z-Buffer | **`PASS`** (99.77%) | *Pending* | *Pending* | Two interpenetrating Gouraud triangles with Z-buffering (Software baseline). |
 
 ---
 
