@@ -192,6 +192,7 @@ bool OpenGLESBackend::SwapBuffers() {
         glDepthMask(GL_FALSE);
         glDisable(GL_BLEND);
         glDisable(GL_CULL_FACE); // Guarantee presentation quad is never culled by active game culling state!
+        glDisable(GL_SCISSOR_TEST); // Guarantee presentation quad is never clipped by active game scissor state!
         
         glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
         checkGLError("SwapBuffers glDrawArrays");
@@ -200,6 +201,15 @@ bool OpenGLESBackend::SwapBuffers() {
     }
 
     return true;
+}
+
+void OpenGLESBackend::SstIdle() {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    if (m_initialized && m_windowAttached) {
+        // Blocks the host CPU until all GLES commands and drawing dispatches 
+        // have been fully processed by the hardware GPU!
+        glFinish();
+    }
 }
 
 void OpenGLESBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z, uint32_t clearMask) {
