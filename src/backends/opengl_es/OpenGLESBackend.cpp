@@ -176,6 +176,7 @@ bool OpenGLESBackend::SwapBuffers() {
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, m_glTexture);
         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, m_headlessWidth, m_headlessHeight, GL_BGRA_EXT, GL_UNSIGNED_BYTE, m_headlessPixelMap);
+        checkGLError("SwapBuffers glTexSubImage2D");
 
         glUseProgram(m_glProgram);
         glBindVertexArray(m_glVAO);
@@ -185,6 +186,7 @@ bool OpenGLESBackend::SwapBuffers() {
         glDepthMask(GL_FALSE);
         
         glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+        checkGLError("SwapBuffers glDrawArrays");
 
         SDL_GL_SwapWindow(reinterpret_cast<SDL_Window*>(m_sdlWindow));
     }
@@ -213,6 +215,7 @@ void OpenGLESBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z, uint3
     glBindFramebuffer(GL_FRAMEBUFFER, m_headlessFBO);
 
     GLbitfield mask = 0;
+    GLboolean oldDepthMask = GL_TRUE;
 
     if (clearMask & 0x1) { // Color Clear
         float a = ((alpha > 0) ? alpha : 255) / 255.0f;
@@ -230,12 +233,18 @@ void OpenGLESBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z, uint3
     }
 
     if (clearMask & 0x2) { // Depth Clear
+        glGetBooleanv(GL_DEPTH_WRITEMASK, &oldDepthMask);
+        glDepthMask(GL_TRUE); // Force depth write enabled so glClear actually clears the depth buffer!
         glClearDepthf(z);
         mask |= GL_DEPTH_BUFFER_BIT;
     }
 
     if (mask != 0) {
         glClear(mask);
+    }
+
+    if (clearMask & 0x2) {
+        glDepthMask(oldDepthMask); // Restore original depth write mask
     }
 
     // Restore default framebuffer binding
@@ -268,6 +277,7 @@ bool OpenGLESBackend::ReadLFB(uint32_t srcX, uint32_t srcY, uint32_t srcWidth, u
     // Read pixels as GL_RGBA (which contains our R/B swapped BGRA-ordered pixels)
     // GLES glReadPixels is synchronous and guarantees the GPU finishes all rendering before returning!
     glReadPixels(0, 0, m_headlessWidth, m_headlessHeight, GL_RGBA, GL_UNSIGNED_BYTE, m_headlessPixelMap);
+    checkGLError("ReadLFB glReadPixels");
 
     // Convert RGBA from GPU glReadPixels to BGRA expected by host staging buffer
     if (m_headlessPixelMap) {
