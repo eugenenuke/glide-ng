@@ -33,6 +33,12 @@ TEST_PASS_RATIOS = {
     "test04": 0.95,  # Software triangle rasterizer vs Mesa GL native triangle rounding and boundary alignment variance
 }
 
+# Custom console text block skip bounds: (max_bx, max_by)
+# Defaults to (15, 2) which covers x < 240, y < 32
+TEST_TEXT_SKIP_BOUNDS = {
+    "test10": (40, 2),  # Widen to full screen width for the top 2 rows to cover all console text/headers
+}
+
 def ensure_dirs():
     os.makedirs(os.path.join(WORKSPACE, REF_DIR), exist_ok=True)
     os.makedirs(os.path.join(WORKSPACE, TEST_DIR), exist_ok=True)
@@ -96,7 +102,7 @@ def count_geometry_pixels(pixels, width, height, threshold=8):
                 count += 1
     return count
 
-def compare_images(ref_path, test_path, threshold=8, pass_ratio=None, block_size=16, block_pass_ratio=0.85):
+def compare_images(ref_path, test_path, test_name, threshold=8, pass_ratio=None, block_size=16, block_pass_ratio=0.85):
     if not os.path.exists(ref_path):
         return False, f"Reference image missing: {ref_path}"
     if not os.path.exists(test_path):
@@ -161,11 +167,12 @@ def compare_images(ref_path, test_path, threshold=8, pass_ratio=None, block_size
 
     mismatched_block_details = []
 
+    max_bx, max_by = TEST_TEXT_SKIP_BOUNDS.get(test_name, (15, 2))
     for by in range(blocks_y):
         for bx in range(blocks_x):
             # Skip the console text blocks because we already verified text presence above!
             # This avoids pixel-level font rendering and anti-aliasing noise.
-            if by < 2 and bx < 15:
+            if by < max_by and bx < max_bx:
                 continue
 
             block_total_pixels = block_size * block_size
@@ -290,7 +297,7 @@ def main():
         test_path_full = os.path.join(WORKSPACE, TEST_DIR, f)
         
         pass_ratio = TEST_PASS_RATIOS.get(test_name, None)
-        passed, msg = compare_images(ref_path_full, test_path_full, pass_ratio=pass_ratio)
+        passed, msg = compare_images(ref_path_full, test_path_full, test_name, pass_ratio=pass_ratio)
         if passed:
             print(f"{GREEN}[PASS] {f} matches! {msg}{RESET}")
         else:
