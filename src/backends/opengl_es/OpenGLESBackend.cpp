@@ -924,14 +924,14 @@ void OpenGLESBackend::SyncCullStateGLES() {
     } else {
         glEnable(GL_CULL_FACE);
         if (m_sstOrigin == 1) {
-            glFrontFace(GL_CW); // Winding is mathematically inverted under lower-left coordinates!
+            glFrontFace(GL_CW);  // Two Y-inversions (C++ flip + shader projection) cancel out; winding is native CW!
         } else {
-            glFrontFace(GL_CCW); // Keep OpenGL default CCW front face
+            glFrontFace(GL_CCW); // Single Y-inversion from GLES Y-up shader projection; winding is inverted to CCW!
         }
-        if (m_cullMode == 1) { // GR_CULL_NEGATIVE (cull CW / Back face)
-            glCullFace(GL_BACK);
-        } else if (m_cullMode == 2) { // GR_CULL_POSITIVE (cull CCW / Front face)
-            glCullFace(GL_FRONT);
+        if (m_cullMode == 1) { // GR_CULL_NEGATIVE (cull negative winding / CCW in Glide)
+            glCullFace(GL_BACK); // Culls CCW under GL_CW, or CW under GL_CCW. Maps perfectly!
+        } else if (m_cullMode == 2) { // GR_CULL_POSITIVE (cull positive winding / CW in Glide)
+            glCullFace(GL_FRONT); // Culls CW under GL_CW, or CCW under GL_CCW. Maps perfectly!
         }
     }
 }
