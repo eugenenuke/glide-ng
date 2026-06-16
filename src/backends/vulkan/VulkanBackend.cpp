@@ -76,11 +76,41 @@ void VulkanBackend::Shutdown() {
     if (!m_initialized) return;
 
     GLIDE_LOG(INFO, "Vulkan", "Shutting down Hybrid Vulkan context.");
+    
+    // 1. Force-detach window resources first (handles active frame command buffer, SDL, etc.)
     DetachWindow();
 
+    // 2. Explicitly destroy all device-owned pipelines, shaders, and caches
+    m_pointPipeline.reset();
+    m_linePipeline.reset();
+    m_trianglePipeline.reset();
+    m_danglingPipelines.clear(); // Clear recompiled mid-frame pipelines
+    m_pipelineLayout.reset();
+    m_vertShaderModule.reset();
+    m_fragShaderModule.reset();
+
+    // 3. Explicitly destroy all device-owned buffers and memories
+    m_vertexBuffer.reset();
+    m_vertexBufferMemory.reset();
+    m_headlessPixelBuffer.reset();
+    m_headlessPixelMemory.reset();
+
+    // 4. Explicitly destroy all device-owned image resources
+    m_headlessFramebuffer.reset();
+    m_headlessImageView.reset();
+    m_headlessImageMemory.reset();
+    m_headlessImage.reset();
+
+    m_depthImageView.reset();
+    m_depthImageMemory.reset();
+    m_depthImage.reset();
+
+    // 5. Reset command submission and render pass infrastructure
     m_commandBuffer.reset();
     m_commandPool.reset();
     m_renderPass.reset();
+
+    // 6. Now it is 100% safe to destroy the logical device and instance!
     m_device.reset();
     m_instance.reset();
 
