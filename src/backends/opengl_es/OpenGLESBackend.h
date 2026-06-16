@@ -32,6 +32,7 @@ public:
 private:
     bool CreateGLContext(void* nativeWindowHandle, uint32_t width, uint32_t height, bool windowed);
     void DestroyGLContext();
+    void SyncDepthState();
 
     // SDL2 & OpenGL ES Context Handles
     void* m_sdlWindow{nullptr};   // SDL_Window*

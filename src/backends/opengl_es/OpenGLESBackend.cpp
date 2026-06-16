@@ -448,8 +448,9 @@ void main() {
     // Convert Glide window-space coordinates to GLES NDC (Y-up)
     float ndcX = (inPos.x / (uViewportSize.x / 2.0)) - 1.0;
     float ndcY = (inPos.y / (uViewportSize.y / 2.0)) - 1.0;
+    float ndcZ = inPos.z * 2.0 - 1.0;
 
-    gl_Position = vec4(ndcX, ndcY, 0.0, 1.0);
+    gl_Position = vec4(ndcX, ndcY, ndcZ, 1.0);
     gl_PointSize = 1.0; // Canonical Glide point size (1px)
     fragColor = inColor;
 }
@@ -559,6 +560,7 @@ void OpenGLESBackend::DrawPoint(const ModernVertex& pt) {
     // 2. Bind offscreen FBO and set state
     glBindFramebuffer(GL_FRAMEBUFFER, m_headlessFBO);
     glViewport(0, 0, m_headlessWidth, m_headlessHeight);
+    SyncDepthState();
 
     // 3. Bind shader program and upload uniforms
     glUseProgram(m_geomProgram);
@@ -614,6 +616,7 @@ void OpenGLESBackend::DrawLine(const ModernVertex& v0, const ModernVertex& v1) {
     // 2. Bind offscreen FBO and set state
     glBindFramebuffer(GL_FRAMEBUFFER, m_headlessFBO);
     glViewport(0, 0, m_headlessWidth, m_headlessHeight);
+    SyncDepthState();
 
     // 3. Bind shader program and upload uniforms
     glUseProgram(m_geomProgram);
@@ -681,6 +684,7 @@ void OpenGLESBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
     // 2. Bind offscreen FBO and set state
     glBindFramebuffer(GL_FRAMEBUFFER, m_headlessFBO);
     glViewport(0, 0, m_headlessWidth, m_headlessHeight);
+    SyncDepthState();
 
     // 3. Bind shader program and upload uniforms
     glUseProgram(m_geomProgram);
@@ -720,6 +724,30 @@ void OpenGLESBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
     }
 
     checkGLError("DrawTriangle");
+}
+
+void OpenGLESBackend::SyncDepthState() {
+    if (m_depthMode != 0) { // GR_DEPTHBUFFER_DISABLE is 0
+        glEnable(GL_DEPTH_TEST);
+        
+        GLenum glDepthFuncVal = GL_LESS;
+        switch (m_depthCompareOp) {
+            case 0: glDepthFuncVal = GL_NEVER; break;
+            case 1: glDepthFuncVal = GL_LESS; break;
+            case 2: glDepthFuncVal = GL_EQUAL; break;
+            case 3: glDepthFuncVal = GL_LEQUAL; break;
+            case 4: glDepthFuncVal = GL_GREATER; break;
+            case 5: glDepthFuncVal = GL_NOTEQUAL; break;
+            case 6: glDepthFuncVal = GL_GEQUAL; break;
+            case 7: glDepthFuncVal = GL_ALWAYS; break;
+            default: break;
+        }
+        glDepthFunc(glDepthFuncVal);
+    } else {
+        glDisable(GL_DEPTH_TEST);
+    }
+
+    glDepthMask(m_depthMask ? GL_TRUE : GL_FALSE);
 }
 
 } // namespace GlideWrapper
