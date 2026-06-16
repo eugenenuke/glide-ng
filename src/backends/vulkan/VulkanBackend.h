@@ -32,6 +32,7 @@ public:
     void SetBlendState(uint32_t rgbSrcFactor, uint32_t rgbDstFactor, uint32_t alphaSrcFactor, uint32_t alphaDstFactor) override;
     void SetCullState(uint32_t cullMode) override;
     void SetAlphaTestState(uint32_t compareOp, uint32_t refVal) override;
+    void SetSstOrigin(uint32_t origin) override;
     bool ReadLFB(uint32_t srcX, uint32_t srcY, uint32_t srcWidth, uint32_t srcHeight, uint32_t dstStride, void* dstData) override;
     void PollEvents() override;
 

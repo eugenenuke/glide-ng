@@ -72,10 +72,16 @@ public:
         grConstantColorValue(0x000000ff); // Blue
         grDrawTriangle(&vtxA, &vtxB, &vtxC);
 
+        // Set origin to lower-left to flip the second triangle and match the original test10.c!
+        grSstOrigin(GR_ORIGIN_LOWER_LEFT);
+
         // 2. Draw Negative-winding Counter-Clockwise (CCW) triangle in RED
         // Winding: A -> C -> B (CCW)
         grConstantColorValue(0x00ff0000); // Red
         grDrawTriangle(&vtxA, &vtxC, &vtxB);
+
+        // Restore origin to upper-left
+        grSstOrigin(GR_ORIGIN_UPPER_LEFT);
 
         // Render console text overlay
         if (m_cullMode == GR_CULL_POSITIVE) {

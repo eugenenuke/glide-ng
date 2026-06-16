@@ -634,8 +634,12 @@ void OpenGLESBackend::DrawPoint(const ModernVertex& pt) {
     GLIDE_LOG(DEBUG, "GLES", "DrawPoint GPU draw. Pos: (" << pt.pos[0] << ", " << pt.pos[1] << ", " << pt.pos[2] << ")");
 
     // 1. Upload vertex to dynamic VBO ring buffer
+    ModernVertex pt_final = pt;
+    if (m_sstOrigin == 1) { // GR_ORIGIN_LOWER_LEFT: flip Y coordinate
+        pt_final.pos[1] = (float)m_headlessHeight - pt.pos[1];
+    }
     glBindBuffer(GL_ARRAY_BUFFER, m_geomVBO);
-    glBufferSubData(GL_ARRAY_BUFFER, m_geomVBOOffset, sizeof(ModernVertex), &pt);
+    glBufferSubData(GL_ARRAY_BUFFER, m_geomVBOOffset, sizeof(ModernVertex), &pt_final);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 
     // 2. Bind offscreen FBO and set state
@@ -698,9 +702,15 @@ void OpenGLESBackend::DrawLine(const ModernVertex& v0, const ModernVertex& v1) {
     GLIDE_LOG(DEBUG, "GLES", "DrawLine Colors. V0: (" << v0.color[0] << "," << v0.color[1] << "," << v0.color[2] << "," << v0.color[3] << "), V1: (" << v1.color[0] << "," << v1.color[1] << "," << v1.color[2] << "," << v1.color[3] << ")");
 
     // 1. Upload both vertices to dynamic VBO ring buffer
+    ModernVertex v0_final = v0;
+    ModernVertex v1_final = v1;
+    if (m_sstOrigin == 1) { // GR_ORIGIN_LOWER_LEFT: flip Y coordinates
+        v0_final.pos[1] = (float)m_headlessHeight - v0.pos[1];
+        v1_final.pos[1] = (float)m_headlessHeight - v1.pos[1];
+    }
     glBindBuffer(GL_ARRAY_BUFFER, m_geomVBO);
-    glBufferSubData(GL_ARRAY_BUFFER, m_geomVBOOffset, sizeof(ModernVertex), &v0);
-    glBufferSubData(GL_ARRAY_BUFFER, m_geomVBOOffset + sizeof(ModernVertex), sizeof(ModernVertex), &v1);
+    glBufferSubData(GL_ARRAY_BUFFER, m_geomVBOOffset, sizeof(ModernVertex), &v0_final);
+    glBufferSubData(GL_ARRAY_BUFFER, m_geomVBOOffset + sizeof(ModernVertex), sizeof(ModernVertex), &v1_final);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 
     // 2. Bind offscreen FBO and set state
@@ -775,6 +785,11 @@ void OpenGLESBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
 
     // 1. Upload all three vertices directly to VBO
     ModernVertex vertices[3] = { a, b, c };
+    if (m_sstOrigin == 1) { // GR_ORIGIN_LOWER_LEFT: flip Y coordinates
+        vertices[0].pos[1] = (float)m_headlessHeight - a.pos[1];
+        vertices[1].pos[1] = (float)m_headlessHeight - b.pos[1];
+        vertices[2].pos[1] = (float)m_headlessHeight - c.pos[1];
+    }
     glBindBuffer(GL_ARRAY_BUFFER, m_geomVBO);
     glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_DYNAMIC_DRAW);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
@@ -908,7 +923,11 @@ void OpenGLESBackend::SyncCullStateGLES() {
         glDisable(GL_CULL_FACE);
     } else {
         glEnable(GL_CULL_FACE);
-        glFrontFace(GL_CCW); // Keep OpenGL default CCW front face (barycentric winding is mathematically preserved!)
+        if (m_sstOrigin == 1) {
+            glFrontFace(GL_CW); // Winding is mathematically inverted under lower-left coordinates!
+        } else {
+            glFrontFace(GL_CCW); // Keep OpenGL default CCW front face
+        }
         if (m_cullMode == 1) { // GR_CULL_NEGATIVE (cull CW / Back face)
             glCullFace(GL_BACK);
         } else if (m_cullMode == 2) { // GR_CULL_POSITIVE (cull CCW / Front face)

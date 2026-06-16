@@ -358,6 +358,16 @@ void VulkanBackend::SetAlphaTestState(uint32_t compareOp, uint32_t refVal) {
     // Note: Emulated in fragment shader via push constants. No pipeline recompilation needed!
 }
 
+void VulkanBackend::SetSstOrigin(uint32_t origin) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    SoftwareBackendBase::SetSstOrigin(origin);
+
+    if (m_initialized && m_device) {
+        GLIDE_LOG(INFO, "Vulkan", "SetSstOrigin: Recompiling Vulkan pipelines with new origin config...");
+        CreateGraphicsPipelines();
+    }
+}
+
 bool VulkanBackend::SwapBuffers() {
 
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
@@ -886,8 +896,9 @@ bool VulkanBackend::CreateGraphicsPipelines() {
             default: break;
         }
 
+        vk::FrontFace frontFace = (m_sstOrigin == 1) ? vk::FrontFace::eCounterClockwise : vk::FrontFace::eClockwise;
         vk::PipelineRasterizationStateCreateInfo rasterizer({}, m_depthClampEnabled, false, vk::PolygonMode::eFill, vkCullMode,
-                                                           vk::FrontFace::eClockwise, false, 0.0f, 0.0f, 0.0f, 1.0f);
+                                                           frontFace, false, 0.0f, 0.0f, 0.0f, 1.0f);
 
         // Multisample Configuration (none)
         vk::PipelineMultisampleStateCreateInfo multisampling({}, vk::SampleCountFlagBits::e1, false, 1.0f, nullptr, false, false);
@@ -994,7 +1005,12 @@ void VulkanBackend::DrawPoint(const ModernVertex& pt) {
         return;
     }
     auto* dest = reinterpret_cast<ModernVertex*>(reinterpret_cast<uint8_t*>(m_vertexBufferMap) + m_vertexBufferOffset);
-    *dest = pt;
+    if (m_sstOrigin == 1) { // GR_ORIGIN_LOWER_LEFT: flip Y coordinate
+        *dest = pt;
+        dest->pos[1] = (float)m_headlessHeight - pt.pos[1];
+    } else {
+        *dest = pt;
+    }
 
     // 2. Ensure Render Pass is active (lazy initialization)
     EnsureRenderPassActive();
@@ -1059,8 +1075,13 @@ void VulkanBackend::DrawLine(const ModernVertex& v1, const ModernVertex& v2) {
     }
 
     auto* dest = reinterpret_cast<ModernVertex*>(reinterpret_cast<uint8_t*>(m_vertexBufferMap) + m_vertexBufferOffset);
-    dest[0] = v1;
-    dest[1] = v2;
+    if (m_sstOrigin == 1) { // GR_ORIGIN_LOWER_LEFT: flip Y coordinates
+        dest[0] = v1; dest[0].pos[1] = (float)m_headlessHeight - v1.pos[1];
+        dest[1] = v2; dest[1].pos[1] = (float)m_headlessHeight - v2.pos[1];
+    } else {
+        dest[0] = v1;
+        dest[1] = v2;
+    }
 
     // 2. Ensure Render Pass is active (lazy initialization)
     EnsureRenderPassActive();
@@ -1134,9 +1155,15 @@ void VulkanBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b, c
     }
 
     auto* dest = reinterpret_cast<ModernVertex*>(reinterpret_cast<uint8_t*>(m_vertexBufferMap) + m_vertexBufferOffset);
-    dest[0] = a;
-    dest[1] = b;
-    dest[2] = c;
+    if (m_sstOrigin == 1) { // GR_ORIGIN_LOWER_LEFT: flip Y coordinates
+        dest[0] = a; dest[0].pos[1] = (float)m_headlessHeight - a.pos[1];
+        dest[1] = b; dest[1].pos[1] = (float)m_headlessHeight - b.pos[1];
+        dest[2] = c; dest[2].pos[1] = (float)m_headlessHeight - c.pos[1];
+    } else {
+        dest[0] = a;
+        dest[1] = b;
+        dest[2] = c;
+    }
 
     // 2. Ensure Render Pass is active (lazy initialization)
     EnsureRenderPassActive();

@@ -146,13 +146,25 @@ void SoftwareBackendBase::DrawTriangle(const ModernVertex& a, const ModernVertex
         std::this_thread::sleep_for(std::chrono::microseconds(static_cast<int64_t>(m_config.drawCallDelayUs)));
     }
 
+    // 1. Evaluate backface culling using the original, pre-flipped coordinates!
     if (m_cullMode != 0) { // 1 = GR_CULL_NEGATIVE, 2 = GR_CULL_POSITIVE
         float area = (b.pos[0] - a.pos[0]) * (c.pos[1] - a.pos[1]) - (b.pos[1] - a.pos[1]) * (c.pos[0] - a.pos[0]);
         if (m_cullMode == 1 && area < 0.0f) return; // Cull negative area
         if (m_cullMode == 2 && area > 0.0f) return; // Cull positive area
     }
 
-    RasterizeSoftwareTriangle(a, b, c);
+    // 2. Now apply Y-coordinate flipping for rasterization
+    ModernVertex a_final = a;
+    ModernVertex b_final = b;
+    ModernVertex c_final = c;
+
+    if (m_sstOrigin == 1) { // GR_ORIGIN_LOWER_LEFT: flip Y coordinates
+        a_final.pos[1] = (float)m_headlessHeight - a.pos[1];
+        b_final.pos[1] = (float)m_headlessHeight - b.pos[1];
+        c_final.pos[1] = (float)m_headlessHeight - c.pos[1];
+    }
+
+    RasterizeSoftwareTriangle(a_final, b_final, c_final);
 }
 
 void SoftwareBackendBase::DrawLine(const ModernVertex& v1, const ModernVertex& v2) {
@@ -163,9 +175,17 @@ void SoftwareBackendBase::DrawLine(const ModernVertex& v1, const ModernVertex& v
         std::this_thread::sleep_for(std::chrono::microseconds(static_cast<int64_t>(m_config.drawCallDelayUs)));
     }
 
+    ModernVertex v1_final = v1;
+    ModernVertex v2_final = v2;
+
+    if (m_sstOrigin == 1) { // GR_ORIGIN_LOWER_LEFT: flip Y coordinates
+        v1_final.pos[1] = (float)m_headlessHeight - v1.pos[1];
+        v2_final.pos[1] = (float)m_headlessHeight - v2.pos[1];
+    }
+
     auto* pixels = reinterpret_cast<uint32_t*>(m_headlessPixelMap);
-    int x0 = static_cast<int>(v1.pos[0]); int y0 = static_cast<int>(v1.pos[1]);
-    int x1 = static_cast<int>(v2.pos[0]); int y1 = static_cast<int>(v2.pos[1]);
+    int x0 = static_cast<int>(v1_final.pos[0]); int y0 = static_cast<int>(v1_final.pos[1]);
+    int x1 = static_cast<int>(v2_final.pos[0]); int y1 = static_cast<int>(v2_final.pos[1]);
 
     int dx = std::abs(x1 - x0); int sx = x0 < x1 ? 1 : -1;
     int dy = -std::abs(y1 - y0); int sy = y0 < y1 ? 1 : -1;
@@ -178,7 +198,7 @@ void SoftwareBackendBase::DrawLine(const ModernVertex& v1, const ModernVertex& v
         float t = totalSteps > 0 ? static_cast<float>(step) / totalSteps : 0.0f;
         ModernVertex vInterpolated;
         for (int i = 0; i < 4; ++i) {
-            vInterpolated.color[i] = v1.color[i] * (1.0f - t) + v2.color[i] * t;
+            vInterpolated.color[i] = v1_final.color[i] * (1.0f - t) + v2_final.color[i] * t;
         }
 
         uint32_t color = EvaluateCombinerColor(vInterpolated);
@@ -205,9 +225,14 @@ void SoftwareBackendBase::DrawPoint(const ModernVertex& pt) {
         std::this_thread::sleep_for(std::chrono::microseconds(static_cast<int64_t>(m_config.drawCallDelayUs)));
     }
 
+    ModernVertex pt_final = pt;
+    if (m_sstOrigin == 1) { // GR_ORIGIN_LOWER_LEFT: flip Y coordinate
+        pt_final.pos[1] = (float)m_headlessHeight - pt.pos[1];
+    }
+
     auto* pixels = reinterpret_cast<uint32_t*>(m_headlessPixelMap);
-    int x = static_cast<int>(pt.pos[0]); int y = static_cast<int>(pt.pos[1]);
-    uint32_t color = EvaluateCombinerColor(pt);
+    int x = static_cast<int>(pt_final.pos[0]); int y = static_cast<int>(pt_final.pos[1]);
+    uint32_t color = EvaluateCombinerColor(pt_final);
 
     // Clip against scissor window
     if (x >= static_cast<int>(m_clipMinX) && x < static_cast<int>(m_clipMaxX) &&
