@@ -214,6 +214,7 @@ FX_ENTRY void FX_CALL grDrawLine(const GrVertex* a, const GrVertex* b) {
 
 FX_ENTRY void FX_CALL grDrawPoint(const GrVertex* pt) {
     EnsureEngineInitialized();
+    GLIDE_LOG(INFO, "Frontend", "grDrawPoint invoked!");
     auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
     if (!backend || !pt) return;
     auto& layout = GlideWrapper::VertexLayout::GetInstance();

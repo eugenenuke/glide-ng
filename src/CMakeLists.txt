@@ -19,7 +19,9 @@ target_include_directories(GlideWrapperCore PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}"
     "${CMAKE_CURRENT_SOURCE_DIR}/core"
     "${CMAKE_CURRENT_SOURCE_DIR}/backends"
+    "${CMAKE_BINARY_DIR}/generated_shaders"
 )
+add_dependencies(GlideWrapperCore CompileShaders)
 find_package(SDL2 REQUIRED)
 target_link_libraries(GlideWrapperCore PUBLIC Vulkan::Vulkan SDL2::SDL2 GLESv2)
 

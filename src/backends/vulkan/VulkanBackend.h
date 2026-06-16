@@ -28,7 +28,12 @@ public:
     // GPU-Driven Clearing & Swapchain Presentation
     void ClearBuffer(uint32_t color, uint32_t alpha, float z, uint32_t clearMask) override;
     bool SwapBuffers() override;
+    bool ReadLFB(uint32_t srcX, uint32_t srcY, uint32_t srcWidth, uint32_t srcHeight, uint32_t dstStride, void* dstData) override;
     void PollEvents() override;
+
+    // Phase 2: Host-GPU Vertex Buffers & State Pipelines
+    void DrawPoint(const ModernVertex& pt) override;
+    void DrawLine(const ModernVertex& v1, const ModernVertex& v2) override;
 
 private:
     bool CreateInstance();
@@ -45,6 +50,7 @@ private:
     vk::UniqueDevice m_device;
     vk::Queue m_graphicsQueue;
     uint32_t m_graphicsQueueFamilyIndex{0};
+    bool m_depthClampEnabled{false};
 
     // Command submission infrastructure
     vk::UniqueCommandPool m_commandPool;
@@ -68,6 +74,27 @@ private:
     void* m_sdlWindow{nullptr};   // SDL_Window*
     void* m_sdlRenderer{nullptr}; // SDL_Renderer*
     void* m_sdlTexture{nullptr};  // SDL_Texture*
+
+    // --- Phase 2: Dynamic Vertex Buffers & State Pipelines ---
+    bool CreateShaderModules();
+    bool CreateGraphicsPipelines();
+
+    vk::UniqueShaderModule m_vertShaderModule;
+    vk::UniqueShaderModule m_fragShaderModule;
+    vk::UniquePipelineLayout m_pipelineLayout;
+    vk::UniquePipeline m_pointPipeline;
+    vk::UniquePipeline m_linePipeline;
+
+    // Dynamic Ring Vertex Buffer
+    vk::UniqueBuffer m_vertexBuffer;
+    vk::UniqueDeviceMemory m_vertexBufferMemory;
+    void* m_vertexBufferMap{nullptr};
+    uint32_t m_vertexBufferOffset{0};
+    const uint32_t m_vertexBufferSize{1024 * 1024}; // 1MB
+    
+    // Unified Frame Render Pass State
+    bool m_inRenderPass{false};
 };
+
 
 } // namespace GlideWrapper

@@ -8,22 +8,32 @@
 #include <algorithm>
 #include <SDL2/SDL.h>
 
+// Include build-time generated shader SPIR-V bytecode headers!
+#include "color_vert.spv.h"
+#include "color_frag.spv.h"
+
 extern "C" {
     extern volatile int g_glideWrapperSdlKeyHit;
 }
 
 namespace GlideWrapper {
 
+// Push Constants definition shared across pipeline layout and draw pipelines
+struct PushConstants {
+    float viewportWidth;
+    float viewportHeight;
+    float padding[2];          // Explicitly align constantColor to 16-byte boundary (std140)
+    float constantColor[4];    // RGBA normalized floats
+    uint32_t useConstantColor;  // 1 = true, 0 = false
+    float padding2[3];         // Pad entire struct to 16-byte multiple (48 bytes total)
+};
+
 // Authoritative Vulkan validation layer declarations
 const std::vector<const char*> validationLayers = {
     "VK_LAYER_KHRONOS_validation"
 };
 
-#ifdef NDEBUG
 const bool enableValidationLayers = false;
-#else
-const bool enableValidationLayers = true;
-#endif
 
 bool VulkanBackend::Initialize(const WrapperConfig& config) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
@@ -70,6 +80,36 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width, uint3
     m_headlessMode = true; // Headless-driven for visual regression
 
     if (!CreateHeadlessRenderTarget(width, height)) return false;
+
+    // Phase 2: Compile Shaders & Graphics Pipelines
+    if (!CreateShaderModules()) {
+        GLIDE_LOG(CRITICAL, "Vulkan", "Failed to compile Vulkan shader modules!");
+        return false;
+    }
+    if (!CreateGraphicsPipelines()) {
+        GLIDE_LOG(CRITICAL, "Vulkan", "Failed to compile Vulkan graphics pipelines!");
+        return false;
+    }
+
+    // Phase 2: Allocate dynamic ring Vertex Buffer (1MB)
+    try {
+        vk::BufferCreateInfo bufferInfo({}, m_vertexBufferSize, vk::BufferUsageFlagBits::eVertexBuffer);
+        m_vertexBuffer = m_device->createBufferUnique(bufferInfo);
+        
+        auto memReqs = m_device->getBufferMemoryRequirements(m_vertexBuffer.get());
+        uint32_t typeIndex = FindMemoryType(memReqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+        vk::MemoryAllocateInfo allocInfo(memReqs.size, typeIndex);
+        
+        m_vertexBufferMemory = m_device->allocateMemoryUnique(allocInfo);
+        m_device->bindBufferMemory(m_vertexBuffer.get(), m_vertexBufferMemory.get(), 0);
+        
+        m_vertexBufferMap = m_device->mapMemory(m_vertexBufferMemory.get(), 0, m_vertexBufferSize);
+        m_vertexBufferOffset = 0;
+        GLIDE_LOG(INFO, "Vulkan", "Allocated 1MB host-visible dynamic ring vertex buffer.");
+    } catch (const std::exception& e) {
+        GLIDE_LOG(CRITICAL, "Vulkan", "Failed to allocate Vulkan vertex buffer: " << e.what());
+        return false;
+    }
 
     // Query GPU details
     auto props = m_physicalDevice.getProperties();
@@ -133,6 +173,19 @@ void VulkanBackend::DetachWindow() {
     if (!m_config.forceNoWindow) SDL_QuitSubSystem(SDL_INIT_VIDEO);
 
     if (m_headlessMode) {
+        // Phase 2: Unmap and reset vertex buffer and pipeline resources
+        if (m_vertexBufferMap) {
+            m_device->unmapMemory(m_vertexBufferMemory.get());
+            m_vertexBufferMap = nullptr;
+        }
+        m_vertexBufferMemory.reset();
+        m_vertexBuffer.reset();
+        m_pointPipeline.reset();
+        m_linePipeline.reset();
+        m_pipelineLayout.reset();
+        m_vertShaderModule.reset();
+        m_fragShaderModule.reset();
+
         if (m_headlessPixelMap) {
             m_device->unmapMemory(m_headlessPixelMemory.get());
             m_headlessPixelMap = nullptr;
@@ -150,13 +203,31 @@ void VulkanBackend::DetachWindow() {
 }
 
 void VulkanBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z, uint32_t clearMask) {
+
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     if (!m_initialized || !m_windowAttached) return;
 
+    // Terminate active render pass if any (clear happens via transfer commands)
+    if (m_inRenderPass) {
+        m_commandBuffer->endRenderPass();
+        m_inRenderPass = false;
+    }
+
     GLIDE_LOG(DEBUG, "Vulkan", "ClearBuffer: color=" << std::hex << color << ", clearMask=" << clearMask);
+
 
     // 1. Call SoftwareBackendBase::ClearBuffer to clear the CPU-side framebuffer!
     SoftwareBackendBase::ClearBuffer(color, alpha, z, clearMask);
+
+    // 1.5. Force CPU framebuffer alpha to 0 (fully transparent) so background is not cached by SwapBuffers!
+    if (clearMask & 1) {
+        auto* pixels = reinterpret_cast<uint32_t*>(m_headlessPixelMap);
+        if (pixels) {
+            for (uint32_t i = 0; i < m_headlessWidth * m_headlessHeight; ++i) {
+                pixels[i] &= 0x00FFFFFF;
+            }
+        }
+    }
 
     // 2. Clear the GPU image using Vulkan!
     if (clearMask & 1) { // Clear color
@@ -180,12 +251,13 @@ void VulkanBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z, uint32_
         // Clear the image on the GPU!
         m_commandBuffer->clearColorImage(m_headlessImage.get(), vk::ImageLayout::eTransferDstOptimal, &clearColor, 1, &range);
 
-        // Transition layout to TransferSrc so we can copy it in SwapBuffers
-        TransitionImageLayout(m_commandBuffer.get(), m_headlessImage.get(), vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eTransferSrcOptimal, range);
+        // Transition layout to ColorAttachmentOptimal so it is ready for our render pass!
+        TransitionImageLayout(m_commandBuffer.get(), m_headlessImage.get(), vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eColorAttachmentOptimal, range);
     }
 }
 
 bool VulkanBackend::SwapBuffers() {
+
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     if (!m_initialized || !m_windowAttached) return false;
 
@@ -198,6 +270,12 @@ bool VulkanBackend::SwapBuffers() {
     }
 
     if (m_headlessMode) {
+        // Terminate active render pass before copying GPU image to host buffer
+        if (m_inRenderPass) {
+            m_commandBuffer->endRenderPass();
+            m_inRenderPass = false;
+        }
+
         // --- STEP 1: Cache CPU-rendered text/geometry pixels ---
         // Any pixel in m_headlessPixelMap that has alpha > 0 (drawn by CPU rasterizer) is cached.
         // The background pixels cleared by SoftwareBackendBase::ClearBuffer have alpha = 0.
@@ -216,6 +294,10 @@ bool VulkanBackend::SwapBuffers() {
         }
 
         // --- STEP 2: Execute GPU presentation copy ---
+        // Manually transition layout from ColorAttachmentOptimal to TransferSrcOptimal before copy!
+        vk::ImageSubresourceRange range(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1);
+        TransitionImageLayout(m_commandBuffer.get(), m_headlessImage.get(), vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eTransferSrcOptimal, range);
+
         // Record copy from GPU image (which has the GPU-cleared blue background) to host staging buffer.
         // This will overwrite m_headlessPixelMap with the GPU-cleared pixels.
         vk::BufferImageCopy region;
@@ -229,6 +311,10 @@ bool VulkanBackend::SwapBuffers() {
         vk::SubmitInfo submitInfo(0, nullptr, nullptr, 1, &m_commandBuffer.get());
         m_graphicsQueue.submit(submitInfo, {});
         m_device->waitIdle(); // Wait for GPU copy to complete
+
+        // Explicitly invalidate mapped memory range to force CPU cache refresh of GPU copy!
+        vk::MappedMemoryRange memRange(m_headlessPixelMemory.get(), 0, VK_WHOLE_SIZE);
+        m_device->invalidateMappedMemoryRanges(memRange);
 
         // --- STEP 3: Overlay CPU-rendered text/geometry back ---
         // Overwrite the staging memory (m_headlessPixelMap) with our cached CPU text pixels!
@@ -254,6 +340,74 @@ bool VulkanBackend::SwapBuffers() {
     }
 
     return true;
+}
+
+bool VulkanBackend::ReadLFB(uint32_t srcX, uint32_t srcY, uint32_t srcWidth, uint32_t srcHeight, uint32_t dstStride, void* dstData) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    if (!m_initialized || !m_windowAttached) return false;
+
+
+
+    // --- STEP 1: Cache CPU-rendered text/geometry pixels ---
+    std::vector<uint32_t> cpuRenderingCache(m_headlessWidth * m_headlessHeight, 0);
+    const auto* cpuPixels = reinterpret_cast<const uint32_t*>(m_headlessPixelMap);
+    bool hasCpuRendering = false;
+
+    if (cpuPixels) {
+        for (size_t i = 0; i < cpuRenderingCache.size(); ++i) {
+            // If the pixel is not transparent background (alpha != 0)
+            if ((cpuPixels[i] >> 24) != 0) {
+                cpuRenderingCache[i] = cpuPixels[i];
+                hasCpuRendering = true;
+            }
+        }
+    }
+
+    // 1. Terminate active render pass if any
+    if (m_inRenderPass) {
+        m_commandBuffer->endRenderPass();
+        m_inRenderPass = false;
+    }
+
+    // 2. Transition layout from ColorAttachmentOptimal to TransferSrcOptimal
+    vk::ImageSubresourceRange range(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1);
+    TransitionImageLayout(m_commandBuffer.get(), m_headlessImage.get(), vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eTransferSrcOptimal, range);
+
+    // 3. Record copy from GPU image to staging buffer
+    vk::BufferImageCopy region;
+    region.imageSubresource = vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
+    region.imageExtent = vk::Extent3D(m_headlessWidth, m_headlessHeight, 1);
+    m_commandBuffer->copyImageToBuffer(m_headlessImage.get(), vk::ImageLayout::eTransferSrcOptimal, m_headlessPixelBuffer.get(), 1, &region);
+
+    // 4. End and submit the command buffer immediately
+    m_commandBuffer->end();
+    vk::SubmitInfo submitInfo(0, nullptr, nullptr, 1, &m_commandBuffer.get());
+    m_graphicsQueue.submit(submitInfo, {});
+    m_device->waitIdle(); // Block CPU until GPU finishes!
+
+    // 5. Invalidate host cache
+    vk::MappedMemoryRange memRange(m_headlessPixelMemory.get(), 0, VK_WHOLE_SIZE);
+    m_device->invalidateMappedMemoryRanges(memRange);
+
+    // --- STEP 3: Overlay CPU-rendered text/geometry back ---
+    if (hasCpuRendering && m_headlessPixelMap) {
+        auto* dest = reinterpret_cast<uint32_t*>(m_headlessPixelMap);
+        for (size_t i = 0; i < cpuRenderingCache.size(); ++i) {
+            if (cpuRenderingCache[i] != 0) {
+                dest[i] = cpuRenderingCache[i];
+            }
+        }
+    }
+
+    // 6. Reset and begin a new command buffer for subsequent commands in the frame!
+    m_commandBuffer->reset({});
+    m_commandBuffer->begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
+
+    // 7. Transition image layout back to ColorAttachmentOptimal so it is ready for any subsequent draw calls!
+    TransitionImageLayout(m_commandBuffer.get(), m_headlessImage.get(), vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::eColorAttachmentOptimal, range);
+
+    // 8. Now call the base class ReadLFB to copy the synchronized pixels to the client buffer!
+    return SoftwareBackendBase::ReadLFB(srcX, srcY, srcWidth, srcHeight, dstStride, dstData);
 }
 
 void VulkanBackend::PollEvents() {
@@ -322,7 +476,21 @@ bool VulkanBackend::CreateLogicalDevice() {
 
     float priority = 1.0f;
     vk::DeviceQueueCreateInfo queueInfo({}, m_graphicsQueueFamilyIndex, 1, &priority);
+
+    // Query and enable dynamic depth clamping to prevent out-of-bounds Z clipping
+    vk::PhysicalDeviceFeatures deviceFeatures;
+    auto supportedFeatures = m_physicalDevice.getFeatures();
+    if (supportedFeatures.depthClamp) {
+        deviceFeatures.depthClamp = true;
+        m_depthClampEnabled = true;
+        GLIDE_LOG(INFO, "Vulkan", "Vulkan Depth Clamping physical device feature enabled.");
+    } else {
+        m_depthClampEnabled = false;
+        GLIDE_LOG(WARN, "Vulkan", "Vulkan Depth Clamping NOT supported on host device!");
+    }
+
     vk::DeviceCreateInfo deviceInfo({}, 1, &queueInfo);
+    deviceInfo.setPEnabledFeatures(&deviceFeatures);
 
     if (enableValidationLayers) {
         deviceInfo.setEnabledLayerCount(static_cast<uint32_t>(validationLayers.size()));
@@ -345,14 +513,38 @@ bool VulkanBackend::CreateLogicalDevice() {
 }
 
 bool VulkanBackend::CreateRenderPass() {
+    // Phase 2 Optimization: LoadOp is set to eLoad to preserve the background cleared by clearColorImage,
+    // and layout is set to eTransferSrcOptimal to match our clearing/copying swapchain layouts!
     vk::AttachmentDescription colorAttachment({}, m_colorFormat, vk::SampleCountFlagBits::e1,
-                                            vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore,
+                                            vk::AttachmentLoadOp::eLoad, vk::AttachmentStoreOp::eStore,
                                             vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare,
-                                            vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferSrcOptimal);
+                                            vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eColorAttachmentOptimal);
 
     vk::AttachmentReference colorRef(0, vk::ImageLayout::eColorAttachmentOptimal);
     vk::SubpassDescription subpass({}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &colorRef);
-    vk::RenderPassCreateInfo passInfo({}, 1, &colorAttachment, 1, &subpass);
+
+    // Setup subpass dependencies to enforce strict GPU synchronization between clear, draw, and copy stages
+    std::array<vk::SubpassDependency, 2> dependencies;
+
+    // Dependency 1: Sync Clear/Transfer writes to Color Attachment input
+    dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
+    dependencies[0].dstSubpass = 0;
+    dependencies[0].srcStageMask = vk::PipelineStageFlagBits::eTransfer | vk::PipelineStageFlagBits::eColorAttachmentOutput;
+    dependencies[0].dstStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput;
+    dependencies[0].srcAccessMask = vk::AccessFlagBits::eTransferWrite | vk::AccessFlagBits::eColorAttachmentWrite;
+    dependencies[0].dstAccessMask = vk::AccessFlagBits::eColorAttachmentWrite | vk::AccessFlagBits::eColorAttachmentRead;
+    dependencies[0].dependencyFlags = vk::DependencyFlagBits::eByRegion;
+
+    // Dependency 2: Sync Color Attachment writes to Transfer/Copy reads (in SwapBuffers)
+    dependencies[1].srcSubpass = 0;
+    dependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
+    dependencies[1].srcStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput;
+    dependencies[1].dstStageMask = vk::PipelineStageFlagBits::eTransfer;
+    dependencies[1].srcAccessMask = vk::AccessFlagBits::eColorAttachmentWrite;
+    dependencies[1].dstAccessMask = vk::AccessFlagBits::eTransferRead;
+    dependencies[1].dependencyFlags = vk::DependencyFlagBits::eByRegion;
+
+    vk::RenderPassCreateInfo passInfo({}, 1, &colorAttachment, 1, &subpass, static_cast<uint32_t>(dependencies.size()), dependencies.data());
     m_renderPass = m_device->createRenderPassUnique(passInfo);
     return true;
 }
@@ -360,13 +552,14 @@ bool VulkanBackend::CreateRenderPass() {
 bool VulkanBackend::CreateHeadlessRenderTarget(uint32_t width, uint32_t height) {
     vk::ImageCreateInfo imageInfo({}, vk::ImageType::e2D, m_colorFormat,
                                  vk::Extent3D(width, height, 1), 1, 1,
-                                 vk::SampleCountFlagBits::e1, vk::ImageTiling::eLinear,
+                                 vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal,
                                  vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eTransferSrc);
 
     m_headlessImage = m_device->createImageUnique(imageInfo);
 
     auto memReqs = m_device->getImageMemoryRequirements(m_headlessImage.get());
-    uint32_t typeIndex = FindMemoryType(memReqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+    // Use device local memory for optimal GPU rendering performance and compatibility
+    uint32_t typeIndex = FindMemoryType(memReqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal);
     vk::MemoryAllocateInfo allocInfo(memReqs.size, typeIndex);
 
     m_headlessImageMemory = m_device->allocateMemoryUnique(allocInfo);
@@ -442,6 +635,243 @@ void VulkanBackend::TransitionImageLayout(vk::CommandBuffer cmd, vk::Image image
     }
 
     cmd.pipelineBarrier(sourceStage, destinationStage, {}, 0, nullptr, 0, nullptr, 1, &barrier);
+}
+
+// --- Phase 2: Dynamic Shader Modules & Pipeline State Creation ---
+bool VulkanBackend::CreateShaderModules() {
+    try {
+        vk::ShaderModuleCreateInfo vertInfo({}, color_vert_spv_size, color_vert_spv);
+        m_vertShaderModule = m_device->createShaderModuleUnique(vertInfo);
+
+        vk::ShaderModuleCreateInfo fragInfo({}, color_frag_spv_size, color_frag_spv);
+        m_fragShaderModule = m_device->createShaderModuleUnique(fragInfo);
+
+        GLIDE_LOG(INFO, "Vulkan", "Loaded build-time compiled SPIR-V vertex and fragment shader modules.");
+        return true;
+    } catch (const std::exception& e) {
+        GLIDE_LOG(CRITICAL, "Vulkan", "Failed to create Vulkan Shader Modules: " << e.what());
+        return false;
+    }
+}
+
+bool VulkanBackend::CreateGraphicsPipelines() {
+    try {
+        // Shader Stages
+        vk::PipelineShaderStageCreateInfo shaderStages[] = {
+            vk::PipelineShaderStageCreateInfo({}, vk::ShaderStageFlagBits::eVertex, m_vertShaderModule.get(), "main"),
+            vk::PipelineShaderStageCreateInfo({}, vk::ShaderStageFlagBits::eFragment, m_fragShaderModule.get(), "main")
+        };
+
+        // Vertex Input Bindings (matches ModernVertex exactly)
+        vk::VertexInputBindingDescription bindingDesc(0, sizeof(ModernVertex), vk::VertexInputRate::eVertex);
+        std::array<vk::VertexInputAttributeDescription, 3> attrDescs = {
+            vk::VertexInputAttributeDescription(0, 0, vk::Format::eR32G32B32A32Sfloat, offsetof(ModernVertex, pos)),
+            vk::VertexInputAttributeDescription(1, 0, vk::Format::eR32G32B32A32Sfloat, offsetof(ModernVertex, color)),
+            vk::VertexInputAttributeDescription(2, 0, vk::Format::eR32G32B32A32Sfloat, offsetof(ModernVertex, tex))
+        };
+
+        vk::PipelineVertexInputStateCreateInfo vertexInputInfo({}, 1, &bindingDesc, static_cast<uint32_t>(attrDescs.size()), attrDescs.data());
+
+        // Input Assembly Topology (Primitive = PointList for test01!)
+        vk::PipelineInputAssemblyStateCreateInfo inputAssembly({}, vk::PrimitiveTopology::ePointList, false);
+
+        // Dynamic Viewport and Scissor States (prevents pipeline rebuilds on resolution change)
+        std::vector<vk::DynamicState> dynamicStates = {
+            vk::DynamicState::eViewport,
+            vk::DynamicState::eScissor
+        };
+        vk::PipelineDynamicStateCreateInfo dynamicState({}, static_cast<uint32_t>(dynamicStates.size()), dynamicStates.data());
+        vk::PipelineViewportStateCreateInfo viewportState({}, 1, nullptr, 1, nullptr);
+
+        // Rasterization Configuration (Dynamic Depth Clamping prevents out-of-bounds Z clipping!)
+        vk::PipelineRasterizationStateCreateInfo rasterizer({}, m_depthClampEnabled, false, vk::PolygonMode::eFill, vk::CullModeFlagBits::eNone,
+                                                           vk::FrontFace::eClockwise, false, 0.0f, 0.0f, 0.0f, 1.0f);
+
+        // Multisample Configuration (none)
+        vk::PipelineMultisampleStateCreateInfo multisampling({}, vk::SampleCountFlagBits::e1, false, 1.0f, nullptr, false, false);
+
+        // Color Blending (disabled for simple flat points)
+        vk::PipelineColorBlendAttachmentState colorBlendAttachment;
+        colorBlendAttachment.colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG | vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA;
+        colorBlendAttachment.blendEnable = false;
+
+        vk::PipelineColorBlendStateCreateInfo colorBlending({}, false, vk::LogicOp::eCopy, 1, &colorBlendAttachment, {0.0f, 0.0f, 0.0f, 0.0f});
+
+        // Push Constants Range (passes viewport and constant color configuration to both shader stages)
+        vk::PushConstantRange pushRange(vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(PushConstants));
+        vk::PipelineLayoutCreateInfo pipelineLayoutInfo({}, 0, nullptr, 1, &pushRange);
+        m_pipelineLayout = m_device->createPipelineLayoutUnique(pipelineLayoutInfo);
+
+        // Assemble Graphics Pipeline
+        vk::GraphicsPipelineCreateInfo pipelineInfo({}, 2, shaderStages, &vertexInputInfo, &inputAssembly, nullptr, &viewportState,
+                                                   &rasterizer, &multisampling, nullptr, &colorBlending, &dynamicState,
+                                                   m_pipelineLayout.get(), m_renderPass.get(), 0, {}, -1);
+
+        // 1. Compile Point Pipeline
+        auto pointResult = m_device->createGraphicsPipelineUnique({}, pipelineInfo);
+        if (pointResult.result != vk::Result::eSuccess) {
+            GLIDE_LOG(CRITICAL, "Vulkan", "Failed to create Vulkan Point graphics pipeline!");
+            return false;
+        }
+        m_pointPipeline = std::move(pointResult.value);
+
+        // 2. Compile Line Pipeline
+        inputAssembly.topology = vk::PrimitiveTopology::eLineList;
+        auto lineResult = m_device->createGraphicsPipelineUnique({}, pipelineInfo);
+        if (lineResult.result != vk::Result::eSuccess) {
+            GLIDE_LOG(CRITICAL, "Vulkan", "Failed to create Vulkan Line graphics pipeline!");
+            return false;
+        }
+        m_linePipeline = std::move(lineResult.value);
+
+        GLIDE_LOG(INFO, "Vulkan", "Vulkan Point & Line Graphics Pipelines compiled successfully.");
+        return true;
+    } catch (const std::exception& e) {
+        GLIDE_LOG(CRITICAL, "Vulkan", "Failed to create Vulkan Graphics Pipelines: " << e.what());
+        return false;
+    }
+}
+
+void VulkanBackend::DrawPoint(const ModernVertex& pt) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    if (!m_initialized || !m_windowAttached) return;
+
+    GLIDE_LOG(DEBUG, "Vulkan", "DrawPoint GPU draw. Pos: (" << pt.pos[0] << ", " << pt.pos[1] << ", " << pt.pos[2] << ")");
+
+    // 1. Upload vertex to dynamic ring vertex buffer
+    if (!m_vertexBufferMap) {
+        GLIDE_LOG(CRITICAL, "Vulkan", "Vertex buffer map is null during DrawPoint!");
+        return;
+    }
+    auto* dest = reinterpret_cast<ModernVertex*>(reinterpret_cast<uint8_t*>(m_vertexBufferMap) + m_vertexBufferOffset);
+    *dest = pt;
+
+    // 2. Ensure Render Pass is active (lazy initialization)
+    if (!m_inRenderPass) {
+        vk::RenderPassBeginInfo renderPassInfo(m_renderPass.get(), m_headlessFramebuffer.get(),
+                                             vk::Rect2D({0, 0}, {m_headlessWidth, m_headlessHeight}),
+                                             0, nullptr);
+        m_commandBuffer->beginRenderPass(renderPassInfo, vk::SubpassContents::eInline);
+
+        // Configure Dynamic Viewport & Scissor (only need to do once per render pass!)
+        vk::Viewport viewport(0.0f, 0.0f, (float)m_headlessWidth, (float)m_headlessHeight, 0.0f, 1.0f);
+        m_commandBuffer->setViewport(0, 1, &viewport);
+
+        vk::Rect2D scissor({0, 0}, {m_headlessWidth, m_headlessHeight});
+        m_commandBuffer->setScissor(0, 1, &scissor);
+
+        // Bind the vertex buffer ONCE at offset 0 for the entire render pass!
+        vk::DeviceSize zeroOffset = 0;
+        m_commandBuffer->bindVertexBuffers(0, 1, &m_vertexBuffer.get(), &zeroOffset);
+
+        m_inRenderPass = true;
+    }
+
+    // Always bind the correct pipeline for this draw call!
+    m_commandBuffer->bindPipeline(vk::PipelineBindPoint::eGraphics, m_pointPipeline.get());
+
+    // Determine whether to use constant color or vertex color based on Glide combiner state
+    bool useConst = ((m_colorCombinerFactor & 0xFFFF) == 1) || (m_colorCombinerFactor == 1);
+
+    PushConstants pcs;
+    pcs.viewportWidth = (float)m_headlessWidth;
+    pcs.viewportHeight = (float)m_headlessHeight;
+    pcs.useConstantColor = useConst ? 1 : 0;
+    
+    // Extract and normalize constant color components
+    pcs.constantColor[0] = ((m_constantColor >> 16) & 0xFF) / 255.0f; // R
+    pcs.constantColor[1] = ((m_constantColor >> 8) & 0xFF) / 255.0f;  // G
+    pcs.constantColor[2] = (m_constantColor & 0xFF) / 255.0f;         // B
+    pcs.constantColor[3] = ((m_constantColor >> 24) & 0xFF) / 255.0f; // A
+    if (pcs.constantColor[3] < 0.5f) {
+        pcs.constantColor[3] = 1.0f; // Force opaque if alpha is uninitialized/transparent
+    }
+
+    m_commandBuffer->pushConstants<PushConstants>(m_pipelineLayout.get(), vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, pcs);
+
+    // 3. Issue GPU point draw call using firstVertex to read the correct slice!
+    uint32_t firstVertex = m_vertexBufferOffset / sizeof(ModernVertex);
+    m_commandBuffer->draw(1, 1, firstVertex, 0);
+
+    // 4. Advance ring buffer offset (wrap around if buffer is full)
+    m_vertexBufferOffset += sizeof(ModernVertex);
+    if (m_vertexBufferOffset + sizeof(ModernVertex) > m_vertexBufferSize) {
+        GLIDE_LOG(WARN, "Vulkan", "Dynamic Vertex Buffer ring buffer wrap-around!");
+        m_vertexBufferOffset = 0;
+    }
+}
+
+void VulkanBackend::DrawLine(const ModernVertex& v1, const ModernVertex& v2) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    if (!m_initialized || !m_windowAttached) return;
+
+    GLIDE_LOG(DEBUG, "Vulkan", "DrawLine GPU draw. V1: (" << v1.pos[0] << ", " << v1.pos[1] << "), V2: (" << v2.pos[0] << ", " << v2.pos[1] << ")");
+
+    // 1. Upload vertices to dynamic ring vertex buffer
+    if (!m_vertexBufferMap) {
+        GLIDE_LOG(CRITICAL, "Vulkan", "Vertex buffer map is null during DrawLine!");
+        return;
+    }
+    
+    // Check if we need to wrap the ring buffer before writing two vertices!
+    if (m_vertexBufferOffset + 2 * sizeof(ModernVertex) > m_vertexBufferSize) {
+        GLIDE_LOG(WARN, "Vulkan", "Dynamic Vertex Buffer ring buffer wrap-around during DrawLine!");
+        m_vertexBufferOffset = 0;
+    }
+
+    auto* dest = reinterpret_cast<ModernVertex*>(reinterpret_cast<uint8_t*>(m_vertexBufferMap) + m_vertexBufferOffset);
+    dest[0] = v1;
+    dest[1] = v2;
+
+    // 2. Ensure Render Pass is active (lazy initialization)
+    if (!m_inRenderPass) {
+        vk::RenderPassBeginInfo renderPassInfo(m_renderPass.get(), m_headlessFramebuffer.get(),
+                                             vk::Rect2D({0, 0}, {m_headlessWidth, m_headlessHeight}),
+                                             0, nullptr);
+        m_commandBuffer->beginRenderPass(renderPassInfo, vk::SubpassContents::eInline);
+
+        // Configure Dynamic Viewport & Scissor
+        vk::Viewport viewport(0.0f, 0.0f, (float)m_headlessWidth, (float)m_headlessHeight, 0.0f, 1.0f);
+        m_commandBuffer->setViewport(0, 1, &viewport);
+
+        vk::Rect2D scissor({0, 0}, {m_headlessWidth, m_headlessHeight});
+        m_commandBuffer->setScissor(0, 1, &scissor);
+
+        // Bind vertex buffer
+        vk::DeviceSize zeroOffset = 0;
+        m_commandBuffer->bindVertexBuffers(0, 1, &m_vertexBuffer.get(), &zeroOffset);
+
+        m_inRenderPass = true;
+    }
+
+    // Always bind the correct pipeline for this draw call!
+    m_commandBuffer->bindPipeline(vk::PipelineBindPoint::eGraphics, m_linePipeline.get());
+
+    // Determine whether to use constant color or vertex color based on Glide combiner state
+    bool useConst = ((m_colorCombinerFactor & 0xFFFF) == 1) || (m_colorCombinerFactor == 1);
+
+    PushConstants pcs;
+    pcs.viewportWidth = (float)m_headlessWidth;
+    pcs.viewportHeight = (float)m_headlessHeight;
+    pcs.useConstantColor = useConst ? 1 : 0;
+    
+    // Extract and normalize constant color components
+    pcs.constantColor[0] = ((m_constantColor >> 16) & 0xFF) / 255.0f; // R
+    pcs.constantColor[1] = ((m_constantColor >> 8) & 0xFF) / 255.0f;  // G
+    pcs.constantColor[2] = (m_constantColor & 0xFF) / 255.0f;         // B
+    pcs.constantColor[3] = ((m_constantColor >> 24) & 0xFF) / 255.0f; // A
+    if (pcs.constantColor[3] < 0.5f) {
+        pcs.constantColor[3] = 1.0f; // Force opaque if alpha is uninitialized/transparent
+    }
+
+    m_commandBuffer->pushConstants<PushConstants>(m_pipelineLayout.get(), vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, pcs);
+
+    // 3. Issue GPU line draw call (vertexCount = 2)
+    uint32_t firstVertex = m_vertexBufferOffset / sizeof(ModernVertex);
+    m_commandBuffer->draw(2, 1, firstVertex, 0);
+
+    // 4. Advance ring buffer offset
+    m_vertexBufferOffset += 2 * sizeof(ModernVertex);
 }
 
 } // namespace GlideWrapper
