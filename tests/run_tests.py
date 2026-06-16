@@ -31,6 +31,7 @@ SDL2_PRELOAD = "/usr/lib/x86_64-linux-gnu/libSDL2-2.0.so.0"
 TEST_PASS_RATIOS = {
     "test02": 0.95,  # Bresenham integer lines vs Mesa software GL native line rasterization rounding variance
     "test04": 0.95,  # Software triangle rasterizer vs Mesa GL native triangle rounding and boundary alignment variance
+    "test14": 0.98,  # Minor diagonal intersection boundary shift under hardware rendering precision differences
 }
 
 # Custom console text block skip bounds: (max_bx, max_by)
@@ -38,6 +39,7 @@ TEST_PASS_RATIOS = {
 TEST_TEXT_SKIP_BOUNDS = {
     "test10": (40, 2),  # Widen to full screen width for the top 2 rows to cover all console text/headers
     "test13": (40, 2),  # Widen to full screen width for the top 2 rows to cover all console text/headers
+    "test14": (40, 2),  # Widen to full screen width for the top 2 rows to cover all console text/headers
     "test15": (40, 2),  # Widen to full screen width for the top 2 rows to cover all console text/headers
 }
 

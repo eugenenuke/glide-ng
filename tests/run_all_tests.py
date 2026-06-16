@@ -33,7 +33,7 @@ def run_command(cmd, env_override=None):
 
 def main():
     backends = ['software', 'vulkan', 'opengl_es']
-    visual_tests = ['test00', 'test01', 'test02', 'test03', 'test04', 'test05', 'test06', 'test07', 'test10', 'test13', 'test15']
+    visual_tests = ['test00', 'test01', 'test02', 'test03', 'test04', 'test05', 'test06', 'test07', 'test10', 'test13', 'test14', 'test15']
     
     catch2_bin = './build/bin/GlideWrapperTests'
     if not os.path.exists(catch2_bin):

@@ -29,6 +29,7 @@ struct PushConstants {
     uint32_t depthBufferMode;   // 0 = None, 1 = Z, 2 = W
     uint32_t alphaTestOp;       // 0..7 (Glide compare ops, 7 = ALWAYS/disabled)
     float alphaTestRef;         // 0.0 .. 1.0 (normalized reference value)
+    float depthBias;            // Normalized depth bias
 };
 
 // Authoritative Vulkan validation layer declarations
@@ -1058,6 +1059,7 @@ void VulkanBackend::DrawPoint(const ModernVertex& pt) {
 
     pcs.alphaTestOp = m_alphaTestOp;
     pcs.alphaTestRef = (float)m_alphaTestRefVal / 255.0f;
+    pcs.depthBias = static_cast<float>(m_depthBiasLevel) / 65535.0f;
 
     m_commandBuffer->pushConstants<PushConstants>(m_pipelineLayout.get(), vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, pcs);
 
@@ -1131,6 +1133,7 @@ void VulkanBackend::DrawLine(const ModernVertex& v1, const ModernVertex& v2) {
 
     pcs.alphaTestOp = m_alphaTestOp;
     pcs.alphaTestRef = (float)m_alphaTestRefVal / 255.0f;
+    pcs.depthBias = static_cast<float>(m_depthBiasLevel) / 65535.0f;
 
     m_commandBuffer->pushConstants<PushConstants>(m_pipelineLayout.get(), vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, pcs);
 
@@ -1215,6 +1218,7 @@ void VulkanBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b, c
 
     pcs.alphaTestOp = m_alphaTestOp;
     pcs.alphaTestRef = (float)m_alphaTestRefVal / 255.0f;
+    pcs.depthBias = static_cast<float>(m_depthBiasLevel) / 65535.0f;
 
     m_commandBuffer->pushConstants<PushConstants>(m_pipelineLayout.get(), vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, pcs);
 

@@ -502,6 +502,7 @@ out vec4 fragColor;
 uniform vec2 uViewportSize;
 uniform int uDepthClipOverride;
 uniform int uDepthBufferMode; // 0=None, 1=Z, 2=W
+uniform float uDepthBias;
 
 void main() {
     // Convert Glide window-space coordinates to GLES NDC (Y-up)
@@ -512,6 +513,8 @@ void main() {
     if (uDepthBufferMode == 2) {
         rawDepth = 1.0 - inPos.w; // W-buffer mapping: 1.0 - oow
     }
+
+    rawDepth += uDepthBias;
 
     float ndcZ;
     if (uDepthClipOverride == 1) {
@@ -685,6 +688,7 @@ void OpenGLESBackend::DrawPoint(const ModernVertex& pt) {
     // Alpha testing uniforms
     glUniform1i(glGetUniformLocation(m_geomProgram, "uAlphaTestOp"), (int)m_alphaTestOp);
     glUniform1f(glGetUniformLocation(m_geomProgram, "uAlphaTestRef"), (float)m_alphaTestRefVal / 255.0f);
+    glUniform1f(glGetUniformLocation(m_geomProgram, "uDepthBias"), static_cast<float>(m_depthBiasLevel) / 65535.0f);
 
     // 4. Bind VAO and issue GLES point draw call
     glBindVertexArray(m_geomVAO);
@@ -758,6 +762,7 @@ void OpenGLESBackend::DrawLine(const ModernVertex& v0, const ModernVertex& v1) {
     // Alpha testing uniforms
     glUniform1i(glGetUniformLocation(m_geomProgram, "uAlphaTestOp"), (int)m_alphaTestOp);
     glUniform1f(glGetUniformLocation(m_geomProgram, "uAlphaTestRef"), (float)m_alphaTestRefVal / 255.0f);
+    glUniform1f(glGetUniformLocation(m_geomProgram, "uDepthBias"), static_cast<float>(m_depthBiasLevel) / 65535.0f);
 
     // 4. Bind VAO and issue GLES line draw call
     glBindVertexArray(m_geomVAO);
@@ -846,6 +851,7 @@ void OpenGLESBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
     GLIDE_LOG(DEBUG, "GLES", "AlphaTest Uniforms. LocOp=" << locOp << " (val=" << (int)m_alphaTestOp << "), LocRef=" << locRef << " (val=" << (float)m_alphaTestRefVal / 255.0f << ")");
     glUniform1i(locOp, (int)m_alphaTestOp);
     glUniform1f(locRef, (float)m_alphaTestRefVal / 255.0f);
+    glUniform1f(glGetUniformLocation(m_geomProgram, "uDepthBias"), static_cast<float>(m_depthBiasLevel) / 65535.0f);
 
     // 4. Bind VAO and issue GLES triangle draw call
     glBindVertexArray(m_geomVAO);

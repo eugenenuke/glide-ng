@@ -15,6 +15,9 @@ layout(push_constant) uniform PushConstants {
     uint useConstantColor;
     uint useConstantAlpha;
     uint depthBufferMode; // 0=None, 1=Z, 2=W
+    uint alphaTestOp;
+    float alphaTestRef;
+    float depthBias;
 } pcs;
 
 void main() {
@@ -26,6 +29,8 @@ void main() {
     if (pcs.depthBufferMode == 2u) {
         rawDepth = 1.0 - inPos.w;
     }
+
+    rawDepth += pcs.depthBias;
 
     gl_Position = vec4(ndcX, ndcY, rawDepth, 1.0);
     gl_PointSize = 1.0; // Canonical Glide point size (1px)

@@ -464,6 +464,11 @@ void SoftwareBackendBase::RasterizeSoftwareTriangle(const ModernVertex& a, const
                 float wVal = w0 * a.pos[3] + w1 * b.pos[3] + w2 * c.pos[3];
                 float targetDepth = (m_depthMode == 2) ? (1.0f - wVal) : zVal;
 
+                if (m_depthBiasLevel != 0) {
+                    targetDepth += static_cast<float>(m_depthBiasLevel) / 65535.0f;
+                    targetDepth = std::max(0.0f, std::min(1.0f, targetDepth));
+                }
+
                 uint32_t pIdx = y * m_headlessWidth + x;
                 bool depthPass = true;
 

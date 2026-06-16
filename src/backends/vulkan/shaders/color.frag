@@ -14,6 +14,7 @@ layout(push_constant) uniform PushConstants {
     uint depthBufferMode;
     uint alphaTestOp;
     float alphaTestRef;
+    float depthBias;
 } pcs;
 
 void main() {
