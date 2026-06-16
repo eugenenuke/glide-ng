@@ -217,6 +217,9 @@ uint32_t SoftwareBackendBase::EvaluateCombinerColor(const ModernVertex& v) {
         r = (m_constantColor >> 16) & 0xFF;
         g = (m_constantColor >> 8)  & 0xFF;
         b = m_constantColor & 0xFF;
+        if (m_pixelFormatOverride == 1) { // ABGR format override for packed constant color
+            std::swap(r, b);
+        }
     }
     uint32_t alphaLocal = m_alphaCombinerFactor & 0xFFFF;
     if (alphaLocal == 1 || m_alphaCombinerFactor == 1) { // CONSTANT
@@ -224,10 +227,6 @@ uint32_t SoftwareBackendBase::EvaluateCombinerColor(const ModernVertex& v) {
     }
 
     if (a < 128) a = 255;
-
-    if (m_pixelFormatOverride == 1) { // ABGR format override
-        std::swap(r, b);
-    }
 
     return (a << 24) | (r << 16) | (g << 8) | b;
 }
@@ -346,9 +345,15 @@ void SoftwareBackendBase::RasterizeSoftwareTriangle(const ModernVertex& a, const
 
                 uint32_t colorLocal = m_colorCombinerFactor & 0xFFFF;
                 if (colorLocal == 1 || m_colorCombinerFactor == 1) { // CONSTANT
-                    red   = ((m_constantColor >> 16) & 0xFF) / 255.0f;
-                    green = ((m_constantColor >> 8)  & 0xFF) / 255.0f;
-                    blue  = (m_constantColor         & 0xFF) / 255.0f;
+                    uint32_t cr = (m_constantColor >> 16) & 0xFF;
+                    uint32_t cg = (m_constantColor >> 8)  & 0xFF;
+                    uint32_t cb = m_constantColor & 0xFF;
+                    if (m_pixelFormatOverride == 1) { // ABGR format override for packed constant color
+                        std::swap(cr, cb);
+                    }
+                    red   = cr / 255.0f;
+                    green = cg / 255.0f;
+                    blue  = cb / 255.0f;
                 }
                 uint32_t alphaLocal = m_alphaCombinerFactor & 0xFFFF;
                 if (alphaLocal == 1 || m_alphaCombinerFactor == 1) { // CONSTANT
@@ -390,9 +395,7 @@ void SoftwareBackendBase::RasterizeSoftwareTriangle(const ModernVertex& a, const
                     }
                 }
 
-                if (m_pixelFormatOverride == 1) { // ABGR format override
-                    std::swap(red, blue);
-                }
+                // Removed global format override swap for vertex colors
 
                 uint32_t aVal = static_cast<uint32_t>(std::min(255.0f, alpha * 255.0f));
 

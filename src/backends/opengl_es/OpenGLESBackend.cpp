@@ -166,6 +166,9 @@ bool OpenGLESBackend::SwapBuffers() {
     }
 
     if (!m_headlessMode && m_sdlWindow && m_glContext && m_headlessPixelMap) {
+        // 1. Flush GPU drawing and composite with CPU text in host memory
+        ReadLFB(0, 0, m_headlessWidth, m_headlessHeight, m_headlessWidth * 4, m_headlessPixelMap);
+
         glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
 

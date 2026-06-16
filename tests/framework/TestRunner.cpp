@@ -15,6 +15,7 @@ namespace GlideTest {
     std::unique_ptr<BaseTest> CreateTest01();
     std::unique_ptr<BaseTest> CreateTest02();
     std::unique_ptr<BaseTest> CreateTest03();
+    std::unique_ptr<BaseTest> CreateTest04();
 }
 
 void dumpBufferToPpm(const std::string& filepath, int width, int height) {
@@ -64,7 +65,7 @@ int main(int argc, char** argv) {
     tests.push_back(GlideTest::CreateTest01());
     tests.push_back(GlideTest::CreateTest02());
     tests.push_back(GlideTest::CreateTest03());
-    // Future tests will be added here!
+    tests.push_back(GlideTest::CreateTest04());
 
     GlideTest::BaseTest* activeTest = nullptr;
     for (const auto& t : tests) {
