@@ -85,8 +85,12 @@ ModernVertex VertexLayout::DecodeVertex(const void* gameVertex) const {
         v.pos[1] = y;
     }
 
-    // Parse Z
-    if (m_offsetZ >= 0) {
+    // Parse Depth (OOZ or Z)
+    if (m_offsetOOZ >= 0) {
+        float ooz = 0.0f;
+        std::memcpy(&ooz, rawBytes + m_offsetOOZ, sizeof(float));
+        v.pos[2] = ooz / 65535.0f;
+    } else if (m_offsetZ >= 0) {
         float z = 0.0f;
         std::memcpy(&z, rawBytes + m_offsetZ, sizeof(float));
         v.pos[2] = z / 65535.0f;
