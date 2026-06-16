@@ -1,0 +1,32 @@
+# Build directories
+build/
+**/build/
+CMakeFiles/
+CMakeCache.txt
+Makefile
+cmake_install.cmake
+*.a
+*.so
+*.dll
+*.dylib
+
+# Logs
+*.log
+**/*.log
+
+# Temporary/manual test dumps in workspace root
+/our_test*
+/ref_text*
+/dump01.rle
+/*.ppm
+/*.png
+/*.rle
+
+# Test suite dynamic dumps
+tests/test_dumps/
+
+# IDE and system files
+.vscode/
+.idea/
+.DS_Store
+.agents/

@@ -1,0 +1,132 @@
+#include "VertexLayout.h"
+#include "core/Logger.h"
+#include <cstring>
+#include <iostream>
+
+namespace GlideWrapper {
+
+// Authentic retro 3dfx preprocessor SDK parameter defines
+#ifndef GR_PARAM_XY
+#define GR_PARAM_XY                     0
+#define GR_PARAM_Z                      1
+#define GR_PARAM_W                      2
+#define GR_PARAM_Q                      3
+#define GR_PARAM_RGB                    4
+#define GR_PARAM_A                      5
+#define GR_PARAM_ST0                    6
+#define GR_PARAM_ST1                    7
+#endif
+
+VertexLayout& VertexLayout::GetInstance() {
+    static VertexLayout instance;
+    return instance;
+}
+
+VertexLayout::VertexLayout() {
+    ResetToGlide2Canonical();
+}
+
+void VertexLayout::ResetToGlide2Canonical() {
+    m_offsetXY  = 0;
+    m_offsetZ   = 8;
+    m_offsetRGB = 12;
+    m_offsetOOZ = 24;
+    m_offsetA   = 28;
+    m_offsetOOW = 32;
+    m_offsetST0 = 36;
+}
+
+void VertexLayout::SetParamOffset(uint32_t param, int32_t offset, uint32_t mode) {
+    SetParamOffsetGlide2(param, offset, mode);
+}
+
+void VertexLayout::SetParamOffsetGlide2(uint32_t param, int32_t offset, uint32_t mode) {
+    if (mode == 0) { offset = -1; }
+    switch (param) {
+        case 0: m_offsetXY  = offset; break; // GR_PARAM_XY
+        case 1: m_offsetZ   = offset; break; // GR_PARAM_Z
+        case 2: m_offsetOOW = offset; break; // GR_PARAM_W
+        case 4: m_offsetRGB = offset; break; // GR_PARAM_RGB
+        case 5: m_offsetA   = offset; break; // GR_PARAM_A
+        case 6: m_offsetST0 = offset; break; // GR_PARAM_ST0
+        default: break;
+    }
+}
+
+void VertexLayout::SetParamOffsetGlide3(uint32_t param, int32_t offset, uint32_t mode) {
+    if (mode == 0) { offset = -1; }
+    switch (param) {
+        case 0x01: m_offsetXY  = offset; break; // GR_PARAM_XY
+        case 0x02: m_offsetZ   = offset; break; // GR_PARAM_Z
+        case 0x03: m_offsetOOW = offset; break; // GR_PARAM_W
+        case 0x10: m_offsetA   = offset; break; // GR_PARAM_A
+        case 0x20: m_offsetRGB = offset; break; // GR_PARAM_RGB
+        case 0x40: m_offsetST0 = offset; break; // GR_PARAM_ST0
+        default: break;
+    }
+}
+
+ModernVertex VertexLayout::DecodeVertex(const void* gameVertex) const {
+    ModernVertex v;
+    v.pos = {0.0f, 0.0f, 0.0f, 1.0f};
+    v.color = {1.0f, 1.0f, 1.0f, 1.0f};
+    v.tex = {0.0f, 0.0f, 0.0f, 0.0f};
+
+    if (!gameVertex) return v;
+
+    const auto* rawBytes = reinterpret_cast<const uint8_t*>(gameVertex);
+
+    // Parse X, Y
+    if (m_offsetXY >= 0) {
+        float x = 0.0f; float y = 0.0f;
+        std::memcpy(&x, rawBytes + m_offsetXY, sizeof(float));
+        std::memcpy(&y, rawBytes + m_offsetXY + sizeof(float), sizeof(float));
+        v.pos[0] = x;
+        v.pos[1] = y;
+    }
+
+    // Parse Z
+    if (m_offsetZ >= 0) {
+        float z = 0.0f;
+        std::memcpy(&z, rawBytes + m_offsetZ, sizeof(float));
+        v.pos[2] = z / 65535.0f;
+    }
+
+    // Parse 1/W
+    if (m_offsetOOW >= 0) {
+        float oow = 1.0f;
+        std::memcpy(&oow, rawBytes + m_offsetOOW, sizeof(float));
+        v.pos[3] = oow;
+    }
+
+    // Parse RGB (Legacy Glide specifies colors from 0.0f .. 255.0f!)
+    if (m_offsetRGB >= 0) {
+        float r = 255.0f; float g = 255.0f; float b = 255.0f;
+        std::memcpy(&r, rawBytes + m_offsetRGB, sizeof(float));
+        std::memcpy(&g, rawBytes + m_offsetRGB + sizeof(float), sizeof(float));
+        std::memcpy(&b, rawBytes + m_offsetRGB + 2 * sizeof(float), sizeof(float));
+        v.color[0] = r / 255.0f;
+        v.color[1] = g / 255.0f;
+        v.color[2] = b / 255.0f;
+    }
+
+    // Parse Alpha (0.0f .. 255.0f)
+    if (m_offsetA >= 0) {
+        float a = 255.0f;
+        std::memcpy(&a, rawBytes + m_offsetA, sizeof(float));
+        v.color[3] = a / 255.0f;
+    }
+
+    // Parse TMU0 Texture Coordinates (S, T)
+    if (m_offsetST0 >= 0) {
+        float s = 0.0f; float t = 0.0f;
+        std::memcpy(&s, rawBytes + m_offsetST0, sizeof(float));
+        std::memcpy(&t, rawBytes + m_offsetST0 + sizeof(float), sizeof(float));
+        v.tex[0] = s;
+        v.tex[1] = t;
+    }
+
+    return v;
+}
+
+} // namespace GlideWrapper
