@@ -83,11 +83,10 @@ bool OpenGLESBackend::AttachWindow(void* nativeWindowHandle, uint32_t width, uin
     const char* version = reinterpret_cast<const char*>(glGetString(GL_VERSION));
     const char* vendor = reinterpret_cast<const char*>(glGetString(GL_VENDOR));
 
-    std::cout << "Info: InitialiseOpenGLWindow(wnd=" << nativeWindowHandle << ", res=" << width << "x" << height << ")\r\n";
-    std::cout << "Info: " << (renderer ? renderer : "Generic GLES Device") << " (" << (vendor ? vendor : "Unknown") << ") " 
-              << (version ? version : "OpenGL ES 3.2") << "\r\n";
-    std::cout << "Info: Pixel Format RGBA8888 D24S0 nAux 0 nSamples 0 0\r\n";
-    std::cout << "Info: Drawable Size: " << width << "x" << height << "\r\n" << std::flush;
+    GLIDE_LOG(INFO, "GLES", "Attached OpenGL ES window surface (wnd=" << nativeWindowHandle << ", res=" << width << "x" << height << ")");
+    GLIDE_LOG(INFO, "GLES", "Active GPU Device: " << (renderer ? renderer : "Generic GLES Device") << " (Vendor: " << (vendor ? vendor : "Unknown") << ")");
+    GLIDE_LOG(INFO, "GLES", "Driver Version   : " << (version ? version : "OpenGL ES 3.2"));
+    GLIDE_LOG(INFO, "GLES", "Pixel Format     : RGBA8888 D24S0 nAux 1");
 
     // Milestone 1: Setup Offscreen Framebuffer Object (FBO) for GPU-native rendering
     glGenFramebuffers(1, &m_headlessFBO);

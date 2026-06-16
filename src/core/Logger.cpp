@@ -80,9 +80,15 @@ void Logger::LogExecutionSummary(const WrapperConfig& config) {
        << "\n  Active TMU Chips     : " << config.tmuCount
        << "\n  Dedicated RAM / TMU  : " << config.tmuMemoryMb << " MB"
        << "\n  Target Presentation  : " << config.maxFps << " FPS"
-       << "\n  AGP Bus Draw Latency : " << config.drawCallDelayUs << " us"
-       << "\n  Voodoo2 SLI Mode     : " << (config.enableSli ? "ENABLED" : "DISABLED")
+       << "\n  AGP Bus Draw Latency : " << config.drawCallDelayUs << " us";
+
+    std::string backendPretty = "Vulkan 1.2 GPU Port";
+    if (config.backend == "opengl_es") backendPretty = "OpenGL ES 3.2 GPU Port";
+    else if (config.backend == "software") backendPretty = "Host CPU Software Reference";
+
+    ss << "\n  Voodoo2 SLI Mode     : " << (config.enableSli ? "ENABLED" : "DISABLED")
        << "\n  Reported API Base    : " << config.apiVersionOverride
+       << "\n  Active Emulation     : " << backendPretty
        << "\n========================================================";
 
     Log(LogLevel::INFO, "Startup", ss.str());
