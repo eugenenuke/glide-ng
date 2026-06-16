@@ -59,7 +59,7 @@ FX_ENTRY void FX_CALL grGlideInit(void) {
     GlideWrapper::JsonConfigLoader configLoader;
     configLoader.Load("glide_config.json", reg.GetConfig());
 
-    logger.Initialize(std::string(GlideWrapper::WRAPPER_PROJECT_NAME) + ".log", static_cast<GlideWrapper::LogLevel>(reg.GetConfig().logLevel));
+    logger.Initialize(std::string(GlideWrapper::WRAPPER_PROJECT_NAME) + ".log", static_cast<GlideWrapper::LogLevel>(reg.GetConfig().logLevel), reg.GetConfig().logToConsole);
     GLIDE_LOG(INFO, "Frontend", "grGlideInit (Glide 3.x) invoked.");
     
     // Dump dynamic startup summaries
@@ -75,7 +75,7 @@ inline void EnsureEngineInitialized() {
     if (!bm.GetBackend()) {
         bm.EstablishBackend(reg.GetConfig());
         auto& logger = GlideWrapper::Logger::GetInstance();
-        logger.Initialize("glide-ng.log", static_cast<GlideWrapper::LogLevel>(reg.GetConfig().logLevel));
+        logger.Initialize("glide-ng.log", static_cast<GlideWrapper::LogLevel>(reg.GetConfig().logLevel), reg.GetConfig().logToConsole);
         GLIDE_LOG(INFO, "Frontend", "Implicit grGlideInit executed seamlessly.");
     } else {
         bm.GetBackend()->PollEvents();

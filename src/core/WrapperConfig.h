@@ -30,6 +30,7 @@ struct WrapperConfig {
     std::string reportedRendererOverride{"3dfx glide-ng Vulkan Wrapper"};
     uint32_t logLevel{3}; // 3 = INFO
     bool forceNoWindow{false}; // Enforces headless offscreen CI mode upon hWnd=0
+    bool logToConsole{false}; // Enforces console logging to stdout/stderr in addition to file
     std::string backend{"vulkan"}; // "vulkan" or "opengl_es"
 };
 

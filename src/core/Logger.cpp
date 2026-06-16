@@ -17,9 +17,10 @@ Logger::~Logger() {
     }
 }
 
-void Logger::Initialize(const std::string& logFilePath, LogLevel level) {
+void Logger::Initialize(const std::string& logFilePath, LogLevel level, bool logToConsole) {
     std::lock_guard<std::mutex> lock(m_mutex);
     m_activeLevel = level;
+    m_logToConsole = logToConsole;
     if (m_activeLevel == LogLevel::OFF) return;
 
     if (m_file.is_open()) {
@@ -59,8 +60,10 @@ void Logger::Log(LogLevel level, const char* component, const std::string& messa
            
     m_file.flush();
 
-    // Also print to stdout for unit test runner visibility!
-    std::cout << "[" << levelStr << "] [" << component << "] " << message << std::endl;
+    // Also print to stdout for unit test runner visibility if enabled!
+    if (m_logToConsole) {
+        std::cout << "[" << levelStr << "] [" << component << "] " << message << std::endl;
+    }
 }
 
 void Logger::LogExecutionSummary(const WrapperConfig& config) {

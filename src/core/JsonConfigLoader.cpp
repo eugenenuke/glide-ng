@@ -23,6 +23,10 @@ bool JsonConfigLoader::Load(const std::string& configFilePath, WrapperConfig& ou
         
         if (content.find("\"opengl_es\"") != std::string::npos)      outConfig.backend = "opengl_es";
         if (content.find("\"vulkan\"") != std::string::npos)         outConfig.backend = "vulkan";
+        if (content.find("\"logToConsole\"") != std::string::npos) {
+            outConfig.logToConsole = (content.find("\"logToConsole\": true") != std::string::npos ||
+                                      content.find("\"logToConsole\":true") != std::string::npos);
+        }
         
         GLIDE_LOG(INFO, "Config", "Parsed local JSON configuration file successfully.");
     } else {
@@ -62,6 +66,12 @@ bool JsonConfigLoader::Load(const std::string& configFilePath, WrapperConfig& ou
     if (const char* envRenderer = std::getenv("GLIDE_WRAPPER_RENDERER")) {
         outConfig.reportedRendererOverride = envRenderer;
         GLIDE_LOG(WARN, "Config", "Overrode Reported Renderer via GLIDE_WRAPPER_RENDERER=" << outConfig.reportedRendererOverride);
+    }
+
+    if (const char* envConsole = std::getenv("GLIDE_WRAPPER_LOG_TO_CONSOLE")) {
+        std::string val(envConsole);
+        outConfig.logToConsole = (val == "1" || val == "true" || val == "TRUE");
+        GLIDE_LOG(WARN, "Config", "Overrode Log To Console via GLIDE_WRAPPER_LOG_TO_CONSOLE=" << outConfig.logToConsole);
     }
 
     return true;

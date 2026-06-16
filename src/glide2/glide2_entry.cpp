@@ -105,14 +105,11 @@ struct GlideWrapperState {
 static_assert(sizeof(GlideWrapperState) <= sizeof(GrState), "GlideWrapperState exceeds GrState footprint!");
 
 FX_ENTRY void FX_CALL grGlideInit(void) {
-    auto& logger = GlideWrapper::Logger::GetInstance();
     auto& reg = GlideWrapper::EmulationRegistry::GetInstance();
-    
-    // Parse configuration profile to ensure accurate LogLevel exists
-    GlideWrapper::JsonConfigLoader configLoader;
-    configLoader.Load("glide_config.json", reg.GetConfig());
-
-    logger.Initialize(std::string(GlideWrapper::WRAPPER_PROJECT_NAME) + ".log", static_cast<GlideWrapper::LogLevel>(reg.GetConfig().logLevel));
+    GlideWrapper::JsonConfigLoader loader;
+    loader.Load("glide_config.json", reg.GetConfig());
+    auto& logger = GlideWrapper::Logger::GetInstance();
+    logger.Initialize(std::string(GlideWrapper::WRAPPER_PROJECT_NAME) + ".log", static_cast<GlideWrapper::LogLevel>(reg.GetConfig().logLevel), reg.GetConfig().logToConsole);
     GLIDE_LOG(INFO, "Frontend", "grGlideInit (Glide 2.x) invoked.");
     
     // Dump dynamic startup summaries
@@ -128,7 +125,7 @@ inline void EnsureEngineInitialized() {
     if (!bm.GetBackend()) {
         bm.EstablishBackend(reg.GetConfig());
         auto& logger = GlideWrapper::Logger::GetInstance();
-        logger.Initialize("glide-ng.log", static_cast<GlideWrapper::LogLevel>(reg.GetConfig().logLevel));
+        logger.Initialize("glide-ng.log", static_cast<GlideWrapper::LogLevel>(reg.GetConfig().logLevel), reg.GetConfig().logToConsole);
         GLIDE_LOG(INFO, "Frontend", "Implicit grGlideInit executed seamlessly.");
     } else {
         bm.GetBackend()->PollEvents();

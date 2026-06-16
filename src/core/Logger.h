@@ -20,7 +20,7 @@ class Logger {
 public:
     static Logger& GetInstance();
 
-    void Initialize(const std::string& logFilePath, LogLevel level);
+    void Initialize(const std::string& logFilePath, LogLevel level, bool logToConsole = false);
     void Log(LogLevel level, const char* component, const std::string& message);
     
     // Feature Summary Injection
@@ -35,6 +35,7 @@ private:
 
     std::ofstream m_file;
     LogLevel m_activeLevel{LogLevel::WARN};
+    bool m_logToConsole{false};
     std::mutex m_mutex;
 };
 
