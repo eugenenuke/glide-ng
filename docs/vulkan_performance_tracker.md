@@ -119,9 +119,9 @@ gantt
     dateFormat  X
     axisFormat %s
     section Benchmarks
-    Our Vulkan (Stage 7 - Double-Buffered) : crit, 0, 205
     OpenGLide (Mesa GL) [Gold Standard]   : active, 0, 277
     Our GLES (Stage 5 - Optimized)       : active, 0, 212
+    Our Vulkan (Stage 7 - Double-Buffered) : crit, 0, 205
     Our Vulkan (Stage 6 - Hash Bypass)    : 0, 184
     Our Vulkan (Stage 5 - Optimized)     : 0, 174
     Our Vulkan (Stage 4 - Optimized)     : 0, 135
