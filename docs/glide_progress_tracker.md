@@ -71,11 +71,10 @@ To resolve long-term translation issues and enable true hardware acceleration, w
 * **Hybrid CPU/GPU Overlay:** Authored an elegant caching pipeline in `SwapBuffers` that captures CPU-rasterized drawing primitives (e.g. console text) and overlays them on top of the GPU-cleared background before presentation.
 * **Milestone Verification:** All active SDK tests (`test00` to `test03`) pass **100% green on Vulkan**, proving the clearing, copying, and presentation pipeline is fully correct and robust!
 
-### Phase 2: Host-GPU Vertex Buffers & State Pipelines (COMPLETED for Points, Lines, and Triangles!)
+### Phase 2: Host-GPU Vertex Buffers & State Pipelines (COMPLETED)
 * **Execution:** Bind host-memory Glide vertices to GPU-visible Vertex Buffers (VBOs).
 * **Pipelines**: Compiled and managed specialized graphics pipelines (`m_pointPipeline`, `m_linePipeline`, `m_trianglePipeline`) with dynamic state updates.
-* **GPU Rasterization**: Re-enabled GPU-native point, line, and Gouraud-shaded triangle drawing (DrawPoint, DrawLine, DrawTriangle) using dynamic vertex streaming buffers.
-* **Text Fallback Strategy**: Integrated a selective CPU software rasterizer fallback for textured triangles to keep the console text overlay rendering perfectly via the hybrid compositor while true GPU texturing is pending.
+* **GPU Rasterization:** Re-enabled GPU-native point, line, and Gouraud-shaded triangle drawing (DrawPoint, DrawLine, DrawTriangle) using dynamic vertex streaming buffers, completely removing software rasterizer fallbacks.
 
 ### Phase 3: Full State Synchronization & Dynamic Pipelines (Alpha, Depth, Culling) (COMPLETED!)
 * **Execution:** Wired up depth compare ops, depth write masks, and scissor/viewport clipping directly to the GPU's fixed-function pipeline states for both Vulkan and OpenGL ES.
@@ -84,6 +83,27 @@ To resolve long-term translation issues and enable true hardware acceleration, w
 
 ### Phase 4: Virtual TMU & Programmable Combiner Shaders (GPU Texturing) (COMPLETED!)
 * **Execution:** Upload guest textures to GPU image samplers, and translate the complex Voodoo Register Combiner equations into a dynamic GLSL/SPIR-V fragment shader. Fully removed the temporary software culling/texturing fallbacks in point, line, and triangle pipelines, achieving a 100% GPU-native texturing and shading engine.
+* **Chroma Keying & Swizzling:** Emulated hardware-accurate chroma keying (`grChromakeyMode`) via fragment shader discards and swizzled ABGR pixels, achieving 100% parity on `test09`.
+* **Dynamic Blending & Compositing:** Resolved the legacy Glide 2.x blend enum collision (0x2/0x6 shared enums) via dynamic, context-aware blend factor mapping in GLES, Vulkan, and Software, achieving 100% parity on `test21` (lightmapping).
+
+### Phase 5: Linear Frame Buffer (LFB) Direct GPU Access (PENDING - IMMEDIATE NEXT TARGET)
+* **Target Tests:** **`test11` (LFB Lock/Unlock)**, **`test12` (LFB + RenderBuffer + Y-Origin)**, **`test26` (`grLfbWriteRegion` / Block Copy)**.
+* **Execution:** Modernize and optimize the Linear Frame Buffer API:
+  * Implement high-speed VRAM locking/unlocking (`grLfbLock`/`grLfbUnlock`) using Vulkan host-visible, coherent memory mapping (`vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent`) and OpenGL ES Pixel Buffer Objects (PBOs).
+  * Ensure correct pixel unpacking, format conversions (e.g., RGB565, ARGB1555, ARGB4444), and coordinate origin flips directly on mapped memory, bypassing slow single-pixel CPU staging copies.
+  * *Status:* **`test11` (LFB Lock/Unlock) is designated as our very next target.**
+
+### Phase 6: Full GPU Presentation & Font Engine (PENDING)
+* **Target Tests:** All visual test console overlays and text rendering.
+* **Execution:** Port the CPU-side console font rasterizer entirely to the GPU. Instead of performing a costly `glReadPixels` / `vkCmdCopyImageToBuffer` transfer every frame to overlay CPU-drawn text (which caps our frame rate at 20-30 FPS), we will compile a dedicated GPU font shader that draws anti-aliased character glyphs directly from a pre-uploaded font sheet texture in a single render pass, unlocking 1000+ FPS hardware presentation speeds.
+
+### Phase 7: Advanced Mipmapping & LOD Blending (PENDING)
+* **Target Tests:** **`test20` (Mipmap Modes & LOD Blending)**.
+* **Execution:** Implement native GPU trilinear mipmapping and LOD blending (`grTexMipMapMode`). Map Glide's TMU mipmapping states to sampler-level LOD bias parameters in Vulkan and OpenGL ES.
+
+### Phase 8: Geometry Edge Anti-Aliasing (PENDING)
+* **Target Tests:** **`test23` (AA Points)**, **`test24` (AA Lines)**, **`test25` (AA Triangles)**.
+* **Execution:** Port legacy 3dfx edge anti-aliasing primitives (`grAADrawPoint`, `grAADrawLine`, `grAADrawTriangle`) to modern GPU pipelines using multisample anti-aliasing (MSAA) or custom fragment-shader coverage estimation.
 
 ---
 
