@@ -494,7 +494,7 @@ bool VulkanBackend::SwapBuffers() {
     }
 
     // 2. Mode-specific presentation / execution dispatch
-    if (!m_headlessMode && m_sdlWindow && m_headlessPixelMap) {
+    if (!m_config.forceNoWindow && m_sdlWindow && m_headlessPixelMap) {
         // --- WINDOWED MODE PRESENTATION (Requires CPU readback for SDL2 blit) ---
 
         // 2.1. Cache CPU-rendered text/geometry pixels (e.g. from LFB)
