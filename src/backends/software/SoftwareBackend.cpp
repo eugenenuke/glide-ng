@@ -42,16 +42,9 @@ bool SoftwareBackend::AttachWindow(void* nativeWindowHandle, uint32_t width, uin
     m_headlessHeight = height;
     m_headlessMode = true;
 
-    // Allocate the CPU framebuffer
-    m_headlessPixelMap = ::malloc(width * height * 4);
-    if (!m_headlessPixelMap) {
-        GLIDE_LOG(CRITICAL, "Software", "Failed to allocate memory for software framebuffer!");
-        return false;
-    }
+    // Allocate the CPU framebuffer double buffers
+    AllocateCpuBuffers(width, height);
     m_allocatedBuffer = true;
-
-    // Pre-initialize buffer to opaque black
-    std::memset(m_headlessPixelMap, 0, width * height * 4);
 
     unsigned int cores = std::thread::hardware_concurrency();
     #if defined(__x86_64__) || defined(_M_X64)
@@ -115,9 +108,8 @@ void SoftwareBackend::DetachWindow() {
     if (m_sdlWindow)   { SDL_DestroyWindow(reinterpret_cast<SDL_Window*>(m_sdlWindow)); m_sdlWindow = nullptr; }
     if (!m_config.forceNoWindow) SDL_QuitSubSystem(SDL_INIT_VIDEO);
 
-    if (m_allocatedBuffer && m_headlessPixelMap) {
-        ::free(m_headlessPixelMap);
-        m_headlessPixelMap = nullptr;
+    if (m_allocatedBuffer) {
+        FreeCpuBuffers();
         m_allocatedBuffer = false;
     }
 
@@ -137,8 +129,19 @@ bool SoftwareBackend::SwapBuffers() {
         std::this_thread::sleep_for(delay);
     }
 
-    if (m_sdlTexture && m_sdlRenderer && m_headlessPixelMap) {
-        SDL_UpdateTexture(reinterpret_cast<SDL_Texture*>(m_sdlTexture), nullptr, m_headlessPixelMap, m_headlessWidth * 4);
+    // 1. Swap the front and back CPU buffer indices
+    std::swap(m_frontBufferIdx, m_backBufferIdx);
+
+    // 2. Update m_headlessPixelMap to point to the active render buffer's memory
+    if (m_activeRenderBuffer == 0) { // GR_BUFFER_FRONTBUFFER
+        m_headlessPixelMap = m_cpuBuffers[m_frontBufferIdx].data();
+    } else { // GR_BUFFER_BACKBUFFER (default)
+        m_headlessPixelMap = m_cpuBuffers[m_backBufferIdx].data();
+    }
+
+    // 3. Present the newly swapped front buffer (which holds the completed frame)
+    if (m_sdlTexture && m_sdlRenderer && !m_cpuBuffers[m_frontBufferIdx].empty()) {
+        SDL_UpdateTexture(reinterpret_cast<SDL_Texture*>(m_sdlTexture), nullptr, m_cpuBuffers[m_frontBufferIdx].data(), m_headlessWidth * 4);
         SDL_RenderCopy(reinterpret_cast<SDL_Renderer*>(m_sdlRenderer), reinterpret_cast<SDL_Texture*>(m_sdlTexture), nullptr, nullptr);
         SDL_RenderPresent(reinterpret_cast<SDL_Renderer*>(m_sdlRenderer));
     }

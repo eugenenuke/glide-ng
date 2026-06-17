@@ -844,11 +844,16 @@ void* SoftwareBackendBase::GetLfbWritePtr() {
     return m_headlessPixelMap;
 }
 
-bool SoftwareBackendBase::ReadLFB(uint32_t srcX, uint32_t srcY, uint32_t srcWidth, uint32_t srcHeight, uint32_t dstStride, void* dstData) {
+bool SoftwareBackendBase::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY, uint32_t srcWidth, uint32_t srcHeight, uint32_t dstStride, void* dstData) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    if (!dstData || !m_headlessPixelMap) return false;
+    if (!dstData || m_cpuBuffers[0].empty()) return false;
 
-    const auto* pixels = reinterpret_cast<const uint32_t*>(m_headlessPixelMap);
+    const uint32_t* pixels = nullptr;
+    if (buffer == 0) { // FRONTBUFFER
+        pixels = reinterpret_cast<const uint32_t*>(m_cpuBuffers[m_frontBufferIdx].data());
+    } else { // BACKBUFFER
+        pixels = reinterpret_cast<const uint32_t*>(m_cpuBuffers[m_backBufferIdx].data());
+    }
     auto* outBytes = reinterpret_cast<uint8_t*>(dstData);
 
     bool is32Bit = (dstStride >= srcWidth * 4);
@@ -887,11 +892,16 @@ bool SoftwareBackendBase::ReadLFB(uint32_t srcX, uint32_t srcY, uint32_t srcWidt
     return true;
 }
 
-bool SoftwareBackendBase::WriteLFB(uint32_t dstX, uint32_t dstY, uint32_t srcWidth, uint32_t srcHeight, int32_t srcStride, uint32_t srcFmt, const void* srcData, const void* refData) {
+bool SoftwareBackendBase::WriteLFB(uint32_t buffer, uint32_t dstX, uint32_t dstY, uint32_t srcWidth, uint32_t srcHeight, int32_t srcStride, uint32_t srcFmt, const void* srcData, const void* refData) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    if (!srcData || !m_headlessPixelMap) return false;
+    if (!srcData || m_cpuBuffers[0].empty()) return false;
 
-    auto* pixels = reinterpret_cast<uint32_t*>(m_headlessPixelMap);
+    uint32_t* pixels = nullptr;
+    if (buffer == 0) { // FRONTBUFFER
+        pixels = reinterpret_cast<uint32_t*>(m_cpuBuffers[m_frontBufferIdx].data());
+    } else { // BACKBUFFER
+        pixels = reinterpret_cast<uint32_t*>(m_cpuBuffers[m_backBufferIdx].data());
+    }
     const auto* inBytes = reinterpret_cast<const uint8_t*>(srcData);
     const auto* refBytes = reinterpret_cast<const uint8_t*>(refData);
 
@@ -993,6 +1003,40 @@ void SoftwareBackendBase::PollEvents() {
 void SoftwareBackendBase::SstIdle() {
     // Software rasterizer is completely synchronous; all drawing dispatches 
     // are completed on the host CPU thread during the draw call itself.
+}
+
+void SoftwareBackendBase::AllocateCpuBuffers(uint32_t width, uint32_t height) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    m_cpuBuffers[0].resize(width * height * 4);
+    m_cpuBuffers[1].resize(width * height * 4);
+    std::memset(m_cpuBuffers[0].data(), 0, m_cpuBuffers[0].size());
+    std::memset(m_cpuBuffers[1].data(), 0, m_cpuBuffers[1].size());
+    m_frontBufferIdx = 0;
+    m_backBufferIdx = 1;
+    m_activeRenderBuffer = 1; // BACKBUFFER
+    m_headlessPixelMap = m_cpuBuffers[m_backBufferIdx].data();
+    GLIDE_LOG(INFO, "SoftwareBackendBase", "Allocated CPU double buffers: " << width << "x" << height << ", map=" << m_headlessPixelMap);
+}
+
+void SoftwareBackendBase::FreeCpuBuffers() {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    m_cpuBuffers[0].clear();
+    m_cpuBuffers[0].shrink_to_fit();
+    m_cpuBuffers[1].clear();
+    m_cpuBuffers[1].shrink_to_fit();
+    m_headlessPixelMap = nullptr;
+    GLIDE_LOG(INFO, "SoftwareBackendBase", "Freed CPU double buffers.");
+}
+
+void SoftwareBackendBase::SetRenderBuffer(uint32_t target) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    m_activeRenderBuffer = target;
+    if (m_activeRenderBuffer == 0) { // GR_BUFFER_FRONTBUFFER
+        m_headlessPixelMap = m_cpuBuffers[m_frontBufferIdx].data();
+    } else { // GR_BUFFER_BACKBUFFER (and others default to back)
+        m_headlessPixelMap = m_cpuBuffers[m_backBufferIdx].data();
+    }
+    GLIDE_LOG(INFO, "SoftwareBackendBase", "SetRenderBuffer: target=" << target << ", map=" << m_headlessPixelMap);
 }
 
 } // namespace GlideWrapper

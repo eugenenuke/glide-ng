@@ -436,7 +436,7 @@ FX_ENTRY FxBool FX_CALL grLfbReadRegion(GrBuffer_t srcBuf, FxU32 srcX, FxU32 src
     EnsureEngineInitialized();
     GLIDE_LOG(INFO, "Frontend", "grLfbReadRegion (Glide 3.x) invoked.");
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
-        return b->ReadLFB(srcX, srcY, srcWidth, srcHeight, dstStride, dstData) ? FXTRUE : FXFALSE;
+        return b->ReadLFB(srcBuf, srcX, srcY, srcWidth, srcHeight, dstStride, dstData) ? FXTRUE : FXFALSE;
     }
     if (dstData) std::memset(dstData, 0, srcHeight * dstStride);
     return FXTRUE;
@@ -446,7 +446,7 @@ FX_ENTRY FxBool FX_CALL grLfbWriteRegion(GrBuffer_t dstBuf, FxU32 dstX, FxU32 ds
     EnsureEngineInitialized();
     GLIDE_LOG(INFO, "Frontend", "grLfbWriteRegion (Glide 3.x) invoked: " << srcWidth << "x" << srcHeight);
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
-        return b->WriteLFB(dstX, dstY, srcWidth, srcHeight, srcStride, srcFmt, srcData) ? FXTRUE : FXFALSE;
+        return b->WriteLFB(dstBuf, dstX, dstY, srcWidth, srcHeight, srcStride, srcFmt, srcData) ? FXTRUE : FXFALSE;
     }
     return FXTRUE;
 }

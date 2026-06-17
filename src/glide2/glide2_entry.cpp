@@ -246,6 +246,8 @@ FX_ENTRY void FX_CALL grBufferSwap(int swap_interval) {
 FX_ENTRY void FX_CALL grRenderBuffer(GrBuffer_t buffer) {
     EnsureEngineInitialized();
     GLIDE_LOG(INFO, "Frontend", "grRenderBuffer invoked for Buffer=" << buffer);
+    auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
+    if (backend) backend->SetRenderBuffer(buffer);
 }
 
 FX_ENTRY void FX_CALL grDrawTriangle(const GrVertex* a, const GrVertex* b, const GrVertex* c) {
@@ -674,7 +676,7 @@ FX_ENTRY FxBool FX_CALL grLfbReadRegion(GrBuffer_t srcBuf, FxU32 srcX, FxU32 src
     EnsureEngineInitialized();
     GLIDE_LOG(INFO, "Frontend", "grLfbReadRegion invoked.");
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
-        return b->ReadLFB(srcX, srcY, srcWidth, srcHeight, dstStride, dstData) ? FXTRUE : FXFALSE;
+        return b->ReadLFB(srcBuf, srcX, srcY, srcWidth, srcHeight, dstStride, dstData) ? FXTRUE : FXFALSE;
     }
     if (dstData) std::memset(dstData, 0, srcHeight * dstStride);
     return FXTRUE;
@@ -684,7 +686,7 @@ FX_ENTRY FxBool FX_CALL grLfbWriteRegion(GrBuffer_t dstBuf, FxU32 dstX, FxU32 ds
     EnsureEngineInitialized();
     GLIDE_LOG(INFO, "Frontend", "grLfbWriteRegion invoked: " << srcWidth << "x" << srcHeight);
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
-        return b->WriteLFB(dstX, dstY, srcWidth, srcHeight, srcStride, srcFmt, srcData) ? FXTRUE : FXFALSE;
+        return b->WriteLFB(dstBuf, dstX, dstY, srcWidth, srcHeight, srcStride, srcFmt, srcData) ? FXTRUE : FXFALSE;
     }
     return FXTRUE;
 }
@@ -757,7 +759,7 @@ FX_ENTRY FxBool FX_CALL grLfbLock(GrLock_t type, GrBuffer_t buffer, GrLfbWriteMo
     
     // Always pre-populate the staging buffer with the current pixels from the backend to preserve unwritten pixels!
     // Read from backend (ReadLFB always reads top-down)
-    b->ReadLFB(0, 0, g_lfbLock.width, g_lfbLock.height, g_lfbLock.stride, g_lfbLock.stagingBuffer.data());
+    b->ReadLFB(buffer, 0, 0, g_lfbLock.width, g_lfbLock.height, g_lfbLock.stride, g_lfbLock.stagingBuffer.data());
     
     // Capture the original top-down buffer for dirty pixel tracking!
     g_lfbLock.originalBuffer = g_lfbLock.stagingBuffer;
@@ -806,10 +808,15 @@ FX_ENTRY FxBool FX_CALL grLfbUnlock(GrLock_t type, GrBuffer_t buffer) {
         if (g_lfbLock.writeMode == GR_LFBWRITEMODE_565) srcFmt = 0;
         else if (g_lfbLock.writeMode == GR_LFBWRITEMODE_555) srcFmt = 1;
         else if (g_lfbLock.writeMode == GR_LFBWRITEMODE_1555) srcFmt = 2;
+        else if (g_lfbLock.writeMode == GR_LFBWRITEMODE_888) srcFmt = 4;
         else if (g_lfbLock.writeMode == GR_LFBWRITEMODE_8888) srcFmt = 5;
+        else if (g_lfbLock.writeMode == GR_LFBWRITEMODE_565_DEPTH) srcFmt = 12;
+        else if (g_lfbLock.writeMode == GR_LFBWRITEMODE_555_DEPTH) srcFmt = 13;
+        else if (g_lfbLock.writeMode == GR_LFBWRITEMODE_1555_DEPTH) srcFmt = 14;
+        else if (g_lfbLock.writeMode == GR_LFBWRITEMODE_ZA16) srcFmt = 15;
 
         // Flush to backend with dirty tracking comparison!
-        b->WriteLFB(0, 0, g_lfbLock.width, g_lfbLock.height, g_lfbLock.stride, srcFmt, g_lfbLock.stagingBuffer.data(), g_lfbLock.originalBuffer.data());
+        b->WriteLFB(g_lfbLock.buffer, 0, 0, g_lfbLock.width, g_lfbLock.height, g_lfbLock.stride, srcFmt, g_lfbLock.stagingBuffer.data(), g_lfbLock.originalBuffer.data());
     }
 
     // Free staging buffer memory

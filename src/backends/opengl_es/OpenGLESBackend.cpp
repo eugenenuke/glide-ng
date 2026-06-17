@@ -133,13 +133,7 @@ bool OpenGLESBackend::AttachWindow(void* nativeWindowHandle, uint32_t width, uin
     }
 
     // Allocate software staging memory
-    m_headlessPixelMap = std::malloc(width * height * 4);
-    if (!m_headlessPixelMap) {
-        GLIDE_LOG(CRITICAL, "GLES", "Failed to allocate software pixel map buffer!");
-        DestroyGLContext();
-        return false;
-    }
-    std::memset(m_headlessPixelMap, 0xFF, width * height * 4);
+    AllocateCpuBuffers(width, height);
 
     m_headlessDepthBuffer.resize(width * height, 0.0f);
     SetClipWindow(0, 0, width, height);
@@ -154,10 +148,7 @@ void OpenGLESBackend::DetachWindow() {
 
     DestroyGLContext();
 
-    if (m_headlessPixelMap) {
-        std::free(m_headlessPixelMap);
-        m_headlessPixelMap = nullptr;
-    }
+    FreeCpuBuffers();
 
     m_windowAttached = false;
 }
@@ -174,7 +165,7 @@ bool OpenGLESBackend::SwapBuffers() {
 
     if (!m_headlessMode && m_sdlWindow && m_glContext && m_headlessPixelMap) {
         // 1. Flush GPU drawing and composite with CPU text in host memory
-        ReadLFB(0, 0, m_headlessWidth, m_headlessHeight, m_headlessWidth * 4, m_headlessPixelMap);
+        ReadLFB(1, 0, 0, m_headlessWidth, m_headlessHeight, m_headlessWidth * 4, m_headlessPixelMap);
 
         glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
@@ -198,7 +189,16 @@ bool OpenGLESBackend::SwapBuffers() {
         glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
         checkGLError("SwapBuffers glDrawArrays");
 
-        SDL_GL_SwapWindow(reinterpret_cast<SDL_Window*>(m_sdlWindow));
+    }
+
+    // 2. Swap the front and back CPU buffer indices for double-buffering (MUST run in headless mode too!)
+    if (m_headlessPixelMap) {
+        std::swap(m_frontBufferIdx, m_backBufferIdx);
+        if (m_activeRenderBuffer == 0) { // FRONTBUFFER
+            m_headlessPixelMap = m_cpuBuffers[m_frontBufferIdx].data();
+        } else { // BACKBUFFER
+            m_headlessPixelMap = m_cpuBuffers[m_backBufferIdx].data();
+        }
     }
 
     return true;
@@ -282,7 +282,7 @@ void OpenGLESBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z, uint3
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
-bool OpenGLESBackend::ReadLFB(uint32_t srcX, uint32_t srcY, uint32_t srcWidth, uint32_t srcHeight, uint32_t dstStride, void* dstData) {
+bool OpenGLESBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY, uint32_t srcWidth, uint32_t srcHeight, uint32_t dstStride, void* dstData) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     if (!m_initialized || !m_windowAttached) return false;
 
@@ -376,7 +376,7 @@ bool OpenGLESBackend::ReadLFB(uint32_t srcX, uint32_t srcY, uint32_t srcWidth, u
     glBindFramebuffer(GL_FRAMEBUFFER, previousFBO);
 
     // --- STEP 4: Convert and copy to client ---
-    bool result = SoftwareBackendBase::ReadLFB(srcX, srcY, srcWidth, srcHeight, dstStride, dstData);
+    bool result = SoftwareBackendBase::ReadLFB(buffer, srcX, srcY, srcWidth, srcHeight, dstStride, dstData);
 
     // --- STEP 5: Restore CPU-only state ---
     // Restore the CPU-only framebuffer state from our cache, completely wiping out GPU pollution while preserving CPU LFB writes!

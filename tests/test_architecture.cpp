@@ -465,7 +465,7 @@ TEST_CASE("Architectural Core Validation", "[Architecture]") {
         StandardVert q2{0.0f, 2000.0f, 0.5f, 255.0f, 255.0f, 0.0f, 1.0f, 255.0f, 1.0f, 0.0f, 0.0f, 1.0f};
         drawTri(&q0, &q1, &q2);
 
-        REQUIRE(readLfb(0, 0, 0, 800, 600, 800 * 4, lfbData.data()) == FXTRUE);
+        REQUIRE(readLfb(1, 0, 0, 800, 600, 800 * 4, lfbData.data()) == FXTRUE);
         REQUIRE(lfbData[150 * 800 + 150] == 0xFFFFFF00); // Inside Scissor -> Yellow
         REQUIRE(lfbData[50 * 800 + 50] == 0xFF000000);   // Outside Scissor -> Untouched Black
 
@@ -481,7 +481,7 @@ TEST_CASE("Architectural Core Validation", "[Architecture]") {
         StandardVert b1{2000.0f, 0.0f, 0.5f, 0.0f, 0.0f, 255.0f, 1.0f, 127.5f, 1.0f, 0.0f, 0.0f, 1.0f};
         StandardVert b2{0.0f, 2000.0f, 0.5f, 0.0f, 0.0f, 255.0f, 1.0f, 127.5f, 1.0f, 0.0f, 0.0f, 1.0f};
         drawTri(&b0, &b1, &b2);
-        REQUIRE(readLfb(0, 0, 0, 800, 600, 800 * 4, lfbData.data()) == FXTRUE);
+        REQUIRE(readLfb(1, 0, 0, 800, 600, 800 * 4, lfbData.data()) == FXTRUE);
         uint32_t blendPixel = lfbData[200 * 800 + 300];
         REQUIRE((blendPixel & 0xFF00FF00) == 0xBF000000); // 75% Alpha (0xBF), 0 Green
         uint32_t blendR = (blendPixel >> 16) & 0xFF;
@@ -503,7 +503,7 @@ TEST_CASE("Architectural Core Validation", "[Architecture]") {
         StandardVert cw2{400.0f, 100.0f, 0.5f, 0.0f, 255.0f, 0.0f, 1.0f, 255.0f, 1.0f, 0.0f, 0.0f, 1.0f};
         drawTri(&cw0, &cw1, &cw2);
 
-        REQUIRE(readLfb(0, 0, 0, 800, 600, 800 * 4, lfbData.data()) == FXTRUE);
+        REQUIRE(readLfb(1, 0, 0, 800, 600, 800 * 4, lfbData.data()) == FXTRUE);
         REQUIRE(lfbData[150 * 800 + 150] == 0xFF000000); // Mapped target remains perfectly black!
 
         // Revert Cull
@@ -521,13 +521,13 @@ TEST_CASE("Architectural Core Validation", "[Architecture]") {
         StandardVert at2{0.0f, 2000.0f, 0.5f, 0.0f, 255.0f, 255.0f, 1.0f, 100.0f, 1.0f, 0.0f, 0.0f, 1.0f};
         drawTri(&at0, &at1, &at2);
 
-        REQUIRE(readLfb(0, 0, 0, 800, 600, 800 * 4, lfbData.data()) == FXTRUE);
+        REQUIRE(readLfb(1, 0, 0, 800, 600, 800 * 4, lfbData.data()) == FXTRUE);
         REQUIRE(lfbData[300 * 800 + 300] == 0xFF000000); // Remains black!
 
         // Draw quad with Alpha = 200 (above threshold -> should pass)
         at0.a = 200.0f; at1.a = 200.0f; at2.a = 200.0f;
         drawTri(&at0, &at1, &at2);
-        REQUIRE(readLfb(0, 0, 0, 800, 600, 800 * 4, lfbData.data()) == FXTRUE);
+        REQUIRE(readLfb(1, 0, 0, 800, 600, 800 * 4, lfbData.data()) == FXTRUE);
         REQUIRE(lfbData[300 * 800 + 300] == 0xC800FFFF); // Alpha=200(0xC8), Cyan(0x00FFFF)
 
         // Revert Alpha Test
@@ -546,14 +546,14 @@ TEST_CASE("Architectural Core Validation", "[Architecture]") {
         StandardVert d1{2000.0f, 0.0f, 0.8f, 255.0f, 0.0f, 0.0f, 0.8f, 255.0f, 1.0f, 0.0f, 0.0f, 1.0f};
         StandardVert d2{0.0f, 2000.0f, 0.8f, 255.0f, 0.0f, 0.0f, 0.8f, 255.0f, 1.0f, 0.0f, 0.0f, 1.0f};
         drawTri(&d0, &d1, &d2);
-        REQUIRE(readLfb(0, 0, 0, 800, 600, 800 * 4, lfbData.data()) == FXTRUE);
+        REQUIRE(readLfb(1, 0, 0, 800, 600, 800 * 4, lfbData.data()) == FXTRUE);
         REQUIRE(lfbData[250 * 800 + 250] == 0xFFFF0000); // Mapped red (opaque 0xFF)!
 
         // Draw quad at Z = 0.9 (Should be REJECTED because 0.9 is NOT less than 0.8)
         d0.z = 0.9f; d1.z = 0.9f; d2.z = 0.9f; d0.ooz = 0.9f; d1.ooz = 0.9f; d2.ooz = 0.9f;
         d0.r = 0.0f; d1.r = 0.0f; d2.r = 0.0f; d0.g = 255.0f; d1.g = 255.0f; d2.g = 255.0f; // Yellow
         drawTri(&d0, &d1, &d2);
-        REQUIRE(readLfb(0, 0, 0, 800, 600, 800 * 4, lfbData.data()) == FXTRUE);
+        REQUIRE(readLfb(1, 0, 0, 800, 600, 800 * 4, lfbData.data()) == FXTRUE);
         REQUIRE(lfbData[250 * 800 + 250] == 0xFFFF0000); // Remains untouched red!
 
         // 6. Validate Depth Mask (Read-Only Depth Buffer)
@@ -562,7 +562,7 @@ TEST_CASE("Architectural Core Validation", "[Architecture]") {
         d0.z = 0.4f; d1.z = 0.4f; d2.z = 0.4f; d0.ooz = 0.4f; d1.ooz = 0.4f; d2.ooz = 0.4f;
         d0.g = 0.0f; d1.g = 0.0f; d2.g = 0.0f; d0.b = 255.0f; d1.b = 255.0f; d2.b = 255.0f; // Blue
         drawTri(&d0, &d1, &d2);
-        REQUIRE(readLfb(0, 0, 0, 800, 600, 800 * 4, lfbData.data()) == FXTRUE);
+        REQUIRE(readLfb(1, 0, 0, 800, 600, 800 * 4, lfbData.data()) == FXTRUE);
         REQUIRE(lfbData[250 * 800 + 250] == 0xFF0000FF); // Passes depth (0.4 < 0.8) -> Blue (opaque 0xFF)!
 
         // Now draw another quad at Z = 0.5 in Green
@@ -571,7 +571,7 @@ TEST_CASE("Architectural Core Validation", "[Architecture]") {
         d0.z = 0.5f; d1.z = 0.5f; d2.z = 0.5f; d0.ooz = 0.5f; d1.ooz = 0.5f; d2.ooz = 0.5f;
         d0.b = 0.0f; d1.b = 0.0f; d2.b = 0.0f; d0.g = 255.0f; d1.g = 255.0f; d2.g = 255.0f; // Green
         drawTri(&d0, &d1, &d2);
-        REQUIRE(readLfb(0, 0, 0, 800, 600, 800 * 4, lfbData.data()) == FXTRUE);
+        REQUIRE(readLfb(1, 0, 0, 800, 600, 800 * 4, lfbData.data()) == FXTRUE);
         REQUIRE(lfbData[250 * 800 + 250] == 0xFF00FF00); // Successfully writes Green (opaque 0xFF)!
 
         // Revert Depth Mode
@@ -692,7 +692,7 @@ TEST_CASE("Architectural Core Validation", "[Architecture]") {
         drawTri(&t0, &t1, &t2);
 
         std::vector<uint32_t> lfb(800 * 600);
-        REQUIRE(readLfb(0, 0, 0, 800, 600, 800 * 4, lfb.data()) == FXTRUE);
+        REQUIRE(readLfb(1, 0, 0, 800, 600, 800 * 4, lfb.data()) == FXTRUE);
         
         // Cyan pixel verification (R == 0, G >= 254, B >= 254)
         REQUIRE((lfb[310 * 800 + 310] & 0x00FF0000) == 0x00000000);
@@ -705,7 +705,7 @@ TEST_CASE("Architectural Core Validation", "[Architecture]") {
         StandardVert m2{400.0f, 350.0f, 0.5f, 255.0f, 255.0f, 255.0f, 1.0f, 255.0f, 1.0f, 192.0f, 64.0f, 1.0f};
         drawTri(&m0, &m1, &m2);
 
-        REQUIRE(readLfb(0, 0, 0, 800, 600, 800 * 4, lfb.data()) == FXTRUE);
+        REQUIRE(readLfb(1, 0, 0, 800, 600, 800 * 4, lfb.data()) == FXTRUE);
 
         // Magenta pixel verification (R >= 254, G == 0, B >= 254)
         REQUIRE((lfb[310 * 800 + 410] & 0x00FF0000) >= 0x00FE0000);

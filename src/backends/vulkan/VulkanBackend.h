@@ -130,7 +130,7 @@ public:
     void SetAlphaTestState(uint32_t compareOp, uint32_t refVal) override;
     void SetSstOrigin(uint32_t origin) override;
     void SetClipWindow(uint32_t minX, uint32_t minY, uint32_t maxX, uint32_t maxY) override;
-    bool ReadLFB(uint32_t srcX, uint32_t srcY, uint32_t srcWidth, uint32_t srcHeight, uint32_t dstStride, void* dstData) override;
+    bool ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY, uint32_t srcWidth, uint32_t srcHeight, uint32_t dstStride, void* dstData) override;
     void PollEvents() override;
     void SstIdle() override;
 
@@ -231,6 +231,7 @@ private:
     vk::UniqueDescriptorPool m_descriptorPool;
     std::unordered_map<uint32_t, VulkanTexture> m_vulkanTextures;
     VulkanTexture m_dummyTexture;
+    void* m_gpuStagingMap{nullptr};
 };
 
 

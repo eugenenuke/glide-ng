@@ -347,10 +347,11 @@ void VulkanBackend::DetachWindow() {
         m_vertShaderModule.reset();
         m_fragShaderModule.reset();
 
-        if (m_headlessPixelMap) {
+        if (m_gpuStagingMap) {
             m_device->unmapMemory(m_headlessPixelMemory.get());
-            m_headlessPixelMap = nullptr;
+            m_gpuStagingMap = nullptr;
         }
+        FreeCpuBuffers();
         m_headlessPixelBuffer.reset();
         m_headlessPixelMemory.reset();
         m_headlessFramebuffer.reset();
@@ -546,6 +547,11 @@ bool VulkanBackend::SwapBuffers() {
         vk::MappedMemoryRange memRange(m_headlessPixelMemory.get(), 0, VK_WHOLE_SIZE);
         m_device->invalidateMappedMemoryRanges(memRange);
 
+        // Copy the GPU-rendered framebuffer from mapped staging memory into our CPU-side active buffer
+        if (m_gpuStagingMap && m_headlessPixelMap) {
+            std::memcpy(m_headlessPixelMap, m_gpuStagingMap, m_headlessWidth * m_headlessHeight * 4);
+        }
+
         // --- STEP 3: Overlay CPU-rendered text/geometry back ---
         // Overwrite the staging memory (m_headlessPixelMap) with our cached CPU text pixels!
         if (hasCpuRendering && m_headlessPixelMap) {
@@ -568,19 +574,21 @@ bool VulkanBackend::SwapBuffers() {
         m_commandBuffer->reset({});
         m_commandBuffer->begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
 
-        // Force alpha to 0 in staging buffer so GPU-rendered pixels are not cached as CPU text in the next frame!
-        if (m_headlessPixelMap) {
-            auto* pixels = reinterpret_cast<uint32_t*>(m_headlessPixelMap);
-            for (uint32_t i = 0; i < m_headlessWidth * m_headlessHeight; ++i) {
-                pixels[i] &= 0x00FFFFFF;
-            }
+        // Swap the CPU buffer indices for double-buffering
+        std::swap(m_frontBufferIdx, m_backBufferIdx);
+        if (m_activeRenderBuffer == 0) { // FRONTBUFFER
+            m_headlessPixelMap = m_cpuBuffers[m_frontBufferIdx].data();
+        } else { // BACKBUFFER
+            m_headlessPixelMap = m_cpuBuffers[m_backBufferIdx].data();
         }
+
+
     }
 
     return true;
 }
 
-bool VulkanBackend::ReadLFB(uint32_t srcX, uint32_t srcY, uint32_t srcWidth, uint32_t srcHeight, uint32_t dstStride, void* dstData) {
+bool VulkanBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY, uint32_t srcWidth, uint32_t srcHeight, uint32_t dstStride, void* dstData) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     if (!m_initialized || !m_windowAttached) return false;
 
@@ -626,9 +634,10 @@ bool VulkanBackend::ReadLFB(uint32_t srcX, uint32_t srcY, uint32_t srcWidth, uin
     m_graphicsQueue.submit(submitInfo, {});
     m_device->waitIdle(); // Block CPU until GPU finishes!
 
-    // 5. Invalidate host cache
-    vk::MappedMemoryRange memRange(m_headlessPixelMemory.get(), 0, VK_WHOLE_SIZE);
-    m_device->invalidateMappedMemoryRanges(memRange);
+    // Copy the GPU-rendered framebuffer from mapped staging memory into our CPU-side active buffer
+    if (m_gpuStagingMap && m_headlessPixelMap) {
+        std::memcpy(m_headlessPixelMap, m_gpuStagingMap, m_headlessWidth * m_headlessHeight * 4);
+    }
 
     // --- STEP 3: Overlay CPU-rendered text/geometry back ---
     if (hasCpuRendering && m_headlessPixelMap) {
@@ -648,7 +657,7 @@ bool VulkanBackend::ReadLFB(uint32_t srcX, uint32_t srcY, uint32_t srcWidth, uin
     TransitionImageLayout(m_commandBuffer.get(), m_headlessImage.get(), vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::eColorAttachmentOptimal, range);
 
     // 8. Now call the base class ReadLFB to copy the synchronized pixels to the client buffer!
-    bool result = SoftwareBackendBase::ReadLFB(srcX, srcY, srcWidth, srcHeight, dstStride, dstData);
+    bool result = SoftwareBackendBase::ReadLFB(buffer, srcX, srcY, srcWidth, srcHeight, dstStride, dstData);
 
     // 9. Restore the CPU-only framebuffer state from our cache, completely wiping out GPU pollution while preserving CPU LFB writes!
     if (m_headlessPixelMap) {
@@ -888,14 +897,17 @@ bool VulkanBackend::CreateHeadlessRenderTarget(uint32_t width, uint32_t height) 
     m_headlessPixelMemory = m_device->allocateMemoryUnique(bufAlloc);
     m_device->bindBufferMemory(m_headlessPixelBuffer.get(), m_headlessPixelMemory.get(), 0);
 
-    m_headlessPixelMap = m_device->mapMemory(m_headlessPixelMemory.get(), 0, width * height * 4);
-    if (!m_headlessPixelMap) {
+    m_gpuStagingMap = m_device->mapMemory(m_headlessPixelMemory.get(), 0, width * height * 4);
+    if (!m_gpuStagingMap) {
         GLIDE_LOG(CRITICAL, "Vulkan", "Failed to map headless host memory map!");
         return false;
     }
 
-    // Pre-initialize buffer to opaque black
-    std::memset(m_headlessPixelMap, 0xFF, width * height * 4);
+    // Allocate CPU framebuffers for double-buffering
+    AllocateCpuBuffers(width, height);
+
+    // Pre-initialize GPU staging buffer to opaque black
+    std::memset(m_gpuStagingMap, 0xFF, width * height * 4);
     return true;
 }
 

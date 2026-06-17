@@ -29,6 +29,7 @@ public:
     virtual bool SwapBuffers() = 0;
     virtual void SetConstantColor(uint32_t color) = 0;
     virtual void SetPixelFormat(uint32_t format) = 0;
+    virtual void SetRenderBuffer(uint32_t target) = 0;
     virtual void PollEvents() = 0;
     virtual void SstIdle() = 0;
 
@@ -52,8 +53,8 @@ public:
 
     // Linear Framebuffer (LFB) cpu CPU inspection and modification
     virtual void* GetLfbWritePtr() = 0;
-    virtual bool ReadLFB(uint32_t srcX, uint32_t srcY, uint32_t srcWidth, uint32_t srcHeight, uint32_t dstStride, void* dstData) = 0;
-    virtual bool WriteLFB(uint32_t dstX, uint32_t dstY, uint32_t srcWidth, uint32_t srcHeight, int32_t srcStride, uint32_t srcFmt, const void* srcData, const void* refData = nullptr) = 0;
+    virtual bool ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY, uint32_t srcWidth, uint32_t srcHeight, uint32_t dstStride, void* dstData) = 0;
+    virtual bool WriteLFB(uint32_t buffer, uint32_t dstX, uint32_t dstY, uint32_t srcWidth, uint32_t srcHeight, int32_t srcStride, uint32_t srcFmt, const void* srcData, const void* refData = nullptr) = 0;
 
     // Phase 5: Virtual TMU & Programmable Uber-Shader Entry Declarations
     virtual void BindTexture(uint32_t tmu, uint32_t startAddress, uint32_t clampS, uint32_t clampT, uint32_t minFilter, uint32_t magFilter) = 0;

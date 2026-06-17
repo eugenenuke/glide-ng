@@ -26,7 +26,7 @@ public:
     bool SwapBuffers() override;
     void SstIdle() override;
     void ClearBuffer(uint32_t color, uint32_t alpha, float z, uint32_t clearMask) override;
-    bool ReadLFB(uint32_t srcX, uint32_t srcY, uint32_t srcWidth, uint32_t srcHeight, uint32_t dstStride, void* dstData) override;
+    bool ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY, uint32_t srcWidth, uint32_t srcHeight, uint32_t dstStride, void* dstData) override;
     void DrawPoint(const ModernVertex& pt) override;
     void DrawLine(const ModernVertex& v0, const ModernVertex& v1) override;
     void DrawTriangle(const ModernVertex& a, const ModernVertex& b, const ModernVertex& c) override;

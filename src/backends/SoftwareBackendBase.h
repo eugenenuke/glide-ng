@@ -27,6 +27,7 @@ public:
     void ClearBuffer(uint32_t color, uint32_t alpha, float z, uint32_t clearMask) override;
     void SetConstantColor(uint32_t color) override;
     void SetPixelFormat(uint32_t format) override;
+    void SetRenderBuffer(uint32_t target) override;
 
     // Phase 3: Immediate Primitive Rasterization
     void DrawTriangle(const ModernVertex& a, const ModernVertex& b, const ModernVertex& c) override;
@@ -58,8 +59,8 @@ public:
 
     // Linear Framebuffer (LFB) read/write utilities
     void* GetLfbWritePtr() override;
-    bool ReadLFB(uint32_t srcX, uint32_t srcY, uint32_t srcWidth, uint32_t srcHeight, uint32_t dstStride, void* dstData) override;
-    bool WriteLFB(uint32_t dstX, uint32_t dstY, uint32_t srcWidth, uint32_t srcHeight, int32_t srcStride, uint32_t srcFmt, const void* srcData, const void* refData = nullptr) override;
+    bool ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY, uint32_t srcWidth, uint32_t srcHeight, uint32_t dstStride, void* dstData) override;
+    bool WriteLFB(uint32_t buffer, uint32_t dstX, uint32_t dstY, uint32_t srcWidth, uint32_t srcHeight, int32_t srcStride, uint32_t srcFmt, const void* srcData, const void* refData = nullptr) override;
 
 protected:
     void RasterizeSoftwareTriangle(const ModernVertex& a, const ModernVertex& b, const ModernVertex& c);
@@ -76,6 +77,15 @@ protected:
     uint32_t m_headlessWidth{800};
     uint32_t m_headlessHeight{600};
     bool m_lfbDirty{false};
+
+    // Double buffering CPU emulation
+    void AllocateCpuBuffers(uint32_t width, uint32_t height);
+    void FreeCpuBuffers();
+    
+    std::vector<uint8_t> m_cpuBuffers[2];
+    uint32_t m_frontBufferIdx{0};
+    uint32_t m_backBufferIdx{1};
+    uint32_t m_activeRenderBuffer{1}; // 1 = GR_BUFFER_BACKBUFFER (default)
 
     // Phase 4 State Trackers & Headless Depth Buffer Attachment
     uint32_t m_depthMode{0};      // 0 = Z-buffer, 1 = W-buffer
