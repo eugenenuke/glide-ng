@@ -102,8 +102,8 @@ This document serves as the authoritative coverage map for the **glide-ng** wrap
 - [ ] `grTexLodBiasValue(GrChipID_t tmu, float bias)` — Adjusts texture LOD selection bias.
 - [ ] `grTexDownloadMipMapLevelPartial(...)` — Uploads a partial slice of a mipmap level.
 - [ ] `ConvertAndDownloadRle(...)` — Decompresses and uploads Run-Length Encoded (RLE) textures.
-- [ ] `grTexDownloadTable(tmu, type, data)` — Downloads custom color lookup tables (e.g., for paletted formats).
-- [ ] `grTexDownloadTablePartial(...)` — Downloads a slice of a color lookup table.
+- [x] `grTexDownloadTable(tmu, type, data)` — Downloads custom color lookup tables (e.g., for paletted formats).
+- [x] `grTexDownloadTablePartial(...)` — Downloads a slice of a color lookup table.
 - [ ] `grTexMultibase(GrChipID_t tmu, FxBool enable)` — Enables multibase texturing (different textures per LOD).
 - [ ] `grTexMultibaseAddress(...)` — Sets the base address for multibase texturing.
 
@@ -123,7 +123,7 @@ This document serves as the authoritative coverage map for the **glide-ng** wrap
 - [ ] `grAADrawTriangle(a, b, c, ab_aa, bc_aa, ca_aa)` — Draws a triangle with edge anti-aliasing.
 - [ ] `grAADrawPolygon(int n, const int *i, const GrVertex *v)` — Draws an anti-aliased polygon.
 - [ ] `grAADrawPolygonVertexList(int n, const GrVertex *v)` — Draws an anti-aliased polygon from a vertex list.
-- [ ] `grGetString(FxU32 pname)` — Retrieves graphics driver extensions and device info.
+- [x] `grGetString(FxU32 pname)` — Retrieves graphics driver extensions and device info.
 - [ ] `grCheckForRoom(FxI32 n)` — Stalls until the command queue has room for `n` entries.
 - [ ] `grGammaCorrectionValue(float value)` — Configures hardware monitor gamma correction.
 - [ ] `grSplash(...)` — Renders a 3dfx splash screen sequence.
