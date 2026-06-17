@@ -5,6 +5,7 @@
 #include <vector>
 #include <mutex>
 #include <unordered_map>
+#include <functional>
 
 namespace GlideWrapper {
 
@@ -48,6 +49,56 @@ struct VulkanTexture {
     uint32_t minFilter{0};
     uint32_t magFilter{0};
 };
+
+struct PipelineStateKey {
+    uint32_t cullMode;
+    uint32_t sstOrigin;
+    uint32_t depthMode;
+    bool depthMask;
+    uint32_t depthCompareOp;
+    uint32_t rgbSrcBlend;
+    uint32_t rgbDstBlend;
+    uint32_t alphaSrcBlend;
+    uint32_t alphaDstBlend;
+
+    bool operator==(const PipelineStateKey& other) const {
+        return cullMode == other.cullMode &&
+               sstOrigin == other.sstOrigin &&
+               depthMode == other.depthMode &&
+               depthMask == other.depthMask &&
+               depthCompareOp == other.depthCompareOp &&
+               rgbSrcBlend == other.rgbSrcBlend &&
+               rgbDstBlend == other.rgbDstBlend &&
+               alphaSrcBlend == other.alphaSrcBlend &&
+               alphaDstBlend == other.alphaDstBlend;
+    }
+};
+
+struct PipelineStateKeyHash {
+    std::size_t operator()(const PipelineStateKey& k) const {
+        std::size_t h = 0;
+        auto combine = [&h](std::size_t val) {
+            h ^= val + 0x9e3779b9 + (h << 6) + (h >> 2);
+        };
+        combine(k.cullMode);
+        combine(k.sstOrigin);
+        combine(k.depthMode);
+        combine(k.depthMask ? 1 : 0);
+        combine(k.depthCompareOp);
+        combine(k.rgbSrcBlend);
+        combine(k.rgbDstBlend);
+        combine(k.alphaSrcBlend);
+        combine(k.alphaDstBlend);
+        return h;
+    }
+};
+
+struct PipelineGroup {
+    vk::UniquePipeline point;
+    vk::UniquePipeline line;
+    vk::UniquePipeline triangle;
+};
+
 
 /**
  * @brief Concrete production Vulkan translation engine.
@@ -136,13 +187,20 @@ private:
     // --- Phase 2: Dynamic Vertex Buffers & State Pipelines ---
     bool CreateShaderModules();
     bool CreateGraphicsPipelines();
+    PipelineGroup CompileGraphicsPipelines(const PipelineStateKey& key);
+    void UpdateActivePipelines();
 
     vk::UniqueShaderModule m_vertShaderModule;
     vk::UniqueShaderModule m_fragShaderModule;
     vk::UniquePipelineLayout m_pipelineLayout;
-    vk::UniquePipeline m_pointPipeline;
-    vk::UniquePipeline m_linePipeline;
-    vk::UniquePipeline m_trianglePipeline;
+    
+    // Active pipeline handles (non-owning pointers into the cache)
+    vk::Pipeline m_activePointPipeline;
+    vk::Pipeline m_activeLinePipeline;
+    vk::Pipeline m_activeTrianglePipeline;
+
+    // Pipeline cache storing owned UniquePipeline triplets
+    std::unordered_map<PipelineStateKey, PipelineGroup, PipelineStateKeyHash> m_pipelineCache;
     std::vector<vk::UniquePipeline> m_danglingPipelines;
 
     // Dynamic Ring Vertex Buffer
