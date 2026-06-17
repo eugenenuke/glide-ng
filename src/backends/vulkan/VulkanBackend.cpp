@@ -466,41 +466,38 @@ bool VulkanBackend::SwapBuffers() {
         std::this_thread::sleep_for(delay);
     }
 
-    if (m_headlessMode) {
-        // Terminate active render pass before copying GPU image to host buffer.
-        // If no draw calls were executed (clear-only frame), we must explicitly begin/end a render pass to execute the pending clears!
-        if (!m_inRenderPass) {
-            if (m_clearColorPending || m_clearDepthPending) {
-                vk::RenderPassBeginInfo renderPassInfo(m_renderPass.get(), m_headlessFramebuffer.get(),
-                                                     vk::Rect2D({0, 0}, {m_headlessWidth, m_headlessHeight}),
-                                                     0, nullptr);
-                m_commandBuffer->beginRenderPass(renderPassInfo, vk::SubpassContents::eInline);
+    // 1. If no draw calls were executed (clear-only frame), we must explicitly begin/end a render pass to execute the pending clears!
+    if (!m_inRenderPass && (m_clearColorPending || m_clearDepthPending)) {
+        vk::RenderPassBeginInfo renderPassInfo(m_renderPass.get(), m_headlessFramebuffer.get(),
+                                             vk::Rect2D({0, 0}, {m_headlessWidth, m_headlessHeight}),
+                                             0, nullptr);
+        m_commandBuffer->beginRenderPass(renderPassInfo, vk::SubpassContents::eInline);
 
-                std::vector<vk::ClearAttachment> clears;
-                if (m_clearColorPending) {
-                    clears.push_back(vk::ClearAttachment(vk::ImageAspectFlagBits::eColor, 0, m_clearColorValue));
-                }
-                if (m_clearDepthPending) {
-                    clears.push_back(vk::ClearAttachment(vk::ImageAspectFlagBits::eDepth, 0, vk::ClearValue(vk::ClearDepthStencilValue(m_clearDepthValue, 0))));
-                }
-                if (!clears.empty()) {
-                    vk::ClearRect clearRect(vk::Rect2D({0, 0}, {m_headlessWidth, m_headlessHeight}), 0, 1);
-                    m_commandBuffer->clearAttachments(static_cast<uint32_t>(clears.size()), clears.data(), 1, &clearRect);
-                    GLIDE_LOG(DEBUG, "Vulkan", "Explicitly cleared " << clears.size() << " attachments in SwapBuffers manual clear.");
-                }
-
-                m_commandBuffer->endRenderPass();
-                m_clearColorPending = false;
-                m_clearDepthPending = false;
-            }
-        } else {
-            m_commandBuffer->endRenderPass();
-            m_inRenderPass = false;
+        std::vector<vk::ClearAttachment> clears;
+        if (m_clearColorPending) {
+            clears.push_back(vk::ClearAttachment(vk::ImageAspectFlagBits::eColor, 0, m_clearColorValue));
+        }
+        if (m_clearDepthPending) {
+            clears.push_back(vk::ClearAttachment(vk::ImageAspectFlagBits::eDepth, 0, vk::ClearValue(vk::ClearDepthStencilValue(m_clearDepthValue, 0))));
+        }
+        if (!clears.empty()) {
+            vk::ClearRect clearRect(vk::Rect2D({0, 0}, {m_headlessWidth, m_headlessHeight}), 0, 1);
+            m_commandBuffer->clearAttachments(static_cast<uint32_t>(clears.size()), clears.data(), 1, &clearRect);
         }
 
-        // --- STEP 1: Cache CPU-rendered text/geometry pixels ---
-        // Any pixel in m_headlessPixelMap that has alpha > 0 (drawn by CPU rasterizer) is cached.
-        // The background pixels cleared by SoftwareBackendBase::ClearBuffer have alpha = 0.
+        m_commandBuffer->endRenderPass();
+        m_clearColorPending = false;
+        m_clearDepthPending = false;
+    } else if (m_inRenderPass) {
+        m_commandBuffer->endRenderPass();
+        m_inRenderPass = false;
+    }
+
+    // 2. Mode-specific presentation / execution dispatch
+    if (!m_headlessMode && m_sdlWindow && m_headlessPixelMap) {
+        // --- WINDOWED MODE PRESENTATION (Requires CPU readback for SDL2 blit) ---
+
+        // 2.1. Cache CPU-rendered text/geometry pixels (e.g. from LFB)
         std::vector<uint32_t> cpuRenderingCache(m_headlessWidth * m_headlessHeight, 0);
         const auto* cpuPixels = reinterpret_cast<const uint32_t*>(m_headlessPixelMap);
         bool hasCpuRendering = false;
@@ -508,7 +505,6 @@ bool VulkanBackend::SwapBuffers() {
 
         if (cpuPixels) {
             for (size_t i = 0; i < cpuRenderingCache.size(); ++i) {
-                // If the pixel is not transparent background (alpha != 0)
                 if ((cpuPixels[i] >> 24) != 0) {
                     cpuRenderingCache[i] = cpuPixels[i];
                     hasCpuRendering = true;
@@ -518,20 +514,16 @@ bool VulkanBackend::SwapBuffers() {
         }
         GLIDE_LOG(INFO, "Vulkan", "SwapBuffers: Cache CPU pixels phase. Found " << cpuPixelCount << " non-transparent CPU pixels.");
 
-        // --- STEP 2: Execute GPU presentation copy ---
-        // Manually transition layout from ColorAttachmentOptimal to TransferSrcOptimal before copy!
+        // 2.2. Execute GPU presentation copy
         vk::ImageSubresourceRange range(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1);
         TransitionImageLayout(m_commandBuffer.get(), m_headlessImage.get(), vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eTransferSrcOptimal, range);
 
-        // Record copy from GPU image (which has the GPU-cleared blue background) to host staging buffer.
-        // This will overwrite m_headlessPixelMap with the GPU-cleared pixels.
         vk::BufferImageCopy region;
         region.imageSubresource = vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
         region.imageExtent = vk::Extent3D(m_headlessWidth, m_headlessHeight, 1);
         
         m_commandBuffer->copyImageToBuffer(m_headlessImage.get(), vk::ImageLayout::eTransferSrcOptimal, m_headlessPixelBuffer.get(), 1, &region);
 
-        // Transition layout back to ColorAttachmentOptimal so the image state is clean for the next frame!
         TransitionImageLayout(m_commandBuffer.get(), m_headlessImage.get(), vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::eColorAttachmentOptimal, range);
 
         // End and submit GPU commands
@@ -540,7 +532,6 @@ bool VulkanBackend::SwapBuffers() {
         m_graphicsQueue.submit(submitInfo, {});
         m_device->waitIdle(); // Wait for GPU copy to complete
 
-        // Now it is 100% safe to destroy any pipelines that were recompiled mid-frame!
         m_danglingPipelines.clear();
 
         // Explicitly invalidate mapped memory range to force CPU cache refresh of GPU copy!
@@ -548,13 +539,12 @@ bool VulkanBackend::SwapBuffers() {
         m_device->invalidateMappedMemoryRanges(memRange);
 
         // Copy the GPU-rendered framebuffer from mapped staging memory into our CPU-side active buffer
-        if (m_gpuStagingMap && m_headlessPixelMap) {
+        if (m_gpuStagingMap) {
             std::memcpy(m_headlessPixelMap, m_gpuStagingMap, m_headlessWidth * m_headlessHeight * 4);
         }
 
-        // --- STEP 3: Overlay CPU-rendered text/geometry back ---
-        // Overwrite the staging memory (m_headlessPixelMap) with our cached CPU text pixels!
-        if (hasCpuRendering && m_headlessPixelMap) {
+        // Overlay CPU-rendered text/geometry back
+        if (hasCpuRendering) {
             auto* dest = reinterpret_cast<uint32_t*>(m_headlessPixelMap);
             for (size_t i = 0; i < cpuRenderingCache.size(); ++i) {
                 if (cpuRenderingCache[i] != 0) {
@@ -563,8 +553,8 @@ bool VulkanBackend::SwapBuffers() {
             }
         }
 
-        // Blit the combined frame to SDL2 window if active
-        if (m_sdlTexture && m_sdlRenderer && m_headlessPixelMap) {
+        // Blit the combined frame to SDL2 window
+        if (m_sdlTexture && m_sdlRenderer) {
             SDL_UpdateTexture(reinterpret_cast<SDL_Texture*>(m_sdlTexture), nullptr, m_headlessPixelMap, m_headlessWidth * 4);
             SDL_RenderCopy(reinterpret_cast<SDL_Renderer*>(m_sdlRenderer), reinterpret_cast<SDL_Texture*>(m_sdlTexture), nullptr, nullptr);
             SDL_RenderPresent(reinterpret_cast<SDL_Renderer*>(m_sdlRenderer));
@@ -574,15 +564,27 @@ bool VulkanBackend::SwapBuffers() {
         m_commandBuffer->reset({});
         m_commandBuffer->begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
 
-        // Swap the CPU buffer indices for double-buffering
+    } else {
+        // --- HEADLESS MODE (Direct Asynchronous GPU Queue Submission) ---
+        m_commandBuffer->end();
+        vk::SubmitInfo submitInfo(0, nullptr, nullptr, 1, &m_commandBuffer.get());
+        
+        m_graphicsQueue.submit(submitInfo, {});
+        m_device->waitIdle(); // Wait for GPU to finish executing this command buffer before reusing it!
+
+        // Reset and begin recording the next frame's commands immediately!
+        m_commandBuffer->reset({});
+        m_commandBuffer->begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
+    }
+
+    // 3. Swap the CPU buffer indices for double-buffering
+    if (m_headlessPixelMap) {
         std::swap(m_frontBufferIdx, m_backBufferIdx);
         if (m_activeRenderBuffer == 0) { // FRONTBUFFER
             m_headlessPixelMap = m_cpuBuffers[m_frontBufferIdx].data();
         } else { // BACKBUFFER
             m_headlessPixelMap = m_cpuBuffers[m_backBufferIdx].data();
         }
-
-
     }
 
     return true;
@@ -633,6 +635,9 @@ bool VulkanBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY, uint3
     vk::SubmitInfo submitInfo(0, nullptr, nullptr, 1, &m_commandBuffer.get());
     m_graphicsQueue.submit(submitInfo, {});
     m_device->waitIdle(); // Block CPU until GPU finishes!
+
+    // Now it is 100% safe to destroy any pipelines that were recompiled mid-frame!
+    m_danglingPipelines.clear();
 
     // Copy the GPU-rendered framebuffer from mapped staging memory into our CPU-side active buffer
     if (m_gpuStagingMap && m_headlessPixelMap) {
@@ -964,6 +969,11 @@ void VulkanBackend::FlushLFBToGPU() {
         GLIDE_LOG(INFO, "Vulkan", "FlushLFBToGPU: Ending active render pass to perform CPU->GPU transfer...");
         m_commandBuffer->endRenderPass();
         m_inRenderPass = false;
+    }
+
+    // Copy from CPU-side active buffer to GPU staging memory
+    if (m_gpuStagingMap && m_headlessPixelMap) {
+        std::memcpy(m_gpuStagingMap, m_headlessPixelMap, m_headlessWidth * m_headlessHeight * 4);
     }
 
     // 2. Transition image to TransferDstOptimal

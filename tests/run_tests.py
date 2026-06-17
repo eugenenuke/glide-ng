@@ -315,7 +315,10 @@ def main():
     res = run_command_with_env([TEST_RUNNER, "--test", test_name, "--mode", "run"], 
                                OUR_LIB_DIR, force_no_window=True, use_xvfb=False)
     if res.returncode != 0:
-        print(f"{RED}Test failed to run or crashed under our library!{RESET}")
+        print(f"{RED}Test failed to run or crashed under our library! Return code: {res.returncode}{RESET}")
+        print(f"--- STDOUT ---")
+        print(res.stdout)
+        print(f"--- STDERR ---")
         print(res.stderr)
         sys.exit(1)
 
