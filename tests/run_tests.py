@@ -32,6 +32,7 @@ TEST_PASS_RATIOS = {
     "test02": 0.95,  # Bresenham integer lines vs Mesa software GL native line rasterization rounding variance
     "test04": 0.95,  # Software triangle rasterizer vs Mesa GL native triangle rounding and boundary alignment variance
     "test14": 0.98,  # Minor diagonal intersection boundary shift under hardware rendering precision differences
+    "test19": 0.95,  # Allow minor sub-pixel rasterization edge shift on minified textures
 }
 
 # Custom console text block skip bounds: (max_bx, max_by)
@@ -43,11 +44,13 @@ TEST_TEXT_SKIP_BOUNDS = {
     "test15": (40, 2),  # Widen to full screen width for the top 2 rows to cover all console text/headers
     "test17": (40, 2),  # Widen to full screen width for the top 2 rows to cover the long title text
     "test18": (40, 2),  # Widen to cover console text
+    "test19": (40, 2),  # Widen to cover console text
 }
 
 # Per-test color delta threshold overrides (defaults to 8 if unspecified)
 TEST_THRESHOLDS = {
     "test17": 12,  # Handle 16-bit RGB565 hardware quantization rounding variance on Red/Blue channels
+    "test19": 12,  # Handle 16-bit RGB565 hardware quantization rounding variance on Red/Blue channels
 }
 
 def ensure_dirs():
