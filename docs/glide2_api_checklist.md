@@ -39,8 +39,8 @@ This document serves as the authoritative coverage map for the **glide-ng** wrap
 - [ ] `grSstScreenHeight(void)` — Returns the screen height in pixels.
 - [ ] `grSstScreenWidth(void)` — Returns the screen width in pixels.
 - [ ] `grSstStatus(void)` — Returns the raw status register bits of the Voodoo chip.
-- [ ] `grSstPerfStats(GrSstPerfStats_t *stats)` — Gathers hardware execution performance metrics.
-- [ ] `grSstResetPerfStats(void)` — Resets hardware performance metrics.
+- [x] `grSstPerfStats(GrSstPerfStats_t *stats)` — Gathers hardware execution performance metrics.
+- [x] `grSstResetPerfStats(void)` — Resets hardware performance metrics.
 
 ### 1.3. Buffers & Presentation
 - [x] `grBufferClear(GrColor_t c, GrAlpha_t a, FxU16 d)` — Clears color, alpha, and depth buffers (GPU-native in Vulkan/GLES).
@@ -56,8 +56,8 @@ This document serves as the authoritative coverage map for the **glide-ng** wrap
 - [ ] `grDrawPlanarPolygonVertexList(int n, const GrVertex *v)` — Renders a flat-colored polygon from a vertex list.
 - [ ] `grDrawPolygon(int n, const int *i, const GrVertex *v)` — Renders a shaded polygon.
 - [ ] `grDrawPolygonVertexList(int n, const GrVertex *v)` — Renders a shaded polygon from a vertex list.
-- [ ] `grResetTriStats(void)` — Resets drawing counters.
-- [ ] `grTriStats(FxU32 *processed, FxU32 *drawn)` — Retrieves triangle drawing statistics.
+- [x] `grResetTriStats(void)` — Resets drawing counters.
+- [x] `grTriStats(FxU32 *processed, FxU32 *drawn)` — Retrieves triangle drawing statistics.
 
 ### 1.5. State Combiners & Blending
 - [x] `grColorCombine(fnc, factor, local, other, invert)` — Configures the RGB color combine unit equations.
