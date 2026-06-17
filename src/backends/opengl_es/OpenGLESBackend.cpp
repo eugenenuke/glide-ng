@@ -90,7 +90,7 @@ bool OpenGLESBackend::AttachWindow(void* nativeWindowHandle, uint32_t width, uin
               << "    Driver    : " << (version ? version : "OpenGL ES 3.2") << "\n"
               << "    Pixel Fmt : RGBA8888 D24S0 nAux 1\n"
               << "------------------------------------------";
-    GLIDE_LOG(INFO, "GLES", logStream.str());
+    GLIDE_LOG(DEBUG, "GLES", logStream.str());
 
     // Milestone 1: Setup Offscreen Framebuffer Object (FBO) for GPU-native rendering
     glGenFramebuffers(1, &m_headlessFBO);
@@ -344,10 +344,10 @@ bool OpenGLESBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY, uin
         const auto* pixels = reinterpret_cast<const uint32_t*>(m_headlessPixelMap);
         uint32_t textPixelIndex = 8 * m_headlessWidth + 50; // (50, 8)
         uint32_t bgPixelIndex = 30 * m_headlessWidth + 50; // (50, 30)
-        GLIDE_LOG(INFO, "OpenGL_ES", "ReadLFB Overlay Debug: Pixel (50,8) before overlay: 0x" 
+        GLIDE_LOG(DEBUG, "OpenGL_ES", "ReadLFB Overlay Debug: Pixel (50,8) before overlay: 0x" 
                   << std::hex << std::uppercase << pixels[textPixelIndex] 
                   << " (Cache: 0x" << cpuRenderingCache[textPixelIndex] << ")");
-        GLIDE_LOG(INFO, "OpenGL_ES", "ReadLFB Overlay Debug: Pixel (50,30) before overlay: 0x" 
+        GLIDE_LOG(DEBUG, "OpenGL_ES", "ReadLFB Overlay Debug: Pixel (50,30) before overlay: 0x" 
                   << std::hex << std::uppercase << pixels[bgPixelIndex] 
                   << " (Cache: 0x" << cpuRenderingCache[bgPixelIndex] << ")");
     }
@@ -366,9 +366,9 @@ bool OpenGLESBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY, uin
         const auto* pixels = reinterpret_cast<const uint32_t*>(m_headlessPixelMap);
         uint32_t textPixelIndex = 8 * m_headlessWidth + 50; // (50, 8)
         uint32_t bgPixelIndex = 30 * m_headlessWidth + 50; // (50, 30)
-        GLIDE_LOG(INFO, "OpenGL_ES", "ReadLFB Overlay Debug: Pixel (50,8) after overlay: 0x" 
+        GLIDE_LOG(DEBUG, "OpenGL_ES", "ReadLFB Overlay Debug: Pixel (50,8) after overlay: 0x" 
                   << std::hex << std::uppercase << pixels[textPixelIndex]);
-        GLIDE_LOG(INFO, "OpenGL_ES", "ReadLFB Overlay Debug: Pixel (50,30) after overlay: 0x" 
+        GLIDE_LOG(DEBUG, "OpenGL_ES", "ReadLFB Overlay Debug: Pixel (50,30) after overlay: 0x" 
                   << std::hex << std::uppercase << pixels[bgPixelIndex]);
     }
 
@@ -1025,10 +1025,10 @@ void OpenGLESBackend::UploadTexture(uint32_t tmu, uint32_t startAddress, const s
     if (it == m_glesTextures.end()) {
         glGenTextures(1, &texId);
         m_glesTextures[startAddress] = texId;
-        GLIDE_LOG(INFO, "GLES", "Generated new GLES Texture ID " << texId << " for Address 0x" << std::hex << startAddress << std::dec);
+        GLIDE_LOG(DEBUG, "GLES", "Generated new GLES Texture ID " << texId << " for Address 0x" << std::hex << startAddress << std::dec);
     } else {
         texId = it->second;
-        GLIDE_LOG(INFO, "GLES", "Re-uploading to existing GLES Texture ID " << texId << " for Address 0x" << std::hex << startAddress << std::dec);
+        GLIDE_LOG(DEBUG, "GLES", "Re-uploading to existing GLES Texture ID " << texId << " for Address 0x" << std::hex << startAddress << std::dec);
     }
 
     glBindTexture(GL_TEXTURE_2D, texId);

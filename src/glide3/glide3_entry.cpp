@@ -145,23 +145,23 @@ FX_ENTRY FxBool FX_CALL grSelectContext(GrContext_t context) {
 
 FX_ENTRY void FX_CALL grRenderBuffer(GrBuffer_t buffer) {
     EnsureEngineInitialized();
-    GLIDE_LOG(INFO, "Frontend", "grRenderBuffer (Glide 3.x) invoked for Buffer=" << buffer);
+    GLIDE_LOG(DEBUG, "Frontend", "grRenderBuffer (Glide 3.x) invoked for Buffer=" << buffer);
 }
 
 FX_ENTRY void FX_CALL grSstSelect(int which_sst) {
     EnsureEngineInitialized();
-    GLIDE_LOG(INFO, "Frontend", "grSstSelect (Glide 3.x) invoked for SST=" << which_sst);
+    GLIDE_LOG(DEBUG, "Frontend", "grSstSelect (Glide 3.x) invoked for SST=" << which_sst);
 }
 
 FX_ENTRY void FX_CALL grVertexLayout(FxU32 param, FxI32 offset, FxU32 mode) {
     EnsureEngineInitialized();
-    GLIDE_LOG(INFO, "Frontend", "grVertexLayout (Glide 3.x) invoked. Param=" << param << ", Offset=" << offset << ", Mode=" << mode);
+    GLIDE_LOG(DEBUG, "Frontend", "grVertexLayout (Glide 3.x) invoked. Param=" << param << ", Offset=" << offset << ", Mode=" << mode);
     GlideWrapper::VertexLayout::GetInstance().SetParamOffsetGlide3(param, offset, mode);
 }
 
 FX_ENTRY void FX_CALL grDrawTriangle(const void* a, const void* b, const void* c) {
     EnsureEngineInitialized();
-    GLIDE_LOG(INFO, "Frontend", "grDrawTriangle (Glide 3.x) invoked with a=" << a << ", b=" << b << ", c=" << c);
+    GLIDE_LOG(DEBUG, "Frontend", "grDrawTriangle (Glide 3.x) invoked with a=" << a << ", b=" << b << ", c=" << c);
     auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
     if (!backend || !a || !b || !c) {
         GLIDE_LOG(WARN, "Frontend", "grDrawTriangle early exit: backend=" << backend << ", a=" << a << ", b=" << b << ", c=" << c);
@@ -188,7 +188,7 @@ FX_ENTRY void FX_CALL grDrawPoint(const void* pt) {
 }
 
 FX_ENTRY FxU32 FX_CALL grGet(FxU32 pname, FxU32 plength, FxI32* params) {
-    GLIDE_LOG(INFO, "Frontend", "grGet (Glide 3.x) invoked for pname: " << pname);
+    GLIDE_LOG(DEBUG, "Frontend", "grGet (Glide 3.x) invoked for pname: " << pname);
     if (!params || plength < 4) return 0;
 
     auto& reg = GlideWrapper::EmulationRegistry::GetInstance();
@@ -205,7 +205,7 @@ FX_ENTRY FxU32 FX_CALL grGet(FxU32 pname, FxU32 plength, FxI32* params) {
 }
 
 FX_ENTRY const char* FX_CALL grGetString(FxU32 pname) {
-    GLIDE_LOG(INFO, "Frontend", "grGetString (Glide 3.x) invoked for pname: " << pname);
+    GLIDE_LOG(DEBUG, "Frontend", "grGetString (Glide 3.x) invoked for pname: " << pname);
     auto& reg = GlideWrapper::EmulationRegistry::GetInstance();
     switch (pname) {
         case GR_VERSION:  return "3.10 (glide-ng)";
@@ -225,47 +225,47 @@ FX_ENTRY const char* FX_CALL grGetString(FxU32 pname) {
 }
 
 FX_ENTRY void FX_CALL grClipWindow(FxU32 minx, FxU32 miny, FxU32 maxx, FxU32 maxy) {
-    GLIDE_LOG(INFO, "Frontend", "grClipWindow (Glide 3.x) invoked: " << minx << "," << miny << " to " << maxx << "," << maxy);
+    GLIDE_LOG(DEBUG, "Frontend", "grClipWindow (Glide 3.x) invoked: " << minx << "," << miny << " to " << maxx << "," << maxy);
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
         b->SetClipWindow(minx, miny, maxx, maxy);
     }
 }
 
 FX_ENTRY FxU32 FX_CALL grTexMinAddress(GrChipID_t tmu) {
-    GLIDE_LOG(INFO, "Frontend", "grTexMinAddress (Glide 3.x) invoked for TMU=" << tmu);
+    GLIDE_LOG(DEBUG, "Frontend", "grTexMinAddress (Glide 3.x) invoked for TMU=" << tmu);
     return 0;
 }
 
 FX_ENTRY FxU32 FX_CALL grTexMaxAddress(GrChipID_t tmu) {
-    GLIDE_LOG(INFO, "Frontend", "grTexMaxAddress (Glide 3.x) invoked for TMU=" << tmu);
+    GLIDE_LOG(DEBUG, "Frontend", "grTexMaxAddress (Glide 3.x) invoked for TMU=" << tmu);
     return 0x200000;
 }
 
 FX_ENTRY FxU32 FX_CALL grTexCalcMemRequired(GrLOD_t lodmin, GrLOD_t lodmax, GrAspectRatio_t aspect, GrTextureFormat_t fmt) {
-    GLIDE_LOG(INFO, "Frontend", "grTexCalcMemRequired (Glide 3.x) invoked.");
+    GLIDE_LOG(DEBUG, "Frontend", "grTexCalcMemRequired (Glide 3.x) invoked.");
     return GlideWrapper::TextureManager::GetInstance().CalculateMemoryRequired(lodmin, lodmax, aspect, fmt);
 }
 
 FX_ENTRY FxU32 FX_CALL grTexTextureMemRequired(FxU32 evenOdd, GrTexInfo *info) {
-    GLIDE_LOG(INFO, "Frontend", "grTexTextureMemRequired (Glide 3.x) invoked");
+    GLIDE_LOG(DEBUG, "Frontend", "grTexTextureMemRequired (Glide 3.x) invoked");
     if (!info) return 0;
     return grTexCalcMemRequired(info->smallLodLog2, info->largeLodLog2, info->aspectRatioLog2, info->format);
 }
 
 FX_ENTRY void FX_CALL grTexDetailControl(GrChipID_t tmu, int lod_bias, FxU8 detail_scale, float detail_max) {
-    GLIDE_LOG(INFO, "Frontend", "grTexDetailControl (Glide 3.x) invoked for TMU=" << tmu << " (Stubbed)");
+    GLIDE_LOG(DEBUG, "Frontend", "grTexDetailControl (Glide 3.x) invoked for TMU=" << tmu << " (Stubbed)");
 }
 
 FX_ENTRY void FX_CALL grGlideGetState(void* state) {
-    GLIDE_LOG(INFO, "Frontend", "grGlideGetState (Glide 3.x) invoked.");
+    GLIDE_LOG(DEBUG, "Frontend", "grGlideGetState (Glide 3.x) invoked.");
 }
 
 FX_ENTRY void FX_CALL grGlideSetState(const void* state) {
-    GLIDE_LOG(INFO, "Frontend", "grGlideSetState (Glide 3.x) invoked.");
+    GLIDE_LOG(DEBUG, "Frontend", "grGlideSetState (Glide 3.x) invoked.");
 }
 
 FX_ENTRY void FX_CALL grColorCombine(GrCombineFunction_t fnc, GrCombineFactor_t factor, GrCombineLocal_t local, GrCombineOther_t other, FxBool invert) {
-    GLIDE_LOG(INFO, "Frontend", "grColorCombine (Glide 3.x) invoked: Function=" << fnc << ", Factor=" << factor << ", Local=" << local << ", Other=" << other << ", Invert=" << invert);
+    GLIDE_LOG(DEBUG, "Frontend", "grColorCombine (Glide 3.x) invoked: Function=" << fnc << ", Factor=" << factor << ", Local=" << local << ", Other=" << other << ", Invert=" << invert);
     s_colorFunc   = fnc;
     s_colorFactor = factor;
     s_colorLocal  = local;
@@ -278,7 +278,7 @@ FX_ENTRY void FX_CALL grColorCombine(GrCombineFunction_t fnc, GrCombineFactor_t 
 }
 
 FX_ENTRY void FX_CALL grAlphaCombine(GrCombineFunction_t fnc, GrCombineFactor_t factor, GrCombineLocal_t local, GrCombineOther_t other, FxBool invert) {
-    GLIDE_LOG(INFO, "Frontend", "grAlphaCombine (Glide 3.x) invoked: Function=" << fnc << ", Factor=" << factor << ", Local=" << local << ", Other=" << other << ", Invert=" << invert);
+    GLIDE_LOG(DEBUG, "Frontend", "grAlphaCombine (Glide 3.x) invoked: Function=" << fnc << ", Factor=" << factor << ", Local=" << local << ", Other=" << other << ", Invert=" << invert);
     s_alphaFunc   = fnc;
     s_alphaFactor = factor;
     s_alphaLocal  = local;
@@ -291,7 +291,7 @@ FX_ENTRY void FX_CALL grAlphaCombine(GrCombineFunction_t fnc, GrCombineFactor_t 
 }
 
 FX_ENTRY void FX_CALL grTexCombine(GrChipID_t tmu, GrCombineFunction_t rgbFnc, GrCombineFactor_t rgbFactor, GrCombineFunction_t alphaFnc, GrCombineFactor_t alphaFactor, FxBool rgbInvert, FxBool alphaInvert) {
-    GLIDE_LOG(INFO, "Frontend", "grTexCombine (Glide 3.x) invoked for TMU=" << tmu);
+    GLIDE_LOG(DEBUG, "Frontend", "grTexCombine (Glide 3.x) invoked for TMU=" << tmu);
     if (tmu < 2) {
         s_texRgbFunc[tmu]    = rgbFnc;
         s_texRgbFactor[tmu]  = rgbFactor;
@@ -304,14 +304,14 @@ FX_ENTRY void FX_CALL grTexCombine(GrChipID_t tmu, GrCombineFunction_t rgbFnc, G
 }
 
 FX_ENTRY void FX_CALL grAlphaBlendFunction(GrAlphaBlendFnc_t rgbSf, GrAlphaBlendFnc_t rgbDf, GrAlphaBlendFnc_t alphaSf, GrAlphaBlendFnc_t alphaDf) {
-    GLIDE_LOG(INFO, "Frontend", "grAlphaBlendFunction (Glide 3.x) invoked.");
+    GLIDE_LOG(DEBUG, "Frontend", "grAlphaBlendFunction (Glide 3.x) invoked.");
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
         b->SetBlendState(rgbSf, rgbDf, alphaSf, alphaDf);
     }
 }
 
 FX_ENTRY void FX_CALL grAlphaTestFunction(GrCmpFnc_t fnc) {
-    GLIDE_LOG(INFO, "Frontend", "grAlphaTestFunction (Glide 3.x) invoked.");
+    GLIDE_LOG(DEBUG, "Frontend", "grAlphaTestFunction (Glide 3.x) invoked.");
     s_alphaTestOp = fnc;
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
         b->SetAlphaTestState(s_alphaTestOp, s_alphaTestRef);
@@ -319,7 +319,7 @@ FX_ENTRY void FX_CALL grAlphaTestFunction(GrCmpFnc_t fnc) {
 }
 
 FX_ENTRY void FX_CALL grAlphaTestReferenceValue(GrAlpha_t refVal) {
-    GLIDE_LOG(INFO, "Frontend", "grAlphaTestReferenceValue (Glide 3.x) invoked: " << static_cast<int>(refVal));
+    GLIDE_LOG(DEBUG, "Frontend", "grAlphaTestReferenceValue (Glide 3.x) invoked: " << static_cast<int>(refVal));
     s_alphaTestRef = refVal;
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
         b->SetAlphaTestState(s_alphaTestOp, s_alphaTestRef);
@@ -327,7 +327,7 @@ FX_ENTRY void FX_CALL grAlphaTestReferenceValue(GrAlpha_t refVal) {
 }
 
 FX_ENTRY void FX_CALL grTexFilterMode(GrChipID_t tmu, GrTextureFilterMode_t minfilter, GrTextureFilterMode_t magfilter) {
-    GLIDE_LOG(INFO, "Frontend", "grTexFilterMode (Glide 3.x) invoked for TMU=" << tmu);
+    GLIDE_LOG(DEBUG, "Frontend", "grTexFilterMode (Glide 3.x) invoked for TMU=" << tmu);
     if (tmu < 2) {
         s_minFilter[tmu] = minfilter;
         s_magFilter[tmu] = magfilter;
@@ -338,7 +338,7 @@ FX_ENTRY void FX_CALL grTexFilterMode(GrChipID_t tmu, GrTextureFilterMode_t minf
 }
 
 FX_ENTRY void FX_CALL grTexClampMode(GrChipID_t tmu, GrTextureClampMode_t s_clampmode, GrTextureClampMode_t t_clampmode) {
-    GLIDE_LOG(INFO, "Frontend", "grTexClampMode (Glide 3.x) invoked for TMU=" << tmu);
+    GLIDE_LOG(DEBUG, "Frontend", "grTexClampMode (Glide 3.x) invoked for TMU=" << tmu);
     if (tmu < 2) {
         s_clampS[tmu] = s_clampmode;
         s_clampT[tmu] = t_clampmode;
@@ -349,11 +349,11 @@ FX_ENTRY void FX_CALL grTexClampMode(GrChipID_t tmu, GrTextureClampMode_t s_clam
 }
 
 FX_ENTRY void FX_CALL grTexMipMapMode(GrChipID_t tmu, GrMipMapMode_t mode, FxBool lodBlend) {
-    GLIDE_LOG(INFO, "Frontend", "grTexMipMapMode (Glide 3.x) invoked for TMU=" << tmu);
+    GLIDE_LOG(DEBUG, "Frontend", "grTexMipMapMode (Glide 3.x) invoked for TMU=" << tmu);
 }
 
 FX_ENTRY void FX_CALL grDepthBufferMode(GrDepthBufferMode_t mode) {
-    GLIDE_LOG(INFO, "Frontend", "grDepthBufferMode (Glide 3.x) invoked: " << mode);
+    GLIDE_LOG(DEBUG, "Frontend", "grDepthBufferMode (Glide 3.x) invoked: " << mode);
     s_depthMode = mode;
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
         b->SetDepthState(s_depthMode, s_depthCompare, s_depthMask, s_depthBias);
@@ -361,7 +361,7 @@ FX_ENTRY void FX_CALL grDepthBufferMode(GrDepthBufferMode_t mode) {
 }
 
 FX_ENTRY void FX_CALL grDepthBufferFunction(GrCmpFnc_t fnc) {
-    GLIDE_LOG(INFO, "Frontend", "grDepthBufferFunction (Glide 3.x) invoked.");
+    GLIDE_LOG(DEBUG, "Frontend", "grDepthBufferFunction (Glide 3.x) invoked.");
     s_depthCompare = fnc;
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
         b->SetDepthState(s_depthMode, s_depthCompare, s_depthMask, s_depthBias);
@@ -369,7 +369,7 @@ FX_ENTRY void FX_CALL grDepthBufferFunction(GrCmpFnc_t fnc) {
 }
 
 FX_ENTRY void FX_CALL grDepthMask(FxBool mask) {
-    GLIDE_LOG(INFO, "Frontend", "grDepthMask (Glide 3.x) invoked: " << mask);
+    GLIDE_LOG(DEBUG, "Frontend", "grDepthMask (Glide 3.x) invoked: " << mask);
     s_depthMask = mask;
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
         b->SetDepthState(s_depthMode, s_depthCompare, s_depthMask, s_depthBias);
@@ -377,7 +377,7 @@ FX_ENTRY void FX_CALL grDepthMask(FxBool mask) {
 }
 
 FX_ENTRY void FX_CALL grDepthBiasLevel(FxI32 level) {
-    GLIDE_LOG(INFO, "Frontend", "grDepthBiasLevel (Glide 3.x) invoked: " << level);
+    GLIDE_LOG(DEBUG, "Frontend", "grDepthBiasLevel (Glide 3.x) invoked: " << level);
     s_depthBias = level;
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
         b->SetDepthState(s_depthMode, s_depthCompare, s_depthMask, s_depthBias);
@@ -385,21 +385,21 @@ FX_ENTRY void FX_CALL grDepthBiasLevel(FxI32 level) {
 }
 
 FX_ENTRY void FX_CALL grSstOrigin(GrOriginLocation_t origin) {
-    GLIDE_LOG(INFO, "Frontend", "grSstOrigin (Glide 3.x) invoked: " << origin);
+    GLIDE_LOG(DEBUG, "Frontend", "grSstOrigin (Glide 3.x) invoked: " << origin);
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
         b->SetSstOrigin(origin);
     }
 }
 
 FX_ENTRY void FX_CALL grCullMode(GrCullMode_t mode) {
-    GLIDE_LOG(INFO, "Frontend", "grCullMode (Glide 3.x) invoked: " << mode);
+    GLIDE_LOG(DEBUG, "Frontend", "grCullMode (Glide 3.x) invoked: " << mode);
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
         b->SetCullState(mode);
     }
 }
 
 FX_ENTRY void FX_CALL grTexDownloadMipMap(GrChipID_t tmu, FxU32 startAddress, FxU32 evenOdd, GrTexInfo* info) {
-    GLIDE_LOG(INFO, "Frontend", "grTexDownloadMipMap (Glide 3.x) invoked for TMU=" << tmu);
+    GLIDE_LOG(DEBUG, "Frontend", "grTexDownloadMipMap (Glide 3.x) invoked for TMU=" << tmu);
     if (info && info->data) {
         // Translate Glide 3.x signed log2 aspect ratio to Glide 2.x core format (CoreAspect = 3 - Glide3Aspect)
         GlideWrapper::TextureManager::GetInstance().DownloadMipMap(tmu, startAddress, info->smallLodLog2, info->largeLodLog2, 3 - info->aspectRatioLog2, info->format, info->data);
@@ -407,7 +407,7 @@ FX_ENTRY void FX_CALL grTexDownloadMipMap(GrChipID_t tmu, FxU32 startAddress, Fx
 }
 
 FX_ENTRY void FX_CALL grTexDownloadMipMapLevel(GrChipID_t tmu, FxU32 startAddress, GrLOD_t thisLod, GrLOD_t largeLod, GrAspectRatio_t aspectRatio, GrTextureFormat_t format, FxU32 evenOdd, void* data) {
-    GLIDE_LOG(INFO, "Frontend", "grTexDownloadMipMapLevel (Glide 3.x) invoked for TMU=" << tmu << ", LOD=" << thisLod);
+    GLIDE_LOG(DEBUG, "Frontend", "grTexDownloadMipMapLevel (Glide 3.x) invoked for TMU=" << tmu << ", LOD=" << thisLod);
     if (data) {
         // Translate Glide 3.x signed log2 aspect ratio to Glide 2.x core format
         GlideWrapper::TextureManager::GetInstance().DownloadMipMap(tmu, startAddress, thisLod, thisLod, 3 - aspectRatio, format, data);
@@ -415,7 +415,7 @@ FX_ENTRY void FX_CALL grTexDownloadMipMapLevel(GrChipID_t tmu, FxU32 startAddres
 }
 
 FX_ENTRY void FX_CALL grTexSource(GrChipID_t tmu, FxU32 startAddress, FxU32 evenOdd, GrTexInfo* info) {
-    GLIDE_LOG(INFO, "Frontend", "grTexSource (Glide 3.x) invoked for TMU=" << tmu);
+    GLIDE_LOG(DEBUG, "Frontend", "grTexSource (Glide 3.x) invoked for TMU=" << tmu);
     if (tmu < 2) {
         s_boundTex[tmu] = startAddress;
         if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
@@ -426,7 +426,7 @@ FX_ENTRY void FX_CALL grTexSource(GrChipID_t tmu, FxU32 startAddress, FxU32 even
 
 FX_ENTRY void FX_CALL grConstantColorValue(GrColor_t value) {
     EnsureEngineInitialized();
-    GLIDE_LOG(INFO, "Frontend", "grConstantColorValue (Glide 3.x) invoked: " << std::hex << value << std::dec);
+    GLIDE_LOG(DEBUG, "Frontend", "grConstantColorValue (Glide 3.x) invoked: " << std::hex << value << std::dec);
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
         b->SetConstantColor(value);
     }
@@ -434,7 +434,7 @@ FX_ENTRY void FX_CALL grConstantColorValue(GrColor_t value) {
 
 FX_ENTRY FxBool FX_CALL grLfbReadRegion(GrBuffer_t srcBuf, FxU32 srcX, FxU32 srcY, FxU32 srcWidth, FxU32 srcHeight, FxU32 dstStride, void* dstData) {
     EnsureEngineInitialized();
-    GLIDE_LOG(INFO, "Frontend", "grLfbReadRegion (Glide 3.x) invoked.");
+    GLIDE_LOG(DEBUG, "Frontend", "grLfbReadRegion (Glide 3.x) invoked.");
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
         return b->ReadLFB(srcBuf, srcX, srcY, srcWidth, srcHeight, dstStride, dstData) ? FXTRUE : FXFALSE;
     }
@@ -444,7 +444,7 @@ FX_ENTRY FxBool FX_CALL grLfbReadRegion(GrBuffer_t srcBuf, FxU32 srcX, FxU32 src
 
 FX_ENTRY FxBool FX_CALL grLfbWriteRegion(GrBuffer_t dstBuf, FxU32 dstX, FxU32 dstY, GrLfbSrcFmt_t srcFmt, FxU32 srcWidth, FxU32 srcHeight, FxBool pixelPipeline, FxI32 srcStride, void* srcData) {
     EnsureEngineInitialized();
-    GLIDE_LOG(INFO, "Frontend", "grLfbWriteRegion (Glide 3.x) invoked: " << srcWidth << "x" << srcHeight);
+    GLIDE_LOG(DEBUG, "Frontend", "grLfbWriteRegion (Glide 3.x) invoked: " << srcWidth << "x" << srcHeight);
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
         return b->WriteLFB(dstBuf, dstX, dstY, srcWidth, srcHeight, srcStride, srcFmt, srcData) ? FXTRUE : FXFALSE;
     }
@@ -453,7 +453,7 @@ FX_ENTRY FxBool FX_CALL grLfbWriteRegion(GrBuffer_t dstBuf, FxU32 dstX, FxU32 ds
 
 FX_ENTRY FxBool FX_CALL grLfbLock(GrLock_t type, GrBuffer_t buffer, GrLfbWriteMode_t writeMode, GrOriginLocation_t origin, FxBool pixelPipeline, GrLfbInfo_t* info) {
     EnsureEngineInitialized();
-    GLIDE_LOG(INFO, "Frontend", "grLfbLock (Glide 3.x) invoked: buffer=" << buffer << ", mode=" << writeMode);
+    GLIDE_LOG(DEBUG, "Frontend", "grLfbLock (Glide 3.x) invoked: buffer=" << buffer << ", mode=" << writeMode);
     if (info) {
         info->size = sizeof(GrLfbInfo_t);
         info->writeMode = writeMode;
@@ -469,12 +469,12 @@ FX_ENTRY FxBool FX_CALL grLfbLock(GrLock_t type, GrBuffer_t buffer, GrLfbWriteMo
 
 FX_ENTRY FxBool FX_CALL grLfbUnlock(GrLock_t type, GrBuffer_t buffer) {
     EnsureEngineInitialized();
-    GLIDE_LOG(INFO, "Frontend", "grLfbUnlock (Glide 3.x) invoked.");
+    GLIDE_LOG(DEBUG, "Frontend", "grLfbUnlock (Glide 3.x) invoked.");
     return FXTRUE;
 }
 
 FX_ENTRY FxBool FX_CALL gu3dfGetInfo(const char* filename, Gu3dfInfo* info) {
-    GLIDE_LOG(INFO, "Frontend", "gu3dfGetInfo (Glide 3.x) invoked for: " << (filename ? filename : "unknown"));
+    GLIDE_LOG(DEBUG, "Frontend", "gu3dfGetInfo (Glide 3.x) invoked for: " << (filename ? filename : "unknown"));
     if (info) {
         info->header.width = 256;
         info->header.height = 256;
@@ -488,13 +488,13 @@ FX_ENTRY FxBool FX_CALL gu3dfGetInfo(const char* filename, Gu3dfInfo* info) {
 }
 
 FX_ENTRY FxBool FX_CALL gu3dfLoad(const char* filename, Gu3dfInfo* data) {
-    GLIDE_LOG(INFO, "Frontend", "gu3dfLoad (Glide 3.x) invoked for: " << (filename ? filename : "unknown"));
+    GLIDE_LOG(DEBUG, "Frontend", "gu3dfLoad (Glide 3.x) invoked for: " << (filename ? filename : "unknown"));
     return FXTRUE;
 }
 
 FX_ENTRY void FX_CALL grDitherMode(GrDitherMode_t mode) {
     EnsureEngineInitialized();
-    GLIDE_LOG(INFO, "Frontend", "grDitherMode (Glide 3.x) invoked: mode=" << mode);
+    GLIDE_LOG(DEBUG, "Frontend", "grDitherMode (Glide 3.x) invoked: mode=" << mode);
 }
 
 } // extern "C"

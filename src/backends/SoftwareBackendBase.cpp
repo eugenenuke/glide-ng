@@ -17,7 +17,7 @@ namespace GlideWrapper {
 
 void SoftwareBackendBase::ClearBuffer(uint32_t color, uint32_t alpha, float z, uint32_t clearMask) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    GLIDE_LOG(INFO, "Rasterizer", "ClearBuffer CPU side invoked: color=0x" << std::hex << color << ", alpha=" << alpha << ", mask=" << clearMask << std::dec << ", map=" << m_headlessPixelMap);
+    GLIDE_LOG(DEBUG, "Rasterizer", "ClearBuffer CPU side invoked: color=0x" << std::hex << color << ", alpha=" << alpha << ", mask=" << clearMask << std::dec << ", map=" << m_headlessPixelMap);
     if (!m_windowAttached || !m_headlessPixelMap) return;
 
     if (clearMask & 0x1) { // Color Clear
@@ -54,7 +54,7 @@ void SoftwareBackendBase::SetConstantColor(uint32_t color) {
 void SoftwareBackendBase::SetPixelFormat(uint32_t format) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     m_pixelFormatOverride = format;
-    GLIDE_LOG(INFO, "Rasterizer", "SetPixelFormat active override format: " << format);
+    GLIDE_LOG(DEBUG, "Rasterizer", "SetPixelFormat active override format: " << format);
 }
 
 void SoftwareBackendBase::SetDepthState(uint32_t depthMode, uint32_t compareOp, bool depthMask, int32_t biasLevel) {
@@ -63,7 +63,7 @@ void SoftwareBackendBase::SetDepthState(uint32_t depthMode, uint32_t compareOp, 
     m_depthCompareOp = compareOp;
     m_depthMask = depthMask;
     m_depthBiasLevel = biasLevel;
-    GLIDE_LOG(INFO, "Rasterizer", "SetDepthState: Mode=" << depthMode << ", Compare=" << compareOp << ", Mask=" << depthMask);
+    GLIDE_LOG(DEBUG, "Rasterizer", "SetDepthState: Mode=" << depthMode << ", Compare=" << compareOp << ", Mask=" << depthMask);
 }
 
 void SoftwareBackendBase::SetBlendState(uint32_t rgbSrcFactor, uint32_t rgbDstFactor, uint32_t alphaSrcFactor, uint32_t alphaDstFactor) {
@@ -72,20 +72,20 @@ void SoftwareBackendBase::SetBlendState(uint32_t rgbSrcFactor, uint32_t rgbDstFa
     m_rgbDstBlend = rgbDstFactor;
     m_alphaSrcBlend = alphaSrcFactor;
     m_alphaDstBlend = alphaDstFactor;
-    GLIDE_LOG(INFO, "Rasterizer", "SetBlendState: Src=" << rgbSrcFactor << ", Dst=" << rgbDstFactor);
+    GLIDE_LOG(DEBUG, "Rasterizer", "SetBlendState: Src=" << rgbSrcFactor << ", Dst=" << rgbDstFactor);
 }
 
 void SoftwareBackendBase::SetAlphaTestState(uint32_t compareOp, uint32_t refVal) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     m_alphaTestOp = compareOp;
     m_alphaTestRefVal = refVal;
-    GLIDE_LOG(INFO, "Rasterizer", "SetAlphaTestState: Op=" << compareOp << ", Ref=" << refVal);
+    GLIDE_LOG(DEBUG, "Rasterizer", "SetAlphaTestState: Op=" << compareOp << ", Ref=" << refVal);
 }
 
 void SoftwareBackendBase::SetCullState(uint32_t cullMode) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     m_cullMode = cullMode;
-    GLIDE_LOG(INFO, "Rasterizer", "SetCullState: Mode=" << cullMode);
+    GLIDE_LOG(DEBUG, "Rasterizer", "SetCullState: Mode=" << cullMode);
 }
 
 void SoftwareBackendBase::SetClipWindow(uint32_t minX, uint32_t minY, uint32_t maxX, uint32_t maxY) {
@@ -94,32 +94,32 @@ void SoftwareBackendBase::SetClipWindow(uint32_t minX, uint32_t minY, uint32_t m
     m_clipMinY = minY;
     m_clipMaxX = std::min(m_headlessWidth, maxX);
     m_clipMaxY = std::min(m_headlessHeight, maxY);
-    GLIDE_LOG(INFO, "Rasterizer", "SetClipWindow: (" << m_clipMinX << "," << m_clipMinY << ") to (" << m_clipMaxX << "," << m_clipMaxY << ")");
+    GLIDE_LOG(DEBUG, "Rasterizer", "SetClipWindow: (" << m_clipMinX << "," << m_clipMinY << ") to (" << m_clipMaxX << "," << m_clipMaxY << ")");
 }
 
 void SoftwareBackendBase::SetSstOrigin(uint32_t origin) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     m_sstOrigin = origin;
-    GLIDE_LOG(INFO, "Rasterizer", "SetSstOrigin: " << origin);
+    GLIDE_LOG(DEBUG, "Rasterizer", "SetSstOrigin: " << origin);
 }
 
 void SoftwareBackendBase::SetFogMode(uint32_t mode) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     m_fogMode = mode;
-    GLIDE_LOG(INFO, "Rasterizer", "SetFogMode: " << mode);
+    GLIDE_LOG(DEBUG, "Rasterizer", "SetFogMode: " << mode);
 }
 
 void SoftwareBackendBase::SetFogColor(uint32_t color) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     m_fogColor = color;
-    GLIDE_LOG(INFO, "Rasterizer", "SetFogColor: 0x" << std::hex << color << std::dec);
+    GLIDE_LOG(DEBUG, "Rasterizer", "SetFogColor: 0x" << std::hex << color << std::dec);
 }
 
 void SoftwareBackendBase::SetFogTable(const uint8_t* table) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     if (table) {
         std::memcpy(m_fogTable, table, sizeof(m_fogTable));
-        GLIDE_LOG(INFO, "Rasterizer", "SetFogTable: 64 entries uploaded.");
+        GLIDE_LOG(DEBUG, "Rasterizer", "SetFogTable: 64 entries uploaded.");
     }
 }
 
@@ -138,7 +138,7 @@ void SoftwareBackendBase::BindTexture(uint32_t tmu, uint32_t startAddress, uint3
 
 void SoftwareBackendBase::UploadTexture(uint32_t tmu, uint32_t startAddress, const struct VirtualTexture& tex) {
     // Software backend doesn't need physical GPU uploads; it queries TextureManager directly.
-    GLIDE_LOG(INFO, "Rasterizer", "UploadTexture (Software) TMU" << tmu << ": Address=0x" << std::hex << startAddress << std::dec << " registered.");
+    GLIDE_LOG(DEBUG, "Rasterizer", "UploadTexture (Software) TMU" << tmu << ": Address=0x" << std::hex << startAddress << std::dec << " registered.");
 }
 
 void SoftwareBackendBase::SetCombinerMode(uint32_t colorFunc, uint32_t colorFactor, uint32_t colorLocal, uint32_t colorOther, bool colorInvert,
@@ -165,26 +165,26 @@ void SoftwareBackendBase::SetTexCombinerMode(uint32_t tmu, uint32_t rgbFunc, uin
         m_texCombinerRgbFactor[tmu]  = rgbFactor;
         m_texCombinerAlphaFunc[tmu]  = alphaFunc;
         m_texCombinerAlphaFactor[tmu]= alphaFactor;
-        GLIDE_LOG(INFO, "Rasterizer", "SetTexCombinerMode TMU" << tmu << ": RGBFunc=" << rgbFunc << ", AlphaFunc=" << alphaFunc);
+        GLIDE_LOG(DEBUG, "Rasterizer", "SetTexCombinerMode TMU" << tmu << ": RGBFunc=" << rgbFunc << ", AlphaFunc=" << alphaFunc);
     }
 }
 
 void SoftwareBackendBase::SetSTWHintState(uint32_t hintMask) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     m_stwHintMask = hintMask;
-    GLIDE_LOG(INFO, "Rasterizer", "SetSTWHintState: Mask=" << hintMask);
+    GLIDE_LOG(DEBUG, "Rasterizer", "SetSTWHintState: Mask=" << hintMask);
 }
 
 void SoftwareBackendBase::SetChromakeyMode(uint32_t mode) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     m_chromakeyMode = mode;
-    GLIDE_LOG(INFO, "Rasterizer", "SetChromakeyMode: Mode=" << mode);
+    GLIDE_LOG(DEBUG, "Rasterizer", "SetChromakeyMode: Mode=" << mode);
 }
 
 void SoftwareBackendBase::SetChromakeyValue(uint32_t value) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     m_chromakeyValue = value;
-    GLIDE_LOG(INFO, "Rasterizer", "SetChromakeyValue: Value=0x" << std::hex << value << std::dec);
+    GLIDE_LOG(DEBUG, "Rasterizer", "SetChromakeyValue: Value=0x" << std::hex << value << std::dec);
 }
 
 void SoftwareBackendBase::DrawTriangle(const ModernVertex& a, const ModernVertex& b, const ModernVertex& c) {
@@ -349,12 +349,12 @@ void SoftwareBackendBase::RasterizeSoftwareTriangle(const ModernVertex& a, const
     maxY = std::min({static_cast<int>(m_headlessHeight) - 1, maxY, static_cast<int>(m_clipMaxY) - 1});
 
     float area = edgeFunc(a.pos.data(), b.pos.data(), c.pos.data());
-    GLIDE_LOG(INFO, "RasterizerDebug", "Rasterizing triangle: Area=" << area << ", A=(" << a.pos[0] << "," << a.pos[1] << "), B=(" << b.pos[0] << "," << b.pos[1] << "), C=(" << c.pos[0] << "," << c.pos[1] << ")");
-    GLIDE_LOG(INFO, "RasterizerDebug", "Bounds: minX=" << minX << ", maxX=" << maxX << ", minY=" << minY << ", maxY=" << maxY);
-    GLIDE_LOG(INFO, "RasterizerDebug", "Scissor bounds: " << m_clipMinX << "," << m_clipMinY << " to " << m_clipMaxX << "," << m_clipMaxY);
+    GLIDE_LOG(DEBUG, "RasterizerDebug", "Rasterizing triangle: Area=" << area << ", A=(" << a.pos[0] << "," << a.pos[1] << "), B=(" << b.pos[0] << "," << b.pos[1] << "), C=(" << c.pos[0] << "," << c.pos[1] << ")");
+    GLIDE_LOG(DEBUG, "RasterizerDebug", "Bounds: minX=" << minX << ", maxX=" << maxX << ", minY=" << minY << ", maxY=" << maxY);
+    GLIDE_LOG(DEBUG, "RasterizerDebug", "Scissor bounds: " << m_clipMinX << "," << m_clipMinY << " to " << m_clipMaxX << "," << m_clipMaxY);
 
     if (std::abs(area) < 0.0001f) {
-        GLIDE_LOG(INFO, "RasterizerDebug", "Triangle area is zero! Skipping.");
+        GLIDE_LOG(DEBUG, "RasterizerDebug", "Triangle area is zero! Skipping.");
         return;
     }
 
@@ -480,7 +480,7 @@ void SoftwareBackendBase::RasterizeSoftwareTriangle(const ModernVertex& a, const
                     texA = ((tWord >> 24) & 0xFF) / 255.0f;
 
                     if (isTestPixel) {
-                        GLIDE_LOG(INFO, "RasterizerDebug", "Test pixel (" << x << "," << y << ") sampled texture coordinate S=" << trueS << ", T=" << trueT 
+                        GLIDE_LOG(DEBUG, "RasterizerDebug", "Test pixel (" << x << "," << y << ") sampled texture coordinate S=" << trueS << ", T=" << trueT 
                                   << ", TexelColor=(" << texR << "," << texG << "," << texB << "," << texA << ")");
                     }
                 }
@@ -702,7 +702,7 @@ void SoftwareBackendBase::RasterizeSoftwareTriangle(const ModernVertex& a, const
 
                 if (!alphaPass) {
                     if (isTestPixel) {
-                        GLIDE_LOG(INFO, "RasterizerDebug", "Test pixel (" << x << "," << y << ") failed alpha test! Op=" << m_alphaTestOp << ", Ref=" << m_alphaTestRefVal);
+                        GLIDE_LOG(DEBUG, "RasterizerDebug", "Test pixel (" << x << "," << y << ") failed alpha test! Op=" << m_alphaTestOp << ", Ref=" << m_alphaTestRefVal);
                     }
                     continue;
                 }
@@ -732,7 +732,7 @@ void SoftwareBackendBase::RasterizeSoftwareTriangle(const ModernVertex& a, const
                         case 7: depthPass = true; break;
                     }
                     if (isTestPixel) {
-                        GLIDE_LOG(INFO, "RasterizerDebug", "Test pixel (" << x << "," << y << ") depth test result=" << (depthPass ? "PASS" : "FAIL") 
+                        GLIDE_LOG(DEBUG, "RasterizerDebug", "Test pixel (" << x << "," << y << ") depth test result=" << (depthPass ? "PASS" : "FAIL") 
                                   << ", targetDepth=" << targetDepth << ", currentDepth=" << currentDepth << ", Op=" << m_depthCompareOp);
                     }
                 }
@@ -830,7 +830,7 @@ void SoftwareBackendBase::RasterizeSoftwareTriangle(const ModernVertex& a, const
                 }
 
                 if (isTestPixel) {
-                    GLIDE_LOG(INFO, "RasterizerDebug", "Test pixel (" << x << "," << y << ") successfully written to LFB! Color=0x" 
+                    GLIDE_LOG(DEBUG, "RasterizerDebug", "Test pixel (" << x << "," << y << ") successfully written to LFB! Color=0x" 
                               << std::hex << ((aVal << 24) | (rVal << 16) | (gVal << 8) | bVal) << std::dec);
                 }
 
@@ -858,7 +858,7 @@ bool SoftwareBackendBase::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
     auto* outBytes = reinterpret_cast<uint8_t*>(dstData);
 
     bool is32Bit = (dstStride >= srcWidth * 4);
-    GLIDE_LOG(INFO, "ReadLFB", "ReadLFB invoked: srcX=" << srcX << ", srcY=" << srcY << ", srcWidth=" << srcWidth << ", srcHeight=" << srcHeight << ", dstStride=" << dstStride << ", is32Bit=" << is32Bit);
+    GLIDE_LOG(DEBUG, "ReadLFB", "ReadLFB invoked: srcX=" << srcX << ", srcY=" << srcY << ", srcWidth=" << srcWidth << ", srcHeight=" << srcHeight << ", dstStride=" << dstStride << ", is32Bit=" << is32Bit);
 
     for (uint32_t y = 0; y < srcHeight; ++y) {
         uint32_t readY = srcY + y;
@@ -871,7 +871,7 @@ bool SoftwareBackendBase::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
                 if (readX >= m_headlessWidth) break;
                 uint32_t val = pixels[readY * m_headlessWidth + readX];
                 if ((readX == 150 && readY == 150) || (readX == 310 && readY == 310)) {
-                    GLIDE_LOG(INFO, "ReadLFB", "ReadLFB (32-bit) at (" << readX << "," << readY << ") = 0x" << std::hex << val << std::dec);
+                    GLIDE_LOG(DEBUG, "ReadLFB", "ReadLFB (32-bit) at (" << readX << "," << readY << ") = 0x" << std::hex << val << std::dec);
                 }
                 destRow32[x] = val;
             }
@@ -995,7 +995,7 @@ void SoftwareBackendBase::PollEvents() {
         if (event.type == SDL_QUIT) {
             GLIDE_LOG(INFO, "Backend", "SDL window quit request received.");
         } else if (event.type == SDL_KEYDOWN) {
-            GLIDE_LOG(INFO, "Backend", "SDL window keydown event captured! Setting keyboard hit hook flag.");
+            GLIDE_LOG(DEBUG, "Backend", "SDL window keydown event captured! Setting keyboard hit hook flag.");
             g_glideWrapperSdlKeyHit = 1;
         }
     }

@@ -391,7 +391,7 @@ void VulkanBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z, uint32_
         m_inRenderPass = false;
     }
 
-    GLIDE_LOG(INFO, "Vulkan", "ClearBuffer: color=" << std::hex << color << ", clearMask=" << clearMask);
+    GLIDE_LOG(DEBUG, "Vulkan", "ClearBuffer: color=" << std::hex << color << ", clearMask=" << clearMask);
 
     // 1. Call SoftwareBackendBase::ClearBuffer to clear the CPU-side framebuffer!
     SoftwareBackendBase::ClearBuffer(color, alpha, z, clearMask);
@@ -637,7 +637,7 @@ bool VulkanBackend::SwapBuffers() {
                 }
             }
         }
-        GLIDE_LOG(INFO, "Vulkan", "SwapBuffers: Cache CPU pixels phase. Found " << cpuPixelCount << " non-transparent CPU pixels.");
+        GLIDE_LOG(DEBUG, "Vulkan", "SwapBuffers: Cache CPU pixels phase. Found " << cpuPixelCount << " non-transparent CPU pixels.");
 
         // 2.2. Execute GPU presentation copy
         vk::ImageSubresourceRange range(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1);
@@ -744,7 +744,7 @@ bool VulkanBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY, uint3
             }
         }
     }
-    GLIDE_LOG(INFO, "Vulkan", "ReadLFB: Cache CPU pixels phase. Found " << cpuPixelCount << " non-transparent CPU pixels.");
+    GLIDE_LOG(DEBUG, "Vulkan", "ReadLFB: Cache CPU pixels phase. Found " << cpuPixelCount << " non-transparent CPU pixels.");
 
     // 1. Flush pending batch or clears, and terminate active render pass
     if (m_batchedVertexCount > 0) {
@@ -824,9 +824,9 @@ void VulkanBackend::PollEvents() {
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
         if (event.type == SDL_QUIT) {
-            GLIDE_LOG(INFO, "Vulkan", "SDL window quit request.");
+            GLIDE_LOG(DEBUG, "Vulkan", "SDL window quit request.");
         } else if (event.type == SDL_KEYDOWN) {
-            GLIDE_LOG(INFO, "Vulkan", "SDL window keydown captured. Setting key hit hook flag.");
+            GLIDE_LOG(DEBUG, "Vulkan", "SDL window keydown captured. Setting key hit hook flag.");
             g_glideWrapperSdlKeyHit = 1;
         }
     }
@@ -877,7 +877,7 @@ bool VulkanBackend::SelectPhysicalDevice() {
               << VK_VERSION_MINOR(props.apiVersion) << "." << VK_VERSION_PATCH(props.apiVersion) << "\n"
               << "    Dev Type  : " << vk::to_string(props.deviceType) << "\n"
               << "----------------------------------------";
-    GLIDE_LOG(INFO, "Vulkan", logStream.str());
+    GLIDE_LOG(DEBUG, "Vulkan", logStream.str());
 
     return true;
 }
@@ -1102,12 +1102,12 @@ void VulkanBackend::TransitionImageLayout(vk::CommandBuffer cmd, vk::Image image
 void VulkanBackend::FlushLFBToGPU() {
     if (!m_lfbDirty) return;
 
-    GLIDE_LOG(INFO, "Vulkan", "FlushLFBToGPU: Flushing CPU LFB staging buffer to GPU framebuffer...");
+    GLIDE_LOG(DEBUG, "Vulkan", "FlushLFBToGPU: Flushing CPU LFB staging buffer to GPU framebuffer...");
 
     // 1. If we are inside an active render pass, we must end it first!
     if (m_inRenderPass) {
         FlushBatch();
-        GLIDE_LOG(INFO, "Vulkan", "FlushLFBToGPU: Ending active render pass to perform CPU->GPU transfer...");
+        GLIDE_LOG(DEBUG, "Vulkan", "FlushLFBToGPU: Ending active render pass to perform CPU->GPU transfer...");
         m_commandBuffer->endRenderPass();
         m_inRenderPass = false;
     }
@@ -1684,7 +1684,7 @@ void VulkanBackend::UploadTexture(uint32_t tmu, uint32_t startAddress, const str
 
         m_vulkanTextures[startAddress] = std::move(vulkanTex);
 
-        GLIDE_LOG(INFO, "Vulkan", "UploadTexture TMU0: Address=0x" << std::hex << startAddress << std::dec << " uploaded perfectly.");
+        GLIDE_LOG(DEBUG, "Vulkan", "UploadTexture TMU0: Address=0x" << std::hex << startAddress << std::dec << " uploaded perfectly.");
     } catch (const std::exception& e) {
         GLIDE_LOG(CRITICAL, "Vulkan", "UploadTexture failed for Address=0x" << std::hex << startAddress << std::dec << ": " << e.what());
     }

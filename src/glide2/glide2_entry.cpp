@@ -220,7 +220,7 @@ FX_ENTRY void FX_CALL grSstWinClose(void) {
 
 FX_ENTRY void FX_CALL grHints(GrHint_t hintType, FxU32 hintMask) {
     EnsureEngineInitialized();
-    GLIDE_LOG(INFO, "Frontend", "grHints invoked: Type=" << hintType << ", Mask=" << hintMask);
+    GLIDE_LOG(DEBUG, "Frontend", "grHints invoked: Type=" << hintType << ", Mask=" << hintMask);
     if (hintType == GR_HINT_STWHINT) {
         s_stwHintMask = hintMask;
         GlideWrapper::VertexLayout::GetInstance().SetSTWHintMask(hintMask);
@@ -245,7 +245,7 @@ FX_ENTRY void FX_CALL grBufferSwap(int swap_interval) {
 
 FX_ENTRY void FX_CALL grRenderBuffer(GrBuffer_t buffer) {
     EnsureEngineInitialized();
-    GLIDE_LOG(INFO, "Frontend", "grRenderBuffer invoked for Buffer=" << buffer);
+    GLIDE_LOG(DEBUG, "Frontend", "grRenderBuffer invoked for Buffer=" << buffer);
     auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
     if (backend) backend->SetRenderBuffer(buffer);
 }
@@ -268,7 +268,7 @@ FX_ENTRY void FX_CALL grDrawLine(const GrVertex* a, const GrVertex* b) {
 
 FX_ENTRY void FX_CALL grDrawPoint(const GrVertex* pt) {
     EnsureEngineInitialized();
-    GLIDE_LOG(INFO, "Frontend", "grDrawPoint invoked!");
+    GLIDE_LOG(DEBUG, "Frontend", "grDrawPoint invoked!");
     auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
     if (!backend || !pt) return;
     auto& layout = GlideWrapper::VertexLayout::GetInstance();
@@ -277,7 +277,7 @@ FX_ENTRY void FX_CALL grDrawPoint(const GrVertex* pt) {
 
 FX_ENTRY FxBool FX_CALL grSstQueryHardware(GrHwConfiguration* hwconfig) {
     EnsureEngineInitialized();
-    GLIDE_LOG(INFO, "Frontend", "grSstQueryHardware invoked.");
+    GLIDE_LOG(DEBUG, "Frontend", "grSstQueryHardware invoked.");
     if (!hwconfig) return FXFALSE;
 
     hwconfig->num_sst = 1;
@@ -294,7 +294,7 @@ FX_ENTRY FxBool FX_CALL grSstQueryBoards(GrHwConfiguration* hwconfig) {
 }
 
 FX_ENTRY void FX_CALL grGlideGetVersion(char version[80]) {
-    GLIDE_LOG(INFO, "Frontend", "grGlideGetVersion invoked.");
+    GLIDE_LOG(DEBUG, "Frontend", "grGlideGetVersion invoked.");
     if (version) {
         std::strncpy(version, "2.43 (glide-ng)", 80);
         version[79] = '\0';
@@ -302,11 +302,11 @@ FX_ENTRY void FX_CALL grGlideGetVersion(char version[80]) {
 }
 
 FX_ENTRY void FX_CALL grSstSelect(int which_sst) {
-    GLIDE_LOG(INFO, "Frontend", "grSstSelect invoked for SST=" << which_sst);
+    GLIDE_LOG(DEBUG, "Frontend", "grSstSelect invoked for SST=" << which_sst);
 }
 
 FX_ENTRY const char* FX_CALL grGetString(FxU32 pname) {
-    GLIDE_LOG(INFO, "Frontend", "grGetString invoked for pname: " << pname);
+    GLIDE_LOG(DEBUG, "Frontend", "grGetString invoked for pname: " << pname);
     auto& reg = GlideWrapper::EmulationRegistry::GetInstance();
     switch (pname) {
         case GR_VERSION:  return "2.43 (glide-ng)";
@@ -326,7 +326,7 @@ FX_ENTRY const char* FX_CALL grGetString(FxU32 pname) {
 }
 
 FX_ENTRY void FX_CALL grClipWindow(FxU32 minx, FxU32 miny, FxU32 maxx, FxU32 maxy) {
-    GLIDE_LOG(INFO, "Frontend", "grClipWindow invoked: " << minx << "," << miny << " to " << maxx << "," << maxy);
+    GLIDE_LOG(DEBUG, "Frontend", "grClipWindow invoked: " << minx << "," << miny << " to " << maxx << "," << maxy);
     s_clipMinX = minx;
     s_clipMinY = miny;
     s_clipMaxX = maxx;
@@ -337,22 +337,22 @@ FX_ENTRY void FX_CALL grClipWindow(FxU32 minx, FxU32 miny, FxU32 maxx, FxU32 max
 }
 
 FX_ENTRY FxU32 FX_CALL grTexMinAddress(GrChipID_t tmu) {
-    GLIDE_LOG(INFO, "Frontend", "grTexMinAddress invoked for TMU=" << tmu);
+    GLIDE_LOG(DEBUG, "Frontend", "grTexMinAddress invoked for TMU=" << tmu);
     return 0;
 }
 
 FX_ENTRY FxU32 FX_CALL grTexMaxAddress(GrChipID_t tmu) {
-    GLIDE_LOG(INFO, "Frontend", "grTexMaxAddress invoked for TMU=" << tmu);
+    GLIDE_LOG(DEBUG, "Frontend", "grTexMaxAddress invoked for TMU=" << tmu);
     return 0x200000;
 }
 
 FX_ENTRY FxU32 FX_CALL grTexCalcMemRequired(GrLOD_t lodmin, GrLOD_t lodmax, GrAspectRatio_t aspect, GrTextureFormat_t fmt) {
-    GLIDE_LOG(INFO, "Frontend", "grTexCalcMemRequired invoked.");
+    GLIDE_LOG(DEBUG, "Frontend", "grTexCalcMemRequired invoked.");
     return GlideWrapper::TextureManager::GetInstance().CalculateMemoryRequired(lodmin, lodmax, aspect, fmt);
 }
 
 FX_ENTRY void FX_CALL grGlideGetState(GrState* state) {
-    GLIDE_LOG(INFO, "Frontend", "grGlideGetState invoked.");
+    GLIDE_LOG(DEBUG, "Frontend", "grGlideGetState invoked.");
     if (!state) return;
     auto* ws = reinterpret_cast<GlideWrapperState*>(state);
     ws->depthMode = s_depthMode;
@@ -398,7 +398,7 @@ FX_ENTRY void FX_CALL grGlideGetState(GrState* state) {
 }
 
 FX_ENTRY void FX_CALL grGlideSetState(const GrState* state) {
-    GLIDE_LOG(INFO, "Frontend", "grGlideSetState invoked.");
+    GLIDE_LOG(DEBUG, "Frontend", "grGlideSetState invoked.");
     if (!state) return;
     const auto* ws = reinterpret_cast<const GlideWrapperState*>(state);
     
@@ -467,7 +467,7 @@ FX_ENTRY void FX_CALL grGlideSetState(const GrState* state) {
 }
 
 FX_ENTRY void FX_CALL grColorCombine(GrCombineFunction_t fnc, GrCombineFactor_t factor, GrCombineLocal_t local, GrCombineOther_t other, FxBool invert) {
-    GLIDE_LOG(INFO, "Frontend", "grColorCombine invoked: Function=" << fnc << ", Factor=" << factor << ", Local=" << local << ", Other=" << other << ", Invert=" << invert);
+    GLIDE_LOG(DEBUG, "Frontend", "grColorCombine invoked: Function=" << fnc << ", Factor=" << factor << ", Local=" << local << ", Other=" << other << ", Invert=" << invert);
     s_colorFunc   = fnc;
     s_colorFactor = factor;
     s_colorLocal  = local;
@@ -480,7 +480,7 @@ FX_ENTRY void FX_CALL grColorCombine(GrCombineFunction_t fnc, GrCombineFactor_t 
 }
 
 FX_ENTRY void FX_CALL grAlphaCombine(GrCombineFunction_t fnc, GrCombineFactor_t factor, GrCombineLocal_t local, GrCombineOther_t other, FxBool invert) {
-    GLIDE_LOG(INFO, "Frontend", "grAlphaCombine invoked: Function=" << fnc << ", Factor=" << factor << ", Local=" << local << ", Other=" << other << ", Invert=" << invert);
+    GLIDE_LOG(DEBUG, "Frontend", "grAlphaCombine invoked: Function=" << fnc << ", Factor=" << factor << ", Local=" << local << ", Other=" << other << ", Invert=" << invert);
     s_alphaFunc   = fnc;
     s_alphaFactor = factor;
     s_alphaLocal  = local;
@@ -493,7 +493,7 @@ FX_ENTRY void FX_CALL grAlphaCombine(GrCombineFunction_t fnc, GrCombineFactor_t 
 }
 
 FX_ENTRY void FX_CALL grTexCombine(GrChipID_t tmu, GrCombineFunction_t rgbFnc, GrCombineFactor_t rgbFactor, GrCombineFunction_t alphaFnc, GrCombineFactor_t alphaFactor, FxBool rgbInvert, FxBool alphaInvert) {
-    GLIDE_LOG(INFO, "Frontend", "grTexCombine invoked for TMU=" << tmu);
+    GLIDE_LOG(DEBUG, "Frontend", "grTexCombine invoked for TMU=" << tmu);
     if (tmu < 2) {
         s_texRgbFunc[tmu]    = rgbFnc;
         s_texRgbFactor[tmu]  = rgbFactor;
@@ -506,7 +506,7 @@ FX_ENTRY void FX_CALL grTexCombine(GrChipID_t tmu, GrCombineFunction_t rgbFnc, G
 }
 
 FX_ENTRY void FX_CALL grAlphaBlendFunction(GrAlphaBlendFnc_t rgbSf, GrAlphaBlendFnc_t rgbDf, GrAlphaBlendFnc_t alphaSf, GrAlphaBlendFnc_t alphaDf) {
-    GLIDE_LOG(INFO, "Frontend", "grAlphaBlendFunction invoked.");
+    GLIDE_LOG(DEBUG, "Frontend", "grAlphaBlendFunction invoked.");
     s_rgbSrcBlend = rgbSf;
     s_rgbDstBlend = rgbDf;
     s_alphaSrcBlend = alphaSf;
@@ -517,7 +517,7 @@ FX_ENTRY void FX_CALL grAlphaBlendFunction(GrAlphaBlendFnc_t rgbSf, GrAlphaBlend
 }
 
 FX_ENTRY void FX_CALL grAlphaTestFunction(GrCmpFnc_t fnc) {
-    GLIDE_LOG(INFO, "Frontend", "grAlphaTestFunction invoked.");
+    GLIDE_LOG(DEBUG, "Frontend", "grAlphaTestFunction invoked.");
     s_alphaTestOp = fnc;
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
         b->SetAlphaTestState(s_alphaTestOp, s_alphaTestRef);
@@ -525,7 +525,7 @@ FX_ENTRY void FX_CALL grAlphaTestFunction(GrCmpFnc_t fnc) {
 }
 
 FX_ENTRY void FX_CALL grAlphaTestReferenceValue(GrAlpha_t refVal) {
-    GLIDE_LOG(INFO, "Frontend", "grAlphaTestReferenceValue invoked: " << static_cast<int>(refVal));
+    GLIDE_LOG(DEBUG, "Frontend", "grAlphaTestReferenceValue invoked: " << static_cast<int>(refVal));
     s_alphaTestRef = refVal;
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
         b->SetAlphaTestState(s_alphaTestOp, s_alphaTestRef);
@@ -533,7 +533,7 @@ FX_ENTRY void FX_CALL grAlphaTestReferenceValue(GrAlpha_t refVal) {
 }
 
 FX_ENTRY void FX_CALL grTexFilterMode(GrChipID_t tmu, GrTextureFilterMode_t minfilter, GrTextureFilterMode_t magfilter) {
-    GLIDE_LOG(INFO, "Frontend", "grTexFilterMode invoked for TMU=" << tmu);
+    GLIDE_LOG(DEBUG, "Frontend", "grTexFilterMode invoked for TMU=" << tmu);
     if (tmu < 2) {
         s_minFilter[tmu] = minfilter;
         s_magFilter[tmu] = magfilter;
@@ -544,7 +544,7 @@ FX_ENTRY void FX_CALL grTexFilterMode(GrChipID_t tmu, GrTextureFilterMode_t minf
 }
 
 FX_ENTRY void FX_CALL grTexClampMode(GrChipID_t tmu, GrTextureClampMode_t s_clampmode, GrTextureClampMode_t t_clampmode) {
-    GLIDE_LOG(INFO, "Frontend", "grTexClampMode invoked for TMU=" << tmu);
+    GLIDE_LOG(DEBUG, "Frontend", "grTexClampMode invoked for TMU=" << tmu);
     if (tmu < 2) {
         s_clampS[tmu] = s_clampmode;
         s_clampT[tmu] = t_clampmode;
@@ -555,11 +555,11 @@ FX_ENTRY void FX_CALL grTexClampMode(GrChipID_t tmu, GrTextureClampMode_t s_clam
 }
 
 FX_ENTRY void FX_CALL grTexMipMapMode(GrChipID_t tmu, GrMipMapMode_t mode, FxBool lodBlend) {
-    GLIDE_LOG(INFO, "Frontend", "grTexMipMapMode invoked for TMU=" << tmu);
+    GLIDE_LOG(DEBUG, "Frontend", "grTexMipMapMode invoked for TMU=" << tmu);
 }
 
 FX_ENTRY void FX_CALL grDepthBufferMode(GrDepthBufferMode_t mode) {
-    GLIDE_LOG(INFO, "Frontend", "grDepthBufferMode invoked: " << mode);
+    GLIDE_LOG(DEBUG, "Frontend", "grDepthBufferMode invoked: " << mode);
     s_depthMode = mode;
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
         b->SetDepthState(s_depthMode, s_depthCompare, s_depthMask, s_depthBias);
@@ -567,7 +567,7 @@ FX_ENTRY void FX_CALL grDepthBufferMode(GrDepthBufferMode_t mode) {
 }
 
 FX_ENTRY void FX_CALL grDepthBufferFunction(GrCmpFnc_t fnc) {
-    GLIDE_LOG(INFO, "Frontend", "grDepthBufferFunction invoked.");
+    GLIDE_LOG(DEBUG, "Frontend", "grDepthBufferFunction invoked.");
     s_depthCompare = fnc;
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
         b->SetDepthState(s_depthMode, s_depthCompare, s_depthMask, s_depthBias);
@@ -575,7 +575,7 @@ FX_ENTRY void FX_CALL grDepthBufferFunction(GrCmpFnc_t fnc) {
 }
 
 FX_ENTRY void FX_CALL grDepthMask(FxBool mask) {
-    GLIDE_LOG(INFO, "Frontend", "grDepthMask invoked: " << mask);
+    GLIDE_LOG(DEBUG, "Frontend", "grDepthMask invoked: " << mask);
     s_depthMask = mask;
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
         b->SetDepthState(s_depthMode, s_depthCompare, s_depthMask, s_depthBias);
@@ -583,7 +583,7 @@ FX_ENTRY void FX_CALL grDepthMask(FxBool mask) {
 }
 
 FX_ENTRY void FX_CALL grDepthBiasLevel(FxI16 level) {
-    GLIDE_LOG(INFO, "Frontend", "grDepthBiasLevel invoked: " << level);
+    GLIDE_LOG(DEBUG, "Frontend", "grDepthBiasLevel invoked: " << level);
     s_depthBias = level;
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
         b->SetDepthState(s_depthMode, s_depthCompare, s_depthMask, s_depthBias);
@@ -591,7 +591,7 @@ FX_ENTRY void FX_CALL grDepthBiasLevel(FxI16 level) {
 }
 
 FX_ENTRY void FX_CALL grSstOrigin(GrOriginLocation_t origin) {
-    GLIDE_LOG(INFO, "Frontend", "grSstOrigin invoked: " << origin);
+    GLIDE_LOG(DEBUG, "Frontend", "grSstOrigin invoked: " << origin);
     s_sstOrigin = origin;
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
         b->SetSstOrigin(origin);
@@ -599,14 +599,14 @@ FX_ENTRY void FX_CALL grSstOrigin(GrOriginLocation_t origin) {
 }
 
 FX_ENTRY void FX_CALL grSstIdle(void) {
-    GLIDE_LOG(INFO, "Frontend", "grSstIdle invoked.");
+    GLIDE_LOG(DEBUG, "Frontend", "grSstIdle invoked.");
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
         b->SstIdle();
     }
 }
 
 FX_ENTRY void FX_CALL grCullMode(GrCullMode_t mode) {
-    GLIDE_LOG(INFO, "Frontend", "grCullMode invoked: " << mode);
+    GLIDE_LOG(DEBUG, "Frontend", "grCullMode invoked: " << mode);
     s_cullMode = mode;
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
         b->SetCullState(mode);
@@ -614,14 +614,14 @@ FX_ENTRY void FX_CALL grCullMode(GrCullMode_t mode) {
 }
 
 FX_ENTRY void FX_CALL grTexDownloadMipMap(GrChipID_t tmu, FxU32 startAddress, FxU32 evenOdd, GrTexInfo* info) {
-    GLIDE_LOG(INFO, "Frontend", "grTexDownloadMipMap invoked for TMU=" << tmu);
+    GLIDE_LOG(DEBUG, "Frontend", "grTexDownloadMipMap invoked for TMU=" << tmu);
     if (info && info->data) {
         GlideWrapper::TextureManager::GetInstance().DownloadMipMap(tmu, startAddress, info->smallLod, info->largeLod, info->aspectRatio, info->format, info->data);
     }
 }
 
 FX_ENTRY void FX_CALL grTexDownloadMipMapLevel(GrChipID_t tmu, FxU32 startAddress, GrLOD_t thisLod, GrLOD_t largeLod, GrAspectRatio_t aspectRatio, GrTextureFormat_t format, FxU32 evenOdd, void* data) {
-    GLIDE_LOG(INFO, "Frontend", "grTexDownloadMipMapLevel invoked for TMU=" << tmu << ", LOD=" << thisLod);
+    GLIDE_LOG(DEBUG, "Frontend", "grTexDownloadMipMapLevel invoked for TMU=" << tmu << ", LOD=" << thisLod);
     if (data) {
         GlideWrapper::TextureManager::GetInstance().DownloadMipMap(tmu, startAddress, thisLod, thisLod, aspectRatio, format, data);
     }
@@ -629,7 +629,7 @@ FX_ENTRY void FX_CALL grTexDownloadMipMapLevel(GrChipID_t tmu, FxU32 startAddres
 
 FX_ENTRY void FX_CALL grTexDownloadTable(GrChipID_t tmu, GrTexTable_t type, void* data) {
     EnsureEngineInitialized();
-    GLIDE_LOG(INFO, "Frontend", "grTexDownloadTable invoked for TMU=" << tmu << ", Type=" << type);
+    GLIDE_LOG(DEBUG, "Frontend", "grTexDownloadTable invoked for TMU=" << tmu << ", Type=" << type);
     if (data) {
         GlideWrapper::TextureManager::GetInstance().DownloadTable(tmu, type, data);
     }
@@ -637,14 +637,14 @@ FX_ENTRY void FX_CALL grTexDownloadTable(GrChipID_t tmu, GrTexTable_t type, void
 
 FX_ENTRY void FX_CALL grTexDownloadTablePartial(GrChipID_t tmu, GrTexTable_t type, void* data, int start, int end) {
     EnsureEngineInitialized();
-    GLIDE_LOG(INFO, "Frontend", "grTexDownloadTablePartial invoked for TMU=" << tmu << ", Type=" << type << ", range " << start << ".." << end);
+    GLIDE_LOG(DEBUG, "Frontend", "grTexDownloadTablePartial invoked for TMU=" << tmu << ", Type=" << type << ", range " << start << ".." << end);
     if (data) {
         GlideWrapper::TextureManager::GetInstance().DownloadTable(tmu, type, data);
     }
 }
 
 FX_ENTRY void FX_CALL grTexSource(GrChipID_t tmu, FxU32 startAddress, FxU32 evenOdd, GrTexInfo* info) {
-    GLIDE_LOG(INFO, "Frontend", "grTexSource invoked for TMU=" << tmu);
+    GLIDE_LOG(DEBUG, "Frontend", "grTexSource invoked for TMU=" << tmu);
     if (tmu < 2) {
         s_boundTex[tmu] = startAddress;
         if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
@@ -654,18 +654,18 @@ FX_ENTRY void FX_CALL grTexSource(GrChipID_t tmu, FxU32 startAddress, FxU32 even
 }
 
 FX_ENTRY FxU32 FX_CALL grTexTextureMemRequired(FxU32 evenOdd, GrTexInfo *info) {
-    GLIDE_LOG(INFO, "Frontend", "grTexTextureMemRequired invoked");
+    GLIDE_LOG(DEBUG, "Frontend", "grTexTextureMemRequired invoked");
     if (!info) return 0;
     return grTexCalcMemRequired(info->smallLod, info->largeLod, info->aspectRatio, info->format);
 }
 
 FX_ENTRY void FX_CALL grTexDetailControl(GrChipID_t tmu, int lod_bias, FxU8 detail_scale, float detail_max) {
-    GLIDE_LOG(INFO, "Frontend", "grTexDetailControl invoked for TMU=" << tmu << ", lod_bias=" << lod_bias << ", detail_scale=" << (int)detail_scale << ", detail_max=" << detail_max << " (Stubbed)");
+    GLIDE_LOG(DEBUG, "Frontend", "grTexDetailControl invoked for TMU=" << tmu << ", lod_bias=" << lod_bias << ", detail_scale=" << (int)detail_scale << ", detail_max=" << detail_max << " (Stubbed)");
 }
 
 FX_ENTRY void FX_CALL grConstantColorValue(GrColor_t value) {
     EnsureEngineInitialized();
-    GLIDE_LOG(INFO, "Frontend", "grConstantColorValue invoked: " << std::hex << value << std::dec);
+    GLIDE_LOG(DEBUG, "Frontend", "grConstantColorValue invoked: " << std::hex << value << std::dec);
     s_constantColor = value;
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
         b->SetConstantColor(value);
@@ -674,7 +674,7 @@ FX_ENTRY void FX_CALL grConstantColorValue(GrColor_t value) {
 
 FX_ENTRY FxBool FX_CALL grLfbReadRegion(GrBuffer_t srcBuf, FxU32 srcX, FxU32 srcY, FxU32 srcWidth, FxU32 srcHeight, FxU32 dstStride, void* dstData) {
     EnsureEngineInitialized();
-    GLIDE_LOG(INFO, "Frontend", "grLfbReadRegion invoked.");
+    GLIDE_LOG(DEBUG, "Frontend", "grLfbReadRegion invoked.");
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
         return b->ReadLFB(srcBuf, srcX, srcY, srcWidth, srcHeight, dstStride, dstData) ? FXTRUE : FXFALSE;
     }
@@ -684,7 +684,7 @@ FX_ENTRY FxBool FX_CALL grLfbReadRegion(GrBuffer_t srcBuf, FxU32 srcX, FxU32 src
 
 FX_ENTRY FxBool FX_CALL grLfbWriteRegion(GrBuffer_t dstBuf, FxU32 dstX, FxU32 dstY, GrLfbSrcFmt_t srcFmt, FxU32 srcWidth, FxU32 srcHeight, FxI32 srcStride, void* srcData) {
     EnsureEngineInitialized();
-    GLIDE_LOG(INFO, "Frontend", "grLfbWriteRegion invoked: " << srcWidth << "x" << srcHeight);
+    GLIDE_LOG(DEBUG, "Frontend", "grLfbWriteRegion invoked: " << srcWidth << "x" << srcHeight);
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
         return b->WriteLFB(dstBuf, dstX, dstY, srcWidth, srcHeight, srcStride, srcFmt, srcData) ? FXTRUE : FXFALSE;
     }
@@ -720,7 +720,7 @@ static void FlipRows(uint8_t* data, uint32_t height, uint32_t stride) {
 
 FX_ENTRY FxBool FX_CALL grLfbLock(GrLock_t type, GrBuffer_t buffer, GrLfbWriteMode_t writeMode, GrOriginLocation_t origin, FxBool pixelPipeline, GrLfbInfo_t* info) {
     EnsureEngineInitialized();
-    GLIDE_LOG(INFO, "Frontend", "grLfbLock invoked: buffer=" << buffer << ", mode=" << writeMode << ", origin=" << origin);
+    GLIDE_LOG(DEBUG, "Frontend", "grLfbLock invoked: buffer=" << buffer << ", mode=" << writeMode << ", origin=" << origin);
     
     if (!info) return FXFALSE;
     
@@ -786,7 +786,7 @@ FX_ENTRY FxBool FX_CALL grLfbLock(GrLock_t type, GrBuffer_t buffer, GrLfbWriteMo
 
 FX_ENTRY FxBool FX_CALL grLfbUnlock(GrLock_t type, GrBuffer_t buffer) {
     EnsureEngineInitialized();
-    GLIDE_LOG(INFO, "Frontend", "grLfbUnlock invoked.");
+    GLIDE_LOG(DEBUG, "Frontend", "grLfbUnlock invoked.");
     
     if (!g_lfbLock.isLocked) {
         GLIDE_LOG(WARN, "Frontend", "grLfbUnlock: No active LFB lock found!");
@@ -860,7 +860,7 @@ static uint32_t ReadBE32(FILE* fp) {
 }
 
 FX_ENTRY FxBool FX_CALL gu3dfGetInfo(const char* filename, Gu3dfInfo* info) {
-    GLIDE_LOG(INFO, "Frontend", "gu3dfGetInfo invoked for: " << (filename ? filename : "unknown"));
+    GLIDE_LOG(DEBUG, "Frontend", "gu3dfGetInfo invoked for: " << (filename ? filename : "unknown"));
     if (!filename || !info) return FXFALSE;
 
     FILE* fp = std::fopen(filename, "rb");
@@ -964,7 +964,7 @@ FX_ENTRY FxBool FX_CALL gu3dfGetInfo(const char* filename, Gu3dfInfo* info) {
 }
 
 FX_ENTRY FxBool FX_CALL gu3dfLoad(const char* filename, Gu3dfInfo* info) {
-    GLIDE_LOG(INFO, "Frontend", "gu3dfLoad invoked for: " << (filename ? filename : "unknown"));
+    GLIDE_LOG(DEBUG, "Frontend", "gu3dfLoad invoked for: " << (filename ? filename : "unknown"));
     if (!filename || !info) return FXFALSE;
 
     if (!gu3dfGetInfo(filename, info)) return FXFALSE;
@@ -982,7 +982,7 @@ FX_ENTRY FxBool FX_CALL gu3dfLoad(const char* filename, Gu3dfInfo* info) {
         for (int i = 0; i < 256; ++i) {
             info->table.palette.data[i] = ReadBE32(fp);
         }
-        GLIDE_LOG(INFO, "Frontend", "gu3dfLoad: Loaded 256 palette entries for P8 texture.");
+        GLIDE_LOG(DEBUG, "Frontend", "gu3dfLoad: Loaded 256 palette entries for P8 texture.");
     }
 
     if (!info->data) {
@@ -1036,7 +1036,7 @@ FX_ENTRY FxBool FX_CALL gu3dfLoad(const char* filename, Gu3dfInfo* info) {
     }
 
     std::fclose(fp);
-    GLIDE_LOG(INFO, "Frontend", "gu3dfLoad: Loaded " << filename << " successfully into memory.");
+    GLIDE_LOG(DEBUG, "Frontend", "gu3dfLoad: Loaded " << filename << " successfully into memory.");
     return FXTRUE;
 }
 
@@ -1108,7 +1108,7 @@ FX_ENTRY void FX_CALL guFogGenerateLinear(GrFog_t *fogtable, float nearZ, float 
 
 FX_ENTRY void FX_CALL grFogMode(GrFogMode_t mode) {
     EnsureEngineInitialized();
-    GLIDE_LOG(INFO, "Frontend", "grFogMode invoked: " << mode);
+    GLIDE_LOG(DEBUG, "Frontend", "grFogMode invoked: " << mode);
     s_fogMode = mode & (GR_FOG_WITH_TABLE | GR_FOG_WITH_ITERATED_ALPHA);
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
         b->SetFogMode(s_fogMode);
@@ -1117,7 +1117,7 @@ FX_ENTRY void FX_CALL grFogMode(GrFogMode_t mode) {
 
 FX_ENTRY void FX_CALL grFogColorValue(GrColor_t fogcolor) {
     EnsureEngineInitialized();
-    GLIDE_LOG(INFO, "Frontend", "grFogColorValue invoked: " << std::hex << fogcolor << std::dec);
+    GLIDE_LOG(DEBUG, "Frontend", "grFogColorValue invoked: " << std::hex << fogcolor << std::dec);
     s_fogColor = fogcolor;
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
         b->SetFogColor(s_fogColor);
@@ -1126,7 +1126,7 @@ FX_ENTRY void FX_CALL grFogColorValue(GrColor_t fogcolor) {
 
 FX_ENTRY void FX_CALL grFogTable(const GrFog_t ft[]) {
     EnsureEngineInitialized();
-    GLIDE_LOG(INFO, "Frontend", "grFogTable invoked.");
+    GLIDE_LOG(DEBUG, "Frontend", "grFogTable invoked.");
     if (ft) {
         std::memcpy(s_fogTable, ft, sizeof(s_fogTable));
         if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
@@ -1144,7 +1144,7 @@ FX_ENTRY FxU16 FX_CALL guEndianSwapBytes( FxU16 value ) {
 }
 
 FX_ENTRY void FX_CALL guAlphaSource( GrAlphaSource_t mode ) {
-    GLIDE_LOG(INFO, "Frontend", "guAlphaSource invoked: " << mode);
+    GLIDE_LOG(DEBUG, "Frontend", "guAlphaSource invoked: " << mode);
     switch ( mode ) {
     case GR_ALPHASOURCE_CC_ALPHA:
         grAlphaCombine( GR_COMBINE_FUNCTION_LOCAL, 
@@ -1185,7 +1185,7 @@ FX_ENTRY void FX_CALL guAlphaSource( GrAlphaSource_t mode ) {
 }
 
 FX_ENTRY void FX_CALL guColorCombineFunction( GrColorCombineFnc_t fnc ) {
-    GLIDE_LOG(INFO, "Frontend", "guColorCombineFunction invoked: " << fnc);
+    GLIDE_LOG(DEBUG, "Frontend", "guColorCombineFunction invoked: " << fnc);
     switch ( fnc )
     {
     case GR_COLORCOMBINE_ZERO:
@@ -1315,7 +1315,7 @@ FX_ENTRY FxU16 * FX_CALL guTexCreateColorMipMap( void ) {
    FxU16 *data;
    FxU16 *start;
 
-   GLIDE_LOG(INFO, "Frontend", "guTexCreateColorMipMap invoked.");
+   GLIDE_LOG(DEBUG, "Frontend", "guTexCreateColorMipMap invoked.");
    memrequired = 2 * ( 256 * 256 + 128 * 128 + 64 * 64 + 32 * 32 + 16 * 16 + 8 * 8 + 4 * 4 + 2 * 2 + 1 * 1 );
    start = data = reinterpret_cast<FxU16*>(std::malloc( memrequired ));
    if ( !data )
@@ -1336,7 +1336,7 @@ FX_ENTRY FxU16 * FX_CALL guTexCreateColorMipMap( void ) {
 
 FX_ENTRY void FX_CALL grChromakeyMode(GrChromakeyMode_t mode) {
     EnsureEngineInitialized();
-    GLIDE_LOG(INFO, "Frontend", "grChromakeyMode invoked: mode=" << mode);
+    GLIDE_LOG(DEBUG, "Frontend", "grChromakeyMode invoked: mode=" << mode);
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
         b->SetChromakeyMode(mode);
     }
@@ -1344,7 +1344,7 @@ FX_ENTRY void FX_CALL grChromakeyMode(GrChromakeyMode_t mode) {
 
 FX_ENTRY void FX_CALL grChromakeyValue(GrColor_t value) {
     EnsureEngineInitialized();
-    GLIDE_LOG(INFO, "Frontend", "grChromakeyValue invoked: value=0x" << std::hex << value << std::dec);
+    GLIDE_LOG(DEBUG, "Frontend", "grChromakeyValue invoked: value=0x" << std::hex << value << std::dec);
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
         b->SetChromakeyValue(value);
     }
@@ -1352,7 +1352,7 @@ FX_ENTRY void FX_CALL grChromakeyValue(GrColor_t value) {
 
 FX_ENTRY void FX_CALL grDitherMode(GrDitherMode_t mode) {
     EnsureEngineInitialized();
-    GLIDE_LOG(INFO, "Frontend", "grDitherMode invoked: mode=" << mode);
+    GLIDE_LOG(DEBUG, "Frontend", "grDitherMode invoked: mode=" << mode);
 }
 
 } // extern "C"
