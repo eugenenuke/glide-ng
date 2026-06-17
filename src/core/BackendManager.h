@@ -19,7 +19,7 @@ public:
     void ShutdownBackend();
 
 private:
-    BackendManager() = default;
+    BackendManager();
     ~BackendManager();
 
     std::recursive_mutex m_mutex;

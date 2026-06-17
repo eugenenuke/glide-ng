@@ -5,6 +5,7 @@
 #include "core/BackendManager.h"
 #include "core/VertexLayout.h"
 #include "core/TextureManager.h"
+#include "core/Telemetry.h"
 #include <iostream>
 #include <cstring>
 #include <cmath>
@@ -157,6 +158,7 @@ inline void EnsureEngineInitialized() {
 
 FX_ENTRY void FX_CALL grGlideShutdown(void) {
     GLIDE_LOG(INFO, "Frontend", "grGlideShutdown (Glide 2.x) invoked.");
+    GlideWrapper::TelemetryManager::GetInstance().PrintReport();
     GlideWrapper::BackendManager::GetInstance().ShutdownBackend();
 }
 
@@ -254,8 +256,38 @@ FX_ENTRY void FX_CALL grDrawTriangle(const GrVertex* a, const GrVertex* b, const
     EnsureEngineInitialized();
     auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
     if (!backend || !a || !b || !c) return;
+
+    GLIDE_PROFILE_SCOPE("API::grDrawTriangle");
+    GlideWrapper::TelemetryManager::GetInstance().IncrementTrianglesProcessed(1);
+
     auto& layout = GlideWrapper::VertexLayout::GetInstance();
     backend->DrawTriangle(layout.DecodeVertex(a), layout.DecodeVertex(b), layout.DecodeVertex(c));
+}
+
+FX_ENTRY void FX_CALL grTriStats(FxU32* processed, FxU32* drawn) {
+    if (processed) {
+        *processed = static_cast<FxU32>(GlideWrapper::TelemetryManager::GetInstance().GetTrianglesProcessed());
+    }
+    if (drawn) {
+        *drawn = static_cast<FxU32>(GlideWrapper::TelemetryManager::GetInstance().GetTrianglesDrawn());
+    }
+}
+
+FX_ENTRY void FX_CALL grResetTriStats(void) {
+    GlideWrapper::TelemetryManager::GetInstance().ResetTriangleStats();
+}
+
+FX_ENTRY void FX_CALL grSstPerfStats(GrSstPerfStats_t* stats) {
+    if (stats) {
+        auto& tracker = GlideWrapper::TelemetryManager::GetInstance().GetFrameTracker();
+        std::memset(stats, 0, sizeof(GrSstPerfStats_t));
+        stats->pixelsIn = static_cast<FxU32>(tracker.GetCurrentFps());
+        stats->chromaFail = static_cast<FxU32>(tracker.GetRenderTimeMs() * 1000.0f);
+    }
+}
+
+FX_ENTRY void FX_CALL grSstResetPerfStats(void) {
+    GlideWrapper::TelemetryManager::GetInstance().Reset();
 }
 
 FX_ENTRY void FX_CALL grDrawLine(const GrVertex* a, const GrVertex* b) {

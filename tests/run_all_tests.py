@@ -77,7 +77,10 @@ def main():
         for backend in backends:
             print(f"Running Catch2 on {Colors.BLUE}{backend:<10}{Colors.END} ... ", end='', flush=True)
             total_count += 1
-            success, stdout, stderr, elapsed = run_command(catch2_bin, {'GLIDE_BACKEND': backend})
+            success, stdout, stderr, elapsed = run_command(catch2_bin, {
+                'GLIDE_BACKEND': backend,
+                'GLIDE_WRAPPER_MAX_FPS': '0'
+            })
             
             status_str = f"{Colors.GREEN}[PASS]{Colors.END}" if success else f"{Colors.RED}[FAIL]{Colors.END}"
             print(f"{status_str} ({elapsed:.2f}s)")
@@ -103,7 +106,10 @@ def main():
             print(f"Running {t:<6} on {Colors.BLUE}{backend:<10}{Colors.END} ... ", end='', flush=True)
             total_count += 1
             cmd = f"python3 tests/run_tests.py {t}"
-            success, stdout, stderr, elapsed = run_command(cmd, {'GLIDE_BACKEND': backend})
+            success, stdout, stderr, elapsed = run_command(cmd, {
+                'GLIDE_BACKEND': backend,
+                'GLIDE_WRAPPER_MAX_FPS': '0'
+            })
             
             status_str = f"{Colors.GREEN}[PASS]{Colors.END}" if success else f"{Colors.RED}[FAIL]{Colors.END}"
             print(f"{status_str} ({elapsed:.2f}s)")

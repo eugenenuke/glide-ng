@@ -66,6 +66,10 @@ def run_command_with_env(cmd, library_path, force_no_window=False, use_xvfb=Fals
     env = os.environ.copy()
     env["LD_LIBRARY_PATH"] = os.path.join(WORKSPACE, library_path)
     
+    # Default to uncapped FPS for all test executions to run at maximum speed!
+    if "GLIDE_WRAPPER_MAX_FPS" not in env:
+        env["GLIDE_WRAPPER_MAX_FPS"] = "0"
+        
     if force_no_window:
         env["GLIDE_FORCE_NO_WINDOW"] = "1"
     else:

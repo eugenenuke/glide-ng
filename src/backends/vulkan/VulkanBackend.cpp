@@ -1,6 +1,7 @@
 #include "VulkanBackend.h"
 #include "core/Logger.h"
 #include "core/TextureManager.h"
+#include "core/Telemetry.h"
 #include <iostream>
 #include <vector>
 #include <cstring>
@@ -585,11 +586,12 @@ bool VulkanBackend::SwapBuffers() {
 
     GLIDE_LOG(DEBUG, "Vulkan", "SwapBuffers Hybrid Presentation dispatch.");
 
-    // Enforce frame pacing
-    if (m_config.maxFps > 0.0f) {
-        auto delay = std::chrono::microseconds(static_cast<int>(1000000.0f / m_config.maxFps));
-        std::this_thread::sleep_for(delay);
-    }
+    // Enforce frame pacing and track frame timing using unified FrameTracker
+    auto& tracker = TelemetryManager::GetInstance().GetFrameTracker();
+    tracker.MarkFrameEnd(m_config.maxFps);
+    tracker.MarkFrameStart();
+
+    GLIDE_PROFILE_SCOPE("Vulkan::SwapBuffersSubmit");
 
     // 1. If no draw calls were executed (clear-only frame), we must explicitly begin/end a render pass to execute the pending clears!
     if (!m_inRenderPass && (m_clearColorPending || m_clearDepthPending)) {
@@ -1508,6 +1510,9 @@ void VulkanBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b, c
 void VulkanBackend::FlushBatch() {
     if (m_batchedVertexCount == 0) return;
 
+    GLIDE_PROFILE_SCOPE("Vulkan::FlushBatch");
+    TelemetryManager::GetInstance().IncrementTrianglesDrawn(m_batchedVertexCount / 3);
+
     GLIDE_LOG(DEBUG, "Vulkan", "FlushBatch: drawing " << m_batchedVertexCount << " vertices. FirstVertex=" << m_batchedFirstVertex);
 
     EnsureRenderPassActive();
@@ -1577,6 +1582,8 @@ void VulkanBackend::UploadTexture(uint32_t tmu, uint32_t startAddress, const str
             return;
         }
     }
+
+    GLIDE_PROFILE_SCOPE("Vulkan::UploadTexture");
 
     GLIDE_LOG(DEBUG, "Vulkan", "UploadTexture TMU" << tmu << ": Address=0x" << std::hex << startAddress << std::dec 
               << " Size: " << tex.baseWidth << "x" << tex.baseHeight 

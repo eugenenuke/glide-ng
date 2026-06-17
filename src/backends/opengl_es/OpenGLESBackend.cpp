@@ -1,6 +1,7 @@
 #include "OpenGLESBackend.h"
 #include "core/Logger.h"
 #include "core/TextureManager.h"
+#include "core/Telemetry.h"
 #include <iostream>
 #include <vector>
 #include <cstring>
@@ -40,7 +41,7 @@ in vec2 fragTex;
 out vec4 outColor;
 uniform sampler2D uTex;
 void main() {
-    outColor = texture(uTex, fragTex);
+    outColor = texture(uTex, fragTex).bgra;
 }
 )";
 
@@ -96,8 +97,8 @@ bool OpenGLESBackend::AttachWindow(void* nativeWindowHandle, uint32_t width, uin
     glGenFramebuffers(1, &m_headlessFBO);
     glBindFramebuffer(GL_FRAMEBUFFER, m_headlessFBO);
 
-    // Attach our color presentation texture as GL_COLOR_ATTACHMENT0
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, m_glTexture, 0);
+    // Attach our color offscreen GPU rendering texture as GL_COLOR_ATTACHMENT0
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, m_fboTexture, 0);
 
     // Allocate and attach depth renderbuffer for hardware Z-testing support
     glGenRenderbuffers(1, &m_headlessDepthRenderbuffer);
@@ -157,15 +158,28 @@ bool OpenGLESBackend::SwapBuffers() {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     if (!m_initialized || !m_windowAttached) return false;
 
-    // Enforce retro game frame pacing
-    if (m_config.maxFps > 0.0f) {
-        auto delay = std::chrono::microseconds(static_cast<int>(1000000.0f / m_config.maxFps));
-        std::this_thread::sleep_for(delay);
-    }
+    // Enforce frame pacing and track frame timing using unified FrameTracker
+    auto& tracker = TelemetryManager::GetInstance().GetFrameTracker();
+    tracker.MarkFrameEnd(m_config.maxFps);
+    tracker.MarkFrameStart();
+
+    GLIDE_PROFILE_SCOPE("GLES::SwapBuffers");
 
     if (!m_headlessMode && m_sdlWindow && m_glContext && m_headlessPixelMap) {
         // 1. Flush GPU drawing and composite with CPU text in host memory
         ReadLFB(1, 0, 0, m_headlessWidth, m_headlessHeight, m_headlessWidth * 4, m_headlessPixelMap);
+
+        // Reset crucial OpenGL states to safe presentation defaults,
+        // preventing active game states (like disabled color masks, custom scissors,
+        // or viewports) from leaking into and obliterating our presentation quad!
+        glViewport(0, 0, m_headlessWidth, m_headlessHeight);
+        glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+        glDisable(GL_SCISSOR_TEST);
+        glDisable(GL_STENCIL_TEST);
+        glDisable(GL_DEPTH_TEST);
+        glDepthMask(GL_TRUE); // Enable writes for the clear
+        glDisable(GL_BLEND);
+        glDisable(GL_CULL_FACE);
 
         glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
@@ -173,22 +187,17 @@ bool OpenGLESBackend::SwapBuffers() {
         // Upload our software pixel map to GLES texture
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, m_glTexture);
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, m_headlessWidth, m_headlessHeight, GL_BGRA_EXT, GL_UNSIGNED_BYTE, m_headlessPixelMap);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, m_headlessWidth, m_headlessHeight, GL_RGBA, GL_UNSIGNED_BYTE, m_headlessPixelMap);
         checkGLError("SwapBuffers glTexSubImage2D");
 
         glUseProgram(m_glProgram);
         glBindVertexArray(m_glVAO);
         
-        // Disable depth testing/writing so the full-screen quad draws cleanly over the window
-        glDisable(GL_DEPTH_TEST);
-        glDepthMask(GL_FALSE);
-        glDisable(GL_BLEND);
-        glDisable(GL_CULL_FACE); // Guarantee presentation quad is never culled by active game culling state!
-        glDisable(GL_SCISSOR_TEST); // Guarantee presentation quad is never clipped by active game scissor state!
-        
         glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
         checkGLError("SwapBuffers glDrawArrays");
 
+        // Swap front and back window buffers to display the rendered frame on the screen!
+        SDL_GL_SwapWindow(static_cast<SDL_Window*>(m_sdlWindow));
     }
 
     // 2. Swap the front and back CPU buffer indices for double-buffering (MUST run in headless mode too!)
@@ -475,6 +484,16 @@ bool OpenGLESBackend::CreateGLContext(void* nativeWindowHandle, uint32_t width, 
         return false;
     }
 
+    // Explicitly bind the presentation shader's texture uniform to texture unit 0
+    GLint uTexLoc = glGetUniformLocation(m_glProgram, "uTex");
+    if (uTexLoc != -1) {
+        glUseProgram(m_glProgram);
+        glUniform1i(uTexLoc, 0);
+        glUseProgram(0);
+    } else {
+        GLIDE_LOG(WARN, "GLES", "Could not find uniform location for 'uTex' in presentation shader!");
+    }
+
     // Set up presentation VBO/VAO quad
     // Quad vertices (Positions: X,Y and TexCoords: U,V)
     float quadVertices[] = {
@@ -497,14 +516,25 @@ bool OpenGLESBackend::CreateGLContext(void* nativeWindowHandle, uint32_t width, 
     glEnableVertexAttribArray(1); // Tex
     glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
 
-    // Create the streaming texture
+    // Create the streaming presentation texture
     glGenTextures(1, &m_glTexture);
     glBindTexture(GL_TEXTURE_2D, m_glTexture);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_BGRA_EXT, GL_UNSIGNED_BYTE, nullptr);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    // Create the offscreen FBO GPU rendering texture
+    glGenTextures(1, &m_fboTexture);
+    glBindTexture(GL_TEXTURE_2D, m_fboTexture);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    glBindTexture(GL_TEXTURE_2D, 0);
 
     m_sdlWindow = win;
     m_glContext = ctx;
@@ -513,7 +543,8 @@ bool OpenGLESBackend::CreateGLContext(void* nativeWindowHandle, uint32_t width, 
 }
 
 void OpenGLESBackend::DestroyGLContext() {
-    if (m_glTexture) { glDeleteTextures(1, &m_glTexture); m_glTexture = 0; }
+    if (m_glTexture)  { glDeleteTextures(1, &m_glTexture); m_glTexture = 0; }
+    if (m_fboTexture) { glDeleteTextures(1, &m_fboTexture); m_fboTexture = 0; }
     if (m_glVBO)     { glDeleteBuffers(1, &m_glVBO); m_glVBO = 0; }
     if (m_glVAO)     { glDeleteVertexArrays(1, &m_glVAO); m_glVAO = 0; }
     if (m_glProgram) { glDeleteProgram(m_glProgram); m_glProgram = 0; }
@@ -994,6 +1025,9 @@ void OpenGLESBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
     uint32_t firstVertex = m_geomVBOOffset / sizeof(ModernVertex);
     glDrawArrays(GL_TRIANGLES, firstVertex, 3);
 
+    // Increment global statistics of triangles actually drawn to the screen
+    TelemetryManager::GetInstance().IncrementTrianglesDrawn(1);
+
     // 5. Cleanup state bindings
     glBindVertexArray(0);
     glUseProgram(0);
@@ -1020,6 +1054,8 @@ void OpenGLESBackend::UploadTexture(uint32_t tmu, uint32_t startAddress, const s
         return;
     }
 
+    GLIDE_PROFILE_SCOPE("GLES::UploadTexture");
+
     GLuint texId = 0;
     auto it = m_glesTextures.find(startAddress);
     if (it == m_glesTextures.end()) {
@@ -1041,9 +1077,20 @@ void OpenGLESBackend::UploadTexture(uint32_t tmu, uint32_t startAddress, const s
         uint32_t h = std::max(1u, baseH >> i);
         const uint32_t* pixels = tex.swizzledMipLevels[i].data();
 
+        // Swizzle BGRA from TextureManager to RGBA on the CPU before uploading to GLES
+        std::vector<uint32_t> rgbaPixels(w * h);
+        for (uint32_t j = 0; j < w * h; ++j) {
+            uint32_t bgra = pixels[j];
+            uint32_t b = bgra & 0xFF;
+            uint32_t g = (bgra >> 8) & 0xFF;
+            uint32_t r = (bgra >> 16) & 0xFF;
+            uint32_t a = (bgra >> 24) & 0xFF;
+            rgbaPixels[j] = (a << 24) | (b << 16) | (g << 8) | r;
+        }
+
         glTexImage2D(GL_TEXTURE_2D, static_cast<GLint>(i), GL_RGBA, 
                      static_cast<GLsizei>(w), static_cast<GLsizei>(h), 0, 
-                     GL_BGRA_EXT, GL_UNSIGNED_BYTE, pixels);
+                     GL_RGBA, GL_UNSIGNED_BYTE, rgbaPixels.data());
         
         GLIDE_LOG(DEBUG, "GLES", "Uploaded Mip Level " << i << " (" << w << "x" << h << ") to GLES Texture ID " << texId);
     }

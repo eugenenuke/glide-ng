@@ -6,6 +6,7 @@ add_library(GlideWrapperCore STATIC
     core/VertexLayout.cpp
     core/BackendManager.cpp
     core/TextureManager.cpp
+    core/Telemetry.cpp
     backends/SoftwareBackendBase.cpp
     backends/vulkan/VulkanBackend.cpp
     backends/opengl_es/OpenGLESBackend.cpp

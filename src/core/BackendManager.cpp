@@ -4,8 +4,15 @@
 #include "backends/software/SoftwareBackend.h"
 #include "Logger.h"
 #include "TextureManager.h"
+#include "Telemetry.h"
 
 namespace GlideWrapper {
+
+BackendManager::BackendManager() {
+    // Force construction of deinitialization dependencies first to guarantee they are destroyed AFTER BackendManager
+    TextureManager::GetInstance();
+    TelemetryManager::GetInstance();
+}
 
 BackendManager& BackendManager::GetInstance() {
     static BackendManager instance;
@@ -46,6 +53,8 @@ void BackendManager::ShutdownBackend() {
     }
     // Purge the core texture manager cache to reset state for the next context
     TextureManager::GetInstance().Reset();
+    // Purge and reset all telemetry statistics
+    TelemetryManager::GetInstance().Reset();
 }
 
 } // namespace GlideWrapper

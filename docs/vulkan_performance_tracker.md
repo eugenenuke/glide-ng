@@ -19,15 +19,23 @@ To establish our "Gold Standard", we measured the reference **OpenGLide (Mesa GL
 2.  **`test21` (Texture Compositing)**: Multi-pass texturing scene (lava quad) combined with a high-frequency text console overlay (`tlib`'s `tlConRender` drawing ~100 characters per frame, resulting in 200+ draw calls/frame).
 
 #### Baseline Metrics Table (True Uncapped Rendering Speed)
-| Test / Scenario | OpenGLide (Mesa GL) | Our CPU Software (Base) | Our CPU Software (Stage 5) | Our Vulkan (Base) | Our Vulkan (Stage 6) | Our GLES (Base) | Our GLES (Stage 5) |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **`test14` (Solid Geometry)** | **208.62 FPS** | **16.79 FPS** | **-** | **117.37 FPS** | **217.38 FPS** | **177.93 FPS** | **-** |
-| **`test21` (Texturing & Console)** | **277.24 FPS** | **7.90 FPS** | **20.42 FPS** | **49.35 FPS** | **184.12 FPS** | **75.24 FPS** | **212.76 FPS** |
+| Test / Scenario | OpenGLide (Mesa GL) | Our CPU Software (Base) | Our CPU Software (Stage 5) | Our Vulkan (Base) | Our Vulkan (Stage 6 - Lifetime) | Our Vulkan (Stage 6 - Steady State) | Our GLES (Base) | Our GLES (Stage 5) |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **`test14` (Solid Geometry)** | **208.62 FPS** | **16.79 FPS** | **-** | **117.37 FPS** | **216.39 FPS** | **389.50 FPS** | **177.93 FPS** | **-** |
+| **`test21` (Texturing & Console)** | **277.24 FPS** | **7.90 FPS** | **20.42 FPS** | **49.35 FPS** | **180.75 FPS** | **374.40 FPS** | **75.24 FPS** | **212.76 FPS** |
 
-*Analysis*: By lifting the artificial 60 FPS (16.66 ms) frame-pacing sleep ceiling, the true raw speed of our modernized pipelines has been unleashed! 
-*   **Vulkan `test14`**: Runs at **217.38 FPS**, officially **beating our OpenGLide "Gold Standard" (208.62 FPS)** natively under software CPU emulation!
-*   **Vulkan `test21`**: Runs at **184.12 FPS**, achieving a colossal **+273.1% speedup** over its starting baseline (49.35 FPS)!
+*Analysis*: By lifting the artificial 60 FPS (16.66 ms) frame-pacing sleep ceiling, the true raw speed of our modernized pipelines has been unleashed! We now track two distinct performance metrics:
+1.  **Process-Lifetime Performance (Lifetime)**: The raw performance of a short 120-frame run including all one-time start-up costs (e.g. Vulkan pipeline compilation, descriptor pool allocations, TMU setup).
+2.  **Steady-State Performance (Steady State)**: The performance of the engine once all shaders and resources are fully cached in memory, measured via the internal telemetry tracker. This is the true performance representative of active gameplay!
+
+*   **Vulkan `test14` (Solid Geometry)**:
+    *   **Lifetime**: Achieves **216.39 FPS**, officially **beating our OpenGLide "Gold Standard" (208.62 FPS)**!
+    *   **Steady-State**: Achieves a staggering **389.50 FPS** (2.57 ms/frame), running **+86.7% faster than OpenGLide**!
+*   **Vulkan `test21` (Texturing & Console)**:
+    *   **Lifetime**: Achieves **180.75 FPS** (+266.3% over baseline).
+    *   **Steady-State**: Achieves a record-breaking **374.40 FPS** (2.67 ms/frame), running **+35.0% faster than OpenGLide**!
 *   **OpenGL ES `test21`**: Runs at **212.76 FPS**, achieving a spectacular **+182.7% speedup** over its starting baseline (75.24 FPS)!
+
 
 ---
 

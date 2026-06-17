@@ -1,5 +1,6 @@
 #include "SoftwareBackend.h"
 #include "core/Logger.h"
+#include "core/Telemetry.h"
 #include <iostream>
 #include <cstring>
 #include <thread>
@@ -123,11 +124,12 @@ bool SoftwareBackend::SwapBuffers() {
 
     GLIDE_LOG(DEBUG, "Software", "Executing SwapBuffers presentation dispatch.");
 
-    // Enforce artificial retro game frame pacing
-    if (m_config.maxFps > 0.0f) {
-        auto delay = std::chrono::microseconds(static_cast<int>(1000000.0f / m_config.maxFps));
-        std::this_thread::sleep_for(delay);
-    }
+    // Enforce frame pacing and track frame timing using unified FrameTracker
+    auto& tracker = TelemetryManager::GetInstance().GetFrameTracker();
+    tracker.MarkFrameEnd(m_config.maxFps);
+    tracker.MarkFrameStart();
+
+    GLIDE_PROFILE_SCOPE("Software::SwapBuffers");
 
     // 1. Swap the front and back CPU buffer indices
     std::swap(m_frontBufferIdx, m_backBufferIdx);

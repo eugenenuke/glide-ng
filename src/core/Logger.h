@@ -43,7 +43,7 @@ private:
 
 #define GLIDE_LOG(level, component, msg) \
     if (static_cast<int>(GlideWrapper::Logger::GetInstance().GetLevel()) >= static_cast<int>(GlideWrapper::LogLevel::level)) { \
-        std::ostringstream ss; \
-        ss << msg; \
-        GlideWrapper::Logger::GetInstance().Log(GlideWrapper::LogLevel::level, component, ss.str()); \
+        std::ostringstream __log_ss; \
+        __log_ss << msg; \
+        GlideWrapper::Logger::GetInstance().Log(GlideWrapper::LogLevel::level, component, __log_ss.str()); \
     }

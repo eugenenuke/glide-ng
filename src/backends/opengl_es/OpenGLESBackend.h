@@ -48,6 +48,7 @@ private:
 
     // GLES 3.2 presentation resources for streaming our software pixel map
     uint32_t m_glTexture{0};      // GLuint
+    uint32_t m_fboTexture{0};     // GLuint
     uint32_t m_glVAO{0};          // GLuint
     uint32_t m_glVBO{0};          // GLuint
     uint32_t m_glProgram{0};      // GLuint
