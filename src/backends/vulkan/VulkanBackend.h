@@ -51,6 +51,7 @@ struct VulkanTexture {
     uint32_t clampT{0};
     uint32_t minFilter{0};
     uint32_t magFilter{0};
+    uint64_t dataHash{0};
 };
 
 struct PipelineStateKey {

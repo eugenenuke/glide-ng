@@ -1525,20 +1525,63 @@ void VulkanBackend::FlushBatch() {
     m_batchedVertexCount = 0;
 }
 
+static uint64_t CalculateTextureHash(const struct VirtualTexture& tex) {
+    uint64_t hash = 14695981039346656037ULL;
+    const uint64_t prime = 1099511628211ULL;
+    
+    // Hash dimensions and mipmap count to protect against collisions
+    auto hash_integer = [&](uint32_t val) {
+        for (int i = 0; i < 4; ++i) {
+            hash ^= (val & 0xFF);
+            hash *= prime;
+            val >>= 8;
+        }
+    };
+    
+    hash_integer(tex.baseWidth);
+    hash_integer(tex.baseHeight);
+    hash_integer(static_cast<uint32_t>(tex.swizzledMipLevels.size()));
+    
+    // Hash raw swizzled mipmap pixel data
+    for (const auto& level : tex.swizzledMipLevels) {
+        const uint8_t* byteData = reinterpret_cast<const uint8_t*>(level.data());
+        size_t byteLength = level.size() * sizeof(uint32_t);
+        for (size_t i = 0; i < byteLength; ++i) {
+            hash ^= byteData[i];
+            hash *= prime;
+        }
+    }
+    return hash;
+}
+
 void VulkanBackend::UploadTexture(uint32_t tmu, uint32_t startAddress, const struct VirtualTexture& tex) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     FlushBatch();
     if (!m_initialized || !m_device) return;
-
-    GLIDE_LOG(DEBUG, "Vulkan", "UploadTexture TMU" << tmu << ": Address=0x" << std::hex << startAddress << std::dec 
-              << " Size: " << tex.baseWidth << "x" << tex.baseHeight 
-              << " Mipmap levels: " << tex.swizzledMipLevels.size());
 
     // Only TMU 0 is currently supported in this backend
     if (tmu != 0) {
         GLIDE_LOG(WARN, "Vulkan", "UploadTexture ignored for unsupported TMU " << tmu);
         return;
     }
+
+    // 1. Calculate incoming texture hash
+    uint64_t incomingHash = CalculateTextureHash(tex);
+
+    // 2. Check if texture already exists at this address and has matching data
+    auto it = m_vulkanTextures.find(startAddress);
+    if (it != m_vulkanTextures.end()) {
+        if (it->second.dataHash == incomingHash) {
+            GLIDE_LOG(DEBUG, "Vulkan", "UploadTexture: Address=0x" << std::hex << startAddress << std::dec 
+                      << " data unmodified (hash match: 0x" << std::hex << incomingHash << std::dec << "). Bypassing upload!");
+            return;
+        }
+    }
+
+    GLIDE_LOG(DEBUG, "Vulkan", "UploadTexture TMU" << tmu << ": Address=0x" << std::hex << startAddress << std::dec 
+              << " Size: " << tex.baseWidth << "x" << tex.baseHeight 
+              << " Mipmap levels: " << tex.swizzledMipLevels.size()
+              << " (Hash: 0x" << std::hex << incomingHash << std::dec << ")");
 
     // Erase existing texture at the address if it exists to clean up its resources
     m_vulkanTextures.erase(startAddress);
@@ -1681,6 +1724,7 @@ void VulkanBackend::UploadTexture(uint32_t tmu, uint32_t startAddress, const str
         vulkanTex.clampT = clampT;
         vulkanTex.minFilter = minFilter;
         vulkanTex.magFilter = magFilter;
+        vulkanTex.dataHash = incomingHash;
 
         m_vulkanTextures[startAddress] = std::move(vulkanTex);
 

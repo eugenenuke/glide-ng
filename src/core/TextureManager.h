@@ -19,6 +19,7 @@ struct VirtualTexture {
     std::vector<std::vector<uint32_t>> swizzledMipLevels; // Completely swizzled into 32-bit ARGB (0xAARRGGBB) per level
     std::vector<std::vector<uint8_t>> raw8BitMipLevels;   // Stored for deferred P8 palettization
     bool isPaletted = false;
+    uint64_t rawDataHash{0};
 };
 
 class TextureManager {

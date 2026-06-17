@@ -44,6 +44,41 @@ bool TextureManager::DownloadMipMap(uint32_t tmu, uint32_t startAddress, uint32_
 
     uint32_t rawBytes = CalculateMemoryRequired(lodMin, lodMax, aspect, format);
 
+    // 1. Calculate FNV-1a 64-bit hash of raw input data including metadata
+    uint64_t incomingHash = 14695981039346656037ULL;
+    const uint64_t prime = 1099511628211ULL;
+    auto hash_integer = [&](uint32_t val) {
+        for (int i = 0; i < 4; ++i) {
+            incomingHash ^= (val & 0xFF);
+            incomingHash *= prime;
+            val >>= 8;
+        }
+    };
+    hash_integer(lodMin);
+    hash_integer(lodMax);
+    hash_integer(aspect);
+    hash_integer(format);
+
+    const uint8_t* byteData = reinterpret_cast<const uint8_t*>(data);
+    for (size_t i = 0; i < rawBytes; ++i) {
+        incomingHash ^= byteData[i];
+        incomingHash *= prime;
+    }
+
+    // 2. Intercept and bypass if identical texture is already loaded
+    auto it = m_tmus[tmu].textures.find(startAddress);
+    if (it != m_tmus[tmu].textures.end()) {
+        auto& cachedTex = it->second;
+        if (cachedTex->rawDataHash == incomingHash &&
+            cachedTex->format == format &&
+            cachedTex->aspectRatio == aspect) {
+            GLIDE_LOG(DEBUG, "TextureManager", "DownloadMipMap Address=0x" << std::hex << startAddress << std::dec 
+                      << " raw data unmodified (hash match: 0x" << std::hex << incomingHash << std::dec 
+                      << "). Bypassing swizzle and download!");
+            return true;
+        }
+    }
+
     // Enforce user-configured TmuMemoryMb silicon ceiling
     if (m_tmus[tmu].allocatedBytes + rawBytes > m_tmuMemoryLimits[tmu]) {
         GLIDE_LOG(CRITICAL, "TextureManager", "TMU" << tmu << " silicon budget exceeded! Total Memory Limit is " << m_tmuMemoryLimits[tmu] << " bytes.");
@@ -54,6 +89,7 @@ bool TextureManager::DownloadMipMap(uint32_t tmu, uint32_t startAddress, uint32_
     tex->startAddress = startAddress;
     tex->format = format;
     tex->aspectRatio = aspect;
+    tex->rawDataHash = incomingHash;
 
     uint32_t start = std::min(lodMin, lodMax);
     uint32_t end   = std::max(lodMin, lodMax);
