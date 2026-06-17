@@ -2,6 +2,7 @@
 
 #include "backends/SoftwareBackendBase.h"
 #include <vector>
+#include <unordered_map>
 
 namespace GlideWrapper {
 
@@ -29,6 +30,7 @@ public:
     void DrawPoint(const ModernVertex& pt) override;
     void DrawLine(const ModernVertex& v0, const ModernVertex& v1) override;
     void DrawTriangle(const ModernVertex& a, const ModernVertex& b, const ModernVertex& c) override;
+    void UploadTexture(uint32_t tmu, uint32_t startAddress, const struct VirtualTexture& tex) override;
     void SetBlendState(uint32_t rgbSrcFactor, uint32_t rgbDstFactor, uint32_t alphaSrcFactor, uint32_t alphaDstFactor) override;
 
 private:
@@ -61,6 +63,7 @@ private:
     uint32_t m_geomVBO{0};                  // GLuint
     uint32_t m_geomVBOOffset{0};
     const uint32_t m_geomVBOSize{1024 * 1024}; // 1MB dynamic ring buffer
+    std::unordered_map<uint32_t, uint32_t> m_glesTextures;
 };
 
 } // namespace GlideWrapper

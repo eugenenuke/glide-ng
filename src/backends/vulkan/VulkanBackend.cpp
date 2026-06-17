@@ -1,5 +1,6 @@
 #include "VulkanBackend.h"
 #include "core/Logger.h"
+#include "core/TextureManager.h"
 #include <iostream>
 #include <vector>
 #include <cstring>
@@ -54,6 +55,98 @@ bool VulkanBackend::Initialize(const WrapperConfig& config) {
     if (!CreateInstance()) return false;
     if (!SelectPhysicalDevice()) return false;
     if (!CreateLogicalDevice()) return false;
+
+    // Create descriptor set layout
+    vk::DescriptorSetLayoutBinding binding(0, vk::DescriptorType::eCombinedImageSampler, 1, vk::ShaderStageFlagBits::eFragment, nullptr);
+    vk::DescriptorSetLayoutCreateInfo layoutInfo({}, 1, &binding);
+    m_descriptorSetLayout = m_device->createDescriptorSetLayoutUnique(layoutInfo);
+    
+    // Create descriptor pool
+    std::array<vk::DescriptorPoolSize, 1> poolSizes = {
+        vk::DescriptorPoolSize(vk::DescriptorType::eCombinedImageSampler, 128)
+    };
+    vk::DescriptorPoolCreateInfo poolInfo(vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet, 128, static_cast<uint32_t>(poolSizes.size()), poolSizes.data());
+    m_descriptorPool = m_device->createDescriptorPoolUnique(poolInfo);
+
+    // Create 1x1 dummy white texture
+    {
+        uint32_t whitePixel = 0xFFFFFFFF;
+        
+        vk::ImageCreateInfo imgInfo({}, vk::ImageType::e2D, vk::Format::eB8G8R8A8Unorm,
+                                     vk::Extent3D(1, 1, 1), 1, 1,
+                                     vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal,
+                                     vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst);
+        m_dummyTexture.image = m_device->createImageUnique(imgInfo);
+        
+        auto memReqs = m_device->getImageMemoryRequirements(m_dummyTexture.image.get());
+        uint32_t typeIndex = FindMemoryType(memReqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal);
+        vk::MemoryAllocateInfo allocInfo(memReqs.size, typeIndex);
+        m_dummyTexture.memory = m_device->allocateMemoryUnique(allocInfo);
+        m_device->bindImageMemory(m_dummyTexture.image.get(), m_dummyTexture.memory.get(), 0);
+        
+        // Create staging buffer for 4 bytes
+        vk::BufferCreateInfo stagingInfo({}, 4, vk::BufferUsageFlagBits::eTransferSrc);
+        auto stagingBuffer = m_device->createBufferUnique(stagingInfo);
+        auto stagingReqs = m_device->getBufferMemoryRequirements(stagingBuffer.get());
+        uint32_t stagingTypeIndex = FindMemoryType(stagingReqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+        vk::MemoryAllocateInfo stagingAlloc(stagingReqs.size, stagingTypeIndex);
+        auto stagingMemory = m_device->allocateMemoryUnique(stagingAlloc);
+        m_device->bindBufferMemory(stagingBuffer.get(), stagingMemory.get(), 0);
+        
+        void* mapped = m_device->mapMemory(stagingMemory.get(), 0, 4);
+        std::memcpy(mapped, &whitePixel, 4);
+        m_device->unmapMemory(stagingMemory.get());
+        
+        // Command buffer for one-time upload
+        vk::CommandBufferAllocateInfo cmdAlloc(m_commandPool.get(), vk::CommandBufferLevel::ePrimary, 1);
+        auto cmds = m_device->allocateCommandBuffersUnique(cmdAlloc);
+        auto cmd = std::move(cmds[0]);
+        
+        cmd->begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
+        
+        vk::ImageSubresourceRange range(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1);
+        TransitionImageLayout(cmd.get(), m_dummyTexture.image.get(), vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, range);
+        
+        vk::BufferImageCopy region;
+        region.imageSubresource = vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
+        region.imageExtent = vk::Extent3D(1, 1, 1);
+        cmd->copyBufferToImage(stagingBuffer.get(), m_dummyTexture.image.get(), vk::ImageLayout::eTransferDstOptimal, 1, &region);
+        
+        TransitionImageLayout(cmd.get(), m_dummyTexture.image.get(), vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, range);
+        
+        cmd->end();
+        
+        vk::SubmitInfo submit(0, nullptr, nullptr, 1, &cmd.get());
+        m_graphicsQueue.submit(submit, {});
+        m_device->waitIdle();
+        
+        // Image View
+        vk::ImageViewCreateInfo viewInfo({}, m_dummyTexture.image.get(), vk::ImageViewType::e2D, vk::Format::eB8G8R8A8Unorm,
+                                        {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1});
+        m_dummyTexture.imageView = m_device->createImageViewUnique(viewInfo);
+        
+        // Sampler
+        vk::SamplerCreateInfo samplerInfo;
+        samplerInfo.magFilter = vk::Filter::eNearest;
+        samplerInfo.minFilter = vk::Filter::eNearest;
+        samplerInfo.addressModeU = vk::SamplerAddressMode::eRepeat;
+        samplerInfo.addressModeV = vk::SamplerAddressMode::eRepeat;
+        samplerInfo.addressModeW = vk::SamplerAddressMode::eRepeat;
+        samplerInfo.mipmapMode = vk::SamplerMipmapMode::eNearest;
+        m_dummyTexture.sampler = m_device->createSamplerUnique(samplerInfo);
+        
+        // Descriptor Set
+        vk::DescriptorSetAllocateInfo setAlloc(m_descriptorPool.get(), 1, &m_descriptorSetLayout.get());
+        auto sets = m_device->allocateDescriptorSets(setAlloc);
+        m_dummyTexture.descriptorSet = sets[0];
+        
+        vk::DescriptorImageInfo imageInfo(m_dummyTexture.sampler.get(), m_dummyTexture.imageView.get(), vk::ImageLayout::eShaderReadOnlyOptimal);
+        vk::WriteDescriptorSet descriptorWrite(m_dummyTexture.descriptorSet, 0, 0, 1, vk::DescriptorType::eCombinedImageSampler, &imageInfo, nullptr, nullptr);
+        m_device->updateDescriptorSets(1, &descriptorWrite, 0, nullptr);
+        
+        GLIDE_LOG(INFO, "Vulkan", "Created 1x1 dummy white texture.");
+    }
+
     if (!CreateRenderPass()) return false;
 
     m_initialized = true;
@@ -78,6 +171,15 @@ void VulkanBackend::Shutdown() {
     m_pipelineLayout.reset();
     m_vertShaderModule.reset();
     m_fragShaderModule.reset();
+
+    // Reset descriptor layout, pool, and textures
+    m_vulkanTextures.clear();
+    m_dummyTexture.imageView.reset();
+    m_dummyTexture.sampler.reset();
+    m_dummyTexture.memory.reset();
+    m_dummyTexture.image.reset();
+    m_descriptorPool.reset();
+    m_descriptorSetLayout.reset();
 
     // 3. Explicitly destroy all device-owned buffers and memories
     m_vertexBuffer.reset();
@@ -364,6 +466,16 @@ void VulkanBackend::SetSstOrigin(uint32_t origin) {
     if (stateChanged && m_initialized && m_device) {
         GLIDE_LOG(INFO, "Vulkan", "SetSstOrigin: Recompiling Vulkan pipelines with new origin config...");
         CreateGraphicsPipelines();
+    }
+}
+
+void VulkanBackend::SetClipWindow(uint32_t minX, uint32_t minY, uint32_t maxX, uint32_t maxY) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    SoftwareBackendBase::SetClipWindow(minX, minY, maxX, maxY);
+
+    if (m_initialized && m_device && m_inRenderPass) {
+        vk::Rect2D scissor = GetScissorRectVulkan();
+        m_commandBuffer->setScissor(0, 1, &scissor);
     }
 }
 
@@ -958,7 +1070,7 @@ bool VulkanBackend::CreateGraphicsPipelines() {
 
         // Push Constants Range (passes viewport and constant color configuration to both shader stages)
         vk::PushConstantRange pushRange(vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, sizeof(PushConstants));
-        vk::PipelineLayoutCreateInfo pipelineLayoutInfo({}, 0, nullptr, 1, &pushRange);
+        vk::PipelineLayoutCreateInfo pipelineLayoutInfo({}, 1, &m_descriptorSetLayout.get(), 1, &pushRange);
         m_pipelineLayout = m_device->createPipelineLayoutUnique(pipelineLayoutInfo);
 
         // Assemble Graphics Pipeline
@@ -1031,12 +1143,18 @@ void VulkanBackend::DrawPoint(const ModernVertex& pt) {
     // Always bind the correct pipeline for this draw call!
     m_commandBuffer->bindPipeline(vk::PipelineBindPoint::eGraphics, m_pointPipeline.get());
 
-    // Determine whether to use constant color or vertex color based on Glide combiner state
-    bool useConstColor = ((m_colorCombinerFactor & 0xFFFF) == 1) || (m_colorCombinerFactor == 1);
-    bool useConstAlpha = ((m_alphaCombinerFactor & 0xFFFF) == 1) || (m_alphaCombinerFactor == 1);
+    // Bind descriptor set for texture unit 0
+    vk::DescriptorSet activeDescSet = m_dummyTexture.descriptorSet;
+    if (m_boundTexAddress[0] != 0xFFFFFFFF) {
+        auto it = m_vulkanTextures.find(m_boundTexAddress[0]);
+        if (it != m_vulkanTextures.end()) {
+            activeDescSet = it->second.descriptorSet;
+        }
+    }
+    m_commandBuffer->bindDescriptorSets(vk::PipelineBindPoint::eGraphics, m_pipelineLayout.get(), 0, 1, &activeDescSet, 0, nullptr);
 
     PushConstants pcs;
-    PopulatePushConstants(pcs, useConstColor, useConstAlpha);
+    PopulatePushConstants(pcs);
 
     m_commandBuffer->pushConstants<PushConstants>(m_pipelineLayout.get(), vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, pcs);
 
@@ -1085,12 +1203,18 @@ void VulkanBackend::DrawLine(const ModernVertex& v1, const ModernVertex& v2) {
     // Always bind the correct pipeline for this draw call!
     m_commandBuffer->bindPipeline(vk::PipelineBindPoint::eGraphics, m_linePipeline.get());
 
-    // Determine whether to use constant color or vertex color based on Glide combiner state
-    bool useConstColor = ((m_colorCombinerFactor & 0xFFFF) == 1) || (m_colorCombinerFactor == 1);
-    bool useConstAlpha = ((m_alphaCombinerFactor & 0xFFFF) == 1) || (m_alphaCombinerFactor == 1);
+    // Bind descriptor set for texture unit 0
+    vk::DescriptorSet activeDescSet = m_dummyTexture.descriptorSet;
+    if (m_boundTexAddress[0] != 0xFFFFFFFF) {
+        auto it = m_vulkanTextures.find(m_boundTexAddress[0]);
+        if (it != m_vulkanTextures.end()) {
+            activeDescSet = it->second.descriptorSet;
+        }
+    }
+    m_commandBuffer->bindDescriptorSets(vk::PipelineBindPoint::eGraphics, m_pipelineLayout.get(), 0, 1, &activeDescSet, 0, nullptr);
 
     PushConstants pcs;
-    PopulatePushConstants(pcs, useConstColor, useConstAlpha);
+    PopulatePushConstants(pcs);
 
     m_commandBuffer->pushConstants<PushConstants>(m_pipelineLayout.get(), vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, pcs);
 
@@ -1105,16 +1229,6 @@ void VulkanBackend::DrawLine(const ModernVertex& v1, const ModernVertex& v2) {
 void VulkanBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b, const ModernVertex& c) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     if (!m_initialized || !m_windowAttached) return;
-
-    // TODO(Phase4): Remove this temporary CPU software rasterizer fallback once
-    // GPU-native texture mapping is fully implemented in Phase 4.
-    // This fallback ensures that textured console text characters (drawn as textured quads)
-    // are correctly rasterized on the CPU and composited, while flat/Gouraud shaded
-    // triangles (like test04) continue to run 100% natively on the GPU.
-    if (m_boundTexAddress[0] != 0) {
-        SoftwareBackendBase::DrawTriangle(a, b, c);
-        return;
-    }
 
     GLIDE_LOG(DEBUG, "Vulkan", "DrawTriangle GPU draw. A: (" << a.pos[0] << ", " << a.pos[1] << "), B: (" << b.pos[0] << ", " << b.pos[1] << "), C: (" << c.pos[0] << ", " << c.pos[1] << ")");
     GLIDE_LOG(INFO, "Vulkan", "DrawTriangle Alpha Debug: Vertex 0 Alpha = " << a.color[3]
@@ -1150,12 +1264,18 @@ void VulkanBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b, c
     // Always bind the correct pipeline for this draw call!
     m_commandBuffer->bindPipeline(vk::PipelineBindPoint::eGraphics, m_trianglePipeline.get());
 
-    // Determine whether to use constant color or vertex color based on Glide combiner state
-    bool useConstColor = ((m_colorCombinerFactor & 0xFFFF) == 1) || (m_colorCombinerFactor == 1);
-    bool useConstAlpha = ((m_alphaCombinerFactor & 0xFFFF) == 1) || (m_alphaCombinerFactor == 1);
+    // Bind descriptor set for texture unit 0
+    vk::DescriptorSet activeDescSet = m_dummyTexture.descriptorSet;
+    if (m_boundTexAddress[0] != 0xFFFFFFFF) {
+        auto it = m_vulkanTextures.find(m_boundTexAddress[0]);
+        if (it != m_vulkanTextures.end()) {
+            activeDescSet = it->second.descriptorSet;
+        }
+    }
+    m_commandBuffer->bindDescriptorSets(vk::PipelineBindPoint::eGraphics, m_pipelineLayout.get(), 0, 1, &activeDescSet, 0, nullptr);
 
     PushConstants pcs;
-    PopulatePushConstants(pcs, useConstColor, useConstAlpha);
+    PopulatePushConstants(pcs);
 
     m_commandBuffer->pushConstants<PushConstants>(m_pipelineLayout.get(), vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, pcs);
 
@@ -1165,6 +1285,237 @@ void VulkanBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b, c
 
     // 4. Advance ring buffer offset
     m_vertexBufferOffset += 3 * sizeof(ModernVertex);
+}
+
+void VulkanBackend::UploadTexture(uint32_t tmu, uint32_t startAddress, const struct VirtualTexture& tex) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    if (!m_initialized || !m_device) return;
+
+    GLIDE_LOG(INFO, "Vulkan", "UploadTexture TMU" << tmu << ": Address=0x" << std::hex << startAddress << std::dec 
+              << " Size: " << tex.baseWidth << "x" << tex.baseHeight 
+              << " Mipmap levels: " << tex.swizzledMipLevels.size());
+
+    // Only TMU 0 is currently supported in this backend
+    if (tmu != 0) {
+        GLIDE_LOG(WARN, "Vulkan", "UploadTexture ignored for unsupported TMU " << tmu);
+        return;
+    }
+
+    // Erase existing texture at the address if it exists to clean up its resources
+    m_vulkanTextures.erase(startAddress);
+
+    try {
+        // 1. Create vk::Image
+        vk::ImageCreateInfo imageInfo({}, vk::ImageType::e2D, vk::Format::eB8G8R8A8Unorm,
+                                     vk::Extent3D(tex.baseWidth, tex.baseHeight, 1),
+                                     static_cast<uint32_t>(tex.swizzledMipLevels.size()), 1,
+                                     vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal,
+                                     vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst);
+        auto image = m_device->createImageUnique(imageInfo);
+
+        // 2. Allocate and bind memory
+        auto memReqs = m_device->getImageMemoryRequirements(image.get());
+        uint32_t typeIndex = FindMemoryType(memReqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal);
+        vk::MemoryAllocateInfo allocInfo(memReqs.size, typeIndex);
+        auto memory = m_device->allocateMemoryUnique(allocInfo);
+        m_device->bindImageMemory(image.get(), memory.get(), 0);
+
+        // 3. Create staging buffer
+        size_t totalBytes = 0;
+        for (const auto& level : tex.swizzledMipLevels) {
+            totalBytes += level.size() * sizeof(uint32_t);
+        }
+
+        vk::BufferCreateInfo stagingInfo({}, totalBytes, vk::BufferUsageFlagBits::eTransferSrc);
+        auto stagingBuffer = m_device->createBufferUnique(stagingInfo);
+        auto stagingReqs = m_device->getBufferMemoryRequirements(stagingBuffer.get());
+        uint32_t stagingTypeIndex = FindMemoryType(stagingReqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+        vk::MemoryAllocateInfo stagingAlloc(stagingReqs.size, stagingTypeIndex);
+        auto stagingMemory = m_device->allocateMemoryUnique(stagingAlloc);
+        m_device->bindBufferMemory(stagingBuffer.get(), stagingMemory.get(), 0);
+
+        // 4. Copy all mipmap levels data into staging memory
+        uint8_t* mappedData = static_cast<uint8_t*>(m_device->mapMemory(stagingMemory.get(), 0, totalBytes));
+        size_t offset = 0;
+        std::vector<size_t> levelOffsets;
+        for (const auto& level : tex.swizzledMipLevels) {
+            levelOffsets.push_back(offset);
+            size_t levelBytes = level.size() * sizeof(uint32_t);
+            std::memcpy(mappedData + offset, level.data(), levelBytes);
+            offset += levelBytes;
+        }
+        m_device->unmapMemory(stagingMemory.get());
+
+        // 5. Submit copy command buffer
+        vk::CommandBufferAllocateInfo cmdAlloc(m_commandPool.get(), vk::CommandBufferLevel::ePrimary, 1);
+        auto cmds = m_device->allocateCommandBuffersUnique(cmdAlloc);
+        auto cmd = std::move(cmds[0]);
+
+        cmd->begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
+
+        // Transition entire image to TransferDstOptimal
+        vk::ImageSubresourceRange entireImageRange(vk::ImageAspectFlagBits::eColor, 0, static_cast<uint32_t>(tex.swizzledMipLevels.size()), 0, 1);
+        TransitionImageLayout(cmd.get(), image.get(), vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, entireImageRange);
+
+        // Copy each mipmap level
+        std::vector<vk::BufferImageCopy> copyRegions;
+        uint32_t width = tex.baseWidth;
+        uint32_t height = tex.baseHeight;
+        for (uint32_t i = 0; i < tex.swizzledMipLevels.size(); ++i) {
+            vk::BufferImageCopy region;
+            region.bufferOffset = levelOffsets[i];
+            region.bufferRowLength = 0;
+            region.bufferImageHeight = 0;
+            region.imageSubresource = vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, i, 0, 1);
+            region.imageOffset = vk::Offset3D(0, 0, 0);
+            region.imageExtent = vk::Extent3D(width, height, 1);
+            copyRegions.push_back(region);
+
+            width = std::max(1u, width / 2);
+            height = std::max(1u, height / 2);
+        }
+
+        cmd->copyBufferToImage(stagingBuffer.get(), image.get(), vk::ImageLayout::eTransferDstOptimal, static_cast<uint32_t>(copyRegions.size()), copyRegions.data());
+
+        // Transition entire image to ShaderReadOnlyOptimal
+        TransitionImageLayout(cmd.get(), image.get(), vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, entireImageRange);
+
+        cmd->end();
+
+        vk::SubmitInfo submit(0, nullptr, nullptr, 1, &cmd.get());
+        m_graphicsQueue.submit(submit, {});
+        m_device->waitIdle();
+
+        // 6. Create Image View
+        vk::ImageViewCreateInfo viewInfo({}, image.get(), vk::ImageViewType::e2D, vk::Format::eB8G8R8A8Unorm,
+                                        {}, {vk::ImageAspectFlagBits::eColor, 0, static_cast<uint32_t>(tex.swizzledMipLevels.size()), 0, 1});
+        auto imageView = m_device->createImageViewUnique(viewInfo);
+
+        // 7. Create Sampler based on currently tracked states
+        uint32_t clampS = m_texClampS[0];
+        uint32_t clampT = m_texClampT[0];
+        uint32_t minFilter = m_texMinFilter[0];
+        uint32_t magFilter = m_texMagFilter[0];
+
+        vk::SamplerAddressMode addressModeS = (clampS == 1) ? vk::SamplerAddressMode::eClampToEdge : vk::SamplerAddressMode::eRepeat;
+        vk::SamplerAddressMode addressModeT = (clampT == 1) ? vk::SamplerAddressMode::eClampToEdge : vk::SamplerAddressMode::eRepeat;
+        vk::Filter minF = (minFilter == 1) ? vk::Filter::eLinear : vk::Filter::eNearest;
+        vk::Filter magF = (magFilter == 1) ? vk::Filter::eLinear : vk::Filter::eNearest;
+
+        vk::SamplerCreateInfo samplerInfo;
+        samplerInfo.magFilter = magF;
+        samplerInfo.minFilter = minF;
+        samplerInfo.addressModeU = addressModeS;
+        samplerInfo.addressModeV = addressModeT;
+        samplerInfo.addressModeW = vk::SamplerAddressMode::eRepeat;
+        samplerInfo.anisotropyEnable = false;
+        samplerInfo.maxAnisotropy = 1.0f;
+        samplerInfo.borderColor = vk::BorderColor::eIntOpaqueBlack;
+        samplerInfo.unnormalizedCoordinates = false;
+        samplerInfo.compareEnable = false;
+        samplerInfo.compareOp = vk::CompareOp::eAlways;
+        samplerInfo.mipmapMode = vk::SamplerMipmapMode::eNearest;
+        samplerInfo.mipLodBias = 0.0f;
+        samplerInfo.minLod = 0.0f;
+        samplerInfo.maxLod = 16.0f;
+
+        auto sampler = m_device->createSamplerUnique(samplerInfo);
+
+        // 8. Allocate Descriptor Set
+        vk::DescriptorSetAllocateInfo setAlloc(m_descriptorPool.get(), 1, &m_descriptorSetLayout.get());
+        auto sets = m_device->allocateDescriptorSets(setAlloc);
+        auto descriptorSet = sets[0];
+
+        // 9. Update Descriptor Set
+        vk::DescriptorImageInfo descriptorImageInfo(sampler.get(), imageView.get(), vk::ImageLayout::eShaderReadOnlyOptimal);
+        vk::WriteDescriptorSet descriptorWrite(descriptorSet, 0, 0, 1, vk::DescriptorType::eCombinedImageSampler, &descriptorImageInfo, nullptr, nullptr);
+        m_device->updateDescriptorSets(1, &descriptorWrite, 0, nullptr);
+
+        // 10. Save in texture cache map
+        VulkanTexture vulkanTex;
+        vulkanTex.image = std::move(image);
+        vulkanTex.memory = std::move(memory);
+        vulkanTex.imageView = std::move(imageView);
+        vulkanTex.sampler = std::move(sampler);
+        vulkanTex.descriptorSet = descriptorSet;
+        vulkanTex.clampS = clampS;
+        vulkanTex.clampT = clampT;
+        vulkanTex.minFilter = minFilter;
+        vulkanTex.magFilter = magFilter;
+
+        m_vulkanTextures[startAddress] = std::move(vulkanTex);
+
+        GLIDE_LOG(INFO, "Vulkan", "UploadTexture TMU0: Address=0x" << std::hex << startAddress << std::dec << " uploaded perfectly.");
+    } catch (const std::exception& e) {
+        GLIDE_LOG(CRITICAL, "Vulkan", "UploadTexture failed for Address=0x" << std::hex << startAddress << std::dec << ": " << e.what());
+    }
+}
+
+void VulkanBackend::BindTexture(uint32_t tmu, uint32_t startAddress, uint32_t clampS, uint32_t clampT, uint32_t minFilter, uint32_t magFilter) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    
+    // 1. Call base class SoftwareBackendBase::BindTexture to update software states
+    SoftwareBackendBase::BindTexture(tmu, startAddress, clampS, clampT, minFilter, magFilter);
+
+    if (!m_initialized || !m_device) return;
+
+    // We only support TMU 0 for now (tmu == 0)
+    if (tmu != 0) return;
+
+    if (startAddress == 0xFFFFFFFF) return;
+
+    auto it = m_vulkanTextures.find(startAddress);
+    if (it != m_vulkanTextures.end()) {
+        auto& tex = it->second;
+        // Check if wrap or filter modes have changed
+        if (tex.clampS != clampS || tex.clampT != clampT || tex.minFilter != minFilter || tex.magFilter != magFilter) {
+            GLIDE_LOG(INFO, "Vulkan", "BindTexture: Sampler properties changed for 0x" << std::hex << startAddress << std::dec 
+                      << ". Recreating VkSampler. WrapS=" << clampS << " WrapT=" << clampT 
+                      << " MinFilter=" << minFilter << " MagFilter=" << magFilter);
+
+            tex.clampS = clampS;
+            tex.clampT = clampT;
+            tex.minFilter = minFilter;
+            tex.magFilter = magFilter;
+
+            // Destroy old sampler
+            tex.sampler.reset();
+
+            // Recreate sampler
+            vk::SamplerAddressMode addressModeS = (clampS == 1) ? vk::SamplerAddressMode::eClampToEdge : vk::SamplerAddressMode::eRepeat;
+            vk::SamplerAddressMode addressModeT = (clampT == 1) ? vk::SamplerAddressMode::eClampToEdge : vk::SamplerAddressMode::eRepeat;
+            vk::Filter minF = (minFilter == 1) ? vk::Filter::eLinear : vk::Filter::eNearest;
+            vk::Filter magF = (magFilter == 1) ? vk::Filter::eLinear : vk::Filter::eNearest;
+
+            vk::SamplerCreateInfo samplerInfo;
+            samplerInfo.magFilter = magF;
+            samplerInfo.minFilter = minF;
+            samplerInfo.addressModeU = addressModeS;
+            samplerInfo.addressModeV = addressModeT;
+            samplerInfo.addressModeW = vk::SamplerAddressMode::eRepeat;
+            samplerInfo.anisotropyEnable = false;
+            samplerInfo.maxAnisotropy = 1.0f;
+            samplerInfo.borderColor = vk::BorderColor::eIntOpaqueBlack;
+            samplerInfo.unnormalizedCoordinates = false;
+            samplerInfo.compareEnable = false;
+            samplerInfo.compareOp = vk::CompareOp::eAlways;
+            samplerInfo.mipmapMode = vk::SamplerMipmapMode::eNearest;
+            samplerInfo.mipLodBias = 0.0f;
+            samplerInfo.minLod = 0.0f;
+            samplerInfo.maxLod = 16.0f;
+
+            try {
+                tex.sampler = m_device->createSamplerUnique(samplerInfo);
+
+                // Update the descriptor set
+                vk::DescriptorImageInfo imageInfo(tex.sampler.get(), tex.imageView.get(), vk::ImageLayout::eShaderReadOnlyOptimal);
+                vk::WriteDescriptorSet descriptorWrite(tex.descriptorSet, 0, 0, 1, vk::DescriptorType::eCombinedImageSampler, &imageInfo, nullptr, nullptr);
+                m_device->updateDescriptorSets(1, &descriptorWrite, 0, nullptr);
+            } catch (const std::exception& e) {
+                GLIDE_LOG(CRITICAL, "Vulkan", "BindTexture failed to update sampler for Address=0x" << std::hex << startAddress << std::dec << ": " << e.what());
+            }
+        }
+    }
 }
 
 vk::Rect2D VulkanBackend::GetScissorRectVulkan() {
@@ -1222,11 +1573,9 @@ void VulkanBackend::EnsureRenderPassActive() {
     }
 }
 
-void VulkanBackend::PopulatePushConstants(PushConstants& pcs, bool useConstColor, bool useConstAlpha) {
+void VulkanBackend::PopulatePushConstants(PushConstants& pcs) {
     pcs.viewportWidth = (float)m_headlessWidth;
     pcs.viewportHeight = (float)m_headlessHeight;
-    pcs.useConstantColor = useConstColor ? 1 : 0;
-    pcs.useConstantAlpha = useConstAlpha ? 1 : 0;
     pcs.depthBufferMode = m_depthMode;
     
     // Extract and normalize constant color components
@@ -1269,6 +1618,21 @@ void VulkanBackend::PopulatePushConstants(PushConstants& pcs, bool useConstColor
         word |= static_cast<uint32_t>(m_fogTable[i * 4 + 3]) << 24;
         pcs.fogTable[i] = word;
     }
+
+    // Milestone 9: Combiner & Texture State
+    pcs.colorFunc = m_colorCombinerFunc;
+    pcs.colorFactor = m_colorCombinerFactor;
+    pcs.colorLocal = m_colorCombinerLocal;
+    pcs.colorOther = m_colorCombinerOther;
+    pcs.colorInvert = m_colorCombinerInvert ? 1u : 0u;
+    
+    pcs.alphaFunc = m_alphaCombinerFunc;
+    pcs.alphaFactor = m_alphaCombinerFactor;
+    pcs.alphaLocal = m_alphaCombinerLocal;
+    pcs.alphaOther = m_alphaCombinerOther;
+    pcs.alphaInvert = m_alphaCombinerInvert ? 1u : 0u;
+
+    pcs.textureEnabled = (m_boundTexAddress[0] != 0xFFFFFFFF) ? 1u : 0u;
 }
 
 } // namespace GlideWrapper

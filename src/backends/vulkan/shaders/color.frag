@@ -10,8 +10,6 @@ layout(push_constant) uniform PushConstants {
     float viewportWidth;
     float viewportHeight;
     vec4 constantColor;
-    uint useConstantColor;
-    uint useConstantAlpha;
     uint depthBufferMode;
     uint alphaTestOp;
     float alphaTestRef;
@@ -21,7 +19,24 @@ layout(push_constant) uniform PushConstants {
     uint fogColor;
     uint pad1;
     uint fogTable[16];
+
+    // Combiner & Texture State
+    uint colorFunc;
+    uint colorFactor;
+    uint colorLocal;
+    uint colorOther;
+    uint colorInvert;
+
+    uint alphaFunc;
+    uint alphaFactor;
+    uint alphaLocal;
+    uint alphaOther;
+    uint alphaInvert;
+
+    uint textureEnabled;
 } pcs;
+
+layout(binding = 0) uniform sampler2D texSampler0;
 
 const float s_tableIndexToW[64] = float[](
     1.000000,      1.142857,      1.333333,      1.600000, 
@@ -43,11 +58,87 @@ const float s_tableIndexToW[64] = float[](
 );
 
 void main() {
-    vec4 finalColor;
-    finalColor.rgb = (pcs.useConstantColor == 1u) ? pcs.constantColor.rgb : fragColor.rgb;
-    finalColor.a   = (pcs.useConstantAlpha == 1u) ? pcs.constantColor.a   : fragColor.a;
+    // 1. Sample texture if enabled
+    vec4 texColor = vec4(1.0);
+    if (pcs.textureEnabled == 1u) {
+        ivec2 texSize = textureSize(texSampler0, 0);
+        float tw = float(texSize.x);
+        float th = float(texSize.y);
+        float maxDim = max(tw, th);
+        vec2 uv = (fragTex.xy / fragOOW) / 256.0;
+        uv.x *= (maxDim / tw);
+        uv.y *= (maxDim / th);
+        texColor = texture(texSampler0, uv);
+    }
 
-    // Milestone 8: Fogging Emulation (applied before alpha testing with linear interpolation)
+    // 2. Route Alpha Combiner inputs
+    float aLocal = 1.0;
+    if (pcs.alphaLocal == 0u) aLocal = fragColor.a;
+    else if (pcs.alphaLocal == 1u) aLocal = pcs.constantColor.a;
+
+    float aOther = 1.0;
+    if (pcs.alphaOther == 0u) aOther = fragColor.a;
+    else if (pcs.alphaOther == 1u) aOther = texColor.a;
+    else if (pcs.alphaOther == 2u) aOther = pcs.constantColor.a;
+
+    // 3. Evaluate Alpha Combiner Factor
+    float factA = 0.0;
+    if (pcs.alphaFactor == 1u || pcs.alphaFactor == 3u) factA = aLocal;
+    else if (pcs.alphaFactor == 2u) factA = aOther;
+    else if (pcs.alphaFactor == 4u) factA = texColor.a;
+    else if (pcs.alphaFactor == 8u) factA = 1.0;
+    else if (pcs.alphaFactor == 9u || pcs.alphaFactor == 11u) factA = 1.0 - aLocal;
+    else if (pcs.alphaFactor == 10u) factA = 1.0 - aOther;
+    else if (pcs.alphaFactor == 12u) factA = 1.0 - texColor.a;
+
+    // 4. Evaluate Alpha Combiner Function
+    float finalA = 0.0;
+    if (pcs.alphaFunc == 1u) finalA = aLocal;
+    else if (pcs.alphaFunc == 3u) finalA = aOther * factA;
+    else if (pcs.alphaFunc == 4u || pcs.alphaFunc == 5u) finalA = aOther * factA + aLocal;
+    else if (pcs.alphaFunc == 6u) finalA = (aOther - aLocal) * factA;
+    else if (pcs.alphaFunc == 7u || pcs.alphaFunc == 8u) finalA = (aOther - aLocal) * factA + aLocal;
+    
+    if (pcs.alphaInvert == 1u) finalA = 1.0 - finalA;
+
+    // 5. Route Color Combiner inputs
+    vec3 cLocal = vec3(0.0);
+    if (pcs.colorLocal == 0u) cLocal = fragColor.rgb;
+    else if (pcs.colorLocal == 1u) cLocal = pcs.constantColor.rgb;
+
+    vec3 cOther = vec3(0.0);
+    if (pcs.colorOther == 0u) cOther = fragColor.rgb;
+    else if (pcs.colorOther == 1u) cOther = texColor.rgb;
+    else if (pcs.colorOther == 2u) cOther = pcs.constantColor.rgb;
+
+    // 6. Evaluate Color Combiner Factor
+    vec3 factC = vec3(0.0);
+    if (pcs.colorFactor == 1u) factC = cLocal;
+    else if (pcs.colorFactor == 2u) factC = vec3(aOther);
+    else if (pcs.colorFactor == 3u) factC = vec3(aLocal);
+    else if (pcs.colorFactor == 4u) factC = vec3(texColor.a);
+    else if (pcs.colorFactor == 5u) factC = texColor.rgb;
+    else if (pcs.colorFactor == 8u) factC = vec3(1.0);
+    else if (pcs.colorFactor == 9u) factC = vec3(1.0) - cLocal;
+    else if (pcs.colorFactor == 10u) factC = vec3(1.0 - aOther);
+    else if (pcs.colorFactor == 11u) factC = vec3(1.0 - aLocal);
+    else if (pcs.colorFactor == 12u) factC = vec3(1.0 - texColor.a);
+
+    // 7. Evaluate Color Combiner Function
+    vec3 finalC = vec3(0.0);
+    if (pcs.colorFunc == 1u) finalC = cLocal;
+    else if (pcs.colorFunc == 3u) finalC = cOther * factC;
+    else if (pcs.colorFunc == 4u) finalC = cOther * factC + cLocal;
+    else if (pcs.colorFunc == 5u) finalC = cOther * factC + vec3(aLocal);
+    else if (pcs.colorFunc == 6u) finalC = (cOther - cLocal) * factC;
+    else if (pcs.colorFunc == 7u) finalC = (cOther - cLocal) * factC + cLocal;
+    else if (pcs.colorFunc == 8u) finalC = (cOther - cLocal) * factC + vec3(aLocal);
+
+    if (pcs.colorInvert == 1u) finalC = vec3(1.0) - finalC;
+
+    vec4 col = vec4(finalC, finalA);
+
+    // Milestone 8: Fogging Emulation
     if (pcs.fogMode > 0u) {
         float eyeW = 1.0 / fragOOW;
         if (eyeW < 1.0) eyeW = 1.0;
@@ -88,12 +179,12 @@ void main() {
         fogColorRGB.g = float((pcs.fogColor >> 8u)  & 0xFFu) / 255.0;
         fogColorRGB.b = float(pcs.fogColor & 0xFFu)        / 255.0;
 
-        finalColor.rgb = finalColor.rgb * (1.0 - f) + fogColorRGB * f;
+        col.rgb = col.rgb * (1.0 - f) + fogColorRGB * f;
     }
 
-    // Emulate legacy 3dfx Glide alpha testing (7 = GR_CMP_ALWAYS / disabled)
+    // Emulate legacy 3dfx Glide alpha testing
     if (pcs.alphaTestOp != 7u) {
-        float alpha = finalColor.a;
+        float alpha = col.a;
         float refVal = pcs.alphaTestRef;
         bool passed = true;
 
@@ -110,5 +201,5 @@ void main() {
         }
     }
 
-    outColor = finalColor;
+    outColor = col;
 }

@@ -46,7 +46,9 @@ public:
 
     // Phase 5: Virtual TMU & Combiner Configurations
     void BindTexture(uint32_t tmu, uint32_t startAddress, uint32_t clampS, uint32_t clampT, uint32_t minFilter, uint32_t magFilter) override;
-    void SetCombinerMode(uint32_t colorFunc, uint32_t colorFactor, uint32_t alphaFunc, uint32_t alphaFactor) override;
+    void UploadTexture(uint32_t tmu, uint32_t startAddress, const struct VirtualTexture& tex) override;
+    void SetCombinerMode(uint32_t colorFunc, uint32_t colorFactor, uint32_t colorLocal, uint32_t colorOther, bool colorInvert,
+                         uint32_t alphaFunc, uint32_t alphaFactor, uint32_t alphaLocal, uint32_t alphaOther, bool alphaInvert) override;
     void SetTexCombinerMode(uint32_t tmu, uint32_t rgbFunc, uint32_t rgbFactor, uint32_t alphaFunc, uint32_t alphaFactor) override;
 
     // Linear Framebuffer (LFB) read/write utilities
@@ -98,7 +100,7 @@ protected:
     std::vector<float> m_headlessDepthBuffer;
 
     // Phase 5 Software Texture Sampler Variables
-    uint32_t m_boundTexAddress[2] = {0, 0};
+    uint32_t m_boundTexAddress[2] = {0xFFFFFFFF, 0xFFFFFFFF};
     uint32_t m_texClampS[2] = {0, 0};
     uint32_t m_texClampT[2] = {0, 0};
     uint32_t m_texMinFilter[2] = {0, 0};
@@ -106,8 +108,14 @@ protected:
 
     uint32_t m_colorCombinerFunc   = 0;
     uint32_t m_colorCombinerFactor = 0;
+    uint32_t m_colorCombinerLocal  = 0;
+    uint32_t m_colorCombinerOther  = 0;
+    bool     m_colorCombinerInvert = false;
     uint32_t m_alphaCombinerFunc   = 0;
     uint32_t m_alphaCombinerFactor = 0;
+    uint32_t m_alphaCombinerLocal  = 0;
+    uint32_t m_alphaCombinerOther  = 0;
+    bool     m_alphaCombinerInvert = false;
 
     uint32_t m_texCombinerRgbFunc[2]    = {0, 0};
     uint32_t m_texCombinerRgbFactor[2]  = {0, 0};

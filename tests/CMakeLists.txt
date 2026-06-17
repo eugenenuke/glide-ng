@@ -124,6 +124,7 @@ add_executable(test_runner
     test13_alpha/test13.cpp
     test14_depthbias/test14.cpp
     test15_clip/test15.cpp
+    test17_texture/test17.cpp
     "${CMAKE_CURRENT_SOURCE_DIR}/../refs/3dfx-Glide-API/glide2x/cvg/glide/tests/tlib.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/../refs/3dfx-Glide-API/swlibs/fxmisc/linutil.c"
 )

@@ -4,6 +4,7 @@
 #include <vulkan/vulkan.hpp>
 #include <vector>
 #include <mutex>
+#include <unordered_map>
 
 namespace GlideWrapper {
 
@@ -13,18 +14,39 @@ struct PushConstants {
     float viewportHeight;
     float padding[2];          // Explicitly align constantColor to 16-byte boundary (std140)
     float constantColor[4];    // RGBA normalized floats
-    uint32_t useConstantColor;  // 1 = true, 0 = false
-    uint32_t useConstantAlpha;  // 1 = true, 0 = false
     uint32_t depthBufferMode;   // 0 = None, 1 = Z, 2 = W
     uint32_t alphaTestOp;       // 0..7 (Glide compare ops, 7 = ALWAYS/disabled)
     float alphaTestRef;         // 0.0 .. 1.0 (normalized reference value)
     float depthBias;            // Normalized depth bias
-    
-    // Milestone 8: Fogging State (Exactly 128 bytes total)
     uint32_t fogMode;           // 0 = disabled, otherwise enabled
     uint32_t fogColor;          // Packed 32-bit ARGB/ABGR color
     uint32_t pad1;              // Alignment pad
     uint32_t fogTable[16];      // 64-entry 8-bit fog table packed into 16 uint32_t values
+
+    // Milestone 9: Combiner & Texture State
+    uint32_t colorFunc;
+    uint32_t colorFactor;
+    uint32_t colorLocal;
+    uint32_t colorOther;
+    uint32_t colorInvert;
+    uint32_t alphaFunc;
+    uint32_t alphaFactor;
+    uint32_t alphaLocal;
+    uint32_t alphaOther;
+    uint32_t alphaInvert;
+    uint32_t textureEnabled;
+};
+
+struct VulkanTexture {
+    vk::UniqueImage image;
+    vk::UniqueDeviceMemory memory;
+    vk::UniqueImageView imageView;
+    vk::UniqueSampler sampler;
+    vk::DescriptorSet descriptorSet; // Owned by m_descriptorPool
+    uint32_t clampS{0};
+    uint32_t clampT{0};
+    uint32_t minFilter{0};
+    uint32_t magFilter{0};
 };
 
 /**
@@ -53,6 +75,7 @@ public:
     void SetCullState(uint32_t cullMode) override;
     void SetAlphaTestState(uint32_t compareOp, uint32_t refVal) override;
     void SetSstOrigin(uint32_t origin) override;
+    void SetClipWindow(uint32_t minX, uint32_t minY, uint32_t maxX, uint32_t maxY) override;
     bool ReadLFB(uint32_t srcX, uint32_t srcY, uint32_t srcWidth, uint32_t srcHeight, uint32_t dstStride, void* dstData) override;
     void PollEvents() override;
     void SstIdle() override;
@@ -61,6 +84,8 @@ public:
     void DrawPoint(const ModernVertex& pt) override;
     void DrawLine(const ModernVertex& v1, const ModernVertex& v2) override;
     void DrawTriangle(const ModernVertex& a, const ModernVertex& b, const ModernVertex& c) override;
+    void BindTexture(uint32_t tmu, uint32_t startAddress, uint32_t clampS, uint32_t clampT, uint32_t minFilter, uint32_t magFilter) override;
+    void UploadTexture(uint32_t tmu, uint32_t startAddress, const struct VirtualTexture& tex) override;
 
 private:
     bool CreateInstance();
@@ -138,7 +163,12 @@ private:
     // Dynamic Scissor Helper
     vk::Rect2D GetScissorRectVulkan();
     void EnsureRenderPassActive();
-    void PopulatePushConstants(PushConstants& pcs, bool useConstColor, bool useConstAlpha);
+    void PopulatePushConstants(PushConstants& pcs);
+
+    vk::UniqueDescriptorSetLayout m_descriptorSetLayout;
+    vk::UniqueDescriptorPool m_descriptorPool;
+    std::unordered_map<uint32_t, VulkanTexture> m_vulkanTextures;
+    VulkanTexture m_dummyTexture;
 };
 
 

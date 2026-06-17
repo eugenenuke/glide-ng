@@ -1,4 +1,6 @@
 #include "TextureManager.h"
+#include "core/BackendManager.h"
+#include "core/IGraphicsBackend.h"
 #include <algorithm>
 #include <cstring>
 #include <cmath>
@@ -89,6 +91,11 @@ bool TextureManager::DownloadMipMap(uint32_t tmu, uint32_t startAddress, uint32_
         }
 
         std::vector<uint32_t> levelPixels(w * h, 0);
+        std::vector<uint8_t> levelRaw;
+        if (format == 0x5) { // GR_TEXFMT_P_8
+            tex->isPaletted = true;
+            levelRaw.resize(w * h, 0);
+        }
 
         for (size_t pIdx = 0; pIdx < w * h; ++pIdx) {
             uint32_t a = 255; uint32_t r = 0; uint32_t g = 0; uint32_t b = 0;
@@ -100,6 +107,7 @@ bool TextureManager::DownloadMipMap(uint32_t tmu, uint32_t startAddress, uint32_
                 r = (val >> 16) & 0xFF;
                 g = (val >> 8)  & 0xFF;
                 b = val & 0xFF;
+                levelPixels[pIdx] = (a << 24) | (r << 16) | (g << 8) | b;
             } else if (format >= 0x8) { // 16-bit
                 const auto* p = reinterpret_cast<const uint16_t*>(rawData + byteOffset) + pIdx;
                 uint16_t val = *p;
@@ -123,21 +131,34 @@ bool TextureManager::DownloadMipMap(uint32_t tmu, uint32_t startAddress, uint32_
                     r = val & 0xFF;
                     g = r; b = r;
                 }
+                levelPixels[pIdx] = (a << 24) | (r << 16) | (g << 8) | b;
             } else { // 8-bit
                 uint8_t val = rawData[byteOffset + pIdx];
                 if (format == 0x2) { // ALPHA_8
                     a = val; r = 255; g = 255; b = 255;
+                    levelPixels[pIdx] = (a << 24) | (r << 16) | (g << 8) | b;
                 } else if (format == 0x3) { // INTENSITY_8
                     r = val; g = val; b = val; a = 255;
-                } else { // P_8 paletted fallback (greyscale for now)
+                    levelPixels[pIdx] = (a << 24) | (r << 16) | (g << 8) | b;
+                } else if (format == 0x5) { // P_8
+                    levelRaw[pIdx] = val;
+                    if (m_tmus[tmu].paletteTableLoaded) {
+                        levelPixels[pIdx] = m_tmus[tmu].paletteTable[val];
+                    } else {
+                        // Greyscale fallback before palette download
+                        levelPixels[pIdx] = (255u << 24) | (val << 16) | (val << 8) | val;
+                    }
+                } else { // Unknown 8-bit format
                     r = val; g = val; b = val; a = 255;
+                    levelPixels[pIdx] = (a << 24) | (r << 16) | (g << 8) | b;
                 }
             }
-
-            levelPixels[pIdx] = (a << 24) | (r << 16) | (g << 8) | b;
         }
 
         tex->swizzledMipLevels.push_back(std::move(levelPixels));
+        if (format == 0x5) {
+            tex->raw8BitMipLevels.push_back(std::move(levelRaw));
+        }
         uint32_t levelBytes = w * h * bytesPerTexel;
         byteOffset += (levelBytes + 7) & ~7; // Advancing aligned silicon footprint
     }
@@ -148,6 +169,58 @@ bool TextureManager::DownloadMipMap(uint32_t tmu, uint32_t startAddress, uint32_
     GLIDE_LOG(INFO, "TextureManager", "Successfully downloaded Virtual Texture MIP Chain at Address=0x" << std::hex << startAddress << std::dec 
                                       << " Base(" << tex->baseWidth << "x" << tex->baseHeight << "), Levels=" << tex->swizzledMipLevels.size()
                                       << " into TMU" << tmu << ". Allocated pool: " << m_tmus[tmu].allocatedBytes << " bytes.");
+
+    // If this texture is fully swizzled (either not paletted, or paletted with a pre-loaded table), upload it immediately!
+    if (!tex->isPaletted || m_tmus[tmu].paletteTableLoaded) {
+        if (auto* b = BackendManager::GetInstance().GetBackend()) {
+            b->UploadTexture(tmu, startAddress, *tex);
+        }
+    }
+
+    return true;
+}
+
+bool TextureManager::DownloadTable(uint32_t tmu, uint32_t type, const void* data) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    if (tmu >= 2 || !data) return false;
+
+    // Currently, we only support 256-color palette tables (type = GR_TEXTABLE_PALETTE = 2)
+    if (type != 2) {
+        GLIDE_LOG(WARN, "TextureManager", "Unsupported texture table type: " << type << ". Skipping.");
+        return false;
+    }
+
+    GLIDE_LOG(INFO, "TextureManager", "Downloading 256-color palette table to TMU" << tmu);
+    const auto* paletteData = reinterpret_cast<const uint32_t*>(data);
+    std::memcpy(m_tmus[tmu].paletteTable, paletteData, sizeof(m_tmus[tmu].paletteTable));
+    m_tmus[tmu].paletteTableLoaded = true;
+
+    // Re-swizzle and trigger GPU upload for all paletted textures in this TMU!
+    int swizzledCount = 0;
+    for (auto& pair : m_tmus[tmu].textures) {
+        auto& tex = pair.second;
+        if (tex->isPaletted && !tex->raw8BitMipLevels.empty()) {
+            tex->swizzledMipLevels.clear();
+            for (size_t lvl = 0; lvl < tex->raw8BitMipLevels.size(); ++lvl) {
+                const auto& raw8 = tex->raw8BitMipLevels[lvl];
+                std::vector<uint32_t> swizzled(raw8.size());
+                for (size_t pIdx = 0; pIdx < raw8.size(); ++pIdx) {
+                    uint8_t idx = raw8[pIdx];
+                    swizzled[pIdx] = m_tmus[tmu].paletteTable[idx];
+                }
+                tex->swizzledMipLevels.push_back(std::move(swizzled));
+            }
+            swizzledCount++;
+            GLIDE_LOG(INFO, "TextureManager", "Deferred-swizzled paletted texture at Address=0x" << std::hex << tex->startAddress << std::dec << " using new palette table.");
+            
+            // Upload the fully swizzled texture to the GPU!
+            if (auto* b = BackendManager::GetInstance().GetBackend()) {
+                b->UploadTexture(tmu, tex->startAddress, *tex);
+            }
+        }
+    }
+
+    GLIDE_LOG(INFO, "TextureManager", "Completed palette download. Deferred-swizzled " << swizzledCount << " textures.");
     return true;
 }
 

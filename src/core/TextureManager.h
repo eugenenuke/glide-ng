@@ -17,6 +17,8 @@ struct VirtualTexture {
     uint32_t baseWidth;
     uint32_t baseHeight;
     std::vector<std::vector<uint32_t>> swizzledMipLevels; // Completely swizzled into 32-bit ARGB (0xAARRGGBB) per level
+    std::vector<std::vector<uint8_t>> raw8BitMipLevels;   // Stored for deferred P8 palettization
+    bool isPaletted = false;
 };
 
 class TextureManager {
@@ -31,6 +33,9 @@ public:
 
     // 2. Decode retro formats across full MIP-map chain and upload into active virtual TMU pool
     bool DownloadMipMap(uint32_t tmu, uint32_t startAddress, uint32_t lodMin, uint32_t lodMax, uint32_t aspect, uint32_t format, const void* data);
+
+    // Download a palette table to the specified TMU and trigger deferred palettization
+    bool DownloadTable(uint32_t tmu, uint32_t type, const void* data);
 
     // 3. Enforce silicon memory limits (e.g. 2MB or 4MB per TMU)
     void SetTmuMemoryLimitMb(uint32_t tmu, uint32_t limitMb);
@@ -53,6 +58,8 @@ private:
     struct TmuState {
         uint32_t allocatedBytes = 0;
         std::unordered_map<uint32_t, std::shared_ptr<VirtualTexture>> textures;
+        uint32_t paletteTable[256];
+        bool paletteTableLoaded = false;
     };
 
     std::recursive_mutex m_mutex;

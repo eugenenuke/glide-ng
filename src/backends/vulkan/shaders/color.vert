@@ -13,12 +13,30 @@ layout(push_constant) uniform PushConstants {
     float viewportWidth;
     float viewportHeight;
     vec4 constantColor;
-    uint useConstantColor;
-    uint useConstantAlpha;
-    uint depthBufferMode; // 0=None, 1=Z, 2=W
+    uint depthBufferMode;
     uint alphaTestOp;
     float alphaTestRef;
     float depthBias;
+    
+    uint fogMode;
+    uint fogColor;
+    uint pad1;
+    uint fogTable[16];
+
+    // Combiner & Texture State
+    uint colorFunc;
+    uint colorFactor;
+    uint colorLocal;
+    uint colorOther;
+    uint colorInvert;
+
+    uint alphaFunc;
+    uint alphaFactor;
+    uint alphaLocal;
+    uint alphaOther;
+    uint alphaInvert;
+
+    uint textureEnabled;
 } pcs;
 
 void main() {

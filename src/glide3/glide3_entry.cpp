@@ -42,8 +42,14 @@ namespace {
     uint32_t s_magFilter[2] = {0, 0};
     uint32_t s_colorFunc   = 0;
     uint32_t s_colorFactor = 0;
+    uint32_t s_colorLocal  = 0;
+    uint32_t s_colorOther  = 0;
+    bool     s_colorInvert = false;
     uint32_t s_alphaFunc   = 0;
     uint32_t s_alphaFactor = 0;
+    uint32_t s_alphaLocal  = 0;
+    uint32_t s_alphaOther  = 0;
+    bool     s_alphaInvert = false;
     uint32_t s_texRgbFunc[2]    = {0, 0};
     uint32_t s_texRgbFactor[2]  = {0, 0};
     uint32_t s_texAlphaFunc[2]  = {0, 0};
@@ -225,6 +231,11 @@ FX_ENTRY void FX_CALL grClipWindow(FxU32 minx, FxU32 miny, FxU32 maxx, FxU32 max
     }
 }
 
+FX_ENTRY FxU32 FX_CALL grTexMinAddress(GrChipID_t tmu) {
+    GLIDE_LOG(INFO, "Frontend", "grTexMinAddress (Glide 3.x) invoked for TMU=" << tmu);
+    return 0;
+}
+
 FX_ENTRY FxU32 FX_CALL grTexMaxAddress(GrChipID_t tmu) {
     GLIDE_LOG(INFO, "Frontend", "grTexMaxAddress (Glide 3.x) invoked for TMU=" << tmu);
     return 0x200000;
@@ -244,20 +255,28 @@ FX_ENTRY void FX_CALL grGlideSetState(const void* state) {
 }
 
 FX_ENTRY void FX_CALL grColorCombine(GrCombineFunction_t fnc, GrCombineFactor_t factor, GrCombineLocal_t local, GrCombineOther_t other, FxBool invert) {
-    GLIDE_LOG(INFO, "Frontend", "grColorCombine (Glide 3.x) invoked: Function=" << fnc << ", Factor=" << factor << ", Local=" << local);
+    GLIDE_LOG(INFO, "Frontend", "grColorCombine (Glide 3.x) invoked: Function=" << fnc << ", Factor=" << factor << ", Local=" << local << ", Other=" << other << ", Invert=" << invert);
     s_colorFunc   = fnc;
-    s_colorFactor = (static_cast<uint32_t>(factor) << 16) | static_cast<uint32_t>(local);
+    s_colorFactor = factor;
+    s_colorLocal  = local;
+    s_colorOther  = other;
+    s_colorInvert = invert != 0;
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
-        b->SetCombinerMode(s_colorFunc, s_colorFactor, s_alphaFunc, s_alphaFactor);
+        b->SetCombinerMode(s_colorFunc, s_colorFactor, s_colorLocal, s_colorOther, s_colorInvert,
+                           s_alphaFunc, s_alphaFactor, s_alphaLocal, s_alphaOther, s_alphaInvert);
     }
 }
 
 FX_ENTRY void FX_CALL grAlphaCombine(GrCombineFunction_t fnc, GrCombineFactor_t factor, GrCombineLocal_t local, GrCombineOther_t other, FxBool invert) {
-    GLIDE_LOG(INFO, "Frontend", "grAlphaCombine (Glide 3.x) invoked: Function=" << fnc << ", Factor=" << factor << ", Local=" << local);
+    GLIDE_LOG(INFO, "Frontend", "grAlphaCombine (Glide 3.x) invoked: Function=" << fnc << ", Factor=" << factor << ", Local=" << local << ", Other=" << other << ", Invert=" << invert);
     s_alphaFunc   = fnc;
-    s_alphaFactor = (static_cast<uint32_t>(factor) << 16) | static_cast<uint32_t>(local);
+    s_alphaFactor = factor;
+    s_alphaLocal  = local;
+    s_alphaOther  = other;
+    s_alphaInvert = invert != 0;
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
-        b->SetCombinerMode(s_colorFunc, s_colorFactor, s_alphaFunc, s_alphaFactor);
+        b->SetCombinerMode(s_colorFunc, s_colorFactor, s_colorLocal, s_colorOther, s_colorInvert,
+                           s_alphaFunc, s_alphaFactor, s_alphaLocal, s_alphaOther, s_alphaInvert);
     }
 }
 

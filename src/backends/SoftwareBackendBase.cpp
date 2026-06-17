@@ -19,10 +19,6 @@ void SoftwareBackendBase::ClearBuffer(uint32_t color, uint32_t alpha, float z, u
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     if (!m_windowAttached || !m_headlessPixelMap) return;
 
-    // Reset temporary software fallback texture bindings at start of frame
-    m_boundTexAddress[0] = 0;
-    m_boundTexAddress[1] = 0;
-
     if (clearMask & 0x1) { // Color Clear
         uint32_t a = (alpha > 0) ? alpha : 255;
         uint32_t r = (color >> 16) & 0xFF;
@@ -138,13 +134,26 @@ void SoftwareBackendBase::BindTexture(uint32_t tmu, uint32_t startAddress, uint3
     }
 }
 
-void SoftwareBackendBase::SetCombinerMode(uint32_t colorFunc, uint32_t colorFactor, uint32_t alphaFunc, uint32_t alphaFactor) {
+void SoftwareBackendBase::UploadTexture(uint32_t tmu, uint32_t startAddress, const struct VirtualTexture& tex) {
+    // Software backend doesn't need physical GPU uploads; it queries TextureManager directly.
+    GLIDE_LOG(INFO, "Rasterizer", "UploadTexture (Software) TMU" << tmu << ": Address=0x" << std::hex << startAddress << std::dec << " registered.");
+}
+
+void SoftwareBackendBase::SetCombinerMode(uint32_t colorFunc, uint32_t colorFactor, uint32_t colorLocal, uint32_t colorOther, bool colorInvert,
+                                         uint32_t alphaFunc, uint32_t alphaFactor, uint32_t alphaLocal, uint32_t alphaOther, bool alphaInvert) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     m_colorCombinerFunc   = colorFunc;
     m_colorCombinerFactor = colorFactor;
+    m_colorCombinerLocal  = colorLocal;
+    m_colorCombinerOther  = colorOther;
+    m_colorCombinerInvert = colorInvert;
     m_alphaCombinerFunc   = alphaFunc;
     m_alphaCombinerFactor = alphaFactor;
-    GLIDE_LOG(INFO, "Rasterizer", "SetCombinerMode: ColorFunc=" << colorFunc << ", AlphaFunc=" << alphaFunc);
+    m_alphaCombinerLocal  = alphaLocal;
+    m_alphaCombinerOther  = alphaOther;
+    m_alphaCombinerInvert = alphaInvert;
+    GLIDE_LOG(INFO, "Rasterizer", "SetCombinerMode: Color(Func=" << colorFunc << ", Fac=" << colorFactor << ", Loc=" << colorLocal << ", Oth=" << colorOther << ", Inv=" << colorInvert 
+                                  << "), Alpha(Func=" << alphaFunc << ", Fac=" << alphaFactor << ", Loc=" << alphaLocal << ", Oth=" << alphaOther << ", Inv=" << alphaInvert << ")");
 }
 
 void SoftwareBackendBase::SetTexCombinerMode(uint32_t tmu, uint32_t rgbFunc, uint32_t rgbFactor, uint32_t alphaFunc, uint32_t alphaFactor) {
@@ -332,7 +341,7 @@ void SoftwareBackendBase::RasterizeSoftwareTriangle(const ModernVertex& a, const
     auto* pixels = reinterpret_cast<uint32_t*>(m_headlessPixelMap);
 
     auto sampleTexture = [&](uint32_t tmu, float s, float t) -> uint32_t {
-        if (tmu >= 2 || m_boundTexAddress[tmu] == 0) return 0xFFFFFFFF; // Solid white fallback
+        if (tmu >= 2 || m_boundTexAddress[tmu] == 0xFFFFFFFF) return 0xFFFFFFFF; // Solid white fallback
         auto* tex = TextureManager::GetInstance().GetTexture(tmu, m_boundTexAddress[tmu]);
         if (!tex || tex->swizzledMipLevels.empty()) return 0xFFFFFFFF;
 
@@ -405,79 +414,230 @@ void SoftwareBackendBase::RasterizeSoftwareTriangle(const ModernVertex& a, const
     for (int y = minY; y <= maxY; ++y) {
         for (int x = minX; x <= maxX; ++x) {
             float p[2] = {x + 0.5f, y + 0.5f};
+            bool isTestPixel = (x == 150 && y == 150) || (x == 310 && y == 310) || (x == 410 && y == 310);
 
             float w0 = edgeFunc(b.pos.data(), c.pos.data(), p) / area;
             float w1 = edgeFunc(c.pos.data(), a.pos.data(), p) / area;
             float w2 = edgeFunc(a.pos.data(), b.pos.data(), p) / area;
 
             if (w0 >= 0.0f && w1 >= 0.0f && w2 >= 0.0f) {
-                float red   = w0 * a.color[0] + w1 * b.color[0] + w2 * c.color[0];
-                float green = w0 * a.color[1] + w1 * b.color[1] + w2 * c.color[1];
-                float blue  = w0 * a.color[2] + w1 * b.color[2] + w2 * c.color[2];
-                float alpha = w0 * a.color[3] + w1 * b.color[3] + w2 * c.color[3];
+                // 1. Interpolate vertex colors and reciprocal depth
+                float wVal = w0 * a.pos[3] + w1 * b.pos[3] + w2 * c.pos[3];
 
-                uint32_t colorLocal = m_colorCombinerFactor & 0xFFFF;
-                if (colorLocal == 1 || m_colorCombinerFactor == 1) { // CONSTANT
-                    uint32_t cr = (m_constantColor >> 16) & 0xFF;
-                    uint32_t cg = (m_constantColor >> 8)  & 0xFF;
-                    uint32_t cb = m_constantColor & 0xFF;
-                    if (m_pixelFormatOverride == 1) { // ABGR format override for packed constant color
-                        std::swap(cr, cb);
-                    }
-                    red   = cr / 255.0f;
-                    green = cg / 255.0f;
-                    blue  = cb / 255.0f;
-                }
-                uint32_t alphaLocal = m_alphaCombinerFactor & 0xFFFF;
-                if (alphaLocal == 1 || m_alphaCombinerFactor == 1) { // CONSTANT
-                    alpha = ((m_constantColor >> 24) & 0xFF) / 255.0f;
-                    if (alpha < 0.001f) alpha = 1.0f;
-                }
+                float iterR = w0 * a.color[0] + w1 * b.color[0] + w2 * c.color[0];
+                float iterG = w0 * a.color[1] + w1 * b.color[1] + w2 * c.color[1];
+                float iterB = w0 * a.color[2] + w1 * b.color[2] + w2 * c.color[2];
+                float iterA = w0 * a.color[3] + w1 * b.color[3] + w2 * c.color[3];
 
-                bool isTestPixel = (x == 150 && y == 150) || (x == 310 && y == 310) || (x == 410 && y == 310);
-                if (isTestPixel) {
-                    GLIDE_LOG(INFO, "RasterizerDebug", "Test pixel (" << x << "," << y << ") edge pass. w0=" << w0 << ", w1=" << w1 << ", w2=" << w2 
-                              << ", Color=(" << red << "," << green << "," << blue << "," << alpha << ")");
-                }
-
-                if (m_boundTexAddress[0] != 0) {
+                // 2. Sample texture using perspective-correct division
+                float texR = 1.0f; float texG = 1.0f; float texB = 1.0f; float texA = 1.0f;
+                if (m_boundTexAddress[0] != 0xFFFFFFFF) {
                     float texS = w0 * a.tex[0] + w1 * b.tex[0] + w2 * c.tex[0];
                     float texT = w0 * a.tex[1] + w1 * b.tex[1] + w2 * c.tex[1];
+                    
+                    // Perspective division!
+                    float trueS = texS / wVal;
+                    float trueT = texT / wVal;
 
-                    uint32_t tWord = sampleTexture(0, texS, texT);
-                    float texR = ((tWord >> 16) & 0xFF) / 255.0f;
-                    float texG = ((tWord >> 8)  & 0xFF) / 255.0f;
-                    float texB = (tWord & 0xFF) / 255.0f;
-                    float texA = ((tWord >> 24) & 0xFF) / 255.0f;
+                    uint32_t tWord = sampleTexture(0, trueS, trueT);
+                    texR = ((tWord >> 16) & 0xFF) / 255.0f;
+                    texG = ((tWord >> 8)  & 0xFF) / 255.0f;
+                    texB = (tWord & 0xFF) / 255.0f;
+                    texA = ((tWord >> 24) & 0xFF) / 255.0f;
 
                     if (isTestPixel) {
-                        GLIDE_LOG(INFO, "RasterizerDebug", "Test pixel (" << x << "," << y << ") sampled texture coordinate S=" << texS << ", T=" << texT 
+                        GLIDE_LOG(INFO, "RasterizerDebug", "Test pixel (" << x << "," << y << ") sampled texture coordinate S=" << trueS << ", T=" << trueT 
                                   << ", TexelColor=(" << texR << "," << texG << "," << texB << "," << texA << ")");
                     }
-
-                    if (m_colorCombinerFunc == 3 || m_colorCombinerFunc == 4) { // Modulate
-                        red   *= texR;
-                        green *= texG;
-                        blue  *= texB;
-                        alpha  = texA;
-                    } else { // Replace
-                        red   = texR;
-                        green = texG;
-                        blue  = texB;
-                        alpha = texA;
-                    }
                 }
 
-                // Removed global format override swap for vertex colors
+                // 3. Evaluate general Register Combiner inputs
+                // 3a. Alpha Combiner inputs (ALOCAL, AOTHER)
+                float aLocal = 1.0f;
+                if (m_alphaCombinerLocal == 0) { // GR_COMBINE_LOCAL_ITERATED
+                    aLocal = iterA;
+                } else if (m_alphaCombinerLocal == 1) { // GR_COMBINE_LOCAL_CONSTANT
+                    aLocal = ((m_constantColor >> 24) & 0xFF) / 255.0f;
+                }
+
+                float aOther = 1.0f;
+                if (m_alphaCombinerOther == 0) { // GR_COMBINE_OTHER_ITERATED
+                    aOther = iterA;
+                } else if (m_alphaCombinerOther == 1) { // GR_COMBINE_OTHER_TEXTURE
+                    aOther = texA;
+                } else if (m_alphaCombinerOther == 2) { // GR_COMBINE_OTHER_CONSTANT
+                    aOther = ((m_constantColor >> 24) & 0xFF) / 255.0f;
+                }
+
+                // 3b. Color Combiner inputs (CLOCAL, COTHER)
+                float cLocalR = 0.0f, cLocalG = 0.0f, cLocalB = 0.0f;
+                if (m_colorCombinerLocal == 0) { // GR_COMBINE_LOCAL_ITERATED
+                    cLocalR = iterR; cLocalG = iterG; cLocalB = iterB;
+                } else if (m_colorCombinerLocal == 1) { // GR_COMBINE_LOCAL_CONSTANT / NONE
+                    cLocalR = ((m_constantColor >> 16) & 0xFF) / 255.0f;
+                    cLocalG = ((m_constantColor >> 8)  & 0xFF) / 255.0f;
+                    cLocalB = (m_constantColor & 0xFF) / 255.0f;
+                    if (m_pixelFormatOverride == 1) std::swap(cLocalR, cLocalB);
+                }
+
+                float cOtherR = 0.0f, cOtherG = 0.0f, cOtherB = 0.0f;
+                if (m_colorCombinerOther == 0) { // GR_COMBINE_OTHER_ITERATED
+                    cOtherR = iterR; cOtherG = iterG; cOtherB = iterB;
+                } else if (m_colorCombinerOther == 1) { // GR_COMBINE_OTHER_TEXTURE
+                    cOtherR = texR; cOtherG = texG; cOtherB = texB;
+                } else if (m_colorCombinerOther == 2) { // GR_COMBINE_OTHER_CONSTANT
+                    cOtherR = ((m_constantColor >> 16) & 0xFF) / 255.0f;
+                    cOtherG = ((m_constantColor >> 8)  & 0xFF) / 255.0f;
+                    cOtherB = (m_constantColor & 0xFF) / 255.0f;
+                    if (m_pixelFormatOverride == 1) std::swap(cOtherR, cOtherB);
+                }
+
+                // 4. Evaluate Color Combiner Factor
+                float factR = 0.0f, factG = 0.0f, factB = 0.0f;
+                switch (m_colorCombinerFactor) {
+                    case 0: // ZERO
+                        break;
+                    case 1: // LOCAL
+                        factR = cLocalR; factG = cLocalG; factB = cLocalB;
+                        break;
+                    case 2: // OTHER_ALPHA
+                        factR = aOther; factG = aOther; factB = aOther;
+                        break;
+                    case 3: // LOCAL_ALPHA
+                        factR = aLocal; factG = aLocal; factB = aLocal;
+                        break;
+                    case 4: // TEXTURE_ALPHA
+                        factR = texA; factG = texA; factB = texA;
+                        break;
+                    case 5: // TEXTURE_RGB
+                        factR = texR; factG = texG; factB = texB;
+                        break;
+                    case 8: // ONE
+                        factR = 1.0f; factG = 1.0f; factB = 1.0f;
+                        break;
+                    case 9: // ONE_MINUS_LOCAL
+                        factR = 1.0f - cLocalR; factG = 1.0f - cLocalG; factB = 1.0f - cLocalB;
+                        break;
+                    case 10: // ONE_MINUS_OTHER_ALPHA
+                        factR = 1.0f - aOther; factG = 1.0f - aOther; factB = 1.0f - aOther;
+                        break;
+                    case 11: // ONE_MINUS_LOCAL_ALPHA
+                        factR = 1.0f - aLocal; factG = 1.0f - aLocal; factB = 1.0f - aLocal;
+                        break;
+                    case 12: // ONE_MINUS_TEXTURE_ALPHA
+                        factR = 1.0f - texA; factG = 1.0f - texA; factB = 1.0f - texA;
+                        break;
+                }
+
+                // 5. Evaluate Color Combiner Function
+                float finalR = 0.0f, finalG = 0.0f, finalB = 0.0f;
+                switch (m_colorCombinerFunc) {
+                    case 0: // ZERO
+                        break;
+                    case 1: // LOCAL
+                        finalR = cLocalR; finalG = cLocalG; finalB = cLocalB;
+                        break;
+                    case 2: // NONE
+                        break;
+                    case 3: // SCALE_OTHER (OTHER * FACTOR)
+                        finalR = cOtherR * factR; finalG = cOtherG * factG; finalB = cOtherB * factB;
+                        break;
+                    case 4: // SCALE_OTHER_ADD_LOCAL (OTHER * FACTOR + LOCAL)
+                        finalR = cOtherR * factR + cLocalR;
+                        finalG = cOtherG * factG + cLocalG;
+                        finalB = cOtherB * factB + cLocalB;
+                        break;
+                    case 5: // SCALE_OTHER_ADD_LOCAL_ALPHA (OTHER * FACTOR + ALOCAL)
+                        finalR = cOtherR * factR + aLocal;
+                        finalG = cOtherG * factG + aLocal;
+                        finalB = cOtherB * factB + aLocal;
+                        break;
+                    case 6: // SCALE_OTHER_MINUS_LOCAL ((OTHER - LOCAL) * FACTOR)
+                        finalR = (cOtherR - cLocalR) * factR;
+                        finalG = (cOtherG - cLocalG) * factG;
+                        finalB = (cOtherB - cLocalB) * factB;
+                        break;
+                    case 7: // SCALE_OTHER_MINUS_LOCAL_ADD_LOCAL ((OTHER - LOCAL) * FACTOR + LOCAL)
+                        finalR = (cOtherR - cLocalR) * factR + cLocalR;
+                        finalG = (cOtherG - cLocalG) * factG + cLocalG;
+                        finalB = (cOtherB - cLocalB) * factB + cLocalB;
+                        break;
+                    case 8: // SCALE_OTHER_MINUS_LOCAL_ADD_LOCAL_ALPHA ((OTHER - LOCAL) * FACTOR + ALOCAL)
+                        finalR = (cOtherR - cLocalR) * factR + aLocal;
+                        finalG = (cOtherG - cLocalG) * factG + aLocal;
+                        finalB = (cOtherB - cLocalB) * factB + aLocal;
+                        break;
+                }
+
+                if (m_colorCombinerInvert) {
+                    finalR = 1.0f - finalR; finalG = 1.0f - finalG; finalB = 1.0f - finalB;
+                }
+
+                // 6. Evaluate Alpha Combiner Factor
+                float factA = 0.0f;
+                switch (m_alphaCombinerFactor) {
+                    case 0: // ZERO
+                        break;
+                    case 1: // LOCAL
+                    case 3: // LOCAL_ALPHA
+                        factA = aLocal;
+                        break;
+                    case 2: // OTHER_ALPHA
+                        factA = aOther;
+                        break;
+                    case 4: // TEXTURE_ALPHA
+                        factA = texA;
+                        break;
+                    case 8: // ONE
+                        factA = 1.0f;
+                        break;
+                    case 9: // ONE_MINUS_LOCAL
+                    case 11: // ONE_MINUS_LOCAL_ALPHA
+                        factA = 1.0f - aLocal;
+                        break;
+                    case 10: // ONE_MINUS_OTHER_ALPHA
+                        factA = 1.0f - aOther;
+                        break;
+                    case 12: // ONE_MINUS_TEXTURE_ALPHA
+                        factA = 1.0f - texA;
+                        break;
+                }
+
+                // 7. Evaluate Alpha Combiner Function
+                float finalA = 0.0f;
+                switch (m_alphaCombinerFunc) {
+                    case 0: // ZERO
+                        break;
+                    case 1: // LOCAL
+                        finalA = aLocal;
+                        break;
+                    case 3: // SCALE_OTHER (OTHER * FACTOR)
+                        finalA = aOther * factA;
+                        break;
+                    case 4: // SCALE_OTHER_ADD_LOCAL (OTHER * FACTOR + LOCAL)
+                    case 5: // SCALE_OTHER_ADD_LOCAL_ALPHA
+                        finalA = aOther * factA + aLocal;
+                        break;
+                    case 6: // SCALE_OTHER_MINUS_LOCAL ((OTHER - LOCAL) * FACTOR)
+                        finalA = (aOther - aLocal) * factA;
+                        break;
+                    case 7: // SCALE_OTHER_MINUS_LOCAL_ADD_LOCAL ((OTHER - LOCAL) * FACTOR + LOCAL)
+                    case 8: // SCALE_OTHER_MINUS_LOCAL_ADD_LOCAL_ALPHA
+                        finalA = (aOther - aLocal) * factA + aLocal;
+                        break;
+                }
+
+                if (m_alphaCombinerInvert) {
+                    finalA = 1.0f - finalA;
+                }
+
+                // Write results to downstream pipeline variables!
+                float red   = finalR;
+                float green = finalG;
+                float blue  = finalB;
+                float alpha = finalA;
 
                 uint32_t aVal = static_cast<uint32_t>(std::min(255.0f, alpha * 255.0f + 0.5f));
-
-                if (aVal < 128 && m_boundTexAddress[0] != 0) {
-                    if (isTestPixel) {
-                        GLIDE_LOG(INFO, "RasterizerDebug", "Test pixel (" << x << "," << y << ") discarded due to alpha threshold (" << aVal << " < 128)");
-                    }
-                    continue;
-                }
 
                 bool alphaPass = true;
                 switch (m_alphaTestOp) {
@@ -499,7 +659,6 @@ void SoftwareBackendBase::RasterizeSoftwareTriangle(const ModernVertex& a, const
                 }
 
                 float zVal = w0 * a.pos[2] + w1 * b.pos[2] + w2 * c.pos[2];
-                float wVal = w0 * a.pos[3] + w1 * b.pos[3] + w2 * c.pos[3];
                 float targetDepth = (m_depthMode == 2) ? (1.0f - wVal) : zVal;
 
                 if (m_depthBiasLevel != 0) {

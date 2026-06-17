@@ -95,7 +95,7 @@ This document serves as the authoritative coverage map for the **glide-ng** wrap
 - [x] `grTexDownloadMipMapLevel(...)` — Uploads a single mipmap level to TMU memory.
 - [x] `grTexMipMapMode(tmu, mode, lodBlend)` — Configures mipmap blending and LOD selection modes.
 - [ ] `grTexTextureMemRequired(evenOdd, info)` — Calculates memory size required for a texture info struct.
-- [ ] `grTexMinAddress(GrChipID_t tmu)` — Returns the minimum memory address for a TMU.
+- [x] `grTexMinAddress(GrChipID_t tmu)` — Returns the minimum memory address for a TMU.
 - [ ] `grTexNCCTable(GrChipID_t tmu, GrNCCTable_t table)` — Downloads Narrow Channel Compression (NCC) tables.
 - [ ] `grTexCombineFunction(GrChipID_t tmu, GrTextureCombineFnc_t fnc)` — Alternate legacy texture combiner config.
 - [ ] `grTexDetailControl(tmu, lod_bias, detail_scale, detail_max)` — Configures detail-texture blending.

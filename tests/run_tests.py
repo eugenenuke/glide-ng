@@ -41,6 +41,12 @@ TEST_TEXT_SKIP_BOUNDS = {
     "test13": (40, 2),  # Widen to full screen width for the top 2 rows to cover all console text/headers
     "test14": (40, 2),  # Widen to full screen width for the top 2 rows to cover all console text/headers
     "test15": (40, 2),  # Widen to full screen width for the top 2 rows to cover all console text/headers
+    "test17": (40, 2),  # Widen to full screen width for the top 2 rows to cover the long title text
+}
+
+# Per-test color delta threshold overrides (defaults to 8 if unspecified)
+TEST_THRESHOLDS = {
+    "test17": 12,  # Handle 16-bit RGB565 hardware quantization rounding variance on Red/Blue channels
 }
 
 def ensure_dirs():
@@ -311,7 +317,8 @@ def main():
         test_path_full = os.path.join(WORKSPACE, TEST_DIR, f)
         
         pass_ratio = TEST_PASS_RATIOS.get(test_name, None)
-        passed, msg = compare_images(ref_path_full, test_path_full, test_name, pass_ratio=pass_ratio)
+        threshold = TEST_THRESHOLDS.get(test_name, 8)
+        passed, msg = compare_images(ref_path_full, test_path_full, test_name, threshold=threshold, pass_ratio=pass_ratio)
         if passed:
             print(f"{GREEN}[PASS] {f} matches! {msg}{RESET}")
         else:

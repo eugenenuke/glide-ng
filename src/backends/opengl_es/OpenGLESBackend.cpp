@@ -1,5 +1,6 @@
 #include "OpenGLESBackend.h"
 #include "core/Logger.h"
+#include "core/TextureManager.h"
 #include <iostream>
 #include <vector>
 #include <cstring>
@@ -499,6 +500,7 @@ layout(location = 2) in vec4 inTex;
 
 out vec4 fragColor;
 out float fragOOW;
+out vec2 fragTexCoord;
 
 uniform vec2 uViewportSize;
 uniform int uDepthClipOverride;
@@ -528,6 +530,7 @@ void main() {
     gl_PointSize = 1.0; // Canonical Glide point size (1px)
     fragColor = inColor;
     fragOOW = inPos.w;
+    fragTexCoord = inTex.xy;
 }
 )";
 
@@ -536,11 +539,27 @@ precision mediump float;
 
 in vec4 fragColor;
 in float fragOOW;
+in vec2 fragTexCoord;
 out vec4 outColor;
 
 uniform vec4 uConstantColor;
-uniform int uUseConstantColor;
-uniform int uUseConstantAlpha;
+
+// Combiner Uniforms
+uniform int uColorFunc;
+uniform int uColorFactor;
+uniform int uColorLocal;
+uniform int uColorOther;
+uniform int uColorInvert;
+
+uniform int uAlphaFunc;
+uniform int uAlphaFactor;
+uniform int uAlphaLocal;
+uniform int uAlphaOther;
+uniform int uAlphaInvert;
+
+uniform int uTextureEnabled;
+uniform sampler2D uTexture0;
+
 uniform int uAlphaTestOp;
 uniform float uAlphaTestRef;
 
@@ -569,11 +588,87 @@ const float s_tableIndexToW[64] = float[](
 );
 
 void main() {
-    vec4 col;
-    col.rgb = (uUseConstantColor == 1) ? uConstantColor.rgb : fragColor.rgb;
-    col.a   = (uUseConstantAlpha == 1) ? uConstantColor.a   : fragColor.a;
+    // 1. Sample texture if enabled
+    vec4 texColor = vec4(1.0);
+    if (uTextureEnabled == 1) {
+        ivec2 texSize = textureSize(uTexture0, 0);
+        float tw = float(texSize.x);
+        float th = float(texSize.y);
+        float maxDim = max(tw, th);
+        vec2 uv = (fragTexCoord / fragOOW) / 256.0;
+        uv.x *= (maxDim / tw);
+        uv.y *= (maxDim / th);
+        texColor = texture(uTexture0, uv);
+    }
 
-    // Milestone 8: Fogging Emulation (applied before alpha testing with linear interpolation)
+    // 2. Route Alpha Combiner inputs
+    float aLocal = 1.0;
+    if (uAlphaLocal == 0) aLocal = fragColor.a;
+    else if (uAlphaLocal == 1) aLocal = uConstantColor.a;
+
+    float aOther = 1.0;
+    if (uAlphaOther == 0) aOther = fragColor.a;
+    else if (uAlphaOther == 1) aOther = texColor.a;
+    else if (uAlphaOther == 2) aOther = uConstantColor.a;
+
+    // 3. Evaluate Alpha Combiner Factor
+    float factA = 0.0;
+    if (uAlphaFactor == 1 || uAlphaFactor == 3) factA = aLocal;
+    else if (uAlphaFactor == 2) factA = aOther;
+    else if (uAlphaFactor == 4) factA = texColor.a;
+    else if (uAlphaFactor == 8) factA = 1.0;
+    else if (uAlphaFactor == 9 || uAlphaFactor == 11) factA = 1.0 - aLocal;
+    else if (uAlphaFactor == 10) factA = 1.0 - aOther;
+    else if (uAlphaFactor == 12) factA = 1.0 - texColor.a;
+
+    // 4. Evaluate Alpha Combiner Function
+    float finalA = 0.0;
+    if (uAlphaFunc == 1) finalA = aLocal;
+    else if (uAlphaFunc == 3) finalA = aOther * factA;
+    else if (uAlphaFunc == 4 || uAlphaFunc == 5) finalA = aOther * factA + aLocal;
+    else if (uAlphaFunc == 6) finalA = (aOther - aLocal) * factA;
+    else if (uAlphaFunc == 7 || uAlphaFunc == 8) finalA = (aOther - aLocal) * factA + aLocal;
+    
+    if (uAlphaInvert == 1) finalA = 1.0 - finalA;
+
+    // 5. Route Color Combiner inputs
+    vec3 cLocal = vec3(0.0);
+    if (uColorLocal == 0) cLocal = fragColor.rgb;
+    else if (uColorLocal == 1) cLocal = uConstantColor.rgb;
+
+    vec3 cOther = vec3(0.0);
+    if (uColorOther == 0) cOther = fragColor.rgb;
+    else if (uColorOther == 1) cOther = texColor.rgb;
+    else if (uColorOther == 2) cOther = uConstantColor.rgb;
+
+    // 6. Evaluate Color Combiner Factor
+    vec3 factC = vec3(0.0);
+    if (uColorFactor == 1) factC = cLocal;
+    else if (uColorFactor == 2) factC = vec3(aOther);
+    else if (uColorFactor == 3) factC = vec3(aLocal);
+    else if (uColorFactor == 4) factC = vec3(texColor.a);
+    else if (uColorFactor == 5) factC = texColor.rgb;
+    else if (uColorFactor == 8) factC = vec3(1.0);
+    else if (uColorFactor == 9) factC = vec3(1.0) - cLocal;
+    else if (uColorFactor == 10) factC = vec3(1.0 - aOther);
+    else if (uColorFactor == 11) factC = vec3(1.0 - aLocal);
+    else if (uColorFactor == 12) factC = vec3(1.0 - texColor.a);
+
+    // 7. Evaluate Color Combiner Function
+    vec3 finalC = vec3(0.0);
+    if (uColorFunc == 1) finalC = cLocal;
+    else if (uColorFunc == 3) finalC = cOther * factC;
+    else if (uColorFunc == 4) finalC = cOther * factC + cLocal;
+    else if (uColorFunc == 5) finalC = cOther * factC + vec3(aLocal);
+    else if (uColorFunc == 6) finalC = (cOther - cLocal) * factC;
+    else if (uColorFunc == 7) finalC = (cOther - cLocal) * factC + cLocal;
+    else if (uColorFunc == 8) finalC = (cOther - cLocal) * factC + vec3(aLocal);
+
+    if (uColorInvert == 1) finalC = vec3(1.0) - finalC;
+
+    vec4 col = vec4(finalC, finalA);
+
+    // Milestone 8: Fogging Emulation
     if (uFogMode > 0) {
         float eyeW = 1.0 / fragOOW;
         if (eyeW < 1.0) eyeW = 1.0;
@@ -602,7 +697,7 @@ void main() {
         col.rgb = col.rgb * (1.0 - f) + uFogColor.rgb * f;
     }
 
-    // Emulate legacy 3dfx Glide alpha testing (7 = GR_CMP_ALWAYS / disabled)
+    // Emulate legacy 3dfx Glide alpha testing
     if (uAlphaTestOp != 7) {
         float alpha = col.a;
         float refVal = uAlphaTestRef;
@@ -621,7 +716,6 @@ void main() {
         }
     }
 
-    // Output native RGB color (driver BGRA format handles layout mapping)
     outColor = col;
 }
 )";
@@ -794,18 +888,7 @@ void OpenGLESBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     if (!m_initialized || !m_windowAttached) return;
 
-    // TODO(Phase4): Remove this temporary CPU software rasterizer fallback once
-    // GPU-native texture mapping is fully implemented in Phase 4.
-    // This fallback ensures that textured console text characters (drawn as textured quads)
-    // are correctly rasterized on the CPU and composited, while flat/Gouraud shaded
-    // triangles (like test04) continue to run 100% natively on the GPU.
-    if (m_boundTexAddress[0] != 0) {
-        SoftwareBackendBase::DrawTriangle(a, b, c);
-        return;
-    }
-
     GLIDE_LOG(DEBUG, "GLES", "DrawTriangle GPU draw. A: (" << a.pos[0] << ", " << a.pos[1] << "), B: (" << b.pos[0] << ", " << b.pos[1] << "), C: (" << c.pos[0] << ", " << c.pos[1] << ")");
-    GLIDE_LOG(DEBUG, "GLES", "DrawTriangle Colors. A: (" << a.color[0] << "," << a.color[1] << "," << a.color[2] << "," << a.color[3] << "), B: (" << b.color[0] << "," << b.color[1] << "," << b.color[2] << "," << b.color[3] << "), C: (" << c.color[0] << "," << c.color[1] << "," << c.color[2] << "," << c.color[3] << ")");
 
     // 1. Upload all three vertices directly to VBO
     ModernVertex vertices[3] = { a, b, c };
@@ -830,6 +913,28 @@ void OpenGLESBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
     glUseProgram(m_geomProgram);
     PopulateUniforms();
 
+    // Bind texture if bound
+    uint32_t addr0 = m_boundTexAddress[0];
+    if (addr0 != 0xFFFFFFFF) {
+        auto it = m_glesTextures.find(addr0);
+        if (it != m_glesTextures.end()) {
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, it->second);
+
+            // Set sampler wrap modes
+            GLint wrapS = (m_texClampS[0] == 1) ? GL_CLAMP_TO_EDGE : GL_REPEAT;
+            GLint wrapT = (m_texClampT[0] == 1) ? GL_CLAMP_TO_EDGE : GL_REPEAT;
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, wrapS);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, wrapT);
+
+            // Set sampler filter modes
+            GLint minFilter = (m_texMinFilter[0] == 1) ? GL_LINEAR : GL_NEAREST;
+            GLint magFilter = (m_texMagFilter[0] == 1) ? GL_LINEAR : GL_NEAREST;
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, minFilter);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, magFilter);
+        }
+    }
+
     // 4. Bind VAO and issue GLES triangle draw call
     glBindVertexArray(m_geomVAO);
     glDrawArrays(GL_TRIANGLES, 0, 3); // Always draw from index 0!
@@ -837,9 +942,58 @@ void OpenGLESBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
     // 5. Cleanup state bindings
     glBindVertexArray(0);
     glUseProgram(0);
+    if (addr0 != 0xFFFFFFFF) {
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
     checkGLError("DrawTriangle");
+}
+
+void OpenGLESBackend::UploadTexture(uint32_t tmu, uint32_t startAddress, const struct VirtualTexture& tex) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    if (!m_windowAttached && !m_headlessMode) {
+        GLIDE_LOG(WARN, "GLES", "UploadTexture called without active GL context! Postponing or ignoring.");
+        return;
+    }
+
+    GLuint texId = 0;
+    auto it = m_glesTextures.find(startAddress);
+    if (it == m_glesTextures.end()) {
+        glGenTextures(1, &texId);
+        m_glesTextures[startAddress] = texId;
+        GLIDE_LOG(INFO, "GLES", "Generated new GLES Texture ID " << texId << " for Address 0x" << std::hex << startAddress << std::dec);
+    } else {
+        texId = it->second;
+        GLIDE_LOG(INFO, "GLES", "Re-uploading to existing GLES Texture ID " << texId << " for Address 0x" << std::hex << startAddress << std::dec);
+    }
+
+    glBindTexture(GL_TEXTURE_2D, texId);
+
+    uint32_t baseW = tex.baseWidth;
+    uint32_t baseH = tex.baseHeight;
+
+    for (size_t i = 0; i < tex.swizzledMipLevels.size(); ++i) {
+        uint32_t w = std::max(1u, baseW >> i);
+        uint32_t h = std::max(1u, baseH >> i);
+        const uint32_t* pixels = tex.swizzledMipLevels[i].data();
+
+        glTexImage2D(GL_TEXTURE_2D, static_cast<GLint>(i), GL_RGBA, 
+                     static_cast<GLsizei>(w), static_cast<GLsizei>(h), 0, 
+                     GL_BGRA_EXT, GL_UNSIGNED_BYTE, pixels);
+        
+        GLIDE_LOG(DEBUG, "GLES", "Uploaded Mip Level " << i << " (" << w << "x" << h << ") to GLES Texture ID " << texId);
+    }
+
+    // Set default wrap/filter parameters so texture is complete
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, tex.swizzledMipLevels.size() > 1 ? GL_NEAREST_MIPMAP_NEAREST : GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+
+    glBindTexture(GL_TEXTURE_2D, 0);
+    checkGLError("UploadTexture");
 }
 
 void OpenGLESBackend::SyncDepthState() {
@@ -935,15 +1089,9 @@ void OpenGLESBackend::SyncCullStateGLES() {
 }
 
 void OpenGLESBackend::PopulateUniforms() {
-    bool useConstColor = ((m_colorCombinerFactor & 0xFFFF) == 1) || (m_colorCombinerFactor == 1);
-    bool useConstAlpha = ((m_alphaCombinerFactor & 0xFFFF) == 1) || (m_alphaCombinerFactor == 1);
-
     glUniform2f(glGetUniformLocation(m_geomProgram, "uViewportSize"), (float)m_headlessWidth, (float)m_headlessHeight);
     glUniform1i(glGetUniformLocation(m_geomProgram, "uDepthClipOverride"), (m_depthMode == 0) ? 1 : 0);
     glUniform1i(glGetUniformLocation(m_geomProgram, "uDepthBufferMode"), m_depthMode);
-
-    glUniform1i(glGetUniformLocation(m_geomProgram, "uUseConstantColor"), useConstColor ? 1 : 0);
-    glUniform1i(glGetUniformLocation(m_geomProgram, "uUseConstantAlpha"), useConstAlpha ? 1 : 0);
 
     float cr = ((m_constantColor >> 16) & 0xFF) / 255.0f;
     float cg = ((m_constantColor >> 8)  & 0xFF) / 255.0f;
@@ -954,6 +1102,24 @@ void OpenGLESBackend::PopulateUniforms() {
     }
     if (ca < 0.5f) ca = 1.0f;
     glUniform4f(glGetUniformLocation(m_geomProgram, "uConstantColor"), cr, cg, cb, ca);
+
+    // Upload Combiner State Uniforms
+    glUniform1i(glGetUniformLocation(m_geomProgram, "uColorFunc"), (int)m_colorCombinerFunc);
+    glUniform1i(glGetUniformLocation(m_geomProgram, "uColorFactor"), (int)m_colorCombinerFactor);
+    glUniform1i(glGetUniformLocation(m_geomProgram, "uColorLocal"), (int)m_colorCombinerLocal);
+    glUniform1i(glGetUniformLocation(m_geomProgram, "uColorOther"), (int)m_colorCombinerOther);
+    glUniform1i(glGetUniformLocation(m_geomProgram, "uColorInvert"), m_colorCombinerInvert ? 1 : 0);
+
+    glUniform1i(glGetUniformLocation(m_geomProgram, "uAlphaFunc"), (int)m_alphaCombinerFunc);
+    glUniform1i(glGetUniformLocation(m_geomProgram, "uAlphaFactor"), (int)m_alphaCombinerFactor);
+    glUniform1i(glGetUniformLocation(m_geomProgram, "uAlphaLocal"), (int)m_alphaCombinerLocal);
+    glUniform1i(glGetUniformLocation(m_geomProgram, "uAlphaOther"), (int)m_alphaCombinerOther);
+    glUniform1i(glGetUniformLocation(m_geomProgram, "uAlphaInvert"), m_alphaCombinerInvert ? 1 : 0);
+
+    // Upload Texture Binding State
+    bool texEnabled = (m_boundTexAddress[0] != 0xFFFFFFFF);
+    glUniform1i(glGetUniformLocation(m_geomProgram, "uTextureEnabled"), texEnabled ? 1 : 0);
+    glUniform1i(glGetUniformLocation(m_geomProgram, "uTexture0"), 0); // Always texture unit 0 for TMU0
 
     glUniform1i(glGetUniformLocation(m_geomProgram, "uAlphaTestOp"), (int)m_alphaTestOp);
     glUniform1f(glGetUniformLocation(m_geomProgram, "uAlphaTestRef"), (float)m_alphaTestRefVal / 255.0f);
