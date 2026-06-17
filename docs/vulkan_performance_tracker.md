@@ -19,10 +19,11 @@ To establish our "Gold Standard", we measured the reference **OpenGLide (Mesa GL
 2.  **`test21` (Texture Compositing)**: Multi-pass texturing scene (lava quad) combined with a high-frequency text console overlay (`tlib`'s `tlConRender` drawing ~100 characters per frame, resulting in 200+ draw calls/frame).
 
 #### Baseline Metrics Table (True Uncapped Rendering Speed)
+
 | Test / Scenario | OpenGLide (Mesa GL) | Our CPU Software (Base) | Our Vulkan (Base) | Our Vulkan (Stage 6 - Steady State) | Our Vulkan (Stage 7 - Lifetime) | Our Vulkan (Stage 7 - Steady State) | Our GLES (Stage 5) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
 | **`test14` (Solid Geometry)** | **208.62 FPS** | **16.79 FPS** | **117.37 FPS** | **389.50 FPS** | **289.65 FPS** | **594.10 FPS** | **-** |
-| **`test21` (Texturing & Console)** | **277.24 / 20.9* FPS** | **7.90 FPS** | **49.35 FPS** | **374.40 FPS** | **204.95 FPS** | **399.80 FPS** | **212.76 FPS** |
+| **`test21` (Texturing & Console)** | **277.24 / 20.9 (VSync) FPS** | **7.90 FPS** | **49.35 FPS** | **374.40 FPS** | **204.95 FPS** | **399.80 FPS** | **212.76 FPS** |
 
 *Analysis*: With our new double-buffered frame resource architecture, the GPU and CPU execute fully in parallel, completely eliminating serial waiting stalls. We track two distinct performance metrics:
 1.  **Process-Lifetime Performance (Lifetime)**: Measured via external process timing (includes LLVM driver boot time, shader compiles, and library load overhead).
