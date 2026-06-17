@@ -24,7 +24,7 @@ target_include_directories(GlideWrapperCore PUBLIC
 )
 add_dependencies(GlideWrapperCore CompileShaders)
 find_package(SDL2 REQUIRED)
-target_link_libraries(GlideWrapperCore PUBLIC Vulkan::Vulkan SDL2::SDL2 GLESv2)
+target_link_libraries(GlideWrapperCore PUBLIC Vulkan::Vulkan SDL2::SDL2 GLESv2 OpenMP::OpenMP_CXX)
 
 # 2. Glide 2 Frontend Export Library (glide2x.dll / libglide2x.so)
 add_library(glide2x SHARED glide2/glide2_entry.cpp)

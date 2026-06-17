@@ -792,19 +792,16 @@ void SoftwareBackendBase::RasterizeSoftwareTriangle(const ModernVertex& a, const
 
     float invArea = 1.0f / area;
     float startX = minX + 0.5f;
-    float startY = minY + 0.5f;
 
-    // Evaluate edge values at the top-left corner of the bounding box
-    float E0_row = a0 * startX + b0 * startY + c0;
-    float E1_row = a1 * startX + b1 * startY + c1;
-    float E2_row = a2 * startX + b2 * startY + c2;
-
-    // Unswitched loops to completely eliminate inner-loop branching on area orientation
+    // Unswitched loops to completely eliminate inner-loop branching on area orientation,
+    // parallelized across host CPU threads using OpenMP row-by-row guided scheduling.
+    // Threading is only spawned for triangles larger than 16 rows to eliminate thread overhead on tiny triangles!
     if (invArea >= 0.0f) {
+        #pragma omp parallel for schedule(guided) if(maxY - minY > 16)
         for (int y = minY; y <= maxY; ++y) {
-            float E0 = E0_row;
-            float E1 = E1_row;
-            float E2 = E2_row;
+            float E0 = a0 * startX + b0 * (static_cast<float>(y) + 0.5f) + c0;
+            float E1 = a1 * startX + b1 * (static_cast<float>(y) + 0.5f) + c1;
+            float E2 = a2 * startX + b2 * (static_cast<float>(y) + 0.5f) + c2;
             for (int x = minX; x <= maxX; ++x) {
                 if (E0 >= 0.0f && E1 >= 0.0f && E2 >= 0.0f) {
                     renderPixel(x, y, E0 * invArea, E1 * invArea, E2 * invArea);
@@ -813,15 +810,13 @@ void SoftwareBackendBase::RasterizeSoftwareTriangle(const ModernVertex& a, const
                 E1 += a1;
                 E2 += a2;
             }
-            E0_row += b0;
-            E1_row += b1;
-            E2_row += b2;
         }
     } else {
+        #pragma omp parallel for schedule(guided) if(maxY - minY > 16)
         for (int y = minY; y <= maxY; ++y) {
-            float E0 = E0_row;
-            float E1 = E1_row;
-            float E2 = E2_row;
+            float E0 = a0 * startX + b0 * (static_cast<float>(y) + 0.5f) + c0;
+            float E1 = a1 * startX + b1 * (static_cast<float>(y) + 0.5f) + c1;
+            float E2 = a2 * startX + b2 * (static_cast<float>(y) + 0.5f) + c2;
             for (int x = minX; x <= maxX; ++x) {
                 if (E0 <= 0.0f && E1 <= 0.0f && E2 <= 0.0f) {
                     renderPixel(x, y, E0 * invArea, E1 * invArea, E2 * invArea);
@@ -830,9 +825,6 @@ void SoftwareBackendBase::RasterizeSoftwareTriangle(const ModernVertex& a, const
                 E1 += a1;
                 E2 += a2;
             }
-            E0_row += b0;
-            E1_row += b1;
-            E2_row += b2;
         }
     }
 }

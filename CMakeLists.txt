@@ -14,6 +14,7 @@ endif()
 # Discover System Graphics & Testing Dependencies
 find_package(Vulkan REQUIRED)
 find_package(Catch2 REQUIRED)
+find_package(OpenMP REQUIRED)
 
 # Setup Global Output Directories for compiled Binaries and Libraries
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/bin")
