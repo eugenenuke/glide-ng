@@ -8,9 +8,9 @@ This document serves as the authoritative coverage map for the **glide-ng** wrap
 
 | API Category | Implemented | Total | Coverage % |
 | :--- | :---: | :---: | :---: |
-| **Core Glide2 (`gr*`)** | 52 | 94 | 55.3% |
+| **Core Glide2 (`gr*`)** | 56 | 94 | 59.6% |
 | **Utility Library (`gu*`)** | 12 | 15 | 80.0% |
-| **Unified Glide2 Specification** | **64** | **109** | **58.7%** |
+| **Unified Glide2 Specification** | **68** | **109** | **62.4%** |
 
 ---
 
