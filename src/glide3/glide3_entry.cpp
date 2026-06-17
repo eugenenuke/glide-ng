@@ -246,6 +246,16 @@ FX_ENTRY FxU32 FX_CALL grTexCalcMemRequired(GrLOD_t lodmin, GrLOD_t lodmax, GrAs
     return GlideWrapper::TextureManager::GetInstance().CalculateMemoryRequired(lodmin, lodmax, aspect, fmt);
 }
 
+FX_ENTRY FxU32 FX_CALL grTexTextureMemRequired(FxU32 evenOdd, GrTexInfo *info) {
+    GLIDE_LOG(INFO, "Frontend", "grTexTextureMemRequired (Glide 3.x) invoked");
+    if (!info) return 0;
+    return grTexCalcMemRequired(info->smallLodLog2, info->largeLodLog2, info->aspectRatioLog2, info->format);
+}
+
+FX_ENTRY void FX_CALL grTexDetailControl(GrChipID_t tmu, int lod_bias, FxU8 detail_scale, float detail_max) {
+    GLIDE_LOG(INFO, "Frontend", "grTexDetailControl (Glide 3.x) invoked for TMU=" << tmu << " (Stubbed)");
+}
+
 FX_ENTRY void FX_CALL grGlideGetState(void* state) {
     GLIDE_LOG(INFO, "Frontend", "grGlideGetState (Glide 3.x) invoked.");
 }

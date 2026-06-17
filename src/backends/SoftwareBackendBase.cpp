@@ -442,9 +442,14 @@ void SoftwareBackendBase::RasterizeSoftwareTriangle(const ModernVertex& a, const
                 // 1. Interpolate vertex colors and reciprocal depth
                 float wVal = w0 * a.pos[3] + w1 * b.pos[3] + w2 * c.pos[3];
 
-                // Only perform near-plane clipping if W-buffering is active or texturing is enabled (valid W)
-                if ((m_depthMode == 2 || m_boundTexAddress[0] != 0xFFFFFFFF) && wVal > 1.0f) {
-                    continue; // Near-plane clipping (W < 1.0)
+                // Near-plane clipping:
+                // 1. If W-buffering is active, the W-buffer cannot represent values < 1.0, so we clip at W < 1.0 (oow > 1.0).
+                // 2. If texturing is enabled, we must clip if W <= 0.0 (oow <= 0.0) to prevent division by zero/negative in texturing.
+                // 3. Otherwise, we do not perform W-based clipping (e.g. flat-shaded Z-buffered geometry has no W).
+                if (m_depthMode == 2) { // GR_DEPTHBUFFER_WBUFFER
+                    if (wVal > 1.0f) continue;
+                } else if (m_boundTexAddress[0] != 0xFFFFFFFF) {
+                    if (wVal <= 0.0f) continue;
                 }
 
                 float iterR = w0 * a.color[0] + w1 * b.color[0] + w2 * c.color[0];
@@ -786,30 +791,30 @@ void SoftwareBackendBase::RasterizeSoftwareTriangle(const ModernVertex& a, const
                     float dstB = (dstWord & 0xFF) / 255.0f;
                     float dstA = ((dstWord >> 24) & 0xFF) / 255.0f;
 
-                    auto getFactor = [&](uint32_t factorMode, float srcC, float dstC, float srcAVal, float dstAVal) {
+                    auto getFactor = [&](uint32_t factorMode, float srcC, float dstC, float srcAVal, float dstAVal, bool isDest) {
                         switch (factorMode) {
                             case 0: return 0.0f;
                             case 1: return srcAVal;
-                            case 2: return srcC;
+                            case 2: return isDest ? srcC : dstC; // 2 = GR_BLEND_SRC_COLOR (dest) / GR_BLEND_DST_COLOR (src)
                             case 3: return dstAVal;
                             case 4: return 1.0f;
                             case 5: return 1.0f - srcAVal;
-                            case 6: return 1.0f - srcC;
+                            case 6: return isDest ? (1.0f - srcC) : (1.0f - dstC); // 6 = ONE_MINUS_SRC_COLOR (dest) / ONE_MINUS_DST_COLOR (src)
                             case 7: return 1.0f - dstAVal;
                             default: return 1.0f;
                         }
                     };
 
-                    float sFR = getFactor(m_rgbSrcBlend, red, dstR, alpha, dstA);
-                    float sFG = getFactor(m_rgbSrcBlend, green, dstG, alpha, dstA);
-                    float sFB = getFactor(m_rgbSrcBlend, blue, dstB, alpha, dstA);
+                    float sFR = getFactor(m_rgbSrcBlend, red, dstR, alpha, dstA, false);
+                    float sFG = getFactor(m_rgbSrcBlend, green, dstG, alpha, dstA, false);
+                    float sFB = getFactor(m_rgbSrcBlend, blue, dstB, alpha, dstA, false);
 
-                    float dFR = getFactor(m_rgbDstBlend, red, dstR, alpha, dstA);
-                    float dFG = getFactor(m_rgbDstBlend, green, dstG, alpha, dstA);
-                    float dFB = getFactor(m_rgbDstBlend, blue, dstB, alpha, dstA);
+                    float dFR = getFactor(m_rgbDstBlend, red, dstR, alpha, dstA, true);
+                    float dFG = getFactor(m_rgbDstBlend, green, dstG, alpha, dstA, true);
+                    float dFB = getFactor(m_rgbDstBlend, blue, dstB, alpha, dstA, true);
 
-                    float sFA = getFactor(m_alphaSrcBlend, alpha, dstA, alpha, dstA);
-                    float dFA = getFactor(m_alphaDstBlend, alpha, dstA, alpha, dstA);
+                    float sFA = getFactor(m_alphaSrcBlend, alpha, dstA, alpha, dstA, false);
+                    float dFA = getFactor(m_alphaDstBlend, alpha, dstA, alpha, dstA, true);
                     float blendedAlpha = std::min(1.0f, alpha * sFA + dstA * dFA);
 
                     red   = std::min(1.0f, red   * sFR + dstR * dFR);

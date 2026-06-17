@@ -310,9 +310,10 @@ bool OpenGLESBackend::ReadLFB(uint32_t srcX, uint32_t srcY, uint32_t srcWidth, u
     glReadPixels(0, 0, m_headlessWidth, m_headlessHeight, GL_RGBA, GL_UNSIGNED_BYTE, m_headlessPixelMap);
     checkGLError("ReadLFB glReadPixels");
 
-    // Convert RGBA from GPU glReadPixels to BGRA expected by host staging buffer
+    // Convert RGBA from GPU glReadPixels to BGRA and vertically flip the image
     if (m_headlessPixelMap) {
         auto* dest = reinterpret_cast<uint32_t*>(m_headlessPixelMap);
+        // 1. Swizzle RGBA to BGRA
         for (uint32_t i = 0; i < m_headlessWidth * m_headlessHeight; ++i) {
             uint32_t rgba = dest[i];
             uint32_t r = rgba & 0xFF;
@@ -320,6 +321,17 @@ bool OpenGLESBackend::ReadLFB(uint32_t srcX, uint32_t srcY, uint32_t srcWidth, u
             uint32_t b = (rgba >> 16) & 0xFF;
             uint32_t a = (rgba >> 24) & 0xFF;
             dest[i] = (a << 24) | (r << 16) | (g << 8) | b;
+        }
+        // 2. Vertically flip rows to convert OpenGL's bottom-up layout to host's top-down layout
+        std::vector<uint32_t> rowBuffer(m_headlessWidth);
+        for (uint32_t y = 0; y < m_headlessHeight / 2; ++y) {
+            uint32_t topY = y;
+            uint32_t bottomY = m_headlessHeight - 1 - y;
+            uint32_t* topRow = dest + topY * m_headlessWidth;
+            uint32_t* bottomRow = dest + bottomY * m_headlessWidth;
+            std::memcpy(rowBuffer.data(), topRow, m_headlessWidth * 4);
+            std::memcpy(topRow, bottomRow, m_headlessWidth * 4);
+            std::memcpy(bottomRow, rowBuffer.data(), m_headlessWidth * 4);
         }
     }
 
@@ -504,6 +516,7 @@ out float fragOOW;
 out vec2 fragTexCoord;
 out vec2 fragTmuOow;
 
+uniform int uSstOrigin; // 0 = UPPER_LEFT, 1 = LOWER_LEFT
 uniform vec2 uViewportSize;
 uniform int uDepthClipOverride;
 uniform int uDepthBufferMode; // 0=None, 1=Z, 2=W
@@ -512,7 +525,12 @@ uniform float uDepthBias;
 void main() {
     // Convert Glide window-space coordinates to GLES NDC (Y-up)
     float ndcX = (inPos.x / (uViewportSize.x / 2.0)) - 1.0;
-    float ndcY = (inPos.y / (uViewportSize.y / 2.0)) - 1.0;
+    float ndcY;
+    if (uSstOrigin == 0) { // GR_ORIGIN_UPPER_LEFT
+        ndcY = 1.0 - (inPos.y / (uViewportSize.y / 2.0));
+    } else {              // GR_ORIGIN_LOWER_LEFT
+        ndcY = (inPos.y / (uViewportSize.y / 2.0)) - 1.0;
+    }
     
     float rawDepth = inPos.z;
     if (uDepthBufferMode == 2) {
@@ -816,12 +834,8 @@ void OpenGLESBackend::DrawPoint(const ModernVertex& pt) {
     GLIDE_LOG(DEBUG, "GLES", "DrawPoint GPU draw. Pos: (" << pt.pos[0] << ", " << pt.pos[1] << ", " << pt.pos[2] << ")");
 
     // 1. Upload vertex to dynamic VBO ring buffer
-    ModernVertex pt_final = pt;
-    if (m_sstOrigin == 1) { // GR_ORIGIN_LOWER_LEFT: flip Y coordinate
-        pt_final.pos[1] = (float)m_headlessHeight - pt.pos[1];
-    }
     glBindBuffer(GL_ARRAY_BUFFER, m_geomVBO);
-    glBufferSubData(GL_ARRAY_BUFFER, m_geomVBOOffset, sizeof(ModernVertex), &pt_final);
+    glBufferSubData(GL_ARRAY_BUFFER, m_geomVBOOffset, sizeof(ModernVertex), &pt);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 
     // 2. Bind offscreen FBO and set state
@@ -862,15 +876,9 @@ void OpenGLESBackend::DrawLine(const ModernVertex& v0, const ModernVertex& v1) {
     GLIDE_LOG(DEBUG, "GLES", "DrawLine Colors. V0: (" << v0.color[0] << "," << v0.color[1] << "," << v0.color[2] << "," << v0.color[3] << "), V1: (" << v1.color[0] << "," << v1.color[1] << "," << v1.color[2] << "," << v1.color[3] << ")");
 
     // 1. Upload both vertices to dynamic VBO ring buffer
-    ModernVertex v0_final = v0;
-    ModernVertex v1_final = v1;
-    if (m_sstOrigin == 1) { // GR_ORIGIN_LOWER_LEFT: flip Y coordinates
-        v0_final.pos[1] = (float)m_headlessHeight - v0.pos[1];
-        v1_final.pos[1] = (float)m_headlessHeight - v1.pos[1];
-    }
     glBindBuffer(GL_ARRAY_BUFFER, m_geomVBO);
-    glBufferSubData(GL_ARRAY_BUFFER, m_geomVBOOffset, sizeof(ModernVertex), &v0_final);
-    glBufferSubData(GL_ARRAY_BUFFER, m_geomVBOOffset + sizeof(ModernVertex), sizeof(ModernVertex), &v1_final);
+    glBufferSubData(GL_ARRAY_BUFFER, m_geomVBOOffset, sizeof(ModernVertex), &v0);
+    glBufferSubData(GL_ARRAY_BUFFER, m_geomVBOOffset + sizeof(ModernVertex), sizeof(ModernVertex), &v1);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 
     // 2. Bind offscreen FBO and set state
@@ -912,11 +920,6 @@ void OpenGLESBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
 
     // 1. Upload all three vertices directly to dynamic VBO ring buffer
     ModernVertex vertices[3] = { a, b, c };
-    if (m_sstOrigin == 1) { // GR_ORIGIN_LOWER_LEFT: flip Y coordinates
-        vertices[0].pos[1] = (float)m_headlessHeight - a.pos[1];
-        vertices[1].pos[1] = (float)m_headlessHeight - b.pos[1];
-        vertices[2].pos[1] = (float)m_headlessHeight - c.pos[1];
-    }
     glBindBuffer(GL_ARRAY_BUFFER, m_geomVBO);
     glBufferSubData(GL_ARRAY_BUFFER, m_geomVBOOffset, sizeof(ModernVertex), &vertices[0]);
     glBufferSubData(GL_ARRAY_BUFFER, m_geomVBOOffset + sizeof(ModernVertex), sizeof(ModernVertex), &vertices[1]);
@@ -1050,15 +1053,15 @@ void OpenGLESBackend::SyncDepthState() {
     }
 }
 
-static GLenum MapBlendFactorGLES(uint32_t factor) {
+static GLenum MapBlendFactorGLES(uint32_t factor, bool isDest) {
     switch (factor) {
         case 0: return GL_ZERO;                  // GR_BLEND_ZERO
         case 1: return GL_SRC_ALPHA;             // GR_BLEND_SRC_ALPHA
-        case 2: return GL_SRC_COLOR;             // GR_BLEND_SRC_COLOR
+        case 2: return isDest ? GL_SRC_COLOR : GL_DST_COLOR; // 2 = GR_BLEND_SRC_COLOR (dest) / GR_BLEND_DST_COLOR (src)
         case 3: return GL_DST_ALPHA;             // GR_BLEND_DST_ALPHA
         case 4: return GL_ONE;                   // GR_BLEND_ONE
         case 5: return GL_ONE_MINUS_SRC_ALPHA;   // GR_BLEND_ONE_MINUS_SRC_ALPHA
-        case 6: return GL_ONE_MINUS_SRC_COLOR;   // GR_BLEND_ONE_MINUS_SRC_COLOR
+        case 6: return isDest ? GL_ONE_MINUS_SRC_COLOR : GL_ONE_MINUS_DST_COLOR; // 6 = ONE_MINUS_SRC_COLOR (dest) / ONE_MINUS_DST_COLOR (src)
         case 7: return GL_ONE_MINUS_DST_ALPHA;   // GR_BLEND_ONE_MINUS_DST_ALPHA
         case 15: return GL_SRC_ALPHA_SATURATE;  // GR_BLEND_ALPHA_SATURATE
         default: return GL_ONE;
@@ -1077,10 +1080,10 @@ void OpenGLESBackend::ApplyBlendingGLES() {
         glEnable(GL_BLEND);
         glBlendEquation(GL_FUNC_ADD);
         glBlendFuncSeparate(
-            MapBlendFactorGLES(m_rgbSrcBlend),
-            MapBlendFactorGLES(m_rgbDstBlend),
-            MapBlendFactorGLES(m_alphaSrcBlend),
-            MapBlendFactorGLES(m_alphaDstBlend)
+            MapBlendFactorGLES(m_rgbSrcBlend, false),
+            MapBlendFactorGLES(m_rgbDstBlend, true),
+            MapBlendFactorGLES(m_alphaSrcBlend, false),
+            MapBlendFactorGLES(m_alphaDstBlend, true)
         );
     }
 }
@@ -1089,10 +1092,13 @@ void OpenGLESBackend::ApplyScissorGLES() {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     glEnable(GL_SCISSOR_TEST);
     
-    // Since the vertex shader does not flip Y, the GPU rendering is already vertically
-    // inverted (Glide top maps to OpenGL bottom). To match this inverted rendering, the
-    // scissor box must also be kept in its raw Glide coordinates (no Y-flipping).
+    // OpenGL scissor box expects bottom-up coordinates (0 = bottom).
+    // If origin is UPPER_LEFT (0, top-down), we must flip Y.
+    // If origin is LOWER_LEFT (1, bottom-up), we use raw coordinates.
     uint32_t glScissorY = m_clipMinY;
+    if (m_sstOrigin == 0) { // GR_ORIGIN_UPPER_LEFT
+        glScissorY = m_headlessHeight - m_clipMaxY;
+    }
     uint32_t glScissorW = (m_clipMaxX > m_clipMinX) ? (m_clipMaxX - m_clipMinX) : 0;
     uint32_t glScissorH = (m_clipMaxY > m_clipMinY) ? (m_clipMaxY - m_clipMinY) : 0;
     
@@ -1106,9 +1112,9 @@ void OpenGLESBackend::SyncCullStateGLES() {
     } else {
         glEnable(GL_CULL_FACE);
         if (m_sstOrigin == 1) {
-            glFrontFace(GL_CW);  // Two Y-inversions (C++ flip + shader projection) cancel out; winding is native CW!
+            glFrontFace(GL_CCW); // LOWER_LEFT is native Y-up; Glide front-face (positive area) is CCW!
         } else {
-            glFrontFace(GL_CCW); // Single Y-inversion from GLES Y-up shader projection; winding is inverted to CCW!
+            glFrontFace(GL_CW);  // UPPER_LEFT is Y-down, shader Y-flip (reflection) maps Glide front-face (positive area) to CW!
         }
         if (m_cullMode == 1) { // GR_CULL_NEGATIVE (cull negative winding / CCW in Glide)
             glCullFace(GL_BACK); // Culls CCW under GL_CW, or CW under GL_CCW. Maps perfectly!
@@ -1119,6 +1125,7 @@ void OpenGLESBackend::SyncCullStateGLES() {
 }
 
 void OpenGLESBackend::PopulateUniforms() {
+    glUniform1i(glGetUniformLocation(m_geomProgram, "uSstOrigin"), (int)m_sstOrigin);
     glUniform2f(glGetUniformLocation(m_geomProgram, "uViewportSize"), (float)m_headlessWidth, (float)m_headlessHeight);
     bool depthClipOverride = (m_depthMode == 0) || (m_depthCompareOp == 7); // 7 = GR_CMP_ALWAYS (prevents uninitialized ooz stack garbage clipping in text overlays)
     glUniform1i(glGetUniformLocation(m_geomProgram, "uDepthClipOverride"), depthClipOverride ? 1 : 0);

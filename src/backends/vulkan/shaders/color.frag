@@ -62,9 +62,14 @@ const float s_tableIndexToW[64] = float[](
 );
 
 void main() {
-    // Near-plane clipping (W < 1.0 / oow > 1.0) - only if W-buffering is active or texturing is enabled
-    if ((pcs.depthBufferMode == 2u || pcs.textureEnabled == 1u) && fragOOW > 1.0) {
-        discard;
+    // Near-plane clipping:
+    // 1. If W-buffering is active (pcs.depthBufferMode == 2), the W-buffer cannot represent values < 1.0, so we clip at W < 1.0 (fragOOW > 1.0).
+    // 2. If texturing is enabled (pcs.textureEnabled == 1), we must clip if the vertex is behind the camera (W <= 0, i.e. fragOOW <= 0.0) to prevent division by negative.
+    // 3. Otherwise, we do not perform W-based clipping (e.g. flat-shaded Z-buffered geometry has no W).
+    if (pcs.depthBufferMode == 2u) {
+        if (fragOOW > 1.0) discard;
+    } else if (pcs.textureEnabled == 1u) {
+        if (fragOOW <= 0.0) discard;
     }
 
     // 1. Sample texture if enabled

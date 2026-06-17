@@ -651,6 +651,16 @@ FX_ENTRY void FX_CALL grTexSource(GrChipID_t tmu, FxU32 startAddress, FxU32 even
     }
 }
 
+FX_ENTRY FxU32 FX_CALL grTexTextureMemRequired(FxU32 evenOdd, GrTexInfo *info) {
+    GLIDE_LOG(INFO, "Frontend", "grTexTextureMemRequired invoked");
+    if (!info) return 0;
+    return grTexCalcMemRequired(info->smallLod, info->largeLod, info->aspectRatio, info->format);
+}
+
+FX_ENTRY void FX_CALL grTexDetailControl(GrChipID_t tmu, int lod_bias, FxU8 detail_scale, float detail_max) {
+    GLIDE_LOG(INFO, "Frontend", "grTexDetailControl invoked for TMU=" << tmu << ", lod_bias=" << lod_bias << ", detail_scale=" << (int)detail_scale << ", detail_max=" << detail_max << " (Stubbed)");
+}
+
 FX_ENTRY void FX_CALL grConstantColorValue(GrColor_t value) {
     EnsureEngineInitialized();
     GLIDE_LOG(INFO, "Frontend", "grConstantColorValue invoked: " << std::hex << value << std::dec);
@@ -821,7 +831,7 @@ FX_ENTRY FxBool FX_CALL gu3dfGetInfo(const char* filename, Gu3dfInfo* info) {
     uint32_t totalBytes = 0;
     int bytesPerTexel = (format >= GR_TEXFMT_16BIT) ? 2 : 1;
     for (int lod = info->header.large_lod; lod <= info->header.small_lod; ++lod) {
-        int lDim = 1 << lod;
+        int lDim = 256 >> lod;
         int w = lDim, h = lDim;
         if (aspectW >= aspectH) {
             h = std::max(1, lDim / aspectW);
@@ -869,7 +879,7 @@ FX_ENTRY FxBool FX_CALL gu3dfLoad(const char* filename, Gu3dfInfo* info) {
     int bytesPerTexel = (info->header.format >= GR_TEXFMT_16BIT) ? 2 : 1;
 
     for (int lod = info->header.large_lod; lod <= info->header.small_lod; ++lod) {
-        int lDim = 1 << lod;
+        int lDim = 256 >> lod;
         int w = lDim, h = lDim;
         if (aspectW >= aspectH) {
             h = std::max(1, lDim / aspectW);
@@ -881,15 +891,29 @@ FX_ENTRY FxBool FX_CALL gu3dfLoad(const char* filename, Gu3dfInfo* info) {
         if (bytesPerTexel == 1) {
             size_t readCount = std::fread(dstBytes, 1, pixelCount, fp);
             if (readCount != pixelCount) {
-                GLIDE_LOG(WARN, "Frontend", "gu3dfLoad: Premature EOF reading 8-bit LOD level " << lod);
-                std::fclose(fp);
-                return FXFALSE;
+                GLIDE_LOG(WARN, "Frontend", "gu3dfLoad: Premature EOF reading 8-bit LOD level " << lod 
+                                            << " (read " << readCount << "/" << pixelCount << "). Filling remainder with zero.");
+                std::memset(dstBytes + readCount, 0, pixelCount - readCount);
             }
             dstBytes += pixelCount;
         } else {
             uint16_t* dstShorts = reinterpret_cast<uint16_t*>(dstBytes);
+            bool hitEof = false;
             for (size_t p = 0; p < pixelCount; ++p) {
-                dstShorts[p] = ReadBE16(fp);
+                if (hitEof) {
+                    dstShorts[p] = 0;
+                } else {
+                    int b1 = std::getc(fp);
+                    int b2 = std::getc(fp);
+                    if (b1 == EOF || b2 == EOF) {
+                        GLIDE_LOG(WARN, "Frontend", "gu3dfLoad: Premature EOF reading 16-bit LOD level " << lod 
+                                                    << " at pixel " << p << "/" << pixelCount << ". Filling remainder with zero.");
+                        dstShorts[p] = 0;
+                        hitEof = true;
+                    } else {
+                        dstShorts[p] = (static_cast<uint16_t>(b1) << 8) | b2;
+                    }
+                }
             }
             dstBytes += pixelCount * 2;
         }

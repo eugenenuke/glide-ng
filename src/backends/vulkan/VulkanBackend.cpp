@@ -26,15 +26,15 @@ const std::vector<const char*> validationLayers = {
     "VK_LAYER_KHRONOS_validation"
 };
 
-static vk::BlendFactor MapBlendFactorVulkan(uint32_t factor) {
+static vk::BlendFactor MapBlendFactorVulkan(uint32_t factor, bool isDest) {
     switch (factor) {
         case 0: return vk::BlendFactor::eZero;                  // GR_BLEND_ZERO
         case 1: return vk::BlendFactor::eSrcAlpha;              // GR_BLEND_SRC_ALPHA
-        case 2: return vk::BlendFactor::eSrcColor;              // GR_BLEND_SRC_COLOR
+        case 2: return isDest ? vk::BlendFactor::eSrcColor : vk::BlendFactor::eDstColor; // 2 = GR_BLEND_SRC_COLOR (dest) / GR_BLEND_DST_COLOR (src)
         case 3: return vk::BlendFactor::eDstAlpha;              // GR_BLEND_DST_ALPHA
         case 4: return vk::BlendFactor::eOne;                   // GR_BLEND_ONE
         case 5: return vk::BlendFactor::eOneMinusSrcAlpha;      // GR_BLEND_ONE_MINUS_SRC_ALPHA
-        case 6: return vk::BlendFactor::eOneMinusSrcColor;      // GR_BLEND_ONE_MINUS_SRC_COLOR
+        case 6: return isDest ? vk::BlendFactor::eOneMinusSrcColor : vk::BlendFactor::eOneMinusDstColor; // 6 = ONE_MINUS_SRC_COLOR (dest) / ONE_MINUS_DST_COLOR (src)
         case 7: return vk::BlendFactor::eOneMinusDstAlpha;      // GR_BLEND_ONE_MINUS_DST_ALPHA
         case 15: return vk::BlendFactor::eSrcAlphaSaturate;     // GR_BLEND_ALPHA_SATURATE
         default: return vk::BlendFactor::eOne;
@@ -1035,11 +1035,11 @@ PipelineGroup VulkanBackend::CompileGraphicsPipelines(const PipelineStateKey& ke
         
         colorBlendAttachment.blendEnable = true;
         colorBlendAttachment.colorBlendOp = vk::BlendOp::eAdd;
-        colorBlendAttachment.srcColorBlendFactor = MapBlendFactorVulkan(key.rgbSrcBlend);
-        colorBlendAttachment.dstColorBlendFactor = MapBlendFactorVulkan(key.rgbDstBlend);
+        colorBlendAttachment.srcColorBlendFactor = MapBlendFactorVulkan(key.rgbSrcBlend, false);
+        colorBlendAttachment.dstColorBlendFactor = MapBlendFactorVulkan(key.rgbDstBlend, true);
         colorBlendAttachment.alphaBlendOp = vk::BlendOp::eAdd;
-        colorBlendAttachment.srcAlphaBlendFactor = MapBlendFactorVulkan(key.alphaSrcBlend);
-        colorBlendAttachment.dstAlphaBlendFactor = MapBlendFactorVulkan(key.alphaDstBlend);
+        colorBlendAttachment.srcAlphaBlendFactor = MapBlendFactorVulkan(key.alphaSrcBlend, false);
+        colorBlendAttachment.dstAlphaBlendFactor = MapBlendFactorVulkan(key.alphaDstBlend, true);
 
         vk::PipelineColorBlendStateCreateInfo colorBlending({}, false, vk::LogicOp::eCopy, 1, &colorBlendAttachment, {0.0f, 0.0f, 0.0f, 0.0f});
 
