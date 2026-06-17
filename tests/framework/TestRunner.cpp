@@ -46,14 +46,18 @@ void dumpBufferToPpm(const std::string& filepath, int width, int height) {
         return;
     }
     ofs << "P6\n" << width << " " << height << "\n255\n";
+
+    // Allocate a single contiguous buffer for the PPM pixel data (3 bytes per pixel)
+    std::vector<uint8_t> ppmData(width * height * 3);
     for (int i = 0; i < width * height; ++i) {
         uint16_t val = buffer[i];
-        uint8_t r = ((val >> 11) & 0x1F) * 255 / 31;
-        uint8_t g = ((val >> 5)  & 0x3F) * 255 / 63;
-        uint8_t b = (val & 0x1F) * 255 / 31;
-        uint8_t rgb[3] = {r, g, b};
-        ofs.write(reinterpret_cast<const char*>(rgb), 3);
+        ppmData[i * 3 + 0] = ((val >> 11) & 0x1F) * 255 / 31;
+        ppmData[i * 3 + 1] = ((val >> 5)  & 0x3F) * 255 / 63;
+        ppmData[i * 3 + 2] = (val & 0x1F) * 255 / 31;
     }
+
+    // Write the entire pixel buffer to disk in a single contiguous write!
+    ofs.write(reinterpret_cast<const char*>(ppmData.data()), ppmData.size());
     ofs.close();
     std::cout << "Dumped frame buffer to " << filepath << "\n";
 }
