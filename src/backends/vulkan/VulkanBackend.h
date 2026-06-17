@@ -257,6 +257,13 @@ private:
     std::unordered_map<uint32_t, VulkanTexture> m_vulkanTextures;
     VulkanTexture m_dummyTexture;
     void* m_gpuStagingMaps[2]{nullptr, nullptr}; // Mapped staging memory addresses
+
+    // Persistent Texture Staging Buffer (Asynchronous Uploads)
+    vk::UniqueBuffer m_texStagingBuffer;
+    vk::UniqueDeviceMemory m_texStagingMemory;
+    void* m_texStagingMap{nullptr};
+    uint32_t m_texStagingOffsets[2]{0, 0};
+    const uint32_t m_texStagingSlotSize{8 * 1024 * 1024}; // 8MB per frame slot
 };
 
 

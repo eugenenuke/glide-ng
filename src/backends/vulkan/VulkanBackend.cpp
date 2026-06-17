@@ -242,6 +242,13 @@ void VulkanBackend::Shutdown() {
     m_renderPass.reset();
     m_vkPipelineCache.reset();
 
+    if (m_device && m_texStagingMap) {
+        m_device->unmapMemory(m_texStagingMemory.get());
+        m_texStagingMap = nullptr;
+    }
+    m_texStagingBuffer.reset();
+    m_texStagingMemory.reset();
+
     // 6. Now it is 100% safe to destroy the logical device and instance!
     m_device.reset();
     m_instance.reset();
@@ -725,6 +732,9 @@ bool VulkanBackend::SwapBuffers() {
         // Advance the frame slot
         m_currentFrameSlot = prevSlot;
 
+        // Reset the texture staging offset for the new active slot back to its base!
+        m_texStagingOffsets[m_currentFrameSlot] = m_currentFrameSlot * m_texStagingSlotSize;
+
         // Reset and begin recording the next frame's commands immediately in the new active slot!
         m_commandBuffer = &m_commandBuffers[m_currentFrameSlot].get();
         m_commandBuffer->reset({});
@@ -748,6 +758,9 @@ bool VulkanBackend::SwapBuffers() {
 
         // Advance the frame slot
         m_currentFrameSlot = nextSlot;
+
+        // Reset the texture staging offset for the new active slot back to its base!
+        m_texStagingOffsets[m_currentFrameSlot] = m_currentFrameSlot * m_texStagingSlotSize;
 
         // Reset and begin recording the next frame's commands immediately in the new active slot!
         m_commandBuffer = &m_commandBuffers[m_currentFrameSlot].get();
@@ -1028,6 +1041,23 @@ bool VulkanBackend::CreateLogicalDevice() {
 
     m_currentFrameSlot = 0;
     m_commandBuffer = &m_commandBuffers[0].get();
+
+    // 2.6. Pre-allocate and permanently map persistent Texture Staging Buffer (16MB)
+    const uint32_t stagingSize = 16 * 1024 * 1024; // 16MB
+    vk::BufferCreateInfo texStagingInfo({}, stagingSize, vk::BufferUsageFlagBits::eTransferSrc);
+    m_texStagingBuffer = m_device->createBufferUnique(texStagingInfo);
+    
+    auto texStagingReqs = m_device->getBufferMemoryRequirements(m_texStagingBuffer.get());
+    uint32_t texStagingTypeIndex = FindMemoryType(texStagingReqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+    vk::MemoryAllocateInfo texStagingAlloc(texStagingReqs.size, texStagingTypeIndex);
+    m_texStagingMemory = m_device->allocateMemoryUnique(texStagingAlloc);
+    m_device->bindBufferMemory(m_texStagingBuffer.get(), m_texStagingMemory.get(), 0);
+    
+    m_texStagingMap = m_device->mapMemory(m_texStagingMemory.get(), 0, stagingSize);
+    
+    // Initialize double-buffered offsets
+    m_texStagingOffsets[0] = 0;
+    m_texStagingOffsets[1] = 8 * 1024 * 1024; // Halfway
 
     return true;
 }
@@ -1657,7 +1687,6 @@ static uint64_t CalculateTextureHash(const struct VirtualTexture& tex) {
 
 void VulkanBackend::UploadTexture(uint32_t tmu, uint32_t startAddress, const struct VirtualTexture& tex) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    FlushBatch();
     if (!m_initialized || !m_device) return;
 
     // Only TMU 0 is currently supported in this backend
@@ -1689,6 +1718,24 @@ void VulkanBackend::UploadTexture(uint32_t tmu, uint32_t startAddress, const str
     // Erase existing texture at the address if it exists to clean up its resources
     m_vulkanTextures.erase(startAddress);
 
+    // Calculate size of this texture
+    size_t totalBytes = 0;
+    for (const auto& level : tex.swizzledMipLevels) {
+        totalBytes += level.size() * sizeof(uint32_t);
+    }
+
+    // Check if we have enough space in the active slot's staging buffer segment
+    uint32_t slotBase = m_currentFrameSlot * m_texStagingSlotSize;
+    uint32_t slotEnd = (m_currentFrameSlot + 1) * m_texStagingSlotSize;
+    
+    if (m_texStagingOffsets[m_currentFrameSlot] + totalBytes > slotEnd) {
+        GLIDE_LOG(WARN, "Vulkan", "Texture staging slot size exceeded! Stalling GPU on waitIdle() and wrapping around...");
+        m_device->waitIdle();
+        m_texStagingOffsets[m_currentFrameSlot] = slotBase;
+    }
+
+    uint32_t currentOffset = m_texStagingOffsets[m_currentFrameSlot];
+
     try {
         // 1. Create vk::Image
         vk::ImageCreateInfo imageInfo({}, vk::ImageType::e2D, vk::Format::eB8G8R8A8Unorm,
@@ -1705,44 +1752,37 @@ void VulkanBackend::UploadTexture(uint32_t tmu, uint32_t startAddress, const str
         auto memory = m_device->allocateMemoryUnique(allocInfo);
         m_device->bindImageMemory(image.get(), memory.get(), 0);
 
-        // 3. Create staging buffer
-        size_t totalBytes = 0;
-        for (const auto& level : tex.swizzledMipLevels) {
-            totalBytes += level.size() * sizeof(uint32_t);
-        }
-
-        vk::BufferCreateInfo stagingInfo({}, totalBytes, vk::BufferUsageFlagBits::eTransferSrc);
-        auto stagingBuffer = m_device->createBufferUnique(stagingInfo);
-        auto stagingReqs = m_device->getBufferMemoryRequirements(stagingBuffer.get());
-        uint32_t stagingTypeIndex = FindMemoryType(stagingReqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
-        vk::MemoryAllocateInfo stagingAlloc(stagingReqs.size, stagingTypeIndex);
-        auto stagingMemory = m_device->allocateMemoryUnique(stagingAlloc);
-        m_device->bindBufferMemory(stagingBuffer.get(), stagingMemory.get(), 0);
-
-        // 4. Copy all mipmap levels data into staging memory
-        uint8_t* mappedData = static_cast<uint8_t*>(m_device->mapMemory(stagingMemory.get(), 0, totalBytes));
+        // 3. Copy all mipmap levels data into our persistent staging memory map
+        uint8_t* mappedData = static_cast<uint8_t*>(m_texStagingMap) + currentOffset;
         size_t offset = 0;
         std::vector<size_t> levelOffsets;
         for (const auto& level : tex.swizzledMipLevels) {
-            levelOffsets.push_back(offset);
+            levelOffsets.push_back(currentOffset + offset);
             size_t levelBytes = level.size() * sizeof(uint32_t);
             std::memcpy(mappedData + offset, level.data(), levelBytes);
             offset += levelBytes;
         }
-        m_device->unmapMemory(stagingMemory.get());
 
-        // 5. Submit copy command buffer
-        vk::CommandBufferAllocateInfo cmdAlloc(m_commandPools[m_currentFrameSlot].get(), vk::CommandBufferLevel::ePrimary, 1);
-        auto cmds = m_device->allocateCommandBuffersUnique(cmdAlloc);
-        auto cmd = std::move(cmds[0]);
+        // Flush mapped memory range to ensure visibility to GPU
+        vk::MappedMemoryRange memRange(m_texStagingMemory.get(), currentOffset, totalBytes);
+        m_device->flushMappedMemoryRanges(memRange);
 
-        cmd->begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
+        // 4. Update the offset in the staging buffer
+        m_texStagingOffsets[m_currentFrameSlot] += totalBytes;
+
+        // 5. Record copy commands into the active frame's command buffer!
+        // First, if we are in an active render pass, we must temporarily end it!
+        if (m_inRenderPass) {
+            FlushBatch();
+            m_commandBuffer->endRenderPass();
+            m_inRenderPass = false;
+        }
 
         // Transition entire image to TransferDstOptimal
         vk::ImageSubresourceRange entireImageRange(vk::ImageAspectFlagBits::eColor, 0, static_cast<uint32_t>(tex.swizzledMipLevels.size()), 0, 1);
-        TransitionImageLayout(cmd.get(), image.get(), vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, entireImageRange);
+        TransitionImageLayout(*m_commandBuffer, image.get(), vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, entireImageRange);
 
-        // Copy each mipmap level
+        // Copy each mipmap level from staging buffer to image
         std::vector<vk::BufferImageCopy> copyRegions;
         uint32_t width = tex.baseWidth;
         uint32_t height = tex.baseHeight;
@@ -1760,16 +1800,10 @@ void VulkanBackend::UploadTexture(uint32_t tmu, uint32_t startAddress, const str
             height = std::max(1u, height / 2);
         }
 
-        cmd->copyBufferToImage(stagingBuffer.get(), image.get(), vk::ImageLayout::eTransferDstOptimal, static_cast<uint32_t>(copyRegions.size()), copyRegions.data());
+        m_commandBuffer->copyBufferToImage(m_texStagingBuffer.get(), image.get(), vk::ImageLayout::eTransferDstOptimal, static_cast<uint32_t>(copyRegions.size()), copyRegions.data());
 
         // Transition entire image to ShaderReadOnlyOptimal
-        TransitionImageLayout(cmd.get(), image.get(), vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, entireImageRange);
-
-        cmd->end();
-
-        vk::SubmitInfo submit(0, nullptr, nullptr, 1, &cmd.get());
-        m_graphicsQueue.submit(submit, {});
-        m_device->waitIdle();
+        TransitionImageLayout(*m_commandBuffer, image.get(), vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, entireImageRange);
 
         // 6. Create Image View
         vk::ImageViewCreateInfo viewInfo({}, image.get(), vk::ImageViewType::e2D, vk::Format::eB8G8R8A8Unorm,
@@ -1831,7 +1865,7 @@ void VulkanBackend::UploadTexture(uint32_t tmu, uint32_t startAddress, const str
 
         m_vulkanTextures[startAddress] = std::move(vulkanTex);
 
-        GLIDE_LOG(DEBUG, "Vulkan", "UploadTexture TMU0: Address=0x" << std::hex << startAddress << std::dec << " uploaded perfectly.");
+        GLIDE_LOG(DEBUG, "Vulkan", "UploadTexture: Completed successfully for address 0x" << std::hex << startAddress << std::dec << " (No GPU block!)");
     } catch (const std::exception& e) {
         GLIDE_LOG(CRITICAL, "Vulkan", "UploadTexture failed for Address=0x" << std::hex << startAddress << std::dec << ": " << e.what());
     }
