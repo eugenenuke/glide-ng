@@ -247,7 +247,11 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width, uint3
         
         m_vertexBufferMap = m_device->mapMemory(m_vertexBufferMemory.get(), 0, m_vertexBufferSize);
         m_vertexBufferOffset = 0;
-        GLIDE_LOG(INFO, "Vulkan", "Allocated 1MB host-visible dynamic ring vertex buffer.");
+        m_batchedPipeline = nullptr;
+        m_batchedDescSet = nullptr;
+        m_batchedVertexCount = 0;
+        m_batchedFirstVertex = 0;
+        GLIDE_LOG(INFO, "Vulkan", "Allocated 1MB host-visible dynamic ring vertex buffer and reset batching state.");
     } catch (const std::exception& e) {
         GLIDE_LOG(CRITICAL, "Vulkan", "Failed to allocate Vulkan vertex buffer: " << e.what());
         return false;
@@ -376,6 +380,7 @@ void VulkanBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z, uint32_
 
     // Terminate active render pass if any (so next draw starts a new render pass that triggers LoadOp Clear!)
     if (m_inRenderPass) {
+        FlushBatch();
         m_commandBuffer->endRenderPass();
         m_inRenderPass = false;
     }
@@ -419,32 +424,38 @@ void VulkanBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z, uint32_
 
 void VulkanBackend::SetDepthState(uint32_t depthMode, uint32_t compareOp, bool depthMask, int32_t biasLevel) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    FlushBatch();
     SoftwareBackendBase::SetDepthState(depthMode, compareOp, depthMask, biasLevel);
 }
 
 void VulkanBackend::SetBlendState(uint32_t rgbSrcFactor, uint32_t rgbDstFactor, uint32_t alphaSrcFactor, uint32_t alphaDstFactor) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    FlushBatch();
     SoftwareBackendBase::SetBlendState(rgbSrcFactor, rgbDstFactor, alphaSrcFactor, alphaDstFactor);
 }
 
 void VulkanBackend::SetCullState(uint32_t cullMode) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    FlushBatch();
     SoftwareBackendBase::SetCullState(cullMode);
 }
 
 void VulkanBackend::SetAlphaTestState(uint32_t compareOp, uint32_t refVal) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    FlushBatch();
     SoftwareBackendBase::SetAlphaTestState(compareOp, refVal);
     // Note: Emulated in fragment shader via push constants. No pipeline recompilation needed!
 }
 
 void VulkanBackend::SetSstOrigin(uint32_t origin) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    FlushBatch();
     SoftwareBackendBase::SetSstOrigin(origin);
 }
 
 void VulkanBackend::SetClipWindow(uint32_t minX, uint32_t minY, uint32_t maxX, uint32_t maxY) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    FlushBatch();
     SoftwareBackendBase::SetClipWindow(minX, minY, maxX, maxY);
 
     if (m_initialized && m_device && m_inRenderPass) {
@@ -453,10 +464,70 @@ void VulkanBackend::SetClipWindow(uint32_t minX, uint32_t minY, uint32_t maxX, u
     }
 }
 
+void VulkanBackend::SetConstantColor(uint32_t color) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    if (color != m_constantColor) {
+        FlushBatch();
+    }
+    SoftwareBackendBase::SetConstantColor(color);
+}
+
+void VulkanBackend::SetCombinerMode(uint32_t colorFunc, uint32_t colorFactor, uint32_t colorLocal, uint32_t colorOther, bool colorInvert,
+                                    uint32_t alphaFunc, uint32_t alphaFactor, uint32_t alphaLocal, uint32_t alphaOther, bool alphaInvert) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    FlushBatch();
+    SoftwareBackendBase::SetCombinerMode(colorFunc, colorFactor, colorLocal, colorOther, colorInvert,
+                                         alphaFunc, alphaFactor, alphaLocal, alphaOther, alphaInvert);
+}
+
+void VulkanBackend::SetTexCombinerMode(uint32_t tmu, uint32_t rgbFunc, uint32_t rgbFactor, uint32_t alphaFunc, uint32_t alphaFactor) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    FlushBatch();
+    SoftwareBackendBase::SetTexCombinerMode(tmu, rgbFunc, rgbFactor, alphaFunc, alphaFactor);
+}
+
+void VulkanBackend::SetSTWHintState(uint32_t hintMask) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    FlushBatch();
+    SoftwareBackendBase::SetSTWHintState(hintMask);
+}
+
+void VulkanBackend::SetChromakeyMode(uint32_t mode) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    FlushBatch();
+    SoftwareBackendBase::SetChromakeyMode(mode);
+}
+
+void VulkanBackend::SetChromakeyValue(uint32_t value) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    FlushBatch();
+    SoftwareBackendBase::SetChromakeyValue(value);
+}
+
+void VulkanBackend::SetFogMode(uint32_t mode) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    FlushBatch();
+    SoftwareBackendBase::SetFogMode(mode);
+}
+
+void VulkanBackend::SetFogColor(uint32_t color) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    FlushBatch();
+    SoftwareBackendBase::SetFogColor(color);
+}
+
+void VulkanBackend::SetFogTable(const uint8_t* table) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    FlushBatch();
+    SoftwareBackendBase::SetFogTable(table);
+}
+
 bool VulkanBackend::SwapBuffers() {
 
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     if (!m_initialized || !m_windowAttached) return false;
+
+    FlushBatch();
 
     GLIDE_LOG(DEBUG, "Vulkan", "SwapBuffers Hybrid Presentation dispatch.");
 
@@ -614,7 +685,13 @@ bool VulkanBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY, uint3
     }
     GLIDE_LOG(INFO, "Vulkan", "ReadLFB: Cache CPU pixels phase. Found " << cpuPixelCount << " non-transparent CPU pixels.");
 
-    // 1. Terminate active render pass if any
+    // 1. Flush pending batch or clears, and terminate active render pass
+    if (m_batchedVertexCount > 0) {
+        FlushBatch();
+    }
+    if (!m_inRenderPass && (m_clearColorPending || m_clearDepthPending)) {
+        EnsureRenderPassActive();
+    }
     if (m_inRenderPass) {
         m_commandBuffer->endRenderPass();
         m_inRenderPass = false;
@@ -667,7 +744,7 @@ bool VulkanBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY, uint3
     // 9. Restore the CPU-only framebuffer state from our cache, completely wiping out GPU pollution while preserving CPU LFB writes!
     if (m_headlessPixelMap) {
         auto* dest = reinterpret_cast<uint32_t*>(m_headlessPixelMap);
-        std::memset(dest, 0, m_headlessWidth * m_headlessHeight * 4);
+        std::fill_n(dest, m_headlessWidth * m_headlessHeight, m_lastCpuClearColor);
         for (size_t i = 0; i < cpuRenderingCache.size(); ++i) {
             if (cpuRenderingCache[i] != 0) {
                 dest[i] = cpuRenderingCache[i];
@@ -966,6 +1043,7 @@ void VulkanBackend::FlushLFBToGPU() {
 
     // 1. If we are inside an active render pass, we must end it first!
     if (m_inRenderPass) {
+        FlushBatch();
         GLIDE_LOG(INFO, "Vulkan", "FlushLFBToGPU: Ending active render pass to perform CPU->GPU transfer...");
         m_commandBuffer->endRenderPass();
         m_inRenderPass = false;
@@ -1196,7 +1274,38 @@ void VulkanBackend::DrawPoint(const ModernVertex& pt) {
 
     GLIDE_LOG(DEBUG, "Vulkan", "DrawPoint GPU draw. Pos: (" << pt.pos[0] << ", " << pt.pos[1] << ", " << pt.pos[2] << ")");
 
-    // 1. Upload vertex to dynamic ring vertex buffer
+    // 1. Determine active pipeline & descriptor set
+    UpdateActivePipelines();
+    vk::Pipeline reqPipeline = m_activePointPipeline;
+
+    vk::DescriptorSet reqDescSet = m_dummyTexture.descriptorSet;
+    if (m_boundTexAddress[0] != 0xFFFFFFFF) {
+        auto it = m_vulkanTextures.find(m_boundTexAddress[0]);
+        if (it != m_vulkanTextures.end()) {
+            reqDescSet = it->second.descriptorSet;
+        }
+    }
+
+    // 2. Check if we need to flush the active batch
+    bool stateChanged = (reqPipeline != m_batchedPipeline || reqDescSet != m_batchedDescSet);
+    bool batchEmpty = (m_batchedVertexCount == 0);
+    bool bufferFull = (m_vertexBufferOffset + sizeof(ModernVertex) > m_vertexBufferSize);
+
+    if (stateChanged || batchEmpty || bufferFull) {
+        if (stateChanged || bufferFull) {
+            FlushBatch();
+        }
+        if (bufferFull) {
+            GLIDE_LOG(WARN, "Vulkan", "Dynamic Vertex Buffer wrap-around during DrawPoint!");
+            m_vertexBufferOffset = 0;
+        }
+        
+        m_batchedPipeline = reqPipeline;
+        m_batchedDescSet = reqDescSet;
+        m_batchedFirstVertex = m_vertexBufferOffset / sizeof(ModernVertex);
+    }
+
+    // 3. Append vertex to mapped buffer
     if (!m_vertexBufferMap) {
         GLIDE_LOG(CRITICAL, "Vulkan", "Vertex buffer map is null during DrawPoint!");
         return;
@@ -1209,38 +1318,9 @@ void VulkanBackend::DrawPoint(const ModernVertex& pt) {
         *dest = pt;
     }
 
-    // 2. Ensure Render Pass is active (lazy initialization)
-    EnsureRenderPassActive();
-
-    // Always bind the correct pipeline for this draw call!
-    UpdateActivePipelines();
-    m_commandBuffer->bindPipeline(vk::PipelineBindPoint::eGraphics, m_activePointPipeline);
-
-    // Bind descriptor set for texture unit 0
-    vk::DescriptorSet activeDescSet = m_dummyTexture.descriptorSet;
-    if (m_boundTexAddress[0] != 0xFFFFFFFF) {
-        auto it = m_vulkanTextures.find(m_boundTexAddress[0]);
-        if (it != m_vulkanTextures.end()) {
-            activeDescSet = it->second.descriptorSet;
-        }
-    }
-    m_commandBuffer->bindDescriptorSets(vk::PipelineBindPoint::eGraphics, m_pipelineLayout.get(), 0, 1, &activeDescSet, 0, nullptr);
-
-    PushConstants pcs;
-    PopulatePushConstants(pcs);
-
-    m_commandBuffer->pushConstants<PushConstants>(m_pipelineLayout.get(), vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, pcs);
-
-    // 3. Issue GPU point draw call using firstVertex to read the correct slice!
-    uint32_t firstVertex = m_vertexBufferOffset / sizeof(ModernVertex);
-    m_commandBuffer->draw(1, 1, firstVertex, 0);
-
-    // 4. Advance ring buffer offset (wrap around if buffer is full)
+    // 4. Update batch & offset tracking
+    m_batchedVertexCount += 1;
     m_vertexBufferOffset += sizeof(ModernVertex);
-    if (m_vertexBufferOffset + sizeof(ModernVertex) > m_vertexBufferSize) {
-        GLIDE_LOG(WARN, "Vulkan", "Dynamic Vertex Buffer ring buffer wrap-around!");
-        m_vertexBufferOffset = 0;
-    }
 }
 
 void VulkanBackend::DrawLine(const ModernVertex& v1, const ModernVertex& v2) {
@@ -1251,18 +1331,42 @@ void VulkanBackend::DrawLine(const ModernVertex& v1, const ModernVertex& v2) {
 
     GLIDE_LOG(DEBUG, "Vulkan", "DrawLine GPU draw. V1: (" << v1.pos[0] << ", " << v1.pos[1] << "), V2: (" << v2.pos[0] << ", " << v2.pos[1] << ")");
 
-    // 1. Upload vertices to dynamic ring vertex buffer
+    // 1. Determine active pipeline & descriptor set
+    UpdateActivePipelines();
+    vk::Pipeline reqPipeline = m_activeLinePipeline;
+
+    vk::DescriptorSet reqDescSet = m_dummyTexture.descriptorSet;
+    if (m_boundTexAddress[0] != 0xFFFFFFFF) {
+        auto it = m_vulkanTextures.find(m_boundTexAddress[0]);
+        if (it != m_vulkanTextures.end()) {
+            reqDescSet = it->second.descriptorSet;
+        }
+    }
+
+    // 2. Check if we need to flush the active batch
+    bool stateChanged = (reqPipeline != m_batchedPipeline || reqDescSet != m_batchedDescSet);
+    bool batchEmpty = (m_batchedVertexCount == 0);
+    bool bufferFull = (m_vertexBufferOffset + 2 * sizeof(ModernVertex) > m_vertexBufferSize);
+
+    if (stateChanged || batchEmpty || bufferFull) {
+        if (stateChanged || bufferFull) {
+            FlushBatch();
+        }
+        if (bufferFull) {
+            GLIDE_LOG(WARN, "Vulkan", "Dynamic Vertex Buffer wrap-around during DrawLine!");
+            m_vertexBufferOffset = 0;
+        }
+        
+        m_batchedPipeline = reqPipeline;
+        m_batchedDescSet = reqDescSet;
+        m_batchedFirstVertex = m_vertexBufferOffset / sizeof(ModernVertex);
+    }
+
+    // 3. Append vertices to mapped buffer
     if (!m_vertexBufferMap) {
         GLIDE_LOG(CRITICAL, "Vulkan", "Vertex buffer map is null during DrawLine!");
         return;
     }
-    
-    // Check if we need to wrap the ring buffer before writing two vertices!
-    if (m_vertexBufferOffset + 2 * sizeof(ModernVertex) > m_vertexBufferSize) {
-        GLIDE_LOG(WARN, "Vulkan", "Dynamic Vertex Buffer ring buffer wrap-around during DrawLine!");
-        m_vertexBufferOffset = 0;
-    }
-
     auto* dest = reinterpret_cast<ModernVertex*>(reinterpret_cast<uint8_t*>(m_vertexBufferMap) + m_vertexBufferOffset);
     if (m_sstOrigin == 1) { // GR_ORIGIN_LOWER_LEFT: flip Y coordinates
         dest[0] = v1; dest[0].pos[1] = (float)m_headlessHeight - v1.pos[1];
@@ -1272,33 +1376,8 @@ void VulkanBackend::DrawLine(const ModernVertex& v1, const ModernVertex& v2) {
         dest[1] = v2;
     }
 
-    // 2. Ensure Render Pass is active (lazy initialization)
-    EnsureRenderPassActive();
-
-    // Always bind the correct pipeline for this draw call!
-    UpdateActivePipelines();
-    m_commandBuffer->bindPipeline(vk::PipelineBindPoint::eGraphics, m_activeLinePipeline);
-
-    // Bind descriptor set for texture unit 0
-    vk::DescriptorSet activeDescSet = m_dummyTexture.descriptorSet;
-    if (m_boundTexAddress[0] != 0xFFFFFFFF) {
-        auto it = m_vulkanTextures.find(m_boundTexAddress[0]);
-        if (it != m_vulkanTextures.end()) {
-            activeDescSet = it->second.descriptorSet;
-        }
-    }
-    m_commandBuffer->bindDescriptorSets(vk::PipelineBindPoint::eGraphics, m_pipelineLayout.get(), 0, 1, &activeDescSet, 0, nullptr);
-
-    PushConstants pcs;
-    PopulatePushConstants(pcs);
-
-    m_commandBuffer->pushConstants<PushConstants>(m_pipelineLayout.get(), vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, pcs);
-
-    // 3. Issue GPU line draw call (vertexCount = 2)
-    uint32_t firstVertex = m_vertexBufferOffset / sizeof(ModernVertex);
-    m_commandBuffer->draw(2, 1, firstVertex, 0);
-
-    // 4. Advance ring buffer offset
+    // 4. Update batch & offset tracking
+    m_batchedVertexCount += 2;
     m_vertexBufferOffset += 2 * sizeof(ModernVertex);
 }
 
@@ -1309,22 +1388,43 @@ void VulkanBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b, c
     FlushLFBToGPU();
 
     GLIDE_LOG(DEBUG, "Vulkan", "DrawTriangle GPU draw. A: (" << a.pos[0] << ", " << a.pos[1] << "), B: (" << b.pos[0] << ", " << b.pos[1] << "), C: (" << c.pos[0] << ", " << c.pos[1] << ")");
-    GLIDE_LOG(INFO, "Vulkan", "DrawTriangle Alpha Debug: Vertex 0 Alpha = " << a.color[3]
-              << ", AlphaTestOp = " << m_alphaTestOp
-              << ", RefVal = " << m_alphaTestRefVal);
 
-    // 1. Upload vertices to dynamic ring vertex buffer
+    // 1. Determine active pipeline & descriptor set
+    UpdateActivePipelines();
+    vk::Pipeline reqPipeline = m_activeTrianglePipeline;
+
+    vk::DescriptorSet reqDescSet = m_dummyTexture.descriptorSet;
+    if (m_boundTexAddress[0] != 0xFFFFFFFF) {
+        auto it = m_vulkanTextures.find(m_boundTexAddress[0]);
+        if (it != m_vulkanTextures.end()) {
+            reqDescSet = it->second.descriptorSet;
+        }
+    }
+
+    // 2. Check if we need to flush the active batch
+    bool stateChanged = (reqPipeline != m_batchedPipeline || reqDescSet != m_batchedDescSet);
+    bool batchEmpty = (m_batchedVertexCount == 0);
+    bool bufferFull = (m_vertexBufferOffset + 3 * sizeof(ModernVertex) > m_vertexBufferSize);
+
+    if (stateChanged || batchEmpty || bufferFull) {
+        if (stateChanged || bufferFull) {
+            FlushBatch();
+        }
+        if (bufferFull) {
+            GLIDE_LOG(WARN, "Vulkan", "Dynamic Vertex Buffer wrap-around during DrawTriangle!");
+            m_vertexBufferOffset = 0;
+        }
+        
+        m_batchedPipeline = reqPipeline;
+        m_batchedDescSet = reqDescSet;
+        m_batchedFirstVertex = m_vertexBufferOffset / sizeof(ModernVertex);
+    }
+
+    // 3. Append vertices to mapped buffer
     if (!m_vertexBufferMap) {
         GLIDE_LOG(CRITICAL, "Vulkan", "Vertex buffer map is null during DrawTriangle!");
         return;
     }
-    
-    // Check if we need to wrap the ring buffer before writing three vertices!
-    if (m_vertexBufferOffset + 3 * sizeof(ModernVertex) > m_vertexBufferSize) {
-        GLIDE_LOG(WARN, "Vulkan", "Dynamic Vertex Buffer ring buffer wrap-around during DrawTriangle!");
-        m_vertexBufferOffset = 0;
-    }
-
     auto* dest = reinterpret_cast<ModernVertex*>(reinterpret_cast<uint8_t*>(m_vertexBufferMap) + m_vertexBufferOffset);
     if (m_sstOrigin == 1) { // GR_ORIGIN_LOWER_LEFT: flip Y coordinates
         dest[0] = a; dest[0].pos[1] = (float)m_headlessHeight - a.pos[1];
@@ -1336,38 +1436,34 @@ void VulkanBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b, c
         dest[2] = c;
     }
 
-    // 2. Ensure Render Pass is active (lazy initialization)
+    // 4. Update batch & offset tracking
+    m_batchedVertexCount += 3;
+    m_vertexBufferOffset += 3 * sizeof(ModernVertex);
+}
+
+void VulkanBackend::FlushBatch() {
+    if (m_batchedVertexCount == 0) return;
+
+    GLIDE_LOG(DEBUG, "Vulkan", "FlushBatch: drawing " << m_batchedVertexCount << " vertices. FirstVertex=" << m_batchedFirstVertex);
+
     EnsureRenderPassActive();
 
-    // Always bind the correct pipeline for this draw call!
-    UpdateActivePipelines();
-    m_commandBuffer->bindPipeline(vk::PipelineBindPoint::eGraphics, m_activeTrianglePipeline);
-
-    // Bind descriptor set for texture unit 0
-    vk::DescriptorSet activeDescSet = m_dummyTexture.descriptorSet;
-    if (m_boundTexAddress[0] != 0xFFFFFFFF) {
-        auto it = m_vulkanTextures.find(m_boundTexAddress[0]);
-        if (it != m_vulkanTextures.end()) {
-            activeDescSet = it->second.descriptorSet;
-        }
-    }
-    m_commandBuffer->bindDescriptorSets(vk::PipelineBindPoint::eGraphics, m_pipelineLayout.get(), 0, 1, &activeDescSet, 0, nullptr);
+    m_commandBuffer->bindPipeline(vk::PipelineBindPoint::eGraphics, m_batchedPipeline);
+    m_commandBuffer->bindDescriptorSets(vk::PipelineBindPoint::eGraphics, m_pipelineLayout.get(), 0, 1, &m_batchedDescSet, 0, nullptr);
 
     PushConstants pcs;
     PopulatePushConstants(pcs);
+    m_commandBuffer->pushConstants<PushConstants>(m_pipelineLayout.get(), 
+        vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, pcs);
 
-    m_commandBuffer->pushConstants<PushConstants>(m_pipelineLayout.get(), vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, pcs);
+    m_commandBuffer->draw(m_batchedVertexCount, 1, m_batchedFirstVertex, 0);
 
-    // 3. Issue GPU triangle draw call (vertexCount = 3)
-    uint32_t firstVertex = m_vertexBufferOffset / sizeof(ModernVertex);
-    m_commandBuffer->draw(3, 1, firstVertex, 0);
-
-    // 4. Advance ring buffer offset
-    m_vertexBufferOffset += 3 * sizeof(ModernVertex);
+    m_batchedVertexCount = 0;
 }
 
 void VulkanBackend::UploadTexture(uint32_t tmu, uint32_t startAddress, const struct VirtualTexture& tex) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    FlushBatch();
     if (!m_initialized || !m_device) return;
 
     GLIDE_LOG(INFO, "Vulkan", "UploadTexture TMU" << tmu << ": Address=0x" << std::hex << startAddress << std::dec 
@@ -1532,6 +1628,7 @@ void VulkanBackend::UploadTexture(uint32_t tmu, uint32_t startAddress, const str
 
 void VulkanBackend::BindTexture(uint32_t tmu, uint32_t startAddress, uint32_t clampS, uint32_t clampT, uint32_t minFilter, uint32_t magFilter) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    FlushBatch();
     
     // 1. Call base class SoftwareBackendBase::BindTexture to update software states
     SoftwareBackendBase::BindTexture(tmu, startAddress, clampS, clampT, minFilter, magFilter);

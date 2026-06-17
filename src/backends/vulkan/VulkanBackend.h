@@ -130,6 +130,7 @@ public:
     void SetAlphaTestState(uint32_t compareOp, uint32_t refVal) override;
     void SetSstOrigin(uint32_t origin) override;
     void SetClipWindow(uint32_t minX, uint32_t minY, uint32_t maxX, uint32_t maxY) override;
+    void SetConstantColor(uint32_t color) override;
     bool ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY, uint32_t srcWidth, uint32_t srcHeight, uint32_t dstStride, void* dstData) override;
     void PollEvents() override;
     void SstIdle() override;
@@ -140,6 +141,15 @@ public:
     void DrawTriangle(const ModernVertex& a, const ModernVertex& b, const ModernVertex& c) override;
     void BindTexture(uint32_t tmu, uint32_t startAddress, uint32_t clampS, uint32_t clampT, uint32_t minFilter, uint32_t magFilter) override;
     void UploadTexture(uint32_t tmu, uint32_t startAddress, const struct VirtualTexture& tex) override;
+    void SetCombinerMode(uint32_t colorFunc, uint32_t colorFactor, uint32_t colorLocal, uint32_t colorOther, bool colorInvert,
+                         uint32_t alphaFunc, uint32_t alphaFactor, uint32_t alphaLocal, uint32_t alphaOther, bool alphaInvert) override;
+    void SetTexCombinerMode(uint32_t tmu, uint32_t rgbFunc, uint32_t rgbFactor, uint32_t alphaFunc, uint32_t alphaFactor) override;
+    void SetSTWHintState(uint32_t hintMask) override;
+    void SetChromakeyMode(uint32_t mode) override;
+    void SetChromakeyValue(uint32_t value) override;
+    void SetFogMode(uint32_t mode) override;
+    void SetFogColor(uint32_t color) override;
+    void SetFogTable(const uint8_t* table) override;
 
 private:
     bool CreateInstance();
@@ -150,6 +160,7 @@ private:
     uint32_t FindMemoryType(uint32_t typeFilter, vk::MemoryPropertyFlags properties);
     void TransitionImageLayout(vk::CommandBuffer cmd, vk::Image image, vk::ImageLayout oldLayout, vk::ImageLayout newLayout, vk::ImageSubresourceRange range);
     void FlushLFBToGPU();
+    void FlushBatch();
 
     // Vulkan Context Handles
     vk::UniqueInstance m_instance;
@@ -216,6 +227,12 @@ private:
     
     // Unified Frame Render Pass State
     bool m_inRenderPass{false};
+
+    // Draw Batching State
+    uint32_t m_batchedVertexCount{0};
+    uint32_t m_batchedFirstVertex{0};
+    vk::Pipeline m_batchedPipeline;
+    vk::DescriptorSet m_batchedDescSet;
 
     // Clear state tracking for Render Pass LoadOp clears
     vk::ClearColorValue m_clearColorValue{std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f}};

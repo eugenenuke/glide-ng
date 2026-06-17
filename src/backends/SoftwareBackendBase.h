@@ -143,6 +143,7 @@ protected:
     uint32_t m_pixelFormatOverride{1}; // 1 = ABGR
     uint32_t m_chromakeyMode{0};       // 0 = GR_CHROMAKEY_DISABLE
     uint32_t m_chromakeyValue{0};
+    uint32_t m_lastCpuClearColor{0};
 };
 
 } // namespace GlideWrapper

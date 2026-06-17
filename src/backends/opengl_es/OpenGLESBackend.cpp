@@ -382,7 +382,7 @@ bool OpenGLESBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY, uin
     // Restore the CPU-only framebuffer state from our cache, completely wiping out GPU pollution while preserving CPU LFB writes!
     if (m_headlessPixelMap) {
         auto* dest = reinterpret_cast<uint32_t*>(m_headlessPixelMap);
-        std::memset(dest, 0, m_headlessWidth * m_headlessHeight * 4);
+        std::fill_n(dest, m_headlessWidth * m_headlessHeight, m_lastCpuClearColor);
         for (size_t i = 0; i < cpuRenderingCache.size(); ++i) {
             if (cpuRenderingCache[i] != 0) {
                 dest[i] = cpuRenderingCache[i];

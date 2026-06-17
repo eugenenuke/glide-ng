@@ -31,6 +31,7 @@ void SoftwareBackendBase::ClearBuffer(uint32_t color, uint32_t alpha, float z, u
         }
 
         uint32_t clearWord = (a << 24) | (r << 16) | (g << 8) | b;
+        m_lastCpuClearColor = clearWord & 0x00FFFFFF; // Track clear color with alpha = 0!
         uint32_t* pixels = reinterpret_cast<uint32_t*>(m_headlessPixelMap);
         std::fill_n(pixels, m_headlessWidth * m_headlessHeight, clearWord);
         GLIDE_LOG(DEBUG, "Rasterizer", "Cleared color buffer with word 0x" << std::hex << clearWord << std::dec);
