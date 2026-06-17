@@ -895,6 +895,7 @@ bool SoftwareBackendBase::WriteLFB(uint32_t dstX, uint32_t dstY, uint32_t srcWid
     const auto* inBytes = reinterpret_cast<const uint8_t*>(srcData);
     const auto* refBytes = reinterpret_cast<const uint8_t*>(refData);
 
+    bool wrotePixel = false;
     for (uint32_t y = 0; y < srcHeight; ++y) {
         uint32_t writeY = dstY + y;
         if (writeY >= m_headlessHeight) break;
@@ -923,24 +924,53 @@ bool SoftwareBackendBase::WriteLFB(uint32_t dstX, uint32_t dstY, uint32_t srcWid
 
             // 2. Unpack and write the modified pixel
             uint32_t pWord = 0xFF000000;
-            if (srcFmt == 0) { // GR_LFB_SRC_FMT_565
-                uint16_t c16 = reinterpret_cast<const uint16_t*>(inBytes + y * srcStride)[x];
+            if (srcFmt == 0 || srcFmt == 12) { // GR_LFB_SRC_FMT_565 or GR_LFB_SRC_FMT_565_DEPTH
+                uint16_t c16;
+                if (srcFmt == 12) {
+                    c16 = (uint16_t)(reinterpret_cast<const uint32_t*>(inBytes + y * srcStride)[x] & 0xFFFF);
+                } else {
+                    c16 = reinterpret_cast<const uint16_t*>(inBytes + y * srcStride)[x];
+                }
                 uint32_t r = ((c16 >> 11) & 0x1F) * 255 / 31;
                 uint32_t g = ((c16 >> 5)  & 0x3F) * 255 / 63;
                 uint32_t b = (c16         & 0x1F) * 255 / 31;
                 pWord = (255 << 24) | (r << 16) | (g << 8) | b;
-            } else if (srcFmt == 1 || srcFmt == 2) { // GR_LFB_SRC_FMT_555 / 1555
-                uint16_t c16 = reinterpret_cast<const uint16_t*>(inBytes + y * srcStride)[x];
+            } else if (srcFmt == 1 || srcFmt == 2 || srcFmt == 13 || srcFmt == 14) { // 555 / 1555 or 555_DEPTH / 1555_DEPTH
+                uint16_t c16;
+                if (srcFmt == 13 || srcFmt == 14) {
+                    c16 = (uint16_t)(reinterpret_cast<const uint32_t*>(inBytes + y * srcStride)[x] & 0xFFFF);
+                } else {
+                    c16 = reinterpret_cast<const uint16_t*>(inBytes + y * srcStride)[x];
+                }
                 uint32_t r = ((c16 >> 10) & 0x1F) * 255 / 31;
                 uint32_t g = ((c16 >> 5)  & 0x1F) * 255 / 31;
                 uint32_t b = (c16         & 0x1F) * 255 / 31;
-                uint32_t a = (srcFmt == 2) ? (((c16 >> 15) & 1) ? 255 : 0) : 255;
+                uint32_t a = (srcFmt == 2 || srcFmt == 14) ? (((c16 >> 15) & 1) ? 255 : 0) : 255;
                 pWord = (a << 24) | (r << 16) | (g << 8) | b;
-            } else { // 32-bit ARGB8888 / RGB888
+            } else { // 32-bit ARGB8888 / RGB888 / ZA16
                 pWord = reinterpret_cast<const uint32_t*>(inBytes + y * srcStride)[x];
+                
+                // Quantize to 16-bit 565 to emulate Voodoo VRAM storage limits
+                uint32_t r = ((pWord >> 16) & 0xFF) >> 3;
+                uint32_t g = ((pWord >> 8)  & 0xFF) >> 2;
+                uint32_t b = (pWord         & 0xFF) >> 3;
+                
+                uint32_t r8 = r * 255 / 31;
+                uint32_t g8 = g * 255 / 63;
+                uint32_t b8 = b * 255 / 31;
+                uint32_t a8 = (pWord >> 24) & 0xFF;
+                
+                if (srcFmt == 4 || srcFmt == 15) { // Force alpha = 255 for RGB888 and ZA16 to make them opaque
+                    a8 = 255;
+                }
+                pWord = (a8 << 24) | (r8 << 16) | (g8 << 8) | b8;
             }
             pixels[writeY * m_headlessWidth + writeX] = pWord;
+            wrotePixel = true;
         }
+    }
+    if (wrotePixel) {
+        m_lfbDirty = true;
     }
     return true;
 }

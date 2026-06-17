@@ -75,6 +75,7 @@ protected:
     void* m_headlessPixelMap{nullptr};
     uint32_t m_headlessWidth{800};
     uint32_t m_headlessHeight{600};
+    bool m_lfbDirty{false};
 
     // Phase 4 State Trackers & Headless Depth Buffer Attachment
     uint32_t m_depthMode{0};      // 0 = Z-buffer, 1 = W-buffer

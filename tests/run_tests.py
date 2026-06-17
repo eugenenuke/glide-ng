@@ -46,6 +46,7 @@ TEST_TEXT_SKIP_BOUNDS = {
     "test17": (40, 2),  # Widen to full screen width for the top 2 rows to cover the long title text
     "test18": (40, 2),  # Widen to cover console text
     "test19": (40, 2),  # Widen to cover console text
+    "test26": (40, 3),  # Ignore top 3 rows of console text to cover long format and status strings
     "test29": (40, 2),  # Widen to cover console text
 }
 

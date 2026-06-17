@@ -942,6 +942,40 @@ void VulkanBackend::TransitionImageLayout(vk::CommandBuffer cmd, vk::Image image
     cmd.pipelineBarrier(sourceStage, destinationStage, {}, 0, nullptr, 0, nullptr, 1, &barrier);
 }
 
+void VulkanBackend::FlushLFBToGPU() {
+    if (!m_lfbDirty) return;
+
+    GLIDE_LOG(INFO, "Vulkan", "FlushLFBToGPU: Flushing CPU LFB staging buffer to GPU framebuffer...");
+
+    // 1. If we are inside an active render pass, we must end it first!
+    if (m_inRenderPass) {
+        GLIDE_LOG(INFO, "Vulkan", "FlushLFBToGPU: Ending active render pass to perform CPU->GPU transfer...");
+        m_commandBuffer->endRenderPass();
+        m_inRenderPass = false;
+    }
+
+    // 2. Transition image to TransferDstOptimal
+    vk::ImageSubresourceRange range(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1);
+    TransitionImageLayout(m_commandBuffer.get(), m_headlessImage.get(), vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eTransferDstOptimal, range);
+
+    // 3. Record copy from buffer to image
+    vk::BufferImageCopy region;
+    region.imageSubresource = vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
+    region.imageExtent = vk::Extent3D(m_headlessWidth, m_headlessHeight, 1);
+
+    // Flush mapped memory to ensure host writes are visible to GPU
+    vk::MappedMemoryRange memRange(m_headlessPixelMemory.get(), 0, VK_WHOLE_SIZE);
+    m_device->flushMappedMemoryRanges(memRange);
+
+    m_commandBuffer->copyBufferToImage(m_headlessPixelBuffer.get(), m_headlessImage.get(), vk::ImageLayout::eTransferDstOptimal, 1, &region);
+
+    // 4. Transition image back to ColorAttachmentOptimal
+    TransitionImageLayout(m_commandBuffer.get(), m_headlessImage.get(), vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eColorAttachmentOptimal, range);
+
+    // 5. Clear the dirty flag
+    m_lfbDirty = false;
+}
+
 // --- Phase 2: Dynamic Shader Modules & Pipeline State Creation ---
 bool VulkanBackend::CreateShaderModules() {
     try {
@@ -1136,6 +1170,8 @@ void VulkanBackend::DrawPoint(const ModernVertex& pt) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     if (!m_initialized || !m_windowAttached) return;
 
+    FlushLFBToGPU();
+
     GLIDE_LOG(DEBUG, "Vulkan", "DrawPoint GPU draw. Pos: (" << pt.pos[0] << ", " << pt.pos[1] << ", " << pt.pos[2] << ")");
 
     // 1. Upload vertex to dynamic ring vertex buffer
@@ -1188,6 +1224,8 @@ void VulkanBackend::DrawPoint(const ModernVertex& pt) {
 void VulkanBackend::DrawLine(const ModernVertex& v1, const ModernVertex& v2) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     if (!m_initialized || !m_windowAttached) return;
+
+    FlushLFBToGPU();
 
     GLIDE_LOG(DEBUG, "Vulkan", "DrawLine GPU draw. V1: (" << v1.pos[0] << ", " << v1.pos[1] << "), V2: (" << v2.pos[0] << ", " << v2.pos[1] << ")");
 
@@ -1245,6 +1283,8 @@ void VulkanBackend::DrawLine(const ModernVertex& v1, const ModernVertex& v2) {
 void VulkanBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b, const ModernVertex& c) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     if (!m_initialized || !m_windowAttached) return;
+
+    FlushLFBToGPU();
 
     GLIDE_LOG(DEBUG, "Vulkan", "DrawTriangle GPU draw. A: (" << a.pos[0] << ", " << a.pos[1] << "), B: (" << b.pos[0] << ", " << b.pos[1] << "), C: (" << c.pos[0] << ", " << c.pos[1] << ")");
     GLIDE_LOG(INFO, "Vulkan", "DrawTriangle Alpha Debug: Vertex 0 Alpha = " << a.color[3]

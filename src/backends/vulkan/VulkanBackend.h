@@ -149,6 +149,7 @@ private:
     bool CreateHeadlessRenderTarget(uint32_t width, uint32_t height);
     uint32_t FindMemoryType(uint32_t typeFilter, vk::MemoryPropertyFlags properties);
     void TransitionImageLayout(vk::CommandBuffer cmd, vk::Image image, vk::ImageLayout oldLayout, vk::ImageLayout newLayout, vk::ImageSubresourceRange range);
+    void FlushLFBToGPU();
 
     // Vulkan Context Handles
     vk::UniqueInstance m_instance;

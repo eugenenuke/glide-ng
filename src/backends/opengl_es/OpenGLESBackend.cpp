@@ -339,6 +339,19 @@ bool OpenGLESBackend::ReadLFB(uint32_t srcX, uint32_t srcY, uint32_t srcWidth, u
         }
     }
 
+    // Temporary debug logging to trace the text obliteration paradox!
+    if (m_headlessPixelMap) {
+        const auto* pixels = reinterpret_cast<const uint32_t*>(m_headlessPixelMap);
+        uint32_t textPixelIndex = 8 * m_headlessWidth + 50; // (50, 8)
+        uint32_t bgPixelIndex = 30 * m_headlessWidth + 50; // (50, 30)
+        GLIDE_LOG(INFO, "OpenGL_ES", "ReadLFB Overlay Debug: Pixel (50,8) before overlay: 0x" 
+                  << std::hex << std::uppercase << pixels[textPixelIndex] 
+                  << " (Cache: 0x" << cpuRenderingCache[textPixelIndex] << ")");
+        GLIDE_LOG(INFO, "OpenGL_ES", "ReadLFB Overlay Debug: Pixel (50,30) before overlay: 0x" 
+                  << std::hex << std::uppercase << pixels[bgPixelIndex] 
+                  << " (Cache: 0x" << cpuRenderingCache[bgPixelIndex] << ")");
+    }
+
     // --- STEP 3: Overlay CPU-rendered text/geometry back ---
     if (hasCpuRendering && m_headlessPixelMap) {
         auto* dest = reinterpret_cast<uint32_t*>(m_headlessPixelMap);
@@ -347,6 +360,16 @@ bool OpenGLESBackend::ReadLFB(uint32_t srcX, uint32_t srcY, uint32_t srcWidth, u
                 dest[i] = cpuRenderingCache[i];
             }
         }
+    }
+
+    if (m_headlessPixelMap) {
+        const auto* pixels = reinterpret_cast<const uint32_t*>(m_headlessPixelMap);
+        uint32_t textPixelIndex = 8 * m_headlessWidth + 50; // (50, 8)
+        uint32_t bgPixelIndex = 30 * m_headlessWidth + 50; // (50, 30)
+        GLIDE_LOG(INFO, "OpenGL_ES", "ReadLFB Overlay Debug: Pixel (50,8) after overlay: 0x" 
+                  << std::hex << std::uppercase << pixels[textPixelIndex]);
+        GLIDE_LOG(INFO, "OpenGL_ES", "ReadLFB Overlay Debug: Pixel (50,30) after overlay: 0x" 
+                  << std::hex << std::uppercase << pixels[bgPixelIndex]);
     }
 
     // Restore the previously bound framebuffer to prevent state leakage!
