@@ -174,9 +174,12 @@ private:
     uint32_t m_graphicsQueueFamilyIndex{0};
     bool m_depthClampEnabled{false};
 
-    // Command submission infrastructure
-    vk::UniqueCommandPool m_commandPool;
-    vk::UniqueCommandBuffer m_commandBuffer;
+    // Command submission infrastructure (Double-Buffered)
+    vk::UniqueCommandPool m_commandPools[2];
+    vk::UniqueCommandBuffer m_commandBuffers[2];
+    vk::CommandBuffer* m_commandBuffer{nullptr}; // Non-owning pointer pointing to active command buffer
+    vk::UniqueFence m_fences[2];       // Fences to track CPU-GPU synchronization per frame slot
+    uint32_t m_currentFrameSlot{0};     // Active frame slot (0 or 1)
 
     // Render Pass abstraction
     vk::UniqueRenderPass m_renderPass;
@@ -194,9 +197,9 @@ private:
     vk::UniqueImageView m_depthImageView;
     vk::Format m_depthFormat{vk::Format::eD32Sfloat};
 
-    // Staging buffer to copy GPU image to CPU
-    vk::UniqueBuffer m_headlessPixelBuffer;
-    vk::UniqueDeviceMemory m_headlessPixelMemory;
+    // Staging buffers to copy GPU image to CPU (Double-Buffered)
+    vk::UniqueBuffer m_headlessPixelBuffers[2];
+    vk::UniqueDeviceMemory m_headlessPixelMemories[2];
 
     // SDL2 Visual Presentation Console Singletons
     void* m_sdlWindow{nullptr};   // SDL_Window*
@@ -252,7 +255,7 @@ private:
     vk::UniqueDescriptorPool m_descriptorPool;
     std::unordered_map<uint32_t, VulkanTexture> m_vulkanTextures;
     VulkanTexture m_dummyTexture;
-    void* m_gpuStagingMap{nullptr};
+    void* m_gpuStagingMaps[2]{nullptr, nullptr}; // Mapped staging memory addresses
 };
 
 
