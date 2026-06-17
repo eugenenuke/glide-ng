@@ -55,21 +55,21 @@ Because `maxFps` defaults to `60.0f`, the wrapper **slept the CPU main thread fo
 *   **Diagnosis**: In `VulkanBackend::DrawTriangle`, a high-frequency log statement was executing on every single triangle draw call, forcing the CPU to perform expensive string stream formatting and console writes.
 *   **Action**: Demoted the alpha debug log from `INFO` to `DEBUG` in [VulkanBackend.cpp:L1312](file:///usr/local/google/home/eianiuk/gemini/3dfx/src/backends/vulkan/VulkanBackend.cpp#L1312).
 *   **Result**:
-    *   **`test14` Vulkan Headless (Uncapped)**: **117.37 FPS** $\rightarrow$ **127.38 FPS** (**+8.5% speedup**)
+    *   **`test14` Vulkan Headless (Uncapped)**: **117.37 FPS** → **127.38 FPS** (**+8.5% speedup**)
 
 ---
 
 ### Stage 2: Core Draw Batching (Vertex Accumulation)
 *   **Action**: Implemented deferred drawing and dynamic batching in [VulkanBackend.cpp](file:///usr/local/google/home/eianiuk/gemini/3dfx/src/backends/vulkan/VulkanBackend.cpp). We accumulate vertices into our VBO ring buffer and only flush the batch when a pipeline, texture binding, or major state changes.
 *   **Result**:
-    *   **`test21` Vulkan Headless (Uncapped)**: **49.35 FPS** $\rightarrow$ **49.35 FPS** (**0% speedup** / blocked by constant color flushes).
+    *   **`test21` Vulkan Headless (Uncapped)**: **49.35 FPS** → **49.35 FPS** (**0% speedup** / blocked by constant color flushes).
 
 ---
 
 ### Stage 3: Smart Constant Color Interception
 *   **Action**: Overrode `SetConstantColor` in the Vulkan backend to perform a value-changed check in [VulkanBackend.cpp:L462](file:///usr/local/google/home/eianiuk/gemini/3dfx/src/backends/vulkan/VulkanBackend.cpp#L462) to prevent batch flushes on identical text colors.
 *   **Result**:
-    *   **`test21` Vulkan Headless (Uncapped)**: **49.35 FPS** $\rightarrow$ **98.24 FPS** (**+99.0% speedup!**)
+    *   **`test21` Vulkan Headless (Uncapped)**: **49.35 FPS** → **98.24 FPS** (**+99.0% speedup!**)
     *   *Analysis*: This successfully leapfrogged our GLES Headless baseline (75.24 FPS) by grouping the entire console overlay into a single draw call!
 
 ---
@@ -77,26 +77,26 @@ Because `maxFps` defaults to `60.0f`, the wrapper **slept the CPU main thread fo
 ### Stage 4: Combined Correctness & Core Pipeline Tuning
 *   **Action**: Streamlined the dynamic VBO ring buffer mappings and optimized the LFB background wiping logic in [VulkanBackend.cpp:L382](file:///usr/local/google/home/eianiuk/gemini/3dfx/src/backends/vulkan/VulkanBackend.cpp#L382).
 *   **Result**:
-    *   **`test14` Vulkan Headless (Uncapped)**: **127.38 FPS** $\rightarrow$ **143.15 FPS** (**+12.3% speedup**)
-    *   **`test21` Vulkan Headless (Uncapped)**: **98.24 FPS** $\rightarrow$ **135.50 FPS** (**+37.9% speedup**)
+    *   **`test14` Vulkan Headless (Uncapped)**: **127.38 FPS** → **143.15 FPS** (**+12.3% speedup**)
+    *   **`test21` Vulkan Headless (Uncapped)**: **98.24 FPS** → **135.50 FPS** (**+37.9% speedup**)
 
 ---
 
 ### Stage 5: High-Frequency Log Demotion Sweep
 *   **Action**: Demoted 143 high-frequency log statements to `DEBUG` across all layers using an automated script [scratch/demote_logs.py](file:///usr/local/google/home/eianiuk/gemini/3dfx/scratch/demote_logs.py), completely bypassing string formatting and mutex locking in benchmarking.
 *   **Result**:
-    *   **Our CPU Software (Uncapped)**: **7.90 FPS** $\rightarrow$ **19.86 FPS** (**+151.3% boost!**)
-    *   **Our GLES Headless (Uncapped)**: **75.24 FPS** $\rightarrow$ **212.76 FPS** (**+182.7% boost!**)
-    *   **`test14` Vulkan Headless (Uncapped)**: **143.15 FPS** $\rightarrow$ **196.48 FPS** (**+37.2% speedup**)
-    *   **`test21` Vulkan Headless (Uncapped)**: **135.50 FPS** $\rightarrow$ **174.65 FPS** (**+28.8% speedup**)
+    *   **Our CPU Software (Uncapped)**: **7.90 FPS** → **19.86 FPS** (**+151.3% boost!**)
+    *   **Our GLES Headless (Uncapped)**: **75.24 FPS** → **212.76 FPS** (**+182.7% boost!**)
+    *   **`test14` Vulkan Headless (Uncapped)**: **143.15 FPS** → **196.48 FPS** (**+37.2% speedup**)
+    *   **`test21` Vulkan Headless (Uncapped)**: **135.50 FPS** → **174.65 FPS** (**+28.8% speedup**)
 
 ---
 
 ### Stage 6: Hash-Based Texture Upload Interception
 *   **Action**: Implemented double-layered raw data hashing (64-bit FNV-1a) in `TextureManager` and `VulkanBackend` to bypass CPU swizzling, vector allocation, and GPU staging/blocking pipeline stalls on unmodified textures.
 *   **Result**:
-    *   **`test14` Vulkan Headless (Uncapped)**: **196.48 FPS** $\rightarrow$ **217.38 FPS** (**+10.6% speedup** / **beats OpenGLide!**)
-    *   **`test21` Vulkan Headless (Uncapped)**: **174.65 FPS** $\rightarrow$ **184.12 FPS** (**+5.4% speedup** / **+273.1% over baseline!**)
+    *   **`test14` Vulkan Headless (Uncapped)**: **196.48 FPS** → **217.38 FPS** (**+10.6% speedup** / **beats OpenGLide!**)
+    *   **`test21` Vulkan Headless (Uncapped)**: **174.65 FPS** → **184.12 FPS** (**+5.4% speedup** / **+273.1% over baseline!**)
 
 ---
 
@@ -122,7 +122,7 @@ gantt
 
 ---
 
-## 4. Current Action Items & Next Steps
+## 5. Current Action Items & Next Steps
 
 1.  **Port Draw Batching to GLES**:
     *   Now that the batching architecture is proven, port the exact same dynamic vertex batching and state tracking to `OpenGLESBackend.cpp` to unlock the same 30%+ speedups for GLES.
