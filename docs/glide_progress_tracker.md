@@ -108,3 +108,32 @@ To resolve long-term translation issues and enable true hardware acceleration, w
 20. **Dynamic Vulkan Pipeline Caching and Deferral (COMPLETED):** Developed a highly optimized state-key-driven pipeline cache (`PipelineStateKey` hash map) for the Vulkan backend. Deferred pipeline resolution and binding to draw-time, completely eliminating the obsolete dynamic pipeline recompilation overhead from state setters. Reduced the number of active Vulkan pipeline creations in `test14` from 482 down to exactly 3, yielding an immediate $\approx 99.3\%$ reduction in driver compilation stalls and restoring massive hardware-native CPU execution speeds.
 21. **Dynamic Texture Filtering & Sampler Parity (test19) (COMPLETED):** Implemented and verified dynamic texture filtering parameter updates (nearest-neighbor point vs. bilinear interpolation) under minification and magnification. Validated on-the-fly Vulkan sampler recreation (`vk::UniqueSampler` and descriptor updates) and OpenGL ES `glTexParameteri` updates. Handled 16-bit RGB565 hardware quantization rounding variance via a dedicated color delta threshold (12) and allowed minor sub-pixel rasterization edge shifts (0.95 pass ratio) under Vulkan headless CPU rendering, achieving a perfect, robust, 100% pass across all 51 test configurations in the ultimate validation matrix.
 
+---
+
+## 4. Software Backend Optimization Opportunities (Future Retro-Compatibility)
+
+While the **Software Backend** serves primarily as our pure CPU reference gold standard for visual regression testing, it is also a highly valuable fallback for systems lacking Vulkan or OpenGL ES hardware acceleration (a common scenario for retro-gaming setups or legacy compatibility). Currently, intensive texturing dispatches (such as the dynamic bilinear filtering in `test19`) exhibit significant CPU overhead. 
+
+If we choose to optimize the software backend for active gameplay in the future, the following high-impact optimization paths should be pursued:
+
+### 4.1. Loop-Invariant Texture Resolution (Immediate 2x-3x Speedup)
+*   **Bottleneck:** In [SoftwareBackendBase.cpp](file:///usr/local/google/home/eianiuk/gemini/3dfx/src/backends/SoftwareBackendBase.cpp#L345), `sampleTexture` executes `TextureManager::GetInstance().GetTexture(tmu, address)` inside the inner pixel loop, triggering a thread-safe singleton access and an `std::unordered_map::find` hash-map lookup for *every single pixel* rendered.
+*   **Solution:** Resolve the texture pointer, base width, base height, and texture clamp/filter states **once** per draw call at the beginning of `grDrawTriangle` (since texture bindings cannot change mid-triangle), and pass a flat struct containing these resolved values directly into the pixel rasterization loop.
+
+### 4.2. Bitwise Power-of-Two Coordinate Wrapping (Immediate 5x-10x Wrapping Speedup)
+*   **Bottleneck:** Coordinate wrapping in `getCoord` uses the integer modulo operator `%` (`int mod = c % maxDim`). On x86 and ARM CPUs, integer division/modulo instructions are notoriously slow, taking 10 to 40 clock cycles.
+*   **Solution:** Glide textures are mathematically restricted to powers of two ($2^n$, e.g., $1, 2, 4, \dots, 256$). Replace the modulo operator with a single-cycle bitwise AND operation:
+    ```cpp
+    int mod = c & (maxDim - 1);
+    ```
+    This completely eliminates division instructions from the texture sampling path.
+
+### 4.3. Incremental Barycentric Rasterization (Pineda Traversal)
+*   **Bottleneck:** The current triangle rasterizer loops over the absolute bounding box of the triangle and evaluates the full barycentric edge equations (`edgeFunc` multiplications) from scratch for every pixel in the bounding box.
+*   **Solution:** Implement Pineda's incremental edge traversal. Because edge equations are linear, moving from pixel $(x) \rightarrow (x+1)$ or $(y) \rightarrow (y+1)$ only requires adding a pre-calculated constant step ($dX$ or $dY$) to the edge value. This replaces all edge-evaluation multiplications in the inner loop with simple additions.
+
+### 4.4. Fixed-Point Bilinear Filtering Math
+*   **Bottleneck:** Bilinear filtering unpacks 32-bit color channels into floats, performs floating-point weighted blending, and casts them back to integers, creating substantial float-conversion overhead.
+*   **Solution:** Implement bilinear blending using 8-bit or 16-bit fixed-point integer math, keeping all operations inside integer registers and avoiding float conversions entirely.
+
+
