@@ -7,7 +7,8 @@ def run_benchmark(test_name, frames=120):
     env = {
         "LD_LIBRARY_PATH": "../../build/lib",
         "GLIDE_HEADLESS": "1",
-        "GLIDE_BACKEND": "vulkan"
+        "GLIDE_BACKEND": "vulkan",
+        "GLIDE_WRAPPER_MAX_FPS": "0"
     }
     
     print(f"Running benchmark: {test_name} for {frames} frames...")

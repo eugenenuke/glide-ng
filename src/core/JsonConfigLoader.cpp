@@ -26,9 +26,21 @@ bool JsonConfigLoader::Load(const std::string& configFilePath, WrapperConfig& ou
             outConfig.backend = "opengl_es";
         }
         if (content.find("\"vulkan\"") != std::string::npos)         outConfig.backend = "vulkan";
-        if (content.find("\"logToConsole\"") != std::string::npos) {
+            if (content.find("\"logToConsole\"") != std::string::npos) {
             outConfig.logToConsole = (content.find("\"logToConsole\": true") != std::string::npos ||
                                       content.find("\"logToConsole\":true") != std::string::npos);
+        }
+        
+        // Parse custom frame rate ceiling (e.g. "maxFps": 60 or 0 for uncapped)
+        size_t maxFpsPos = content.find("\"maxFps\"");
+        if (maxFpsPos != std::string::npos) {
+            size_t colonPos = content.find(":", maxFpsPos);
+            if (colonPos != std::string::npos) {
+                size_t valPos = content.find_first_of("-0123456789.", colonPos);
+                if (valPos != std::string::npos) {
+                    outConfig.maxFps = std::atof(content.c_str() + valPos);
+                }
+            }
         }
         
         GLIDE_LOG(INFO, "Config", "Parsed local JSON configuration file successfully.");
@@ -65,6 +77,11 @@ bool JsonConfigLoader::Load(const std::string& configFilePath, WrapperConfig& ou
     if (const char* envLog = std::getenv("GLIDE_WRAPPER_LOG_LEVEL")) {
         outConfig.logLevel = std::atoi(envLog);
         GLIDE_LOG(WARN, "Config", "Overrode Log Level via GLIDE_WRAPPER_LOG_LEVEL=" << outConfig.logLevel);
+    }
+    
+    if (const char* envMaxFps = std::getenv("GLIDE_WRAPPER_MAX_FPS")) {
+        outConfig.maxFps = std::atof(envMaxFps);
+        GLIDE_LOG(WARN, "Config", "Overrode Max FPS via GLIDE_WRAPPER_MAX_FPS=" << outConfig.maxFps);
     }
     
     if (const char* envVendor = std::getenv("GLIDE_WRAPPER_VENDOR")) {
