@@ -112,24 +112,19 @@ Because `maxFps` defaults to `60.0f`, the wrapper **slept the CPU main thread fo
 
 ## 4. Comparative Progress Chart (test21 Headless - Uncapped FPS)
 
-```mermaid
-gantt
-    title test21 Headless True Rendering Progress (FPS)
-    dateFormat  X
-    axisFormat %s
-    section Benchmarks
-    Our Vulkan (Stage 7 - Double-Buffered) : crit, 0, 205
-    OpenGLide (Mesa GL) [Gold Standard]   : active, 0, 277
-    Our GLES (Stage 5 - Optimized)       : active, 0, 212
-    Our Vulkan (Stage 6 - Hash Bypass)    : 0, 184
-    Our Vulkan (Stage 5 - Optimized)     : 0, 174
-    Our Vulkan (Stage 4 - Optimized)     : 0, 135
-    Our Vulkan (Stage 3 - Optimized)     : 0, 98
-    Our GLES (Stage 0 - Control Group)    : 0, 75
-    Our Vulkan (Stage 0 - Baseline)      : 0, 49
-    Our CPU Software (Stage 5)           : 0, 20
-    Our CPU Software (Baseline)          : 0, 7
-```
+| Backend / Optimization Stage | Process-Lifetime FPS | True Rendering Progress Bar | Relative Performance |
+| :--- | :---: | :--- | :---: |
+| 👑 **OpenGLide (Mesa GL) [Gold Standard]** | **277.24 FPS** | `████████████████████████████` | **100% (Baseline)** |
+| ⚡ **Our GLES (Stage 5 - Optimized)** | **212.76 FPS** | `█████████████████████░░░░░░░` | **77%** |
+| 🚀 **Our Vulkan (Stage 7 - Double-Buffered)** | **204.95 FPS** | `████████████████████░░░░░░░░` | **74%** |
+| 🔒 **Our Vulkan (Stage 6 - Hash Bypass)** | **184.12 FPS** | `██████████████████░░░░░░░░░░` | **66%** |
+| 📈 **Our Vulkan (Stage 5 - Optimized)** | **174.65 FPS** | `█████████████████░░░░░░░░░░░` | **63%** |
+| 🛠️ **Our Vulkan (Stage 4 - Optimized)** | **135.50 FPS** | `█████████████░░░░░░░░░░░░░░░` | **49%** |
+| ⏱️ **Our Vulkan (Stage 3 - Optimized)** | **98.24 FPS** | `█████████░░░░░░░░░░░░░░░░░░░` | **35%** |
+| 📉 **Our GLES (Stage 0 - Control Group)** | **75.24 FPS** | `███████░░░░░░░░░░░░░░░░░░░░░` | **27%** |
+| 🧱 **Our Vulkan (Stage 0 - Baseline)** | **49.35 FPS** | `█████░░░░░░░░░░░░░░░░░░░░░░░` | **18%** |
+| 🐌 **Our CPU Software (Stage 5)** | **19.86 FPS** | `██░░░░░░░░░░░░░░░░░░░░░░░░░░` | **7%** |
+| 💤 **Our CPU Software (Baseline)** | **7.90 FPS** | `█░░░░░░░░░░░░░░░░░░░░░░░░░░░` | **3%** |
 
 ---
 
