@@ -3,6 +3,7 @@
 #include "backends/opengl_es/OpenGLESBackend.h"
 #include "backends/software/SoftwareBackend.h"
 #include "Logger.h"
+#include "TextureManager.h"
 
 namespace GlideWrapper {
 
@@ -43,6 +44,8 @@ void BackendManager::ShutdownBackend() {
         m_backend->Shutdown();
         m_backend.reset();
     }
+    // Purge the core texture manager cache to reset state for the next context
+    TextureManager::GetInstance().Reset();
 }
 
 } // namespace GlideWrapper
