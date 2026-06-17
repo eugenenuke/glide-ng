@@ -361,76 +361,37 @@ void SoftwareBackendBase::RasterizeSoftwareTriangle(const ModernVertex& a, const
 
     auto* pixels = reinterpret_cast<uint32_t*>(m_headlessPixelMap);
 
-    auto sampleTexture = [&](uint32_t tmu, float s, float t) -> uint32_t {
-        if (tmu >= 2 || m_boundTexAddress[tmu] == 0xFFFFFFFF) return 0xFFFFFFFF; // Solid white fallback
-        auto* tex = TextureManager::GetInstance().GetTexture(tmu, m_boundTexAddress[tmu]);
-        if (!tex || tex->swizzledMipLevels.empty()) return 0xFFFFFFFF;
+    // Pre-resolve active texture parameters once per triangle to completely avoid per-pixel manager/hashmap lookups!
+    bool hasTexture = (m_boundTexAddress[0] != 0xFFFFFFFF);
+    const uint32_t* texPixels = nullptr;
+    uint32_t texW = 0;
+    uint32_t texH = 0;
+    uint32_t clampS = 0;
+    uint32_t clampT = 0;
+    uint32_t minFilter = 0;
+    float scaleU = 0.0f;
+    float scaleV = 0.0f;
+    uint32_t wMask = 0;
+    uint32_t hMask = 0;
 
-        const auto& basePixels = tex->swizzledMipLevels[0];
-        uint32_t w = tex->baseWidth;
-        uint32_t h = tex->baseHeight;
-
-        float maxDim = static_cast<float>(std::max(w, h));
-        float texU = (s / 256.0f) * maxDim;
-        float texV = (t / 256.0f) * maxDim;
-
-        auto getCoord = [](int c, int maxDim, uint32_t clampMode) -> int {
-            if (clampMode == 1) { // CLAMP
-                return std::max(0, std::min(maxDim - 1, c));
-            } else { // WRAP
-                int mod = c % maxDim;
-                return (mod < 0) ? (mod + maxDim) : mod;
-            }
-        };
-
-        if (m_texMinFilter[tmu] == 1) { // BILINEAR
-            int u0 = static_cast<int>(std::floor(texU - 0.5f));
-            int v0 = static_cast<int>(std::floor(texV - 0.5f));
-            int u1 = u0 + 1;
-            int v1 = v0 + 1;
-
-            float fU = (texU - 0.5f) - u0;
-            float fV = (texV - 0.5f) - v0;
-
-            int x0 = getCoord(u0, w, m_texClampS[tmu]);
-            int x1 = getCoord(u1, w, m_texClampS[tmu]);
-            int y0 = getCoord(v0, h, m_texClampT[tmu]);
-            int y1 = getCoord(v1, h, m_texClampT[tmu]);
-
-            uint32_t c00 = basePixels[y0 * w + x0];
-            uint32_t c10 = basePixels[y0 * w + x1];
-            uint32_t c01 = basePixels[y1 * w + x0];
-            uint32_t c11 = basePixels[y1 * w + x1];
-
-            auto mix = [](uint32_t p00, uint32_t p10, uint32_t p01, uint32_t p11, float fx, float fy) -> uint32_t {
-                auto b = [](uint32_t c, int shift) { return static_cast<float>((c >> shift) & 0xFF); };
-                float r0 = b(p00, 16) * (1.0f - fx) + b(p10, 16) * fx;
-                float r1 = b(p01, 16) * (1.0f - fx) + b(p11, 16) * fx;
-                float resR = r0 * (1.0f - fy) + r1 * fy;
-
-                float g0 = b(p00, 8) * (1.0f - fx) + b(p10, 8) * fx;
-                float g1 = b(p01, 8) * (1.0f - fx) + b(p11, 8) * fx;
-                float resG = g0 * (1.0f - fy) + g1 * fy;
-
-                float bl0 = b(p00, 0) * (1.0f - fx) + b(p10, 0) * fx;
-                float bl1 = b(p01, 0) * (1.0f - fx) + b(p11, 0) * fx;
-                float resB = bl0 * (1.0f - fy) + bl1 * fy;
-
-                float a0 = b(p00, 24) * (1.0f - fx) + b(p10, 24) * fx;
-                float a1 = b(p01, 24) * (1.0f - fx) + b(p11, 24) * fx;
-                float resA = a0 * (1.0f - fy) + a1 * fy;
-
-                return (static_cast<uint32_t>(resA + 0.5f) << 24) | (static_cast<uint32_t>(resR + 0.5f) << 16) |
-                       (static_cast<uint32_t>(resG + 0.5f) << 8)  | static_cast<uint32_t>(resB + 0.5f);
-            };
-
-            return mix(c00, c10, c01, c11, fU, fV);
-        } else { // POINT
-            int x = getCoord(static_cast<int>(texU), w, m_texClampS[tmu]);
-            int y = getCoord(static_cast<int>(texV), h, m_texClampT[tmu]);
-            return basePixels[y * w + x];
+    if (hasTexture) {
+        auto* tex = TextureManager::GetInstance().GetTexture(0, m_boundTexAddress[0]);
+        if (tex && !tex->swizzledMipLevels.empty()) {
+            texPixels = tex->swizzledMipLevels[0].data();
+            texW = tex->baseWidth;
+            texH = tex->baseHeight;
+            clampS = m_texClampS[0];
+            clampT = m_texClampT[0];
+            minFilter = m_texMinFilter[0];
+            float maxDim = static_cast<float>(std::max(texW, texH));
+            scaleU = maxDim / 256.0f;
+            scaleV = maxDim / 256.0f;
+            wMask = texW - 1; // Used for fast wrapping mask (assuming power of two)
+            hMask = texH - 1; // Used for fast wrapping mask (assuming power of two)
+        } else {
+            hasTexture = false; // Disable texturing if invalid
         }
-    };
+    }
 
     // Define the core pixel rendering pipeline as a lambda
     auto renderPixel = [&](int x, int y, float w0, float w1, float w2) {
@@ -442,7 +403,7 @@ void SoftwareBackendBase::RasterizeSoftwareTriangle(const ModernVertex& a, const
         // Near-plane clipping
         if (m_depthMode == 2) { // GR_DEPTHBUFFER_WBUFFER
             if (wVal > 1.0f) return;
-        } else if (m_boundTexAddress[0] != 0xFFFFFFFF) {
+        } else if (hasTexture) {
             if (wVal <= 0.0f) return;
         }
 
@@ -451,9 +412,9 @@ void SoftwareBackendBase::RasterizeSoftwareTriangle(const ModernVertex& a, const
         float iterB = w0 * a.color[2] + w1 * b.color[2] + w2 * c.color[2];
         float iterA = w0 * a.color[3] + w1 * b.color[3] + w2 * c.color[3];
 
-        // 2. Sample texture using perspective-correct division
+        // 2. Sample texture using perspective-correct division and optimized integer pipelines
         float texR = 1.0f; float texG = 1.0f; float texB = 1.0f; float texA = 1.0f;
-        if (m_boundTexAddress[0] != 0xFFFFFFFF) {
+        if (hasTexture) {
             float texS = w0 * a.tex[0] + w1 * b.tex[0] + w2 * c.tex[0];
             float texT = w0 * a.tex[1] + w1 * b.tex[1] + w2 * c.tex[1];
             
@@ -465,7 +426,69 @@ void SoftwareBackendBase::RasterizeSoftwareTriangle(const ModernVertex& a, const
             float trueS = texS / divW;
             float trueT = texT / divW;
 
-            uint32_t tWord = sampleTexture(0, trueS, trueT);
+            float texU = trueS * scaleU;
+            float texV = trueT * scaleV;
+
+            uint32_t tWord;
+            if (minFilter == 1) { // BILINEAR
+                float u_sub = texU - 0.5f;
+                float v_sub = texV - 0.5f;
+                int u0 = static_cast<int>(std::floor(u_sub));
+                int v0 = static_cast<int>(std::floor(v_sub));
+                
+                int fx = static_cast<int>((u_sub - u0) * 256.0f);
+                int fy = static_cast<int>((v_sub - v0) * 256.0f);
+
+                int x0, x1, y0, y1;
+                if (clampS == 1) { // CLAMP
+                    x0 = std::max(0, std::min(static_cast<int>(texW - 1), u0));
+                    x1 = std::max(0, std::min(static_cast<int>(texW - 1), u0 + 1));
+                } else { // WRAP
+                    x0 = u0 & wMask;
+                    x1 = (u0 + 1) & wMask;
+                }
+
+                if (clampT == 1) { // CLAMP
+                    y0 = std::max(0, std::min(static_cast<int>(texH - 1), v0));
+                    y1 = std::max(0, std::min(static_cast<int>(texH - 1), v0 + 1));
+                } else { // WRAP
+                    y0 = v0 & hMask;
+                    y1 = (v0 + 1) & hMask;
+                }
+
+                uint32_t c00 = texPixels[y0 * texW + x0];
+                uint32_t c10 = texPixels[y0 * texW + x1];
+                uint32_t c01 = texPixels[y1 * texW + x0];
+                uint32_t c11 = texPixels[y1 * texW + x1];
+
+                // Perform 8-bit fixed-point integer bilinear blend
+                int w00 = (256 - fx) * (256 - fy);
+                int w10 = fx * (256 - fy);
+                int w01 = (256 - fx) * fy;
+                int w11 = fx * fy;
+
+                auto blendChannel = [&](int shift) -> uint32_t {
+                    uint32_t val00 = (c00 >> shift) & 0xFF;
+                    uint32_t val10 = (c10 >> shift) & 0xFF;
+                    uint32_t val01 = (c01 >> shift) & 0xFF;
+                    uint32_t val11 = (c11 >> shift) & 0xFF;
+                    return (val00 * w00 + val10 * w10 + val01 * w01 + val11 * w11) >> 16;
+                };
+
+                uint32_t r = blendChannel(16);
+                uint32_t g = blendChannel(8);
+                uint32_t b = blendChannel(0);
+                uint32_t a_val = blendChannel(24);
+
+                tWord = (a_val << 24) | (r << 16) | (g << 8) | b;
+            } else { // POINT
+                int u0 = static_cast<int>(texU);
+                int v0 = static_cast<int>(texV);
+                int x0 = (clampS == 1) ? std::max(0, std::min(static_cast<int>(texW - 1), u0)) : (u0 & wMask);
+                int y0 = (clampT == 1) ? std::max(0, std::min(static_cast<int>(texH - 1), v0)) : (v0 & hMask);
+                tWord = texPixels[y0 * texW + x0];
+            }
+
             texR = ((tWord >> 16) & 0xFF) / 255.0f;
             texG = ((tWord >> 8)  & 0xFF) / 255.0f;
             texB = (tWord & 0xFF) / 255.0f;
