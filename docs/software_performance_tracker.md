@@ -15,19 +15,26 @@ Our pure software backend implements a reference-quality C++ rasterizer that run
 
 | Test Scenario | Our Software (Baseline) | Mesa CPU Vulkan (Gold Standard) | Overhead Factor | Target Goal (Stage 1) | Target Speedup |
 | :--- | :---: | :---: | :---: | :---: | :---: |
-| **`test00` (Clears)** | **317.40 FPS** | **121.10 FPS** | 0.4x | **350.00 FPS** | **+10.3%** |
-| **`test08` (Fog)** | **58.60 FPS** | **71.40 FPS** | 1.2x | **68.00 FPS** | **+16.0%** |
-| **`test14` (Solid Depth)** | **72.30 FPS** | **116.10 FPS** | 1.6x | **105.00 FPS** | **+45.2%** |
-| **`test17` (Simple Texture)** | **34.40 FPS** | **122.90 FPS** | 3.6x | **70.00 FPS** | **+103.5%** |
-| **`test18` (Texture Alpha)** | **3.60 FPS** | **71.20 FPS** | 19.8x | **15.00 FPS** | **+316.7%** |
-| **`test21` (Texture & Blend)** | **12.70 FPS** | **89.40 FPS** | 7.0x | **35.00 FPS** | **+175.6%** |
-| **Aggregated Average (Raster)** | **-** | **-** | **6.6x slower** | **-** | **-** |
+| **`test00` (Clears)** | **312.70 FPS** | **148.60 FPS** | 0.5x | **350.00 FPS** | **+11.9%** |
+| **`test02` (Lines)** | **98.30 FPS** | **134.90 FPS** | 1.4x | **120.00 FPS** | **+22.1%** |
+| **`test04` (Triangles)** | **92.30 FPS** | **147.40 FPS** | 1.6x | **125.00 FPS** | **+35.4%** |
+| **`test07` (Blending)** | **61.90 FPS** | **119.10 FPS** | 1.9x | **90.00 FPS** | **+45.4%** |
+| **`test08` (Fog)** | **42.10 FPS** | **76.10 FPS** | 1.8x | **65.00 FPS** | **+54.4%** |
+| **`test13` (Alpha Test)** | **47.80 FPS** | **100.50 FPS** | 2.1x | **75.00 FPS** | **+56.9%** |
+| **`test14` (Solid Depth)** | **81.70 FPS** | **115.70 FPS** | 1.4x | **110.00 FPS** | **+34.6%** |
+| **`test17` (Simple Texture)** | **33.60 FPS** | **122.40 FPS** | 3.6x | **70.00 FPS** | **+108.3%** |
+| **`test18` (Texture Alpha)** | **12.80 FPS** | **72.50 FPS** | 5.7x | **35.00 FPS** | **+173.4%** |
+| **`test19` (Texture Blend)** | **46.20 FPS** | **127.70 FPS** | 2.8x | **80.00 FPS** | **+73.2%** |
+| **`test21` (Texture & Blend)** | **12.90 FPS** | **90.40 FPS** | **7.0x** | **35.00 FPS** | **+171.3%** |
+| **Aggregated Average (Raster)** | **-** | **-** | **2.9x slower** | **-** | **-** |
+
+*Note: The Aggregated Average (Raster) represents the average ratio across all 10 active rendering tests (excluding test00 clears).*
 
 *Analysis*: 
-*   In **`test00` (Clears)**, our software backend is **2.6x faster** than Mesa CPU Vulkan! This is because we bypass all Vulkan command buffer recording, synchronization, and presentation overhead, doing a simple `std::fill` on raw memory.
-*   The overhead is most severe in **`test18` (Texture Alpha)**, where our software backend is **19.8x slower** (**3.60 FPS vs. 71.20 FPS**)! This is because `test18` draws dense, transparent leaf textures where many pixels fail the alpha test, but our current pixel loop performs the entire suite of heavy color interpolation, coordinate division, texture sampling, and combiner math *before* discarding the pixel at the very end of the pipeline.
-*   By combining **Pineda's Incremental Rasterization (Stage 1)** with **Early Alpha/Depth Pruning**, we can bypass the entire texture sampling and combiner pipeline for transparent pixels, unlocking a massive speedup for `test18`!
-*   In **`test21` (Texture & Blend)**, our software backend is **7.0x slower** due to the heavy bilinear texture filtering and multi-pass blending math, making it our second major target for optimization.
+*   In **`test00` (Clears)**, our software backend is **2.1x faster** than Mesa CPU Vulkan! This is because we bypass all Vulkan command buffer recording, synchronization, and presentation overhead, doing a simple `std::fill` on raw memory.
+*   On actual rasterization workloads, our software backend is **2.9x slower** on average than Mesa CPU Vulkan.
+*   The overhead climbs dramatically on textured geometry, peaking at **7.0x slower in `test21` (Texture & Blend)** and **5.7x slower in `test18` (Texture Alpha)**. This is due to the heavy floating-point divisions and redundant edge function calculations in our pixel traversal loop, which executes for every single pixel in the triangle bounding boxes.
+*   Speeding up the core triangle rasterizer will benefit **every single drawing test** across the entire suite!
 
 ---
 
@@ -91,14 +98,14 @@ graph TD
     *   Step to the next pixel by simply adding the derivatives: `E0 += dE0_dx`, `E1 += dE1_dx`, `E2 += dE2_dx`. This replaces 15 complex floating-point operations with **just 3 simple float additions**!
 
 ### Projected Performance Impact:
-*   **Solid Geometry (`test14` & `test08`)**: Removing inner loop divisions and adopting incremental steps will reduce instruction count by ~70%, projected to boost solid rendering significantly.
-*   **Texturing & Blending (`test17`, `test18`, `test21`)**: Combining incremental rasterization with texture mapping will allow the CPU to spend more cycles on interpolation and texel filtering. For `test18`, we expect a massive **+316.7% boost** (reaching 15+ FPS) from the raw instruction reduction!
+*   **Solid Geometry (`test02`, `test04`, `test07`, `test08`, `test13`, `test14`)**: Removing inner loop divisions and adopting incremental steps will reduce instruction count by ~70%, projected to boost solid rendering significantly.
+*   **Texturing & Blending (`test17`, `test18`, `test19`, `test21`)**: Combining incremental rasterization with texture mapping will allow the CPU to spend more cycles on interpolation and texel filtering. For textured tests, we expect a massive **+70% to +170% speedup**!
 
 ---
 
 ## 4. Comparative Progress Chart (Aggregated Rasterization FPS Index)
 
-*Note: The Aggregated Index represents the average FPS across `test08`, `test14`, `test17`, `test18`, and `test21`, representing true rasterization workloads.*
+*Note: The Aggregated Index represents the average FPS across the 10 active rendering tests (excluding test00 clears), representing true drawing workloads.*
 
 ```mermaid
 gantt
@@ -106,8 +113,8 @@ gantt
     dateFormat  X
     axisFormat %s
     section Performance Index
-    Mesa CPU Vulkan (Gold Standard)      : active, 0, 94
-    Our Software (Baseline)              : crit, 0, 36
+    Mesa CPU Vulkan (Gold Standard)      : active, 0, 110
+    Our Software (Baseline)              : crit, 0, 52
 ```
 
 ---
