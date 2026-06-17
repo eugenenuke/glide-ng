@@ -19,10 +19,10 @@ To establish our "Gold Standard", we measured the reference **OpenGLide (Mesa GL
 2.  **`test21` (Texture Compositing)**: Multi-pass texturing scene (lava quad) combined with a high-frequency text console overlay (`tlib`'s `tlConRender` drawing ~100 characters per frame, resulting in 200+ draw calls/frame).
 
 ### Baseline Metrics Table
-| Test / Scenario | OpenGLide (Mesa GL) | Our CPU Software | Our Vulkan (Headless Baseline) | Our GLES (Headless Baseline) |
-| :--- | :---: | :---: | :---: | :---: |
-| **`test14` (Solid Geometry)** | **208.62 FPS** (4.79 ms) | **13.12 FPS** (76.22 ms) | **39.70 FPS** (25.19 ms) | **44.88 FPS** (22.28 ms) |
-| **`test21` (Texturing & Console)** | **277.24 FPS** (3.61 ms) | **6.98 FPS** (143.24 ms) | **27.08 FPS** (36.93 ms) | **33.39 FPS** (29.95 ms) |
+| Test / Scenario | OpenGLide (Mesa GL) | Our CPU Software | Our Vulkan (Headless Baseline) | Our Vulkan (Stage 4 - Current) | Our GLES (Headless Baseline) |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| **`test14` (Solid Geometry)** | **208.62 FPS** (4.79 ms) | **13.12 FPS** (76.22 ms) | **39.70 FPS** (25.19 ms) | **42.81 FPS** (23.36 ms) | **44.88 FPS** (22.28 ms) |
+| **`test21` (Texturing & Console)** | **277.24 FPS** (3.61 ms) | **6.98 FPS** (143.24 ms) | **27.08 FPS** (36.93 ms) | **40.57 FPS** (24.65 ms) | **33.39 FPS** (29.95 ms) |
 
 *Analysis*: OpenGLide is **4.3x faster** on solid geometry and **10.2x faster** on texturing than our unoptimized Vulkan/GLES backends under software emulation. Since both run on the CPU, this proved that our wrapper suffered from severe implementation/driver validation overhead.
 

@@ -188,11 +188,13 @@ void VulkanBackend::Shutdown() {
     m_headlessPixelBuffer.reset();
     m_headlessPixelMemory.reset();
 
-    // 4. Explicitly destroy all device-owned image resources
-    m_headlessFramebuffer.reset();
-    m_headlessImageView.reset();
-    m_headlessImageMemory.reset();
-    m_headlessImage.reset();
+    // 4. Explicitly destroy all device-owned image resources (Double-Buffered)
+    for (int i = 0; i < 2; ++i) {
+        m_headlessFramebuffers[i].reset();
+        m_headlessImageViews[i].reset();
+        m_headlessImageMemories[i].reset();
+        m_headlessImages[i].reset();
+    }
 
     m_depthImageView.reset();
     m_depthImageMemory.reset();
@@ -304,7 +306,9 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width, uint3
     // One-time layout transition of color and depth images from eUndefined to their optimal layouts
     GLIDE_LOG(INFO, "Vulkan", "Performing one-time startup layout transitions for render targets...");
     vk::ImageSubresourceRange colorRange(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1);
-    TransitionImageLayout(m_commandBuffer.get(), m_headlessImage.get(), vk::ImageLayout::eUndefined, vk::ImageLayout::eColorAttachmentOptimal, colorRange);
+    for (int i = 0; i < 2; ++i) {
+        TransitionImageLayout(m_commandBuffer.get(), m_headlessImages[i].get(), vk::ImageLayout::eUndefined, vk::ImageLayout::eColorAttachmentOptimal, colorRange);
+    }
 
     vk::ImageSubresourceRange depthRange(vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1);
     TransitionImageLayout(m_commandBuffer.get(), m_depthImage.get(), vk::ImageLayout::eUndefined, vk::ImageLayout::eDepthStencilAttachmentOptimal, depthRange);
@@ -358,10 +362,12 @@ void VulkanBackend::DetachWindow() {
         FreeCpuBuffers();
         m_headlessPixelBuffer.reset();
         m_headlessPixelMemory.reset();
-        m_headlessFramebuffer.reset();
-        m_headlessImageView.reset();
-        m_headlessImageMemory.reset();
-        m_headlessImage.reset();
+        for (int i = 0; i < 2; ++i) {
+            m_headlessFramebuffers[i].reset();
+            m_headlessImageViews[i].reset();
+            m_headlessImageMemories[i].reset();
+            m_headlessImages[i].reset();
+        }
 
         // Explicitly reset depth buffer resources to prevent leaks and shutdown crashes!
         m_depthImageView.reset();
@@ -424,38 +430,50 @@ void VulkanBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z, uint32_
 
 void VulkanBackend::SetDepthState(uint32_t depthMode, uint32_t compareOp, bool depthMask, int32_t biasLevel) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    FlushBatch();
+    if (depthMode != m_depthMode || compareOp != m_depthCompareOp || depthMask != m_depthMask || biasLevel != m_depthBiasLevel) {
+        FlushBatch();
+    }
     SoftwareBackendBase::SetDepthState(depthMode, compareOp, depthMask, biasLevel);
 }
 
 void VulkanBackend::SetBlendState(uint32_t rgbSrcFactor, uint32_t rgbDstFactor, uint32_t alphaSrcFactor, uint32_t alphaDstFactor) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    FlushBatch();
+    if (rgbSrcFactor != m_rgbSrcBlend || rgbDstFactor != m_rgbDstBlend || alphaSrcFactor != m_alphaSrcBlend || alphaDstFactor != m_alphaDstBlend) {
+        FlushBatch();
+    }
     SoftwareBackendBase::SetBlendState(rgbSrcFactor, rgbDstFactor, alphaSrcFactor, alphaDstFactor);
 }
 
 void VulkanBackend::SetCullState(uint32_t cullMode) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    FlushBatch();
+    if (cullMode != m_cullMode) {
+        FlushBatch();
+    }
     SoftwareBackendBase::SetCullState(cullMode);
 }
 
 void VulkanBackend::SetAlphaTestState(uint32_t compareOp, uint32_t refVal) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    FlushBatch();
+    if (compareOp != m_alphaTestOp || refVal != m_alphaTestRefVal) {
+        FlushBatch();
+    }
     SoftwareBackendBase::SetAlphaTestState(compareOp, refVal);
     // Note: Emulated in fragment shader via push constants. No pipeline recompilation needed!
 }
 
 void VulkanBackend::SetSstOrigin(uint32_t origin) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    FlushBatch();
+    if (origin != m_sstOrigin) {
+        FlushBatch();
+    }
     SoftwareBackendBase::SetSstOrigin(origin);
 }
 
 void VulkanBackend::SetClipWindow(uint32_t minX, uint32_t minY, uint32_t maxX, uint32_t maxY) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    FlushBatch();
+    if (minX != m_clipMinX || minY != m_clipMinY || maxX != m_clipMaxX || maxY != m_clipMaxY) {
+        FlushBatch();
+    }
     SoftwareBackendBase::SetClipWindow(minX, minY, maxX, maxY);
 
     if (m_initialized && m_device && m_inRenderPass) {
@@ -472,53 +490,89 @@ void VulkanBackend::SetConstantColor(uint32_t color) {
     SoftwareBackendBase::SetConstantColor(color);
 }
 
+void VulkanBackend::SetRenderBuffer(uint32_t target) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    if (target != m_activeRenderBuffer) {
+        FlushBatch();
+    }
+    SoftwareBackendBase::SetRenderBuffer(target);
+}
+
+void VulkanBackend::SetPixelFormat(uint32_t format) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    if (format != m_pixelFormatOverride) {
+        FlushBatch();
+    }
+    SoftwareBackendBase::SetPixelFormat(format);
+}
+
 void VulkanBackend::SetCombinerMode(uint32_t colorFunc, uint32_t colorFactor, uint32_t colorLocal, uint32_t colorOther, bool colorInvert,
                                     uint32_t alphaFunc, uint32_t alphaFactor, uint32_t alphaLocal, uint32_t alphaOther, bool alphaInvert) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    FlushBatch();
+    if (colorFunc != m_colorCombinerFunc || colorFactor != m_colorCombinerFactor || colorLocal != m_colorCombinerLocal ||
+        colorOther != m_colorCombinerOther || colorInvert != m_colorCombinerInvert ||
+        alphaFunc != m_alphaCombinerFunc || alphaFactor != m_alphaCombinerFactor || alphaLocal != m_alphaCombinerLocal ||
+        alphaOther != m_alphaCombinerOther || alphaInvert != m_alphaCombinerInvert) {
+        FlushBatch();
+    }
     SoftwareBackendBase::SetCombinerMode(colorFunc, colorFactor, colorLocal, colorOther, colorInvert,
                                          alphaFunc, alphaFactor, alphaLocal, alphaOther, alphaInvert);
 }
 
 void VulkanBackend::SetTexCombinerMode(uint32_t tmu, uint32_t rgbFunc, uint32_t rgbFactor, uint32_t alphaFunc, uint32_t alphaFactor) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    FlushBatch();
+    if (tmu < 2 && (rgbFunc != m_texCombinerRgbFunc[tmu] || rgbFactor != m_texCombinerRgbFactor[tmu] ||
+                    alphaFunc != m_texCombinerAlphaFunc[tmu] || alphaFactor != m_texCombinerAlphaFactor[tmu])) {
+        FlushBatch();
+    }
     SoftwareBackendBase::SetTexCombinerMode(tmu, rgbFunc, rgbFactor, alphaFunc, alphaFactor);
 }
 
 void VulkanBackend::SetSTWHintState(uint32_t hintMask) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    FlushBatch();
+    if (hintMask != m_stwHintMask) {
+        FlushBatch();
+    }
     SoftwareBackendBase::SetSTWHintState(hintMask);
 }
 
 void VulkanBackend::SetChromakeyMode(uint32_t mode) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    FlushBatch();
+    if (mode != m_chromakeyMode) {
+        FlushBatch();
+    }
     SoftwareBackendBase::SetChromakeyMode(mode);
 }
 
 void VulkanBackend::SetChromakeyValue(uint32_t value) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    FlushBatch();
+    if (value != m_chromakeyValue) {
+        FlushBatch();
+    }
     SoftwareBackendBase::SetChromakeyValue(value);
 }
 
 void VulkanBackend::SetFogMode(uint32_t mode) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    FlushBatch();
+    if (mode != m_fogMode) {
+        FlushBatch();
+    }
     SoftwareBackendBase::SetFogMode(mode);
 }
 
 void VulkanBackend::SetFogColor(uint32_t color) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    FlushBatch();
+    if (color != m_fogColor) {
+        FlushBatch();
+    }
     SoftwareBackendBase::SetFogColor(color);
 }
 
 void VulkanBackend::SetFogTable(const uint8_t* table) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    FlushBatch();
+    if (table && std::memcmp(table, m_fogTable, 64) != 0) {
+        FlushBatch();
+    }
     SoftwareBackendBase::SetFogTable(table);
 }
 
@@ -539,7 +593,7 @@ bool VulkanBackend::SwapBuffers() {
 
     // 1. If no draw calls were executed (clear-only frame), we must explicitly begin/end a render pass to execute the pending clears!
     if (!m_inRenderPass && (m_clearColorPending || m_clearDepthPending)) {
-        vk::RenderPassBeginInfo renderPassInfo(m_renderPass.get(), m_headlessFramebuffer.get(),
+        vk::RenderPassBeginInfo renderPassInfo(m_renderPass.get(), m_headlessFramebuffers[GetActiveGpuBufferIdx()].get(),
                                              vk::Rect2D({0, 0}, {m_headlessWidth, m_headlessHeight}),
                                              0, nullptr);
         m_commandBuffer->beginRenderPass(renderPassInfo, vk::SubpassContents::eInline);
@@ -587,15 +641,16 @@ bool VulkanBackend::SwapBuffers() {
 
         // 2.2. Execute GPU presentation copy
         vk::ImageSubresourceRange range(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1);
-        TransitionImageLayout(m_commandBuffer.get(), m_headlessImage.get(), vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eTransferSrcOptimal, range);
+        uint32_t activeIdx = GetActiveGpuBufferIdx();
+        TransitionImageLayout(m_commandBuffer.get(), m_headlessImages[activeIdx].get(), vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eTransferSrcOptimal, range);
 
         vk::BufferImageCopy region;
         region.imageSubresource = vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
         region.imageExtent = vk::Extent3D(m_headlessWidth, m_headlessHeight, 1);
         
-        m_commandBuffer->copyImageToBuffer(m_headlessImage.get(), vk::ImageLayout::eTransferSrcOptimal, m_headlessPixelBuffer.get(), 1, &region);
+        m_commandBuffer->copyImageToBuffer(m_headlessImages[activeIdx].get(), vk::ImageLayout::eTransferSrcOptimal, m_headlessPixelBuffer.get(), 1, &region);
 
-        TransitionImageLayout(m_commandBuffer.get(), m_headlessImage.get(), vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::eColorAttachmentOptimal, range);
+        TransitionImageLayout(m_commandBuffer.get(), m_headlessImages[activeIdx].get(), vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::eColorAttachmentOptimal, range);
 
         // End and submit GPU commands
         m_commandBuffer->end();
@@ -658,6 +713,12 @@ bool VulkanBackend::SwapBuffers() {
         }
     }
 
+    // 4. Swap the GPU color targets for physical double-buffering!
+    std::swap(m_headlessImages[0], m_headlessImages[1]);
+    std::swap(m_headlessImageMemories[0], m_headlessImageMemories[1]);
+    std::swap(m_headlessImageViews[0], m_headlessImageViews[1]);
+    std::swap(m_headlessFramebuffers[0], m_headlessFramebuffers[1]);
+
     return true;
 }
 
@@ -699,13 +760,14 @@ bool VulkanBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY, uint3
 
     // 2. Transition layout from ColorAttachmentOptimal to TransferSrcOptimal
     vk::ImageSubresourceRange range(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1);
-    TransitionImageLayout(m_commandBuffer.get(), m_headlessImage.get(), vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eTransferSrcOptimal, range);
+    uint32_t activeIdx = GetActiveGpuBufferIdx();
+    TransitionImageLayout(m_commandBuffer.get(), m_headlessImages[activeIdx].get(), vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eTransferSrcOptimal, range);
 
     // 3. Record copy from GPU image to staging buffer
     vk::BufferImageCopy region;
     region.imageSubresource = vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
     region.imageExtent = vk::Extent3D(m_headlessWidth, m_headlessHeight, 1);
-    m_commandBuffer->copyImageToBuffer(m_headlessImage.get(), vk::ImageLayout::eTransferSrcOptimal, m_headlessPixelBuffer.get(), 1, &region);
+    m_commandBuffer->copyImageToBuffer(m_headlessImages[activeIdx].get(), vk::ImageLayout::eTransferSrcOptimal, m_headlessPixelBuffer.get(), 1, &region);
 
     // 4. End and submit the command buffer immediately
     m_commandBuffer->end();
@@ -736,7 +798,7 @@ bool VulkanBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY, uint3
     m_commandBuffer->begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
 
     // 7. Transition image layout back to ColorAttachmentOptimal so it is ready for any subsequent draw calls!
-    TransitionImageLayout(m_commandBuffer.get(), m_headlessImage.get(), vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::eColorAttachmentOptimal, range);
+    TransitionImageLayout(m_commandBuffer.get(), m_headlessImages[activeIdx].get(), vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::eColorAttachmentOptimal, range);
 
     // 8. Now call the base class ReadLFB to copy the synchronized pixels to the client buffer!
     bool result = SoftwareBackendBase::ReadLFB(buffer, srcX, srcY, srcWidth, srcHeight, dstStride, dstData);
@@ -922,28 +984,8 @@ bool VulkanBackend::CreateRenderPass() {
     m_renderPass = m_device->createRenderPassUnique(passInfo);
     return true;
 }
-
 bool VulkanBackend::CreateHeadlessRenderTarget(uint32_t width, uint32_t height) {
-    vk::ImageCreateInfo imageInfo({}, vk::ImageType::e2D, m_colorFormat,
-                                 vk::Extent3D(width, height, 1), 1, 1,
-                                 vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal,
-                                 vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eTransferSrc);
-
-    m_headlessImage = m_device->createImageUnique(imageInfo);
-
-    auto memReqs = m_device->getImageMemoryRequirements(m_headlessImage.get());
-    // Use device local memory for optimal GPU rendering performance and compatibility
-    uint32_t typeIndex = FindMemoryType(memReqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal);
-    vk::MemoryAllocateInfo allocInfo(memReqs.size, typeIndex);
-
-    m_headlessImageMemory = m_device->allocateMemoryUnique(allocInfo);
-    m_device->bindImageMemory(m_headlessImage.get(), m_headlessImageMemory.get(), 0);
-
-    vk::ImageViewCreateInfo viewInfo({}, m_headlessImage.get(), vk::ImageViewType::e2D, m_colorFormat,
-                                    {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1});
-    m_headlessImageView = m_device->createImageViewUnique(viewInfo);
-
-    // 2. Allocate depth image for hardware depth-testing support
+    // 1. Allocate depth image for hardware depth-testing support (Shared!)
     vk::ImageCreateInfo depthImageInfo({}, vk::ImageType::e2D, m_depthFormat,
                                       vk::Extent3D(width, height, 1), 1, 1,
                                       vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal,
@@ -960,13 +1002,34 @@ bool VulkanBackend::CreateHeadlessRenderTarget(uint32_t width, uint32_t height) 
                                          {}, {vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1});
     m_depthImageView = m_device->createImageViewUnique(depthViewInfo);
 
-    // 3. Create framebuffer with both color and depth attachments
-    std::array<vk::ImageView, 2> attachments = {
-        m_headlessImageView.get(),
-        m_depthImageView.get()
-    };
-    vk::FramebufferCreateInfo fbInfo({}, m_renderPass.get(), static_cast<uint32_t>(attachments.size()), attachments.data(), width, height, 1);
-    m_headlessFramebuffer = m_device->createFramebufferUnique(fbInfo);
+    // 2. Allocate Double-Buffered Color Images and Framebuffers (i=0 for BACK, i=1 for FRONT)
+    for (int i = 0; i < 2; ++i) {
+        vk::ImageCreateInfo imageInfo({}, vk::ImageType::e2D, m_colorFormat,
+                                     vk::Extent3D(width, height, 1), 1, 1,
+                                     vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal,
+                                     vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst);
+
+        m_headlessImages[i] = m_device->createImageUnique(imageInfo);
+
+        auto memReqs = m_device->getImageMemoryRequirements(m_headlessImages[i].get());
+        uint32_t typeIndex = FindMemoryType(memReqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal);
+        vk::MemoryAllocateInfo allocInfo(memReqs.size, typeIndex);
+
+        m_headlessImageMemories[i] = m_device->allocateMemoryUnique(allocInfo);
+        m_device->bindImageMemory(m_headlessImages[i].get(), m_headlessImageMemories[i].get(), 0);
+
+        vk::ImageViewCreateInfo viewInfo({}, m_headlessImages[i].get(), vk::ImageViewType::e2D, m_colorFormat,
+                                        {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1});
+        m_headlessImageViews[i] = m_device->createImageViewUnique(viewInfo);
+
+        // Create framebuffer with both color and depth attachments
+        std::array<vk::ImageView, 2> attachments = {
+            m_headlessImageViews[i].get(),
+            m_depthImageView.get()
+        };
+        vk::FramebufferCreateInfo fbInfo({}, m_renderPass.get(), static_cast<uint32_t>(attachments.size()), attachments.data(), width, height, 1);
+        m_headlessFramebuffers[i] = m_device->createFramebufferUnique(fbInfo);
+    }
 
     // Create the CPU staging buffer map
     vk::BufferCreateInfo bufInfo({}, width * height * 4, vk::BufferUsageFlagBits::eTransferDst);
@@ -1056,7 +1119,8 @@ void VulkanBackend::FlushLFBToGPU() {
 
     // 2. Transition image to TransferDstOptimal
     vk::ImageSubresourceRange range(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1);
-    TransitionImageLayout(m_commandBuffer.get(), m_headlessImage.get(), vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eTransferDstOptimal, range);
+    uint32_t activeIdx = GetActiveGpuBufferIdx();
+    TransitionImageLayout(m_commandBuffer.get(), m_headlessImages[activeIdx].get(), vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eTransferDstOptimal, range);
 
     // 3. Record copy from buffer to image
     vk::BufferImageCopy region;
@@ -1067,10 +1131,10 @@ void VulkanBackend::FlushLFBToGPU() {
     vk::MappedMemoryRange memRange(m_headlessPixelMemory.get(), 0, VK_WHOLE_SIZE);
     m_device->flushMappedMemoryRanges(memRange);
 
-    m_commandBuffer->copyBufferToImage(m_headlessPixelBuffer.get(), m_headlessImage.get(), vk::ImageLayout::eTransferDstOptimal, 1, &region);
+    m_commandBuffer->copyBufferToImage(m_headlessPixelBuffer.get(), m_headlessImages[activeIdx].get(), vk::ImageLayout::eTransferDstOptimal, 1, &region);
 
     // 4. Transition image back to ColorAttachmentOptimal
-    TransitionImageLayout(m_commandBuffer.get(), m_headlessImage.get(), vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eColorAttachmentOptimal, range);
+    TransitionImageLayout(m_commandBuffer.get(), m_headlessImages[activeIdx].get(), vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eColorAttachmentOptimal, range);
 
     // 5. Clear the dirty flag
     m_lfbDirty = false;
@@ -1713,7 +1777,7 @@ void VulkanBackend::EnsureRenderPassActive() {
     if (m_inRenderPass) return;
 
     // Begin render pass with eLoad (no automatic clear)
-    vk::RenderPassBeginInfo renderPassInfo(m_renderPass.get(), m_headlessFramebuffer.get(),
+    vk::RenderPassBeginInfo renderPassInfo(m_renderPass.get(), m_headlessFramebuffers[GetActiveGpuBufferIdx()].get(),
                                          vk::Rect2D({0, 0}, {m_headlessWidth, m_headlessHeight}),
                                          0, nullptr); // 0 clear values since we use eLoad!
     m_commandBuffer->beginRenderPass(renderPassInfo, vk::SubpassContents::eInline);

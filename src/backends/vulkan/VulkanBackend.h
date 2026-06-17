@@ -131,6 +131,8 @@ public:
     void SetSstOrigin(uint32_t origin) override;
     void SetClipWindow(uint32_t minX, uint32_t minY, uint32_t maxX, uint32_t maxY) override;
     void SetConstantColor(uint32_t color) override;
+    void SetRenderBuffer(uint32_t target) override;
+    void SetPixelFormat(uint32_t format) override;
     bool ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY, uint32_t srcWidth, uint32_t srcHeight, uint32_t dstStride, void* dstData) override;
     void PollEvents() override;
     void SstIdle() override;
@@ -161,6 +163,7 @@ private:
     void TransitionImageLayout(vk::CommandBuffer cmd, vk::Image image, vk::ImageLayout oldLayout, vk::ImageLayout newLayout, vk::ImageSubresourceRange range);
     void FlushLFBToGPU();
     void FlushBatch();
+    uint32_t GetActiveGpuBufferIdx() const { return (m_activeRenderBuffer == 0) ? 1u : 0u; }
 
     // Vulkan Context Handles
     vk::UniqueInstance m_instance;
@@ -178,11 +181,11 @@ private:
     vk::UniqueRenderPass m_renderPass;
     vk::Format m_colorFormat{vk::Format::eB8G8R8A8Unorm};
 
-    // Headless automated CI testing execution handles
-    vk::UniqueImage m_headlessImage;
-    vk::UniqueDeviceMemory m_headlessImageMemory;
-    vk::UniqueImageView m_headlessImageView;
-    vk::UniqueFramebuffer m_headlessFramebuffer;
+    // Headless automated CI testing execution handles (Double-Buffered)
+    vk::UniqueImage m_headlessImages[2];
+    vk::UniqueDeviceMemory m_headlessImageMemories[2];
+    vk::UniqueImageView m_headlessImageViews[2];
+    vk::UniqueFramebuffer m_headlessFramebuffers[2];
 
     // Headless depth attachment resources
     vk::UniqueImage m_depthImage;

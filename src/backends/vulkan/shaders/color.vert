@@ -39,6 +39,9 @@ layout(push_constant) uniform PushConstants {
     uint alphaInvert;
 
     uint textureEnabled;
+    uint chromakeyEnabled;
+    uint paddingPush;
+    vec4 chromakeyValue;
 } pcs;
 
 void main() {
