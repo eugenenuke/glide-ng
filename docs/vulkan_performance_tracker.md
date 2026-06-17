@@ -146,7 +146,11 @@ gantt
 
 ## 5. Current Action Items & Next Steps
 
+### Next Priorities (Active Optimization Phase)
 1.  **Port Draw Batching to GLES**:
     *   Now that the batching architecture is proven, port the exact same dynamic vertex batching and state tracking to `OpenGLESBackend.cpp` to unlock similar speedups for GLES.
-2.  **Triple Buffering**:
-    *   Scale our frame resource arrays from size `2` to `3` (Triple Buffering) to allow the CPU to record commands up to 2 frames ahead, completely smoothing out any CPU scheduling jitter on multi-core host CPUs.
+
+### Future Architectural Goals (Long-Term Vulkan Roadmap)
+1.  **Vulkan Triple Buffering (3-Slot Frame Pacing)**:
+    *   *Concept*: Scale our frame resource arrays (command pools, command buffers, fences, staging memory buffers, descriptor sets) from size `2` to `3`.
+    *   *Impact*: By maintaining 3 overlapping frame slots, the CPU can record commands up to 2 frames ahead of the GPU. This completely absorbs transient frame-time spikes or OS thread-scheduling delays on the host CPU, ensuring butter-smooth frame pacing under software rasterization drivers (like LLVMpipe) where CPU cores are shared.
