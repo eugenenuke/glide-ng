@@ -79,9 +79,9 @@ inline void EnsureEngineInitialized() {
     auto& reg = GlideWrapper::EmulationRegistry::GetInstance();
     auto& bm  = GlideWrapper::BackendManager::GetInstance();
     if (!bm.GetBackend()) {
-        bm.EstablishBackend(reg.GetConfig());
         auto& logger = GlideWrapper::Logger::GetInstance();
         logger.Initialize("glide-ng.log", static_cast<GlideWrapper::LogLevel>(reg.GetConfig().logLevel), reg.GetConfig().logToConsole);
+        bm.EstablishBackend(reg.GetConfig());
         GLIDE_LOG(INFO, "Frontend", "Implicit grGlideInit executed seamlessly.");
     } else {
         bm.GetBackend()->PollEvents();
@@ -490,6 +490,11 @@ FX_ENTRY FxBool FX_CALL gu3dfGetInfo(const char* filename, Gu3dfInfo* info) {
 FX_ENTRY FxBool FX_CALL gu3dfLoad(const char* filename, Gu3dfInfo* data) {
     GLIDE_LOG(INFO, "Frontend", "gu3dfLoad (Glide 3.x) invoked for: " << (filename ? filename : "unknown"));
     return FXTRUE;
+}
+
+FX_ENTRY void FX_CALL grDitherMode(GrDitherMode_t mode) {
+    EnsureEngineInitialized();
+    GLIDE_LOG(INFO, "Frontend", "grDitherMode (Glide 3.x) invoked: mode=" << mode);
 }
 
 } // extern "C"

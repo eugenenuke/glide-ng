@@ -302,6 +302,10 @@ bool OpenGLESBackend::ReadLFB(uint32_t srcX, uint32_t srcY, uint32_t srcWidth, u
     }
 
     // --- STEP 2: GPU Readback Flush ---
+    // Query the currently bound FBO to restore it at the end, preventing state leakage!
+    GLint previousFBO = 0;
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &previousFBO);
+
     // Bind our offscreen FBO and read pixels directly into m_headlessPixelMap
     glBindFramebuffer(GL_FRAMEBUFFER, m_headlessFBO);
     
@@ -345,19 +349,21 @@ bool OpenGLESBackend::ReadLFB(uint32_t srcX, uint32_t srcY, uint32_t srcWidth, u
         }
     }
 
-    // Restore default framebuffer binding
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    // Restore the previously bound framebuffer to prevent state leakage!
+    glBindFramebuffer(GL_FRAMEBUFFER, previousFBO);
 
     // --- STEP 4: Convert and copy to client ---
     bool result = SoftwareBackendBase::ReadLFB(srcX, srcY, srcWidth, srcHeight, dstStride, dstData);
 
-    // --- STEP 5: Force alpha to 0 in staging buffer ---
-    // This prevents GPU-rendered pixels (which have alpha=255 from GPU clear/draw)
-    // from being incorrectly detected as CPU-rendered text/geometry in the next ReadLFB frame!
+    // --- STEP 5: Restore CPU-only state ---
+    // Restore the CPU-only framebuffer state from our cache, completely wiping out GPU pollution while preserving CPU LFB writes!
     if (m_headlessPixelMap) {
-        auto* pixels = reinterpret_cast<uint32_t*>(m_headlessPixelMap);
-        for (uint32_t i = 0; i < m_headlessWidth * m_headlessHeight; ++i) {
-            pixels[i] &= 0x00FFFFFF;
+        auto* dest = reinterpret_cast<uint32_t*>(m_headlessPixelMap);
+        std::memset(dest, 0, m_headlessWidth * m_headlessHeight * 4);
+        for (size_t i = 0; i < cpuRenderingCache.size(); ++i) {
+            if (cpuRenderingCache[i] != 0) {
+                dest[i] = cpuRenderingCache[i];
+            }
         }
     }
 

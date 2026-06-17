@@ -146,9 +146,9 @@ inline void EnsureEngineInitialized() {
     auto& reg = GlideWrapper::EmulationRegistry::GetInstance();
     auto& bm  = GlideWrapper::BackendManager::GetInstance();
     if (!bm.GetBackend()) {
-        bm.EstablishBackend(reg.GetConfig());
         auto& logger = GlideWrapper::Logger::GetInstance();
         logger.Initialize("glide-ng.log", static_cast<GlideWrapper::LogLevel>(reg.GetConfig().logLevel), reg.GetConfig().logToConsole);
+        bm.EstablishBackend(reg.GetConfig());
         GLIDE_LOG(INFO, "Frontend", "Implicit grGlideInit executed seamlessly.");
     } else {
         bm.GetBackend()->PollEvents();
@@ -689,25 +689,134 @@ FX_ENTRY FxBool FX_CALL grLfbWriteRegion(GrBuffer_t dstBuf, FxU32 dstX, FxU32 ds
     return FXTRUE;
 }
 
+struct LfbLockState {
+    bool isLocked{false};
+    GrLock_t type;
+    GrBuffer_t buffer;
+    GrLfbWriteMode_t writeMode;
+    GrOriginLocation_t origin;
+    uint32_t width{0};
+    uint32_t height{0};
+    std::vector<uint8_t> stagingBuffer;
+    std::vector<uint8_t> originalBuffer;
+    uint32_t stride{0};
+    uint32_t pixelSize{0};
+};
+
+static LfbLockState g_lfbLock;
+
+static void FlipRows(uint8_t* data, uint32_t height, uint32_t stride) {
+    std::vector<uint8_t> tempRow(stride);
+    for (uint32_t y = 0; y < height / 2; ++y) {
+        uint8_t* rowTop = data + y * stride;
+        uint8_t* rowBottom = data + (height - 1 - y) * stride;
+        std::memcpy(tempRow.data(), rowTop, stride);
+        std::memcpy(rowTop, rowBottom, stride);
+        std::memcpy(rowBottom, tempRow.data(), stride);
+    }
+}
+
 FX_ENTRY FxBool FX_CALL grLfbLock(GrLock_t type, GrBuffer_t buffer, GrLfbWriteMode_t writeMode, GrOriginLocation_t origin, FxBool pixelPipeline, GrLfbInfo_t* info) {
     EnsureEngineInitialized();
-    GLIDE_LOG(INFO, "Frontend", "grLfbLock invoked: buffer=" << buffer << ", mode=" << writeMode);
-    if (info) {
-        info->size = sizeof(GrLfbInfo_t);
-        info->writeMode = writeMode;
-        info->origin = origin;
-        if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
-            info->lfbPtr = b->GetLfbWritePtr();
-            info->strideInBytes = 800 * 4;
-            return FXTRUE;
-        }
+    GLIDE_LOG(INFO, "Frontend", "grLfbLock invoked: buffer=" << buffer << ", mode=" << writeMode << ", origin=" << origin);
+    
+    if (!info) return FXFALSE;
+    
+    auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend();
+    if (!b) return FXFALSE;
+
+    g_lfbLock.width = b->GetWidth();
+    g_lfbLock.height = b->GetHeight();
+    
+    // Resolve writeMode. Glide 2.x applications using ANY expect 16-bit 565 natively
+    GrLfbWriteMode_t resolvedMode = writeMode;
+    if (resolvedMode == GR_LFBWRITEMODE_ANY) {
+        resolvedMode = GR_LFBWRITEMODE_565;
     }
-    return FXFALSE;
+
+    // Resolve pixel size
+    if (resolvedMode == GR_LFBWRITEMODE_565 || 
+        resolvedMode == GR_LFBWRITEMODE_555 || 
+        resolvedMode == GR_LFBWRITEMODE_1555 || 
+        resolvedMode == GR_LFBWRITEMODE_565_DEPTH || 
+        resolvedMode == GR_LFBWRITEMODE_555_DEPTH || 
+        resolvedMode == GR_LFBWRITEMODE_1555_DEPTH || 
+        resolvedMode == GR_LFBWRITEMODE_ZA16) {
+        g_lfbLock.pixelSize = 2;
+    } else if (resolvedMode == GR_LFBWRITEMODE_888) {
+        g_lfbLock.pixelSize = 3;
+    } else if (resolvedMode == GR_LFBWRITEMODE_8888) {
+        g_lfbLock.pixelSize = 4;
+    } else {
+        GLIDE_LOG(CRITICAL, "Frontend", "grLfbLock: Unsupported writeMode=" << writeMode);
+        return FXFALSE;
+    }
+
+    g_lfbLock.stride = g_lfbLock.width * g_lfbLock.pixelSize;
+    g_lfbLock.stagingBuffer.resize(g_lfbLock.stride * g_lfbLock.height);
+    
+    // Always pre-populate the staging buffer with the current pixels from the backend to preserve unwritten pixels!
+    // Read from backend (ReadLFB always reads top-down)
+    b->ReadLFB(0, 0, g_lfbLock.width, g_lfbLock.height, g_lfbLock.stride, g_lfbLock.stagingBuffer.data());
+    
+    // Capture the original top-down buffer for dirty pixel tracking!
+    g_lfbLock.originalBuffer = g_lfbLock.stagingBuffer;
+    
+    // If the application expects a LOWER_LEFT origin, we must vertically flip the rows!
+    if (origin == GR_ORIGIN_LOWER_LEFT) {
+        FlipRows(g_lfbLock.stagingBuffer.data(), g_lfbLock.height, g_lfbLock.stride);
+    }
+
+    info->size = sizeof(GrLfbInfo_t);
+    info->writeMode = resolvedMode;
+    info->origin = origin;
+    info->strideInBytes = g_lfbLock.stride;
+    info->lfbPtr = g_lfbLock.stagingBuffer.data();
+
+    g_lfbLock.isLocked = true;
+    g_lfbLock.type = type;
+    g_lfbLock.buffer = buffer;
+    g_lfbLock.writeMode = resolvedMode;
+    g_lfbLock.origin = origin;
+
+    return FXTRUE;
 }
 
 FX_ENTRY FxBool FX_CALL grLfbUnlock(GrLock_t type, GrBuffer_t buffer) {
     EnsureEngineInitialized();
     GLIDE_LOG(INFO, "Frontend", "grLfbUnlock invoked.");
+    
+    if (!g_lfbLock.isLocked) {
+        GLIDE_LOG(WARN, "Frontend", "grLfbUnlock: No active LFB lock found!");
+        return FXFALSE;
+    }
+
+    auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend();
+    if (!b) return FXFALSE;
+
+    // If the application was writing, we must flush the staging buffer back to the backend!
+    if (g_lfbLock.type == GR_LFB_WRITE_ONLY) {
+        // If the application wrote using LOWER_LEFT origin, we must vertically flip the rows before flushing!
+        if (g_lfbLock.origin == GR_ORIGIN_LOWER_LEFT) {
+            FlipRows(g_lfbLock.stagingBuffer.data(), g_lfbLock.height, g_lfbLock.stride);
+        }
+
+        // Map writeMode to GrLfbSrcFmt_t
+        uint32_t srcFmt = 0; // Default to 565
+        if (g_lfbLock.writeMode == GR_LFBWRITEMODE_565) srcFmt = 0;
+        else if (g_lfbLock.writeMode == GR_LFBWRITEMODE_555) srcFmt = 1;
+        else if (g_lfbLock.writeMode == GR_LFBWRITEMODE_1555) srcFmt = 2;
+        else if (g_lfbLock.writeMode == GR_LFBWRITEMODE_8888) srcFmt = 5;
+
+        // Flush to backend with dirty tracking comparison!
+        b->WriteLFB(0, 0, g_lfbLock.width, g_lfbLock.height, g_lfbLock.stride, srcFmt, g_lfbLock.stagingBuffer.data(), g_lfbLock.originalBuffer.data());
+    }
+
+    // Free staging buffer memory
+    g_lfbLock.stagingBuffer.clear();
+    g_lfbLock.stagingBuffer.shrink_to_fit();
+    g_lfbLock.isLocked = false;
+
     return FXTRUE;
 }
 
@@ -1232,6 +1341,11 @@ FX_ENTRY void FX_CALL grChromakeyValue(GrColor_t value) {
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
         b->SetChromakeyValue(value);
     }
+}
+
+FX_ENTRY void FX_CALL grDitherMode(GrDitherMode_t mode) {
+    EnsureEngineInitialized();
+    GLIDE_LOG(INFO, "Frontend", "grDitherMode invoked: mode=" << mode);
 }
 
 } // extern "C"

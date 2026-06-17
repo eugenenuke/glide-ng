@@ -21,7 +21,10 @@ bool JsonConfigLoader::Load(const std::string& configFilePath, WrapperConfig& ou
         if (content.find("\"Voodoo3\"") != std::string::npos)        outConfig.model = CardModel::Voodoo3;
         if (content.find("\"Voodoo5\"") != std::string::npos)        outConfig.model = CardModel::Voodoo5;
         
-        if (content.find("\"opengl_es\"") != std::string::npos)      outConfig.backend = "opengl_es";
+        if (content.find("\"opengl_es\"") != std::string::npos ||
+            content.find("\"gles\"") != std::string::npos) {
+            outConfig.backend = "opengl_es";
+        }
         if (content.find("\"vulkan\"") != std::string::npos)         outConfig.backend = "vulkan";
         if (content.find("\"logToConsole\"") != std::string::npos) {
             outConfig.logToConsole = (content.find("\"logToConsole\": true") != std::string::npos ||
@@ -37,6 +40,12 @@ bool JsonConfigLoader::Load(const std::string& configFilePath, WrapperConfig& ou
     if (const char* envBackend = std::getenv("GLIDE_BACKEND")) {
         outConfig.backend = envBackend;
         GLIDE_LOG(WARN, "Config", "Overrode active Rendering Backend via GLIDE_BACKEND=" << outConfig.backend);
+    }
+
+    // Normalize backend aliases
+    if (outConfig.backend == "gles") {
+        outConfig.backend = "opengl_es";
+        GLIDE_LOG(INFO, "Config", "Normalized backend alias 'gles' to 'opengl_es'");
     }
 
     if (const char* envModel = std::getenv("GLIDE_WRAPPER_CARD_MODEL")) {

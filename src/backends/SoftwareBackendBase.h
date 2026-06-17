@@ -17,6 +17,8 @@ public:
     void Shutdown() override = 0;
     bool AttachWindow(void* nativeWindowHandle, uint32_t width, uint32_t height, bool windowed) override = 0;
     void DetachWindow() override = 0;
+    uint32_t GetWidth() const override { return m_headlessWidth; }
+    uint32_t GetHeight() const override { return m_headlessHeight; }
     bool SwapBuffers() override = 0;
     void PollEvents() override;
     void SstIdle() override;
@@ -57,7 +59,7 @@ public:
     // Linear Framebuffer (LFB) read/write utilities
     void* GetLfbWritePtr() override;
     bool ReadLFB(uint32_t srcX, uint32_t srcY, uint32_t srcWidth, uint32_t srcHeight, uint32_t dstStride, void* dstData) override;
-    bool WriteLFB(uint32_t dstX, uint32_t dstY, uint32_t srcWidth, uint32_t srcHeight, int32_t srcStride, uint32_t srcFmt, const void* srcData) override;
+    bool WriteLFB(uint32_t dstX, uint32_t dstY, uint32_t srcWidth, uint32_t srcHeight, int32_t srcStride, uint32_t srcFmt, const void* srcData, const void* refData = nullptr) override;
 
 protected:
     void RasterizeSoftwareTriangle(const ModernVertex& a, const ModernVertex& b, const ModernVertex& c);

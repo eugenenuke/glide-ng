@@ -21,6 +21,8 @@ public:
     // Phase 2: Window Surface & Headless Swapchain Attachment
     virtual bool AttachWindow(void* nativeWindowHandle, uint32_t width, uint32_t height, bool windowed) = 0;
     virtual void DetachWindow() = 0;
+    virtual uint32_t GetWidth() const = 0;
+    virtual uint32_t GetHeight() const = 0;
 
     // Phase 2: Execution Buffer Clearing & Swapchain Presentation
     virtual void ClearBuffer(uint32_t color, uint32_t alpha, float z, uint32_t clearMask) = 0;
@@ -51,7 +53,7 @@ public:
     // Linear Framebuffer (LFB) cpu CPU inspection and modification
     virtual void* GetLfbWritePtr() = 0;
     virtual bool ReadLFB(uint32_t srcX, uint32_t srcY, uint32_t srcWidth, uint32_t srcHeight, uint32_t dstStride, void* dstData) = 0;
-    virtual bool WriteLFB(uint32_t dstX, uint32_t dstY, uint32_t srcWidth, uint32_t srcHeight, int32_t srcStride, uint32_t srcFmt, const void* srcData) = 0;
+    virtual bool WriteLFB(uint32_t dstX, uint32_t dstY, uint32_t srcWidth, uint32_t srcHeight, int32_t srcStride, uint32_t srcFmt, const void* srcData, const void* refData = nullptr) = 0;
 
     // Phase 5: Virtual TMU & Programmable Uber-Shader Entry Declarations
     virtual void BindTexture(uint32_t tmu, uint32_t startAddress, uint32_t clampS, uint32_t clampT, uint32_t minFilter, uint32_t magFilter) = 0;

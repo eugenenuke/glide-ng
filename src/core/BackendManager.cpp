@@ -2,6 +2,7 @@
 #include "backends/vulkan/VulkanBackend.h"
 #include "backends/opengl_es/OpenGLESBackend.h"
 #include "backends/software/SoftwareBackend.h"
+#include "Logger.h"
 
 namespace GlideWrapper {
 
@@ -21,12 +22,16 @@ IGraphicsBackend* BackendManager::GetBackend() {
 bool BackendManager::EstablishBackend(const WrapperConfig& config) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     if (!m_backend) {
-        if (config.backend == "opengl_es") {
+        if (config.backend == "opengl_es" || config.backend == "gles") {
             m_backend = std::make_unique<OpenGLESBackend>();
         } else if (config.backend == "software") {
             m_backend = std::make_unique<SoftwareBackend>();
-        } else {
+        } else if (config.backend == "vulkan") {
             m_backend = std::make_unique<VulkanBackend>();
+        } else {
+            GLIDE_LOG(CRITICAL, "Backend", "Unrecognized rendering backend specified: '" << config.backend 
+                      << "'. Supported backends are: vulkan, opengl_es (alias: gles), software.");
+            return false;
         }
     }
     return m_backend->Initialize(config);

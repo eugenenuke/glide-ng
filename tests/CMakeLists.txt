@@ -122,6 +122,7 @@ add_executable(test_runner
     test08_fog/test08.cpp
     test09_chromakey/test09.cpp
     test10_culling/test10.cpp
+    test11_lfb/test11.cpp
     test13_alpha/test13.cpp
     test14_depthbias/test14.cpp
     test15_clip/test15.cpp

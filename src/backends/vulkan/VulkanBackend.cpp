@@ -379,7 +379,7 @@ void VulkanBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z, uint32_
         m_inRenderPass = false;
     }
 
-    GLIDE_LOG(DEBUG, "Vulkan", "ClearBuffer: color=" << std::hex << color << ", clearMask=" << clearMask);
+    GLIDE_LOG(INFO, "Vulkan", "ClearBuffer: color=" << std::hex << color << ", clearMask=" << clearMask);
 
     // 1. Call SoftwareBackendBase::ClearBuffer to clear the CPU-side framebuffer!
     SoftwareBackendBase::ClearBuffer(color, alpha, z, clearMask);
@@ -650,11 +650,14 @@ bool VulkanBackend::ReadLFB(uint32_t srcX, uint32_t srcY, uint32_t srcWidth, uin
     // 8. Now call the base class ReadLFB to copy the synchronized pixels to the client buffer!
     bool result = SoftwareBackendBase::ReadLFB(srcX, srcY, srcWidth, srcHeight, dstStride, dstData);
 
-    // 9. Force alpha to 0 in the staging buffer so GPU-rendered pixels are not cached as CPU text in the next ReadLFB!
+    // 9. Restore the CPU-only framebuffer state from our cache, completely wiping out GPU pollution while preserving CPU LFB writes!
     if (m_headlessPixelMap) {
-        auto* pixels = reinterpret_cast<uint32_t*>(m_headlessPixelMap);
-        for (uint32_t i = 0; i < m_headlessWidth * m_headlessHeight; ++i) {
-            pixels[i] &= 0x00FFFFFF;
+        auto* dest = reinterpret_cast<uint32_t*>(m_headlessPixelMap);
+        std::memset(dest, 0, m_headlessWidth * m_headlessHeight * 4);
+        for (size_t i = 0; i < cpuRenderingCache.size(); ++i) {
+            if (cpuRenderingCache[i] != 0) {
+                dest[i] = cpuRenderingCache[i];
+            }
         }
     }
 

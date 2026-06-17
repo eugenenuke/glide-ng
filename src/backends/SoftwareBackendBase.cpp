@@ -17,6 +17,7 @@ namespace GlideWrapper {
 
 void SoftwareBackendBase::ClearBuffer(uint32_t color, uint32_t alpha, float z, uint32_t clearMask) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    GLIDE_LOG(INFO, "Rasterizer", "ClearBuffer CPU side invoked: color=0x" << std::hex << color << ", alpha=" << alpha << ", mask=" << clearMask << std::dec << ", map=" << m_headlessPixelMap);
     if (!m_windowAttached || !m_headlessPixelMap) return;
 
     if (clearMask & 0x1) { // Color Clear
@@ -886,12 +887,13 @@ bool SoftwareBackendBase::ReadLFB(uint32_t srcX, uint32_t srcY, uint32_t srcWidt
     return true;
 }
 
-bool SoftwareBackendBase::WriteLFB(uint32_t dstX, uint32_t dstY, uint32_t srcWidth, uint32_t srcHeight, int32_t srcStride, uint32_t srcFmt, const void* srcData) {
+bool SoftwareBackendBase::WriteLFB(uint32_t dstX, uint32_t dstY, uint32_t srcWidth, uint32_t srcHeight, int32_t srcStride, uint32_t srcFmt, const void* srcData, const void* refData) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     if (!srcData || !m_headlessPixelMap) return false;
 
     auto* pixels = reinterpret_cast<uint32_t*>(m_headlessPixelMap);
     const auto* inBytes = reinterpret_cast<const uint8_t*>(srcData);
+    const auto* refBytes = reinterpret_cast<const uint8_t*>(refData);
 
     for (uint32_t y = 0; y < srcHeight; ++y) {
         uint32_t writeY = dstY + y;
@@ -901,14 +903,40 @@ bool SoftwareBackendBase::WriteLFB(uint32_t dstX, uint32_t dstY, uint32_t srcWid
             uint32_t writeX = dstX + x;
             if (writeX >= m_headlessWidth) break;
 
+            // 1. If refData is provided, check if the pixel has changed.
+            // If it hasn't changed, skip writing it completely (preserving GPU-rendered pixels!)
+            if (refBytes) {
+                if (srcFmt <= 2) { // 16-bit formats (565, 555, 1555)
+                    uint16_t c16 = reinterpret_cast<const uint16_t*>(inBytes + y * srcStride)[x];
+                    uint16_t ref16 = reinterpret_cast<const uint16_t*>(refBytes + y * srcStride)[x];
+                    if (c16 == ref16) {
+                        continue;
+                    }
+                } else { // 32-bit formats
+                    uint32_t c32 = reinterpret_cast<const uint32_t*>(inBytes + y * srcStride)[x];
+                    uint32_t ref32 = reinterpret_cast<const uint32_t*>(refBytes + y * srcStride)[x];
+                    if (c32 == ref32) {
+                        continue;
+                    }
+                }
+            }
+
+            // 2. Unpack and write the modified pixel
             uint32_t pWord = 0xFF000000;
-            if (srcFmt == 1 || srcFmt == 2) { // 565 or 555
+            if (srcFmt == 0) { // GR_LFB_SRC_FMT_565
                 uint16_t c16 = reinterpret_cast<const uint16_t*>(inBytes + y * srcStride)[x];
                 uint32_t r = ((c16 >> 11) & 0x1F) * 255 / 31;
                 uint32_t g = ((c16 >> 5)  & 0x3F) * 255 / 63;
                 uint32_t b = (c16         & 0x1F) * 255 / 31;
                 pWord = (255 << 24) | (r << 16) | (g << 8) | b;
-            } else { // 888 or ARGB
+            } else if (srcFmt == 1 || srcFmt == 2) { // GR_LFB_SRC_FMT_555 / 1555
+                uint16_t c16 = reinterpret_cast<const uint16_t*>(inBytes + y * srcStride)[x];
+                uint32_t r = ((c16 >> 10) & 0x1F) * 255 / 31;
+                uint32_t g = ((c16 >> 5)  & 0x1F) * 255 / 31;
+                uint32_t b = (c16         & 0x1F) * 255 / 31;
+                uint32_t a = (srcFmt == 2) ? (((c16 >> 15) & 1) ? 255 : 0) : 255;
+                pWord = (a << 24) | (r << 16) | (g << 8) | b;
+            } else { // 32-bit ARGB8888 / RGB888
                 pWord = reinterpret_cast<const uint32_t*>(inBytes + y * srcStride)[x];
             }
             pixels[writeY * m_headlessWidth + writeX] = pWord;
