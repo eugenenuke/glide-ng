@@ -60,6 +60,10 @@ public:
                                  uint32_t alphaFunc, uint32_t alphaFactor, uint32_t alphaLocal, uint32_t alphaOther, bool alphaInvert) = 0;
     virtual void SetTexCombinerMode(uint32_t tmu, uint32_t rgbFunc, uint32_t rgbFactor, uint32_t alphaFunc, uint32_t alphaFactor) = 0;
     virtual void SetSTWHintState(uint32_t hintMask) = 0;
+
+    // Milestone 10: Chromakey State
+    virtual void SetChromakeyMode(uint32_t mode) = 0;
+    virtual void SetChromakeyValue(uint32_t value) = 0;
 };
 
 } // namespace GlideWrapper

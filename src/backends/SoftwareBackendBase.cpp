@@ -173,6 +173,18 @@ void SoftwareBackendBase::SetSTWHintState(uint32_t hintMask) {
     GLIDE_LOG(INFO, "Rasterizer", "SetSTWHintState: Mask=" << hintMask);
 }
 
+void SoftwareBackendBase::SetChromakeyMode(uint32_t mode) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    m_chromakeyMode = mode;
+    GLIDE_LOG(INFO, "Rasterizer", "SetChromakeyMode: Mode=" << mode);
+}
+
+void SoftwareBackendBase::SetChromakeyValue(uint32_t value) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    m_chromakeyValue = value;
+    GLIDE_LOG(INFO, "Rasterizer", "SetChromakeyValue: Value=0x" << std::hex << value << std::dec);
+}
+
 void SoftwareBackendBase::DrawTriangle(const ModernVertex& a, const ModernVertex& b, const ModernVertex& c) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     if (!m_windowAttached || !m_headlessPixelMap) return;
@@ -651,6 +663,21 @@ void SoftwareBackendBase::RasterizeSoftwareTriangle(const ModernVertex& a, const
                 float green = finalG;
                 float blue  = finalB;
                 float alpha = finalA;
+
+                // Milestone 10: Chromakey Emulation
+                if (m_chromakeyMode == 1) { // 1 = GR_CHROMAKEY_ENABLE
+                    float chromaR = ((m_chromakeyValue >> 16) & 0xFF) / 255.0f;
+                    float chromaG = ((m_chromakeyValue >> 8) & 0xFF) / 255.0f;
+                    float chromaB = (m_chromakeyValue & 0xFF) / 255.0f;
+                    if (m_pixelFormatOverride == 1) {
+                        std::swap(chromaR, chromaB);
+                    }
+                    if (std::abs(red - chromaR) < 0.01f &&
+                        std::abs(green - chromaG) < 0.01f &&
+                        std::abs(blue - chromaB) < 0.01f) {
+                        continue; // Discard! Skip depth, blending, and color writes.
+                    }
+                }
 
                 uint32_t aVal = static_cast<uint32_t>(std::min(255.0f, alpha * 255.0f + 0.5f));
 

@@ -36,6 +36,9 @@ struct PushConstants {
     uint32_t alphaOther;
     uint32_t alphaInvert;
     uint32_t textureEnabled;
+    uint32_t chromakeyEnabled;
+    float    paddingPush;
+    float    chromakeyValue[4];
 };
 
 struct VulkanTexture {

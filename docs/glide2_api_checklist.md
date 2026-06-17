@@ -8,9 +8,9 @@ This document serves as the authoritative coverage map for the **glide-ng** wrap
 
 | API Category | Implemented | Total | Coverage % |
 | :--- | :---: | :---: | :---: |
-| **Core Glide2 (`gr*`)** | 50 | 92 | 54.3% |
+| **Core Glide2 (`gr*`)** | 52 | 94 | 55.3% |
 | **Utility Library (`gu*`)** | 12 | 15 | 80.0% |
-| **Unified Glide2 Specification** | **62** | **107** | **57.9%** |
+| **Unified Glide2 Specification** | **64** | **109** | **58.7%** |
 
 ---
 
@@ -67,6 +67,8 @@ This document serves as the authoritative coverage map for the **glide-ng** wrap
 - [x] `grAlphaTestReferenceValue(GrAlpha_t value)` — Sets the reference value for alpha testing.
 - [x] `grConstantColorValue(GrColor_t value)` — Sets the constant color value utilized in the combiner stage.
 - [ ] `grConstantColorValue4(float a, float r, float g, float b)` — Sets constant color via floating-point channels.
+- [x] `grChromakeyMode(GrChromakeyMode_t mode)` — Enables/disables hardware chroma-keying (discarding fragments matching a key).
+- [x] `grChromakeyValue(GrColor_t value)` — Sets the global chroma-key reference color.
 - [ ] `grAlphaControlsITRGBLighting(FxBool enable)` — Routes vertex alpha to control color combiner lighting equations.
 - [ ] `grColorMask(FxBool rgb, FxBool a)` — Enables/disables color and alpha channel write masks.
 - [ ] `grDisableAllEffects(void)` — Disables blending, fog, depth, and chromakeying instantly.

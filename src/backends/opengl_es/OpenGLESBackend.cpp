@@ -565,6 +565,9 @@ uniform int uTextureEnabled;
 uniform sampler2D uTexture0;
 uniform int uUseTmuOow;
 
+uniform int uChromakeyEnabled;
+uniform vec4 uChromakeyValue;
+
 uniform int uAlphaTestOp;
 uniform float uAlphaTestRef;
 
@@ -673,6 +676,13 @@ void main() {
     if (uColorInvert == 1) finalC = vec3(1.0) - finalC;
 
     vec4 col = vec4(finalC, finalA);
+
+    // Milestone 10: Chromakey Emulation
+    if (uChromakeyEnabled == 1) {
+        if (distance(col.rgb, uChromakeyValue.rgb) < 0.01) {
+            discard;
+        }
+    }
 
     // Milestone 8: Fogging Emulation
     if (uFogMode > 0) {
@@ -1122,6 +1132,17 @@ void OpenGLESBackend::PopulateUniforms() {
     }
     if (ca < 0.5f) ca = 1.0f;
     glUniform4f(glGetUniformLocation(m_geomProgram, "uConstantColor"), cr, cg, cb, ca);
+
+    // Upload Chromakey State Uniforms
+    glUniform1i(glGetUniformLocation(m_geomProgram, "uChromakeyEnabled"), (int)m_chromakeyMode);
+    float chR = ((m_chromakeyValue >> 16) & 0xFF) / 255.0f;
+    float chG = ((m_chromakeyValue >> 8)  & 0xFF) / 255.0f;
+    float chB = (m_chromakeyValue         & 0xFF) / 255.0f;
+    float chA = ((m_chromakeyValue >> 24) & 0xFF) / 255.0f;
+    if (m_pixelFormatOverride == 1) {
+        std::swap(chR, chB);
+    }
+    glUniform4f(glGetUniformLocation(m_geomProgram, "uChromakeyValue"), chR, chG, chB, chA);
 
     // Upload Combiner State Uniforms
     glUniform1i(glGetUniformLocation(m_geomProgram, "uColorFunc"), (int)m_colorCombinerFunc);

@@ -35,6 +35,9 @@ layout(push_constant) uniform PushConstants {
     uint alphaInvert;
 
     uint textureEnabled;
+    uint chromakeyEnabled;
+    uint paddingPush;
+    vec4 chromakeyValue;
 } pcs;
 
 layout(binding = 0) uniform sampler2D texSampler0;
@@ -144,6 +147,13 @@ void main() {
     if (pcs.colorInvert == 1u) finalC = vec3(1.0) - finalC;
 
     vec4 col = vec4(finalC, finalA);
+
+    // Milestone 10: Chromakey Emulation
+    if (pcs.chromakeyEnabled == 1u) {
+        if (distance(col.rgb, pcs.chromakeyValue.rgb) < 0.01) {
+            discard;
+        }
+    }
 
     // Milestone 8: Fogging Emulation
     if (pcs.fogMode > 0u) {

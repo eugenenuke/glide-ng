@@ -1194,4 +1194,20 @@ FX_ENTRY FxU16 * FX_CALL guTexCreateColorMipMap( void ) {
    return start;
 }
 
+FX_ENTRY void FX_CALL grChromakeyMode(GrChromakeyMode_t mode) {
+    EnsureEngineInitialized();
+    GLIDE_LOG(INFO, "Frontend", "grChromakeyMode invoked: mode=" << mode);
+    if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
+        b->SetChromakeyMode(mode);
+    }
+}
+
+FX_ENTRY void FX_CALL grChromakeyValue(GrColor_t value) {
+    EnsureEngineInitialized();
+    GLIDE_LOG(INFO, "Frontend", "grChromakeyValue invoked: value=0x" << std::hex << value << std::dec);
+    if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
+        b->SetChromakeyValue(value);
+    }
+}
+
 } // extern "C"

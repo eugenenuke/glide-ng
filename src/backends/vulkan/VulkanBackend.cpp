@@ -1647,6 +1647,16 @@ void VulkanBackend::PopulatePushConstants(PushConstants& pcs) {
     pcs.alphaInvert = m_alphaCombinerInvert ? 1u : 0u;
 
     pcs.textureEnabled = (m_boundTexAddress[0] != 0xFFFFFFFF) ? 1u : 0u;
+
+    // Milestone 10: Chromakey State
+    pcs.chromakeyEnabled = m_chromakeyMode;
+    pcs.chromakeyValue[0] = ((m_chromakeyValue >> 16) & 0xFF) / 255.0f; // R
+    pcs.chromakeyValue[1] = ((m_chromakeyValue >> 8) & 0xFF) / 255.0f;  // G
+    pcs.chromakeyValue[2] = (m_chromakeyValue & 0xFF) / 255.0f;         // B
+    pcs.chromakeyValue[3] = ((m_chromakeyValue >> 24) & 0xFF) / 255.0f; // A
+    if (m_pixelFormatOverride == 1) {
+        std::swap(pcs.chromakeyValue[0], pcs.chromakeyValue[2]);
+    }
 }
 
 } // namespace GlideWrapper

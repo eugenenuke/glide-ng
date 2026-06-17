@@ -51,6 +51,8 @@ public:
                          uint32_t alphaFunc, uint32_t alphaFactor, uint32_t alphaLocal, uint32_t alphaOther, bool alphaInvert) override;
     void SetTexCombinerMode(uint32_t tmu, uint32_t rgbFunc, uint32_t rgbFactor, uint32_t alphaFunc, uint32_t alphaFactor) override;
     void SetSTWHintState(uint32_t hintMask) override;
+    void SetChromakeyMode(uint32_t mode) override;
+    void SetChromakeyValue(uint32_t value) override;
 
     // Linear Framebuffer (LFB) read/write utilities
     void* GetLfbWritePtr() override;
@@ -126,6 +128,8 @@ protected:
     uint32_t m_constantColor{0xFFFFFFFF};
     uint32_t m_stwHintMask{0}; // Default: 0 (GR_STWHINT_W_OK)
     uint32_t m_pixelFormatOverride{1}; // 1 = ABGR
+    uint32_t m_chromakeyMode{0};       // 0 = GR_CHROMAKEY_DISABLE
+    uint32_t m_chromakeyValue{0};
 };
 
 } // namespace GlideWrapper
