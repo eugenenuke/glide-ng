@@ -43,21 +43,21 @@ namespace {
     uint32_t s_clampT[2] = {0, 0};
     uint32_t s_minFilter[2] = {0, 0}; // 0=POINT, 1=BILINEAR
     uint32_t s_magFilter[2] = {0, 0};
-    uint32_t s_colorFunc   = 0;
-    uint32_t s_colorFactor = 0;
-    uint32_t s_colorLocal  = 0;
-    uint32_t s_colorOther  = 0;
+    uint32_t s_colorFunc   = 0x3; // GR_COMBINE_FUNCTION_SCALE_OTHER
+    uint32_t s_colorFactor = 0x8; // GR_COMBINE_FACTOR_ONE
+    uint32_t s_colorLocal  = 0x0; // GR_COMBINE_LOCAL_ITERATED
+    uint32_t s_colorOther  = 0x0; // GR_COMBINE_OTHER_ITERATED
     bool     s_colorInvert = false;
-    uint32_t s_alphaFunc   = 0;
-    uint32_t s_alphaFactor = 0;
-    uint32_t s_alphaLocal  = 0;
-    uint32_t s_alphaOther  = 0;
+    uint32_t s_alphaFunc   = 0x3; // GR_COMBINE_FUNCTION_SCALE_OTHER
+    uint32_t s_alphaFactor = 0x8; // GR_COMBINE_FACTOR_ONE
+    uint32_t s_alphaLocal  = 0x1; // GR_COMBINE_LOCAL_NONE (constant)
+    uint32_t s_alphaOther  = 0x2; // GR_COMBINE_OTHER_CONSTANT
     bool     s_alphaInvert = false;
     uint32_t s_texRgbFunc[2]    = {0, 0};
     uint32_t s_texRgbFactor[2]  = {0, 0};
     uint32_t s_texAlphaFunc[2]  = {0, 0};
     uint32_t s_texAlphaFactor[2]= {0, 0};
-    uint32_t s_boundTex[2]      = {0, 0};
+    uint32_t s_boundTex[2]      = {0xFFFFFFFF, 0xFFFFFFFF};
 
     uint32_t s_constantColor = 0xFFFFFFFF;
     uint32_t s_rgbSrcBlend = 4;   // GR_BLEND_ONE
@@ -186,6 +186,24 @@ FX_ENTRY FxBool FX_CALL grSstWinOpen(
     
     backend->SetPixelFormat(format);
     bool attached = backend->AttachWindow(reinterpret_cast<void*>(static_cast<uintptr_t>(hWnd)), width, height, hWnd != 0);
+    if (attached) {
+        backend->SetCombinerMode(s_colorFunc, s_colorFactor, s_colorLocal, s_colorOther, s_colorInvert,
+                                 s_alphaFunc, s_alphaFactor, s_alphaLocal, s_alphaOther, s_alphaInvert);
+        backend->SetConstantColor(s_constantColor);
+        backend->SetBlendState(s_rgbSrcBlend, s_rgbDstBlend, s_alphaSrcBlend, s_alphaDstBlend);
+        backend->SetCullState(s_cullMode);
+        backend->SetDepthState(s_depthMode, s_depthCompare, s_depthMask, s_depthBias);
+        backend->SetAlphaTestState(s_alphaTestOp, s_alphaTestRef);
+        backend->SetClipWindow(s_clipMinX, s_clipMinY, s_clipMaxX, s_clipMaxY);
+        backend->SetSstOrigin(s_sstOrigin);
+        backend->SetFogMode(s_fogMode);
+        backend->SetFogColor(s_fogColor);
+        backend->SetFogTable(s_fogTable);
+        for (uint32_t tmu = 0; tmu < 2; ++tmu) {
+            backend->SetTexCombinerMode(tmu, s_texRgbFunc[tmu], s_texRgbFactor[tmu], s_texAlphaFunc[tmu], s_texAlphaFactor[tmu]);
+            backend->BindTexture(tmu, s_boundTex[tmu], s_clampS[tmu], s_clampT[tmu], s_minFilter[tmu], s_magFilter[tmu]);
+        }
+    }
     return attached ? FXTRUE : FXFALSE;
 }
 

@@ -417,6 +417,7 @@ TEST_CASE("Architectural Core Validation", "[Architecture]") {
         using DepthModeFunc = void(*)(FxU32);
         using DepthFuncFunc = void(*)(FxU32);
         using DepthMaskFunc = void(*)(FxBool);
+        using AlphaCombineFunc = void(*)(FxU32, FxU32, FxU32, FxU32, FxBool);
 
         auto glideInit  = reinterpret_cast<InitFunc>(::dlsym(handle, "grGlideInit"));
         auto winOpen    = reinterpret_cast<WinOpenFunc>(::dlsym(handle, "grSstWinOpen"));
@@ -426,6 +427,7 @@ TEST_CASE("Architectural Core Validation", "[Architecture]") {
         auto cullMode   = CullFunc(::dlsym(handle, "grCullMode"));
         auto drawTri    = reinterpret_cast<DrawTriFunc>(::dlsym(handle, "grDrawTriangle"));
         auto readLfb    = reinterpret_cast<ReadFunc>(::dlsym(handle, "grLfbReadRegion"));
+        auto alphaCombine = reinterpret_cast<AlphaCombineFunc>(::dlsym(handle, "grAlphaCombine"));
         auto winClose   = reinterpret_cast<WinCloseFunc>(::dlsym(handle, "grSstWinClose"));
         auto alphaTestFunc   = reinterpret_cast<AlphaTestFunc>(::dlsym(handle, "grAlphaTestFunction"));
         auto alphaRefVal     = reinterpret_cast<AlphaRefFunc>(::dlsym(handle, "grAlphaTestReferenceValue"));
@@ -441,6 +443,7 @@ TEST_CASE("Architectural Core Validation", "[Architecture]") {
         REQUIRE(cullMode != nullptr);
         REQUIRE(drawTri != nullptr);
         REQUIRE(readLfb != nullptr);
+        REQUIRE(alphaCombine != nullptr);
         REQUIRE(alphaTestFunc != nullptr);
         REQUIRE(alphaRefVal != nullptr);
         REQUIRE(depthBufferMode != nullptr);
@@ -472,6 +475,7 @@ TEST_CASE("Architectural Core Validation", "[Architecture]") {
         // 2. Validate Alpha Blending (50% Blue over Solid Red -> Perfect Purple 0xFF7F007F)
         clearBuf(0xFFFF0000, 0, 1); // Solid Red (0xFFFF0000 in ARGB)
         blendFunc(1, 5, 1, 5); // GR_BLEND_SRC_ALPHA, GR_BLEND_ONE_MINUS_SRC_ALPHA
+        alphaCombine(1, 0, 0, 2, 0); // GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE, GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_NONE
 
         StandardVert b0{0.0f, 0.0f, 0.5f, 0.0f, 0.0f, 255.0f, 1.0f, 127.5f, 1.0f, 0.0f, 0.0f, 1.0f}; // 50% Blue
         StandardVert b1{2000.0f, 0.0f, 0.5f, 0.0f, 0.0f, 255.0f, 1.0f, 127.5f, 1.0f, 0.0f, 0.0f, 1.0f};
@@ -485,8 +489,9 @@ TEST_CASE("Architectural Core Validation", "[Architecture]") {
         REQUIRE((blendR == 0x7F || blendR == 0x80)); // Allow both GPU (0x7F) and CPU (0x80) rounding!
         REQUIRE((blendB == 0x7F || blendB == 0x80));
 
-        // Revert Blend
+        // Revert Blend & Combiner
         blendFunc(4, 0, 4, 0);
+        alphaCombine(3, 8, 1, 2, 0); // Revert to authentic defaults
 
         // 3. Validate Polygon Winding Culling
         cullMode(1); // GR_CULL_NEGATIVE / CW backface
@@ -508,6 +513,7 @@ TEST_CASE("Architectural Core Validation", "[Architecture]") {
         clearBuf(0xFF000000, 0, 1); // Black
         alphaTestFunc(4); // GR_CMP_GREATER
         alphaRefVal(128); // Threshold = 128 (50%)
+        alphaCombine(1, 0, 0, 2, 0); // Use iterated vertex alpha
 
         // Draw quad with Alpha = 100 (below threshold -> should be rejected)
         StandardVert at0{0.0f, 0.0f, 0.5f, 0.0f, 255.0f, 255.0f, 1.0f, 100.0f, 1.0f, 0.0f, 0.0f, 1.0f}; // Cyan
@@ -526,6 +532,7 @@ TEST_CASE("Architectural Core Validation", "[Architecture]") {
 
         // Revert Alpha Test
         alphaTestFunc(7); // GR_CMP_ALWAYS
+        alphaCombine(3, 8, 1, 2, 0); // Revert to constant alpha default
 
         // 5. Validate Extended Depth Comparison Suites (GR_CMP_LESS & Depth Masking)
         depthBufferMode(1); // GR_DEPTHBUFFER_ZBUFFER
@@ -675,7 +682,7 @@ TEST_CASE("Architectural Core Validation", "[Architecture]") {
 
         // 3. Configure Register Combiners
         texCombine(0, 1, 1, 1, 1, FXFALSE, FXFALSE);
-        colorCombine(1, 1, 0, 1, FXFALSE);
+        colorCombine(3, 8, 1, 1, FXFALSE); // Decal texturing: SCALE_OTHER, ONE, NONE, TEXTURE
 
         // 4. Draw Triangle Quad sampling top-left texel (s=64.0, t=64.0 -> should map to Cyan)
         // StandardVert format: x, y, z, r, g, b, ooz, a, oow, s, t, w

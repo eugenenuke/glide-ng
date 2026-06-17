@@ -890,7 +890,7 @@ void OpenGLESBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
 
     GLIDE_LOG(DEBUG, "GLES", "DrawTriangle GPU draw. A: (" << a.pos[0] << ", " << a.pos[1] << "), B: (" << b.pos[0] << ", " << b.pos[1] << "), C: (" << c.pos[0] << ", " << c.pos[1] << ")");
 
-    // 1. Upload all three vertices directly to VBO
+    // 1. Upload all three vertices directly to dynamic VBO ring buffer
     ModernVertex vertices[3] = { a, b, c };
     if (m_sstOrigin == 1) { // GR_ORIGIN_LOWER_LEFT: flip Y coordinates
         vertices[0].pos[1] = (float)m_headlessHeight - a.pos[1];
@@ -898,7 +898,9 @@ void OpenGLESBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
         vertices[2].pos[1] = (float)m_headlessHeight - c.pos[1];
     }
     glBindBuffer(GL_ARRAY_BUFFER, m_geomVBO);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_DYNAMIC_DRAW);
+    glBufferSubData(GL_ARRAY_BUFFER, m_geomVBOOffset, sizeof(ModernVertex), &vertices[0]);
+    glBufferSubData(GL_ARRAY_BUFFER, m_geomVBOOffset + sizeof(ModernVertex), sizeof(ModernVertex), &vertices[1]);
+    glBufferSubData(GL_ARRAY_BUFFER, m_geomVBOOffset + 2 * sizeof(ModernVertex), sizeof(ModernVertex), &vertices[2]);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 
     // 2. Bind offscreen FBO and set state
@@ -937,7 +939,8 @@ void OpenGLESBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
 
     // 4. Bind VAO and issue GLES triangle draw call
     glBindVertexArray(m_geomVAO);
-    glDrawArrays(GL_TRIANGLES, 0, 3); // Always draw from index 0!
+    uint32_t firstVertex = m_geomVBOOffset / sizeof(ModernVertex);
+    glDrawArrays(GL_TRIANGLES, firstVertex, 3);
 
     // 5. Cleanup state bindings
     glBindVertexArray(0);
@@ -947,6 +950,13 @@ void OpenGLESBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
         glBindTexture(GL_TEXTURE_2D, 0);
     }
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+    // 6. Advance ring buffer offset
+    m_geomVBOOffset += 3 * sizeof(ModernVertex);
+    if (m_geomVBOOffset + 3 * sizeof(ModernVertex) > m_geomVBOSize) {
+        GLIDE_LOG(WARN, "GLES", "Dynamic Geometry VBO ring buffer wrap-around!");
+        m_geomVBOOffset = 0;
+    }
 
     checkGLError("DrawTriangle");
 }

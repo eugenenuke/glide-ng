@@ -54,7 +54,7 @@ namespace {
     uint32_t s_texRgbFactor[2]  = {0, 0};
     uint32_t s_texAlphaFunc[2]  = {0, 0};
     uint32_t s_texAlphaFactor[2]= {0, 0};
-    uint32_t s_boundTex[2]      = {0, 0};
+    uint32_t s_boundTex[2]      = {0xFFFFFFFF, 0xFFFFFFFF};
 }
 
 FX_ENTRY void FX_CALL grGlideInit(void) {

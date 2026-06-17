@@ -276,7 +276,7 @@ uint32_t SoftwareBackendBase::EvaluateCombinerColor(const ModernVertex& v) {
     uint32_t g = static_cast<uint32_t>(v.color[1] * 255.0f + 0.5f);
     uint32_t b = static_cast<uint32_t>(v.color[2] * 255.0f + 0.5f);
 
-    uint32_t colorLocal = m_colorCombinerFactor & 0xFFFF;
+    uint32_t colorLocal = m_colorCombinerLocal & 0xFFFF;
     if (colorLocal == 1 || m_colorCombinerFactor == 1) { // CONSTANT
         r = (m_constantColor >> 16) & 0xFF;
         g = (m_constantColor >> 8)  & 0xFF;
@@ -285,7 +285,7 @@ uint32_t SoftwareBackendBase::EvaluateCombinerColor(const ModernVertex& v) {
             std::swap(r, b);
         }
     }
-    uint32_t alphaLocal = m_alphaCombinerFactor & 0xFFFF;
+    uint32_t alphaLocal = m_alphaCombinerLocal & 0xFFFF;
     if (alphaLocal == 1 || m_alphaCombinerFactor == 1) { // CONSTANT
         a = (m_constantColor >> 24) & 0xFF;
     }

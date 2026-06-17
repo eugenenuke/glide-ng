@@ -24,8 +24,8 @@ struct VirtualTexture {
 class TextureManager {
 public:
     static TextureManager& GetInstance() {
-        static TextureManager instance;
-        return instance;
+        static TextureManager* instance = new TextureManager();
+        return *instance;
     }
 
     // 1. Calculate rigorous memory footprints matching 3dfx silicon MIP-map chains
