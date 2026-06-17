@@ -293,6 +293,95 @@ TEST_CASE("Architectural Core Validation", "[Architecture]") {
 #endif
     }
 
+    SECTION("Telemetry and Statistics API Coverage Suite") {
+#ifdef __linux__
+        void* handle = OpenGlide2Handle();
+        REQUIRE(handle != nullptr);
+
+        using InitFunc = void(*)(void);
+        using WinOpenFunc = FxBool(*)(FxU32, FxU32, FxU32, FxU32, FxU32, int, int);
+        using DrawTriFunc = void(*)(const void*, const void*, const void*);
+        using BufferSwapFunc = void(*)(int);
+        using WinCloseFunc = void(*)(void);
+        
+        using TriStatsFunc = void(*)(FxU32*, FxU32*);
+        using ResetTriStatsFunc = void(*)(void);
+        using PerfStatsFunc = void(*)(GrSstPerfStats_t*);
+        using ResetPerfStatsFunc = void(*)(void);
+
+        auto glideInit      = reinterpret_cast<InitFunc>(::dlsym(handle, "grGlideInit"));
+        auto winOpen        = reinterpret_cast<WinOpenFunc>(::dlsym(handle, "grSstWinOpen"));
+        auto drawTri        = reinterpret_cast<DrawTriFunc>(::dlsym(handle, "grDrawTriangle"));
+        auto bufferSwap     = reinterpret_cast<BufferSwapFunc>(::dlsym(handle, "grBufferSwap"));
+        auto winClose       = reinterpret_cast<WinCloseFunc>(::dlsym(handle, "grSstWinClose"));
+        
+        auto grTriStats     = reinterpret_cast<TriStatsFunc>(::dlsym(handle, "grTriStats"));
+        auto grResetTriStats = reinterpret_cast<ResetTriStatsFunc>(::dlsym(handle, "grResetTriStats"));
+        auto grSstPerfStats = reinterpret_cast<PerfStatsFunc>(::dlsym(handle, "grSstPerfStats"));
+        auto grSstResetPerfStats = reinterpret_cast<ResetPerfStatsFunc>(::dlsym(handle, "grSstResetPerfStats"));
+
+        REQUIRE(glideInit != nullptr);
+        REQUIRE(winOpen != nullptr);
+        REQUIRE(drawTri != nullptr);
+        REQUIRE(bufferSwap != nullptr);
+        REQUIRE(winClose != nullptr);
+        
+        REQUIRE(grTriStats != nullptr);
+        REQUIRE(grResetTriStats != nullptr);
+        REQUIRE(grSstPerfStats != nullptr);
+        REQUIRE(grSstResetPerfStats != nullptr);
+
+        // 1. Initialize and open a context
+        glideInit();
+        REQUIRE(winOpen(0, 5, 0, 0, 0, 2, 0) == FXTRUE);
+
+        // 2. Test initial reset state
+        grResetTriStats();
+        FxU32 processed = 0, drawn = 0;
+        grTriStats(&processed, &drawn);
+        REQUIRE(processed == 0);
+        REQUIRE(drawn == 0);
+
+        // 3. Draw a mock triangle 30 times and verify counters increment to exactly 30
+        struct Vert { float x, y, z, r, g, b, ooz, a, oow; };
+        Vert v0{10.0f, 10.0f, 0.0f, 255.0f, 0.0f, 0.0f, 0.0f, 255.0f, 1.0f};
+        Vert v1{50.0f, 10.0f, 0.0f, 255.0f, 0.0f, 0.0f, 0.0f, 255.0f, 1.0f};
+        Vert v2{30.0f, 40.0f, 0.0f, 255.0f, 0.0f, 0.0f, 0.0f, 255.0f, 1.0f};
+
+        // Draw and swap 30 times to trigger sliding-window FPS update
+        for (int i = 0; i < 30; ++i) {
+            drawTri(&v0, &v1, &v2);
+            bufferSwap(1);
+        }
+
+        grTriStats(&processed, &drawn);
+        REQUIRE(processed == 30);
+        REQUIRE(drawn == 30);
+
+        // 4. Test grResetTriStats
+        grResetTriStats();
+        grTriStats(&processed, &drawn);
+        REQUIRE(processed == 0);
+        REQUIRE(drawn == 0);
+
+        // 5. Test grSstPerfStats
+        GrSstPerfStats_t stats;
+        grSstPerfStats(&stats);
+        // Map our FrameTracker metrics:
+        // pixelsIn contains FPS (should be > 0.0f after 30 swaps)
+        // chromaFail contains render time in microseconds (should be > 0)
+        REQUIRE(stats.pixelsIn > 0);
+        REQUIRE(stats.chromaFail > 0);
+        
+        // 6. Test grSstResetPerfStats
+        grSstResetPerfStats();
+
+        // 7. Cleanup
+        winClose();
+        ::dlclose(handle);
+#endif
+    }
+
     SECTION("Phase 3: Automated Geometry Drawing Validation Suite") {
 #ifdef __linux__
         // 1. Validate Glide 2.x Fixed Geometry Parsing & Drawing
