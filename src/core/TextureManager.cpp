@@ -135,7 +135,7 @@ bool TextureManager::DownloadMipMap(uint32_t tmu, uint32_t startAddress, uint32_
             } else { // 8-bit
                 uint8_t val = rawData[byteOffset + pIdx];
                 if (format == 0x2) { // ALPHA_8
-                    a = val; r = 255; g = 255; b = 255;
+                    a = val; r = val; g = val; b = val;
                     levelPixels[pIdx] = (a << 24) | (r << 16) | (g << 8) | b;
                 } else if (format == 0x3) { // INTENSITY_8
                     r = val; g = val; b = val; a = 255;
