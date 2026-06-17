@@ -1120,7 +1120,8 @@ void OpenGLESBackend::SyncCullStateGLES() {
 
 void OpenGLESBackend::PopulateUniforms() {
     glUniform2f(glGetUniformLocation(m_geomProgram, "uViewportSize"), (float)m_headlessWidth, (float)m_headlessHeight);
-    glUniform1i(glGetUniformLocation(m_geomProgram, "uDepthClipOverride"), (m_depthMode == 0) ? 1 : 0);
+    bool depthClipOverride = (m_depthMode == 0) || (m_depthCompareOp == 7); // 7 = GR_CMP_ALWAYS (prevents uninitialized ooz stack garbage clipping in text overlays)
+    glUniform1i(glGetUniformLocation(m_geomProgram, "uDepthClipOverride"), depthClipOverride ? 1 : 0);
     glUniform1i(glGetUniformLocation(m_geomProgram, "uDepthBufferMode"), m_depthMode);
 
     float cr = ((m_constantColor >> 16) & 0xFF) / 255.0f;
