@@ -224,6 +224,7 @@ private:
     // Pipeline cache storing owned UniquePipeline triplets
     std::unordered_map<PipelineStateKey, PipelineGroup, PipelineStateKeyHash> m_pipelineCache;
     std::vector<vk::UniquePipeline> m_danglingPipelines;
+    vk::UniquePipelineCache m_vkPipelineCache; // Persistent Vulkan driver-level pipeline cache
 
     // Dynamic Ring Vertex Buffer
     vk::UniqueBuffer m_vertexBuffer;

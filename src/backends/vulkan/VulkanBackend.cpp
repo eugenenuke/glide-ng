@@ -8,6 +8,8 @@
 #include <thread>
 #include <chrono>
 #include <algorithm>
+#include <fstream>
+#include <cstdlib>
 #include <SDL2/SDL.h>
 
 // Include build-time generated shader SPIR-V bytecode headers!
@@ -203,6 +205,33 @@ void VulkanBackend::Shutdown() {
     m_depthImageMemory.reset();
     m_depthImage.reset();
 
+    // 2.5. Save persistent Vulkan pipeline cache back to disk!
+    if (m_device && m_vkPipelineCache) {
+        std::string cachePath = "";
+        const char* envCache = std::getenv("GLIDE_WRAPPER_CACHE_PATH");
+        if (envCache && envCache[0] != '\0') {
+            cachePath = envCache;
+        } else {
+            cachePath = ".glide-vulkan-cache.bin";
+        }
+
+        try {
+            auto data = m_device->getPipelineCacheData(m_vkPipelineCache.get());
+            if (!data.empty()) {
+                std::ofstream cacheFile(cachePath, std::ios::binary | std::ios::trunc);
+                if (cacheFile.is_open()) {
+                    cacheFile.write(reinterpret_cast<const char*>(data.data()), data.size());
+                    cacheFile.close();
+                    GLIDE_LOG(INFO, "Vulkan", "Successfully serialized persistent pipeline cache binary (" << data.size() << " bytes) to " << cachePath);
+                } else {
+                    GLIDE_LOG(WARN, "Vulkan", "Failed to open pipeline cache file for writing: " << cachePath);
+                }
+            }
+        } catch (const std::exception& e) {
+            GLIDE_LOG(WARN, "Vulkan", "Failed to retrieve or save pipeline cache data: " << e.what());
+        }
+    }
+
     // 5. Reset command submission and render pass infrastructure (Double-Buffered)
     m_commandBuffer = nullptr;
     for (int i = 0; i < 2; ++i) {
@@ -211,6 +240,7 @@ void VulkanBackend::Shutdown() {
         m_fences[i].reset();
     }
     m_renderPass.reset();
+    m_vkPipelineCache.reset();
 
     // 6. Now it is 100% safe to destroy the logical device and instance!
     m_device.reset();
@@ -950,6 +980,39 @@ bool VulkanBackend::CreateLogicalDevice() {
     m_device = m_physicalDevice.createDeviceUnique(deviceInfo);
     m_graphicsQueue = m_device->getQueue(m_graphicsQueueFamilyIndex, 0);
 
+    // 2.5. Initialize persistent Vulkan pipeline cache from disk!
+    std::string cachePath = "";
+    const char* envCache = std::getenv("GLIDE_WRAPPER_CACHE_PATH");
+    if (envCache && envCache[0] != '\0') {
+        cachePath = envCache;
+    } else {
+        cachePath = ".glide-vulkan-cache.bin";
+    }
+
+    std::vector<char> cacheData;
+    std::ifstream cacheFile(cachePath, std::ios::binary | std::ios::ate);
+    if (cacheFile.is_open()) {
+        std::streamsize size = cacheFile.tellg();
+        cacheFile.seekg(0, std::ios::beg);
+        cacheData.resize(size);
+        if (cacheFile.read(cacheData.data(), size)) {
+            GLIDE_LOG(INFO, "Vulkan", "Successfully loaded persistent pipeline cache binary (" << size << " bytes) from " << cachePath);
+        } else {
+            cacheData.clear();
+            GLIDE_LOG(WARN, "Vulkan", "Failed to read pipeline cache file: " << cachePath);
+        }
+        cacheFile.close();
+    } else {
+        GLIDE_LOG(INFO, "Vulkan", "No pre-existing pipeline cache file found at " << cachePath << ". Starting with a fresh cache.");
+    }
+
+    vk::PipelineCacheCreateInfo cacheInfo;
+    if (!cacheData.empty()) {
+        cacheInfo.initialDataSize = cacheData.size();
+        cacheInfo.pInitialData = cacheData.data();
+    }
+    m_vkPipelineCache = m_device->createPipelineCacheUnique(cacheInfo);
+
     vk::CommandPoolCreateInfo poolInfo(vk::CommandPoolCreateFlagBits::eResetCommandBuffer, m_graphicsQueueFamilyIndex);
     vk::FenceCreateInfo fenceInfo(vk::FenceCreateFlagBits::eSignaled); // Start signaled so first wait succeeds immediately!
 
@@ -1291,22 +1354,22 @@ PipelineGroup VulkanBackend::CompileGraphicsPipelines(const PipelineStateKey& ke
                                                    &rasterizer, &multisampling, &depthStencil, &colorBlending, &dynamicState,
                                                    m_pipelineLayout.get(), m_renderPass.get(), 0, {}, -1);
 
-        // 1. Compile Point Pipeline
-        auto pointResult = m_device->createGraphicsPipelineUnique({}, pipelineInfo);
+        // 1. Compile Point Pipeline using persistent Vulkan pipeline cache!
+        auto pointResult = m_device->createGraphicsPipelineUnique(m_vkPipelineCache.get(), pipelineInfo);
         if (pointResult.result != vk::Result::eSuccess) {
             throw std::runtime_error("Failed to compile Vulkan Point pipeline!");
         }
 
-        // 2. Compile Line Pipeline
+        // 2. Compile Line Pipeline using persistent Vulkan pipeline cache!
         inputAssembly.topology = vk::PrimitiveTopology::eLineList;
-        auto lineResult = m_device->createGraphicsPipelineUnique({}, pipelineInfo);
+        auto lineResult = m_device->createGraphicsPipelineUnique(m_vkPipelineCache.get(), pipelineInfo);
         if (lineResult.result != vk::Result::eSuccess) {
             throw std::runtime_error("Failed to compile Vulkan Line pipeline!");
         }
 
-        // 3. Compile Triangle Pipeline
+        // 3. Compile Triangle Pipeline using persistent Vulkan pipeline cache!
         inputAssembly.topology = vk::PrimitiveTopology::eTriangleList;
-        auto triangleResult = m_device->createGraphicsPipelineUnique({}, pipelineInfo);
+        auto triangleResult = m_device->createGraphicsPipelineUnique(m_vkPipelineCache.get(), pipelineInfo);
         if (triangleResult.result != vk::Result::eSuccess) {
             throw std::runtime_error("Failed to compile Vulkan Triangle pipeline!");
         }
