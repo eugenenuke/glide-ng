@@ -138,4 +138,16 @@ If we choose to optimize the software backend for active gameplay in the future,
 *   **Bottleneck:** Bilinear filtering unpacks 32-bit color channels into floats, performs floating-point weighted blending, and casts them back to integers, creating substantial float-conversion overhead.
 *   **Solution:** Implement bilinear blending using 8-bit or 16-bit fixed-point integer math, keeping all operations inside integer registers and avoiding float conversions entirely.
 
-
+### 4.5. Fast-Path for Linear / Constant-W Texture Mapping (grHints)
+*   **Bottleneck:** In tests like `test29` (Separate TMU W-routing), the application enables linear texture mapping by setting a constant $W = 1.0$ for all vertices via `grHints(GR_HINT_STWHINT, GR_STWHINT_W_DIFF_TMU0)` and setting `tmu_oow[0] = 1.0f`. Currently, the software rasterizer still performs full perspective-correct interpolation and division per pixel:
+    ```cpp
+    float divW = w0 * a.tmu_oow[0] + w1 * b.tmu_oow[0] + w2 * c.tmu_oow[0];
+    float trueS = texS / divW;
+    ```
+    This incurs 3 multiplications, 2 additions, and 2 divisions per pixel, even though `divW` is guaranteed to be mathematically `1.0f` at every pixel.
+*   **Solution:** Implement an optimized draw-time fast-path. At the beginning of `grDrawTriangle`, check if the separate TMU W hint is active and if all three vertices have `tmu_oow[0] == 1.0f`. If so, set a boolean flag `isLinearMapping = true`. Inside the pixel loop, bypass the varying interpolation and perspective division entirely:
+    ```cpp
+    float trueS = texS;
+    float trueT = texT;
+    ```
+    This completely eliminates divisions and interpolation math for linear textures, yielding an immediate speedup for `test29` and other UI/2D rendering pipelines.
