@@ -34,7 +34,7 @@ uint32_t TextureManager::CalculateMemoryRequired(uint32_t lodMin, uint32_t lodMa
         totalBytes += (levelBytes + 7) & ~7;
     }
 
-    GLIDE_LOG(INFO, "TextureManager", "Calculated MIP-map footprint: " << totalBytes << " bytes for LODs " << start << ".." << end << ", Format=" << format);
+    GLIDE_LOG(DEBUG, "TextureManager", "Calculated MIP-map footprint: " << totalBytes << " bytes for LODs " << start << ".." << end << ", Format=" << format);
     return totalBytes;
 }
 
@@ -166,7 +166,7 @@ bool TextureManager::DownloadMipMap(uint32_t tmu, uint32_t startAddress, uint32_
     m_tmus[tmu].allocatedBytes += rawBytes;
     m_tmus[tmu].textures[startAddress] = tex;
 
-    GLIDE_LOG(INFO, "TextureManager", "Successfully downloaded Virtual Texture MIP Chain at Address=0x" << std::hex << startAddress << std::dec 
+    GLIDE_LOG(DEBUG, "TextureManager", "Successfully downloaded Virtual Texture MIP Chain at Address=0x" << std::hex << startAddress << std::dec 
                                       << " Base(" << tex->baseWidth << "x" << tex->baseHeight << "), Levels=" << tex->swizzledMipLevels.size()
                                       << " into TMU" << tmu << ". Allocated pool: " << m_tmus[tmu].allocatedBytes << " bytes.");
 
@@ -190,7 +190,7 @@ bool TextureManager::DownloadTable(uint32_t tmu, uint32_t type, const void* data
         return false;
     }
 
-    GLIDE_LOG(INFO, "TextureManager", "Downloading 256-color palette table to TMU" << tmu);
+    GLIDE_LOG(DEBUG, "TextureManager", "Downloading 256-color palette table to TMU" << tmu);
     const auto* paletteData = reinterpret_cast<const uint32_t*>(data);
     std::memcpy(m_tmus[tmu].paletteTable, paletteData, sizeof(m_tmus[tmu].paletteTable));
     m_tmus[tmu].paletteTableLoaded = true;
@@ -211,7 +211,7 @@ bool TextureManager::DownloadTable(uint32_t tmu, uint32_t type, const void* data
                 tex->swizzledMipLevels.push_back(std::move(swizzled));
             }
             swizzledCount++;
-            GLIDE_LOG(INFO, "TextureManager", "Deferred-swizzled paletted texture at Address=0x" << std::hex << tex->startAddress << std::dec << " using new palette table.");
+            GLIDE_LOG(DEBUG, "TextureManager", "Deferred-swizzled paletted texture at Address=0x" << std::hex << tex->startAddress << std::dec << " using new palette table.");
             
             // Upload the fully swizzled texture to the GPU!
             if (auto* b = BackendManager::GetInstance().GetBackend()) {
@@ -220,7 +220,7 @@ bool TextureManager::DownloadTable(uint32_t tmu, uint32_t type, const void* data
         }
     }
 
-    GLIDE_LOG(INFO, "TextureManager", "Completed palette download. Deferred-swizzled " << swizzledCount << " textures.");
+    GLIDE_LOG(DEBUG, "TextureManager", "Completed palette download. Deferred-swizzled " << swizzledCount << " textures.");
     return true;
 }
 

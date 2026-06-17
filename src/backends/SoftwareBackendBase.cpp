@@ -131,7 +131,7 @@ void SoftwareBackendBase::BindTexture(uint32_t tmu, uint32_t startAddress, uint3
         m_texClampT[tmu] = clampT;
         m_texMinFilter[tmu] = minFilter;
         m_texMagFilter[tmu] = magFilter;
-        GLIDE_LOG(INFO, "Rasterizer", "BindTexture TMU" << tmu << ": Address=0x" << std::hex << startAddress << std::dec 
+        GLIDE_LOG(DEBUG, "Rasterizer", "BindTexture TMU" << tmu << ": Address=0x" << std::hex << startAddress << std::dec 
                                   << ", Clamp(" << clampS << "," << clampT << "), Filter(" << minFilter << "," << magFilter << ")");
     }
 }
@@ -154,7 +154,7 @@ void SoftwareBackendBase::SetCombinerMode(uint32_t colorFunc, uint32_t colorFact
     m_alphaCombinerLocal  = alphaLocal;
     m_alphaCombinerOther  = alphaOther;
     m_alphaCombinerInvert = alphaInvert;
-    GLIDE_LOG(INFO, "Rasterizer", "SetCombinerMode: Color(Func=" << colorFunc << ", Fac=" << colorFactor << ", Loc=" << colorLocal << ", Oth=" << colorOther << ", Inv=" << colorInvert 
+    GLIDE_LOG(DEBUG, "Rasterizer", "SetCombinerMode: Color(Func=" << colorFunc << ", Fac=" << colorFactor << ", Loc=" << colorLocal << ", Oth=" << colorOther << ", Inv=" << colorInvert 
                                   << "), Alpha(Func=" << alphaFunc << ", Fac=" << alphaFactor << ", Loc=" << alphaLocal << ", Oth=" << alphaOther << ", Inv=" << alphaInvert << ")");
 }
 

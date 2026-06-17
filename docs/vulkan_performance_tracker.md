@@ -21,8 +21,8 @@ To establish our "Gold Standard", we measured the reference **OpenGLide (Mesa GL
 ### Baseline Metrics Table
 | Test / Scenario | OpenGLide (Mesa GL) | Our CPU Software (Base) | Our CPU Software (Stage 5) | Our Vulkan (Base) | Our Vulkan (Stage 5) | Our GLES (Base) | Our GLES (Stage 5) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **`test14` (Solid Geometry)** | **208.62 FPS** | **13.12 FPS** | **-** | **39.70 FPS** | **45.48 FPS** | **44.88 FPS** | **-** |
-| **`test21` (Texturing & Console)** | **277.24 FPS** | **6.98 FPS** | **15.01 FPS** | **27.08 FPS** | **44.08 FPS** | **33.39 FPS** | **45.64 FPS** |
+| **`test14` (Solid Geometry)** | **208.62 FPS** | **13.12 FPS** | **-** | **39.70 FPS** | **46.02 FPS** | **44.88 FPS** | **-** |
+| **`test21` (Texturing & Console)** | **277.24 FPS** | **6.98 FPS** | **15.36 FPS** | **27.08 FPS** | **44.65 FPS** | **33.39 FPS** | **46.84 FPS** |
 
 *Analysis*: OpenGLide remains our "Gold Standard", but our Vulkan and GLES backends are now **closing the gap rapidly** under software emulation. By eliminating wrapper-level state formatting and scheduling overhead, we have achieved double-to-triple digit speedups across all three execution paths!
 
@@ -70,12 +70,12 @@ To establish our "Gold Standard", we measured the reference **OpenGLide (Mesa GL
 
 ### Stage 5: High-Frequency Log Demotion Sweep (June 17, 2026)
 *   **Diagnosis**: High-frequency state-setting calls in `glide_entry.cpp` (frontend), `SoftwareBackendBase.cpp` (base rasterizer), and the GPU backends were logging at `INFO` level. This flooded the log file, forcing expensive string formatting and blocking disk write IO on the CPU on *every single frame*. Crucially, the CPU software rasterizer was logging pixel-level rasterization steps under `INFO`!
-*   **Action**: Demoted **137 high-frequency log statements** to `DEBUG` across all layers using an automated script [scratch/demote_logs.py](file:///usr/local/google/home/eianiuk/gemini/3dfx/scratch/demote_logs.py). Since the `GLIDE_LOG` macro contains an early-out check on active log levels, this completely bypassed all string stream formatting and function execution for these logs in production/benchmarking.
+*   **Action**: Demoted **143 high-frequency log statements** to `DEBUG` across all layers using an automated script [scratch/demote_logs.py](file:///usr/local/google/home/eianiuk/gemini/3dfx/scratch/demote_logs.py). A revised multi-line regex parser callback was implemented to capture multi-line split `GLIDE_LOG` calls (such as `BindTexture` and `SetCombinerMode`). Since the `GLIDE_LOG` macro contains an early-out check on active log levels, this completely bypassed all string stream formatting and function execution for these logs in production/benchmarking.
 *   **Result**:
-    *   **Our CPU Software**: **6.98 FPS** $\rightarrow$ **15.01 FPS** (**+115.0% performance boost!**)
-    *   **Our GLES Headless**: **33.39 FPS** $\rightarrow$ **45.64 FPS** (**+36.7% performance boost!**)
-    *   **`test14` Vulkan Headless**: **42.81 FPS** $\rightarrow$ **45.48 FPS** (**+6.2% speedup** / **+14.6% over baseline!**)
-    *   **`test21` Vulkan Headless**: **40.57 FPS** $\rightarrow$ **44.08 FPS** (**+8.7% speedup** / **+62.8% over baseline!**)
+    *   **Our CPU Software**: **6.98 FPS** $\rightarrow$ **15.36 FPS** (**+120.0% performance boost!**)
+    *   **Our GLES Headless**: **33.39 FPS** $\rightarrow$ **46.84 FPS** (**+40.3% performance boost!**)
+    *   **`test14` Vulkan Headless**: **42.81 FPS** $\rightarrow$ **46.02 FPS** (**+7.5% speedup** / **+15.9% over baseline!**)
+    *   **`test21` Vulkan Headless**: **40.57 FPS** $\rightarrow$ **44.65 FPS** (**+10.0% speedup** / **+64.9% over baseline!**)
     *   *Analysis*: Bypassing string formatting and disk IO in the hot path unlocked a monumental double-to-triple digit speedup across the entire software emulation stack!
 
 ---
@@ -89,8 +89,8 @@ gantt
     axisFormat %s
     section Benchmarks
     OpenGLide (Mesa GL) [Gold Standard] : active, 0, 277
-    Our GLES (Stage 5 - Optimized)     : active, 0, 46
-    Our Vulkan (Stage 5 - Optimized)   : crit, 0, 44
+    Our GLES (Stage 5 - Optimized)     : active, 0, 47
+    Our Vulkan (Stage 5 - Optimized)   : crit, 0, 45
     Our Vulkan (Stage 4 - Optimized)   : 0, 41
     Our Vulkan (Stage 3 - Optimized)   : 0, 35
     Our GLES (Stage 0 - Control Group)  : 0, 33

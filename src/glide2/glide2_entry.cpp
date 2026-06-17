@@ -958,7 +958,7 @@ FX_ENTRY FxBool FX_CALL gu3dfGetInfo(const char* filename, Gu3dfInfo* info) {
     }
     info->mem_required = totalBytes;
 
-    GLIDE_LOG(INFO, "Frontend", "gu3dfGetInfo: parsed " << filename << " successfully. Format=" << formatStr 
+    GLIDE_LOG(DEBUG, "Frontend", "gu3dfGetInfo: parsed " << filename << " successfully. Format=" << formatStr 
                                 << " Aspect=" << aspectW << "x" << aspectH << " LargeLOD=" << largeLod << " MemRequired=" << totalBytes);
     return FXTRUE;
 }

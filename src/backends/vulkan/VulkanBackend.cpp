@@ -1530,7 +1530,7 @@ void VulkanBackend::UploadTexture(uint32_t tmu, uint32_t startAddress, const str
     FlushBatch();
     if (!m_initialized || !m_device) return;
 
-    GLIDE_LOG(INFO, "Vulkan", "UploadTexture TMU" << tmu << ": Address=0x" << std::hex << startAddress << std::dec 
+    GLIDE_LOG(DEBUG, "Vulkan", "UploadTexture TMU" << tmu << ": Address=0x" << std::hex << startAddress << std::dec 
               << " Size: " << tex.baseWidth << "x" << tex.baseHeight 
               << " Mipmap levels: " << tex.swizzledMipLevels.size());
 
@@ -1709,7 +1709,7 @@ void VulkanBackend::BindTexture(uint32_t tmu, uint32_t startAddress, uint32_t cl
         auto& tex = it->second;
         // Check if wrap or filter modes have changed
         if (tex.clampS != clampS || tex.clampT != clampT || tex.minFilter != minFilter || tex.magFilter != magFilter) {
-            GLIDE_LOG(INFO, "Vulkan", "BindTexture: Sampler properties changed for 0x" << std::hex << startAddress << std::dec 
+            GLIDE_LOG(DEBUG, "Vulkan", "BindTexture: Sampler properties changed for 0x" << std::hex << startAddress << std::dec 
                       << ". Recreating VkSampler. WrapS=" << clampS << " WrapT=" << clampT 
                       << " MinFilter=" << minFilter << " MagFilter=" << magFilter);
 
