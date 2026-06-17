@@ -3,6 +3,7 @@
 layout(location = 0) in vec4 fragColor;
 layout(location = 1) in vec4 fragTex;
 layout(location = 2) in float fragOOW;
+layout(location = 3) in vec2 fragTmuOow;
 
 layout(location = 0) out vec4 outColor;
 
@@ -17,7 +18,7 @@ layout(push_constant) uniform PushConstants {
     
     uint fogMode;
     uint fogColor;
-    uint pad1;
+    uint useTmuOow;
     uint fogTable[16];
 
     // Combiner & Texture State
@@ -58,6 +59,11 @@ const float s_tableIndexToW[64] = float[](
 );
 
 void main() {
+    // Near-plane clipping (W < 1.0 / oow > 1.0) - only if W-buffering is active or texturing is enabled
+    if ((pcs.depthBufferMode == 2u || pcs.textureEnabled == 1u) && fragOOW > 1.0) {
+        discard;
+    }
+
     // 1. Sample texture if enabled
     vec4 texColor = vec4(1.0);
     if (pcs.textureEnabled == 1u) {
@@ -65,7 +71,8 @@ void main() {
         float tw = float(texSize.x);
         float th = float(texSize.y);
         float maxDim = max(tw, th);
-        vec2 uv = (fragTex.xy / fragOOW) / 256.0;
+        float divW = (pcs.useTmuOow == 1u) ? fragTmuOow.x : fragOOW;
+        vec2 uv = (fragTex.xy / divW) / 256.0;
         uv.x *= (maxDim / tw);
         uv.y *= (maxDim / th);
         texColor = texture(texSampler0, uv);

@@ -73,6 +73,7 @@ ModernVertex VertexLayout::DecodeVertex(const void* gameVertex) const {
     v.pos = {0.0f, 0.0f, 0.0f, 1.0f};
     v.color = {1.0f, 1.0f, 1.0f, 1.0f};
     v.tex = {0.0f, 0.0f, 0.0f, 0.0f};
+    v.tmu_oow = {1.0f, 1.0f};
 
     if (!gameVertex) return v;
 
@@ -139,6 +140,14 @@ ModernVertex VertexLayout::DecodeVertex(const void* gameVertex) const {
         std::memcpy(&t, rawBytes + m_offsetST0 + sizeof(float), sizeof(float));
         v.tex[0] = s;
         v.tex[1] = t;
+
+        if (m_stwHintMask & 0x2) { // GR_STWHINT_W_DIFF_TMU0
+            float oow0 = 1.0f;
+            std::memcpy(&oow0, rawBytes + m_offsetST0 + 2 * sizeof(float), sizeof(float));
+            v.tmu_oow[0] = oow0;
+        } else {
+            v.tmu_oow[0] = 1.0f; // Safe default when separate W is disabled
+        }
     }
 
     return v;

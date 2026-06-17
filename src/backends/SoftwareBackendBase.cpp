@@ -167,6 +167,12 @@ void SoftwareBackendBase::SetTexCombinerMode(uint32_t tmu, uint32_t rgbFunc, uin
     }
 }
 
+void SoftwareBackendBase::SetSTWHintState(uint32_t hintMask) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    m_stwHintMask = hintMask;
+    GLIDE_LOG(INFO, "Rasterizer", "SetSTWHintState: Mask=" << hintMask);
+}
+
 void SoftwareBackendBase::DrawTriangle(const ModernVertex& a, const ModernVertex& b, const ModernVertex& c) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     if (!m_windowAttached || !m_headlessPixelMap) return;
@@ -424,6 +430,11 @@ void SoftwareBackendBase::RasterizeSoftwareTriangle(const ModernVertex& a, const
                 // 1. Interpolate vertex colors and reciprocal depth
                 float wVal = w0 * a.pos[3] + w1 * b.pos[3] + w2 * c.pos[3];
 
+                // Only perform near-plane clipping if W-buffering is active or texturing is enabled (valid W)
+                if ((m_depthMode == 2 || m_boundTexAddress[0] != 0xFFFFFFFF) && wVal > 1.0f) {
+                    continue; // Near-plane clipping (W < 1.0)
+                }
+
                 float iterR = w0 * a.color[0] + w1 * b.color[0] + w2 * c.color[0];
                 float iterG = w0 * a.color[1] + w1 * b.color[1] + w2 * c.color[1];
                 float iterB = w0 * a.color[2] + w1 * b.color[2] + w2 * c.color[2];
@@ -436,8 +447,12 @@ void SoftwareBackendBase::RasterizeSoftwareTriangle(const ModernVertex& a, const
                     float texT = w0 * a.tex[1] + w1 * b.tex[1] + w2 * c.tex[1];
                     
                     // Perspective division!
-                    float trueS = texS / wVal;
-                    float trueT = texT / wVal;
+                    float divW = wVal;
+                    if (m_stwHintMask & 0x2) { // GR_STWHINT_W_DIFF_TMU0
+                        divW = w0 * a.tmu_oow[0] + w1 * b.tmu_oow[0] + w2 * c.tmu_oow[0];
+                    }
+                    float trueS = texS / divW;
+                    float trueT = texT / divW;
 
                     uint32_t tWord = sampleTexture(0, trueS, trueT);
                     texR = ((tWord >> 16) & 0xFF) / 255.0f;

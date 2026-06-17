@@ -127,6 +127,7 @@ add_executable(test_runner
     test17_texture/test17.cpp
     test18_texture_alpha/test18.cpp
     test19_texture_filter/test19.cpp
+    test29_stw_hint/test29.cpp
     "${CMAKE_CURRENT_SOURCE_DIR}/../refs/3dfx-Glide-API/glide2x/cvg/glide/tests/tlib.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/../refs/3dfx-Glide-API/swlibs/fxmisc/linutil.c"
 )

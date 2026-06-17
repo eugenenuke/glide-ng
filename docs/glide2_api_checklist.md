@@ -8,9 +8,9 @@ This document serves as the authoritative coverage map for the **glide-ng** wrap
 
 | API Category | Implemented | Total | Coverage % |
 | :--- | :---: | :---: | :---: |
-| **Core Glide2 (`gr*`)** | 45 | 99 | 45.5% |
+| **Core Glide2 (`gr*`)** | 46 | 99 | 46.5% |
 | **Utility Library (`gu*`)** | 6 | 16 | 37.5% |
-| **Unified Glide2 Specification** | **51** | **115** | **44.3%** |
+| **Unified Glide2 Specification** | **52** | **115** | **45.2%** |
 
 ---
 
@@ -127,7 +127,7 @@ This document serves as the authoritative coverage map for the **glide-ng** wrap
 - [ ] `grCheckForRoom(FxI32 n)` — Stalls until the command queue has room for `n` entries.
 - [ ] `grGammaCorrectionValue(float value)` — Configures hardware monitor gamma correction.
 - [ ] `grSplash(...)` — Renders a 3dfx splash screen sequence.
-- [ ] `grHints(GrHint_t hintType, FxU32 hintMask)` — Provides rendering hints (e.g. sub-pixel precision).
+- [x] `grHints(GrHint_t hintType, FxU32 hintMask)` — Provides rendering hints (e.g. sub-pixel precision, separate TMU W-routing).
 
 ---
 

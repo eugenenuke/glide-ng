@@ -497,10 +497,12 @@ static const char* geomVsSource = R"(#version 300 es
 layout(location = 0) in vec4 inPos;
 layout(location = 1) in vec4 inColor;
 layout(location = 2) in vec4 inTex;
+layout(location = 3) in vec2 inTmuOow;
 
 out vec4 fragColor;
 out float fragOOW;
 out vec2 fragTexCoord;
+out vec2 fragTmuOow;
 
 uniform vec2 uViewportSize;
 uniform int uDepthClipOverride;
@@ -531,6 +533,7 @@ void main() {
     fragColor = inColor;
     fragOOW = inPos.w;
     fragTexCoord = inTex.xy;
+    fragTmuOow = inTmuOow;
 }
 )";
 
@@ -540,6 +543,7 @@ precision mediump float;
 in vec4 fragColor;
 in float fragOOW;
 in vec2 fragTexCoord;
+in vec2 fragTmuOow;
 out vec4 outColor;
 
 uniform vec4 uConstantColor;
@@ -559,6 +563,7 @@ uniform int uAlphaInvert;
 
 uniform int uTextureEnabled;
 uniform sampler2D uTexture0;
+uniform int uUseTmuOow;
 
 uniform int uAlphaTestOp;
 uniform float uAlphaTestRef;
@@ -595,7 +600,8 @@ void main() {
         float tw = float(texSize.x);
         float th = float(texSize.y);
         float maxDim = max(tw, th);
-        vec2 uv = (fragTexCoord / fragOOW) / 256.0;
+        float divW = (uUseTmuOow == 1) ? fragTmuOow.x : fragOOW;
+        vec2 uv = (fragTexCoord / divW) / 256.0;
         uv.x *= (maxDim / tw);
         uv.y *= (maxDim / th);
         texColor = texture(uTexture0, uv);
@@ -781,6 +787,10 @@ bool OpenGLESBackend::CreateGeomBuffers() {
     // Location 2: inTex (tex) -> vec4 (16 bytes)
     glEnableVertexAttribArray(2);
     glVertexAttribPointer(2, 4, GL_FLOAT, GL_FALSE, sizeof(ModernVertex), (void*)offsetof(ModernVertex, tex));
+
+    // Location 3: inTmuOow (tmu_oow) -> vec2 (8 bytes)
+    glEnableVertexAttribArray(3);
+    glVertexAttribPointer(3, 2, GL_FLOAT, GL_FALSE, sizeof(ModernVertex), (void*)offsetof(ModernVertex, tmu_oow));
 
     glBindVertexArray(0);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
@@ -1130,6 +1140,7 @@ void OpenGLESBackend::PopulateUniforms() {
     bool texEnabled = (m_boundTexAddress[0] != 0xFFFFFFFF);
     glUniform1i(glGetUniformLocation(m_geomProgram, "uTextureEnabled"), texEnabled ? 1 : 0);
     glUniform1i(glGetUniformLocation(m_geomProgram, "uTexture0"), 0); // Always texture unit 0 for TMU0
+    glUniform1i(glGetUniformLocation(m_geomProgram, "uUseTmuOow"), (m_stwHintMask & 0x2) ? 1 : 0);
 
     glUniform1i(glGetUniformLocation(m_geomProgram, "uAlphaTestOp"), (int)m_alphaTestOp);
     glUniform1f(glGetUniformLocation(m_geomProgram, "uAlphaTestRef"), (float)m_alphaTestRefVal / 255.0f);

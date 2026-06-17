@@ -58,6 +58,7 @@ namespace {
     uint32_t s_texAlphaFunc[2]  = {0, 0};
     uint32_t s_texAlphaFactor[2]= {0, 0};
     uint32_t s_boundTex[2]      = {0xFFFFFFFF, 0xFFFFFFFF};
+    uint32_t s_stwHintMask      = 0; // Default: 0 (GR_STWHINT_W_OK)
 
     uint32_t s_constantColor = 0xFFFFFFFF;
     uint32_t s_rgbSrcBlend = 4;   // GR_BLEND_ONE
@@ -106,6 +107,7 @@ struct GlideWrapperState {
     uint32_t texAlphaFunc[2];
     uint32_t texAlphaFactor[2];
     uint32_t boundTex[2];
+    uint32_t stwHintMask;
 
     uint32_t constantColor;
     uint32_t rgbSrcBlend;
@@ -167,7 +169,8 @@ FX_ENTRY FxBool FX_CALL grSstWinOpen(
           int                  nColBuffers,
           int                  nAuxBuffers) {
     EnsureEngineInitialized();
-    GLIDE_LOG(INFO, "Frontend", "grSstWinOpen (Glide 2.x) invoked. Res=" << resolution << ", Buffers=" << nColBuffers);
+    GLIDE_LOG(INFO, "Frontend", "grSstWinOpen (Glide 2.x) invoked. Res=" << resolution << ", Buffers=" << nColBuffers << ", Origin=" << origin);
+    s_sstOrigin = origin;
     GlideWrapper::VertexLayout::GetInstance().ResetToGlide2Canonical();
     auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
     if (!backend) return FXFALSE;
@@ -198,6 +201,7 @@ FX_ENTRY FxBool FX_CALL grSstWinOpen(
         backend->SetSstOrigin(s_sstOrigin);
         backend->SetFogMode(s_fogMode);
         backend->SetFogColor(s_fogColor);
+        backend->SetSTWHintState(s_stwHintMask);
         backend->SetFogTable(s_fogTable);
         for (uint32_t tmu = 0; tmu < 2; ++tmu) {
             backend->SetTexCombinerMode(tmu, s_texRgbFunc[tmu], s_texRgbFactor[tmu], s_texAlphaFunc[tmu], s_texAlphaFactor[tmu]);
@@ -212,6 +216,19 @@ FX_ENTRY void FX_CALL grSstWinClose(void) {
     GLIDE_LOG(INFO, "Frontend", "grSstWinClose invoked.");
     auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
     if (backend) backend->DetachWindow();
+}
+
+FX_ENTRY void FX_CALL grHints(GrHint_t hintType, FxU32 hintMask) {
+    EnsureEngineInitialized();
+    GLIDE_LOG(INFO, "Frontend", "grHints invoked: Type=" << hintType << ", Mask=" << hintMask);
+    if (hintType == GR_HINT_STWHINT) {
+        s_stwHintMask = hintMask;
+        GlideWrapper::VertexLayout::GetInstance().SetSTWHintMask(hintMask);
+        auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
+        if (backend) {
+            backend->SetSTWHintState(hintMask);
+        }
+    }
 }
 
 FX_ENTRY void FX_CALL grBufferClear(GrColor_t color, GrAlpha_t alpha, FxU16 depth) {
@@ -361,6 +378,7 @@ FX_ENTRY void FX_CALL grGlideGetState(GrState* state) {
     std::memcpy(ws->texAlphaFunc, s_texAlphaFunc, sizeof(s_texAlphaFunc));
     std::memcpy(ws->texAlphaFactor, s_texAlphaFactor, sizeof(s_texAlphaFactor));
     std::memcpy(ws->boundTex, s_boundTex, sizeof(s_boundTex));
+    ws->stwHintMask = s_stwHintMask;
     ws->constantColor = s_constantColor;
     ws->rgbSrcBlend = s_rgbSrcBlend;
     ws->rgbDstBlend = s_rgbDstBlend;
@@ -407,6 +425,8 @@ FX_ENTRY void FX_CALL grGlideSetState(const GrState* state) {
     std::memcpy(s_texAlphaFunc, ws->texAlphaFunc, sizeof(s_texAlphaFunc));
     std::memcpy(s_texAlphaFactor, ws->texAlphaFactor, sizeof(s_texAlphaFactor));
     std::memcpy(s_boundTex, ws->boundTex, sizeof(s_boundTex));
+    s_stwHintMask = ws->stwHintMask;
+    GlideWrapper::VertexLayout::GetInstance().SetSTWHintMask(s_stwHintMask);
     s_constantColor = ws->constantColor;
     s_rgbSrcBlend = ws->rgbSrcBlend;
     s_rgbDstBlend = ws->rgbDstBlend;
@@ -429,11 +449,13 @@ FX_ENTRY void FX_CALL grGlideSetState(const GrState* state) {
                            s_alphaFunc, s_alphaFactor, s_alphaLocal, s_alphaOther, s_alphaInvert);
         b->SetBlendState(s_rgbSrcBlend, s_rgbDstBlend, s_alphaSrcBlend, s_alphaDstBlend);
         b->SetCullState(s_cullMode);
+        b->SetSstOrigin(s_sstOrigin);
         b->SetClipWindow(s_clipMinX, s_clipMinY, s_clipMaxX, s_clipMaxY);
         b->SetConstantColor(s_constantColor);
         b->SetFogMode(s_fogMode);
         b->SetFogColor(s_fogColor);
         b->SetFogTable(s_fogTable);
+        b->SetSTWHintState(s_stwHintMask);
 
         for (uint32_t tmu = 0; tmu < 2; ++tmu) {
             b->SetTexCombinerMode(tmu, s_texRgbFunc[tmu], s_texRgbFactor[tmu], s_texAlphaFunc[tmu], s_texAlphaFactor[tmu]);

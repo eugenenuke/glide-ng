@@ -3,10 +3,12 @@
 layout(location = 0) in vec4 inPos;
 layout(location = 1) in vec4 inColor;
 layout(location = 2) in vec4 inTex;
+layout(location = 3) in vec2 inTmuOow;
 
 layout(location = 0) out vec4 fragColor;
 layout(location = 1) out vec4 fragTex;
 layout(location = 2) out float fragOOW;
+layout(location = 3) out vec2 fragTmuOow;
 
 // Viewport and constant-color configuration passed via push constants
 layout(push_constant) uniform PushConstants {
@@ -20,7 +22,7 @@ layout(push_constant) uniform PushConstants {
     
     uint fogMode;
     uint fogColor;
-    uint pad1;
+    uint useTmuOow;
     uint fogTable[16];
 
     // Combiner & Texture State
@@ -56,4 +58,5 @@ void main() {
     fragColor = inColor;
     fragTex = inTex;
     fragOOW = inPos.w;
+    fragTmuOow = inTmuOow;
 }

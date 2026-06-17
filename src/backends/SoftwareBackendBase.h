@@ -50,6 +50,7 @@ public:
     void SetCombinerMode(uint32_t colorFunc, uint32_t colorFactor, uint32_t colorLocal, uint32_t colorOther, bool colorInvert,
                          uint32_t alphaFunc, uint32_t alphaFactor, uint32_t alphaLocal, uint32_t alphaOther, bool alphaInvert) override;
     void SetTexCombinerMode(uint32_t tmu, uint32_t rgbFunc, uint32_t rgbFactor, uint32_t alphaFunc, uint32_t alphaFactor) override;
+    void SetSTWHintState(uint32_t hintMask) override;
 
     // Linear Framebuffer (LFB) read/write utilities
     void* GetLfbWritePtr() override;
@@ -123,6 +124,7 @@ protected:
     uint32_t m_texCombinerAlphaFactor[2]= {0, 0};
 
     uint32_t m_constantColor{0xFFFFFFFF};
+    uint32_t m_stwHintMask{0}; // Default: 0 (GR_STWHINT_W_OK)
     uint32_t m_pixelFormatOverride{1}; // 1 = ABGR
 };
 

@@ -967,10 +967,11 @@ PipelineGroup VulkanBackend::CompileGraphicsPipelines(const PipelineStateKey& ke
 
         // Vertex Input Bindings (matches ModernVertex exactly)
         vk::VertexInputBindingDescription bindingDesc(0, sizeof(ModernVertex), vk::VertexInputRate::eVertex);
-        std::array<vk::VertexInputAttributeDescription, 3> attrDescs = {
+        std::array<vk::VertexInputAttributeDescription, 4> attrDescs = {
             vk::VertexInputAttributeDescription(0, 0, vk::Format::eR32G32B32A32Sfloat, offsetof(ModernVertex, pos)),
             vk::VertexInputAttributeDescription(1, 0, vk::Format::eR32G32B32A32Sfloat, offsetof(ModernVertex, color)),
-            vk::VertexInputAttributeDescription(2, 0, vk::Format::eR32G32B32A32Sfloat, offsetof(ModernVertex, tex))
+            vk::VertexInputAttributeDescription(2, 0, vk::Format::eR32G32B32A32Sfloat, offsetof(ModernVertex, tex)),
+            vk::VertexInputAttributeDescription(3, 0, vk::Format::eR32G32Sfloat, offsetof(ModernVertex, tmu_oow))
         };
 
         vk::PipelineVertexInputStateCreateInfo vertexInputInfo({}, 1, &bindingDesc, static_cast<uint32_t>(attrDescs.size()), attrDescs.data());
@@ -1430,7 +1431,7 @@ void VulkanBackend::UploadTexture(uint32_t tmu, uint32_t startAddress, const str
         samplerInfo.mipmapMode = vk::SamplerMipmapMode::eNearest;
         samplerInfo.mipLodBias = 0.0f;
         samplerInfo.minLod = 0.0f;
-        samplerInfo.maxLod = 16.0f;
+        samplerInfo.maxLod = 0.0f;
 
         auto sampler = m_device->createSamplerUnique(samplerInfo);
 
@@ -1515,7 +1516,7 @@ void VulkanBackend::BindTexture(uint32_t tmu, uint32_t startAddress, uint32_t cl
             samplerInfo.mipmapMode = vk::SamplerMipmapMode::eNearest;
             samplerInfo.mipLodBias = 0.0f;
             samplerInfo.minLod = 0.0f;
-            samplerInfo.maxLod = 16.0f;
+            samplerInfo.maxLod = 0.0f;
 
             try {
                 tex.sampler = m_device->createSamplerUnique(samplerInfo);
@@ -1620,7 +1621,7 @@ void VulkanBackend::PopulatePushConstants(PushConstants& pcs) {
         packedFogColor = (a << 24) | (b << 16) | (g << 8) | r;
     }
     pcs.fogColor = packedFogColor;
-    pcs.pad1 = 0;
+    pcs.useTmuOow = (m_stwHintMask & 0x2) ? 1u : 0u;
 
     // Pack 64-entry 8-bit fog table into 16 uint32_t values
     for (int i = 0; i < 16; ++i) {

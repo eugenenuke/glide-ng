@@ -21,7 +21,7 @@ struct PushConstants {
     float depthBias;            // Normalized depth bias
     uint32_t fogMode;           // 0 = disabled, otherwise enabled
     uint32_t fogColor;          // Packed 32-bit ARGB/ABGR color
-    uint32_t pad1;              // Alignment pad
+    uint32_t useTmuOow;         // 1 = use separate TMU OOW (grHints), 0 = use vertex OOW
     uint32_t fogTable[16];      // 64-entry 8-bit fog table packed into 16 uint32_t values
 
     // Milestone 9: Combiner & Texture State
