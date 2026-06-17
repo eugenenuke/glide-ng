@@ -8,9 +8,9 @@ This document serves as the authoritative coverage map for the **glide-ng** wrap
 
 | API Category | Implemented | Total | Coverage % |
 | :--- | :---: | :---: | :---: |
-| **Core Glide2 (`gr*`)** | 46 | 99 | 46.5% |
-| **Utility Library (`gu*`)** | 6 | 16 | 37.5% |
-| **Unified Glide2 Specification** | **52** | **115** | **45.2%** |
+| **Core Glide2 (`gr*`)** | 50 | 92 | 54.3% |
+| **Utility Library (`gu*`)** | 12 | 15 | 80.0% |
+| **Unified Glide2 Specification** | **62** | **107** | **57.9%** |
 
 ---
 
@@ -139,9 +139,9 @@ This document serves as the authoritative coverage map for the **glide-ng** wrap
 - [ ] `guDrawPolygonVertexListWithClip(int n, const GrVertex *v)` — Renders a polygon with viewport clipping.
 
 ### 2.2. Combiners & Texturing
-- [ ] `guAlphaSource(GrAlphaSource_t mode)` — High-level helper to configure alpha combining modes.
-- [ ] `guColorCombineFunction(GrColorCombineFnc_t fnc)` — High-level helper to configure color combining modes.
-- [ ] `guTexCreateColorMipMap(void)` — Utility to generate a color-bar test mipmap pattern.
+- [x] `guAlphaSource(GrAlphaSource_t mode)` — High-level helper to configure alpha combining modes.
+- [x] `guColorCombineFunction(GrColorCombineFnc_t fnc)` — High-level helper to configure color combining modes.
+- [x] `guTexCreateColorMipMap(void)` — Utility to generate a color-bar test mipmap pattern.
 - [x] `gu3dfGetInfo(const char *filename, Gu3dfInfo *info)` — Parses `.3df` texture file headers.
 - [x] `gu3dfLoad(const char *filename, Gu3dfInfo *data)` — Parses and loads `.3df` texture pixels into RAM.
 
@@ -152,6 +152,6 @@ This document serves as the authoritative coverage map for the **glide-ng** wrap
 - [x] `guFogGenerateLinear(GrFog_t fogtable[], float nearZ, float farZ)` — Populates the table with a linear curve.
 
 ### 2.4. Endian Swapping & Encoding
-- [ ] `guEncodeRLE16(void *dst, void *src, FxU32 w, FxU32 h)` — Compresses 16-bit color pixels to RLE.
-- [ ] `guEndianSwapWords(FxU32 value)` — Swaps byte order of 32-bit words.
-- [ ] `guEndianSwapBytes(FxU16 value)` — Swaps byte order of 16-bit words.
+- [x] `guEncodeRLE16(void *dst, void *src, FxU32 w, FxU32 h)` — Compresses 16-bit color pixels to RLE.
+- [x] `guEndianSwapWords(FxU32 value)` — Swaps byte order of 32-bit words.
+- [x] `guEndianSwapBytes(FxU16 value)` — Swaps byte order of 16-bit words.

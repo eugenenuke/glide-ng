@@ -995,4 +995,203 @@ FX_ENTRY void FX_CALL grFogTable(const GrFog_t ft[]) {
     }
 }
 
+FX_ENTRY FxU32 FX_CALL guEndianSwapWords( FxU32 value ) {
+    return ( ( value & 0xFFFF0000 ) >> 16 ) | ( value << 16 );
+}
+
+FX_ENTRY FxU16 FX_CALL guEndianSwapBytes( FxU16 value ) {
+    return ( ( value & 0xFF00 ) >> 8 ) | ( value << 8 );
+}
+
+FX_ENTRY void FX_CALL guAlphaSource( GrAlphaSource_t mode ) {
+    GLIDE_LOG(INFO, "Frontend", "guAlphaSource invoked: " << mode);
+    switch ( mode ) {
+    case GR_ALPHASOURCE_CC_ALPHA:
+        grAlphaCombine( GR_COMBINE_FUNCTION_LOCAL, 
+                        GR_COMBINE_FACTOR_NONE, 
+                        GR_COMBINE_LOCAL_CONSTANT, 
+                        GR_COMBINE_OTHER_NONE, 
+                        FXFALSE );
+        break;
+
+    case GR_ALPHASOURCE_ITERATED_ALPHA:
+        grAlphaCombine( GR_COMBINE_FUNCTION_LOCAL, 
+                        GR_COMBINE_FACTOR_NONE, 
+                        GR_COMBINE_LOCAL_ITERATED, 
+                        GR_COMBINE_OTHER_NONE, 
+                        FXFALSE );
+        break;
+
+    case GR_ALPHASOURCE_TEXTURE_ALPHA:
+        grAlphaCombine( GR_COMBINE_FUNCTION_SCALE_OTHER, 
+                        GR_COMBINE_FACTOR_ONE, 
+                        GR_COMBINE_LOCAL_NONE, 
+                        GR_COMBINE_OTHER_TEXTURE, 
+                        FXFALSE );
+        break;
+
+    case GR_ALPHASOURCE_TEXTURE_ALPHA_TIMES_ITERATED_ALPHA:
+        grAlphaCombine( GR_COMBINE_FUNCTION_SCALE_OTHER, 
+                        GR_COMBINE_FACTOR_LOCAL, 
+                        GR_COMBINE_LOCAL_ITERATED, 
+                        GR_COMBINE_OTHER_TEXTURE, 
+                        FXFALSE );
+        break;
+
+    default:
+        GLIDE_LOG(WARN, "Frontend", "guAlphaSource: unknown alpha source mode: " << mode);
+        break;
+    }
+}
+
+FX_ENTRY void FX_CALL guColorCombineFunction( GrColorCombineFnc_t fnc ) {
+    GLIDE_LOG(INFO, "Frontend", "guColorCombineFunction invoked: " << fnc);
+    switch ( fnc )
+    {
+    case GR_COLORCOMBINE_ZERO:
+        grColorCombine( GR_COMBINE_FUNCTION_ZERO, GR_COMBINE_FACTOR_NONE, GR_COMBINE_LOCAL_NONE, GR_COMBINE_OTHER_NONE, FXFALSE );
+        break;
+
+    case GR_COLORCOMBINE_CCRGB:
+        grColorCombine( GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE, GR_COMBINE_LOCAL_CONSTANT, GR_COMBINE_OTHER_NONE, FXFALSE );
+        break;
+
+    case GR_COLORCOMBINE_ITRGB_DELTA0:
+    case GR_COLORCOMBINE_ITRGB:
+        grColorCombine( GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE, GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_NONE, FXFALSE );
+        break;
+
+    case GR_COLORCOMBINE_DECAL_TEXTURE:
+        grColorCombine( GR_COMBINE_FUNCTION_SCALE_OTHER, GR_COMBINE_FACTOR_ONE, GR_COMBINE_LOCAL_NONE, GR_COMBINE_OTHER_TEXTURE, FXFALSE );
+        break;
+
+    case GR_COLORCOMBINE_TEXTURE_TIMES_CCRGB:
+        grColorCombine( GR_COMBINE_FUNCTION_SCALE_OTHER, GR_COMBINE_FACTOR_LOCAL, GR_COMBINE_LOCAL_CONSTANT, GR_COMBINE_OTHER_TEXTURE, FXFALSE );
+        break;
+
+    case GR_COLORCOMBINE_TEXTURE_TIMES_ITRGB_DELTA0:
+    case GR_COLORCOMBINE_TEXTURE_TIMES_ITRGB:
+        grColorCombine( GR_COMBINE_FUNCTION_SCALE_OTHER, GR_COMBINE_FACTOR_LOCAL, GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_TEXTURE, FXFALSE );
+        break;
+
+    case GR_COLORCOMBINE_TEXTURE_TIMES_ITRGB_ADD_ALPHA:
+        grColorCombine( GR_COMBINE_FUNCTION_SCALE_OTHER_ADD_LOCAL_ALPHA, GR_COMBINE_FACTOR_LOCAL, GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_TEXTURE, FXFALSE );
+        break;
+
+    case GR_COLORCOMBINE_TEXTURE_TIMES_ALPHA:
+        grColorCombine( GR_COMBINE_FUNCTION_SCALE_OTHER, GR_COMBINE_FACTOR_LOCAL_ALPHA, GR_COMBINE_LOCAL_NONE, GR_COMBINE_OTHER_TEXTURE, FXFALSE );
+        break;
+
+    case GR_COLORCOMBINE_TEXTURE_TIMES_ALPHA_ADD_ITRGB:
+        grColorCombine( GR_COMBINE_FUNCTION_SCALE_OTHER_ADD_LOCAL, GR_COMBINE_FACTOR_LOCAL_ALPHA, GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_TEXTURE, FXFALSE );
+        break;
+
+    case GR_COLORCOMBINE_TEXTURE_ADD_ITRGB:
+        grColorCombine( GR_COMBINE_FUNCTION_SCALE_OTHER_ADD_LOCAL, GR_COMBINE_FACTOR_ONE, GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_TEXTURE, FXFALSE );
+        break;
+
+    case GR_COLORCOMBINE_TEXTURE_SUB_ITRGB:
+        grColorCombine( GR_COMBINE_FUNCTION_SCALE_OTHER_MINUS_LOCAL, GR_COMBINE_FACTOR_ONE, GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_TEXTURE, FXFALSE );
+        break;
+
+    case GR_COLORCOMBINE_CCRGB_BLEND_ITRGB_ON_TEXALPHA:
+        grColorCombine( GR_COMBINE_FUNCTION_BLEND, GR_COMBINE_FACTOR_TEXTURE_ALPHA, GR_COMBINE_LOCAL_CONSTANT, GR_COMBINE_OTHER_ITERATED, FXFALSE );
+        break;
+
+    case GR_COLORCOMBINE_DIFF_SPEC_A:
+        grColorCombine( GR_COMBINE_FUNCTION_SCALE_OTHER_ADD_LOCAL, GR_COMBINE_FACTOR_LOCAL_ALPHA, GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_TEXTURE, FXFALSE );
+        break;
+
+    case GR_COLORCOMBINE_DIFF_SPEC_B:
+        grColorCombine( GR_COMBINE_FUNCTION_SCALE_OTHER_ADD_LOCAL_ALPHA, GR_COMBINE_FACTOR_LOCAL, GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_TEXTURE, FXFALSE );
+        break;
+
+    case GR_COLORCOMBINE_ONE:
+        grColorCombine( GR_COMBINE_FUNCTION_ZERO, GR_COMBINE_FACTOR_NONE, GR_COMBINE_LOCAL_NONE, GR_COMBINE_OTHER_NONE, FXTRUE );
+        break;
+        
+    default:
+        GLIDE_LOG(WARN, "Frontend", "guColorCombineFunction: unsupported color combine function: " << fnc);
+        break;
+    }
+}
+
+FX_ENTRY int FX_CALL guEncodeRLE16( void *dst, void *src, FxU32 width, FxU32 height ) {
+    int byteCount = 0;
+    int sourceImageSizeInWords = width * height;
+    FxU16 *srcPixels = reinterpret_cast<FxU16*>(src);
+    FxU32 *dstPixels = reinterpret_cast<FxU32*>(dst);
+
+    if ( dstPixels ) {
+        while( sourceImageSizeInWords > 0 ) {
+            FxU16 length    = 1;
+            FxU16 color     = *srcPixels;
+            int   lookAhead = 1;
+
+            while( (sourceImageSizeInWords - length > 0) &&
+                   (color == srcPixels[lookAhead]) ) {
+                length++;
+                lookAhead++;
+            }
+
+            *dstPixels = ((((FxU32)length)<<16) | ((FxU32)color));
+            dstPixels++;
+            byteCount += 4;
+            srcPixels += length;
+            sourceImageSizeInWords -= length;            
+        }
+    } else {
+        while( sourceImageSizeInWords > 0 ) {
+            FxU16 length    = 1;
+            FxU16 color     = *srcPixels;
+            int   lookAhead = 1;
+
+            while( (sourceImageSizeInWords - length > 0) &&
+                   (color == srcPixels[lookAhead]) ) {
+                length++;
+                lookAhead++;
+            }
+
+            byteCount += 4;
+            srcPixels += length;
+            sourceImageSizeInWords -= length;            
+        }
+    }
+    return byteCount;
+}
+
+static void setlevel( FxU16 *data, FxU16 color, int width, int height ) {
+   int s, t;
+   for ( t = 0; t < height; t++ ) {
+      for ( s = 0; s < width; s++ ) {
+         *data = color;
+          data++;
+      }
+   }
+}
+
+FX_ENTRY FxU16 * FX_CALL guTexCreateColorMipMap( void ) {
+   FxU32 memrequired;
+   FxU16 *data;
+   FxU16 *start;
+
+   GLIDE_LOG(INFO, "Frontend", "guTexCreateColorMipMap invoked.");
+   memrequired = 2 * ( 256 * 256 + 128 * 128 + 64 * 64 + 32 * 32 + 16 * 16 + 8 * 8 + 4 * 4 + 2 * 2 + 1 * 1 );
+   start = data = reinterpret_cast<FxU16*>(std::malloc( memrequired ));
+   if ( !data )
+      return nullptr;
+
+   setlevel( data,            0xF800, 256, 256 ); // Red
+   setlevel( data += 256*256, 0x07e0, 128, 128 ); // Green
+   setlevel( data += 128*128, 0x001F, 64, 64 );   // Blue
+   setlevel( data += 64*64,   0xFFFF, 32, 32);    // White
+   setlevel( data += 32*32,   0x0000, 16, 16 );   // Black
+   setlevel( data += 16*16,   0xF800, 8, 8);      // Red
+   setlevel( data += 8*8,     0x07e0, 4, 4 );     // Green
+   setlevel( data += 4*4,     0x001f, 2, 2 );     // Blue
+   setlevel( data += 2*2,     0xFFFF, 1, 1 );     // White
+
+   return start;
+}
+
 } // extern "C"

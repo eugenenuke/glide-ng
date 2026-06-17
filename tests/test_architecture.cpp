@@ -717,3 +717,154 @@ TEST_CASE("Architectural Core Validation", "[Architecture]") {
 #endif
     }
 }
+
+TEST_CASE("Glide Utility Helpers (gu*)", "[Utility]") {
+    SECTION("Endian Swapping") {
+        void* handle = OpenGlide2Handle();
+        REQUIRE(handle != nullptr);
+
+        using SwapWordsFunc = FxU32(*)(FxU32);
+        using SwapBytesFunc = FxU16(*)(FxU16);
+
+        auto swapWords = reinterpret_cast<SwapWordsFunc>(::dlsym(handle, "guEndianSwapWords"));
+        auto swapBytes = reinterpret_cast<SwapBytesFunc>(::dlsym(handle, "guEndianSwapBytes"));
+
+        REQUIRE(swapWords != nullptr);
+        REQUIRE(swapBytes != nullptr);
+
+        // Test word swap (swaps high and low 16-bit words of a 32-bit value)
+        REQUIRE(swapWords(0x12345678) == 0x56781234);
+        REQUIRE(swapWords(0x0000FFFF) == 0xFFFF0000);
+        REQUIRE(swapWords(0xABCDEF01) == 0xEF01ABCD);
+
+        // Test byte swap (swaps two bytes of a 16-bit value)
+        REQUIRE(swapBytes(0x1234) == 0x3412);
+        REQUIRE(swapBytes(0x00FF) == 0xFF00);
+        REQUIRE(swapBytes(0xABCD) == 0xCDAB);
+
+        ::dlclose(handle);
+    }
+
+    SECTION("RLE 16-bit Encoding") {
+        void* handle = OpenGlide2Handle();
+        REQUIRE(handle != nullptr);
+
+        using EncodeRLEFunc = int(*)(void*, void*, FxU32, FxU32);
+        auto encodeRLE = reinterpret_cast<EncodeRLEFunc>(::dlsym(handle, "guEncodeRLE16"));
+        REQUIRE(encodeRLE != nullptr);
+
+        // Construct 8x2 test image (16 pixels)
+        // 8 pixels of Red (0xF800), 4 pixels of Green (0x07E0), 4 pixels of Blue (0x001F)
+        std::vector<uint16_t> src(16);
+        for (int i = 0; i < 8; ++i) src[i] = 0xF800;
+        for (int i = 8; i < 12; ++i) src[i] = 0x07E0;
+        for (int i = 12; i < 16; ++i) src[i] = 0x001F;
+
+        // 1. Query size only
+        int bytesNeeded = encodeRLE(nullptr, src.data(), 8, 2);
+        REQUIRE(bytesNeeded == 12); // 3 runs * 4 bytes/run = 12 bytes
+
+        // 2. Perform encoding
+        std::vector<uint32_t> dst(3, 0);
+        int bytesWritten = encodeRLE(dst.data(), src.data(), 8, 2);
+        REQUIRE(bytesWritten == 12);
+
+        // 3. Verify encoded runs
+        // Run 0: 8 of Red (0xF800) -> 0x0008F800
+        REQUIRE(dst[0] == 0x0008F800);
+        // Run 1: 4 of Green (0x07E0) -> 0x000407E0
+        REQUIRE(dst[1] == 0x000407E0);
+        // Run 2: 4 of Blue (0x001F) -> 0x0004001F
+        REQUIRE(dst[2] == 0x0004001F);
+
+        ::dlclose(handle);
+    }
+
+    SECTION("Color MipMap Creation") {
+        void* handle = OpenGlide2Handle();
+        REQUIRE(handle != nullptr);
+
+        using CreateMipMapFunc = FxU16*(*)(void);
+        auto createMipMap = reinterpret_cast<CreateMipMapFunc>(::dlsym(handle, "guTexCreateColorMipMap"));
+        REQUIRE(createMipMap != nullptr);
+
+        FxU16* mipmap = createMipMap();
+        REQUIRE(mipmap != nullptr);
+
+        // Verify colors at the start of each mipmap level
+        // Level 0 (256x256): starts at offset 0, Red (0xF800)
+        REQUIRE(mipmap[0] == 0xF800);
+        REQUIRE(mipmap[256*256 - 1] == 0xF800);
+
+        // Level 1 (128x128): starts at offset 65536, Green (0x07E0)
+        REQUIRE(mipmap[65536] == 0x07E0);
+        REQUIRE(mipmap[65536 + 128*128 - 1] == 0x07E0);
+
+        // Level 2 (64x64): starts at offset 81920, Blue (0x001F)
+        REQUIRE(mipmap[81920] == 0x001F);
+
+        // Level 3 (32x32): starts at offset 86016, White (0xFFFF)
+        REQUIRE(mipmap[86016] == 0xFFFF);
+
+        // Level 4 (16x16): starts at offset 87040, Black (0x0000)
+        REQUIRE(mipmap[87040] == 0x0000);
+
+        // Level 5 (8x8): starts at offset 87296, Red (0xF800)
+        REQUIRE(mipmap[87296] == 0xF800);
+
+        // Level 6 (4x4): starts at offset 87360, Green (0x07E0)
+        REQUIRE(mipmap[87360] == 0x07E0);
+
+        // Level 7 (2x2): starts at offset 87376, Blue (0x001F)
+        REQUIRE(mipmap[87376] == 0x001F);
+
+        // Level 8 (1x1): starts at offset 87380, White (0xFFFF)
+        REQUIRE(mipmap[87380] == 0xFFFF);
+
+        std::free(mipmap);
+        ::dlclose(handle);
+    }
+
+    SECTION("Combiner Preset State Routing") {
+        void* handle = OpenGlide2Handle();
+        REQUIRE(handle != nullptr);
+
+        using InitFunc = void(*)(void);
+        using SelectSstFunc = void(*)(int);
+        using OpenWinFunc = FxBool(*)(FxU32, GrScreenResolution_t, GrScreenRefresh_t, GrColorFormat_t, GrOriginLocation_t, int, int);
+        using CloseWinFunc = void(*)(void);
+        using AlphaSourceFunc = void(*)(GrAlphaSource_t);
+        using ColorCombineFunc = void(*)(GrColorCombineFnc_t);
+
+        auto glideInit = reinterpret_cast<InitFunc>(::dlsym(handle, "grGlideInit"));
+        auto sstSelect = reinterpret_cast<SelectSstFunc>(::dlsym(handle, "grSstSelect"));
+        auto winOpen   = reinterpret_cast<OpenWinFunc>(::dlsym(handle, "grSstWinOpen"));
+        auto winClose  = reinterpret_cast<CloseWinFunc>(::dlsym(handle, "grSstWinClose"));
+        auto alphaSrc  = reinterpret_cast<AlphaSourceFunc>(::dlsym(handle, "guAlphaSource"));
+        auto colorComb = reinterpret_cast<ColorCombineFunc>(::dlsym(handle, "guColorCombineFunction"));
+
+        REQUIRE(glideInit != nullptr);
+        REQUIRE(sstSelect != nullptr);
+        REQUIRE(winOpen != nullptr);
+        REQUIRE(winClose != nullptr);
+        REQUIRE(alphaSrc != nullptr);
+        REQUIRE(colorComb != nullptr);
+
+        // Open a headless window context to instantiate the backend
+        glideInit();
+        sstSelect(0);
+        FxBool ok = winOpen(0, GR_RESOLUTION_800x600, GR_REFRESH_60Hz, GR_COLORFORMAT_ARGB, GR_ORIGIN_LOWER_LEFT, 2, 0);
+        REQUIRE(ok == FXTRUE);
+
+        // Call the combiner helpers under the active context
+        // These should execute successfully and update the combiner state without throwing/crashing
+        REQUIRE_NOTHROW(alphaSrc(GR_ALPHASOURCE_TEXTURE_ALPHA));
+        REQUIRE_NOTHROW(alphaSrc(GR_ALPHASOURCE_ITERATED_ALPHA));
+
+        REQUIRE_NOTHROW(colorComb(GR_COLORCOMBINE_DECAL_TEXTURE));
+        REQUIRE_NOTHROW(colorComb(GR_COLORCOMBINE_TEXTURE_TIMES_ITRGB));
+
+        winClose();
+        ::dlclose(handle);
+    }
+}
