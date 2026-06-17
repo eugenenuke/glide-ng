@@ -15,16 +15,19 @@ Our pure software backend implements a reference-quality C++ rasterizer that run
 
 | Test Scenario | Our Software (Baseline) | Mesa CPU Vulkan (Gold Standard) | Overhead Factor | Target Goal (Stage 1) | Target Speedup |
 | :--- | :---: | :---: | :---: | :---: | :---: |
-| **`test00` (Clears)** | **323.80 FPS** | **144.50 FPS** | 0.4x | **350.00 FPS** | **+8.1%** |
-| **`test14` (Solid Depth)** | **81.00 FPS** | **117.80 FPS** | 1.5x | **110.00 FPS** | **+35.8%** |
-| **`test17` (Simple Texture)** | **34.90 FPS** | **123.90 FPS** | 3.6x | **70.00 FPS** | **+100.6%** |
-| **`test21` (Texture & Blend)** | **12.80 FPS** | **88.80 FPS** | 6.9x | **35.00 FPS** | **+173.4%** |
-| **Aggregated Average (Raster)** | **-** | **-** | **4.0x slower** | **-** | **-** |
+| **`test00` (Clears)** | **317.40 FPS** | **121.10 FPS** | 0.4x | **350.00 FPS** | **+10.3%** |
+| **`test08` (Fog)** | **58.60 FPS** | **71.40 FPS** | 1.2x | **68.00 FPS** | **+16.0%** |
+| **`test14` (Solid Depth)** | **72.30 FPS** | **116.10 FPS** | 1.6x | **105.00 FPS** | **+45.2%** |
+| **`test17` (Simple Texture)** | **34.40 FPS** | **122.90 FPS** | 3.6x | **70.00 FPS** | **+103.5%** |
+| **`test18` (Texture Alpha)** | **3.60 FPS** | **71.20 FPS** | 19.8x | **15.00 FPS** | **+316.7%** |
+| **`test21` (Texture & Blend)** | **12.70 FPS** | **89.40 FPS** | 7.0x | **35.00 FPS** | **+175.6%** |
+| **Aggregated Average (Raster)** | **-** | **-** | **6.6x slower** | **-** | **-** |
 
 *Analysis*: 
-*   In **`test00` (Clears)**, our software backend is **2.2x faster** than Mesa CPU Vulkan! This is because we bypass all Vulkan command buffer recording, synchronization, and presentation overhead, doing a simple `std::fill` on raw memory.
-*   On actual rasterization workloads, our software backend is **4.0x slower** than Mesa CPU Vulkan.
-*   The overhead is most severe in **`test21` (Texture & Blend)**, where our software backend is **6.9x slower**! This is due to the heavy floating-point divisions and redundant edge function calculations in our pixel traversal loop, making `test21` the biggest and easiest target for optimization.
+*   In **`test00` (Clears)**, our software backend is **2.6x faster** than Mesa CPU Vulkan! This is because we bypass all Vulkan command buffer recording, synchronization, and presentation overhead, doing a simple `std::fill` on raw memory.
+*   The overhead is most severe in **`test18` (Texture Alpha)**, where our software backend is **19.8x slower** (**3.60 FPS vs. 71.20 FPS**)! This is because `test18` draws dense, transparent leaf textures where many pixels fail the alpha test, but our current pixel loop performs the entire suite of heavy color interpolation, coordinate division, texture sampling, and combiner math *before* discarding the pixel at the very end of the pipeline.
+*   By combining **Pineda's Incremental Rasterization (Stage 1)** with **Early Alpha/Depth Pruning**, we can bypass the entire texture sampling and combiner pipeline for transparent pixels, unlocking a massive speedup for `test18`!
+*   In **`test21` (Texture & Blend)**, our software backend is **7.0x slower** due to the heavy bilinear texture filtering and multi-pass blending math, making it our second major target for optimization.
 
 ---
 
@@ -88,14 +91,14 @@ graph TD
     *   Step to the next pixel by simply adding the derivatives: `E0 += dE0_dx`, `E1 += dE1_dx`, `E2 += dE2_dx`. This replaces 15 complex floating-point operations with **just 3 simple float additions**!
 
 ### Projected Performance Impact:
-*   **Solid Geometry (`test14`)**: Removing inner loop divisions and adopting incremental steps will reduce instruction count by ~70%, projected to boost FPS from **81.00** to **110+ FPS** (+35%).
-*   **Texturing & Blending (`test21`)**: Combining incremental rasterization with texture mapping will allow the CPU to spend more cycles on interpolation and texel filtering, projected to boost FPS from **12.80** to **35+ FPS** (+173%).
+*   **Solid Geometry (`test14` & `test08`)**: Removing inner loop divisions and adopting incremental steps will reduce instruction count by ~70%, projected to boost solid rendering significantly.
+*   **Texturing & Blending (`test17`, `test18`, `test21`)**: Combining incremental rasterization with texture mapping will allow the CPU to spend more cycles on interpolation and texel filtering. For `test18`, we expect a massive **+316.7% boost** (reaching 15+ FPS) from the raw instruction reduction!
 
 ---
 
 ## 4. Comparative Progress Chart (Aggregated Rasterization FPS Index)
 
-*Note: The Aggregated Index represents the average FPS across `test14`, `test17`, and `test21`, representing true rasterization workloads.*
+*Note: The Aggregated Index represents the average FPS across `test08`, `test14`, `test17`, `test18`, and `test21`, representing true rasterization workloads.*
 
 ```mermaid
 gantt
@@ -103,8 +106,8 @@ gantt
     dateFormat  X
     axisFormat %s
     section Performance Index
-    Mesa CPU Vulkan (Gold Standard)      : active, 0, 110
-    Our Software (Baseline)              : crit, 0, 42
+    Mesa CPU Vulkan (Gold Standard)      : active, 0, 94
+    Our Software (Baseline)              : crit, 0, 36
 ```
 
 ---
