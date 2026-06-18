@@ -328,12 +328,13 @@ int main(int argc, char* argv[]) {
     std::cout << "Glide Version:   " << (GLIDE_VERSION == 3 ? "3.10" : "2.43") << std::endl;
     std::cout << "Resolution:      " << resolutions[res_index].name << " (" << std::fixed << std::setprecision(2) << req_mem << " MB VRAM required)" << std::endl;
     std::cout << "----------------------------------------------------------------------" << std::endl;
-    std::cout << "Emulated Device: " << board_name << std::endl;
+    std::cout << "Emulated Device: " << board_name << " (" << grGetString(GR_HARDWARE) << ")" << std::endl;
+    std::cout << "Device Vendor:   " << grGetString(GR_VENDOR) << std::endl;
     std::cout << "VRAM Size:       " << fbi_mem << ".00 MB" << std::endl;
     std::cout << "Active TMUs:     " << tmu_count << " TMUs" << std::endl;
     std::cout << "SLI Detect:      " << (sli ? "Yes (Dual-Card Board)" : "No") << std::endl;
     std::cout << "----------------------------------------------------------------------" << std::endl;
-    std::cout << "Active Driver:   " << grGetString(GR_RENDERER) << std::endl;
+    std::cout << "Active Driver:   " << grGetString(GR_RENDERER) << " (Version: " << grGetString(GR_VERSION) << ")" << std::endl;
     std::cout << "----------------------------------------------------------------------" << std::endl;
     std::cout << "Interactive Keybindings:" << std::endl;
     std::cout << "  [ESC]          Exit Tool" << std::endl;

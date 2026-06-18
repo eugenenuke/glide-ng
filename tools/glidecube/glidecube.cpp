@@ -260,12 +260,13 @@ int main(int argc, char* argv[]) {
     std::cout << "Glide Version:   " << (GLIDE_VERSION == 3 ? "3.10" : "2.43") << std::endl;
     std::cout << "Resolution:      " << resolutions[res_index].name << " (" << std::fixed << std::setprecision(2) << req_mem << " MB VRAM required)" << std::endl;
     std::cout << "----------------------------------------------------------------------" << std::endl;
-    std::cout << "Emulated Device: " << board_name << std::endl;
+    std::cout << "Emulated Device: " << board_name << " (" << grGetString(GR_HARDWARE) << ")" << std::endl;
+    std::cout << "Device Vendor:   " << grGetString(GR_VENDOR) << std::endl;
     std::cout << "VRAM Size:       " << fbi_mem << ".00 MB" << std::endl;
     std::cout << "Active TMUs:     " << tmu_count << " TMUs" << std::endl;
     std::cout << "SLI Detect:      " << (sli ? "Yes (Dual-Card Board)" : "No") << std::endl;
     std::cout << "----------------------------------------------------------------------" << std::endl;
-    std::cout << "Active Driver:   " << grGetString(GR_RENDERER) << std::endl;
+    std::cout << "Active Driver:   " << grGetString(GR_RENDERER) << " (Version: " << grGetString(GR_VERSION) << ")" << std::endl;
     std::cout << "----------------------------------------------------------------------" << std::endl;
     std::cout << "Interactive Keybindings:" << std::endl;
     std::cout << "  [ESC]          Exit Tool" << std::endl;
@@ -362,9 +363,19 @@ int main(int argc, char* argv[]) {
     banner_tex_info.format = GR_TEXFMT_RGB_565;
     banner_tex_info.data = banner_tex_buf.data();
 
-    // 3. Set up the 3dfx Splash Logo (64x64) by copying its GrTexInfo header from raw assets
+    // 3. Set up the 3dfx Splash Logo (64x64) by assigning fields from raw assets layout
+    Gu3dfInfo* splash_info = (Gu3dfInfo*)text_3dfinfo_raw;
     GrTexInfo splash_tex_info;
-    memcpy(&splash_tex_info, text_3dfinfo_raw, sizeof(GrTexInfo));
+#if GLIDE_VERSION == 3
+    splash_tex_info.smallLodLog2 = splash_info->header.small_lod;
+    splash_tex_info.largeLodLog2 = splash_info->header.large_lod;
+    splash_tex_info.aspectRatioLog2 = splash_info->header.aspect_ratio;
+#else
+    splash_tex_info.smallLod = splash_info->header.small_lod;
+    splash_tex_info.largeLod = splash_info->header.large_lod;
+    splash_tex_info.aspectRatio = splash_info->header.aspect_ratio;
+#endif
+    splash_tex_info.format = splash_info->header.format;
     splash_tex_info.data = text_3dfinfo_image;
 
     // Download all textures into TMU0 memory
