@@ -12,13 +12,13 @@ The two codebases operate at entirely different layers of the graphics stack:
 graph TD
     A["Legacy Game (Guest Application)"] -->|Calls Glide C API| B["Glide C Driver (glide2x.dll / .ovl)"]
     
-    subgraph "Our Approach: API Wrapper"
+    subgraph wrapper ["Our Approach: API Wrapper"]
         B -->|Direct High-Level Intercept| C["Our Glide Wrapper (glide-ng)"]
         C -->|Translates Calls| D["Host Graphics Backend (Vulkan / GLES / Our SW)"]
         D -->|Renders Natively| E["Host GPU / CPU"]
     end
     
-    subgraph "DosBox Approach: Hardware Emulator"
+    subgraph emulator ["DosBox Approach: Hardware Emulator"]
         B -->|Compiles to Register Writes| F["Memory-Mapped I/O (MMIO) Registers"]
         F -->|Guest CPU PCI Writes| G["DosBox Voodoo Hardware Emulator (voodoo_emu.cpp)"]
         G -->|Software Rasterization| H["Simulated VRAM Framebuffer"]
