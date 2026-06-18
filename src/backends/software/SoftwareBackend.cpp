@@ -833,9 +833,7 @@ void SoftwareBackend::RasterizeSoftwareTriangleImpl(const ModernVertex& a, const
 __attribute__((target("avx2,fma")))
 void SoftwareBackend::RasterizeSoftwareTriangle(const ModernVertex& a, const ModernVertex& b, const ModernVertex& c) {
     if (!m_simdLogged) {
-        if (std::getenv("GLIDE_WRAPPER_DEBUG")) {
-            std::cerr << "[GLIDE WRAPPER DISPATCH]: Dispatched to AVX2 + FMA rasterizer path!" << std::endl;
-        }
+        GLIDE_LOG(DEBUG, "SoftwareBackend", "Dispatched to AVX2 + FMA rasterizer path!");
         m_simdLogged = true;
     }
     RasterizeSoftwareTriangleImpl(a, b, c);
@@ -844,9 +842,7 @@ void SoftwareBackend::RasterizeSoftwareTriangle(const ModernVertex& a, const Mod
 __attribute__((target("sse4.2")))
 void SoftwareBackend::RasterizeSoftwareTriangle(const ModernVertex& a, const ModernVertex& b, const ModernVertex& c) {
     if (!m_simdLogged) {
-        if (std::getenv("GLIDE_WRAPPER_DEBUG")) {
-            std::cerr << "[GLIDE WRAPPER DISPATCH]: Dispatched to SSE4.2 rasterizer path!" << std::endl;
-        }
+        GLIDE_LOG(DEBUG, "SoftwareBackend", "Dispatched to SSE4.2 rasterizer path!");
         m_simdLogged = true;
     }
     RasterizeSoftwareTriangleImpl(a, b, c);
@@ -855,9 +851,7 @@ void SoftwareBackend::RasterizeSoftwareTriangle(const ModernVertex& a, const Mod
 __attribute__((target("default")))
 void SoftwareBackend::RasterizeSoftwareTriangle(const ModernVertex& a, const ModernVertex& b, const ModernVertex& c) {
     if (!m_simdLogged) {
-        if (std::getenv("GLIDE_WRAPPER_DEBUG")) {
-            std::cerr << "[GLIDE WRAPPER DISPATCH]: Dispatched to default scalar rasterizer path!" << std::endl;
-        }
+        GLIDE_LOG(DEBUG, "SoftwareBackend", "Dispatched to default scalar rasterizer path!");
         m_simdLogged = true;
     }
     RasterizeSoftwareTriangleImpl(a, b, c);
