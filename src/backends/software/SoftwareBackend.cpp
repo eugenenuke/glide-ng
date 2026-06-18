@@ -394,27 +394,32 @@ void SoftwareBackend::RasterizeSoftwareTriangleImpl(const ModernVertex& a, const
     }
 
     // Define the core pixel rendering pipeline as a lambda
+    // Define the core pixel rendering pipeline as a lambda (restructured to be branch-free / early-exit-free for SIMD)
     auto renderPixel = [&](int x, int y, float w0, float w1, float w2) {
         bool isTestPixel = (x == 150 && y == 150) || (x == 310 && y == 310) || (x == 410 && y == 310);
+        bool keepPixel = true;
 
         // 1. Interpolate vertex colors and reciprocal depth
         float wVal = w0 * a.pos[3] + w1 * b.pos[3] + w2 * c.pos[3];
 
         // Near-plane clipping
         if (m_depthMode == 2) { // GR_DEPTHBUFFER_WBUFFER
-            if (wVal > 1.0f) return;
+            if (wVal > 1.0f) keepPixel = false;
         } else if (hasTexture) {
-            if (wVal <= 0.0f) return;
+            if (wVal <= 0.0f) keepPixel = false;
         }
 
-        float iterR = w0 * a.color[0] + w1 * b.color[0] + w2 * c.color[0];
-        float iterG = w0 * a.color[1] + w1 * b.color[1] + w2 * c.color[1];
-        float iterB = w0 * a.color[2] + w1 * b.color[2] + w2 * c.color[2];
-        float iterA = w0 * a.color[3] + w1 * b.color[3] + w2 * c.color[3];
+        float iterR = 0.0f; float iterG = 0.0f; float iterB = 0.0f; float iterA = 0.0f;
+        if (keepPixel) {
+            iterR = w0 * a.color[0] + w1 * b.color[0] + w2 * c.color[0];
+            iterG = w0 * a.color[1] + w1 * b.color[1] + w2 * c.color[1];
+            iterB = w0 * a.color[2] + w1 * b.color[2] + w2 * c.color[2];
+            iterA = w0 * a.color[3] + w1 * b.color[3] + w2 * c.color[3];
+        }
 
         // 2. Sample texture using perspective-correct division and optimized integer pipelines
         float texR = 1.0f; float texG = 1.0f; float texB = 1.0f; float texA = 1.0f;
-        if (hasTexture) {
+        if (keepPixel && hasTexture) {
             float texS = w0 * a.tex[0] + w1 * b.tex[0] + w2 * c.tex[0];
             float texT = w0 * a.tex[1] + w1 * b.tex[1] + w2 * c.tex[1];
             
@@ -502,117 +507,120 @@ void SoftwareBackend::RasterizeSoftwareTriangleImpl(const ModernVertex& a, const
         }
 
         // 3. Evaluate general Register Combiner inputs
-        float aLocal = 1.0f;
-        if (m_alphaCombinerLocal == 0) { // GR_COMBINE_LOCAL_ITERATED
-            aLocal = iterA;
-        } else if (m_alphaCombinerLocal == 1) { // GR_COMBINE_LOCAL_CONSTANT
-            aLocal = ((m_constantColor >> 24) & 0xFF) / 255.0f;
-        }
+        float red = 0.0f; float green = 0.0f; float blue = 0.0f; float alpha = 0.0f;
+        if (keepPixel) {
+            float aLocal = 1.0f;
+            if (m_alphaCombinerLocal == 0) { // GR_COMBINE_LOCAL_ITERATED
+                aLocal = iterA;
+            } else if (m_alphaCombinerLocal == 1) { // GR_COMBINE_LOCAL_CONSTANT
+                aLocal = ((m_constantColor >> 24) & 0xFF) / 255.0f;
+            }
 
-        float aOther = 1.0f;
-        if (m_alphaCombinerOther == 0) { // GR_COMBINE_OTHER_ITERATED
-            aOther = iterA;
-        } else if (m_alphaCombinerOther == 1) { // GR_COMBINE_OTHER_TEXTURE
-            aOther = texA;
-        } else if (m_alphaCombinerOther == 2) { // GR_COMBINE_OTHER_CONSTANT
-            aOther = ((m_constantColor >> 24) & 0xFF) / 255.0f;
-        }
+            float aOther = 1.0f;
+            if (m_alphaCombinerOther == 0) { // GR_COMBINE_OTHER_ITERATED
+                aOther = iterA;
+            } else if (m_alphaCombinerOther == 1) { // GR_COMBINE_OTHER_TEXTURE
+                aOther = texA;
+            } else if (m_alphaCombinerOther == 2) { // GR_COMBINE_OTHER_CONSTANT
+                aOther = ((m_constantColor >> 24) & 0xFF) / 255.0f;
+            }
 
-        float cLocalR = 0.0f, cLocalG = 0.0f, cLocalB = 0.0f;
-        if (m_colorCombinerLocal == 0) { // GR_COMBINE_LOCAL_ITERATED
-            cLocalR = iterR; cLocalG = iterG; cLocalB = iterB;
-        } else if (m_colorCombinerLocal == 1) { // GR_COMBINE_LOCAL_CONSTANT / NONE
-            cLocalR = ((m_constantColor >> 16) & 0xFF) / 255.0f;
-            cLocalG = ((m_constantColor >> 8)  & 0xFF) / 255.0f;
-            cLocalB = (m_constantColor & 0xFF) / 255.0f;
-            if (m_pixelFormatOverride == 1) std::swap(cLocalR, cLocalB);
-        }
+            float cLocalR = 0.0f; float cLocalG = 0.0f; float cLocalB = 0.0f;
+            if (m_colorCombinerLocal == 0) { // GR_COMBINE_LOCAL_ITERATED
+                cLocalR = iterR; cLocalG = iterG; cLocalB = iterB;
+            } else if (m_colorCombinerLocal == 1) { // GR_COMBINE_LOCAL_CONSTANT / NONE
+                cLocalR = ((m_constantColor >> 16) & 0xFF) / 255.0f;
+                cLocalG = ((m_constantColor >> 8)  & 0xFF) / 255.0f;
+                cLocalB = (m_constantColor & 0xFF) / 255.0f;
+                if (m_pixelFormatOverride == 1) std::swap(cLocalR, cLocalB);
+            }
 
-        float cOtherR = 0.0f, cOtherG = 0.0f, cOtherB = 0.0f;
-        if (m_colorCombinerOther == 0) { // GR_COMBINE_OTHER_ITERATED
-            cOtherR = iterR; cOtherG = iterG; cOtherB = iterB;
-        } else if (m_colorCombinerOther == 1) { // GR_COMBINE_OTHER_TEXTURE
-            cOtherR = texR; cOtherG = texG; cOtherB = texB;
-        } else if (m_colorCombinerOther == 2) { // GR_COMBINE_OTHER_CONSTANT
-            cOtherR = ((m_constantColor >> 16) & 0xFF) / 255.0f;
-            cOtherG = ((m_constantColor >> 8)  & 0xFF) / 255.0f;
-            cOtherB = (m_constantColor & 0xFF) / 255.0f;
-            if (m_pixelFormatOverride == 1) std::swap(cOtherR, cOtherB);
-        }
+            float cOtherR = 0.0f; float cOtherG = 0.0f; float cOtherB = 0.0f;
+            if (m_colorCombinerOther == 0) { // GR_COMBINE_OTHER_ITERATED
+                cOtherR = iterR; cOtherG = iterG; cOtherB = iterB;
+            } else if (m_colorCombinerOther == 1) { // GR_COMBINE_OTHER_TEXTURE
+                cOtherR = texR; cOtherG = texG; cOtherB = texB;
+            } else if (m_colorCombinerOther == 2) { // GR_COMBINE_OTHER_CONSTANT
+                cOtherR = ((m_constantColor >> 16) & 0xFF) / 255.0f;
+                cOtherG = ((m_constantColor >> 8)  & 0xFF) / 255.0f;
+                cOtherB = (m_constantColor & 0xFF) / 255.0f;
+                if (m_pixelFormatOverride == 1) std::swap(cOtherR, cOtherB);
+            }
 
-        // 4. Evaluate Color Combiner Factor
-        float factR = 0.0f, factG = 0.0f, factB = 0.0f;
-        switch (m_colorCombinerFactor) {
-            case 0: break;
-            case 1: factR = cLocalR; factG = cLocalG; factB = cLocalB; break;
-            case 2: factR = aOther; factG = aOther; factB = aOther; break;
-            case 3: factR = aLocal; factG = aLocal; factB = aLocal; break;
-            case 4: factR = texA; factG = texA; factB = texA; break;
-            case 5: factR = texR; factG = texG; factB = texB; break;
-            case 8: factR = 1.0f; factG = 1.0f; factB = 1.0f; break;
-            case 9: factR = 1.0f - cLocalR; factG = 1.0f - cLocalG; factB = 1.0f - cLocalB; break;
-            case 10: factR = 1.0f - aOther; factG = 1.0f - aOther; factB = 1.0f - aOther; break;
-            case 11: factR = 1.0f - aLocal; factG = 1.0f - aLocal; factB = 1.0f - aLocal; break;
-            case 12: factR = 1.0f - texA; factG = 1.0f - texA; factB = 1.0f - texA; break;
-        }
+            // 4. Evaluate Color Combiner Factor
+            float factR = 0.0f; float factG = 0.0f; float factB = 0.0f;
+            switch (m_colorCombinerFactor) {
+                case 0: break;
+                case 1: factR = cLocalR; factG = cLocalG; factB = cLocalB; break;
+                case 2: factR = aOther; factG = aOther; factB = aOther; break;
+                case 3: factR = aLocal; factG = aLocal; factB = aLocal; break;
+                case 4: factR = texA; factG = texA; factB = texA; break;
+                case 5: factR = texR; factG = texG; factB = texB; break;
+                case 8: factR = 1.0f; factG = 1.0f; factB = 1.0f; break;
+                case 9: factR = 1.0f - cLocalR; factG = 1.0f - cLocalG; factB = 1.0f - cLocalB; break;
+                case 10: factR = 1.0f - aOther; factG = 1.0f - aOther; factB = 1.0f - aOther; break;
+                case 11: factR = 1.0f - aLocal; factG = 1.0f - aLocal; factB = 1.0f - aLocal; break;
+                case 12: factR = 1.0f - texA; factG = 1.0f - texA; factB = 1.0f - texA; break;
+            }
 
-        // 5. Evaluate Color Combiner Function
-        float finalR = 0.0f, finalG = 0.0f, finalB = 0.0f;
-        switch (m_colorCombinerFunc) {
-            case 0: break;
-            case 1: finalR = cLocalR; finalG = cLocalG; finalB = cLocalB; break;
-            case 2: break;
-            case 3: finalR = cOtherR * factR; finalG = cOtherG * factG; finalB = cOtherB * factB; break;
-            case 4: finalR = cOtherR * factR + cLocalR; finalG = cOtherG * factG + cLocalG; finalB = cOtherB * factB + cLocalB; break;
-            case 5: finalR = cOtherR * factR + aLocal; finalG = cOtherG * factG + aLocal; finalB = cOtherB * factB + aLocal; break;
-            case 6: finalR = (cOtherR - cLocalR) * factR; finalG = (cOtherG - cLocalG) * factG; finalB = (cOtherB - cLocalB) * factB; break;
-            case 7: finalR = (cOtherR - cLocalR) * factR + cLocalR; finalG = (cOtherG - cLocalG) * factR + cLocalG; finalB = (cOtherB - cLocalB) * factR + cLocalB; break;
-            case 8: finalR = (cOtherR - cLocalR) * factR + aLocal; finalG = (cOtherG - cLocalG) * factR + aLocal; finalB = (cOtherB - cLocalB) * factR + aLocal; break;
-        }
+            // 5. Evaluate Color Combiner Function
+            float finalR = 0.0f; float finalG = 0.0f; float finalB = 0.0f;
+            switch (m_colorCombinerFunc) {
+                case 0: break;
+                case 1: finalR = cLocalR; finalG = cLocalG; finalB = cLocalB; break;
+                case 2: break;
+                case 3: finalR = cOtherR * factR; finalG = cOtherG * factG; finalB = cOtherB * factB; break;
+                case 4: finalR = cOtherR * factR + cLocalR; finalG = cOtherG * factG + cLocalG; finalB = cOtherB * factB + cLocalB; break;
+                case 5: finalR = cOtherR * factR + aLocal; finalG = cOtherG * factG + aLocal; finalB = cOtherB * factB + aLocal; break;
+                case 6: finalR = (cOtherR - cLocalR) * factR; finalG = (cOtherG - cLocalG) * factG; finalB = (cOtherB - cLocalB) * factB; break;
+                case 7: finalR = (cOtherR - cLocalR) * factR + cLocalR; finalG = (cOtherG - cLocalG) * factR + cLocalG; finalB = (cOtherB - cLocalB) * factR + cLocalB; break;
+                case 8: finalR = (cOtherR - cLocalR) * factR + aLocal; finalG = (cOtherG - cLocalG) * factR + aLocal; finalB = (cOtherB - cLocalB) * factR + aLocal; break;
+            }
 
-        if (m_colorCombinerInvert) {
-            finalR = 1.0f - finalR; finalG = 1.0f - finalG; finalB = 1.0f - finalB;
-        }
+            if (m_colorCombinerInvert) {
+                finalR = 1.0f - finalR; finalG = 1.0f - finalG; finalB = 1.0f - finalB;
+            }
 
-        // 6. Evaluate Alpha Combiner Factor
-        float factA = 0.0f;
-        switch (m_alphaCombinerFactor) {
-            case 0: break;
-            case 1:
-            case 3: factA = aLocal; break;
-            case 2: factA = aOther; break;
-            case 4: factA = texA; break;
-            case 8: factA = 1.0f; break;
-            case 9:
-            case 11: factA = 1.0f - aLocal; break;
-            case 10: factA = 1.0f - aOther; break;
-            case 12: factA = 1.0f - texA; break;
-        }
+            // 6. Evaluate Alpha Combiner Factor
+            float factA = 0.0f;
+            switch (m_alphaCombinerFactor) {
+                case 0: break;
+                case 1:
+                case 3: factA = aLocal; break;
+                case 2: factA = aOther; break;
+                case 4: factA = texA; break;
+                case 8: factA = 1.0f; break;
+                case 9:
+                case 11: factA = 1.0f - aLocal; break;
+                case 10: factA = 1.0f - aOther; break;
+                case 12: factA = 1.0f - texA; break;
+            }
 
-        // 7. Evaluate Alpha Combiner Function
-        float finalA = 0.0f;
-        switch (m_alphaCombinerFunc) {
-            case 0: break;
-            case 1: finalA = aLocal; break;
-            case 3: finalA = aOther * factA; break;
-            case 4:
-            case 5: finalA = aOther * factA + aLocal; break;
-            case 6: finalA = (aOther - aLocal) * factA; break;
-            case 7:
-            case 8: finalA = (aOther - aLocal) * factA + aLocal; break;
-        }
+            // 7. Evaluate Alpha Combiner Function
+            float finalA = 0.0f;
+            switch (m_alphaCombinerFunc) {
+                case 0: break;
+                case 1: finalA = aLocal; break;
+                case 3: finalA = aOther * factA; break;
+                case 4:
+                case 5: finalA = aOther * factA + aLocal; break;
+                case 6: finalA = (aOther - aLocal) * factA; break;
+                case 7:
+                case 8: finalA = (aOther - aLocal) * factA + aLocal; break;
+            }
 
-        if (m_alphaCombinerInvert) {
-            finalA = 1.0f - finalA;
-        }
+            if (m_alphaCombinerInvert) {
+                finalA = 1.0f - finalA;
+            }
 
-        float red   = finalR;
-        float green = finalG;
-        float blue  = finalB;
-        float alpha = finalA;
+            red   = finalR;
+            green = finalG;
+            blue  = finalB;
+            alpha = finalA;
+        }
 
         // Chromakey Emulation
-        if (m_chromakeyMode == 1) { // GR_CHROMAKEY_ENABLE
+        if (keepPixel && m_chromakeyMode == 1) { // GR_CHROMAKEY_ENABLE
             float chromaR = ((m_chromakeyValue >> 16) & 0xFF) / 255.0f;
             float chromaG = ((m_chromakeyValue >> 8) & 0xFF) / 255.0f;
             float chromaB = (m_chromakeyValue & 0xFF) / 255.0f;
@@ -622,157 +630,169 @@ void SoftwareBackend::RasterizeSoftwareTriangleImpl(const ModernVertex& a, const
             if (std::abs(red - chromaR) < 0.01f &&
                 std::abs(green - chromaG) < 0.01f &&
                 std::abs(blue - chromaB) < 0.01f) {
-                return; // Discard
+                keepPixel = false; // Discard
             }
         }
 
-        uint32_t aVal = static_cast<uint32_t>(std::min(255.0f, alpha * 255.0f + 0.5f));
+        uint32_t aVal = 0;
+        if (keepPixel) {
+            aVal = static_cast<uint32_t>(std::min(255.0f, alpha * 255.0f + 0.5f));
+        }
 
         bool alphaPass = true;
-        switch (m_alphaTestOp) {
-            case 0: alphaPass = false; break; // NEVER
-            case 1: alphaPass = (aVal < m_alphaTestRefVal); break; // LESS
-            case 2: alphaPass = (aVal == m_alphaTestRefVal); break; // EQUAL
-            case 3: alphaPass = (aVal <= m_alphaTestRefVal); break; // LEQUAL
-            case 4: alphaPass = (aVal > m_alphaTestRefVal); break; // GREATER
-            case 5: alphaPass = (aVal != m_alphaTestRefVal); break; // NOTEQUAL
-            case 6: alphaPass = (aVal >= m_alphaTestRefVal); break; // GEQUAL
-            case 7: alphaPass = true; break; // ALWAYS
-        }
-
-        if (!alphaPass) {
-            if (isTestPixel) {
-                GLIDE_LOG(DEBUG, "RasterizerDebug", "Test pixel (" << x << "," << y << ") failed alpha test! Op=" << m_alphaTestOp << ", Ref=" << m_alphaTestRefVal);
+        if (keepPixel) {
+            switch (m_alphaTestOp) {
+                case 0: alphaPass = false; break; // NEVER
+                case 1: alphaPass = (aVal < m_alphaTestRefVal); break; // LESS
+                case 2: alphaPass = (aVal == m_alphaTestRefVal); break; // EQUAL
+                case 3: alphaPass = (aVal <= m_alphaTestRefVal); break; // LEQUAL
+                case 4: alphaPass = (aVal > m_alphaTestRefVal); break; // GREATER
+                case 5: alphaPass = (aVal != m_alphaTestRefVal); break; // NOTEQUAL
+                case 6: alphaPass = (aVal >= m_alphaTestRefVal); break; // GEQUAL
+                case 7: alphaPass = true; break; // ALWAYS
             }
-            return;
+
+            if (!alphaPass) {
+                if (isTestPixel) {
+                    GLIDE_LOG(DEBUG, "RasterizerDebug", "Test pixel (" << x << "," << y << ") failed alpha test! Op=" << m_alphaTestOp << ", Ref=" << m_alphaTestRefVal);
+                }
+                keepPixel = false;
+            }
         }
 
-        float zVal = w0 * a.pos[2] + w1 * b.pos[2] + w2 * c.pos[2];
-        float targetDepth = (m_depthMode == 2) ? (1.0f - wVal) : zVal;
-
-        if (m_depthBiasLevel != 0) {
-            targetDepth += static_cast<float>(m_depthBiasLevel) / 65535.0f;
-            targetDepth = std::max(0.0f, std::min(1.0f, targetDepth));
-        }
-
+        float targetDepth = 0.0f;
         uint32_t pIdx = y * m_headlessWidth + x;
         bool depthPass = true;
 
-        if (m_depthMode != 0 && m_depthCompareOp != 7 && !m_headlessDepthBuffer.empty()) {
-            float currentDepth = m_headlessDepthBuffer[pIdx];
-            switch (m_depthCompareOp) {
-                case 0: depthPass = false; break;
-                case 1: depthPass = (targetDepth < currentDepth); break;
-                case 2: depthPass = (targetDepth == currentDepth); break;
-                case 3: depthPass = (targetDepth <= currentDepth); break;
-                case 4: depthPass = (targetDepth > currentDepth); break;
-                case 5: depthPass = (targetDepth != currentDepth); break;
-                case 6: depthPass = (targetDepth >= currentDepth); break;
-                case 7: depthPass = true; break;
+        if (keepPixel) {
+            float zVal = w0 * a.pos[2] + w1 * b.pos[2] + w2 * c.pos[2];
+            targetDepth = (m_depthMode == 2) ? (1.0f - wVal) : zVal;
+
+            if (m_depthBiasLevel != 0) {
+                targetDepth += static_cast<float>(m_depthBiasLevel) / 65535.0f;
+                targetDepth = std::max(0.0f, std::min(1.0f, targetDepth));
             }
-            if (isTestPixel) {
-                GLIDE_LOG(DEBUG, "RasterizerDebug", "Test pixel (" << x << "," << y << ") depth test result=" << (depthPass ? "PASS" : "FAIL") 
-                          << ", targetDepth=" << targetDepth << ", currentDepth=" << currentDepth << ", Op=" << m_depthCompareOp);
+
+            if (m_depthMode != 0 && m_depthCompareOp != 7 && !m_headlessDepthBuffer.empty()) {
+                float currentDepth = m_headlessDepthBuffer[pIdx];
+                switch (m_depthCompareOp) {
+                    case 0: depthPass = false; break;
+                    case 1: depthPass = (targetDepth < currentDepth); break;
+                    case 2: depthPass = (targetDepth == currentDepth); break;
+                    case 3: depthPass = (targetDepth <= currentDepth); break;
+                    case 4: depthPass = (targetDepth > currentDepth); break;
+                    case 5: depthPass = (targetDepth != currentDepth); break;
+                    case 6: depthPass = (targetDepth >= currentDepth); break;
+                    case 7: depthPass = true; break;
+                }
+                if (isTestPixel) {
+                    GLIDE_LOG(DEBUG, "RasterizerDebug", "Test pixel (" << x << "," << y << ") depth test result=" << (depthPass ? "PASS" : "FAIL") 
+                              << ", targetDepth=" << targetDepth << ", currentDepth=" << currentDepth << ", Op=" << m_depthCompareOp);
+                }
+            }
+
+            if (!depthPass) {
+                keepPixel = false;
             }
         }
 
-        if (!depthPass) return;
-
-        if (m_depthMode != 0 && m_depthMask && !m_headlessDepthBuffer.empty()) {
+        if (keepPixel && m_depthMode != 0 && m_depthMask && !m_headlessDepthBuffer.empty()) {
             m_headlessDepthBuffer[pIdx] = targetDepth;
         }
 
-        // Fogging Emulation
-        if (m_fogMode != 0) {
-            float eyeW = 1.0f / wVal;
-            if (eyeW < 1.0f) eyeW = 1.0f;
+        // Fogging Emulation, Blending, and Framebuffer Write
+        if (keepPixel) {
+            if (m_fogMode != 0) {
+                float eyeW = 1.0f / wVal;
+                if (eyeW < 1.0f) eyeW = 1.0f;
 
-            int idx = 0;
-            for (int i = 0; i < 63; ++i) {
-                if (s_tableIndexToW[i] < eyeW) {
-                    idx = i;
-                } else {
-                    break;
+                int idx = 0;
+                for (int i = 0; i < 63; ++i) {
+                    if (s_tableIndexToW[i] < eyeW) {
+                        idx = i;
+                    } else {
+                        break;
+                    }
                 }
-            }
 
-            float w0_fog = s_tableIndexToW[idx];
-            float w1_fog = s_tableIndexToW[idx + 1];
-            float f0 = m_fogTable[idx] / 255.0f;
-            float f1 = m_fogTable[idx + 1] / 255.0f;
+                float w0_fog = s_tableIndexToW[idx];
+                float w1_fog = s_tableIndexToW[idx + 1];
+                float f0 = m_fogTable[idx] / 255.0f;
+                float f1 = m_fogTable[idx + 1] / 255.0f;
 
-            float t = 0.0f;
-            if (w1_fog > w0_fog) {
-                t = (eyeW - w0_fog) / (w1_fog - w0_fog);
-            }
-            t = std::max(0.0f, std::min(1.0f, t));
-            float f = f0 * (1.0f - t) + f1 * t;
-
-            float fogR = ((m_fogColor >> 16) & 0xFF) / 255.0f;
-            float fogG = ((m_fogColor >> 8)  & 0xFF) / 255.0f;
-            float fogB = (m_fogColor & 0xFF) / 255.0f;
-            if (m_pixelFormatOverride == 1) {
-                std::swap(fogR, fogB);
-            }
-
-            red   = red   * (1.0f - f) + fogR * f;
-            green = green * (1.0f - f) + fogG * f;
-            blue  = blue  * (1.0f - f) + fogB * f;
-        }
-
-        uint32_t rVal = static_cast<uint32_t>(std::min(255.0f, red * 255.0f + 0.5f));
-        uint32_t gVal = static_cast<uint32_t>(std::min(255.0f, green * 255.0f + 0.5f));
-        uint32_t bVal = static_cast<uint32_t>(std::min(255.0f, blue * 255.0f + 0.5f));
-
-        if (m_rgbSrcBlend != 4 || m_rgbDstBlend != 0) {
-            uint32_t dstWord = pixels[pIdx];
-            float dstR = ((dstWord >> 16) & 0xFF) / 255.0f;
-            float dstG = ((dstWord >> 8) & 0xFF) / 255.0f;
-            float dstB = (dstWord & 0xFF) / 255.0f;
-            float dstA = ((dstWord >> 24) & 0xFF) / 255.0f;
-
-            auto getFactor = [&](uint32_t factorMode, float srcC, float dstC, float srcAVal, float dstAVal, bool isDest) {
-                switch (factorMode) {
-                    case 0: return 0.0f;
-                    case 1: return srcAVal;
-                    case 2: return isDest ? srcC : dstC;
-                    case 3: return dstAVal;
-                    case 4: return 1.0f;
-                    case 5: return 1.0f - srcAVal;
-                    case 6: return isDest ? (1.0f - srcC) : (1.0f - dstC);
-                    case 7: return 1.0f - dstAVal;
-                    default: return 1.0f;
+                float t = 0.0f;
+                if (w1_fog > w0_fog) {
+                    t = (eyeW - w0_fog) / (w1_fog - w0_fog);
                 }
-            };
+                t = std::max(0.0f, std::min(1.0f, t));
+                float f = f0 * (1.0f - t) + f1 * t;
 
-            float sFR = getFactor(m_rgbSrcBlend, red, dstR, alpha, dstA, false);
-            float sFG = getFactor(m_rgbSrcBlend, green, dstG, alpha, dstA, false);
-            float sFB = getFactor(m_rgbSrcBlend, blue, dstB, alpha, dstA, false);
+                float fogR = ((m_fogColor >> 16) & 0xFF) / 255.0f;
+                float fogG = ((m_fogColor >> 8)  & 0xFF) / 255.0f;
+                float fogB = (m_fogColor & 0xFF) / 255.0f;
+                if (m_pixelFormatOverride == 1) {
+                    std::swap(fogR, fogB);
+                }
 
-            float dFR = getFactor(m_rgbDstBlend, red, dstR, alpha, dstA, true);
-            float dFG = getFactor(m_rgbDstBlend, green, dstG, alpha, dstA, true);
-            float dFB = getFactor(m_rgbDstBlend, blue, dstB, alpha, dstA, true);
+                red   = red   * (1.0f - f) + fogR * f;
+                green = green * (1.0f - f) + fogG * f;
+                blue  = blue  * (1.0f - f) + fogB * f;
+            }
 
-            float sFA = getFactor(m_alphaSrcBlend, alpha, dstA, alpha, dstA, false);
-            float dFA = getFactor(m_alphaDstBlend, alpha, dstA, alpha, dstA, true);
-            float blendedAlpha = std::min(1.0f, alpha * sFA + dstA * dFA);
+            uint32_t rVal = static_cast<uint32_t>(std::min(255.0f, red * 255.0f + 0.5f));
+            uint32_t gVal = static_cast<uint32_t>(std::min(255.0f, green * 255.0f + 0.5f));
+            uint32_t bVal = static_cast<uint32_t>(std::min(255.0f, blue * 255.0f + 0.5f));
 
-            red   = std::min(1.0f, red   * sFR + dstR * dFR);
-            green = std::min(1.0f, green * sFG + dstG * dFG);
-            blue  = std::min(1.0f, blue  * sFB + dstB * dFB);
+            if (m_rgbSrcBlend != 4 || m_rgbDstBlend != 0) {
+                uint32_t dstWord = pixels[pIdx];
+                float dstR = ((dstWord >> 16) & 0xFF) / 255.0f;
+                float dstG = ((dstWord >> 8) & 0xFF) / 255.0f;
+                float dstB = (dstWord & 0xFF) / 255.0f;
+                float dstA = ((dstWord >> 24) & 0xFF) / 255.0f;
 
-            rVal = static_cast<uint32_t>(red * 255.0f + 0.5f);
-            gVal = static_cast<uint32_t>(green * 255.0f + 0.5f);
-            bVal = static_cast<uint32_t>(blue * 255.0f + 0.5f);
-            aVal = static_cast<uint32_t>(blendedAlpha * 255.0f + 0.5f);
+                auto getFactor = [&](uint32_t factorMode, float srcC, float dstC, float srcAVal, float dstAVal, bool isDest) {
+                    switch (factorMode) {
+                        case 0: return 0.0f;
+                        case 1: return srcAVal;
+                        case 2: return isDest ? srcC : dstC;
+                        case 3: return dstAVal;
+                        case 4: return 1.0f;
+                        case 5: return 1.0f - srcAVal;
+                        case 6: return isDest ? (1.0f - srcC) : (1.0f - dstC);
+                        case 7: return 1.0f - dstAVal;
+                        default: return 1.0f;
+                    }
+                };
+
+                float sFR = getFactor(m_rgbSrcBlend, red, dstR, alpha, dstA, false);
+                float sFG = getFactor(m_rgbSrcBlend, green, dstG, alpha, dstA, false);
+                float sFB = getFactor(m_rgbSrcBlend, blue, dstB, alpha, dstA, false);
+
+                float dFR = getFactor(m_rgbDstBlend, red, dstR, alpha, dstA, true);
+                float dFG = getFactor(m_rgbDstBlend, green, dstG, alpha, dstA, true);
+                float dFB = getFactor(m_rgbDstBlend, blue, dstB, alpha, dstA, true);
+
+                float sFA = getFactor(m_alphaSrcBlend, alpha, dstA, alpha, dstA, false);
+                float dFA = getFactor(m_alphaDstBlend, alpha, dstA, alpha, dstA, true);
+                float blendedAlpha = std::min(1.0f, alpha * sFA + dstA * dFA);
+
+                red   = std::min(1.0f, red   * sFR + dstR * dFR);
+                green = std::min(1.0f, green * sFG + dstG * dFG);
+                blue  = std::min(1.0f, blue  * sFB + dstB * dFB);
+
+                rVal = static_cast<uint32_t>(red * 255.0f + 0.5f);
+                gVal = static_cast<uint32_t>(green * 255.0f + 0.5f);
+                bVal = static_cast<uint32_t>(blue * 255.0f + 0.5f);
+                aVal = static_cast<uint32_t>(blendedAlpha * 255.0f + 0.5f);
+            }
+
+            if (isTestPixel) {
+                GLIDE_LOG(DEBUG, "RasterizerDebug", "Test pixel (" << x << "," << y << ") successfully written to LFB! Color=0x" 
+                          << std::hex << ((aVal << 24) | (rVal << 16) | (gVal << 8) | bVal) << std::dec);
+            }
+
+            pixels[pIdx] = (aVal << 24) | (rVal << 16) | (gVal << 8) | bVal;
         }
-
-        if (isTestPixel) {
-            GLIDE_LOG(DEBUG, "RasterizerDebug", "Test pixel (" << x << "," << y << ") successfully written to LFB! Color=0x" 
-                      << std::hex << ((aVal << 24) | (rVal << 16) | (gVal << 8) | bVal) << std::dec);
-        }
-
-        pixels[pIdx] = (aVal << 24) | (rVal << 16) | (gVal << 8) | bVal;
     };
 
     // Incremental Edge Setup for Pineda's Algorithm
