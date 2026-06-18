@@ -321,35 +321,23 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width, uint3
         if (SDL_Init(SDL_INIT_VIDEO) < 0) {
             GLIDE_LOG(WARN, "Vulkan", "SDL_Init failed: " << SDL_GetError() << ". Running headless offscreen.");
         } else {
-            auto* win = SDL_CreateWindow("3dfx glide-ng Presentation Console (Vulkan Swapchain)", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, width, height, SDL_WINDOW_VULKAN | SDL_WINDOW_SHOWN);
+            auto* win = SDL_CreateWindow("3dfx glide-ng Presentation Console (Vulkan)", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, width, height, SDL_WINDOW_VULKAN | SDL_WINDOW_SHOWN);
             if (win) {
                 // Create Vulkan Surface associated with the SDL window
                 VkSurfaceKHR rawSurface;
                 if (SDL_Vulkan_CreateSurface(win, m_instance.get(), &rawSurface)) {
                     m_surface = vk::UniqueSurfaceKHR(rawSurface, m_instance.get());
                     GLIDE_LOG(INFO, "Vulkan", "Vulkan presentation surface created successfully!");
-                    if (!CreateSwapchain(width, height)) {
-                        GLIDE_LOG(WARN, "Vulkan", "Failed to create Vulkan presentation swapchain.");
-                    }
-                } else {
-                    GLIDE_LOG(WARN, "Vulkan", "Failed to create Vulkan surface: " << SDL_GetError());
-                }
-
-                auto* ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
-                if (!ren) ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_SOFTWARE);
-                
-                if (ren) {
-                    auto* tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, width, height);
-                    if (tex) {
-                        m_sdlWindow   = win;
-                        m_sdlRenderer = ren;
-                        m_sdlTexture  = tex;
-                        GLIDE_LOG(INFO, "Vulkan", "SDL2 presentation console structured beautifully.");
+                    if (CreateSwapchain(width, height)) {
+                        m_sdlWindow = win;
+                        GLIDE_LOG(INFO, "Vulkan", "Vulkan GPU-native swapchain presentation window initialized successfully.");
                     } else {
-                        SDL_DestroyRenderer(ren);
+                        GLIDE_LOG(CRITICAL, "Vulkan", "Failed to create Vulkan presentation swapchain.");
+                        m_surface.reset();
                         SDL_DestroyWindow(win);
                     }
                 } else {
+                    GLIDE_LOG(CRITICAL, "Vulkan", "Failed to create Vulkan surface: " << SDL_GetError());
                     SDL_DestroyWindow(win);
                 }
             }
@@ -393,8 +381,6 @@ void VulkanBackend::DetachWindow() {
 
     DestroySwapchain();
     m_surface.reset();
-    if (m_sdlTexture)  { SDL_DestroyTexture(reinterpret_cast<SDL_Texture*>(m_sdlTexture)); m_sdlTexture = nullptr; }
-    if (m_sdlRenderer) { SDL_DestroyRenderer(reinterpret_cast<SDL_Renderer*>(m_sdlRenderer)); m_sdlRenderer = nullptr; }
     if (m_sdlWindow)   { SDL_DestroyWindow(reinterpret_cast<SDL_Window*>(m_sdlWindow)); m_sdlWindow = nullptr; }
     if (!m_config.forceNoWindow) SDL_QuitSubSystem(SDL_INIT_VIDEO);
 
@@ -443,6 +429,14 @@ void VulkanBackend::DetachWindow() {
 bool VulkanBackend::CreateSwapchain(uint32_t width, uint32_t height) {
     if (!m_surface) {
         GLIDE_LOG(WARN, "Vulkan", "Cannot create swapchain: no presentation surface available.");
+        return false;
+    }
+
+    // Verify that our graphics queue family supports presentation to the surface!
+    vk::Bool32 presentSupport = false;
+    vk::Result supportRes = m_physicalDevice.getSurfaceSupportKHR(m_graphicsQueueFamilyIndex, m_surface.get(), &presentSupport);
+    if (supportRes != vk::Result::eSuccess || !presentSupport) {
+        GLIDE_LOG(CRITICAL, "Vulkan", "Graphics queue family index " << m_graphicsQueueFamilyIndex << " does NOT support surface presentation! Res=" << vk::to_string(supportRes));
         return false;
     }
 
@@ -816,17 +810,20 @@ bool VulkanBackend::SwapBuffers() {
         TransitionImageLayout(*m_commandBuffer, m_headlessImages[activeIdx].get(), vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eTransferSrcOptimal, range);
         TransitionImageLayout(*m_commandBuffer, m_swapchainImages[imageIndex], vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, range);
 
-        vk::ImageCopy copyRegion;
-        copyRegion.srcSubresource = vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
-        copyRegion.srcOffset = vk::Offset3D(0, 0, 0);
-        copyRegion.dstSubresource = vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
-        copyRegion.dstOffset = vk::Offset3D(0, 0, 0);
-        copyRegion.extent = vk::Extent3D(m_headlessWidth, m_headlessHeight, 1);
+        vk::ImageBlit blitRegion;
+        blitRegion.srcSubresource = vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
+        blitRegion.srcOffsets[0] = vk::Offset3D(0, 0, 0);
+        blitRegion.srcOffsets[1] = vk::Offset3D(m_headlessWidth, m_headlessHeight, 1);
         
-        m_commandBuffer->copyImage(
+        blitRegion.dstSubresource = vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
+        blitRegion.dstOffsets[0] = vk::Offset3D(0, 0, 0);
+        blitRegion.dstOffsets[1] = vk::Offset3D(m_swapchainExtent.width, m_swapchainExtent.height, 1);
+
+        m_commandBuffer->blitImage(
             m_headlessImages[activeIdx].get(), vk::ImageLayout::eTransferSrcOptimal,
             m_swapchainImages[imageIndex], vk::ImageLayout::eTransferDstOptimal,
-            1, &copyRegion
+            1, &blitRegion,
+            vk::Filter::eLinear
         );
 
         // Transition layouts back: FBO to Attachment (for next frame draws), Swapchain to Present
@@ -839,7 +836,7 @@ bool VulkanBackend::SwapBuffers() {
         // 3. Submit GPU copy commands, waiting on image availability and signaling render completion
         m_device->resetFences(1, &m_fences[m_currentFrameSlot].get());
 
-        vk::PipelineStageFlags waitStages[] = { vk::PipelineStageFlagBits::eColorAttachmentOutput };
+        vk::PipelineStageFlags waitStages[] = { vk::PipelineStageFlagBits::eTransfer };
         vk::SubmitInfo submitInfo(
             1, &m_imageAvailableSemaphores[m_currentFrameSlot].get(),
             waitStages,
@@ -1426,6 +1423,26 @@ void VulkanBackend::TransitionImageLayout(vk::CommandBuffer cmd, vk::Image image
         barrier.dstAccessMask = vk::AccessFlagBits::eTransferRead;
         sourceStage = vk::PipelineStageFlagBits::eTransfer;
         destinationStage = vk::PipelineStageFlagBits::eTransfer;
+    } else if (oldLayout == vk::ImageLayout::eColorAttachmentOptimal && newLayout == vk::ImageLayout::eTransferSrcOptimal) {
+        barrier.srcAccessMask = vk::AccessFlagBits::eColorAttachmentWrite;
+        barrier.dstAccessMask = vk::AccessFlagBits::eTransferRead;
+        sourceStage = vk::PipelineStageFlagBits::eColorAttachmentOutput;
+        destinationStage = vk::PipelineStageFlagBits::eTransfer;
+    } else if (oldLayout == vk::ImageLayout::eTransferSrcOptimal && newLayout == vk::ImageLayout::eColorAttachmentOptimal) {
+        barrier.srcAccessMask = vk::AccessFlagBits::eTransferRead;
+        barrier.dstAccessMask = vk::AccessFlagBits::eColorAttachmentWrite | vk::AccessFlagBits::eColorAttachmentRead;
+        sourceStage = vk::PipelineStageFlagBits::eTransfer;
+        destinationStage = vk::PipelineStageFlagBits::eColorAttachmentOutput;
+    } else if (oldLayout == vk::ImageLayout::eTransferDstOptimal && newLayout == vk::ImageLayout::ePresentSrcKHR) {
+        barrier.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
+        barrier.dstAccessMask = {};
+        sourceStage = vk::PipelineStageFlagBits::eTransfer;
+        destinationStage = vk::PipelineStageFlagBits::eBottomOfPipe;
+    } else if (oldLayout == vk::ImageLayout::eUndefined && newLayout == vk::ImageLayout::ePresentSrcKHR) {
+        barrier.srcAccessMask = {};
+        barrier.dstAccessMask = {};
+        sourceStage = vk::PipelineStageFlagBits::eTopOfPipe;
+        destinationStage = vk::PipelineStageFlagBits::eBottomOfPipe;
     } else {
         barrier.srcAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite;
         barrier.dstAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite;

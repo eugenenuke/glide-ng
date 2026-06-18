@@ -205,8 +205,6 @@ private:
 
     // SDL2 Visual Presentation Console Singletons
     void* m_sdlWindow{nullptr};   // SDL_Window*
-    void* m_sdlRenderer{nullptr}; // SDL_Renderer*
-    void* m_sdlTexture{nullptr};  // SDL_Texture*
     vk::UniqueSurfaceKHR m_surface; // Vulkan presentation surface associated with m_sdlWindow
 
     // --- Phase 9: Vulkan Swapchain Resources (Milestone 2) ---
