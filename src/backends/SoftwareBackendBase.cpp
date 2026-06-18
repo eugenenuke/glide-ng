@@ -831,6 +831,9 @@ void SoftwareBackendBase::RasterizeSoftwareTriangle(const ModernVertex& a, const
 
 void* SoftwareBackendBase::GetLfbWritePtr() {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    m_lfbDirty = true;
+    m_lfbBufferDirty[0] = true;
+    m_lfbBufferDirty[1] = true;
     return m_headlessPixelMap;
 }
 
