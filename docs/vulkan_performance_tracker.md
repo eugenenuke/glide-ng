@@ -99,6 +99,11 @@ Because `maxFps` defaults to `60.0f`, the wrapper **slept the CPU main thread fo
 
 ### Stage 7: Vulkan Frame-Resource Double Buffering
 *   **Action**: Replaced the single-buffered blocking design with a fully double-buffered Vulkan execution loop in [VulkanBackend.cpp](file:///usr/local/google/home/eianiuk/gemini/3dfx/src/backends/vulkan/VulkanBackend.cpp). Duplicated command pools, command buffers, fences, and host-visible staging buffers. Implemented a 1-frame latency blit (presenting the previous frame's staging buffer while recording the current frame in parallel).
+
+> [!IMPORTANT]
+> **Interactive vs. Headless Presentation Modes**:
+> *   **Windowed / Interactive Mode**: Because windowed presentation blits the CPU-side double-buffer (`m_headlessPixelMap`) to the SDL window, any pipelined 1-frame delay caused a startup blink (displaying unitialized staging memory on frame 0) and out-of-sync CPU readbacks (causing interactive tests to fail initial frames). To resolve this, **Windowed Mode executes synchronously**: it immediately awaits the GPU fence for the current frame, copies the GPU output back to the CPU, overlays CPU writes, and presents. This guarantees **0-frame latency, zero blinking, and immediate correctness of interactive readbacks** (matching OpenGL ES and Software backends).
+> *   **Headless Mode**: Preserves **100% asynchronous, pipelined double-buffered execution** (1-frame latency). This ensures that automated visual regression checks (which don't map window surfaces and perform readbacks at specific points via `ReadLFB` which is already synchronous) run at maximum speed with zero CPU stalls.
 *   **Result**:
     *   **`test14` Vulkan Headless (Uncapped)**:
         *   **Lifetime**: **216.39 FPS** → **289.65 FPS** (**+33.8% speedup!**)

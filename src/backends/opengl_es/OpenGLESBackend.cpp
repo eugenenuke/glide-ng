@@ -93,29 +93,33 @@ bool OpenGLESBackend::AttachWindow(void* nativeWindowHandle, uint32_t width, uin
               << "------------------------------------------";
     GLIDE_LOG(DEBUG, "GLES", logStream.str());
 
-    // Milestone 1: Setup Offscreen Framebuffer Object (FBO) for GPU-native rendering
-    glGenFramebuffers(1, &m_headlessFBO);
-    glBindFramebuffer(GL_FRAMEBUFFER, m_headlessFBO);
+    // Milestone 1: Setup Offscreen Framebuffer Objects (FBOs) for GPU-native rendering (Double-Buffered)
+    glGenFramebuffers(2, m_headlessFBOs);
+    glGenRenderbuffers(2, m_headlessDepthRenderbuffers);
 
-    // Attach our color offscreen GPU rendering texture as GL_COLOR_ATTACHMENT0
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, m_fboTexture, 0);
+    for (int i = 0; i < 2; ++i) {
+        glBindFramebuffer(GL_FRAMEBUFFER, m_headlessFBOs[i]);
 
-    // Allocate and attach depth renderbuffer for hardware Z-testing support
-    glGenRenderbuffers(1, &m_headlessDepthRenderbuffer);
-    glBindRenderbuffer(GL_RENDERBUFFER, m_headlessDepthRenderbuffer);
-    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, width, height);
-    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, m_headlessDepthRenderbuffer);
+        // Attach our color offscreen GPU rendering texture as GL_COLOR_ATTACHMENT0
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, m_fboTextures[i], 0);
 
-    // Verify FBO completeness
-    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
-        GLIDE_LOG(CRITICAL, "GLES", "Headless FBO is incomplete!");
-        DestroyGLContext();
-        return false;
+        // Allocate and attach depth renderbuffer for hardware Z-testing support
+        glBindRenderbuffer(GL_RENDERBUFFER, m_headlessDepthRenderbuffers[i]);
+        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, width, height);
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, m_headlessDepthRenderbuffers[i]);
+
+        // Verify FBO completeness
+        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+            GLIDE_LOG(CRITICAL, "GLES", "Headless FBO " << i << " is incomplete!");
+            DestroyGLContext();
+            return false;
+        }
     }
 
+    glBindRenderbuffer(GL_RENDERBUFFER, 0);
     // Restore default framebuffer binding
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    GLIDE_LOG(INFO, "GLES", "Offscreen Headless FBO & Depth Renderbuffer initialized successfully.");
+    GLIDE_LOG(INFO, "GLES", "Double-buffered offscreen FBOs & Depth Renderbuffers initialized successfully.");
 
     // Disable dithering to ensure 100% flat and mathematically consistent color outputs,
     // preventing 1-LSB noise from failing precision regression tests.
@@ -135,6 +139,7 @@ bool OpenGLESBackend::AttachWindow(void* nativeWindowHandle, uint32_t width, uin
 
     // Allocate software staging memory
     AllocateCpuBuffers(width, height);
+    m_swizzleBuffer.resize(width * height);
 
     m_headlessDepthBuffer.resize(width * height, 0.0f);
     SetClipWindow(0, 0, width, height);
@@ -158,6 +163,9 @@ bool OpenGLESBackend::SwapBuffers() {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     if (!m_initialized || !m_windowAttached) return false;
 
+    // Proactively flush any pending CPU LFB writes to the GPU FBO before presenting/swapping!
+    FlushLFBToGPU();
+
     // Enforce frame pacing and track frame timing using unified FrameTracker
     auto& tracker = TelemetryManager::GetInstance().GetFrameTracker();
     tracker.MarkFrameEnd(m_config.maxFps);
@@ -165,50 +173,47 @@ bool OpenGLESBackend::SwapBuffers() {
 
     GLIDE_PROFILE_SCOPE("GLES::SwapBuffers");
 
-    if (!m_headlessMode && m_sdlWindow && m_glContext && m_headlessPixelMap) {
-        // 1. Flush GPU drawing and composite with CPU text in host memory
-        ReadLFB(1, 0, 0, m_headlessWidth, m_headlessHeight, m_headlessWidth * 4, m_headlessPixelMap);
+    if (!m_headlessMode && m_sdlWindow && m_glContext) {
+        // --- 100% GPU-NATIVE PRESENTATION (glBlitFramebuffer) ---
+        // Bind our offscreen FBO as READ and the default window framebuffer 0 as DRAW
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, m_headlessFBOs[0]);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
 
         // Reset crucial OpenGL states to safe presentation defaults,
-        // preventing active game states (like disabled color masks, custom scissors,
-        // or viewports) from leaking into and obliterating our presentation quad!
-        glViewport(0, 0, m_headlessWidth, m_headlessHeight);
-        glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+        // preventing active game states (like disabled color masks or custom scissors)
+        // from masking or clipping our blit!
         glDisable(GL_SCISSOR_TEST);
-        glDisable(GL_STENCIL_TEST);
-        glDisable(GL_DEPTH_TEST);
-        glDepthMask(GL_TRUE); // Enable writes for the clear
-        glDisable(GL_BLEND);
-        glDisable(GL_CULL_FACE);
+        glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
 
-        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT);
+        // Blit the color buffer from our offscreen FBO directly to the window surface.
+        // glBlitFramebuffer performs a high-speed GPU-to-GPU copy.
+        glBlitFramebuffer(0, 0, m_headlessWidth, m_headlessHeight,
+                          0, 0, m_headlessWidth, m_headlessHeight,
+                          GL_COLOR_BUFFER_BIT, GL_NEAREST);
+        checkGLError("SwapBuffers glBlitFramebuffer");
 
-        // Upload our software pixel map to GLES texture
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, m_glTexture);
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, m_headlessWidth, m_headlessHeight, GL_RGBA, GL_UNSIGNED_BYTE, m_headlessPixelMap);
-        checkGLError("SwapBuffers glTexSubImage2D");
-
-        glUseProgram(m_glProgram);
-        glBindVertexArray(m_glVAO);
-        
-        glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
-        checkGLError("SwapBuffers glDrawArrays");
+        // Restore framebuffer bindings
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
         // Swap front and back window buffers to display the rendered frame on the screen!
         SDL_GL_SwapWindow(static_cast<SDL_Window*>(m_sdlWindow));
     }
 
-    // 2. Swap the front and back CPU buffer indices for double-buffering (MUST run in headless mode too!)
+    // Swap the front and back CPU buffer indices for double-buffering
     if (m_headlessPixelMap) {
         std::swap(m_frontBufferIdx, m_backBufferIdx);
+        std::swap(m_lfbBufferDirty[0], m_lfbBufferDirty[1]); // Swap dirty flags alongside buffer indices!
         if (m_activeRenderBuffer == 0) { // FRONTBUFFER
             m_headlessPixelMap = m_cpuBuffers[m_frontBufferIdx].data();
         } else { // BACKBUFFER
             m_headlessPixelMap = m_cpuBuffers[m_backBufferIdx].data();
         }
     }
+
+    // Swap the GPU color targets for physical double-buffering!
+    std::swap(m_headlessFBOs[0], m_headlessFBOs[1]);
+    std::swap(m_fboTextures[0], m_fboTextures[1]);
+    std::swap(m_headlessDepthRenderbuffers[0], m_headlessDepthRenderbuffers[1]);
 
     return true;
 }
@@ -229,18 +234,8 @@ void OpenGLESBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z, uint3
     // 1. Clear CPU-side framebuffer for progressive hybrid compatibility
     SoftwareBackendBase::ClearBuffer(color, alpha, z, clearMask);
 
-    // 1.5. Force CPU framebuffer alpha to 0 so background is not cached as hybrid geometry/text!
-    if (clearMask & 1) {
-        auto* pixels = reinterpret_cast<uint32_t*>(m_headlessPixelMap);
-        if (pixels) {
-            for (uint32_t i = 0; i < m_headlessWidth * m_headlessHeight; ++i) {
-                pixels[i] &= 0x00FFFFFF;
-            }
-        }
-    }
-
     // Bind offscreen FBO
-    glBindFramebuffer(GL_FRAMEBUFFER, m_headlessFBO);
+    glBindFramebuffer(GL_FRAMEBUFFER, m_headlessFBOs[0]);
 
     GLbitfield mask = 0;
     GLboolean oldDepthMask = GL_TRUE;
@@ -291,41 +286,91 @@ void OpenGLESBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z, uint3
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
+void OpenGLESBackend::FlushLFBToGPU() {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    if (!m_lfbDirty) return;
+
+    GLint prevTexture = 0;
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &prevTexture);
+
+    // Helper lambda to swizzle and upload a CPU buffer to a specific GPU texture
+    auto flushBuffer = [this](const uint8_t* cpuBufferData, uint32_t gpuTexture) {
+        const auto* src = reinterpret_cast<const uint32_t*>(cpuBufferData);
+        if (!src || m_swizzleBuffer.empty()) return;
+        for (uint32_t y = 0; y < m_headlessHeight; ++y) {
+            uint32_t srcY = y;
+            uint32_t dstY = m_headlessHeight - 1 - y; // Flip to match bottom-up FBO layout
+            const uint32_t* srcRow = src + srcY * m_headlessWidth;
+            uint32_t* dstRow = m_swizzleBuffer.data() + dstY * m_headlessWidth;
+
+            for (uint32_t x = 0; x < m_headlessWidth; ++x) {
+                uint32_t bgra = srcRow[x];
+                uint32_t b = bgra & 0xFF;
+                uint32_t g = (bgra >> 8) & 0xFF;
+                uint32_t r = (bgra >> 16) & 0xFF;
+                uint32_t a = (bgra >> 24) & 0xFF;
+                dstRow[x] = (a << 24) | (b << 16) | (g << 8) | r; // RGBA
+            }
+        }
+        glBindTexture(GL_TEXTURE_2D, gpuTexture);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, m_headlessWidth, m_headlessHeight, GL_RGBA, GL_UNSIGNED_BYTE, m_swizzleBuffer.data());
+    };
+
+    // Determine which FBO texture corresponds to FRONTBUFFER and BACKBUFFER.
+    // - If m_activeRenderBuffer == 0 (FRONTBUFFER):
+    //   m_fboTextures[0] is the GPU FRONTBUFFER, m_fboTextures[1] is the GPU BACKBUFFER.
+    // - If m_activeRenderBuffer == 1 (BACKBUFFER):
+    //   m_fboTextures[0] is the GPU BACKBUFFER, m_fboTextures[1] is the GPU FRONTBUFFER.
+    uint32_t gpuFrontTexture = (m_activeRenderBuffer == 0) ? m_fboTextures[0] : m_fboTextures[1];
+    uint32_t gpuBackTexture  = (m_activeRenderBuffer == 0) ? m_fboTextures[1] : m_fboTextures[0];
+
+    // 1. Flush FRONTBUFFER if dirty
+    if (m_lfbBufferDirty[0]) {
+        flushBuffer(m_cpuBuffers[m_frontBufferIdx].data(), gpuFrontTexture);
+        checkGLError("FlushLFBToGPU FrontBuffer glTexSubImage2D");
+        m_lfbBufferDirty[0] = false;
+    }
+
+    // 2. Flush BACKBUFFER if dirty
+    if (m_lfbBufferDirty[1]) {
+        flushBuffer(m_cpuBuffers[m_backBufferIdx].data(), gpuBackTexture);
+        checkGLError("FlushLFBToGPU BackBuffer glTexSubImage2D");
+        m_lfbBufferDirty[1] = false;
+    }
+
+    glBindTexture(GL_TEXTURE_2D, prevTexture);
+
+    m_lfbDirty = false;
+}
+
 bool OpenGLESBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY, uint32_t srcWidth, uint32_t srcHeight, uint32_t dstStride, void* dstData) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     if (!m_initialized || !m_windowAttached) return false;
 
-    // --- STEP 1: Cache CPU-rendered text/geometry pixels ---
-    std::vector<uint32_t> cpuRenderingCache(m_headlessWidth * m_headlessHeight, 0);
-    const auto* cpuPixels = reinterpret_cast<const uint32_t*>(m_headlessPixelMap);
-    bool hasCpuRendering = false;
+    // Flush any pending CPU LFB writes to the GPU first, ensuring they are
+    // not obliterated by the subsequent glReadPixels readback!
+    FlushLFBToGPU();
 
-    if (cpuPixels) {
-        for (size_t i = 0; i < cpuRenderingCache.size(); ++i) {
-            // If the pixel is not transparent background (alpha != 0)
-            if ((cpuPixels[i] >> 24) != 0) {
-                cpuRenderingCache[i] = cpuPixels[i];
-                hasCpuRendering = true;
-            }
-        }
-    }
-
-    // --- STEP 2: GPU Readback Flush ---
+    // --- STEP 1: GPU Readback Flush ---
     // Query the currently bound FBO to restore it at the end, preventing state leakage!
     GLint previousFBO = 0;
     glGetIntegerv(GL_FRAMEBUFFER_BINDING, &previousFBO);
 
-    // Bind our offscreen FBO and read pixels directly into m_headlessPixelMap
-    glBindFramebuffer(GL_FRAMEBUFFER, m_headlessFBO);
+    // Bind the correct offscreen FBO based on the requested buffer (0 = FRONT, 1 = BACK)
+    GLuint fboToRead = (buffer == 0) ? m_headlessFBOs[1] : m_headlessFBOs[0];
+    glBindFramebuffer(GL_FRAMEBUFFER, fboToRead);
     
-    // Read pixels as GL_RGBA (which contains our R/B swapped BGRA-ordered pixels)
-    // GLES glReadPixels is synchronous and guarantees the GPU finishes all rendering before returning!
-    glReadPixels(0, 0, m_headlessWidth, m_headlessHeight, GL_RGBA, GL_UNSIGNED_BYTE, m_headlessPixelMap);
-    checkGLError("ReadLFB glReadPixels");
+    // Resolve the destination CPU buffer based on the requested buffer
+    void* readDst = (buffer == 0) ? m_cpuBuffers[m_frontBufferIdx].data() : m_cpuBuffers[m_backBufferIdx].data();
 
-    // Convert RGBA from GPU glReadPixels to BGRA and vertically flip the image
-    if (m_headlessPixelMap) {
-        auto* dest = reinterpret_cast<uint32_t*>(m_headlessPixelMap);
+    if (readDst) {
+        // Read pixels as GL_RGBA (which contains our R/B swapped BGRA-ordered pixels)
+        // GLES glReadPixels is synchronous and guarantees the GPU finishes all rendering before returning!
+        glReadPixels(0, 0, m_headlessWidth, m_headlessHeight, GL_RGBA, GL_UNSIGNED_BYTE, readDst);
+        checkGLError("ReadLFB glReadPixels");
+
+        // Convert RGBA from GPU glReadPixels to BGRA and vertically flip the image in-place
+        auto* dest = reinterpret_cast<uint32_t*>(readDst);
         // 1. Swizzle RGBA to BGRA
         for (uint32_t i = 0; i < m_headlessWidth * m_headlessHeight; ++i) {
             uint32_t rgba = dest[i];
@@ -348,56 +393,11 @@ bool OpenGLESBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY, uin
         }
     }
 
-    // Temporary debug logging to trace the text obliteration paradox!
-    if (m_headlessPixelMap) {
-        const auto* pixels = reinterpret_cast<const uint32_t*>(m_headlessPixelMap);
-        uint32_t textPixelIndex = 8 * m_headlessWidth + 50; // (50, 8)
-        uint32_t bgPixelIndex = 30 * m_headlessWidth + 50; // (50, 30)
-        GLIDE_LOG(DEBUG, "OpenGL_ES", "ReadLFB Overlay Debug: Pixel (50,8) before overlay: 0x" 
-                  << std::hex << std::uppercase << pixels[textPixelIndex] 
-                  << " (Cache: 0x" << cpuRenderingCache[textPixelIndex] << ")");
-        GLIDE_LOG(DEBUG, "OpenGL_ES", "ReadLFB Overlay Debug: Pixel (50,30) before overlay: 0x" 
-                  << std::hex << std::uppercase << pixels[bgPixelIndex] 
-                  << " (Cache: 0x" << cpuRenderingCache[bgPixelIndex] << ")");
-    }
-
-    // --- STEP 3: Overlay CPU-rendered text/geometry back ---
-    if (hasCpuRendering && m_headlessPixelMap) {
-        auto* dest = reinterpret_cast<uint32_t*>(m_headlessPixelMap);
-        for (size_t i = 0; i < cpuRenderingCache.size(); ++i) {
-            if (cpuRenderingCache[i] != 0) {
-                dest[i] = cpuRenderingCache[i];
-            }
-        }
-    }
-
-    if (m_headlessPixelMap) {
-        const auto* pixels = reinterpret_cast<const uint32_t*>(m_headlessPixelMap);
-        uint32_t textPixelIndex = 8 * m_headlessWidth + 50; // (50, 8)
-        uint32_t bgPixelIndex = 30 * m_headlessWidth + 50; // (50, 30)
-        GLIDE_LOG(DEBUG, "OpenGL_ES", "ReadLFB Overlay Debug: Pixel (50,8) after overlay: 0x" 
-                  << std::hex << std::uppercase << pixels[textPixelIndex]);
-        GLIDE_LOG(DEBUG, "OpenGL_ES", "ReadLFB Overlay Debug: Pixel (50,30) after overlay: 0x" 
-                  << std::hex << std::uppercase << pixels[bgPixelIndex]);
-    }
-
     // Restore the previously bound framebuffer to prevent state leakage!
     glBindFramebuffer(GL_FRAMEBUFFER, previousFBO);
 
-    // --- STEP 4: Convert and copy to client ---
+    // --- STEP 2: Convert and copy to client ---
     bool result = SoftwareBackendBase::ReadLFB(buffer, srcX, srcY, srcWidth, srcHeight, dstStride, dstData);
-
-    // --- STEP 5: Restore CPU-only state ---
-    // Restore the CPU-only framebuffer state from our cache, completely wiping out GPU pollution while preserving CPU LFB writes!
-    if (m_headlessPixelMap) {
-        auto* dest = reinterpret_cast<uint32_t*>(m_headlessPixelMap);
-        std::fill_n(dest, m_headlessWidth * m_headlessHeight, m_lastCpuClearColor);
-        for (size_t i = 0; i < cpuRenderingCache.size(); ++i) {
-            if (cpuRenderingCache[i] != 0) {
-                dest[i] = cpuRenderingCache[i];
-            }
-        }
-    }
 
     return result;
 }
@@ -525,14 +525,16 @@ bool OpenGLESBackend::CreateGLContext(void* nativeWindowHandle, uint32_t width, 
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
-    // Create the offscreen FBO GPU rendering texture
-    glGenTextures(1, &m_fboTexture);
-    glBindTexture(GL_TEXTURE_2D, m_fboTexture);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    // Create the offscreen FBO GPU rendering textures (Double-Buffered)
+    glGenTextures(2, m_fboTextures);
+    for (int i = 0; i < 2; ++i) {
+        glBindTexture(GL_TEXTURE_2D, m_fboTextures[i]);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    }
 
     glBindTexture(GL_TEXTURE_2D, 0);
 
@@ -544,12 +546,12 @@ bool OpenGLESBackend::CreateGLContext(void* nativeWindowHandle, uint32_t width, 
 
 void OpenGLESBackend::DestroyGLContext() {
     if (m_glTexture)  { glDeleteTextures(1, &m_glTexture); m_glTexture = 0; }
-    if (m_fboTexture) { glDeleteTextures(1, &m_fboTexture); m_fboTexture = 0; }
+    if (m_fboTextures[0]) { glDeleteTextures(2, m_fboTextures); m_fboTextures[0] = m_fboTextures[1] = 0; }
     if (m_glVBO)     { glDeleteBuffers(1, &m_glVBO); m_glVBO = 0; }
     if (m_glVAO)     { glDeleteVertexArrays(1, &m_glVAO); m_glVAO = 0; }
     if (m_glProgram) { glDeleteProgram(m_glProgram); m_glProgram = 0; }
-    if (m_headlessDepthRenderbuffer) { glDeleteRenderbuffers(1, &m_headlessDepthRenderbuffer); m_headlessDepthRenderbuffer = 0; }
-    if (m_headlessFBO)               { glDeleteFramebuffers(1, &m_headlessFBO); m_headlessFBO = 0; }
+    if (m_headlessDepthRenderbuffers[0]) { glDeleteRenderbuffers(2, m_headlessDepthRenderbuffers); m_headlessDepthRenderbuffers[0] = m_headlessDepthRenderbuffers[1] = 0; }
+    if (m_headlessFBOs[0])               { glDeleteFramebuffers(2, m_headlessFBOs); m_headlessFBOs[0] = m_headlessFBOs[1] = 0; }
     if (m_geomVBO)     { glDeleteBuffers(1, &m_geomVBO); m_geomVBO = 0; }
     if (m_geomVAO)     { glDeleteVertexArrays(1, &m_geomVAO); m_geomVAO = 0; }
     if (m_geomProgram) { glDeleteProgram(m_geomProgram); m_geomProgram = 0; }
@@ -891,6 +893,8 @@ void OpenGLESBackend::DrawPoint(const ModernVertex& pt) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     if (!m_initialized || !m_windowAttached) return;
 
+    FlushLFBToGPU();
+
     GLIDE_LOG(DEBUG, "GLES", "DrawPoint GPU draw. Pos: (" << pt.pos[0] << ", " << pt.pos[1] << ", " << pt.pos[2] << ")");
 
     // 1. Upload vertex to dynamic VBO ring buffer
@@ -899,7 +903,7 @@ void OpenGLESBackend::DrawPoint(const ModernVertex& pt) {
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 
     // 2. Bind offscreen FBO and set state
-    glBindFramebuffer(GL_FRAMEBUFFER, m_headlessFBO);
+    glBindFramebuffer(GL_FRAMEBUFFER, m_headlessFBOs[0]);
     glViewport(0, 0, m_headlessWidth, m_headlessHeight);
     SyncDepthState();
     ApplyBlendingGLES();
@@ -932,6 +936,8 @@ void OpenGLESBackend::DrawLine(const ModernVertex& v0, const ModernVertex& v1) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     if (!m_initialized || !m_windowAttached) return;
 
+    FlushLFBToGPU();
+
     GLIDE_LOG(DEBUG, "GLES", "DrawLine GPU draw. V0: (" << v0.pos[0] << ", " << v0.pos[1] << "), V1: (" << v1.pos[0] << ", " << v1.pos[1] << ")");
     GLIDE_LOG(DEBUG, "GLES", "DrawLine Colors. V0: (" << v0.color[0] << "," << v0.color[1] << "," << v0.color[2] << "," << v0.color[3] << "), V1: (" << v1.color[0] << "," << v1.color[1] << "," << v1.color[2] << "," << v1.color[3] << ")");
 
@@ -942,7 +948,7 @@ void OpenGLESBackend::DrawLine(const ModernVertex& v0, const ModernVertex& v1) {
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 
     // 2. Bind offscreen FBO and set state
-    glBindFramebuffer(GL_FRAMEBUFFER, m_headlessFBO);
+    glBindFramebuffer(GL_FRAMEBUFFER, m_headlessFBOs[0]);
     glViewport(0, 0, m_headlessWidth, m_headlessHeight);
     SyncDepthState();
     ApplyBlendingGLES();
@@ -976,6 +982,8 @@ void OpenGLESBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     if (!m_initialized || !m_windowAttached) return;
 
+    FlushLFBToGPU();
+
     GLIDE_LOG(DEBUG, "GLES", "DrawTriangle GPU draw. A: (" << a.pos[0] << ", " << a.pos[1] << "), B: (" << b.pos[0] << ", " << b.pos[1] << "), C: (" << c.pos[0] << ", " << c.pos[1] << ")");
 
     // 1. Upload all three vertices directly to dynamic VBO ring buffer
@@ -987,7 +995,7 @@ void OpenGLESBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 
     // 2. Bind offscreen FBO and set state
-    glBindFramebuffer(GL_FRAMEBUFFER, m_headlessFBO);
+    glBindFramebuffer(GL_FRAMEBUFFER, m_headlessFBOs[0]);
     glViewport(0, 0, m_headlessWidth, m_headlessHeight);
     SyncDepthState();
     ApplyBlendingGLES();

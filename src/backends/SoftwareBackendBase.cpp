@@ -971,6 +971,11 @@ bool SoftwareBackendBase::WriteLFB(uint32_t buffer, uint32_t dstX, uint32_t dstY
     }
     if (wrotePixel) {
         m_lfbDirty = true;
+        if (buffer == 0) { // FRONTBUFFER
+            m_lfbBufferDirty[0] = true;
+        } else { // BACKBUFFER
+            m_lfbBufferDirty[1] = true;
+        }
     }
     return true;
 }

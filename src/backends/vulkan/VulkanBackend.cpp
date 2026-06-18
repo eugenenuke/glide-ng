@@ -453,6 +453,7 @@ void VulkanBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z, uint32_
     }
 
     // 2. Save clear state and mark pending for GPU LoadOp clears when Render Pass starts!
+    uint32_t activeIdx = GetActiveGpuBufferIdx();
     if (clearMask & 1) { // Color clear
         float a = ((color >> 24) & 0xFF) / 255.0f;
         float r = ((color >> 16) & 0xFF) / 255.0f;
@@ -464,13 +465,13 @@ void VulkanBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z, uint32_
             std::swap(r, b);
         }
 
-        m_clearColorValue = vk::ClearColorValue(std::array<float, 4>{r, g, b, a});
-        m_clearColorPending = true;
+        m_clearColorValue[activeIdx] = vk::ClearColorValue(std::array<float, 4>{r, g, b, a});
+        m_clearColorPending[activeIdx] = true;
     }
 
     if (clearMask & 2) { // Depth clear
-        m_clearDepthValue = z;
-        m_clearDepthPending = true;
+        m_clearDepthValue[activeIdx] = z;
+        m_clearDepthPending[activeIdx] = true;
     }
 }
 
@@ -626,6 +627,9 @@ bool VulkanBackend::SwapBuffers() {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     if (!m_initialized || !m_windowAttached) return false;
 
+    // Flush any pending CPU LFB writes to the GPU active image before we swap/present!
+    FlushLFBToGPU();
+
     // Enforce frame pacing and track frame timing using unified FrameTracker
     auto& tracker = TelemetryManager::GetInstance().GetFrameTracker();
     tracker.MarkFrameEnd(m_config.maxFps);
@@ -639,7 +643,8 @@ bool VulkanBackend::SwapBuffers() {
     }
     
     // Check if we have any pending LoadOp clears. If yes, execute them now by beginning and ending a render pass.
-    if (!m_inRenderPass && (m_clearColorPending || m_clearDepthPending)) {
+    uint32_t activeIdx = GetActiveGpuBufferIdx();
+    if (!m_inRenderPass && (m_clearColorPending[activeIdx] || m_clearDepthPending[activeIdx])) {
         EnsureRenderPassActive();
     }
     
@@ -649,8 +654,21 @@ bool VulkanBackend::SwapBuffers() {
     }
 
     // 2. Mode-specific presentation / execution dispatch
+    //
+    // ARCHITECTURAL DESIGN NOTE (SYNC VS ASYNC PRESENTATION):
+    // * WINDOWED/INTERACTIVE MODE (Synchronous):
+    //   Because windowed presentation blits the CPU-side double-buffer (m_headlessPixelMap) to the SDL window,
+    //   we must ensure that the CPU buffer is in perfect sync with the GPU before the frame ends.
+    //   Pipelining this asynchronously with a 1-frame delay caused a startup blink (displaying unitialized 
+    //   staging memory on frame 0) and out-of-sync CPU readbacks (causing interactive tests to fail initial frames).
+    //   To guarantee 0-frame latency, zero blinking, and immediate correctness of interactive readbacks, 
+    //   windowed mode executes SYNCHRONOUSLY by immediately awaiting the current frame's GPU fence.
+    // * HEADLESS MODE (Asynchronous):
+    //   Headless mode preserves 100% asynchronous, pipelined double-buffered queue execution. This guarantees 
+    //   maximum performance and zero CPU stalls during automated visual regression runs, where rendering speed is 
+    //   the primary metric and readbacks only occur via explicit, synchronous ReadLFB calls.
     if (!m_config.forceNoWindow && m_sdlWindow && m_headlessPixelMap) {
-        // --- WINDOWED MODE PRESENTATION (Requires CPU readback for SDL2 blit) ---
+        // --- WINDOWED MODE PRESENTATION (Synchronous Correct Presentation) ---
 
         // 2.1. Cache CPU-rendered text/geometry pixels (e.g. from LFB)
         std::vector<uint32_t> cpuRenderingCache(m_headlessWidth * m_headlessHeight, 0);
@@ -691,25 +709,21 @@ bool VulkanBackend::SwapBuffers() {
         vk::SubmitInfo submitInfo(0, nullptr, nullptr, 1, m_commandBuffer);
         m_graphicsQueue.submit(submitInfo, m_fences[m_currentFrameSlot].get());
 
-        // Now, we present the PREVIOUS frame's staging buffer (slot (m_currentFrameSlot + 1) % 2) to the SDL window!
-        // This completely overlaps GPU rendering of the current frame with CPU presentation of the previous frame!
-        uint32_t prevSlot = (m_currentFrameSlot + 1) % 2;
-        
-        // Wait for the previous frame's GPU copy to complete. This is usually already done, so it's a 0-stall wait!
-        if (m_device->waitForFences(1, &m_fences[prevSlot].get(), VK_TRUE, UINT64_MAX) != vk::Result::eSuccess) {
-            GLIDE_LOG(CRITICAL, "Vulkan", "Failed to wait for fence of previous frame slot " << prevSlot);
+        // Wait for the CURRENT frame's GPU copy to complete immediately!
+        if (m_device->waitForFences(1, &m_fences[m_currentFrameSlot].get(), VK_TRUE, UINT64_MAX) != vk::Result::eSuccess) {
+            GLIDE_LOG(CRITICAL, "Vulkan", "Failed to wait for fence of current frame slot " << m_currentFrameSlot);
         }
 
         // Now it is 100% safe to destroy any pipelines that were recompiled mid-frame!
         m_danglingPipelines.clear();
 
-        // Explicitly invalidate mapped memory range of the previous slot to force CPU cache refresh!
-        vk::MappedMemoryRange memRange(m_headlessPixelMemories[prevSlot].get(), 0, VK_WHOLE_SIZE);
+        // Explicitly invalidate mapped memory range of the current slot to force CPU cache refresh!
+        vk::MappedMemoryRange memRange(m_headlessPixelMemories[m_currentFrameSlot].get(), 0, VK_WHOLE_SIZE);
         m_device->invalidateMappedMemoryRanges(memRange);
 
-        // Copy the GPU-rendered framebuffer from the previous slot's mapped staging memory into our CPU-side active buffer
-        if (m_gpuStagingMaps[prevSlot]) {
-            std::memcpy(m_headlessPixelMap, m_gpuStagingMaps[prevSlot], m_headlessWidth * m_headlessHeight * 4);
+        // Copy the GPU-rendered framebuffer from the current slot's mapped staging memory into our CPU-side active buffer
+        if (m_gpuStagingMaps[m_currentFrameSlot]) {
+            std::memcpy(m_headlessPixelMap, m_gpuStagingMaps[m_currentFrameSlot], m_headlessWidth * m_headlessHeight * 4);
         }
 
         // Overlay CPU-rendered text/geometry back
@@ -729,8 +743,8 @@ bool VulkanBackend::SwapBuffers() {
             SDL_RenderPresent(reinterpret_cast<SDL_Renderer*>(m_sdlRenderer));
         }
 
-        // Advance the frame slot
-        m_currentFrameSlot = prevSlot;
+        // Advance to the next slot (so we use the other staging slot for the next frame)
+        m_currentFrameSlot = (m_currentFrameSlot + 1) % 2;
 
         // Reset the texture staging offset for the new active slot back to its base!
         m_texStagingOffsets[m_currentFrameSlot] = m_currentFrameSlot * m_texStagingSlotSize;
@@ -771,6 +785,7 @@ bool VulkanBackend::SwapBuffers() {
     // 3. Swap the CPU buffer indices for double-buffering
     if (m_headlessPixelMap) {
         std::swap(m_frontBufferIdx, m_backBufferIdx);
+        std::swap(m_lfbBufferDirty[0], m_lfbBufferDirty[1]); // Swap dirty flags alongside buffer indices!
         if (m_activeRenderBuffer == 0) { // FRONTBUFFER
             m_headlessPixelMap = m_cpuBuffers[m_frontBufferIdx].data();
         } else { // BACKBUFFER
@@ -791,11 +806,13 @@ bool VulkanBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY, uint3
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     if (!m_initialized || !m_windowAttached) return false;
 
-
-
     // --- STEP 1: Cache CPU-rendered text/geometry pixels ---
     std::vector<uint32_t> cpuRenderingCache(m_headlessWidth * m_headlessHeight, 0);
-    const auto* cpuPixels = reinterpret_cast<const uint32_t*>(m_headlessPixelMap);
+    
+    // Resolve the CPU source buffer based on the requested buffer (0 = FRONT, 1 = BACK)
+    void* readDst = (buffer == 0) ? m_cpuBuffers[m_frontBufferIdx].data() : m_cpuBuffers[m_backBufferIdx].data();
+    const auto* cpuPixels = reinterpret_cast<const uint32_t*>(readDst);
+    
     bool hasCpuRendering = false;
     size_t cpuPixelCount = 0;
 
@@ -811,13 +828,25 @@ bool VulkanBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY, uint3
     }
     GLIDE_LOG(DEBUG, "Vulkan", "ReadLFB: Cache CPU pixels phase. Found " << cpuPixelCount << " non-transparent CPU pixels.");
 
-    // 1. Flush pending batch or clears, and terminate active render pass
+    // 1. Flush pending batch draws
     if (m_batchedVertexCount > 0) {
         FlushBatch();
     }
-    if (!m_inRenderPass && (m_clearColorPending || m_clearDepthPending)) {
+
+    // Resolve the GPU image index based on the requested buffer (0 = FRONT, 1 = BACK)
+    uint32_t readIdx = (buffer == m_activeRenderBuffer) ? GetActiveGpuBufferIdx() : (1u - GetActiveGpuBufferIdx());
+
+    // If the target read FBO has pending clears, we must execute them first!
+    if (!m_inRenderPass && (m_clearColorPending[readIdx] || m_clearDepthPending[readIdx])) {
+        GLIDE_LOG(DEBUG, "Vulkan", "ReadLFB: Executing pending clears on read target FBO " << readIdx << "...");
+        uint32_t origActive = m_activeRenderBuffer;
+        m_activeRenderBuffer = buffer; // Temporarily set active buffer to target buffer so EnsureRenderPassActive targets readIdx!
         EnsureRenderPassActive();
+        m_commandBuffer->endRenderPass();
+        m_inRenderPass = false;
+        m_activeRenderBuffer = origActive; // Restore
     }
+
     if (m_inRenderPass) {
         m_commandBuffer->endRenderPass();
         m_inRenderPass = false;
@@ -825,14 +854,13 @@ bool VulkanBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY, uint3
 
     // 2. Transition layout from ColorAttachmentOptimal to TransferSrcOptimal
     vk::ImageSubresourceRange range(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1);
-    uint32_t activeIdx = GetActiveGpuBufferIdx();
-    TransitionImageLayout(*m_commandBuffer, m_headlessImages[activeIdx].get(), vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eTransferSrcOptimal, range);
+    TransitionImageLayout(*m_commandBuffer, m_headlessImages[readIdx].get(), vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eTransferSrcOptimal, range);
 
     // 3. Record copy from GPU image to staging buffer
     vk::BufferImageCopy region;
     region.imageSubresource = vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
     region.imageExtent = vk::Extent3D(m_headlessWidth, m_headlessHeight, 1);
-    m_commandBuffer->copyImageToBuffer(m_headlessImages[activeIdx].get(), vk::ImageLayout::eTransferSrcOptimal, m_headlessPixelBuffers[m_currentFrameSlot].get(), 1, &region);
+    m_commandBuffer->copyImageToBuffer(m_headlessImages[readIdx].get(), vk::ImageLayout::eTransferSrcOptimal, m_headlessPixelBuffers[m_currentFrameSlot].get(), 1, &region);
 
     // 4. End and submit the command buffer immediately
     m_commandBuffer->end();
@@ -844,13 +872,13 @@ bool VulkanBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY, uint3
     m_danglingPipelines.clear();
 
     // Copy the GPU-rendered framebuffer from mapped staging memory into our CPU-side active buffer
-    if (m_gpuStagingMaps[m_currentFrameSlot] && m_headlessPixelMap) {
-        std::memcpy(m_headlessPixelMap, m_gpuStagingMaps[m_currentFrameSlot], m_headlessWidth * m_headlessHeight * 4);
+    if (m_gpuStagingMaps[m_currentFrameSlot] && readDst) {
+        std::memcpy(readDst, m_gpuStagingMaps[m_currentFrameSlot], m_headlessWidth * m_headlessHeight * 4);
     }
 
     // --- STEP 3: Overlay CPU-rendered text/geometry back ---
-    if (hasCpuRendering && m_headlessPixelMap) {
-        auto* dest = reinterpret_cast<uint32_t*>(m_headlessPixelMap);
+    if (hasCpuRendering && readDst) {
+        auto* dest = reinterpret_cast<uint32_t*>(readDst);
         for (size_t i = 0; i < cpuRenderingCache.size(); ++i) {
             if (cpuRenderingCache[i] != 0) {
                 dest[i] = cpuRenderingCache[i];
@@ -863,14 +891,14 @@ bool VulkanBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY, uint3
     m_commandBuffer->begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
 
     // 7. Transition image layout back to ColorAttachmentOptimal so it is ready for any subsequent draw calls!
-    TransitionImageLayout(*m_commandBuffer, m_headlessImages[activeIdx].get(), vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::eColorAttachmentOptimal, range);
+    TransitionImageLayout(*m_commandBuffer, m_headlessImages[readIdx].get(), vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::eColorAttachmentOptimal, range);
 
     // 8. Now call the base class ReadLFB to copy the synchronized pixels to the client buffer!
     bool result = SoftwareBackendBase::ReadLFB(buffer, srcX, srcY, srcWidth, srcHeight, dstStride, dstData);
 
     // 9. Restore the CPU-only framebuffer state from our cache, completely wiping out GPU pollution while preserving CPU LFB writes!
-    if (m_headlessPixelMap) {
-        auto* dest = reinterpret_cast<uint32_t*>(m_headlessPixelMap);
+    if (readDst) {
+        auto* dest = reinterpret_cast<uint32_t*>(readDst);
         std::fill_n(dest, m_headlessWidth * m_headlessHeight, m_lastCpuClearColor);
         for (size_t i = 0; i < cpuRenderingCache.size(); ++i) {
             if (cpuRenderingCache[i] != 0) {
@@ -878,7 +906,6 @@ bool VulkanBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY, uint3
             }
         }
     }
-
     return result;
 }
 
@@ -1230,7 +1257,51 @@ void VulkanBackend::TransitionImageLayout(vk::CommandBuffer cmd, vk::Image image
 void VulkanBackend::FlushLFBToGPU() {
     if (!m_lfbDirty) return;
 
-    GLIDE_LOG(DEBUG, "Vulkan", "FlushLFBToGPU: Flushing CPU LFB staging buffer to GPU framebuffer...");
+    GLIDE_LOG(DEBUG, "Vulkan", "FlushLFBToGPU: Checking dirty buffers...");
+
+    // Resolve the GPU image indices for FRONT and BACK buffers
+    uint32_t gpuFrontIdx = (0 == m_activeRenderBuffer) ? GetActiveGpuBufferIdx() : (1u - GetActiveGpuBufferIdx());
+    uint32_t gpuBackIdx = (1 == m_activeRenderBuffer) ? GetActiveGpuBufferIdx() : (1u - GetActiveGpuBufferIdx());
+
+    // We will flush the dirty buffer. In practice, only one is dirty at a time.
+    // If both are dirty, we warn and flush the back buffer.
+    uint32_t bufferToFlush = 2; // 2 = none
+    uint32_t targetGpuIdx = 0;
+    void* srcCpuData = nullptr;
+
+    if (m_lfbBufferDirty[0] && m_lfbBufferDirty[1]) {
+        GLIDE_LOG(WARN, "Vulkan", "FlushLFBToGPU: Both FRONT and BACK LFB buffers are dirty in the same flush. Flushing BACK.");
+        bufferToFlush = 1;
+        targetGpuIdx = gpuBackIdx;
+        srcCpuData = m_cpuBuffers[m_backBufferIdx].data();
+    } else if (m_lfbBufferDirty[0]) {
+        bufferToFlush = 0;
+        targetGpuIdx = gpuFrontIdx;
+        srcCpuData = m_cpuBuffers[m_frontBufferIdx].data();
+    } else if (m_lfbBufferDirty[1]) {
+        bufferToFlush = 1;
+        targetGpuIdx = gpuBackIdx;
+        srcCpuData = m_cpuBuffers[m_backBufferIdx].data();
+    }
+
+    if (bufferToFlush == 2 || !srcCpuData) {
+        m_lfbDirty = false;
+        m_lfbBufferDirty[0] = false;
+        m_lfbBufferDirty[1] = false;
+        return;
+    }
+
+    // If there are pending clears on the target FBO, we MUST execute them on the GPU first!
+    // Otherwise, the subsequent copyBufferToImage will be overwritten when the clears are eventually executed!
+    if (!m_inRenderPass && (m_clearColorPending[bufferToFlush] || m_clearDepthPending[bufferToFlush])) {
+        GLIDE_LOG(DEBUG, "Vulkan", "FlushLFBToGPU: Executing pending clears on target buffer " << bufferToFlush << " before LFB upload...");
+        uint32_t origActive = m_activeRenderBuffer;
+        m_activeRenderBuffer = bufferToFlush; // Temporarily set active buffer so EnsureRenderPassActive targets bufferToFlush!
+        EnsureRenderPassActive();
+        m_commandBuffer->endRenderPass();
+        m_inRenderPass = false;
+        m_activeRenderBuffer = origActive; // Restore
+    }
 
     // 1. If we are inside an active render pass, we must end it first!
     if (m_inRenderPass) {
@@ -1241,14 +1312,13 @@ void VulkanBackend::FlushLFBToGPU() {
     }
 
     // Copy from CPU-side active buffer to GPU staging memory
-    if (m_gpuStagingMaps[m_currentFrameSlot] && m_headlessPixelMap) {
-        std::memcpy(m_gpuStagingMaps[m_currentFrameSlot], m_headlessPixelMap, m_headlessWidth * m_headlessHeight * 4);
+    if (m_gpuStagingMaps[m_currentFrameSlot]) {
+        std::memcpy(m_gpuStagingMaps[m_currentFrameSlot], srcCpuData, m_headlessWidth * m_headlessHeight * 4);
     }
 
     // 2. Transition image to TransferDstOptimal
     vk::ImageSubresourceRange range(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1);
-    uint32_t activeIdx = GetActiveGpuBufferIdx();
-    TransitionImageLayout(*m_commandBuffer, m_headlessImages[activeIdx].get(), vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eTransferDstOptimal, range);
+    TransitionImageLayout(*m_commandBuffer, m_headlessImages[targetGpuIdx].get(), vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eTransferDstOptimal, range);
 
     // 3. Record copy from buffer to image
     vk::BufferImageCopy region;
@@ -1259,13 +1329,15 @@ void VulkanBackend::FlushLFBToGPU() {
     vk::MappedMemoryRange memRange(m_headlessPixelMemories[m_currentFrameSlot].get(), 0, VK_WHOLE_SIZE);
     m_device->flushMappedMemoryRanges(memRange);
 
-    m_commandBuffer->copyBufferToImage(m_headlessPixelBuffers[m_currentFrameSlot].get(), m_headlessImages[activeIdx].get(), vk::ImageLayout::eTransferDstOptimal, 1, &region);
+    m_commandBuffer->copyBufferToImage(m_headlessPixelBuffers[m_currentFrameSlot].get(), m_headlessImages[targetGpuIdx].get(), vk::ImageLayout::eTransferDstOptimal, 1, &region);
 
     // 4. Transition image back to ColorAttachmentOptimal
-    TransitionImageLayout(*m_commandBuffer, m_headlessImages[activeIdx].get(), vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eColorAttachmentOptimal, range);
+    TransitionImageLayout(*m_commandBuffer, m_headlessImages[targetGpuIdx].get(), vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eColorAttachmentOptimal, range);
 
-    // 5. Clear the dirty flag
+    // 5. Clear the dirty flags
     m_lfbDirty = false;
+    m_lfbBufferDirty[0] = false;
+    m_lfbBufferDirty[1] = false;
 }
 
 // --- Phase 2: Dynamic Shader Modules & Pipeline State Creation ---
@@ -1976,15 +2048,16 @@ void VulkanBackend::EnsureRenderPassActive() {
 
     m_inRenderPass = true;
 
-    // Perform explicit clears using vkCmdClearAttachments if pending!
+    // Perform explicit clears using vkCmdClearAttachments if pending on the active FBO!
     std::vector<vk::ClearAttachment> clears;
-    if (m_clearColorPending) {
-        clears.push_back(vk::ClearAttachment(vk::ImageAspectFlagBits::eColor, 0, m_clearColorValue));
-        m_clearColorPending = false;
+    uint32_t activeIdx = GetActiveGpuBufferIdx();
+    if (m_clearColorPending[activeIdx]) {
+        clears.push_back(vk::ClearAttachment(vk::ImageAspectFlagBits::eColor, 0, m_clearColorValue[activeIdx]));
+        m_clearColorPending[activeIdx] = false;
     }
-    if (m_clearDepthPending) {
-        clears.push_back(vk::ClearAttachment(vk::ImageAspectFlagBits::eDepth, 0, vk::ClearValue(vk::ClearDepthStencilValue(m_clearDepthValue, 0))));
-        m_clearDepthPending = false;
+    if (m_clearDepthPending[activeIdx]) {
+        clears.push_back(vk::ClearAttachment(vk::ImageAspectFlagBits::eDepth, 0, vk::ClearValue(vk::ClearDepthStencilValue(m_clearDepthValue[activeIdx], 0))));
+        m_clearDepthPending[activeIdx] = false;
     }
 
     if (!clears.empty()) {

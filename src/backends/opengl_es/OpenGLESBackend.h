@@ -48,12 +48,14 @@ private:
 
     // GLES 3.2 presentation resources for streaming our software pixel map
     uint32_t m_glTexture{0};      // GLuint
-    uint32_t m_fboTexture{0};     // GLuint
     uint32_t m_glVAO{0};          // GLuint
     uint32_t m_glVBO{0};          // GLuint
     uint32_t m_glProgram{0};      // GLuint
-    uint32_t m_headlessFBO{0};              // GLuint
-    uint32_t m_headlessDepthRenderbuffer{0}; // GLuint
+
+    // Double-buffered offscreen GPU rendering targets
+    uint32_t m_headlessFBOs[2]{0, 0};              // GLuint
+    uint32_t m_fboTextures[2]{0, 0};             // GLuint
+    uint32_t m_headlessDepthRenderbuffers[2]{0, 0}; // GLuint
 
     // Milestone 3: GPU-Native Geometry Resources
     bool CreateGeomShaders();
@@ -65,6 +67,11 @@ private:
     uint32_t m_geomVBOOffset{0};
     const uint32_t m_geomVBOSize{1024 * 1024}; // 1MB dynamic ring buffer
     std::unordered_map<uint32_t, uint32_t> m_glesTextures;
+
+    // Unified GPU Framebuffer LFB Flushing
+    void FlushLFBToGPU();
+    std::vector<uint32_t> m_swizzleBuffer;
 };
 
 } // namespace GlideWrapper
+

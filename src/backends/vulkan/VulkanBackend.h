@@ -242,11 +242,14 @@ private:
     vk::Pipeline m_batchedPipeline;
     vk::DescriptorSet m_batchedDescSet;
 
-    // Clear state tracking for Render Pass LoadOp clears
-    vk::ClearColorValue m_clearColorValue{std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f}};
-    float m_clearDepthValue{1.0f};
-    bool m_clearColorPending{false};
-    bool m_clearDepthPending{false};
+    // Clear state tracking for Render Pass LoadOp clears (tracked per physical GPU framebuffer FBO 0 and 1)
+    vk::ClearColorValue m_clearColorValue[2] = {
+        vk::ClearColorValue(std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f}),
+        vk::ClearColorValue(std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f})
+    };
+    float m_clearDepthValue[2]{1.0f, 1.0f};
+    bool m_clearColorPending[2]{false, false};
+    bool m_clearDepthPending[2]{false, false};
     // Dynamic Scissor Helper
     vk::Rect2D GetScissorRectVulkan();
     void EnsureRenderPassActive();
