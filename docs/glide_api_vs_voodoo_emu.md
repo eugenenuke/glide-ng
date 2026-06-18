@@ -77,3 +77,35 @@ To understand what happens under the hood when our high-level Glide functions ar
 | `grDrawTriangle(...)` | `triangle` (Command trigger) | The guest driver writes vertex data to registers (`ax`, `ay`, `startr`, etc.) and then writes to the `triangle` command register, which triggers `setup_and_draw_triangle()` in `voodoo_emu.cpp`. |
 | `grLfbWriteRegion(...)` | LFB Memory Range (`0x00000000` in VRAM) | Guest CPU copies pixels directly to the framebuffer aperture. `voodoo.cpp` intercepts the write and writes directly to the simulated VRAM. |
 | `grSstIdle(...)` | `sstStatus` | Blocks until the command FIFO is empty and the rasterizer status flags report idle. |
+
+---
+
+## 4. Glide API Coverage Comparison
+
+When executing games through DosBox's Glide pass-through, the effective API coverage is the **intersection** of what DosBox's bridge is capable of forwarding and what our host wrapper implements:
+
+$$\text{Effective Pass-Through Coverage} = \text{DosBox Forwarding Coverage} \cap \text{Our Wrapper's Implementation}$$
+
+### A. API Surface Comparison Table
+
+| Metric | Our Wrapper (`glide-ng`) | DosBox Pass-Through (`glide.cpp`) | Comparison |
+| :--- | :---: | :---: | :--- |
+| **Core Glide2 (`gr*`)** | 94 | 94 | Both support the full core Glide2 specification. |
+| **Utility Library (`gu*`)** | 15 | 35 | DosBox supports a much larger set of utility functions, including rare movie playback (`guMovie*`) and multi-processor (`guMP*`) APIs. |
+| **Custom Extensions** | 0 | 2 | DosBox includes custom extensions like `ConvertAndDownloadRle` to optimize texture downloads. |
+| **Total API Surface** | **109** | **131** | **DosBox's forwarding surface is 20% larger.** |
+| **Current Implementation** | **68 (62.4%)** | **131 (100.0%)** | DosBox can marshal all 131; our wrapper implements 68. |
+
+### B. The Bottleneck: Unimplemented Functions Forwarded by DosBox
+
+If a game calls one of the following functions, DosBox **will successfully forward it**, but our wrapper will fail because it is currently **unimplemented (`[ ]`)** in our checklist:
+
+1.  **Hardware Queries**:
+    *   `grSstScreenWidth()` / `grSstScreenHeight()` (Used by games to query resolution).
+    *   `grSstIsBusy()` / `grSstVideoLine()` / `grSstVRetraceOn()` (Used for frame pacing and vertical sync).
+2.  **Lifecycle & Overlays**:
+    *   `grGlideShamelessPlug()` (Renders the spinning 3dfx logo splash).
+    *   `grSstControl()` (Low-level ASIC command register access).
+3.  **Linear Frame Buffer (LFB) Extensions**:
+    *   `grLfbWriteColorFormat()` / `grLfbWriteColorSwizzle()` (Advanced pixel layout control).
+
