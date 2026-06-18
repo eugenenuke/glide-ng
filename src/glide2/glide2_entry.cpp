@@ -311,6 +311,75 @@ FX_ENTRY void FX_CALL grDrawPoint(const GrVertex* pt) {
     backend->DrawPoint(layout.DecodeVertex(pt));
 }
 
+// =============================================================================
+// Polygon Fan Decomposition & Forwarding Helpers
+// =============================================================================
+static void DrawPolygonHelper(const int nverts, const GrVertex vlist[]) {
+    if (nverts < 3 || !vlist) return;
+    for (int i = 1; i < nverts - 1; ++i) {
+        grDrawTriangle(&vlist[0], &vlist[i], &vlist[i + 1]);
+    }
+}
+
+static void DrawPolygonIndexedHelper(const int nverts, const int ilist[], const GrVertex vlist[]) {
+    if (nverts < 3 || !ilist || !vlist) return;
+    for (int i = 1; i < nverts - 1; ++i) {
+        grDrawTriangle(&vlist[ilist[0]], &vlist[ilist[i]], &vlist[ilist[i + 1]]);
+    }
+}
+
+// =============================================================================
+// Standard Polygon Drawing APIs (Milestone 3)
+// =============================================================================
+FX_ENTRY void FX_CALL grDrawPolygon(const int nverts, const int ilist[], const GrVertex vlist[]) {
+    EnsureEngineInitialized();
+    DrawPolygonIndexedHelper(nverts, ilist, vlist);
+}
+
+FX_ENTRY void FX_CALL grDrawPolygonVertexList(const int nverts, const GrVertex vlist[]) {
+    EnsureEngineInitialized();
+    DrawPolygonHelper(nverts, vlist);
+}
+
+// =============================================================================
+// Anti-Aliased Geometry Forwarding APIs (Milestone 2)
+// =============================================================================
+FX_ENTRY void FX_CALL grAADrawPoint(const GrVertex* pt) {
+    grDrawPoint(pt);
+}
+
+FX_ENTRY void FX_CALL grAADrawLine(const GrVertex* v1, const GrVertex* v2) {
+    grDrawLine(v1, v2);
+}
+
+FX_ENTRY void FX_CALL grAADrawTriangle(const GrVertex* a, const GrVertex* b, const GrVertex* c, FxBool ab_antialias, FxBool bc_antialias, FxBool ca_antialias) {
+    (void)ab_antialias;
+    (void)bc_antialias;
+    (void)ca_antialias;
+    grDrawTriangle(a, b, c);
+}
+
+FX_ENTRY void FX_CALL grAADrawPolygon(const int nverts, const int ilist[], const GrVertex vlist[]) {
+    EnsureEngineInitialized();
+    DrawPolygonIndexedHelper(nverts, ilist, vlist);
+}
+
+FX_ENTRY void FX_CALL grAADrawPolygonVertexList(const int nverts, const GrVertex vlist[]) {
+    EnsureEngineInitialized();
+    DrawPolygonHelper(nverts, vlist);
+}
+
+// =============================================================================
+// Clipped Utility Forwarding APIs (Milestone 2)
+// =============================================================================
+FX_ENTRY void FX_CALL guDrawTriangleWithClip(const GrVertex* a, const GrVertex* b, const GrVertex* c) {
+    grDrawTriangle(a, b, c);
+}
+
+FX_ENTRY void FX_CALL guAADrawTriangleWithClip(const GrVertex* a, const GrVertex* b, const GrVertex* c) {
+    grDrawTriangle(a, b, c);
+}
+
 FX_ENTRY FxBool FX_CALL grSstQueryHardware(GrHwConfiguration* hwconfig) {
     EnsureEngineInitialized();
     GLIDE_LOG(DEBUG, "Frontend", "grSstQueryHardware invoked.");

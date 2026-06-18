@@ -121,6 +121,7 @@ public:
     // Window Surface & Headless Swapchain Attachment
     bool AttachWindow(void* nativeWindowHandle, uint32_t width, uint32_t height, bool windowed) override;
     void DetachWindow() override;
+    uint32_t GetMsaaSamples() const override { return m_msaaSamples; }
 
     // GPU-Driven Clearing & Swapchain Presentation
     void ClearBuffer(uint32_t color, uint32_t alpha, float z, uint32_t clearMask) override;
@@ -198,6 +199,15 @@ private:
     vk::UniqueDeviceMemory m_depthImageMemory;
     vk::UniqueImageView m_depthImageView;
     vk::Format m_depthFormat{vk::Format::eD32Sfloat};
+
+    // Multi-Sampled (MSAA) rendering resources
+    vk::UniqueImage m_msaaColorImages[2];
+    vk::UniqueDeviceMemory m_msaaColorImageMemories[2];
+    vk::UniqueImageView m_msaaColorImageViews[2];
+    vk::UniqueImage m_msaaDepthImage;
+    vk::UniqueDeviceMemory m_msaaDepthImageMemory;
+    vk::UniqueImageView m_msaaDepthImageView;
+
 
     // Staging buffers to copy GPU image to CPU (Double-Buffered)
     vk::UniqueBuffer m_headlessPixelBuffers[2];
@@ -279,6 +289,7 @@ private:
     void* m_texStagingMap{nullptr};
     uint32_t m_texStagingOffsets[2]{0, 0};
     const uint32_t m_texStagingSlotSize{8 * 1024 * 1024}; // 8MB per frame slot
+    uint32_t m_msaaSamples{1};
 };
 
 

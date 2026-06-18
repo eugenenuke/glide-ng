@@ -19,6 +19,7 @@ public:
     void DetachWindow() override = 0;
     uint32_t GetWidth() const override { return m_headlessWidth; }
     uint32_t GetHeight() const override { return m_headlessHeight; }
+    uint32_t GetMsaaSamples() const override { return 1; }
     bool SwapBuffers() override = 0;
     void PollEvents() override;
     void SstIdle() override;

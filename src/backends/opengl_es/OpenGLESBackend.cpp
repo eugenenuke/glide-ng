@@ -51,6 +51,7 @@ bool OpenGLESBackend::Initialize(const WrapperConfig& config) {
 
     GLIDE_LOG(INFO, "GLES", "Initializing OpenGL ES 3.2 staging context...");
     m_config = config;
+    m_msaaSamples = config.msaaSamples;
     m_initialized = true;
     return true;
 }
@@ -417,6 +418,14 @@ bool OpenGLESBackend::CreateGLContext(void* nativeWindowHandle, uint32_t width, 
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
 
+    if (m_msaaSamples > 1) {
+        SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, 1);
+        SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, m_msaaSamples);
+    } else {
+        SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, 0);
+        SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, 0);
+    }
+
     uint32_t windowFlags = SDL_WINDOW_OPENGL;
     if (m_headlessMode) {
         windowFlags |= SDL_WINDOW_HIDDEN;
@@ -437,14 +446,51 @@ bool OpenGLESBackend::CreateGLContext(void* nativeWindowHandle, uint32_t width, 
     }
 
     auto* ctx = SDL_GL_CreateContext(win);
+    if (!ctx && m_msaaSamples > 1) {
+        GLIDE_LOG(WARN, "GLES", "Failed to create multi-sampled OpenGL ES context. Falling back to single-sampling.");
+        m_msaaSamples = 1;
+        SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, 0);
+        SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, 0);
+
+        SDL_DestroyWindow(win);
+        win = SDL_CreateWindow(
+            "3dfx glide-ng Presentation Console (OpenGL ES 3.2)",
+            SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+            width, height, windowFlags
+        );
+        if (win) {
+            ctx = SDL_GL_CreateContext(win);
+        }
+    }
+
     if (!ctx) {
         GLIDE_LOG(CRITICAL, "GLES", "SDL_GL_CreateContext failed: " << SDL_GetError());
-        SDL_DestroyWindow(win);
+        if (win) {
+            SDL_DestroyWindow(win);
+        }
         SDL_QuitSubSystem(SDL_INIT_VIDEO);
         return false;
     }
 
     SDL_GL_MakeCurrent(win, ctx);
+
+    // Query actual EGL samples allocated by host driver
+    GLint actualSamples = 0;
+    glGetIntegerv(GL_SAMPLES, &actualSamples);
+    m_msaaSamples = (actualSamples > 1) ? static_cast<uint32_t>(actualSamples) : 1;
+
+    // Output dynamic startup telemetry info
+    const char* glVendor = reinterpret_cast<const char*>(glGetString(GL_VENDOR));
+    const char* glRenderer = reinterpret_cast<const char*>(glGetString(GL_RENDERER));
+    const char* glVersion = reinterpret_cast<const char*>(glGetString(GL_VERSION));
+
+    std::cout << "Info: InitialiseOpenGLWindow(wnd=" << nativeWindowHandle << ", res=" << width << "x" << height << ")\r\n";
+    std::cout << "Info: Host OpenGL Adapter: " << (glVendor ? glVendor : "Unknown") << " - " 
+              << (glRenderer ? glRenderer : "Unknown") << " (GL Ver " << (glVersion ? glVersion : "Unknown") << ")\r\n";
+    
+    uint32_t samplesVal = (m_msaaSamples > 1) ? m_msaaSamples : 0;
+    std::cout << "Info: Pixel Format RGBA8888 D24S8 nAux 0 nSamples " << samplesVal << " " << samplesVal << "\r\n";
+    std::cout << "Info: Drawable Size: " << width << "x" << height << "\r\n" << std::flush;
 
     // Setup full-screen quad presentation shaders
     auto compileShader = [](GLenum type, const char* src) -> GLuint {

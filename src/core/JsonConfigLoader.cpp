@@ -51,6 +51,18 @@ bool JsonConfigLoader::Load(const std::string& configFilePath, WrapperConfig& ou
             }
         }
         
+        // Parse custom MSAA sample count (e.g. "msaaSamples": 4)
+        size_t msaaPos = content.find("\"msaaSamples\"");
+        if (msaaPos != std::string::npos) {
+            size_t colonPos = content.find(":", msaaPos);
+            if (colonPos != std::string::npos) {
+                size_t valPos = content.find_first_of("-0123456789", colonPos);
+                if (valPos != std::string::npos) {
+                    outConfig.msaaSamples = std::atoi(content.c_str() + valPos);
+                }
+            }
+        }
+        
         GLIDE_LOG(INFO, "Config", "Parsed local JSON configuration file successfully.");
     } else {
         GLIDE_LOG(INFO, "Config", "No local glide_config.json file detected. Using baseline defaults.");
@@ -113,6 +125,20 @@ bool JsonConfigLoader::Load(const std::string& configFilePath, WrapperConfig& ou
         std::string val(envConsole);
         outConfig.logToConsole = (val == "1" || val == "true" || val == "TRUE");
         GLIDE_LOG(WARN, "Config", "Overrode Log To Console via GLIDE_WRAPPER_LOG_TO_CONSOLE=" << outConfig.logToConsole);
+    }
+
+    if (const char* envMsaa = std::getenv("GLIDE_WRAPPER_MSAA")) {
+        outConfig.msaaSamples = std::atoi(envMsaa);
+        GLIDE_LOG(WARN, "Config", "Overrode MSAA Sample Count via GLIDE_WRAPPER_MSAA=" << outConfig.msaaSamples);
+    }
+
+    // Normalize MSAA sample count to valid GPU powers of two
+    if (outConfig.msaaSamples != 1 && outConfig.msaaSamples != 2 && 
+        outConfig.msaaSamples != 4 && outConfig.msaaSamples != 8 && 
+        outConfig.msaaSamples != 16) {
+        uint32_t original = outConfig.msaaSamples;
+        outConfig.msaaSamples = 1;
+        GLIDE_LOG(WARN, "Config", "Invalid MSAA sample count '" << original << "' requested. Defaulting to 1 (MSAA disabled).");
     }
 
     return true;

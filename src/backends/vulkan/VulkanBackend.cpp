@@ -53,11 +53,33 @@ bool VulkanBackend::Initialize(const WrapperConfig& config) {
 
     GLIDE_LOG(INFO, "Vulkan", "Initializing Hybrid hardware Vulkan GPU context...");
     m_config = config;
+    m_msaaSamples = config.msaaSamples;
 
     Logger::GetInstance().LogHostVulkanCapabilities();
 
     if (!CreateInstance()) return false;
     if (!SelectPhysicalDevice()) return false;
+
+    // Resolve and clamp MSAA sample count based on physical device limits
+    {
+        vk::PhysicalDeviceProperties props = m_physicalDevice.getProperties();
+        vk::SampleCountFlags counts = props.limits.framebufferColorSampleCounts & props.limits.framebufferDepthSampleCounts;
+        
+        uint32_t maxSupported = 1;
+        if (counts & vk::SampleCountFlagBits::e16) maxSupported = 16;
+        else if (counts & vk::SampleCountFlagBits::e8)  maxSupported = 8;
+        else if (counts & vk::SampleCountFlagBits::e4)  maxSupported = 4;
+        else if (counts & vk::SampleCountFlagBits::e2)  maxSupported = 2;
+
+        if (m_msaaSamples > maxSupported) {
+            GLIDE_LOG(WARN, "Vulkan", "Requested MSAA count " << m_msaaSamples << " exceeds hardware limits. Clamping to " << maxSupported);
+            m_msaaSamples = maxSupported;
+        }
+        if (m_msaaSamples < 1) {
+            m_msaaSamples = 1;
+        }
+    }
+
     if (!CreateLogicalDevice()) return false;
 
     // Create descriptor set layout
@@ -308,10 +330,18 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width, uint3
     auto props = m_physicalDevice.getProperties();
     std::string devName(props.deviceName);
 
-    std::cout << "Info: InitialiseOpenGLWindow(wnd=" << nativeWindowHandle << ", res=" << width << "x" << height << ")\r\n";
+    std::string depthStr = "D24S0";
+    if (m_depthFormat == vk::Format::eD32Sfloat) {
+        depthStr = "D32S0";
+    } else if (m_depthFormat == vk::Format::eD24UnormS8Uint) {
+        depthStr = "D24S8";
+    }
+    uint32_t samplesVal = (m_msaaSamples > 1) ? m_msaaSamples : 0;
+
+    std::cout << "Info: InitialiseVulkanWindow(wnd=" << nativeWindowHandle << ", res=" << width << "x" << height << ")\r\n";
     std::cout << "Info: Host Vulkan Adapter: " << devName << " (Vulkan API " 
               << (props.apiVersion >> 22) << "." << ((props.apiVersion >> 12) & 0x3FF) << "." << (props.apiVersion & 0xFFF) << ")\r\n";
-    std::cout << "Info: Pixel Format RGBA8888 D24S0 nAux 0 nSamples 0 0\r\n";
+    std::cout << "Info: Pixel Format RGBA8888 " << depthStr << " nAux 0 nSamples " << samplesVal << " " << samplesVal << "\r\n";
     std::cout << "Info: Drawable Size: " << width << "x" << height << "\r\n" << std::flush;
 
     SetClipWindow(0, 0, width, height);
@@ -1220,52 +1250,126 @@ bool VulkanBackend::CreateLogicalDevice() {
 }
 
 bool VulkanBackend::CreateRenderPass() {
-    // 1. Color Attachment Description
-    vk::AttachmentDescription colorAttachment({}, m_colorFormat, vk::SampleCountFlagBits::e1,
-                                            vk::AttachmentLoadOp::eLoad, vk::AttachmentStoreOp::eStore,
-                                            vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare,
-                                            vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eColorAttachmentOptimal);
+    vk::SampleCountFlagBits samples = static_cast<vk::SampleCountFlagBits>(m_msaaSamples);
 
-    vk::AttachmentReference colorRef(0, vk::ImageLayout::eColorAttachmentOptimal);
+    if (m_msaaSamples > 1) {
+        // --- MSAA Render Pass Configuration (3 Attachments) ---
 
-    // 2. Depth Attachment Description
-    vk::AttachmentDescription depthAttachment({}, m_depthFormat, vk::SampleCountFlagBits::e1,
-                                            vk::AttachmentLoadOp::eLoad, vk::AttachmentStoreOp::eStore,
-                                            vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare,
-                                            vk::ImageLayout::eDepthStencilAttachmentOptimal, vk::ImageLayout::eDepthStencilAttachmentOptimal);
+        // Attachment 0: Multi-sampled Color Target
+        vk::AttachmentDescription colorAttachment(
+            {}, m_colorFormat, samples,
+            vk::AttachmentLoadOp::eLoad, vk::AttachmentStoreOp::eStore,
+            vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare,
+            vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eColorAttachmentOptimal
+        );
+        vk::AttachmentReference colorRef(0, vk::ImageLayout::eColorAttachmentOptimal);
 
-    vk::AttachmentReference depthRef(1, vk::ImageLayout::eDepthStencilAttachmentOptimal);
+        // Attachment 1: Multi-sampled Depth Target
+        vk::AttachmentDescription depthAttachment(
+            {}, m_depthFormat, samples,
+            vk::AttachmentLoadOp::eLoad, vk::AttachmentStoreOp::eStore,
+            vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare,
+            vk::ImageLayout::eDepthStencilAttachmentOptimal, vk::ImageLayout::eDepthStencilAttachmentOptimal
+        );
+        vk::AttachmentReference depthRef(1, vk::ImageLayout::eDepthStencilAttachmentOptimal);
 
-    // 3. Subpass Description (binds both color reference and depth stencil reference)
-    vk::SubpassDescription subpass({}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &colorRef, nullptr, &depthRef);
+        // Attachment 2: Single-sampled Resolve Target (our presentation FBO color image)
+        vk::AttachmentDescription resolveAttachment(
+            {}, m_colorFormat, vk::SampleCountFlagBits::e1,
+            vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eStore,
+            vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare,
+            vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eColorAttachmentOptimal
+        );
+        vk::AttachmentReference resolveRef(2, vk::ImageLayout::eColorAttachmentOptimal);
 
-    // Setup subpass dependencies to enforce strict GPU synchronization between clear, draw, and copy stages
-    std::array<vk::SubpassDependency, 2> dependencies;
+        // Subpass: renders to colorRef (0) with depthRef (1), and automatically resolves color to resolveRef (2)
+        vk::SubpassDescription subpass(
+            {}, vk::PipelineBindPoint::eGraphics,
+            0, nullptr,
+            1, &colorRef,
+            &resolveRef,
+            &depthRef
+        );
 
-    // Dependency 1: Sync Clear/Transfer writes to Color/Depth Attachments
-    dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
-    dependencies[0].dstSubpass = 0;
-    dependencies[0].srcStageMask = vk::PipelineStageFlagBits::eTransfer | vk::PipelineStageFlagBits::eColorAttachmentOutput | vk::PipelineStageFlagBits::eEarlyFragmentTests;
-    dependencies[0].dstStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput | vk::PipelineStageFlagBits::eEarlyFragmentTests;
-    dependencies[0].srcAccessMask = vk::AccessFlagBits::eTransferWrite | vk::AccessFlagBits::eColorAttachmentWrite | vk::AccessFlagBits::eDepthStencilAttachmentWrite;
-    dependencies[0].dstAccessMask = vk::AccessFlagBits::eColorAttachmentWrite | vk::AccessFlagBits::eColorAttachmentRead | vk::AccessFlagBits::eDepthStencilAttachmentWrite | vk::AccessFlagBits::eDepthStencilAttachmentRead;
-    dependencies[0].dependencyFlags = vk::DependencyFlagBits::eByRegion;
+        // Setup subpass dependencies to enforce strict GPU synchronization between clear, draw, and copy stages
+        std::array<vk::SubpassDependency, 2> dependencies;
 
-    // Dependency 2: Sync Color/Depth Attachment writes to Transfer/Copy reads (in SwapBuffers)
-    dependencies[1].srcSubpass = 0;
-    dependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
-    dependencies[1].srcStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput | vk::PipelineStageFlagBits::eLateFragmentTests;
-    dependencies[1].dstStageMask = vk::PipelineStageFlagBits::eTransfer;
-    dependencies[1].srcAccessMask = vk::AccessFlagBits::eColorAttachmentWrite | vk::AccessFlagBits::eDepthStencilAttachmentWrite;
-    dependencies[1].dstAccessMask = vk::AccessFlagBits::eTransferRead;
-    dependencies[1].dependencyFlags = vk::DependencyFlagBits::eByRegion;
+        // Dependency 1: Sync Clear/Transfer writes to Color/Depth Attachments
+        dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
+        dependencies[0].dstSubpass = 0;
+        dependencies[0].srcStageMask = vk::PipelineStageFlagBits::eTransfer | vk::PipelineStageFlagBits::eColorAttachmentOutput | vk::PipelineStageFlagBits::eEarlyFragmentTests;
+        dependencies[0].dstStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput | vk::PipelineStageFlagBits::eEarlyFragmentTests;
+        dependencies[0].srcAccessMask = vk::AccessFlagBits::eTransferWrite | vk::AccessFlagBits::eColorAttachmentWrite | vk::AccessFlagBits::eDepthStencilAttachmentWrite;
+        dependencies[0].dstAccessMask = vk::AccessFlagBits::eColorAttachmentWrite | vk::AccessFlagBits::eColorAttachmentRead | vk::AccessFlagBits::eDepthStencilAttachmentWrite | vk::AccessFlagBits::eDepthStencilAttachmentRead;
+        dependencies[0].dependencyFlags = vk::DependencyFlagBits::eByRegion;
 
-    std::array<vk::AttachmentDescription, 2> attachments = { colorAttachment, depthAttachment };
-    vk::RenderPassCreateInfo passInfo({}, static_cast<uint32_t>(attachments.size()), attachments.data(), 1, &subpass, static_cast<uint32_t>(dependencies.size()), dependencies.data());
-    m_renderPass = m_device->createRenderPassUnique(passInfo);
+        // Dependency 2: Sync Color/Depth Attachment writes to Transfer/Copy reads (in SwapBuffers)
+        dependencies[1].srcSubpass = 0;
+        dependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
+        dependencies[1].srcStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput | vk::PipelineStageFlagBits::eLateFragmentTests;
+        dependencies[1].dstStageMask = vk::PipelineStageFlagBits::eTransfer;
+        dependencies[1].srcAccessMask = vk::AccessFlagBits::eColorAttachmentWrite | vk::AccessFlagBits::eDepthStencilAttachmentWrite;
+        dependencies[1].dstAccessMask = vk::AccessFlagBits::eTransferRead;
+        dependencies[1].dependencyFlags = vk::DependencyFlagBits::eByRegion;
+
+        std::array<vk::AttachmentDescription, 3> attachments = { colorAttachment, depthAttachment, resolveAttachment };
+        vk::RenderPassCreateInfo passInfo({}, static_cast<uint32_t>(attachments.size()), attachments.data(), 1, &subpass, static_cast<uint32_t>(dependencies.size()), dependencies.data());
+        m_renderPass = m_device->createRenderPassUnique(passInfo);
+    } else {
+        // --- Standard Render Pass Configuration (2 Attachments, 1x MSAA) ---
+
+        // 1. Color Attachment Description
+        vk::AttachmentDescription colorAttachment(
+            {}, m_colorFormat, vk::SampleCountFlagBits::e1,
+            vk::AttachmentLoadOp::eLoad, vk::AttachmentStoreOp::eStore,
+            vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare,
+            vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eColorAttachmentOptimal
+        );
+        vk::AttachmentReference colorRef(0, vk::ImageLayout::eColorAttachmentOptimal);
+
+        // 2. Depth Attachment Description
+        vk::AttachmentDescription depthAttachment(
+            {}, m_depthFormat, vk::SampleCountFlagBits::e1,
+            vk::AttachmentLoadOp::eLoad, vk::AttachmentStoreOp::eStore,
+            vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare,
+            vk::ImageLayout::eDepthStencilAttachmentOptimal, vk::ImageLayout::eDepthStencilAttachmentOptimal
+        );
+        vk::AttachmentReference depthRef(1, vk::ImageLayout::eDepthStencilAttachmentOptimal);
+
+        // 3. Subpass Description (binds both color reference and depth stencil reference)
+        vk::SubpassDescription subpass({}, vk::PipelineBindPoint::eGraphics, 0, nullptr, 1, &colorRef, nullptr, &depthRef);
+
+        // Setup subpass dependencies to enforce strict GPU synchronization between clear, draw, and copy stages
+        std::array<vk::SubpassDependency, 2> dependencies;
+
+        // Dependency 1: Sync Clear/Transfer writes to Color/Depth Attachments
+        dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
+        dependencies[0].dstSubpass = 0;
+        dependencies[0].srcStageMask = vk::PipelineStageFlagBits::eTransfer | vk::PipelineStageFlagBits::eColorAttachmentOutput | vk::PipelineStageFlagBits::eEarlyFragmentTests;
+        dependencies[0].dstStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput | vk::PipelineStageFlagBits::eEarlyFragmentTests;
+        dependencies[0].srcAccessMask = vk::AccessFlagBits::eTransferWrite | vk::AccessFlagBits::eColorAttachmentWrite | vk::AccessFlagBits::eDepthStencilAttachmentWrite;
+        dependencies[0].dstAccessMask = vk::AccessFlagBits::eColorAttachmentWrite | vk::AccessFlagBits::eColorAttachmentRead | vk::AccessFlagBits::eDepthStencilAttachmentWrite | vk::AccessFlagBits::eDepthStencilAttachmentRead;
+        dependencies[0].dependencyFlags = vk::DependencyFlagBits::eByRegion;
+
+        // Dependency 2: Sync Color/Depth Attachment writes to Transfer/Copy reads (in SwapBuffers)
+        dependencies[1].srcSubpass = 0;
+        dependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
+        dependencies[1].srcStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput | vk::PipelineStageFlagBits::eLateFragmentTests;
+        dependencies[1].dstStageMask = vk::PipelineStageFlagBits::eTransfer;
+        dependencies[1].srcAccessMask = vk::AccessFlagBits::eColorAttachmentWrite | vk::AccessFlagBits::eDepthStencilAttachmentWrite;
+        dependencies[1].dstAccessMask = vk::AccessFlagBits::eTransferRead;
+        dependencies[1].dependencyFlags = vk::DependencyFlagBits::eByRegion;
+
+        std::array<vk::AttachmentDescription, 2> attachments = { colorAttachment, depthAttachment };
+        vk::RenderPassCreateInfo passInfo({}, static_cast<uint32_t>(attachments.size()), attachments.data(), 1, &subpass, static_cast<uint32_t>(dependencies.size()), dependencies.data());
+        m_renderPass = m_device->createRenderPassUnique(passInfo);
+    }
+
     return true;
 }
 bool VulkanBackend::CreateHeadlessRenderTarget(uint32_t width, uint32_t height) {
+    vk::SampleCountFlagBits samples = static_cast<vk::SampleCountFlagBits>(m_msaaSamples);
+
     // 1. Allocate depth image for hardware depth-testing support (Shared!)
     vk::ImageCreateInfo depthImageInfo({}, vk::ImageType::e2D, m_depthFormat,
                                       vk::Extent3D(width, height, 1), 1, 1,
@@ -1283,8 +1387,28 @@ bool VulkanBackend::CreateHeadlessRenderTarget(uint32_t width, uint32_t height) 
                                          {}, {vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1});
     m_depthImageView = m_device->createImageViewUnique(depthViewInfo);
 
+    // 1.1 Allocate Multi-sampled Depth image if MSAA is enabled (Transient VRAM-only tile-local)
+    if (m_msaaSamples > 1) {
+        vk::ImageCreateInfo msaaDepthInfo({}, vk::ImageType::e2D, m_depthFormat,
+                                          vk::Extent3D(width, height, 1), 1, 1,
+                                          samples, vk::ImageTiling::eOptimal,
+                                          vk::ImageUsageFlagBits::eDepthStencilAttachment | vk::ImageUsageFlagBits::eTransientAttachment);
+        m_msaaDepthImage = m_device->createImageUnique(msaaDepthInfo);
+
+        auto msaaDepthMemReqs = m_device->getImageMemoryRequirements(m_msaaDepthImage.get());
+        uint32_t msaaDepthTypeIndex = FindMemoryType(msaaDepthMemReqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal);
+        vk::MemoryAllocateInfo msaaDepthAlloc(msaaDepthMemReqs.size, msaaDepthTypeIndex);
+        m_msaaDepthImageMemory = m_device->allocateMemoryUnique(msaaDepthAlloc);
+        m_device->bindImageMemory(m_msaaDepthImage.get(), m_msaaDepthImageMemory.get(), 0);
+
+        vk::ImageViewCreateInfo msaaDepthViewInfo({}, m_msaaDepthImage.get(), vk::ImageViewType::e2D, m_depthFormat,
+                                                 {}, {vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1});
+        m_msaaDepthImageView = m_device->createImageViewUnique(msaaDepthViewInfo);
+    }
+
     // 2. Allocate Double-Buffered Color Images and Framebuffers (i=0 for BACK, i=1 for FRONT)
     for (int i = 0; i < 2; ++i) {
+        // 2.1 Allocate Single-sampled Resolve/Present Target
         vk::ImageCreateInfo imageInfo({}, vk::ImageType::e2D, m_colorFormat,
                                      vk::Extent3D(width, height, 1), 1, 1,
                                      vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal,
@@ -1303,12 +1427,42 @@ bool VulkanBackend::CreateHeadlessRenderTarget(uint32_t width, uint32_t height) 
                                         {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1});
         m_headlessImageViews[i] = m_device->createImageViewUnique(viewInfo);
 
-        // Create framebuffer with both color and depth attachments
-        std::array<vk::ImageView, 2> attachments = {
-            m_headlessImageViews[i].get(),
-            m_depthImageView.get()
-        };
-        vk::FramebufferCreateInfo fbInfo({}, m_renderPass.get(), static_cast<uint32_t>(attachments.size()), attachments.data(), width, height, 1);
+        // 2.2 Allocate Multi-sampled Color target if MSAA is enabled (Transient VRAM-only tile-local)
+        if (m_msaaSamples > 1) {
+            vk::ImageCreateInfo msaaColorInfo({}, vk::ImageType::e2D, m_colorFormat,
+                                              vk::Extent3D(width, height, 1), 1, 1,
+                                              samples, vk::ImageTiling::eOptimal,
+                                              vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eTransientAttachment);
+            m_msaaColorImages[i] = m_device->createImageUnique(msaaColorInfo);
+
+            auto msaaMemReqs = m_device->getImageMemoryRequirements(m_msaaColorImages[i].get());
+            uint32_t msaaTypeIndex = FindMemoryType(msaaMemReqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal);
+            vk::MemoryAllocateInfo msaaAllocInfo(msaaMemReqs.size, msaaTypeIndex);
+
+            m_msaaColorImageMemories[i] = m_device->allocateMemoryUnique(msaaAllocInfo);
+            m_device->bindImageMemory(m_msaaColorImages[i].get(), m_msaaColorImageMemories[i].get(), 0);
+
+            vk::ImageViewCreateInfo msaaViewInfo({}, m_msaaColorImages[i].get(), vk::ImageViewType::e2D, m_colorFormat,
+                                                 {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1});
+            m_msaaColorImageViews[i] = m_device->createImageViewUnique(msaaViewInfo);
+        }
+
+        // 2.3 Create Framebuffer binding color, depth, and resolve attachments
+        std::vector<vk::ImageView> fboAttachments;
+        if (m_msaaSamples > 1) {
+            fboAttachments = {
+                m_msaaColorImageViews[i].get(),
+                m_msaaDepthImageView.get(),
+                m_headlessImageViews[i].get() // Resolve target
+            };
+        } else {
+            fboAttachments = {
+                m_headlessImageViews[i].get(),
+                m_depthImageView.get()
+            };
+        }
+
+        vk::FramebufferCreateInfo fbInfo({}, m_renderPass.get(), static_cast<uint32_t>(fboAttachments.size()), fboAttachments.data(), width, height, 1);
         m_headlessFramebuffers[i] = m_device->createFramebufferUnique(fbInfo);
     }
 
@@ -1561,8 +1715,8 @@ PipelineGroup VulkanBackend::CompileGraphicsPipelines(const PipelineStateKey& ke
         vk::PipelineRasterizationStateCreateInfo rasterizer({}, m_depthClampEnabled, false, vk::PolygonMode::eFill, vkCullMode,
                                                            frontFace, false, 0.0f, 0.0f, 0.0f, 1.0f);
 
-        // Multisample Configuration (none)
-        vk::PipelineMultisampleStateCreateInfo multisampling({}, vk::SampleCountFlagBits::e1, false, 1.0f, nullptr, false, false);
+        // Multisample Configuration
+        vk::PipelineMultisampleStateCreateInfo multisampling({}, static_cast<vk::SampleCountFlagBits>(m_msaaSamples), false, 1.0f, nullptr, false, false);
 
         // Depth Stencil Configuration based on Glide's active states
         vk::PipelineDepthStencilStateCreateInfo depthStencil{};

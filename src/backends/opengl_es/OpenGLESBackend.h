@@ -22,6 +22,7 @@ public:
 
     bool AttachWindow(void* nativeWindowHandle, uint32_t width, uint32_t height, bool windowed) override;
     void DetachWindow() override;
+    uint32_t GetMsaaSamples() const override { return m_msaaSamples; }
 
     bool SwapBuffers() override;
     void SstIdle() override;
@@ -71,6 +72,7 @@ private:
     // Unified GPU Framebuffer LFB Flushing
     void FlushLFBToGPU();
     std::vector<uint32_t> m_swizzleBuffer;
+    uint32_t m_msaaSamples{1};
 };
 
 } // namespace GlideWrapper

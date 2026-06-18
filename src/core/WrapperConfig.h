@@ -32,6 +32,7 @@ struct WrapperConfig {
     bool forceNoWindow{false}; // Enforces headless offscreen CI mode upon hWnd=0
     bool logToConsole{false}; // Enforces console logging to stdout/stderr in addition to file
     std::string backend{"vulkan"}; // "vulkan" or "opengl_es"
+    uint32_t msaaSamples{1}; // 1 = MSAA disabled, 4 = 4x MSAA, etc.
 };
 
 class EmulationRegistry {

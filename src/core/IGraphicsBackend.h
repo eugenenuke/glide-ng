@@ -23,6 +23,7 @@ public:
     virtual void DetachWindow() = 0;
     virtual uint32_t GetWidth() const = 0;
     virtual uint32_t GetHeight() const = 0;
+    virtual uint32_t GetMsaaSamples() const = 0;
 
     // Phase 2: Execution Buffer Clearing & Swapchain Presentation
     virtual void ClearBuffer(uint32_t color, uint32_t alpha, float z, uint32_t clearMask) = 0;

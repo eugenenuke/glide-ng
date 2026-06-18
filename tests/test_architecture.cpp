@@ -472,6 +472,71 @@ TEST_CASE("Architectural Core Validation", "[Architecture]") {
 #endif
     }
 
+    SECTION("Milestone 2: Anti-Aliasing & Transparent MSAA") {
+#ifdef __linux__
+        // 1. Temporarily set the environment variable GLIDE_WRAPPER_MSAA to 4
+        ::setenv("GLIDE_WRAPPER_MSAA", "4", 1);
+
+        void* handle = OpenGlide2Handle();
+        REQUIRE(handle != nullptr);
+
+        using InitFunc = void(*)(void);
+        using WinOpenFunc = FxBool(*)(FxU32, FxU32, FxU32, FxU32, FxU32, int, int);
+        using WinCloseFunc = void(*)(void);
+        using AADrawTriFunc = void(*)(const void*, const void*, const void*, FxBool, FxBool, FxBool);
+        using BufferClearFunc = void(*)(FxU32, FxU32, FxU32);
+        using BufferSwapFunc = void(*)(int);
+        using LfbReadFunc = FxBool(*)(FxU32, FxU32, FxU32, FxU32, FxU32, FxU32, void*);
+
+        auto glideInit   = reinterpret_cast<InitFunc>(::dlsym(handle, "grGlideInit"));
+        auto winOpen     = reinterpret_cast<WinOpenFunc>(::dlsym(handle, "grSstWinOpen"));
+        auto winClose    = reinterpret_cast<WinCloseFunc>(::dlsym(handle, "grSstWinClose"));
+        auto aaDrawTri   = reinterpret_cast<AADrawTriFunc>(::dlsym(handle, "grAADrawTriangle"));
+        auto bufferClear = reinterpret_cast<BufferClearFunc>(::dlsym(handle, "grBufferClear"));
+        auto bufferSwap  = reinterpret_cast<BufferSwapFunc>(::dlsym(handle, "grBufferSwap"));
+        auto lfbRead     = reinterpret_cast<LfbReadFunc>(::dlsym(handle, "grLfbReadRegion"));
+
+        REQUIRE(glideInit != nullptr);
+        REQUIRE(winOpen != nullptr);
+        REQUIRE(winClose != nullptr);
+        REQUIRE(aaDrawTri != nullptr);
+        REQUIRE(bufferClear != nullptr);
+        REQUIRE(bufferSwap != nullptr);
+        REQUIRE(lfbRead != nullptr);
+
+        // 2. Initialize and open context (800x600 resolution)
+        glideInit();
+        REQUIRE(winOpen(0, 0x8, 0, 0, 0, 2, 0) == FXTRUE);
+
+        // 3. Test drawing using the anti-aliased geometry forwarding call
+        bufferClear(0x00000000, 0xFF, 0xFFFF); // Clear to Black
+
+        // Draw a green triangle
+        GrVertex a{}, b{}, c{};
+        a.x = 400.0f; a.y = 100.0f; a.ooz = 1.0f; a.oow = 1.0f; a.r = 0.0f; a.g = 255.0f; a.b = 0.0f; a.a = 255.0f;
+        b.x = 200.0f; b.y = 500.0f; b.ooz = 1.0f; b.oow = 1.0f; b.r = 0.0f; b.g = 255.0f; b.b = 0.0f; b.a = 255.0f;
+        c.x = 600.0f; c.y = 500.0f; c.ooz = 1.0f; c.oow = 1.0f; c.r = 0.0f; c.g = 255.0f; c.b = 0.0f; c.a = 255.0f;
+
+        REQUIRE_NOTHROW(aaDrawTri(&a, &b, &c, FXTRUE, FXTRUE, FXTRUE));
+        bufferSwap(0); // Trigger resolve and present!
+
+        // 4. Read back center pixel via standard grLfbReadRegion API and verify it was drawn green!
+        uint32_t pixel = 0;
+        REQUIRE(lfbRead(1, 400, 300, 1, 1, 4, &pixel) == FXTRUE); // 1 = GR_BUFFER_BACKBUFFER
+        
+        // Assert green component is active
+        uint8_t g = (pixel >> 8) & 0xFF;
+        REQUIRE(g == 255);
+
+        // 5. Clean up
+        winClose();
+        ::dlclose(handle);
+
+        // Reset the environment variable to avoid affecting other tests
+        ::unsetenv("GLIDE_WRAPPER_MSAA");
+#endif
+    }
+
     SECTION("Phase 3: Automated Geometry Drawing Validation Suite") {
 #ifdef __linux__
         // 1. Validate Glide 2.x Fixed Geometry Parsing & Drawing
