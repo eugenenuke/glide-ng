@@ -8,9 +8,9 @@ This document serves as the authoritative coverage map for the **glide-ng** wrap
 
 | API Category | Implemented | Total | Coverage % |
 | :--- | :---: | :---: | :---: |
-| **Core Glide2 (`gr*`)** | 64 | 94 | 68.1% |
-| **Utility Library (`gu*`)** | 12 | 15 | 80.0% |
-| **Unified Glide2 Specification** | **76** | **109** | **69.7%** |
+| **Core Glide2 (`gr*`)** | 71 | 94 | 75.5% |
+| **Utility Library (`gu*`)** | 14 | 15 | 93.3% |
+| **Unified Glide2 Specification** | **85** | **109** | **78.0%** |
 
 ---
 
@@ -54,8 +54,8 @@ This document serves as the authoritative coverage map for the **glide-ng** wrap
 - [x] `grDrawTriangle(const GrVertex *a, const GrVertex *b, const GrVertex *c)` — Renders a Gouraud-shaded 2D triangle (GPU-native).
 - [ ] `grDrawPlanarPolygon(int n, const int *i, const GrVertex *v)` — Renders a flat-colored convex polygon.
 - [ ] `grDrawPlanarPolygonVertexList(int n, const GrVertex *v)` — Renders a flat-colored polygon from a vertex list.
-- [ ] `grDrawPolygon(int n, const int *i, const GrVertex *v)` — Renders a shaded polygon.
-- [ ] `grDrawPolygonVertexList(int n, const GrVertex *v)` — Renders a shaded polygon from a vertex list.
+- [x] `grDrawPolygon(int n, const int *i, const GrVertex *v)` — Renders a shaded polygon.
+- [x] `grDrawPolygonVertexList(int n, const GrVertex *v)` — Renders a shaded polygon from a vertex list.
 - [x] `grResetTriStats(void)` — Resets drawing counters.
 - [x] `grTriStats(FxU32 *processed, FxU32 *drawn)` — Retrieves triangle drawing statistics.
 
@@ -120,11 +120,11 @@ This document serves as the authoritative coverage map for the **glide-ng** wrap
 - [ ] `grLfbWriteColorFormat(colorFormat)` — Configures color pixel formats for LFB writes.
 
 ### 1.10. Anti-Aliasing & Special Effects
-- [ ] `grAADrawPoint(const GrVertex *pt)` — Draws an anti-aliased sub-pixel point.
-- [ ] `grAADrawLine(const GrVertex *v1, const GrVertex *v2)` — Draws an anti-aliased line.
-- [ ] `grAADrawTriangle(a, b, c, ab_aa, bc_aa, ca_aa)` — Draws a triangle with edge anti-aliasing.
-- [ ] `grAADrawPolygon(int n, const int *i, const GrVertex *v)` — Draws an anti-aliased polygon.
-- [ ] `grAADrawPolygonVertexList(int n, const GrVertex *v)` — Draws an anti-aliased polygon from a vertex list.
+- [x] `grAADrawPoint(const GrVertex *pt)` — Draws an anti-aliased sub-pixel point.
+- [x] `grAADrawLine(const GrVertex *v1, const GrVertex *v2)` — Draws an anti-aliased line.
+- [x] `grAADrawTriangle(a, b, c, ab_aa, bc_aa, ca_aa)` — Draws a triangle with edge anti-aliasing.
+- [x] `grAADrawPolygon(int n, const int *i, const GrVertex *v)` — Draws an anti-aliased polygon.
+- [x] `grAADrawPolygonVertexList(int n, const GrVertex *v)` — Draws an anti-aliased polygon from a vertex list.
 - [x] `grGetString(FxU32 pname)` — Retrieves graphics driver extensions and device info.
 - [x] `grCheckForRoom(FxI32 n)` — Stalls until the command queue has room for `n` entries.
 - [ ] `grGammaCorrectionValue(float value)` — Configures hardware monitor gamma correction.
@@ -136,8 +136,8 @@ This document serves as the authoritative coverage map for the **glide-ng** wrap
 ## 2. Glide Utility Library (`gu*`)
 
 ### 2.1. Geometry & Clipping
-- [ ] `guAADrawTriangleWithClip(const GrVertex *a, const GrVertex *b, const GrVertex *c)` — Renders an anti-aliased triangle with viewport clipping.
-- [ ] `guDrawTriangleWithClip(const GrVertex *a, const GrVertex *b, const GrVertex *c)` — Renders a Gouraud triangle with viewport clipping.
+- [x] `guAADrawTriangleWithClip(const GrVertex *a, const GrVertex *b, const GrVertex *c)` — Renders an anti-aliased triangle with viewport clipping.
+- [x] `guDrawTriangleWithClip(const GrVertex *a, const GrVertex *b, const GrVertex *c)` — Renders a Gouraud triangle with viewport clipping.
 - [ ] `guDrawPolygonVertexListWithClip(int n, const GrVertex *v)` — Renders a polygon with viewport clipping.
 
 ### 2.2. Combiners & Texturing
