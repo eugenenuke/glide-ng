@@ -199,16 +199,23 @@ FX_ENTRY FxBool FX_CALL grSstWinOpen(
     if (!backend) return FXFALSE;
     
     // Normalize classic resolution defines to pixel dimensions
-    uint32_t width = 800;
-    uint32_t height = 600;
+    uint32_t width = 640;
+    uint32_t height = 480;
     if (resolution == GR_RESOLUTION_320x200) { width = 320; height = 200; }
-    if (resolution == GR_RESOLUTION_320x240) { width = 320; height = 240; }
-    if (resolution == GR_RESOLUTION_512x384) { width = 512; height = 384; }
-    if (resolution == GR_RESOLUTION_640x400) { width = 640; height = 400; }
-    if (resolution == GR_RESOLUTION_640x480) { width = 640; height = 480; }
-    if (resolution == GR_RESOLUTION_800x600) { width = 800; height = 600; }
-    if (resolution == GR_RESOLUTION_960x720) { width = 960; height = 720; }
-    if (resolution == GR_RESOLUTION_1024x768) { width = 1024; height = 768; }
+    else if (resolution == GR_RESOLUTION_320x240) { width = 320; height = 240; }
+    else if (resolution == GR_RESOLUTION_400x256) { width = 400; height = 256; }
+    else if (resolution == GR_RESOLUTION_400x300) { width = 400; height = 300; }
+    else if (resolution == GR_RESOLUTION_512x384) { width = 512; height = 384; }
+    else if (resolution == GR_RESOLUTION_640x200) { width = 640; height = 200; }
+    else if (resolution == GR_RESOLUTION_640x350) { width = 640; height = 350; }
+    else if (resolution == GR_RESOLUTION_640x400) { width = 640; height = 400; }
+    else if (resolution == GR_RESOLUTION_640x480) { width = 640; height = 480; }
+    else if (resolution == GR_RESOLUTION_800x600) { width = 800; height = 600; }
+    else if (resolution == GR_RESOLUTION_856x480) { width = 856; height = 480; }
+    else if (resolution == GR_RESOLUTION_960x720) { width = 960; height = 720; }
+    else if (resolution == GR_RESOLUTION_1024x768) { width = 1024; height = 768; }
+    else if (resolution == GR_RESOLUTION_1280x1024) { width = 1280; height = 1024; }
+    else if (resolution == GR_RESOLUTION_1600x1200) { width = 1600; height = 1200; }
     
     backend->SetPixelFormat(format);
     bool attached = backend->AttachWindow(reinterpret_cast<void*>(static_cast<uintptr_t>(hWnd)), width, height, hWnd != 0);
@@ -416,11 +423,20 @@ FX_ENTRY FxBool FX_CALL grSstQueryHardware(GrHwConfiguration* hwconfig) {
     GLIDE_LOG(DEBUG, "Frontend", "grSstQueryHardware invoked.");
     if (!hwconfig) return FXFALSE;
 
+    auto& reg = GlideWrapper::EmulationRegistry::GetInstance();
+    auto& config = reg.GetConfig();
+
     hwconfig->num_sst = 1;
-    hwconfig->SSTs[0].type = GR_SSTTYPE_Voodoo2;
-    hwconfig->SSTs[0].sstBoard.Voodoo2Config.fbRam = 16;
-    hwconfig->SSTs[0].sstBoard.Voodoo2Config.nTexelfx = 2;
-    hwconfig->SSTs[0].sstBoard.Voodoo2Config.sliDetect = FXTRUE;
+    if (config.model == GlideWrapper::CardModel::VoodooGraphics) {
+        hwconfig->SSTs[0].type = GR_SSTTYPE_VOODOO;
+        hwconfig->SSTs[0].sstBoard.VoodooConfig.fbRam = config.fbiMemoryMb;
+    } else {
+        // Voodoo 2 or Voodoo 3
+        hwconfig->SSTs[0].type = GR_SSTTYPE_Voodoo2;
+        hwconfig->SSTs[0].sstBoard.Voodoo2Config.fbRam = config.fbiMemoryMb;
+        hwconfig->SSTs[0].sstBoard.Voodoo2Config.nTexelfx = config.tmuCount;
+        hwconfig->SSTs[0].sstBoard.Voodoo2Config.sliDetect = (config.model == GlideWrapper::CardModel::Voodoo2) ? FXTRUE : FXFALSE;
+    }
     
     return FXTRUE;
 }

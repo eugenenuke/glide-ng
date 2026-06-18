@@ -103,16 +103,25 @@ FX_ENTRY GrContext_t FX_CALL grSstWinOpen(FxU32 hWnd, GrScreenResolution_t resol
     if (!backend) return 0;
     
     // Normalize classic resolution defines to pixel dimensions
-    uint32_t width = 800;
-    uint32_t height = 600;
+    uint32_t width = 640;
+    uint32_t height = 480;
     if (resolution == GR_RESOLUTION_320x200) { width = 320; height = 200; }
-    if (resolution == GR_RESOLUTION_320x240) { width = 320; height = 240; }
-    if (resolution == GR_RESOLUTION_512x384) { width = 512; height = 384; }
-    if (resolution == GR_RESOLUTION_640x400) { width = 640; height = 400; }
-    if (resolution == GR_RESOLUTION_640x480) { width = 640; height = 480; }
-    if (resolution == GR_RESOLUTION_800x600) { width = 800; height = 600; }
-    if (resolution == GR_RESOLUTION_960x720) { width = 960; height = 720; }
-    if (resolution == GR_RESOLUTION_1024x768) { width = 1024; height = 768; }
+    else if (resolution == GR_RESOLUTION_320x240) { width = 320; height = 240; }
+    else if (resolution == GR_RESOLUTION_400x256) { width = 400; height = 256; }
+    else if (resolution == GR_RESOLUTION_400x300) { width = 400; height = 300; }
+    else if (resolution == GR_RESOLUTION_512x384) { width = 512; height = 384; }
+    else if (resolution == GR_RESOLUTION_640x200) { width = 640; height = 200; }
+    else if (resolution == GR_RESOLUTION_640x350) { width = 640; height = 350; }
+    else if (resolution == GR_RESOLUTION_640x400) { width = 640; height = 400; }
+    else if (resolution == GR_RESOLUTION_640x480) { width = 640; height = 480; }
+    else if (resolution == GR_RESOLUTION_800x600) { width = 800; height = 600; }
+    else if (resolution == GR_RESOLUTION_856x480) { width = 856; height = 480; }
+    else if (resolution == GR_RESOLUTION_960x720) { width = 960; height = 720; }
+    else if (resolution == GR_RESOLUTION_1024x768) { width = 1024; height = 768; }
+    else if (resolution == GR_RESOLUTION_1152x864) { width = 1152; height = 864; }
+    else if (resolution == GR_RESOLUTION_1280x960) { width = 1280; height = 960; }
+    else if (resolution == GR_RESOLUTION_1280x1024) { width = 1280; height = 1024; }
+    else if (resolution == GR_RESOLUTION_1600x1200) { width = 1600; height = 1200; }
     
     backend->SetPixelFormat(format);
     bool attached = backend->AttachWindow(reinterpret_cast<void*>(static_cast<uintptr_t>(hWnd)), width, height, hWnd != 0);
@@ -527,6 +536,22 @@ FX_ENTRY FxBool FX_CALL gu3dfLoad(const char* filename, Gu3dfInfo* data) {
 FX_ENTRY void FX_CALL grDitherMode(GrDitherMode_t mode) {
     EnsureEngineInitialized();
     GLIDE_LOG(DEBUG, "Frontend", "grDitherMode (Glide 3.x) invoked: mode=" << mode);
+}
+
+FX_ENTRY void FX_CALL grCoordinateSpace(GrCoordinateSpaceMode_t mode) {
+    GLIDE_LOG(DEBUG, "Frontend", "grCoordinateSpace (Glide 3.x) stub invoked with mode=" << mode);
+}
+
+FX_ENTRY void FX_CALL grTexMultibase(GrChipID_t tmu, FxBool enable) {
+    GLIDE_LOG(DEBUG, "Frontend", "grTexMultibase (Glide 3.x) stub invoked for TMU=" << tmu << ", enable=" << enable);
+}
+
+FX_ENTRY void FX_CALL grGlideGetVertexLayout(void* layout) {
+    GLIDE_LOG(DEBUG, "Frontend", "grGlideGetVertexLayout (Glide 3.x) stub invoked.");
+}
+
+FX_ENTRY void FX_CALL grGlideSetVertexLayout(const void* layout) {
+    GLIDE_LOG(DEBUG, "Frontend", "grGlideSetVertexLayout (Glide 3.x) stub invoked.");
 }
 
 } // extern "C"

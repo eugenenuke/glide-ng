@@ -66,3 +66,4 @@ add_custom_target(CompileShaders DEPENDS ${GENERATED_SHADER_HEADERS})
 # Add Primary Source Directories
 add_subdirectory(src)
 add_subdirectory(tests)
+add_subdirectory(tools)
