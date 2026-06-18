@@ -90,6 +90,12 @@ namespace {
     uint32_t s_guTexNextAddress = 0;
     GrMipMapId_t s_currentMipMap[2] = { GR_NULL_MIPMAP_HANDLE, GR_NULL_MIPMAP_HANDLE };
     float s_texLodBias = 0.0f;
+
+    uint16_t s_lfbConstantDepth = 0;
+    bool s_lfbWriteColorSwizzle = false;
+    bool s_lfbWriteColorSwizzleSwap = false;
+    bool s_alphaControlsITRGBLighting = false;
+    GrErrorCallbackFnc_t s_errorCallback = nullptr;
 }
 
 uint32_t s_sstOrigin = 0;     // GR_ORIGIN_UPPER_LEFT (Global for grSplash)
@@ -1856,6 +1862,56 @@ FX_ENTRY int FX_CALL grBufferNumPending(void) {
 
 FX_ENTRY void FX_CALL grCheckForRoom(FxI32 n) {
     EnsureEngineInitialized();
+}
+
+// Define the local typedef for GrChromaRangeMode_t which is guarded in glide2.h
+typedef FxI32 GrChromaRangeMode_t;
+
+// Forward declaration of our Chroma-Key Range Extension
+FX_ENTRY void FX_CALL grChromakeyRangeExt(GrColor_t minColor, GrColor_t maxColor, GrChromaRangeMode_t mode);
+
+FX_ENTRY GrProc FX_CALL grGetProcAddress(char *procName) {
+    EnsureEngineInitialized();
+    GLIDE_LOG(DEBUG, "Frontend", "grGetProcAddress: " << (procName ? procName : "NULL"));
+    if (!procName) return nullptr;
+
+    if (std::strcmp(procName, "grChromakeyRangeExt") == 0) {
+        return (GrProc)grChromakeyRangeExt;
+    }
+
+    GLIDE_LOG(WARN, "Frontend", "grGetProcAddress: Unknown extension " << procName);
+    return nullptr;
+}
+
+FX_ENTRY void FX_CALL grChromakeyRangeExt(GrColor_t minColor, GrColor_t maxColor, GrChromaRangeMode_t mode) {
+    EnsureEngineInitialized();
+    GLIDE_LOG(DEBUG, "Frontend", "grChromakeyRangeExt: minColor=0x" << std::hex << minColor 
+              << ", maxColor=0x" << maxColor << ", mode=" << std::dec << mode);
+}
+
+FX_ENTRY void FX_CALL grErrorSetCallback(GrErrorCallbackFnc_t fnc) {
+    EnsureEngineInitialized();
+    GLIDE_LOG(DEBUG, "Frontend", "grErrorSetCallback invoked");
+    s_errorCallback = fnc;
+}
+
+FX_ENTRY void FX_CALL grLfbConstantDepth(FxU16 depth) {
+    EnsureEngineInitialized();
+    GLIDE_LOG(DEBUG, "Frontend", "grLfbConstantDepth: " << depth);
+    s_lfbConstantDepth = depth;
+}
+
+FX_ENTRY void FX_CALL grLfbWriteColorSwizzle(FxBool swizzleBytes, FxBool swapWords) {
+    EnsureEngineInitialized();
+    GLIDE_LOG(DEBUG, "Frontend", "grLfbWriteColorSwizzle: swizzleBytes=" << swizzleBytes << ", swapWords=" << swapWords);
+    s_lfbWriteColorSwizzle = (swizzleBytes != 0);
+    s_lfbWriteColorSwizzleSwap = (swapWords != 0);
+}
+
+FX_ENTRY void FX_CALL grAlphaControlsITRGBLighting(FxBool enable) {
+    EnsureEngineInitialized();
+    GLIDE_LOG(DEBUG, "Frontend", "grAlphaControlsITRGBLighting: " << enable);
+    s_alphaControlsITRGBLighting = (enable != 0);
 }
 
 } // extern "C"

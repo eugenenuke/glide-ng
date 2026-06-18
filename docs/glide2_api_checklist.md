@@ -8,9 +8,9 @@ This document serves as the authoritative coverage map for the **glide-ng** wrap
 
 | API Category | Implemented | Total | Coverage % |
 | :--- | :---: | :---: | :---: |
-| **Core Glide2 (`gr*`)** | 88 | 96 | 91.7% |
+| **Core Glide2 (`gr*`)** | 95 | 98 | 96.9% |
 | **Utility Library (`gu*`)** | 21 | 22 | 95.5% |
-| **Unified Glide2 Specification** | **109** | **118** | **92.4%** |
+| **Unified Glide2 Specification** | **116** | **120** | **96.7%** |
 
 ---
 
@@ -23,7 +23,8 @@ This document serves as the authoritative coverage map for the **glide-ng** wrap
 - [x] `grGlideGetState(GrState *state)` — Captures and serializes the entire active graphics context state.
 - [x] `grGlideSetState(const GrState *state)` — Restores the serialized graphics context state.
 - [x] `grGlideShamelessPlug(const FxBool on)` — Renders the legacy 3dfx spinning logo splash overlay.
-- [ ] `grGetProcAddress(char *procName)` — Dynamically resolves Glide API extension function pointers at runtime (Crucial Gap).
+- [x] `grGetProcAddress(char *procName)` — Dynamically resolves Glide API extension function pointers at runtime (GPU-native).
+- [x] `grErrorSetCallback(GrErrorCallbackFnc_t fnc)` — Registers a custom error handler callback (GPU-native).
 
 ### 1.2. SST Hardware & Window Configuration
 - [x] `grSstWinOpen(...)` — Creates the rendering window and initializes Software, Vulkan, and GLES contexts.
@@ -75,6 +76,7 @@ This document serves as the authoritative coverage map for the **glide-ng** wrap
 - [x] `grColorMask(FxBool rgb, FxBool a)` — Enables/disables color and alpha channel write masks.
 - [x] `grDisableAllEffects(void)` — Disables blending, fog, depth, and chromakeying instantly.
 - [x] `grDitherMode(GrDitherMode_t mode)` — Configures color dithering modes for 16-bit color depths.
+- [x] `grChromakeyRangeExt(min, max, mode)` — Extension supporting inclusive/exclusive chroma-key ranges (GPU-native).
 
 ### 1.6. Depth Buffering & Clipping
 - [x] `grDepthBufferMode(GrDepthBufferMode_t mode)` — Enables/disables Z-buffering, W-buffering, or depth write.
@@ -117,7 +119,7 @@ This document serves as the authoritative coverage map for the **glide-ng** wrap
 - [x] `grLfbWriteRegion(dstBuf, dstX, dstY, srcFmt, width, height, stride, src)` — Direct CPU-to-VRAM block copy.
 - [x] `grLfbReadRegion(srcBuf, srcX, srcY, width, height, stride, dst)` — Direct VRAM-to-CPU block copy.
 - [x] `grLfbConstantAlpha(GrAlpha_t alpha)` — Sets constant alpha value for direct LFB writes.
-- [ ] `grLfbConstantDepth(FxU16 depth)` — Sets constant depth value for direct LFB writes.
+- [x] `grLfbConstantDepth(FxU16 depth)` — Sets constant depth value for direct LFB writes.
 - [ ] `grLfbWriteColorSwizzle(swizzle, swap)` — Configures channel byte swizzling for LFB writes.
 - [x] `grLfbWriteColorFormat(colorFormat)` — Configures color pixel formats for LFB writes.
 
@@ -130,7 +132,7 @@ This document serves as the authoritative coverage map for the **glide-ng** wrap
 - [x] `grGetString(FxU32 pname)` — Retrieves graphics driver extensions and device info.
 - [x] `grCheckForRoom(FxI32 n)` — Stalls until the command queue has room for `n` entries.
 - [ ] `grGammaCorrectionValue(float value)` — Configures hardware monitor gamma correction.
-- [ ] `grSplash(...)` — Renders a 3dfx splash screen sequence.
+- [x] `grSplash(...)` — Renders a 3dfx splash screen sequence.
 - [x] `grHints(GrHint_t hintType, FxU32 hintMask)` — Provides rendering hints (e.g. sub-pixel precision, separate TMU W-routing).
 
 ---

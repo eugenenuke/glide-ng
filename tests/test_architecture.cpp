@@ -132,6 +132,59 @@ TEST_CASE("Architectural Core Validation", "[Architecture]") {
 #endif
     }
 
+    SECTION("Newly Implemented Glide 2.x API Gaps (Task 3)") {
+#ifdef __linux__
+        // 1. Load the shared library
+        void* handle = OpenGlide2Handle();
+        REQUIRE(handle != nullptr);
+        
+        // 2. Resolve function pointers
+        using GetProcAddressFunc = GrProc(*)(char*);
+        using ErrorSetCallbackFunc = void(*)(GrErrorCallbackFnc_t);
+        using LfbConstantDepthFunc = void(*)(FxU16);
+        using LfbWriteColorSwizzleFunc = void(*)(FxBool, FxBool);
+        using AlphaControlsITRGBLightingFunc = void(*)(FxBool);
+
+        auto getProcAddress = reinterpret_cast<GetProcAddressFunc>(::dlsym(handle, "grGetProcAddress"));
+        auto errorSetCallback = reinterpret_cast<ErrorSetCallbackFunc>(::dlsym(handle, "grErrorSetCallback"));
+        auto lfbConstantDepth = reinterpret_cast<LfbConstantDepthFunc>(::dlsym(handle, "grLfbConstantDepth"));
+        auto lfbWriteColorSwizzle = reinterpret_cast<LfbWriteColorSwizzleFunc>(::dlsym(handle, "grLfbWriteColorSwizzle"));
+        auto alphaControlsITRGBLighting = reinterpret_cast<AlphaControlsITRGBLightingFunc>(::dlsym(handle, "grAlphaControlsITRGBLighting"));
+
+        REQUIRE(getProcAddress != nullptr);
+        REQUIRE(errorSetCallback != nullptr);
+        REQUIRE(lfbConstantDepth != nullptr);
+        REQUIRE(lfbWriteColorSwizzle != nullptr);
+        REQUIRE(alphaControlsITRGBLighting != nullptr);
+
+        // 3. Test grGetProcAddress resolves the chroma-range extension
+        // We use mutable local arrays to prevent "ISO C++ forbids converting a string constant to char*" warnings
+        char extName[] = "grChromakeyRangeExt";
+        char badExtName[] = "non_existent_extension";
+
+        GrProc chromakeyRangePtr = getProcAddress(extName);
+        REQUIRE(chromakeyRangePtr != nullptr);
+        
+        // Test grGetProcAddress returns nullptr for invalid/null extensions
+        REQUIRE(getProcAddress(badExtName) == nullptr);
+        REQUIRE(getProcAddress(nullptr) == nullptr);
+
+        // 4. Test grErrorSetCallback
+        auto mockCallback = [](const char* string, FxBool fatal) {
+            // Mock error callback
+        };
+        REQUIRE_NOTHROW(errorSetCallback(mockCallback));
+
+        // 5. Test LFB and lighting helpers (ensure no-crash, safe parameters)
+        REQUIRE_NOTHROW(lfbConstantDepth(0x7FFF));
+        REQUIRE_NOTHROW(lfbWriteColorSwizzle(FXTRUE, FXTRUE));
+        REQUIRE_NOTHROW(alphaControlsITRGBLighting(FXTRUE));
+
+        // 6. Clean up
+        ::dlclose(handle);
+#endif
+    }
+
     SECTION("Phase 2: Multilib Headless CI Swapchain Attachment & Buffer Clears (GENERATE Matrix)") {
 #ifdef __linux__
         // Cycle through all 4 official 3dfx card permutations using Catch2 GENERATE
