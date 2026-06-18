@@ -423,8 +423,9 @@ void SoftwareBackend::RasterizeSoftwareTriangleImpl(const ModernVertex& a, const
             if (m_stwHintMask & 0x2) { // GR_STWHINT_W_DIFF_TMU0
                 divW = w0 * a.tmu_oow[0] + w1 * b.tmu_oow[0] + w2 * c.tmu_oow[0];
             }
-            float trueS = texS / divW;
-            float trueT = texT / divW;
+            float invW = 1.0f / divW;
+            float trueS = texS * invW;
+            float trueT = texT * invW;
 
             float texU = trueS * scaleU;
             float texV = trueT * scaleV;
@@ -831,16 +832,34 @@ void SoftwareBackend::RasterizeSoftwareTriangleImpl(const ModernVertex& a, const
 
 __attribute__((target("avx2,fma")))
 void SoftwareBackend::RasterizeSoftwareTriangle(const ModernVertex& a, const ModernVertex& b, const ModernVertex& c) {
+    if (!m_simdLogged) {
+        if (std::getenv("GLIDE_WRAPPER_DEBUG")) {
+            std::cerr << "[GLIDE WRAPPER DISPATCH]: Dispatched to AVX2 + FMA rasterizer path!" << std::endl;
+        }
+        m_simdLogged = true;
+    }
     RasterizeSoftwareTriangleImpl(a, b, c);
 }
 
 __attribute__((target("sse4.2")))
 void SoftwareBackend::RasterizeSoftwareTriangle(const ModernVertex& a, const ModernVertex& b, const ModernVertex& c) {
+    if (!m_simdLogged) {
+        if (std::getenv("GLIDE_WRAPPER_DEBUG")) {
+            std::cerr << "[GLIDE WRAPPER DISPATCH]: Dispatched to SSE4.2 rasterizer path!" << std::endl;
+        }
+        m_simdLogged = true;
+    }
     RasterizeSoftwareTriangleImpl(a, b, c);
 }
 
 __attribute__((target("default")))
 void SoftwareBackend::RasterizeSoftwareTriangle(const ModernVertex& a, const ModernVertex& b, const ModernVertex& c) {
+    if (!m_simdLogged) {
+        if (std::getenv("GLIDE_WRAPPER_DEBUG")) {
+            std::cerr << "[GLIDE WRAPPER DISPATCH]: Dispatched to default scalar rasterizer path!" << std::endl;
+        }
+        m_simdLogged = true;
+    }
     RasterizeSoftwareTriangleImpl(a, b, c);
 }
 

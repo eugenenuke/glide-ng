@@ -48,6 +48,7 @@ private:
 
     // Dynamic CPU staging buffer allocation
     bool m_allocatedBuffer{false};
+    bool m_simdLogged{false};
 };
 
 } // namespace GlideWrapper
