@@ -29,10 +29,7 @@ public:
     void SetPixelFormat(uint32_t format) override;
     void SetRenderBuffer(uint32_t target) override;
 
-    // Phase 3: Immediate Primitive Rasterization
-    void DrawTriangle(const ModernVertex& a, const ModernVertex& b, const ModernVertex& c) override;
-    void DrawLine(const ModernVertex& v1, const ModernVertex& v2) override;
-    void DrawPoint(const ModernVertex& pt) override;
+    // Phase 3: Immediate Primitive Rasterization (left as pure virtual from IGraphicsBackend)
 
     // Phase 4: Depth Comparison, Transparency Blending & Culling States
     void SetDepthState(uint32_t depthMode, uint32_t compareOp, bool depthMask, int32_t biasLevel) override;
@@ -63,8 +60,6 @@ public:
     bool WriteLFB(uint32_t buffer, uint32_t dstX, uint32_t dstY, uint32_t srcWidth, uint32_t srcHeight, int32_t srcStride, uint32_t srcFmt, const void* srcData, const void* refData = nullptr) override;
 
 protected:
-    void RasterizeSoftwareTriangle(const ModernVertex& a, const ModernVertex& b, const ModernVertex& c);
-    uint32_t EvaluateCombinerColor(const ModernVertex& v);
 
     std::recursive_mutex m_mutex;
     bool m_initialized{false};

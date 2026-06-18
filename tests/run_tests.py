@@ -55,7 +55,7 @@ TEST_TEXT_SKIP_BOUNDS = {
     "test18": (40, 2),  # Widen to cover console text
     "test19": (40, 2),  # Widen to cover console text
     "test26": (40, 3),  # Ignore top 3 rows of console text to cover long format and status strings
-    "test29": (40, 2),  # Widen to cover console text
+    "test29": (40, 8),  # Widen to cover all accumulated console text (up to y=128)
 }
 
 # Per-test color delta threshold overrides (defaults to 8 if unspecified)

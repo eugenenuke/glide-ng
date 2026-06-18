@@ -23,7 +23,15 @@ public:
 
     bool SwapBuffers() override;
 
+    // Overridden Software Primitive Rasterization
+    void DrawTriangle(const ModernVertex& a, const ModernVertex& b, const ModernVertex& c) override;
+    void DrawLine(const ModernVertex& v1, const ModernVertex& v2) override;
+    void DrawPoint(const ModernVertex& pt) override;
+
 private:
+    // Core CPU Scanline & Barycentric Rasterizer
+    void RasterizeSoftwareTriangle(const ModernVertex& a, const ModernVertex& b, const ModernVertex& c);
+    uint32_t EvaluateCombinerColor(const ModernVertex& v);
     // SDL2 Visual Presentation Console Singletons
     void* m_sdlWindow{nullptr};   // SDL_Window*
     void* m_sdlRenderer{nullptr}; // SDL_Renderer*
