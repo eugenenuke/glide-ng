@@ -40,6 +40,7 @@ public:
     void SetClipWindow(uint32_t minX, uint32_t minY, uint32_t maxX, uint32_t maxY) override;
     void SetSstOrigin(uint32_t origin) override;
     void SetColorMask(bool rgb, bool alpha) override;
+    void SetGamma(float gamma) override {}
     
     // Milestone 8: Fogging State
     void SetFogMode(uint32_t mode) override;

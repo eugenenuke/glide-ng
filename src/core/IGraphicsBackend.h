@@ -78,6 +78,9 @@ public:
     // Milestone 10: Chromakey State
     virtual void SetChromakeyMode(uint32_t mode) = 0;
     virtual void SetChromakeyValue(uint32_t value) = 0;
+
+    // Gamma Correction
+    virtual void SetGamma(float gamma) = 0;
 };
 
 } // namespace GlideWrapper

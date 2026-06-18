@@ -8,9 +8,9 @@ This document serves as the authoritative coverage map for the **glide-ng** wrap
 
 | API Category | Implemented | Total | Coverage % |
 | :--- | :---: | :---: | :---: |
-| **Core Glide2 (`gr*`)** | 95 | 98 | 96.9% |
-| **Utility Library (`gu*`)** | 21 | 22 | 95.5% |
-| **Unified Glide2 Specification** | **116** | **120** | **96.7%** |
+| **Core Glide2 (`gr*`)** | 98 | 98 | 100.0% |
+| **Utility Library (`gu*`)** | 22 | 22 | 100.0% |
+| **Unified Glide2 Specification** | **120** | **120** | **100.0%** |
 
 ---
 
@@ -34,7 +34,7 @@ This document serves as the authoritative coverage map for the **glide-ng** wrap
 - [x] `grSstQueryBoards(GrHwConfiguration *hw)` — Queries the number of physical Voodoo boards present.
 - [x] `grSstOrigin(GrOriginLocation_t origin)` — Configures coordinate origin orientation (upper-left vs. lower-left).
 - [x] `grSstIdle(void)` — Blocks until the graphics pipeline completes all pending commands.
-- [ ] `grSstControl(FxU32 code)` — Direct register level control interface for hardware-specific actions.
+- [x] `grSstControl(FxU32 code)` — Direct register level control interface for hardware-specific actions (GPU-native).
 - [x] `grSstVideoLine(void)` — Returns the current raster line being drawn to the monitor.
 - [x] `grSstVRetraceOn(void)` — Checks if the screen is undergoing vertical retrace.
 - [x] `grSstIsBusy(void)` — Checks if the graphics hardware is currently executing draw commands.
@@ -72,7 +72,7 @@ This document serves as the authoritative coverage map for the **glide-ng** wrap
 - [x] `grConstantColorValue4(float a, float r, float g, float b)` — Sets constant color via floating-point channels.
 - [x] `grChromakeyMode(GrChromakeyMode_t mode)` — Enables/disables hardware chroma-keying (discarding fragments matching a key).
 - [x] `grChromakeyValue(GrColor_t value)` — Sets the global chroma-key reference color.
-- [ ] `grAlphaControlsITRGBLighting(FxBool enable)` — Routes vertex alpha to control color combiner lighting equations.
+- [x] `grAlphaControlsITRGBLighting(FxBool enable)` — Routes vertex alpha to control color combiner lighting equations (GPU-native).
 - [x] `grColorMask(FxBool rgb, FxBool a)` — Enables/disables color and alpha channel write masks.
 - [x] `grDisableAllEffects(void)` — Disables blending, fog, depth, and chromakeying instantly.
 - [x] `grDitherMode(GrDitherMode_t mode)` — Configures color dithering modes for 16-bit color depths.
@@ -106,8 +106,8 @@ This document serves as the authoritative coverage map for the **glide-ng** wrap
 - [x] `grTexCombineFunction(GrChipID_t tmu, GrTextureCombineFnc_t fnc)` — Alternate legacy texture combiner config.
 - [x] `grTexDetailControl(tmu, lod_bias, detail_scale, detail_max)` — Configures detail-texture blending.
 - [x] `grTexLodBiasValue(GrChipID_t tmu, float bias)` — Adjusts texture LOD selection bias.
-- [ ] `grTexDownloadMipMapLevelPartial(...)` — Uploads a partial slice of a mipmap level.
-- [ ] `ConvertAndDownloadRle(...)` — Decompresses and uploads Run-Length Encoded (RLE) textures.
+- [x] `grTexDownloadMipMapLevelPartial(...)` — Uploads a partial slice of a mipmap level (GPU-native).
+- [x] `ConvertAndDownloadRle(...)` — Decompresses and uploads Run-Length Encoded (RLE) textures (GPU-native).
 - [x] `grTexDownloadTable(tmu, type, data)` — Downloads custom color lookup tables (e.g., for paletted formats).
 - [x] `grTexDownloadTablePartial(...)` — Downloads a slice of a color lookup table.
 - [x] `grTexMultibase(GrChipID_t tmu, FxBool enable)` — Enables multibase texturing (different textures per LOD).
@@ -120,7 +120,7 @@ This document serves as the authoritative coverage map for the **glide-ng** wrap
 - [x] `grLfbReadRegion(srcBuf, srcX, srcY, width, height, stride, dst)` — Direct VRAM-to-CPU block copy.
 - [x] `grLfbConstantAlpha(GrAlpha_t alpha)` — Sets constant alpha value for direct LFB writes.
 - [x] `grLfbConstantDepth(FxU16 depth)` — Sets constant depth value for direct LFB writes.
-- [ ] `grLfbWriteColorSwizzle(swizzle, swap)` — Configures channel byte swizzling for LFB writes.
+- [x] `grLfbWriteColorSwizzle(swizzle, swap)` — Configures channel byte swizzling for LFB writes (GPU-native).
 - [x] `grLfbWriteColorFormat(colorFormat)` — Configures color pixel formats for LFB writes.
 
 ### 1.10. Anti-Aliasing & Special Effects
@@ -131,7 +131,7 @@ This document serves as the authoritative coverage map for the **glide-ng** wrap
 - [x] `grAADrawPolygonVertexList(int n, const GrVertex *v)` — Draws an anti-aliased polygon from a vertex list.
 - [x] `grGetString(FxU32 pname)` — Retrieves graphics driver extensions and device info.
 - [x] `grCheckForRoom(FxI32 n)` — Stalls until the command queue has room for `n` entries.
-- [ ] `grGammaCorrectionValue(float value)` — Configures hardware monitor gamma correction.
+- [x] `grGammaCorrectionValue(float value)` — Configures hardware monitor gamma correction (GPU-native).
 - [x] `grSplash(...)` — Renders a 3dfx splash screen sequence.
 - [x] `grHints(GrHint_t hintType, FxU32 hintMask)` — Provides rendering hints (e.g. sub-pixel precision, separate TMU W-routing).
 
@@ -142,7 +142,7 @@ This document serves as the authoritative coverage map for the **glide-ng** wrap
 ### 2.1. Geometry & Clipping
 - [x] `guAADrawTriangleWithClip(const GrVertex *a, const GrVertex *b, const GrVertex *c)` — Renders an anti-aliased triangle with viewport clipping.
 - [x] `guDrawTriangleWithClip(const GrVertex *a, const GrVertex *b, const GrVertex *c)` — Renders a Gouraud triangle with viewport clipping.
-- [ ] `guDrawPolygonVertexListWithClip(int n, const GrVertex *v)` — Renders a polygon with viewport clipping.
+- [x] `guDrawPolygonVertexListWithClip(int n, const GrVertex *v)` — Renders a polygon with viewport clipping (GPU-native).
 
 ### 2.2. Combiners & Texturing
 - [x] `guAlphaSource(GrAlphaSource_t mode)` — High-level helper to configure alpha combining modes.

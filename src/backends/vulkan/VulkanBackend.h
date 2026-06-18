@@ -139,6 +139,7 @@ public:
     void SetSstOrigin(uint32_t origin) override;
     void SetClipWindow(uint32_t minX, uint32_t minY, uint32_t maxX, uint32_t maxY) override;
     void SetColorMask(bool rgb, bool alpha) override;
+    void SetGamma(float gamma) override {}
     void SetConstantColor(uint32_t color) override;
     void SetRenderBuffer(uint32_t target) override;
     void SetPixelFormat(uint32_t format) override;

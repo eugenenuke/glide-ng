@@ -40,8 +40,11 @@ precision mediump float;
 in vec2 fragTex;
 out vec4 outColor;
 uniform sampler2D uTex;
+uniform float uGamma;
 void main() {
-    outColor = texture(uTex, fragTex).bgra;
+    vec4 texColor = texture(uTex, fragTex).bgra;
+    float gamma = (uGamma > 0.0) ? uGamma : 1.0;
+    outColor = vec4(pow(texColor.rgb, vec3(1.0 / gamma)), texColor.a);
 }
 )";
 
@@ -175,23 +178,47 @@ bool OpenGLESBackend::SwapBuffers() {
     GLIDE_PROFILE_SCOPE("GLES::SwapBuffers");
 
     if (!m_headlessMode && m_sdlWindow && m_glContext) {
-        // --- 100% GPU-NATIVE PRESENTATION (glBlitFramebuffer) ---
-        // Bind our offscreen FBO as READ and the default window framebuffer 0 as DRAW
-        glBindFramebuffer(GL_READ_FRAMEBUFFER, m_headlessFBOs[0]);
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-
         // Reset crucial OpenGL states to safe presentation defaults,
         // preventing active game states (like disabled color masks or custom scissors)
-        // from masking or clipping our blit!
+        // from masking or clipping our presentation!
         glDisable(GL_SCISSOR_TEST);
         glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
 
-        // Blit the color buffer from our offscreen FBO directly to the window surface.
-        // glBlitFramebuffer performs a high-speed GPU-to-GPU copy.
-        glBlitFramebuffer(0, 0, m_headlessWidth, m_headlessHeight,
-                          0, 0, m_headlessWidth, m_headlessHeight,
-                          GL_COLOR_BUFFER_BIT, GL_NEAREST);
-        checkGLError("SwapBuffers glBlitFramebuffer");
+        if (m_gammaCorrectionValue == 1.0f) {
+            // --- OPTION A: HIGH-SPEED GPU HARDWARE BLIT (Gamma = 1.0) ---
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, m_headlessFBOs[0]);
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+            glViewport(0, 0, m_headlessWidth, m_headlessHeight);
+            glBlitFramebuffer(0, 0, m_headlessWidth, m_headlessHeight,
+                              0, 0, m_headlessWidth, m_headlessHeight,
+                              GL_COLOR_BUFFER_BIT, GL_NEAREST);
+            checkGLError("SwapBuffers glBlitFramebuffer");
+        } else {
+            // --- OPTION B: FULL-SCREEN QUAD SHADER PASS (Gamma != 1.0) ---
+            glBindFramebuffer(GL_FRAMEBUFFER, 0); // Render directly to window surface
+            glViewport(0, 0, m_headlessWidth, m_headlessHeight);
+            glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+            glUseProgram(m_glProgram);
+            
+            // Pass active gamma value
+            GLint uGammaLoc = glGetUniformLocation(m_glProgram, "uGamma");
+            if (uGammaLoc != -1) {
+                glUniform1f(uGammaLoc, m_gammaCorrectionValue);
+            }
+
+            // Bind the rendered offscreen FBO color texture as texture unit 0
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, m_fboTextures[0]); 
+
+            glBindVertexArray(m_glVAO);
+            glDrawArrays(GL_TRIANGLE_FAN, 0, 4); // Draw full-screen quad
+            
+            glBindVertexArray(0);
+            glUseProgram(0);
+            checkGLError("SwapBuffers Gamma shader pass");
+        }
 
         // Restore framebuffer bindings
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -1230,6 +1257,11 @@ void OpenGLESBackend::SetBlendState(uint32_t rgbSrcFactor, uint32_t rgbDstFactor
 void OpenGLESBackend::SetColorMask(bool rgb, bool alpha) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     SoftwareBackendBase::SetColorMask(rgb, alpha);
+}
+
+void OpenGLESBackend::SetGamma(float gamma) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    m_gammaCorrectionValue = gamma;
 }
 
 void OpenGLESBackend::ApplyBlendingGLES() {

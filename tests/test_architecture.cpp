@@ -6,6 +6,9 @@
 #include "software/SoftwareBackend.h"
 #include <cstdlib>
 #include <dlfcn.h>
+#ifdef __linux__
+#include <GLES3/gl32.h>
+#endif
 #include "core/BackendManager.h"
 #include <glide.h>
 #include <catch2/generators/catch_generators.hpp>
@@ -180,7 +183,45 @@ TEST_CASE("Architectural Core Validation", "[Architecture]") {
         REQUIRE_NOTHROW(lfbWriteColorSwizzle(FXTRUE, FXTRUE));
         REQUIRE_NOTHROW(alphaControlsITRGBLighting(FXTRUE));
 
-        // 6. Clean up
+        // 7. Resolve the final 5 functions
+        using GammaCorrectionValueFunc = void(*)(float);
+        using SstControlFunc = FxBool(*)(FxU32);
+        using TexDownloadMipMapLevelPartialFunc = void(*)(GrChipID_t, FxU32, GrLOD_t, GrLOD_t, GrAspectRatio_t, GrTextureFormat_t, FxU32, void*, int, int);
+        using GuDrawPolygonVertexListWithClipFunc = void(*)(int, const GrVertex[]);
+        using ConvertAndDownloadRleFunc = void(*)(GrChipID_t, FxU32, GrLOD_t, GrLOD_t, GrAspectRatio_t, GrTextureFormat_t, FxU32, FxU8*, long, FxU32, FxU32, FxU32, FxU32, FxU32, FxU32, FxU16*);
+
+        auto gammaCorrectionValue = reinterpret_cast<GammaCorrectionValueFunc>(::dlsym(handle, "grGammaCorrectionValue"));
+        auto sstControl = reinterpret_cast<SstControlFunc>(::dlsym(handle, "grSstControl"));
+        auto texDownloadMipMapLevelPartial = reinterpret_cast<TexDownloadMipMapLevelPartialFunc>(::dlsym(handle, "grTexDownloadMipMapLevelPartial"));
+        auto guDrawPolygonVertexListWithClip = reinterpret_cast<GuDrawPolygonVertexListWithClipFunc>(::dlsym(handle, "guDrawPolygonVertexListWithClip"));
+        auto convertAndDownloadRle = reinterpret_cast<ConvertAndDownloadRleFunc>(::dlsym(handle, "ConvertAndDownloadRle"));
+
+        REQUIRE(gammaCorrectionValue != nullptr);
+        REQUIRE(sstControl != nullptr);
+        REQUIRE(texDownloadMipMapLevelPartial != nullptr);
+        REQUIRE(guDrawPolygonVertexListWithClip != nullptr);
+        REQUIRE(convertAndDownloadRle != nullptr);
+
+        // 8. Verify grSstControl and grGammaCorrectionValue
+        REQUIRE(sstControl(0xFEED) == FXTRUE);
+        REQUIRE_NOTHROW(gammaCorrectionValue(1.8f));
+
+        // 9. Verify grTexDownloadMipMapLevelPartial (ensure no-crash)
+        std::vector<uint16_t> mockTex(16 * 16, 0xABCD);
+        REQUIRE_NOTHROW(texDownloadMipMapLevelPartial(0, 0x1000, 4, 4, 0, 0, 0, mockTex.data(), 4, 12));
+
+        // 10. Verify guDrawPolygonVertexListWithClip (ensure no-crash)
+        GrVertex mockPolygon[4] = {};
+        REQUIRE_NOTHROW(guDrawPolygonVertexListWithClip(4, mockPolygon));
+
+        // 11. Verify ConvertAndDownloadRle with a mocked 2x2 RLE compressed texture
+        // 2x2 texture (4 pixels) compressed as a single run-length of 4 white pixels:
+        // - Packet code: 0x83 (0x80 run-length bit | 3 count)
+        // - Pixel value: 0xFFFF (16-bit white)
+        uint8_t mockRleData[] = { 0x83, 0xFF, 0xFF };
+        REQUIRE_NOTHROW(convertAndDownloadRle(0, 0x2000, 8, 8, 0, 0, 0, mockRleData, 2, 0, 0, 2, 2, 2, 2, nullptr));
+
+        // 12. Clean up
         ::dlclose(handle);
 #endif
     }
@@ -1664,4 +1705,109 @@ TEST_CASE("Texture Decoders & LFB Pipeline Simulation Correctness", "[Texture_LF
         REQUIRE(b >= 126);
         REQUIRE(b <= 128);
     }
+}
+
+TEST_CASE("OpenGL ES Gamma Correction Accuracy Validation") {
+#ifdef __linux__
+    // 1. Ensure we only run this test if the OpenGL ES backend is active at process start
+    const char* envBackend = std::getenv("GLIDE_BACKEND");
+    if (!envBackend || std::string(envBackend) != "opengl_es") {
+        return; // Safely skip if not explicitly running GLES
+    }
+
+    // Load the shared library dynamically
+    void* handle = ::dlopen("./build/lib/libglide2x.so", RTLD_NOW | RTLD_GLOBAL);
+    REQUIRE(handle != nullptr);
+
+    // Resolve needed functions
+    using InitFunc = void(*)(void);
+    using ShutdownFunc = void(*)(void);
+    using WinOpenFunc = FxBool(*)(FxU32, GrScreenResolution_t, GrScreenRefresh_t, GrColorFormat_t, GrOriginLocation_t, int, int);
+    using BufferClearFunc = void(*)(GrColor_t, GrAlpha_t, FxU16);
+    using BufferSwapFunc = void(*)(FxU32);
+    using LfbReadRegionFunc = FxBool(*)(GrBuffer_t, FxU32, FxU32, FxU32, FxU32, FxU32, void*);
+    using GammaFunc = void(*)(float);
+
+    auto init = reinterpret_cast<InitFunc>(::dlsym(handle, "grGlideInit"));
+    auto shutdown = reinterpret_cast<ShutdownFunc>(::dlsym(handle, "grGlideShutdown"));
+    auto winOpen = reinterpret_cast<WinOpenFunc>(::dlsym(handle, "grSstWinOpen"));
+    auto bufferClear = reinterpret_cast<BufferClearFunc>(::dlsym(handle, "grBufferClear"));
+    auto bufferSwap = reinterpret_cast<BufferSwapFunc>(::dlsym(handle, "grBufferSwap"));
+    auto lfbReadRegion = reinterpret_cast<LfbReadRegionFunc>(::dlsym(handle, "grLfbReadRegion"));
+    auto gammaCorrection = reinterpret_cast<GammaFunc>(::dlsym(handle, "grGammaCorrectionValue"));
+
+    REQUIRE(init != nullptr);
+    REQUIRE(shutdown != nullptr);
+    REQUIRE(winOpen != nullptr);
+    REQUIRE(bufferClear != nullptr);
+    REQUIRE(bufferSwap != nullptr);
+    REQUIRE(lfbReadRegion != nullptr);
+    REQUIRE(gammaCorrection != nullptr);
+
+    // 1. Force the OpenGL ES backend
+    ::setenv("GLIDE_BACKEND", "opengl_es", 1);
+
+    // 2. Initialize Glide and open the window (windowed mode so it runs headlessly)
+    REQUIRE_NOTHROW(init());
+    FxBool ok = winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz, GR_COLORFORMAT_ARGB, GR_ORIGIN_UPPER_LEFT, 2, 0);
+    REQUIRE(ok == FXTRUE);
+
+    // --- CASE 1: GAMMA = 1.0f (Linear Mapping) ---
+    gammaCorrection(1.0f);
+
+    // Clear the backbuffer to a solid mid-grey color:
+    // Color: 0xFF808080 (ARGB8888, Alpha=FF, Red=80, Green=80, Blue=80)
+    bufferClear(0xFF808080, 0xFF, 0);
+
+    // Swap buffers to present the mid-grey frame onto the screen (with Gamma = 1.0)
+    bufferSwap(1);
+
+    // Read the center pixel (at 320, 240) directly from the EGL window surface (framebuffer 0)
+    ::glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    uint8_t screenPixel1[4] = {0};
+    ::glReadPixels(320, 240, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, screenPixel1);
+    
+    // The screen presented value should be exactly 128 (linear, no scaling)
+    REQUIRE(screenPixel1[0] >= 126);
+    REQUIRE(screenPixel1[0] <= 130);
+
+    // --- CASE 2: GAMMA = 2.0f (Power Curve Boost) ---
+    gammaCorrection(2.0f);
+
+    // Clear the backbuffer to the exact same mid-grey color
+    bufferClear(0xFF808080, 0xFF, 0);
+
+    // Swap buffers to trigger our new presentation shader with Gamma = 2.0!
+    bufferSwap(1);
+
+    // Read the center pixel directly from the EGL window surface (framebuffer 0)
+    ::glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    uint8_t screenPixel2[4] = {0};
+    ::glReadPixels(320, 240, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, screenPixel2);
+
+    // Mathematically, the presented output value should be:
+    // Color_out = (128 / 255.0)^(1.0 / 2.0) * 255.0 = sqrt(0.502) * 255.0 = 180
+    // The screen pixel should have boosted from 128 to around 180!
+    REQUIRE(screenPixel2[0] >= 175);
+    REQUIRE(screenPixel2[0] <= 185);
+
+    // --- CASE 3: SILICON-FAITHFUL VRAM VERIFICATION ---
+    // Verify that although the screen shows a boosted 180, the digital VRAM front buffer
+    // itself remains perfectly linear at 128 (matching physical Voodoo RAMDAC behavior!)
+    uint32_t vramPixel = 0;
+    ok = lfbReadRegion(GR_BUFFER_FRONTBUFFER, 320, 240, 1, 1, 4, &vramPixel);
+    REQUIRE(ok == FXTRUE);
+
+    // Unpack Red channel from ARGB8888 VRAM pixel
+    uint8_t vramR = (vramPixel >> 16) & 0xFF;
+    REQUIRE(vramR >= 126);
+    REQUIRE(vramR <= 130); // Still linear 128!
+
+    // Clean up
+    REQUIRE_NOTHROW(shutdown());
+    ::dlclose(handle);
+
+    // Restore environment
+    ::unsetenv("GLIDE_BACKEND");
+#endif
 }

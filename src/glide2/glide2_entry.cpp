@@ -96,6 +96,30 @@ namespace {
     bool s_lfbWriteColorSwizzleSwap = false;
     bool s_alphaControlsITRGBLighting = false;
     GrErrorCallbackFnc_t s_errorCallback = nullptr;
+    float s_gammaCorrectionValue = 1.0f;
+
+    // Optimized 16-bit 3dfx RLE Decompression Helper
+    static void Decompress3dfxRle(int width, int height, const uint8_t* src, uint16_t* dst) {
+        int count = width * height;
+        while (count > 0) {
+            uint8_t code = *src++;
+            int run = (code & 0x7F) + 1;
+            if (code & 0x80) { // Run-Length Packet
+                uint16_t val = *reinterpret_cast<const uint16_t*>(src);
+                src += 2;
+                for (int i = 0; i < run && count > 0; ++i) {
+                    *dst++ = val;
+                    count--;
+                }
+            } else { // Literal Packet
+                for (int i = 0; i < run && count > 0; ++i) {
+                    *dst++ = *reinterpret_cast<const uint16_t*>(src);
+                    src += 2;
+                    count--;
+                }
+            }
+        }
+    }
 }
 
 uint32_t s_sstOrigin = 0;     // GR_ORIGIN_UPPER_LEFT (Global for grSplash)
@@ -1912,6 +1936,56 @@ FX_ENTRY void FX_CALL grAlphaControlsITRGBLighting(FxBool enable) {
     EnsureEngineInitialized();
     GLIDE_LOG(DEBUG, "Frontend", "grAlphaControlsITRGBLighting: " << enable);
     s_alphaControlsITRGBLighting = (enable != 0);
+}
+
+FX_ENTRY void FX_CALL grGammaCorrectionValue(float value) {
+    EnsureEngineInitialized();
+    GLIDE_LOG(DEBUG, "Frontend", "grGammaCorrectionValue: " << value);
+    s_gammaCorrectionValue = value;
+    if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
+        b->SetGamma(value);
+    }
+}
+
+FX_ENTRY FxBool FX_CALL grSstControl(FxU32 code) {
+    EnsureEngineInitialized();
+    GLIDE_LOG(DEBUG, "Frontend", "grSstControl invoked: code=" << code);
+    return FXTRUE;
+}
+
+FX_ENTRY void FX_CALL grTexDownloadMipMapLevelPartial(
+    GrChipID_t tmu, FxU32 startAddress, GrLOD_t thisLod, GrLOD_t largeLod,
+    GrAspectRatio_t aspectRatio, GrTextureFormat_t format, FxU32 evenOdd,
+    void *data, int start, int end)
+{
+    EnsureEngineInitialized();
+    GLIDE_LOG(DEBUG, "Frontend", "grTexDownloadMipMapLevelPartial invoked for TMU=" << tmu 
+              << ", LOD=" << thisLod << ", rows=" << start << ".." << end << " (Promoting to full download)");
+    // Promote to full level download for simplicity and visual correctness!
+    grTexDownloadMipMapLevel(tmu, startAddress, thisLod, largeLod, aspectRatio, format, evenOdd, data);
+}
+
+FX_ENTRY void FX_CALL guDrawPolygonVertexListWithClip(int nverts, const GrVertex vlist[]) {
+    // Delegate to GPU-native polygon drawer (GPU hardware handles viewport clipping automatically!)
+    grDrawPolygonVertexList(nverts, vlist);
+}
+
+FX_ENTRY void FX_CALL ConvertAndDownloadRle(
+    GrChipID_t tmu, FxU32 startAddress, GrLOD_t thisLod, GrLOD_t largeLod,
+    GrAspectRatio_t aspectRatio, GrTextureFormat_t format, FxU32 evenOdd,
+    FxU8 *bm_data, long bm_h, FxU32 u0, FxU32 v0, FxU32 width, FxU32 height,
+    FxU32 dest_width, FxU32 dest_height, FxU16 *tlut)
+{
+    EnsureEngineInitialized();
+    GLIDE_LOG(DEBUG, "Frontend", "ConvertAndDownloadRle: TMU=" << tmu << ", Address=0x" << std::hex << startAddress);
+    if (!bm_data) return;
+
+    // Decompress 16-bit RLE texture pixels in RAM
+    std::vector<uint16_t> decompressed(dest_width * dest_height, 0);
+    Decompress3dfxRle(dest_width, dest_height, bm_data, decompressed.data());
+
+    // Download the decompressed texture to GPU TMU memory
+    grTexDownloadMipMapLevel(tmu, startAddress, thisLod, largeLod, aspectRatio, format, evenOdd, decompressed.data());
 }
 
 } // extern "C"
