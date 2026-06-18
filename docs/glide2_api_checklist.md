@@ -8,9 +8,9 @@ This document serves as the authoritative coverage map for the **glide-ng** wrap
 
 | API Category | Implemented | Total | Coverage % |
 | :--- | :---: | :---: | :---: |
-| **Core Glide2 (`gr*`)** | 73 | 94 | 77.7% |
+| **Core Glide2 (`gr*`)** | 77 | 95 | 81.1% |
 | **Utility Library (`gu*`)** | 14 | 15 | 93.3% |
-| **Unified Glide2 Specification** | **87** | **109** | **79.8%** |
+| **Unified Glide2 Specification** | **91** | **110** | **82.7%** |
 
 ---
 
@@ -23,6 +23,7 @@ This document serves as the authoritative coverage map for the **glide-ng** wrap
 - [x] `grGlideGetState(GrState *state)` — Captures and serializes the entire active graphics context state.
 - [x] `grGlideSetState(const GrState *state)` — Restores the serialized graphics context state.
 - [ ] `grGlideShamelessPlug(const FxBool on)` — Renders the legacy 3dfx spinning logo splash overlay.
+- [ ] `grGetProcAddress(char *procName)` — Dynamically resolves Glide API extension function pointers at runtime (Crucial Gap).
 
 ### 1.2. SST Hardware & Window Configuration
 - [x] `grSstWinOpen(...)` — Creates the rendering window and initializes Software, Vulkan, and GLES contexts.
@@ -96,12 +97,12 @@ This document serves as the authoritative coverage map for the **glide-ng** wrap
 - [x] `grTexDownloadMipMap(tmu, startAddress, evenOdd, info)` — Uploads a texture mipmap chain to TMU memory.
 - [x] `grTexDownloadMipMapLevel(...)` — Uploads a single mipmap level to TMU memory.
 - [x] `grTexMipMapMode(tmu, mode, lodBlend)` — Configures mipmap blending and LOD selection modes.
-- [ ] `grTexTextureMemRequired(evenOdd, info)` — Calculates memory size required for a texture info struct.
+- [x] `grTexTextureMemRequired(evenOdd, info)` — Calculates memory size required for a texture info struct.
 - [x] `grTexMinAddress(GrChipID_t tmu)` — Returns the minimum memory address for a TMU.
-- [ ] `grTexNCCTable(GrChipID_t tmu, GrNCCTable_t table)` — Downloads Narrow Channel Compression (NCC) tables.
-- [ ] `grTexCombineFunction(GrChipID_t tmu, GrTextureCombineFnc_t fnc)` — Alternate legacy texture combiner config.
+- [x] `grTexNCCTable(GrChipID_t tmu, GrNCCTable_t table)` — Downloads Narrow Channel Compression (NCC) tables.
+- [x] `grTexCombineFunction(GrChipID_t tmu, GrTextureCombineFnc_t fnc)` — Alternate legacy texture combiner config.
 - [ ] `grTexDetailControl(tmu, lod_bias, detail_scale, detail_max)` — Configures detail-texture blending.
-- [ ] `grTexLodBiasValue(GrChipID_t tmu, float bias)` — Adjusts texture LOD selection bias.
+- [x] `grTexLodBiasValue(GrChipID_t tmu, float bias)` — Adjusts texture LOD selection bias.
 - [ ] `grTexDownloadMipMapLevelPartial(...)` — Uploads a partial slice of a mipmap level.
 - [ ] `ConvertAndDownloadRle(...)` — Decompresses and uploads Run-Length Encoded (RLE) textures.
 - [x] `grTexDownloadTable(tmu, type, data)` — Downloads custom color lookup tables (e.g., for paletted formats).
