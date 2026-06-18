@@ -24,7 +24,7 @@ gantt
     section Implementation
     Milestone 1 Hardware Queries and Pacing     :done, m1, 2026-06-18, 2d
     Milestone 2 Anti Aliasing Forwarding        :done, m2, after m1, 1d
-    Milestone 3 Polygon Fan Decomposition       :      m3, after m2, 2d
+    Milestone 3 Polygon Fan Decomposition       :done, m3, after m2, 2d
     Milestone 4 Shortcut State Config           :        m4, after m3, 1d
     Milestone 5 LFB Pixel Formatting            :        m5, after m4, 2d
     Milestone 6 Texturing and Utilities         :        m6, after m5, 3d

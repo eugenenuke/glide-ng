@@ -537,6 +537,72 @@ TEST_CASE("Architectural Core Validation", "[Architecture]") {
 #endif
     }
 
+    SECTION("Milestone 3: Polygon Fan Decomposition") {
+#ifdef __linux__
+        void* handle = OpenGlide2Handle();
+        REQUIRE(handle != nullptr);
+
+        using InitFunc = void(*)(void);
+        using WinOpenFunc = FxBool(*)(FxU32, FxU32, FxU32, FxU32, FxU32, int, int);
+        using WinCloseFunc = void(*)(void);
+        using DrawPolyFunc = void(*)(const int, const int*, const void*);
+        using BufferClearFunc = void(*)(FxU32, FxU32, FxU32);
+        using BufferSwapFunc = void(*)(int);
+        using LfbReadFunc = FxBool(*)(FxU32, FxU32, FxU32, FxU32, FxU32, FxU32, void*);
+
+        auto glideInit   = reinterpret_cast<InitFunc>(::dlsym(handle, "grGlideInit"));
+        auto winOpen     = reinterpret_cast<WinOpenFunc>(::dlsym(handle, "grSstWinOpen"));
+        auto winClose    = reinterpret_cast<WinCloseFunc>(::dlsym(handle, "grSstWinClose"));
+        auto drawPoly    = reinterpret_cast<DrawPolyFunc>(::dlsym(handle, "grDrawPolygon"));
+        auto bufferClear = reinterpret_cast<BufferClearFunc>(::dlsym(handle, "grBufferClear"));
+        auto bufferSwap  = reinterpret_cast<BufferSwapFunc>(::dlsym(handle, "grBufferSwap"));
+        auto lfbRead     = reinterpret_cast<LfbReadFunc>(::dlsym(handle, "grLfbReadRegion"));
+
+        REQUIRE(glideInit != nullptr);
+        REQUIRE(winOpen != nullptr);
+        REQUIRE(winClose != nullptr);
+        REQUIRE(drawPoly != nullptr);
+        REQUIRE(bufferClear != nullptr);
+        REQUIRE(bufferSwap != nullptr);
+        REQUIRE(lfbRead != nullptr);
+
+        // 1. Initialize and open context (800x600 resolution)
+        glideInit();
+        REQUIRE(winOpen(0, 0x8, 0, 0, 0, 2, 0) == FXTRUE);
+
+        // 2. Clear screen to black
+        bufferClear(0x00000000, 0xFF, 0xFFFF);
+
+        // 3. Draw a green quad (convex 4-vertex polygon)
+        GrVertex vlist[4]{};
+        // Top-Left
+        vlist[0].x = 200.0f; vlist[0].y = 200.0f; vlist[0].ooz = 1.0f; vlist[0].oow = 1.0f; vlist[0].r = 0.0f; vlist[0].g = 255.0f; vlist[0].b = 0.0f; vlist[0].a = 255.0f;
+        // Bottom-Left
+        vlist[1].x = 200.0f; vlist[1].y = 400.0f; vlist[1].ooz = 1.0f; vlist[1].oow = 1.0f; vlist[1].r = 0.0f; vlist[1].g = 255.0f; vlist[1].b = 0.0f; vlist[1].a = 255.0f;
+        // Bottom-Right
+        vlist[2].x = 400.0f; vlist[2].y = 400.0f; vlist[2].ooz = 1.0f; vlist[2].oow = 1.0f; vlist[2].r = 0.0f; vlist[2].g = 255.0f; vlist[2].b = 0.0f; vlist[2].a = 255.0f;
+        // Top-Right
+        vlist[3].x = 400.0f; vlist[3].y = 200.0f; vlist[3].ooz = 1.0f; vlist[3].oow = 1.0f; vlist[3].r = 0.0f; vlist[3].g = 255.0f; vlist[3].b = 0.0f; vlist[3].a = 255.0f;
+
+        int ilist[4] = { 0, 1, 2, 3 };
+
+        REQUIRE_NOTHROW(drawPoly(4, ilist, vlist));
+        bufferSwap(0); // Present and resolve!
+
+        // 4. Read back center pixel of the quad (300, 300) and assert it is green
+        uint32_t pixel = 0;
+        REQUIRE(lfbRead(1, 300, 300, 1, 1, 4, &pixel) == FXTRUE); // 1 = GR_BUFFER_BACKBUFFER
+        
+        uint8_t g = (pixel >> 8) & 0xFF;
+        REQUIRE(g == 255);
+
+        // 5. Clean up
+        winClose();
+        ::dlclose(handle);
+#endif
+    }
+
+
     SECTION("Phase 3: Automated Geometry Drawing Validation Suite") {
 #ifdef __linux__
         // 1. Validate Glide 2.x Fixed Geometry Parsing & Drawing

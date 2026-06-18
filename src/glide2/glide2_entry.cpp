@@ -341,6 +341,16 @@ FX_ENTRY void FX_CALL grDrawPolygonVertexList(const int nverts, const GrVertex v
     DrawPolygonHelper(nverts, vlist);
 }
 
+FX_ENTRY void FX_CALL grDrawPlanarPolygon(const int nverts, const int ilist[], const GrVertex vlist[]) {
+    EnsureEngineInitialized();
+    DrawPolygonIndexedHelper(nverts, ilist, vlist);
+}
+
+FX_ENTRY void FX_CALL grDrawPlanarPolygonVertexList(const int nverts, const GrVertex vlist[]) {
+    EnsureEngineInitialized();
+    DrawPolygonHelper(nverts, vlist);
+}
+
 // =============================================================================
 // Anti-Aliased Geometry Forwarding APIs (Milestone 2)
 // =============================================================================
