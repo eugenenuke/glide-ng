@@ -22,7 +22,7 @@ gantt
     title Glide API Coverage Expansion Timeline
     dateFormat  YYYY-MM-DD
     section Implementation
-    Milestone 1 Hardware Queries and Pacing     :active, m1, 2026-06-18, 2d
+    Milestone 1 Hardware Queries and Pacing     :done, m1, 2026-06-18, 2d
     Milestone 2 Anti Aliasing Forwarding        :        m2, after m1, 1d
     Milestone 3 Polygon Fan Decomposition       :        m3, after m2, 2d
     Milestone 4 Shortcut State Config           :        m4, after m3, 1d

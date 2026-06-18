@@ -11,6 +11,7 @@
 #include <cmath>
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 
 #ifndef __linux__
 #define __linux__
@@ -32,6 +33,8 @@
 extern "C" {
 
 namespace {
+    std::chrono::steady_clock::time_point s_lastSwapTime = std::chrono::steady_clock::now();
+
     uint32_t s_depthMode = 0;
     uint32_t s_depthCompare = 1;
     bool s_depthMask = true;
@@ -241,6 +244,7 @@ FX_ENTRY void FX_CALL grBufferClear(GrColor_t color, GrAlpha_t alpha, FxU16 dept
 
 FX_ENTRY void FX_CALL grBufferSwap(int swap_interval) {
     EnsureEngineInitialized();
+    s_lastSwapTime = std::chrono::steady_clock::now();
     auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
     if (backend) backend->SwapBuffers();
 }
@@ -1385,6 +1389,69 @@ FX_ENTRY void FX_CALL grChromakeyValue(GrColor_t value) {
 FX_ENTRY void FX_CALL grDitherMode(GrDitherMode_t mode) {
     EnsureEngineInitialized();
     GLIDE_LOG(DEBUG, "Frontend", "grDitherMode invoked: mode=" << mode);
+}
+
+FX_ENTRY FxU32 FX_CALL grSstScreenWidth(void) {
+    EnsureEngineInitialized();
+    if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
+        return b->GetWidth();
+    }
+    return 0;
+}
+
+FX_ENTRY FxU32 FX_CALL grSstScreenHeight(void) {
+    EnsureEngineInitialized();
+    if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
+        return b->GetHeight();
+    }
+    return 0;
+}
+
+FX_ENTRY FxBool FX_CALL grSstIsBusy(void) {
+    EnsureEngineInitialized();
+    return FXFALSE;
+}
+
+FX_ENTRY FxU32 FX_CALL grSstStatus(void) {
+    EnsureEngineInitialized();
+    // Return status register bits indicating:
+    // - PCI FIFO has plenty of room (0x3FF free slots)
+    // - Card is not busy / rasterizer is idle
+    return 0x3FF;
+}
+
+FX_ENTRY FxU32 FX_CALL grSstVideoLine(void) {
+    EnsureEngineInitialized();
+    auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
+    uint32_t height = backend ? backend->GetHeight() : 480;
+    if (height == 0) height = 480;
+    
+    uint32_t totalLines = height + 30; // height + 30 VBLANK lines
+    auto now = std::chrono::steady_clock::now();
+    auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(now - s_lastSwapTime).count();
+    
+    const uint64_t frameTimeUs = 16666; // 1/60 sec
+    uint64_t currentFrameTimeUs = elapsedUs % frameTimeUs;
+    
+    return static_cast<uint32_t>((currentFrameTimeUs * totalLines) / frameTimeUs);
+}
+
+FX_ENTRY FxBool FX_CALL grSstVRetraceOn(void) {
+    EnsureEngineInitialized();
+    auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
+    uint32_t height = backend ? backend->GetHeight() : 480;
+    if (height == 0) height = 480;
+    
+    return (grSstVideoLine() >= height) ? FXTRUE : FXFALSE;
+}
+
+FX_ENTRY int FX_CALL grBufferNumPending(void) {
+    EnsureEngineInitialized();
+    return 0;
+}
+
+FX_ENTRY void FX_CALL grCheckForRoom(FxI32 n) {
+    EnsureEngineInitialized();
 }
 
 } // extern "C"

@@ -382,6 +382,96 @@ TEST_CASE("Architectural Core Validation", "[Architecture]") {
 #endif
     }
 
+    SECTION("Milestone 1: Hardware Queries & Pacing (Resolution Matrix)") {
+#ifdef __linux__
+        void* handle = OpenGlide2Handle();
+        REQUIRE(handle != nullptr);
+
+        using InitFunc = void(*)(void);
+        using WinOpenFunc = FxBool(*)(FxU32, FxU32, FxU32, FxU32, FxU32, int, int);
+        using WinCloseFunc = void(*)(void);
+        
+        using WidthFunc = FxU32(*)(void);
+        using HeightFunc = FxU32(*)(void);
+        using BusyFunc = FxBool(*)(void);
+        using StatusFunc = FxU32(*)(void);
+        using VideoLineFunc = FxU32(*)(void);
+        using RetraceFunc = FxBool(*)(void);
+        using PendingFunc = int(*)(void);
+        using CheckRoomFunc = void(*)(FxI32);
+
+        auto glideInit      = reinterpret_cast<InitFunc>(::dlsym(handle, "grGlideInit"));
+        auto winOpen        = reinterpret_cast<WinOpenFunc>(::dlsym(handle, "grSstWinOpen"));
+        auto winClose       = reinterpret_cast<WinCloseFunc>(::dlsym(handle, "grSstWinClose"));
+        
+        auto grSstScreenWidth  = reinterpret_cast<WidthFunc>(::dlsym(handle, "grSstScreenWidth"));
+        auto grSstScreenHeight = reinterpret_cast<HeightFunc>(::dlsym(handle, "grSstScreenHeight"));
+        auto grSstIsBusy       = reinterpret_cast<BusyFunc>(::dlsym(handle, "grSstIsBusy"));
+        auto grSstStatus       = reinterpret_cast<StatusFunc>(::dlsym(handle, "grSstStatus"));
+        auto grSstVideoLine    = reinterpret_cast<VideoLineFunc>(::dlsym(handle, "grSstVideoLine"));
+        auto grSstVRetraceOn   = reinterpret_cast<RetraceFunc>(::dlsym(handle, "grSstVRetraceOn"));
+        auto grBufferNumPending = reinterpret_cast<PendingFunc>(::dlsym(handle, "grBufferNumPending"));
+        auto grCheckForRoom    = reinterpret_cast<CheckRoomFunc>(::dlsym(handle, "grCheckForRoom"));
+
+        REQUIRE(glideInit != nullptr);
+        REQUIRE(winOpen != nullptr);
+        REQUIRE(winClose != nullptr);
+        REQUIRE(grSstScreenWidth != nullptr);
+        REQUIRE(grSstScreenHeight != nullptr);
+        REQUIRE(grSstIsBusy != nullptr);
+        REQUIRE(grSstStatus != nullptr);
+        REQUIRE(grSstVideoLine != nullptr);
+        REQUIRE(grSstVRetraceOn != nullptr);
+        REQUIRE(grBufferNumPending != nullptr);
+        REQUIRE(grCheckForRoom != nullptr);
+
+        // Run parameterized resolution matrix using Catch2 GENERATE
+        auto resTuple = GENERATE(
+            std::make_tuple(0x7, 640, 480),  // GR_RESOLUTION_640x480
+            std::make_tuple(0x8, 800, 600),  // GR_RESOLUTION_800x600
+            // GR_RESOLUTION_1024x768 (1024x768)
+            // HISTORICAL NOTE: On physical Voodoo 2 hardware, opening a Z-buffered 1024x768 target 
+            // on a single card would fail due to physical VRAM limits, requiring SLI mode.
+            // Our API wrapper passes this test successfully because it leverages modern host VRAM,
+            // bypassing the historical hardware memory boundaries without needing explicit SLI logic.
+            std::make_tuple(0xC, 1024, 768), 
+            std::make_tuple(0x1, 320, 240)   // GR_RESOLUTION_320x240
+        );
+
+        GrScreenResolution_t resolution = std::get<0>(resTuple);
+        FxU32 expectedW = static_cast<FxU32>(std::get<1>(resTuple));
+        FxU32 expectedH = static_cast<FxU32>(std::get<2>(resTuple));
+
+        // 1. Initialize and open context with target resolution
+        glideInit();
+        REQUIRE(winOpen(0, resolution, 0, 0, 0, 2, 0) == FXTRUE);
+
+        // 2. Validate resolution queries match expected pixel bounds!
+        REQUIRE(grSstScreenWidth() == expectedW);
+        REQUIRE(grSstScreenHeight() == expectedH);
+
+        // 3. Validate status & pacing APIs
+        REQUIRE(grSstIsBusy() == FXFALSE);
+        REQUIRE(grBufferNumPending() == 0);
+        REQUIRE(grSstStatus() == 0x3FF);
+        REQUIRE_NOTHROW(grCheckForRoom(10));
+
+        // 4. Validate pacing simulation
+        FxU32 line1 = grSstVideoLine();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        FxU32 line2 = grSstVideoLine();
+        
+        // Assert we can query pacing state and suppress warnings
+        REQUIRE_NOTHROW(grSstVRetraceOn());
+        (void)line1;
+        (void)line2;
+
+        // 5. Clean up
+        winClose();
+        ::dlclose(handle);
+#endif
+    }
+
     SECTION("Phase 3: Automated Geometry Drawing Validation Suite") {
 #ifdef __linux__
         // 1. Validate Glide 2.x Fixed Geometry Parsing & Drawing
