@@ -518,7 +518,6 @@ TEST_CASE("Architectural Core Validation", "[Architecture]") {
         c.x = 600.0f; c.y = 500.0f; c.ooz = 1.0f; c.oow = 1.0f; c.r = 0.0f; c.g = 255.0f; c.b = 0.0f; c.a = 255.0f;
 
         REQUIRE_NOTHROW(aaDrawTri(&a, &b, &c, FXTRUE, FXTRUE, FXTRUE));
-        bufferSwap(0); // Trigger resolve and present!
 
         // 4. Read back center pixel via standard grLfbReadRegion API and verify it was drawn green!
         uint32_t pixel = 0;
@@ -527,6 +526,8 @@ TEST_CASE("Architectural Core Validation", "[Architecture]") {
         // Assert green component is active
         uint8_t g = (pixel >> 8) & 0xFF;
         REQUIRE(g == 255);
+
+        bufferSwap(0); // Trigger resolve and present!
 
         // 5. Clean up
         winClose();
@@ -587,7 +588,6 @@ TEST_CASE("Architectural Core Validation", "[Architecture]") {
         int ilist[4] = { 0, 1, 2, 3 };
 
         REQUIRE_NOTHROW(drawPoly(4, ilist, vlist));
-        bufferSwap(0); // Present and resolve!
 
         // 4. Read back center pixel of the quad (300, 300) and assert it is green
         uint32_t pixel = 0;
@@ -595,6 +595,8 @@ TEST_CASE("Architectural Core Validation", "[Architecture]") {
         
         uint8_t g = (pixel >> 8) & 0xFF;
         REQUIRE(g == 255);
+
+        bufferSwap(0); // Present and resolve!
 
         // 5. Clean up
         winClose();
