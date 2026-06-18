@@ -27,10 +27,15 @@ find_package(SDL2 REQUIRED)
 target_link_libraries(GlideWrapperCore PUBLIC Vulkan::Vulkan SDL2::SDL2 GLESv2 OpenMP::OpenMP_CXX)
 
 # 2. Glide 2 Frontend Export Library (glide2x.dll / libglide2x.so)
-add_library(glide2x SHARED glide2/glide2_entry.cpp)
+add_library(glide2x SHARED 
+    glide2/glide2_entry.cpp
+    ../vendor/3dfx/gsplash.cpp
+    ../vendor/3dfx/gbanner.cpp
+)
 target_include_directories(glide2x PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/../include/glide2"
     "${CMAKE_CURRENT_SOURCE_DIR}/../include/3dfx"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../vendor/3dfx"
 )
 target_link_libraries(glide2x PRIVATE GlideWrapperCore)
 

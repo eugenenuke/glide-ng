@@ -26,7 +26,7 @@ gantt
     Milestone 2 Anti Aliasing Forwarding        :done, m2, after m1, 1d
     Milestone 3 Polygon Fan Decomposition       :done, m3, after m2, 2d
     Milestone 4 Shortcut State Config           :done,   m4, after m3, 1d
-    Milestone 5 LFB Pixel Formatting            :        m5, after m4, 2d
+    Milestone 5 LFB Pixel Formatting            :done,   m5, after m4, 2d
     Milestone 6 Texturing and Utilities         :        m6, after m5, 3d
 ```
 
@@ -136,7 +136,7 @@ gantt
 ---
 
 
-### 5. Milestone 5: LFB Formatting & Spinning Logo Integration (Grouped)
+### 5. Milestone 5: LFB Formatting & Spinning Logo Integration (Completed)
 *   **Target Functions**:
     *   `grLfbConstantAlpha(GrAlpha_t alpha)`
     *   `grLfbConstantDepth(FxU16 depth)`

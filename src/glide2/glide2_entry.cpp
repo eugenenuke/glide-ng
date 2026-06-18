@@ -70,7 +70,6 @@ namespace {
     uint32_t s_alphaSrcBlend = 4;
     uint32_t s_alphaDstBlend = 0;
     uint32_t s_cullMode = 0;      // GR_CULL_DISABLE
-    uint32_t s_sstOrigin = 0;     // GR_ORIGIN_UPPER_LEFT
     uint32_t s_clipMinX = 0;
     uint32_t s_clipMinY = 0;
     uint32_t s_clipMaxX = 640;
@@ -81,7 +80,13 @@ namespace {
 
     bool s_colorMaskRgb = true;
     bool s_colorMaskAlpha = true;
+    bool s_shamelessPlugEnabled = false;
+    uint8_t s_lfbConstantAlpha = 255;
+    uint32_t s_lfbWriteColorFormat = 0; // GR_COLORFORMAT_ARGB
 }
+
+uint32_t s_sstOrigin = 0;     // GR_ORIGIN_UPPER_LEFT (Global for grSplash)
+void grShamelessPlug(void);   // Forward declaration of internal watermark renderer
 
 // Opaque state container matching GrState's char padding
 struct GlideWrapperState {
@@ -250,6 +255,9 @@ FX_ENTRY void FX_CALL grBufferClear(GrColor_t color, GrAlpha_t alpha, FxU16 dept
 
 FX_ENTRY void FX_CALL grBufferSwap(int swap_interval) {
     EnsureEngineInitialized();
+    if (s_shamelessPlugEnabled) {
+        grShamelessPlug();
+    }
     s_lastSwapTime = std::chrono::steady_clock::now();
     auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
     if (backend) backend->SwapBuffers();
@@ -843,6 +851,12 @@ FX_ENTRY void FX_CALL grDisableAllEffects(void) {
     }
 }
 
+FX_ENTRY void FX_CALL grGlideShamelessPlug(const FxBool on) {
+    EnsureEngineInitialized();
+    GLIDE_LOG(DEBUG, "Frontend", "grGlideShamelessPlug invoked: on=" << on);
+    s_shamelessPlugEnabled = (on != 0);
+}
+
 FX_ENTRY FxBool FX_CALL grLfbReadRegion(GrBuffer_t srcBuf, FxU32 srcX, FxU32 srcY, FxU32 srcWidth, FxU32 srcHeight, FxU32 dstStride, void* dstData) {
     EnsureEngineInitialized();
     GLIDE_LOG(DEBUG, "Frontend", "grLfbReadRegion invoked.");
@@ -887,6 +901,18 @@ static void FlipRows(uint8_t* data, uint32_t height, uint32_t stride) {
         std::memcpy(rowTop, rowBottom, stride);
         std::memcpy(rowBottom, tempRow.data(), stride);
     }
+}
+
+FX_ENTRY void FX_CALL grLfbConstantAlpha(FxU8 alpha) {
+    EnsureEngineInitialized();
+    GLIDE_LOG(DEBUG, "Frontend", "grLfbConstantAlpha: " << (int)alpha);
+    s_lfbConstantAlpha = alpha;
+}
+
+FX_ENTRY void FX_CALL grLfbWriteColorFormat(GrColorFormat_t format) {
+    EnsureEngineInitialized();
+    GLIDE_LOG(DEBUG, "Frontend", "grLfbWriteColorFormat: " << format);
+    s_lfbWriteColorFormat = format;
 }
 
 FX_ENTRY FxBool FX_CALL grLfbLock(GrLock_t type, GrBuffer_t buffer, GrLfbWriteMode_t writeMode, GrOriginLocation_t origin, FxBool pixelPipeline, GrLfbInfo_t* info) {

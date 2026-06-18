@@ -688,6 +688,62 @@ TEST_CASE("Architectural Core Validation", "[Architecture]") {
 #endif
     }
 
+    SECTION("Milestone 5: Spinning Logo & LFB Formatting") {
+#ifdef __linux__
+        void* handle = OpenGlide2Handle();
+        REQUIRE(handle != nullptr);
+
+        using WinOpenFunc = FxBool(*)(FxU32, FxU32, FxU32, FxU32, FxU32, FxU32, FxU32);
+        using WinCloseFunc = void(*)(void);
+        using BufferClearFunc = void(*)(GrColor_t, FxU8, FxU16);
+        using BufferSwapFunc = void(*)(FxU32);
+        using LfbReadFunc = FxBool(*)(GrBuffer_t, FxU32, FxU32, FxU32, FxU32, FxU32, void*);
+
+        using SplashFunc = void(*)(float, float, float, float, FxU32);
+        using ShamelessPlugFunc = void(*)(const FxBool);
+
+        auto winOpen = reinterpret_cast<WinOpenFunc>(::dlsym(handle, "grSstWinOpen"));
+        auto winClose = reinterpret_cast<WinCloseFunc>(::dlsym(handle, "grSstWinClose"));
+        auto bufferClear = reinterpret_cast<BufferClearFunc>(::dlsym(handle, "grBufferClear"));
+        auto bufferSwap = reinterpret_cast<BufferSwapFunc>(::dlsym(handle, "grBufferSwap"));
+        auto lfbRead = reinterpret_cast<LfbReadFunc>(::dlsym(handle, "grLfbReadRegion"));
+
+        auto splash = reinterpret_cast<SplashFunc>(::dlsym(handle, "grSplash"));
+        auto shamelessPlug = reinterpret_cast<ShamelessPlugFunc>(::dlsym(handle, "grGlideShamelessPlug"));
+
+        REQUIRE(winOpen != nullptr);
+        REQUIRE(winClose != nullptr);
+        REQUIRE(bufferClear != nullptr);
+        REQUIRE(bufferSwap != nullptr);
+        REQUIRE(lfbRead != nullptr);
+        REQUIRE(splash != nullptr);
+        REQUIRE(shamelessPlug != nullptr);
+
+        // Run this test across all 3 active backends using the environment configuration matrix
+        const char* backends[] = { "SOFTWARE", "OPENGL_ES", "VULKAN" };
+        for (const char* backendName : backends) {
+            ::setenv("GLIDE_WRAPPER_BACKEND", backendName, 1);
+
+            // Open window
+            REQUIRE(winOpen(0, 0x8, 0, 0, 0, 2, 0) == FXTRUE);
+
+            // 1. Enable shameless plug watermark logo
+            REQUIRE_NOTHROW(shamelessPlug(FXTRUE));
+
+            // 2. Render a single frame of the 3D spinning logo (frame 0)
+            REQUIRE_NOTHROW(splash(0.0f, 0.0f, 640.0f, 480.0f, 0));
+
+            // 3. Swap buffers - this will draw the splash frame, overlay the shameless plug, and swap!
+            REQUIRE_NOTHROW(bufferSwap(0));
+
+            // 4. Clean up
+            winClose();
+        }
+
+        ::dlclose(handle);
+#endif
+    }
+
     SECTION("Phase 3: Automated Geometry Drawing Validation Suite") {
 #ifdef __linux__
         // 1. Validate Glide 2.x Fixed Geometry Parsing & Drawing
