@@ -324,7 +324,7 @@ static const float s_tableIndexToW[64] = {
     32768.000000f,  37449.144531f,  43690.667969f,  52428.800781f
 };
 
-void SoftwareBackend::RasterizeSoftwareTriangle(const ModernVertex& a, const ModernVertex& b, const ModernVertex& c) {
+void SoftwareBackend::RasterizeSoftwareTriangleImpl(const ModernVertex& a, const ModernVertex& b, const ModernVertex& c) {
     int minX = std::max(0, static_cast<int>(std::floor(std::min({a.pos[0], b.pos[0], c.pos[0]}))));
     int maxX = std::min(static_cast<int>(m_headlessWidth) - 1, static_cast<int>(std::ceil(std::max({a.pos[0], b.pos[0], c.pos[0]}))));
     int minY = std::max(0, static_cast<int>(std::floor(std::min({a.pos[1], b.pos[1], c.pos[1]}))));
@@ -828,5 +828,21 @@ void SoftwareBackend::RasterizeSoftwareTriangle(const ModernVertex& a, const Mod
         }
     }
 }
+
+__attribute__((target("avx2,fma")))
+void SoftwareBackend::RasterizeSoftwareTriangle(const ModernVertex& a, const ModernVertex& b, const ModernVertex& c) {
+    RasterizeSoftwareTriangleImpl(a, b, c);
+}
+
+__attribute__((target("sse4.2")))
+void SoftwareBackend::RasterizeSoftwareTriangle(const ModernVertex& a, const ModernVertex& b, const ModernVertex& c) {
+    RasterizeSoftwareTriangleImpl(a, b, c);
+}
+
+__attribute__((target("default")))
+void SoftwareBackend::RasterizeSoftwareTriangle(const ModernVertex& a, const ModernVertex& b, const ModernVertex& c) {
+    RasterizeSoftwareTriangleImpl(a, b, c);
+}
+
 
 } // namespace GlideWrapper

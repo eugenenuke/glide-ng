@@ -30,7 +30,16 @@ public:
 
 private:
     // Core CPU Scanline & Barycentric Rasterizer
+    __attribute__((target("avx2,fma")))
     void RasterizeSoftwareTriangle(const ModernVertex& a, const ModernVertex& b, const ModernVertex& c);
+
+    __attribute__((target("sse4.2")))
+    void RasterizeSoftwareTriangle(const ModernVertex& a, const ModernVertex& b, const ModernVertex& c);
+
+    __attribute__((target("default")))
+    void RasterizeSoftwareTriangle(const ModernVertex& a, const ModernVertex& b, const ModernVertex& c);
+
+    __attribute__((always_inline)) inline void RasterizeSoftwareTriangleImpl(const ModernVertex& a, const ModernVertex& b, const ModernVertex& c);
     uint32_t EvaluateCombinerColor(const ModernVertex& v);
     // SDL2 Visual Presentation Console Singletons
     void* m_sdlWindow{nullptr};   // SDL_Window*
