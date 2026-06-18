@@ -889,6 +889,30 @@ bool SoftwareBackendBase::WriteLFB(uint32_t buffer, uint32_t dstX, uint32_t dstY
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     if (!srcData || m_cpuBuffers[0].empty()) return false;
 
+    // Validate LFB source format (must be one of the 9 defined Glide formats)
+    bool isValidFormat = false;
+    switch (srcFmt) {
+        case 0:  // GR_LFB_SRC_FMT_565
+        case 1:  // GR_LFB_SRC_FMT_555
+        case 2:  // GR_LFB_SRC_FMT_1555
+        case 4:  // GR_LFB_SRC_FMT_888
+        case 5:  // GR_LFB_SRC_FMT_8888
+        case 12: // GR_LFB_SRC_FMT_565_DEPTH
+        case 13: // GR_LFB_SRC_FMT_555_DEPTH
+        case 14: // GR_LFB_SRC_FMT_1555_DEPTH
+        case 15: // GR_LFB_SRC_FMT_ZA16
+            isValidFormat = true;
+            break;
+        default:
+            isValidFormat = false;
+            break;
+    }
+
+    if (!isValidFormat) {
+        GLIDE_LOG(WARN, "WriteLFB", "Invalid or undefined LFB source format: " << srcFmt);
+        return false;
+    }
+
     uint32_t* pixels = nullptr;
     if (buffer == 0) { // FRONTBUFFER
         pixels = reinterpret_cast<uint32_t*>(m_cpuBuffers[m_frontBufferIdx].data());
