@@ -328,6 +328,9 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width, uint3
                 if (SDL_Vulkan_CreateSurface(win, m_instance.get(), &rawSurface)) {
                     m_surface = vk::UniqueSurfaceKHR(rawSurface, m_instance.get());
                     GLIDE_LOG(INFO, "Vulkan", "Vulkan presentation surface created successfully!");
+                    if (!CreateSwapchain(width, height)) {
+                        GLIDE_LOG(WARN, "Vulkan", "Failed to create Vulkan presentation swapchain.");
+                    }
                 } else {
                     GLIDE_LOG(WARN, "Vulkan", "Failed to create Vulkan surface: " << SDL_GetError());
                 }
@@ -388,6 +391,7 @@ void VulkanBackend::DetachWindow() {
         m_device->waitIdle();
     }
 
+    DestroySwapchain();
     m_surface.reset();
     if (m_sdlTexture)  { SDL_DestroyTexture(reinterpret_cast<SDL_Texture*>(m_sdlTexture)); m_sdlTexture = nullptr; }
     if (m_sdlRenderer) { SDL_DestroyRenderer(reinterpret_cast<SDL_Renderer*>(m_sdlRenderer)); m_sdlRenderer = nullptr; }
@@ -434,6 +438,126 @@ void VulkanBackend::DetachWindow() {
 
     m_windowAttached = false;
     m_headlessMode = false;
+}
+
+bool VulkanBackend::CreateSwapchain(uint32_t width, uint32_t height) {
+    if (!m_surface) {
+        GLIDE_LOG(WARN, "Vulkan", "Cannot create swapchain: no presentation surface available.");
+        return false;
+    }
+
+    // 1. Query surface capabilities, formats, and present modes
+    vk::SurfaceCapabilitiesKHR capabilities = m_physicalDevice.getSurfaceCapabilitiesKHR(m_surface.get());
+    std::vector<vk::SurfaceFormatKHR> formats = m_physicalDevice.getSurfaceFormatsKHR(m_surface.get());
+    std::vector<vk::PresentModeKHR> presentModes = m_physicalDevice.getSurfacePresentModesKHR(m_surface.get());
+
+    if (formats.empty()) {
+        GLIDE_LOG(CRITICAL, "Vulkan", "No supported surface formats found for Vulkan presentation.");
+        return false;
+    }
+
+    // 2. Select the best surface format (RGBA8 or BGRA8 preferred, non-linear sRGB or unorm)
+    vk::SurfaceFormatKHR selectedFormat = formats[0];
+    for (const auto& f : formats) {
+        if ((f.format == vk::Format::eB8G8R8A8Unorm || f.format == vk::Format::eR8G8B8A8Unorm) &&
+            f.colorSpace == vk::ColorSpaceKHR::eSrgbNonlinear) {
+            selectedFormat = f;
+            break;
+        }
+    }
+    m_swapchainImageFormat = selectedFormat.format;
+    GLIDE_LOG(INFO, "Vulkan", "Selected swapchain format: " << vk::to_string(m_swapchainImageFormat));
+
+    // 3. Select the best present mode (FIFO is guaranteed, but let's log if Mailbox/Immediate are available)
+    vk::PresentModeKHR presentMode = vk::PresentModeKHR::eFifo; // VSync aligned, guaranteed by spec
+    for (const auto& pm : presentModes) {
+        if (pm == vk::PresentModeKHR::eMailbox) {
+            // Mailbox is low-latency triple buffering, we can use it if desired. But let's stick to FIFO for strict frame pacing
+            // presentMode = pm;
+        }
+    }
+
+    // 4. Determine swapchain extent (size)
+    vk::Extent2D extent;
+    if (capabilities.currentExtent.width != UINT32_MAX) {
+        extent = capabilities.currentExtent;
+    } else {
+        extent.width = std::clamp(width, capabilities.minImageExtent.width, capabilities.maxImageExtent.width);
+        extent.height = std::clamp(height, capabilities.minImageExtent.height, capabilities.maxImageExtent.height);
+    }
+    m_swapchainExtent = extent;
+    GLIDE_LOG(INFO, "Vulkan", "Selected swapchain extent: " << extent.width << "x" << extent.height);
+
+    // 5. Determine number of images (double or triple buffering)
+    uint32_t imageCount = capabilities.minImageCount + 1;
+    if (capabilities.maxImageCount > 0 && imageCount > capabilities.maxImageCount) {
+        imageCount = capabilities.maxImageCount;
+    }
+    GLIDE_LOG(INFO, "Vulkan", "Creating swapchain with " << imageCount << " images.");
+
+    // 6. Create the Swapchain!
+    vk::SwapchainCreateInfoKHR createInfo(
+        {},
+        m_surface.get(),
+        imageCount,
+        m_swapchainImageFormat,
+        selectedFormat.colorSpace,
+        m_swapchainExtent,
+        1, // imageArrayLayers
+        vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eTransferDst, // We will blit/copy to it!
+        vk::SharingMode::eExclusive,
+        0, nullptr, // Queue family indices (exclusive mode doesn't need them)
+        capabilities.currentTransform,
+        vk::CompositeAlphaFlagBitsKHR::eOpaque,
+        presentMode,
+        VK_TRUE, // clipped
+        {} // oldSwapchain
+    );
+
+    m_swapchain = m_device->createSwapchainKHRUnique(createInfo);
+
+    // 7. Retrieve swapchain images
+    m_swapchainImages = m_device->getSwapchainImagesKHR(m_swapchain.get());
+
+    // 8. Create Image Views for each swapchain image
+    m_swapchainImageViews.clear();
+    m_swapchainImageViews.reserve(m_swapchainImages.size());
+    for (const auto& img : m_swapchainImages) {
+        vk::ImageViewCreateInfo viewInfo(
+            {},
+            img,
+            vk::ImageViewType::e2D,
+            m_swapchainImageFormat,
+            { vk::ComponentSwizzle::eIdentity, vk::ComponentSwizzle::eIdentity, vk::ComponentSwizzle::eIdentity, vk::ComponentSwizzle::eIdentity },
+            { vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1 }
+        );
+        m_swapchainImageViews.push_back(m_device->createImageViewUnique(viewInfo));
+    }
+
+    // 9. Create synchronization semaphores for swapchain image acquisition & presentation pacing
+    vk::SemaphoreCreateInfo semaphoreInfo;
+    for (int i = 0; i < 2; ++i) {
+        m_imageAvailableSemaphores[i] = m_device->createSemaphoreUnique(semaphoreInfo);
+        m_renderFinishedSemaphores[i] = m_device->createSemaphoreUnique(semaphoreInfo);
+    }
+
+    GLIDE_LOG(INFO, "Vulkan", "Vulkan Swapchain and " << m_swapchainImageViews.size() << " image views successfully allocated.");
+    return true;
+}
+
+void VulkanBackend::DestroySwapchain() {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    if (m_device) {
+        m_device->waitIdle();
+    }
+    for (int i = 0; i < 2; ++i) {
+        if (m_imageAvailableSemaphores[i]) m_imageAvailableSemaphores[i].reset();
+        if (m_renderFinishedSemaphores[i]) m_renderFinishedSemaphores[i].reset();
+    }
+    m_swapchainImageViews.clear();
+    m_swapchainImages.clear();
+    if (m_swapchain) m_swapchain.reset();
+    GLIDE_LOG(INFO, "Vulkan", "Vulkan Swapchain resources successfully released.");
 }
 
 void VulkanBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z, uint32_t clearMask) {
@@ -1047,8 +1171,28 @@ bool VulkanBackend::CreateLogicalDevice() {
         GLIDE_LOG(WARN, "Vulkan", "Vulkan Depth Clamping NOT supported on host device!");
     }
 
+    std::vector<const char*> deviceExtensions;
+    auto availableExtensions = m_physicalDevice.enumerateDeviceExtensionProperties();
+    bool swapchainSupported = false;
+    for (const auto& ext : availableExtensions) {
+        if (std::strcmp(ext.extensionName, VK_KHR_SWAPCHAIN_EXTENSION_NAME) == 0) {
+            swapchainSupported = true;
+            break;
+        }
+    }
+
+    if (swapchainSupported) {
+        deviceExtensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+        GLIDE_LOG(INFO, "Vulkan", "VK_KHR_swapchain logical device extension supported and enabled.");
+    } else if (!m_config.forceNoWindow) {
+        GLIDE_LOG(CRITICAL, "Vulkan", "VK_KHR_swapchain extension is required for windowed presentation but not supported by host GPU.");
+        return false;
+    }
+
     vk::DeviceCreateInfo deviceInfo({}, 1, &queueInfo);
     deviceInfo.setPEnabledFeatures(&deviceFeatures);
+    deviceInfo.setEnabledExtensionCount(static_cast<uint32_t>(deviceExtensions.size()));
+    deviceInfo.setPpEnabledExtensionNames(deviceExtensions.data());
 
     if (enableValidationLayers) {
         deviceInfo.setEnabledLayerCount(static_cast<uint32_t>(validationLayers.size()));

@@ -160,6 +160,8 @@ private:
     bool CreateLogicalDevice();
     bool CreateRenderPass();
     bool CreateHeadlessRenderTarget(uint32_t width, uint32_t height);
+    bool CreateSwapchain(uint32_t width, uint32_t height);
+    void DestroySwapchain();
     uint32_t FindMemoryType(uint32_t typeFilter, vk::MemoryPropertyFlags properties);
     void TransitionImageLayout(vk::CommandBuffer cmd, vk::Image image, vk::ImageLayout oldLayout, vk::ImageLayout newLayout, vk::ImageSubresourceRange range);
     void FlushLFBToGPU();
@@ -206,6 +208,17 @@ private:
     void* m_sdlRenderer{nullptr}; // SDL_Renderer*
     void* m_sdlTexture{nullptr};  // SDL_Texture*
     vk::UniqueSurfaceKHR m_surface; // Vulkan presentation surface associated with m_sdlWindow
+
+    // --- Phase 9: Vulkan Swapchain Resources (Milestone 2) ---
+    vk::UniqueSwapchainKHR m_swapchain;
+    std::vector<vk::Image> m_swapchainImages;
+    std::vector<vk::UniqueImageView> m_swapchainImageViews;
+    vk::Format m_swapchainImageFormat{vk::Format::eB8G8R8A8Unorm};
+    vk::Extent2D m_swapchainExtent;
+
+    // Synchronization semaphores for swapchain presentation (Double-Buffered)
+    vk::UniqueSemaphore m_imageAvailableSemaphores[2];
+    vk::UniqueSemaphore m_renderFinishedSemaphores[2];
 
     // --- Phase 2: Dynamic Vertex Buffers & State Pipelines ---
     bool CreateShaderModules();
