@@ -611,21 +611,24 @@ void VulkanBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z, uint32_
     // 1. Call SoftwareBackendBase::ClearBuffer to clear the CPU-side framebuffer!
     SoftwareBackendBase::ClearBuffer(color, alpha, z, clearMask);
 
-    // 2. Save clear state and mark pending for GPU LoadOp clears when Render Pass starts!
+    // 2. Save clear state and mark pending for GPU clears when Render Pass starts!
     uint32_t activeIdx = GetActiveGpuBufferIdx();
     if (clearMask & 1) { // Color clear
-        float a = ((color >> 24) & 0xFF) / 255.0f;
-        float r = ((color >> 16) & 0xFF) / 255.0f;
-        float g = ((color >> 8)  & 0xFF) / 255.0f;
-        float b = (color         & 0xFF) / 255.0f;
+        // Only schedule a GPU color clear if color or alpha writes are actually enabled!
+        if (m_colorMaskRgb || m_colorMaskAlpha) {
+            float a = ((color >> 24) & 0xFF) / 255.0f;
+            float r = ((color >> 16) & 0xFF) / 255.0f;
+            float g = ((color >> 8)  & 0xFF) / 255.0f;
+            float b = (color         & 0xFF) / 255.0f;
 
-        // Respect the active pixel format from SoftwareBackendBase!
-        if (m_pixelFormatOverride == 1) { // ABGR format override
-            std::swap(r, b);
+            // Respect the active pixel format from SoftwareBackendBase!
+            if (m_pixelFormatOverride == 1) { // ABGR format override
+                std::swap(r, b);
+            }
+
+            m_clearColorValue[activeIdx] = vk::ClearColorValue(std::array<float, 4>{r, g, b, a});
+            m_clearColorPending[activeIdx] = true;
         }
-
-        m_clearColorValue[activeIdx] = vk::ClearColorValue(std::array<float, 4>{r, g, b, a});
-        m_clearColorPending[activeIdx] = true;
     }
 
     if (clearMask & 2) { // Depth clear
