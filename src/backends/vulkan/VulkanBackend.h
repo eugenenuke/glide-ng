@@ -205,6 +205,7 @@ private:
     void* m_sdlWindow{nullptr};   // SDL_Window*
     void* m_sdlRenderer{nullptr}; // SDL_Renderer*
     void* m_sdlTexture{nullptr};  // SDL_Texture*
+    vk::UniqueSurfaceKHR m_surface; // Vulkan presentation surface associated with m_sdlWindow
 
     // --- Phase 2: Dynamic Vertex Buffers & State Pipelines ---
     bool CreateShaderModules();

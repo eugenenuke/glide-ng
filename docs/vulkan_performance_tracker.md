@@ -159,3 +159,19 @@ gantt
 1.  **Vulkan Triple Buffering (3-Slot Frame Pacing)**:
     *   *Concept*: Scale our frame resource arrays (command pools, command buffers, fences, staging memory buffers, descriptor sets) from size `2` to `3`.
     *   *Impact*: By maintaining 3 overlapping frame slots, the CPU can record commands up to 2 frames ahead of the GPU. This completely absorbs transient frame-time spikes or OS thread-scheduling delays on the host CPU, ensuring butter-smooth frame pacing under software rasterization drivers (like LLVMpipe) where CPU cores are shared.
+
+---
+
+## 6. Vulkan Swapchain Migration Progress (June 18, 2026)
+We are executing the [Vulkan Swapchain Migration Plan](file:///usr/local/google/home/eianiuk/gemini/3dfx/docs/vulkan_swapchain_migration_plan.md) to transition the Vulkan backend to a 100% GPU-native presentation pipeline.
+
+### Progress Tracker
+- [x] **Milestone 1: Vulkan Surface Creation & Instance Extensions**
+  - *Action*: Enabled `SDL_WINDOW_VULKAN` flag, dynamically loaded Vulkan driver via `SDL_Vulkan_LoadLibrary()`, queried required extensions, and successfully initialized `VkSurfaceKHR`. Added robust `DISPLAY` environment checks to skip SDL video initialization in headless console unit test environments, completely preventing startup segfaults.
+  - *Status*: **COMPLETED & VERIFIED** (Catch2 and all headless visual regression tests are 100% green).
+- [ ] **Milestone 2: Swapchain & Image Views Initialization**
+  - *Status*: **NOT STARTED**
+- [ ] **Milestone 3: GPU-to-GPU Blit and Swapchain Presentation**
+  - *Status*: **NOT STARTED**
+- [ ] **Milestone 4: Staging & Compositing Retirement**
+  - *Status*: **NOT STARTED**

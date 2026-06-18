@@ -11,6 +11,7 @@
 #include <fstream>
 #include <cstdlib>
 #include <SDL2/SDL.h>
+#include <SDL2/SDL_vulkan.h>
 
 // Include build-time generated shader SPIR-V bytecode headers!
 #include "color_vert.spv.h"
@@ -320,8 +321,17 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width, uint3
         if (SDL_Init(SDL_INIT_VIDEO) < 0) {
             GLIDE_LOG(WARN, "Vulkan", "SDL_Init failed: " << SDL_GetError() << ". Running headless offscreen.");
         } else {
-            auto* win = SDL_CreateWindow("3dfx glide-ng Presentation Console (Hybrid Vulkan)", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, width, height, SDL_WINDOW_SHOWN);
+            auto* win = SDL_CreateWindow("3dfx glide-ng Presentation Console (Vulkan Swapchain)", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, width, height, SDL_WINDOW_VULKAN | SDL_WINDOW_SHOWN);
             if (win) {
+                // Create Vulkan Surface associated with the SDL window
+                VkSurfaceKHR rawSurface;
+                if (SDL_Vulkan_CreateSurface(win, m_instance.get(), &rawSurface)) {
+                    m_surface = vk::UniqueSurfaceKHR(rawSurface, m_instance.get());
+                    GLIDE_LOG(INFO, "Vulkan", "Vulkan presentation surface created successfully!");
+                } else {
+                    GLIDE_LOG(WARN, "Vulkan", "Failed to create Vulkan surface: " << SDL_GetError());
+                }
+
                 auto* ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
                 if (!ren) ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_SOFTWARE);
                 
@@ -939,6 +949,35 @@ bool VulkanBackend::CreateInstance() {
     vk::InstanceCreateInfo createInfo({}, &appInfo);
 
     std::vector<const char*> requiredExtensions;
+
+    // Load Vulkan instance extensions required by SDL2 for surface creation!
+    const char* display = std::getenv("DISPLAY");
+    if (!m_config.forceNoWindow && display && display[0] != '\0') {
+        if (SDL_Init(SDL_INIT_VIDEO) < 0) {
+            GLIDE_LOG(WARN, "Vulkan", "SDL_Init video failed in CreateInstance: " << SDL_GetError());
+        } else {
+            // Explicitly load the Vulkan driver library via SDL to initialize its internal function pointers!
+            if (SDL_Vulkan_LoadLibrary(nullptr) < 0) {
+                GLIDE_LOG(WARN, "Vulkan", "SDL_Vulkan_LoadLibrary failed in CreateInstance: " << SDL_GetError());
+            } else {
+                unsigned int extensionCount = 0;
+                if (SDL_Vulkan_GetInstanceExtensions(nullptr, &extensionCount, nullptr)) {
+                    std::vector<const char*> sdlExtensions(extensionCount);
+                    if (SDL_Vulkan_GetInstanceExtensions(nullptr, &extensionCount, sdlExtensions.data())) {
+                        for (const auto& ext : sdlExtensions) {
+                            requiredExtensions.push_back(ext);
+                            GLIDE_LOG(INFO, "Vulkan", "Loaded SDL Vulkan extension: " << ext);
+                        }
+                    }
+                } else {
+                    GLIDE_LOG(WARN, "Vulkan", "SDL_Vulkan_GetInstanceExtensions count query failed: " << SDL_GetError());
+                }
+            }
+        }
+    } else {
+        GLIDE_LOG(INFO, "Vulkan", "No active DISPLAY environment variable or forceNoWindow is set. Skipping SDL Vulkan instance extensions.");
+    }
+
     createInfo.setEnabledExtensionCount(static_cast<uint32_t>(requiredExtensions.size()));
     createInfo.setPpEnabledExtensionNames(requiredExtensions.data());
 
