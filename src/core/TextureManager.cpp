@@ -7,6 +7,63 @@
 
 namespace GlideWrapper {
 
+namespace {
+    GuNccTable GetActiveNccTableOrDefault(const GuNccTable* nccTables, const bool* nccTablesLoaded, uint32_t activeNccTable) {
+        if (nccTablesLoaded[activeNccTable]) {
+            return nccTables[activeNccTable];
+        }
+        // Return a default identity table (grayscale mapping)
+        GuNccTable ncc;
+        for (int y = 0; y < 16; ++y) {
+            int val = y * 255 / 15;
+            ncc.yRGB[y] = val;
+        }
+        std::memset(ncc.iRGB, 0, sizeof(ncc.iRGB));
+        std::memset(ncc.qRGB, 0, sizeof(ncc.qRGB));
+        return ncc;
+    }
+
+    uint32_t swizzleYiq(uint8_t val, const GuNccTable& ncc) {
+        uint8_t y = (val >> 4) & 0xF;
+        uint8_t i = (val >> 2) & 0x3;
+        uint8_t q = val & 0x3;
+
+        int r = ncc.yRGB[y] + ncc.iRGB[i][0] + ncc.qRGB[q][0];
+        int g = ncc.yRGB[y] + ncc.iRGB[i][1] + ncc.qRGB[q][1];
+        int b = ncc.yRGB[y] + ncc.iRGB[i][2] + ncc.qRGB[q][2];
+
+        r = std::clamp(r, 0, 255);
+        g = std::clamp(g, 0, 255);
+        b = std::clamp(b, 0, 255);
+
+        return (255u << 24) | (static_cast<uint32_t>(r) << 16) | (static_cast<uint32_t>(g) << 8) | static_cast<uint32_t>(b);
+    }
+
+    uint32_t swizzleAyiq(uint16_t val, const GuNccTable& ncc) {
+        uint8_t a = (val >> 8) & 0xFF;
+        uint8_t y = (val >> 4) & 0xF;
+        uint8_t i = (val >> 2) & 0x3;
+        uint8_t q = val & 0x3;
+
+        int r = ncc.yRGB[y] + ncc.iRGB[i][0] + ncc.qRGB[q][0];
+        int g = ncc.yRGB[y] + ncc.iRGB[i][1] + ncc.qRGB[q][1];
+        int b = ncc.yRGB[y] + ncc.iRGB[i][2] + ncc.qRGB[q][2];
+
+        r = std::clamp(r, 0, 255);
+        g = std::clamp(g, 0, 255);
+        b = std::clamp(b, 0, 255);
+
+        return (static_cast<uint32_t>(a) << 24) | (static_cast<uint32_t>(r) << 16) | (static_cast<uint32_t>(g) << 8) | static_cast<uint32_t>(b);
+    }
+
+    uint32_t swizzleAp88(uint16_t val, const uint32_t* palette) {
+        uint8_t a = (val >> 8) & 0xFF;
+        uint8_t idx = val & 0xFF;
+        uint32_t color = palette[idx];
+        return (static_cast<uint32_t>(a) << 24) | (color & 0x00FFFFFF);
+    }
+}
+
 uint32_t TextureManager::CalculateMemoryRequired(uint32_t lodMin, uint32_t lodMax, uint32_t aspect, uint32_t format) {
     uint32_t start = std::min(lodMin, lodMax);
     uint32_t end   = std::max(lodMin, lodMax);
@@ -132,6 +189,23 @@ bool TextureManager::DownloadMipMap(uint32_t tmu, uint32_t startAddress, uint32_
             tex->isPaletted = true;
             levelRaw.resize(w * h, 0);
         }
+        std::vector<uint8_t> levelYiq;
+        if (format == 0x1) { // GR_TEXFMT_YIQ_422
+            tex->isNcc = true;
+            levelYiq.resize(w * h, 0);
+        }
+        std::vector<uint16_t> levelAyiq;
+        if (format == 0x9) { // GR_TEXFMT_AYIQ_8422
+            tex->isNcc = true;
+            levelAyiq.resize(w * h, 0);
+        }
+        std::vector<uint16_t> levelAp88;
+        if (format == 0xe) { // GR_TEXFMT_AP_88
+            tex->isPaletted = true;
+            levelAp88.resize(w * h, 0);
+        }
+
+        GuNccTable activeNcc = GetActiveNccTableOrDefault(m_tmus[tmu].nccTables, m_tmus[tmu].nccTablesLoaded, m_tmus[tmu].activeNccTable);
 
         for (size_t pIdx = 0; pIdx < w * h; ++pIdx) {
             uint32_t a = 255; uint32_t r = 0; uint32_t g = 0; uint32_t b = 0;
@@ -166,8 +240,27 @@ bool TextureManager::DownloadMipMap(uint32_t tmu, uint32_t startAddress, uint32_
                     a = (val >> 8) & 0xFF;
                     r = val & 0xFF;
                     g = r; b = r;
+                } else if (format == 0x8) { // ARGB_8332
+                    a = (val >> 8) & 0xFF;
+                    r = ((val >> 5) & 0x7) * 255 / 7;
+                    g = ((val >> 2) & 0x7) * 255 / 7;
+                    b = (val & 0x3) * 255 / 3;
+                } else if (format == 0x9) { // AYIQ_8422
+                    levelAyiq[pIdx] = val;
+                    levelPixels[pIdx] = swizzleAyiq(val, activeNcc);
+                } else if (format == 0xe) { // AP_88
+                    levelAp88[pIdx] = val;
+                    if (m_tmus[tmu].paletteTableLoaded) {
+                        levelPixels[pIdx] = swizzleAp88(val, m_tmus[tmu].paletteTable);
+                    } else {
+                        uint8_t alphaVal = (val >> 8) & 0xFF;
+                        uint8_t indexVal = val & 0xFF;
+                        levelPixels[pIdx] = (alphaVal << 24) | (indexVal << 16) | (indexVal << 8) | indexVal;
+                    }
                 }
-                levelPixels[pIdx] = (a << 24) | (r << 16) | (g << 8) | b;
+                if (format != 0x9 && format != 0xe) {
+                    levelPixels[pIdx] = (a << 24) | (r << 16) | (g << 8) | b;
+                }
             } else { // 8-bit
                 uint8_t val = rawData[byteOffset + pIdx];
                 if (format == 0x2) { // ALPHA_8
@@ -184,6 +277,20 @@ bool TextureManager::DownloadMipMap(uint32_t tmu, uint32_t startAddress, uint32_
                         // Greyscale fallback before palette download
                         levelPixels[pIdx] = (255u << 24) | (val << 16) | (val << 8) | val;
                     }
+                } else if (format == 0x0) { // RGB_332
+                    r = ((val >> 5) & 0x7) * 255 / 7;
+                    g = ((val >> 2) & 0x7) * 255 / 7;
+                    b = (val & 0x3) * 255 / 3;
+                    a = 255;
+                    levelPixels[pIdx] = (a << 24) | (r << 16) | (g << 8) | b;
+                } else if (format == 0x1) { // YIQ_422
+                    levelYiq[pIdx] = val;
+                    levelPixels[pIdx] = swizzleYiq(val, activeNcc);
+                } else if (format == 0x4) { // ALPHA_INTENSITY_44
+                    a = ((val >> 4) & 0xF) * 255 / 15;
+                    uint32_t iVal = (val & 0xF) * 255 / 15;
+                    r = iVal; g = iVal; b = iVal;
+                    levelPixels[pIdx] = (a << 24) | (r << 16) | (g << 8) | b;
                 } else { // Unknown 8-bit format
                     r = val; g = val; b = val; a = 255;
                     levelPixels[pIdx] = (a << 24) | (r << 16) | (g << 8) | b;
@@ -194,6 +301,12 @@ bool TextureManager::DownloadMipMap(uint32_t tmu, uint32_t startAddress, uint32_
         tex->swizzledMipLevels.push_back(std::move(levelPixels));
         if (format == 0x5) {
             tex->raw8BitMipLevels.push_back(std::move(levelRaw));
+        } else if (format == 0x1) {
+            tex->rawYiqMipLevels.push_back(std::move(levelYiq));
+        } else if (format == 0x9) {
+            tex->rawAyiqMipLevels.push_back(std::move(levelAyiq));
+        } else if (format == 0xe) {
+            tex->rawAp88MipLevels.push_back(std::move(levelAp88));
         }
         uint32_t levelBytes = w * h * bytesPerTexel;
         byteOffset += (levelBytes + 7) & ~7; // Advancing aligned silicon footprint
@@ -220,44 +333,143 @@ bool TextureManager::DownloadTable(uint32_t tmu, uint32_t type, const void* data
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     if (tmu >= 2 || !data) return false;
 
-    // Currently, we only support 256-color palette tables (type = GR_TEXTABLE_PALETTE = 2)
-    if (type != 2) {
+    // type can be: GR_TEXTABLE_NCC0 (0), GR_TEXTABLE_NCC1 (1), or GR_TEXTABLE_PALETTE (2)
+    if (type > 2) {
         GLIDE_LOG(WARN, "TextureManager", "Unsupported texture table type: " << type << ". Skipping.");
         return false;
     }
 
-    GLIDE_LOG(DEBUG, "TextureManager", "Downloading 256-color palette table to TMU" << tmu);
-    const auto* paletteData = reinterpret_cast<const uint32_t*>(data);
-    std::memcpy(m_tmus[tmu].paletteTable, paletteData, sizeof(m_tmus[tmu].paletteTable));
-    m_tmus[tmu].paletteTableLoaded = true;
+    int swizzledCount = 0;
+    if (type == 0 || type == 1) {
+        GLIDE_LOG(DEBUG, "TextureManager", "Downloading NCC" << type << " table to TMU" << tmu);
+        m_tmus[tmu].nccTables[type] = *reinterpret_cast<const GuNccTable*>(data);
+        m_tmus[tmu].nccTablesLoaded[type] = true;
 
-    // Re-swizzle and trigger GPU upload for all paletted textures in this TMU!
+        // Re-swizzle NCC textures if this is the active table!
+        if (m_tmus[tmu].activeNccTable == type) {
+            const auto& activeNcc = m_tmus[tmu].nccTables[type];
+            for (auto& pair : m_tmus[tmu].textures) {
+                auto& tex = pair.second;
+                if (tex->isNcc) {
+                    tex->swizzledMipLevels.clear();
+                    if (tex->format == 0x1) { // YIQ_422
+                        for (size_t lvl = 0; lvl < tex->rawYiqMipLevels.size(); ++lvl) {
+                            const auto& raw8 = tex->rawYiqMipLevels[lvl];
+                            std::vector<uint32_t> swizzled(raw8.size());
+                            for (size_t pIdx = 0; pIdx < raw8.size(); ++pIdx) {
+                                swizzled[pIdx] = swizzleYiq(raw8[pIdx], activeNcc);
+                            }
+                            tex->swizzledMipLevels.push_back(std::move(swizzled));
+                        }
+                    } else if (tex->format == 0x9) { // AYIQ_8422
+                        for (size_t lvl = 0; lvl < tex->rawAyiqMipLevels.size(); ++lvl) {
+                            const auto& raw16 = tex->rawAyiqMipLevels[lvl];
+                            std::vector<uint32_t> swizzled(raw16.size());
+                            for (size_t pIdx = 0; pIdx < raw16.size(); ++pIdx) {
+                                swizzled[pIdx] = swizzleAyiq(raw16[pIdx], activeNcc);
+                            }
+                            tex->swizzledMipLevels.push_back(std::move(swizzled));
+                        }
+                    }
+                    swizzledCount++;
+                    if (auto* b = BackendManager::GetInstance().GetBackend()) {
+                        b->UploadTexture(tmu, tex->startAddress, *tex);
+                    }
+                }
+            }
+            GLIDE_LOG(DEBUG, "TextureManager", "Completed active NCC table download. Re-swizzled " << swizzledCount << " textures.");
+        }
+    } else if (type == 2) {
+        GLIDE_LOG(DEBUG, "TextureManager", "Downloading 256-color palette table to TMU" << tmu);
+        const auto* paletteData = reinterpret_cast<const uint32_t*>(data);
+        std::memcpy(m_tmus[tmu].paletteTable, paletteData, sizeof(m_tmus[tmu].paletteTable));
+        m_tmus[tmu].paletteTableLoaded = true;
+
+        // Re-swizzle and trigger GPU upload for all paletted textures in this TMU!
+        for (auto& pair : m_tmus[tmu].textures) {
+            auto& tex = pair.second;
+            if (tex->isPaletted) {
+                tex->swizzledMipLevels.clear();
+                if (tex->format == 0x5) { // P_8
+                    if (!tex->raw8BitMipLevels.empty()) {
+                        for (size_t lvl = 0; lvl < tex->raw8BitMipLevels.size(); ++lvl) {
+                            const auto& raw8 = tex->raw8BitMipLevels[lvl];
+                            std::vector<uint32_t> swizzled(raw8.size());
+                            for (size_t pIdx = 0; pIdx < raw8.size(); ++pIdx) {
+                                swizzled[pIdx] = m_tmus[tmu].paletteTable[raw8[pIdx]];
+                            }
+                            tex->swizzledMipLevels.push_back(std::move(swizzled));
+                        }
+                    }
+                } else if (tex->format == 0xe) { // AP_88
+                    if (!tex->rawAp88MipLevels.empty()) {
+                        for (size_t lvl = 0; lvl < tex->rawAp88MipLevels.size(); ++lvl) {
+                            const auto& raw16 = tex->rawAp88MipLevels[lvl];
+                            std::vector<uint32_t> swizzled(raw16.size());
+                            for (size_t pIdx = 0; pIdx < raw16.size(); ++pIdx) {
+                                swizzled[pIdx] = swizzleAp88(raw16[pIdx], m_tmus[tmu].paletteTable);
+                            }
+                            tex->swizzledMipLevels.push_back(std::move(swizzled));
+                        }
+                    }
+                }
+                swizzledCount++;
+                GLIDE_LOG(DEBUG, "TextureManager", "Deferred-swizzled paletted texture at Address=0x" << std::hex << tex->startAddress << std::dec << " using new palette table.");
+                
+                // Upload the fully swizzled texture to the GPU!
+                if (auto* b = BackendManager::GetInstance().GetBackend()) {
+                    b->UploadTexture(tmu, tex->startAddress, *tex);
+                }
+            }
+        }
+        GLIDE_LOG(DEBUG, "TextureManager", "Completed palette download. Deferred-swizzled " << swizzledCount << " textures.");
+    }
+
+    return true;
+}
+
+void TextureManager::SetActiveNccTable(uint32_t tmu, uint32_t table) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    if (tmu >= 2 || table >= 2) return;
+    
+    if (m_tmus[tmu].activeNccTable == table) return; // No change
+    
+    m_tmus[tmu].activeNccTable = table;
+    GLIDE_LOG(DEBUG, "TextureManager", "TMU" << tmu << " active NCC table switched to: NCC" << table);
+    
+    // Re-swizzle all NCC textures in this TMU using the new active table
+    GuNccTable activeNcc = GetActiveNccTableOrDefault(m_tmus[tmu].nccTables, m_tmus[tmu].nccTablesLoaded, m_tmus[tmu].activeNccTable);
     int swizzledCount = 0;
     for (auto& pair : m_tmus[tmu].textures) {
         auto& tex = pair.second;
-        if (tex->isPaletted && !tex->raw8BitMipLevels.empty()) {
+        if (tex->isNcc) {
             tex->swizzledMipLevels.clear();
-            for (size_t lvl = 0; lvl < tex->raw8BitMipLevels.size(); ++lvl) {
-                const auto& raw8 = tex->raw8BitMipLevels[lvl];
-                std::vector<uint32_t> swizzled(raw8.size());
-                for (size_t pIdx = 0; pIdx < raw8.size(); ++pIdx) {
-                    uint8_t idx = raw8[pIdx];
-                    swizzled[pIdx] = m_tmus[tmu].paletteTable[idx];
+            if (tex->format == 0x1) { // YIQ_422
+                for (size_t lvl = 0; lvl < tex->rawYiqMipLevels.size(); ++lvl) {
+                    const auto& raw8 = tex->rawYiqMipLevels[lvl];
+                    std::vector<uint32_t> swizzled(raw8.size());
+                    for (size_t pIdx = 0; pIdx < raw8.size(); ++pIdx) {
+                        swizzled[pIdx] = swizzleYiq(raw8[pIdx], activeNcc);
+                    }
+                    tex->swizzledMipLevels.push_back(std::move(swizzled));
                 }
-                tex->swizzledMipLevels.push_back(std::move(swizzled));
+            } else if (tex->format == 0x9) { // AYIQ_8422
+                for (size_t lvl = 0; lvl < tex->rawAyiqMipLevels.size(); ++lvl) {
+                    const auto& raw16 = tex->rawAyiqMipLevels[lvl];
+                    std::vector<uint32_t> swizzled(raw16.size());
+                    for (size_t pIdx = 0; pIdx < raw16.size(); ++pIdx) {
+                        swizzled[pIdx] = swizzleAyiq(raw16[pIdx], activeNcc);
+                    }
+                    tex->swizzledMipLevels.push_back(std::move(swizzled));
+                }
             }
             swizzledCount++;
-            GLIDE_LOG(DEBUG, "TextureManager", "Deferred-swizzled paletted texture at Address=0x" << std::hex << tex->startAddress << std::dec << " using new palette table.");
-            
-            // Upload the fully swizzled texture to the GPU!
             if (auto* b = BackendManager::GetInstance().GetBackend()) {
                 b->UploadTexture(tmu, tex->startAddress, *tex);
             }
         }
     }
-
-    GLIDE_LOG(DEBUG, "TextureManager", "Completed palette download. Deferred-swizzled " << swizzledCount << " textures.");
-    return true;
+    GLIDE_LOG(DEBUG, "TextureManager", "Completed NCC active table switch. Re-swizzled " << swizzledCount << " textures.");
 }
 
 void TextureManager::SetTmuMemoryLimitMb(uint32_t tmu, uint32_t limitMb) {

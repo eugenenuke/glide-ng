@@ -6,6 +6,15 @@
 
 namespace GlideWrapper {
 
+struct LfbPipelineConfig {
+    bool pixelPipeline{false};
+    bool chromakeyEnabled{false};
+    uint32_t chromakeyValue{0};
+    uint8_t constantAlpha{255};
+    uint32_t rgbSrcBlend{1};  // Default: GR_BLEND_ONE (1)
+    uint32_t rgbDstBlend{0};  // Default: GR_BLEND_ZERO (0)
+};
+
 /**
  * @brief Authoritative Pure Virtual Abstraction representing our multi-target graphics execution engine.
  * Completely decouples legacy Glide frontend dispatches from low-level Vulkan, EGL, or OpenGL APIs.
@@ -56,7 +65,7 @@ public:
     // Linear Framebuffer (LFB) cpu CPU inspection and modification
     virtual void* GetLfbWritePtr() = 0;
     virtual bool ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY, uint32_t srcWidth, uint32_t srcHeight, uint32_t dstStride, void* dstData) = 0;
-    virtual bool WriteLFB(uint32_t buffer, uint32_t dstX, uint32_t dstY, uint32_t srcWidth, uint32_t srcHeight, int32_t srcStride, uint32_t srcFmt, const void* srcData, const void* refData = nullptr) = 0;
+    virtual bool WriteLFB(uint32_t buffer, uint32_t dstX, uint32_t dstY, uint32_t srcWidth, uint32_t srcHeight, int32_t srcStride, uint32_t srcFmt, const void* srcData, const void* refData = nullptr, const LfbPipelineConfig& config = {}) = 0;
 
     // Phase 5: Virtual TMU & Programmable Uber-Shader Entry Declarations
     virtual void BindTexture(uint32_t tmu, uint32_t startAddress, uint32_t clampS, uint32_t clampT, uint32_t minFilter, uint32_t magFilter) = 0;

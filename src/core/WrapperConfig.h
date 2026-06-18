@@ -23,7 +23,7 @@ struct WrapperConfig {
     uint32_t tmuCount{2};
     uint32_t tmuMemoryMb{16};
     float maxFps{60.0f};
-    float drawCallDelayUs{1.5f};
+    float drawCallDelayUs{0.0f};
     bool enableSli{false}; // Disabled by default for maximum classic interop
     std::string apiVersionOverride{"2.43 (Latest)"};
     std::string reportedVendorOverride{"3Dfx Interactive"}; // Authentic retro default!

@@ -127,6 +127,7 @@ add_executable(test_runner
     test13_alpha/test13.cpp
     test14_depthbias/test14.cpp
     test15_clip/test15.cpp
+    test16_logo/test16.cpp
     test17_texture/test17.cpp
     test18_texture_alpha/test18.cpp
     test19_texture_filter/test19.cpp

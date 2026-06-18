@@ -83,6 +83,8 @@ namespace {
     bool s_shamelessPlugEnabled = false;
     uint8_t s_lfbConstantAlpha = 255;
     uint32_t s_lfbWriteColorFormat = 0; // GR_COLORFORMAT_ARGB
+    uint32_t s_chromakeyMode = 0;
+    uint32_t s_chromakeyValue = 0;
 
     std::vector<GrMipMapInfo> s_guTextures;
     uint32_t s_guTexNextAddress = 0;
@@ -782,6 +784,12 @@ FX_ENTRY void FX_CALL grTexDownloadTablePartial(GrChipID_t tmu, GrTexTable_t typ
     }
 }
 
+FX_ENTRY void FX_CALL grTexNCCTable(GrChipID_t tmu, GrNCCTable_t table) {
+    EnsureEngineInitialized();
+    GLIDE_LOG(DEBUG, "Frontend", "grTexNCCTable invoked for TMU=" << tmu << ", Table=" << table);
+    GlideWrapper::TextureManager::GetInstance().SetActiveNccTable(tmu, table);
+}
+
 FX_ENTRY void FX_CALL grTexSource(GrChipID_t tmu, FxU32 startAddress, FxU32 evenOdd, GrTexInfo* info) {
     GLIDE_LOG(DEBUG, "Frontend", "grTexSource invoked for TMU=" << tmu);
     if (tmu < 2) {
@@ -1088,6 +1096,7 @@ struct LfbLockState {
     GrBuffer_t buffer;
     GrLfbWriteMode_t writeMode;
     GrOriginLocation_t origin;
+    bool pixelPipeline{false};
     uint32_t width{0};
     uint32_t height{0};
     std::vector<uint8_t> stagingBuffer;
@@ -1183,6 +1192,7 @@ FX_ENTRY FxBool FX_CALL grLfbLock(GrLock_t type, GrBuffer_t buffer, GrLfbWriteMo
     g_lfbLock.buffer = buffer;
     g_lfbLock.writeMode = resolvedMode;
     g_lfbLock.origin = origin;
+    g_lfbLock.pixelPipeline = (pixelPipeline != 0);
 
     return FXTRUE;
 }
@@ -1218,8 +1228,17 @@ FX_ENTRY FxBool FX_CALL grLfbUnlock(GrLock_t type, GrBuffer_t buffer) {
         else if (g_lfbLock.writeMode == GR_LFBWRITEMODE_1555_DEPTH) srcFmt = 14;
         else if (g_lfbLock.writeMode == GR_LFBWRITEMODE_ZA16) srcFmt = 15;
 
-        // Flush to backend with dirty tracking comparison!
-        b->WriteLFB(g_lfbLock.buffer, 0, 0, g_lfbLock.width, g_lfbLock.height, g_lfbLock.stride, srcFmt, g_lfbLock.stagingBuffer.data(), g_lfbLock.originalBuffer.data());
+        // Construct pipeline configuration for the backend to simulate blending & chroma keying
+        GlideWrapper::LfbPipelineConfig config;
+        config.pixelPipeline = g_lfbLock.pixelPipeline;
+        config.chromakeyEnabled = (s_chromakeyMode != 0);
+        config.chromakeyValue = s_chromakeyValue;
+        config.constantAlpha = s_lfbConstantAlpha;
+        config.rgbSrcBlend = s_rgbSrcBlend;
+        config.rgbDstBlend = s_rgbDstBlend;
+
+        // Flush to backend with dirty tracking comparison and pipeline configuration!
+        b->WriteLFB(g_lfbLock.buffer, 0, 0, g_lfbLock.width, g_lfbLock.height, g_lfbLock.stride, srcFmt, g_lfbLock.stagingBuffer.data(), g_lfbLock.originalBuffer.data(), config);
     }
 
     // Free staging buffer memory
@@ -1740,6 +1759,7 @@ FX_ENTRY FxU16 * FX_CALL guTexCreateColorMipMap( void ) {
 FX_ENTRY void FX_CALL grChromakeyMode(GrChromakeyMode_t mode) {
     EnsureEngineInitialized();
     GLIDE_LOG(DEBUG, "Frontend", "grChromakeyMode invoked: mode=" << mode);
+    s_chromakeyMode = mode;
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
         b->SetChromakeyMode(mode);
     }
@@ -1748,6 +1768,7 @@ FX_ENTRY void FX_CALL grChromakeyMode(GrChromakeyMode_t mode) {
 FX_ENTRY void FX_CALL grChromakeyValue(GrColor_t value) {
     EnsureEngineInitialized();
     GLIDE_LOG(DEBUG, "Frontend", "grChromakeyValue invoked: value=0x" << std::hex << value << std::dec);
+    s_chromakeyValue = value;
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
         b->SetChromakeyValue(value);
     }

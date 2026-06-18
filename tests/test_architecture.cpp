@@ -2,6 +2,8 @@
 #include "core/WrapperConfig.h"
 #include "core/Logger.h"
 #include "core/JsonConfigLoader.h"
+#include "core/TextureManager.h"
+#include "software/SoftwareBackend.h"
 #include <cstdlib>
 #include <dlfcn.h>
 #include "core/BackendManager.h"
@@ -1432,5 +1434,192 @@ TEST_CASE("Glide Utility Helpers (gu*)", "[Utility]") {
 
         winClose();
         ::dlclose(handle);
+    }
+}
+
+TEST_CASE("Texture Decoders & LFB Pipeline Simulation Correctness", "[Texture_LFB]") {
+    // Initialize logger to print to console for debug visibility!
+    auto& logger = GlideWrapper::Logger::GetInstance();
+    logger.Initialize("test_debug.log", GlideWrapper::LogLevel::DEBUG, true);
+
+    SECTION("RGB_332 Texture Format Decoder") {
+        auto& tm = GlideWrapper::TextureManager::GetInstance();
+        tm.Reset();
+        
+        // 1 pixel of RGB_332
+        uint8_t rawData = 0b11111010; // R=7 (111), G=6 (110), B=2 (10)
+        
+        // Download as 1x1 mipmap
+        bool ok = tm.DownloadMipMap(0, 0x1000, 8, 8, 3, 0x0, &rawData);
+        REQUIRE(ok == true);
+        
+        auto* tex = tm.GetTexture(0, 0x1000);
+        REQUIRE(tex != nullptr);
+        REQUIRE(tex->swizzledMipLevels.size() == 1);
+        REQUIRE(tex->swizzledMipLevels[0].size() == 1);
+        
+        // Expected ARGB: A=255, R=255, G=218, B=170 -> 0xFFFFDAAA
+        uint32_t decoded = tex->swizzledMipLevels[0][0];
+        REQUIRE(decoded == 0xFFFFDAAA);
+    }
+
+    SECTION("ALPHA_INTENSITY_44 Texture Format Decoder") {
+        auto& tm = GlideWrapper::TextureManager::GetInstance();
+        tm.Reset();
+        
+        uint8_t rawData = 0x8A; // Alpha = 8, Intensity = 10
+        
+        bool ok = tm.DownloadMipMap(0, 0x2000, 8, 8, 3, 0x4, &rawData);
+        REQUIRE(ok == true);
+        
+        auto* tex = tm.GetTexture(0, 0x2000);
+        REQUIRE(tex != nullptr);
+        
+        // Expected ARGB: A=136 (0x88), R=G=B=170 (0xAA) -> 0x88AAAAAA
+        uint32_t decoded = tex->swizzledMipLevels[0][0];
+        REQUIRE(decoded == 0x88AAAAAA);
+    }
+
+    SECTION("ARGB_8332 Texture Format Decoder") {
+        auto& tm = GlideWrapper::TextureManager::GetInstance();
+        tm.Reset();
+        
+        uint16_t rawData = 0x89FA; // Alpha = 0x89, RGB332 = 0xFA (R=7, G=6, B=2)
+        
+        bool ok = tm.DownloadMipMap(0, 0x3000, 8, 8, 3, 0x8, &rawData);
+        REQUIRE(ok == true);
+        
+        auto* tex = tm.GetTexture(0, 0x3000);
+        REQUIRE(tex != nullptr);
+        
+        // Expected ARGB: A=0x89, R=255 (0xFF), G=218 (0xDA), B=170 (0xAA) -> 0x89FFDAAA
+        uint32_t decoded = tex->swizzledMipLevels[0][0];
+        REQUIRE(decoded == 0x89FFDAAA);
+    }
+
+    SECTION("AP_88 Texture Format Decoder and Deferred Palettization") {
+        auto& tm = GlideWrapper::TextureManager::GetInstance();
+        tm.Reset();
+        
+        uint16_t rawData = 0xF245; // Alpha = 0xF2, Index = 0x45
+        
+        // Download AP_88 texture before palette is loaded
+        bool ok = tm.DownloadMipMap(0, 0x4000, 8, 8, 3, 0xe, &rawData);
+        REQUIRE(ok == true);
+        
+        auto* tex = tm.GetTexture(0, 0x4000);
+        REQUIRE(tex != nullptr);
+        REQUIRE(tex->isPaletted == true);
+        
+        // 1. Check grayscale fallback: A=0xF2, R=G=B=0x45 -> 0xF2454545
+        REQUIRE(tex->swizzledMipLevels[0][0] == 0xF2454545);
+        
+        // 2. Load palette table
+        uint32_t mockPalette[256] = {0};
+        mockPalette[0x45] = 0x00112233; // RGB color = 0x112233
+        
+        ok = tm.DownloadTable(0, 2, mockPalette); // 2 = GR_TEXTABLE_PALETTE
+        REQUIRE(ok == true);
+        
+        // 3. Verify texture deferred-swizzles correctly using the new palette table
+        // Expected: A=0xF2, R=0x11, G=0x22, B=0x33 -> 0xF2112233
+        REQUIRE(tex->swizzledMipLevels[0][0] == 0xF2112233);
+    }
+
+    SECTION("AYIQ_8422 Texture Format Decoder and Deferred NCC Swizzling") {
+        auto& tm = GlideWrapper::TextureManager::GetInstance();
+        tm.Reset();
+        
+        uint16_t rawData = 0xE196; // Alpha = 0xE1, YIQ = 0x96 (Y=9, I=1, Q=2)
+        
+        // Download AYIQ_8422 texture
+        bool ok = tm.DownloadMipMap(0, 0x5000, 8, 8, 3, 0x9, &rawData);
+        REQUIRE(ok == true);
+        
+        auto* tex = tm.GetTexture(0, 0x5000);
+        REQUIRE(tex != nullptr);
+        REQUIRE(tex->isNcc == true);
+        
+        // 1. Check grayscale fallback: A=0xE1, Y=9 -> 9 * 255 / 15 = 153 (0x99) -> 0xE1999999
+        REQUIRE(tex->swizzledMipLevels[0][0] == 0xE1999999);
+        
+        // 2. Load NCC0 table
+        GuNccTable ncc;
+        std::memset(&ncc, 0, sizeof(ncc));
+        ncc.yRGB[9] = 100;
+        ncc.iRGB[1][0] = 10; // R
+        ncc.iRGB[1][1] = 20; // G
+        ncc.iRGB[1][2] = 30; // B
+        ncc.qRGB[2][0] = 5;  // R
+        ncc.qRGB[2][1] = 15; // G
+        ncc.qRGB[2][2] = 25; // B
+        
+        // Active NCC table is NCC0 (0) by default. Download table NCC0 (0).
+        ok = tm.DownloadTable(0, 0, &ncc); // 0 = GR_TEXTABLE_NCC0
+        REQUIRE(ok == true);
+        
+        // 3. Verify texture deferred-swizzles correctly using active NCC table
+        // Expected: A=0xE1, R=115 (0x73), G=135 (0x87), B=155 (0x9B) -> 0xE173879B
+        REQUIRE(tex->swizzledMipLevels[0][0] == 0xE173879B);
+    }
+
+    SECTION("LFB Blending and Chroma Keying Simulation") {
+        GlideWrapper::SoftwareBackend backend;
+        GlideWrapper::WrapperConfig cfg;
+        bool ok = backend.Initialize(cfg);
+        REQUIRE(ok == true);
+        
+        ok = backend.AttachWindow(nullptr, 800, 600, true);
+        REQUIRE(ok == true);
+        
+        // Clear backbuffer (buffer 1) to solid Blue (0xFF0000FF)
+        backend.ClearBuffer(0x000000FF, 0xFF, 1.0f, 1);
+        
+        // Verify it was cleared correctly
+        uint32_t pixel = 0;
+        backend.ReadLFB(1, 0, 0, 1, 1, 4, &pixel);
+        REQUIRE(pixel == 0xFF0000FF);
+        
+        // 1. Chroma Keying test: Write Green (0x07E0) with Chroma Keying matching Green
+        uint16_t green565 = 0x07E0;
+        
+        GlideWrapper::LfbPipelineConfig chromaConfig;
+        chromaConfig.pixelPipeline = true;
+        chromaConfig.chromakeyEnabled = true;
+        chromaConfig.chromakeyValue = 0x07E0; // Match green
+        
+        // Write to (0, 0)
+        ok = backend.WriteLFB(1, 0, 0, 1, 1, 2, 0, &green565, nullptr, chromaConfig);
+        REQUIRE(ok == true);
+        
+        // Verify pixel remains Blue (write discarded)
+        backend.ReadLFB(1, 0, 0, 1, 1, 4, &pixel);
+        REQUIRE(pixel == 0xFF0000FF);
+        
+        // 2. Alpha Blending test: Write Green (0x07E0) with 50% constant alpha blending
+        GlideWrapper::LfbPipelineConfig blendConfig;
+        blendConfig.pixelPipeline = true;
+        blendConfig.chromakeyEnabled = false;
+        blendConfig.constantAlpha = 128; // ~50%
+        blendConfig.rgbSrcBlend = 4;     // GR_BLEND_SRC_ALPHA
+        blendConfig.rgbDstBlend = 5;     // GR_BLEND_ONE_MINUS_SRC_ALPHA
+        
+        ok = backend.WriteLFB(1, 0, 0, 1, 1, 2, 0, &green565, nullptr, blendConfig);
+        REQUIRE(ok == true);
+        
+        // Verify blended color: Green (0, 255, 0) blended 50/50 with Blue (0, 0, 255)
+        // R = 0
+        // G = 255 * (128.0f/255.0f) = 128
+        // B = 255 * (127.0f/255.0f) = 127
+        backend.ReadLFB(1, 0, 0, 1, 1, 4, &pixel);
+        uint8_t r = (pixel >> 16) & 0xFF;
+        uint8_t g = (pixel >> 8) & 0xFF;
+        uint8_t b = pixel & 0xFF;
+        
+        REQUIRE(r == 0);
+        REQUIRE(g >= 127);
+        REQUIRE(g <= 129);
+        REQUIRE(b >= 126);
+        REQUIRE(b <= 128);
     }
 }

@@ -11,6 +11,10 @@
 #include <cstdlib>
 #include <SDL2/SDL.h>
 
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
 namespace GlideWrapper {
 
 bool SoftwareBackend::Initialize(const WrapperConfig& config) {
@@ -19,6 +23,20 @@ bool SoftwareBackend::Initialize(const WrapperConfig& config) {
 
     GLIDE_LOG(INFO, "Software", "Initializing Pure Software translation backend...");
     m_config = config;
+
+#ifdef _OPENMP
+    // If the user has NOT manually set OMP_NUM_THREADS in their environment,
+    // dynamically clamp the default thread count to a safe range [1, 4] to prevent
+    // severe multi-core scheduling latency and cache-line thrashing bottlenecks.
+    if (std::getenv("OMP_NUM_THREADS") == nullptr) {
+        int logicalCores = std::max(1, static_cast<int>(std::thread::hardware_concurrency()));
+        int targetThreads = std::min(4, logicalCores);
+        omp_set_num_threads(targetThreads);
+        GLIDE_LOG(INFO, "Software", "Configured OpenMP thread pool size to " << targetThreads << " (Hardware cores: " << logicalCores << ")");
+    } else {
+        GLIDE_LOG(INFO, "Software", "OpenMP thread pool size controlled by environment: " << std::getenv("OMP_NUM_THREADS"));
+    }
+#endif
 
     m_initialized = true;
     GLIDE_LOG(INFO, "Software", "Pure Software translation backend initialized successfully.");
@@ -99,6 +117,7 @@ bool SoftwareBackend::AttachWindow(void* nativeWindowHandle, uint32_t width, uin
         }
     }
 
+    m_headlessPixelMap = m_cpuBuffers[m_backBufferIdx].data();
     m_windowAttached = true;
     return true;
 }
@@ -158,7 +177,7 @@ void SoftwareBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     if (!m_windowAttached || !m_headlessPixelMap) return;
 
-    GLIDE_LOG(INFO, "SoftwareDraw", "DrawTriangle: "
+    GLIDE_LOG(DEBUG, "SoftwareDraw", "DrawTriangle: "
               << "A: pos=(" << a.pos[0] << "," << a.pos[1] << "," << a.pos[2] << "," << a.pos[3] << "), tex=(" << a.tex[0] << "," << a.tex[1] << "), tmu_oow=" << a.tmu_oow[0]
               << " | B: pos=(" << b.pos[0] << "," << b.pos[1] << "," << b.pos[2] << "," << b.pos[3] << "), tex=(" << b.tex[0] << "," << b.tex[1] << "), tmu_oow=" << b.tmu_oow[0]
               << " | C: pos=(" << c.pos[0] << "," << c.pos[1] << "," << c.pos[2] << "," << c.pos[3] << "), tex=(" << c.tex[0] << "," << c.tex[1] << "), tmu_oow=" << c.tmu_oow[0]

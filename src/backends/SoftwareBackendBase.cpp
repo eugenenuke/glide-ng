@@ -231,6 +231,13 @@ bool SoftwareBackendBase::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
                 uint32_t readX = srcX + x;
                 if (readX >= m_headlessWidth) break;
                 uint32_t val = pixels[readY * m_headlessWidth + readX];
+                if (m_pixelFormatOverride == 1) {
+                    uint32_t a = val & 0xFF000000;
+                    uint32_t g = val & 0x0000FF00;
+                    uint32_t r = (val >> 16) & 0xFF;
+                    uint32_t b = val & 0xFF;
+                    val = a | (b << 16) | g | r;
+                }
                 if ((readX == 150 && readY == 150) || (readX == 310 && readY == 310)) {
                     GLIDE_LOG(DEBUG, "ReadLFB", "ReadLFB (32-bit) at (" << readX << "," << readY << ") = 0x" << std::hex << val << std::dec);
                 }
@@ -243,9 +250,15 @@ bool SoftwareBackendBase::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
                 if (readX >= m_headlessWidth) break;
 
                 uint32_t pWord = pixels[readY * m_headlessWidth + readX];
-                uint16_t r = (((pWord >> 16) & 0xFF) * 31 + 127) / 255;
-                uint16_t g = (((pWord >> 8)  & 0xFF) * 63 + 127) / 255;
-                uint16_t b = ((pWord         & 0xFF) * 31 + 127) / 255;
+                uint32_t rVal = (pWord >> 16) & 0xFF;
+                uint32_t gVal = (pWord >> 8)  & 0xFF;
+                uint32_t bVal = pWord         & 0xFF;
+                if (m_pixelFormatOverride == 1) {
+                    std::swap(rVal, bVal);
+                }
+                uint16_t r = (rVal * 31 + 127) / 255;
+                uint16_t g = (gVal * 63 + 127) / 255;
+                uint16_t b = (bVal * 31 + 127) / 255;
                 uint16_t c16 = (r << 11) | (g << 5) | b;
                 destRow16[x] = c16;
             }
@@ -254,7 +267,7 @@ bool SoftwareBackendBase::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
     return true;
 }
 
-bool SoftwareBackendBase::WriteLFB(uint32_t buffer, uint32_t dstX, uint32_t dstY, uint32_t srcWidth, uint32_t srcHeight, int32_t srcStride, uint32_t srcFmt, const void* srcData, const void* refData) {
+bool SoftwareBackendBase::WriteLFB(uint32_t buffer, uint32_t dstX, uint32_t dstY, uint32_t srcWidth, uint32_t srcHeight, int32_t srcStride, uint32_t srcFmt, const void* srcData, const void* refData, const LfbPipelineConfig& config) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     if (!srcData || m_cpuBuffers[0].empty()) return false;
 
@@ -300,17 +313,33 @@ bool SoftwareBackendBase::WriteLFB(uint32_t buffer, uint32_t dstX, uint32_t dstY
             uint32_t writeX = dstX + x;
             if (writeX >= m_headlessWidth) break;
 
-            // 1. If refData is provided, check if the pixel has changed.
-            // If it hasn't changed, skip writing it completely (preserving GPU-rendered pixels!)
+            // 1. Extract the raw source pixel first
+            bool is16Bit = (srcFmt == 0 || srcFmt == 1 || srcFmt == 2 || srcFmt == 12 || srcFmt == 13 || srcFmt == 14 || srcFmt == 15);
+            uint16_t c16 = 0;
+            uint32_t c32 = 0;
+            if (is16Bit) {
+                if (srcFmt == 12 || srcFmt == 13 || srcFmt == 14) {
+                    c16 = (uint16_t)(reinterpret_cast<const uint32_t*>(inBytes + y * srcStride)[x] & 0xFFFF);
+                } else {
+                    c16 = reinterpret_cast<const uint16_t*>(inBytes + y * srcStride)[x];
+                }
+            } else {
+                c32 = reinterpret_cast<const uint32_t*>(inBytes + y * srcStride)[x];
+            }
+
+            // 2. If refData is provided, check if the pixel has changed (dirty tracking)
             if (refBytes) {
-                if (srcFmt <= 2) { // 16-bit formats (565, 555, 1555)
-                    uint16_t c16 = reinterpret_cast<const uint16_t*>(inBytes + y * srcStride)[x];
-                    uint16_t ref16 = reinterpret_cast<const uint16_t*>(refBytes + y * srcStride)[x];
+                if (is16Bit) {
+                    uint16_t ref16;
+                    if (srcFmt == 12 || srcFmt == 13 || srcFmt == 14) {
+                        ref16 = (uint16_t)(reinterpret_cast<const uint32_t*>(refBytes + y * srcStride)[x] & 0xFFFF);
+                    } else {
+                        ref16 = reinterpret_cast<const uint16_t*>(refBytes + y * srcStride)[x];
+                    }
                     if (c16 == ref16) {
                         continue;
                     }
-                } else { // 32-bit formats
-                    uint32_t c32 = reinterpret_cast<const uint32_t*>(inBytes + y * srcStride)[x];
+                } else {
                     uint32_t ref32 = reinterpret_cast<const uint32_t*>(refBytes + y * srcStride)[x];
                     if (c32 == ref32) {
                         continue;
@@ -318,48 +347,108 @@ bool SoftwareBackendBase::WriteLFB(uint32_t buffer, uint32_t dstX, uint32_t dstY
                 }
             }
 
-            // 2. Unpack and write the modified pixel
+            // 3. Chroma Keying check
+            if (config.pixelPipeline && config.chromakeyEnabled) {
+                if (is16Bit) {
+                    if (c16 == static_cast<uint16_t>(config.chromakeyValue)) {
+                        continue; // Discard matching key pixel!
+                    }
+                } else {
+                    if (c32 == config.chromakeyValue) {
+                        continue; // Discard matching key pixel!
+                    }
+                }
+            }
+
+            // 4. Unpack the pixel to 32-bit RGBA
             uint32_t pWord = 0xFF000000;
             if (srcFmt == 0 || srcFmt == 12) { // GR_LFB_SRC_FMT_565 or GR_LFB_SRC_FMT_565_DEPTH
-                uint16_t c16;
-                if (srcFmt == 12) {
-                    c16 = (uint16_t)(reinterpret_cast<const uint32_t*>(inBytes + y * srcStride)[x] & 0xFFFF);
-                } else {
-                    c16 = reinterpret_cast<const uint16_t*>(inBytes + y * srcStride)[x];
-                }
                 uint32_t r = ((c16 >> 11) & 0x1F) * 255 / 31;
                 uint32_t g = ((c16 >> 5)  & 0x3F) * 255 / 63;
                 uint32_t b = (c16         & 0x1F) * 255 / 31;
-                pWord = (255 << 24) | (r << 16) | (g << 8) | b;
+                pWord = (255u << 24) | (r << 16) | (g << 8) | b;
             } else if (srcFmt == 1 || srcFmt == 2 || srcFmt == 13 || srcFmt == 14) { // 555 / 1555 or 555_DEPTH / 1555_DEPTH
-                uint16_t c16;
-                if (srcFmt == 13 || srcFmt == 14) {
-                    c16 = (uint16_t)(reinterpret_cast<const uint32_t*>(inBytes + y * srcStride)[x] & 0xFFFF);
-                } else {
-                    c16 = reinterpret_cast<const uint16_t*>(inBytes + y * srcStride)[x];
-                }
                 uint32_t r = ((c16 >> 10) & 0x1F) * 255 / 31;
                 uint32_t g = ((c16 >> 5)  & 0x1F) * 255 / 31;
                 uint32_t b = (c16         & 0x1F) * 255 / 31;
                 uint32_t a = (srcFmt == 2 || srcFmt == 14) ? (((c16 >> 15) & 1) ? 255 : 0) : 255;
                 pWord = (a << 24) | (r << 16) | (g << 8) | b;
             } else { // 32-bit ARGB8888 / RGB888 / ZA16
-                pWord = reinterpret_cast<const uint32_t*>(inBytes + y * srcStride)[x];
-                
                 // Quantize to 16-bit 565 to emulate Voodoo VRAM storage limits
-                uint32_t r = ((pWord >> 16) & 0xFF) >> 3;
-                uint32_t g = ((pWord >> 8)  & 0xFF) >> 2;
-                uint32_t b = (pWord         & 0xFF) >> 3;
+                uint32_t r = ((c32 >> 16) & 0xFF) >> 3;
+                uint32_t g = ((c32 >> 8)  & 0xFF) >> 2;
+                uint32_t b = (c32         & 0xFF) >> 3;
                 
                 uint32_t r8 = r * 255 / 31;
                 uint32_t g8 = g * 255 / 63;
                 uint32_t b8 = b * 255 / 31;
-                uint32_t a8 = (pWord >> 24) & 0xFF;
+                uint32_t a8 = (c32 >> 24) & 0xFF;
                 
                 if (srcFmt == 4 || srcFmt == 15) { // Force alpha = 255 for RGB888 and ZA16 to make them opaque
                     a8 = 255;
                 }
                 pWord = (a8 << 24) | (r8 << 16) | (g8 << 8) | b8;
+            }
+
+            // 5. Alpha Blending simulation
+            if (config.pixelPipeline) {
+                uint32_t srcA = (pWord >> 24) & 0xFF;
+                uint32_t srcR = (pWord >> 16) & 0xFF;
+                uint32_t srcG = (pWord >> 8)  & 0xFF;
+                uint32_t srcB = pWord         & 0xFF;
+
+                // Override alpha if the source has no native alpha channel
+                if (srcFmt == 0 || srcFmt == 4 || srcFmt == 12 || srcFmt == 15) {
+                    srcA = config.constantAlpha;
+                }
+
+                // Fetch destination pixel from active render buffer
+                uint32_t dstWord = pixels[writeY * m_headlessWidth + writeX];
+                uint32_t dstR = (dstWord >> 16) & 0xFF;
+                uint32_t dstG = (dstWord >> 8)  & 0xFF;
+                uint32_t dstB = dstWord         & 0xFF;
+                if (m_pixelFormatOverride == 1) {
+                    std::swap(dstR, dstB);
+                }
+
+                float sFactor = 1.0f;
+                float dFactor = 0.0f;
+
+                // Source RGB factor (4 = GR_BLEND_SRC_ALPHA, 1 = GR_BLEND_ONE, 0 = GR_BLEND_ZERO)
+                if (config.rgbSrcBlend == 4) {
+                    sFactor = srcA / 255.0f;
+                } else if (config.rgbSrcBlend == 0) {
+                    sFactor = 0.0f;
+                } else {
+                    sFactor = 1.0f;
+                }
+
+                // Destination RGB factor (5 = GR_BLEND_ONE_MINUS_SRC_ALPHA, 1 = GR_BLEND_ONE, 0 = GR_BLEND_ZERO)
+                if (config.rgbDstBlend == 5) {
+                    dFactor = 1.0f - (srcA / 255.0f);
+                } else if (config.rgbDstBlend == 1) {
+                    dFactor = 1.0f;
+                } else {
+                    dFactor = 0.0f;
+                }
+
+                uint32_t finalR = static_cast<uint32_t>(srcR * sFactor + dstR * dFactor + 0.5f);
+                uint32_t finalG = static_cast<uint32_t>(srcG * sFactor + dstG * dFactor + 0.5f);
+                uint32_t finalB = static_cast<uint32_t>(srcB * sFactor + dstB * dFactor + 0.5f);
+
+                finalR = std::min(255u, finalR);
+                finalG = std::min(255u, finalG);
+                finalB = std::min(255u, finalB);
+
+                pWord = (255u << 24) | (finalR << 16) | (finalG << 8) | finalB;
+            }
+
+            if (m_pixelFormatOverride == 1) {
+                uint32_t a = pWord & 0xFF000000;
+                uint32_t g = pWord & 0x0000FF00;
+                uint32_t r = (pWord >> 16) & 0xFF;
+                uint32_t b = pWord & 0xFF;
+                pWord = a | (b << 16) | g | r;
             }
             pixels[writeY * m_headlessWidth + writeX] = pWord;
             wrotePixel = true;

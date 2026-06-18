@@ -69,9 +69,13 @@ bool JsonConfigLoader::Load(const std::string& configFilePath, WrapperConfig& ou
     }
 
     // Process Environment Overrides (Highest Priority next to app arguments)
-    if (const char* envBackend = std::getenv("GLIDE_BACKEND")) {
+    const char* envBackend = std::getenv("GLIDE_BACKEND");
+    if (!envBackend) {
+        envBackend = std::getenv("GLIDE_WRAPPER_BACKEND");
+    }
+    if (envBackend) {
         outConfig.backend = envBackend;
-        GLIDE_LOG(WARN, "Config", "Overrode active Rendering Backend via GLIDE_BACKEND=" << outConfig.backend);
+        GLIDE_LOG(WARN, "Config", "Overrode active Rendering Backend via environment=" << outConfig.backend);
     }
 
     // Normalize backend aliases

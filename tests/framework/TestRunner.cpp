@@ -27,6 +27,7 @@ namespace GlideTest {
     std::unique_ptr<BaseTest> CreateTest13();
     std::unique_ptr<BaseTest> CreateTest14();
     std::unique_ptr<BaseTest> CreateTest15();
+    std::unique_ptr<BaseTest> CreateTest16();
     std::unique_ptr<BaseTest> CreateTest17();
     std::unique_ptr<BaseTest> CreateTest18();
     std::unique_ptr<BaseTest> CreateTest19();
@@ -37,8 +38,8 @@ namespace GlideTest {
 
 void dumpBufferToPpm(const std::string& filepath, int width, int height) {
     std::vector<uint16_t> buffer(width * height);
-    // Read from back buffer
-    grLfbReadRegion(GR_BUFFER_BACKBUFFER, 0, 0, width, height, width * 2, buffer.data());
+    // Read from front buffer (after buffer swap)
+    grLfbReadRegion(GR_BUFFER_FRONTBUFFER, 0, 0, width, height, width * 2, buffer.data());
 
     std::ofstream ofs(filepath, std::ios::binary);
     if (!ofs) {
@@ -98,6 +99,7 @@ int main(int argc, char** argv) {
     tests.push_back(GlideTest::CreateTest13());
     tests.push_back(GlideTest::CreateTest14());
     tests.push_back(GlideTest::CreateTest15());
+    tests.push_back(GlideTest::CreateTest16());
     tests.push_back(GlideTest::CreateTest17());
     tests.push_back(GlideTest::CreateTest18());
     tests.push_back(GlideTest::CreateTest19());
@@ -145,13 +147,13 @@ int main(int argc, char** argv) {
             if (!activeTest->RenderFrame(frame)) {
                 break;
             }
+            grBufferSwap(1);
             if (std::find(captureFrames.begin(), captureFrames.end(), frame) != captureFrames.end()) {
                 char filename[256];
                 std::snprintf(filename, sizeof(filename), "%s/%s_mode%d_frame%d.ppm",
                              destDir.c_str(), activeTest->GetName().c_str(), m, frame);
                 dumpBufferToPpm(filename, 640, 480);
             }
-            grBufferSwap(1);
         }
         activeTest->Shutdown();
     }

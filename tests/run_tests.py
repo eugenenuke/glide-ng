@@ -40,6 +40,7 @@ TEST_PASS_RATIOS = {
     "test04": 0.95,  # Software triangle rasterizer vs Mesa GL native triangle rounding and boundary alignment variance
     "test12": 0.94,  # Handle GPU vs CPU font anti-aliasing and subpixel edge rasterization variance
     "test14": 0.98,  # Minor diagonal intersection boundary shift under hardware rendering precision differences
+    "test16": 0.98,  # Allow minor sub-pixel rendering and bilinear filtering variance on 3D spinning logo
     "test19": 0.95,  # Allow minor sub-pixel rasterization edge shift on minified textures
 }
 

@@ -20,6 +20,9 @@ target_include_directories(GlideWrapperCore PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}"
     "${CMAKE_CURRENT_SOURCE_DIR}/core"
     "${CMAKE_CURRENT_SOURCE_DIR}/backends"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../include/glide2"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../include/3dfx"
     "${CMAKE_BINARY_DIR}/generated_shaders"
 )
 add_dependencies(GlideWrapperCore CompileShaders)
