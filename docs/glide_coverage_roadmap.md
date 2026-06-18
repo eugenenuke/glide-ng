@@ -61,7 +61,7 @@ gantt
 
 ---
 
-### 2. Milestone 2: Anti-Aliasing Geometry (Direct Forwarding)
+### 2. Milestone 2: Anti-Aliasing Geometry & Transparent MSAA Support
 *   **Target Functions**:
     *   `grAADrawPoint(const GrVertex *pt)`
     *   `grAADrawLine(const GrVertex *v1, const GrVertex *v2)`
@@ -70,15 +70,20 @@ gantt
     *   `grAADrawPolygonVertexList(int n, const GrVertex *v)`
     *   `guAADrawTriangleWithClip(const GrVertex *a, const GrVertex *b, const GrVertex *c)`
 *   **Implementation Strategy**:
-    *   On legacy 3dfx hardware, edge anti-aliasing was a complex, manual hardware stage. On modern GPUs, anti-aliasing is handled much more efficiently via Multi-Sample Anti-Aliasing (MSAA) at the swapchain level.
-    *   Therefore, the industry-standard approach for Glide wrappers (like dgVoodoo) is to **forward all anti-aliased draw calls directly to their standard, non-anti-aliased counterparts**.
-    *   E.g., `grAADrawTriangle(a, b, c, ...)` will simply call `grDrawTriangle(a, b, c)`.
+    1.  **C Entry Point Forwarding**: In `glide2_entry.cpp`, we will forward all 6 anti-aliased geometry calls directly to their standard, non-anti-aliased counterparts.
+    2.  **MSAA Configuration**: Add `msaaSamples` to `WrapperConfig` (defaulting to 1), and wire it to `JsonConfigLoader` to support `"msaaSamples"` in `glide-ng.json` and the environment override `GLIDE_WRAPPER_MSAA`.
+    3.  **Vulkan Backend Integration**: Wire the dynamic sample count to the Vulkan render pass, color/depth attachments, framebuffers, and the `vk::PipelineMultisampleStateCreateInfo` pipeline state. Resolve multi-sampled targets to single-sampled swapchain images before presentation.
+    4.  **OpenGL ES Backend Integration**: Wire the dynamic sample count to EGL context creation, requesting multi-sampled config attributes from the host OS.
+    5.  **Dynamic Telemetry Logging**: Locate and replace the hardcoded `"Info: Pixel Format RGBA8888..."` printout with a dynamically formatted log string reflecting the actual pixel format, depth/stencil bounds, and multi-sample count successfully initialized by the driver.
 *   **Unit Testing Plan**:
-    *   Write a Catch2 section `SECTION("Milestone 2: Anti-Aliasing Forwarding")` that:
-        1. Clears the screen to Black.
-        2. Draws a test triangle using `grAADrawTriangle(...)` with anti-aliasing enabled on all edges.
-        3. Reads back the center pixel of the triangle via `grLfbReadRegion()` and asserts it was drawn correctly with the vertex color, confirming the forwarder executed successfully.
-*   **Impact**: High. Adds instant compatibility for games that enable "Smooth Edges" or "Anti-Aliasing" in their menus, with zero performance cost or rendering bugs.
+    *   Write a Catch2 section `SECTION("Milestone 2: Anti-Aliasing & Transparent MSAA")` that:
+        1. Temporarily sets `GLIDE_WRAPPER_MSAA=4`.
+        2. Opens a window context via `grSstWinOpen` using our dynamic backends.
+        3. Queries the active backend's sample count (via a new virtual method `backend->GetMsaaSamples()`) and asserts it returns exactly `4` (confirming active driver-level multisampling!).
+        4. Clears the screen, draws a test triangle using the forwarded `grAADrawTriangle()`, and reads the LFB to verify correct rendering.
+        5. Closes the window immediately, ensuring zero performance penalty on our software GPU (`llvmpipe`) in CI.
+*   **Impact**: Very High. Adds instant compatibility for games that enable anti-aliasing, and transparently upgrades retro graphics with gorgeous, modern hardware-accelerated MSAA!
+
 
 ---
 
