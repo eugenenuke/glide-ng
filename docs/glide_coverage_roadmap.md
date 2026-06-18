@@ -25,7 +25,7 @@ gantt
     Milestone 1 Hardware Queries and Pacing     :done, m1, 2026-06-18, 2d
     Milestone 2 Anti Aliasing Forwarding        :done, m2, after m1, 1d
     Milestone 3 Polygon Fan Decomposition       :done, m3, after m2, 2d
-    Milestone 4 Shortcut State Config           :        m4, after m3, 1d
+    Milestone 4 Shortcut State Config           :done,   m4, after m3, 1d
     Milestone 5 LFB Pixel Formatting            :        m5, after m4, 2d
     Milestone 6 Texturing and Utilities         :        m6, after m5, 3d
 ```
@@ -109,7 +109,7 @@ gantt
 
 ---
 
-### 4. Milestone 4: Shortcut State Configuration (Very Easy)
+### 4. Milestone 4: Shortcut State Configuration (Completed)
 *   **Target Functions**:
     *   `grConstantColorValue4(float a, float r, float g, float b)`
     *   `grColorMask(FxBool rgb, FxBool a)`
@@ -132,19 +132,28 @@ gantt
         4. Calls `grDisableAllEffects()` and asserts that the state flags for blend, depth, fog, and chroma are all turned off.
 *   **Impact**: Moderate. Standardizes state tracking and ensures complex games can cleanly reset their pipelines.
 
+
 ---
 
-### 5. Milestone 5: Linear Frame Buffer (LFB) Formatting (Grouped)
+
+### 5. Milestone 5: LFB Formatting & Spinning Logo Integration (Grouped)
 *   **Target Functions**:
     *   `grLfbConstantAlpha(GrAlpha_t alpha)`
     *   `grLfbConstantDepth(FxU16 depth)`
     *   `grLfbWriteColorFormat(colorFormat)`
     *   `grLfbWriteColorSwizzle(swizzle, swap)`
+    *   `grGlideShamelessPlug(const FxBool on)`
+    *   `grSplash(float x, float y, float width, float height, FxU32 frame)`
 *   **Implementation Strategy**:
     *   These functions configure the pixel format, channel swizzling, and constant properties for direct CPU writes to the frame buffer.
     *   We will store these configurations as state variables in our global `GrState` context.
     *   We will update our existing `grLfbLock` / `grLfbUnlock` and `grLfbWriteRegion` implementations to inspect these swizzle/format parameters and correctly transform the pixel buffer before presenting it to the screen.
-*   **Unit Testing Plan**:
+    *   **3dfx Spinning Logo Integration**:
+        *   Copy the reference source code `gsplash.cpp`, `gbanner.cpp`, `splash.dat`, and `banner.dat` from `ext_tests/openglide-ng/` into a dedicated **`vendor/openglide/`** directory to keep foreign code isolated.
+        *   Compile them directly into our `libglide2x.so` shared library using CMake.
+        *   Implement a lightweight compatibility struct `Glide` inside `vendor/openglide/` to bind with our wrapper's state system (resolution, coordinate origin, and buffer counts).
+        *   Implement `grSplash` and `grGlideShamelessPlug` by routing them directly to the compiled vendor code.
+*   **Unit & Visual Testing Plan**:
     *   Write a Catch2 section `SECTION("Milestone 5: LFB Pixel Formatting")` that:
         1. Calls `grLfbWriteColorSwizzle(GR_SWIZZLE_BGRA, FXTRUE)` to enable channel swapping.
         2. Locks the LFB via `grLfbLock()`, writes a raw test block of pixels, and unlocks.

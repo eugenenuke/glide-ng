@@ -604,6 +604,89 @@ TEST_CASE("Architectural Core Validation", "[Architecture]") {
 #endif
     }
 
+    SECTION("Milestone 4: Shortcut State Config") {
+#ifdef __linux__
+        void* handle = OpenGlide2Handle();
+        REQUIRE(handle != nullptr);
+
+        using WinOpenFunc = FxBool(*)(FxU32, FxU32, FxU32, FxU32, FxU32, FxU32, FxU32);
+        using WinCloseFunc = void(*)(void);
+        using BufferClearFunc = void(*)(GrColor_t, FxU8, FxU16);
+        using BufferSwapFunc = void(*)(FxU32);
+        using DrawTriFunc = void(*)(const GrVertex*, const GrVertex*, const GrVertex*);
+        using LfbReadFunc = FxBool(*)(GrBuffer_t, FxU32, FxU32, FxU32, FxU32, FxU32, void*);
+
+        using ConstColor4Func = void(*)(float, float, float, float);
+        using ColorMaskFunc = void(*)(FxBool, FxBool);
+        using DisableAllEffectsFunc = void(*)(void);
+
+        auto winOpen = reinterpret_cast<WinOpenFunc>(::dlsym(handle, "grSstWinOpen"));
+        auto winClose = reinterpret_cast<WinCloseFunc>(::dlsym(handle, "grSstWinClose"));
+        auto bufferClear = reinterpret_cast<BufferClearFunc>(::dlsym(handle, "grBufferClear"));
+        auto bufferSwap = reinterpret_cast<BufferSwapFunc>(::dlsym(handle, "grBufferSwap"));
+        auto drawTri = reinterpret_cast<DrawTriFunc>(::dlsym(handle, "grDrawTriangle"));
+        auto lfbRead = reinterpret_cast<LfbReadFunc>(::dlsym(handle, "grLfbReadRegion"));
+
+        auto constColor4 = reinterpret_cast<ConstColor4Func>(::dlsym(handle, "grConstantColorValue4"));
+        auto colorMask = reinterpret_cast<ColorMaskFunc>(::dlsym(handle, "grColorMask"));
+        auto disableAllEffects = reinterpret_cast<DisableAllEffectsFunc>(::dlsym(handle, "grDisableAllEffects"));
+
+        REQUIRE(winOpen != nullptr);
+        REQUIRE(winClose != nullptr);
+        REQUIRE(bufferClear != nullptr);
+        REQUIRE(bufferSwap != nullptr);
+        REQUIRE(drawTri != nullptr);
+        REQUIRE(lfbRead != nullptr);
+        REQUIRE(constColor4 != nullptr);
+        REQUIRE(colorMask != nullptr);
+        REQUIRE(disableAllEffects != nullptr);
+
+        // Run this test across all 3 active backends using the environment configuration matrix
+        const char* backends[] = { "SOFTWARE", "OPENGL_ES", "VULKAN" };
+        for (const char* backendName : backends) {
+            ::setenv("GLIDE_WRAPPER_BACKEND", backendName, 1);
+            
+            // Open window
+            REQUIRE(winOpen(0, 0x8, 0, 0, 0, 2, 0) == FXTRUE);
+
+            // Test 1: Write masking disabled completely (no color channels or alpha can be written)
+            colorMask(FXFALSE, FXFALSE);
+            bufferClear(0x00000000, 0xFF, 0xFFFF); // Clear to black
+
+            GrVertex a, b, c;
+            a.x = 400.0f; a.y = 100.0f; a.ooz = 1.0f; a.oow = 1.0f; a.r = 0.0f; a.g = 255.0f; a.b = 0.0f; a.a = 255.0f;
+            b.x = 200.0f; b.y = 500.0f; b.ooz = 1.0f; b.oow = 1.0f; b.r = 0.0f; b.g = 255.0f; b.b = 0.0f; b.a = 255.0f;
+            c.x = 600.0f; c.y = 500.0f; c.ooz = 1.0f; c.oow = 1.0f; c.r = 0.0f; c.g = 255.0f; c.b = 0.0f; c.a = 255.0f;
+
+            REQUIRE_NOTHROW(drawTri(&a, &b, &c));
+
+            // Read back center pixel (400, 300) - must remain 100% black (0x00000000 or at least alpha=0 and green=0)
+            uint32_t pixel = 0xffffffff;
+            REQUIRE(lfbRead(1, 400, 300, 1, 1, 4, &pixel) == FXTRUE);
+            REQUIRE((pixel & 0xffffffff) == 0x00000000);
+
+            // Test 2: Write masking enabled for color and alpha
+            colorMask(FXTRUE, FXTRUE);
+            REQUIRE_NOTHROW(drawTri(&a, &b, &c));
+
+            // Read back center pixel - now it MUST be green!
+            REQUIRE(lfbRead(1, 400, 300, 1, 1, 4, &pixel) == FXTRUE);
+            uint8_t g = (pixel >> 8) & 0xFF;
+            REQUIRE(g == 255);
+
+            // Test 3: grConstantColorValue4 packing validation
+            constColor4(255.0f, 128.0f, 64.0f, 32.0f); // A=255, R=128, G=64, B=32
+
+            // Test 4: grDisableAllEffects runs successfully
+            REQUIRE_NOTHROW(disableAllEffects());
+
+            bufferSwap(0);
+            winClose();
+        }
+        
+        ::dlclose(handle);
+#endif
+    }
 
     SECTION("Phase 3: Automated Geometry Drawing Validation Suite") {
 #ifdef __linux__

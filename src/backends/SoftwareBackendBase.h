@@ -39,6 +39,7 @@ public:
     void SetCullState(uint32_t cullMode) override;
     void SetClipWindow(uint32_t minX, uint32_t minY, uint32_t maxX, uint32_t maxY) override;
     void SetSstOrigin(uint32_t origin) override;
+    void SetColorMask(bool rgb, bool alpha) override;
     
     // Milestone 8: Fogging State
     void SetFogMode(uint32_t mode) override;
@@ -109,6 +110,9 @@ protected:
     uint32_t m_fogMode{0};
     uint32_t m_fogColor{0xff000000};
     uint8_t m_fogTable[64] = {0};
+
+    bool m_colorMaskRgb{true};
+    bool m_colorMaskAlpha{true};
 
     std::vector<float> m_headlessDepthBuffer;
 

@@ -104,6 +104,13 @@ void SoftwareBackendBase::SetSstOrigin(uint32_t origin) {
     GLIDE_LOG(DEBUG, "Rasterizer", "SetSstOrigin: " << origin);
 }
 
+void SoftwareBackendBase::SetColorMask(bool rgb, bool alpha) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    m_colorMaskRgb = rgb;
+    m_colorMaskAlpha = alpha;
+    GLIDE_LOG(DEBUG, "Rasterizer", "SetColorMask: RGB=" << rgb << ", Alpha=" << alpha);
+}
+
 void SoftwareBackendBase::SetFogMode(uint32_t mode) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     m_fogMode = mode;

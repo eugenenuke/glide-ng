@@ -954,6 +954,7 @@ void OpenGLESBackend::DrawPoint(const ModernVertex& pt) {
     SyncDepthState();
     ApplyBlendingGLES();
     ApplyScissorGLES();
+    ApplyColorMaskGLES();
 
     // 3. Bind shader program and upload uniforms
     glUseProgram(m_geomProgram);
@@ -999,6 +1000,7 @@ void OpenGLESBackend::DrawLine(const ModernVertex& v0, const ModernVertex& v1) {
     SyncDepthState();
     ApplyBlendingGLES();
     ApplyScissorGLES();
+    ApplyColorMaskGLES();
 
     // 3. Bind shader program and upload uniforms
     glUseProgram(m_geomProgram);
@@ -1047,6 +1049,7 @@ void OpenGLESBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
     ApplyBlendingGLES();
     ApplyScissorGLES();
     SyncCullStateGLES();
+    ApplyColorMaskGLES();
 
     // 3. Bind shader program and upload uniforms
     glUseProgram(m_geomProgram);
@@ -1203,6 +1206,11 @@ void OpenGLESBackend::SetBlendState(uint32_t rgbSrcFactor, uint32_t rgbDstFactor
     SoftwareBackendBase::SetBlendState(rgbSrcFactor, rgbDstFactor, alphaSrcFactor, alphaDstFactor);
 }
 
+void OpenGLESBackend::SetColorMask(bool rgb, bool alpha) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    SoftwareBackendBase::SetColorMask(rgb, alpha);
+}
+
 void OpenGLESBackend::ApplyBlendingGLES() {
     if (m_rgbSrcBlend == 4 && m_rgbDstBlend == 0 && m_alphaSrcBlend == 4 && m_alphaDstBlend == 0) { // GR_BLEND_ONE & GR_BLEND_ZERO (disabled)
         glDisable(GL_BLEND);
@@ -1216,6 +1224,15 @@ void OpenGLESBackend::ApplyBlendingGLES() {
             MapBlendFactorGLES(m_alphaDstBlend, true)
         );
     }
+}
+
+void OpenGLESBackend::ApplyColorMaskGLES() {
+    glColorMask(
+        m_colorMaskRgb ? GL_TRUE : GL_FALSE,
+        m_colorMaskRgb ? GL_TRUE : GL_FALSE,
+        m_colorMaskRgb ? GL_TRUE : GL_FALSE,
+        m_colorMaskAlpha ? GL_TRUE : GL_FALSE
+    );
 }
 
 void OpenGLESBackend::ApplyScissorGLES() {

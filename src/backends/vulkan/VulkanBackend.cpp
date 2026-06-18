@@ -678,6 +678,14 @@ void VulkanBackend::SetClipWindow(uint32_t minX, uint32_t minY, uint32_t maxX, u
     }
 }
 
+void VulkanBackend::SetColorMask(bool rgb, bool alpha) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    if (rgb != m_colorMaskRgb || alpha != m_colorMaskAlpha) {
+        FlushBatch();
+    }
+    SoftwareBackendBase::SetColorMask(rgb, alpha);
+}
+
 void VulkanBackend::SetConstantColor(uint32_t color) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     if (color != m_constantColor) {
@@ -1746,7 +1754,14 @@ PipelineGroup VulkanBackend::CompileGraphicsPipelines(const PipelineStateKey& ke
 
         // Color Blending
         vk::PipelineColorBlendAttachmentState colorBlendAttachment;
-        colorBlendAttachment.colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG | vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA;
+        vk::ColorComponentFlags mask{};
+        if (key.colorMaskRgb) {
+            mask |= vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG | vk::ColorComponentFlagBits::eB;
+        }
+        if (key.colorMaskAlpha) {
+            mask |= vk::ColorComponentFlagBits::eA;
+        }
+        colorBlendAttachment.colorWriteMask = mask;
         
         colorBlendAttachment.blendEnable = true;
         colorBlendAttachment.colorBlendOp = vk::BlendOp::eAdd;
@@ -1815,6 +1830,8 @@ void VulkanBackend::UpdateActivePipelines() {
     key.rgbDstBlend = m_rgbDstBlend;
     key.alphaSrcBlend = m_alphaSrcBlend;
     key.alphaDstBlend = m_alphaDstBlend;
+    key.colorMaskRgb = m_colorMaskRgb;
+    key.colorMaskAlpha = m_colorMaskAlpha;
 
     auto it = m_pipelineCache.find(key);
     if (it == m_pipelineCache.end()) {

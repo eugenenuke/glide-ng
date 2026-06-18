@@ -78,6 +78,9 @@ namespace {
     uint32_t s_fogMode = 0;
     uint32_t s_fogColor = 0xff000000;
     uint8_t s_fogTable[64] = {0};
+
+    bool s_colorMaskRgb = true;
+    bool s_colorMaskAlpha = true;
 }
 
 // Opaque state container matching GrState's char padding
@@ -127,6 +130,9 @@ struct GlideWrapperState {
     uint32_t fogMode;
     uint32_t fogColor;
     uint8_t fogTable[64];
+
+    uint32_t colorMaskRgb;
+    uint32_t colorMaskAlpha;
 };
 
 static_assert(sizeof(GlideWrapperState) <= sizeof(GrState), "GlideWrapperState exceeds GrState footprint!");
@@ -510,6 +516,8 @@ FX_ENTRY void FX_CALL grGlideGetState(GrState* state) {
     ws->fogMode = s_fogMode;
     ws->fogColor = s_fogColor;
     std::memcpy(ws->fogTable, s_fogTable, sizeof(s_fogTable));
+    ws->colorMaskRgb = s_colorMaskRgb ? 1 : 0;
+    ws->colorMaskAlpha = s_colorMaskAlpha ? 1 : 0;
 }
 
 FX_ENTRY void FX_CALL grGlideSetState(const GrState* state) {
@@ -558,6 +566,8 @@ FX_ENTRY void FX_CALL grGlideSetState(const GrState* state) {
     s_fogMode = ws->fogMode;
     s_fogColor = ws->fogColor;
     std::memcpy(s_fogTable, ws->fogTable, sizeof(s_fogTable));
+    s_colorMaskRgb = ws->colorMaskRgb != 0;
+    s_colorMaskAlpha = ws->colorMaskAlpha != 0;
 
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
         b->SetDepthState(s_depthMode, s_depthCompare, s_depthMask, s_depthBias);
@@ -568,6 +578,7 @@ FX_ENTRY void FX_CALL grGlideSetState(const GrState* state) {
         b->SetCullState(s_cullMode);
         b->SetSstOrigin(s_sstOrigin);
         b->SetClipWindow(s_clipMinX, s_clipMinY, s_clipMaxX, s_clipMaxY);
+        b->SetColorMask(s_colorMaskRgb, s_colorMaskAlpha);
         b->SetConstantColor(s_constantColor);
         b->SetFogMode(s_fogMode);
         b->SetFogColor(s_fogColor);
@@ -784,6 +795,51 @@ FX_ENTRY void FX_CALL grConstantColorValue(GrColor_t value) {
     s_constantColor = value;
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
         b->SetConstantColor(value);
+    }
+}
+
+FX_ENTRY void FX_CALL grConstantColorValue4(float a, float r, float g, float b) {
+    EnsureEngineInitialized();
+    GLIDE_LOG(DEBUG, "Frontend", "grConstantColorValue4 invoked: a=" << a << ", r=" << r << ", g=" << g << ", b=" << b);
+    uint32_t aInt = static_cast<uint32_t>(a + 0.5f);
+    uint32_t rInt = static_cast<uint32_t>(r + 0.5f);
+    uint32_t gInt = static_cast<uint32_t>(g + 0.5f);
+    uint32_t bInt = static_cast<uint32_t>(b + 0.5f);
+    aInt = std::max(0u, std::min(255u, aInt));
+    rInt = std::max(0u, std::min(255u, rInt));
+    gInt = std::max(0u, std::min(255u, gInt));
+    bInt = std::max(0u, std::min(255u, bInt));
+    uint32_t packed = (aInt << 24) | (rInt << 16) | (gInt << 8) | bInt;
+    grConstantColorValue(packed);
+}
+
+FX_ENTRY void FX_CALL grColorMask(FxBool rgb, FxBool a) {
+    EnsureEngineInitialized();
+    GLIDE_LOG(DEBUG, "Frontend", "grColorMask invoked: rgb=" << rgb << ", a=" << a);
+    s_colorMaskRgb = (rgb != 0);
+    s_colorMaskAlpha = (a != 0);
+    if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
+        b->SetColorMask(s_colorMaskRgb, s_colorMaskAlpha);
+    }
+}
+
+FX_ENTRY void FX_CALL grDisableAllEffects(void) {
+    EnsureEngineInitialized();
+    GLIDE_LOG(DEBUG, "Frontend", "grDisableAllEffects invoked");
+    s_rgbSrcBlend = 4;   // GR_BLEND_ONE
+    s_rgbDstBlend = 0;   // GR_BLEND_ZERO
+    s_alphaSrcBlend = 4; // GR_BLEND_ONE
+    s_alphaDstBlend = 0; // GR_BLEND_ZERO
+    s_depthCompare = 1;  // GR_CMP_ALWAYS
+    s_depthMask = false;
+    s_alphaTestOp = 7;   // GR_CMP_ALWAYS
+    s_fogMode = 0;       // GR_FOG_DISABLE
+    if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
+        b->SetBlendState(s_rgbSrcBlend, s_rgbDstBlend, s_alphaSrcBlend, s_alphaDstBlend);
+        b->SetDepthState(s_depthMode, s_depthCompare, s_depthMask, s_depthBias);
+        b->SetAlphaTestState(s_alphaTestOp, s_alphaTestRef);
+        b->SetFogMode(s_fogMode);
+        b->SetChromakeyMode(0); // Disable chromakey
     }
 }
 

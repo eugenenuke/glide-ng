@@ -237,7 +237,15 @@ void SoftwareBackend::DrawLine(const ModernVertex& v1, const ModernVertex& v2) {
         // Clip against scissor window
         if (x0 >= static_cast<int>(m_clipMinX) && x0 < static_cast<int>(m_clipMaxX) &&
             y0 >= clipMinY_resolved && y0 < clipMaxY_resolved) {
-            pixels[y0 * m_headlessWidth + x0] = color;
+            uint32_t finalColor = color;
+            if (!m_colorMaskRgb || !m_colorMaskAlpha) {
+                uint32_t oldColor = pixels[y0 * m_headlessWidth + x0];
+                uint32_t mask = 0;
+                if (m_colorMaskRgb)   mask |= 0x00FFFFFF;
+                if (m_colorMaskAlpha) mask |= 0xFF000000;
+                finalColor = (finalColor & mask) | (oldColor & ~mask);
+            }
+            pixels[y0 * m_headlessWidth + x0] = finalColor;
         }
 
         if (x0 == x1 && y0 == y1) break;
@@ -276,7 +284,15 @@ void SoftwareBackend::DrawPoint(const ModernVertex& pt) {
     // Clip against scissor window
     if (x >= static_cast<int>(m_clipMinX) && x < static_cast<int>(m_clipMaxX) &&
         y >= clipMinY_resolved && y < clipMaxY_resolved) {
-        pixels[y * m_headlessWidth + x] = color;
+        uint32_t finalColor = color;
+        if (!m_colorMaskRgb || !m_colorMaskAlpha) {
+            uint32_t oldColor = pixels[y * m_headlessWidth + x];
+            uint32_t mask = 0;
+            if (m_colorMaskRgb)   mask |= 0x00FFFFFF;
+            if (m_colorMaskAlpha) mask |= 0xFF000000;
+            finalColor = (finalColor & mask) | (oldColor & ~mask);
+        }
+        pixels[y * m_headlessWidth + x] = finalColor;
     }
 }
 
@@ -791,7 +807,15 @@ void SoftwareBackend::RasterizeSoftwareTriangleImpl(const ModernVertex& a, const
                           << std::hex << ((aVal << 24) | (rVal << 16) | (gVal << 8) | bVal) << std::dec);
             }
 
-            pixels[pIdx] = (aVal << 24) | (rVal << 16) | (gVal << 8) | bVal;
+            uint32_t finalColor = (aVal << 24) | (rVal << 16) | (gVal << 8) | bVal;
+            if (!m_colorMaskRgb || !m_colorMaskAlpha) {
+                uint32_t oldColor = pixels[pIdx];
+                uint32_t mask = 0;
+                if (m_colorMaskRgb)   mask |= 0x00FFFFFF;
+                if (m_colorMaskAlpha) mask |= 0xFF000000;
+                finalColor = (finalColor & mask) | (oldColor & ~mask);
+            }
+            pixels[pIdx] = finalColor;
         }
     };
 

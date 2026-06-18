@@ -64,6 +64,8 @@ struct PipelineStateKey {
     uint32_t rgbDstBlend;
     uint32_t alphaSrcBlend;
     uint32_t alphaDstBlend;
+    bool colorMaskRgb;
+    bool colorMaskAlpha;
 
     bool operator==(const PipelineStateKey& other) const {
         return cullMode == other.cullMode &&
@@ -74,7 +76,9 @@ struct PipelineStateKey {
                rgbSrcBlend == other.rgbSrcBlend &&
                rgbDstBlend == other.rgbDstBlend &&
                alphaSrcBlend == other.alphaSrcBlend &&
-               alphaDstBlend == other.alphaDstBlend;
+               alphaDstBlend == other.alphaDstBlend &&
+               colorMaskRgb == other.colorMaskRgb &&
+               colorMaskAlpha == other.colorMaskAlpha;
     }
 };
 
@@ -93,6 +97,8 @@ struct PipelineStateKeyHash {
         combine(k.rgbDstBlend);
         combine(k.alphaSrcBlend);
         combine(k.alphaDstBlend);
+        combine(k.colorMaskRgb ? 1 : 0);
+        combine(k.colorMaskAlpha ? 1 : 0);
         return h;
     }
 };
@@ -132,6 +138,7 @@ public:
     void SetAlphaTestState(uint32_t compareOp, uint32_t refVal) override;
     void SetSstOrigin(uint32_t origin) override;
     void SetClipWindow(uint32_t minX, uint32_t minY, uint32_t maxX, uint32_t maxY) override;
+    void SetColorMask(bool rgb, bool alpha) override;
     void SetConstantColor(uint32_t color) override;
     void SetRenderBuffer(uint32_t target) override;
     void SetPixelFormat(uint32_t format) override;
