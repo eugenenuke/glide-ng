@@ -16,6 +16,13 @@ REF_DIR = "tests/reference_dumps"
 
 # Dynamically resolve test dumps directory based on active backend
 backend = os.environ.get("GLIDE_BACKEND", "vulkan").lower()
+if backend in ["gles", "goes"]:
+    backend = "opengl_es"
+elif backend == "sw":
+    backend = "software"
+elif backend == "vk":
+    backend = "vulkan"
+
 if backend == "opengl_es":
     TEST_DIR = "tests/opengl_es_dumps"
 elif backend == "software":

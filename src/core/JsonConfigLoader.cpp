@@ -22,10 +22,18 @@ bool JsonConfigLoader::Load(const std::string& configFilePath, WrapperConfig& ou
         if (content.find("\"Voodoo5\"") != std::string::npos)        outConfig.model = CardModel::Voodoo5;
         
         if (content.find("\"opengl_es\"") != std::string::npos ||
-            content.find("\"gles\"") != std::string::npos) {
+            content.find("\"gles\"") != std::string::npos ||
+            content.find("\"goes\"") != std::string::npos) {
             outConfig.backend = "opengl_es";
         }
-        if (content.find("\"vulkan\"") != std::string::npos)         outConfig.backend = "vulkan";
+        if (content.find("\"vulkan\"") != std::string::npos ||
+            content.find("\"vk\"") != std::string::npos) {
+            outConfig.backend = "vulkan";
+        }
+        if (content.find("\"software\"") != std::string::npos ||
+            content.find("\"sw\"") != std::string::npos) {
+            outConfig.backend = "software";
+        }
             if (content.find("\"logToConsole\"") != std::string::npos) {
             outConfig.logToConsole = (content.find("\"logToConsole\": true") != std::string::npos ||
                                       content.find("\"logToConsole\":true") != std::string::npos);
@@ -55,9 +63,16 @@ bool JsonConfigLoader::Load(const std::string& configFilePath, WrapperConfig& ou
     }
 
     // Normalize backend aliases
-    if (outConfig.backend == "gles") {
+    if (outConfig.backend == "gles" || outConfig.backend == "goes") {
+        std::string original = outConfig.backend;
         outConfig.backend = "opengl_es";
-        GLIDE_LOG(INFO, "Config", "Normalized backend alias 'gles' to 'opengl_es'");
+        GLIDE_LOG(INFO, "Config", "Normalized backend alias '" << original << "' to 'opengl_es'");
+    } else if (outConfig.backend == "vk") {
+        outConfig.backend = "vulkan";
+        GLIDE_LOG(INFO, "Config", "Normalized backend alias 'vk' to 'vulkan'");
+    } else if (outConfig.backend == "sw") {
+        outConfig.backend = "software";
+        GLIDE_LOG(INFO, "Config", "Normalized backend alias 'sw' to 'software'");
     }
 
     if (const char* envModel = std::getenv("GLIDE_WRAPPER_CARD_MODEL")) {

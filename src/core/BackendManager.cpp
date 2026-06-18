@@ -30,15 +30,15 @@ IGraphicsBackend* BackendManager::GetBackend() {
 bool BackendManager::EstablishBackend(const WrapperConfig& config) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     if (!m_backend) {
-        if (config.backend == "opengl_es" || config.backend == "gles") {
+        if (config.backend == "opengl_es" || config.backend == "gles" || config.backend == "goes") {
             m_backend = std::make_unique<OpenGLESBackend>();
-        } else if (config.backend == "software") {
+        } else if (config.backend == "software" || config.backend == "sw") {
             m_backend = std::make_unique<SoftwareBackend>();
-        } else if (config.backend == "vulkan") {
+        } else if (config.backend == "vulkan" || config.backend == "vk") {
             m_backend = std::make_unique<VulkanBackend>();
         } else {
             GLIDE_LOG(CRITICAL, "Backend", "Unrecognized rendering backend specified: '" << config.backend 
-                      << "'. Supported backends are: vulkan, opengl_es (alias: gles), software.");
+                      << "'. Supported backends are: vulkan (alias: vk), opengl_es (aliases: gles, goes), software (alias: sw).");
             return false;
         }
     }

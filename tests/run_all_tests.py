@@ -36,7 +36,7 @@ def main():
     
     parser = argparse.ArgumentParser(description="Glide Wrapper Test Matrix Runner")
     parser.add_argument('--smoke', '-s', action='store_true', help="Run in fast smoke test mode (subset of tests)")
-    parser.add_argument('--backend', '-b', choices=['software', 'vulkan', 'opengl_es'], help="Filter by a specific backend")
+    parser.add_argument('--backend', '-b', choices=['software', 'sw', 'vulkan', 'vk', 'opengl_es', 'gles', 'goes'], help="Filter by a specific backend")
     parser.add_argument('--tests', '-t', help="Comma-separated list of visual tests to run (e.g., test00,test14)")
     parser.add_argument('--skip-unit', action='store_true', help="Skip running Catch2 unit tests")
     
