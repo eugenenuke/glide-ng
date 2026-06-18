@@ -40,7 +40,7 @@ public:
 
     int GetMaxFrames() const override { return m_maxFrames; }
     int GetCaptureFrameIndex() const override { return m_captureFrameIndex; }
-    std::vector<int> GetCaptureFrames() const override { return { m_captureFrameIndex }; }
+    std::vector<int> GetCaptureFrames() const override { return { 0, m_captureFrameIndex }; }
 
     void Initialize() override {
         tlSetScreen(scrWidth, scrHeight);

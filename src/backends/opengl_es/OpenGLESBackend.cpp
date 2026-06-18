@@ -1042,7 +1042,7 @@ void OpenGLESBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
 
     FlushLFBToGPU();
 
-    GLIDE_LOG(DEBUG, "GLES", "DrawTriangle GPU draw. A: (" << a.pos[0] << ", " << a.pos[1] << "), B: (" << b.pos[0] << ", " << b.pos[1] << "), C: (" << c.pos[0] << ", " << c.pos[1] << ")");
+    GLIDE_LOG(DEBUG, "GLES", "DrawTriangle GPU draw. A: (" << a.pos[0] << ", " << a.pos[1] << ", " << a.pos[2] << ", " << a.pos[3] << "), B: (" << b.pos[0] << ", " << b.pos[1] << ", " << b.pos[2] << ", " << b.pos[3] << "), C: (" << c.pos[0] << ", " << c.pos[1] << ", " << c.pos[2] << ", " << c.pos[3] << ")");
 
     // 1. Upload all three vertices directly to dynamic VBO ring buffer
     ModernVertex vertices[3] = { a, b, c };
@@ -1284,9 +1284,11 @@ void OpenGLESBackend::SyncCullStateGLES() {
 void OpenGLESBackend::PopulateUniforms() {
     glUniform1i(glGetUniformLocation(m_geomProgram, "uSstOrigin"), (int)m_sstOrigin);
     glUniform2f(glGetUniformLocation(m_geomProgram, "uViewportSize"), (float)m_headlessWidth, (float)m_headlessHeight);
-    bool depthClipOverride = (m_depthMode == 0) || (m_depthCompareOp == 7); // 7 = GR_CMP_ALWAYS (prevents uninitialized ooz stack garbage clipping in text overlays)
+    bool depthClipOverride = (m_depthMode == 0) || (m_depthCompareOp == 7 && !m_depthMask); // 7 = GR_CMP_ALWAYS (prevents uninitialized ooz stack garbage clipping in text overlays, but only if depth writes are disabled!)
     glUniform1i(glGetUniformLocation(m_geomProgram, "uDepthClipOverride"), depthClipOverride ? 1 : 0);
-    glUniform1i(glGetUniformLocation(m_geomProgram, "uDepthBufferMode"), m_depthMode);
+    GLint dbgLoc = glGetUniformLocation(m_geomProgram, "uDepthBufferMode");
+    GLIDE_LOG(DEBUG, "GLES", "Uploading uDepthBufferMode. Location: " << dbgLoc << ", Value: " << m_depthMode);
+    glUniform1i(dbgLoc, m_depthMode);
 
     float cr = ((m_constantColor >> 16) & 0xFF) / 255.0f;
     float cg = ((m_constantColor >> 8)  & 0xFF) / 255.0f;

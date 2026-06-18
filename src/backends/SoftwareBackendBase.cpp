@@ -64,7 +64,7 @@ void SoftwareBackendBase::SetDepthState(uint32_t depthMode, uint32_t compareOp, 
     m_depthCompareOp = compareOp;
     m_depthMask = depthMask;
     m_depthBiasLevel = biasLevel;
-    GLIDE_LOG(DEBUG, "Rasterizer", "SetDepthState: Mode=" << depthMode << ", Compare=" << compareOp << ", Mask=" << depthMask);
+    GLIDE_LOG(DEBUG, "Rasterizer", "SetDepthState: Mode=" << depthMode << ", Compare=" << compareOp << ", Mask=" << depthMask << ", BiasLevel=" << biasLevel);
 }
 
 void SoftwareBackendBase::SetBlendState(uint32_t rgbSrcFactor, uint32_t rgbDstFactor, uint32_t alphaSrcFactor, uint32_t alphaDstFactor) {
