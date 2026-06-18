@@ -8,9 +8,9 @@ This document serves as the authoritative coverage map for the **glide-ng** wrap
 
 | API Category | Implemented | Total | Coverage % |
 | :--- | :---: | :---: | :---: |
-| **Core Glide2 (`gr*`)** | 77 | 95 | 81.1% |
-| **Utility Library (`gu*`)** | 14 | 15 | 93.3% |
-| **Unified Glide2 Specification** | **91** | **110** | **82.7%** |
+| **Core Glide2 (`gr*`)** | 88 | 96 | 91.7% |
+| **Utility Library (`gu*`)** | 21 | 22 | 95.5% |
+| **Unified Glide2 Specification** | **109** | **118** | **92.4%** |
 
 ---
 
@@ -22,7 +22,7 @@ This document serves as the authoritative coverage map for the **glide-ng** wrap
 - [x] `grGlideGetVersion(char version[80])` — Retrieves the wrapper's version string.
 - [x] `grGlideGetState(GrState *state)` — Captures and serializes the entire active graphics context state.
 - [x] `grGlideSetState(const GrState *state)` — Restores the serialized graphics context state.
-- [ ] `grGlideShamelessPlug(const FxBool on)` — Renders the legacy 3dfx spinning logo splash overlay.
+- [x] `grGlideShamelessPlug(const FxBool on)` — Renders the legacy 3dfx spinning logo splash overlay.
 - [ ] `grGetProcAddress(char *procName)` — Dynamically resolves Glide API extension function pointers at runtime (Crucial Gap).
 
 ### 1.2. SST Hardware & Window Configuration
@@ -59,6 +59,7 @@ This document serves as the authoritative coverage map for the **glide-ng** wrap
 - [x] `grDrawPolygonVertexList(int n, const GrVertex *v)` — Renders a shaded polygon from a vertex list.
 - [x] `grResetTriStats(void)` — Resets drawing counters.
 - [x] `grTriStats(FxU32 *processed, FxU32 *drawn)` — Retrieves triangle drawing statistics.
+- [x] `grCullMode(GrCullMode_t mode)` — Configures polygon backface/frontface culling (GPU-native).
 
 ### 1.5. State Combiners & Blending
 - [x] `grColorCombine(fnc, factor, local, other, invert)` — Configures the RGB color combine unit equations.
@@ -67,13 +68,13 @@ This document serves as the authoritative coverage map for the **glide-ng** wrap
 - [x] `grAlphaTestFunction(GrCmpFnc_t function)` — Sets the comparison function for alpha testing.
 - [x] `grAlphaTestReferenceValue(GrAlpha_t value)` — Sets the reference value for alpha testing.
 - [x] `grConstantColorValue(GrColor_t value)` — Sets the constant color value utilized in the combiner stage.
-- [ ] `grConstantColorValue4(float a, float r, float g, float b)` — Sets constant color via floating-point channels.
+- [x] `grConstantColorValue4(float a, float r, float g, float b)` — Sets constant color via floating-point channels.
 - [x] `grChromakeyMode(GrChromakeyMode_t mode)` — Enables/disables hardware chroma-keying (discarding fragments matching a key).
 - [x] `grChromakeyValue(GrColor_t value)` — Sets the global chroma-key reference color.
 - [ ] `grAlphaControlsITRGBLighting(FxBool enable)` — Routes vertex alpha to control color combiner lighting equations.
-- [ ] `grColorMask(FxBool rgb, FxBool a)` — Enables/disables color and alpha channel write masks.
-- [ ] `grDisableAllEffects(void)` — Disables blending, fog, depth, and chromakeying instantly.
-- [ ] `grDitherMode(GrDitherMode_t mode)` — Configures color dithering modes for 16-bit color depths.
+- [x] `grColorMask(FxBool rgb, FxBool a)` — Enables/disables color and alpha channel write masks.
+- [x] `grDisableAllEffects(void)` — Disables blending, fog, depth, and chromakeying instantly.
+- [x] `grDitherMode(GrDitherMode_t mode)` — Configures color dithering modes for 16-bit color depths.
 
 ### 1.6. Depth Buffering & Clipping
 - [x] `grDepthBufferMode(GrDepthBufferMode_t mode)` — Enables/disables Z-buffering, W-buffering, or depth write.
@@ -101,24 +102,24 @@ This document serves as the authoritative coverage map for the **glide-ng** wrap
 - [x] `grTexMinAddress(GrChipID_t tmu)` — Returns the minimum memory address for a TMU.
 - [x] `grTexNCCTable(GrChipID_t tmu, GrNCCTable_t table)` — Downloads Narrow Channel Compression (NCC) tables.
 - [x] `grTexCombineFunction(GrChipID_t tmu, GrTextureCombineFnc_t fnc)` — Alternate legacy texture combiner config.
-- [ ] `grTexDetailControl(tmu, lod_bias, detail_scale, detail_max)` — Configures detail-texture blending.
+- [x] `grTexDetailControl(tmu, lod_bias, detail_scale, detail_max)` — Configures detail-texture blending.
 - [x] `grTexLodBiasValue(GrChipID_t tmu, float bias)` — Adjusts texture LOD selection bias.
 - [ ] `grTexDownloadMipMapLevelPartial(...)` — Uploads a partial slice of a mipmap level.
 - [ ] `ConvertAndDownloadRle(...)` — Decompresses and uploads Run-Length Encoded (RLE) textures.
 - [x] `grTexDownloadTable(tmu, type, data)` — Downloads custom color lookup tables (e.g., for paletted formats).
 - [x] `grTexDownloadTablePartial(...)` — Downloads a slice of a color lookup table.
-- [ ] `grTexMultibase(GrChipID_t tmu, FxBool enable)` — Enables multibase texturing (different textures per LOD).
-- [ ] `grTexMultibaseAddress(...)` — Sets the base address for multibase texturing.
+- [x] `grTexMultibase(GrChipID_t tmu, FxBool enable)` — Enables multibase texturing (different textures per LOD).
+- [x] `grTexMultibaseAddress(...)` — Sets the base address for multibase texturing.
 
 ### 1.9. Linear Frame Buffer (LFB) Access
 - [x] `grLfbLock(type, buffer, writeMode, origin, pipeline, info)` — Locks VRAM, returning a host-writable pointer.
 - [x] `grLfbUnlock(type, buffer)` — Unlocks VRAM, submitting direct CPU pixel writes to the graphics engine.
 - [x] `grLfbWriteRegion(dstBuf, dstX, dstY, srcFmt, width, height, stride, src)` — Direct CPU-to-VRAM block copy.
 - [x] `grLfbReadRegion(srcBuf, srcX, srcY, width, height, stride, dst)` — Direct VRAM-to-CPU block copy.
-- [ ] `grLfbConstantAlpha(GrAlpha_t alpha)` — Sets constant alpha value for direct LFB writes.
+- [x] `grLfbConstantAlpha(GrAlpha_t alpha)` — Sets constant alpha value for direct LFB writes.
 - [ ] `grLfbConstantDepth(FxU16 depth)` — Sets constant depth value for direct LFB writes.
 - [ ] `grLfbWriteColorSwizzle(swizzle, swap)` — Configures channel byte swizzling for LFB writes.
-- [ ] `grLfbWriteColorFormat(colorFormat)` — Configures color pixel formats for LFB writes.
+- [x] `grLfbWriteColorFormat(colorFormat)` — Configures color pixel formats for LFB writes.
 
 ### 1.10. Anti-Aliasing & Special Effects
 - [x] `grAADrawPoint(const GrVertex *pt)` — Draws an anti-aliased sub-pixel point.
@@ -147,6 +148,13 @@ This document serves as the authoritative coverage map for the **glide-ng** wrap
 - [x] `guTexCreateColorMipMap(void)` — Utility to generate a color-bar test mipmap pattern.
 - [x] `gu3dfGetInfo(const char *filename, Gu3dfInfo *info)` — Parses `.3df` texture file headers.
 - [x] `gu3dfLoad(const char *filename, Gu3dfInfo *data)` — Parses and loads `.3df` texture pixels into RAM.
+- [x] `guTexAllocateMemory(...)` — Utility helper to allocate space in TMU texture memory.
+- [x] `guTexChangeAttributes(...)` — Modifies properties of an existing texture.
+- [x] `guTexCombineFunction(...)` — High-level helper to configure texture combiners.
+- [x] `guTexDownloadMipMap(...)` — High-level helper to download an entire mipmap.
+- [x] `guTexGetCurrentMipMap(...)` — Retrieves active texture properties for a TMU.
+- [x] `guTexGetMipMapInfo(...)` — Extracts sizing and details from a texture info struct.
+- [x] `guTexSource(...)` — Binds high-level texture state to a TMU.
 
 ### 2.3. Fog Tables & Math
 - [x] `guFogTableIndexToW(int i)` — Maps a fog table index logarithmic octave back to planar depth $W$.
