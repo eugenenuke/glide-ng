@@ -4,6 +4,17 @@ This roadmap outlines our strategic plan to bridge the gap between our current w
 
 ---
 
+## 🧪 Rigorous Unit Testing Strategy
+
+To ensure absolute stability, visual correctness, and prevent regressions, **every single milestone will be accompanied by a dedicated unit test suite** integrated directly into our Catch2 testing architecture in [tests/test_architecture.cpp](file:///usr/local/google/home/eianiuk/gemini/3dfx/tests/test_architecture.cpp).
+
+Each test suite will:
+1.  **Resolve Function Pointers**: Dynamically load the wrapper's `libglide2x.so` front-end and resolve the new C API entry points via `dlsym`.
+2.  **Verify Functional Parity**: Call the APIs and assert that they return mathematically correct results.
+3.  **Validate Render State**: For drawing and state APIs, we will clear the framebuffer, draw test primitives using the new functions, read back the LFB via `grLfbReadRegion()`, and assert that the pixel values match our reference colors.
+
+---
+
 ## 🗺️ Architectural Milestones at a Glance
 
 ```mermaid
@@ -38,6 +49,14 @@ gantt
     *   `grSstIsBusy()` and `grBufferNumPending()` will return mock values (`FXFALSE` and `0` respectively) since modern host GPU rendering queues are dynamic and asynchronous.
     *   `grSstVideoLine()` and `grSstVRetraceOn()` will return simulated scanline counts based on the time elapsed since the last vertical swap (e.g., wrapping from 0 to 480 based on a 60Hz pacing timer).
     *   `grCheckForRoom()` will be a no-op (return immediately), as modern command buffers are dynamically sized.
+*   **Unit Testing Plan**:
+    *   Write a new Catch2 section `SECTION("Milestone 1: Hardware Queries & Pacing")` that:
+        1. Opens a window of size 800x600 via `grSstWinOpen`.
+        2. Asserts that `grSstScreenWidth()` returns `800` and `grSstScreenHeight()` returns `600`.
+        3. Asserts that `grSstIsBusy()` returns `FXFALSE`.
+        4. Asserts that `grBufferNumPending()` returns `0`.
+        5. Calls `grCheckForRoom(10)` and asserts it does not throw or block.
+        6. Queries `grSstVideoLine()` multiple times over a short sleep interval and asserts that it increments correctly.
 *   **Impact**: High. Immediately unblocks games that poll hardware status registers or query screen bounds before starting their rendering loops.
 
 ---
@@ -54,6 +73,11 @@ gantt
     *   On legacy 3dfx hardware, edge anti-aliasing was a complex, manual hardware stage. On modern GPUs, anti-aliasing is handled much more efficiently via Multi-Sample Anti-Aliasing (MSAA) at the swapchain level.
     *   Therefore, the industry-standard approach for Glide wrappers (like dgVoodoo) is to **forward all anti-aliased draw calls directly to their standard, non-anti-aliased counterparts**.
     *   E.g., `grAADrawTriangle(a, b, c, ...)` will simply call `grDrawTriangle(a, b, c)`.
+*   **Unit Testing Plan**:
+    *   Write a Catch2 section `SECTION("Milestone 2: Anti-Aliasing Forwarding")` that:
+        1. Clears the screen to Black.
+        2. Draws a test triangle using `grAADrawTriangle(...)` with anti-aliasing enabled on all edges.
+        3. Reads back the center pixel of the triangle via `grLfbReadRegion()` and asserts it was drawn correctly with the vertex color, confirming the forwarder executed successfully.
 *   **Impact**: High. Adds instant compatibility for games that enable "Smooth Edges" or "Anti-Aliasing" in their menus, with zero performance cost or rendering bugs.
 
 ---
@@ -69,6 +93,13 @@ gantt
     *   Any convex polygon with $n$ vertices can be mathematically decomposed into a fan of $n-2$ triangles.
     *   We will implement a shared geometry helper `DrawPolygonAsTriangleFan(int n, const GrVertex *vertices)` in our front-end wrapper. This helper will split the polygon and make sequential calls to our highly optimized `grDrawTriangle()`.
     *   For `grDrawPlanarPolygon` (flat-colored), we will set the flat-shading state, draw the triangles, and restore the state.
+*   **Unit Testing Plan**:
+    *   Write a Catch2 section `SECTION("Milestone 3: Polygon Fan Decomposition")` that:
+        1. Clears the screen to Black.
+        2. Defines a 5-vertex regular pentagon (convex polygon).
+        3. Renders it using `grDrawPolygonVertexList(5, vertices)`.
+        4. Reads back multiple pixels located inside the pentagon's boundaries and asserts that they match the expected color.
+        5. Asserts that pixels outside the pentagon remain Black, verifying correct decomposition and rasterization.
 *   **Impact**: High. Instantly implements 5 polygon rendering APIs using our existing, fully verified triangle rasterization pipeline!
 
 ---
@@ -88,6 +119,12 @@ gantt
       grDepthBufferMode(GR_DEPTHDISABLE);
       grChromakeyMode(GR_CHROMAKEY_DISABLE);
       ```
+*   **Unit Testing Plan**:
+    *   Write a Catch2 section `SECTION("Milestone 4: Shortcut State Config")` that:
+        1. Calls `grConstantColorValue4(1.0f, 0.5f, 0.25f, 0.125f)` and queries the internal context color to assert it was correctly converted to the integer `0xFF804020`.
+        2. Configures `grColorMask(FXFALSE, FXFALSE)` (capping all writes).
+        3. Draws a bright red triangle and reads the LFB to assert that the screen remains completely black (verifying write masking).
+        4. Calls `grDisableAllEffects()` and asserts that the state flags for blend, depth, fog, and chroma are all turned off.
 *   **Impact**: Moderate. Standardizes state tracking and ensures complex games can cleanly reset their pipelines.
 
 ---
@@ -102,6 +139,11 @@ gantt
     *   These functions configure the pixel format, channel swizzling, and constant properties for direct CPU writes to the frame buffer.
     *   We will store these configurations as state variables in our global `GrState` context.
     *   We will update our existing `grLfbLock` / `grLfbUnlock` and `grLfbWriteRegion` implementations to inspect these swizzle/format parameters and correctly transform the pixel buffer before presenting it to the screen.
+*   **Unit Testing Plan**:
+    *   Write a Catch2 section `SECTION("Milestone 5: LFB Pixel Formatting")` that:
+        1. Calls `grLfbWriteColorSwizzle(GR_SWIZZLE_BGRA, FXTRUE)` to enable channel swapping.
+        2. Locks the LFB via `grLfbLock()`, writes a raw test block of pixels, and unlocks.
+        3. Reads back the region and asserts that the red and blue channels were correctly swapped and swizzled, validating the LFB processor.
 *   **Impact**: Moderate. Resolves color-swapping or depth-writing issues in games that render 2D UI overlays or video cutscenes via direct LFB pixel copying.
 
 ---
@@ -121,13 +163,17 @@ gantt
     *   `grTexTextureMemRequired()` is a trivial variant of `grTexCalcMemRequired()`.
     *   `grTexLodBiasValue()` adjusts texture mipmap LOD selection bias, which we will map directly to Vulkan's `mipLodBias` in the sampler or GLES's texture parameters.
     *   The remaining `guTex*` utility functions are high-level state setup helpers that calculate memory bounds or configure combining modes. We will implement them on the host side by calling our standard `grTexSource` and `grTexCombine` APIs.
+*   **Unit Testing Plan**:
+    *   Write a Catch2 section `SECTION("Milestone 6: Advanced Texturing & Utilities")` that:
+        1. Asserts that `grTexTextureMemRequired()` returns the mathematically correct byte size for a 16x16 RGB_565 texture.
+        2. Calls high-level helpers like `guTexAllocateMemory()` and verifies that they correctly populate the texture handle structures.
+        3. Configures a LodBias and asserts that it compiles into the active texture sampler state.
 *   **Impact**: Moderate. Ensures advanced mipmapping, detail texturing, and custom texture utilities operate perfectly.
 
 ---
 
 ## 📈 Effective Coverage Projection
 
-Implementing these milestones will increase our API coverage as follows:
 
 | Stage | Core `gr*` Implemented | Utility `gu*` Implemented | Total Implemented | Effective Coverage % |
 | :--- | :---: | :---: | :---: | :---: |
