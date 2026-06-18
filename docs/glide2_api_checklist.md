@@ -8,9 +8,9 @@ This document serves as the authoritative coverage map for the **glide-ng** wrap
 
 | API Category | Implemented | Total | Coverage % |
 | :--- | :---: | :---: | :---: |
-| **Core Glide2 (`gr*`)** | 71 | 94 | 75.5% |
+| **Core Glide2 (`gr*`)** | 73 | 94 | 77.7% |
 | **Utility Library (`gu*`)** | 14 | 15 | 93.3% |
-| **Unified Glide2 Specification** | **85** | **109** | **78.0%** |
+| **Unified Glide2 Specification** | **87** | **109** | **79.8%** |
 
 ---
 
@@ -52,8 +52,8 @@ This document serves as the authoritative coverage map for the **glide-ng** wrap
 - [x] `grDrawPoint(const GrVertex *pt)` — Renders a single pixel point (GPU-native in Vulkan/GLES).
 - [x] `grDrawLine(const GrVertex *v1, const GrVertex *v2)` — Renders a 2D line with flat/Gouraud shading (GPU-native).
 - [x] `grDrawTriangle(const GrVertex *a, const GrVertex *b, const GrVertex *c)` — Renders a Gouraud-shaded 2D triangle (GPU-native).
-- [ ] `grDrawPlanarPolygon(int n, const int *i, const GrVertex *v)` — Renders a flat-colored convex polygon.
-- [ ] `grDrawPlanarPolygonVertexList(int n, const GrVertex *v)` — Renders a flat-colored polygon from a vertex list.
+- [x] `grDrawPlanarPolygon(int n, const int *i, const GrVertex *v)` — Renders a flat-colored convex polygon.
+- [x] `grDrawPlanarPolygonVertexList(int n, const GrVertex *v)` — Renders a flat-colored polygon from a vertex list.
 - [x] `grDrawPolygon(int n, const int *i, const GrVertex *v)` — Renders a shaded polygon.
 - [x] `grDrawPolygonVertexList(int n, const GrVertex *v)` — Renders a shaded polygon from a vertex list.
 - [x] `grResetTriStats(void)` — Resets drawing counters.
