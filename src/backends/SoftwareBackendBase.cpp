@@ -31,11 +31,31 @@ void SoftwareBackendBase::ClearBuffer(uint32_t color, uint32_t alpha, float z, u
             std::swap(r, b);
         }
 
-        uint32_t clearWord = (a << 24) | (r << 16) | (g << 8) | b;
-        m_lastCpuClearColor = clearWord & 0x00FFFFFF; // Track clear color with alpha = 0!
-        uint32_t* pixels = reinterpret_cast<uint32_t*>(m_headlessPixelMap);
-        std::fill_n(pixels, m_headlessWidth * m_headlessHeight, clearWord);
-        GLIDE_LOG(DEBUG, "Rasterizer", "Cleared color buffer with word 0x" << std::hex << clearWord << std::dec);
+        uint32_t writeMask = 0;
+        if (m_colorMaskRgb)   writeMask |= 0x00FFFFFF;
+        if (m_colorMaskAlpha) writeMask |= 0xFF000000;
+
+        if (writeMask == 0) {
+            GLIDE_LOG(DEBUG, "Rasterizer", "ClearBuffer color clear skipped due to zero color mask (write masking active).");
+        } else {
+            uint32_t clearWord = (a << 24) | (r << 16) | (g << 8) | b;
+            m_lastCpuClearColor = clearWord & 0x00FFFFFF; // Track clear color with alpha = 0!
+            uint32_t* pixels = reinterpret_cast<uint32_t*>(m_headlessPixelMap);
+            uint32_t totalPixels = m_headlessWidth * m_headlessHeight;
+
+            if (writeMask == 0xFFFFFFFF) {
+                // Fast path: write mask fully enabled, overwrite everything
+                std::fill_n(pixels, totalPixels, clearWord);
+            } else {
+                // Slow path: write mask partially enabled, preserve masked-out bits
+                uint32_t keepMask = ~writeMask;
+                uint32_t maskedClearWord = clearWord & writeMask;
+                for (uint32_t i = 0; i < totalPixels; ++i) {
+                    pixels[i] = (pixels[i] & keepMask) | maskedClearWord;
+                }
+            }
+            GLIDE_LOG(DEBUG, "Rasterizer", "Cleared color buffer with word 0x" << std::hex << clearWord << " using write mask 0x" << writeMask << std::dec);
+        }
     }
 
     if (clearMask & 0x2) { // Depth Clear

@@ -450,6 +450,16 @@ void VulkanBackend::DetachWindow() {
         m_depthImageView.reset();
         m_depthImageMemory.reset();
         m_depthImage.reset();
+
+        // Explicitly reset MSAA resources
+        for (int i = 0; i < 2; ++i) {
+            m_msaaColorImageViews[i].reset();
+            m_msaaColorImageMemories[i].reset();
+            m_msaaColorImages[i].reset();
+        }
+        m_msaaDepthImageView.reset();
+        m_msaaDepthImageMemory.reset();
+        m_msaaDepthImage.reset();
     }
 
     m_windowAttached = false;

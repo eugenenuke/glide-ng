@@ -3,6 +3,7 @@
 #include <fstream>
 #include <sstream>
 #include <cstdlib>
+#include <iostream>
 
 namespace GlideWrapper {
 
@@ -69,10 +70,23 @@ bool JsonConfigLoader::Load(const std::string& configFilePath, WrapperConfig& ou
     }
 
     // Process Environment Overrides (Highest Priority next to app arguments)
-    const char* envBackend = std::getenv("GLIDE_BACKEND");
-    if (!envBackend) {
-        envBackend = std::getenv("GLIDE_WRAPPER_BACKEND");
+    const char* envWrapperBackend = std::getenv("GLIDE_WRAPPER_BACKEND");
+    const char* envLegacyBackend  = std::getenv("GLIDE_BACKEND");
+
+    if (envWrapperBackend && envLegacyBackend) {
+        GLIDE_LOG(CRITICAL, "Config", "ENVIRONMENT CONFLICT: Both 'GLIDE_WRAPPER_BACKEND' ("
+            << envWrapperBackend << ") and legacy alias 'GLIDE_BACKEND' ("
+            << envLegacyBackend << ") are set simultaneously! This is highly ambiguous. "
+            << "Please unset one of these variables to resolve the conflict.");
+        std::cerr << "\n===============================================================================\n"
+                  << "[CRIT] [Config] ENVIRONMENT CONFLICT: Both 'GLIDE_WRAPPER_BACKEND' and 'GLIDE_BACKEND'\n"
+                  << "               are set simultaneously! This is ambiguous. Aborting execution.\n"
+                  << "               Please unset one of these environment variables.\n"
+                  << "===============================================================================\n\n";
+        std::exit(EXIT_FAILURE);
     }
+
+    const char* envBackend = envWrapperBackend ? envWrapperBackend : envLegacyBackend;
     if (envBackend) {
         outConfig.backend = envBackend;
         GLIDE_LOG(WARN, "Config", "Overrode active Rendering Backend via environment=" << outConfig.backend);

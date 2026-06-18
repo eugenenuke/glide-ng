@@ -264,6 +264,11 @@ void OpenGLESBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z, uint3
     }
 
     if (mask != 0) {
+        // Apply active color write mask so glClear color clear respects the active color mask!
+        if (mask & GL_COLOR_BUFFER_BIT) {
+            ApplyColorMaskGLES();
+        }
+
         // In OpenGL, glClear is affected by the active scissor box.
         // But Glide grBufferClear always clears the entire screen.
         // We must temporarily disable the scissor test to force a full-screen clear!
@@ -951,6 +956,8 @@ void OpenGLESBackend::DrawPoint(const ModernVertex& pt) {
 
     FlushLFBToGPU();
 
+    m_is2DGeometry = (pt.pos[3] == 1.0f);
+
     GLIDE_LOG(DEBUG, "GLES", "DrawPoint GPU draw. Pos: (" << pt.pos[0] << ", " << pt.pos[1] << ", " << pt.pos[2] << ")");
 
     // 1. Upload vertex to dynamic VBO ring buffer
@@ -994,6 +1001,8 @@ void OpenGLESBackend::DrawLine(const ModernVertex& v0, const ModernVertex& v1) {
     if (!m_initialized || !m_windowAttached) return;
 
     FlushLFBToGPU();
+
+    m_is2DGeometry = (v0.pos[3] == 1.0f && v1.pos[3] == 1.0f);
 
     GLIDE_LOG(DEBUG, "GLES", "DrawLine GPU draw. V0: (" << v0.pos[0] << ", " << v0.pos[1] << "), V1: (" << v1.pos[0] << ", " << v1.pos[1] << ")");
     GLIDE_LOG(DEBUG, "GLES", "DrawLine Colors. V0: (" << v0.color[0] << "," << v0.color[1] << "," << v0.color[2] << "," << v0.color[3] << "), V1: (" << v1.color[0] << "," << v1.color[1] << "," << v1.color[2] << "," << v1.color[3] << ")");
@@ -1041,6 +1050,8 @@ void OpenGLESBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
     if (!m_initialized || !m_windowAttached) return;
 
     FlushLFBToGPU();
+
+    m_is2DGeometry = (a.pos[3] == 1.0f && b.pos[3] == 1.0f && c.pos[3] == 1.0f);
 
     GLIDE_LOG(DEBUG, "GLES", "DrawTriangle GPU draw. A: (" << a.pos[0] << ", " << a.pos[1] << ", " << a.pos[2] << ", " << a.pos[3] << "), B: (" << b.pos[0] << ", " << b.pos[1] << ", " << b.pos[2] << ", " << b.pos[3] << "), C: (" << c.pos[0] << ", " << c.pos[1] << ", " << c.pos[2] << ", " << c.pos[3] << ")");
 
@@ -1284,7 +1295,7 @@ void OpenGLESBackend::SyncCullStateGLES() {
 void OpenGLESBackend::PopulateUniforms() {
     glUniform1i(glGetUniformLocation(m_geomProgram, "uSstOrigin"), (int)m_sstOrigin);
     glUniform2f(glGetUniformLocation(m_geomProgram, "uViewportSize"), (float)m_headlessWidth, (float)m_headlessHeight);
-    bool depthClipOverride = (m_depthMode == 0) || (m_depthCompareOp == 7 && !m_depthMask); // 7 = GR_CMP_ALWAYS (prevents uninitialized ooz stack garbage clipping in text overlays, but only if depth writes are disabled!)
+    bool depthClipOverride = (m_depthMode == 0) || (m_depthCompareOp == 7 && (!m_depthMask || m_is2DGeometry)); // 7 = GR_CMP_ALWAYS (prevents uninitialized ooz stack garbage clipping in text overlays, but only if depth writes are disabled OR if it's 2D geometry!)
     glUniform1i(glGetUniformLocation(m_geomProgram, "uDepthClipOverride"), depthClipOverride ? 1 : 0);
     GLint dbgLoc = glGetUniformLocation(m_geomProgram, "uDepthBufferMode");
     GLIDE_LOG(DEBUG, "GLES", "Uploading uDepthBufferMode. Location: " << dbgLoc << ", Value: " << m_depthMode);

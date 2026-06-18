@@ -75,6 +75,7 @@ private:
     void FlushLFBToGPU();
     std::vector<uint32_t> m_swizzleBuffer;
     uint32_t m_msaaSamples{1};
+    bool m_is2DGeometry{true};
 };
 
 } // namespace GlideWrapper

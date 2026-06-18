@@ -3,6 +3,7 @@
 #include "core/IGraphicsBackend.h"
 #include <memory>
 #include <mutex>
+#include <string>
 
 namespace GlideWrapper {
 
@@ -24,6 +25,7 @@ private:
 
     std::recursive_mutex m_mutex;
     std::unique_ptr<IGraphicsBackend> m_backend;
+    std::string m_activeBackendName;
 };
 
 } // namespace GlideWrapper

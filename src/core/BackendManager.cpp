@@ -1,4 +1,6 @@
 #include "BackendManager.h"
+#include <algorithm>
+#include <cctype>
 #include "backends/vulkan/VulkanBackend.h"
 #include "backends/opengl_es/OpenGLESBackend.h"
 #include "backends/software/SoftwareBackend.h"
@@ -29,13 +31,30 @@ IGraphicsBackend* BackendManager::GetBackend() {
 
 bool BackendManager::EstablishBackend(const WrapperConfig& config) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    if (m_backend) return true;
+
+    // Resolve requested backend name from config (already resolved/validated by JsonConfigLoader)
+    std::string requested = config.backend;
+
+    // Normalize to lowercase for case-insensitive matching
+    std::transform(requested.begin(), requested.end(), requested.begin(), [](unsigned char c) {
+        return std::tolower(c);
+    });
+
+    if (requested == "gles" || requested == "goes" || requested == "opengl_es") requested = "opengl_es";
+    else if (requested == "sw" || requested == "software") requested = "software";
+    else if (requested == "vk" || requested == "vulkan") requested = "vulkan";
+
     if (!m_backend) {
-        if (config.backend == "opengl_es" || config.backend == "gles" || config.backend == "goes") {
+        if (requested == "opengl_es") {
             m_backend = std::make_unique<OpenGLESBackend>();
-        } else if (config.backend == "software" || config.backend == "sw") {
+            m_activeBackendName = "opengl_es";
+        } else if (requested == "software") {
             m_backend = std::make_unique<SoftwareBackend>();
-        } else if (config.backend == "vulkan" || config.backend == "vk") {
+            m_activeBackendName = "software";
+        } else if (requested == "vulkan") {
             m_backend = std::make_unique<VulkanBackend>();
+            m_activeBackendName = "vulkan";
         } else {
             GLIDE_LOG(CRITICAL, "Backend", "Unrecognized rendering backend specified: '" << config.backend 
                       << "'. Supported backends are: vulkan (alias: vk), opengl_es (aliases: gles, goes), software (alias: sw).");
@@ -51,6 +70,7 @@ void BackendManager::ShutdownBackend() {
         m_backend->Shutdown();
         m_backend.reset();
     }
+    m_activeBackendName.clear();
     // Purge the core texture manager cache to reset state for the next context
     TextureManager::GetInstance().Reset();
     // Purge and reset all telemetry statistics
