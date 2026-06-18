@@ -8,9 +8,9 @@ This document serves as the authoritative coverage map for the **glide-ng** wrap
 
 | API Category | Implemented | Total | Coverage % |
 | :--- | :---: | :---: | :---: |
-| **Core Glide2 (`gr*`)** | 56 | 94 | 59.6% |
+| **Core Glide2 (`gr*`)** | 64 | 94 | 68.1% |
 | **Utility Library (`gu*`)** | 12 | 15 | 80.0% |
-| **Unified Glide2 Specification** | **68** | **109** | **62.4%** |
+| **Unified Glide2 Specification** | **76** | **109** | **69.7%** |
 
 ---
 
@@ -33,12 +33,12 @@ This document serves as the authoritative coverage map for the **glide-ng** wrap
 - [x] `grSstOrigin(GrOriginLocation_t origin)` — Configures coordinate origin orientation (upper-left vs. lower-left).
 - [x] `grSstIdle(void)` — Blocks until the graphics pipeline completes all pending commands.
 - [ ] `grSstControl(FxU32 code)` — Direct register level control interface for hardware-specific actions.
-- [ ] `grSstVideoLine(void)` — Returns the current raster line being drawn to the monitor.
-- [ ] `grSstVRetraceOn(void)` — Checks if the screen is undergoing vertical retrace.
-- [ ] `grSstIsBusy(void)` — Checks if the graphics hardware is currently executing draw commands.
-- [ ] `grSstScreenHeight(void)` — Returns the screen height in pixels.
-- [ ] `grSstScreenWidth(void)` — Returns the screen width in pixels.
-- [ ] `grSstStatus(void)` — Returns the raw status register bits of the Voodoo chip.
+- [x] `grSstVideoLine(void)` — Returns the current raster line being drawn to the monitor.
+- [x] `grSstVRetraceOn(void)` — Checks if the screen is undergoing vertical retrace.
+- [x] `grSstIsBusy(void)` — Checks if the graphics hardware is currently executing draw commands.
+- [x] `grSstScreenHeight(void)` — Returns the screen height in pixels.
+- [x] `grSstScreenWidth(void)` — Returns the screen width in pixels.
+- [x] `grSstStatus(void)` — Returns the raw status register bits of the Voodoo chip.
 - [x] `grSstPerfStats(GrSstPerfStats_t *stats)` — Gathers hardware execution performance metrics.
 - [x] `grSstResetPerfStats(void)` — Resets hardware performance metrics.
 
@@ -46,7 +46,7 @@ This document serves as the authoritative coverage map for the **glide-ng** wrap
 - [x] `grBufferClear(GrColor_t c, GrAlpha_t a, FxU16 d)` — Clears color, alpha, and depth buffers (GPU-native in Vulkan/GLES).
 - [x] `grBufferSwap(int swap_interval)` — Swaps front and back buffers, triggering presentation and overlay compositing.
 - [x] `grRenderBuffer(GrBuffer_t buffer)` — Sets the target buffer for subsequent draw commands (front, back, depth).
-- [ ] `grBufferNumPending(void)` — Returns the number of swap commands queued but not yet executed.
+- [x] `grBufferNumPending(void)` — Returns the number of swap commands queued but not yet executed.
 
 ### 1.4. Drawing & Geometry Primitives
 - [x] `grDrawPoint(const GrVertex *pt)` — Renders a single pixel point (GPU-native in Vulkan/GLES).
@@ -126,7 +126,7 @@ This document serves as the authoritative coverage map for the **glide-ng** wrap
 - [ ] `grAADrawPolygon(int n, const int *i, const GrVertex *v)` — Draws an anti-aliased polygon.
 - [ ] `grAADrawPolygonVertexList(int n, const GrVertex *v)` — Draws an anti-aliased polygon from a vertex list.
 - [x] `grGetString(FxU32 pname)` — Retrieves graphics driver extensions and device info.
-- [ ] `grCheckForRoom(FxI32 n)` — Stalls until the command queue has room for `n` entries.
+- [x] `grCheckForRoom(FxI32 n)` — Stalls until the command queue has room for `n` entries.
 - [ ] `grGammaCorrectionValue(float value)` — Configures hardware monitor gamma correction.
 - [ ] `grSplash(...)` — Renders a 3dfx splash screen sequence.
 - [x] `grHints(GrHint_t hintType, FxU32 hintMask)` — Provides rendering hints (e.g. sub-pixel precision, separate TMU W-routing).
