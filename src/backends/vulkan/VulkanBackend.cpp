@@ -777,7 +777,7 @@ bool VulkanBackend::SwapBuffers() {
         FlushBatch();
     }
     
-    // Check if we have any pending LoadOp clears. If yes, execute them now by beginning and ending a render pass.
+    // Check if we have any pending LoadOp clears. If yes, execute them now.
     uint32_t activeIdx = GetActiveGpuBufferIdx();
     if (!m_inRenderPass && (m_clearColorPending[activeIdx] || m_clearDepthPending[activeIdx])) {
         EnsureRenderPassActive();
@@ -788,43 +788,100 @@ bool VulkanBackend::SwapBuffers() {
         m_inRenderPass = false;
     }
 
-    // 2. Mode-specific presentation / execution dispatch
-    //
-    // ARCHITECTURAL DESIGN NOTE (SYNC VS ASYNC PRESENTATION):
-    // * WINDOWED/INTERACTIVE MODE (Synchronous):
-    //   Because windowed presentation blits the CPU-side double-buffer (m_headlessPixelMap) to the SDL window,
-    //   we must ensure that the CPU buffer is in perfect sync with the GPU before the frame ends.
-    //   Pipelining this asynchronously with a 1-frame delay caused a startup blink (displaying unitialized 
-    //   staging memory on frame 0) and out-of-sync CPU readbacks (causing interactive tests to fail initial frames).
-    //   To guarantee 0-frame latency, zero blinking, and immediate correctness of interactive readbacks, 
-    //   windowed mode executes SYNCHRONOUSLY by immediately awaiting the current frame's GPU fence.
-    // * HEADLESS MODE (Asynchronous):
-    //   Headless mode preserves 100% asynchronous, pipelined double-buffered queue execution. This guarantees 
-    //   maximum performance and zero CPU stalls during automated visual regression runs, where rendering speed is 
-    //   the primary metric and readbacks only occur via explicit, synchronous ReadLFB calls.
-    if (!m_config.forceNoWindow && m_sdlWindow && m_headlessPixelMap) {
-        // --- WINDOWED MODE PRESENTATION (Synchronous Correct Presentation) ---
+    if (m_swapchain) {
+        // --- WINDOWED SWAPCHAIN PRESENTATION MODE (100% GPU-Native) ---
 
-        // 2.1. Cache CPU-rendered text/geometry pixels (e.g. from LFB)
-        std::vector<uint32_t> cpuRenderingCache(m_headlessWidth * m_headlessHeight, 0);
-        const auto* cpuPixels = reinterpret_cast<const uint32_t*>(m_headlessPixelMap);
-        bool hasCpuRendering = false;
-        size_t cpuPixelCount = 0;
+        // 1. Acquire the next available presentation swapchain image index
+        uint32_t imageIndex = 0;
+        vk::Result acquireRes = m_device->acquireNextImageKHR(
+            m_swapchain.get(),
+            UINT64_MAX,
+            m_imageAvailableSemaphores[m_currentFrameSlot].get(),
+            nullptr,
+            &imageIndex
+        );
 
-        if (cpuPixels) {
-            for (size_t i = 0; i < cpuRenderingCache.size(); ++i) {
-                if ((cpuPixels[i] >> 24) != 0) {
-                    cpuRenderingCache[i] = cpuPixels[i];
-                    hasCpuRendering = true;
-                    cpuPixelCount++;
-                }
-            }
+        if (acquireRes == vk::Result::eErrorOutOfDateKHR) {
+            GLIDE_LOG(WARN, "Vulkan", "AcquireNextImage: Swapchain is out of date. Skipped frame presentation.");
+            return false;
+        } else if (acquireRes != vk::Result::eSuccess && acquireRes != vk::Result::eSuboptimalKHR) {
+            GLIDE_LOG(CRITICAL, "Vulkan", "Failed to acquire next swapchain image: " << vk::to_string(acquireRes));
+            return false;
         }
-        GLIDE_LOG(DEBUG, "Vulkan", "SwapBuffers: Cache CPU pixels phase. Found " << cpuPixelCount << " non-transparent CPU pixels.");
 
-        // 2.2. Execute GPU presentation copy for the CURRENT frame slot
+        // 2. Record GPU-to-GPU copy from our active offscreen FBO image to the acquired swapchain image
         vk::ImageSubresourceRange range(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1);
-        uint32_t activeIdx = GetActiveGpuBufferIdx();
+        
+        // Transition layouts: FBO to Src, Swapchain to Dst
+        TransitionImageLayout(*m_commandBuffer, m_headlessImages[activeIdx].get(), vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eTransferSrcOptimal, range);
+        TransitionImageLayout(*m_commandBuffer, m_swapchainImages[imageIndex], vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, range);
+
+        vk::ImageCopy copyRegion;
+        copyRegion.srcSubresource = vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
+        copyRegion.srcOffset = vk::Offset3D(0, 0, 0);
+        copyRegion.dstSubresource = vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
+        copyRegion.dstOffset = vk::Offset3D(0, 0, 0);
+        copyRegion.extent = vk::Extent3D(m_headlessWidth, m_headlessHeight, 1);
+        
+        m_commandBuffer->copyImage(
+            m_headlessImages[activeIdx].get(), vk::ImageLayout::eTransferSrcOptimal,
+            m_swapchainImages[imageIndex], vk::ImageLayout::eTransferDstOptimal,
+            1, &copyRegion
+        );
+
+        // Transition layouts back: FBO to Attachment (for next frame draws), Swapchain to Present
+        TransitionImageLayout(*m_commandBuffer, m_headlessImages[activeIdx].get(), vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::eColorAttachmentOptimal, range);
+        TransitionImageLayout(*m_commandBuffer, m_swapchainImages[imageIndex], vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::ePresentSrcKHR, range);
+
+        // End command buffer recording
+        m_commandBuffer->end();
+
+        // 3. Submit GPU copy commands, waiting on image availability and signaling render completion
+        m_device->resetFences(1, &m_fences[m_currentFrameSlot].get());
+
+        vk::PipelineStageFlags waitStages[] = { vk::PipelineStageFlagBits::eColorAttachmentOutput };
+        vk::SubmitInfo submitInfo(
+            1, &m_imageAvailableSemaphores[m_currentFrameSlot].get(),
+            waitStages,
+            1, m_commandBuffer,
+            1, &m_renderFinishedSemaphores[m_currentFrameSlot].get()
+        );
+
+        m_graphicsQueue.submit(submitInfo, m_fences[m_currentFrameSlot].get());
+
+        // 4. Queue the swapchain image for presentation on the screen!
+        vk::PresentInfoKHR presentInfo(
+            1, &m_renderFinishedSemaphores[m_currentFrameSlot].get(),
+            1, &m_swapchain.get(),
+            &imageIndex,
+            nullptr
+        );
+
+        vk::Result presentRes = m_graphicsQueue.presentKHR(presentInfo);
+        if (presentRes == vk::Result::eErrorOutOfDateKHR || presentRes == vk::Result::eSuboptimalKHR) {
+            GLIDE_LOG(WARN, "Vulkan", "Present: Swapchain is out of date or suboptimal.");
+        } else if (presentRes != vk::Result::eSuccess) {
+            GLIDE_LOG(CRITICAL, "Vulkan", "Failed to present swapchain image: " << vk::to_string(presentRes));
+        }
+
+        // Clean up any recompiled mid-frame pipelines
+        m_danglingPipelines.clear();
+
+        // 5. Advance to the next frame slot and wait for its fence to become free before starting the next frame
+        m_currentFrameSlot = (m_currentFrameSlot + 1) % 2;
+        m_texStagingOffsets[m_currentFrameSlot] = m_currentFrameSlot * m_texStagingSlotSize;
+
+        m_commandBuffer = &m_commandBuffers[m_currentFrameSlot].get();
+        if (m_device->waitForFences(1, &m_fences[m_currentFrameSlot].get(), VK_TRUE, UINT64_MAX) != vk::Result::eSuccess) {
+            GLIDE_LOG(CRITICAL, "Vulkan", "Failed to wait for fence of next frame slot " << m_currentFrameSlot);
+        }
+        
+        m_commandBuffer->reset({});
+        m_commandBuffer->begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
+
+    } else {
+        // --- HEADLESS OFFSCREEN MODE (Asynchronous Staging Stash) ---
+        vk::ImageSubresourceRange range(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1);
         TransitionImageLayout(*m_commandBuffer, m_headlessImages[activeIdx].get(), vk::ImageLayout::eColorAttachmentOptimal, vk::ImageLayout::eTransferSrcOptimal, range);
 
         vk::BufferImageCopy region;
@@ -835,83 +892,24 @@ bool VulkanBackend::SwapBuffers() {
 
         TransitionImageLayout(*m_commandBuffer, m_headlessImages[activeIdx].get(), vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::eColorAttachmentOptimal, range);
 
-        // End and submit GPU commands for the CURRENT frame slot, associating it with its fence!
         m_commandBuffer->end();
         
-        // Reset the fence for the current slot before submitting!
         m_device->resetFences(1, &m_fences[m_currentFrameSlot].get());
         
         vk::SubmitInfo submitInfo(0, nullptr, nullptr, 1, m_commandBuffer);
         m_graphicsQueue.submit(submitInfo, m_fences[m_currentFrameSlot].get());
 
-        // Wait for the CURRENT frame's GPU copy to complete immediately!
-        if (m_device->waitForFences(1, &m_fences[m_currentFrameSlot].get(), VK_TRUE, UINT64_MAX) != vk::Result::eSuccess) {
-            GLIDE_LOG(CRITICAL, "Vulkan", "Failed to wait for fence of current frame slot " << m_currentFrameSlot);
-        }
-
-        // Now it is 100% safe to destroy any pipelines that were recompiled mid-frame!
         m_danglingPipelines.clear();
 
-        // Explicitly invalidate mapped memory range of the current slot to force CPU cache refresh!
-        vk::MappedMemoryRange memRange(m_headlessPixelMemories[m_currentFrameSlot].get(), 0, VK_WHOLE_SIZE);
-        m_device->invalidateMappedMemoryRanges(memRange);
-
-        // Copy the GPU-rendered framebuffer from the current slot's mapped staging memory into our CPU-side active buffer
-        if (m_gpuStagingMaps[m_currentFrameSlot]) {
-            std::memcpy(m_headlessPixelMap, m_gpuStagingMaps[m_currentFrameSlot], m_headlessWidth * m_headlessHeight * 4);
-        }
-
-        // Overlay CPU-rendered text/geometry back
-        if (hasCpuRendering) {
-            auto* dest = reinterpret_cast<uint32_t*>(m_headlessPixelMap);
-            for (size_t i = 0; i < cpuRenderingCache.size(); ++i) {
-                if (cpuRenderingCache[i] != 0) {
-                    dest[i] = cpuRenderingCache[i];
-                }
-            }
-        }
-
-        // Blit the combined frame to SDL2 window
-        if (m_sdlTexture && m_sdlRenderer) {
-            SDL_UpdateTexture(reinterpret_cast<SDL_Texture*>(m_sdlTexture), nullptr, m_headlessPixelMap, m_headlessWidth * 4);
-            SDL_RenderCopy(reinterpret_cast<SDL_Renderer*>(m_sdlRenderer), reinterpret_cast<SDL_Texture*>(m_sdlTexture), nullptr, nullptr);
-            SDL_RenderPresent(reinterpret_cast<SDL_Renderer*>(m_sdlRenderer));
-        }
-
-        // Advance to the next slot (so we use the other staging slot for the next frame)
-        m_currentFrameSlot = (m_currentFrameSlot + 1) % 2;
-
-        // Reset the texture staging offset for the new active slot back to its base!
-        m_texStagingOffsets[m_currentFrameSlot] = m_currentFrameSlot * m_texStagingSlotSize;
-
-        // Reset and begin recording the next frame's commands immediately in the new active slot!
-        m_commandBuffer = &m_commandBuffers[m_currentFrameSlot].get();
-        m_commandBuffer->reset({});
-        m_commandBuffer->begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
-
-    } else {
-        // --- HEADLESS MODE (Direct Asynchronous GPU Queue Submission) ---
-        m_commandBuffer->end();
-        
-        // Reset the fence for the current slot before submitting!
-        m_device->resetFences(1, &m_fences[m_currentFrameSlot].get());
-        
-        vk::SubmitInfo submitInfo(0, nullptr, nullptr, 1, m_commandBuffer);
-        m_graphicsQueue.submit(submitInfo, m_fences[m_currentFrameSlot].get());
-
-        // Wait for the next slot (the previous frame's slot) to be free before we start recording into it!
+        // Advance to the next slot and setup recording immediately
         uint32_t nextSlot = (m_currentFrameSlot + 1) % 2;
         if (m_device->waitForFences(1, &m_fences[nextSlot].get(), VK_TRUE, UINT64_MAX) != vk::Result::eSuccess) {
             GLIDE_LOG(CRITICAL, "Vulkan", "Failed to wait for fence of next frame slot " << nextSlot);
         }
 
-        // Advance the frame slot
         m_currentFrameSlot = nextSlot;
-
-        // Reset the texture staging offset for the new active slot back to its base!
         m_texStagingOffsets[m_currentFrameSlot] = m_currentFrameSlot * m_texStagingSlotSize;
 
-        // Reset and begin recording the next frame's commands immediately in the new active slot!
         m_commandBuffer = &m_commandBuffers[m_currentFrameSlot].get();
         m_commandBuffer->reset({});
         m_commandBuffer->begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
