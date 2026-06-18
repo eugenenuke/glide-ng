@@ -744,6 +744,121 @@ TEST_CASE("Architectural Core Validation", "[Architecture]") {
 #endif
     }
 
+    SECTION("Milestone 6: Advanced Texturing & Utilities (LOD/Mipmaps)") {
+#ifdef __linux__
+        void* handle = OpenGlide2Handle();
+        REQUIRE(handle != nullptr);
+
+        using WinOpenFunc = FxBool(*)(FxU32, FxU32, FxU32, FxU32, FxU32, FxU32, FxU32);
+        using WinCloseFunc = void(*)(void);
+
+        using AllocFunc = GrMipMapId_t(*)(GrChipID_t, FxU8, int, int, GrTextureFormat_t, GrMipMapMode_t, GrLOD_t, GrLOD_t, GrAspectRatio_t, GrTextureClampMode_t, GrTextureClampMode_t, GrTextureFilterMode_t, GrTextureFilterMode_t, float, FxBool);
+        using SourceFunc = void(*)(GrMipMapId_t);
+        using GetInfoFunc = GrMipMapInfo*(*)(GrMipMapId_t);
+        using ChangeAttrsFunc = FxBool(*)(GrMipMapId_t, int, int, GrTextureFormat_t, GrMipMapMode_t, GrLOD_t, GrLOD_t, GrAspectRatio_t, GrTextureClampMode_t, GrTextureClampMode_t, GrTextureFilterMode_t, GrTextureFilterMode_t);
+        using GetCurrentFunc = GrMipMapId_t(*)(GrChipID_t);
+        using DownloadFunc = void(*)(GrMipMapId_t, const void*, const GuNccTable*);
+        using TexCombineFunc = void(*)(GrChipID_t, GrTextureCombineFnc_t);
+
+        using LodBiasFunc = void(*)(GrChipID_t, float);
+        using MultibaseFunc = void(*)(GrChipID_t, FxBool);
+        using MultibaseAddrFunc = void(*)(GrChipID_t, GrTexBaseRange_t, FxU32, FxU32, GrTexInfo*);
+
+        auto winOpen = reinterpret_cast<WinOpenFunc>(::dlsym(handle, "grSstWinOpen"));
+        auto winClose = reinterpret_cast<WinCloseFunc>(::dlsym(handle, "grSstWinClose"));
+
+        auto texAlloc = reinterpret_cast<AllocFunc>(::dlsym(handle, "guTexAllocateMemory"));
+        auto texSource = reinterpret_cast<SourceFunc>(::dlsym(handle, "guTexSource"));
+        auto texGetInfo = reinterpret_cast<GetInfoFunc>(::dlsym(handle, "guTexGetMipMapInfo"));
+        auto texChange = reinterpret_cast<ChangeAttrsFunc>(::dlsym(handle, "guTexChangeAttributes"));
+        auto texGetCurrent = reinterpret_cast<GetCurrentFunc>(::dlsym(handle, "guTexGetCurrentMipMap"));
+        auto texDownload = reinterpret_cast<DownloadFunc>(::dlsym(handle, "guTexDownloadMipMap"));
+        auto texCombine = reinterpret_cast<TexCombineFunc>(::dlsym(handle, "grTexCombineFunction"));
+
+        auto lodBias = reinterpret_cast<LodBiasFunc>(::dlsym(handle, "grTexLodBiasValue"));
+        auto multibase = reinterpret_cast<MultibaseFunc>(::dlsym(handle, "grTexMultibase"));
+        auto multibaseAddr = reinterpret_cast<MultibaseAddrFunc>(::dlsym(handle, "grTexMultibaseAddress"));
+
+        REQUIRE(winOpen != nullptr);
+        REQUIRE(winClose != nullptr);
+        REQUIRE(texAlloc != nullptr);
+        REQUIRE(texSource != nullptr);
+        REQUIRE(texGetInfo != nullptr);
+        REQUIRE(texChange != nullptr);
+        REQUIRE(texGetCurrent != nullptr);
+        REQUIRE(texDownload != nullptr);
+        REQUIRE(texCombine != nullptr);
+        REQUIRE(lodBias != nullptr);
+        REQUIRE(multibase != nullptr);
+        REQUIRE(multibaseAddr != nullptr);
+
+        // Open a software window for quick validation
+        ::setenv("GLIDE_WRAPPER_BACKEND", "SOFTWARE", 1);
+        REQUIRE(winOpen(0, 0x8, 0, 0, 0, 2, 0) == FXTRUE);
+
+        // 1. Allocate a 256x256 RGB_565 texture mipmap
+        GrMipMapId_t mmid = texAlloc(
+            0, // TMU0
+            0, // odd_even_mask
+            256, 256,
+            0x3, // GR_TEXFMT_RGB_565
+            0, // GR_MIPMAP_DISABLE
+            0, 0, // lod_min, lod_max
+            0, // GR_ASPECT_1x1
+            0, 0, // clamp modes
+            0, 0, // filter modes
+            0.0f, // lod_bias
+            FXFALSE // trilinear
+        );
+        REQUIRE(mmid != GR_NULL_MIPMAP_HANDLE);
+
+        // 2. Query mipmap info and verify metadata
+        GrMipMapInfo* info = texGetInfo(mmid);
+        REQUIRE(info != nullptr);
+        REQUIRE(info->valid == FXTRUE);
+        REQUIRE(info->width == 256);
+        REQUIRE(info->height == 256);
+        REQUIRE(info->format == 0x3);
+
+        // 3. Change attributes and verify they updated
+        REQUIRE(texChange(
+            mmid,
+            128, 128,
+            0x3,
+            0,
+            0, 0,
+            0,
+            0, 0,
+            0, 0
+        ) == FXTRUE);
+        REQUIRE(info->width == 128);
+        REQUIRE(info->height == 128);
+
+        // 4. Download mock texture data
+        std::vector<uint16_t> mockData(128 * 128, 0xF800); // Pure Red 16-bit pixels
+        REQUIRE_NOTHROW(texDownload(mmid, mockData.data(), nullptr));
+        REQUIRE(info->data == mockData.data());
+
+        // 5. Bind the texture and verify it is marked as current on TMU0
+        REQUIRE_NOTHROW(texSource(mmid));
+        REQUIRE(texGetCurrent(0) == mmid);
+
+        // 6. Test texture combination state mapping
+        REQUIRE_NOTHROW(texCombine(0, 0x4)); // GR_TEXTURECOMBINE_MULTIPLY
+
+        // 7. Test LOD bias and multibase stubs run successfully
+        REQUIRE_NOTHROW(lodBias(0, -0.5f));
+        REQUIRE_NOTHROW(multibase(0, FXTRUE));
+        
+        GrTexInfo coreInfo;
+        REQUIRE_NOTHROW(multibaseAddr(0, 0, 0, 0, &coreInfo));
+
+        // Clean up
+        winClose();
+        ::dlclose(handle);
+#endif
+    }
+
     SECTION("Phase 3: Automated Geometry Drawing Validation Suite") {
 #ifdef __linux__
         // 1. Validate Glide 2.x Fixed Geometry Parsing & Drawing

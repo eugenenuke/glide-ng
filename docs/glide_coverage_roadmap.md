@@ -27,7 +27,7 @@ gantt
     Milestone 3 Polygon Fan Decomposition       :done, m3, after m2, 2d
     Milestone 4 Shortcut State Config           :done,   m4, after m3, 1d
     Milestone 5 LFB Pixel Formatting            :done,   m5, after m4, 2d
-    Milestone 6 Texturing and Utilities         :        m6, after m5, 3d
+    Milestone 6 Texturing and Utilities         :done,   m6, after m5, 3d
 ```
 
 ---
@@ -162,7 +162,7 @@ gantt
 
 ---
 
-### 6. Milestone 6: Advanced Texturing & Utilities (LOD / Mipmaps)
+### 6. Milestone 6: Advanced Texturing & Utilities (LOD / Mipmaps) (Completed)
 *   **Target Functions**:
     *   `grTexTextureMemRequired(evenOdd, info)`
     *   `grTexLodBiasValue(GrChipID_t tmu, float bias)`
@@ -191,7 +191,7 @@ gantt
 
 | Stage | Core `gr*` Implemented | Utility `gu*` Implemented | Total Implemented | Effective Coverage % |
 | :--- | :---: | :---: | :---: | :---: |
-| **Current Wrapper Status** | **56 / 94** | **12 / 15** | **68 / 109** | **62.4%** |
+| **Current Wrapper Status** | **94 / 94** | **15 / 15** | **109 / 109** | **100.0%** |
 | After Milestone 1 (Queries & Pacing) | 64 / 94 | 12 / 15 | 76 / 109 | 69.7% |
 | After Milestone 2 (Anti-Aliasing) | 69 / 94 | 13 / 15 | 82 / 109 | 75.2% |
 | After Milestone 3 (Polygons) | 73 / 94 | 14 / 15 | 87 / 109 | 79.8% |

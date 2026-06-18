@@ -83,6 +83,11 @@ namespace {
     bool s_shamelessPlugEnabled = false;
     uint8_t s_lfbConstantAlpha = 255;
     uint32_t s_lfbWriteColorFormat = 0; // GR_COLORFORMAT_ARGB
+
+    std::vector<GrMipMapInfo> s_guTextures;
+    uint32_t s_guTexNextAddress = 0;
+    GrMipMapId_t s_currentMipMap[2] = { GR_NULL_MIPMAP_HANDLE, GR_NULL_MIPMAP_HANDLE };
+    float s_texLodBias = 0.0f;
 }
 
 uint32_t s_sstOrigin = 0;     // GR_ORIGIN_UPPER_LEFT (Global for grSplash)
@@ -795,6 +800,207 @@ FX_ENTRY FxU32 FX_CALL grTexTextureMemRequired(FxU32 evenOdd, GrTexInfo *info) {
 
 FX_ENTRY void FX_CALL grTexDetailControl(GrChipID_t tmu, int lod_bias, FxU8 detail_scale, float detail_max) {
     GLIDE_LOG(DEBUG, "Frontend", "grTexDetailControl invoked for TMU=" << tmu << ", lod_bias=" << lod_bias << ", detail_scale=" << (int)detail_scale << ", detail_max=" << detail_max << " (Stubbed)");
+}
+
+FX_ENTRY void FX_CALL grTexLodBiasValue(GrChipID_t tmu, float bias) {
+    EnsureEngineInitialized();
+    GLIDE_LOG(DEBUG, "Frontend", "grTexLodBiasValue: tmu=" << tmu << ", bias=" << bias);
+    s_texLodBias = bias;
+}
+
+FX_ENTRY void FX_CALL grTexCombineFunction(GrChipID_t tmu, GrTextureCombineFnc_t func) {
+    EnsureEngineInitialized();
+    GLIDE_LOG(DEBUG, "Frontend", "grTexCombineFunction: tmu=" << tmu << ", func=" << func);
+    switch (func) {
+        case GR_TEXTURECOMBINE_ZERO:
+            grTexCombine(tmu, GR_COMBINE_FUNCTION_ZERO, GR_COMBINE_FACTOR_ZERO,
+                         GR_COMBINE_FUNCTION_ZERO, GR_COMBINE_FACTOR_ZERO, FXFALSE, FXFALSE);
+            break;
+        case GR_TEXTURECOMBINE_DECAL:
+            grTexCombine(tmu, GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+                         GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE, FXFALSE, FXFALSE);
+            break;
+        case GR_TEXTURECOMBINE_OTHER:
+            grTexCombine(tmu, GR_COMBINE_FUNCTION_SCALE_OTHER, GR_COMBINE_FACTOR_ONE,
+                         GR_COMBINE_FUNCTION_SCALE_OTHER, GR_COMBINE_FACTOR_ONE, FXFALSE, FXFALSE);
+            break;
+        case GR_TEXTURECOMBINE_ADD:
+            grTexCombine(tmu, GR_COMBINE_FUNCTION_SCALE_OTHER_ADD_LOCAL, GR_COMBINE_FACTOR_ONE,
+                         GR_COMBINE_FUNCTION_SCALE_OTHER_ADD_LOCAL, GR_COMBINE_FACTOR_ONE, FXFALSE, FXFALSE);
+            break;
+        case GR_TEXTURECOMBINE_MULTIPLY:
+            grTexCombine(tmu, GR_COMBINE_FUNCTION_SCALE_OTHER, GR_COMBINE_FACTOR_LOCAL,
+                         GR_COMBINE_FUNCTION_SCALE_OTHER, GR_COMBINE_FACTOR_LOCAL, FXFALSE, FXFALSE);
+            break;
+        case GR_TEXTURECOMBINE_SUBTRACT:
+            grTexCombine(tmu, GR_COMBINE_FUNCTION_SCALE_OTHER_MINUS_LOCAL, GR_COMBINE_FACTOR_ONE,
+                         GR_COMBINE_FUNCTION_SCALE_OTHER_MINUS_LOCAL, GR_COMBINE_FACTOR_ONE, FXFALSE, FXFALSE);
+            break;
+        case GR_TEXTURECOMBINE_ONE:
+            grTexCombine(tmu, GR_COMBINE_FUNCTION_ZERO, GR_COMBINE_FACTOR_ZERO,
+                         GR_COMBINE_FUNCTION_ZERO, GR_COMBINE_FACTOR_ZERO, FXTRUE, FXTRUE);
+            break;
+        default:
+            GLIDE_LOG(WARN, "Frontend", "Unsupported grTexCombineFunction enum: " << func);
+            break;
+    }
+}
+
+FX_ENTRY void FX_CALL grTexMultibase(GrChipID_t tmu, FxBool enable) {
+    EnsureEngineInitialized();
+    GLIDE_LOG(DEBUG, "Frontend", "grTexMultibase: tmu=" << tmu << ", enable=" << enable << " (Stubbed)");
+}
+
+FX_ENTRY void FX_CALL grTexMultibaseAddress(GrChipID_t tmu, GrTexBaseRange_t range, FxU32 startAddress, FxU32 evenOdd, GrTexInfo *info) {
+    EnsureEngineInitialized();
+    GLIDE_LOG(DEBUG, "Frontend", "grTexMultibaseAddress: tmu=" << tmu << ", range=" << range << ", startAddress=" << startAddress << " (Stubbed)");
+}
+
+FX_ENTRY GrMipMapId_t FX_CALL guTexAllocateMemory(
+    GrChipID_t tmu,
+    FxU8 odd_even_mask,
+    int width, int height,
+    GrTextureFormat_t fmt,
+    GrMipMapMode_t mm_mode,
+    GrLOD_t smallest_lod, GrLOD_t largest_lod,
+    GrAspectRatio_t aspect,
+    GrTextureClampMode_t s_clamp_mode,
+    GrTextureClampMode_t t_clamp_mode,
+    GrTextureFilterMode_t minfilter_mode,
+    GrTextureFilterMode_t magfilter_mode,
+    float lod_bias,
+    FxBool trilinear)
+{
+    EnsureEngineInitialized();
+    GLIDE_LOG(DEBUG, "Frontend", "guTexAllocateMemory: tmu=" << tmu << ", dim=" << width << "x" << height << ", format=" << fmt);
+    
+    GrMipMapInfo tex;
+    std::memset(&tex, 0, sizeof(GrMipMapInfo));
+    tex.valid = FXTRUE;
+    tex.width = width;
+    tex.height = height;
+    tex.aspect_ratio = aspect;
+    tex.format = fmt;
+    tex.mipmap_mode = mm_mode;
+    tex.magfilter_mode = magfilter_mode;
+    tex.minfilter_mode = minfilter_mode;
+    tex.s_clamp_mode = s_clamp_mode;
+    tex.t_clamp_mode = t_clamp_mode;
+    tex.lod_bias = static_cast<FxU32>(lod_bias);
+    tex.lod_min = smallest_lod;
+    tex.lod_max = largest_lod;
+    tex.tmu = tmu;
+    tex.odd_even_mask = odd_even_mask;
+    tex.trilinear = trilinear;
+
+    // Calculate VRAM size required and allocate
+    uint32_t bytesRequired = grTexCalcMemRequired(smallest_lod, largest_lod, aspect, fmt);
+    tex.tmu_base_address = s_guTexNextAddress;
+    s_guTexNextAddress += bytesRequired;
+
+    s_guTextures.push_back(tex);
+    GrMipMapId_t id = static_cast<GrMipMapId_t>(s_guTextures.size() - 1);
+    return id;
+}
+
+FX_ENTRY void FX_CALL guTexSource(GrMipMapId_t id) {
+    EnsureEngineInitialized();
+    GLIDE_LOG(DEBUG, "Frontend", "guTexSource: id=" << id);
+    if (id == GR_NULL_MIPMAP_HANDLE || id >= (GrMipMapId_t)s_guTextures.size() || !s_guTextures[id].valid) {
+        return;
+    }
+    
+    auto& tex = s_guTextures[id];
+    GrTexInfo info;
+    info.smallLod = tex.lod_min;
+    info.largeLod = tex.lod_max;
+    info.aspectRatio = tex.aspect_ratio;
+    info.format = tex.format;
+    info.data = tex.data;
+
+    grTexSource(tex.tmu, tex.tmu_base_address, tex.odd_even_mask, &info);
+    grTexClampMode(tex.tmu, tex.s_clamp_mode, tex.t_clamp_mode);
+    grTexFilterMode(tex.tmu, tex.minfilter_mode, tex.magfilter_mode);
+    grTexMipMapMode(tex.tmu, tex.mipmap_mode, tex.trilinear);
+
+    s_currentMipMap[tex.tmu] = id;
+}
+
+FX_ENTRY void FX_CALL guTexDownloadMipMap(GrMipMapId_t id, const void *src, const GuNccTable *table) {
+    EnsureEngineInitialized();
+    GLIDE_LOG(DEBUG, "Frontend", "guTexDownloadMipMap: id=" << id);
+    if (id == GR_NULL_MIPMAP_HANDLE || id >= (GrMipMapId_t)s_guTextures.size() || !s_guTextures[id].valid) {
+        return;
+    }
+    
+    auto& tex = s_guTextures[id];
+    tex.data = const_cast<void*>(src);
+    if (table) {
+        tex.ncc_table = *table;
+    }
+
+    GrTexInfo info;
+    info.smallLod = tex.lod_min;
+    info.largeLod = tex.lod_max;
+    info.aspectRatio = tex.aspect_ratio;
+    info.format = tex.format;
+    info.data = tex.data;
+
+    grTexDownloadMipMap(tex.tmu, tex.tmu_base_address, tex.odd_even_mask, &info);
+}
+
+FX_ENTRY FxBool FX_CALL guTexChangeAttributes(
+    GrMipMapId_t id,
+    int width, int height,
+    GrTextureFormat_t fmt,
+    GrMipMapMode_t mm_mode,
+    GrLOD_t smallest_lod, GrLOD_t largest_lod,
+    GrAspectRatio_t aspect,
+    GrTextureClampMode_t s_clamp_mode,
+    GrTextureClampMode_t t_clamp_mode,
+    GrTextureFilterMode_t minfilter_mode,
+    GrTextureFilterMode_t magfilter_mode)
+{
+    EnsureEngineInitialized();
+    GLIDE_LOG(DEBUG, "Frontend", "guTexChangeAttributes: id=" << id);
+    if (id == GR_NULL_MIPMAP_HANDLE || id >= (GrMipMapId_t)s_guTextures.size() || !s_guTextures[id].valid) {
+        return FXFALSE;
+    }
+    
+    auto& tex = s_guTextures[id];
+    tex.width = width;
+    tex.height = height;
+    tex.format = fmt;
+    tex.mipmap_mode = mm_mode;
+    tex.lod_min = smallest_lod;
+    tex.lod_max = largest_lod;
+    tex.aspect_ratio = aspect;
+    tex.s_clamp_mode = s_clamp_mode;
+    tex.t_clamp_mode = t_clamp_mode;
+    tex.minfilter_mode = minfilter_mode;
+    tex.magfilter_mode = magfilter_mode;
+
+    return FXTRUE;
+}
+
+FX_ENTRY GrMipMapId_t FX_CALL guTexGetCurrentMipMap(GrChipID_t tmu) {
+    EnsureEngineInitialized();
+    GLIDE_LOG(DEBUG, "Frontend", "guTexGetCurrentMipMap: tmu=" << tmu);
+    if (tmu < 0 || tmu > 1) return GR_NULL_MIPMAP_HANDLE;
+    return s_currentMipMap[tmu];
+}
+
+FX_ENTRY GrMipMapInfo* FX_CALL guTexGetMipMapInfo(GrMipMapId_t id) {
+    EnsureEngineInitialized();
+    GLIDE_LOG(DEBUG, "Frontend", "guTexGetMipMapInfo: id=" << id);
+    if (id == GR_NULL_MIPMAP_HANDLE || id >= (GrMipMapId_t)s_guTextures.size() || !s_guTextures[id].valid) {
+        return nullptr;
+    }
+    return &s_guTextures[id];
+}
+
+FX_ENTRY void FX_CALL guTexCombineFunction(GrChipID_t tmu, GrTextureCombineFnc_t func) {
+    grTexCombineFunction(tmu, func);
 }
 
 FX_ENTRY void FX_CALL grConstantColorValue(GrColor_t value) {
