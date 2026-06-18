@@ -627,7 +627,7 @@ out vec2 fragTmuOow;
 uniform int uSstOrigin; // 0 = UPPER_LEFT, 1 = LOWER_LEFT
 uniform vec2 uViewportSize;
 uniform int uDepthClipOverride;
-uniform int uDepthBufferMode; // 0=None, 1=Z, 2=W
+uniform highp int uDepthBufferMode; // 0=None, 1=Z, 2=W
 uniform float uDepthBias;
 
 void main() {
@@ -664,7 +664,7 @@ void main() {
 )";
 
 static const char* geomFsSource = R"(#version 300 es
-precision mediump float;
+precision highp float;
 
 in vec4 fragColor;
 in float fragOOW;
@@ -702,6 +702,9 @@ uniform int uFogMode;
 uniform vec4 uFogColor;
 uniform float uFogTable[64];
 
+// Depth Buffer Mode Uniform for Clipping
+uniform highp int uDepthBufferMode;
+
 const float s_tableIndexToW[64] = float[](
     1.000000,      1.142857,      1.333333,      1.600000, 
     2.000000,      2.285714,      2.666667,      3.200000, 
@@ -722,6 +725,13 @@ const float s_tableIndexToW[64] = float[](
 );
 
 void main() {
+    // W-based coordinate near-plane and camera-space clipping
+    if (uDepthBufferMode == 2) {
+        if (fragOOW > 1.0) discard;
+    } else if (uTextureEnabled == 1) {
+        if (fragOOW <= 0.0) discard;
+    }
+
     // 1. Sample texture if enabled
     vec4 texColor = vec4(1.0);
     if (uTextureEnabled == 1) {
