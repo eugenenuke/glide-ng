@@ -390,6 +390,13 @@ int main(int argc, char* argv[]) {
     grTexDownloadMipMap(GR_TMU0, banner_tex_addr, GR_MIPMAPLEVELMASK_BOTH, &banner_tex_info);
     grTexDownloadMipMap(GR_TMU0, splash_tex_addr, GR_MIPMAPLEVELMASK_BOTH, &splash_tex_info);
 
+    // Download the companion NCC Decompression lookup table for the compressed YIQ Splash Logo!
+#if GLIDE_VERSION == 3
+    grTexDownloadTable(GR_TEXTABLE_NCC0, &splash_info->table);
+#else
+    grTexDownloadTable(GR_TMU0, GR_TEXTABLE_NCC0, &splash_info->table);
+#endif
+
     // Initial state: Neon Grid texture active
     int active_texture = 0; // 0 = Neon Grid, 1 = 3dfx Banner, 2 = 3dfx Splash Logo
     grTexSource(GR_TMU0, neon_tex_addr, GR_MIPMAPLEVELMASK_BOTH, &neon_tex_info);
@@ -502,6 +509,12 @@ int main(int argc, char* argv[]) {
                 } else {
                     // Load 3dfx Splash Logo (64x64, 1:1)
                     grTexSource(GR_TMU0, splash_tex_addr, GR_MIPMAPLEVELMASK_BOTH, &splash_tex_info);
+                    // Make sure the companion NCC decompression table is loaded into the table register!
+#if GLIDE_VERSION == 3
+                    grTexDownloadTable(GR_TEXTABLE_NCC0, &splash_info->table);
+#else
+                    grTexDownloadTable(GR_TMU0, GR_TEXTABLE_NCC0, &splash_info->table);
+#endif
                     // Update texture UV scaling in vertex database (0..64)
                     for (int i = 0; i < 24; i++) {
                         cube_vertices[i].s = (cube_vertices[i].s > 0.0f) ? 64.0f : 0.0f;

@@ -504,11 +504,28 @@ bool VulkanBackend::CreateSwapchain(uint32_t width, uint32_t height) {
 
     // 3. Select the best present mode (FIFO is guaranteed, but let's log if Mailbox/Immediate are available)
     vk::PresentModeKHR presentMode = vk::PresentModeKHR::eFifo; // VSync aligned, guaranteed by spec
-    for (const auto& pm : presentModes) {
-        if (pm == vk::PresentModeKHR::eMailbox) {
-            // Mailbox is low-latency triple buffering, we can use it if desired. But let's stick to FIFO for strict frame pacing
-            // presentMode = pm;
+    if (!m_config.vsync) {
+        // Uncapped mode requested! Prefer Mailbox (uncapped triple-buffering), then Immediate (VSync off), falling back to FIFO.
+        bool found_mailbox = false;
+        bool found_immediate = false;
+        for (const auto& pm : presentModes) {
+            if (pm == vk::PresentModeKHR::eMailbox) {
+                found_mailbox = true;
+            } else if (pm == vk::PresentModeKHR::eImmediate) {
+                found_immediate = true;
+            }
         }
+        if (found_mailbox) {
+            presentMode = vk::PresentModeKHR::eMailbox;
+            GLIDE_LOG(INFO, "Vulkan", "VSync Disabled: Using Mailbox present mode (Uncapped, no tearing).");
+        } else if (found_immediate) {
+            presentMode = vk::PresentModeKHR::eImmediate;
+            GLIDE_LOG(INFO, "Vulkan", "VSync Disabled: Using Immediate present mode (Uncapped, screen tearing may occur).");
+        } else {
+            GLIDE_LOG(WARN, "Vulkan", "VSync Disabled: Uncapped present modes not supported by GPU, falling back to FIFO.");
+        }
+    } else {
+        GLIDE_LOG(INFO, "Vulkan", "VSync Enabled: Using FIFO present mode (Sync to vertical blanking, locked to refresh rate).");
     }
 
     // 4. Determine swapchain extent (size)

@@ -33,6 +33,7 @@ struct WrapperConfig {
     bool logToConsole{false}; // Enforces console logging to stdout/stderr in addition to file
     std::string backend{"vulkan"}; // "vulkan" or "opengl_es"
     uint32_t msaaSamples{1}; // 1 = MSAA disabled, 4 = 4x MSAA, etc.
+    bool vsync{true}; // Enables swapchain vertical synchronization (capping to refresh rate)
 };
 
 class EmulationRegistry {

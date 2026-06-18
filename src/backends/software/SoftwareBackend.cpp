@@ -96,7 +96,11 @@ bool SoftwareBackend::AttachWindow(void* nativeWindowHandle, uint32_t width, uin
         } else {
             auto* win = SDL_CreateWindow("3dfx glide-ng Presentation Console (Software)", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, width, height, SDL_WINDOW_SHOWN);
             if (win) {
-                auto* ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+                Uint32 flags = SDL_RENDERER_ACCELERATED;
+                if (m_config.vsync) {
+                    flags |= SDL_RENDERER_PRESENTVSYNC;
+                }
+                auto* ren = SDL_CreateRenderer(win, -1, flags);
                 if (!ren) ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_SOFTWARE);
                 
                 if (ren) {

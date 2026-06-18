@@ -150,6 +150,12 @@ bool JsonConfigLoader::Load(const std::string& configFilePath, WrapperConfig& ou
         GLIDE_LOG(WARN, "Config", "Overrode MSAA Sample Count via GLIDE_WRAPPER_MSAA=" << outConfig.msaaSamples);
     }
 
+    if (const char* envVsync = std::getenv("GLIDE_VSYNC")) {
+        std::string val(envVsync);
+        outConfig.vsync = !(val == "0" || val == "false" || val == "FALSE" || val == "off" || val == "OFF");
+        GLIDE_LOG(WARN, "Config", "Overrode VSync via GLIDE_VSYNC=" << (outConfig.vsync ? "ENABLED" : "DISABLED"));
+    }
+
     // Normalize MSAA sample count to valid GPU powers of two
     if (outConfig.msaaSamples != 1 && outConfig.msaaSamples != 2 && 
         outConfig.msaaSamples != 4 && outConfig.msaaSamples != 8 && 

@@ -293,6 +293,22 @@ FX_ENTRY FxU32 FX_CALL grTexTextureMemRequired(FxU32 evenOdd, GrTexInfo *info) {
     return grTexCalcMemRequired(info->smallLodLog2, info->largeLodLog2, info->aspectRatioLog2, info->format);
 }
 
+FX_ENTRY void FX_CALL grTexDownloadTable(GrTexTable_t type, void* data) {
+    EnsureEngineInitialized();
+    GLIDE_LOG(DEBUG, "Frontend", "grTexDownloadTable (Glide 3.x) invoked for Type=" << type);
+    if (data) {
+        GlideWrapper::TextureManager::GetInstance().DownloadTable(GR_TMU0, type, data);
+    }
+}
+
+FX_ENTRY void FX_CALL grTexDownloadTablePartial(GrTexTable_t type, void* data, int start, int end) {
+    EnsureEngineInitialized();
+    GLIDE_LOG(DEBUG, "Frontend", "grTexDownloadTablePartial (Glide 3.x) invoked for Type=" << type << ", range " << start << ".." << end);
+    if (data) {
+        GlideWrapper::TextureManager::GetInstance().DownloadTable(GR_TMU0, type, data);
+    }
+}
+
 FX_ENTRY void FX_CALL grTexDetailControl(GrChipID_t tmu, int lod_bias, FxU8 detail_scale, float detail_max) {
     GLIDE_LOG(DEBUG, "Frontend", "grTexDetailControl (Glide 3.x) invoked for TMU=" << tmu << " (Stubbed)");
 }
