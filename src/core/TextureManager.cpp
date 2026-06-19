@@ -23,14 +23,22 @@ namespace {
         return ncc;
     }
 
+    inline int16_t sign_extend_9bit(int16_t val) {
+        // If bit 8 is set, it represents a negative 9-bit two's complement number
+        if (val & 0x0100) {
+            return val - 512;
+        }
+        return val;
+    }
+
     uint32_t swizzleYiq(uint8_t val, const GuNccTable& ncc) {
         uint8_t y = (val >> 4) & 0xF;
         uint8_t i = (val >> 2) & 0x3;
         uint8_t q = val & 0x3;
 
-        int r = ncc.yRGB[y] + ncc.iRGB[i][0] + ncc.qRGB[q][0];
-        int g = ncc.yRGB[y] + ncc.iRGB[i][1] + ncc.qRGB[q][1];
-        int b = ncc.yRGB[y] + ncc.iRGB[i][2] + ncc.qRGB[q][2];
+        int r = ncc.yRGB[y] + sign_extend_9bit(ncc.iRGB[i][0]) + sign_extend_9bit(ncc.qRGB[q][0]);
+        int g = ncc.yRGB[y] + sign_extend_9bit(ncc.iRGB[i][1]) + sign_extend_9bit(ncc.qRGB[q][1]);
+        int b = ncc.yRGB[y] + sign_extend_9bit(ncc.iRGB[i][2]) + sign_extend_9bit(ncc.qRGB[q][2]);
 
         r = std::clamp(r, 0, 255);
         g = std::clamp(g, 0, 255);
@@ -45,9 +53,9 @@ namespace {
         uint8_t i = (val >> 2) & 0x3;
         uint8_t q = val & 0x3;
 
-        int r = ncc.yRGB[y] + ncc.iRGB[i][0] + ncc.qRGB[q][0];
-        int g = ncc.yRGB[y] + ncc.iRGB[i][1] + ncc.qRGB[q][1];
-        int b = ncc.yRGB[y] + ncc.iRGB[i][2] + ncc.qRGB[q][2];
+        int r = ncc.yRGB[y] + sign_extend_9bit(ncc.iRGB[i][0]) + sign_extend_9bit(ncc.qRGB[q][0]);
+        int g = ncc.yRGB[y] + sign_extend_9bit(ncc.iRGB[i][1]) + sign_extend_9bit(ncc.qRGB[q][1]);
+        int b = ncc.yRGB[y] + sign_extend_9bit(ncc.iRGB[i][2]) + sign_extend_9bit(ncc.qRGB[q][2]);
 
         r = std::clamp(r, 0, 255);
         g = std::clamp(g, 0, 255);
