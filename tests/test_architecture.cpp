@@ -2085,6 +2085,61 @@ TEST_CASE("Glide Chroma-Key Range Rendering Verification") {
     REQUIRE((int)g3 <= 5);
     REQUIRE((int)b3 >= 250);
 
+    // --- CASE 4: DISABLE RANGE MODE & FALLBACK TO EXACT MATCH ---
+    using ChromakeyValueFunc = void(*)(GrColor_t);
+    auto chromakeyValue = reinterpret_cast<ChromakeyValueFunc>(::dlsym(handle, "grChromakeyValue"));
+    REQUIRE(chromakeyValue != nullptr);
+
+    // 1. Explicitly disable range mode by passing 0 in the mode parameter
+    chromakeyRangeExt(0, 0, 0);
+
+    // 2. Configure exact match chromakey color: R=128, G=150, B=60 -> 0x0080963C
+    chromakeyValue(0x0080963C);
+
+    // 3. Render exact match color (R=128, G=150, B=60) -> should be DISCARDED
+    bufferClear(0xFF0000FF, 0xFF, 0);
+    v0.r = v1.r = v2.r = 128.0f;
+    v0.g = v1.g = v2.g = 150.0f;
+    v0.b = v1.b = v2.b = 60.0f;
+
+    drawTriangle(&v0, &v1, &v2);
+    bufferSwap(1);
+
+    uint32_t pixelVal4_match = 0;
+    ok = lfbReadRegion(GR_BUFFER_FRONTBUFFER, 320, 240, 1, 1, 4, &pixelVal4_match);
+    REQUIRE(ok == FXTRUE);
+
+    uint8_t r4_m = (pixelVal4_match >> 16) & 0xFF;
+    uint8_t g4_m = (pixelVal4_match >> 8) & 0xFF;
+    uint8_t b4_m = pixelVal4_match & 0xFF;
+
+    // Should be discarded -> remains Solid Blue
+    REQUIRE((int)r4_m <= 5);
+    REQUIRE((int)g4_m <= 5);
+    REQUIRE((int)b4_m >= 250);
+
+    // 4. Render a color that would match the old range but does NOT match the exact value:
+    // Red = 138 (inside old [100, 150] range, but not exactly 128)
+    // Since range mode is disabled, this should NOT be discarded and should render normally!
+    bufferClear(0xFF0000FF, 0xFF, 0);
+    v0.r = v1.r = v2.r = 138.0f;
+
+    drawTriangle(&v0, &v1, &v2);
+    bufferSwap(1);
+
+    uint32_t pixelVal4_nomatch = 0;
+    ok = lfbReadRegion(GR_BUFFER_FRONTBUFFER, 320, 240, 1, 1, 4, &pixelVal4_nomatch);
+    REQUIRE(ok == FXTRUE);
+
+    uint8_t r4_nm = (pixelVal4_nomatch >> 16) & 0xFF;
+    uint8_t g4_nm = (pixelVal4_nomatch >> 8) & 0xFF;
+    uint8_t b4_nm = pixelVal4_nomatch & 0xFF;
+
+    // Should NOT be discarded -> rendered as Red=138, Green=150, Blue=60 (with tolerance 2)
+    REQUIRE((int)r4_nm >= 136); REQUIRE((int)r4_nm <= 140);
+    REQUIRE((int)g4_nm >= 148); REQUIRE((int)g4_nm <= 152);
+    REQUIRE((int)b4_nm >= 58);  REQUIRE((int)b4_nm <= 62);
+
     // Clean up
     REQUIRE_NOTHROW(shutdown());
     ::dlclose(handle);
