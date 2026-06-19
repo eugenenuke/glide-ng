@@ -37,8 +37,8 @@ int main(int argc, char** argv) {
     // Resolve the extension dynamically
     s_grChromakeyRangeExt = (grChromakeyRangeExtFunc)grGetProcAddress(const_cast<char*>("grChromakeyRangeExt"));
     if (!s_grChromakeyRangeExt) {
-        std::printf("[WARNING] grChromakeyRangeExt extension NOT supported by the active Glide library!\n");
-        std::printf("Range mode will not be available, falling back to standard chromakey.\n\n");
+        std::printf("[WARNING] grChromakeyRangeExt extension NOT supported by the active Glide library!\r\n");
+        std::printf("Range mode will not be available, falling back to standard chromakey.\r\n\r\n");
     }
 
     // Initial Glide state: Gouraud/iterated color shading
@@ -61,7 +61,7 @@ int main(int argc, char** argv) {
             char key = tlGetCH();
             if (key == 27) { // ESC
                 running = false;
-                std::printf("\nExiting demo...\n");
+                std::printf("\r\nExiting demo...\r\n");
                 break;
             } else if (key == ' ') { // Space
                 chromaEnabled = !chromaEnabled;
@@ -71,7 +71,7 @@ int main(int argc, char** argv) {
                     rangeMode = !rangeMode;
                     PrintStatus(chromaEnabled, rangeMode, s_grChromakeyRangeExt != nullptr);
                 } else {
-                    std::printf("\n[ERROR] Cannot toggle range mode: extension not supported!\n");
+                    std::printf("\r\n[ERROR] Cannot toggle range mode: extension not supported!\r\n");
                     PrintStatus(chromaEnabled, rangeMode, s_grChromakeyRangeExt != nullptr);
                 }
             }
