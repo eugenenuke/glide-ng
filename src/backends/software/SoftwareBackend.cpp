@@ -792,7 +792,7 @@ void SoftwareBackend::RasterizeSoftwareTriangleImpl(const ModernVertex& a, const
             if (fogSource != 0) {
                 float f = 0.0f;
                 if (fogSource == 1) { // GR_FOG_WITH_ITERATED_ALPHA
-                    f = alpha;
+                    f = iterA;
                 } else { // Table-based fog (GR_FOG_WITH_TABLE)
                     float eyeW = 1.0f / wVal;
                     if (eyeW < 1.0f) eyeW = 1.0f;

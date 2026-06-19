@@ -195,7 +195,7 @@ void main() {
     if (fogSource != 0u) {
         float f = 0.0;
         if (fogSource == 1u) { // GR_FOG_WITH_ITERATED_ALPHA
-            f = col.a;
+            f = fragColor.a;
         } else { // Table-based fog (GR_FOG_WITH_TABLE)
             float eyeW = 1.0 / fragOOW;
             if (eyeW < 1.0) eyeW = 1.0;

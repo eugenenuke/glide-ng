@@ -892,32 +892,44 @@ void main() {
     }
 
     // Milestone 8: Fogging Emulation
-    if (uFogMode > 0) {
-        float eyeW = 1.0 / fragOOW;
-        if (eyeW < 1.0) eyeW = 1.0;
+    int fogSource = uFogMode & 0x0F;
+    if (fogSource != 0) {
+        float f = 0.0;
+        if (fogSource == 1) { // GR_FOG_WITH_ITERATED_ALPHA
+            f = fragColor.a; // Raw interpolated vertex alpha
+        } else { // Table-based fog (GR_FOG_WITH_TABLE)
+            float eyeW = 1.0 / fragOOW;
+            if (eyeW < 1.0) eyeW = 1.0;
 
-        int idx = 0;
-        for (int i = 0; i < 63; ++i) {
-            if (s_tableIndexToW[i] < eyeW) {
-                idx = i;
-            } else {
-                break;
+            // O(1) unrolled logarithmic binary search
+            int idx = 0;
+            if (eyeW >= s_tableIndexToW[32]) idx += 32;
+            if (eyeW >= s_tableIndexToW[idx + 16]) idx += 16;
+            if (eyeW >= s_tableIndexToW[idx + 8]) idx += 8;
+            if (eyeW >= s_tableIndexToW[idx + 4]) idx += 4;
+            if (eyeW >= s_tableIndexToW[idx + 2]) idx += 2;
+            if (eyeW >= s_tableIndexToW[idx + 1]) idx += 1;
+
+            float w0 = s_tableIndexToW[idx];
+            float w1 = s_tableIndexToW[idx + 1];
+            float f0 = uFogTable[idx];
+            float f1 = uFogTable[idx + 1];
+
+            float t = 0.0;
+            if (w1 > w0) {
+                t = (eyeW - w0) / (w1 - w0);
             }
+            t = clamp(t, 0.0, 1.0);
+
+            f = mix(f0, f1, t);
         }
 
-        float w0 = s_tableIndexToW[idx];
-        float w1 = s_tableIndexToW[idx + 1];
-        float f0 = uFogTable[idx];
-        float f1 = uFogTable[idx + 1];
+        // Extract FOGMODE flags
+        float mult = float((uFogMode & 0x100) != 0); // GR_FOG_MULT2 (SST_FOGMULT)
+        float add  = float((uFogMode & 0x200) != 0); // GR_FOG_ADD2  (SST_FOGADD)
 
-        float t = 0.0;
-        if (w1 > w0) {
-            t = (eyeW - w0) / (w1 - w0);
-        }
-        t = clamp(t, 0.0, 1.0);
-
-        float f = mix(f0, f1, t);
-        col.rgb = col.rgb * (1.0 - f) + uFogColor.rgb * f;
+        // Apply the unified branch-free hardware equation
+        col.rgb = col.rgb * (1.0 - mult) * (1.0 - f) + uFogColor.rgb * (1.0 - add) * f;
     }
 
     // Emulate legacy 3dfx Glide alpha testing
