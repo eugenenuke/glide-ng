@@ -81,7 +81,7 @@ int main(int argc, char** argv) {
 
     // Fog generation table (required for Glide table fog)
     GrFog_t fogtable[64];
-    float density = 0.008f;
+    float density = 0.0025f;
     guFogGenerateExp(fogtable, density);
     grFogTable(fogtable);
 

@@ -3644,7 +3644,42 @@ TEST_CASE("Glide 2.x Alpha Blending & Fog [test07][test08][test13]", "[Glide2][A
         REQUIRE(g <= 8);
         REQUIRE(b <= 8);
 
-        // Restore fog mode to disabled
+        // --------------------------------------------------------
+        // Part C: Iterated Alpha Fog Mode (GR_FOG_WITH_ITERATED_ALPHA)
+        // --------------------------------------------------------
+        fogColorValue(0x0000FF00); // Green Fog
+        fogMode(GR_FOG_WITH_ITERATED_ALPHA);
+        bufferClear(0x00, 0, 0);
+
+        // Setup constant alpha 64 for all vertices to verify uniform alpha fogging
+        vtxA.a = 64.0f;
+        vtxB.a = 64.0f;
+        vtxC.a = 64.0f;
+
+        drawTriangle(&vtxA, &vtxB, &vtxC);
+
+        REQUIRE(readLfb(GR_BUFFER_BACKBUFFER, 0, 0, 640, 480, 640 * 4, fb.data()) == FXTRUE);
+
+        // Check a pixel inside the triangle (e.g., center)
+        uint32_t p_iter = fb[100 * 640 + 320];
+        r = p_iter & 0xFF;
+        g = (p_iter >> 8) & 0xFF;
+        b = (p_iter >> 16) & 0xFF;
+
+        // Swapped readback: Red channel gets the Blue input color.
+        // Color_out = Blue_perspective_interpolated(77.3) * (1 - 0.251) = (58, 64, 0)
+        // So client read-back: r = 0, g = 64, b = 58
+        REQUIRE(r <= 8);
+        REQUIRE(std::abs((int)g - 64) <= 8);
+        REQUIRE(std::abs((int)b - 58) <= 8);
+
+        // Restore vertex alpha to default 255.0f
+        vtxA.a = 255.0f;
+        vtxB.a = 255.0f;
+        vtxC.a = 255.0f;
+
+        // Restore fog color and mode
+        fogColorValue(0x0000FF00); // Default green
         fogMode(GR_FOG_DISABLE);
     }
 
