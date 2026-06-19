@@ -36,9 +36,14 @@ int main(int argc, char** argv) {
 
     // Resolve the extension dynamically
     s_grChromakeyRangeExt = (grChromakeyRangeExtFunc)grGetProcAddress(const_cast<char*>("grChromakeyRangeExt"));
-    if (!s_grChromakeyRangeExt) {
-        std::printf("[WARNING] grChromakeyRangeExt extension NOT supported by the active Glide library!\r\n");
-        std::printf("Range mode will not be available, falling back to standard chromakey.\r\n\r\n");
+    
+    // Check if the range extension is officially supported by the active backend
+    const char* extString = grGetString(GR_EXTENSION);
+    bool extensionSupported = (extString && std::strstr(extString, "CHROMARANGE") != nullptr) && (s_grChromakeyRangeExt != nullptr);
+
+    if (!extensionSupported) {
+        std::printf("[WARNING] CHROMARANGE extension is NOT supported by the active driver backend!\r\n");
+        std::printf("Range mode will not be available, falling back to standard exact chromakey.\r\n\r\n");
     }
 
     // Initial Glide state: Gouraud/iterated color shading
@@ -49,10 +54,10 @@ int main(int argc, char** argv) {
                    FXFALSE);
 
     bool chromaEnabled = true;
-    bool rangeMode = (s_grChromakeyRangeExt != nullptr);
+    bool rangeMode = extensionSupported;
 
     // Print initial status line
-    PrintStatus(chromaEnabled, rangeMode, s_grChromakeyRangeExt != nullptr);
+    PrintStatus(chromaEnabled, rangeMode, extensionSupported);
 
     bool running = true;
     while (running) {
@@ -65,14 +70,14 @@ int main(int argc, char** argv) {
                 break;
             } else if (key == ' ') { // Space
                 chromaEnabled = !chromaEnabled;
-                PrintStatus(chromaEnabled, rangeMode, s_grChromakeyRangeExt != nullptr);
+                PrintStatus(chromaEnabled, rangeMode, extensionSupported);
             } else if (key == 'r' || key == 'R') {
-                if (s_grChromakeyRangeExt) {
+                if (extensionSupported) {
                     rangeMode = !rangeMode;
-                    PrintStatus(chromaEnabled, rangeMode, s_grChromakeyRangeExt != nullptr);
+                    PrintStatus(chromaEnabled, rangeMode, extensionSupported);
                 } else {
-                    std::printf("\r\n[ERROR] Cannot toggle range mode: extension not supported!\r\n");
-                    PrintStatus(chromaEnabled, rangeMode, s_grChromakeyRangeExt != nullptr);
+                    std::printf("\r\n[WARNING] Cannot toggle mode: CHROMARANGE extension not supported by active backend!\r\n");
+                    PrintStatus(chromaEnabled, rangeMode, extensionSupported);
                 }
             }
         }
@@ -84,7 +89,7 @@ int main(int argc, char** argv) {
             grChromakeyMode(GR_CHROMAKEY_DISABLE);
         }
 
-        if (rangeMode && s_grChromakeyRangeExt) {
+        if (rangeMode && extensionSupported) {
             // Range Match Mode (ABGR packed format: 0x00BBGGRR):
             // Min Color: Red=100 (0x64), Green=50 (0x32), Blue=50 (0x32) -> 0x00323264
             // Max Color: Red=150 (0x96), Green=200 (0xC8), Blue=200 (0xC8) -> 0x00C8C896
