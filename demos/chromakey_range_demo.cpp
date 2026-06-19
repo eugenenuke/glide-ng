@@ -92,6 +92,11 @@ int main(int argc, char** argv) {
             s_grChromakeyRangeExt(0x00323264, 0x00C8C896, 0x10000000);
         } else {
             // Exact Match Mode:
+            // If the range extension is supported, we MUST explicitly disable range mode in the driver state
+            // by passing 0 as the mode, allowing the shader to fall back to exact match!
+            if (s_grChromakeyRangeExt) {
+                s_grChromakeyRangeExt(0, 0, 0);
+            }
             // Value: Red=128 (0x80), Green=120 (0x78), Blue=60 (0x3C) -> 0x003C7880
             grChromakeyValue(0x003c7880);
         }
