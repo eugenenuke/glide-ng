@@ -83,6 +83,7 @@ public:
 
     // Gamma Correction
     virtual void SetGamma(float gamma) = 0;
+    virtual void LoadGammaTable(uint32_t nentries, const uint32_t* rTable, const uint32_t* gTable, const uint32_t* bTable) = 0;
 };
 
 } // namespace GlideWrapper

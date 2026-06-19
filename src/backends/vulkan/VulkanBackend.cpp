@@ -2526,4 +2526,29 @@ void VulkanBackend::PopulatePushConstants(PushConstants& pcs) {
     }
 }
 
+void VulkanBackend::SetGamma(float gamma) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    GLIDE_LOG(INFO, "Vulkan", "SetGamma: value=" << gamma);
+    m_gammaCorrectionValue = gamma;
+    if (gamma <= 0.0f) gamma = 1.0f;
+    for (int i = 0; i < 256; i++) {
+        m_lutR[i] = static_cast<uint8_t>(std::pow(i / 255.0f, 1.0f / gamma) * 255.0f + 0.5f);
+        m_lutG[i] = m_lutR[i];
+        m_lutB[i] = m_lutR[i];
+    }
+    m_useGammaLut = (gamma != 1.0f);
+}
+
+void VulkanBackend::LoadGammaTable(uint32_t nentries, const uint32_t* rTable, const uint32_t* gTable, const uint32_t* bTable) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    GLIDE_LOG(INFO, "Vulkan", "LoadGammaTable: nentries=" << nentries);
+    if (nentries != 256 || !rTable || !gTable || !bTable) return;
+    for (int i = 0; i < 256; i++) {
+        m_lutR[i] = static_cast<uint8_t>(rTable[i]);
+        m_lutG[i] = static_cast<uint8_t>(gTable[i]);
+        m_lutB[i] = static_cast<uint8_t>(bTable[i]);
+    }
+    m_useGammaLut = true;
+}
+
 } // namespace GlideWrapper

@@ -41,7 +41,8 @@ public:
     void SetClipWindow(uint32_t minX, uint32_t minY, uint32_t maxX, uint32_t maxY) override;
     void SetSstOrigin(uint32_t origin) override;
     void SetColorMask(bool rgb, bool alpha) override;
-    void SetGamma(float gamma) override {}
+    void SetGamma(float gamma) override;
+    void LoadGammaTable(uint32_t nentries, const uint32_t* rTable, const uint32_t* gTable, const uint32_t* bTable) override;
     
     // Milestone 8: Fogging State
     void SetFogMode(uint32_t mode) override;
@@ -151,6 +152,12 @@ protected:
     uint32_t m_chromakeyRangeMax{0};
     uint32_t m_chromakeyRangeMode{0};
     uint32_t m_lastCpuClearColor{0};
+    
+    // Gamma correction software LUT state
+    bool m_useGammaLut{false};
+    uint8_t m_lutR[256];
+    uint8_t m_lutG[256];
+    uint8_t m_lutB[256];
 };
 
 } // namespace GlideWrapper

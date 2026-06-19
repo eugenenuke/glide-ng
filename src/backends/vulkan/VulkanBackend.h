@@ -141,7 +141,8 @@ public:
     void SetSstOrigin(uint32_t origin) override;
     void SetClipWindow(uint32_t minX, uint32_t minY, uint32_t maxX, uint32_t maxY) override;
     void SetColorMask(bool rgb, bool alpha) override;
-    void SetGamma(float gamma) override {}
+    void SetGamma(float gamma) override;
+    void LoadGammaTable(uint32_t nentries, const uint32_t* rTable, const uint32_t* gTable, const uint32_t* bTable) override;
     void SetConstantColor(uint32_t color) override;
     void SetRenderBuffer(uint32_t target) override;
     void SetPixelFormat(uint32_t format) override;
@@ -301,6 +302,13 @@ private:
     uint32_t m_texStagingOffsets[2]{0, 0};
     const uint32_t m_texStagingSlotSize{8 * 1024 * 1024}; // 8MB per frame slot
     uint32_t m_msaaSamples{1};
+    
+    // Vulkan Gamma LUT State variables
+    float m_gammaCorrectionValue{1.0f};
+    bool m_useGammaLut{false};
+    uint8_t m_lutR[256];
+    uint8_t m_lutG[256];
+    uint8_t m_lutB[256];
 };
 
 

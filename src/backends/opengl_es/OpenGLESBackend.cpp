@@ -40,11 +40,19 @@ precision mediump float;
 in vec2 fragTex;
 out vec4 outColor;
 uniform sampler2D uTex;
-uniform float uGamma;
+uniform sampler2D uGammaLut;
+uniform bool uUseGammaLut;
 void main() {
     vec4 texColor = texture(uTex, fragTex).bgra;
-    float gamma = (uGamma > 0.0) ? uGamma : 1.0;
-    outColor = vec4(pow(texColor.rgb, vec3(1.0 / gamma)), texColor.a);
+    if (uUseGammaLut) {
+        vec3 corrected;
+        corrected.r = texture(uGammaLut, vec2(texColor.r, 0.5)).r;
+        corrected.g = texture(uGammaLut, vec2(texColor.g, 0.5)).g;
+        corrected.b = texture(uGammaLut, vec2(texColor.b, 0.5)).b;
+        outColor = vec4(corrected, texColor.a);
+    } else {
+        outColor = texColor;
+    }
 }
 )";
 
@@ -74,6 +82,7 @@ void OpenGLESBackend::ResetState() {
     m_geomVBOOffset = 0;
     m_is2DGeometry = true;
     m_gammaCorrectionValue = 1.0f;
+    m_useGammaLut = false;
     m_glesTextures.clear(); // Clear the stale texture cache to prevent reusing dead GL texture IDs in new contexts!
 }
 
@@ -194,8 +203,8 @@ bool OpenGLESBackend::SwapBuffers() {
         glDisable(GL_SCISSOR_TEST);
         glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
 
-        if (m_gammaCorrectionValue == 1.0f) {
-            // --- OPTION A: HIGH-SPEED GPU HARDWARE BLIT (Gamma = 1.0) ---
+        if (m_gammaCorrectionValue == 1.0f && !m_useGammaLut) {
+            // --- OPTION A: HIGH-SPEED GPU HARDWARE BLIT (Gamma = 1.0, No LUT) ---
             glBindFramebuffer(GL_READ_FRAMEBUFFER, m_headlessFBOs[0]);
             glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
             glViewport(0, 0, m_headlessWidth, m_headlessHeight);
@@ -204,7 +213,7 @@ bool OpenGLESBackend::SwapBuffers() {
                               GL_COLOR_BUFFER_BIT, GL_NEAREST);
             checkGLError("SwapBuffers glBlitFramebuffer");
         } else {
-            // --- OPTION B: FULL-SCREEN QUAD SHADER PASS (Gamma != 1.0) ---
+            // --- OPTION B: FULL-SCREEN QUAD SHADER PASS (Gamma != 1.0 or LUT active) ---
             glBindFramebuffer(GL_FRAMEBUFFER, 0); // Render directly to window surface
             glViewport(0, 0, m_headlessWidth, m_headlessHeight);
             glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
@@ -212,21 +221,28 @@ bool OpenGLESBackend::SwapBuffers() {
 
             glUseProgram(m_glProgram);
             
-            // Pass active gamma value
-            GLint uGammaLoc = glGetUniformLocation(m_glProgram, "uGamma");
-            if (uGammaLoc != -1) {
-                glUniform1f(uGammaLoc, m_gammaCorrectionValue);
+            // Pass active gamma lut switch
+            GLint uUseGammaLutLoc = glGetUniformLocation(m_glProgram, "uUseGammaLut");
+            if (uUseGammaLutLoc != -1) {
+                glUniform1i(uUseGammaLutLoc, m_useGammaLut ? 1 : 0);
             }
 
             // Bind the rendered offscreen FBO color texture as texture unit 0
             glActiveTexture(GL_TEXTURE0);
             glBindTexture(GL_TEXTURE_2D, m_fboTextures[0]); 
 
+            // Bind the Gamma LUT 1D texture as texture unit 1
+            glActiveTexture(GL_TEXTURE1);
+            glBindTexture(GL_TEXTURE_2D, m_glGammaLutTex);
+
             glBindVertexArray(m_glVAO);
             glDrawArrays(GL_TRIANGLE_FAN, 0, 4); // Draw full-screen quad
             
             glBindVertexArray(0);
             glUseProgram(0);
+            
+            // Reset active texture unit back to unit 0
+            glActiveTexture(GL_TEXTURE0);
             checkGLError("SwapBuffers Gamma shader pass");
         }
 
@@ -580,8 +596,14 @@ bool OpenGLESBackend::CreateGLContext(void* nativeWindowHandle, uint32_t width, 
         glUseProgram(m_glProgram);
         glUniform1i(uTexLoc, 0);
         glUseProgram(0);
-    } else {
-        GLIDE_LOG(WARN, "GLES", "Could not find uniform location for 'uTex' in presentation shader!");
+    }
+    
+    // Explicitly bind the presentation shader's Gamma LUT sampler to texture unit 1
+    GLint uGammaLutLoc = glGetUniformLocation(m_glProgram, "uGammaLut");
+    if (uGammaLutLoc != -1) {
+        glUseProgram(m_glProgram);
+        glUniform1i(uGammaLutLoc, 1);
+        glUseProgram(0);
     }
 
     // Set up presentation VBO/VAO quad
@@ -615,6 +637,22 @@ bool OpenGLESBackend::CreateGLContext(void* nativeWindowHandle, uint32_t width, 
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 
+    // Create the 256x1 Gamma LUT texture
+    glGenTextures(1, &m_glGammaLutTex);
+    glBindTexture(GL_TEXTURE_2D, m_glGammaLutTex);
+    uint8_t identityLut[256 * 3];
+    for (int i = 0; i < 256; ++i) {
+        identityLut[i * 3 + 0] = static_cast<uint8_t>(i);
+        identityLut[i * 3 + 1] = static_cast<uint8_t>(i);
+        identityLut[i * 3 + 2] = static_cast<uint8_t>(i);
+    }
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, 256, 1, 0, GL_RGB, GL_UNSIGNED_BYTE, identityLut);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glBindTexture(GL_TEXTURE_2D, 0);
+
     // Create the offscreen FBO GPU rendering textures (Double-Buffered)
     glGenTextures(2, m_fboTextures);
     for (int i = 0; i < 2; ++i) {
@@ -636,6 +674,7 @@ bool OpenGLESBackend::CreateGLContext(void* nativeWindowHandle, uint32_t width, 
 
 void OpenGLESBackend::DestroyGLContext() {
     if (m_glTexture)  { glDeleteTextures(1, &m_glTexture); m_glTexture = 0; }
+    if (m_glGammaLutTex) { glDeleteTextures(1, &m_glGammaLutTex); m_glGammaLutTex = 0; }
     if (m_fboTextures[0]) { glDeleteTextures(2, m_fboTextures); m_fboTextures[0] = m_fboTextures[1] = 0; }
     if (m_glVBO)     { glDeleteBuffers(1, &m_glVBO); m_glVBO = 0; }
     if (m_glVAO)     { glDeleteVertexArrays(1, &m_glVAO); m_glVAO = 0; }
@@ -1312,7 +1351,38 @@ void OpenGLESBackend::SetColorMask(bool rgb, bool alpha) {
 
 void OpenGLESBackend::SetGamma(float gamma) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    GLIDE_LOG(INFO, "GLES", "SetGamma: value=" << gamma);
     m_gammaCorrectionValue = gamma;
+    if (gamma <= 0.0f) gamma = 1.0f;
+    
+    uint32_t rTable[256], gTable[256], bTable[256];
+    for (int i = 0; i < 256; ++i) {
+        rTable[i] = static_cast<uint32_t>(std::pow(i / 255.0f, 1.0f / gamma) * 255.0f + 0.5f);
+        gTable[i] = rTable[i];
+        bTable[i] = rTable[i];
+    }
+    LoadGammaTable(256, rTable, gTable, bTable);
+    m_useGammaLut = (gamma != 1.0f);
+}
+
+void OpenGLESBackend::LoadGammaTable(uint32_t nentries, const uint32_t* rTable, const uint32_t* gTable, const uint32_t* bTable) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    GLIDE_LOG(INFO, "GLES", "LoadGammaTable: nentries=" << nentries << ", tex=" << m_glGammaLutTex);
+    if (nentries != 256 || !rTable || !gTable || !bTable) return;
+    
+    if (m_glGammaLutTex) {
+        std::vector<uint8_t> lutData(256 * 3);
+        for (int i = 0; i < 256; ++i) {
+            lutData[i * 3 + 0] = static_cast<uint8_t>(rTable[i]);
+            lutData[i * 3 + 1] = static_cast<uint8_t>(gTable[i]);
+            lutData[i * 3 + 2] = static_cast<uint8_t>(bTable[i]);
+        }
+        glBindTexture(GL_TEXTURE_2D, m_glGammaLutTex);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 256, 1, GL_RGB, GL_UNSIGNED_BYTE, lutData.data());
+        glBindTexture(GL_TEXTURE_2D, 0);
+        checkGLError("LoadGammaTable glTexSubImage2D");
+    }
+    m_useGammaLut = true;
 }
 
 void OpenGLESBackend::ApplyBlendingGLES() {

@@ -167,6 +167,21 @@ bool SoftwareBackend::SwapBuffers() {
         m_headlessPixelMap = m_cpuBuffers[m_backBufferIdx].data();
     }
 
+    // 2.5 Apply CPU-level Gamma LUT in-place on the front buffer if active
+    if (m_useGammaLut && !m_cpuBuffers[m_frontBufferIdx].empty()) {
+        auto* pixels = reinterpret_cast<uint32_t*>(m_cpuBuffers[m_frontBufferIdx].data());
+        int totalPixels = m_headlessWidth * m_headlessHeight;
+        #pragma omp parallel for if(totalPixels > 64000)
+        for (int i = 0; i < totalPixels; ++i) {
+            uint32_t pixel = pixels[i];
+            uint8_t a = (pixel >> 24) & 0xFF;
+            uint8_t r = (pixel >> 16) & 0xFF;
+            uint8_t g = (pixel >> 8) & 0xFF;
+            uint8_t b = pixel & 0xFF;
+            pixels[i] = (a << 24) | (m_lutR[r] << 16) | (m_lutG[g] << 8) | m_lutB[b];
+        }
+    }
+
     // 3. Present the newly swapped front buffer (which holds the completed frame)
     if (m_sdlTexture && m_sdlRenderer && !m_cpuBuffers[m_frontBufferIdx].empty()) {
         SDL_UpdateTexture(reinterpret_cast<SDL_Texture*>(m_sdlTexture), nullptr, m_cpuBuffers[m_frontBufferIdx].data(), m_headlessWidth * 4);

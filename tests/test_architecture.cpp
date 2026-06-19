@@ -229,6 +229,68 @@ TEST_CASE("Architectural Core Validation", "[Architecture]") {
 #endif
     }
 
+    SECTION("Gamma Correction & Custom Lookup Tables (TDD Phase)") {
+#ifdef __linux__
+        // 1. Verify Glide 2.x Gamma Exports
+        {
+            void* handle = OpenGlide2Handle();
+            REQUIRE(handle != nullptr);
+
+            using LoadGammaTableFunc = void(*)(FxU32, FxU32*, FxU32*, FxU32*);
+            using GammaCorrectionRGBFunc = void(*)(FxFloat, FxFloat, FxFloat);
+            using GammaCorrectionValueFunc = void(*)(float);
+
+            auto grLoadGammaTable = reinterpret_cast<LoadGammaTableFunc>(::dlsym(handle, "grLoadGammaTable"));
+            auto guGammaCorrectionRGB = reinterpret_cast<GammaCorrectionRGBFunc>(::dlsym(handle, "guGammaCorrectionRGB"));
+            auto grGammaCorrectionValue = reinterpret_cast<GammaCorrectionValueFunc>(::dlsym(handle, "grGammaCorrectionValue"));
+
+            REQUIRE(grLoadGammaTable != nullptr);
+            REQUIRE(guGammaCorrectionRGB != nullptr);
+            REQUIRE(grGammaCorrectionValue != nullptr);
+
+            // Test execution - verify no crash under active backend
+            uint32_t r[256], g[256], b[256];
+            for (int i = 0; i < 256; ++i) {
+                r[i] = g[i] = b[i] = i;
+            }
+            REQUIRE_NOTHROW(grLoadGammaTable(256, r, g, b));
+            REQUIRE_NOTHROW(guGammaCorrectionRGB(1.5f, 1.0f, 0.5f));
+            REQUIRE_NOTHROW(grGammaCorrectionValue(1.8f));
+
+            ::dlclose(handle);
+        }
+
+        // 2. Verify Glide 3.x Gamma Exports (Voodoo3 / 2.61 spec)
+        {
+            void* handle = OpenGlide3Handle();
+            REQUIRE(handle != nullptr);
+
+            using LoadGammaTableFunc = void(*)(FxU32, FxU32*, FxU32*, FxU32*);
+            using GammaCorrectionRGBFunc = void(*)(FxFloat, FxFloat, FxFloat);
+
+            auto grLoadGammaTable = reinterpret_cast<LoadGammaTableFunc>(::dlsym(handle, "grLoadGammaTable"));
+            auto guGammaCorrectionRGB = reinterpret_cast<GammaCorrectionRGBFunc>(::dlsym(handle, "guGammaCorrectionRGB"));
+
+            REQUIRE(grLoadGammaTable != nullptr);
+            REQUIRE(guGammaCorrectionRGB != nullptr);
+
+            // In Glide 3.x, grGammaCorrectionValue should NOT be exported!
+            auto grGammaCorrectionValue = ::dlsym(handle, "grGammaCorrectionValue");
+            REQUIRE(grGammaCorrectionValue == nullptr);
+
+            // Test execution - verify no crash under active backend
+            uint32_t r[256], g[256], b[256];
+            for (int i = 0; i < 256; ++i) {
+                r[i] = g[i] = b[i] = i;
+            }
+            REQUIRE_NOTHROW(grLoadGammaTable(256, r, g, b));
+            REQUIRE_NOTHROW(guGammaCorrectionRGB(1.5f, 1.0f, 0.5f));
+
+            ::dlclose(handle);
+        }
+#endif
+    }
+
     SECTION("Phase 2: Multilib Headless CI Swapchain Attachment & Buffer Clears (GENERATE Matrix)") {
 #ifdef __linux__
         // Cycle through all 4 official 3dfx card permutations using Catch2 GENERATE

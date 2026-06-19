@@ -80,6 +80,12 @@ void SoftwareBackendBase::ResetState() {
     m_chromakeyRangeMax = 0;
     m_chromakeyRangeMode = 0;
     m_lastCpuClearColor = 0;
+    m_useGammaLut = false;
+    for (int i = 0; i < 256; ++i) {
+        m_lutR[i] = static_cast<uint8_t>(i);
+        m_lutG[i] = static_cast<uint8_t>(i);
+        m_lutB[i] = static_cast<uint8_t>(i);
+    }
 }
 
 void SoftwareBackendBase::ClearBuffer(uint32_t color, uint32_t alpha, float z, uint32_t clearMask) {
@@ -612,6 +618,30 @@ void SoftwareBackendBase::SetRenderBuffer(uint32_t target) {
         m_headlessPixelMap = m_cpuBuffers[m_backBufferIdx].data();
     }
     GLIDE_LOG(INFO, "SoftwareBackendBase", "SetRenderBuffer: target=" << target << ", map=" << m_headlessPixelMap);
+}
+
+void SoftwareBackendBase::SetGamma(float gamma) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    GLIDE_LOG(INFO, "Software", "SetGamma: value=" << gamma);
+    if (gamma <= 0.0f) gamma = 1.0f;
+    for (int i = 0; i < 256; i++) {
+        m_lutR[i] = static_cast<uint8_t>(std::pow(i / 255.0f, 1.0f / gamma) * 255.0f + 0.5f);
+        m_lutG[i] = m_lutR[i];
+        m_lutB[i] = m_lutR[i];
+    }
+    m_useGammaLut = (gamma != 1.0f);
+}
+
+void SoftwareBackendBase::LoadGammaTable(uint32_t nentries, const uint32_t* rTable, const uint32_t* gTable, const uint32_t* bTable) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    GLIDE_LOG(INFO, "Software", "LoadGammaTable: nentries=" << nentries);
+    if (nentries != 256 || !rTable || !gTable || !bTable) return;
+    for (int i = 0; i < 256; i++) {
+        m_lutR[i] = static_cast<uint8_t>(rTable[i]);
+        m_lutG[i] = static_cast<uint8_t>(gTable[i]);
+        m_lutB[i] = static_cast<uint8_t>(bTable[i]);
+    }
+    m_useGammaLut = true;
 }
 
 } // namespace GlideWrapper

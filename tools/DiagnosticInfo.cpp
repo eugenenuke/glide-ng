@@ -1,6 +1,7 @@
 #include "DiagnosticInfo.h"
 #include <iostream>
 #include <iomanip>
+#include <sstream>
 #include <algorithm>
 #include <cstring>
 #include <cstdlib>
@@ -9,6 +10,34 @@
 #if GLIDE_VERSION == 2
 #include <sst1vid.h>
 #endif
+
+namespace {
+    // Helper to print message safely under raw terminal modes by ensuring carriage returns
+    void SafePrint(std::ostream& os, const std::string& msg, bool newline = true) {
+        std::string formatted;
+        formatted.reserve(msg.size() * 2);
+        for (size_t i = 0; i < msg.size(); ++i) {
+            if (msg[i] == '\n') {
+                if (i == 0 || msg[i - 1] != '\r') {
+                    formatted.push_back('\r');
+                }
+            }
+            formatted.push_back(msg[i]);
+        }
+        os << formatted;
+        if (newline) {
+            os << "\r\n";
+        }
+        os.flush();
+    }
+
+    template<typename T>
+    void SafePrint(std::ostream& os, const T& val, bool newline = true) {
+        std::ostringstream ss;
+        ss << val;
+        SafePrint(os, ss.str(), newline);
+    }
+}
 
 // Define unified Glide resolution tables
 struct ResolutionInfo {
@@ -110,26 +139,27 @@ Tools::ToolRunConfig Tools::InitializeAndParse(
 
     // 4. Handle List Mode (-l / --list)
     if (list_mode) {
-        std::cout << "======================================================================" << std::endl;
-        std::cout << "3DFX GLIDE DIAGNOSTIC TOOL - RESOLUTION MATRIX (GLIDE " << GLIDE_VERSION << " API)" << std::endl;
-        std::cout << "Active Device: " << sysConfig.boardName << " | Emulated VRAM: " << sysConfig.fbiMemMb << ".00 MB" << std::endl;
-        std::cout << "======================================================================" << std::endl;
+        SafePrint(std::cout, "======================================================================");
+        SafePrint(std::cout, "3DFX GLIDE DIAGNOSTIC TOOL - RESOLUTION MATRIX (GLIDE " + std::to_string(GLIDE_VERSION) + " API)");
+        SafePrint(std::cout, "Active Device: " + sysConfig.boardName + " | Emulated VRAM: " + std::to_string(sysConfig.fbiMemMb) + ".00 MB");
+        SafePrint(std::cout, "======================================================================");
 
         for (int i = 0; i < num_resolutions; i++) {
-            // Standard Voodoo formula: 3 buffers * 16-bit depth (2 bytes/pixel) = 6 bytes/pixel
             float req_mem = (resolutions[i].width * resolutions[i].height * 6.0f) / (1024.0f * 1024.0f);
             bool supported = (req_mem <= sysConfig.fbiMemMb);
             
-            std::cout << "  [" << (supported ? "*" : " ") << "]  " 
-                      << std::left << std::setw(10) << resolutions[i].name 
-                      << " (" << std::fixed << std::setprecision(2) << req_mem << " MB required";
+            std::ostringstream ss;
+            ss << "  [" << (supported ? "*" : " ") << "]  " 
+               << std::left << std::setw(10) << resolutions[i].name 
+               << " (" << std::fixed << std::setprecision(2) << req_mem << " MB required";
             if (!supported) {
-                std::cout << " - EXCEEDS VRAM!)" << std::endl;
+                ss << " - EXCEEDS VRAM!)";
             } else {
-                std::cout << ")" << std::endl;
+                ss << ")";
             }
+            SafePrint(std::cout, ss.str());
         }
-        std::cout << "======================================================================" << std::endl;
+        SafePrint(std::cout, "======================================================================");
         grGlideShutdown();
         std::exit(EXIT_SUCCESS);
     }
@@ -144,10 +174,10 @@ Tools::ToolRunConfig Tools::InitializeAndParse(
     }
 
     if (res_index == -1) {
-        std::cerr << "ERROR: Invalid resolution requested: '" << res_name << "'" << std::endl;
-        std::cerr << "Supported resolutions for this binary:" << std::endl;
+        SafePrint(std::cerr, "ERROR: Invalid resolution requested: '" + res_name + "'");
+        SafePrint(std::cerr, "Supported resolutions for this binary:");
         for (int i = 0; i < num_resolutions; i++) {
-            std::cerr << "  " << resolutions[i].name << std::endl;
+            SafePrint(std::cerr, "  " + std::string(resolutions[i].name));
         }
         grGlideShutdown();
         std::exit(EXIT_FAILURE);
@@ -156,9 +186,11 @@ Tools::ToolRunConfig Tools::InitializeAndParse(
     // Check VRAM compatibility for requested resolution
     float req_mem = (resolutions[res_index].width * resolutions[res_index].height * 6.0f) / (1024.0f * 1024.0f);
     if (req_mem > sysConfig.fbiMemMb) {
-        std::cerr << "ERROR: Requested resolution '" << res_name << "' requires " 
-                  << std::fixed << std::setprecision(2) << req_mem 
-                  << " MB VRAM, but only " << sysConfig.fbiMemMb << ".00 MB is available!" << std::endl;
+        std::ostringstream ss;
+        ss << "ERROR: Requested resolution '" << res_name << "' requires " 
+           << std::fixed << std::setprecision(2) << req_mem 
+           << " MB VRAM, but only " << sysConfig.fbiMemMb << ".00 MB is available!";
+        SafePrint(std::cerr, ss.str());
         grGlideShutdown();
         std::exit(EXIT_FAILURE);
     }
@@ -170,26 +202,29 @@ Tools::ToolRunConfig Tools::InitializeAndParse(
     const char* rendererName = grGetString(GR_RENDERER);
     const char* extString = grGetString(GR_EXTENSION);
 
-    std::cout << "======================================================================" << std::endl;
-    std::cout << toolName << " (Glide " << GLIDE_VERSION << ".x API)" << std::endl;
-    std::cout << "======================================================================" << std::endl;
-    std::cout << "Glide Version:   " << (driverVersion ? driverVersion : "Unknown") << std::endl;
-    std::cout << "Resolution:      " << resolutions[res_index].name << " (" << std::fixed << std::setprecision(2) << req_mem << " MB VRAM required)" << std::endl;
-    std::cout << "----------------------------------------------------------------------" << std::endl;
-    std::cout << "Emulated Device: " << sysConfig.boardName << " (" << (hardwareName ? hardwareName : "Unknown") << ")" << std::endl;
-    std::cout << "Device Vendor:   " << (vendorName ? vendorName : "Unknown") << std::endl;
-    std::cout << "VRAM Size:       " << sysConfig.fbiMemMb << ".00 MB" << std::endl;
-    std::cout << "Active TMUs:     " << sysConfig.tmuCount << " TMUs" << std::endl;
-    std::cout << "SLI Detect:      " << (sysConfig.sli ? "Yes (Dual-Card Board)" : "No") << std::endl;
-    std::cout << "----------------------------------------------------------------------" << std::endl;
-    std::cout << "Active Driver:   " << (rendererName ? rendererName : "Unknown") << std::endl;
-    std::cout << "----------------------------------------------------------------------" << std::endl;
+    SafePrint(std::cout, "======================================================================");
+    SafePrint(std::cout, toolName + " (Glide " + std::to_string(GLIDE_VERSION) + ".x API)");
+    SafePrint(std::cout, "======================================================================");
+    SafePrint(std::cout, "Glide Version:   " + std::string(driverVersion ? driverVersion : "Unknown"));
+    
+    std::ostringstream res_ss;
+    res_ss << "Resolution:      " << resolutions[res_index].name << " (" << std::fixed << std::setprecision(2) << req_mem << " MB VRAM required)";
+    SafePrint(std::cout, res_ss.str());
+    
+    SafePrint(std::cout, "----------------------------------------------------------------------");
+    SafePrint(std::cout, "Emulated Device: " + sysConfig.boardName + " (" + std::string(hardwareName ? hardwareName : "Unknown") + ")");
+    SafePrint(std::cout, "Device Vendor:   " + std::string(vendorName ? vendorName : "Unknown"));
+    SafePrint(std::cout, "VRAM Size:       " + std::to_string(sysConfig.fbiMemMb) + ".00 MB");
+    SafePrint(std::cout, "Active TMUs:     " + std::to_string(sysConfig.tmuCount) + " TMUs");
+    SafePrint(std::cout, "SLI Detect:      " + std::string(sysConfig.sli ? "Yes (Dual-Card Board)" : "No"));
+    SafePrint(std::cout, "----------------------------------------------------------------------");
+    SafePrint(std::cout, "Active Driver:   " + std::string(rendererName ? rendererName : "Unknown"));
+    SafePrint(std::cout, "----------------------------------------------------------------------");
 
 #if GLIDE_VERSION == 2
     // Grouped Gated Functions Checklist (Spec-compliant dynamic queries!)
-    std::cout << "Available Minor-Version API Features:" << std::endl;
+    SafePrint(std::cout, "Available Minor-Version API Features:");
     
-    // Imply function availability at runtime based on reported driver version and card model!
     double reported_version = 2.43;
     if (driverVersion) {
         reported_version = std::atof(driverVersion);
@@ -213,22 +248,22 @@ Tools::ToolRunConfig Tools::InitializeAndParse(
         return false;
     };
     
-    std::cout << "  [2.42 Features (Voodoo2 Multitexturing)]" << std::endl;
-    std::cout << "    [" << (is_func_avail("grTexMultibase") ? "X" : " ") << "] grTexMultibase" << std::endl;
-    std::cout << "    [" << (is_func_avail("grTexMultibaseAddress") ? "X" : " ") << "] grTexMultibaseAddress" << std::endl;
+    SafePrint(std::cout, "  [2.42 Features (Voodoo2 Multitexturing)]");
+    SafePrint(std::cout, "    [" + std::string(is_func_avail("grTexMultibase") ? "X" : " ") + "] grTexMultibase");
+    SafePrint(std::cout, "    [" + std::string(is_func_avail("grTexMultibaseAddress") ? "X" : " ") + "] grTexMultibaseAddress");
     
-    std::cout << "  [2.43 Features (Voodoo2 Gold Standard)]" << std::endl;
-    std::cout << "    [" << (is_func_avail("grGetProcAddress") ? "X" : " ") << "] grGetProcAddress" << std::endl;
-    std::cout << "    [" << (is_func_avail("grChromakeyRangeExt") ? "X" : " ") << "] grChromakeyRangeExt" << std::endl;
-    std::cout << "    [" << (is_func_avail("grAlphaControlsITRGBLighting") ? "X" : " ") << "] grAlphaControlsITRGBLighting" << std::endl;
+    SafePrint(std::cout, "  [2.43 Features (Voodoo2 Gold Standard)]");
+    SafePrint(std::cout, "    [" + std::string(is_func_avail("grGetProcAddress") ? "X" : " ") + "] grGetProcAddress");
+    SafePrint(std::cout, "    [" + std::string(is_func_avail("grChromakeyRangeExt") ? "X" : " ") + "] grChromakeyRangeExt");
+    SafePrint(std::cout, "    [" + std::string(is_func_avail("grAlphaControlsITRGBLighting") ? "X" : " ") + "] grAlphaControlsITRGBLighting");
     
-    std::cout << "  [2.61 Features (Voodoo3 Splash Callbacks)]" << std::endl;
-    std::cout << "    [" << (is_func_avail("grSplashCb") ? "X" : " ") << "] grSplashCb" << std::endl;
-    std::cout << "----------------------------------------------------------------------" << std::endl;
+    SafePrint(std::cout, "  [2.61 Features (Voodoo3 Splash Callbacks)]");
+    SafePrint(std::cout, "    [" + std::string(is_func_avail("grSplashCb") ? "X" : " ") + "] grSplashCb");
+    SafePrint(std::cout, "----------------------------------------------------------------------");
 #endif
 
     // Print Extension Checklist
-    std::cout << "Extensions:" << std::endl;
+    SafePrint(std::cout, "Extensions:");
     std::vector<std::string> targetExtensions;
 #if GLIDE_VERSION == 3
     targetExtensions = {"CHROMARANGE", "COMBINER", "STENCIL", "TBUFFER", "TEXCOMBINER"};
@@ -251,15 +286,15 @@ Tools::ToolRunConfig Tools::InitializeAndParse(
                 pos += ext.length();
             }
         }
-        std::cout << "  [" << (supported ? "X" : " ") << "]  " << ext << std::endl;
+        SafePrint(std::cout, "  [" + std::string(supported ? "X" : " ") + "]  " + ext);
     }
-    std::cout << "----------------------------------------------------------------------" << std::endl;
+    SafePrint(std::cout, "----------------------------------------------------------------------");
 
-    std::cout << "Interactive Keybindings:" << std::endl;
+    SafePrint(std::cout, "Interactive Keybindings:");
     for (const auto& binding : keybindings) {
-        std::cout << "  " << binding << std::endl;
+        SafePrint(std::cout, "  " + binding);
     }
-    std::cout << "======================================================================" << std::endl;
+    SafePrint(std::cout, "======================================================================");
 
     // 7. Construct and Return final validated parameters
     ToolRunConfig runConfig;

@@ -2147,6 +2147,34 @@ FX_ENTRY void FX_CALL grGammaCorrectionValue(float value) {
     }
 }
 
+FX_ENTRY void FX_CALL grLoadGammaTable(FxU32 nentries, FxU32 *red, FxU32 *green, FxU32 *blue) {
+    EnsureEngineInitialized();
+    GLIDE_LOG(DEBUG, "Frontend", "grLoadGammaTable: nentries=" << nentries);
+    if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
+        b->LoadGammaTable(nentries, red, green, blue);
+    }
+}
+
+FX_ENTRY void FX_CALL guGammaCorrectionRGB(FxFloat red, FxFloat green, FxFloat blue) {
+    EnsureEngineInitialized();
+    GLIDE_LOG(DEBUG, "Frontend", "guGammaCorrectionRGB: red=" << red << ", green=" << green << ", blue=" << blue);
+    
+    float r = (red > 0.0f) ? red : 1.0f;
+    float g = (green > 0.0f) ? green : 1.0f;
+    float b = (blue > 0.0f) ? blue : 1.0f;
+    
+    uint32_t rTable[256], gTable[256], bTable[256];
+    for (int i = 0; i < 256; ++i) {
+        rTable[i] = static_cast<uint32_t>(std::pow(i / 255.0f, 1.0f / r) * 255.0f + 0.5f);
+        gTable[i] = static_cast<uint32_t>(std::pow(i / 255.0f, 1.0f / g) * 255.0f + 0.5f);
+        bTable[i] = static_cast<uint32_t>(std::pow(i / 255.0f, 1.0f / b) * 255.0f + 0.5f);
+    }
+    
+    if (auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
+        backend->LoadGammaTable(256, rTable, gTable, bTable);
+    }
+}
+
 FX_ENTRY FxBool FX_CALL grSstControl(FxU32 code) {
     EnsureEngineInitialized();
     GLIDE_LOG(DEBUG, "Frontend", "grSstControl invoked: code=" << code);
