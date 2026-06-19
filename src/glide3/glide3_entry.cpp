@@ -288,7 +288,12 @@ FX_ENTRY const char* FX_CALL grGetString(FxU32 pname) {
             }
             return "3dfx glide-ng Vulkan Wrapper";
         }
-        case GR_EXTENSION:return "CHROMARANGE";
+        case GR_EXTENSION: {
+            if (reg.GetConfig().backend == "software") {
+                return "";
+            }
+            return "CHROMARANGE";
+        }
         default: return "Unknown";
     }
 }
