@@ -56,251 +56,218 @@ This forces rigid retro games to follow their authentic retro software execution
 
 ---
 
-## 4. Baseline Glide 2.x API: Common Feature Set
+## 4. The Historical Relationship of Minor Versions
 
-The following **136 functions** constitute the baseline Glide 2.x specification. They are common across all hardware platforms (Voodoo Graphics, Voodoo Rush, and Voodoo2) under the unified `glide2x` ABI.
+To understand why certain version numbers appear next to each other, we must examine the physical hardware releases and the evolution of the software development kits (SDKs):
 
-### A. Lifecycle & Global State (7 functions)
-*   `grGlideInit(void)` — Initializes the Glide runtime environment.
-*   `grGlideShutdown(void)` — Shuts down the runtime and terminates active backends.
-*   `grGlideGetVersion(char version[80])` — Retrieves the wrapper's version string.
-*   `grGlideGetState(GrState *state)` — Captures the active graphics context state.
-*   `grGlideSetState(const GrState *state)` — Restores a saved graphics context state.
-*   `grGlideShamelessPlug(const FxBool on)` — Renders the legacy 3dfx spinning logo.
-*   `grGetProcAddress(char *procName)` — Dynamically resolves extension function pointers.
+### A. Glide 2.1 vs. Glide 2.40: The Launch vs. The Formalized Spec
+*   **Glide 2.1 (Late 1996)**: The raw, internal launch API developed specifically for the **SST-1 Voodoo Graphics** board. It was heavily geared towards MS-DOS, running in exclusive full-screen pass-through mode. The dynamic library was named `glide.dll` (Windows) or `libglide.so` (Linux).
+*   **Glide 2.40 (Mid 1997)**: The first formalized, publicly documented API specification. It was released to support the new **Voodoo Rush** board (which integrated 2D and 3D on a single shared framebuffer). It introduced the windowed rendering paradigm, removed the old DOS-only monolithic functions, and renamed the dynamic library to **`glide2x.dll`** / **`libglide2x.so`**.
+*   **The Relationship**: **Glide 2.1 is the launch state of Voodoo Graphics**, while **Glide 2.40 is the unified, windowed-ready SDK for both Voodoo Graphics and Voodoo Rush**.
 
-### B. Hardware & Window Management (11 functions)
-*   `grSstSelect(int which_sst)` — Selects the active Voodoo board (always routes to board 0).
-*   `grSstWinOpen(...)` — Creates the window and initializes Software/Vulkan/GLES contexts.
-*   `grSstWinClose(void)` — Closes the window and destroys backend contexts.
-*   `grSstQueryHardware(GrHwConfiguration *hw)` — Queries Voodoo board characteristics.
-*   `grSstQueryBoards(GrHwConfiguration *hw)` — Queries the number of boards present.
-*   `grSstOrigin(GrOriginLocation_t origin)` — Configures coordinate origin orientation.
-*   `grSstIdle(void)` — Blocks until the graphics pipeline completes all pending commands.
-*   `grSstControl(FxU32 code)` — Direct register-level control interface.
-*   `grSstVideoLine(void)` — Returns the current raster line being drawn.
-*   `grSstVRetraceOn(void)` — Checks if the screen is undergoing vertical retrace.
-*   `grSstIsBusy(void)` — Checks if the graphics hardware is executing commands.
-
-### C. Buffer Control & Presentation (4 functions)
-*   `grBufferClear(GrColor_t c, GrAlpha_t a, FxU16 d)` — Clears color, alpha, and depth buffers.
-*   `grBufferSwap(int swap_interval)` — Swaps front and back buffers.
-*   `grRenderBuffer(GrBuffer_t buffer)` — Sets the target buffer for drawing.
-*   `grBufferNumPending(void)` — Returns the number of swap commands queued.
-
-### D. Geometry & Drawing Primitives (13 functions)
-*   `grDrawPoint(const GrVertex *pt)` — Renders a single pixel point.
-*   `grDrawLine(const GrVertex *v1, const GrVertex *v2)` — Renders a 2D line.
-*   `grDrawTriangle(const GrVertex *a, const GrVertex *b, const GrVertex *c)` — Renders a Gouraud-shaded triangle.
-*   `grDrawPlanarPolygon(...)` — Renders a flat-colored convex polygon.
-*   `grDrawPlanarPolygonVertexList(...)` — Renders a flat-colored polygon from a vertex list.
-*   `grDrawPolygon(...)` — Renders a shaded polygon.
-*   `grDrawPolygonVertexList(...)` — Renders a shaded polygon from a vertex list.
-*   `grDrawVertexArray(...)` — Renders primitives from a vertex array.
-*   `grDrawVertexArrayLinear(...)` — Renders primitives from a linear vertex array.
-*   `grCullMode(GrCullMode_t mode)` — Configures polygon backface/frontface culling.
-*   `grViewport(FxI32 x, FxI32 y, FxI32 width, FxI32 height)` — Sets the rendering viewport.
-*   `grCoordinateSpace(GrCoordinateSpaceMode_t mode)` — Sets coordinate space mode.
-*   `grVertexLayout(...)` — Sets the vertex layout properties.
-
-### E. Color & Alpha Combiners (10 functions)
-*   `grColorCombine(fnc, factor, local, other, invert)` — Configures RGB combiner equations.
-*   `grAlphaCombine(fnc, factor, local, other, invert)` — Configures Alpha combiner equations.
-*   `grAlphaBlendFunction(rgb_sf, rgb_df, alpha_sf, alpha_df)` — Configures final blending factors.
-*   `grAlphaTestFunction(GrCmpFnc_t function)` — Sets the comparison function for alpha testing.
-*   `grAlphaTestReferenceValue(GrAlpha_t value)` — Sets the reference value for alpha testing.
-*   `grConstantColorValue(GrColor_t value)` — Sets constant combiner color.
-*   `grConstantColorValue4(float a, float r, float g, float b)` — Sets constant color via floats.
-*   `grChromakeyMode(GrChromakeyMode_t mode)` — Enables/disables hardware chroma-keying.
-*   `grChromakeyValue(GrColor_t value)` — Sets the global chroma-key reference color.
-*   `grAlphaControlsITRGBLighting(FxBool enable)` — Routes vertex alpha to control lighting.
-
-### F. Depth & Clipping (6 functions)
-*   `grDepthBufferMode(GrDepthBufferMode_t mode)` — Enables Z-buffering or W-buffering.
-*   `grDepthBufferFunction(GrCmpFnc_t function)` — Configures depth comparison.
-*   `grDepthMask(FxBool mask)` — Enables/disables writing depth values.
-*   `grDepthBiasLevel(FxI16 level)` — Sets depth bias offset.
-*   `grClipWindow(minx, miny, maxx, maxy)` — Configures the scissor clipping box.
-*   `grDepthRange(float y_near, float y_far)` — Configures depth range mapping.
-
-### G. Fogging (3 functions)
-*   `grFogMode(GrFogMode_t mode)` — Enables table-based or iterated alpha fogging.
-*   `grFogColorValue(GrColor_t fogcolor)` — Sets the color of the fog.
-*   `grFogTable(const GrFog_t ft[])` — Uploads the 64-entry logarithmic fog table.
-
-### H. Texture Mapping (19 functions)
-*   `grTexCalcMemRequired(...)` — Calculates memory required for a texture.
-*   `grTexMaxAddress(GrChipID_t tmu)` — Returns maximum memory address for a TMU.
-*   `grTexMinAddress(GrChipID_t tmu)` — Returns minimum memory address for a TMU.
-*   `grTexSource(tmu, startAddress, evenOdd, info)` — Binds a texture to a TMU.
-*   `grTexClampMode(tmu, s_clamp, t_clamp)` — Configures texture wrapping/clamping.
-*   `grTexCombine(tmu, rgbFnc, rgbFac, alphaFnc, alphaFac, ...)` — Configures texture combining.
-*   `grTexFilterMode(tmu, minfilter, magfilter)` — Configures minification/magnification filters.
-*   `grTexDownloadMipMap(tmu, startAddress, evenOdd, info)` — Uploads a texture mipmap chain.
-*   `grTexDownloadMipMapLevel(...)` — Uploads a single mipmap level.
-*   `grTexDownloadMipMapLevelPartial(...)` — Uploads a partial slice of a mipmap level.
-*   `grTexMipMapMode(tmu, mode, lodBlend)` — Configures mipmap blending and LOD selection.
-*   `grTexTextureMemRequired(evenOdd, info)` — Calculates memory required for a texture info struct.
-*   `grTexNCCTable(GrChipID_t tmu, GrNCCTable_t table)` — Downloads Narrow Channel Compression tables.
-*   `grTexCombineFunction(GrChipID_t tmu, GrTextureCombineFnc_t fnc)` — Legacy texture combiner config.
-*   `grTexDetailControl(tmu, lod_bias, detail_scale, detail_max)` — Configures detail-texture blending.
-*   `grTexLodBiasValue(GrChipID_t tmu, float bias)` — Adjusts texture LOD selection bias.
-*   `grTexDownloadTable(tmu, type, data)` — Downloads custom color lookup tables (e.g., paletted formats).
-*   `grTexDownloadTablePartial(...)` — Downloads a slice of a color lookup table.
-*   `grTexMultibase(GrChipID_t tmu, FxBool enable)` — Enables multibase texturing.
-
-### I. Linear Frame Buffer (LFB) Access (8 functions)
-*   `grLfbLock(type, buffer, writeMode, origin, pipeline, info)` — Locks VRAM, returning writable pointer.
-*   `grLfbUnlock(type, buffer)` — Unlocks VRAM, submitting pixel writes to the graphics engine.
-*   `grLfbWriteRegion(dstBuf, dstX, dstY, srcFmt, width, height, stride, src)` — CPU-to-VRAM block copy.
-*   `grLfbReadRegion(srcBuf, srcX, srcY, width, height, stride, dst)` — VRAM-to-CPU block copy.
-*   `grLfbConstantAlpha(GrAlpha_t alpha)` — Sets constant alpha value for direct LFB writes.
-*   `grLfbConstantDepth(FxU16 depth)` — Sets constant depth value for direct LFB writes.
-*   `grLfbWriteColorSwizzle(swizzle, swap)` — Configures channel byte swizzling for LFB writes.
-*   `grLfbWriteColorFormat(colorFormat)` — Configures color pixel formats for LFB writes.
-
-### J. Anti-Aliasing, Statistics & System Queries (18 functions)
-*   `grAADrawPoint(const GrVertex *pt)` — Draws an anti-aliased sub-pixel point.
-*   `grAADrawLine(const GrVertex *v1, const GrVertex *v2)` — Draws an anti-aliased line.
-*   `grAADrawTriangle(...)` — Draws a triangle with edge anti-aliasing.
-*   `grAADrawPolygon(...)` — Draws an anti-aliased polygon.
-*   `grAADrawPolygonVertexList(...)` — Draws an anti-aliased polygon from a vertex list.
-*   `grGetString(FxU32 pname)` — Retrieves driver extensions and device info.
-*   `grCheckForRoom(FxI32 n)` — Stalls until the command queue has room for `n` entries.
-*   `grGammaCorrectionValue(float value)` — Configures hardware monitor gamma correction.
-*   `grSplash(...)` — Renders the legacy 3dfx splash screen sequence.
-*   `grHints(GrHint_t hintType, FxU32 hintMask)` — Provides rendering hints.
-*   `grResetTriStats(void)` — Resets drawing counters.
-*   `grTriStats(FxU32 *processed, FxU32 *drawn)` — Retrieves triangle drawing statistics.
-*   `grErrorSetCallback(GrErrorCallbackFnc_t fnc)` — Registers a custom error handler callback.
-*   `grSstStatus(void)` — Returns the raw status register bits of the Voodoo chip.
-*   `grSstResetPerfStats(void)` — Resets hardware performance metrics.
-*   `grSstPerfStats(GrSstPerfStats_t *stats)` — Gathers hardware performance metrics.
-*   `grSstScreenWidth(void)` — Returns screen width.
-*   `grSstScreenHeight(void)` — Returns screen height.
-
-### K. Utility Library (`gu*` - 28 functions)
-*   `guAADrawTriangleWithClip(...)` — Renders an anti-aliased triangle with viewport clipping.
-*   `guDrawTriangleWithClip(...)` — Renders a Gouraud triangle with viewport clipping.
-*   `guDrawPolygonVertexListWithClip(...)` — Renders a polygon with viewport clipping.
-*   `guAlphaSource(GrAlphaSource_t mode)` — Configures alpha combining modes.
-*   `guColorCombineFunction(GrColorCombineFnc_t fnc)` — Configures color combining modes.
-*   `guTexCreateColorMipMap(void)` — Generates a color-bar test mipmap pattern.
-*   `gu3dfGetInfo(...)` — Parses `.3df` texture file headers.
-*   `gu3dfLoad(...)` — Parses and loads `.3df` texture pixels into RAM.
-*   `guTexAllocateMemory(...)` — Allocates space in TMU texture memory.
-*   `guTexChangeAttributes(...)` — Modifies properties of an existing texture.
-*   `guTexCombineFunction(...)` — Configures texture combiners.
-*   `guTexDownloadMipMap(...)` — Downloads an entire mipmap.
-*   `guTexGetCurrentMipMap(...)` — Retrieves active texture properties for a TMU.
-*   `guTexGetMipMapInfo(...)` — Extracts sizing and details from a texture info struct.
-*   `guTexSource(...)` — Binds texture state to a TMU.
-*   *   `guFogTableIndexToW(int i)` — Maps a fog table index back to planar depth $W$.
-*   `guFogGenerateExp(...)` — Populates the table with an exponential curve ($1 - e^{-d \cdot W}$).
-*   `guFogGenerateExp2(...)` — Populates the table with a double-exponential curve ($1 - e^{-(d \cdot W)^2}$).
-*   `guFogGenerateLinear(...)` — Populates the table with a linear curve.
-*   `guEncodeRLE16(void *dst, void *src, FxU32 w, FxU32 h)` — Compresses 16-bit color pixels to RLE.
-*   `guEndianSwapWords(FxU32 value)` — Swaps byte order of 32-bit words.
-*   `guEndianSwapBytes(FxU16 value)` — Swaps byte order of 16-bit words.
-*   *(Plus minor viewport-mapping, matrix, and texture-tiling internal utility routines).*
+### B. Glide 2.40 vs. 2.42 vs. 2.43: The Voodoo2 Evolution
+*   **Glide 2.40 (1997)**: The baseline for single-TMU boards (Voodoo Graphics, Voodoo Rush). It had **no concept of a second TMU (`GR_TMU1`)**, no SLI synchronization, and no support for advanced chroma range registers.
+*   **Glide 2.42 (Early 1998)**: Released alongside the **Voodoo2 (CVG)** hardware. It added multi-TMU single-pass multitexturing and dual-board Scan-Line Interleaving (SLI) support.
+*   **Glide 2.43 (Mid 1998 - Gold Standard)**: The definitive, highly optimized release for Voodoo2. It introduced the dynamic extension loading system (**`grGetProcAddress`**), the Voodoo2-exclusive **Chroma-Keying Ranges (`grChromakeyRangeExt`)**, and vertex-alpha routed lighting control.
+*   **Do We Care? YES!** 
+    *   If a legacy game targets **2.40**, it is an older Voodoo Graphics title (e.g., *GLQuake*) and only uses exact-match chroma-keying.
+    *   If a game targets **2.43**, it is a high-performance Voodoo2 title (e.g., *Unreal*, *Half-Life*) that dynamically queries extensions via `grGetProcAddress` and relies on range-match chroma-keying or multi-TMU combiners.
 
 ---
 
-## 5. Glide Version-by-Version Incremental Diffs
+## 5. Master Map of All Glide Functions & Their Introducing Versions
 
-When retro games target our wrapper, they execute against a historical timeline of API additions, deprecations, and removals. Here is the exact incremental diff for every subsequent version:
+This master map lists every single Glide core (`gr*`), utility (`gu*`), and custom wrapper extension function, detailing exactly when it was introduced, its hardware generation mapping, and its compatibility status.
 
-### A. Glide 2.1 (1996 - SST-1 Voodoo Graphics Baseline)
-*   **The Original Paradigm**: Hardcoded for full-screen pass-through accelerators.
-*   **Legacy Primitives (Later Removed)**:
-    *   `grSstOpen` / `grSstClose` — Formed the original device opening/closing context.
-    *   `grSstPassthruMode` — Toggled between 2D VGA card output and Voodoo Graphics output.
-    *   `grLfbBegin` / `grLfbEnd` — Demarcated LFB memory writes under a **fixed stride of 1024 pixels**.
-    *   `guFbWriteRegion` / `guFbReadRegion` — Executed screen copies.
-    *   `grLfbOrigin` / `grLfbWriteMode` — Set LFB coordinate mapping.
+| Function Name | API Type | Introduced In | Hardware Generation | Status / Architectural Notes |
+| :--- | :---: | :---: | :---: | :--- |
+| `grSstOpen` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | **Removed in 2.2/2.3**; replaced by `grSstWinOpen`. |
+| `grSstClose` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | **Removed in 2.2/2.3**; replaced by `grSstWinClose`. |
+| `grSstPassthruMode` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | **Removed in 2.2/2.3**; replaced by `grSstControl`. |
+| `grLfbBegin` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | **Removed in 2.2/2.3**; replaced by `grLfbLock` (fixed 1024 stride). |
+| `grLfbEnd` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | **Removed in 2.2/2.3**; replaced by `grLfbUnlock`. |
+| `grLfbOrigin` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | **Removed in 2.2/2.3**. |
+| `grLfbWriteMode` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | **Removed in 2.2/2.3**. |
+| `guFbWriteRegion` | Utility | **Glide 2.1** | SST-1 (Voodoo Graphics) | **Removed in 2.2/2.3**; replaced by `grLfbWriteRegion`. |
+| `guFbReadRegion` | Utility | **Glide 2.1** | SST-1 (Voodoo Graphics) | **Removed in 2.2/2.3**; replaced by `grLfbReadRegion`. |
+| `grDrawTriangle` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | Baseline drawing primitive; supported across all versions. |
+| `grDrawLine` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | Baseline drawing primitive; supported across all versions. |
+| `grDrawPoint` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | Baseline drawing primitive; supported across all versions. |
+| `grBufferClear` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | Baseline buffer clearing; supported across all versions. |
+| `grBufferSwap` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | Baseline buffer presentation; supported across all versions. |
+| `grRenderBuffer` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | Baseline render target selection; supported across all versions. |
+| `grColorCombine` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | Baseline color combiner unit; supported across all versions. |
+| `grAlphaCombine` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | Baseline alpha combiner unit; supported across all versions. |
+| `grAlphaBlendFunction` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | Baseline alpha blending; supported across all versions. |
+| `grAlphaTestFunction` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | Baseline alpha testing; supported across all versions. |
+| `grAlphaTestReferenceValue` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | Baseline alpha testing; supported across all versions. |
+| `grConstantColorValue` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | Baseline combiner helper; supported across all versions. |
+| `grConstantColorValue4` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | **Removed in Glide 3.x**; float-based constant color. |
+| `grChromakeyMode` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | Exact chroma-key toggle; supported across all versions. |
+| `grChromakeyValue` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | Exact chroma-key color value; supported across all versions. |
+| `grClipWindow` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | Baseline scissor clipping; supported across all versions. |
+| `grCullMode` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | Baseline face culling; supported across all versions. |
+| `grDepthBufferFunction` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | Baseline depth comparison; supported across all versions. |
+| `grDepthBufferMode` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | Baseline depth mode; supported across all versions. |
+| `grDepthMask` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | Baseline depth write mask; supported across all versions. |
+| `grDepthBiasLevel` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | Baseline depth offset bias; supported across all versions. |
+| `grDitherMode` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | Baseline dithering; supported across all versions. |
+| `grColorMask` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | Baseline color write mask; supported across all versions. |
+| `grDisableAllEffects` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | Disables all pipeline effects; supported across all versions. |
+| `grFogMode` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | Baseline fog configuration; supported across all versions. |
+| `grFogColorValue` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | Baseline fog color; supported across all versions. |
+| `grFogTable` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | Baseline 64-entry logarithmic table; supported across all versions. |
+| `grTexCalcMemRequired` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | Baseline texture helper; supported across all versions. |
+| `grTexTextureMemRequired` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | Baseline texture helper; supported across all versions. |
+| `grTexMaxAddress` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | Baseline texture helper; supported across all versions. |
+| `grTexMinAddress` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | Baseline texture helper; supported across all versions. |
+| `grTexSource` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | Baseline texture binding; supported across all versions. |
+| `grTexClampMode` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | Baseline texture wrapping; supported across all versions. |
+| `grTexFilterMode` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | Baseline texture filtering; supported across all versions. |
+| `grTexMipMapMode` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | Baseline mipmapping; supported across all versions. |
+| `grTexCombine` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | Baseline texture combiner; supported across all versions. |
+| `grTexCombineFunction` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | **Removed in Glide 3.x**; alternate texture combiner. |
+| `grTexDownloadMipMap` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | Baseline texture upload; supported across all versions. |
+| `grTexDownloadMipMapLevel` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | Baseline texture upload; supported across all versions. |
+| `grTexDownloadTable` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | Baseline paletted texture helper; supported across all versions. |
+| `grTexNCCTable` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | Baseline compressed texture helper; supported across all versions. |
+| `grTexDetailControl` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | Baseline detail-texture blending; supported across all versions. |
+| `grTexLodBiasValue` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | Baseline LOD bias adjustment; supported across all versions. |
+| `grAADrawPoint` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | **Removed in Glide 3.x**; anti-aliased point. |
+| `grAADrawLine` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | **Removed in Glide 3.x**; anti-aliased line. |
+| `grAADrawTriangle` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | **Removed in Glide 3.x**; anti-aliased triangle. |
+| `grAADrawPolygon` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | **Removed in Glide 3.x**; anti-aliased polygon. |
+| `grAADrawPolygonVertexList` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | **Removed in Glide 3.x**; anti-aliased polygon list. |
+| `grDrawPlanarPolygon` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | **Removed in Glide 3.x**; planar flat polygon. |
+| `grDrawPlanarPolygonVertexList` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | **Removed in Glide 3.x**; planar flat polygon list. |
+| `grDrawPolygon` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | **Removed in Glide 3.x**; Gouraud-shaded polygon. |
+| `grDrawPolygonVertexList` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | **Removed in Glide 3.x**; Gouraud-shaded polygon list. |
+| `grGetString` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | Baseline system query; supported across all versions. |
+| `grCheckForRoom` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | **Removed in Glide 3.x**; queue stall check. |
+| `grGammaCorrectionValue` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | **Removed in Glide 3.x**; hardware monitor gamma. |
+| `grSplash` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | Baseline splash screen sequence; supported across all versions. |
+| `grHints` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | **Removed in Glide 3.x**; hardware hints. |
+| `grResetTriStats` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | **Removed in Glide 3.x**; resets stats counters. |
+| `grTriStats` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | **Removed in Glide 3.x**; retrieves triangle stats. |
+| `grSstIsBusy` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | **Removed in Glide 3.x**; checks if hardware is executing. |
+| `grSstStatus` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | **Removed in Glide 3.x**; returns status register. |
+| `grSstVideoLine` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | **Removed in Glide 3.x**; returns raster line. |
+| `grSstVRetraceOn` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | **Removed in Glide 3.x**; checks vertical retrace. |
+| `grSstScreenHeight` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | **Removed in Glide 3.x**; returns screen height. |
+| `grSstScreenWidth` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | **Removed in Glide 3.x**; returns screen width. |
+| `grSstQueryBoards` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | **Removed in Glide 3.x**; queries number of boards. |
+| `grSstQueryHardware` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | **Removed in Glide 3.x**; queries board specifications. |
+| `grSstSelect` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | Selects active board; supported across all versions. |
+| `grSstIdle` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | **Removed in Glide 3.x**; flushes and stalls pipeline. |
+| `grErrorSetCallback` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | Baseline error callback; supported across all versions. |
+| `grGlideInit` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | Baseline lifecycle init; supported across all versions. |
+| `grGlideShutdown` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | Baseline lifecycle shutdown; supported across all versions. |
+| `grGlideGetVersion` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | **Removed in Glide 3.x**; gets wrapper version string. |
+| `grGlideGetState` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | Captures context state; supported across all versions. |
+| `grGlideSetState` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | Restores context state; supported across all versions. |
+| `grGlideShamelessPlug` | Core | **Glide 2.1** | SST-1 (Voodoo Graphics) | **Removed in Glide 3.x**; renders 3dfx spinning logo. |
+| *(All 28 `gu*` functions)* | Utility | **Glide 2.1** | SST-1 (Voodoo Graphics) | **Removed in Glide 3.x**; high-level helper functions (e.g. `gu3dfLoad`, `guFogGenerateExp`). |
+| `grSstWinOpen` | Core | **Glide 2.2 / 2.3** | Voodoo Rush | Baseline windowed init; supported across all versions. |
+| `grSstWinClose` | Core | **Glide 2.2 / 2.3** | Voodoo Rush | Baseline windowed shutdown; supported across all versions. |
+| `grSstControl` | Core | **Glide 2.2 / 2.3** | Voodoo Rush | **Removed in Glide 3.x**; register control interface. |
+| `grLfbLock` | Core | **Glide 2.2 / 2.3** | Voodoo Rush | Locks VRAM with variable stride; supported across all versions. |
+| `grLfbUnlock` | Core | **Glide 2.2 / 2.3** | Voodoo Rush | Unlocks VRAM; supported across all versions. |
+| `grLfbWriteRegion` | Core | **Glide 2.2 / 2.3** | Voodoo Rush | Stride-aware CPU-to-VRAM copy; supported across all versions. |
+| `grLfbReadRegion` | Core | **Glide 2.2 / 2.3** | Voodoo Rush | Stride-aware VRAM-to-CPU copy; supported across all versions. |
+| `grLfbConstantAlpha` | Core | **Glide 2.2 / 2.3** | Voodoo Rush | Constant alpha for LFB writes; supported across all versions. |
+| `grLfbConstantDepth` | Core | **Glide 2.2 / 2.3** | Voodoo Rush | Constant depth for LFB writes; supported across all versions. |
+| `grLfbWriteColorFormat` | Core | **Glide 2.2 / 2.3** | Voodoo Rush | Pixel format for LFB writes; supported across all versions. |
+| `grLfbWriteColorSwizzle` | Core | **Glide 2.2 / 2.3** | Voodoo Rush | Byte swizzling for LFB writes; supported across all versions. |
+| `grTexMultibase` | Core | **Glide 2.42** | Voodoo2 (CVG) | Multi-base LOD texturing; supported across all versions. |
+| `grTexMultibaseAddress` | Core | **Glide 2.42** | Voodoo2 (CVG) | Sets multi-base LOD addresses; supported across all versions. |
+| `grTexDownloadMipMapLevelPartial` | Core | **Glide 2.42** | Voodoo2 (CVG) | Uploads partial mipmap slice; supported across all versions. |
+| `grTexDownloadTablePartial` | Core | **Glide 2.42** | Voodoo2 (CVG) | Uploads partial LUT slice; supported across all versions. |
+| `grGetProcAddress` | Core | **Glide 2.43** | Voodoo2 (CVG) | Dynamic extension resolution; supported across all versions. |
+| `grAlphaControlsITRGBLighting` | Core | **Glide 2.43** | Voodoo2 (CVG) | Vertex-alpha routed lighting; supported across all versions. |
+| `grCoordinateSpace` | Core | **Glide 2.43** | Voodoo2 (CVG) | Sets coordinate space mode; supported across all versions. |
+| `grChromakeyRangeExt` | Core Extension | **Glide 2.43** | Voodoo2 (CVG) | **Wrapper Custom Extension**; inclusive/exclusive range chromakeying. Throws fault on SST-1! |
+| `grSplashCb` | Core | **Glide 2.61** | Voodoo3 (Avenger) | **Removed in Glide 3.x**; callback-based splash screen. |
+| `grSelectContext` | Core | **Glide 3.x** | Voodoo3 (Avenger) | Context selection and multi-window routing. |
+| `grQueryResolutions` | Core | **Glide 3.x** | Voodoo3 (Avenger) | Clean, non-monolithic monitor resolution query. |
+| `grGlideGetVertexLayout` | Core | **Glide 3.x** | Voodoo3 (Avenger) | Configures custom Vertex Layout Pointers (VLP). |
+| `grGlideSetVertexLayout` | Core | **Glide 3.x** | Voodoo3 (Avenger) | Configures custom Vertex Layout Pointers (VLP). |
+| `grDrawVertexArrayContiguous` | Core | **Glide 3.x** | Voodoo3 (Avenger) | High-performance contiguous vertex array submission. |
+| `grStippleMode` | Core | **Glide 3.x** | Voodoo3 (Avenger) | Configures hardware polygon stippling patterns. |
+| `grStipplePattern` | Core | **Glide 3.x** | Voodoo3 (Avenger) | Configures hardware polygon stippling patterns. |
 
-### B. Glide 2.2 / 2.3 (1997 - Voodoo Rush & The Windowed Paradigm Shift)
-*   **The Windowed Revolution**: Introduced to support Voodoo Rush, which shared the framebuffer with a 2D accelerator on the desktop.
-*   **API Removals (Breaking Changes)**:
+---
+
+## 6. Incremental Version Diffs & Function Transitions
+
+Here is the exact version-by-version breakdown of functions added, replaced, or removed throughout the historical timeline:
+
+### A. Glide 2.1 (SST-1 Voodoo Graphics Launch Baseline)
+*   **Core Feature Set**: Foundation of all rendering primitives (`grDrawTriangle`, `grDrawLine`, `grDrawPoint`), buffer swaps, state combiners (`grColorCombine`, `grAlphaCombine`), and basic table-based depth fogging.
+*   **The Original Full-Screen Functions**:
+    *   `grSstOpen` / `grSstClose` (Removed in 2.2/2.3)
+    *   `grSstPassthruMode` (Removed in 2.2/2.3)
+    *   `grLfbBegin` / `grLfbEnd` (Removed in 2.2/2.3; enforced a fixed 1024-pixel stride)
+    *   `grLfbOrigin` / `grLfbWriteMode` (Removed in 2.2/2.3)
+    *   `guFbWriteRegion` / `guFbReadRegion` (Removed in 2.2/2.3)
+
+### B. Glide 2.2 / 2.3 (Voodoo Rush & Shared Desktops)
+*   **The Windowed Paradigm Shift**: Breaking changes introduced to support rendering to windows and sharing the display framebuffer with a 2D accelerator.
+*   **Functions REMOVED**:
     *   `grSstOpen`, `grSstPassthruMode`, `grLfbBegin`, `grLfbEnd`, `guFbWriteRegion`, `guFbReadRegion`, `grLfbOrigin`, `grLfbWriteMode` were **completely deprecated and removed**.
-    *   `glide.dll` was renamed to **`glide2x.dll`**.
-*   **API Additions (The Replacements)**:
-    *   `grSstWinOpen` — Replaced `grSstOpen` to allow windowed and shared desktop context creation.
-    *   `grSstWinClose` — Replaced the old hardware close mechanisms.
-    *   `grSstControl` — Allowed direct control and notification of system/window events.
-    *   `grLfbLock` / `grLfbUnlock` — Replaced `grLfbBegin`/`grLfbEnd`. Introduced **variable stride** (`strideInBytes`) returned dynamically in `GrLfbInfo_t` to handle arbitrary desktop resolutions.
-    *   `grLfbWriteRegion` / `grLfbReadRegion` — Modernized rectangle BLT routines supporting stride and clipping.
+*   **Functions ADDED (The Replacements)**:
+    *   `grSstWinOpen` (Replaced `grSstOpen`)
+    *   `grSstWinClose` (Replaced the old hardware close mechanisms)
+    *   `grSstControl` (Replaced `grSstPassthruMode`)
+    *   `grLfbLock` / `grLfbUnlock` (Replaced `grLfbBegin`/`grLfbEnd`, returning variable strides in `GrLfbInfo_t`)
+    *   `grLfbWriteRegion` / `grLfbReadRegion` (Replaced `guFbWriteRegion`/`guFbReadRegion`)
+    *   `grLfbConstantAlpha`, `grLfbConstantDepth`, `grLfbWriteColorFormat`, `grLfbWriteColorSwizzle` (LFB pixel-pipeline configuration additions)
 
-### C. Glide 2.4 / 2.42 / 2.43 (1998 - Voodoo2 Era & Hardware Extensions)
-*   **Baseline Preservation**: Kept the exact same header and ABI footprint as Glide 2.3 to ensure perfect binary backward compatibility.
-*   **Hardware Expansion**: Enabled support for dual-TMU configurations (`GR_TMU1` passed to `grTexCombine` and `grTexSource`) and Scan-Line Interleaving (SLI).
-*   **Dynamic Extension API**:
-    *   `grGetProcAddress` — Added to allow games to dynamically query and bind hardware-specific extension pointers at runtime without static linking.
-*   **Voodoo2-Exclusive Hardware Extensions (Exported Symbols)**:
-    *   `grChromakeyRangeExt` (or internally `_grChromaRangeExt`) — Added to support **inclusive/exclusive Chroma-Keying Ranges** (Voodoo2 CVG hardware registers). 
+### C. Glide 2.42 (Voodoo2 Multitexturing)
+*   **Multitexturing Expansion**: Kept the exact same header and ABI footprint as 2.3, but enabled support for the second TMU (`GR_TMU1`) in combiner functions.
+*   **Functions ADDED**:
+    *   `grTexMultibase` / `grTexMultibaseAddress` (Allows binding different texture sources per LOD level)
+    *   `grTexDownloadMipMapLevelPartial` / `grTexDownloadTablePartial` (Optimized partial slices uploads)
+
+### D. Glide 2.43 (Voodoo2 Gold Standard & Extension Architecture)
+*   **Extension System**: Introduced to allow advanced games to dynamically query features without static linking.
+*   **Functions ADDED**:
+    *   `grGetProcAddress` (Dynamic extension loader)
+    *   `grAlphaControlsITRGBLighting` (Routes vertex alpha to control lighting combiners)
+    *   `grCoordinateSpace` (Switches between window-relative screen coordinates and normalized coordinates)
+    *   `grChromakeyRangeExt` (The **Chroma-Keying Ranges** extension, resolved via `grGetProcAddress`).
         > [!IMPORTANT]
         > If called on Voodoo Graphics (SST-1) or Voodoo Rush hardware, the driver throws a runtime fault (`grChromaRange not supported.`).
-    *   `grAlphaControlsITRGBLighting` — Added to route vertex alpha directly to color combiner lighting.
 
-### D. Glide 2.5 / 2.6 / 2.61 (1999 - Voodoo3 Legacy Interop & Final Release)
+### E. Glide 2.61 (Voodoo3 Legacy Interop)
 *   **API Additions**:
-    *   `grSplashCb` — Added callback-based splash screen rendering to allow legacy Glide 2 game engines to display custom logos.
+    *   `grSplashCb` (Callback-based splash screen rendering to allow custom logos in legacy engines)
+
+### F. Glide 3.x (The Modernized Redesign)
+*   **The Paradigm Shift**: Massive, non-backward-compatible API clean-up. Eliminated legacy hardware-monitoring functions, moved the utility library out of the core, and introduced modern vertex buffering and context switching.
+*   **Functions ADDED (7 functions)**:
+    *   `grSelectContext`, `grQueryResolutions`, `grGlideGetVertexLayout` / `grGlideSetVertexLayout`, `grDrawVertexArrayContiguous`, `grStippleMode` / `grStipplePattern`.
+*   **Functions REMOVED (51 functions!)**:
+    *   **All `gu*` Utility Functions (28 functions)**: Core has **zero** utility functions; applications must handle texture parsing (`gu3dfLoad`) and math internally.
+    *   **Anti-Aliasing Drawing (5 functions)**: `grAADrawPoint`, `grAADrawLine`, `grAADrawTriangle`, `grAADrawPolygon`, `grAADrawPolygonVertexList` (replaced by pipeline state settings).
+    *   **Planar/Legacy Drawing (4 functions)**: `grDrawPlanarPolygon`, `grDrawPlanarPolygonVertexList`, `grDrawPolygon`, `grDrawPolygonVertexList`.
+    *   **Hardware Status & Monitoring (10 functions)**: `grSstIsBusy`, `grSstStatus`, `grSstVideoLine`, `grSstVRetraceOn`, `grSstScreenHeight`, `grSstScreenWidth`, `grSstQueryBoards`, `grSstQueryHardware`, `grSstControl`, `grSstIdle` (replaced by unified `grGet` queries).
+    *   **Performance & Rendering Counters (4 functions)**: `grSstPerfStats`, `grSstResetPerfStats`, `grResetTriStats`, `grTriStats`.
+    *   **Legacy Helpers**: `grGlideShamelessPlug`, `grSplashCb`, `grTexCombineFunction`, `grDrawVertexArrayLinear`, `grGlideGetVersion`.
 
 ---
 
-### E. Glide 3.x (1999 - The Modernized Redesign)
+## 7. Custom Wrapper Extensions Mapping
 
-Glide 3.x was a massive, non-backward-compatible API clean-up. It eliminated legacy hardware-monitoring functions, moved the utility library out of the core, and introduced modern vertex buffering and context switching.
+The following table maps our custom implemented features and extensions to their correct architectural counterparts in the Glide timeline:
 
-#### 1. Functions ADDED in Glide 3.x (7 functions)
-*   `grSelectContext` — Binds a specific, independent off-screen rendering context (multi-window support).
-*   `grQueryResolutions` — Queries supported monitor resolutions in a clean, non-monolithic way.
-*   `grGlideGetVertexLayout` / `grGlideSetVertexLayout` — Configures modern **Vertex Layout Pointers (VLP)**, allowing arbitrary custom vertex structures.
-*   `grDrawVertexArrayContiguous` — Submits contiguous vertex arrays directly.
-*   `grStippleMode` / `grStipplePattern` — Configures hardware polygon stippling patterns.
+| Implemented Feature / Extension | Configuration Mode | Introducing Glide Version | Target HW Support | Wrapper Emu Architecture |
+| :--- | :--- | :---: | :---: | :--- |
+| **Exact Match Chroma-Keying** | `grChromakeyValue` | **Glide 2.1** | All Hardware | Handled via exact match fragment discard (`col == key`). |
+| **Range Match Chroma-Keying** | `grChromakeyRangeExt` | **Glide 2.43** | Voodoo2+ Only | Handled via inclusive/exclusive color range check. **Throws runtime warning if board targets SST-1.** |
+| **Table-Based Depth Fog** | `grFogMode(GR_FOG_WITH_TABLE)` | **Glide 2.1** | All Hardware | $O(1)$ unrolled logarithmic binary search using 6 comparisons in the fragment shader. |
+| **Iterated Vertex Alpha Fog** | `grFogMode(GR_FOG_WITH_ITERATED_ALPHA)` | **Glide 2.1** | All Hardware | Bypasses color combiner; reads raw interpolated vertex alpha channel (`fragColor.a` / `iterA`). |
+| **Subtractive Cavern Fog** | `grFogMode(GR_FOG_ADD2)` | **Glide 2.1** | All Hardware | Evaluates the unified branch-free hardware blending equation to perform subtractive cavern shading. |
+| **Additive Glow Fog** | `grFogMode(GR_FOG_MULT2)` | **Glide 2.1** | All Hardware | Evaluates the unified branch-free hardware blending equation to perform additive glow shading. |
 
-#### 2. Functions REMOVED in Glide 3.x (51 functions!)
-*   **All `gu*` Utility Functions (28 functions)**:
-    *   *Examples*: `gu3dfLoad`, `guFogGenerateExp`, `guTexSource`, `guTexAllocateMemory`. Glide 3.x core has **zero** utility functions; applications must handle asset parsing and loading themselves.
-*   **Anti-Aliasing Drawing (5 functions)**:
-    *   `grAADrawPoint`, `grAADrawLine`, `grAADrawTriangle`, `grAADrawPolygon`, `grAADrawPolygonVertexList`. (Replaced by general pipeline state settings).
-*   **Planar/Legacy Drawing (4 functions)**:
-    *   `grDrawPlanarPolygon`, `grDrawPlanarPolygonVertexList`, `grDrawPolygon`, `grDrawPolygonVertexList`.
-*   **Hardware Status & Monitoring (10 functions)**:
-    *   `grSstIsBusy`, `grSstStatus`, `grSstVideoLine`, `grSstVRetraceOn`, `grSstScreenHeight`, `grSstScreenWidth`, `grSstQueryBoards`, `grSstQueryHardware`, `grSstControl`, `grSstIdle`. (Replaced by a unified, elegant query routine: `grGet(pname, plength, params)`).
-*   **Performance & Rendering Counters (4 functions)**:
-    *   `grSstPerfStats`, `grSstResetPerfStats`, `grResetTriStats`, `grTriStats`.
-*   **Legacy Helpers**:
-    *   `grGlideShamelessPlug`, `grSplashCb`, `grTexCombineFunction`, `grDrawVertexArrayLinear`, `grGlideGetVersion`.
-
----
-
-## 6. Chroma-Keying & Fogging: API Placement Map
-
-When debugging or implementing Chroma-Keying and Fogging features in our wrapper, refer to this exact specification map to understand which execution paths are active:
-
-### A. Chroma-Keying
-1.  **Exact Match Chroma-Keying**:
-    *   *APIs*: `grChromakeyMode` (enable/disable) and `grChromakeyValue` (exact color key value).
-    *   *Ecosystem*: Part of the baseline **Glide 2.1 / 2.40 specification**. Supported on **all hardware** (SST-1, Voodoo Rush, Voodoo2).
-    *   *Logic*: Fragments matching the exact key are discarded.
-2.  **Range Match Chroma-Keying**:
-    *   *APIs*: `grChromakeyRangeExt` (extension, resolved via `grGetProcAddress`).
-    *   *Ecosystem*: Introduced in **Glide 2.42/2.43** specifically for the Voodoo2 (CVG) chipset.
-    *   *Logic*: Discards fragments falling inside (inclusive) or outside (exclusive) a color range. **Throws a runtime warning if executed on SST-1 hardware.**
-
-### B. Fogging
-1.  **Table-Based Depth Fogging**:
-    *   *APIs*: `grFogMode(GR_FOG_WITH_TABLE)` and `grFogTable(ft)` (uploads the 64-entry logarithmic table).
-    *   *Ecosystem*: Baseline **Glide 2.1** (all hardware).
-    *   *Wrapper Math*: Implemented via our $O(1)$ unrolled logarithmic binary search and unified branch-free blending equation.
-2.  **Iterated Vertex Alpha Fogging**:
-    *   *APIs*: `grFogMode(GR_FOG_WITH_ITERATED_ALPHA)`.
-    *   *Ecosystem*: Baseline **Glide 2.1** (all hardware).
-    *   *Wrapper Math*: Bypasses the color combiner stage and reads the raw interpolated vertex alpha channel directly (`fragColor.a` in Vulkan/GLES, `iterA` in Software).
-3.  **Additive & Subtractive Blending**:
-    *   *APIs*: Configured by mapping `grFogMode` to `GR_FOG_ADD2` (subtractive cavern fog) or `GR_FOG_MULT2` (additive glow fog).
-    *   *Ecosystem*: Baseline **Glide 2.1** (all hardware).
-    *   *Wrapper Implementation*: Fully supported across our Software, Vulkan, and GLES pipelines (whereas legacy wrappers like OpenGlide incorrectly map both modes to a subtractive black shadow).
 
 

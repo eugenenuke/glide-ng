@@ -4735,6 +4735,128 @@ TEST_CASE("Glide 2.x Texture & Combiner Pipeline [test17][test18][test19][test21
 #endif
 }
 
+TEST_CASE("Glide 2.x Dynamic Version and Hardware Gating", "[Glide2][Gating]") {
+#ifdef __linux__
+    // Load the runtime wrapper dynamic library
+    void* handle = ::dlopen("build/lib/libglide2x.so", RTLD_LAZY);
+    REQUIRE(handle != nullptr);
+
+    // Resolve base initialization entry points
+    auto init = (void (FX_CALL*)(void))::dlsym(handle, "grGlideInit");
+    auto shutdown = (void (FX_CALL*)(void))::dlsym(handle, "grGlideShutdown");
+    auto sstSelect = (void (FX_CALL*)(int))::dlsym(handle, "grSstSelect");
+    auto getProcAddress = (GrProc (FX_CALL*)(char*))::dlsym(handle, "grGetProcAddress");
+    auto sstQueryHardware = (FxBool (FX_CALL*)(GrHwConfiguration*))::dlsym(handle, "grSstQueryHardware");
+    auto sstWinOpen = (FxBool (FX_CALL*)(FxU32, GrScreenResolution_t, GrScreenRefresh_t, GrColorFormat_t, GrOriginLocation_t, int, int))::dlsym(handle, "grSstWinOpen");
+
+    REQUIRE(init != nullptr);
+    REQUIRE(shutdown != nullptr);
+    REQUIRE(sstSelect != nullptr);
+    REQUIRE(getProcAddress != nullptr);
+    REQUIRE(sstQueryHardware != nullptr);
+    REQUIRE(sstWinOpen != nullptr);
+
+    // Helper to setup and initialize under specific env profiles
+    auto init_with_profile = [&](const char* card, const char* version) {
+        if (card) ::setenv("GLIDE_DEVICE", card, 1);
+        else ::unsetenv("GLIDE_DEVICE");
+        
+        if (version) ::setenv("GLIDE_VERSION_OVERRIDE", version, 1);
+        else ::unsetenv("GLIDE_VERSION_OVERRIDE");
+        
+        init();
+        sstSelect(0);
+        
+        // Open a dummy context to instantiate the backend and create the splash animator!
+        sstWinOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz, GR_COLORFORMAT_ARGB, GR_ORIGIN_UPPER_LEFT, 2, 1);
+    };
+
+    SECTION("Case A: Default Profile (Voodoo2, 2.43)") {
+        init_with_profile("voodoo2", "2.43");
+
+        // Query standard 2.43 functions (dynamic loading)
+        REQUIRE(getProcAddress((char*)"grChromakeyRangeExt") != nullptr);
+        
+        // 2.61 functions should be blocked under 2.43
+        REQUIRE(getProcAddress((char*)"grSplashCb") == nullptr);
+
+        // Hardware query check: Voodoo 2 config
+        GrHwConfiguration hwconfig;
+        REQUIRE(sstQueryHardware(&hwconfig) == FXTRUE);
+        REQUIRE(hwconfig.SSTs[0].type == GR_SSTTYPE_Voodoo2);
+        REQUIRE(hwconfig.SSTs[0].sstBoard.Voodoo2Config.fbRam == 16);
+
+        shutdown();
+    }
+
+    SECTION("Case B: Voodoo1 Legacy Profile (Voodoo Graphics, 2.40)") {
+        init_with_profile("voodoo1", "2.40");
+
+        // 2.40 profile: 2.42/2.43 features must be blocked
+        REQUIRE(getProcAddress((char*)"grChromakeyRangeExt") == nullptr);
+
+        // Hardware query check: Voodoo Graphics config
+        GrHwConfiguration hwconfig;
+        REQUIRE(sstQueryHardware(&hwconfig) == FXTRUE);
+        REQUIRE(hwconfig.SSTs[0].type == GR_SSTTYPE_VOODOO);
+
+        shutdown();
+    }
+
+    SECTION("Case C: Voodoo3 Interop Profile (Voodoo3, 2.61)") {
+        init_with_profile("voodoo3", "2.61");
+
+        // Everything should be fully available under 2.61 on Voodoo3
+        REQUIRE(getProcAddress((char*)"grChromakeyRangeExt") != nullptr);
+        REQUIRE(getProcAddress((char*)"grSplashCb") != nullptr);
+
+        shutdown();
+    }
+
+    SECTION("Case D: Static Function Safe Gating Call (Direct Gated Invocation)") {
+        init_with_profile("voodoo1", "2.40");
+
+        // Resolve grChromakeyRangeExt directly
+        typedef void (FX_CALL *chromakeyRange_t)(GrColor_t, GrColor_t, FxI32);
+        auto chromakeyRange = (chromakeyRange_t)::dlsym(handle, "grChromakeyRangeExt");
+        REQUIRE(chromakeyRange != nullptr);
+
+        // Invoking gated function directly in Voodoo 1 mode must not crash; it behaves as a safe no-op.
+        chromakeyRange(0x0, 0xFFFFFFFF, 0x8); // 0x8 = GR_CHROMARANGE_RGB_ALL (inclusive mode)
+
+        shutdown();
+    }
+
+    SECTION("Case E: grSplashCb Callback Execution") {
+        init_with_profile("voodoo3", "2.61");
+
+        auto p_grSplashCb = (void (FX_CALL*)(float, float, float, float, FxU32, void (*)(int)))::dlsym(handle, "grSplashCb");
+        REQUIRE(p_grSplashCb != nullptr);
+
+        // Setup a tracking callback
+        static int s_callback_trigger_count = 0;
+        s_callback_trigger_count = 0;
+        auto tracking_callback = [](int frame) {
+            s_callback_trigger_count++;
+        };
+
+        // Render frame 35 (single frame path: callback should not be triggered)
+        p_grSplashCb(0.0f, 0.0f, 640.0f, 480.0f, 35, tracking_callback);
+        REQUIRE(s_callback_trigger_count == 0);
+
+        // Render whole animation (automatic loop: callback should be triggered for each frame)
+        p_grSplashCb(0.0f, 0.0f, 640.0f, 480.0f, 0, tracking_callback);
+        
+        // Ensure the callback was actually invoked repeatedly!
+        REQUIRE(s_callback_trigger_count > 0);
+
+        shutdown();
+    }
+
+    ::dlclose(handle);
+#endif
+}
+
 
 
 

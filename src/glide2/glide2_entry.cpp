@@ -527,12 +527,16 @@ FX_ENTRY FxBool FX_CALL grSstQueryHardware(GrHwConfiguration* hwconfig) {
     if (config.model == GlideWrapper::CardModel::VoodooGraphics) {
         hwconfig->SSTs[0].type = GR_SSTTYPE_VOODOO;
         hwconfig->SSTs[0].sstBoard.VoodooConfig.fbRam = config.fbiMemoryMb;
+    } else if (config.model == GlideWrapper::CardModel::VoodooRush) {
+        hwconfig->SSTs[0].type = GR_SSTTYPE_SST96;
+        hwconfig->SSTs[0].sstBoard.SST96Config.fbRam = config.fbiMemoryMb;
+        hwconfig->SSTs[0].sstBoard.SST96Config.nTexelfx = config.tmuCount;
     } else {
-        // Voodoo 2 or Voodoo 3
+        // Voodoo2, Voodoo3, Voodoo5 (Banshee/Avenger/Napalm)
         hwconfig->SSTs[0].type = GR_SSTTYPE_Voodoo2;
         hwconfig->SSTs[0].sstBoard.Voodoo2Config.fbRam = config.fbiMemoryMb;
         hwconfig->SSTs[0].sstBoard.Voodoo2Config.nTexelfx = config.tmuCount;
-        hwconfig->SSTs[0].sstBoard.Voodoo2Config.sliDetect = (config.model == GlideWrapper::CardModel::Voodoo2) ? FXTRUE : FXFALSE;
+        hwconfig->SSTs[0].sstBoard.Voodoo2Config.sliDetect = (config.model == GlideWrapper::CardModel::Voodoo2 && config.enableSli) ? FXTRUE : FXFALSE;
     }
     
     return FXTRUE;
@@ -558,8 +562,26 @@ FX_ENTRY const char* FX_CALL grGetString(FxU32 pname) {
     GLIDE_LOG(DEBUG, "Frontend", "grGetString invoked for pname: " << pname);
     auto& reg = GlideWrapper::EmulationRegistry::GetInstance();
     switch (pname) {
-        case GR_VERSION:  return "2.43 (glide-ng)";
-        case GR_HARDWARE: return "Voodoo2 (Modernized Wrapper Emulation)";
+        case GR_VERSION: {
+            switch (reg.GetConfig().apiVersion) {
+                case GlideWrapper::ApiVersion::GLIDE_2_1:  return "2.10 (glide-ng)";
+                case GlideWrapper::ApiVersion::GLIDE_2_40: return "2.40 (glide-ng)";
+                case GlideWrapper::ApiVersion::GLIDE_2_42: return "2.42 (glide-ng)";
+                case GlideWrapper::ApiVersion::GLIDE_2_43: return "2.43 (glide-ng)";
+                case GlideWrapper::ApiVersion::GLIDE_2_61: return "2.61 (glide-ng)";
+            }
+            return "2.43 (glide-ng)";
+        }
+        case GR_HARDWARE: {
+            switch (reg.GetConfig().model) {
+                case GlideWrapper::CardModel::VoodooGraphics: return "Voodoo Graphics";
+                case GlideWrapper::CardModel::VoodooRush:     return "Voodoo Rush";
+                case GlideWrapper::CardModel::Voodoo2:        return "Voodoo2";
+                case GlideWrapper::CardModel::Voodoo3:        return "Voodoo3";
+                case GlideWrapper::CardModel::Voodoo5:        return "Voodoo5";
+            }
+            return "Voodoo2";
+        }
         case GR_VENDOR:   return reg.GetConfig().reportedVendorOverride.c_str();
         case GR_RENDERER: {
             if (reg.GetConfig().backend == "opengl_es") {
@@ -569,7 +591,13 @@ FX_ENTRY const char* FX_CALL grGetString(FxU32 pname) {
             }
             return "3dfx glide-ng Vulkan Wrapper";
         }
-        case GR_EXTENSION:return "CHROMARANGE";
+        case GR_EXTENSION: {
+            // Only advertise extensions that are fully implemented in the backend (no stubs!)
+            if (reg.IsFunctionAvailable("grChromakeyRangeExt")) {
+                return "CHROMARANGE";
+            }
+            return "";
+        }
         default: return "Unknown";
     }
 }
@@ -969,11 +997,19 @@ FX_ENTRY void FX_CALL grTexCombineFunction(GrChipID_t tmu, GrTextureCombineFnc_t
 
 FX_ENTRY void FX_CALL grTexMultibase(GrChipID_t tmu, FxBool enable) {
     EnsureEngineInitialized();
+    if (!GlideWrapper::EmulationRegistry::GetInstance().IsFunctionAvailable("grTexMultibase")) {
+        GLIDE_LOG(WARN, "API", "GATED CALL: grTexMultibase is not available under the active version/device profile.");
+        return;
+    }
     GLIDE_LOG(DEBUG, "Frontend", "grTexMultibase: tmu=" << tmu << ", enable=" << enable << " (Stubbed)");
 }
 
 FX_ENTRY void FX_CALL grTexMultibaseAddress(GrChipID_t tmu, GrTexBaseRange_t range, FxU32 startAddress, FxU32 evenOdd, GrTexInfo *info) {
     EnsureEngineInitialized();
+    if (!GlideWrapper::EmulationRegistry::GetInstance().IsFunctionAvailable("grTexMultibaseAddress")) {
+        GLIDE_LOG(WARN, "API", "GATED CALL: grTexMultibaseAddress is not available under the active version/device profile.");
+        return;
+    }
     GLIDE_LOG(DEBUG, "Frontend", "grTexMultibaseAddress: tmu=" << tmu << ", range=" << range << ", startAddress=" << startAddress << " (Stubbed)");
 }
 
@@ -1967,14 +2003,24 @@ FX_ENTRY void FX_CALL grBufferClearExt(GrColor_t color, GrAlpha_t alpha, FxU32 d
 FX_ENTRY void FX_CALL grLfbConstantStencilExt(FxU32 stencil);
 FX_ENTRY void FX_CALL grTBufferWriteMaskExt(FxU32 mask);
 FX_ENTRY void FX_CALL grAlphaBlendFunctionExt(FxU32 rgb_sf, FxU32 rgb_df, FxU32 rgb_op, FxU32 alpha_sf, FxU32 alpha_df, FxU32 alpha_op);
+FX_ENTRY void FX_CALL grSplashCb(float x, float y, float w, float h, FxU32 frame, void (*callback)(int frame));
 
 FX_ENTRY GrProc FX_CALL grGetProcAddress(char *procName) {
     EnsureEngineInitialized();
     GLIDE_LOG(DEBUG, "Frontend", "grGetProcAddress: " << (procName ? procName : "NULL"));
     if (!procName) return nullptr;
 
+    // Dynamic Gating Checklist Validation
+    if (!GlideWrapper::EmulationRegistry::GetInstance().IsFunctionAvailable(procName)) {
+        GLIDE_LOG(WARN, "Frontend", "grGetProcAddress: Gating out '" << procName << "' under active version/device profile");
+        return nullptr;
+    }
+
     if (std::strcmp(procName, "grChromakeyRangeExt") == 0) {
         return (GrProc)grChromakeyRangeExt;
+    }
+    if (std::strcmp(procName, "grSplashCb") == 0) {
+        return (GrProc)grSplashCb;
     }
     if (std::strcmp(procName, "grColorMaskExt") == 0) {
         return (GrProc)grColorMaskExt;
@@ -2007,6 +2053,10 @@ FX_ENTRY GrProc FX_CALL grGetProcAddress(char *procName) {
 
 FX_ENTRY void FX_CALL grChromakeyRangeExt(GrColor_t minColor, GrColor_t maxColor, GrChromaRangeMode_t mode) {
     EnsureEngineInitialized();
+    if (!GlideWrapper::EmulationRegistry::GetInstance().IsFunctionAvailable("grChromakeyRangeExt")) {
+        GLIDE_LOG(WARN, "Frontend", "GATED CALL: grChromakeyRangeExt called but gated out under active version/device profile.");
+        return;
+    }
     GLIDE_LOG(DEBUG, "Frontend", "grChromakeyRangeExt: minColor=0x" << std::hex << minColor 
               << ", maxColor=0x" << maxColor << ", mode=" << std::dec << mode);
     s_chromakeyRangeMin = minColor;
@@ -2080,6 +2130,10 @@ FX_ENTRY void FX_CALL grLfbWriteColorSwizzle(FxBool swizzleBytes, FxBool swapWor
 
 FX_ENTRY void FX_CALL grAlphaControlsITRGBLighting(FxBool enable) {
     EnsureEngineInitialized();
+    if (!GlideWrapper::EmulationRegistry::GetInstance().IsFunctionAvailable("grAlphaControlsITRGBLighting")) {
+        GLIDE_LOG(WARN, "Frontend", "GATED CALL: grAlphaControlsITRGBLighting called but gated out under active version/device profile.");
+        return;
+    }
     GLIDE_LOG(DEBUG, "Frontend", "grAlphaControlsITRGBLighting: " << enable);
     s_alphaControlsITRGBLighting = (enable != 0);
 }

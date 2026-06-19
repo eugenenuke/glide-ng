@@ -184,7 +184,49 @@ Tools::ToolRunConfig Tools::InitializeAndParse(
     std::cout << "----------------------------------------------------------------------" << std::endl;
     std::cout << "Active Driver:   " << (rendererName ? rendererName : "Unknown") << std::endl;
     std::cout << "----------------------------------------------------------------------" << std::endl;
+
+#if GLIDE_VERSION == 2
+    // Grouped Gated Functions Checklist (Spec-compliant dynamic queries!)
+    std::cout << "Available Minor-Version API Features:" << std::endl;
     
+    // Imply function availability at runtime based on reported driver version and card model!
+    double reported_version = 2.43;
+    if (driverVersion) {
+        reported_version = std::atof(driverVersion);
+    }
+
+    bool is_voodoo2_plus = (sysConfig.boardName.find("Voodoo2") != std::string::npos ||
+                            sysConfig.boardName.find("Voodoo3") != std::string::npos ||
+                            sysConfig.boardName.find("Voodoo5") != std::string::npos);
+
+    auto is_func_avail = [&](const char* name) -> bool {
+        std::string f(name);
+        if (f == "grTexMultibase" || f == "grTexMultibaseAddress") {
+            return (reported_version >= 2.42 && is_voodoo2_plus);
+        }
+        if (f == "grGetProcAddress" || f == "grChromakeyRangeExt" || f == "grAlphaControlsITRGBLighting") {
+            return (reported_version >= 2.43);
+        }
+        if (f == "grSplashCb") {
+            return (reported_version >= 2.61);
+        }
+        return false;
+    };
+    
+    std::cout << "  [2.42 Features (Voodoo2 Multitexturing)]" << std::endl;
+    std::cout << "    [" << (is_func_avail("grTexMultibase") ? "X" : " ") << "] grTexMultibase" << std::endl;
+    std::cout << "    [" << (is_func_avail("grTexMultibaseAddress") ? "X" : " ") << "] grTexMultibaseAddress" << std::endl;
+    
+    std::cout << "  [2.43 Features (Voodoo2 Gold Standard)]" << std::endl;
+    std::cout << "    [" << (is_func_avail("grGetProcAddress") ? "X" : " ") << "] grGetProcAddress" << std::endl;
+    std::cout << "    [" << (is_func_avail("grChromakeyRangeExt") ? "X" : " ") << "] grChromakeyRangeExt" << std::endl;
+    std::cout << "    [" << (is_func_avail("grAlphaControlsITRGBLighting") ? "X" : " ") << "] grAlphaControlsITRGBLighting" << std::endl;
+    
+    std::cout << "  [2.61 Features (Voodoo3 Splash Callbacks)]" << std::endl;
+    std::cout << "    [" << (is_func_avail("grSplashCb") ? "X" : " ") << "] grSplashCb" << std::endl;
+    std::cout << "----------------------------------------------------------------------" << std::endl;
+#endif
+
     // Print Extension Checklist
     std::cout << "Extensions:" << std::endl;
     std::vector<std::string> targetExtensions;
