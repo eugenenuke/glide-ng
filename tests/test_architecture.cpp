@@ -1886,9 +1886,7 @@ TEST_CASE("Glide Chroma-Key Range Rendering Verification") {
     const char* envBackend = std::getenv("GLIDE_BACKEND");
     std::string activeBackend = envBackend ? envBackend : "vulkan";
 
-    if (activeBackend == "software" || activeBackend == "sw") {
-        return; // Skip chroma range rendering test on software backend
-    }
+
 
     INFO("Testing Chroma-Key Range on Backend: " << activeBackend);
 

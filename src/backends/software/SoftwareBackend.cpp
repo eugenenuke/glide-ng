@@ -670,16 +670,53 @@ void SoftwareBackend::RasterizeSoftwareTriangleImpl(const ModernVertex& a, const
 
         // Chromakey Emulation
         if (keepPixel && m_chromakeyMode == 1) { // GR_CHROMAKEY_ENABLE
-            float chromaR = ((m_chromakeyValue >> 16) & 0xFF) / 255.0f;
-            float chromaG = ((m_chromakeyValue >> 8) & 0xFF) / 255.0f;
-            float chromaB = (m_chromakeyValue & 0xFF) / 255.0f;
-            if (m_pixelFormatOverride == 1) {
-                std::swap(chromaR, chromaB);
-            }
-            if (std::abs(red - chromaR) < 0.01f &&
-                std::abs(green - chromaG) < 0.01f &&
-                std::abs(blue - chromaB) < 0.01f) {
-                keepPixel = false; // Discard
+            bool rangeEnabled = ((m_chromakeyRangeMode >> 28) & 1) == 1;
+            if (rangeEnabled) {
+                // Range Match Mode
+                float minR = ((m_chromakeyRangeMin >> 16) & 0xFF) / 255.0f;
+                float minG = ((m_chromakeyRangeMin >> 8)  & 0xFF) / 255.0f;
+                float minB = (m_chromakeyRangeMin & 0xFF) / 255.0f;
+
+                float maxR = ((m_chromakeyRangeMax >> 16) & 0xFF) / 255.0f;
+                float maxG = ((m_chromakeyRangeMax >> 8)  & 0xFF) / 255.0f;
+                float maxB = (m_chromakeyRangeMax & 0xFF) / 255.0f;
+
+                if (m_pixelFormatOverride == 1) {
+                    std::swap(minR, minB);
+                    std::swap(maxR, maxB);
+                }
+
+                bool rMatch = (red   >= minR && red   <= maxR);
+                bool gMatch = (green >= minG && green <= maxG);
+                bool bMatch = (blue  >= minB && blue  <= maxB);
+
+                bool blueExcl  = ((m_chromakeyRangeMode >> 24) & 1) == 1;
+                bool greenExcl = ((m_chromakeyRangeMode >> 25) & 1) == 1;
+                bool redExcl   = ((m_chromakeyRangeMode >> 26) & 1) == 1;
+
+                bool rRes = rMatch != redExcl;
+                bool gRes = gMatch != greenExcl;
+                bool bRes = bMatch != blueExcl;
+
+                bool unionMode = ((m_chromakeyRangeMode >> 27) & 1) == 1;
+                bool discardPixel = unionMode ? (rRes || gRes || bRes) : (rRes && gRes && bRes);
+
+                if (discardPixel) {
+                    keepPixel = false;
+                }
+            } else {
+                // Exact Match Mode
+                float chromaR = ((m_chromakeyValue >> 16) & 0xFF) / 255.0f;
+                float chromaG = ((m_chromakeyValue >> 8) & 0xFF) / 255.0f;
+                float chromaB = (m_chromakeyValue & 0xFF) / 255.0f;
+                if (m_pixelFormatOverride == 1) {
+                    std::swap(chromaR, chromaB);
+                }
+                if (std::abs(red - chromaR) < 0.01f &&
+                    std::abs(green - chromaG) < 0.01f &&
+                    std::abs(blue - chromaB) < 0.01f) {
+                    keepPixel = false; // Discard
+                }
             }
         }
 
