@@ -4,37 +4,43 @@
 #include <cstdlib>
 #include <cstring>
 #include <cassert>
+#include <DiagnosticInfo.h>
 
 // Dynamically resolve grChromakeyRangeExt if available
 typedef void (FX_CALL *grChromakeyRangeExtFunc)(GrColor_t minColor, GrColor_t maxColor, FxU32 mode);
 static grChromakeyRangeExtFunc s_grChromakeyRangeExt = nullptr;
 
-int main(int argc, char** argv) {
-    float scrWidth = 640.0f;
-    float scrHeight = 480.0f;
-    GrHwConfiguration hwconfig;
+void PrintStatus(bool chromaEnabled, bool rangeMode, bool extensionSupported) {
+    std::printf("\r[STATUS] Chroma-Keying: %s | Mode: %s                   ",
+                chromaEnabled ? "ENABLED" : "DISABLED",
+                (!chromaEnabled) ? "OFF" :
+                (rangeMode && extensionSupported) ? "RANGE MATCH (Red 100 to 150)" : "EXACT MATCH (Red=128)");
+    std::fflush(stdout);
+}
 
-    tlSetScreen(scrWidth, scrHeight);
-    grGlideInit();
-    assert(grSstQueryHardware(&hwconfig));
+int main(int argc, char** argv) {
+    // Initialize Glide, parse CLI, print header, and resolve resolution
+    auto runConfig = Tools::InitializeAndParse(argc, argv, "Chroma-Key Range Demo", {
+        "[SPACE]        Toggle Chroma-Keying On/Off",
+        "[ R ]          Toggle between Exact Match and Range Match",
+        "[ESC]          Exit Demo"
+    });
+
+    // Set screen size for tlib scaling coordinate conversions
+    tlSetScreen((float)runConfig.width, (float)runConfig.height);
+
+    // Open standard double-buffered window using resolved resolution.
     grSstSelect(0);
-    
-    // Open standard 640x480 double-buffered window.
-    // For visual desktop display, the user should make sure that "forceNoWindow"
-    // is set to false in the glide_config.json file!
-    assert(grSstWinOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+    assert(grSstWinOpen(0, runConfig.resEnum, GR_REFRESH_60Hz,
                        GR_COLORFORMAT_ABGR, GR_ORIGIN_UPPER_LEFT, 2, 1));
 
     // Resolve the extension dynamically
     s_grChromakeyRangeExt = (grChromakeyRangeExtFunc)grGetProcAddress(const_cast<char*>("grChromakeyRangeExt"));
     if (!s_grChromakeyRangeExt) {
         std::printf("[WARNING] grChromakeyRangeExt extension NOT supported by the active Glide library!\n");
-        std::printf("Range mode will not be available, falling back to standard chromakey.\n");
+        std::printf("Range mode will not be available, falling back to standard chromakey.\n\n");
     }
 
-    // Set up console text overlay
-    tlConSet(0.0f, 0.0f, 1.0f, 1.0f, 60, 30, 0xffffff);
-    
     // Initial Glide state: Gouraud/iterated color shading
     grColorCombine(GR_COMBINE_FUNCTION_LOCAL,
                    GR_COMBINE_FACTOR_NONE,
@@ -45,30 +51,28 @@ int main(int argc, char** argv) {
     bool chromaEnabled = true;
     bool rangeMode = (s_grChromakeyRangeExt != nullptr);
 
-    std::printf("\n==================================================\n");
-    std::printf("  3dfx Glide Chroma-Key Range Interactive Demo\n");
-    std::printf("==================================================\n");
-    std::printf("  Controls (press in the console or terminal):\n");
-    std::printf("    [SPACE]  : Toggle Chroma-Keying On/Off\n");
-    std::printf("    [R]      : Toggle between Exact Match and Range Match\n");
-    std::printf("    [ESC]    : Exit Demo\n");
-    std::printf("==================================================\n\n");
+    // Print initial status line
+    PrintStatus(chromaEnabled, rangeMode, s_grChromakeyRangeExt != nullptr);
 
     bool running = true;
     while (running) {
-        // Handle input if a key was pressed (bridged via console stdin / SDL window)
+        // Handle input if a key was pressed
         if (tlKbHit()) {
             char key = tlGetCH();
             if (key == 27) { // ESC
                 running = false;
+                std::printf("\nExiting demo...\n");
                 break;
             } else if (key == ' ') { // Space
                 chromaEnabled = !chromaEnabled;
+                PrintStatus(chromaEnabled, rangeMode, s_grChromakeyRangeExt != nullptr);
             } else if (key == 'r' || key == 'R') {
                 if (s_grChromakeyRangeExt) {
                     rangeMode = !rangeMode;
+                    PrintStatus(chromaEnabled, rangeMode, s_grChromakeyRangeExt != nullptr);
                 } else {
-                    std::printf("Cannot toggle range mode: extension not supported!\n");
+                    std::printf("\n[ERROR] Cannot toggle range mode: extension not supported!\n");
+                    PrintStatus(chromaEnabled, rangeMode, s_grChromakeyRangeExt != nullptr);
                 }
             }
         }
@@ -112,24 +116,6 @@ int main(int argc, char** argv) {
 
         grDrawTriangle(&v0, &v1, &v2);
 
-        // Update console overlay text
-        tlConOutput("=== Glide Chroma-Key Range Demo ===\n");
-        if (chromaEnabled) {
-            tlConOutput("Chroma-Keying: ENABLED \n");
-        } else {
-            tlConOutput("Chroma-Keying: DISABLED\n");
-        }
-
-        if (rangeMode && s_grChromakeyRangeExt) {
-            tlConOutput("Mode: RANGE MATCH (Red 100 to 150)\n");
-            tlConOutput("Expected: Wide vertical transparent band in middle of triangle.\n");
-        } else {
-            tlConOutput("Mode: EXACT MATCH (Red=128)\n");
-            tlConOutput("Expected: Very thin single-pixel vertical line in middle.\n");
-        }
-        tlConOutput("\nPress SPACE to toggle keying, R to toggle mode, ESC to exit.\n");
-
-        tlConRender();
         grBufferSwap(1);
     }
 
