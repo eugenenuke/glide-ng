@@ -39,6 +39,7 @@ def main():
     parser.add_argument('--backend', '-b', choices=['software', 'sw', 'vulkan', 'vk', 'opengl_es', 'gles', 'goes'], help="Filter by a specific backend")
     parser.add_argument('--tests', '-t', help="Comma-separated list of visual tests to run (e.g., test00,test14)")
     parser.add_argument('--skip-unit', action='store_true', help="Skip running Catch2 unit tests")
+    parser.add_argument('--skip-vis', action='store_true', help="Skip running Glide visual regression tests")
     
     args = parser.parse_args()
     
@@ -48,9 +49,9 @@ def main():
     if args.tests:
         visual_tests = [t.strip() for t in args.tests.split(',') if t.strip()]
     elif smoke_mode:
-        visual_tests = ['test00', 'test12', 'test14', 'test21']
+        visual_tests = ['test12', 'test14', 'test21']
     else:
-        visual_tests = ['test00', 'test01', 'test02', 'test03', 'test04', 'test05', 'test06', 'test07', 'test08', 'test09', 'test10', 'test11', 'test13', 'test14', 'test15', 'test16', 'test17', 'test18', 'test19', 'test21', 'test26', 'test29']
+        visual_tests = ['test01', 'test02', 'test03', 'test04', 'test05', 'test06', 'test07', 'test08', 'test09', 'test10', 'test11', 'test13', 'test14', 'test15', 'test16', 'test17', 'test18', 'test19', 'test21', 'test26', 'test29']
     
     catch2_bin = './build/bin/GlideWrapperTests'
     if not os.path.exists(catch2_bin):
@@ -100,30 +101,33 @@ def main():
         print(f"{Colors.YELLOW}--- [1/2] Skipping Catch2 Architectural Validation Suite ---{Colors.END}\n")
 
     # 2. Run Visual Regression Tests across all backends
-    print(f"{Colors.BOLD}--- [2/2] Running Glide Visual Regression Suite (test00-07) ---{Colors.END}")
-    for backend in backends:
-        for t in visual_tests:
-            print(f"Running {t:<6} on {Colors.BLUE}{backend:<10}{Colors.END} ... ", end='', flush=True)
-            total_count += 1
-            cmd = f"python3 tests/run_tests.py {t}"
-            success, stdout, stderr, elapsed = run_command(cmd, {
-                'GLIDE_BACKEND': backend,
-                'GLIDE_WRAPPER_MAX_FPS': '0'
-            })
-            
-            status_str = f"{Colors.GREEN}[PASS]{Colors.END}" if success else f"{Colors.RED}[FAIL]{Colors.END}"
-            print(f"{status_str} ({elapsed:.2f}s)")
-            
-            results.append({
-                'backend': backend,
-                'type': 'Visual Regr',
-                'name': t,
-                'success': success,
-                'elapsed': elapsed,
-                'details': '' if success else (stdout + "\n" + stderr)
-            })
-            if not success:
-                failed_count += 1
+    if not args.skip_vis:
+        print(f"{Colors.BOLD}--- [2/2] Running Glide Visual Regression Suite (test00-07) ---{Colors.END}")
+        for backend in backends:
+            for t in visual_tests:
+                print(f"Running {t:<6} on {Colors.BLUE}{backend:<10}{Colors.END} ... ", end='', flush=True)
+                total_count += 1
+                cmd = f"python3 tests/run_tests.py {t}"
+                success, stdout, stderr, elapsed = run_command(cmd, {
+                    'GLIDE_BACKEND': backend,
+                    'GLIDE_WRAPPER_MAX_FPS': '0'
+                })
+                
+                status_str = f"{Colors.GREEN}[PASS]{Colors.END}" if success else f"{Colors.RED}[FAIL]{Colors.END}"
+                print(f"{status_str} ({elapsed:.2f}s)")
+                
+                results.append({
+                    'backend': backend,
+                    'type': 'Visual Regr',
+                    'name': t,
+                    'success': success,
+                    'elapsed': elapsed,
+                    'details': '' if success else (stdout + "\n" + stderr)
+                })
+                if not success:
+                    failed_count += 1
+    else:
+        print(f"{Colors.YELLOW}--- [2/2] Skipping Glide Visual Regression Suite ---{Colors.END}\n")
 
     # Print Consolidated Summary Table
     print("\n")

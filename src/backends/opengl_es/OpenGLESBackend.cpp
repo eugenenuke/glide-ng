@@ -68,6 +68,14 @@ void OpenGLESBackend::Shutdown() {
     m_initialized = false;
 }
 
+void OpenGLESBackend::ResetState() {
+    SoftwareBackendBase::ResetState();
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    m_geomVBOOffset = 0;
+    m_is2DGeometry = true;
+    m_gammaCorrectionValue = 1.0f;
+}
+
 bool OpenGLESBackend::AttachWindow(void* nativeWindowHandle, uint32_t width, uint32_t height, bool windowed) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     if (!m_initialized) return false;
@@ -77,6 +85,7 @@ bool OpenGLESBackend::AttachWindow(void* nativeWindowHandle, uint32_t width, uin
 
     m_headlessWidth = width;
     m_headlessHeight = height;
+    ResetState();
     m_headlessMode = m_config.forceNoWindow;
 
     if (!CreateGLContext(nativeWindowHandle, width, height, windowed)) {
@@ -725,6 +734,11 @@ uniform int uUseTmuOow;
 
 uniform int uChromakeyEnabled;
 uniform vec4 uChromakeyValue;
+uniform int uChromakeyRangeEnabled;
+uniform vec3 uChromakeyRangeMin;
+uniform vec3 uChromakeyRangeMax;
+uniform ivec3 uChromakeyRangeExclusive;
+uniform int uChromakeyRangeUnion;
 
 uniform int uAlphaTestOp;
 uniform float uAlphaTestRef;
@@ -847,8 +861,30 @@ void main() {
 
     // Milestone 10: Chromakey Emulation
     if (uChromakeyEnabled == 1) {
-        if (distance(col.rgb, uChromakeyValue.rgb) < 0.01) {
-            discard;
+        vec3 chromaTestColor = (uTextureEnabled == 1) ? texColor.rgb : fragColor.rgb;
+        if (uChromakeyRangeEnabled == 1) {
+            bool rMatch = (chromaTestColor.r >= uChromakeyRangeMin.r && chromaTestColor.r <= uChromakeyRangeMax.r);
+            bool gMatch = (chromaTestColor.g >= uChromakeyRangeMin.g && chromaTestColor.g <= uChromakeyRangeMax.g);
+            bool bMatch = (chromaTestColor.b >= uChromakeyRangeMin.b && chromaTestColor.b <= uChromakeyRangeMax.b);
+            
+            bool rRes = rMatch != (uChromakeyRangeExclusive.x != 0);
+            bool gRes = gMatch != (uChromakeyRangeExclusive.y != 0);
+            bool bRes = bMatch != (uChromakeyRangeExclusive.z != 0);
+            
+            bool discardPixel = false;
+            if (uChromakeyRangeUnion == 1) {
+                discardPixel = rRes || gRes || bRes;
+            } else {
+                discardPixel = rRes && gRes && bRes;
+            }
+            
+            if (discardPixel) {
+                discard;
+            }
+        } else {
+            if (distance(chromaTestColor, uChromakeyValue.rgb) < 0.01) {
+                discard;
+            }
         }
     }
 
@@ -1080,7 +1116,7 @@ void OpenGLESBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
 
     m_is2DGeometry = (a.pos[3] == 1.0f && b.pos[3] == 1.0f && c.pos[3] == 1.0f);
 
-    GLIDE_LOG(DEBUG, "GLES", "DrawTriangle GPU draw. A: (" << a.pos[0] << ", " << a.pos[1] << ", " << a.pos[2] << ", " << a.pos[3] << "), B: (" << b.pos[0] << ", " << b.pos[1] << ", " << b.pos[2] << ", " << b.pos[3] << "), C: (" << c.pos[0] << ", " << c.pos[1] << ", " << c.pos[2] << ", " << c.pos[3] << ")");
+    GLIDE_LOG(DEBUG, "GLES", "DrawTriangle GPU draw. A: pos=(" << a.pos[0] << "," << a.pos[1] << "," << a.pos[2] << "," << a.pos[3] << ") tex=(" << a.tex[0] << "," << a.tex[1] << "), B: pos=(" << b.pos[0] << "," << b.pos[1] << "," << b.pos[2] << "," << b.pos[3] << ") tex=(" << b.tex[0] << "," << b.tex[1] << "), C: pos=(" << c.pos[0] << "," << c.pos[1] << "," << c.pos[2] << "," << c.pos[3] << ") tex=(" << c.tex[0] << "," << c.tex[1] << ")");
 
     // 1. Upload all three vertices directly to dynamic VBO ring buffer
     ModernVertex vertices[3] = { a, b, c };
@@ -1353,6 +1389,38 @@ void OpenGLESBackend::PopulateUniforms() {
         std::swap(chR, chB);
     }
     glUniform4f(glGetUniformLocation(m_geomProgram, "uChromakeyValue"), chR, chG, chB, chA);
+
+    // Upload Chromakey Range Uniforms
+    bool rangeEnabled = ((m_chromakeyRangeMode >> 28) & 1) != 0;
+    glUniform1i(glGetUniformLocation(m_geomProgram, "uChromakeyRangeEnabled"), rangeEnabled ? 1 : 0);
+    
+    float rMin = ((m_chromakeyRangeMin >> 16) & 0xFF) / 255.0f;
+    float gMin = ((m_chromakeyRangeMin >> 8)  & 0xFF) / 255.0f;
+    float bMin = (m_chromakeyRangeMin         & 0xFF) / 255.0f;
+
+    float rMax = ((m_chromakeyRangeMax >> 16) & 0xFF) / 255.0f;
+    float gMax = ((m_chromakeyRangeMax >> 8)  & 0xFF) / 255.0f;
+    float bMax = (m_chromakeyRangeMax         & 0xFF) / 255.0f;
+
+    if (m_pixelFormatOverride == 1) {
+        std::swap(rMin, bMin);
+        std::swap(rMax, bMax);
+    }
+    GLIDE_LOG(DEBUG, "GLES", "ChromaRangeMin: R=" << rMin << ", G=" << gMin << ", B=" << bMin);
+    GLIDE_LOG(DEBUG, "GLES", "ChromaRangeMax: R=" << rMax << ", G=" << gMax << ", B=" << bMax);
+    GLIDE_LOG(DEBUG, "GLES", "ChromaRangeMode: 0x" << std::hex << m_chromakeyRangeMode << std::dec);
+    GLIDE_LOG(DEBUG, "GLES", "PixelFormatOverride: " << m_pixelFormatOverride);
+
+    glUniform3f(glGetUniformLocation(m_geomProgram, "uChromakeyRangeMin"), rMin, gMin, bMin);
+    glUniform3f(glGetUniformLocation(m_geomProgram, "uChromakeyRangeMax"), rMax, gMax, bMax);
+
+    int blueExcl  = ((m_chromakeyRangeMode >> 24) & 1);
+    int greenExcl = ((m_chromakeyRangeMode >> 25) & 1);
+    int redExcl   = ((m_chromakeyRangeMode >> 26) & 1);
+    glUniform3i(glGetUniformLocation(m_geomProgram, "uChromakeyRangeExclusive"), redExcl, greenExcl, blueExcl);
+
+    int unionMode = ((m_chromakeyRangeMode >> 27) & 1);
+    glUniform1i(glGetUniformLocation(m_geomProgram, "uChromakeyRangeUnion"), unionMode);
 
     // Upload Combiner State Uniforms
     glUniform1i(glGetUniformLocation(m_geomProgram, "uColorFunc"), (int)m_colorCombinerFunc);

@@ -123,8 +123,8 @@ FX_ENTRY GrContext_t FX_CALL grSstWinOpen(FxU32 hWnd, GrScreenResolution_t resol
     else if (resolution == GR_RESOLUTION_1280x1024) { width = 1280; height = 1024; }
     else if (resolution == GR_RESOLUTION_1600x1200) { width = 1600; height = 1200; }
     
-    backend->SetPixelFormat(format);
     bool attached = backend->AttachWindow(reinterpret_cast<void*>(static_cast<uintptr_t>(hWnd)), width, height, hWnd != 0);
+    backend->SetPixelFormat(format);
     return attached ? 1 : 0;
 }
 

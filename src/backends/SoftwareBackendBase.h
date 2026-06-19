@@ -15,6 +15,7 @@ public:
     // Derived classes MUST implement these context/lifecycle routines
     bool Initialize(const WrapperConfig& config) override = 0;
     void Shutdown() override = 0;
+    void ResetState() override;
     bool AttachWindow(void* nativeWindowHandle, uint32_t width, uint32_t height, bool windowed) override = 0;
     void DetachWindow() override = 0;
     uint32_t GetWidth() const override { return m_headlessWidth; }
@@ -56,6 +57,7 @@ public:
     void SetSTWHintState(uint32_t hintMask) override;
     void SetChromakeyMode(uint32_t mode) override;
     void SetChromakeyValue(uint32_t value) override;
+    void SetChromakeyRange(uint32_t minColor, uint32_t maxColor, uint32_t mode) override;
 
     // Linear Framebuffer (LFB) read/write utilities
     void* GetLfbWritePtr() override;
@@ -145,6 +147,9 @@ protected:
     uint32_t m_pixelFormatOverride{1}; // 1 = ABGR
     uint32_t m_chromakeyMode{0};       // 0 = GR_CHROMAKEY_DISABLE
     uint32_t m_chromakeyValue{0};
+    uint32_t m_chromakeyRangeMin{0};
+    uint32_t m_chromakeyRangeMax{0};
+    uint32_t m_chromakeyRangeMode{0};
     uint32_t m_lastCpuClearColor{0};
 };
 

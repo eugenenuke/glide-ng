@@ -83,7 +83,7 @@ int main(int argc, char** argv) {
     }
 
     std::vector<std::unique_ptr<GlideTest::BaseTest>> tests;
-    tests.push_back(GlideTest::CreateTest00());
+    // tests.push_back(GlideTest::CreateTest00()); // Disabled in favor of hardware-accurate Catch2 unit test validation!
     tests.push_back(GlideTest::CreateTest01());
     tests.push_back(GlideTest::CreateTest02());
     tests.push_back(GlideTest::CreateTest03());

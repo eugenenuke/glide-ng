@@ -36,8 +36,10 @@ layout(push_constant) uniform PushConstants {
 
     uint textureEnabled;
     uint chromakeyEnabled;
-    uint paddingPush;
+    uint chromakeyRangeMode;
     vec4 chromakeyValue;
+    vec4 chromakeyRangeMin;
+    vec4 chromakeyRangeMax;
 } pcs;
 
 layout(binding = 0) uniform sampler2D texSampler0;
@@ -155,8 +157,36 @@ void main() {
 
     // Milestone 10: Chromakey Emulation
     if (pcs.chromakeyEnabled == 1u) {
-        if (distance(col.rgb, pcs.chromakeyValue.rgb) < 0.01) {
-            discard;
+        vec3 chromaTestColor = (pcs.textureEnabled == 1u) ? texColor.rgb : fragColor.rgb;
+        bool rangeEnabled = ((pcs.chromakeyRangeMode >> 28u) & 1u) == 1u;
+        if (rangeEnabled) {
+            bool rMatch = (chromaTestColor.r >= pcs.chromakeyRangeMin.r && chromaTestColor.r <= pcs.chromakeyRangeMax.r);
+            bool gMatch = (chromaTestColor.g >= pcs.chromakeyRangeMin.g && chromaTestColor.g <= pcs.chromakeyRangeMax.g);
+            bool bMatch = (chromaTestColor.b >= pcs.chromakeyRangeMin.b && chromaTestColor.b <= pcs.chromakeyRangeMax.b);
+            
+            bool blueExcl  = ((pcs.chromakeyRangeMode >> 24u) & 1u) == 1u;
+            bool greenExcl = ((pcs.chromakeyRangeMode >> 25u) & 1u) == 1u;
+            bool redExcl   = ((pcs.chromakeyRangeMode >> 26u) & 1u) == 1u;
+            
+            bool rRes = rMatch != redExcl;
+            bool gRes = gMatch != greenExcl;
+            bool bRes = bMatch != blueExcl;
+            
+            bool unionMode = ((pcs.chromakeyRangeMode >> 27u) & 1u) == 1u;
+            bool discardPixel = false;
+            if (unionMode) {
+                discardPixel = rRes || gRes || bRes;
+            } else {
+                discardPixel = rRes && gRes && bRes;
+            }
+            
+            if (discardPixel) {
+                discard;
+            }
+        } else {
+            if (distance(chromaTestColor, pcs.chromakeyValue.rgb) < 0.01) {
+                discard;
+            }
         }
     }
 

@@ -2,6 +2,7 @@
 #include "core/Logger.h"
 #include "core/TextureManager.h"
 #include "core/Telemetry.h"
+#include "core/VertexLayout.h"
 #include <iostream>
 #include <algorithm>
 #include <cmath>
@@ -15,6 +16,71 @@ extern "C" {
 }
 
 namespace GlideWrapper {
+
+void SoftwareBackendBase::ResetState() {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    VertexLayout::GetInstance().ResetToGlide2Canonical();
+    m_depthMode = 0;
+    m_depthCompareOp = 1;
+    m_depthMask = true;
+    m_depthBiasLevel = 0;
+
+    m_rgbSrcBlend = 4;
+    m_rgbDstBlend = 0;
+    m_alphaSrcBlend = 4;
+    m_alphaDstBlend = 0;
+
+    m_alphaTestOp = 7;
+    m_alphaTestRefVal = 0;
+
+    m_cullMode = 0;
+
+    m_clipMinX = 0;
+    m_clipMinY = 0;
+    m_clipMaxX = m_headlessWidth;
+    m_clipMaxY = m_headlessHeight;
+    m_sstOrigin = 0;
+    
+    m_fogMode = 0;
+    m_fogColor = 0xff000000;
+    std::memset(m_fogTable, 0, sizeof(m_fogTable));
+
+    m_colorMaskRgb = true;
+    m_colorMaskAlpha = true;
+
+    m_boundTexAddress[0] = 0xFFFFFFFF;
+    m_boundTexAddress[1] = 0xFFFFFFFF;
+    m_texClampS[0] = m_texClampS[1] = 0;
+    m_texClampT[0] = m_texClampT[1] = 0;
+    m_texMinFilter[0] = m_texMinFilter[1] = 0;
+    m_texMagFilter[0] = m_texMagFilter[1] = 0;
+
+    m_colorCombinerFunc   = 0;
+    m_colorCombinerFactor = 0;
+    m_colorCombinerLocal  = 0;
+    m_colorCombinerOther  = 0;
+    m_colorCombinerInvert = false;
+    m_alphaCombinerFunc   = 0;
+    m_alphaCombinerFactor = 0;
+    m_alphaCombinerLocal  = 0;
+    m_alphaCombinerOther  = 0;
+    m_alphaCombinerInvert = false;
+
+    m_texCombinerRgbFunc[0] = m_texCombinerRgbFunc[1] = 0;
+    m_texCombinerRgbFactor[0] = m_texCombinerRgbFactor[1] = 0;
+    m_texCombinerAlphaFunc[0] = m_texCombinerAlphaFunc[1] = 0;
+    m_texCombinerAlphaFactor[0] = m_texCombinerAlphaFactor[1] = 0;
+
+    m_constantColor = 0xFFFFFFFF;
+    m_stwHintMask = 0;
+    m_pixelFormatOverride = 1;
+    m_chromakeyMode = 0;
+    m_chromakeyValue = 0;
+    m_chromakeyRangeMin = 0;
+    m_chromakeyRangeMax = 0;
+    m_chromakeyRangeMode = 0;
+    m_lastCpuClearColor = 0;
+}
 
 void SoftwareBackendBase::ClearBuffer(uint32_t color, uint32_t alpha, float z, uint32_t clearMask) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
@@ -213,6 +279,15 @@ void SoftwareBackendBase::SetChromakeyValue(uint32_t value) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     m_chromakeyValue = value;
     GLIDE_LOG(DEBUG, "Rasterizer", "SetChromakeyValue: Value=0x" << std::hex << value << std::dec);
+}
+
+void SoftwareBackendBase::SetChromakeyRange(uint32_t minColor, uint32_t maxColor, uint32_t mode) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    m_chromakeyRangeMin = minColor;
+    m_chromakeyRangeMax = maxColor;
+    m_chromakeyRangeMode = mode;
+    GLIDE_LOG(DEBUG, "Rasterizer", "SetChromakeyRange: min=0x" << std::hex << minColor 
+              << ", max=0x" << maxColor << ", mode=" << std::dec << mode);
 }
 
 // Note: DrawTriangle, DrawLine, DrawPoint, EvaluateCombinerColor, and RasterizeSoftwareTriangle

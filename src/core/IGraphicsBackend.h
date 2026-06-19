@@ -26,6 +26,7 @@ public:
     // Foundational Core Lifecycle
     virtual bool Initialize(const WrapperConfig& config) = 0;
     virtual void Shutdown() = 0;
+    virtual void ResetState() = 0;
 
     // Phase 2: Window Surface & Headless Swapchain Attachment
     virtual bool AttachWindow(void* nativeWindowHandle, uint32_t width, uint32_t height, bool windowed) = 0;
@@ -78,6 +79,7 @@ public:
     // Milestone 10: Chromakey State
     virtual void SetChromakeyMode(uint32_t mode) = 0;
     virtual void SetChromakeyValue(uint32_t value) = 0;
+    virtual void SetChromakeyRange(uint32_t minColor, uint32_t maxColor, uint32_t mode) = 0;
 
     // Gamma Correction
     virtual void SetGamma(float gamma) = 0;

@@ -288,6 +288,7 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width, uint3
 
     m_headlessWidth = width;
     m_headlessHeight = height;
+    ResetState();
     m_headlessMode = true; // Headless-driven for visual regression
 
     if (!CreateHeadlessRenderTarget(width, height)) return false;
@@ -633,7 +634,7 @@ void VulkanBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z, uint32_
     if (clearMask & 1) { // Color clear
         // Only schedule a GPU color clear if color or alpha writes are actually enabled!
         if (m_colorMaskRgb || m_colorMaskAlpha) {
-            float a = ((color >> 24) & 0xFF) / 255.0f;
+            float a = ((alpha > 0) ? alpha : 255) / 255.0f;
             float r = ((color >> 16) & 0xFF) / 255.0f;
             float g = ((color >> 8)  & 0xFF) / 255.0f;
             float b = (color         & 0xFF) / 255.0f;
@@ -784,6 +785,14 @@ void VulkanBackend::SetChromakeyValue(uint32_t value) {
         FlushBatch();
     }
     SoftwareBackendBase::SetChromakeyValue(value);
+}
+
+void VulkanBackend::SetChromakeyRange(uint32_t minColor, uint32_t maxColor, uint32_t mode) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    if (minColor != m_chromakeyRangeMin || maxColor != m_chromakeyRangeMax || mode != m_chromakeyRangeMode) {
+        FlushBatch();
+    }
+    SoftwareBackendBase::SetChromakeyRange(minColor, maxColor, mode);
 }
 
 void VulkanBackend::SetFogMode(uint32_t mode) {
@@ -2493,12 +2502,27 @@ void VulkanBackend::PopulatePushConstants(PushConstants& pcs) {
 
     // Milestone 10: Chromakey State
     pcs.chromakeyEnabled = m_chromakeyMode;
+    pcs.chromakeyRangeMode = m_chromakeyRangeMode;
+    
     pcs.chromakeyValue[0] = ((m_chromakeyValue >> 16) & 0xFF) / 255.0f; // R
     pcs.chromakeyValue[1] = ((m_chromakeyValue >> 8) & 0xFF) / 255.0f;  // G
     pcs.chromakeyValue[2] = (m_chromakeyValue & 0xFF) / 255.0f;         // B
     pcs.chromakeyValue[3] = ((m_chromakeyValue >> 24) & 0xFF) / 255.0f; // A
+
+    pcs.chromakeyRangeMin[0] = ((m_chromakeyRangeMin >> 16) & 0xFF) / 255.0f; // R
+    pcs.chromakeyRangeMin[1] = ((m_chromakeyRangeMin >> 8) & 0xFF) / 255.0f;  // G
+    pcs.chromakeyRangeMin[2] = (m_chromakeyRangeMin & 0xFF) / 255.0f;         // B
+    pcs.chromakeyRangeMin[3] = ((m_chromakeyRangeMin >> 24) & 0xFF) / 255.0f; // A
+
+    pcs.chromakeyRangeMax[0] = ((m_chromakeyRangeMax >> 16) & 0xFF) / 255.0f; // R
+    pcs.chromakeyRangeMax[1] = ((m_chromakeyRangeMax >> 8) & 0xFF) / 255.0f;  // G
+    pcs.chromakeyRangeMax[2] = (m_chromakeyRangeMax & 0xFF) / 255.0f;         // B
+    pcs.chromakeyRangeMax[3] = ((m_chromakeyRangeMax >> 24) & 0xFF) / 255.0f; // A
+
     if (m_pixelFormatOverride == 1) {
         std::swap(pcs.chromakeyValue[0], pcs.chromakeyValue[2]);
+        std::swap(pcs.chromakeyRangeMin[0], pcs.chromakeyRangeMin[2]);
+        std::swap(pcs.chromakeyRangeMax[0], pcs.chromakeyRangeMax[2]);
     }
 }
 

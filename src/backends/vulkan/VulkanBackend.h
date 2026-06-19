@@ -37,8 +37,10 @@ struct PushConstants {
     uint32_t alphaInvert;
     uint32_t textureEnabled;
     uint32_t chromakeyEnabled;
-    float    paddingPush;
+    uint32_t chromakeyRangeMode;
     float    chromakeyValue[4];
+    float    chromakeyRangeMin[4];
+    float    chromakeyRangeMax[4];
 };
 
 struct VulkanTexture {
@@ -159,6 +161,7 @@ public:
     void SetSTWHintState(uint32_t hintMask) override;
     void SetChromakeyMode(uint32_t mode) override;
     void SetChromakeyValue(uint32_t value) override;
+    void SetChromakeyRange(uint32_t minColor, uint32_t maxColor, uint32_t mode) override;
     void SetFogMode(uint32_t mode) override;
     void SetFogColor(uint32_t color) override;
     void SetFogTable(const uint8_t* table) override;

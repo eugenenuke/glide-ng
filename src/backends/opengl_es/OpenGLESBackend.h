@@ -19,6 +19,7 @@ public:
     // Overridden Context & Presentation Lifecycle
     bool Initialize(const WrapperConfig& config) override;
     void Shutdown() override;
+    void ResetState() override;
 
     bool AttachWindow(void* nativeWindowHandle, uint32_t width, uint32_t height, bool windowed) override;
     void DetachWindow() override;

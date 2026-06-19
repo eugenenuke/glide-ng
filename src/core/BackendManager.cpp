@@ -31,6 +31,7 @@ IGraphicsBackend* BackendManager::GetBackend() {
 
 bool BackendManager::EstablishBackend(const WrapperConfig& config) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    GLIDE_LOG(INFO, "Backend", "EstablishBackend entered. config.backend='" << config.backend << "', m_backend=" << (m_backend ? "NON-NULL" : "NULL"));
     if (m_backend) return true;
 
     // Resolve requested backend name from config (already resolved/validated by JsonConfigLoader)
@@ -47,12 +48,15 @@ bool BackendManager::EstablishBackend(const WrapperConfig& config) {
 
     if (!m_backend) {
         if (requested == "opengl_es") {
+            GLIDE_LOG(INFO, "Backend", "Instantiating OpenGLESBackend.");
             m_backend = std::make_unique<OpenGLESBackend>();
             m_activeBackendName = "opengl_es";
         } else if (requested == "software") {
+            GLIDE_LOG(INFO, "Backend", "Instantiating SoftwareBackend.");
             m_backend = std::make_unique<SoftwareBackend>();
             m_activeBackendName = "software";
         } else if (requested == "vulkan") {
+            GLIDE_LOG(INFO, "Backend", "Instantiating VulkanBackend.");
             m_backend = std::make_unique<VulkanBackend>();
             m_activeBackendName = "vulkan";
         } else {

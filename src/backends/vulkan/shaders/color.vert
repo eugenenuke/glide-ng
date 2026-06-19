@@ -40,8 +40,10 @@ layout(push_constant) uniform PushConstants {
 
     uint textureEnabled;
     uint chromakeyEnabled;
-    uint paddingPush;
+    uint chromakeyRangeMode;
     vec4 chromakeyValue;
+    vec4 chromakeyRangeMin;
+    vec4 chromakeyRangeMax;
 } pcs;
 
 void main() {

@@ -67,6 +67,7 @@ namespace {
     uint32_t s_constantColor = 0xFFFFFFFF;
     uint32_t s_rgbSrcBlend = 4;   // GR_BLEND_ONE
     uint32_t s_rgbDstBlend = 0;   // GR_BLEND_ZERO
+    typedef FxI32 GrChromaRangeMode_t;
     uint32_t s_alphaSrcBlend = 4;
     uint32_t s_alphaDstBlend = 0;
     uint32_t s_cullMode = 0;      // GR_CULL_DISABLE
@@ -85,6 +86,9 @@ namespace {
     uint32_t s_lfbWriteColorFormat = 0; // GR_COLORFORMAT_ARGB
     uint32_t s_chromakeyMode = 0;
     uint32_t s_chromakeyValue = 0;
+    uint32_t s_chromakeyRangeMin = 0;
+    uint32_t s_chromakeyRangeMax = 0;
+    GrChromaRangeMode_t s_chromakeyRangeMode = 0;
 
     std::vector<GrMipMapInfo> s_guTextures;
     uint32_t s_guTexNextAddress = 0;
@@ -246,9 +250,69 @@ FX_ENTRY FxBool FX_CALL grSstWinOpen(
     else if (resolution == GR_RESOLUTION_1024x768) { width = 1024; height = 768; }
     else if (resolution == GR_RESOLUTION_1280x1024) { width = 1280; height = 1024; }
     else if (resolution == GR_RESOLUTION_1600x1200) { width = 1600; height = 1200; }
-    
-    backend->SetPixelFormat(format);
+ 
+    // Reset all frontend static global states to canonical Glide defaults
+    s_depthMode = 0;
+    s_depthCompare = 1;
+    s_depthMask = true;
+    s_depthBias = 0;
+    s_alphaTestOp = 7;
+    s_alphaTestRef = 0;
+    s_clampS[0] = s_clampS[1] = 0;
+    s_clampT[0] = s_clampT[1] = 0;
+    s_minFilter[0] = s_minFilter[1] = 0;
+    s_magFilter[0] = s_magFilter[1] = 0;
+    s_colorFunc   = 0x3; // GR_COMBINE_FUNCTION_SCALE_OTHER
+    s_colorFactor = 0x8; // GR_COMBINE_FACTOR_ONE
+    s_colorLocal  = 0x0; // GR_COMBINE_LOCAL_ITERATED
+    s_colorOther  = 0x0; // GR_COMBINE_OTHER_ITERATED
+    s_colorInvert = false;
+    s_alphaFunc   = 0x3; // GR_COMBINE_FUNCTION_SCALE_OTHER
+    s_alphaFactor = 0x8; // GR_COMBINE_FACTOR_ONE
+    s_alphaLocal  = 0x1; // GR_COMBINE_LOCAL_NONE
+    s_alphaOther  = 0x2; // GR_COMBINE_OTHER_CONSTANT
+    s_alphaInvert = false;
+    s_texRgbFunc[0] = s_texRgbFunc[1] = 0;
+    s_texRgbFactor[0] = s_texRgbFactor[1] = 0;
+    s_texAlphaFunc[0] = s_texAlphaFunc[1] = 0;
+    s_texAlphaFactor[0] = s_texAlphaFactor[1] = 0;
+    s_boundTex[0] = s_boundTex[1] = 0xFFFFFFFF;
+    s_stwHintMask = 0;
+    s_constantColor = 0xFFFFFFFF;
+    s_rgbSrcBlend = 4; // GR_BLEND_ONE
+    s_rgbDstBlend = 0; // GR_BLEND_ZERO
+    s_alphaSrcBlend = 4;
+    s_alphaDstBlend = 0;
+    s_cullMode = 0;
+    s_clipMinX = 0;
+    s_clipMinY = 0;
+    s_clipMaxX = width;
+    s_clipMaxY = height;
+    s_fogMode = 0;
+    s_fogColor = 0xff000000;
+    std::memset(s_fogTable, 0, sizeof(s_fogTable));
+    s_colorMaskRgb = true;
+    s_colorMaskAlpha = true;
+    s_shamelessPlugEnabled = false;
+    s_lfbConstantAlpha = 255;
+    s_lfbWriteColorFormat = 0;
+    s_chromakeyMode = 0;
+    s_chromakeyValue = 0;
+    s_chromakeyRangeMin = 0;
+    s_chromakeyRangeMax = 0;
+    s_chromakeyRangeMode = 0;
+    s_guTextures.clear();
+    s_guTexNextAddress = 0;
+    s_currentMipMap[0] = s_currentMipMap[1] = GR_NULL_MIPMAP_HANDLE;
+    s_texLodBias = 0.0f;
+    s_lfbConstantDepth = 0;
+    s_lfbWriteColorSwizzle = false;
+    s_lfbWriteColorSwizzleSwap = false;
+    s_alphaControlsITRGBLighting = false;
+    s_gammaCorrectionValue = 1.0f;
+ 
     bool attached = backend->AttachWindow(reinterpret_cast<void*>(static_cast<uintptr_t>(hWnd)), width, height, hWnd != 0);
+    backend->SetPixelFormat(format);
     if (attached) {
         backend->SetCombinerMode(s_colorFunc, s_colorFactor, s_colorLocal, s_colorOther, s_colorInvert,
                                  s_alphaFunc, s_alphaFactor, s_alphaLocal, s_alphaOther, s_alphaInvert);
@@ -1889,7 +1953,6 @@ FX_ENTRY void FX_CALL grCheckForRoom(FxI32 n) {
 }
 
 // Define the local typedef for GrChromaRangeMode_t which is guarded in glide2.h
-typedef FxI32 GrChromaRangeMode_t;
 
 // Forward declaration of our Chroma-Key Range Extension
 FX_ENTRY void FX_CALL grChromakeyRangeExt(GrColor_t minColor, GrColor_t maxColor, GrChromaRangeMode_t mode);
@@ -1911,6 +1974,12 @@ FX_ENTRY void FX_CALL grChromakeyRangeExt(GrColor_t minColor, GrColor_t maxColor
     EnsureEngineInitialized();
     GLIDE_LOG(DEBUG, "Frontend", "grChromakeyRangeExt: minColor=0x" << std::hex << minColor 
               << ", maxColor=0x" << maxColor << ", mode=" << std::dec << mode);
+    s_chromakeyRangeMin = minColor;
+    s_chromakeyRangeMax = maxColor;
+    s_chromakeyRangeMode = mode;
+    if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
+        b->SetChromakeyRange(minColor, maxColor, mode);
+    }
 }
 
 FX_ENTRY void FX_CALL grErrorSetCallback(GrErrorCallbackFnc_t fnc) {
