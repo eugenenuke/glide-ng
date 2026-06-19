@@ -11,7 +11,7 @@ typedef void (FX_CALL *grChromakeyRangeExtFunc)(GrColor_t minColor, GrColor_t ma
 static grChromakeyRangeExtFunc s_grChromakeyRangeExt = nullptr;
 
 void PrintStatus(bool chromaEnabled, bool rangeMode, bool extensionSupported) {
-    std::printf("\r[STATUS] Chroma-Keying: %s | Mode: %s                   ",
+    std::printf("\r[STATUS] Chroma-Keying: %s | Mode: %s\033[K",
                 chromaEnabled ? "ENABLED" : "DISABLED",
                 (!chromaEnabled) ? "OFF" :
                 (rangeMode && extensionSupported) ? "RANGE MATCH (Red 100 to 150)" : "EXACT MATCH (Red=128)");
