@@ -24,57 +24,9 @@
 #define GR_WDEPTHVALUE_FARTHEST 0xFFFF
 #endif
 
-// ======================================================================
-// Resolution Database & API Resolution Gating
-// ======================================================================
-struct ResolutionInfo {
-    const char* name;
-    GrScreenResolution_t constant;
-    int width;
-    int height;
-};
+#include <DiagnosticInfo.h>
 
-#if GLIDE_VERSION == 3
-ResolutionInfo resolutions[] = {
-    {"320x200", GR_RESOLUTION_320x200, 320, 200},
-    {"320x240", GR_RESOLUTION_320x240, 320, 240},
-    {"400x256", GR_RESOLUTION_400x256, 400, 256},
-    {"400x300", GR_RESOLUTION_400x300, 400, 300},
-    {"512x384", GR_RESOLUTION_512x384, 512, 384},
-    {"640x200", GR_RESOLUTION_640x200, 640, 200},
-    {"640x350", GR_RESOLUTION_640x350, 640, 350},
-    {"640x400", GR_RESOLUTION_640x400, 640, 400},
-    {"640x480", GR_RESOLUTION_640x480, 640, 480},
-    {"800x600", GR_RESOLUTION_800x600, 800, 600},
-    {"856x480", GR_RESOLUTION_856x480, 856, 480},
-    {"960x720", GR_RESOLUTION_960x720, 960, 720},
-    {"1024x768", GR_RESOLUTION_1024x768, 1024, 768},
-    {"1152x864", GR_RESOLUTION_1152x864, 1152, 864},
-    {"1280x960", GR_RESOLUTION_1280x960, 1280, 960},
-    {"1280x1024", GR_RESOLUTION_1280x1024, 1280, 1024},
-    {"1600x1200", GR_RESOLUTION_1600x1200, 1600, 1200}
-};
-#else
-ResolutionInfo resolutions[] = {
-    {"320x200", GR_RESOLUTION_320x200, 320, 200},
-    {"320x240", GR_RESOLUTION_320x240, 320, 240},
-    {"400x256", GR_RESOLUTION_400x256, 400, 256},
-    {"400x300", GR_RESOLUTION_400x300, 400, 300},
-    {"512x384", GR_RESOLUTION_512x384, 512, 384},
-    {"640x200", GR_RESOLUTION_640x200, 640, 200},
-    {"640x350", GR_RESOLUTION_640x350, 640, 350},
-    {"640x400", GR_RESOLUTION_640x400, 640, 400},
-    {"640x480", GR_RESOLUTION_640x480, 640, 480},
-    {"800x600", GR_RESOLUTION_800x600, 800, 600},
-    {"856x480", GR_RESOLUTION_856x480, 856, 480},
-    {"960x720", GR_RESOLUTION_960x720, 960, 720},
-    {"1024x768", GR_RESOLUTION_1024x768, 1024, 768},
-    {"1280x1024", GR_RESOLUTION_1280x1024, 1280, 1024},
-    {"1600x1200", GR_RESOLUTION_1600x1200, 1600, 1200}
-};
-#endif
 
-const int num_resolutions = sizeof(resolutions) / sizeof(resolutions[0]);
 
 // ======================================================================
 // Lightweight CPU 3D Math Structures
@@ -132,141 +84,25 @@ Vector3D GetNormal(Vector3D p1, Vector3D p2, Vector3D p3) {
 // Main Application & Window Loop
 // ======================================================================
 int main(int argc, char* argv[]) {
-    bool list_mode = false;
-    std::string res_name = "640x480";
-
-    // Parse Command-Line Arguments
-    for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "-l") == 0 || strcmp(argv[i], "--list") == 0) {
-            list_mode = true;
-        } else if (strcmp(argv[i], "-r") == 0 && i + 1 < argc) {
-            res_name = argv[i + 1];
-            i++;
-        }
-    }
-
-    // Initialize Glide
-    grGlideInit();
-
-    // Determine emulated board parameters dynamically
-    std::string board_name = "Unknown Voodoo Card";
-    int fbi_mem = 4;
-    int tmu_count = 1;
-    bool sli = false;
-
-#if GLIDE_VERSION == 3
-    board_name = "Voodoo3 (H3) / Voodoo5";
-    
-    FxI32 fbi_mem_val = 4;
-    grGet(GR_MEMORY_FB, 4, &fbi_mem_val);
-    fbi_mem = fbi_mem_val / (1024 * 1024);
-
-    FxI32 tmu_count_val = 1;
-    grGet(GR_NUM_TMU, 4, &tmu_count_val);
-    tmu_count = tmu_count_val;
-    sli = false;
-#else
-    GrHwConfiguration hwconfig;
-    if (!grSstQueryHardware(&hwconfig)) {
-        std::cerr << "CRITICAL ERROR: Failed to query Glide hardware! Exiting." << std::endl;
-        grGlideShutdown();
-        return EXIT_FAILURE;
-    }
-
-    if (hwconfig.SSTs[0].type == GR_SSTTYPE_VOODOO) {
-        board_name = "Voodoo Graphics (SST-1)";
-        fbi_mem = hwconfig.SSTs[0].sstBoard.VoodooConfig.fbRam;
-        tmu_count = 1;
-        sli = false;
-    } else if (hwconfig.SSTs[0].type == GR_SSTTYPE_Voodoo2) {
-        board_name = "Voodoo2 (CVG)";
-        fbi_mem = hwconfig.SSTs[0].sstBoard.Voodoo2Config.fbRam;
-        tmu_count = hwconfig.SSTs[0].sstBoard.Voodoo2Config.nTexelfx;
-        sli = hwconfig.SSTs[0].sstBoard.Voodoo2Config.sliDetect ? true : false;
-    }
-#endif
-
-    // LIST MODE: Print the VRAM/Resolution support matrix and exit immediately
-    if (list_mode) {
-        std::cout << "======================================================================" << std::endl;
-        std::cout << "3DFX GLIDE DIAGNOSTIC TOOL - RESOLUTION MATRIX (GLIDE " << GLIDE_VERSION << " API)" << std::endl;
-        std::cout << "Active Device: " << board_name << " | Emulated VRAM: " << fbi_mem << ".00 MB" << std::endl;
-        std::cout << "======================================================================" << std::endl;
-
-        for (int i = 0; i < num_resolutions; i++) {
-            float req_mem = (resolutions[i].width * resolutions[i].height * 6.0f) / (1024.0f * 1024.0f);
-            bool supported = (req_mem <= fbi_mem);
-            
-            std::cout << "  [" << (supported ? "*" : " ") << "]  " 
-                      << std::left << std::setw(10) << resolutions[i].name 
-                      << " (" << std::fixed << std::setprecision(2) << req_mem << " MB required";
-            if (!supported) {
-                std::cout << " - EXCEEDS VRAM!)" << std::endl;
-            } else {
-                std::cout << ")" << std::endl;
-            }
-        }
-        std::cout << "======================================================================" << std::endl;
-        grGlideShutdown();
-        return EXIT_SUCCESS;
-    }
-
-    // Resolve Requested Resolution
-    int res_index = -1;
-    for (int i = 0; i < num_resolutions; i++) {
-        if (res_name == resolutions[i].name) {
-            res_index = i;
-            break;
-        }
-    }
-
-    if (res_index == -1) {
-        std::cerr << "ERROR: Invalid resolution requested: '" << res_name << "'" << std::endl;
-        grGlideShutdown();
-        return EXIT_FAILURE;
-    }
-
-    // Validate active device memory support
-    float req_mem = (resolutions[res_index].width * resolutions[res_index].height * 6.0f) / (1024.0f * 1024.0f);
-    if (req_mem > fbi_mem) {
-        std::cerr << "ERROR: Requested resolution '" << res_name << "' exceeds the active VRAM!" << std::endl;
-        grGlideShutdown();
-        return EXIT_FAILURE;
-    }
-
-    // Print Startup Diagnostic Header
-    std::cout << "======================================================================" << std::endl;
-    std::cout << "Glide 3D Cube (Glide " << GLIDE_VERSION << ".x API)" << std::endl;
-    std::cout << "======================================================================" << std::endl;
-    std::cout << "Glide Version:   " << (GLIDE_VERSION == 3 ? "3.10" : "2.43") << std::endl;
-    std::cout << "Resolution:      " << resolutions[res_index].name << " (" << std::fixed << std::setprecision(2) << req_mem << " MB VRAM required)" << std::endl;
-    std::cout << "----------------------------------------------------------------------" << std::endl;
-    std::cout << "Emulated Device: " << board_name << " (" << grGetString(GR_HARDWARE) << ")" << std::endl;
-    std::cout << "Device Vendor:   " << grGetString(GR_VENDOR) << std::endl;
-    std::cout << "VRAM Size:       " << fbi_mem << ".00 MB" << std::endl;
-    std::cout << "Active TMUs:     " << tmu_count << " TMUs" << std::endl;
-    std::cout << "SLI Detect:      " << (sli ? "Yes (Dual-Card Board)" : "No") << std::endl;
-    std::cout << "----------------------------------------------------------------------" << std::endl;
-    std::cout << "Active Driver:   " << grGetString(GR_RENDERER) << " (Version: " << grGetString(GR_VERSION) << ")" << std::endl;
-    std::cout << "----------------------------------------------------------------------" << std::endl;
-    std::cout << "Interactive Keybindings:" << std::endl;
-    std::cout << "  [ESC]          Exit Tool" << std::endl;
-    std::cout << "  [ T ]          Toggle Cube Texture (Neon Grid / 3dfx Banner / 3dfx Splash Logo)" << std::endl;
-    std::cout << "  [ F ]          Toggle Bilinear Filtering Mode" << std::endl;
-    std::cout << "  [ R ]          Toggle Continuous Rotation" << std::endl;
-    std::cout << "======================================================================" << std::endl;
+    // Initialize Glide, parse CLI, print header, and resolve resolution
+    auto runConfig = Tools::InitializeAndParse(argc, argv, "Glide 3D Cube", {
+        "[ESC]          Exit Tool",
+        "[ T ]          Toggle Cube Texture (Neon Grid / 3dfx Banner / 3dfx Splash Logo)",
+        "[ F ]          Toggle Bilinear Filtering Mode",
+        "[ R ]          Toggle Continuous Rotation"
+    });
 
     // Open Window
     grSstSelect(0);
 #if GLIDE_VERSION == 3
-    GrContext_t context = grSstWinOpen(0, resolutions[res_index].constant, GR_REFRESH_60Hz, GR_COLORFORMAT_ARGB, GR_ORIGIN_LOWER_LEFT, 2, 1);
+    GrContext_t context = grSstWinOpen(0, runConfig.resEnum, GR_REFRESH_60Hz, GR_COLORFORMAT_ARGB, GR_ORIGIN_LOWER_LEFT, 2, 1);
     if (!context) {
         std::cerr << "CRITICAL ERROR: Failed to open Glide 3 window context!" << std::endl;
         grGlideShutdown();
         return EXIT_FAILURE;
     }
 #else
-    FxBool win_opened = grSstWinOpen(0, resolutions[res_index].constant, GR_REFRESH_60Hz, GR_COLORFORMAT_ARGB, GR_ORIGIN_LOWER_LEFT, 2, 1);
+    FxBool win_opened = grSstWinOpen(0, runConfig.resEnum, GR_REFRESH_60Hz, GR_COLORFORMAT_ARGB, GR_ORIGIN_LOWER_LEFT, 2, 1);
     if (!win_opened) {
         std::cerr << "CRITICAL ERROR: Failed to open Glide 2 window!" << std::endl;
         grGlideShutdown();
@@ -275,7 +111,7 @@ int main(int argc, char* argv[]) {
 #endif
 
     // Configure the scissor clip window to the full logical resolution size
-    grClipWindow(0, 0, resolutions[res_index].width, resolutions[res_index].height);
+    grClipWindow(0, 0, runConfig.width, runConfig.height);
 
     // Setup rendering states
     grDepthBufferMode(GR_DEPTHBUFFER_WBUFFER);
@@ -428,8 +264,8 @@ int main(int argc, char* argv[]) {
     float angle_y = 45.0f * (float)M_PI / 180.0f;
     float angle_z = 0.0f;
 
-    int screen_w = resolutions[res_index].width;
-    int screen_h = resolutions[res_index].height;
+    int screen_w = runConfig.width;
+    int screen_h = runConfig.height;
 
     // Interactive Loop
     while (tlOkToRender()) {

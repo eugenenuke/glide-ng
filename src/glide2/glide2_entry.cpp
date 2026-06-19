@@ -569,7 +569,7 @@ FX_ENTRY const char* FX_CALL grGetString(FxU32 pname) {
             }
             return "3dfx glide-ng Vulkan Wrapper";
         }
-        case GR_EXTENSION:return "";
+        case GR_EXTENSION:return "CHROMARANGE";
         default: return "Unknown";
     }
 }
@@ -1957,8 +1957,16 @@ FX_ENTRY void FX_CALL grCheckForRoom(FxI32 n) {
 
 // Define the local typedef for GrChromaRangeMode_t which is guarded in glide2.h
 
-// Forward declaration of our Chroma-Key Range Extension
+// Forward declarations of Glide 2.x Extensions & Stubs
 FX_ENTRY void FX_CALL grChromakeyRangeExt(GrColor_t minColor, GrColor_t maxColor, GrChromaRangeMode_t mode);
+FX_ENTRY void FX_CALL grColorMaskExt(FxBool r, FxBool g, FxBool b, FxBool a);
+FX_ENTRY void FX_CALL grStencilFuncExt(FxU32 func, FxU32 ref, FxU32 mask);
+FX_ENTRY void FX_CALL grStencilMaskExt(FxU32 mask);
+FX_ENTRY void FX_CALL grStencilOpExt(FxU32 fail, FxU32 zfail, FxU32 zpass);
+FX_ENTRY void FX_CALL grBufferClearExt(GrColor_t color, GrAlpha_t alpha, FxU32 depth, FxU32 stencil);
+FX_ENTRY void FX_CALL grLfbConstantStencilExt(FxU32 stencil);
+FX_ENTRY void FX_CALL grTBufferWriteMaskExt(FxU32 mask);
+FX_ENTRY void FX_CALL grAlphaBlendFunctionExt(FxU32 rgb_sf, FxU32 rgb_df, FxU32 rgb_op, FxU32 alpha_sf, FxU32 alpha_df, FxU32 alpha_op);
 
 FX_ENTRY GrProc FX_CALL grGetProcAddress(char *procName) {
     EnsureEngineInitialized();
@@ -1967,6 +1975,30 @@ FX_ENTRY GrProc FX_CALL grGetProcAddress(char *procName) {
 
     if (std::strcmp(procName, "grChromakeyRangeExt") == 0) {
         return (GrProc)grChromakeyRangeExt;
+    }
+    if (std::strcmp(procName, "grColorMaskExt") == 0) {
+        return (GrProc)grColorMaskExt;
+    }
+    if (std::strcmp(procName, "grStencilFuncExt") == 0) {
+        return (GrProc)grStencilFuncExt;
+    }
+    if (std::strcmp(procName, "grStencilMaskExt") == 0) {
+        return (GrProc)grStencilMaskExt;
+    }
+    if (std::strcmp(procName, "grStencilOpExt") == 0) {
+        return (GrProc)grStencilOpExt;
+    }
+    if (std::strcmp(procName, "grBufferClearExt") == 0) {
+        return (GrProc)grBufferClearExt;
+    }
+    if (std::strcmp(procName, "grLfbConstantStencilExt") == 0) {
+        return (GrProc)grLfbConstantStencilExt;
+    }
+    if (std::strcmp(procName, "grTBufferWriteMaskExt") == 0) {
+        return (GrProc)grTBufferWriteMaskExt;
+    }
+    if (std::strcmp(procName, "grAlphaBlendFunctionExt") == 0) {
+        return (GrProc)grAlphaBlendFunctionExt;
     }
 
     GLIDE_LOG(WARN, "Frontend", "grGetProcAddress: Unknown extension " << procName);
@@ -1984,6 +2016,48 @@ FX_ENTRY void FX_CALL grChromakeyRangeExt(GrColor_t minColor, GrColor_t maxColor
         b->SetChromakeyRange(minColor, maxColor, mode);
     }
 }
+
+// Extension Stub Implementations (Glide 2.x)
+FX_ENTRY void FX_CALL grColorMaskExt(FxBool r, FxBool g, FxBool b, FxBool a) {
+    EnsureEngineInitialized();
+    GLIDE_LOG(WARN, "Stub", "grColorMaskExt stub invoked: R=" << (int)r << ", G=" << (int)g << ", B=" << (int)b << ", A=" << (int)a);
+}
+
+FX_ENTRY void FX_CALL grStencilFuncExt(FxU32 func, FxU32 ref, FxU32 mask) {
+    EnsureEngineInitialized();
+    GLIDE_LOG(WARN, "Stub", "grStencilFuncExt stub invoked: func=" << func << ", ref=" << ref << ", mask=" << mask);
+}
+
+FX_ENTRY void FX_CALL grStencilMaskExt(FxU32 mask) {
+    EnsureEngineInitialized();
+    GLIDE_LOG(WARN, "Stub", "grStencilMaskExt stub invoked: mask=" << mask);
+}
+
+FX_ENTRY void FX_CALL grStencilOpExt(FxU32 fail, FxU32 zfail, FxU32 zpass) {
+    EnsureEngineInitialized();
+    GLIDE_LOG(WARN, "Stub", "grStencilOpExt stub invoked: fail=" << fail << ", zfail=" << zfail << ", zpass=" << zpass);
+}
+
+FX_ENTRY void FX_CALL grBufferClearExt(GrColor_t color, GrAlpha_t alpha, FxU32 depth, FxU32 stencil) {
+    EnsureEngineInitialized();
+    GLIDE_LOG(WARN, "Stub", "grBufferClearExt stub invoked: color=" << color << ", alpha=" << (int)alpha << ", depth=" << depth << ", stencil=" << stencil);
+}
+
+FX_ENTRY void FX_CALL grLfbConstantStencilExt(FxU32 stencil) {
+    EnsureEngineInitialized();
+    GLIDE_LOG(WARN, "Stub", "grLfbConstantStencilExt stub invoked: stencil=" << stencil);
+}
+
+FX_ENTRY void FX_CALL grTBufferWriteMaskExt(FxU32 mask) {
+    EnsureEngineInitialized();
+    GLIDE_LOG(WARN, "Stub", "grTBufferWriteMaskExt stub invoked: mask=" << mask);
+}
+
+FX_ENTRY void FX_CALL grAlphaBlendFunctionExt(FxU32 rgb_sf, FxU32 rgb_df, FxU32 rgb_op, FxU32 alpha_sf, FxU32 alpha_df, FxU32 alpha_op) {
+    EnsureEngineInitialized();
+    GLIDE_LOG(WARN, "Stub", "grAlphaBlendFunctionExt stub invoked");
+}
+
 
 FX_ENTRY void FX_CALL grErrorSetCallback(GrErrorCallbackFnc_t fnc) {
     EnsureEngineInitialized();

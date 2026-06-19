@@ -24,5 +24,24 @@ target_include_directories(tlib3 PUBLIC
     "${CMAKE_SOURCE_DIR}/refs/3dfx-Glide-API/swlibs/fxmisc"
 )
 
+# --- Shared Diagnostic Helper for Glide 2.x ---
+add_library(tool_info2 STATIC DiagnosticInfo.cpp)
+target_compile_definitions(tool_info2 PRIVATE GLIDE_VERSION=2)
+target_include_directories(tool_info2 PUBLIC 
+    "${CMAKE_CURRENT_SOURCE_DIR}" 
+    "${CMAKE_SOURCE_DIR}/include/glide2"
+    "${CMAKE_SOURCE_DIR}/include/3dfx"
+)
+
+# --- Shared Diagnostic Helper for Glide 3.x ---
+add_library(tool_info3 STATIC DiagnosticInfo.cpp)
+target_compile_definitions(tool_info3 PRIVATE GLIDE_VERSION=3)
+target_include_directories(tool_info3 PUBLIC 
+    "${CMAKE_CURRENT_SOURCE_DIR}" 
+    "${CMAKE_SOURCE_DIR}/include/glide3"
+    "${CMAKE_SOURCE_DIR}/include/3dfx"
+)
+
 add_subdirectory(glidegears)
 add_subdirectory(glidecube)
+
