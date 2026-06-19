@@ -4,6 +4,7 @@
 #include <sstream>
 #include <cstdlib>
 #include <iostream>
+#include <algorithm>
 
 namespace GlideWrapper {
 
@@ -145,13 +146,17 @@ bool JsonConfigLoader::Load(const std::string& configFilePath, WrapperConfig& ou
     // Parse Card Model Override (GLIDE_WRAPPER_CARD_MODEL or GLIDE_DEVICE)
     const char* envCardOverride = std::getenv("GLIDE_WRAPPER_CARD_MODEL") ? std::getenv("GLIDE_WRAPPER_CARD_MODEL") : std::getenv("GLIDE_DEVICE");
     if (envCardOverride) {
-        std::string m(envCardOverride);
-        if (m == "SST1" || m == "voodoo1" || m == "VOODOO1") outConfig.model = CardModel::VoodooGraphics;
-        else if (m == "SST96" || m == "voodoo_rush" || m == "rush" || m == "RUSH") outConfig.model = CardModel::VoodooRush;
-        else if (m == "CVG" || m == "voodoo2" || m == "VOODOO2")  outConfig.model = CardModel::Voodoo2;
-        else if (m == "H3" || m == "voodoo3" || m == "VOODOO3")   outConfig.model = CardModel::Voodoo3;
-        else if (m == "H5" || m == "voodoo5" || m == "VOODOO5")   outConfig.model = CardModel::Voodoo5;
-        GLIDE_LOG(WARN, "Config", "Overrode emulated Card Model via environment=" << m);
+        std::string rawStr(envCardOverride);
+        std::string m = rawStr;
+        std::transform(m.begin(), m.end(), m.begin(), ::toupper);
+        
+        if (m == "SST1" || m == "VOODOO1" || m == "VOODOOGRAPHICS") outConfig.model = CardModel::VoodooGraphics;
+        else if (m == "SST96" || m == "VOODOORUSH" || m == "VOODOO_RUSH" || m == "RUSH") outConfig.model = CardModel::VoodooRush;
+        else if (m == "CVG" || m == "VOODOO2")  outConfig.model = CardModel::Voodoo2;
+        else if (m == "H3" || m == "VOODOO3")   outConfig.model = CardModel::Voodoo3;
+        else if (m == "H5" || m == "VOODOO5")   outConfig.model = CardModel::Voodoo5;
+        
+        GLIDE_LOG(WARN, "Config", "Overrode emulated Card Model via environment=" << rawStr << " (matched: " << m << ")");
     }
 
     // Parse API Version Override (GLIDE_WRAPPER_API_VERSION or GLIDE_VERSION_OVERRIDE)
