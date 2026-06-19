@@ -12,27 +12,8 @@
 #include <sst1vid.h>
 #include <tlib.h>
 
-// Include official 3dfx powershield banner logo asset
-#include "../../vendor/3dfx/banner.dat"
-
-// Helper types required to parse the splash screen geometry in splash.dat
-typedef struct {
-  float x, y, z;                /* object space coordinates */
-  float nx, ny, nz;             /* object space vertex normal for lighting */
-  float s, t;                   /* pre-glide-ified texture coordinates */
-} Vert;
-
-typedef struct {
-  int v[3];                     /* vertex indices into array of verts for face */
-  int mat_index;                /* material index */
-  int aa_edge_flags;
-} Face;
-
-typedef float Vector[3];
-typedef float Matrix[16];
-
-// Include official 3dfx splash screen logo assets
-#include "../../vendor/3dfx/splash.dat"
+// Include our modernized embedded assets header
+#include "core/EmbeddedAssets.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -323,6 +304,10 @@ int main(int argc, char* argv[]) {
     }
 
     // 2. Official 3dfx Powershield Banner Texture (256x128 pixels, 16-bit RGB_565)
+    constexpr int banner_width = 180;
+    constexpr int banner_height = 90;
+    const unsigned short* banner_data = reinterpret_cast<const unsigned short*>(GlideWrapper::Assets::banner_raw);
+
     // Pad the 180x90 banner data into a power-of-two 256x128 texture
     std::vector<unsigned short> banner_tex_buf(256 * 128, 0x0000); // clear to black
     int start_x = (256 - banner_width) / 2;
@@ -364,7 +349,7 @@ int main(int argc, char* argv[]) {
     banner_tex_info.data = banner_tex_buf.data();
 
     // 3. Set up the 3dfx Splash Logo (64x64) by assigning fields from raw assets layout
-    Gu3dfInfo* splash_info = (Gu3dfInfo*)text_3dfinfo_raw;
+    const Gu3dfInfo* splash_info = reinterpret_cast<const Gu3dfInfo*>(GlideWrapper::Assets::splash_text_raw);
     GrTexInfo splash_tex_info;
 #if GLIDE_VERSION == 3
     splash_tex_info.smallLodLog2 = splash_info->header.small_lod;
@@ -376,7 +361,7 @@ int main(int argc, char* argv[]) {
     splash_tex_info.aspectRatio = splash_info->header.aspect_ratio;
 #endif
     splash_tex_info.format = splash_info->header.format;
-    splash_tex_info.data = text_3dfinfo_image;
+    splash_tex_info.data = const_cast<void*>(reinterpret_cast<const void*>(GlideWrapper::Assets::splash_text_image));
 
     // Download all textures into TMU0 memory
     FxU32 tmu_start_addr = grTexMinAddress(GR_TMU0);
@@ -392,9 +377,9 @@ int main(int argc, char* argv[]) {
 
     // Download the companion NCC Decompression lookup table for the compressed YIQ Splash Logo!
 #if GLIDE_VERSION == 3
-    grTexDownloadTable(GR_TEXTABLE_NCC0, &splash_info->table);
+    grTexDownloadTable(GR_TEXTABLE_NCC0, const_cast<void*>(static_cast<const void*>(&splash_info->table)));
 #else
-    grTexDownloadTable(GR_TMU0, GR_TEXTABLE_NCC0, &splash_info->table);
+    grTexDownloadTable(GR_TMU0, GR_TEXTABLE_NCC0, const_cast<void*>(static_cast<const void*>(&splash_info->table)));
 #endif
 
     // Initial state: Neon Grid texture active
@@ -511,9 +496,9 @@ int main(int argc, char* argv[]) {
                     grTexSource(GR_TMU0, splash_tex_addr, GR_MIPMAPLEVELMASK_BOTH, &splash_tex_info);
                     // Make sure the companion NCC decompression table is loaded into the table register!
 #if GLIDE_VERSION == 3
-                    grTexDownloadTable(GR_TEXTABLE_NCC0, &splash_info->table);
+                    grTexDownloadTable(GR_TEXTABLE_NCC0, const_cast<void*>(static_cast<const void*>(&splash_info->table)));
 #else
-                    grTexDownloadTable(GR_TMU0, GR_TEXTABLE_NCC0, &splash_info->table);
+                    grTexDownloadTable(GR_TMU0, GR_TEXTABLE_NCC0, const_cast<void*>(static_cast<const void*>(&splash_info->table)));
 #endif
                     // Update texture UV scaling in vertex database (0..64)
                     for (int i = 0; i < 24; i++) {

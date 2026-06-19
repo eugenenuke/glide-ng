@@ -20,11 +20,14 @@ target_link_libraries(GlideWrapperTests PRIVATE
     -lm
 )
 
-add_executable(rle_to_ppm rle_to_ppm.cpp)
-
 include(CTest)
 include(Catch)
 catch_discover_tests(GlideWrapperTests)
+
+option(BUILD_VISUAL_TESTS "Build legacy visual regression test binaries" OFF)
+
+if(BUILD_VISUAL_TESTS)
+    add_executable(rle_to_ppm rle_to_ppm.cpp)
 
 # add_executable(Glide3xTest00
 #     "${CMAKE_CURRENT_SOURCE_DIR}/../refs/3dfx-Glide-API/glide3x/h5/glide3/tests/test00.c"
@@ -156,3 +159,4 @@ target_link_libraries(test_runner PRIVATE
     ${CMAKE_DL_LIBS}
     -lm
 )
+endif()

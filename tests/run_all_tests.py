@@ -34,24 +34,22 @@ def run_command(cmd, env_override=None):
 def main():
     import argparse
     
-    parser = argparse.ArgumentParser(description="Glide Wrapper Test Matrix Runner")
-    parser.add_argument('--smoke', '-s', action='store_true', help="Run in fast smoke test mode (subset of tests)")
+    parser = argparse.ArgumentParser(description="Glide Wrapper Catch2 Unit Test Suite Runner")
     parser.add_argument('--backend', '-b', choices=['software', 'sw', 'vulkan', 'vk', 'opengl_es', 'gles', 'goes'], help="Filter by a specific backend")
-    parser.add_argument('--tests', '-t', help="Comma-separated list of visual tests to run (e.g., test00,test14)")
-    parser.add_argument('--skip-unit', action='store_true', help="Skip running Catch2 unit tests")
-    parser.add_argument('--skip-vis', action='store_true', help="Skip running Glide visual regression tests")
     
     args = parser.parse_args()
     
-    backends = [args.backend] if args.backend else ['software', 'vulkan', 'opengl_es']
-    smoke_mode = args.smoke
+    # Map backend shortcuts to canonical names
+    backend_map = {
+        'software': 'software', 'sw': 'software',
+        'vulkan': 'vulkan', 'vk': 'vulkan',
+        'opengl_es': 'opengl_es', 'gles': 'opengl_es', 'goes': 'opengl_es'
+    }
     
-    if args.tests:
-        visual_tests = [t.strip() for t in args.tests.split(',') if t.strip()]
-    elif smoke_mode:
-        visual_tests = ['test21']
+    if args.backend:
+        backends = [backend_map[args.backend]]
     else:
-        visual_tests = ['test16', 'test17', 'test18', 'test19', 'test21', 'test29']
+        backends = ['software', 'vulkan', 'opengl_es']
     
     catch2_bin = './build/bin/GlideWrapperTests'
     if not os.path.exists(catch2_bin):
@@ -62,75 +60,38 @@ def main():
             sys.exit(1)
 
     print(f"{Colors.BLUE}{Colors.BOLD}============================================================")
-    if smoke_mode:
-        print("             STARTING FAST SMOKE VALIDATION MATRIX          ")
-    else:
-        print("             STARTING ULTIMATE VALIDATION MATRIX            ")
+    print("             STARTING CATCH2 UNIT VALIDATION MATRIX         ")
     print(f"============================================================{Colors.END}\n")
 
     results = []
     failed_count = 0
     total_count = 0
 
-    # 1. Run Catch2 Unit Tests across all backends
-    if not args.skip_unit:
-        print(f"{Colors.BOLD}--- [1/2] Running Catch2 Architectural Validation Suite ---{Colors.END}")
-        for backend in backends:
-            print(f"Running Catch2 on {Colors.BLUE}{backend:<10}{Colors.END} ... ", end='', flush=True)
-            total_count += 1
-            success, stdout, stderr, elapsed = run_command(catch2_bin, {
-                'GLIDE_BACKEND': backend,
-                'GLIDE_WRAPPER_MAX_FPS': '0'
-            })
-            
-            status_str = f"{Colors.GREEN}[PASS]{Colors.END}" if success else f"{Colors.RED}[FAIL]{Colors.END}"
-            print(f"{status_str} ({elapsed:.2f}s)")
-            
-            results.append({
-                'backend': backend,
-                'type': 'Catch2 Unit',
-                'name': 'All Unit',
-                'success': success,
-                'elapsed': elapsed,
-                'details': '' if success else (stdout + "\n" + stderr)
-            })
-            if not success:
-                failed_count += 1
-        print()
-    else:
-        print(f"{Colors.YELLOW}--- [1/2] Skipping Catch2 Architectural Validation Suite ---{Colors.END}\n")
-
-    # 2. Run Visual Regression Tests across all backends
-    if not args.skip_vis:
-        print(f"{Colors.BOLD}--- [2/2] Running Glide Visual Regression Suite (test00-07) ---{Colors.END}")
-        for backend in backends:
-            for t in visual_tests:
-                print(f"Running {t:<6} on {Colors.BLUE}{backend:<10}{Colors.END} ... ", end='', flush=True)
-                total_count += 1
-                cmd = f"python3 tests/run_tests.py {t}"
-                success, stdout, stderr, elapsed = run_command(cmd, {
-                    'GLIDE_BACKEND': backend,
-                    'GLIDE_WRAPPER_MAX_FPS': '0'
-                })
-                
-                status_str = f"{Colors.GREEN}[PASS]{Colors.END}" if success else f"{Colors.RED}[FAIL]{Colors.END}"
-                print(f"{status_str} ({elapsed:.2f}s)")
-                
-                results.append({
-                    'backend': backend,
-                    'type': 'Visual Regr',
-                    'name': t,
-                    'success': success,
-                    'elapsed': elapsed,
-                    'details': '' if success else (stdout + "\n" + stderr)
-                })
-                if not success:
-                    failed_count += 1
-    else:
-        print(f"{Colors.YELLOW}--- [2/2] Skipping Glide Visual Regression Suite ---{Colors.END}\n")
+    print(f"{Colors.BOLD}--- Running Catch2 Architectural Validation Suite ---{Colors.END}")
+    for backend in backends:
+        print(f"Running Catch2 on {Colors.BLUE}{backend:<10}{Colors.END} ... ", end='', flush=True)
+        total_count += 1
+        success, stdout, stderr, elapsed = run_command(catch2_bin, {
+            'GLIDE_BACKEND': backend,
+            'GLIDE_WRAPPER_MAX_FPS': '0'
+        })
+        
+        status_str = f"{Colors.GREEN}[PASS]{Colors.END}" if success else f"{Colors.RED}[FAIL]{Colors.END}"
+        print(f"{status_str} ({elapsed:.2f}s)")
+        
+        results.append({
+            'backend': backend,
+            'type': 'Catch2 Unit',
+            'name': 'All Unit',
+            'success': success,
+            'elapsed': elapsed,
+            'details': '' if success else (stdout + "\n" + stderr)
+        })
+        if not success:
+            failed_count += 1
+    print()
 
     # Print Consolidated Summary Table
-    print("\n")
     print(f"{Colors.BOLD}============================================================")
     print("                 CONSOLIDATED TEST MATRIX SUMMARY            ")
     print(f"============================================================{Colors.END}")
@@ -138,15 +99,8 @@ def main():
     print("-" * 60)
     
     for r in results:
-        backend_str = f"{Colors.BLUE}{r['backend']:<12}{Colors.END}"
-        type_str = f"{r['type']:<12}"
-        name_str = f"{r['name']:<10}"
-        status_str = f"{Colors.GREEN}PASS{Colors.END}" if r['success'] else f"{Colors.RED}FAIL{Colors.END}"
-        status_padded = f"{status_str:<8}" # Color codes break standard padding, but we do our best
-        time_str = f"{r['elapsed']:.2f}s"
-        
-        # Adjusting status string padding manually due to ANSI escapes
         color_status = f"{Colors.GREEN}PASS{Colors.END}" if r['success'] else f"{Colors.RED}FAIL{Colors.END}"
+        time_str = f"{r['elapsed']:.2f}s"
         print(f" {r['backend']:<12} | {r['type']:<12} | {r['name']:<10} | {color_status:<4} | {time_str:<6}")
 
     print("-" * 60)

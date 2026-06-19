@@ -7,6 +7,7 @@
 #include "Logger.h"
 #include "TextureManager.h"
 #include "Telemetry.h"
+#include "ISplashAnimator.h"
 
 namespace GlideWrapper {
 
@@ -83,11 +84,22 @@ void BackendManager::ShutdownBackend() {
         m_backend->Shutdown();
         m_backend.reset();
     }
+    SetSplashAnimator(nullptr);
     m_activeBackendName.clear();
     // Purge the core texture manager cache to reset state for the next context
     TextureManager::GetInstance().Reset();
     // Purge and reset all telemetry statistics
     TelemetryManager::GetInstance().Reset();
+}
+
+ISplashAnimator* BackendManager::GetSplashAnimator() {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    return m_splashAnimator.get();
+}
+
+void BackendManager::SetSplashAnimator(std::unique_ptr<ISplashAnimator> animator) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    m_splashAnimator = std::move(animator);
 }
 
 } // namespace GlideWrapper

@@ -3,6 +3,7 @@
 #include "core/IConfigLoader.h"
 #include "core/JsonConfigLoader.h"
 #include "core/BackendManager.h"
+#include "core/GlideSplashAnimator.h"
 #include "core/VertexLayout.h"
 #include "core/TextureManager.h"
 #include "core/Telemetry.h"
@@ -211,13 +212,10 @@ inline void EnsureEngineInitialized() {
     }
 }
 
-extern "C" void grSplashShutdown(void);
-
 FX_ENTRY void FX_CALL grGlideShutdown(void) {
     GLIDE_LOG(INFO, "Frontend", "grGlideShutdown (Glide 2.x) invoked.");
     GlideWrapper::TelemetryManager::GetInstance().PrintReport();
     GlideWrapper::BackendManager::GetInstance().ShutdownBackend();
-    grSplashShutdown();
 }
 
 FX_ENTRY FxBool FX_CALL grSstWinOpen(
@@ -229,6 +227,7 @@ FX_ENTRY FxBool FX_CALL grSstWinOpen(
           int                  nColBuffers,
           int                  nAuxBuffers) {
     EnsureEngineInitialized();
+    GlideWrapper::BackendManager::GetInstance().SetSplashAnimator(std::make_unique<GlideWrapper::GlideSplashAnimator>());
     GLIDE_LOG(INFO, "Frontend", "grSstWinOpen (Glide 2.x) invoked. Res=" << resolution << ", Buffers=" << nColBuffers << ", Origin=" << origin);
     s_sstOrigin = origin;
     GlideWrapper::VertexLayout::GetInstance().ResetToGlide2Canonical();
@@ -340,6 +339,7 @@ FX_ENTRY FxBool FX_CALL grSstWinOpen(
 
 FX_ENTRY void FX_CALL grSstWinClose(void) {
     EnsureEngineInitialized();
+    GlideWrapper::BackendManager::GetInstance().SetSplashAnimator(nullptr);
     GLIDE_LOG(INFO, "Frontend", "grSstWinClose invoked.");
     auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
     if (backend) backend->DetachWindow();
