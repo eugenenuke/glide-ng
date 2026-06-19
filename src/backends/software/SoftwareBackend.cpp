@@ -788,30 +788,36 @@ void SoftwareBackend::RasterizeSoftwareTriangleImpl(const ModernVertex& a, const
 
         // Fogging Emulation, Blending, and Framebuffer Write
         if (keepPixel) {
-            if (m_fogMode != 0) {
-                float eyeW = 1.0f / wVal;
-                if (eyeW < 1.0f) eyeW = 1.0f;
+            uint32_t fogSource = m_fogMode & 0x0F;
+            if (fogSource != 0) {
+                float f = 0.0f;
+                if (fogSource == 1) { // GR_FOG_WITH_ITERATED_ALPHA
+                    f = alpha;
+                } else { // Table-based fog (GR_FOG_WITH_TABLE)
+                    float eyeW = 1.0f / wVal;
+                    if (eyeW < 1.0f) eyeW = 1.0f;
 
-                int idx = 0;
-                for (int i = 0; i < 63; ++i) {
-                    if (s_tableIndexToW[i] < eyeW) {
-                        idx = i;
-                    } else {
-                        break;
+                    // O(1) unrolled logarithmic binary search
+                    int idx = 0;
+                    if (eyeW >= s_tableIndexToW[32]) idx += 32;
+                    if (eyeW >= s_tableIndexToW[idx + 16]) idx += 16;
+                    if (eyeW >= s_tableIndexToW[idx + 8]) idx += 8;
+                    if (eyeW >= s_tableIndexToW[idx + 4]) idx += 4;
+                    if (eyeW >= s_tableIndexToW[idx + 2]) idx += 2;
+                    if (eyeW >= s_tableIndexToW[idx + 1]) idx += 1;
+
+                    float w0_fog = s_tableIndexToW[idx];
+                    float w1_fog = s_tableIndexToW[idx + 1];
+                    float f0 = m_fogTable[idx] / 255.0f;
+                    float f1 = m_fogTable[idx + 1] / 255.0f;
+
+                    float t = 0.0f;
+                    if (w1_fog > w0_fog) {
+                        t = (eyeW - w0_fog) / (w1_fog - w0_fog);
                     }
+                    t = std::max(0.0f, std::min(1.0f, t));
+                    f = f0 * (1.0f - t) + f1 * t;
                 }
-
-                float w0_fog = s_tableIndexToW[idx];
-                float w1_fog = s_tableIndexToW[idx + 1];
-                float f0 = m_fogTable[idx] / 255.0f;
-                float f1 = m_fogTable[idx + 1] / 255.0f;
-
-                float t = 0.0f;
-                if (w1_fog > w0_fog) {
-                    t = (eyeW - w0_fog) / (w1_fog - w0_fog);
-                }
-                t = std::max(0.0f, std::min(1.0f, t));
-                float f = f0 * (1.0f - t) + f1 * t;
 
                 float fogR = ((m_fogColor >> 16) & 0xFF) / 255.0f;
                 float fogG = ((m_fogColor >> 8)  & 0xFF) / 255.0f;
@@ -820,9 +826,14 @@ void SoftwareBackend::RasterizeSoftwareTriangleImpl(const ModernVertex& a, const
                     std::swap(fogR, fogB);
                 }
 
-                red   = red   * (1.0f - f) + fogR * f;
-                green = green * (1.0f - f) + fogG * f;
-                blue  = blue  * (1.0f - f) + fogB * f;
+                // Extract FOGMODE flags
+                float mult = ((m_fogMode & 0x100) != 0) ? 1.0f : 0.0f; // GR_FOG_MULT2 (SST_FOGMULT)
+                float add  = ((m_fogMode & 0x200) != 0) ? 1.0f : 0.0f; // GR_FOG_ADD2  (SST_FOGADD)
+
+                // Apply the unified branch-free hardware equation
+                red   = red   * (1.0f - mult) * (1.0f - f) + fogR * (1.0f - add) * f;
+                green = green * (1.0f - mult) * (1.0f - f) + fogG * (1.0f - add) * f;
+                blue  = blue  * (1.0f - mult) * (1.0f - f) + fogB * (1.0f - add) * f;
             }
 
             uint32_t rVal = static_cast<uint32_t>(std::min(255.0f, red * 255.0f + 0.5f));

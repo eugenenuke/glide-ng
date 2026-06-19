@@ -3562,6 +3562,92 @@ TEST_CASE("Glide 2.x Alpha Blending & Fog [test07][test08][test13]", "[Glide2][A
         fogMode(GR_FOG_DISABLE);
     }
 
+    SECTION("test08_extra: Additive and Subtractive Fogging") {
+        // --------------------------------------------------------
+        // Part A: Additive Fog Mode (GR_FOG_WITH_TABLE | GR_FOG_MULT2)
+        // --------------------------------------------------------
+        colorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE, GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_NONE, FXFALSE);
+        fogMode(GR_FOG_WITH_TABLE | GR_FOG_MULT2);
+        fogColorValue(0xFF00FF00); // Green
+
+        GrFog_t fogtable[64];
+        fogGenerateExp(fogtable, 0.01f);
+        fogTable(fogtable);
+
+        bufferClear(0x00, 0, 0);
+
+        GrVertex vtxA, vtxB, vtxC;
+        vtxA.x = 0.0f; vtxA.y = 0.0f; vtxA.ooz = 1.0f;
+        vtxA.r = 0.0f; vtxA.g = 0.0f; vtxA.b = 64.0f; vtxA.a = 255.0f;
+        vtxA.oow = 1.0f / 20.0f;
+
+        vtxB.x = 10.24f; vtxB.y = 480.0f; vtxB.ooz = 1.0f;
+        vtxB.r = 0.0f; vtxB.g = 0.0f; vtxB.b = 128.0f; vtxB.a = 255.0f;
+        vtxB.oow = 1.0f / 2000.0f;
+
+        vtxC.x = 640.0f; vtxC.y = 9.984f; vtxC.ooz = 1.0f;
+        vtxC.r = 0.0f; vtxC.g = 0.0f; vtxC.b = 64.0f; vtxC.a = 255.0f;
+        vtxC.oow = 1.0f / 20.0f;
+
+        drawTriangle(&vtxA, &vtxB, &vtxC);
+
+        std::vector<uint32_t> fb(640 * 480);
+        REQUIRE(readLfb(GR_BUFFER_BACKBUFFER, 0, 0, 640, 480, 640 * 4, fb.data()) == FXTRUE);
+
+        // Near pixel: W is close to 20. f = 0.1813.
+        // Additive Fog: Color = FogColor * f = Green * 0.1813 = (0, 46, 0)
+        uint32_t p_add_close = fb[10 * 640 + 320];
+        uint8_t r = p_add_close & 0xFF;
+        uint8_t g = (p_add_close >> 8) & 0xFF;
+        uint8_t b = (p_add_close >> 16) & 0xFF;
+        REQUIRE(r <= 8);
+        REQUIRE(std::abs((int)g - 46) <= 8);
+        REQUIRE(b <= 8);
+
+        // Far pixel: W is close to 2000. f = 1.0.
+        // Additive Fog: Color = FogColor * 1.0 = (0, 255, 0)
+        uint32_t p_add_far = fb[470 * 640 + 10];
+        r = p_add_far & 0xFF;
+        g = (p_add_far >> 8) & 0xFF;
+        b = (p_add_far >> 16) & 0xFF;
+        REQUIRE(r <= 8);
+        REQUIRE(std::abs((int)g - 255) <= 4);
+        REQUIRE(b <= 8);
+
+        // --------------------------------------------------------
+        // Part B: Subtractive Fog Mode (GR_FOG_WITH_TABLE | GR_FOG_ADD2)
+        // --------------------------------------------------------
+        fogMode(GR_FOG_WITH_TABLE | GR_FOG_ADD2);
+        bufferClear(0x00, 0, 0);
+        drawTriangle(&vtxA, &vtxB, &vtxC);
+
+        REQUIRE(readLfb(GR_BUFFER_BACKBUFFER, 0, 0, 640, 480, 640 * 4, fb.data()) == FXTRUE);
+
+        // Near pixel: W is close to 20. f = 0.1813.
+        // Subtractive Fog: Color = InputColor * (1 - f) = Blue(64) * 0.8187 = 52.4 -> 52.
+        // Swapped client read-back: Red channel receives the Blue input.
+        uint32_t p_sub_close = fb[10 * 640 + 320];
+        r = p_sub_close & 0xFF;
+        g = (p_sub_close >> 8) & 0xFF;
+        b = (p_sub_close >> 16) & 0xFF;
+        REQUIRE(r <= 8);
+        REQUIRE(g <= 8);
+        REQUIRE(std::abs((int)b - 52) <= 8);
+
+        // Far pixel: W is close to 2000. f = 1.0.
+        // Subtractive Fog: Color = InputColor * (1 - 1.0) = 0.
+        uint32_t p_sub_far = fb[470 * 640 + 10];
+        r = p_sub_far & 0xFF;
+        g = (p_sub_far >> 8) & 0xFF;
+        b = (p_sub_far >> 16) & 0xFF;
+        REQUIRE(r <= 8);
+        REQUIRE(g <= 8);
+        REQUIRE(b <= 8);
+
+        // Restore fog mode to disabled
+        fogMode(GR_FOG_DISABLE);
+    }
+
     SECTION("test13: Gouraud Iterated Alpha") {
         colorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE, GR_COMBINE_LOCAL_CONSTANT, GR_COMBINE_OTHER_NONE, FXFALSE);
         alphaCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE, GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_NONE, FXFALSE);

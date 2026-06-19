@@ -1644,7 +1644,7 @@ FX_ENTRY void FX_CALL guFogGenerateLinear(GrFog_t *fogtable, float nearZ, float 
 FX_ENTRY void FX_CALL grFogMode(GrFogMode_t mode) {
     EnsureEngineInitialized();
     GLIDE_LOG(DEBUG, "Frontend", "grFogMode invoked: " << mode);
-    s_fogMode = mode & (GR_FOG_WITH_TABLE | GR_FOG_WITH_ITERATED_ALPHA);
+    s_fogMode = mode & (0x0F | GR_FOG_MULT2 | GR_FOG_ADD2);
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
         b->SetFogMode(s_fogMode);
     }
