@@ -379,11 +379,14 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width, uint3
     m_commandBuffer->reset({});
     m_commandBuffer->begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
 
-    // One-time layout transition of color and depth images from eUndefined to their optimal layouts
-    GLIDE_LOG(INFO, "Vulkan", "Performing one-time startup layout transitions for render targets...");
+    // One-time layout transition and initial clear of color images to transparent Black (0x00000000) to ensure a clean, deterministic initial state
+    GLIDE_LOG(INFO, "Vulkan", "Performing one-time startup layout transitions and clearing render targets...");
     vk::ImageSubresourceRange colorRange(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1);
+    vk::ClearColorValue clearZero(std::array<float, 4>{0.0f, 0.0f, 0.0f, 0.0f});
     for (int i = 0; i < 2; ++i) {
-        TransitionImageLayout(*m_commandBuffer, m_headlessImages[i].get(), vk::ImageLayout::eUndefined, vk::ImageLayout::eColorAttachmentOptimal, colorRange);
+        TransitionImageLayout(*m_commandBuffer, m_headlessImages[i].get(), vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, colorRange);
+        m_commandBuffer->clearColorImage(m_headlessImages[i].get(), vk::ImageLayout::eTransferDstOptimal, &clearZero, 1, &colorRange);
+        TransitionImageLayout(*m_commandBuffer, m_headlessImages[i].get(), vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eColorAttachmentOptimal, colorRange);
     }
 
     vk::ImageSubresourceRange depthRange(vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1);
@@ -2451,10 +2454,7 @@ void VulkanBackend::PopulatePushConstants(PushConstants& pcs) {
         std::swap(pcs.constantColor[0], pcs.constantColor[2]);
     }
     
-    // Targeted workaround for the Glide SDK console text color bug (which passes 0x00ffffff with alpha = 0.0f)
-    if (pcs.constantColor[3] == 0.0f) {
-        pcs.constantColor[3] = 1.0f;
-    }
+
 
     pcs.alphaTestOp = m_alphaTestOp;
     pcs.alphaTestRef = (float)m_alphaTestRefVal / 255.0f;

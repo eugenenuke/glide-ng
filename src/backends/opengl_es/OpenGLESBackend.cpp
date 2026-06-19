@@ -606,7 +606,7 @@ bool OpenGLESBackend::CreateGLContext(void* nativeWindowHandle, uint32_t width, 
     // Create the streaming presentation texture
     glGenTextures(1, &m_glTexture);
     glBindTexture(GL_TEXTURE_2D, m_glTexture);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -616,7 +616,7 @@ bool OpenGLESBackend::CreateGLContext(void* nativeWindowHandle, uint32_t width, 
     glGenTextures(2, m_fboTextures);
     for (int i = 0; i < 2; ++i) {
         glBindTexture(GL_TEXTURE_2D, m_fboTextures[i]);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -861,7 +861,7 @@ void main() {
 
     // Milestone 10: Chromakey Emulation
     if (uChromakeyEnabled == 1) {
-        vec3 chromaTestColor = (uTextureEnabled == 1) ? texColor.rgb : fragColor.rgb;
+        vec3 chromaTestColor = col.rgb;
         if (uChromakeyRangeEnabled == 1) {
             bool rMatch = (chromaTestColor.r >= uChromakeyRangeMin.r && chromaTestColor.r <= uChromakeyRangeMax.r);
             bool gMatch = (chromaTestColor.g >= uChromakeyRangeMin.g && chromaTestColor.g <= uChromakeyRangeMax.g);
@@ -1376,7 +1376,6 @@ void OpenGLESBackend::PopulateUniforms() {
     if (m_pixelFormatOverride == 1) {
         std::swap(cr, cb);
     }
-    if (ca < 0.5f) ca = 1.0f;
     glUniform4f(glGetUniformLocation(m_geomProgram, "uConstantColor"), cr, cg, cb, ca);
 
     // Upload Chromakey State Uniforms

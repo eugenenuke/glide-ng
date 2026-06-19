@@ -157,7 +157,7 @@ void main() {
 
     // Milestone 10: Chromakey Emulation
     if (pcs.chromakeyEnabled == 1u) {
-        vec3 chromaTestColor = (pcs.textureEnabled == 1u) ? texColor.rgb : fragColor.rgb;
+        vec3 chromaTestColor = col.rgb;
         bool rangeEnabled = ((pcs.chromakeyRangeMode >> 28u) & 1u) == 1u;
         if (rangeEnabled) {
             bool rMatch = (chromaTestColor.r >= pcs.chromakeyRangeMin.r && chromaTestColor.r <= pcs.chromakeyRangeMax.r);

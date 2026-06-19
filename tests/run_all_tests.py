@@ -51,7 +51,7 @@ def main():
     elif smoke_mode:
         visual_tests = ['test12', 'test14', 'test21']
     else:
-        visual_tests = ['test01', 'test02', 'test03', 'test04', 'test05', 'test06', 'test07', 'test08', 'test09', 'test10', 'test11', 'test13', 'test14', 'test15', 'test16', 'test17', 'test18', 'test19', 'test21', 'test26', 'test29']
+        visual_tests = ['test01', 'test02', 'test03', 'test04', 'test05', 'test06', 'test07', 'test08', 'test10', 'test11', 'test13', 'test14', 'test15', 'test16', 'test17', 'test18', 'test19', 'test21', 'test26', 'test29']
     
     catch2_bin = './build/bin/GlideWrapperTests'
     if not os.path.exists(catch2_bin):

@@ -2422,5 +2422,144 @@ TEST_CASE("Glide 2.x ABGR Framebuffer Clear & LFB Readback Parity", "[Glide2][Cl
 #endif
 }
 
+TEST_CASE("Glide 2.x Pixel Pipeline Chromakey & Triangles Discard Parity", "[Glide2][Chroma]") {
+#ifdef __linux__
+    // Dynamically load the Glide 2 wrapper library
+    void* handle = OpenGlide2Handle();
+    REQUIRE(handle != nullptr);
+
+    // Resolve Glide 2.x function pointers
+    using GlideInitFunc = void(*)(void);
+    using SstSelectFunc = void(*)(int);
+    using WinOpenFunc = FxBool(*)(FxU32, GrScreenResolution_t, GrScreenRefresh_t, GrColorFormat_t, GrOriginLocation_t, int, int);
+    using BufferClearFunc = void(*)(GrColor_t, GrAlpha_t, FxU16);
+    using ColorCombineFunc = void(*)(GrCombineFunction_t, GrCombineFactor_t, GrCombineLocal_t, GrCombineOther_t, FxBool);
+    using ChromakeyModeFunc = void(*)(GrChromakeyMode_t);
+    using ChromakeyValueFunc = void(*)(GrColor_t);
+    using ConstantColorValueFunc = void(*)(GrColor_t);
+    using SstOriginFunc = void(*)(GrOriginLocation_t);
+    using DrawTriangleFunc = void(*)(const GrVertex*, const GrVertex*, const GrVertex*);
+    using LfbReadRegionFunc = FxBool(*)(GrBuffer_t, FxU32, FxU32, FxU32, FxU32, FxU32, void*);
+    using GlideShutdownFunc = void(*)(void);
+
+    auto glideInit = (GlideInitFunc)dlsym(handle, "grGlideInit");
+    auto sstSelect = (SstSelectFunc)dlsym(handle, "grSstSelect");
+    auto winOpen = (WinOpenFunc)dlsym(handle, "grSstWinOpen");
+    auto bufferClear = (BufferClearFunc)dlsym(handle, "grBufferClear");
+    auto colorCombine = (ColorCombineFunc)dlsym(handle, "grColorCombine");
+    auto chromakeyMode = (ChromakeyModeFunc)dlsym(handle, "grChromakeyMode");
+    auto chromakeyValue = (ChromakeyValueFunc)dlsym(handle, "grChromakeyValue");
+    auto constantColorValue = (ConstantColorValueFunc)dlsym(handle, "grConstantColorValue");
+    auto sstOrigin = (SstOriginFunc)dlsym(handle, "grSstOrigin");
+    auto drawTriangle = (DrawTriangleFunc)dlsym(handle, "grDrawTriangle");
+    auto readLfb = (LfbReadRegionFunc)dlsym(handle, "grLfbReadRegion");
+    auto shutdown = (GlideShutdownFunc)dlsym(handle, "grGlideShutdown");
+
+    REQUIRE(glideInit != nullptr);
+    REQUIRE(sstSelect != nullptr);
+    REQUIRE(winOpen != nullptr);
+    REQUIRE(bufferClear != nullptr);
+    REQUIRE(colorCombine != nullptr);
+    REQUIRE(chromakeyMode != nullptr);
+    REQUIRE(chromakeyValue != nullptr);
+    REQUIRE(constantColorValue != nullptr);
+    REQUIRE(sstOrigin != nullptr);
+    REQUIRE(drawTriangle != nullptr);
+    REQUIRE(readLfb != nullptr);
+    REQUIRE(shutdown != nullptr);
+
+    // Initialize Glide
+    glideInit();
+    sstSelect(0);
+
+    // Open window with ABGR format
+    FxBool openOk = winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz, GR_COLORFORMAT_ABGR, GR_ORIGIN_UPPER_LEFT, 2, 1);
+    REQUIRE(openOk == FXTRUE);
+
+    // Set up render state: constant color routed to combiner, chromakey enabled
+    colorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE, GR_COMBINE_LOCAL_CONSTANT, GR_COMBINE_OTHER_NONE, FXFALSE);
+    chromakeyMode(GR_CHROMAKEY_ENABLE);
+
+    // Define vertices for a triangle centered on the screen
+    GrVertex vtxA, vtxB, vtxC;
+    vtxA.z = vtxB.z = vtxC.z = 0.0f;
+    vtxA.ooz = vtxB.ooz = vtxC.ooz = 1.0f;
+    vtxA.oow = vtxB.oow = vtxC.oow = 1.0f;
+    vtxA.r = vtxA.g = vtxA.b = vtxA.a = 255.0f;
+    vtxB.r = vtxB.g = vtxB.b = vtxB.a = 255.0f;
+    vtxC.r = vtxC.g = vtxC.b = vtxC.a = 255.0f;
+
+    vtxA.x = 320.0f; vtxA.y = 48.0f;
+    vtxB.x = 512.0f; vtxB.y = 432.0f;
+    vtxC.x = 128.0f; vtxC.y = 432.0f;
+
+    // SECTION 1: Test with Chromakey = Blue (0x00ff0000)
+    SECTION("Chromakey Blue - Red triangle visible, Blue discarded") {
+        chromakeyValue(0x00ff0000); // Blue key
+
+        bufferClear(0x00, 0, 0); // Clear to Black
+
+        // 1. Draw RED triangle (pointing down)
+        constantColorValue(0x000000ff); // Red
+        drawTriangle(&vtxA, &vtxB, &vtxC);
+
+        // 2. Draw BLUE triangle (pointing up)
+        sstOrigin(GR_ORIGIN_LOWER_LEFT);
+        constantColorValue(0x00ff0000); // Blue
+        drawTriangle(&vtxA, &vtxB, &vtxC);
+
+        // Restore origin for LFB read
+        sstOrigin(GR_ORIGIN_UPPER_LEFT);
+
+        // Read pixel from Red-only region (150, 400) -> should be Red!
+        uint32_t redPixel = 0;
+        FxBool ok = readLfb(GR_BUFFER_BACKBUFFER, 150, 400, 1, 1, 4, &redPixel);
+        REQUIRE(ok == FXTRUE);
+        REQUIRE(redPixel == 0x000000FF); // Red under ABGR (Alpha = 0)
+
+        // Read pixel from Blue-only region (150, 80) -> should be Black (discarded)!
+        uint32_t bluePixel = 0;
+        ok = readLfb(GR_BUFFER_BACKBUFFER, 150, 80, 1, 1, 4, &bluePixel);
+        REQUIRE(ok == FXTRUE);
+        REQUIRE(bluePixel == 0xFF000000); // Opaque Black (discarded, remains at clear color)
+    }
+
+    // SECTION 2: Test with Chromakey = Red (0x000000ff)
+    SECTION("Chromakey Red - Blue triangle visible, Red discarded") {
+        chromakeyValue(0x000000ff); // Red key
+
+        bufferClear(0x00, 0, 0); // Clear to Black
+
+        // 1. Draw RED triangle (pointing down)
+        constantColorValue(0x000000ff); // Red
+        drawTriangle(&vtxA, &vtxB, &vtxC);
+
+        // 2. Draw BLUE triangle (pointing up)
+        sstOrigin(GR_ORIGIN_LOWER_LEFT);
+        constantColorValue(0x00ff0000); // Blue
+        drawTriangle(&vtxA, &vtxB, &vtxC);
+
+        // Restore origin
+        sstOrigin(GR_ORIGIN_UPPER_LEFT);
+
+        // Read pixel from Red-only region (150, 400) -> should be Black (discarded)!
+        uint32_t redPixel = 0;
+        FxBool ok = readLfb(GR_BUFFER_BACKBUFFER, 150, 400, 1, 1, 4, &redPixel);
+        REQUIRE(ok == FXTRUE);
+        REQUIRE(redPixel == 0xFF000000); // Opaque Black (discarded, remains at clear color)
+
+        // Read pixel from Blue-only region (150, 80) -> should be Blue!
+        uint32_t bluePixel = 0;
+        ok = readLfb(GR_BUFFER_BACKBUFFER, 150, 80, 1, 1, 4, &bluePixel);
+        REQUIRE(ok == FXTRUE);
+        REQUIRE(bluePixel == 0x00FF0000); // Blue under ABGR (Alpha = 0)
+    }
+
+    // Clean up
+    shutdown();
+    ::dlclose(handle);
+#endif
+}
+
 
 
