@@ -348,42 +348,17 @@ int main(int argc, char* argv[]) {
     banner_tex_info.format = GR_TEXFMT_RGB_565;
     banner_tex_info.data = banner_tex_buf.data();
 
-    // 3. Set up the 3dfx Splash Logo (64x64) by assigning fields from raw assets layout
-    const Gu3dfInfo* splash_info = reinterpret_cast<const Gu3dfInfo*>(GlideWrapper::Assets::splash_text_raw);
-    GrTexInfo splash_tex_info;
-#if GLIDE_VERSION == 3
-    splash_tex_info.smallLodLog2 = splash_info->header.small_lod;
-    splash_tex_info.largeLodLog2 = splash_info->header.large_lod;
-    splash_tex_info.aspectRatioLog2 = splash_info->header.aspect_ratio;
-#else
-    splash_tex_info.smallLod = splash_info->header.small_lod;
-    splash_tex_info.largeLod = splash_info->header.large_lod;
-    splash_tex_info.aspectRatio = splash_info->header.aspect_ratio;
-#endif
-    splash_tex_info.format = splash_info->header.format;
-    splash_tex_info.data = const_cast<void*>(reinterpret_cast<const void*>(GlideWrapper::Assets::splash_text_image));
-
     // Download all textures into TMU0 memory
     FxU32 tmu_start_addr = grTexMinAddress(GR_TMU0);
     FxU32 neon_tex_addr = tmu_start_addr;
     // Offset next texture to avoid collision. A 128x128 16-bit texture is 32KB.
     FxU32 banner_tex_addr = neon_tex_addr + 32 * 1024; 
-    // Offset next texture to avoid collision. A 256x128 16-bit texture is 64KB.
-    FxU32 splash_tex_addr = banner_tex_addr + 64 * 1024;
 
     grTexDownloadMipMap(GR_TMU0, neon_tex_addr, GR_MIPMAPLEVELMASK_BOTH, &neon_tex_info);
     grTexDownloadMipMap(GR_TMU0, banner_tex_addr, GR_MIPMAPLEVELMASK_BOTH, &banner_tex_info);
-    grTexDownloadMipMap(GR_TMU0, splash_tex_addr, GR_MIPMAPLEVELMASK_BOTH, &splash_tex_info);
-
-    // Download the companion NCC Decompression lookup table for the compressed YIQ Splash Logo!
-#if GLIDE_VERSION == 3
-    grTexDownloadTable(GR_TEXTABLE_NCC0, const_cast<void*>(static_cast<const void*>(&splash_info->table)));
-#else
-    grTexDownloadTable(GR_TMU0, GR_TEXTABLE_NCC0, const_cast<void*>(static_cast<const void*>(&splash_info->table)));
-#endif
 
     // Initial state: Neon Grid texture active
-    int active_texture = 0; // 0 = Neon Grid, 1 = 3dfx Banner, 2 = 3dfx Splash Logo
+    int active_texture = 0; // 0 = Neon Grid, 1 = 3dfx Banner
     grTexSource(GR_TMU0, neon_tex_addr, GR_MIPMAPLEVELMASK_BOTH, &neon_tex_info);
 
     // Setup texture combine unit on TMU0
@@ -472,7 +447,7 @@ int main(int argc, char* argv[]) {
                 std::cout << "Bilinear Filtering: " << (bilinear ? "ENABLED\r\n" : "DISABLED\r\n");
             } else if (key == 't' || key == 'T') {
                 // Toggle active texture mapping
-                active_texture = (active_texture + 1) % 3;
+                active_texture = (active_texture + 1) % 2;
                 if (active_texture == 0) {
                     // Load Neon Grid (128x128, 1:1)
                     grTexSource(GR_TMU0, neon_tex_addr, GR_MIPMAPLEVELMASK_BOTH, &neon_tex_info);
@@ -482,7 +457,7 @@ int main(int argc, char* argv[]) {
                         cube_vertices[i].t = (cube_vertices[i].t > 0.0f) ? 128.0f : 0.0f;
                     }
                     std::cout << "Swapped active texture to: Diagnostic Neon Grid\r\n";
-                } else if (active_texture == 1) {
+                } else {
                     // Load 3dfx Banner (256x128, 2:1)
                     grTexSource(GR_TMU0, banner_tex_addr, GR_MIPMAPLEVELMASK_BOTH, &banner_tex_info);
                     // Update texture UV scaling in vertex database (0..256 for S, 0..128 for T)
@@ -491,21 +466,6 @@ int main(int argc, char* argv[]) {
                         cube_vertices[i].t = (cube_vertices[i].t > 0.0f) ? 128.0f : 0.0f;
                     }
                     std::cout << "Swapped active texture to: Nostalgic 3dfx Banner Logo\r\n";
-                } else {
-                    // Load 3dfx Splash Logo (64x64, 1:1)
-                    grTexSource(GR_TMU0, splash_tex_addr, GR_MIPMAPLEVELMASK_BOTH, &splash_tex_info);
-                    // Make sure the companion NCC decompression table is loaded into the table register!
-#if GLIDE_VERSION == 3
-                    grTexDownloadTable(GR_TEXTABLE_NCC0, const_cast<void*>(static_cast<const void*>(&splash_info->table)));
-#else
-                    grTexDownloadTable(GR_TMU0, GR_TEXTABLE_NCC0, const_cast<void*>(static_cast<const void*>(&splash_info->table)));
-#endif
-                    // Update texture UV scaling in vertex database (0..64)
-                    for (int i = 0; i < 24; i++) {
-                        cube_vertices[i].s = (cube_vertices[i].s > 0.0f) ? 64.0f : 0.0f;
-                        cube_vertices[i].t = (cube_vertices[i].t > 0.0f) ? 64.0f : 0.0f;
-                    }
-                    std::cout << "Swapped active texture to: Authentic 3dfx Splash Logo\r\n";
                 }
             }
         }
