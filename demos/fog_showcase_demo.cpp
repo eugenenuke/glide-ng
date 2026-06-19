@@ -105,10 +105,28 @@ int main(int argc, char** argv) {
         // Handle keyboard input
         if (tlKbHit()) {
             char key = tlGetCH();
-            if (key == 27) { // ESC
-                running = false;
-                std::printf("\r\nExiting demo...\r\n");
-                break;
+            if (key == 27) { // ESC or Arrow key escape sequence
+                if (tlKbHit()) {
+                    char next1 = tlGetCH();
+                    if (next1 == '[') {
+                        char next2 = tlGetCH();
+                        if (next2 == 'A') { // Up Arrow
+                            density = std::min(0.08f, density + 0.001f);
+                            guFogGenerateExp(fogtable, density);
+                            grFogTable(fogtable);
+                            PrintStatus(activeModeIndex, density, fogEnabled);
+                        } else if (next2 == 'B') { // Down Arrow
+                            density = std::max(0.0005f, density - 0.001f);
+                            guFogGenerateExp(fogtable, density);
+                            grFogTable(fogtable);
+                            PrintStatus(activeModeIndex, density, fogEnabled);
+                        }
+                    }
+                } else {
+                    running = false;
+                    std::printf("\r\nExiting demo...\r\n");
+                    break;
+                }
             } else if (key == ' ') { // Space
                 fogEnabled = !fogEnabled;
                 PrintStatus(activeModeIndex, density, fogEnabled);
