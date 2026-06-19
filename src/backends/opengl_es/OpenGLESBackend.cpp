@@ -74,6 +74,7 @@ void OpenGLESBackend::ResetState() {
     m_geomVBOOffset = 0;
     m_is2DGeometry = true;
     m_gammaCorrectionValue = 1.0f;
+    m_glesTextures.clear(); // Clear the stale texture cache to prevent reusing dead GL texture IDs in new contexts!
 }
 
 bool OpenGLESBackend::AttachWindow(void* nativeWindowHandle, uint32_t width, uint32_t height, bool windowed) {
@@ -411,7 +412,9 @@ bool OpenGLESBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY, uin
         glReadPixels(0, 0, m_headlessWidth, m_headlessHeight, GL_RGBA, GL_UNSIGNED_BYTE, readDst);
         checkGLError("ReadLFB glReadPixels");
 
-        // Convert RGBA from GPU glReadPixels to BGRA and vertically flip the image in-place
+        // Convert RGBA from GPU glReadPixels to BGRA and vertically flip the image in-place.
+        // The swizzle is necessary because SoftwareBackendBase::ReadLFB expects the internal
+        // CPU buffer to be in BGRA layout before applying client-facing format conversions!
         auto* dest = reinterpret_cast<uint32_t*>(readDst);
         // 1. Swizzle RGBA to BGRA
         for (uint32_t i = 0; i < m_headlessWidth * m_headlessHeight; ++i) {

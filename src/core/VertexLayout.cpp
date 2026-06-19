@@ -29,6 +29,7 @@ VertexLayout::VertexLayout() {
 }
 
 void VertexLayout::ResetToGlide2Canonical() {
+    m_stwHintMask = 0;
     m_offsetXY  = 0;
     m_offsetZ   = 8;
     m_offsetRGB = 12;

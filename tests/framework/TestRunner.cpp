@@ -12,28 +12,28 @@
 // Forward declarations of test factory functions
 namespace GlideTest {
     std::unique_ptr<BaseTest> CreateTest00();
-    std::unique_ptr<BaseTest> CreateTest01();
-    std::unique_ptr<BaseTest> CreateTest02();
-    std::unique_ptr<BaseTest> CreateTest03();
-    std::unique_ptr<BaseTest> CreateTest04();
-    std::unique_ptr<BaseTest> CreateTest05();
-    std::unique_ptr<BaseTest> CreateTest06();
-    std::unique_ptr<BaseTest> CreateTest07();
-    std::unique_ptr<BaseTest> CreateTest08();
+    // std::unique_ptr<BaseTest> CreateTest01(); // Migrated to Catch2 unit tests
+    // std::unique_ptr<BaseTest> CreateTest02(); // Migrated to Catch2 unit tests
+    // std::unique_ptr<BaseTest> CreateTest03(); // Migrated to Catch2 unit tests
+    // std::unique_ptr<BaseTest> CreateTest04(); // Migrated to Catch2 unit tests
+    // std::unique_ptr<BaseTest> CreateTest05(); // Migrated to Catch2 unit tests
+    // std::unique_ptr<BaseTest> CreateTest06(); // Migrated to Catch2 unit tests
+    // std::unique_ptr<BaseTest> CreateTest07(); // Migrated to Catch2 unit tests
+    // std::unique_ptr<BaseTest> CreateTest08(); // Migrated to Catch2 unit tests
     std::unique_ptr<BaseTest> CreateTest09();
-    std::unique_ptr<BaseTest> CreateTest10();
-    std::unique_ptr<BaseTest> CreateTest11();
-    std::unique_ptr<BaseTest> CreateTest12();
-    std::unique_ptr<BaseTest> CreateTest13();
-    std::unique_ptr<BaseTest> CreateTest14();
-    std::unique_ptr<BaseTest> CreateTest15();
+    // std::unique_ptr<BaseTest> CreateTest10(); // Migrated to Catch2 unit tests
+    // std::unique_ptr<BaseTest> CreateTest11(); // Migrated to Catch2 unit tests
+    // std::unique_ptr<BaseTest> CreateTest12(); // Migrated to Catch2 unit tests
+    // std::unique_ptr<BaseTest> CreateTest13(); // Migrated to Catch2 unit tests
+    // std::unique_ptr<BaseTest> CreateTest14(); // Migrated to Catch2 unit tests
+    // std::unique_ptr<BaseTest> CreateTest15(); // Migrated to Catch2 unit tests
     std::unique_ptr<BaseTest> CreateTest16();
     std::unique_ptr<BaseTest> CreateTest17();
     std::unique_ptr<BaseTest> CreateTest18();
     std::unique_ptr<BaseTest> CreateTest19();
     std::unique_ptr<BaseTest> CreateTest29();
     std::unique_ptr<BaseTest> CreateTest21();
-    std::unique_ptr<BaseTest> CreateTest26();
+    // std::unique_ptr<BaseTest> CreateTest26(); // Migrated to Catch2 unit tests
 }
 
 void dumpBufferToPpm(const std::string& filepath, int width, int height) {
@@ -84,28 +84,28 @@ int main(int argc, char** argv) {
 
     std::vector<std::unique_ptr<GlideTest::BaseTest>> tests;
     // tests.push_back(GlideTest::CreateTest00()); // Disabled in favor of hardware-accurate Catch2 unit test validation!
-    tests.push_back(GlideTest::CreateTest01());
-    tests.push_back(GlideTest::CreateTest02());
-    tests.push_back(GlideTest::CreateTest03());
-    tests.push_back(GlideTest::CreateTest04());
-    tests.push_back(GlideTest::CreateTest05());
-    tests.push_back(GlideTest::CreateTest06());
-    tests.push_back(GlideTest::CreateTest07());
-    tests.push_back(GlideTest::CreateTest08());
+    // tests.push_back(GlideTest::CreateTest01()); // Disabled in favor of hardware-accurate Catch2 unit test validation!
+    // tests.push_back(GlideTest::CreateTest02()); // Disabled in favor of hardware-accurate Catch2 unit test validation!
+    // tests.push_back(GlideTest::CreateTest03()); // Disabled in favor of hardware-accurate Catch2 unit test validation!
+    // tests.push_back(GlideTest::CreateTest04()); // Disabled in favor of hardware-accurate Catch2 unit test validation!
+    // tests.push_back(GlideTest::CreateTest05()); // Disabled in favor of hardware-accurate Catch2 unit test validation!
+    // tests.push_back(GlideTest::CreateTest06()); // Disabled in favor of hardware-accurate Catch2 unit test validation!
+    // tests.push_back(GlideTest::CreateTest07()); // Disabled in favor of hardware-accurate Catch2 unit test validation!
+    // tests.push_back(GlideTest::CreateTest08()); // Disabled in favor of hardware-accurate Catch2 unit test validation!
     // tests.push_back(GlideTest::CreateTest09()); // Disabled in favor of hardware-accurate Catch2 unit test validation!
-    tests.push_back(GlideTest::CreateTest10());
-    tests.push_back(GlideTest::CreateTest11());
-    tests.push_back(GlideTest::CreateTest12());
-    tests.push_back(GlideTest::CreateTest13());
-    tests.push_back(GlideTest::CreateTest14());
-    tests.push_back(GlideTest::CreateTest15());
+    // tests.push_back(GlideTest::CreateTest10()); // Disabled in favor of hardware-accurate Catch2 unit test validation!
+    // tests.push_back(GlideTest::CreateTest11()); // Disabled in favor of hardware-accurate Catch2 unit test validation!
+    // tests.push_back(GlideTest::CreateTest12()); // Disabled in favor of hardware-accurate Catch2 unit test validation!
+    // tests.push_back(GlideTest::CreateTest13()); // Disabled in favor of hardware-accurate Catch2 unit test validation!
+    // tests.push_back(GlideTest::CreateTest14()); // Disabled in favor of hardware-accurate Catch2 unit test validation!
+    // tests.push_back(GlideTest::CreateTest15()); // Disabled in favor of hardware-accurate Catch2 unit test validation!
     tests.push_back(GlideTest::CreateTest16());
     tests.push_back(GlideTest::CreateTest17());
     tests.push_back(GlideTest::CreateTest18());
     tests.push_back(GlideTest::CreateTest19());
     tests.push_back(GlideTest::CreateTest29());
     tests.push_back(GlideTest::CreateTest21());
-    tests.push_back(GlideTest::CreateTest26());
+    // tests.push_back(GlideTest::CreateTest26()); // Disabled in favor of hardware-accurate Catch2 unit test validation!
 
     GlideTest::BaseTest* activeTest = nullptr;
     for (const auto& t : tests) {

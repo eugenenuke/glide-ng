@@ -211,10 +211,13 @@ inline void EnsureEngineInitialized() {
     }
 }
 
+extern "C" void grSplashShutdown(void);
+
 FX_ENTRY void FX_CALL grGlideShutdown(void) {
     GLIDE_LOG(INFO, "Frontend", "grGlideShutdown (Glide 2.x) invoked.");
     GlideWrapper::TelemetryManager::GetInstance().PrintReport();
     GlideWrapper::BackendManager::GetInstance().ShutdownBackend();
+    grSplashShutdown();
 }
 
 FX_ENTRY FxBool FX_CALL grSstWinOpen(

@@ -1,16 +1,23 @@
 add_executable(GlideWrapperTests
     test_architecture.cpp
+    "${CMAKE_CURRENT_SOURCE_DIR}/../refs/3dfx-Glide-API/glide2x/cvg/glide/tests/tlib.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../refs/3dfx-Glide-API/swlibs/fxmisc/linutil.c"
 )
 
 target_include_directories(GlideWrapperTests PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/../src"
     "${CMAKE_CURRENT_SOURCE_DIR}/../include/3dfx"
     "${CMAKE_CURRENT_SOURCE_DIR}/../include/glide2"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../refs/3dfx-Glide-API/glide2x/cvg/glide/tests"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../refs/3dfx-Glide-API/swlibs/fxmisc"
 )
+target_compile_definitions(GlideWrapperTests PRIVATE -D__linux__)
 target_link_libraries(GlideWrapperTests PRIVATE
     GlideWrapperCore
     Catch2::Catch2WithMain
+    glide2x
     ${CMAKE_DL_LIBS}
+    -lm
 )
 
 add_executable(rle_to_ppm rle_to_ppm.cpp)

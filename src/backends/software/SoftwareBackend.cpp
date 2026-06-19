@@ -21,8 +21,8 @@ bool SoftwareBackend::Initialize(const WrapperConfig& config) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     if (m_initialized) return true;
 
-    GLIDE_LOG(INFO, "Software", "Initializing Pure Software translation backend...");
     m_config = config;
+    ResetState();
 
 #ifdef _OPENMP
     // If the user has NOT manually set OMP_NUM_THREADS in their environment,

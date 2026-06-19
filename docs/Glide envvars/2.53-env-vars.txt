@@ -1,0 +1,60 @@
+3dfx Voodoo2 (CVG), Glide 2.53
+
+The following environment variables can optionally be used to alter functionality (A value of X is a "don't care"):
+
+Variable                    Value   Description
+--------                    -----   -----------
+SSTV2_ARCADE                  X       Allow special configs for arcade use
+SSTV2_ALLOC_AUX               {0,1}   Number of aux. buffers to allocate
+SSTV2_ALLOC_COLOR             {2,3}   Number of color buffers to allocate
+SSTV2_BACKPORCH               hex     Specify value of backPorch video register
+SSTV2_BOARDS                  val     Specify number of SST-1 boards in system
+SSTV2_CMDFIFO_DIRECT          X       Enable Direct Execution of CMDFIFO
+SSTV2_CMDFIFO_NOHOLES         X       Disable hole counting feature in CMDFIFO
+SSTV2_DEBUGDAC                X       Print out debug information for DAC reads and writes
+SSTV2_DEVICEID                X       Specify the device ID value passed to the PCI library
+SSTV2_DIMENSIONS              hex     Specify value of videoDimensions register
+SSTV2_FASTMEM_RAS_READS       X       Allow fast ras reads
+SSTV2_FASTPCIRD               X       Enable fast PCI reads
+SSTV2_FBICFG                  hex     Specify FBI configuration strapping bits
+SSTV2_FBI_MEMSIZE             val     Specify amount of frame buffer memory
+SSTV2_FT_CLKDEL               hex     Fbi-to-Trex clock delay value
+SSTV2_GAMMA                   float   Floating point value for gamma correction
+SSTV2_GRXCLK                  val     16 <= Frequency < 80 (50 is default)
+SSTV2_HSYNC                   hex     Specify value of hSync video register
+SSTV2_IGNORE_CLKDELAYS        X       Ignore calls to sst1InitSetClkDelays()
+SSTV2_IGNORE_IDLE             X       Ignore calls to sst1InitIdle*()
+SSTV2_IGNORE_INIT_GAMMA       X       Bypass sst1InitGamma call and return
+SSTV2_IGNORE_INIT_REGISTERS   X       Bypass sst1InitRegisters call and return
+SSTV2_IGNORE_INIT_VIDEO       X       Bypass sst1InitVideo call and return
+SSTV2_INITDEBUG               X       Enable debug output
+SSTV2_INITDEBUG_FILE          file    File to direct all debug output
+SSTV2_MEMFIFO                 0       Disable FBI Memory FIFO
+SSTV2_MEMFIFO                 1       Enable FBI Memory FIFO
+SSTV2_MEMFIFO_ENTRIES         hex     Set number of entries in memory fifo
+SSTV2_MEMFIFO_HWM             hex     Set memory fifo high water mark
+SSTV2_MEMFIFO_LFB             {0,1}   Specify LFB writes through Memory FIFO
+SSTV2_MEMFIFO_LWM             hex     Set memory fifo low water mark
+SSTV2_MEMFIFO_TEX             {0,1}   Specify Texture writes through Mem FIFO
+SSTV2_MEMOFFSET               hex     Specify value of memoffset video register
+SSTV2_NOCHECKHANG             X       Do not Check for FBI Hangs for texturing
+SSTV2_NODEVICEINFO            X       Ignore calls to sst1InitFillDeviceInfo()
+SSTV2_NOSHUTDOWN              X       Do not turn off monitor refresh on call to sst1InitShutdown()
+SSTV2_NUM_TMUS                {1,2,3} Specify number of TMUs detected
+SSTV2_PCIFIFO_LWM             hex     Set pci fifo low water mark
+SSTV2_PFT_CLKDEL              hex     Preliminary Fbi-to-Trex clock delay value
+SSTV2_PTF0_CLKDEL             hex     Prelim TMU2Fbi clock delay value (TMU #0)
+SSTV2_PTF1_CLKDEL             hex     Prelim TMU2Fbi clock delay value (TMU #1)
+SSTV2_PTF2_CLKDEL             hex     Prelim TMU2Fbi clock delay value (TMU #2)
+SSTV2_SIPROCESS_CNTR          hex     Silicon process monitor PCI counter load
+SSTV2_SLIDETECT               {0,1}   Specify Scanline Interleaving detection
+SSTV2_SLIM_VIN_CLKDEL         hex     Specify FBI internal video clock delay (SLI Master)
+SSTV2_SLIM_VOUT_CLKDEL        hex     Specify FBI external video clock delay (SLI Master)
+SSTV2_SLIS_VIN_CLKDEL         hex     Specify FBI internal video clock delay (SLI Slave)
+SSTV2_SLIS_VOUT_CLKDEL        hex     Specify FBI external video clock delay (SLI Slave)
+SSTV2_SCREENREFRESH           {60,75, Select monitor refresh rate
+                              85,120}
+SSTV2_SCREENREZ               {512,   Select monitor resolution (512x384)
+                              512256, (512x256)
+                              640400, (640x400)
+                              640,    (640x480)

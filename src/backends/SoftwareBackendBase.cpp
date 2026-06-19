@@ -50,10 +50,10 @@ void SoftwareBackendBase::ResetState() {
 
     m_boundTexAddress[0] = 0xFFFFFFFF;
     m_boundTexAddress[1] = 0xFFFFFFFF;
-    m_texClampS[0] = m_texClampS[1] = 0;
-    m_texClampT[0] = m_texClampT[1] = 0;
-    m_texMinFilter[0] = m_texMinFilter[1] = 0;
-    m_texMagFilter[0] = m_texMagFilter[1] = 0;
+    m_texClampS[0] = 0; m_texClampS[1] = 0;
+    m_texClampT[0] = 0; m_texClampT[1] = 0;
+    m_texMinFilter[0] = 0; m_texMinFilter[1] = 0;
+    m_texMagFilter[0] = 0; m_texMagFilter[1] = 0;
 
     m_colorCombinerFunc   = 0;
     m_colorCombinerFactor = 0;

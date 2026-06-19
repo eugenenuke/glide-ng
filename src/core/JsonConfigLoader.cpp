@@ -8,6 +8,9 @@
 namespace GlideWrapper {
 
 bool JsonConfigLoader::Load(const std::string& configFilePath, WrapperConfig& outConfig) {
+    // Reset to baseline defaults to prevent state leakage across dynamic library reloads
+    outConfig = WrapperConfig{};
+
     GLIDE_LOG(INFO, "Config", "Attempting to load profile from: " << configFilePath);
 
     std::ifstream file(configFilePath);

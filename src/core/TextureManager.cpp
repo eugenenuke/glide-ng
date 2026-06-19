@@ -492,6 +492,12 @@ void TextureManager::Reset() {
     for (int i = 0; i < 2; ++i) {
         m_tmus[i].allocatedBytes = 0;
         m_tmus[i].textures.clear();
+        m_tmus[i].paletteTableLoaded = false;
+        std::memset(m_tmus[i].paletteTable, 0, sizeof(m_tmus[i].paletteTable));
+        std::memset(m_tmus[i].nccTables, 0, sizeof(m_tmus[i].nccTables));
+        m_tmus[i].nccTablesLoaded[0] = false;
+        m_tmus[i].nccTablesLoaded[1] = false;
+        m_tmus[i].activeNccTable = 0;
     }
     GLIDE_LOG(INFO, "TextureManager", "Purged and reset all Virtual TMU state pools.");
 }

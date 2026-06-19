@@ -98,6 +98,34 @@ FX_ENTRY void FX_CALL grGlideShutdown(void) {
 FX_ENTRY GrContext_t FX_CALL grSstWinOpen(FxU32 hWnd, GrScreenResolution_t resolution, GrScreenRefresh_t refresh, GrColorFormat_t format, GrOriginLocation_t origin, int nColBuffers, int nAuxBuffers) {
     EnsureEngineInitialized();
     GLIDE_LOG(INFO, "Frontend", "grSstWinOpen (Glide 3.x) invoked. Res=" << resolution << ", Buffers=" << nColBuffers);
+    
+    // Reset all Glide 3.x frontend static global states to canonical Glide defaults
+    s_depthMode = 0;
+    s_depthCompare = 1;
+    s_depthMask = true;
+    s_depthBias = 0;
+    s_alphaTestOp = 7;
+    s_alphaTestRef = 0;
+    s_clampS[0] = s_clampS[1] = 0;
+    s_clampT[0] = s_clampT[1] = 0;
+    s_minFilter[0] = s_minFilter[1] = 0;
+    s_magFilter[0] = s_magFilter[1] = 0;
+    s_colorFunc   = 0;
+    s_colorFactor = 0;
+    s_colorLocal  = 0;
+    s_colorOther  = 0;
+    s_colorInvert = false;
+    s_alphaFunc   = 0;
+    s_alphaFactor = 0;
+    s_alphaLocal  = 0;
+    s_alphaOther  = 0;
+    s_alphaInvert = false;
+    s_texRgbFunc[0] = s_texRgbFunc[1] = 0;
+    s_texRgbFactor[0] = s_texRgbFactor[1] = 0;
+    s_texAlphaFunc[0] = s_texAlphaFunc[1] = 0;
+    s_texAlphaFactor[0] = s_texAlphaFactor[1] = 0;
+    s_boundTex[0] = s_boundTex[1] = 0xFFFFFFFF;
+
     GlideWrapper::VertexLayout::GetInstance().ResetToGlide2Canonical();
     auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
     if (!backend) return 0;
