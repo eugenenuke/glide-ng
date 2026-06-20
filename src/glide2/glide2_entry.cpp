@@ -195,6 +195,12 @@ struct GlideWrapperState {
 
     uint32_t colorMaskRgb;
     uint32_t colorMaskAlpha;
+
+    uint32_t chromakeyMode;
+    uint32_t chromakeyValue;
+    uint32_t chromakeyRangeMin;
+    uint32_t chromakeyRangeMax;
+    uint32_t chromakeyRangeMode;
 };
 
 static_assert(sizeof(GlideWrapperState) <= sizeof(GrState), "GlideWrapperState exceeds GrState footprint!");
@@ -703,6 +709,11 @@ FX_ENTRY void FX_CALL grGlideGetState(GrState* state) {
     std::memcpy(ws->fogTable, s_fogTable, sizeof(s_fogTable));
     ws->colorMaskRgb = s_colorMaskRgb ? 1 : 0;
     ws->colorMaskAlpha = s_colorMaskAlpha ? 1 : 0;
+    ws->chromakeyMode = s_chromakeyMode;
+    ws->chromakeyValue = s_chromakeyValue;
+    ws->chromakeyRangeMin = s_chromakeyRangeMin;
+    ws->chromakeyRangeMax = s_chromakeyRangeMax;
+    ws->chromakeyRangeMode = s_chromakeyRangeMode;
 }
 
 FX_ENTRY void FX_CALL grGlideSetState(const GrState* state) {
@@ -753,6 +764,11 @@ FX_ENTRY void FX_CALL grGlideSetState(const GrState* state) {
     std::memcpy(s_fogTable, ws->fogTable, sizeof(s_fogTable));
     s_colorMaskRgb = ws->colorMaskRgb != 0;
     s_colorMaskAlpha = ws->colorMaskAlpha != 0;
+    s_chromakeyMode = ws->chromakeyMode;
+    s_chromakeyValue = ws->chromakeyValue;
+    s_chromakeyRangeMin = ws->chromakeyRangeMin;
+    s_chromakeyRangeMax = ws->chromakeyRangeMax;
+    s_chromakeyRangeMode = ws->chromakeyRangeMode;
 
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
         b->SetDepthState(s_depthMode, s_depthCompare, s_depthMask, s_depthBias);
@@ -769,6 +785,9 @@ FX_ENTRY void FX_CALL grGlideSetState(const GrState* state) {
         b->SetFogColor(s_fogColor);
         b->SetFogTable(s_fogTable);
         b->SetSTWHintState(s_stwHintMask);
+        b->SetChromakeyMode(s_chromakeyMode);
+        b->SetChromakeyValue(s_chromakeyValue);
+        b->SetChromakeyRange(s_chromakeyRangeMin, s_chromakeyRangeMax, s_chromakeyRangeMode);
 
         for (uint32_t tmu = 0; tmu < 2; ++tmu) {
             b->SetTexCombinerMode(tmu, s_texRgbFunc[tmu], s_texRgbFactor[tmu], s_texAlphaFunc[tmu], s_texAlphaFactor[tmu]);
