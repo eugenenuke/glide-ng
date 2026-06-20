@@ -491,6 +491,22 @@ FX_ENTRY FxU32 FX_CALL grGet(FxU32 pname, FxU32 plength, FxI32* params) {
         case GR_IS_BUSY:
             *params = 0;
             return 4;
+        case GR_WDEPTH_MIN_MAX:
+            if (plength < 8) return 0;
+            params[0] = 0;
+            params[1] = 65535;
+            return 8;
+        case GR_ZDEPTH_MIN_MAX:
+            if (plength < 8) return 0;
+            params[0] = 0;
+            params[1] = 65535;
+            return 8;
+        case 0x06: // GR_GLIDE_STATE_SIZE
+            *params = 1024;
+            return 4;
+        case 0x07: // GR_GLIDE_VERTEXLAYOUT_SIZE
+            *params = 256;
+            return 4;
         default:
             GLIDE_LOG(WARN, "Frontend", "grGet (Glide 3.x) unknown or unsupported pname=" << pname);
             return 0;

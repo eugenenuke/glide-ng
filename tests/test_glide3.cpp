@@ -634,3 +634,89 @@ TEST_CASE("Glide 3.x Vertex Layout Decoding Integrity", "[VertexLayout][Glide3]"
     }
 }
 
+TEST_CASE("Glide 3.x W-Buffering and Layout Q-Param Compatibility", "[Glide3][WBuffer]") {
+    #ifndef GR_WDEPTH_MIN_MAX
+    #define GR_WDEPTH_MIN_MAX 0x27
+    #endif
+    #ifndef GR_ZDEPTH_MIN_MAX
+    #define GR_ZDEPTH_MIN_MAX 0x28
+    #endif
+
+    // 1. Direct unit test of VertexLayout decoding for Q-Parameter (GR_PARAM_Q)
+    SECTION("Direct VertexLayout Decode with GR_PARAM_Q") {
+        auto& layout = GlideWrapper::VertexLayout::GetInstance();
+        layout.ResetToGlide3Canonical();
+
+        // Configure layout: XY at 0, Q (0x04) at 8
+        layout.SetParamOffsetGlide3(0x01, 0, 1); // GR_PARAM_XY
+        layout.SetParamOffsetGlide3(0x04, 8, 1); // GR_PARAM_Q
+
+        struct MockQVertex {
+            float x, y;
+            float q; // oow (1/W)
+        };
+
+        MockQVertex v;
+        v.x = 100.0f; v.y = 200.0f;
+        v.q = 0.125f; // W = 8.0f
+
+        GlideWrapper::ModernVertex mv = layout.DecodeVertex(&v);
+
+        REQUIRE(mv.pos[0] == 100.0f);
+        REQUIRE(mv.pos[1] == 200.0f);
+        REQUIRE(mv.pos[3] == 0.125f);
+    }
+
+#ifdef __linux__
+    // 2. Integration test via dynamic shared library loading
+    SECTION("Dynamic API Verification for grGet Depth Ranges and State Sizes") {
+        void* handle = OpenGlide3Handle();
+        REQUIRE(handle != nullptr);
+
+        using InitFunc = void(*)(void);
+        using GetFunc = FxU32(*)(FxU32, FxU32, FxI32*);
+        using ShutdownFunc = void(*)(void);
+
+        auto glideInit = reinterpret_cast<InitFunc>(::dlsym(handle, "grGlideInit"));
+        auto grGetVal = reinterpret_cast<GetFunc>(::dlsym(handle, "grGet"));
+        auto shutdown = reinterpret_cast<ShutdownFunc>(::dlsym(handle, "grGlideShutdown"));
+
+        REQUIRE(glideInit != nullptr);
+        REQUIRE(grGetVal != nullptr);
+        REQUIRE(shutdown != nullptr);
+
+        glideInit();
+
+        // Test GR_WDEPTH_MIN_MAX
+        FxI32 wRange[2] = { -1, -1 };
+        FxU32 bytes = grGetVal(GR_WDEPTH_MIN_MAX, 8, wRange);
+        REQUIRE(bytes == 8);
+        REQUIRE(wRange[0] == 0);
+        REQUIRE(wRange[1] == 65535);
+
+        // Test GR_ZDEPTH_MIN_MAX
+        FxI32 zRange[2] = { -1, -1 };
+        bytes = grGetVal(GR_ZDEPTH_MIN_MAX, 8, zRange);
+        REQUIRE(bytes == 8);
+        REQUIRE(zRange[0] == 0);
+        REQUIRE(zRange[1] == 65535);
+
+        // Test GR_GLIDE_STATE_SIZE (0x06)
+        FxI32 stateSize = 0;
+        bytes = grGetVal(0x06, 4, &stateSize);
+        REQUIRE(bytes == 4);
+        REQUIRE(stateSize > 0);
+
+        // Test GR_GLIDE_VERTEXLAYOUT_SIZE (0x07)
+        FxI32 layoutSize = 0;
+        bytes = grGetVal(0x07, 4, &layoutSize);
+        REQUIRE(bytes == 4);
+        REQUIRE(layoutSize > 0);
+
+        shutdown();
+        ::dlclose(handle);
+    }
+#endif
+}
+
+
