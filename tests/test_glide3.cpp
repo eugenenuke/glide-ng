@@ -1404,3 +1404,114 @@ TEST_CASE("OpenGL ES Backend Multi-pass Pre-Fog Blending Verification [GLES_PreF
     ::unsetenv("GLIDE_WRAPPER_BACKEND");
 }
 #endif
+
+namespace {
+    void* OpenGlide2Handle() {
+        void* h = ::dlopen("../lib/libglide2x.so", RTLD_LAZY);
+        if (!h) h = ::dlopen("lib/libglide2x.so", RTLD_LAZY);
+        if (!h) h = ::dlopen("build/lib/libglide2x.so", RTLD_LAZY);
+        return h;
+    }
+}
+
+TEST_CASE("Glide 2.x Coordinate Unsnapping Verification", "[Glide2][Unsnap][Glide2_Unsnap]") {
+#ifdef __linux__
+    // 1. Load Glide 2 shared library
+    void* handle = OpenGlide2Handle();
+    REQUIRE(handle != nullptr);
+
+    using InitFunc = void(*)(void);
+    using WinOpenFunc = FxBool(*)(FxU32, GrScreenResolution_t, GrScreenRefresh_t, GrColorFormat_t, GrOriginLocation_t, int, int);
+    using BufferClearFunc = void(*)(GrColor_t, GrAlpha_t, FxU32);
+    using ColorCombineFunc = void(*)(GrCombineFunction_t, GrCombineFactor_t, GrCombineLocal_t, GrCombineOther_t, FxBool);
+    using DrawLineFunc = void(*)(const void*, const void*);
+    using ReadLfbFunc = FxBool(*)(GrBuffer_t, FxU32, FxU32, FxU32, FxU32, FxU32, void*);
+    using WinCloseFunc = FxBool(*)(void);
+    using ShutdownFunc = void(*)(void);
+
+    auto glideInit = reinterpret_cast<InitFunc>(::dlsym(handle, "grGlideInit"));
+    auto winOpen = reinterpret_cast<WinOpenFunc>(::dlsym(handle, "grSstWinOpen"));
+    auto bufferClear = reinterpret_cast<BufferClearFunc>(::dlsym(handle, "grBufferClear"));
+    auto colorCombine = reinterpret_cast<ColorCombineFunc>(::dlsym(handle, "grColorCombine"));
+    auto drawLine = reinterpret_cast<DrawLineFunc>(::dlsym(handle, "grDrawLine"));
+    auto readLfb = reinterpret_cast<ReadLfbFunc>(::dlsym(handle, "grLfbReadRegion"));
+    auto winClose = reinterpret_cast<WinCloseFunc>(::dlsym(handle, "grSstWinClose"));
+    auto shutdown = reinterpret_cast<ShutdownFunc>(::dlsym(handle, "grGlideShutdown"));
+
+    REQUIRE(glideInit != nullptr);
+    REQUIRE(winOpen != nullptr);
+    REQUIRE(bufferClear != nullptr);
+    REQUIRE(colorCombine != nullptr);
+    REQUIRE(drawLine != nullptr);
+    REQUIRE(readLfb != nullptr);
+    REQUIRE(winClose != nullptr);
+    REQUIRE(shutdown != nullptr);
+
+    // 3. Initialize Glide 2 and open a window (defaulting to Software backend for speed & sanity)
+    ::setenv("GLIDE_WRAPPER_BACKEND", "SOFTWARE", 1);
+    glideInit();
+    FxBool ok = winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz, GR_COLORFORMAT_ABGR, GR_ORIGIN_UPPER_LEFT, 2, 1);
+    REQUIRE(ok == FXTRUE);
+
+    // Configure Glide to draw using vertex colors (iterated)
+    colorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE, GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_NONE, FXFALSE);
+
+    // Clear buffer to black
+    bufferClear(0, 0, 0);
+
+    // 4. Draw a biased white line using SNAP_BIAS
+    // SNAP_BIAS = (3 << 18) = 786432.0f
+    const float SNAP_BIAS = 786432.0f;
+    
+    struct GrVertex2 {
+        float x, y, z;
+        float r, g, b;
+        float ooz;
+        float a;
+        float oow;
+        float sow, tow, oow_tmu;
+    };
+
+    GrVertex2 v1{};
+    v1.x = SNAP_BIAS + 100.0f;
+    v1.y = SNAP_BIAS + 100.0f;
+    v1.z = 0.0f;
+    v1.r = v1.g = v1.b = 255.0f;
+    v1.a = 255.0f;
+    v1.oow = 1.0f;
+
+    GrVertex2 v2{};
+    v2.x = SNAP_BIAS + 200.0f;
+    v2.y = SNAP_BIAS + 100.0f; // Horizontal line from (100, 100) to (200, 100)
+    v2.z = 0.0f;
+    v2.r = v2.g = v2.b = 255.0f;
+    v2.a = 255.0f;
+    v2.oow = 1.0f;
+
+    // Issue the draw call!
+    drawLine(&v1, &v2);
+
+    // Read back a pixel on the line (e.g., at X=150, Y=100)
+    uint32_t pixel = 0;
+    FxBool readOk = readLfb(GR_BUFFER_BACKBUFFER, 150, 100, 1, 1, 4, &pixel);
+    REQUIRE(readOk == FXTRUE);
+
+    // Unpack color (little-endian ABGR: byte 0 is R, byte 1 is G, byte 2 is B)
+    uint8_t r = pixel & 0xFF;
+    uint8_t g = (pixel >> 8) & 0xFF;
+    uint8_t b = (pixel >> 16) & 0xFF;
+    
+    INFO("Readback pixel at (150, 100): R=" << (int)r << ", G=" << (int)g << ", B=" << (int)b);
+
+    // The pixel color must be white (R, G, B > 240) if coordinate unsnapping succeeded.
+    // If unsnapping failed, the line would be clipped off-screen and the pixel would be black.
+    CHECK(r > 240);
+    CHECK(g > 240);
+    CHECK(b > 240);
+
+    winClose();
+    shutdown();
+    ::dlclose(handle);
+    ::unsetenv("GLIDE_WRAPPER_BACKEND");
+#endif
+}

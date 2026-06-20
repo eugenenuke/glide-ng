@@ -97,6 +97,22 @@ ModernVertex VertexLayout::DecodeVertex(const void* gameVertex) const {
         float x = 0.0f; float y = 0.0f;
         std::memcpy(&x, rawBytes + m_offsetXY, sizeof(float));
         std::memcpy(&y, rawBytes + m_offsetXY + sizeof(float), sizeof(float));
+
+        // Unsnap Voodoo-specific coordinate snap bias (3 << 18 = 786432.0f or 3 << 19 = 1572864.0f)
+        constexpr float SNAP_BIAS_18 = 786432.0f;
+        constexpr float SNAP_BIAS_19 = 1572864.0f;
+        if (x >= SNAP_BIAS_18 - 2048.0f && x <= SNAP_BIAS_18 + 2048.0f) {
+            x -= SNAP_BIAS_18;
+        } else if (x >= SNAP_BIAS_19 - 2048.0f && x <= SNAP_BIAS_19 + 2048.0f) {
+            x -= SNAP_BIAS_19;
+        }
+
+        if (y >= SNAP_BIAS_18 - 2048.0f && y <= SNAP_BIAS_18 + 2048.0f) {
+            y -= SNAP_BIAS_18;
+        } else if (y >= SNAP_BIAS_19 - 2048.0f && y <= SNAP_BIAS_19 + 2048.0f) {
+            y -= SNAP_BIAS_19;
+        }
+
         v.pos[0] = x;
         v.pos[1] = y;
     }
