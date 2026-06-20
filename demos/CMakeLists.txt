@@ -89,3 +89,52 @@ target_link_libraries(gamma_showcase_demo PRIVATE
     ${CMAKE_DL_LIBS}
     -lm
 )
+
+# --- Glide 3.x State Showcase Demo ---
+add_executable(glide3_state_demo
+    glide3_state_demo.cpp
+    "${CMAKE_CURRENT_SOURCE_DIR}/../refs/3dfx-Glide-API/glide3x/cvg/glide3/tests/tlib.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../refs/3dfx-Glide-API/swlibs/fxmisc/linutil.c"
+)
+
+target_include_directories(glide3_state_demo PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../refs/3dfx-Glide-API/glide3x/cvg/glide3/tests"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../refs/3dfx-Glide-API/swlibs/fxmisc"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../include/3dfx"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../include/glide3"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../tools"
+)
+
+target_compile_definitions(glide3_state_demo PRIVATE -D__linux__ -DGLIDE_VERSION=3)
+
+target_link_libraries(glide3_state_demo PRIVATE
+    glide3x
+    tool_info3
+    ${CMAKE_DL_LIBS}
+    -lm
+)
+
+# --- Glide 2.x Compatibility Showcase Demo ---
+add_executable(glide2_compat_demo
+    glide2_compat_demo.cpp
+    "${CMAKE_CURRENT_SOURCE_DIR}/../refs/3dfx-Glide-API/glide2x/cvg/glide/tests/tlib.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../refs/3dfx-Glide-API/swlibs/fxmisc/linutil.c"
+)
+
+target_include_directories(glide2_compat_demo PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../refs/3dfx-Glide-API/glide2x/cvg/glide/tests"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../refs/3dfx-Glide-API/swlibs/fxmisc"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../include/3dfx"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../include/glide2"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../tools"
+)
+
+target_compile_definitions(glide2_compat_demo PRIVATE -D__linux__ -DGLIDE_VERSION=2)
+
+target_link_libraries(glide2_compat_demo PRIVATE
+    glide2x
+    tool_info2
+    ${CMAKE_DL_LIBS}
+    -lm
+)
+

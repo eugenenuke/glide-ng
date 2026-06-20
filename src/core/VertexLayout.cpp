@@ -39,6 +39,17 @@ void VertexLayout::ResetToGlide2Canonical() {
     m_offsetST0 = 36;
 }
 
+void VertexLayout::ResetToGlide3Canonical() {
+    m_stwHintMask = 0;
+    m_offsetXY  = 0;
+    m_offsetZ   = -1;
+    m_offsetOOZ = 8;
+    m_offsetOOW = 12;
+    m_offsetRGB = 16;
+    m_offsetA   = 28;
+    m_offsetST0 = 36;
+}
+
 void VertexLayout::SetParamOffset(uint32_t param, int32_t offset, uint32_t mode) {
     SetParamOffsetGlide2(param, offset, mode);
 }

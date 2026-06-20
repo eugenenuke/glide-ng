@@ -21,6 +21,20 @@ public:
     uint32_t GetWidth() const override { return m_headlessWidth; }
     uint32_t GetHeight() const override { return m_headlessHeight; }
     uint32_t GetMsaaSamples() const override { return 1; }
+
+    // State Getters for Testing
+    uint32_t GetColorCombinerFunc() const { return m_colorCombinerFunc; }
+    uint32_t GetColorCombinerFactor() const { return m_colorCombinerFactor; }
+    uint32_t GetColorCombinerLocal() const { return m_colorCombinerLocal; }
+    uint32_t GetColorCombinerOther() const { return m_colorCombinerOther; }
+    uint32_t GetConstantColor() const { return m_constantColor; }
+    uint32_t GetSTWHintMask() const { return m_stwHintMask; }
+    float GetDepthBufferPixel(uint32_t x, uint32_t y) const {
+        uint32_t pIdx = y * m_headlessWidth + x;
+        if (pIdx < m_headlessDepthBuffer.size()) return m_headlessDepthBuffer[pIdx];
+        return 0.0f;
+    }
+
     bool SwapBuffers() override = 0;
     void PollEvents() override;
     void SstIdle() override;

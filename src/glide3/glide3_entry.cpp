@@ -28,6 +28,7 @@
 #endif
 
 extern "C" {
+void grShamelessPlug(void);
 
 namespace {
     uint32_t s_depthMode = 0;
@@ -37,6 +38,16 @@ namespace {
 
     uint32_t s_alphaTestOp = 7;
     uint32_t s_alphaTestRef = 0;
+
+    uint8_t  s_lfbConstantAlpha = 0;
+    uint32_t s_lfbWriteColorFormat = 0;
+    uint32_t s_chromakeyMode = 0;
+    uint32_t s_chromakeyValue = 0;
+
+    uint32_t s_rgbSrcBlend = 4;   // GR_BLEND_ONE
+    uint32_t s_rgbDstBlend = 0;   // GR_BLEND_ZERO
+    uint32_t s_alphaSrcBlend = 4; // GR_BLEND_ONE
+    uint32_t s_alphaDstBlend = 0; // GR_BLEND_ZERO
 
     uint32_t s_clampS[2] = {0, 0}; // 0=WRAP, 1=CLAMP
     uint32_t s_clampT[2] = {0, 0};
@@ -57,7 +68,73 @@ namespace {
     uint32_t s_texAlphaFunc[2]  = {0, 0};
     uint32_t s_texAlphaFactor[2]= {0, 0};
     uint32_t s_boundTex[2]      = {0xFFFFFFFF, 0xFFFFFFFF};
+
+    // Glide 3.x State Control cache
+    uint32_t s_coordSpace = 0; // 0 = GR_WINDOW_COORDS, 1 = GR_CLIP_COORDS
+    float s_viewportX = 0.0f;
+    float s_viewportY = 0.0f;
+    float s_viewportWidth = 640.0f;
+    float s_viewportHeight = 480.0f;
+    float s_depthRangeNear = 0.0f;
+    float s_depthRangeFar = 1.0f;
+
+    // Enable states
+    bool s_aaOrdered = false;
+    bool s_shamelessPlug = false;
+
+    inline void TransformVertexIfNecessary(GlideWrapper::ModernVertex& mv) {
+        if (s_coordSpace == 1) { // GR_CLIP_COORDS
+            mv.pos[0] = (mv.pos[0] + 1.0f) * 0.5f * s_viewportWidth + s_viewportX;
+            mv.pos[1] = (mv.pos[1] + 1.0f) * 0.5f * s_viewportHeight + s_viewportY;
+            mv.pos[2] = (mv.pos[2] + 1.0f) * 0.5f * (s_depthRangeFar - s_depthRangeNear) + s_depthRangeNear;
+        }
+    }
 }
+
+struct GlideWrapperState {
+    uint32_t depthMode;
+    uint32_t depthCompare;
+    int      depthMask;
+    int32_t  depthBias;
+    uint32_t alphaTestOp;
+    uint32_t alphaTestRef;
+    uint32_t clampS[2];
+    uint32_t clampT[2];
+    uint32_t minFilter[2];
+    uint32_t magFilter[2];
+    uint32_t colorFunc;
+    uint32_t colorFactor;
+    uint32_t colorLocal;
+    uint32_t colorOther;
+    int      colorInvert;
+    uint32_t alphaFunc;
+    uint32_t alphaFactor;
+    uint32_t alphaLocal;
+    uint32_t alphaOther;
+    int      alphaInvert;
+    uint32_t texRgbFunc[2];
+    uint32_t texRgbFactor[2];
+    uint32_t texAlphaFunc[2];
+    uint32_t texAlphaFactor[2];
+    uint32_t boundTex[2];
+    uint32_t coordSpace;
+    float    viewportX;
+    float    viewportY;
+    float    viewportWidth;
+    float    viewportHeight;
+    float    depthRangeNear;
+    float    depthRangeFar;
+    int      aaOrdered;
+    int      shamelessPlug;
+    uint8_t  lfbConstantAlpha;
+    uint32_t lfbWriteColorFormat;
+    uint32_t chromakeyMode;
+    uint32_t chromakeyValue;
+    uint32_t rgbSrcBlend;
+    uint32_t rgbDstBlend;
+    uint32_t alphaSrcBlend;
+    uint32_t alphaDstBlend;
+};
 
 FX_ENTRY void FX_CALL grGlideInit(void) {
     auto& logger = GlideWrapper::Logger::GetInstance();
@@ -126,8 +203,18 @@ FX_ENTRY GrContext_t FX_CALL grSstWinOpen(FxU32 hWnd, GrScreenResolution_t resol
     s_texAlphaFunc[0] = s_texAlphaFunc[1] = 0;
     s_texAlphaFactor[0] = s_texAlphaFactor[1] = 0;
     s_boundTex[0] = s_boundTex[1] = 0xFFFFFFFF;
+    
+    s_coordSpace = 0;
+    s_viewportX = 0.0f;
+    s_viewportY = 0.0f;
+    s_viewportWidth = 640.0f; // Temporary fallback; set dynamically below
+    s_viewportHeight = 480.0f;
+    s_depthRangeNear = 0.0f;
+    s_depthRangeFar = 1.0f;
+    s_aaOrdered = false;
+    s_shamelessPlug = false;
 
-    GlideWrapper::VertexLayout::GetInstance().ResetToGlide2Canonical();
+    GlideWrapper::VertexLayout::GetInstance().ResetToGlide3Canonical();
     auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
     if (!backend) return 0;
     
@@ -152,8 +239,12 @@ FX_ENTRY GrContext_t FX_CALL grSstWinOpen(FxU32 hWnd, GrScreenResolution_t resol
     else if (resolution == GR_RESOLUTION_1280x1024) { width = 1280; height = 1024; }
     else if (resolution == GR_RESOLUTION_1600x1200) { width = 1600; height = 1200; }
     
+    s_viewportWidth = static_cast<float>(width);
+    s_viewportHeight = static_cast<float>(height);
+
     bool attached = backend->AttachWindow(reinterpret_cast<void*>(static_cast<uintptr_t>(hWnd)), width, height, hWnd != 0);
     backend->SetPixelFormat(format);
+    backend->SetSstOrigin(origin);
     return attached ? 1 : 0;
 }
 
@@ -168,11 +259,14 @@ FX_ENTRY FxBool FX_CALL grSstWinClose(GrContext_t context) {
 FX_ENTRY void FX_CALL grBufferClear(GrColor_t color, GrAlpha_t alpha, FxU32 depth) {
     EnsureEngineInitialized();
     auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
-    if (backend) backend->ClearBuffer(color, alpha, static_cast<float>(depth) / 4294967295.0f, 0x3);
+    if (backend) backend->ClearBuffer(color, alpha, static_cast<float>(depth) / 65535.0f, 0x3);
 }
 
 FX_ENTRY void FX_CALL grBufferSwap(FxU32 swapInterval) {
     EnsureEngineInitialized();
+    if (s_shamelessPlug) {
+        grShamelessPlug();
+    }
     auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
     if (backend) backend->SwapBuffers();
 }
@@ -212,7 +306,15 @@ FX_ENTRY void FX_CALL grDrawTriangle(const void* a, const void* b, const void* c
     GlideWrapper::TelemetryManager::GetInstance().IncrementTrianglesProcessed(1);
 
     auto& layout = GlideWrapper::VertexLayout::GetInstance();
-    backend->DrawTriangle(layout.DecodeVertex(a), layout.DecodeVertex(b), layout.DecodeVertex(c));
+    GlideWrapper::ModernVertex va = layout.DecodeVertex(a);
+    GlideWrapper::ModernVertex vb = layout.DecodeVertex(b);
+    GlideWrapper::ModernVertex vc = layout.DecodeVertex(c);
+
+    TransformVertexIfNecessary(va);
+    TransformVertexIfNecessary(vb);
+    TransformVertexIfNecessary(vc);
+
+    backend->DrawTriangle(va, vb, vc);
 }
 
 FX_ENTRY void FX_CALL grTriStats(FxU32* processed, FxU32* drawn) {
@@ -246,7 +348,13 @@ FX_ENTRY void FX_CALL grDrawLine(const void* a, const void* b) {
     auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
     if (!backend || !a || !b) return;
     auto& layout = GlideWrapper::VertexLayout::GetInstance();
-    backend->DrawLine(layout.DecodeVertex(a), layout.DecodeVertex(b));
+    GlideWrapper::ModernVertex va = layout.DecodeVertex(a);
+    GlideWrapper::ModernVertex vb = layout.DecodeVertex(b);
+
+    TransformVertexIfNecessary(va);
+    TransformVertexIfNecessary(vb);
+
+    backend->DrawLine(va, vb);
 }
 
 FX_ENTRY void FX_CALL grDrawPoint(const void* pt) {
@@ -254,7 +362,11 @@ FX_ENTRY void FX_CALL grDrawPoint(const void* pt) {
     auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
     if (!backend || !pt) return;
     auto& layout = GlideWrapper::VertexLayout::GetInstance();
-    backend->DrawPoint(layout.DecodeVertex(pt));
+    GlideWrapper::ModernVertex mv = layout.DecodeVertex(pt);
+
+    TransformVertexIfNecessary(mv);
+
+    backend->DrawPoint(mv);
 }
 
 FX_ENTRY FxU32 FX_CALL grGet(FxU32 pname, FxU32 plength, FxI32* params) {
@@ -262,15 +374,54 @@ FX_ENTRY FxU32 FX_CALL grGet(FxU32 pname, FxU32 plength, FxI32* params) {
     if (!params || plength < 4) return 0;
 
     auto& reg = GlideWrapper::EmulationRegistry::GetInstance();
-    
+    const auto& config = reg.GetConfig();
+
     switch (pname) {
-        case GR_MEMORY_FB:              *params = reg.GetConfig().fbiMemoryMb * 1024 * 1024; return 4;
-        case GR_MEMORY_TMU:             *params = reg.GetConfig().tmuMemoryMb * 1024 * 1024; return 4;
-        case GR_NUM_BOARDS:             *params = 1; return 4;
-        case GR_NUM_TMU:                *params = reg.GetConfig().tmuCount; return 4;
-        case GR_MAX_TEXTURE_SIZE:       *params = 2048; return 4;
-        case GR_MAX_TEXTURE_ASPECT_RATIO:*params = 3; return 4; // 8:1
-        default: return 0;
+        case GR_MEMORY_FB:
+            *params = static_cast<FxI32>(config.fbiMemoryMb * 1024 * 1024);
+            return 4;
+        case GR_MEMORY_TMU:
+            *params = static_cast<FxI32>(config.tmuMemoryMb * 1024 * 1024);
+            return 4;
+        case GR_NUM_BOARDS:
+            *params = 1;
+            return 4;
+        case GR_NUM_TMU:
+            // Voodoo 1 (VoodooGraphics) and Voodoo Rush only have 1 TMU. Voodoo 2 and 3 have 2 TMUs.
+            *params = (config.model == GlideWrapper::CardModel::VoodooGraphics || config.model == GlideWrapper::CardModel::VoodooRush) ? 1 : 2;
+            return 4;
+        case GR_MAX_TEXTURE_SIZE:
+            // Voodoo 3 supports up to 2048x2048 textures; Voodoo 1 and 2 only support up to 256x256
+            *params = (config.model == GlideWrapper::CardModel::Voodoo3) ? 2048 : 256;
+            return 4;
+        case GR_MAX_TEXTURE_ASPECT_RATIO:
+            *params = 3; // 8:1
+            return 4;
+        case GR_BITS_DEPTH:
+            *params = 16;
+            return 4;
+        case GR_BITS_RGBA:
+            *params = 32;
+            return 4;
+        case GR_FOG_TABLE_ENTRIES:
+            *params = 64;
+            return 4;
+        case GR_GAMMA_TABLE_ENTRIES:
+            *params = 256;
+            return 4;
+        case GR_VIEWPORT:
+            if (plength < 16) return 0;
+            params[0] = static_cast<FxI32>(s_viewportX);
+            params[1] = static_cast<FxI32>(s_viewportY);
+            params[2] = static_cast<FxI32>(s_viewportWidth);
+            params[3] = static_cast<FxI32>(s_viewportHeight);
+            return 16;
+        case GR_IS_BUSY:
+            *params = 0;
+            return 4;
+        default:
+            GLIDE_LOG(WARN, "Frontend", "grGet (Glide 3.x) unknown or unsupported pname=" << pname);
+            return 0;
     }
 }
 
@@ -279,7 +430,22 @@ FX_ENTRY const char* FX_CALL grGetString(FxU32 pname) {
     auto& reg = GlideWrapper::EmulationRegistry::GetInstance();
     switch (pname) {
         case GR_VERSION:  return "3.10 (glide-ng)";
-        case GR_HARDWARE: return "Voodoo5 (Modernized Wrapper Emulation)";
+        case GR_HARDWARE: {
+            switch (reg.GetConfig().model) {
+                case GlideWrapper::CardModel::VoodooGraphics:
+                    return "Voodoo Graphics (SST-1) (Modernized Wrapper Emulation)";
+                case GlideWrapper::CardModel::VoodooRush:
+                    return "Voodoo Rush (SST-96) (Modernized Wrapper Emulation)";
+                case GlideWrapper::CardModel::Voodoo2:
+                    return "Voodoo2 (CVG) (Modernized Wrapper Emulation)";
+                case GlideWrapper::CardModel::Voodoo3:
+                    return "Voodoo3 (H3) (Modernized Wrapper Emulation)";
+                case GlideWrapper::CardModel::Voodoo5:
+                    return "Voodoo5 (H5) (Modernized Wrapper Emulation)";
+                default:
+                    return "3dfx Voodoo Accelerator (Modernized Wrapper Emulation)";
+            }
+        }
         case GR_VENDOR:   return reg.GetConfig().reportedVendorOverride.c_str();
         case GR_RENDERER: {
             if (reg.GetConfig().backend == "opengl_es") {
@@ -313,7 +479,7 @@ FX_ENTRY FxU32 FX_CALL grTexMaxAddress(GrChipID_t tmu) {
 
 FX_ENTRY FxU32 FX_CALL grTexCalcMemRequired(GrLOD_t lodmin, GrLOD_t lodmax, GrAspectRatio_t aspect, GrTextureFormat_t fmt) {
     GLIDE_LOG(DEBUG, "Frontend", "grTexCalcMemRequired (Glide 3.x) invoked.");
-    return GlideWrapper::TextureManager::GetInstance().CalculateMemoryRequired(lodmin, lodmax, aspect, fmt);
+    return GlideWrapper::TextureManager::GetInstance().CalculateMemoryRequired(8 - lodmin, 8 - lodmax, 3 - aspect, fmt);
 }
 
 FX_ENTRY FxU32 FX_CALL grTexTextureMemRequired(FxU32 evenOdd, GrTexInfo *info) {
@@ -344,10 +510,117 @@ FX_ENTRY void FX_CALL grTexDetailControl(GrChipID_t tmu, int lod_bias, FxU8 deta
 
 FX_ENTRY void FX_CALL grGlideGetState(void* state) {
     GLIDE_LOG(DEBUG, "Frontend", "grGlideGetState (Glide 3.x) invoked.");
+    if (!state) return;
+    auto* ws = reinterpret_cast<GlideWrapperState*>(state);
+    ws->depthMode = s_depthMode;
+    ws->depthCompare = s_depthCompare;
+    ws->depthMask = s_depthMask ? 1 : 0;
+    ws->depthBias = s_depthBias;
+    ws->alphaTestOp = s_alphaTestOp;
+    ws->alphaTestRef = s_alphaTestRef;
+    std::memcpy(ws->clampS, s_clampS, sizeof(s_clampS));
+    std::memcpy(ws->clampT, s_clampT, sizeof(s_clampT));
+    std::memcpy(ws->minFilter, s_minFilter, sizeof(s_minFilter));
+    std::memcpy(ws->magFilter, s_magFilter, sizeof(s_magFilter));
+    ws->colorFunc = s_colorFunc;
+    ws->colorFactor = s_colorFactor;
+    ws->colorLocal = s_colorLocal;
+    ws->colorOther = s_colorOther;
+    ws->colorInvert = s_colorInvert ? 1 : 0;
+    ws->alphaFunc = s_alphaFunc;
+    ws->alphaFactor = s_alphaFactor;
+    ws->alphaLocal = s_alphaLocal;
+    ws->alphaOther = s_alphaOther;
+    ws->alphaInvert = s_alphaInvert ? 1 : 0;
+    std::memcpy(ws->texRgbFunc, s_texRgbFunc, sizeof(s_texRgbFunc));
+    std::memcpy(ws->texRgbFactor, s_texRgbFactor, sizeof(s_texRgbFactor));
+    std::memcpy(ws->texAlphaFunc, s_texAlphaFunc, sizeof(s_texAlphaFunc));
+    std::memcpy(ws->texAlphaFactor, s_texAlphaFactor, sizeof(s_texAlphaFactor));
+    std::memcpy(ws->boundTex, s_boundTex, sizeof(s_boundTex));
+    ws->coordSpace = s_coordSpace;
+    ws->viewportX = s_viewportX;
+    ws->viewportY = s_viewportY;
+    ws->viewportWidth = s_viewportWidth;
+    ws->viewportHeight = s_viewportHeight;
+    ws->depthRangeNear = s_depthRangeNear;
+    ws->depthRangeFar = s_depthRangeFar;
+    ws->aaOrdered = s_aaOrdered ? 1 : 0;
+    ws->shamelessPlug = s_shamelessPlug ? 1 : 0;
+    ws->lfbConstantAlpha = s_lfbConstantAlpha;
+    ws->lfbWriteColorFormat = s_lfbWriteColorFormat;
+    ws->chromakeyMode = s_chromakeyMode;
+    ws->chromakeyValue = s_chromakeyValue;
+    ws->rgbSrcBlend = s_rgbSrcBlend;
+    ws->rgbDstBlend = s_rgbDstBlend;
+    ws->alphaSrcBlend = s_alphaSrcBlend;
+    ws->alphaDstBlend = s_alphaDstBlend;
 }
 
 FX_ENTRY void FX_CALL grGlideSetState(const void* state) {
     GLIDE_LOG(DEBUG, "Frontend", "grGlideSetState (Glide 3.x) invoked.");
+    if (!state) return;
+    auto* ws = reinterpret_cast<const GlideWrapperState*>(state);
+    s_depthMode = ws->depthMode;
+    s_depthCompare = ws->depthCompare;
+    s_depthMask = ws->depthMask != 0;
+    s_depthBias = ws->depthBias;
+    s_alphaTestOp = ws->alphaTestOp;
+    s_alphaTestRef = ws->alphaTestRef;
+    std::memcpy(s_clampS, ws->clampS, sizeof(s_clampS));
+    std::memcpy(s_clampT, ws->clampT, sizeof(s_clampT));
+    std::memcpy(s_minFilter, ws->minFilter, sizeof(s_minFilter));
+    std::memcpy(s_magFilter, ws->magFilter, sizeof(s_magFilter));
+    s_colorFunc = ws->colorFunc;
+    s_colorFactor = ws->colorFactor;
+    s_colorLocal = ws->colorLocal;
+    s_colorOther = ws->colorOther;
+    s_colorInvert = ws->colorInvert != 0;
+    s_alphaFunc = ws->alphaFunc;
+    s_alphaFactor = ws->alphaFactor;
+    s_alphaLocal = ws->alphaLocal;
+    s_alphaOther = ws->alphaOther;
+    s_alphaInvert = ws->alphaInvert != 0;
+    std::memcpy(s_texRgbFunc, ws->texRgbFunc, sizeof(s_texRgbFunc));
+    std::memcpy(s_texRgbFactor, ws->texRgbFactor, sizeof(s_texRgbFactor));
+    std::memcpy(s_texAlphaFunc, ws->texAlphaFunc, sizeof(s_texAlphaFunc));
+    std::memcpy(s_texAlphaFactor, ws->texAlphaFactor, sizeof(s_texAlphaFactor));
+    std::memcpy(s_boundTex, ws->boundTex, sizeof(s_boundTex));
+    s_coordSpace = ws->coordSpace;
+    s_viewportX = ws->viewportX;
+    s_viewportY = ws->viewportY;
+    s_viewportWidth = ws->viewportWidth;
+    s_viewportHeight = ws->viewportHeight;
+    s_depthRangeNear = ws->depthRangeNear;
+    s_depthRangeFar = ws->depthRangeFar;
+    s_aaOrdered = ws->aaOrdered != 0;
+    s_shamelessPlug = ws->shamelessPlug != 0;
+    s_lfbConstantAlpha = ws->lfbConstantAlpha;
+    s_lfbWriteColorFormat = ws->lfbWriteColorFormat;
+    s_chromakeyMode = ws->chromakeyMode;
+    s_chromakeyValue = ws->chromakeyValue;
+    s_rgbSrcBlend = ws->rgbSrcBlend;
+    s_rgbDstBlend = ws->rgbDstBlend;
+    s_alphaSrcBlend = ws->alphaSrcBlend;
+    s_alphaDstBlend = ws->alphaDstBlend;
+
+    // Apply states to backend
+    if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
+        b->SetDepthState(s_depthMode, s_depthCompare, s_depthMask, s_depthBias);
+        b->SetAlphaTestState(s_alphaTestOp, s_alphaTestRef);
+        b->SetChromakeyMode(s_chromakeyMode);
+        b->SetChromakeyValue(s_chromakeyValue);
+        b->SetBlendState(s_rgbSrcBlend, s_rgbDstBlend, s_alphaSrcBlend, s_alphaDstBlend);
+
+        // Restore color and alpha combiner states
+        b->SetCombinerMode(s_colorFunc, s_colorFactor, s_colorLocal, s_colorOther, s_colorInvert,
+                           s_alphaFunc, s_alphaFactor, s_alphaLocal, s_alphaOther, s_alphaInvert);
+
+        // Restore texture state for both TMUs
+        for (uint32_t tmu = 0; tmu < 2; ++tmu) {
+            b->SetTexCombinerMode(tmu, s_texRgbFunc[tmu], s_texRgbFactor[tmu], s_texAlphaFunc[tmu], s_texAlphaFactor[tmu]);
+            b->BindTexture(tmu, s_boundTex[tmu], s_clampS[tmu], s_clampT[tmu], s_minFilter[tmu], s_magFilter[tmu]);
+        }
+    }
 }
 
 FX_ENTRY void FX_CALL grColorCombine(GrCombineFunction_t fnc, GrCombineFactor_t factor, GrCombineLocal_t local, GrCombineOther_t other, FxBool invert) {
@@ -391,6 +664,10 @@ FX_ENTRY void FX_CALL grTexCombine(GrChipID_t tmu, GrCombineFunction_t rgbFnc, G
 
 FX_ENTRY void FX_CALL grAlphaBlendFunction(GrAlphaBlendFnc_t rgbSf, GrAlphaBlendFnc_t rgbDf, GrAlphaBlendFnc_t alphaSf, GrAlphaBlendFnc_t alphaDf) {
     GLIDE_LOG(DEBUG, "Frontend", "grAlphaBlendFunction (Glide 3.x) invoked.");
+    s_rgbSrcBlend = rgbSf;
+    s_rgbDstBlend = rgbDf;
+    s_alphaSrcBlend = alphaSf;
+    s_alphaDstBlend = alphaDf;
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
         b->SetBlendState(rgbSf, rgbDf, alphaSf, alphaDf);
     }
@@ -487,16 +764,16 @@ FX_ENTRY void FX_CALL grCullMode(GrCullMode_t mode) {
 FX_ENTRY void FX_CALL grTexDownloadMipMap(GrChipID_t tmu, FxU32 startAddress, FxU32 evenOdd, GrTexInfo* info) {
     GLIDE_LOG(DEBUG, "Frontend", "grTexDownloadMipMap (Glide 3.x) invoked for TMU=" << tmu);
     if (info && info->data) {
-        // Translate Glide 3.x signed log2 aspect ratio to Glide 2.x core format (CoreAspect = 3 - Glide3Aspect)
-        GlideWrapper::TextureManager::GetInstance().DownloadMipMap(tmu, startAddress, info->smallLodLog2, info->largeLodLog2, 3 - info->aspectRatioLog2, info->format, info->data);
+        // Translate Glide 3.x signed log2 aspect ratio and LOD to Glide 2.x core format
+        GlideWrapper::TextureManager::GetInstance().DownloadMipMap(tmu, startAddress, 8 - info->smallLodLog2, 8 - info->largeLodLog2, 3 - info->aspectRatioLog2, info->format, info->data);
     }
 }
 
 FX_ENTRY void FX_CALL grTexDownloadMipMapLevel(GrChipID_t tmu, FxU32 startAddress, GrLOD_t thisLod, GrLOD_t largeLod, GrAspectRatio_t aspectRatio, GrTextureFormat_t format, FxU32 evenOdd, void* data) {
     GLIDE_LOG(DEBUG, "Frontend", "grTexDownloadMipMapLevel (Glide 3.x) invoked for TMU=" << tmu << ", LOD=" << thisLod);
     if (data) {
-        // Translate Glide 3.x signed log2 aspect ratio to Glide 2.x core format
-        GlideWrapper::TextureManager::GetInstance().DownloadMipMap(tmu, startAddress, thisLod, thisLod, 3 - aspectRatio, format, data);
+        // Translate Glide 3.x signed log2 aspect ratio and LOD to Glide 2.x core format
+        GlideWrapper::TextureManager::GetInstance().DownloadMipMap(tmu, startAddress, 8 - thisLod, 8 - thisLod, 3 - aspectRatio, format, data);
     }
 }
 
@@ -537,25 +814,134 @@ FX_ENTRY FxBool FX_CALL grLfbWriteRegion(GrBuffer_t dstBuf, FxU32 dstX, FxU32 ds
     return FXTRUE;
 }
 
+struct LfbLockState {
+    bool isLocked{false};
+    GrLock_t type;
+    GrBuffer_t buffer;
+    GrLfbWriteMode_t writeMode;
+    GrOriginLocation_t origin;
+    bool pixelPipeline{false};
+    uint32_t width{0};
+    uint32_t height{0};
+    std::vector<uint8_t> stagingBuffer;
+    std::vector<uint8_t> originalBuffer;
+    uint32_t stride{0};
+    uint32_t pixelSize{0};
+};
+
+static LfbLockState g_lfbLock;
+
+static void FlipRows(uint8_t* data, uint32_t height, uint32_t stride) {
+    std::vector<uint8_t> tempRow(stride);
+    for (uint32_t y = 0; y < height / 2; ++y) {
+        uint8_t* rowTop = data + y * stride;
+        uint8_t* rowBottom = data + (height - 1 - y) * stride;
+        std::memcpy(tempRow.data(), rowTop, stride);
+        std::memcpy(rowTop, rowBottom, stride);
+        std::memcpy(rowBottom, tempRow.data(), stride);
+    }
+}
+
 FX_ENTRY FxBool FX_CALL grLfbLock(GrLock_t type, GrBuffer_t buffer, GrLfbWriteMode_t writeMode, GrOriginLocation_t origin, FxBool pixelPipeline, GrLfbInfo_t* info) {
     EnsureEngineInitialized();
-    GLIDE_LOG(DEBUG, "Frontend", "grLfbLock (Glide 3.x) invoked: buffer=" << buffer << ", mode=" << writeMode);
-    if (info) {
-        info->size = sizeof(GrLfbInfo_t);
-        info->writeMode = writeMode;
-        info->origin = origin;
-        if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
-            info->lfbPtr = b->GetLfbWritePtr();
-            info->strideInBytes = 800 * 4;
-            return FXTRUE;
-        }
+    GLIDE_LOG(DEBUG, "Frontend", "grLfbLock (Glide 3.x) invoked: buffer=" << buffer << ", mode=" << writeMode << ", origin=" << origin);
+    
+    if (!info) return FXFALSE;
+    
+    auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend();
+    if (!b) return FXFALSE;
+
+    g_lfbLock.width = b->GetWidth();
+    g_lfbLock.height = b->GetHeight();
+    
+    GrLfbWriteMode_t resolvedMode = writeMode;
+    if (resolvedMode == GR_LFBWRITEMODE_ANY) {
+        resolvedMode = GR_LFBWRITEMODE_565;
     }
-    return FXFALSE;
+
+    if (resolvedMode == GR_LFBWRITEMODE_565 || 
+        resolvedMode == GR_LFBWRITEMODE_555 || 
+        resolvedMode == GR_LFBWRITEMODE_1555 || 
+        resolvedMode == GR_LFBWRITEMODE_565_DEPTH || 
+        resolvedMode == GR_LFBWRITEMODE_555_DEPTH || 
+        resolvedMode == GR_LFBWRITEMODE_1555_DEPTH || 
+        resolvedMode == GR_LFBWRITEMODE_ZA16) {
+        g_lfbLock.pixelSize = 2;
+    } else if (resolvedMode == GR_LFBWRITEMODE_888) {
+        g_lfbLock.pixelSize = 3;
+    } else if (resolvedMode == GR_LFBWRITEMODE_8888) {
+        g_lfbLock.pixelSize = 4;
+    } else {
+        GLIDE_LOG(CRITICAL, "Frontend", "grLfbLock: Unsupported writeMode=" << writeMode);
+        return FXFALSE;
+    }
+
+    g_lfbLock.stride = g_lfbLock.width * g_lfbLock.pixelSize;
+    g_lfbLock.stagingBuffer.resize(g_lfbLock.stride * g_lfbLock.height);
+    
+    b->ReadLFB(buffer, 0, 0, g_lfbLock.width, g_lfbLock.height, g_lfbLock.stride, g_lfbLock.stagingBuffer.data());
+    g_lfbLock.originalBuffer = g_lfbLock.stagingBuffer;
+    
+    if (origin == GR_ORIGIN_LOWER_LEFT) {
+        FlipRows(g_lfbLock.stagingBuffer.data(), g_lfbLock.height, g_lfbLock.stride);
+    }
+
+    info->size = sizeof(GrLfbInfo_t);
+    info->writeMode = resolvedMode;
+    info->origin = origin;
+    info->strideInBytes = g_lfbLock.stride;
+    info->lfbPtr = g_lfbLock.stagingBuffer.data();
+
+    g_lfbLock.isLocked = true;
+    g_lfbLock.type = type;
+    g_lfbLock.buffer = buffer;
+    g_lfbLock.writeMode = resolvedMode;
+    g_lfbLock.origin = origin;
+    g_lfbLock.pixelPipeline = (pixelPipeline != 0);
+
+    return FXTRUE;
 }
 
 FX_ENTRY FxBool FX_CALL grLfbUnlock(GrLock_t type, GrBuffer_t buffer) {
     EnsureEngineInitialized();
     GLIDE_LOG(DEBUG, "Frontend", "grLfbUnlock (Glide 3.x) invoked.");
+    
+    if (!g_lfbLock.isLocked) {
+        GLIDE_LOG(WARN, "Frontend", "grLfbUnlock: No active LFB lock found!");
+        return FXFALSE;
+    }
+
+    auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend();
+    if (!b) return FXFALSE;
+
+    if (g_lfbLock.type == GR_LFB_WRITE_ONLY) {
+        if (g_lfbLock.origin == GR_ORIGIN_LOWER_LEFT) {
+            FlipRows(g_lfbLock.stagingBuffer.data(), g_lfbLock.height, g_lfbLock.stride);
+        }
+
+        uint32_t srcFmt = 0;
+        if (g_lfbLock.writeMode == GR_LFBWRITEMODE_565) srcFmt = 0;
+        else if (g_lfbLock.writeMode == GR_LFBWRITEMODE_555) srcFmt = 1;
+        else if (g_lfbLock.writeMode == GR_LFBWRITEMODE_1555) srcFmt = 2;
+        else if (g_lfbLock.writeMode == GR_LFBWRITEMODE_888) srcFmt = 4;
+        else if (g_lfbLock.writeMode == GR_LFBWRITEMODE_8888) srcFmt = 5;
+        else if (g_lfbLock.writeMode == GR_LFBWRITEMODE_565_DEPTH) srcFmt = 12;
+        else if (g_lfbLock.writeMode == GR_LFBWRITEMODE_555_DEPTH) srcFmt = 13;
+        else if (g_lfbLock.writeMode == GR_LFBWRITEMODE_1555_DEPTH) srcFmt = 14;
+        else if (g_lfbLock.writeMode == GR_LFBWRITEMODE_ZA16) srcFmt = 15;
+
+        GlideWrapper::LfbPipelineConfig config;
+        config.pixelPipeline = g_lfbLock.pixelPipeline;
+        config.chromakeyEnabled = (s_chromakeyMode != 0);
+        config.chromakeyValue = s_chromakeyValue;
+        config.constantAlpha = s_lfbConstantAlpha;
+        config.rgbSrcBlend = s_rgbSrcBlend;
+        config.rgbDstBlend = s_rgbDstBlend;
+
+        b->WriteLFB(g_lfbLock.buffer, 0, 0, g_lfbLock.width, g_lfbLock.height, g_lfbLock.stride, srcFmt, g_lfbLock.stagingBuffer.data(), g_lfbLock.originalBuffer.data(), config);
+    }
+
+    g_lfbLock.isLocked = false;
     return FXTRUE;
 }
 
@@ -584,7 +970,52 @@ FX_ENTRY void FX_CALL grDitherMode(GrDitherMode_t mode) {
 }
 
 FX_ENTRY void FX_CALL grCoordinateSpace(GrCoordinateSpaceMode_t mode) {
-    GLIDE_LOG(DEBUG, "Frontend", "grCoordinateSpace (Glide 3.x) stub invoked with mode=" << mode);
+    GLIDE_LOG(DEBUG, "Frontend", "grCoordinateSpace (Glide 3.x) set to mode=" << mode);
+    s_coordSpace = (mode == GR_CLIP_COORDS) ? 1 : 0;
+}
+
+FX_ENTRY void FX_CALL grViewport(FxI32 x, FxI32 y, FxI32 width, FxI32 height) {
+    GLIDE_LOG(DEBUG, "Frontend", "grViewport (Glide 3.x) set to x=" << x << ", y=" << y << ", w=" << width << ", h=" << height);
+    s_viewportX = static_cast<float>(x);
+    s_viewportY = static_cast<float>(y);
+    s_viewportWidth = static_cast<float>(width);
+    s_viewportHeight = static_cast<float>(height);
+}
+
+FX_ENTRY void FX_CALL grDepthRange(FxFloat n, FxFloat f) {
+    GLIDE_LOG(DEBUG, "Frontend", "grDepthRange (Glide 3.x) set to near=" << n << ", far=" << f);
+    s_depthRangeNear = n;
+    s_depthRangeFar = f;
+}
+
+FX_ENTRY void FX_CALL grEnable(GrEnableMode_t mode) {
+    GLIDE_LOG(DEBUG, "Frontend", "grEnable (Glide 3.x) mode=" << mode);
+    switch (mode) {
+        case GR_AA_ORDERED:
+            s_aaOrdered = true;
+            break;
+        case GR_SHAMELESS_PLUG:
+            s_shamelessPlug = true;
+            break;
+        default:
+            GLIDE_LOG(WARN, "Frontend", "grEnable (Glide 3.x) unsupported mode=" << mode);
+            break;
+    }
+}
+
+FX_ENTRY void FX_CALL grDisable(GrEnableMode_t mode) {
+    GLIDE_LOG(DEBUG, "Frontend", "grDisable (Glide 3.x) mode=" << mode);
+    switch (mode) {
+        case GR_AA_ORDERED:
+            s_aaOrdered = false;
+            break;
+        case GR_SHAMELESS_PLUG:
+            s_shamelessPlug = false;
+            break;
+        default:
+            GLIDE_LOG(WARN, "Frontend", "grDisable (Glide 3.x) unsupported mode=" << mode);
+            break;
+    }
 }
 
 FX_ENTRY void FX_CALL grTexMultibase(GrChipID_t tmu, FxBool enable) {
@@ -625,6 +1056,55 @@ FX_ENTRY void FX_CALL guGammaCorrectionRGB(FxFloat red, FxFloat green, FxFloat b
     if (auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
         backend->LoadGammaTable(256, rTable, gTable, bTable);
     }
+}
+
+FX_ENTRY void FX_CALL grDisableAllEffects(void) {
+    EnsureEngineInitialized();
+    GLIDE_LOG(DEBUG, "Frontend", "grDisableAllEffects (Glide 3.x) invoked");
+    s_rgbSrcBlend = 4;   // GR_BLEND_ONE
+    s_rgbDstBlend = 0;   // GR_BLEND_ZERO
+    s_alphaSrcBlend = 4; // GR_BLEND_ONE
+    s_alphaDstBlend = 0; // GR_BLEND_ZERO
+    s_depthCompare = 1;  // GR_CMP_ALWAYS
+    s_depthMask = false;
+    s_alphaTestOp = 7;   // GR_CMP_ALWAYS
+    if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
+        b->SetBlendState(s_rgbSrcBlend, s_rgbDstBlend, s_alphaSrcBlend, s_alphaDstBlend);
+        b->SetDepthState(s_depthMode, s_depthCompare, s_depthMask, s_depthBias);
+        b->SetAlphaTestState(s_alphaTestOp, s_alphaTestRef);
+        b->SetFogMode(0); // GR_FOG_DISABLE
+        b->SetChromakeyMode(0); // Disable chromakey
+    }
+}
+
+FX_ENTRY void FX_CALL grChromakeyMode(GrChromakeyMode_t mode) {
+    EnsureEngineInitialized();
+    GLIDE_LOG(DEBUG, "Frontend", "grChromakeyMode (Glide 3.x) invoked: mode=" << mode);
+    s_chromakeyMode = mode;
+    if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
+        b->SetChromakeyMode(mode);
+    }
+}
+
+FX_ENTRY void FX_CALL grChromakeyValue(GrColor_t value) {
+    EnsureEngineInitialized();
+    GLIDE_LOG(DEBUG, "Frontend", "grChromakeyValue (Glide 3.x) invoked: value=0x" << std::hex << value << std::dec);
+    s_chromakeyValue = value;
+    if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
+        b->SetChromakeyValue(value);
+    }
+}
+
+FX_ENTRY void FX_CALL grLfbConstantAlpha(GrAlpha_t alpha) {
+    EnsureEngineInitialized();
+    GLIDE_LOG(DEBUG, "Frontend", "grLfbConstantAlpha (Glide 3.x) invoked: alpha=" << static_cast<int>(alpha));
+    s_lfbConstantAlpha = alpha;
+}
+
+FX_ENTRY void FX_CALL grLfbWriteColorFormat(GrColorFormat_t colorFormat) {
+    EnsureEngineInitialized();
+    GLIDE_LOG(DEBUG, "Frontend", "grLfbWriteColorFormat (Glide 3.x) invoked: format=" << colorFormat);
+    s_lfbWriteColorFormat = colorFormat;
 }
 
 } // extern "C"

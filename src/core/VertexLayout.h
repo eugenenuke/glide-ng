@@ -16,6 +16,7 @@ public:
     static VertexLayout& GetInstance();
 
     void ResetToGlide2Canonical();
+    void ResetToGlide3Canonical();
     void SetParamOffset(uint32_t param, int32_t offset, uint32_t mode);
     void SetParamOffsetGlide2(uint32_t param, int32_t offset, uint32_t mode);
     void SetParamOffsetGlide3(uint32_t param, int32_t offset, uint32_t mode);

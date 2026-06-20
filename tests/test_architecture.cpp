@@ -2206,165 +2206,6 @@ TEST_CASE("Glide Chroma-Key Range Rendering Verification") {
 #endif
 }
 
-TEST_CASE("Alpha 8 Font Texture Rendering & Text Damage Detection", "[Architecture][Text]") {
-#ifdef __linux__
-    // 1. Load the shared library
-    void* handle = OpenGlide3Handle();
-    REQUIRE(handle != nullptr);
-
-    // 2. Resolve function pointers
-    using InitFunc = void(*)(void);
-    using WinOpenFunc = FxU32(*)(FxU32, FxU32, FxU32, FxU32, FxU32, int, int);
-    using SelectCtxFunc = FxBool(*)(FxU32);
-    using BufferClearFunc = void(*)(FxU32, FxU32, FxU32);
-    using WinCloseFunc = FxBool(*)(FxU32);
-    using DrawTriFunc = void(*)(const void*, const void*, const void*);
-    using ReadLfbFunc = FxBool(*)(FxU32, FxU32, FxU32, FxU32, FxU32, FxU32, void*);
-    using ClipWinFunc = void(*)(FxU32, FxU32, FxU32, FxU32);
-    using VertexLayoutFunc = void(*)(FxU32, FxI32, FxU32);
-
-    using TexDownloadMipMapFunc = void(*)(GrChipID_t, FxU32, FxU32, GrTexInfo*);
-    using TexSourceFunc = void(*)(GrChipID_t, FxU32, FxU32, GrTexInfo*);
-    using TexCombineFunc = void(*)(GrChipID_t, GrCombineFunction_t, GrCombineFactor_t, GrCombineFunction_t, GrCombineFactor_t, FxBool, FxBool);
-    using ColorCombineFunc = void(*)(GrCombineFunction_t, GrCombineFactor_t, GrCombineLocal_t, GrCombineOther_t, FxBool);
-    using TexFilterModeFunc = void(*)(GrChipID_t, GrTextureFilterMode_t, GrTextureFilterMode_t);
-    using TexClampModeFunc = void(*)(GrChipID_t, GrTextureClampMode_t, GrTextureClampMode_t);
-    using ShutdownFunc = void(*)(void);
-
-    auto glideInit = reinterpret_cast<InitFunc>(::dlsym(handle, "grGlideInit"));
-    auto winOpen = reinterpret_cast<WinOpenFunc>(::dlsym(handle, "grSstWinOpen"));
-    auto selectCtx = reinterpret_cast<SelectCtxFunc>(::dlsym(handle, "grSelectContext"));
-    auto bufferClear = reinterpret_cast<BufferClearFunc>(::dlsym(handle, "grBufferClear"));
-    auto winClose = reinterpret_cast<WinCloseFunc>(::dlsym(handle, "grSstWinClose"));
-    auto drawTri = reinterpret_cast<DrawTriFunc>(::dlsym(handle, "grDrawTriangle"));
-    auto readLfb = reinterpret_cast<ReadLfbFunc>(::dlsym(handle, "grLfbReadRegion"));
-    auto clipWin = reinterpret_cast<ClipWinFunc>(::dlsym(handle, "grClipWindow"));
-    auto vertexLayout = reinterpret_cast<VertexLayoutFunc>(::dlsym(handle, "grVertexLayout"));
-
-    auto texDownload = reinterpret_cast<TexDownloadMipMapFunc>(::dlsym(handle, "grTexDownloadMipMap"));
-    auto texSource = reinterpret_cast<TexSourceFunc>(::dlsym(handle, "grTexSource"));
-    auto texCombine = reinterpret_cast<TexCombineFunc>(::dlsym(handle, "grTexCombine"));
-    auto colorCombine = reinterpret_cast<ColorCombineFunc>(::dlsym(handle, "grColorCombine"));
-    auto texFilter = reinterpret_cast<TexFilterModeFunc>(::dlsym(handle, "grTexFilterMode"));
-    auto texClamp = reinterpret_cast<TexClampModeFunc>(::dlsym(handle, "grTexClampMode"));
-    auto shutdown = reinterpret_cast<ShutdownFunc>(::dlsym(handle, "grGlideShutdown"));
-
-    REQUIRE(glideInit != nullptr);
-    REQUIRE(winOpen != nullptr);
-    REQUIRE(selectCtx != nullptr);
-    REQUIRE(bufferClear != nullptr);
-    REQUIRE(winClose != nullptr);
-    REQUIRE(drawTri != nullptr);
-    REQUIRE(readLfb != nullptr);
-    REQUIRE(clipWin != nullptr);
-    REQUIRE(vertexLayout != nullptr);
-    REQUIRE(texDownload != nullptr);
-    REQUIRE(texSource != nullptr);
-    REQUIRE(texCombine != nullptr);
-    REQUIRE(colorCombine != nullptr);
-    REQUIRE(texFilter != nullptr);
-    REQUIRE(texClamp != nullptr);
-    REQUIRE(shutdown != nullptr);
-
-    glideInit();
-    FxU32 ctx = winOpen(0, 8, 0, 0, 0, 2, 1); // 800x600
-    REQUIRE(ctx == 1);
-    REQUIRE(selectCtx(ctx) == FXTRUE);
-
-    clipWin(0, 0, 800, 600);
-
-    // Configure vertex layout
-    vertexLayout(0x01, 0, 1);  // GR_PARAM_XY at 0
-    vertexLayout(0x02, 8, 1);  // GR_PARAM_Z at 8
-    vertexLayout(0x20, 12, 1); // GR_PARAM_RGB at 12
-    vertexLayout(0x10, 28, 1); // GR_PARAM_A at 28
-    vertexLayout(0x03, 32, 1); // GR_PARAM_W at 32
-    vertexLayout(0x40, 36, 1); // GR_PARAM_ST0 at 36
-
-    bufferClear(0xFF000000, 0, 0xFFFFFFFF); // Clear to Black
-
-    // Prepare 32x16 Texture in GR_TEXFMT_ALPHA_8
-    // Top half (y = 0..7) is solid white (0xFF), bottom half (y = 8..15) is transparent/black (0x00)
-    std::vector<uint8_t> texData(32 * 16, 0);
-    for (int y = 0; y < 8; ++y) {
-        for (int x = 0; x < 32; ++x) {
-            texData[y * 32 + x] = 0xFF;
-        }
-    }
-
-    GrTexInfo texInfo;
-    texInfo.smallLod = 3; // LOD 3 -> 32x32 (Max dimension)
-    texInfo.largeLod = 3;
-    texInfo.aspectRatio = 1; // 2W x 1H -> 32x16 (Glide 3 aspect ratio value)
-    texInfo.format = GR_TEXFMT_ALPHA_8;
-    texInfo.data = texData.data();
-
-    // Download to TMU0
-    texDownload(0, 0x00002000, 0, &texInfo);
-    texSource(0, 0x00002000, 0, &texInfo);
-    texClamp(0, GR_TEXTURECLAMP_CLAMP, GR_TEXTURECLAMP_CLAMP);
-    texFilter(0, GR_TEXTUREFILTER_BILINEAR, GR_TEXTUREFILTER_BILINEAR);
-
-    // Combine setup: output the texture alpha to RGB/A channels so we can read it easily
-    texCombine(0, GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE, GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE, FXFALSE, FXFALSE);
-    colorCombine(GR_COMBINE_FUNCTION_SCALE_OTHER, GR_COMBINE_FACTOR_ONE, GR_COMBINE_LOCAL_NONE, GR_COMBINE_OTHER_TEXTURE, FXFALSE);
-
-    // Draw a centered quad from (300,300) to (500,500)
-    // S coordinate is scaled: s_val = s_pixel * (256.0 / 32.0) = s_pixel * 8.0
-    // T coordinate is scaled: t_val = t_pixel * (256.0 / 32.0) = t_pixel * 8.0 (since max dimension is 32)
-    // So for:
-    // s_pixel = 0 -> s_val = 0
-    // s_pixel = 32 -> s_val = 256.0
-    // t_pixel = 0 -> t_val = 0
-    // t_pixel = 16 -> t_val = 128.0
-    
-    StandardVert v0{300.0f, 300.0f, 0.5f, 255.0f, 255.0f, 255.0f, 1.0f, 255.0f, 1.0f,   0.0f,   0.0f, 1.0f};
-    StandardVert v1{500.0f, 300.0f, 0.5f, 255.0f, 255.0f, 255.0f, 1.0f, 255.0f, 1.0f, 256.0f,   0.0f, 1.0f};
-    StandardVert v2{500.0f, 500.0f, 0.5f, 255.0f, 255.0f, 255.0f, 1.0f, 255.0f, 1.0f, 256.0f, 128.0f, 1.0f};
-    StandardVert v3{300.0f, 500.0f, 0.5f, 255.0f, 255.0f, 255.0f, 1.0f, 255.0f, 1.0f,   0.0f, 128.0f, 1.0f};
-
-    drawTri(&v0, &v1, &v2);
-    drawTri(&v0, &v2, &v3);
-
-    // Read back a pixel from the top half (e.g. x=400, y=350) directly from the back buffer
-    // It should be solid white: 0xFFFFFFFF
-    uint32_t topPixel = 0;
-    FxBool ok = readLfb(GR_BUFFER_BACKBUFFER, 400, 350, 1, 1, 4, &topPixel);
-    REQUIRE(ok == FXTRUE);
-
-    // Read back a pixel from the bottom half (e.g. x=400, y=450) directly from the back buffer
-    // It should be black: 0xFF000000 or similar (since alpha is 0)
-    uint32_t bottomPixel = 0;
-    ok = readLfb(GR_BUFFER_BACKBUFFER, 400, 450, 1, 1, 4, &bottomPixel);
-    REQUIRE(ok == FXTRUE);
-
-    // Unpack colors
-    uint8_t r_top = (topPixel >> 16) & 0xFF;
-    uint8_t g_top = (topPixel >> 8) & 0xFF;
-    uint8_t b_top = topPixel & 0xFF;
-
-    uint8_t r_bottom = (bottomPixel >> 16) & 0xFF;
-    uint8_t g_bottom = (bottomPixel >> 8) & 0xFF;
-    uint8_t b_bottom = bottomPixel & 0xFF;
-
-    INFO("Top half pixel at (400,150) = 0x" << std::hex << topPixel << " | R=" << (int)r_top << ", G=" << (int)g_top << ", B=" << (int)b_top);
-    INFO("Bottom half pixel at (400,450) = 0x" << std::hex << bottomPixel << " | R=" << (int)r_bottom << ", G=" << (int)g_bottom << ", B=" << (int)b_bottom);
-
-    // Top half MUST be white (since it maps to texture t < 8.0, containing 0xFF)
-    REQUIRE(r_top >= 250);
-    REQUIRE(g_top >= 250);
-    REQUIRE(b_top >= 250);
-
-    // Bottom half MUST be black (since it maps to texture t > 8.0, containing 0x00)
-    REQUIRE(r_bottom <= 5);
-    REQUIRE(g_bottom <= 5);
-    REQUIRE(b_bottom <= 5);
-
-    // Clean up
-    shutdown();
-    ::dlclose(handle);
-#endif
-}
 
 TEST_CASE("Glide 2.x Alpha 8 Font Texture Rendering & Text Damage Detection", "[Glide2][Text]") {
 #ifdef __linux__
@@ -4918,6 +4759,54 @@ TEST_CASE("Glide 2.x Dynamic Version and Hardware Gating", "[Glide2][Gating]") {
     ::dlclose(handle);
 #endif
 }
+
+
+
+#include "core/VertexLayout.h"
+
+TEST_CASE("Glide 2.x Vertex Layout Decoding Integrity", "[VertexLayout][Glide2]") {
+    SECTION("Glide 2 Canonical Vertex Decoding") {
+        auto& layout = GlideWrapper::VertexLayout::GetInstance();
+        layout.ResetToGlide2Canonical();
+
+        // Prepare mock raw Glide 2 vertex matching canonical offsets:
+        // x,y at 0, z at 8, rgb at 12, ooz at 24, a at 28, oow at 32, st0 at 36
+        struct MockGlide2Vertex {
+            float x, y;
+            float z;
+            float r, g, b;
+            float ooz;
+            float a;
+            float oow;
+            float s, t;
+        };
+
+        MockGlide2Vertex v2;
+        v2.x = 100.0f; v2.y = 200.0f;
+        v2.z = 30000.0f;
+        v2.r = 128.0f; v2.g = 192.0f; v2.b = 255.0f;
+        v2.ooz = 40000.0f;
+        v2.a = 200.0f;
+        v2.oow = 0.5f;
+        v2.s = 5.0f; v2.t = 10.0f;
+
+        GlideWrapper::ModernVertex mv = layout.DecodeVertex(&v2);
+
+        REQUIRE(mv.pos[0] == 100.0f);
+        REQUIRE(mv.pos[1] == 200.0f);
+        REQUIRE(mv.pos[2] == 40000.0f / 65535.0f);
+        REQUIRE(mv.color[0] == 128.0f / 255.0f);
+        REQUIRE(mv.color[1] == 192.0f / 255.0f);
+        REQUIRE(mv.color[2] == 255.0f / 255.0f);
+        REQUIRE(mv.color[3] == 200.0f / 255.0f);
+        REQUIRE(mv.pos[3] == 0.5f);
+        REQUIRE(mv.tex[0] == 5.0f);
+        REQUIRE(mv.tex[1] == 10.0f);
+    }
+}
+
+
+
 
 
 

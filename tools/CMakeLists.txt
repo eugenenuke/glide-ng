@@ -45,3 +45,22 @@ target_include_directories(tool_info3 PUBLIC
 add_subdirectory(glidegears)
 add_subdirectory(glidecube)
 
+# --- Glide 2.x System Info Tool ---
+add_executable(glide2_info glide_info.cpp)
+target_link_libraries(glide2_info PRIVATE glide2x tool_info2)
+target_compile_definitions(glide2_info PRIVATE GLIDE_VERSION=2)
+target_include_directories(glide2_info PRIVATE 
+    "${CMAKE_SOURCE_DIR}/include/glide2"
+    "${CMAKE_SOURCE_DIR}/include/3dfx"
+)
+
+# --- Glide 3.x System Info Tool ---
+add_executable(glide3_info glide_info.cpp)
+target_link_libraries(glide3_info PRIVATE glide3x tool_info3)
+target_compile_definitions(glide3_info PRIVATE GLIDE_VERSION=3)
+target_include_directories(glide3_info PRIVATE 
+    "${CMAKE_SOURCE_DIR}/include/glide3"
+    "${CMAKE_SOURCE_DIR}/include/3dfx"
+)
+
+

@@ -45,7 +45,10 @@ target_include_directories(glide2x PRIVATE
 target_link_libraries(glide2x PRIVATE GlideWrapperCore)
 
 # 3. Glide 3 Frontend Export Library (glide3x.dll / libglide3x.so)
-add_library(glide3x SHARED glide3/glide3_entry.cpp)
+add_library(glide3x SHARED 
+    glide3/glide3_entry.cpp
+    glide3/glide3_banner.cpp
+)
 target_include_directories(glide3x PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/../include/glide3"
     "${CMAKE_CURRENT_SOURCE_DIR}/../include/3dfx"

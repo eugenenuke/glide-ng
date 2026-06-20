@@ -101,7 +101,8 @@ Tools::ToolRunConfig Tools::InitializeAndParse(
     sysConfig.sli = false;
 
 #if GLIDE_VERSION == 3
-    sysConfig.boardName = "Voodoo3 (H3) / Voodoo5";
+    const char* hw_name = grGetString(GR_HARDWARE);
+    sysConfig.boardName = hw_name ? hw_name : "Voodoo3 (H3) / Voodoo5";
     FxI32 fbi_mem_val = 4;
     grGet(GR_MEMORY_FB, 4, &fbi_mem_val);
     sysConfig.fbiMemMb = fbi_mem_val / (1024 * 1024);
@@ -212,13 +213,20 @@ Tools::ToolRunConfig Tools::InitializeAndParse(
     SafePrint(std::cout, res_ss.str());
     
     SafePrint(std::cout, "----------------------------------------------------------------------");
-    SafePrint(std::cout, "Emulated Device: " + sysConfig.boardName + " (" + std::string(hardwareName ? hardwareName : "Unknown") + ")");
+    std::string board_str = sysConfig.boardName;
+    if (hardwareName && board_str != hardwareName && board_str.find(hardwareName) == std::string::npos) {
+        board_str += " (" + std::string(hardwareName) + ")";
+    }
+    SafePrint(std::cout, "Emulated Device: " + board_str);
     SafePrint(std::cout, "Device Vendor:   " + std::string(vendorName ? vendorName : "Unknown"));
     SafePrint(std::cout, "VRAM Size:       " + std::to_string(sysConfig.fbiMemMb) + ".00 MB");
     SafePrint(std::cout, "Active TMUs:     " + std::to_string(sysConfig.tmuCount) + " TMUs");
     SafePrint(std::cout, "SLI Detect:      " + std::string(sysConfig.sli ? "Yes (Dual-Card Board)" : "No"));
     SafePrint(std::cout, "----------------------------------------------------------------------");
     SafePrint(std::cout, "Active Driver:   " + std::string(rendererName ? rendererName : "Unknown"));
+    const char* msaa_env = std::getenv("GLIDE_WRAPPER_MSAA");
+    std::string msaa_str = msaa_env ? std::string(msaa_env) + "x MSAA (Vulkan GPU Accelerated)" : "Disabled (1x / CPU Software Emulation)";
+    SafePrint(std::cout, "Anti-Aliasing:   " + msaa_str);
     SafePrint(std::cout, "----------------------------------------------------------------------");
 
 #if GLIDE_VERSION == 2

@@ -19,7 +19,6 @@ namespace GlideWrapper {
 
 void SoftwareBackendBase::ResetState() {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    VertexLayout::GetInstance().ResetToGlide2Canonical();
     m_depthMode = 0;
     m_depthCompareOp = 1;
     m_depthMask = true;
