@@ -2,6 +2,7 @@
 #include <glidesys.h>
 #include <glide.h>
 #include <core/BackendManager.h>
+#include <core/GlideSplashAnimator.h>
 #include <core/EmbeddedAssets.h>
 
 // Dummy GrState type since it is a stub in our Glide 3.x wrapper
@@ -88,4 +89,13 @@ grShamelessPlug( void )
   }
 
   grGlideSetState( &state );
+}
+
+extern "C" void FX_CALL
+grSplash(float x, float y, float w, float h, FxU32 frame)
+{
+    auto* animator = GlideWrapper::BackendManager::GetInstance().GetSplashAnimator();
+    if (animator) {
+        animator->Render(x, y, w, h, frame, nullptr);
+    }
 }

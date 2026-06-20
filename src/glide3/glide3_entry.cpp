@@ -8,6 +8,7 @@
 #include "core/Telemetry.h"
 #include <iostream>
 #include <cmath>
+#include <vector>
 
 #ifndef __linux__
 #define __linux__
@@ -89,6 +90,10 @@ namespace {
             mv.pos[2] = (mv.pos[2] + 1.0f) * 0.5f * (s_depthRangeFar - s_depthRangeNear) + s_depthRangeNear;
         }
     }
+
+    uint32_t s_fogMode = 0;
+    uint32_t s_fogColor = 0xff000000;
+    uint8_t s_fogTable[64] = {0};
 }
 
 struct GlideWrapperState {
@@ -134,6 +139,9 @@ struct GlideWrapperState {
     uint32_t rgbDstBlend;
     uint32_t alphaSrcBlend;
     uint32_t alphaDstBlend;
+    uint32_t fogMode;
+    uint32_t fogColor;
+    uint8_t  fogTable[64];
 };
 
 FX_ENTRY void FX_CALL grGlideInit(void) {
@@ -317,6 +325,70 @@ FX_ENTRY void FX_CALL grDrawTriangle(const void* a, const void* b, const void* c
     backend->DrawTriangle(va, vb, vc);
 }
 
+FX_ENTRY void FX_CALL grAADrawTriangle(const void* a, const void* b, const void* c, FxBool ab_strong, FxBool bc_strong, FxBool ca_strong) {
+    GLIDE_LOG(DEBUG, "Frontend", "grAADrawTriangle (Glide 3.x) invoked.");
+    grDrawTriangle(a, b, c);
+}
+
+static void DrawVertexList(FxU32 mode, FxU32 count, const GlideWrapper::ModernVertex* vertices) {
+    auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
+    if (!backend || count < 3) return;
+
+    if (mode == GR_TRIANGLES) {
+        for (FxU32 i = 0; i + 2 < count; i += 3) {
+            backend->DrawTriangle(vertices[i], vertices[i+1], vertices[i+2]);
+        }
+    } else if (mode == GR_TRIANGLE_STRIP) {
+        for (FxU32 i = 0; i + 2 < count; ++i) {
+            if (i % 2 == 0) {
+                backend->DrawTriangle(vertices[i], vertices[i+1], vertices[i+2]);
+            } else {
+                backend->DrawTriangle(vertices[i], vertices[i+2], vertices[i+1]);
+            }
+        }
+    } else if (mode == GR_TRIANGLE_FAN || mode == GR_POLYGON) {
+        for (FxU32 i = 1; i + 1 < count; ++i) {
+            backend->DrawTriangle(vertices[0], vertices[i], vertices[i+1]);
+        }
+    }
+}
+
+FX_ENTRY void FX_CALL grDrawVertexArray(FxU32 mode, FxU32 count, void *pointers) {
+    EnsureEngineInitialized();
+    GLIDE_LOG(DEBUG, "Frontend", "grDrawVertexArray (Glide 3.x) invoked: mode=" << mode << ", count=" << count);
+    if (!pointers || count < 3) return;
+
+    GLIDE_PROFILE_SCOPE("API::grDrawVertexArray");
+    auto& layout = GlideWrapper::VertexLayout::GetInstance();
+    const void* const* ptrs = static_cast<const void* const*>(pointers);
+
+    std::vector<GlideWrapper::ModernVertex> vertices(count);
+    for (FxU32 i = 0; i < count; ++i) {
+        vertices[i] = layout.DecodeVertex(ptrs[i]);
+        TransformVertexIfNecessary(vertices[i]);
+    }
+
+    DrawVertexList(mode, count, vertices.data());
+}
+
+FX_ENTRY void FX_CALL grDrawVertexArrayContiguous(FxU32 mode, FxU32 count, void *pointers, FxU32 stride) {
+    EnsureEngineInitialized();
+    GLIDE_LOG(DEBUG, "Frontend", "grDrawVertexArrayContiguous (Glide 3.x) invoked: mode=" << mode << ", count=" << count << ", stride=" << stride);
+    if (!pointers || count < 3 || stride == 0) return;
+
+    GLIDE_PROFILE_SCOPE("API::grDrawVertexArrayContiguous");
+    auto& layout = GlideWrapper::VertexLayout::GetInstance();
+    const char* rawBytes = static_cast<const char*>(pointers);
+
+    std::vector<GlideWrapper::ModernVertex> vertices(count);
+    for (FxU32 i = 0; i < count; ++i) {
+        vertices[i] = layout.DecodeVertex(rawBytes + i * stride);
+        TransformVertexIfNecessary(vertices[i]);
+    }
+
+    DrawVertexList(mode, count, vertices.data());
+}
+
 FX_ENTRY void FX_CALL grTriStats(FxU32* processed, FxU32* drawn) {
     if (processed) {
         *processed = static_cast<FxU32>(GlideWrapper::TelemetryManager::GetInstance().GetTrianglesProcessed());
@@ -423,6 +495,58 @@ FX_ENTRY FxU32 FX_CALL grGet(FxU32 pname, FxU32 plength, FxI32* params) {
             GLIDE_LOG(WARN, "Frontend", "grGet (Glide 3.x) unknown or unsupported pname=" << pname);
             return 0;
     }
+}
+
+static const GrResolution s_supportedResolutions[] = {
+    { GR_RESOLUTION_512x384,  GR_REFRESH_60Hz, 2, 1 },
+    { GR_RESOLUTION_640x480,  GR_REFRESH_60Hz, 2, 1 },
+    { GR_RESOLUTION_800x600,  GR_REFRESH_60Hz, 2, 1 },
+    { GR_RESOLUTION_1024x768, GR_REFRESH_60Hz, 2, 1 }
+};
+
+FX_ENTRY FxI32 FX_CALL grQueryResolutions(const GrResolution *resTemplate, GrResolution *output) {
+    GLIDE_LOG(DEBUG, "Frontend", "grQueryResolutions (Glide 3.x) invoked.");
+    
+    FxI32 matchCount = 0;
+    constexpr int numResolutions = sizeof(s_supportedResolutions) / sizeof(s_supportedResolutions[0]);
+
+    for (int i = 0; i < numResolutions; ++i) {
+        const auto& res = s_supportedResolutions[i];
+        bool match = true;
+
+        if (resTemplate) {
+            if (resTemplate->resolution != static_cast<GrScreenResolution_t>(GR_QUERY_ANY) && 
+                resTemplate->resolution != res.resolution) {
+                match = false;
+            }
+            if (resTemplate->refresh != static_cast<GrScreenRefresh_t>(GR_QUERY_ANY) && 
+                resTemplate->refresh != res.refresh) {
+                match = false;
+            }
+            if (resTemplate->numColorBuffers != GR_QUERY_ANY && 
+                resTemplate->numColorBuffers != res.numColorBuffers) {
+                match = false;
+            }
+            if (resTemplate->numAuxBuffers != GR_QUERY_ANY && 
+                resTemplate->numAuxBuffers != res.numAuxBuffers) {
+                match = false;
+            }
+        }
+
+        if (match) {
+            if (output) {
+                output[matchCount] = res;
+            }
+            matchCount++;
+        }
+    }
+
+    return matchCount;
+}
+
+FX_ENTRY FxBool FX_CALL grReset(FxU32 what) {
+    GLIDE_LOG(DEBUG, "Frontend", "grReset (Glide 3.x) invoked: what=" << what);
+    return FXTRUE;
 }
 
 FX_ENTRY const char* FX_CALL grGetString(FxU32 pname) {
@@ -554,6 +678,9 @@ FX_ENTRY void FX_CALL grGlideGetState(void* state) {
     ws->rgbDstBlend = s_rgbDstBlend;
     ws->alphaSrcBlend = s_alphaSrcBlend;
     ws->alphaDstBlend = s_alphaDstBlend;
+    ws->fogMode = s_fogMode;
+    ws->fogColor = s_fogColor;
+    std::memcpy(ws->fogTable, s_fogTable, sizeof(s_fogTable));
 }
 
 FX_ENTRY void FX_CALL grGlideSetState(const void* state) {
@@ -602,6 +729,9 @@ FX_ENTRY void FX_CALL grGlideSetState(const void* state) {
     s_rgbDstBlend = ws->rgbDstBlend;
     s_alphaSrcBlend = ws->alphaSrcBlend;
     s_alphaDstBlend = ws->alphaDstBlend;
+    s_fogMode = ws->fogMode;
+    s_fogColor = ws->fogColor;
+    std::memcpy(s_fogTable, ws->fogTable, sizeof(s_fogTable));
 
     // Apply states to backend
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
@@ -610,6 +740,9 @@ FX_ENTRY void FX_CALL grGlideSetState(const void* state) {
         b->SetChromakeyMode(s_chromakeyMode);
         b->SetChromakeyValue(s_chromakeyValue);
         b->SetBlendState(s_rgbSrcBlend, s_rgbDstBlend, s_alphaSrcBlend, s_alphaDstBlend);
+        b->SetFogMode(s_fogMode);
+        b->SetFogColor(s_fogColor);
+        b->SetFogTable(s_fogTable);
 
         // Restore color and alpha combiner states
         b->SetCombinerMode(s_colorFunc, s_colorFactor, s_colorLocal, s_colorOther, s_colorInvert,
@@ -745,6 +878,154 @@ FX_ENTRY void FX_CALL grDepthBiasLevel(FxI32 level) {
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
         b->SetDepthState(s_depthMode, s_depthCompare, s_depthMask, s_depthBias);
     }
+}
+
+static const float tableIndexToW[64] = {
+    1.000000f,      1.142857f,      1.333333f,      1.600000f, 
+    2.000000f,      2.285714f,      2.666667f,      3.200000f, 
+    4.000000f,      4.571428f,      5.333333f,      6.400000f, 
+    8.000000f,      9.142857f,     10.666667f,     12.800000f, 
+    16.000000f,    18.285714f,     21.333334f,     25.600000f, 
+    32.000000f,    36.571426f,     42.666668f,     51.200001f, 
+    64.000000f,    73.142853f,     85.333336f,    102.400002f, 
+    128.000000f,   146.285706f,    170.666672f,    204.800003f, 
+    256.000000f,   292.571411f,    341.333344f,    409.600006f, 
+    512.000000f,   585.142822f,    682.666687f,    819.200012f, 
+    1024.000000f,  1170.285645f,   1365.333374f,   1638.400024f, 
+    2048.000000f,  2340.571533f,   2730.666748f,   3276.800049f, 
+    4096.000000f,  4681.143066f,   5461.333496f,   6553.600098f, 
+    8192.000000f,  9362.286133f,  10922.666992f,  13107.200195f, 
+    16384.000000f, 18724.572266f,  21845.333984f,  26214.400391f, 
+    32768.000000f, 37449.144531f,  43690.667969f,  52428.800781f
+};
+
+FX_ENTRY float FX_CALL guFogTableIndexToW(int i) {
+    if (i < 0) i = 0;
+    if (i >= 64) i = 63;
+    return tableIndexToW[i];
+}
+
+FX_ENTRY void FX_CALL guFogGenerateExp(GrFog_t *fogtable, float density) {
+    if (!fogtable) return;
+    float dp = density * guFogTableIndexToW(63);
+    float scale = 1.0f / (1.0f - std::exp(-dp));
+
+    for (int i = 0; i < 64; ++i) {
+        dp = density * guFogTableIndexToW(i);
+        float f = (1.0f - std::exp(-dp)) * scale;
+        f = std::clamp(f, 0.0f, 1.0f) * 255.0f;
+        fogtable[i] = static_cast<GrFog_t>(f);
+    }
+}
+
+FX_ENTRY void FX_CALL guFogGenerateExp2(GrFog_t *fogtable, float density) {
+    if (!fogtable) return;
+    float dp = density * guFogTableIndexToW(63);
+    float scale = 1.0f / (1.0f - std::exp(-(dp * dp)));
+
+    for (int i = 0; i < 64; ++i) {
+        dp = density * guFogTableIndexToW(i);
+        float f = (1.0f - std::exp(-(dp * dp))) * scale;
+        f = std::clamp(f, 0.0f, 1.0f) * 255.0f;
+        fogtable[i] = static_cast<GrFog_t>(f);
+    }
+}
+
+FX_ENTRY void FX_CALL guFogGenerateLinear(GrFog_t *fogtable, float nearZ, float farZ) {
+    if (!fogtable) return;
+    for (int i = 0; i < 64; ++i) {
+        float world_w = guFogTableIndexToW(i);
+        world_w = std::clamp(world_w, nearZ, farZ);
+        float f = (world_w - nearZ) / (farZ - nearZ);
+        f = std::clamp(f, 0.0f, 1.0f) * 255.0f;
+        fogtable[i] = static_cast<GrFog_t>(f);
+    }
+}
+
+FX_ENTRY void FX_CALL grFogMode(GrFogMode_t mode) {
+    GLIDE_LOG(DEBUG, "Frontend", "grFogMode (Glide 3.x) invoked: " << mode);
+    s_fogMode = mode;
+    if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
+        b->SetFogMode(s_fogMode);
+    }
+}
+
+FX_ENTRY void FX_CALL grFogColorValue(GrColor_t fogcolor) {
+    GLIDE_LOG(DEBUG, "Frontend", "grFogColorValue (Glide 3.x) invoked: " << std::hex << fogcolor << std::dec);
+    s_fogColor = fogcolor;
+    if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
+        b->SetFogColor(s_fogColor);
+    }
+}
+
+FX_ENTRY void FX_CALL grFogTable(const GrFog_t ft[]) {
+    GLIDE_LOG(DEBUG, "Frontend", "grFogTable (Glide 3.x) invoked.");
+    if (ft) {
+        std::memcpy(s_fogTable, ft, sizeof(s_fogTable));
+        if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
+            b->SetFogTable(s_fogTable);
+        }
+    }
+}
+
+FX_ENTRY void FX_CALL grFinish(void) {
+    GLIDE_LOG(DEBUG, "Frontend", "grFinish (Glide 3.x) invoked.");
+    if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
+        b->SstIdle();
+    }
+}
+
+FX_ENTRY void FX_CALL grFlush(void) {
+    GLIDE_LOG(DEBUG, "Frontend", "grFlush (Glide 3.x) invoked.");
+}
+
+FX_ENTRY void FX_CALL grChromaRangeModeExt(GrChromakeyMode_t mode) {
+    GLIDE_LOG(DEBUG, "Frontend", "grChromaRangeModeExt (Glide 3.x): mode=" << mode);
+    s_chromakeyMode = mode;
+    if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
+        b->SetChromakeyMode(s_chromakeyMode);
+    }
+}
+
+FX_ENTRY void FX_CALL grChromaRangeExt(GrColor_t minColor, GrColor_t maxColor, GrChromaRangeMode_t mode) {
+    GLIDE_LOG(DEBUG, "Frontend", "grChromaRangeExt (Glide 3.x): min=0x" << std::hex << minColor << ", max=0x" << maxColor << ", mode=" << std::dec << mode);
+    s_chromakeyValue = minColor;
+    if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
+        b->SetChromakeyRange(minColor, maxColor, mode);
+    }
+}
+
+FX_ENTRY void FX_CALL grTexChromaModeExt(GrChipID_t tmu, GrTexChromakeyMode_t mode) {
+    GLIDE_LOG(WARN, "Stub", "grTexChromaModeExt stub (Glide 3.x): tmu=" << tmu << ", mode=" << mode);
+}
+
+FX_ENTRY void FX_CALL grTexChromaRangeExt(GrChipID_t tmu, GrColor_t minColor, GrColor_t maxColor, GrTexChromakeyMode_t mode) {
+    GLIDE_LOG(WARN, "Stub", "grTexChromaRangeExt stub (Glide 3.x): tmu=" << tmu << ", min=0x" << std::hex << minColor << ", max=0x" << maxColor << ", mode=" << std::dec << mode);
+}
+
+FX_ENTRY GrProc FX_CALL grGetProcAddress(char *procName) {
+    GLIDE_LOG(DEBUG, "Frontend", "grGetProcAddress (Glide 3.x): " << (procName ? procName : "NULL"));
+    if (!procName) return nullptr;
+
+    if (std::strcmp(procName, "grChromaRangeModeExt") == 0) {
+        return (GrProc)grChromaRangeModeExt;
+    }
+    if (std::strcmp(procName, "grChromaRangeExt") == 0) {
+        return (GrProc)grChromaRangeExt;
+    }
+    if (std::strcmp(procName, "grTexChromaModeExt") == 0) {
+        return (GrProc)grTexChromaModeExt;
+    }
+    if (std::strcmp(procName, "grTexChromaRangeExt") == 0) {
+        return (GrProc)grTexChromaRangeExt;
+    }
+
+    GLIDE_LOG(WARN, "Frontend", "grGetProcAddress (Glide 3.x): Unknown extension " << procName);
+    return nullptr;
+}
+
+FX_ENTRY void FX_CALL grSstVidMode(FxU32 whichSst, void* vidTimings) {
+    GLIDE_LOG(DEBUG, "Frontend", "grSstVidMode (Glide 3.x) stub: whichSst=" << whichSst);
 }
 
 FX_ENTRY void FX_CALL grSstOrigin(GrOriginLocation_t origin) {
@@ -1020,6 +1301,10 @@ FX_ENTRY void FX_CALL grDisable(GrEnableMode_t mode) {
 
 FX_ENTRY void FX_CALL grTexMultibase(GrChipID_t tmu, FxBool enable) {
     GLIDE_LOG(DEBUG, "Frontend", "grTexMultibase (Glide 3.x) stub invoked for TMU=" << tmu << ", enable=" << enable);
+}
+
+FX_ENTRY void FX_CALL grTexMultibaseAddress(GrChipID_t tmu, GrTexBaseRange_t level, FxU32 startAddress, FxU32 evenOdd, GrTexInfo *info) {
+    GLIDE_LOG(DEBUG, "Frontend", "grTexMultibaseAddress (Glide 3.x) stub: tmu=" << tmu << ", level=" << level);
 }
 
 FX_ENTRY void FX_CALL grGlideGetVertexLayout(void* layout) {
