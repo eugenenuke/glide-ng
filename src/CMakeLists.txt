@@ -9,6 +9,7 @@ add_library(GlideWrapperCore STATIC
     core/Telemetry.cpp
     core/EmbeddedAssets.cpp
     core/GlideSplashAnimator.cpp
+    core/3dfParser.cpp
     backends/SoftwareBackendBase.cpp
     backends/vulkan/VulkanBackend.cpp
     backends/opengl_es/OpenGLESBackend.cpp
