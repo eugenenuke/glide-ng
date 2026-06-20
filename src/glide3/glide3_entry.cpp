@@ -169,6 +169,7 @@ struct GlideWrapperState {
     uint8_t  fogTable[64];
     uint32_t cullMode;
     uint32_t constantColor;
+    uint32_t sstOrigin;
 };
 
 FX_ENTRY void FX_CALL grGlideInit(void) {
@@ -281,6 +282,7 @@ FX_ENTRY GrContext_t FX_CALL grSstWinOpen(FxU32 hWnd, GrScreenResolution_t resol
 
     bool attached = backend->AttachWindow(reinterpret_cast<void*>(static_cast<uintptr_t>(hWnd)), width, height, hWnd != 0);
     backend->SetPixelFormat(format);
+    s_sstOrigin = origin;
     backend->SetSstOrigin(origin);
     return attached ? 1 : 0;
 }
@@ -733,6 +735,7 @@ FX_ENTRY void FX_CALL grGlideGetState(void* state) {
     std::memcpy(ws->fogTable, s_fogTable, sizeof(s_fogTable));
     ws->cullMode = s_cullMode;
     ws->constantColor = s_constantColor;
+    ws->sstOrigin = s_sstOrigin;
 }
 
 FX_ENTRY void FX_CALL grGlideSetState(const void* state) {
@@ -786,6 +789,7 @@ FX_ENTRY void FX_CALL grGlideSetState(const void* state) {
     std::memcpy(s_fogTable, ws->fogTable, sizeof(s_fogTable));
     s_cullMode = ws->cullMode;
     s_constantColor = ws->constantColor;
+    s_sstOrigin = ws->sstOrigin;
 
     // Apply states to backend
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
@@ -799,6 +803,7 @@ FX_ENTRY void FX_CALL grGlideSetState(const void* state) {
         b->SetFogTable(s_fogTable);
         b->SetCullState(s_cullMode);
         b->SetConstantColor(s_constantColor);
+        b->SetSstOrigin(s_sstOrigin);
 
         // Restore color and alpha combiner states
         b->SetCombinerMode(s_colorFunc, s_colorFactor, s_colorLocal, s_colorOther, s_colorInvert,

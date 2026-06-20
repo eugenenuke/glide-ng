@@ -30,6 +30,7 @@ public:
     uint32_t GetConstantColor() const { return m_constantColor; }
     uint32_t GetSTWHintMask() const { return m_stwHintMask; }
     uint32_t GetCullMode() const { return m_cullMode; }
+    uint32_t GetSstOrigin() const { return m_sstOrigin; }
     float GetDepthBufferPixel(uint32_t x, uint32_t y) const {
         uint32_t pIdx = y * m_headlessWidth + x;
         if (pIdx < m_headlessDepthBuffer.size()) return m_headlessDepthBuffer[pIdx];

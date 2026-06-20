@@ -1056,5 +1056,69 @@ TEST_CASE("Glide 3.x W-Buffering and Layout Q-Param Compatibility", "[Glide3][WB
         shutdown();
         ::dlclose(handle);
     }
+
+    SECTION("Dynamic API Verification for Coordinate Origin Save/Restore") {
+        void* handle = OpenGlide3Handle();
+        REQUIRE(handle != nullptr);
+
+        using InitFunc = void(*)(void);
+        using SelectFunc = void(*)(GrChipID_t);
+        using WinOpenFunc = unsigned long(*)(FxU32, GrScreenResolution_t, GrScreenRefresh_t, GrColorFormat_t, GrOriginLocation_t, int, int);
+        using CloseWinFunc = void(*)(void);
+        using OriginFunc = void(*)(GrOriginLocation_t);
+        using GetStateFunc = void(*)(void*);
+        using SetStateFunc = void(*)(const void*);
+        using ShutdownFunc = void(*)(void);
+
+        auto glideInit = reinterpret_cast<InitFunc>(::dlsym(handle, "grGlideInit"));
+        auto sstSelect = reinterpret_cast<SelectFunc>(::dlsym(handle, "grSstSelect"));
+        auto winOpen = reinterpret_cast<WinOpenFunc>(::dlsym(handle, "grSstWinOpen"));
+        auto winClose = reinterpret_cast<CloseWinFunc>(::dlsym(handle, "grSstWinClose"));
+        auto origin = reinterpret_cast<OriginFunc>(::dlsym(handle, "grSstOrigin"));
+        auto getState = reinterpret_cast<GetStateFunc>(::dlsym(handle, "grGlideGetState"));
+        auto setState = reinterpret_cast<SetStateFunc>(::dlsym(handle, "grGlideSetState"));
+        auto shutdown = reinterpret_cast<ShutdownFunc>(::dlsym(handle, "grGlideShutdown"));
+
+        REQUIRE(glideInit != nullptr);
+        REQUIRE(winOpen != nullptr);
+        REQUIRE(origin != nullptr);
+        REQUIRE(getState != nullptr);
+        REQUIRE(setState != nullptr);
+        REQUIRE(winClose != nullptr);
+        REQUIRE(shutdown != nullptr);
+
+        // Force headless software reference backend for testing
+        ::setenv("GLIDE_WRAPPER_BACKEND", "software", 1);
+
+        glideInit();
+        if (sstSelect) sstSelect(0);
+
+        // Open window with LOWER_LEFT origin (1)
+        unsigned long ctx = winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz, GR_COLORFORMAT_ABGR, GR_ORIGIN_LOWER_LEFT, 2, 1);
+        REQUIRE(ctx != 0);
+
+        auto* backend = static_cast<GlideWrapper::SoftwareBackendBase*>(
+            GlideWrapper::BackendManager::GetInstance().GetBackend()
+        );
+        REQUIRE(backend != nullptr);
+        REQUIRE(backend->GetSstOrigin() == 1); // Verify initial origin is indeed LOWER_LEFT (1)
+
+        // 1. Save state (should capture origin=1)
+        char savedState[1024];
+        getState(savedState);
+
+        // 2. Clobber origin to UPPER_LEFT (0) (simulating console overlay text render)
+        origin(GR_ORIGIN_UPPER_LEFT);
+        REQUIRE(backend->GetSstOrigin() == 0);
+
+        // 3. Restore state: should restore origin back to 1!
+        setState(savedState);
+        REQUIRE(backend->GetSstOrigin() == 1);
+
+        winClose();
+        shutdown();
+        ::dlclose(handle);
+        ::unsetenv("GLIDE_WRAPPER_BACKEND");
+    }
 #endif
 }
