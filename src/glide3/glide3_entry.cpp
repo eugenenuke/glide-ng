@@ -95,6 +95,7 @@ namespace {
     uint8_t s_fogTable[64] = {0};
     bool s_colorMaskRgb = true;
     bool s_colorMaskAlpha = true;
+    static uint32_t s_constantColor = 0xFFFFFFFF;
 
     inline void TransformVertexIfNecessary(GlideWrapper::ModernVertex& mv) {
         // Sanitize inactive parameters to prevent stack garbage from culling/distorting triangles on modern GPUs
@@ -167,6 +168,7 @@ struct GlideWrapperState {
     uint32_t fogColor;
     uint8_t  fogTable[64];
     uint32_t cullMode;
+    uint32_t constantColor;
 };
 
 FX_ENTRY void FX_CALL grGlideInit(void) {
@@ -730,6 +732,7 @@ FX_ENTRY void FX_CALL grGlideGetState(void* state) {
     ws->fogColor = s_fogColor;
     std::memcpy(ws->fogTable, s_fogTable, sizeof(s_fogTable));
     ws->cullMode = s_cullMode;
+    ws->constantColor = s_constantColor;
 }
 
 FX_ENTRY void FX_CALL grGlideSetState(const void* state) {
@@ -782,6 +785,7 @@ FX_ENTRY void FX_CALL grGlideSetState(const void* state) {
     s_fogColor = ws->fogColor;
     std::memcpy(s_fogTable, ws->fogTable, sizeof(s_fogTable));
     s_cullMode = ws->cullMode;
+    s_constantColor = ws->constantColor;
 
     // Apply states to backend
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
@@ -794,6 +798,7 @@ FX_ENTRY void FX_CALL grGlideSetState(const void* state) {
         b->SetFogColor(s_fogColor);
         b->SetFogTable(s_fogTable);
         b->SetCullState(s_cullMode);
+        b->SetConstantColor(s_constantColor);
 
         // Restore color and alpha combiner states
         b->SetCombinerMode(s_colorFunc, s_colorFactor, s_colorLocal, s_colorOther, s_colorInvert,
@@ -1108,6 +1113,7 @@ FX_ENTRY void FX_CALL grTexSource(GrChipID_t tmu, FxU32 startAddress, FxU32 even
 FX_ENTRY void FX_CALL grConstantColorValue(GrColor_t value) {
     EnsureEngineInitialized();
     GLIDE_LOG(DEBUG, "Frontend", "grConstantColorValue (Glide 3.x) invoked: " << std::hex << value << std::dec);
+    s_constantColor = value;
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
         b->SetConstantColor(value);
     }
