@@ -217,6 +217,37 @@ cmake --build build -j$(nproc)
         *   [Software Fixed Screen (test12_replica_software.png)](file:///usr/local/google/home/eianiuk/.gemini/jetski/brain/f96ca68c-6e31-4c86-a397-b3a8305ba563/test12_replica_software.png)
         *   [Vulkan Fixed Screen (test12_replica_vulkan.png)](file:///usr/local/google/home/eianiuk/.gemini/jetski/brain/f96ca68c-6e31-4c86-a397-b3a8305ba563/test12_replica_vulkan.png)
 
+### Case Study 8: The Glide 3.x Splash Screen Blackout (Vertex Layout Save/Restore Omission)
+1.  **The Symptom**: In Glide 3.x, pressing **`S`** (splash) or **`R`** (continuous splash) inside `test16` produced a completely black screen under all backends, whereas the watermark plug (**`P`**) worked perfectly.
+2.  **The Root Cause**:
+    *   The `GlideSplashAnimator` (a core class shared by both Glide 2.x and 3.x frontends) is compiled as a static library using Glide 2.x headers. When drawing the 3D powershield and spinning logo mesh, it populates and passes standard Glide 2.x `GrVertex` structs to `grDrawTriangle`.
+    *   In Glide 2.x, the vertex layout is static and canonical. But in Glide 3.x, the vertex layout is fully dynamic and configured by the application via `grVertexLayout`.
+    *   During the interactive run of `test16` under Glide 3.x, the game configured a layout that only enabled `GR_PARAM_XY` (ignoring color, depth, and texture coordinates).
+    *   Because our Glide 3.x frontend's `grSplash` simply delegated to `animator->Render(...)` without setting the layout, the vertex decoder (`DecodeVertex`) attempted to decode the animator's `GrVertex` array using the game's active layout (extracting only `x` and `y` and ignoring everything else!). This resulted in completely untextured, uncolored, and invisible geometry, causing a black screen.
+3.  **The Solution**:
+    *   In `grSplash` inside [src/glide3/glide3_banner.cpp](file:///usr/local/google/home/eianiuk/gemini/3dfx/src/glide3/glide3_banner.cpp), we wrapped `animator->Render` with a layout save-and-restore sequence:
+        1. Save the game's current Glide 3.x layout state: `VertexLayout::GetInstance().GetLayoutState(&savedLayout);`
+        2. Set the active layout to the Glide 2.x canonical layout: `VertexLayout::GetInstance().ResetToGlide2Canonical();`
+        3. Render the splash animation.
+        4. Restore the game's layout: `VertexLayout::GetInstance().SetLayoutState(&savedLayout);`
+4.  **Verification**:
+    *   Rebuilt the wrapper. Running `test16` (Glide 3.x) now successfully displays the gorgeous full-screen spinning 3Dfx powershield and logo animation on all rendering backends!
+
+### Case Study 9: The Glide 2.x Shameless Plug Logo Corruption (Chromakey State Serialization Leak)
+1.  **The Symptom**: In Glide 2.x, if the shameless plug (`P`) was enabled, pressing `S` correctly ran the splash animation. However, the letters `"fx"` in the `"3dfx"` word on the spinning logo were "damaged" and looked like hollow outlines.
+2.  **The Root Cause**:
+    *   The shameless plug overlay (`grShamelessPlug`) is written directly to the linear framebuffer using CPU writes. To mask out the black background of the banner image, it enables chromakeying with a value of `0x0000` (black).
+    *   To prevent clobbering the game's state, `grShamelessPlug` saves the active Glide state before drawing using `grGlideGetState` and restores it afterward using `grGlideSetState`.
+    *   However, our Glide 2.x frontend's state structures and serialization functions (`grGlideGetState` and `grGlideSetState` in `glide2_entry.cpp`) **completely omitted** all chromakey-related states (`s_chromakeyMode`, `s_chromakeyValue`, etc.).
+    *   Because of this serialization leak, once the plug was rendered for the first time, chromakeying remained **permanently enabled globally** as `GR_CHROMAKEY_ENABLE` for the rest of the application's lifecycle.
+    *   In the next frame, when the splash animator drew the 3Dfx logo texture (which contains dark shading and black pixels in the letters `"fx"`), the backend discarded every pixel matching `0x0000`, punching holes through the letters and reducing them to outlines.
+3.  **The Solution**:
+    *   Added `chromakeyMode`, `chromakeyValue`, and range variables to the internal `GlideWrapperState` structure in [src/glide2/glide2_entry.cpp](file:///usr/local/google/home/eianiuk/gemini/3dfx/src/glide2/glide2_entry.cpp).
+    *   Implemented full serialization and deserialization for these variables in `grGlideGetState` and `grGlideSetState`.
+    *   Added explicit backend state restoration calls (`b->SetChromakeyMode` and `b->SetChromakeyValue`) inside `grGlideSetState` to push the restored state back to the active graphics backend.
+4.  **Verification**:
+    *   Rebuilt the wrapper and verified that all 2318 Catch2 assertions pass cleanly. The Glide 2.x splash screen now renders the spinning logo with perfect solid text and pristine shading even when the shameless plug is active!
+
 ---
 
 ## 5. Unified Troubleshooting & Diagnostic Methodologies
