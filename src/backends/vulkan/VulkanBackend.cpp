@@ -30,7 +30,7 @@ const std::vector<const char*> validationLayers = {
     "VK_LAYER_KHRONOS_validation"
 };
 
-static vk::BlendFactor MapBlendFactorVulkan(uint32_t factor, bool isDest) {
+static vk::BlendFactor MapBlendFactorVulkan(uint32_t factor, bool isDest, bool isAlpha) {
     switch (factor) {
         case 0: return vk::BlendFactor::eZero;                  // GR_BLEND_ZERO
         case 1: return vk::BlendFactor::eSrcAlpha;              // GR_BLEND_SRC_ALPHA
@@ -40,7 +40,7 @@ static vk::BlendFactor MapBlendFactorVulkan(uint32_t factor, bool isDest) {
         case 5: return vk::BlendFactor::eOneMinusSrcAlpha;      // GR_BLEND_ONE_MINUS_SRC_ALPHA
         case 6: return isDest ? vk::BlendFactor::eOneMinusSrcColor : vk::BlendFactor::eOneMinusDstColor; // 6 = ONE_MINUS_SRC_COLOR (dest) / ONE_MINUS_DST_COLOR (src)
         case 7: return vk::BlendFactor::eOneMinusDstAlpha;      // GR_BLEND_ONE_MINUS_DST_ALPHA
-        case 15: return vk::BlendFactor::eSrcAlphaSaturate;     // GR_BLEND_ALPHA_SATURATE
+        case 15: return isDest ? (isAlpha ? vk::BlendFactor::eSrc1Alpha : vk::BlendFactor::eSrc1Color) : vk::BlendFactor::eSrcAlphaSaturate; // 15 = GR_BLEND_PREFOG_COLOR (dest) / GR_BLEND_ALPHA_SATURATE (src)
         default: return vk::BlendFactor::eOne;
     }
 }
@@ -1208,6 +1208,13 @@ bool VulkanBackend::CreateLogicalDevice() {
         GLIDE_LOG(WARN, "Vulkan", "Vulkan Depth Clamping NOT supported on host device!");
     }
 
+    if (supportedFeatures.dualSrcBlend) {
+        deviceFeatures.dualSrcBlend = true;
+        GLIDE_LOG(INFO, "Vulkan", "Vulkan Dual-Source Blending physical device feature enabled.");
+    } else {
+        GLIDE_LOG(WARN, "Vulkan", "Vulkan Dual-Source Blending NOT supported by host GPU! Pre-fog blending will be degraded.");
+    }
+
     std::vector<const char*> deviceExtensions;
     auto availableExtensions = m_physicalDevice.enumerateDeviceExtensionProperties();
     bool swapchainSupported = false;
@@ -1818,11 +1825,11 @@ PipelineGroup VulkanBackend::CompileGraphicsPipelines(const PipelineStateKey& ke
         
         colorBlendAttachment.blendEnable = true;
         colorBlendAttachment.colorBlendOp = vk::BlendOp::eAdd;
-        colorBlendAttachment.srcColorBlendFactor = MapBlendFactorVulkan(key.rgbSrcBlend, false);
-        colorBlendAttachment.dstColorBlendFactor = MapBlendFactorVulkan(key.rgbDstBlend, true);
+        colorBlendAttachment.srcColorBlendFactor = MapBlendFactorVulkan(key.rgbSrcBlend, false, false);
+        colorBlendAttachment.dstColorBlendFactor = MapBlendFactorVulkan(key.rgbDstBlend, true, false);
         colorBlendAttachment.alphaBlendOp = vk::BlendOp::eAdd;
-        colorBlendAttachment.srcAlphaBlendFactor = MapBlendFactorVulkan(key.alphaSrcBlend, false);
-        colorBlendAttachment.dstAlphaBlendFactor = MapBlendFactorVulkan(key.alphaDstBlend, true);
+        colorBlendAttachment.srcAlphaBlendFactor = MapBlendFactorVulkan(key.alphaSrcBlend, false, true);
+        colorBlendAttachment.dstAlphaBlendFactor = MapBlendFactorVulkan(key.alphaDstBlend, true, true);
 
         vk::PipelineColorBlendStateCreateInfo colorBlending({}, false, vk::LogicOp::eCopy, 1, &colorBlendAttachment, {0.0f, 0.0f, 0.0f, 0.0f});
 

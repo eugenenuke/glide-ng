@@ -747,13 +747,20 @@ void main() {
 )";
 
 static const char* geomFsSource = R"(#version 300 es
+#extension GL_EXT_blend_func_extended : enable
 precision highp float;
 
 in vec4 fragColor;
 in float fragOOW;
 in vec2 fragTexCoord;
 in vec2 fragTmuOow;
+
+#ifdef GL_EXT_blend_func_extended
+layout(location = 0, index = 0) out vec4 outColor;
+layout(location = 0, index = 1) out vec4 outPreFogColor;
+#else
 out vec4 outColor;
+#endif
 
 uniform vec4 uConstantColor;
 
@@ -930,6 +937,8 @@ void main() {
         }
     }
 
+    vec4 preFogColor = col;
+
     // Milestone 8: Fogging Emulation
     int fogSource = uFogMode & 0x0F;
     if (fogSource != 0) {
@@ -991,6 +1000,9 @@ void main() {
     }
 
     outColor = col;
+#ifdef GL_EXT_blend_func_extended
+    outPreFogColor = preFogColor;
+#endif
 }
 )";
 
@@ -1324,7 +1336,14 @@ void OpenGLESBackend::SyncDepthState() {
     }
 }
 
-static GLenum MapBlendFactorGLES(uint32_t factor, bool isDest) {
+#ifndef GL_SRC1_COLOR_EXT
+#define GL_SRC1_COLOR_EXT 0x88F9
+#endif
+#ifndef GL_SRC1_ALPHA_EXT
+#define GL_SRC1_ALPHA_EXT 0x8589
+#endif
+
+static GLenum MapBlendFactorGLES(uint32_t factor, bool isDest, bool isAlpha) {
     switch (factor) {
         case 0: return GL_ZERO;                  // GR_BLEND_ZERO
         case 1: return GL_SRC_ALPHA;             // GR_BLEND_SRC_ALPHA
@@ -1334,7 +1353,7 @@ static GLenum MapBlendFactorGLES(uint32_t factor, bool isDest) {
         case 5: return GL_ONE_MINUS_SRC_ALPHA;   // GR_BLEND_ONE_MINUS_SRC_ALPHA
         case 6: return isDest ? GL_ONE_MINUS_SRC_COLOR : GL_ONE_MINUS_DST_COLOR; // 6 = ONE_MINUS_SRC_COLOR (dest) / ONE_MINUS_DST_COLOR (src)
         case 7: return GL_ONE_MINUS_DST_ALPHA;   // GR_BLEND_ONE_MINUS_DST_ALPHA
-        case 15: return GL_SRC_ALPHA_SATURATE;  // GR_BLEND_ALPHA_SATURATE
+        case 15: return isDest ? (isAlpha ? GL_SRC1_ALPHA_EXT : GL_SRC1_COLOR_EXT) : GL_SRC_ALPHA_SATURATE; // 15 = GR_BLEND_PREFOG_COLOR (dest) / GR_BLEND_ALPHA_SATURATE (src)
         default: return GL_ONE;
     }
 }
@@ -1392,10 +1411,10 @@ void OpenGLESBackend::ApplyBlendingGLES() {
         glEnable(GL_BLEND);
         glBlendEquation(GL_FUNC_ADD);
         glBlendFuncSeparate(
-            MapBlendFactorGLES(m_rgbSrcBlend, false),
-            MapBlendFactorGLES(m_rgbDstBlend, true),
-            MapBlendFactorGLES(m_alphaSrcBlend, false),
-            MapBlendFactorGLES(m_alphaDstBlend, true)
+            MapBlendFactorGLES(m_rgbSrcBlend, false, false),
+            MapBlendFactorGLES(m_rgbDstBlend, true, false),
+            MapBlendFactorGLES(m_alphaSrcBlend, false, true),
+            MapBlendFactorGLES(m_alphaDstBlend, true, true)
         );
     }
 }

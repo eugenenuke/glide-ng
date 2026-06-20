@@ -1120,5 +1120,287 @@ TEST_CASE("Glide 3.x W-Buffering and Layout Q-Param Compatibility", "[Glide3][WB
         ::dlclose(handle);
         ::unsetenv("GLIDE_WRAPPER_BACKEND");
     }
-#endif
+#endif // matches line 678
+} // matches line 645
+
+#ifdef __linux__
+TEST_CASE("Vulkan Backend Multi-pass Pre-Fog Blending Verification [Vulkan_PreFog]", "[Glide3][Vulkan][PreFog]") {
+    void* handle = OpenGlide3Handle();
+    REQUIRE(handle != nullptr);
+
+    using InitFunc = void(*)(void);
+    using SelectSstFunc = void(*)(int);
+    using OpenWinFunc = unsigned long(*)(FxU32, GrScreenResolution_t, GrScreenRefresh_t, GrColorFormat_t, GrOriginLocation_t, int, int);
+    using CloseWinFunc = void(*)(void);
+    using BufferClearFunc = void(*)(GrColor_t, GrAlpha_t, FxU32);
+    using LfbReadFunc = FxBool(*)(GrBuffer_t, FxU32, FxU32, FxU32, FxU32, FxU32, void*);
+    using ConstantColorFunc = void(*)(GrColor_t);
+    using ColorCombineFunc = void(*)(GrCombineFunction_t, GrCombineFactor_t, GrCombineLocal_t, GrCombineOther_t, FxBool);
+    using BlendFunc = void(*)(GrAlphaBlendFnc_t, GrAlphaBlendFnc_t, GrAlphaBlendFnc_t, GrAlphaBlendFnc_t);
+    using FogModeFunc = void(*)(GrFogMode_t);
+    using VertexLayoutFunc = void(*)(FxU32, FxU32, FxBool);
+    using DrawTriangleFunc = void(*)(const void*, const void*, const void*);
+    using ShutdownFunc = void(*)(void);
+
+    auto glideInit = reinterpret_cast<InitFunc>(::dlsym(handle, "grGlideInit"));
+    auto sstSelect = reinterpret_cast<SelectSstFunc>(::dlsym(handle, "grSstSelect"));
+    auto winOpen   = reinterpret_cast<OpenWinFunc>(::dlsym(handle, "grSstWinOpen"));
+    auto winClose  = reinterpret_cast<CloseWinFunc>(::dlsym(handle, "grSstWinClose"));
+    auto bufferClear = reinterpret_cast<BufferClearFunc>(::dlsym(handle, "grBufferClear"));
+    auto lfbRead   = reinterpret_cast<LfbReadFunc>(::dlsym(handle, "grLfbReadRegion"));
+    auto constantColor = reinterpret_cast<ConstantColorFunc>(::dlsym(handle, "grConstantColorValue"));
+    auto colorCombine = reinterpret_cast<ColorCombineFunc>(::dlsym(handle, "grColorCombine"));
+    auto blendFunc = reinterpret_cast<BlendFunc>(::dlsym(handle, "grAlphaBlendFunction"));
+    auto fogMode = reinterpret_cast<FogModeFunc>(::dlsym(handle, "grFogMode"));
+    auto vertexLayout = reinterpret_cast<VertexLayoutFunc>(::dlsym(handle, "grVertexLayout"));
+    auto drawTriangle = reinterpret_cast<DrawTriangleFunc>(::dlsym(handle, "grDrawTriangle"));
+    auto glideShutdown = reinterpret_cast<ShutdownFunc>(::dlsym(handle, "grGlideShutdown"));
+
+    REQUIRE(glideInit != nullptr);
+    REQUIRE(winOpen != nullptr);
+    REQUIRE(bufferClear != nullptr);
+    REQUIRE(lfbRead != nullptr);
+    REQUIRE(constantColor != nullptr);
+    REQUIRE(colorCombine != nullptr);
+    REQUIRE(blendFunc != nullptr);
+    REQUIRE(fogMode != nullptr);
+    REQUIRE(vertexLayout != nullptr);
+    REQUIRE(drawTriangle != nullptr);
+    REQUIRE(winClose != nullptr);
+    REQUIRE(glideShutdown != nullptr);
+
+    // Force headless Vulkan backend for testing
+    ::setenv("GLIDE_WRAPPER_BACKEND", "vulkan", 1);
+    ::setenv("GLIDE_WRAPPER_LOG_LEVEL", "3", 1); // INFO
+
+    glideInit();
+    if (sstSelect) sstSelect(0);
+    unsigned long ctx = winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz, GR_COLORFORMAT_ABGR, GR_ORIGIN_LOWER_LEFT, 2, 0);
+    REQUIRE(ctx != 0);
+
+    // Set vertex layout
+    #define G3_PARAM_XY       0x01
+    #define G3_PARAM_RGB      0x20
+    #define G3_PARAM_ENABLE   0x01
+    vertexLayout(G3_PARAM_XY, 0, G3_PARAM_ENABLE);
+    vertexLayout(G3_PARAM_RGB, 24, G3_PARAM_ENABLE);
+
+    // Define vertices for a full-screen or centered quad
+    struct TestVert {
+        float x, y, z;
+        float ooz, a, oow;
+        float r, g, b;
+    };
+    // Solid orange color: (1.0, 0.5, 0.0) -> R=255, G=128, B=0
+    TestVert v0{ 100.0f, 100.0f, 0.5f, 1.0f, 255.0f, 1.0f, 255.0f, 128.0f, 0.0f };
+    TestVert v1{ 700.0f, 100.0f, 0.5f, 1.0f, 255.0f, 1.0f, 255.0f, 128.0f, 0.0f };
+    TestVert v2{ 700.0f, 500.0f, 0.5f, 1.0f, 255.0f, 1.0f, 255.0f, 128.0f, 0.0f };
+    TestVert v3{ 100.0f, 500.0f, 0.5f, 1.0f, 255.0f, 1.0f, 255.0f, 128.0f, 0.0f };
+
+    // Clear buffer to Black
+    bufferClear(0xFF000000, 0, 0xFFFF);
+
+    // ==========================================
+    // PASS 1: Render base color (Solid Orange)
+    // ==========================================
+    colorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE, GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_NONE, FXFALSE);
+    blendFunc(GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_ONE, GR_BLEND_ZERO); // Src * 1 + Dst * 0
+    fogMode(0); // Disable fog
+
+    drawTriangle(&v0, &v1, &v2);
+    drawTriangle(&v0, &v2, &v3);
+
+    // ==========================================
+    // PASS 2: Render lightmap with PREFOG_COLOR blending
+    // ==========================================
+    // C_src = f * C_fog. We want C_src to be Black (0, 0, 0).
+    // So we enable fog with MULT2 and Black fog color.
+    // Pre-fog color should be Green (0.5, 1.0, 0.0) -> R=128, G=255, B=0.
+    v0.r = 128.0f; v0.g = 255.0f; v0.b = 0.0f;
+    v1.r = 128.0f; v1.g = 255.0f; v1.b = 0.0f;
+    v2.r = 128.0f; v2.g = 255.0f; v2.b = 0.0f;
+    v3.r = 128.0f; v3.g = 255.0f; v3.b = 0.0f;
+
+    // Set constant fog color to Black
+    using FogColorFunc = void(*)(GrColor_t);
+    auto fogColorVal = reinterpret_cast<FogColorFunc>(::dlsym(handle, "grFogColorValue"));
+    REQUIRE(fogColorVal != nullptr);
+    fogColorVal(0x00000000); // Black
+
+    // Configure fog: GR_FOG_MULT2 (0x100) | GR_FOG_WITH_ITERATED_ALPHA (0x1) -> f = alpha = 1.0f (so C_src = C_fog = Black)
+    #define G3_FOG_MULT2 0x100
+    fogMode(static_cast<GrFogMode_t>(G3_FOG_MULT2 | 0x1)); 
+
+    // Configure blending: Src * 1 + Dst * Src_prefog (GR_BLEND_PREFOG_COLOR = 15)
+    blendFunc(GR_BLEND_ONE, static_cast<GrAlphaBlendFnc_t>(15), GR_BLEND_ONE, GR_BLEND_ZERO);
+
+    drawTriangle(&v0, &v1, &v2);
+    drawTriangle(&v0, &v2, &v3);
+
+    // Read back center pixel (400, 300)
+    std::vector<uint32_t> pixels(16, 0);
+    FxBool ok = lfbRead(1, 400, 300, 4, 4, 4 * 4, pixels.data());
+    REQUIRE(ok == FXTRUE);
+
+    // Expected blended color:
+    // Red = C_src.r + C_dest.r * C_prefog.r = 0.0 + 1.0 * 0.5 = 0.5 (128)
+    // Green = C_src.g + C_dest.g * C_prefog.g = 0.0 + 0.5 * 1.0 = 0.5 (128)
+    // Blue = C_src.b + C_dest.b * C_prefog.b = 0.0 + 0.0 * 0.0 = 0.0 (0)
+    // Unpack colors (little-endian ABGR: byte 0 is R, byte 1 is G, byte 2 is B)
+    uint8_t r = pixels[0] & 0xFF;
+    uint8_t g = (pixels[0] >> 8) & 0xFF;
+    uint8_t b = (pixels[0] >> 16) & 0xFF;
+
+    INFO("Vulkan Blended Pixel Color: R=" << (int)r << ", G=" << (int)g << ", B=" << (int)b);
+
+    // Assert that color matches Orange/Yellow (128, 128, 0) with a tolerance of +-5
+    REQUIRE(std::abs((int)r - 128) <= 5);
+    REQUIRE(std::abs((int)g - 128) <= 5);
+    REQUIRE(b <= 5);
+
+    winClose();
+    glideShutdown();
+    ::dlclose(handle);
+    ::unsetenv("GLIDE_WRAPPER_BACKEND");
 }
+
+TEST_CASE("OpenGL ES Backend Multi-pass Pre-Fog Blending Verification [GLES_PreFog]", "[Glide3][GLES][PreFog]") {
+    void* handle = OpenGlide3Handle();
+    REQUIRE(handle != nullptr);
+
+    using InitFunc = void(*)(void);
+    using SelectSstFunc = void(*)(int);
+    using OpenWinFunc = unsigned long(*)(FxU32, GrScreenResolution_t, GrScreenRefresh_t, GrColorFormat_t, GrOriginLocation_t, int, int);
+    using CloseWinFunc = void(*)(void);
+    using BufferClearFunc = void(*)(GrColor_t, GrAlpha_t, FxU32);
+    using LfbReadFunc = FxBool(*)(GrBuffer_t, FxU32, FxU32, FxU32, FxU32, FxU32, void*);
+    using ConstantColorFunc = void(*)(GrColor_t);
+    using ColorCombineFunc = void(*)(GrCombineFunction_t, GrCombineFactor_t, GrCombineLocal_t, GrCombineOther_t, FxBool);
+    using BlendFunc = void(*)(GrAlphaBlendFnc_t, GrAlphaBlendFnc_t, GrAlphaBlendFnc_t, GrAlphaBlendFnc_t);
+    using FogModeFunc = void(*)(GrFogMode_t);
+    using VertexLayoutFunc = void(*)(FxU32, FxU32, FxBool);
+    using DrawTriangleFunc = void(*)(const void*, const void*, const void*);
+    using ShutdownFunc = void(*)(void);
+
+    auto glideInit = reinterpret_cast<InitFunc>(::dlsym(handle, "grGlideInit"));
+    auto sstSelect = reinterpret_cast<SelectSstFunc>(::dlsym(handle, "grSstSelect"));
+    auto winOpen   = reinterpret_cast<OpenWinFunc>(::dlsym(handle, "grSstWinOpen"));
+    auto winClose  = reinterpret_cast<CloseWinFunc>(::dlsym(handle, "grSstWinClose"));
+    auto bufferClear = reinterpret_cast<BufferClearFunc>(::dlsym(handle, "grBufferClear"));
+    auto lfbRead   = reinterpret_cast<LfbReadFunc>(::dlsym(handle, "grLfbReadRegion"));
+    auto constantColor = reinterpret_cast<ConstantColorFunc>(::dlsym(handle, "grConstantColorValue"));
+    auto colorCombine = reinterpret_cast<ColorCombineFunc>(::dlsym(handle, "grColorCombine"));
+    auto blendFunc = reinterpret_cast<BlendFunc>(::dlsym(handle, "grAlphaBlendFunction"));
+    auto fogMode = reinterpret_cast<FogModeFunc>(::dlsym(handle, "grFogMode"));
+    auto vertexLayout = reinterpret_cast<VertexLayoutFunc>(::dlsym(handle, "grVertexLayout"));
+    auto drawTriangle = reinterpret_cast<DrawTriangleFunc>(::dlsym(handle, "grDrawTriangle"));
+    auto glideShutdown = reinterpret_cast<ShutdownFunc>(::dlsym(handle, "grGlideShutdown"));
+
+    REQUIRE(glideInit != nullptr);
+    REQUIRE(winOpen != nullptr);
+    REQUIRE(bufferClear != nullptr);
+    REQUIRE(lfbRead != nullptr);
+    REQUIRE(constantColor != nullptr);
+    REQUIRE(colorCombine != nullptr);
+    REQUIRE(blendFunc != nullptr);
+    REQUIRE(fogMode != nullptr);
+    REQUIRE(vertexLayout != nullptr);
+    REQUIRE(drawTriangle != nullptr);
+    REQUIRE(winClose != nullptr);
+    REQUIRE(glideShutdown != nullptr);
+
+    // Force headless OpenGL ES backend for testing
+    ::setenv("GLIDE_WRAPPER_BACKEND", "opengl_es", 1);
+    ::setenv("GLIDE_WRAPPER_LOG_LEVEL", "3", 1); // INFO
+
+    glideInit();
+    if (sstSelect) sstSelect(0);
+    unsigned long ctx = winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz, GR_COLORFORMAT_ABGR, GR_ORIGIN_LOWER_LEFT, 2, 0);
+    REQUIRE(ctx != 0);
+
+    // Set vertex layout
+    #define G3_PARAM_XY       0x01
+    #define G3_PARAM_RGB      0x20
+    #define G3_PARAM_ENABLE   0x01
+    vertexLayout(G3_PARAM_XY, 0, G3_PARAM_ENABLE);
+    vertexLayout(G3_PARAM_RGB, 24, G3_PARAM_ENABLE);
+
+    // Define vertices for a full-screen or centered quad
+    struct TestVert {
+        float x, y, z;
+        float ooz, a, oow;
+        float r, g, b;
+    };
+    // Solid orange color: (1.0, 0.5, 0.0) -> R=255, G=128, B=0
+    TestVert v0{ 100.0f, 100.0f, 0.5f, 1.0f, 255.0f, 1.0f, 255.0f, 128.0f, 0.0f };
+    TestVert v1{ 700.0f, 100.0f, 0.5f, 1.0f, 255.0f, 1.0f, 255.0f, 128.0f, 0.0f };
+    TestVert v2{ 700.0f, 500.0f, 0.5f, 1.0f, 255.0f, 1.0f, 255.0f, 128.0f, 0.0f };
+    TestVert v3{ 100.0f, 500.0f, 0.5f, 1.0f, 255.0f, 1.0f, 255.0f, 128.0f, 0.0f };
+
+    // Clear buffer to Black
+    bufferClear(0xFF000000, 0, 0xFFFF);
+
+    // ==========================================
+    // PASS 1: Render base color (Solid Orange)
+    // ==========================================
+    colorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE, GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_NONE, FXFALSE);
+    blendFunc(GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_ONE, GR_BLEND_ZERO); // Src * 1 + Dst * 0
+    fogMode(0); // Disable fog
+
+    drawTriangle(&v0, &v1, &v2);
+    drawTriangle(&v0, &v2, &v3);
+
+    // ==========================================
+    // PASS 2: Render lightmap with PREFOG_COLOR blending
+    // ==========================================
+    // C_src = f * C_fog. We want C_src to be Black (0, 0, 0).
+    // So we enable fog with MULT2 and Black fog color.
+    // Pre-fog color should be Green (0.5, 1.0, 0.0) -> R=128, G=255, B=0.
+    v0.r = 128.0f; v0.g = 255.0f; v0.b = 0.0f;
+    v1.r = 128.0f; v1.g = 255.0f; v1.b = 0.0f;
+    v2.r = 128.0f; v2.g = 255.0f; v2.b = 0.0f;
+    v3.r = 128.0f; v3.g = 255.0f; v3.b = 0.0f;
+
+    // Set constant fog color to Black
+    using FogColorFunc = void(*)(GrColor_t);
+    auto fogColorVal = reinterpret_cast<FogColorFunc>(::dlsym(handle, "grFogColorValue"));
+    REQUIRE(fogColorVal != nullptr);
+    fogColorVal(0x00000000); // Black
+
+    // Configure fog: GR_FOG_MULT2 (0x100) | GR_FOG_WITH_ITERATED_ALPHA (0x1) -> f = alpha = 1.0f (so C_src = C_fog = Black)
+    #define G3_FOG_MULT2 0x100
+    fogMode(static_cast<GrFogMode_t>(G3_FOG_MULT2 | 0x1)); 
+
+    // Configure blending: Src * 1 + Dst * Src_prefog (GR_BLEND_PREFOG_COLOR = 15)
+    blendFunc(GR_BLEND_ONE, static_cast<GrAlphaBlendFnc_t>(15), GR_BLEND_ONE, GR_BLEND_ZERO);
+
+    drawTriangle(&v0, &v1, &v2);
+    drawTriangle(&v0, &v2, &v3);
+
+    // Read back center pixel (400, 300)
+    std::vector<uint32_t> pixels(16, 0);
+    FxBool ok = lfbRead(1, 400, 300, 4, 4, 4 * 4, pixels.data());
+    REQUIRE(ok == FXTRUE);
+
+    // Expected blended color:
+    // Red = C_src.r + C_dest.r * C_prefog.r = 0.0 + 1.0 * 0.5 = 0.5 (128)
+    // Green = C_src.g + C_dest.g * C_prefog.g = 0.0 + 0.5 * 1.0 = 0.5 (128)
+    // Blue = C_src.b + C_dest.b * C_prefog.b = 0.0 + 0.0 * 0.0 = 0.0 (0)
+    // Unpack colors (little-endian ABGR: byte 0 is R, byte 1 is G, byte 2 is B)
+    uint8_t r = pixels[0] & 0xFF;
+    uint8_t g = (pixels[0] >> 8) & 0xFF;
+    uint8_t b = (pixels[0] >> 16) & 0xFF;
+
+    INFO("GLES Blended Pixel Color: R=" << (int)r << ", G=" << (int)g << ", B=" << (int)b);
+
+    // Assert that color matches Orange/Yellow (128, 128, 0) with a tolerance of +-5
+    REQUIRE(std::abs((int)r - 128) <= 5);
+    REQUIRE(std::abs((int)g - 128) <= 5);
+    REQUIRE(b <= 5);
+
+    winClose();
+    glideShutdown();
+    ::dlclose(handle);
+    ::unsetenv("GLIDE_WRAPPER_BACKEND");
+}
+#endif
