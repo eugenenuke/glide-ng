@@ -8,6 +8,8 @@
 #include "core/TextureManager.h"
 #include "core/Telemetry.h"
 #include "core/3dfParser.h"
+#include "core/MathUtils.h"
+#include "core/LfbManager.h"
 #include <iostream>
 #include <cmath>
 #include <vector>
@@ -949,46 +951,19 @@ static const float tableIndexToW[64] = {
 };
 
 FX_ENTRY float FX_CALL guFogTableIndexToW(int i) {
-    if (i < 0) i = 0;
-    if (i >= 64) i = 63;
-    return tableIndexToW[i];
+    return GlideWrapper::MathUtils::FogTableIndexToW(i);
 }
 
 FX_ENTRY void FX_CALL guFogGenerateExp(GrFog_t *fogtable, float density) {
-    if (!fogtable) return;
-    float dp = density * guFogTableIndexToW(63);
-    float scale = 1.0f / (1.0f - std::exp(-dp));
-
-    for (int i = 0; i < 64; ++i) {
-        dp = density * guFogTableIndexToW(i);
-        float f = (1.0f - std::exp(-dp)) * scale;
-        f = std::clamp(f, 0.0f, 1.0f) * 255.0f;
-        fogtable[i] = static_cast<GrFog_t>(f);
-    }
+    GlideWrapper::MathUtils::FogGenerateExp(fogtable, density);
 }
 
 FX_ENTRY void FX_CALL guFogGenerateExp2(GrFog_t *fogtable, float density) {
-    if (!fogtable) return;
-    float dp = density * guFogTableIndexToW(63);
-    float scale = 1.0f / (1.0f - std::exp(-(dp * dp)));
-
-    for (int i = 0; i < 64; ++i) {
-        dp = density * guFogTableIndexToW(i);
-        float f = (1.0f - std::exp(-(dp * dp))) * scale;
-        f = std::clamp(f, 0.0f, 1.0f) * 255.0f;
-        fogtable[i] = static_cast<GrFog_t>(f);
-    }
+    GlideWrapper::MathUtils::FogGenerateExp2(fogtable, density);
 }
 
 FX_ENTRY void FX_CALL guFogGenerateLinear(GrFog_t *fogtable, float nearZ, float farZ) {
-    if (!fogtable) return;
-    for (int i = 0; i < 64; ++i) {
-        float world_w = guFogTableIndexToW(i);
-        world_w = std::clamp(world_w, nearZ, farZ);
-        float f = (world_w - nearZ) / (farZ - nearZ);
-        f = std::clamp(f, 0.0f, 1.0f) * 255.0f;
-        fogtable[i] = static_cast<GrFog_t>(f);
-    }
+    GlideWrapper::MathUtils::FogGenerateLinear(fogtable, nearZ, farZ);
 }
 
 FX_ENTRY void FX_CALL grFogMode(GrFogMode_t mode) {
@@ -1157,135 +1132,28 @@ FX_ENTRY FxBool FX_CALL grLfbWriteRegion(GrBuffer_t dstBuf, FxU32 dstX, FxU32 ds
     return FXTRUE;
 }
 
-struct LfbLockState {
-    bool isLocked{false};
-    GrLock_t type;
-    GrBuffer_t buffer;
-    GrLfbWriteMode_t writeMode;
-    GrOriginLocation_t origin;
-    bool pixelPipeline{false};
-    uint32_t width{0};
-    uint32_t height{0};
-    std::vector<uint8_t> stagingBuffer;
-    std::vector<uint8_t> originalBuffer;
-    uint32_t stride{0};
-    uint32_t pixelSize{0};
-};
-
-static LfbLockState g_lfbLock;
-
-static void FlipRows(uint8_t* data, uint32_t height, uint32_t stride) {
-    std::vector<uint8_t> tempRow(stride);
-    for (uint32_t y = 0; y < height / 2; ++y) {
-        uint8_t* rowTop = data + y * stride;
-        uint8_t* rowBottom = data + (height - 1 - y) * stride;
-        std::memcpy(tempRow.data(), rowTop, stride);
-        std::memcpy(rowTop, rowBottom, stride);
-        std::memcpy(rowBottom, tempRow.data(), stride);
-    }
-}
+// LFB locking, unlocking, and row-flipping are managed by the unified GlideWrapper::LfbManager.
 
 FX_ENTRY FxBool FX_CALL grLfbLock(GrLock_t type, GrBuffer_t buffer, GrLfbWriteMode_t writeMode, GrOriginLocation_t origin, FxBool pixelPipeline, GrLfbInfo_t* info) {
     EnsureEngineInitialized();
     GLIDE_LOG(DEBUG, "Frontend", "grLfbLock (Glide 3.x) invoked: buffer=" << buffer << ", mode=" << writeMode << ", origin=" << origin);
-    
-    if (!info) return FXFALSE;
-    
-    auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend();
-    if (!b) return FXFALSE;
-
-    g_lfbLock.width = b->GetWidth();
-    g_lfbLock.height = b->GetHeight();
-    
-    GrLfbWriteMode_t resolvedMode = writeMode;
-    if (resolvedMode == GR_LFBWRITEMODE_ANY) {
-        resolvedMode = GR_LFBWRITEMODE_565;
-    }
-
-    if (resolvedMode == GR_LFBWRITEMODE_565 || 
-        resolvedMode == GR_LFBWRITEMODE_555 || 
-        resolvedMode == GR_LFBWRITEMODE_1555 || 
-        resolvedMode == GR_LFBWRITEMODE_565_DEPTH || 
-        resolvedMode == GR_LFBWRITEMODE_555_DEPTH || 
-        resolvedMode == GR_LFBWRITEMODE_1555_DEPTH || 
-        resolvedMode == GR_LFBWRITEMODE_ZA16) {
-        g_lfbLock.pixelSize = 2;
-    } else if (resolvedMode == GR_LFBWRITEMODE_888) {
-        g_lfbLock.pixelSize = 3;
-    } else if (resolvedMode == GR_LFBWRITEMODE_8888) {
-        g_lfbLock.pixelSize = 4;
-    } else {
-        GLIDE_LOG(CRITICAL, "Frontend", "grLfbLock: Unsupported writeMode=" << writeMode);
-        return FXFALSE;
-    }
-
-    g_lfbLock.stride = g_lfbLock.width * g_lfbLock.pixelSize;
-    g_lfbLock.stagingBuffer.resize(g_lfbLock.stride * g_lfbLock.height);
-    
-    b->ReadLFB(buffer, 0, 0, g_lfbLock.width, g_lfbLock.height, g_lfbLock.stride, g_lfbLock.stagingBuffer.data());
-    g_lfbLock.originalBuffer = g_lfbLock.stagingBuffer;
-    
-    if (origin == GR_ORIGIN_LOWER_LEFT) {
-        FlipRows(g_lfbLock.stagingBuffer.data(), g_lfbLock.height, g_lfbLock.stride);
-    }
-
-    info->size = sizeof(GrLfbInfo_t);
-    info->writeMode = resolvedMode;
-    info->origin = origin;
-    info->strideInBytes = g_lfbLock.stride;
-    info->lfbPtr = g_lfbLock.stagingBuffer.data();
-
-    g_lfbLock.isLocked = true;
-    g_lfbLock.type = type;
-    g_lfbLock.buffer = buffer;
-    g_lfbLock.writeMode = resolvedMode;
-    g_lfbLock.origin = origin;
-    g_lfbLock.pixelPipeline = (pixelPipeline != 0);
-
-    return FXTRUE;
+    return GlideWrapper::LfbManager::GetInstance().Lock(type, buffer, writeMode, origin, pixelPipeline != 0, info) ? FXTRUE : FXFALSE;
 }
 
 FX_ENTRY FxBool FX_CALL grLfbUnlock(GrLock_t type, GrBuffer_t buffer) {
     EnsureEngineInitialized();
     GLIDE_LOG(DEBUG, "Frontend", "grLfbUnlock (Glide 3.x) invoked.");
-    
-    if (!g_lfbLock.isLocked) {
-        GLIDE_LOG(WARN, "Frontend", "grLfbUnlock: No active LFB lock found!");
-        return FXFALSE;
-    }
 
-    auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend();
-    if (!b) return FXFALSE;
+    // Construct pipeline configuration for the backend to simulate blending & chroma keying
+    GlideWrapper::LfbPipelineConfig config;
+    config.pixelPipeline = GlideWrapper::LfbManager::GetInstance().IsPixelPipeline();
+    config.chromakeyEnabled = (s_chromakeyMode != 0);
+    config.chromakeyValue = s_chromakeyValue;
+    config.constantAlpha = s_lfbConstantAlpha;
+    config.rgbSrcBlend = s_rgbSrcBlend;
+    config.rgbDstBlend = s_rgbDstBlend;
 
-    if (g_lfbLock.type == GR_LFB_WRITE_ONLY) {
-        if (g_lfbLock.origin == GR_ORIGIN_LOWER_LEFT) {
-            FlipRows(g_lfbLock.stagingBuffer.data(), g_lfbLock.height, g_lfbLock.stride);
-        }
-
-        uint32_t srcFmt = 0;
-        if (g_lfbLock.writeMode == GR_LFBWRITEMODE_565) srcFmt = 0;
-        else if (g_lfbLock.writeMode == GR_LFBWRITEMODE_555) srcFmt = 1;
-        else if (g_lfbLock.writeMode == GR_LFBWRITEMODE_1555) srcFmt = 2;
-        else if (g_lfbLock.writeMode == GR_LFBWRITEMODE_888) srcFmt = 4;
-        else if (g_lfbLock.writeMode == GR_LFBWRITEMODE_8888) srcFmt = 5;
-        else if (g_lfbLock.writeMode == GR_LFBWRITEMODE_565_DEPTH) srcFmt = 12;
-        else if (g_lfbLock.writeMode == GR_LFBWRITEMODE_555_DEPTH) srcFmt = 13;
-        else if (g_lfbLock.writeMode == GR_LFBWRITEMODE_1555_DEPTH) srcFmt = 14;
-        else if (g_lfbLock.writeMode == GR_LFBWRITEMODE_ZA16) srcFmt = 15;
-
-        GlideWrapper::LfbPipelineConfig config;
-        config.pixelPipeline = g_lfbLock.pixelPipeline;
-        config.chromakeyEnabled = (s_chromakeyMode != 0);
-        config.chromakeyValue = s_chromakeyValue;
-        config.constantAlpha = s_lfbConstantAlpha;
-        config.rgbSrcBlend = s_rgbSrcBlend;
-        config.rgbDstBlend = s_rgbDstBlend;
-
-        b->WriteLFB(g_lfbLock.buffer, 0, 0, g_lfbLock.width, g_lfbLock.height, g_lfbLock.stride, srcFmt, g_lfbLock.stagingBuffer.data(), g_lfbLock.originalBuffer.data(), config);
-    }
-
-    g_lfbLock.isLocked = false;
-    return FXTRUE;
+    return GlideWrapper::LfbManager::GetInstance().Unlock(type, buffer, config) ? FXTRUE : FXFALSE;
 }
 
 FX_ENTRY FxBool FX_CALL gu3dfGetInfo(const char* filename, Gu3dfInfo* info) {
@@ -1451,21 +1319,7 @@ FX_ENTRY void FX_CALL grLoadGammaTable(FxU32 nentries, FxU32 *red, FxU32 *green,
 FX_ENTRY void FX_CALL guGammaCorrectionRGB(FxFloat red, FxFloat green, FxFloat blue) {
     EnsureEngineInitialized();
     GLIDE_LOG(DEBUG, "Frontend", "guGammaCorrectionRGB (Glide 3.x): red=" << red << ", green=" << green << ", blue=" << blue);
-    
-    float r = (red > 0.0f) ? red : 1.0f;
-    float g = (green > 0.0f) ? green : 1.0f;
-    float b = (blue > 0.0f) ? blue : 1.0f;
-    
-    uint32_t rTable[256], gTable[256], bTable[256];
-    for (int i = 0; i < 256; ++i) {
-        rTable[i] = static_cast<uint32_t>(std::pow(i / 255.0f, 1.0f / r) * 255.0f + 0.5f);
-        gTable[i] = static_cast<uint32_t>(std::pow(i / 255.0f, 1.0f / g) * 255.0f + 0.5f);
-        bTable[i] = static_cast<uint32_t>(std::pow(i / 255.0f, 1.0f / b) * 255.0f + 0.5f);
-    }
-    
-    if (auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
-        backend->LoadGammaTable(256, rTable, gTable, bTable);
-    }
+    GlideWrapper::MathUtils::GammaCorrectionRGB(red, green, blue);
 }
 
 FX_ENTRY void FX_CALL grDisableAllEffects(void) {

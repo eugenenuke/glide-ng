@@ -4854,6 +4854,59 @@ TEST_CASE("Glide 3.x Texture Loading and LFB Integrity", "[Glide3][Texture]") {
 }
 #endif
 
+#include "core/MathUtils.h"
+#include "core/LfbManager.h"
+
+TEST_CASE("MathUtils Unit Tests", "[Core][MathUtils]") {
+    SECTION("FogTableIndexToW calculations") {
+        REQUIRE(GlideWrapper::MathUtils::FogTableIndexToW(0) == 1.0f);
+        REQUIRE(GlideWrapper::MathUtils::FogTableIndexToW(63) == 52428.800781f);
+        // Clamp boundaries
+        REQUIRE(GlideWrapper::MathUtils::FogTableIndexToW(-1) == 1.0f);
+        REQUIRE(GlideWrapper::MathUtils::FogTableIndexToW(100) == 52428.800781f);
+    }
+
+    SECTION("FogGenerateLinear generates correct linear mapping") {
+        uint8_t table[64];
+        std::memset(table, 0, sizeof(table));
+        
+        // Define linear range between 1.0 and 100.0
+        GlideWrapper::MathUtils::FogGenerateLinear(table, 1.0f, 100.0f);
+
+        // Under W=1.0, fog value should be 0 (no fog)
+        REQUIRE(table[0] == 0);
+        // Under W=52428.8, since it's far above farW (100.0), it should be 255 (full fog)
+        REQUIRE(table[63] == 255);
+    }
+
+    SECTION("FogGenerateExp behaves exponentially") {
+        uint8_t table[64];
+        std::memset(table, 0, sizeof(table));
+
+        GlideWrapper::MathUtils::FogGenerateExp(table, 0.01f);
+        // Exponential values should increase monotonically
+        for (int i = 1; i < 64; ++i) {
+            REQUIRE(table[i] >= table[i-1]);
+        }
+    }
+}
+
+TEST_CASE("LfbManager Unit Tests", "[Core][LfbManager]") {
+    auto& manager = GlideWrapper::LfbManager::GetInstance();
+    
+    SECTION("Initial state is unlocked") {
+        REQUIRE(manager.IsLocked() == false);
+    }
+
+    SECTION("Unlock fails gracefully if not locked") {
+        GlideWrapper::LfbPipelineConfig config;
+        bool status = manager.Unlock(0, 0, config);
+        REQUIRE(status == false);
+        REQUIRE(manager.IsLocked() == false);
+    }
+}
+
+
 
 
 
