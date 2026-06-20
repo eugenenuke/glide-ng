@@ -37,8 +37,6 @@ target_link_libraries(GlideWrapperCore PUBLIC Vulkan::Vulkan SDL2::SDL2 GLESv2 O
 # 2. Glide 2 Frontend Export Library (glide2x.dll / libglide2x.so)
 add_library(glide2x SHARED 
     glide2/glide2_entry.cpp
-    glide2/gsplash.cpp
-    glide2/gbanner.cpp
 )
 set_target_properties(glide2x PROPERTIES
     VERSION 2.0.0
@@ -54,7 +52,6 @@ target_link_libraries(glide2x PRIVATE GlideWrapperCore)
 # 3. Glide 3 Frontend Export Library (glide3x.dll / libglide3x.so)
 add_library(glide3x SHARED 
     glide3/glide3_entry.cpp
-    glide3/glide3_banner.cpp
 )
 set_target_properties(glide3x PROPERTIES
     VERSION 3.0.0

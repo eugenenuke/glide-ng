@@ -1392,4 +1392,41 @@ FX_ENTRY void FX_CALL grColorMask(FxBool rgb, FxBool a) {
     }
 }
 
+FX_ENTRY void FX_CALL grShamelessPlug(void) {
+    EnsureEngineInitialized();
+    uint32_t scrWidth = 640;
+    uint32_t scrHeight = 480;
+    auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
+    if (backend) {
+        scrWidth = backend->GetWidth();
+        scrHeight = backend->GetHeight();
+    }
+    auto* animator = GlideWrapper::BackendManager::GetInstance().GetSplashAnimator();
+    if (animator) {
+        animator->RenderBanner(scrWidth, scrHeight);
+    }
+}
+
+FX_ENTRY void FX_CALL grSplash(float x, float y, float w, float h, FxU32 frame) {
+    EnsureEngineInitialized();
+    g_inSplash = true;
+
+    // Save current Glide 3.x vertex layout state
+    GlideWrapper::Glide3VertexLayout savedLayout;
+    GlideWrapper::VertexLayout::GetInstance().GetLayoutState(&savedLayout);
+
+    // Reset to Glide 2 canonical layout since GlideSplashAnimator uses standard Glide 2 GrVertex structures
+    GlideWrapper::VertexLayout::GetInstance().ResetToGlide2Canonical();
+
+    auto* animator = GlideWrapper::BackendManager::GetInstance().GetSplashAnimator();
+    if (animator) {
+        animator->Render(x, y, w, h, frame, nullptr);
+    }
+
+    // Restore the game's active Glide 3.x vertex layout state
+    GlideWrapper::VertexLayout::GetInstance().SetLayoutState(&savedLayout);
+
+    g_inSplash = false;
+}
+
 } // extern "C"

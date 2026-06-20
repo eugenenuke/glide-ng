@@ -1948,4 +1948,39 @@ FX_ENTRY void FX_CALL ConvertAndDownloadRle(
     grTexDownloadMipMapLevel(tmu, startAddress, thisLod, largeLod, aspectRatio, format, evenOdd, decompressed.data());
 }
 
+FX_ENTRY void FX_CALL grShamelessPlug(void) {
+    EnsureEngineInitialized();
+    uint32_t scrWidth = 640;
+    uint32_t scrHeight = 480;
+    auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
+    if (backend) {
+        scrWidth = backend->GetWidth();
+        scrHeight = backend->GetHeight();
+    }
+    auto* animator = GlideWrapper::BackendManager::GetInstance().GetSplashAnimator();
+    if (animator) {
+        animator->RenderBanner(scrWidth, scrHeight);
+    }
+}
+
+FX_ENTRY void FX_CALL grSplash(float x, float y, float w, float h, FxU32 frame) {
+    EnsureEngineInitialized();
+    auto* animator = GlideWrapper::BackendManager::GetInstance().GetSplashAnimator();
+    if (animator) {
+        animator->Render(x, y, w, h, frame, nullptr);
+    }
+}
+
+FX_ENTRY void FX_CALL grSplashCb(float x, float y, float w, float h, FxU32 frame, void (*callback)(int frame)) {
+    EnsureEngineInitialized();
+    if (!GlideWrapper::EmulationRegistry::GetInstance().IsFunctionAvailable("grSplashCb")) {
+        GLIDE_LOG(WARN, "API", "GATED CALL: grSplashCb is not available under the active version/device profile.");
+        return;
+    }
+    auto* animator = GlideWrapper::BackendManager::GetInstance().GetSplashAnimator();
+    if (animator) {
+        animator->Render(x, y, w, h, frame, callback);
+    }
+}
+
 } // extern "C"
