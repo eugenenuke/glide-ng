@@ -318,6 +318,10 @@ When future agents or developers encounter regressions or divergent rendering be
     *   If a test has a bug (e.g., a keyboard hook omission in its helper library), patch the wrapper or helper library bridge dynamically, or replicate the test logic in a modern C++ demo under the `demos/` directory.
     *   Never check in modifications to reference tests. If you need to experiment, copy the test code into a scratch script under `scratch/` or create a standalone demo.
 
-
-
+### G. Bounded Background Task Management & Screen Capture Timing
+*   **The Problem**: When running interactive graphical tests in the background to programmatically capture their rendering output (using `import` or `xwd`), developers often use a generic `sleep 4.0` or longer to wait for window initialization. However, if the test is launched with a fixed frame count (e.g. `-n 100`), the headless software/Vulkan backend will render those frames in a few milliseconds and terminate. The capturing tool will then fail or hang because the presentation window no longer exists.
+*   **The Best Practices**:
+    1.  **Ensure Window Persistence**: Always run the background test with an extremely large frame count (e.g., `-n 999999`) or run it indefinitely to guarantee the presentation window remains active during the entire capturing sequence.
+    2.  **Optimize Wait Times**: Keep window-mapping wait times minimal. A delay of `0.5` to `1.0` seconds is more than sufficient for the graphics context to initialize and map the window on virtual display servers.
+    3.  **Immediate Cleanup**: Always capture the process ID (`DEMO_PID=$!`) immediately upon launching, and execute a forceful termination (`kill -9 $DEMO_PID`) immediately after the screenshot is captured. This prevents zombie processes and resource leaks in sandboxed environments.
 
