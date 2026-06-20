@@ -32,6 +32,7 @@
 
 extern "C" {
 uint32_t s_sstOrigin = 0;
+bool g_inSplash = false; // Execution context flag for internally loaded Glide 2.x splash textures
 void grShamelessPlug(void);
 
 namespace {
@@ -644,6 +645,10 @@ FX_ENTRY FxU32 FX_CALL grTexMaxAddress(GrChipID_t tmu) {
 
 FX_ENTRY FxU32 FX_CALL grTexCalcMemRequired(GrLOD_t lodmin, GrLOD_t lodmax, GrAspectRatio_t aspect, GrTextureFormat_t fmt) {
     GLIDE_LOG(DEBUG, "Frontend", "grTexCalcMemRequired (Glide 3.x) invoked.");
+    if (g_inSplash) {
+        // Internally loaded Glide 2.x splash texture: already has Glide 2.x canonical values!
+        return GlideWrapper::TextureManager::GetInstance().CalculateMemoryRequired(lodmin, lodmax, aspect, fmt);
+    }
     return GlideWrapper::TextureManager::GetInstance().CalculateMemoryRequired(8 - lodmin, 8 - lodmax, 3 - aspect, fmt);
 }
 
@@ -1095,8 +1100,15 @@ FX_ENTRY void FX_CALL grCullMode(GrCullMode_t mode) {
 FX_ENTRY void FX_CALL grTexDownloadMipMap(GrChipID_t tmu, FxU32 startAddress, FxU32 evenOdd, GrTexInfo* info) {
     GLIDE_LOG(DEBUG, "Frontend", "grTexDownloadMipMap (Glide 3.x) invoked for TMU=" << tmu);
     if (info && info->data) {
-        // Translate Glide 3.x signed log2 aspect ratio and LOD to Glide 2.x core format
-        GlideWrapper::TextureManager::GetInstance().DownloadMipMap(tmu, startAddress, 8 - info->smallLodLog2, 8 - info->largeLodLog2, 3 - info->aspectRatioLog2, info->format, info->data);
+        if (g_inSplash) {
+            // Internally loaded Glide 2.x splash texture: its GrTexInfo fields contain Glide 2.x canonical values.
+            // Note that although the header declaration in glide3/glide.h names them smallLodLog2, largeLodLog2, aspectRatioLog2,
+            // they physically map to the exact same offsets/sizes as Glide 2.x smallLod, largeLod, aspectRatio.
+            GlideWrapper::TextureManager::GetInstance().DownloadMipMap(tmu, startAddress, info->smallLodLog2, info->largeLodLog2, info->aspectRatioLog2, info->format, info->data);
+        } else {
+            // Translate Glide 3.x signed log2 aspect ratio and LOD to Glide 2.x core format
+            GlideWrapper::TextureManager::GetInstance().DownloadMipMap(tmu, startAddress, 8 - info->smallLodLog2, 8 - info->largeLodLog2, 3 - info->aspectRatioLog2, info->format, info->data);
+        }
     }
 }
 

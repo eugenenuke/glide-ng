@@ -248,6 +248,24 @@ cmake --build build -j$(nproc)
 4.  **Verification**:
     *   Rebuilt the wrapper and verified that all 2318 Catch2 assertions pass cleanly. The Glide 2.x splash screen now renders the spinning logo with perfect solid text and pristine shading even when the shameless plug is active!
 
+### Case Study 10: The Glide 3.x Splash Screen Grey/Damaged Texture (Log2 Aspect Ratio & LOD Translation Mismatch)
+1.  **The Symptom**: In Glide 3.x, the spinning 3Dfx splash logo rendered correctly, but the letters `"3Dfx"` in the center of the shield were a flat, dark grey/black color, completely lacking their bright, shiny, metallic red/orange/yellow shading, whereas Glide 2.x rendered it beautifully.
+2.  **The Root Cause**:
+    *   The `GlideSplashAnimator` is compiled as Glide 2.x core code, meaning its internal texture definitions and `GrTexInfo` structs are populated using Glide 2.x canonical values (e.g. `smallLod` = `GR_LOD_1` (8), `largeLod` = `GR_LOD_256` (0), and `aspectRatio` = `GR_ASPECT_1x1` (0)).
+    *   In the Glide 3.x frontend translation layer (`glide3_entry.cpp`), `grTexDownloadMipMap` and `grTexTextureMemRequired` assume that any incoming `GrTexInfo` struct contains Glide 3.x signed log2 values (where a size of 256 is `8`, a size of 1 is `0`, etc.).
+    *   To translate these log2 values back to the core backend, the Glide 3.x frontend applies formula transformations: `8 - smallLodLog2`, `8 - largeLodLog2`, and `3 - aspectRatioLog2`.
+    *   When the splash animator passed its Glide 2.x `GrTexInfo` struct to `grTexDownloadMipMap`, the Glide 3.x translation layer interpreted the Glide 2.x canonical values (0 and 8) as Glide 3.x log2 values, and performed the translation:
+        *   `largeLod` became `8 - 0 = 8` (which is `GR_LOD_1` in Glide 2.x).
+        *   `smallLod` became `8 - 8 = 0` (which is `GR_LOD_256` in Glide 2.x).
+        *   `aspectRatio` became `3 - 0 = 3` (which is `GR_ASPECT_8x1` in Glide 2.x).
+    *   This completely inverted the mipmap levels (setting the large LOD to 1x1 and the small LOD to 256x256) and corrupted the aspect ratio, causing the texture loader to upload corrupted/empty mipmap levels, resulting in a flat-grey untextured logo.
+3.  **The Solution**:
+    *   We implemented a thread-local/execution context flag `g_inSplash` inside `libglide3x.so`.
+    *   In `grSplash` (inside [src/glide3/glide3_banner.cpp](file:///usr/local/google/home/eianiuk/gemini/3dfx/src/glide3/glide3_banner.cpp)), we set `g_inSplash = true;` before rendering the splash frame and reset it to `false` afterward.
+    *   In `grTexCalcMemRequired` and `grTexDownloadMipMap` inside [src/glide3/glide3_entry.cpp](file:///usr/local/google/home/eianiuk/gemini/3dfx/src/glide3/glide3_entry.cpp), we added a conditional check: if `g_inSplash` is active, we bypass the signed log2 translation entirely, passing the canonical Glide 2.x values directly to the backend.
+4.  **Verification**:
+    *   Rebuilt the project and ran `test16` (Glide 3.x) under the Vulkan backend. The spinning logo now displays its gorgeous, high-fidelity metallic red/orange/yellow shading, rendering identically to the Glide 2.x reference implementation!
+
 ---
 
 ## 5. Unified Troubleshooting & Diagnostic Methodologies

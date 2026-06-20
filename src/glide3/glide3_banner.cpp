@@ -91,11 +91,29 @@ grShamelessPlug( void )
   grGlideSetState( &state );
 }
 
+#include <core/VertexLayout.h>
+
+extern "C" bool g_inSplash;
+
 extern "C" void FX_CALL
 grSplash(float x, float y, float w, float h, FxU32 frame)
 {
+    g_inSplash = true;
+
+    // Save current Glide 3.x vertex layout state
+    GlideWrapper::Glide3VertexLayout savedLayout;
+    GlideWrapper::VertexLayout::GetInstance().GetLayoutState(&savedLayout);
+
+    // Reset to Glide 2 canonical layout since GlideSplashAnimator uses standard Glide 2 GrVertex structures
+    GlideWrapper::VertexLayout::GetInstance().ResetToGlide2Canonical();
+
     auto* animator = GlideWrapper::BackendManager::GetInstance().GetSplashAnimator();
     if (animator) {
         animator->Render(x, y, w, h, frame, nullptr);
     }
+
+    // Restore the game's active Glide 3.x vertex layout state
+    GlideWrapper::VertexLayout::GetInstance().SetLayoutState(&savedLayout);
+
+    g_inSplash = false;
 }
