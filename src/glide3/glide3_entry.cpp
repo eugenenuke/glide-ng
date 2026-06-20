@@ -3,6 +3,7 @@
 #include "core/IConfigLoader.h"
 #include "core/JsonConfigLoader.h"
 #include "core/BackendManager.h"
+#include "core/GlideSplashAnimator.h"
 #include "core/VertexLayout.h"
 #include "core/TextureManager.h"
 #include "core/Telemetry.h"
@@ -29,6 +30,7 @@
 #endif
 
 extern "C" {
+uint32_t s_sstOrigin = 0;
 void grShamelessPlug(void);
 
 namespace {
@@ -94,6 +96,8 @@ namespace {
     uint32_t s_fogMode = 0;
     uint32_t s_fogColor = 0xff000000;
     uint8_t s_fogTable[64] = {0};
+    bool s_colorMaskRgb = true;
+    bool s_colorMaskAlpha = true;
 }
 
 struct GlideWrapperState {
@@ -183,6 +187,7 @@ FX_ENTRY void FX_CALL grGlideShutdown(void) {
 
 FX_ENTRY GrContext_t FX_CALL grSstWinOpen(FxU32 hWnd, GrScreenResolution_t resolution, GrScreenRefresh_t refresh, GrColorFormat_t format, GrOriginLocation_t origin, int nColBuffers, int nAuxBuffers) {
     EnsureEngineInitialized();
+    GlideWrapper::BackendManager::GetInstance().SetSplashAnimator(std::make_unique<GlideWrapper::GlideSplashAnimator>());
     GLIDE_LOG(INFO, "Frontend", "grSstWinOpen (Glide 3.x) invoked. Res=" << resolution << ", Buffers=" << nColBuffers);
     
     // Reset all Glide 3.x frontend static global states to canonical Glide defaults
@@ -258,6 +263,7 @@ FX_ENTRY GrContext_t FX_CALL grSstWinOpen(FxU32 hWnd, GrScreenResolution_t resol
 
 FX_ENTRY FxBool FX_CALL grSstWinClose(GrContext_t context) {
     EnsureEngineInitialized();
+    GlideWrapper::BackendManager::GetInstance().SetSplashAnimator(nullptr);
     GLIDE_LOG(INFO, "Frontend", "grSstWinClose invoked for Context=" << context);
     auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
     if (backend) backend->DetachWindow();
@@ -1046,6 +1052,7 @@ FX_ENTRY void FX_CALL grSstVidMode(FxU32 whichSst, void* vidTimings) {
 
 FX_ENTRY void FX_CALL grSstOrigin(GrOriginLocation_t origin) {
     GLIDE_LOG(DEBUG, "Frontend", "grSstOrigin (Glide 3.x) invoked: " << origin);
+    s_sstOrigin = origin;
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
         b->SetSstOrigin(origin);
     }
@@ -1406,6 +1413,16 @@ FX_ENTRY void FX_CALL grLfbWriteColorFormat(GrColorFormat_t colorFormat) {
     EnsureEngineInitialized();
     GLIDE_LOG(DEBUG, "Frontend", "grLfbWriteColorFormat (Glide 3.x) invoked: format=" << colorFormat);
     s_lfbWriteColorFormat = colorFormat;
+}
+
+FX_ENTRY void FX_CALL grColorMask(FxBool rgb, FxBool a) {
+    EnsureEngineInitialized();
+    GLIDE_LOG(DEBUG, "Frontend", "grColorMask (Glide 3.x) invoked: rgb=" << rgb << ", a=" << a);
+    s_colorMaskRgb = (rgb != 0);
+    s_colorMaskAlpha = (a != 0);
+    if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
+        b->SetColorMask(s_colorMaskRgb, s_colorMaskAlpha);
+    }
 }
 
 } // extern "C"

@@ -8,6 +8,7 @@ add_library(GlideWrapperCore STATIC
     core/TextureManager.cpp
     core/Telemetry.cpp
     core/EmbeddedAssets.cpp
+    core/GlideSplashAnimator.cpp
     backends/SoftwareBackendBase.cpp
     backends/vulkan/VulkanBackend.cpp
     backends/opengl_es/OpenGLESBackend.cpp
@@ -35,7 +36,6 @@ add_library(glide2x SHARED
     glide2/glide2_entry.cpp
     glide2/gsplash.cpp
     glide2/gbanner.cpp
-    core/GlideSplashAnimator.cpp
 )
 target_include_directories(glide2x PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/../include/glide2"

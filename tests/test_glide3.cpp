@@ -716,6 +716,139 @@ TEST_CASE("Glide 3.x W-Buffering and Layout Q-Param Compatibility", "[Glide3][WB
         shutdown();
         ::dlclose(handle);
     }
+
+    SECTION("Dynamic API Verification for LFB Lock, Write and Origin Swapping") {
+        void* handle = OpenGlide3Handle();
+        REQUIRE(handle != nullptr);
+
+        using G3Context = unsigned long;
+
+        using InitFunc = void(*)(void);
+        using SelectFunc = void(*)(GrChipID_t);
+        using WinOpenFunc = G3Context(*)(FxU32, GrScreenResolution_t, GrScreenRefresh_t, GrColorFormat_t, GrOriginLocation_t, int, int);
+        using LockFunc = FxBool(*)(GrLock_t, GrBuffer_t, GrLfbWriteMode_t, GrOriginLocation_t, FxBool, GrLfbInfo_t*);
+        using UnlockFunc = FxBool(*)(GrLock_t, GrBuffer_t);
+        using ShutdownFunc = void(*)(void);
+
+        auto glideInit = reinterpret_cast<InitFunc>(::dlsym(handle, "grGlideInit"));
+        auto sstSelect = reinterpret_cast<SelectFunc>(::dlsym(handle, "grSstSelect"));
+        auto winOpen = reinterpret_cast<WinOpenFunc>(::dlsym(handle, "grSstWinOpen"));
+        auto lfbLock = reinterpret_cast<LockFunc>(::dlsym(handle, "grLfbLock"));
+        auto lfbUnlock = reinterpret_cast<UnlockFunc>(::dlsym(handle, "grLfbUnlock"));
+        auto shutdown = reinterpret_cast<ShutdownFunc>(::dlsym(handle, "grGlideShutdown"));
+
+        REQUIRE(glideInit != nullptr);
+        REQUIRE(winOpen != nullptr);
+        REQUIRE(lfbLock != nullptr);
+        REQUIRE(lfbUnlock != nullptr);
+        REQUIRE(shutdown != nullptr);
+
+        glideInit();
+        if (sstSelect) sstSelect(0);
+
+        G3Context ctx = winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz, GR_COLORFORMAT_ABGR, GR_ORIGIN_UPPER_LEFT, 2, 1);
+        REQUIRE(ctx != 0);
+
+        auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend();
+        REQUIRE(b != nullptr);
+
+        // 1. Clear backbuffer to solid black
+        b->ClearBuffer(0, 0, 0.0f, 0x3);
+
+        // 2. Lock backbuffer with UPPER_LEFT origin, write a red pixel at (0, 0)
+        GrLfbInfo_t info{};
+        info.size = sizeof(info);
+        FxBool locked = lfbLock(GR_LFB_WRITE_ONLY, GR_BUFFER_BACKBUFFER, GR_LFBWRITEMODE_565, GR_ORIGIN_UPPER_LEFT, FXFALSE, &info);
+        REQUIRE(locked == FXTRUE);
+        REQUIRE(info.lfbPtr != nullptr);
+        REQUIRE(info.strideInBytes >= 640 * 2);
+
+        auto* shortData = reinterpret_cast<FxU16*>(info.lfbPtr);
+        shortData[0] = 0xF800; // Red in RGB565
+
+        FxBool unlocked = lfbUnlock(GR_LFB_WRITE_ONLY, GR_BUFFER_BACKBUFFER);
+        REQUIRE(unlocked == FXTRUE);
+
+        // 3. Read back from backend and verify it is red (0xFFFF0000 in RGBA)
+        std::vector<uint32_t> readPixels(640 * 480, 0);
+        b->ReadLFB(GR_BUFFER_BACKBUFFER, 0, 0, 640, 480, 640 * 4, readPixels.data());
+        REQUIRE(readPixels[0] == 0xFFFF0000);
+
+        // 4. Clear backbuffer again
+        b->ClearBuffer(0, 0, 0.0f, 0x3);
+
+        // 5. Lock with LOWER_LEFT origin, write red pixel at (0, 0) (logical)
+        locked = lfbLock(GR_LFB_WRITE_ONLY, GR_BUFFER_BACKBUFFER, GR_LFBWRITEMODE_565, GR_ORIGIN_LOWER_LEFT, FXFALSE, &info);
+        REQUIRE(locked == FXTRUE);
+        shortData = reinterpret_cast<FxU16*>(info.lfbPtr);
+        shortData[0] = 0xF800; // Red
+
+        unlocked = lfbUnlock(GR_LFB_WRITE_ONLY, GR_BUFFER_BACKBUFFER);
+        REQUIRE(unlocked == FXTRUE);
+
+        // 6. Read back: row-flipping must have mapped it to physical (0, height - 1)!
+        std::fill(readPixels.begin(), readPixels.end(), 0);
+        b->ReadLFB(GR_BUFFER_BACKBUFFER, 0, 0, 640, 480, 640 * 4, readPixels.data());
+        
+        // Logical (0,0) under LOWER_LEFT maps to physical bottom-left (0, 479)
+        REQUIRE(readPixels[479 * 640] == 0xFFFF0000);
+        REQUIRE(readPixels[0] == 0xFF000000); // Physical (0,0) must remain black (alpha=255)!
+
+        shutdown();
+        ::dlclose(handle);
+    }
+
+    SECTION("Dynamic API Verification for Splash Screen and Shameless Plug") {
+        void* handle = OpenGlide3Handle();
+        REQUIRE(handle != nullptr);
+
+        using G3Context = unsigned long;
+        using G3EnableMode = FxU32;
+
+        using InitFunc = void(*)(void);
+        using SelectFunc = void(*)(GrChipID_t);
+        using WinOpenFunc = G3Context(*)(FxU32, GrScreenResolution_t, GrScreenRefresh_t, GrColorFormat_t, GrOriginLocation_t, int, int);
+        using SplashFunc = void(*)(float, float, float, float, FxU32);
+        using EnableFunc = void(*)(G3EnableMode);
+        using DisableFunc = void(*)(G3EnableMode);
+        using SwapFunc = void(*)(FxU32);
+        using ShutdownFunc = void(*)(void);
+
+        auto glideInit = reinterpret_cast<InitFunc>(::dlsym(handle, "grGlideInit"));
+        auto sstSelect = reinterpret_cast<SelectFunc>(::dlsym(handle, "grSstSelect"));
+        auto winOpen = reinterpret_cast<WinOpenFunc>(::dlsym(handle, "grSstWinOpen"));
+        auto splash = reinterpret_cast<SplashFunc>(::dlsym(handle, "grSplash"));
+        auto enable = reinterpret_cast<EnableFunc>(::dlsym(handle, "grEnable"));
+        auto disable = reinterpret_cast<DisableFunc>(::dlsym(handle, "grDisable"));
+        auto swap = reinterpret_cast<SwapFunc>(::dlsym(handle, "grBufferSwap"));
+        auto shutdown = reinterpret_cast<ShutdownFunc>(::dlsym(handle, "grGlideShutdown"));
+
+        REQUIRE(glideInit != nullptr);
+        REQUIRE(winOpen != nullptr);
+        REQUIRE(splash != nullptr);
+        REQUIRE(enable != nullptr);
+        REQUIRE(disable != nullptr);
+        REQUIRE(swap != nullptr);
+        REQUIRE(shutdown != nullptr);
+
+        glideInit();
+        if (sstSelect) sstSelect(0);
+
+        G3Context ctx = winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz, GR_COLORFORMAT_ABGR, GR_ORIGIN_UPPER_LEFT, 2, 1);
+        REQUIRE(ctx != 0);
+
+        // Render a splash frame (tests core animator lifecycle)
+        splash(0.0f, 0.0f, 640.0f, 480.0f, 35);
+
+        // Enable shameless plug and swap (tests plug drawing)
+        enable(static_cast<G3EnableMode>(0x04)); // GR_SHAMELESS_PLUG
+        swap(1);
+
+        disable(static_cast<G3EnableMode>(0x04));
+
+        shutdown();
+        ::dlclose(handle);
+    }
 #endif
 }
 
