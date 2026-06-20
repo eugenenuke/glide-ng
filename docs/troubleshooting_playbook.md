@@ -147,3 +147,27 @@ cmake --build build -j$(nproc)
     *   **Symbol Exporting**: Implemented `grColorMask` (which was called by the splash animator but missing in the Glide 3.x frontend) and exposed the global `s_sstOrigin` symbol so the animator could resolve the active screen orientation.
 4.  **Verification**:
     *   Added a Catch2 integration test calling `grSplash` and `grEnable(GR_SHAMELESS_PLUG)` to verify the animation frames and translucent watermarks execute and swap buffers with 100% stability.
+
+### Case Study 5: The `test10` Key Interception & Culling Winding Discrepancy Triage
+1.  **The Symptom**: In Glide 3.x, `test10.exe` (winding and culling test) displayed both triangles on startup and ignored the `<SPACE>` key pressed in the window, whereas the Glide 2.x version worked perfectly (showing a single blue triangle on startup and toggling on `<SPACE>`).
+2.  **Root Cause Analysis & TDD Loop**:
+    *   **Unit Testing**: We implemented a rigorous Catch2 unit test `Dynamic API Verification for Backface Culling and Winding` in [tests/test_glide3.cpp](file:///usr/local/google/home/eianiuk/gemini/3dfx/tests/test_glide3.cpp). This test draws a Clockwise triangle in Blue and a Counter-Clockwise triangle in Red, sets `grCullMode`, and uses `ReadLFB` to read back the center pixels of the backbuffer to verify culling is programmatically applied on the GPU/Software backends.
+    *   **The Result**: The unit test **passed 100% successfully**, proving that our wrapper's internal culling and winding engines were completely correct!
+    *   **Forensic Submodule Discovery**: We investigated why the space key was ignored *only* in Glide 3.x's interactive run. We discovered that there are **two distinct copies** of the test utility helper `linutil.c` in the repository submodules:
+        1.  [refs/3dfx-Glide-API/swlibs/fxmisc/linutil.c](file:///usr/local/google/home/eianiuk/gemini/3dfx/refs/3dfx-Glide-API/swlibs/fxmisc/linutil.c) (used by Glide 2.x tests), which was correctly patched with a weak symbol bridge to check the global flag `g_glideWrapperSdlKeyHit` set by GLFW/SDL window events.
+        2.  [refs/glide/swlibs/fxmisc/linutil.c](file:///usr/local/google/home/eianiuk/gemini/3dfx/refs/glide/swlibs/fxmisc/linutil.c) (used by Glide 3.x tests), which was **completely unpatched** and lacked the virtual keyboard hook! Because of this, it only polled `stdin` via terminal select, completely ignoring keypresses in the graphical window.
+    *   **Historical Source Reference**: Note that the Glide 2 original source files for tests are located in [refs/glide/glide2x/sst1/glide/tests](file:///usr/local/google/home/eianiuk/gemini/3dfx/refs/glide/glide2x/sst1/glide/tests).
+3.  **The Fix**:
+    *   **Keyboard Hook Porting**: Patched [refs/glide/swlibs/fxmisc/linutil.c](file:///usr/local/google/home/eianiuk/gemini/3dfx/refs/glide/swlibs/fxmisc/linutil.c) to port the weak symbol `g_glideWrapperSdlKeyHit` check and `isatty(0)` guard, matching the Glide 2.x bridge.
+    *   **Rebuilding Tests**: Rebuilt the Glide 3.x test suite with the patched `linutil.o` by overriding `TOP` on the command line:
+        ```bash
+        make -f Makefile.linux test06.exe test10.exe test12.exe test16.exe \
+            TOP=../../../.. \
+            CFLAGS="-std=gnu89 -Wall -O2 -I/usr/local/google/home/eianiuk/gemini/3dfx/include/glide3 -I/usr/local/google/home/eianiuk/gemini/3dfx/include/3dfx -I/usr/local/google/home/eianiuk/gemini/3dfx/refs/glide/swlibs/fxmisc -DH3" \
+            LDFLAGS="-L/usr/local/google/home/eianiuk/gemini/3dfx/build/lib -Wl,-rpath,/usr/local/google/home/eianiuk/gemini/3dfx/build/lib" \
+            LDLIBS="-lglide3x -lm"
+        ```
+4.  **Verification**:
+    *   Running the rebuilt `test10.exe` now successfully captures graphical keypresses in the window, enabling seamless culling toggling on `<SPACE>`.
+    *   All Catch2 unit tests pass cleanly, guarding against culling and winding regressions.
+

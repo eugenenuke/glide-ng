@@ -938,5 +938,115 @@ TEST_CASE("Glide 3.x W-Buffering and Layout Q-Param Compatibility", "[Glide3][WB
         shutdown();
         ::dlclose(handle);
     }
+
+    SECTION("Dynamic API Verification for Backface Culling and Winding") {
+        void* handle = OpenGlide3Handle();
+        REQUIRE(handle != nullptr);
+
+        using G3Context = unsigned long;
+
+        using InitFunc = void(*)(void);
+        using SelectFunc = void(*)(GrChipID_t);
+        using WinOpenFunc = G3Context(*)(FxU32, GrScreenResolution_t, GrScreenRefresh_t, GrColorFormat_t, GrOriginLocation_t, int, int);
+        using ColorCombineFunc = void(*)(GrCombineFunction_t, GrCombineFactor_t, GrCombineLocal_t, GrCombineOther_t, FxBool);
+        using ConstantColorFunc = void(*)(GrColor_t);
+        using CullModeFunc = void(*)(GrCullMode_t);
+        using DrawTriFunc = void(*)(const void*, const void*, const void*);
+        using BufferClearFunc = void(*)(GrColor_t, FxU16, FxU32);
+        using SwapFunc = void(*)(FxU32);
+        using ShutdownFunc = void(*)(void);
+
+        auto glideInit = reinterpret_cast<InitFunc>(::dlsym(handle, "grGlideInit"));
+        auto sstSelect = reinterpret_cast<SelectFunc>(::dlsym(handle, "grSstSelect"));
+        auto winOpen = reinterpret_cast<WinOpenFunc>(::dlsym(handle, "grSstWinOpen"));
+        auto colorCombine = reinterpret_cast<ColorCombineFunc>(::dlsym(handle, "grColorCombine"));
+        auto constantColor = reinterpret_cast<ConstantColorFunc>(::dlsym(handle, "grConstantColorValue"));
+        auto cullMode = reinterpret_cast<CullModeFunc>(::dlsym(handle, "grCullMode"));
+        auto drawTriangle = reinterpret_cast<DrawTriFunc>(::dlsym(handle, "grDrawTriangle"));
+        auto bufferClear = reinterpret_cast<BufferClearFunc>(::dlsym(handle, "grBufferClear"));
+        auto swap = reinterpret_cast<SwapFunc>(::dlsym(handle, "grBufferSwap"));
+        auto shutdown = reinterpret_cast<ShutdownFunc>(::dlsym(handle, "grGlideShutdown"));
+
+        REQUIRE(glideInit != nullptr);
+        REQUIRE(winOpen != nullptr);
+        REQUIRE(colorCombine != nullptr);
+        REQUIRE(constantColor != nullptr);
+        REQUIRE(cullMode != nullptr);
+        REQUIRE(drawTriangle != nullptr);
+        REQUIRE(bufferClear != nullptr);
+        REQUIRE(swap != nullptr);
+        REQUIRE(shutdown != nullptr);
+
+        glideInit();
+        if (sstSelect) sstSelect(0);
+
+        G3Context ctx = winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz, GR_COLORFORMAT_ABGR, GR_ORIGIN_UPPER_LEFT, 2, 1);
+        REQUIRE(ctx != 0);
+
+        // Set up flat constant color rendering
+        colorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE, GR_COMBINE_LOCAL_CONSTANT, GR_COMBINE_OTHER_NONE, FXFALSE);
+
+        // Define three vertices for Clockwise triangle (Triangle 1)
+        struct G3Vertex { float x, y, z, oow; } vA, vB, vC;
+        vA.x = 320.0f; vA.y = 48.0f;  vA.z = 0.0f; vA.oow = 1.0f;
+        vB.x = 512.0f; vB.y = 432.0f; vB.z = 0.0f; vB.oow = 1.0f;
+        vC.x = 128.0f; vC.y = 432.0f; vC.z = 0.0f; vC.oow = 1.0f;
+
+        auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
+        REQUIRE(backend != nullptr);
+
+        std::vector<uint32_t> readPixels(640 * 480, 0);
+
+        // ==========================================
+        // TEST CASE A: CULL_POSITIVE (Cull Clockwise, Render Counter-Clockwise)
+        // ==========================================
+        cullMode(GR_CULL_POSITIVE);
+        bufferClear(0xFF000000, 0, 0); // Clear to black (alpha=255)
+
+        // 1. Draw Clockwise triangle (vA -> vB -> vC) in BLUE (0x000000FF in unpacked shader)
+        constantColor(0x000000FF); 
+        drawTriangle(&vA, &vB, &vC);
+
+        // Read back center: must remain black!
+        std::fill(readPixels.begin(), readPixels.end(), 0);
+        backend->ReadLFB(GR_BUFFER_BACKBUFFER, 320, 240, 1, 1, 4, readPixels.data());
+        REQUIRE((readPixels[0] & 0x00FFFFFF) == 0x00000000); // Culled! (ignore alpha)
+
+        // 2. Draw Counter-Clockwise triangle (vA -> vC -> vB) in RED (0x00FF0000 in unpacked shader)
+        constantColor(0x00FF0000);
+        drawTriangle(&vA, &vC, &vB);
+
+        // Read back center: must be Red (0x00FF0000)
+        std::fill(readPixels.begin(), readPixels.end(), 0);
+        backend->ReadLFB(GR_BUFFER_BACKBUFFER, 320, 240, 1, 1, 4, readPixels.data());
+        REQUIRE((readPixels[0] & 0x00FFFFFF) == 0x00FF0000); // Rendered! (ignore alpha)
+
+        // ==========================================
+        // TEST CASE B: CULL_NEGATIVE (Cull Counter-Clockwise, Render Clockwise)
+        // ==========================================
+        cullMode(GR_CULL_NEGATIVE);
+        bufferClear(0xFF000000, 0, 0);
+
+        // 1. Draw Counter-Clockwise triangle (vA -> vC -> vB) in RED (0x00FF0000)
+        constantColor(0x00FF0000);
+        drawTriangle(&vA, &vC, &vB);
+
+        // Read back center: must remain black!
+        std::fill(readPixels.begin(), readPixels.end(), 0);
+        backend->ReadLFB(GR_BUFFER_BACKBUFFER, 320, 240, 1, 1, 4, readPixels.data());
+        REQUIRE((readPixels[0] & 0x00FFFFFF) == 0x00000000); // Culled! (ignore alpha)
+
+        // 2. Draw Clockwise triangle (vA -> vB -> vC) in BLUE (0x000000FF)
+        constantColor(0x000000FF);
+        drawTriangle(&vA, &vB, &vC);
+
+        // Read back center: must be Blue (0x000000FF)
+        std::fill(readPixels.begin(), readPixels.end(), 0);
+        backend->ReadLFB(GR_BUFFER_BACKBUFFER, 320, 240, 1, 1, 4, readPixels.data());
+        REQUIRE((readPixels[0] & 0x00FFFFFF) == 0x000000FF); // Rendered! (ignore alpha)
+
+        shutdown();
+        ::dlclose(handle);
+    }
 #endif
 }
