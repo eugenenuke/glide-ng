@@ -706,8 +706,8 @@ TEST_CASE("Glide 3.x W-Buffering and Layout Q-Param Compatibility", "[Glide3][WB
         FxI32 zRange[2] = { -1, -1 };
         bytes = grGetVal(GR_ZDEPTH_MIN_MAX, 8, zRange);
         REQUIRE(bytes == 8);
-        REQUIRE(zRange[0] == 0);
-        REQUIRE(zRange[1] == 65535);
+        REQUIRE(zRange[0] == 65535);
+        REQUIRE(zRange[1] == 0);
 
         // Test GR_GLIDE_STATE_SIZE (0x06)
         FxI32 stateSize = 0;

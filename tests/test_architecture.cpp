@@ -4906,6 +4906,74 @@ TEST_CASE("LfbManager Unit Tests", "[Core][LfbManager]") {
     }
 }
 
+TEST_CASE("Glide 3.x grGet Unit Tests", "[Glide3][grGet]") {
+#ifdef __linux__
+    // Load the runtime wrapper dynamic library
+    void* handle = ::dlopen("build/lib/libglide3x.so", RTLD_LAZY);
+    REQUIRE(handle != nullptr);
+
+    // Resolve entry points
+    auto init = (void (FX_CALL*)(void))::dlsym(handle, "grGlideInit");
+    auto shutdown = (void (FX_CALL*)(void))::dlsym(handle, "grGlideShutdown");
+    auto sstSelect = (void (FX_CALL*)(int))::dlsym(handle, "grSstSelect");
+    auto sstWinOpen = (FxBool (FX_CALL*)(FxU32, GrScreenResolution_t, GrScreenRefresh_t, GrColorFormat_t, GrOriginLocation_t, int, int))::dlsym(handle, "grSstWinOpen");
+    auto get = (FxU32 (FX_CALL*)(FxU32, FxU32, FxI32*))::dlsym(handle, "grGet");
+
+    REQUIRE(init != nullptr);
+    REQUIRE(shutdown != nullptr);
+    REQUIRE(sstSelect != nullptr);
+    REQUIRE(sstWinOpen != nullptr);
+    REQUIRE(get != nullptr);
+
+    init();
+    sstSelect(0);
+    
+    // Open window to initialize the engine
+    FxBool open_ok = sstWinOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz, GR_COLORFORMAT_ARGB, GR_ORIGIN_UPPER_LEFT, 2, 1);
+    REQUIRE(open_ok == FXTRUE);
+
+    SECTION("Query Z-depth range returns Voodoo3 hardware specs (65535, 0)") {
+        FxI32 zrange[2] = {-999, -999};
+        FxU32 bytes = get(0x28, 8, zrange); // 0x28 = GR_ZDEPTH_MIN_MAX
+        REQUIRE(bytes == 8);
+        REQUIRE(zrange[0] == 65535); // Nearest
+        REQUIRE(zrange[1] == 0);     // Farthest
+    }
+
+    SECTION("Query W-depth range returns (0, 65535)") {
+        FxI32 wrange[2] = {-999, -999};
+        FxU32 bytes = get(0x27, 8, wrange); // 0x27 = GR_WDEPTH_MIN_MAX
+        REQUIRE(bytes == 8);
+        REQUIRE(wrange[0] == 0);
+        REQUIRE(wrange[1] == 65535);
+    }
+
+    SECTION("Query IS_BUSY returns 0") {
+        FxI32 is_busy = -999;
+        FxU32 bytes = get(0x08, 4, &is_busy); // 0x08 = GR_IS_BUSY
+        REQUIRE(bytes == 4);
+        REQUIRE(is_busy == 0);
+    }
+
+    SECTION("Query GLIDE_STATE_SIZE returns 1024") {
+        FxI32 state_size = -999;
+        FxU32 bytes = get(0x06, 4, &state_size);
+        REQUIRE(bytes == 4);
+        REQUIRE(state_size == 1024);
+    }
+
+    SECTION("Query GLIDE_VERTEXLAYOUT_SIZE returns 256") {
+        FxI32 layout_size = -999;
+        FxU32 bytes = get(0x07, 4, &layout_size);
+        REQUIRE(bytes == 4);
+        REQUIRE(layout_size == 256);
+    }
+
+    shutdown();
+    ::dlclose(handle);
+#endif
+}
+
 
 
 

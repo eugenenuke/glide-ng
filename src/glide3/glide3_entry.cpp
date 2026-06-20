@@ -528,8 +528,8 @@ FX_ENTRY FxU32 FX_CALL grGet(FxU32 pname, FxU32 plength, FxI32* params) {
             return 8;
         case GR_ZDEPTH_MIN_MAX:
             if (plength < 8) return 0;
-            params[0] = 0;
-            params[1] = 65535;
+            params[0] = 65535;
+            params[1] = 0;
             return 8;
         case 0x06: // GR_GLIDE_STATE_SIZE
             *params = 1024;
