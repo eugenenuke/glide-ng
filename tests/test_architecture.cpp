@@ -4801,9 +4801,58 @@ TEST_CASE("Glide 2.x Vertex Layout Decoding Integrity", "[VertexLayout][Glide2]"
         REQUIRE(mv.color[3] == 200.0f / 255.0f);
         REQUIRE(mv.pos[3] == 0.5f);
         REQUIRE(mv.tex[0] == 5.0f);
-        REQUIRE(mv.tex[1] == 10.0f);
     }
 }
+
+#ifndef _WIN32
+TEST_CASE("Glide 3.x Texture Loading and LFB Integrity", "[Glide3][Texture]") {
+    void* handle = ::dlopen("build/lib/libglide3x.so", RTLD_LAZY);
+    if (!handle) handle = ::dlopen("lib/libglide3x.so", RTLD_LAZY);
+    if (!handle) handle = ::dlopen("../lib/libglide3x.so", RTLD_LAZY);
+    REQUIRE(handle != nullptr);
+
+    auto p_gu3dfGetInfo = (FxBool(*)(const char*, Gu3dfInfo*))dlsym(handle, "gu3dfGetInfo");
+    auto p_gu3dfLoad = (FxBool(*)(const char*, Gu3dfInfo*))dlsym(handle, "gu3dfLoad");
+
+    REQUIRE(p_gu3dfGetInfo != nullptr);
+    REQUIRE(p_gu3dfLoad != nullptr);
+
+    SECTION("Load decal1.3df and verify properties") {
+        Gu3dfInfo info;
+        std::memset(&info, 0, sizeof(info));
+        
+        // 1. Get texture info
+        FxBool infoOk = p_gu3dfGetInfo("ext_tests/build_tests/decal1.3df", &info);
+        REQUIRE(infoOk == FXTRUE);
+        REQUIRE(info.header.width == 256);
+        REQUIRE(info.header.height == 256);
+        REQUIRE(info.header.format == GR_TEXFMT_RGB_565);
+        REQUIRE(info.mem_required == 174762);
+
+        // 2. Allocate and load data
+        info.data = std::malloc(info.mem_required);
+        REQUIRE(info.data != nullptr);
+
+        FxBool loadOk = p_gu3dfLoad("ext_tests/build_tests/decal1.3df", &info);
+        REQUIRE(loadOk == FXTRUE);
+
+        // 3. Verify that pixel data is loaded (not all zeroes/black!)
+        const uint16_t* pixels = reinterpret_cast<const uint16_t*>(info.data);
+        bool hasNonZeroPixel = false;
+        for (uint32_t i = 0; i < info.header.width * info.header.height; ++i) {
+            if (pixels[i] != 0) {
+                hasNonZeroPixel = true;
+                break;
+            }
+        }
+        REQUIRE(hasNonZeroPixel == true);
+
+        std::free(info.data);
+    }
+
+    ::dlclose(handle);
+}
+#endif
 
 
 

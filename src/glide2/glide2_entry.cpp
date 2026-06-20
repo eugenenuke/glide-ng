@@ -125,6 +125,20 @@ namespace {
             }
         }
     }
+
+    inline void SanitizeVertex(GlideWrapper::ModernVertex& mv) {
+        bool depthActive = (s_depthMode != 0);
+        bool textureActive = (s_boundTex[0] != 0xFFFFFFFF || s_boundTex[1] != 0xFFFFFFFF);
+        bool fogActive = (s_fogMode != 0);
+        bool wActive = (s_depthMode == 2 || s_depthMode == 4);
+
+        if (!depthActive) {
+            mv.pos[2] = 0.0f;
+        }
+        if (!textureActive && !fogActive && !wActive) {
+            mv.pos[3] = 1.0f;
+        }
+    }
 }
 
 uint32_t s_sstOrigin = 0;     // GR_ORIGIN_UPPER_LEFT (Global for grSplash)
@@ -390,7 +404,15 @@ FX_ENTRY void FX_CALL grDrawTriangle(const GrVertex* a, const GrVertex* b, const
     GlideWrapper::TelemetryManager::GetInstance().IncrementTrianglesProcessed(1);
 
     auto& layout = GlideWrapper::VertexLayout::GetInstance();
-    backend->DrawTriangle(layout.DecodeVertex(a), layout.DecodeVertex(b), layout.DecodeVertex(c));
+    GlideWrapper::ModernVertex va = layout.DecodeVertex(a);
+    GlideWrapper::ModernVertex vb = layout.DecodeVertex(b);
+    GlideWrapper::ModernVertex vc = layout.DecodeVertex(c);
+    
+    SanitizeVertex(va);
+    SanitizeVertex(vb);
+    SanitizeVertex(vc);
+
+    backend->DrawTriangle(va, vb, vc);
 }
 
 FX_ENTRY void FX_CALL grTriStats(FxU32* processed, FxU32* drawn) {
@@ -424,7 +446,11 @@ FX_ENTRY void FX_CALL grDrawLine(const GrVertex* a, const GrVertex* b) {
     auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
     if (!backend || !a || !b) return;
     auto& layout = GlideWrapper::VertexLayout::GetInstance();
-    backend->DrawLine(layout.DecodeVertex(a), layout.DecodeVertex(b));
+    GlideWrapper::ModernVertex va = layout.DecodeVertex(a);
+    GlideWrapper::ModernVertex vb = layout.DecodeVertex(b);
+    SanitizeVertex(va);
+    SanitizeVertex(vb);
+    backend->DrawLine(va, vb);
 }
 
 FX_ENTRY void FX_CALL grDrawPoint(const GrVertex* pt) {
@@ -433,7 +459,9 @@ FX_ENTRY void FX_CALL grDrawPoint(const GrVertex* pt) {
     auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
     if (!backend || !pt) return;
     auto& layout = GlideWrapper::VertexLayout::GetInstance();
-    backend->DrawPoint(layout.DecodeVertex(pt));
+    GlideWrapper::ModernVertex vpt = layout.DecodeVertex(pt);
+    SanitizeVertex(vpt);
+    backend->DrawPoint(vpt);
 }
 
 // =============================================================================

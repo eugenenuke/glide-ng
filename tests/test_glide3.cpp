@@ -383,6 +383,8 @@ TEST_CASE("Glide 3.x State Save & Restore Combiner Bug Verification", "[Glide3][
     auto colorComb = reinterpret_cast<ColorCombineFunc>(::dlsym(handle, "grColorCombine"));
     auto getState  = reinterpret_cast<GetStateFunc>(::dlsym(handle, "grGlideGetState"));
     auto setState  = reinterpret_cast<SetStateFunc>(::dlsym(handle, "grGlideSetState"));
+    using CullModeFunc = void(*)(GrCullMode_t);
+    auto cullMode = reinterpret_cast<CullModeFunc>(::dlsym(handle, "grCullMode"));
     auto glideShutdown = reinterpret_cast<ShutdownFunc>(::dlsym(handle, "grGlideShutdown"));
 
     REQUIRE(glideInit != nullptr);
@@ -392,6 +394,7 @@ TEST_CASE("Glide 3.x State Save & Restore Combiner Bug Verification", "[Glide3][
     REQUIRE(colorComb != nullptr);
     REQUIRE(getState != nullptr);
     REQUIRE(setState != nullptr);
+    REQUIRE(cullMode != nullptr);
     REQUIRE(glideShutdown != nullptr);
 
     // Force headless software reference backend for testing
@@ -409,26 +412,31 @@ TEST_CASE("Glide 3.x State Save & Restore Combiner Bug Verification", "[Glide3][
     );
     REQUIRE(backend != nullptr);
 
-    // 1. Configure initial combiner state: GR_COMBINE_FUNCTION_LOCAL, ITERATED, NONE
+    // 1. Configure initial combiner and cull state
     colorComb(1, 0, 0, 2, 0); // function=1, factor=0, local=0, other=2
+    cullMode(2); // GR_CULL_POSITIVE
     REQUIRE(backend->GetColorCombinerFunc() == 1);
     REQUIRE(backend->GetColorCombinerLocal() == 0);
+    REQUIRE(backend->GetCullMode() == 2);
 
     // 2. Save state using grGlideGetState
     char savedState[1024];
     getState(savedState);
 
-    // 3. Modify combiner state to simulate watermark drawing: FUNCTION_SCALE_OTHER, CONSTANT, TEXTURE
+    // 3. Modify states to simulate watermark drawing (clobbering state)
     colorComb(3, 8, 1, 1, 0); // function=3, factor=8, local=1, other=1
+    cullMode(0); // GR_CULL_DISABLE
     REQUIRE(backend->GetColorCombinerFunc() == 3);
     REQUIRE(backend->GetColorCombinerLocal() == 1);
+    REQUIRE(backend->GetCullMode() == 0);
 
     // 4. Restore state using grGlideSetState
     setState(savedState);
 
-    // 5. Verify that the combiner state was successfully restored in the backend!
+    // 5. Verify that both the combiner and culling states were successfully restored!
     REQUIRE(backend->GetColorCombinerFunc() == 1);
     REQUIRE(backend->GetColorCombinerLocal() == 0);
+    REQUIRE(backend->GetCullMode() == 2);
 
     winClose();
     glideShutdown();

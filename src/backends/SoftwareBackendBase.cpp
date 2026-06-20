@@ -371,6 +371,9 @@ bool SoftwareBackendBase::WriteLFB(uint32_t buffer, uint32_t dstX, uint32_t dstY
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     if (!srcData || m_cpuBuffers[0].empty()) return false;
 
+    GLIDE_LOG(DEBUG, "WriteLFB", "WriteLFB invoked: buffer=" << buffer << ", dst=(" << dstX << "," << dstY << "), size=" << srcWidth << "x" << srcHeight << ", stride=" << srcStride << ", fmt=" << srcFmt);
+    uint32_t modifiedCount = 0;
+
     // Validate LFB source format (must be one of the 9 defined Glide formats)
     bool isValidFormat = false;
     switch (srcFmt) {
@@ -552,6 +555,7 @@ bool SoftwareBackendBase::WriteLFB(uint32_t buffer, uint32_t dstX, uint32_t dstY
             }
             pixels[writeY * m_headlessWidth + writeX] = pWord;
             wrotePixel = true;
+            modifiedCount++;
         }
     }
     if (wrotePixel) {
@@ -562,6 +566,7 @@ bool SoftwareBackendBase::WriteLFB(uint32_t buffer, uint32_t dstX, uint32_t dstY
             m_lfbBufferDirty[1] = true;
         }
     }
+    GLIDE_LOG(DEBUG, "WriteLFB", "WriteLFB finished: wrotePixel=" << (wrotePixel ? "Yes" : "No") << ", modifiedPixels=" << modifiedCount << ", m_lfbDirty=" << (m_lfbDirty ? "Yes" : "No"));
     return true;
 }
 

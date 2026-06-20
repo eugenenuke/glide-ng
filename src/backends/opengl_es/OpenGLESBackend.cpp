@@ -1428,20 +1428,28 @@ void OpenGLESBackend::ApplyScissorGLES() {
 
 void OpenGLESBackend::SyncCullStateGLES() {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    GLIDE_LOG(DEBUG, "GLES", "SyncCullStateGLES: m_cullMode=" << m_cullMode << ", m_sstOrigin=" << m_sstOrigin);
     if (m_cullMode == 0) { // GR_CULL_DISABLE
         glDisable(GL_CULL_FACE);
+        GLIDE_LOG(DEBUG, "GLES", "  glDisable(GL_CULL_FACE)");
     } else {
         glEnable(GL_CULL_FACE);
+        GLint frontFace;
         if (m_sstOrigin == 1) {
-            glFrontFace(GL_CCW); // LOWER_LEFT is native Y-up; Glide front-face (positive area) is CCW!
+            frontFace = GL_CCW; // LOWER_LEFT is native Y-up; Glide front-face (positive area) is CCW!
         } else {
-            glFrontFace(GL_CW);  // UPPER_LEFT is Y-down, shader Y-flip (reflection) maps Glide front-face (positive area) to CW!
+            frontFace = GL_CW;  // UPPER_LEFT is Y-down, shader Y-flip (reflection) maps Glide front-face (positive area) to CW!
         }
+        glFrontFace(frontFace);
+        
+        GLint cullFace;
         if (m_cullMode == 1) { // GR_CULL_NEGATIVE (cull negative winding / CCW in Glide)
-            glCullFace(GL_BACK); // Culls CCW under GL_CW, or CW under GL_CCW. Maps perfectly!
-        } else if (m_cullMode == 2) { // GR_CULL_POSITIVE (cull positive winding / CW in Glide)
-            glCullFace(GL_FRONT); // Culls CW under GL_CW, or CCW under GL_CCW. Maps perfectly!
+            cullFace = GL_BACK; // Culls CCW under GL_CW, or CW under GL_CCW. Maps perfectly!
+        } else { // m_cullMode == 2: GR_CULL_POSITIVE (cull positive winding / CW in Glide)
+            cullFace = GL_FRONT; // Culls CW under GL_CW, or CCW under GL_CCW. Maps perfectly!
         }
+        glCullFace(cullFace);
+        GLIDE_LOG(DEBUG, "GLES", "  glEnable(GL_CULL_FACE) | glFrontFace(" << (frontFace == GL_CCW ? "GL_CCW" : "GL_CW") << ") | glCullFace(" << (cullFace == GL_BACK ? "GL_BACK" : "GL_FRONT") << ")");
     }
 }
 

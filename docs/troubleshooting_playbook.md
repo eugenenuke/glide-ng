@@ -171,3 +171,104 @@ cmake --build build -j$(nproc)
     *   Running the rebuilt `test10.exe` now successfully captures graphical keypresses in the window, enabling seamless culling toggling on `<SPACE>`.
     *   All Catch2 unit tests pass cleanly, guarding against culling and winding regressions.
 
+### Case Study 6: The `test10` State Restoration Leak & Vertex Parameter Sanitization
+1.  **The Symptom**: Even with the keyboard input hook patched, `test10.exe` under Glide 3.x still displayed **both** triangles (Blue and Red) on startup under all backends (Vulkan, Software, and OpenGL ES), failing the culling test.
+2.  **The Investigation**:
+    *   **Verbose Log Inspection**: We executed the test with verbose debug logs (`GLIDE_WRAPPER_LOG_LEVEL=4`).
+    *   **State Analysis**: In the log, we noticed that during triangle rendering, the active culling state was reported as `m_cullMode = 0 (GR_CULL_DISABLE)`, disabling culling on the GPU despite `test10.c` having set `grCullMode(GR_CULL_POSITIVE)` on startup.
+    *   **Text Console Clobbering**: We traced this behavior to `tlConRender()` (the test suite's text console rendering library), which disables culling (`grCullMode(GR_CULL_DISABLE)`) to render text glyphs and attempts to save/restore state using `grGlideGetState` and `grGlideSetState`.
+    *   **The Root Cause**: In Glide 3.x's entry point, the translation layer **completely omitted** `cullMode` from the `GlideWrapperState` structure and the `grGlideGetState`/`grGlideSetState` serialization! Because of this state restoration leak, the first time the text console was rendered, the culling mode was permanently wiped out to `GR_CULL_DISABLE` for the rest of the application's life cycle. (In Glide 2.x, this was correctly saved and restored).
+3.  **The Vertex Parameter Sanitization (Stack Garbage)**:
+    *   Even after fixing the state restoration leak, the OpenGL ES backend still exhibited rendering artifacts.
+    *   We discovered that Glide tests (like `test10.c`) call `tlVertexLayout` which enables texture coordinates (`GR_PARAM_ST0`) and homogeneous coordinates (`GR_PARAM_Q` / `oow`), but fail to initialize them when drawing flat-shaded colored triangles.
+    *   Modern GPUs evaluate these uninitialized parameters (stack garbage), causing triangle projection warping and clipping.
+    *   **The Solution**: We implemented **Vertex Parameter Sanitization** inside the Glide 2.x and Glide 3.x frontends. This logic dynamically checks whether depth buffering, texturing, or fog are currently active in the Glide state before drawing. If any of these features are disabled, we automatically override the corresponding coordinates (forcing `pos[2] = 0.0f` and `pos[3] = 1.0f`) to prevent modern GPUs from being corrupted by legacy stack garbage.
+4.  **The Fix**:
+    *   Declared the `s_cullMode` global variable and tracked it in `grCullMode`.
+    *   Added `cullMode` to the `GlideWrapperState` struct and serialized/deserialized it in `grGlideGetState` and `grGlideSetState` in `src/glide3/glide3_entry.cpp`.
+    *   Implemented `SanitizeVertex` helper functions in both `src/glide2/glide2_entry.cpp` and `src/glide3/glide3_entry.cpp` to sanitize parameters dynamically on draw calls.
+5.  **Verification**:
+    *   Rebuilt the wrapper.
+    *   Running the genuine reference `test10.exe` under **OpenGL ES**, **Vulkan**, and **Software** backends now renders a single downwards-pointing blue triangle on startup with 100% correct culling!
+    *   Pressing the spacebar correctly toggles culling, showing only the red upwards-pointing triangle!
+    *   Verified and captured the fixed screens for all three backends:
+        *   [OpenGL ES Fixed Screen](file:///usr/local/google/home/eianiuk/.gemini/jetski/brain/f96ca68c-6e31-4c86-a397-b3a8305ba563/test10_fixed_gles.png)
+        *   [Vulkan Fixed Screen](file:///usr/local/google/home/eianiuk/.gemini/jetski/brain/f96ca68c-6e31-4c86-a397-b3a8305ba563/test10_fixed_vk.png)
+        *   [Software Fixed Screen](file:///usr/local/google/home/eianiuk/.gemini/jetski/brain/f96ca68c-6e31-4c86-a397-b3a8305ba563/test10_fixed_sw.png)
+
+### Case Study 7: The `test12` Texture Regression & Glide 3.x Utility Parser Omission
+1.  **The Symptom**: In Glide 3.x, `test12.exe` (LFB Write Modes) rendered a completely black background (missing texture) under all backends, whereas the Glide 2.x version worked perfectly (displaying the colorful 3Dfx decal logo).
+2.  **Triage & Offline Bisection**:
+    *   We built an interactive C++ replica `test12_replica_demo` and added an offline PPM frame dump facility to dump the CPU-side backing buffer contents (`m_cpuBuffers`) immediately after `WriteLFB`.
+    *   The direct CPU backing buffer dump was completely black, proving that the problem was NOT on the Vulkan/GPU presentation layer, but rather that the texture pixels were never written to the CPU memory.
+3.  **The Root Cause**:
+    *   We investigated `WriteLFB` logs and found that the application was writing 3008 pixels of uninitialized stack memory (all zeroes).
+    *   We traced the texture loading process: the test called `tlLoadTexture` which calls the utility functions `gu3dfGetInfo` and `gu3dfLoad`.
+    *   In `src/glide3/glide3_entry.cpp` (Glide 3.x frontend), these functions were **completely stubbed out** as empty functions! `gu3dfGetInfo` returned a hardcoded 256x256 footprint, and `gu3dfLoad` did absolutely nothing, leaving the texture memory uninitialized. (In Glide 2.x, these were fully implemented parsers that read `.3df` files from disk).
+4.  **The Solution**:
+    *   Ported the full `.3df` file parser from the Glide 2.x frontend to the Glide 3.x frontend.
+    *   Tailored the aspect ratio and LOD enum constants to Glide 3.x's native `_LOG2` definitions (e.g. `GR_ASPECT_LOG2_1x1` and `GR_LOD_LOG2_256`).
+    *   Adjusted the mipmap loading loop and dimension calculations to respect Glide 3.x's log2 LOD ordering (looping from `large_lod` down to `small_lod` with `1 << lod` dimension computation).
+5.  **TDD / Unit Testing**:
+    *   Added a robust Catch2 integration test `TEST_CASE("Glide 3.x Texture Loading and LFB Integrity", "[Glide3][Texture]")` to `tests/test_architecture.cpp` which dynamically loads the Glide 3.x library and verifies that `gu3dfGetInfo` and `gu3dfLoad` parse `decal1.3df` correctly, validating dimensions, format, size, and the presence of non-zero pixel data.
+6.  **Verification**:
+    *   Running the rebuilt `test12_replica_demo` now renders the 3Dfx decal logo beautifully and flawlessly under both **Software** and **Vulkan** backends!
+    *   Captured and verified the fixed screens for the replica:
+        *   [Software Fixed Screen (test12_replica_software.png)](file:///usr/local/google/home/eianiuk/.gemini/jetski/brain/f96ca68c-6e31-4c86-a397-b3a8305ba563/test12_replica_software.png)
+        *   [Vulkan Fixed Screen (test12_replica_vulkan.png)](file:///usr/local/google/home/eianiuk/.gemini/jetski/brain/f96ca68c-6e31-4c86-a397-b3a8305ba563/test12_replica_vulkan.png)
+
+---
+
+## 5. Unified Troubleshooting & Diagnostic Methodologies
+
+When future agents or developers encounter regressions or divergent rendering behaviors in the Glide wrappers, they should apply the following high-leverage diagnostic techniques and workflows:
+
+### A. Soliciting Visual Reference Captures (Ground-Truth Bisection)
+*   **The Approach**: If a graphical test compiles but exhibits incorrect visual states (e.g., rendering too many shapes, missing textures, or producing black screens) and the unit tests pass, **request the user to run the application interactively and provide a direct screenshot of the window** (e.g., [01.png](file:///usr/local/google/home/eianiuk/gemini/3dfx/01.png)).
+*   **Why it works**: Automated unit tests often evaluate isolated API states and rendering pipelines in headless, idealized contexts. Ground-truth screenshots capture the cumulative effects of state transitions, event loops, and third-party helper libraries (like `tlib` or `linutil`) that are active in the real interactive execution.
+
+### B. Headless Multi-Backend Window Capturing via `xwd`
+*   **The Approach**: To verify interactive graphical applications programmatically inside the workspace (without manual user intervention), run the application in the background and capture its frame buffer directly from the X11/Xwayland display server:
+    1. Resolve the display environment: `export DISPLAY=:0 && export XAUTHORITY=/run/user/<uid>/.mutter-Xwaylandauth.<hash>`
+    2. Launch the application: `./test10.exe -r 640x480 & DEMO_PID=$!`
+    3. Sleep briefly to allow context creation and frame presentation: `sleep 4.0`
+    4. Capture the named window using `xwd`: `xwd -display :0 -name "<exact_window_title>" -out /tmp/dump.xwd`
+    5. Convert to standard PNG for visual inspection: `convert /tmp/dump.xwd /path/to/artifacts/dump.png`
+    6. Clean up: `kill -9 $DEMO_PID`
+*   **Why it works**: Unlike the test suite's built-in frame dumps (which only dump the first frame and bypass overlays), `xwd` captures the fully presented desktop window at a specific point in time, enabling automated verification of multi-frame animations and interactive states (such as toggling culling with keypresses).
+
+### C. Differential Cross-Generation Translation Analysis
+*   **The Approach**: When debugging a failure or missing feature in Glide 3.x, **perform a structural comparison against the corresponding Glide 2.x implementation** (e.g., comparing [glide2_entry.cpp](file:///usr/local/google/home/eianiuk/gemini/3dfx/src/glide2/glide2_entry.cpp) against [glide3_entry.cpp](file:///usr/local/google/home/eianiuk/gemini/3dfx/src/glide3/glide3_entry.cpp)):
+    *   Compare the fields of the internal state structures (`GlideWrapperState`).
+    *   Compare the set of variables saved and restored in `grGlideGetState` and `grGlideSetState`.
+    *   Compare how the drawing commands decode and submit vertices to the backend.
+*   **Why it works**: The Glide 2.x wrapper is a mature, production-grade translation layer. Since Glide 3.x is an evolutionary extension of the Glide architecture, discrepancies between the two frontends—such as omitted state variables or different vertex layout decoding—are highly reliable indicators of frontend bugs or state leaks.
+
+### D. Multi-Backend Behavioral Bisection
+*   **The Approach**: Run the problematic application across all three backend options using the `GLIDE_BACKEND` environment variable (`gles`, `vk`, `sw`):
+    *   **All Backends Fail**: Points to a **frontend logic bug** (e.g., a state restoration leak in `glide3_entry.cpp` or coordinate transformation error in `VertexLayout`).
+    *   **Only GPU Backends Fail (Software Succeeds)**: Points to a **vertex parameter/pipeline corruption** (e.g., stack garbage/uninitialized coordinates being parsed by modern GPU shaders) or shader compilation issue.
+    *   **Only Vulkan or Only GLES Fails**: Points to a **backend-specific driver/API configuration mismatch** (e.g., incorrect blending setup, wrong cull-face orientation, or scissor clip rectangle boundaries).
+
+### E. Mandatory Catch2 Regression Guarding (Unit Testing Requirement)
+*   **The Mandate**: Every bug fix, state addition, or feature alignment **must** be accompanied by a corresponding Catch2 unit test.
+*   **Best Practices**:
+    *   Place unit tests in `tests/test_glide3.cpp` (for Glide 3.x) or `tests/test_architecture.cpp` (for Glide 2.x/core).
+    *   Write tests that simulate the regression directly under the headless software reference backend (which runs reliably inside sandboxed build environments).
+    *   Perform state verification by calling getters on the backend (e.g., `backend->GetColorCombinerFunc()`, `backend->GetCullMode()`) to verify the frontend correctly applied the states.
+    *   Verify edge-case inputs (such as W-buffering vs Z-buffering depth modes) to ensure sanitization or performance optimization rules do not introduce regressions on native features.
+
+### F. Pristine Reference Resource Isolation & Modification Ban
+*   **The Mandate**: The original 3dfx Glide reference source files, test suites, and headers in the repository are **100% pristine historical artifacts** and **MUST NEVER BE MODIFIED** under any circumstances.
+*   **Pristine Test Suite Paths**:
+    *   Glide 2.x original C test suite: [refs/glide/glide2x/sst1/glide/tests/](file:///usr/local/google/home/eianiuk/gemini/3dfx/refs/glide/glide2x/sst1/glide/tests/)
+    *   Glide 3.x original C test suite: [refs/glide/glide3x/h3/glide3/tests/](file:///usr/local/google/home/eianiuk/gemini/3dfx/refs/glide/glide3x/h3/glide3/tests/)
+*   **Strict Guidelines**:
+    *   > [!WARNING]
+    *   > **NEVER** edit any `.c` or `.h` file inside the `refs/` directory. These are the gold-standard ground truths used to measure wrapper compatibility.
+    *   If a test has a bug (e.g., a keyboard hook omission in its helper library), patch the wrapper or helper library bridge dynamically, or replicate the test logic in a modern C++ demo under the `demos/` directory.
+    *   Never check in modifications to reference tests. If you need to experiment, copy the test code into a scratch script under `scratch/` or create a standalone demo.
+
+
+
+

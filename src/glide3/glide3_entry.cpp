@@ -84,20 +84,36 @@ namespace {
     // Enable states
     bool s_aaOrdered = false;
     bool s_shamelessPlug = false;
-
-    inline void TransformVertexIfNecessary(GlideWrapper::ModernVertex& mv) {
-        if (s_coordSpace == 1) { // GR_CLIP_COORDS
-            mv.pos[0] = (mv.pos[0] + 1.0f) * 0.5f * s_viewportWidth + s_viewportX;
-            mv.pos[1] = (mv.pos[1] + 1.0f) * 0.5f * s_viewportHeight + s_viewportY;
-            mv.pos[2] = (mv.pos[2] + 1.0f) * 0.5f * (s_depthRangeFar - s_depthRangeNear) + s_depthRangeNear;
-        }
-    }
+    uint32_t s_cullMode = 0;      // GR_CULL_DISABLE (0)
 
     uint32_t s_fogMode = 0;
     uint32_t s_fogColor = 0xff000000;
     uint8_t s_fogTable[64] = {0};
     bool s_colorMaskRgb = true;
     bool s_colorMaskAlpha = true;
+
+    inline void TransformVertexIfNecessary(GlideWrapper::ModernVertex& mv) {
+        // Sanitize inactive parameters to prevent stack garbage from culling/distorting triangles on modern GPUs
+        bool depthActive = (s_depthMode != 0);
+        bool textureActive = (s_boundTex[0] != 0xFFFFFFFF || s_boundTex[1] != 0xFFFFFFFF);
+        bool fogActive = (s_fogMode != 0);
+        bool wActive = (s_depthMode == 2 || s_depthMode == 4);
+
+        if (!depthActive) {
+            mv.pos[2] = 0.0f;
+        }
+        if (!textureActive && !fogActive && !wActive) {
+            mv.pos[3] = 1.0f;
+        }
+
+        if (s_coordSpace == 1) { // GR_CLIP_COORDS
+            mv.pos[0] = (mv.pos[0] + 1.0f) * 0.5f * s_viewportWidth + s_viewportX;
+            mv.pos[1] = (mv.pos[1] + 1.0f) * 0.5f * s_viewportHeight + s_viewportY;
+            if (depthActive) {
+                mv.pos[2] = (mv.pos[2] + 1.0f) * 0.5f * (s_depthRangeFar - s_depthRangeNear) + s_depthRangeNear;
+            }
+        }
+    }
 }
 
 struct GlideWrapperState {
@@ -146,6 +162,7 @@ struct GlideWrapperState {
     uint32_t fogMode;
     uint32_t fogColor;
     uint8_t  fogTable[64];
+    uint32_t cullMode;
 };
 
 FX_ENTRY void FX_CALL grGlideInit(void) {
@@ -216,6 +233,7 @@ FX_ENTRY GrContext_t FX_CALL grSstWinOpen(FxU32 hWnd, GrScreenResolution_t resol
     s_texAlphaFunc[0] = s_texAlphaFunc[1] = 0;
     s_texAlphaFactor[0] = s_texAlphaFactor[1] = 0;
     s_boundTex[0] = s_boundTex[1] = 0xFFFFFFFF;
+    s_cullMode = 0; // GR_CULL_DISABLE
     
     s_coordSpace = 0;
     s_viewportX = 0.0f;
@@ -703,6 +721,7 @@ FX_ENTRY void FX_CALL grGlideGetState(void* state) {
     ws->fogMode = s_fogMode;
     ws->fogColor = s_fogColor;
     std::memcpy(ws->fogTable, s_fogTable, sizeof(s_fogTable));
+    ws->cullMode = s_cullMode;
 }
 
 FX_ENTRY void FX_CALL grGlideSetState(const void* state) {
@@ -754,6 +773,7 @@ FX_ENTRY void FX_CALL grGlideSetState(const void* state) {
     s_fogMode = ws->fogMode;
     s_fogColor = ws->fogColor;
     std::memcpy(s_fogTable, ws->fogTable, sizeof(s_fogTable));
+    s_cullMode = ws->cullMode;
 
     // Apply states to backend
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
@@ -765,6 +785,7 @@ FX_ENTRY void FX_CALL grGlideSetState(const void* state) {
         b->SetFogMode(s_fogMode);
         b->SetFogColor(s_fogColor);
         b->SetFogTable(s_fogTable);
+        b->SetCullState(s_cullMode);
 
         // Restore color and alpha combiner states
         b->SetCombinerMode(s_colorFunc, s_colorFactor, s_colorLocal, s_colorOther, s_colorInvert,
@@ -1064,6 +1085,7 @@ FX_ENTRY void FX_CALL grSstOrigin(GrOriginLocation_t origin) {
 
 FX_ENTRY void FX_CALL grCullMode(GrCullMode_t mode) {
     GLIDE_LOG(DEBUG, "Frontend", "grCullMode (Glide 3.x) invoked: " << mode);
+    s_cullMode = mode;
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
         b->SetCullState(mode);
     }
@@ -1253,22 +1275,216 @@ FX_ENTRY FxBool FX_CALL grLfbUnlock(GrLock_t type, GrBuffer_t buffer) {
     return FXTRUE;
 }
 
+static bool Read3dfHeader(FILE* fp, char* buffer, size_t bufSize, char* version, char* formatStr, int* smallLod, int* largeLod, int* aspectW, int* aspectH) {
+    size_t pos = 0;
+    for (int i = 0; i < 4; ++i) {
+        if (!fgets(buffer + pos, bufSize - pos, fp)) return false;
+        pos += std::strlen(buffer + pos);
+    }
+    
+    int parsed = std::sscanf(buffer, "3df v%15s\n%31s\nlod range: %d %d\naspect ratio: %d %d\n",
+                             version, formatStr, smallLod, largeLod, aspectW, aspectH);
+    if (parsed != 6) {
+        parsed = std::sscanf(buffer, "3df v%15s %31s lod range: %d %d aspect ratio: %d %d\n",
+                             version, formatStr, smallLod, largeLod, aspectW, aspectH);
+    }
+    return (parsed == 6);
+}
+
+static uint16_t ReadBE16(FILE* fp) {
+    int b1 = std::getc(fp);
+    int b2 = std::getc(fp);
+    if (b1 == EOF || b2 == EOF) return 0;
+    return (static_cast<uint16_t>(b1) << 8) | b2;
+}
+
+static uint32_t ReadBE32(FILE* fp) {
+    uint8_t bytes[4];
+    if (std::fread(bytes, 1, 4, fp) != 4) return 0;
+    return (static_cast<uint32_t>(bytes[0]) << 24) |
+           (static_cast<uint32_t>(bytes[1]) << 16) |
+           (static_cast<uint32_t>(bytes[2]) << 8)  |
+           bytes[3];
+}
+
 FX_ENTRY FxBool FX_CALL gu3dfGetInfo(const char* filename, Gu3dfInfo* info) {
     GLIDE_LOG(DEBUG, "Frontend", "gu3dfGetInfo (Glide 3.x) invoked for: " << (filename ? filename : "unknown"));
-    if (info) {
-        info->header.width = 256;
-        info->header.height = 256;
-        info->header.small_lod = 0;
-        info->header.large_lod = 8;
-        info->header.aspect_ratio = 0;
-        info->header.format = 0;
-        info->mem_required = 65536;
+    if (!filename || !info) return FXFALSE;
+
+    FILE* fp = std::fopen(filename, "rb");
+    if (!fp) {
+        GLIDE_LOG(WARN, "Frontend", "gu3dfGetInfo (Glide 3.x): Failed to open " << filename);
+        return FXFALSE;
     }
+
+    char buffer[256] = {0};
+    char version[16] = {0};
+    char formatStr[32] = {0};
+    int smallLod = 0, largeLod = 0, aspectW = 0, aspectH = 0;
+
+    if (!Read3dfHeader(fp, buffer, sizeof(buffer), version, formatStr, &smallLod, &largeLod, &aspectW, &aspectH)) {
+        GLIDE_LOG(WARN, "Frontend", "gu3dfGetInfo (Glide 3.x): Failed to parse header of " << filename);
+        std::fclose(fp);
+        return FXFALSE;
+    }
+    std::fclose(fp);
+
+    for (int i = 0; formatStr[i]; ++i) {
+        formatStr[i] = (char)std::toupper((unsigned char)formatStr[i]);
+    }
+
+    GrTextureFormat_t format = GR_TEXFMT_RGB_565;
+    bool formatFound = false;
+    struct FormatMap { const char* name; GrTextureFormat_t fmt; };
+    FormatMap maps[] = {
+        { "I8",       GR_TEXFMT_INTENSITY_8 },
+        { "A8",       GR_TEXFMT_ALPHA_8 },
+        { "RGB565",   GR_TEXFMT_RGB_565 },
+        { "ARGB1555", GR_TEXFMT_ARGB_1555 },
+        { "ARGB4444", GR_TEXFMT_ARGB_4444 },
+        { "AI88",     GR_TEXFMT_ALPHA_INTENSITY_88 },
+        { "P8",       GR_TEXFMT_P_8 },
+        { "AP88",     GR_TEXFMT_AP_88 }
+    };
+    for (const auto& m : maps) {
+        if (std::strcmp(formatStr, m.name) == 0) {
+            format = m.fmt;
+            formatFound = true;
+            break;
+        }
+    }
+    if (!formatFound) {
+        GLIDE_LOG(WARN, "Frontend", "gu3dfGetInfo (Glide 3.x): Unsupported format " << formatStr);
+        return FXFALSE;
+    }
+
+    GrAspectRatio_t aspect = GR_ASPECT_LOG2_1x1;
+    if (aspectW == 1 && aspectH == 1) aspect = GR_ASPECT_LOG2_1x1;
+    else if (aspectW == 1 && aspectH == 2) aspect = GR_ASPECT_LOG2_1x2;
+    else if (aspectW == 1 && aspectH == 4) aspect = GR_ASPECT_LOG2_1x4;
+    else if (aspectW == 1 && aspectH == 8) aspect = GR_ASPECT_LOG2_1x8;
+    else if (aspectW == 2 && aspectH == 1) aspect = GR_ASPECT_LOG2_2x1;
+    else if (aspectW == 4 && aspectH == 1) aspect = GR_ASPECT_LOG2_4x1;
+    else if (aspectW == 8 && aspectH == 1) aspect = GR_ASPECT_LOG2_8x1;
+
+    auto mapLod = [](int dim) -> int {
+        if (dim <= 1) return GR_LOD_LOG2_1;
+        if (dim <= 2) return GR_LOD_LOG2_2;
+        if (dim <= 4) return GR_LOD_LOG2_4;
+        if (dim <= 8) return GR_LOD_LOG2_8;
+        if (dim <= 16) return GR_LOD_LOG2_16;
+        if (dim <= 32) return GR_LOD_LOG2_32;
+        if (dim <= 64) return GR_LOD_LOG2_64;
+        if (dim <= 128) return GR_LOD_LOG2_128;
+        return GR_LOD_LOG2_256;
+    };
+
+    info->header.format = format;
+    info->header.aspect_ratio = aspect;
+    info->header.small_lod = mapLod(smallLod);
+    info->header.large_lod = mapLod(largeLod);
+    
+    if (aspectW >= aspectH) {
+        info->header.width = largeLod;
+        info->header.height = largeLod / aspectW;
+    } else {
+        info->header.height = largeLod;
+        info->header.width = largeLod / aspectH;
+    }
+
+    uint32_t totalBytes = 0;
+    int bytesPerTexel = (format >= GR_TEXFMT_16BIT) ? 2 : 1;
+    for (int lod = info->header.large_lod; lod >= info->header.small_lod; --lod) {
+        int lDim = 1 << lod;
+        int w = lDim, h = lDim;
+        if (aspectW >= aspectH) {
+            h = std::max(1, lDim / aspectW);
+        } else {
+            w = std::max(1, lDim / aspectH);
+        }
+        totalBytes += w * h * bytesPerTexel;
+    }
+    info->mem_required = totalBytes;
+
+    GLIDE_LOG(DEBUG, "Frontend", "gu3dfGetInfo (Glide 3.x): parsed " << filename << " successfully. Format=" << formatStr 
+                                 << " Aspect=" << aspectW << "x" << aspectH << " LargeLOD=" << largeLod << " MemRequired=" << totalBytes);
     return FXTRUE;
 }
 
-FX_ENTRY FxBool FX_CALL gu3dfLoad(const char* filename, Gu3dfInfo* data) {
+FX_ENTRY FxBool FX_CALL gu3dfLoad(const char* filename, Gu3dfInfo* info) {
     GLIDE_LOG(DEBUG, "Frontend", "gu3dfLoad (Glide 3.x) invoked for: " << (filename ? filename : "unknown"));
+    if (!filename || !info) return FXFALSE;
+
+    if (!gu3dfGetInfo(filename, info)) return FXFALSE;
+
+    FILE* fp = std::fopen(filename, "rb");
+    if (!fp) return FXFALSE;
+
+    char buffer[256] = {0};
+    char version[16] = {0};
+    char formatStr[32] = {0};
+    int smallLod = 0, largeLod = 0, aspectW = 0, aspectH = 0;
+    Read3dfHeader(fp, buffer, sizeof(buffer), version, formatStr, &smallLod, &largeLod, &aspectW, &aspectH);
+
+    if (info->header.format == GR_TEXFMT_P_8) {
+        for (int i = 0; i < 256; ++i) {
+            info->table.palette.data[i] = ReadBE32(fp);
+        }
+        GLIDE_LOG(DEBUG, "Frontend", "gu3dfLoad (Glide 3.x): Loaded 256 palette entries for P8 texture.");
+    }
+
+    if (!info->data) {
+        GLIDE_LOG(WARN, "Frontend", "gu3dfLoad (Glide 3.x): Destination info->data is NULL! Caller must allocate memory.");
+        std::fclose(fp);
+        return FXFALSE;
+    }
+
+    uint8_t* dstBytes = reinterpret_cast<uint8_t*>(info->data);
+    int bytesPerTexel = (info->header.format >= GR_TEXFMT_16BIT) ? 2 : 1;
+
+    for (int lod = info->header.large_lod; lod >= info->header.small_lod; --lod) {
+        int lDim = 1 << lod;
+        int w = lDim, h = lDim;
+        if (aspectW >= aspectH) {
+            h = std::max(1, lDim / aspectW);
+        } else {
+            w = std::max(1, lDim / aspectH);
+        }
+        size_t pixelCount = w * h;
+
+        if (bytesPerTexel == 1) {
+            size_t readCount = std::fread(dstBytes, 1, pixelCount, fp);
+            if (readCount != pixelCount) {
+                GLIDE_LOG(WARN, "Frontend", "gu3dfLoad (Glide 3.x): Premature EOF reading 8-bit LOD level " << lod 
+                                            << " (read " << readCount << "/" << pixelCount << "). Filling remainder with zero.");
+                std::memset(dstBytes + readCount, 0, pixelCount - readCount);
+            }
+            dstBytes += pixelCount;
+        } else {
+            uint16_t* dstShorts = reinterpret_cast<uint16_t*>(dstBytes);
+            bool hitEof = false;
+            for (size_t p = 0; p < pixelCount; ++p) {
+                if (hitEof) {
+                    dstShorts[p] = 0;
+                } else {
+                    int b1 = std::getc(fp);
+                    int b2 = std::getc(fp);
+                    if (b1 == EOF || b2 == EOF) {
+                        GLIDE_LOG(WARN, "Frontend", "gu3dfLoad (Glide 3.x): Premature EOF reading 16-bit LOD level " << lod 
+                                                    << " at pixel " << p << "/" << pixelCount << ". Filling remainder with zero.");
+                        dstShorts[p] = 0;
+                        hitEof = true;
+                    } else {
+                        dstShorts[p] = (static_cast<uint16_t>(b1) << 8) | b2;
+                    }
+                }
+            }
+            dstBytes += pixelCount * 2;
+        }
+    }
+
+    std::fclose(fp);
+    GLIDE_LOG(DEBUG, "Frontend", "gu3dfLoad (Glide 3.x): Loaded " << filename << " successfully into memory.");
     return FXTRUE;
 }
 

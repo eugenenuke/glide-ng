@@ -138,3 +138,53 @@ target_link_libraries(glide2_compat_demo PRIVATE
     -lm
 )
 
+# --- Glide 3.x test10 Winding/Culling Replica Demo ---
+add_executable(test10_replica_demo
+    test10_replica_demo.cpp
+    "${CMAKE_CURRENT_SOURCE_DIR}/../refs/3dfx-Glide-API/glide3x/cvg/glide3/tests/tlib.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../refs/3dfx-Glide-API/swlibs/fxmisc/linutil.c"
+)
+
+target_include_directories(test10_replica_demo PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../refs/3dfx-Glide-API/glide3x/cvg/glide3/tests"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../refs/3dfx-Glide-API/swlibs/fxmisc"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../include/3dfx"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../include/glide3"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../tools"
+)
+
+target_compile_definitions(test10_replica_demo PRIVATE -D__linux__ -DGLIDE_VERSION=3)
+
+target_link_libraries(test10_replica_demo PRIVATE
+    glide3x
+    tool_info3
+    ${CMAKE_DL_LIBS}
+    -lm
+)
+
+# --- Glide 3.x test12 LFB Write Modes Replica Demo ---
+add_executable(test12_replica_demo
+    test12_replica_demo.cpp
+    "${CMAKE_CURRENT_SOURCE_DIR}/../refs/3dfx-Glide-API/glide3x/cvg/glide3/tests/tlib.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../refs/3dfx-Glide-API/swlibs/fxmisc/linutil.c"
+)
+
+target_include_directories(test12_replica_demo PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../refs/3dfx-Glide-API/glide3x/cvg/glide3/tests"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../refs/3dfx-Glide-API/swlibs/fxmisc"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../include/3dfx"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../include/glide3"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../tools"
+)
+
+target_compile_definitions(test12_replica_demo PRIVATE -D__linux__ -DGLIDE_VERSION=3)
+
+target_link_libraries(test12_replica_demo PRIVATE
+    glide3x
+    tool_info3
+    ${CMAKE_DL_LIBS}
+    -lm
+)
+
+
+
