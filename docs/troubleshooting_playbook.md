@@ -268,7 +268,52 @@ cmake --build build -j$(nproc)
 
 ---
 
-## 5. Unified Troubleshooting & Diagnostic Methodologies
+## 5. Performance Benchmarking & Overhead Assessment
+
+When introducing modifications to the vertex decoding pipeline (such as coordinate unsnapping), state serialization, or shader generation, developers must ensure the changes do not introduce performance regressions. We use an automated headless benchmark to measure maximum rendering throughput.
+
+### A. The Benchmark Environment
+The benchmark is orchestrated by [tests/benchmark.py](file:///usr/local/google/home/eianiuk/gemini/3dfx/tests/benchmark.py). It executes tests in a high-performance profile by configuring the following environment variables:
+*   `GLIDE_HEADLESS=1`: Disables window presentation and physical display syncing.
+*   `GLIDE_BACKEND=vulkan`: Benchmarks the GPU translation layer.
+*   `GLIDE_WRAPPER_MAX_FPS=0`: Disables the frame rate limiter, letting the pipeline render frames as fast as the CPU and GPU allow.
+
+### B. Assessment Workflow (Scientific Bisection)
+To measure the exact performance impact of your changes:
+
+1.  **Measure Current Throughput**:
+    Run the benchmark on your modified codebase and record the FPS/frame times:
+    ```bash
+    python3 tests/benchmark.py
+    ```
+2.  **Establish the Baseline**:
+    Stash your changes or temporarily revert to the previous commit:
+    ```bash
+    # Stash uncommitted changes (or use git reset --hard HEAD~1 if already committed)
+    git stash
+    
+    # Rebuild the baseline binaries
+    cd build && make -j$(nproc) && cd ..
+    
+    # Run the benchmark again to record baseline numbers
+    python3 tests/benchmark.py
+    ```
+3.  **Compare Side-by-Side**:
+    *   Compare the FPS and frame time (ms) for `test14` (depth/vertex-heavy) and `test21` (combiner/compositing-heavy).
+    *   **Acceptance Criteria**: Any performance delta within $\pm 3\%$ is considered standard system/scheduling noise (LLVMpipe variance), confirming **zero measurable performance impact**.
+4.  **Restore the Codebase**:
+    Restore your changes and rebuild to return to the active development state:
+    ```bash
+    # Pop stashed changes (or git reset --hard ORIG_HEAD if restoring a reset commit)
+    git stash pop
+    
+    # Rebuild
+    cd build && make -j$(nproc) && cd ..
+    ```
+
+---
+
+## 6. Unified Troubleshooting & Diagnostic Methodologies
 
 When future agents or developers encounter regressions or divergent rendering behaviors in the Glide wrappers, they should apply the following high-leverage diagnostic techniques and workflows:
 
