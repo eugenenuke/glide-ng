@@ -803,6 +803,11 @@ void SoftwareBackend::RasterizeSoftwareTriangleImpl(const ModernVertex& a, const
 
         // Fogging Emulation, Blending, and Framebuffer Write
         if (keepPixel) {
+            float prefogR = red;
+            float prefogG = green;
+            float prefogB = blue;
+            float prefogA = alpha;
+
             uint32_t fogSource = m_fogMode & 0x0F;
             if (fogSource != 0) {
                 float f = 0.0f;
@@ -862,7 +867,7 @@ void SoftwareBackend::RasterizeSoftwareTriangleImpl(const ModernVertex& a, const
                 float dstB = (dstWord & 0xFF) / 255.0f;
                 float dstA = ((dstWord >> 24) & 0xFF) / 255.0f;
 
-                auto getFactor = [&](uint32_t factorMode, float srcC, float dstC, float srcAVal, float dstAVal, bool isDest) {
+                auto getFactor = [&](uint32_t factorMode, float srcC, float dstC, float srcAVal, float dstAVal, bool isDest, float prefogC) {
                     switch (factorMode) {
                         case 0: return 0.0f;
                         case 1: return srcAVal;
@@ -872,20 +877,21 @@ void SoftwareBackend::RasterizeSoftwareTriangleImpl(const ModernVertex& a, const
                         case 5: return 1.0f - srcAVal;
                         case 6: return isDest ? (1.0f - srcC) : (1.0f - dstC);
                         case 7: return 1.0f - dstAVal;
+                        case 15: return prefogC; // GR_BLEND_PREFOG_COLOR (shared with GR_BLEND_ALPHA_SATURATE)
                         default: return 1.0f;
                     }
                 };
 
-                float sFR = getFactor(m_rgbSrcBlend, red, dstR, alpha, dstA, false);
-                float sFG = getFactor(m_rgbSrcBlend, green, dstG, alpha, dstA, false);
-                float sFB = getFactor(m_rgbSrcBlend, blue, dstB, alpha, dstA, false);
+                float sFR = getFactor(m_rgbSrcBlend, red, dstR, alpha, dstA, false, prefogR);
+                float sFG = getFactor(m_rgbSrcBlend, green, dstG, alpha, dstA, false, prefogG);
+                float sFB = getFactor(m_rgbSrcBlend, blue, dstB, alpha, dstA, false, prefogB);
 
-                float dFR = getFactor(m_rgbDstBlend, red, dstR, alpha, dstA, true);
-                float dFG = getFactor(m_rgbDstBlend, green, dstG, alpha, dstA, true);
-                float dFB = getFactor(m_rgbDstBlend, blue, dstB, alpha, dstA, true);
+                float dFR = getFactor(m_rgbDstBlend, red, dstR, alpha, dstA, true, prefogR);
+                float dFG = getFactor(m_rgbDstBlend, green, dstG, alpha, dstA, true, prefogG);
+                float dFB = getFactor(m_rgbDstBlend, blue, dstB, alpha, dstA, true, prefogB);
 
-                float sFA = getFactor(m_alphaSrcBlend, alpha, dstA, alpha, dstA, false);
-                float dFA = getFactor(m_alphaDstBlend, alpha, dstA, alpha, dstA, true);
+                float sFA = getFactor(m_alphaSrcBlend, alpha, dstA, alpha, dstA, false, prefogA);
+                float dFA = getFactor(m_alphaDstBlend, alpha, dstA, alpha, dstA, true, prefogA);
                 float blendedAlpha = std::min(1.0f, alpha * sFA + dstA * dFA);
 
                 red   = std::min(1.0f, red   * sFR + dstR * dFR);
