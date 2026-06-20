@@ -494,20 +494,20 @@ bool VulkanBackend::CreateSwapchain(uint32_t width, uint32_t height) {
         return false;
     }
 
-    // 2. Select the best surface format (sRGB preferred for automatic hardware gamma correction!)
+    // 2. Select the best surface format (UNORM preferred for authentic retro linear presentation without double gamma correction!)
     vk::SurfaceFormatKHR selectedFormat = formats[0];
-    bool found_srgb = false;
+    bool found_unorm = false;
     for (const auto& f : formats) {
-        if ((f.format == vk::Format::eB8G8R8A8Srgb || f.format == vk::Format::eR8G8B8A8Srgb) &&
+        if ((f.format == vk::Format::eB8G8R8A8Unorm || f.format == vk::Format::eR8G8B8A8Unorm) &&
             f.colorSpace == vk::ColorSpaceKHR::eSrgbNonlinear) {
             selectedFormat = f;
-            found_srgb = true;
+            found_unorm = true;
             break;
         }
     }
-    if (!found_srgb) {
+    if (!found_unorm) {
         for (const auto& f : formats) {
-            if ((f.format == vk::Format::eB8G8R8A8Unorm || f.format == vk::Format::eR8G8B8A8Unorm) &&
+            if ((f.format == vk::Format::eB8G8R8A8Srgb || f.format == vk::Format::eR8G8B8A8Srgb) &&
                 f.colorSpace == vk::ColorSpaceKHR::eSrgbNonlinear) {
                 selectedFormat = f;
                 break;
