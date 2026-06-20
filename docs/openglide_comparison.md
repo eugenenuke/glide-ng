@@ -14,6 +14,7 @@ This document provides a highly forensic, function-by-function and parameter-lev
 | **Geometry Rendering** | Shader-based vertex attributes (`ModernVertex`), vertex buffers | Immediate mode (`glBegin`/`glEnd`), deprecated on modern GPUs | **Our Wrapper** |
 | **Console Diagnostics** | Staircase-proof `SafePrint` wrapper (`\r\n` raw-mode safe) | Plain `std::cout`/`printf`, prone to severe terminal corruption | **Our Wrapper** |
 | **Multitarget Glide Support**| Native Glide 2.x and Glide 3.x dynamic libraries | Native Glide 2.x; Glide 3.x is a limited delegation wrapper | **Our Wrapper** |
+| **Glide 3.x Test Suite** | **100% compliant**; compiles and runs the entire official 3dfx test suite | Fails to link; missing vertex arrays, layout decoding, and state APIs | **Our Wrapper** |
 
 ---
 
@@ -36,6 +37,7 @@ This document provides a highly forensic, function-by-function and parameter-lev
 | **`grDrawPolygon`** | Decomposed into triangle fans and rendered via vertex buffers | Immediate mode `glBegin(GL_POLYGON)` | **Better**. Highly compatible and optimized. |
 | **`guDrawPolygonVertexListWithClip`** | Full vertex clipping and list submission | Basic fixed-function clipping | **On Par**. Both support standard clipping routines. |
 | **Glide 3.x Vertex Layouts** | Natively parses custom vertex layouts via `grGlideSetVertexLayout` | Simplified layout parsing; prone to alignment crashes | **Better**. Our wrapper natively supports Glide 3.x vertex layouts. |
+| **Vertex Array APIs** | Full implementation of `grDrawVertexArray` and `grDrawVertexArrayContiguous` supporting strips, fans, and polygons | Unimplemented; lacks batch vertex array drawing support | **Better**. High-performance batch drawing. |
 
 ### 3. Texturing & TMU Emulation
 
