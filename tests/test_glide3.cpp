@@ -849,7 +849,94 @@ TEST_CASE("Glide 3.x W-Buffering and Layout Q-Param Compatibility", "[Glide3][WB
         shutdown();
         ::dlclose(handle);
     }
+
+    SECTION("Dynamic API Verification for Vertex Layout Save/Restore and TMU Chromakey Extensions") {
+        void* handle = OpenGlide3Handle();
+        REQUIRE(handle != nullptr);
+
+        using G3Context = unsigned long;
+
+        using InitFunc = void(*)(void);
+        using SelectFunc = void(*)(GrChipID_t);
+        using WinOpenFunc = G3Context(*)(FxU32, GrScreenResolution_t, GrScreenRefresh_t, GrColorFormat_t, GrOriginLocation_t, int, int);
+        using GetProcFunc = GrProc(*)(char*);
+        using LayoutFunc = void(*)(FxU32, FxI32, FxU32);
+        using GetLayoutFunc = void(*)(void*);
+        using SetLayoutFunc = void(*)(const void*);
+        using ShutdownFunc = void(*)(void);
+
+        auto glideInit = reinterpret_cast<InitFunc>(::dlsym(handle, "grGlideInit"));
+        auto sstSelect = reinterpret_cast<SelectFunc>(::dlsym(handle, "grSstSelect"));
+        auto winOpen = reinterpret_cast<WinOpenFunc>(::dlsym(handle, "grSstWinOpen"));
+        auto getProc = reinterpret_cast<GetProcFunc>(::dlsym(handle, "grGetProcAddress"));
+        auto vertexLayout = reinterpret_cast<LayoutFunc>(::dlsym(handle, "grVertexLayout"));
+        auto getLayout = reinterpret_cast<GetLayoutFunc>(::dlsym(handle, "grGlideGetVertexLayout"));
+        auto setLayout = reinterpret_cast<SetLayoutFunc>(::dlsym(handle, "grGlideSetVertexLayout"));
+        auto shutdown = reinterpret_cast<ShutdownFunc>(::dlsym(handle, "grGlideShutdown"));
+
+        REQUIRE(glideInit != nullptr);
+        REQUIRE(winOpen != nullptr);
+        REQUIRE(getProc != nullptr);
+        REQUIRE(vertexLayout != nullptr);
+        REQUIRE(getLayout != nullptr);
+        REQUIRE(setLayout != nullptr);
+        REQUIRE(shutdown != nullptr);
+
+        glideInit();
+        if (sstSelect) sstSelect(0);
+
+        G3Context ctx = winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz, GR_COLORFORMAT_ABGR, GR_ORIGIN_UPPER_LEFT, 2, 1);
+        REQUIRE(ctx != 0);
+
+        // 1. Modify active layout
+        vertexLayout(0x01, 8, 1);  // GR_PARAM_XY at offset 8, mode ENABLE
+        vertexLayout(0x20, 24, 1); // GR_PARAM_RGB at offset 24, mode ENABLE
+
+        // 2. Save active layout
+        uint8_t savedLayout[256];
+        std::memset(savedLayout, 0, sizeof(savedLayout));
+        getLayout(savedLayout);
+
+        // 3. Clobber/reset layout to canonical
+        vertexLayout(0x01, 0, 1);
+        vertexLayout(0x20, 12, 1);
+
+        // 4. Restore saved layout
+        setLayout(savedLayout);
+
+        // 5. Verify restored offsets via Backend/Core DecodeVertex
+        auto& vlayout = GlideWrapper::VertexLayout::GetInstance();
+        
+        // Let's decode a dummy vertex to verify offsets were restored!
+        struct DummyRestoredVertex {
+            float pad1[2];
+            float x, y;
+            float pad2[2];
+            float r, g, b;
+        } vertex;
+        vertex.x = 10.0f; vertex.y = 20.0f;
+        vertex.r = 255.0f; vertex.g = 128.0f; vertex.b = 0.0f;
+
+        GlideWrapper::ModernVertex decoded = vlayout.DecodeVertex(&vertex);
+        REQUIRE(decoded.pos[0] == 10.0f);
+        REQUIRE(decoded.pos[1] == 20.0f);
+        REQUIRE(decoded.color[0] == 1.0f);
+        REQUIRE(std::abs(decoded.color[1] - 128.0f / 255.0f) < 0.001f);
+        REQUIRE(decoded.color[2] == 0.0f);
+
+        // 6. Query and verify TMU Chromakey extensions via grGetProcAddress
+        auto texChromaMode = reinterpret_cast<void(*)(GrChipID_t, FxU32)>(getProc(const_cast<char*>("grTexChromaModeExt")));
+        auto texChromaRange = reinterpret_cast<void(*)(GrChipID_t, GrColor_t, GrColor_t, FxU32)>(getProc(const_cast<char*>("grTexChromaRangeExt")));
+        
+        REQUIRE(texChromaMode != nullptr);
+        REQUIRE(texChromaRange != nullptr);
+
+        // Invoke them to ensure no crash and correct routing
+        texChromaMode(0, 1); // Enable chromakey on TMU 0
+        texChromaRange(0, 0xFF000000, 0xFF0000FF, 1); // Range-based on TMU 0
+
+        shutdown();
+        ::dlclose(handle);
+    }
 #endif
 }
-
-

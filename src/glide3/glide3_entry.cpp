@@ -1018,11 +1018,15 @@ FX_ENTRY void FX_CALL grChromaRangeExt(GrColor_t minColor, GrColor_t maxColor, G
 }
 
 FX_ENTRY void FX_CALL grTexChromaModeExt(GrChipID_t tmu, GrTexChromakeyMode_t mode) {
-    GLIDE_LOG(WARN, "Stub", "grTexChromaModeExt stub (Glide 3.x): tmu=" << tmu << ", mode=" << mode);
+    EnsureEngineInitialized();
+    GLIDE_LOG(DEBUG, "Frontend", "grTexChromaModeExt (Glide 3.x): tmu=" << tmu << ", mode=" << mode);
+    grChromakeyMode(mode);
 }
 
 FX_ENTRY void FX_CALL grTexChromaRangeExt(GrChipID_t tmu, GrColor_t minColor, GrColor_t maxColor, GrTexChromakeyMode_t mode) {
-    GLIDE_LOG(WARN, "Stub", "grTexChromaRangeExt stub (Glide 3.x): tmu=" << tmu << ", min=0x" << std::hex << minColor << ", max=0x" << maxColor << ", mode=" << std::dec << mode);
+    EnsureEngineInitialized();
+    GLIDE_LOG(DEBUG, "Frontend", "grTexChromaRangeExt (Glide 3.x): tmu=" << tmu << ", min=0x" << std::hex << minColor << ", max=" << maxColor << ", mode=" << std::dec << mode);
+    grChromaRangeExt(minColor, maxColor, mode);
 }
 
 FX_ENTRY GrProc FX_CALL grGetProcAddress(char *procName) {
@@ -1331,11 +1335,15 @@ FX_ENTRY void FX_CALL grTexMultibaseAddress(GrChipID_t tmu, GrTexBaseRange_t lev
 }
 
 FX_ENTRY void FX_CALL grGlideGetVertexLayout(void* layout) {
-    GLIDE_LOG(DEBUG, "Frontend", "grGlideGetVertexLayout (Glide 3.x) stub invoked.");
+    EnsureEngineInitialized();
+    GLIDE_LOG(DEBUG, "Frontend", "grGlideGetVertexLayout (Glide 3.x) invoked.");
+    GlideWrapper::VertexLayout::GetInstance().GetLayoutState(layout);
 }
 
 FX_ENTRY void FX_CALL grGlideSetVertexLayout(const void* layout) {
-    GLIDE_LOG(DEBUG, "Frontend", "grGlideSetVertexLayout (Glide 3.x) stub invoked.");
+    EnsureEngineInitialized();
+    GLIDE_LOG(DEBUG, "Frontend", "grGlideSetVertexLayout (Glide 3.x) invoked.");
+    GlideWrapper::VertexLayout::GetInstance().SetLayoutState(layout);
 }
 
 FX_ENTRY void FX_CALL grLoadGammaTable(FxU32 nentries, FxU32 *red, FxU32 *green, FxU32 *blue) {

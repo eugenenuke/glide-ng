@@ -166,4 +166,30 @@ ModernVertex VertexLayout::DecodeVertex(const void* gameVertex) const {
     return v;
 }
 
+void VertexLayout::GetLayoutState(void* layoutState) const {
+    if (!layoutState) return;
+    auto* state = reinterpret_cast<Glide3VertexLayout*>(layoutState);
+    state->stwHintMask = m_stwHintMask;
+    state->offsetXY = m_offsetXY;
+    state->offsetZ = m_offsetZ;
+    state->offsetRGB = m_offsetRGB;
+    state->offsetOOZ = m_offsetOOZ;
+    state->offsetA = m_offsetA;
+    state->offsetOOW = m_offsetOOW;
+    state->offsetST0 = m_offsetST0;
+}
+
+void VertexLayout::SetLayoutState(const void* layoutState) {
+    if (!layoutState) return;
+    auto* state = reinterpret_cast<const Glide3VertexLayout*>(layoutState);
+    m_stwHintMask = state->stwHintMask;
+    m_offsetXY = state->offsetXY;
+    m_offsetZ = state->offsetZ;
+    m_offsetRGB = state->offsetRGB;
+    m_offsetOOZ = state->offsetOOZ;
+    m_offsetA = state->offsetA;
+    m_offsetOOW = state->offsetOOW;
+    m_offsetST0 = state->offsetST0;
+}
+
 } // namespace GlideWrapper
