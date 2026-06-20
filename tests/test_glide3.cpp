@@ -1515,3 +1515,47 @@ TEST_CASE("Glide 2.x Coordinate Unsnapping Verification", "[Glide2][Unsnap][Glid
     ::unsetenv("GLIDE_WRAPPER_BACKEND");
 #endif
 }
+
+extern "C" int tlGetOpt(int argc, char *argv[], const char *tags, char *match, char **remArgs[]);
+
+TEST_CASE("tlib tlGetOpt Conjoined Arguments Verification", "[tlib][GetOpt][tlib_GetOpt]") {
+    // Test space-separated argument (standard)
+    {
+        tlGetOpt(0, nullptr, nullptr, nullptr, nullptr); // Reset static parser state
+        char arg0[] = "./test";
+        char arg1[] = "-r";
+        char arg2[] = "1024x768";
+        char* argv[] = { arg0, arg1, arg2, nullptr };
+        int argc = 3;
+
+        char match = 0;
+        char** remArgs = nullptr;
+        
+        int rv = tlGetOpt(argc, argv, "r", &match, &remArgs);
+        CHECK(rv == 1);
+        CHECK(match == 'r');
+        REQUIRE(remArgs != nullptr);
+        CHECK(std::strcmp(remArgs[0], "1024x768") == 0);
+    }
+
+    // Test conjoined argument (the bug case: -r1024x768)
+    {
+        tlGetOpt(0, nullptr, nullptr, nullptr, nullptr); // Reset static parser state
+        char arg0[] = "./test";
+        char arg1[] = "-r1024x768";
+        char* argv[] = { arg0, arg1, nullptr };
+        int argc = 2;
+
+        char match = 0;
+        char** remArgs = nullptr;
+        
+        // This would have segfaulted before our fix!
+        int rv = tlGetOpt(argc, argv, "r", &match, &remArgs);
+        
+        CHECK(rv == 1);
+        CHECK(match == 'r');
+        REQUIRE(remArgs != nullptr);
+        // The prefix "-r" should be stripped in-place, making the argument value "1024x768"
+        CHECK(std::strcmp(remArgs[0], "1024x768") == 0);
+    }
+}
