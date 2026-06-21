@@ -150,13 +150,35 @@ void main() {
         vec2 uv = (fragTex.xy / divW) / 256.0;
         uv.x *= (maxDim / tw);
         uv.y *= (maxDim / th);
-        texColor = texture(texSampler0, uv);
-        
-        // Texture-level chromakeying for TMU0
         if (pcs.texChromaEnabled[0] == 1u) {
-            if (IsColorInRange(texColor.rgb, pcs.texChromaMin[0].rgb, pcs.texChromaMax[0].rgb, pcs.texChromaRangeMode[0])) {
-                texColor = vec4(0.0);
-            }
+            ivec2 size = ivec2(int(tw), int(th));
+            vec2 texelCoord = uv * vec2(tw, th) - vec2(0.5);
+            ivec2 tl = ivec2(floor(texelCoord));
+            vec2 f = fract(texelCoord);
+
+            // Fetch 4 raw texels (clamping coordinates to edge for safety)
+            ivec2 c00_coord = clamp(tl + ivec2(0, 0), ivec2(0), size - ivec2(1));
+            ivec2 c10_coord = clamp(tl + ivec2(1, 0), ivec2(0), size - ivec2(1));
+            ivec2 c01_coord = clamp(tl + ivec2(0, 1), ivec2(0), size - ivec2(1));
+            ivec2 c11_coord = clamp(tl + ivec2(1, 1), ivec2(0), size - ivec2(1));
+
+            vec4 c00 = texelFetch(texSampler0, c00_coord, 0);
+            vec4 c10 = texelFetch(texSampler0, c10_coord, 0);
+            vec4 c01 = texelFetch(texSampler0, c01_coord, 0);
+            vec4 c11 = texelFetch(texSampler0, c11_coord, 0);
+
+            // Evaluate chromakey test on each raw texel individually before interpolation
+            if (IsColorInRange(c00.rgb, pcs.texChromaMin[0].rgb, pcs.texChromaMax[0].rgb, pcs.texChromaRangeMode[0])) c00 = vec4(0.0);
+            if (IsColorInRange(c10.rgb, pcs.texChromaMin[0].rgb, pcs.texChromaMax[0].rgb, pcs.texChromaRangeMode[0])) c10 = vec4(0.0);
+            if (IsColorInRange(c01.rgb, pcs.texChromaMin[0].rgb, pcs.texChromaMax[0].rgb, pcs.texChromaRangeMode[0])) c01 = vec4(0.0);
+            if (IsColorInRange(c11.rgb, pcs.texChromaMin[0].rgb, pcs.texChromaMax[0].rgb, pcs.texChromaRangeMode[0])) c11 = vec4(0.0);
+
+            // Manually interpolate the keyed texels
+            vec4 c0 = mix(c00, c10, f.x);
+            vec4 c1 = mix(c01, c11, f.x);
+            texColor = mix(c0, c1, f.y);
+        } else {
+            texColor = texture(texSampler0, uv);
         }
     }
 

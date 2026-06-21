@@ -57,6 +57,7 @@ bool s_palette6666Enabled = true;  // Std P8 vs P8_6666 Ext
 bool s_bilinearFilter = true;      // Point vs Bilinear
 bool s_rotatePlane = true;         // Rotation active
 float s_rotationAngle = 0.0f;
+int s_timeoutSeconds = 0;
 
 // 3D Quad original vertex definition (CPU coordinates)
 struct Vertex3D {
@@ -79,9 +80,9 @@ struct DemoVertex {
 };
 
 // Texture buffer storages
-std::vector<FxU16> s_mirrorTexData(128 * 128);
-std::vector<FxU16> s_chromaTexData(128 * 128);
-std::vector<FxU8> s_paletteTexData(128 * 128);
+std::vector<FxU16> s_mirrorTexData(256 * 256);
+std::vector<FxU16> s_chromaTexData(256 * 256);
+std::vector<FxU8> s_paletteTexData(256 * 256);
 
 FxU32 s_stdPaletteTable[256];
 FxU32 s_6666PaletteTable[256];
@@ -127,12 +128,12 @@ bool CheckVoodooModel(bool& hasMirror, bool& hasPalette6666) {
 
 // Procedural texture generators
 void GenerateMirrorTexture() {
-  for (int y = 0; y < 128; ++y) {
-    for (int x = 0; x < 128; ++x) {
+  for (int y = 0; y < 256; ++y) {
+    for (int x = 0; x < 256; ++x) {
       FxU16 color = 0;
       // Quadrants to make asymmetry obvious
-      if (y < 64) {
-        if (x < 64) {
+      if (y < 128) {
+        if (x < 128) {
           color = (31 << 11);  // Top-Left: Red
           // Diagonal black line in red quadrant
           if (x == y || x == (y + 1) || x == (y - 1)) {
@@ -142,30 +143,30 @@ void GenerateMirrorTexture() {
           color = (63 << 5);  // Top-Right: Green
         }
       } else {
-        if (x < 64) {
+        if (x < 128) {
           color = 31;  // Bottom-Left: Blue
         } else {
           color = (31 << 11) | (63 << 5);  // Bottom-Right: Yellow
         }
       }
       // Black borders
-      if (x == 0 || x == 127 || y == 0 || y == 127) {
+      if (x == 0 || x == 255 || y == 0 || y == 255) {
         color = 0x0000;
       }
-      s_mirrorTexData[y * 128 + x] = color;
+      s_mirrorTexData[y * 256 + x] = color;
     }
   }
 }
 
 void GenerateChromaTexture() {
-  for (int y = 0; y < 128; ++y) {
-    for (int x = 0; x < 128; ++x) {
-      float dx = x - 63.5f;
-      float dy = y - 63.5f;
-      if (dx * dx + dy * dy < 40.0f * 40.0f) {
-        s_chromaTexData[y * 128 + x] = 0xF81F;  // Pure Magenta Circle
+  for (int y = 0; y < 256; ++y) {
+    for (int x = 0; x < 256; ++x) {
+      float dx = x - 127.5f;
+      float dy = y - 127.5f;
+      if (dx * dx + dy * dy < 80.0f * 80.0f) {
+        s_chromaTexData[y * 256 + x] = 0xF81F;  // Pure Magenta Circle
       } else {
-        s_chromaTexData[y * 128 + x] =
+        s_chromaTexData[y * 256 + x] =
             0x07E0;  // Pure Green background (key color in RGB565)
       }
     }
@@ -173,14 +174,14 @@ void GenerateChromaTexture() {
 }
 
 void GeneratePaletteTexture() {
-  for (int y = 0; y < 128; ++y) {
-    for (int x = 0; x < 128; ++x) {
-      float dx = x - 63.5f;
-      float dy = y - 63.5f;
+  for (int y = 0; y < 256; ++y) {
+    for (int x = 0; x < 256; ++x) {
+      float dx = x - 127.5f;
+      float dy = y - 127.5f;
       float dist = std::sqrt(dx * dx + dy * dy);
-      int val = 255 - static_cast<int>(dist * 4.0f);
+      int val = 255 - static_cast<int>(dist * 2.0f);
       if (val < 0) val = 0;
-      s_paletteTexData[y * 128 + x] = static_cast<FxU8>(val);
+      s_paletteTexData[y * 256 + x] = static_cast<FxU8>(val);
     }
   }
 }
@@ -278,6 +279,43 @@ int main(int argc, char* argv[]) {
 
   tlSetScreen((float)runConfig.width, (float)runConfig.height);
 
+  for (int i = 1; i < argc; ++i) {
+    std::string arg = argv[i];
+    if (arg == "--screen" && i + 1 < argc) {
+      std::string val = argv[++i];
+      if (val == "1")
+        s_activeScreen = SCREEN_MIRROR;
+      else if (val == "2")
+        s_activeScreen = SCREEN_CHROMA;
+      else if (val == "3")
+        s_activeScreen = SCREEN_PALETTE;
+    } else if (arg == "--mirror" && i + 1 < argc) {
+      std::string val = argv[++i];
+      if (val == "on")
+        s_mirrorEnabled = true;
+      else if (val == "off")
+        s_mirrorEnabled = false;
+    } else if (arg == "--chroma" && i + 1 < argc) {
+      std::string val = argv[++i];
+      if (val == "off")
+        s_chromaState = 0;
+      else if (val == "std")
+        s_chromaState = 1;
+      else if (val == "perfect")
+        s_chromaState = 2;
+    } else if (arg == "--palette" && i + 1 < argc) {
+      std::string val = argv[++i];
+      if (val == "on")
+        s_palette6666Enabled = true;
+      else if (val == "off")
+        s_palette6666Enabled = false;
+    } else if (arg == "--no-rotate") {
+      s_rotatePlane = false;
+    } else if (arg == "--timeout" && i + 1 < argc) {
+      s_timeoutSeconds = std::stoi(argv[++i]);
+    }
+  }
+
   // 3. Resolve dynamic extension pointers
   ResolveExtensions();
 
@@ -332,13 +370,13 @@ int main(int argc, char* argv[]) {
   // Allocate texture memory addresses on TMU0
   FxU32 tmuBaseAddr = grTexMinAddress(GR_TMU0);
   FxU32 mirrorTexAddr = tmuBaseAddr;
-  FxU32 chromaTexAddr = mirrorTexAddr + 32 * 1024;
-  FxU32 paletteTexAddr = chromaTexAddr + 32 * 1024;
+  FxU32 chromaTexAddr = mirrorTexAddr + 128 * 1024;
+  FxU32 paletteTexAddr = chromaTexAddr + 128 * 1024;
 
   // Define texture infos
   GrTexInfo mirrorInfo;
-  mirrorInfo.smallLodLog2 = GR_LOD_LOG2_128;
-  mirrorInfo.largeLodLog2 = GR_LOD_LOG2_128;
+  mirrorInfo.smallLodLog2 = GR_LOD_LOG2_256;
+  mirrorInfo.largeLodLog2 = GR_LOD_LOG2_256;
   mirrorInfo.aspectRatioLog2 = GR_ASPECT_LOG2_1x1;
   mirrorInfo.format = GR_TEXFMT_RGB_565;
   mirrorInfo.data = s_mirrorTexData.data();
@@ -346,8 +384,8 @@ int main(int argc, char* argv[]) {
                       &mirrorInfo);
 
   GrTexInfo chromaInfo;
-  chromaInfo.smallLodLog2 = GR_LOD_LOG2_128;
-  chromaInfo.largeLodLog2 = GR_LOD_LOG2_128;
+  chromaInfo.smallLodLog2 = GR_LOD_LOG2_256;
+  chromaInfo.largeLodLog2 = GR_LOD_LOG2_256;
   chromaInfo.aspectRatioLog2 = GR_ASPECT_LOG2_1x1;
   chromaInfo.format = GR_TEXFMT_RGB_565;
   chromaInfo.data = s_chromaTexData.data();
@@ -355,8 +393,8 @@ int main(int argc, char* argv[]) {
                       &chromaInfo);
 
   GrTexInfo paletteInfo;
-  paletteInfo.smallLodLog2 = GR_LOD_LOG2_128;
-  paletteInfo.largeLodLog2 = GR_LOD_LOG2_128;
+  paletteInfo.smallLodLog2 = GR_LOD_LOG2_256;
+  paletteInfo.largeLodLog2 = GR_LOD_LOG2_256;
   paletteInfo.aspectRatioLog2 = GR_ASPECT_LOG2_1x1;
   paletteInfo.format = GR_TEXFMT_P_8;
   paletteInfo.data = s_paletteTexData.data();
@@ -376,6 +414,7 @@ int main(int argc, char* argv[]) {
   // Set up console overlay
   tlConSet(0.0f, 0.0f, 1.0f, 0.4f, 80, 15, 0xffffff);
 
+  auto startTime = std::chrono::steady_clock::now();
   bool running = true;
   while (running && tlOkToRender()) {
     // Handle input
@@ -531,12 +570,13 @@ int main(int argc, char* argv[]) {
 
     // Calculate rotation and 3D projection on CPU
     float uvMax = (s_activeScreen == SCREEN_MIRROR)
-                      ? 256.0f
-                      : 128.0f;  // 2x tiling for mirroring
-    float cosY = std::cos(s_rotationAngle);
-    float sinY = std::sin(s_rotationAngle);
-    float cosX = std::cos(s_rotationAngle * 0.5f);
-    float sinX = std::sin(s_rotationAngle * 0.5f);
+                      ? 512.0f
+                      : 256.0f;  // 2x tiling for mirroring
+    float currentAngle = s_rotatePlane ? s_rotationAngle : 0.0f;
+    float cosY = std::cos(currentAngle);
+    float sinY = std::sin(currentAngle);
+    float cosX = std::cos(currentAngle * 0.5f);
+    float sinX = std::sin(currentAngle * 0.5f);
 
     DemoVertex projectedQuad[4];
     for (int i = 0; i < 4; ++i) {
@@ -556,7 +596,8 @@ int main(int argc, char* argv[]) {
       float cameraDist = 3.0f;
       float W = z2 + cameraDist;
       float oow = 1.0f / W;
-      float scale = runConfig.height * 0.40f;  // Quad size relative to height
+      float scale = s_rotatePlane ? (runConfig.height * 0.40f)
+                                  : (runConfig.height * 0.75f);
 
       projectedQuad[i].x = (runConfig.width / 2.0f) + (x1 * scale) * oow;
       // Projected Y (increases upwards under GR_ORIGIN_LOWER_LEFT)
@@ -642,6 +683,16 @@ int main(int argc, char* argv[]) {
 
     // Frame pacing (approx. 60 FPS)
     std::this_thread::sleep_for(std::chrono::milliseconds(16));
+
+    if (s_timeoutSeconds > 0) {
+      auto now = std::chrono::steady_clock::now();
+      auto elapsed =
+          std::chrono::duration_cast<std::chrono::seconds>(now - startTime)
+              .count();
+      if (elapsed >= s_timeoutSeconds) {
+        running = false;
+      }
+    }
   }
 
   // Clean up and shutdown Glide
