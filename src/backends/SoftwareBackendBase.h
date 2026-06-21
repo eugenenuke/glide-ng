@@ -21,6 +21,21 @@ public:
     uint32_t GetWidth() const override { return m_headlessWidth; }
     uint32_t GetHeight() const override { return m_headlessHeight; }
     uint32_t GetMsaaSamples() const override { return 1; }
+
+    // State Getters for Testing
+    uint32_t GetColorCombinerFunc() const { return m_colorCombinerFunc; }
+    uint32_t GetColorCombinerFactor() const { return m_colorCombinerFactor; }
+    uint32_t GetColorCombinerLocal() const { return m_colorCombinerLocal; }
+    uint32_t GetColorCombinerOther() const { return m_colorCombinerOther; }
+    uint32_t GetConstantColor() const { return m_constantColor; }
+    uint32_t GetSTWHintMask() const { return m_stwHintMask; }
+    uint32_t GetCullMode() const { return m_cullMode; }
+    float GetDepthBufferPixel(uint32_t x, uint32_t y) const {
+        uint32_t pIdx = y * m_headlessWidth + x;
+        if (pIdx < m_headlessDepthBuffer.size()) return m_headlessDepthBuffer[pIdx];
+        return 0.0f;
+    }
+
     bool SwapBuffers() override = 0;
     void PollEvents() override;
     void SstIdle() override;
@@ -41,7 +56,8 @@ public:
     void SetClipWindow(uint32_t minX, uint32_t minY, uint32_t maxX, uint32_t maxY) override;
     void SetSstOrigin(uint32_t origin) override;
     void SetColorMask(bool rgb, bool alpha) override;
-    void SetGamma(float gamma) override {}
+    void SetGamma(float gamma) override;
+    void LoadGammaTable(uint32_t nentries, const uint32_t* rTable, const uint32_t* gTable, const uint32_t* bTable) override;
     
     // Milestone 8: Fogging State
     void SetFogMode(uint32_t mode) override;
@@ -151,6 +167,12 @@ protected:
     uint32_t m_chromakeyRangeMax{0};
     uint32_t m_chromakeyRangeMode{0};
     uint32_t m_lastCpuClearColor{0};
+    
+    // Gamma correction software LUT state
+    bool m_useGammaLut{false};
+    uint8_t m_lutR[256];
+    uint8_t m_lutG[256];
+    uint8_t m_lutB[256];
 };
 
 } // namespace GlideWrapper

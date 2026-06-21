@@ -22,17 +22,34 @@
 #include <glide.h>
 #include <core/BackendManager.h>
 #include <core/GlideSplashAnimator.h>
+#include <core/WrapperConfig.h>
+#include <core/Logger.h>
 
 /*
- * Modernized grSplash Entry Point
- * Stateless wrapper that forwards rendering to our thread-safe C++ animator
- * tied to the active graphics context.
- */
+** Banshee/Voodoo3 Callback-based Splash Animation Entry Point
+*/
+extern "C" void FX_CALL
+grSplashCb(float x, float y, float w, float h, FxU32 frame, void (*callback)(int frame))
+{
+    if (!GlideWrapper::EmulationRegistry::GetInstance().IsFunctionAvailable("grSplashCb")) {
+        GLIDE_LOG(WARN, "API", "GATED CALL: grSplashCb is not available under the active version/device profile.");
+        return;
+    }
+
+    auto* animator = GlideWrapper::BackendManager::GetInstance().GetSplashAnimator();
+    if (animator) {
+        animator->Render(x, y, w, h, frame, callback);
+    }
+}
+
+/*
+** Modernized grSplash Entry Point (Baseline Glide 2.1 / 2.40)
+*/
 extern "C" void FX_CALL
 grSplash(float x, float y, float w, float h, FxU32 frame)
 {
     auto* animator = GlideWrapper::BackendManager::GetInstance().GetSplashAnimator();
     if (animator) {
-        animator->Render(x, y, w, h, frame);
+        animator->Render(x, y, w, h, frame, nullptr);
     }
 }

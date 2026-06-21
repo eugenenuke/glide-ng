@@ -36,6 +36,7 @@ public:
     void SetBlendState(uint32_t rgbSrcFactor, uint32_t rgbDstFactor, uint32_t alphaSrcFactor, uint32_t alphaDstFactor) override;
     void SetColorMask(bool rgb, bool alpha) override;
     void SetGamma(float gamma) override;
+    void LoadGammaTable(uint32_t nentries, const uint32_t* rTable, const uint32_t* gTable, const uint32_t* bTable) override;
 
 private:
     bool CreateGLContext(void* nativeWindowHandle, uint32_t width, uint32_t height, bool windowed);
@@ -79,6 +80,10 @@ private:
     uint32_t m_msaaSamples{1};
     bool m_is2DGeometry{true};
     float m_gammaCorrectionValue{1.0f};
+    
+    // GLES Gamma LUT Texture Resources
+    uint32_t m_glGammaLutTex{0};
+    bool m_useGammaLut{false};
 };
 
 } // namespace GlideWrapper

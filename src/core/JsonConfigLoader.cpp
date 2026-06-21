@@ -4,12 +4,14 @@
 #include <sstream>
 #include <cstdlib>
 #include <iostream>
+#include <algorithm>
 
 namespace GlideWrapper {
 
 bool JsonConfigLoader::Load(const std::string& configFilePath, WrapperConfig& outConfig) {
     // Reset to baseline defaults to prevent state leakage across dynamic library reloads
     outConfig = WrapperConfig{};
+    bool hasApiVerInJson = false;
 
     GLIDE_LOG(INFO, "Config", "Attempting to load profile from: " << configFilePath);
 
@@ -21,10 +23,43 @@ bool JsonConfigLoader::Load(const std::string& configFilePath, WrapperConfig& ou
         
         // Simple heuristic JSON parsing for our foundation layer
         if (content.find("\"VoodooGraphics\"") != std::string::npos) outConfig.model = CardModel::VoodooGraphics;
+        if (content.find("\"VoodooRush\"") != std::string::npos)     outConfig.model = CardModel::VoodooRush;
         if (content.find("\"Voodoo2\"") != std::string::npos)        outConfig.model = CardModel::Voodoo2;
         if (content.find("\"Voodoo3\"") != std::string::npos)        outConfig.model = CardModel::Voodoo3;
         if (content.find("\"Voodoo5\"") != std::string::npos)        outConfig.model = CardModel::Voodoo5;
         
+        // Parse API Version (e.g. "apiVersion": "2.43" or "apiVersion": 2.43)
+        hasApiVerInJson = false;
+        size_t apiVerPos = content.find("\"apiVersion\"");
+        if (apiVerPos != std::string::npos) {
+            size_t colonPos = content.find(":", apiVerPos);
+            if (colonPos != std::string::npos) {
+                size_t valPos = content.find_first_of("\"0123456789", colonPos);
+                if (valPos != std::string::npos) {
+                    std::string valStr;
+                    size_t idx = valPos;
+                    if (content[idx] == '\"') {
+                        idx++;
+                        while (idx < content.length() && content[idx] != '\"') {
+                            valStr += content[idx];
+                            idx++;
+                        }
+                    } else {
+                        while (idx < content.length() && content[idx] != ',' && content[idx] != '}' && content[idx] != '\n' && content[idx] != '\r' && content[idx] != ' ') {
+                            valStr += content[idx];
+                            idx++;
+                        }
+                    }
+                    
+                    if (valStr == "2.1") { outConfig.apiVersion = ApiVersion::GLIDE_2_1; hasApiVerInJson = true; }
+                    else if (valStr == "2.40" || valStr == "2.4") { outConfig.apiVersion = ApiVersion::GLIDE_2_40; hasApiVerInJson = true; }
+                    else if (valStr == "2.42") { outConfig.apiVersion = ApiVersion::GLIDE_2_42; hasApiVerInJson = true; }
+                    else if (valStr == "2.43") { outConfig.apiVersion = ApiVersion::GLIDE_2_43; hasApiVerInJson = true; }
+                    else if (valStr == "2.61") { outConfig.apiVersion = ApiVersion::GLIDE_2_61; hasApiVerInJson = true; }
+                }
+            }
+        }
+
         if (content.find("\"opengl_es\"") != std::string::npos ||
             content.find("\"gles\"") != std::string::npos ||
             content.find("\"goes\"") != std::string::npos) {
@@ -38,7 +73,7 @@ bool JsonConfigLoader::Load(const std::string& configFilePath, WrapperConfig& ou
             content.find("\"sw\"") != std::string::npos) {
             outConfig.backend = "software";
         }
-            if (content.find("\"logToConsole\"") != std::string::npos) {
+        if (content.find("\"logToConsole\"") != std::string::npos) {
             outConfig.logToConsole = (content.find("\"logToConsole\": true") != std::string::npos ||
                                       content.find("\"logToConsole\":true") != std::string::npos);
         }
@@ -108,14 +143,52 @@ bool JsonConfigLoader::Load(const std::string& configFilePath, WrapperConfig& ou
         GLIDE_LOG(INFO, "Config", "Normalized backend alias 'sw' to 'software'");
     }
 
-    if (const char* envModel = std::getenv("GLIDE_WRAPPER_CARD_MODEL")) {
-        std::string m(envModel);
-        if (m == "SST1") outConfig.model = CardModel::VoodooGraphics;
-        if (m == "CVG")  outConfig.model = CardModel::Voodoo2;
-        if (m == "H3")   outConfig.model = CardModel::Voodoo3;
-        if (m == "H5")   outConfig.model = CardModel::Voodoo5;
-        GLIDE_LOG(WARN, "Config", "Overrode emulated Card Model via GLIDE_WRAPPER_CARD_MODEL=" << m);
+    // Parse Card Model Override (GLIDE_WRAPPER_CARD_MODEL or GLIDE_DEVICE)
+    const char* envCardOverride = std::getenv("GLIDE_WRAPPER_CARD_MODEL") ? std::getenv("GLIDE_WRAPPER_CARD_MODEL") : std::getenv("GLIDE_DEVICE");
+    if (envCardOverride) {
+        std::string rawStr(envCardOverride);
+        std::string m = rawStr;
+        std::transform(m.begin(), m.end(), m.begin(), ::toupper);
+        
+        if (m == "SST1" || m == "VOODOO1" || m == "VOODOOGRAPHICS") outConfig.model = CardModel::VoodooGraphics;
+        else if (m == "SST96" || m == "VOODOORUSH" || m == "VOODOO_RUSH" || m == "RUSH") outConfig.model = CardModel::VoodooRush;
+        else if (m == "CVG" || m == "VOODOO2")  outConfig.model = CardModel::Voodoo2;
+        else if (m == "H3" || m == "VOODOO3")   outConfig.model = CardModel::Voodoo3;
+        else if (m == "H5" || m == "VOODOO5")   outConfig.model = CardModel::Voodoo5;
+        
+        GLIDE_LOG(WARN, "Config", "Overrode emulated Card Model via environment=" << rawStr << " (matched: " << m << ")");
     }
+
+    // Parse API Version Override (GLIDE_WRAPPER_API_VERSION or GLIDE_VERSION_OVERRIDE)
+    const char* envApiOverride = std::getenv("GLIDE_WRAPPER_API_VERSION") ? std::getenv("GLIDE_WRAPPER_API_VERSION") : std::getenv("GLIDE_VERSION_OVERRIDE");
+    if (envApiOverride) {
+        std::string v(envApiOverride);
+        if (v == "2.1") outConfig.apiVersion = ApiVersion::GLIDE_2_1;
+        else if (v == "2.40" || v == "2.4") outConfig.apiVersion = ApiVersion::GLIDE_2_40;
+        else if (v == "2.42") outConfig.apiVersion = ApiVersion::GLIDE_2_42;
+        else if (v == "2.43") outConfig.apiVersion = ApiVersion::GLIDE_2_43;
+        else if (v == "2.61") outConfig.apiVersion = ApiVersion::GLIDE_2_61;
+        GLIDE_LOG(WARN, "Config", "Overrode emulated API Version via environment=" << v);
+    } else {
+        // Auto-default API version based on selected Card Model if not explicitly configured in JSON
+        if (!hasApiVerInJson) {
+            switch (outConfig.model) {
+                case CardModel::VoodooGraphics:
+                case CardModel::VoodooRush:
+                    outConfig.apiVersion = ApiVersion::GLIDE_2_40;
+                    break;
+                case CardModel::Voodoo2:
+                    outConfig.apiVersion = ApiVersion::GLIDE_2_43;
+                    break;
+                case CardModel::Voodoo3:
+                case CardModel::Voodoo5:
+                    outConfig.apiVersion = ApiVersion::GLIDE_2_61;
+                    break;
+            }
+            GLIDE_LOG(INFO, "Config", "Auto-configured API Version based on active Card Model.");
+        }
+    }
+
     
     if (const char* envFbi = std::getenv("GLIDE_WRAPPER_FBI_MEM_MB")) {
         outConfig.fbiMemoryMb = std::atoi(envFbi);

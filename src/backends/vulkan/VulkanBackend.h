@@ -11,35 +11,61 @@ namespace GlideWrapper {
 
 // Push Constants definition shared across pipeline layout and draw pipelines (exactly 128 bytes)
 struct PushConstants {
-    float viewportWidth;
-    float viewportHeight;
-    float padding[2];          // Explicitly align constantColor to 16-byte boundary (std140)
-    float constantColor[4];    // RGBA normalized floats
+    // Block 0: Offset 0 (16 bytes)
+    float    viewportWidth;
+    float    viewportHeight;
     uint32_t depthBufferMode;   // 0 = None, 1 = Z, 2 = W
     uint32_t alphaTestOp;       // 0..7 (Glide compare ops, 7 = ALWAYS/disabled)
-    float alphaTestRef;         // 0.0 .. 1.0 (normalized reference value)
-    float depthBias;            // Normalized depth bias
+
+    // Block 1: Offset 16 (16 bytes)
+    float    constantColor[4];  // RGBA normalized floats
+
+    // Block 2: Offset 32 (16 bytes)
+    float    alphaTestRef;      // 0.0 .. 1.0 (normalized reference value)
+    float    depthBias;         // Normalized depth bias
     uint32_t fogMode;           // 0 = disabled, otherwise enabled
     uint32_t fogColor;          // Packed 32-bit ARGB/ABGR color
-    uint32_t useTmuOow;         // 1 = use separate TMU OOW (grHints), 0 = use vertex OOW
-    uint32_t fogTable[16];      // 64-entry 8-bit fog table packed into 16 uint32_t values
 
-    // Milestone 9: Combiner & Texture State
+    // Block 3: Offset 48 (16 bytes)
+    uint32_t useTmuOow;         // 1 = use separate TMU OOW (grHints), 0 = use vertex OOW
+    uint32_t padding0;
+    uint32_t padding1;
+    uint32_t padding2;
+
+    // Block 4: Offset 64 (64 bytes)
+    uint32_t fogTable[16];      // 64-entry 8-bit fog table packed into 16 uint32_t values (aligned to 16-byte boundaries via uvec4 in GLSL)
+
+    // Block 5: Offset 128 (16 bytes)
     uint32_t colorFunc;
     uint32_t colorFactor;
     uint32_t colorLocal;
     uint32_t colorOther;
+
+    // Block 6: Offset 144 (16 bytes)
     uint32_t colorInvert;
     uint32_t alphaFunc;
     uint32_t alphaFactor;
     uint32_t alphaLocal;
+
+    // Block 7: Offset 160 (16 bytes)
     uint32_t alphaOther;
     uint32_t alphaInvert;
     uint32_t textureEnabled;
     uint32_t chromakeyEnabled;
+
+    // Block 8: Offset 176 (16 bytes)
     uint32_t chromakeyRangeMode;
+    uint32_t padding3;
+    uint32_t padding4;
+    uint32_t padding5;
+
+    // Block 9: Offset 192 (16 bytes)
     float    chromakeyValue[4];
+
+    // Block 10: Offset 208 (16 bytes)
     float    chromakeyRangeMin[4];
+
+    // Block 11: Offset 224 (16 bytes)
     float    chromakeyRangeMax[4];
 };
 
@@ -141,7 +167,8 @@ public:
     void SetSstOrigin(uint32_t origin) override;
     void SetClipWindow(uint32_t minX, uint32_t minY, uint32_t maxX, uint32_t maxY) override;
     void SetColorMask(bool rgb, bool alpha) override;
-    void SetGamma(float gamma) override {}
+    void SetGamma(float gamma) override;
+    void LoadGammaTable(uint32_t nentries, const uint32_t* rTable, const uint32_t* gTable, const uint32_t* bTable) override;
     void SetConstantColor(uint32_t color) override;
     void SetRenderBuffer(uint32_t target) override;
     void SetPixelFormat(uint32_t format) override;
@@ -301,6 +328,13 @@ private:
     uint32_t m_texStagingOffsets[2]{0, 0};
     const uint32_t m_texStagingSlotSize{8 * 1024 * 1024}; // 8MB per frame slot
     uint32_t m_msaaSamples{1};
+    
+    // Vulkan Gamma LUT State variables
+    float m_gammaCorrectionValue{1.0f};
+    bool m_useGammaLut{false};
+    uint8_t m_lutR[256];
+    uint8_t m_lutG[256];
+    uint8_t m_lutB[256];
 };
 
 

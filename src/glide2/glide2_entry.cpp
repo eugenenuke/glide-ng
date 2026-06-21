@@ -125,6 +125,20 @@ namespace {
             }
         }
     }
+
+    inline void SanitizeVertex(GlideWrapper::ModernVertex& mv) {
+        bool depthActive = (s_depthMode != 0);
+        bool textureActive = (s_boundTex[0] != 0xFFFFFFFF || s_boundTex[1] != 0xFFFFFFFF);
+        bool fogActive = (s_fogMode != 0);
+        bool wActive = (s_depthMode == 2 || s_depthMode == 4);
+
+        if (!depthActive) {
+            mv.pos[2] = 0.0f;
+        }
+        if (!textureActive && !fogActive && !wActive) {
+            mv.pos[3] = 1.0f;
+        }
+    }
 }
 
 uint32_t s_sstOrigin = 0;     // GR_ORIGIN_UPPER_LEFT (Global for grSplash)
@@ -390,7 +404,15 @@ FX_ENTRY void FX_CALL grDrawTriangle(const GrVertex* a, const GrVertex* b, const
     GlideWrapper::TelemetryManager::GetInstance().IncrementTrianglesProcessed(1);
 
     auto& layout = GlideWrapper::VertexLayout::GetInstance();
-    backend->DrawTriangle(layout.DecodeVertex(a), layout.DecodeVertex(b), layout.DecodeVertex(c));
+    GlideWrapper::ModernVertex va = layout.DecodeVertex(a);
+    GlideWrapper::ModernVertex vb = layout.DecodeVertex(b);
+    GlideWrapper::ModernVertex vc = layout.DecodeVertex(c);
+    
+    SanitizeVertex(va);
+    SanitizeVertex(vb);
+    SanitizeVertex(vc);
+
+    backend->DrawTriangle(va, vb, vc);
 }
 
 FX_ENTRY void FX_CALL grTriStats(FxU32* processed, FxU32* drawn) {
@@ -424,7 +446,11 @@ FX_ENTRY void FX_CALL grDrawLine(const GrVertex* a, const GrVertex* b) {
     auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
     if (!backend || !a || !b) return;
     auto& layout = GlideWrapper::VertexLayout::GetInstance();
-    backend->DrawLine(layout.DecodeVertex(a), layout.DecodeVertex(b));
+    GlideWrapper::ModernVertex va = layout.DecodeVertex(a);
+    GlideWrapper::ModernVertex vb = layout.DecodeVertex(b);
+    SanitizeVertex(va);
+    SanitizeVertex(vb);
+    backend->DrawLine(va, vb);
 }
 
 FX_ENTRY void FX_CALL grDrawPoint(const GrVertex* pt) {
@@ -433,7 +459,9 @@ FX_ENTRY void FX_CALL grDrawPoint(const GrVertex* pt) {
     auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
     if (!backend || !pt) return;
     auto& layout = GlideWrapper::VertexLayout::GetInstance();
-    backend->DrawPoint(layout.DecodeVertex(pt));
+    GlideWrapper::ModernVertex vpt = layout.DecodeVertex(pt);
+    SanitizeVertex(vpt);
+    backend->DrawPoint(vpt);
 }
 
 // =============================================================================
@@ -527,12 +555,16 @@ FX_ENTRY FxBool FX_CALL grSstQueryHardware(GrHwConfiguration* hwconfig) {
     if (config.model == GlideWrapper::CardModel::VoodooGraphics) {
         hwconfig->SSTs[0].type = GR_SSTTYPE_VOODOO;
         hwconfig->SSTs[0].sstBoard.VoodooConfig.fbRam = config.fbiMemoryMb;
+    } else if (config.model == GlideWrapper::CardModel::VoodooRush) {
+        hwconfig->SSTs[0].type = GR_SSTTYPE_SST96;
+        hwconfig->SSTs[0].sstBoard.SST96Config.fbRam = config.fbiMemoryMb;
+        hwconfig->SSTs[0].sstBoard.SST96Config.nTexelfx = config.tmuCount;
     } else {
-        // Voodoo 2 or Voodoo 3
+        // Voodoo2, Voodoo3, Voodoo5 (Banshee/Avenger/Napalm)
         hwconfig->SSTs[0].type = GR_SSTTYPE_Voodoo2;
         hwconfig->SSTs[0].sstBoard.Voodoo2Config.fbRam = config.fbiMemoryMb;
         hwconfig->SSTs[0].sstBoard.Voodoo2Config.nTexelfx = config.tmuCount;
-        hwconfig->SSTs[0].sstBoard.Voodoo2Config.sliDetect = (config.model == GlideWrapper::CardModel::Voodoo2) ? FXTRUE : FXFALSE;
+        hwconfig->SSTs[0].sstBoard.Voodoo2Config.sliDetect = (config.model == GlideWrapper::CardModel::Voodoo2 && config.enableSli) ? FXTRUE : FXFALSE;
     }
     
     return FXTRUE;
@@ -558,8 +590,26 @@ FX_ENTRY const char* FX_CALL grGetString(FxU32 pname) {
     GLIDE_LOG(DEBUG, "Frontend", "grGetString invoked for pname: " << pname);
     auto& reg = GlideWrapper::EmulationRegistry::GetInstance();
     switch (pname) {
-        case GR_VERSION:  return "2.43 (glide-ng)";
-        case GR_HARDWARE: return "Voodoo2 (Modernized Wrapper Emulation)";
+        case GR_VERSION: {
+            switch (reg.GetConfig().apiVersion) {
+                case GlideWrapper::ApiVersion::GLIDE_2_1:  return "2.10 (glide-ng)";
+                case GlideWrapper::ApiVersion::GLIDE_2_40: return "2.40 (glide-ng)";
+                case GlideWrapper::ApiVersion::GLIDE_2_42: return "2.42 (glide-ng)";
+                case GlideWrapper::ApiVersion::GLIDE_2_43: return "2.43 (glide-ng)";
+                case GlideWrapper::ApiVersion::GLIDE_2_61: return "2.61 (glide-ng)";
+            }
+            return "2.43 (glide-ng)";
+        }
+        case GR_HARDWARE: {
+            switch (reg.GetConfig().model) {
+                case GlideWrapper::CardModel::VoodooGraphics: return "Voodoo Graphics";
+                case GlideWrapper::CardModel::VoodooRush:     return "Voodoo Rush";
+                case GlideWrapper::CardModel::Voodoo2:        return "Voodoo2";
+                case GlideWrapper::CardModel::Voodoo3:        return "Voodoo3";
+                case GlideWrapper::CardModel::Voodoo5:        return "Voodoo5";
+            }
+            return "Voodoo2";
+        }
         case GR_VENDOR:   return reg.GetConfig().reportedVendorOverride.c_str();
         case GR_RENDERER: {
             if (reg.GetConfig().backend == "opengl_es") {
@@ -569,7 +619,13 @@ FX_ENTRY const char* FX_CALL grGetString(FxU32 pname) {
             }
             return "3dfx glide-ng Vulkan Wrapper";
         }
-        case GR_EXTENSION:return "";
+        case GR_EXTENSION: {
+            // Only advertise extensions that are fully implemented in the backend (no stubs!)
+            if (reg.IsFunctionAvailable("grChromakeyRangeExt")) {
+                return "CHROMARANGE";
+            }
+            return "";
+        }
         default: return "Unknown";
     }
 }
@@ -969,11 +1025,19 @@ FX_ENTRY void FX_CALL grTexCombineFunction(GrChipID_t tmu, GrTextureCombineFnc_t
 
 FX_ENTRY void FX_CALL grTexMultibase(GrChipID_t tmu, FxBool enable) {
     EnsureEngineInitialized();
+    if (!GlideWrapper::EmulationRegistry::GetInstance().IsFunctionAvailable("grTexMultibase")) {
+        GLIDE_LOG(WARN, "API", "GATED CALL: grTexMultibase is not available under the active version/device profile.");
+        return;
+    }
     GLIDE_LOG(DEBUG, "Frontend", "grTexMultibase: tmu=" << tmu << ", enable=" << enable << " (Stubbed)");
 }
 
 FX_ENTRY void FX_CALL grTexMultibaseAddress(GrChipID_t tmu, GrTexBaseRange_t range, FxU32 startAddress, FxU32 evenOdd, GrTexInfo *info) {
     EnsureEngineInitialized();
+    if (!GlideWrapper::EmulationRegistry::GetInstance().IsFunctionAvailable("grTexMultibaseAddress")) {
+        GLIDE_LOG(WARN, "API", "GATED CALL: grTexMultibaseAddress is not available under the active version/device profile.");
+        return;
+    }
     GLIDE_LOG(DEBUG, "Frontend", "grTexMultibaseAddress: tmu=" << tmu << ", range=" << range << ", startAddress=" << startAddress << " (Stubbed)");
 }
 
@@ -1644,7 +1708,7 @@ FX_ENTRY void FX_CALL guFogGenerateLinear(GrFog_t *fogtable, float nearZ, float 
 FX_ENTRY void FX_CALL grFogMode(GrFogMode_t mode) {
     EnsureEngineInitialized();
     GLIDE_LOG(DEBUG, "Frontend", "grFogMode invoked: " << mode);
-    s_fogMode = mode & (GR_FOG_WITH_TABLE | GR_FOG_WITH_ITERATED_ALPHA);
+    s_fogMode = mode & (0x0F | GR_FOG_MULT2 | GR_FOG_ADD2);
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
         b->SetFogMode(s_fogMode);
     }
@@ -1957,16 +2021,58 @@ FX_ENTRY void FX_CALL grCheckForRoom(FxI32 n) {
 
 // Define the local typedef for GrChromaRangeMode_t which is guarded in glide2.h
 
-// Forward declaration of our Chroma-Key Range Extension
+// Forward declarations of Glide 2.x Extensions & Stubs
 FX_ENTRY void FX_CALL grChromakeyRangeExt(GrColor_t minColor, GrColor_t maxColor, GrChromaRangeMode_t mode);
+FX_ENTRY void FX_CALL grColorMaskExt(FxBool r, FxBool g, FxBool b, FxBool a);
+FX_ENTRY void FX_CALL grStencilFuncExt(FxU32 func, FxU32 ref, FxU32 mask);
+FX_ENTRY void FX_CALL grStencilMaskExt(FxU32 mask);
+FX_ENTRY void FX_CALL grStencilOpExt(FxU32 fail, FxU32 zfail, FxU32 zpass);
+FX_ENTRY void FX_CALL grBufferClearExt(GrColor_t color, GrAlpha_t alpha, FxU32 depth, FxU32 stencil);
+FX_ENTRY void FX_CALL grLfbConstantStencilExt(FxU32 stencil);
+FX_ENTRY void FX_CALL grTBufferWriteMaskExt(FxU32 mask);
+FX_ENTRY void FX_CALL grAlphaBlendFunctionExt(FxU32 rgb_sf, FxU32 rgb_df, FxU32 rgb_op, FxU32 alpha_sf, FxU32 alpha_df, FxU32 alpha_op);
+FX_ENTRY void FX_CALL grSplashCb(float x, float y, float w, float h, FxU32 frame, void (*callback)(int frame));
 
 FX_ENTRY GrProc FX_CALL grGetProcAddress(char *procName) {
     EnsureEngineInitialized();
     GLIDE_LOG(DEBUG, "Frontend", "grGetProcAddress: " << (procName ? procName : "NULL"));
     if (!procName) return nullptr;
 
+    // Dynamic Gating Checklist Validation
+    if (!GlideWrapper::EmulationRegistry::GetInstance().IsFunctionAvailable(procName)) {
+        GLIDE_LOG(WARN, "Frontend", "grGetProcAddress: Gating out '" << procName << "' under active version/device profile");
+        return nullptr;
+    }
+
     if (std::strcmp(procName, "grChromakeyRangeExt") == 0) {
         return (GrProc)grChromakeyRangeExt;
+    }
+    if (std::strcmp(procName, "grSplashCb") == 0) {
+        return (GrProc)grSplashCb;
+    }
+    if (std::strcmp(procName, "grColorMaskExt") == 0) {
+        return (GrProc)grColorMaskExt;
+    }
+    if (std::strcmp(procName, "grStencilFuncExt") == 0) {
+        return (GrProc)grStencilFuncExt;
+    }
+    if (std::strcmp(procName, "grStencilMaskExt") == 0) {
+        return (GrProc)grStencilMaskExt;
+    }
+    if (std::strcmp(procName, "grStencilOpExt") == 0) {
+        return (GrProc)grStencilOpExt;
+    }
+    if (std::strcmp(procName, "grBufferClearExt") == 0) {
+        return (GrProc)grBufferClearExt;
+    }
+    if (std::strcmp(procName, "grLfbConstantStencilExt") == 0) {
+        return (GrProc)grLfbConstantStencilExt;
+    }
+    if (std::strcmp(procName, "grTBufferWriteMaskExt") == 0) {
+        return (GrProc)grTBufferWriteMaskExt;
+    }
+    if (std::strcmp(procName, "grAlphaBlendFunctionExt") == 0) {
+        return (GrProc)grAlphaBlendFunctionExt;
     }
 
     GLIDE_LOG(WARN, "Frontend", "grGetProcAddress: Unknown extension " << procName);
@@ -1975,6 +2081,10 @@ FX_ENTRY GrProc FX_CALL grGetProcAddress(char *procName) {
 
 FX_ENTRY void FX_CALL grChromakeyRangeExt(GrColor_t minColor, GrColor_t maxColor, GrChromaRangeMode_t mode) {
     EnsureEngineInitialized();
+    if (!GlideWrapper::EmulationRegistry::GetInstance().IsFunctionAvailable("grChromakeyRangeExt")) {
+        GLIDE_LOG(WARN, "Frontend", "GATED CALL: grChromakeyRangeExt called but gated out under active version/device profile.");
+        return;
+    }
     GLIDE_LOG(DEBUG, "Frontend", "grChromakeyRangeExt: minColor=0x" << std::hex << minColor 
               << ", maxColor=0x" << maxColor << ", mode=" << std::dec << mode);
     s_chromakeyRangeMin = minColor;
@@ -1984,6 +2094,48 @@ FX_ENTRY void FX_CALL grChromakeyRangeExt(GrColor_t minColor, GrColor_t maxColor
         b->SetChromakeyRange(minColor, maxColor, mode);
     }
 }
+
+// Extension Stub Implementations (Glide 2.x)
+FX_ENTRY void FX_CALL grColorMaskExt(FxBool r, FxBool g, FxBool b, FxBool a) {
+    EnsureEngineInitialized();
+    GLIDE_LOG(WARN, "Stub", "grColorMaskExt stub invoked: R=" << (int)r << ", G=" << (int)g << ", B=" << (int)b << ", A=" << (int)a);
+}
+
+FX_ENTRY void FX_CALL grStencilFuncExt(FxU32 func, FxU32 ref, FxU32 mask) {
+    EnsureEngineInitialized();
+    GLIDE_LOG(WARN, "Stub", "grStencilFuncExt stub invoked: func=" << func << ", ref=" << ref << ", mask=" << mask);
+}
+
+FX_ENTRY void FX_CALL grStencilMaskExt(FxU32 mask) {
+    EnsureEngineInitialized();
+    GLIDE_LOG(WARN, "Stub", "grStencilMaskExt stub invoked: mask=" << mask);
+}
+
+FX_ENTRY void FX_CALL grStencilOpExt(FxU32 fail, FxU32 zfail, FxU32 zpass) {
+    EnsureEngineInitialized();
+    GLIDE_LOG(WARN, "Stub", "grStencilOpExt stub invoked: fail=" << fail << ", zfail=" << zfail << ", zpass=" << zpass);
+}
+
+FX_ENTRY void FX_CALL grBufferClearExt(GrColor_t color, GrAlpha_t alpha, FxU32 depth, FxU32 stencil) {
+    EnsureEngineInitialized();
+    GLIDE_LOG(WARN, "Stub", "grBufferClearExt stub invoked: color=" << color << ", alpha=" << (int)alpha << ", depth=" << depth << ", stencil=" << stencil);
+}
+
+FX_ENTRY void FX_CALL grLfbConstantStencilExt(FxU32 stencil) {
+    EnsureEngineInitialized();
+    GLIDE_LOG(WARN, "Stub", "grLfbConstantStencilExt stub invoked: stencil=" << stencil);
+}
+
+FX_ENTRY void FX_CALL grTBufferWriteMaskExt(FxU32 mask) {
+    EnsureEngineInitialized();
+    GLIDE_LOG(WARN, "Stub", "grTBufferWriteMaskExt stub invoked: mask=" << mask);
+}
+
+FX_ENTRY void FX_CALL grAlphaBlendFunctionExt(FxU32 rgb_sf, FxU32 rgb_df, FxU32 rgb_op, FxU32 alpha_sf, FxU32 alpha_df, FxU32 alpha_op) {
+    EnsureEngineInitialized();
+    GLIDE_LOG(WARN, "Stub", "grAlphaBlendFunctionExt stub invoked");
+}
+
 
 FX_ENTRY void FX_CALL grErrorSetCallback(GrErrorCallbackFnc_t fnc) {
     EnsureEngineInitialized();
@@ -2006,6 +2158,10 @@ FX_ENTRY void FX_CALL grLfbWriteColorSwizzle(FxBool swizzleBytes, FxBool swapWor
 
 FX_ENTRY void FX_CALL grAlphaControlsITRGBLighting(FxBool enable) {
     EnsureEngineInitialized();
+    if (!GlideWrapper::EmulationRegistry::GetInstance().IsFunctionAvailable("grAlphaControlsITRGBLighting")) {
+        GLIDE_LOG(WARN, "Frontend", "GATED CALL: grAlphaControlsITRGBLighting called but gated out under active version/device profile.");
+        return;
+    }
     GLIDE_LOG(DEBUG, "Frontend", "grAlphaControlsITRGBLighting: " << enable);
     s_alphaControlsITRGBLighting = (enable != 0);
 }
@@ -2016,6 +2172,34 @@ FX_ENTRY void FX_CALL grGammaCorrectionValue(float value) {
     s_gammaCorrectionValue = value;
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
         b->SetGamma(value);
+    }
+}
+
+FX_ENTRY void FX_CALL grLoadGammaTable(FxU32 nentries, FxU32 *red, FxU32 *green, FxU32 *blue) {
+    EnsureEngineInitialized();
+    GLIDE_LOG(DEBUG, "Frontend", "grLoadGammaTable: nentries=" << nentries);
+    if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
+        b->LoadGammaTable(nentries, red, green, blue);
+    }
+}
+
+FX_ENTRY void FX_CALL guGammaCorrectionRGB(FxFloat red, FxFloat green, FxFloat blue) {
+    EnsureEngineInitialized();
+    GLIDE_LOG(DEBUG, "Frontend", "guGammaCorrectionRGB: red=" << red << ", green=" << green << ", blue=" << blue);
+    
+    float r = (red > 0.0f) ? red : 1.0f;
+    float g = (green > 0.0f) ? green : 1.0f;
+    float b = (blue > 0.0f) ? blue : 1.0f;
+    
+    uint32_t rTable[256], gTable[256], bTable[256];
+    for (int i = 0; i < 256; ++i) {
+        rTable[i] = static_cast<uint32_t>(std::pow(i / 255.0f, 1.0f / r) * 255.0f + 0.5f);
+        gTable[i] = static_cast<uint32_t>(std::pow(i / 255.0f, 1.0f / g) * 255.0f + 0.5f);
+        bTable[i] = static_cast<uint32_t>(std::pow(i / 255.0f, 1.0f / b) * 255.0f + 0.5f);
+    }
+    
+    if (auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
+        backend->LoadGammaTable(256, rTable, gTable, bTable);
     }
 }
 

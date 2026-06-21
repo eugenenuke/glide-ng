@@ -28,7 +28,7 @@ public:
     GlideSplashAnimator();
     ~GlideSplashAnimator();
 
-    void Render(float x, float y, float w, float h, FxU32 frame) override;
+    void Render(float x, float y, float w, float h, FxU32 frame, void (*callback)(int frame) = nullptr) override;
 
 private:
 

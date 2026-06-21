@@ -8,6 +8,7 @@ add_library(GlideWrapperCore STATIC
     core/TextureManager.cpp
     core/Telemetry.cpp
     core/EmbeddedAssets.cpp
+    core/GlideSplashAnimator.cpp
     backends/SoftwareBackendBase.cpp
     backends/vulkan/VulkanBackend.cpp
     backends/opengl_es/OpenGLESBackend.cpp
@@ -35,7 +36,6 @@ add_library(glide2x SHARED
     glide2/glide2_entry.cpp
     glide2/gsplash.cpp
     glide2/gbanner.cpp
-    core/GlideSplashAnimator.cpp
 )
 target_include_directories(glide2x PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/../include/glide2"
@@ -45,7 +45,10 @@ target_include_directories(glide2x PRIVATE
 target_link_libraries(glide2x PRIVATE GlideWrapperCore)
 
 # 3. Glide 3 Frontend Export Library (glide3x.dll / libglide3x.so)
-add_library(glide3x SHARED glide3/glide3_entry.cpp)
+add_library(glide3x SHARED 
+    glide3/glide3_entry.cpp
+    glide3/glide3_banner.cpp
+)
 target_include_directories(glide3x PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/../include/glide3"
     "${CMAKE_CURRENT_SOURCE_DIR}/../include/3dfx"

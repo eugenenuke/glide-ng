@@ -1,5 +1,6 @@
 add_executable(GlideWrapperTests
     test_architecture.cpp
+    test_glide3.cpp
     "${CMAKE_CURRENT_SOURCE_DIR}/../refs/3dfx-Glide-API/glide2x/cvg/glide/tests/tlib.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/../refs/3dfx-Glide-API/swlibs/fxmisc/linutil.c"
 )

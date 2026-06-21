@@ -384,7 +384,7 @@ void GlideSplashAnimator::DrawShadow(int frame, int shadow_object_index, int rec
     grAlphaBlendFunction(GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_ONE, GR_BLEND_ZERO);
 }
 
-void GlideSplashAnimator::Render(float x, float y, float w, float h, FxU32 _frame) {
+void GlideSplashAnimator::Render(float x, float y, float w, float h, FxU32 _frame, void (*callback)(int frame)) {
     GrState oldState;
     int frame;
     Vector lights[] = {
@@ -500,6 +500,9 @@ void GlideSplashAnimator::Render(float x, float y, float w, float h, FxU32 _fram
             m_pass = 1;
             grAlphaBlendFunction(GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_ONE, GR_BLEND_ZERO);
             grBufferSwap(2);
+            if (callback) {
+                callback(frame);
+            }
         }
     } else { /* Render One Frame */
         frame = ((_frame >> 1) % 25) + 26; // SPIN_FRAMES = 25, SPIN_START = 26

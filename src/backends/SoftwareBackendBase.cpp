@@ -19,7 +19,6 @@ namespace GlideWrapper {
 
 void SoftwareBackendBase::ResetState() {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    VertexLayout::GetInstance().ResetToGlide2Canonical();
     m_depthMode = 0;
     m_depthCompareOp = 1;
     m_depthMask = true;
@@ -80,6 +79,12 @@ void SoftwareBackendBase::ResetState() {
     m_chromakeyRangeMax = 0;
     m_chromakeyRangeMode = 0;
     m_lastCpuClearColor = 0;
+    m_useGammaLut = false;
+    for (int i = 0; i < 256; ++i) {
+        m_lutR[i] = static_cast<uint8_t>(i);
+        m_lutG[i] = static_cast<uint8_t>(i);
+        m_lutB[i] = static_cast<uint8_t>(i);
+    }
 }
 
 void SoftwareBackendBase::ClearBuffer(uint32_t color, uint32_t alpha, float z, uint32_t clearMask) {
@@ -366,6 +371,9 @@ bool SoftwareBackendBase::WriteLFB(uint32_t buffer, uint32_t dstX, uint32_t dstY
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     if (!srcData || m_cpuBuffers[0].empty()) return false;
 
+    GLIDE_LOG(DEBUG, "WriteLFB", "WriteLFB invoked: buffer=" << buffer << ", dst=(" << dstX << "," << dstY << "), size=" << srcWidth << "x" << srcHeight << ", stride=" << srcStride << ", fmt=" << srcFmt);
+    uint32_t modifiedCount = 0;
+
     // Validate LFB source format (must be one of the 9 defined Glide formats)
     bool isValidFormat = false;
     switch (srcFmt) {
@@ -547,6 +555,7 @@ bool SoftwareBackendBase::WriteLFB(uint32_t buffer, uint32_t dstX, uint32_t dstY
             }
             pixels[writeY * m_headlessWidth + writeX] = pWord;
             wrotePixel = true;
+            modifiedCount++;
         }
     }
     if (wrotePixel) {
@@ -557,6 +566,7 @@ bool SoftwareBackendBase::WriteLFB(uint32_t buffer, uint32_t dstX, uint32_t dstY
             m_lfbBufferDirty[1] = true;
         }
     }
+    GLIDE_LOG(DEBUG, "WriteLFB", "WriteLFB finished: wrotePixel=" << (wrotePixel ? "Yes" : "No") << ", modifiedPixels=" << modifiedCount << ", m_lfbDirty=" << (m_lfbDirty ? "Yes" : "No"));
     return true;
 }
 
@@ -612,6 +622,30 @@ void SoftwareBackendBase::SetRenderBuffer(uint32_t target) {
         m_headlessPixelMap = m_cpuBuffers[m_backBufferIdx].data();
     }
     GLIDE_LOG(INFO, "SoftwareBackendBase", "SetRenderBuffer: target=" << target << ", map=" << m_headlessPixelMap);
+}
+
+void SoftwareBackendBase::SetGamma(float gamma) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    GLIDE_LOG(INFO, "Software", "SetGamma: value=" << gamma);
+    if (gamma <= 0.0f) gamma = 1.0f;
+    for (int i = 0; i < 256; i++) {
+        m_lutR[i] = static_cast<uint8_t>(std::pow(i / 255.0f, 1.0f / gamma) * 255.0f + 0.5f);
+        m_lutG[i] = m_lutR[i];
+        m_lutB[i] = m_lutR[i];
+    }
+    m_useGammaLut = (gamma != 1.0f);
+}
+
+void SoftwareBackendBase::LoadGammaTable(uint32_t nentries, const uint32_t* rTable, const uint32_t* gTable, const uint32_t* bTable) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    GLIDE_LOG(INFO, "Software", "LoadGammaTable: nentries=" << nentries);
+    if (nentries != 256 || !rTable || !gTable || !bTable) return;
+    for (int i = 0; i < 256; i++) {
+        m_lutR[i] = static_cast<uint8_t>(rTable[i]);
+        m_lutG[i] = static_cast<uint8_t>(gTable[i]);
+        m_lutB[i] = static_cast<uint8_t>(bTable[i]);
+    }
+    m_useGammaLut = true;
 }
 
 } // namespace GlideWrapper

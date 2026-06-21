@@ -8,37 +8,61 @@ layout(location = 3) in vec2 fragTmuOow;
 layout(location = 0) out vec4 outColor;
 
 layout(push_constant) uniform PushConstants {
+    // Block 0: Offset 0 (16 bytes)
     float viewportWidth;
     float viewportHeight;
-    vec4 constantColor;
     uint depthBufferMode;
     uint alphaTestOp;
+
+    // Block 1: Offset 16 (16 bytes)
+    vec4 constantColor;
+
+    // Block 2: Offset 32 (16 bytes)
     float alphaTestRef;
     float depthBias;
-    
     uint fogMode;
     uint fogColor;
-    uint useTmuOow;
-    uint fogTable[16];
 
-    // Combiner & Texture State
+    // Block 3: Offset 48 (16 bytes)
+    uint useTmuOow;
+    uint padding0;
+    uint padding1;
+    uint padding2;
+
+    // Block 4: Offset 64 (64 bytes)
+    uvec4 fogTable[4];
+
+    // Block 5: Offset 128 (16 bytes)
     uint colorFunc;
     uint colorFactor;
     uint colorLocal;
     uint colorOther;
-    uint colorInvert;
 
+    // Block 6: Offset 144 (16 bytes)
+    uint colorInvert;
     uint alphaFunc;
     uint alphaFactor;
     uint alphaLocal;
+
+    // Block 7: Offset 160 (16 bytes)
     uint alphaOther;
     uint alphaInvert;
-
     uint textureEnabled;
     uint chromakeyEnabled;
+
+    // Block 8: Offset 176 (16 bytes)
     uint chromakeyRangeMode;
+    uint padding3;
+    uint padding4;
+    uint padding5;
+
+    // Block 9: Offset 192 (16 bytes)
     vec4 chromakeyValue;
+
+    // Block 10: Offset 208 (16 bytes)
     vec4 chromakeyRangeMin;
+
+    // Block 11: Offset 224 (16 bytes)
     vec4 chromakeyRangeMax;
 } pcs;
 
@@ -191,47 +215,58 @@ void main() {
     }
 
     // Milestone 8: Fogging Emulation
-    if (pcs.fogMode > 0u) {
-        float eyeW = 1.0 / fragOOW;
-        if (eyeW < 1.0) eyeW = 1.0;
+    uint fogSource = pcs.fogMode & 0x0Fu;
+    if (fogSource != 0u) {
+        float f = 0.0;
+        if (fogSource == 1u) { // GR_FOG_WITH_ITERATED_ALPHA
+            f = fragColor.a;
+        } else { // Table-based fog (GR_FOG_WITH_TABLE)
+            float eyeW = 1.0 / fragOOW;
+            if (eyeW < 1.0) eyeW = 1.0;
 
-        int idx = 0;
-        for (int i = 0; i < 63; ++i) {
-            if (s_tableIndexToW[i] < eyeW) {
-                idx = i;
-            } else {
-                break;
+            // O(1) unrolled logarithmic binary search
+            int idx = 0;
+            if (eyeW >= s_tableIndexToW[32]) idx += 32;
+            if (eyeW >= s_tableIndexToW[idx + 16]) idx += 16;
+            if (eyeW >= s_tableIndexToW[idx + 8]) idx += 8;
+            if (eyeW >= s_tableIndexToW[idx + 4]) idx += 4;
+            if (eyeW >= s_tableIndexToW[idx + 2]) idx += 2;
+            if (eyeW >= s_tableIndexToW[idx + 1]) idx += 1;
+
+            float w0 = s_tableIndexToW[idx];
+            float w1 = s_tableIndexToW[idx + 1];
+
+            // Unpack f0 at idx
+            uint packedWord0 = pcs.fogTable[idx / 16][(idx / 4) % 4];
+            uint shift0 = uint(idx % 4) * 8u;
+            float f0 = float((packedWord0 >> shift0) & 0xFFu) / 255.0;
+
+            // Unpack f1 at idx + 1
+            uint packedWord1 = pcs.fogTable[(idx + 1) / 16][((idx + 1) / 4) % 4];
+            uint shift1 = uint((idx + 1) % 4) * 8u;
+            float f1 = float((packedWord1 >> shift1) & 0xFFu) / 255.0;
+
+            // Linear interpolation factor
+            float t = 0.0;
+            if (w1 > w0) {
+                t = (eyeW - w0) / (w1 - w0);
             }
+            t = clamp(t, 0.0, 1.0);
+
+            f = mix(f0, f1, t);
         }
-
-        float w0 = s_tableIndexToW[idx];
-        float w1 = s_tableIndexToW[idx + 1];
-
-        // Unpack f0 at idx
-        uint packedWord0 = pcs.fogTable[idx / 4];
-        uint shift0 = uint(idx % 4) * 8u;
-        float f0 = float((packedWord0 >> shift0) & 0xFFu) / 255.0;
-
-        // Unpack f1 at idx + 1
-        uint packedWord1 = pcs.fogTable[(idx + 1) / 4];
-        uint shift1 = uint((idx + 1) % 4) * 8u;
-        float f1 = float((packedWord1 >> shift1) & 0xFFu) / 255.0;
-
-        // Linear interpolation factor
-        float t = 0.0;
-        if (w1 > w0) {
-            t = (eyeW - w0) / (w1 - w0);
-        }
-        t = clamp(t, 0.0, 1.0);
-
-        float f = mix(f0, f1, t);
 
         vec3 fogColorRGB;
         fogColorRGB.r = float((pcs.fogColor >> 16u) & 0xFFu) / 255.0;
         fogColorRGB.g = float((pcs.fogColor >> 8u)  & 0xFFu) / 255.0;
         fogColorRGB.b = float(pcs.fogColor & 0xFFu)        / 255.0;
 
-        col.rgb = col.rgb * (1.0 - f) + fogColorRGB * f;
+        // Extract FOGMODE flags
+        float mult = float((pcs.fogMode & 0x100u) != 0u); // GR_FOG_MULT2 (SST_FOGMULT)
+        float add  = float((pcs.fogMode & 0x200u) != 0u); // GR_FOG_ADD2  (SST_FOGADD)
+
+        // Apply the unified branch-free hardware equation
+        col.rgb = col.rgb * (1.0 - mult) * (1.0 - f) + fogColorRGB * (1.0 - add) * f;
     }
 
     // Emulate legacy 3dfx Glide alpha testing

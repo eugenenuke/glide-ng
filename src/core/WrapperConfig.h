@@ -11,14 +11,24 @@ constexpr const char* WRAPPER_VERSION      = "v0.1.0-dev";
 constexpr const char* WRAPPER_FULL_NAME    = "3dfx glide-ng (Glide Next Generation) Modernization Wrapper";
 
 enum class CardModel {
-    VoodooGraphics,
-    Voodoo2,
-    Voodoo3,
-    Voodoo5
+    VoodooGraphics, // SST-1
+    VoodooRush,     // SST-96
+    Voodoo2,        // CVG
+    Voodoo3,        // Avenger
+    Voodoo5         // Napalm
+};
+
+enum class ApiVersion {
+    GLIDE_2_1 = 210,
+    GLIDE_2_40 = 240,
+    GLIDE_2_42 = 242,
+    GLIDE_2_43 = 243,
+    GLIDE_2_61 = 261
 };
 
 struct WrapperConfig {
     CardModel model{CardModel::Voodoo2};
+    ApiVersion apiVersion{ApiVersion::GLIDE_2_43};
     uint32_t fbiMemoryMb{16};
     uint32_t tmuCount{2};
     uint32_t tmuMemoryMb{16};
@@ -43,9 +53,13 @@ public:
     WrapperConfig& GetConfig() { return m_config; }
     const WrapperConfig& GetConfig() const { return m_config; }
 
+    // Check if a function is supported under the active card model and API version
+    bool IsFunctionAvailable(const std::string& funcName) const;
+
 private:
     EmulationRegistry();
     WrapperConfig m_config;
 };
 
 } // namespace GlideWrapper
+

@@ -39,6 +39,17 @@ void VertexLayout::ResetToGlide2Canonical() {
     m_offsetST0 = 36;
 }
 
+void VertexLayout::ResetToGlide3Canonical() {
+    m_stwHintMask = 0;
+    m_offsetXY  = 0;
+    m_offsetZ   = -1;
+    m_offsetOOZ = 8;
+    m_offsetOOW = 12;
+    m_offsetRGB = 16;
+    m_offsetA   = 28;
+    m_offsetST0 = 36;
+}
+
 void VertexLayout::SetParamOffset(uint32_t param, int32_t offset, uint32_t mode) {
     SetParamOffsetGlide2(param, offset, mode);
 }
@@ -61,7 +72,8 @@ void VertexLayout::SetParamOffsetGlide3(uint32_t param, int32_t offset, uint32_t
     switch (param) {
         case 0x01: m_offsetXY  = offset; break; // GR_PARAM_XY
         case 0x02: m_offsetZ   = offset; break; // GR_PARAM_Z
-        case 0x03: m_offsetOOW = offset; break; // GR_PARAM_W
+        case 0x03: // GR_PARAM_W
+        case 0x04: m_offsetOOW = offset; break; // GR_PARAM_Q
         case 0x10: m_offsetA   = offset; break; // GR_PARAM_A
         case 0x20: m_offsetRGB = offset; break; // GR_PARAM_RGB
         case 0x40: m_offsetST0 = offset; break; // GR_PARAM_ST0
@@ -152,6 +164,32 @@ ModernVertex VertexLayout::DecodeVertex(const void* gameVertex) const {
     }
 
     return v;
+}
+
+void VertexLayout::GetLayoutState(void* layoutState) const {
+    if (!layoutState) return;
+    auto* state = reinterpret_cast<Glide3VertexLayout*>(layoutState);
+    state->stwHintMask = m_stwHintMask;
+    state->offsetXY = m_offsetXY;
+    state->offsetZ = m_offsetZ;
+    state->offsetRGB = m_offsetRGB;
+    state->offsetOOZ = m_offsetOOZ;
+    state->offsetA = m_offsetA;
+    state->offsetOOW = m_offsetOOW;
+    state->offsetST0 = m_offsetST0;
+}
+
+void VertexLayout::SetLayoutState(const void* layoutState) {
+    if (!layoutState) return;
+    auto* state = reinterpret_cast<const Glide3VertexLayout*>(layoutState);
+    m_stwHintMask = state->stwHintMask;
+    m_offsetXY = state->offsetXY;
+    m_offsetZ = state->offsetZ;
+    m_offsetRGB = state->offsetRGB;
+    m_offsetOOZ = state->offsetOOZ;
+    m_offsetA = state->offsetA;
+    m_offsetOOW = state->offsetOOW;
+    m_offsetST0 = state->offsetST0;
 }
 
 } // namespace GlideWrapper

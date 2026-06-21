@@ -494,13 +494,24 @@ bool VulkanBackend::CreateSwapchain(uint32_t width, uint32_t height) {
         return false;
     }
 
-    // 2. Select the best surface format (RGBA8 or BGRA8 preferred, non-linear sRGB or unorm)
+    // 2. Select the best surface format (sRGB preferred for automatic hardware gamma correction!)
     vk::SurfaceFormatKHR selectedFormat = formats[0];
+    bool found_srgb = false;
     for (const auto& f : formats) {
-        if ((f.format == vk::Format::eB8G8R8A8Unorm || f.format == vk::Format::eR8G8B8A8Unorm) &&
+        if ((f.format == vk::Format::eB8G8R8A8Srgb || f.format == vk::Format::eR8G8B8A8Srgb) &&
             f.colorSpace == vk::ColorSpaceKHR::eSrgbNonlinear) {
             selectedFormat = f;
+            found_srgb = true;
             break;
+        }
+    }
+    if (!found_srgb) {
+        for (const auto& f : formats) {
+            if ((f.format == vk::Format::eB8G8R8A8Unorm || f.format == vk::Format::eR8G8B8A8Unorm) &&
+                f.colorSpace == vk::ColorSpaceKHR::eSrgbNonlinear) {
+                selectedFormat = f;
+                break;
+            }
         }
     }
     m_swapchainImageFormat = selectedFormat.format;
@@ -2024,7 +2035,7 @@ void VulkanBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b, c
 
     FlushLFBToGPU();
 
-    GLIDE_LOG(DEBUG, "Vulkan", "DrawTriangle GPU draw. A: (" << a.pos[0] << ", " << a.pos[1] << "), B: (" << b.pos[0] << ", " << b.pos[1] << "), C: (" << c.pos[0] << ", " << c.pos[1] << ")");
+    GLIDE_LOG(DEBUG, "Vulkan", "DrawTriangle GPU draw. A pos: (" << a.pos[0] << ", " << a.pos[1] << ", " << a.pos[2] << ", " << a.pos[3] << ") color: (" << a.color[0] << ", " << a.color[1] << ", " << a.color[2] << ", " << a.color[3] << ") tex: (" << a.tex[0] << ", " << a.tex[1] << ")");
 
     // 1. Determine active pipeline & descriptor set
     UpdateActivePipelines();
@@ -2091,7 +2102,7 @@ void VulkanBackend::FlushBatch() {
     m_commandBuffer->bindPipeline(vk::PipelineBindPoint::eGraphics, m_batchedPipeline);
     m_commandBuffer->bindDescriptorSets(vk::PipelineBindPoint::eGraphics, m_pipelineLayout.get(), 0, 1, &m_batchedDescSet, 0, nullptr);
 
-    PushConstants pcs;
+    PushConstants pcs{};
     PopulatePushConstants(pcs);
     m_commandBuffer->pushConstants<PushConstants>(m_pipelineLayout.get(), 
         vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0, pcs);
@@ -2524,6 +2535,31 @@ void VulkanBackend::PopulatePushConstants(PushConstants& pcs) {
         std::swap(pcs.chromakeyRangeMin[0], pcs.chromakeyRangeMin[2]);
         std::swap(pcs.chromakeyRangeMax[0], pcs.chromakeyRangeMax[2]);
     }
+}
+
+void VulkanBackend::SetGamma(float gamma) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    GLIDE_LOG(INFO, "Vulkan", "SetGamma: value=" << gamma);
+    m_gammaCorrectionValue = gamma;
+    if (gamma <= 0.0f) gamma = 1.0f;
+    for (int i = 0; i < 256; i++) {
+        m_lutR[i] = static_cast<uint8_t>(std::pow(i / 255.0f, 1.0f / gamma) * 255.0f + 0.5f);
+        m_lutG[i] = m_lutR[i];
+        m_lutB[i] = m_lutR[i];
+    }
+    m_useGammaLut = (gamma != 1.0f);
+}
+
+void VulkanBackend::LoadGammaTable(uint32_t nentries, const uint32_t* rTable, const uint32_t* gTable, const uint32_t* bTable) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    GLIDE_LOG(INFO, "Vulkan", "LoadGammaTable: nentries=" << nentries);
+    if (nentries != 256 || !rTable || !gTable || !bTable) return;
+    for (int i = 0; i < 256; i++) {
+        m_lutR[i] = static_cast<uint8_t>(rTable[i]);
+        m_lutG[i] = static_cast<uint8_t>(gTable[i]);
+        m_lutB[i] = static_cast<uint8_t>(bTable[i]);
+    }
+    m_useGammaLut = true;
 }
 
 } // namespace GlideWrapper

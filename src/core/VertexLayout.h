@@ -11,14 +11,29 @@ struct ModernVertex {
     std::array<float, 2> tmu_oow; // oow0, oow1 (TMU-specific 1/W)
 };
 
+struct Glide3VertexLayout {
+    uint32_t stwHintMask;
+    int32_t offsetXY;
+    int32_t offsetZ;
+    int32_t offsetRGB;
+    int32_t offsetOOZ;
+    int32_t offsetA;
+    int32_t offsetOOW;
+    int32_t offsetST0;
+};
+
 class VertexLayout {
 public:
     static VertexLayout& GetInstance();
 
     void ResetToGlide2Canonical();
+    void ResetToGlide3Canonical();
     void SetParamOffset(uint32_t param, int32_t offset, uint32_t mode);
     void SetParamOffsetGlide2(uint32_t param, int32_t offset, uint32_t mode);
     void SetParamOffsetGlide3(uint32_t param, int32_t offset, uint32_t mode);
+
+    void GetLayoutState(void* layoutState) const;
+    void SetLayoutState(const void* layoutState);
 
     void SetSTWHintMask(uint32_t mask) { m_stwHintMask = mask; }
     uint32_t GetSTWHintMask() const { return m_stwHintMask; }

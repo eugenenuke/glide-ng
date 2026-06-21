@@ -12,37 +12,61 @@ layout(location = 3) out vec2 fragTmuOow;
 
 // Viewport and constant-color configuration passed via push constants
 layout(push_constant) uniform PushConstants {
+    // Block 0: Offset 0 (16 bytes)
     float viewportWidth;
     float viewportHeight;
-    vec4 constantColor;
     uint depthBufferMode;
     uint alphaTestOp;
+
+    // Block 1: Offset 16 (16 bytes)
+    vec4 constantColor;
+
+    // Block 2: Offset 32 (16 bytes)
     float alphaTestRef;
     float depthBias;
-    
     uint fogMode;
     uint fogColor;
-    uint useTmuOow;
-    uint fogTable[16];
 
-    // Combiner & Texture State
+    // Block 3: Offset 48 (16 bytes)
+    uint useTmuOow;
+    uint padding0;
+    uint padding1;
+    uint padding2;
+
+    // Block 4: Offset 64 (64 bytes)
+    uvec4 fogTable[4];
+
+    // Block 5: Offset 128 (16 bytes)
     uint colorFunc;
     uint colorFactor;
     uint colorLocal;
     uint colorOther;
-    uint colorInvert;
 
+    // Block 6: Offset 144 (16 bytes)
+    uint colorInvert;
     uint alphaFunc;
     uint alphaFactor;
     uint alphaLocal;
+
+    // Block 7: Offset 160 (16 bytes)
     uint alphaOther;
     uint alphaInvert;
-
     uint textureEnabled;
     uint chromakeyEnabled;
+
+    // Block 8: Offset 176 (16 bytes)
     uint chromakeyRangeMode;
+    uint padding3;
+    uint padding4;
+    uint padding5;
+
+    // Block 9: Offset 192 (16 bytes)
     vec4 chromakeyValue;
+
+    // Block 10: Offset 208 (16 bytes)
     vec4 chromakeyRangeMin;
+
+    // Block 11: Offset 224 (16 bytes)
     vec4 chromakeyRangeMax;
 } pcs;
 
