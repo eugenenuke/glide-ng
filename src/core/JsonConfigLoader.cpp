@@ -161,6 +161,7 @@ bool JsonConfigLoader::Load(const std::string& configFilePath, WrapperConfig& ou
 
     // Parse API Version Override (GLIDE_WRAPPER_API_VERSION or GLIDE_VERSION_OVERRIDE)
     const char* envApiOverride = std::getenv("GLIDE_WRAPPER_API_VERSION") ? std::getenv("GLIDE_WRAPPER_API_VERSION") : std::getenv("GLIDE_VERSION_OVERRIDE");
+    bool overrideApi = false;
     if (envApiOverride) {
         std::string v(envApiOverride);
         if (v == "2.1") outConfig.apiVersion = ApiVersion::GLIDE_2_1;
@@ -169,42 +170,43 @@ bool JsonConfigLoader::Load(const std::string& configFilePath, WrapperConfig& ou
         else if (v == "2.43") outConfig.apiVersion = ApiVersion::GLIDE_2_43;
         else if (v == "2.61") outConfig.apiVersion = ApiVersion::GLIDE_2_61;
         GLIDE_LOG(WARN, "Config", "Overrode emulated API Version via environment=" << v);
-    } else {
-        // Auto-default API version, VRAM sizes, and TMU counts based on selected Card Model if not overridden
-        switch (outConfig.model) {
-            case CardModel::VoodooGraphics:
-                if (!hasApiVerInJson) outConfig.apiVersion = ApiVersion::GLIDE_2_40;
-                outConfig.tmuCount = 1;
-                outConfig.fbiMemoryMb = 4;
-                outConfig.tmuMemoryMb = 2;
-                break;
-            case CardModel::VoodooRush:
-                if (!hasApiVerInJson) outConfig.apiVersion = ApiVersion::GLIDE_2_40;
-                outConfig.tmuCount = 1;
-                outConfig.fbiMemoryMb = 6;
-                outConfig.tmuMemoryMb = 2;
-                break;
-            case CardModel::Voodoo2:
-                if (!hasApiVerInJson) outConfig.apiVersion = ApiVersion::GLIDE_2_43;
-                outConfig.tmuCount = 2;
-                outConfig.fbiMemoryMb = 16;
-                outConfig.tmuMemoryMb = 16;
-                break;
-            case CardModel::Voodoo3:
-                if (!hasApiVerInJson) outConfig.apiVersion = ApiVersion::GLIDE_2_61;
-                outConfig.tmuCount = 1;      // Authentic 1 TMU Avenger!
-                outConfig.fbiMemoryMb = 16;
-                outConfig.tmuMemoryMb = 16;
-                break;
-            case CardModel::Voodoo5:
-                if (!hasApiVerInJson) outConfig.apiVersion = ApiVersion::GLIDE_2_61;
-                outConfig.tmuCount = 2;      // Dual VSA-100 SLI!
-                outConfig.fbiMemoryMb = 64;
-                outConfig.tmuMemoryMb = 32;
-                break;
-        }
-        GLIDE_LOG(INFO, "Config", "Auto-configured hardware specs (TMUs, VRAM, API) based on active Card Model.");
+        overrideApi = true;
     }
+
+    // Auto-default API version, VRAM sizes, and TMU counts based on selected Card Model if not overridden
+    switch (outConfig.model) {
+        case CardModel::VoodooGraphics:
+            if (!overrideApi && !hasApiVerInJson) outConfig.apiVersion = ApiVersion::GLIDE_2_40;
+            outConfig.tmuCount = 1;
+            outConfig.fbiMemoryMb = 4;
+            outConfig.tmuMemoryMb = 2;
+            break;
+        case CardModel::VoodooRush:
+            if (!overrideApi && !hasApiVerInJson) outConfig.apiVersion = ApiVersion::GLIDE_2_40;
+            outConfig.tmuCount = 1;
+            outConfig.fbiMemoryMb = 6;
+            outConfig.tmuMemoryMb = 2;
+            break;
+        case CardModel::Voodoo2:
+            if (!overrideApi && !hasApiVerInJson) outConfig.apiVersion = ApiVersion::GLIDE_2_43;
+            outConfig.tmuCount = 2;
+            outConfig.fbiMemoryMb = 16;
+            outConfig.tmuMemoryMb = 16;
+            break;
+        case CardModel::Voodoo3:
+            if (!overrideApi && !hasApiVerInJson) outConfig.apiVersion = ApiVersion::GLIDE_2_61;
+            outConfig.tmuCount = 1;      // Authentic 1 TMU Avenger!
+            outConfig.fbiMemoryMb = 16;
+            outConfig.tmuMemoryMb = 16;
+            break;
+        case CardModel::Voodoo5:
+            if (!overrideApi && !hasApiVerInJson) outConfig.apiVersion = ApiVersion::GLIDE_2_61;
+            outConfig.tmuCount = 2;      // Dual VSA-100 SLI!
+            outConfig.fbiMemoryMb = 64;
+            outConfig.tmuMemoryMb = 32;
+            break;
+    }
+    GLIDE_LOG(INFO, "Config", "Auto-configured hardware specs (TMUs, VRAM, API) based on active Card Model.");
 
     
     if (const char* envFbi = std::getenv("GLIDE_WRAPPER_FBI_MEM_MB")) {
