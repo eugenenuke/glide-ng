@@ -491,12 +491,10 @@ FX_ENTRY FxU32 FX_CALL grGet(FxU32 pname, FxU32 plength, FxI32* params) {
             *params = 1;
             return 4;
         case GR_NUM_TMU:
-            // Voodoo 1 (VoodooGraphics) and Voodoo Rush only have 1 TMU. Voodoo 2 and 3 have 2 TMUs.
-            *params = (config.model == GlideWrapper::CardModel::VoodooGraphics || config.model == GlideWrapper::CardModel::VoodooRush) ? 1 : 2;
+            *params = static_cast<FxI32>(config.tmuCount);
             return 4;
         case GR_MAX_TEXTURE_SIZE:
-            // Voodoo 3 supports up to 2048x2048 textures; Voodoo 1 and 2 only support up to 256x256
-            *params = (config.model == GlideWrapper::CardModel::Voodoo3) ? 2048 : 256;
+            *params = (config.model >= GlideWrapper::CardModel::Voodoo3) ? 2048 : 256;
             return 4;
         case GR_MAX_TEXTURE_ASPECT_RATIO:
             *params = 3; // 8:1

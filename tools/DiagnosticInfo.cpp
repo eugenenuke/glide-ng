@@ -306,7 +306,7 @@ Tools::ToolRunConfig Tools::InitializeAndParse(
     auto is_func_avail = [&](const char* name) -> bool {
         std::string f(name);
         if (f == "grTexMultibase" || f == "grTexMultibaseAddress") {
-            return (reported_version >= 2.42 && is_voodoo2_plus);
+            return (reported_version >= 2.42 && is_voodoo2_plus && sysConfig.tmuCount >= 2);
         }
         if (f == "grGetProcAddress" || f == "grChromakeyRangeExt" || f == "grAlphaControlsITRGBLighting") {
             return (reported_version >= 2.43);
