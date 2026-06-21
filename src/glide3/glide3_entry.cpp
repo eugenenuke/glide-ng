@@ -627,7 +627,21 @@ FX_ENTRY const char* FX_CALL grGetString(FxU32 pname) {
             }
             return "3dfx glide-ng Vulkan Wrapper";
         }
-        case GR_EXTENSION:return "CHROMARANGE FOGCOORD";
+        case GR_EXTENSION: {
+            switch (reg.GetConfig().model) {
+                case GlideWrapper::CardModel::VoodooGraphics:
+                case GlideWrapper::CardModel::VoodooRush:
+                    return "CHROMARANGE FOGCOORD";
+                case GlideWrapper::CardModel::Voodoo2:
+                    return "CHROMARANGE FOGCOORD TEXCHROMA RESOLUTION SURFACE COMMAND_TRANSPORT";
+                case GlideWrapper::CardModel::Voodoo3:
+                    return "CHROMARANGE FOGCOORD TEXCHROMA TEXMIRROR PALETTE6666 RESOLUTION SURFACE COMMAND_TRANSPORT";
+                case GlideWrapper::CardModel::Voodoo5:
+                    return "CHROMARANGE FOGCOORD TEXCHROMA TEXMIRROR PALETTE6666 RESOLUTION SURFACE COMMAND_TRANSPORT PIXEXT COMBINE TEXFMT TEXTUREBUFFER TEXUMA";
+                default:
+                    return "CHROMARANGE FOGCOORD";
+            }
+        }
         default: return "Unknown";
     }
 }
