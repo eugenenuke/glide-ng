@@ -45,6 +45,8 @@
 #define GR_TEXTABLE_PALETTE_6666_EXT 0x3
 #endif
 
+extern "C" uint32_t s_sstOrigin;
+
 namespace {
 std::chrono::steady_clock::time_point s_lastSwapTime =
     std::chrono::steady_clock::now();
@@ -161,6 +163,71 @@ inline void SanitizeVertex(GlideWrapper::ModernVertex& mv) {
     mv.pos[3] = 1.0f;
   }
 }
+
+void ResetFrontendState() {
+  s_lastSwapTime = std::chrono::steady_clock::now();
+  s_depthMode = 0;
+  s_depthCompare = 1;
+  s_depthMask = true;
+  s_depthBias = 0;
+  s_alphaTestOp = 7;
+  s_alphaTestRef = 0;
+  s_clampS[0] = s_clampS[1] = 0;
+  s_clampT[0] = s_clampT[1] = 0;
+  s_minFilter[0] = s_minFilter[1] = 0;
+  s_magFilter[0] = s_magFilter[1] = 0;
+  s_colorFunc = 0x3;
+  s_colorFactor = 0x8;
+  s_colorLocal = 0x0;
+  s_colorOther = 0x0;
+  s_colorInvert = false;
+  s_alphaFunc = 0x3;
+  s_alphaFactor = 0x8;
+  s_alphaLocal = 0x1;
+  s_alphaOther = 0x2;
+  s_alphaInvert = false;
+  s_texRgbFunc[0] = s_texRgbFunc[1] = 0;
+  s_texRgbFactor[0] = s_texRgbFactor[1] = 0;
+  s_texAlphaFunc[0] = s_texAlphaFunc[1] = 0;
+  s_texAlphaFactor[0] = s_texAlphaFactor[1] = 0;
+  s_boundTex[0] = s_boundTex[1] = 0xFFFFFFFF;
+  s_texChromaState[0] = s_texChromaState[1] = {0, 0, 0};
+  s_stwHintMask = 0;
+  s_constantColor = 0xFFFFFFFF;
+  s_rgbSrcBlend = 4;
+  s_rgbDstBlend = 0;
+  s_alphaSrcBlend = 4;
+  s_alphaDstBlend = 0;
+  s_cullMode = 0;
+  s_clipMinX = 0;
+  s_clipMinY = 0;
+  s_clipMaxX = 640;
+  s_clipMaxY = 480;
+  s_fogMode = 0;
+  s_fogColor = 0xff000000;
+  std::memset(s_fogTable, 0, sizeof(s_fogTable));
+  s_colorMaskRgb = true;
+  s_colorMaskAlpha = true;
+  s_shamelessPlugEnabled = false;
+  s_lfbConstantAlpha = 255;
+  s_lfbWriteColorFormat = 0;
+  s_chromakeyMode = 0;
+  s_chromakeyValue = 0;
+  s_chromakeyRangeMin = 0;
+  s_chromakeyRangeMax = 0;
+  s_chromakeyRangeMode = 0;
+  s_guTextures.clear();
+  s_guTexNextAddress = 0;
+  s_currentMipMap[0] = s_currentMipMap[1] = GR_NULL_MIPMAP_HANDLE;
+  s_texLodBias = 0.0f;
+  s_lfbConstantDepth = 0;
+  s_lfbWriteColorSwizzle = false;
+  s_lfbWriteColorSwizzleSwap = false;
+  s_alphaControlsITRGBLighting = false;
+  s_errorCallback = nullptr;
+  s_gammaCorrectionValue = 1.0f;
+  s_sstOrigin = 0;
+}
 }  // namespace
 
 extern "C" {
@@ -235,6 +302,7 @@ static_assert(sizeof(GlideWrapperState) <= sizeof(GrState),
               "GlideWrapperState exceeds GrState footprint!");
 
 FX_ENTRY void FX_CALL grGlideInit(void) {
+  ResetFrontendState();
   auto& reg = GlideWrapper::EmulationRegistry::GetInstance();
   GlideWrapper::JsonConfigLoader loader;
   loader.Load("glide_config.json", reg.GetConfig());
@@ -256,6 +324,7 @@ inline void EnsureEngineInitialized() {
   auto& reg = GlideWrapper::EmulationRegistry::GetInstance();
   auto& bm = GlideWrapper::BackendManager::GetInstance();
   if (!bm.GetBackend()) {
+    ResetFrontendState();
     auto& logger = GlideWrapper::Logger::GetInstance();
     logger.Initialize(
         "glide-ng.log",

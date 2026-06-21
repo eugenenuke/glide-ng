@@ -139,6 +139,65 @@ inline void TransformVertexIfNecessary(GlideWrapper::ModernVertex& mv) {
     }
   }
 }
+
+void ResetFrontendState() {
+  s_depthMode = 0;
+  s_depthCompare = 1;
+  s_depthMask = true;
+  s_depthBias = 0;
+  s_alphaTestOp = 7;
+  s_alphaTestRef = 0;
+  s_lfbConstantAlpha = 0;
+  s_lfbWriteColorFormat = 0;
+  s_chromakeyMode = 0;
+  s_chromakeyValue = 0;
+  s_chromakeyRangeMin = 0;
+  s_chromakeyRangeMax = 0;
+  s_chromakeyRangeMode = 0;
+  s_rgbSrcBlend = 4;
+  s_rgbDstBlend = 0;
+  s_alphaSrcBlend = 4;
+  s_alphaDstBlend = 0;
+  s_clampS[0] = s_clampS[1] = 0;
+  s_clampT[0] = s_clampT[1] = 0;
+  s_minFilter[0] = s_minFilter[1] = 0;
+  s_magFilter[0] = s_magFilter[1] = 0;
+  s_colorFunc = 0x3;
+  s_colorFactor = 0x8;
+  s_colorLocal = 0x0;
+  s_colorOther = 0x0;
+  s_colorInvert = false;
+  s_alphaFunc = 0x3;
+  s_alphaFactor = 0x8;
+  s_alphaLocal = 0x1;
+  s_alphaOther = 0x2;
+  s_alphaInvert = false;
+  s_texRgbFunc[0] = s_texRgbFunc[1] = 0;
+  s_texRgbFactor[0] = s_texRgbFactor[1] = 0;
+  s_texAlphaFunc[0] = s_texAlphaFunc[1] = 0;
+  s_texAlphaFactor[0] = s_texAlphaFactor[1] = 0;
+  s_boundTex[0] = s_boundTex[1] = 0xFFFFFFFF;
+  s_texLodBias[0] = s_texLodBias[1] = 0.0f;
+  s_texChromaState[0] = s_texChromaState[1] = {GR_TEXCHROMA_DISABLE_EXT, 0, 0};
+  s_coordSpace = 0;
+  s_viewportX = 0.0f;
+  s_viewportY = 0.0f;
+  s_viewportWidth = 640.0f;
+  s_viewportHeight = 480.0f;
+  s_depthRangeNear = 0.0f;
+  s_depthRangeFar = 1.0f;
+  s_aaOrdered = false;
+  s_shamelessPlug = false;
+  s_cullMode = 0;
+  s_fogMode = 0;
+  s_fogColor = 0xff000000;
+  std::memset(s_fogTable, 0, sizeof(s_fogTable));
+  s_colorMaskRgb = true;
+  s_colorMaskAlpha = true;
+  s_constantColor = 0xFFFFFFFF;
+  s_sstOrigin = 0;
+  g_inSplash = false;
+}
 }  // namespace
 
 extern "C" {
@@ -203,6 +262,7 @@ struct GlideWrapperState {
 };
 
 FX_ENTRY void FX_CALL grGlideInit(void) {
+  ResetFrontendState();
   auto& logger = GlideWrapper::Logger::GetInstance();
   auto& reg = GlideWrapper::EmulationRegistry::GetInstance();
 
@@ -227,6 +287,7 @@ inline void EnsureEngineInitialized() {
   auto& reg = GlideWrapper::EmulationRegistry::GetInstance();
   auto& bm = GlideWrapper::BackendManager::GetInstance();
   if (!bm.GetBackend()) {
+    ResetFrontendState();
     auto& logger = GlideWrapper::Logger::GetInstance();
     logger.Initialize(
         "glide-ng.log",

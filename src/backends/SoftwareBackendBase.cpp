@@ -1,750 +1,885 @@
 #include "SoftwareBackendBase.h"
-#include "core/Logger.h"
-#include "core/TextureManager.h"
-#include "core/Telemetry.h"
-#include "core/VertexLayout.h"
-#include <iostream>
-#include <algorithm>
-#include <cmath>
-#include <cstring>
-#include <thread>
-#include <chrono>
+
 #include <SDL2/SDL.h>
 
+#include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <cstring>
+#include <iostream>
+#include <thread>
+
+#include "core/Logger.h"
+#include "core/Telemetry.h"
+#include "core/TextureManager.h"
+#include "core/VertexLayout.h"
+
 extern "C" {
-    volatile int g_glideWrapperSdlKeyHit = 0;
-    volatile int g_glideWrapperLastKey = 0;
+volatile int g_glideWrapperSdlKeyHit = 0;
+volatile int g_glideWrapperLastKey = 0;
 }
 
 namespace GlideWrapper {
 
 void SoftwareBackendBase::ResetState() {
-    std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    m_depthMode = 0;
-    m_depthCompareOp = 1;
-    m_depthMask = true;
-    m_depthBiasLevel = 0;
+  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  m_depthMode = 0;
+  m_depthCompareOp = 1;
+  m_depthMask = true;
+  m_depthBiasLevel = 0;
 
-    m_rgbSrcBlend = 4;
-    m_rgbDstBlend = 0;
-    m_alphaSrcBlend = 4;
-    m_alphaDstBlend = 0;
+  m_rgbSrcBlend = 4;
+  m_rgbDstBlend = 0;
+  m_alphaSrcBlend = 4;
+  m_alphaDstBlend = 0;
 
-    m_alphaTestOp = 7;
-    m_alphaTestRefVal = 0;
+  m_alphaTestOp = 7;
+  m_alphaTestRefVal = 0;
 
-    m_cullMode = 0;
+  m_cullMode = 0;
 
-    m_clipMinX = 0;
-    m_clipMinY = 0;
-    m_clipMaxX = m_headlessWidth;
-    m_clipMaxY = m_headlessHeight;
-    m_sstOrigin = 0;
-    
-    m_fogMode = 0;
-    m_fogColor = 0xff000000;
-    std::memset(m_fogTable, 0, sizeof(m_fogTable));
+  m_clipMinX = 0;
+  m_clipMinY = 0;
+  m_clipMaxX = m_headlessWidth;
+  m_clipMaxY = m_headlessHeight;
+  m_sstOrigin = 0;
 
-    m_colorMaskRgb = true;
-    m_colorMaskAlpha = true;
+  m_fogMode = 0;
+  m_fogColor = 0xff000000;
+  std::memset(m_fogTable, 0, sizeof(m_fogTable));
 
-    m_boundTexAddress[0] = 0xFFFFFFFF;
-    m_boundTexAddress[1] = 0xFFFFFFFF;
-    m_texClampS[0] = 0; m_texClampS[1] = 0;
-    m_texClampT[0] = 0; m_texClampT[1] = 0;
-    m_texMinFilter[0] = 0; m_texMinFilter[1] = 0;
-    m_texMagFilter[0] = 0; m_texMagFilter[1] = 0;
+  m_colorMaskRgb = true;
+  m_colorMaskAlpha = true;
 
-    m_colorCombinerFunc   = 0;
-    m_colorCombinerFactor = 0;
-    m_colorCombinerLocal  = 0;
-    m_colorCombinerOther  = 0;
-    m_colorCombinerInvert = false;
-    m_alphaCombinerFunc   = 0;
-    m_alphaCombinerFactor = 0;
-    m_alphaCombinerLocal  = 0;
-    m_alphaCombinerOther  = 0;
-    m_alphaCombinerInvert = false;
+  m_boundTexAddress[0] = 0xFFFFFFFF;
+  m_boundTexAddress[1] = 0xFFFFFFFF;
+  m_texClampS[0] = 0;
+  m_texClampS[1] = 0;
+  m_texClampT[0] = 0;
+  m_texClampT[1] = 0;
+  m_texMinFilter[0] = 0;
+  m_texMinFilter[1] = 0;
+  m_texMagFilter[0] = 0;
+  m_texMagFilter[1] = 0;
 
-    m_texCombinerRgbFunc[0] = m_texCombinerRgbFunc[1] = 0;
-    m_texCombinerRgbFactor[0] = m_texCombinerRgbFactor[1] = 0;
-    m_texCombinerAlphaFunc[0] = m_texCombinerAlphaFunc[1] = 0;
-    m_texCombinerAlphaFactor[0] = m_texCombinerAlphaFactor[1] = 0;
+  m_colorCombinerFunc = 0;
+  m_colorCombinerFactor = 0;
+  m_colorCombinerLocal = 0;
+  m_colorCombinerOther = 0;
+  m_colorCombinerInvert = false;
+  m_alphaCombinerFunc = 0;
+  m_alphaCombinerFactor = 0;
+  m_alphaCombinerLocal = 0;
+  m_alphaCombinerOther = 0;
+  m_alphaCombinerInvert = false;
 
-    m_constantColor = 0xFFFFFFFF;
-    m_stwHintMask = 0;
-    m_pixelFormatOverride = 1;
-    m_chromakeyMode = 0;
-    m_chromakeyValue = 0;
-    m_chromakeyRangeMin = 0;
-    m_chromakeyRangeMax = 0;
-    m_chromakeyRangeMode = 0;
-    m_texChromaMode[0] = m_texChromaMode[1] = 0;
-    m_texChromaMin[0] = m_texChromaMin[1] = 0;
-    m_texChromaMax[0] = m_texChromaMax[1] = 0;
-    m_texChromaRangeMode[0] = m_texChromaRangeMode[1] = 0;
-    m_lastCpuClearColor = 0;
-    m_useGammaLut = false;
-    for (int i = 0; i < 256; ++i) {
-        m_lutR[i] = static_cast<uint8_t>(i);
-        m_lutG[i] = static_cast<uint8_t>(i);
-        m_lutB[i] = static_cast<uint8_t>(i);
-    }
+  m_texCombinerRgbFunc[0] = m_texCombinerRgbFunc[1] = 0;
+  m_texCombinerRgbFactor[0] = m_texCombinerRgbFactor[1] = 0;
+  m_texCombinerAlphaFunc[0] = m_texCombinerAlphaFunc[1] = 0;
+  m_texCombinerAlphaFactor[0] = m_texCombinerAlphaFactor[1] = 0;
+
+  m_constantColor = 0xFFFFFFFF;
+  m_stwHintMask = 0;
+  m_pixelFormatOverride = 1;
+  m_chromakeyMode = 0;
+  m_chromakeyValue = 0;
+  m_chromakeyRangeMin = 0;
+  m_chromakeyRangeMax = 0;
+  m_chromakeyRangeMode = 0;
+  m_texChromaMode[0] = m_texChromaMode[1] = 0;
+  m_texChromaMin[0] = m_texChromaMin[1] = 0;
+  m_texChromaMax[0] = m_texChromaMax[1] = 0;
+  m_texChromaRangeMode[0] = m_texChromaRangeMode[1] = 0;
+  m_lastCpuClearColor = 0;
+  m_useGammaLut = false;
+  for (int i = 0; i < 256; ++i) {
+    m_lutR[i] = static_cast<uint8_t>(i);
+    m_lutG[i] = static_cast<uint8_t>(i);
+    m_lutB[i] = static_cast<uint8_t>(i);
+  }
 }
 
-void SoftwareBackendBase::ClearBuffer(uint32_t color, uint32_t alpha, float z, uint32_t clearMask) {
-    std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    GLIDE_LOG(DEBUG, "Rasterizer", "ClearBuffer CPU side invoked: color=0x" << std::hex << color << ", alpha=" << alpha << ", mask=" << clearMask << std::dec << ", map=" << m_headlessPixelMap);
-    if (!m_windowAttached || !m_headlessPixelMap) return;
+void SoftwareBackendBase::ClearBuffer(uint32_t color, uint32_t alpha, float z,
+                                      uint32_t clearMask) {
+  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  GLIDE_LOG(DEBUG, "Rasterizer",
+            "ClearBuffer CPU side invoked: color=0x"
+                << std::hex << color << ", alpha=" << alpha << ", mask="
+                << clearMask << std::dec << ", map=" << m_headlessPixelMap);
+  if (!m_windowAttached || !m_headlessPixelMap) return;
 
-    if (clearMask & 0x1) { // Color Clear
-        uint32_t a = (alpha > 0) ? alpha : 255;
-        uint32_t r = (color >> 16) & 0xFF;
-        uint32_t g = (color >> 8) & 0xFF;
-        uint32_t b = color & 0xFF;
+  if (clearMask & 0x1) {  // Color Clear
+    uint32_t a = (alpha > 0) ? alpha : 255;
+    uint32_t r = (color >> 16) & 0xFF;
+    uint32_t g = (color >> 8) & 0xFF;
+    uint32_t b = color & 0xFF;
 
-        if (m_pixelFormatOverride == 1) { // ABGR format override
-            std::swap(r, b);
-        }
-
-        uint32_t writeMask = 0;
-        if (m_colorMaskRgb)   writeMask |= 0x00FFFFFF;
-        if (m_colorMaskAlpha) writeMask |= 0xFF000000;
-
-        if (writeMask == 0) {
-            GLIDE_LOG(DEBUG, "Rasterizer", "ClearBuffer color clear skipped due to zero color mask (write masking active).");
-        } else {
-            uint32_t clearWord = (a << 24) | (r << 16) | (g << 8) | b;
-            m_lastCpuClearColor = clearWord & 0x00FFFFFF; // Track clear color with alpha = 0!
-            uint32_t* pixels = reinterpret_cast<uint32_t*>(m_headlessPixelMap);
-            uint32_t totalPixels = m_headlessWidth * m_headlessHeight;
-
-            if (writeMask == 0xFFFFFFFF) {
-                // Fast path: write mask fully enabled, overwrite everything
-                std::fill_n(pixels, totalPixels, clearWord);
-            } else {
-                // Slow path: write mask partially enabled, preserve masked-out bits
-                uint32_t keepMask = ~writeMask;
-                uint32_t maskedClearWord = clearWord & writeMask;
-                for (uint32_t i = 0; i < totalPixels; ++i) {
-                    pixels[i] = (pixels[i] & keepMask) | maskedClearWord;
-                }
-            }
-            GLIDE_LOG(DEBUG, "Rasterizer", "Cleared color buffer with word 0x" << std::hex << clearWord << " using write mask 0x" << writeMask << std::dec);
-        }
+    if (m_pixelFormatOverride == 1) {  // ABGR format override
+      std::swap(r, b);
     }
 
-    if (clearMask & 0x2) { // Depth Clear
-        if (!m_headlessDepthBuffer.empty()) {
-            std::fill(m_headlessDepthBuffer.begin(), m_headlessDepthBuffer.end(), z);
-            GLIDE_LOG(DEBUG, "Rasterizer", "Cleared depth buffer with value " << z);
+    uint32_t writeMask = 0;
+    if (m_colorMaskRgb) writeMask |= 0x00FFFFFF;
+    if (m_colorMaskAlpha) writeMask |= 0xFF000000;
+
+    if (writeMask == 0) {
+      GLIDE_LOG(DEBUG, "Rasterizer",
+                "ClearBuffer color clear skipped due to zero color mask (write "
+                "masking active).");
+    } else {
+      uint32_t clearWord = (a << 24) | (r << 16) | (g << 8) | b;
+      m_lastCpuClearColor =
+          clearWord & 0x00FFFFFF;  // Track clear color with alpha = 0!
+      uint32_t* pixels = reinterpret_cast<uint32_t*>(m_headlessPixelMap);
+      uint32_t totalPixels = m_headlessWidth * m_headlessHeight;
+
+      if (writeMask == 0xFFFFFFFF) {
+        // Fast path: write mask fully enabled, overwrite everything
+        std::fill_n(pixels, totalPixels, clearWord);
+      } else {
+        // Slow path: write mask partially enabled, preserve masked-out bits
+        uint32_t keepMask = ~writeMask;
+        uint32_t maskedClearWord = clearWord & writeMask;
+        for (uint32_t i = 0; i < totalPixels; ++i) {
+          pixels[i] = (pixels[i] & keepMask) | maskedClearWord;
         }
+      }
+      GLIDE_LOG(DEBUG, "Rasterizer",
+                "Cleared color buffer with word 0x" << std::hex << clearWord
+                                                    << " using write mask 0x"
+                                                    << writeMask << std::dec);
     }
+  }
+
+  if (clearMask & 0x2) {  // Depth Clear
+    if (!m_headlessDepthBuffer.empty()) {
+      std::fill(m_headlessDepthBuffer.begin(), m_headlessDepthBuffer.end(), z);
+      GLIDE_LOG(DEBUG, "Rasterizer", "Cleared depth buffer with value " << z);
+    }
+  }
 }
 
 void SoftwareBackendBase::SetConstantColor(uint32_t color) {
-    std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    m_constantColor = color;
-    GLIDE_LOG(DEBUG, "Rasterizer", "SetConstantColor: 0x" << std::hex << color << std::dec);
+  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  m_constantColor = color;
+  GLIDE_LOG(DEBUG, "Rasterizer",
+            "SetConstantColor: 0x" << std::hex << color << std::dec);
 }
 
 void SoftwareBackendBase::SetPixelFormat(uint32_t format) {
-    std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    m_pixelFormatOverride = format;
-    GLIDE_LOG(DEBUG, "Rasterizer", "SetPixelFormat active override format: " << format);
+  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  m_pixelFormatOverride = format;
+  GLIDE_LOG(DEBUG, "Rasterizer",
+            "SetPixelFormat active override format: " << format);
 }
 
-void SoftwareBackendBase::SetDepthState(uint32_t depthMode, uint32_t compareOp, bool depthMask, int32_t biasLevel) {
-    std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    m_depthMode = depthMode;
-    m_depthCompareOp = compareOp;
-    m_depthMask = depthMask;
-    m_depthBiasLevel = biasLevel;
-    GLIDE_LOG(DEBUG, "Rasterizer", "SetDepthState: Mode=" << depthMode << ", Compare=" << compareOp << ", Mask=" << depthMask << ", BiasLevel=" << biasLevel);
+void SoftwareBackendBase::SetDepthState(uint32_t depthMode, uint32_t compareOp,
+                                        bool depthMask, int32_t biasLevel) {
+  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  m_depthMode = depthMode;
+  m_depthCompareOp = compareOp;
+  m_depthMask = depthMask;
+  m_depthBiasLevel = biasLevel;
+  GLIDE_LOG(DEBUG, "Rasterizer",
+            "SetDepthState: Mode=" << depthMode << ", Compare=" << compareOp
+                                   << ", Mask=" << depthMask
+                                   << ", BiasLevel=" << biasLevel);
 }
 
-void SoftwareBackendBase::SetBlendState(uint32_t rgbSrcFactor, uint32_t rgbDstFactor, uint32_t alphaSrcFactor, uint32_t alphaDstFactor) {
-    std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    m_rgbSrcBlend = rgbSrcFactor;
-    m_rgbDstBlend = rgbDstFactor;
-    m_alphaSrcBlend = alphaSrcFactor;
-    m_alphaDstBlend = alphaDstFactor;
-    GLIDE_LOG(DEBUG, "Rasterizer", "SetBlendState: Src=" << rgbSrcFactor << ", Dst=" << rgbDstFactor);
+void SoftwareBackendBase::SetBlendState(uint32_t rgbSrcFactor,
+                                        uint32_t rgbDstFactor,
+                                        uint32_t alphaSrcFactor,
+                                        uint32_t alphaDstFactor) {
+  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  m_rgbSrcBlend = rgbSrcFactor;
+  m_rgbDstBlend = rgbDstFactor;
+  m_alphaSrcBlend = alphaSrcFactor;
+  m_alphaDstBlend = alphaDstFactor;
+  GLIDE_LOG(DEBUG, "Rasterizer",
+            "SetBlendState: Src=" << rgbSrcFactor << ", Dst=" << rgbDstFactor);
 }
 
-void SoftwareBackendBase::SetAlphaTestState(uint32_t compareOp, uint32_t refVal) {
-    std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    m_alphaTestOp = compareOp;
-    m_alphaTestRefVal = refVal;
-    GLIDE_LOG(DEBUG, "Rasterizer", "SetAlphaTestState: Op=" << compareOp << ", Ref=" << refVal);
+void SoftwareBackendBase::SetAlphaTestState(uint32_t compareOp,
+                                            uint32_t refVal) {
+  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  m_alphaTestOp = compareOp;
+  m_alphaTestRefVal = refVal;
+  GLIDE_LOG(DEBUG, "Rasterizer",
+            "SetAlphaTestState: Op=" << compareOp << ", Ref=" << refVal);
 }
 
 void SoftwareBackendBase::SetCullState(uint32_t cullMode) {
-    std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    m_cullMode = cullMode;
-    GLIDE_LOG(DEBUG, "Rasterizer", "SetCullState: Mode=" << cullMode);
+  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  m_cullMode = cullMode;
+  GLIDE_LOG(DEBUG, "Rasterizer", "SetCullState: Mode=" << cullMode);
 }
 
-void SoftwareBackendBase::SetClipWindow(uint32_t minX, uint32_t minY, uint32_t maxX, uint32_t maxY) {
-    std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    m_clipMinX = minX;
-    m_clipMinY = minY;
-    m_clipMaxX = std::min(m_headlessWidth, maxX);
-    m_clipMaxY = std::min(m_headlessHeight, maxY);
-    GLIDE_LOG(DEBUG, "Rasterizer", "SetClipWindow: (" << m_clipMinX << "," << m_clipMinY << ") to (" << m_clipMaxX << "," << m_clipMaxY << ")");
+void SoftwareBackendBase::SetClipWindow(uint32_t minX, uint32_t minY,
+                                        uint32_t maxX, uint32_t maxY) {
+  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  m_clipMinX = minX;
+  m_clipMinY = minY;
+  m_clipMaxX = std::min(m_headlessWidth, maxX);
+  m_clipMaxY = std::min(m_headlessHeight, maxY);
+  GLIDE_LOG(DEBUG, "Rasterizer",
+            "SetClipWindow: (" << m_clipMinX << "," << m_clipMinY << ") to ("
+                               << m_clipMaxX << "," << m_clipMaxY << ")");
 }
 
 void SoftwareBackendBase::SetSstOrigin(uint32_t origin) {
-    std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    m_sstOrigin = origin;
-    GLIDE_LOG(DEBUG, "Rasterizer", "SetSstOrigin: " << origin);
+  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  m_sstOrigin = origin;
+  GLIDE_LOG(DEBUG, "Rasterizer", "SetSstOrigin: " << origin);
 }
 
 void SoftwareBackendBase::SetColorMask(bool rgb, bool alpha) {
-    std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    m_colorMaskRgb = rgb;
-    m_colorMaskAlpha = alpha;
-    GLIDE_LOG(DEBUG, "Rasterizer", "SetColorMask: RGB=" << rgb << ", Alpha=" << alpha);
+  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  m_colorMaskRgb = rgb;
+  m_colorMaskAlpha = alpha;
+  GLIDE_LOG(DEBUG, "Rasterizer",
+            "SetColorMask: RGB=" << rgb << ", Alpha=" << alpha);
 }
 
 void SoftwareBackendBase::SetFogMode(uint32_t mode) {
-    std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    m_fogMode = mode;
-    GLIDE_LOG(DEBUG, "Rasterizer", "SetFogMode: " << mode);
+  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  m_fogMode = mode;
+  GLIDE_LOG(DEBUG, "Rasterizer", "SetFogMode: " << mode);
 }
 
 void SoftwareBackendBase::SetFogColor(uint32_t color) {
-    std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    m_fogColor = color;
-    GLIDE_LOG(DEBUG, "Rasterizer", "SetFogColor: 0x" << std::hex << color << std::dec);
+  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  m_fogColor = color;
+  GLIDE_LOG(DEBUG, "Rasterizer",
+            "SetFogColor: 0x" << std::hex << color << std::dec);
 }
 
 void SoftwareBackendBase::SetFogTable(const uint8_t* table) {
-    std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    if (table) {
-        std::memcpy(m_fogTable, table, sizeof(m_fogTable));
-        GLIDE_LOG(DEBUG, "Rasterizer", "SetFogTable: 64 entries uploaded.");
-    }
+  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  if (table) {
+    std::memcpy(m_fogTable, table, sizeof(m_fogTable));
+    GLIDE_LOG(DEBUG, "Rasterizer", "SetFogTable: 64 entries uploaded.");
+  }
 }
 
-void SoftwareBackendBase::BindTexture(uint32_t tmu, uint32_t startAddress, uint32_t clampS, uint32_t clampT, uint32_t minFilter, uint32_t magFilter) {
-    std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    if (tmu < 2) {
-        m_boundTexAddress[tmu] = startAddress;
-        m_texClampS[tmu] = clampS;
-        m_texClampT[tmu] = clampT;
-        m_texMinFilter[tmu] = minFilter;
-        m_texMagFilter[tmu] = magFilter;
-        GLIDE_LOG(DEBUG, "Rasterizer", "BindTexture TMU" << tmu << ": Address=0x" << std::hex << startAddress << std::dec 
-                                  << ", Clamp(" << clampS << "," << clampT << "), Filter(" << minFilter << "," << magFilter << ")");
-    }
+void SoftwareBackendBase::BindTexture(uint32_t tmu, uint32_t startAddress,
+                                      uint32_t clampS, uint32_t clampT,
+                                      uint32_t minFilter, uint32_t magFilter) {
+  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  if (tmu < 2) {
+    m_boundTexAddress[tmu] = startAddress;
+    m_texClampS[tmu] = clampS;
+    m_texClampT[tmu] = clampT;
+    m_texMinFilter[tmu] = minFilter;
+    m_texMagFilter[tmu] = magFilter;
+    GLIDE_LOG(DEBUG, "Rasterizer",
+              "BindTexture TMU" << tmu << ": Address=0x" << std::hex
+                                << startAddress << std::dec << ", Clamp("
+                                << clampS << "," << clampT << "), Filter("
+                                << minFilter << "," << magFilter << ")");
+  }
 }
 
-void SoftwareBackendBase::UploadTexture(uint32_t tmu, uint32_t startAddress, const struct VirtualTexture& tex) {
-    // Software backend doesn't need physical GPU uploads; it queries TextureManager directly.
-    GLIDE_LOG(DEBUG, "Rasterizer", "UploadTexture (Software) TMU" << tmu << ": Address=0x" << std::hex << startAddress << std::dec << " registered.");
+void SoftwareBackendBase::UploadTexture(uint32_t tmu, uint32_t startAddress,
+                                        const struct VirtualTexture& tex) {
+  // Software backend doesn't need physical GPU uploads; it queries
+  // TextureManager directly.
+  GLIDE_LOG(DEBUG, "Rasterizer",
+            "UploadTexture (Software) TMU" << tmu << ": Address=0x" << std::hex
+                                           << startAddress << std::dec
+                                           << " registered.");
 }
 
-void SoftwareBackendBase::SetCombinerMode(uint32_t colorFunc, uint32_t colorFactor, uint32_t colorLocal, uint32_t colorOther, bool colorInvert,
-                                         uint32_t alphaFunc, uint32_t alphaFactor, uint32_t alphaLocal, uint32_t alphaOther, bool alphaInvert) {
-    std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    m_colorCombinerFunc   = colorFunc;
-    m_colorCombinerFactor = colorFactor;
-    m_colorCombinerLocal  = colorLocal;
-    m_colorCombinerOther  = colorOther;
-    m_colorCombinerInvert = colorInvert;
-    m_alphaCombinerFunc   = alphaFunc;
-    m_alphaCombinerFactor = alphaFactor;
-    m_alphaCombinerLocal  = alphaLocal;
-    m_alphaCombinerOther  = alphaOther;
-    m_alphaCombinerInvert = alphaInvert;
-    GLIDE_LOG(DEBUG, "Rasterizer", "SetCombinerMode: Color(Func=" << colorFunc << ", Fac=" << colorFactor << ", Loc=" << colorLocal << ", Oth=" << colorOther << ", Inv=" << colorInvert 
-                                  << "), Alpha(Func=" << alphaFunc << ", Fac=" << alphaFactor << ", Loc=" << alphaLocal << ", Oth=" << alphaOther << ", Inv=" << alphaInvert << ")");
+void SoftwareBackendBase::SetCombinerMode(
+    uint32_t colorFunc, uint32_t colorFactor, uint32_t colorLocal,
+    uint32_t colorOther, bool colorInvert, uint32_t alphaFunc,
+    uint32_t alphaFactor, uint32_t alphaLocal, uint32_t alphaOther,
+    bool alphaInvert) {
+  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  m_colorCombinerFunc = colorFunc;
+  m_colorCombinerFactor = colorFactor;
+  m_colorCombinerLocal = colorLocal;
+  m_colorCombinerOther = colorOther;
+  m_colorCombinerInvert = colorInvert;
+  m_alphaCombinerFunc = alphaFunc;
+  m_alphaCombinerFactor = alphaFactor;
+  m_alphaCombinerLocal = alphaLocal;
+  m_alphaCombinerOther = alphaOther;
+  m_alphaCombinerInvert = alphaInvert;
+  GLIDE_LOG(DEBUG, "Rasterizer",
+            "SetCombinerMode: Color(Func="
+                << colorFunc << ", Fac=" << colorFactor
+                << ", Loc=" << colorLocal << ", Oth=" << colorOther
+                << ", Inv=" << colorInvert << "), Alpha(Func=" << alphaFunc
+                << ", Fac=" << alphaFactor << ", Loc=" << alphaLocal
+                << ", Oth=" << alphaOther << ", Inv=" << alphaInvert << ")");
 }
 
-void SoftwareBackendBase::SetTexCombinerMode(uint32_t tmu, uint32_t rgbFunc, uint32_t rgbFactor, uint32_t alphaFunc, uint32_t alphaFactor) {
-    std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    if (tmu < 2) {
-        m_texCombinerRgbFunc[tmu]    = rgbFunc;
-        m_texCombinerRgbFactor[tmu]  = rgbFactor;
-        m_texCombinerAlphaFunc[tmu]  = alphaFunc;
-        m_texCombinerAlphaFactor[tmu]= alphaFactor;
-        GLIDE_LOG(DEBUG, "Rasterizer", "SetTexCombinerMode TMU" << tmu << ": RGBFunc=" << rgbFunc << ", AlphaFunc=" << alphaFunc);
-    }
+void SoftwareBackendBase::SetTexCombinerMode(uint32_t tmu, uint32_t rgbFunc,
+                                             uint32_t rgbFactor,
+                                             uint32_t alphaFunc,
+                                             uint32_t alphaFactor) {
+  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  if (tmu < 2) {
+    m_texCombinerRgbFunc[tmu] = rgbFunc;
+    m_texCombinerRgbFactor[tmu] = rgbFactor;
+    m_texCombinerAlphaFunc[tmu] = alphaFunc;
+    m_texCombinerAlphaFactor[tmu] = alphaFactor;
+    GLIDE_LOG(DEBUG, "Rasterizer",
+              "SetTexCombinerMode TMU" << tmu << ": RGBFunc=" << rgbFunc
+                                       << ", AlphaFunc=" << alphaFunc);
+  }
 }
 
 void SoftwareBackendBase::SetSTWHintState(uint32_t hintMask) {
-    std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    m_stwHintMask = hintMask;
-    GLIDE_LOG(DEBUG, "Rasterizer", "SetSTWHintState: Mask=" << hintMask);
+  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  m_stwHintMask = hintMask;
+  GLIDE_LOG(DEBUG, "Rasterizer", "SetSTWHintState: Mask=" << hintMask);
 }
 
 void SoftwareBackendBase::SetChromakeyMode(uint32_t mode) {
-    std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    m_chromakeyMode = mode;
-    GLIDE_LOG(DEBUG, "Rasterizer", "SetChromakeyMode: Mode=" << mode);
+  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  m_chromakeyMode = mode;
+  GLIDE_LOG(DEBUG, "Rasterizer", "SetChromakeyMode: Mode=" << mode);
 }
 
 void SoftwareBackendBase::SetChromakeyValue(uint32_t value) {
-    std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    m_chromakeyValue = value;
-    GLIDE_LOG(DEBUG, "Rasterizer", "SetChromakeyValue: Value=0x" << std::hex << value << std::dec);
+  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  m_chromakeyValue = value;
+  GLIDE_LOG(DEBUG, "Rasterizer",
+            "SetChromakeyValue: Value=0x" << std::hex << value << std::dec);
 }
 
-void SoftwareBackendBase::SetChromakeyRange(uint32_t minColor, uint32_t maxColor, uint32_t mode) {
-    std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    m_chromakeyRangeMin = minColor;
-    m_chromakeyRangeMax = maxColor;
-    m_chromakeyRangeMode = mode;
-    GLIDE_LOG(DEBUG, "Rasterizer", "SetChromakeyRange: min=0x" << std::hex << minColor 
-              << ", max=0x" << maxColor << ", mode=" << std::dec << mode);
+void SoftwareBackendBase::SetChromakeyRange(uint32_t minColor,
+                                            uint32_t maxColor, uint32_t mode) {
+  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  m_chromakeyRangeMin = minColor;
+  m_chromakeyRangeMax = maxColor;
+  m_chromakeyRangeMode = mode;
+  GLIDE_LOG(DEBUG, "Rasterizer",
+            "SetChromakeyRange: min=0x" << std::hex << minColor << ", max=0x"
+                                        << maxColor << ", mode=" << std::dec
+                                        << mode);
 }
 
 void SoftwareBackendBase::SetTexChromakeyMode(uint32_t tmu, uint32_t mode) {
-    std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    if (tmu < 2) {
-        m_texChromaMode[tmu] = mode;
-        GLIDE_LOG(DEBUG, "Rasterizer", "SetTexChromakeyMode TMU" << tmu << ": Mode=" << mode);
-    }
+  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  if (tmu < 2) {
+    m_texChromaMode[tmu] = mode;
+    GLIDE_LOG(DEBUG, "Rasterizer",
+              "SetTexChromakeyMode TMU" << tmu << ": Mode=" << mode);
+  }
 }
 
-void SoftwareBackendBase::SetTexChromakeyRange(uint32_t tmu, uint32_t minColor, uint32_t maxColor, uint32_t mode) {
-    std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    if (tmu < 2) {
-        m_texChromaMin[tmu] = minColor;
-        m_texChromaMax[tmu] = maxColor;
-        m_texChromaRangeMode[tmu] = mode;
-        GLIDE_LOG(DEBUG, "Rasterizer", "SetTexChromakeyRange TMU" << tmu << ": min=0x" << std::hex << minColor 
-                  << ", max=0x" << maxColor << ", mode=" << std::dec << mode);
-    }
+void SoftwareBackendBase::SetTexChromakeyRange(uint32_t tmu, uint32_t minColor,
+                                               uint32_t maxColor,
+                                               uint32_t mode) {
+  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  if (tmu < 2) {
+    m_texChromaMin[tmu] = minColor;
+    m_texChromaMax[tmu] = maxColor;
+    m_texChromaRangeMode[tmu] = mode;
+    GLIDE_LOG(DEBUG, "Rasterizer",
+              "SetTexChromakeyRange TMU" << tmu << ": min=0x" << std::hex
+                                         << minColor << ", max=0x" << maxColor
+                                         << ", mode=" << std::dec << mode);
+  }
 }
 
-// Note: DrawTriangle, DrawLine, DrawPoint, EvaluateCombinerColor, and RasterizeSoftwareTriangle
-// have been relocated to the concrete SoftwareBackend subclass (SoftwareBackend.cpp).
+// Note: DrawTriangle, DrawLine, DrawPoint, EvaluateCombinerColor, and
+// RasterizeSoftwareTriangle have been relocated to the concrete SoftwareBackend
+// subclass (SoftwareBackend.cpp).
 
 void* SoftwareBackendBase::GetLfbWritePtr() {
-    std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    m_lfbDirty = true;
-    m_lfbBufferDirty[0] = true;
-    m_lfbBufferDirty[1] = true;
-    return m_headlessPixelMap;
+  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  m_lfbDirty = true;
+  m_lfbBufferDirty[0] = true;
+  m_lfbBufferDirty[1] = true;
+  return m_headlessPixelMap;
 }
 
-bool SoftwareBackendBase::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY, uint32_t srcWidth, uint32_t srcHeight, uint32_t dstStride, void* dstData) {
-    std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    if (!dstData || m_cpuBuffers[0].empty()) return false;
+bool SoftwareBackendBase::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
+                                  uint32_t srcWidth, uint32_t srcHeight,
+                                  uint32_t dstStride, void* dstData) {
+  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  if (!dstData || m_cpuBuffers[0].empty()) return false;
 
-    const uint32_t* pixels = nullptr;
-    uint32_t width = m_headlessWidth;
-    uint32_t height = m_headlessHeight;
+  const uint32_t* pixels = nullptr;
+  uint32_t width = m_headlessWidth;
+  uint32_t height = m_headlessHeight;
 
-    if (m_ssaaScale > 1) {
-        uint32_t srcBufferIdx = (buffer == 0) ? m_frontBufferIdx : m_backBufferIdx;
-        const uint32_t* srcPixels = reinterpret_cast<const uint32_t*>(m_cpuBuffers[srcBufferIdx].data());
-        uint32_t* dstPixels = reinterpret_cast<uint32_t*>(m_resolvedBuffer.data());
-        uint32_t nativeWidth = m_headlessWidth / m_ssaaScale;
-        uint32_t nativeHeight = m_headlessHeight / m_ssaaScale;
+  if (m_ssaaScale > 1) {
+    uint32_t srcBufferIdx = (buffer == 0) ? m_frontBufferIdx : m_backBufferIdx;
+    const uint32_t* srcPixels =
+        reinterpret_cast<const uint32_t*>(m_cpuBuffers[srcBufferIdx].data());
+    uint32_t* dstPixels = reinterpret_cast<uint32_t*>(m_resolvedBuffer.data());
+    uint32_t nativeWidth = m_headlessWidth / m_ssaaScale;
+    uint32_t nativeHeight = m_headlessHeight / m_ssaaScale;
 
-        #pragma omp parallel for collapse(2) if(nativeHeight * nativeWidth > 64000)
-        for (uint32_t y = 0; y < nativeHeight; ++y) {
-            for (uint32_t x = 0; x < nativeWidth; ++x) {
-                uint32_t r = 0, g = 0, b = 0, a = 0;
-                for (uint32_t dy = 0; dy < 2; ++dy) {
-                    for (uint32_t dx = 0; dx < 2; ++dx) {
-                        uint32_t srcIdx = (2 * y + dy) * m_headlessWidth + (2 * x + dx);
-                        uint32_t p = srcPixels[srcIdx];
-                        a += (p >> 24) & 0xFF;
-                        r += (p >> 16) & 0xFF;
-                        g += (p >> 8)  & 0xFF;
-                        b += p         & 0xFF;
-                    }
-                }
-                a /= 4; r /= 4; g /= 4; b /= 4;
-                dstPixels[y * nativeWidth + x] = (a << 24) | (r << 16) | (g << 8) | b;
-            }
+#pragma omp parallel for collapse(2) if (nativeHeight * nativeWidth > 64000)
+    for (uint32_t y = 0; y < nativeHeight; ++y) {
+      for (uint32_t x = 0; x < nativeWidth; ++x) {
+        uint32_t r = 0, g = 0, b = 0, a = 0;
+        for (uint32_t dy = 0; dy < 2; ++dy) {
+          for (uint32_t dx = 0; dx < 2; ++dx) {
+            uint32_t srcIdx = (2 * y + dy) * m_headlessWidth + (2 * x + dx);
+            uint32_t p = srcPixels[srcIdx];
+            a += (p >> 24) & 0xFF;
+            r += (p >> 16) & 0xFF;
+            g += (p >> 8) & 0xFF;
+            b += p & 0xFF;
+          }
         }
-        pixels = dstPixels;
-        width = nativeWidth;
-        height = nativeHeight;
+        a /= 4;
+        r /= 4;
+        g /= 4;
+        b /= 4;
+        dstPixels[y * nativeWidth + x] = (a << 24) | (r << 16) | (g << 8) | b;
+      }
+    }
+    pixels = dstPixels;
+    width = nativeWidth;
+    height = nativeHeight;
+  } else {
+    if (buffer == 0) {  // FRONTBUFFER
+      pixels = reinterpret_cast<const uint32_t*>(
+          m_cpuBuffers[m_frontBufferIdx].data());
+    } else {  // BACKBUFFER
+      pixels = reinterpret_cast<const uint32_t*>(
+          m_cpuBuffers[m_backBufferIdx].data());
+    }
+  }
+  auto* outBytes = reinterpret_cast<uint8_t*>(dstData);
+
+  bool is32Bit = (dstStride >= srcWidth * 4);
+  GLIDE_LOG(DEBUG, "ReadLFB",
+            "ReadLFB invoked: srcX="
+                << srcX << ", srcY=" << srcY << ", srcWidth=" << srcWidth
+                << ", srcHeight=" << srcHeight << ", dstStride=" << dstStride
+                << ", is32Bit=" << is32Bit);
+
+  for (uint32_t y = 0; y < srcHeight; ++y) {
+    uint32_t readY = srcY + y;
+    if (readY >= height) break;
+
+    if (is32Bit) {
+      uint32_t* destRow32 =
+          reinterpret_cast<uint32_t*>(outBytes + y * dstStride);
+      for (uint32_t x = 0; x < srcWidth; ++x) {
+        uint32_t readX = srcX + x;
+        if (readX >= width) break;
+        uint32_t val = pixels[readY * width + readX];
+        if (m_pixelFormatOverride == 1) {
+          uint32_t a = val & 0xFF000000;
+          uint32_t g = val & 0x0000FF00;
+          uint32_t r = (val >> 16) & 0xFF;
+          uint32_t b = val & 0xFF;
+          val = a | (b << 16) | g | r;
+        }
+        destRow32[x] = val;
+      }
     } else {
-        if (buffer == 0) { // FRONTBUFFER
-            pixels = reinterpret_cast<const uint32_t*>(m_cpuBuffers[m_frontBufferIdx].data());
-        } else { // BACKBUFFER
-            pixels = reinterpret_cast<const uint32_t*>(m_cpuBuffers[m_backBufferIdx].data());
+      uint16_t* destRow16 =
+          reinterpret_cast<uint16_t*>(outBytes + y * dstStride);
+      for (uint32_t x = 0; x < srcWidth; ++x) {
+        uint32_t readX = srcX + x;
+        if (readX >= width) break;
+
+        uint32_t pWord = pixels[readY * width + readX];
+        uint32_t rVal = (pWord >> 16) & 0xFF;
+        uint32_t gVal = (pWord >> 8) & 0xFF;
+        uint32_t bVal = pWord & 0xFF;
+        if (m_pixelFormatOverride == 1) {
+          std::swap(rVal, bVal);
         }
+        uint16_t r = (rVal * 31 + 127) / 255;
+        uint16_t g = (gVal * 63 + 127) / 255;
+        uint16_t b = (bVal * 31 + 127) / 255;
+        uint16_t c16 = (r << 11) | (g << 5) | b;
+        destRow16[x] = c16;
+      }
     }
-    auto* outBytes = reinterpret_cast<uint8_t*>(dstData);
-
-    bool is32Bit = (dstStride >= srcWidth * 4);
-    GLIDE_LOG(DEBUG, "ReadLFB", "ReadLFB invoked: srcX=" << srcX << ", srcY=" << srcY << ", srcWidth=" << srcWidth << ", srcHeight=" << srcHeight << ", dstStride=" << dstStride << ", is32Bit=" << is32Bit);
-
-    for (uint32_t y = 0; y < srcHeight; ++y) {
-        uint32_t readY = srcY + y;
-        if (readY >= height) break;
-
-        if (is32Bit) {
-            uint32_t* destRow32 = reinterpret_cast<uint32_t*>(outBytes + y * dstStride);
-            for (uint32_t x = 0; x < srcWidth; ++x) {
-                uint32_t readX = srcX + x;
-                if (readX >= width) break;
-                uint32_t val = pixels[readY * width + readX];
-                if (m_pixelFormatOverride == 1) {
-                    uint32_t a = val & 0xFF000000;
-                    uint32_t g = val & 0x0000FF00;
-                    uint32_t r = (val >> 16) & 0xFF;
-                    uint32_t b = val & 0xFF;
-                    val = a | (b << 16) | g | r;
-                }
-                destRow32[x] = val;
-            }
-        } else {
-            uint16_t* destRow16 = reinterpret_cast<uint16_t*>(outBytes + y * dstStride);
-            for (uint32_t x = 0; x < srcWidth; ++x) {
-                uint32_t readX = srcX + x;
-                if (readX >= width) break;
-
-                uint32_t pWord = pixels[readY * width + readX];
-                uint32_t rVal = (pWord >> 16) & 0xFF;
-                uint32_t gVal = (pWord >> 8)  & 0xFF;
-                uint32_t bVal = pWord         & 0xFF;
-                if (m_pixelFormatOverride == 1) {
-                    std::swap(rVal, bVal);
-                }
-                uint16_t r = (rVal * 31 + 127) / 255;
-                uint16_t g = (gVal * 63 + 127) / 255;
-                uint16_t b = (bVal * 31 + 127) / 255;
-                uint16_t c16 = (r << 11) | (g << 5) | b;
-                destRow16[x] = c16;
-            }
-        }
-    }
-    return true;
+  }
+  return true;
 }
 
-bool SoftwareBackendBase::WriteLFB(uint32_t buffer, uint32_t dstX, uint32_t dstY, uint32_t srcWidth, uint32_t srcHeight, int32_t srcStride, uint32_t srcFmt, const void* srcData, const void* refData, const LfbPipelineConfig& config) {
-    std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    if (!srcData || m_cpuBuffers[0].empty()) return false;
+bool SoftwareBackendBase::WriteLFB(uint32_t buffer, uint32_t dstX,
+                                   uint32_t dstY, uint32_t srcWidth,
+                                   uint32_t srcHeight, int32_t srcStride,
+                                   uint32_t srcFmt, const void* srcData,
+                                   const void* refData,
+                                   const LfbPipelineConfig& config) {
+  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  if (!srcData || m_cpuBuffers[0].empty()) return false;
 
-    GLIDE_LOG(DEBUG, "WriteLFB", "WriteLFB invoked: buffer=" << buffer << ", dst=(" << dstX << "," << dstY << "), size=" << srcWidth << "x" << srcHeight << ", stride=" << srcStride << ", fmt=" << srcFmt);
-    uint32_t modifiedCount = 0;
+  GLIDE_LOG(DEBUG, "WriteLFB",
+            "WriteLFB invoked: buffer=" << buffer << ", dst=(" << dstX << ","
+                                        << dstY << "), size=" << srcWidth << "x"
+                                        << srcHeight << ", stride=" << srcStride
+                                        << ", fmt=" << srcFmt);
+  uint32_t modifiedCount = 0;
 
-    // Validate LFB source format (must be one of the 9 defined Glide formats)
-    bool isValidFormat = false;
-    switch (srcFmt) {
-        case 0:  // GR_LFB_SRC_FMT_565
-        case 1:  // GR_LFB_SRC_FMT_555
-        case 2:  // GR_LFB_SRC_FMT_1555
-        case 4:  // GR_LFB_SRC_FMT_888
-        case 5:  // GR_LFB_SRC_FMT_8888
-        case 12: // GR_LFB_SRC_FMT_565_DEPTH
-        case 13: // GR_LFB_SRC_FMT_555_DEPTH
-        case 14: // GR_LFB_SRC_FMT_1555_DEPTH
-        case 15: // GR_LFB_SRC_FMT_ZA16
-            isValidFormat = true;
-            break;
-        default:
-            isValidFormat = false;
-            break;
-    }
+  // Validate LFB source format (must be one of the 9 defined Glide formats)
+  bool isValidFormat = false;
+  switch (srcFmt) {
+    case 0:   // GR_LFB_SRC_FMT_565
+    case 1:   // GR_LFB_SRC_FMT_555
+    case 2:   // GR_LFB_SRC_FMT_1555
+    case 4:   // GR_LFB_SRC_FMT_888
+    case 5:   // GR_LFB_SRC_FMT_8888
+    case 12:  // GR_LFB_SRC_FMT_565_DEPTH
+    case 13:  // GR_LFB_SRC_FMT_555_DEPTH
+    case 14:  // GR_LFB_SRC_FMT_1555_DEPTH
+    case 15:  // GR_LFB_SRC_FMT_ZA16
+      isValidFormat = true;
+      break;
+    default:
+      isValidFormat = false;
+      break;
+  }
 
-    if (!isValidFormat) {
-        GLIDE_LOG(WARN, "WriteLFB", "Invalid or undefined LFB source format: " << srcFmt);
-        return false;
-    }
+  if (!isValidFormat) {
+    GLIDE_LOG(WARN, "WriteLFB",
+              "Invalid or undefined LFB source format: " << srcFmt);
+    return false;
+  }
 
-    uint32_t* pixels = nullptr;
-    if (buffer == 0) { // FRONTBUFFER
-        pixels = reinterpret_cast<uint32_t*>(m_cpuBuffers[m_frontBufferIdx].data());
-    } else { // BACKBUFFER
-        pixels = reinterpret_cast<uint32_t*>(m_cpuBuffers[m_backBufferIdx].data());
-    }
-    const auto* inBytes = reinterpret_cast<const uint8_t*>(srcData);
-    const auto* refBytes = reinterpret_cast<const uint8_t*>(refData);
+  uint32_t* pixels = nullptr;
+  if (buffer == 0) {  // FRONTBUFFER
+    pixels = reinterpret_cast<uint32_t*>(m_cpuBuffers[m_frontBufferIdx].data());
+  } else {  // BACKBUFFER
+    pixels = reinterpret_cast<uint32_t*>(m_cpuBuffers[m_backBufferIdx].data());
+  }
+  const auto* inBytes = reinterpret_cast<const uint8_t*>(srcData);
+  const auto* refBytes = reinterpret_cast<const uint8_t*>(refData);
 
-    bool wrotePixel = false;
-    for (uint32_t y = 0; y < srcHeight; ++y) {
-        uint32_t writeY = dstY + y;
-        if (writeY >= m_headlessHeight) break;
+  bool wrotePixel = false;
+  for (uint32_t y = 0; y < srcHeight; ++y) {
+    uint32_t writeY = dstY + y;
+    if (writeY >= m_headlessHeight) break;
 
-        for (uint32_t x = 0; x < srcWidth; ++x) {
-            uint32_t writeX = dstX + x;
-            if (writeX >= m_headlessWidth) break;
+    for (uint32_t x = 0; x < srcWidth; ++x) {
+      uint32_t writeX = dstX + x;
+      if (writeX >= m_headlessWidth) break;
 
-            // 1. Extract the raw source pixel first
-            bool is16Bit = (srcFmt == 0 || srcFmt == 1 || srcFmt == 2 || srcFmt == 12 || srcFmt == 13 || srcFmt == 14 || srcFmt == 15);
-            uint16_t c16 = 0;
-            uint32_t c32 = 0;
-            if (is16Bit) {
-                if (srcFmt == 12 || srcFmt == 13 || srcFmt == 14) {
-                    c16 = (uint16_t)(reinterpret_cast<const uint32_t*>(inBytes + y * srcStride)[x] & 0xFFFF);
-                } else {
-                    c16 = reinterpret_cast<const uint16_t*>(inBytes + y * srcStride)[x];
-                }
-            } else {
-                c32 = reinterpret_cast<const uint32_t*>(inBytes + y * srcStride)[x];
-            }
-
-            // 2. If refData is provided, check if the pixel has changed (dirty tracking)
-            if (refBytes) {
-                if (is16Bit) {
-                    uint16_t ref16;
-                    if (srcFmt == 12 || srcFmt == 13 || srcFmt == 14) {
-                        ref16 = (uint16_t)(reinterpret_cast<const uint32_t*>(refBytes + y * srcStride)[x] & 0xFFFF);
-                    } else {
-                        ref16 = reinterpret_cast<const uint16_t*>(refBytes + y * srcStride)[x];
-                    }
-                    if (c16 == ref16) {
-                        continue;
-                    }
-                } else {
-                    uint32_t ref32 = reinterpret_cast<const uint32_t*>(refBytes + y * srcStride)[x];
-                    if (c32 == ref32) {
-                        continue;
-                    }
-                }
-            }
-
-            // 3. Chroma Keying check
-            if (config.pixelPipeline && config.chromakeyEnabled) {
-                if (is16Bit) {
-                    if (c16 == static_cast<uint16_t>(config.chromakeyValue)) {
-                        continue; // Discard matching key pixel!
-                    }
-                } else {
-                    if (c32 == config.chromakeyValue) {
-                        continue; // Discard matching key pixel!
-                    }
-                }
-            }
-
-            // 4. Unpack the pixel to 32-bit RGBA
-            uint32_t pWord = 0xFF000000;
-            if (srcFmt == 0 || srcFmt == 12) { // GR_LFB_SRC_FMT_565 or GR_LFB_SRC_FMT_565_DEPTH
-                uint32_t r = ((c16 >> 11) & 0x1F) * 255 / 31;
-                uint32_t g = ((c16 >> 5)  & 0x3F) * 255 / 63;
-                uint32_t b = (c16         & 0x1F) * 255 / 31;
-                pWord = (255u << 24) | (r << 16) | (g << 8) | b;
-            } else if (srcFmt == 1 || srcFmt == 2 || srcFmt == 13 || srcFmt == 14) { // 555 / 1555 or 555_DEPTH / 1555_DEPTH
-                uint32_t r = ((c16 >> 10) & 0x1F) * 255 / 31;
-                uint32_t g = ((c16 >> 5)  & 0x1F) * 255 / 31;
-                uint32_t b = (c16         & 0x1F) * 255 / 31;
-                uint32_t a = (srcFmt == 2 || srcFmt == 14) ? (((c16 >> 15) & 1) ? 255 : 0) : 255;
-                pWord = (a << 24) | (r << 16) | (g << 8) | b;
-            } else { // 32-bit ARGB8888 / RGB888 / ZA16
-                // Quantize to 16-bit 565 to emulate Voodoo VRAM storage limits
-                uint32_t r = ((c32 >> 16) & 0xFF) >> 3;
-                uint32_t g = ((c32 >> 8)  & 0xFF) >> 2;
-                uint32_t b = (c32         & 0xFF) >> 3;
-                
-                uint32_t r8 = r * 255 / 31;
-                uint32_t g8 = g * 255 / 63;
-                uint32_t b8 = b * 255 / 31;
-                uint32_t a8 = (c32 >> 24) & 0xFF;
-                
-                if (srcFmt == 4 || srcFmt == 15) { // Force alpha = 255 for RGB888 and ZA16 to make them opaque
-                    a8 = 255;
-                }
-                pWord = (a8 << 24) | (r8 << 16) | (g8 << 8) | b8;
-            }
-
-            // 5. Alpha Blending simulation
-            if (config.pixelPipeline) {
-                uint32_t srcA = (pWord >> 24) & 0xFF;
-                uint32_t srcR = (pWord >> 16) & 0xFF;
-                uint32_t srcG = (pWord >> 8)  & 0xFF;
-                uint32_t srcB = pWord         & 0xFF;
-
-                // Override alpha if the source has no native alpha channel
-                if (srcFmt == 0 || srcFmt == 4 || srcFmt == 12 || srcFmt == 15) {
-                    srcA = config.constantAlpha;
-                }
-
-                // Fetch destination pixel from active render buffer
-                uint32_t dstWord = pixels[writeY * m_headlessWidth + writeX];
-                uint32_t dstR = (dstWord >> 16) & 0xFF;
-                uint32_t dstG = (dstWord >> 8)  & 0xFF;
-                uint32_t dstB = dstWord         & 0xFF;
-                if (m_pixelFormatOverride == 1) {
-                    std::swap(dstR, dstB);
-                }
-
-                float sFactor = 1.0f;
-                float dFactor = 0.0f;
-
-                // Source RGB factor (4 = GR_BLEND_SRC_ALPHA, 1 = GR_BLEND_ONE, 0 = GR_BLEND_ZERO)
-                if (config.rgbSrcBlend == 4) {
-                    sFactor = srcA / 255.0f;
-                } else if (config.rgbSrcBlend == 0) {
-                    sFactor = 0.0f;
-                } else {
-                    sFactor = 1.0f;
-                }
-
-                // Destination RGB factor (5 = GR_BLEND_ONE_MINUS_SRC_ALPHA, 1 = GR_BLEND_ONE, 0 = GR_BLEND_ZERO)
-                if (config.rgbDstBlend == 5) {
-                    dFactor = 1.0f - (srcA / 255.0f);
-                } else if (config.rgbDstBlend == 1) {
-                    dFactor = 1.0f;
-                } else {
-                    dFactor = 0.0f;
-                }
-
-                uint32_t finalR = static_cast<uint32_t>(srcR * sFactor + dstR * dFactor + 0.5f);
-                uint32_t finalG = static_cast<uint32_t>(srcG * sFactor + dstG * dFactor + 0.5f);
-                uint32_t finalB = static_cast<uint32_t>(srcB * sFactor + dstB * dFactor + 0.5f);
-
-                finalR = std::min(255u, finalR);
-                finalG = std::min(255u, finalG);
-                finalB = std::min(255u, finalB);
-
-                pWord = (255u << 24) | (finalR << 16) | (finalG << 8) | finalB;
-            }
-
-            if (m_pixelFormatOverride == 1) {
-                uint32_t a = pWord & 0xFF000000;
-                uint32_t g = pWord & 0x0000FF00;
-                uint32_t r = (pWord >> 16) & 0xFF;
-                uint32_t b = pWord & 0xFF;
-                pWord = a | (b << 16) | g | r;
-            }
-            pixels[writeY * m_headlessWidth + writeX] = pWord;
-            wrotePixel = true;
-            modifiedCount++;
+      // 1. Extract the raw source pixel first
+      bool is16Bit =
+          (srcFmt == 0 || srcFmt == 1 || srcFmt == 2 || srcFmt == 12 ||
+           srcFmt == 13 || srcFmt == 14 || srcFmt == 15);
+      uint16_t c16 = 0;
+      uint32_t c32 = 0;
+      if (is16Bit) {
+        if (srcFmt == 12 || srcFmt == 13 || srcFmt == 14) {
+          c16 = (uint16_t)(reinterpret_cast<const uint32_t*>(inBytes +
+                                                             y * srcStride)[x] &
+                           0xFFFF);
+        } else {
+          c16 = reinterpret_cast<const uint16_t*>(inBytes + y * srcStride)[x];
         }
-    }
-    if (wrotePixel) {
-        m_lfbDirty = true;
-        if (buffer == 0) { // FRONTBUFFER
-            m_lfbBufferDirty[0] = true;
-        } else { // BACKBUFFER
-            m_lfbBufferDirty[1] = true;
+      } else {
+        c32 = reinterpret_cast<const uint32_t*>(inBytes + y * srcStride)[x];
+      }
+
+      // 2. If refData is provided, check if the pixel has changed (dirty
+      // tracking)
+      if (refBytes) {
+        if (is16Bit) {
+          uint16_t ref16;
+          if (srcFmt == 12 || srcFmt == 13 || srcFmt == 14) {
+            ref16 = (uint16_t)(reinterpret_cast<const uint32_t*>(
+                                   refBytes + y * srcStride)[x] &
+                               0xFFFF);
+          } else {
+            ref16 =
+                reinterpret_cast<const uint16_t*>(refBytes + y * srcStride)[x];
+          }
+          if (c16 == ref16) {
+            continue;
+          }
+        } else {
+          uint32_t ref32 =
+              reinterpret_cast<const uint32_t*>(refBytes + y * srcStride)[x];
+          if (c32 == ref32) {
+            continue;
+          }
         }
+      }
+
+      // 3. Chroma Keying check
+      if (config.pixelPipeline && config.chromakeyEnabled) {
+        if (is16Bit) {
+          if (c16 == static_cast<uint16_t>(config.chromakeyValue)) {
+            continue;  // Discard matching key pixel!
+          }
+        } else {
+          if (c32 == config.chromakeyValue) {
+            continue;  // Discard matching key pixel!
+          }
+        }
+      }
+
+      // 4. Unpack the pixel to 32-bit RGBA
+      uint32_t pWord = 0xFF000000;
+      if (srcFmt == 0 ||
+          srcFmt == 12) {  // GR_LFB_SRC_FMT_565 or GR_LFB_SRC_FMT_565_DEPTH
+        uint32_t r = ((c16 >> 11) & 0x1F) * 255 / 31;
+        uint32_t g = ((c16 >> 5) & 0x3F) * 255 / 63;
+        uint32_t b = (c16 & 0x1F) * 255 / 31;
+        pWord = (255u << 24) | (r << 16) | (g << 8) | b;
+      } else if (srcFmt == 1 || srcFmt == 2 || srcFmt == 13 ||
+                 srcFmt == 14) {  // 555 / 1555 or 555_DEPTH / 1555_DEPTH
+        uint32_t r = ((c16 >> 10) & 0x1F) * 255 / 31;
+        uint32_t g = ((c16 >> 5) & 0x1F) * 255 / 31;
+        uint32_t b = (c16 & 0x1F) * 255 / 31;
+        uint32_t a =
+            (srcFmt == 2 || srcFmt == 14) ? (((c16 >> 15) & 1) ? 255 : 0) : 255;
+        pWord = (a << 24) | (r << 16) | (g << 8) | b;
+      } else {  // 32-bit ARGB8888 / RGB888 / ZA16
+        // Quantize to 16-bit 565 to emulate Voodoo VRAM storage limits
+        uint32_t r = ((c32 >> 16) & 0xFF) >> 3;
+        uint32_t g = ((c32 >> 8) & 0xFF) >> 2;
+        uint32_t b = (c32 & 0xFF) >> 3;
+
+        uint32_t r8 = r * 255 / 31;
+        uint32_t g8 = g * 255 / 63;
+        uint32_t b8 = b * 255 / 31;
+        uint32_t a8 = (c32 >> 24) & 0xFF;
+
+        if (srcFmt == 4 || srcFmt == 15) {  // Force alpha = 255 for RGB888 and
+                                            // ZA16 to make them opaque
+          a8 = 255;
+        }
+        pWord = (a8 << 24) | (r8 << 16) | (g8 << 8) | b8;
+      }
+
+      // 5. Alpha Blending simulation
+      if (config.pixelPipeline) {
+        uint32_t srcA = (pWord >> 24) & 0xFF;
+        uint32_t srcR = (pWord >> 16) & 0xFF;
+        uint32_t srcG = (pWord >> 8) & 0xFF;
+        uint32_t srcB = pWord & 0xFF;
+
+        // Override alpha if the source has no native alpha channel
+        if (srcFmt == 0 || srcFmt == 4 || srcFmt == 12 || srcFmt == 15) {
+          srcA = config.constantAlpha;
+        }
+
+        // Fetch destination pixel from active render buffer
+        uint32_t dstWord = pixels[writeY * m_headlessWidth + writeX];
+        uint32_t dstR = (dstWord >> 16) & 0xFF;
+        uint32_t dstG = (dstWord >> 8) & 0xFF;
+        uint32_t dstB = dstWord & 0xFF;
+        if (m_pixelFormatOverride == 1) {
+          std::swap(dstR, dstB);
+        }
+
+        float sFactor = 1.0f;
+        float dFactor = 0.0f;
+
+        // Source RGB factor (4 = GR_BLEND_SRC_ALPHA, 1 = GR_BLEND_ONE, 0 =
+        // GR_BLEND_ZERO)
+        if (config.rgbSrcBlend == 4) {
+          sFactor = srcA / 255.0f;
+        } else if (config.rgbSrcBlend == 0) {
+          sFactor = 0.0f;
+        } else {
+          sFactor = 1.0f;
+        }
+
+        // Destination RGB factor (5 = GR_BLEND_ONE_MINUS_SRC_ALPHA, 1 =
+        // GR_BLEND_ONE, 0 = GR_BLEND_ZERO)
+        if (config.rgbDstBlend == 5) {
+          dFactor = 1.0f - (srcA / 255.0f);
+        } else if (config.rgbDstBlend == 1) {
+          dFactor = 1.0f;
+        } else {
+          dFactor = 0.0f;
+        }
+
+        uint32_t finalR =
+            static_cast<uint32_t>(srcR * sFactor + dstR * dFactor + 0.5f);
+        uint32_t finalG =
+            static_cast<uint32_t>(srcG * sFactor + dstG * dFactor + 0.5f);
+        uint32_t finalB =
+            static_cast<uint32_t>(srcB * sFactor + dstB * dFactor + 0.5f);
+
+        finalR = std::min(255u, finalR);
+        finalG = std::min(255u, finalG);
+        finalB = std::min(255u, finalB);
+
+        pWord = (255u << 24) | (finalR << 16) | (finalG << 8) | finalB;
+      }
+
+      if (m_pixelFormatOverride == 1) {
+        uint32_t a = pWord & 0xFF000000;
+        uint32_t g = pWord & 0x0000FF00;
+        uint32_t r = (pWord >> 16) & 0xFF;
+        uint32_t b = pWord & 0xFF;
+        pWord = a | (b << 16) | g | r;
+      }
+      pixels[writeY * m_headlessWidth + writeX] = pWord;
+      wrotePixel = true;
+      modifiedCount++;
     }
-    GLIDE_LOG(DEBUG, "WriteLFB", "WriteLFB finished: wrotePixel=" << (wrotePixel ? "Yes" : "No") << ", modifiedPixels=" << modifiedCount << ", m_lfbDirty=" << (m_lfbDirty ? "Yes" : "No"));
-    return true;
+  }
+  if (wrotePixel) {
+    m_lfbDirty = true;
+    if (buffer == 0) {  // FRONTBUFFER
+      m_lfbBufferDirty[0] = true;
+    } else {  // BACKBUFFER
+      m_lfbBufferDirty[1] = true;
+    }
+  }
+  GLIDE_LOG(DEBUG, "WriteLFB",
+            "WriteLFB finished: wrotePixel="
+                << (wrotePixel ? "Yes" : "No")
+                << ", modifiedPixels=" << modifiedCount
+                << ", m_lfbDirty=" << (m_lfbDirty ? "Yes" : "No"));
+  return true;
 }
 
 void SoftwareBackendBase::PollEvents() {
-    std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    if (!m_windowAttached) return;
+  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  if (!m_windowAttached) return;
 
-    SDL_Event event;
-    while (SDL_PollEvent(&event)) {
-        if (event.type == SDL_QUIT) {
-            GLIDE_LOG(INFO, "Backend", "SDL window quit request received.");
-        } else if (event.type == SDL_KEYDOWN) {
-            GLIDE_LOG(DEBUG, "Backend", "SDL window keydown event captured! Setting keyboard hit hook flag.");
-            g_glideWrapperSdlKeyHit = 1;
-            g_glideWrapperLastKey = event.key.keysym.sym;
-        }
+  SDL_Event event;
+  while (SDL_PollEvent(&event)) {
+    if (event.type == SDL_QUIT) {
+      GLIDE_LOG(INFO, "Backend", "SDL window quit request received.");
+    } else if (event.type == SDL_KEYDOWN) {
+      GLIDE_LOG(
+          DEBUG, "Backend",
+          "SDL window keydown event captured! Setting keyboard hit hook flag.");
+      g_glideWrapperSdlKeyHit = 1;
+      g_glideWrapperLastKey = event.key.keysym.sym;
     }
+  }
 }
 
 void SoftwareBackendBase::SstIdle() {
-    // Software rasterizer is completely synchronous; all drawing dispatches 
-    // are completed on the host CPU thread during the draw call itself.
+  // Software rasterizer is completely synchronous; all drawing dispatches
+  // are completed on the host CPU thread during the draw call itself.
 }
 
 void SoftwareBackendBase::AllocateCpuBuffers(uint32_t width, uint32_t height) {
-    std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    m_cpuBuffers[0].resize(width * height * 4);
-    m_cpuBuffers[1].resize(width * height * 4);
-    m_resolvedBuffer.resize((width / m_ssaaScale) * (height / m_ssaaScale) * 4);
-    std::memset(m_cpuBuffers[0].data(), 0, m_cpuBuffers[0].size());
-    std::memset(m_cpuBuffers[1].data(), 0, m_cpuBuffers[1].size());
-    std::memset(m_resolvedBuffer.data(), 0, m_resolvedBuffer.size());
-    m_frontBufferIdx = 0;
-    m_backBufferIdx = 1;
-    m_activeRenderBuffer = 1; // BACKBUFFER
-    m_headlessPixelMap = m_cpuBuffers[m_backBufferIdx].data();
-    GLIDE_LOG(INFO, "SoftwareBackendBase", "Allocated CPU double buffers: " << width << "x" << height << ", map=" << m_headlessPixelMap << ", resolved size=" << m_resolvedBuffer.size());
+  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  m_cpuBuffers[0].resize(width * height * 4);
+  m_cpuBuffers[1].resize(width * height * 4);
+  m_resolvedBuffer.resize((width / m_ssaaScale) * (height / m_ssaaScale) * 4);
+  std::memset(m_cpuBuffers[0].data(), 0, m_cpuBuffers[0].size());
+  std::memset(m_cpuBuffers[1].data(), 0, m_cpuBuffers[1].size());
+  std::memset(m_resolvedBuffer.data(), 0, m_resolvedBuffer.size());
+  m_frontBufferIdx = 0;
+  m_backBufferIdx = 1;
+  m_activeRenderBuffer = 1;  // BACKBUFFER
+  m_headlessPixelMap = m_cpuBuffers[m_backBufferIdx].data();
+  GLIDE_LOG(INFO, "SoftwareBackendBase",
+            "Allocated CPU double buffers: "
+                << width << "x" << height << ", map=" << m_headlessPixelMap
+                << ", resolved size=" << m_resolvedBuffer.size());
 }
 
 void SoftwareBackendBase::FreeCpuBuffers() {
-    std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    m_cpuBuffers[0].clear();
-    m_cpuBuffers[0].shrink_to_fit();
-    m_cpuBuffers[1].clear();
-    m_cpuBuffers[1].shrink_to_fit();
-    m_resolvedBuffer.clear();
-    m_resolvedBuffer.shrink_to_fit();
-    m_headlessPixelMap = nullptr;
-    GLIDE_LOG(INFO, "SoftwareBackendBase", "Freed CPU double buffers.");
+  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  m_cpuBuffers[0].clear();
+  m_cpuBuffers[0].shrink_to_fit();
+  m_cpuBuffers[1].clear();
+  m_cpuBuffers[1].shrink_to_fit();
+  m_resolvedBuffer.clear();
+  m_resolvedBuffer.shrink_to_fit();
+  m_headlessPixelMap = nullptr;
+  GLIDE_LOG(INFO, "SoftwareBackendBase", "Freed CPU double buffers.");
 }
 
 void SoftwareBackendBase::SetRenderBuffer(uint32_t target) {
-    std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    m_activeRenderBuffer = target;
-    if (m_activeRenderBuffer == 0) { // GR_BUFFER_FRONTBUFFER
-        m_headlessPixelMap = m_cpuBuffers[m_frontBufferIdx].data();
-    } else { // GR_BUFFER_BACKBUFFER (and others default to back)
-        m_headlessPixelMap = m_cpuBuffers[m_backBufferIdx].data();
-    }
-    GLIDE_LOG(INFO, "SoftwareBackendBase", "SetRenderBuffer: target=" << target << ", map=" << m_headlessPixelMap);
+  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  m_activeRenderBuffer = target;
+  if (m_activeRenderBuffer == 0) {  // GR_BUFFER_FRONTBUFFER
+    m_headlessPixelMap = m_cpuBuffers[m_frontBufferIdx].data();
+  } else {  // GR_BUFFER_BACKBUFFER (and others default to back)
+    m_headlessPixelMap = m_cpuBuffers[m_backBufferIdx].data();
+  }
+  GLIDE_LOG(
+      INFO, "SoftwareBackendBase",
+      "SetRenderBuffer: target=" << target << ", map=" << m_headlessPixelMap);
 }
 
 void SoftwareBackendBase::SetGamma(float gamma) {
-    std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    GLIDE_LOG(INFO, "Software", "SetGamma: value=" << gamma);
-    if (gamma <= 0.0f) gamma = 1.0f;
-    for (int i = 0; i < 256; i++) {
-        m_lutR[i] = static_cast<uint8_t>(std::pow(i / 255.0f, 1.0f / gamma) * 255.0f + 0.5f);
-        m_lutG[i] = m_lutR[i];
-        m_lutB[i] = m_lutR[i];
-    }
-    m_useGammaLut = (gamma != 1.0f);
+  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  GLIDE_LOG(INFO, "Software", "SetGamma: value=" << gamma);
+  if (gamma <= 0.0f) gamma = 1.0f;
+  for (int i = 0; i < 256; i++) {
+    m_lutR[i] = static_cast<uint8_t>(
+        std::pow(i / 255.0f, 1.0f / gamma) * 255.0f + 0.5f);
+    m_lutG[i] = m_lutR[i];
+    m_lutB[i] = m_lutR[i];
+  }
+  m_useGammaLut = (gamma != 1.0f);
 }
 
-void SoftwareBackendBase::LoadGammaTable(uint32_t nentries, const uint32_t* rTable, const uint32_t* gTable, const uint32_t* bTable) {
-    std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    GLIDE_LOG(INFO, "Software", "LoadGammaTable: nentries=" << nentries);
-    if (nentries != 256 || !rTable || !gTable || !bTable) return;
-    for (int i = 0; i < 256; i++) {
-        m_lutR[i] = static_cast<uint8_t>(rTable[i]);
-        m_lutG[i] = static_cast<uint8_t>(gTable[i]);
-        m_lutB[i] = static_cast<uint8_t>(bTable[i]);
-    }
-    m_useGammaLut = true;
+void SoftwareBackendBase::LoadGammaTable(uint32_t nentries,
+                                         const uint32_t* rTable,
+                                         const uint32_t* gTable,
+                                         const uint32_t* bTable) {
+  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  GLIDE_LOG(INFO, "Software", "LoadGammaTable: nentries=" << nentries);
+  if (nentries != 256 || !rTable || !gTable || !bTable) return;
+  for (int i = 0; i < 256; i++) {
+    m_lutR[i] = static_cast<uint8_t>(rTable[i]);
+    m_lutG[i] = static_cast<uint8_t>(gTable[i]);
+    m_lutB[i] = static_cast<uint8_t>(bTable[i]);
+  }
+  m_useGammaLut = true;
 }
 
 void SoftwareBackendBase::ResolveAAMode() {
-    m_softwareAaMode = "analytical";
-    m_ssaaScale = 1;
-    const char* envMode = ::getenv("GLIDE_WRAPPER_SOFTWARE_AA");
-    if (envMode) {
-        std::string modeStr(envMode);
-        if (modeStr == "ssaa") {
-            m_softwareAaMode = "ssaa";
-            m_ssaaScale = 2;
-            GLIDE_LOG(INFO, "Software", "Supersampling Anti-Aliasing (SSAA) mode enabled (2x scaling).");
-        } else {
-            GLIDE_LOG(INFO, "Software", "Analytical Point/Line Anti-Aliasing mode enabled (default).");
-        }
+  m_softwareAaMode = "analytical";
+  m_ssaaScale = 1;
+  const char* envMode = ::getenv("GLIDE_WRAPPER_SOFTWARE_AA");
+  if (envMode) {
+    std::string modeStr(envMode);
+    if (modeStr == "ssaa") {
+      m_softwareAaMode = "ssaa";
+      m_ssaaScale = 2;
+      GLIDE_LOG(
+          INFO, "Software",
+          "Supersampling Anti-Aliasing (SSAA) mode enabled (2x scaling).");
     } else {
-        GLIDE_LOG(INFO, "Software", "Analytical Point/Line Anti-Aliasing mode enabled (default).");
+      GLIDE_LOG(INFO, "Software",
+                "Analytical Point/Line Anti-Aliasing mode enabled (default).");
     }
+  } else {
+    GLIDE_LOG(INFO, "Software",
+              "Analytical Point/Line Anti-Aliasing mode enabled (default).");
+  }
 }
 
 void SoftwareBackendBase::SetAAState(bool enabled) {
-    std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    m_aaEnabled = enabled;
-    GLIDE_LOG(INFO, "Software", "SetAAState: AA active=" << (enabled ? "Yes" : "No"));
+  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  m_aaEnabled = enabled;
+  GLIDE_LOG(INFO, "Software",
+            "SetAAState: AA active=" << (enabled ? "Yes" : "No"));
 }
 
 void SoftwareBackendBase::SetTexLodBias(uint32_t tmu, float bias) {
-    std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    if (tmu < 2) {
-        m_texLodBias[tmu] = bias;
-        GLIDE_LOG(DEBUG, "Rasterizer", "SetTexLodBias TMU" << tmu << ": " << bias);
-    }
+  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  if (tmu < 2) {
+    m_texLodBias[tmu] = bias;
+    GLIDE_LOG(DEBUG, "Rasterizer", "SetTexLodBias TMU" << tmu << ": " << bias);
+  }
 }
 
-void SoftwareBackendBase::UploadTexturePartial(uint32_t tmu, uint32_t startAddress, const struct VirtualTexture& tex, uint32_t lodLevel, uint32_t startRow, uint32_t endRow) {
-    GLIDE_LOG(DEBUG, "Rasterizer", "UploadTexturePartial (Software) TMU" << tmu << ": Address=0x" << std::hex << startAddress << std::dec << " level=" << lodLevel << " rows=" << startRow << ".." << endRow << " registered.");
+void SoftwareBackendBase::UploadTexturePartial(
+    uint32_t tmu, uint32_t startAddress, const struct VirtualTexture& tex,
+    uint32_t lodLevel, uint32_t startRow, uint32_t endRow) {
+  GLIDE_LOG(DEBUG, "Rasterizer",
+            "UploadTexturePartial (Software) TMU"
+                << tmu << ": Address=0x" << std::hex << startAddress << std::dec
+                << " level=" << lodLevel << " rows=" << startRow << ".."
+                << endRow << " registered.");
 }
 
 void SoftwareBackendBase::PurgeTextures() {
-    GLIDE_LOG(DEBUG, "Rasterizer", "PurgeTextures (Software) invoked.");
+  GLIDE_LOG(DEBUG, "Rasterizer", "PurgeTextures (Software) invoked.");
 }
 
-} // namespace GlideWrapper
+}  // namespace GlideWrapper
