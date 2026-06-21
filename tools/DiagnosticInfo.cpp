@@ -37,6 +37,28 @@ namespace {
         ss << val;
         SafePrint(os, ss.str(), newline);
     }
+
+    struct ExtensionInfo {
+        const char* name;   // The extension string to look up in grGetString(GR_EXTENSION)
+        const char* label;  // The descriptive label shown in the checklist
+    };
+
+    bool IsExtensionSupported(const char* extString, const std::string& ext) {
+        if (!extString || extString[0] == '\0') {
+            return false;
+        }
+        std::string s(extString);
+        size_t pos = 0;
+        while ((pos = s.find(ext, pos)) != std::string::npos) {
+            bool leftWordBound = (pos == 0 || s[pos - 1] == ' ');
+            bool rightWordBound = (pos + ext.length() == s.length() || s[pos + ext.length()] == ' ');
+            if (leftWordBound && rightWordBound) {
+                return true;
+            }
+            pos += ext.length();
+        }
+        return false;
+    }
 }
 
 // Define unified Glide resolution tables
@@ -272,30 +294,62 @@ Tools::ToolRunConfig Tools::InitializeAndParse(
 
     // Print Extension Checklist
     SafePrint(std::cout, "Extensions:");
-    std::vector<std::string> targetExtensions;
 #if GLIDE_VERSION == 3
-    targetExtensions = {"CHROMARANGE", "FOGCOORD", "COMBINER", "STENCIL", "TBUFFER", "TEXCOMBINER"};
-#else
-    targetExtensions = {"BLEND", "BUFFERCLEAR", "CHROMARANGE", "COLORMASK", "LFBSTENCIL", "STENCIL", "TBUFFER"};
-#endif
+    ExtensionInfo sharedExts[] = {
+        {"CHROMARANGE", "CHROMARANGE"},
+        {"TEXCHROMA", "TEXCHROMA"},
+        {"TEXMIRROR", "TEXMIRROR"},
+        {"PALETTE6666", "PALETTE6666"}
+    };
+    ExtensionInfo g3ExclusiveExts[] = {
+        {"FOGCOORD", "FOGCOORD          (Glide 3x)"},
+        {"RESOLUTION", "RESOLUTION        (Glide 3x)"},
+        {"SURFACE", "SURFACE           (Glide 3x Direct Draw)"},
+        {"COMMAND_TRANSPORT", "COMMAND_TRANSPORT (Glide 3x FIFO)"}
+    };
+    ExtensionInfo napalmExts[] = {
+        {"PIXEXT", "PIXEXT            (Glide 3x - Stencil/T-Buffer)"},
+        {"COMBINE", "COMBINE           (Glide 3x - Advanced Combiner)"},
+        {"TEXFMT", "TEXFMT            (Glide 3x - FXT1/32-bit Textures)"},
+        {"TEXTUREBUFFER", "TEXTUREBUFFER     (Glide 3x - T-Buffer)"},
+        {"TEXUMA", "TEXUMA            (Glide 3x - Texture Memory Utility)"}
+    };
 
-    for (const auto& ext : targetExtensions) {
-        bool supported = false;
-        if (extString && extString[0] != '\0') {
-            std::string s(extString);
-            size_t pos = 0;
-            while ((pos = s.find(ext, pos)) != std::string::npos) {
-                bool leftWordBound = (pos == 0 || s[pos - 1] == ' ');
-                bool rightWordBound = (pos + ext.length() == s.length() || s[pos + ext.length()] == ' ');
-                if (leftWordBound && rightWordBound) {
-                    supported = true;
-                    break;
-                }
-                pos += ext.length();
-            }
+    auto printCategory = [&](const std::string& title, ExtensionInfo exts[], int count) {
+        SafePrint(std::cout, title);
+        for (int i = 0; i < count; ++i) {
+            bool supported = IsExtensionSupported(extString, exts[i].name);
+            SafePrint(std::cout, "    [" + std::string(supported ? "X" : " ") + "]  " + exts[i].label);
         }
-        SafePrint(std::cout, "  [" + std::string(supported ? "X" : " ") + "]  " + ext);
-    }
+    };
+
+    printCategory("  [Core / Shared with Glide 2.x]", sharedExts, sizeof(sharedExts)/sizeof(sharedExts[0]));
+    printCategory("  [Glide 3.x Exclusive]", g3ExclusiveExts, sizeof(g3ExclusiveExts)/sizeof(g3ExclusiveExts[0]));
+    printCategory("  [Voodoo 4/5 / Napalm Exclusive]", napalmExts, sizeof(napalmExts)/sizeof(napalmExts[0]));
+#else
+    ExtensionInfo g2StandardExts[] = {
+        {"CHROMARANGE", "CHROMARANGE"}
+    };
+    ExtensionInfo g2BackportedExts[] = {
+        {"BLEND", "BLEND             (Core in Glide 3.x)"},
+        {"BUFFERCLEAR", "BUFFERCLEAR       (Core in Glide 3.x)"},
+        {"COLORMASK", "COLORMASK         (Core in Glide 3.x)"},
+        {"LFBSTENCIL", "LFBSTENCIL        (Core in Glide 3.x)"},
+        {"STENCIL", "STENCIL           (Core in Glide 3.x)"},
+        {"TBUFFER", "TBUFFER           (Core in Glide 3.x)"}
+    };
+
+    auto printCategory = [&](const std::string& title, ExtensionInfo exts[], int count) {
+        SafePrint(std::cout, title);
+        for (int i = 0; i < count; ++i) {
+            bool supported = IsExtensionSupported(extString, exts[i].name);
+            SafePrint(std::cout, "    [" + std::string(supported ? "X" : " ") + "]  " + exts[i].label);
+        }
+    };
+
+    printCategory("  [Glide 2.x Standard]", g2StandardExts, sizeof(g2StandardExts)/sizeof(g2StandardExts[0]));
+    printCategory("  [Backported Glide 3.x Core Features]", g2BackportedExts, sizeof(g2BackportedExts)/sizeof(g2BackportedExts[0]));
+#endif
     SafePrint(std::cout, "----------------------------------------------------------------------");
 
     SafePrint(std::cout, "Interactive Keybindings:");
