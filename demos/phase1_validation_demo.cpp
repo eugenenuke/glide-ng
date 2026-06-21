@@ -59,13 +59,15 @@ int main(int argc, char* argv[]) {
       grSstWinOpen(0, runConfig.resEnum, GR_REFRESH_60Hz, GR_COLORFORMAT_ARGB,
                    GR_ORIGIN_LOWER_LEFT, 2, 0);
   if (!context) {
-    std::printf("[CRITICAL] Failed to open Glide 3.x window!\\n");
+    Tools::SafePrintf("[CRITICAL] Failed to open Glide 3.x window!\n");
     return -1;
   }
 
   grTexCombine(GR_TMU0, GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
                GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE, FXFALSE,
                FXFALSE);
+  grColorCombine(GR_COMBINE_FUNCTION_SCALE_OTHER, GR_COMBINE_FACTOR_ONE,
+                 GR_COMBINE_LOCAL_NONE, GR_COMBINE_OTHER_TEXTURE, FXFALSE);
 
   // Create and download texture
   auto texData = CreateGridTexture();
@@ -91,15 +93,15 @@ int main(int argc, char* argv[]) {
       } else if (key == 's' || key == 'S') {
         s_texLodBias -= 0.25f;
         grTexLodBiasValue(GR_TMU0, s_texLodBias);
-        std::printf("LOD Bias set to: %.2f (Sharper)\\n", s_texLodBias);
+        Tools::SafePrintf("LOD Bias set to: %.2f (Sharper)\n", s_texLodBias);
       } else if (key == 'd' || key == 'D') {
         s_texLodBias += 0.25f;
         grTexLodBiasValue(GR_TMU0, s_texLodBias);
-        std::printf("LOD Bias set to: %.2f (Blurrier)\\n", s_texLodBias);
+        Tools::SafePrintf("LOD Bias set to: %.2f (Blurrier)\n", s_texLodBias);
       } else if (key == 'r' || key == 'R') {
         s_texLodBias = 0.0f;
         grTexLodBiasValue(GR_TMU0, s_texLodBias);
-        std::printf("LOD Bias reset to: 0.00\\n");
+        Tools::SafePrintf("LOD Bias reset to: 0.00\n");
       }
     }
 
@@ -232,15 +234,14 @@ int main(int argc, char* argv[]) {
 
   if (!grSstWinOpen(0, runConfig.resEnum, GR_REFRESH_60Hz, GR_COLORFORMAT_ARGB,
                     GR_ORIGIN_LOWER_LEFT, 2, 0)) {
-    std::printf("[CRITICAL] Failed to open Glide 2.x window!\\n");
+    Tools::SafePrintf("[CRITICAL] Failed to open Glide 2.x window!\n");
     return -1;
   }
 
   // 1. Verify grGet hardware queries
-  std::printf(
-      "======================================================================"
-      "\\n");
-  std::printf("VERIFYING grGet CAPABILITIES QUERIES:\\n");
+  Tools::SafePrintf(
+      "======================================================================\n");
+  Tools::SafePrintf("VERIFYING grGet CAPABILITIES QUERIES:\n");
   FxI32 fbiMem = 0;
   FxI32 tmuMem = 0;
   FxI32 numTmus = 0;
@@ -259,21 +260,20 @@ int main(int argc, char* argv[]) {
   grGet(GR_WDEPTH_MIN_MAX, 8, wDepthRange);
   grGet(GR_ZDEPTH_MIN_MAX, 8, zDepthRange);
 
-  std::printf("  grGet(GR_MEMORY_FB)           : %d bytes (%.1f MB)\\n", fbiMem,
+  Tools::SafePrintf("  grGet(GR_MEMORY_FB)           : %d bytes (%.1f MB)\n", fbiMem,
               fbiMem / (1024.0f * 1024.0f));
-  std::printf("  grGet(GR_MEMORY_TMU)          : %d bytes (%.1f MB)\\n", tmuMem,
+  Tools::SafePrintf("  grGet(GR_MEMORY_TMU)          : %d bytes (%.1f MB)\n", tmuMem,
               tmuMem / (1024.0f * 1024.0f));
-  std::printf("  grGet(GR_NUM_TMU)             : %d\\n", numTmus);
-  std::printf("  grGet(GR_MAX_TEXTURE_SIZE)    : %d\\n", maxTexSize);
-  std::printf("  grGet(GR_BITS_DEPTH)          : %d-bit\\n", depthBits);
-  std::printf("  grGet(GR_BITS_RGBA)           : %d-bit\\n", colorBits);
-  std::printf("  grGet(GR_WDEPTH_MIN_MAX)      : [%d, %d]\\n", wDepthRange[0],
+  Tools::SafePrintf("  grGet(GR_NUM_TMU)             : %d\n", numTmus);
+  Tools::SafePrintf("  grGet(GR_MAX_TEXTURE_SIZE)    : %d\n", maxTexSize);
+  Tools::SafePrintf("  grGet(GR_BITS_DEPTH)          : %d-bit\n", depthBits);
+  Tools::SafePrintf("  grGet(GR_BITS_RGBA)           : %d-bit\n", colorBits);
+  Tools::SafePrintf("  grGet(GR_WDEPTH_MIN_MAX)      : [%d, %d]\n", wDepthRange[0],
               wDepthRange[1]);
-  std::printf("  grGet(GR_ZDEPTH_MIN_MAX)      : [%d, %d]\\n", zDepthRange[0],
+  Tools::SafePrintf("  grGet(GR_ZDEPTH_MIN_MAX)      : [%d, %d]\n", zDepthRange[0],
               zDepthRange[1]);
-  std::printf(
-      "======================================================================"
-      "\\n");
+  Tools::SafePrintf(
+      "======================================================================\n");
 
   assert(fbiMem > 0);
   assert(tmuMem > 0);
@@ -282,7 +282,7 @@ int main(int argc, char* argv[]) {
   assert(wDepthRange[1] > wDepthRange[0]);
 
   // 2. Allocate texture and verify guTexDownloadMipMapLevel pointer advancement
-  std::printf("VERIFYING guTexDownloadMipMapLevel POINTER ADVANCEMENT:\\n");
+  Tools::SafePrintf("VERIFYING guTexDownloadMipMapLevel POINTER ADVANCEMENT:\n");
 
   GrMipMapId_t texId = guTexAllocateMemory(
       GR_TMU0, GR_MIPMAPLEVELMASK_BOTH, 64, 64, GR_TEXFMT_RGB_565,
@@ -311,9 +311,8 @@ int main(int argc, char* argv[]) {
   guTexDownloadMipMapLevel(texId, GR_LOD_64, &srcPointer);
   size_t diff64 = reinterpret_cast<const uint8_t*>(srcPointer) -
                   reinterpret_cast<const uint8_t*>(originalPointer);
-  std::printf(
-      "  After LOD 64 download: pointer advanced by %zu bytes (Expected: "
-      "%d)\\n",
+  Tools::SafePrintf(
+      "  After LOD 64 download: pointer advanced by %zu bytes (Expected: %d)\n",
       diff64, 64 * 64 * 2);
   assert(diff64 == 64 * 64 * 2);
 
@@ -321,9 +320,8 @@ int main(int argc, char* argv[]) {
   guTexDownloadMipMapLevel(texId, GR_LOD_32, &srcPointer);
   size_t diff32 = reinterpret_cast<const uint8_t*>(srcPointer) -
                   reinterpret_cast<const uint8_t*>(prevPointer);
-  std::printf(
-      "  After LOD 32 download: pointer advanced by %zu bytes (Expected: "
-      "%d)\\n",
+  Tools::SafePrintf(
+      "  After LOD 32 download: pointer advanced by %zu bytes (Expected: %d)\n",
       diff32, 32 * 32 * 2);
   assert(diff32 == 32 * 32 * 2);
 
@@ -331,14 +329,12 @@ int main(int argc, char* argv[]) {
   guTexDownloadMipMapLevel(texId, GR_LOD_16, &srcPointer);
   size_t diff16 = reinterpret_cast<const uint8_t*>(srcPointer) -
                   reinterpret_cast<const uint8_t*>(prevPointer);
-  std::printf(
-      "  After LOD 16 download: pointer advanced by %zu bytes (Expected: "
-      "%d)\\n",
+  Tools::SafePrintf(
+      "  After LOD 16 download: pointer advanced by %zu bytes (Expected: %d)\n",
       diff16, 16 * 16 * 2);
   assert(diff16 == 16 * 16 * 2);
-  std::printf(
-      "======================================================================"
-      "\\n");
+  Tools::SafePrintf(
+      "======================================================================\n");
 
   // 3. Render loop
   bool running = true;

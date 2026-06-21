@@ -30,4 +30,10 @@ namespace Tools {
         const std::string& toolName,
         const std::vector<std::string>& keybindings
     );
+
+    // Prints safely to an ostream under raw terminal modes by ensuring carriage returns
+    void SafePrint(std::ostream& os, const std::string& msg, bool newline = true);
+
+    // Formatted print (printf-like) that handles raw terminal modes safely
+    void SafePrintf(const char* format, ...);
 }

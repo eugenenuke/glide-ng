@@ -5,15 +5,16 @@
 #include <algorithm>
 #include <cstring>
 #include <cstdlib>
+#include <cstdarg>
 #include <glide.h>
 
 #if GLIDE_VERSION == 2
 #include <sst1vid.h>
 #endif
 
-namespace {
+namespace Tools {
     // Helper to print message safely under raw terminal modes by ensuring carriage returns
-    void SafePrint(std::ostream& os, const std::string& msg, bool newline = true) {
+    void SafePrint(std::ostream& os, const std::string& msg, bool newline) {
         std::string formatted;
         formatted.reserve(msg.size() * 2);
         for (size_t i = 0; i < msg.size(); ++i) {
@@ -29,6 +30,16 @@ namespace {
             os << "\r\n";
         }
         os.flush();
+    }
+
+    // Formatted print (printf-like) that handles raw terminal modes safely
+    void SafePrintf(const char* format, ...) {
+        va_list args;
+        va_start(args, format);
+        char buf[2048];
+        vsnprintf(buf, sizeof(buf), format, args);
+        va_end(args);
+        SafePrint(std::cout, buf, false);
     }
 
     template<typename T>
@@ -70,7 +81,6 @@ namespace {
             SafePrint(std::cout, ss.str());
         }
     }
-}
 
 // Define unified Glide resolution tables
 struct ResolutionInfo {
@@ -104,7 +114,7 @@ static ResolutionInfo resolutions[] = {
 
 static const int num_resolutions = sizeof(resolutions) / sizeof(resolutions[0]);
 
-Tools::ToolRunConfig Tools::InitializeAndParse(
+ToolRunConfig InitializeAndParse(
     int argc,
     char* argv[],
     const std::string& toolName,
@@ -430,3 +440,5 @@ Tools::ToolRunConfig Tools::InitializeAndParse(
 
     return runConfig;
 }
+} // namespace Tools
+
