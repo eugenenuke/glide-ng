@@ -369,6 +369,8 @@ When future agents or developers encounter regressions or divergent rendering be
 *   **Pristine Test Suite Paths**:
     *   Glide 2.x original C test suite: [refs/glide/glide2x/sst1/glide/tests/](file:///usr/local/google/home/eianiuk/gemini/3dfx/refs/glide/glide2x/sst1/glide/tests/)
     *   Glide 3.x original C test suite: [refs/glide/glide3x/h3/glide3/tests/](file:///usr/local/google/home/eianiuk/gemini/3dfx/refs/glide/glide3x/h3/glide3/tests/)
+    *   Alternative historical Glide 2.x/3.x test suites: [refs/3dfx-Glide-API/](file:///usr/local/google/home/eianiuk/gemini/3dfx/refs/3dfx-Glide-API/) (contains CVG and H3 target trees, e.g., `glide2x/cvg/glide/tests/`, `glide2x/h3/glide/tests/`, and `glide3x/h3/glide3/tests/`, which are highly valuable for side-by-side comparative code reviews to identify differences in test configurations).
+
 *   **Strict Guidelines**:
     *   > [!WARNING]
     *   > **NEVER** edit any `.c` or `.h` file inside the `refs/` directory. These are the gold-standard ground truths used to measure wrapper compatibility.
