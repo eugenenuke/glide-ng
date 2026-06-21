@@ -258,7 +258,35 @@ Tools::ToolRunConfig Tools::InitializeAndParse(
     SafePrint(std::cout, "----------------------------------------------------------------------");
     SafePrint(std::cout, "Active Driver:   " + std::string(rendererName ? rendererName : "Unknown"));
     const char* msaa_env = std::getenv("GLIDE_WRAPPER_MSAA");
-    std::string msaa_str = msaa_env ? std::string(msaa_env) + "x MSAA (Vulkan GPU Accelerated)" : "Disabled (1x / CPU Software Emulation)";
+    std::string msaa_str;
+    bool is_software = (rendererName && std::string(rendererName).find("Software") != std::string::npos);
+    
+    if (msaa_env && std::atoi(msaa_env) > 1) {
+        std::string samples = msaa_env;
+        if (is_software) {
+            msaa_str = samples + "x MSAA (CPU Software Emulated)";
+        } else {
+            std::string backend_desc = "GPU Accelerated";
+            if (rendererName) {
+                std::string r(rendererName);
+                if (r.find("Vulkan") != std::string::npos) backend_desc = "Vulkan GPU Accelerated";
+                else if (r.find("OpenGL") != std::string::npos) backend_desc = "OpenGL ES GPU Accelerated";
+            }
+            msaa_str = samples + "x MSAA (" + backend_desc + ")";
+        }
+    } else {
+        if (is_software) {
+            msaa_str = "Disabled (1x / CPU Software Rendering)";
+        } else {
+            std::string backend_desc = "GPU Accelerated";
+            if (rendererName) {
+                std::string r(rendererName);
+                if (r.find("Vulkan") != std::string::npos) backend_desc = "Vulkan GPU Accelerated";
+                else if (r.find("OpenGL") != std::string::npos) backend_desc = "OpenGL ES GPU Accelerated";
+            }
+            msaa_str = "Disabled (1x / " + backend_desc + ")";
+        }
+    }
     SafePrint(std::cout, "Anti-Aliasing:   " + msaa_str);
     SafePrint(std::cout, "----------------------------------------------------------------------");
 
