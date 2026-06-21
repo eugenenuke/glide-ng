@@ -38,3 +38,13 @@ tests/software_dumps/
 /scratch/
 /OpenGLid.*
 
+# Global compiled objects, binaries, logs, and caches
+*.o
+*.exe
+*.bin
+*.log
+
+# Submodule test suite outputs
+/ext_tests/openglide-ng/tests/
+
+

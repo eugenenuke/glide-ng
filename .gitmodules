@@ -1,0 +1,9 @@
+[submodule "refs/glide"]
+	path = refs/glide
+	url = ./refs/glide
+	ignore = untracked
+
+[submodule "ext_tests/openglide-ng"]
+	path = ext_tests/openglide-ng
+	url = ./ext_tests/openglide-ng
+	ignore = untracked
