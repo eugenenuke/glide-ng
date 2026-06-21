@@ -33,3 +33,8 @@ tests/software_dumps/
 .idea/
 .DS_Store
 .agents/
+
+# Scratch and local configuration files
+/scratch/
+/OpenGLid.*
+
