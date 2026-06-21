@@ -184,3 +184,22 @@ We have analyzed all 30 legacy tests and ordered them from simplest to most comp
 * [ ] Migrate `test03` (Gouraud Lines) and `test04` (Gouraud Triangles) to verify color interpolation.
 * [ ] Migrate `test10` (Culling), `test05` (Z Buffer), and `test06` (W Buffer) to verify depth operations.
 * [ ] Run comparisons, debug, and patch our Vulkan/software rasterizer as needed.
+
+---
+
+## 6. Stuck Task Prevention & Interactive Prompt Bypassing
+
+During automated or headless execution, background tasks must never block on user input or hang indefinitely.
+
+### A. The Startup Keypress Hook (`tlGetCH()`)
+* **The Issue**: Many legacy Glide tests (e.g., `test34`) default to a frame count of `-1`. In the test helper library (`tlib`), if `frames == -1`, it prompts `"Press A Key To Begin Test."` and calls `tlGetCH()` to block on terminal input.
+* **The Impact**: In automated, headless, or CI/CD pipelines, this blocks the execution context indefinitely, resulting in a hung agent or pipeline.
+* **The Solution**: 
+    1. **Command-Line Overrides**: Always pass `-n <positive_integer>` (e.g., `-n 120` or `-n 99999`) to the test executable to set an explicit frame limit and completely bypass the startup keyboard wait.
+    2. **Weak Symbol Mocking**: In the custom test harness (`tlib_shim.cpp`), mock the keyboard polling functions (`lin_kbhit` and `lin_getch` / `tlKbHit` and `tlGetCH`) to automatically return progress signals or immediately return no-op triggers.
+
+### B. Automated Pipeline Watchdog Timers
+* **The Best Practice**: When spawning background test runs or visual capturing loops:
+    1. **Set Bounded Runtimes**: Ensure all spawned background processes are launched with explicit timeouts (e.g., wrapping execution in `timeout 30s` in bash).
+    2. **Agent Watchdog Reminders**: If executing within an agentic loop, always schedule a companion one-shot watchdog timer (e.g., using the `schedule` tool set to 30–60 seconds) immediately upon launching a background task. This ensures the agent is forcefully woken up to diagnose and clean up any stuck processes if a driver deadlock or input hang occurs.
+
