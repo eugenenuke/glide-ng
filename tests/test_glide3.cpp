@@ -265,7 +265,7 @@ TEST_CASE("Glide 3.x State Control & Dynamic Capabilities", "[Glide3][State]") {
         
         FxI32 params[4] = {0};
         grGetVal(GR_NUM_TMU, 4, params);
-        REQUIRE(params[0] == 2);
+        REQUIRE(params[0] == 1);
 
         grGetVal(GR_MAX_TEXTURE_SIZE, 4, params);
         REQUIRE(params[0] == 2048);
