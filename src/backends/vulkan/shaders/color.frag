@@ -17,19 +17,22 @@ layout(push_constant) uniform PushConstants {
     uint alphaTestOp;
 
     // Block 1: Offset 16 (16 bytes)
-    vec4 constantColor;
-
-    // Block 2: Offset 32 (16 bytes)
+    uint constantColor;
     float alphaTestRef;
     float depthBias;
     uint fogMode;
+
+    // Block 2: Offset 32 (16 bytes)
     uint fogColor;
+    uint useTmuOow;
+    uint chromakeyEnabled;
+    uint chromakeyRangeMode;
 
     // Block 3: Offset 48 (16 bytes)
-    uint useTmuOow;
-    uint padding0;
-    uint padding1;
-    uint padding2;
+    uint chromakeyValue;
+    uint chromakeyRangeMin;
+    uint chromakeyRangeMax;
+    uint padding_fog;
 
     // Block 4: Offset 64 (64 bytes)
     uvec4 fogTable[4];
@@ -50,25 +53,55 @@ layout(push_constant) uniform PushConstants {
     uint alphaOther;
     uint alphaInvert;
     uint textureEnabled;
-    uint chromakeyEnabled;
+    uint padding_tmu;
 
     // Block 8: Offset 176 (16 bytes)
-    uint chromakeyRangeMode;
-    uint padding3;
-    uint padding4;
-    uint padding5;
+    uint texChromaEnabled[2];
+    uint texChromaRangeMode[2];
 
-    // Block 9: Offset 192 (16 bytes)
-    vec4 chromakeyValue;
+    // Block 9: Offset 192 (32 bytes)
+    vec4 texChromaMin[2];
 
-    // Block 10: Offset 208 (16 bytes)
-    vec4 chromakeyRangeMin;
-
-    // Block 11: Offset 224 (16 bytes)
-    vec4 chromakeyRangeMax;
+    // Block 10: Offset 224 (32 bytes)
+    vec4 texChromaMax[2];
 } pcs;
 
 layout(binding = 0) uniform sampler2D texSampler0;
+
+vec4 unpackRGBA(uint packedColor) {
+    return vec4(
+        float((packedColor >> 0u) & 0xFFu) / 255.0,
+        float((packedColor >> 8u) & 0xFFu) / 255.0,
+        float((packedColor >> 16u) & 0xFFu) / 255.0,
+        float((packedColor >> 24u) & 0xFFu) / 255.0
+    );
+}
+
+bool IsColorInRange(vec3 color, vec3 minColor, vec3 maxColor, uint rangeMode) {
+    bool rangeEnabled = ((rangeMode >> 28u) & 1u) == 1u;
+    if (rangeEnabled) {
+        bool rMatch = (color.r >= minColor.r && color.r <= maxColor.r);
+        bool gMatch = (color.g >= minColor.g && color.g <= maxColor.g);
+        bool bMatch = (color.b >= minColor.b && color.b <= maxColor.b);
+        
+        bool blueExcl  = ((rangeMode >> 24u) & 1u) == 1u;
+        bool greenExcl = ((rangeMode >> 25u) & 1u) == 1u;
+        bool redExcl   = ((rangeMode >> 26u) & 1u) == 1u;
+        
+        bool rRes = rMatch != redExcl;
+        bool gRes = gMatch != greenExcl;
+        bool bRes = bMatch != blueExcl;
+        
+        bool unionMode = ((rangeMode >> 27u) & 1u) == 1u;
+        if (unionMode) {
+            return rRes || gRes || bRes;
+        } else {
+            return rRes && gRes && bRes;
+        }
+    } else {
+        return distance(color, minColor) < 0.01;
+    }
+}
 
 const float s_tableIndexToW[64] = float[](
     1.000000,      1.142857,      1.333333,      1.600000, 
@@ -90,6 +123,12 @@ const float s_tableIndexToW[64] = float[](
 );
 
 void main() {
+    // Unpack colors at the start of main()
+    vec4 constantColor = unpackRGBA(pcs.constantColor);
+    vec4 chromakeyValue = unpackRGBA(pcs.chromakeyValue);
+    vec4 chromakeyRangeMin = unpackRGBA(pcs.chromakeyRangeMin);
+    vec4 chromakeyRangeMax = unpackRGBA(pcs.chromakeyRangeMax);
+
     // Near-plane clipping:
     // 1. If W-buffering is active (pcs.depthBufferMode == 2), the W-buffer cannot represent values < 1.0, so we clip at W < 1.0 (fragOOW > 1.0).
     // 2. If texturing is enabled (pcs.textureEnabled == 1), we must clip if the vertex is behind the camera (W <= 0, i.e. fragOOW <= 0.0) to prevent division by negative.
@@ -112,17 +151,24 @@ void main() {
         uv.x *= (maxDim / tw);
         uv.y *= (maxDim / th);
         texColor = texture(texSampler0, uv);
+        
+        // Texture-level chromakeying for TMU0
+        if (pcs.texChromaEnabled[0] == 1u) {
+            if (IsColorInRange(texColor.rgb, pcs.texChromaMin[0].rgb, pcs.texChromaMax[0].rgb, pcs.texChromaRangeMode[0])) {
+                texColor = vec4(0.0);
+            }
+        }
     }
 
     // 2. Route Alpha Combiner inputs
     float aLocal = 1.0;
     if (pcs.alphaLocal == 0u) aLocal = fragColor.a;
-    else if (pcs.alphaLocal == 1u) aLocal = pcs.constantColor.a;
+    else if (pcs.alphaLocal == 1u) aLocal = constantColor.a;
 
     float aOther = 1.0;
     if (pcs.alphaOther == 0u) aOther = fragColor.a;
     else if (pcs.alphaOther == 1u) aOther = texColor.a;
-    else if (pcs.alphaOther == 2u) aOther = pcs.constantColor.a;
+    else if (pcs.alphaOther == 2u) aOther = constantColor.a;
 
     // 3. Evaluate Alpha Combiner Factor
     float factA = 0.0;
@@ -147,12 +193,12 @@ void main() {
     // 5. Route Color Combiner inputs
     vec3 cLocal = vec3(0.0);
     if (pcs.colorLocal == 0u) cLocal = fragColor.rgb;
-    else if (pcs.colorLocal == 1u) cLocal = pcs.constantColor.rgb;
+    else if (pcs.colorLocal == 1u) cLocal = constantColor.rgb;
 
     vec3 cOther = vec3(0.0);
     if (pcs.colorOther == 0u) cOther = fragColor.rgb;
     else if (pcs.colorOther == 1u) cOther = texColor.rgb;
-    else if (pcs.colorOther == 2u) cOther = pcs.constantColor.rgb;
+    else if (pcs.colorOther == 2u) cOther = constantColor.rgb;
 
     // 6. Evaluate Color Combiner Factor
     vec3 factC = vec3(0.0);
@@ -183,36 +229,16 @@ void main() {
 
     // Milestone 10: Chromakey Emulation
     if (pcs.chromakeyEnabled == 1u) {
-        vec3 chromaTestColor = col.rgb;
+        vec3 chromaTestColor = (pcs.textureEnabled == 1u) ? cOther : col.rgb;
         bool rangeEnabled = ((pcs.chromakeyRangeMode >> 28u) & 1u) == 1u;
+        bool discardPixel = false;
         if (rangeEnabled) {
-            bool rMatch = (chromaTestColor.r >= pcs.chromakeyRangeMin.r && chromaTestColor.r <= pcs.chromakeyRangeMax.r);
-            bool gMatch = (chromaTestColor.g >= pcs.chromakeyRangeMin.g && chromaTestColor.g <= pcs.chromakeyRangeMax.g);
-            bool bMatch = (chromaTestColor.b >= pcs.chromakeyRangeMin.b && chromaTestColor.b <= pcs.chromakeyRangeMax.b);
-            
-            bool blueExcl  = ((pcs.chromakeyRangeMode >> 24u) & 1u) == 1u;
-            bool greenExcl = ((pcs.chromakeyRangeMode >> 25u) & 1u) == 1u;
-            bool redExcl   = ((pcs.chromakeyRangeMode >> 26u) & 1u) == 1u;
-            
-            bool rRes = rMatch != redExcl;
-            bool gRes = gMatch != greenExcl;
-            bool bRes = bMatch != blueExcl;
-            
-            bool unionMode = ((pcs.chromakeyRangeMode >> 27u) & 1u) == 1u;
-            bool discardPixel = false;
-            if (unionMode) {
-                discardPixel = rRes || gRes || bRes;
-            } else {
-                discardPixel = rRes && gRes && bRes;
-            }
-            
-            if (discardPixel) {
-                discard;
-            }
+            discardPixel = IsColorInRange(chromaTestColor, chromakeyRangeMin.rgb, chromakeyRangeMax.rgb, pcs.chromakeyRangeMode);
         } else {
-            if (distance(chromaTestColor, pcs.chromakeyValue.rgb) < 0.01) {
-                discard;
-            }
+            discardPixel = IsColorInRange(chromaTestColor, chromakeyValue.rgb, chromakeyValue.rgb, pcs.chromakeyRangeMode);
+        }
+        if (discardPixel) {
+            discard;
         }
     }
 

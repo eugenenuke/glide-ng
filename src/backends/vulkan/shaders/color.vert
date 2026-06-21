@@ -21,19 +21,22 @@ layout(push_constant) uniform PushConstants {
     uint alphaTestOp;
 
     // Block 1: Offset 16 (16 bytes)
-    vec4 constantColor;
-
-    // Block 2: Offset 32 (16 bytes)
+    uint constantColor;
     float alphaTestRef;
     float depthBias;
     uint fogMode;
+
+    // Block 2: Offset 32 (16 bytes)
     uint fogColor;
+    uint useTmuOow;
+    uint chromakeyEnabled;
+    uint chromakeyRangeMode;
 
     // Block 3: Offset 48 (16 bytes)
-    uint useTmuOow;
-    uint padding0;
-    uint padding1;
-    uint padding2;
+    uint chromakeyValue;
+    uint chromakeyRangeMin;
+    uint chromakeyRangeMax;
+    uint texChromaEnabled0;
 
     // Block 4: Offset 64 (64 bytes)
     uvec4 fogTable[4];
@@ -54,22 +57,19 @@ layout(push_constant) uniform PushConstants {
     uint alphaOther;
     uint alphaInvert;
     uint textureEnabled;
-    uint chromakeyEnabled;
+    uint texChromaEnabled1;
 
     // Block 8: Offset 176 (16 bytes)
-    uint chromakeyRangeMode;
-    uint padding3;
-    uint padding4;
-    uint padding5;
+    uint texChromaRangeMode0;
+    uint texChromaRangeMode1;
+    uint texChromaMin0;
+    uint texChromaMin1;
 
     // Block 9: Offset 192 (16 bytes)
-    vec4 chromakeyValue;
-
-    // Block 10: Offset 208 (16 bytes)
-    vec4 chromakeyRangeMin;
-
-    // Block 11: Offset 224 (16 bytes)
-    vec4 chromakeyRangeMax;
+    uint texChromaMax0;
+    uint texChromaMax1;
+    uint padding0;
+    uint padding1;
 } pcs;
 
 void main() {

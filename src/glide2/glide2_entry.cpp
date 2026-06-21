@@ -34,6 +34,16 @@
 #define GR_VERSION                      0xa4
 #endif
 
+#ifndef GR_TEXFMT_P_8_6666
+#define GR_TEXFMT_P_8_6666              0x6
+#endif
+#ifndef GR_TEXFMT_P_8_6666_EXT
+#define GR_TEXFMT_P_8_6666_EXT          0x6
+#endif
+#ifndef GR_TEXTABLE_PALETTE_6666_EXT
+#define GR_TEXTABLE_PALETTE_6666_EXT    0x3
+#endif
+
 extern "C" {
 
 namespace {
@@ -66,6 +76,15 @@ namespace {
     uint32_t s_texAlphaFunc[2]  = {0, 0};
     uint32_t s_texAlphaFactor[2]= {0, 0};
     uint32_t s_boundTex[2]      = {0xFFFFFFFF, 0xFFFFFFFF};
+    struct TexChromaState {
+        uint32_t mode;
+        GrColor_t minColor;
+        GrColor_t maxColor;
+    };
+    static TexChromaState s_texChromaState[2] = {
+        { 0, 0, 0 },
+        { 0, 0, 0 }
+    };
     uint32_t s_stwHintMask      = 0; // Default: 0 (GR_STWHINT_W_OK)
 
     uint32_t s_constantColor = 0xFFFFFFFF;
@@ -203,6 +222,11 @@ struct GlideWrapperState {
     uint32_t chromakeyRangeMin;
     uint32_t chromakeyRangeMax;
     uint32_t chromakeyRangeMode;
+    struct {
+        uint32_t mode;
+        GrColor_t minColor;
+        GrColor_t maxColor;
+    } texChromaState[2];
 };
 
 static_assert(sizeof(GlideWrapperState) <= sizeof(GrState), "GlideWrapperState exceeds GrState footprint!");
@@ -629,11 +653,18 @@ FX_ENTRY const char* FX_CALL grGetString(FxU32 pname) {
             return "3dfx glide-ng Vulkan Wrapper";
         }
         case GR_EXTENSION: {
-            // Only advertise extensions that are fully implemented in the backend (no stubs!)
+            static std::string s_extensions;
+            s_extensions = "";
             if (reg.IsFunctionAvailable("grChromakeyRangeExt")) {
-                return "CHROMARANGE";
+                s_extensions += "CHROMARANGE ";
             }
-            return "";
+            if (reg.IsFunctionAvailable("grTexChromaModeExt")) {
+                s_extensions += "TEXCHROMA ";
+            }
+            if (!s_extensions.empty() && s_extensions.back() == ' ') {
+                s_extensions.pop_back();
+            }
+            return s_extensions.c_str();
         }
         default: return "Unknown";
     }
@@ -716,6 +747,11 @@ FX_ENTRY void FX_CALL grGlideGetState(GrState* state) {
     ws->chromakeyRangeMin = s_chromakeyRangeMin;
     ws->chromakeyRangeMax = s_chromakeyRangeMax;
     ws->chromakeyRangeMode = s_chromakeyRangeMode;
+    for (int i = 0; i < 2; ++i) {
+        ws->texChromaState[i].mode = s_texChromaState[i].mode;
+        ws->texChromaState[i].minColor = s_texChromaState[i].minColor;
+        ws->texChromaState[i].maxColor = s_texChromaState[i].maxColor;
+    }
 }
 
 FX_ENTRY void FX_CALL grGlideSetState(const GrState* state) {
@@ -771,6 +807,11 @@ FX_ENTRY void FX_CALL grGlideSetState(const GrState* state) {
     s_chromakeyRangeMin = ws->chromakeyRangeMin;
     s_chromakeyRangeMax = ws->chromakeyRangeMax;
     s_chromakeyRangeMode = ws->chromakeyRangeMode;
+    for (int i = 0; i < 2; ++i) {
+        s_texChromaState[i].mode = ws->texChromaState[i].mode;
+        s_texChromaState[i].minColor = ws->texChromaState[i].minColor;
+        s_texChromaState[i].maxColor = ws->texChromaState[i].maxColor;
+    }
 
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
         b->SetDepthState(s_depthMode, s_depthCompare, s_depthMask, s_depthBias);
@@ -794,6 +835,8 @@ FX_ENTRY void FX_CALL grGlideSetState(const GrState* state) {
         for (uint32_t tmu = 0; tmu < 2; ++tmu) {
             b->SetTexCombinerMode(tmu, s_texRgbFunc[tmu], s_texRgbFactor[tmu], s_texAlphaFunc[tmu], s_texAlphaFactor[tmu]);
             b->BindTexture(tmu, s_boundTex[tmu], s_clampS[tmu], s_clampT[tmu], s_minFilter[tmu], s_magFilter[tmu]);
+            b->SetTexChromakeyMode(tmu, s_texChromaState[tmu].mode);
+            b->SetTexChromakeyRange(tmu, s_texChromaState[tmu].minColor, s_texChromaState[tmu].maxColor, s_texChromaState[tmu].mode);
         }
     }
 }
@@ -1391,7 +1434,7 @@ FX_ENTRY FxBool FX_CALL gu3dfLoad(const char* filename, Gu3dfInfo* info) {
     }
 
     // Copy palette if applicable
-    if (info->header.format == GR_TEXFMT_P_8) {
+    if (info->header.format == GR_TEXFMT_P_8 || info->header.format == GR_TEXFMT_P_8_6666) {
         for (int i = 0; i < 256; ++i) {
             info->table.palette.data[i] = sharedInfo.palette[i];
         }
@@ -1756,6 +1799,8 @@ FX_ENTRY void FX_CALL grCheckForRoom(FxI32 n) {
 
 // Forward declarations of Glide 2.x Extensions & Stubs
 FX_ENTRY void FX_CALL grChromakeyRangeExt(GrColor_t minColor, GrColor_t maxColor, GrChromaRangeMode_t mode);
+FX_ENTRY void FX_CALL grTexChromaModeExt(GrChipID_t tmu, uint32_t mode);
+FX_ENTRY void FX_CALL grTexChromaRangeExt(GrChipID_t tmu, GrColor_t minColor, GrColor_t maxColor, uint32_t mode);
 FX_ENTRY void FX_CALL grColorMaskExt(FxBool r, FxBool g, FxBool b, FxBool a);
 FX_ENTRY void FX_CALL grStencilFuncExt(FxU32 func, FxU32 ref, FxU32 mask);
 FX_ENTRY void FX_CALL grStencilMaskExt(FxU32 mask);
@@ -1779,6 +1824,12 @@ FX_ENTRY GrProc FX_CALL grGetProcAddress(char *procName) {
 
     if (std::strcmp(procName, "grChromakeyRangeExt") == 0) {
         return (GrProc)grChromakeyRangeExt;
+    }
+    if (std::strcmp(procName, "grTexChromaModeExt") == 0) {
+        return (GrProc)grTexChromaModeExt;
+    }
+    if (std::strcmp(procName, "grTexChromaRangeExt") == 0) {
+        return (GrProc)grTexChromaRangeExt;
     }
     if (std::strcmp(procName, "grSplashCb") == 0) {
         return (GrProc)grSplashCb;
@@ -1825,6 +1876,38 @@ FX_ENTRY void FX_CALL grChromakeyRangeExt(GrColor_t minColor, GrColor_t maxColor
     s_chromakeyRangeMode = mode;
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
         b->SetChromakeyRange(minColor, maxColor, mode);
+    }
+}
+
+FX_ENTRY void FX_CALL grTexChromaModeExt(GrChipID_t tmu, uint32_t mode) {
+    EnsureEngineInitialized();
+    if (!GlideWrapper::EmulationRegistry::GetInstance().IsFunctionAvailable("grTexChromaModeExt")) {
+        GLIDE_LOG(WARN, "Frontend", "GATED CALL: grTexChromaModeExt called but gated out under active version/device profile.");
+        return;
+    }
+    GLIDE_LOG(DEBUG, "Frontend", "grTexChromaModeExt (Glide 2.x): tmu=" << tmu << ", mode=" << mode);
+    if (tmu < 2) {
+        s_texChromaState[tmu].mode = mode;
+        if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
+            b->SetTexChromakeyMode(tmu, mode);
+        }
+    }
+}
+
+FX_ENTRY void FX_CALL grTexChromaRangeExt(GrChipID_t tmu, GrColor_t minColor, GrColor_t maxColor, uint32_t mode) {
+    EnsureEngineInitialized();
+    if (!GlideWrapper::EmulationRegistry::GetInstance().IsFunctionAvailable("grTexChromaRangeExt")) {
+        GLIDE_LOG(WARN, "Frontend", "GATED CALL: grTexChromaRangeExt called but gated out under active version/device profile.");
+        return;
+    }
+    GLIDE_LOG(DEBUG, "Frontend", "grTexChromaRangeExt (Glide 2.x): tmu=" << tmu << ", min=0x" << std::hex << minColor << ", max=" << maxColor << ", mode=" << std::dec << mode);
+    if (tmu < 2) {
+        s_texChromaState[tmu].mode = mode;
+        s_texChromaState[tmu].minColor = minColor;
+        s_texChromaState[tmu].maxColor = maxColor;
+        if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
+            b->SetTexChromakeyRange(tmu, minColor, maxColor, mode);
+        }
     }
 }
 

@@ -38,6 +38,7 @@ static int GetBytesPerTexel(int format) {
         case FORMAT_INTENSITY_8:
         case FORMAT_ALPHA_8:
         case FORMAT_P_8:
+        case FORMAT_P_8_6666:
             return 1;
         case FORMAT_RGB_565:
         case FORMAT_ARGB_1555:
@@ -84,6 +85,7 @@ bool Parse3dfHeader(const std::string& filename, Shared3dfHeader& header, uint32
         { "ARGB4444", FORMAT_ARGB_4444 },
         { "AI88",     FORMAT_ALPHA_INTENSITY_88 },
         { "P8",       FORMAT_P_8 },
+        { "P6666",    FORMAT_P_8_6666 },
         { "AP88",     FORMAT_AP_88 }
     };
     for (const auto& m : maps) {
@@ -148,12 +150,12 @@ bool Load3dfFile(const std::string& filename, Shared3dfInfo& info) {
     Read3dfHeader(fp, buffer, sizeof(buffer), version, formatStr, &smallLod, &largeLod, &aspectW, &aspectH);
 
     // Load palette if applicable
-    if (info.header.format == FORMAT_P_8) {
+    if (info.header.format == FORMAT_P_8 || info.header.format == FORMAT_P_8_6666) {
         info.palette.resize(256);
         for (int i = 0; i < 256; ++i) {
             info.palette[i] = ReadBE32(fp);
         }
-        GLIDE_LOG(DEBUG, "3dfParser", "Load3dfFile: Loaded 256 palette entries for P8 texture.");
+        GLIDE_LOG(DEBUG, "3dfParser", "Load3dfFile: Loaded 256 palette entries for paletted texture.");
     }
 
     // Load raw pixel bytes

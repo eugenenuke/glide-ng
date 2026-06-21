@@ -14,6 +14,7 @@ enum SharedTextureFormat {
     FORMAT_ARGB_4444 = 12,
     FORMAT_ALPHA_INTENSITY_88 = 13,
     FORMAT_P_8 = 5,
+    FORMAT_P_8_6666 = 6,
     FORMAT_AP_88 = 14
 };
 

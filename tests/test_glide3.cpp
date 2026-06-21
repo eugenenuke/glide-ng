@@ -1837,3 +1837,292 @@ TEST_CASE("Software Backend Anti-Aliasing (AA) Modes & Verification", "[Software
 #endif
 
 
+
+#ifdef __linux__
+TEST_CASE("Glide 3.x Texture Coordinate Mirroring (TEXMIRROR) [Glide3][TexMirror]", "[Glide3][TexMirror]") {
+    void* handle = OpenGlide3Handle();
+    REQUIRE(handle != nullptr);
+
+    using InitFunc = void(*)(void);
+    using SelectSstFunc = void(*)(int);
+    using OpenWinFunc = FxU32(*)(FxU32, FxI32, FxI32, FxI32, FxI32, int, int);
+    using CloseWinFunc = void(*)(void);
+    using BufferClearFunc = void(*)(GrColor_t, GrAlpha_t, FxU32);
+    using DrawTriangleFunc = void(*)(const void*, const void*, const void*);
+    using LfbReadFunc = FxBool(*)(GrBuffer_t, FxU32, FxU32, FxU32, FxU32, FxU32, void*);
+    using VertexLayoutFunc = void(*)(FxU32, FxU32, FxBool);
+    using TexDownloadMipMapFunc = void(*)(GrChipID_t, FxU32, FxU32, GrTexInfo*);
+    using TexSourceFunc = void(*)(GrChipID_t, FxU32, FxU32, GrTexInfo*);
+    using TexCombineFunc = void(*)(GrChipID_t, GrCombineFunction_t, GrCombineFactor_t, GrCombineFunction_t, GrCombineFactor_t, FxBool, FxBool);
+    using ColorCombineFunc = void(*)(GrCombineFunction_t, GrCombineFactor_t, GrCombineLocal_t, GrCombineOther_t, FxBool);
+    using TexClampModeFunc = void(*)(GrChipID_t, GrTextureClampMode_t, GrTextureClampMode_t);
+    using TexFilterModeFunc = void(*)(GrChipID_t, GrTextureFilterMode_t, GrTextureFilterMode_t);
+    using ShutdownFunc = void(*)(void);
+
+    auto glideInit = reinterpret_cast<InitFunc>(::dlsym(handle, "grGlideInit"));
+    auto sstSelect = reinterpret_cast<SelectSstFunc>(::dlsym(handle, "grSstSelect"));
+    auto winOpen   = reinterpret_cast<OpenWinFunc>(::dlsym(handle, "grSstWinOpen"));
+    auto winClose  = reinterpret_cast<CloseWinFunc>(::dlsym(handle, "grSstWinClose"));
+    auto bufferClear = reinterpret_cast<BufferClearFunc>(::dlsym(handle, "grBufferClear"));
+    auto drawTri   = reinterpret_cast<DrawTriangleFunc>(::dlsym(handle, "grDrawTriangle"));
+    auto readLfb   = reinterpret_cast<LfbReadFunc>(::dlsym(handle, "grLfbReadRegion"));
+    auto vertexLayout = reinterpret_cast<VertexLayoutFunc>(::dlsym(handle, "grVertexLayout"));
+    auto texDownload = reinterpret_cast<TexDownloadMipMapFunc>(::dlsym(handle, "grTexDownloadMipMap"));
+    auto texSource = reinterpret_cast<TexSourceFunc>(::dlsym(handle, "grTexSource"));
+    auto texCombine = reinterpret_cast<TexCombineFunc>(::dlsym(handle, "grTexCombine"));
+    auto colorCombine = reinterpret_cast<ColorCombineFunc>(::dlsym(handle, "grColorCombine"));
+    auto texClamp = reinterpret_cast<TexClampModeFunc>(::dlsym(handle, "grTexClampMode"));
+    auto texFilter = reinterpret_cast<TexFilterModeFunc>(::dlsym(handle, "grTexFilterMode"));
+    auto shutdown  = reinterpret_cast<ShutdownFunc>(::dlsym(handle, "grGlideShutdown"));
+
+    REQUIRE(glideInit != nullptr);
+    REQUIRE(winOpen != nullptr);
+    REQUIRE(bufferClear != nullptr);
+    REQUIRE(drawTri != nullptr);
+    REQUIRE(readLfb != nullptr);
+    REQUIRE(vertexLayout != nullptr);
+    REQUIRE(texDownload != nullptr);
+    REQUIRE(texSource != nullptr);
+    REQUIRE(texCombine != nullptr);
+    REQUIRE(colorCombine != nullptr);
+    REQUIRE(texClamp != nullptr);
+    REQUIRE(texFilter != nullptr);
+    REQUIRE(shutdown != nullptr);
+
+    // Force headless software backend
+    ::setenv("GLIDE_WRAPPER_BACKEND", "software", 1);
+    ::setenv("GLIDE_WRAPPER_LOG_LEVEL", "3", 1);
+
+    glideInit();
+    sstSelect(0);
+    FxU32 ctx = winOpen(0, 8, 0, 0, 0, 2, 1); // 800x600 resolution
+    REQUIRE(ctx != 0);
+
+    vertexLayout(0x01, 0, 1);  // GR_PARAM_XY at 0
+    vertexLayout(0x02, 8, 1);  // GR_PARAM_Z at 8
+    vertexLayout(0x20, 12, 1); // GR_PARAM_RGB at 12
+    vertexLayout(0x10, 28, 1); // GR_PARAM_A at 28
+    vertexLayout(0x03, 32, 1); // GR_PARAM_W at 32
+    vertexLayout(0x40, 36, 1); // GR_PARAM_ST0 at 36
+
+    bufferClear(0xFF000000, 0, 0xFFFFFFFF); // Clear to Black
+
+    // 1. Create a 2x2 texture of format GR_TEXFMT_ALPHA_8 (checkerboard pattern)
+    // Pixel (0,0)=255, Pixel (1,0)=0, Pixel (0,1)=0, Pixel (1,1)=255
+    std::vector<uint8_t> texData = {
+        255, 0,
+        0, 255
+    };
+
+    GrTexInfo texInfo;
+    texInfo.smallLod = 1; // 2^1 = 2
+    texInfo.largeLod = 1;
+    texInfo.aspectRatio = 1; // 1:1
+    texInfo.format = GR_TEXFMT_ALPHA_8;
+    texInfo.data = texData.data();
+
+    texDownload(0, 0x00002000, 0, &texInfo);
+    texSource(0, 0x00002000, 0, &texInfo);
+    
+    // Set clamp mode to MIRROR (2)
+    #define GR_TEXTURECLAMP_MIRROR_EXT 2
+    texClamp(0, (GrTextureClampMode_t)GR_TEXTURECLAMP_MIRROR_EXT, (GrTextureClampMode_t)GR_TEXTURECLAMP_MIRROR_EXT);
+    texFilter(0, GR_TEXTUREFILTER_POINT_SAMPLED, GR_TEXTUREFILTER_POINT_SAMPLED);
+
+    texCombine(0, GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE, GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE, FXFALSE, FXFALSE);
+    colorCombine(GR_COMBINE_FUNCTION_SCALE_OTHER, GR_COMBINE_FACTOR_ONE, GR_COMBINE_LOCAL_NONE, GR_COMBINE_OTHER_TEXTURE, FXFALSE);
+
+    // Render a quad from (300, 300) to (500, 500) where texture coordinates span [0, 512] (2.0 repetitions)
+    StandardVert v0{300.0f, 300.0f, 0.5f, 255.0f, 255.0f, 255.0f, 1.0f, 255.0f, 1.0f,   0.0f,   0.0f, 1.0f};
+    StandardVert v1{500.0f, 300.0f, 0.5f, 255.0f, 255.0f, 255.0f, 1.0f, 255.0f, 1.0f, 512.0f,   0.0f, 1.0f};
+    StandardVert v2{500.0f, 500.0f, 0.5f, 255.0f, 255.0f, 255.0f, 1.0f, 255.0f, 1.0f, 512.0f, 512.0f, 1.0f};
+    StandardVert v3{300.0f, 500.0f, 0.5f, 255.0f, 255.0f, 255.0f, 1.0f, 255.0f, 1.0f,   0.0f, 512.0f, 1.0f};
+
+    drawTri(&v0, &v1, &v2);
+    drawTri(&v0, &v2, &v3);
+
+    // Read back pixels at key horizontal locations along y=400:
+    uint32_t px325 = 0, px375 = 0, px425 = 0, px475 = 0;
+    
+    REQUIRE(readLfb(GR_BUFFER_BACKBUFFER, 325, 400, 1, 1, 4, &px325) == FXTRUE);
+    REQUIRE(readLfb(GR_BUFFER_BACKBUFFER, 375, 400, 1, 1, 4, &px375) == FXTRUE);
+    REQUIRE(readLfb(GR_BUFFER_BACKBUFFER, 425, 400, 1, 1, 4, &px425) == FXTRUE);
+    REQUIRE(readLfb(GR_BUFFER_BACKBUFFER, 475, 400, 1, 1, 4, &px475) == FXTRUE);
+
+    uint8_t r325 = (px325 >> 16) & 0xFF;
+    uint8_t r375 = (px375 >> 16) & 0xFF;
+    uint8_t r425 = (px425 >> 16) & 0xFF;
+    uint8_t r475 = (px475 >> 16) & 0xFF;
+
+    CHECK(r325 >= 250);
+    CHECK(r375 <= 5);
+    CHECK(r425 <= 5);   // Mirroring verified: 320 maps to 192 (Black)
+    CHECK(r475 >= 250); // Mirroring verified: 448 maps to 64 (White)
+
+    winClose();
+    shutdown();
+    ::unsetenv("GLIDE_WRAPPER_BACKEND");
+}
+
+TEST_CASE("Glide 3.x Perfect Bilinear Halo-Free Texture Chromakeying (TEXCHROMA) [Glide3][TexChroma]", "[Glide3][TexChroma]") {
+    void* handle = OpenGlide3Handle();
+    REQUIRE(handle != nullptr);
+
+    using InitFunc = void(*)(void);
+    using SelectSstFunc = void(*)(int);
+    using OpenWinFunc = FxU32(*)(FxU32, FxI32, FxI32, FxI32, FxI32, int, int);
+    using CloseWinFunc = void(*)(void);
+    using BufferClearFunc = void(*)(GrColor_t, GrAlpha_t, FxU32);
+    using DrawTriangleFunc = void(*)(const void*, const void*, const void*);
+    using LfbReadFunc = FxBool(*)(GrBuffer_t, FxU32, FxU32, FxU32, FxU32, FxU32, void*);
+    using VertexLayoutFunc = void(*)(FxU32, FxU32, FxBool);
+    using TexDownloadMipMapFunc = void(*)(GrChipID_t, FxU32, FxU32, GrTexInfo*);
+    using TexSourceFunc = void(*)(GrChipID_t, FxU32, FxU32, GrTexInfo*);
+    using TexCombineFunc = void(*)(GrChipID_t, GrCombineFunction_t, GrCombineFactor_t, GrCombineFunction_t, GrCombineFactor_t, FxBool, FxBool);
+    using ColorCombineFunc = void(*)(GrCombineFunction_t, GrCombineFactor_t, GrCombineLocal_t, GrCombineOther_t, FxBool);
+    using AlphaCombineFunc = void(*)(GrCombineFunction_t, GrCombineFactor_t, GrCombineLocal_t, GrCombineOther_t, FxBool);
+    using TexClampModeFunc = void(*)(GrChipID_t, GrTextureClampMode_t, GrTextureClampMode_t);
+    using TexFilterModeFunc = void(*)(GrChipID_t, GrTextureFilterMode_t, GrTextureFilterMode_t);
+    using GetProcFunc = void*(*)(const char*); // Fixed to void* to prevent 64-bit truncation!
+    using ShutdownFunc = void(*)(void);
+
+    auto glideInit = reinterpret_cast<InitFunc>(::dlsym(handle, "grGlideInit"));
+    auto sstSelect = reinterpret_cast<SelectSstFunc>(::dlsym(handle, "grSstSelect"));
+    auto winOpen   = reinterpret_cast<OpenWinFunc>(::dlsym(handle, "grSstWinOpen"));
+    auto winClose  = reinterpret_cast<CloseWinFunc>(::dlsym(handle, "grSstWinClose"));
+    auto bufferClear = reinterpret_cast<BufferClearFunc>(::dlsym(handle, "grBufferClear"));
+    auto drawTri   = reinterpret_cast<DrawTriangleFunc>(::dlsym(handle, "grDrawTriangle"));
+    auto readLfb   = reinterpret_cast<LfbReadFunc>(::dlsym(handle, "grLfbReadRegion"));
+    auto vertexLayout = reinterpret_cast<VertexLayoutFunc>(::dlsym(handle, "grVertexLayout"));
+    auto texDownload = reinterpret_cast<TexDownloadMipMapFunc>(::dlsym(handle, "grTexDownloadMipMap"));
+    auto texSource = reinterpret_cast<TexSourceFunc>(::dlsym(handle, "grTexSource"));
+    auto texCombine = reinterpret_cast<TexCombineFunc>(::dlsym(handle, "grTexCombine"));
+    auto colorCombine = reinterpret_cast<ColorCombineFunc>(::dlsym(handle, "grColorCombine"));
+    auto alphaCombine = reinterpret_cast<AlphaCombineFunc>(::dlsym(handle, "grAlphaCombine"));
+    auto texClamp = reinterpret_cast<TexClampModeFunc>(::dlsym(handle, "grTexClampMode"));
+    auto texFilter = reinterpret_cast<TexFilterModeFunc>(::dlsym(handle, "grTexFilterMode"));
+    auto getProc   = reinterpret_cast<GetProcFunc>(::dlsym(handle, "grGetProcAddress"));
+    auto shutdown  = reinterpret_cast<ShutdownFunc>(::dlsym(handle, "grGlideShutdown"));
+
+    REQUIRE(glideInit != nullptr);
+    REQUIRE(winOpen != nullptr);
+    REQUIRE(bufferClear != nullptr);
+    REQUIRE(drawTri != nullptr);
+    REQUIRE(readLfb != nullptr);
+    REQUIRE(vertexLayout != nullptr);
+    REQUIRE(texDownload != nullptr);
+    REQUIRE(texSource != nullptr);
+    REQUIRE(texCombine != nullptr);
+    REQUIRE(colorCombine != nullptr);
+    REQUIRE(alphaCombine != nullptr);
+    REQUIRE(texClamp != nullptr);
+    REQUIRE(texFilter != nullptr);
+    REQUIRE(getProc != nullptr);
+    REQUIRE(shutdown != nullptr);
+
+    // Lookup texture chromakey extension functions
+    auto texChromaMode = reinterpret_cast<void(*)(GrChipID_t, FxU32)>(getProc("grTexChromaModeExt"));
+    auto texChromaRange = reinterpret_cast<void(*)(GrChipID_t, GrColor_t, GrColor_t, FxU32)>(getProc("grTexChromaRangeExt"));
+    REQUIRE(texChromaMode != nullptr);
+    REQUIRE(texChromaRange != nullptr);
+
+    // Force headless software backend
+    ::setenv("GLIDE_WRAPPER_BACKEND", "software", 1);
+    ::setenv("GLIDE_WRAPPER_LOG_LEVEL", "3", 1);
+
+    glideInit();
+    sstSelect(0);
+    FxU32 ctx = winOpen(0, 8, 0, 0, 0, 2, 1); // 800x600 resolution
+    REQUIRE(ctx != 0);
+
+    vertexLayout(0x01, 0, 1);  // GR_PARAM_XY at 0
+    vertexLayout(0x02, 8, 1);  // GR_PARAM_Z at 8
+    vertexLayout(0x20, 12, 1); // GR_PARAM_RGB at 12
+    vertexLayout(0x10, 28, 1); // GR_PARAM_A at 28
+    vertexLayout(0x03, 32, 1); // GR_PARAM_W at 32
+    vertexLayout(0x40, 36, 1); // GR_PARAM_ST0 at 36
+
+    bufferClear(0xFF000000, 0, 0xFFFFFFFF); // Clear to Black
+
+    // 2. Create a 2x2 texture of format GR_TEXFMT_ARGB_4444
+    // Left half (x=0) is Solid Blue (0xF00F), Right half (x=1) is Solid Green (0xF0F0 - Key Color)
+    std::vector<uint16_t> texData = {
+        0xF00F, 0xF0F0,
+        0xF00F, 0xF0F0
+    };
+
+    GrTexInfo texInfo;
+    texInfo.smallLod = 1; // 2^1 = 2
+    texInfo.largeLod = 1;
+    texInfo.aspectRatio = 1; // 1:1
+    texInfo.format = GR_TEXFMT_ARGB_4444;
+    texInfo.data = texData.data();
+
+    texDownload(0, 0x00002000, 0, &texInfo);
+    texSource(0, 0x00002000, 0, &texInfo);
+    texClamp(0, GR_TEXTURECLAMP_CLAMP, GR_TEXTURECLAMP_CLAMP);
+    
+    // Enable Bilinear Filtering to force interpolation!
+    texFilter(0, GR_TEXTUREFILTER_BILINEAR, GR_TEXTUREFILTER_BILINEAR);
+
+    // Configure Texture Chromakeying on TMU0
+    // Key out the green color: 0xF0F0 (ARGB4444).
+    // The key check in our wrapper is 32-bit (A8R8G8B8).
+    // Bright green in 32-bit ARGB is 0xFF00FF00.
+    #define GR_TEXCHROMA_ENABLE_EXT 1
+    texChromaRange(0, 0xFF00FF00, 0xFF00FF00, 0); // Exact match mode on 0xFF00FF00
+    texChromaMode(0, GR_TEXCHROMA_ENABLE_EXT);
+
+    // Configure both RGB and Alpha combiners to output the texture color/alpha
+    texCombine(0, GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE, GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE, FXFALSE, FXFALSE);
+    colorCombine(GR_COMBINE_FUNCTION_SCALE_OTHER, GR_COMBINE_FACTOR_ONE, GR_COMBINE_LOCAL_NONE, GR_COMBINE_OTHER_TEXTURE, FXFALSE);
+    alphaCombine(GR_COMBINE_FUNCTION_SCALE_OTHER, GR_COMBINE_FACTOR_ONE, GR_COMBINE_LOCAL_NONE, GR_COMBINE_OTHER_TEXTURE, FXFALSE);
+
+    // Render a quad from (300, 300) to (500, 500)
+    StandardVert v0{300.0f, 300.0f, 0.5f, 255.0f, 255.0f, 255.0f, 1.0f, 255.0f, 1.0f,   0.0f,   0.0f, 1.0f};
+    StandardVert v1{500.0f, 300.0f, 0.5f, 255.0f, 255.0f, 255.0f, 1.0f, 255.0f, 1.0f, 256.0f,   0.0f, 1.0f};
+    StandardVert v2{500.0f, 500.0f, 0.5f, 255.0f, 255.0f, 255.0f, 1.0f, 255.0f, 1.0f, 256.0f, 256.0f, 1.0f};
+    StandardVert v3{300.0f, 500.0f, 0.5f, 255.0f, 255.0f, 255.0f, 1.0f, 255.0f, 1.0f,   0.0f, 256.0f, 1.0f};
+
+    drawTri(&v0, &v1, &v2);
+    drawTri(&v0, &v2, &v3);
+
+    // Read back a line of pixels across the transition zone (from x=330 to x=470 along y=400):
+    // Texel centers are at s=64 (x=350) and s=192 (x=450).
+    // Transition zone spans x in (350, 450).
+    for (int x = 330; x <= 470; ++x) {
+        uint32_t px = 0;
+        REQUIRE(readLfb(GR_BUFFER_BACKBUFFER, x, 400, 1, 1, 4, &px) == FXTRUE);
+        
+        uint8_t a = (px >> 24) & 0xFF;
+        uint8_t r = (px >> 16) & 0xFF;
+        uint8_t g = (px >> 8) & 0xFF;
+        uint8_t b = px & 0xFF;
+
+        // Swizzle-tolerant color check: since we wrote Blue (0xF00F) in ARGB4444,
+        // it may read back as Blue or Red depending on swizzles.
+        uint8_t colorVal = std::max(r, b);
+
+        if (x <= 350) {
+            // Solid color zone
+            CHECK(a >= 250);
+            CHECK(colorVal >= 250);
+            CHECK(g == 0);
+        } else if (x >= 450) {
+            // Completely transparent black zone (fully inside keyed-out green area)
+            CHECK(px == 0);
+        } else {
+            // Blending transition zone: must be semi-transparent, contain no green, and some blue/red
+            CHECK(g == 0); // Crucial: no green halo!
+            CHECK(a < 255);
+            CHECK(a > 0);
+            CHECK(colorVal < 255);
+            CHECK(colorVal > 0);
+        }
+    }
+
+    winClose();
+    shutdown();
+    ::unsetenv("GLIDE_WRAPPER_BACKEND");
+}
+#endif

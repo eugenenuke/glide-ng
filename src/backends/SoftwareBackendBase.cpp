@@ -79,6 +79,10 @@ void SoftwareBackendBase::ResetState() {
     m_chromakeyRangeMin = 0;
     m_chromakeyRangeMax = 0;
     m_chromakeyRangeMode = 0;
+    m_texChromaMode[0] = m_texChromaMode[1] = 0;
+    m_texChromaMin[0] = m_texChromaMin[1] = 0;
+    m_texChromaMax[0] = m_texChromaMax[1] = 0;
+    m_texChromaRangeMode[0] = m_texChromaRangeMode[1] = 0;
     m_lastCpuClearColor = 0;
     m_useGammaLut = false;
     for (int i = 0; i < 256; ++i) {
@@ -294,6 +298,25 @@ void SoftwareBackendBase::SetChromakeyRange(uint32_t minColor, uint32_t maxColor
     m_chromakeyRangeMode = mode;
     GLIDE_LOG(DEBUG, "Rasterizer", "SetChromakeyRange: min=0x" << std::hex << minColor 
               << ", max=0x" << maxColor << ", mode=" << std::dec << mode);
+}
+
+void SoftwareBackendBase::SetTexChromakeyMode(uint32_t tmu, uint32_t mode) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    if (tmu < 2) {
+        m_texChromaMode[tmu] = mode;
+        GLIDE_LOG(DEBUG, "Rasterizer", "SetTexChromakeyMode TMU" << tmu << ": Mode=" << mode);
+    }
+}
+
+void SoftwareBackendBase::SetTexChromakeyRange(uint32_t tmu, uint32_t minColor, uint32_t maxColor, uint32_t mode) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    if (tmu < 2) {
+        m_texChromaMin[tmu] = minColor;
+        m_texChromaMax[tmu] = maxColor;
+        m_texChromaRangeMode[tmu] = mode;
+        GLIDE_LOG(DEBUG, "Rasterizer", "SetTexChromakeyRange TMU" << tmu << ": min=0x" << std::hex << minColor 
+                  << ", max=0x" << maxColor << ", mode=" << std::dec << mode);
+    }
 }
 
 // Note: DrawTriangle, DrawLine, DrawPoint, EvaluateCombinerColor, and RasterizeSoftwareTriangle

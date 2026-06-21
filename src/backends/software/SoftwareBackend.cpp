@@ -611,6 +611,53 @@ uint32_t SoftwareBackend::EvaluateCombinerColor(const ModernVertex& v) {
 
 
 void SoftwareBackend::RasterizeSoftwareTriangleImpl(const ModernVertex& a, const ModernVertex& b, const ModernVertex& c) {
+    auto mirrorCoord = [](int coord, uint32_t size) -> int {
+        int doubleSize = static_cast<int>(size * 2);
+        int mask = doubleSize - 1;
+        int wrapped = coord & mask;
+        return (wrapped < static_cast<int>(size)) ? wrapped : (mask - wrapped);
+    };
+
+    auto isTexChromaMatch = [&](uint32_t color) -> bool {
+        if (m_texChromaMode[0] != 1) return false;
+        
+        uint32_t r = (color >> 16) & 0xFF;
+        uint32_t g = (color >> 8) & 0xFF;
+        uint32_t b = color & 0xFF;
+        
+        bool rangeEnabled = ((m_texChromaRangeMode[0] >> 28) & 1) == 1;
+        if (rangeEnabled) {
+            uint32_t minR = (m_texChromaMin[0] >> 16) & 0xFF;
+            uint32_t minG = (m_texChromaMin[0] >> 8) & 0xFF;
+            uint32_t minB = m_texChromaMin[0] & 0xFF;
+            
+            uint32_t maxR = (m_texChromaMax[0] >> 16) & 0xFF;
+            uint32_t maxG = (m_texChromaMax[0] >> 8) & 0xFF;
+            uint32_t maxB = m_texChromaMax[0] & 0xFF;
+            
+            bool rMatch = (r >= minR && r <= maxR);
+            bool gMatch = (g >= minG && g <= maxG);
+            bool bMatch = (b >= minB && b <= maxB);
+            
+            bool blueExcl  = ((m_texChromaRangeMode[0] >> 24) & 1) == 1;
+            bool greenExcl = ((m_texChromaRangeMode[0] >> 25) & 1) == 1;
+            bool redExcl   = ((m_texChromaRangeMode[0] >> 26) & 1) == 1;
+            
+            bool rRes = rMatch != redExcl;
+            bool gRes = gMatch != greenExcl;
+            bool bRes = bMatch != blueExcl;
+            
+            bool unionMode = ((m_texChromaRangeMode[0] >> 27) & 1) == 1;
+            return unionMode ? (rRes || gRes || bRes) : (rRes && gRes && bRes);
+        } else {
+            uint32_t chromaR = (m_texChromaMin[0] >> 16) & 0xFF;
+            uint32_t chromaG = (m_texChromaMin[0] >> 8) & 0xFF;
+            uint32_t chromaB = m_texChromaMin[0] & 0xFF;
+            
+            return (r == chromaR && g == chromaG && b == chromaB);
+        }
+    };
+
     int minX = std::max(0, static_cast<int>(std::floor(std::min({a.pos[0], b.pos[0], c.pos[0]}))));
     int maxX = std::min(static_cast<int>(m_headlessWidth) - 1, static_cast<int>(std::ceil(std::max({a.pos[0], b.pos[0], c.pos[0]}))));
     int minY = std::max(0, static_cast<int>(std::floor(std::min({a.pos[1], b.pos[1], c.pos[1]}))));
@@ -682,6 +729,9 @@ void SoftwareBackend::RasterizeSoftwareTriangleImpl(const ModernVertex& a, const
     // Define the core pixel rendering pipeline as a lambda
     // Define the core pixel rendering pipeline as a lambda (restructured to be branch-free / early-exit-free for SIMD)
     auto renderPixel = [&](int x, int y, float w0, float w1, float w2) {
+        float cOtherR = 0.0f;
+        float cOtherG = 0.0f;
+        float cOtherB = 0.0f;
         bool isTestPixel = (x == 150 && y == 150) || (x == 310 && y == 310) || (x == 410 && y == 310);
         bool keepPixel = true;
 
@@ -735,6 +785,9 @@ void SoftwareBackend::RasterizeSoftwareTriangleImpl(const ModernVertex& a, const
                 if (clampS == 1) { // CLAMP
                     x0 = std::max(0, std::min(static_cast<int>(texW - 1), u0));
                     x1 = std::max(0, std::min(static_cast<int>(texW - 1), u0 + 1));
+                } else if (clampS == 2) { // MIRROR
+                    x0 = mirrorCoord(u0, texW);
+                    x1 = mirrorCoord(u0 + 1, texW);
                 } else { // WRAP
                     x0 = u0 & wMask;
                     x1 = (u0 + 1) & wMask;
@@ -743,6 +796,9 @@ void SoftwareBackend::RasterizeSoftwareTriangleImpl(const ModernVertex& a, const
                 if (clampT == 1) { // CLAMP
                     y0 = std::max(0, std::min(static_cast<int>(texH - 1), v0));
                     y1 = std::max(0, std::min(static_cast<int>(texH - 1), v0 + 1));
+                } else if (clampT == 2) { // MIRROR
+                    y0 = mirrorCoord(v0, texH);
+                    y1 = mirrorCoord(v0 + 1, texH);
                 } else { // WRAP
                     y0 = v0 & hMask;
                     y1 = (v0 + 1) & hMask;
@@ -752,6 +808,12 @@ void SoftwareBackend::RasterizeSoftwareTriangleImpl(const ModernVertex& a, const
                 uint32_t c10 = texPixels[y0 * texW + x1];
                 uint32_t c01 = texPixels[y1 * texW + x0];
                 uint32_t c11 = texPixels[y1 * texW + x1];
+
+                // Perfect Halo-Free Bilinear Texture Chromakeying: substitute before blending!
+                if (isTexChromaMatch(c00)) c00 = 0;
+                if (isTexChromaMatch(c10)) c10 = 0;
+                if (isTexChromaMatch(c01)) c01 = 0;
+                if (isTexChromaMatch(c11)) c11 = 0;
 
                 // Perform 8-bit fixed-point integer bilinear blend
                 int w00 = (256 - fx) * (256 - fy);
@@ -776,9 +838,28 @@ void SoftwareBackend::RasterizeSoftwareTriangleImpl(const ModernVertex& a, const
             } else { // POINT
                 int u0 = static_cast<int>(texU + 0.0001f);
                 int v0 = static_cast<int>(texV + 0.0001f);
-                int x0 = (clampS == 1) ? std::max(0, std::min(static_cast<int>(texW - 1), u0)) : (u0 & wMask);
-                int y0 = (clampT == 1) ? std::max(0, std::min(static_cast<int>(texH - 1), v0)) : (v0 & hMask);
+                
+                int x0, y0;
+                if (clampS == 1) {
+                    x0 = std::max(0, std::min(static_cast<int>(texW - 1), u0));
+                } else if (clampS == 2) {
+                    x0 = mirrorCoord(u0, texW);
+                } else {
+                    x0 = u0 & wMask;
+                }
+
+                if (clampT == 1) {
+                    y0 = std::max(0, std::min(static_cast<int>(texH - 1), v0));
+                } else if (clampT == 2) {
+                    y0 = mirrorCoord(v0, texH);
+                } else {
+                    y0 = v0 & hMask;
+                }
+
                 tWord = texPixels[y0 * texW + x0];
+                if (isTexChromaMatch(tWord)) {
+                    tWord = 0; // Substitute with transparent black!
+                }
             }
 
             texR = ((tWord >> 16) & 0xFF) / 255.0f;
@@ -821,7 +902,7 @@ void SoftwareBackend::RasterizeSoftwareTriangleImpl(const ModernVertex& a, const
                 if (m_pixelFormatOverride == 1) std::swap(cLocalR, cLocalB);
             }
 
-            float cOtherR = 0.0f; float cOtherG = 0.0f; float cOtherB = 0.0f;
+            cOtherR = 0.0f; cOtherG = 0.0f; cOtherB = 0.0f;
             if (m_colorCombinerOther == 0) { // GR_COMBINE_OTHER_ITERATED
                 cOtherR = iterR; cOtherG = iterG; cOtherB = iterB;
             } else if (m_colorCombinerOther == 1) { // GR_COMBINE_OTHER_TEXTURE
@@ -923,9 +1004,9 @@ void SoftwareBackend::RasterizeSoftwareTriangleImpl(const ModernVertex& a, const
                     std::swap(maxR, maxB);
                 }
 
-                bool rMatch = (red   >= minR && red   <= maxR);
-                bool gMatch = (green >= minG && green <= maxG);
-                bool bMatch = (blue  >= minB && blue  <= maxB);
+                bool rMatch = (cOtherR   >= minR && cOtherR   <= maxR);
+                bool gMatch = (cOtherG >= minG && cOtherG <= maxG);
+                bool bMatch = (cOtherB  >= minB && cOtherB  <= maxB);
 
                 bool blueExcl  = ((m_chromakeyRangeMode >> 24) & 1) == 1;
                 bool greenExcl = ((m_chromakeyRangeMode >> 25) & 1) == 1;
@@ -949,9 +1030,9 @@ void SoftwareBackend::RasterizeSoftwareTriangleImpl(const ModernVertex& a, const
                 if (m_pixelFormatOverride == 1) {
                     std::swap(chromaR, chromaB);
                 }
-                if (std::abs(red - chromaR) < 0.01f &&
-                    std::abs(green - chromaG) < 0.01f &&
-                    std::abs(blue - chromaB) < 0.01f) {
+                if (std::abs(cOtherR - chromaR) < 0.01f &&
+                    std::abs(cOtherG - chromaG) < 0.01f &&
+                    std::abs(cOtherB - chromaB) < 0.01f) {
                     keepPixel = false; // Discard
                 }
             }

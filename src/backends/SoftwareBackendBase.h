@@ -75,6 +75,14 @@ public:
     void SetChromakeyMode(uint32_t mode) override;
     void SetChromakeyValue(uint32_t value) override;
     void SetChromakeyRange(uint32_t minColor, uint32_t maxColor, uint32_t mode) override;
+    void SetTexChromakeyMode(uint32_t tmu, uint32_t mode) override;
+    void SetTexChromakeyRange(uint32_t tmu, uint32_t minColor, uint32_t maxColor, uint32_t mode) override;
+
+    // Getters for per-TMU texture chromakeying diagnostics/testing
+    uint32_t GetTexChromaMode(uint32_t tmu) const { return tmu < 2 ? m_texChromaMode[tmu] : 0; }
+    uint32_t GetTexChromaMin(uint32_t tmu) const { return tmu < 2 ? m_texChromaMin[tmu] : 0; }
+    uint32_t GetTexChromaMax(uint32_t tmu) const { return tmu < 2 ? m_texChromaMax[tmu] : 0; }
+    uint32_t GetTexChromaRangeMode(uint32_t tmu) const { return tmu < 2 ? m_texChromaRangeMode[tmu] : 0; }
 
     // Linear Framebuffer (LFB) read/write utilities
     void* GetLfbWritePtr() override;
@@ -168,6 +176,10 @@ protected:
     uint32_t m_chromakeyRangeMin{0};
     uint32_t m_chromakeyRangeMax{0};
     uint32_t m_chromakeyRangeMode{0};
+    uint32_t m_texChromaMode[2]{0, 0};
+    uint32_t m_texChromaMin[2]{0, 0};
+    uint32_t m_texChromaMax[2]{0, 0};
+    uint32_t m_texChromaRangeMode[2]{0, 0};
     uint32_t m_lastCpuClearColor{0};
     
     // Gamma correction software LUT state

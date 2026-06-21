@@ -193,7 +193,7 @@ bool TextureManager::DownloadMipMap(uint32_t tmu, uint32_t startAddress, uint32_
 
         std::vector<uint32_t> levelPixels(w * h, 0);
         std::vector<uint8_t> levelRaw;
-        if (format == 0x5) { // GR_TEXFMT_P_8
+        if (format == 0x5 || format == 0x6) { // GR_TEXFMT_P_8 or GR_TEXFMT_P_8_6666
             tex->isPaletted = true;
             levelRaw.resize(w * h, 0);
         }
@@ -277,7 +277,7 @@ bool TextureManager::DownloadMipMap(uint32_t tmu, uint32_t startAddress, uint32_
                 } else if (format == 0x3) { // INTENSITY_8
                     r = val; g = val; b = val; a = 255;
                     levelPixels[pIdx] = (a << 24) | (r << 16) | (g << 8) | b;
-                } else if (format == 0x5) { // P_8
+                } else if (format == 0x5 || format == 0x6) { // P_8 or P_8_6666
                     levelRaw[pIdx] = val;
                     if (m_tmus[tmu].paletteTableLoaded) {
                         levelPixels[pIdx] = m_tmus[tmu].paletteTable[val];
@@ -307,7 +307,7 @@ bool TextureManager::DownloadMipMap(uint32_t tmu, uint32_t startAddress, uint32_
         }
 
         tex->swizzledMipLevels.push_back(std::move(levelPixels));
-        if (format == 0x5) {
+        if (format == 0x5 || format == 0x6) {
             tex->raw8BitMipLevels.push_back(std::move(levelRaw));
         } else if (format == 0x1) {
             tex->rawYiqMipLevels.push_back(std::move(levelYiq));
@@ -341,8 +341,8 @@ bool TextureManager::DownloadTable(uint32_t tmu, uint32_t type, const void* data
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     if (tmu >= 2 || !data) return false;
 
-    // type can be: GR_TEXTABLE_NCC0 (0), GR_TEXTABLE_NCC1 (1), or GR_TEXTABLE_PALETTE (2)
-    if (type > 2) {
+    // type can be: GR_TEXTABLE_NCC0 (0), GR_TEXTABLE_NCC1 (1), GR_TEXTABLE_PALETTE (2), or GR_TEXTABLE_PALETTE_6666_EXT (3)
+    if (type > 3) {
         GLIDE_LOG(WARN, "TextureManager", "Unsupported texture table type: " << type << ". Skipping.");
         return false;
     }
@@ -387,10 +387,22 @@ bool TextureManager::DownloadTable(uint32_t tmu, uint32_t type, const void* data
             }
             GLIDE_LOG(DEBUG, "TextureManager", "Completed active NCC table download. Re-swizzled " << swizzledCount << " textures.");
         }
-    } else if (type == 2) {
-        GLIDE_LOG(DEBUG, "TextureManager", "Downloading 256-color palette table to TMU" << tmu);
-        const auto* paletteData = reinterpret_cast<const uint32_t*>(data);
-        std::memcpy(m_tmus[tmu].paletteTable, paletteData, sizeof(m_tmus[tmu].paletteTable));
+    } else if (type == 2 || type == 3) {
+        if (type == 2) {
+            GLIDE_LOG(DEBUG, "TextureManager", "Downloading 256-color palette table to TMU" << tmu);
+            const auto* paletteData = reinterpret_cast<const uint32_t*>(data);
+            std::memcpy(m_tmus[tmu].paletteTable, paletteData, sizeof(m_tmus[tmu].paletteTable));
+        } else {
+            GLIDE_LOG(DEBUG, "TextureManager", "Downloading 256-color PALETTE6666 table to TMU" << tmu);
+            const auto* paletteData = reinterpret_cast<const uint32_t*>(data);
+            for (int i = 0; i < 256; ++i) {
+                uint32_t val = paletteData[i];
+                m_tmus[tmu].paletteTable[i] = (((val & 0x3F) << 2) | ((val >> 4) & 0x3)) |
+                                              ((((val >> 6) & 0x3F) << 10) | (((val >> 10) & 0x3) << 8)) |
+                                              ((((val >> 12) & 0x3F) << 18) | (((val >> 16) & 0x3) << 16)) |
+                                              ((((val >> 18) & 0x3F) << 26) | (((val >> 22) & 0x3) << 24));
+            }
+        }
         m_tmus[tmu].paletteTableLoaded = true;
 
         // Re-swizzle and trigger GPU upload for all paletted textures in this TMU!
@@ -398,7 +410,7 @@ bool TextureManager::DownloadTable(uint32_t tmu, uint32_t type, const void* data
             auto& tex = pair.second;
             if (tex->isPaletted) {
                 tex->swizzledMipLevels.clear();
-                if (tex->format == 0x5) { // P_8
+                if (tex->format == 0x5 || tex->format == 0x6) { // P_8 or P_8_6666
                     if (!tex->raw8BitMipLevels.empty()) {
                         for (size_t lvl = 0; lvl < tex->raw8BitMipLevels.size(); ++lvl) {
                             const auto& raw8 = tex->raw8BitMipLevels[lvl];
@@ -430,7 +442,7 @@ bool TextureManager::DownloadTable(uint32_t tmu, uint32_t type, const void* data
                 }
             }
         }
-        GLIDE_LOG(DEBUG, "TextureManager", "Completed palette download. Deferred-swizzled " << swizzledCount << " textures.");
+        GLIDE_LOG(DEBUG, "TextureManager", "Completed palette download (type=" << type << "). Deferred-swizzled " << swizzledCount << " textures.");
     }
 
     return true;

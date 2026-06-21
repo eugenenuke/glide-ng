@@ -84,6 +84,44 @@ private:
     // GLES Gamma LUT Texture Resources
     uint32_t m_glGammaLutTex{0};
     bool m_useGammaLut{false};
+
+    // Cached Uniform Locations for geomProgram
+    int m_uSstOriginLoc{-1};
+    int m_uViewportSizeLoc{-1};
+    int m_uDepthClipOverrideLoc{-1};
+    int m_uDepthBufferModeLoc{-1};
+    int m_uConstantColorLoc{-1};
+    int m_uChromakeyEnabledLoc{-1};
+    int m_uChromakeyValueLoc{-1};
+    int m_uChromakeyRangeEnabledLoc{-1};
+    int m_uChromakeyRangeMinLoc{-1};
+    int m_uChromakeyRangeMaxLoc{-1};
+    int m_uChromakeyRangeExclusiveLoc{-1};
+    int m_uChromakeyRangeUnionLoc{-1};
+    int m_uColorFuncLoc{-1};
+    int m_uColorFactorLoc{-1};
+    int m_uColorLocalLoc{-1};
+    int m_uColorOtherLoc{-1};
+    int m_uColorInvertLoc{-1};
+    int m_uAlphaFuncLoc{-1};
+    int m_uAlphaFactorLoc{-1};
+    int m_uAlphaLocalLoc{-1};
+    int m_uAlphaOtherLoc{-1};
+    int m_uAlphaInvertLoc{-1};
+    int m_uTextureEnabledLoc{-1};
+    int m_uTexture0Loc{-1};
+    int m_uTexture1Loc{-1};
+    int m_uUseTmuOowLoc{-1};
+    int m_uAlphaTestOpLoc{-1};
+    int m_uAlphaTestRefLoc{-1};
+    int m_uDepthBiasLoc{-1};
+    int m_uFogModeLoc{-1};
+    int m_uFogColorLoc{-1};
+    int m_uFogTableLoc{-1};
+    int m_uTexChromaEnabledLoc{-1};
+    int m_uTexChromaRangeModeLoc{-1};
+    int m_uTexChromaMinLoc{-1};
+    int m_uTexChromaMaxLoc{-1};
 };
 
 } // namespace GlideWrapper

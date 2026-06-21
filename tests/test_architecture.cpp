@@ -2374,6 +2374,236 @@ TEST_CASE("Glide 2.x Alpha 8 Font Texture Rendering & Text Damage Detection", "[
 #endif
 }
 
+TEST_CASE("Glide Per-TMU Texture Chromakey & State Serialization", "[Core][Chroma]") {
+#ifdef __linux__
+    SECTION("Glide 3.x Per-TMU Texture Chromakey Caching & State Serialization") {
+        void* handle = OpenGlide3Handle();
+        REQUIRE(handle != nullptr);
+
+        using InitFunc = void(*)(void);
+        using ShutdownFunc = void(*)(void);
+        using SstSelectFunc = void(*)(int);
+        using SstWinOpenFunc = FxBool(*)(FxU32, GrScreenResolution_t, GrScreenRefresh_t, GrColorFormat_t, GrOriginLocation_t, int, int);
+        using TexChromaModeFunc = void(*)(int, int);
+        using TexChromaRangeFunc = void(*)(int, uint32_t, uint32_t, int);
+        using GlideGetStateFunc = void(*)(GrState*);
+        using GlideSetStateFunc = void(*)(const GrState*);
+        using WinCloseFunc = void(*)(void);
+
+        auto init = reinterpret_cast<InitFunc>(::dlsym(handle, "grGlideInit"));
+        auto shutdown = reinterpret_cast<ShutdownFunc>(::dlsym(handle, "grGlideShutdown"));
+        auto sstSelect = reinterpret_cast<SstSelectFunc>(::dlsym(handle, "grSstSelect"));
+        auto sstWinOpen = reinterpret_cast<SstWinOpenFunc>(::dlsym(handle, "grSstWinOpen"));
+        auto texChromaMode = reinterpret_cast<TexChromaModeFunc>(::dlsym(handle, "grTexChromaModeExt"));
+        auto texChromaRange = reinterpret_cast<TexChromaRangeFunc>(::dlsym(handle, "grTexChromaRangeExt"));
+        auto glideGetState = reinterpret_cast<GlideGetStateFunc>(::dlsym(handle, "grGlideGetState"));
+        auto glideSetState = reinterpret_cast<GlideSetStateFunc>(::dlsym(handle, "grGlideSetState"));
+        auto winClose = reinterpret_cast<WinCloseFunc>(::dlsym(handle, "grSstWinClose"));
+
+        REQUIRE(init != nullptr);
+        REQUIRE(shutdown != nullptr);
+        REQUIRE(sstSelect != nullptr);
+        REQUIRE(sstWinOpen != nullptr);
+        REQUIRE(texChromaMode != nullptr);
+        REQUIRE(texChromaRange != nullptr);
+        REQUIRE(glideGetState != nullptr);
+        REQUIRE(glideSetState != nullptr);
+        REQUIRE(winClose != nullptr);
+
+        // Force software backend so we can access it directly
+        ::setenv("GLIDE_WRAPPER_BACKEND", "software", 1);
+
+        init();
+        sstSelect(0);
+        FxBool open_ok = sstWinOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz, GR_COLORFORMAT_ARGB, GR_ORIGIN_UPPER_LEFT, 2, 1);
+        REQUIRE(open_ok == FXTRUE);
+
+        // Configure per-TMU chromakey range and mode
+        texChromaMode(0, 1); // GR_TEXCHROMA_ENABLE_EXT
+        texChromaRange(0, 0x00112233, 0x00445566, 1);
+        texChromaMode(1, 0); // GR_TEXCHROMA_DISABLE_EXT
+        texChromaRange(1, 0x00778899, 0x00AABBCC, 0);
+
+        // Verify that backend immediately received them
+        auto* backend = static_cast<GlideWrapper::SoftwareBackendBase*>(
+            GlideWrapper::BackendManager::GetInstance().GetBackend()
+        );
+        REQUIRE(backend != nullptr);
+        CHECK(backend->GetTexChromaMode(0) == 1);
+        CHECK(backend->GetTexChromaMin(0) == 0x00112233);
+        CHECK(backend->GetTexChromaMax(0) == 0x00445566);
+        CHECK(backend->GetTexChromaRangeMode(0) == 1);
+        CHECK(backend->GetTexChromaMode(1) == 0);
+
+        // Serialize state
+        std::vector<char> stateBuf(2048, 0);
+        GrState* statePtr = reinterpret_cast<GrState*>(stateBuf.data());
+        glideGetState(statePtr);
+
+        // Modify states to check restore
+        texChromaMode(0, 0);
+        texChromaRange(0, 0, 0, 0);
+        texChromaMode(1, 1);
+        texChromaRange(1, 0, 0, 1);
+
+        CHECK(backend->GetTexChromaMode(0) == 0);
+        CHECK(backend->GetTexChromaMode(1) == 1);
+
+        // Restore state
+        glideSetState(statePtr);
+
+        // Verify restored values
+        CHECK(backend->GetTexChromaMode(0) == 1);
+        CHECK(backend->GetTexChromaMin(0) == 0x00112233);
+        CHECK(backend->GetTexChromaMax(0) == 0x00445566);
+        CHECK(backend->GetTexChromaRangeMode(0) == 1);
+        CHECK(backend->GetTexChromaMode(1) == 0);
+        CHECK(backend->GetTexChromaMin(1) == 0x00778899);
+        CHECK(backend->GetTexChromaMax(1) == 0x00AABBCC);
+
+        winClose();
+        shutdown();
+        ::unsetenv("GLIDE_WRAPPER_BACKEND");
+        ::dlclose(handle);
+    }
+
+    SECTION("Glide 2.x Per-TMU Texture Chromakey Caching & State Serialization") {
+        void* handle = OpenGlide2Handle();
+        REQUIRE(handle != nullptr);
+
+        using InitFunc = void(*)(void);
+        using ShutdownFunc = void(*)(void);
+        using SstSelectFunc = void(*)(int);
+        using SstWinOpenFunc = FxBool(*)(FxU32, GrScreenResolution_t, GrScreenRefresh_t, GrColorFormat_t, GrOriginLocation_t, int, int);
+        using GetProcAddressFunc = GrProc(*)(char*);
+        using GlideGetStateFunc = void(*)(GrState*);
+        using GlideSetStateFunc = void(*)(const GrState*);
+        using WinCloseFunc = void(*)(void);
+
+        auto init = reinterpret_cast<InitFunc>(::dlsym(handle, "grGlideInit"));
+        auto shutdown = reinterpret_cast<ShutdownFunc>(::dlsym(handle, "grGlideShutdown"));
+        auto sstSelect = reinterpret_cast<SstSelectFunc>(::dlsym(handle, "grSstSelect"));
+        auto sstWinOpen = reinterpret_cast<SstWinOpenFunc>(::dlsym(handle, "grSstWinOpen"));
+        auto getProc = reinterpret_cast<GetProcAddressFunc>(::dlsym(handle, "grGetProcAddress"));
+        auto glideGetState = reinterpret_cast<GlideGetStateFunc>(::dlsym(handle, "grGlideGetState"));
+        auto glideSetState = reinterpret_cast<GlideSetStateFunc>(::dlsym(handle, "grGlideSetState"));
+        auto winClose = reinterpret_cast<WinCloseFunc>(::dlsym(handle, "grSstWinClose"));
+
+        REQUIRE(init != nullptr);
+        REQUIRE(shutdown != nullptr);
+        REQUIRE(sstSelect != nullptr);
+        REQUIRE(sstWinOpen != nullptr);
+        REQUIRE(getProc != nullptr);
+        REQUIRE(glideGetState != nullptr);
+        REQUIRE(glideSetState != nullptr);
+        REQUIRE(winClose != nullptr);
+
+        // Resolve extension methods dynamically via grGetProcAddress!
+        char modeExtName[] = "grTexChromaModeExt";
+        char rangeExtName[] = "grTexChromaRangeExt";
+        
+        using TexChromaModeGlide2Func = void(*)(int, uint32_t);
+        using TexChromaRangeGlide2Func = void(*)(int, uint32_t, uint32_t, uint32_t);
+
+        auto texChromaMode = reinterpret_cast<TexChromaModeGlide2Func>(getProc(modeExtName));
+        auto texChromaRange = reinterpret_cast<TexChromaRangeGlide2Func>(getProc(rangeExtName));
+
+        REQUIRE(texChromaMode != nullptr);
+        REQUIRE(texChromaRange != nullptr);
+
+        ::setenv("GLIDE_WRAPPER_BACKEND", "software", 1);
+
+        init();
+        sstSelect(0);
+        FxBool open_ok = sstWinOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz, GR_COLORFORMAT_ARGB, GR_ORIGIN_UPPER_LEFT, 2, 1);
+        REQUIRE(open_ok == FXTRUE);
+
+        // Configure per-TMU chromakey
+        texChromaMode(0, 1);
+        texChromaRange(0, 0x00AABBCC, 0x00DDEEFF, 1);
+        texChromaMode(1, 0);
+
+        auto* backend = static_cast<GlideWrapper::SoftwareBackendBase*>(
+            GlideWrapper::BackendManager::GetInstance().GetBackend()
+        );
+        REQUIRE(backend != nullptr);
+        CHECK(backend->GetTexChromaMode(0) == 1);
+        CHECK(backend->GetTexChromaMin(0) == 0x00AABBCC);
+        CHECK(backend->GetTexChromaMax(0) == 0x00DDEEFF);
+
+        // Serialize
+        std::vector<char> stateBuf(2048, 0);
+        GrState* statePtr = reinterpret_cast<GrState*>(stateBuf.data());
+        glideGetState(statePtr);
+
+        // Modify
+        texChromaMode(0, 0);
+        CHECK(backend->GetTexChromaMode(0) == 0);
+
+        // Restore
+        glideSetState(statePtr);
+
+        // Verify
+        CHECK(backend->GetTexChromaMode(0) == 1);
+        CHECK(backend->GetTexChromaMin(0) == 0x00AABBCC);
+        CHECK(backend->GetTexChromaMax(0) == 0x00DDEEFF);
+
+        winClose();
+        shutdown();
+        ::unsetenv("GLIDE_WRAPPER_BACKEND");
+        ::dlclose(handle);
+    }
+#endif
+}
+
+TEST_CASE("PALETTE6666 Unpacking, Loading, and Swizzling Unit Tests", "[Core][Palette6666]") {
+    auto& tm = GlideWrapper::TextureManager::GetInstance();
+    tm.Reset();
+
+    SECTION("Direct validation of COLOR24_6666TOCOLOR32 unpacking logic") {
+        uint32_t packed6666 = (0x3F << 18) | (0x2A << 12) | (0x15 << 6) | 0x0B;
+
+        uint32_t unpacked32 = (((packed6666 & 0x3F) << 2) | ((packed6666 >> 4) & 0x3)) |
+                              ((((packed6666 >> 6) & 0x3F) << 10) | (((packed6666 >> 10) & 0x3) << 8)) |
+                              ((((packed6666 >> 12) & 0x3F) << 18) | (((packed6666 >> 16) & 0x3) << 16)) |
+                              ((((packed6666 >> 18) & 0x3F) << 26) | (((packed6666 >> 22) & 0x3) << 24));
+
+        CHECK(unpacked32 == 0xFFAA552C);
+    }
+
+    SECTION("Download PALETTE6666 table and swizzle GR_TEXFMT_P_8_6666 texture") {
+        std::vector<uint8_t> rawIndices = {
+            0, 1, 0, 1,
+            1, 0, 1, 0,
+            0, 1, 0, 1,
+            1, 0, 1, 0
+        };
+
+        bool dl_ok = tm.DownloadMipMap(0, 0x00010000, 6, 6, 3, 6, rawIndices.data());
+        REQUIRE(dl_ok == true);
+
+        auto* tex = tm.GetTexture(0, 0x00010000);
+        REQUIRE(tex != nullptr);
+        CHECK(tex->isPaletted == true);
+        CHECK(tex->format == 6);
+
+        REQUIRE(tex->swizzledMipLevels.size() == 1);
+        CHECK(tex->swizzledMipLevels[0][0] == 0xFF000000);
+        CHECK(tex->swizzledMipLevels[0][1] == 0xFF010101);
+
+        std::vector<uint32_t> mockPalette(256, 0);
+        mockPalette[0] = (63 << 18) | (63 << 12); // Red
+        mockPalette[1] = (63 << 18) | (63 << 6);  // Green
+
+        bool tbl_ok = tm.DownloadTable(0, 3, mockPalette.data());
+        REQUIRE(tbl_ok == true);
+
+        CHECK(tex->swizzledMipLevels[0][0] == 0xFFFF0000);
+        CHECK(tex->swizzledMipLevels[0][1] == 0xFF00FF00);
+        CHECK(tex->swizzledMipLevels[0][4] == 0xFF00FF00);
+    }
+}
+
 TEST_CASE("Glide 2.x ABGR Framebuffer Clear & LFB Readback Parity", "[Glide2][Clear]") {
 #ifdef __linux__
     // Dynamically load the Glide 2 wrapper library

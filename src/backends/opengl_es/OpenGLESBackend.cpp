@@ -783,6 +783,7 @@ uniform int uAlphaInvert;
 
 uniform int uTextureEnabled;
 uniform sampler2D uTexture0;
+uniform sampler2D uTexture1;
 uniform int uUseTmuOow;
 
 uniform int uChromakeyEnabled;
@@ -792,6 +793,11 @@ uniform vec3 uChromakeyRangeMin;
 uniform vec3 uChromakeyRangeMax;
 uniform ivec3 uChromakeyRangeExclusive;
 uniform int uChromakeyRangeUnion;
+
+uniform uint uTexChromaEnabled[2];
+uniform uint uTexChromaRangeMode[2];
+uniform vec4 uTexChromaMin[2];
+uniform vec4 uTexChromaMax[2];
 
 uniform int uAlphaTestOp;
 uniform float uAlphaTestRef;
@@ -823,6 +829,32 @@ const float s_tableIndexToW[64] = float[](
     32768.000000,  37449.144531,  43690.667969,  52428.800781
 );
 
+bool IsColorInRange(vec3 color, vec3 minColor, vec3 maxColor, uint rangeMode) {
+    bool rangeEnabled = ((rangeMode >> 28u) & 1u) == 1u;
+    if (rangeEnabled) {
+        bool rMatch = (color.r >= minColor.r && color.r <= maxColor.r);
+        bool gMatch = (color.g >= minColor.g && color.g <= maxColor.g);
+        bool bMatch = (color.b >= minColor.b && color.b <= maxColor.b);
+        
+        bool blueExcl  = ((rangeMode >> 24u) & 1u) == 1u;
+        bool greenExcl = ((rangeMode >> 25u) & 1u) == 1u;
+        bool redExcl   = ((rangeMode >> 26u) & 1u) == 1u;
+        
+        bool rRes = rMatch != redExcl;
+        bool gRes = gMatch != greenExcl;
+        bool bRes = bMatch != blueExcl;
+        
+        bool unionMode = ((rangeMode >> 27u) & 1u) == 1u;
+        if (unionMode) {
+            return rRes || gRes || bRes;
+        } else {
+            return rRes && gRes && bRes;
+        }
+    } else {
+        return distance(color, minColor) < 0.01;
+    }
+}
+
 void main() {
     // W-based coordinate near-plane and camera-space clipping
     if (uDepthBufferMode == 2) {
@@ -843,6 +875,11 @@ void main() {
         uv.x *= (maxDim / tw);
         uv.y *= (maxDim / th);
         texColor = texture(uTexture0, uv);
+        if (uTexChromaEnabled[0] == 1u) {
+            if (IsColorInRange(texColor.rgb, uTexChromaMin[0].rgb, uTexChromaMax[0].rgb, uTexChromaRangeMode[0])) {
+                texColor = vec4(0.0);
+            }
+        }
     }
 
     // 2. Route Alpha Combiner inputs
@@ -914,7 +951,7 @@ void main() {
 
     // Milestone 10: Chromakey Emulation
     if (uChromakeyEnabled == 1) {
-        vec3 chromaTestColor = col.rgb;
+        vec3 chromaTestColor = (uTextureEnabled == 1) ? cOther : col.rgb;
         if (uChromakeyRangeEnabled == 1) {
             bool rMatch = (chromaTestColor.r >= uChromakeyRangeMin.r && chromaTestColor.r <= uChromakeyRangeMax.r);
             bool gMatch = (chromaTestColor.g >= uChromakeyRangeMin.g && chromaTestColor.g <= uChromakeyRangeMax.g);
@@ -1048,6 +1085,49 @@ bool OpenGLESBackend::CreateGeomShaders() {
         glGetProgramInfoLog(m_geomProgram, 512, nullptr, log);
         GLIDE_LOG(CRITICAL, "GLES", "Geometry Program linking failure: " << log);
         return false;
+    }
+
+    // Resolve and cache all uniform locations once
+    m_uSstOriginLoc = glGetUniformLocation(m_geomProgram, "uSstOrigin");
+    m_uViewportSizeLoc = glGetUniformLocation(m_geomProgram, "uViewportSize");
+    m_uDepthClipOverrideLoc = glGetUniformLocation(m_geomProgram, "uDepthClipOverride");
+    m_uDepthBufferModeLoc = glGetUniformLocation(m_geomProgram, "uDepthBufferMode");
+    m_uConstantColorLoc = glGetUniformLocation(m_geomProgram, "uConstantColor");
+    m_uChromakeyEnabledLoc = glGetUniformLocation(m_geomProgram, "uChromakeyEnabled");
+    m_uChromakeyValueLoc = glGetUniformLocation(m_geomProgram, "uChromakeyValue");
+    m_uChromakeyRangeEnabledLoc = glGetUniformLocation(m_geomProgram, "uChromakeyRangeEnabled");
+    m_uChromakeyRangeMinLoc = glGetUniformLocation(m_geomProgram, "uChromakeyRangeMin");
+    m_uChromakeyRangeMaxLoc = glGetUniformLocation(m_geomProgram, "uChromakeyRangeMax");
+    m_uChromakeyRangeExclusiveLoc = glGetUniformLocation(m_geomProgram, "uChromakeyRangeExclusive");
+    m_uChromakeyRangeUnionLoc = glGetUniformLocation(m_geomProgram, "uChromakeyRangeUnion");
+    m_uColorFuncLoc = glGetUniformLocation(m_geomProgram, "uColorFunc");
+    m_uColorFactorLoc = glGetUniformLocation(m_geomProgram, "uColorFactor");
+    m_uColorLocalLoc = glGetUniformLocation(m_geomProgram, "uColorLocal");
+    m_uColorOtherLoc = glGetUniformLocation(m_geomProgram, "uColorOther");
+    m_uColorInvertLoc = glGetUniformLocation(m_geomProgram, "uColorInvert");
+    m_uAlphaFuncLoc = glGetUniformLocation(m_geomProgram, "uAlphaFunc");
+    m_uAlphaFactorLoc = glGetUniformLocation(m_geomProgram, "uAlphaFactor");
+    m_uAlphaLocalLoc = glGetUniformLocation(m_geomProgram, "uAlphaLocal");
+    m_uAlphaOtherLoc = glGetUniformLocation(m_geomProgram, "uAlphaOther");
+    m_uAlphaInvertLoc = glGetUniformLocation(m_geomProgram, "uAlphaInvert");
+    m_uTextureEnabledLoc = glGetUniformLocation(m_geomProgram, "uTextureEnabled");
+    m_uTexture0Loc = glGetUniformLocation(m_geomProgram, "uTexture0");
+    m_uTexture1Loc = glGetUniformLocation(m_geomProgram, "uTexture1");
+    m_uUseTmuOowLoc = glGetUniformLocation(m_geomProgram, "uUseTmuOow");
+    m_uAlphaTestOpLoc = glGetUniformLocation(m_geomProgram, "uAlphaTestOp");
+    m_uAlphaTestRefLoc = glGetUniformLocation(m_geomProgram, "uAlphaTestRef");
+    m_uDepthBiasLoc = glGetUniformLocation(m_geomProgram, "uDepthBias");
+    m_uFogModeLoc = glGetUniformLocation(m_geomProgram, "uFogMode");
+    m_uFogColorLoc = glGetUniformLocation(m_geomProgram, "uFogColor");
+    m_uFogTableLoc = glGetUniformLocation(m_geomProgram, "uFogTable");
+    m_uTexChromaEnabledLoc = glGetUniformLocation(m_geomProgram, "uTexChromaEnabled");
+    m_uTexChromaRangeModeLoc = glGetUniformLocation(m_geomProgram, "uTexChromaRangeMode");
+    m_uTexChromaMinLoc = glGetUniformLocation(m_geomProgram, "uTexChromaMin");
+    m_uTexChromaMaxLoc = glGetUniformLocation(m_geomProgram, "uTexChromaMax");
+
+    // Log critical uniform location failure
+    if (m_uSstOriginLoc == -1 || m_uViewportSizeLoc == -1 || m_uColorFuncLoc == -1 || m_uAlphaFuncLoc == -1 || m_uTextureEnabledLoc == -1) {
+        GLIDE_LOG(CRITICAL, "GLES", "Critical uniform location query failed! Some uniforms could not be resolved.");
     }
 
     checkGLError("CreateGeomShaders");
@@ -1218,25 +1298,39 @@ void OpenGLESBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
     glUseProgram(m_geomProgram);
     PopulateUniforms();
 
-    // Bind texture if bound
-    uint32_t addr0 = m_boundTexAddress[0];
-    if (addr0 != 0xFFFFFFFF) {
-        auto it = m_glesTextures.find(addr0);
-        if (it != m_glesTextures.end()) {
-            glActiveTexture(GL_TEXTURE0);
-            glBindTexture(GL_TEXTURE_2D, it->second);
+    // Bind textures and configure samplers for active TMUs (TMU0 and TMU1)
+    for (uint32_t tmu = 0; tmu < 2; ++tmu) {
+        uint32_t addr = m_boundTexAddress[tmu];
+        if (addr != 0xFFFFFFFF) {
+            auto it = m_glesTextures.find(addr);
+            if (it != m_glesTextures.end()) {
+                glActiveTexture(GL_TEXTURE0 + tmu);
+                glBindTexture(GL_TEXTURE_2D, it->second);
 
-            // Set sampler wrap modes
-            GLint wrapS = (m_texClampS[0] == 1) ? GL_CLAMP_TO_EDGE : GL_REPEAT;
-            GLint wrapT = (m_texClampT[0] == 1) ? GL_CLAMP_TO_EDGE : GL_REPEAT;
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, wrapS);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, wrapT);
+                // Set sampler wrap modes
+                GLint wrapS = GL_REPEAT;
+                if (m_texClampS[tmu] == 1) {
+                    wrapS = GL_CLAMP_TO_EDGE;
+                } else if (m_texClampS[tmu] == 2) {
+                    wrapS = GL_MIRRORED_REPEAT;
+                }
 
-            // Set sampler filter modes
-            GLint minFilter = (m_texMinFilter[0] == 1) ? GL_LINEAR : GL_NEAREST;
-            GLint magFilter = (m_texMagFilter[0] == 1) ? GL_LINEAR : GL_NEAREST;
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, minFilter);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, magFilter);
+                GLint wrapT = GL_REPEAT;
+                if (m_texClampT[tmu] == 1) {
+                    wrapT = GL_CLAMP_TO_EDGE;
+                } else if (m_texClampT[tmu] == 2) {
+                    wrapT = GL_MIRRORED_REPEAT;
+                }
+
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, wrapS);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, wrapT);
+
+                // Set sampler filter modes
+                GLint minFilter = (m_texMinFilter[tmu] == 1) ? GL_LINEAR : GL_NEAREST;
+                GLint magFilter = (m_texMagFilter[tmu] == 1) ? GL_LINEAR : GL_NEAREST;
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, minFilter);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, magFilter);
+            }
         }
     }
 
@@ -1251,10 +1345,13 @@ void OpenGLESBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
     // 5. Cleanup state bindings
     glBindVertexArray(0);
     glUseProgram(0);
-    if (addr0 != 0xFFFFFFFF) {
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, 0);
+    for (uint32_t tmu = 0; tmu < 2; ++tmu) {
+        if (m_boundTexAddress[tmu] != 0xFFFFFFFF) {
+            glActiveTexture(GL_TEXTURE0 + tmu);
+            glBindTexture(GL_TEXTURE_2D, 0);
+        }
     }
+    glActiveTexture(GL_TEXTURE0); // Reset active texture unit to 0
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
     // 6. Advance ring buffer offset
@@ -1486,11 +1583,11 @@ void OpenGLESBackend::SyncCullStateGLES() {
 }
 
 void OpenGLESBackend::PopulateUniforms() {
-    glUniform1i(glGetUniformLocation(m_geomProgram, "uSstOrigin"), (int)m_sstOrigin);
-    glUniform2f(glGetUniformLocation(m_geomProgram, "uViewportSize"), (float)m_headlessWidth, (float)m_headlessHeight);
+    glUniform1i(m_uSstOriginLoc, (int)m_sstOrigin);
+    glUniform2f(m_uViewportSizeLoc, (float)m_headlessWidth, (float)m_headlessHeight);
     bool depthClipOverride = (m_depthMode == 0) || (m_depthCompareOp == 7 && (!m_depthMask || m_is2DGeometry)); // 7 = GR_CMP_ALWAYS (prevents uninitialized ooz stack garbage clipping in text overlays, but only if depth writes are disabled OR if it's 2D geometry!)
-    glUniform1i(glGetUniformLocation(m_geomProgram, "uDepthClipOverride"), depthClipOverride ? 1 : 0);
-    GLint dbgLoc = glGetUniformLocation(m_geomProgram, "uDepthBufferMode");
+    glUniform1i(m_uDepthClipOverrideLoc, depthClipOverride ? 1 : 0);
+    GLint dbgLoc = m_uDepthBufferModeLoc;
     GLIDE_LOG(DEBUG, "GLES", "Uploading uDepthBufferMode. Location: " << dbgLoc << ", Value: " << m_depthMode);
     glUniform1i(dbgLoc, m_depthMode);
 
@@ -1501,10 +1598,10 @@ void OpenGLESBackend::PopulateUniforms() {
     if (m_pixelFormatOverride == 1) {
         std::swap(cr, cb);
     }
-    glUniform4f(glGetUniformLocation(m_geomProgram, "uConstantColor"), cr, cg, cb, ca);
+    glUniform4f(m_uConstantColorLoc, cr, cg, cb, ca);
 
     // Upload Chromakey State Uniforms
-    glUniform1i(glGetUniformLocation(m_geomProgram, "uChromakeyEnabled"), (int)m_chromakeyMode);
+    glUniform1i(m_uChromakeyEnabledLoc, (int)m_chromakeyMode);
     float chR = ((m_chromakeyValue >> 16) & 0xFF) / 255.0f;
     float chG = ((m_chromakeyValue >> 8)  & 0xFF) / 255.0f;
     float chB = (m_chromakeyValue         & 0xFF) / 255.0f;
@@ -1512,11 +1609,11 @@ void OpenGLESBackend::PopulateUniforms() {
     if (m_pixelFormatOverride == 1) {
         std::swap(chR, chB);
     }
-    glUniform4f(glGetUniformLocation(m_geomProgram, "uChromakeyValue"), chR, chG, chB, chA);
+    glUniform4f(m_uChromakeyValueLoc, chR, chG, chB, chA);
 
     // Upload Chromakey Range Uniforms
     bool rangeEnabled = ((m_chromakeyRangeMode >> 28) & 1) != 0;
-    glUniform1i(glGetUniformLocation(m_geomProgram, "uChromakeyRangeEnabled"), rangeEnabled ? 1 : 0);
+    glUniform1i(m_uChromakeyRangeEnabledLoc, rangeEnabled ? 1 : 0);
     
     float rMin = ((m_chromakeyRangeMin >> 16) & 0xFF) / 255.0f;
     float gMin = ((m_chromakeyRangeMin >> 8)  & 0xFF) / 255.0f;
@@ -1535,42 +1632,43 @@ void OpenGLESBackend::PopulateUniforms() {
     GLIDE_LOG(DEBUG, "GLES", "ChromaRangeMode: 0x" << std::hex << m_chromakeyRangeMode << std::dec);
     GLIDE_LOG(DEBUG, "GLES", "PixelFormatOverride: " << m_pixelFormatOverride);
 
-    glUniform3f(glGetUniformLocation(m_geomProgram, "uChromakeyRangeMin"), rMin, gMin, bMin);
-    glUniform3f(glGetUniformLocation(m_geomProgram, "uChromakeyRangeMax"), rMax, gMax, bMax);
+    glUniform3f(m_uChromakeyRangeMinLoc, rMin, gMin, bMin);
+    glUniform3f(m_uChromakeyRangeMaxLoc, rMax, gMax, bMax);
 
     int blueExcl  = ((m_chromakeyRangeMode >> 24) & 1);
     int greenExcl = ((m_chromakeyRangeMode >> 25) & 1);
     int redExcl   = ((m_chromakeyRangeMode >> 26) & 1);
-    glUniform3i(glGetUniformLocation(m_geomProgram, "uChromakeyRangeExclusive"), redExcl, greenExcl, blueExcl);
+    glUniform3i(m_uChromakeyRangeExclusiveLoc, redExcl, greenExcl, blueExcl);
 
     int unionMode = ((m_chromakeyRangeMode >> 27) & 1);
-    glUniform1i(glGetUniformLocation(m_geomProgram, "uChromakeyRangeUnion"), unionMode);
+    glUniform1i(m_uChromakeyRangeUnionLoc, unionMode);
 
     // Upload Combiner State Uniforms
-    glUniform1i(glGetUniformLocation(m_geomProgram, "uColorFunc"), (int)m_colorCombinerFunc);
-    glUniform1i(glGetUniformLocation(m_geomProgram, "uColorFactor"), (int)m_colorCombinerFactor);
-    glUniform1i(glGetUniformLocation(m_geomProgram, "uColorLocal"), (int)m_colorCombinerLocal);
-    glUniform1i(glGetUniformLocation(m_geomProgram, "uColorOther"), (int)m_colorCombinerOther);
-    glUniform1i(glGetUniformLocation(m_geomProgram, "uColorInvert"), m_colorCombinerInvert ? 1 : 0);
+    glUniform1i(m_uColorFuncLoc, (int)m_colorCombinerFunc);
+    glUniform1i(m_uColorFactorLoc, (int)m_colorCombinerFactor);
+    glUniform1i(m_uColorLocalLoc, (int)m_colorCombinerLocal);
+    glUniform1i(m_uColorOtherLoc, (int)m_colorCombinerOther);
+    glUniform1i(m_uColorInvertLoc, m_colorCombinerInvert ? 1 : 0);
 
-    glUniform1i(glGetUniformLocation(m_geomProgram, "uAlphaFunc"), (int)m_alphaCombinerFunc);
-    glUniform1i(glGetUniformLocation(m_geomProgram, "uAlphaFactor"), (int)m_alphaCombinerFactor);
-    glUniform1i(glGetUniformLocation(m_geomProgram, "uAlphaLocal"), (int)m_alphaCombinerLocal);
-    glUniform1i(glGetUniformLocation(m_geomProgram, "uAlphaOther"), (int)m_alphaCombinerOther);
-    glUniform1i(glGetUniformLocation(m_geomProgram, "uAlphaInvert"), m_alphaCombinerInvert ? 1 : 0);
+    glUniform1i(m_uAlphaFuncLoc, (int)m_alphaCombinerFunc);
+    glUniform1i(m_uAlphaFactorLoc, (int)m_alphaCombinerFactor);
+    glUniform1i(m_uAlphaLocalLoc, (int)m_alphaCombinerLocal);
+    glUniform1i(m_uAlphaOtherLoc, (int)m_alphaCombinerOther);
+    glUniform1i(m_uAlphaInvertLoc, m_alphaCombinerInvert ? 1 : 0);
 
     // Upload Texture Binding State
     bool texEnabled = (m_boundTexAddress[0] != 0xFFFFFFFF);
-    glUniform1i(glGetUniformLocation(m_geomProgram, "uTextureEnabled"), texEnabled ? 1 : 0);
-    glUniform1i(glGetUniformLocation(m_geomProgram, "uTexture0"), 0); // Always texture unit 0 for TMU0
-    glUniform1i(glGetUniformLocation(m_geomProgram, "uUseTmuOow"), (m_stwHintMask & 0x2) ? 1 : 0);
+    glUniform1i(m_uTextureEnabledLoc, texEnabled ? 1 : 0);
+    glUniform1i(m_uTexture0Loc, 0); // Always texture unit 0 for TMU0
+    glUniform1i(m_uTexture1Loc, 1); // Always texture unit 1 for TMU1
+    glUniform1i(m_uUseTmuOowLoc, (m_stwHintMask & 0x2) ? 1 : 0);
 
-    glUniform1i(glGetUniformLocation(m_geomProgram, "uAlphaTestOp"), (int)m_alphaTestOp);
-    glUniform1f(glGetUniformLocation(m_geomProgram, "uAlphaTestRef"), (float)m_alphaTestRefVal / 255.0f);
-    glUniform1f(glGetUniformLocation(m_geomProgram, "uDepthBias"), static_cast<float>(m_depthBiasLevel) / 65535.0f);
+    glUniform1i(m_uAlphaTestOpLoc, (int)m_alphaTestOp);
+    glUniform1f(m_uAlphaTestRefLoc, (float)m_alphaTestRefVal / 255.0f);
+    glUniform1f(m_uDepthBiasLoc, static_cast<float>(m_depthBiasLevel) / 65535.0f);
 
     // Milestone 8: Fogging State
-    glUniform1i(glGetUniformLocation(m_geomProgram, "uFogMode"), (int)m_fogMode);
+    glUniform1i(m_uFogModeLoc, (int)m_fogMode);
     
     float fogR = ((m_fogColor >> 16) & 0xFF) / 255.0f;
     float fogG = ((m_fogColor >> 8)  & 0xFF) / 255.0f;
@@ -1578,13 +1676,54 @@ void OpenGLESBackend::PopulateUniforms() {
     if (m_pixelFormatOverride == 1) {
         std::swap(fogR, fogB);
     }
-    glUniform4f(glGetUniformLocation(m_geomProgram, "uFogColor"), fogR, fogG, fogB, 1.0f);
+    glUniform4f(m_uFogColorLoc, fogR, fogG, fogB, 1.0f);
 
     float glesFogTable[64];
     for (int i = 0; i < 64; ++i) {
         glesFogTable[i] = m_fogTable[i] / 255.0f;
     }
-    glUniform1fv(glGetUniformLocation(m_geomProgram, "uFogTable"), 64, glesFogTable);
+    glUniform1fv(m_uFogTableLoc, 64, glesFogTable);
+
+    // Upload Texture-specific Chromakey Uniforms for TMU0 and TMU1
+    uint32_t enabled[2];
+    uint32_t rangeMode[2];
+    float minColor[8]; // 2 vec4s flat
+    float maxColor[8]; // 2 vec4s flat
+
+    for (int i = 0; i < 2; ++i) {
+        enabled[i] = m_texChromaMode[i];
+        rangeMode[i] = m_texChromaRangeMode[i];
+
+        float rMin = ((m_texChromaMin[i] >> 16) & 0xFF) / 255.0f;
+        float gMin = ((m_texChromaMin[i] >> 8)  & 0xFF) / 255.0f;
+        float bMin = (m_texChromaMin[i]         & 0xFF) / 255.0f;
+        float aMin = ((m_texChromaMin[i] >> 24) & 0xFF) / 255.0f;
+
+        float rMax = ((m_texChromaMax[i] >> 16) & 0xFF) / 255.0f;
+        float gMax = ((m_texChromaMax[i] >> 8)  & 0xFF) / 255.0f;
+        float bMax = (m_texChromaMax[i]         & 0xFF) / 255.0f;
+        float aMax = ((m_texChromaMax[i] >> 24) & 0xFF) / 255.0f;
+
+        if (m_pixelFormatOverride == 1) {
+            std::swap(rMin, bMin);
+            std::swap(rMax, bMax);
+        }
+
+        minColor[i * 4 + 0] = rMin;
+        minColor[i * 4 + 1] = gMin;
+        minColor[i * 4 + 2] = bMin;
+        minColor[i * 4 + 3] = aMin;
+
+        maxColor[i * 4 + 0] = rMax;
+        maxColor[i * 4 + 1] = gMax;
+        maxColor[i * 4 + 2] = bMax;
+        maxColor[i * 4 + 3] = aMax;
+    }
+
+    glUniform1uiv(m_uTexChromaEnabledLoc, 2, enabled);
+    glUniform1uiv(m_uTexChromaRangeModeLoc, 2, rangeMode);
+    glUniform4fv(m_uTexChromaMinLoc, 2, minColor);
+    glUniform4fv(m_uTexChromaMaxLoc, 2, maxColor);
 }
 
 } // namespace GlideWrapper

@@ -50,6 +50,9 @@ namespace {
     uint32_t s_lfbWriteColorFormat = 0;
     uint32_t s_chromakeyMode = 0;
     uint32_t s_chromakeyValue = 0;
+    uint32_t s_chromakeyRangeMin = 0;
+    uint32_t s_chromakeyRangeMax = 0;
+    uint32_t s_chromakeyRangeMode = 0;
 
     uint32_t s_rgbSrcBlend = 4;   // GR_BLEND_ONE
     uint32_t s_rgbDstBlend = 0;   // GR_BLEND_ZERO
@@ -75,6 +78,16 @@ namespace {
     uint32_t s_texAlphaFunc[2]  = {0, 0};
     uint32_t s_texAlphaFactor[2]= {0, 0};
     uint32_t s_boundTex[2]      = {0xFFFFFFFF, 0xFFFFFFFF};
+
+    struct TexChromaState {
+        GrTexChromakeyMode_t mode;
+        GrColor_t minColor;
+        GrColor_t maxColor;
+    };
+    static TexChromaState s_texChromaState[2] = {
+        { GR_TEXCHROMA_DISABLE_EXT, 0, 0 },
+        { GR_TEXCHROMA_DISABLE_EXT, 0, 0 }
+    };
 
     // Glide 3.x State Control cache
     uint32_t s_coordSpace = 0; // 0 = GR_WINDOW_COORDS, 1 = GR_CLIP_COORDS
@@ -160,6 +173,14 @@ struct GlideWrapperState {
     uint32_t lfbWriteColorFormat;
     uint32_t chromakeyMode;
     uint32_t chromakeyValue;
+    uint32_t chromakeyRangeMin;
+    uint32_t chromakeyRangeMax;
+    uint32_t chromakeyRangeMode;
+    struct {
+        GrTexChromakeyMode_t mode;
+        GrColor_t minColor;
+        GrColor_t maxColor;
+    } texChromaState[2];
     uint32_t rgbSrcBlend;
     uint32_t rgbDstBlend;
     uint32_t alphaSrcBlend;
@@ -738,6 +759,14 @@ FX_ENTRY void FX_CALL grGlideGetState(void* state) {
     ws->lfbWriteColorFormat = s_lfbWriteColorFormat;
     ws->chromakeyMode = s_chromakeyMode;
     ws->chromakeyValue = s_chromakeyValue;
+    ws->chromakeyRangeMin = s_chromakeyRangeMin;
+    ws->chromakeyRangeMax = s_chromakeyRangeMax;
+    ws->chromakeyRangeMode = s_chromakeyRangeMode;
+    for (int i = 0; i < 2; ++i) {
+        ws->texChromaState[i].mode = s_texChromaState[i].mode;
+        ws->texChromaState[i].minColor = s_texChromaState[i].minColor;
+        ws->texChromaState[i].maxColor = s_texChromaState[i].maxColor;
+    }
     ws->rgbSrcBlend = s_rgbSrcBlend;
     ws->rgbDstBlend = s_rgbDstBlend;
     ws->alphaSrcBlend = s_alphaSrcBlend;
@@ -792,6 +821,14 @@ FX_ENTRY void FX_CALL grGlideSetState(const void* state) {
     s_lfbWriteColorFormat = ws->lfbWriteColorFormat;
     s_chromakeyMode = ws->chromakeyMode;
     s_chromakeyValue = ws->chromakeyValue;
+    s_chromakeyRangeMin = ws->chromakeyRangeMin;
+    s_chromakeyRangeMax = ws->chromakeyRangeMax;
+    s_chromakeyRangeMode = ws->chromakeyRangeMode;
+    for (int i = 0; i < 2; ++i) {
+        s_texChromaState[i].mode = ws->texChromaState[i].mode;
+        s_texChromaState[i].minColor = ws->texChromaState[i].minColor;
+        s_texChromaState[i].maxColor = ws->texChromaState[i].maxColor;
+    }
     s_rgbSrcBlend = ws->rgbSrcBlend;
     s_rgbDstBlend = ws->rgbDstBlend;
     s_alphaSrcBlend = ws->alphaSrcBlend;
@@ -809,6 +846,7 @@ FX_ENTRY void FX_CALL grGlideSetState(const void* state) {
         b->SetAlphaTestState(s_alphaTestOp, s_alphaTestRef);
         b->SetChromakeyMode(s_chromakeyMode);
         b->SetChromakeyValue(s_chromakeyValue);
+        b->SetChromakeyRange(s_chromakeyRangeMin, s_chromakeyRangeMax, s_chromakeyRangeMode);
         b->SetBlendState(s_rgbSrcBlend, s_rgbDstBlend, s_alphaSrcBlend, s_alphaDstBlend);
         b->SetFogMode(s_fogMode);
         b->SetFogColor(s_fogColor);
@@ -825,6 +863,8 @@ FX_ENTRY void FX_CALL grGlideSetState(const void* state) {
         for (uint32_t tmu = 0; tmu < 2; ++tmu) {
             b->SetTexCombinerMode(tmu, s_texRgbFunc[tmu], s_texRgbFactor[tmu], s_texAlphaFunc[tmu], s_texAlphaFactor[tmu]);
             b->BindTexture(tmu, s_boundTex[tmu], s_clampS[tmu], s_clampT[tmu], s_minFilter[tmu], s_magFilter[tmu]);
+            b->SetTexChromakeyMode(tmu, s_texChromaState[tmu].mode);
+            b->SetTexChromakeyRange(tmu, s_texChromaState[tmu].minColor, s_texChromaState[tmu].maxColor, s_texChromaState[tmu].mode);
         }
     }
 }
@@ -1028,6 +1068,7 @@ FX_ENTRY void FX_CALL grFlush(void) {
 FX_ENTRY void FX_CALL grChromaRangeModeExt(GrChromakeyMode_t mode) {
     GLIDE_LOG(DEBUG, "Frontend", "grChromaRangeModeExt (Glide 3.x): mode=" << mode);
     s_chromakeyMode = mode;
+    s_chromakeyRangeMode = mode;
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
         b->SetChromakeyMode(s_chromakeyMode);
     }
@@ -1036,21 +1077,44 @@ FX_ENTRY void FX_CALL grChromaRangeModeExt(GrChromakeyMode_t mode) {
 FX_ENTRY void FX_CALL grChromaRangeExt(GrColor_t minColor, GrColor_t maxColor, GrChromaRangeMode_t mode) {
     GLIDE_LOG(DEBUG, "Frontend", "grChromaRangeExt (Glide 3.x): min=0x" << std::hex << minColor << ", max=0x" << maxColor << ", mode=" << std::dec << mode);
     s_chromakeyValue = minColor;
+    s_chromakeyRangeMin = minColor;
+    s_chromakeyRangeMax = maxColor;
+    s_chromakeyRangeMode = mode;
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
         b->SetChromakeyRange(minColor, maxColor, mode);
     }
 }
 
-FX_ENTRY void FX_CALL grTexChromaModeExt(GrChipID_t tmu, GrTexChromakeyMode_t mode) {
+FX_ENTRY void FX_CALL grTexChromaMode(GrChipID_t tmu, GrTexChromakeyMode_t mode) {
     EnsureEngineInitialized();
-    GLIDE_LOG(DEBUG, "Frontend", "grTexChromaModeExt (Glide 3.x): tmu=" << tmu << ", mode=" << mode);
-    grChromakeyMode(mode);
+    GLIDE_LOG(DEBUG, "Frontend", "grTexChromaMode (Glide 3.x): tmu=" << tmu << ", mode=" << mode);
+    if (tmu < 2) {
+        s_texChromaState[tmu].mode = mode;
+        if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
+            b->SetTexChromakeyMode(tmu, mode);
+        }
+    }
+}
+
+FX_ENTRY void FX_CALL grTexChromaModeExt(GrChipID_t tmu, GrTexChromakeyMode_t mode) {
+    grTexChromaMode(tmu, mode);
+}
+
+FX_ENTRY void FX_CALL grTexChromaRange(GrChipID_t tmu, GrColor_t minColor, GrColor_t maxColor, GrTexChromakeyMode_t mode) {
+    EnsureEngineInitialized();
+    GLIDE_LOG(DEBUG, "Frontend", "grTexChromaRange (Glide 3.x): tmu=" << tmu << ", min=0x" << std::hex << minColor << ", max=0x" << maxColor << ", mode=" << std::dec << mode);
+    if (tmu < 2) {
+        s_texChromaState[tmu].mode = mode;
+        s_texChromaState[tmu].minColor = minColor;
+        s_texChromaState[tmu].maxColor = maxColor;
+        if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
+            b->SetTexChromakeyRange(tmu, minColor, maxColor, mode);
+        }
+    }
 }
 
 FX_ENTRY void FX_CALL grTexChromaRangeExt(GrChipID_t tmu, GrColor_t minColor, GrColor_t maxColor, GrTexChromakeyMode_t mode) {
-    EnsureEngineInitialized();
-    GLIDE_LOG(DEBUG, "Frontend", "grTexChromaRangeExt (Glide 3.x): tmu=" << tmu << ", min=0x" << std::hex << minColor << ", max=" << maxColor << ", mode=" << std::dec << mode);
-    grChromaRangeExt(minColor, maxColor, mode);
+    grTexChromaRange(tmu, minColor, maxColor, mode);
 }
 
 FX_ENTRY GrProc FX_CALL grGetProcAddress(char *procName) {
@@ -1245,7 +1309,7 @@ FX_ENTRY FxBool FX_CALL gu3dfLoad(const char* filename, Gu3dfInfo* info) {
     }
 
     // Copy palette if applicable
-    if (info->header.format == GR_TEXFMT_P_8) {
+    if (info->header.format == GR_TEXFMT_P_8 || info->header.format == GR_TEXFMT_P_8_6666) {
         for (int i = 0; i < 256; ++i) {
             info->table.palette.data[i] = sharedInfo.palette[i];
         }

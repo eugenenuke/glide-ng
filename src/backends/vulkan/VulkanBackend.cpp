@@ -24,7 +24,13 @@ extern "C" {
 
 namespace GlideWrapper {
 
-
+static uint32_t PackRGBA(float r, float g, float b, float a) {
+    uint8_t ur = static_cast<uint8_t>(std::clamp(r * 255.0f, 0.0f, 255.0f));
+    uint8_t ug = static_cast<uint8_t>(std::clamp(g * 255.0f, 0.0f, 255.0f));
+    uint8_t ub = static_cast<uint8_t>(std::clamp(b * 255.0f, 0.0f, 255.0f));
+    uint8_t ua = static_cast<uint8_t>(std::clamp(a * 255.0f, 0.0f, 255.0f));
+    return (ur << 0) | (ug << 8) | (ub << 16) | (ua << 24);
+}
 
 // Authoritative Vulkan validation layer declarations
 const std::vector<const char*> validationLayers = {
@@ -160,15 +166,15 @@ bool VulkanBackend::Initialize(const WrapperConfig& config) {
         samplerInfo.addressModeV = vk::SamplerAddressMode::eRepeat;
         samplerInfo.addressModeW = vk::SamplerAddressMode::eRepeat;
         samplerInfo.mipmapMode = vk::SamplerMipmapMode::eNearest;
-        m_dummyTexture.sampler = m_device->createSamplerUnique(samplerInfo);
+        m_dummySampler = m_device->createSamplerUnique(samplerInfo);
         
         // Descriptor Set
         vk::DescriptorSetAllocateInfo setAlloc(m_descriptorPool.get(), 1, &m_descriptorSetLayout.get());
         auto sets = m_device->allocateDescriptorSets(setAlloc);
-        m_dummyTexture.descriptorSet = sets[0];
+        m_dummyDescriptorSet = sets[0];
         
-        vk::DescriptorImageInfo imageInfo(m_dummyTexture.sampler.get(), m_dummyTexture.imageView.get(), vk::ImageLayout::eShaderReadOnlyOptimal);
-        vk::WriteDescriptorSet descriptorWrite(m_dummyTexture.descriptorSet, 0, 0, 1, vk::DescriptorType::eCombinedImageSampler, &imageInfo, nullptr, nullptr);
+        vk::DescriptorImageInfo imageInfo(m_dummySampler.get(), m_dummyTexture.imageView.get(), vk::ImageLayout::eShaderReadOnlyOptimal);
+        vk::WriteDescriptorSet descriptorWrite(m_dummyDescriptorSet, 0, 0, 1, vk::DescriptorType::eCombinedImageSampler, &imageInfo, nullptr, nullptr);
         m_device->updateDescriptorSets(1, &descriptorWrite, 0, nullptr);
         
         GLIDE_LOG(INFO, "Vulkan", "Created 1x1 dummy white texture.");
@@ -187,6 +193,10 @@ void VulkanBackend::Shutdown() {
 
     GLIDE_LOG(INFO, "Vulkan", "Shutting down Hybrid Vulkan context.");
     
+    // Clear sampler and descriptor caches
+    m_samplerCache.clear();
+    m_descriptorCache.clear();
+
     // 1. Force-detach window resources first (handles active frame command buffer, SDL, etc.)
     DetachWindow();
 
@@ -203,7 +213,7 @@ void VulkanBackend::Shutdown() {
     // Reset descriptor layout, pool, and textures
     m_vulkanTextures.clear();
     m_dummyTexture.imageView.reset();
-    m_dummyTexture.sampler.reset();
+    m_dummySampler.reset();
     m_dummyTexture.memory.reset();
     m_dummyTexture.image.reset();
     m_descriptorPool.reset();
@@ -1936,11 +1946,13 @@ void VulkanBackend::DrawPoint(const ModernVertex& pt) {
     UpdateActivePipelines();
     vk::Pipeline reqPipeline = m_activePointPipeline;
 
-    vk::DescriptorSet reqDescSet = m_dummyTexture.descriptorSet;
+    vk::DescriptorSet reqDescSet = m_dummyDescriptorSet;
     if (m_boundTexAddress[0] != 0xFFFFFFFF) {
         auto it = m_vulkanTextures.find(m_boundTexAddress[0]);
         if (it != m_vulkanTextures.end()) {
-            reqDescSet = it->second.descriptorSet;
+            auto& tex = it->second;
+            vk::Sampler sampler = GetOrCreateSampler(tex.clampS, tex.clampT, tex.minFilter, tex.magFilter);
+            reqDescSet = GetOrCreateDescriptorSet(tex.imageView.get(), sampler);
         }
     }
 
@@ -1993,11 +2005,13 @@ void VulkanBackend::DrawLine(const ModernVertex& v1, const ModernVertex& v2) {
     UpdateActivePipelines();
     vk::Pipeline reqPipeline = m_activeLinePipeline;
 
-    vk::DescriptorSet reqDescSet = m_dummyTexture.descriptorSet;
+    vk::DescriptorSet reqDescSet = m_dummyDescriptorSet;
     if (m_boundTexAddress[0] != 0xFFFFFFFF) {
         auto it = m_vulkanTextures.find(m_boundTexAddress[0]);
         if (it != m_vulkanTextures.end()) {
-            reqDescSet = it->second.descriptorSet;
+            auto& tex = it->second;
+            vk::Sampler sampler = GetOrCreateSampler(tex.clampS, tex.clampT, tex.minFilter, tex.magFilter);
+            reqDescSet = GetOrCreateDescriptorSet(tex.imageView.get(), sampler);
         }
     }
 
@@ -2051,11 +2065,13 @@ void VulkanBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b, c
     UpdateActivePipelines();
     vk::Pipeline reqPipeline = m_activeTrianglePipeline;
 
-    vk::DescriptorSet reqDescSet = m_dummyTexture.descriptorSet;
+    vk::DescriptorSet reqDescSet = m_dummyDescriptorSet;
     if (m_boundTexAddress[0] != 0xFFFFFFFF) {
         auto it = m_vulkanTextures.find(m_boundTexAddress[0]);
         if (it != m_vulkanTextures.end()) {
-            reqDescSet = it->second.descriptorSet;
+            auto& tex = it->second;
+            vk::Sampler sampler = GetOrCreateSampler(tex.clampS, tex.clampT, tex.minFilter, tex.magFilter);
+            reqDescSet = GetOrCreateDescriptorSet(tex.imageView.get(), sampler);
         }
     }
 
@@ -2276,57 +2292,15 @@ void VulkanBackend::UploadTexture(uint32_t tmu, uint32_t startAddress, const str
                                         {}, {vk::ImageAspectFlagBits::eColor, 0, static_cast<uint32_t>(tex.swizzledMipLevels.size()), 0, 1});
         auto imageView = m_device->createImageViewUnique(viewInfo);
 
-        // 7. Create Sampler based on currently tracked states
-        uint32_t clampS = m_texClampS[0];
-        uint32_t clampT = m_texClampT[0];
-        uint32_t minFilter = m_texMinFilter[0];
-        uint32_t magFilter = m_texMagFilter[0];
-
-        vk::SamplerAddressMode addressModeS = (clampS == 1) ? vk::SamplerAddressMode::eClampToEdge : vk::SamplerAddressMode::eRepeat;
-        vk::SamplerAddressMode addressModeT = (clampT == 1) ? vk::SamplerAddressMode::eClampToEdge : vk::SamplerAddressMode::eRepeat;
-        vk::Filter minF = (minFilter == 1) ? vk::Filter::eLinear : vk::Filter::eNearest;
-        vk::Filter magF = (magFilter == 1) ? vk::Filter::eLinear : vk::Filter::eNearest;
-
-        vk::SamplerCreateInfo samplerInfo;
-        samplerInfo.magFilter = magF;
-        samplerInfo.minFilter = minF;
-        samplerInfo.addressModeU = addressModeS;
-        samplerInfo.addressModeV = addressModeT;
-        samplerInfo.addressModeW = vk::SamplerAddressMode::eRepeat;
-        samplerInfo.anisotropyEnable = false;
-        samplerInfo.maxAnisotropy = 1.0f;
-        samplerInfo.borderColor = vk::BorderColor::eIntOpaqueBlack;
-        samplerInfo.unnormalizedCoordinates = false;
-        samplerInfo.compareEnable = false;
-        samplerInfo.compareOp = vk::CompareOp::eAlways;
-        samplerInfo.mipmapMode = vk::SamplerMipmapMode::eNearest;
-        samplerInfo.mipLodBias = 0.0f;
-        samplerInfo.minLod = 0.0f;
-        samplerInfo.maxLod = 0.0f;
-
-        auto sampler = m_device->createSamplerUnique(samplerInfo);
-
-        // 8. Allocate Descriptor Set
-        vk::DescriptorSetAllocateInfo setAlloc(m_descriptorPool.get(), 1, &m_descriptorSetLayout.get());
-        auto sets = m_device->allocateDescriptorSets(setAlloc);
-        auto descriptorSet = sets[0];
-
-        // 9. Update Descriptor Set
-        vk::DescriptorImageInfo descriptorImageInfo(sampler.get(), imageView.get(), vk::ImageLayout::eShaderReadOnlyOptimal);
-        vk::WriteDescriptorSet descriptorWrite(descriptorSet, 0, 0, 1, vk::DescriptorType::eCombinedImageSampler, &descriptorImageInfo, nullptr, nullptr);
-        m_device->updateDescriptorSets(1, &descriptorWrite, 0, nullptr);
-
-        // 10. Save in texture cache map
+        // 7. Save in texture cache map
         VulkanTexture vulkanTex;
         vulkanTex.image = std::move(image);
         vulkanTex.memory = std::move(memory);
         vulkanTex.imageView = std::move(imageView);
-        vulkanTex.sampler = std::move(sampler);
-        vulkanTex.descriptorSet = descriptorSet;
-        vulkanTex.clampS = clampS;
-        vulkanTex.clampT = clampT;
-        vulkanTex.minFilter = minFilter;
-        vulkanTex.magFilter = magFilter;
+        vulkanTex.clampS = m_texClampS[0];
+        vulkanTex.clampT = m_texClampT[0];
+        vulkanTex.minFilter = m_texMinFilter[0];
+        vulkanTex.magFilter = m_texMagFilter[0];
         vulkanTex.dataHash = incomingHash;
 
         m_vulkanTextures[startAddress] = std::move(vulkanTex);
@@ -2354,54 +2328,10 @@ void VulkanBackend::BindTexture(uint32_t tmu, uint32_t startAddress, uint32_t cl
     auto it = m_vulkanTextures.find(startAddress);
     if (it != m_vulkanTextures.end()) {
         auto& tex = it->second;
-        // Check if wrap or filter modes have changed
-        if (tex.clampS != clampS || tex.clampT != clampT || tex.minFilter != minFilter || tex.magFilter != magFilter) {
-            GLIDE_LOG(DEBUG, "Vulkan", "BindTexture: Sampler properties changed for 0x" << std::hex << startAddress << std::dec 
-                      << ". Recreating VkSampler. WrapS=" << clampS << " WrapT=" << clampT 
-                      << " MinFilter=" << minFilter << " MagFilter=" << magFilter);
-
-            tex.clampS = clampS;
-            tex.clampT = clampT;
-            tex.minFilter = minFilter;
-            tex.magFilter = magFilter;
-
-            // Destroy old sampler
-            tex.sampler.reset();
-
-            // Recreate sampler
-            vk::SamplerAddressMode addressModeS = (clampS == 1) ? vk::SamplerAddressMode::eClampToEdge : vk::SamplerAddressMode::eRepeat;
-            vk::SamplerAddressMode addressModeT = (clampT == 1) ? vk::SamplerAddressMode::eClampToEdge : vk::SamplerAddressMode::eRepeat;
-            vk::Filter minF = (minFilter == 1) ? vk::Filter::eLinear : vk::Filter::eNearest;
-            vk::Filter magF = (magFilter == 1) ? vk::Filter::eLinear : vk::Filter::eNearest;
-
-            vk::SamplerCreateInfo samplerInfo;
-            samplerInfo.magFilter = magF;
-            samplerInfo.minFilter = minF;
-            samplerInfo.addressModeU = addressModeS;
-            samplerInfo.addressModeV = addressModeT;
-            samplerInfo.addressModeW = vk::SamplerAddressMode::eRepeat;
-            samplerInfo.anisotropyEnable = false;
-            samplerInfo.maxAnisotropy = 1.0f;
-            samplerInfo.borderColor = vk::BorderColor::eIntOpaqueBlack;
-            samplerInfo.unnormalizedCoordinates = false;
-            samplerInfo.compareEnable = false;
-            samplerInfo.compareOp = vk::CompareOp::eAlways;
-            samplerInfo.mipmapMode = vk::SamplerMipmapMode::eNearest;
-            samplerInfo.mipLodBias = 0.0f;
-            samplerInfo.minLod = 0.0f;
-            samplerInfo.maxLod = 0.0f;
-
-            try {
-                tex.sampler = m_device->createSamplerUnique(samplerInfo);
-
-                // Update the descriptor set
-                vk::DescriptorImageInfo imageInfo(tex.sampler.get(), tex.imageView.get(), vk::ImageLayout::eShaderReadOnlyOptimal);
-                vk::WriteDescriptorSet descriptorWrite(tex.descriptorSet, 0, 0, 1, vk::DescriptorType::eCombinedImageSampler, &imageInfo, nullptr, nullptr);
-                m_device->updateDescriptorSets(1, &descriptorWrite, 0, nullptr);
-            } catch (const std::exception& e) {
-                GLIDE_LOG(CRITICAL, "Vulkan", "BindTexture failed to update sampler for Address=0x" << std::hex << startAddress << std::dec << ": " << e.what());
-            }
-        }
+        tex.clampS = clampS;
+        tex.clampT = clampT;
+        tex.minFilter = minFilter;
+        tex.magFilter = magFilter;
     }
 }
 
@@ -2466,16 +2396,15 @@ void VulkanBackend::PopulatePushConstants(PushConstants& pcs) {
     pcs.viewportHeight = (float)m_headlessHeight;
     pcs.depthBufferMode = m_depthMode;
     
-    // Extract and normalize constant color components
-    pcs.constantColor[0] = ((m_constantColor >> 16) & 0xFF) / 255.0f; // R
-    pcs.constantColor[1] = ((m_constantColor >> 8) & 0xFF) / 255.0f;  // G
-    pcs.constantColor[2] = (m_constantColor & 0xFF) / 255.0f;         // B
-    pcs.constantColor[3] = ((m_constantColor >> 24) & 0xFF) / 255.0f; // A
+    // Extract and normalize constant color components, then pack
+    float constR = ((m_constantColor >> 16) & 0xFF) / 255.0f;
+    float constG = ((m_constantColor >> 8) & 0xFF) / 255.0f;
+    float constB = (m_constantColor & 0xFF) / 255.0f;
+    float constA = ((m_constantColor >> 24) & 0xFF) / 255.0f;
     if (m_pixelFormatOverride == 1) {
-        std::swap(pcs.constantColor[0], pcs.constantColor[2]);
+        std::swap(constR, constB);
     }
-    
-
+    pcs.constantColor = PackRGBA(constR, constG, constB, constA);
 
     pcs.alphaTestOp = m_alphaTestOp;
     pcs.alphaTestRef = (float)m_alphaTestRefVal / 255.0f;
@@ -2525,25 +2454,60 @@ void VulkanBackend::PopulatePushConstants(PushConstants& pcs) {
     pcs.chromakeyEnabled = m_chromakeyMode;
     pcs.chromakeyRangeMode = m_chromakeyRangeMode;
     
-    pcs.chromakeyValue[0] = ((m_chromakeyValue >> 16) & 0xFF) / 255.0f; // R
-    pcs.chromakeyValue[1] = ((m_chromakeyValue >> 8) & 0xFF) / 255.0f;  // G
-    pcs.chromakeyValue[2] = (m_chromakeyValue & 0xFF) / 255.0f;         // B
-    pcs.chromakeyValue[3] = ((m_chromakeyValue >> 24) & 0xFF) / 255.0f; // A
+    float cValR = ((m_chromakeyValue >> 16) & 0xFF) / 255.0f;
+    float cValG = ((m_chromakeyValue >> 8) & 0xFF) / 255.0f;
+    float cValB = (m_chromakeyValue & 0xFF) / 255.0f;
+    float cValA = ((m_chromakeyValue >> 24) & 0xFF) / 255.0f;
 
-    pcs.chromakeyRangeMin[0] = ((m_chromakeyRangeMin >> 16) & 0xFF) / 255.0f; // R
-    pcs.chromakeyRangeMin[1] = ((m_chromakeyRangeMin >> 8) & 0xFF) / 255.0f;  // G
-    pcs.chromakeyRangeMin[2] = (m_chromakeyRangeMin & 0xFF) / 255.0f;         // B
-    pcs.chromakeyRangeMin[3] = ((m_chromakeyRangeMin >> 24) & 0xFF) / 255.0f; // A
+    float cMinR = ((m_chromakeyRangeMin >> 16) & 0xFF) / 255.0f;
+    float cMinG = ((m_chromakeyRangeMin >> 8) & 0xFF) / 255.0f;
+    float cMinB = (m_chromakeyRangeMin & 0xFF) / 255.0f;
+    float cMinA = ((m_chromakeyRangeMin >> 24) & 0xFF) / 255.0f;
 
-    pcs.chromakeyRangeMax[0] = ((m_chromakeyRangeMax >> 16) & 0xFF) / 255.0f; // R
-    pcs.chromakeyRangeMax[1] = ((m_chromakeyRangeMax >> 8) & 0xFF) / 255.0f;  // G
-    pcs.chromakeyRangeMax[2] = (m_chromakeyRangeMax & 0xFF) / 255.0f;         // B
-    pcs.chromakeyRangeMax[3] = ((m_chromakeyRangeMax >> 24) & 0xFF) / 255.0f; // A
+    float cMaxR = ((m_chromakeyRangeMax >> 16) & 0xFF) / 255.0f;
+    float cMaxG = ((m_chromakeyRangeMax >> 8) & 0xFF) / 255.0f;
+    float cMaxB = (m_chromakeyRangeMax & 0xFF) / 255.0f;
+    float cMaxA = ((m_chromakeyRangeMax >> 24) & 0xFF) / 255.0f;
 
     if (m_pixelFormatOverride == 1) {
-        std::swap(pcs.chromakeyValue[0], pcs.chromakeyValue[2]);
-        std::swap(pcs.chromakeyRangeMin[0], pcs.chromakeyRangeMin[2]);
-        std::swap(pcs.chromakeyRangeMax[0], pcs.chromakeyRangeMax[2]);
+        std::swap(cValR, cValB);
+        std::swap(cMinR, cMinB);
+        std::swap(cMaxR, cMaxB);
+    }
+    
+    pcs.chromakeyValue = PackRGBA(cValR, cValG, cValB, cValA);
+    pcs.chromakeyRangeMin = PackRGBA(cMinR, cMinG, cMinB, cMinA);
+    pcs.chromakeyRangeMax = PackRGBA(cMaxR, cMaxG, cMaxB, cMaxA);
+
+    // Populate texture-specific chromakeying states for TMU0 and TMU1
+    for (int i = 0; i < 2; ++i) {
+        pcs.texChromaEnabled[i] = m_texChromaMode[i];
+        pcs.texChromaRangeMode[i] = m_texChromaRangeMode[i];
+
+        float minR = ((m_texChromaMin[i] >> 16) & 0xFF) / 255.0f;
+        float minG = ((m_texChromaMin[i] >> 8)  & 0xFF) / 255.0f;
+        float minB = (m_texChromaMin[i]         & 0xFF) / 255.0f;
+        float minA = ((m_texChromaMin[i] >> 24) & 0xFF) / 255.0f;
+
+        float maxR = ((m_texChromaMax[i] >> 16) & 0xFF) / 255.0f;
+        float maxG = ((m_texChromaMax[i] >> 8)  & 0xFF) / 255.0f;
+        float maxB = (m_texChromaMax[i]         & 0xFF) / 255.0f;
+        float maxA = ((m_texChromaMax[i] >> 24) & 0xFF) / 255.0f;
+
+        if (m_pixelFormatOverride == 1) {
+            std::swap(minR, minB);
+            std::swap(maxR, maxB);
+        }
+
+        pcs.texChromaMin[i][0] = minR;
+        pcs.texChromaMin[i][1] = minG;
+        pcs.texChromaMin[i][2] = minB;
+        pcs.texChromaMin[i][3] = minA;
+
+        pcs.texChromaMax[i][0] = maxR;
+        pcs.texChromaMax[i][1] = maxG;
+        pcs.texChromaMax[i][2] = maxB;
+        pcs.texChromaMax[i][3] = maxA;
     }
 }
 
@@ -2570,6 +2534,68 @@ void VulkanBackend::LoadGammaTable(uint32_t nentries, const uint32_t* rTable, co
         m_lutB[i] = static_cast<uint8_t>(bTable[i]);
     }
     m_useGammaLut = true;
+}
+
+vk::Sampler VulkanBackend::GetOrCreateSampler(uint32_t clampS, uint32_t clampT, uint32_t minFilter, uint32_t magFilter) {
+    SamplerKey key{clampS, clampT, minFilter, magFilter};
+    auto it = m_samplerCache.find(key);
+    if (it != m_samplerCache.end()) {
+        return it->second.get();
+    }
+
+    vk::SamplerAddressMode addressModeS = vk::SamplerAddressMode::eRepeat;
+    if (clampS == 1) addressModeS = vk::SamplerAddressMode::eClampToEdge;
+    else if (clampS == 2) addressModeS = vk::SamplerAddressMode::eMirroredRepeat;
+
+    vk::SamplerAddressMode addressModeT = vk::SamplerAddressMode::eRepeat;
+    if (clampT == 1) addressModeT = vk::SamplerAddressMode::eClampToEdge;
+    else if (clampT == 2) addressModeT = vk::SamplerAddressMode::eMirroredRepeat;
+
+    vk::Filter minF = (minFilter == 1) ? vk::Filter::eLinear : vk::Filter::eNearest;
+    vk::Filter magF = (magFilter == 1) ? vk::Filter::eLinear : vk::Filter::eNearest;
+
+    vk::SamplerCreateInfo samplerInfo;
+    samplerInfo.magFilter = magF;
+    samplerInfo.minFilter = minF;
+    samplerInfo.addressModeU = addressModeS;
+    samplerInfo.addressModeV = addressModeT;
+    samplerInfo.addressModeW = vk::SamplerAddressMode::eRepeat;
+    samplerInfo.anisotropyEnable = false;
+    samplerInfo.maxAnisotropy = 1.0f;
+    samplerInfo.borderColor = vk::BorderColor::eIntOpaqueBlack;
+    samplerInfo.unnormalizedCoordinates = false;
+    samplerInfo.compareEnable = false;
+    samplerInfo.compareOp = vk::CompareOp::eAlways;
+    samplerInfo.mipmapMode = vk::SamplerMipmapMode::eNearest;
+    samplerInfo.mipLodBias = 0.0f;
+    samplerInfo.minLod = 0.0f;
+    samplerInfo.maxLod = 0.0f;
+
+    auto sampler = m_device->createSamplerUnique(samplerInfo);
+    vk::Sampler res = sampler.get();
+    m_samplerCache.emplace(key, std::move(sampler));
+    return res;
+}
+
+vk::DescriptorSet VulkanBackend::GetOrCreateDescriptorSet(vk::ImageView imageView, vk::Sampler sampler) {
+    DescriptorKey key{imageView, sampler};
+    auto it = m_descriptorCache.find(key);
+    if (it != m_descriptorCache.end()) {
+        return it->second;
+    }
+
+    // Allocate Descriptor Set
+    vk::DescriptorSetAllocateInfo setAlloc(m_descriptorPool.get(), 1, &m_descriptorSetLayout.get());
+    auto sets = m_device->allocateDescriptorSets(setAlloc);
+    vk::DescriptorSet descriptorSet = sets[0];
+
+    // Update Descriptor Set
+    vk::DescriptorImageInfo descriptorImageInfo(sampler, imageView, vk::ImageLayout::eShaderReadOnlyOptimal);
+    vk::WriteDescriptorSet descriptorWrite(descriptorSet, 0, 0, 1, vk::DescriptorType::eCombinedImageSampler, &descriptorImageInfo, nullptr, nullptr);
+    m_device->updateDescriptorSets(1, &descriptorWrite, 0, nullptr);
+
+    m_descriptorCache.emplace(key, descriptorSet);
+    return descriptorSet;
 }
 
 } // namespace GlideWrapper

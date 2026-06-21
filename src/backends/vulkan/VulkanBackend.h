@@ -9,7 +9,7 @@
 
 namespace GlideWrapper {
 
-// Push Constants definition shared across pipeline layout and draw pipelines (exactly 128 bytes)
+// Push Constants definition shared across pipeline layout and draw pipelines (exactly 256 bytes)
 struct PushConstants {
     // Block 0: Offset 0 (16 bytes)
     float    viewportWidth;
@@ -18,22 +18,25 @@ struct PushConstants {
     uint32_t alphaTestOp;       // 0..7 (Glide compare ops, 7 = ALWAYS/disabled)
 
     // Block 1: Offset 16 (16 bytes)
-    float    constantColor[4];  // RGBA normalized floats
-
-    // Block 2: Offset 32 (16 bytes)
+    uint32_t constantColor;     // Packed RGBA
     float    alphaTestRef;      // 0.0 .. 1.0 (normalized reference value)
     float    depthBias;         // Normalized depth bias
     uint32_t fogMode;           // 0 = disabled, otherwise enabled
+
+    // Block 2: Offset 32 (16 bytes)
     uint32_t fogColor;          // Packed 32-bit ARGB/ABGR color
+    uint32_t useTmuOow;         // 1 = use separate TMU OOW (grHints), 0 = use vertex OOW
+    uint32_t chromakeyEnabled;
+    uint32_t chromakeyRangeMode;
 
     // Block 3: Offset 48 (16 bytes)
-    uint32_t useTmuOow;         // 1 = use separate TMU OOW (grHints), 0 = use vertex OOW
-    uint32_t padding0;
-    uint32_t padding1;
-    uint32_t padding2;
+    uint32_t chromakeyValue;     // Packed RGBA
+    uint32_t chromakeyRangeMin;  // Packed RGBA
+    uint32_t chromakeyRangeMax;  // Packed RGBA
+    uint32_t padding_fog;
 
     // Block 4: Offset 64 (64 bytes)
-    uint32_t fogTable[16];      // 64-entry 8-bit fog table packed into 16 uint32_t values (aligned to 16-byte boundaries via uvec4 in GLSL)
+    uint32_t fogTable[16];      // 64-entry 8-bit fog table packed into 16 uint32_t values
 
     // Block 5: Offset 128 (16 bytes)
     uint32_t colorFunc;
@@ -51,35 +54,73 @@ struct PushConstants {
     uint32_t alphaOther;
     uint32_t alphaInvert;
     uint32_t textureEnabled;
-    uint32_t chromakeyEnabled;
+    uint32_t padding_tmu;
 
     // Block 8: Offset 176 (16 bytes)
-    uint32_t chromakeyRangeMode;
-    uint32_t padding3;
-    uint32_t padding4;
-    uint32_t padding5;
+    uint32_t texChromaEnabled[2];  // TMU0/TMU1 chromakey enabled
+    uint32_t texChromaRangeMode[2]; // TMU0/TMU1 range mode
 
-    // Block 9: Offset 192 (16 bytes)
-    float    chromakeyValue[4];
+    // Block 9: Offset 192 (32 bytes)
+    float    texChromaMin[2][4];   // TMU0/TMU1 packed RGBA min
 
-    // Block 10: Offset 208 (16 bytes)
-    float    chromakeyRangeMin[4];
-
-    // Block 11: Offset 224 (16 bytes)
-    float    chromakeyRangeMax[4];
+    // Block 10: Offset 224 (32 bytes)
+    float    texChromaMax[2][4];   // TMU0/TMU1 packed RGBA max
 };
 
 struct VulkanTexture {
     vk::UniqueImage image;
     vk::UniqueDeviceMemory memory;
     vk::UniqueImageView imageView;
-    vk::UniqueSampler sampler;
-    vk::DescriptorSet descriptorSet; // Owned by m_descriptorPool
     uint32_t clampS{0};
     uint32_t clampT{0};
     uint32_t minFilter{0};
     uint32_t magFilter{0};
     uint64_t dataHash{0};
+};
+
+struct SamplerKey {
+    uint32_t clampS;
+    uint32_t clampT;
+    uint32_t minFilter;
+    uint32_t magFilter;
+    bool operator==(const SamplerKey& other) const {
+        return clampS == other.clampS && clampT == other.clampT &&
+               minFilter == other.minFilter && magFilter == other.magFilter;
+    }
+};
+
+struct SamplerKeyHash {
+    std::size_t operator()(const SamplerKey& k) const {
+        std::size_t h = 0;
+        auto combine = [&h](std::size_t val) {
+            h ^= val + 0x9e3779b9 + (h << 6) + (h >> 2);
+        };
+        combine(k.clampS);
+        combine(k.clampT);
+        combine(k.minFilter);
+        combine(k.magFilter);
+        return h;
+    }
+};
+
+struct DescriptorKey {
+    vk::ImageView imageView;
+    vk::Sampler sampler;
+    bool operator==(const DescriptorKey& other) const {
+        return imageView == other.imageView && sampler == other.sampler;
+    }
+};
+
+struct DescriptorKeyHash {
+    std::size_t operator()(const DescriptorKey& k) const {
+        std::size_t h = 0;
+        auto combine = [&h](std::size_t val) {
+            h ^= val + 0x9e3779b9 + (h << 6) + (h >> 2);
+        };
+        combine(reinterpret_cast<std::uintptr_t>(static_cast<VkImageView>(k.imageView)));
+        combine(reinterpret_cast<std::uintptr_t>(static_cast<VkSampler>(k.sampler)));
+        return h;
+    }
 };
 
 struct PipelineStateKey {
@@ -319,7 +360,15 @@ private:
     vk::UniqueDescriptorPool m_descriptorPool;
     std::unordered_map<uint32_t, VulkanTexture> m_vulkanTextures;
     VulkanTexture m_dummyTexture;
+    vk::UniqueSampler m_dummySampler;
+    vk::DescriptorSet m_dummyDescriptorSet;
     void* m_gpuStagingMaps[2]{nullptr, nullptr}; // Mapped staging memory addresses
+
+    vk::Sampler GetOrCreateSampler(uint32_t clampS, uint32_t clampT, uint32_t minFilter, uint32_t magFilter);
+    vk::DescriptorSet GetOrCreateDescriptorSet(vk::ImageView imageView, vk::Sampler sampler);
+
+    std::unordered_map<SamplerKey, vk::UniqueSampler, SamplerKeyHash> m_samplerCache;
+    std::unordered_map<DescriptorKey, vk::DescriptorSet, DescriptorKeyHash> m_descriptorCache;
 
     // Persistent Texture Staging Buffer (Asynchronous Uploads)
     vk::UniqueBuffer m_texStagingBuffer;
