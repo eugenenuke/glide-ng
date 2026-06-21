@@ -47,4 +47,5 @@ tests/software_dumps/
 # Submodule test suite outputs
 /ext_tests/openglide-ng/tests/
 
-
+# Local release build directories
+build_release/
