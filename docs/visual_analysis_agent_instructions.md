@@ -146,7 +146,16 @@ Instead, you must **evaluate visual correctness analytically**:
 4.  **Verify LFB writes**: In LFB tests (e.g. `test11`/`test12`), verify that the direct pixel buffer writes (and text logos) are drawn with the correct orientation and aspect ratios.
 5.  **Verify AA and Fogging**: Ensure that anti-aliasing (when enabled) and fogging smoothly blend primitives into the background without harsh, blocky pixelation.
 
+### 6.A. Pristine Reference & Experimentation Scratch Protocol
+*   **The Golden Rule**: The reference test suites, source codes, and headers inside the `refs/` directory are **pristine historical artifacts** and **MUST NEVER BE MODIFIED**.
+*   **Experimentation Scratch Protocol**: If you must modify a test (e.g., to add debugging print statements, change state configurations, or isolate a rendering bug):
+    1.  **Isolate in Scratch**: Copy the target reference `.c` or `.h` file to the parent project's `./scratch` directory (or your conversation's scratch directory).
+    2.  **Edit the Scratch Copy**: Make all changes, debugging print statements, or parameters modifications exclusively inside the `./scratch` directory.
+    3.  **Local Compilation**: Compile the modified test binary pointing to the parent wrapper's header and library targets, keeping the binary and all intermediate objects completely outside the `refs/` submodules.
+    4.  **Zero Dirty Submodules**: Ensure that submodules are never modified. Running `git status` inside any submodule in the `refs/` folder must always return a completely clean working tree.
+
 ---
+
 
 ## 7. Report Template
 

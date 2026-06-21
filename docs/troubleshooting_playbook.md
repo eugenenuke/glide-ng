@@ -373,7 +373,12 @@ When future agents or developers encounter regressions or divergent rendering be
     *   > [!WARNING]
     *   > **NEVER** edit any `.c` or `.h` file inside the `refs/` directory. These are the gold-standard ground truths used to measure wrapper compatibility.
     *   If a test has a bug (e.g., a keyboard hook omission in its helper library), patch the wrapper or helper library bridge dynamically, or replicate the test logic in a modern C++ demo under the `demos/` directory.
-    *   Never check in modifications to reference tests. If you need to experiment, copy the test code into a scratch script under `scratch/` or create a standalone demo.
+    *   **The Experimentation Scratch Protocol**: If you need to temporarily modify a reference test (e.g., to inject printf statements, alter vertex coordinates, or change state parameters for debugging):
+        1.  **Copy to Scratch**: Copy the target reference `.c` or `.h` file to the parent project's `./scratch` directory (or use your conversation's artifacts scratch directory).
+        2.  **Modify Locally**: Perform all edits, debugging, and experimentation exclusively on the copy inside `./scratch/`.
+        3.  **Compile and Execute**: Compile the scratch binary pointing to the wrapper's headers and library, keeping all changes localized.
+        4.  **Enforce Cleanliness**: Never commit, stage, or leave any dirty state in the submodules. Ensure the original files in the `refs/` submodules remain 100% untouched.
+
 
 ### G. Bounded Background Task Management & Screen Capture Timing
 *   **The Problem**: When running interactive graphical tests in the background to programmatically capture their rendering output (using `import` or `xwd`), developers often use a generic `sleep 4.0` or longer to wait for window initialization. However, if the test is launched with a fixed frame count (e.g. `-n 100`), the headless software/Vulkan backend will render those frames in a few milliseconds and terminate. The capturing tool will then fail or hang because the presentation window no longer exists.
