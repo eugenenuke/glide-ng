@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <glide.h>
 #include "core/ISplashAnimator.h"
 
@@ -29,6 +30,7 @@ public:
     ~GlideSplashAnimator();
 
     void Render(float x, float y, float w, float h, FxU32 frame, void (*callback)(int frame) = nullptr) override;
+    void RenderBanner(uint32_t screenWidth, uint32_t screenHeight) override;
 
 private:
 

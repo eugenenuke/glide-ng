@@ -40,6 +40,9 @@ EmulationRegistry::EmulationRegistry() {
     if (const char* env = std::getenv("GLIDE_HEADLESS")) {
         m_config.forceNoWindow = (std::string(env) == "1");
     }
+    if (const char* env = std::getenv("GLIDE_WRAPPER_LOG_LEVEL")) {
+        m_config.logLevel = std::stoul(env);
+    }
 }
 
 bool EmulationRegistry::IsFunctionAvailable(const std::string& funcName) const {

@@ -7,6 +7,9 @@
 #include "core/VertexLayout.h"
 #include "core/TextureManager.h"
 #include "core/Telemetry.h"
+#include "core/3dfParser.h"
+#include "core/MathUtils.h"
+#include "core/LfbManager.h"
 #include <iostream>
 #include <cmath>
 #include <vector>
@@ -31,6 +34,7 @@
 
 extern "C" {
 uint32_t s_sstOrigin = 0;
+bool g_inSplash = false; // Execution context flag for internally loaded Glide 2.x splash textures
 void grShamelessPlug(void);
 
 namespace {
@@ -91,6 +95,7 @@ namespace {
     uint8_t s_fogTable[64] = {0};
     bool s_colorMaskRgb = true;
     bool s_colorMaskAlpha = true;
+    static uint32_t s_constantColor = 0xFFFFFFFF;
 
     inline void TransformVertexIfNecessary(GlideWrapper::ModernVertex& mv) {
         // Sanitize inactive parameters to prevent stack garbage from culling/distorting triangles on modern GPUs
@@ -163,6 +168,8 @@ struct GlideWrapperState {
     uint32_t fogColor;
     uint8_t  fogTable[64];
     uint32_t cullMode;
+    uint32_t constantColor;
+    uint32_t sstOrigin;
 };
 
 FX_ENTRY void FX_CALL grGlideInit(void) {
@@ -275,6 +282,7 @@ FX_ENTRY GrContext_t FX_CALL grSstWinOpen(FxU32 hWnd, GrScreenResolution_t resol
 
     bool attached = backend->AttachWindow(reinterpret_cast<void*>(static_cast<uintptr_t>(hWnd)), width, height, hWnd != 0);
     backend->SetPixelFormat(format);
+    s_sstOrigin = origin;
     backend->SetSstOrigin(origin);
     return attached ? 1 : 0;
 }
@@ -522,8 +530,8 @@ FX_ENTRY FxU32 FX_CALL grGet(FxU32 pname, FxU32 plength, FxI32* params) {
             return 8;
         case GR_ZDEPTH_MIN_MAX:
             if (plength < 8) return 0;
-            params[0] = 0;
-            params[1] = 65535;
+            params[0] = 65535;
+            params[1] = 0;
             return 8;
         case 0x06: // GR_GLIDE_STATE_SIZE
             *params = 1024;
@@ -643,6 +651,10 @@ FX_ENTRY FxU32 FX_CALL grTexMaxAddress(GrChipID_t tmu) {
 
 FX_ENTRY FxU32 FX_CALL grTexCalcMemRequired(GrLOD_t lodmin, GrLOD_t lodmax, GrAspectRatio_t aspect, GrTextureFormat_t fmt) {
     GLIDE_LOG(DEBUG, "Frontend", "grTexCalcMemRequired (Glide 3.x) invoked.");
+    if (g_inSplash) {
+        // Internally loaded Glide 2.x splash texture: already has Glide 2.x canonical values!
+        return GlideWrapper::TextureManager::GetInstance().CalculateMemoryRequired(lodmin, lodmax, aspect, fmt);
+    }
     return GlideWrapper::TextureManager::GetInstance().CalculateMemoryRequired(8 - lodmin, 8 - lodmax, 3 - aspect, fmt);
 }
 
@@ -722,6 +734,8 @@ FX_ENTRY void FX_CALL grGlideGetState(void* state) {
     ws->fogColor = s_fogColor;
     std::memcpy(ws->fogTable, s_fogTable, sizeof(s_fogTable));
     ws->cullMode = s_cullMode;
+    ws->constantColor = s_constantColor;
+    ws->sstOrigin = s_sstOrigin;
 }
 
 FX_ENTRY void FX_CALL grGlideSetState(const void* state) {
@@ -774,6 +788,8 @@ FX_ENTRY void FX_CALL grGlideSetState(const void* state) {
     s_fogColor = ws->fogColor;
     std::memcpy(s_fogTable, ws->fogTable, sizeof(s_fogTable));
     s_cullMode = ws->cullMode;
+    s_constantColor = ws->constantColor;
+    s_sstOrigin = ws->sstOrigin;
 
     // Apply states to backend
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
@@ -786,6 +802,8 @@ FX_ENTRY void FX_CALL grGlideSetState(const void* state) {
         b->SetFogColor(s_fogColor);
         b->SetFogTable(s_fogTable);
         b->SetCullState(s_cullMode);
+        b->SetConstantColor(s_constantColor);
+        b->SetSstOrigin(s_sstOrigin);
 
         // Restore color and alpha combiner states
         b->SetCombinerMode(s_colorFunc, s_colorFactor, s_colorLocal, s_colorOther, s_colorInvert,
@@ -943,46 +961,19 @@ static const float tableIndexToW[64] = {
 };
 
 FX_ENTRY float FX_CALL guFogTableIndexToW(int i) {
-    if (i < 0) i = 0;
-    if (i >= 64) i = 63;
-    return tableIndexToW[i];
+    return GlideWrapper::MathUtils::FogTableIndexToW(i);
 }
 
 FX_ENTRY void FX_CALL guFogGenerateExp(GrFog_t *fogtable, float density) {
-    if (!fogtable) return;
-    float dp = density * guFogTableIndexToW(63);
-    float scale = 1.0f / (1.0f - std::exp(-dp));
-
-    for (int i = 0; i < 64; ++i) {
-        dp = density * guFogTableIndexToW(i);
-        float f = (1.0f - std::exp(-dp)) * scale;
-        f = std::clamp(f, 0.0f, 1.0f) * 255.0f;
-        fogtable[i] = static_cast<GrFog_t>(f);
-    }
+    GlideWrapper::MathUtils::FogGenerateExp(fogtable, density);
 }
 
 FX_ENTRY void FX_CALL guFogGenerateExp2(GrFog_t *fogtable, float density) {
-    if (!fogtable) return;
-    float dp = density * guFogTableIndexToW(63);
-    float scale = 1.0f / (1.0f - std::exp(-(dp * dp)));
-
-    for (int i = 0; i < 64; ++i) {
-        dp = density * guFogTableIndexToW(i);
-        float f = (1.0f - std::exp(-(dp * dp))) * scale;
-        f = std::clamp(f, 0.0f, 1.0f) * 255.0f;
-        fogtable[i] = static_cast<GrFog_t>(f);
-    }
+    GlideWrapper::MathUtils::FogGenerateExp2(fogtable, density);
 }
 
 FX_ENTRY void FX_CALL guFogGenerateLinear(GrFog_t *fogtable, float nearZ, float farZ) {
-    if (!fogtable) return;
-    for (int i = 0; i < 64; ++i) {
-        float world_w = guFogTableIndexToW(i);
-        world_w = std::clamp(world_w, nearZ, farZ);
-        float f = (world_w - nearZ) / (farZ - nearZ);
-        f = std::clamp(f, 0.0f, 1.0f) * 255.0f;
-        fogtable[i] = static_cast<GrFog_t>(f);
-    }
+    GlideWrapper::MathUtils::FogGenerateLinear(fogtable, nearZ, farZ);
 }
 
 FX_ENTRY void FX_CALL grFogMode(GrFogMode_t mode) {
@@ -1094,8 +1085,15 @@ FX_ENTRY void FX_CALL grCullMode(GrCullMode_t mode) {
 FX_ENTRY void FX_CALL grTexDownloadMipMap(GrChipID_t tmu, FxU32 startAddress, FxU32 evenOdd, GrTexInfo* info) {
     GLIDE_LOG(DEBUG, "Frontend", "grTexDownloadMipMap (Glide 3.x) invoked for TMU=" << tmu);
     if (info && info->data) {
-        // Translate Glide 3.x signed log2 aspect ratio and LOD to Glide 2.x core format
-        GlideWrapper::TextureManager::GetInstance().DownloadMipMap(tmu, startAddress, 8 - info->smallLodLog2, 8 - info->largeLodLog2, 3 - info->aspectRatioLog2, info->format, info->data);
+        if (g_inSplash) {
+            // Internally loaded Glide 2.x splash texture: its GrTexInfo fields contain Glide 2.x canonical values.
+            // Note that although the header declaration in glide3/glide.h names them smallLodLog2, largeLodLog2, aspectRatioLog2,
+            // they physically map to the exact same offsets/sizes as Glide 2.x smallLod, largeLod, aspectRatio.
+            GlideWrapper::TextureManager::GetInstance().DownloadMipMap(tmu, startAddress, info->smallLodLog2, info->largeLodLog2, info->aspectRatioLog2, info->format, info->data);
+        } else {
+            // Translate Glide 3.x signed log2 aspect ratio and LOD to Glide 2.x core format
+            GlideWrapper::TextureManager::GetInstance().DownloadMipMap(tmu, startAddress, 8 - info->smallLodLog2, 8 - info->largeLodLog2, 3 - info->aspectRatioLog2, info->format, info->data);
+        }
     }
 }
 
@@ -1120,6 +1118,7 @@ FX_ENTRY void FX_CALL grTexSource(GrChipID_t tmu, FxU32 startAddress, FxU32 even
 FX_ENTRY void FX_CALL grConstantColorValue(GrColor_t value) {
     EnsureEngineInitialized();
     GLIDE_LOG(DEBUG, "Frontend", "grConstantColorValue (Glide 3.x) invoked: " << std::hex << value << std::dec);
+    s_constantColor = value;
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
         b->SetConstantColor(value);
     }
@@ -1144,221 +1143,47 @@ FX_ENTRY FxBool FX_CALL grLfbWriteRegion(GrBuffer_t dstBuf, FxU32 dstX, FxU32 ds
     return FXTRUE;
 }
 
-struct LfbLockState {
-    bool isLocked{false};
-    GrLock_t type;
-    GrBuffer_t buffer;
-    GrLfbWriteMode_t writeMode;
-    GrOriginLocation_t origin;
-    bool pixelPipeline{false};
-    uint32_t width{0};
-    uint32_t height{0};
-    std::vector<uint8_t> stagingBuffer;
-    std::vector<uint8_t> originalBuffer;
-    uint32_t stride{0};
-    uint32_t pixelSize{0};
-};
-
-static LfbLockState g_lfbLock;
-
-static void FlipRows(uint8_t* data, uint32_t height, uint32_t stride) {
-    std::vector<uint8_t> tempRow(stride);
-    for (uint32_t y = 0; y < height / 2; ++y) {
-        uint8_t* rowTop = data + y * stride;
-        uint8_t* rowBottom = data + (height - 1 - y) * stride;
-        std::memcpy(tempRow.data(), rowTop, stride);
-        std::memcpy(rowTop, rowBottom, stride);
-        std::memcpy(rowBottom, tempRow.data(), stride);
-    }
-}
+// LFB locking, unlocking, and row-flipping are managed by the unified GlideWrapper::LfbManager.
 
 FX_ENTRY FxBool FX_CALL grLfbLock(GrLock_t type, GrBuffer_t buffer, GrLfbWriteMode_t writeMode, GrOriginLocation_t origin, FxBool pixelPipeline, GrLfbInfo_t* info) {
     EnsureEngineInitialized();
     GLIDE_LOG(DEBUG, "Frontend", "grLfbLock (Glide 3.x) invoked: buffer=" << buffer << ", mode=" << writeMode << ", origin=" << origin);
-    
-    if (!info) return FXFALSE;
-    
-    auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend();
-    if (!b) return FXFALSE;
-
-    g_lfbLock.width = b->GetWidth();
-    g_lfbLock.height = b->GetHeight();
-    
-    GrLfbWriteMode_t resolvedMode = writeMode;
-    if (resolvedMode == GR_LFBWRITEMODE_ANY) {
-        resolvedMode = GR_LFBWRITEMODE_565;
-    }
-
-    if (resolvedMode == GR_LFBWRITEMODE_565 || 
-        resolvedMode == GR_LFBWRITEMODE_555 || 
-        resolvedMode == GR_LFBWRITEMODE_1555 || 
-        resolvedMode == GR_LFBWRITEMODE_565_DEPTH || 
-        resolvedMode == GR_LFBWRITEMODE_555_DEPTH || 
-        resolvedMode == GR_LFBWRITEMODE_1555_DEPTH || 
-        resolvedMode == GR_LFBWRITEMODE_ZA16) {
-        g_lfbLock.pixelSize = 2;
-    } else if (resolvedMode == GR_LFBWRITEMODE_888) {
-        g_lfbLock.pixelSize = 3;
-    } else if (resolvedMode == GR_LFBWRITEMODE_8888) {
-        g_lfbLock.pixelSize = 4;
-    } else {
-        GLIDE_LOG(CRITICAL, "Frontend", "grLfbLock: Unsupported writeMode=" << writeMode);
-        return FXFALSE;
-    }
-
-    g_lfbLock.stride = g_lfbLock.width * g_lfbLock.pixelSize;
-    g_lfbLock.stagingBuffer.resize(g_lfbLock.stride * g_lfbLock.height);
-    
-    b->ReadLFB(buffer, 0, 0, g_lfbLock.width, g_lfbLock.height, g_lfbLock.stride, g_lfbLock.stagingBuffer.data());
-    g_lfbLock.originalBuffer = g_lfbLock.stagingBuffer;
-    
-    if (origin == GR_ORIGIN_LOWER_LEFT) {
-        FlipRows(g_lfbLock.stagingBuffer.data(), g_lfbLock.height, g_lfbLock.stride);
-    }
-
-    info->size = sizeof(GrLfbInfo_t);
-    info->writeMode = resolvedMode;
-    info->origin = origin;
-    info->strideInBytes = g_lfbLock.stride;
-    info->lfbPtr = g_lfbLock.stagingBuffer.data();
-
-    g_lfbLock.isLocked = true;
-    g_lfbLock.type = type;
-    g_lfbLock.buffer = buffer;
-    g_lfbLock.writeMode = resolvedMode;
-    g_lfbLock.origin = origin;
-    g_lfbLock.pixelPipeline = (pixelPipeline != 0);
-
-    return FXTRUE;
+    return GlideWrapper::LfbManager::GetInstance().Lock(type, buffer, writeMode, origin, pixelPipeline != 0, info) ? FXTRUE : FXFALSE;
 }
 
 FX_ENTRY FxBool FX_CALL grLfbUnlock(GrLock_t type, GrBuffer_t buffer) {
     EnsureEngineInitialized();
     GLIDE_LOG(DEBUG, "Frontend", "grLfbUnlock (Glide 3.x) invoked.");
-    
-    if (!g_lfbLock.isLocked) {
-        GLIDE_LOG(WARN, "Frontend", "grLfbUnlock: No active LFB lock found!");
-        return FXFALSE;
-    }
 
-    auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend();
-    if (!b) return FXFALSE;
+    // Construct pipeline configuration for the backend to simulate blending & chroma keying
+    GlideWrapper::LfbPipelineConfig config;
+    config.pixelPipeline = GlideWrapper::LfbManager::GetInstance().IsPixelPipeline();
+    config.chromakeyEnabled = (s_chromakeyMode != 0);
+    config.chromakeyValue = s_chromakeyValue;
+    config.constantAlpha = s_lfbConstantAlpha;
+    config.rgbSrcBlend = s_rgbSrcBlend;
+    config.rgbDstBlend = s_rgbDstBlend;
 
-    if (g_lfbLock.type == GR_LFB_WRITE_ONLY) {
-        if (g_lfbLock.origin == GR_ORIGIN_LOWER_LEFT) {
-            FlipRows(g_lfbLock.stagingBuffer.data(), g_lfbLock.height, g_lfbLock.stride);
-        }
-
-        uint32_t srcFmt = 0;
-        if (g_lfbLock.writeMode == GR_LFBWRITEMODE_565) srcFmt = 0;
-        else if (g_lfbLock.writeMode == GR_LFBWRITEMODE_555) srcFmt = 1;
-        else if (g_lfbLock.writeMode == GR_LFBWRITEMODE_1555) srcFmt = 2;
-        else if (g_lfbLock.writeMode == GR_LFBWRITEMODE_888) srcFmt = 4;
-        else if (g_lfbLock.writeMode == GR_LFBWRITEMODE_8888) srcFmt = 5;
-        else if (g_lfbLock.writeMode == GR_LFBWRITEMODE_565_DEPTH) srcFmt = 12;
-        else if (g_lfbLock.writeMode == GR_LFBWRITEMODE_555_DEPTH) srcFmt = 13;
-        else if (g_lfbLock.writeMode == GR_LFBWRITEMODE_1555_DEPTH) srcFmt = 14;
-        else if (g_lfbLock.writeMode == GR_LFBWRITEMODE_ZA16) srcFmt = 15;
-
-        GlideWrapper::LfbPipelineConfig config;
-        config.pixelPipeline = g_lfbLock.pixelPipeline;
-        config.chromakeyEnabled = (s_chromakeyMode != 0);
-        config.chromakeyValue = s_chromakeyValue;
-        config.constantAlpha = s_lfbConstantAlpha;
-        config.rgbSrcBlend = s_rgbSrcBlend;
-        config.rgbDstBlend = s_rgbDstBlend;
-
-        b->WriteLFB(g_lfbLock.buffer, 0, 0, g_lfbLock.width, g_lfbLock.height, g_lfbLock.stride, srcFmt, g_lfbLock.stagingBuffer.data(), g_lfbLock.originalBuffer.data(), config);
-    }
-
-    g_lfbLock.isLocked = false;
-    return FXTRUE;
-}
-
-static bool Read3dfHeader(FILE* fp, char* buffer, size_t bufSize, char* version, char* formatStr, int* smallLod, int* largeLod, int* aspectW, int* aspectH) {
-    size_t pos = 0;
-    for (int i = 0; i < 4; ++i) {
-        if (!fgets(buffer + pos, bufSize - pos, fp)) return false;
-        pos += std::strlen(buffer + pos);
-    }
-    
-    int parsed = std::sscanf(buffer, "3df v%15s\n%31s\nlod range: %d %d\naspect ratio: %d %d\n",
-                             version, formatStr, smallLod, largeLod, aspectW, aspectH);
-    if (parsed != 6) {
-        parsed = std::sscanf(buffer, "3df v%15s %31s lod range: %d %d aspect ratio: %d %d\n",
-                             version, formatStr, smallLod, largeLod, aspectW, aspectH);
-    }
-    return (parsed == 6);
-}
-
-static uint16_t ReadBE16(FILE* fp) {
-    int b1 = std::getc(fp);
-    int b2 = std::getc(fp);
-    if (b1 == EOF || b2 == EOF) return 0;
-    return (static_cast<uint16_t>(b1) << 8) | b2;
-}
-
-static uint32_t ReadBE32(FILE* fp) {
-    uint8_t bytes[4];
-    if (std::fread(bytes, 1, 4, fp) != 4) return 0;
-    return (static_cast<uint32_t>(bytes[0]) << 24) |
-           (static_cast<uint32_t>(bytes[1]) << 16) |
-           (static_cast<uint32_t>(bytes[2]) << 8)  |
-           bytes[3];
+    return GlideWrapper::LfbManager::GetInstance().Unlock(type, buffer, config) ? FXTRUE : FXFALSE;
 }
 
 FX_ENTRY FxBool FX_CALL gu3dfGetInfo(const char* filename, Gu3dfInfo* info) {
     GLIDE_LOG(DEBUG, "Frontend", "gu3dfGetInfo (Glide 3.x) invoked for: " << (filename ? filename : "unknown"));
     if (!filename || !info) return FXFALSE;
 
-    FILE* fp = std::fopen(filename, "rb");
-    if (!fp) {
-        GLIDE_LOG(WARN, "Frontend", "gu3dfGetInfo (Glide 3.x): Failed to open " << filename);
+    GlideWrapper::Texture::Shared3dfHeader sharedHeader;
+    uint32_t memRequired = 0;
+    if (!GlideWrapper::Texture::Parse3dfHeader(filename, sharedHeader, memRequired)) {
         return FXFALSE;
     }
 
-    char buffer[256] = {0};
-    char version[16] = {0};
-    char formatStr[32] = {0};
-    int smallLod = 0, largeLod = 0, aspectW = 0, aspectH = 0;
-
-    if (!Read3dfHeader(fp, buffer, sizeof(buffer), version, formatStr, &smallLod, &largeLod, &aspectW, &aspectH)) {
-        GLIDE_LOG(WARN, "Frontend", "gu3dfGetInfo (Glide 3.x): Failed to parse header of " << filename);
-        std::fclose(fp);
-        return FXFALSE;
-    }
-    std::fclose(fp);
-
-    for (int i = 0; formatStr[i]; ++i) {
-        formatStr[i] = (char)std::toupper((unsigned char)formatStr[i]);
-    }
-
-    GrTextureFormat_t format = GR_TEXFMT_RGB_565;
-    bool formatFound = false;
-    struct FormatMap { const char* name; GrTextureFormat_t fmt; };
-    FormatMap maps[] = {
-        { "I8",       GR_TEXFMT_INTENSITY_8 },
-        { "A8",       GR_TEXFMT_ALPHA_8 },
-        { "RGB565",   GR_TEXFMT_RGB_565 },
-        { "ARGB1555", GR_TEXFMT_ARGB_1555 },
-        { "ARGB4444", GR_TEXFMT_ARGB_4444 },
-        { "AI88",     GR_TEXFMT_ALPHA_INTENSITY_88 },
-        { "P8",       GR_TEXFMT_P_8 },
-        { "AP88",     GR_TEXFMT_AP_88 }
-    };
-    for (const auto& m : maps) {
-        if (std::strcmp(formatStr, m.name) == 0) {
-            format = m.fmt;
-            formatFound = true;
-            break;
-        }
-    }
-    if (!formatFound) {
-        GLIDE_LOG(WARN, "Frontend", "gu3dfGetInfo (Glide 3.x): Unsupported format " << formatStr);
-        return FXFALSE;
-    }
-
+    // Map sharedHeader to Glide 3.x specific types/enums
+    info->header.format = static_cast<GrTextureFormat_t>(sharedHeader.format);
+    
+    // Map aspect ratio
     GrAspectRatio_t aspect = GR_ASPECT_LOG2_1x1;
+    int aspectW = sharedHeader.aspectW;
+    int aspectH = sharedHeader.aspectH;
     if (aspectW == 1 && aspectH == 1) aspect = GR_ASPECT_LOG2_1x1;
     else if (aspectW == 1 && aspectH == 2) aspect = GR_ASPECT_LOG2_1x2;
     else if (aspectW == 1 && aspectH == 4) aspect = GR_ASPECT_LOG2_1x4;
@@ -1366,7 +1191,9 @@ FX_ENTRY FxBool FX_CALL gu3dfGetInfo(const char* filename, Gu3dfInfo* info) {
     else if (aspectW == 2 && aspectH == 1) aspect = GR_ASPECT_LOG2_2x1;
     else if (aspectW == 4 && aspectH == 1) aspect = GR_ASPECT_LOG2_4x1;
     else if (aspectW == 8 && aspectH == 1) aspect = GR_ASPECT_LOG2_8x1;
+    info->header.aspect_ratio = aspect;
 
+    // Map LODs
     auto mapLod = [](int dim) -> int {
         if (dim <= 1) return GR_LOD_LOG2_1;
         if (dim <= 2) return GR_LOD_LOG2_2;
@@ -1378,36 +1205,13 @@ FX_ENTRY FxBool FX_CALL gu3dfGetInfo(const char* filename, Gu3dfInfo* info) {
         if (dim <= 128) return GR_LOD_LOG2_128;
         return GR_LOD_LOG2_256;
     };
+    info->header.small_lod = mapLod(sharedHeader.smallLod);
+    info->header.large_lod = mapLod(sharedHeader.largeLod);
 
-    info->header.format = format;
-    info->header.aspect_ratio = aspect;
-    info->header.small_lod = mapLod(smallLod);
-    info->header.large_lod = mapLod(largeLod);
-    
-    if (aspectW >= aspectH) {
-        info->header.width = largeLod;
-        info->header.height = largeLod / aspectW;
-    } else {
-        info->header.height = largeLod;
-        info->header.width = largeLod / aspectH;
-    }
+    info->header.width = sharedHeader.width;
+    info->header.height = sharedHeader.height;
+    info->mem_required = memRequired;
 
-    uint32_t totalBytes = 0;
-    int bytesPerTexel = (format >= GR_TEXFMT_16BIT) ? 2 : 1;
-    for (int lod = info->header.large_lod; lod >= info->header.small_lod; --lod) {
-        int lDim = 1 << lod;
-        int w = lDim, h = lDim;
-        if (aspectW >= aspectH) {
-            h = std::max(1, lDim / aspectW);
-        } else {
-            w = std::max(1, lDim / aspectH);
-        }
-        totalBytes += w * h * bytesPerTexel;
-    }
-    info->mem_required = totalBytes;
-
-    GLIDE_LOG(DEBUG, "Frontend", "gu3dfGetInfo (Glide 3.x): parsed " << filename << " successfully. Format=" << formatStr 
-                                 << " Aspect=" << aspectW << "x" << aspectH << " LargeLOD=" << largeLod << " MemRequired=" << totalBytes);
     return FXTRUE;
 }
 
@@ -1415,76 +1219,29 @@ FX_ENTRY FxBool FX_CALL gu3dfLoad(const char* filename, Gu3dfInfo* info) {
     GLIDE_LOG(DEBUG, "Frontend", "gu3dfLoad (Glide 3.x) invoked for: " << (filename ? filename : "unknown"));
     if (!filename || !info) return FXFALSE;
 
+    // We must first parse the header to map everything
     if (!gu3dfGetInfo(filename, info)) return FXFALSE;
-
-    FILE* fp = std::fopen(filename, "rb");
-    if (!fp) return FXFALSE;
-
-    char buffer[256] = {0};
-    char version[16] = {0};
-    char formatStr[32] = {0};
-    int smallLod = 0, largeLod = 0, aspectW = 0, aspectH = 0;
-    Read3dfHeader(fp, buffer, sizeof(buffer), version, formatStr, &smallLod, &largeLod, &aspectW, &aspectH);
-
-    if (info->header.format == GR_TEXFMT_P_8) {
-        for (int i = 0; i < 256; ++i) {
-            info->table.palette.data[i] = ReadBE32(fp);
-        }
-        GLIDE_LOG(DEBUG, "Frontend", "gu3dfLoad (Glide 3.x): Loaded 256 palette entries for P8 texture.");
-    }
 
     if (!info->data) {
         GLIDE_LOG(WARN, "Frontend", "gu3dfLoad (Glide 3.x): Destination info->data is NULL! Caller must allocate memory.");
-        std::fclose(fp);
         return FXFALSE;
     }
 
-    uint8_t* dstBytes = reinterpret_cast<uint8_t*>(info->data);
-    int bytesPerTexel = (info->header.format >= GR_TEXFMT_16BIT) ? 2 : 1;
+    GlideWrapper::Texture::Shared3dfInfo sharedInfo;
+    if (!GlideWrapper::Texture::Load3dfFile(filename, sharedInfo)) {
+        return FXFALSE;
+    }
 
-    for (int lod = info->header.large_lod; lod >= info->header.small_lod; --lod) {
-        int lDim = 1 << lod;
-        int w = lDim, h = lDim;
-        if (aspectW >= aspectH) {
-            h = std::max(1, lDim / aspectW);
-        } else {
-            w = std::max(1, lDim / aspectH);
-        }
-        size_t pixelCount = w * h;
-
-        if (bytesPerTexel == 1) {
-            size_t readCount = std::fread(dstBytes, 1, pixelCount, fp);
-            if (readCount != pixelCount) {
-                GLIDE_LOG(WARN, "Frontend", "gu3dfLoad (Glide 3.x): Premature EOF reading 8-bit LOD level " << lod 
-                                            << " (read " << readCount << "/" << pixelCount << "). Filling remainder with zero.");
-                std::memset(dstBytes + readCount, 0, pixelCount - readCount);
-            }
-            dstBytes += pixelCount;
-        } else {
-            uint16_t* dstShorts = reinterpret_cast<uint16_t*>(dstBytes);
-            bool hitEof = false;
-            for (size_t p = 0; p < pixelCount; ++p) {
-                if (hitEof) {
-                    dstShorts[p] = 0;
-                } else {
-                    int b1 = std::getc(fp);
-                    int b2 = std::getc(fp);
-                    if (b1 == EOF || b2 == EOF) {
-                        GLIDE_LOG(WARN, "Frontend", "gu3dfLoad (Glide 3.x): Premature EOF reading 16-bit LOD level " << lod 
-                                                    << " at pixel " << p << "/" << pixelCount << ". Filling remainder with zero.");
-                        dstShorts[p] = 0;
-                        hitEof = true;
-                    } else {
-                        dstShorts[p] = (static_cast<uint16_t>(b1) << 8) | b2;
-                    }
-                }
-            }
-            dstBytes += pixelCount * 2;
+    // Copy palette if applicable
+    if (info->header.format == GR_TEXFMT_P_8) {
+        for (int i = 0; i < 256; ++i) {
+            info->table.palette.data[i] = sharedInfo.palette[i];
         }
     }
 
-    std::fclose(fp);
-    GLIDE_LOG(DEBUG, "Frontend", "gu3dfLoad (Glide 3.x): Loaded " << filename << " successfully into memory.");
+    // Copy pixel data
+    std::memcpy(info->data, sharedInfo.pixelData.data(), sharedInfo.pixelData.size());
+
     return FXTRUE;
 }
 
@@ -1573,21 +1330,7 @@ FX_ENTRY void FX_CALL grLoadGammaTable(FxU32 nentries, FxU32 *red, FxU32 *green,
 FX_ENTRY void FX_CALL guGammaCorrectionRGB(FxFloat red, FxFloat green, FxFloat blue) {
     EnsureEngineInitialized();
     GLIDE_LOG(DEBUG, "Frontend", "guGammaCorrectionRGB (Glide 3.x): red=" << red << ", green=" << green << ", blue=" << blue);
-    
-    float r = (red > 0.0f) ? red : 1.0f;
-    float g = (green > 0.0f) ? green : 1.0f;
-    float b = (blue > 0.0f) ? blue : 1.0f;
-    
-    uint32_t rTable[256], gTable[256], bTable[256];
-    for (int i = 0; i < 256; ++i) {
-        rTable[i] = static_cast<uint32_t>(std::pow(i / 255.0f, 1.0f / r) * 255.0f + 0.5f);
-        gTable[i] = static_cast<uint32_t>(std::pow(i / 255.0f, 1.0f / g) * 255.0f + 0.5f);
-        bTable[i] = static_cast<uint32_t>(std::pow(i / 255.0f, 1.0f / b) * 255.0f + 0.5f);
-    }
-    
-    if (auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
-        backend->LoadGammaTable(256, rTable, gTable, bTable);
-    }
+    GlideWrapper::MathUtils::GammaCorrectionRGB(red, green, blue);
 }
 
 FX_ENTRY void FX_CALL grDisableAllEffects(void) {
@@ -1647,6 +1390,43 @@ FX_ENTRY void FX_CALL grColorMask(FxBool rgb, FxBool a) {
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
         b->SetColorMask(s_colorMaskRgb, s_colorMaskAlpha);
     }
+}
+
+FX_ENTRY void FX_CALL grShamelessPlug(void) {
+    EnsureEngineInitialized();
+    uint32_t scrWidth = 640;
+    uint32_t scrHeight = 480;
+    auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
+    if (backend) {
+        scrWidth = backend->GetWidth();
+        scrHeight = backend->GetHeight();
+    }
+    auto* animator = GlideWrapper::BackendManager::GetInstance().GetSplashAnimator();
+    if (animator) {
+        animator->RenderBanner(scrWidth, scrHeight);
+    }
+}
+
+FX_ENTRY void FX_CALL grSplash(float x, float y, float w, float h, FxU32 frame) {
+    EnsureEngineInitialized();
+    g_inSplash = true;
+
+    // Save current Glide 3.x vertex layout state
+    GlideWrapper::Glide3VertexLayout savedLayout;
+    GlideWrapper::VertexLayout::GetInstance().GetLayoutState(&savedLayout);
+
+    // Reset to Glide 2 canonical layout since GlideSplashAnimator uses standard Glide 2 GrVertex structures
+    GlideWrapper::VertexLayout::GetInstance().ResetToGlide2Canonical();
+
+    auto* animator = GlideWrapper::BackendManager::GetInstance().GetSplashAnimator();
+    if (animator) {
+        animator->Render(x, y, w, h, frame, nullptr);
+    }
+
+    // Restore the game's active Glide 3.x vertex layout state
+    GlideWrapper::VertexLayout::GetInstance().SetLayoutState(&savedLayout);
+
+    g_inSplash = false;
 }
 
 } // extern "C"

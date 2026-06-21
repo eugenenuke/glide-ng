@@ -6,6 +6,7 @@ layout(location = 2) in float fragOOW;
 layout(location = 3) in vec2 fragTmuOow;
 
 layout(location = 0) out vec4 outColor;
+layout(location = 0, index = 1) out vec4 outPreFogColor;
 
 layout(push_constant) uniform PushConstants {
     // Block 0: Offset 0 (16 bytes)
@@ -214,6 +215,8 @@ void main() {
         }
     }
 
+    vec4 preFogColor = col;
+
     // Milestone 8: Fogging Emulation
     uint fogSource = pcs.fogMode & 0x0Fu;
     if (fogSource != 0u) {
@@ -289,4 +292,5 @@ void main() {
     }
 
     outColor = col;
+    outPreFogColor = preFogColor;
 }

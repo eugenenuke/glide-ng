@@ -217,9 +217,103 @@ cmake --build build -j$(nproc)
         *   [Software Fixed Screen (test12_replica_software.png)](file:///usr/local/google/home/eianiuk/.gemini/jetski/brain/f96ca68c-6e31-4c86-a397-b3a8305ba563/test12_replica_software.png)
         *   [Vulkan Fixed Screen (test12_replica_vulkan.png)](file:///usr/local/google/home/eianiuk/.gemini/jetski/brain/f96ca68c-6e31-4c86-a397-b3a8305ba563/test12_replica_vulkan.png)
 
+### Case Study 8: The Glide 3.x Splash Screen Blackout (Vertex Layout Save/Restore Omission)
+1.  **The Symptom**: In Glide 3.x, pressing **`S`** (splash) or **`R`** (continuous splash) inside `test16` produced a completely black screen under all backends, whereas the watermark plug (**`P`**) worked perfectly.
+2.  **The Root Cause**:
+    *   The `GlideSplashAnimator` (a core class shared by both Glide 2.x and 3.x frontends) is compiled as a static library using Glide 2.x headers. When drawing the 3D powershield and spinning logo mesh, it populates and passes standard Glide 2.x `GrVertex` structs to `grDrawTriangle`.
+    *   In Glide 2.x, the vertex layout is static and canonical. But in Glide 3.x, the vertex layout is fully dynamic and configured by the application via `grVertexLayout`.
+    *   During the interactive run of `test16` under Glide 3.x, the game configured a layout that only enabled `GR_PARAM_XY` (ignoring color, depth, and texture coordinates).
+    *   Because our Glide 3.x frontend's `grSplash` simply delegated to `animator->Render(...)` without setting the layout, the vertex decoder (`DecodeVertex`) attempted to decode the animator's `GrVertex` array using the game's active layout (extracting only `x` and `y` and ignoring everything else!). This resulted in completely untextured, uncolored, and invisible geometry, causing a black screen.
+3.  **The Solution**:
+    *   In `grSplash` inside [src/glide3/glide3_banner.cpp](file:///usr/local/google/home/eianiuk/gemini/3dfx/src/glide3/glide3_banner.cpp), we wrapped `animator->Render` with a layout save-and-restore sequence:
+        1. Save the game's current Glide 3.x layout state: `VertexLayout::GetInstance().GetLayoutState(&savedLayout);`
+        2. Set the active layout to the Glide 2.x canonical layout: `VertexLayout::GetInstance().ResetToGlide2Canonical();`
+        3. Render the splash animation.
+        4. Restore the game's layout: `VertexLayout::GetInstance().SetLayoutState(&savedLayout);`
+4.  **Verification**:
+    *   Rebuilt the wrapper. Running `test16` (Glide 3.x) now successfully displays the gorgeous full-screen spinning 3Dfx powershield and logo animation on all rendering backends!
+
+### Case Study 9: The Glide 2.x Shameless Plug Logo Corruption (Chromakey State Serialization Leak)
+1.  **The Symptom**: In Glide 2.x, if the shameless plug (`P`) was enabled, pressing `S` correctly ran the splash animation. However, the letters `"fx"` in the `"3dfx"` word on the spinning logo were "damaged" and looked like hollow outlines.
+2.  **The Root Cause**:
+    *   The shameless plug overlay (`grShamelessPlug`) is written directly to the linear framebuffer using CPU writes. To mask out the black background of the banner image, it enables chromakeying with a value of `0x0000` (black).
+    *   To prevent clobbering the game's state, `grShamelessPlug` saves the active Glide state before drawing using `grGlideGetState` and restores it afterward using `grGlideSetState`.
+    *   However, our Glide 2.x frontend's state structures and serialization functions (`grGlideGetState` and `grGlideSetState` in `glide2_entry.cpp`) **completely omitted** all chromakey-related states (`s_chromakeyMode`, `s_chromakeyValue`, etc.).
+    *   Because of this serialization leak, once the plug was rendered for the first time, chromakeying remained **permanently enabled globally** as `GR_CHROMAKEY_ENABLE` for the rest of the application's lifecycle.
+    *   In the next frame, when the splash animator drew the 3Dfx logo texture (which contains dark shading and black pixels in the letters `"fx"`), the backend discarded every pixel matching `0x0000`, punching holes through the letters and reducing them to outlines.
+3.  **The Solution**:
+    *   Added `chromakeyMode`, `chromakeyValue`, and range variables to the internal `GlideWrapperState` structure in [src/glide2/glide2_entry.cpp](file:///usr/local/google/home/eianiuk/gemini/3dfx/src/glide2/glide2_entry.cpp).
+    *   Implemented full serialization and deserialization for these variables in `grGlideGetState` and `grGlideSetState`.
+    *   Added explicit backend state restoration calls (`b->SetChromakeyMode` and `b->SetChromakeyValue`) inside `grGlideSetState` to push the restored state back to the active graphics backend.
+4.  **Verification**:
+    *   Rebuilt the wrapper and verified that all 2318 Catch2 assertions pass cleanly. The Glide 2.x splash screen now renders the spinning logo with perfect solid text and pristine shading even when the shameless plug is active!
+
+### Case Study 10: The Glide 3.x Splash Screen Grey/Damaged Texture (Log2 Aspect Ratio & LOD Translation Mismatch)
+1.  **The Symptom**: In Glide 3.x, the spinning 3Dfx splash logo rendered correctly, but the letters `"3Dfx"` in the center of the shield were a flat, dark grey/black color, completely lacking their bright, shiny, metallic red/orange/yellow shading, whereas Glide 2.x rendered it beautifully.
+2.  **The Root Cause**:
+    *   The `GlideSplashAnimator` is compiled as Glide 2.x core code, meaning its internal texture definitions and `GrTexInfo` structs are populated using Glide 2.x canonical values (e.g. `smallLod` = `GR_LOD_1` (8), `largeLod` = `GR_LOD_256` (0), and `aspectRatio` = `GR_ASPECT_1x1` (0)).
+    *   In the Glide 3.x frontend translation layer (`glide3_entry.cpp`), `grTexDownloadMipMap` and `grTexTextureMemRequired` assume that any incoming `GrTexInfo` struct contains Glide 3.x signed log2 values (where a size of 256 is `8`, a size of 1 is `0`, etc.).
+    *   To translate these log2 values back to the core backend, the Glide 3.x frontend applies formula transformations: `8 - smallLodLog2`, `8 - largeLodLog2`, and `3 - aspectRatioLog2`.
+    *   When the splash animator passed its Glide 2.x `GrTexInfo` struct to `grTexDownloadMipMap`, the Glide 3.x translation layer interpreted the Glide 2.x canonical values (0 and 8) as Glide 3.x log2 values, and performed the translation:
+        *   `largeLod` became `8 - 0 = 8` (which is `GR_LOD_1` in Glide 2.x).
+        *   `smallLod` became `8 - 8 = 0` (which is `GR_LOD_256` in Glide 2.x).
+        *   `aspectRatio` became `3 - 0 = 3` (which is `GR_ASPECT_8x1` in Glide 2.x).
+    *   This completely inverted the mipmap levels (setting the large LOD to 1x1 and the small LOD to 256x256) and corrupted the aspect ratio, causing the texture loader to upload corrupted/empty mipmap levels, resulting in a flat-grey untextured logo.
+3.  **The Solution**:
+    *   We implemented a thread-local/execution context flag `g_inSplash` inside `libglide3x.so`.
+    *   In `grSplash` (inside [src/glide3/glide3_banner.cpp](file:///usr/local/google/home/eianiuk/gemini/3dfx/src/glide3/glide3_banner.cpp)), we set `g_inSplash = true;` before rendering the splash frame and reset it to `false` afterward.
+    *   In `grTexCalcMemRequired` and `grTexDownloadMipMap` inside [src/glide3/glide3_entry.cpp](file:///usr/local/google/home/eianiuk/gemini/3dfx/src/glide3/glide3_entry.cpp), we added a conditional check: if `g_inSplash` is active, we bypass the signed log2 translation entirely, passing the canonical Glide 2.x values directly to the backend.
+4.  **Verification**:
+    *   Rebuilt the project and ran `test16` (Glide 3.x) under the Vulkan backend. The spinning logo now displays its gorgeous, high-fidelity metallic red/orange/yellow shading, rendering identically to the Glide 2.x reference implementation!
+
 ---
 
-## 5. Unified Troubleshooting & Diagnostic Methodologies
+## 5. Performance Benchmarking & Overhead Assessment
+
+When introducing modifications to the vertex decoding pipeline (such as coordinate unsnapping), state serialization, or shader generation, developers must ensure the changes do not introduce performance regressions. We use an automated headless benchmark to measure maximum rendering throughput.
+
+### A. The Benchmark Environment
+The benchmark is orchestrated by [tests/benchmark.py](file:///usr/local/google/home/eianiuk/gemini/3dfx/tests/benchmark.py). It executes tests in a high-performance profile by configuring the following environment variables:
+*   `GLIDE_HEADLESS=1`: Disables window presentation and physical display syncing.
+*   `GLIDE_BACKEND=vulkan`: Benchmarks the GPU translation layer.
+*   `GLIDE_WRAPPER_MAX_FPS=0`: Disables the frame rate limiter, letting the pipeline render frames as fast as the CPU and GPU allow.
+
+### B. Assessment Workflow (Scientific Bisection)
+To measure the exact performance impact of your changes:
+
+1.  **Measure Current Throughput**:
+    Run the benchmark on your modified codebase and record the FPS/frame times:
+    ```bash
+    python3 tests/benchmark.py
+    ```
+2.  **Establish the Baseline**:
+    Stash your changes or temporarily revert to the previous commit:
+    ```bash
+    # Stash uncommitted changes (or use git reset --hard HEAD~1 if already committed)
+    git stash
+    
+    # Rebuild the baseline binaries
+    cd build && make -j$(nproc) && cd ..
+    
+    # Run the benchmark again to record baseline numbers
+    python3 tests/benchmark.py
+    ```
+3.  **Compare Side-by-Side**:
+    *   Compare the FPS and frame time (ms) for `test14` (depth/vertex-heavy) and `test21` (combiner/compositing-heavy).
+    *   **Acceptance Criteria**: Any performance delta within $\pm 3\%$ is considered standard system/scheduling noise (LLVMpipe variance), confirming **zero measurable performance impact**.
+4.  **Restore the Codebase**:
+    Restore your changes and rebuild to return to the active development state:
+    ```bash
+    # Pop stashed changes (or git reset --hard ORIG_HEAD if restoring a reset commit)
+    git stash pop
+    
+    # Rebuild
+    cd build && make -j$(nproc) && cd ..
+    ```
+
+---
+
+## 6. Unified Troubleshooting & Diagnostic Methodologies
 
 When future agents or developers encounter regressions or divergent rendering behaviors in the Glide wrappers, they should apply the following high-leverage diagnostic techniques and workflows:
 
@@ -269,6 +363,10 @@ When future agents or developers encounter regressions or divergent rendering be
     *   If a test has a bug (e.g., a keyboard hook omission in its helper library), patch the wrapper or helper library bridge dynamically, or replicate the test logic in a modern C++ demo under the `demos/` directory.
     *   Never check in modifications to reference tests. If you need to experiment, copy the test code into a scratch script under `scratch/` or create a standalone demo.
 
-
-
+### G. Bounded Background Task Management & Screen Capture Timing
+*   **The Problem**: When running interactive graphical tests in the background to programmatically capture their rendering output (using `import` or `xwd`), developers often use a generic `sleep 4.0` or longer to wait for window initialization. However, if the test is launched with a fixed frame count (e.g. `-n 100`), the headless software/Vulkan backend will render those frames in a few milliseconds and terminate. The capturing tool will then fail or hang because the presentation window no longer exists.
+*   **The Best Practices**:
+    1.  **Ensure Window Persistence**: Always run the background test with an extremely large frame count (e.g., `-n 999999`) or run it indefinitely to guarantee the presentation window remains active during the entire capturing sequence.
+    2.  **Optimize Wait Times**: Keep window-mapping wait times minimal. A delay of `0.5` to `1.0` seconds is more than sufficient for the graphics context to initialize and map the window on virtual display servers.
+    3.  **Immediate Cleanup**: Always capture the process ID (`DEMO_PID=$!`) immediately upon launching, and execute a forceful termination (`kill -9 $DEMO_PID`) immediately after the screenshot is captured. This prevents zombie processes and resource leaks in sandboxed environments.
 
