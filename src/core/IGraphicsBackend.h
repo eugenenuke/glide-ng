@@ -57,6 +57,7 @@ public:
     virtual void SetClipWindow(uint32_t minX, uint32_t minY, uint32_t maxX, uint32_t maxY) = 0;
     virtual void SetSstOrigin(uint32_t origin) = 0;
     virtual void SetColorMask(bool rgb, bool alpha) = 0;
+    virtual void SetAAState(bool enabled) {}
 
     // Milestone 8: Fogging State
     virtual void SetFogMode(uint32_t mode) = 0;

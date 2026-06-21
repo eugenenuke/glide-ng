@@ -101,6 +101,7 @@ protected:
     void FreeCpuBuffers();
     
     std::vector<uint8_t> m_cpuBuffers[2];
+    std::vector<uint8_t> m_resolvedBuffer;
     uint32_t m_frontBufferIdx{0};
     uint32_t m_backBufferIdx{1};
     uint32_t m_activeRenderBuffer{1}; // 1 = GR_BUFFER_BACKBUFFER (default)
@@ -174,6 +175,13 @@ protected:
     uint8_t m_lutR[256];
     uint8_t m_lutG[256];
     uint8_t m_lutB[256];
+
+    // Software Anti-Aliasing (AA) States
+    std::string m_softwareAaMode{"analytical"};
+    uint32_t m_ssaaScale{1};
+    bool m_aaEnabled{false};
+    void ResolveAAMode();
+    void SetAAState(bool enabled) override;
 };
 
 } // namespace GlideWrapper

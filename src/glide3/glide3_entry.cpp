@@ -1274,6 +1274,9 @@ FX_ENTRY void FX_CALL grEnable(GrEnableMode_t mode) {
     switch (mode) {
         case GR_AA_ORDERED:
             s_aaOrdered = true;
+            if (auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
+                backend->SetAAState(true);
+            }
             break;
         case GR_SHAMELESS_PLUG:
             s_shamelessPlug = true;
@@ -1289,6 +1292,9 @@ FX_ENTRY void FX_CALL grDisable(GrEnableMode_t mode) {
     switch (mode) {
         case GR_AA_ORDERED:
             s_aaOrdered = false;
+            if (auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
+                backend->SetAAState(false);
+            }
             break;
         case GR_SHAMELESS_PLUG:
             s_shamelessPlug = false;

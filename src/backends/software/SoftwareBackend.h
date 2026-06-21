@@ -41,6 +41,7 @@ private:
 
     __attribute__((always_inline)) inline void RasterizeSoftwareTriangleImpl(const ModernVertex& a, const ModernVertex& b, const ModernVertex& c);
     uint32_t EvaluateCombinerColor(const ModernVertex& v);
+    void WritePixelPipeline(int x, int y, const ModernVertex& v, float coverage = 1.0f);
     // SDL2 Visual Presentation Console Singletons
     void* m_sdlWindow{nullptr};   // SDL_Window*
     void* m_sdlRenderer{nullptr}; // SDL_Renderer*

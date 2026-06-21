@@ -17,6 +17,25 @@
 
 namespace GlideWrapper {
 
+static const float s_tableIndexToW[64] = {
+    1.000000f,      1.142857f,      1.333333f,      1.600000f, 
+    2.000000f,      2.285714f,      2.666667f,      3.200000f, 
+    4.000000f,      4.571429f,      5.333333f,      6.400000f, 
+    8.000000f,      9.142858f,     10.666667f,     12.800000f, 
+    16.000000f,     18.285715f,     21.333334f,     25.600000f, 
+    32.000000f,     36.571430f,     42.666668f,     51.200001f, 
+    64.000000f,     73.142860f,     85.333336f,    102.400002f, 
+    128.000000f,    146.285721f,    170.666672f,    204.800003f, 
+    256.000000f,    292.571442f,    341.333344f,    409.600006f, 
+    512.000000f,    585.142883f,    682.666687f,    819.200012f, 
+    1024.000000f,   1170.285767f,   1365.333374f,   1638.400024f, 
+    2048.000000f,   2340.571533f,   2730.666748f,   3276.800049f, 
+    4096.000000f,   4681.143066f,   5461.333496f,   6553.600098f, 
+    8192.000000f,   9362.286133f,  10922.666992f,  13107.200195f, 
+    16384.000000f,  18724.572266f,  21845.333984f,  26214.400391f, 
+    32768.000000f,  37449.144531f,  43690.667969f,  52428.800781f
+};
+
 bool SoftwareBackend::Initialize(const WrapperConfig& config) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     if (m_initialized) return true;
@@ -60,12 +79,13 @@ bool SoftwareBackend::AttachWindow(void* nativeWindowHandle, uint32_t width, uin
 
     GLIDE_LOG(INFO, "Software", "Attaching software execution window (" << width << "x" << height << "), Windowed=" << (windowed ? "Yes" : "No"));
 
-    m_headlessWidth = width;
-    m_headlessHeight = height;
+    ResolveAAMode();
+    m_headlessWidth = width * m_ssaaScale;
+    m_headlessHeight = height * m_ssaaScale;
     m_headlessMode = true;
 
-    // Allocate the CPU framebuffer double buffers
-    AllocateCpuBuffers(width, height);
+    // Allocate the CPU framebuffer double buffers (scaled for SSAA!)
+    AllocateCpuBuffers(m_headlessWidth, m_headlessHeight);
     m_allocatedBuffer = true;
 
     unsigned int cores = std::thread::hardware_concurrency();
@@ -83,11 +103,12 @@ bool SoftwareBackend::AttachWindow(void* nativeWindowHandle, uint32_t width, uin
               << "    Cores     : " << cores << " Hardware Threads\n"
               << "    Arch      : " << arch << "\n"
               << "    Engine    : glide-ng Software Reference Core (v0.1.0)\n"
+              << "    AA Mode   : " << m_softwareAaMode << " (" << m_ssaaScale << "x scale)\n"
               << "------------------------------------------";
     GLIDE_LOG(INFO, "Software", logStream.str());
 
-    m_headlessDepthBuffer.resize(width * height, 0.0f);
-    SetClipWindow(0, 0, width, height);
+    m_headlessDepthBuffer.resize(m_headlessWidth * m_headlessHeight, 0.0f);
+    SetClipWindow(0, 0, m_headlessWidth, m_headlessHeight);
 
     if (!m_config.forceNoWindow) {
         GLIDE_LOG(INFO, "Software", "Instantiating interactive SDL2 desktop presentation console...");
@@ -184,7 +205,38 @@ bool SoftwareBackend::SwapBuffers() {
 
     // 3. Present the newly swapped front buffer (which holds the completed frame)
     if (m_sdlTexture && m_sdlRenderer && !m_cpuBuffers[m_frontBufferIdx].empty()) {
-        SDL_UpdateTexture(reinterpret_cast<SDL_Texture*>(m_sdlTexture), nullptr, m_cpuBuffers[m_frontBufferIdx].data(), m_headlessWidth * 4);
+        const void* textureData = m_cpuBuffers[m_frontBufferIdx].data();
+        uint32_t pitch = m_headlessWidth * 4;
+
+        if (m_ssaaScale > 1) {
+            uint32_t nativeWidth = m_headlessWidth / m_ssaaScale;
+            uint32_t nativeHeight = m_headlessHeight / m_ssaaScale;
+            const uint32_t* srcPixels = reinterpret_cast<const uint32_t*>(m_cpuBuffers[m_frontBufferIdx].data());
+            uint32_t* dstPixels = reinterpret_cast<uint32_t*>(m_resolvedBuffer.data());
+
+            #pragma omp parallel for collapse(2) if(nativeHeight * nativeWidth > 64000)
+            for (uint32_t y = 0; y < nativeHeight; ++y) {
+                for (uint32_t x = 0; x < nativeWidth; ++x) {
+                    uint32_t r = 0, g = 0, b = 0, a = 0;
+                    for (uint32_t dy = 0; dy < 2; ++dy) {
+                        for (uint32_t dx = 0; dx < 2; ++dx) {
+                            uint32_t srcIdx = (2 * y + dy) * m_headlessWidth + (2 * x + dx);
+                            uint32_t p = srcPixels[srcIdx];
+                            a += (p >> 24) & 0xFF;
+                            r += (p >> 16) & 0xFF;
+                            g += (p >> 8)  & 0xFF;
+                            b += p         & 0xFF;
+                        }
+                    }
+                    a /= 4; r /= 4; g /= 4; b /= 4;
+                    dstPixels[y * nativeWidth + x] = (a << 24) | (r << 16) | (g << 8) | b;
+                }
+            }
+            textureData = m_resolvedBuffer.data();
+            pitch = nativeWidth * 4;
+        }
+
+        SDL_UpdateTexture(reinterpret_cast<SDL_Texture*>(m_sdlTexture), nullptr, textureData, pitch);
         SDL_RenderCopy(reinterpret_cast<SDL_Renderer*>(m_sdlRenderer), reinterpret_cast<SDL_Texture*>(m_sdlTexture), nullptr, nullptr);
         SDL_RenderPresent(reinterpret_cast<SDL_Renderer*>(m_sdlRenderer));
     }
@@ -228,10 +280,19 @@ void SoftwareBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
     ModernVertex b_final = b;
     ModernVertex c_final = c;
 
+    if (m_ssaaScale > 1) {
+        a_final.pos[0] *= static_cast<float>(m_ssaaScale);
+        a_final.pos[1] *= static_cast<float>(m_ssaaScale);
+        b_final.pos[0] *= static_cast<float>(m_ssaaScale);
+        b_final.pos[1] *= static_cast<float>(m_ssaaScale);
+        c_final.pos[0] *= static_cast<float>(m_ssaaScale);
+        c_final.pos[1] *= static_cast<float>(m_ssaaScale);
+    }
+
     if (m_sstOrigin == 1) { // GR_ORIGIN_LOWER_LEFT: flip Y coordinates
-        a_final.pos[1] = (float)m_headlessHeight - a.pos[1];
-        b_final.pos[1] = (float)m_headlessHeight - b.pos[1];
-        c_final.pos[1] = (float)m_headlessHeight - c.pos[1];
+        a_final.pos[1] = (float)m_headlessHeight - a_final.pos[1];
+        b_final.pos[1] = (float)m_headlessHeight - b_final.pos[1];
+        c_final.pos[1] = (float)m_headlessHeight - c_final.pos[1];
     }
 
     RasterizeSoftwareTriangle(a_final, b_final, c_final);
@@ -249,59 +310,230 @@ void SoftwareBackend::DrawLine(const ModernVertex& v1, const ModernVertex& v2) {
     ModernVertex v1_final = v1;
     ModernVertex v2_final = v2;
 
-    if (m_sstOrigin == 1) { // GR_ORIGIN_LOWER_LEFT: flip Y coordinates
-        v1_final.pos[1] = (float)m_headlessHeight - v1.pos[1];
-        v2_final.pos[1] = (float)m_headlessHeight - v2.pos[1];
+    if (m_ssaaScale > 1) {
+        v1_final.pos[0] *= static_cast<float>(m_ssaaScale);
+        v1_final.pos[1] *= static_cast<float>(m_ssaaScale);
+        v2_final.pos[0] *= static_cast<float>(m_ssaaScale);
+        v2_final.pos[1] *= static_cast<float>(m_ssaaScale);
     }
 
-    // Resolve scissor boundaries in top-left space
+    if (m_sstOrigin == 1) { // GR_ORIGIN_LOWER_LEFT: flip Y coordinates
+        v1_final.pos[1] = (float)m_headlessHeight - v1_final.pos[1];
+        v2_final.pos[1] = (float)m_headlessHeight - v2_final.pos[1];
+    }
+
+    if (m_aaEnabled) {
+        float x0_f = v1_final.pos[0]; float y0_f = v1_final.pos[1];
+        float x1_f = v2_final.pos[0]; float y1_f = v2_final.pos[1];
+
+        bool steep = std::abs(y1_f - y0_f) > std::abs(x1_f - x0_f);
+        if (steep) {
+            std::swap(x0_f, y0_f);
+            std::swap(x1_f, y1_f);
+        }
+        if (x0_f > x1_f) {
+            std::swap(x0_f, x1_f);
+            std::swap(y0_f, y1_f);
+            std::swap(v1_final, v2_final);
+        }
+
+        float dx = x1_f - x0_f;
+        float dy = y1_f - y0_f;
+        float gradient = (dx == 0.0f) ? 1.0f : dy / dx;
+
+        auto plot = [&](int px, int py, float c, float t) {
+            if (steep) std::swap(px, py);
+            ModernVertex vInterpolated;
+            for (int i = 0; i < 4; ++i) {
+                vInterpolated.color[i] = v1_final.color[i] * (1.0f - t) + v2_final.color[i] * t;
+            }
+            vInterpolated.fog = v1_final.fog * (1.0f - t) + v2_final.fog * t;
+            vInterpolated.pos[3] = v1_final.pos[3] * (1.0f - t) + v2_final.pos[3] * t;
+
+            WritePixelPipeline(px, py, vInterpolated, c);
+        };
+
+        float intery = y0_f;
+        for (int x = static_cast<int>(std::round(x0_f)); x <= static_cast<int>(std::round(x1_f)); ++x) {
+            float t = (dx == 0.0f) ? 0.0f : (x - x0_f) / dx;
+            t = std::max(0.0f, std::min(1.0f, t));
+            int ipart = static_cast<int>(std::floor(intery));
+            float fpart = intery - ipart;
+            plot(x, ipart, 1.0f - fpart, t);
+            plot(x, ipart + 1, fpart, t);
+            intery += gradient;
+        }
+    } else {
+        int x0 = static_cast<int>(v1_final.pos[0]); int y0 = static_cast<int>(v1_final.pos[1]);
+        int x1 = static_cast<int>(v2_final.pos[0]); int y1 = static_cast<int>(v2_final.pos[1]);
+
+        int dx = std::abs(x1 - x0); int sx = x0 < x1 ? 1 : -1;
+        int dy = -std::abs(y1 - y0); int sy = y0 < y1 ? 1 : -1;
+        int err = dx + dy;
+
+        int totalSteps = std::max(dx, -dy);
+        int step = 0;
+
+        while (true) {
+            float t = totalSteps > 0 ? static_cast<float>(step) / totalSteps : 0.0f;
+            ModernVertex vInterpolated;
+            for (int i = 0; i < 4; ++i) {
+                vInterpolated.color[i] = v1_final.color[i] * (1.0f - t) + v2_final.color[i] * t;
+            }
+            vInterpolated.fog = v1_final.fog * (1.0f - t) + v2_final.fog * t;
+            vInterpolated.pos[3] = v1_final.pos[3] * (1.0f - t) + v2_final.pos[3] * t;
+
+            WritePixelPipeline(x0, y0, vInterpolated, 1.0f);
+
+            if (x0 == x1 && y0 == y1) break;
+            int e2 = 2 * err;
+            if (e2 >= dy) { err += dy; x0 += sx; }
+            if (e2 <= dx) { err += dx; y0 += sy; }
+            step++;
+        }
+    }
+}
+
+void SoftwareBackend::WritePixelPipeline(int x, int y, const ModernVertex& v, float coverage) {
+    // 1. Clip against scissor window
     int clipMinY_resolved = static_cast<int>(m_clipMinY);
     int clipMaxY_resolved = static_cast<int>(m_clipMaxY);
     if (m_sstOrigin == 1) {
         clipMinY_resolved = static_cast<int>(m_headlessHeight) - static_cast<int>(m_clipMaxY);
         clipMaxY_resolved = static_cast<int>(m_headlessHeight) - static_cast<int>(m_clipMinY);
     }
-
-    auto* pixels = reinterpret_cast<uint32_t*>(m_headlessPixelMap);
-    int x0 = static_cast<int>(v1_final.pos[0]); int y0 = static_cast<int>(v1_final.pos[1]);
-    int x1 = static_cast<int>(v2_final.pos[0]); int y1 = static_cast<int>(v2_final.pos[1]);
-
-    int dx = std::abs(x1 - x0); int sx = x0 < x1 ? 1 : -1;
-    int dy = -std::abs(y1 - y0); int sy = y0 < y1 ? 1 : -1;
-    int err = dx + dy;
-
-    int totalSteps = std::max(dx, -dy);
-    int step = 0;
-
-    while (true) {
-        float t = totalSteps > 0 ? static_cast<float>(step) / totalSteps : 0.0f;
-        ModernVertex vInterpolated;
-        for (int i = 0; i < 4; ++i) {
-            vInterpolated.color[i] = v1_final.color[i] * (1.0f - t) + v2_final.color[i] * t;
-        }
-
-        uint32_t color = EvaluateCombinerColor(vInterpolated);
-
-        // Clip against scissor window
-        if (x0 >= static_cast<int>(m_clipMinX) && x0 < static_cast<int>(m_clipMaxX) &&
-            y0 >= clipMinY_resolved && y0 < clipMaxY_resolved) {
-            uint32_t finalColor = color;
-            if (!m_colorMaskRgb || !m_colorMaskAlpha) {
-                uint32_t oldColor = pixels[y0 * m_headlessWidth + x0];
-                uint32_t mask = 0;
-                if (m_colorMaskRgb)   mask |= 0x00FFFFFF;
-                if (m_colorMaskAlpha) mask |= 0xFF000000;
-                finalColor = (finalColor & mask) | (oldColor & ~mask);
-            }
-            pixels[y0 * m_headlessWidth + x0] = finalColor;
-        }
-
-        if (x0 == x1 && y0 == y1) break;
-        int e2 = 2 * err;
-        if (e2 >= dy) { err += dy; x0 += sx; }
-        if (e2 <= dx) { err += dx; y0 += sy; }
-        step++;
+    if (x < static_cast<int>(m_clipMinX) || x >= static_cast<int>(m_clipMaxX) ||
+        y < clipMinY_resolved || y >= clipMaxY_resolved) {
+        return;
     }
+
+    // 2. Color Combiner
+    uint32_t combinerColor = EvaluateCombinerColor(v);
+    float red   = ((combinerColor >> 16) & 0xFF) / 255.0f;
+    float green = ((combinerColor >> 8)  & 0xFF) / 255.0f;
+    float blue  = (combinerColor         & 0xFF) / 255.0f;
+    float alpha = ((combinerColor >> 24) & 0xFF) / 255.0f;
+
+    // Scale alpha by coverage (anti-aliasing!)
+    alpha *= coverage;
+
+    // 3. Fogging
+    uint32_t fogSource = m_fogMode & 0x0F;
+    if (fogSource != 0) {
+        float f = 0.0f;
+        if (fogSource == 4) { // UNIFIED_FOG_WITH_ITERATED_ALPHA
+            f = v.color[3];
+        } else { // Table-based fog
+            float eyeW = 0.0f;
+            if (fogSource == 1) { // UNIFIED_FOG_WITH_TABLE_ON_FOGCOORD
+                eyeW = v.fog;
+            } else { // UNIFIED_FOG_WITH_TABLE_ON_W
+                eyeW = 1.0f / v.pos[3]; // pos[3] is oow (1/W)
+            }
+            if (eyeW < 1.0f) eyeW = 1.0f;
+
+            // O(1) unrolled logarithmic binary search
+            int idx = 0;
+            if (eyeW >= s_tableIndexToW[32]) idx += 32;
+            if (eyeW >= s_tableIndexToW[idx + 16]) idx += 16;
+            if (eyeW >= s_tableIndexToW[idx + 8]) idx += 8;
+            if (eyeW >= s_tableIndexToW[idx + 4]) idx += 4;
+            if (eyeW >= s_tableIndexToW[idx + 2]) idx += 2;
+            if (eyeW >= s_tableIndexToW[idx + 1]) idx += 1;
+
+            float w0_fog = s_tableIndexToW[idx];
+            float w1_fog = s_tableIndexToW[idx + 1];
+            float f0 = m_fogTable[idx] / 255.0f;
+            float f1 = m_fogTable[idx + 1] / 255.0f;
+
+            float t = 0.0f;
+            if (w1_fog > w0_fog) {
+                t = (eyeW - w0_fog) / (w1_fog - w0_fog);
+            }
+            t = std::max(0.0f, std::min(1.0f, t));
+            f = f0 * (1.0f - t) + f1 * t;
+        }
+
+        float fogR = ((m_fogColor >> 16) & 0xFF) / 255.0f;
+        float fogG = ((m_fogColor >> 8)  & 0xFF) / 255.0f;
+        float fogB = (m_fogColor & 0xFF) / 255.0f;
+        if (m_pixelFormatOverride == 1) {
+            std::swap(fogR, fogB);
+        }
+
+        float mult = ((m_fogMode & 0x100) != 0) ? 1.0f : 0.0f;
+        float add  = ((m_fogMode & 0x200) != 0) ? 1.0f : 0.0f;
+
+        red   = red   * (1.0f - mult) * (1.0f - f) + fogR * (1.0f - add) * f;
+        green = green * (1.0f - mult) * (1.0f - f) + fogG * (1.0f - add) * f;
+        blue  = blue  * (1.0f - mult) * (1.0f - f) + fogB * (1.0f - add) * f;
+    }
+
+    uint32_t rVal = static_cast<uint32_t>(std::min(255.0f, red * 255.0f + 0.5f));
+    uint32_t gVal = static_cast<uint32_t>(std::min(255.0f, green * 255.0f + 0.5f));
+    uint32_t bVal = static_cast<uint32_t>(std::min(255.0f, blue * 255.0f + 0.5f));
+    uint32_t aVal = static_cast<uint32_t>(std::min(255.0f, alpha * 255.0f + 0.5f));
+
+    // 4. Alpha Blending
+    uint32_t* pixels = reinterpret_cast<uint32_t*>(m_headlessPixelMap);
+    uint32_t dstWord = pixels[y * m_headlessWidth + x];
+    uint32_t dstR = (dstWord >> 16) & 0xFF;
+    uint32_t dstG = (dstWord >> 8)  & 0xFF;
+    uint32_t dstB = dstWord         & 0xFF;
+    if (m_pixelFormatOverride == 1) {
+        std::swap(dstR, dstB);
+    }
+
+    // Default factors
+    float sFactor = 1.0f;
+    float dFactor = 0.0f;
+
+    // Source RGB blend factor (4 = GR_BLEND_SRC_ALPHA, 1 = GR_BLEND_ONE, 0 = GR_BLEND_ZERO)
+    if (m_rgbSrcBlend == 4) {
+        sFactor = aVal / 255.0f;
+    } else if (m_rgbSrcBlend == 0) {
+        sFactor = 0.0f;
+    } else {
+        sFactor = 1.0f;
+    }
+
+    // Destination RGB blend factor (5 = GR_BLEND_ONE_MINUS_SRC_ALPHA, 1 = GR_BLEND_ONE, 0 = GR_BLEND_ZERO)
+    if (m_rgbDstBlend == 5) {
+        dFactor = 1.0f - (aVal / 255.0f);
+    } else if (m_rgbDstBlend == 1) {
+        dFactor = 1.0f;
+    } else {
+        dFactor = 0.0f;
+    }
+
+    uint32_t finalR = static_cast<uint32_t>(rVal * sFactor + dstR * dFactor + 0.5f);
+    uint32_t finalG = static_cast<uint32_t>(gVal * sFactor + dstG * dFactor + 0.5f);
+    uint32_t finalB = static_cast<uint32_t>(bVal * sFactor + dstB * dFactor + 0.5f);
+    uint32_t finalA = aVal; // Simplification for destination alpha
+
+    finalR = std::min(255u, finalR);
+    finalG = std::min(255u, finalG);
+    finalB = std::min(255u, finalB);
+
+    uint32_t finalColor = (finalA << 24) | (finalR << 16) | (finalG << 8) | finalB;
+
+    // 5. Color Masking
+    if (!m_colorMaskRgb || !m_colorMaskAlpha) {
+        uint32_t mask = 0;
+        if (m_colorMaskRgb)   mask |= 0x00FFFFFF;
+        if (m_colorMaskAlpha) mask |= 0xFF000000;
+        finalColor = (finalColor & mask) | (dstWord & ~mask);
+    }
+
+    if (m_pixelFormatOverride == 1) {
+        uint32_t a_bit = finalColor & 0xFF000000;
+        uint32_t g_bit = finalColor & 0x0000FF00;
+        uint32_t r_bit = (finalColor >> 16) & 0xFF;
+        uint32_t b_bit = finalColor & 0xFF;
+        finalColor = a_bit | (b_bit << 16) | g_bit | r_bit;
+    }
+
+    pixels[y * m_headlessWidth + x] = finalColor;
 }
 
 void SoftwareBackend::DrawPoint(const ModernVertex& pt) {
@@ -313,34 +545,42 @@ void SoftwareBackend::DrawPoint(const ModernVertex& pt) {
     }
 
     ModernVertex pt_final = pt;
+
+    if (m_ssaaScale > 1) {
+        pt_final.pos[0] *= static_cast<float>(m_ssaaScale);
+        pt_final.pos[1] *= static_cast<float>(m_ssaaScale);
+    }
+
     if (m_sstOrigin == 1) { // GR_ORIGIN_LOWER_LEFT: flip Y coordinate
-        pt_final.pos[1] = (float)m_headlessHeight - pt.pos[1];
+        pt_final.pos[1] = (float)m_headlessHeight - pt_final.pos[1];
     }
 
-    // Resolve scissor boundaries in top-left space
-    int clipMinY_resolved = static_cast<int>(m_clipMinY);
-    int clipMaxY_resolved = static_cast<int>(m_clipMaxY);
-    if (m_sstOrigin == 1) {
-        clipMinY_resolved = static_cast<int>(m_headlessHeight) - static_cast<int>(m_clipMaxY);
-        clipMaxY_resolved = static_cast<int>(m_headlessHeight) - static_cast<int>(m_clipMinY);
-    }
+    if (m_aaEnabled) {
+        float x_f = pt_final.pos[0];
+        float y_f = pt_final.pos[1];
+        float r_max = 0.75f * static_cast<float>(m_ssaaScale);
 
-    auto* pixels = reinterpret_cast<uint32_t*>(m_headlessPixelMap);
-    int x = static_cast<int>(pt_final.pos[0]); int y = static_cast<int>(pt_final.pos[1]);
-    uint32_t color = EvaluateCombinerColor(pt_final);
+        int min_x = static_cast<int>(std::floor(x_f - r_max));
+        int max_x = static_cast<int>(std::ceil(x_f + r_max));
+        int min_y = static_cast<int>(std::floor(y_f - r_max));
+        int max_y = static_cast<int>(std::ceil(y_f + r_max));
 
-    // Clip against scissor window
-    if (x >= static_cast<int>(m_clipMinX) && x < static_cast<int>(m_clipMaxX) &&
-        y >= clipMinY_resolved && y < clipMaxY_resolved) {
-        uint32_t finalColor = color;
-        if (!m_colorMaskRgb || !m_colorMaskAlpha) {
-            uint32_t oldColor = pixels[y * m_headlessWidth + x];
-            uint32_t mask = 0;
-            if (m_colorMaskRgb)   mask |= 0x00FFFFFF;
-            if (m_colorMaskAlpha) mask |= 0xFF000000;
-            finalColor = (finalColor & mask) | (oldColor & ~mask);
+        for (int py = min_y; py <= max_y; ++py) {
+            for (int px = min_x; px <= max_x; ++px) {
+                float dx = (static_cast<float>(px) + 0.5f) - x_f;
+                float dy = (static_cast<float>(py) + 0.5f) - y_f;
+                float d = std::sqrt(dx * dx + dy * dy);
+                float C = 1.0f - (d / r_max);
+                if (C > 0.0f) {
+                    C = std::max(0.0f, std::min(1.0f, C));
+                    WritePixelPipeline(px, py, pt_final, C);
+                }
+            }
         }
-        pixels[y * m_headlessWidth + x] = finalColor;
+    } else {
+        int x = static_cast<int>(pt_final.pos[0]);
+        int y = static_cast<int>(pt_final.pos[1]);
+        WritePixelPipeline(x, y, pt_final, 1.0f);
     }
 }
 
@@ -369,24 +609,6 @@ uint32_t SoftwareBackend::EvaluateCombinerColor(const ModernVertex& v) {
     return (a << 24) | (r << 16) | (g << 8) | b;
 }
 
-static const float s_tableIndexToW[64] = {
-    1.000000f,      1.142857f,      1.333333f,      1.600000f, 
-    2.000000f,      2.285714f,      2.666667f,      3.200000f, 
-    4.000000f,      4.571429f,      5.333333f,      6.400000f, 
-    8.000000f,      9.142858f,     10.666667f,     12.800000f, 
-    16.000000f,     18.285715f,     21.333334f,     25.600000f, 
-    32.000000f,     36.571430f,     42.666668f,     51.200001f, 
-    64.000000f,     73.142860f,     85.333336f,    102.400002f, 
-    128.000000f,    146.285721f,    170.666672f,    204.800003f, 
-    256.000000f,    292.571442f,    341.333344f,    409.600006f, 
-    512.000000f,    585.142883f,    682.666687f,    819.200012f, 
-    1024.000000f,   1170.285767f,   1365.333374f,   1638.400024f, 
-    2048.000000f,   2340.571533f,   2730.666748f,   3276.800049f, 
-    4096.000000f,   4681.143066f,   5461.333496f,   6553.600098f, 
-    8192.000000f,   9362.286133f,  10922.666992f,  13107.200195f, 
-    16384.000000f,  18724.572266f,  21845.333984f,  26214.400391f, 
-    32768.000000f,  37449.144531f,  43690.667969f,  52428.800781f
-};
 
 void SoftwareBackend::RasterizeSoftwareTriangleImpl(const ModernVertex& a, const ModernVertex& b, const ModernVertex& c) {
     int minX = std::max(0, static_cast<int>(std::floor(std::min({a.pos[0], b.pos[0], c.pos[0]}))));

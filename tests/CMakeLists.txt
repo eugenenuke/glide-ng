@@ -17,6 +17,7 @@ target_link_libraries(GlideWrapperTests PRIVATE
     GlideWrapperCore
     Catch2::Catch2WithMain
     glide2x
+    glide3x
     ${CMAKE_DL_LIBS}
     -lm
 )

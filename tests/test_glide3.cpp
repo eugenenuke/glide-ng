@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include <iostream>
 #include <cmath>
 #include "core/WrapperConfig.h"
 #include "core/Logger.h"
@@ -1705,4 +1706,134 @@ TEST_CASE("VertexLayout FOGCOORD Parameter Decoding", "[VertexLayout][FOGCOORD]"
     // Clean up layout
     layout.ResetToGlide3Canonical();
 }
+
+#ifdef __linux__
+TEST_CASE("Software Backend Anti-Aliasing (AA) Modes & Verification", "[Software][AA]") {
+    void* handle = OpenGlide3Handle();
+    REQUIRE(handle != nullptr);
+
+    using InitFunc = void(*)(void);
+    using SelectSstFunc = void(*)(int);
+    using OpenWinFunc = unsigned long(*)(FxU32, GrScreenResolution_t, GrScreenRefresh_t, GrColorFormat_t, GrOriginLocation_t, int, int);
+    using CloseWinFunc = void(*)(void);
+    using DrawPointFunc = void(*)(const void*);
+    using DrawLineFunc = void(*)(const void*, const void*);
+    using VertexLayoutFunc = void(*)(FxU32, FxU32, FxBool);
+    using EnableFunc = void(*)(FxU32);
+    using ConstantColorFunc = void(*)(GrColor_t);
+    using ColorCombineFunc = void(*)(GrCombineFunction_t, GrCombineFactor_t, GrCombineLocal_t, GrCombineOther_t, FxBool);
+    using BufferClearFunc = void(*)(GrColor_t, GrAlpha_t, FxU32);
+    using LfbReadFunc = FxBool(*)(GrBuffer_t, FxU32, FxU32, FxU32, FxU32, FxU32, void*);
+    using ShutdownFunc = void(*)(void);
+
+    auto glideInit = reinterpret_cast<InitFunc>(::dlsym(handle, "grGlideInit"));
+    auto sstSelect = reinterpret_cast<SelectSstFunc>(::dlsym(handle, "grSstSelect"));
+    auto winOpen   = reinterpret_cast<OpenWinFunc>(::dlsym(handle, "grSstWinOpen"));
+    auto winClose  = reinterpret_cast<CloseWinFunc>(::dlsym(handle, "grSstWinClose"));
+    auto drawPoint = reinterpret_cast<DrawPointFunc>(::dlsym(handle, "grDrawPoint"));
+    auto drawLine  = reinterpret_cast<DrawLineFunc>(::dlsym(handle, "grDrawLine"));
+    auto vertexLayout = reinterpret_cast<VertexLayoutFunc>(::dlsym(handle, "grVertexLayout"));
+    auto enable    = reinterpret_cast<EnableFunc>(::dlsym(handle, "grEnable"));
+    auto constantColor = reinterpret_cast<ConstantColorFunc>(::dlsym(handle, "grConstantColorValue"));
+    auto colorCombine = reinterpret_cast<ColorCombineFunc>(::dlsym(handle, "grColorCombine"));
+    auto bufferClear = reinterpret_cast<BufferClearFunc>(::dlsym(handle, "grBufferClear"));
+    auto lfbRead   = reinterpret_cast<LfbReadFunc>(::dlsym(handle, "grLfbReadRegion"));
+    auto shutdown  = reinterpret_cast<ShutdownFunc>(::dlsym(handle, "grGlideShutdown"));
+
+    REQUIRE(glideInit != nullptr);
+    REQUIRE(winOpen != nullptr);
+    REQUIRE(drawPoint != nullptr);
+    REQUIRE(drawLine != nullptr);
+    REQUIRE(vertexLayout != nullptr);
+    REQUIRE(enable != nullptr);
+    REQUIRE(constantColor != nullptr);
+    REQUIRE(colorCombine != nullptr);
+    REQUIRE(bufferClear != nullptr);
+    REQUIRE(lfbRead != nullptr);
+    REQUIRE(shutdown != nullptr);
+
+    #define G3_PARAM_XY       0x01
+    #define G3_PARAM_RGB      0x20
+    #define G3_PARAM_A        0x10
+    #define G3_PARAM_ENABLE   0x01
+    #define GR_AA_ORDERED     0x01
+
+    struct GlideVertex {
+        float x, y, z;
+        float ooz, a, oow;
+        float r, g, b;
+    };
+
+    SECTION("Option A: Analytical Point AA Coverage") {
+        ::setenv("GLIDE_WRAPPER_BACKEND", "software", 1);
+        ::setenv("GLIDE_WRAPPER_SOFTWARE_AA", "analytical", 1);
+
+        glideInit();
+        if (sstSelect) sstSelect(0);
+        unsigned long ctx = winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz, GR_COLORFORMAT_ABGR, GR_ORIGIN_UPPER_LEFT, 2, 1);
+        REQUIRE(ctx != 0);
+
+        vertexLayout(G3_PARAM_XY, 0, G3_PARAM_ENABLE);
+        vertexLayout(G3_PARAM_RGB, 24, G3_PARAM_ENABLE);
+
+        colorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE, GR_COMBINE_LOCAL_CONSTANT, GR_COMBINE_OTHER_NONE, FXFALSE);
+        constantColor(0xFFFFFFFF); // Solid white
+
+        bufferClear(0x00000000, 0, 0);
+
+        enable(GR_AA_ORDERED);
+
+        GlideVertex v;
+        v.x = 320.9f; v.y = 240.9f; v.z = 0.5f;
+        v.ooz = 1.0f; v.a = 255.0f; v.oow = 1.0f;
+        v.r = 255.0f; v.g = 255.0f; v.b = 255.0f;
+
+        drawPoint(&v);
+
+        uint32_t pixels[9];
+        FxBool ok = lfbRead(GR_BUFFER_BACKBUFFER, 319, 239, 3, 3, 12, pixels);
+        REQUIRE(ok == FXTRUE);
+
+        uint32_t centerPixel = pixels[4] & 0x00FFFFFF;
+        uint32_t rightPixel = pixels[5] & 0x00FFFFFF;
+        uint32_t bottomPixel = pixels[7] & 0x00FFFFFF;
+
+        CHECK(centerPixel > 0);
+        CHECK(rightPixel > 0);
+        CHECK(bottomPixel > 0);
+        CHECK(rightPixel < 0x00FFFFFF);
+        CHECK(bottomPixel < 0x00FFFFFF);
+
+        winClose();
+        shutdown();
+        ::unsetenv("GLIDE_WRAPPER_BACKEND");
+        ::unsetenv("GLIDE_WRAPPER_SOFTWARE_AA");
+    }
+
+    SECTION("Option B: SSAA Resolution Scaling & Downsampling") {
+        ::setenv("GLIDE_WRAPPER_BACKEND", "software", 1);
+        ::setenv("GLIDE_WRAPPER_SOFTWARE_AA", "ssaa", 1);
+
+        glideInit();
+        if (sstSelect) sstSelect(0);
+        unsigned long ctx = winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz, GR_COLORFORMAT_ABGR, GR_ORIGIN_UPPER_LEFT, 2, 1);
+        REQUIRE(ctx != 0);
+
+        auto* backend = static_cast<GlideWrapper::SoftwareBackendBase*>(
+            GlideWrapper::BackendManager::GetInstance().GetBackend()
+        );
+        REQUIRE(backend != nullptr);
+
+        // Framebuffer dimensions must be scaled by 2x
+        CHECK(backend->GetWidth() == 1280);
+        CHECK(backend->GetHeight() == 960);
+
+        winClose();
+        shutdown();
+        ::unsetenv("GLIDE_WRAPPER_BACKEND");
+        ::unsetenv("GLIDE_WRAPPER_SOFTWARE_AA");
+    }
+}
+#endif
+
 

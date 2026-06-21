@@ -312,10 +312,43 @@ bool SoftwareBackendBase::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
     if (!dstData || m_cpuBuffers[0].empty()) return false;
 
     const uint32_t* pixels = nullptr;
-    if (buffer == 0) { // FRONTBUFFER
-        pixels = reinterpret_cast<const uint32_t*>(m_cpuBuffers[m_frontBufferIdx].data());
-    } else { // BACKBUFFER
-        pixels = reinterpret_cast<const uint32_t*>(m_cpuBuffers[m_backBufferIdx].data());
+    uint32_t width = m_headlessWidth;
+    uint32_t height = m_headlessHeight;
+
+    if (m_ssaaScale > 1) {
+        uint32_t srcBufferIdx = (buffer == 0) ? m_frontBufferIdx : m_backBufferIdx;
+        const uint32_t* srcPixels = reinterpret_cast<const uint32_t*>(m_cpuBuffers[srcBufferIdx].data());
+        uint32_t* dstPixels = reinterpret_cast<uint32_t*>(m_resolvedBuffer.data());
+        uint32_t nativeWidth = m_headlessWidth / m_ssaaScale;
+        uint32_t nativeHeight = m_headlessHeight / m_ssaaScale;
+
+        #pragma omp parallel for collapse(2) if(nativeHeight * nativeWidth > 64000)
+        for (uint32_t y = 0; y < nativeHeight; ++y) {
+            for (uint32_t x = 0; x < nativeWidth; ++x) {
+                uint32_t r = 0, g = 0, b = 0, a = 0;
+                for (uint32_t dy = 0; dy < 2; ++dy) {
+                    for (uint32_t dx = 0; dx < 2; ++dx) {
+                        uint32_t srcIdx = (2 * y + dy) * m_headlessWidth + (2 * x + dx);
+                        uint32_t p = srcPixels[srcIdx];
+                        a += (p >> 24) & 0xFF;
+                        r += (p >> 16) & 0xFF;
+                        g += (p >> 8)  & 0xFF;
+                        b += p         & 0xFF;
+                    }
+                }
+                a /= 4; r /= 4; g /= 4; b /= 4;
+                dstPixels[y * nativeWidth + x] = (a << 24) | (r << 16) | (g << 8) | b;
+            }
+        }
+        pixels = dstPixels;
+        width = nativeWidth;
+        height = nativeHeight;
+    } else {
+        if (buffer == 0) { // FRONTBUFFER
+            pixels = reinterpret_cast<const uint32_t*>(m_cpuBuffers[m_frontBufferIdx].data());
+        } else { // BACKBUFFER
+            pixels = reinterpret_cast<const uint32_t*>(m_cpuBuffers[m_backBufferIdx].data());
+        }
     }
     auto* outBytes = reinterpret_cast<uint8_t*>(dstData);
 
@@ -324,14 +357,14 @@ bool SoftwareBackendBase::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
 
     for (uint32_t y = 0; y < srcHeight; ++y) {
         uint32_t readY = srcY + y;
-        if (readY >= m_headlessHeight) break;
+        if (readY >= height) break;
 
         if (is32Bit) {
             uint32_t* destRow32 = reinterpret_cast<uint32_t*>(outBytes + y * dstStride);
             for (uint32_t x = 0; x < srcWidth; ++x) {
                 uint32_t readX = srcX + x;
-                if (readX >= m_headlessWidth) break;
-                uint32_t val = pixels[readY * m_headlessWidth + readX];
+                if (readX >= width) break;
+                uint32_t val = pixels[readY * width + readX];
                 if (m_pixelFormatOverride == 1) {
                     uint32_t a = val & 0xFF000000;
                     uint32_t g = val & 0x0000FF00;
@@ -339,18 +372,15 @@ bool SoftwareBackendBase::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
                     uint32_t b = val & 0xFF;
                     val = a | (b << 16) | g | r;
                 }
-                if ((readX == 150 && readY == 150) || (readX == 310 && readY == 310)) {
-                    GLIDE_LOG(DEBUG, "ReadLFB", "ReadLFB (32-bit) at (" << readX << "," << readY << ") = 0x" << std::hex << val << std::dec);
-                }
                 destRow32[x] = val;
             }
         } else {
             uint16_t* destRow16 = reinterpret_cast<uint16_t*>(outBytes + y * dstStride);
             for (uint32_t x = 0; x < srcWidth; ++x) {
                 uint32_t readX = srcX + x;
-                if (readX >= m_headlessWidth) break;
+                if (readX >= width) break;
 
-                uint32_t pWord = pixels[readY * m_headlessWidth + readX];
+                uint32_t pWord = pixels[readY * width + readX];
                 uint32_t rVal = (pWord >> 16) & 0xFF;
                 uint32_t gVal = (pWord >> 8)  & 0xFF;
                 uint32_t bVal = pWord         & 0xFF;
@@ -596,13 +626,15 @@ void SoftwareBackendBase::AllocateCpuBuffers(uint32_t width, uint32_t height) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     m_cpuBuffers[0].resize(width * height * 4);
     m_cpuBuffers[1].resize(width * height * 4);
+    m_resolvedBuffer.resize((width / m_ssaaScale) * (height / m_ssaaScale) * 4);
     std::memset(m_cpuBuffers[0].data(), 0, m_cpuBuffers[0].size());
     std::memset(m_cpuBuffers[1].data(), 0, m_cpuBuffers[1].size());
+    std::memset(m_resolvedBuffer.data(), 0, m_resolvedBuffer.size());
     m_frontBufferIdx = 0;
     m_backBufferIdx = 1;
     m_activeRenderBuffer = 1; // BACKBUFFER
     m_headlessPixelMap = m_cpuBuffers[m_backBufferIdx].data();
-    GLIDE_LOG(INFO, "SoftwareBackendBase", "Allocated CPU double buffers: " << width << "x" << height << ", map=" << m_headlessPixelMap);
+    GLIDE_LOG(INFO, "SoftwareBackendBase", "Allocated CPU double buffers: " << width << "x" << height << ", map=" << m_headlessPixelMap << ", resolved size=" << m_resolvedBuffer.size());
 }
 
 void SoftwareBackendBase::FreeCpuBuffers() {
@@ -611,6 +643,8 @@ void SoftwareBackendBase::FreeCpuBuffers() {
     m_cpuBuffers[0].shrink_to_fit();
     m_cpuBuffers[1].clear();
     m_cpuBuffers[1].shrink_to_fit();
+    m_resolvedBuffer.clear();
+    m_resolvedBuffer.shrink_to_fit();
     m_headlessPixelMap = nullptr;
     GLIDE_LOG(INFO, "SoftwareBackendBase", "Freed CPU double buffers.");
 }
@@ -648,6 +682,30 @@ void SoftwareBackendBase::LoadGammaTable(uint32_t nentries, const uint32_t* rTab
         m_lutB[i] = static_cast<uint8_t>(bTable[i]);
     }
     m_useGammaLut = true;
+}
+
+void SoftwareBackendBase::ResolveAAMode() {
+    m_softwareAaMode = "analytical";
+    m_ssaaScale = 1;
+    const char* envMode = ::getenv("GLIDE_WRAPPER_SOFTWARE_AA");
+    if (envMode) {
+        std::string modeStr(envMode);
+        if (modeStr == "ssaa") {
+            m_softwareAaMode = "ssaa";
+            m_ssaaScale = 2;
+            GLIDE_LOG(INFO, "Software", "Supersampling Anti-Aliasing (SSAA) mode enabled (2x scaling).");
+        } else {
+            GLIDE_LOG(INFO, "Software", "Analytical Point/Line Anti-Aliasing mode enabled (default).");
+        }
+    } else {
+        GLIDE_LOG(INFO, "Software", "Analytical Point/Line Anti-Aliasing mode enabled (default).");
+    }
+}
+
+void SoftwareBackendBase::SetAAState(bool enabled) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    m_aaEnabled = enabled;
+    GLIDE_LOG(INFO, "Software", "SetAAState: AA active=" << (enabled ? "Yes" : "No"));
 }
 
 } // namespace GlideWrapper
