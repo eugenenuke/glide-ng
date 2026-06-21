@@ -266,7 +266,19 @@ cmake --build build -j$(nproc)
 4.  **Verification**:
     *   Rebuilt the project and ran `test16` (Glide 3.x) under the Vulkan backend. The spinning logo now displays its gorgeous, high-fidelity metallic red/orange/yellow shading, rendering identically to the Glide 2.x reference implementation!
 
+### Case Study 11: The `test34` Black Screen & Glide 3.x Combiner State Reset Omission
+1.  **The Symptom**: `test34.exe` (Fogging with Table/FogCoord) rendered a completely black screen under all backends (Vulkan, OpenGL ES, and Software), despite the test executing successfully and generating thousands of frames.
+2.  **The Root Cause**:
+    *   **State Analysis**: Inspected verbose traces (`GLIDE_WRAPPER_LOG_LEVEL=4`) and noticed that the alpha combiner state was reported as `Alpha(Func=0, Fac=0, Loc=0, Oth=0, Inv=0)`. `Func = 0` corresponds to `GR_COMBINE_FUNCTION_ZERO`.
+    *   **The Discrepancy**: In Glide 2.x, default combiner states are correctly initialized to `GR_COMBINE_FUNCTION_SCALE_OTHER` (0x3) with factor `GR_COMBINE_FACTOR_ONE` (0x8), which defaults to a solid `1.0f` alpha.
+    *   **The Bug**: In Glide 3.x's translation layer (`glide3_entry.cpp`), the default color and alpha combiner state variables (`s_colorFunc`, `s_alphaFunc`, etc.) were **erroneously initialized and reset to `0`** both at startup and inside `grSstWinOpen`. Because `test34.exe` relies on the default combiner state and uses `GR_BLEND_SRC_ALPHA`, the zeroed-out alpha combiner forced the final pixel alpha to `0.0f`, rendering all geometry completely black.
+3.  **The Fix**:
+    *   Corrected the default state declarations and resets inside `src/glide3/glide3_entry.cpp` to align with the Glide specification defaults (`0x3` for functions, `0x8` for factors).
+4.  **Verification**:
+    *   Rebuilt the project. Running `test34.exe` now displays the beautiful receding textured road smoothly fading into the green exponential fog on all backends with 100% pixel-perfect parity!
+
 ---
+
 
 ## 5. Performance Benchmarking & Overhead Assessment
 
@@ -378,3 +390,34 @@ When future agents or developers encounter regressions or divergent rendering be
         *   `DurationSeconds`: Set slightly above the maximum expected runtime of your task (e.g., `40` for a 12-second script).
         *   `Prompt`: Use a clear message telling yourself to check on the task's status and kill it if stuck (e.g. `"Check if background task XYZ has finished, or if it is stuck."`).
     3.  **Automatic Cancellation**: If the background task finishes successfully before the watchdog expires, the system will automatically deliver the completion message and cancel the watchdog timer silently, ensuring zero noise. If it hangs, the watchdog will fire, allowing you to run `manage_task(Action='status')` and `manage_task(Action='kill')` to prevent resource hogging.
+
+### I. Working Directory Texture Loading Requirement
+*   **The Problem**: Many legacy Glide test suites (e.g., `test34.exe`) load asset resources (such as `.3df` texture files) using relative paths (e.g., `tlLoadTexture("miro.3df", ...)`). If you launch the test from the project root directory, the loader will search the root directory, fail to find the file, and crash the application on startup (triggering an assertion failure).
+*   **The Best Practices**:
+    1.  **Change Directory for Execution**: Always execute the test binary inside its own native directory using a subshell so it can resolve relative texture paths locally:
+        ```bash
+        (cd refs/glide/glide3x/h3/glide3/tests && ./test34.exe -r 640x480 -n 99999) &
+        ```
+    2.  **Maintain Absolute Environment Variables**: Keep target paths (like `LD_LIBRARY_PATH` and outputs) fully absolute so they remain valid when running in a different directory.
+
+### J. Advanced Headless Interactive Testing via Stdin Piping
+*   **The Problem**: Some test cases require interactive keyboard inputs to cycle through subtests or toggle display states (e.g., pressing `F` in `test34.exe` to toggle fog coordinates). In a headless background execution, you cannot send manual keyboard events to the window, and installing GUI automation tools (like `xdotool`) may not be possible.
+*   **The Solution**:
+    1.  **Pipe Keys via Stdin**: Since the test helper library polls file descriptor `0` (`stdin`) for inputs, you can send timed keystrokes directly by piping input from a subshell:
+        ```bash
+        (sleep 7.0; echo -n "f"; sleep 10.0) | ./test34.exe
+        ```
+    2.  **CRITICAL: Avoid EOF infinite loops**: If the stdin pipe closes, the test's keyboard checking loop (`while (tlKbHit())`) will see a permanent "readable" state (EOF) and spin infinitely at 100% CPU. Always add a long trailing `sleep` to keep the pipe open until you terminate the process.
+
+### K. Robust Window Title Mapping and Import timeouts
+*   **The Problem**: ImageMagick's `import` tool requires exact, case-sensitive window titles. If the title is slightly misspelled or the window has not mapped yet, `import` will block permanently waiting for a mouse click, hanging your entire script.
+*   **The Best Practices**:
+    1.  **Map Exact Window Titles**:
+        *   **Vulkan**: `"3dfx glide-ng Presentation Console (Vulkan)"`
+        *   **OpenGL ES**: `"3dfx glide-ng Presentation Console (OpenGL ES 3.2)"`
+        *   **Software**: `"3dfx glide-ng Presentation Console (Software)"`
+    2.  **Use a Capture Timeout**: Always prefix the `import` command with `timeout 5s` to guarantee the process aborts cleanly rather than hanging if the window is missing or name-mismatched:
+        ```bash
+        timeout 5s import -window "$WIN_TITLE" "$OUTPUT_PNG"
+        ```
+

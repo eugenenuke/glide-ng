@@ -102,25 +102,35 @@ export GLIDE_WRAPPER_BACKEND=$BACKEND
 # Resolve the target window title
 if [ "$BACKEND" == "vulkan" ]; then
     WIN_TITLE="3dfx glide-ng Presentation Console (Vulkan)"
-elif [ "$BACKEND" == "opengl_es" ]; then
+elif [ "$BACKEND" == "gles" ] || [ "$BACKEND" == "opengl_es" ]; then
     WIN_TITLE="3dfx glide-ng Presentation Console (OpenGL ES 3.2)"
 else
     WIN_TITLE="3dfx glide-ng Presentation Console (Software)"
 fi
 
-echo "Launching $TEST_NAME on $BACKEND..."
-$TEST_BIN -r 640x480 >/dev/null 2>&1 &
+# Get the directory of the test executable
+TEST_DIR=$(dirname "$TEST_BIN")
+TEST_EXE=$(basename "$TEST_BIN")
+
+echo "Launching $TEST_EXE on $BACKEND inside $TEST_DIR..."
+# CRITICAL: Always execute the test with its current working directory set to its folder
+# so it can locate relative texture files (e.g. miro.3df, decal1.3df) successfully!
+(cd "$TEST_DIR" && "./$TEST_EXE" -r 640x480 -n 99999) >/dev/null 2>&1 &
 PID=$!
 
 # Wait for window mapping and rendering
 sleep $SLEEP_TIME
 
-# Capture window using ImageMagick
-import -window "$WIN_TITLE" "$OUTPUT_PNG"
+# Capture window using ImageMagick with a strict timeout safety guard to prevent permanent hangs
+timeout 5s import -window "$WIN_TITLE" "$OUTPUT_PNG"
+if [ $? -ne 0 ]; then
+    echo "WARNING: Failed to capture $BACKEND window!"
+else
+    echo "Captured $OUTPUT_PNG"
+fi
 
 # Terminate the test process immediately to prevent resource leaks
 kill -9 $PID
-echo "Captured $OUTPUT_PNG"
 ```
 
 ---
@@ -181,3 +191,45 @@ Format your **`visual_matrix_report.md`** using the following Markdown structure
 
 * **Parity Analysis**: The splash animation renders smoothly on all backends. Dynamic vertex layout states are correctly saved and restored between the console and splash screens.
 ```
+
+---
+
+## 8. Advanced Headless Interactive Testing (Stdin Piping)
+
+Many legacy tests require interactive keyboard input to cycle through their various subtests or display modes (e.g., pressing `F` in `test34` to toggle between W-based and FogCoord-based fogging). 
+
+To automate capturing these multi-mode states headlessly without needing GUI-automation utilities (like `xdotool`) and without modifying any reference files, use **standard Unix stdin piping**.
+
+### The Interactive Pipeling Pattern
+Because the Glide test helper library (`linutil.c`) checks for keyboard input by running a non-blocking `select()` on file descriptor `0` (`stdin`), you can feed keys directly into the test via shell pipes.
+
+Use the following pattern to capture multiple modes of a test in a single execution loop:
+
+```bash
+# Start the test in the background, feeding a timed sequence of keys into stdin.
+# Here, we run for 7 seconds in the default Mode 1, send "f" to toggle to Mode 2, 
+# and then sleep 10.0 seconds to keep the write end of the pipe open.
+(sleep 7.0; echo -n "f"; sleep 10.0) | (cd "$TEST_DIR" && ./test34.exe -r 640x480 -n 99999) &
+PID=$!
+
+# 1. Capture Mode 1 (Fog on W)
+sleep 5.5
+timeout 5s import -window "$WIN_TITLE" "mode1.png"
+
+# 2. Wait for the key press to be dispatched and processed
+sleep 2.5
+
+# 3. Capture Mode 2 (Fog on FogCoord)
+timeout 5s import -window "$WIN_TITLE" "mode2.png"
+
+# 4. Clean up cleanly
+kill -9 $PID
+```
+
+> [!WARNING]
+> **Keep the Stdin Pipe Open!**
+> If you do not include a trailing `sleep 10.0` after the `echo`, the subshell will terminate and close the write end of the pipe. 
+> In Unix, when a pipe is closed, `select()` on `stdin` permanently returns readable (EOF state). 
+> This causes the test's internal keyboard polling loop (`while (tlKbHit())`) to spin in a permanent infinite loop, consuming 100% CPU and completely freezing the rendering loop. 
+> Always keep the pipe open until you terminate the process!
+
