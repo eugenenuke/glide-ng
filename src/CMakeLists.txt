@@ -37,6 +37,10 @@ add_library(glide2x SHARED
     glide2/gsplash.cpp
     glide2/gbanner.cpp
 )
+set_target_properties(glide2x PROPERTIES
+    VERSION 2.0.0
+    SOVERSION 0
+)
 target_include_directories(glide2x PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/../include/glide2"
     "${CMAKE_CURRENT_SOURCE_DIR}/../include/3dfx"
@@ -48,6 +52,10 @@ target_link_libraries(glide2x PRIVATE GlideWrapperCore)
 add_library(glide3x SHARED 
     glide3/glide3_entry.cpp
     glide3/glide3_banner.cpp
+)
+set_target_properties(glide3x PROPERTIES
+    VERSION 3.0.0
+    SOVERSION 0
 )
 target_include_directories(glide3x PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/../include/glide3"
