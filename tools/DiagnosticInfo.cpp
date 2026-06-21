@@ -289,7 +289,7 @@ Tools::ToolRunConfig Tools::InitializeAndParse(
         return false;
     };
     
-    SafePrint(std::cout, "  [2.42 Features (Voodoo2 Multitexturing)]");
+    SafePrint(std::cout, "  [Glide v2.42 Features]");
     {
         std::vector<std::string> lines = {
             "    [" + std::string(is_func_avail("grTexMultibase") ? "X" : " ") + "]  grTexMultibase",
@@ -298,7 +298,7 @@ Tools::ToolRunConfig Tools::InitializeAndParse(
         PrintTwoColumns(lines);
     }
     
-    SafePrint(std::cout, "  [2.43 Features (Voodoo2 Gold Standard)]");
+    SafePrint(std::cout, "  [Glide v2.43 Features]");
     {
         std::vector<std::string> lines = {
             "    [" + std::string(is_func_avail("grGetProcAddress") ? "X" : " ") + "]  grGetProcAddress",
@@ -308,7 +308,7 @@ Tools::ToolRunConfig Tools::InitializeAndParse(
         PrintTwoColumns(lines);
     }
     
-    SafePrint(std::cout, "  [2.61 Features (Voodoo3 Splash Callbacks)]");
+    SafePrint(std::cout, "  [Glide v2.61 Features]");
     {
         std::vector<std::string> lines = {
             "    [" + std::string(is_func_avail("grSplashCb") ? "X" : " ") + "]  grSplashCb"
@@ -328,17 +328,17 @@ Tools::ToolRunConfig Tools::InitializeAndParse(
         {"PALETTE6666", "PALETTE6666"}
     };
     ExtensionInfo g3ExclusiveExts[] = {
-        {"FOGCOORD", "FOGCOORD (G3)"},
-        {"RESOLUTION", "RESOLUTION (G3)"},
-        {"SURFACE", "SURFACE (G3 DDraw)"},
-        {"COMMAND_TRANSPORT", "CMD_TRANSP (G3 FIFO)"}
+        {"FOGCOORD", "FOGCOORD"},
+        {"RESOLUTION", "RESOLUTION"},
+        {"SURFACE", "SURFACE (DirectDraw)"},
+        {"COMMAND_TRANSPORT", "COMMAND_TRANSPORT"}
     };
     ExtensionInfo napalmExts[] = {
-        {"PIXEXT", "PIXEXT (Napalm Stencil/TB)"},
-        {"COMBINE", "COMBINE (Napalm Combiner)"},
-        {"TEXFMT", "TEXFMT (Napalm FXT1/32b)"},
-        {"TEXTUREBUFFER", "TEXBUFFER (Napalm T-Buffer)"},
-        {"TEXUMA", "TEXUMA (Napalm Memory)"}
+        {"PIXEXT", "PIXEXT (Stencil/TB)"},
+        {"COMBINE", "COMBINE (Advanced)"},
+        {"TEXFMT", "TEXFMT (FXT1/32b)"},
+        {"TEXTUREBUFFER", "TEXTUREBUFFER"},
+        {"TEXUMA", "TEXUMA"}
     };
 
     auto printCategory = [&](const std::string& title, ExtensionInfo exts[], int count) {
@@ -360,12 +360,12 @@ Tools::ToolRunConfig Tools::InitializeAndParse(
         {"CHROMARANGE", "CHROMARANGE"}
     };
     ExtensionInfo g2BackportedExts[] = {
-        {"BLEND", "BLEND (G3 Core)"},
-        {"BUFFERCLEAR", "BUFFERCLEAR (G3 Core)"},
-        {"COLORMASK", "COLORMASK (G3 Core)"},
-        {"LFBSTENCIL", "LFBSTENCIL (G3 Core)"},
-        {"STENCIL", "STENCIL (G3 Core)"},
-        {"TBUFFER", "TBUFFER (G3 Core)"}
+        {"BLEND", "BLEND"},
+        {"BUFFERCLEAR", "BUFFERCLEAR"},
+        {"COLORMASK", "COLORMASK"},
+        {"LFBSTENCIL", "LFBSTENCIL"},
+        {"STENCIL", "STENCIL"},
+        {"TBUFFER", "TBUFFER"}
     };
 
     auto printCategory = [&](const std::string& title, ExtensionInfo exts[], int count) {
