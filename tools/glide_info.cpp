@@ -6,30 +6,10 @@
 #include <glide.h>
 
 int main(int argc, char* argv[]) {
-    // Initialize Glide
-    grGlideInit();
+    // 1. Initialize and print standard diagnostic header and extensions checklist
+    auto runConfig = Tools::InitializeAndParse(argc, argv, "3DFX GLIDE SYSTEM DIAGNOSTICS UTILITY", {});
 
-    // Retrieve system strings
-    const char* version = grGetString(GR_VERSION);
-    const char* hardware = grGetString(GR_HARDWARE);
-    const char* vendor = grGetString(GR_VENDOR);
-#if GLIDE_VERSION == 3
-    const char* renderer = grGetString(GR_RENDERER);
-#else
-    const char* renderer = "glide2x legacy renderer";
-#endif
-
-    std::cout << "========================================================\n";
-    std::cout << "          3DFX GLIDE SYSTEM DIAGNOSTICS UTILITY         \n";
-    std::cout << "========================================================\n";
-    std::cout << "  Glide API Version    : " << (GLIDE_VERSION == 3 ? "Glide 3.x" : "Glide 2.x") << "\n";
-    std::cout << "  Driver Version       : " << (version ? version : "Unknown") << "\n";
-    std::cout << "  Hardware Device      : " << (hardware ? hardware : "Unknown") << "\n";
-    std::cout << "  Vendor String        : " << (vendor ? vendor : "Unknown") << "\n";
-    std::cout << "  Renderer String      : " << (renderer ? renderer : "Unknown") << "\n";
-    std::cout << "========================================================\n";
-
-    // Query card capabilities dynamically
+    // 2. Query card capabilities dynamically (since InitializeAndParse left Glide initialized)
     FxI32 fbiMem = 0;
     FxI32 tmuMem = 0;
     FxI32 numTmus = 0;
@@ -75,9 +55,9 @@ int main(int argc, char* argv[]) {
     std::cout << "  Color Buffer Bits    : " << colorBits << "-bit\n";
     std::cout << "  Fog Table Entries    : " << fogEntries << "\n";
     std::cout << "  Gamma Table Entries  : " << gammaEntries << "\n";
-    std::cout << "========================================================\n";
+    std::cout << "----------------------------------------------------------------------\n";
 
-    // Print active environment variables
+    // 3. Print active environment variables
     std::cout << "  ENVIRONMENT VARIABLES:\n";
     const char* envCard = std::getenv("GLIDE_WRAPPER_CARD_MODEL");
     const char* envDev = std::getenv("GLIDE_DEVICE");
@@ -88,7 +68,7 @@ int main(int argc, char* argv[]) {
     std::cout << "    GLIDE_DEVICE             : " << (envDev ? envDev : "(not set)") << "\n";
     std::cout << "    GLIDE_WRAPPER_BACKEND    : " << (envBackend ? envBackend : "(not set)") << "\n";
     std::cout << "    GLIDE_WRAPPER_LOG_LEVEL  : " << (envLog ? envLog : "(not set)") << "\n";
-    std::cout << "========================================================\n";
+    std::cout << "======================================================================\n";
 
     grGlideShutdown();
     return 0;

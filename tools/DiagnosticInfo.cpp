@@ -290,16 +290,31 @@ Tools::ToolRunConfig Tools::InitializeAndParse(
     };
     
     SafePrint(std::cout, "  [2.42 Features (Voodoo2 Multitexturing)]");
-    SafePrint(std::cout, "    [" + std::string(is_func_avail("grTexMultibase") ? "X" : " ") + "] grTexMultibase");
-    SafePrint(std::cout, "    [" + std::string(is_func_avail("grTexMultibaseAddress") ? "X" : " ") + "] grTexMultibaseAddress");
+    {
+        std::vector<std::string> lines = {
+            "    [" + std::string(is_func_avail("grTexMultibase") ? "X" : " ") + "]  grTexMultibase",
+            "    [" + std::string(is_func_avail("grTexMultibaseAddress") ? "X" : " ") + "]  grTexMultibaseAddress"
+        };
+        PrintTwoColumns(lines);
+    }
     
     SafePrint(std::cout, "  [2.43 Features (Voodoo2 Gold Standard)]");
-    SafePrint(std::cout, "    [" + std::string(is_func_avail("grGetProcAddress") ? "X" : " ") + "] grGetProcAddress");
-    SafePrint(std::cout, "    [" + std::string(is_func_avail("grChromakeyRangeExt") ? "X" : " ") + "] grChromakeyRangeExt");
-    SafePrint(std::cout, "    [" + std::string(is_func_avail("grAlphaControlsITRGBLighting") ? "X" : " ") + "] grAlphaControlsITRGBLighting");
+    {
+        std::vector<std::string> lines = {
+            "    [" + std::string(is_func_avail("grGetProcAddress") ? "X" : " ") + "]  grGetProcAddress",
+            "    [" + std::string(is_func_avail("grChromakeyRangeExt") ? "X" : " ") + "]  grChromakeyRangeExt",
+            "    [" + std::string(is_func_avail("grAlphaControlsITRGBLighting") ? "X" : " ") + "]  grAlphaControlsITRGBLighting"
+        };
+        PrintTwoColumns(lines);
+    }
     
     SafePrint(std::cout, "  [2.61 Features (Voodoo3 Splash Callbacks)]");
-    SafePrint(std::cout, "    [" + std::string(is_func_avail("grSplashCb") ? "X" : " ") + "] grSplashCb");
+    {
+        std::vector<std::string> lines = {
+            "    [" + std::string(is_func_avail("grSplashCb") ? "X" : " ") + "]  grSplashCb"
+        };
+        PrintTwoColumns(lines);
+    }
     SafePrint(std::cout, "----------------------------------------------------------------------");
 #endif
 
@@ -369,9 +384,11 @@ Tools::ToolRunConfig Tools::InitializeAndParse(
 #endif
     SafePrint(std::cout, "----------------------------------------------------------------------");
 
-    SafePrint(std::cout, "Interactive Keybindings:");
-    for (const auto& binding : keybindings) {
-        SafePrint(std::cout, "  " + binding);
+    if (!keybindings.empty()) {
+        SafePrint(std::cout, "Interactive Keybindings:");
+        for (const auto& binding : keybindings) {
+            SafePrint(std::cout, "  " + binding);
+        }
     }
     SafePrint(std::cout, "======================================================================");
 
