@@ -195,7 +195,7 @@ bool JsonConfigLoader::Load(const std::string& configFilePath, WrapperConfig& ou
             break;
         case CardModel::Voodoo3:
             if (!overrideApi && !hasApiVerInJson) outConfig.apiVersion = ApiVersion::GLIDE_2_61;
-            outConfig.tmuCount = 1;      // Authentic 1 TMU Avenger!
+            outConfig.tmuCount = 2;      // Authentic Voodoo3 2-TMU driver compatibility illusion!
             outConfig.fbiMemoryMb = 16;
             outConfig.tmuMemoryMb = 16;
             break;
