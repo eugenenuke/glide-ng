@@ -59,6 +59,17 @@ namespace {
         }
         return false;
     }
+
+    void PrintTwoColumns(const std::vector<std::string>& lines) {
+        for (size_t i = 0; i < lines.size(); i += 2) {
+            std::ostringstream ss;
+            ss << std::left << std::setw(34) << lines[i];
+            if (i + 1 < lines.size()) {
+                ss << lines[i + 1];
+            }
+            SafePrint(std::cout, ss.str());
+        }
+    }
 }
 
 // Define unified Glide resolution tables
@@ -302,25 +313,28 @@ Tools::ToolRunConfig Tools::InitializeAndParse(
         {"PALETTE6666", "PALETTE6666"}
     };
     ExtensionInfo g3ExclusiveExts[] = {
-        {"FOGCOORD", "FOGCOORD          (Glide 3x)"},
-        {"RESOLUTION", "RESOLUTION        (Glide 3x)"},
-        {"SURFACE", "SURFACE           (Glide 3x Direct Draw)"},
-        {"COMMAND_TRANSPORT", "COMMAND_TRANSPORT (Glide 3x FIFO)"}
+        {"FOGCOORD", "FOGCOORD (G3)"},
+        {"RESOLUTION", "RESOLUTION (G3)"},
+        {"SURFACE", "SURFACE (G3 DDraw)"},
+        {"COMMAND_TRANSPORT", "CMD_TRANSP (G3 FIFO)"}
     };
     ExtensionInfo napalmExts[] = {
-        {"PIXEXT", "PIXEXT            (Glide 3x - Stencil/T-Buffer)"},
-        {"COMBINE", "COMBINE           (Glide 3x - Advanced Combiner)"},
-        {"TEXFMT", "TEXFMT            (Glide 3x - FXT1/32-bit Textures)"},
-        {"TEXTUREBUFFER", "TEXTUREBUFFER     (Glide 3x - T-Buffer)"},
-        {"TEXUMA", "TEXUMA            (Glide 3x - Texture Memory Utility)"}
+        {"PIXEXT", "PIXEXT (Napalm Stencil/TB)"},
+        {"COMBINE", "COMBINE (Napalm Combiner)"},
+        {"TEXFMT", "TEXFMT (Napalm FXT1/32b)"},
+        {"TEXTUREBUFFER", "TEXBUFFER (Napalm T-Buffer)"},
+        {"TEXUMA", "TEXUMA (Napalm Memory)"}
     };
 
     auto printCategory = [&](const std::string& title, ExtensionInfo exts[], int count) {
         SafePrint(std::cout, title);
+        std::vector<std::string> lines;
+        lines.reserve(count);
         for (int i = 0; i < count; ++i) {
             bool supported = IsExtensionSupported(extString, exts[i].name);
-            SafePrint(std::cout, "    [" + std::string(supported ? "X" : " ") + "]  " + exts[i].label);
+            lines.push_back("    [" + std::string(supported ? "X" : " ") + "]  " + exts[i].label);
         }
+        PrintTwoColumns(lines);
     };
 
     printCategory("  [Core / Shared with Glide 2.x]", sharedExts, sizeof(sharedExts)/sizeof(sharedExts[0]));
@@ -331,20 +345,23 @@ Tools::ToolRunConfig Tools::InitializeAndParse(
         {"CHROMARANGE", "CHROMARANGE"}
     };
     ExtensionInfo g2BackportedExts[] = {
-        {"BLEND", "BLEND             (Core in Glide 3.x)"},
-        {"BUFFERCLEAR", "BUFFERCLEAR       (Core in Glide 3.x)"},
-        {"COLORMASK", "COLORMASK         (Core in Glide 3.x)"},
-        {"LFBSTENCIL", "LFBSTENCIL        (Core in Glide 3.x)"},
-        {"STENCIL", "STENCIL           (Core in Glide 3.x)"},
-        {"TBUFFER", "TBUFFER           (Core in Glide 3.x)"}
+        {"BLEND", "BLEND (G3 Core)"},
+        {"BUFFERCLEAR", "BUFFERCLEAR (G3 Core)"},
+        {"COLORMASK", "COLORMASK (G3 Core)"},
+        {"LFBSTENCIL", "LFBSTENCIL (G3 Core)"},
+        {"STENCIL", "STENCIL (G3 Core)"},
+        {"TBUFFER", "TBUFFER (G3 Core)"}
     };
 
     auto printCategory = [&](const std::string& title, ExtensionInfo exts[], int count) {
         SafePrint(std::cout, title);
+        std::vector<std::string> lines;
+        lines.reserve(count);
         for (int i = 0; i < count; ++i) {
             bool supported = IsExtensionSupported(extString, exts[i].name);
-            SafePrint(std::cout, "    [" + std::string(supported ? "X" : " ") + "]  " + exts[i].label);
+            lines.push_back("    [" + std::string(supported ? "X" : " ") + "]  " + exts[i].label);
         }
+        PrintTwoColumns(lines);
     };
 
     printCategory("  [Glide 2.x Standard]", g2StandardExts, sizeof(g2StandardExts)/sizeof(g2StandardExts[0]));
