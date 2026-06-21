@@ -13,6 +13,7 @@
 
 extern "C" {
     volatile int g_glideWrapperSdlKeyHit = 0;
+    volatile int g_glideWrapperLastKey = 0;
 }
 
 namespace GlideWrapper {
@@ -581,6 +582,7 @@ void SoftwareBackendBase::PollEvents() {
         } else if (event.type == SDL_KEYDOWN) {
             GLIDE_LOG(DEBUG, "Backend", "SDL window keydown event captured! Setting keyboard hit hook flag.");
             g_glideWrapperSdlKeyHit = 1;
+            g_glideWrapperLastKey = event.key.keysym.sym;
         }
     }
 }

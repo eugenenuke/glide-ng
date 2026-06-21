@@ -19,6 +19,7 @@
 
 extern "C" {
     extern volatile int g_glideWrapperSdlKeyHit;
+    extern volatile int g_glideWrapperLastKey;
 }
 
 namespace GlideWrapper {
@@ -1092,6 +1093,7 @@ void VulkanBackend::PollEvents() {
         } else if (event.type == SDL_KEYDOWN) {
             GLIDE_LOG(DEBUG, "Vulkan", "SDL window keydown captured. Setting key hit hook flag.");
             g_glideWrapperSdlKeyHit = 1;
+            g_glideWrapperLastKey = event.key.keysym.sym;
         }
     }
 }
