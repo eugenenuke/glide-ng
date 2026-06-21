@@ -27,6 +27,11 @@ namespace {
     float s_viewportScale = 1.0f; // 0.2f to 1.0f
     float s_rotationAngle = 0.0f;
 
+    // Fog states
+    bool s_fogEnabled = false;
+    int s_fogModeIndex = 0; // 0 = Table on W, 1 = Table on FogCoord
+    GrFog_t s_fogTable[64];
+
     // Viewport coordinates
     int s_baseWidth = 640;
     int s_baseHeight = 480;
@@ -39,8 +44,10 @@ namespace {
 
     // Dynamic status line printer
     void UpdateStatusLine() {
-        std::printf("\r[STATUS] Viewport Scale: %.2f | Anti-Aliasing (AA): %s | Shameless Plug: %s\033[K",
-                    s_viewportScale, s_aaEnabled ? "ON" : "OFF", s_plugEnabled ? "ON" : "OFF");
+        const char* FOG_NAMES[] = { "DISABLED", "TABLE ON W", "TABLE ON FOGCOORD" };
+        const char* activeFogName = s_fogEnabled ? FOG_NAMES[s_fogModeIndex + 1] : FOG_NAMES[0];
+        std::printf("\r[STATUS] Viewport Scale: %.2f | AA: %s | Fog: %s | Plug: %s\033[K",
+                    s_viewportScale, s_aaEnabled ? "ON" : "OFF", activeFogName, s_plugEnabled ? "ON" : "OFF");
         std::fflush(stdout);
     }
 
@@ -48,6 +55,7 @@ namespace {
     struct ClipVertex {
         float x, y, z;      // Position coordinates (NDC [-1.0, 1.0])
         float r, g, b, a;   // Colors (0.0 .. 255.0)
+        float fog;          // Custom fog coordinate
     };
 
     // Rotate 3D vertex around X and Y axes
@@ -64,8 +72,12 @@ namespace {
         float y2 = y * cosX - z1 * sinX;
         float z2 = y * sinX + z1 * cosX;
 
+        // Compute dynamic fog coordinate based on rotated Z depth
+        // Maps depth z2 from [-1.0, 1.0] to custom fog index space [2.0, 32.0]
+        float fogVal = (z2 + 1.1f) * 15.0f + 2.0f;
+
         // Return clip vertex
-        return ClipVertex{ x1, y2, z2, r, g, b, 255.0f };
+        return ClipVertex{ x1, y2, z2, r, g, b, 255.0f, fogVal };
     }
 
     // Renders the 3D rotating pyramid
@@ -112,6 +124,7 @@ int main(int argc, char* argv[]) {
     auto runConfig = Tools::InitializeAndParse(argc, argv, "3dfx Glide 3.x State Control & Dynamic Clip-Space Demo", {
         "[ A ]          Toggle Anti-Aliasing (grEnable/grDisable(GR_AA_ORDERED))",
         "[ W ]          Toggle Shameless Plug Watermark (GR_SHAMELESS_PLUG)",
+        "[ F ]          Cycle Fog Mode (Disabled -> Table on W -> Table on FogCoord)",
         "[ S ]          Scale Viewport DOWN (Shrink render region)",
         "[ D ]          Scale Viewport UP (Expand render region)",
         "[ R ]          Reset Viewport Scale to 100%",
@@ -155,6 +168,12 @@ int main(int argc, char* argv[]) {
     grVertexLayout(GR_PARAM_RGB, 12, GR_PARAM_ENABLE);
     grVertexLayout(GR_PARAM_A, 24, GR_PARAM_ENABLE);
 
+    // Set up table fogging parameters
+    // Generate exponential fog table: neon hot-pink fog!
+    guFogGenerateExp(s_fogTable, 0.05f);
+    grFogTable(s_fogTable);
+    grFogColorValue(0x00FF00FF); // ABGR hot pink (Red=255, Green=0, Blue=255)
+
     // Setup color combiner
     SetupColorCombiner();
 
@@ -183,6 +202,17 @@ int main(int argc, char* argv[]) {
                     if (s_plugEnabled) grEnable(GR_SHAMELESS_PLUG); else grDisable(GR_SHAMELESS_PLUG);
                     UpdateStatusLine();
                     break;
+                case 'f': case 'F':
+                    if (!s_fogEnabled) {
+                        s_fogEnabled = true;
+                        s_fogModeIndex = 0; // Table on W
+                    } else if (s_fogModeIndex == 0) {
+                        s_fogModeIndex = 1; // Table on FogCoord
+                    } else {
+                        s_fogEnabled = false;
+                    }
+                    UpdateStatusLine();
+                    break;
                 case 's': case 'S':
                     s_viewportScale = std::max(0.2f, s_viewportScale - 0.05f);
                     UpdateStatusLine();
@@ -196,6 +226,20 @@ int main(int argc, char* argv[]) {
                     UpdateStatusLine();
                     break;
             }
+        }
+
+        // Apply active Fog Mode state
+        if (s_fogEnabled) {
+            if (s_fogModeIndex == 0) {
+                grFogMode(GR_FOG_WITH_TABLE_ON_W);
+                grVertexLayout(GR_PARAM_FOG_EXT, 28, GR_PARAM_DISABLE);
+            } else {
+                grFogMode(GR_FOG_WITH_TABLE_ON_FOGCOORD_EXT);
+                grVertexLayout(GR_PARAM_FOG_EXT, 28, GR_PARAM_ENABLE); // Offset 28 is custom fog coordinate!
+            }
+        } else {
+            grFogMode(GR_FOG_DISABLE);
+            grVertexLayout(GR_PARAM_FOG_EXT, 28, GR_PARAM_DISABLE);
         }
 
         // 2. Clear Screen to dark blue

@@ -1426,7 +1426,22 @@ FX_ENTRY void FX_CALL guFogGenerateLinear(GrFog_t *fogtable, float nearZ, float 
 FX_ENTRY void FX_CALL grFogMode(GrFogMode_t mode) {
     EnsureEngineInitialized();
     GLIDE_LOG(DEBUG, "Frontend", "grFogMode invoked: " << mode);
-    s_fogMode = mode & (0x0F | GR_FOG_MULT2 | GR_FOG_ADD2);
+    
+    uint32_t baseMode = mode & 0x0F;
+    uint32_t flags = mode & ~(0x0F);
+    uint32_t unifiedBase = 0;
+    
+    if (baseMode == 0) { // GR_FOG_DISABLE
+        unifiedBase = 0;
+    } else if (baseMode == 1) { // GR_FOG_WITH_ITERATED_ALPHA
+        unifiedBase = 4; // Unified Iterated Alpha
+    } else if (baseMode == 2) { // GR_FOG_WITH_TABLE
+        unifiedBase = 2; // Unified Table on W/Z
+    } else if (baseMode == 3) { // GR_FOG_WITH_ITERATED_Z
+        unifiedBase = 3; // Unified Iterated Z
+    }
+    
+    s_fogMode = unifiedBase | flags;
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
         b->SetFogMode(s_fogMode);
     }

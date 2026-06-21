@@ -37,6 +37,7 @@ void VertexLayout::ResetToGlide2Canonical() {
     m_offsetA   = 28;
     m_offsetOOW = 32;
     m_offsetST0 = 36;
+    m_offsetFog = -1;
 }
 
 void VertexLayout::ResetToGlide3Canonical() {
@@ -48,6 +49,7 @@ void VertexLayout::ResetToGlide3Canonical() {
     m_offsetRGB = 16;
     m_offsetA   = 28;
     m_offsetST0 = 36;
+    m_offsetFog = -1;
 }
 
 void VertexLayout::SetParamOffset(uint32_t param, int32_t offset, uint32_t mode) {
@@ -74,6 +76,7 @@ void VertexLayout::SetParamOffsetGlide3(uint32_t param, int32_t offset, uint32_t
         case 0x02: m_offsetZ   = offset; break; // GR_PARAM_Z
         case 0x03: // GR_PARAM_W
         case 0x04: m_offsetOOW = offset; break; // GR_PARAM_Q
+        case 0x05: m_offsetFog = offset; break; // GR_PARAM_FOG_EXT
         case 0x10: m_offsetA   = offset; break; // GR_PARAM_A
         case 0x20: m_offsetRGB = offset; break; // GR_PARAM_RGB
         case 0x40: m_offsetST0 = offset; break; // GR_PARAM_ST0
@@ -87,6 +90,7 @@ ModernVertex VertexLayout::DecodeVertex(const void* gameVertex) const {
     v.color = {1.0f, 1.0f, 1.0f, 1.0f};
     v.tex = {0.0f, 0.0f, 0.0f, 0.0f};
     v.tmu_oow = {1.0f, 1.0f};
+    v.fog = 0.0f;
 
     if (!gameVertex) return v;
 
@@ -179,6 +183,13 @@ ModernVertex VertexLayout::DecodeVertex(const void* gameVertex) const {
         }
     }
 
+    // Parse Custom Fog Coordinate
+    if (m_offsetFog >= 0) {
+        float fog = 0.0f;
+        std::memcpy(&fog, rawBytes + m_offsetFog, sizeof(float));
+        v.fog = fog;
+    }
+
     return v;
 }
 
@@ -193,6 +204,7 @@ void VertexLayout::GetLayoutState(void* layoutState) const {
     state->offsetA = m_offsetA;
     state->offsetOOW = m_offsetOOW;
     state->offsetST0 = m_offsetST0;
+    state->offsetFog = m_offsetFog;
 }
 
 void VertexLayout::SetLayoutState(const void* layoutState) {
@@ -206,6 +218,7 @@ void VertexLayout::SetLayoutState(const void* layoutState) {
     m_offsetA = state->offsetA;
     m_offsetOOW = state->offsetOOW;
     m_offsetST0 = state->offsetST0;
+    m_offsetFog = state->offsetFog;
 }
 
 } // namespace GlideWrapper

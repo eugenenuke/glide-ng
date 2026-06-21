@@ -811,10 +811,15 @@ void SoftwareBackend::RasterizeSoftwareTriangleImpl(const ModernVertex& a, const
             uint32_t fogSource = m_fogMode & 0x0F;
             if (fogSource != 0) {
                 float f = 0.0f;
-                if (fogSource == 1) { // GR_FOG_WITH_ITERATED_ALPHA
+                if (fogSource == 4) { // UNIFIED_FOG_WITH_ITERATED_ALPHA
                     f = iterA;
-                } else { // Table-based fog (GR_FOG_WITH_TABLE)
-                    float eyeW = 1.0f / wVal;
+                } else { // Table-based fog
+                    float eyeW = 0.0f;
+                    if (fogSource == 1) { // UNIFIED_FOG_WITH_TABLE_ON_FOGCOORD
+                        eyeW = w0 * a.fog + w1 * b.fog + w2 * c.fog;
+                    } else { // UNIFIED_FOG_WITH_TABLE_ON_W
+                        eyeW = 1.0f / wVal;
+                    }
                     if (eyeW < 1.0f) eyeW = 1.0f;
 
                     // O(1) unrolled logarithmic binary search

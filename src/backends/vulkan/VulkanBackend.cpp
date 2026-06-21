@@ -1752,11 +1752,12 @@ PipelineGroup VulkanBackend::CompileGraphicsPipelines(const PipelineStateKey& ke
 
         // Vertex Input Bindings (matches ModernVertex exactly)
         vk::VertexInputBindingDescription bindingDesc(0, sizeof(ModernVertex), vk::VertexInputRate::eVertex);
-        std::array<vk::VertexInputAttributeDescription, 4> attrDescs = {
+        std::array<vk::VertexInputAttributeDescription, 5> attrDescs = {
             vk::VertexInputAttributeDescription(0, 0, vk::Format::eR32G32B32A32Sfloat, offsetof(ModernVertex, pos)),
             vk::VertexInputAttributeDescription(1, 0, vk::Format::eR32G32B32A32Sfloat, offsetof(ModernVertex, color)),
             vk::VertexInputAttributeDescription(2, 0, vk::Format::eR32G32B32A32Sfloat, offsetof(ModernVertex, tex)),
-            vk::VertexInputAttributeDescription(3, 0, vk::Format::eR32G32Sfloat, offsetof(ModernVertex, tmu_oow))
+            vk::VertexInputAttributeDescription(3, 0, vk::Format::eR32G32Sfloat, offsetof(ModernVertex, tmu_oow)),
+            vk::VertexInputAttributeDescription(4, 0, vk::Format::eR32Sfloat, offsetof(ModernVertex, fog))
         };
 
         vk::PipelineVertexInputStateCreateInfo vertexInputInfo({}, 1, &bindingDesc, static_cast<uint32_t>(attrDescs.size()), attrDescs.data());

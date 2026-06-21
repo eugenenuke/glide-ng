@@ -1559,3 +1559,150 @@ TEST_CASE("tlib tlGetOpt Conjoined Arguments Verification", "[tlib][GetOpt][tlib
         CHECK(std::strcmp(remArgs[0], "1024x768") == 0);
     }
 }
+
+TEST_CASE("Glide FOGCOORD Extension and Fog Mode Mapping Verification", "[Glide][Fog][FOGCOORD]") {
+    // 1. Glide 3.x Verification
+    SECTION("Glide 3.x FOGCOORD Support") {
+#ifdef __linux__
+        void* handle = OpenGlide3Handle();
+        REQUIRE(handle != nullptr);
+
+        using InitFunc = void(*)(void);
+        using WinOpenFunc = FxU32(*)(FxU32, FxU32, FxU32, FxU32, FxU32, int, int);
+        using SelectCtxFunc = FxBool(*)(FxU32);
+        using GetStringFunc = const char*(*)(FxU32);
+        using FogModeFunc = void(*)(FxU32);
+        using VertexLayoutFunc = void(*)(FxU32, FxI32, FxU32);
+        using WinCloseFunc = FxBool(*)(FxU32);
+        using ShutdownFunc = void(*)(void);
+
+        auto glideInit = reinterpret_cast<InitFunc>(::dlsym(handle, "grGlideInit"));
+        auto winOpen = reinterpret_cast<WinOpenFunc>(::dlsym(handle, "grSstWinOpen"));
+        auto selectCtx = reinterpret_cast<SelectCtxFunc>(::dlsym(handle, "grSelectContext"));
+        auto getString = reinterpret_cast<GetStringFunc>(::dlsym(handle, "grGetString"));
+        auto fogMode = reinterpret_cast<FogModeFunc>(::dlsym(handle, "grFogMode"));
+        auto vertexLayout = reinterpret_cast<VertexLayoutFunc>(::dlsym(handle, "grVertexLayout"));
+        auto winClose = reinterpret_cast<WinCloseFunc>(::dlsym(handle, "grSstWinClose"));
+        auto shutdown = reinterpret_cast<ShutdownFunc>(::dlsym(handle, "grGlideShutdown"));
+
+        REQUIRE(glideInit != nullptr);
+        REQUIRE(winOpen != nullptr);
+        REQUIRE(selectCtx != nullptr);
+        REQUIRE(getString != nullptr);
+        REQUIRE(fogMode != nullptr);
+        REQUIRE(vertexLayout != nullptr);
+        REQUIRE(winClose != nullptr);
+        REQUIRE(shutdown != nullptr);
+
+        // Run with software backend to isolate
+        ::setenv("GLIDE_WRAPPER_BACKEND", "software", 1);
+        glideInit();
+        FxU32 ctx = winOpen(0, 8, 0, 0, 0, 2, 1); // 800x600
+        REQUIRE(ctx != 0);
+        REQUIRE(selectCtx(ctx) == FXTRUE);
+
+        // A. Verify that FOGCOORD is advertised in the extension string
+        const char* extensions = getString(0xa0); // GR_EXTENSION
+        REQUIRE(extensions != nullptr);
+        std::string extStr(extensions);
+        CHECK(extStr.find("FOGCOORD") != std::string::npos);
+
+        // B. Verify that grFogMode with Glide 3 table-on-fogcoord compiles/runs without crash
+        // GR_FOG_WITH_TABLE_ON_FOGCOORD_EXT = 0x1
+        fogMode(0x1); 
+
+        // C. Verify that grVertexLayout with GR_PARAM_FOG_EXT works
+        // GR_PARAM_FOG_EXT = 0x05, offset = 28, mode = 1 (ENABLE)
+        vertexLayout(0x05, 28, 1);
+
+        winClose(ctx);
+        shutdown();
+        ::dlclose(handle);
+        ::unsetenv("GLIDE_WRAPPER_BACKEND");
+#endif
+    }
+
+    // 2. Glide 2.x Verification
+    SECTION("Glide 2.x No FOGCOORD Support") {
+#ifdef __linux__
+        void* handle = OpenGlide2Handle();
+        REQUIRE(handle != nullptr);
+
+        using InitFunc = void(*)(void);
+        using WinOpenFunc = FxBool(*)(FxU32, GrScreenResolution_t, GrScreenRefresh_t, GrColorFormat_t, GrOriginLocation_t, int, int);
+        using GetStringFunc = const char*(*)(FxU32);
+        using WinCloseFunc = FxBool(*)(void);
+        using ShutdownFunc = void(*)(void);
+
+        auto glideInit = reinterpret_cast<InitFunc>(::dlsym(handle, "grGlideInit"));
+        auto winOpen = reinterpret_cast<WinOpenFunc>(::dlsym(handle, "grSstWinOpen"));
+        auto getString = reinterpret_cast<GetStringFunc>(::dlsym(handle, "grGetString"));
+        auto winClose = reinterpret_cast<WinCloseFunc>(::dlsym(handle, "grSstWinClose"));
+        auto shutdown = reinterpret_cast<ShutdownFunc>(::dlsym(handle, "grGlideShutdown"));
+
+        REQUIRE(glideInit != nullptr);
+        REQUIRE(winOpen != nullptr);
+        REQUIRE(getString != nullptr);
+        REQUIRE(winClose != nullptr);
+        REQUIRE(shutdown != nullptr);
+
+        ::setenv("GLIDE_WRAPPER_BACKEND", "software", 1);
+        glideInit();
+        // Resolution GR_RESOLUTION_640x480 = 0x4
+        FxBool ok = winOpen(0, 0x4, 0, 0, 0, 2, 1);
+        REQUIRE(ok == FXTRUE);
+
+        // A. Verify that FOGCOORD is NOT advertised under Glide 2
+        const char* extensions = getString(0xa0); // GR_EXTENSION
+        if (extensions) {
+            std::string extStr(extensions);
+            CHECK(extStr.find("FOGCOORD") == std::string::npos);
+        }
+
+        winClose();
+        shutdown();
+        ::dlclose(handle);
+        ::unsetenv("GLIDE_WRAPPER_BACKEND");
+#endif
+    }
+}
+
+TEST_CASE("VertexLayout FOGCOORD Parameter Decoding", "[VertexLayout][FOGCOORD]") {
+    auto& layout = GlideWrapper::VertexLayout::GetInstance();
+    layout.ResetToGlide3Canonical();
+
+    // 1. Enable custom fog coordinate offset
+    // GR_PARAM_FOG_EXT = 0x05, offset = 28, mode = 1 (ENABLE)
+    layout.SetParamOffsetGlide3(0x05, 28, 1);
+
+    // 2. Create a mock vertex byte buffer matching this layout
+    struct MockVertex {
+        float x, y;    // 0, 4
+        float z;       // 8
+        float r, g, b; // 12, 16, 20
+        float a;       // 24
+        float fog;     // 28  <-- Custom Fog Coordinate!
+    };
+
+    MockVertex mockV;
+    mockV.x = 100.0f;
+    mockV.y = 200.0f;
+    mockV.z = 0.5f;
+    mockV.r = 255.0f;
+    mockV.g = 128.0f;
+    mockV.b = 64.0f;
+    mockV.a = 255.0f;
+    mockV.fog = 12.34f; // Custom fog coord!
+
+    // 3. Decode the vertex
+    GlideWrapper::ModernVertex decoded = layout.DecodeVertex(&mockV);
+
+    // 4. Assert decoded values
+    CHECK(decoded.pos[0] == 100.0f);
+    CHECK(decoded.pos[1] == 200.0f);
+    CHECK(decoded.fog == 12.34f);
+
+    // Clean up layout
+    layout.ResetToGlide3Canonical();
+}
+

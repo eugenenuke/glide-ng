@@ -4,11 +4,13 @@ layout(location = 0) in vec4 inPos;
 layout(location = 1) in vec4 inColor;
 layout(location = 2) in vec4 inTex;
 layout(location = 3) in vec2 inTmuOow;
+layout(location = 4) in float inFogCoord;
 
 layout(location = 0) out vec4 fragColor;
 layout(location = 1) out vec4 fragTex;
 layout(location = 2) out float fragOOW;
 layout(location = 3) out vec2 fragTmuOow;
+layout(location = 4) out float fragFogCoord;
 
 // Viewport and constant-color configuration passed via push constants
 layout(push_constant) uniform PushConstants {
@@ -88,4 +90,5 @@ void main() {
     fragTex = inTex;
     fragOOW = inPos.w;
     fragTmuOow = inTmuOow;
+    fragFogCoord = inFogCoord;
 }

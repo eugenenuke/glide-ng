@@ -4,6 +4,7 @@ layout(location = 0) in vec4 fragColor;
 layout(location = 1) in vec4 fragTex;
 layout(location = 2) in float fragOOW;
 layout(location = 3) in vec2 fragTmuOow;
+layout(location = 4) in float fragFogCoord;
 
 layout(location = 0) out vec4 outColor;
 layout(location = 0, index = 1) out vec4 outPreFogColor;
@@ -221,10 +222,15 @@ void main() {
     uint fogSource = pcs.fogMode & 0x0Fu;
     if (fogSource != 0u) {
         float f = 0.0;
-        if (fogSource == 1u) { // GR_FOG_WITH_ITERATED_ALPHA
+        if (fogSource == 4u) { // UNIFIED_FOG_WITH_ITERATED_ALPHA
             f = fragColor.a;
-        } else { // Table-based fog (GR_FOG_WITH_TABLE)
-            float eyeW = 1.0 / fragOOW;
+        } else { // Table-based fog
+            float eyeW;
+            if (fogSource == 1u) { // UNIFIED_FOG_WITH_TABLE_ON_FOGCOORD
+                eyeW = fragFogCoord;
+            } else { // UNIFIED_FOG_WITH_TABLE_ON_W
+                eyeW = 1.0 / fragOOW;
+            }
             if (eyeW < 1.0) eyeW = 1.0;
 
             // O(1) unrolled logarithmic binary search

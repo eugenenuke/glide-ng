@@ -701,11 +701,13 @@ layout(location = 0) in vec4 inPos;
 layout(location = 1) in vec4 inColor;
 layout(location = 2) in vec4 inTex;
 layout(location = 3) in vec2 inTmuOow;
+layout(location = 4) in float inFogCoord;
 
 out vec4 fragColor;
 out float fragOOW;
 out vec2 fragTexCoord;
 out vec2 fragTmuOow;
+out float fragFogCoord;
 
 uniform int uSstOrigin; // 0 = UPPER_LEFT, 1 = LOWER_LEFT
 uniform vec2 uViewportSize;
@@ -743,6 +745,7 @@ void main() {
     fragOOW = inPos.w;
     fragTexCoord = inTex.xy;
     fragTmuOow = inTmuOow;
+    fragFogCoord = inFogCoord;
 }
 )";
 
@@ -754,6 +757,7 @@ in vec4 fragColor;
 in float fragOOW;
 in vec2 fragTexCoord;
 in vec2 fragTmuOow;
+in float fragFogCoord;
 
 #ifdef GL_EXT_blend_func_extended
 layout(location = 0, index = 0) out vec4 outColor;
@@ -943,10 +947,15 @@ void main() {
     int fogSource = uFogMode & 0x0F;
     if (fogSource != 0) {
         float f = 0.0;
-        if (fogSource == 1) { // GR_FOG_WITH_ITERATED_ALPHA
+        if (fogSource == 4) { // UNIFIED_FOG_WITH_ITERATED_ALPHA
             f = fragColor.a; // Raw interpolated vertex alpha
-        } else { // Table-based fog (GR_FOG_WITH_TABLE)
-            float eyeW = 1.0 / fragOOW;
+        } else { // Table-based fog
+            float eyeW;
+            if (fogSource == 1) { // UNIFIED_FOG_WITH_TABLE_ON_FOGCOORD
+                eyeW = fragFogCoord;
+            } else { // UNIFIED_FOG_WITH_TABLE_ON_W
+                eyeW = 1.0 / fragOOW;
+            }
             if (eyeW < 1.0) eyeW = 1.0;
 
             // O(1) unrolled logarithmic binary search
@@ -1071,6 +1080,10 @@ bool OpenGLESBackend::CreateGeomBuffers() {
     // Location 3: inTmuOow (tmu_oow) -> vec2 (8 bytes)
     glEnableVertexAttribArray(3);
     glVertexAttribPointer(3, 2, GL_FLOAT, GL_FALSE, sizeof(ModernVertex), (void*)offsetof(ModernVertex, tmu_oow));
+
+    // Location 4: inFogCoord (fog) -> float (4 bytes)
+    glEnableVertexAttribArray(4);
+    glVertexAttribPointer(4, 1, GL_FLOAT, GL_FALSE, sizeof(ModernVertex), (void*)offsetof(ModernVertex, fog));
 
     glBindVertexArray(0);
     glBindBuffer(GL_ARRAY_BUFFER, 0);

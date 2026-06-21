@@ -9,6 +9,7 @@ struct ModernVertex {
     std::array<float, 4> color; // r, g, b, a (normalized 0..1)
     std::array<float, 4> tex;   // s0, t0, s1, t1
     std::array<float, 2> tmu_oow; // oow0, oow1 (TMU-specific 1/W)
+    float fog;                  // custom per-vertex fog coordinate (GR_PARAM_FOG_EXT)
 };
 
 struct Glide3VertexLayout {
@@ -20,6 +21,7 @@ struct Glide3VertexLayout {
     int32_t offsetA;
     int32_t offsetOOW;
     int32_t offsetST0;
+    int32_t offsetFog;
 };
 
 class VertexLayout {
@@ -53,6 +55,7 @@ private:
     int32_t m_offsetA{28};
     int32_t m_offsetOOW{32};
     int32_t m_offsetST0{36};
+    int32_t m_offsetFog{-1};
 };
 
 } // namespace GlideWrapper

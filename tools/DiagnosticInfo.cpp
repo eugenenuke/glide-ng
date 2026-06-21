@@ -274,7 +274,7 @@ Tools::ToolRunConfig Tools::InitializeAndParse(
     SafePrint(std::cout, "Extensions:");
     std::vector<std::string> targetExtensions;
 #if GLIDE_VERSION == 3
-    targetExtensions = {"CHROMARANGE", "COMBINER", "STENCIL", "TBUFFER", "TEXCOMBINER"};
+    targetExtensions = {"CHROMARANGE", "FOGCOORD", "COMBINER", "STENCIL", "TBUFFER", "TEXCOMBINER"};
 #else
     targetExtensions = {"BLEND", "BUFFERCLEAR", "CHROMARANGE", "COLORMASK", "LFBSTENCIL", "STENCIL", "TBUFFER"};
 #endif
