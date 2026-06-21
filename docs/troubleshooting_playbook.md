@@ -370,3 +370,11 @@ When future agents or developers encounter regressions or divergent rendering be
     2.  **Optimize Wait Times**: Keep window-mapping wait times minimal. A delay of `0.5` to `1.0` seconds is more than sufficient for the graphics context to initialize and map the window on virtual display servers.
     3.  **Immediate Cleanup**: Always capture the process ID (`DEMO_PID=$!`) immediately upon launching, and execute a forceful termination (`kill -9 $DEMO_PID`) immediately after the screenshot is captured. This prevents zombie processes and resource leaks in sandboxed environments.
 
+### H. Preventing Stuck Background Tasks with Scheduled Watchdog Timers
+* **The Problem**: Background tasks (such as compiled test suites or visual capture scripts) can sometimes hang or wait indefinitely due to unhandled exceptions, driver synchronization blocks, or hidden interactive prompts (e.g., `tlGetCH()` waiting for startup input). In a headless or automated agent environment, this causes the agent context to freeze or loop indefinitely.
+* **The Best Practices**:
+    1.  **Deploy a Watchdog Timer**: Whenever proposing a long-running command or script in the background, immediately schedule a companion one-shot watchdog timer using the `schedule` tool (e.g., set to 30–60 seconds).
+    2.  **Watchdog Configuration**:
+        *   `DurationSeconds`: Set slightly above the maximum expected runtime of your task (e.g., `40` for a 12-second script).
+        *   `Prompt`: Use a clear message telling yourself to check on the task's status and kill it if stuck (e.g. `"Check if background task XYZ has finished, or if it is stuck."`).
+    3.  **Automatic Cancellation**: If the background task finishes successfully before the watchdog expires, the system will automatically deliver the completion message and cancel the watchdog timer silently, ensuring zero noise. If it hangs, the watchdog will fire, allowing you to run `manage_task(Action='status')` and `manage_task(Action='kill')` to prevent resource hogging.
