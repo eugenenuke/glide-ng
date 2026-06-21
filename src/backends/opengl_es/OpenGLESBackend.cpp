@@ -1354,6 +1354,11 @@ void OpenGLESBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
                 GLint magFilter = (m_texMagFilter[tmu] == 1) ? GL_LINEAR : GL_NEAREST;
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, minFilter);
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, magFilter);
+#ifdef GL_TEXTURE_LOD_BIAS
+                glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_LOD_BIAS, m_texLodBias[tmu]);
+#elif defined(GL_TEXTURE_LOD_BIAS_EXT)
+                glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_LOD_BIAS_EXT, m_texLodBias[tmu]);
+#endif
             }
         }
     }
@@ -1748,6 +1753,29 @@ void OpenGLESBackend::PopulateUniforms() {
     glUniform1uiv(m_uTexChromaRangeModeLoc, 2, rangeMode);
     glUniform4fv(m_uTexChromaMinLoc, 2, minColor);
     glUniform4fv(m_uTexChromaMaxLoc, 2, maxColor);
+}
+
+void OpenGLESBackend::SetTexLodBias(uint32_t tmu, float bias) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    SoftwareBackendBase::SetTexLodBias(tmu, bias);
+    GLIDE_LOG(DEBUG, "GLES", "SetTexLodBias TMU" << tmu << ": " << bias);
+}
+
+void OpenGLESBackend::UploadTexturePartial(uint32_t tmu, uint32_t startAddress, const struct VirtualTexture& tex, uint32_t lodLevel, uint32_t startRow, uint32_t endRow) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    GLIDE_LOG(DEBUG, "GLES", "UploadTexturePartial TMU" << tmu << ": Address=0x" << std::hex << startAddress << std::dec << " level=" << lodLevel << " rows=" << startRow << ".." << endRow << " (Stubbed)");
+}
+
+void OpenGLESBackend::PurgeTextures() {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    GLIDE_LOG(DEBUG, "GLES", "PurgeTextures: deleting " << m_glesTextures.size() << " textures from GPU.");
+    for (auto& pair : m_glesTextures) {
+        if (pair.second) {
+            glDeleteTextures(1, &pair.second);
+        }
+    }
+    m_glesTextures.clear();
+    checkGLError("PurgeTextures");
 }
 
 } // namespace GlideWrapper

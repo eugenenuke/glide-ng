@@ -72,7 +72,7 @@ namespace {
     }
 }
 
-uint32_t TextureManager::CalculateMemoryRequired(uint32_t lodMin, uint32_t lodMax, uint32_t aspect, uint32_t format) {
+uint32_t TextureManager::CalculateMemoryRequired(uint32_t lodMin, uint32_t lodMax, uint32_t aspect, uint32_t format, bool packed) {
     uint32_t start = std::min(lodMin, lodMax);
     uint32_t end   = std::max(lodMin, lodMax);
 
@@ -95,8 +95,12 @@ uint32_t TextureManager::CalculateMemoryRequired(uint32_t lodMin, uint32_t lodMa
         }
 
         uint32_t levelBytes = w * h * bytesPerTexel;
-        // Align MIP level footprint to 8-byte silicon TMU memory bounds
-        totalBytes += (levelBytes + 7) & ~7;
+        if (packed) {
+            totalBytes += levelBytes;
+        } else {
+            // Align MIP level footprint to 8-byte silicon TMU memory bounds
+            totalBytes += (levelBytes + 7) & ~7;
+        }
     }
 
     GLIDE_LOG(DEBUG, "TextureManager", "Calculated MIP-map footprint: " << totalBytes << " bytes for LODs " << start << ".." << end << ", Format=" << format);
@@ -107,7 +111,7 @@ bool TextureManager::DownloadMipMap(uint32_t tmu, uint32_t startAddress, uint32_
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     if (tmu >= 2 || !data) return false;
 
-    uint32_t rawBytes = CalculateMemoryRequired(lodMin, lodMax, aspect, format);
+    uint32_t rawBytes = CalculateMemoryRequired(lodMin, lodMax, aspect, format, true); // Use packed unaligned size for raw input data hashing!
 
     // 1. Calculate FNV-1a 64-bit hash of raw input data including metadata
     uint64_t incomingHash = 14695981039346656037ULL;
@@ -144,32 +148,92 @@ bool TextureManager::DownloadMipMap(uint32_t tmu, uint32_t startAddress, uint32_
         }
     }
 
-    // Enforce user-configured TmuMemoryMb silicon ceiling
-    if (m_tmus[tmu].allocatedBytes + rawBytes > m_tmuMemoryLimits[tmu]) {
-        GLIDE_LOG(CRITICAL, "TextureManager", "TMU" << tmu << " silicon budget exceeded! Total Memory Limit is " << m_tmuMemoryLimits[tmu] << " bytes.");
-        return false;
-    }
-
-    auto tex = std::make_shared<VirtualTexture>();
-    tex->startAddress = startAddress;
-    tex->format = format;
-    tex->aspectRatio = aspect;
-    tex->rawDataHash = incomingHash;
+    std::shared_ptr<VirtualTexture> tex;
+    bool isNew = true;
+    uint32_t oldBytes = 0;
 
     uint32_t start = std::min(lodMin, lodMax);
     uint32_t end   = std::max(lodMin, lodMax);
 
-    uint32_t baseMaxDim = 256 >> start;
-    tex->baseWidth  = baseMaxDim;
-    tex->baseHeight = baseMaxDim;
-    switch (aspect) {
-        case 0: tex->baseHeight = std::max(1u, baseMaxDim / 8); break; // 8x1
-        case 1: tex->baseHeight = std::max(1u, baseMaxDim / 4); break; // 4x1
-        case 2: tex->baseHeight = std::max(1u, baseMaxDim / 2); break; // 2x1
-        case 3: break; // 1x1
-        case 4: tex->baseWidth  = std::max(1u, baseMaxDim / 2); break; // 1x2
-        case 5: tex->baseWidth  = std::max(1u, baseMaxDim / 4); break; // 1x4
-        case 6: tex->baseWidth  = std::max(1u, baseMaxDim / 8); break; // 1x8
+    uint32_t newLarge = start;
+    uint32_t newSmall = end;
+
+    if (it != m_tmus[tmu].textures.end()) {
+        auto& existing = it->second;
+        if (existing->format != format || existing->aspectRatio != aspect) {
+            // Format/Aspect changed! Treat as a completely new texture
+            oldBytes = CalculateMemoryRequired(existing->largeLod, existing->smallLod, existing->aspectRatio, existing->format);
+            m_tmus[tmu].allocatedBytes -= oldBytes;
+            m_tmus[tmu].textures.erase(startAddress);
+            
+            tex = std::make_shared<VirtualTexture>();
+            tex->startAddress = startAddress;
+            tex->format = format;
+            tex->aspectRatio = aspect;
+            isNew = true;
+            oldBytes = 0;
+            newLarge = start;
+            newSmall = end;
+        } else {
+            tex = existing;
+            isNew = false;
+            oldBytes = CalculateMemoryRequired(tex->largeLod, tex->smallLod, tex->aspectRatio, tex->format);
+            newLarge = std::min(tex->largeLod, start);
+            newSmall = std::max(tex->smallLod, end);
+        }
+    } else {
+        tex = std::make_shared<VirtualTexture>();
+        tex->startAddress = startAddress;
+        tex->format = format;
+        tex->aspectRatio = aspect;
+        isNew = true;
+    }
+
+    uint32_t newBytes = CalculateMemoryRequired(newLarge, newSmall, aspect, format);
+
+    // Enforce user-configured TmuMemoryMb silicon ceiling
+    if (m_tmus[tmu].allocatedBytes - oldBytes + newBytes > m_tmuMemoryLimits[tmu]) {
+        GLIDE_LOG(CRITICAL, "TextureManager", "TMU" << tmu << " silicon budget exceeded!");
+        return false;
+    }
+
+    uint32_t numLevels = newSmall - newLarge + 1;
+    std::vector<std::vector<uint32_t>> newSwizzled(numLevels);
+    std::vector<std::vector<uint8_t>> newRaw8Bit;
+    std::vector<std::vector<uint8_t>> newRawYiq;
+    std::vector<std::vector<uint16_t>> newRawAyiq;
+    std::vector<std::vector<uint16_t>> newRawAp88;
+
+    if (format == 0x5 || format == 0x6) newRaw8Bit.resize(numLevels);
+    if (format == 0x1) newRawYiq.resize(numLevels);
+    if (format == 0x9) newRawAyiq.resize(numLevels);
+    if (format == 0xe) newRawAp88.resize(numLevels);
+
+    if (!isNew) {
+        for (uint32_t L = tex->largeLod; L <= tex->smallLod; ++L) {
+            uint32_t oldIdx = L - tex->largeLod;
+            uint32_t newIdx = L - newLarge;
+            if (oldIdx < tex->swizzledMipLevels.size()) {
+                newSwizzled[newIdx] = std::move(tex->swizzledMipLevels[oldIdx]);
+            }
+            if (tex->format == 0x5 || tex->format == 0x6) {
+                if (oldIdx < tex->raw8BitMipLevels.size()) {
+                    newRaw8Bit[newIdx] = std::move(tex->raw8BitMipLevels[oldIdx]);
+                }
+            } else if (tex->format == 0x1) {
+                if (oldIdx < tex->rawYiqMipLevels.size()) {
+                    newRawYiq[newIdx] = std::move(tex->rawYiqMipLevels[oldIdx]);
+                }
+            } else if (tex->format == 0x9) {
+                if (oldIdx < tex->rawAyiqMipLevels.size()) {
+                    newRawAyiq[newIdx] = std::move(tex->rawAyiqMipLevels[oldIdx]);
+                }
+            } else if (tex->format == 0xe) {
+                if (oldIdx < tex->rawAp88MipLevels.size()) {
+                    newRawAp88[newIdx] = std::move(tex->rawAp88MipLevels[oldIdx]);
+                }
+            }
+        }
     }
 
     const auto* rawData = reinterpret_cast<const uint8_t*>(data);
@@ -306,26 +370,52 @@ bool TextureManager::DownloadMipMap(uint32_t tmu, uint32_t startAddress, uint32_
             }
         }
 
-        tex->swizzledMipLevels.push_back(std::move(levelPixels));
+        uint32_t destIdx = i - newLarge;
+        newSwizzled[destIdx] = std::move(levelPixels);
         if (format == 0x5 || format == 0x6) {
-            tex->raw8BitMipLevels.push_back(std::move(levelRaw));
+            newRaw8Bit[destIdx] = std::move(levelRaw);
         } else if (format == 0x1) {
-            tex->rawYiqMipLevels.push_back(std::move(levelYiq));
+            newRawYiq[destIdx] = std::move(levelYiq);
         } else if (format == 0x9) {
-            tex->rawAyiqMipLevels.push_back(std::move(levelAyiq));
+            newRawAyiq[destIdx] = std::move(levelAyiq);
         } else if (format == 0xe) {
-            tex->rawAp88MipLevels.push_back(std::move(levelAp88));
+            newRawAp88[destIdx] = std::move(levelAp88);
         }
         uint32_t levelBytes = w * h * bytesPerTexel;
-        byteOffset += (levelBytes + 7) & ~7; // Advancing aligned silicon footprint
+        byteOffset += levelBytes; // Advancing packed unaligned input bytes offset!
     }
 
-    m_tmus[tmu].allocatedBytes += rawBytes;
+    tex->swizzledMipLevels = std::move(newSwizzled);
+    if (format == 0x5 || format == 0x6) tex->raw8BitMipLevels = std::move(newRaw8Bit);
+    else if (format == 0x1) tex->rawYiqMipLevels = std::move(newRawYiq);
+    else if (format == 0x9) tex->rawAyiqMipLevels = std::move(newRawAyiq);
+    else if (format == 0xe) tex->rawAp88MipLevels = std::move(newRawAp88);
+
+    tex->largeLod = newLarge;
+    tex->smallLod = newSmall;
+
+    // Update base dimensions to correspond to newLarge
+    uint32_t baseMaxDim = 256 >> newLarge;
+    tex->baseWidth  = baseMaxDim;
+    tex->baseHeight = baseMaxDim;
+    switch (aspect) {
+        case 0: tex->baseHeight = std::max(1u, baseMaxDim / 8); break; // 8x1
+        case 1: tex->baseHeight = std::max(1u, baseMaxDim / 4); break; // 4x1
+        case 2: tex->baseHeight = std::max(1u, baseMaxDim / 2); break; // 2x1
+        case 3: break; // 1x1
+        case 4: tex->baseWidth  = std::max(1u, baseMaxDim / 2); break; // 1x2
+        case 5: tex->baseWidth  = std::max(1u, baseMaxDim / 4); break; // 1x4
+        case 6: tex->baseWidth  = std::max(1u, baseMaxDim / 8); break; // 1x8
+    }
+
+    tex->rawDataHash = incomingHash;
+
+    m_tmus[tmu].allocatedBytes = m_tmus[tmu].allocatedBytes - oldBytes + newBytes;
     m_tmus[tmu].textures[startAddress] = tex;
 
     GLIDE_LOG(DEBUG, "TextureManager", "Successfully downloaded Virtual Texture MIP Chain at Address=0x" << std::hex << startAddress << std::dec 
-                                      << " Base(" << tex->baseWidth << "x" << tex->baseHeight << "), Levels=" << tex->swizzledMipLevels.size()
-                                      << " into TMU" << tmu << ". Allocated pool: " << m_tmus[tmu].allocatedBytes << " bytes.");
+                                       << " Base(" << tex->baseWidth << "x" << tex->baseHeight << "), Levels=" << tex->swizzledMipLevels.size()
+                                       << " into TMU" << tmu << ". Allocated pool: " << m_tmus[tmu].allocatedBytes << " bytes.");
 
     // If this texture is fully swizzled (either not paletted, or paletted with a pre-loaded table), upload it immediately!
     if (!tex->isPaletted || m_tmus[tmu].paletteTableLoaded) {
@@ -337,6 +427,165 @@ bool TextureManager::DownloadMipMap(uint32_t tmu, uint32_t startAddress, uint32_
     return true;
 }
 
+bool TextureManager::DownloadMipMapPartial(uint32_t tmu, uint32_t startAddress, uint32_t thisLod, uint32_t largeLod, uint32_t aspectRatio, uint32_t format, const void* data, int startRow, int endRow) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    if (tmu >= 2 || !data) return false;
+
+    // Find the existing texture
+    auto it = m_tmus[tmu].textures.find(startAddress);
+    if (it == m_tmus[tmu].textures.end()) {
+        GLIDE_LOG(WARN, "TextureManager", "DownloadMipMapPartial: texture at address 0x" << std::hex << startAddress << std::dec << " does not exist! Cannot do partial update.");
+        return false;
+    }
+
+    auto tex = it->second;
+
+    // Validate LOD level
+    if (thisLod < tex->largeLod || thisLod > tex->smallLod) {
+        GLIDE_LOG(WARN, "TextureManager", "DownloadMipMapPartial: LOD level " << thisLod << " is out of texture LOD range " << tex->largeLod << ".." << tex->smallLod);
+        return false;
+    }
+
+    uint32_t lodIdx = thisLod - tex->largeLod;
+    if (lodIdx >= tex->swizzledMipLevels.size()) {
+        GLIDE_LOG(WARN, "TextureManager", "DownloadMipMapPartial: LOD index " << lodIdx << " out of bounds");
+        return false;
+    }
+
+    uint32_t maxDim = 256 >> thisLod;
+    uint32_t w = maxDim;
+    uint32_t h = maxDim;
+    switch (aspectRatio) {
+        case 0: h = std::max(1u, maxDim / 8); break;
+        case 1: h = std::max(1u, maxDim / 4); break;
+        case 2: h = std::max(1u, maxDim / 2); break;
+        case 3: break;
+        case 4: w = std::max(1u, maxDim / 2); break;
+        case 5: w = std::max(1u, maxDim / 4); break;
+        case 6: w = std::max(1u, maxDim / 8); break;
+    }
+
+    if (startRow < 0 || startRow >= static_cast<int>(h) || endRow <= startRow || endRow > static_cast<int>(h)) {
+        GLIDE_LOG(WARN, "TextureManager", "DownloadMipMapPartial: invalid row range " << startRow << ".." << endRow << " for height " << h);
+        return false;
+    }
+
+    // Decode only the partial rows
+    int numRows = endRow - startRow;
+    size_t partialTexels = numRows * w;
+
+    const auto* rawData = reinterpret_cast<const uint8_t*>(data);
+    GuNccTable activeNcc = GetActiveNccTableOrDefault(m_tmus[tmu].nccTables, m_tmus[tmu].nccTablesLoaded, m_tmus[tmu].activeNccTable);
+
+    // Update swizzled mip levels
+    auto& levelPixels = tex->swizzledMipLevels[lodIdx];
+    
+    for (size_t pIdx = 0; pIdx < partialTexels; ++pIdx) {
+        size_t destIdx = startRow * w + pIdx;
+        uint32_t a = 255; uint32_t r = 0; uint32_t g = 0; uint32_t b = 0;
+
+        if (format >= 0x10) {
+            const auto* p = reinterpret_cast<const uint32_t*>(rawData) + pIdx;
+            uint32_t val = *p;
+            a = (val >> 24) & 0xFF;
+            r = (val >> 16) & 0xFF;
+            g = (val >> 8)  & 0xFF;
+            b = val & 0xFF;
+            levelPixels[destIdx] = (a << 24) | (r << 16) | (g << 8) | b;
+        } else if (format >= 0x8) {
+            const auto* p = reinterpret_cast<const uint16_t*>(rawData) + pIdx;
+            uint16_t val = *p;
+            if (format == 0xa) {
+                r = ((val >> 11) & 0x1F) * 255 / 31;
+                g = ((val >> 5)  & 0x3F) * 255 / 63;
+                b = (val & 0x1F) * 255 / 31;
+                a = 255;
+            } else if (format == 0xc) {
+                a = ((val >> 12) & 0xF) * 255 / 15;
+                r = ((val >> 8)  & 0xF) * 255 / 15;
+                g = ((val >> 4)  & 0xF) * 255 / 15;
+                b = (val & 0xF) * 255 / 15;
+            } else if (format == 0xb) {
+                a = (val & 0x8000) ? 255 : 0;
+                r = ((val >> 10) & 0x1F) * 255 / 31;
+                g = ((val >> 5)  & 0x1F) * 255 / 31;
+                b = (val & 0x1F) * 255 / 31;
+            } else if (format == 0xd) {
+                a = (val >> 8) & 0xFF;
+                r = val & 0xFF;
+                g = r; b = r;
+            } else if (format == 0x8) {
+                a = (val >> 8) & 0xFF;
+                r = ((val >> 5) & 0x7) * 255 / 7;
+                g = ((val >> 2) & 0x7) * 255 / 7;
+                b = (val & 0x3) * 255 / 3;
+            } else if (format == 0x9) {
+                if (lodIdx < tex->rawAyiqMipLevels.size()) {
+                    tex->rawAyiqMipLevels[lodIdx][destIdx] = val;
+                }
+                levelPixels[destIdx] = swizzleAyiq(val, activeNcc);
+            } else if (format == 0xe) {
+                if (lodIdx < tex->rawAp88MipLevels.size()) {
+                    tex->rawAp88MipLevels[lodIdx][destIdx] = val;
+                }
+                if (m_tmus[tmu].paletteTableLoaded) {
+                    levelPixels[destIdx] = swizzleAp88(val, m_tmus[tmu].paletteTable);
+                } else {
+                    uint8_t alphaVal = (val >> 8) & 0xFF;
+                    uint8_t indexVal = val & 0xFF;
+                    levelPixels[destIdx] = (alphaVal << 24) | (indexVal << 16) | (indexVal << 8) | indexVal;
+                }
+            }
+            if (format != 0x9 && format != 0xe) {
+                levelPixels[destIdx] = (a << 24) | (r << 16) | (g << 8) | b;
+            }
+        } else {
+            uint8_t val = rawData[pIdx];
+            if (format == 0x2) {
+                a = val; r = val; g = val; b = val;
+                levelPixels[destIdx] = (a << 24) | (r << 16) | (g << 8) | b;
+            } else if (format == 0x3) {
+                r = val; g = val; b = val; a = 255;
+                levelPixels[destIdx] = (a << 24) | (r << 16) | (g << 8) | b;
+            } else if (format == 0x5 || format == 0x6) {
+                if (lodIdx < tex->raw8BitMipLevels.size()) {
+                    tex->raw8BitMipLevels[lodIdx][destIdx] = val;
+                }
+                if (m_tmus[tmu].paletteTableLoaded) {
+                    levelPixels[destIdx] = m_tmus[tmu].paletteTable[val];
+                } else {
+                    levelPixels[destIdx] = (255u << 24) | (val << 16) | (val << 8) | val;
+                }
+            } else if (format == 0x0) {
+                r = ((val >> 5) & 0x7) * 255 / 7;
+                g = ((val >> 2) & 0x7) * 255 / 7;
+                b = (val & 0x3) * 255 / 3;
+                a = 255;
+                levelPixels[destIdx] = (a << 24) | (r << 16) | (g << 8) | b;
+            } else if (format == 0x1) {
+                if (lodIdx < tex->rawYiqMipLevels.size()) {
+                    tex->rawYiqMipLevels[lodIdx][destIdx] = val;
+                }
+                levelPixels[destIdx] = swizzleYiq(val, activeNcc);
+            } else if (format == 0x4) {
+                a = ((val >> 4) & 0xF) * 255 / 15;
+                uint32_t iVal = (val & 0xF) * 255 / 15;
+                r = iVal; g = iVal; b = iVal;
+                levelPixels[destIdx] = (a << 24) | (r << 16) | (g << 8) | b;
+            } else {
+                r = val; g = val; b = val; a = 255;
+                levelPixels[destIdx] = (a << 24) | (r << 16) | (g << 8) | b;
+            }
+        }
+    }
+
+    // Call the backend to perform the partial GPU upload
+    if (auto* b = BackendManager::GetInstance().GetBackend()) {
+        b->UploadTexturePartial(tmu, startAddress, *tex, lodIdx, startRow, endRow);
+    }
+
+    return true;
+}
 bool TextureManager::DownloadTable(uint32_t tmu, uint32_t type, const void* data) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     if (tmu >= 2 || !data) return false;

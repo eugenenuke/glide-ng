@@ -17,6 +17,8 @@ struct VirtualTexture {
     uint32_t aspectRatio;
     uint32_t baseWidth;
     uint32_t baseHeight;
+    uint32_t smallLod;
+    uint32_t largeLod;
     std::vector<std::vector<uint32_t>> swizzledMipLevels; // Completely swizzled into 32-bit ARGB (0xAARRGGBB) per level
     std::vector<std::vector<uint8_t>> raw8BitMipLevels;   // Stored for deferred P8 palettization
     
@@ -38,10 +40,13 @@ public:
     }
 
     // 1. Calculate rigorous memory footprints matching 3dfx silicon MIP-map chains
-    uint32_t CalculateMemoryRequired(uint32_t lodMin, uint32_t lodMax, uint32_t aspect, uint32_t format);
+    uint32_t CalculateMemoryRequired(uint32_t lodMin, uint32_t lodMax, uint32_t aspect, uint32_t format, bool packed = false);
 
     // 2. Decode retro formats across full MIP-map chain and upload into active virtual TMU pool
     bool DownloadMipMap(uint32_t tmu, uint32_t startAddress, uint32_t lodMin, uint32_t lodMax, uint32_t aspect, uint32_t format, const void* data);
+
+    // Download a partial sub-region of a specific mipmap level
+    bool DownloadMipMapPartial(uint32_t tmu, uint32_t startAddress, uint32_t thisLod, uint32_t largeLod, uint32_t aspect, uint32_t format, const void* data, int startRow, int endRow);
 
     // Download a palette or NCC table to the specified TMU and trigger deferred swizzling
     bool DownloadTable(uint32_t tmu, uint32_t type, const void* data);

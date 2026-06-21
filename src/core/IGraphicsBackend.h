@@ -72,6 +72,9 @@ public:
     // Phase 5: Virtual TMU & Programmable Uber-Shader Entry Declarations
     virtual void BindTexture(uint32_t tmu, uint32_t startAddress, uint32_t clampS, uint32_t clampT, uint32_t minFilter, uint32_t magFilter) = 0;
     virtual void UploadTexture(uint32_t tmu, uint32_t startAddress, const struct VirtualTexture& tex) = 0;
+    virtual void SetTexLodBias(uint32_t tmu, float bias) = 0;
+    virtual void UploadTexturePartial(uint32_t tmu, uint32_t startAddress, const struct VirtualTexture& tex, uint32_t lodLevel, uint32_t startRow, uint32_t endRow) = 0;
+    virtual void PurgeTextures() = 0;
     virtual void SetCombinerMode(uint32_t colorFunc, uint32_t colorFactor, uint32_t colorLocal, uint32_t colorOther, bool colorInvert,
                                  uint32_t alphaFunc, uint32_t alphaFactor, uint32_t alphaLocal, uint32_t alphaOther, bool alphaInvert) = 0;
     virtual void SetTexCombinerMode(uint32_t tmu, uint32_t rgbFunc, uint32_t rgbFactor, uint32_t alphaFunc, uint32_t alphaFactor) = 0;

@@ -33,6 +33,9 @@ public:
     void DrawLine(const ModernVertex& v0, const ModernVertex& v1) override;
     void DrawTriangle(const ModernVertex& a, const ModernVertex& b, const ModernVertex& c) override;
     void UploadTexture(uint32_t tmu, uint32_t startAddress, const struct VirtualTexture& tex) override;
+    void SetTexLodBias(uint32_t tmu, float bias) override;
+    void UploadTexturePartial(uint32_t tmu, uint32_t startAddress, const struct VirtualTexture& tex, uint32_t lodLevel, uint32_t startRow, uint32_t endRow) override;
+    void PurgeTextures() override;
     void SetBlendState(uint32_t rgbSrcFactor, uint32_t rgbDstFactor, uint32_t alphaSrcFactor, uint32_t alphaDstFactor) override;
     void SetColorMask(bool rgb, bool alpha) override;
     void SetGamma(float gamma) override;

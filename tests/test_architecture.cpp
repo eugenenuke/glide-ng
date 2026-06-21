@@ -518,11 +518,11 @@ TEST_CASE("Architectural Core Validation", "[Architecture]") {
         REQUIRE(processed == 0);
         REQUIRE(drawn == 0);
 
-        // 3. Draw a mock triangle 30 times and verify counters increment to exactly 30
-        struct Vert { float x, y, z, r, g, b, ooz, a, oow; };
-        Vert v0{10.0f, 10.0f, 0.0f, 255.0f, 0.0f, 0.0f, 0.0f, 255.0f, 1.0f};
-        Vert v1{50.0f, 10.0f, 0.0f, 255.0f, 0.0f, 0.0f, 0.0f, 255.0f, 1.0f};
-        Vert v2{30.0f, 40.0f, 0.0f, 255.0f, 0.0f, 0.0f, 0.0f, 255.0f, 1.0f};
+        // 3. Draw a mock triangle 30 times and verify counters increment to exactly 30 (use GrVertex to prevent ASan stack overflow!)
+        GrVertex v0{}, v1{}, v2{};
+        v0.x = 10.0f; v0.y = 10.0f; v0.z = 0.0f; v0.r = 255.0f; v0.g = 0.0f; v0.b = 0.0f; v0.ooz = 0.0f; v0.a = 255.0f; v0.oow = 1.0f;
+        v1.x = 50.0f; v1.y = 10.0f; v1.z = 0.0f; v1.r = 255.0f; v1.g = 0.0f; v1.b = 0.0f; v1.ooz = 0.0f; v1.a = 255.0f; v1.oow = 1.0f;
+        v2.x = 30.0f; v2.y = 40.0f; v2.z = 0.0f; v2.r = 255.0f; v2.g = 0.0f; v2.b = 0.0f; v2.ooz = 0.0f; v2.a = 255.0f; v2.oow = 1.0f;
 
         // Draw and swap 30 times to trigger sliding-window FPS update
         for (int i = 0; i < 30; ++i) {
@@ -1084,11 +1084,11 @@ TEST_CASE("Architectural Core Validation", "[Architecture]") {
             REQUIRE(winOpen(0, 5, 0, 0, 0, 2, 0) == FXTRUE);
             bufferClear(0, 0, 65535);
 
-            // Canonical Glide 2 vertex: x, y, z, r, g, b
-            struct Vert2 { float x, y, z, r, g, b, ooz, a, oow; };
-            Vert2 v0{100.0f, 100.0f, 0.0f, 255.0f, 0.0f, 0.0f, 0.0f, 255.0f, 1.0f};
-            Vert2 v1{500.0f, 100.0f, 0.0f, 255.0f, 0.0f, 0.0f, 0.0f, 255.0f, 1.0f};
-            Vert2 v2{300.0f, 400.0f, 0.0f, 255.0f, 0.0f, 0.0f, 0.0f, 255.0f, 1.0f};
+            // Canonical Glide 2 vertex: x, y, z, r, g, b (use GrVertex to prevent ASan stack overflow!)
+            GrVertex v0{}, v1{}, v2{};
+            v0.x = 100.0f; v0.y = 100.0f; v0.z = 0.0f; v0.r = 255.0f; v0.g = 0.0f; v0.b = 0.0f; v0.ooz = 0.0f; v0.a = 255.0f; v0.oow = 1.0f;
+            v1.x = 500.0f; v1.y = 100.0f; v1.z = 0.0f; v1.r = 255.0f; v1.g = 0.0f; v1.b = 0.0f; v1.ooz = 0.0f; v1.a = 255.0f; v1.oow = 1.0f;
+            v2.x = 300.0f; v2.y = 400.0f; v2.z = 0.0f; v2.r = 255.0f; v2.g = 0.0f; v2.b = 0.0f; v2.ooz = 0.0f; v2.a = 255.0f; v2.oow = 1.0f;
 
             REQUIRE_NOTHROW(drawTri(&v0, &v1, &v2));
             REQUIRE_NOTHROW(bufferSwap(1));
@@ -1143,10 +1143,14 @@ TEST_CASE("Architectural Core Validation", "[Architecture]") {
                 float alpha;     // offset 24
             };
 
-            // Configure programmable layout
-            vertexLayout(0, 0, 1);  // GR_PARAM_XY at offset 0
-            vertexLayout(4, 12, 1); // GR_PARAM_RGB at offset 12
-            vertexLayout(5, 24, 1); // GR_PARAM_A at offset 24
+            // Configure programmable layout (Correct Glide 3.x Parameter IDs!)
+            vertexLayout(0x01, 0, 1);  // GR_PARAM_XY at offset 0
+            vertexLayout(0x20, 12, 1); // GR_PARAM_RGB at offset 12
+            vertexLayout(0x10, 24, 1); // GR_PARAM_A at offset 24
+            // Disable other unused parameters to prevent ASan stack-buffer-overflow on 28-byte CustomVert3!
+            vertexLayout(0x02, 0, 0);  // GR_PARAM_Z, DISABLE
+            vertexLayout(0x04, 0, 0);  // GR_PARAM_Q (OOW), DISABLE
+            vertexLayout(0x40, 0, 0);  // GR_PARAM_ST0, DISABLE
 
             CustomVert3 v0{{200.0f, 200.0f}, 0, {0.0f, 255.0f, 0.0f}, 255.0f};
             CustomVert3 v1{{600.0f, 200.0f}, 0, {0.0f, 255.0f, 0.0f}, 255.0f};

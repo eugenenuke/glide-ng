@@ -83,9 +83,11 @@ struct SamplerKey {
     uint32_t clampT;
     uint32_t minFilter;
     uint32_t magFilter;
+    float lodBias;
     bool operator==(const SamplerKey& other) const {
         return clampS == other.clampS && clampT == other.clampT &&
-               minFilter == other.minFilter && magFilter == other.magFilter;
+               minFilter == other.minFilter && magFilter == other.magFilter &&
+               lodBias == other.lodBias;
     }
 };
 
@@ -99,6 +101,9 @@ struct SamplerKeyHash {
         combine(k.clampT);
         combine(k.minFilter);
         combine(k.magFilter);
+        union { float f; uint32_t u; } u;
+        u.f = k.lodBias;
+        combine(u.u);
         return h;
     }
 };
@@ -223,6 +228,9 @@ public:
     void DrawTriangle(const ModernVertex& a, const ModernVertex& b, const ModernVertex& c) override;
     void BindTexture(uint32_t tmu, uint32_t startAddress, uint32_t clampS, uint32_t clampT, uint32_t minFilter, uint32_t magFilter) override;
     void UploadTexture(uint32_t tmu, uint32_t startAddress, const struct VirtualTexture& tex) override;
+    void SetTexLodBias(uint32_t tmu, float bias) override;
+    void UploadTexturePartial(uint32_t tmu, uint32_t startAddress, const struct VirtualTexture& tex, uint32_t lodLevel, uint32_t startRow, uint32_t endRow) override;
+    void PurgeTextures() override;
     void SetCombinerMode(uint32_t colorFunc, uint32_t colorFactor, uint32_t colorLocal, uint32_t colorOther, bool colorInvert,
                          uint32_t alphaFunc, uint32_t alphaFactor, uint32_t alphaLocal, uint32_t alphaOther, bool alphaInvert) override;
     void SetTexCombinerMode(uint32_t tmu, uint32_t rgbFunc, uint32_t rgbFactor, uint32_t alphaFunc, uint32_t alphaFactor) override;
@@ -364,7 +372,7 @@ private:
     vk::DescriptorSet m_dummyDescriptorSet;
     void* m_gpuStagingMaps[2]{nullptr, nullptr}; // Mapped staging memory addresses
 
-    vk::Sampler GetOrCreateSampler(uint32_t clampS, uint32_t clampT, uint32_t minFilter, uint32_t magFilter);
+    vk::Sampler GetOrCreateSampler(uint32_t clampS, uint32_t clampT, uint32_t minFilter, uint32_t magFilter, float lodBias);
     vk::DescriptorSet GetOrCreateDescriptorSet(vk::ImageView imageView, vk::Sampler sampler);
 
     std::unordered_map<SamplerKey, vk::UniqueSampler, SamplerKeyHash> m_samplerCache;

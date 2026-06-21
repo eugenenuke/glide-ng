@@ -731,4 +731,20 @@ void SoftwareBackendBase::SetAAState(bool enabled) {
     GLIDE_LOG(INFO, "Software", "SetAAState: AA active=" << (enabled ? "Yes" : "No"));
 }
 
+void SoftwareBackendBase::SetTexLodBias(uint32_t tmu, float bias) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    if (tmu < 2) {
+        m_texLodBias[tmu] = bias;
+        GLIDE_LOG(DEBUG, "Rasterizer", "SetTexLodBias TMU" << tmu << ": " << bias);
+    }
+}
+
+void SoftwareBackendBase::UploadTexturePartial(uint32_t tmu, uint32_t startAddress, const struct VirtualTexture& tex, uint32_t lodLevel, uint32_t startRow, uint32_t endRow) {
+    GLIDE_LOG(DEBUG, "Rasterizer", "UploadTexturePartial (Software) TMU" << tmu << ": Address=0x" << std::hex << startAddress << std::dec << " level=" << lodLevel << " rows=" << startRow << ".." << endRow << " registered.");
+}
+
+void SoftwareBackendBase::PurgeTextures() {
+    GLIDE_LOG(DEBUG, "Rasterizer", "PurgeTextures (Software) invoked.");
+}
+
 } // namespace GlideWrapper

@@ -463,7 +463,7 @@ typedef FxU32 GrCoordinateSpaceMode_t;
 #define GLIDE3_EXTRA_STATE      0
 #endif
 
-#define GLIDE_STATE_PAD_SIZE 312 + GLIDE3_EXTRA_STATE 
+#define GLIDE_STATE_PAD_SIZE 528 // Expanded unconditionally to prevent Glide 3.x state stack overflow! 
 
 #ifdef GLIDE_LIB
 typedef struct _GrState_s GrState;
@@ -473,8 +473,7 @@ typedef struct _GrState_s {
 } GrState;
 #endif
 
-#ifdef GLIDE3
-/* Types of data in strips */
+/* Types of data in strips (Exposed for Glide 2.x / 3.x) */
 #define GR_FLOAT        0
 #define GR_U8           1
 
@@ -594,7 +593,6 @@ typedef struct _GrState_s {
 #define GR_VIEWPORT                     0x22
 #define GR_WDEPTH_MIN_MAX               0x23
 #define GR_ZDEPTH_MIN_MAX               0x24
-#endif /* GLIDE3 */
 
 /* stuff for grGetString */
 #define GR_EXTENSION                    0xa0
@@ -1124,6 +1122,9 @@ grSplash(float x, float y, float width, float height, FxU32 frame);
 #ifdef GLIDE3
 FX_ENTRY FxBool FX_CALL 
 grGet( FxU32 pname, FxU32 plength, FxI32 *params );
+#else
+FX_ENTRY void FX_CALL 
+grGet( FxU32 pname, FxU32 plength, FxI32 *params );
 #endif
 
 FX_ENTRY const char * FX_CALL 
@@ -1498,17 +1499,13 @@ grHints(GrHint_t hintType, FxU32 hintMask);
 #ifdef GLIDE3
 FX_ENTRY void FX_CALL
 grVertexLayout(FxU32 param, FxI32 offset, FxU32 mode);
+#endif
 
 FX_ENTRY void FX_CALL 
 grDrawVertexArray(FxU32 mode, FxU32 Count, void *pointers);
 
 FX_ENTRY void FX_CALL 
 grDrawVertexArrayLinear(FxU32 mode, FxU32 Count, void *pointers, FxU32 stride);
-
-FX_ENTRY void FX_CALL 
-grDrawVertexArrayLinear(FxU32 mode, FxU32 Count, void *pointers, FxU32 stride);
-
-#endif
 
 #endif /* FX_GLIDE_NO_FUNC_PROTO */
 

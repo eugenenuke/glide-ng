@@ -981,10 +981,13 @@ bool VulkanBackend::SwapBuffers() {
 
         TransitionImageLayout(*m_commandBuffer, m_headlessImages[activeIdx].get(), vk::ImageLayout::eTransferSrcOptimal, vk::ImageLayout::eColorAttachmentOptimal, range);
 
+        GLIDE_LOG(DEBUG, "Vulkan", "SwapBuffers: Headless - Ending command buffer recording...");
         m_commandBuffer->end();
         
+        GLIDE_LOG(DEBUG, "Vulkan", "SwapBuffers: Headless - Resetting fence for slot " << m_currentFrameSlot << "...");
         m_device->resetFences(1, &m_fences[m_currentFrameSlot].get());
         
+        GLIDE_LOG(DEBUG, "Vulkan", "SwapBuffers: Headless - Submitting command buffer...");
         vk::SubmitInfo submitInfo(0, nullptr, nullptr, 1, m_commandBuffer);
         m_graphicsQueue.submit(submitInfo, m_fences[m_currentFrameSlot].get());
 
@@ -992,6 +995,7 @@ bool VulkanBackend::SwapBuffers() {
 
         // Advance to the next slot and setup recording immediately
         uint32_t nextSlot = (m_currentFrameSlot + 1) % 2;
+        GLIDE_LOG(DEBUG, "Vulkan", "SwapBuffers: Headless - Waiting for fence of next slot " << nextSlot << "...");
         if (m_device->waitForFences(1, &m_fences[nextSlot].get(), VK_TRUE, UINT64_MAX) != vk::Result::eSuccess) {
             GLIDE_LOG(CRITICAL, "Vulkan", "Failed to wait for fence of next frame slot " << nextSlot);
         }
@@ -999,9 +1003,12 @@ bool VulkanBackend::SwapBuffers() {
         m_currentFrameSlot = nextSlot;
         m_texStagingOffsets[m_currentFrameSlot] = m_currentFrameSlot * m_texStagingSlotSize;
 
+        GLIDE_LOG(DEBUG, "Vulkan", "SwapBuffers: Headless - Switching to next command buffer & resetting...");
         m_commandBuffer = &m_commandBuffers[m_currentFrameSlot].get();
         m_commandBuffer->reset({});
+        GLIDE_LOG(DEBUG, "Vulkan", "SwapBuffers: Headless - Beginning new command buffer...");
         m_commandBuffer->begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
+        GLIDE_LOG(DEBUG, "Vulkan", "SwapBuffers: Headless - Done!");
     }
 
     // 3. Swap the CPU buffer indices for double-buffering
@@ -1587,6 +1594,7 @@ uint32_t VulkanBackend::FindMemoryType(uint32_t typeFilter, vk::MemoryPropertyFl
 }
 
 void VulkanBackend::TransitionImageLayout(vk::CommandBuffer cmd, vk::Image image, vk::ImageLayout oldLayout, vk::ImageLayout newLayout, vk::ImageSubresourceRange range) {
+    GLIDE_LOG(DEBUG, "Vulkan", "TransitionImageLayout: [TRACE] cmd = " << (VkCommandBuffer)cmd << ", image = " << (VkImage)image << ", oldLayout = " << (int)oldLayout << ", newLayout = " << (int)newLayout);
     vk::ImageMemoryBarrier barrier;
     barrier.oldLayout = oldLayout;
     barrier.newLayout = newLayout;
@@ -1642,6 +1650,13 @@ void VulkanBackend::FlushLFBToGPU() {
     if (!m_lfbDirty) return;
 
     GLIDE_LOG(DEBUG, "Vulkan", "FlushLFBToGPU: Checking dirty buffers...");
+    if (!m_commandBuffer) {
+        GLIDE_LOG(CRITICAL, "Vulkan", "FlushLFBToGPU: CRITICAL ERROR - m_commandBuffer is NULL pointer!");
+        std::cerr << "[CRIT] FlushLFBToGPU: m_commandBuffer is NULL pointer!\n";
+    } else if (!(*m_commandBuffer)) {
+        GLIDE_LOG(CRITICAL, "Vulkan", "FlushLFBToGPU: CRITICAL ERROR - *m_commandBuffer is NULL handle!");
+        std::cerr << "[CRIT] FlushLFBToGPU: *m_commandBuffer is NULL handle!\n";
+    }
 
     // Resolve the GPU image indices for FRONT and BACK buffers
     uint32_t gpuFrontIdx = (0 == m_activeRenderBuffer) ? GetActiveGpuBufferIdx() : (1u - GetActiveGpuBufferIdx());
@@ -1696,8 +1711,17 @@ void VulkanBackend::FlushLFBToGPU() {
     }
 
     // Copy from CPU-side active buffer to GPU staging memory
+    GLIDE_LOG(DEBUG, "Vulkan", "FlushLFBToGPU: [MEMCPY TRACE] m_currentFrameSlot = " << m_currentFrameSlot);
+    GLIDE_LOG(DEBUG, "Vulkan", "FlushLFBToGPU: [MEMCPY TRACE] m_gpuStagingMaps = " << m_gpuStagingMaps[m_currentFrameSlot]);
+    GLIDE_LOG(DEBUG, "Vulkan", "FlushLFBToGPU: [MEMCPY TRACE] srcCpuData = " << srcCpuData);
+    GLIDE_LOG(DEBUG, "Vulkan", "FlushLFBToGPU: [MEMCPY TRACE] bufferToFlush = " << bufferToFlush << ", m_frontBufferIdx = " << m_frontBufferIdx << ", m_backBufferIdx = " << m_backBufferIdx);
+    GLIDE_LOG(DEBUG, "Vulkan", "FlushLFBToGPU: [MEMCPY TRACE] m_cpuBuffers[0].size() = " << m_cpuBuffers[0].size() << ", m_cpuBuffers[1].size() = " << m_cpuBuffers[1].size());
+    GLIDE_LOG(DEBUG, "Vulkan", "FlushLFBToGPU: [MEMCPY TRACE] Copy size = " << (m_headlessWidth * m_headlessHeight * 4));
+    
     if (m_gpuStagingMaps[m_currentFrameSlot]) {
+        GLIDE_LOG(DEBUG, "Vulkan", "FlushLFBToGPU: [MEMCPY TRACE] Executing std::memcpy...");
         std::memcpy(m_gpuStagingMaps[m_currentFrameSlot], srcCpuData, m_headlessWidth * m_headlessHeight * 4);
+        GLIDE_LOG(DEBUG, "Vulkan", "FlushLFBToGPU: [MEMCPY TRACE] std::memcpy finished successfully!");
     }
 
     // 2. Transition image to TransferDstOptimal
@@ -1951,7 +1975,7 @@ void VulkanBackend::DrawPoint(const ModernVertex& pt) {
         auto it = m_vulkanTextures.find(m_boundTexAddress[0]);
         if (it != m_vulkanTextures.end()) {
             auto& tex = it->second;
-            vk::Sampler sampler = GetOrCreateSampler(tex.clampS, tex.clampT, tex.minFilter, tex.magFilter);
+            vk::Sampler sampler = GetOrCreateSampler(tex.clampS, tex.clampT, tex.minFilter, tex.magFilter, m_texLodBias[0]);
             reqDescSet = GetOrCreateDescriptorSet(tex.imageView.get(), sampler);
         }
     }
@@ -2010,7 +2034,7 @@ void VulkanBackend::DrawLine(const ModernVertex& v1, const ModernVertex& v2) {
         auto it = m_vulkanTextures.find(m_boundTexAddress[0]);
         if (it != m_vulkanTextures.end()) {
             auto& tex = it->second;
-            vk::Sampler sampler = GetOrCreateSampler(tex.clampS, tex.clampT, tex.minFilter, tex.magFilter);
+            vk::Sampler sampler = GetOrCreateSampler(tex.clampS, tex.clampT, tex.minFilter, tex.magFilter, m_texLodBias[0]);
             reqDescSet = GetOrCreateDescriptorSet(tex.imageView.get(), sampler);
         }
     }
@@ -2070,7 +2094,7 @@ void VulkanBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b, c
         auto it = m_vulkanTextures.find(m_boundTexAddress[0]);
         if (it != m_vulkanTextures.end()) {
             auto& tex = it->second;
-            vk::Sampler sampler = GetOrCreateSampler(tex.clampS, tex.clampT, tex.minFilter, tex.magFilter);
+            vk::Sampler sampler = GetOrCreateSampler(tex.clampS, tex.clampT, tex.minFilter, tex.magFilter, m_texLodBias[0]);
             reqDescSet = GetOrCreateDescriptorSet(tex.imageView.get(), sampler);
         }
     }
@@ -2536,8 +2560,8 @@ void VulkanBackend::LoadGammaTable(uint32_t nentries, const uint32_t* rTable, co
     m_useGammaLut = true;
 }
 
-vk::Sampler VulkanBackend::GetOrCreateSampler(uint32_t clampS, uint32_t clampT, uint32_t minFilter, uint32_t magFilter) {
-    SamplerKey key{clampS, clampT, minFilter, magFilter};
+vk::Sampler VulkanBackend::GetOrCreateSampler(uint32_t clampS, uint32_t clampT, uint32_t minFilter, uint32_t magFilter, float lodBias) {
+    SamplerKey key{clampS, clampT, minFilter, magFilter, lodBias};
     auto it = m_samplerCache.find(key);
     if (it != m_samplerCache.end()) {
         return it->second.get();
@@ -2567,9 +2591,9 @@ vk::Sampler VulkanBackend::GetOrCreateSampler(uint32_t clampS, uint32_t clampT, 
     samplerInfo.compareEnable = false;
     samplerInfo.compareOp = vk::CompareOp::eAlways;
     samplerInfo.mipmapMode = vk::SamplerMipmapMode::eNearest;
-    samplerInfo.mipLodBias = 0.0f;
+    samplerInfo.mipLodBias = lodBias;
     samplerInfo.minLod = 0.0f;
-    samplerInfo.maxLod = 0.0f;
+    samplerInfo.maxLod = 15.0f;
 
     auto sampler = m_device->createSamplerUnique(samplerInfo);
     vk::Sampler res = sampler.get();
@@ -2596,6 +2620,113 @@ vk::DescriptorSet VulkanBackend::GetOrCreateDescriptorSet(vk::ImageView imageVie
 
     m_descriptorCache.emplace(key, descriptorSet);
     return descriptorSet;
+}
+
+void VulkanBackend::SetTexLodBias(uint32_t tmu, float bias) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    if (tmu < 2) {
+        if (m_texLodBias[tmu] != bias) {
+            FlushBatch();
+            m_texLodBias[tmu] = bias;
+            GLIDE_LOG(DEBUG, "Vulkan", "SetTexLodBias: TMU" << tmu << " set to " << bias);
+        }
+    }
+}
+
+void VulkanBackend::UploadTexturePartial(uint32_t tmu, uint32_t startAddress, const struct VirtualTexture& tex, uint32_t lodLevel, uint32_t startRow, uint32_t endRow) {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    if (!m_initialized || !m_device) return;
+
+    if (tmu != 0) {
+        GLIDE_LOG(WARN, "Vulkan", "UploadTexturePartial ignored for unsupported TMU " << tmu);
+        return;
+    }
+
+    auto it = m_vulkanTextures.find(startAddress);
+    if (it == m_vulkanTextures.end()) {
+        GLIDE_LOG(WARN, "Vulkan", "UploadTexturePartial: texture at address 0x" << std::hex << startAddress << std::dec << " does not exist! Promoting to full upload.");
+        UploadTexture(tmu, startAddress, tex);
+        return;
+    }
+
+    auto& vTex = it->second;
+    
+    if (lodLevel >= tex.swizzledMipLevels.size()) {
+        GLIDE_LOG(WARN, "Vulkan", "UploadTexturePartial: invalid lodLevel " << lodLevel);
+        return;
+    }
+
+    uint32_t w = std::max(1u, tex.baseWidth >> lodLevel);
+    uint32_t h = std::max(1u, tex.baseHeight >> lodLevel);
+    if (startRow >= h || endRow > h || startRow >= endRow) {
+        GLIDE_LOG(WARN, "Vulkan", "UploadTexturePartial: invalid row range " << startRow << ".." << endRow << " for level height " << h);
+        return;
+    }
+
+    uint32_t numRows = endRow - startRow;
+    size_t rowBytes = w * sizeof(uint32_t);
+    size_t partialBytes = numRows * rowBytes;
+
+    uint32_t slotBase = m_currentFrameSlot * m_texStagingSlotSize;
+    uint32_t slotEnd = (m_currentFrameSlot + 1) * m_texStagingSlotSize;
+    
+    if (m_texStagingOffsets[m_currentFrameSlot] + partialBytes > slotEnd) {
+        GLIDE_LOG(WARN, "Vulkan", "Texture staging slot size exceeded during partial! Stalling GPU and wrapping around...");
+        m_device->waitIdle();
+        m_texStagingOffsets[m_currentFrameSlot] = slotBase;
+    }
+
+    uint32_t currentOffset = m_texStagingOffsets[m_currentFrameSlot];
+    
+    const uint32_t* srcPixels = tex.swizzledMipLevels[lodLevel].data();
+    uint8_t* mappedData = static_cast<uint8_t*>(m_texStagingMap) + currentOffset;
+    
+    std::memcpy(mappedData, srcPixels + startRow * w, partialBytes);
+
+    vk::MappedMemoryRange memRange(m_texStagingMemory.get(), currentOffset, partialBytes);
+    m_device->flushMappedMemoryRanges(memRange);
+
+    m_texStagingOffsets[m_currentFrameSlot] += partialBytes;
+
+    if (m_inRenderPass) {
+        FlushBatch();
+        m_commandBuffer->endRenderPass();
+        m_inRenderPass = false;
+    }
+
+    vk::ImageSubresourceRange levelRange(vk::ImageAspectFlagBits::eColor, lodLevel, 1, 0, 1);
+    TransitionImageLayout(*m_commandBuffer, vTex.image.get(), vk::ImageLayout::eShaderReadOnlyOptimal, vk::ImageLayout::eTransferDstOptimal, levelRange);
+
+    vk::BufferImageCopy region;
+    region.bufferOffset = currentOffset;
+    region.bufferRowLength = w;
+    region.bufferImageHeight = h;
+    region.imageSubresource = vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, lodLevel, 0, 1);
+    region.imageOffset = vk::Offset3D(0, startRow, 0);
+    region.imageExtent = vk::Extent3D(w, numRows, 1);
+
+    m_commandBuffer->copyBufferToImage(m_texStagingBuffer.get(), vTex.image.get(), vk::ImageLayout::eTransferDstOptimal, 1, &region);
+
+    TransitionImageLayout(*m_commandBuffer, vTex.image.get(), vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, levelRange);
+    
+    vTex.dataHash = CalculateTextureHash(tex);
+
+    GLIDE_LOG(DEBUG, "Vulkan", "UploadTexturePartial: Completed successfully for address 0x" << std::hex << startAddress << std::dec << " level=" << lodLevel << " rows=" << startRow << ".." << endRow);
+}
+
+void VulkanBackend::PurgeTextures() {
+    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    if (!m_initialized || !m_device) return;
+
+    FlushBatch();
+    
+    GLIDE_LOG(DEBUG, "Vulkan", "PurgeTextures: destroying " << m_vulkanTextures.size() << " textures, " << m_samplerCache.size() << " samplers, and " << m_descriptorCache.size() << " descriptors.");
+
+    m_descriptorCache.clear();
+    m_samplerCache.clear();
+    m_vulkanTextures.clear();
+
+    GLIDE_LOG(DEBUG, "Vulkan", "PurgeTextures completed successfully.");
 }
 
 } // namespace GlideWrapper

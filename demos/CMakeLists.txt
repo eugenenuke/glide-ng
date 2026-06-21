@@ -210,5 +210,53 @@ target_link_libraries(glide3_extensions_demo PRIVATE
     -lm
 )
 
+# --- Phase 1 Visual/Logical Validation Demo (Glide 2.x) ---
+add_executable(phase1_validation_demo_g2
+    phase1_validation_demo.cpp
+    "${CMAKE_CURRENT_SOURCE_DIR}/../refs/3dfx-Glide-API/glide2x/cvg/glide/tests/tlib.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../refs/3dfx-Glide-API/swlibs/fxmisc/linutil.c"
+)
+
+target_include_directories(phase1_validation_demo_g2 PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../refs/3dfx-Glide-API/glide2x/cvg/glide/tests"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../refs/3dfx-Glide-API/swlibs/fxmisc"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../include/3dfx"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../include/glide2"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../tools"
+)
+
+target_compile_definitions(phase1_validation_demo_g2 PRIVATE -D__linux__ -DGLIDE_VERSION=2)
+
+target_link_libraries(phase1_validation_demo_g2 PRIVATE
+    glide2x
+    tool_info2
+    ${CMAKE_DL_LIBS}
+    -lm
+)
+
+# --- Phase 1 Visual/Logical Validation Demo (Glide 3.x) ---
+add_executable(phase1_validation_demo_g3
+    phase1_validation_demo.cpp
+    "${CMAKE_CURRENT_SOURCE_DIR}/../refs/3dfx-Glide-API/glide3x/cvg/glide3/tests/tlib.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../refs/3dfx-Glide-API/swlibs/fxmisc/linutil.c"
+)
+
+target_include_directories(phase1_validation_demo_g3 PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../refs/3dfx-Glide-API/glide3x/cvg/glide3/tests"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../refs/3dfx-Glide-API/swlibs/fxmisc"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../include/3dfx"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../include/glide3"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../tools"
+)
+
+target_compile_definitions(phase1_validation_demo_g3 PRIVATE -D__linux__ -DGLIDE_VERSION=3)
+
+target_link_libraries(phase1_validation_demo_g3 PRIVATE
+    glide3x
+    tool_info3
+    ${CMAKE_DL_LIBS}
+    -lm
+)
+
 
 
