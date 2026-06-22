@@ -277,6 +277,27 @@ cmake --build build -j$(nproc)
 4.  **Verification**:
     *   Rebuilt the project. Running `test34.exe` now displays the beautiful receding textured road smoothly fading into the green exponential fog on all backends with 100% pixel-perfect parity!
 
+### Case Study 12: The `test00` Segmentation Fault (Glide 2.x Opaque State ABI Overflow & Vertex Stack Garbage NaNs)
+1.  **The Symptom**: The pre-compiled binary `./test00` (Glide 2.x screen clearing test) crashed with a segmentation fault when run natively in the user's GUI session under both the Vulkan and Software backends, despite the wrapper working perfectly for custom, scratch-compiled tests. The crash disappeared under Valgrind or GDB, but under normal run, it occurred immediately after `grSstWinOpen` returned.
+2.  **The Investigation & Bisection**:
+    *   **Logging Diagnostics**: We injected unbuffered `std::cerr` print logs inside key entry points (`grSstWinOpen`, `grBufferClear`, `grBufferSwap`, `grDrawTriangle`). The logs showed that the crash occurred immediately after `grBufferClear` returned, but *before* `grDrawTriangle` was ever called by the console text renderer `tlConRender()`.
+    *   **Code Review**: In `tlib.c` (the test console renderer), the first line of `tlConRender()` is `grGlideGetState(&state)`.
+    *   **The Size Mismatch**: We inspected the size of the opaque `GrState` structure in both the pre-compiled binary and our compiled library using GDB:
+        *   `sizeof(GrState)` in the pre-compiled binary was **312 bytes** (legacy Glide 2.x standard).
+        *   `sizeof(GrState)` in our compiled library was **528 bytes** (bloated due to Glide 3.x unified changes).
+    *   **The Root Cause**: When `grGlideGetState` was called, our library cast the pointer to our internal `GlideWrapperState` struct and wrote **528 bytes** of data into the game's **312-byte** static global variable. This caused a massive **216-byte buffer overflow** that completely corrupted the binary's adjacent global memory (variables/pointers), triggering an immediate segmentation fault on the very next instruction!
+3.  **The Solution**:
+    *   **Data Type Compaction**: We redesigned the Glide 2.x internal `GlideWrapperState` struct in `src/glide2/glide2_entry.cpp` to use compact `uint8_t` variables for state enums and flags (e.g. depth modes, blend states, combiner settings) instead of bloated 32-bit `uint32_t` fields. This shrunk the active state fields to only **186 bytes** without losing any state.
+    *   **ABI Guarantee**: We marked the struct as `__attribute__((packed))` and added explicit padding to make its footprint **exactly 312 bytes**, protecting it with a compile-time static assertion:
+        ```cpp
+        static_assert(sizeof(GlideWrapperState) == 312,
+                      "GlideWrapperState must be exactly 312 bytes for Glide 2.x ABI compatibility!");
+        ```
+    *   **Stack Garbage Hardening**: To protect the Vulkan/Software rasterizers from driver-level crashes when games pass uninitialized stack vertices (such as `z` and `ooz` fields left uninitialized on the stack by `tlib.c`'s `drawChar`), we added a robust sanitization layer in `VertexLayout::DecodeVertex` to intercept, clamp, and replace any `NaN` or `Infinity` coordinates/depth with safe defaults (`0.0f` or `1.0f`).
+4.  **Verification**:
+    *   Rebuilt the library. The compile-time assertion passed successfully.
+    *   Running the genuine pre-compiled `./test00` binary under both **Software** and **Vulkan** backends now executes with 100% rock-solid stability, rendering a beautiful blue screen with crystal-clear, ungarbled text!
+
 ---
 
 
