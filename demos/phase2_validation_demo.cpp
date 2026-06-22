@@ -164,8 +164,12 @@ int main(int argc, char* argv[]) {
     // -------------------------------------------------------------------------
     // Set custom states
     if (s_useClipWindow) {
-      // Cropped center clip window that intersects the quad
-      grClipWindow(200, 150, static_cast<FxU32>(s_screenWidth - 200), static_cast<FxU32>(s_screenHeight - 150));
+      // Cropped center clip window that dynamically intersects the quad at 30% to 70% of screen size
+      grClipWindow(
+          static_cast<FxU32>(s_screenWidth * 0.3f),
+          static_cast<FxU32>(s_screenHeight * 0.3f),
+          static_cast<FxU32>(s_screenWidth * 0.7f),
+          static_cast<FxU32>(s_screenHeight * 0.7f));
     } else {
       grClipWindow(0, 0, static_cast<FxU32>(s_screenWidth), static_cast<FxU32>(s_screenHeight));
     }
