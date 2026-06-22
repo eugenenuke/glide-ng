@@ -1560,13 +1560,13 @@ FX_ENTRY void FX_CALL grTexDownloadMipMap(GrChipID_t tmu, FxU32 startAddress,
       // aspectRatioLog2, they physically map to the exact same offsets/sizes as
       // Glide 2.x smallLod, largeLod, aspectRatio.
       GlideWrapper::TextureManager::GetInstance().DownloadMipMap(
-          tmu, startAddress, info->smallLodLog2, info->largeLodLog2,
+          tmu, startAddress, info->largeLodLog2, info->smallLodLog2,
           info->aspectRatioLog2, info->format, info->data);
     } else {
       // Translate Glide 3.x signed log2 aspect ratio and LOD to Glide 2.x core
       // format
       GlideWrapper::TextureManager::GetInstance().DownloadMipMap(
-          tmu, startAddress, 8 - info->smallLodLog2, 8 - info->largeLodLog2,
+          tmu, startAddress, 8 - info->largeLodLog2, 8 - info->smallLodLog2,
           3 - info->aspectRatioLog2, info->format, info->data);
     }
   }

@@ -116,7 +116,7 @@ std::vector<GrMipMapInfo> s_guTextures;
 uint32_t s_guTexNextAddress = 0;
 GrMipMapId_t s_currentMipMap[2] = {GR_NULL_MIPMAP_HANDLE,
                                    GR_NULL_MIPMAP_HANDLE};
-float s_texLodBias = 0.0f;
+float s_texLodBias[2] = {0.0f, 0.0f};
 uint32_t s_mipmapMode[2] = {0, 0};
 bool s_lodBlend[2] = {false, false};
 
@@ -221,7 +221,7 @@ void ResetFrontendState() {
   s_guTextures.clear();
   s_guTexNextAddress = 0;
   s_currentMipMap[0] = s_currentMipMap[1] = GR_NULL_MIPMAP_HANDLE;
-  s_texLodBias = 0.0f;
+  s_texLodBias[0] = s_texLodBias[1] = 0.0f;
   s_mipmapMode[0] = s_mipmapMode[1] = 0;
   s_lodBlend[0] = s_lodBlend[1] = false;
   s_lfbConstantDepth = 0;
@@ -303,9 +303,10 @@ struct __attribute__((packed)) GlideWrapperState {
   } texChromaState[2];
   uint8_t mipmapMode[2];
   uint8_t lodBlend[2];
+  float texLodBias[2]; // Added to support save/restore of LOD bias
 
   // Explicit padding to align exactly to the Glide 2.x standard 312-byte layout size
-  uint8_t pad[126];
+  uint8_t pad[118];
 };
 
 static_assert(sizeof(GlideWrapperState) == 312,
@@ -482,7 +483,7 @@ FX_ENTRY FxBool FX_CALL grSstWinOpen(FxU32 hWnd,
   s_guTextures.clear();
   s_guTexNextAddress = 0;
   s_currentMipMap[0] = s_currentMipMap[1] = GR_NULL_MIPMAP_HANDLE;
-  s_texLodBias = 0.0f;
+  s_texLodBias[0] = s_texLodBias[1] = 0.0f;
   s_lfbConstantDepth = 0;
   s_lfbWriteColorSwizzle = false;
   s_lfbWriteColorSwizzleSwap = false;
@@ -1109,6 +1110,7 @@ FX_ENTRY void FX_CALL grGlideGetState(GrState* state) {
   for (int i = 0; i < 2; ++i) {
     ws->lodBlend[i] = s_lodBlend[i] ? 1 : 0;
   }
+  std::memcpy(ws->texLodBias, s_texLodBias, sizeof(s_texLodBias));
 }
 
 FX_ENTRY void FX_CALL grGlideSetState(const GrState* state) {
@@ -1173,6 +1175,7 @@ FX_ENTRY void FX_CALL grGlideSetState(const GrState* state) {
   for (int i = 0; i < 2; ++i) {
     s_lodBlend[i] = ws->lodBlend[i] != 0;
   }
+  std::memcpy(s_texLodBias, ws->texLodBias, sizeof(s_texLodBias));
 
   if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
     b->SetDepthState(s_depthMode, s_depthCompare, s_depthMask, s_depthBias);
@@ -1207,6 +1210,7 @@ FX_ENTRY void FX_CALL grGlideSetState(const GrState* state) {
                               s_texChromaState[tmu].maxColor,
                               s_texChromaState[tmu].mode);
       b->SetTexMipMapMode(tmu, s_mipmapMode[tmu], s_lodBlend[tmu]);
+      b->SetTexLodBias(tmu, s_texLodBias[tmu]);
     }
   }
 }
@@ -1400,7 +1404,7 @@ FX_ENTRY void FX_CALL grTexDownloadMipMap(GrChipID_t tmu, FxU32 startAddress,
   GLIDE_LOG(DEBUG, "Frontend", "grTexDownloadMipMap invoked for TMU=" << tmu);
   if (info && info->data) {
     GlideWrapper::TextureManager::GetInstance().DownloadMipMap(
-        tmu, startAddress, info->smallLod, info->largeLod, info->aspectRatio,
+        tmu, startAddress, info->largeLod, info->smallLod, info->aspectRatio,
         info->format, info->data);
   }
 }
@@ -1480,7 +1484,12 @@ FX_ENTRY void FX_CALL grTexLodBiasValue(GrChipID_t tmu, float bias) {
   EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend",
             "grTexLodBiasValue: tmu=" << tmu << ", bias=" << bias);
-  s_texLodBias = bias;
+  if (tmu < 2) {
+    s_texLodBias[tmu] = bias;
+    if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
+      b->SetTexLodBias(tmu, bias);
+    }
+  }
 }
 
 FX_ENTRY void FX_CALL grTexCombineFunction(GrChipID_t tmu,
@@ -1589,7 +1598,10 @@ FX_ENTRY GrMipMapId_t FX_CALL guTexAllocateMemory(
   tex.minfilter_mode = minfilter_mode;
   tex.s_clamp_mode = s_clamp_mode;
   tex.t_clamp_mode = t_clamp_mode;
-  tex.lod_bias = static_cast<FxU32>(lod_bias);
+  int32_t bias_fixed = static_cast<int32_t>(std::round(lod_bias * 4.0f));
+  if (bias_fixed < -32) bias_fixed = -32;
+  if (bias_fixed > 31) bias_fixed = 31;
+  tex.lod_bias = static_cast<FxU32>(bias_fixed & 0x3F);
   tex.lod_min = smallest_lod;
   tex.lod_max = largest_lod;
   tex.tmu = tmu;
@@ -1627,6 +1639,13 @@ FX_ENTRY void FX_CALL guTexSource(GrMipMapId_t id) {
   grTexClampMode(tex.tmu, tex.s_clamp_mode, tex.t_clamp_mode);
   grTexFilterMode(tex.tmu, tex.minfilter_mode, tex.magfilter_mode);
   grTexMipMapMode(tex.tmu, tex.mipmap_mode, tex.trilinear);
+
+  int32_t raw_bias = static_cast<int32_t>(tex.lod_bias & 0x3F);
+  if (raw_bias & 0x20) {
+    raw_bias |= ~0x3F; // Sign-extend from 6 bits to 32 bits
+  }
+  float bias = static_cast<float>(raw_bias) / 4.0f;
+  grTexLodBiasValue(tex.tmu, bias);
 
   s_currentMipMap[tex.tmu] = id;
 }

@@ -305,8 +305,22 @@ target_link_libraries(phase2_validation_demo PRIVATE
     ${CMAKE_DL_LIBS}
     -lm
 )
+add_executable(perspective_mipmapping_showcase
+    perspective_mipmapping_showcase.cpp
+)
 
+target_include_directories(perspective_mipmapping_showcase PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../include/3dfx"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../include/glide2"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../tools"
+)
 
+target_compile_definitions(perspective_mipmapping_showcase PRIVATE -D__linux__)
 
-
-
+target_link_libraries(perspective_mipmapping_showcase PRIVATE
+    glide2x
+    tool_info2
+    tlib_compat
+    ${CMAKE_DL_LIBS}
+    -lm
+)

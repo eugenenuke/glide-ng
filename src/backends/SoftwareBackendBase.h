@@ -41,6 +41,7 @@ class SoftwareBackendBase : public IGraphicsBackend {
   bool GetColorMaskAlpha() const { return m_colorMaskAlpha; }
   bool GetTexCombinerRgbInvert(uint32_t tmu) const { return tmu < 2 ? m_texCombinerRgbInvert[tmu] : false; }
   bool GetTexCombinerAlphaInvert(uint32_t tmu) const { return tmu < 2 ? m_texCombinerAlphaInvert[tmu] : false; }
+  float GetTexLodBias(uint32_t tmu) const { return tmu < 2 ? m_texLodBias[tmu] : 0.0f; }
   float GetDepthBufferPixel(uint32_t x, uint32_t y) const {
     uint32_t pIdx = y * m_headlessWidth + x;
     if (pIdx < m_headlessDepthBuffer.size()) return m_headlessDepthBuffer[pIdx];

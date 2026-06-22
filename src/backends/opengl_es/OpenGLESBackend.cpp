@@ -736,6 +736,8 @@ bool OpenGLESBackend::CreateGLContext(void* nativeWindowHandle, uint32_t width,
 
   glBindTexture(GL_TEXTURE_2D, 0);
 
+  glGenSamplers(2, m_glesSamplers);
+
   m_sdlWindow = win;
   m_glContext = ctx;
 
@@ -743,6 +745,10 @@ bool OpenGLESBackend::CreateGLContext(void* nativeWindowHandle, uint32_t width,
 }
 
 void OpenGLESBackend::DestroyGLContext() {
+  if (m_glesSamplers[0] != 0) {
+    glDeleteSamplers(2, m_glesSamplers);
+    m_glesSamplers[0] = m_glesSamplers[1] = 0;
+  }
   if (m_glTexture) {
     glDeleteTextures(1, &m_glTexture);
     m_glTexture = 0;
@@ -1606,8 +1612,8 @@ void OpenGLESBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
           wrapT = GL_MIRRORED_REPEAT;
         }
 
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, wrapS);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, wrapT);
+        glSamplerParameteri(m_glesSamplers[tmu], GL_TEXTURE_WRAP_S, wrapS);
+        glSamplerParameteri(m_glesSamplers[tmu], GL_TEXTURE_WRAP_T, wrapT);
 
         // Set sampler filter modes
         GLint minFilter = GL_NEAREST;
@@ -1623,8 +1629,11 @@ void OpenGLESBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
           }
         }
         GLint magFilter = (m_texMagFilter[tmu] == 1) ? GL_LINEAR : GL_NEAREST;
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, minFilter);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, magFilter);
+        glSamplerParameteri(m_glesSamplers[tmu], GL_TEXTURE_MIN_FILTER, minFilter);
+        glSamplerParameteri(m_glesSamplers[tmu], GL_TEXTURE_MAG_FILTER, magFilter);
+
+        // Bind sampler object to the active texture unit
+        glBindSampler(tmu, m_glesSamplers[tmu]);
       }
     }
   }
@@ -1646,6 +1655,8 @@ void OpenGLESBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
       glBindTexture(GL_TEXTURE_2D, 0);
     }
   }
+  glBindSampler(0, 0);
+  glBindSampler(1, 0);
   glActiveTexture(GL_TEXTURE0);  // Reset active texture unit to 0
   glBindFramebuffer(GL_FRAMEBUFFER, 0);
 

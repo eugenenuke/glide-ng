@@ -6422,3 +6422,93 @@ TEST_CASE("Glide 2.x Linear Draw Stride Validation [VULN-03]", "[Glide2][Draw]")
   ::dlclose(handle);
 #endif
 }
+
+TEST_CASE("Glide 2.x State Serialization & Fixed-Point LOD Bias Roundtrip [Glide2][State]", "[Glide2][State]") {
+#ifdef __linux__
+  // Force the Software backend for this test
+  ::setenv("GLIDE_WRAPPER_BACKEND", "sw", 1);
+
+  void* handle = OpenGlide2Handle();
+  REQUIRE(handle != nullptr);
+
+  auto glideInit = (void (*)(void))dlsym(handle, "grGlideInit");
+  auto sstSelect = (void (*)(int))dlsym(handle, "grSstSelect");
+  auto winOpen = (FxBool (*)(FxU32, GrScreenResolution_t, GrScreenRefresh_t,
+                             GrColorFormat_t, GrOriginLocation_t, int,
+                             int))dlsym(handle, "grSstWinOpen");
+  auto winClose = (FxBool (*)(FxU32))dlsym(handle, "grSstWinClose");
+  auto shutdown = (void (*)(void))dlsym(handle, "grGlideShutdown");
+
+  auto texLodBiasValue = (void (*)(GrChipID_t, float))dlsym(handle, "grTexLodBiasValue");
+  auto glideGetState = (void (*)(GrState*))dlsym(handle, "grGlideGetState");
+  auto glideSetState = (void (*)(const GrState*))dlsym(handle, "grGlideSetState");
+
+  auto texAllocateMemory = (GrMipMapId_t (*)(      GrChipID_t, FxU8, int, int, GrTextureFormat_t, GrMipMapMode_t, GrLOD_t,      GrLOD_t, GrAspectRatio_t, GrTextureClampMode_t, GrTextureClampMode_t,      GrTextureFilterMode_t, GrTextureFilterMode_t, float, FxBool))dlsym(handle, "guTexAllocateMemory");
+  auto texSource = (void (*)(GrMipMapId_t))dlsym(handle, "guTexSource");
+
+  REQUIRE(glideInit != nullptr);
+  REQUIRE(winOpen != nullptr);
+  REQUIRE(texLodBiasValue != nullptr);
+  REQUIRE(glideGetState != nullptr);
+  REQUIRE(glideSetState != nullptr);
+  REQUIRE(texAllocateMemory != nullptr);
+  REQUIRE(texSource != nullptr);
+
+  glideInit();
+  if (sstSelect) sstSelect(0);
+  FxBool openOk = winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                          GR_COLORFORMAT_ABGR, GR_ORIGIN_UPPER_LEFT, 2, 1);
+  REQUIRE(openOk == FXTRUE);
+
+  auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend();
+  auto* sw_b = dynamic_cast<GlideWrapper::SoftwareBackendBase*>(b);
+  REQUIRE(sw_b != nullptr);
+
+  // 1. Set distinct LOD biases and verify backend receives them
+  texLodBiasValue(GR_TMU0, -1.5f);
+  texLodBiasValue(GR_TMU1, 2.25f);
+  CHECK(sw_b->GetTexLodBias(0) == -1.5f);
+  CHECK(sw_b->GetTexLodBias(1) == 2.25f);
+
+  // 2. Serialize state
+  char stateBuffer[512] = {0};
+  glideGetState(reinterpret_cast<GrState*>(stateBuffer));
+
+  // 3. Clobber active states
+  texLodBiasValue(GR_TMU0, 0.0f);
+  texLodBiasValue(GR_TMU1, 0.0f);
+  CHECK(sw_b->GetTexLodBias(0) == 0.0f);
+  CHECK(sw_b->GetTexLodBias(1) == 0.0f);
+
+  // 4. Restore state
+  glideSetState(reinterpret_cast<const GrState*>(stateBuffer));
+
+  // 5. Assert active LOD biases are restored
+  CHECK(sw_b->GetTexLodBias(0) == -1.5f);
+  CHECK(sw_b->GetTexLodBias(1) == 2.25f);
+
+  // 6. Verify 4.2 fixed-point roundtrip in guTexAllocateMemory & guTexSource
+  // Negative fractional bias (-1.75f)
+  GrMipMapId_t idNeg = texAllocateMemory(
+      GR_TMU0, 0, 256, 256, GR_TEXFMT_RGB_565, GR_MIPMAP_NEAREST, GR_LOD_256,
+      GR_LOD_1, GR_ASPECT_1x1, GR_TEXTURECLAMP_CLAMP, GR_TEXTURECLAMP_CLAMP,
+      GR_TEXTUREFILTER_POINT_SAMPLED, GR_TEXTUREFILTER_POINT_SAMPLED, -1.75f, FXFALSE);
+  
+  texSource(idNeg);
+  CHECK(sw_b->GetTexLodBias(0) == -1.75f);
+
+  // Positive fractional bias (2.25f)
+  GrMipMapId_t idPos = texAllocateMemory(
+      GR_TMU0, 0, 256, 256, GR_TEXFMT_RGB_565, GR_MIPMAP_NEAREST, GR_LOD_256,
+      GR_LOD_1, GR_ASPECT_1x1, GR_TEXTURECLAMP_CLAMP, GR_TEXTURECLAMP_CLAMP,
+      GR_TEXTUREFILTER_POINT_SAMPLED, GR_TEXTUREFILTER_POINT_SAMPLED, 2.25f, FXFALSE);
+  
+  texSource(idPos);
+  CHECK(sw_b->GetTexLodBias(0) == 2.25f);
+
+  if (winClose) winClose(0);
+  shutdown();
+  ::dlclose(handle);
+  ::unsetenv("GLIDE_WRAPPER_BACKEND");
+#endif
+}

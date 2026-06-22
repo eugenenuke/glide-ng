@@ -2849,3 +2849,142 @@ TEST_CASE("Glide 3.x Texture LOD & Aspect Bounds Validation [VULN-05]", "[Glide3
 #endif
 }
 
+
+TEST_CASE("Mathematical LOD y-derivative Calculation Verification [Glide3][LOD]", "[Glide3][LOD]") {
+#ifdef __linux__
+    // Force the Software backend for this test
+    ::setenv("GLIDE_WRAPPER_BACKEND", "sw", 1);
+
+    void* handle = OpenGlide3Handle();
+    REQUIRE(handle != nullptr);
+
+    auto glideInit    = reinterpret_cast<void(*)(void)>(::dlsym(handle, "grGlideInit"));
+    auto sstSelect    = reinterpret_cast<void(*)(int)>(::dlsym(handle, "grSstSelect"));
+    auto winOpen      = reinterpret_cast<FxU32(*)(FxU32, GrScreenResolution_t, GrScreenRefresh_t, GrColorFormat_t, GrOriginLocation_t, int, int)>(::dlsym(handle, "grSstWinOpen"));
+    auto winClose     = reinterpret_cast<FxBool(*)(FxU32)>(::dlsym(handle, "grSstWinClose"));
+    auto glideShutdown = reinterpret_cast<void(*)(void)>(::dlsym(handle, "grGlideShutdown"));
+
+    auto texDownload  = reinterpret_cast<void(*)(GrChipID_t, FxU32, FxU32, GrTexInfo*)>(::dlsym(handle, "grTexDownloadMipMap"));
+    auto texSource    = reinterpret_cast<void(*)(GrChipID_t, FxU32, FxU32, GrTexInfo*)>(::dlsym(handle, "grTexSource"));
+    auto texMipMapMode = reinterpret_cast<void(*)(GrChipID_t, GrMipMapMode_t, FxBool)>(::dlsym(handle, "grTexMipMapMode"));
+    auto texFilterMode = reinterpret_cast<void(*)(GrChipID_t, GrTextureFilterMode_t, GrTextureFilterMode_t)>(::dlsym(handle, "grTexFilterMode"));
+    auto vertexLayout  = reinterpret_cast<void(*)(FxU32, int, FxBool)>(::dlsym(handle, "grVertexLayout"));
+
+    auto colorCombine = reinterpret_cast<void(*)(GrCombineFunction_t, GrCombineFactor_t, GrCombineLocal_t, GrCombineOther_t, FxBool)>(::dlsym(handle, "grColorCombine"));
+    auto texCombine   = reinterpret_cast<void(*)(GrChipID_t, GrCombineFunction_t, GrCombineFactor_t, GrCombineFunction_t, GrCombineFactor_t, FxBool, FxBool)>(::dlsym(handle, "grTexCombine"));
+    auto drawTriangle = reinterpret_cast<void(*)(const void*, const void*, const void*)>(::dlsym(handle, "grDrawTriangle"));
+    auto lfbReadRegion = reinterpret_cast<FxBool(*)(GrBuffer_t, FxU32, FxU32, FxU32, FxU32, FxU32, void*)>(::dlsym(handle, "grLfbReadRegion"));
+
+    REQUIRE(glideInit != nullptr);
+    REQUIRE(winOpen != nullptr);
+    REQUIRE(texDownload != nullptr);
+    REQUIRE(texSource != nullptr);
+    REQUIRE(vertexLayout != nullptr);
+    REQUIRE(drawTriangle != nullptr);
+    REQUIRE(lfbReadRegion != nullptr);
+
+    glideInit();
+    if (sstSelect) sstSelect(0);
+    FxU32 ctx = winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz, GR_COLORFORMAT_ARGB, GR_ORIGIN_UPPER_LEFT, 2, 1);
+    REQUIRE(ctx != 0);
+
+    // Set up vertex layout in Glide 3.x
+    vertexLayout(0x01, 0, 1);  // GR_PARAM_XY at offset 0
+    vertexLayout(0x02, 8, 1);  // GR_PARAM_Z at offset 8
+    vertexLayout(0x20, 12, 1); // GR_PARAM_RGB at offset 12
+    vertexLayout(0x10, 24, 1); // GR_PARAM_A at offset 24
+    vertexLayout(0x04, 28, 1); // GR_PARAM_Q at offset 28
+    vertexLayout(0x40, 32, 1); // GR_PARAM_ST0 at offset 32
+
+    // Create a contiguous 256x256 texture mipmap chain for RGB_565 (87381 texels)
+    std::vector<uint16_t> textureData(87381, 0xFFFF);
+    
+    // Fill each level with contrasting colors:
+    // Level 0 (256x256, 65536 texels): Red (0xF800)
+    for (int i = 0; i < 65536; ++i) textureData[i] = 0xF800;
+    // Level 1 (128x128, 16384 texels): Green (0x07E0)
+    for (int i = 65536; i < 81920; ++i) textureData[i] = 0x07E0;
+    // Level 2 (64x64, 4096 texels): Blue (0x001F)
+    for (int i = 81920; i < 86016; ++i) textureData[i] = 0x001F;
+    // Level 3 (32x32, 1024 texels): Yellow (0xFFE0)
+    for (int i = 86016; i < 87040; ++i) textureData[i] = 0xFFE0;
+    // Level 4 (16x16, 256 texels): Magenta (0xF81F)
+    for (int i = 87040; i < 87296; ++i) textureData[i] = 0xF81F;
+    // Level 5 (8x8, 64 texels): Cyan (0x07FF)
+    for (int i = 87296; i < 87360; ++i) textureData[i] = 0x07FF;
+    // Level 6 (4x4, 16 texels): White (0xFFFF)
+    for (int i = 87360; i < 87376; ++i) textureData[i] = 0xFFFF;
+    // Level 7 (2x2, 4 texels): White (0xFFFF)
+    for (int i = 87376; i < 87380; ++i) textureData[i] = 0xFFFF;
+    // Level 8 (1x1, 1 texel): White (0xFFFF)
+    textureData[87380] = 0xFFFF;
+
+    GrTexInfo info;
+    info.smallLodLog2 = GR_LOD_LOG2_1;     // 1x1
+    info.largeLodLog2 = GR_LOD_LOG2_256;   // 256x256
+    info.aspectRatioLog2 = GR_ASPECT_LOG2_1x1;
+    info.format = GR_TEXFMT_RGB_565;
+    info.data = textureData.data();
+
+    uint32_t startAddress = 0;
+    texDownload(GR_TMU0, startAddress, GR_MIPMAPLEVELMASK_BOTH, &info);
+    texSource(GR_TMU0, startAddress, GR_MIPMAPLEVELMASK_BOTH, &info);
+
+    // Set discrete mipmapping and point filtering to get sharp boundaries
+    texMipMapMode(GR_TMU0, GR_MIPMAP_NEAREST, FXFALSE);
+    texFilterMode(GR_TMU0, GR_TEXTUREFILTER_POINT_SAMPLED, GR_TEXTUREFILTER_POINT_SAMPLED);
+
+    // Setup combiner: output texture color directly
+    colorCombine(GR_COMBINE_FUNCTION_SCALE_OTHER, GR_COMBINE_FACTOR_ONE,
+                 GR_COMBINE_LOCAL_NONE, GR_COMBINE_OTHER_TEXTURE, FXFALSE);
+    texCombine(GR_TMU0, GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+               GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE, FXFALSE, FXFALSE);
+
+    // Set up vertices for mathematical LOD test
+    struct TestVert {
+        float x, y;     // offset 0
+        float z;        // offset 8
+        float r, g, b;  // offset 12
+        float a;        // offset 24
+        float q;        // offset 28 (oow)
+        float s, t;     // offset 32
+    };
+
+    TestVert vA{ 100.0f, 100.0f, 1.0f, 255.0f, 255.0f, 255.0f, 255.0f, 1.0f, 0.0f, 512.0f };
+    TestVert vB{ 100.0f, 108.0f, 1.0f, 255.0f, 255.0f, 255.0f, 255.0f, 1.0f, 0.0f, 256.0f };
+    TestVert vC{ 108.0f, 108.0f, 1.0f, 255.0f, 255.0f, 255.0f, 255.0f, 1.0f, 0.0f, 256.0f };
+
+    // Draw the triangle
+    drawTriangle(&vA, &vB, &vC);
+
+    // Read the 8x8 region of the triangle
+    std::vector<uint32_t> pixels(64, 0);
+    FxBool readOk = lfbReadRegion(GR_BUFFER_BACKBUFFER, 100, 100, 8, 8, 8 * 4, pixels.data());
+    REQUIRE(readOk == FXTRUE);
+    std::cout << "[DEBUG_GRID] Printing 8x8 rendered grid:" << std::endl;
+    for (int y = 0; y < 8; ++y) {
+        std::cout << "  y=" << 100 + y << ": ";
+        for (int x = 0; x < 8; ++x) {
+            uint32_t val = pixels[y * 8 + x];
+            std::cout << std::hex << val << " ";
+        }
+        std::cout << std::dec << std::endl;
+    }
+    uint32_t color = pixels[6 * 8 + 2]; // (102, 106)
+    uint8_t r_chan = (color >> 16) & 0xFF;
+    uint8_t g_chan = (color >> 8) & 0xFF;
+    uint8_t b_chan = color & 0xFF;
+
+    // Under the bug, the y-derivative of T was 0, resulting in LOD=0 (Red).
+    // Under the fix, the y-derivative is correct, resulting in LOD=5 (Cyan).
+    // Verify that the color is Cyan (R=0, G=255, B=255) and NOT Red (R=255, G=0, B=0)
+    CHECK(r_chan == 0);
+    CHECK(g_chan > 240);
+    CHECK(b_chan > 240);
+
+    winClose(ctx);
+    glideShutdown();
+    ::dlclose(handle);
+    ::unsetenv("GLIDE_WRAPPER_BACKEND");
+#endif
+}

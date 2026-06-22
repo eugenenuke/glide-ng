@@ -900,9 +900,9 @@ void SoftwareBackend::RasterizeSoftwareTriangleImpl(const ModernVertex& a, const
 
     if (mipmappingEnabled) {
         dSp_dx = dw0_dx * a.tex[0] + dw1_dx * b.tex[0] + dw2_dx * c.tex[0];
-        dSp_dy = dw0_dy * a.tex[0] + dw1_dy * b.tex[0] + dw2_dx * c.tex[0];
+        dSp_dy = dw0_dy * a.tex[0] + dw1_dy * b.tex[0] + dw2_dy * c.tex[0];
         dTp_dx = dw0_dx * a.tex[1] + dw1_dx * b.tex[1] + dw2_dx * c.tex[1];
-        dTp_dy = dw0_dy * a.tex[1] + dw1_dy * b.tex[1] + dw2_dx * c.tex[1];
+        dTp_dy = dw0_dy * a.tex[1] + dw1_dy * b.tex[1] + dw2_dy * c.tex[1];
 
         float qa = a.pos[3]; float qb = b.pos[3]; float qc = c.pos[3];
         if (m_stwHintMask & 0x2) { // GR_STWHINT_W_DIFF_TMU0
@@ -914,9 +914,9 @@ void SoftwareBackend::RasterizeSoftwareTriangleImpl(const ModernVertex& a, const
 
     if (mipmappingEnabled1) {
         dSp1_dx = dw0_dx * a.tex[2] + dw1_dx * b.tex[2] + dw2_dx * c.tex[2];
-        dSp1_dy = dw0_dy * a.tex[2] + dw1_dy * b.tex[2] + dw2_dx * c.tex[2];
+        dSp1_dy = dw0_dy * a.tex[2] + dw1_dy * b.tex[2] + dw2_dy * c.tex[2];
         dTp1_dx = dw0_dx * a.tex[3] + dw1_dx * b.tex[3] + dw2_dx * c.tex[3];
-        dTp1_dy = dw0_dy * a.tex[3] + dw1_dy * b.tex[3] + dw2_dx * c.tex[3];
+        dTp1_dy = dw0_dy * a.tex[3] + dw1_dy * b.tex[3] + dw2_dy * c.tex[3];
 
         float qa = a.pos[3]; float qb = b.pos[3]; float qc = c.pos[3];
         if (m_stwHintMask & 0x4) { // GR_STWHINT_W_DIFF_TMU1

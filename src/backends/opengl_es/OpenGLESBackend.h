@@ -143,6 +143,7 @@ class OpenGLESBackend : public SoftwareBackendBase {
   int m_uTexAlphaFactorLoc{-1};
   int m_uTexRgbInvertLoc{-1};
   int m_uTexAlphaInvertLoc{-1};
+  uint32_t m_glesSamplers[2]{0, 0}; // GLuint sampler objects for TMU0/1
 };
 
 }  // namespace GlideWrapper
