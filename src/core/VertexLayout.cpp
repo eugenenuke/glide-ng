@@ -52,6 +52,49 @@ void VertexLayout::ResetToGlide3Canonical() {
   m_offsetST0 = 36;
   m_offsetFog = -1;
   m_offsetST1 = -1;
+
+  // Initialize the 108-byte struct to match the canonical Glide 3 state
+  std::memset(&m_glide3LayoutState, 0, sizeof(m_glide3LayoutState));
+
+  m_glide3LayoutState.vertexInfo.offset = 0;
+  m_glide3LayoutState.vertexInfo.mode = 1;  // ENABLE
+
+  m_glide3LayoutState.zInfo.offset = 8;  // canonical depth is OOZ at offset 8
+  m_glide3LayoutState.zInfo.mode = 1;
+
+  m_glide3LayoutState.wInfo.offset = 12;
+  m_glide3LayoutState.wInfo.mode = 1;
+
+  m_glide3LayoutState.rgbInfo.offset = 16;
+  m_glide3LayoutState.rgbInfo.mode = 1;
+
+  m_glide3LayoutState.aInfo.offset = 28;
+  m_glide3LayoutState.aInfo.mode = 1;
+
+  m_glide3LayoutState.st0Info.offset = 36;
+  m_glide3LayoutState.st0Info.mode = 1;
+
+  m_glide3LayoutState.st1Info.offset = -1;
+  m_glide3LayoutState.st1Info.mode = 0;
+
+  m_glide3LayoutState.fogInfo.offset = -1;
+  m_glide3LayoutState.fogInfo.mode = 0;
+
+  m_glide3LayoutState.pargbInfo.offset = -1;
+  m_glide3LayoutState.pargbInfo.mode = 0;
+
+  m_glide3LayoutState.qInfo.offset = -1;
+  m_glide3LayoutState.qInfo.mode = 0;
+
+  m_glide3LayoutState.q0Info.offset = -1;
+  m_glide3LayoutState.q0Info.mode = 0;
+
+  m_glide3LayoutState.q1Info.offset = -1;
+  m_glide3LayoutState.q1Info.mode = 0;
+
+  m_glide3LayoutState.vStride = 44;  // standard canonical stride
+  m_glide3LayoutState.vSize = 44;
+  m_glide3LayoutState.colorType = 0;  // float
 }
 
 void VertexLayout::SetParamOffset(uint32_t param, int32_t offset,
@@ -97,27 +140,49 @@ void VertexLayout::SetParamOffsetGlide3(uint32_t param, int32_t offset,
     offset = -1;
   }
   switch (param) {
-    case 0x01:
+    case 0x01:  // GR_PARAM_XY
       m_offsetXY = offset;
-      break;  // GR_PARAM_XY
-    case 0x02:
+      m_glide3LayoutState.vertexInfo.offset = offset;
+      m_glide3LayoutState.vertexInfo.mode = mode;
+      break;
+    case 0x02:  // GR_PARAM_Z
       m_offsetZ = offset;
-      break;    // GR_PARAM_Z
+      m_glide3LayoutState.zInfo.offset = offset;
+      m_glide3LayoutState.zInfo.mode = mode;
+      break;
     case 0x03:  // GR_PARAM_W
-    case 0x04:
       m_offsetOOW = offset;
-      break;  // GR_PARAM_Q
-    case 0x05:
+      m_glide3LayoutState.wInfo.offset = offset;
+      m_glide3LayoutState.wInfo.mode = mode;
+      break;
+    case 0x04:  // GR_PARAM_Q
+      m_offsetOOW = offset;
+      m_glide3LayoutState.qInfo.offset = offset;
+      m_glide3LayoutState.qInfo.mode = mode;
+      break;
+    case 0x05:  // GR_PARAM_FOG_EXT
       m_offsetFog = offset;
-      break;  // GR_PARAM_FOG_EXT
-    case 0x10:
+      m_glide3LayoutState.fogInfo.offset = offset;
+      m_glide3LayoutState.fogInfo.mode = mode;
+      break;
+    case 0x10:  // GR_PARAM_A
       m_offsetA = offset;
-      break;  // GR_PARAM_A
-    case 0x20:
+      m_glide3LayoutState.aInfo.offset = offset;
+      m_glide3LayoutState.aInfo.mode = mode;
+      break;
+    case 0x20:  // GR_PARAM_RGB
       m_offsetRGB = offset;
-      break;    // GR_PARAM_RGB
+      m_glide3LayoutState.rgbInfo.offset = offset;
+      m_glide3LayoutState.rgbInfo.mode = mode;
+      break;
+    case 0x30:  // GR_PARAM_PARGB
+      m_glide3LayoutState.pargbInfo.offset = offset;
+      m_glide3LayoutState.pargbInfo.mode = mode;
+      break;
     case 0x40:  // GR_PARAM_ST0
       m_offsetST0 = offset;
+      m_glide3LayoutState.st0Info.offset = offset;
+      m_glide3LayoutState.st0Info.mode = mode;
       if (offset != -1) {
         if (mode & 0x2) {  // GR_STWHINT_W_DIFF_TMU0
           m_stwHintMask |= 0x2;
@@ -130,6 +195,8 @@ void VertexLayout::SetParamOffsetGlide3(uint32_t param, int32_t offset,
       break;
     case 0x41:  // GR_PARAM_ST1
       m_offsetST1 = offset;
+      m_glide3LayoutState.st1Info.offset = offset;
+      m_glide3LayoutState.st1Info.mode = mode;
       if (offset != -1) {
         if (mode & 0x8) {  // GR_STWHINT_W_DIFF_TMU1
           m_stwHintMask |= 0x8;
@@ -139,6 +206,14 @@ void VertexLayout::SetParamOffsetGlide3(uint32_t param, int32_t offset,
       } else {
         m_stwHintMask &= ~0x8;
       }
+      break;
+    case 0x50:  // GR_PARAM_Q0
+      m_glide3LayoutState.q0Info.offset = offset;
+      m_glide3LayoutState.q0Info.mode = mode;
+      break;
+    case 0x51:  // GR_PARAM_Q1
+      m_glide3LayoutState.q1Info.offset = offset;
+      m_glide3LayoutState.q1Info.mode = mode;
       break;
     default:
       break;
@@ -318,32 +393,40 @@ ModernVertex VertexLayout::DecodeVertex(const void* gameVertex) const {
 
 void VertexLayout::GetLayoutState(void* layoutState) const {
   if (!layoutState) return;
-  auto* state = reinterpret_cast<Glide3VertexLayout*>(layoutState);
-  state->stwHintMask = m_stwHintMask;
-  state->offsetXY = m_offsetXY;
-  state->offsetZ = m_offsetZ;
-  state->offsetRGB = m_offsetRGB;
-  state->offsetOOZ = m_offsetOOZ;
-  state->offsetA = m_offsetA;
-  state->offsetOOW = m_offsetOOW;
-  state->offsetST0 = m_offsetST0;
-  state->offsetFog = m_offsetFog;
-  state->offsetST1 = m_offsetST1;
+  std::memcpy(layoutState, &m_glide3LayoutState, sizeof(Glide3VertexLayout));
 }
 
 void VertexLayout::SetLayoutState(const void* layoutState) {
   if (!layoutState) return;
-  auto* state = reinterpret_cast<const Glide3VertexLayout*>(layoutState);
-  m_stwHintMask = state->stwHintMask;
-  m_offsetXY = state->offsetXY;
-  m_offsetZ = state->offsetZ;
-  m_offsetRGB = state->offsetRGB;
-  m_offsetOOZ = state->offsetOOZ;
-  m_offsetA = state->offsetA;
-  m_offsetOOW = state->offsetOOW;
-  m_offsetST0 = state->offsetST0;
-  m_offsetFog = state->offsetFog;
-  m_offsetST1 = state->offsetST1;
+  std::memcpy(&m_glide3LayoutState, layoutState, sizeof(Glide3VertexLayout));
+
+  // Symmetrically restore all the internal flat offsets from the loaded struct
+  m_offsetXY = m_glide3LayoutState.vertexInfo.offset;
+  m_offsetZ = m_glide3LayoutState.zInfo.offset;
+  m_offsetOOZ = -1; // Reset OOZ and map depth to offsetZ for Glide 3.x consistency
+
+  m_offsetOOW = m_glide3LayoutState.wInfo.offset;
+  if (m_offsetOOW == -1 && m_glide3LayoutState.qInfo.offset != -1) {
+    m_offsetOOW = m_glide3LayoutState.qInfo.offset;
+  }
+  m_offsetA = m_glide3LayoutState.aInfo.offset;
+  m_offsetRGB = m_glide3LayoutState.rgbInfo.offset;
+  m_offsetST0 = m_glide3LayoutState.st0Info.offset;
+  m_offsetST1 = m_glide3LayoutState.st1Info.offset;
+  m_offsetFog = m_glide3LayoutState.fogInfo.offset;
+
+  // Reconstruct m_stwHintMask from the restored TMU modes
+  m_stwHintMask = 0;
+  if (m_offsetST0 != -1) {
+    if (m_glide3LayoutState.st0Info.mode & 0x2) {  // GR_STWHINT_W_DIFF_TMU0
+      m_stwHintMask |= 0x2;
+    }
+  }
+  if (m_offsetST1 != -1) {
+    if (m_glide3LayoutState.st1Info.mode & 0x8) {  // GR_STWHINT_W_DIFF_TMU1
+      m_stwHintMask |= 0x8;
+    }
+  }
 }
 
 }  // namespace GlideWrapper
