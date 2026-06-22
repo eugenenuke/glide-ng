@@ -2494,3 +2494,162 @@ TEST_CASE("Glide 3.x State Save & Restore ClipWindow and ColorMask Verification"
     glideShutdown();
     ::dlclose(handle);
 }
+
+TEST_CASE("Glide 3.x Software Reference Backend Multi-Texturing Parity", "[Glide3][Software][MultiTexture]") {
+    void* handle = OpenGlide3Handle();
+    REQUIRE(handle != nullptr);
+
+    using InitFunc = void(*)(void);
+    using SelectSstFunc = void(*)(int);
+    using OpenWinFunc = FxU32(*)(FxU32, FxU32, FxU32, FxU32, FxU32, int, int);
+    using CloseWinFunc = void(*)(FxU32);
+    using TexDownloadFunc = void(*)(GrChipID_t, FxU32, FxU32, GrTexInfo*);
+    using TexSourceFunc = void(*)(GrChipID_t, FxU32, FxU32, GrTexInfo*);
+    using TexClampFunc = void(*)(GrChipID_t, GrTextureClampMode_t, GrTextureClampMode_t);
+    using TexFilterFunc = void(*)(GrChipID_t, GrTextureFilterMode_t, GrTextureFilterMode_t);
+    using TexCombineFunc = void(*)(GrChipID_t, GrCombineFunction_t, GrCombineFactor_t, GrCombineFunction_t, GrCombineFactor_t, FxBool, FxBool);
+    using ColorCombineFunc = void(*)(GrCombineFunction_t, GrCombineFactor_t, GrCombineLocal_t, GrCombineOther_t, FxBool);
+    using BufferClearFunc = void(*)(FxU32, FxU32, FxU32);
+    using DrawTriFunc = void(*)(const void*, const void*, const void*);
+    using ReadLfbFunc = FxBool(*)(FxU32, FxU32, FxU32, FxU32, FxU32, FxU32, void*);
+    using ShutdownFunc = void(*)(void);
+    using VertexLayoutFunc = void(*)(FxU32, FxI32, FxU32);
+
+    auto glideInit = reinterpret_cast<InitFunc>(::dlsym(handle, "grGlideInit"));
+    auto sstSelect = reinterpret_cast<SelectSstFunc>(::dlsym(handle, "grSstSelect"));
+    auto winOpen   = reinterpret_cast<OpenWinFunc>(::dlsym(handle, "grSstWinOpen"));
+    auto winClose  = reinterpret_cast<CloseWinFunc>(::dlsym(handle, "grSstWinClose"));
+    auto texDownload = reinterpret_cast<TexDownloadFunc>(::dlsym(handle, "grTexDownloadMipMap"));
+    auto texSource   = reinterpret_cast<TexSourceFunc>(::dlsym(handle, "grTexSource"));
+    auto texClamp    = reinterpret_cast<TexClampFunc>(::dlsym(handle, "grTexClampMode"));
+    auto texFilter   = reinterpret_cast<TexFilterFunc>(::dlsym(handle, "grTexFilterMode"));
+    auto texCombine  = reinterpret_cast<TexCombineFunc>(::dlsym(handle, "grTexCombine"));
+    auto colorCombine = reinterpret_cast<ColorCombineFunc>(::dlsym(handle, "grColorCombine"));
+    auto bufferClear  = reinterpret_cast<BufferClearFunc>(::dlsym(handle, "grBufferClear"));
+    auto drawTri     = reinterpret_cast<DrawTriFunc>(::dlsym(handle, "grDrawTriangle"));
+    auto readLfb     = reinterpret_cast<ReadLfbFunc>(::dlsym(handle, "grLfbReadRegion"));
+    auto glideShutdown = reinterpret_cast<ShutdownFunc>(::dlsym(handle, "grGlideShutdown"));
+    auto vertexLayout = reinterpret_cast<VertexLayoutFunc>(::dlsym(handle, "grVertexLayout"));
+
+    REQUIRE(glideInit != nullptr);
+    REQUIRE(winOpen != nullptr);
+    REQUIRE(winClose != nullptr);
+    REQUIRE(texDownload != nullptr);
+    REQUIRE(texSource != nullptr);
+    REQUIRE(texClamp != nullptr);
+    REQUIRE(texFilter != nullptr);
+    REQUIRE(texCombine != nullptr);
+    REQUIRE(colorCombine != nullptr);
+    REQUIRE(bufferClear != nullptr);
+    REQUIRE(drawTri != nullptr);
+    REQUIRE(readLfb != nullptr);
+    REQUIRE(glideShutdown != nullptr);
+    REQUIRE(vertexLayout != nullptr);
+
+    // Force headless software reference backend for TDD validation
+    ::setenv("GLIDE_WRAPPER_BACKEND", "software", 1);
+    ::setenv("GLIDE_WRAPPER_LOG_LEVEL", "3", 1); // INFO
+
+    glideInit();
+    if (sstSelect) sstSelect(0);
+    FxU32 ctx = winOpen(0, GR_RESOLUTION_800x600, GR_REFRESH_60Hz, GR_COLORFORMAT_ABGR, GR_ORIGIN_UPPER_LEFT, 2, 1);
+    REQUIRE(ctx != 0);
+
+    // Configure Custom Multi-texture Vertex Layout
+    vertexLayout(0x01, 0, 1);  // GR_PARAM_XY at offset 0
+    vertexLayout(0x02, 8, 1);  // GR_PARAM_Z at offset 8
+    vertexLayout(0x20, 12, 1); // GR_PARAM_RGB at offset 12
+    vertexLayout(0x10, 24, 1); // GR_PARAM_A at offset 24
+    vertexLayout(0x04, 28, 1); // GR_PARAM_Q at offset 28
+    vertexLayout(0x40, 32, 1); // GR_PARAM_ST0 at offset 32
+    vertexLayout(0x100, 40, 1); // GR_PARAM_Q0 at offset 40
+    vertexLayout(0x80, 44, 1);  // GR_PARAM_ST1 at offset 44
+    vertexLayout(0x200, 52, 1); // GR_PARAM_Q1 at offset 52
+
+    // Allocate 16x16 red texture with 50% Alpha (0x8F00 in ARGB_4444) for TMU0
+    std::vector<uint16_t> tex0Data(16 * 16, 0x8F00); 
+    GrTexInfo tex0Info;
+    tex0Info.smallLodLog2 = 4; // 16x16
+    tex0Info.largeLodLog2 = 4;
+    tex0Info.aspectRatioLog2 = 0; // 1:1 aspect
+    tex0Info.format = GR_TEXFMT_ARGB_4444;
+    tex0Info.data = tex0Data.data();
+
+    // Allocate 16x16 blue texture (0xF00F in ARGB_4444) for TMU1
+    std::vector<uint16_t> tex1Data(16 * 16, 0xF00F); 
+    GrTexInfo tex1Info;
+    tex1Info.smallLodLog2 = 4; // 16x16
+    tex1Info.largeLodLog2 = 4;
+    tex1Info.aspectRatioLog2 = 0; // 1:1 aspect
+    tex1Info.format = GR_TEXFMT_ARGB_4444;
+    tex1Info.data = tex1Data.data();
+
+    // Download and configure TMU 0
+    texDownload(0, 0x00001000, 0, &tex0Info);
+    texSource(0, 0x00001000, 0, &tex0Info);
+    texClamp(0, GR_TEXTURECLAMP_CLAMP, GR_TEXTURECLAMP_CLAMP);
+    texFilter(0, GR_TEXTUREFILTER_POINT_SAMPLED, GR_TEXTUREFILTER_POINT_SAMPLED);
+
+    // Download and configure TMU 1
+    texDownload(1, 0x00010000, 0, &tex1Info);
+    texSource(1, 0x00010000, 0, &tex1Info);
+    texClamp(1, GR_TEXTURECLAMP_CLAMP, GR_TEXTURECLAMP_CLAMP);
+    texFilter(1, GR_TEXTUREFILTER_POINT_SAMPLED, GR_TEXTUREFILTER_POINT_SAMPLED);
+
+    // Combine setup:
+    // TMU 1: Output texture color directly (tmu1Out = tex1Color = Blue)
+    texCombine(GR_TMU1, GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+               GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE, FXFALSE, FXFALSE);
+
+    // TMU 0: Mix TMU 1 output (blue) with TMU 0 texture color (red) in 50/50 blend!
+    texCombine(GR_TMU0, GR_COMBINE_FUNCTION_BLEND, GR_COMBINE_FACTOR_LOCAL_ALPHA,
+               GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE, FXFALSE, FXFALSE);
+
+    // FBI Combiner: Pass texture color directly
+    colorCombine(GR_COMBINE_FUNCTION_SCALE_OTHER, GR_COMBINE_FACTOR_ONE,
+                 GR_COMBINE_LOCAL_NONE, GR_COMBINE_OTHER_TEXTURE, FXFALSE);
+
+    // Clear buffer to dark gray
+    bufferClear(0xFF333333, 0, 0);
+
+    // Define vertices
+    struct MultiTexVert {
+        float x, y, z;
+        float r, g, b, a;
+        float oow;
+        float s0, t0, oow0;
+        float s1, t1, oow1;
+    };
+
+    MultiTexVert v0{300.0f, 200.0f, 0.5f, 255.0f, 255.0f, 255.0f, 255.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f};
+    MultiTexVert v1{500.0f, 200.0f, 0.5f, 255.0f, 255.0f, 255.0f, 255.0f, 1.0f, 16.0f, 0.0f, 1.0f, 16.0f, 0.0f, 1.0f};
+    MultiTexVert v2{500.0f, 400.0f, 0.5f, 255.0f, 255.0f, 255.0f, 255.0f, 1.0f, 16.0f, 16.0f, 1.0f, 16.0f, 16.0f, 1.0f};
+    MultiTexVert v3{300.0f, 400.0f, 0.5f, 255.0f, 255.0f, 255.0f, 255.0f, 1.0f, 0.0f, 16.0f, 1.0f, 0.0f, 16.0f, 1.0f};
+
+    drawTri(&v0, &v1, &v2);
+    drawTri(&v0, &v2, &v3);
+
+    // Read back a pixel from the center (x=400, y=300)
+    uint32_t centerPixel = 0;
+    FxBool ok = readLfb(1, 400, 300, 1, 1, 4, &centerPixel);
+    REQUIRE(ok == FXTRUE);
+
+    // Unpack colors (ABGR format)
+    uint8_t a = (centerPixel >> 24) & 0xFF;
+    uint8_t b = (centerPixel >> 16) & 0xFF;
+    uint8_t g = (centerPixel >> 8) & 0xFF;
+    uint8_t r = centerPixel & 0xFF;
+
+    // Assert that the color is a perfect purple blend of 50% Red and 50% Blue!
+    INFO("Center Pixel color: R=" << (int)r << ", G=" << (int)g << ", B=" << (int)b << ", A=" << (int)a);
+    REQUIRE(r >= 110);
+    REQUIRE(r <= 125);
+    REQUIRE(g <= 5);
+    REQUIRE(b >= 130);
+    REQUIRE(b <= 145);
+
+    winClose(ctx);
+    glideShutdown();
+    ::dlclose(handle);
+}
+

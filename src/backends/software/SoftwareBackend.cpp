@@ -44,6 +44,88 @@ static const float s_tableIndexToW[64] = {
     32768.000000f,  37449.144531f,  43690.667969f,  52428.800781f
 };
 
+struct TmuColor {
+    float r, g, b, a;
+};
+
+static TmuColor EvaluateTmuStage(
+    uint32_t rgbFunc, uint32_t rgbFactor, uint32_t alphaFunc, uint32_t alphaFactor,
+    bool rgbInvert, bool alphaInvert,
+    const TmuColor& localVal, const TmuColor& otherVal, const TmuColor& iteratedCol) {
+    
+    // 1. Evaluate Alpha
+    float aLocal = localVal.a;
+    float aOther = otherVal.a;
+    float factA = 0.0f;
+    switch (alphaFactor) {
+        case 1: case 3: factA = aLocal; break;
+        case 2: factA = aOther; break;
+        case 4: factA = localVal.a; break;
+        case 8: factA = 1.0f; break;
+        case 9: case 11: factA = 1.0f - aLocal; break;
+        case 10: factA = 1.0f - aOther; break;
+        case 12: factA = 1.0f - localVal.a; break;
+    }
+
+    float finalA = 0.0f;
+    switch (alphaFunc) {
+        case 0: break;
+        case 1: finalA = aLocal; break;
+        case 3: finalA = aOther * factA; break;
+        case 4: case 5: finalA = aOther * factA + aLocal; break;
+        case 6: finalA = (aOther - aLocal) * factA; break;
+        case 7: case 8: finalA = (aOther - aLocal) * factA + aLocal; break;
+        case 9: case 16: finalA = (aLocal - aOther) * factA + aOther; break;
+    }
+    if (alphaInvert) finalA = 1.0f - finalA;
+
+    // 2. Evaluate RGB
+    float cLocalR = localVal.r; float cLocalG = localVal.g; float cLocalB = localVal.b;
+    float cOtherR = otherVal.r; float cOtherG = otherVal.g; float cOtherB = otherVal.b;
+
+    float factCR = 0.0f; float factCG = 0.0f; float factCB = 0.0f;
+    switch (rgbFactor) {
+        case 1: factCR = cLocalR; factCG = cLocalG; factCB = cLocalB; break;
+        case 2: factCR = aOther; factCG = aOther; factCB = aOther; break;
+        case 3: factCR = aLocal; factCG = aLocal; factCB = aLocal; break;
+        case 4: factCR = localVal.a; factCG = localVal.a; factCB = localVal.a; break;
+        case 5: factCR = localVal.r; factCG = localVal.g; factCB = localVal.b; break;
+        case 8: factCR = 1.0f; factCG = 1.0f; factCB = 1.0f; break;
+        case 9: factCR = 1.0f - cLocalR; factCG = 1.0f - cLocalG; factCB = 1.0f - cLocalB; break;
+        case 10: factCR = 1.0f - aOther; factCG = 1.0f - aOther; factCB = 1.0f - aOther; break;
+        case 11: factCR = 1.0f - aLocal; factCG = 1.0f - aLocal; factCB = 1.0f - aLocal; break;
+        case 12: factCR = 1.0f - localVal.a; factCG = 1.0f - localVal.a; factCB = 1.0f - localVal.a; break;
+    }
+
+    float finalCR = 0.0f; float finalCG = 0.0f; float finalCB = 0.0f;
+    switch (rgbFunc) {
+        case 0: break;
+        case 1: finalCR = cLocalR; finalCG = cLocalG; finalCB = cLocalB; break;
+        case 3: finalCR = cOtherR * factCR; finalCG = cOtherG * factCG; finalCB = cOtherB * factCB; break;
+        case 4: finalCR = cOtherR * factCR + cLocalR; finalCG = cOtherG * factCG + cLocalG; finalCB = cOtherB * factCB + cLocalB; break;
+        case 5: finalCR = cOtherR * factCR + aLocal; finalCG = cOtherG * factCG + aLocal; finalCB = cOtherB * factCB + aLocal; break;
+        case 6: finalCR = (cOtherR - cLocalR) * factCR; finalCG = (cOtherG - cLocalG) * factCR; finalCB = (cOtherB - cLocalB) * factCR; break;
+        case 7: finalCR = (cOtherR - cLocalR) * factCR + cLocalR; finalCG = (cOtherG - cLocalG) * factCR + cLocalG; finalCB = (cOtherB - cLocalB) * factCR + cLocalB; break;
+        case 8: finalCR = (cOtherR - cLocalR) * factCR + aLocal; finalCG = (cOtherG - cLocalG) * factCR + aLocal; finalCB = (cOtherB - cLocalB) * factCR + aLocal; break;
+        case 9:
+                finalCR = (cLocalR - cOtherR) * factCR + cOtherR;
+                finalCG = (cLocalG - cOtherG) * factCG + cOtherG;
+                finalCB = (cLocalB - cOtherB) * factCB + cOtherB;
+                break;
+        case 16:
+                // In GLSL: (vec3(aLocal) - cOther) * factC + cOther;
+                finalCR = (aLocal - cOtherR) * factCR + cOtherR;
+                finalCG = (aLocal - cOtherG) * factCG + cOtherG;
+                finalCB = (aLocal - cOtherB) * factCB + cOtherB;
+                break;
+    }
+    if (rgbInvert) {
+        finalCR = 1.0f - finalCR; finalCG = 1.0f - finalCG; finalCB = 1.0f - finalCB;
+    }
+
+    return {finalCR, finalCG, finalCB, finalA};
+}
+
 bool SoftwareBackend::Initialize(const WrapperConfig& config) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     if (m_initialized) return true;
@@ -626,41 +708,41 @@ void SoftwareBackend::RasterizeSoftwareTriangleImpl(const ModernVertex& a, const
         return (wrapped < static_cast<int>(size)) ? wrapped : (mask - wrapped);
     };
 
-    auto isTexChromaMatch = [&](uint32_t color) -> bool {
-        if (m_texChromaMode[0] != 1) return false;
+    auto isTexChromaMatch = [&](uint32_t color, uint32_t tmu) -> bool {
+        if (m_texChromaMode[tmu] != 1) return false;
         
         uint32_t r = (color >> 16) & 0xFF;
         uint32_t g = (color >> 8) & 0xFF;
         uint32_t b = color & 0xFF;
         
-        bool rangeEnabled = ((m_texChromaRangeMode[0] >> 28) & 1) == 1;
+        bool rangeEnabled = ((m_texChromaRangeMode[tmu] >> 28) & 1) == 1;
         if (rangeEnabled) {
-            uint32_t minR = (m_texChromaMin[0] >> 16) & 0xFF;
-            uint32_t minG = (m_texChromaMin[0] >> 8) & 0xFF;
-            uint32_t minB = m_texChromaMin[0] & 0xFF;
+            uint32_t minR = (m_texChromaMin[tmu] >> 16) & 0xFF;
+            uint32_t minG = (m_texChromaMin[tmu] >> 8) & 0xFF;
+            uint32_t minB = m_texChromaMin[tmu] & 0xFF;
             
-            uint32_t maxR = (m_texChromaMax[0] >> 16) & 0xFF;
-            uint32_t maxG = (m_texChromaMax[0] >> 8) & 0xFF;
-            uint32_t maxB = m_texChromaMax[0] & 0xFF;
+            uint32_t maxR = (m_texChromaMax[tmu] >> 16) & 0xFF;
+            uint32_t maxG = (m_texChromaMax[tmu] >> 8) & 0xFF;
+            uint32_t maxB = m_texChromaMax[tmu] & 0xFF;
             
             bool rMatch = (r >= minR && r <= maxR);
             bool gMatch = (g >= minG && g <= maxG);
             bool bMatch = (b >= minB && b <= maxB);
             
-            bool blueExcl  = ((m_texChromaRangeMode[0] >> 24) & 1) == 1;
-            bool greenExcl = ((m_texChromaRangeMode[0] >> 25) & 1) == 1;
-            bool redExcl   = ((m_texChromaRangeMode[0] >> 26) & 1) == 1;
+            bool blueExcl  = ((m_texChromaRangeMode[tmu] >> 24) & 1) == 1;
+            bool greenExcl = ((m_texChromaRangeMode[tmu] >> 25) & 1) == 1;
+            bool redExcl   = ((m_texChromaRangeMode[tmu] >> 26) & 1) == 1;
             
             bool rRes = rMatch != redExcl;
             bool gRes = gMatch != greenExcl;
             bool bRes = bMatch != blueExcl;
             
-            bool unionMode = ((m_texChromaRangeMode[0] >> 27) & 1) == 1;
+            bool unionMode = ((m_texChromaRangeMode[tmu] >> 27) & 1) == 1;
             return unionMode ? (rRes || gRes || bRes) : (rRes && gRes && bRes);
         } else {
-            uint32_t chromaR = (m_texChromaMin[0] >> 16) & 0xFF;
-            uint32_t chromaG = (m_texChromaMin[0] >> 8) & 0xFF;
-            uint32_t chromaB = m_texChromaMin[0] & 0xFF;
+            uint32_t chromaR = (m_texChromaMin[tmu] >> 16) & 0xFF;
+            uint32_t chromaG = (m_texChromaMin[tmu] >> 8) & 0xFF;
+            uint32_t chromaB = m_texChromaMin[tmu] & 0xFF;
             
             return (r == chromaR && g == chromaG && b == chromaB);
         }
@@ -722,7 +804,6 @@ void SoftwareBackend::RasterizeSoftwareTriangleImpl(const ModernVertex& a, const
 
     // Pre-resolve active texture parameters once per triangle to completely avoid per-pixel manager/hashmap lookups!
     bool hasTexture = (m_boundTexAddress[0] != 0xFFFFFFFF);
-    const uint32_t* texPixels = nullptr;
     uint32_t texW = 0;
     uint32_t texH = 0;
     uint32_t clampS = 0;
@@ -730,8 +811,6 @@ void SoftwareBackend::RasterizeSoftwareTriangleImpl(const ModernVertex& a, const
     uint32_t minFilter = 0;
     float scaleU = 0.0f;
     float scaleV = 0.0f;
-    uint32_t wMask = 0;
-    uint32_t hMask = 0;
 
     // Analytical Screen-Space Derivatives constants
     float dw0_dx = 0.0f, dw0_dy = 0.0f;
@@ -749,7 +828,6 @@ void SoftwareBackend::RasterizeSoftwareTriangleImpl(const ModernVertex& a, const
     if (hasTexture) {
         tex = TextureManager::GetInstance().GetTexture(0, m_boundTexAddress[0]);
         if (tex && !tex->swizzledMipLevels.empty()) {
-            texPixels = tex->swizzledMipLevels[0].data();
             texW = tex->baseWidth;
             texH = tex->baseHeight;
             clampS = m_texClampS[0];
@@ -758,40 +836,94 @@ void SoftwareBackend::RasterizeSoftwareTriangleImpl(const ModernVertex& a, const
             float maxDim = static_cast<float>(std::max(texW, texH));
             scaleU = maxDim / 256.0f;
             scaleV = maxDim / 256.0f;
-            wMask = texW - 1; // Used for fast wrapping mask (assuming power of two)
-            hMask = texH - 1; // Used for fast wrapping mask (assuming power of two)
 
             // Check if mipmapping is active in Glide state
             mipmapMode = m_texMipMapMode[0];
             lodBlend = m_texLodBlend[0];
             mipmappingEnabled = (mipmapMode != 0); // 0 = GR_MIPMAP_DISABLE
-
-            if (mipmappingEnabled) {
-                // Pre-compute barycentric derivatives with respect to screen x and y
-                dw0_dx = a0 * invArea;
-                dw0_dy = b0 * invArea;
-                dw1_dx = a1 * invArea;
-                dw1_dy = b1 * invArea;
-                dw2_dx = a2 * invArea;
-                dw2_dy = b2 * invArea;
-
-                // S' and T' derivatives
-                dSp_dx = dw0_dx * a.tex[0] + dw1_dx * b.tex[0] + dw2_dx * c.tex[0];
-                dSp_dy = dw0_dy * a.tex[0] + dw1_dy * b.tex[0] + dw2_dy * c.tex[0];
-                dTp_dx = dw0_dx * a.tex[1] + dw1_dx * b.tex[1] + dw2_dx * c.tex[1];
-                dTp_dy = dw0_dy * a.tex[1] + dw1_dy * b.tex[1] + dw2_dy * c.tex[1];
-
-                // Q (1/W) derivatives (incorporating TMU W-hint)
-                float qa = a.pos[3]; float qb = b.pos[3]; float qc = c.pos[3];
-                if (m_stwHintMask & 0x2) { // GR_STWHINT_W_DIFF_TMU0
-                    qa = a.tmu_oow[0]; qb = b.tmu_oow[0]; qc = c.tmu_oow[0];
-                }
-                dQ_dx = dw0_dx * qa + dw1_dx * qb + dw2_dx * qc;
-                dQ_dy = dw0_dy * qa + dw1_dy * qb + dw2_dy * qc;
-            }
         } else {
             hasTexture = false; // Disable texturing if invalid
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // TMU 1 Setup (Upstream)
+    // -------------------------------------------------------------------------
+    bool hasTexture1 = (m_boundTexAddress[1] != 0xFFFFFFFF);
+    uint32_t texW1 = 0;
+    uint32_t texH1 = 0;
+    uint32_t clampS1 = 0;
+    uint32_t clampT1 = 0;
+    uint32_t minFilter1 = 0;
+    float scaleU1 = 0.0f;
+    float scaleV1 = 0.0f;
+
+    float dSp1_dx = 0.0f, dSp1_dy = 0.0f;
+    float dTp1_dx = 0.0f, dTp1_dy = 0.0f;
+    float dQ1_dx = 0.0f, dQ1_dy = 0.0f;
+
+    bool mipmappingEnabled1 = false;
+    uint32_t mipmapMode1 = 0;
+    bool lodBlend1 = false;
+    const VirtualTexture* tex1 = nullptr;
+
+    if (hasTexture1) {
+        tex1 = TextureManager::GetInstance().GetTexture(1, m_boundTexAddress[1]);
+        if (tex1 && !tex1->swizzledMipLevels.empty()) {
+            texW1 = tex1->baseWidth;
+            texH1 = tex1->baseHeight;
+            clampS1 = m_texClampS[1];
+            clampT1 = m_texClampT[1];
+            minFilter1 = m_texMinFilter[1];
+            float maxDim1 = static_cast<float>(std::max(texW1, texH1));
+            scaleU1 = maxDim1 / 256.0f;
+            scaleV1 = maxDim1 / 256.0f;
+
+            mipmapMode1 = m_texMipMapMode[1];
+            lodBlend1 = m_texLodBlend[1];
+            mipmappingEnabled1 = (mipmapMode1 != 0);
+        } else {
+            hasTexture1 = false;
+        }
+    }
+
+    // Shared barycentric derivatives computation
+    bool needBarycentricDerivatives = mipmappingEnabled || mipmappingEnabled1;
+    if (needBarycentricDerivatives) {
+        dw0_dx = a0 * invArea;
+        dw0_dy = b0 * invArea;
+        dw1_dx = a1 * invArea;
+        dw1_dy = b1 * invArea;
+        dw2_dx = a2 * invArea;
+        dw2_dy = b2 * invArea;
+    }
+
+    if (mipmappingEnabled) {
+        dSp_dx = dw0_dx * a.tex[0] + dw1_dx * b.tex[0] + dw2_dx * c.tex[0];
+        dSp_dy = dw0_dy * a.tex[0] + dw1_dy * b.tex[0] + dw2_dx * c.tex[0];
+        dTp_dx = dw0_dx * a.tex[1] + dw1_dx * b.tex[1] + dw2_dx * c.tex[1];
+        dTp_dy = dw0_dy * a.tex[1] + dw1_dy * b.tex[1] + dw2_dx * c.tex[1];
+
+        float qa = a.pos[3]; float qb = b.pos[3]; float qc = c.pos[3];
+        if (m_stwHintMask & 0x2) { // GR_STWHINT_W_DIFF_TMU0
+            qa = a.tmu_oow[0]; qb = b.tmu_oow[0]; qc = c.tmu_oow[0];
+        }
+        dQ_dx = dw0_dx * qa + dw1_dx * qb + dw2_dx * qc;
+        dQ_dy = dw0_dy * qa + dw1_dy * qb + dw2_dy * qc;
+    }
+
+    if (mipmappingEnabled1) {
+        dSp1_dx = dw0_dx * a.tex[2] + dw1_dx * b.tex[2] + dw2_dx * c.tex[2];
+        dSp1_dy = dw0_dy * a.tex[2] + dw1_dy * b.tex[2] + dw2_dx * c.tex[2];
+        dTp1_dx = dw0_dx * a.tex[3] + dw1_dx * b.tex[3] + dw2_dx * c.tex[3];
+        dTp1_dy = dw0_dy * a.tex[3] + dw1_dy * b.tex[3] + dw2_dx * c.tex[3];
+
+        float qa = a.pos[3]; float qb = b.pos[3]; float qc = c.pos[3];
+        if (m_stwHintMask & 0x4) { // GR_STWHINT_W_DIFF_TMU1
+            qa = a.tmu_oow[1]; qb = b.tmu_oow[1]; qc = c.tmu_oow[1];
+        }
+        dQ1_dx = dw0_dx * qa + dw1_dx * qb + dw2_dx * qc;
+        dQ1_dy = dw0_dy * qa + dw1_dy * qb + dw2_dy * qc;
     }
 
     // Define the core pixel rendering pipeline as a lambda
@@ -821,126 +953,217 @@ void SoftwareBackend::RasterizeSoftwareTriangleImpl(const ModernVertex& a, const
             iterA = w0 * a.color[3] + w1 * b.color[3] + w2 * c.color[3];
         }
 
-        // 2. Sample texture using perspective-correct division and optimized integer pipelines
-        float texR = 1.0f; float texG = 1.0f; float texB = 1.0f; float texA = 1.0f;
-        if (keepPixel && hasTexture) {
-            // Define a local lambda to sample from a specific mipmap level
-            auto sampleLevel = [&](int lodIdx, float levelTrueS, float levelTrueT) -> uint32_t {
-                const uint32_t* levelPixels = tex->swizzledMipLevels[lodIdx].data();
-                uint32_t levelW = std::max(1u, texW >> lodIdx);
-                uint32_t levelH = std::max(1u, texH >> lodIdx);
-                uint32_t levelWMask = levelW - 1;
-                uint32_t levelHMask = levelH - 1;
+        // Define a unified parameter-driven texture sampler lambda
+        auto sampleLevel = [&](const VirtualTexture* targetTex, int lodIdx, float levelTrueS, float levelTrueT,
+                               uint32_t targetClampS, uint32_t targetClampT, uint32_t targetMinFilter, uint32_t tmuIdx) -> uint32_t {
+            const uint32_t* levelPixels = targetTex->swizzledMipLevels[lodIdx].data();
+            uint32_t targetW = targetTex->baseWidth;
+            uint32_t targetH = targetTex->baseHeight;
+            uint32_t levelW = std::max(1u, targetW >> lodIdx);
+            uint32_t levelH = std::max(1u, targetH >> lodIdx);
+            uint32_t levelWMask = levelW - 1;
+            uint32_t levelHMask = levelH - 1;
 
-                float levelScale = 1.0f / static_cast<float>(1 << lodIdx);
-                float levelTexU = levelTrueS * scaleU * levelScale;
-                float levelTexV = levelTrueT * scaleV * levelScale;
+            float levelScale = 1.0f / static_cast<float>(1 << lodIdx);
+            float maxDim = static_cast<float>(std::max(targetW, targetH));
+            float targetScaleU = maxDim / 256.0f;
+            float targetScaleV = maxDim / 256.0f;
+            float levelTexU = levelTrueS * targetScaleU * levelScale;
+            float levelTexV = levelTrueT * targetScaleV * levelScale;
 
-                if (minFilter == 1) { // BILINEAR
-                    float u_sub = levelTexU - 0.5f;
-                    float v_sub = levelTexV - 0.5f;
-                    int u0 = static_cast<int>(std::floor(u_sub));
-                    int v0 = static_cast<int>(std::floor(v_sub));
-                    
-                    int fx = static_cast<int>((u_sub - u0) * 256.0f);
-                    int fy = static_cast<int>((v_sub - v0) * 256.0f);
+            if (targetMinFilter == 1) { // BILINEAR
+                float u_sub = levelTexU - 0.5f;
+                float v_sub = levelTexV - 0.5f;
+                int u0 = static_cast<int>(std::floor(u_sub));
+                int v0 = static_cast<int>(std::floor(v_sub));
+                
+                int fx = static_cast<int>((u_sub - u0) * 256.0f);
+                int fy = static_cast<int>((v_sub - v0) * 256.0f);
 
-                    int x0, x1, y0, y1;
-                    if (clampS == 1) { // CLAMP
-                        x0 = std::max(0, std::min(static_cast<int>(levelW - 1), u0));
-                        x1 = std::max(0, std::min(static_cast<int>(levelW - 1), u0 + 1));
-                    } else if (clampS == 2) { // MIRROR
-                        x0 = mirrorCoord(u0, levelW);
-                        x1 = mirrorCoord(u0 + 1, levelW);
-                    } else { // WRAP
-                        x0 = u0 & levelWMask;
-                        x1 = (u0 + 1) & levelWMask;
-                    }
+                int x0, x1, y0, y1;
+                if (targetClampS == 1) { // CLAMP
+                    x0 = std::max(0, std::min(static_cast<int>(levelW - 1), u0));
+                    x1 = std::max(0, std::min(static_cast<int>(levelW - 1), u0 + 1));
+                } else if (targetClampS == 2) { // MIRROR
+                    x0 = mirrorCoord(u0, levelW);
+                    x1 = mirrorCoord(u0 + 1, levelW);
+                } else { // WRAP
+                    x0 = u0 & levelWMask;
+                    x1 = (u0 + 1) & levelWMask;
+                }
 
-                    if (clampT == 1) { // CLAMP
-                        y0 = std::max(0, std::min(static_cast<int>(levelH - 1), v0));
-                        y1 = std::max(0, std::min(static_cast<int>(levelH - 1), v0 + 1));
-                    } else if (clampT == 2) { // MIRROR
-                        y0 = mirrorCoord(v0, levelH);
-                        y1 = mirrorCoord(v0 + 1, levelH);
-                    } else { // WRAP
-                        y0 = v0 & levelHMask;
-                        y1 = (v0 + 1) & levelHMask;
-                    }
+                if (targetClampT == 1) { // CLAMP
+                    y0 = std::max(0, std::min(static_cast<int>(levelH - 1), v0));
+                    y1 = std::max(0, std::min(static_cast<int>(levelH - 1), v0 + 1));
+                } else if (targetClampT == 2) { // MIRROR
+                    y0 = mirrorCoord(v0, levelH);
+                    y1 = mirrorCoord(v0 + 1, levelH);
+                } else { // WRAP
+                    y0 = v0 & levelHMask;
+                    y1 = (v0 + 1) & levelHMask;
+                }
 
-                    uint32_t c00 = levelPixels[y0 * levelW + x0];
-                    uint32_t c10 = levelPixels[y0 * levelW + x1];
-                    uint32_t c01 = levelPixels[y1 * levelW + x0];
-                    uint32_t c11 = levelPixels[y1 * levelW + x1];
+                uint32_t c00 = levelPixels[y0 * levelW + x0];
+                uint32_t c10 = levelPixels[y0 * levelW + x1];
+                uint32_t c01 = levelPixels[y1 * levelW + x0];
+                uint32_t c11 = levelPixels[y1 * levelW + x1];
 
-                    if (isTexChromaMatch(c00)) c00 = 0;
-                    if (isTexChromaMatch(c10)) c10 = 0;
-                    if (isTexChromaMatch(c01)) c01 = 0;
-                    if (isTexChromaMatch(c11)) c11 = 0;
+                if (isTexChromaMatch(c00, tmuIdx)) c00 = 0;
+                if (isTexChromaMatch(c10, tmuIdx)) c10 = 0;
+                if (isTexChromaMatch(c01, tmuIdx)) c01 = 0;
+                if (isTexChromaMatch(c11, tmuIdx)) c11 = 0;
 
-                    int w00 = (256 - fx) * (256 - fy);
-                    int w10 = fx * (256 - fy);
-                    int w01 = (256 - fx) * fy;
-                    int w11 = fx * fy;
+                int w00 = (256 - fx) * (256 - fy);
+                int w10 = fx * (256 - fy);
+                int w01 = (256 - fx) * fy;
+                int w11 = fx * fy;
 
-                    auto blendChannel = [&](int shift) -> uint32_t {
-                        uint32_t val00 = (c00 >> shift) & 0xFF;
-                        uint32_t val10 = (c10 >> shift) & 0xFF;
-                        uint32_t val01 = (c01 >> shift) & 0xFF;
-                        uint32_t val11 = (c11 >> shift) & 0xFF;
-                        return (val00 * w00 + val10 * w10 + val01 * w01 + val11 * w11) >> 16;
+                auto blendChannel = [&](int shift) -> uint32_t {
+                    uint32_t val00 = (c00 >> shift) & 0xFF;
+                    uint32_t val10 = (c10 >> shift) & 0xFF;
+                    uint32_t val01 = (c01 >> shift) & 0xFF;
+                    uint32_t val11 = (c11 >> shift) & 0xFF;
+                    return (val00 * w00 + val10 * w10 + val01 * w01 + val11 * w11) >> 16;
+                };
+
+                uint32_t r = blendChannel(16);
+                uint32_t g = blendChannel(8);
+                uint32_t b = blendChannel(0);
+                uint32_t a_val = blendChannel(24);
+
+                return (a_val << 24) | (r << 16) | (g << 8) | b;
+            } else { // POINT
+                int u0 = static_cast<int>(levelTexU + 0.0001f);
+                int v0 = static_cast<int>(levelTexV + 0.0001f);
+                
+                int x0, y0;
+                if (targetClampS == 1) {
+                    x0 = std::max(0, std::min(static_cast<int>(levelW - 1), u0));
+                } else if (targetClampS == 2) {
+                    x0 = mirrorCoord(u0, levelW);
+                } else {
+                    x0 = u0 & levelWMask;
+                }
+
+                if (targetClampT == 1) {
+                    y0 = std::max(0, std::min(static_cast<int>(levelH - 1), v0));
+                } else if (targetClampT == 2) {
+                    y0 = mirrorCoord(v0, levelH);
+                } else {
+                    y0 = v0 & levelHMask;
+                }
+
+                uint32_t val = levelPixels[y0 * levelW + x0];
+                if (isTexChromaMatch(val, tmuIdx)) {
+                    val = 0;
+                }
+                return val;
+            }
+        };
+
+        // 2. Sample TMU 1 (Upstream)
+        TmuColor tmu1Color = {1.0f, 1.0f, 1.0f, 1.0f};
+        if (keepPixel && hasTexture1) {
+            float texS1 = w0 * a.tex[2] + w1 * b.tex[2] + w2 * c.tex[2];
+            float texT1 = w0 * a.tex[3] + w1 * b.tex[3] + w2 * c.tex[3];
+            
+            float divW1 = wVal;
+            if (m_stwHintMask & 0x4) { // GR_STWHINT_W_DIFF_TMU1
+                divW1 = w0 * a.tmu_oow[1] + w1 * b.tmu_oow[1] + w2 * c.tmu_oow[1];
+            }
+            float invW1 = 1.0f / divW1;
+            float trueS1 = texS1 * invW1;
+            float trueT1 = texT1 * invW1;
+
+            uint32_t tWord1;
+            if (mipmappingEnabled1) {
+                float ds_dx1 = (dSp1_dx - trueS1 * dQ1_dx) * invW1;
+                float ds_dy1 = (dSp1_dy - trueS1 * dQ1_dy) * invW1;
+                float dt_dx1 = (dTp1_dx - trueT1 * dQ1_dx) * invW1;
+                float dt_dy1 = (dTp1_dy - trueT1 * dQ1_dy) * invW1;
+
+                float du_dx1 = ds_dx1 * scaleU1;
+                float du_dy1 = ds_dy1 * scaleU1;
+                float dv_dx1 = dt_dx1 * scaleV1;
+                float dv_dy1 = dt_dy1 * scaleV1;
+
+                float d1 = std::max(du_dx1 * du_dx1 + dv_dx1 * dv_dx1, du_dy1 * du_dy1 + dv_dy1 * dv_dy1);
+                float lod1 = 0.0f;
+                if (d1 > 1e-8f) {
+                    lod1 = 0.5f * fast_log2(d1);
+                } else {
+                    lod1 = -10.0f;
+                }
+                lod1 += m_texLodBias[1];
+
+                float clampedLod1 = std::clamp(lod1, static_cast<float>(tex1->largeLod), static_cast<float>(tex1->smallLod));
+
+                if (lodBlend1) { // Trilinear
+                    int level0 = static_cast<int>(std::floor(clampedLod1));
+                    int level1 = level0 + 1;
+                    int lodIdx0 = std::clamp(level0 - tex1->largeLod, 0, static_cast<int>(tex1->swizzledMipLevels.size() - 1));
+                    int lodIdx1 = std::clamp(level1 - tex1->largeLod, 0, static_cast<int>(tex1->swizzledMipLevels.size() - 1));
+                    float lodFraction = clampedLod1 - std::floor(clampedLod1);
+
+                    uint32_t c0 = sampleLevel(tex1, lodIdx0, trueS1, trueT1, clampS1, clampT1, minFilter1, 1u);
+                    uint32_t c1 = sampleLevel(tex1, lodIdx1, trueS1, trueT1, clampS1, clampT1, minFilter1, 1u);
+
+                    int w1_frac = static_cast<int>(lodFraction * 256.0f);
+                    int w0_frac = 256 - w1_frac;
+
+                    auto blendMip = [&](int shift) -> uint32_t {
+                        uint32_t val0 = (c0 >> shift) & 0xFF;
+                        uint32_t val1 = (c1 >> shift) & 0xFF;
+                        return (val0 * w0_frac + val1 * w1_frac) >> 8;
                     };
 
-                    uint32_t r = blendChannel(16);
-                    uint32_t g = blendChannel(8);
-                    uint32_t b = blendChannel(0);
-                    uint32_t a_val = blendChannel(24);
-
-                    return (a_val << 24) | (r << 16) | (g << 8) | b;
-                } else { // POINT
-                    int u0 = static_cast<int>(levelTexU + 0.0001f);
-                    int v0 = static_cast<int>(levelTexV + 0.0001f);
-                    
-                    int x0, y0;
-                    if (clampS == 1) {
-                        x0 = std::max(0, std::min(static_cast<int>(levelW - 1), u0));
-                    } else if (clampS == 2) {
-                        x0 = mirrorCoord(u0, levelW);
-                    } else {
-                        x0 = u0 & levelWMask;
-                    }
-
-                    if (clampT == 1) {
-                        y0 = std::max(0, std::min(static_cast<int>(levelH - 1), v0));
-                    } else if (clampT == 2) {
-                        y0 = mirrorCoord(v0, levelH);
-                    } else {
-                        y0 = v0 & levelHMask;
-                    }
-
-                    uint32_t val = levelPixels[y0 * levelW + x0];
-                    if (isTexChromaMatch(val)) {
-                        val = 0;
-                    }
-                    return val;
+                    uint32_t r = blendMip(16);
+                    uint32_t g = blendMip(8);
+                    uint32_t b = blendMip(0);
+                    uint32_t a_val = blendMip(24);
+                    tWord1 = (a_val << 24) | (r << 16) | (g << 8) | b;
+                } else { // Nearest Mipmap
+                    int level = static_cast<int>(std::round(clampedLod1));
+                    int lodIdx = std::clamp(level - tex1->largeLod, 0, static_cast<int>(tex1->swizzledMipLevels.size() - 1));
+                    tWord1 = sampleLevel(tex1, lodIdx, trueS1, trueT1, clampS1, clampT1, minFilter1, 1u);
                 }
-            };
+            } else {
+                tWord1 = sampleLevel(tex1, 0, trueS1, trueT1, clampS1, clampT1, minFilter1, 1u);
+            }
 
+            tmu1Color.r = ((tWord1 >> 16) & 0xFF) / 255.0f;
+            tmu1Color.g = ((tWord1 >> 8)  & 0xFF) / 255.0f;
+            tmu1Color.b = (tWord1 & 0xFF) / 255.0f;
+            tmu1Color.a = ((tWord1 >> 24) & 0xFF) / 255.0f;
+        }
+
+        // Evaluate TMU 1 Stage (iterated color is passed as other and iterated)
+        TmuColor iteratedColor = {iterR, iterG, iterB, iterA};
+        bool tmu1Active = hasTexture1;
+        TmuColor tmu1Out = iteratedColor;
+        if (keepPixel && tmu1Active) {
+            tmu1Out = EvaluateTmuStage(m_texCombinerRgbFunc[1], m_texCombinerRgbFactor[1],
+                                       m_texCombinerAlphaFunc[1], m_texCombinerAlphaFactor[1],
+                                       m_texCombinerRgbInvert[1], m_texCombinerAlphaInvert[1],
+                                       tmu1Color, iteratedColor, iteratedColor);
+        }
+
+        // 3. Sample TMU 0 (Downstream)
+        TmuColor tmu0Color = {1.0f, 1.0f, 1.0f, 1.0f};
+        if (keepPixel && hasTexture) {
             float texS = w0 * a.tex[0] + w1 * b.tex[0] + w2 * c.tex[0];
             float texT = w0 * a.tex[1] + w1 * b.tex[1] + w2 * c.tex[1];
             
-            // Perspective division
-            float divW = wVal;
+            float divW0 = wVal;
             if (m_stwHintMask & 0x2) { // GR_STWHINT_W_DIFF_TMU0
-                divW = w0 * a.tmu_oow[0] + w1 * b.tmu_oow[0] + w2 * c.tmu_oow[0];
+                divW0 = w0 * a.tmu_oow[0] + w1 * b.tmu_oow[0] + w2 * c.tmu_oow[0];
             }
-            float invW = 1.0f / divW;
+            float invW = 1.0f / divW0;
             float trueS = texS * invW;
             float trueT = texT * invW;
 
             uint32_t tWord;
             if (mipmappingEnabled) {
-                // Compute analytical screen-space derivatives using Quotient Rule
                 float ds_dx = (dSp_dx - trueS * dQ_dx) * invW;
                 float ds_dy = (dSp_dy - trueS * dQ_dy) * invW;
                 float dt_dx = (dTp_dx - trueT * dQ_dx) * invW;
@@ -960,20 +1183,18 @@ void SoftwareBackend::RasterizeSoftwareTriangleImpl(const ModernVertex& a, const
                 }
                 lod += m_texLodBias[0];
 
-                // Clamp to loaded LOD bounds
                 float clampedLod = std::clamp(lod, static_cast<float>(tex->largeLod), static_cast<float>(tex->smallLod));
 
-                if (lodBlend) { // Trilinear (LOD Blend)
+                if (lodBlend) { // Trilinear
                     int level0 = static_cast<int>(std::floor(clampedLod));
                     int level1 = level0 + 1;
                     int lodIdx0 = std::clamp(level0 - tex->largeLod, 0, static_cast<int>(tex->swizzledMipLevels.size() - 1));
                     int lodIdx1 = std::clamp(level1 - tex->largeLod, 0, static_cast<int>(tex->swizzledMipLevels.size() - 1));
                     float lodFraction = clampedLod - std::floor(clampedLod);
 
-                    uint32_t c0 = sampleLevel(lodIdx0, trueS, trueT);
-                    uint32_t c1 = sampleLevel(lodIdx1, trueS, trueT);
+                    uint32_t c0 = sampleLevel(tex, lodIdx0, trueS, trueT, clampS, clampT, minFilter, 0u);
+                    uint32_t c1 = sampleLevel(tex, lodIdx1, trueS, trueT, clampS, clampT, minFilter, 0u);
 
-                    // Blend the two mipmap levels
                     int w1_frac = static_cast<int>(lodFraction * 256.0f);
                     int w0_frac = 256 - w1_frac;
 
@@ -987,28 +1208,37 @@ void SoftwareBackend::RasterizeSoftwareTriangleImpl(const ModernVertex& a, const
                     uint32_t g = blendMip(8);
                     uint32_t b = blendMip(0);
                     uint32_t a_val = blendMip(24);
-
                     tWord = (a_val << 24) | (r << 16) | (g << 8) | b;
                 } else { // Nearest Mipmap
                     int level = static_cast<int>(std::round(clampedLod));
                     int lodIdx = std::clamp(level - tex->largeLod, 0, static_cast<int>(tex->swizzledMipLevels.size() - 1));
-                    tWord = sampleLevel(lodIdx, trueS, trueT);
+                    tWord = sampleLevel(tex, lodIdx, trueS, trueT, clampS, clampT, minFilter, 0u);
                 }
             } else {
-                // Mipmapping disabled: sample base level 0
-                tWord = sampleLevel(0, trueS, trueT);
+                tWord = sampleLevel(tex, 0, trueS, trueT, clampS, clampT, minFilter, 0u);
             }
 
-            texR = ((tWord >> 16) & 0xFF) / 255.0f;
-            texG = ((tWord >> 8)  & 0xFF) / 255.0f;
-            texB = (tWord & 0xFF) / 255.0f;
-            texA = ((tWord >> 24) & 0xFF) / 255.0f;
-
-            if (isTestPixel) {
-                GLIDE_LOG(DEBUG, "RasterizerDebug", "Test pixel (" << x << "," << y << ") sampled texture coordinate S=" << trueS << ", T=" << trueT 
-                          << ", TexelColor=(" << texR << "," << texG << "," << texB << "," << texA << ")");
-            }
+            tmu0Color.r = ((tWord >> 16) & 0xFF) / 255.0f;
+            tmu0Color.g = ((tWord >> 8)  & 0xFF) / 255.0f;
+            tmu0Color.b = (tWord & 0xFF) / 255.0f;
+            tmu0Color.a = ((tWord >> 24) & 0xFF) / 255.0f;
         }
+
+        // Evaluate TMU 0 Stage (upstream output tmu1Out is passed as otherVal)
+        bool tmu0Active = hasTexture;
+        TmuColor tmu0Out = tmu1Out;
+        if (keepPixel && tmu0Active) {
+            tmu0Out = EvaluateTmuStage(m_texCombinerRgbFunc[0], m_texCombinerRgbFactor[0],
+                                       m_texCombinerAlphaFunc[0], m_texCombinerAlphaFactor[0],
+                                       m_texCombinerRgbInvert[0], m_texCombinerAlphaInvert[0],
+                                       tmu0Color, tmu1Out, iteratedColor);
+        }
+
+        TmuColor texColor = tmu0Out;
+        float texR = texColor.r;
+        float texG = texColor.g;
+        float texB = texColor.b;
+        float texA = texColor.a;
 
         // 3. Evaluate general Register Combiner inputs
         float red = 0.0f; float green = 0.0f; float blue = 0.0f; float alpha = 0.0f;
