@@ -10,6 +10,8 @@ __attribute__((weak)) extern volatile int g_glideWrapperLastKey;
 namespace {
     struct termios save_termdata;
     int init_done = 0;
+    float s_screenWidth = 640.0f;
+    float s_screenHeight = 480.0f;
 
     void reset_term(void) {
         if (init_done) {
@@ -81,4 +83,17 @@ extern "C" char tlGetCH(void) {
         ch = 0;
     }
     return ch;
+}
+
+extern "C" void tlSetScreen(float width, float height) {
+    s_screenWidth = width;
+    s_screenHeight = height;
+}
+
+extern "C" float tlScaleX(float coord) {
+    return coord * s_screenWidth;
+}
+
+extern "C" float tlScaleY(float coord) {
+    return coord * s_screenHeight;
 }

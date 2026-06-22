@@ -1,6 +1,5 @@
 #include <glide.h>
 #include <tlib.h>
-#include <linutil.h>
 #include <iostream>
 #include <algorithm>
 #include <cmath>

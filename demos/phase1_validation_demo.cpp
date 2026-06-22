@@ -1,6 +1,5 @@
 #include <DiagnosticInfo.h>
 #include <glide.h>
-#include <linutil.h>
 #include <tlib.h>
 
 #include <algorithm>

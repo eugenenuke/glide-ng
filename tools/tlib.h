@@ -8,6 +8,9 @@ extern "C" {
 int tlOkToRender(void);
 int tlKbHit(void);
 char tlGetCH(void);
+void tlSetScreen(float width, float height);
+float tlScaleX(float coord);
+float tlScaleY(float coord);
 
 #ifdef __cplusplus
 }
