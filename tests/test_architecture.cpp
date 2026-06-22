@@ -6327,3 +6327,48 @@ TEST_CASE("Glide 2.x/3.x TMU 1 Vertex Layout Decoding Integrity", "[VertexLayout
     REQUIRE(mv.tex[3] == 80.0f);
   }
 }
+
+TEST_CASE("Glide 2.x LFB Readback Stride Validation [VULN-04]", "[Glide2][LFB]") {
+#ifdef __linux__
+  void* handle = OpenGlide2Handle();
+  REQUIRE(handle != nullptr);
+
+  auto glideInit = (void (*)(void))dlsym(handle, "grGlideInit");
+  auto sstSelect = (void (*)(int))dlsym(handle, "grSstSelect");
+  auto winOpen = (FxBool (*)(FxU32, GrScreenResolution_t, GrScreenRefresh_t,
+                             GrColorFormat_t, GrOriginLocation_t, int,
+                             int))dlsym(handle, "grSstWinOpen");
+  auto readLfb = (FxBool (*)(GrBuffer_t, FxU32, FxU32, FxU32, FxU32, FxU32,
+                             void*))dlsym(handle, "grLfbReadRegion");
+  auto shutdown = (void (*)(void))dlsym(handle, "grGlideShutdown");
+
+  REQUIRE(glideInit != nullptr);
+  REQUIRE(sstSelect != nullptr);
+  REQUIRE(winOpen != nullptr);
+  REQUIRE(readLfb != nullptr);
+  REQUIRE(shutdown != nullptr);
+
+  glideInit();
+  sstSelect(0);
+  FxBool openOk = winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                          GR_COLORFORMAT_ABGR, GR_ORIGIN_UPPER_LEFT, 2, 1);
+  REQUIRE(openOk == FXTRUE);
+
+  // We read a 100x100 region.
+  // Native/determined format is 16-bit, so required stride is 100 * 2 = 200 bytes.
+  std::vector<uint8_t> buffer(20000, 0);
+
+  // Test case 1: Pass an invalid stride (100 bytes, which is less than 200)
+  FxBool status1 = readLfb(GR_BUFFER_BACKBUFFER, 0, 0, 100, 100, 100, buffer.data());
+  // It should fail and return FXFALSE to prevent overflow!
+  REQUIRE(status1 == FXFALSE);
+
+  // Test case 2: Pass a valid stride (200 bytes)
+  FxBool status2 = readLfb(GR_BUFFER_BACKBUFFER, 0, 0, 100, 100, 200, buffer.data());
+  // It should succeed and return FXTRUE!
+  REQUIRE(status2 == FXTRUE);
+
+  shutdown();
+  ::dlclose(handle);
+#endif
+}

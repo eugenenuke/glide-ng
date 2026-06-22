@@ -467,6 +467,16 @@ bool SoftwareBackendBase::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
                 << ", srcHeight=" << srcHeight << ", dstStride=" << dstStride
                 << ", is32Bit=" << is32Bit);
 
+  // VULN-04: Prevent out-of-bounds row writes if dstStride is too small for the pixel format
+  size_t requiredStride = is32Bit ? (srcWidth * 4) : (srcWidth * 2);
+  if (dstStride < requiredStride) {
+    GLIDE_LOG(WARN, "Backend",
+              "ReadLFB: dstStride (" << dstStride << ") is smaller than required stride ("
+                                     << requiredStride << ") for width " << srcWidth
+                                     << ". Rejecting read to prevent buffer overflow.");
+    return false;
+  }
+
   for (uint32_t y = 0; y < srcHeight; ++y) {
     uint32_t readY = srcY + y;
     if (readY >= height) break;
