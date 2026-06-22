@@ -123,6 +123,11 @@ uint32_t s_clipMaxY = 480;
 bool s_texRgbInvert[2] = {false, false};
 bool s_texAlphaInvert[2] = {false, false};
 
+// Phase 4 states
+uint32_t s_stippleMode = 0;
+uint32_t s_stipplePattern = 0xFFFFFFFF;
+uint32_t s_ditherMode = 0;
+
 inline void TransformVertexIfNecessary(GlideWrapper::ModernVertex& mv) {
   // Sanitize inactive parameters to prevent stack garbage from
   // culling/distorting triangles on modern GPUs
@@ -215,6 +220,9 @@ void ResetFrontendState() {
   s_clipMaxY = 480;
   s_texRgbInvert[0] = s_texRgbInvert[1] = false;
   s_texAlphaInvert[0] = s_texAlphaInvert[1] = false;
+  s_stippleMode = 0;
+  s_stipplePattern = 0xFFFFFFFF;
+  s_ditherMode = 0;
 }
 }  // namespace
 
@@ -287,6 +295,9 @@ struct GlideWrapperState {
   int colorMaskAlpha;
   int texRgbInvert[2];
   int texAlphaInvert[2];
+  uint32_t ditherMode;
+  uint32_t stippleMode;
+  uint32_t stipplePattern;
 };
 
 static_assert(sizeof(GlideWrapperState) <= 1024,
@@ -525,6 +536,9 @@ FX_ENTRY void FX_CALL grRenderBuffer(GrBuffer_t buffer) {
   EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend",
             "grRenderBuffer (Glide 3.x) invoked for Buffer=" << buffer);
+  if (auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
+    backend->SetRenderBuffer(buffer);
+  }
 }
 
 FX_ENTRY void FX_CALL grSstSelect(int which_sst) {
@@ -1057,6 +1071,9 @@ FX_ENTRY void FX_CALL grGlideGetState(void* state) {
     ws->texRgbInvert[i] = s_texRgbInvert[i] ? 1 : 0;
     ws->texAlphaInvert[i] = s_texAlphaInvert[i] ? 1 : 0;
   }
+  ws->ditherMode = s_ditherMode;
+  ws->stippleMode = s_stippleMode;
+  ws->stipplePattern = s_stipplePattern;
 }
 
 FX_ENTRY void FX_CALL grGlideSetState(const void* state) {
@@ -1071,6 +1088,9 @@ FX_ENTRY void FX_CALL grGlideSetState(const void* state) {
   s_depthBias = ws->depthBias;
   s_alphaTestOp = (ws->alphaTestOp > 7) ? 7 : ws->alphaTestOp; // GR_CMP_ALWAYS
   s_alphaTestRef = ws->alphaTestRef;
+  s_ditherMode = (ws->ditherMode > 2) ? 0 : ws->ditherMode;
+  s_stippleMode = (ws->stippleMode > 2) ? 0 : ws->stippleMode;
+  s_stipplePattern = ws->stipplePattern;
 
   for (int i = 0; i < 2; ++i) {
     s_clampS[i] = (ws->clampS[i] > 2) ? 0 : ws->clampS[i];
@@ -1172,6 +1192,9 @@ FX_ENTRY void FX_CALL grGlideSetState(const void* state) {
     b->SetClipWindow(s_clipMinX, s_clipMinY, s_clipMaxX, s_clipMaxY);
     b->SetColorMask(s_colorMaskRgb, s_colorMaskAlpha);
     b->SetAAState(s_aaOrdered);
+    b->SetDepthRange(s_depthRangeNear, s_depthRangeFar);
+    b->SetDitherMode(s_ditherMode);
+    b->SetStippleState(s_stippleMode, s_stipplePattern);
 
     // Restore color and alpha combiner states
     b->SetCombinerMode(s_colorFunc, s_colorFactor, s_colorLocal, s_colorOther,
@@ -1799,6 +1822,30 @@ FX_ENTRY void FX_CALL grDitherMode(GrDitherMode_t mode) {
   EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend",
             "grDitherMode (Glide 3.x) invoked: mode=" << mode);
+  s_ditherMode = mode;
+  if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
+    b->SetDitherMode(s_ditherMode);
+  }
+}
+
+FX_ENTRY void FX_CALL grStippleMode(GrStippleMode_t mode) {
+  EnsureEngineInitialized();
+  GLIDE_LOG(DEBUG, "Frontend",
+            "grStippleMode (Glide 3.x) invoked: mode=" << mode);
+  s_stippleMode = mode;
+  if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
+    b->SetStippleState(s_stippleMode, s_stipplePattern);
+  }
+}
+
+FX_ENTRY void FX_CALL grStipplePattern(GrStipplePattern_t pattern) {
+  EnsureEngineInitialized();
+  GLIDE_LOG(DEBUG, "Frontend",
+            "grStipplePattern (Glide 3.x) invoked: pattern=" << pattern);
+  s_stipplePattern = pattern;
+  if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
+    b->SetStippleState(s_stippleMode, s_stipplePattern);
+  }
 }
 
 FX_ENTRY void FX_CALL grCoordinateSpace(GrCoordinateSpaceMode_t mode) {
@@ -1822,6 +1869,9 @@ FX_ENTRY void FX_CALL grDepthRange(FxFloat n, FxFloat f) {
             "grDepthRange (Glide 3.x) set to near=" << n << ", far=" << f);
   s_depthRangeNear = n;
   s_depthRangeFar = f;
+  if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
+    b->SetDepthRange(n, f);
+  }
 }
 
 FX_ENTRY void FX_CALL grEnable(GrEnableMode_t mode) {

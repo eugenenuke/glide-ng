@@ -9,6 +9,7 @@
 #include <thread>
 #include <chrono>
 #include <cstdlib>
+#include <atomic>
 #include <SDL2/SDL.h>
 
 #ifdef _OPENMP
@@ -497,6 +498,16 @@ void SoftwareBackend::WritePixelPipeline(int x, int y, const ModernVertex& v, fl
         return;
     }
 
+    // Stipple Transparency
+    if (m_stippleMode != 0) {
+        int stippleX = (m_stippleMode == 2) ? ((x + y) & 7) : (x & 7);
+        int stippleY = y & 3;
+        int stippleIndex = (stippleY << 3) | (7 - stippleX);
+        if (((m_stipplePattern >> stippleIndex) & 1) == 0) {
+            return; // Discard fragment
+        }
+    }
+
     // 2. Color Combiner
     uint32_t combinerColor = EvaluateCombinerColor(v);
     float red   = ((combinerColor >> 16) & 0xFF) / 255.0f;
@@ -604,6 +615,43 @@ void SoftwareBackend::WritePixelPipeline(int x, int y, const ModernVertex& v, fl
     finalR = std::min(255u, finalR);
     finalG = std::min(255u, finalG);
     finalB = std::min(255u, finalB);
+
+    // 16-Bit Dithering
+    if (m_ditherMode != 0) {
+        static const uint8_t dither_matrix_4x4[16] = {
+             0,  8,  2, 10,
+            12,  4, 14,  6,
+             3, 11,  1,  9,
+            15,  7, 13,  5
+        };
+        static const uint8_t dither_matrix_2x2[16] = {
+             2, 10,  2, 10,
+            14,  6, 14,  6,
+             2, 10,  2, 10,
+            14,  6, 14,  6
+        };
+        int ditherX = x & 3;
+        int ditherY = y & 3;
+        uint8_t dith = (m_ditherMode == 2) ? dither_matrix_4x4[ditherY * 4 + ditherX] :
+                       (m_ditherMode == 1) ? dither_matrix_2x2[ditherY * 4 + ditherX] : 0;
+
+        // Quantize Red (5-bit)
+        uint32_t ditheredR = (((finalR << 1) - (finalR >> 4) + (finalR >> 7) + dith) >> 1);
+        uint32_t quantizedR = std::min(31u, ditheredR >> 3);
+
+        // Quantize Green (6-bit)
+        uint32_t ditheredG = (((finalG << 2) - (finalG >> 4) + (finalG >> 6) + dith) >> 2);
+        uint32_t quantizedG = std::min(63u, ditheredG >> 2);
+
+        // Quantize Blue (5-bit)
+        uint32_t ditheredB = (((finalB << 1) - (finalB >> 4) + (finalB >> 7) + dith) >> 1);
+        uint32_t quantizedB = std::min(31u, ditheredB >> 3);
+
+        // Upscale back to 8-bit using bit replication
+        finalR = (quantizedR << 3) | (quantizedR >> 2);
+        finalG = (quantizedG << 2) | (quantizedG >> 4);
+        finalB = (quantizedB << 3) | (quantizedB >> 2);
+    }
 
     uint32_t finalColor = (finalA << 24) | (finalR << 16) | (finalG << 8) | finalB;
 
@@ -934,6 +982,16 @@ void SoftwareBackend::RasterizeSoftwareTriangleImpl(const ModernVertex& a, const
         float cOtherB = 0.0f;
         bool isTestPixel = (x == 150 && y == 150) || (x == 310 && y == 310) || (x == 410 && y == 310);
         bool keepPixel = true;
+
+        // Stipple Transparency Check
+        if (m_stippleMode != 0) {
+            int stippleX = (m_stippleMode == 2) ? ((x + y) & 7) : (x & 7);
+            int stippleY = y & 3;
+            int stippleIndex = (stippleY << 3) | (7 - stippleX);
+            if (((m_stipplePattern >> stippleIndex) & 1) == 0) {
+                keepPixel = false;
+            }
+        }
 
         // 1. Interpolate vertex colors and reciprocal depth
         float wVal = w0 * a.pos[3] + w1 * b.pos[3] + w2 * c.pos[3];
@@ -1436,8 +1494,17 @@ void SoftwareBackend::RasterizeSoftwareTriangleImpl(const ModernVertex& a, const
         bool depthPass = true;
 
         if (keepPixel) {
-            float zVal = w0 * a.pos[2] + w1 * b.pos[2] + w2 * c.pos[2];
-            targetDepth = (m_depthMode == 2) ? (1.0f - wVal) : zVal;
+            if (m_depthMode == 2) { // True W-Buffering
+                float w = 1.0f / wVal;
+                float range = m_depthFar - m_depthNear;
+                if (std::abs(range) > 1e-6f) {
+                    targetDepth = (w - m_depthNear) / range;
+                } else {
+                    targetDepth = 0.0f;
+                }
+            } else { // Z-buffering or disabled
+                targetDepth = w0 * a.pos[2] + w1 * b.pos[2] + w2 * c.pos[2]; // zVal
+            }
 
             if (m_depthBiasLevel != 0) {
                 targetDepth += static_cast<float>(m_depthBiasLevel) / 65535.0f;
@@ -1577,6 +1644,43 @@ void SoftwareBackend::RasterizeSoftwareTriangleImpl(const ModernVertex& a, const
                 gVal = static_cast<uint32_t>(green * 255.0f + 0.5f);
                 bVal = static_cast<uint32_t>(blue * 255.0f + 0.5f);
                 aVal = static_cast<uint32_t>(blendedAlpha * 255.0f + 0.5f);
+            }
+
+            // 16-Bit Dithering
+            if (m_ditherMode != 0) {
+                static const uint8_t dither_matrix_4x4[16] = {
+                     0,  8,  2, 10,
+                    12,  4, 14,  6,
+                     3, 11,  1,  9,
+                    15,  7, 13,  5
+                };
+                static const uint8_t dither_matrix_2x2[16] = {
+                     2, 10,  2, 10,
+                    14,  6, 14,  6,
+                     2, 10,  2, 10,
+                    14,  6, 14,  6
+                };
+                int ditherX = x & 3;
+                int ditherY = y & 3;
+                uint8_t dith = (m_ditherMode == 2) ? dither_matrix_4x4[ditherY * 4 + ditherX] :
+                               (m_ditherMode == 1) ? dither_matrix_2x2[ditherY * 4 + ditherX] : 0;
+
+                // Quantize Red (5-bit)
+                uint32_t ditheredR = (((rVal << 1) - (rVal >> 4) + (rVal >> 7) + dith) >> 1);
+                uint32_t quantizedR = std::min(31u, ditheredR >> 3);
+
+                // Quantize Green (6-bit)
+                uint32_t ditheredG = (((gVal << 2) - (gVal >> 4) + (gVal >> 6) + dith) >> 2);
+                uint32_t quantizedG = std::min(63u, ditheredG >> 2);
+
+                // Quantize Blue (5-bit)
+                uint32_t ditheredB = (((bVal << 1) - (bVal >> 4) + (bVal >> 7) + dith) >> 1);
+                uint32_t quantizedB = std::min(31u, ditheredB >> 3);
+
+                // Upscale back to 8-bit using bit replication
+                rVal = (quantizedR << 3) | (quantizedR >> 2);
+                gVal = (quantizedG << 2) | (quantizedG >> 4);
+                bVal = (quantizedB << 3) | (quantizedB >> 2);
             }
 
             if (isTestPixel) {

@@ -48,6 +48,10 @@ class OpenGLESBackend : public SoftwareBackendBase {
                      uint32_t alphaSrcFactor, uint32_t alphaDstFactor) override;
   void SetColorMask(bool rgb, bool alpha) override;
   void SetGamma(float gamma) override;
+  void SetRenderBuffer(uint32_t target) override;
+  void SetDepthRange(float nearVal, float farVal) override;
+  void SetDitherMode(uint32_t mode) override;
+  void SetStippleState(uint32_t mode, uint32_t pattern) override;
   void LoadGammaTable(uint32_t nentries, const uint32_t* rTable,
                       const uint32_t* gTable, const uint32_t* bTable) override;
 
@@ -61,6 +65,7 @@ class OpenGLESBackend : public SoftwareBackendBase {
   void ApplyScissorGLES();
   void SyncCullStateGLES();
   void PopulateUniforms();
+  uint32_t GetActiveGpuFbo() const;
 
   // SDL2 & OpenGL ES Context Handles
   void* m_sdlWindow{nullptr};  // SDL_Window*
@@ -75,7 +80,7 @@ class OpenGLESBackend : public SoftwareBackendBase {
   // Double-buffered offscreen GPU rendering targets
   uint32_t m_headlessFBOs[2]{0, 0};                // GLuint
   uint32_t m_fboTextures[2]{0, 0};                 // GLuint
-  uint32_t m_headlessDepthRenderbuffers[2]{0, 0};  // GLuint
+  uint32_t m_sharedDepthRenderbuffer{0};  // GLuint
 
   // Milestone 3: GPU-Native Geometry Resources
   bool CreateGeomShaders();
@@ -101,6 +106,11 @@ class OpenGLESBackend : public SoftwareBackendBase {
 
   // Cached Uniform Locations for geomProgram
   int m_uSstOriginLoc{-1};
+  int m_uDepthNearLoc{-1};
+  int m_uDepthFarLoc{-1};
+  int m_uDitherModeLoc{-1};
+  int m_uStippleModeLoc{-1};
+  int m_uStipplePatternLoc{-1};
   int m_uViewportSizeLoc{-1};
   int m_uDepthClipOverrideLoc{-1};
   int m_uDepthBufferModeLoc{-1};

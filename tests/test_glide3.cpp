@@ -2721,6 +2721,9 @@ struct MockGlideWrapperState {
   int colorMaskAlpha;
   int texRgbInvert[2];
   int texAlphaInvert[2];
+  uint32_t ditherMode;
+  uint32_t stippleMode;
+  uint32_t stipplePattern;
 };
 
 TEST_CASE("Glide 3.x State Restoration Sanitization [VULN-01]", "[Glide3][State]") {
@@ -2986,5 +2989,355 @@ TEST_CASE("Mathematical LOD y-derivative Calculation Verification [Glide3][LOD]"
     glideShutdown();
     ::dlclose(handle);
     ::unsetenv("GLIDE_WRAPPER_BACKEND");
+#endif
+}
+
+TEST_CASE("Glide 3.x Phase 4 Retro Aesthetic & Advanced Features [Glide3][Phase4][Retro]", "[Glide3][Phase4]") {
+#ifdef __linux__
+    // Force headless software reference backend for testing
+    ::setenv("GLIDE_WRAPPER_BACKEND", "software", 1);
+    ::setenv("GLIDE_WRAPPER_LOG_LEVEL", "3", 1); // INFO
+
+    void* handle = OpenGlide3Handle();
+    REQUIRE(handle != nullptr);
+
+    using InitFunc = void(*)(void);
+    using OpenWinFunc = FxU32(*)(FxU32, FxI32, FxI32, FxI32, FxI32, int, int);
+    using CloseWinFunc = void(*)(void);
+    using ShutdownFunc = void(*)(void);
+    using BufferClearFunc = void(*)(GrColor_t, GrAlpha_t, FxU32);
+    using DrawTriFunc = void(*)(const void*, const void*, const void*);
+    using ReadLfbFunc = FxBool(*)(FxU32, FxU32, FxU32, FxU32, FxU32, FxU32, void*);
+    using VertexLayoutFunc = void(*)(FxU32, FxI32, FxU32);
+    using DepthBufferModeFunc = void(*)(GrDepthBufferMode_t);
+    using DepthBufferFunctionFunc = void(*)(GrCmpFnc_t);
+    using DepthMaskFunc = void(*)(FxBool);
+    using AlphaBlendFunctionFunc = void(*)(GrAlphaBlendFnc_t, GrAlphaBlendFnc_t, GrAlphaBlendFnc_t, GrAlphaBlendFnc_t);
+    using AlphaTestFunctionFunc = void(*)(GrCmpFnc_t);
+    using AlphaTestReferenceValueFunc = void(*)(GrAlpha_t);
+    using DitherModeFunc = void(*)(GrDitherMode_t);
+    using StippleModeFunc = void(*)(GrStippleMode_t);
+    using StipplePatternFunc = void(*)(GrStipplePattern_t);
+    using DepthRangeFunc = void(*)(float, float);
+    using ColorCombineFunc = void(*)(GrCombineFunction_t, GrCombineFactor_t, GrCombineLocal_t, GrCombineOther_t, FxBool);
+    using AlphaCombineFunc = void(*)(GrCombineFunction_t, GrCombineFactor_t, GrCombineLocal_t, GrCombineOther_t, FxBool);
+
+    auto glideInit = reinterpret_cast<InitFunc>(::dlsym(handle, "grGlideInit"));
+    auto winOpen   = reinterpret_cast<OpenWinFunc>(::dlsym(handle, "grSstWinOpen"));
+    auto winClose  = reinterpret_cast<CloseWinFunc>(::dlsym(handle, "grSstWinClose"));
+    auto shutdown  = reinterpret_cast<ShutdownFunc>(::dlsym(handle, "grGlideShutdown"));
+    auto bufferClear = reinterpret_cast<BufferClearFunc>(::dlsym(handle, "grBufferClear"));
+    auto drawTri   = reinterpret_cast<DrawTriFunc>(::dlsym(handle, "grDrawTriangle"));
+    auto readLfb   = reinterpret_cast<ReadLfbFunc>(::dlsym(handle, "grLfbReadRegion"));
+    auto vertexLayout = reinterpret_cast<VertexLayoutFunc>(::dlsym(handle, "grVertexLayout"));
+    auto depthBufferMode = reinterpret_cast<DepthBufferModeFunc>(::dlsym(handle, "grDepthBufferMode"));
+    auto depthBufferFunction = reinterpret_cast<DepthBufferFunctionFunc>(::dlsym(handle, "grDepthBufferFunction"));
+    auto depthMask = reinterpret_cast<DepthMaskFunc>(::dlsym(handle, "grDepthMask"));
+    auto alphaBlendFunction = reinterpret_cast<AlphaBlendFunctionFunc>(::dlsym(handle, "grAlphaBlendFunction"));
+    auto alphaTestFunction = reinterpret_cast<AlphaTestFunctionFunc>(::dlsym(handle, "grAlphaTestFunction"));
+    auto alphaTestRef = reinterpret_cast<AlphaTestReferenceValueFunc>(::dlsym(handle, "grAlphaTestReferenceValue"));
+    auto ditherMode = reinterpret_cast<DitherModeFunc>(::dlsym(handle, "grDitherMode"));
+    auto stippleMode = reinterpret_cast<StippleModeFunc>(::dlsym(handle, "grStippleMode"));
+    auto stipplePattern = reinterpret_cast<StipplePatternFunc>(::dlsym(handle, "grStipplePattern"));
+    auto depthRange = reinterpret_cast<DepthRangeFunc>(::dlsym(handle, "grDepthRange"));
+    auto colorCombine = reinterpret_cast<ColorCombineFunc>(::dlsym(handle, "grColorCombine"));
+    auto alphaCombine = reinterpret_cast<AlphaCombineFunc>(::dlsym(handle, "grAlphaCombine"));
+
+    REQUIRE(glideInit != nullptr);
+    REQUIRE(winOpen != nullptr);
+    REQUIRE(winClose != nullptr);
+    REQUIRE(shutdown != nullptr);
+    REQUIRE(bufferClear != nullptr);
+    REQUIRE(drawTri != nullptr);
+    REQUIRE(readLfb != nullptr);
+    REQUIRE(vertexLayout != nullptr);
+    REQUIRE(depthBufferMode != nullptr);
+    REQUIRE(depthBufferFunction != nullptr);
+    REQUIRE(depthMask != nullptr);
+    REQUIRE(alphaBlendFunction != nullptr);
+    REQUIRE(alphaTestFunction != nullptr);
+    REQUIRE(alphaTestRef != nullptr);
+    REQUIRE(ditherMode != nullptr);
+    REQUIRE(stippleMode != nullptr);
+    REQUIRE(stipplePattern != nullptr);
+    REQUIRE(depthRange != nullptr);
+    REQUIRE(colorCombine != nullptr);
+    REQUIRE(alphaCombine != nullptr);
+
+    glideInit();
+    FxU32 ctx = winOpen(0, 8, 0, 0, 0, 2, 0); // 800x600 resolution
+    REQUIRE(ctx != 0);
+
+    auto* backend = static_cast<GlideWrapper::SoftwareBackendBase*>(
+        GlideWrapper::BackendManager::GetInstance().GetBackend()
+    );
+    REQUIRE(backend != nullptr);
+
+    // Canonical vertex layout for StandardVert
+    vertexLayout(0x01, 0, 1);  // GR_PARAM_XY at 0
+    vertexLayout(0x02, 8, 1);  // GR_PARAM_Z at 8
+    vertexLayout(0x20, 12, 1); // GR_PARAM_RGB at 12
+    vertexLayout(0x10, 28, 1); // GR_PARAM_A at 28
+    vertexLayout(0x03, 32, 1); // GR_PARAM_W (oow) at 32
+
+    // Set simple color combiner: output vertex iterated color
+    colorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+                 GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_NONE, FXFALSE);
+    alphaCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+                 GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_NONE, FXFALSE);
+
+    SECTION("Depth Buffering (Z vs W, compare ops, depth mask)") {
+        // 1. Z-buffering test
+        depthBufferMode(GR_DEPTHBUFFER_ZBUFFER);
+        depthBufferFunction(GR_CMP_LESS);
+        depthMask(FXTRUE);
+
+        bufferClear(0x00000000, 0, 0xFFFF); // Clear depth to 1.0f
+
+        // Draw green triangle at Z = 0.5f (close)
+        StandardVert v0 = { 100.0f, 100.0f, 0.5f, 0.0f, 255.0f, 0.0f, 0.0f, 255.0f, 1.0f, 0.0f, 0.0f };
+        StandardVert v1 = { 200.0f, 100.0f, 0.5f, 0.0f, 255.0f, 0.0f, 0.0f, 255.0f, 1.0f, 0.0f, 0.0f };
+        StandardVert v2 = { 150.0f, 200.0f, 0.5f, 0.0f, 255.0f, 0.0f, 0.0f, 255.0f, 1.0f, 0.0f, 0.0f };
+        drawTri(&v0, &v1, &v2);
+
+        // Draw red triangle at Z = 0.75f (farther, should be occluded)
+        StandardVert v3 = { 100.0f, 100.0f, 0.75f, 255.0f, 0.0f, 0.0f, 0.0f, 255.0f, 1.0f, 0.0f, 0.0f };
+        StandardVert v4 = { 200.0f, 100.0f, 0.75f, 255.0f, 0.0f, 0.0f, 0.0f, 255.0f, 1.0f, 0.0f, 0.0f };
+        StandardVert v5 = { 150.0f, 200.0f, 0.75f, 255.0f, 0.0f, 0.0f, 0.0f, 255.0f, 1.0f, 0.0f, 0.0f };
+        drawTri(&v3, &v4, &v5);
+
+        // Verify pixel at center (150, 130) is Green (not Red)
+        uint32_t px = 0;
+        REQUIRE(readLfb(GR_BUFFER_BACKBUFFER, 150, 130, 1, 1, 4, &px) == FXTRUE);
+        uint8_t gChan = (px >> 8) & 0xFF;
+        CHECK(gChan > 240);
+        
+        // 2. Depth mask test
+        depthMask(FXFALSE); // disable depth writes
+        bufferClear(0x00000000, 0, 0xFFFF);
+
+        // Draw green triangle at Z = 0.5f again
+        drawTri(&v0, &v1, &v2);
+        // Verify depth buffer pixel was NOT written (should still be 1.0f)
+        float dbPixel = backend->GetDepthBufferPixel(150, 130);
+        CHECK(dbPixel == 1.0f);
+
+        // 3. W-buffering test
+        depthBufferMode(GR_DEPTHBUFFER_WBUFFER);
+        depthBufferFunction(GR_CMP_LESS);
+        depthMask(FXTRUE);
+        depthRange(2.0f, 10.0f);
+        bufferClear(0x00000000, 0, 0xFFFF); // Clears depth to 1.0f
+
+        // Draw green triangle with W = 4.0f (oow = 0.25f) -> TargetDepth = (4-2)/8 = 0.25f
+        v0.oow = 0.25f; v1.oow = 0.25f; v2.oow = 0.25f;
+        drawTri(&v0, &v1, &v2);
+
+        float dbWVal = backend->GetDepthBufferPixel(150, 130);
+        CHECK(std::abs(dbWVal - 0.25f) < 0.001f);
+    }
+
+    SECTION("Alpha Blending and Testing") {
+        bufferClear(0x00000000, 0, 0xFFFF);
+        
+        // 1. Alpha blending test: Src = Src Alpha, Dst = One Minus Src Alpha
+        alphaBlendFunction(GR_BLEND_SRC_ALPHA, GR_BLEND_ONE_MINUS_SRC_ALPHA,
+                           GR_BLEND_ONE, GR_BLEND_ZERO);
+
+        // Draw flat blue triangle with Alpha = 0.5f (128)
+        StandardVert v0 = { 100.0f, 100.0f, 0.5f, 0.0f, 0.0f, 255.0f, 0.0f, 128.0f, 1.0f, 0.0f, 0.0f };
+        StandardVert v1 = { 200.0f, 100.0f, 0.5f, 0.0f, 0.0f, 255.0f, 0.0f, 128.0f, 1.0f, 0.0f, 0.0f };
+        StandardVert v2 = { 150.0f, 200.0f, 0.5f, 0.0f, 0.0f, 255.0f, 0.0f, 128.0f, 1.0f, 0.0f, 0.0f };
+        drawTri(&v0, &v1, &v2);
+
+        uint32_t px = 0;
+        REQUIRE(readLfb(GR_BUFFER_BACKBUFFER, 150, 130, 1, 1, 4, &px) == FXTRUE);
+        uint8_t b1 = px & 0xFF;
+        uint8_t b3 = (px >> 16) & 0xFF;
+        bool blendOk = (b1 > 110 && b1 < 140) || (b3 > 110 && b3 < 140);
+        CHECK(blendOk);
+
+        // 2. Alpha testing test
+        bufferClear(0x00000000, 0, 0xFFFF);
+        alphaBlendFunction(GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_ONE, GR_BLEND_ZERO); // no blend
+
+        // Enable alpha test: pass if Alpha > 150
+        alphaTestFunction(GR_CMP_GREATER);
+        alphaTestRef(150);
+
+        // Draw flat red triangle with Alpha = 100 (should be discarded)
+        v0.r = 255.0f; v0.g = 0.0f; v0.b = 0.0f; v0.a = 100.0f;
+        v1.r = 255.0f; v1.g = 0.0f; v1.b = 0.0f; v1.a = 100.0f;
+        v2.r = 255.0f; v2.g = 0.0f; v2.b = 0.0f; v2.a = 100.0f;
+        drawTri(&v0, &v1, &v2);
+
+        px = 0xFFFFFFFF;
+        REQUIRE(readLfb(GR_BUFFER_BACKBUFFER, 150, 130, 1, 1, 4, &px) == FXTRUE);
+        CHECK((px & 0x00FFFFFF) == 0); // Color is black
+
+        // Draw flat red triangle with Alpha = 200 (should pass)
+        v0.a = 200.0f; v1.a = 200.0f; v2.a = 200.0f;
+        drawTri(&v0, &v1, &v2);
+
+        REQUIRE(readLfb(GR_BUFFER_BACKBUFFER, 150, 130, 1, 1, 4, &px) == FXTRUE);
+        b1 = px & 0xFF;
+        b3 = (px >> 16) & 0xFF;
+        bool redHigh = (b1 > 240) || (b3 > 240);
+        CHECK(redHigh); // Red is high
+        
+        alphaTestFunction(GR_CMP_ALWAYS);
+    }
+
+    SECTION("Dithering (16-bit retro dithering)") {
+        bufferClear(0x00000000, 0, 0xFFFF);
+        ditherMode(GR_DITHER_4x4);
+
+        StandardVert v0 = { 100.0f, 100.0f, 0.5f, 15.0f, 30.0f, 45.0f, 0.0f, 255.0f, 1.0f, 0.0f, 0.0f };
+        StandardVert v1 = { 200.0f, 100.0f, 0.5f, 15.0f, 30.0f, 45.0f, 0.0f, 255.0f, 1.0f, 0.0f, 0.0f };
+        StandardVert v2 = { 150.0f, 200.0f, 0.5f, 15.0f, 30.0f, 45.0f, 0.0f, 255.0f, 1.0f, 0.0f, 0.0f };
+        drawTri(&v0, &v1, &v2);
+
+        std::vector<uint32_t> block(16);
+        for (int yOffset = 0; yOffset < 4; ++yOffset) {
+            for (int xOffset = 0; xOffset < 4; ++xOffset) {
+                readLfb(GR_BUFFER_BACKBUFFER, 148 + xOffset, 128 + yOffset, 1, 1, 4, &block[yOffset * 4 + xOffset]);
+            }
+        }
+
+        bool foundDifference = false;
+        uint32_t firstPixel = block[0] & 0x00FFFFFF;
+        for (int i = 1; i < 16; ++i) {
+            if ((block[i] & 0x00FFFFFF) != firstPixel) {
+                foundDifference = true;
+                break;
+            }
+        }
+        if (!foundDifference) {
+            std::cout << "[DITHER_DEBUG] All 16 pixels are identical: 0x" << std::hex << firstPixel << std::dec << std::endl;
+            for (int i = 0; i < 16; ++i) {
+                std::cout << "  Pixel " << i << ": 0x" << std::hex << block[i] << std::dec << std::endl;
+            }
+        }
+        CHECK(foundDifference == true);
+
+        ditherMode(GR_DITHER_DISABLE);
+    }
+
+    SECTION("Stipple Transparency") {
+        bufferClear(0x00000000, 0, 0xFFFF);
+        stippleMode(GR_STIPPLE_PATTERN);
+        stipplePattern(0x55AA55AA);
+
+        StandardVert v0 = { 100.0f, 100.0f, 0.5f, 255.0f, 255.0f, 255.0f, 0.0f, 255.0f, 1.0f, 0.0f, 0.0f };
+        StandardVert v1 = { 200.0f, 100.0f, 0.5f, 255.0f, 255.0f, 255.0f, 0.0f, 255.0f, 1.0f, 0.0f, 0.0f };
+        StandardVert v2 = { 150.0f, 200.0f, 0.5f, 255.0f, 255.0f, 255.0f, 0.0f, 255.0f, 1.0f, 0.0f, 0.0f };
+        drawTri(&v0, &v1, &v2);
+
+        uint32_t px150 = 0;
+        uint32_t px151 = 0;
+        REQUIRE(readLfb(GR_BUFFER_BACKBUFFER, 150, 130, 1, 1, 4, &px150) == FXTRUE);
+        REQUIRE(readLfb(GR_BUFFER_BACKBUFFER, 151, 130, 1, 1, 4, &px151) == FXTRUE);
+
+        if ((px150 & 0x00FFFFFF) == 0 || (px151 & 0x00FFFFFF) != 0) {
+            std::cout << "[STIPPLE_DEBUG] Stipple mismatch!" << std::endl;
+            std::cout << "  Pixel (150, 130): 0x" << std::hex << px150 << std::dec << std::endl;
+            std::cout << "  Pixel (151, 130): 0x" << std::hex << px151 << std::dec << std::endl;
+            std::cout << "  Backend Stipple Mode: " << backend->GetStippleMode() << std::endl;
+            std::cout << "  Backend Stipple Pattern: 0x" << std::hex << backend->GetStipplePattern() << std::dec << std::endl;
+        }
+
+        CHECK((px150 & 0x00FFFFFF) != 0);
+        CHECK((px151 & 0x00FFFFFF) == 0);
+
+        stippleMode(0);
+    }
+
+    winClose();
+    shutdown();
+    ::dlclose(handle);
+    ::unsetenv("GLIDE_WRAPPER_BACKEND");
+#endif
+}
+
+TEST_CASE("Glide 3.x State Serialization & Phase 4 States [Glide3][State][Serialization]", "[Glide3][State]") {
+#ifdef __linux__
+  // Force the Software backend for this test
+  ::setenv("GLIDE_WRAPPER_BACKEND", "sw", 1);
+
+  void* handle = OpenGlide3Handle();
+  REQUIRE(handle != nullptr);
+
+  auto glideInit = (void (*)(void))dlsym(handle, "grGlideInit");
+  auto winOpen = (FxU32 (*)(FxU32, FxI32, FxI32, FxI32, FxI32, int, int))dlsym(handle, "grSstWinOpen");
+  auto winClose = (void (*)(void))dlsym(handle, "grSstWinClose");
+  auto shutdown = (void (*)(void))dlsym(handle, "grGlideShutdown");
+
+  auto ditherMode = (void (*)(GrDitherMode_t))dlsym(handle, "grDitherMode");
+  auto stippleMode = (void (*)(GrStippleMode_t))dlsym(handle, "grStippleMode");
+  auto stipplePattern = (void (*)(GrStipplePattern_t))dlsym(handle, "grStipplePattern");
+  auto depthRange = (void (*)(float, float))dlsym(handle, "grDepthRange");
+  auto glideGetState = (void (*)(void*))dlsym(handle, "grGlideGetState");
+  auto glideSetState = (void (*)(const void*))dlsym(handle, "grGlideSetState");
+
+  REQUIRE(glideInit != nullptr);
+  REQUIRE(winOpen != nullptr);
+  REQUIRE(ditherMode != nullptr);
+  REQUIRE(stippleMode != nullptr);
+  REQUIRE(stipplePattern != nullptr);
+  REQUIRE(depthRange != nullptr);
+  REQUIRE(glideGetState != nullptr);
+  REQUIRE(glideSetState != nullptr);
+
+  glideInit();
+  FxU32 ctx = winOpen(0, 8, 0, 0, 0, 2, 0); // 800x600 resolution
+  REQUIRE(ctx != 0);
+
+  auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend();
+  auto* sw_b = dynamic_cast<GlideWrapper::SoftwareBackendBase*>(b);
+  REQUIRE(sw_b != nullptr);
+
+  // 1. Set custom states
+  ditherMode(GR_DITHER_4x4);
+  stippleMode(GR_STIPPLE_PATTERN);
+  stipplePattern(0x0F0F0F0F);
+  depthRange(0.25f, 0.75f);
+
+  // Verify backend received them
+  CHECK(sw_b->GetDitherMode() == GR_DITHER_4x4);
+  CHECK(sw_b->GetStippleMode() == GR_STIPPLE_PATTERN);
+  CHECK(sw_b->GetStipplePattern() == 0x0F0F0F0F);
+  CHECK(sw_b->GetDepthNear() == 0.25f);
+  CHECK(sw_b->GetDepthFar() == 0.75f);
+
+  // 2. Serialize state
+  char savedState[1024] = {0};
+  glideGetState(savedState);
+
+  // 3. Clobber/perturb states
+  ditherMode(GR_DITHER_DISABLE);
+  stippleMode(0); // DISABLE
+  stipplePattern(0xFFFFFFFF);
+  depthRange(0.0f, 1.0f);
+
+  CHECK(sw_b->GetDitherMode() == GR_DITHER_DISABLE);
+  CHECK(sw_b->GetStippleMode() == 0);
+  CHECK(sw_b->GetStipplePattern() == 0xFFFFFFFF);
+  CHECK(sw_b->GetDepthNear() == 0.0f);
+  CHECK(sw_b->GetDepthFar() == 1.0f);
+
+  // 4. Restore state
+  glideSetState(savedState);
+
+  // 5. Assert states are restored
+  CHECK(sw_b->GetDitherMode() == GR_DITHER_4x4);
+  CHECK(sw_b->GetStippleMode() == GR_STIPPLE_PATTERN);
+  CHECK(sw_b->GetStipplePattern() == 0x0F0F0F0F);
+  CHECK(sw_b->GetDepthNear() == 0.25f);
+  CHECK(sw_b->GetDepthFar() == 0.75f);
+
+  if (winClose) winClose();
+  if (shutdown) shutdown();
+  ::dlclose(handle);
+  ::unsetenv("GLIDE_WRAPPER_BACKEND");
 #endif
 }

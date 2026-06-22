@@ -7,7 +7,7 @@ layout(location = 3) in vec2 fragTmuOow;
 layout(location = 4) in float fragFogCoord;
 
 layout(location = 0) out vec4 outColor;
-layout(location = 0, index = 1) out vec4 outPreFogColor;
+// layout(location = 0, index = 1) out vec4 outPreFogColor;
 
 layout(push_constant) uniform PushConstants {
   // Block 0: Offset 0 (16 bytes)
@@ -24,9 +24,9 @@ layout(push_constant) uniform PushConstants {
 
   // Block 2: Offset 32 (16 bytes)
   uint fogColor;
-  uint useTmuOow;
-  uint chromakeyEnabled;
   uint chromakeyRangeMode;
+  float depthNear;
+  float depthFar;
 
   // Block 3: Offset 48 (16 bytes)
   uint chromakeyValue;
@@ -44,25 +44,21 @@ layout(push_constant) uniform PushConstants {
   uint colorOther;
 
   // Block 6: Offset 144 (16 bytes)
-  uint colorInvert;
   uint alphaFunc;
   uint alphaFactor;
   uint alphaLocal;
+  uint alphaOther;
 
   // Block 7: Offset 160 (16 bytes)
-  uint alphaOther;
-  uint alphaInvert;
   uint textureEnabled;
   uint tmuCombinerModes0;
+  uint stipplePattern;
+  uint flags;
 
-  // Block 8: Offset 176 (16 bytes)
-  uint texChromaEnabled[2];
-  uint texChromaRangeMode[2];
-
-  // Block 9: Offset 192 (32 bytes)
+  // Block 8: Offset 176 (32 bytes)
   vec4 texChromaMin[2];
 
-  // Block 10: Offset 224 (32 bytes)
+  // Block 9: Offset 208 (32 bytes)
   vec4 texChromaMax[2];
 }
 pcs;
@@ -79,7 +75,8 @@ vec4 sampleTexture(sampler2D tex, vec2 uv, uint tmuIdx, float tw, float th) {
   finalUv.x *= (maxDim / tw);
   finalUv.y *= (maxDim / th);
 
-  if (pcs.texChromaEnabled[tmuIdx] == 1u) {
+  bool texChromaEnabled = ((pcs.flags >> (5u + tmuIdx)) & 1u) != 0u;
+  if (texChromaEnabled) {
     ivec2 size = ivec2(int(tw), int(th));
     vec2 texelCoord = finalUv * vec2(tw, th) - vec2(0.5);
     ivec2 tl = ivec2(floor(texelCoord));
@@ -95,21 +92,23 @@ vec4 sampleTexture(sampler2D tex, vec2 uv, uint tmuIdx, float tw, float th) {
     vec4 c01 = texelFetch(tex, c01_coord, 0);
     vec4 c11 = texelFetch(tex, c11_coord, 0);
 
+    uint texChromaRangeMode = ((pcs.flags >> (7u + tmuIdx)) & 1u) != 0u ? 0x10000000u : 0u;
+
     if (IsColorInRange(c00.rgb, pcs.texChromaMin[tmuIdx].rgb,
                        pcs.texChromaMax[tmuIdx].rgb,
-                       pcs.texChromaRangeMode[tmuIdx]))
+                       texChromaRangeMode))
       c00 = vec4(0.0);
     if (IsColorInRange(c10.rgb, pcs.texChromaMin[tmuIdx].rgb,
                        pcs.texChromaMax[tmuIdx].rgb,
-                       pcs.texChromaRangeMode[tmuIdx]))
+                       texChromaRangeMode))
       c10 = vec4(0.0);
     if (IsColorInRange(c01.rgb, pcs.texChromaMin[tmuIdx].rgb,
                        pcs.texChromaMax[tmuIdx].rgb,
-                       pcs.texChromaRangeMode[tmuIdx]))
+                       texChromaRangeMode))
       c01 = vec4(0.0);
     if (IsColorInRange(c11.rgb, pcs.texChromaMin[tmuIdx].rgb,
                        pcs.texChromaMax[tmuIdx].rgb,
-                       pcs.texChromaRangeMode[tmuIdx]))
+                       texChromaRangeMode))
       c11 = vec4(0.0);
 
     vec4 c0 = mix(c00, c10, f.x);
@@ -256,12 +255,124 @@ const float s_tableIndexToW[64] = float[](
     13107.200195, 16384.000000, 18724.572266, 21845.333984, 26214.400391,
     32768.000000, 37449.144531, 43690.667969, 52428.800781);
 
+vec4 applyDithering(vec4 color, uint ditherMode) {
+  if (ditherMode == 0u) return color;
+
+  ivec2 coord = ivec2(gl_FragCoord.xy) & 3;
+  uint threshold = 0u;
+  uint matrixSize = 16u;
+  
+  if (ditherMode == 1u) { // 2x2
+    const uint dither_matrix_2x2[4] = uint[](
+        0u, 2u,
+        3u, 1u
+    );
+    int idx = (coord.y & 1) * 2 + (coord.x & 1);
+    threshold = dither_matrix_2x2[idx];
+    matrixSize = 4u;
+  } else if (ditherMode == 2u) { // 4x4
+    const uint dither_matrix_4x4[16] = uint[](
+         0u,  8u,  2u, 10u,
+        12u,  4u, 14u,  6u,
+         3u, 11u,  1u,  9u,
+        15u,  7u, 13u,  5u
+    );
+    int idx = coord.y * 4 + coord.x;
+    threshold = dither_matrix_4x4[idx];
+    matrixSize = 16u;
+  }
+
+  float r = color.r * 255.0;
+  float g = color.g * 255.0;
+  float b = color.b * 255.0;
+  float a = color.a * 255.0;
+
+  bool useAlpha = (pcs.alphaTestOp != 7u) || (color.a < 0.99);
+
+  if (useAlpha) {
+    // ARGB1555
+    uint ditherR = (threshold * 8u) / matrixSize;
+    uint r5 = uint(clamp(r + float(ditherR), 0.0, 255.0)) / 8u;
+    r5 = min(r5, 31u);
+    r = float((r5 << 3u) | (r5 >> 2u));
+
+    uint ditherG = (threshold * 8u) / matrixSize;
+    uint g5 = uint(clamp(g + float(ditherG), 0.0, 255.0)) / 8u;
+    g5 = min(g5, 31u);
+    g = float((g5 << 3u) | (g5 >> 2u));
+
+    uint ditherB = (threshold * 8u) / matrixSize;
+    uint b5 = uint(clamp(b + float(ditherB), 0.0, 255.0)) / 8u;
+    b5 = min(b5, 31u);
+    b = float((b5 << 3u) | (b5 >> 2u));
+
+    uint ditherA = (threshold * 128u) / matrixSize;
+    uint a1 = uint(clamp(a + float(ditherA), 0.0, 255.0)) / 128u;
+    a1 = min(a1, 1u);
+    a = float(a1 * 255u);
+  } else {
+    // RGB565
+    uint ditherR = (threshold * 8u) / matrixSize;
+    uint r5 = uint(clamp(r + float(ditherR), 0.0, 255.0)) / 8u;
+    r5 = min(r5, 31u);
+    r = float((r5 << 3u) | (r5 >> 2u));
+
+    uint ditherG = (threshold * 4u) / matrixSize;
+    uint g6 = uint(clamp(g + float(ditherG), 0.0, 255.0)) / 4u;
+    g6 = min(g6, 63u);
+    g = float((g6 << 2u) | (g6 >> 4u));
+
+    uint ditherB = (threshold * 8u) / matrixSize;
+    uint b5 = uint(clamp(b + float(ditherB), 0.0, 255.0)) / 8u;
+    b5 = min(b5, 31u);
+    b = float((b5 << 3u) | (b5 >> 2u));
+  }
+
+  return vec4(r / 255.0, g / 255.0, b / 255.0, a / 255.0);
+}
+
+void applyStippling(uint stippleMode, uint stipplePattern) {
+  if (stippleMode == 0u) return;
+
+  ivec2 coord = ivec2(gl_FragCoord.xy);
+  
+  if (stippleMode == 1u) {
+    int x = coord.x & 7;
+    int y = coord.y & 3;
+    int bitIdx = (y * 8) + (7 - x);
+    uint bit = (stipplePattern >> uint(bitIdx)) & 1u;
+    if (bit == 0u) {
+      discard;
+    }
+  } else if (stippleMode == 2u) {
+    int x = (coord.x + coord.y) & 7;
+    int y = coord.y & 3;
+    int bitIdx = (y * 8) + (7 - x);
+    uint bit = (stipplePattern >> uint(bitIdx)) & 1u;
+    if (bit == 0u) {
+      discard;
+    }
+  }
+}
+
 void main() {
   // Unpack colors at the start of main()
   vec4 constantColor = unpackRGBA(pcs.constantColor);
   vec4 chromakeyValue = unpackRGBA(pcs.chromakeyValue);
   vec4 chromakeyRangeMin = unpackRGBA(pcs.chromakeyRangeMin);
   vec4 chromakeyRangeMax = unpackRGBA(pcs.chromakeyRangeMax);
+
+  // Unpack flags
+  bool colorInvert = (pcs.flags & 1u) != 0u;
+  bool alphaInvert = ((pcs.flags >> 1u) & 1u) != 0u;
+  bool chromakeyEnabled = ((pcs.flags >> 2u) & 1u) != 0u;
+  uint useTmuOow = (pcs.flags >> 3u) & 3u;
+
+  uint ditherMode = (pcs.flags >> 9u) & 3u;
+  uint stippleMode = (pcs.flags >> 11u) & 3u;
+
+  // Apply stippling early
+  applyStippling(stippleMode, pcs.stipplePattern);
 
   // Unpack texture enabling and invert bits
   bool tmu0Active = (pcs.textureEnabled & 1u) != 0u;
@@ -282,11 +393,7 @@ void main() {
   uint alphaFunc1 = (pcs.tmuCombinerModes1 >> 16u) & 0xFFu;
   uint alphaFactor1 = (pcs.tmuCombinerModes1 >> 24u) & 0xFFu;
 
-  // Near-plane clipping:
-  // 1. If W-buffering is active, the W-buffer cannot represent values < 1.0, so
-  // we clip at W < 1.0 (fragOOW > 1.0).
-  // 2. If texturing is enabled, we must clip if the vertex is behind the camera
-  // (W <= 0) to prevent division by negative.
+  // Near-plane clipping
   if (pcs.depthBufferMode == 2u) {
     if (fragOOW > 1.0) discard;
   } else if ((pcs.textureEnabled & 3u) != 0u) {
@@ -299,17 +406,17 @@ void main() {
     ivec2 texSize = textureSize(texSampler1, 0);
     float tw = float(texSize.x);
     float th = float(texSize.y);
-    float divW1 = ((pcs.useTmuOow >> 1u) & 1u) != 0u ? fragTmuOow.y : fragOOW;
+    float divW1 = ((useTmuOow >> 1u) & 1u) != 0u ? fragTmuOow.y : fragOOW;
     vec2 uv1 = (fragTex.zw / divW1) / 256.0;
     tmu1Color = sampleTexture(texSampler1, uv1, 1u, tw, th);
   }
 
-  // Evaluate TMU 1 combiner stage (upstream, no other input, pass iterated)
+  // Evaluate TMU 1 combiner stage
   vec4 tmu1Out = tmu1Active ? evaluateTmuStage(rgbFunc1, rgbFactor1, alphaFunc1,
                                                alphaFactor1, tmu1RgbInvert,
                                                tmu1AlphaInvert, tmu1Color,
                                                fragColor, fragColor)
-                            : fragColor;
+                             : fragColor;
 
   // 2. Sample TMU 0 (downstream)
   vec4 tmu0Color = vec4(1.0);
@@ -317,21 +424,21 @@ void main() {
     ivec2 texSize = textureSize(texSampler0, 0);
     float tw = float(texSize.x);
     float th = float(texSize.y);
-    float divW0 = (pcs.useTmuOow & 1u) != 0u ? fragTmuOow.x : fragOOW;
+    float divW0 = (useTmuOow & 1u) != 0u ? fragTmuOow.x : fragOOW;
     vec2 uv0 = (fragTex.xy / divW0) / 256.0;
     tmu0Color = sampleTexture(texSampler0, uv0, 0u, tw, th);
   }
 
-  // Evaluate TMU 0 combiner stage (downstream, other input is tmu1Out)
+  // Evaluate TMU 0 combiner stage
   vec4 tmu0Out = tmu0Active ? evaluateTmuStage(rgbFunc0, rgbFactor0, alphaFunc0,
                                                alphaFactor0, tmu0RgbInvert,
                                                tmu0AlphaInvert, tmu0Color,
                                                tmu1Out, fragColor)
-                            : tmu1Out;
+                             : tmu1Out;
 
   vec4 texColor = tmu0Out;
 
-  // 2. Route Alpha Combiner inputs
+  // Route Alpha Combiner inputs
   float aLocal = 1.0;
   if (pcs.alphaLocal == 0u)
     aLocal = fragColor.a;
@@ -346,7 +453,7 @@ void main() {
   else if (pcs.alphaOther == 2u)
     aOther = constantColor.a;
 
-  // 3. Evaluate Alpha Combiner Factor
+  // Evaluate Alpha Combiner Factor
   float factA = 0.0;
   if (pcs.alphaFactor == 1u || pcs.alphaFactor == 3u)
     factA = aLocal;
@@ -363,7 +470,7 @@ void main() {
   else if (pcs.alphaFactor == 12u)
     factA = 1.0 - texColor.a;
 
-  // 4. Evaluate Alpha Combiner Function
+  // Evaluate Alpha Combiner Function
   float finalA = 0.0;
   if (pcs.alphaFunc == 1u)
     finalA = aLocal;
@@ -378,9 +485,9 @@ void main() {
   else if (pcs.alphaFunc == 9u || pcs.alphaFunc == 16u)
     finalA = (aLocal - aOther) * factA + aOther;
 
-  if (pcs.alphaInvert == 1u) finalA = 1.0 - finalA;
+  if (alphaInvert) finalA = 1.0 - finalA;
 
-  // 5. Route Color Combiner inputs
+  // Route Color Combiner inputs
   vec3 cLocal = vec3(0.0);
   if (pcs.colorLocal == 0u)
     cLocal = fragColor.rgb;
@@ -395,7 +502,7 @@ void main() {
   else if (pcs.colorOther == 2u)
     cOther = constantColor.rgb;
 
-  // 6. Evaluate Color Combiner Factor
+  // Evaluate Color Combiner Factor
   vec3 factC = vec3(0.0);
   if (pcs.colorFactor == 1u)
     factC = cLocal;
@@ -418,7 +525,7 @@ void main() {
   else if (pcs.colorFactor == 12u)
     factC = vec3(1.0 - texColor.a);
 
-  // 7. Evaluate Color Combiner Function
+  // Evaluate Color Combiner Function
   vec3 finalC = vec3(0.0);
   if (pcs.colorFunc == 1u)
     finalC = cLocal;
@@ -439,12 +546,12 @@ void main() {
   else if (pcs.colorFunc == 16u)
     finalC = (vec3(aLocal) - cOther) * factC + cOther;
 
-  if (pcs.colorInvert == 1u) finalC = vec3(1.0) - finalC;
+  if (colorInvert) finalC = vec3(1.0) - finalC;
 
   vec4 col = vec4(finalC, finalA);
 
-  // Milestone 10: Chromakey Emulation
-  if (pcs.chromakeyEnabled == 1u) {
+  // Chromakey Emulation
+  if (chromakeyEnabled) {
     vec3 chromaTestColor = (pcs.textureEnabled == 1u) ? cOther : col.rgb;
     bool rangeEnabled = ((pcs.chromakeyRangeMode >> 28u) & 1u) == 1u;
     bool discardPixel = false;
@@ -463,7 +570,7 @@ void main() {
 
   vec4 preFogColor = col;
 
-  // Milestone 8: Fogging Emulation
+  // Fogging Emulation
   uint fogSource = pcs.fogMode & 0x0Fu;
   if (fogSource != 0u) {
     float f = 0.0;
@@ -554,6 +661,16 @@ void main() {
     }
   }
 
-  outColor = col;
-  outPreFogColor = preFogColor;
+  // Depth Write (must write in all paths if gl_FragDepth is statically assigned)
+  if (pcs.depthBufferMode == 2u) {
+    float eyeW = 1.0 / fragOOW;
+    float normalizedW = (eyeW - pcs.depthNear) / (pcs.depthFar - pcs.depthNear);
+    gl_FragDepth = clamp(normalizedW, 0.0, 1.0);
+  } else {
+    gl_FragDepth = gl_FragCoord.z;
+  }
+
+  // Apply Dithering to outColor and outPreFogColor
+  outColor = applyDithering(col, ditherMode);
+  // outPreFogColor = applyDithering(preFogColor, ditherMode);
 }

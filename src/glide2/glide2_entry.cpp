@@ -124,6 +124,7 @@ uint16_t s_lfbConstantDepth = 0;
 bool s_lfbWriteColorSwizzle = false;
 bool s_lfbWriteColorSwizzleSwap = false;
 bool s_alphaControlsITRGBLighting = false;
+uint32_t s_ditherMode = 0;
 GrErrorCallbackFnc_t s_errorCallback = nullptr;
 float s_gammaCorrectionValue = 1.0f;
 
@@ -228,6 +229,7 @@ void ResetFrontendState() {
   s_lfbWriteColorSwizzle = false;
   s_lfbWriteColorSwizzleSwap = false;
   s_alphaControlsITRGBLighting = false;
+  s_ditherMode = 0;
   s_errorCallback = nullptr;
   s_gammaCorrectionValue = 1.0f;
   s_sstOrigin = 0;
@@ -304,9 +306,10 @@ struct __attribute__((packed)) GlideWrapperState {
   uint8_t mipmapMode[2];
   uint8_t lodBlend[2];
   float texLodBias[2]; // Added to support save/restore of LOD bias
+  uint8_t ditherMode;
 
   // Explicit padding to align exactly to the Glide 2.x standard 312-byte layout size
-  uint8_t pad[118];
+  uint8_t pad[117];
 };
 
 static_assert(sizeof(GlideWrapperState) == 312,
@@ -1111,6 +1114,7 @@ FX_ENTRY void FX_CALL grGlideGetState(GrState* state) {
     ws->lodBlend[i] = s_lodBlend[i] ? 1 : 0;
   }
   std::memcpy(ws->texLodBias, s_texLodBias, sizeof(s_texLodBias));
+  ws->ditherMode = s_ditherMode;
 }
 
 FX_ENTRY void FX_CALL grGlideSetState(const GrState* state) {
@@ -1176,6 +1180,7 @@ FX_ENTRY void FX_CALL grGlideSetState(const GrState* state) {
     s_lodBlend[i] = ws->lodBlend[i] != 0;
   }
   std::memcpy(s_texLodBias, ws->texLodBias, sizeof(s_texLodBias));
+  s_ditherMode = (ws->ditherMode > 2) ? 0 : ws->ditherMode;
 
   if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
     b->SetDepthState(s_depthMode, s_depthCompare, s_depthMask, s_depthBias);
@@ -1189,6 +1194,7 @@ FX_ENTRY void FX_CALL grGlideSetState(const GrState* state) {
     b->SetSstOrigin(s_sstOrigin);
     b->SetClipWindow(s_clipMinX, s_clipMinY, s_clipMaxX, s_clipMaxY);
     b->SetColorMask(s_colorMaskRgb, s_colorMaskAlpha);
+    b->SetDitherMode(s_ditherMode);
     b->SetConstantColor(s_constantColor);
     b->SetFogMode(s_fogMode);
     b->SetFogColor(s_fogColor);
@@ -2356,6 +2362,10 @@ FX_ENTRY void FX_CALL grChromakeyValue(GrColor_t value) {
 FX_ENTRY void FX_CALL grDitherMode(GrDitherMode_t mode) {
   EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend", "grDitherMode invoked: mode=" << mode);
+  s_ditherMode = mode;
+  if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
+    b->SetDitherMode(s_ditherMode);
+  }
 }
 
 FX_ENTRY FxU32 FX_CALL grSstScreenWidth(void) {

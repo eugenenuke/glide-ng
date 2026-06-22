@@ -27,6 +27,11 @@ void SoftwareBackendBase::ResetState() {
   m_depthCompareOp = 1;
   m_depthMask = true;
   m_depthBiasLevel = 0;
+  m_depthNear = 1.0f;
+  m_depthFar = 65535.0f;
+  m_ditherMode = 0;
+  m_stippleMode = 0;
+  m_stipplePattern = 0xFFFFFFFF;
 
   m_rgbSrcBlend = 4;
   m_rgbDstBlend = 0;
@@ -188,6 +193,26 @@ void SoftwareBackendBase::SetDepthState(uint32_t depthMode, uint32_t compareOp,
             "SetDepthState: Mode=" << depthMode << ", Compare=" << compareOp
                                    << ", Mask=" << depthMask
                                    << ", BiasLevel=" << biasLevel);
+}
+
+void SoftwareBackendBase::SetDepthRange(float nearVal, float farVal) {
+  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  m_depthNear = nearVal;
+  m_depthFar = farVal;
+  GLIDE_LOG(DEBUG, "Rasterizer", "SetDepthRange: Near=" << nearVal << ", Far=" << farVal);
+}
+
+void SoftwareBackendBase::SetDitherMode(uint32_t mode) {
+  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  m_ditherMode = mode;
+  GLIDE_LOG(DEBUG, "Rasterizer", "SetDitherMode: Mode=" << mode);
+}
+
+void SoftwareBackendBase::SetStippleState(uint32_t mode, uint32_t pattern) {
+  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  m_stippleMode = mode;
+  m_stipplePattern = pattern;
+  GLIDE_LOG(DEBUG, "Rasterizer", "SetStippleState: Mode=" << mode << ", Pattern=0x" << std::hex << pattern << std::dec);
 }
 
 void SoftwareBackendBase::SetBlendState(uint32_t rgbSrcFactor,

@@ -57,6 +57,9 @@ class IGraphicsBackend {
   // Phase 4: Depth Comparison, Transparency Blending & Culling States
   virtual void SetDepthState(uint32_t depthMode, uint32_t compareOp,
                              bool depthMask, int32_t biasLevel) = 0;
+  virtual void SetDepthRange(float nearVal, float farVal) = 0;
+  virtual void SetDitherMode(uint32_t mode) = 0;
+  virtual void SetStippleState(uint32_t mode, uint32_t pattern) = 0;
   virtual void SetBlendState(uint32_t rgbSrcFactor, uint32_t rgbDstFactor,
                              uint32_t alphaSrcFactor,
                              uint32_t alphaDstFactor) = 0;

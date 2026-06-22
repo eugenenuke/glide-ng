@@ -259,3 +259,22 @@ target_link_libraries(perspective_mipmapping_showcase PRIVATE
     ${CMAKE_DL_LIBS}
     -lm
 )
+
+
+# --- Glide 3.x Phase 4 Interactive Showcase Demo ---
+add_executable(Glide3xShowcaseDemo
+    phase4_showcase.cpp
+)
+target_include_directories(Glide3xShowcaseDemo PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../include/3dfx"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../include/glide3"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../tools"
+)
+target_compile_definitions(Glide3xShowcaseDemo PRIVATE -D__linux__ -DGLIDE_VERSION=3)
+target_link_libraries(Glide3xShowcaseDemo PRIVATE
+    glide3x
+    tool_info3
+    tlib_compat
+    ${CMAKE_DL_LIBS}
+    -lm
+)

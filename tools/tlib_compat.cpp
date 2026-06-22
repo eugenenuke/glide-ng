@@ -12,6 +12,7 @@ namespace {
     int init_done = 0;
     float s_screenWidth = 640.0f;
     float s_screenHeight = 480.0f;
+    bool s_stdin_eof = false;
 
     void reset_term(void) {
         if (init_done) {
@@ -48,11 +49,13 @@ extern "C" int tlKbHit(void) {
         return 1;
     }
 
-    if (!isatty(STDIN_FILENO)) {
+    if (s_stdin_eof) {
         return 0;
     }
 
-    if (!init_done) do_init();
+    if (isatty(STDIN_FILENO) && !init_done) {
+        do_init();
+    }
 
     struct timeval tv = { 0L, 0L };
     fd_set fds;
@@ -72,14 +75,18 @@ extern "C" char tlGetCH(void) {
         return key;
     }
 
-    char ch = 0;
-    if (!isatty(STDIN_FILENO)) {
+    if (s_stdin_eof) {
         return 0;
     }
 
-    if (!init_done) do_init();
+    if (isatty(STDIN_FILENO) && !init_done) {
+        do_init();
+    }
 
-    if (read(STDIN_FILENO, &ch, 1) < 0) {
+    char ch = 0;
+    int n = read(STDIN_FILENO, &ch, 1);
+    if (n <= 0) {
+        s_stdin_eof = true;
         ch = 0;
     }
     return ch;

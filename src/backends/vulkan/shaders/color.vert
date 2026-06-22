@@ -17,20 +17,20 @@ layout(push_constant) uniform PushConstants {
   // Block 0: Offset 0 (16 bytes)
   float viewportWidth;
   float viewportHeight;
-  uint depthBufferMode;
-  uint alphaTestOp;
+  uint depthBufferMode;  // 0 = None, 1 = Z, 2 = W
+  uint alphaTestOp;      // 0..7
 
   // Block 1: Offset 16 (16 bytes)
-  uint constantColor;
-  float alphaTestRef;
-  float depthBias;
+  uint constantColor;  // Packed RGBA
+  float alphaTestRef;  // 0.0 .. 1.0
+  float depthBias;     // Normalized
   uint fogMode;
 
   // Block 2: Offset 32 (16 bytes)
-  uint fogColor;
-  uint useTmuOow;
-  uint chromakeyEnabled;
+  uint fogColor;   // Packed ARGB
   uint chromakeyRangeMode;
+  float depthNear;
+  float depthFar;
 
   // Block 3: Offset 48 (16 bytes)
   uint chromakeyValue;
@@ -48,25 +48,21 @@ layout(push_constant) uniform PushConstants {
   uint colorOther;
 
   // Block 6: Offset 144 (16 bytes)
-  uint colorInvert;
   uint alphaFunc;
   uint alphaFactor;
   uint alphaLocal;
+  uint alphaOther;
 
   // Block 7: Offset 160 (16 bytes)
-  uint alphaOther;
-  uint alphaInvert;
   uint textureEnabled;
   uint tmuCombinerModes0;
+  uint stipplePattern;
+  uint flags;
 
-  // Block 8: Offset 176 (16 bytes)
-  uint texChromaEnabled[2];
-  uint texChromaRangeMode[2];
-
-  // Block 9: Offset 192 (32 bytes)
+  // Block 8: Offset 176 (32 bytes)
   vec4 texChromaMin[2];
 
-  // Block 10: Offset 224 (32 bytes)
+  // Block 9: Offset 208 (32 bytes)
   vec4 texChromaMax[2];
 }
 pcs;

@@ -138,7 +138,11 @@ bool OpenGLESBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
   // Milestone 1: Setup Offscreen Framebuffer Objects (FBOs) for GPU-native
   // rendering (Double-Buffered)
   glGenFramebuffers(2, m_headlessFBOs);
-  glGenRenderbuffers(2, m_headlessDepthRenderbuffers);
+  glGenRenderbuffers(1, &m_sharedDepthRenderbuffer);
+
+  // Allocate single shared depth renderbuffer with the active context dimensions
+  glBindRenderbuffer(GL_RENDERBUFFER, m_sharedDepthRenderbuffer);
+  glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, width, height);
 
   for (int i = 0; i < 2; ++i) {
     glBindFramebuffer(GL_FRAMEBUFFER, m_headlessFBOs[i]);
@@ -147,11 +151,9 @@ bool OpenGLESBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
                            m_fboTextures[i], 0);
 
-    // Allocate and attach depth renderbuffer for hardware Z-testing support
-    glBindRenderbuffer(GL_RENDERBUFFER, m_headlessDepthRenderbuffers[i]);
-    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, width, height);
+    // Attach the single shared depth renderbuffer to both FBOs
     glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
-                              GL_RENDERBUFFER, m_headlessDepthRenderbuffers[i]);
+                              GL_RENDERBUFFER, m_sharedDepthRenderbuffer);
 
     // Verify FBO completeness
     if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
@@ -304,7 +306,6 @@ bool OpenGLESBackend::SwapBuffers() {
   // Swap the GPU color targets for physical double-buffering!
   std::swap(m_headlessFBOs[0], m_headlessFBOs[1]);
   std::swap(m_fboTextures[0], m_fboTextures[1]);
-  std::swap(m_headlessDepthRenderbuffers[0], m_headlessDepthRenderbuffers[1]);
 
   return true;
 }
@@ -326,8 +327,8 @@ void OpenGLESBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z,
   // 1. Clear CPU-side framebuffer for progressive hybrid compatibility
   SoftwareBackendBase::ClearBuffer(color, alpha, z, clearMask);
 
-  // Bind offscreen FBO
-  glBindFramebuffer(GL_FRAMEBUFFER, m_headlessFBOs[0]);
+  // Bind active offscreen FBO
+  glBindFramebuffer(GL_FRAMEBUFFER, GetActiveGpuFbo());
 
   GLbitfield mask = 0;
   GLboolean oldDepthMask = GL_TRUE;
@@ -773,9 +774,9 @@ void OpenGLESBackend::DestroyGLContext() {
     glDeleteProgram(m_glProgram);
     m_glProgram = 0;
   }
-  if (m_headlessDepthRenderbuffers[0]) {
-    glDeleteRenderbuffers(2, m_headlessDepthRenderbuffers);
-    m_headlessDepthRenderbuffers[0] = m_headlessDepthRenderbuffers[1] = 0;
+  if (m_sharedDepthRenderbuffer) {
+    glDeleteRenderbuffers(1, &m_sharedDepthRenderbuffer);
+    m_sharedDepthRenderbuffer = 0;
   }
   if (m_headlessFBOs[0]) {
     glDeleteFramebuffers(2, m_headlessFBOs);
@@ -928,6 +929,13 @@ uniform float uFogTable[64];
 // Depth Buffer Mode Uniform for Clipping
 uniform highp int uDepthBufferMode;
 
+uniform float uDepthNear;
+uniform float uDepthFar;
+uniform uint uDitherMode;
+uniform uint uStippleMode;
+uniform uint uStipplePattern;
+uniform vec2 uViewportSize;
+
 const float s_tableIndexToW[64] = float[](
     1.000000,      1.142857,      1.333333,      1.600000, 
     2.000000,      2.285714,      2.666667,      3.200000, 
@@ -1064,6 +1072,25 @@ vec4 evaluateTmuStageGLES(
 }
 
 void main() {
+    // Stipple Transparency Emulation
+    if (uStippleMode == 1u) { // GR_STIPPLE_PATTERN
+        int stippleX = int(gl_FragCoord.x) & 7;
+        int stippleY = int(gl_FragCoord.y) & 3;
+        int stippleBitIdx = (stippleY << 3) | (7 - stippleX);
+        uint bit = (uStipplePattern >> uint(stippleBitIdx)) & 1u;
+        if (bit == 0u) {
+            discard;
+        }
+    } else if (uStippleMode == 2u) { // GR_STIPPLE_ROTATE
+        int stippleX = (int(gl_FragCoord.x) + int(gl_FragCoord.y)) & 7;
+        int stippleY = int(gl_FragCoord.y) & 3;
+        int stippleBitIdx = (stippleY << 3) | (7 - stippleX);
+        uint bit = (uStipplePattern >> uint(stippleBitIdx)) & 1u;
+        if (bit == 0u) {
+            discard;
+        }
+    }
+
     // W-based coordinate near-plane and camera-space clipping
     if (uDepthBufferMode == 2) {
         if (fragOOW > 1.0) discard;
@@ -1281,6 +1308,64 @@ void main() {
         }
     }
 
+    // 16-Bit Dithering Emulation
+    if (uDitherMode != 0u) {
+        int x = int(gl_FragCoord.x) & 3;
+        int y = int(gl_FragCoord.y) & 3;
+        int d = 0;
+        if (uDitherMode == 2u) { // GR_DITHER_4x4
+            int idx = (y << 2) | x;
+            if (idx == 0) d = 0;
+            else if (idx == 1) d = 8;
+            else if (idx == 2) d = 2;
+            else if (idx == 3) d = 10;
+            else if (idx == 4) d = 12;
+            else if (idx == 5) d = 4;
+            else if (idx == 6) d = 14;
+            else if (idx == 7) d = 6;
+            else if (idx == 8) d = 3;
+            else if (idx == 9) d = 11;
+            else if (idx == 10) d = 1;
+            else if (idx == 11) d = 9;
+            else if (idx == 12) d = 15;
+            else if (idx == 13) d = 7;
+            else if (idx == 14) d = 13;
+            else if (idx == 15) d = 5;
+        } else if (uDitherMode == 1u) { // GR_DITHER_2x2
+            int idx = ((y & 1) << 1) | (x & 1);
+            if (idx == 0) d = 0;
+            else if (idx == 1) d = 8;
+            else if (idx == 2) d = 12;
+            else if (idx == 3) d = 4;
+        }
+        
+        vec3 c255 = col.rgb * 255.0;
+        int r_dither = d >> 1;
+        int b_dither = d >> 1;
+        int g_dither = d >> 2;
+        
+        int r = int(c255.r) + r_dither;
+        int g = int(c255.g) + g_dither;
+        int b = int(c255.b) + b_dither;
+        
+        r = clamp(r, 0, 255) & 0xF8;
+        g = clamp(g, 0, 255) & 0xFC;
+        b = clamp(b, 0, 255) & 0xF8;
+        
+        col.r = float(r | (r >> 5)) / 255.0;
+        col.g = float(g | (g >> 6)) / 255.0;
+        col.b = float(b | (b >> 5)) / 255.0;
+    }
+
+    // True W-Buffering Depth Write
+    if (uDepthBufferMode == 2) { // 2 = W-buffer
+        float eyeW = 1.0 / fragOOW;
+        float normalizedW = (eyeW - uDepthNear) / (uDepthFar - uDepthNear);
+        gl_FragDepth = clamp(normalizedW, 0.0, 1.0);
+    } else {
+        gl_FragDepth = gl_FragCoord.z;
+    }
+
     outColor = col;
 #ifdef GL_EXT_blend_func_extended
     outPreFogColor = preFogColor;
@@ -1382,6 +1467,11 @@ bool OpenGLESBackend::CreateGeomShaders() {
   m_uTexChromaMinLoc = glGetUniformLocation(m_geomProgram, "uTexChromaMin");
   m_uTexChromaMaxLoc = glGetUniformLocation(m_geomProgram, "uTexChromaMax");
   m_uTexLodBiasLoc = glGetUniformLocation(m_geomProgram, "uTexLodBias");
+  m_uDepthNearLoc = glGetUniformLocation(m_geomProgram, "uDepthNear");
+  m_uDepthFarLoc = glGetUniformLocation(m_geomProgram, "uDepthFar");
+  m_uDitherModeLoc = glGetUniformLocation(m_geomProgram, "uDitherMode");
+  m_uStippleModeLoc = glGetUniformLocation(m_geomProgram, "uStippleMode");
+  m_uStipplePatternLoc = glGetUniformLocation(m_geomProgram, "uStipplePattern");
 
   // Log critical uniform location failure
   if (m_uSstOriginLoc == -1 || m_uViewportSizeLoc == -1 ||
@@ -1456,8 +1546,8 @@ void OpenGLESBackend::DrawPoint(const ModernVertex& pt) {
   glBufferSubData(GL_ARRAY_BUFFER, m_geomVBOOffset, sizeof(ModernVertex), &pt);
   glBindBuffer(GL_ARRAY_BUFFER, 0);
 
-  // 2. Bind offscreen FBO and set state
-  glBindFramebuffer(GL_FRAMEBUFFER, m_headlessFBOs[0]);
+  // 2. Bind active offscreen FBO and set state
+  glBindFramebuffer(GL_FRAMEBUFFER, GetActiveGpuFbo());
   glViewport(0, 0, m_headlessWidth, m_headlessHeight);
   SyncDepthState();
   ApplyBlendingGLES();
@@ -1513,8 +1603,8 @@ void OpenGLESBackend::DrawLine(const ModernVertex& v0, const ModernVertex& v1) {
                   sizeof(ModernVertex), &v1);
   glBindBuffer(GL_ARRAY_BUFFER, 0);
 
-  // 2. Bind offscreen FBO and set state
-  glBindFramebuffer(GL_FRAMEBUFFER, m_headlessFBOs[0]);
+  // 2. Bind active offscreen FBO and set state
+  glBindFramebuffer(GL_FRAMEBUFFER, GetActiveGpuFbo());
   glViewport(0, 0, m_headlessWidth, m_headlessHeight);
   SyncDepthState();
   ApplyBlendingGLES();
@@ -1575,8 +1665,8 @@ void OpenGLESBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
                   sizeof(ModernVertex), &vertices[2]);
   glBindBuffer(GL_ARRAY_BUFFER, 0);
 
-  // 2. Bind offscreen FBO and set state
-  glBindFramebuffer(GL_FRAMEBUFFER, m_headlessFBOs[0]);
+  // 2. Bind active offscreen FBO and set state
+  glBindFramebuffer(GL_FRAMEBUFFER, GetActiveGpuFbo());
   glViewport(0, 0, m_headlessWidth, m_headlessHeight);
   SyncDepthState();
   ApplyBlendingGLES();
@@ -1834,6 +1924,36 @@ void OpenGLESBackend::SetBlendState(uint32_t rgbSrcFactor,
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   SoftwareBackendBase::SetBlendState(rgbSrcFactor, rgbDstFactor, alphaSrcFactor,
                                      alphaDstFactor);
+}
+
+void OpenGLESBackend::SetRenderBuffer(uint32_t target) {
+  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  SoftwareBackendBase::SetRenderBuffer(target);
+  if (m_initialized && m_windowAttached) {
+    glBindFramebuffer(GL_FRAMEBUFFER, GetActiveGpuFbo());
+  }
+}
+
+void OpenGLESBackend::SetDepthRange(float nearVal, float farVal) {
+  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  SoftwareBackendBase::SetDepthRange(nearVal, farVal);
+}
+
+void OpenGLESBackend::SetDitherMode(uint32_t mode) {
+  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  SoftwareBackendBase::SetDitherMode(mode);
+}
+
+void OpenGLESBackend::SetStippleState(uint32_t mode, uint32_t pattern) {
+  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  SoftwareBackendBase::SetStippleState(mode, pattern);
+}
+
+uint32_t OpenGLESBackend::GetActiveGpuFbo() const {
+  if (m_activeRenderBuffer == 0) {  // GR_BUFFER_FRONTBUFFER
+    return m_headlessFBOs[1];
+  }
+  return m_headlessFBOs[0];  // GR_BUFFER_BACKBUFFER (default)
 }
 
 void OpenGLESBackend::SetColorMask(bool rgb, bool alpha) {
@@ -2145,6 +2265,12 @@ void OpenGLESBackend::PopulateUniforms() {
   glUniform1uiv(m_uTexChromaRangeModeLoc, 2, rangeMode);
   glUniform4fv(m_uTexChromaMinLoc, 2, minColor);
   glUniform4fv(m_uTexChromaMaxLoc, 2, maxColor);
+
+  glUniform1f(m_uDepthNearLoc, m_depthNear);
+  glUniform1f(m_uDepthFarLoc, m_depthFar);
+  glUniform1ui(m_uDitherModeLoc, m_ditherMode);
+  glUniform1ui(m_uStippleModeLoc, m_stippleMode);
+  glUniform1ui(m_uStipplePatternLoc, m_stipplePattern);
 }
 
 void OpenGLESBackend::UploadTexturePartial(uint32_t tmu, uint32_t startAddress,

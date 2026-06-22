@@ -6442,6 +6442,7 @@ TEST_CASE("Glide 2.x State Serialization & Fixed-Point LOD Bias Roundtrip [Glide
   auto texLodBiasValue = (void (*)(GrChipID_t, float))dlsym(handle, "grTexLodBiasValue");
   auto glideGetState = (void (*)(GrState*))dlsym(handle, "grGlideGetState");
   auto glideSetState = (void (*)(const GrState*))dlsym(handle, "grGlideSetState");
+  auto ditherMode = (void (*)(GrDitherMode_t))dlsym(handle, "grDitherMode");
 
   auto texAllocateMemory = (GrMipMapId_t (*)(      GrChipID_t, FxU8, int, int, GrTextureFormat_t, GrMipMapMode_t, GrLOD_t,      GrLOD_t, GrAspectRatio_t, GrTextureClampMode_t, GrTextureClampMode_t,      GrTextureFilterMode_t, GrTextureFilterMode_t, float, FxBool))dlsym(handle, "guTexAllocateMemory");
   auto texSource = (void (*)(GrMipMapId_t))dlsym(handle, "guTexSource");
@@ -6451,6 +6452,7 @@ TEST_CASE("Glide 2.x State Serialization & Fixed-Point LOD Bias Roundtrip [Glide
   REQUIRE(texLodBiasValue != nullptr);
   REQUIRE(glideGetState != nullptr);
   REQUIRE(glideSetState != nullptr);
+  REQUIRE(ditherMode != nullptr);
   REQUIRE(texAllocateMemory != nullptr);
   REQUIRE(texSource != nullptr);
 
@@ -6469,6 +6471,8 @@ TEST_CASE("Glide 2.x State Serialization & Fixed-Point LOD Bias Roundtrip [Glide
   texLodBiasValue(GR_TMU1, 2.25f);
   CHECK(sw_b->GetTexLodBias(0) == -1.5f);
   CHECK(sw_b->GetTexLodBias(1) == 2.25f);
+  ditherMode(GR_DITHER_2x2);
+  CHECK(sw_b->GetDitherMode() == GR_DITHER_2x2);
 
   // 2. Serialize state
   char stateBuffer[512] = {0};
@@ -6479,6 +6483,8 @@ TEST_CASE("Glide 2.x State Serialization & Fixed-Point LOD Bias Roundtrip [Glide
   texLodBiasValue(GR_TMU1, 0.0f);
   CHECK(sw_b->GetTexLodBias(0) == 0.0f);
   CHECK(sw_b->GetTexLodBias(1) == 0.0f);
+  ditherMode(GR_DITHER_DISABLE);
+  CHECK(sw_b->GetDitherMode() == GR_DITHER_DISABLE);
 
   // 4. Restore state
   glideSetState(reinterpret_cast<const GrState*>(stateBuffer));
@@ -6486,6 +6492,7 @@ TEST_CASE("Glide 2.x State Serialization & Fixed-Point LOD Bias Roundtrip [Glide
   // 5. Assert active LOD biases are restored
   CHECK(sw_b->GetTexLodBias(0) == -1.5f);
   CHECK(sw_b->GetTexLodBias(1) == 2.25f);
+  CHECK(sw_b->GetDitherMode() == GR_DITHER_2x2);
 
   // 6. Verify 4.2 fixed-point roundtrip in guTexAllocateMemory & guTexSource
   // Negative fractional bias (-1.75f)

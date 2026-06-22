@@ -42,6 +42,11 @@ class SoftwareBackendBase : public IGraphicsBackend {
   bool GetTexCombinerRgbInvert(uint32_t tmu) const { return tmu < 2 ? m_texCombinerRgbInvert[tmu] : false; }
   bool GetTexCombinerAlphaInvert(uint32_t tmu) const { return tmu < 2 ? m_texCombinerAlphaInvert[tmu] : false; }
   float GetTexLodBias(uint32_t tmu) const { return tmu < 2 ? m_texLodBias[tmu] : 0.0f; }
+  float GetDepthNear() const { return m_depthNear; }
+  float GetDepthFar() const { return m_depthFar; }
+  uint32_t GetDitherMode() const { return m_ditherMode; }
+  uint32_t GetStippleMode() const { return m_stippleMode; }
+  uint32_t GetStipplePattern() const { return m_stipplePattern; }
   float GetDepthBufferPixel(uint32_t x, uint32_t y) const {
     uint32_t pIdx = y * m_headlessWidth + x;
     if (pIdx < m_headlessDepthBuffer.size()) return m_headlessDepthBuffer[pIdx];
@@ -66,6 +71,9 @@ class SoftwareBackendBase : public IGraphicsBackend {
   // Phase 4: Depth Comparison, Transparency Blending & Culling States
   void SetDepthState(uint32_t depthMode, uint32_t compareOp, bool depthMask,
                      int32_t biasLevel) override;
+  void SetDepthRange(float nearVal, float farVal) override;
+  void SetDitherMode(uint32_t mode) override;
+  void SetStippleState(uint32_t mode, uint32_t pattern) override;
   void SetBlendState(uint32_t rgbSrcFactor, uint32_t rgbDstFactor,
                      uint32_t alphaSrcFactor, uint32_t alphaDstFactor) override;
   void SetAlphaTestState(uint32_t compareOp, uint32_t refVal) override;
@@ -167,6 +175,11 @@ class SoftwareBackendBase : public IGraphicsBackend {
   uint32_t m_depthCompareOp{1};  // 1 = LESS (GR_CMP_LESS)
   bool m_depthMask{true};
   int32_t m_depthBiasLevel{0};
+  float m_depthNear{1.0f};
+  float m_depthFar{65535.0f};
+  uint32_t m_ditherMode{0};
+  uint32_t m_stippleMode{0};
+  uint32_t m_stipplePattern{0xFFFFFFFF};
 
   uint32_t m_rgbSrcBlend{4};  // 4 = ONE (GR_BLEND_ONE)
   uint32_t m_rgbDstBlend{0};  // 0 = ZERO (GR_BLEND_ZERO)

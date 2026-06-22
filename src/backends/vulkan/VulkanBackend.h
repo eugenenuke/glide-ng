@@ -27,9 +27,9 @@ struct PushConstants {
 
   // Block 2: Offset 32 (16 bytes)
   uint32_t fogColor;   // Packed 32-bit ARGB/ABGR color
-  uint32_t useTmuOow;  // 1 = use separate TMU OOW (grHints), 0 = use vertex OOW
-  uint32_t chromakeyEnabled;
   uint32_t chromakeyRangeMode;
+  float depthNear;     // Phase 4 depth range near (normalized)
+  float depthFar;      // Phase 4 depth range far (normalized)
 
   // Block 3: Offset 48 (16 bytes)
   uint32_t chromakeyValue;     // Packed RGBA
@@ -48,27 +48,25 @@ struct PushConstants {
   uint32_t colorOther;
 
   // Block 6: Offset 144 (16 bytes)
-  uint32_t colorInvert;
   uint32_t alphaFunc;
   uint32_t alphaFactor;
   uint32_t alphaLocal;
+  uint32_t alphaOther;
 
   // Block 7: Offset 160 (16 bytes)
-  uint32_t alphaOther;
-  uint32_t alphaInvert;
   uint32_t textureEnabled;
   uint32_t tmuCombinerModes0;
+  uint32_t stipplePattern;  // Phase 4 32-bit stipple pattern
+  uint32_t flags;           // Phase 4 packed flags
 
-  // Block 8: Offset 176 (16 bytes)
-  uint32_t texChromaEnabled[2];    // TMU0/TMU1 chromakey enabled
-  uint32_t texChromaRangeMode[2];  // TMU0/TMU1 range mode
-
-  // Block 9: Offset 192 (32 bytes)
+  // Block 8: Offset 176 (32 bytes)
   float texChromaMin[2][4];  // TMU0/TMU1 packed RGBA min
 
-  // Block 10: Offset 224 (32 bytes)
+  // Block 9: Offset 208 (32 bytes)
   float texChromaMax[2][4];  // TMU0/TMU1 packed RGBA max
 };
+
+static_assert(sizeof(PushConstants) <= 256, "Vulkan PushConstants exceed 256-byte hardware limit!");
 
 struct VulkanTexture {
   vk::UniqueImage image;
@@ -236,6 +234,9 @@ class VulkanBackend : public SoftwareBackendBase {
   void SetClipWindow(uint32_t minX, uint32_t minY, uint32_t maxX,
                      uint32_t maxY) override;
   void SetColorMask(bool rgb, bool alpha) override;
+  void SetDepthRange(float nearVal, float farVal) override;
+  void SetDitherMode(uint32_t mode) override;
+  void SetStippleState(uint32_t mode, uint32_t pattern) override;
   void SetGamma(float gamma) override;
   void LoadGammaTable(uint32_t nentries, const uint32_t* rTable,
                       const uint32_t* gTable, const uint32_t* bTable) override;
@@ -369,6 +370,7 @@ class VulkanBackend : public SoftwareBackendBase {
 
   vk::UniqueShaderModule m_vertShaderModule;
   vk::UniqueShaderModule m_fragShaderModule;
+  vk::UniqueShaderModule m_fragShaderModuleDualSrc;
   vk::UniquePipelineLayout m_pipelineLayout;
 
   // Active pipeline handles (non-owning pointers into the cache)

@@ -18,6 +18,7 @@
 
 // Include build-time generated shader SPIR-V bytecode headers!
 #include "color_frag.spv.h"
+#include "color_dualsrc_frag.spv.h"
 #include "color_vert.spv.h"
 
 extern "C" {
@@ -289,6 +290,7 @@ void VulkanBackend::Shutdown() {
   m_pipelineLayout.reset();
   m_vertShaderModule.reset();
   m_fragShaderModule.reset();
+  m_fragShaderModuleDualSrc.reset();
 
   // Reset descriptor layout, pool, and textures
   m_vulkanTextures.clear();
@@ -943,6 +945,30 @@ void VulkanBackend::SetColorMask(bool rgb, bool alpha) {
     FlushBatch();
   }
   SoftwareBackendBase::SetColorMask(rgb, alpha);
+}
+
+void VulkanBackend::SetDepthRange(float nearVal, float farVal) {
+  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  if (nearVal != m_depthNear || farVal != m_depthFar) {
+    FlushBatch();
+  }
+  SoftwareBackendBase::SetDepthRange(nearVal, farVal);
+}
+
+void VulkanBackend::SetDitherMode(uint32_t mode) {
+  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  if (mode != m_ditherMode) {
+    FlushBatch();
+  }
+  SoftwareBackendBase::SetDitherMode(mode);
+}
+
+void VulkanBackend::SetStippleState(uint32_t mode, uint32_t pattern) {
+  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  if (mode != m_stippleMode || pattern != m_stipplePattern) {
+    FlushBatch();
+  }
+  SoftwareBackendBase::SetStippleState(mode, pattern);
 }
 
 void VulkanBackend::SetConstantColor(uint32_t color) {
@@ -2263,9 +2289,14 @@ bool VulkanBackend::CreateShaderModules() {
                                         color_frag_spv);
     m_fragShaderModule = m_device->createShaderModuleUnique(fragInfo);
 
+    vk::ShaderModuleCreateInfo fragDualSrcInfo({}, color_dualsrc_frag_spv_size,
+                                               color_dualsrc_frag_spv);
+    m_fragShaderModuleDualSrc =
+        m_device->createShaderModuleUnique(fragDualSrcInfo);
+
     GLIDE_LOG(INFO, "Vulkan",
               "Loaded build-time compiled SPIR-V vertex and fragment shader "
-              "modules.");
+              "modules (including dual-source variant).");
     return true;
   } catch (const std::exception& e) {
     GLIDE_LOG(CRITICAL, "Vulkan",
@@ -2278,13 +2309,19 @@ PipelineGroup VulkanBackend::CompileGraphicsPipelines(
     const PipelineStateKey& key) {
   PipelineGroup group;
   try {
+    // Determine if the pipeline key requires dual-source blending (factor 15 = GR_BLEND_PREFOG_COLOR)
+    bool useDualSrcBlend = (key.rgbSrcBlend == 15 || key.rgbDstBlend == 15 ||
+                            key.alphaSrcBlend == 15 || key.alphaDstBlend == 15);
+    vk::ShaderModule fragShader = useDualSrcBlend ? m_fragShaderModuleDualSrc.get()
+                                                  : m_fragShaderModule.get();
+
     // Shader Stages
     vk::PipelineShaderStageCreateInfo shaderStages[] = {
         vk::PipelineShaderStageCreateInfo({}, vk::ShaderStageFlagBits::eVertex,
                                           m_vertShaderModule.get(), "main"),
         vk::PipelineShaderStageCreateInfo({},
                                           vk::ShaderStageFlagBits::eFragment,
-                                          m_fragShaderModule.get(), "main")};
+                                          fragShader, "main")};
 
     // Vertex Input Bindings (matches ModernVertex exactly)
     vk::VertexInputBindingDescription bindingDesc(0, sizeof(ModernVertex),
@@ -2414,6 +2451,18 @@ PipelineGroup VulkanBackend::CompileGraphicsPipelines(
         MapBlendFactorVulkan(key.alphaSrcBlend, false, true);
     colorBlendAttachment.dstAlphaBlendFactor =
         MapBlendFactorVulkan(key.alphaDstBlend, true, true);
+
+    GLIDE_LOG(DEBUG, "Vulkan",
+              "CompileGraphicsPipelines: blendEnable="
+                  << colorBlendAttachment.blendEnable
+                  << ", srcFactor="
+                  << vk::to_string(colorBlendAttachment.srcColorBlendFactor)
+                  << ", dstFactor="
+                  << vk::to_string(colorBlendAttachment.dstColorBlendFactor)
+                  << ", srcAlphaFactor="
+                  << vk::to_string(colorBlendAttachment.srcAlphaBlendFactor)
+                  << ", dstAlphaFactor="
+                  << vk::to_string(colorBlendAttachment.dstAlphaBlendFactor));
 
     vk::PipelineColorBlendStateCreateInfo colorBlending(
         {}, false, vk::LogicOp::eCopy, 1, &colorBlendAttachment,
@@ -3160,10 +3209,6 @@ void VulkanBackend::PopulatePushConstants(PushConstants& pcs) {
     packedFogColor = (a << 24) | (b << 16) | (g << 8) | r;
   }
   pcs.fogColor = packedFogColor;
-  uint32_t useTmuOow = 0;
-  if (m_stwHintMask & 0x2) useTmuOow |= (1u << 0);
-  if (m_stwHintMask & 0x8) useTmuOow |= (1u << 1);
-  pcs.useTmuOow = useTmuOow;
 
   // Pack 64-entry 8-bit fog table into 16 uint32_t values
   for (int i = 0; i < 16; ++i) {
@@ -3180,13 +3225,11 @@ void VulkanBackend::PopulatePushConstants(PushConstants& pcs) {
   pcs.colorFactor = m_colorCombinerFactor;
   pcs.colorLocal = m_colorCombinerLocal;
   pcs.colorOther = m_colorCombinerOther;
-  pcs.colorInvert = m_colorCombinerInvert ? 1u : 0u;
 
   pcs.alphaFunc = m_alphaCombinerFunc;
   pcs.alphaFactor = m_alphaCombinerFactor;
   pcs.alphaLocal = m_alphaCombinerLocal;
   pcs.alphaOther = m_alphaCombinerOther;
-  pcs.alphaInvert = m_alphaCombinerInvert ? 1u : 0u;
 
   uint32_t textureEnabled = 0;
   if (m_boundTexAddress[0] != 0xFFFFFFFF) textureEnabled |= (1u << 0);
@@ -3214,7 +3257,6 @@ void VulkanBackend::PopulatePushConstants(PushConstants& pcs) {
   pcs.tmuCombinerModes1 = tmu1Comb;
 
   // Milestone 10: Chromakey State
-  pcs.chromakeyEnabled = m_chromakeyMode;
   pcs.chromakeyRangeMode = m_chromakeyRangeMode;
 
   float cValR = ((m_chromakeyValue >> 16) & 0xFF) / 255.0f;
@@ -3244,9 +3286,6 @@ void VulkanBackend::PopulatePushConstants(PushConstants& pcs) {
 
   // Populate texture-specific chromakeying states for TMU0 and TMU1
   for (int i = 0; i < 2; ++i) {
-    pcs.texChromaEnabled[i] = m_texChromaMode[i];
-    pcs.texChromaRangeMode[i] = m_texChromaRangeMode[i];
-
     float minR = ((m_texChromaMin[i] >> 16) & 0xFF) / 255.0f;
     float minG = ((m_texChromaMin[i] >> 8) & 0xFF) / 255.0f;
     float minB = (m_texChromaMin[i] & 0xFF) / 255.0f;
@@ -3272,6 +3311,36 @@ void VulkanBackend::PopulatePushConstants(PushConstants& pcs) {
     pcs.texChromaMax[i][2] = maxB;
     pcs.texChromaMax[i][3] = maxA;
   }
+
+  // Phase 4 additions: depth range, stipple pattern, and packed flags
+  pcs.depthNear = m_depthNear;
+  pcs.depthFar = m_depthFar;
+  pcs.stipplePattern = m_stipplePattern;
+
+  uint32_t flags = 0;
+  if (m_colorCombinerInvert) flags |= (1u << 0);
+  if (m_alphaCombinerInvert) flags |= (1u << 1);
+  if (m_chromakeyMode != 0) flags |= (1u << 2);
+
+  uint32_t useTmuOow = 0;
+  if (m_stwHintMask & 0x2) useTmuOow |= (1u << 0);
+  if (m_stwHintMask & 0x8) useTmuOow |= (1u << 1);
+  flags |= (useTmuOow & 3u) << 3;
+
+  uint32_t texChromaEnabled = 0;
+  if (m_texChromaMode[0] != 0) texChromaEnabled |= (1u << 0);
+  if (m_texChromaMode[1] != 0) texChromaEnabled |= (1u << 1);
+  flags |= (texChromaEnabled & 3u) << 5;
+
+  uint32_t texChromaRangeMode = 0;
+  if (m_texChromaRangeMode[0] != 0) texChromaRangeMode |= (1u << 0);
+  if (m_texChromaRangeMode[1] != 0) texChromaRangeMode |= (1u << 1);
+  flags |= (texChromaRangeMode & 3u) << 7;
+
+  flags |= (m_ditherMode & 3u) << 9;
+  flags |= (m_stippleMode & 3u) << 11;
+
+  pcs.flags = flags;
 }
 
 void VulkanBackend::SetGamma(float gamma) {
