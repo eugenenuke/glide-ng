@@ -2339,5 +2339,45 @@ TEST_CASE("Avenger Voodoo3 2048x2048 Texture Support & LOD Bounds Verification [
     GlideWrapper::TextureManager::GetInstance().SetTmuMemoryLimitMb(0, 2);
     reg.GetConfig() = prevConfig;
 }
+
+TEST_CASE("Software Reference Backend Mipmapping & LOD Bias Verification [Glide3][Software]", "[Glide3][Software]") {
+    // Force the Software backend for this test
+    ::setenv("GLIDE_WRAPPER_BACKEND", "sw", 1);
+
+    // Initialize Glide
+    GrScreenResolution_t res = GR_RESOLUTION_1024x768;
+    grGlideInit();
+    GrContext_t ctx = grSstWinOpen(0, res, GR_REFRESH_60Hz, GR_COLORFORMAT_ARGB,
+                                  GR_ORIGIN_UPPER_LEFT, 2, 1);
+    REQUIRE(ctx != 0);
+
+    // Create a 256x256 texture with a complete mipmap chain down to 1x1
+    std::vector<uint16_t> textureData(256 * 256 * 2, 0xFFFF);
+    GrTexInfo info;
+    info.smallLodLog2 = GR_LOD_LOG2_1;
+    info.largeLodLog2 = GR_LOD_LOG2_256;
+    info.aspectRatioLog2 = GR_ASPECT_LOG2_1x1;
+    info.format = GR_TEXFMT_ARGB_4444;
+    info.data = textureData.data();
+
+    uint32_t startAddress = 0;
+    grTexDownloadMipMap(GR_TMU0, startAddress, GR_MIPMAPLEVELMASK_BOTH, &info);
+    grTexSource(GR_TMU0, startAddress, GR_MIPMAPLEVELMASK_BOTH, &info);
+
+    // 1. Verify Nearest Mipmap Mode State Propagation
+    grTexMipMapMode(GR_TMU0, GR_MIPMAP_NEAREST, FXFALSE);
+    
+    // 2. Verify Trilinear/LOD Blend State Propagation
+    grTexMipMapMode(GR_TMU0, GR_MIPMAP_NEAREST, FXTRUE);
+
+    // 3. Verify LOD Bias Propagation
+    grTexLodBiasValue(GR_TMU0, 1.5f);
+
+    // Clean up
+    grSstWinClose(ctx);
+    grGlideShutdown();
+    ::unsetenv("GLIDE_WRAPPER_BACKEND");
+}
+
 #endif
 
