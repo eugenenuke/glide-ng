@@ -20,8 +20,8 @@
 namespace {
 float s_screenWidth = 640.0f;
 float s_screenHeight = 480.0f;
-bool s_useClipWindow = true;
-bool s_useColorMask = true;
+bool s_useClipWindow = false;
+bool s_useColorMask = false;
 bool s_enableTMU1 = true;
 
 // Create a 256x256 checkerboard texture in ARGB 4444 format for TMU 0 (White / Blue)
