@@ -277,8 +277,6 @@ int main(int argc, char* argv[]) {
 
     grDrawVertexArray(GR_TRIANGLE_FAN, 4, pointers);
 
-    grBufferSwap(1);
-    
     if (headless) {
       std::vector<uint32_t> pixels(static_cast<size_t>(s_screenWidth * s_screenHeight));
       if (grLfbReadRegion(1, 0, 0, static_cast<FxU32>(s_screenWidth), static_cast<FxU32>(s_screenHeight), static_cast<FxU32>(s_screenWidth * 4), pixels.data())) {
@@ -289,6 +287,8 @@ int main(int argc, char* argv[]) {
       }
       running = false;
     }
+
+    grBufferSwap(1);
 
     std::this_thread::sleep_for(std::chrono::milliseconds(16));
   }
