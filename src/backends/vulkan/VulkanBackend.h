@@ -87,10 +87,13 @@ struct SamplerKey {
   uint32_t minFilter;
   uint32_t magFilter;
   float lodBias;
+  uint32_t mipmapMode;
+  bool lodBlend;
   bool operator==(const SamplerKey& other) const {
     return clampS == other.clampS && clampT == other.clampT &&
            minFilter == other.minFilter && magFilter == other.magFilter &&
-           lodBias == other.lodBias;
+           lodBias == other.lodBias && mipmapMode == other.mipmapMode &&
+           lodBlend == other.lodBlend;
   }
 };
 
@@ -110,6 +113,8 @@ struct SamplerKeyHash {
     } u;
     u.f = k.lodBias;
     combine(u.u);
+    combine(k.mipmapMode);
+    combine(k.lodBlend ? 1 : 0);
     return h;
   }
 };
@@ -246,6 +251,7 @@ class VulkanBackend : public SoftwareBackendBase {
   void UploadTexture(uint32_t tmu, uint32_t startAddress,
                      const struct VirtualTexture& tex) override;
   void SetTexLodBias(uint32_t tmu, float bias) override;
+  void SetTexMipMapMode(uint32_t tmu, uint32_t mode, bool lodBlend) override;
   void UploadTexturePartial(uint32_t tmu, uint32_t startAddress,
                             const struct VirtualTexture& tex, uint32_t lodLevel,
                             uint32_t startRow, uint32_t endRow) override;
@@ -409,7 +415,8 @@ class VulkanBackend : public SoftwareBackendBase {
 
   vk::Sampler GetOrCreateSampler(uint32_t clampS, uint32_t clampT,
                                  uint32_t minFilter, uint32_t magFilter,
-                                 float lodBias);
+                                 float lodBias, uint32_t mipmapMode,
+                                 bool lodBlend);
   vk::DescriptorSet GetOrCreateDescriptorSet(vk::ImageView imageView,
                                              vk::Sampler sampler);
 
@@ -423,7 +430,7 @@ class VulkanBackend : public SoftwareBackendBase {
   vk::UniqueDeviceMemory m_texStagingMemory;
   void* m_texStagingMap{nullptr};
   uint32_t m_texStagingOffsets[2]{0, 0};
-  const uint32_t m_texStagingSlotSize{8 * 1024 * 1024};  // 8MB per frame slot
+  const uint32_t m_texStagingSlotSize{32 * 1024 * 1024};  // 32MB per frame slot
   uint32_t m_msaaSamples{1};
 
   // Vulkan Gamma LUT State variables

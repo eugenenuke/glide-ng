@@ -83,6 +83,8 @@ uint32_t s_texAlphaFunc[2] = {0, 0};
 uint32_t s_texAlphaFactor[2] = {0, 0};
 uint32_t s_boundTex[2] = {0xFFFFFFFF, 0xFFFFFFFF};
 float s_texLodBias[2] = {0.0f, 0.0f};
+uint32_t s_mipmapMode[2] = {0, 0};
+bool s_lodBlend[2] = {false, false};
 
 struct TexChromaState {
   GrTexChromakeyMode_t mode;
@@ -178,6 +180,8 @@ void ResetFrontendState() {
   s_texAlphaFactor[0] = s_texAlphaFactor[1] = 0;
   s_boundTex[0] = s_boundTex[1] = 0xFFFFFFFF;
   s_texLodBias[0] = s_texLodBias[1] = 0.0f;
+  s_mipmapMode[0] = s_mipmapMode[1] = 0;
+  s_lodBlend[0] = s_lodBlend[1] = false;
   s_texChromaState[0] = s_texChromaState[1] = {GR_TEXCHROMA_DISABLE_EXT, 0, 0};
   s_coordSpace = 0;
   s_viewportX = 0.0f;
@@ -259,6 +263,8 @@ struct GlideWrapperState {
   uint32_t constantColor;
   uint32_t sstOrigin;
   float texLodBias[2];
+  uint32_t mipmapMode[2];
+  uint32_t lodBlend[2];
 };
 
 FX_ENTRY void FX_CALL grGlideInit(void) {
@@ -281,6 +287,11 @@ FX_ENTRY void FX_CALL grGlideInit(void) {
 
   // Establish multi-target Vulkan rendering execution pipeline
   GlideWrapper::BackendManager::GetInstance().EstablishBackend(reg.GetConfig());
+
+  // Set TMU memory limits based on emulated card config
+  for (uint32_t tmu = 0; tmu < reg.GetConfig().tmuCount; ++tmu) {
+    GlideWrapper::TextureManager::GetInstance().SetTmuMemoryLimitMb(tmu, reg.GetConfig().tmuMemoryMb);
+  }
 }
 
 inline void EnsureEngineInitialized() {
@@ -294,6 +305,9 @@ inline void EnsureEngineInitialized() {
         static_cast<GlideWrapper::LogLevel>(reg.GetConfig().logLevel),
         reg.GetConfig().logToConsole);
     bm.EstablishBackend(reg.GetConfig());
+    for (uint32_t tmu = 0; tmu < reg.GetConfig().tmuCount; ++tmu) {
+      GlideWrapper::TextureManager::GetInstance().SetTmuMemoryLimitMb(tmu, reg.GetConfig().tmuMemoryMb);
+    }
     GLIDE_LOG(INFO, "Frontend", "Implicit grGlideInit executed seamlessly.");
   } else {
     bm.GetBackend()->PollEvents();
@@ -427,6 +441,14 @@ FX_ENTRY GrContext_t FX_CALL grSstWinOpen(FxU32 hWnd,
   backend->SetPixelFormat(format);
   s_sstOrigin = origin;
   backend->SetSstOrigin(origin);
+
+  if (attached) {
+    auto& reg = GlideWrapper::EmulationRegistry::GetInstance();
+    for (uint32_t tmu = 0; tmu < reg.GetConfig().tmuCount; ++tmu) {
+      GlideWrapper::TextureManager::GetInstance().SetTmuMemoryLimitMb(tmu, reg.GetConfig().tmuMemoryMb);
+    }
+  }
+
   return attached ? 1 : 0;
 }
 
@@ -973,6 +995,10 @@ FX_ENTRY void FX_CALL grGlideGetState(void* state) {
   ws->constantColor = s_constantColor;
   ws->sstOrigin = s_sstOrigin;
   std::memcpy(ws->texLodBias, s_texLodBias, sizeof(s_texLodBias));
+  std::memcpy(ws->mipmapMode, s_mipmapMode, sizeof(s_mipmapMode));
+  for (int i = 0; i < 2; ++i) {
+    ws->lodBlend[i] = s_lodBlend[i] ? 1 : 0;
+  }
 }
 
 FX_ENTRY void FX_CALL grGlideSetState(const void* state) {
@@ -1036,6 +1062,10 @@ FX_ENTRY void FX_CALL grGlideSetState(const void* state) {
   s_constantColor = ws->constantColor;
   s_sstOrigin = ws->sstOrigin;
   std::memcpy(s_texLodBias, ws->texLodBias, sizeof(s_texLodBias));
+  std::memcpy(s_mipmapMode, ws->mipmapMode, sizeof(s_mipmapMode));
+  for (int i = 0; i < 2; ++i) {
+    s_lodBlend[i] = ws->lodBlend[i] != 0;
+  }
 
   // Apply states to backend
   if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
@@ -1070,6 +1100,7 @@ FX_ENTRY void FX_CALL grGlideSetState(const void* state) {
                               s_texChromaState[tmu].maxColor,
                               s_texChromaState[tmu].mode);
       b->SetTexLodBias(tmu, s_texLodBias[tmu]);
+      b->SetTexMipMapMode(tmu, s_mipmapMode[tmu], s_lodBlend[tmu]);
     }
   }
 }
@@ -1197,7 +1228,15 @@ FX_ENTRY void FX_CALL grTexClampMode(GrChipID_t tmu,
 FX_ENTRY void FX_CALL grTexMipMapMode(GrChipID_t tmu, GrMipMapMode_t mode,
                                       FxBool lodBlend) {
   GLIDE_LOG(DEBUG, "Frontend",
-            "grTexMipMapMode (Glide 3.x) invoked for TMU=" << tmu);
+            "grTexMipMapMode (Glide 3.x) invoked for TMU=" << tmu
+                                   << ", mode=" << mode << ", lodBlend=" << lodBlend);
+  if (tmu < 2) {
+    s_mipmapMode[tmu] = mode;
+    s_lodBlend[tmu] = lodBlend;
+    if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
+      b->SetTexMipMapMode(tmu, mode, lodBlend);
+    }
+  }
 }
 
 FX_ENTRY void FX_CALL grDepthBufferMode(GrDepthBufferMode_t mode) {

@@ -6,6 +6,7 @@
 
 #include "core/BackendManager.h"
 #include "core/IGraphicsBackend.h"
+#include "core/WrapperConfig.h"
 
 namespace GlideWrapper {
 
@@ -82,20 +83,24 @@ uint32_t swizzleAp88(uint16_t val, const uint32_t* palette) {
   uint32_t color = palette[idx];
   return (static_cast<uint32_t>(a) << 24) | (color & 0x00FFFFFF);
 }
+
+uint32_t LodToDimension(int32_t lod) {
+  return (lod >= 0) ? (256 >> lod) : (256 << (-lod));
+}
 }  // namespace
 
-uint32_t TextureManager::CalculateMemoryRequired(uint32_t lodMin,
-                                                 uint32_t lodMax,
+uint32_t TextureManager::CalculateMemoryRequired(int32_t lodMin,
+                                                 int32_t lodMax,
                                                  uint32_t aspect,
                                                  uint32_t format, bool packed) {
-  uint32_t start = std::min(lodMin, lodMax);
-  uint32_t end = std::max(lodMin, lodMax);
+  int32_t start = std::min(lodMin, lodMax);
+  int32_t end = std::max(lodMin, lodMax);
 
   uint32_t totalBytes = 0;
   uint32_t bytesPerTexel = (format >= 0x10) ? 4 : ((format >= 0x8) ? 2 : 1);
 
-  for (uint32_t i = start; i <= end; ++i) {
-    uint32_t maxDim = 256 >> i;
+  for (int32_t i = start; i <= end; ++i) {
+    uint32_t maxDim = LodToDimension(i);
     uint32_t w = maxDim;
     uint32_t h = maxDim;
 
@@ -139,11 +144,20 @@ uint32_t TextureManager::CalculateMemoryRequired(uint32_t lodMin,
 }
 
 bool TextureManager::DownloadMipMap(uint32_t tmu, uint32_t startAddress,
-                                    uint32_t lodMin, uint32_t lodMax,
+                                    int32_t lodMin, int32_t lodMax,
                                     uint32_t aspect, uint32_t format,
                                     const void* data) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   if (tmu >= 2 || !data) return false;
+
+  // Card-specific bounds check
+  auto model = EmulationRegistry::GetInstance().GetConfig().model;
+  uint32_t maxDimension = (model >= CardModel::Voodoo3) ? 2048 : 256;
+  int32_t minValidLod = 8 - static_cast<int32_t>(std::log2(maxDimension));
+  if (lodMin < minValidLod || lodMin > 8 || lodMax < minValidLod || lodMax > 8) {
+    GLIDE_LOG(CRITICAL, "TextureManager", "DownloadMipMap: LOD index out of emulated card bounds!");
+    return false;
+  }
 
   uint32_t rawBytes = CalculateMemoryRequired(
       lodMin, lodMax, aspect, format,
@@ -159,8 +173,8 @@ bool TextureManager::DownloadMipMap(uint32_t tmu, uint32_t startAddress,
       val >>= 8;
     }
   };
-  hash_integer(lodMin);
-  hash_integer(lodMax);
+  hash_integer(static_cast<uint32_t>(lodMin));
+  hash_integer(static_cast<uint32_t>(lodMax));
   hash_integer(aspect);
   hash_integer(format);
 
@@ -190,11 +204,11 @@ bool TextureManager::DownloadMipMap(uint32_t tmu, uint32_t startAddress,
   bool isNew = true;
   uint32_t oldBytes = 0;
 
-  uint32_t start = std::min(lodMin, lodMax);
-  uint32_t end = std::max(lodMin, lodMax);
+  int32_t start = std::min(lodMin, lodMax);
+  int32_t end = std::max(lodMin, lodMax);
 
-  uint32_t newLarge = start;
-  uint32_t newSmall = end;
+  int32_t newLarge = start;
+  int32_t newSmall = end;
 
   if (it != m_tmus[tmu].textures.end()) {
     auto& existing = it->second;
@@ -241,7 +255,7 @@ bool TextureManager::DownloadMipMap(uint32_t tmu, uint32_t startAddress,
     return false;
   }
 
-  uint32_t numLevels = newSmall - newLarge + 1;
+  uint32_t numLevels = static_cast<uint32_t>(newSmall - newLarge + 1);
   std::vector<std::vector<uint32_t>> newSwizzled(numLevels);
   std::vector<std::vector<uint8_t>> newRaw8Bit;
   std::vector<std::vector<uint8_t>> newRawYiq;
@@ -254,9 +268,9 @@ bool TextureManager::DownloadMipMap(uint32_t tmu, uint32_t startAddress,
   if (format == 0xe) newRawAp88.resize(numLevels);
 
   if (!isNew) {
-    for (uint32_t L = tex->largeLod; L <= tex->smallLod; ++L) {
-      uint32_t oldIdx = L - tex->largeLod;
-      uint32_t newIdx = L - newLarge;
+    for (int32_t L = tex->largeLod; L <= tex->smallLod; ++L) {
+      uint32_t oldIdx = static_cast<uint32_t>(L - tex->largeLod);
+      uint32_t newIdx = static_cast<uint32_t>(L - newLarge);
       if (oldIdx < tex->swizzledMipLevels.size()) {
         newSwizzled[newIdx] = std::move(tex->swizzledMipLevels[oldIdx]);
       }
@@ -284,8 +298,8 @@ bool TextureManager::DownloadMipMap(uint32_t tmu, uint32_t startAddress,
   size_t byteOffset = 0;
   uint32_t bytesPerTexel = (format >= 0x10) ? 4 : ((format >= 0x8) ? 2 : 1);
 
-  for (uint32_t i = start; i <= end; ++i) {
-    uint32_t maxDim = 256 >> i;
+  for (int32_t i = start; i <= end; ++i) {
+    uint32_t maxDim = LodToDimension(i);
     uint32_t w = maxDim;
     uint32_t h = maxDim;
 
@@ -448,7 +462,7 @@ bool TextureManager::DownloadMipMap(uint32_t tmu, uint32_t startAddress,
       }
     }
 
-    uint32_t destIdx = i - newLarge;
+    uint32_t destIdx = static_cast<uint32_t>(i - newLarge);
     newSwizzled[destIdx] = std::move(levelPixels);
     if (format == 0x5 || format == 0x6) {
       newRaw8Bit[destIdx] = std::move(levelRaw);
@@ -477,7 +491,7 @@ bool TextureManager::DownloadMipMap(uint32_t tmu, uint32_t startAddress,
   tex->smallLod = newSmall;
 
   // Update base dimensions to correspond to newLarge
-  uint32_t baseMaxDim = 256 >> newLarge;
+  uint32_t baseMaxDim = LodToDimension(newLarge);
   tex->baseWidth = baseMaxDim;
   tex->baseHeight = baseMaxDim;
   switch (aspect) {
@@ -528,12 +542,21 @@ bool TextureManager::DownloadMipMap(uint32_t tmu, uint32_t startAddress,
 }
 
 bool TextureManager::DownloadMipMapPartial(uint32_t tmu, uint32_t startAddress,
-                                           uint32_t thisLod, uint32_t largeLod,
+                                           int32_t thisLod, int32_t largeLod,
                                            uint32_t aspectRatio,
                                            uint32_t format, const void* data,
                                            int startRow, int endRow) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   if (tmu >= 2 || !data) return false;
+
+  // Card-specific bounds check
+  auto model = EmulationRegistry::GetInstance().GetConfig().model;
+  uint32_t maxDimension = (model >= CardModel::Voodoo3) ? 2048 : 256;
+  int32_t minValidLod = 8 - static_cast<int32_t>(std::log2(maxDimension));
+  if (thisLod < minValidLod || thisLod > 8 || largeLod < minValidLod || largeLod > 8) {
+    GLIDE_LOG(CRITICAL, "TextureManager", "DownloadMipMapPartial: LOD index out of emulated card bounds!");
+    return false;
+  }
 
   // Find the existing texture
   auto it = m_tmus[tmu].textures.find(startAddress);
@@ -556,7 +579,7 @@ bool TextureManager::DownloadMipMapPartial(uint32_t tmu, uint32_t startAddress,
     return false;
   }
 
-  uint32_t lodIdx = thisLod - tex->largeLod;
+  uint32_t lodIdx = static_cast<uint32_t>(thisLod - tex->largeLod);
   if (lodIdx >= tex->swizzledMipLevels.size()) {
     GLIDE_LOG(
         WARN, "TextureManager",
@@ -564,7 +587,7 @@ bool TextureManager::DownloadMipMapPartial(uint32_t tmu, uint32_t startAddress,
     return false;
   }
 
-  uint32_t maxDim = 256 >> thisLod;
+  uint32_t maxDim = LodToDimension(thisLod);
   uint32_t w = maxDim;
   uint32_t h = maxDim;
   switch (aspectRatio) {

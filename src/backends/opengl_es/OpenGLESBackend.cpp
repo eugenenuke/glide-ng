@@ -875,6 +875,7 @@ uniform int uAlphaInvert;
 uniform int uTextureEnabled;
 uniform sampler2D uTexture0;
 uniform sampler2D uTexture1;
+uniform float uTexLodBias[2];
 uniform int uUseTmuOow;
 
 uniform int uChromakeyEnabled;
@@ -993,7 +994,7 @@ void main() {
             vec4 c1 = mix(c01, c11, f.x);
             texColor = mix(c0, c1, f.y);
         } else {
-            texColor = texture(uTexture0, uv);
+            texColor = texture(uTexture0, uv, uTexLodBias[0]);
         }
     }
 
@@ -1250,6 +1251,7 @@ bool OpenGLESBackend::CreateGeomShaders() {
       glGetUniformLocation(m_geomProgram, "uTexChromaRangeMode");
   m_uTexChromaMinLoc = glGetUniformLocation(m_geomProgram, "uTexChromaMin");
   m_uTexChromaMaxLoc = glGetUniformLocation(m_geomProgram, "uTexChromaMax");
+  m_uTexLodBiasLoc = glGetUniformLocation(m_geomProgram, "uTexLodBias");
 
   // Log critical uniform location failure
   if (m_uSstOriginLoc == -1 || m_uViewportSizeLoc == -1 ||
@@ -1484,7 +1486,16 @@ void OpenGLESBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, wrapT);
 
         // Set sampler filter modes
-        GLint minFilter = (m_texMinFilter[tmu] == 1) ? GL_LINEAR : GL_NEAREST;
+        GLint minFilter = GL_NEAREST;
+        if (m_texMipMapMode[tmu] == 0) {  // Mipmap Disabled
+          minFilter = (m_texMinFilter[tmu] == 1) ? GL_LINEAR : GL_NEAREST;
+        } else {                          // Mipmap Enabled
+          if (m_texMinFilter[tmu] == 1) { // Bilinear
+            minFilter = m_texLodBlend[tmu] ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR_MIPMAP_NEAREST;
+          } else {                        // Point
+            minFilter = m_texLodBlend[tmu] ? GL_NEAREST_MIPMAP_LINEAR : GL_NEAREST_MIPMAP_NEAREST;
+          }
+        }
         GLint magFilter = (m_texMagFilter[tmu] == 1) ? GL_LINEAR : GL_NEAREST;
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, minFilter);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, magFilter);
@@ -1593,6 +1604,10 @@ void OpenGLESBackend::UploadTexture(uint32_t tmu, uint32_t startAddress,
                   tex.swizzledMipLevels.size() > 1 ? GL_NEAREST_MIPMAP_NEAREST
                                                    : GL_NEAREST);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+  if (!tex.swizzledMipLevels.empty()) {
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL,
+                    static_cast<GLint>(tex.swizzledMipLevels.size() - 1));
+  }
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
 
@@ -1909,6 +1924,8 @@ void OpenGLESBackend::PopulateUniforms() {
   glUniform1i(m_uTextureEnabledLoc, texEnabled ? 1 : 0);
   glUniform1i(m_uTexture0Loc, 0);  // Always texture unit 0 for TMU0
   glUniform1i(m_uTexture1Loc, 1);  // Always texture unit 1 for TMU1
+  float lodBias[2] = {m_texLodBias[0], m_texLodBias[1]};
+  glUniform1fv(m_uTexLodBiasLoc, 2, lodBias);
   glUniform1i(m_uUseTmuOowLoc, (m_stwHintMask & 0x2) ? 1 : 0);
 
   glUniform1i(m_uAlphaTestOpLoc, (int)m_alphaTestOp);
@@ -1974,22 +1991,77 @@ void OpenGLESBackend::PopulateUniforms() {
   glUniform4fv(m_uTexChromaMaxLoc, 2, maxColor);
 }
 
-void OpenGLESBackend::SetTexLodBias(uint32_t tmu, float bias) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
-  SoftwareBackendBase::SetTexLodBias(tmu, bias);
-  GLIDE_LOG(DEBUG, "GLES", "SetTexLodBias TMU" << tmu << ": " << bias);
-}
-
 void OpenGLESBackend::UploadTexturePartial(uint32_t tmu, uint32_t startAddress,
                                            const struct VirtualTexture& tex,
                                            uint32_t lodLevel, uint32_t startRow,
                                            uint32_t endRow) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
-  GLIDE_LOG(DEBUG, "GLES",
-            "UploadTexturePartial TMU"
-                << tmu << ": Address=0x" << std::hex << startAddress << std::dec
-                << " level=" << lodLevel << " rows=" << startRow << ".."
-                << endRow << " (Stubbed)");
+  if (!m_windowAttached && !m_headlessMode) return;
+
+  GLIDE_PROFILE_SCOPE("GLES::UploadTexturePartial");
+
+  // 1. Check if the texture exists. If not, promote to a full upload!
+  auto it = m_glesTextures.find(startAddress);
+  if (it == m_glesTextures.end()) {
+    GLIDE_LOG(INFO, "GLES", "UploadTexturePartial: Texture at 0x" << std::hex << startAddress << std::dec << " not found. Promoting to full upload.");
+    UploadTexture(tmu, startAddress, tex);
+    return;
+  }
+  GLuint texId = it->second;
+
+  // 2. Validate existence of LOD level in the virtual texture
+  if (lodLevel >= tex.swizzledMipLevels.size()) {
+    GLIDE_LOG(CRITICAL, "GLES", "UploadTexturePartial: lodLevel " << lodLevel << " out of range (max: " << tex.swizzledMipLevels.size() << ")");
+    return;
+  }
+
+  // 3. Compute dimensions of the specific LOD level
+  uint32_t w = std::max(1u, tex.baseWidth >> lodLevel);
+  uint32_t h = std::max(1u, tex.baseHeight >> lodLevel);
+
+  // 4. Validate row range bounds
+  if (startRow >= h || endRow > h || startRow >= endRow) {
+    GLIDE_LOG(CRITICAL, "GLES", "UploadTexturePartial: invalid row range [" << startRow << ".." << endRow << ") for height " << h);
+    return;
+  }
+
+  // 5. Ensure the row range does not exceed the physical pixel vector size
+  uint32_t numRows = endRow - startRow;
+  uint32_t startPixelIndex = startRow * w;
+  uint32_t requiredPixels = startPixelIndex + numRows * w;
+  if (requiredPixels > tex.swizzledMipLevels[lodLevel].size()) {
+    GLIDE_LOG(CRITICAL, "GLES", "UploadTexturePartial: required pixels " << requiredPixels << " exceed mip level size " << tex.swizzledMipLevels[lodLevel].size());
+    return;
+  }
+
+  // Save current texture binding to restore later
+  GLint previousTexture = 0;
+  glGetIntegerv(GL_TEXTURE_BINDING_2D, &previousTexture);
+
+  glBindTexture(GL_TEXTURE_2D, texId);
+
+  // Swizzle only the modified sub-image rows
+  const uint32_t* pixels = tex.swizzledMipLevels[lodLevel].data();
+  std::vector<uint32_t> rgbaSubPixels(w * numRows);
+  for (uint32_t j = 0; j < w * numRows; ++j) {
+    uint32_t bgra = pixels[startPixelIndex + j];
+    uint32_t b = bgra & 0xFF;
+    uint32_t g = (bgra >> 8) & 0xFF;
+    uint32_t r = (bgra >> 16) & 0xFF;
+    uint32_t a = (bgra >> 24) & 0xFF;
+    rgbaSubPixels[j] = (a << 24) | (b << 16) | (g << 8) | r;
+  }
+
+  // Upload using glTexSubImage2D
+  glTexSubImage2D(GL_TEXTURE_2D, static_cast<GLint>(lodLevel),
+                  0, static_cast<GLint>(startRow),
+                  static_cast<GLsizei>(w), static_cast<GLsizei>(numRows),
+                  GL_RGBA, GL_UNSIGNED_BYTE, rgbaSubPixels.data());
+
+  GLIDE_LOG(DEBUG, "GLES", "UploadTexturePartial TMU" << tmu << ": Address=0x" << std::hex << startAddress << std::dec << " level=" << lodLevel << " rows=" << startRow << ".." << endRow << " uploaded via glTexSubImage2D.");
+
+  glBindTexture(GL_TEXTURE_2D, previousTexture);
+  checkGLError("UploadTexturePartial");
 }
 
 void OpenGLESBackend::PurgeTextures() {

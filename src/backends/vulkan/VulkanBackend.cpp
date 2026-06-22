@@ -1613,8 +1613,8 @@ bool VulkanBackend::CreateLogicalDevice() {
   m_commandBuffer = &m_commandBuffers[0].get();
 
   // 2.6. Pre-allocate and permanently map persistent Texture Staging Buffer
-  // (16MB)
-  const uint32_t stagingSize = 16 * 1024 * 1024;  // 16MB
+  // (dynamically sized based on m_texStagingSlotSize * 2)
+  const uint32_t stagingSize = m_texStagingSlotSize * 2;
   vk::BufferCreateInfo texStagingInfo({}, stagingSize,
                                       vk::BufferUsageFlagBits::eTransferSrc);
   m_texStagingBuffer = m_device->createBufferUnique(texStagingInfo);
@@ -1636,7 +1636,7 @@ bool VulkanBackend::CreateLogicalDevice() {
 
   // Initialize double-buffered offsets
   m_texStagingOffsets[0] = 0;
-  m_texStagingOffsets[1] = 8 * 1024 * 1024;  // Halfway
+  m_texStagingOffsets[1] = m_texStagingSlotSize;
 
   return true;
 }
@@ -2509,7 +2509,8 @@ void VulkanBackend::DrawPoint(const ModernVertex& pt) {
       auto& tex = it->second;
       vk::Sampler sampler =
           GetOrCreateSampler(tex.clampS, tex.clampT, tex.minFilter,
-                             tex.magFilter, m_texLodBias[0]);
+                             tex.magFilter, m_texLodBias[0],
+                             m_texMipMapMode[0], m_texLodBlend[0]);
       reqDescSet = GetOrCreateDescriptorSet(tex.imageView.get(), sampler);
     }
   }
@@ -2578,7 +2579,8 @@ void VulkanBackend::DrawLine(const ModernVertex& v1, const ModernVertex& v2) {
       auto& tex = it->second;
       vk::Sampler sampler =
           GetOrCreateSampler(tex.clampS, tex.clampT, tex.minFilter,
-                             tex.magFilter, m_texLodBias[0]);
+                             tex.magFilter, m_texLodBias[0],
+                             m_texMipMapMode[0], m_texLodBlend[0]);
       reqDescSet = GetOrCreateDescriptorSet(tex.imageView.get(), sampler);
     }
   }
@@ -2652,7 +2654,8 @@ void VulkanBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
       auto& tex = it->second;
       vk::Sampler sampler =
           GetOrCreateSampler(tex.clampS, tex.clampT, tex.minFilter,
-                             tex.magFilter, m_texLodBias[0]);
+                             tex.magFilter, m_texLodBias[0],
+                             m_texMipMapMode[0], m_texLodBlend[0]);
       reqDescSet = GetOrCreateDescriptorSet(tex.imageView.get(), sampler);
     }
   }
@@ -3192,8 +3195,10 @@ void VulkanBackend::LoadGammaTable(uint32_t nentries, const uint32_t* rTable,
 vk::Sampler VulkanBackend::GetOrCreateSampler(uint32_t clampS, uint32_t clampT,
                                               uint32_t minFilter,
                                               uint32_t magFilter,
-                                              float lodBias) {
-  SamplerKey key{clampS, clampT, minFilter, magFilter, lodBias};
+                                              float lodBias,
+                                              uint32_t mipmapMode,
+                                              bool lodBlend) {
+  SamplerKey key{clampS, clampT, minFilter, magFilter, lodBias, mipmapMode, lodBlend};
   auto it = m_samplerCache.find(key);
   if (it != m_samplerCache.end()) {
     return it->second.get();
@@ -3220,15 +3225,21 @@ vk::Sampler VulkanBackend::GetOrCreateSampler(uint32_t clampS, uint32_t clampT,
   vk::Filter magF =
       (magFilter == 1) ? vk::Filter::eLinear : vk::Filter::eNearest;
 
-  // Mipmap blending mode (linear between levels represents trilinear, i.e.
-  // modes 4 and 5)
-  vk::SamplerMipmapMode mipmapMode = (minFilter == 4 || minFilter == 5)
-                                         ? vk::SamplerMipmapMode::eLinear
-                                         : vk::SamplerMipmapMode::eNearest;
+  // Mipmap blending mode and maxLod are determined by the mipmapMode and lodBlend parameters
+  vk::SamplerMipmapMode vkMipmapMode = vk::SamplerMipmapMode::eNearest;
+  float maxLod = 0.0f;
 
-  // maxLod: Clamp to 0.0f (disable mipmapping) if minFilter is non-mipmapped (0
-  // or 1), otherwise unlock to 15.0f
-  float maxLod = (minFilter >= 2) ? 15.0f : 0.0f;
+  if (mipmapMode != 0) {  // GR_MIPMAP_DISABLE is 0
+    maxLod = 15.0f;
+    if (lodBlend) {
+      vkMipmapMode = vk::SamplerMipmapMode::eLinear;
+    } else {
+      vkMipmapMode = vk::SamplerMipmapMode::eNearest;
+    }
+  } else {
+    maxLod = 0.0f;
+    vkMipmapMode = vk::SamplerMipmapMode::eNearest;
+  }
 
   vk::SamplerCreateInfo samplerInfo;
   samplerInfo.magFilter = magF;
@@ -3242,7 +3253,7 @@ vk::Sampler VulkanBackend::GetOrCreateSampler(uint32_t clampS, uint32_t clampT,
   samplerInfo.unnormalizedCoordinates = false;
   samplerInfo.compareEnable = false;
   samplerInfo.compareOp = vk::CompareOp::eAlways;
-  samplerInfo.mipmapMode = mipmapMode;
+  samplerInfo.mipmapMode = vkMipmapMode;
   samplerInfo.mipLodBias = lodBias;
   samplerInfo.minLod = 0.0f;
   samplerInfo.maxLod = maxLod;
@@ -3287,6 +3298,20 @@ void VulkanBackend::SetTexLodBias(uint32_t tmu, float bias) {
       m_texLodBias[tmu] = bias;
       GLIDE_LOG(DEBUG, "Vulkan",
                 "SetTexLodBias: TMU" << tmu << " set to " << bias);
+    }
+  }
+}
+
+void VulkanBackend::SetTexMipMapMode(uint32_t tmu, uint32_t mode, bool lodBlend) {
+  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  if (tmu < 2) {
+    if (m_texMipMapMode[tmu] != mode || m_texLodBlend[tmu] != lodBlend) {
+      FlushBatch();
+      m_texMipMapMode[tmu] = mode;
+      m_texLodBlend[tmu] = lodBlend;
+      GLIDE_LOG(DEBUG, "Vulkan",
+                "SetTexMipMapMode: TMU" << tmu << " set to Mode=" << mode
+                                       << ", LodBlend=" << (lodBlend ? "Yes" : "No"));
     }
   }
 }

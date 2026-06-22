@@ -91,6 +91,7 @@ class IGraphicsBackend {
   virtual void UploadTexture(uint32_t tmu, uint32_t startAddress,
                              const struct VirtualTexture& tex) = 0;
   virtual void SetTexLodBias(uint32_t tmu, float bias) = 0;
+  virtual void SetTexMipMapMode(uint32_t tmu, uint32_t mode, bool lodBlend) = 0;
   virtual void UploadTexturePartial(uint32_t tmu, uint32_t startAddress,
                                     const struct VirtualTexture& tex,
                                     uint32_t lodLevel, uint32_t startRow,

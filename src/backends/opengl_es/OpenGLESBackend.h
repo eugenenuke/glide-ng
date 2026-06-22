@@ -40,7 +40,6 @@ class OpenGLESBackend : public SoftwareBackendBase {
                     const ModernVertex& c) override;
   void UploadTexture(uint32_t tmu, uint32_t startAddress,
                      const struct VirtualTexture& tex) override;
-  void SetTexLodBias(uint32_t tmu, float bias) override;
   void UploadTexturePartial(uint32_t tmu, uint32_t startAddress,
                             const struct VirtualTexture& tex, uint32_t lodLevel,
                             uint32_t startRow, uint32_t endRow) override;
@@ -137,6 +136,7 @@ class OpenGLESBackend : public SoftwareBackendBase {
   int m_uTexChromaRangeModeLoc{-1};
   int m_uTexChromaMinLoc{-1};
   int m_uTexChromaMaxLoc{-1};
+  int m_uTexLodBiasLoc{-1};
 };
 
 }  // namespace GlideWrapper

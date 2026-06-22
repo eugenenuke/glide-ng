@@ -2,6 +2,7 @@
 #include <iostream>
 #include <cmath>
 #include "core/WrapperConfig.h"
+#include "core/TextureManager.h"
 #include "core/Logger.h"
 #include "core/BackendManager.h"
 #include "software/SoftwareBackend.h"
@@ -2166,4 +2167,177 @@ TEST_CASE("Glide 3.x Perfect Bilinear Halo-Free Texture Chromakeying (TEXCHROMA)
     shutdown();
     ::unsetenv("GLIDE_WRAPPER_BACKEND");
 }
+
+TEST_CASE("Glide 3.x Mipmapping State & grGlideGetState/SetState Round-Trip [Glide3][Mipmap]", "[Glide3][Mipmap]") {
+    void* handle = OpenGlide3Handle();
+    REQUIRE(handle != nullptr);
+
+    using InitFunc = void(*)(void);
+    using OpenWinFunc = FxU32(*)(FxU32, FxI32, FxI32, FxI32, FxI32, int, int);
+    using CloseWinFunc = void(*)(void);
+    using TexMipMapModeFunc = void(*)(GrChipID_t, GrMipMapMode_t, FxBool);
+    using GetStateFunc = void(*)(void*);
+    using SetStateFunc = void(*)(const void*);
+    using ShutdownFunc = void(*)(void);
+
+    auto glideInit = reinterpret_cast<InitFunc>(::dlsym(handle, "grGlideInit"));
+    auto winOpen   = reinterpret_cast<OpenWinFunc>(::dlsym(handle, "grSstWinOpen"));
+    auto winClose  = reinterpret_cast<CloseWinFunc>(::dlsym(handle, "grSstWinClose"));
+    auto texMipMapMode = reinterpret_cast<TexMipMapModeFunc>(::dlsym(handle, "grTexMipMapMode"));
+    auto getState  = reinterpret_cast<GetStateFunc>(::dlsym(handle, "grGlideGetState"));
+    auto setState  = reinterpret_cast<SetStateFunc>(::dlsym(handle, "grGlideSetState"));
+    auto shutdown  = reinterpret_cast<ShutdownFunc>(::dlsym(handle, "grGlideShutdown"));
+
+    REQUIRE(glideInit != nullptr);
+    REQUIRE(winOpen != nullptr);
+    REQUIRE(winClose != nullptr);
+    REQUIRE(texMipMapMode != nullptr);
+    REQUIRE(getState != nullptr);
+    REQUIRE(setState != nullptr);
+    REQUIRE(shutdown != nullptr);
+
+    // Force headless software backend
+    ::setenv("GLIDE_WRAPPER_BACKEND", "software", 1);
+
+    glideInit();
+    FxU32 ctx = winOpen(0, 8, 0, 0, 0, 2, 1); // 800x600
+    REQUIRE(ctx != 0);
+
+    // 1. Set different mipmap modes on TMU0 and TMU1
+    texMipMapMode(0, 1, FXTRUE);  // TMU0: GR_MIPMAP_NEAREST, lodBlend=true
+    texMipMapMode(1, 0, FXFALSE); // TMU1: GR_MIPMAP_DISABLE, lodBlend=false
+
+    // 2. Capture state
+    std::vector<uint8_t> stateBuffer(2048, 0);
+    getState(stateBuffer.data());
+
+    // 3. Temporarily change the states to ensure restore works
+    texMipMapMode(0, 0, FXFALSE);
+    texMipMapMode(1, 1, FXTRUE);
+
+    // 4. Restore the captured state
+    setState(stateBuffer.data());
+
+    // 5. Re-capture and verify round-trip values
+    std::vector<uint8_t> checkBuffer(2048, 0);
+    getState(checkBuffer.data());
+
+    // Cast to the internal struct layout to verify fields
+    struct StateLayout {
+      uint32_t depthMode;
+      uint32_t depthCompare;
+      int depthMask;
+      int32_t depthBias;
+      uint32_t alphaTestOp;
+      uint32_t alphaTestRef;
+      uint32_t clampS[2];
+      uint32_t clampT[2];
+      uint32_t minFilter[2];
+      uint32_t magFilter[2];
+      uint32_t colorFunc;
+      uint32_t colorFactor;
+      uint32_t colorLocal;
+      uint32_t colorOther;
+      int colorInvert;
+      uint32_t alphaFunc;
+      uint32_t alphaFactor;
+      uint32_t alphaLocal;
+      uint32_t alphaOther;
+      int alphaInvert;
+      uint32_t texRgbFunc[2];
+      uint32_t texRgbFactor[2];
+      uint32_t texAlphaFunc[2];
+      uint32_t texAlphaFactor[2];
+      uint32_t boundTex[2];
+      uint32_t coordSpace;
+      float viewportX;
+      float viewportY;
+      float viewportWidth;
+      float viewportHeight;
+      float depthRangeNear;
+      float depthRangeFar;
+      int aaOrdered;
+      int shamelessPlug;
+      uint8_t lfbConstantAlpha;
+      uint32_t lfbWriteColorFormat;
+      uint32_t chromakeyMode;
+      uint32_t chromakeyValue;
+      uint32_t chromakeyRangeMin;
+      uint32_t chromakeyRangeMax;
+      uint32_t chromakeyRangeMode;
+      struct {
+        int mode;
+        uint32_t minColor;
+        uint32_t maxColor;
+      } texChromaState[2];
+      uint32_t rgbSrcBlend;
+      uint32_t rgbDstBlend;
+      uint32_t alphaSrcBlend;
+      uint32_t alphaDstBlend;
+      uint32_t fogMode;
+      uint32_t fogColor;
+      uint8_t fogTable[64];
+      uint32_t cullMode;
+      uint32_t constantColor;
+      uint32_t sstOrigin;
+      float texLodBias[2];
+      uint32_t mipmapMode[2];
+      int lodBlend[2];
+    };
+
+    auto* ws = reinterpret_cast<StateLayout*>(checkBuffer.data());
+    CHECK(ws->mipmapMode[0] == 1);       // GR_MIPMAP_NEAREST
+    CHECK(ws->lodBlend[0] == 1);         // true
+    CHECK(ws->mipmapMode[1] == 0);       // GR_MIPMAP_DISABLE
+    CHECK(ws->lodBlend[1] == 0);         // false
+
+    winClose();
+    shutdown();
+    ::unsetenv("GLIDE_WRAPPER_BACKEND");
+    ::dlclose(handle);
+}
+
+TEST_CASE("Avenger Voodoo3 2048x2048 Texture Support & LOD Bounds Verification [Glide3][Voodoo3]", "[Glide3][Voodoo3]") {
+    // 1. Get the global EmulationRegistry instance and save the previous config
+    auto& reg = GlideWrapper::EmulationRegistry::GetInstance();
+    auto prevConfig = reg.GetConfig();
+    
+    // 2. Setup Voodoo2 emulation first (max texture dimension 256)
+    reg.GetConfig().model = GlideWrapper::CardModel::Voodoo2;
+    
+    // Verify min LOD logic for Voodoo2: min LOD is 8 - log2(256) = 0.
+    // So downloading LOD -1 (512x512) or -3 (2048x2048) must fail bounds check!
+    std::vector<uint16_t> dummyData(2048 * 2048, 0);
+    
+    bool v2DownloadSuccess = GlideWrapper::TextureManager::GetInstance().DownloadMipMap(
+        0, 0, -1, -1, 3, 0xa, dummyData.data()
+    );
+    CHECK(v2DownloadSuccess == false); // Must fail on Voodoo2!
+    
+    // 3. Setup Voodoo3 emulation (max texture dimension 2048)
+    reg.GetConfig().model = GlideWrapper::CardModel::Voodoo3;
+    
+    // Temporarily increase TMU0 memory limit to 16MB to accommodate the 8MB test texture
+    GlideWrapper::TextureManager::GetInstance().SetTmuMemoryLimitMb(0, 16);
+    
+    // Verify min LOD logic for Voodoo3: min LOD is 8 - log2(2048) = -3.
+    // So downloading LOD -3 (2048x2048) must succeed bounds check!
+    bool v3DownloadSuccess = GlideWrapper::TextureManager::GetInstance().DownloadMipMap(
+        0, 0, -3, -3, 3, 0xa, dummyData.data()
+    );
+    CHECK(v3DownloadSuccess == true); // Must succeed on Voodoo3!
+    
+    // Verify memory calculations under negative LODs:
+    // For LOD -3 (2048x2048), format RGB_565 (2 bytes per texel), packed = true:
+    // Size = 2048 * 2048 * 2 = 8388608 bytes.
+    uint32_t memReq = GlideWrapper::TextureManager::GetInstance().CalculateMemoryRequired(
+        -3, -3, 3, 0xa, true
+    );
+    CHECK(memReq == 8388608);
+    
+    // Restore configuration and TMU memory limit to be pristine
+    GlideWrapper::TextureManager::GetInstance().SetTmuMemoryLimitMb(0, 2);
+    reg.GetConfig() = prevConfig;
+}
 #endif
+

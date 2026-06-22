@@ -61,6 +61,8 @@ void SoftwareBackendBase::ResetState() {
   m_texMinFilter[1] = 0;
   m_texMagFilter[0] = 0;
   m_texMagFilter[1] = 0;
+  m_texMipMapMode[0] = m_texMipMapMode[1] = 0;
+  m_texLodBlend[0] = m_texLodBlend[1] = false;
 
   m_colorCombinerFunc = 0;
   m_colorCombinerFactor = 0;
@@ -865,6 +867,17 @@ void SoftwareBackendBase::SetTexLodBias(uint32_t tmu, float bias) {
   if (tmu < 2) {
     m_texLodBias[tmu] = bias;
     GLIDE_LOG(DEBUG, "Rasterizer", "SetTexLodBias TMU" << tmu << ": " << bias);
+  }
+}
+
+void SoftwareBackendBase::SetTexMipMapMode(uint32_t tmu, uint32_t mode, bool lodBlend) {
+  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  if (tmu < 2) {
+    m_texMipMapMode[tmu] = mode;
+    m_texLodBlend[tmu] = lodBlend;
+    GLIDE_LOG(DEBUG, "Rasterizer",
+              "SetTexMipMapMode TMU" << tmu << ": Mode=" << mode
+                                     << ", LodBlend=" << (lodBlend ? "Yes" : "No"));
   }
 }
 

@@ -80,6 +80,7 @@ class SoftwareBackendBase : public IGraphicsBackend {
   void UploadTexture(uint32_t tmu, uint32_t startAddress,
                      const struct VirtualTexture& tex) override;
   void SetTexLodBias(uint32_t tmu, float bias) override;
+  void SetTexMipMapMode(uint32_t tmu, uint32_t mode, bool lodBlend) override;
   void UploadTexturePartial(uint32_t tmu, uint32_t startAddress,
                             const struct VirtualTexture& tex, uint32_t lodLevel,
                             uint32_t startRow, uint32_t endRow) override;
@@ -183,6 +184,8 @@ class SoftwareBackendBase : public IGraphicsBackend {
 
   // Phase 5 Software Texture Sampler Variables
   float m_texLodBias[2] = {0.0f, 0.0f};
+  uint32_t m_texMipMapMode[2] = {0, 0};
+  bool m_texLodBlend[2] = {false, false};
   uint32_t m_boundTexAddress[2] = {0xFFFFFFFF, 0xFFFFFFFF};
   uint32_t m_texClampS[2] = {0, 0};
   uint32_t m_texClampT[2] = {0, 0};

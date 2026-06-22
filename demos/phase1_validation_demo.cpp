@@ -29,14 +29,21 @@ int s_whiteBandRow = 0;
 
 // Create a simple 256x256 checkerboard texture in ARGB 4444 format (16-bit)
 std::vector<uint16_t> CreateGridTexture() {
-  std::vector<uint16_t> pixels(256 * 256);
-  for (int y = 0; y < 256; ++y) {
-    for (int x = 0; x < 256; ++x) {
-      bool check = ((x / 16) % 2) == ((y / 16) % 2);
-      pixels[y * 256 + x] = check ? 0xFFFF : 0xF00F;  // White / Blue
+  std::vector<uint16_t> chain;
+  // Pack from largest level (256, i.e. LOD 8) down to smallest level (1, i.e. LOD 0)
+  for (int lod = 8; lod >= 0; --lod) {
+    int size = 1 << lod; // 256, 128, 64, 32, 16, 8, 4, 2, 1
+    int blockSize = std::max(1, size / 8);
+    std::vector<uint16_t> level(size * size);
+    for (int y = 0; y < size; ++y) {
+      for (int x = 0; x < size; ++x) {
+        bool check = ((x / blockSize) % 2) == ((y / blockSize) % 2);
+        level[y * size + x] = check ? 0xFFFF : 0xF00F;  // White / Blue
+      }
     }
+    chain.insert(chain.end(), level.begin(), level.end());
   }
-  return pixels;
+  return chain;
 }
 }  // namespace
 
@@ -83,6 +90,7 @@ int main(int argc, char* argv[]) {
   grTexSource(GR_TMU0, startAddress, GR_MIPMAPLEVELMASK_BOTH, &info);
   grTexFilterMode(GR_TMU0, GR_TEXTUREFILTER_BILINEAR,
                   GR_TEXTUREFILTER_BILINEAR);
+  grTexMipMapMode(GR_TMU0, GR_MIPMAP_NEAREST, FXFALSE);
 
   bool running = true;
   while (running) {

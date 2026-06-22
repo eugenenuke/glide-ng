@@ -258,5 +258,30 @@ target_link_libraries(phase1_validation_demo_g3 PRIVATE
     -lm
 )
 
+# --- Avenger Voodoo3 2048x2048 Texture Engine Showcase Demo ---
+add_executable(large_texture_showcase
+    large_texture_showcase.cpp
+    "${CMAKE_CURRENT_SOURCE_DIR}/../refs/3dfx-Glide-API/glide3x/cvg/glide3/tests/tlib.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../refs/3dfx-Glide-API/swlibs/fxmisc/linutil.c"
+)
+
+target_include_directories(large_texture_showcase PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../refs/3dfx-Glide-API/glide3x/cvg/glide3/tests"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../refs/3dfx-Glide-API/swlibs/fxmisc"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../include/3dfx"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../include/glide3"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../tools"
+)
+
+target_compile_definitions(large_texture_showcase PRIVATE -D__linux__ -DGLIDE_VERSION=3)
+
+target_link_libraries(large_texture_showcase PRIVATE
+    glide3x
+    tool_info3
+    ${CMAKE_DL_LIBS}
+    -lm
+)
+
+
 
 

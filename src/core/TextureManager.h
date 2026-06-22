@@ -19,8 +19,8 @@ struct VirtualTexture {
   uint32_t aspectRatio;
   uint32_t baseWidth;
   uint32_t baseHeight;
-  uint32_t smallLod;
-  uint32_t largeLod;
+  int32_t smallLod;
+  int32_t largeLod;
   std::vector<std::vector<uint32_t>>
       swizzledMipLevels;  // Completely swizzled into 32-bit ARGB (0xAARRGGBB)
                           // per level
@@ -49,19 +49,19 @@ class TextureManager {
 
   // 1. Calculate rigorous memory footprints matching 3dfx silicon MIP-map
   // chains
-  uint32_t CalculateMemoryRequired(uint32_t lodMin, uint32_t lodMax,
+  uint32_t CalculateMemoryRequired(int32_t lodMin, int32_t lodMax,
                                    uint32_t aspect, uint32_t format,
                                    bool packed = false);
 
   // 2. Decode retro formats across full MIP-map chain and upload into active
   // virtual TMU pool
-  bool DownloadMipMap(uint32_t tmu, uint32_t startAddress, uint32_t lodMin,
-                      uint32_t lodMax, uint32_t aspect, uint32_t format,
+  bool DownloadMipMap(uint32_t tmu, uint32_t startAddress, int32_t lodMin,
+                      int32_t lodMax, uint32_t aspect, uint32_t format,
                       const void* data);
 
   // Download a partial sub-region of a specific mipmap level
   bool DownloadMipMapPartial(uint32_t tmu, uint32_t startAddress,
-                             uint32_t thisLod, uint32_t largeLod,
+                             int32_t thisLod, int32_t largeLod,
                              uint32_t aspect, uint32_t format, const void* data,
                              int startRow, int endRow);
 
