@@ -5,11 +5,11 @@
 namespace GlideWrapper {
 
 struct ModernVertex {
-    std::array<float, 4> pos;   // x, y, z, w (where w = 1.0f / oow)
-    std::array<float, 4> color; // r, g, b, a (normalized 0..1)
-    std::array<float, 4> tex;   // s0, t0, s1, t1
-    std::array<float, 2> tmu_oow; // oow0, oow1 (TMU-specific 1/W)
-    float fog;                  // custom per-vertex fog coordinate (GR_PARAM_FOG_EXT)
+    std::array<float, 4> pos{0.0f, 0.0f, 0.0f, 1.0f};   // x, y, z, w (where w = 1.0f / oow)
+    std::array<float, 4> color{1.0f, 1.0f, 1.0f, 1.0f}; // r, g, b, a (normalized 0..1)
+    std::array<float, 4> tex{0.0f, 0.0f, 0.0f, 0.0f};   // s0, t0, s1, t1
+    std::array<float, 2> tmu_oow{1.0f, 1.0f};           // oow0, oow1 (TMU-specific 1/W)
+    float fog{0.0f};                  // custom per-vertex fog coordinate (GR_PARAM_FOG_EXT)
 };
 
 struct Glide3VertexLayout {

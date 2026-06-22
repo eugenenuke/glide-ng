@@ -277,6 +277,42 @@ ModernVertex VertexLayout::DecodeVertex(const void* gameVertex) const {
     v.fog = fog;
   }
 
+  // Sanitize position: clamp X, Y to typical screen space range if NaN/Inf
+  for (int i = 0; i < 2; ++i) {
+    if (std::isnan(v.pos[i]) || std::isinf(v.pos[i])) {
+      v.pos[i] = 0.0f;
+    }
+  }
+
+  // Sanitize Z/depth: if NaN/Inf, set to 0.0f.
+  if (std::isnan(v.pos[2]) || std::isinf(v.pos[2])) {
+    v.pos[2] = 0.0f;
+  }
+
+  // Sanitize W: if NaN/Inf or <= 0.0f, set to 1.0f (prevent division by zero/NaN)
+  if (std::isnan(v.pos[3]) || std::isinf(v.pos[3]) || v.pos[3] <= 0.0f) {
+    v.pos[3] = 1.0f;
+  }
+
+  // Sanitize texture coordinates: clamp to 0.0f if NaN/Inf
+  for (int i = 0; i < 4; ++i) {
+    if (std::isnan(v.tex[i]) || std::isinf(v.tex[i])) {
+      v.tex[i] = 0.0f;
+    }
+  }
+
+  // Sanitize TMU OOW values: if NaN/Inf or <= 0.0f, set to 1.0f
+  for (int i = 0; i < 2; ++i) {
+    if (std::isnan(v.tmu_oow[i]) || std::isinf(v.tmu_oow[i]) || v.tmu_oow[i] <= 0.0f) {
+      v.tmu_oow[i] = 1.0f;
+    }
+  }
+
+  // Sanitize fog: if NaN/Inf, set to 0.0f
+  if (std::isnan(v.fog) || std::isinf(v.fog)) {
+    v.fog = 0.0f;
+  }
+
   return v;
 }
 

@@ -240,72 +240,76 @@ void grShamelessPlug(
     void);  // Forward declaration of internal watermark renderer
 
 // Opaque state container matching GrState's char padding
-struct GlideWrapperState {
-  uint32_t depthMode;
-  uint32_t depthCompare;
-  uint32_t depthMask;
+// Opaque state container matching GrState's char padding (exactly 312 bytes for Glide 2.x ABI!)
+struct __attribute__((packed)) GlideWrapperState {
+  uint8_t depthMode;
+  uint8_t depthCompare;
+  uint8_t depthMask;
   int32_t depthBias;
 
-  uint32_t alphaTestOp;
-  uint32_t alphaTestRef;
+  uint8_t alphaTestOp;
+  uint8_t alphaTestRef;
 
-  uint32_t clampS[2];
-  uint32_t clampT[2];
-  uint32_t minFilter[2];
-  uint32_t magFilter[2];
+  uint8_t clampS[2];
+  uint8_t clampT[2];
+  uint8_t minFilter[2];
+  uint8_t magFilter[2];
 
-  uint32_t colorFunc;
-  uint32_t colorFactor;
-  uint32_t colorLocal;
-  uint32_t colorOther;
-  uint32_t colorInvert;
-  uint32_t alphaFunc;
-  uint32_t alphaFactor;
-  uint32_t alphaLocal;
-  uint32_t alphaOther;
-  uint32_t alphaInvert;
+  uint8_t colorFunc;
+  uint8_t colorFactor;
+  uint8_t colorLocal;
+  uint8_t colorOther;
+  uint8_t colorInvert;
+  uint8_t alphaFunc;
+  uint8_t alphaFactor;
+  uint8_t alphaLocal;
+  uint8_t alphaOther;
+  uint8_t alphaInvert;
 
-  uint32_t texRgbFunc[2];
-  uint32_t texRgbFactor[2];
-  uint32_t texAlphaFunc[2];
-  uint32_t texAlphaFactor[2];
+  uint8_t texRgbFunc[2];
+  uint8_t texRgbFactor[2];
+  uint8_t texAlphaFunc[2];
+  uint8_t texAlphaFactor[2];
   uint32_t boundTex[2];
   uint32_t stwHintMask;
 
   uint32_t constantColor;
-  uint32_t rgbSrcBlend;
-  uint32_t rgbDstBlend;
-  uint32_t alphaSrcBlend;
-  uint32_t alphaDstBlend;
-  uint32_t cullMode;
-  uint32_t sstOrigin;
+  uint8_t rgbSrcBlend;
+  uint8_t rgbDstBlend;
+  uint8_t alphaSrcBlend;
+  uint8_t alphaDstBlend;
+  uint8_t cullMode;
+  uint8_t sstOrigin;
   uint32_t clipMinX;
   uint32_t clipMinY;
   uint32_t clipMaxX;
   uint32_t clipMaxY;
-  uint32_t fogMode;
+  uint8_t fogMode;
   uint32_t fogColor;
   uint8_t fogTable[64];
 
-  uint32_t colorMaskRgb;
-  uint32_t colorMaskAlpha;
+  uint8_t colorMaskRgb;
+  uint8_t colorMaskAlpha;
 
-  uint32_t chromakeyMode;
+  uint8_t chromakeyMode;
   uint32_t chromakeyValue;
   uint32_t chromakeyRangeMin;
   uint32_t chromakeyRangeMax;
-  uint32_t chromakeyRangeMode;
+  uint8_t chromakeyRangeMode;
   struct {
-    uint32_t mode;
+    uint8_t mode;
     GrColor_t minColor;
     GrColor_t maxColor;
   } texChromaState[2];
-  uint32_t mipmapMode[2];
-  uint32_t lodBlend[2];
+  uint8_t mipmapMode[2];
+  uint8_t lodBlend[2];
+
+  // Explicit padding to align exactly to the Glide 2.x standard 312-byte layout size
+  uint8_t pad[126];
 };
 
-static_assert(sizeof(GlideWrapperState) <= sizeof(GrState),
-              "GlideWrapperState exceeds GrState footprint!");
+static_assert(sizeof(GlideWrapperState) == 312,
+              "GlideWrapperState must be exactly 312 bytes for Glide 2.x ABI compatibility!");
 
 FX_ENTRY void FX_CALL grGlideInit(void) {
   ResetFrontendState();
