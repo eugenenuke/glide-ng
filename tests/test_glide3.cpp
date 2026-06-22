@@ -1347,7 +1347,7 @@ TEST_CASE("OpenGL ES Backend Multi-pass Pre-Fog Blending Verification [GLES_PreF
 
     glideInit();
     if (sstSelect) sstSelect(0);
-    unsigned long ctx = winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz, GR_COLORFORMAT_ABGR, GR_ORIGIN_LOWER_LEFT, 2, 0);
+    unsigned long ctx = winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz, GR_COLORFORMAT_ABGR, GR_ORIGIN_LOWER_LEFT, 2, 1);
     REQUIRE(ctx != 0);
 
     // Set vertex layout
@@ -2381,3 +2381,116 @@ TEST_CASE("Software Reference Backend Mipmapping & LOD Bias Verification [Glide3
 
 #endif
 
+
+TEST_CASE("Glide 3.x State Save & Restore ClipWindow and ColorMask Verification", "[Glide3][State]") {
+    void* handle = OpenGlide3Handle();
+    REQUIRE(handle != nullptr);
+
+    using InitFunc = void(*)(void);
+    using SelectSstFunc = void(*)(int);
+    using OpenWinFunc = FxU32(*)(FxU32, FxI32, FxI32, FxI32, FxI32, int, int);
+    using CloseWinFunc = void(*)(void);
+    using ClipWinFunc = void(*)(FxU32, FxU32, FxU32, FxU32);
+    using ColorMaskFunc = void(*)(FxBool, FxBool);
+    using TexCombineFunc = void(*)(GrChipID_t, GrCombineFunction_t, GrCombineFactor_t, GrCombineFunction_t, GrCombineFactor_t, FxBool, FxBool);
+    using GetStateFunc = void(*)(void*);
+    using SetStateFunc = void(*)(const void*);
+    using ShutdownFunc = void(*)(void);
+
+    auto glideInit = reinterpret_cast<InitFunc>(::dlsym(handle, "grGlideInit"));
+    auto sstSelect = reinterpret_cast<SelectSstFunc>(::dlsym(handle, "grSstSelect"));
+    auto winOpen   = reinterpret_cast<OpenWinFunc>(::dlsym(handle, "grSstWinOpen"));
+    auto winClose  = reinterpret_cast<CloseWinFunc>(::dlsym(handle, "grSstWinClose"));
+    auto clipWin   = reinterpret_cast<ClipWinFunc>(::dlsym(handle, "grClipWindow"));
+    auto colorMask = reinterpret_cast<ColorMaskFunc>(::dlsym(handle, "grColorMask"));
+    auto texCombine = reinterpret_cast<TexCombineFunc>(::dlsym(handle, "grTexCombine"));
+    auto getState  = reinterpret_cast<GetStateFunc>(::dlsym(handle, "grGlideGetState"));
+    auto setState  = reinterpret_cast<SetStateFunc>(::dlsym(handle, "grGlideSetState"));
+    auto glideShutdown = reinterpret_cast<ShutdownFunc>(::dlsym(handle, "grGlideShutdown"));
+
+    REQUIRE(glideInit != nullptr);
+    REQUIRE(sstSelect != nullptr);
+    REQUIRE(winOpen != nullptr);
+    REQUIRE(winClose != nullptr);
+    REQUIRE(clipWin != nullptr);
+    REQUIRE(colorMask != nullptr);
+    REQUIRE(texCombine != nullptr);
+    REQUIRE(getState != nullptr);
+    REQUIRE(setState != nullptr);
+    REQUIRE(glideShutdown != nullptr);
+
+    // Force headless software reference backend for testing
+    ::setenv("GLIDE_WRAPPER_BACKEND", "software", 1);
+    ::setenv("GLIDE_WRAPPER_LOG_LEVEL", "3", 1); // INFO
+
+    glideInit();
+    sstSelect(0);
+    FxU32 ctx = winOpen(0, 8, 0, 0, 0, 2, 0); // 800x600 resolution
+    REQUIRE(ctx != 0);
+
+    auto* backend = static_cast<GlideWrapper::SoftwareBackendBase*>(
+        GlideWrapper::BackendManager::GetInstance().GetBackend()
+    );
+    REQUIRE(backend != nullptr);
+
+    // 1. Configure initial custom clip, mask and TMU invert states
+    clipWin(30, 40, 500, 400);
+    colorMask(FXTRUE, FXFALSE);
+    texCombine(GR_TMU0, GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+               GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE, FXTRUE, FXFALSE);
+    texCombine(GR_TMU1, GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+               GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE, FXFALSE, FXTRUE);
+
+    REQUIRE(backend->GetClipMinX() == 30);
+    REQUIRE(backend->GetClipMinY() == 40);
+    REQUIRE(backend->GetClipMaxX() == 500);
+    REQUIRE(backend->GetClipMaxY() == 400);
+    REQUIRE(backend->GetColorMaskRgb() == true);
+    REQUIRE(backend->GetColorMaskAlpha() == false);
+    REQUIRE(backend->GetTexCombinerRgbInvert(0) == true);
+    REQUIRE(backend->GetTexCombinerAlphaInvert(0) == false);
+    REQUIRE(backend->GetTexCombinerRgbInvert(1) == false);
+    REQUIRE(backend->GetTexCombinerAlphaInvert(1) == true);
+
+    // 2. Save state using grGlideGetState
+    char savedState[1024];
+    getState(savedState);
+
+    // 3. Clobber/perturb states
+    clipWin(0, 0, 800, 600);
+    colorMask(FXFALSE, FXTRUE);
+    texCombine(GR_TMU0, GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+               GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE, FXFALSE, FXFALSE);
+    texCombine(GR_TMU1, GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+               GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE, FXFALSE, FXFALSE);
+
+    REQUIRE(backend->GetClipMinX() == 0);
+    REQUIRE(backend->GetClipMinY() == 0);
+    REQUIRE(backend->GetClipMaxX() == 800);
+    REQUIRE(backend->GetClipMaxY() == 600);
+    REQUIRE(backend->GetColorMaskRgb() == false);
+    REQUIRE(backend->GetColorMaskAlpha() == true);
+    REQUIRE(backend->GetTexCombinerRgbInvert(0) == false);
+    REQUIRE(backend->GetTexCombinerAlphaInvert(0) == false);
+    REQUIRE(backend->GetTexCombinerRgbInvert(1) == false);
+    REQUIRE(backend->GetTexCombinerAlphaInvert(1) == false);
+
+    // 4. Restore state using grGlideSetState
+    setState(savedState);
+
+    // 5. Verify that all serialized states were successfully restored to the backend!
+    REQUIRE(backend->GetClipMinX() == 30);
+    REQUIRE(backend->GetClipMinY() == 40);
+    REQUIRE(backend->GetClipMaxX() == 500);
+    REQUIRE(backend->GetClipMaxY() == 400);
+    REQUIRE(backend->GetColorMaskRgb() == true);
+    REQUIRE(backend->GetColorMaskAlpha() == false);
+    REQUIRE(backend->GetTexCombinerRgbInvert(0) == true);
+    REQUIRE(backend->GetTexCombinerAlphaInvert(0) == false);
+    REQUIRE(backend->GetTexCombinerRgbInvert(1) == false);
+    REQUIRE(backend->GetTexCombinerAlphaInvert(1) == true);
+
+    winClose();
+    glideShutdown();
+    ::dlclose(handle);
+}

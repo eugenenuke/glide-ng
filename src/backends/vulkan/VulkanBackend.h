@@ -57,7 +57,7 @@ struct PushConstants {
   uint32_t alphaOther;
   uint32_t alphaInvert;
   uint32_t textureEnabled;
-  uint32_t padding_tmu;
+  uint32_t tmuCombinerModes;
 
   // Block 8: Offset 176 (16 bytes)
   uint32_t texChromaEnabled[2];    // TMU0/TMU1 chromakey enabled
@@ -120,10 +120,13 @@ struct SamplerKeyHash {
 };
 
 struct DescriptorKey {
-  vk::ImageView imageView;
-  vk::Sampler sampler;
+  vk::ImageView imageView0;
+  vk::Sampler sampler0;
+  vk::ImageView imageView1;
+  vk::Sampler sampler1;
   bool operator==(const DescriptorKey& other) const {
-    return imageView == other.imageView && sampler == other.sampler;
+    return imageView0 == other.imageView0 && sampler0 == other.sampler0 &&
+           imageView1 == other.imageView1 && sampler1 == other.sampler1;
   }
 };
 
@@ -133,10 +136,10 @@ struct DescriptorKeyHash {
     auto combine = [&h](std::size_t val) {
       h ^= val + 0x9e3779b9 + (h << 6) + (h >> 2);
     };
-    combine(reinterpret_cast<std::uintptr_t>(
-        static_cast<VkImageView>(k.imageView)));
-    combine(
-        reinterpret_cast<std::uintptr_t>(static_cast<VkSampler>(k.sampler)));
+    combine(reinterpret_cast<std::uintptr_t>(static_cast<VkImageView>(k.imageView0)));
+    combine(reinterpret_cast<std::uintptr_t>(static_cast<VkSampler>(k.sampler0)));
+    combine(reinterpret_cast<std::uintptr_t>(static_cast<VkImageView>(k.imageView1)));
+    combine(reinterpret_cast<std::uintptr_t>(static_cast<VkSampler>(k.sampler1)));
     return h;
   }
 };
@@ -262,7 +265,8 @@ class VulkanBackend : public SoftwareBackendBase {
                        uint32_t alphaFactor, uint32_t alphaLocal,
                        uint32_t alphaOther, bool alphaInvert) override;
   void SetTexCombinerMode(uint32_t tmu, uint32_t rgbFunc, uint32_t rgbFactor,
-                          uint32_t alphaFunc, uint32_t alphaFactor) override;
+                          uint32_t alphaFunc, uint32_t alphaFactor,
+                          bool rgbInvert, bool alphaInvert) override;
   void SetSTWHintState(uint32_t hintMask) override;
   void SetChromakeyMode(uint32_t mode) override;
   void SetChromakeyValue(uint32_t value) override;
@@ -417,8 +421,10 @@ class VulkanBackend : public SoftwareBackendBase {
                                  uint32_t minFilter, uint32_t magFilter,
                                  float lodBias, uint32_t mipmapMode,
                                  bool lodBlend);
-  vk::DescriptorSet GetOrCreateDescriptorSet(vk::ImageView imageView,
-                                             vk::Sampler sampler);
+  vk::DescriptorSet GetOrCreateDescriptorSet(vk::ImageView imageView0,
+                                             vk::Sampler sampler0,
+                                             vk::ImageView imageView1,
+                                             vk::Sampler sampler1);
 
   std::unordered_map<SamplerKey, vk::UniqueSampler, SamplerKeyHash>
       m_samplerCache;

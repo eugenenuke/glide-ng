@@ -796,7 +796,7 @@ layout(location = 4) in float inFogCoord;
 
 out vec4 fragColor;
 out float fragOOW;
-out vec2 fragTexCoord;
+out vec4 fragTexCoord;
 out vec2 fragTmuOow;
 out float fragFogCoord;
 
@@ -834,7 +834,7 @@ void main() {
     gl_PointSize = 1.0; // Canonical Glide point size (1px)
     fragColor = inColor;
     fragOOW = inPos.w;
-    fragTexCoord = inTex.xy;
+    fragTexCoord = inTex;
     fragTmuOow = inTmuOow;
     fragFogCoord = inFogCoord;
 }
@@ -846,7 +846,7 @@ precision highp float;
 
 in vec4 fragColor;
 in float fragOOW;
-in vec2 fragTexCoord;
+in vec4 fragTexCoord;
 in vec2 fragTmuOow;
 in float fragFogCoord;
 
@@ -872,11 +872,18 @@ uniform int uAlphaLocal;
 uniform int uAlphaOther;
 uniform int uAlphaInvert;
 
-uniform int uTextureEnabled;
+uniform int uTextureEnabled[2];
 uniform sampler2D uTexture0;
 uniform sampler2D uTexture1;
 uniform float uTexLodBias[2];
-uniform int uUseTmuOow;
+uniform int uUseTmuOow[2];
+
+uniform int uTexRgbFunc[2];
+uniform int uTexRgbFactor[2];
+uniform int uTexAlphaFunc[2];
+uniform int uTexAlphaFactor[2];
+uniform int uTexRgbInvert[2];
+uniform int uTexAlphaInvert[2];
 
 uniform int uChromakeyEnabled;
 uniform vec4 uChromakeyValue;
@@ -947,56 +954,142 @@ bool IsColorInRange(vec3 color, vec3 minColor, vec3 maxColor, uint rangeMode) {
     }
 }
 
+vec4 evaluateTmuStage(int idx, vec4 localVal, vec4 otherVal) {
+    int rgbFunc = uTexRgbFunc[idx];
+    int rgbFactor = uTexRgbFactor[idx];
+    int alphaFunc = uTexAlphaFunc[idx];
+    int alphaFactor = uTexAlphaFactor[idx];
+    bool rgbInvert = uTexRgbInvert[idx] == 1;
+    bool alphaInvert = uTexAlphaInvert[idx] == 1;
+
+    float factA = 0.0;
+    if (alphaFactor == 1) factA = localVal.a;
+    else if (alphaFactor == 2) factA = otherVal.a;
+    else if (alphaFactor == 8) factA = 1.0;
+    else if (alphaFactor == 9) factA = 1.0 - localVal.a;
+    else if (alphaFactor == 10) factA = 1.0 - otherVal.a;
+
+    float finalA = 0.0;
+    if (alphaFunc == 1 || alphaFunc == 2) {
+        finalA = localVal.a;
+    } else if (alphaFunc == 3) {
+        finalA = otherVal.a * factA;
+    } else if (alphaFunc == 4 || alphaFunc == 5) {
+        finalA = otherVal.a * factA + localVal.a;
+    } else if (alphaFunc == 6) {
+        finalA = (otherVal.a - localVal.a) * factA;
+    } else if (alphaFunc == 7) {
+        finalA = (otherVal.a - localVal.a) * factA + localVal.a;
+    }
+
+    if (alphaInvert) {
+        finalA = 1.0 - finalA;
+    }
+
+    vec3 factC = vec3(0.0);
+    if (rgbFactor == 1) factC = localVal.rgb;
+    else if (rgbFactor == 2) factC = vec3(otherVal.a);
+    else if (rgbFactor == 3) factC = vec3(localVal.a);
+    else if (rgbFactor == 4) factC = otherVal.rgb;
+    else if (rgbFactor == 8) factC = vec3(1.0);
+    else if (rgbFactor == 9) factC = vec3(1.0) - localVal.rgb;
+    else if (rgbFactor == 10) factC = vec3(1.0 - otherVal.a);
+    else if (rgbFactor == 11) factC = vec3(1.0 - localVal.a);
+    else if (rgbFactor == 12) factC = vec3(1.0) - otherVal.rgb;
+
+    vec3 finalC = vec3(0.0);
+    if (rgbFunc == 1) {
+        finalC = localVal.rgb;
+    } else if (rgbFunc == 3) {
+        finalC = otherVal.rgb * factC;
+    } else if (rgbFunc == 4) {
+        finalC = otherVal.rgb * factC + localVal.rgb;
+    } else if (rgbFunc == 5) {
+        finalC = otherVal.rgb * factC + vec3(localVal.a);
+    } else if (rgbFunc == 6) {
+        finalC = (otherVal.rgb - localVal.rgb) * factC;
+    } else if (rgbFunc == 7) {
+        finalC = (otherVal.rgb - localVal.rgb) * factC + localVal.rgb;
+    } else if (rgbFunc == 8) {
+        finalC = (otherVal.rgb - localVal.rgb) * factC + vec3(localVal.a);
+    }
+
+    if (rgbInvert) {
+        finalC = vec3(1.0) - finalC;
+    }
+
+    return vec4(finalC, finalA);
+}
+
+vec4 sampleTmu(int idx, sampler2D samplerObj, vec2 texCoords, float divW) {
+    ivec2 texSize = textureSize(samplerObj, 0);
+    float tw = float(texSize.x);
+    float th = float(texSize.y);
+    float maxDim = max(tw, th);
+    vec2 uv = (texCoords / divW) / 256.0;
+    uv.x *= (maxDim / tw);
+    uv.y *= (maxDim / th);
+
+    vec4 texColor = vec4(1.0);
+    if (uTexChromaEnabled[idx] == 1u) {
+        ivec2 size = ivec2(int(tw), int(th));
+        vec2 texelCoord = uv * vec2(tw, th) - vec2(0.5);
+        ivec2 tl = ivec2(floor(texelCoord));
+        vec2 f = fract(texelCoord);
+
+        ivec2 c00_coord = clamp(tl + ivec2(0, 0), ivec2(0), size - ivec2(1));
+        ivec2 c10_coord = clamp(tl + ivec2(1, 0), ivec2(0), size - ivec2(1));
+        ivec2 c01_coord = clamp(tl + ivec2(0, 1), ivec2(0), size - ivec2(1));
+        ivec2 c11_coord = clamp(tl + ivec2(1, 1), ivec2(0), size - ivec2(1));
+
+        vec4 c00 = texelFetch(samplerObj, c00_coord, 0);
+        vec4 c10 = texelFetch(samplerObj, c10_coord, 0);
+        vec4 c01 = texelFetch(samplerObj, c01_coord, 0);
+        vec4 c11 = texelFetch(samplerObj, c11_coord, 0);
+
+        if (IsColorInRange(c00.rgb, uTexChromaMin[idx].rgb, uTexChromaMax[idx].rgb, uTexChromaRangeMode[idx])) c00 = vec4(0.0);
+        if (IsColorInRange(c10.rgb, uTexChromaMin[idx].rgb, uTexChromaMax[idx].rgb, uTexChromaRangeMode[idx])) c10 = vec4(0.0);
+        if (IsColorInRange(c01.rgb, uTexChromaMin[idx].rgb, uTexChromaMax[idx].rgb, uTexChromaRangeMode[idx])) c01 = vec4(0.0);
+        if (IsColorInRange(c11.rgb, uTexChromaMin[idx].rgb, uTexChromaMax[idx].rgb, uTexChromaRangeMode[idx])) c11 = vec4(0.0);
+
+        vec4 c0 = mix(c00, c10, f.x);
+        vec4 c1 = mix(c01, c11, f.x);
+        texColor = mix(c0, c1, f.y);
+    } else {
+        texColor = texture(samplerObj, uv, uTexLodBias[idx]);
+    }
+    return texColor;
+}
+
 void main() {
-    // W-based coordinate near-plane and camera-space clipping
+    // Evaluate active TMUs
+    bool tmu0Active = uTextureEnabled[0] == 1;
+    bool tmu1Active = uTextureEnabled[1] == 1;
+
+    // Near-plane clipping:
     if (uDepthBufferMode == 2) {
         if (fragOOW > 1.0) discard;
-    } else if (uTextureEnabled == 1) {
+    } else if (tmu0Active || tmu1Active) {
         if (fragOOW <= 0.0) discard;
     }
 
-    // 1. Sample texture if enabled
-    vec4 texColor = vec4(1.0);
-    if (uTextureEnabled == 1) {
-        ivec2 texSize = textureSize(uTexture0, 0);
-        float tw = float(texSize.x);
-        float th = float(texSize.y);
-        float maxDim = max(tw, th);
-        float divW = (uUseTmuOow == 1) ? fragTmuOow.x : fragOOW;
-        vec2 uv = (fragTexCoord / divW) / 256.0;
-        uv.x *= (maxDim / tw);
-        uv.y *= (maxDim / th);
-        if (uTexChromaEnabled[0] == 1u) {
-            ivec2 size = ivec2(int(tw), int(th));
-            vec2 texelCoord = uv * vec2(tw, th) - vec2(0.5);
-            ivec2 tl = ivec2(floor(texelCoord));
-            vec2 f = fract(texelCoord);
-
-            // Fetch 4 raw texels (clamping coordinates to edge for safety)
-            ivec2 c00_coord = clamp(tl + ivec2(0, 0), ivec2(0), size - ivec2(1));
-            ivec2 c10_coord = clamp(tl + ivec2(1, 0), ivec2(0), size - ivec2(1));
-            ivec2 c01_coord = clamp(tl + ivec2(0, 1), ivec2(0), size - ivec2(1));
-            ivec2 c11_coord = clamp(tl + ivec2(1, 1), ivec2(0), size - ivec2(1));
-
-            vec4 c00 = texelFetch(uTexture0, c00_coord, 0);
-            vec4 c10 = texelFetch(uTexture0, c10_coord, 0);
-            vec4 c01 = texelFetch(uTexture0, c01_coord, 0);
-            vec4 c11 = texelFetch(uTexture0, c11_coord, 0);
-
-            // Evaluate chromakey test on each raw texel individually before interpolation
-            if (IsColorInRange(c00.rgb, uTexChromaMin[0].rgb, uTexChromaMax[0].rgb, uTexChromaRangeMode[0])) c00 = vec4(0.0);
-            if (IsColorInRange(c10.rgb, uTexChromaMin[0].rgb, uTexChromaMax[0].rgb, uTexChromaRangeMode[0])) c10 = vec4(0.0);
-            if (IsColorInRange(c01.rgb, uTexChromaMin[0].rgb, uTexChromaMax[0].rgb, uTexChromaRangeMode[0])) c01 = vec4(0.0);
-            if (IsColorInRange(c11.rgb, uTexChromaMin[0].rgb, uTexChromaMax[0].rgb, uTexChromaRangeMode[0])) c11 = vec4(0.0);
-
-            // Manually interpolate the keyed texels
-            vec4 c0 = mix(c00, c10, f.x);
-            vec4 c1 = mix(c01, c11, f.x);
-            texColor = mix(c0, c1, f.y);
-        } else {
-            texColor = texture(uTexture0, uv, uTexLodBias[0]);
-        }
+    vec4 tmu1Out = vec4(1.0);
+    if (tmu1Active) {
+        float divW1 = (uUseTmuOow[1] == 1) ? fragTmuOow.y : fragOOW;
+        vec4 localVal1 = sampleTmu(1, uTexture1, fragTexCoord.zw, divW1);
+        tmu1Out = evaluateTmuStage(1, localVal1, fragColor);
     }
+
+    vec4 tmu0Out = vec4(1.0);
+    if (tmu0Active) {
+        float divW0 = (uUseTmuOow[0] == 1) ? fragTmuOow.x : fragOOW;
+        vec4 localVal0 = sampleTmu(0, uTexture0, fragTexCoord.xy, divW0);
+        tmu0Out = evaluateTmuStage(0, localVal0, tmu1Out);
+    } else if (tmu1Active) {
+        tmu0Out = tmu1Out;
+    }
+
+    vec4 texColor = tmu0Out;
 
     // 2. Route Alpha Combiner inputs
     float aLocal = 1.0;
@@ -1239,6 +1332,12 @@ bool OpenGLESBackend::CreateGeomShaders() {
   m_uTexture0Loc = glGetUniformLocation(m_geomProgram, "uTexture0");
   m_uTexture1Loc = glGetUniformLocation(m_geomProgram, "uTexture1");
   m_uUseTmuOowLoc = glGetUniformLocation(m_geomProgram, "uUseTmuOow");
+  m_uTexRgbFuncLoc = glGetUniformLocation(m_geomProgram, "uTexRgbFunc");
+  m_uTexRgbFactorLoc = glGetUniformLocation(m_geomProgram, "uTexRgbFactor");
+  m_uTexAlphaFuncLoc = glGetUniformLocation(m_geomProgram, "uTexAlphaFunc");
+  m_uTexAlphaFactorLoc = glGetUniformLocation(m_geomProgram, "uTexAlphaFactor");
+  m_uTexRgbInvertLoc = glGetUniformLocation(m_geomProgram, "uTexRgbInvert");
+  m_uTexAlphaInvertLoc = glGetUniformLocation(m_geomProgram, "uTexAlphaInvert");
   m_uAlphaTestOpLoc = glGetUniformLocation(m_geomProgram, "uAlphaTestOp");
   m_uAlphaTestRefLoc = glGetUniformLocation(m_geomProgram, "uAlphaTestRef");
   m_uDepthBiasLoc = glGetUniformLocation(m_geomProgram, "uDepthBias");
@@ -1256,7 +1355,7 @@ bool OpenGLESBackend::CreateGeomShaders() {
   // Log critical uniform location failure
   if (m_uSstOriginLoc == -1 || m_uViewportSizeLoc == -1 ||
       m_uColorFuncLoc == -1 || m_uAlphaFuncLoc == -1 ||
-      m_uTextureEnabledLoc == -1) {
+      m_uTextureEnabledLoc == -1 || m_uTexRgbFuncLoc == -1) {
     GLIDE_LOG(CRITICAL, "GLES",
               "Critical uniform location query failed! Some uniforms could not "
               "be resolved.");
@@ -1920,13 +2019,35 @@ void OpenGLESBackend::PopulateUniforms() {
   glUniform1i(m_uAlphaInvertLoc, m_alphaCombinerInvert ? 1 : 0);
 
   // Upload Texture Binding State
-  bool texEnabled = (m_boundTexAddress[0] != 0xFFFFFFFF);
-  glUniform1i(m_uTextureEnabledLoc, texEnabled ? 1 : 0);
+  int texEnabledArray[2] = {
+      (m_boundTexAddress[0] != 0xFFFFFFFF) ? 1 : 0,
+      (m_boundTexAddress[1] != 0xFFFFFFFF) ? 1 : 0
+  };
+  glUniform1iv(m_uTextureEnabledLoc, 2, texEnabledArray);
   glUniform1i(m_uTexture0Loc, 0);  // Always texture unit 0 for TMU0
   glUniform1i(m_uTexture1Loc, 1);  // Always texture unit 1 for TMU1
   float lodBias[2] = {m_texLodBias[0], m_texLodBias[1]};
   glUniform1fv(m_uTexLodBiasLoc, 2, lodBias);
-  glUniform1i(m_uUseTmuOowLoc, (m_stwHintMask & 0x2) ? 1 : 0);
+  
+  int useTmuOowArray[2] = {
+      (m_stwHintMask & 0x2) ? 1 : 0,
+      (m_stwHintMask & 0x8) ? 1 : 0
+  };
+  glUniform1iv(m_uUseTmuOowLoc, 2, useTmuOowArray);
+
+  int rgbFunc[2] = { (int)m_texCombinerRgbFunc[0], (int)m_texCombinerRgbFunc[1] };
+  int rgbFactor[2] = { (int)m_texCombinerRgbFactor[0], (int)m_texCombinerRgbFactor[1] };
+  int alphaFunc[2] = { (int)m_texCombinerAlphaFunc[0], (int)m_texCombinerAlphaFunc[1] };
+  int alphaFactor[2] = { (int)m_texCombinerAlphaFactor[0], (int)m_texCombinerAlphaFactor[1] };
+  int rgbInvert[2] = { m_texCombinerRgbInvert[0] ? 1 : 0, m_texCombinerRgbInvert[1] ? 1 : 0 };
+  int alphaInvert[2] = { m_texCombinerAlphaInvert[0] ? 1 : 0, m_texCombinerAlphaInvert[1] ? 1 : 0 };
+
+  glUniform1iv(m_uTexRgbFuncLoc, 2, rgbFunc);
+  glUniform1iv(m_uTexRgbFactorLoc, 2, rgbFactor);
+  glUniform1iv(m_uTexAlphaFuncLoc, 2, alphaFunc);
+  glUniform1iv(m_uTexAlphaFactorLoc, 2, alphaFactor);
+  glUniform1iv(m_uTexRgbInvertLoc, 2, rgbInvert);
+  glUniform1iv(m_uTexAlphaInvertLoc, 2, alphaInvert);
 
   glUniform1i(m_uAlphaTestOpLoc, (int)m_alphaTestOp);
   glUniform1f(m_uAlphaTestRefLoc, (float)m_alphaTestRefVal / 255.0f);

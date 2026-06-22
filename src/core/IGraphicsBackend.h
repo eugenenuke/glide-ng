@@ -104,7 +104,8 @@ class IGraphicsBackend {
                                uint32_t alphaOther, bool alphaInvert) = 0;
   virtual void SetTexCombinerMode(uint32_t tmu, uint32_t rgbFunc,
                                   uint32_t rgbFactor, uint32_t alphaFunc,
-                                  uint32_t alphaFactor) = 0;
+                                  uint32_t alphaFactor, bool rgbInvert,
+                                  bool alphaInvert) = 0;
   virtual void SetSTWHintState(uint32_t hintMask) = 0;
 
   // Milestone 10: Chromakey State

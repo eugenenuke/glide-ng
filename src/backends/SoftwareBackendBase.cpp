@@ -79,6 +79,8 @@ void SoftwareBackendBase::ResetState() {
   m_texCombinerRgbFactor[0] = m_texCombinerRgbFactor[1] = 0;
   m_texCombinerAlphaFunc[0] = m_texCombinerAlphaFunc[1] = 0;
   m_texCombinerAlphaFactor[0] = m_texCombinerAlphaFactor[1] = 0;
+  m_texCombinerRgbInvert[0] = m_texCombinerRgbInvert[1] = false;
+  m_texCombinerAlphaInvert[0] = m_texCombinerAlphaInvert[1] = false;
 
   m_constantColor = 0xFFFFFFFF;
   m_stwHintMask = 0;
@@ -319,16 +321,22 @@ void SoftwareBackendBase::SetCombinerMode(
 void SoftwareBackendBase::SetTexCombinerMode(uint32_t tmu, uint32_t rgbFunc,
                                              uint32_t rgbFactor,
                                              uint32_t alphaFunc,
-                                             uint32_t alphaFactor) {
+                                             uint32_t alphaFactor,
+                                             bool rgbInvert,
+                                             bool alphaInvert) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   if (tmu < 2) {
     m_texCombinerRgbFunc[tmu] = rgbFunc;
     m_texCombinerRgbFactor[tmu] = rgbFactor;
     m_texCombinerAlphaFunc[tmu] = alphaFunc;
     m_texCombinerAlphaFactor[tmu] = alphaFactor;
+    m_texCombinerRgbInvert[tmu] = rgbInvert;
+    m_texCombinerAlphaInvert[tmu] = alphaInvert;
     GLIDE_LOG(DEBUG, "Rasterizer",
               "SetTexCombinerMode TMU" << tmu << ": RGBFunc=" << rgbFunc
-                                       << ", AlphaFunc=" << alphaFunc);
+                                       << ", AlphaFunc=" << alphaFunc
+                                       << ", RGBInvert=" << rgbInvert
+                                       << ", AlphaInvert=" << alphaInvert);
   }
 }
 

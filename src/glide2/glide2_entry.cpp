@@ -512,7 +512,8 @@ FX_ENTRY FxBool FX_CALL grSstWinOpen(FxU32 hWnd,
     backend->SetFogTable(s_fogTable);
     for (uint32_t tmu = 0; tmu < 2; ++tmu) {
       backend->SetTexCombinerMode(tmu, s_texRgbFunc[tmu], s_texRgbFactor[tmu],
-                                  s_texAlphaFunc[tmu], s_texAlphaFactor[tmu]);
+                                  s_texAlphaFunc[tmu], s_texAlphaFactor[tmu],
+                                  false, false);
       backend->BindTexture(tmu, s_boundTex[tmu], s_clampS[tmu], s_clampT[tmu],
                            s_minFilter[tmu], s_magFilter[tmu]);
     }
@@ -1185,7 +1186,8 @@ FX_ENTRY void FX_CALL grGlideSetState(const GrState* state) {
 
     for (uint32_t tmu = 0; tmu < 2; ++tmu) {
       b->SetTexCombinerMode(tmu, s_texRgbFunc[tmu], s_texRgbFactor[tmu],
-                            s_texAlphaFunc[tmu], s_texAlphaFactor[tmu]);
+                            s_texAlphaFunc[tmu], s_texAlphaFactor[tmu],
+                            false, false);
       b->BindTexture(tmu, s_boundTex[tmu], s_clampS[tmu], s_clampT[tmu],
                      s_minFilter[tmu], s_magFilter[tmu]);
       b->SetTexChromakeyMode(tmu, s_texChromaState[tmu].mode);
@@ -1249,7 +1251,7 @@ FX_ENTRY void FX_CALL grTexCombine(GrChipID_t tmu, GrCombineFunction_t rgbFnc,
     s_texAlphaFunc[tmu] = alphaFnc;
     s_texAlphaFactor[tmu] = alphaFactor;
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
-      b->SetTexCombinerMode(tmu, rgbFnc, rgbFactor, alphaFnc, alphaFactor);
+      b->SetTexCombinerMode(tmu, rgbFnc, rgbFactor, alphaFnc, alphaFactor, false, false);
     }
   }
 }

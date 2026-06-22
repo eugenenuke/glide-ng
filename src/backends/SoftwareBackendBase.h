@@ -33,11 +33,20 @@ class SoftwareBackendBase : public IGraphicsBackend {
   uint32_t GetSTWHintMask() const { return m_stwHintMask; }
   uint32_t GetCullMode() const { return m_cullMode; }
   uint32_t GetSstOrigin() const { return m_sstOrigin; }
+  uint32_t GetClipMinX() const { return m_clipMinX; }
+  uint32_t GetClipMinY() const { return m_clipMinY; }
+  uint32_t GetClipMaxX() const { return m_clipMaxX; }
+  uint32_t GetClipMaxY() const { return m_clipMaxY; }
+  bool GetColorMaskRgb() const { return m_colorMaskRgb; }
+  bool GetColorMaskAlpha() const { return m_colorMaskAlpha; }
+  bool GetTexCombinerRgbInvert(uint32_t tmu) const { return tmu < 2 ? m_texCombinerRgbInvert[tmu] : false; }
+  bool GetTexCombinerAlphaInvert(uint32_t tmu) const { return tmu < 2 ? m_texCombinerAlphaInvert[tmu] : false; }
   float GetDepthBufferPixel(uint32_t x, uint32_t y) const {
     uint32_t pIdx = y * m_headlessWidth + x;
     if (pIdx < m_headlessDepthBuffer.size()) return m_headlessDepthBuffer[pIdx];
     return 0.0f;
   }
+
 
   bool SwapBuffers() override = 0;
   void PollEvents() override;
@@ -91,7 +100,8 @@ class SoftwareBackendBase : public IGraphicsBackend {
                        uint32_t alphaFactor, uint32_t alphaLocal,
                        uint32_t alphaOther, bool alphaInvert) override;
   void SetTexCombinerMode(uint32_t tmu, uint32_t rgbFunc, uint32_t rgbFactor,
-                          uint32_t alphaFunc, uint32_t alphaFactor) override;
+                          uint32_t alphaFunc, uint32_t alphaFactor,
+                          bool rgbInvert, bool alphaInvert) override;
   void SetSTWHintState(uint32_t hintMask) override;
   void SetChromakeyMode(uint32_t mode) override;
   void SetChromakeyValue(uint32_t value) override;
@@ -207,6 +217,8 @@ class SoftwareBackendBase : public IGraphicsBackend {
   uint32_t m_texCombinerRgbFactor[2] = {0, 0};
   uint32_t m_texCombinerAlphaFunc[2] = {0, 0};
   uint32_t m_texCombinerAlphaFactor[2] = {0, 0};
+  bool m_texCombinerRgbInvert[2] = {false, false};
+  bool m_texCombinerAlphaInvert[2] = {false, false};
 
   uint32_t m_constantColor{0xFFFFFFFF};
   uint32_t m_stwHintMask{0};          // Default: 0 (GR_STWHINT_W_OK)

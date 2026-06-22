@@ -125,10 +125,11 @@ bool VulkanBackend::Initialize(const WrapperConfig& config) {
   if (!CreateLogicalDevice()) return false;
 
   // Create descriptor set layout
-  vk::DescriptorSetLayoutBinding binding(
-      0, vk::DescriptorType::eCombinedImageSampler, 1,
-      vk::ShaderStageFlagBits::eFragment, nullptr);
-  vk::DescriptorSetLayoutCreateInfo layoutInfo({}, 1, &binding);
+  std::array<vk::DescriptorSetLayoutBinding, 2> bindings = {
+      vk::DescriptorSetLayoutBinding(0, vk::DescriptorType::eCombinedImageSampler, 1, vk::ShaderStageFlagBits::eFragment, nullptr),
+      vk::DescriptorSetLayoutBinding(1, vk::DescriptorType::eCombinedImageSampler, 1, vk::ShaderStageFlagBits::eFragment, nullptr)
+  };
+  vk::DescriptorSetLayoutCreateInfo layoutInfo({}, static_cast<uint32_t>(bindings.size()), bindings.data());
   m_descriptorSetLayout = m_device->createDescriptorSetLayoutUnique(layoutInfo);
 
   // Create descriptor pool
@@ -233,14 +234,15 @@ bool VulkanBackend::Initialize(const WrapperConfig& config) {
     auto sets = m_device->allocateDescriptorSets(setAlloc);
     m_dummyDescriptorSet = sets[0];
 
-    vk::DescriptorImageInfo imageInfo(m_dummySampler.get(),
-                                      m_dummyTexture.imageView.get(),
-                                      vk::ImageLayout::eShaderReadOnlyOptimal);
-    vk::WriteDescriptorSet descriptorWrite(
-        m_dummyDescriptorSet, 0, 0, 1,
-        vk::DescriptorType::eCombinedImageSampler, &imageInfo, nullptr,
-        nullptr);
-    m_device->updateDescriptorSets(1, &descriptorWrite, 0, nullptr);
+    std::array<vk::DescriptorImageInfo, 2> imageInfos = {
+        vk::DescriptorImageInfo(m_dummySampler.get(), m_dummyTexture.imageView.get(), vk::ImageLayout::eShaderReadOnlyOptimal),
+        vk::DescriptorImageInfo(m_dummySampler.get(), m_dummyTexture.imageView.get(), vk::ImageLayout::eShaderReadOnlyOptimal)
+    };
+    std::array<vk::WriteDescriptorSet, 2> descriptorWrites = {
+        vk::WriteDescriptorSet(m_dummyDescriptorSet, 0, 0, 1, vk::DescriptorType::eCombinedImageSampler, &imageInfos[0], nullptr, nullptr),
+        vk::WriteDescriptorSet(m_dummyDescriptorSet, 1, 0, 1, vk::DescriptorType::eCombinedImageSampler, &imageInfos[1], nullptr, nullptr)
+    };
+    m_device->updateDescriptorSets(static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
 
     GLIDE_LOG(INFO, "Vulkan", "Created 1x1 dummy white texture.");
   }
@@ -959,16 +961,19 @@ void VulkanBackend::SetCombinerMode(uint32_t colorFunc, uint32_t colorFactor,
 
 void VulkanBackend::SetTexCombinerMode(uint32_t tmu, uint32_t rgbFunc,
                                        uint32_t rgbFactor, uint32_t alphaFunc,
-                                       uint32_t alphaFactor) {
+                                       uint32_t alphaFactor, bool rgbInvert,
+                                       bool alphaInvert) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   if (tmu < 2 && (rgbFunc != m_texCombinerRgbFunc[tmu] ||
                   rgbFactor != m_texCombinerRgbFactor[tmu] ||
                   alphaFunc != m_texCombinerAlphaFunc[tmu] ||
-                  alphaFactor != m_texCombinerAlphaFactor[tmu])) {
+                  alphaFactor != m_texCombinerAlphaFactor[tmu] ||
+                  rgbInvert != m_texCombinerRgbInvert[tmu] ||
+                  alphaInvert != m_texCombinerAlphaInvert[tmu])) {
     FlushBatch();
   }
   SoftwareBackendBase::SetTexCombinerMode(tmu, rgbFunc, rgbFactor, alphaFunc,
-                                          alphaFactor);
+                                          alphaFactor, rgbInvert, alphaInvert);
 }
 
 void VulkanBackend::SetSTWHintState(uint32_t hintMask) {
@@ -2502,18 +2507,33 @@ void VulkanBackend::DrawPoint(const ModernVertex& pt) {
   UpdateActivePipelines();
   vk::Pipeline reqPipeline = m_activePointPipeline;
 
-  vk::DescriptorSet reqDescSet = m_dummyDescriptorSet;
+  vk::ImageView view0 = m_dummyTexture.imageView.get();
+  vk::Sampler sampler0 = m_dummySampler.get();
   if (m_boundTexAddress[0] != 0xFFFFFFFF) {
     auto it = m_vulkanTextures.find(m_boundTexAddress[0]);
     if (it != m_vulkanTextures.end()) {
       auto& tex = it->second;
-      vk::Sampler sampler =
-          GetOrCreateSampler(tex.clampS, tex.clampT, tex.minFilter,
-                             tex.magFilter, m_texLodBias[0],
-                             m_texMipMapMode[0], m_texLodBlend[0]);
-      reqDescSet = GetOrCreateDescriptorSet(tex.imageView.get(), sampler);
+      view0 = tex.imageView.get();
+      sampler0 = GetOrCreateSampler(tex.clampS, tex.clampT, tex.minFilter,
+                                    tex.magFilter, m_texLodBias[0],
+                                    m_texMipMapMode[0], m_texLodBlend[0]);
     }
   }
+
+  vk::ImageView view1 = m_dummyTexture.imageView.get();
+  vk::Sampler sampler1 = m_dummySampler.get();
+  if (m_boundTexAddress[1] != 0xFFFFFFFF) {
+    auto it = m_vulkanTextures.find(m_boundTexAddress[1]);
+    if (it != m_vulkanTextures.end()) {
+      auto& tex = it->second;
+      view1 = tex.imageView.get();
+      sampler1 = GetOrCreateSampler(tex.clampS, tex.clampT, tex.minFilter,
+                                    tex.magFilter, m_texLodBias[1],
+                                    m_texMipMapMode[1], m_texLodBlend[1]);
+    }
+  }
+
+  vk::DescriptorSet reqDescSet = GetOrCreateDescriptorSet(view0, sampler0, view1, sampler1);
 
   // 2. Check if we need to flush the active batch
   bool stateChanged =
@@ -2572,18 +2592,33 @@ void VulkanBackend::DrawLine(const ModernVertex& v1, const ModernVertex& v2) {
   UpdateActivePipelines();
   vk::Pipeline reqPipeline = m_activeLinePipeline;
 
-  vk::DescriptorSet reqDescSet = m_dummyDescriptorSet;
+  vk::ImageView view0 = m_dummyTexture.imageView.get();
+  vk::Sampler sampler0 = m_dummySampler.get();
   if (m_boundTexAddress[0] != 0xFFFFFFFF) {
     auto it = m_vulkanTextures.find(m_boundTexAddress[0]);
     if (it != m_vulkanTextures.end()) {
       auto& tex = it->second;
-      vk::Sampler sampler =
-          GetOrCreateSampler(tex.clampS, tex.clampT, tex.minFilter,
-                             tex.magFilter, m_texLodBias[0],
-                             m_texMipMapMode[0], m_texLodBlend[0]);
-      reqDescSet = GetOrCreateDescriptorSet(tex.imageView.get(), sampler);
+      view0 = tex.imageView.get();
+      sampler0 = GetOrCreateSampler(tex.clampS, tex.clampT, tex.minFilter,
+                                    tex.magFilter, m_texLodBias[0],
+                                    m_texMipMapMode[0], m_texLodBlend[0]);
     }
   }
+
+  vk::ImageView view1 = m_dummyTexture.imageView.get();
+  vk::Sampler sampler1 = m_dummySampler.get();
+  if (m_boundTexAddress[1] != 0xFFFFFFFF) {
+    auto it = m_vulkanTextures.find(m_boundTexAddress[1]);
+    if (it != m_vulkanTextures.end()) {
+      auto& tex = it->second;
+      view1 = tex.imageView.get();
+      sampler1 = GetOrCreateSampler(tex.clampS, tex.clampT, tex.minFilter,
+                                    tex.magFilter, m_texLodBias[1],
+                                    m_texMipMapMode[1], m_texLodBlend[1]);
+    }
+  }
+
+  vk::DescriptorSet reqDescSet = GetOrCreateDescriptorSet(view0, sampler0, view1, sampler1);
 
   // 2. Check if we need to flush the active batch
   bool stateChanged =
@@ -2647,18 +2682,33 @@ void VulkanBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
   UpdateActivePipelines();
   vk::Pipeline reqPipeline = m_activeTrianglePipeline;
 
-  vk::DescriptorSet reqDescSet = m_dummyDescriptorSet;
+  vk::ImageView view0 = m_dummyTexture.imageView.get();
+  vk::Sampler sampler0 = m_dummySampler.get();
   if (m_boundTexAddress[0] != 0xFFFFFFFF) {
     auto it = m_vulkanTextures.find(m_boundTexAddress[0]);
     if (it != m_vulkanTextures.end()) {
       auto& tex = it->second;
-      vk::Sampler sampler =
-          GetOrCreateSampler(tex.clampS, tex.clampT, tex.minFilter,
-                             tex.magFilter, m_texLodBias[0],
-                             m_texMipMapMode[0], m_texLodBlend[0]);
-      reqDescSet = GetOrCreateDescriptorSet(tex.imageView.get(), sampler);
+      view0 = tex.imageView.get();
+      sampler0 = GetOrCreateSampler(tex.clampS, tex.clampT, tex.minFilter,
+                                    tex.magFilter, m_texLodBias[0],
+                                    m_texMipMapMode[0], m_texLodBlend[0]);
     }
   }
+
+  vk::ImageView view1 = m_dummyTexture.imageView.get();
+  vk::Sampler sampler1 = m_dummySampler.get();
+  if (m_boundTexAddress[1] != 0xFFFFFFFF) {
+    auto it = m_vulkanTextures.find(m_boundTexAddress[1]);
+    if (it != m_vulkanTextures.end()) {
+      auto& tex = it->second;
+      view1 = tex.imageView.get();
+      sampler1 = GetOrCreateSampler(tex.clampS, tex.clampT, tex.minFilter,
+                                    tex.magFilter, m_texLodBias[1],
+                                    m_texMipMapMode[1], m_texLodBlend[1]);
+    }
+  }
+
+  vk::DescriptorSet reqDescSet = GetOrCreateDescriptorSet(view0, sampler0, view1, sampler1);
 
   // 2. Check if we need to flush the active batch
   bool stateChanged =
@@ -2774,8 +2824,7 @@ void VulkanBackend::UploadTexture(uint32_t tmu, uint32_t startAddress,
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   if (!m_initialized || !m_device) return;
 
-  // Only TMU 0 is currently supported in this backend
-  if (tmu != 0) {
+  if (tmu >= 2) {
     GLIDE_LOG(WARN, "Vulkan",
               "UploadTexture ignored for unsupported TMU " << tmu);
     return;
@@ -2958,8 +3007,7 @@ void VulkanBackend::BindTexture(uint32_t tmu, uint32_t startAddress,
 
   if (!m_initialized || !m_device) return;
 
-  // We only support TMU 0 for now (tmu == 0)
-  if (tmu != 0) return;
+  if (tmu >= 2) return;
 
   if (startAddress == 0xFFFFFFFF) return;
 
@@ -3076,7 +3124,10 @@ void VulkanBackend::PopulatePushConstants(PushConstants& pcs) {
     packedFogColor = (a << 24) | (b << 16) | (g << 8) | r;
   }
   pcs.fogColor = packedFogColor;
-  pcs.useTmuOow = (m_stwHintMask & 0x2) ? 1u : 0u;
+  uint32_t useTmuOow = 0;
+  if (m_stwHintMask & 0x2) useTmuOow |= (1u << 0);
+  if (m_stwHintMask & 0x8) useTmuOow |= (1u << 1);
+  pcs.useTmuOow = useTmuOow;
 
   // Pack 64-entry 8-bit fog table into 16 uint32_t values
   for (int i = 0; i < 16; ++i) {
@@ -3101,7 +3152,27 @@ void VulkanBackend::PopulatePushConstants(PushConstants& pcs) {
   pcs.alphaOther = m_alphaCombinerOther;
   pcs.alphaInvert = m_alphaCombinerInvert ? 1u : 0u;
 
-  pcs.textureEnabled = (m_boundTexAddress[0] != 0xFFFFFFFF) ? 1u : 0u;
+  uint32_t textureEnabled = 0;
+  if (m_boundTexAddress[0] != 0xFFFFFFFF) textureEnabled |= (1u << 0);
+  if (m_boundTexAddress[1] != 0xFFFFFFFF) textureEnabled |= (1u << 1);
+  if (m_texCombinerRgbInvert[0])           textureEnabled |= (1u << 2);
+  if (m_texCombinerAlphaInvert[0])         textureEnabled |= (1u << 3);
+  if (m_texCombinerRgbInvert[1])           textureEnabled |= (1u << 4);
+  if (m_texCombinerAlphaInvert[1])         textureEnabled |= (1u << 5);
+  pcs.textureEnabled = textureEnabled;
+
+  uint32_t tmuCombinerModes = 0;
+  // TMU 0
+  tmuCombinerModes |= (m_texCombinerRgbFunc[0] & 0x7) << 0;
+  tmuCombinerModes |= (m_texCombinerRgbFactor[0] & 0xF) << 3;
+  tmuCombinerModes |= (m_texCombinerAlphaFunc[0] & 0x7) << 7;
+  tmuCombinerModes |= (m_texCombinerAlphaFactor[0] & 0xF) << 10;
+  // TMU 1
+  tmuCombinerModes |= (m_texCombinerRgbFunc[1] & 0x7) << 14;
+  tmuCombinerModes |= (m_texCombinerRgbFactor[1] & 0xF) << 17;
+  tmuCombinerModes |= (m_texCombinerAlphaFunc[1] & 0x7) << 21;
+  tmuCombinerModes |= (m_texCombinerAlphaFactor[1] & 0xF) << 24;
+  pcs.tmuCombinerModes = tmuCombinerModes;
 
   // Milestone 10: Chromakey State
   pcs.chromakeyEnabled = m_chromakeyMode;
@@ -3265,8 +3336,9 @@ vk::Sampler VulkanBackend::GetOrCreateSampler(uint32_t clampS, uint32_t clampT,
 }
 
 vk::DescriptorSet VulkanBackend::GetOrCreateDescriptorSet(
-    vk::ImageView imageView, vk::Sampler sampler) {
-  DescriptorKey key{imageView, sampler};
+    vk::ImageView imageView0, vk::Sampler sampler0,
+    vk::ImageView imageView1, vk::Sampler sampler1) {
+  DescriptorKey key{imageView0, sampler0, imageView1, sampler1};
   auto it = m_descriptorCache.find(key);
   if (it != m_descriptorCache.end()) {
     return it->second;
@@ -3278,13 +3350,16 @@ vk::DescriptorSet VulkanBackend::GetOrCreateDescriptorSet(
   auto sets = m_device->allocateDescriptorSets(setAlloc);
   vk::DescriptorSet descriptorSet = sets[0];
 
-  // Update Descriptor Set
-  vk::DescriptorImageInfo descriptorImageInfo(
-      sampler, imageView, vk::ImageLayout::eShaderReadOnlyOptimal);
-  vk::WriteDescriptorSet descriptorWrite(
-      descriptorSet, 0, 0, 1, vk::DescriptorType::eCombinedImageSampler,
-      &descriptorImageInfo, nullptr, nullptr);
-  m_device->updateDescriptorSets(1, &descriptorWrite, 0, nullptr);
+  // Update Descriptor Set for both bindings
+  std::array<vk::DescriptorImageInfo, 2> imageInfos = {
+      vk::DescriptorImageInfo(sampler0, imageView0, vk::ImageLayout::eShaderReadOnlyOptimal),
+      vk::DescriptorImageInfo(sampler1, imageView1, vk::ImageLayout::eShaderReadOnlyOptimal)
+  };
+  std::array<vk::WriteDescriptorSet, 2> descriptorWrites = {
+      vk::WriteDescriptorSet(descriptorSet, 0, 0, 1, vk::DescriptorType::eCombinedImageSampler, &imageInfos[0], nullptr, nullptr),
+      vk::WriteDescriptorSet(descriptorSet, 1, 0, 1, vk::DescriptorType::eCombinedImageSampler, &imageInfos[1], nullptr, nullptr)
+  };
+  m_device->updateDescriptorSets(static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
 
   m_descriptorCache.emplace(key, descriptorSet);
   return descriptorSet;
@@ -3323,7 +3398,7 @@ void VulkanBackend::UploadTexturePartial(uint32_t tmu, uint32_t startAddress,
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   if (!m_initialized || !m_device) return;
 
-  if (tmu != 0) {
+  if (tmu >= 2) {
     GLIDE_LOG(WARN, "Vulkan",
               "UploadTexturePartial ignored for unsupported TMU " << tmu);
     return;

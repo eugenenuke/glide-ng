@@ -22,6 +22,7 @@ struct Glide3VertexLayout {
     int32_t offsetOOW;
     int32_t offsetST0;
     int32_t offsetFog;
+    int32_t offsetST1;
 };
 
 class VertexLayout {
@@ -56,6 +57,7 @@ private:
     int32_t m_offsetOOW{32};
     int32_t m_offsetST0{36};
     int32_t m_offsetFog{-1};
+    int32_t m_offsetST1{-1};
 };
 
 } // namespace GlideWrapper

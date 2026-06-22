@@ -115,6 +115,14 @@ bool s_colorMaskRgb = true;
 bool s_colorMaskAlpha = true;
 static uint32_t s_constantColor = 0xFFFFFFFF;
 
+uint32_t s_clipMinX = 0;
+uint32_t s_clipMinY = 0;
+uint32_t s_clipMaxX = 640;
+uint32_t s_clipMaxY = 480;
+
+bool s_texRgbInvert[2] = {false, false};
+bool s_texAlphaInvert[2] = {false, false};
+
 inline void TransformVertexIfNecessary(GlideWrapper::ModernVertex& mv) {
   // Sanitize inactive parameters to prevent stack garbage from
   // culling/distorting triangles on modern GPUs
@@ -201,6 +209,12 @@ void ResetFrontendState() {
   s_constantColor = 0xFFFFFFFF;
   s_sstOrigin = 0;
   g_inSplash = false;
+  s_clipMinX = 0;
+  s_clipMinY = 0;
+  s_clipMaxX = 640;
+  s_clipMaxY = 480;
+  s_texRgbInvert[0] = s_texRgbInvert[1] = false;
+  s_texAlphaInvert[0] = s_texAlphaInvert[1] = false;
 }
 }  // namespace
 
@@ -265,7 +279,18 @@ struct GlideWrapperState {
   float texLodBias[2];
   uint32_t mipmapMode[2];
   uint32_t lodBlend[2];
+  uint32_t clipMinX;
+  uint32_t clipMinY;
+  uint32_t clipMaxX;
+  uint32_t clipMaxY;
+  int colorMaskRgb;
+  int colorMaskAlpha;
+  int texRgbInvert[2];
+  int texAlphaInvert[2];
 };
+
+static_assert(sizeof(GlideWrapperState) <= 1024,
+              "GlideWrapperState footprint exceeds the 1024-byte client allocation limit!");
 
 FX_ENTRY void FX_CALL grGlideInit(void) {
   ResetFrontendState();
@@ -434,6 +459,12 @@ FX_ENTRY GrContext_t FX_CALL grSstWinOpen(FxU32 hWnd,
 
   s_viewportWidth = static_cast<float>(width);
   s_viewportHeight = static_cast<float>(height);
+  s_clipMinX = 0;
+  s_clipMinY = 0;
+  s_clipMaxX = width;
+  s_clipMaxY = height;
+  s_texRgbInvert[0] = s_texRgbInvert[1] = false;
+  s_texAlphaInvert[0] = s_texAlphaInvert[1] = false;
 
   bool attached = backend->AttachWindow(
       reinterpret_cast<void*>(static_cast<uintptr_t>(hWnd)), width, height,
@@ -854,6 +885,10 @@ FX_ENTRY void FX_CALL grClipWindow(FxU32 minx, FxU32 miny, FxU32 maxx,
   GLIDE_LOG(DEBUG, "Frontend",
             "grClipWindow (Glide 3.x) invoked: "
                 << minx << "," << miny << " to " << maxx << "," << maxy);
+  s_clipMinX = minx;
+  s_clipMinY = miny;
+  s_clipMaxX = maxx;
+  s_clipMaxY = maxy;
   if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
     b->SetClipWindow(minx, miny, maxx, maxy);
   }
@@ -999,6 +1034,16 @@ FX_ENTRY void FX_CALL grGlideGetState(void* state) {
   for (int i = 0; i < 2; ++i) {
     ws->lodBlend[i] = s_lodBlend[i] ? 1 : 0;
   }
+  ws->clipMinX = s_clipMinX;
+  ws->clipMinY = s_clipMinY;
+  ws->clipMaxX = s_clipMaxX;
+  ws->clipMaxY = s_clipMaxY;
+  ws->colorMaskRgb = s_colorMaskRgb ? 1 : 0;
+  ws->colorMaskAlpha = s_colorMaskAlpha ? 1 : 0;
+  for (int i = 0; i < 2; ++i) {
+    ws->texRgbInvert[i] = s_texRgbInvert[i] ? 1 : 0;
+    ws->texAlphaInvert[i] = s_texAlphaInvert[i] ? 1 : 0;
+  }
 }
 
 FX_ENTRY void FX_CALL grGlideSetState(const void* state) {
@@ -1066,6 +1111,16 @@ FX_ENTRY void FX_CALL grGlideSetState(const void* state) {
   for (int i = 0; i < 2; ++i) {
     s_lodBlend[i] = ws->lodBlend[i] != 0;
   }
+  s_clipMinX = ws->clipMinX;
+  s_clipMinY = ws->clipMinY;
+  s_clipMaxX = ws->clipMaxX;
+  s_clipMaxY = ws->clipMaxY;
+  s_colorMaskRgb = ws->colorMaskRgb != 0;
+  s_colorMaskAlpha = ws->colorMaskAlpha != 0;
+  for (int i = 0; i < 2; ++i) {
+    s_texRgbInvert[i] = ws->texRgbInvert[i] != 0;
+    s_texAlphaInvert[i] = ws->texAlphaInvert[i] != 0;
+  }
 
   // Apply states to backend
   if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
@@ -1083,6 +1138,8 @@ FX_ENTRY void FX_CALL grGlideSetState(const void* state) {
     b->SetCullState(s_cullMode);
     b->SetConstantColor(s_constantColor);
     b->SetSstOrigin(s_sstOrigin);
+    b->SetClipWindow(s_clipMinX, s_clipMinY, s_clipMaxX, s_clipMaxY);
+    b->SetColorMask(s_colorMaskRgb, s_colorMaskAlpha);
 
     // Restore color and alpha combiner states
     b->SetCombinerMode(s_colorFunc, s_colorFactor, s_colorLocal, s_colorOther,
@@ -1092,7 +1149,8 @@ FX_ENTRY void FX_CALL grGlideSetState(const void* state) {
     // Restore texture state for both TMUs
     for (uint32_t tmu = 0; tmu < 2; ++tmu) {
       b->SetTexCombinerMode(tmu, s_texRgbFunc[tmu], s_texRgbFactor[tmu],
-                            s_texAlphaFunc[tmu], s_texAlphaFactor[tmu]);
+                            s_texAlphaFunc[tmu], s_texAlphaFactor[tmu],
+                            s_texRgbInvert[tmu], s_texAlphaInvert[tmu]);
       b->BindTexture(tmu, s_boundTex[tmu], s_clampS[tmu], s_clampT[tmu],
                      s_minFilter[tmu], s_magFilter[tmu]);
       b->SetTexChromakeyMode(tmu, s_texChromaState[tmu].mode);
@@ -1157,8 +1215,11 @@ FX_ENTRY void FX_CALL grTexCombine(GrChipID_t tmu, GrCombineFunction_t rgbFnc,
     s_texRgbFactor[tmu] = rgbFactor;
     s_texAlphaFunc[tmu] = alphaFnc;
     s_texAlphaFactor[tmu] = alphaFactor;
+    s_texRgbInvert[tmu] = rgbInvert != 0;
+    s_texAlphaInvert[tmu] = alphaInvert != 0;
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
-      b->SetTexCombinerMode(tmu, rgbFnc, rgbFactor, alphaFnc, alphaFactor);
+      b->SetTexCombinerMode(tmu, rgbFnc, rgbFactor, alphaFnc, alphaFactor,
+                            rgbInvert != 0, alphaInvert != 0);
     }
   }
 }

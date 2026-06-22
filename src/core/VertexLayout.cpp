@@ -38,6 +38,7 @@ void VertexLayout::ResetToGlide2Canonical() {
     m_offsetOOW = 32;
     m_offsetST0 = 36;
     m_offsetFog = -1;
+    m_offsetST1 = 48;
 }
 
 void VertexLayout::ResetToGlide3Canonical() {
@@ -50,6 +51,7 @@ void VertexLayout::ResetToGlide3Canonical() {
     m_offsetA   = 28;
     m_offsetST0 = 36;
     m_offsetFog = -1;
+    m_offsetST1 = -1;
 }
 
 void VertexLayout::SetParamOffset(uint32_t param, int32_t offset, uint32_t mode) {
@@ -65,6 +67,7 @@ void VertexLayout::SetParamOffsetGlide2(uint32_t param, int32_t offset, uint32_t
         case 4: m_offsetRGB = offset; break; // GR_PARAM_RGB
         case 5: m_offsetA   = offset; break; // GR_PARAM_A
         case 6: m_offsetST0 = offset; break; // GR_PARAM_ST0
+        case 7: m_offsetST1 = offset; break; // GR_PARAM_ST1
         default: break;
     }
 }
@@ -80,6 +83,7 @@ void VertexLayout::SetParamOffsetGlide3(uint32_t param, int32_t offset, uint32_t
         case 0x10: m_offsetA   = offset; break; // GR_PARAM_A
         case 0x20: m_offsetRGB = offset; break; // GR_PARAM_RGB
         case 0x40: m_offsetST0 = offset; break; // GR_PARAM_ST0
+        case 0x41: m_offsetST1 = offset; break; // GR_PARAM_ST1
         default: break;
     }
 }
@@ -183,6 +187,23 @@ ModernVertex VertexLayout::DecodeVertex(const void* gameVertex) const {
         }
     }
 
+    // Parse TMU1 Texture Coordinates (S, T)
+    if (m_offsetST1 >= 0) {
+        float s = 0.0f; float t = 0.0f;
+        std::memcpy(&s, rawBytes + m_offsetST1, sizeof(float));
+        std::memcpy(&t, rawBytes + m_offsetST1 + sizeof(float), sizeof(float));
+        v.tex[2] = s;
+        v.tex[3] = t;
+
+        if (m_stwHintMask & 0x8) { // GR_STWHINT_W_DIFF_TMU1
+            float oow1 = 1.0f;
+            std::memcpy(&oow1, rawBytes + m_offsetST1 + 2 * sizeof(float), sizeof(float));
+            v.tmu_oow[1] = oow1;
+        } else {
+            v.tmu_oow[1] = 1.0f;
+        }
+    }
+
     // Parse Custom Fog Coordinate
     if (m_offsetFog >= 0) {
         float fog = 0.0f;
@@ -205,6 +226,7 @@ void VertexLayout::GetLayoutState(void* layoutState) const {
     state->offsetOOW = m_offsetOOW;
     state->offsetST0 = m_offsetST0;
     state->offsetFog = m_offsetFog;
+    state->offsetST1 = m_offsetST1;
 }
 
 void VertexLayout::SetLayoutState(const void* layoutState) {
@@ -219,6 +241,7 @@ void VertexLayout::SetLayoutState(const void* layoutState) {
     m_offsetOOW = state->offsetOOW;
     m_offsetST0 = state->offsetST0;
     m_offsetFog = state->offsetFog;
+    m_offsetST1 = state->offsetST1;
 }
 
 } // namespace GlideWrapper

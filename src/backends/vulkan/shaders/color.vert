@@ -36,7 +36,7 @@ layout(push_constant) uniform PushConstants {
     uint chromakeyValue;
     uint chromakeyRangeMin;
     uint chromakeyRangeMax;
-    uint texChromaEnabled0;
+    uint padding_fog;
 
     // Block 4: Offset 64 (64 bytes)
     uvec4 fogTable[4];
@@ -57,19 +57,17 @@ layout(push_constant) uniform PushConstants {
     uint alphaOther;
     uint alphaInvert;
     uint textureEnabled;
-    uint texChromaEnabled1;
+    uint tmuCombinerModes; // Renamed from padding_tmu
 
     // Block 8: Offset 176 (16 bytes)
-    uint texChromaRangeMode0;
-    uint texChromaRangeMode1;
-    uint texChromaMin0;
-    uint texChromaMin1;
+    uint texChromaEnabled[2];
+    uint texChromaRangeMode[2];
 
-    // Block 9: Offset 192 (16 bytes)
-    uint texChromaMax0;
-    uint texChromaMax1;
-    uint padding0;
-    uint padding1;
+    // Block 9: Offset 192 (32 bytes)
+    vec4 texChromaMin[2];
+
+    // Block 10: Offset 224 (32 bytes)
+    vec4 texChromaMax[2];
 } pcs;
 
 void main() {

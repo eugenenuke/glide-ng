@@ -137,6 +137,12 @@ class OpenGLESBackend : public SoftwareBackendBase {
   int m_uTexChromaMinLoc{-1};
   int m_uTexChromaMaxLoc{-1};
   int m_uTexLodBiasLoc{-1};
+  int m_uTexRgbFuncLoc{-1};
+  int m_uTexRgbFactorLoc{-1};
+  int m_uTexAlphaFuncLoc{-1};
+  int m_uTexAlphaFactorLoc{-1};
+  int m_uTexRgbInvertLoc{-1};
+  int m_uTexAlphaInvertLoc{-1};
 };
 
 }  // namespace GlideWrapper
