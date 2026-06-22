@@ -150,10 +150,10 @@ int main(int argc, char* argv[]) {
         Tools::SafePrintf("TMU 1 Texture: %s\n", s_enableTMU1 ? "ENABLED" : "DISABLED");
       } else if (key == 'c' || key == 'C') {
         s_useClipWindow = !s_useClipWindow;
-        Tools::SafePrintf("Custom Clip Window: %s\n", s_useClipWindow ? "ENABLED" : "DISABLED");
+        Tools::SafePrintf("Custom Clip Window (Cropped Center): %s\n", s_useClipWindow ? "ENABLED" : "DISABLED");
       } else if (key == 'm' || key == 'M') {
         s_useColorMask = !s_useColorMask;
-        Tools::SafePrintf("Custom Color Mask (Red Only): %s\n", s_useColorMask ? "ENABLED" : "DISABLED");
+        Tools::SafePrintf("Color Write Mask (RGB Off): %s\n", s_useColorMask ? "ENABLED" : "DISABLED");
       }
     }
 
@@ -164,13 +164,14 @@ int main(int argc, char* argv[]) {
     // -------------------------------------------------------------------------
     // Set custom states
     if (s_useClipWindow) {
-      grClipWindow(80, 60, static_cast<FxU32>(s_screenWidth - 80), static_cast<FxU32>(s_screenHeight - 60));
+      // Cropped center clip window that intersects the quad
+      grClipWindow(200, 150, static_cast<FxU32>(s_screenWidth - 200), static_cast<FxU32>(s_screenHeight - 150));
     } else {
       grClipWindow(0, 0, static_cast<FxU32>(s_screenWidth), static_cast<FxU32>(s_screenHeight));
     }
 
     if (s_useColorMask) {
-      grColorMask(FXTRUE, FXFALSE); // Red only!
+      grColorMask(FXFALSE, FXTRUE); // Disable RGB color writes entirely!
     } else {
       grColorMask(FXTRUE, FXTRUE);  // Full RGB!
     }
