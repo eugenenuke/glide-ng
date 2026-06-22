@@ -2653,3 +2653,149 @@ TEST_CASE("Glide 3.x Software Reference Backend Multi-Texturing Parity", "[Glide
     ::dlclose(handle);
 }
 
+struct MockGlideWrapperState {
+  uint32_t depthMode;
+  uint32_t depthCompare;
+  int depthMask;
+  int32_t depthBias;
+  uint32_t alphaTestOp;
+  uint32_t alphaTestRef;
+  uint32_t clampS[2];
+  uint32_t clampT[2];
+  uint32_t minFilter[2];
+  uint32_t magFilter[2];
+  uint32_t colorFunc;
+  uint32_t colorFactor;
+  uint32_t colorLocal;
+  uint32_t colorOther;
+  int colorInvert;
+  uint32_t alphaFunc;
+  uint32_t alphaFactor;
+  uint32_t alphaLocal;
+  uint32_t alphaOther;
+  int alphaInvert;
+  uint32_t texRgbFunc[2];
+  uint32_t texRgbFactor[2];
+  uint32_t texAlphaFunc[2];
+  uint32_t texAlphaFactor[2];
+  uint32_t boundTex[2];
+  uint32_t coordSpace;
+  float viewportX;
+  float viewportY;
+  float viewportWidth;
+  float viewportHeight;
+  float depthRangeNear;
+  float depthRangeFar;
+  int aaOrdered;
+  int shamelessPlug;
+  uint8_t lfbConstantAlpha;
+  uint32_t lfbWriteColorFormat;
+  uint32_t chromakeyMode;
+  uint32_t chromakeyValue;
+  uint32_t chromakeyRangeMin;
+  uint32_t chromakeyRangeMax;
+  uint32_t chromakeyRangeMode;
+  struct {
+    int mode;
+    uint32_t minColor;
+    uint32_t maxColor;
+  } texChromaState[2];
+  uint32_t rgbSrcBlend;
+  uint32_t rgbDstBlend;
+  uint32_t alphaSrcBlend;
+  uint32_t alphaDstBlend;
+  uint32_t fogMode;
+  uint32_t fogColor;
+  uint8_t fogTable[64];
+  uint32_t cullMode;
+  uint32_t constantColor;
+  uint32_t sstOrigin;
+  float texLodBias[2];
+  uint32_t mipmapMode[2];
+  int lodBlend[2];
+  uint32_t clipMinX;
+  uint32_t clipMinY;
+  uint32_t clipMaxX;
+  uint32_t clipMaxY;
+  int colorMaskRgb;
+  int colorMaskAlpha;
+  int texRgbInvert[2];
+  int texAlphaInvert[2];
+};
+
+TEST_CASE("Glide 3.x State Restoration Sanitization [VULN-01]", "[Glide3][State]") {
+#ifdef __linux__
+    void* handle = OpenGlide3Handle();
+    REQUIRE(handle != nullptr);
+
+    auto glideInit    = reinterpret_cast<void(*)(void)>(::dlsym(handle, "grGlideInit"));
+    auto sstSelect    = reinterpret_cast<void(*)(int)>(::dlsym(handle, "grSstSelect"));
+    auto winOpen      = reinterpret_cast<FxU32(*)(FxU32, GrScreenResolution_t, GrScreenRefresh_t, GrColorFormat_t, GrOriginLocation_t, int, int)>(::dlsym(handle, "grSstWinOpen"));
+    auto getState     = reinterpret_cast<void(*)(void*)>(::dlsym(handle, "grGlideGetState"));
+    auto setState     = reinterpret_cast<void(*)(const void*)>(::dlsym(handle, "grGlideSetState"));
+    auto winClose     = reinterpret_cast<FxBool(*)(FxU32)>(::dlsym(handle, "grSstWinClose"));
+    auto glideShutdown = reinterpret_cast<void(*)(void)>(::dlsym(handle, "grGlideShutdown"));
+
+    REQUIRE(glideInit != nullptr);
+    REQUIRE(winOpen != nullptr);
+    REQUIRE(getState != nullptr);
+    REQUIRE(setState != nullptr);
+
+    glideInit();
+    if (sstSelect) sstSelect(0);
+    FxU32 ctx = winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz, GR_COLORFORMAT_ABGR, GR_ORIGIN_UPPER_LEFT, 2, 1);
+    REQUIRE(ctx != 0);
+
+    // Get current state
+    std::vector<uint8_t> stateBuffer(sizeof(MockGlideWrapperState), 0);
+    getState(stateBuffer.data());
+
+    auto* statePtr = reinterpret_cast<MockGlideWrapperState*>(stateBuffer.data());
+
+    // Verify initial values
+    REQUIRE(statePtr->cullMode == 0); // GR_CULL_DISABLE
+
+    // Corrupt state values with out-of-range enums and values
+    statePtr->cullMode = 999;        // invalid (valid range is 0..2)
+    statePtr->depthCompare = 888;    // invalid (valid range is 0..7)
+    statePtr->alphaTestOp = 777;     // invalid (valid range is 0..7)
+    statePtr->rgbSrcBlend = 666;     // invalid (valid range is 0..10)
+    statePtr->rgbDstBlend = 555;     // invalid (valid range is 0..10)
+    statePtr->clampS[0] = 444;       // invalid (valid range is 0..2)
+    statePtr->clipMaxX = 99999;      // invalid (exceeds window width 640)
+
+    // Restore state using mutated buffer.
+    // The wrapper must sanitize all these values to prevent corruption!
+    setState(stateBuffer.data());
+
+    // Read back state again to verify that sanitization took place!
+    std::vector<uint8_t> checkBuffer(sizeof(MockGlideWrapperState), 0);
+    getState(checkBuffer.data());
+
+    auto* checkPtr = reinterpret_cast<MockGlideWrapperState*>(checkBuffer.data());
+
+    // Cull mode must be sanitized to default (0 - GR_CULL_DISABLE)
+    REQUIRE(checkPtr->cullMode == 0);
+
+    // Depth compare must be sanitized to default (1 - GR_CMP_LESS)
+    REQUIRE(checkPtr->depthCompare == 1);
+
+    // Alpha test op must be sanitized to default (7 - GR_CMP_ALWAYS)
+    REQUIRE(checkPtr->alphaTestOp == 7);
+
+    // Blend modes must be sanitized to default (src=1, dst=0)
+    REQUIRE(checkPtr->rgbSrcBlend == 1);
+    REQUIRE(checkPtr->rgbDstBlend == 0);
+
+    // Clamp mode must be sanitized to default (0 - GR_TEXTURECLAMP_WRAP)
+    REQUIRE(checkPtr->clampS[0] == 0);
+
+    // Clip boundaries must be clamped to window width (640)
+    REQUIRE(checkPtr->clipMaxX == 640);
+
+    winClose(ctx);
+    glideShutdown();
+    ::dlclose(handle);
+#endif
+}
+

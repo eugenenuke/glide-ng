@@ -1063,16 +1063,22 @@ FX_ENTRY void FX_CALL grGlideSetState(const void* state) {
   GLIDE_LOG(DEBUG, "Frontend", "grGlideSetState (Glide 3.x) invoked.");
   if (!state) return;
   auto* ws = reinterpret_cast<const GlideWrapperState*>(state);
-  s_depthMode = ws->depthMode;
-  s_depthCompare = ws->depthCompare;
+
+  // VULN-01: Sanitize all restored state enums and boundaries to prevent out-of-range memory corruption
+  s_depthMode = (ws->depthMode > 3) ? 0 : ws->depthMode;
+  s_depthCompare = (ws->depthCompare > 7) ? 1 : ws->depthCompare; // GR_CMP_LESS
   s_depthMask = ws->depthMask != 0;
   s_depthBias = ws->depthBias;
-  s_alphaTestOp = ws->alphaTestOp;
+  s_alphaTestOp = (ws->alphaTestOp > 7) ? 7 : ws->alphaTestOp; // GR_CMP_ALWAYS
   s_alphaTestRef = ws->alphaTestRef;
-  std::memcpy(s_clampS, ws->clampS, sizeof(s_clampS));
-  std::memcpy(s_clampT, ws->clampT, sizeof(s_clampT));
+
+  for (int i = 0; i < 2; ++i) {
+    s_clampS[i] = (ws->clampS[i] > 2) ? 0 : ws->clampS[i];
+    s_clampT[i] = (ws->clampT[i] > 2) ? 0 : ws->clampT[i];
+  }
   std::memcpy(s_minFilter, ws->minFilter, sizeof(s_minFilter));
   std::memcpy(s_magFilter, ws->magFilter, sizeof(s_magFilter));
+
   s_colorFunc = ws->colorFunc;
   s_colorFactor = ws->colorFactor;
   s_colorLocal = ws->colorLocal;
@@ -1088,6 +1094,7 @@ FX_ENTRY void FX_CALL grGlideSetState(const void* state) {
   std::memcpy(s_texAlphaFunc, ws->texAlphaFunc, sizeof(s_texAlphaFunc));
   std::memcpy(s_texAlphaFactor, ws->texAlphaFactor, sizeof(s_texAlphaFactor));
   std::memcpy(s_boundTex, ws->boundTex, sizeof(s_boundTex));
+
   s_coordSpace = ws->coordSpace;
   s_viewportX = ws->viewportX;
   s_viewportY = ws->viewportY;
@@ -1109,25 +1116,36 @@ FX_ENTRY void FX_CALL grGlideSetState(const void* state) {
     s_texChromaState[i].minColor = ws->texChromaState[i].minColor;
     s_texChromaState[i].maxColor = ws->texChromaState[i].maxColor;
   }
-  s_rgbSrcBlend = ws->rgbSrcBlend;
-  s_rgbDstBlend = ws->rgbDstBlend;
-  s_alphaSrcBlend = ws->alphaSrcBlend;
-  s_alphaDstBlend = ws->alphaDstBlend;
+
+  s_rgbSrcBlend = (ws->rgbSrcBlend > 10) ? 1 : ws->rgbSrcBlend; // GR_BLEND_ONE
+  s_rgbDstBlend = (ws->rgbDstBlend > 10) ? 0 : ws->rgbDstBlend; // GR_BLEND_ZERO
+  s_alphaSrcBlend = (ws->alphaSrcBlend > 10) ? 1 : ws->alphaSrcBlend;
+  s_alphaDstBlend = (ws->alphaDstBlend > 10) ? 0 : ws->alphaDstBlend;
+
   s_fogMode = ws->fogMode;
   s_fogColor = ws->fogColor;
   std::memcpy(s_fogTable, ws->fogTable, sizeof(s_fogTable));
-  s_cullMode = ws->cullMode;
+  s_cullMode = (ws->cullMode > 2) ? 0 : ws->cullMode; // GR_CULL_DISABLE
   s_constantColor = ws->constantColor;
-  s_sstOrigin = ws->sstOrigin;
+  s_sstOrigin = (ws->sstOrigin > 1) ? 0 : ws->sstOrigin;
   std::memcpy(s_texLodBias, ws->texLodBias, sizeof(s_texLodBias));
   std::memcpy(s_mipmapMode, ws->mipmapMode, sizeof(s_mipmapMode));
   for (int i = 0; i < 2; ++i) {
     s_lodBlend[i] = ws->lodBlend[i] != 0;
   }
-  s_clipMinX = ws->clipMinX;
-  s_clipMinY = ws->clipMinY;
-  s_clipMaxX = ws->clipMaxX;
-  s_clipMaxY = ws->clipMaxY;
+
+  // Get active window size to clamp clip boundaries safely
+  uint32_t winWidth = 640;
+  uint32_t winHeight = 480;
+  if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
+    winWidth = b->GetWidth();
+    winHeight = b->GetHeight();
+  }
+  s_clipMinX = std::max(0u, std::min(ws->clipMinX, winWidth));
+  s_clipMinY = std::max(0u, std::min(ws->clipMinY, winHeight));
+  s_clipMaxX = std::max(s_clipMinX, std::min(ws->clipMaxX, winWidth));
+  s_clipMaxY = std::max(s_clipMinY, std::min(ws->clipMaxY, winHeight));
+
   s_colorMaskRgb = ws->colorMaskRgb != 0;
   s_colorMaskAlpha = ws->colorMaskAlpha != 0;
   for (int i = 0; i < 2; ++i) {
