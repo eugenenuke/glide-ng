@@ -802,6 +802,14 @@ FX_ENTRY void FX_CALL grDrawVertexArrayLinear(FxU32 mode, FxU32 count,
   if (!pointers || count == 0 || stride == 0) return;
 
   auto& layout = GlideWrapper::VertexLayout::GetInstance();
+  int32_t maxOffset = layout.GetMaxActiveOffset();
+  if (static_cast<int32_t>(stride) < maxOffset) {
+    GLIDE_LOG(WARN, "Frontend",
+              "grDrawVertexArrayLinear: stride (" << stride << ") is smaller than maximum active layout offset ("
+                                                 << maxOffset << "). Rejecting draw call to prevent buffer overflow.");
+    return;
+  }
+
   const char* rawBytes = static_cast<const char*>(pointers);
 
   std::vector<GlideWrapper::ModernVertex> vertices(count);

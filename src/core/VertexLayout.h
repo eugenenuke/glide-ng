@@ -59,6 +59,7 @@ public:
     uint32_t GetSTWHintMask() const { return m_stwHintMask; }
 
     ModernVertex DecodeVertex(const void* gameVertex) const;
+    int32_t GetMaxActiveOffset() const;
 
 private:
     VertexLayout();

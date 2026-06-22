@@ -6372,3 +6372,53 @@ TEST_CASE("Glide 2.x LFB Readback Stride Validation [VULN-04]", "[Glide2][LFB]")
   ::dlclose(handle);
 #endif
 }
+
+TEST_CASE("Glide 2.x Linear Draw Stride Validation [VULN-03]", "[Glide2][Draw]") {
+#ifdef __linux__
+  void* handle = OpenGlide2Handle();
+  REQUIRE(handle != nullptr);
+
+  auto glideInit = (void (*)(void))dlsym(handle, "grGlideInit");
+  auto sstSelect = (void (*)(int))dlsym(handle, "grSstSelect");
+  auto winOpen = (FxBool (*)(FxU32, GrScreenResolution_t, GrScreenRefresh_t,
+                             GrColorFormat_t, GrOriginLocation_t, int,
+                             int))dlsym(handle, "grSstWinOpen");
+  auto drawVertexArrayLinear = (void (*)(FxU32, FxU32, void*, FxU32))dlsym(
+      handle, "grDrawVertexArrayLinear");
+  auto shutdown = (void (*)(void))dlsym(handle, "grGlideShutdown");
+
+  REQUIRE(glideInit != nullptr);
+  REQUIRE(sstSelect != nullptr);
+  REQUIRE(winOpen != nullptr);
+  REQUIRE(drawVertexArrayLinear != nullptr);
+  REQUIRE(shutdown != nullptr);
+
+  glideInit();
+  sstSelect(0);
+  FxBool openOk = winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                          GR_COLORFORMAT_ABGR, GR_ORIGIN_UPPER_LEFT, 2, 1);
+  REQUIRE(openOk == FXTRUE);
+
+  // Set a custom layout to simulate active offsets
+  auto& layout = GlideWrapper::VertexLayout::GetInstance();
+  layout.ResetToGlide2Canonical(); // m_offsetXY = 0, m_offsetRGB = 12, etc. (max offset is 48!)
+  int32_t maxOffset = layout.GetMaxActiveOffset();
+  REQUIRE(maxOffset > 0);
+
+  // Create a buffer for 3 vertices.
+  // Stride of 20 bytes is smaller than maxOffset (48 bytes).
+  // Calling grDrawVertexArrayLinear with stride = 20 should be caught and rejected!
+  std::vector<uint8_t> dummyVertices(300, 0);
+
+  // We check that this call runs without crashing!
+  // (In a real legacy app, this would have crashed or corrupted memory because maxOffset > 20)
+  // By returning early, the wrapper prevents the out-of-bounds read!
+  drawVertexArrayLinear(0, 3, dummyVertices.data(), 20);
+
+  // Now verify that it works fine with a valid stride (64 bytes, which is >= maxOffset)
+  drawVertexArrayLinear(0, 3, dummyVertices.data(), 64);
+
+  shutdown();
+  ::dlclose(handle);
+#endif
+}

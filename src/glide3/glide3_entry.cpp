@@ -632,8 +632,16 @@ FX_ENTRY void FX_CALL grDrawVertexArrayContiguous(FxU32 mode, FxU32 count,
                 << mode << ", count=" << count << ", stride=" << stride);
   if (!pointers || count < 3 || stride == 0) return;
 
-  GLIDE_PROFILE_SCOPE("API::grDrawVertexArrayContiguous");
   auto& layout = GlideWrapper::VertexLayout::GetInstance();
+  int32_t maxOffset = layout.GetMaxActiveOffset();
+  if (static_cast<int32_t>(stride) < maxOffset) {
+    GLIDE_LOG(WARN, "Frontend",
+              "grDrawVertexArrayContiguous: stride (" << stride << ") is smaller than maximum active layout offset ("
+                                                     << maxOffset << "). Rejecting draw call to prevent buffer overflow.");
+    return;
+  }
+
+  GLIDE_PROFILE_SCOPE("API::grDrawVertexArrayContiguous");
   const char* rawBytes = static_cast<const char*>(pointers);
 
   std::vector<GlideWrapper::ModernVertex> vertices(count);

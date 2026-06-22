@@ -429,4 +429,26 @@ void VertexLayout::SetLayoutState(const void* layoutState) {
   }
 }
 
+int32_t VertexLayout::GetMaxActiveOffset() const {
+  int32_t maxOffset = -1;
+
+  if (m_offsetXY >= 0) maxOffset = std::max(maxOffset, m_offsetXY + 8);
+  if (m_offsetZ >= 0) maxOffset = std::max(maxOffset, m_offsetZ + 4);
+  if (m_offsetRGB >= 0) maxOffset = std::max(maxOffset, m_offsetRGB + 12);
+  if (m_offsetOOZ >= 0) maxOffset = std::max(maxOffset, m_offsetOOZ + 4);
+  if (m_offsetA >= 0) maxOffset = std::max(maxOffset, m_offsetA + 4);
+  if (m_offsetOOW >= 0) maxOffset = std::max(maxOffset, m_offsetOOW + 4);
+  if (m_offsetST0 >= 0) {
+    int32_t size = (m_stwHintMask & 0x2) ? 12 : 8;
+    maxOffset = std::max(maxOffset, m_offsetST0 + size);
+  }
+  if (m_offsetST1 >= 0) {
+    int32_t size = (m_stwHintMask & 0x8) ? 12 : 8;
+    maxOffset = std::max(maxOffset, m_offsetST1 + size);
+  }
+  if (m_offsetFog >= 0) maxOffset = std::max(maxOffset, m_offsetFog + 4);
+
+  return maxOffset;
+}
+
 }  // namespace GlideWrapper
