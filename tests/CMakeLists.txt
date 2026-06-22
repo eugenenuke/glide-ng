@@ -1,7 +1,7 @@
 # --- Glide 2.x Test Suite ---
 add_executable(Glide2xWrapperTests
     test_architecture.cpp
-    "${CMAKE_CURRENT_SOURCE_DIR}/../refs/3dfx-Glide-API/glide2x/cvg/glide/tests/tlib.c"
+    tlib2_patched.c
     "${CMAKE_CURRENT_SOURCE_DIR}/../refs/3dfx-Glide-API/swlibs/fxmisc/linutil.c"
 )
 
@@ -26,7 +26,7 @@ target_link_libraries(Glide2xWrapperTests PRIVATE
 # --- Glide 3.x Test Suite ---
 add_executable(Glide3xWrapperTests
     test_glide3.cpp
-    "${CMAKE_CURRENT_SOURCE_DIR}/../refs/3dfx-Glide-API/glide3x/cvg/glide3/tests/tlib.c"
+    tlib3_patched.c
     "${CMAKE_CURRENT_SOURCE_DIR}/../refs/3dfx-Glide-API/swlibs/fxmisc/linutil.c"
 )
 

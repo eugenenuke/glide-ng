@@ -35,7 +35,7 @@ struct PushConstants {
   uint32_t chromakeyValue;     // Packed RGBA
   uint32_t chromakeyRangeMin;  // Packed RGBA
   uint32_t chromakeyRangeMax;  // Packed RGBA
-  uint32_t padding_fog;
+  uint32_t tmuCombinerModes1;
 
   // Block 4: Offset 64 (64 bytes)
   uint32_t
@@ -57,7 +57,7 @@ struct PushConstants {
   uint32_t alphaOther;
   uint32_t alphaInvert;
   uint32_t textureEnabled;
-  uint32_t tmuCombinerModes;
+  uint32_t tmuCombinerModes0;
 
   // Block 8: Offset 176 (16 bytes)
   uint32_t texChromaEnabled[2];    // TMU0/TMU1 chromakey enabled
@@ -136,10 +136,14 @@ struct DescriptorKeyHash {
     auto combine = [&h](std::size_t val) {
       h ^= val + 0x9e3779b9 + (h << 6) + (h >> 2);
     };
-    combine(reinterpret_cast<std::uintptr_t>(static_cast<VkImageView>(k.imageView0)));
-    combine(reinterpret_cast<std::uintptr_t>(static_cast<VkSampler>(k.sampler0)));
-    combine(reinterpret_cast<std::uintptr_t>(static_cast<VkImageView>(k.imageView1)));
-    combine(reinterpret_cast<std::uintptr_t>(static_cast<VkSampler>(k.sampler1)));
+    combine(reinterpret_cast<std::uintptr_t>(
+        static_cast<VkImageView>(k.imageView0)));
+    combine(
+        reinterpret_cast<std::uintptr_t>(static_cast<VkSampler>(k.sampler0)));
+    combine(reinterpret_cast<std::uintptr_t>(
+        static_cast<VkImageView>(k.imageView1)));
+    combine(
+        reinterpret_cast<std::uintptr_t>(static_cast<VkSampler>(k.sampler1)));
     return h;
   }
 };

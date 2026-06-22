@@ -126,10 +126,14 @@ bool VulkanBackend::Initialize(const WrapperConfig& config) {
 
   // Create descriptor set layout
   std::array<vk::DescriptorSetLayoutBinding, 2> bindings = {
-      vk::DescriptorSetLayoutBinding(0, vk::DescriptorType::eCombinedImageSampler, 1, vk::ShaderStageFlagBits::eFragment, nullptr),
-      vk::DescriptorSetLayoutBinding(1, vk::DescriptorType::eCombinedImageSampler, 1, vk::ShaderStageFlagBits::eFragment, nullptr)
-  };
-  vk::DescriptorSetLayoutCreateInfo layoutInfo({}, static_cast<uint32_t>(bindings.size()), bindings.data());
+      vk::DescriptorSetLayoutBinding(
+          0, vk::DescriptorType::eCombinedImageSampler, 1,
+          vk::ShaderStageFlagBits::eFragment, nullptr),
+      vk::DescriptorSetLayoutBinding(
+          1, vk::DescriptorType::eCombinedImageSampler, 1,
+          vk::ShaderStageFlagBits::eFragment, nullptr)};
+  vk::DescriptorSetLayoutCreateInfo layoutInfo(
+      {}, static_cast<uint32_t>(bindings.size()), bindings.data());
   m_descriptorSetLayout = m_device->createDescriptorSetLayoutUnique(layoutInfo);
 
   // Create descriptor pool
@@ -235,14 +239,22 @@ bool VulkanBackend::Initialize(const WrapperConfig& config) {
     m_dummyDescriptorSet = sets[0];
 
     std::array<vk::DescriptorImageInfo, 2> imageInfos = {
-        vk::DescriptorImageInfo(m_dummySampler.get(), m_dummyTexture.imageView.get(), vk::ImageLayout::eShaderReadOnlyOptimal),
-        vk::DescriptorImageInfo(m_dummySampler.get(), m_dummyTexture.imageView.get(), vk::ImageLayout::eShaderReadOnlyOptimal)
-    };
+        vk::DescriptorImageInfo(m_dummySampler.get(),
+                                m_dummyTexture.imageView.get(),
+                                vk::ImageLayout::eShaderReadOnlyOptimal),
+        vk::DescriptorImageInfo(m_dummySampler.get(),
+                                m_dummyTexture.imageView.get(),
+                                vk::ImageLayout::eShaderReadOnlyOptimal)};
     std::array<vk::WriteDescriptorSet, 2> descriptorWrites = {
-        vk::WriteDescriptorSet(m_dummyDescriptorSet, 0, 0, 1, vk::DescriptorType::eCombinedImageSampler, &imageInfos[0], nullptr, nullptr),
-        vk::WriteDescriptorSet(m_dummyDescriptorSet, 1, 0, 1, vk::DescriptorType::eCombinedImageSampler, &imageInfos[1], nullptr, nullptr)
-    };
-    m_device->updateDescriptorSets(static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
+        vk::WriteDescriptorSet(m_dummyDescriptorSet, 0, 0, 1,
+                               vk::DescriptorType::eCombinedImageSampler,
+                               &imageInfos[0], nullptr, nullptr),
+        vk::WriteDescriptorSet(m_dummyDescriptorSet, 1, 0, 1,
+                               vk::DescriptorType::eCombinedImageSampler,
+                               &imageInfos[1], nullptr, nullptr)};
+    m_device->updateDescriptorSets(
+        static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(),
+        0, nullptr);
 
     GLIDE_LOG(INFO, "Vulkan", "Created 1x1 dummy white texture.");
   }
@@ -306,6 +318,27 @@ void VulkanBackend::Shutdown() {
   m_depthImageView.reset();
   m_depthImageMemory.reset();
   m_depthImage.reset();
+
+  // Explicitly destroy MSAA resources
+  for (int i = 0; i < 2; ++i) {
+    m_msaaColorImageViews[i].reset();
+    m_msaaColorImageMemories[i].reset();
+    m_msaaColorImages[i].reset();
+  }
+  m_msaaDepthImageView.reset();
+  m_msaaDepthImageMemory.reset();
+  m_msaaDepthImage.reset();
+
+  // Explicitly destroy Swapchain and Presentation Surface resources
+  m_swapchainImageViews.clear();
+  m_swapchain.reset();
+  m_surface.reset();
+
+  // Explicitly destroy presentation synchronization semaphores
+  for (int i = 0; i < 2; ++i) {
+    m_imageAvailableSemaphores[i].reset();
+    m_renderFinishedSemaphores[i].reset();
+  }
 
   // 2.5. Save persistent Vulkan pipeline cache back to disk!
   if (m_device && m_vkPipelineCache) {
@@ -2533,7 +2566,8 @@ void VulkanBackend::DrawPoint(const ModernVertex& pt) {
     }
   }
 
-  vk::DescriptorSet reqDescSet = GetOrCreateDescriptorSet(view0, sampler0, view1, sampler1);
+  vk::DescriptorSet reqDescSet =
+      GetOrCreateDescriptorSet(view0, sampler0, view1, sampler1);
 
   // 2. Check if we need to flush the active batch
   bool stateChanged =
@@ -2618,7 +2652,8 @@ void VulkanBackend::DrawLine(const ModernVertex& v1, const ModernVertex& v2) {
     }
   }
 
-  vk::DescriptorSet reqDescSet = GetOrCreateDescriptorSet(view0, sampler0, view1, sampler1);
+  vk::DescriptorSet reqDescSet =
+      GetOrCreateDescriptorSet(view0, sampler0, view1, sampler1);
 
   // 2. Check if we need to flush the active batch
   bool stateChanged =
@@ -2708,7 +2743,8 @@ void VulkanBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
     }
   }
 
-  vk::DescriptorSet reqDescSet = GetOrCreateDescriptorSet(view0, sampler0, view1, sampler1);
+  vk::DescriptorSet reqDescSet =
+      GetOrCreateDescriptorSet(view0, sampler0, view1, sampler1);
 
   // 2. Check if we need to flush the active batch
   bool stateChanged =
@@ -3155,24 +3191,27 @@ void VulkanBackend::PopulatePushConstants(PushConstants& pcs) {
   uint32_t textureEnabled = 0;
   if (m_boundTexAddress[0] != 0xFFFFFFFF) textureEnabled |= (1u << 0);
   if (m_boundTexAddress[1] != 0xFFFFFFFF) textureEnabled |= (1u << 1);
-  if (m_texCombinerRgbInvert[0])           textureEnabled |= (1u << 2);
-  if (m_texCombinerAlphaInvert[0])         textureEnabled |= (1u << 3);
-  if (m_texCombinerRgbInvert[1])           textureEnabled |= (1u << 4);
-  if (m_texCombinerAlphaInvert[1])         textureEnabled |= (1u << 5);
+  if (m_texCombinerRgbInvert[0]) textureEnabled |= (1u << 2);
+  if (m_texCombinerAlphaInvert[0]) textureEnabled |= (1u << 3);
+  if (m_texCombinerRgbInvert[1]) textureEnabled |= (1u << 4);
+  if (m_texCombinerAlphaInvert[1]) textureEnabled |= (1u << 5);
   pcs.textureEnabled = textureEnabled;
 
-  uint32_t tmuCombinerModes = 0;
-  // TMU 0
-  tmuCombinerModes |= (m_texCombinerRgbFunc[0] & 0x7) << 0;
-  tmuCombinerModes |= (m_texCombinerRgbFactor[0] & 0xF) << 3;
-  tmuCombinerModes |= (m_texCombinerAlphaFunc[0] & 0x7) << 7;
-  tmuCombinerModes |= (m_texCombinerAlphaFactor[0] & 0xF) << 10;
-  // TMU 1
-  tmuCombinerModes |= (m_texCombinerRgbFunc[1] & 0x7) << 14;
-  tmuCombinerModes |= (m_texCombinerRgbFactor[1] & 0xF) << 17;
-  tmuCombinerModes |= (m_texCombinerAlphaFunc[1] & 0x7) << 21;
-  tmuCombinerModes |= (m_texCombinerAlphaFactor[1] & 0xF) << 24;
-  pcs.tmuCombinerModes = tmuCombinerModes;
+  // Pack combiner modes (functions and factors) for both TMUs into separate
+  // uint32_t fields (8-bit precision)
+  uint32_t tmu0Comb = 0;
+  tmu0Comb |= (m_texCombinerRgbFunc[0] & 0xFF) << 0;
+  tmu0Comb |= (m_texCombinerRgbFactor[0] & 0xFF) << 8;
+  tmu0Comb |= (m_texCombinerAlphaFunc[0] & 0xFF) << 16;
+  tmu0Comb |= (m_texCombinerAlphaFactor[0] & 0xFF) << 24;
+  pcs.tmuCombinerModes0 = tmu0Comb;
+
+  uint32_t tmu1Comb = 0;
+  tmu1Comb |= (m_texCombinerRgbFunc[1] & 0xFF) << 0;
+  tmu1Comb |= (m_texCombinerRgbFactor[1] & 0xFF) << 8;
+  tmu1Comb |= (m_texCombinerAlphaFunc[1] & 0xFF) << 16;
+  tmu1Comb |= (m_texCombinerAlphaFactor[1] & 0xFF) << 24;
+  pcs.tmuCombinerModes1 = tmu1Comb;
 
   // Milestone 10: Chromakey State
   pcs.chromakeyEnabled = m_chromakeyMode;
@@ -3265,11 +3304,11 @@ void VulkanBackend::LoadGammaTable(uint32_t nentries, const uint32_t* rTable,
 
 vk::Sampler VulkanBackend::GetOrCreateSampler(uint32_t clampS, uint32_t clampT,
                                               uint32_t minFilter,
-                                              uint32_t magFilter,
-                                              float lodBias,
+                                              uint32_t magFilter, float lodBias,
                                               uint32_t mipmapMode,
                                               bool lodBlend) {
-  SamplerKey key{clampS, clampT, minFilter, magFilter, lodBias, mipmapMode, lodBlend};
+  SamplerKey key{clampS,  clampT,     minFilter, magFilter,
+                 lodBias, mipmapMode, lodBlend};
   auto it = m_samplerCache.find(key);
   if (it != m_samplerCache.end()) {
     return it->second.get();
@@ -3296,7 +3335,8 @@ vk::Sampler VulkanBackend::GetOrCreateSampler(uint32_t clampS, uint32_t clampT,
   vk::Filter magF =
       (magFilter == 1) ? vk::Filter::eLinear : vk::Filter::eNearest;
 
-  // Mipmap blending mode and maxLod are determined by the mipmapMode and lodBlend parameters
+  // Mipmap blending mode and maxLod are determined by the mipmapMode and
+  // lodBlend parameters
   vk::SamplerMipmapMode vkMipmapMode = vk::SamplerMipmapMode::eNearest;
   float maxLod = 0.0f;
 
@@ -3336,8 +3376,8 @@ vk::Sampler VulkanBackend::GetOrCreateSampler(uint32_t clampS, uint32_t clampT,
 }
 
 vk::DescriptorSet VulkanBackend::GetOrCreateDescriptorSet(
-    vk::ImageView imageView0, vk::Sampler sampler0,
-    vk::ImageView imageView1, vk::Sampler sampler1) {
+    vk::ImageView imageView0, vk::Sampler sampler0, vk::ImageView imageView1,
+    vk::Sampler sampler1) {
   DescriptorKey key{imageView0, sampler0, imageView1, sampler1};
   auto it = m_descriptorCache.find(key);
   if (it != m_descriptorCache.end()) {
@@ -3352,14 +3392,19 @@ vk::DescriptorSet VulkanBackend::GetOrCreateDescriptorSet(
 
   // Update Descriptor Set for both bindings
   std::array<vk::DescriptorImageInfo, 2> imageInfos = {
-      vk::DescriptorImageInfo(sampler0, imageView0, vk::ImageLayout::eShaderReadOnlyOptimal),
-      vk::DescriptorImageInfo(sampler1, imageView1, vk::ImageLayout::eShaderReadOnlyOptimal)
-  };
+      vk::DescriptorImageInfo(sampler0, imageView0,
+                              vk::ImageLayout::eShaderReadOnlyOptimal),
+      vk::DescriptorImageInfo(sampler1, imageView1,
+                              vk::ImageLayout::eShaderReadOnlyOptimal)};
   std::array<vk::WriteDescriptorSet, 2> descriptorWrites = {
-      vk::WriteDescriptorSet(descriptorSet, 0, 0, 1, vk::DescriptorType::eCombinedImageSampler, &imageInfos[0], nullptr, nullptr),
-      vk::WriteDescriptorSet(descriptorSet, 1, 0, 1, vk::DescriptorType::eCombinedImageSampler, &imageInfos[1], nullptr, nullptr)
-  };
-  m_device->updateDescriptorSets(static_cast<uint32_t>(descriptorWrites.size()), descriptorWrites.data(), 0, nullptr);
+      vk::WriteDescriptorSet(descriptorSet, 0, 0, 1,
+                             vk::DescriptorType::eCombinedImageSampler,
+                             &imageInfos[0], nullptr, nullptr),
+      vk::WriteDescriptorSet(descriptorSet, 1, 0, 1,
+                             vk::DescriptorType::eCombinedImageSampler,
+                             &imageInfos[1], nullptr, nullptr)};
+  m_device->updateDescriptorSets(static_cast<uint32_t>(descriptorWrites.size()),
+                                 descriptorWrites.data(), 0, nullptr);
 
   m_descriptorCache.emplace(key, descriptorSet);
   return descriptorSet;
@@ -3377,7 +3422,8 @@ void VulkanBackend::SetTexLodBias(uint32_t tmu, float bias) {
   }
 }
 
-void VulkanBackend::SetTexMipMapMode(uint32_t tmu, uint32_t mode, bool lodBlend) {
+void VulkanBackend::SetTexMipMapMode(uint32_t tmu, uint32_t mode,
+                                     bool lodBlend) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   if (tmu < 2) {
     if (m_texMipMapMode[tmu] != mode || m_texLodBlend[tmu] != lodBlend) {
@@ -3385,8 +3431,9 @@ void VulkanBackend::SetTexMipMapMode(uint32_t tmu, uint32_t mode, bool lodBlend)
       m_texMipMapMode[tmu] = mode;
       m_texLodBlend[tmu] = lodBlend;
       GLIDE_LOG(DEBUG, "Vulkan",
-                "SetTexMipMapMode: TMU" << tmu << " set to Mode=" << mode
-                                       << ", LodBlend=" << (lodBlend ? "Yes" : "No"));
+                "SetTexMipMapMode: TMU"
+                    << tmu << " set to Mode=" << mode
+                    << ", LodBlend=" << (lodBlend ? "Yes" : "No"));
     }
   }
 }

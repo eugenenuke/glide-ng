@@ -94,7 +94,11 @@ void OpenGLESBackend::ResetState() {
 bool OpenGLESBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
                                    uint32_t height, bool windowed) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
-  if (!m_initialized) return false;
+  if (!m_initialized) {
+    std::cout << "[DEBUG-GLES] AttachWindow failed: !m_initialized"
+              << std::endl;
+    return false;
+  }
   if (m_windowAttached) DetachWindow();
 
   GLIDE_LOG(INFO, "GLES",
@@ -109,6 +113,8 @@ bool OpenGLESBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
 
   if (!CreateGLContext(nativeWindowHandle, width, height, windowed)) {
     GLIDE_LOG(CRITICAL, "GLES", "Failed to create OpenGL ES 3.2 context!");
+    std::cout << "[DEBUG-GLES] AttachWindow failed: CreateGLContext failed"
+              << std::endl;
     return false;
   }
 
@@ -150,6 +156,8 @@ bool OpenGLESBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
     // Verify FBO completeness
     if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
       GLIDE_LOG(CRITICAL, "GLES", "Headless FBO " << i << " is incomplete!");
+      std::cout << "[DEBUG-GLES] AttachWindow failed: FBO " << i
+                << " incomplete" << std::endl;
       DestroyGLContext();
       return false;
     }
@@ -169,11 +177,15 @@ bool OpenGLESBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
   // Milestone 3: Compile shaders and allocate dynamic VBO/VAO
   if (!CreateGeomShaders()) {
     GLIDE_LOG(CRITICAL, "GLES", "Failed to compile GLES geometry shaders!");
+    std::cout << "[DEBUG-GLES] AttachWindow failed: CreateGeomShaders failed"
+              << std::endl;
     DestroyGLContext();
     return false;
   }
   if (!CreateGeomBuffers()) {
     GLIDE_LOG(CRITICAL, "GLES", "Failed to allocate GLES geometry buffers!");
+    std::cout << "[DEBUG-GLES] AttachWindow failed: CreateGeomBuffers failed"
+              << std::endl;
     DestroyGLContext();
     return false;
   }
@@ -796,7 +808,7 @@ layout(location = 4) in float inFogCoord;
 
 out vec4 fragColor;
 out float fragOOW;
-out vec4 fragTexCoord;
+out vec4 fragTexCoord; // Passes s0, t0, s1, t1
 out vec2 fragTmuOow;
 out float fragFogCoord;
 
@@ -834,7 +846,7 @@ void main() {
     gl_PointSize = 1.0; // Canonical Glide point size (1px)
     fragColor = inColor;
     fragOOW = inPos.w;
-    fragTexCoord = inTex;
+    fragTexCoord = inTex; // Pass all 4 coordinates!
     fragTmuOow = inTmuOow;
     fragFogCoord = inFogCoord;
 }
@@ -846,7 +858,7 @@ precision highp float;
 
 in vec4 fragColor;
 in float fragOOW;
-in vec4 fragTexCoord;
+in vec4 fragTexCoord; // Passes s0, t0, s1, t1
 in vec2 fragTmuOow;
 in float fragFogCoord;
 
@@ -872,12 +884,13 @@ uniform int uAlphaLocal;
 uniform int uAlphaOther;
 uniform int uAlphaInvert;
 
-uniform int uTextureEnabled[2];
+uniform int uTextureEnabled[2]; // Array of size 2
 uniform sampler2D uTexture0;
 uniform sampler2D uTexture1;
 uniform float uTexLodBias[2];
-uniform int uUseTmuOow[2];
+uniform int uUseTmuOow[2]; // Array of size 2
 
+// New TMU combiner uniforms
 uniform int uTexRgbFunc[2];
 uniform int uTexRgbFactor[2];
 uniform int uTexAlphaFunc[2];
@@ -954,140 +967,143 @@ bool IsColorInRange(vec3 color, vec3 minColor, vec3 maxColor, uint rangeMode) {
     }
 }
 
-vec4 evaluateTmuStage(int idx, vec4 localVal, vec4 otherVal) {
-    int rgbFunc = uTexRgbFunc[idx];
-    int rgbFactor = uTexRgbFactor[idx];
-    int alphaFunc = uTexAlphaFunc[idx];
-    int alphaFactor = uTexAlphaFactor[idx];
-    bool rgbInvert = uTexRgbInvert[idx] == 1;
-    bool alphaInvert = uTexAlphaInvert[idx] == 1;
-
-    float factA = 0.0;
-    if (alphaFactor == 1) factA = localVal.a;
-    else if (alphaFactor == 2) factA = otherVal.a;
-    else if (alphaFactor == 8) factA = 1.0;
-    else if (alphaFactor == 9) factA = 1.0 - localVal.a;
-    else if (alphaFactor == 10) factA = 1.0 - otherVal.a;
-
-    float finalA = 0.0;
-    if (alphaFunc == 1 || alphaFunc == 2) {
-        finalA = localVal.a;
-    } else if (alphaFunc == 3) {
-        finalA = otherVal.a * factA;
-    } else if (alphaFunc == 4 || alphaFunc == 5) {
-        finalA = otherVal.a * factA + localVal.a;
-    } else if (alphaFunc == 6) {
-        finalA = (otherVal.a - localVal.a) * factA;
-    } else if (alphaFunc == 7) {
-        finalA = (otherVal.a - localVal.a) * factA + localVal.a;
-    }
-
-    if (alphaInvert) {
-        finalA = 1.0 - finalA;
-    }
-
-    vec3 factC = vec3(0.0);
-    if (rgbFactor == 1) factC = localVal.rgb;
-    else if (rgbFactor == 2) factC = vec3(otherVal.a);
-    else if (rgbFactor == 3) factC = vec3(localVal.a);
-    else if (rgbFactor == 4) factC = otherVal.rgb;
-    else if (rgbFactor == 8) factC = vec3(1.0);
-    else if (rgbFactor == 9) factC = vec3(1.0) - localVal.rgb;
-    else if (rgbFactor == 10) factC = vec3(1.0 - otherVal.a);
-    else if (rgbFactor == 11) factC = vec3(1.0 - localVal.a);
-    else if (rgbFactor == 12) factC = vec3(1.0) - otherVal.rgb;
-
-    vec3 finalC = vec3(0.0);
-    if (rgbFunc == 1) {
-        finalC = localVal.rgb;
-    } else if (rgbFunc == 3) {
-        finalC = otherVal.rgb * factC;
-    } else if (rgbFunc == 4) {
-        finalC = otherVal.rgb * factC + localVal.rgb;
-    } else if (rgbFunc == 5) {
-        finalC = otherVal.rgb * factC + vec3(localVal.a);
-    } else if (rgbFunc == 6) {
-        finalC = (otherVal.rgb - localVal.rgb) * factC;
-    } else if (rgbFunc == 7) {
-        finalC = (otherVal.rgb - localVal.rgb) * factC + localVal.rgb;
-    } else if (rgbFunc == 8) {
-        finalC = (otherVal.rgb - localVal.rgb) * factC + vec3(localVal.a);
-    }
-
-    if (rgbInvert) {
-        finalC = vec3(1.0) - finalC;
-    }
-
-    return vec4(finalC, finalA);
-}
-
-vec4 sampleTmu(int idx, sampler2D samplerObj, vec2 texCoords, float divW) {
-    ivec2 texSize = textureSize(samplerObj, 0);
-    float tw = float(texSize.x);
-    float th = float(texSize.y);
+vec4 sampleTextureGLES(sampler2D tex, vec2 uv, int tmuIdx, float tw, float th) {
     float maxDim = max(tw, th);
-    vec2 uv = (texCoords / divW) / 256.0;
-    uv.x *= (maxDim / tw);
-    uv.y *= (maxDim / th);
-
-    vec4 texColor = vec4(1.0);
-    if (uTexChromaEnabled[idx] == 1u) {
+    vec2 finalUv = uv;
+    finalUv.x *= (maxDim / tw);
+    finalUv.y *= (maxDim / th);
+    if (uTexChromaEnabled[tmuIdx] == 1u) {
         ivec2 size = ivec2(int(tw), int(th));
-        vec2 texelCoord = uv * vec2(tw, th) - vec2(0.5);
+        vec2 texelCoord = finalUv * vec2(tw, th) - vec2(0.5);
         ivec2 tl = ivec2(floor(texelCoord));
         vec2 f = fract(texelCoord);
-
         ivec2 c00_coord = clamp(tl + ivec2(0, 0), ivec2(0), size - ivec2(1));
         ivec2 c10_coord = clamp(tl + ivec2(1, 0), ivec2(0), size - ivec2(1));
         ivec2 c01_coord = clamp(tl + ivec2(0, 1), ivec2(0), size - ivec2(1));
         ivec2 c11_coord = clamp(tl + ivec2(1, 1), ivec2(0), size - ivec2(1));
-
-        vec4 c00 = texelFetch(samplerObj, c00_coord, 0);
-        vec4 c10 = texelFetch(samplerObj, c10_coord, 0);
-        vec4 c01 = texelFetch(samplerObj, c01_coord, 0);
-        vec4 c11 = texelFetch(samplerObj, c11_coord, 0);
-
-        if (IsColorInRange(c00.rgb, uTexChromaMin[idx].rgb, uTexChromaMax[idx].rgb, uTexChromaRangeMode[idx])) c00 = vec4(0.0);
-        if (IsColorInRange(c10.rgb, uTexChromaMin[idx].rgb, uTexChromaMax[idx].rgb, uTexChromaRangeMode[idx])) c10 = vec4(0.0);
-        if (IsColorInRange(c01.rgb, uTexChromaMin[idx].rgb, uTexChromaMax[idx].rgb, uTexChromaRangeMode[idx])) c01 = vec4(0.0);
-        if (IsColorInRange(c11.rgb, uTexChromaMin[idx].rgb, uTexChromaMax[idx].rgb, uTexChromaRangeMode[idx])) c11 = vec4(0.0);
-
+        vec4 c00 = texelFetch(tex, c00_coord, 0);
+        vec4 c10 = texelFetch(tex, c10_coord, 0);
+        vec4 c01 = texelFetch(tex, c01_coord, 0);
+        vec4 c11 = texelFetch(tex, c11_coord, 0);
+        if (IsColorInRange(c00.rgb, uTexChromaMin[tmuIdx].rgb, uTexChromaMax[tmuIdx].rgb, uTexChromaRangeMode[tmuIdx])) c00 = vec4(0.0);
+        if (IsColorInRange(c10.rgb, uTexChromaMin[tmuIdx].rgb, uTexChromaMax[tmuIdx].rgb, uTexChromaRangeMode[tmuIdx])) c10 = vec4(0.0);
+        if (IsColorInRange(c01.rgb, uTexChromaMin[tmuIdx].rgb, uTexChromaMax[tmuIdx].rgb, uTexChromaRangeMode[tmuIdx])) c01 = vec4(0.0);
+        if (IsColorInRange(c11.rgb, uTexChromaMin[tmuIdx].rgb, uTexChromaMax[tmuIdx].rgb, uTexChromaRangeMode[tmuIdx])) c11 = vec4(0.0);
         vec4 c0 = mix(c00, c10, f.x);
         vec4 c1 = mix(c01, c11, f.x);
-        texColor = mix(c0, c1, f.y);
+        return mix(c0, c1, f.y);
     } else {
-        texColor = texture(samplerObj, uv, uTexLodBias[idx]);
+        return texture(tex, finalUv, uTexLodBias[tmuIdx]);
     }
-    return texColor;
+}
+
+vec4 evaluateTmuStageGLES(
+    int rgbFunc, int rgbFactor, int alphaFunc, int alphaFactor,
+    bool rgbInvert, bool alphaInvert,
+    vec4 localVal, vec4 otherVal) {
+    
+    // 1. Evaluate Alpha
+    float aLocal = localVal.a;
+    float aOther = otherVal.a;
+    
+    float factA = 0.0;
+    if (alphaFactor == 1 || alphaFactor == 3) factA = aLocal;
+    else if (alphaFactor == 2) factA = aOther;
+    else if (alphaFactor == 4) factA = localVal.a;
+    else if (alphaFactor == 8) factA = 1.0;
+    else if (alphaFactor == 9 || alphaFactor == 11) factA = 1.0 - aLocal;
+    else if (alphaFactor == 10) factA = 1.0 - aOther;
+    else if (alphaFactor == 12) factA = 1.0 - localVal.a;
+    
+    float finalA = 0.0;
+    if (alphaFunc == 1) finalA = aLocal;
+    else if (alphaFunc == 3) finalA = aOther * factA;
+    else if (alphaFunc == 4 || alphaFunc == 5) finalA = aOther * factA + aLocal;
+    else if (alphaFunc == 6) finalA = (aOther - aLocal) * factA;
+    else if (alphaFunc == 7 || alphaFunc == 8) finalA = (aOther - aLocal) * factA + aLocal;
+    else if (alphaFunc == 9 || alphaFunc == 16) finalA = (aLocal - aOther) * factA + aOther;
+    
+    if (alphaInvert) finalA = 1.0 - finalA;
+    
+    // 2. Evaluate RGB
+    vec3 cLocal = localVal.rgb;
+    vec3 cOther = otherVal.rgb;
+    
+    vec3 factC = vec3(0.0);
+    if (rgbFactor == 1) factC = cLocal;
+    else if (rgbFactor == 2) factC = vec3(aOther);
+    else if (rgbFactor == 3) factC = vec3(aLocal);
+    else if (rgbFactor == 4) factC = vec3(localVal.a);
+    else if (rgbFactor == 5) factC = localVal.rgb;
+    else if (rgbFactor == 8) factC = vec3(1.0);
+    else if (rgbFactor == 9) factC = vec3(1.0) - cLocal;
+    else if (rgbFactor == 10) factC = vec3(1.0 - aOther);
+    else if (rgbFactor == 11) factC = vec3(1.0 - aLocal);
+    else if (rgbFactor == 12) factC = vec3(1.0 - localVal.a);
+    
+    vec3 finalC = vec3(0.0);
+    if (rgbFunc == 1) finalC = cLocal;
+    else if (rgbFunc == 3) finalC = cOther * factC;
+    else if (rgbFunc == 4) finalC = cOther * factC + cLocal;
+    else if (rgbFunc == 5) finalC = cOther * factC + vec3(aLocal);
+    else if (rgbFunc == 6) finalC = (cOther - cLocal) * factC;
+    else if (rgbFunc == 7) finalC = (cOther - cLocal) * factC + cLocal;
+    else if (rgbFunc == 8) finalC = (cOther - cLocal) * factC + vec3(aLocal);
+    else if (rgbFunc == 9) finalC = (cLocal - cOther) * factC + cOther;
+    else if (rgbFunc == 16) finalC = (vec3(aLocal) - cOther) * factC + cOther;
+    
+    if (rgbInvert) finalC = vec3(1.0) - finalC;
+    
+    return vec4(finalC, finalA);
 }
 
 void main() {
-    // Evaluate active TMUs
-    bool tmu0Active = uTextureEnabled[0] == 1;
-    bool tmu1Active = uTextureEnabled[1] == 1;
-
-    // Near-plane clipping:
+    // W-based coordinate near-plane and camera-space clipping
     if (uDepthBufferMode == 2) {
         if (fragOOW > 1.0) discard;
-    } else if (tmu0Active || tmu1Active) {
+    } else if (uTextureEnabled[0] == 1 || uTextureEnabled[1] == 1) {
         if (fragOOW <= 0.0) discard;
     }
 
-    vec4 tmu1Out = vec4(1.0);
+    // Unpack texture active flags
+    bool tmu0Active = uTextureEnabled[0] == 1;
+    bool tmu1Active = uTextureEnabled[1] == 1;
+
+    // 1. Sample TMU 1 (upstream)
+    vec4 tmu1Color = vec4(1.0);
     if (tmu1Active) {
+        ivec2 texSize = textureSize(uTexture1, 0);
+        float tw = float(texSize.x);
+        float th = float(texSize.y);
         float divW1 = (uUseTmuOow[1] == 1) ? fragTmuOow.y : fragOOW;
-        vec4 localVal1 = sampleTmu(1, uTexture1, fragTexCoord.zw, divW1);
-        tmu1Out = evaluateTmuStage(1, localVal1, fragColor);
+        vec2 uv1 = (fragTexCoord.zw / divW1) / 256.0;
+        tmu1Color = sampleTextureGLES(uTexture1, uv1, 1, tw, th);
     }
 
-    vec4 tmu0Out = vec4(1.0);
+    // Evaluate TMU 1 combiner stage (upstream, passes iterated)
+    vec4 tmu1Out = tmu1Active ? evaluateTmuStageGLES(
+        uTexRgbFunc[1], uTexRgbFactor[1], uTexAlphaFunc[1], uTexAlphaFactor[1],
+        uTexRgbInvert[1] == 1, uTexAlphaInvert[1] == 1,
+        tmu1Color, fragColor
+    ) : fragColor;
+
+    // 2. Sample TMU 0 (downstream)
+    vec4 tmu0Color = vec4(1.0);
     if (tmu0Active) {
+        ivec2 texSize = textureSize(uTexture0, 0);
+        float tw = float(texSize.x);
+        float th = float(texSize.y);
         float divW0 = (uUseTmuOow[0] == 1) ? fragTmuOow.x : fragOOW;
-        vec4 localVal0 = sampleTmu(0, uTexture0, fragTexCoord.xy, divW0);
-        tmu0Out = evaluateTmuStage(0, localVal0, tmu1Out);
-    } else if (tmu1Active) {
-        tmu0Out = tmu1Out;
+        vec2 uv0 = (fragTexCoord.xy / divW0) / 256.0;
+        tmu0Color = sampleTextureGLES(uTexture0, uv0, 0, tw, th);
     }
+
+    // Evaluate TMU 0 combiner stage (downstream, other is tmu1Out)
+    vec4 tmu0Out = tmu0Active ? evaluateTmuStageGLES(
+        uTexRgbFunc[0], uTexRgbFactor[0], uTexAlphaFunc[0], uTexAlphaFactor[0],
+        uTexRgbInvert[0] == 1, uTexAlphaInvert[0] == 1,
+        tmu0Color, tmu1Out
+    ) : tmu1Out;
 
     vec4 texColor = tmu0Out;
 
@@ -1118,6 +1134,7 @@ void main() {
     else if (uAlphaFunc == 4 || uAlphaFunc == 5) finalA = aOther * factA + aLocal;
     else if (uAlphaFunc == 6) finalA = (aOther - aLocal) * factA;
     else if (uAlphaFunc == 7 || uAlphaFunc == 8) finalA = (aOther - aLocal) * factA + aLocal;
+    else if (uAlphaFunc == 9 || uAlphaFunc == 16) finalA = (aLocal - aOther) * factA + aOther;
     
     if (uAlphaInvert == 1) finalA = 1.0 - finalA;
 
@@ -1153,6 +1170,8 @@ void main() {
     else if (uColorFunc == 6) finalC = (cOther - cLocal) * factC;
     else if (uColorFunc == 7) finalC = (cOther - cLocal) * factC + cLocal;
     else if (uColorFunc == 8) finalC = (cOther - cLocal) * factC + vec3(aLocal);
+    else if (uColorFunc == 9) finalC = (cLocal - cOther) * factC + cOther;
+    else if (uColorFunc == 16) finalC = (vec3(aLocal) - cOther) * factC + cOther;
 
     if (uColorInvert == 1) finalC = vec3(1.0) - finalC;
 
@@ -1160,7 +1179,7 @@ void main() {
 
     // Milestone 10: Chromakey Emulation
     if (uChromakeyEnabled == 1) {
-        vec3 chromaTestColor = (uTextureEnabled == 1) ? cOther : col.rgb;
+        vec3 chromaTestColor = (uTextureEnabled[0] == 1 || uTextureEnabled[1] == 1) ? cOther : col.rgb;
         if (uChromakeyRangeEnabled == 1) {
             bool rMatch = (chromaTestColor.r >= uChromakeyRangeMin.r && chromaTestColor.r <= uChromakeyRangeMax.r);
             bool gMatch = (chromaTestColor.g >= uChromakeyRangeMin.g && chromaTestColor.g <= uChromakeyRangeMax.g);
@@ -1212,6 +1231,8 @@ void main() {
             if (eyeW >= s_tableIndexToW[idx + 4]) idx += 4;
             if (eyeW >= s_tableIndexToW[idx + 2]) idx += 2;
             if (eyeW >= s_tableIndexToW[idx + 1]) idx += 1;
+
+            idx = min(idx, 62);
 
             float w0 = s_tableIndexToW[idx];
             float w1 = s_tableIndexToW[idx + 1];
@@ -1273,6 +1294,9 @@ bool OpenGLESBackend::CreateGeomShaders() {
       glGetShaderInfoLog(s, 512, nullptr, log);
       GLIDE_LOG(CRITICAL, "GLES",
                 "Geometry Shader compilation failure: " << log);
+      std::cout << "[DEBUG-SHADER-ERROR] Type: "
+                << (type == GL_VERTEX_SHADER ? "VERT" : "FRAG")
+                << ", Error: " << log << std::endl;
     }
     return s;
   };
@@ -1294,6 +1318,7 @@ bool OpenGLESBackend::CreateGeomShaders() {
     char log[512];
     glGetProgramInfoLog(m_geomProgram, 512, nullptr, log);
     GLIDE_LOG(CRITICAL, "GLES", "Geometry Program linking failure: " << log);
+    std::cout << "[DEBUG-PROGRAM-ERROR] Error: " << log << std::endl;
     return false;
   }
 
@@ -1355,7 +1380,7 @@ bool OpenGLESBackend::CreateGeomShaders() {
   // Log critical uniform location failure
   if (m_uSstOriginLoc == -1 || m_uViewportSizeLoc == -1 ||
       m_uColorFuncLoc == -1 || m_uAlphaFuncLoc == -1 ||
-      m_uTextureEnabledLoc == -1 || m_uTexRgbFuncLoc == -1) {
+      m_uTextureEnabledLoc == -1) {
     GLIDE_LOG(CRITICAL, "GLES",
               "Critical uniform location query failed! Some uniforms could not "
               "be resolved.");
@@ -1588,22 +1613,18 @@ void OpenGLESBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
         GLint minFilter = GL_NEAREST;
         if (m_texMipMapMode[tmu] == 0) {  // Mipmap Disabled
           minFilter = (m_texMinFilter[tmu] == 1) ? GL_LINEAR : GL_NEAREST;
-        } else {                          // Mipmap Enabled
-          if (m_texMinFilter[tmu] == 1) { // Bilinear
-            minFilter = m_texLodBlend[tmu] ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR_MIPMAP_NEAREST;
-          } else {                        // Point
-            minFilter = m_texLodBlend[tmu] ? GL_NEAREST_MIPMAP_LINEAR : GL_NEAREST_MIPMAP_NEAREST;
+        } else {                           // Mipmap Enabled
+          if (m_texMinFilter[tmu] == 1) {  // Bilinear
+            minFilter = m_texLodBlend[tmu] ? GL_LINEAR_MIPMAP_LINEAR
+                                           : GL_LINEAR_MIPMAP_NEAREST;
+          } else {  // Point
+            minFilter = m_texLodBlend[tmu] ? GL_NEAREST_MIPMAP_LINEAR
+                                           : GL_NEAREST_MIPMAP_NEAREST;
           }
         }
         GLint magFilter = (m_texMagFilter[tmu] == 1) ? GL_LINEAR : GL_NEAREST;
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, minFilter);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, magFilter);
-#ifdef GL_TEXTURE_LOD_BIAS
-        glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_LOD_BIAS, m_texLodBias[tmu]);
-#elif defined(GL_TEXTURE_LOD_BIAS_EXT)
-        glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_LOD_BIAS_EXT,
-                        m_texLodBias[tmu]);
-#endif
       }
     }
   }
@@ -2018,36 +2039,39 @@ void OpenGLESBackend::PopulateUniforms() {
   glUniform1i(m_uAlphaOtherLoc, (int)m_alphaCombinerOther);
   glUniform1i(m_uAlphaInvertLoc, m_alphaCombinerInvert ? 1 : 0);
 
-  // Upload Texture Binding State
-  int texEnabledArray[2] = {
-      (m_boundTexAddress[0] != 0xFFFFFFFF) ? 1 : 0,
-      (m_boundTexAddress[1] != 0xFFFFFFFF) ? 1 : 0
-  };
-  glUniform1iv(m_uTextureEnabledLoc, 2, texEnabledArray);
+  // Upload Texture Binding State (double bindings for multi-texturing)
+  int texEnabled[2] = {(m_boundTexAddress[0] != 0xFFFFFFFF) ? 1 : 0,
+                       (m_boundTexAddress[1] != 0xFFFFFFFF) ? 1 : 0};
+  glUniform1iv(m_uTextureEnabledLoc, 2, texEnabled);
   glUniform1i(m_uTexture0Loc, 0);  // Always texture unit 0 for TMU0
   glUniform1i(m_uTexture1Loc, 1);  // Always texture unit 1 for TMU1
   float lodBias[2] = {m_texLodBias[0], m_texLodBias[1]};
   glUniform1fv(m_uTexLodBiasLoc, 2, lodBias);
-  
-  int useTmuOowArray[2] = {
-      (m_stwHintMask & 0x2) ? 1 : 0,
-      (m_stwHintMask & 0x8) ? 1 : 0
-  };
-  glUniform1iv(m_uUseTmuOowLoc, 2, useTmuOowArray);
 
-  int rgbFunc[2] = { (int)m_texCombinerRgbFunc[0], (int)m_texCombinerRgbFunc[1] };
-  int rgbFactor[2] = { (int)m_texCombinerRgbFactor[0], (int)m_texCombinerRgbFactor[1] };
-  int alphaFunc[2] = { (int)m_texCombinerAlphaFunc[0], (int)m_texCombinerAlphaFunc[1] };
-  int alphaFactor[2] = { (int)m_texCombinerAlphaFactor[0], (int)m_texCombinerAlphaFactor[1] };
-  int rgbInvert[2] = { m_texCombinerRgbInvert[0] ? 1 : 0, m_texCombinerRgbInvert[1] ? 1 : 0 };
-  int alphaInvert[2] = { m_texCombinerAlphaInvert[0] ? 1 : 0, m_texCombinerAlphaInvert[1] ? 1 : 0 };
+  int useTmuOow[2] = {(m_stwHintMask & 0x2) ? 1 : 0,
+                      (m_stwHintMask & 0x8) ? 1 : 0};
+  glUniform1iv(m_uUseTmuOowLoc, 2, useTmuOow);
 
-  glUniform1iv(m_uTexRgbFuncLoc, 2, rgbFunc);
-  glUniform1iv(m_uTexRgbFactorLoc, 2, rgbFactor);
-  glUniform1iv(m_uTexAlphaFuncLoc, 2, alphaFunc);
-  glUniform1iv(m_uTexAlphaFactorLoc, 2, alphaFactor);
-  glUniform1iv(m_uTexRgbInvertLoc, 2, rgbInvert);
-  glUniform1iv(m_uTexAlphaInvertLoc, 2, alphaInvert);
+  // Upload TMU combiner states (functions, factors, and inverts)
+  int rgbFuncs[2] = {(int)m_texCombinerRgbFunc[0],
+                     (int)m_texCombinerRgbFunc[1]};
+  int rgbFactors[2] = {(int)m_texCombinerRgbFactor[0],
+                       (int)m_texCombinerRgbFactor[1]};
+  int alphaFuncs[2] = {(int)m_texCombinerAlphaFunc[0],
+                       (int)m_texCombinerAlphaFunc[1]};
+  int alphaFactors[2] = {(int)m_texCombinerAlphaFactor[0],
+                         (int)m_texCombinerAlphaFactor[1]};
+  int rgbInverts[2] = {m_texCombinerRgbInvert[0] ? 1 : 0,
+                       m_texCombinerRgbInvert[1] ? 1 : 0};
+  int alphaInverts[2] = {m_texCombinerAlphaInvert[0] ? 1 : 0,
+                         m_texCombinerAlphaInvert[1] ? 1 : 0};
+
+  glUniform1iv(m_uTexRgbFuncLoc, 2, rgbFuncs);
+  glUniform1iv(m_uTexRgbFactorLoc, 2, rgbFactors);
+  glUniform1iv(m_uTexAlphaFuncLoc, 2, alphaFuncs);
+  glUniform1iv(m_uTexAlphaFactorLoc, 2, alphaFactors);
+  glUniform1iv(m_uTexRgbInvertLoc, 2, rgbInverts);
+  glUniform1iv(m_uTexAlphaInvertLoc, 2, alphaInverts);
 
   glUniform1i(m_uAlphaTestOpLoc, (int)m_alphaTestOp);
   glUniform1f(m_uAlphaTestRefLoc, (float)m_alphaTestRefVal / 255.0f);
@@ -2124,7 +2148,10 @@ void OpenGLESBackend::UploadTexturePartial(uint32_t tmu, uint32_t startAddress,
   // 1. Check if the texture exists. If not, promote to a full upload!
   auto it = m_glesTextures.find(startAddress);
   if (it == m_glesTextures.end()) {
-    GLIDE_LOG(INFO, "GLES", "UploadTexturePartial: Texture at 0x" << std::hex << startAddress << std::dec << " not found. Promoting to full upload.");
+    GLIDE_LOG(INFO, "GLES",
+              "UploadTexturePartial: Texture at 0x"
+                  << std::hex << startAddress << std::dec
+                  << " not found. Promoting to full upload.");
     UploadTexture(tmu, startAddress, tex);
     return;
   }
@@ -2132,7 +2159,10 @@ void OpenGLESBackend::UploadTexturePartial(uint32_t tmu, uint32_t startAddress,
 
   // 2. Validate existence of LOD level in the virtual texture
   if (lodLevel >= tex.swizzledMipLevels.size()) {
-    GLIDE_LOG(CRITICAL, "GLES", "UploadTexturePartial: lodLevel " << lodLevel << " out of range (max: " << tex.swizzledMipLevels.size() << ")");
+    GLIDE_LOG(CRITICAL, "GLES",
+              "UploadTexturePartial: lodLevel "
+                  << lodLevel << " out of range (max: "
+                  << tex.swizzledMipLevels.size() << ")");
     return;
   }
 
@@ -2142,7 +2172,9 @@ void OpenGLESBackend::UploadTexturePartial(uint32_t tmu, uint32_t startAddress,
 
   // 4. Validate row range bounds
   if (startRow >= h || endRow > h || startRow >= endRow) {
-    GLIDE_LOG(CRITICAL, "GLES", "UploadTexturePartial: invalid row range [" << startRow << ".." << endRow << ") for height " << h);
+    GLIDE_LOG(CRITICAL, "GLES",
+              "UploadTexturePartial: invalid row range ["
+                  << startRow << ".." << endRow << ") for height " << h);
     return;
   }
 
@@ -2151,7 +2183,10 @@ void OpenGLESBackend::UploadTexturePartial(uint32_t tmu, uint32_t startAddress,
   uint32_t startPixelIndex = startRow * w;
   uint32_t requiredPixels = startPixelIndex + numRows * w;
   if (requiredPixels > tex.swizzledMipLevels[lodLevel].size()) {
-    GLIDE_LOG(CRITICAL, "GLES", "UploadTexturePartial: required pixels " << requiredPixels << " exceed mip level size " << tex.swizzledMipLevels[lodLevel].size());
+    GLIDE_LOG(CRITICAL, "GLES",
+              "UploadTexturePartial: required pixels "
+                  << requiredPixels << " exceed mip level size "
+                  << tex.swizzledMipLevels[lodLevel].size());
     return;
   }
 
@@ -2174,12 +2209,16 @@ void OpenGLESBackend::UploadTexturePartial(uint32_t tmu, uint32_t startAddress,
   }
 
   // Upload using glTexSubImage2D
-  glTexSubImage2D(GL_TEXTURE_2D, static_cast<GLint>(lodLevel),
-                  0, static_cast<GLint>(startRow),
-                  static_cast<GLsizei>(w), static_cast<GLsizei>(numRows),
-                  GL_RGBA, GL_UNSIGNED_BYTE, rgbaSubPixels.data());
+  glTexSubImage2D(GL_TEXTURE_2D, static_cast<GLint>(lodLevel), 0,
+                  static_cast<GLint>(startRow), static_cast<GLsizei>(w),
+                  static_cast<GLsizei>(numRows), GL_RGBA, GL_UNSIGNED_BYTE,
+                  rgbaSubPixels.data());
 
-  GLIDE_LOG(DEBUG, "GLES", "UploadTexturePartial TMU" << tmu << ": Address=0x" << std::hex << startAddress << std::dec << " level=" << lodLevel << " rows=" << startRow << ".." << endRow << " uploaded via glTexSubImage2D.");
+  GLIDE_LOG(DEBUG, "GLES",
+            "UploadTexturePartial TMU"
+                << tmu << ": Address=0x" << std::hex << startAddress << std::dec
+                << " level=" << lodLevel << " rows=" << startRow << ".."
+                << endRow << " uploaded via glTexSubImage2D.");
 
   glBindTexture(GL_TEXTURE_2D, previousTexture);
   checkGLError("UploadTexturePartial");

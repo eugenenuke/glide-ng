@@ -4946,6 +4946,9 @@ TEST_CASE(
           handle, "grTexFilterMode");
   auto drawTriangle = (void (*)(const void*, const void*, const void*))dlsym(
       handle, "grDrawTriangle");
+  auto texCombine = (void (*)(
+      GrChipID_t, GrCombineFunction_t, GrCombineFactor_t, GrCombineFunction_t,
+      GrCombineFactor_t, FxBool, FxBool))dlsym(handle, "grTexCombine");
 
   REQUIRE(glideInit != nullptr);
   REQUIRE(sstSelect != nullptr);
@@ -4962,6 +4965,7 @@ TEST_CASE(
   REQUIRE(texClamp != nullptr);
   REQUIRE(texFilter != nullptr);
   REQUIRE(drawTriangle != nullptr);
+  REQUIRE(texCombine != nullptr);
 
   // Initialize
   glideInit();
@@ -4987,6 +4991,9 @@ TEST_CASE(
     texClamp(GR_TMU0, GR_TEXTURECLAMP_WRAP, GR_TEXTURECLAMP_WRAP);
     texFilter(GR_TMU0, GR_TEXTUREFILTER_POINT_SAMPLED,
               GR_TEXTUREFILTER_POINT_SAMPLED);
+    texCombine(GR_TMU0, GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+               GR_COMBINE_FUNCTION_NONE, GR_COMBINE_FACTOR_NONE, FXFALSE,
+               FXFALSE);
 
     // Set green constant color (FLATLIT mode uses it)
     constantColorValue(0x00ff0000);
@@ -5119,6 +5126,9 @@ TEST_CASE(
     texSource(GR_TMU0, 0, GR_MIPMAPLEVELMASK_BOTH, &texture.info);
     texFilter(GR_TMU0, GR_TEXTUREFILTER_BILINEAR, GR_TEXTUREFILTER_BILINEAR);
     texMipMapMode(GR_TMU0, GR_MIPMAP_NEAREST, FXFALSE);
+    texCombine(GR_TMU0, GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+               GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE, FXFALSE,
+               FXFALSE);
 
     bufferClear(0, 0, GR_ZDEPTHVALUE_FARTHEST);
 
@@ -6161,84 +6171,159 @@ TEST_CASE("Glide 3.x grGet Unit Tests", "[Glide3][grGet]") {
 
 #include "core/VertexLayout.h"
 
-TEST_CASE("Glide 3.x Vertex Layout Decoding Integrity TMU 1", "[VertexLayout][TMU1]") {
-    auto& layout = GlideWrapper::VertexLayout::GetInstance();
+TEST_CASE("Glide 2.x/3.x TMU 1 Vertex Layout Decoding Integrity", "[VertexLayout][TMU1]") {
+  auto& layout = GlideWrapper::VertexLayout::GetInstance();
 
-    SECTION("Voodoo2 Canonical Layout (TMU 1)") {
-        layout.ResetToGlide2Canonical();
+  SECTION("Glide 2 TMU 1 Decoding (Canonical)") {
+    layout.ResetToGlide2Canonical();
 
-        struct MockVoodoo2Vertex {
-            float x, y;     // 0, 4
-            float z;        // 8
-            float r, g, b;  // 12, 16, 20
-            float ooz;      // 24
-            float a;        // 28
-            float oow;      // 32
-            float s0, t0;   // 36, 40
-            float oow0;     // 44
-            float s1, t1;   // 48, 52 (TMU 1!)
-            float oow1;     // 56
-        };
+    struct MockGlide2TMU1Vertex {
+      float x, y;
+      float z;
+      float r, g, b;
+      float ooz;
+      float a;
+      float oow;
+      float s0, t0;
+      float padding[1]; // Pad to offset 48
+      float s1, t1;
+    };
 
-        MockVoodoo2Vertex v;
-        v.x = 120.0f; v.y = 240.0f;
-        v.z = 0.5f;
-        v.r = 255.0f; v.g = 128.0f; v.b = 0.0f;
-        v.ooz = 32768.0f;
-        v.a = 255.0f;
-        v.oow = 0.5f;
-        v.s0 = 10.0f; v.t0 = 20.0f;
-        v.oow0 = 0.5f;
-        v.s1 = 100.0f; v.t1 = 200.0f;
-        v.oow1 = 0.5f;
+    MockGlide2TMU1Vertex v;
+    v.x = 100.0f;
+    v.y = 200.0f;
+    v.z = 0.0f;
+    v.r = 255.0f; v.g = 255.0f; v.b = 255.0f;
+    v.ooz = 0.0f;
+    v.a = 255.0f;
+    v.oow = 1.0f;
+    v.s0 = 5.0f; v.t0 = 10.0f;
+    v.s1 = 15.0f; v.t1 = 20.0f;
 
-        GlideWrapper::ModernVertex mv = layout.DecodeVertex(&v);
+    GlideWrapper::ModernVertex mv = layout.DecodeVertex(&v);
 
-        REQUIRE(mv.pos[0] == 120.0f);
-        REQUIRE(mv.pos[1] == 240.0f);
-        REQUIRE(mv.pos[3] == 0.5f);
-        REQUIRE(mv.tex[0] == 10.0f);
-        REQUIRE(mv.tex[1] == 20.0f);
-        REQUIRE(mv.tex[2] == 100.0f);
-        REQUIRE(mv.tex[3] == 200.0f);
-    }
+    REQUIRE(mv.pos[0] == 100.0f);
+    REQUIRE(mv.pos[1] == 200.0f);
+    REQUIRE(mv.tex[0] == 5.0f);
+    REQUIRE(mv.tex[1] == 10.0f);
+    REQUIRE(mv.tex[2] == 15.0f);
+    REQUIRE(mv.tex[3] == 20.0f);
+    REQUIRE(mv.tmu_oow[1] == 1.0f); // Default when separate W disabled
+  }
 
-    SECTION("Glide 3 Custom Layout (TMU 1)") {
-        layout.ResetToGlide3Canonical();
+  SECTION("Glide 2 TMU 1 Decoding (Canonical with separate W)") {
+    layout.ResetToGlide2Canonical();
+    layout.SetSTWHintMask(0x8); // GR_STWHINT_W_DIFF_TMU1
 
-        layout.SetParamOffsetGlide3(0x01, 0, 1);  // GR_PARAM_XY
-        layout.SetParamOffsetGlide3(0x04, 12, 1); // GR_PARAM_Q
-        layout.SetParamOffsetGlide3(0x20, 16, 1); // GR_PARAM_RGB
-        layout.SetParamOffsetGlide3(0x10, 28, 1); // GR_PARAM_A
-        layout.SetParamOffsetGlide3(0x40, 32, 1); // GR_PARAM_ST0
-        layout.SetParamOffsetGlide3(0x41, 40, 1); // GR_PARAM_ST1
+    struct MockGlide2TMU1Vertex {
+      float x, y;
+      float z;
+      float r, g, b;
+      float ooz;
+      float a;
+      float oow;
+      float s0, t0;
+      float padding[1]; // Pad to offset 48
+      float s1, t1, w1;
+    };
 
-        struct MockGlide3Vertex {
-            float x, y;     // 0, 4
-            float pad_ooz;  // 8
-            float q;        // 12
-            float r, g, b;  // 16, 20, 24
-            float a;        // 28
-            float s0, t0;   // 32, 36
-            float s1, t1;   // 40, 44 (TMU 1!)
-        };
+    MockGlide2TMU1Vertex v;
+    v.x = 100.0f;
+    v.y = 200.0f;
+    v.z = 0.0f;
+    v.r = 255.0f; v.g = 255.0f; v.b = 255.0f;
+    v.ooz = 0.0f;
+    v.a = 255.0f;
+    v.oow = 0.5f;
+    v.s0 = 5.0f; v.t0 = 10.0f;
+    v.s1 = 15.0f; v.t1 = 20.0f; v.w1 = 0.25f;
 
-        MockGlide3Vertex v;
-        v.x = 300.0f; v.y = 150.0f;
-        v.q = 0.2f;
-        v.r = 0.0f; v.g = 255.0f; v.b = 255.0f;
-        v.a = 128.0f;
-        v.s0 = 5.0f; v.t0 = 8.0f;
-        v.s1 = 50.0f; v.t1 = 80.0f;
+    GlideWrapper::ModernVertex mv = layout.DecodeVertex(&v);
 
-        GlideWrapper::ModernVertex mv = layout.DecodeVertex(&v);
+    REQUIRE(mv.pos[0] == 100.0f);
+    REQUIRE(mv.pos[1] == 200.0f);
+    REQUIRE(mv.tex[0] == 5.0f);
+    REQUIRE(mv.tex[1] == 10.0f);
+    REQUIRE(mv.tex[2] == 15.0f);
+    REQUIRE(mv.tex[3] == 20.0f);
+    REQUIRE(mv.tmu_oow[1] == 0.25f);
+  }
 
-        REQUIRE(mv.pos[0] == 300.0f);
-        REQUIRE(mv.pos[1] == 150.0f);
-        REQUIRE(mv.pos[3] == 0.2f);
-        REQUIRE(mv.tex[0] == 5.0f);
-        REQUIRE(mv.tex[1] == 8.0f);
-        REQUIRE(mv.tex[2] == 50.0f);
-        REQUIRE(mv.tex[3] == 80.0f);
-    }
+  SECTION("Glide 3 TMU 1 Decoding (Voodoo2 Canonical on Glide 3)") {
+    layout.ResetToGlide2Canonical();
+
+    struct MockVoodoo2Vertex {
+      float x, y;     // 0, 4
+      float z;        // 8
+      float r, g, b;  // 12, 16, 20
+      float ooz;      // 24
+      float a;        // 28
+      float oow;      // 32
+      float s0, t0;   // 36, 40
+      float oow0;     // 44
+      float s1, t1;   // 48, 52 (TMU 1!)
+      float oow1;     // 56
+    };
+
+    MockVoodoo2Vertex v;
+    v.x = 120.0f; v.y = 240.0f;
+    v.z = 0.5f;
+    v.r = 255.0f; v.g = 128.0f; v.b = 0.0f;
+    v.ooz = 32768.0f;
+    v.a = 255.0f;
+    v.oow = 0.5f;
+    v.s0 = 10.0f; v.t0 = 20.0f;
+    v.oow0 = 0.5f;
+    v.s1 = 100.0f; v.t1 = 200.0f;
+    v.oow1 = 0.5f;
+
+    GlideWrapper::ModernVertex mv = layout.DecodeVertex(&v);
+
+    REQUIRE(mv.pos[0] == 120.0f);
+    REQUIRE(mv.pos[1] == 240.0f);
+    REQUIRE(mv.pos[3] == 0.5f);
+    REQUIRE(mv.tex[0] == 10.0f);
+    REQUIRE(mv.tex[1] == 20.0f);
+    REQUIRE(mv.tex[2] == 100.0f);
+    REQUIRE(mv.tex[3] == 200.0f);
+  }
+
+  SECTION("Glide 3 TMU 1 Decoding (Glide 3 Custom Layout)") {
+    layout.ResetToGlide3Canonical();
+
+    layout.SetParamOffsetGlide3(0x01, 0, 1);  // GR_PARAM_XY
+    layout.SetParamOffsetGlide3(0x04, 12, 1); // GR_PARAM_Q
+    layout.SetParamOffsetGlide3(0x20, 16, 1); // GR_PARAM_RGB
+    layout.SetParamOffsetGlide3(0x10, 28, 1); // GR_PARAM_A
+    layout.SetParamOffsetGlide3(0x40, 32, 1); // GR_PARAM_ST0
+    layout.SetParamOffsetGlide3(0x41, 40, 1); // GR_PARAM_ST1
+
+    struct MockGlide3Vertex {
+      float x, y;     // 0, 4
+      float pad_ooz;  // 8
+      float q;        // 12
+      float r, g, b;  // 16, 20, 24
+      float a;        // 28
+      float s0, t0;   // 32, 36
+      float s1, t1;   // 40, 44 (TMU 1!)
+    };
+
+    MockGlide3Vertex v;
+    v.x = 300.0f; v.y = 150.0f;
+    v.q = 0.2f;
+    v.r = 0.0f; v.g = 255.0f; v.b = 255.0f;
+    v.a = 128.0f;
+    v.s0 = 5.0f; v.t0 = 8.0f;
+    v.s1 = 50.0f; v.t1 = 80.0f;
+
+    GlideWrapper::ModernVertex mv = layout.DecodeVertex(&v);
+
+    REQUIRE(mv.pos[0] == 300.0f);
+    REQUIRE(mv.pos[1] == 150.0f);
+    REQUIRE(mv.pos[3] == 0.2f);
+    REQUIRE(mv.tex[0] == 5.0f);
+    REQUIRE(mv.tex[1] == 8.0f);
+    REQUIRE(mv.tex[2] == 50.0f);
+    REQUIRE(mv.tex[3] == 80.0f);
+  }
 }

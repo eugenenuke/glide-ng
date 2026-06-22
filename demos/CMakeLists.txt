@@ -285,7 +285,7 @@ target_link_libraries(large_texture_showcase PRIVATE
 # --- Phase 2 Visual/Logical Validation Demo (Glide 3.x State Serialization & Multi-Texturing) ---
 add_executable(phase2_validation_demo
     phase2_validation_demo.cpp
-    "${CMAKE_CURRENT_SOURCE_DIR}/../refs/3dfx-Glide-API/glide3x/cvg/glide3/tests/tlib.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../tests/tlib3_patched.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/../refs/3dfx-Glide-API/swlibs/fxmisc/linutil.c"
 )
 

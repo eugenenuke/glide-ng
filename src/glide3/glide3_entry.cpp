@@ -290,7 +290,8 @@ struct GlideWrapperState {
 };
 
 static_assert(sizeof(GlideWrapperState) <= 1024,
-              "GlideWrapperState footprint exceeds the 1024-byte client allocation limit!");
+              "GlideWrapperState footprint exceeds the 1024-byte client "
+              "allocation limit!");
 
 FX_ENTRY void FX_CALL grGlideInit(void) {
   ResetFrontendState();
@@ -315,7 +316,8 @@ FX_ENTRY void FX_CALL grGlideInit(void) {
 
   // Set TMU memory limits based on emulated card config
   for (uint32_t tmu = 0; tmu < reg.GetConfig().tmuCount; ++tmu) {
-    GlideWrapper::TextureManager::GetInstance().SetTmuMemoryLimitMb(tmu, reg.GetConfig().tmuMemoryMb);
+    GlideWrapper::TextureManager::GetInstance().SetTmuMemoryLimitMb(
+        tmu, reg.GetConfig().tmuMemoryMb);
   }
 }
 
@@ -331,7 +333,8 @@ inline void EnsureEngineInitialized() {
         reg.GetConfig().logToConsole);
     bm.EstablishBackend(reg.GetConfig());
     for (uint32_t tmu = 0; tmu < reg.GetConfig().tmuCount; ++tmu) {
-      GlideWrapper::TextureManager::GetInstance().SetTmuMemoryLimitMb(tmu, reg.GetConfig().tmuMemoryMb);
+      GlideWrapper::TextureManager::GetInstance().SetTmuMemoryLimitMb(
+          tmu, reg.GetConfig().tmuMemoryMb);
     }
     GLIDE_LOG(INFO, "Frontend", "Implicit grGlideInit executed seamlessly.");
   } else {
@@ -476,7 +479,8 @@ FX_ENTRY GrContext_t FX_CALL grSstWinOpen(FxU32 hWnd,
   if (attached) {
     auto& reg = GlideWrapper::EmulationRegistry::GetInstance();
     for (uint32_t tmu = 0; tmu < reg.GetConfig().tmuCount; ++tmu) {
-      GlideWrapper::TextureManager::GetInstance().SetTmuMemoryLimitMb(tmu, reg.GetConfig().tmuMemoryMb);
+      GlideWrapper::TextureManager::GetInstance().SetTmuMemoryLimitMb(
+          tmu, reg.GetConfig().tmuMemoryMb);
     }
   }
 
@@ -973,6 +977,7 @@ FX_ENTRY void FX_CALL grGlideGetState(void* state) {
   GLIDE_LOG(DEBUG, "Frontend", "grGlideGetState (Glide 3.x) invoked.");
   if (!state) return;
   auto* ws = reinterpret_cast<GlideWrapperState*>(state);
+  std::memset(ws, 0, sizeof(GlideWrapperState));
   ws->depthMode = s_depthMode;
   ws->depthCompare = s_depthCompare;
   ws->depthMask = s_depthMask ? 1 : 0;
@@ -1140,6 +1145,7 @@ FX_ENTRY void FX_CALL grGlideSetState(const void* state) {
     b->SetSstOrigin(s_sstOrigin);
     b->SetClipWindow(s_clipMinX, s_clipMinY, s_clipMaxX, s_clipMaxY);
     b->SetColorMask(s_colorMaskRgb, s_colorMaskAlpha);
+    b->SetAAState(s_aaOrdered);
 
     // Restore color and alpha combiner states
     b->SetCombinerMode(s_colorFunc, s_colorFactor, s_colorLocal, s_colorOther,
@@ -1289,8 +1295,8 @@ FX_ENTRY void FX_CALL grTexClampMode(GrChipID_t tmu,
 FX_ENTRY void FX_CALL grTexMipMapMode(GrChipID_t tmu, GrMipMapMode_t mode,
                                       FxBool lodBlend) {
   GLIDE_LOG(DEBUG, "Frontend",
-            "grTexMipMapMode (Glide 3.x) invoked for TMU=" << tmu
-                                   << ", mode=" << mode << ", lodBlend=" << lodBlend);
+            "grTexMipMapMode (Glide 3.x) invoked for TMU="
+                << tmu << ", mode=" << mode << ", lodBlend=" << lodBlend);
   if (tmu < 2) {
     s_mipmapMode[tmu] = mode;
     s_lodBlend[tmu] = lodBlend;
