@@ -150,6 +150,16 @@ bool TextureManager::DownloadMipMap(uint32_t tmu, uint32_t startAddress,
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   if (tmu >= 2 || !data) return false;
 
+  // VULN-05: Strict validation of LOD limits and aspect ratios to prevent out-of-bounds memory access
+  if (lodMin > lodMax) {
+    GLIDE_LOG(CRITICAL, "TextureManager", "DownloadMipMap: lodMin (" << lodMin << ") is greater than lodMax (" << lodMax << ")!");
+    return false;
+  }
+  if (aspect > 6) {
+    GLIDE_LOG(CRITICAL, "TextureManager", "DownloadMipMap: aspect ratio (" << aspect << ") is out of range (0..6)!");
+    return false;
+  }
+
   // Card-specific bounds check
   auto model = EmulationRegistry::GetInstance().GetConfig().model;
   uint32_t maxDimension = (model >= CardModel::Voodoo3) ? 2048 : 256;
@@ -548,6 +558,16 @@ bool TextureManager::DownloadMipMapPartial(uint32_t tmu, uint32_t startAddress,
                                            int startRow, int endRow) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   if (tmu >= 2 || !data) return false;
+
+  // VULN-05: Strict validation of LOD limits and aspect ratios to prevent out-of-bounds memory access
+  if (thisLod < largeLod) {
+    GLIDE_LOG(CRITICAL, "TextureManager", "DownloadMipMapPartial: thisLod (" << thisLod << ") is smaller than base largeLod (" << largeLod << ")!");
+    return false;
+  }
+  if (aspectRatio > 6) {
+    GLIDE_LOG(CRITICAL, "TextureManager", "DownloadMipMapPartial: aspect ratio (" << aspectRatio << ") is out of range (0..6)!");
+    return false;
+  }
 
   // Card-specific bounds check
   auto model = EmulationRegistry::GetInstance().GetConfig().model;

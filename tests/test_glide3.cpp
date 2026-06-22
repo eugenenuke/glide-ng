@@ -2799,3 +2799,53 @@ TEST_CASE("Glide 3.x State Restoration Sanitization [VULN-01]", "[Glide3][State]
 #endif
 }
 
+TEST_CASE("Glide 3.x Texture LOD & Aspect Bounds Validation [VULN-05]", "[Glide3][Texture]") {
+#ifdef __linux__
+    void* handle = OpenGlide3Handle();
+    REQUIRE(handle != nullptr);
+
+    auto glideInit    = reinterpret_cast<void(*)(void)>(::dlsym(handle, "grGlideInit"));
+    auto sstSelect    = reinterpret_cast<void(*)(int)>(::dlsym(handle, "grSstSelect"));
+    auto winOpen      = reinterpret_cast<FxU32(*)(FxU32, GrScreenResolution_t, GrScreenRefresh_t, GrColorFormat_t, GrOriginLocation_t, int, int)>(::dlsym(handle, "grSstWinOpen"));
+    auto texDownload      = reinterpret_cast<void(*)(GrChipID_t, FxU32, FxU32, GrTexInfo*)>(::dlsym(handle, "grTexDownloadMipMap"));
+    auto winClose         = reinterpret_cast<FxBool(*)(FxU32)>(::dlsym(handle, "grSstWinClose"));
+    auto glideShutdown    = reinterpret_cast<void(*)(void)>(::dlsym(handle, "grGlideShutdown"));
+
+    REQUIRE(glideInit != nullptr);
+    REQUIRE(winOpen != nullptr);
+    REQUIRE(texDownload != nullptr);
+
+    glideInit();
+    if (sstSelect) sstSelect(0);
+    FxU32 ctx = winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz, GR_COLORFORMAT_ABGR, GR_ORIGIN_UPPER_LEFT, 2, 1);
+    REQUIRE(ctx != 0);
+
+    // Create a 16x16 dummy texture buffer
+    std::vector<uint16_t> dummyData(16 * 16, 0);
+
+    GrTexInfo badInfo;
+    badInfo.format = GR_TEXFMT_RGB_565;
+    badInfo.data = dummyData.data();
+
+    // 1. Test case: Invalid aspect ratio (aspectRatioLog2 out of bounds)
+    badInfo.smallLodLog2 = 4; // 16x16
+    badInfo.largeLodLog2 = 4;
+    badInfo.aspectRatioLog2 = 999; 
+
+    // We verify that calling grTexDownloadMipMap does NOT crash the process
+    texDownload(GR_TMU0, 0, 0, &badInfo);
+
+    // 2. Test case: Invalid LOD limits where smallLodLog2 < largeLodLog2 in log2 (lodMin > lodMax)
+    badInfo.aspectRatioLog2 = 0; // 1:1
+    badInfo.smallLodLog2 = 0; // 1x1 (translated to lodMin = 8)
+    badInfo.largeLodLog2 = 4; // 16x16 (translated to lodMax = 4)
+
+    // We verify that this does NOT crash and is caught safely
+    texDownload(GR_TMU0, 0, 0, &badInfo);
+
+    winClose(ctx);
+    glideShutdown();
+    ::dlclose(handle);
+#endif
+}
+
