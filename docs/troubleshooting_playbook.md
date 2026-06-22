@@ -428,3 +428,11 @@ When future agents or developers encounter regressions or divergent rendering be
         timeout 5s import -window "$WIN_TITLE" "$OUTPUT_PNG"
         ```
 
+### L. Headless Framebuffer Readback Swap Race Condition
+*   **The Problem**: When running a demo or test in headless mode and reading back the framebuffer using `grLfbReadRegion` to save a screenshot, calling `grBufferSwap` **before** calling `grLfbReadRegion` will cause the graphics driver to swap the fully populated back buffer with the empty front buffer. Consequently, calling `grLfbReadRegion(GR_BUFFER_BACKBUFFER, ...)` will read from the newly swapped, completely empty/black back buffer, resulting in a **100% black/blank screenshot**, even if the frame rendered perfectly on the screen!
+*   **The Best Practice**: Always call `grLfbReadRegion` to capture the back buffer **before** calling `grBufferSwap`. This ensures you read the framebuffer while it is still populated with the rendered scene.
+
+### M. Clear Buffer Color Mask Synchronization
+*   **The Problem**: Clears (like `grBufferClear`) respect the active color write mask in modern graphics backends. If you call `grColorMask(FXFALSE, FXTRUE)` (disabling RGB color writes) before calling `grBufferClear`, the clear operation will be unable to write the clear color to the framebuffer, leaving the entire window black or uninitialized.
+*   **The Best Practice**: Always ensure the color write mask is fully enabled (`grColorMask(FXTRUE, FXTRUE)`) when performing a buffer clear, or be aware that clearing while the mask is disabled will prevent the clear color from being written.
+
