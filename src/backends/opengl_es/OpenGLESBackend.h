@@ -55,6 +55,39 @@ class OpenGLESBackend : public SoftwareBackendBase {
   void SetStippleState(uint32_t mode, uint32_t pattern) override;
   void LoadGammaTable(uint32_t nentries, const uint32_t* rTable,
                       const uint32_t* gTable, const uint32_t* bTable) override;
+  void SetDepthState(uint32_t depthMode, uint32_t compareOp, bool depthMask,
+                     int32_t biasLevel) override;
+  void SetCullState(uint32_t cullMode) override;
+  void SetAlphaTestState(uint32_t compareOp, uint32_t refVal) override;
+  void SetSstOrigin(uint32_t origin) override;
+  void SetClipWindow(uint32_t minX, uint32_t minY, uint32_t maxX,
+                     uint32_t maxY) override;
+  void SetConstantColor(uint32_t color) override;
+  void SetPixelFormat(uint32_t format) override;
+  void BindTexture(uint32_t tmu, uint32_t startAddress, uint32_t clampS,
+                   uint32_t clampT, uint32_t minFilter,
+                   uint32_t magFilter) override;
+  void SetTexLodBias(uint32_t tmu, float bias) override;
+  void SetTexMipMapMode(uint32_t tmu, uint32_t mode, bool lodBlend) override;
+  void SetCombinerMode(uint32_t colorFunc, uint32_t colorFactor,
+                       uint32_t colorLocal, uint32_t colorOther,
+                       bool colorInvert, uint32_t alphaFunc,
+                       uint32_t alphaFactor, uint32_t alphaLocal,
+                       uint32_t alphaOther, bool alphaInvert) override;
+  void SetTexCombinerMode(uint32_t tmu, uint32_t rgbFunc, uint32_t rgbFactor,
+                          uint32_t alphaFunc, uint32_t alphaFactor,
+                          bool rgbInvert, bool alphaInvert) override;
+  void SetSTWHintState(uint32_t hintMask) override;
+  void SetChromakeyMode(uint32_t mode) override;
+  void SetChromakeyValue(uint32_t value) override;
+  void SetChromakeyRange(uint32_t minColor, uint32_t maxColor,
+                         uint32_t mode) override;
+  void SetTexChromakeyMode(uint32_t tmu, uint32_t mode) override;
+  void SetTexChromakeyRange(uint32_t tmu, uint32_t minColor, uint32_t maxColor,
+                            uint32_t mode) override;
+  void SetFogMode(uint32_t mode) override;
+  void SetFogColor(uint32_t color) override;
+  void SetFogTable(const uint8_t* table) override;
 
  private:
   bool CreateGLContext(void* nativeWindowHandle, uint32_t width,
@@ -92,8 +125,15 @@ class OpenGLESBackend : public SoftwareBackendBase {
   uint32_t m_geomVAO{0};      // GLuint
   uint32_t m_geomVBO{0};      // GLuint
   uint32_t m_geomVBOOffset{0};
-  const uint32_t m_geomVBOSize{1024 * 1024};  // 1MB dynamic ring buffer
+  uint32_t m_geomVBOSizeConfigured{1024 * 1024};  // Configurable dynamic ring buffer size in bytes
   std::unordered_map<uint32_t, uint32_t> m_glesTextures;
+
+  // Geometry Batching State
+  enum class BatchPrimitiveMode { None, Points, Lines, Triangles };
+  BatchPrimitiveMode m_batchPrimitiveMode{BatchPrimitiveMode::None};
+  std::vector<ModernVertex> m_batchVertices;
+  bool m_batchIs2DGeometry{false};
+  void FlushBatch();
 
   // Unified GPU Framebuffer LFB Flushing
   void FlushLFBToGPU();
