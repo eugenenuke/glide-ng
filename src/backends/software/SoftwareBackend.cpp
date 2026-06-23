@@ -1924,8 +1924,10 @@ void SoftwareBackend::FlushBins() {
     }
 
     if (!activeTiles.empty()) {
-      // Avoid thread wakeup and synchronization overhead for tiny workloads (e.g. glide2_cube)
-      if (activeTiles.size() < 16 || m_binnedCommands.size() < 64 || m_threadPool->GetThreadCount() == 0) {
+      // Refined thresholding: only bypass the thread pool if the active tile count is extremely small (< 4),
+      // indicating a tiny screen footprint. Large triangles (even if few in number, like the Glide Cube)
+      // cover many pixels and benefit immensely from multi-threaded rasterization!
+      if (activeTiles.size() < 4 || m_threadPool->GetThreadCount() == 0) {
         for (int tileIdx : activeTiles) {
           RasterizeTile(tileIdx);
         }
