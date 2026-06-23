@@ -844,7 +844,7 @@ void SoftwareBackendBase::SetRenderBuffer(uint32_t target) {
     m_headlessPixelMap = m_cpuBuffers[m_backBufferIdx].data();
   }
   GLIDE_LOG(
-      INFO, "SoftwareBackendBase",
+      DEBUG, "SoftwareBackendBase",
       "SetRenderBuffer: target=" << target << ", map=" << m_headlessPixelMap);
 }
 
