@@ -1475,6 +1475,17 @@ bool VulkanBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
   if (m_gpuStagingMaps[m_currentFrameSlot] && readDst) {
     std::memcpy(readDst, m_gpuStagingMaps[m_currentFrameSlot],
                 m_headlessWidth * m_headlessHeight * 4);
+    if (m_pixelFormatOverride == 1) {
+      auto* dest = reinterpret_cast<uint32_t*>(readDst);
+      for (uint32_t i = 0; i < m_headlessWidth * m_headlessHeight; ++i) {
+        uint32_t argb = dest[i];
+        uint32_t b = argb & 0xFF;
+        uint32_t g = (argb >> 8) & 0xFF;
+        uint32_t r = (argb >> 16) & 0xFF;
+        uint32_t a = (argb >> 24) & 0xFF;
+        dest[i] = (a << 24) | (b << 16) | (g << 8) | r;
+      }
+    }
   }
 
   // 5. Reset and begin a new command buffer for subsequent commands in the

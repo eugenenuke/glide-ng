@@ -111,6 +111,7 @@ void SoftwareBackendBase::ResetState() {
 void SoftwareBackendBase::ClearBuffer(uint32_t color, uint32_t alpha, float z,
                                       uint32_t clearMask) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  FlushBins();
   GLIDE_LOG(DEBUG, "Rasterizer",
             "ClearBuffer CPU side invoked: color=0x"
                 << std::hex << color << ", alpha=" << alpha << ", mask="
@@ -122,10 +123,6 @@ void SoftwareBackendBase::ClearBuffer(uint32_t color, uint32_t alpha, float z,
     uint32_t r = (color >> 16) & 0xFF;
     uint32_t g = (color >> 8) & 0xFF;
     uint32_t b = color & 0xFF;
-
-    if (m_pixelFormatOverride == 1) {  // ABGR format override
-      std::swap(r, b);
-    }
 
     uint32_t writeMask = 0;
     if (m_colorMaskRgb) writeMask |= 0x00FFFFFF;
@@ -170,6 +167,7 @@ void SoftwareBackendBase::ClearBuffer(uint32_t color, uint32_t alpha, float z,
 
 void SoftwareBackendBase::SetConstantColor(uint32_t color) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  MarkStateDirty();
   m_constantColor = color;
   GLIDE_LOG(DEBUG, "Rasterizer",
             "SetConstantColor: 0x" << std::hex << color << std::dec);
@@ -177,6 +175,7 @@ void SoftwareBackendBase::SetConstantColor(uint32_t color) {
 
 void SoftwareBackendBase::SetPixelFormat(uint32_t format) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  MarkStateDirty();
   m_pixelFormatOverride = format;
   GLIDE_LOG(DEBUG, "Rasterizer",
             "SetPixelFormat active override format: " << format);
@@ -185,6 +184,7 @@ void SoftwareBackendBase::SetPixelFormat(uint32_t format) {
 void SoftwareBackendBase::SetDepthState(uint32_t depthMode, uint32_t compareOp,
                                         bool depthMask, int32_t biasLevel) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  MarkStateDirty();
   m_depthMode = depthMode;
   m_depthCompareOp = compareOp;
   m_depthMask = depthMask;
@@ -197,6 +197,7 @@ void SoftwareBackendBase::SetDepthState(uint32_t depthMode, uint32_t compareOp,
 
 void SoftwareBackendBase::SetDepthRange(float nearVal, float farVal) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  MarkStateDirty();
   m_depthNear = nearVal;
   m_depthFar = farVal;
   GLIDE_LOG(DEBUG, "Rasterizer", "SetDepthRange: Near=" << nearVal << ", Far=" << farVal);
@@ -204,12 +205,14 @@ void SoftwareBackendBase::SetDepthRange(float nearVal, float farVal) {
 
 void SoftwareBackendBase::SetDitherMode(uint32_t mode) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  MarkStateDirty();
   m_ditherMode = mode;
   GLIDE_LOG(DEBUG, "Rasterizer", "SetDitherMode: Mode=" << mode);
 }
 
 void SoftwareBackendBase::SetStippleState(uint32_t mode, uint32_t pattern) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  MarkStateDirty();
   m_stippleMode = mode;
   m_stipplePattern = pattern;
   GLIDE_LOG(DEBUG, "Rasterizer", "SetStippleState: Mode=" << mode << ", Pattern=0x" << std::hex << pattern << std::dec);
@@ -220,6 +223,7 @@ void SoftwareBackendBase::SetBlendState(uint32_t rgbSrcFactor,
                                         uint32_t alphaSrcFactor,
                                         uint32_t alphaDstFactor) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  MarkStateDirty();
   m_rgbSrcBlend = rgbSrcFactor;
   m_rgbDstBlend = rgbDstFactor;
   m_alphaSrcBlend = alphaSrcFactor;
@@ -231,6 +235,7 @@ void SoftwareBackendBase::SetBlendState(uint32_t rgbSrcFactor,
 void SoftwareBackendBase::SetAlphaTestState(uint32_t compareOp,
                                             uint32_t refVal) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  MarkStateDirty();
   m_alphaTestOp = compareOp;
   m_alphaTestRefVal = refVal;
   GLIDE_LOG(DEBUG, "Rasterizer",
@@ -239,6 +244,7 @@ void SoftwareBackendBase::SetAlphaTestState(uint32_t compareOp,
 
 void SoftwareBackendBase::SetCullState(uint32_t cullMode) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  MarkStateDirty();
   m_cullMode = cullMode;
   GLIDE_LOG(DEBUG, "Rasterizer", "SetCullState: Mode=" << cullMode);
 }
@@ -246,6 +252,7 @@ void SoftwareBackendBase::SetCullState(uint32_t cullMode) {
 void SoftwareBackendBase::SetClipWindow(uint32_t minX, uint32_t minY,
                                         uint32_t maxX, uint32_t maxY) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  MarkStateDirty();
   m_clipMinX = minX;
   m_clipMinY = minY;
   m_clipMaxX = std::min(m_headlessWidth, maxX);
@@ -257,12 +264,14 @@ void SoftwareBackendBase::SetClipWindow(uint32_t minX, uint32_t minY,
 
 void SoftwareBackendBase::SetSstOrigin(uint32_t origin) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  MarkStateDirty();
   m_sstOrigin = origin;
   GLIDE_LOG(DEBUG, "Rasterizer", "SetSstOrigin: " << origin);
 }
 
 void SoftwareBackendBase::SetColorMask(bool rgb, bool alpha) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  MarkStateDirty();
   m_colorMaskRgb = rgb;
   m_colorMaskAlpha = alpha;
   GLIDE_LOG(DEBUG, "Rasterizer",
@@ -271,12 +280,14 @@ void SoftwareBackendBase::SetColorMask(bool rgb, bool alpha) {
 
 void SoftwareBackendBase::SetFogMode(uint32_t mode) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  MarkStateDirty();
   m_fogMode = mode;
   GLIDE_LOG(DEBUG, "Rasterizer", "SetFogMode: " << mode);
 }
 
 void SoftwareBackendBase::SetFogColor(uint32_t color) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  MarkStateDirty();
   m_fogColor = color;
   GLIDE_LOG(DEBUG, "Rasterizer",
             "SetFogColor: 0x" << std::hex << color << std::dec);
@@ -284,6 +295,7 @@ void SoftwareBackendBase::SetFogColor(uint32_t color) {
 
 void SoftwareBackendBase::SetFogTable(const uint8_t* table) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  MarkStateDirty();
   if (table) {
     std::memcpy(m_fogTable, table, sizeof(m_fogTable));
     GLIDE_LOG(DEBUG, "Rasterizer", "SetFogTable: 64 entries uploaded.");
@@ -294,6 +306,7 @@ void SoftwareBackendBase::BindTexture(uint32_t tmu, uint32_t startAddress,
                                       uint32_t clampS, uint32_t clampT,
                                       uint32_t minFilter, uint32_t magFilter) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  MarkStateDirty();
   if (tmu < 2) {
     m_boundTexAddress[tmu] = startAddress;
     m_texClampS[tmu] = clampS;
@@ -324,6 +337,7 @@ void SoftwareBackendBase::SetCombinerMode(
     uint32_t alphaFactor, uint32_t alphaLocal, uint32_t alphaOther,
     bool alphaInvert) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  MarkStateDirty();
   m_colorCombinerFunc = colorFunc;
   m_colorCombinerFactor = colorFactor;
   m_colorCombinerLocal = colorLocal;
@@ -350,6 +364,7 @@ void SoftwareBackendBase::SetTexCombinerMode(uint32_t tmu, uint32_t rgbFunc,
                                              bool rgbInvert,
                                              bool alphaInvert) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  MarkStateDirty();
   if (tmu < 2) {
     m_texCombinerRgbFunc[tmu] = rgbFunc;
     m_texCombinerRgbFactor[tmu] = rgbFactor;
@@ -367,18 +382,21 @@ void SoftwareBackendBase::SetTexCombinerMode(uint32_t tmu, uint32_t rgbFunc,
 
 void SoftwareBackendBase::SetSTWHintState(uint32_t hintMask) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  MarkStateDirty();
   m_stwHintMask = hintMask;
   GLIDE_LOG(DEBUG, "Rasterizer", "SetSTWHintState: Mask=" << hintMask);
 }
 
 void SoftwareBackendBase::SetChromakeyMode(uint32_t mode) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  MarkStateDirty();
   m_chromakeyMode = mode;
   GLIDE_LOG(DEBUG, "Rasterizer", "SetChromakeyMode: Mode=" << mode);
 }
 
 void SoftwareBackendBase::SetChromakeyValue(uint32_t value) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  MarkStateDirty();
   m_chromakeyValue = value;
   GLIDE_LOG(DEBUG, "Rasterizer",
             "SetChromakeyValue: Value=0x" << std::hex << value << std::dec);
@@ -387,6 +405,7 @@ void SoftwareBackendBase::SetChromakeyValue(uint32_t value) {
 void SoftwareBackendBase::SetChromakeyRange(uint32_t minColor,
                                             uint32_t maxColor, uint32_t mode) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  MarkStateDirty();
   m_chromakeyRangeMin = minColor;
   m_chromakeyRangeMax = maxColor;
   m_chromakeyRangeMode = mode;
@@ -398,6 +417,7 @@ void SoftwareBackendBase::SetChromakeyRange(uint32_t minColor,
 
 void SoftwareBackendBase::SetTexChromakeyMode(uint32_t tmu, uint32_t mode) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  MarkStateDirty();
   if (tmu < 2) {
     m_texChromaMode[tmu] = mode;
     GLIDE_LOG(DEBUG, "Rasterizer",
@@ -409,6 +429,7 @@ void SoftwareBackendBase::SetTexChromakeyRange(uint32_t tmu, uint32_t minColor,
                                                uint32_t maxColor,
                                                uint32_t mode) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  MarkStateDirty();
   if (tmu < 2) {
     m_texChromaMin[tmu] = minColor;
     m_texChromaMax[tmu] = maxColor;
@@ -436,6 +457,7 @@ bool SoftwareBackendBase::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
                                   uint32_t srcWidth, uint32_t srcHeight,
                                   uint32_t dstStride, void* dstData) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  FlushBins();
   if (!dstData || m_cpuBuffers[0].empty()) return false;
 
   const uint32_t* pixels = nullptr;
@@ -513,13 +535,6 @@ bool SoftwareBackendBase::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
         uint32_t readX = srcX + x;
         if (readX >= width) break;
         uint32_t val = pixels[readY * width + readX];
-        if (m_pixelFormatOverride == 1) {
-          uint32_t a = val & 0xFF000000;
-          uint32_t g = val & 0x0000FF00;
-          uint32_t r = (val >> 16) & 0xFF;
-          uint32_t b = val & 0xFF;
-          val = a | (b << 16) | g | r;
-        }
         destRow32[x] = val;
       }
     } else {
@@ -554,6 +569,7 @@ bool SoftwareBackendBase::WriteLFB(uint32_t buffer, uint32_t dstX,
                                    const void* refData,
                                    const LfbPipelineConfig& config) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  FlushBins();
   if (!srcData || m_cpuBuffers[0].empty()) return false;
 
   GLIDE_LOG(DEBUG, "WriteLFB",
@@ -837,6 +853,7 @@ void SoftwareBackendBase::FreeCpuBuffers() {
 
 void SoftwareBackendBase::SetRenderBuffer(uint32_t target) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  FlushBins();
   m_activeRenderBuffer = target;
   if (m_activeRenderBuffer == 0) {  // GR_BUFFER_FRONTBUFFER
     m_headlessPixelMap = m_cpuBuffers[m_frontBufferIdx].data();
@@ -850,6 +867,7 @@ void SoftwareBackendBase::SetRenderBuffer(uint32_t target) {
 
 void SoftwareBackendBase::SetGamma(float gamma) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  MarkStateDirty();
   GLIDE_LOG(INFO, "Software", "SetGamma: value=" << gamma);
   if (gamma <= 0.0f) gamma = 1.0f;
   for (int i = 0; i < 256; i++) {
@@ -866,6 +884,7 @@ void SoftwareBackendBase::LoadGammaTable(uint32_t nentries,
                                          const uint32_t* gTable,
                                          const uint32_t* bTable) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  MarkStateDirty();
   GLIDE_LOG(INFO, "Software", "LoadGammaTable: nentries=" << nentries);
   if (nentries != 256 || !rTable || !gTable || !bTable) return;
   for (int i = 0; i < 256; i++) {
@@ -900,6 +919,7 @@ void SoftwareBackendBase::ResolveAAMode() {
 
 void SoftwareBackendBase::SetAAState(bool enabled) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  MarkStateDirty();
   m_aaEnabled = enabled;
   GLIDE_LOG(INFO, "Software",
             "SetAAState: AA active=" << (enabled ? "Yes" : "No"));
@@ -907,6 +927,7 @@ void SoftwareBackendBase::SetAAState(bool enabled) {
 
 void SoftwareBackendBase::SetTexLodBias(uint32_t tmu, float bias) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  MarkStateDirty();
   if (tmu < 2) {
     m_texLodBias[tmu] = bias;
     GLIDE_LOG(DEBUG, "Rasterizer", "SetTexLodBias TMU" << tmu << ": " << bias);
@@ -915,6 +936,7 @@ void SoftwareBackendBase::SetTexLodBias(uint32_t tmu, float bias) {
 
 void SoftwareBackendBase::SetTexMipMapMode(uint32_t tmu, uint32_t mode, bool lodBlend) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  MarkStateDirty();
   if (tmu < 2) {
     m_texMipMapMode[tmu] = mode;
     m_texLodBlend[tmu] = lodBlend;

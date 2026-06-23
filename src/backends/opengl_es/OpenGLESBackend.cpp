@@ -503,14 +503,16 @@ bool OpenGLESBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
     // expects the internal CPU buffer to be in BGRA layout before applying
     // client-facing format conversions!
     auto* dest = reinterpret_cast<uint32_t*>(readDst);
-    // 1. Swizzle RGBA to BGRA
-    for (uint32_t i = 0; i < m_headlessWidth * m_headlessHeight; ++i) {
-      uint32_t rgba = dest[i];
-      uint32_t r = rgba & 0xFF;
-      uint32_t g = (rgba >> 8) & 0xFF;
-      uint32_t b = (rgba >> 16) & 0xFF;
-      uint32_t a = (rgba >> 24) & 0xFF;
-      dest[i] = (a << 24) | (r << 16) | (g << 8) | b;
+    // 1. Swizzle RGBA to BGRA (only if not in ABGR override mode, since GL_RGBA is already ABGR)
+    if (m_pixelFormatOverride == 0) {
+      for (uint32_t i = 0; i < m_headlessWidth * m_headlessHeight; ++i) {
+        uint32_t rgba = dest[i];
+        uint32_t r = rgba & 0xFF;
+        uint32_t g = (rgba >> 8) & 0xFF;
+        uint32_t b = (rgba >> 16) & 0xFF;
+        uint32_t a = (rgba >> 24) & 0xFF;
+        dest[i] = (a << 24) | (r << 16) | (g << 8) | b;
+      }
     }
     // 2. Vertically flip rows to convert OpenGL's bottom-up layout to host's
     // top-down layout

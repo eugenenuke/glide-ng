@@ -53,6 +53,7 @@ class IGraphicsBackend {
                             const ModernVertex& c) = 0;
   virtual void DrawLine(const ModernVertex& v1, const ModernVertex& v2) = 0;
   virtual void DrawPoint(const ModernVertex& pt) = 0;
+  virtual void FlushBins() = 0;
 
   // Phase 4: Depth Comparison, Transparency Blending & Culling States
   virtual void SetDepthState(uint32_t depthMode, uint32_t compareOp,

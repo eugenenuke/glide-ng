@@ -47,41 +47,41 @@ static const float s_tableIndexToW[64] = {
     13107.200195f, 16384.000000f, 18724.572266f, 21845.333984f, 26214.400391f,
     32768.000000f, 37449.144531f, 43690.667969f, 52428.800781f};
 
-inline bool SoftwareBackend::IsTexChromaMatch(uint32_t color, uint32_t tmu) const {
-  if (m_texChromaMode[tmu] != 1) return false;
+inline bool SoftwareBackend::IsTexChromaMatch(uint32_t color, uint32_t tmu, const RasterizerState& state) const {
+  if (state.texChromaMode[tmu] != 1) return false;
 
   uint32_t r = (color >> 16) & 0xFF;
   uint32_t g = (color >> 8) & 0xFF;
   uint32_t b = color & 0xFF;
 
-  bool rangeEnabled = ((m_texChromaRangeMode[tmu] >> 28) & 1) == 1;
+  bool rangeEnabled = ((state.texChromaRangeMode[tmu] >> 28) & 1) == 1;
   if (rangeEnabled) {
-    uint32_t minR = (m_texChromaMin[tmu] >> 16) & 0xFF;
-    uint32_t minG = (m_texChromaMin[tmu] >> 8) & 0xFF;
-    uint32_t minB = m_texChromaMin[tmu] & 0xFF;
+    uint32_t minR = (state.texChromaMin[tmu] >> 16) & 0xFF;
+    uint32_t minG = (state.texChromaMin[tmu] >> 8) & 0xFF;
+    uint32_t minB = state.texChromaMin[tmu] & 0xFF;
 
-    uint32_t maxR = (m_texChromaMax[tmu] >> 16) & 0xFF;
-    uint32_t maxG = (m_texChromaMax[tmu] >> 8) & 0xFF;
-    uint32_t maxB = m_texChromaMax[tmu] & 0xFF;
+    uint32_t maxR = (state.texChromaMax[tmu] >> 16) & 0xFF;
+    uint32_t maxG = (state.texChromaMax[tmu] >> 8) & 0xFF;
+    uint32_t maxB = state.texChromaMax[tmu] & 0xFF;
 
     bool rMatch = (r >= minR && r <= maxR);
     bool gMatch = (g >= minG && g <= maxG);
     bool bMatch = (b >= minB && b <= maxB);
 
-    bool blueExcl = ((m_texChromaRangeMode[tmu] >> 24) & 1) == 1;
-    bool greenExcl = ((m_texChromaRangeMode[tmu] >> 25) & 1) == 1;
-    bool redExcl = ((m_texChromaRangeMode[tmu] >> 26) & 1) == 1;
+    bool blueExcl = ((state.texChromaRangeMode[tmu] >> 24) & 1) == 1;
+    bool greenExcl = ((state.texChromaRangeMode[tmu] >> 25) & 1) == 1;
+    bool redExcl = ((state.texChromaRangeMode[tmu] >> 26) & 1) == 1;
 
     bool rRes = rMatch != redExcl;
     bool gRes = gMatch != greenExcl;
     bool bRes = bMatch != blueExcl;
 
-    bool unionMode = ((m_texChromaRangeMode[tmu] >> 27) & 1) == 1;
+    bool unionMode = ((state.texChromaRangeMode[tmu] >> 27) & 1) == 1;
     return unionMode ? (rRes || gRes || bRes) : (rRes && gRes && bRes);
   } else {
-    uint32_t chromaR = (m_texChromaMin[tmu] >> 16) & 0xFF;
-    uint32_t chromaG = (m_texChromaMin[tmu] >> 8) & 0xFF;
-    uint32_t chromaB = m_texChromaMin[tmu] & 0xFF;
+    uint32_t chromaR = (state.texChromaMin[tmu] >> 16) & 0xFF;
+    uint32_t chromaG = (state.texChromaMin[tmu] >> 8) & 0xFF;
+    uint32_t chromaB = state.texChromaMin[tmu] & 0xFF;
 
     return (r == chromaR && g == chromaG && b == chromaB);
   }
@@ -90,7 +90,7 @@ inline bool SoftwareBackend::IsTexChromaMatch(uint32_t color, uint32_t tmu) cons
 inline uint32_t SoftwareBackend::SampleTextureLevel(
     const struct VirtualTexture* targetTex, int lodIdx, float levelTrueS, float levelTrueT,
     uint32_t targetClampS, uint32_t targetClampT, uint32_t targetMinFilter,
-    uint32_t tmuIdx) const {
+    uint32_t tmuIdx, const RasterizerState& state) const {
   auto mirrorCoord = [](int coord, uint32_t size) -> int {
     int doubleSize = static_cast<int>(size * 2);
     int mask = doubleSize - 1;
@@ -150,10 +150,10 @@ inline uint32_t SoftwareBackend::SampleTextureLevel(
     uint32_t c01 = levelPixels[y1 * levelW + x0];
     uint32_t c11 = levelPixels[y1 * levelW + x1];
 
-    if (IsTexChromaMatch(c00, tmuIdx)) c00 = 0;
-    if (IsTexChromaMatch(c10, tmuIdx)) c10 = 0;
-    if (IsTexChromaMatch(c01, tmuIdx)) c01 = 0;
-    if (IsTexChromaMatch(c11, tmuIdx)) c11 = 0;
+    if (IsTexChromaMatch(c00, tmuIdx, state)) c00 = 0;
+    if (IsTexChromaMatch(c10, tmuIdx, state)) c10 = 0;
+    if (IsTexChromaMatch(c01, tmuIdx, state)) c01 = 0;
+    if (IsTexChromaMatch(c11, tmuIdx, state)) c11 = 0;
 
     int w00 = (256 - fx) * (256 - fy);
     int w10 = fx * (256 - fy);
@@ -196,7 +196,7 @@ inline uint32_t SoftwareBackend::SampleTextureLevel(
     }
 
     uint32_t val = levelPixels[y0 * levelW + x0];
-    if (IsTexChromaMatch(val, tmuIdx)) {
+    if (IsTexChromaMatch(val, tmuIdx, state)) {
       val = 0;
     }
     return val;
@@ -404,30 +404,24 @@ bool SoftwareBackend::Initialize(const WrapperConfig& config) {
   m_config = config;
   ResetState();
 
-#ifdef _OPENMP
-  // If the user has NOT manually set OMP_NUM_THREADS in their environment,
-  // dynamically clamp the default thread count to a safe range [1, 4] to
-  // prevent severe multi-core scheduling latency and cache-line thrashing
-  // bottlenecks.
-  if (std::getenv("OMP_NUM_THREADS") == nullptr) {
-    int logicalCores =
-        std::max(1, static_cast<int>(std::thread::hardware_concurrency()));
-    int targetThreads = std::min(4, logicalCores);
-    omp_set_num_threads(targetThreads);
-    GLIDE_LOG(INFO, "Software",
-              "Configured OpenMP thread pool size to "
-                  << targetThreads << " (Hardware cores: " << logicalCores
-                  << ")");
+  int numThreads = 1;
+  const char* ompEnv = std::getenv("OMP_NUM_THREADS");
+  if (ompEnv != nullptr) {
+    numThreads = std::max(1, std::atoi(ompEnv));
+    GLIDE_LOG(INFO, "Software", "ThreadPool size controlled by environment (OMP_NUM_THREADS): " << numThreads);
   } else {
-    GLIDE_LOG(INFO, "Software",
-              "OpenMP thread pool size controlled by environment: "
-                  << std::getenv("OMP_NUM_THREADS"));
+    numThreads = std::max(1u, std::thread::hardware_concurrency());
+    GLIDE_LOG(INFO, "Software", "ThreadPool size configured to hardware concurrency: " << numThreads);
   }
-#endif
+
+  m_threadPool = std::make_unique<ThreadPool>(numThreads, [this](int tileIdx) {
+    RasterizeTile(tileIdx);
+  });
+
+  InitTileGrid();
 
   m_initialized = true;
-  GLIDE_LOG(INFO, "Software",
-            "Pure Software translation backend initialized successfully.");
+  GLIDE_LOG(INFO, "Software", "Pure Software translation backend initialized successfully with Tile-Based ThreadPool.");
   return true;
 }
 
@@ -435,7 +429,8 @@ void SoftwareBackend::Shutdown() {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   if (!m_initialized) return;
 
-  GLIDE_LOG(INFO, "Software", "Shutting down Pure Software backend.");
+  GLIDE_LOG(INFO, "Software", "Shutting down Pure Software backend and joining thread pool.");
+  m_threadPool = nullptr; // Join all threads
   DetachWindow();
 
   m_initialized = false;
@@ -512,8 +507,9 @@ bool SoftwareBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
         if (!ren) ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_SOFTWARE);
 
         if (ren) {
+          uint32_t sdlFormat = (m_pixelFormatOverride == 1) ? SDL_PIXELFORMAT_ABGR8888 : SDL_PIXELFORMAT_ARGB8888;
           auto* tex =
-              SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888,
+              SDL_CreateTexture(ren, sdlFormat,
                                 SDL_TEXTUREACCESS_STREAMING, width, height);
           if (tex) {
             m_sdlWindow = win;
@@ -567,6 +563,7 @@ void SoftwareBackend::DetachWindow() {
 
 bool SoftwareBackend::SwapBuffers() {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  FlushBins();
   if (!m_initialized || !m_windowAttached) return false;
 
   GLIDE_LOG(DEBUG, "Software", "Executing SwapBuffers presentation dispatch.");
@@ -721,12 +718,23 @@ void SoftwareBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
     c_final.pos[1] = (float)m_headlessHeight - c_final.pos[1];
   }
 
-  RasterizeSoftwareTriangle(a_final, b_final, c_final);
+  ResolveActiveState();
+  BinnedTriangle cmd;
+  cmd.stateId = m_activeStateId;
+  cmd.vertices[0] = a_final;
+  cmd.vertices[1] = b_final;
+  cmd.vertices[2] = c_final;
+
+  m_binnedTriangles.push_back(cmd);
+  uint32_t cmdIdx = static_cast<uint32_t>(m_binnedTriangles.size() - 1);
+  BinTriangle(cmdIdx, a_final, b_final, c_final);
+
   GLIDE_INCREMENT_TRIANGLES_DRAWN(1);
 }
 
 void SoftwareBackend::DrawLine(const ModernVertex& v1, const ModernVertex& v2) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  FlushBins();
   if (!m_windowAttached || !m_headlessPixelMap) return;
 
   if (m_config.drawCallDelayUs > 0) {
@@ -875,15 +883,17 @@ void SoftwareBackend::WritePixelPipeline(int x, int y, const ModernVertex& v,
   // 3. Fogging
   uint32_t fogSource = m_fogMode & 0x0F;
   if (fogSource != 0) {
-    float f = 0.0f;
+    float visibility = 1.0f;
     if (fogSource == 4) {  // UNIFIED_FOG_WITH_ITERATED_ALPHA
-      f = v.color[3];
+      visibility = 1.0f - v.color[3];
+    } else if (fogSource == 1) {  // UNIFIED_FOG_WITH_TABLE_ON_FOGCOORD
+      visibility = 1.0f - v.fog;
     } else {  // Table-based fog
       float eyeW = 0.0f;
-      if (fogSource == 1) {  // UNIFIED_FOG_WITH_TABLE_ON_FOGCOORD
-        eyeW = v.fog;
-      } else {                   // UNIFIED_FOG_WITH_TABLE_ON_W
+      if (fogSource == 2) {      // UNIFIED_FOG_WITH_TABLE_ON_W
         eyeW = 1.0f / v.pos[3];  // pos[3] is oow (1/W)
+      } else {
+        eyeW = v.fog;
       }
       if (eyeW < 1.0f) eyeW = 1.0f;
 
@@ -906,8 +916,10 @@ void SoftwareBackend::WritePixelPipeline(int x, int y, const ModernVertex& v,
         t = (eyeW - w0_fog) / (w1_fog - w0_fog);
       }
       t = std::max(0.0f, std::min(1.0f, t));
-      f = f0 * (1.0f - t) + f1 * t;
+      float f_table = f0 * (1.0f - t) + f1 * t;
+      visibility = 1.0f - f_table; // Convert density to visibility!
     }
+    visibility = std::max(0.0f, std::min(1.0f, visibility));
 
     float fogR = ((m_fogColor >> 16) & 0xFF) / 255.0f;
     float fogG = ((m_fogColor >> 8) & 0xFF) / 255.0f;
@@ -919,9 +931,9 @@ void SoftwareBackend::WritePixelPipeline(int x, int y, const ModernVertex& v,
     float mult = ((m_fogMode & 0x100) != 0) ? 1.0f : 0.0f;
     float add = ((m_fogMode & 0x200) != 0) ? 1.0f : 0.0f;
 
-    red = red * (1.0f - mult) * (1.0f - f) + fogR * (1.0f - add) * f;
-    green = green * (1.0f - mult) * (1.0f - f) + fogG * (1.0f - add) * f;
-    blue = blue * (1.0f - mult) * (1.0f - f) + fogB * (1.0f - add) * f;
+    red = red * (1.0f - mult) * visibility + fogR * (1.0f - add) * (1.0f - visibility);
+    green = green * (1.0f - mult) * visibility + fogG * (1.0f - add) * (1.0f - visibility);
+    blue = blue * (1.0f - mult) * visibility + fogB * (1.0f - add) * (1.0f - visibility);
   }
 
   float blendAlphaVal = alpha;
@@ -1062,6 +1074,7 @@ void SoftwareBackend::WritePixelPipeline(int x, int y, const ModernVertex& v,
 
 void SoftwareBackend::DrawPoint(const ModernVertex& pt) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  FlushBins();
   if (!m_windowAttached || !m_headlessPixelMap) return;
 
   if (m_config.drawCallDelayUs > 0) {
@@ -1138,39 +1151,80 @@ uint32_t SoftwareBackend::EvaluateCombinerColor(const ModernVertex& v) {
 template <bool HasTexture, bool BlendEnabled, bool DitherEnabled>
 inline void SoftwareBackend::RasterizeTriangleTemplate(const ModernVertex& a,
                                                        const ModernVertex& b,
-                                                       const ModernVertex& c) {
-  int minX = std::max(
-      0,
-      static_cast<int>(std::floor(std::min({a.pos[0], b.pos[0], c.pos[0]}))));
-  int maxX = std::min(
-      static_cast<int>(m_headlessWidth) - 1,
-      static_cast<int>(std::ceil(std::max({a.pos[0], b.pos[0], c.pos[0]}))));
-  int minY = std::max(
-      0,
-      static_cast<int>(std::floor(std::min({a.pos[1], b.pos[1], c.pos[1]}))));
-  int maxY = std::min(
-      static_cast<int>(m_headlessHeight) - 1,
-      static_cast<int>(std::ceil(std::max({a.pos[1], b.pos[1], c.pos[1]}))));
+                                                       const ModernVertex& c,
+                                                       int minX, int maxX,
+                                                       int minY, int maxY,
+                                                       const RasterizerState& state) {
+  // Shadow class member variables with local references to the passed state structure.
+  // This ensures that worker threads process rendering with 100% thread-safe snapshotted state!
+  const auto& m_depthMode = state.depthMode;
+  const auto& m_depthCompareOp = state.depthCompareOp;
+  const auto& m_depthMask = state.depthMask;
+  const auto& m_depthBiasLevel = state.depthBiasLevel;
+  const auto& m_depthNear = state.depthNear;
+  const auto& m_depthFar = state.depthFar;
 
-  // Resolve scissor boundaries in top-left space
-  int clipMinX_resolved = static_cast<int>(m_clipMinX);
-  int clipMaxX_resolved = static_cast<int>(m_clipMaxX);
-  int clipMinY_resolved = static_cast<int>(m_clipMinY);
-  int clipMaxY_resolved = static_cast<int>(m_clipMaxY);
+  const auto& m_ditherMode = state.ditherMode;
+  const auto& m_stippleMode = state.stippleMode;
+  const auto& m_stipplePattern = state.stipplePattern;
 
-  if (m_sstOrigin == 1) {  // GR_ORIGIN_LOWER_LEFT: flip Y coordinates
-    clipMinY_resolved =
-        static_cast<int>(m_headlessHeight) - static_cast<int>(m_clipMaxY);
-    clipMaxY_resolved =
-        static_cast<int>(m_headlessHeight) - static_cast<int>(m_clipMinY);
-  }
+  const auto& m_rgbSrcBlend = state.rgbSrcBlend;
+  const auto& m_rgbDstBlend = state.rgbDstBlend;
+  const auto& m_alphaSrcBlend = state.alphaSrcBlend;
+  const auto& m_alphaDstBlend = state.alphaDstBlend;
 
-  minX = std::max({0, minX, clipMinX_resolved});
-  minY = std::max({0, minY, clipMinY_resolved});
-  maxX = std::min(
-      {static_cast<int>(m_headlessWidth) - 1, maxX, clipMaxX_resolved - 1});
-  maxY = std::min(
-      {static_cast<int>(m_headlessHeight) - 1, maxY, clipMaxY_resolved - 1});
+  const auto& m_alphaTestOp = state.alphaTestOp;
+  const auto& m_alphaTestRefVal = state.alphaTestRefVal;
+
+  const auto& m_colorMaskRgb = state.colorMaskRgb;
+  const auto& m_colorMaskAlpha = state.colorMaskAlpha;
+
+  const auto& m_clipMinX = state.clipMinX;
+  const auto& m_clipMinY = state.clipMinY;
+  const auto& m_clipMaxX = state.clipMaxX;
+  const auto& m_clipMaxY = state.clipMaxY;
+  const auto& m_sstOrigin = state.sstOrigin;
+
+  const auto& m_fogMode = state.fogMode;
+  const auto& m_fogColor = state.fogColor;
+  const auto& m_fogTable = state.fogTable;
+
+  const auto& m_boundTexAddress = state.boundTexAddress;
+  const auto& m_texClampS = state.texClampS;
+  const auto& m_texClampT = state.texClampT;
+  const auto& m_texMinFilter = state.texMinFilter;
+  const auto& m_texMagFilter = state.texMagFilter;
+  const auto& m_texMipMapMode = state.texMipMapMode;
+  const auto& m_texLodBlend = state.texLodBlend;
+  const auto& m_texLodBias = state.texLodBias;
+
+  const auto& m_colorCombinerFunc = state.colorCombinerFunc;
+  const auto& m_colorCombinerFactor = state.colorCombinerFactor;
+  const auto& m_colorCombinerLocal = state.colorCombinerLocal;
+  const auto& m_colorCombinerOther = state.colorCombinerOther;
+  const auto& m_colorCombinerInvert = state.colorCombinerInvert;
+  const auto& m_alphaCombinerFunc = state.alphaCombinerFunc;
+  const auto& m_alphaCombinerFactor = state.alphaCombinerFactor;
+  const auto& m_alphaCombinerLocal = state.alphaCombinerLocal;
+  const auto& m_alphaCombinerOther = state.alphaCombinerOther;
+  const auto& m_alphaCombinerInvert = state.alphaCombinerInvert;
+
+  const auto& m_texCombinerRgbFunc = state.texCombinerRgbFunc;
+  const auto& m_texCombinerRgbFactor = state.texCombinerRgbFactor;
+  const auto& m_texCombinerAlphaFunc = state.texCombinerAlphaFunc;
+  const auto& m_texCombinerAlphaFactor = state.texCombinerAlphaFactor;
+  const auto& m_texCombinerRgbInvert = state.texCombinerRgbInvert;
+  const auto& m_texCombinerAlphaInvert = state.texCombinerAlphaInvert;
+
+  const auto& m_constantColor = state.constantColor;
+  const auto& m_stwHintMask = state.stwHintMask;
+  const auto& m_pixelFormatOverride = state.pixelFormatOverride;
+
+  const auto& m_chromakeyMode = state.chromakeyMode;
+  const auto& m_chromakeyValue = state.chromakeyValue;
+  const auto& m_chromakeyRangeMin = state.chromakeyRangeMin;
+  const auto& m_chromakeyRangeMax = state.chromakeyRangeMax;
+  const auto& m_chromakeyRangeMode = state.chromakeyRangeMode;
 
   // Compute triangle area
   float area = (c.pos[0] - a.pos[0]) * (b.pos[1] - a.pos[1]) -
@@ -1408,9 +1462,9 @@ inline void SoftwareBackend::RasterizeTriangleTemplate(const ModernVertex& a,
           float lodFraction = clampedLod1 - std::floor(clampedLod1);
 
           uint32_t c0 = SampleTextureLevel(tex1, lodIdx0, trueS1, trueT1, clampS1,
-                                           clampT1, minFilter1, 1u);
+                                           clampT1, minFilter1, 1u, state);
           uint32_t c1 = SampleTextureLevel(tex1, lodIdx1, trueS1, trueT1, clampS1,
-                                           clampT1, minFilter1, 1u);
+                                           clampT1, minFilter1, 1u, state);
 
           int w1_frac = static_cast<int>(lodFraction * 256.0f);
           int w0_frac = 256 - w1_frac;
@@ -1432,11 +1486,11 @@ inline void SoftwareBackend::RasterizeTriangleTemplate(const ModernVertex& a,
               std::clamp(level - tex1->largeLod, 0,
                          static_cast<int>(tex1->swizzledMipLevels.size() - 1));
           tWord1 = SampleTextureLevel(tex1, lodIdx, trueS1, trueT1, clampS1, clampT1,
-                                     minFilter1, 1u);
+                                     minFilter1, 1u, state);
         }
       } else {
         tWord1 = SampleTextureLevel(tex1, 0, trueS1, trueT1, clampS1, clampT1,
-                                   minFilter1, 1u);
+                                   minFilter1, 1u, state);
       }
 
       tmu1Color.r = ((tWord1 >> 16) & 0xFF) / 255.0f;
@@ -1504,9 +1558,9 @@ inline void SoftwareBackend::RasterizeTriangleTemplate(const ModernVertex& a,
             float lodFraction = clampedLod - std::floor(clampedLod);
 
             uint32_t c0 = SampleTextureLevel(tex, lodIdx0, trueS, trueT, clampS, clampT,
-                                            minFilter, 0u);
+                                            minFilter, 0u, state);
             uint32_t c1 = SampleTextureLevel(tex, lodIdx1, trueS, trueT, clampS, clampT,
-                                            minFilter, 0u);
+                                            minFilter, 0u, state);
 
             int w1_frac = static_cast<int>(lodFraction * 256.0f);
             int w0_frac = 256 - w1_frac;
@@ -1528,11 +1582,11 @@ inline void SoftwareBackend::RasterizeTriangleTemplate(const ModernVertex& a,
                 std::clamp(level - tex->largeLod, 0,
                            static_cast<int>(tex->swizzledMipLevels.size() - 1));
             tWord = SampleTextureLevel(tex, lodIdx, trueS, trueT, clampS, clampT,
-                                      minFilter, 0u);
+                                      minFilter, 0u, state);
           }
         } else {
           tWord =
-              SampleTextureLevel(tex, 0, trueS, trueT, clampS, clampT, minFilter, 0u);
+              SampleTextureLevel(tex, 0, trueS, trueT, clampS, clampT, minFilter, 0u, state);
         }
 
         tmu0Color.r = ((tWord >> 16) & 0xFF) / 255.0f;
@@ -1730,17 +1784,55 @@ inline void SoftwareBackend::RasterizeTriangleTemplate(const ModernVertex& a,
     }
 
     // Fog Application
-    if (keepPixel && (m_fogMode & 1)) {
-      float f = std::max(0.0f, std::min(1.0f, w0 * a.fog + w1 * b.fog + w2 * c.fog));
+    uint32_t fogSource = m_fogMode & 0x0F;
+    if (keepPixel && fogSource != 0) {
+      float visibility = 1.0f;
+      if (fogSource == 4) {  // UNIFIED_FOG_WITH_ITERATED_ALPHA
+        visibility = 1.0f - (w0 * a.color[3] + w1 * b.color[3] + w2 * c.color[3]);
+      } else if (fogSource == 1) {  // UNIFIED_FOG_WITH_TABLE_ON_FOGCOORD
+        visibility = 1.0f - (w0 * a.fog + w1 * b.fog + w2 * c.fog);
+      } else {  // Table-based fog
+        float eyeW = 0.0f;
+        if (fogSource == 2) {      // UNIFIED_FOG_WITH_TABLE_ON_W
+          eyeW = 1.0f / wVal;
+        } else {
+          eyeW = w0 * a.fog + w1 * b.fog + w2 * c.fog;
+        }
+        if (eyeW < 1.0f) eyeW = 1.0f;
+
+        // O(1) unrolled logarithmic binary search on the fog table
+        int idx = 0;
+        if (eyeW >= s_tableIndexToW[32]) idx += 32;
+        if (eyeW >= s_tableIndexToW[idx + 16]) idx += 16;
+        if (eyeW >= s_tableIndexToW[idx + 8]) idx += 8;
+        if (eyeW >= s_tableIndexToW[idx + 4]) idx += 4;
+        if (eyeW >= s_tableIndexToW[idx + 2]) idx += 2;
+        if (eyeW >= s_tableIndexToW[idx + 1]) idx += 1;
+
+        float w0_fog = s_tableIndexToW[idx];
+        float w1_fog = s_tableIndexToW[idx + 1];
+        float f0 = m_fogTable[idx] / 255.0f;
+        float f1 = m_fogTable[idx + 1] / 255.0f;
+
+        float t = 0.0f;
+        if (w1_fog > w0_fog) {
+          t = (eyeW - w0_fog) / (w1_fog - w0_fog);
+        }
+        t = std::max(0.0f, std::min(1.0f, t));
+        float f_table = f0 * (1.0f - t) + f1 * t;
+        visibility = 1.0f - f_table; // Convert density to visibility!
+      }
+      visibility = std::max(0.0f, std::min(1.0f, visibility));
+
       float fogR = ((m_fogColor >> 16) & 0xFF) / 255.0f;
       float fogG = ((m_fogColor >> 8) & 0xFF) / 255.0f;
       float fogB = (m_fogColor & 0xFF) / 255.0f;
       if (m_pixelFormatOverride == 1) std::swap(fogR, fogB);
       float mult = ((m_fogMode & 0x100) != 0) ? 1.0f : 0.0f;
       float add = ((m_fogMode & 0x200) != 0) ? 1.0f : 0.0f;
-      red = red * (1.0f - mult) * (1.0f - f) + fogR * (1.0f - add) * f;
-      green = green * (1.0f - mult) * (1.0f - f) + fogG * (1.0f - add) * f;
-      blue = blue * (1.0f - mult) * (1.0f - f) + fogB * (1.0f - add) * f;
+      red = red * (1.0f - mult) * visibility + fogR * (1.0f - add) * (1.0f - visibility);
+      green = green * (1.0f - mult) * visibility + fogG * (1.0f - add) * (1.0f - visibility);
+      blue = blue * (1.0f - mult) * visibility + fogB * (1.0f - add) * (1.0f - visibility);
     }
 
     if (keepPixel) {
@@ -1751,6 +1843,9 @@ inline void SoftwareBackend::RasterizeTriangleTemplate(const ModernVertex& a,
       if constexpr (BlendEnabled) {
         uint32_t dstWord = pixels[pIdx];
         float dstR = ((dstWord >> 16) & 0xFF) / 255.0f, dstG = ((dstWord >> 8) & 0xFF) / 255.0f, dstB = (dstWord & 0xFF) / 255.0f, dstA = ((dstWord >> 24) & 0xFF) / 255.0f;
+        if (m_pixelFormatOverride == 1) {
+          std::swap(dstR, dstB);
+        }
         auto getF = [&](uint32_t mode, float srcC, float dstC, float srcA, float dstA, bool isDest) {
           switch(mode) {
             case 0: return 0.0f; case 1: return srcA; case 2: return isDest ? srcC : dstC; case 3: return dstA;
@@ -1778,12 +1873,18 @@ inline void SoftwareBackend::RasterizeTriangleTemplate(const ModernVertex& a,
         uint32_t mask = (m_colorMaskRgb ? 0x00FFFFFF : 0) | (m_colorMaskAlpha ? 0xFF000000 : 0);
         finalColor = (finalColor & mask) | (pixels[pIdx] & ~mask);
       }
+      if (m_pixelFormatOverride == 1) {
+        uint32_t a_bit = finalColor & 0xFF000000;
+        uint32_t g_bit = finalColor & 0x0000FF00;
+        uint32_t r_bit = (finalColor >> 16) & 0xFF;
+        uint32_t b_bit = finalColor & 0xFF;
+        finalColor = a_bit | (b_bit << 16) | g_bit | r_bit;
+      }
       pixels[pIdx] = finalColor;
     }
   };
 
   if (invArea >= 0.0f) {
-#pragma omp parallel for schedule(guided) if (maxY - minY > 16)
     for (int y = minY; y <= maxY; ++y) {
       float E0 = a0 * startX + b0 * (static_cast<float>(y) + 0.5f) + c0;
       float E1 = a1 * startX + b1 * (static_cast<float>(y) + 0.5f) + c1;
@@ -1794,7 +1895,6 @@ inline void SoftwareBackend::RasterizeTriangleTemplate(const ModernVertex& a,
       }
     }
   } else {
-#pragma omp parallel for schedule(guided) if (maxY - minY > 16)
     for (int y = minY; y <= maxY; ++y) {
       float E0 = a0 * startX + b0 * (static_cast<float>(y) + 0.5f) + c0;
       float E1 = a1 * startX + b1 * (static_cast<float>(y) + 0.5f) + c1;
@@ -1807,59 +1907,246 @@ inline void SoftwareBackend::RasterizeTriangleTemplate(const ModernVertex& a,
   }
 }
 
-void SoftwareBackend::RasterizeSoftwareTriangleImpl(const ModernVertex& a,
-                                                    const ModernVertex& b,
-                                                    const ModernVertex& c) {
-  bool hasTexture = (m_boundTexAddress[0] != 0xFFFFFFFF);
-  bool blendEnabled = (m_rgbSrcBlend != 4 || m_rgbDstBlend != 0);
-  bool ditherEnabled = (m_ditherMode != 0);
-  uint32_t key = (hasTexture ? 4 : 0) | (blendEnabled ? 2 : 0) | (ditherEnabled ? 1 : 0);
-  switch (key) {
-    case 0: RasterizeTriangleTemplate<false, false, false>(a, b, c); break;
-    case 1: RasterizeTriangleTemplate<false, false, true>(a, b, c); break;
-    case 2: RasterizeTriangleTemplate<false, true, false>(a, b, c); break;
-    case 3: RasterizeTriangleTemplate<false, true, true>(a, b, c); break;
-    case 4: RasterizeTriangleTemplate<true, false, false>(a, b, c); break;
-    case 5: RasterizeTriangleTemplate<true, false, true>(a, b, c); break;
-    case 6: RasterizeTriangleTemplate<true, true, false>(a, b, c); break;
-    case 7: RasterizeTriangleTemplate<true, true, true>(a, b, c); break;
+void SoftwareBackend::InitTileGrid() {
+  m_tileCols = (m_headlessWidth + m_tileSize - 1) / m_tileSize;
+  m_tileRows = (m_headlessHeight + m_tileSize - 1) / m_tileSize;
+  m_tiles.clear();
+  m_tiles.resize(m_tileCols * m_tileRows);
+}
+
+void SoftwareBackend::ResolveActiveState() {
+  if (!m_stateCacheDirty && !m_stateCatalog.empty()) {
+    return; // Cache is clean!
+  }
+
+  RasterizerState s;
+  s.depthMode = m_depthMode;
+  s.depthCompareOp = m_depthCompareOp;
+  s.depthMask = m_depthMask;
+  s.depthBiasLevel = m_depthBiasLevel;
+  s.depthNear = m_depthNear;
+  s.depthFar = m_depthFar;
+
+  s.ditherMode = m_ditherMode;
+  s.stippleMode = m_stippleMode;
+  s.stipplePattern = m_stipplePattern;
+
+  s.rgbSrcBlend = m_rgbSrcBlend;
+  s.rgbDstBlend = m_rgbDstBlend;
+  s.alphaSrcBlend = m_alphaSrcBlend;
+  s.alphaDstBlend = m_alphaDstBlend;
+
+  s.alphaTestOp = m_alphaTestOp;
+  s.alphaTestRefVal = m_alphaTestRefVal;
+
+  s.colorMaskRgb = m_colorMaskRgb;
+  s.colorMaskAlpha = m_colorMaskAlpha;
+
+  s.clipMinX = m_clipMinX;
+  s.clipMinY = m_clipMinY;
+  s.clipMaxX = m_clipMaxX;
+  s.clipMaxY = m_clipMaxY;
+  s.sstOrigin = m_sstOrigin;
+
+  s.fogMode = m_fogMode;
+  s.fogColor = m_fogColor;
+  std::memcpy(s.fogTable, m_fogTable, sizeof(s.fogTable));
+
+  s.boundTexAddress[0] = m_boundTexAddress[0];
+  s.boundTexAddress[1] = m_boundTexAddress[1];
+  s.texClampS[0] = m_texClampS[0];
+  s.texClampS[1] = m_texClampS[1];
+  s.texClampT[0] = m_texClampT[0];
+  s.texClampT[1] = m_texClampT[1];
+  s.texMinFilter[0] = m_texMinFilter[0];
+  s.texMinFilter[1] = m_texMinFilter[1];
+  s.texMagFilter[0] = m_texMagFilter[0];
+  s.texMagFilter[1] = m_texMagFilter[1];
+  s.texMipMapMode[0] = m_texMipMapMode[0];
+  s.texMipMapMode[1] = m_texMipMapMode[1];
+  s.texLodBlend[0] = m_texLodBlend[0];
+  s.texLodBlend[1] = m_texLodBlend[1];
+  s.texLodBias[0] = m_texLodBias[0];
+  s.texLodBias[1] = m_texLodBias[1];
+
+  s.colorCombinerFunc = m_colorCombinerFunc;
+  s.colorCombinerFactor = m_colorCombinerFactor;
+  s.colorCombinerLocal = m_colorCombinerLocal;
+  s.colorCombinerOther = m_colorCombinerOther;
+  s.colorCombinerInvert = m_colorCombinerInvert;
+  s.alphaCombinerFunc = m_alphaCombinerFunc;
+  s.alphaCombinerFactor = m_alphaCombinerFactor;
+  s.alphaCombinerLocal = m_alphaCombinerLocal;
+  s.alphaCombinerOther = m_alphaCombinerOther;
+  s.alphaCombinerInvert = m_alphaCombinerInvert;
+
+  s.texCombinerRgbFunc[0] = m_texCombinerRgbFunc[0];
+  s.texCombinerRgbFunc[1] = m_texCombinerRgbFunc[1];
+  s.texCombinerRgbFactor[0] = m_texCombinerRgbFactor[0];
+  s.texCombinerRgbFactor[1] = m_texCombinerRgbFactor[1];
+  s.texCombinerAlphaFunc[0] = m_texCombinerAlphaFunc[0];
+  s.texCombinerAlphaFunc[1] = m_texCombinerAlphaFunc[1];
+  s.texCombinerAlphaFactor[0] = m_texCombinerAlphaFactor[0];
+  s.texCombinerAlphaFactor[1] = m_texCombinerAlphaFactor[1];
+  s.texCombinerRgbInvert[0] = m_texCombinerRgbInvert[0];
+  s.texCombinerRgbInvert[1] = m_texCombinerRgbInvert[1];
+  s.texCombinerAlphaInvert[0] = m_texCombinerAlphaInvert[0];
+  s.texCombinerAlphaInvert[1] = m_texCombinerAlphaInvert[1];
+
+  s.constantColor = m_constantColor;
+  s.stwHintMask = m_stwHintMask;
+  s.pixelFormatOverride = m_pixelFormatOverride;
+
+  s.chromakeyMode = m_chromakeyMode;
+  s.chromakeyValue = m_chromakeyValue;
+  s.chromakeyRangeMin = m_chromakeyRangeMin;
+  s.chromakeyRangeMax = m_chromakeyRangeMax;
+  s.chromakeyRangeMode = m_chromakeyRangeMode;
+  s.texChromaMode[0] = m_texChromaMode[0];
+  s.texChromaMode[1] = m_texChromaMode[1];
+  s.texChromaMin[0] = m_texChromaMin[0];
+  s.texChromaMin[1] = m_texChromaMin[1];
+  s.texChromaMax[0] = m_texChromaMax[0];
+  s.texChromaMax[1] = m_texChromaMax[1];
+  s.texChromaRangeMode[0] = m_texChromaRangeMode[0];
+  s.texChromaRangeMode[1] = m_texChromaRangeMode[1];
+
+  // Deduplicate in catalog
+  for (size_t i = 0; i < m_stateCatalog.size(); ++i) {
+    if (m_stateCatalog[i] == s) {
+      m_activeStateId = static_cast<uint32_t>(i);
+      m_stateCacheDirty = false;
+      return;
+    }
+  }
+
+  m_stateCatalog.push_back(s);
+  m_activeStateId = static_cast<uint32_t>(m_stateCatalog.size() - 1);
+  m_stateCacheDirty = false;
+}
+
+void SoftwareBackend::BinTriangle(uint32_t cmdIdx, const ModernVertex& a, const ModernVertex& b, const ModernVertex& c) {
+  float minX = std::min({a.pos[0], b.pos[0], c.pos[0]});
+  float maxX = std::max({a.pos[0], b.pos[0], c.pos[0]});
+  float minY = std::min({a.pos[1], b.pos[1], c.pos[1]});
+  float maxY = std::max({a.pos[1], b.pos[1], c.pos[1]});
+
+  int clipMinX_resolved = static_cast<int>(m_clipMinX);
+  int clipMaxX_resolved = static_cast<int>(m_clipMaxX);
+  int clipMinY_resolved = static_cast<int>(m_clipMinY);
+  int clipMaxY_resolved = static_cast<int>(m_clipMaxY);
+
+  if (m_sstOrigin == 1) { // GR_ORIGIN_LOWER_LEFT
+    clipMinY_resolved = static_cast<int>(m_headlessHeight) - static_cast<int>(m_clipMaxY);
+    clipMaxY_resolved = static_cast<int>(m_headlessHeight) - static_cast<int>(m_clipMinY);
+  }
+
+  int startX = std::max({0, static_cast<int>(std::floor(minX)), clipMinX_resolved});
+  int endX = std::min({static_cast<int>(m_headlessWidth) - 1, static_cast<int>(std::ceil(maxX)), clipMaxX_resolved - 1});
+  int startY = std::max({0, static_cast<int>(std::floor(minY)), clipMinY_resolved});
+  int endY = std::min({static_cast<int>(m_headlessHeight) - 1, static_cast<int>(std::ceil(maxY)), clipMaxY_resolved - 1});
+
+  if (startX > endX || startY > endY) return;
+
+  int startTileX = startX / m_tileSize;
+  int endTileX = endX / m_tileSize;
+  int startTileY = startY / m_tileSize;
+  int endTileY = endY / m_tileSize;
+
+  for (int ty = startTileY; ty <= endTileY; ++ty) {
+    for (int tx = startTileX; tx <= endTileX; ++tx) {
+      int tileIdx = ty * m_tileCols + tx;
+      m_tiles[tileIdx].triangleIndices.push_back(cmdIdx);
+    }
   }
 }
 
-__attribute__((target("avx2,fma"))) void
-SoftwareBackend::RasterizeSoftwareTriangle(const ModernVertex& a,
-                                           const ModernVertex& b,
-                                           const ModernVertex& c) {
-  if (!m_simdLogged) {
-    GLIDE_LOG(DEBUG, "SoftwareBackend",
-              "Dispatched to AVX2 + FMA rasterizer path!");
-    m_simdLogged = true;
+void SoftwareBackend::FlushBins() {
+  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  if (m_binnedTriangles.empty()) return;
+
+  GLIDE_LOG(DEBUG, "Software", "Flushing binned command queue: " << m_binnedTriangles.size() << " triangles, " << m_tiles.size() << " tiles.");
+
+  m_threadPool->StartFrame(static_cast<int>(m_tiles.size()));
+  m_threadPool->Wait();
+
+  m_binnedTriangles.clear();
+  m_stateCatalog.clear();
+  for (auto& tile : m_tiles) {
+    tile.triangleIndices.clear();
   }
-  RasterizeSoftwareTriangleImpl(a, b, c);
+  m_stateCacheDirty = true;
 }
 
-__attribute__((target("sse4.2"))) void
-SoftwareBackend::RasterizeSoftwareTriangle(const ModernVertex& a,
-                                           const ModernVertex& b,
-                                           const ModernVertex& c) {
-  if (!m_simdLogged) {
-    GLIDE_LOG(DEBUG, "SoftwareBackend",
-              "Dispatched to SSE4.2 rasterizer path!");
-    m_simdLogged = true;
-  }
-  RasterizeSoftwareTriangleImpl(a, b, c);
-}
+void SoftwareBackend::RasterizeTile(int tileIdx) {
+  int ty = tileIdx / m_tileCols;
+  int tx = tileIdx % m_tileCols;
 
-__attribute__((target("default"))) void
-SoftwareBackend::RasterizeSoftwareTriangle(const ModernVertex& a,
-                                           const ModernVertex& b,
-                                           const ModernVertex& c) {
-  if (!m_simdLogged) {
-    GLIDE_LOG(DEBUG, "SoftwareBackend",
-              "Dispatched to default scalar rasterizer path!");
-    m_simdLogged = true;
+  int tileMinX = tx * m_tileSize;
+  int tileMaxX = std::min(m_headlessWidth, (tx + 1) * m_tileSize) - 1;
+  int tileMinY = ty * m_tileSize;
+  int tileMaxY = std::min(m_headlessHeight, (ty + 1) * m_tileSize) - 1;
+
+  const auto& triangleIndices = m_tiles[tileIdx].triangleIndices;
+  if (triangleIndices.empty()) return;
+
+  for (uint32_t cmdIdx : triangleIndices) {
+    const auto& cmd = m_binnedTriangles[cmdIdx];
+    const auto& state = m_stateCatalog[cmd.stateId];
+
+    int clipMinX_resolved = static_cast<int>(state.clipMinX);
+    int clipMaxX_resolved = static_cast<int>(state.clipMaxX);
+    int clipMinY_resolved = static_cast<int>(state.clipMinY);
+    int clipMaxY_resolved = static_cast<int>(state.clipMaxY);
+
+    if (state.sstOrigin == 1) { // GR_ORIGIN_LOWER_LEFT
+      clipMinY_resolved = static_cast<int>(m_headlessHeight) - static_cast<int>(state.clipMaxY);
+      clipMaxY_resolved = static_cast<int>(m_headlessHeight) - static_cast<int>(state.clipMinY);
+    }
+
+    int finalMinX = std::max({tileMinX, clipMinX_resolved});
+    int finalMaxX = std::min({tileMaxX, clipMaxX_resolved - 1});
+    int finalMinY = std::max({tileMinY, clipMinY_resolved});
+    int finalMaxY = std::min({tileMaxY, clipMaxY_resolved - 1});
+
+    if (finalMinX > finalMaxX || finalMinY > finalMaxY) {
+      continue;
+    }
+
+    const auto& a = cmd.vertices[0];
+    const auto& b = cmd.vertices[1];
+    const auto& c = cmd.vertices[2];
+
+    int triMinX = static_cast<int>(std::floor(std::min({a.pos[0], b.pos[0], c.pos[0]})));
+    int triMaxX = static_cast<int>(std::ceil(std::max({a.pos[0], b.pos[0], c.pos[0]})));
+    int triMinY = static_cast<int>(std::floor(std::min({a.pos[1], b.pos[1], c.pos[1]})));
+    int triMaxY = static_cast<int>(std::ceil(std::max({a.pos[1], b.pos[1], c.pos[1]})));
+
+    finalMinX = std::max(finalMinX, triMinX);
+    finalMaxX = std::min(finalMaxX, triMaxX);
+    finalMinY = std::max(finalMinY, triMinY);
+    finalMaxY = std::min(finalMaxY, triMaxY);
+
+    if (finalMinX > finalMaxX || finalMinY > finalMaxY) {
+      continue;
+    }
+
+    bool hasTexture = (state.boundTexAddress[0] != 0xFFFFFFFF);
+    bool blendEnabled = (state.rgbSrcBlend != 4 || state.rgbDstBlend != 0);
+    bool ditherEnabled = (state.ditherMode != 0);
+    uint32_t key = (hasTexture ? 4 : 0) | (blendEnabled ? 2 : 0) | (ditherEnabled ? 1 : 0);
+
+    switch (key) {
+      case 0: RasterizeTriangleTemplate<false, false, false>(a, b, c, finalMinX, finalMaxX, finalMinY, finalMaxY, state); break;
+      case 1: RasterizeTriangleTemplate<false, false, true>(a, b, c, finalMinX, finalMaxX, finalMinY, finalMaxY, state); break;
+      case 2: RasterizeTriangleTemplate<false, true, false>(a, b, c, finalMinX, finalMaxX, finalMinY, finalMaxY, state); break;
+      case 3: RasterizeTriangleTemplate<false, true, true>(a, b, c, finalMinX, finalMaxX, finalMinY, finalMaxY, state); break;
+      case 4: RasterizeTriangleTemplate<true, false, false>(a, b, c, finalMinX, finalMaxX, finalMinY, finalMaxY, state); break;
+      case 5: RasterizeTriangleTemplate<true, false, true>(a, b, c, finalMinX, finalMaxX, finalMinY, finalMaxY, state); break;
+      case 6: RasterizeTriangleTemplate<true, true, false>(a, b, c, finalMinX, finalMaxX, finalMinY, finalMaxY, state); break;
+      case 7: RasterizeTriangleTemplate<true, true, true>(a, b, c, finalMinX, finalMaxX, finalMinY, finalMaxY, state); break;
+    }
   }
-  RasterizeSoftwareTriangleImpl(a, b, c);
 }
 
 }  // namespace GlideWrapper

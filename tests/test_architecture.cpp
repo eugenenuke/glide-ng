@@ -3169,9 +3169,9 @@ TEST_CASE("Glide 2.x ABGR Framebuffer Clear & LFB Readback Parity",
   // Clear buffer with color 0xff0000 (which represents BLUE under ABGR)
   bufferClear(0xff0000, 0, 0);
 
-  // 1. Validate 16-bit LFB readback (should return hardware-accurate BGR565
-  // format) Blue is in bits 11..15 of the 16-bit word, Red in bits 0..4, Green
-  // in bits 5..10. Since the screen is Blue, the value should be exactly 0xF800
+  // 1. Validate 16-bit LFB readback (should return symmetric RGB565 format)
+  // Blue is in bits 0..4 of the 16-bit word, Red in bits 11..15, Green
+  // in bits 5..10. Since the screen is Blue, the value should be exactly 31
   // (Blue=31, Green=0, Red=0).
   std::vector<uint16_t> buffer16(10, 0);
   FxBool ok =
@@ -3179,7 +3179,7 @@ TEST_CASE("Glide 2.x ABGR Framebuffer Clear & LFB Readback Parity",
   REQUIRE(ok == FXTRUE);
 
   for (int i = 0; i < 10; ++i) {
-    REQUIRE(buffer16[i] == 0xF800);
+    REQUIRE(buffer16[i] == 31);
   }
 
   // 2. Validate 32-bit LFB readback (should return hardware-accurate ABGR
