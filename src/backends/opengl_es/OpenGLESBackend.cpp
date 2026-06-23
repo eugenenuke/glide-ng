@@ -266,55 +266,58 @@ bool OpenGLESBackend::SwapBuffers() {
     uint32_t scale = m_config.windowScale;
     GLenum filter = (m_config.presentationFilter == 0) ? GL_NEAREST : GL_LINEAR;
 
-    if (m_gammaCorrectionValue == 1.0f && !m_useGammaLut) {
-      // --- OPTION A: HIGH-SPEED GPU HARDWARE BLIT (Gamma = 1.0, No LUT) ---
-      glBindFramebuffer(GL_READ_FRAMEBUFFER, m_headlessFBOs[0]);
-      glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-      glViewport(0, 0, m_headlessWidth * scale, m_headlessHeight * scale);
-      glBlitFramebuffer(0, 0, m_headlessWidth, m_headlessHeight, 0, 0,
-                        m_headlessWidth * scale, m_headlessHeight * scale,
-                        GL_COLOR_BUFFER_BIT, filter);
-      checkGLError("SwapBuffers glBlitFramebuffer");
-    } else {
-      // --- OPTION B: FULL-SCREEN QUAD SHADER PASS (Gamma != 1.0 or LUT active)
-      // ---
-      glBindFramebuffer(GL_FRAMEBUFFER,
-                        0);  // Render directly to window surface
-      glViewport(0, 0, m_headlessWidth * scale, m_headlessHeight * scale);
-      glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-      glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    {
+      GLIDE_PROFILE_SCOPE("GLES::SwapBuffers_Blit");
+      if (m_gammaCorrectionValue == 1.0f && !m_useGammaLut) {
+        // --- OPTION A: HIGH-SPEED GPU HARDWARE BLIT (Gamma = 1.0, No LUT) ---
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, m_headlessFBOs[0]);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+        glViewport(0, 0, m_headlessWidth * scale, m_headlessHeight * scale);
+        glBlitFramebuffer(0, 0, m_headlessWidth, m_headlessHeight, 0, 0,
+                          m_headlessWidth * scale, m_headlessHeight * scale,
+                          GL_COLOR_BUFFER_BIT, filter);
+        checkGLError("SwapBuffers glBlitFramebuffer");
+      } else {
+        // --- OPTION B: FULL-SCREEN QUAD SHADER PASS (Gamma != 1.0 or LUT active)
+        // ---
+        glBindFramebuffer(GL_FRAMEBUFFER,
+                          0);  // Render directly to window surface
+        glViewport(0, 0, m_headlessWidth * scale, m_headlessHeight * scale);
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-      glUseProgram(m_glProgram);
+        glUseProgram(m_glProgram);
 
-      // Pass active gamma lut switch
-      GLint uUseGammaLutLoc = glGetUniformLocation(m_glProgram, "uUseGammaLut");
-      if (uUseGammaLutLoc != -1) {
-        glUniform1i(uUseGammaLutLoc, m_useGammaLut ? 1 : 0);
+        // Pass active gamma lut switch
+        GLint uUseGammaLutLoc = glGetUniformLocation(m_glProgram, "uUseGammaLut");
+        if (uUseGammaLutLoc != -1) {
+          glUniform1i(uUseGammaLutLoc, m_useGammaLut ? 1 : 0);
+        }
+
+        // Bind the rendered offscreen FBO color texture as texture unit 0
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, m_fboTextures[0]);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter);
+
+        // Bind the Gamma LUT 1D texture as texture unit 1
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, m_glGammaLutTex);
+
+        glBindVertexArray(m_glVAO);
+        glDrawArrays(GL_TRIANGLE_FAN, 0, 4);  // Draw full-screen quad
+
+        glBindVertexArray(0);
+        glUseProgram(0);
+
+        // Reset active texture unit back to unit 0
+        glActiveTexture(GL_TEXTURE0);
+        checkGLError("SwapBuffers Gamma shader pass");
       }
 
-      // Bind the rendered offscreen FBO color texture as texture unit 0
-      glActiveTexture(GL_TEXTURE0);
-      glBindTexture(GL_TEXTURE_2D, m_fboTextures[0]);
-      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter);
-      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter);
-
-      // Bind the Gamma LUT 1D texture as texture unit 1
-      glActiveTexture(GL_TEXTURE1);
-      glBindTexture(GL_TEXTURE_2D, m_glGammaLutTex);
-
-      glBindVertexArray(m_glVAO);
-      glDrawArrays(GL_TRIANGLE_FAN, 0, 4);  // Draw full-screen quad
-
-      glBindVertexArray(0);
-      glUseProgram(0);
-
-      // Reset active texture unit back to unit 0
-      glActiveTexture(GL_TEXTURE0);
-      checkGLError("SwapBuffers Gamma shader pass");
+      // Restore framebuffer bindings
+      glBindFramebuffer(GL_FRAMEBUFFER, 0);
     }
-
-    // Restore framebuffer bindings
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
     // Show the window dynamically on the first swap, with safety guards,
     // BEFORE swapping to ensure the compositor maps the first swapped frame immediately!
@@ -325,7 +328,10 @@ bool OpenGLESBackend::SwapBuffers() {
 
     // Swap front and back window buffers to display the rendered frame on the
     // screen!
-    SDL_GL_SwapWindow(static_cast<SDL_Window*>(m_sdlWindow));
+    {
+      GLIDE_PROFILE_SCOPE("GLES::SwapBuffers_GLSwap");
+      SDL_GL_SwapWindow(static_cast<SDL_Window*>(m_sdlWindow));
+    }
   }
 
   // Swap the front and back CPU buffer indices for double-buffering
@@ -2323,100 +2329,106 @@ void OpenGLESBackend::FlushBatch() {
 
   uint32_t uploadSize = m_batchVertices.size() * sizeof(ModernVertex);
   
-  // Handle VBO ring buffer wrapping and orphaning
-  if (m_geomVBOOffset + uploadSize > m_geomVBOSizeConfigured) {
-    GLIDE_LOG(WARN, "GLES", "Dynamic Geometry VBO ring buffer wrap-around & orphaning! Offset reset to 0.");
-    m_geomVBOOffset = 0;
-    glBindBuffer(GL_ARRAY_BUFFER, m_geomVBO);
-    glBufferData(GL_ARRAY_BUFFER, m_geomVBOSizeConfigured, nullptr, GL_DYNAMIC_DRAW);
-  }
-
-  // Upload the entire accumulated vertex array in a single contiguous transfer
-  glBindBuffer(GL_ARRAY_BUFFER, m_geomVBO);
-  glBufferSubData(GL_ARRAY_BUFFER, m_geomVBOOffset, uploadSize, m_batchVertices.data());
-  glBindBuffer(GL_ARRAY_BUFFER, 0);
-
-  // Bind active offscreen headless FBO and configure viewport
-  // Bind active offscreen headless FBO and configure viewport
-  glBindFramebuffer(GL_FRAMEBUFFER, GetActiveGpuFbo());
-  glViewport(0, 0, m_headlessWidth, m_headlessHeight);
-
-  // Always bind geometry shader program and VAO for drawing
-  glUseProgram(m_geomProgram);
-  glBindVertexArray(m_geomVAO);
-
-  // Always bind active texture samplers to their texture units
-  for (uint32_t tmu = 0; tmu < 2; ++tmu) {
-    uint32_t addr = m_boundTexAddress[tmu];
-    if (addr != 0xFFFFFFFF) {
-      auto it = m_glesTextures.find(addr);
-      if (it != m_glesTextures.end()) {
-        glActiveTexture(GL_TEXTURE0 + tmu);
-        glBindTexture(GL_TEXTURE_2D, it->second);
-        glBindSampler(tmu, m_glesSamplers[tmu]);
-      }
+  {
+    GLIDE_PROFILE_SCOPE("GLES::FlushBatch_Upload");
+    // Handle VBO ring buffer wrapping and orphaning
+    if (m_geomVBOOffset + uploadSize > m_geomVBOSizeConfigured) {
+      GLIDE_LOG(WARN, "GLES", "Dynamic Geometry VBO ring buffer wrap-around & orphaning! Offset reset to 0.");
+      m_geomVBOOffset = 0;
+      glBindBuffer(GL_ARRAY_BUFFER, m_geomVBO);
+      glBufferData(GL_ARRAY_BUFFER, m_geomVBOSizeConfigured, nullptr, GL_DYNAMIC_DRAW);
     }
+
+    // Upload the entire accumulated vertex array in a single contiguous transfer
+    glBindBuffer(GL_ARRAY_BUFFER, m_geomVBO);
+    glBufferSubData(GL_ARRAY_BUFFER, m_geomVBOOffset, uploadSize, m_batchVertices.data());
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
   }
 
-  // Lazy State Synchronization
-  if (m_stateCacheDirty) {
-    m_is2DGeometry = m_batchIs2DGeometry;
-    SyncDepthState();
-    ApplyBlendingGLES();
-    ApplyScissorGLES();
-    SyncCullStateGLES();
-    ApplyColorMaskGLES();
+  {
+    GLIDE_PROFILE_SCOPE("GLES::FlushBatch_StateSync");
+    // Bind active offscreen headless FBO and configure viewport
+    glBindFramebuffer(GL_FRAMEBUFFER, GetActiveGpuFbo());
+    glViewport(0, 0, m_headlessWidth, m_headlessHeight);
 
-    // Populate all uniforms on the active shader program
-    PopulateUniforms();
+    // Always bind geometry shader program and VAO for drawing
+    glUseProgram(m_geomProgram);
+    glBindVertexArray(m_geomVAO);
 
-    // Configure active sampler parameters (wrap/filter modes)
+    // Always bind active texture samplers to their texture units
     for (uint32_t tmu = 0; tmu < 2; ++tmu) {
       uint32_t addr = m_boundTexAddress[tmu];
       if (addr != 0xFFFFFFFF) {
         auto it = m_glesTextures.find(addr);
         if (it != m_glesTextures.end()) {
-          // Set sampler wrap modes
-          GLint wrapS = GL_REPEAT;
-          if (m_texClampS[tmu] == 1) {
-            wrapS = GL_CLAMP_TO_EDGE;
-          } else if (m_texClampS[tmu] == 2) {
-            wrapS = GL_MIRRORED_REPEAT;
-          }
-
-          GLint wrapT = GL_REPEAT;
-          if (m_texClampT[tmu] == 1) {
-            wrapT = GL_CLAMP_TO_EDGE;
-          } else if (m_texClampT[tmu] == 2) {
-            wrapT = GL_MIRRORED_REPEAT;
-          }
-
-          glSamplerParameteri(m_glesSamplers[tmu], GL_TEXTURE_WRAP_S, wrapS);
-          glSamplerParameteri(m_glesSamplers[tmu], GL_TEXTURE_WRAP_T, wrapT);
-
-          // Set sampler filter modes
-          GLint minFilter = GL_NEAREST;
-          if (m_texMipMapMode[tmu] == 0) {  // Mipmap Disabled
-            minFilter = (m_texMinFilter[tmu] == 1) ? GL_LINEAR : GL_NEAREST;
-          } else {                           // Mipmap Enabled
-            if (m_texMinFilter[tmu] == 1) {  // Bilinear
-              minFilter = m_texLodBlend[tmu] ? GL_LINEAR_MIPMAP_LINEAR
-                                             : GL_LINEAR_MIPMAP_NEAREST;
-            } else {  // Point
-              minFilter = m_texLodBlend[tmu] ? GL_NEAREST_MIPMAP_LINEAR
-                                             : GL_NEAREST_MIPMAP_NEAREST;
-            }
-          }
-          GLint magFilter = (m_texMagFilter[tmu] == 1) ? GL_LINEAR : GL_NEAREST;
-          glSamplerParameteri(m_glesSamplers[tmu], GL_TEXTURE_MIN_FILTER,
-                              minFilter);
-          glSamplerParameteri(m_glesSamplers[tmu], GL_TEXTURE_MAG_FILTER,
-                              magFilter);
+          glActiveTexture(GL_TEXTURE0 + tmu);
+          glBindTexture(GL_TEXTURE_2D, it->second);
+          glBindSampler(tmu, m_glesSamplers[tmu]);
         }
       }
     }
-    m_stateCacheDirty = false;
+
+    // Lazy State Synchronization
+    if (m_stateCacheDirty) {
+      m_is2DGeometry = m_batchIs2DGeometry;
+      SyncDepthState();
+      ApplyBlendingGLES();
+      ApplyScissorGLES();
+      SyncCullStateGLES();
+      ApplyColorMaskGLES();
+
+      // Populate all uniforms on the active shader program
+      PopulateUniforms();
+
+      // Configure active sampler parameters (wrap/filter modes)
+      for (uint32_t tmu = 0; tmu < 2; ++tmu) {
+        uint32_t addr = m_boundTexAddress[tmu];
+        if (addr != 0xFFFFFFFF) {
+          auto it = m_glesTextures.find(addr);
+          if (it != m_glesTextures.end()) {
+            // Set sampler wrap modes
+            GLint wrapS = GL_REPEAT;
+            if (m_texClampS[tmu] == 1) {
+              wrapS = GL_CLAMP_TO_EDGE;
+            } else if (m_texClampS[tmu] == 2) {
+              wrapS = GL_MIRRORED_REPEAT;
+            }
+
+            GLint wrapT = GL_REPEAT;
+            if (m_texClampT[tmu] == 1) {
+              wrapT = GL_CLAMP_TO_EDGE;
+            } else if (m_texClampT[tmu] == 2) {
+              wrapT = GL_MIRRORED_REPEAT;
+            }
+
+            glSamplerParameteri(m_glesSamplers[tmu], GL_TEXTURE_WRAP_S, wrapS);
+            glSamplerParameteri(m_glesSamplers[tmu], GL_TEXTURE_WRAP_T, wrapT);
+
+            // Set sampler filter modes
+            GLint minFilter = GL_NEAREST;
+            if (m_texMipMapMode[tmu] == 0) {  // Mipmap Disabled
+              minFilter = (m_texMinFilter[tmu] == 1) ? GL_LINEAR : GL_NEAREST;
+            } else {                           // Mipmap Enabled
+              if (m_texMinFilter[tmu] == 1) {  // Bilinear
+                minFilter = m_texLodBlend[tmu] ? GL_LINEAR_MIPMAP_LINEAR
+                                               : GL_LINEAR_MIPMAP_NEAREST;
+              } else {  // Point
+                minFilter = m_texLodBlend[tmu] ? GL_NEAREST_MIPMAP_LINEAR
+                                               : GL_NEAREST_MIPMAP_NEAREST;
+              }
+            }
+            GLint magFilter = (m_texMagFilter[tmu] == 1) ? GL_LINEAR : GL_NEAREST;
+            glSamplerParameteri(m_glesSamplers[tmu], GL_TEXTURE_MIN_FILTER,
+                                minFilter);
+            glSamplerParameteri(m_glesSamplers[tmu], GL_TEXTURE_MAG_FILTER,
+                                magFilter);
+          }
+        }
+      }
+      m_stateCacheDirty = false;
+    }
   }
+
   uint32_t firstVertex = m_geomVBOOffset / sizeof(ModernVertex);
 
   // Dispatch a single glDrawArrays call for the batch
@@ -2428,7 +2440,10 @@ void OpenGLESBackend::FlushBatch() {
   }
   
   uint32_t vertexCount = m_batchVertices.size();
-  glDrawArrays(mode, firstVertex, vertexCount);
+  {
+    GLIDE_PROFILE_SCOPE("GLES::FlushBatch_Draw");
+    glDrawArrays(mode, firstVertex, vertexCount);
+  }
 
   // Statistics tracking
   if (m_batchPrimitiveMode == BatchPrimitiveMode::Triangles) {

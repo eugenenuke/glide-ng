@@ -168,6 +168,18 @@ int main(int argc, char* argv[]) {
         "[ R ]          Toggle Continuous Rotation"
     });
 
+    int max_frames = 0;
+    float max_duration = 0.0f;
+    for (int i = 1; i < argc; i++) {
+        if ((strcmp(argv[i], "--frames") == 0 || strcmp(argv[i], "-f") == 0) && i + 1 < argc) {
+            max_frames = std::atoi(argv[i + 1]);
+            i++;
+        } else if ((strcmp(argv[i], "--duration") == 0 || strcmp(argv[i], "-d") == 0) && i + 1 < argc) {
+            max_duration = std::atof(argv[i + 1]);
+            i++;
+        }
+    }
+
     // Open Window & Initialize Graphics State
     grSstSelect(0);
 #if GLIDE_VERSION == 3
@@ -222,7 +234,9 @@ int main(int argc, char* argv[]) {
 
     // Frame-rate and timing loop states
     auto last_fps_report = std::chrono::steady_clock::now();
+    auto start_time = std::chrono::steady_clock::now();
     int frame_count = 0;
+    int total_frames_rendered = 0;
     float rotation_angle = 0.0f;
 
     float view_angle_x = 20.0f * (float)M_PI / 180.0f;
@@ -330,9 +344,22 @@ int main(int argc, char* argv[]) {
         // Swap Buffers to present to screen
         grBufferSwap(1);
         frame_count++;
+        total_frames_rendered++;
+
+        auto now = std::chrono::steady_clock::now();
+
+        // Automated exit conditions
+        if (max_frames > 0 && total_frames_rendered >= max_frames) {
+            goto exit_loop;
+        }
+        if (max_duration > 0.0f) {
+            std::chrono::duration<double> run_elapsed = now - start_time;
+            if (run_elapsed.count() >= max_duration) {
+                goto exit_loop;
+            }
+        }
 
         // Calculate and log FPS every 5.0 seconds
-        auto now = std::chrono::steady_clock::now();
         std::chrono::duration<double> elapsed = now - last_fps_report;
         if (elapsed.count() >= 5.0) {
             double fps = frame_count / elapsed.count();
