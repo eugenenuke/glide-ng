@@ -40,6 +40,16 @@ private:
     void RasterizeSoftwareTriangle(const ModernVertex& a, const ModernVertex& b, const ModernVertex& c);
 
     __attribute__((always_inline)) inline void RasterizeSoftwareTriangleImpl(const ModernVertex& a, const ModernVertex& b, const ModernVertex& c);
+    
+    template <bool HasTexture, bool BlendEnabled, bool DitherEnabled>
+    __attribute__((always_inline)) inline void RasterizeTriangleTemplate(const ModernVertex& a, const ModernVertex& b, const ModernVertex& c);
+
+    __attribute__((always_inline)) inline bool IsTexChromaMatch(uint32_t color, uint32_t tmu) const;
+    __attribute__((always_inline)) inline uint32_t SampleTextureLevel(
+        const struct VirtualTexture* targetTex, int lodIdx, float levelTrueS, float levelTrueT,
+        uint32_t targetClampS, uint32_t targetClampT, uint32_t targetMinFilter,
+        uint32_t tmuIdx) const;
+
     uint32_t EvaluateCombinerColor(const ModernVertex& v);
     void WritePixelPipeline(int x, int y, const ModernVertex& v, float coverage = 1.0f);
     // SDL2 Visual Presentation Console Singletons

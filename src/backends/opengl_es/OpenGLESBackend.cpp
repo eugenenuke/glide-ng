@@ -293,15 +293,16 @@ bool OpenGLESBackend::SwapBuffers() {
     // Restore framebuffer bindings
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
-    // Swap front and back window buffers to display the rendered frame on the
-    // screen!
-    SDL_GL_SwapWindow(static_cast<SDL_Window*>(m_sdlWindow));
-
-    // Show the window dynamically on the first swap, with safety guards
+    // Show the window dynamically on the first swap, with safety guards,
+    // BEFORE swapping to ensure the compositor maps the first swapped frame immediately!
     if (m_sdlWindow && !m_windowShown && !m_headlessMode) {
       SDL_ShowWindow(static_cast<SDL_Window*>(m_sdlWindow));
       m_windowShown = true;
     }
+
+    // Swap front and back window buffers to display the rendered frame on the
+    // screen!
+    SDL_GL_SwapWindow(static_cast<SDL_Window*>(m_sdlWindow));
   }
 
   // Swap the front and back CPU buffer indices for double-buffering

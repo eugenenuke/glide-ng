@@ -574,6 +574,7 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
                     "Vulkan presentation surface created successfully!");
           if (CreateSwapchain(width * scale, height * scale)) {
             m_sdlWindow = win;
+            m_headlessMode = false; // We are NOT headless because we have a presentation window!
             GLIDE_LOG(INFO, "Vulkan",
                       "Vulkan GPU-native swapchain presentation window "
                       "initialized successfully.");
@@ -1268,27 +1269,11 @@ bool VulkanBackend::SwapBuffers() {
 
     m_graphicsQueue.submit(submitInfo, m_fences[m_currentFrameSlot].get());
 
-    // 4. Queue the swapchain image for presentation on the screen!
-    vk::PresentInfoKHR presentInfo(
-        1, &m_renderFinishedSemaphores[m_currentFrameSlot].get(), 1,
-        &m_swapchain.get(), &imageIndex, nullptr);
-
-    vk::Result presentRes = m_graphicsQueue.presentKHR(presentInfo);
-    if (presentRes == vk::Result::eErrorOutOfDateKHR ||
-        presentRes == vk::Result::eSuboptimalKHR) {
-      GLIDE_LOG(WARN, "Vulkan",
-                "Present: Swapchain is out of date or suboptimal.");
-    } else if (presentRes != vk::Result::eSuccess) {
-      GLIDE_LOG(
-          CRITICAL, "Vulkan",
-          "Failed to present swapchain image: " << vk::to_string(presentRes));
-    }
-
-    // Show the window dynamically only AFTER the first frame is fully rendered
-    // and presented. We block the CPU thread on the frame's fence to guarantee
+    // Show the window dynamically only AFTER the first frame is fully rendered,
+    // but BEFORE it is presented! We block the CPU thread on the frame's fence to guarantee
     // llvmpipe has completed rendering, ensuring the compositor maps a fully
-    // populated front buffer and avoiding any black flash.
-    if (m_sdlWindow && !m_windowShown) {
+    // populated front buffer immediately and avoiding any black flash.
+    if (m_sdlWindow && !m_windowShown && !m_headlessMode) {
       try {
         if (m_device->waitForFences(1, &m_fences[m_currentFrameSlot].get(),
                                     VK_TRUE,
@@ -1303,6 +1288,22 @@ bool VulkanBackend::SwapBuffers() {
       }
       SDL_ShowWindow(reinterpret_cast<SDL_Window*>(m_sdlWindow));
       m_windowShown = true;
+    }
+
+    // 4. Queue the swapchain image for presentation on the screen!
+    vk::PresentInfoKHR presentInfo(
+        1, &m_renderFinishedSemaphores[m_currentFrameSlot].get(), 1,
+        &m_swapchain.get(), &imageIndex, nullptr);
+
+    vk::Result presentRes = m_graphicsQueue.presentKHR(presentInfo);
+    if (presentRes == vk::Result::eErrorOutOfDateKHR ||
+        presentRes == vk::Result::eSuboptimalKHR) {
+      GLIDE_LOG(WARN, "Vulkan",
+                "Present: Swapchain is out of date or suboptimal.");
+    } else if (presentRes != vk::Result::eSuccess) {
+      GLIDE_LOG(
+          CRITICAL, "Vulkan",
+          "Failed to present swapchain image: " << vk::to_string(presentRes));
     }
 
     // 5. Advance to the next frame slot and wait for its fence to become free
