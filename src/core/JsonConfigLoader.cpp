@@ -102,6 +102,18 @@ bool JsonConfigLoader::Load(const std::string& configFilePath, WrapperConfig& ou
             }
         }
         
+        // Parse custom window scale (e.g. "windowScale": 2)
+        size_t scalePos = content.find("\"windowScale\"");
+        if (scalePos != std::string::npos) {
+            size_t colonPos = content.find(":", scalePos);
+            if (colonPos != std::string::npos) {
+                size_t valPos = content.find_first_of("-0123456789", colonPos);
+                if (valPos != std::string::npos) {
+                    outConfig.windowScale = std::atoi(content.c_str() + valPos);
+                }
+            }
+        }
+        
         GLIDE_LOG(INFO, "Config", "Parsed local JSON configuration file successfully.");
     } else {
         GLIDE_LOG(INFO, "Config", "No local glide_config.json file detected. Using baseline defaults.");
@@ -249,6 +261,14 @@ bool JsonConfigLoader::Load(const std::string& configFilePath, WrapperConfig& ou
         std::string val(envVsync);
         outConfig.vsync = !(val == "0" || val == "false" || val == "FALSE" || val == "off" || val == "OFF");
         GLIDE_LOG(WARN, "Config", "Overrode VSync via GLIDE_VSYNC=" << (outConfig.vsync ? "ENABLED" : "DISABLED"));
+    }
+
+    if (const char* envScale = std::getenv("GLIDE_WRAPPER_WINDOW_SCALE")) {
+        int val = std::atoi(envScale);
+        if (val >= 1 && val <= 8) {
+            outConfig.windowScale = static_cast<uint32_t>(val);
+            GLIDE_LOG(WARN, "Config", "Overrode Window Scale via GLIDE_WRAPPER_WINDOW_SCALE=" << outConfig.windowScale);
+        }
     }
 
     // Normalize MSAA sample count to valid GPU powers of two

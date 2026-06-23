@@ -1762,6 +1762,7 @@ TEST_CASE("Software Backend Anti-Aliasing (AA) Modes & Verification", "[Software
     using BufferClearFunc = void(*)(GrColor_t, GrAlpha_t, FxU32);
     using LfbReadFunc = FxBool(*)(GrBuffer_t, FxU32, FxU32, FxU32, FxU32, FxU32, void*);
     using ShutdownFunc = void(*)(void);
+    using AlphaBlendFunc = void(*)(GrAlphaBlendFnc_t, GrAlphaBlendFnc_t, GrAlphaBlendFnc_t, GrAlphaBlendFnc_t);
 
     auto glideInit = reinterpret_cast<InitFunc>(::dlsym(handle, "grGlideInit"));
     auto sstSelect = reinterpret_cast<SelectSstFunc>(::dlsym(handle, "grSstSelect"));
@@ -1776,6 +1777,7 @@ TEST_CASE("Software Backend Anti-Aliasing (AA) Modes & Verification", "[Software
     auto bufferClear = reinterpret_cast<BufferClearFunc>(::dlsym(handle, "grBufferClear"));
     auto lfbRead   = reinterpret_cast<LfbReadFunc>(::dlsym(handle, "grLfbReadRegion"));
     auto shutdown  = reinterpret_cast<ShutdownFunc>(::dlsym(handle, "grGlideShutdown"));
+    auto alphaBlendFunction = reinterpret_cast<AlphaBlendFunc>(::dlsym(handle, "grAlphaBlendFunction"));
 
     REQUIRE(glideInit != nullptr);
     REQUIRE(winOpen != nullptr);
@@ -1788,6 +1790,7 @@ TEST_CASE("Software Backend Anti-Aliasing (AA) Modes & Verification", "[Software
     REQUIRE(bufferClear != nullptr);
     REQUIRE(lfbRead != nullptr);
     REQUIRE(shutdown != nullptr);
+    REQUIRE(alphaBlendFunction != nullptr);
 
     #define G3_PARAM_XY       0x01
     #define G3_PARAM_RGB      0x20
@@ -1820,6 +1823,8 @@ TEST_CASE("Software Backend Anti-Aliasing (AA) Modes & Verification", "[Software
 
         colorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE, GR_COMBINE_LOCAL_CONSTANT, GR_COMBINE_OTHER_NONE, FXFALSE);
         constantColor(0xFFFFFFFF); // Solid white
+        alphaBlendFunction(GR_BLEND_SRC_ALPHA, GR_BLEND_ONE_MINUS_SRC_ALPHA,
+                           GR_BLEND_SRC_ALPHA, GR_BLEND_ONE_MINUS_SRC_ALPHA);
 
         bufferClear(0x00000000, 0, 0);
 

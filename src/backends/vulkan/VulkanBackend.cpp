@@ -494,10 +494,11 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
                 "SDL_Init failed: " << SDL_GetError()
                                     << ". Running headless offscreen.");
     } else {
+      uint32_t scale = m_config.windowScale;
       auto* win =
           SDL_CreateWindow("3dfx glide-ng Presentation Console (Vulkan)",
                            SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-                           width, height, SDL_WINDOW_VULKAN | SDL_WINDOW_SHOWN);
+                           width * scale, height * scale, SDL_WINDOW_VULKAN | SDL_WINDOW_SHOWN);
       if (win) {
         // Create Vulkan Surface associated with the SDL window
         VkSurfaceKHR rawSurface;
@@ -505,7 +506,7 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
           m_surface = vk::UniqueSurfaceKHR(rawSurface, m_instance.get());
           GLIDE_LOG(INFO, "Vulkan",
                     "Vulkan presentation surface created successfully!");
-          if (CreateSwapchain(width, height)) {
+          if (CreateSwapchain(width * scale, height * scale)) {
             m_sdlWindow = win;
             GLIDE_LOG(INFO, "Vulkan",
                       "Vulkan GPU-native swapchain presentation window "
@@ -1174,10 +1175,11 @@ bool VulkanBackend::SwapBuffers() {
     blitRegion.dstOffsets[1] =
         vk::Offset3D(m_swapchainExtent.width, m_swapchainExtent.height, 1);
 
+    vk::Filter filter = (m_config.presentationFilter == 0) ? vk::Filter::eNearest : vk::Filter::eLinear;
     m_commandBuffer->blitImage(
         m_headlessImages[activeIdx].get(), vk::ImageLayout::eTransferSrcOptimal,
         m_swapchainImages[imageIndex], vk::ImageLayout::eTransferDstOptimal, 1,
-        &blitRegion, vk::Filter::eLinear);
+        &blitRegion, filter);
 
     // Transition layouts back: FBO to Attachment (for next frame draws),
     // Swapchain to Present

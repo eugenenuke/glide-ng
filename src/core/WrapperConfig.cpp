@@ -43,6 +43,18 @@ EmulationRegistry::EmulationRegistry() {
     if (const char* env = std::getenv("GLIDE_WRAPPER_LOG_LEVEL")) {
         m_config.logLevel = std::stoul(env);
     }
+    if (const char* env = std::getenv("GLIDE_WRAPPER_WINDOW_SCALE")) {
+        int val = std::atoi(env);
+        if (val >= 1 && val <= 8) {
+            m_config.windowScale = static_cast<uint32_t>(val);
+        }
+    }
+    if (const char* env = std::getenv("GLIDE_WRAPPER_PRESENTATION_FILTER")) {
+        int val = std::atoi(env);
+        if (val == 0 || val == 1) {
+            m_config.presentationFilter = static_cast<uint32_t>(val);
+        }
+    }
 }
 
 bool EmulationRegistry::IsFunctionAvailable(const std::string& funcName) const {

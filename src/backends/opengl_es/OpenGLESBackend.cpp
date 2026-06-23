@@ -237,21 +237,24 @@ bool OpenGLESBackend::SwapBuffers() {
     glDisable(GL_SCISSOR_TEST);
     glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
 
+    uint32_t scale = m_config.windowScale;
+    GLenum filter = (m_config.presentationFilter == 0) ? GL_NEAREST : GL_LINEAR;
+
     if (m_gammaCorrectionValue == 1.0f && !m_useGammaLut) {
       // --- OPTION A: HIGH-SPEED GPU HARDWARE BLIT (Gamma = 1.0, No LUT) ---
       glBindFramebuffer(GL_READ_FRAMEBUFFER, m_headlessFBOs[0]);
       glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-      glViewport(0, 0, m_headlessWidth, m_headlessHeight);
+      glViewport(0, 0, m_headlessWidth * scale, m_headlessHeight * scale);
       glBlitFramebuffer(0, 0, m_headlessWidth, m_headlessHeight, 0, 0,
-                        m_headlessWidth, m_headlessHeight, GL_COLOR_BUFFER_BIT,
-                        GL_NEAREST);
+                        m_headlessWidth * scale, m_headlessHeight * scale, GL_COLOR_BUFFER_BIT,
+                        filter);
       checkGLError("SwapBuffers glBlitFramebuffer");
     } else {
       // --- OPTION B: FULL-SCREEN QUAD SHADER PASS (Gamma != 1.0 or LUT active)
       // ---
       glBindFramebuffer(GL_FRAMEBUFFER,
                         0);  // Render directly to window surface
-      glViewport(0, 0, m_headlessWidth, m_headlessHeight);
+      glViewport(0, 0, m_headlessWidth * scale, m_headlessHeight * scale);
       glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
       glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
@@ -266,6 +269,8 @@ bool OpenGLESBackend::SwapBuffers() {
       // Bind the rendered offscreen FBO color texture as texture unit 0
       glActiveTexture(GL_TEXTURE0);
       glBindTexture(GL_TEXTURE_2D, m_fboTextures[0]);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filter);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filter);
 
       // Bind the Gamma LUT 1D texture as texture unit 1
       glActiveTexture(GL_TEXTURE1);
@@ -550,10 +555,11 @@ bool OpenGLESBackend::CreateGLContext(void* nativeWindowHandle, uint32_t width,
     windowFlags |= SDL_WINDOW_SHOWN;
   }
 
+  uint32_t scale = m_config.windowScale;
   auto* win =
       SDL_CreateWindow("3dfx glide-ng Presentation Console (OpenGL ES 3.2)",
-                       SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, width,
-                       height, windowFlags);
+                       SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, width * scale,
+                       height * scale, windowFlags);
 
   if (!win) {
     GLIDE_LOG(CRITICAL, "GLES", "SDL_CreateWindow failed: " << SDL_GetError());
@@ -573,7 +579,7 @@ bool OpenGLESBackend::CreateGLContext(void* nativeWindowHandle, uint32_t width,
     SDL_DestroyWindow(win);
     win = SDL_CreateWindow("3dfx glide-ng Presentation Console (OpenGL ES 3.2)",
                            SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-                           width, height, windowFlags);
+                           width * scale, height * scale, windowFlags);
     if (win) {
       ctx = SDL_GL_CreateContext(win);
     }
@@ -1340,21 +1346,53 @@ void main() {
         }
         
         vec3 c255 = col.rgb * 255.0;
-        int r_dither = d >> 1;
-        int b_dither = d >> 1;
-        int g_dither = d >> 2;
+        float a255 = col.a * 255.0;
+        bool useAlpha = (uAlphaTestOp != 7) || (col.a < 0.99);
         
-        int r = int(c255.r) + r_dither;
-        int g = int(c255.g) + g_dither;
-        int b = int(c255.b) + b_dither;
-        
-        r = clamp(r, 0, 255) & 0xF8;
-        g = clamp(g, 0, 255) & 0xFC;
-        b = clamp(b, 0, 255) & 0xF8;
-        
-        col.r = float(r | (r >> 5)) / 255.0;
-        col.g = float(g | (g >> 6)) / 255.0;
-        col.b = float(b | (b >> 5)) / 255.0;
+        if (useAlpha) {
+            // ARGB1555
+            int matrixSize = (uDitherMode == 2u) ? 16 : 4;
+            int ditherA = (d * 128) / matrixSize;
+            
+            int r_dither = d >> 1;
+            int g_dither = d >> 1;
+            int b_dither = d >> 1;
+            
+            int r = int(c255.r) + r_dither;
+            int g = int(c255.g) + g_dither;
+            int b = int(c255.b) + b_dither;
+            int a = int(a255) + ditherA;
+            
+            r = clamp(r, 0, 255) & 0xF8;
+            g = clamp(g, 0, 255) & 0xF8;
+            b = clamp(b, 0, 255) & 0xF8;
+            
+            int a1 = clamp(a, 0, 255) / 128;
+            a1 = min(a1, 1);
+            
+            col.r = float(r | (r >> 5)) / 255.0;
+            col.g = float(g | (g >> 5)) / 255.0;
+            col.b = float(b | (b >> 5)) / 255.0;
+            col.a = float(a1 * 255) / 255.0;
+        } else {
+            // RGB565
+            int r_dither = d >> 1;
+            int g_dither = d >> 2;
+            int b_dither = d >> 1;
+            
+            int r = int(c255.r) + r_dither;
+            int g = int(c255.g) + g_dither;
+            int b = int(c255.b) + b_dither;
+            
+            r = clamp(r, 0, 255) & 0xF8;
+            g = clamp(g, 0, 255) & 0xFC;
+            b = clamp(b, 0, 255) & 0xF8;
+            
+            col.r = float(r | (r >> 5)) / 255.0;
+            col.g = float(g | (g >> 6)) / 255.0;
+            col.b = float(b | (b >> 5)) / 255.0;
+            col.a = 1.0;
+        }
     }
 
     // True W-Buffering Depth Write

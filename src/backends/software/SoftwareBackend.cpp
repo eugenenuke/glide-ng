@@ -206,8 +206,12 @@ bool SoftwareBackend::AttachWindow(void* nativeWindowHandle, uint32_t width, uin
         if (SDL_Init(SDL_INIT_VIDEO) < 0) {
             GLIDE_LOG(WARN, "Software", "SDL_Init failed: " << SDL_GetError() << ". Running pure offscreen testing mode.");
         } else {
-            auto* win = SDL_CreateWindow("3dfx glide-ng Presentation Console (Software)", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, width, height, SDL_WINDOW_SHOWN);
+            uint32_t scale = m_config.windowScale;
+            auto* win = SDL_CreateWindow("3dfx glide-ng Presentation Console (Software)", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, width * scale, height * scale, SDL_WINDOW_SHOWN);
             if (win) {
+                const char* quality = (m_config.presentationFilter == 0) ? "nearest" : "linear";
+                SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, quality);
+
                 Uint32 flags = SDL_RENDERER_ACCELERATED;
                 if (m_config.vsync) {
                     flags |= SDL_RENDERER_PRESENTVSYNC;
@@ -570,10 +574,42 @@ void SoftwareBackend::WritePixelPipeline(int x, int y, const ModernVertex& v, fl
         blue  = blue  * (1.0f - mult) * (1.0f - f) + fogB * (1.0f - add) * f;
     }
 
+    float blendAlphaVal = alpha;
+    // Pre-blend Alpha Dithering / Quantization
+    if (m_ditherMode != 0) {
+        static const uint8_t dither_matrix_4x4[16] = {
+             0,  8,  2, 10,
+            12,  4, 14,  6,
+             3, 11,  1,  9,
+            15,  7, 13,  5
+        };
+        static const uint8_t dither_matrix_2x2[16] = {
+             0,  2,  0,  2,
+             3,  1,  3,  1,
+             0,  2,  0,  2,
+             3,  1,  3,  1
+        };
+        int ditherX = x & 3;
+        int ditherY = y & 3;
+        uint8_t dith = (m_ditherMode == 2) ? dither_matrix_4x4[ditherY * 4 + ditherX] :
+                       (m_ditherMode == 1) ? dither_matrix_2x2[ditherY * 4 + ditherX] : 0;
+
+        bool useAlpha = (m_alphaTestOp != 7) || (alpha < 0.99f);
+        if (useAlpha) {
+            uint32_t matrixSize = (m_ditherMode == 2) ? 16 : 4;
+            float alpha255 = std::round(alpha * 255.0f);
+            float ditherVal = (static_cast<float>(dith) * 128.0f) / static_cast<float>(matrixSize);
+            if (alpha255 + ditherVal < 128.0f) {
+                return; // Discard translucent stippled-out pixel!
+            }
+            blendAlphaVal = 1.0f; // Stippled-in pixel blends as opaque!
+        }
+    }
+
     uint32_t rVal = static_cast<uint32_t>(std::min(255.0f, red * 255.0f + 0.5f));
     uint32_t gVal = static_cast<uint32_t>(std::min(255.0f, green * 255.0f + 0.5f));
     uint32_t bVal = static_cast<uint32_t>(std::min(255.0f, blue * 255.0f + 0.5f));
-    uint32_t aVal = static_cast<uint32_t>(std::min(255.0f, alpha * 255.0f + 0.5f));
+    uint32_t aVal = static_cast<uint32_t>(std::min(255.0f, blendAlphaVal * 255.0f + 0.5f));
 
     // 4. Alpha Blending
     uint32_t* pixels = reinterpret_cast<uint32_t*>(m_headlessPixelMap);
@@ -589,19 +625,23 @@ void SoftwareBackend::WritePixelPipeline(int x, int y, const ModernVertex& v, fl
     float sFactor = 1.0f;
     float dFactor = 0.0f;
 
-    // Source RGB blend factor (4 = GR_BLEND_SRC_ALPHA, 1 = GR_BLEND_ONE, 0 = GR_BLEND_ZERO)
-    if (m_rgbSrcBlend == 4) {
+    // Source RGB blend factor (1 = GR_BLEND_SRC_ALPHA, 4 = GR_BLEND_ONE, 0 = GR_BLEND_ZERO)
+    if (m_rgbSrcBlend == 1) {
         sFactor = aVal / 255.0f;
     } else if (m_rgbSrcBlend == 0) {
         sFactor = 0.0f;
+    } else if (m_rgbSrcBlend == 4) {
+        sFactor = 1.0f;
     } else {
         sFactor = 1.0f;
     }
 
-    // Destination RGB blend factor (5 = GR_BLEND_ONE_MINUS_SRC_ALPHA, 1 = GR_BLEND_ONE, 0 = GR_BLEND_ZERO)
+    // Destination RGB blend factor (5 = GR_BLEND_ONE_MINUS_SRC_ALPHA, 4 = GR_BLEND_ONE, 0 = GR_BLEND_ZERO)
     if (m_rgbDstBlend == 5) {
         dFactor = 1.0f - (aVal / 255.0f);
-    } else if (m_rgbDstBlend == 1) {
+    } else if (m_rgbDstBlend == 0) {
+        dFactor = 0.0f;
+    } else if (m_rgbDstBlend == 4) {
         dFactor = 1.0f;
     } else {
         dFactor = 0.0f;
@@ -616,7 +656,7 @@ void SoftwareBackend::WritePixelPipeline(int x, int y, const ModernVertex& v, fl
     finalG = std::min(255u, finalG);
     finalB = std::min(255u, finalB);
 
-    // 16-Bit Dithering
+    // 16-Bit Dithering (Post-Blend RGB565 Quantization Only)
     if (m_ditherMode != 0) {
         static const uint8_t dither_matrix_4x4[16] = {
              0,  8,  2, 10,
@@ -635,19 +675,15 @@ void SoftwareBackend::WritePixelPipeline(int x, int y, const ModernVertex& v, fl
         uint8_t dith = (m_ditherMode == 2) ? dither_matrix_4x4[ditherY * 4 + ditherX] :
                        (m_ditherMode == 1) ? dither_matrix_2x2[ditherY * 4 + ditherX] : 0;
 
-        // Quantize Red (5-bit)
         uint32_t ditheredR = (((finalR << 1) - (finalR >> 4) + (finalR >> 7) + dith) >> 1);
         uint32_t quantizedR = std::min(31u, ditheredR >> 3);
 
-        // Quantize Green (6-bit)
         uint32_t ditheredG = (((finalG << 2) - (finalG >> 4) + (finalG >> 6) + dith) >> 2);
         uint32_t quantizedG = std::min(63u, ditheredG >> 2);
 
-        // Quantize Blue (5-bit)
         uint32_t ditheredB = (((finalB << 1) - (finalB >> 4) + (finalB >> 7) + dith) >> 1);
         uint32_t quantizedB = std::min(31u, ditheredB >> 3);
 
-        // Upscale back to 8-bit using bit replication
         finalR = (quantizedR << 3) | (quantizedR >> 2);
         finalG = (quantizedG << 2) | (quantizedG >> 4);
         finalB = (quantizedB << 3) | (quantizedB >> 2);
@@ -980,8 +1016,8 @@ void SoftwareBackend::RasterizeSoftwareTriangleImpl(const ModernVertex& a, const
         float cOtherR = 0.0f;
         float cOtherG = 0.0f;
         float cOtherB = 0.0f;
-        bool isTestPixel = (x == 150 && y == 150) || (x == 310 && y == 310) || (x == 410 && y == 310);
         bool keepPixel = true;
+        float blendAlphaVal = 1.0f;
 
         // Stipple Transparency Check
         if (m_stippleMode != 0) {
@@ -998,7 +1034,7 @@ void SoftwareBackend::RasterizeSoftwareTriangleImpl(const ModernVertex& a, const
 
         // Near-plane clipping
         if (m_depthMode == 2) { // GR_DEPTHBUFFER_WBUFFER
-            if (wVal > 1.0f) keepPixel = false;
+            if (wVal > 1.0001f) keepPixel = false;
         } else if (hasTexture) {
             if (wVal <= 0.0f) keepPixel = false;
         }
@@ -1409,6 +1445,39 @@ void SoftwareBackend::RasterizeSoftwareTriangleImpl(const ModernVertex& a, const
             green = finalG;
             blue  = finalB;
             alpha = finalA;
+
+            blendAlphaVal = alpha;
+            // Pre-blend Alpha Dithering / Quantization
+            if (m_ditherMode != 0) {
+                static const uint8_t dither_matrix_4x4[16] = {
+                     0,  8,  2, 10,
+                    12,  4, 14,  6,
+                     3, 11,  1,  9,
+                    15,  7, 13,  5
+                };
+                static const uint8_t dither_matrix_2x2[16] = {
+                     0,  2,  0,  2,
+                     3,  1,  3,  1,
+                     0,  2,  0,  2,
+                     3,  1,  3,  1
+                };
+                int ditherX = x & 3;
+                int ditherY = y & 3;
+                uint8_t dith = (m_ditherMode == 2) ? dither_matrix_4x4[ditherY * 4 + ditherX] :
+                               (m_ditherMode == 1) ? dither_matrix_2x2[ditherY * 4 + ditherX] : 0;
+
+                bool useAlpha = (m_alphaTestOp != 7) || (alpha < 0.99f);
+                if (useAlpha) {
+                    uint32_t matrixSize = (m_ditherMode == 2) ? 16 : 4;
+                    float alpha255 = std::round(alpha * 255.0f);
+                    float ditherVal = (static_cast<float>(dith) * 128.0f) / static_cast<float>(matrixSize);
+                    if (alpha255 + ditherVal < 128.0f) {
+                        keepPixel = false; // Discard translucent stippled-out pixel!
+                    } else {
+                        blendAlphaVal = 1.0f; // Stippled-in pixel blends as opaque!
+                    }
+                }
+            }
         }
 
         // Chromakey Emulation
@@ -1482,9 +1551,6 @@ void SoftwareBackend::RasterizeSoftwareTriangleImpl(const ModernVertex& a, const
             }
 
             if (!alphaPass) {
-                if (isTestPixel) {
-                    GLIDE_LOG(DEBUG, "RasterizerDebug", "Test pixel (" << x << "," << y << ") failed alpha test! Op=" << m_alphaTestOp << ", Ref=" << m_alphaTestRefVal);
-                }
                 keepPixel = false;
             }
         }
@@ -1522,10 +1588,6 @@ void SoftwareBackend::RasterizeSoftwareTriangleImpl(const ModernVertex& a, const
                     case 5: depthPass = (targetDepth != currentDepth); break;
                     case 6: depthPass = (targetDepth >= currentDepth); break;
                     case 7: depthPass = true; break;
-                }
-                if (isTestPixel) {
-                    GLIDE_LOG(DEBUG, "RasterizerDebug", "Test pixel (" << x << "," << y << ") depth test result=" << (depthPass ? "PASS" : "FAIL") 
-                              << ", targetDepth=" << targetDepth << ", currentDepth=" << currentDepth << ", Op=" << m_depthCompareOp);
                 }
             }
 
@@ -1601,6 +1663,7 @@ void SoftwareBackend::RasterizeSoftwareTriangleImpl(const ModernVertex& a, const
             uint32_t rVal = static_cast<uint32_t>(std::min(255.0f, red * 255.0f + 0.5f));
             uint32_t gVal = static_cast<uint32_t>(std::min(255.0f, green * 255.0f + 0.5f));
             uint32_t bVal = static_cast<uint32_t>(std::min(255.0f, blue * 255.0f + 0.5f));
+            uint32_t aVal = static_cast<uint32_t>(std::min(255.0f, blendAlphaVal * 255.0f + 0.5f));
 
             if (m_rgbSrcBlend != 4 || m_rgbDstBlend != 0) {
                 uint32_t dstWord = pixels[pIdx];
@@ -1624,17 +1687,17 @@ void SoftwareBackend::RasterizeSoftwareTriangleImpl(const ModernVertex& a, const
                     }
                 };
 
-                float sFR = getFactor(m_rgbSrcBlend, red, dstR, alpha, dstA, false, prefogR);
-                float sFG = getFactor(m_rgbSrcBlend, green, dstG, alpha, dstA, false, prefogG);
-                float sFB = getFactor(m_rgbSrcBlend, blue, dstB, alpha, dstA, false, prefogB);
+                float sFR = getFactor(m_rgbSrcBlend, red, dstR, blendAlphaVal, dstA, false, prefogR);
+                float sFG = getFactor(m_rgbSrcBlend, green, dstG, blendAlphaVal, dstA, false, prefogG);
+                float sFB = getFactor(m_rgbSrcBlend, blue, dstB, blendAlphaVal, dstA, false, prefogB);
 
-                float dFR = getFactor(m_rgbDstBlend, red, dstR, alpha, dstA, true, prefogR);
-                float dFG = getFactor(m_rgbDstBlend, green, dstG, alpha, dstA, true, prefogG);
-                float dFB = getFactor(m_rgbDstBlend, blue, dstB, alpha, dstA, true, prefogB);
+                float dFR = getFactor(m_rgbDstBlend, red, dstR, blendAlphaVal, dstA, true, prefogR);
+                float dFG = getFactor(m_rgbDstBlend, green, dstG, blendAlphaVal, dstA, true, prefogG);
+                float dFB = getFactor(m_rgbDstBlend, blue, dstB, blendAlphaVal, dstA, true, prefogB);
 
-                float sFA = getFactor(m_alphaSrcBlend, alpha, dstA, alpha, dstA, false, prefogA);
-                float dFA = getFactor(m_alphaDstBlend, alpha, dstA, alpha, dstA, true, prefogA);
-                float blendedAlpha = std::min(1.0f, alpha * sFA + dstA * dFA);
+                float sFA = getFactor(m_alphaSrcBlend, blendAlphaVal, dstA, blendAlphaVal, dstA, false, prefogA);
+                float dFA = getFactor(m_alphaDstBlend, blendAlphaVal, dstA, blendAlphaVal, dstA, true, prefogA);
+                float finalBlendedAlpha = std::min(1.0f, blendAlphaVal * sFA + dstA * dFA);
 
                 red   = std::min(1.0f, red   * sFR + dstR * dFR);
                 green = std::min(1.0f, green * sFG + dstG * dFG);
@@ -1643,7 +1706,7 @@ void SoftwareBackend::RasterizeSoftwareTriangleImpl(const ModernVertex& a, const
                 rVal = static_cast<uint32_t>(red * 255.0f + 0.5f);
                 gVal = static_cast<uint32_t>(green * 255.0f + 0.5f);
                 bVal = static_cast<uint32_t>(blue * 255.0f + 0.5f);
-                aVal = static_cast<uint32_t>(blendedAlpha * 255.0f + 0.5f);
+                aVal = static_cast<uint32_t>(finalBlendedAlpha * 255.0f + 0.5f);
             }
 
             // 16-Bit Dithering
@@ -1665,27 +1728,19 @@ void SoftwareBackend::RasterizeSoftwareTriangleImpl(const ModernVertex& a, const
                 uint8_t dith = (m_ditherMode == 2) ? dither_matrix_4x4[ditherY * 4 + ditherX] :
                                (m_ditherMode == 1) ? dither_matrix_2x2[ditherY * 4 + ditherX] : 0;
 
-                // Quantize Red (5-bit)
                 uint32_t ditheredR = (((rVal << 1) - (rVal >> 4) + (rVal >> 7) + dith) >> 1);
                 uint32_t quantizedR = std::min(31u, ditheredR >> 3);
 
-                // Quantize Green (6-bit)
                 uint32_t ditheredG = (((gVal << 2) - (gVal >> 4) + (gVal >> 6) + dith) >> 2);
                 uint32_t quantizedG = std::min(63u, ditheredG >> 2);
 
-                // Quantize Blue (5-bit)
+                // Fix typo: use bVal >> 7 instead of gVal >> 7
                 uint32_t ditheredB = (((bVal << 1) - (bVal >> 4) + (bVal >> 7) + dith) >> 1);
                 uint32_t quantizedB = std::min(31u, ditheredB >> 3);
 
-                // Upscale back to 8-bit using bit replication
                 rVal = (quantizedR << 3) | (quantizedR >> 2);
                 gVal = (quantizedG << 2) | (quantizedG >> 4);
                 bVal = (quantizedB << 3) | (quantizedB >> 2);
-            }
-
-            if (isTestPixel) {
-                GLIDE_LOG(DEBUG, "RasterizerDebug", "Test pixel (" << x << "," << y << ") successfully written to LFB! Color=0x" 
-                          << std::hex << ((aVal << 24) | (rVal << 16) | (gVal << 8) | bVal) << std::dec);
             }
 
             uint32_t finalColor = (aVal << 24) | (rVal << 16) | (gVal << 8) | bVal;

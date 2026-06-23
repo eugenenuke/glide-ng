@@ -7,6 +7,8 @@
 #include <cmath>
 #include <thread>
 #include <chrono>
+#include <vector>
+#include <string>
 #include <DiagnosticInfo.h>
 
 namespace {
@@ -19,6 +21,23 @@ namespace {
     
     float s_screenWidth = 640.0f;
     float s_screenHeight = 480.0f;
+
+    bool SaveTGA(const char* filepath, int width, int height, const uint32_t* pixels) {
+        std::FILE* f = std::fopen(filepath, "wb");
+        if (!f) return false;
+        uint8_t header[18] = {0};
+        header[2] = 2; // uncompressed truecolor
+        header[12] = width & 0xFF;
+        header[13] = (width >> 8) & 0xFF;
+        header[14] = height & 0xFF;
+        header[15] = (height >> 8) & 0xFF;
+        header[16] = 32; // 32bpp
+        header[17] = 0x28; // top-left origin, 8-bit alpha
+        std::fwrite(header, 1, 18, f);
+        std::fwrite(pixels, 4, width * height, f);
+        std::fclose(f);
+        return true;
+    }
 
     // Print the current pipeline states to stdout for immediate tester feedback
     void PrintPipelineStates() {
@@ -74,6 +93,27 @@ namespace {
 }
 
 int main(int argc, char* argv[]) {
+    // Parse custom automation command-line arguments first
+    std::string screenshotPath = "";
+    for (int i = 1; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--dither") == 0 && i + 1 < argc) {
+            s_ditherMode = std::atoi(argv[i + 1]);
+            i++;
+        } else if (std::strcmp(argv[i], "--stipple") == 0 && i + 1 < argc) {
+            s_stippleMode = std::atoi(argv[i + 1]);
+            i++;
+        } else if (std::strcmp(argv[i], "--depth") == 0 && i + 1 < argc) {
+            s_depthMode = std::atoi(argv[i + 1]);
+            i++;
+        } else if (std::strcmp(argv[i], "--alpha") == 0 && i + 1 < argc) {
+            s_alphaMode = std::atoi(argv[i + 1]);
+            i++;
+        } else if (std::strcmp(argv[i], "--screenshot") == 0 && i + 1 < argc) {
+            screenshotPath = argv[i + 1];
+            i++;
+        }
+    }
+
     // Initialize Glide and parse arguments via local helper
     auto runConfig = Tools::InitializeAndParse(argc, argv, "Glide3x Phase 4 Aesthetic & Pipeline Showcase", {
         "[ W ]          Toggle Depth Buffer Mode (Z-Buffer vs W-Buffer)",
@@ -279,6 +319,20 @@ int main(int argc, char* argv[]) {
                  1.0f, 1.0f, 1.0f, 1.0f,
                  0.0f, 255.0f, 255.0f, 120.0f,         // Left color: Cyan with Alpha = 120
                  0.0f, 255.0f, 255.0f, 120.0f);        // Right color: Cyan with Alpha = 120
+
+        if (!screenshotPath.empty()) {
+            // Wait for rendering pipeline to complete and read back the back buffer headlessly
+            std::vector<uint32_t> pixels(640 * 480);
+            grLfbReadRegion(GR_BUFFER_BACKBUFFER, 0, 0, 640, 480, 640 * 4, pixels.data());
+            if (SaveTGA(screenshotPath.c_str(), 640, 480, pixels.data())) {
+                std::printf("[AUTOMATION] Headless screenshot saved successfully to: %s\n", screenshotPath.c_str());
+            } else {
+                std::printf("[ERROR] Failed to save headless screenshot to: %s\n", screenshotPath.c_str());
+            }
+            grSstWinClose(ctx);
+            grGlideShutdown();
+            return 0;
+        }
 
         // 5. Swap buffers to present the rendered image
         grBufferSwap(1);

@@ -44,6 +44,8 @@ struct WrapperConfig {
     std::string backend{"vulkan"}; // "vulkan" or "opengl_es"
     uint32_t msaaSamples{1}; // 1 = MSAA disabled, 4 = 4x MSAA, etc.
     bool vsync{true}; // Enables swapchain vertical synchronization (capping to refresh rate)
+    uint32_t windowScale{1}; // 1 = 1x, 2 = 2x, etc.
+    uint32_t presentationFilter{0}; // 0 = Nearest-Neighbor (Sharp), 1 = Linear/Bilinear (Smooth)
 };
 
 class EmulationRegistry {
