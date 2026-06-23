@@ -193,10 +193,22 @@ struct PipelineStateKeyHash {
   }
 };
 
-struct PipelineGroup {
-  vk::UniquePipeline point;
-  vk::UniquePipeline line;
-  vk::UniquePipeline triangle;
+struct PipelineCacheKey {
+  PipelineStateKey stateKey;
+  vk::PrimitiveTopology topology;
+
+  bool operator==(const PipelineCacheKey& other) const {
+    return stateKey == other.stateKey && topology == other.topology;
+  }
+};
+
+struct PipelineCacheKeyHash {
+  std::size_t operator()(const PipelineCacheKey& k) const {
+    std::size_t h = PipelineStateKeyHash()(k.stateKey);
+    std::size_t topoVal = static_cast<std::size_t>(k.topology);
+    h ^= topoVal + 0x9e3779b9 + (h << 6) + (h >> 2);
+    return h;
+  }
 };
 
 /**
@@ -348,6 +360,7 @@ class VulkanBackend : public SoftwareBackendBase {
 
   // SDL2 Visual Presentation Console Singletons
   void* m_sdlWindow{nullptr};  // SDL_Window*
+  bool m_windowShown{false};
   vk::UniqueSurfaceKHR
       m_surface;  // Vulkan presentation surface associated with m_sdlWindow
 
@@ -364,22 +377,17 @@ class VulkanBackend : public SoftwareBackendBase {
 
   // --- Phase 2: Dynamic Vertex Buffers & State Pipelines ---
   bool CreateShaderModules();
-  bool CreateGraphicsPipelines();
-  PipelineGroup CompileGraphicsPipelines(const PipelineStateKey& key);
-  void UpdateActivePipelines();
+  PipelineStateKey GetCurrentStateKey() const;
+  vk::UniquePipeline CompileSinglePipeline(const PipelineStateKey& key, vk::PrimitiveTopology topology);
+  vk::Pipeline GetOrCreatePipeline(const PipelineStateKey& key, vk::PrimitiveTopology topology);
 
   vk::UniqueShaderModule m_vertShaderModule;
   vk::UniqueShaderModule m_fragShaderModule;
   vk::UniqueShaderModule m_fragShaderModuleDualSrc;
   vk::UniquePipelineLayout m_pipelineLayout;
 
-  // Active pipeline handles (non-owning pointers into the cache)
-  vk::Pipeline m_activePointPipeline;
-  vk::Pipeline m_activeLinePipeline;
-  vk::Pipeline m_activeTrianglePipeline;
-
-  // Pipeline cache storing owned UniquePipeline triplets
-  std::unordered_map<PipelineStateKey, PipelineGroup, PipelineStateKeyHash>
+  // Pipeline cache storing owned UniquePipeline individually by cache key
+  std::unordered_map<PipelineCacheKey, vk::UniquePipeline, PipelineCacheKeyHash>
       m_pipelineCache;
   std::vector<vk::UniquePipeline> m_danglingPipelines;
   vk::UniquePipelineCache

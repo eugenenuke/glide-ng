@@ -6,6 +6,12 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Telemetry Configuration Option
+option(ENABLE_TELEMETRY "Enable high-resolution profiling telemetry" OFF)
+if(ENABLE_TELEMETRY)
+    add_compile_definitions(ENABLE_TELEMETRY)
+endif()
+
 # Expose strict, clean compile warnings
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     add_compile_options(-Wall -Wextra -Wpedantic -Wno-unused-parameter)

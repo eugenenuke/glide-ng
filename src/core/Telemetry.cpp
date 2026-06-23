@@ -68,7 +68,9 @@ void FrameTracker::UpdateStats(int64_t intervalUs) {
 // ==========================================
 
 TelemetryManager::TelemetryManager() {
+#ifdef ENABLE_TELEMETRY
     ResetTriangleStats();
+#endif
 }
 
 TelemetryManager& TelemetryManager::GetInstance() {
@@ -76,6 +78,7 @@ TelemetryManager& TelemetryManager::GetInstance() {
     return instance;
 }
 
+#ifdef ENABLE_TELEMETRY
 void TelemetryManager::RecordScope(const std::string& name, int64_t durationUs) {
     std::lock_guard<std::mutex> lock(m_mutex);
     auto& stats = m_stats[name];
@@ -125,7 +128,7 @@ void TelemetryManager::PrintReport() {
        << " Global Emulated Geometry Statistics:\n"
        << "   Triangles Processed : " << GetTrianglesProcessed() << "\n"
        << "   Triangles Drawn     : " << GetTrianglesDrawn() << " (" 
-       << (GetTrianglesProcessed() > 0 ? (100.0 * GetTrianglesDrawn() / GetTrianglesProcessed()) : 0.0) << "% yield)\n"
+       << (GetTrianglesProcessed() > 0 ? (100.0 * GetTrianglesDrawn() / GetTrianglesProcessed()) : 0.0) << "%% yield)\n"
        << "------------------------------------------------------------------------------------\n"
        << " Presentation & Pacing Performance:\n"
        << "   Average Frame Rate  : " << std::fixed << std::setprecision(1) << m_frameTracker.GetCurrentFps() << " FPS\n"
@@ -135,5 +138,6 @@ void TelemetryManager::PrintReport() {
 
     GLIDE_LOG(INFO, "Telemetry", reportStream.str());
 }
+#endif
 
 } // namespace GlideWrapper

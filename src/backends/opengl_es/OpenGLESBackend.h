@@ -70,6 +70,7 @@ class OpenGLESBackend : public SoftwareBackendBase {
   // SDL2 & OpenGL ES Context Handles
   void* m_sdlWindow{nullptr};  // SDL_Window*
   void* m_glContext{nullptr};  // SDL_GLContext
+  bool m_windowShown{false};
 
   // GLES 3.2 presentation resources for streaming our software pixel map
   uint32_t m_glTexture{0};  // GLuint

@@ -166,6 +166,7 @@ void SoftwareBackend::Shutdown() {
 bool SoftwareBackend::AttachWindow(void* nativeWindowHandle, uint32_t width, uint32_t height, bool windowed) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     if (!m_initialized) return false;
+    m_windowShown = false;
     if (m_windowAttached) DetachWindow();
 
     GLIDE_LOG(INFO, "Software", "Attaching software execution window (" << width << "x" << height << "), Windowed=" << (windowed ? "Yes" : "No"));
@@ -207,7 +208,7 @@ bool SoftwareBackend::AttachWindow(void* nativeWindowHandle, uint32_t width, uin
             GLIDE_LOG(WARN, "Software", "SDL_Init failed: " << SDL_GetError() << ". Running pure offscreen testing mode.");
         } else {
             uint32_t scale = m_config.windowScale;
-            auto* win = SDL_CreateWindow("3dfx glide-ng Presentation Console (Software)", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, width * scale, height * scale, SDL_WINDOW_SHOWN);
+            auto* win = SDL_CreateWindow("3dfx glide-ng Presentation Console (Software)", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, width * scale, height * scale, SDL_WINDOW_HIDDEN);
             if (win) {
                 const char* quality = (m_config.presentationFilter == 0) ? "nearest" : "linear";
                 SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, quality);
@@ -244,6 +245,7 @@ bool SoftwareBackend::AttachWindow(void* nativeWindowHandle, uint32_t width, uin
 
 void SoftwareBackend::DetachWindow() {
     if (!m_windowAttached) return;
+    m_windowShown = false;
     GLIDE_LOG(INFO, "Software", "Detaching active display attachment resources.");
     
     if (m_sdlTexture)  { SDL_DestroyTexture(reinterpret_cast<SDL_Texture*>(m_sdlTexture)); m_sdlTexture = nullptr; }
@@ -333,6 +335,10 @@ bool SoftwareBackend::SwapBuffers() {
 
         SDL_UpdateTexture(reinterpret_cast<SDL_Texture*>(m_sdlTexture), nullptr, textureData, pitch);
         SDL_RenderCopy(reinterpret_cast<SDL_Renderer*>(m_sdlRenderer), reinterpret_cast<SDL_Texture*>(m_sdlTexture), nullptr, nullptr);
+        if (!m_windowShown) {
+            SDL_ShowWindow(reinterpret_cast<SDL_Window*>(m_sdlWindow));
+            m_windowShown = true;
+        }
         SDL_RenderPresent(reinterpret_cast<SDL_Renderer*>(m_sdlRenderer));
     }
 

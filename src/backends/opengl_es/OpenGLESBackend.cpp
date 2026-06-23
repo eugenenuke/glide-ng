@@ -83,6 +83,7 @@ void OpenGLESBackend::Shutdown() {
 void OpenGLESBackend::ResetState() {
   SoftwareBackendBase::ResetState();
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  m_windowShown = false;
   m_geomVBOOffset = 0;
   m_is2DGeometry = true;
   m_gammaCorrectionValue = 1.0f;
@@ -205,6 +206,7 @@ bool OpenGLESBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
 
 void OpenGLESBackend::DetachWindow() {
   if (!m_windowAttached) return;
+  m_windowShown = false;
   GLIDE_LOG(INFO, "GLES",
             "Detaching OpenGL ES window surface and freeing buffers.");
 
@@ -292,6 +294,10 @@ bool OpenGLESBackend::SwapBuffers() {
 
     // Swap front and back window buffers to display the rendered frame on the
     // screen!
+    if (!m_windowShown) {
+      SDL_ShowWindow(static_cast<SDL_Window*>(m_sdlWindow));
+      m_windowShown = true;
+    }
     SDL_GL_SwapWindow(static_cast<SDL_Window*>(m_sdlWindow));
   }
 
@@ -548,12 +554,7 @@ bool OpenGLESBackend::CreateGLContext(void* nativeWindowHandle, uint32_t width,
     SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, 0);
   }
 
-  uint32_t windowFlags = SDL_WINDOW_OPENGL;
-  if (m_headlessMode) {
-    windowFlags |= SDL_WINDOW_HIDDEN;
-  } else {
-    windowFlags |= SDL_WINDOW_SHOWN;
-  }
+  uint32_t windowFlags = SDL_WINDOW_OPENGL | SDL_WINDOW_HIDDEN;
 
   uint32_t scale = m_config.windowScale;
   auto* win =
@@ -596,6 +597,7 @@ bool OpenGLESBackend::CreateGLContext(void* nativeWindowHandle, uint32_t width,
   }
 
   SDL_GL_MakeCurrent(win, ctx);
+  SDL_GL_SetSwapInterval(m_config.vsync ? 1 : 0);
 
   // Query actual EGL samples allocated by host driver
   GLint actualSamples = 0;
