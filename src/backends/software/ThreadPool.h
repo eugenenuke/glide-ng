@@ -7,17 +7,6 @@
 #include <atomic>
 #include <functional>
 
-#if defined(__x86_64__) || defined(_M_X64)
-    #if defined(_MSC_VER)
-        #include <intrin.h>
-        #define GLIDE_SPIN_PAUSE() _mm_pause()
-    #else
-        #define GLIDE_SPIN_PAUSE() __builtin_ia32_pause()
-    #endif
-#else
-    #define GLIDE_SPIN_PAUSE() std::this_thread::yield()
-#endif
-
 namespace GlideWrapper {
 
 class ThreadPool {
@@ -65,23 +54,11 @@ public:
             taskFunc(taskIdx);
         }
 
-        // Spin-wait on completion before falling back to condition variable
-        bool allDone = false;
-        for (int spin = 0; spin < 40000; ++spin) {
-            if (m_completedThreads.load(std::memory_order_relaxed) == m_threads.size() || 
-                m_shutdown.load(std::memory_order_relaxed)) {
-                allDone = true;
-                break;
-            }
-            GLIDE_SPIN_PAUSE();
-        }
-
-        if (!allDone) {
-            std::unique_lock<std::mutex> lock(m_mutex);
-            m_cvEnd.wait(lock, [this]() {
-                return m_completedThreads.load() == m_threads.size() || m_shutdown.load();
-            });
-        }
+        // Wait for workers to finish via condition variable
+        std::unique_lock<std::mutex> lock(m_mutex);
+        m_cvEnd.wait(lock, [this]() {
+            return m_completedThreads.load() == m_threads.size() || m_shutdown.load();
+        });
     }
 
     size_t GetThreadCount() const { return m_threads.size(); }
@@ -90,19 +67,7 @@ private:
     void WorkerLoop() {
         uint32_t localFrameId = 0;
         while (true) {
-            // Spin-wait to avoid kernel futex latency
-            bool gotWork = false;
-            for (int spin = 0; spin < 40000; ++spin) {
-                if (m_frameId.load(std::memory_order_relaxed) > localFrameId || 
-                    m_shutdown.load(std::memory_order_relaxed)) {
-                    gotWork = true;
-                    break;
-                }
-                GLIDE_SPIN_PAUSE();
-            }
-
-            // Fall back to condition variable if spin-wait timed out
-            if (!gotWork) {
+            {
                 std::unique_lock<std::mutex> lock(m_mutex);
                 m_cvStart.wait(lock, [this, localFrameId]() {
                     return m_frameId.load() > localFrameId || m_shutdown.load();
