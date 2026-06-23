@@ -44,8 +44,8 @@ tests/software_dumps/
 *.bin
 *.log
 
-# Submodule test suite outputs
-/ext_tests/openglide-ng/tests/
+# External test suites, demos, and third-party emulators
+/ext_tests/
 
 # Local release build directories
 build_release/
