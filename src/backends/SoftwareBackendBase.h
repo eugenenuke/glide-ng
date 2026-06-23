@@ -2,11 +2,54 @@
 
 #include <mutex>
 #include <vector>
+#include <new>
+#include <limits>
+#include <cstdlib>
+#include <algorithm>
 
 #include "core/IGraphicsBackend.h"
 #include "core/WrapperConfig.h"
 
 namespace GlideWrapper {
+
+template <typename T, std::size_t Alignment = 64>
+struct AlignedAllocator {
+  using value_type = T;
+
+  AlignedAllocator() noexcept = default;
+  template <typename U>
+  AlignedAllocator(const AlignedAllocator<U, Alignment>&) noexcept {}
+
+  T* allocate(std::size_t n) {
+    if (n == 0) return nullptr;
+    if (n > std::numeric_limits<std::size_t>::max() / sizeof(T)) {
+      throw std::bad_alloc();
+    }
+    void* ptr = nullptr;
+    std::size_t actual_alignment = std::max(Alignment, sizeof(void*));
+    std::size_t size = n * sizeof(T);
+    std::size_t remainder = size % actual_alignment;
+    if (remainder != 0) {
+      size += actual_alignment - remainder;
+    }
+    if (posix_memalign(&ptr, actual_alignment, size) != 0) {
+      throw std::bad_alloc();
+    }
+    return static_cast<T*>(ptr);
+  }
+
+  void deallocate(T* p, std::size_t) noexcept {
+    std::free(p);
+  }
+
+  template <typename U>
+  struct rebind {
+    using other = AlignedAllocator<U, Alignment>;
+  };
+
+  bool operator==(const AlignedAllocator&) const noexcept { return true; }
+  bool operator!=(const AlignedAllocator&) const noexcept { return false; }
+};
 
 class SoftwareBackendBase : public IGraphicsBackend {
  public:
@@ -168,8 +211,8 @@ class SoftwareBackendBase : public IGraphicsBackend {
   void AllocateCpuBuffers(uint32_t width, uint32_t height);
   void FreeCpuBuffers();
 
-  std::vector<uint8_t> m_cpuBuffers[2];
-  std::vector<uint8_t> m_resolvedBuffer;
+  std::vector<uint8_t, AlignedAllocator<uint8_t, 64>> m_cpuBuffers[2];
+  std::vector<uint8_t, AlignedAllocator<uint8_t, 64>> m_resolvedBuffer;
   uint32_t m_frontBufferIdx{0};
   uint32_t m_backBufferIdx{1};
   uint32_t m_activeRenderBuffer{1};  // 1 = GR_BUFFER_BACKBUFFER (default)
@@ -208,7 +251,7 @@ class SoftwareBackendBase : public IGraphicsBackend {
   bool m_colorMaskRgb{true};
   bool m_colorMaskAlpha{true};
 
-  std::vector<float> m_headlessDepthBuffer;
+  std::vector<float, AlignedAllocator<float, 64>> m_headlessDepthBuffer;
 
   // Phase 5 Software Texture Sampler Variables
   float m_texLodBias[2] = {0.0f, 0.0f};

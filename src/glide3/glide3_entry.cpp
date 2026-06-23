@@ -77,9 +77,9 @@ uint32_t s_alphaFactor = 0x8;  // GR_COMBINE_FACTOR_ONE
 uint32_t s_alphaLocal = 0x1;   // GR_COMBINE_LOCAL_NONE (constant)
 uint32_t s_alphaOther = 0x2;   // GR_COMBINE_OTHER_CONSTANT
 bool s_alphaInvert = false;
-uint32_t s_texRgbFunc[2] = {0, 0};
+uint32_t s_texRgbFunc[2] = {1, 1};
 uint32_t s_texRgbFactor[2] = {0, 0};
-uint32_t s_texAlphaFunc[2] = {0, 0};
+uint32_t s_texAlphaFunc[2] = {1, 1};
 uint32_t s_texAlphaFactor[2] = {0, 0};
 uint32_t s_boundTex[2] = {0xFFFFFFFF, 0xFFFFFFFF};
 float s_texLodBias[2] = {0.0f, 0.0f};
@@ -187,9 +187,9 @@ void ResetFrontendState() {
   s_alphaLocal = 0x1;
   s_alphaOther = 0x2;
   s_alphaInvert = false;
-  s_texRgbFunc[0] = s_texRgbFunc[1] = 0;
+  s_texRgbFunc[0] = s_texRgbFunc[1] = 1;
   s_texRgbFactor[0] = s_texRgbFactor[1] = 0;
-  s_texAlphaFunc[0] = s_texAlphaFunc[1] = 0;
+  s_texAlphaFunc[0] = s_texAlphaFunc[1] = 1;
   s_texAlphaFactor[0] = s_texAlphaFactor[1] = 0;
   s_boundTex[0] = s_boundTex[1] = 0xFFFFFFFF;
   s_texLodBias[0] = s_texLodBias[1] = 0.0f;
@@ -394,9 +394,9 @@ FX_ENTRY GrContext_t FX_CALL grSstWinOpen(FxU32 hWnd,
   s_alphaLocal = 0x1;   // GR_COMBINE_LOCAL_NONE (constant)
   s_alphaOther = 0x2;   // GR_COMBINE_OTHER_CONSTANT
   s_alphaInvert = false;
-  s_texRgbFunc[0] = s_texRgbFunc[1] = 0;
+  s_texRgbFunc[0] = s_texRgbFunc[1] = 1;
   s_texRgbFactor[0] = s_texRgbFactor[1] = 0;
-  s_texAlphaFunc[0] = s_texAlphaFunc[1] = 0;
+  s_texAlphaFunc[0] = s_texAlphaFunc[1] = 1;
   s_texAlphaFactor[0] = s_texAlphaFactor[1] = 0;
   s_boundTex[0] = s_boundTex[1] = 0xFFFFFFFF;
   s_cullMode = 0;  // GR_CULL_DISABLE

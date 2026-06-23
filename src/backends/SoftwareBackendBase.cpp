@@ -14,6 +14,17 @@
 #include "core/TextureManager.h"
 #include "core/VertexLayout.h"
 
+#if defined(__x86_64__) || defined(_M_X64)
+#include <immintrin.h>
+#define HAS_AVX2 1
+#else
+#define HAS_AVX2 0
+#endif
+
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
 extern "C" {
 volatile int g_glideWrapperSdlKeyHit = 0;
 volatile int g_glideWrapperLastKey = 0;
@@ -109,6 +120,9 @@ void SoftwareBackendBase::ResetState() {
   }
 }
 
+#if HAS_AVX2
+__attribute__((target("avx2")))
+#endif
 void SoftwareBackendBase::ClearBuffer(uint32_t color, uint32_t alpha, float z,
                                       uint32_t clearMask) {
   FlushBins();
@@ -129,8 +143,6 @@ void SoftwareBackendBase::ClearBuffer(uint32_t color, uint32_t alpha, float z,
       std::swap(r, b);
     }
 
-
-
     uint32_t writeMask = 0;
     if (m_colorMaskRgb) writeMask |= 0x00FFFFFF;
     if (m_colorMaskAlpha) writeMask |= 0xFF000000;
@@ -147,12 +159,26 @@ void SoftwareBackendBase::ClearBuffer(uint32_t color, uint32_t alpha, float z,
       uint32_t totalPixels = m_headlessWidth * m_headlessHeight;
 
       if (writeMask == 0xFFFFFFFF) {
-        // Fast path: write mask fully enabled, overwrite everything
+#if HAS_AVX2
+        // Fast path: write mask fully enabled, overwrite everything using AVX2 Streaming Stores
+        uint32_t alignedPixels = totalPixels & ~7;
+#pragma omp parallel for
+        for (uint32_t i = 0; i < alignedPixels; i += 8) {
+          __m256i val = _mm256_set1_epi32(clearWord);
+          _mm256_stream_si256(reinterpret_cast<__m256i*>(&pixels[i]), val);
+        }
+        for (uint32_t i = alignedPixels; i < totalPixels; ++i) {
+          pixels[i] = clearWord;
+        }
+        _mm_sfence();
+#else
         std::fill_n(pixels, totalPixels, clearWord);
+#endif
       } else {
         // Slow path: write mask partially enabled, preserve masked-out bits
         uint32_t keepMask = ~writeMask;
         uint32_t maskedClearWord = clearWord & writeMask;
+#pragma omp parallel for
         for (uint32_t i = 0; i < totalPixels; ++i) {
           pixels[i] = (pixels[i] & keepMask) | maskedClearWord;
         }
@@ -166,7 +192,22 @@ void SoftwareBackendBase::ClearBuffer(uint32_t color, uint32_t alpha, float z,
 
   if (clearMask & 0x2) {  // Depth Clear
     if (!m_headlessDepthBuffer.empty()) {
+      float* depthPtr = m_headlessDepthBuffer.data();
+      uint32_t totalPixels = m_headlessWidth * m_headlessHeight;
+#if HAS_AVX2
+      uint32_t alignedPixels = totalPixels & ~7;
+#pragma omp parallel for
+      for (uint32_t i = 0; i < alignedPixels; i += 8) {
+        __m256 val = _mm256_set1_ps(z);
+        _mm256_stream_ps(&depthPtr[i], val);
+      }
+      for (uint32_t i = alignedPixels; i < totalPixels; ++i) {
+        depthPtr[i] = z;
+      }
+      _mm_sfence();
+#else
       std::fill(m_headlessDepthBuffer.begin(), m_headlessDepthBuffer.end(), z);
+#endif
       GLIDE_LOG(DEBUG, "Rasterizer", "Cleared depth buffer with value " << z);
     }
   }
@@ -564,6 +605,162 @@ bool SoftwareBackendBase::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
   return true;
 }
 
+template <uint32_t SrcFmt, bool ChromakeyEnabled, bool BlendEnabled, bool HasRefData>
+struct LfbRowProcessor {
+  static inline void ProcessRow(
+      uint32_t y, uint32_t dstX, uint32_t dstY, uint32_t srcWidth,
+      uint32_t m_headlessWidth, uint32_t m_headlessHeight, uint32_t m_pixelFormatOverride,
+      uint32_t* pixels, const uint8_t* inBytes, const uint8_t* refBytes,
+      int32_t srcStride, const LfbPipelineConfig& config, uint32_t& rowModifiedCount) {
+    
+    uint32_t writeY = dstY + y;
+    if (writeY >= m_headlessHeight) return;
+
+    for (uint32_t x = 0; x < srcWidth; ++x) {
+      uint32_t writeX = dstX + x;
+      if (writeX >= m_headlessWidth) break;
+
+      // 1. Extract raw source pixel
+      constexpr bool is16Bit = (SrcFmt == 0 || SrcFmt == 1 || SrcFmt == 2 || 
+                                SrcFmt == 12 || SrcFmt == 13 || SrcFmt == 14 || 
+                                SrcFmt == 15);
+      uint16_t c16 = 0;
+      uint32_t c32 = 0;
+      if constexpr (is16Bit) {
+        if constexpr (SrcFmt == 12 || SrcFmt == 13 || SrcFmt == 14) {
+          c16 = (uint16_t)(reinterpret_cast<const uint32_t*>(inBytes + y * srcStride)[x] & 0xFFFF);
+        } else {
+          c16 = reinterpret_cast<const uint16_t*>(inBytes + y * srcStride)[x];
+        }
+      } else {
+        c32 = reinterpret_cast<const uint32_t*>(inBytes + y * srcStride)[x];
+      }
+
+      // 2. Dirty tracking check
+      if constexpr (HasRefData) {
+        if constexpr (is16Bit) {
+          uint16_t ref16;
+          if constexpr (SrcFmt == 12 || SrcFmt == 13 || SrcFmt == 14) {
+            ref16 = (uint16_t)(reinterpret_cast<const uint32_t*>(refBytes + y * srcStride)[x] & 0xFFFF);
+          } else {
+            ref16 = reinterpret_cast<const uint16_t*>(refBytes + y * srcStride)[x];
+          }
+          if (c16 == ref16) continue;
+        } else {
+          uint32_t ref32 = reinterpret_cast<const uint32_t*>(refBytes + y * srcStride)[x];
+          if (c32 == ref32) continue;
+        }
+      }
+
+      // 3. Chroma Keying check
+      if constexpr (ChromakeyEnabled) {
+        if constexpr (is16Bit) {
+          if (c16 == static_cast<uint16_t>(config.chromakeyValue)) continue;
+        } else {
+          if (c32 == config.chromakeyValue) continue;
+        }
+      }
+
+      // 4. Unpack pixel to 32-bit RGBA
+      uint32_t pWord = 0xFF000000;
+      if constexpr (SrcFmt == 0 || SrcFmt == 12) {
+        uint32_t r = ((c16 >> 11) & 0x1F) * 255 / 31;
+        uint32_t g = ((c16 >> 5) & 0x3F) * 255 / 63;
+        uint32_t b = (c16 & 0x1F) * 255 / 31;
+        pWord = (255u << 24) | (r << 16) | (g << 8) | b;
+      } else if constexpr (SrcFmt == 1 || SrcFmt == 2 || SrcFmt == 13 || SrcFmt == 14) {
+        uint32_t r = ((c16 >> 10) & 0x1F) * 255 / 31;
+        uint32_t g = ((c16 >> 5) & 0x1F) * 255 / 31;
+        uint32_t b = (c16 & 0x1F) * 255 / 31;
+        uint32_t a = (SrcFmt == 2 || SrcFmt == 14) ? (((c16 >> 15) & 1) ? 255 : 0) : 255;
+        pWord = (a << 24) | (r << 16) | (g << 8) | b;
+      } else {
+        uint32_t r, g, b;
+        if (m_pixelFormatOverride == 1) {
+          r = (c32 & 0xFF) >> 3;
+          g = ((c32 >> 8) & 0xFF) >> 2;
+          b = ((c32 >> 16) & 0xFF) >> 3;
+        } else {
+          r = ((c32 >> 16) & 0xFF) >> 3;
+          g = ((c32 >> 8) & 0xFF) >> 2;
+          b = (c32 & 0xFF) >> 3;
+        }
+        uint32_t r8 = r * 255 / 31;
+        uint32_t g8 = g * 255 / 63;
+        uint32_t b8 = b * 255 / 31;
+        uint32_t a8 = (c32 >> 24) & 0xFF;
+        if constexpr (SrcFmt == 4 || SrcFmt == 15) {
+          a8 = 255;
+        }
+        pWord = (a8 << 24) | (r8 << 16) | (g8 << 8) | b8;
+      }
+
+      // 5. Alpha Blending
+      if constexpr (BlendEnabled) {
+        uint32_t srcA = (pWord >> 24) & 0xFF;
+        uint32_t srcR = (pWord >> 16) & 0xFF;
+        uint32_t srcG = (pWord >> 8) & 0xFF;
+        uint32_t srcB = pWord & 0xFF;
+
+        if constexpr (SrcFmt == 0 || SrcFmt == 4 || SrcFmt == 12 || SrcFmt == 15) {
+          srcA = config.constantAlpha;
+        }
+
+        uint32_t dstWord = pixels[writeY * m_headlessWidth + writeX];
+        uint32_t dstR = (dstWord >> 16) & 0xFF;
+        uint32_t dstG = (dstWord >> 8) & 0xFF;
+        uint32_t dstB = dstWord & 0xFF;
+
+        float sFactor = 1.0f;
+        float dFactor = 0.0f;
+
+        if (config.rgbSrcBlend == 4) {
+          sFactor = srcA / 255.0f;
+        } else if (config.rgbSrcBlend == 0) {
+          sFactor = 0.0f;
+        }
+
+        if (config.rgbDstBlend == 5) {
+          dFactor = 1.0f - (srcA / 255.0f);
+        } else if (config.rgbDstBlend == 1) {
+          dFactor = 1.0f;
+        }
+
+        uint32_t finalR = static_cast<uint32_t>(srcR * sFactor + dstR * dFactor + 0.5f);
+        uint32_t finalG = static_cast<uint32_t>(srcG * sFactor + dstG * dFactor + 0.5f);
+        uint32_t finalB = static_cast<uint32_t>(srcB * sFactor + dstB * dFactor + 0.5f);
+
+        finalR = std::min(255u, finalR);
+        finalG = std::min(255u, finalG);
+        finalB = std::min(255u, finalB);
+
+        pWord = (255u << 24) | (finalR << 16) | (finalG << 8) | finalB;
+      }
+
+      pixels[writeY * m_headlessWidth + writeX] = pWord;
+      rowModifiedCount++;
+    }
+  }
+};
+
+template <uint32_t SrcFmt, bool ChromakeyEnabled, bool BlendEnabled, bool HasRefData>
+void RunWriteLFBParallel(
+    uint32_t srcHeight, uint32_t dstX, uint32_t dstY, uint32_t srcWidth,
+    uint32_t m_headlessWidth, uint32_t m_headlessHeight, uint32_t m_pixelFormatOverride,
+    uint32_t* pixels, const uint8_t* inBytes, const uint8_t* refBytes,
+    int32_t srcStride, const LfbPipelineConfig& config, uint32_t& modifiedCount) {
+  
+  #pragma omp parallel for reduction(+:modifiedCount)
+  for (uint32_t y = 0; y < srcHeight; ++y) {
+    uint32_t rowModifiedCount = 0;
+    LfbRowProcessor<SrcFmt, ChromakeyEnabled, BlendEnabled, HasRefData>::ProcessRow(
+        y, dstX, dstY, srcWidth, m_headlessWidth, m_headlessHeight, m_pixelFormatOverride,
+        pixels, inBytes, refBytes, srcStride, config, rowModifiedCount
+    );
+    modifiedCount += rowModifiedCount;
+  }
+}
+
 bool SoftwareBackendBase::WriteLFB(uint32_t buffer, uint32_t dstX,
                                    uint32_t dstY, uint32_t srcWidth,
                                    uint32_t srcHeight, int32_t srcStride,
@@ -615,180 +812,28 @@ bool SoftwareBackendBase::WriteLFB(uint32_t buffer, uint32_t dstX,
   const auto* inBytes = reinterpret_cast<const uint8_t*>(srcData);
   const auto* refBytes = reinterpret_cast<const uint8_t*>(refData);
 
-  bool wrotePixel = false;
-  for (uint32_t y = 0; y < srcHeight; ++y) {
-    uint32_t writeY = dstY + y;
-    if (writeY >= m_headlessHeight) break;
+  bool chromakeyEnabled = config.pixelPipeline && config.chromakeyEnabled;
+  bool blendEnabled = config.pixelPipeline;
+  bool hasRefData = (refBytes != nullptr);
 
-    for (uint32_t x = 0; x < srcWidth; ++x) {
-      uint32_t writeX = dstX + x;
-      if (writeX >= m_headlessWidth) break;
+  #define DISPATCH_CASE(Fmt)     case Fmt:       if (chromakeyEnabled) {         if (blendEnabled) {           if (hasRefData) {             RunWriteLFBParallel<Fmt, true, true, true>(srcHeight, dstX, dstY, srcWidth, m_headlessWidth, m_headlessHeight, m_pixelFormatOverride, pixels, inBytes, refBytes, srcStride, config, modifiedCount);           } else {             RunWriteLFBParallel<Fmt, true, true, false>(srcHeight, dstX, dstY, srcWidth, m_headlessWidth, m_headlessHeight, m_pixelFormatOverride, pixels, inBytes, refBytes, srcStride, config, modifiedCount);           }         } else {           if (hasRefData) {             RunWriteLFBParallel<Fmt, true, false, true>(srcHeight, dstX, dstY, srcWidth, m_headlessWidth, m_headlessHeight, m_pixelFormatOverride, pixels, inBytes, refBytes, srcStride, config, modifiedCount);           } else {             RunWriteLFBParallel<Fmt, true, false, false>(srcHeight, dstX, dstY, srcWidth, m_headlessWidth, m_headlessHeight, m_pixelFormatOverride, pixels, inBytes, refBytes, srcStride, config, modifiedCount);           }         }       } else {         if (blendEnabled) {           if (hasRefData) {             RunWriteLFBParallel<Fmt, false, true, true>(srcHeight, dstX, dstY, srcWidth, m_headlessWidth, m_headlessHeight, m_pixelFormatOverride, pixels, inBytes, refBytes, srcStride, config, modifiedCount);           } else {             RunWriteLFBParallel<Fmt, false, true, false>(srcHeight, dstX, dstY, srcWidth, m_headlessWidth, m_headlessHeight, m_pixelFormatOverride, pixels, inBytes, refBytes, srcStride, config, modifiedCount);           }         } else {           if (hasRefData) {             RunWriteLFBParallel<Fmt, false, false, true>(srcHeight, dstX, dstY, srcWidth, m_headlessWidth, m_headlessHeight, m_pixelFormatOverride, pixels, inBytes, refBytes, srcStride, config, modifiedCount);           } else {             RunWriteLFBParallel<Fmt, false, false, false>(srcHeight, dstX, dstY, srcWidth, m_headlessWidth, m_headlessHeight, m_pixelFormatOverride, pixels, inBytes, refBytes, srcStride, config, modifiedCount);           }         }       }       break;
 
-      // 1. Extract the raw source pixel first
-      bool is16Bit =
-          (srcFmt == 0 || srcFmt == 1 || srcFmt == 2 || srcFmt == 12 ||
-           srcFmt == 13 || srcFmt == 14 || srcFmt == 15);
-      uint16_t c16 = 0;
-      uint32_t c32 = 0;
-      if (is16Bit) {
-        if (srcFmt == 12 || srcFmt == 13 || srcFmt == 14) {
-          c16 = (uint16_t)(reinterpret_cast<const uint32_t*>(inBytes +
-                                                             y * srcStride)[x] &
-                           0xFFFF);
-        } else {
-          c16 = reinterpret_cast<const uint16_t*>(inBytes + y * srcStride)[x];
-        }
-      } else {
-        c32 = reinterpret_cast<const uint32_t*>(inBytes + y * srcStride)[x];
-      }
-
-      // 2. If refData is provided, check if the pixel has changed (dirty
-      // tracking)
-      if (refBytes) {
-        if (is16Bit) {
-          uint16_t ref16;
-          if (srcFmt == 12 || srcFmt == 13 || srcFmt == 14) {
-            ref16 = (uint16_t)(reinterpret_cast<const uint32_t*>(
-                                   refBytes + y * srcStride)[x] &
-                               0xFFFF);
-          } else {
-            ref16 =
-                reinterpret_cast<const uint16_t*>(refBytes + y * srcStride)[x];
-          }
-          if (c16 == ref16) {
-            continue;
-          }
-        } else {
-          uint32_t ref32 =
-              reinterpret_cast<const uint32_t*>(refBytes + y * srcStride)[x];
-          if (c32 == ref32) {
-            continue;
-          }
-        }
-      }
-
-      // 3. Chroma Keying check
-      if (config.pixelPipeline && config.chromakeyEnabled) {
-        if (is16Bit) {
-          if (c16 == static_cast<uint16_t>(config.chromakeyValue)) {
-            continue;  // Discard matching key pixel!
-          }
-        } else {
-          if (c32 == config.chromakeyValue) {
-            continue;  // Discard matching key pixel!
-          }
-        }
-      }
-
-      // 4. Unpack the pixel to 32-bit RGBA
-      uint32_t pWord = 0xFF000000;
-      if (srcFmt == 0 ||
-          srcFmt == 12) {  // GR_LFB_SRC_FMT_565 or GR_LFB_SRC_FMT_565_DEPTH
-        uint32_t r = ((c16 >> 11) & 0x1F) * 255 / 31;
-        uint32_t g = ((c16 >> 5) & 0x3F) * 255 / 63;
-        uint32_t b = (c16 & 0x1F) * 255 / 31;
-        if (m_pixelFormatOverride == 1) {
-          std::swap(r, b);
-        }
-        pWord = (255u << 24) | (r << 16) | (g << 8) | b;
-      } else if (srcFmt == 1 || srcFmt == 2 || srcFmt == 13 ||
-                 srcFmt == 14) {  // 555 / 1555 or 555_DEPTH / 1555_DEPTH
-        uint32_t r = ((c16 >> 10) & 0x1F) * 255 / 31;
-        uint32_t g = ((c16 >> 5) & 0x1F) * 255 / 31;
-        uint32_t b = (c16 & 0x1F) * 255 / 31;
-        if (m_pixelFormatOverride == 1) {
-          std::swap(r, b);
-        }
-        uint32_t a =
-            (srcFmt == 2 || srcFmt == 14) ? (((c16 >> 15) & 1) ? 255 : 0) : 255;
-        pWord = (a << 24) | (r << 16) | (g << 8) | b;
-      } else {  // 32-bit ARGB8888 / RGB888 / ZA16
-        // Quantize to 16-bit 565 to emulate Voodoo VRAM storage limits
-        uint32_t r, g, b;
-        if (m_pixelFormatOverride == 1) {
-          r = (c32 & 0xFF) >> 3;
-          g = ((c32 >> 8) & 0xFF) >> 2;
-          b = ((c32 >> 16) & 0xFF) >> 3;
-        } else {
-          r = ((c32 >> 16) & 0xFF) >> 3;
-          g = ((c32 >> 8) & 0xFF) >> 2;
-          b = (c32 & 0xFF) >> 3;
-        }
-
-        uint32_t r8 = r * 255 / 31;
-        uint32_t g8 = g * 255 / 63;
-        uint32_t b8 = b * 255 / 31;
-        uint32_t a8 = (c32 >> 24) & 0xFF;
-
-        if (srcFmt == 4 || srcFmt == 15) {  // Force alpha = 255 for RGB888 and
-                                            // ZA16 to make them opaque
-          a8 = 255;
-        }
-        pWord = (a8 << 24) | (r8 << 16) | (g8 << 8) | b8;
-      }
-
-      // 5. Alpha Blending simulation
-      if (config.pixelPipeline) {
-        uint32_t srcA = (pWord >> 24) & 0xFF;
-        uint32_t srcR = (pWord >> 16) & 0xFF;
-        uint32_t srcG = (pWord >> 8) & 0xFF;
-        uint32_t srcB = pWord & 0xFF;
-
-        // Override alpha if the source has no native alpha channel
-        if (srcFmt == 0 || srcFmt == 4 || srcFmt == 12 || srcFmt == 15) {
-          srcA = config.constantAlpha;
-        }
-
-        // Fetch destination pixel from active render buffer
-        uint32_t dstWord = pixels[writeY * m_headlessWidth + writeX];
-        uint32_t dstR = (dstWord >> 16) & 0xFF;
-        uint32_t dstG = (dstWord >> 8) & 0xFF;
-        uint32_t dstB = dstWord & 0xFF;
-
-
-        float sFactor = 1.0f;
-        float dFactor = 0.0f;
-
-        // Source RGB factor (4 = GR_BLEND_SRC_ALPHA, 1 = GR_BLEND_ONE, 0 =
-        // GR_BLEND_ZERO)
-        if (config.rgbSrcBlend == 4) {
-          sFactor = srcA / 255.0f;
-        } else if (config.rgbSrcBlend == 0) {
-          sFactor = 0.0f;
-        } else {
-          sFactor = 1.0f;
-        }
-
-        // Destination RGB factor (5 = GR_BLEND_ONE_MINUS_SRC_ALPHA, 1 =
-        // GR_BLEND_ONE, 0 = GR_BLEND_ZERO)
-        if (config.rgbDstBlend == 5) {
-          dFactor = 1.0f - (srcA / 255.0f);
-        } else if (config.rgbDstBlend == 1) {
-          dFactor = 1.0f;
-        } else {
-          dFactor = 0.0f;
-        }
-
-        uint32_t finalR =
-            static_cast<uint32_t>(srcR * sFactor + dstR * dFactor + 0.5f);
-        uint32_t finalG =
-            static_cast<uint32_t>(srcG * sFactor + dstG * dFactor + 0.5f);
-        uint32_t finalB =
-            static_cast<uint32_t>(srcB * sFactor + dstB * dFactor + 0.5f);
-
-        finalR = std::min(255u, finalR);
-        finalG = std::min(255u, finalG);
-        finalB = std::min(255u, finalB);
-
-        pWord = (255u << 24) | (finalR << 16) | (finalG << 8) | finalB;
-      }
-
-
-      pixels[writeY * m_headlessWidth + writeX] = pWord;
-      wrotePixel = true;
-      modifiedCount++;
-    }
+  switch (srcFmt) {
+    DISPATCH_CASE(0)
+    DISPATCH_CASE(1)
+    DISPATCH_CASE(2)
+    DISPATCH_CASE(4)
+    DISPATCH_CASE(5)
+    DISPATCH_CASE(12)
+    DISPATCH_CASE(13)
+    DISPATCH_CASE(14)
+    DISPATCH_CASE(15)
+    default:
+      break;
   }
+  #undef DISPATCH_CASE
+
+  bool wrotePixel = (modifiedCount > 0);
   if (wrotePixel) {
     m_lfbDirty = true;
     if (buffer == 0) {  // FRONTBUFFER
@@ -830,9 +875,18 @@ void SoftwareBackendBase::SstIdle() {
 
 void SoftwareBackendBase::AllocateCpuBuffers(uint32_t width, uint32_t height) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
-  m_cpuBuffers[0].resize(width * height * 4);
-  m_cpuBuffers[1].resize(width * height * 4);
-  m_resolvedBuffer.resize((width / m_ssaaScale) * (height / m_ssaaScale) * 4);
+  size_t rawSize = (size_t)width * height * 4;
+  size_t paddedSize = (rawSize + 63) & ~63;
+  size_t allocatedSize = paddedSize + 64;
+
+  m_cpuBuffers[0].resize(allocatedSize);
+  m_cpuBuffers[1].resize(allocatedSize);
+
+  size_t resolvedRawSize = (size_t)(width / m_ssaaScale) * (height / m_ssaaScale) * 4;
+  size_t resolvedPaddedSize = (resolvedRawSize + 63) & ~63;
+  size_t resolvedAllocatedSize = resolvedPaddedSize + 64;
+  m_resolvedBuffer.resize(resolvedAllocatedSize);
+
   std::memset(m_cpuBuffers[0].data(), 0, m_cpuBuffers[0].size());
   std::memset(m_cpuBuffers[1].data(), 0, m_cpuBuffers[1].size());
   std::memset(m_resolvedBuffer.data(), 0, m_resolvedBuffer.size());
@@ -841,7 +895,7 @@ void SoftwareBackendBase::AllocateCpuBuffers(uint32_t width, uint32_t height) {
   m_activeRenderBuffer = 1;  // BACKBUFFER
   m_headlessPixelMap = m_cpuBuffers[m_backBufferIdx].data();
   GLIDE_LOG(INFO, "SoftwareBackendBase",
-            "Allocated CPU double buffers: "
+            "Allocated CPU double buffers (padded for SIMD safety): "
                 << width << "x" << height << ", map=" << m_headlessPixelMap
                 << ", resolved size=" << m_resolvedBuffer.size());
 }

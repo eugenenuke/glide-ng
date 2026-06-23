@@ -415,7 +415,13 @@ bool SoftwareBackend::Initialize(const WrapperConfig& config) {
   const char* envTileSize = std::getenv("GLIDE_WRAPPER_TILE_SIZE");
   uint32_t rawTileSize = 32;
   if (envTileSize) {
-      rawTileSize = std::max(8, std::atoi(envTileSize));
+      int configuredSize = std::atoi(envTileSize);
+      if (configuredSize < 16) {
+          GLIDE_LOG(WARN, "Software", "Unsafe tile size " << configuredSize << " configured (minimum is 16). Overriding to 16.");
+          rawTileSize = 16;
+      } else {
+          rawTileSize = configuredSize;
+      }
   }
   m_tileSize = 1;
   m_tileShift = 0;
@@ -483,7 +489,10 @@ bool SoftwareBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
             << "------------------------------------------";
   GLIDE_LOG(INFO, "Software", logStream.str());
 
-  m_headlessDepthBuffer.resize(m_headlessWidth * m_headlessHeight, 0.0f);
+  size_t rawDepthSize = (size_t)m_headlessWidth * m_headlessHeight * 4;
+  size_t paddedDepthSize = (rawDepthSize + 63) & ~63;
+  size_t allocatedDepthSize = paddedDepthSize + 64;
+  m_headlessDepthBuffer.resize(allocatedDepthSize / sizeof(float), 0.0f);
   SetClipWindow(0, 0, m_headlessWidth, m_headlessHeight);
   InitTileGrid();
 
@@ -1222,9 +1231,9 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
 
   if (mipmappingEnabled) {
     dSp_dx = dw0_dx * a.tex[0] + dw1_dx * b.tex[0] + dw2_dx * c.tex[0];
-    dSp_dy = dw0_dy * a.tex[0] + dw1_dy * b.tex[0] + dw2_dx * c.tex[0];
+    dSp_dy = dw0_dy * a.tex[0] + dw1_dy * b.tex[0] + dw2_dy * c.tex[0];
     dTp_dx = dw0_dx * a.tex[1] + dw1_dx * b.tex[1] + dw2_dx * c.tex[1];
-    dTp_dy = dw0_dy * a.tex[1] + dw1_dy * b.tex[1] + dw2_dx * c.tex[1];
+    dTp_dy = dw0_dy * a.tex[1] + dw1_dy * b.tex[1] + dw2_dy * c.tex[1];
 
     float qa = a.pos[3];
     float qb = b.pos[3];
@@ -1242,7 +1251,7 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
     dSp1_dx = dw0_dx * a.tex[2] + dw1_dx * b.tex[2] + dw2_dx * c.tex[2];
     dSp1_dy = dw0_dy * a.tex[2] + dw1_dy * b.tex[2] + dw2_dy * c.tex[2];
     dTp1_dx = dw0_dx * a.tex[3] + dw1_dx * b.tex[3] + dw2_dx * c.tex[3];
-    dTp1_dy = dw0_dy * a.tex[3] + dw1_dy * b.tex[3] + dw2_dx * c.tex[3];
+    dTp1_dy = dw0_dy * a.tex[3] + dw1_dy * b.tex[3] + dw2_dy * c.tex[3];
 
     float qa = a.pos[3];
     float qb = b.pos[3];
@@ -2165,17 +2174,14 @@ void SoftwareBackend::ResolveActiveState() {
 
 bool SoftwareBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY, uint32_t srcWidth, uint32_t srcHeight,
                               uint32_t dstStride, void* dstData) {
-  // 1. First, call the base class to perform the standard copy and conversion
   bool ok = SoftwareBackendBase::ReadLFB(buffer, srcX, srcY, srcWidth, srcHeight, dstStride, dstData);
   if (!ok) return false;
 
-  // 2. If ABGR format override is active, perform the Red/Blue channel swap on the copied client buffer
   if (m_pixelFormatOverride == 1) {
     bool is32Bit = (dstStride >= srcWidth * 4);
-    auto* outBytes = reinterpret_cast<uint8_t*>(dstData);
-
-    for (uint32_t y = 0; y < srcHeight; ++y) {
-      if (is32Bit) {
+    if (is32Bit) {
+      auto* outBytes = reinterpret_cast<uint8_t*>(dstData);
+      for (uint32_t y = 0; y < srcHeight; ++y) {
         auto* row32 = reinterpret_cast<uint32_t*>(outBytes + y * dstStride);
         for (uint32_t x = 0; x < srcWidth; ++x) {
           uint32_t val = row32[x];
@@ -2184,16 +2190,6 @@ bool SoftwareBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY, uin
           uint32_t r = (val >> 16) & 0xFF;
           uint32_t b = val & 0xFF;
           row32[x] = a | (b << 16) | g | r;
-        }
-      } else {
-        auto* row16 = reinterpret_cast<uint16_t*>(outBytes + y * dstStride);
-        for (uint32_t x = 0; x < srcWidth; ++x) {
-          uint16_t c16 = row16[x];
-          // Swap Red (bits 11..15) and Blue (bits 0..4) in RGB565 to get BGR565
-          uint16_t r = (c16 >> 11) & 0x1F;
-          uint16_t g = (c16 >> 5) & 0x3F;
-          uint16_t b = c16 & 0x1F;
-          row16[x] = (b << 11) | (g << 5) | r;
         }
       }
     }

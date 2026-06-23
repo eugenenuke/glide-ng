@@ -26,9 +26,12 @@ target_link_libraries(Glide2xWrapperTests PRIVATE
 # --- Glide 3.x Test Suite ---
 add_executable(Glide3xWrapperTests
     test_glide3.cpp
+    test_simd_vec.cpp
     tlib3_patched.c
     "${CMAKE_CURRENT_SOURCE_DIR}/../refs/3dfx-Glide-API/swlibs/fxmisc/linutil.c"
 )
+
+set_source_files_properties(test_simd_vec.cpp PROPERTIES COMPILE_FLAGS "-mavx2")
 
 target_include_directories(Glide3xWrapperTests PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/../src"
@@ -132,29 +135,29 @@ if(BUILD_VISUAL_TESTS)
 
     add_executable(test_runner
         framework/TestRunner.cpp
-        test00_clear/test00.cpp
-        test01_points/test01.cpp
-        test02_lines/test02.cpp
-        test03_shading/test03.cpp
-        test04_triangles/test04.cpp
-        test05_zbuffer/test05.cpp
-        test06_wbuffer/test06.cpp
-        test07_blend/test07.cpp
-        test08_fog/test08.cpp
-        test09_chromakey/test09.cpp
-        test10_culling/test10.cpp
-        test11_lfb/test11.cpp
-        test12_lfb_buffer/test12.cpp
-        test13_alpha/test13.cpp
-        test14_depthbias/test14.cpp
-        test15_clip/test15.cpp
-        test16_logo/test16.cpp
-        test17_texture/test17.cpp
-        test18_texture_alpha/test18.cpp
-        test19_texture_filter/test19.cpp
-        test29_stw_hint/test29.cpp
-        test21_compositing/test21.cpp
-        test26_writeregion/test26.cpp
+        deprecated/test00_clear/test00.cpp
+        deprecated/test01_points/test01.cpp
+        deprecated/test02_lines/test02.cpp
+        deprecated/test03_shading/test03.cpp
+        deprecated/test04_triangles/test04.cpp
+        deprecated/test05_zbuffer/test05.cpp
+        deprecated/test06_wbuffer/test06.cpp
+        deprecated/test07_blend/test07.cpp
+        deprecated/test08_fog/test08.cpp
+        deprecated/test09_chromakey/test09.cpp
+        deprecated/test10_culling/test10.cpp
+        deprecated/test11_lfb/test11.cpp
+        deprecated/test12_lfb_buffer/test12.cpp
+        deprecated/test13_alpha/test13.cpp
+        deprecated/test14_depthbias/test14.cpp
+        deprecated/test15_clip/test15.cpp
+        deprecated/test16_logo/test16.cpp
+        deprecated/test17_texture/test17.cpp
+        deprecated/test18_texture_alpha/test18.cpp
+        deprecated/test19_texture_filter/test19.cpp
+        deprecated/test29_stw_hint/test29.cpp
+        deprecated/test21_compositing/test21.cpp
+        deprecated/test26_writeregion/test26.cpp
         "${CMAKE_CURRENT_SOURCE_DIR}/../refs/3dfx-Glide-API/glide2x/cvg/glide/tests/tlib.c"
         "${CMAKE_CURRENT_SOURCE_DIR}/../refs/3dfx-Glide-API/swlibs/fxmisc/linutil.c"
     )
@@ -171,3 +174,33 @@ if(BUILD_VISUAL_TESTS)
         -lm
     )
 endif()
+
+# --- Headless C++ Benchmark and Validation Tooling ---
+add_executable(sw_benchmark sw_benchmark.cpp)
+target_include_directories(sw_benchmark PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../src"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../include/3dfx"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../include/glide3"
+)
+target_compile_definitions(sw_benchmark PRIVATE -D__linux__ -DGLIDE_VERSION=3)
+target_link_libraries(sw_benchmark PRIVATE
+    GlideWrapperCore
+    glide3x
+    ${CMAKE_DL_LIBS}
+    -lm
+)
+
+add_executable(sw_validate sw_validate.cpp)
+target_include_directories(sw_validate PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../src"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../include/3dfx"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../include/glide3"
+)
+target_compile_definitions(sw_validate PRIVATE -D__linux__ -DGLIDE_VERSION=3)
+target_link_libraries(sw_validate PRIVATE
+    GlideWrapperCore
+    glide3x
+    ${CMAKE_DL_LIBS}
+    -lm
+)
+

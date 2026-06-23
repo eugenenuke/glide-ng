@@ -3182,11 +3182,7 @@ TEST_CASE("Glide 2.x ABGR Framebuffer Clear & LFB Readback Parity",
   bool isSoftware = (backend == "sw" || backend == "software");
 
   for (int i = 0; i < 10; ++i) {
-    if (isSoftware) {
-      REQUIRE(buffer16[i] == 0xF800);
-    } else {
-      REQUIRE(buffer16[i] == 31);
-    }
+    REQUIRE(buffer16[i] == 31);
   }
 
   // 2. Validate 32-bit LFB readback (should return hardware-accurate ABGR

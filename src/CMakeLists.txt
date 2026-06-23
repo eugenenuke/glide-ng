@@ -18,6 +18,14 @@ add_library(GlideWrapperCore STATIC
     backends/software/SoftwareBackend.cpp
 )
 
+# Enable AVX2 instruction set specifically for the Software Reference Backend files
+set_source_files_properties(
+    backends/SoftwareBackendBase.cpp
+    backends/software/SoftwareBackend.cpp
+    PROPERTIES COMPILE_FLAGS "-mavx2"
+)
+
+
 # Mandatory when linking a Static library into a Shared library (.so / .dll)
 set_target_properties(GlideWrapperCore PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
