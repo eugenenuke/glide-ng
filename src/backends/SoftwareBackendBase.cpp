@@ -159,26 +159,12 @@ void SoftwareBackendBase::ClearBuffer(uint32_t color, uint32_t alpha, float z,
       uint32_t totalPixels = m_headlessWidth * m_headlessHeight;
 
       if (writeMask == 0xFFFFFFFF) {
-#if HAS_AVX2
-        // Fast path: write mask fully enabled, overwrite everything using AVX2 Streaming Stores
-        uint32_t alignedPixels = totalPixels & ~7;
-#pragma omp parallel for
-        for (uint32_t i = 0; i < alignedPixels; i += 8) {
-          __m256i val = _mm256_set1_epi32(clearWord);
-          _mm256_stream_si256(reinterpret_cast<__m256i*>(&pixels[i]), val);
-        }
-        for (uint32_t i = alignedPixels; i < totalPixels; ++i) {
-          pixels[i] = clearWord;
-        }
-        _mm_sfence();
-#else
+        // Fast path: write mask fully enabled, overwrite everything
         std::fill_n(pixels, totalPixels, clearWord);
-#endif
       } else {
         // Slow path: write mask partially enabled, preserve masked-out bits
         uint32_t keepMask = ~writeMask;
         uint32_t maskedClearWord = clearWord & writeMask;
-#pragma omp parallel for
         for (uint32_t i = 0; i < totalPixels; ++i) {
           pixels[i] = (pixels[i] & keepMask) | maskedClearWord;
         }
@@ -192,22 +178,7 @@ void SoftwareBackendBase::ClearBuffer(uint32_t color, uint32_t alpha, float z,
 
   if (clearMask & 0x2) {  // Depth Clear
     if (!m_headlessDepthBuffer.empty()) {
-      float* depthPtr = m_headlessDepthBuffer.data();
-      uint32_t totalPixels = m_headlessWidth * m_headlessHeight;
-#if HAS_AVX2
-      uint32_t alignedPixels = totalPixels & ~7;
-#pragma omp parallel for
-      for (uint32_t i = 0; i < alignedPixels; i += 8) {
-        __m256 val = _mm256_set1_ps(z);
-        _mm256_stream_ps(&depthPtr[i], val);
-      }
-      for (uint32_t i = alignedPixels; i < totalPixels; ++i) {
-        depthPtr[i] = z;
-      }
-      _mm_sfence();
-#else
       std::fill(m_headlessDepthBuffer.begin(), m_headlessDepthBuffer.end(), z);
-#endif
       GLIDE_LOG(DEBUG, "Rasterizer", "Cleared depth buffer with value " << z);
     }
   }

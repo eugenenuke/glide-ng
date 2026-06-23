@@ -1924,9 +1924,16 @@ void SoftwareBackend::FlushBins() {
     }
 
     if (!activeTiles.empty()) {
-      m_threadPool->ParallelFor(static_cast<int>(activeTiles.size()), [this, &activeTiles](int taskIdx) {
-        RasterizeTile(activeTiles[taskIdx]);
-      });
+      // Avoid thread wakeup and synchronization overhead for tiny workloads (e.g. glide2_cube)
+      if (activeTiles.size() < 16 || m_binnedCommands.size() < 64 || m_threadPool->GetThreadCount() == 0) {
+        for (int tileIdx : activeTiles) {
+          RasterizeTile(tileIdx);
+        }
+      } else {
+        m_threadPool->ParallelFor(static_cast<int>(activeTiles.size()), [this, &activeTiles](int taskIdx) {
+          RasterizeTile(activeTiles[taskIdx]);
+        });
+      }
     }
   } else {
     for (size_t i = 0; i < m_tiles.size(); ++i) {
