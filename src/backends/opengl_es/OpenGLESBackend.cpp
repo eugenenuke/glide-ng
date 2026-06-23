@@ -69,7 +69,7 @@ bool OpenGLESBackend::Initialize(const WrapperConfig& config) {
   m_msaaSamples = config.msaaSamples;
 
   // Configurable VBO size via environment variable GLIDE_GLES_VBO_SIZE (in MB)
-  m_geomVBOSizeConfigured = 1024 * 1024; // Default to 1MB
+  m_geomVBOSizeConfigured = 8 * 1024 * 1024; // Default to 8MB (Optimal sweet spot)
   if (const char* vboSizeEnv = std::getenv("GLIDE_GLES_VBO_SIZE")) {
     try {
       int sizeMB = std::stoi(vboSizeEnv);
