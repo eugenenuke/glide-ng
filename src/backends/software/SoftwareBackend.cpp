@@ -413,12 +413,17 @@ bool SoftwareBackend::Initialize(const WrapperConfig& config) {
   GLIDE_LOG(INFO, "Software", "Initialized Lock-Free Thread Pool with " << (numThreads - 1) << " worker threads (Total threads: " << numThreads << ").");
 
   const char* envTileSize = std::getenv("GLIDE_WRAPPER_TILE_SIZE");
+  uint32_t rawTileSize = 32;
   if (envTileSize) {
-      m_tileSize = std::max(8, std::atoi(envTileSize));
-  } else {
-      m_tileSize = 32;
+      rawTileSize = std::max(8, std::atoi(envTileSize));
   }
-  GLIDE_LOG(INFO, "Software", "Configured Software Rasterizer Tile Size to " << m_tileSize << "x" << m_tileSize << ".");
+  m_tileSize = 1;
+  m_tileShift = 0;
+  while (m_tileSize < rawTileSize) {
+      m_tileSize <<= 1;
+      m_tileShift++;
+  }
+  GLIDE_LOG(INFO, "Software", "Configured Software Rasterizer Tile Size to " << m_tileSize << "x" << m_tileSize << " (shift " << m_tileShift << ").");
 
   m_initialized = true;
   GLIDE_LOG(INFO, "Software",
@@ -1782,8 +1787,8 @@ void SoftwareBackend::RasterizeSoftwareTriangleTile(const ModernVertex& a,
 }
 
 void SoftwareBackend::InitTileGrid() {
-  m_tileCols = (m_headlessWidth + m_tileSize - 1) / m_tileSize;
-  m_tileRows = (m_headlessHeight + m_tileSize - 1) / m_tileSize;
+  m_tileCols = (m_headlessWidth + m_tileSize - 1) >> m_tileShift;
+  m_tileRows = (m_headlessHeight + m_tileSize - 1) >> m_tileShift;
   m_tiles.resize(m_tileCols * m_tileRows);
   for (auto& tile : m_tiles) {
     tile.commandIndices.clear();
@@ -1804,10 +1809,10 @@ void SoftwareBackend::BinTriangle(uint32_t cmdIdx, const ModernVertex& a, const 
 
   if (minX > maxX || minY > maxY) return;
 
-  int tileMinCol = (int)(minX) / m_tileSize;
-  int tileMaxCol = (int)(maxX) / m_tileSize;
-  int tileMinRow = (int)(minY) / m_tileSize;
-  int tileMaxRow = (int)(maxY) / m_tileSize;
+  int tileMinCol = (int)(minX) >> m_tileShift;
+  int tileMaxCol = (int)(maxX) >> m_tileShift;
+  int tileMinRow = (int)(minY) >> m_tileShift;
+  int tileMaxRow = (int)(maxY) >> m_tileShift;
 
   for (int r = tileMinRow; r <= tileMaxRow; ++r) {
     for (int c = tileMinCol; c <= tileMaxCol; ++c) {
@@ -1829,10 +1834,10 @@ void SoftwareBackend::BinLine(uint32_t cmdIdx, const ModernVertex& v1, const Mod
 
   if (minX > maxX || minY > maxY) return;
 
-  int tileMinCol = (int)(minX) / m_tileSize;
-  int tileMaxCol = (int)(maxX) / m_tileSize;
-  int tileMinRow = (int)(minY) / m_tileSize;
-  int tileMaxRow = (int)(maxY) / m_tileSize;
+  int tileMinCol = (int)(minX) >> m_tileShift;
+  int tileMaxCol = (int)(maxX) >> m_tileShift;
+  int tileMinRow = (int)(minY) >> m_tileShift;
+  int tileMaxRow = (int)(maxY) >> m_tileShift;
 
   for (int r = tileMinRow; r <= tileMaxRow; ++r) {
     for (int c = tileMinCol; c <= tileMaxCol; ++c) {
@@ -1847,8 +1852,8 @@ void SoftwareBackend::BinPoint(uint32_t cmdIdx, const ModernVertex& pt) {
 
   if (px < 0.0f || px >= (float)m_headlessWidth || py < 0.0f || py >= (float)m_headlessHeight) return;
 
-  int tileCol = (int)(px) / m_tileSize;
-  int tileRow = (int)(py) / m_tileSize;
+  int tileCol = (int)(px) >> m_tileShift;
+  int tileRow = (int)(py) >> m_tileShift;
 
   m_tiles[tileRow * m_tileCols + tileCol].commandIndices.push_back(cmdIdx);
 }
@@ -1857,9 +1862,9 @@ void SoftwareBackend::RasterizeTile(int tileIdx) {
   int col = tileIdx % m_tileCols;
   int row = tileIdx / m_tileCols;
 
-  int tileMinX = col * m_tileSize;
+  int tileMinX = col << m_tileShift;
   int tileMaxX = tileMinX + m_tileSize;
-  int tileMinY = row * m_tileSize;
+  int tileMinY = row << m_tileShift;
   int tileMaxY = tileMinY + m_tileSize;
 
   const auto& cmdIndices = m_tiles[tileIdx].commandIndices;

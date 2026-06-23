@@ -101,6 +101,7 @@ private:
     
     uint32_t m_activeStateId{0};
     uint32_t m_tileSize{32};
+    uint32_t m_tileShift{5};
     uint32_t m_tileCols{0};
     uint32_t m_tileRows{0};
 };
