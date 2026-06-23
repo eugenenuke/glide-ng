@@ -42,6 +42,7 @@ class IGraphicsBackend {
   virtual void ClearBuffer(uint32_t color, uint32_t alpha, float z,
                            uint32_t clearMask) = 0;
   virtual bool SwapBuffers() = 0;
+  virtual void FlushBins() = 0;
   virtual void SetConstantColor(uint32_t color) = 0;
   virtual void SetPixelFormat(uint32_t format) = 0;
   virtual void SetRenderBuffer(uint32_t target) = 0;
@@ -53,7 +54,6 @@ class IGraphicsBackend {
                             const ModernVertex& c) = 0;
   virtual void DrawLine(const ModernVertex& v1, const ModernVertex& v2) = 0;
   virtual void DrawPoint(const ModernVertex& pt) = 0;
-  virtual void FlushBins() = 0;
 
   // Phase 4: Depth Comparison, Transparency Blending & Culling States
   virtual void SetDepthState(uint32_t depthMode, uint32_t compareOp,

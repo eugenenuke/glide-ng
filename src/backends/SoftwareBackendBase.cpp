@@ -23,6 +23,7 @@ namespace GlideWrapper {
 
 void SoftwareBackendBase::ResetState() {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  MarkStateDirty();
   m_depthMode = 0;
   m_depthCompareOp = 1;
   m_depthMask = true;
@@ -110,8 +111,8 @@ void SoftwareBackendBase::ResetState() {
 
 void SoftwareBackendBase::ClearBuffer(uint32_t color, uint32_t alpha, float z,
                                       uint32_t clearMask) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
   FlushBins();
+  std::lock_guard<std::recursive_mutex> lock(m_mutex);
   GLIDE_LOG(DEBUG, "Rasterizer",
             "ClearBuffer CPU side invoked: color=0x"
                 << std::hex << color << ", alpha=" << alpha << ", mask="
@@ -123,6 +124,12 @@ void SoftwareBackendBase::ClearBuffer(uint32_t color, uint32_t alpha, float z,
     uint32_t r = (color >> 16) & 0xFF;
     uint32_t g = (color >> 8) & 0xFF;
     uint32_t b = color & 0xFF;
+
+    if (m_pixelFormatOverride == 1) {  // Convert input ABGR to internal ARGB
+      std::swap(r, b);
+    }
+
+
 
     uint32_t writeMask = 0;
     if (m_colorMaskRgb) writeMask |= 0x00FFFFFF;
@@ -456,8 +463,8 @@ void* SoftwareBackendBase::GetLfbWritePtr() {
 bool SoftwareBackendBase::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
                                   uint32_t srcWidth, uint32_t srcHeight,
                                   uint32_t dstStride, void* dstData) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
   FlushBins();
+  std::lock_guard<std::recursive_mutex> lock(m_mutex);
   if (!dstData || m_cpuBuffers[0].empty()) return false;
 
   const uint32_t* pixels = nullptr;
@@ -548,9 +555,6 @@ bool SoftwareBackendBase::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
         uint32_t rVal = (pWord >> 16) & 0xFF;
         uint32_t gVal = (pWord >> 8) & 0xFF;
         uint32_t bVal = pWord & 0xFF;
-        if (m_pixelFormatOverride == 1) {
-          std::swap(rVal, bVal);
-        }
         uint16_t r = (rVal * 31 + 127) / 255;
         uint16_t g = (gVal * 63 + 127) / 255;
         uint16_t b = (bVal * 31 + 127) / 255;
@@ -568,8 +572,8 @@ bool SoftwareBackendBase::WriteLFB(uint32_t buffer, uint32_t dstX,
                                    uint32_t srcFmt, const void* srcData,
                                    const void* refData,
                                    const LfbPipelineConfig& config) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
   FlushBins();
+  std::lock_guard<std::recursive_mutex> lock(m_mutex);
   if (!srcData || m_cpuBuffers[0].empty()) return false;
 
   GLIDE_LOG(DEBUG, "WriteLFB",
@@ -685,20 +689,33 @@ bool SoftwareBackendBase::WriteLFB(uint32_t buffer, uint32_t dstX,
         uint32_t r = ((c16 >> 11) & 0x1F) * 255 / 31;
         uint32_t g = ((c16 >> 5) & 0x3F) * 255 / 63;
         uint32_t b = (c16 & 0x1F) * 255 / 31;
+        if (m_pixelFormatOverride == 1) {
+          std::swap(r, b);
+        }
         pWord = (255u << 24) | (r << 16) | (g << 8) | b;
       } else if (srcFmt == 1 || srcFmt == 2 || srcFmt == 13 ||
                  srcFmt == 14) {  // 555 / 1555 or 555_DEPTH / 1555_DEPTH
         uint32_t r = ((c16 >> 10) & 0x1F) * 255 / 31;
         uint32_t g = ((c16 >> 5) & 0x1F) * 255 / 31;
         uint32_t b = (c16 & 0x1F) * 255 / 31;
+        if (m_pixelFormatOverride == 1) {
+          std::swap(r, b);
+        }
         uint32_t a =
             (srcFmt == 2 || srcFmt == 14) ? (((c16 >> 15) & 1) ? 255 : 0) : 255;
         pWord = (a << 24) | (r << 16) | (g << 8) | b;
       } else {  // 32-bit ARGB8888 / RGB888 / ZA16
         // Quantize to 16-bit 565 to emulate Voodoo VRAM storage limits
-        uint32_t r = ((c32 >> 16) & 0xFF) >> 3;
-        uint32_t g = ((c32 >> 8) & 0xFF) >> 2;
-        uint32_t b = (c32 & 0xFF) >> 3;
+        uint32_t r, g, b;
+        if (m_pixelFormatOverride == 1) {
+          r = (c32 & 0xFF) >> 3;
+          g = ((c32 >> 8) & 0xFF) >> 2;
+          b = ((c32 >> 16) & 0xFF) >> 3;
+        } else {
+          r = ((c32 >> 16) & 0xFF) >> 3;
+          g = ((c32 >> 8) & 0xFF) >> 2;
+          b = (c32 & 0xFF) >> 3;
+        }
 
         uint32_t r8 = r * 255 / 31;
         uint32_t g8 = g * 255 / 63;
@@ -729,9 +746,7 @@ bool SoftwareBackendBase::WriteLFB(uint32_t buffer, uint32_t dstX,
         uint32_t dstR = (dstWord >> 16) & 0xFF;
         uint32_t dstG = (dstWord >> 8) & 0xFF;
         uint32_t dstB = dstWord & 0xFF;
-        if (m_pixelFormatOverride == 1) {
-          std::swap(dstR, dstB);
-        }
+
 
         float sFactor = 1.0f;
         float dFactor = 0.0f;
@@ -770,13 +785,7 @@ bool SoftwareBackendBase::WriteLFB(uint32_t buffer, uint32_t dstX,
         pWord = (255u << 24) | (finalR << 16) | (finalG << 8) | finalB;
       }
 
-      if (m_pixelFormatOverride == 1) {
-        uint32_t a = pWord & 0xFF000000;
-        uint32_t g = pWord & 0x0000FF00;
-        uint32_t r = (pWord >> 16) & 0xFF;
-        uint32_t b = pWord & 0xFF;
-        pWord = a | (b << 16) | g | r;
-      }
+
       pixels[writeY * m_headlessWidth + writeX] = pWord;
       wrotePixel = true;
       modifiedCount++;
@@ -853,7 +862,7 @@ void SoftwareBackendBase::FreeCpuBuffers() {
 
 void SoftwareBackendBase::SetRenderBuffer(uint32_t target) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
-  FlushBins();
+  MarkStateDirty();
   m_activeRenderBuffer = target;
   if (m_activeRenderBuffer == 0) {  // GR_BUFFER_FRONTBUFFER
     m_headlessPixelMap = m_cpuBuffers[m_frontBufferIdx].data();

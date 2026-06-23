@@ -223,6 +223,7 @@ class VulkanBackend : public SoftwareBackendBase {
   void ClearBuffer(uint32_t color, uint32_t alpha, float z,
                    uint32_t clearMask) override;
   bool SwapBuffers() override;
+  void FlushBins() override {}
   void SetDepthState(uint32_t depthMode, uint32_t compareOp, bool depthMask,
                      int32_t biasLevel) override;
   void SetBlendState(uint32_t rgbSrcFactor, uint32_t rgbDstFactor,

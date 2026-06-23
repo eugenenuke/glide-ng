@@ -11,10 +11,10 @@ namespace GlideWrapper {
 
 class ThreadPool {
 public:
-    ThreadPool(size_t numThreads, std::function<void(int)> workerFunc)
-        : m_workerFunc(workerFunc), m_shutdown(false), m_frameId(0) {
+    ThreadPool(size_t numThreads)
+        : m_totalTasks(0), m_completedThreads(0), m_shutdown(false), m_frameId(0) {
         for (size_t i = 0; i < numThreads; ++i) {
-            m_threads.emplace_back([this]() { ThreadLoop(); });
+            m_threads.emplace_back([this]() { WorkerLoop(); });
         }
     }
 
@@ -29,18 +29,35 @@ public:
         }
     }
 
-    void StartFrame(int totalTiles) {
+    void ParallelFor(int totalTasks, const std::function<void(int)>& taskFunc) {
+        if (totalTasks <= 0) return;
+        if (m_threads.empty()) {
+            for (int i = 0; i < totalTasks; ++i) {
+                taskFunc(i);
+            }
+            return;
+        }
+
         {
             std::unique_lock<std::mutex> lock(m_mutex);
-            m_nextTile = 0;
-            m_totalTiles = totalTiles;
+            m_taskFunc = &taskFunc;
+            m_nextTaskIndex.store(0);
+            m_totalTasks = totalTasks;
             m_completedThreads = 0;
             m_frameId++;
         }
         m_cvStart.notify_all();
-    }
 
-    void Wait() {
+        // Main thread helps with the work
+        while (true) {
+            int taskIdx = m_nextTaskIndex.fetch_add(1);
+            if (taskIdx >= totalTasks) {
+                break;
+            }
+            taskFunc(taskIdx);
+        }
+
+        // Wait for workers to finish
         std::unique_lock<std::mutex> lock(m_mutex);
         uint32_t activeFrame = m_frameId;
         m_cvEnd.wait(lock, [this, activeFrame]() {
@@ -48,8 +65,10 @@ public:
         });
     }
 
+    size_t GetThreadCount() const { return m_threads.size(); }
+
 private:
-    void ThreadLoop() {
+    void WorkerLoop() {
         uint32_t localFrameId = 0;
         while (true) {
             {
@@ -60,13 +79,13 @@ private:
                 if (m_shutdown) return;
             }
 
-            // Lock-free tile processing loop
+            // Lock-free task processing loop
             while (true) {
-                int tileIdx = m_nextTile.fetch_add(1);
-                if (tileIdx >= m_totalTiles) {
+                int taskIdx = m_nextTaskIndex.fetch_add(1);
+                if (taskIdx >= m_totalTasks) {
                     break;
                 }
-                m_workerFunc(tileIdx);
+                (*m_taskFunc)(taskIdx);
             }
 
             {
@@ -81,15 +100,15 @@ private:
     }
 
     std::vector<std::thread> m_threads;
-    std::function<void(int)> m_workerFunc;
     std::mutex m_mutex;
     std::condition_variable m_cvStart;
     std::condition_variable m_cvEnd;
-    std::atomic<int> m_nextTile{0};
-    int m_totalTiles{0};
+    std::atomic<int> m_nextTaskIndex{0};
+    int m_totalTasks{0};
     size_t m_completedThreads{0};
     bool m_shutdown{false};
     uint32_t m_frameId{0};
+    const std::function<void(int)>* m_taskFunc{nullptr};
 };
 
 } // namespace GlideWrapper

@@ -56,7 +56,7 @@ class SoftwareBackendBase : public IGraphicsBackend {
 
 
   bool SwapBuffers() override = 0;
-  void FlushBins() override {}
+  void FlushBins() override = 0;
   void PollEvents() override;
   void SstIdle() override;
 
@@ -148,12 +148,12 @@ class SoftwareBackendBase : public IGraphicsBackend {
 
  protected:
   std::recursive_mutex m_mutex;
+  bool m_stateCacheDirty{true};
+  void MarkStateDirty() { m_stateCacheDirty = true; }
   bool m_initialized{false};
   bool m_windowAttached{false};
   bool m_headlessMode{false};
   WrapperConfig m_config;
-  bool m_stateCacheDirty{true};
-  void MarkStateDirty() { m_stateCacheDirty = true; }
 
   // Derived backends are responsible for allocating/mapping this CPU staging
   // buffer
