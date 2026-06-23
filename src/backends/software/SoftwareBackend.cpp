@@ -1047,8 +1047,87 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
     float a2, float b2, float c2) {
 
   auto* pixels = reinterpret_cast<uint32_t*>(m_cpuBuffers[state.activeRenderBufferIdx].data());
+  float* depthBuffer = m_headlessDepthBuffer.empty() ? nullptr : m_headlessDepthBuffer.data();
+  const int width = m_headlessWidth;
 
-  // Pre-resolve active texture parameters once per triangle
+  // Cache read-only state variables outside the loops to maximize register allocation
+  const uint32_t stippleMode = state.stippleMode;
+  const uint32_t stipplePattern = state.stipplePattern;
+  const uint32_t depthMode = state.depthMode;
+  const uint32_t depthCompareOp = state.depthCompareOp;
+  const bool depthMask = state.depthMask;
+  const int depthBiasLevel = state.depthBiasLevel;
+  const uint32_t fogMode = state.fogMode;
+  const uint32_t fogColor = state.fogColor;
+  const uint32_t chromakeyMode = state.chromakeyMode;
+  const uint32_t chromakeyRangeMode = state.chromakeyRangeMode;
+  const uint32_t chromakeyRangeMin = state.chromakeyRangeMin;
+  const uint32_t chromakeyRangeMax = state.chromakeyRangeMax;
+  const uint32_t chromakeyValue = state.chromakeyValue;
+  const uint32_t pixelFormatOverride = state.pixelFormatOverride;
+  const uint32_t alphaTestOp = state.alphaTestOp;
+  const uint32_t alphaTestRefVal = state.alphaTestRefVal;
+  const bool colorMaskRgb = state.colorMaskRgb;
+  const bool colorMaskAlpha = state.colorMaskAlpha;
+  const uint32_t rgbSrcBlend = state.rgbSrcBlend;
+  const uint32_t rgbDstBlend = state.rgbDstBlend;
+  const uint32_t alphaSrcBlend = state.alphaSrcBlend;
+  const uint32_t alphaDstBlend = state.alphaDstBlend;
+  const uint32_t constantColor = state.constantColor;
+  const uint32_t stwHintMask = state.stwHintMask;
+  const uint32_t alphaCombinerLocal = state.alphaCombinerLocal;
+  const uint32_t alphaCombinerOther = state.alphaCombinerOther;
+  const uint32_t colorCombinerLocal = state.colorCombinerLocal;
+  const uint32_t colorCombinerOther = state.colorCombinerOther;
+  const uint32_t colorCombinerFactor = state.colorCombinerFactor;
+  const uint32_t colorCombinerFunc = state.colorCombinerFunc;
+  const uint32_t alphaCombinerFactor = state.alphaCombinerFactor;
+  const uint32_t alphaCombinerFunc = state.alphaCombinerFunc;
+  const bool alphaCombinerInvert = state.alphaCombinerInvert;
+  const bool colorCombinerInvert = state.colorCombinerInvert;
+
+  // Pre-calculate expensive division and format operations outside the loop
+  const float depthFar = state.depthFar;
+  const float depthNear = state.depthNear;
+  const float depthRangeInv = (std::abs(depthFar - depthNear) > 1e-6f) ? (1.0f / (depthFar - depthNear)) : 0.0f;
+
+  const float constantAlpha = ((constantColor >> 24) & 0xFF) / 255.0f;
+  float constantR = ((constantColor >> 16) & 0xFF) / 255.0f;
+  float constantG = ((constantColor >> 8) & 0xFF) / 255.0f;
+  float constantB = (constantColor & 0xFF) / 255.0f;
+  if (pixelFormatOverride == 1) std::swap(constantR, constantB);
+
+  const float alphaTestRef = static_cast<float>(alphaTestRefVal) / 255.0f;
+
+  float chromaR = 0.0f, chromaG = 0.0f, chromaB = 0.0f;
+  float chromaMinR = 0.0f, chromaMinG = 0.0f, chromaMinB = 0.0f;
+  float chromaMaxR = 0.0f, chromaMaxG = 0.0f, chromaMaxB = 0.0f;
+  if (chromakeyMode == 1) {
+    bool rangeEnabled = ((chromakeyRangeMode >> 28) & 1) == 1;
+    if (rangeEnabled) {
+      chromaMinR = ((chromakeyRangeMin >> 16) & 0xFF) / 255.0f;
+      chromaMinG = ((chromakeyRangeMin >> 8) & 0xFF) / 255.0f;
+      chromaMinB = (chromakeyRangeMin & 0xFF) / 255.0f;
+      chromaMaxR = ((chromakeyRangeMax >> 16) & 0xFF) / 255.0f;
+      chromaMaxG = ((chromakeyRangeMax >> 8) & 0xFF) / 255.0f;
+      chromaMaxB = (chromakeyRangeMax & 0xFF) / 255.0f;
+    } else {
+      chromaR = ((chromakeyValue >> 16) & 0xFF) / 255.0f;
+      chromaG = ((chromakeyValue >> 8) & 0xFF) / 255.0f;
+      chromaB = (chromakeyValue & 0xFF) / 255.0f;
+      if (pixelFormatOverride == 1) { std::swap(chromaR, chromaB); }
+    }
+  }
+
+  float fogR = 0.0f, fogG = 0.0f, fogB = 0.0f;
+  if (fogMode != 0) {
+    fogR = ((fogColor >> 16) & 0xFF) / 255.0f;
+    fogG = ((fogColor >> 8) & 0xFF) / 255.0f;
+    fogB = (fogColor & 0xFF) / 255.0f;
+    if (pixelFormatOverride == 1) std::swap(fogR, fogB);
+  }
+
+  // TMU 0 Setup (Downstream - runtime resolved)
   uint32_t texW = 0;
   uint32_t texH = 0;
   uint32_t clampS = 0;
@@ -1145,7 +1224,7 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
     float qa = a.pos[3];
     float qb = b.pos[3];
     float qc = c.pos[3];
-    if (state.stwHintMask & 0x2) {  // GR_STWHINT_W_DIFF_TMU0
+    if (stwHintMask & 0x2) {  // GR_STWHINT_W_DIFF_TMU0
       qa = a.tmu_oow[0];
       qb = b.tmu_oow[0];
       qc = c.tmu_oow[0];
@@ -1163,7 +1242,7 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
     float qa = a.pos[3];
     float qb = b.pos[3];
     float qc = c.pos[3];
-    if (state.stwHintMask & 0x4) {  // GR_STWHINT_W_DIFF_TMU1
+    if (stwHintMask & 0x4) {  // GR_STWHINT_W_DIFF_TMU1
       qa = a.tmu_oow[1];
       qb = b.tmu_oow[1];
       qc = c.tmu_oow[1];
@@ -1190,7 +1269,7 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
         float w1 = E1 * invArea;
         float w2 = E2 * invArea;
 
-        int pIdx = y * m_headlessWidth + x;
+        int pIdx = y * width + x;
         float cOtherR = 0.0f;
         float cOtherG = 0.0f;
         float cOtherB = 0.0f;
@@ -1198,11 +1277,11 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
         float blendAlphaVal = 1.0f;
 
         // Stipple Transparency Check
-        if (state.stippleMode != 0) {
-          int stippleX = (state.stippleMode == 2) ? ((x + y) & 7) : (x & 7);
+        if (stippleMode != 0) {
+          int stippleX = (stippleMode == 2) ? ((x + y) & 7) : (x & 7);
           int stippleY = y & 3;
           int stippleIndex = (stippleY << 3) | (7 - stippleX);
-          if (((state.stipplePattern >> stippleIndex) & 1) == 0) {
+          if (((stipplePattern >> stippleIndex) & 1) == 0) {
             keepPixel = false;
           }
         }
@@ -1210,7 +1289,7 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
         float wVal = w0 * a.pos[3] + w1 * b.pos[3] + w2 * c.pos[3];
 
         // Near-plane clipping
-        if (state.depthMode == 2) {  // GR_DEPTHBUFFER_WBUFFER
+        if (depthMode == 2) {  // GR_DEPTHBUFFER_WBUFFER
           if (wVal > 1.0001f) keepPixel = false;
         } else if constexpr (HasTexture) {
           if (wVal <= 0.0f) keepPixel = false;
@@ -1234,7 +1313,7 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
           float texT1 = w0 * a.tex[3] + w1 * b.tex[3] + w2 * c.tex[3];
 
           float divW1 = wVal;
-          if (state.stwHintMask & 0x4) {  // GR_STWHINT_W_DIFF_TMU1
+          if (stwHintMask & 0x4) {  // GR_STWHINT_W_DIFF_TMU1
             divW1 = w0 * a.tmu_oow[1] + w1 * b.tmu_oow[1] + w2 * c.tmu_oow[1];
           }
           float invW1 = 1.0f / divW1;
@@ -1330,7 +1409,7 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
             float texT = w0 * a.tex[1] + w1 * b.tex[1] + w2 * c.tex[1];
 
             float divW0 = wVal;
-            if (state.stwHintMask & 0x2) {  // GR_STWHINT_W_DIFF_TMU0
+            if (stwHintMask & 0x2) {  // GR_STWHINT_W_DIFF_TMU0
               divW0 = w0 * a.tmu_oow[0] + w1 * b.tmu_oow[0] + w2 * c.tmu_oow[0];
             }
             float invW = 1.0f / divW0;
@@ -1420,7 +1499,7 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
         }
 
         // Save original color from texture stage for chromakeying reference
-        if (keepPixel && state.chromakeyMode == 1) {
+        if (keepPixel && chromakeyMode == 1) {
           cOtherR = tmu0Out.r;
           cOtherG = tmu0Out.g;
           cOtherB = tmu0Out.b;
@@ -1439,31 +1518,29 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
         float alpha = 0.0f;
 
         if (keepPixel) {
-          float aLocal = (state.alphaCombinerLocal == 0) ? iterA : ((state.constantColor >> 24) & 0xFF) / 255.0f;
-          float aOther = (state.alphaCombinerOther == 0) ? iterA : ((state.alphaCombinerOther == 1) ? texA : ((state.constantColor >> 24) & 0xFF) / 255.0f);
+          float aLocal = (alphaCombinerLocal == 0) ? iterA : constantAlpha;
+          float aOther = (alphaCombinerOther == 0) ? iterA : ((alphaCombinerOther == 1) ? texA : constantAlpha);
 
           float cLocalR = 0.0f;
           float cLocalG = 0.0f;
           float cLocalB = 0.0f;
-          if (state.colorCombinerLocal == 0) {  // GR_COMBINE_LOCAL_ITERATED
+          if (colorCombinerLocal == 0) {  // GR_COMBINE_LOCAL_ITERATED
             cLocalR = iterR;
             cLocalG = iterG;
             cLocalB = iterB;
-          } else if (state.colorCombinerLocal == 1) {  // GR_COMBINE_LOCAL_CONSTANT / NONE
-            cLocalR = ((state.constantColor >> 16) & 0xFF) / 255.0f;
-            cLocalG = ((state.constantColor >> 8) & 0xFF) / 255.0f;
-            cLocalB = (state.constantColor & 0xFF) / 255.0f;
-            if (state.pixelFormatOverride == 1) std::swap(cLocalR, cLocalB);
+          } else if (colorCombinerLocal == 1) {  // GR_COMBINE_LOCAL_CONSTANT / NONE
+            cLocalR = constantR;
+            cLocalG = constantG;
+            cLocalB = constantB;
           }
 
-          cOtherR = (state.colorCombinerOther == 0) ? iterR : ((state.colorCombinerOther == 1) ? texR : ((state.constantColor >> 16) & 0xFF) / 255.0f);
-          cOtherG = (state.colorCombinerOther == 0) ? iterG : ((state.colorCombinerOther == 1) ? texG : ((state.constantColor >> 8) & 0xFF) / 255.0f);
-          cOtherB = (state.colorCombinerOther == 0) ? iterB : ((state.colorCombinerOther == 1) ? texB : (state.constantColor & 0xFF) / 255.0f);
-          if (state.colorCombinerOther == 2 && state.pixelFormatOverride == 1) std::swap(cOtherR, cOtherB);
+          cOtherR = (colorCombinerOther == 0) ? iterR : ((colorCombinerOther == 1) ? texR : constantR);
+          cOtherG = (colorCombinerOther == 0) ? iterG : ((colorCombinerOther == 1) ? texG : constantG);
+          cOtherB = (colorCombinerOther == 0) ? iterB : ((colorCombinerOther == 1) ? texB : constantB);
 
           // Evaluate Color Combiner Factor
           float factR = 0.0f; float factG = 0.0f; float factB = 0.0f;
-          switch (state.colorCombinerFactor) {
+          switch (colorCombinerFactor) {
             case 1: factR = cLocalR; factG = cLocalG; factB = cLocalB; break;
             case 2: factR = aOther; factG = aOther; factB = aOther; break;
             case 3: factR = aLocal; factG = aLocal; factB = aLocal; break;
@@ -1478,7 +1555,7 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
 
           // Evaluate Color Combiner Function
           float finalR = 0.0f; float finalG = 0.0f; float finalB = 0.0f;
-          switch (state.colorCombinerFunc) {
+          switch (colorCombinerFunc) {
             case 1: finalR = cLocalR; finalG = cLocalG; finalB = cLocalB; break;
             case 3: finalR = cOtherR * factR; finalG = cOtherG * factG; finalB = cOtherB * factB; break;
             case 4: finalR = cOtherR * factR + cLocalR; finalG = cOtherG * factG + cLocalG; finalB = cOtherB * factB + cLocalB; break;
@@ -1487,11 +1564,11 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
             case 7: finalR = (cOtherR - cLocalR) * factR + cLocalR; finalG = (cOtherG - cLocalG) * factR + cLocalG; finalB = (cOtherB - cLocalB) * factR + cLocalB; break;
             case 8: finalR = (cOtherR - cLocalR) * factR + aLocal; finalG = (cOtherG - cLocalG) * factR + aLocal; finalB = (cOtherB - cLocalB) * factR + aLocal; break;
           }
-          if (state.colorCombinerInvert) { finalR = 1.0f - finalR; finalG = 1.0f - finalG; finalB = 1.0f - finalB; }
+          if (colorCombinerInvert) { finalR = 1.0f - finalR; finalG = 1.0f - finalG; finalB = 1.0f - finalB; }
 
           // Evaluate Alpha Combiner Factor
           float factA = 0.0f;
-          switch (state.alphaCombinerFactor) {
+          switch (alphaCombinerFactor) {
             case 1: case 3: factA = aLocal; break;
             case 2: factA = aOther; break;
             case 4: factA = texA; break;
@@ -1503,14 +1580,14 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
 
           // Evaluate Alpha Combiner Function
           float finalA = 0.0f;
-          switch (state.alphaCombinerFunc) {
+          switch (alphaCombinerFunc) {
             case 1: finalA = aLocal; break;
             case 3: finalA = aOther * factA; break;
             case 4: case 5: finalA = aOther * factA + aLocal; break;
             case 6: finalA = (aOther - aLocal) * factA; break;
             case 7: case 8: finalA = (aOther - aLocal) * factA + aLocal; break;
           }
-          if (state.alphaCombinerInvert) finalA = 1.0f - finalA;
+          if (alphaCombinerInvert) finalA = 1.0f - finalA;
 
           red = finalR; green = finalG; blue = finalB; alpha = finalA;
           blendAlphaVal = alpha;
@@ -1521,7 +1598,7 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
             static const uint8_t dither_matrix_2x2[16] = {0, 2, 0, 2, 3, 1, 3, 1, 0, 2, 0, 2, 3, 1, 3, 1};
             int ditherX = x & 3; int ditherY = y & 3;
             uint8_t dith = (state.ditherMode == 2) ? dither_matrix_4x4[ditherY * 4 + ditherX] : dither_matrix_2x2[ditherY * 4 + ditherX];
-            if ((state.alphaTestOp != 7) || (alpha < 0.99f)) {
+            if ((alphaTestOp != 7) || (alpha < 0.99f)) {
               float alpha255 = std::round(alpha * 255.0f);
               if (alpha255 + (static_cast<float>(dith) * 128.0f / (state.ditherMode == 2 ? 16.0f : 4.0f)) < 128.0f) keepPixel = false;
               else blendAlphaVal = 1.0f;
@@ -1530,50 +1607,37 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
         }
 
         // Chromakey Emulation
-        if (keepPixel && state.chromakeyMode == 1) {  // GR_CHROMAKEY_ENABLE
+        if (keepPixel && chromakeyMode == 1) {  // GR_CHROMAKEY_ENABLE
           bool hasTex = HasTexture || hasTexture1;
           float testR = hasTex ? cOtherR : red;
           float testG = hasTex ? cOtherG : green;
           float testB = hasTex ? cOtherB : blue;
 
-          bool rangeEnabled = ((state.chromakeyRangeMode >> 28) & 1) == 1;
+          bool rangeEnabled = ((chromakeyRangeMode >> 28) & 1) == 1;
           if (rangeEnabled) {
-            float minR = ((state.chromakeyRangeMin >> 16) & 0xFF) / 255.0f;
-            float minG = ((state.chromakeyRangeMin >> 8) & 0xFF) / 255.0f;
-            float minB = (state.chromakeyRangeMin & 0xFF) / 255.0f;
-            float maxR = ((state.chromakeyRangeMax >> 16) & 0xFF) / 255.0f;
-            float maxG = ((state.chromakeyRangeMax >> 8) & 0xFF) / 255.0f;
-            float maxB = (state.chromakeyRangeMax & 0xFF) / 255.0f;
-
-            bool rMatch = (testR >= minR && testR <= maxR);
-            bool gMatch = (testG >= minG && testG <= maxG);
-            bool bMatch = (testB >= minB && testB <= maxB);
-            bool rRes = rMatch != ((state.chromakeyRangeMode >> 26) & 1);
-            bool gRes = gMatch != ((state.chromakeyRangeMode >> 25) & 1);
-            bool bRes = bMatch != ((state.chromakeyRangeMode >> 24) & 1);
-            if (((state.chromakeyRangeMode >> 27) & 1) ? (rRes || gRes || bRes) : (rRes && gRes && bRes)) keepPixel = false;
+            bool rMatch = (testR >= chromaMinR && testR <= chromaMaxR);
+            bool gMatch = (testG >= chromaMinG && testG <= chromaMaxG);
+            bool bMatch = (testB >= chromaMinB && testB <= chromaMaxB);
+            bool rRes = rMatch != ((chromakeyRangeMode >> 26) & 1);
+            bool gRes = gMatch != ((chromakeyRangeMode >> 25) & 1);
+            bool bRes = bMatch != ((chromakeyRangeMode >> 24) & 1);
+            if (((chromakeyRangeMode >> 27) & 1) ? (rRes || gRes || bRes) : (rRes && gRes && bRes)) keepPixel = false;
           } else {
-            float chromaR = ((state.chromakeyValue >> 16) & 0xFF) / 255.0f;
-            float chromaG = ((state.chromakeyValue >> 8) & 0xFF) / 255.0f;
-            float chromaB = (state.chromakeyValue & 0xFF) / 255.0f;
-            if (state.pixelFormatOverride == 1) { std::swap(chromaR, chromaB); }
-
             if (std::abs(testR - chromaR) < 0.001f && std::abs(testG - chromaG) < 0.001f && std::abs(testB - chromaB) < 0.001f) keepPixel = false;
           }
         }
 
         // Alpha Testing
-        if (keepPixel && state.alphaTestOp != 7) {
-          float ref = static_cast<float>(state.alphaTestRefVal) / 255.0f;
+        if (keepPixel && alphaTestOp != 7) {
           bool alphaPass = false;
-          switch (state.alphaTestOp) {
+          switch (alphaTestOp) {
             case 0: alphaPass = false; break;
-            case 1: alphaPass = (alpha < ref); break;
-            case 2: alphaPass = (alpha == ref); break;
-            case 3: alphaPass = (alpha <= ref); break;
-            case 4: alphaPass = (alpha > ref); break;
-            case 5: alphaPass = (alpha != ref); break;
-            case 6: alphaPass = (alpha >= ref); break;
+            case 1: alphaPass = (alpha < alphaTestRef); break;
+            case 2: alphaPass = (alpha == alphaTestRef); break;
+            case 3: alphaPass = (alpha <= alphaTestRef); break;
+            case 4: alphaPass = (alpha > alphaTestRef); break;
+            case 5: alphaPass = (alpha != alphaTestRef); break;
+            case 6: alphaPass = (alpha >= alphaTestRef); break;
           }
           if (!alphaPass) keepPixel = false;
         }
@@ -1581,18 +1645,17 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
         // Depth Testing
         if (keepPixel) {
           float targetDepth = 0.0f;
-          if (state.depthMode == 2) {
+          if (depthMode == 2) {
             float w = 1.0f / wVal;
-            float range = state.depthFar - state.depthNear;
-            targetDepth = (std::abs(range) > 1e-6f) ? ((w - state.depthNear) / range) : 0.0f;
+            targetDepth = (w - depthNear) * depthRangeInv;
           } else {
             targetDepth = w0 * a.pos[2] + w1 * b.pos[2] + w2 * c.pos[2];
           }
-          if (state.depthBiasLevel != 0) targetDepth = std::max(0.0f, std::min(1.0f, targetDepth + static_cast<float>(state.depthBiasLevel) / 65535.0f));
-          if (state.depthMode != 0 && state.depthCompareOp != 7 && !m_headlessDepthBuffer.empty()) {
-            float currentDepth = m_headlessDepthBuffer[pIdx];
+          if (depthBiasLevel != 0) targetDepth = std::max(0.0f, std::min(1.0f, targetDepth + static_cast<float>(depthBiasLevel) / 65535.0f));
+          if (depthMode != 0 && depthCompareOp != 7 && depthBuffer) {
+            float currentDepth = depthBuffer[pIdx];
             bool depthPass = false;
-            switch (state.depthCompareOp) {
+            switch (depthCompareOp) {
               case 1: depthPass = (targetDepth < currentDepth); break;
               case 2: depthPass = (targetDepth == currentDepth); break;
               case 3: depthPass = (targetDepth <= currentDepth); break;
@@ -1604,15 +1667,15 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
           }
 
           if (keepPixel) {
-            if (state.depthMode != 0 && state.depthMask) {
-              m_headlessDepthBuffer[pIdx] = targetDepth;
+            if (depthMode != 0 && depthMask && depthBuffer) {
+              depthBuffer[pIdx] = targetDepth;
             }
           }
         }
 
         // Fog Stage
-        if (keepPixel && (state.fogMode != 0)) {
-          uint32_t fogSource = state.fogMode & 0x0F;
+        if (keepPixel && (fogMode != 0)) {
+          uint32_t fogSource = fogMode & 0x0F;
           float f = 0.0f;
           if (fogSource == 4) { // UNIFIED_FOG_WITH_ITERATED_ALPHA
             f = w0 * a.color[3] + w1 * b.color[3] + w2 * c.color[3];
@@ -1641,13 +1704,8 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
             f = f0 * (1.0f - t) + f1 * t;
           }
 
-          float fogR = ((state.fogColor >> 16) & 0xFF) / 255.0f;
-          float fogG = ((state.fogColor >> 8) & 0xFF) / 255.0f;
-          float fogB = (state.fogColor & 0xFF) / 255.0f;
-          if (state.pixelFormatOverride == 1) std::swap(fogR, fogB);
-
-          float mult = ((state.fogMode & 0x100) != 0) ? 1.0f : 0.0f;
-          float add = ((state.fogMode & 0x200) != 0) ? 1.0f : 0.0f;
+          float mult = ((fogMode & 0x100) != 0) ? 1.0f : 0.0f;
+          float add = ((fogMode & 0x200) != 0) ? 1.0f : 0.0f;
 
           red = red * (1.0f - mult) * (1.0f - f) + fogR * (1.0f - add) * f;
           green = green * (1.0f - mult) * (1.0f - f) + fogG * (1.0f - add) * f;
@@ -1671,10 +1729,10 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
                 case 15: return srcC; default: return 1.0f;
               }
             };
-            red = std::min(1.0f, red * getF(state.rgbSrcBlend, red, dstR, blendAlphaVal, dstA, false) + dstR * getF(state.rgbDstBlend, red, dstR, blendAlphaVal, dstA, true));
-            green = std::min(1.0f, green * getF(state.rgbSrcBlend, green, dstG, blendAlphaVal, dstA, false) + dstG * getF(state.rgbDstBlend, green, dstG, blendAlphaVal, dstA, true));
-            blue = std::min(1.0f, blue * getF(state.rgbSrcBlend, blue, dstB, blendAlphaVal, dstA, false) + dstB * getF(state.rgbDstBlend, blue, dstB, blendAlphaVal, dstA, true));
-            aVal = static_cast<uint32_t>(std::min(1.0f, blendAlphaVal * getF(state.alphaSrcBlend, 0,0,blendAlphaVal, dstA, false) + dstA * getF(state.alphaDstBlend, 0,0,blendAlphaVal, dstA, true)) * 255.0f + 0.5f);
+            red = std::min(1.0f, red * getF(rgbSrcBlend, red, dstR, blendAlphaVal, dstA, false) + dstR * getF(rgbDstBlend, red, dstR, blendAlphaVal, dstA, true));
+            green = std::min(1.0f, green * getF(rgbSrcBlend, green, dstG, blendAlphaVal, dstA, false) + dstG * getF(rgbDstBlend, green, dstG, blendAlphaVal, dstA, true));
+            blue = std::min(1.0f, blue * getF(rgbSrcBlend, blue, dstB, blendAlphaVal, dstA, false) + dstB * getF(rgbDstBlend, blue, dstB, blendAlphaVal, dstA, true));
+            aVal = static_cast<uint32_t>(std::min(1.0f, blendAlphaVal * getF(alphaSrcBlend, 0,0,blendAlphaVal, dstA, false) + dstA * getF(alphaDstBlend, 0,0,blendAlphaVal, dstA, true)) * 255.0f + 0.5f);
             rVal = static_cast<uint32_t>(red * 255.0f + 0.5f); gVal = static_cast<uint32_t>(green * 255.0f + 0.5f); bVal = static_cast<uint32_t>(blue * 255.0f + 0.5f);
           } else {
             aVal = static_cast<uint32_t>(alpha * 255.0f + 0.5f);
@@ -1690,8 +1748,8 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
             rVal = (r << 3) | (r >> 2); gVal = (g << 2) | (g >> 4); bVal = (b << 3) | (b >> 2);
           }
           uint32_t finalColor = (aVal << 24) | (rVal << 16) | (gVal << 8) | bVal;
-          if (!state.colorMaskRgb || !state.colorMaskAlpha) {
-            uint32_t mask = (state.colorMaskRgb ? 0x00FFFFFF : 0) | (state.colorMaskAlpha ? 0xFF000000 : 0);
+          if (!colorMaskRgb || !colorMaskAlpha) {
+            uint32_t mask = (colorMaskRgb ? 0x00FFFFFF : 0) | (colorMaskAlpha ? 0xFF000000 : 0);
             finalColor = (finalColor & mask) | (pixels[pIdx] & ~mask);
           }
           pixels[pIdx] = finalColor;
