@@ -536,7 +536,8 @@ FX_ENTRY void FX_CALL grRenderBuffer(GrBuffer_t buffer) {
   EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend",
             "grRenderBuffer (Glide 3.x) invoked for Buffer=" << buffer);
-  if (auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
+  if (auto* backend =
+          GlideWrapper::BackendManager::GetInstance().GetBackend()) {
     backend->SetRenderBuffer(buffer);
   }
 }
@@ -571,7 +572,7 @@ FX_ENTRY void FX_CALL grDrawTriangle(const void* a, const void* b,
   }
 
   GLIDE_PROFILE_SCOPE("API::grDrawTriangle");
-  GlideWrapper::TelemetryManager::GetInstance().IncrementTrianglesProcessed(1);
+  GLIDE_INCREMENT_TRIANGLES_PROCESSED(1);
 
   auto& layout = GlideWrapper::VertexLayout::GetInstance();
   GlideWrapper::ModernVertex va = layout.DecodeVertex(a);
@@ -598,10 +599,12 @@ static void DrawVertexList(FxU32 mode, FxU32 count,
   if (!backend || count < 3) return;
 
   if (mode == GR_TRIANGLES) {
+    GLIDE_INCREMENT_TRIANGLES_PROCESSED(count / 3);
     for (FxU32 i = 0; i + 2 < count; i += 3) {
       backend->DrawTriangle(vertices[i], vertices[i + 1], vertices[i + 2]);
     }
   } else if (mode == GR_TRIANGLE_STRIP) {
+    GLIDE_INCREMENT_TRIANGLES_PROCESSED(count > 2 ? count - 2 : 0);
     for (FxU32 i = 0; i + 2 < count; ++i) {
       if (i % 2 == 0) {
         backend->DrawTriangle(vertices[i], vertices[i + 1], vertices[i + 2]);
@@ -610,6 +613,7 @@ static void DrawVertexList(FxU32 mode, FxU32 count,
       }
     }
   } else if (mode == GR_TRIANGLE_FAN || mode == GR_POLYGON) {
+    GLIDE_INCREMENT_TRIANGLES_PROCESSED(count > 2 ? count - 2 : 0);
     for (FxU32 i = 1; i + 1 < count; ++i) {
       backend->DrawTriangle(vertices[0], vertices[i], vertices[i + 1]);
     }
@@ -650,8 +654,11 @@ FX_ENTRY void FX_CALL grDrawVertexArrayContiguous(FxU32 mode, FxU32 count,
   int32_t maxOffset = layout.GetMaxActiveOffset();
   if (static_cast<int32_t>(stride) < maxOffset) {
     GLIDE_LOG(WARN, "Frontend",
-              "grDrawVertexArrayContiguous: stride (" << stride << ") is smaller than maximum active layout offset ("
-                                                     << maxOffset << "). Rejecting draw call to prevent buffer overflow.");
+              "grDrawVertexArrayContiguous: stride ("
+                  << stride
+                  << ") is smaller than maximum active layout offset ("
+                  << maxOffset
+                  << "). Rejecting draw call to prevent buffer overflow.");
     return;
   }
 
@@ -1081,12 +1088,14 @@ FX_ENTRY void FX_CALL grGlideSetState(const void* state) {
   if (!state) return;
   auto* ws = reinterpret_cast<const GlideWrapperState*>(state);
 
-  // VULN-01: Sanitize all restored state enums and boundaries to prevent out-of-range memory corruption
+  // VULN-01: Sanitize all restored state enums and boundaries to prevent
+  // out-of-range memory corruption
   s_depthMode = (ws->depthMode > 3) ? 0 : ws->depthMode;
-  s_depthCompare = (ws->depthCompare > 7) ? 1 : ws->depthCompare; // GR_CMP_LESS
+  s_depthCompare =
+      (ws->depthCompare > 7) ? 1 : ws->depthCompare;  // GR_CMP_LESS
   s_depthMask = ws->depthMask != 0;
   s_depthBias = ws->depthBias;
-  s_alphaTestOp = (ws->alphaTestOp > 7) ? 7 : ws->alphaTestOp; // GR_CMP_ALWAYS
+  s_alphaTestOp = (ws->alphaTestOp > 7) ? 7 : ws->alphaTestOp;  // GR_CMP_ALWAYS
   s_alphaTestRef = ws->alphaTestRef;
   s_ditherMode = (ws->ditherMode > 2) ? 0 : ws->ditherMode;
   s_stippleMode = (ws->stippleMode > 2) ? 0 : ws->stippleMode;
@@ -1137,15 +1146,16 @@ FX_ENTRY void FX_CALL grGlideSetState(const void* state) {
     s_texChromaState[i].maxColor = ws->texChromaState[i].maxColor;
   }
 
-  s_rgbSrcBlend = (ws->rgbSrcBlend > 10) ? 1 : ws->rgbSrcBlend; // GR_BLEND_ONE
-  s_rgbDstBlend = (ws->rgbDstBlend > 10) ? 0 : ws->rgbDstBlend; // GR_BLEND_ZERO
+  s_rgbSrcBlend = (ws->rgbSrcBlend > 10) ? 1 : ws->rgbSrcBlend;  // GR_BLEND_ONE
+  s_rgbDstBlend =
+      (ws->rgbDstBlend > 10) ? 0 : ws->rgbDstBlend;  // GR_BLEND_ZERO
   s_alphaSrcBlend = (ws->alphaSrcBlend > 10) ? 1 : ws->alphaSrcBlend;
   s_alphaDstBlend = (ws->alphaDstBlend > 10) ? 0 : ws->alphaDstBlend;
 
   s_fogMode = ws->fogMode;
   s_fogColor = ws->fogColor;
   std::memcpy(s_fogTable, ws->fogTable, sizeof(s_fogTable));
-  s_cullMode = (ws->cullMode > 2) ? 0 : ws->cullMode; // GR_CULL_DISABLE
+  s_cullMode = (ws->cullMode > 2) ? 0 : ws->cullMode;  // GR_CULL_DISABLE
   s_constantColor = ws->constantColor;
   s_sstOrigin = (ws->sstOrigin > 1) ? 0 : ws->sstOrigin;
   std::memcpy(s_texLodBias, ws->texLodBias, sizeof(s_texLodBias));

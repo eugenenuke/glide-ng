@@ -242,7 +242,8 @@ void grShamelessPlug(
     void);  // Forward declaration of internal watermark renderer
 
 // Opaque state container matching GrState's char padding
-// Opaque state container matching GrState's char padding (exactly 312 bytes for Glide 2.x ABI!)
+// Opaque state container matching GrState's char padding (exactly 312 bytes for
+// Glide 2.x ABI!)
 struct __attribute__((packed)) GlideWrapperState {
   uint8_t depthMode;
   uint8_t depthCompare;
@@ -305,15 +306,17 @@ struct __attribute__((packed)) GlideWrapperState {
   } texChromaState[2];
   uint8_t mipmapMode[2];
   uint8_t lodBlend[2];
-  float texLodBias[2]; // Added to support save/restore of LOD bias
+  float texLodBias[2];  // Added to support save/restore of LOD bias
   uint8_t ditherMode;
 
-  // Explicit padding to align exactly to the Glide 2.x standard 312-byte layout size
+  // Explicit padding to align exactly to the Glide 2.x standard 312-byte layout
+  // size
   uint8_t pad[117];
 };
 
 static_assert(sizeof(GlideWrapperState) == 312,
-              "GlideWrapperState must be exactly 312 bytes for Glide 2.x ABI compatibility!");
+              "GlideWrapperState must be exactly 312 bytes for Glide 2.x ABI "
+              "compatibility!");
 
 FX_ENTRY void FX_CALL grGlideInit(void) {
   ResetFrontendState();
@@ -335,7 +338,8 @@ FX_ENTRY void FX_CALL grGlideInit(void) {
 
   // Set TMU memory limits based on emulated card config
   for (uint32_t tmu = 0; tmu < reg.GetConfig().tmuCount; ++tmu) {
-    GlideWrapper::TextureManager::GetInstance().SetTmuMemoryLimitMb(tmu, reg.GetConfig().tmuMemoryMb);
+    GlideWrapper::TextureManager::GetInstance().SetTmuMemoryLimitMb(
+        tmu, reg.GetConfig().tmuMemoryMb);
   }
 }
 
@@ -351,7 +355,8 @@ inline void EnsureEngineInitialized() {
         reg.GetConfig().logToConsole);
     bm.EstablishBackend(reg.GetConfig());
     for (uint32_t tmu = 0; tmu < reg.GetConfig().tmuCount; ++tmu) {
-      GlideWrapper::TextureManager::GetInstance().SetTmuMemoryLimitMb(tmu, reg.GetConfig().tmuMemoryMb);
+      GlideWrapper::TextureManager::GetInstance().SetTmuMemoryLimitMb(
+          tmu, reg.GetConfig().tmuMemoryMb);
     }
     GLIDE_LOG(INFO, "Frontend", "Implicit grGlideInit executed seamlessly.");
   } else {
@@ -500,7 +505,8 @@ FX_ENTRY FxBool FX_CALL grSstWinOpen(FxU32 hWnd,
   if (attached) {
     auto& reg = GlideWrapper::EmulationRegistry::GetInstance();
     for (uint32_t tmu = 0; tmu < reg.GetConfig().tmuCount; ++tmu) {
-      GlideWrapper::TextureManager::GetInstance().SetTmuMemoryLimitMb(tmu, reg.GetConfig().tmuMemoryMb);
+      GlideWrapper::TextureManager::GetInstance().SetTmuMemoryLimitMb(
+          tmu, reg.GetConfig().tmuMemoryMb);
     }
     backend->SetCombinerMode(
         s_colorFunc, s_colorFactor, s_colorLocal, s_colorOther, s_colorInvert,
@@ -584,7 +590,7 @@ FX_ENTRY void FX_CALL grDrawTriangle(const GrVertex* a, const GrVertex* b,
   if (!backend || !a || !b || !c) return;
 
   GLIDE_PROFILE_SCOPE("API::grDrawTriangle");
-  GlideWrapper::TelemetryManager::GetInstance().IncrementTrianglesProcessed(1);
+  GLIDE_INCREMENT_TRIANGLES_PROCESSED(1);
 
   auto& layout = GlideWrapper::VertexLayout::GetInstance();
   GlideWrapper::ModernVertex va = layout.DecodeVertex(a);
@@ -759,10 +765,12 @@ static void DrawVertexList(FxU32 mode, FxU32 count,
       backend->DrawLine(vertices[i], vertices[i + 1]);
     }
   } else if (mode == GR_TRIANGLES) {
+    GLIDE_INCREMENT_TRIANGLES_PROCESSED(count / 3);
     for (FxU32 i = 0; i + 2 < count; i += 3) {
       backend->DrawTriangle(vertices[i], vertices[i + 1], vertices[i + 2]);
     }
   } else if (mode == GR_TRIANGLE_STRIP) {
+    GLIDE_INCREMENT_TRIANGLES_PROCESSED(count > 2 ? count - 2 : 0);
     for (FxU32 i = 0; i + 2 < count; ++i) {
       if (i % 2 == 0) {
         backend->DrawTriangle(vertices[i], vertices[i + 1], vertices[i + 2]);
@@ -771,6 +779,7 @@ static void DrawVertexList(FxU32 mode, FxU32 count,
       }
     }
   } else if (mode == GR_TRIANGLE_FAN || mode == GR_POLYGON) {
+    GLIDE_INCREMENT_TRIANGLES_PROCESSED(count > 2 ? count - 2 : 0);
     for (FxU32 i = 1; i + 1 < count; ++i) {
       backend->DrawTriangle(vertices[0], vertices[i], vertices[i + 1]);
     }
@@ -809,8 +818,11 @@ FX_ENTRY void FX_CALL grDrawVertexArrayLinear(FxU32 mode, FxU32 count,
   int32_t maxOffset = layout.GetMaxActiveOffset();
   if (static_cast<int32_t>(stride) < maxOffset) {
     GLIDE_LOG(WARN, "Frontend",
-              "grDrawVertexArrayLinear: stride (" << stride << ") is smaller than maximum active layout offset ("
-                                                 << maxOffset << "). Rejecting draw call to prevent buffer overflow.");
+              "grDrawVertexArrayLinear: stride ("
+                  << stride
+                  << ") is smaller than maximum active layout offset ("
+                  << maxOffset
+                  << "). Rejecting draw call to prevent buffer overflow.");
     return;
   }
 
@@ -1207,8 +1219,8 @@ FX_ENTRY void FX_CALL grGlideSetState(const GrState* state) {
 
     for (uint32_t tmu = 0; tmu < 2; ++tmu) {
       b->SetTexCombinerMode(tmu, s_texRgbFunc[tmu], s_texRgbFactor[tmu],
-                            s_texAlphaFunc[tmu], s_texAlphaFactor[tmu],
-                            false, false);
+                            s_texAlphaFunc[tmu], s_texAlphaFactor[tmu], false,
+                            false);
       b->BindTexture(tmu, s_boundTex[tmu], s_clampS[tmu], s_clampT[tmu],
                      s_minFilter[tmu], s_magFilter[tmu]);
       b->SetTexChromakeyMode(tmu, s_texChromaState[tmu].mode);
@@ -1273,7 +1285,8 @@ FX_ENTRY void FX_CALL grTexCombine(GrChipID_t tmu, GrCombineFunction_t rgbFnc,
     s_texAlphaFunc[tmu] = alphaFnc;
     s_texAlphaFactor[tmu] = alphaFactor;
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
-      b->SetTexCombinerMode(tmu, rgbFnc, rgbFactor, alphaFnc, alphaFactor, false, false);
+      b->SetTexCombinerMode(tmu, rgbFnc, rgbFactor, alphaFnc, alphaFactor,
+                            false, false);
     }
   }
 }
@@ -1339,8 +1352,9 @@ FX_ENTRY void FX_CALL grTexClampMode(GrChipID_t tmu,
 
 FX_ENTRY void FX_CALL grTexMipMapMode(GrChipID_t tmu, GrMipMapMode_t mode,
                                       FxBool lodBlend) {
-  GLIDE_LOG(DEBUG, "Frontend", "grTexMipMapMode (Glide 2.x) invoked for TMU=" << tmu
-                               << ", mode=" << mode << ", lodBlend=" << lodBlend);
+  GLIDE_LOG(DEBUG, "Frontend",
+            "grTexMipMapMode (Glide 2.x) invoked for TMU="
+                << tmu << ", mode=" << mode << ", lodBlend=" << lodBlend);
   if (tmu < 2) {
     s_mipmapMode[tmu] = mode;
     s_lodBlend[tmu] = lodBlend;
@@ -1648,7 +1662,7 @@ FX_ENTRY void FX_CALL guTexSource(GrMipMapId_t id) {
 
   int32_t raw_bias = static_cast<int32_t>(tex.lod_bias & 0x3F);
   if (raw_bias & 0x20) {
-    raw_bias |= ~0x3F; // Sign-extend from 6 bits to 32 bits
+    raw_bias |= ~0x3F;  // Sign-extend from 6 bits to 32 bits
   }
   float bias = static_cast<float>(raw_bias) / 4.0f;
   grTexLodBiasValue(tex.tmu, bias);

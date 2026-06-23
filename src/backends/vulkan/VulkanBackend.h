@@ -26,10 +26,10 @@ struct PushConstants {
   uint32_t fogMode;        // 0 = disabled, otherwise enabled
 
   // Block 2: Offset 32 (16 bytes)
-  uint32_t fogColor;   // Packed 32-bit ARGB/ABGR color
+  uint32_t fogColor;  // Packed 32-bit ARGB/ABGR color
   uint32_t chromakeyRangeMode;
-  float depthNear;     // Phase 4 depth range near (normalized)
-  float depthFar;      // Phase 4 depth range far (normalized)
+  float depthNear;  // Phase 4 depth range near (normalized)
+  float depthFar;   // Phase 4 depth range far (normalized)
 
   // Block 3: Offset 48 (16 bytes)
   uint32_t chromakeyValue;     // Packed RGBA
@@ -66,7 +66,8 @@ struct PushConstants {
   float texChromaMax[2][4];  // TMU0/TMU1 packed RGBA max
 };
 
-static_assert(sizeof(PushConstants) <= 256, "Vulkan PushConstants exceed 256-byte hardware limit!");
+static_assert(sizeof(PushConstants) <= 256,
+              "Vulkan PushConstants exceed 256-byte hardware limit!");
 
 struct VulkanTexture {
   vk::UniqueImage image;
@@ -147,17 +148,17 @@ struct DescriptorKeyHash {
 };
 
 struct PipelineStateKey {
-  uint32_t cullMode;
-  uint32_t sstOrigin;
-  uint32_t depthMode;
-  bool depthMask;
-  uint32_t depthCompareOp;
-  uint32_t rgbSrcBlend;
-  uint32_t rgbDstBlend;
-  uint32_t alphaSrcBlend;
-  uint32_t alphaDstBlend;
-  bool colorMaskRgb;
-  bool colorMaskAlpha;
+  uint32_t cullMode{0};
+  uint32_t sstOrigin{0};
+  uint32_t depthMode{0};
+  bool depthMask{false};
+  uint32_t depthCompareOp{0};
+  uint32_t rgbSrcBlend{0};
+  uint32_t rgbDstBlend{0};
+  uint32_t alphaSrcBlend{0};
+  uint32_t alphaDstBlend{0};
+  bool colorMaskRgb{false};
+  bool colorMaskAlpha{false};
 
   bool operator==(const PipelineStateKey& other) const {
     return cullMode == other.cullMode && sstOrigin == other.sstOrigin &&
@@ -193,23 +194,9 @@ struct PipelineStateKeyHash {
   }
 };
 
-struct PipelineCacheKey {
-  PipelineStateKey stateKey;
-  vk::PrimitiveTopology topology;
-
-  bool operator==(const PipelineCacheKey& other) const {
-    return stateKey == other.stateKey && topology == other.topology;
-  }
-};
-
-struct PipelineCacheKeyHash {
-  std::size_t operator()(const PipelineCacheKey& k) const {
-    std::size_t h = PipelineStateKeyHash()(k.stateKey);
-    std::size_t topoVal = static_cast<std::size_t>(k.topology);
-    h ^= topoVal + 0x9e3779b9 + (h << 6) + (h >> 2);
-    return h;
-  }
-};
+// Pack state key (11 fields) and topology (3 bits) into a single uint32_t
+// bitmask (30 bits total)
+using PipelineCacheKey = uint32_t;
 
 /**
  * @brief Concrete production Vulkan translation engine.
@@ -378,8 +365,10 @@ class VulkanBackend : public SoftwareBackendBase {
   // --- Phase 2: Dynamic Vertex Buffers & State Pipelines ---
   bool CreateShaderModules();
   PipelineStateKey GetCurrentStateKey() const;
-  vk::UniquePipeline CompileSinglePipeline(const PipelineStateKey& key, vk::PrimitiveTopology topology);
-  vk::Pipeline GetOrCreatePipeline(const PipelineStateKey& key, vk::PrimitiveTopology topology);
+  vk::UniquePipeline CompileSinglePipeline(const PipelineStateKey& key,
+                                           vk::PrimitiveTopology topology);
+  vk::Pipeline GetOrCreatePipeline(const PipelineStateKey& key,
+                                   vk::PrimitiveTopology topology);
 
   vk::UniqueShaderModule m_vertShaderModule;
   vk::UniqueShaderModule m_fragShaderModule;
@@ -387,9 +376,7 @@ class VulkanBackend : public SoftwareBackendBase {
   vk::UniquePipelineLayout m_pipelineLayout;
 
   // Pipeline cache storing owned UniquePipeline individually by cache key
-  std::unordered_map<PipelineCacheKey, vk::UniquePipeline, PipelineCacheKeyHash>
-      m_pipelineCache;
-  std::vector<vk::UniquePipeline> m_danglingPipelines;
+  std::unordered_map<PipelineCacheKey, vk::UniquePipeline> m_pipelineCache;
   vk::UniquePipelineCache
       m_vkPipelineCache;  // Persistent Vulkan driver-level pipeline cache
 
@@ -398,7 +385,7 @@ class VulkanBackend : public SoftwareBackendBase {
   vk::UniqueDeviceMemory m_vertexBufferMemory;
   void* m_vertexBufferMap{nullptr};
   uint32_t m_vertexBufferOffset{0};
-  const uint32_t m_vertexBufferSize{1024 * 1024};  // 1MB
+  const uint32_t m_vertexBufferSize{16 * 1024 * 1024};  // 16MB
 
   // Unified Frame Render Pass State
   bool m_inRenderPass{false};

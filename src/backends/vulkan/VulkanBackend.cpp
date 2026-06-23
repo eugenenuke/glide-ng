@@ -17,8 +17,8 @@
 #include "core/TextureManager.h"
 
 // Include build-time generated shader SPIR-V bytecode headers!
-#include "color_frag.spv.h"
 #include "color_dualsrc_frag.spv.h"
+#include "color_frag.spv.h"
 #include "color_vert.spv.h"
 
 extern "C" {
@@ -283,7 +283,6 @@ void VulkanBackend::Shutdown() {
 
   // 2. Explicitly destroy all device-owned pipelines, shaders, and caches
   m_pipelineCache.clear();
-  m_danglingPipelines.clear();  // Clear recompiled mid-frame pipelines
   m_pipelineLayout.reset();
   m_vertShaderModule.reset();
   m_fragShaderModule.reset();
@@ -422,69 +421,77 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
     return false;
   }
 
-  // Pipeline Pre-warming (Warming the cache to prevent mid-frame shader compilation stutters!)
-  GLIDE_LOG(INFO, "Vulkan", "Pre-warming Vulkan pipeline cache with common rendering states...");
+  // Pipeline Pre-warming (Warming the cache to prevent mid-frame shader
+  // compilation stutters!)
+  GLIDE_LOG(
+      INFO, "Vulkan",
+      "Pre-warming Vulkan pipeline cache with common rendering states...");
   {
     std::vector<PipelineStateKey> warmStates;
+
     // State 1: Default opaque 3D rendering (both lower-left and upper-left origins, cull negative and disabled)
+    // Warm 4 pipelines for common 3D rendering
     for (uint32_t origin : {0u, 1u}) {
       for (uint32_t cull : {0u, 1u}) {
         PipelineStateKey k{};
         k.cullMode = cull;
         k.sstOrigin = origin;
-        k.depthMode = 1; // Enabled
+        k.depthMode = 1;  // Enabled
         k.depthMask = true;
-        k.depthCompareOp = 3; // LessEqual
-        k.rgbSrcBlend = 1; // One
-        k.rgbDstBlend = 0; // Zero
-        k.alphaSrcBlend = 1;
-        k.alphaDstBlend = 0;
+        k.depthCompareOp = 3;  // LessEqual
+        k.rgbSrcBlend = 4;     // GR_BLEND_ONE
+        k.rgbDstBlend = 0;     // GR_BLEND_ZERO
+        k.alphaSrcBlend = 4;   // GR_BLEND_ONE
+        k.alphaDstBlend = 0;   // GR_BLEND_ZERO
         k.colorMaskRgb = true;
         k.colorMaskAlpha = true;
         warmStates.push_back(k);
       }
     }
-    // State 2: Translucent blending (e.g. UI/sprites)
+
+    // State 2: Standard Translucent Text/UI (e.g. tlConRender - 2 pipelines)
+    // Note: Separate Alpha factors (RGB: SrcAlpha/OneMinusSrcAlpha, Alpha: One/Zero)
     for (uint32_t origin : {0u, 1u}) {
       PipelineStateKey k{};
-      k.cullMode = 0; // Disable
+      k.cullMode = 0;  // None
       k.sstOrigin = origin;
-      k.depthMode = 1; // Enabled
-      k.depthMask = false; // No write
-      k.depthCompareOp = 3; // LessEqual
-      k.rgbSrcBlend = 4; // SrcAlpha
-      k.rgbDstBlend = 5; // OneMinusSrcAlpha
-      k.alphaSrcBlend = 1;
-      k.alphaDstBlend = 0;
-      k.colorMaskRgb = true;
-      k.colorMaskAlpha = true;
-      warmStates.push_back(k);
-      
-      // With depth test disabled (very common for 2D UI overlay)
-      k.depthMode = 0;
-      warmStates.push_back(k);
-    }
-    // State 3: Additive blending (particles)
-    for (uint32_t origin : {0u, 1u}) {
-      PipelineStateKey k{};
-      k.cullMode = 0;
-      k.sstOrigin = origin;
-      k.depthMode = 1;
+      k.depthMode = 0;  // Disabled (canonicalized)
       k.depthMask = false;
-      k.depthCompareOp = 3;
-      k.rgbSrcBlend = 4; // SrcAlpha
-      k.rgbDstBlend = 1; // One
-      k.alphaSrcBlend = 1;
-      k.alphaDstBlend = 0;
+      k.depthCompareOp = 0;
+      k.rgbSrcBlend = 1;   // GR_BLEND_SRC_ALPHA
+      k.rgbDstBlend = 5;   // GR_BLEND_ONE_MINUS_SRC_ALPHA
+      k.alphaSrcBlend = 4;  // GR_BLEND_ONE (separate Alpha factor!)
+      k.alphaDstBlend = 0;  // GR_BLEND_ZERO
       k.colorMaskRgb = true;
       k.colorMaskAlpha = true;
       warmStates.push_back(k);
     }
-    // Warm all of them for Triangle List topology (which is 99% of drawing)
+
+    // State 3: Opaque 2D Overlays/Backgrounds (2 pipelines)
+    for (uint32_t origin : {0u, 1u}) {
+      PipelineStateKey k{};
+      k.cullMode = 0;  // None
+      k.sstOrigin = origin;
+      k.depthMode = 0;  // Disabled (canonicalized)
+      k.depthMask = false;
+      k.depthCompareOp = 0;
+      k.rgbSrcBlend = 4;   // GR_BLEND_ONE
+      k.rgbDstBlend = 0;   // GR_BLEND_ZERO
+      k.alphaSrcBlend = 4;  // GR_BLEND_ONE
+      k.alphaDstBlend = 0;  // GR_BLEND_ZERO
+      k.colorMaskRgb = true;
+      k.colorMaskAlpha = true;
+      warmStates.push_back(k);
+    }
+
+    // Warm all 8 of them for Triangle List topology (which is 99% of drawing)
     for (const auto& state : warmStates) {
       GetOrCreatePipeline(state, vk::PrimitiveTopology::eTriangleList);
     }
-    GLIDE_LOG(INFO, "Vulkan", "Pipeline cache pre-warming completed successfully. Total warmed: " << warmStates.size());
+    GLIDE_LOG(
+        INFO, "Vulkan",
+        "Pipeline cache pre-warming completed successfully. Total warmed: "
+            << warmStates.size());
   }
 
   // Phase 2: Allocate dynamic ring Vertex Buffer (1MB)
@@ -510,9 +517,10 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
     m_batchedDescSet = nullptr;
     m_batchedVertexCount = 0;
     m_batchedFirstVertex = 0;
-    GLIDE_LOG(INFO, "Vulkan",
-              "Allocated 1MB host-visible dynamic ring vertex buffer and reset "
-              "batching state.");
+     GLIDE_LOG(INFO, "Vulkan",
+               "Allocated " << (m_vertexBufferSize / (1024 * 1024))
+                            << "MB host-visible dynamic ring vertex buffer and reset "
+                            "batching state.");
   } catch (const std::exception& e) {
     GLIDE_LOG(CRITICAL, "Vulkan",
               "Failed to allocate Vulkan vertex buffer: " << e.what());
@@ -553,10 +561,10 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
                                     << ". Running headless offscreen.");
     } else {
       uint32_t scale = m_config.windowScale;
-      auto* win =
-          SDL_CreateWindow("3dfx glide-ng Presentation Console (Vulkan)",
-                           SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-                           width * scale, height * scale, SDL_WINDOW_VULKAN | SDL_WINDOW_HIDDEN);
+      auto* win = SDL_CreateWindow(
+          "3dfx glide-ng Presentation Console (Vulkan)", SDL_WINDOWPOS_CENTERED,
+          SDL_WINDOWPOS_CENTERED, width * scale, height * scale,
+          SDL_WINDOW_VULKAN | SDL_WINDOW_HIDDEN);
       if (win) {
         // Create Vulkan Surface associated with the SDL window
         VkSurfaceKHR rawSurface;
@@ -1227,7 +1235,9 @@ bool VulkanBackend::SwapBuffers() {
     blitRegion.dstOffsets[1] =
         vk::Offset3D(m_swapchainExtent.width, m_swapchainExtent.height, 1);
 
-    vk::Filter filter = (m_config.presentationFilter == 0) ? vk::Filter::eNearest : vk::Filter::eLinear;
+    vk::Filter filter = (m_config.presentationFilter == 0)
+                            ? vk::Filter::eNearest
+                            : vk::Filter::eLinear;
     m_commandBuffer->blitImage(
         m_headlessImages[activeIdx].get(), vk::ImageLayout::eTransferSrcOptimal,
         m_swapchainImages[imageIndex], vk::ImageLayout::eTransferDstOptimal, 1,
@@ -1263,10 +1273,6 @@ bool VulkanBackend::SwapBuffers() {
         1, &m_renderFinishedSemaphores[m_currentFrameSlot].get(), 1,
         &m_swapchain.get(), &imageIndex, nullptr);
 
-    if (!m_windowShown) {
-      SDL_ShowWindow(reinterpret_cast<SDL_Window*>(m_sdlWindow));
-      m_windowShown = true;
-    }
     vk::Result presentRes = m_graphicsQueue.presentKHR(presentInfo);
     if (presentRes == vk::Result::eErrorOutOfDateKHR ||
         presentRes == vk::Result::eSuboptimalKHR) {
@@ -1278,8 +1284,26 @@ bool VulkanBackend::SwapBuffers() {
           "Failed to present swapchain image: " << vk::to_string(presentRes));
     }
 
-    // Clean up any recompiled mid-frame pipelines
-    m_danglingPipelines.clear();
+    // Show the window dynamically only AFTER the first frame is fully rendered
+    // and presented. We block the CPU thread on the frame's fence to guarantee
+    // llvmpipe has completed rendering, ensuring the compositor maps a fully
+    // populated front buffer and avoiding any black flash.
+    if (m_sdlWindow && !m_windowShown) {
+      try {
+        if (m_device->waitForFences(1, &m_fences[m_currentFrameSlot].get(),
+                                    VK_TRUE,
+                                    UINT64_MAX) != vk::Result::eSuccess) {
+          GLIDE_LOG(
+              WARN, "Vulkan",
+              "Failed to wait for first frame fence before showing window");
+        }
+      } catch (const std::exception& e) {
+        GLIDE_LOG(WARN, "Vulkan",
+                  "Exception waiting for first frame fence: " << e.what());
+      }
+      SDL_ShowWindow(reinterpret_cast<SDL_Window*>(m_sdlWindow));
+      m_windowShown = true;
+    }
 
     // 5. Advance to the next frame slot and wait for its fence to become free
     // before starting the next frame
@@ -1333,8 +1357,6 @@ bool VulkanBackend::SwapBuffers() {
               "SwapBuffers: Headless - Submitting command buffer...");
     vk::SubmitInfo submitInfo(0, nullptr, nullptr, 1, m_commandBuffer);
     m_graphicsQueue.submit(submitInfo, m_fences[m_currentFrameSlot].get());
-
-    m_danglingPipelines.clear();
 
     // Advance to the next slot and setup recording immediately
     uint32_t nextSlot = (m_currentFrameSlot + 1) % 2;
@@ -1444,10 +1466,6 @@ bool VulkanBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
   vk::SubmitInfo submitInfo(0, nullptr, nullptr, 1, m_commandBuffer);
   m_graphicsQueue.submit(submitInfo, {});
   m_device->waitIdle();
-
-  // Now it is 100% safe to destroy any pipelines that were recompiled
-  // mid-frame!
-  m_danglingPipelines.clear();
 
   // Copy the GPU-rendered framebuffer from mapped staging memory into our
   // CPU-side active buffer
@@ -2338,6 +2356,9 @@ void VulkanBackend::FlushLFBToGPU() {
 
 // --- Phase 2: Dynamic Shader Modules & Pipeline State Creation ---
 bool VulkanBackend::CreateShaderModules() {
+  if (m_vertShaderModule && m_fragShaderModule && m_fragShaderModuleDualSrc) {
+    return true;  // Already persistent across window resets
+  }
   try {
     vk::ShaderModuleCreateInfo vertInfo({}, color_vert_spv_size,
                                         color_vert_spv);
@@ -2368,8 +2389,13 @@ PipelineStateKey VulkanBackend::GetCurrentStateKey() const {
   key.cullMode = m_cullMode;
   key.sstOrigin = m_sstOrigin;
   key.depthMode = m_depthMode;
-  key.depthMask = m_depthMask;
-  key.depthCompareOp = m_depthCompareOp;
+  if (m_depthMode != 0) {
+    key.depthMask = m_depthMask;
+    key.depthCompareOp = m_depthCompareOp;
+  } else {
+    key.depthMask = false;
+    key.depthCompareOp = 0;  // Canonical constant for depth disabled
+  }
   key.rgbSrcBlend = m_rgbSrcBlend;
   key.rgbDstBlend = m_rgbDstBlend;
   key.alphaSrcBlend = m_alphaSrcBlend;
@@ -2382,19 +2408,20 @@ PipelineStateKey VulkanBackend::GetCurrentStateKey() const {
 vk::UniquePipeline VulkanBackend::CompileSinglePipeline(
     const PipelineStateKey& key, vk::PrimitiveTopology topology) {
   try {
-    // Determine if the pipeline key requires dual-source blending (factor 15 = GR_BLEND_PREFOG_COLOR)
+    // Determine if the pipeline key requires dual-source blending (factor 15 =
+    // GR_BLEND_PREFOG_COLOR)
     bool useDualSrcBlend = (key.rgbSrcBlend == 15 || key.rgbDstBlend == 15 ||
                             key.alphaSrcBlend == 15 || key.alphaDstBlend == 15);
-    vk::ShaderModule fragShader = useDualSrcBlend ? m_fragShaderModuleDualSrc.get()
-                                                  : m_fragShaderModule.get();
+    vk::ShaderModule fragShader = useDualSrcBlend
+                                      ? m_fragShaderModuleDualSrc.get()
+                                      : m_fragShaderModule.get();
 
     // Shader Stages
     vk::PipelineShaderStageCreateInfo shaderStages[] = {
         vk::PipelineShaderStageCreateInfo({}, vk::ShaderStageFlagBits::eVertex,
                                           m_vertShaderModule.get(), "main"),
-        vk::PipelineShaderStageCreateInfo({},
-                                          vk::ShaderStageFlagBits::eFragment,
-                                          fragShader, "main")};
+        vk::PipelineShaderStageCreateInfo(
+            {}, vk::ShaderStageFlagBits::eFragment, fragShader, "main")};
 
     // Vertex Input Bindings (matches ModernVertex exactly)
     vk::VertexInputBindingDescription bindingDesc(0, sizeof(ModernVertex),
@@ -2417,10 +2444,10 @@ vk::UniquePipeline VulkanBackend::CompileSinglePipeline(
         attrDescs.data());
 
     // Input Assembly Topology
-    vk::PipelineInputAssemblyStateCreateInfo inputAssembly(
-        {}, topology, false);
+    vk::PipelineInputAssemblyStateCreateInfo inputAssembly({}, topology, false);
 
-    // Dynamic Viewport and Scissor States (prevents pipeline rebuilds on resolution change)
+    // Dynamic Viewport and Scissor States (prevents pipeline rebuilds on
+    // resolution change)
     std::vector<vk::DynamicState> dynamicStates = {vk::DynamicState::eViewport,
                                                    vk::DynamicState::eScissor};
     vk::PipelineDynamicStateCreateInfo dynamicState(
@@ -2428,7 +2455,8 @@ vk::UniquePipeline VulkanBackend::CompileSinglePipeline(
     vk::PipelineViewportStateCreateInfo viewportState({}, 1, nullptr, 1,
                                                       nullptr);
 
-    // Rasterization Configuration (Dynamic Depth Clamping prevents out-of-bounds Z clipping!)
+    // Rasterization Configuration (Dynamic Depth Clamping prevents
+    // out-of-bounds Z clipping!)
     vk::CullModeFlags vkCullMode = vk::CullModeFlagBits::eNone;
     switch (key.cullMode) {
       case 0:
@@ -2464,15 +2492,32 @@ vk::UniquePipeline VulkanBackend::CompileSinglePipeline(
 
       vk::CompareOp op = vk::CompareOp::eLess;
       switch (key.depthCompareOp) {
-        case 0: op = vk::CompareOp::eNever; break;
-        case 1: op = vk::CompareOp::eLess; break;
-        case 2: op = vk::CompareOp::eEqual; break;
-        case 3: op = vk::CompareOp::eLessOrEqual; break;
-        case 4: op = vk::CompareOp::eGreater; break;
-        case 5: op = vk::CompareOp::eNotEqual; break;
-        case 6: op = vk::CompareOp::eGreaterOrEqual; break;
-        case 7: op = vk::CompareOp::eAlways; break;
-        default: break;
+        case 0:
+          op = vk::CompareOp::eNever;
+          break;
+        case 1:
+          op = vk::CompareOp::eLess;
+          break;
+        case 2:
+          op = vk::CompareOp::eEqual;
+          break;
+        case 3:
+          op = vk::CompareOp::eLessOrEqual;
+          break;
+        case 4:
+          op = vk::CompareOp::eGreater;
+          break;
+        case 5:
+          op = vk::CompareOp::eNotEqual;
+          break;
+        case 6:
+          op = vk::CompareOp::eGreaterOrEqual;
+          break;
+        case 7:
+          op = vk::CompareOp::eAlways;
+          break;
+        default:
+          break;
       }
       depthStencil.depthCompareOp = op;
     } else {
@@ -2535,31 +2580,52 @@ vk::UniquePipeline VulkanBackend::CompileSinglePipeline(
     }
     return std::move(result.value);
   } catch (const std::exception& e) {
-    GLIDE_LOG(CRITICAL, "Vulkan",
-              "Failed to compile single Vulkan graphics pipeline: " << e.what());
+    GLIDE_LOG(
+        CRITICAL, "Vulkan",
+        "Failed to compile single Vulkan graphics pipeline: " << e.what());
   }
   return vk::UniquePipeline();
 }
 
+static inline uint32_t PackPipelineCacheKey(const PipelineStateKey& state,
+                                            vk::PrimitiveTopology topology) {
+  uint32_t key = 0;
+  key |= (state.cullMode & 0x3) << 0;
+  key |= (state.sstOrigin & 0x1) << 2;
+  key |= (state.depthMode & 0x3) << 3;
+  key |= (state.depthMask ? 1 : 0) << 5;
+  key |= (state.depthCompareOp & 0x7) << 6;
+  key |= (state.rgbSrcBlend & 0xF) << 9;
+  key |= (state.rgbDstBlend & 0xF) << 13;
+  key |= (state.alphaSrcBlend & 0xF) << 17;
+  key |= (state.alphaDstBlend & 0xF) << 21;
+  key |= (state.colorMaskRgb ? 1 : 0) << 25;
+  key |= (state.colorMaskAlpha ? 1 : 0) << 26;
+  key |= (static_cast<uint32_t>(topology) & 0x7) << 27;
+  return key;
+}
+
 vk::Pipeline VulkanBackend::GetOrCreatePipeline(
     const PipelineStateKey& key, vk::PrimitiveTopology topology) {
-  PipelineCacheKey cacheKey{key, topology};
+  PipelineCacheKey cacheKey = PackPipelineCacheKey(key, topology);
   auto it = m_pipelineCache.find(cacheKey);
   if (it == m_pipelineCache.end()) {
-    GLIDE_LOG(INFO, "Vulkan",
-              "Pipeline Cache Miss! Compiling new pipeline for state & topology. "
-              "Topology=" << vk::to_string(topology)
-              << ", Cull=" << key.cullMode << ", Origin=" << key.sstOrigin
-              << ", DepthMode=" << key.depthMode
-              << ", DepthMask=" << key.depthMask
-              << ", DepthOp=" << key.depthCompareOp << ", RGBBlend("
-              << key.rgbSrcBlend << "," << key.rgbDstBlend << ")"
-              << ", AlphaBlend(" << key.alphaSrcBlend << ","
-              << key.alphaDstBlend << ")");
+    GLIDE_LOG(
+        INFO, "Vulkan",
+        "Pipeline Cache Miss! Compiling new pipeline for state & topology. "
+        "Topology="
+            << vk::to_string(topology) << ", Cull=" << key.cullMode
+            << ", Origin=" << key.sstOrigin << ", DepthMode=" << key.depthMode
+            << ", DepthMask=" << key.depthMask
+            << ", DepthOp=" << key.depthCompareOp << ", RGBBlend("
+            << key.rgbSrcBlend << "," << key.rgbDstBlend << ")"
+            << ", AlphaBlend(" << key.alphaSrcBlend << "," << key.alphaDstBlend
+            << ")");
 
     vk::UniquePipeline pipeline = CompileSinglePipeline(key, topology);
     if (!pipeline) {
-      GLIDE_LOG(CRITICAL, "Vulkan", "Failed to compile new pipeline in GetOrCreatePipeline!");
+      GLIDE_LOG(CRITICAL, "Vulkan",
+                "Failed to compile new pipeline in GetOrCreatePipeline!");
       return vk::Pipeline();
     }
     vk::Pipeline rawPipeline = pipeline.get();
@@ -2580,7 +2646,8 @@ void VulkanBackend::DrawPoint(const ModernVertex& pt) {
                                          << ", " << pt.pos[2] << ")");
 
   // 1. Determine active pipeline & descriptor set
-  vk::Pipeline reqPipeline = GetOrCreatePipeline(GetCurrentStateKey(), vk::PrimitiveTopology::ePointList);
+  vk::Pipeline reqPipeline = GetOrCreatePipeline(
+      GetCurrentStateKey(), vk::PrimitiveTopology::ePointList);
 
   vk::ImageView view0 = m_dummyTexture.imageView.get();
   vk::Sampler sampler0 = m_dummySampler.get();
@@ -2624,7 +2691,23 @@ void VulkanBackend::DrawPoint(const ModernVertex& pt) {
     }
     if (bufferFull) {
       GLIDE_LOG(WARN, "Vulkan",
-                "Dynamic Vertex Buffer wrap-around during DrawPoint!");
+                "Dynamic Vertex Buffer wrap-around during DrawPoint! Stalling "
+                "GPU to prevent geometry corruption.");
+      FlushBatch();
+      if (m_inRenderPass) {
+        m_commandBuffer->endRenderPass();
+        m_inRenderPass = false;
+      }
+      m_commandBuffer->end();
+
+      vk::SubmitInfo submitInfo(0, nullptr, nullptr, 1, m_commandBuffer);
+      m_graphicsQueue.submit(submitInfo, {});
+      m_device->waitIdle();
+
+      m_commandBuffer->reset({});
+      m_commandBuffer->begin(vk::CommandBufferBeginInfo(
+          vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
+
       m_vertexBufferOffset = 0;
     }
 
@@ -2665,7 +2748,8 @@ void VulkanBackend::DrawLine(const ModernVertex& v1, const ModernVertex& v2) {
                                        << v2.pos[1] << ")");
 
   // 1. Determine active pipeline & descriptor set
-  vk::Pipeline reqPipeline = GetOrCreatePipeline(GetCurrentStateKey(), vk::PrimitiveTopology::eLineList);
+  vk::Pipeline reqPipeline = GetOrCreatePipeline(
+      GetCurrentStateKey(), vk::PrimitiveTopology::eLineList);
 
   vk::ImageView view0 = m_dummyTexture.imageView.get();
   vk::Sampler sampler0 = m_dummySampler.get();
@@ -2709,7 +2793,23 @@ void VulkanBackend::DrawLine(const ModernVertex& v1, const ModernVertex& v2) {
     }
     if (bufferFull) {
       GLIDE_LOG(WARN, "Vulkan",
-                "Dynamic Vertex Buffer wrap-around during DrawLine!");
+                "Dynamic Vertex Buffer wrap-around during DrawLine! Stalling "
+                "GPU to prevent geometry corruption.");
+      FlushBatch();
+      if (m_inRenderPass) {
+        m_commandBuffer->endRenderPass();
+        m_inRenderPass = false;
+      }
+      m_commandBuffer->end();
+
+      vk::SubmitInfo submitInfo(0, nullptr, nullptr, 1, m_commandBuffer);
+      m_graphicsQueue.submit(submitInfo, {});
+      m_device->waitIdle();
+
+      m_commandBuffer->reset({});
+      m_commandBuffer->begin(vk::CommandBufferBeginInfo(
+          vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
+
       m_vertexBufferOffset = 0;
     }
 
@@ -2755,7 +2855,8 @@ void VulkanBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
                 << a.tex[0] << ", " << a.tex[1] << ")");
 
   // 1. Determine active pipeline & descriptor set
-  vk::Pipeline reqPipeline = GetOrCreatePipeline(GetCurrentStateKey(), vk::PrimitiveTopology::eTriangleList);
+  vk::Pipeline reqPipeline = GetOrCreatePipeline(
+      GetCurrentStateKey(), vk::PrimitiveTopology::eTriangleList);
 
   vk::ImageView view0 = m_dummyTexture.imageView.get();
   vk::Sampler sampler0 = m_dummySampler.get();
@@ -2799,7 +2900,23 @@ void VulkanBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
     }
     if (bufferFull) {
       GLIDE_LOG(WARN, "Vulkan",
-                "Dynamic Vertex Buffer wrap-around during DrawTriangle!");
+                "Dynamic Vertex Buffer wrap-around during DrawTriangle! "
+                "Stalling GPU to prevent geometry corruption.");
+      FlushBatch();
+      if (m_inRenderPass) {
+        m_commandBuffer->endRenderPass();
+        m_inRenderPass = false;
+      }
+      m_commandBuffer->end();
+
+      vk::SubmitInfo submitInfo(0, nullptr, nullptr, 1, m_commandBuffer);
+      m_graphicsQueue.submit(submitInfo, {});
+      m_device->waitIdle();
+
+      m_commandBuffer->reset({});
+      m_commandBuffer->begin(vk::CommandBufferBeginInfo(
+          vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
+
       m_vertexBufferOffset = 0;
     }
 
@@ -2838,8 +2955,7 @@ void VulkanBackend::FlushBatch() {
   if (m_batchedVertexCount == 0) return;
 
   GLIDE_PROFILE_SCOPE("Vulkan::FlushBatch");
-  TelemetryManager::GetInstance().IncrementTrianglesDrawn(m_batchedVertexCount /
-                                                          3);
+  GLIDE_INCREMENT_TRIANGLES_DRAWN(m_batchedVertexCount / 3);
 
   GLIDE_LOG(DEBUG, "Vulkan",
             "FlushBatch: drawing "

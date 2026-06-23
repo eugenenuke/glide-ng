@@ -141,7 +141,8 @@ bool OpenGLESBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
   glGenFramebuffers(2, m_headlessFBOs);
   glGenRenderbuffers(1, &m_sharedDepthRenderbuffer);
 
-  // Allocate single shared depth renderbuffer with the active context dimensions
+  // Allocate single shared depth renderbuffer with the active context
+  // dimensions
   glBindRenderbuffer(GL_RENDERBUFFER, m_sharedDepthRenderbuffer);
   glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, width, height);
 
@@ -248,8 +249,8 @@ bool OpenGLESBackend::SwapBuffers() {
       glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
       glViewport(0, 0, m_headlessWidth * scale, m_headlessHeight * scale);
       glBlitFramebuffer(0, 0, m_headlessWidth, m_headlessHeight, 0, 0,
-                        m_headlessWidth * scale, m_headlessHeight * scale, GL_COLOR_BUFFER_BIT,
-                        filter);
+                        m_headlessWidth * scale, m_headlessHeight * scale,
+                        GL_COLOR_BUFFER_BIT, filter);
       checkGLError("SwapBuffers glBlitFramebuffer");
     } else {
       // --- OPTION B: FULL-SCREEN QUAD SHADER PASS (Gamma != 1.0 or LUT active)
@@ -294,11 +295,13 @@ bool OpenGLESBackend::SwapBuffers() {
 
     // Swap front and back window buffers to display the rendered frame on the
     // screen!
-    if (!m_windowShown) {
+    SDL_GL_SwapWindow(static_cast<SDL_Window*>(m_sdlWindow));
+
+    // Show the window dynamically on the first swap, with safety guards
+    if (m_sdlWindow && !m_windowShown && !m_headlessMode) {
       SDL_ShowWindow(static_cast<SDL_Window*>(m_sdlWindow));
       m_windowShown = true;
     }
-    SDL_GL_SwapWindow(static_cast<SDL_Window*>(m_sdlWindow));
   }
 
   // Swap the front and back CPU buffer indices for double-buffering
@@ -559,8 +562,8 @@ bool OpenGLESBackend::CreateGLContext(void* nativeWindowHandle, uint32_t width,
   uint32_t scale = m_config.windowScale;
   auto* win =
       SDL_CreateWindow("3dfx glide-ng Presentation Console (OpenGL ES 3.2)",
-                       SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, width * scale,
-                       height * scale, windowFlags);
+                       SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+                       width * scale, height * scale, windowFlags);
 
   if (!win) {
     GLIDE_LOG(CRITICAL, "GLES", "SDL_CreateWindow failed: " << SDL_GetError());
@@ -1759,8 +1762,10 @@ void OpenGLESBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
           }
         }
         GLint magFilter = (m_texMagFilter[tmu] == 1) ? GL_LINEAR : GL_NEAREST;
-        glSamplerParameteri(m_glesSamplers[tmu], GL_TEXTURE_MIN_FILTER, minFilter);
-        glSamplerParameteri(m_glesSamplers[tmu], GL_TEXTURE_MAG_FILTER, magFilter);
+        glSamplerParameteri(m_glesSamplers[tmu], GL_TEXTURE_MIN_FILTER,
+                            minFilter);
+        glSamplerParameteri(m_glesSamplers[tmu], GL_TEXTURE_MAG_FILTER,
+                            magFilter);
 
         // Bind sampler object to the active texture unit
         glBindSampler(tmu, m_glesSamplers[tmu]);
@@ -1774,7 +1779,7 @@ void OpenGLESBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
   glDrawArrays(GL_TRIANGLES, firstVertex, 3);
 
   // Increment global statistics of triangles actually drawn to the screen
-  TelemetryManager::GetInstance().IncrementTrianglesDrawn(1);
+  GLIDE_INCREMENT_TRIANGLES_DRAWN(1);
 
   // 5. Cleanup state bindings
   glBindVertexArray(0);
