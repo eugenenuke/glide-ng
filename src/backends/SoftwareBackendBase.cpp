@@ -538,11 +538,9 @@ bool SoftwareBackendBase::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
     if (is32Bit) {
       uint32_t* destRow32 =
           reinterpret_cast<uint32_t*>(outBytes + y * dstStride);
-      for (uint32_t x = 0; x < srcWidth; ++x) {
-        uint32_t readX = srcX + x;
-        if (readX >= width) break;
-        uint32_t val = pixels[readY * width + readX];
-        destRow32[x] = val;
+      uint32_t safeWidth = (srcX >= width) ? 0 : std::min(srcWidth, width - srcX);
+      if (safeWidth > 0) {
+        std::memcpy(destRow32, &pixels[readY * width + srcX], safeWidth * sizeof(uint32_t));
       }
     } else {
       uint16_t* destRow16 =
