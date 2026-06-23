@@ -42,6 +42,7 @@ class IGraphicsBackend {
   virtual void ClearBuffer(uint32_t color, uint32_t alpha, float z,
                            uint32_t clearMask) = 0;
   virtual bool SwapBuffers() = 0;
+  virtual void FlushBins() = 0;
   virtual void SetConstantColor(uint32_t color) = 0;
   virtual void SetPixelFormat(uint32_t format) = 0;
   virtual void SetRenderBuffer(uint32_t target) = 0;

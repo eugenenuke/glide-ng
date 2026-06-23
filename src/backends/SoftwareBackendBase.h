@@ -48,6 +48,7 @@ class SoftwareBackendBase : public IGraphicsBackend {
   uint32_t GetStippleMode() const { return m_stippleMode; }
   uint32_t GetStipplePattern() const { return m_stipplePattern; }
   float GetDepthBufferPixel(uint32_t x, uint32_t y) const {
+    const_cast<SoftwareBackendBase*>(this)->FlushBins();
     uint32_t pIdx = y * m_headlessWidth + x;
     if (pIdx < m_headlessDepthBuffer.size()) return m_headlessDepthBuffer[pIdx];
     return 0.0f;
@@ -55,6 +56,7 @@ class SoftwareBackendBase : public IGraphicsBackend {
 
 
   bool SwapBuffers() override = 0;
+  void FlushBins() override = 0;
   void PollEvents() override;
   void SstIdle() override;
 
@@ -146,6 +148,8 @@ class SoftwareBackendBase : public IGraphicsBackend {
 
  protected:
   std::recursive_mutex m_mutex;
+  bool m_stateCacheDirty{true};
+  void MarkStateDirty() { m_stateCacheDirty = true; }
   bool m_initialized{false};
   bool m_windowAttached{false};
   bool m_headlessMode{false};

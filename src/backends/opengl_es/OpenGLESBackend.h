@@ -29,6 +29,7 @@ class OpenGLESBackend : public SoftwareBackendBase {
   uint32_t GetMsaaSamples() const override { return m_msaaSamples; }
 
   bool SwapBuffers() override;
+  void FlushBins() override {}
   void SstIdle() override;
   void ClearBuffer(uint32_t color, uint32_t alpha, float z,
                    uint32_t clearMask) override;

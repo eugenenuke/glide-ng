@@ -47,50 +47,49 @@ static const float s_tableIndexToW[64] = {
     13107.200195f, 16384.000000f, 18724.572266f, 21845.333984f, 26214.400391f,
     32768.000000f, 37449.144531f, 43690.667969f, 52428.800781f};
 
-inline bool SoftwareBackend::IsTexChromaMatch(uint32_t color, uint32_t tmu) const {
-  if (m_texChromaMode[tmu] != 1) return false;
+inline bool SoftwareBackend::IsTexChromaMatch(uint32_t color, uint32_t tmu, const RasterizerState& state) const {
+  if (state.texChromaMode[tmu] != 1) return false;
 
   uint32_t r = (color >> 16) & 0xFF;
   uint32_t g = (color >> 8) & 0xFF;
   uint32_t b = color & 0xFF;
 
-  bool rangeEnabled = ((m_texChromaRangeMode[tmu] >> 28) & 1) == 1;
+  bool rangeEnabled = ((state.texChromaRangeMode[tmu] >> 28) & 1) == 1;
   if (rangeEnabled) {
-    uint32_t minR = (m_texChromaMin[tmu] >> 16) & 0xFF;
-    uint32_t minG = (m_texChromaMin[tmu] >> 8) & 0xFF;
-    uint32_t minB = m_texChromaMin[tmu] & 0xFF;
+    uint32_t minR = (state.texChromaMin[tmu] >> 16) & 0xFF;
+    uint32_t minG = (state.texChromaMin[tmu] >> 8) & 0xFF;
+    uint32_t minB = state.texChromaMin[tmu] & 0xFF;
 
-    uint32_t maxR = (m_texChromaMax[tmu] >> 16) & 0xFF;
-    uint32_t maxG = (m_texChromaMax[tmu] >> 8) & 0xFF;
-    uint32_t maxB = m_texChromaMax[tmu] & 0xFF;
+    uint32_t maxR = (state.texChromaMax[tmu] >> 16) & 0xFF;
+    uint32_t maxG = (state.texChromaMax[tmu] >> 8) & 0xFF;
+    uint32_t maxB = state.texChromaMax[tmu] & 0xFF;
 
     bool rMatch = (r >= minR && r <= maxR);
     bool gMatch = (g >= minG && g <= maxG);
     bool bMatch = (b >= minB && b <= maxB);
 
-    bool blueExcl = ((m_texChromaRangeMode[tmu] >> 24) & 1) == 1;
-    bool greenExcl = ((m_texChromaRangeMode[tmu] >> 25) & 1) == 1;
-    bool redExcl = ((m_texChromaRangeMode[tmu] >> 26) & 1) == 1;
+    bool blueExcl = ((state.texChromaRangeMode[tmu] >> 24) & 1) == 1;
+    bool greenExcl = ((state.texChromaRangeMode[tmu] >> 25) & 1) == 1;
+    bool redExcl = ((state.texChromaRangeMode[tmu] >> 26) & 1) == 1;
 
     bool rRes = rMatch != redExcl;
     bool gRes = gMatch != greenExcl;
     bool bRes = bMatch != blueExcl;
 
-    bool unionMode = ((m_texChromaRangeMode[tmu] >> 27) & 1) == 1;
+    bool unionMode = ((state.texChromaRangeMode[tmu] >> 27) & 1) == 1;
     return unionMode ? (rRes || gRes || bRes) : (rRes && gRes && bRes);
   } else {
-    uint32_t chromaR = (m_texChromaMin[tmu] >> 16) & 0xFF;
-    uint32_t chromaG = (m_texChromaMin[tmu] >> 8) & 0xFF;
-    uint32_t chromaB = m_texChromaMin[tmu] & 0xFF;
+    uint32_t chromaR = (state.texChromaMin[tmu] >> 16) & 0xFF;
+    uint32_t chromaG = (state.texChromaMin[tmu] >> 8) & 0xFF;
+    uint32_t chromaB = state.texChromaMin[tmu] & 0xFF;
 
     return (r == chromaR && g == chromaG && b == chromaB);
   }
 }
 
-inline uint32_t SoftwareBackend::SampleTextureLevel(
-    const struct VirtualTexture* targetTex, int lodIdx, float levelTrueS, float levelTrueT,
+inline uint32_t SoftwareBackend::SampleTextureLevel(const struct VirtualTexture* targetTex, int lodIdx, float levelTrueS, float levelTrueT,
     uint32_t targetClampS, uint32_t targetClampT, uint32_t targetMinFilter,
-    uint32_t tmuIdx) const {
+    uint32_t tmuIdx, const RasterizerState& state) const {
   auto mirrorCoord = [](int coord, uint32_t size) -> int {
     int doubleSize = static_cast<int>(size * 2);
     int mask = doubleSize - 1;
@@ -150,10 +149,10 @@ inline uint32_t SoftwareBackend::SampleTextureLevel(
     uint32_t c01 = levelPixels[y1 * levelW + x0];
     uint32_t c11 = levelPixels[y1 * levelW + x1];
 
-    if (IsTexChromaMatch(c00, tmuIdx)) c00 = 0;
-    if (IsTexChromaMatch(c10, tmuIdx)) c10 = 0;
-    if (IsTexChromaMatch(c01, tmuIdx)) c01 = 0;
-    if (IsTexChromaMatch(c11, tmuIdx)) c11 = 0;
+    if (IsTexChromaMatch(c00, tmuIdx, state)) c00 = 0;
+    if (IsTexChromaMatch(c10, tmuIdx, state)) c10 = 0;
+    if (IsTexChromaMatch(c01, tmuIdx, state)) c01 = 0;
+    if (IsTexChromaMatch(c11, tmuIdx, state)) c11 = 0;
 
     int w00 = (256 - fx) * (256 - fy);
     int w10 = fx * (256 - fy);
@@ -196,7 +195,7 @@ inline uint32_t SoftwareBackend::SampleTextureLevel(
     }
 
     uint32_t val = levelPixels[y0 * levelW + x0];
-    if (IsTexChromaMatch(val, tmuIdx)) {
+    if (IsTexChromaMatch(val, tmuIdx, state)) {
       val = 0;
     }
     return val;
@@ -404,26 +403,14 @@ bool SoftwareBackend::Initialize(const WrapperConfig& config) {
   m_config = config;
   ResetState();
 
-#ifdef _OPENMP
-  // If the user has NOT manually set OMP_NUM_THREADS in their environment,
-  // dynamically clamp the default thread count to a safe range [1, 4] to
-  // prevent severe multi-core scheduling latency and cache-line thrashing
-  // bottlenecks.
-  if (std::getenv("OMP_NUM_THREADS") == nullptr) {
-    int logicalCores =
-        std::max(1, static_cast<int>(std::thread::hardware_concurrency()));
-    int targetThreads = std::min(4, logicalCores);
-    omp_set_num_threads(targetThreads);
-    GLIDE_LOG(INFO, "Software",
-              "Configured OpenMP thread pool size to "
-                  << targetThreads << " (Hardware cores: " << logicalCores
-                  << ")");
-  } else {
-    GLIDE_LOG(INFO, "Software",
-              "OpenMP thread pool size controlled by environment: "
-                  << std::getenv("OMP_NUM_THREADS"));
+  int logicalCores = std::max(1, static_cast<int>(std::thread::hardware_concurrency()));
+  const char* envThreads = std::getenv("GLIDE_NUM_THREADS");
+  int numThreads = logicalCores;
+  if (envThreads) {
+      numThreads = std::max(1, std::atoi(envThreads));
   }
-#endif
+  m_threadPool = std::make_unique<ThreadPool>(numThreads);
+  GLIDE_LOG(INFO, "Software", "Initialized Lock-Free Thread Pool with " << numThreads << " worker threads.");
 
   m_initialized = true;
   GLIDE_LOG(INFO, "Software",
@@ -437,6 +424,7 @@ void SoftwareBackend::Shutdown() {
 
   GLIDE_LOG(INFO, "Software", "Shutting down Pure Software backend.");
   DetachWindow();
+  m_threadPool.reset();
 
   m_initialized = false;
 }
@@ -484,6 +472,7 @@ bool SoftwareBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
 
   m_headlessDepthBuffer.resize(m_headlessWidth * m_headlessHeight, 0.0f);
   SetClipWindow(0, 0, m_headlessWidth, m_headlessHeight);
+  InitTileGrid();
 
   if (!m_config.forceNoWindow) {
     GLIDE_LOG(INFO, "Software",
@@ -663,45 +652,15 @@ void SoftwareBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   if (!m_windowAttached || !m_headlessPixelMap) return;
 
-  GLIDE_LOG(DEBUG, "SoftwareDraw",
-            "DrawTriangle: "
-                << "A: pos=(" << a.pos[0] << "," << a.pos[1] << "," << a.pos[2]
-                << "," << a.pos[3] << "), tex=(" << a.tex[0] << "," << a.tex[1]
-                << "), tmu_oow=" << a.tmu_oow[0] << " | B: pos=(" << b.pos[0]
-                << "," << b.pos[1] << "," << b.pos[2] << "," << b.pos[3]
-                << "), tex=(" << b.tex[0] << "," << b.tex[1] << "), tmu_oow="
-                << b.tmu_oow[0] << " | C: pos=(" << c.pos[0] << "," << c.pos[1]
-                << "," << c.pos[2] << "," << c.pos[3] << "), tex=(" << c.tex[0]
-                << "," << c.tex[1] << "), tmu_oow=" << c.tmu_oow[0]
-                << " | stwHint=" << m_stwHintMask);
-
-  // ARCHITECTURAL NOTE ON drawCallDelayUs (AGP Bus Latency Simulation):
-  // Originally, this block was implemented to simulate physical AGP/PCI bus
-  // bottlenecks on vintage hardware:
-  //
-  // if (m_config.drawCallDelayUs > 0) {
-  //     std::this_thread::sleep_for(std::chrono::microseconds(static_cast<int64_t>(m_config.drawCallDelayUs)));
-  // }
-  //
-  // PERFORMANCE DISCOVERY: Even when drawCallDelayUs was 0.0f (bypassing the
-  // sleep), the mere presence of std::this_thread::sleep_for and its chrono
-  // dependencies inside this high-frequency DrawTriangle function blocked the
-  // C++ compiler's optimizer from inlining DrawTriangle and caching registers.
-  // Commenting out this block completely allows the compiler to fully inline
-  // and auto-vectorize the entire DrawTriangle pipeline, yielding a spectacular
-  // 65% to 250% speedup across all thread configurations (skyrocketing from 55
-  // FPS to 86+ FPS)! We leave it commented to enjoy maximum CPU rasterization
-  // speed.
-
-  // 1. Evaluate backface culling using the original, pre-flipped coordinates!
-  if (m_cullMode != 0) {  // 1 = GR_CULL_NEGATIVE, 2 = GR_CULL_POSITIVE
+  // 1. Evaluate backface culling
+  if (m_cullMode != 0) {
     float area = (b.pos[0] - a.pos[0]) * (c.pos[1] - a.pos[1]) -
                  (b.pos[1] - a.pos[1]) * (c.pos[0] - a.pos[0]);
-    if (m_cullMode == 1 && area < 0.0f) return;  // Cull negative area
-    if (m_cullMode == 2 && area > 0.0f) return;  // Cull positive area
+    if (m_cullMode == 1 && area < 0.0f) return;
+    if (m_cullMode == 2 && area > 0.0f) return;
   }
 
-  // 2. Now apply Y-coordinate flipping for rasterization
+  // 2. Flip Y and scale coordinates for SSAA
   ModernVertex a_final = a;
   ModernVertex b_final = b;
   ModernVertex c_final = c;
@@ -715,24 +674,31 @@ void SoftwareBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
     c_final.pos[1] *= static_cast<float>(m_ssaaScale);
   }
 
-  if (m_sstOrigin == 1) {  // GR_ORIGIN_LOWER_LEFT: flip Y coordinates
+  if (m_sstOrigin == 1) {  // GR_ORIGIN_LOWER_LEFT
     a_final.pos[1] = (float)m_headlessHeight - a_final.pos[1];
     b_final.pos[1] = (float)m_headlessHeight - b_final.pos[1];
     c_final.pos[1] = (float)m_headlessHeight - c_final.pos[1];
   }
 
-  RasterizeSoftwareTriangle(a_final, b_final, c_final);
+  ResolveActiveState();
+
+  DrawCommand cmd;
+  cmd.type = CommandType::TRIANGLE;
+  cmd.stateId = m_activeStateId;
+  cmd.vertices[0] = a_final;
+  cmd.vertices[1] = b_final;
+  cmd.vertices[2] = c_final;
+
+  m_binnedCommands.push_back(cmd);
+  uint32_t cmdIdx = m_binnedCommands.size() - 1;
+
+  BinTriangle(cmdIdx, a_final, b_final, c_final);
   GLIDE_INCREMENT_TRIANGLES_DRAWN(1);
 }
 
 void SoftwareBackend::DrawLine(const ModernVertex& v1, const ModernVertex& v2) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   if (!m_windowAttached || !m_headlessPixelMap) return;
-
-  if (m_config.drawCallDelayUs > 0) {
-    std::this_thread::sleep_for(std::chrono::microseconds(
-        static_cast<int64_t>(m_config.drawCallDelayUs)));
-  }
 
   ModernVertex v1_final = v1;
   ModernVertex v2_final = v2;
@@ -744,150 +710,96 @@ void SoftwareBackend::DrawLine(const ModernVertex& v1, const ModernVertex& v2) {
     v2_final.pos[1] *= static_cast<float>(m_ssaaScale);
   }
 
-  if (m_sstOrigin == 1) {  // GR_ORIGIN_LOWER_LEFT: flip Y coordinates
+  if (m_sstOrigin == 1) {  // GR_ORIGIN_LOWER_LEFT
     v1_final.pos[1] = (float)m_headlessHeight - v1_final.pos[1];
     v2_final.pos[1] = (float)m_headlessHeight - v2_final.pos[1];
   }
 
-  if (m_aaEnabled) {
-    float x0_f = v1_final.pos[0];
-    float y0_f = v1_final.pos[1];
-    float x1_f = v2_final.pos[0];
-    float y1_f = v2_final.pos[1];
+  ResolveActiveState();
 
-    bool steep = std::abs(y1_f - y0_f) > std::abs(x1_f - x0_f);
-    if (steep) {
-      std::swap(x0_f, y0_f);
-      std::swap(x1_f, y1_f);
-    }
-    if (x0_f > x1_f) {
-      std::swap(x0_f, x1_f);
-      std::swap(y0_f, y1_f);
-      std::swap(v1_final, v2_final);
-    }
+  DrawCommand cmd;
+  cmd.type = CommandType::LINE;
+  cmd.stateId = m_activeStateId;
+  cmd.vertices[0] = v1_final;
+  cmd.vertices[1] = v2_final;
 
-    float dx = x1_f - x0_f;
-    float dy = y1_f - y0_f;
-    float gradient = (dx == 0.0f) ? 1.0f : dy / dx;
+  m_binnedCommands.push_back(cmd);
+  uint32_t cmdIdx = m_binnedCommands.size() - 1;
 
-    auto plot = [&](int px, int py, float c, float t) {
-      if (steep) std::swap(px, py);
-      ModernVertex vInterpolated;
-      for (int i = 0; i < 4; ++i) {
-        vInterpolated.color[i] =
-            v1_final.color[i] * (1.0f - t) + v2_final.color[i] * t;
-      }
-      vInterpolated.fog = v1_final.fog * (1.0f - t) + v2_final.fog * t;
-      vInterpolated.pos[3] = v1_final.pos[3] * (1.0f - t) + v2_final.pos[3] * t;
-
-      WritePixelPipeline(px, py, vInterpolated, c);
-    };
-
-    float intery = y0_f;
-    for (int x = static_cast<int>(std::round(x0_f));
-         x <= static_cast<int>(std::round(x1_f)); ++x) {
-      float t = (dx == 0.0f) ? 0.0f : (x - x0_f) / dx;
-      t = std::max(0.0f, std::min(1.0f, t));
-      int ipart = static_cast<int>(std::floor(intery));
-      float fpart = intery - ipart;
-      plot(x, ipart, 1.0f - fpart, t);
-      plot(x, ipart + 1, fpart, t);
-      intery += gradient;
-    }
-  } else {
-    int x0 = static_cast<int>(v1_final.pos[0]);
-    int y0 = static_cast<int>(v1_final.pos[1]);
-    int x1 = static_cast<int>(v2_final.pos[0]);
-    int y1 = static_cast<int>(v2_final.pos[1]);
-
-    int dx = std::abs(x1 - x0);
-    int sx = x0 < x1 ? 1 : -1;
-    int dy = -std::abs(y1 - y0);
-    int sy = y0 < y1 ? 1 : -1;
-    int err = dx + dy;
-
-    int totalSteps = std::max(dx, -dy);
-    int step = 0;
-
-    while (true) {
-      float t = totalSteps > 0 ? static_cast<float>(step) / totalSteps : 0.0f;
-      ModernVertex vInterpolated;
-      for (int i = 0; i < 4; ++i) {
-        vInterpolated.color[i] =
-            v1_final.color[i] * (1.0f - t) + v2_final.color[i] * t;
-      }
-      vInterpolated.fog = v1_final.fog * (1.0f - t) + v2_final.fog * t;
-      vInterpolated.pos[3] = v1_final.pos[3] * (1.0f - t) + v2_final.pos[3] * t;
-
-      WritePixelPipeline(x0, y0, vInterpolated, 1.0f);
-
-      if (x0 == x1 && y0 == y1) break;
-      int e2 = 2 * err;
-      if (e2 >= dy) {
-        err += dy;
-        x0 += sx;
-      }
-      if (e2 <= dx) {
-        err += dx;
-        y0 += sy;
-      }
-      step++;
-    }
-  }
+  BinLine(cmdIdx, v1_final, v2_final);
 }
 
-void SoftwareBackend::WritePixelPipeline(int x, int y, const ModernVertex& v,
-                                         float coverage) {
-  // 1. Clip against scissor window
-  int clipMinY_resolved = static_cast<int>(m_clipMinY);
-  int clipMaxY_resolved = static_cast<int>(m_clipMaxY);
-  if (m_sstOrigin == 1) {
-    clipMinY_resolved =
-        static_cast<int>(m_headlessHeight) - static_cast<int>(m_clipMaxY);
-    clipMaxY_resolved =
-        static_cast<int>(m_headlessHeight) - static_cast<int>(m_clipMinY);
+void SoftwareBackend::DrawPoint(const ModernVertex& pt) {
+  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  if (!m_windowAttached || !m_headlessPixelMap) return;
+
+  ModernVertex pt_final = pt;
+
+  if (m_ssaaScale > 1) {
+    pt_final.pos[0] *= static_cast<float>(m_ssaaScale);
+    pt_final.pos[1] *= static_cast<float>(m_ssaaScale);
   }
-  if (x < static_cast<int>(m_clipMinX) || x >= static_cast<int>(m_clipMaxX) ||
-      y < clipMinY_resolved || y >= clipMaxY_resolved) {
+
+  if (m_sstOrigin == 1) {  // GR_ORIGIN_LOWER_LEFT
+    pt_final.pos[1] = (float)m_headlessHeight - pt_final.pos[1];
+  }
+
+  ResolveActiveState();
+
+  DrawCommand cmd;
+  cmd.type = CommandType::POINT;
+  cmd.stateId = m_activeStateId;
+  cmd.vertices[0] = pt_final;
+
+  m_binnedCommands.push_back(cmd);
+  uint32_t cmdIdx = m_binnedCommands.size() - 1;
+
+  BinPoint(cmdIdx, pt_final);
+}
+
+void SoftwareBackend::WritePixelPipeline(
+    int x, int y, const ModernVertex& v, float coverage,
+    int minX, int maxX, int minY, int maxY,
+    const RasterizerState& state) {
+  
+  if (x < minX || x >= maxX || y < minY || y >= maxY) {
     return;
   }
 
   // Stipple Transparency
-  if (m_stippleMode != 0) {
-    int stippleX = (m_stippleMode == 2) ? ((x + y) & 7) : (x & 7);
+  if (state.stippleMode != 0) {
+    int stippleX = (state.stippleMode == 2) ? ((x + y) & 7) : (x & 7);
     int stippleY = y & 3;
     int stippleIndex = (stippleY << 3) | (7 - stippleX);
-    if (((m_stipplePattern >> stippleIndex) & 1) == 0) {
-      return;  // Discard fragment
+    if (((state.stipplePattern >> stippleIndex) & 1) == 0) {
+      return;
     }
   }
 
   // 2. Color Combiner
-  uint32_t combinerColor = EvaluateCombinerColor(v);
+  uint32_t combinerColor = EvaluateCombinerColor(v, state);
   float red = ((combinerColor >> 16) & 0xFF) / 255.0f;
   float green = ((combinerColor >> 8) & 0xFF) / 255.0f;
   float blue = (combinerColor & 0xFF) / 255.0f;
   float alpha = ((combinerColor >> 24) & 0xFF) / 255.0f;
 
-  // Scale alpha by coverage (anti-aliasing!)
   alpha *= coverage;
 
   // 3. Fogging
-  uint32_t fogSource = m_fogMode & 0x0F;
+  uint32_t fogSource = state.fogMode & 0x0F;
   if (fogSource != 0) {
     float f = 0.0f;
-    if (fogSource == 4) {  // UNIFIED_FOG_WITH_ITERATED_ALPHA
+    if (fogSource == 4) {
       f = v.color[3];
-    } else {  // Table-based fog
+    } else {
       float eyeW = 0.0f;
-      if (fogSource == 1) {  // UNIFIED_FOG_WITH_TABLE_ON_FOGCOORD
+      if (fogSource == 1) {
         eyeW = v.fog;
-      } else {                   // UNIFIED_FOG_WITH_TABLE_ON_W
-        eyeW = 1.0f / v.pos[3];  // pos[3] is oow (1/W)
+      } else {
+        eyeW = 1.0f / v.pos[3];
       }
       if (eyeW < 1.0f) eyeW = 1.0f;
 
-      // O(1) unrolled logarithmic binary search
       int idx = 0;
       if (eyeW >= s_tableIndexToW[32]) idx += 32;
       if (eyeW >= s_tableIndexToW[idx + 16]) idx += 16;
@@ -898,8 +810,8 @@ void SoftwareBackend::WritePixelPipeline(int x, int y, const ModernVertex& v,
 
       float w0_fog = s_tableIndexToW[idx];
       float w1_fog = s_tableIndexToW[idx + 1];
-      float f0 = m_fogTable[idx] / 255.0f;
-      float f1 = m_fogTable[idx + 1] / 255.0f;
+      float f0 = state.fogTable[idx] / 255.0f;
+      float f1 = state.fogTable[idx + 1] / 255.0f;
 
       float t = 0.0f;
       if (w1_fog > w0_fog) {
@@ -909,15 +821,16 @@ void SoftwareBackend::WritePixelPipeline(int x, int y, const ModernVertex& v,
       f = f0 * (1.0f - t) + f1 * t;
     }
 
-    float fogR = ((m_fogColor >> 16) & 0xFF) / 255.0f;
-    float fogG = ((m_fogColor >> 8) & 0xFF) / 255.0f;
-    float fogB = (m_fogColor & 0xFF) / 255.0f;
-    if (m_pixelFormatOverride == 1) {
+    float fogR = ((state.fogColor >> 16) & 0xFF) / 255.0f;
+    float fogG = ((state.fogColor >> 8) & 0xFF) / 255.0f;
+    float fogB = (state.fogColor & 0xFF) / 255.0f;
+    if (state.pixelFormatOverride == 1) {
       std::swap(fogR, fogB);
     }
 
-    float mult = ((m_fogMode & 0x100) != 0) ? 1.0f : 0.0f;
-    float add = ((m_fogMode & 0x200) != 0) ? 1.0f : 0.0f;
+
+    float mult = ((state.fogMode & 0x100) != 0) ? 1.0f : 0.0f;
+    float add = ((state.fogMode & 0x200) != 0) ? 1.0f : 0.0f;
 
     red = red * (1.0f - mult) * (1.0f - f) + fogR * (1.0f - add) * f;
     green = green * (1.0f - mult) * (1.0f - f) + fogG * (1.0f - add) * f;
@@ -925,8 +838,7 @@ void SoftwareBackend::WritePixelPipeline(int x, int y, const ModernVertex& v,
   }
 
   float blendAlphaVal = alpha;
-  // Pre-blend Alpha Dithering / Quantization
-  if (m_ditherMode != 0) {
+  if (state.ditherMode != 0) {
     static const uint8_t dither_matrix_4x4[16] = {0, 8,  2, 10, 12, 4, 14, 6,
                                                   3, 11, 1, 9,  15, 7, 13, 5};
     static const uint8_t dither_matrix_2x2[16] = {0, 2, 0, 2, 3, 1, 3, 1,
@@ -934,20 +846,20 @@ void SoftwareBackend::WritePixelPipeline(int x, int y, const ModernVertex& v,
     int ditherX = x & 3;
     int ditherY = y & 3;
     uint8_t dith =
-        (m_ditherMode == 2)   ? dither_matrix_4x4[ditherY * 4 + ditherX]
-        : (m_ditherMode == 1) ? dither_matrix_2x2[ditherY * 4 + ditherX]
+        (state.ditherMode == 2)   ? dither_matrix_4x4[ditherY * 4 + ditherX]
+        : (state.ditherMode == 1) ? dither_matrix_2x2[ditherY * 4 + ditherX]
                               : 0;
 
-    bool useAlpha = (m_alphaTestOp != 7) || (alpha < 0.99f);
+    bool useAlpha = (state.alphaTestOp != 7) || (alpha < 0.99f);
     if (useAlpha) {
-      uint32_t matrixSize = (m_ditherMode == 2) ? 16 : 4;
+      uint32_t matrixSize = (state.ditherMode == 2) ? 16 : 4;
       float alpha255 = std::round(alpha * 255.0f);
       float ditherVal =
           (static_cast<float>(dith) * 128.0f) / static_cast<float>(matrixSize);
       if (alpha255 + ditherVal < 128.0f) {
-        return;  // Discard translucent stippled-out pixel!
+        return;
       }
-      blendAlphaVal = 1.0f;  // Stippled-in pixel blends as opaque!
+      blendAlphaVal = 1.0f;
     }
   }
 
@@ -959,38 +871,31 @@ void SoftwareBackend::WritePixelPipeline(int x, int y, const ModernVertex& v,
       static_cast<uint32_t>(std::min(255.0f, blendAlphaVal * 255.0f + 0.5f));
 
   // 4. Alpha Blending
-  uint32_t* pixels = reinterpret_cast<uint32_t*>(m_headlessPixelMap);
+  uint32_t* pixels = reinterpret_cast<uint32_t*>(m_cpuBuffers[state.activeRenderBufferIdx].data());
   uint32_t dstWord = pixels[y * m_headlessWidth + x];
   uint32_t dstR = (dstWord >> 16) & 0xFF;
   uint32_t dstG = (dstWord >> 8) & 0xFF;
   uint32_t dstB = dstWord & 0xFF;
-  if (m_pixelFormatOverride == 1) {
-    std::swap(dstR, dstB);
-  }
 
-  // Default factors
+
   float sFactor = 1.0f;
   float dFactor = 0.0f;
 
-  // Source RGB blend factor (1 = GR_BLEND_SRC_ALPHA, 4 = GR_BLEND_ONE, 0 =
-  // GR_BLEND_ZERO)
-  if (m_rgbSrcBlend == 1) {
+  if (state.rgbSrcBlend == 1) {
     sFactor = aVal / 255.0f;
-  } else if (m_rgbSrcBlend == 0) {
+  } else if (state.rgbSrcBlend == 0) {
     sFactor = 0.0f;
-  } else if (m_rgbSrcBlend == 4) {
+  } else if (state.rgbSrcBlend == 4) {
     sFactor = 1.0f;
   } else {
     sFactor = 1.0f;
   }
 
-  // Destination RGB blend factor (5 = GR_BLEND_ONE_MINUS_SRC_ALPHA, 4 =
-  // GR_BLEND_ONE, 0 = GR_BLEND_ZERO)
-  if (m_rgbDstBlend == 5) {
+  if (state.rgbDstBlend == 5) {
     dFactor = 1.0f - (aVal / 255.0f);
-  } else if (m_rgbDstBlend == 0) {
+  } else if (state.rgbDstBlend == 0) {
     dFactor = 0.0f;
-  } else if (m_rgbDstBlend == 4) {
+  } else if (state.rgbDstBlend == 4) {
     dFactor = 1.0f;
   } else {
     dFactor = 0.0f;
@@ -1002,14 +907,13 @@ void SoftwareBackend::WritePixelPipeline(int x, int y, const ModernVertex& v,
       static_cast<uint32_t>(gVal * sFactor + dstG * dFactor + 0.5f);
   uint32_t finalB =
       static_cast<uint32_t>(bVal * sFactor + dstB * dFactor + 0.5f);
-  uint32_t finalA = aVal;  // Simplification for destination alpha
+  uint32_t finalA = aVal;
 
   finalR = std::min(255u, finalR);
   finalG = std::min(255u, finalG);
   finalB = std::min(255u, finalB);
 
-  // 16-Bit Dithering (Post-Blend RGB565 Quantization Only)
-  if (m_ditherMode != 0) {
+  if (state.ditherMode != 0) {
     static const uint8_t dither_matrix_4x4[16] = {0, 8,  2, 10, 12, 4, 14, 6,
                                                   3, 11, 1, 9,  15, 7, 13, 5};
     static const uint8_t dither_matrix_2x2[16] = {2, 10, 2, 10, 14, 6, 14, 6,
@@ -1017,8 +921,8 @@ void SoftwareBackend::WritePixelPipeline(int x, int y, const ModernVertex& v,
     int ditherX = x & 3;
     int ditherY = y & 3;
     uint8_t dith =
-        (m_ditherMode == 2)   ? dither_matrix_4x4[ditherY * 4 + ditherX]
-        : (m_ditherMode == 1) ? dither_matrix_2x2[ditherY * 4 + ditherX]
+        (state.ditherMode == 2)   ? dither_matrix_4x4[ditherY * 4 + ditherX]
+        : (state.ditherMode == 1) ? dither_matrix_2x2[ditherY * 4 + ditherX]
                               : 0;
 
     uint32_t ditheredR =
@@ -1041,136 +945,55 @@ void SoftwareBackend::WritePixelPipeline(int x, int y, const ModernVertex& v,
   uint32_t finalColor =
       (finalA << 24) | (finalR << 16) | (finalG << 8) | finalB;
 
-  // 5. Color Masking
-  if (!m_colorMaskRgb || !m_colorMaskAlpha) {
+  if (!state.colorMaskRgb || !state.colorMaskAlpha) {
     uint32_t mask = 0;
-    if (m_colorMaskRgb) mask |= 0x00FFFFFF;
-    if (m_colorMaskAlpha) mask |= 0xFF000000;
+    if (state.colorMaskRgb) mask |= 0x00FFFFFF;
+    if (state.colorMaskAlpha) mask |= 0xFF000000;
     finalColor = (finalColor & mask) | (dstWord & ~mask);
   }
 
-  if (m_pixelFormatOverride == 1) {
-    uint32_t a_bit = finalColor & 0xFF000000;
-    uint32_t g_bit = finalColor & 0x0000FF00;
-    uint32_t r_bit = (finalColor >> 16) & 0xFF;
-    uint32_t b_bit = finalColor & 0xFF;
-    finalColor = a_bit | (b_bit << 16) | g_bit | r_bit;
-  }
+
 
   pixels[y * m_headlessWidth + x] = finalColor;
 }
 
-void SoftwareBackend::DrawPoint(const ModernVertex& pt) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
-  if (!m_windowAttached || !m_headlessPixelMap) return;
-
-  if (m_config.drawCallDelayUs > 0) {
-    std::this_thread::sleep_for(std::chrono::microseconds(
-        static_cast<int64_t>(m_config.drawCallDelayUs)));
-  }
-
-  ModernVertex pt_final = pt;
-
-  if (m_ssaaScale > 1) {
-    pt_final.pos[0] *= static_cast<float>(m_ssaaScale);
-    pt_final.pos[1] *= static_cast<float>(m_ssaaScale);
-  }
-
-  if (m_sstOrigin == 1) {  // GR_ORIGIN_LOWER_LEFT: flip Y coordinate
-    pt_final.pos[1] = (float)m_headlessHeight - pt_final.pos[1];
-  }
-
-  if (m_aaEnabled) {
-    float x_f = pt_final.pos[0];
-    float y_f = pt_final.pos[1];
-    float r_max = 0.75f * static_cast<float>(m_ssaaScale);
-
-    int min_x = static_cast<int>(std::floor(x_f - r_max));
-    int max_x = static_cast<int>(std::ceil(x_f + r_max));
-    int min_y = static_cast<int>(std::floor(y_f - r_max));
-    int max_y = static_cast<int>(std::ceil(y_f + r_max));
-
-    for (int py = min_y; py <= max_y; ++py) {
-      for (int px = min_x; px <= max_x; ++px) {
-        float dx = (static_cast<float>(px) + 0.5f) - x_f;
-        float dy = (static_cast<float>(py) + 0.5f) - y_f;
-        float d = std::sqrt(dx * dx + dy * dy);
-        float C = 1.0f - (d / r_max);
-        if (C > 0.0f) {
-          C = std::max(0.0f, std::min(1.0f, C));
-          WritePixelPipeline(px, py, pt_final, C);
-        }
-      }
-    }
-  } else {
-    int x = static_cast<int>(pt_final.pos[0]);
-    int y = static_cast<int>(pt_final.pos[1]);
-    WritePixelPipeline(x, y, pt_final, 1.0f);
-  }
-}
-
-uint32_t SoftwareBackend::EvaluateCombinerColor(const ModernVertex& v) {
+uint32_t SoftwareBackend::EvaluateCombinerColor(const ModernVertex& v, const RasterizerState& state) {
   uint32_t a = static_cast<uint32_t>(v.color[3] * 255.0f + 0.5f);
   uint32_t r = static_cast<uint32_t>(v.color[0] * 255.0f + 0.5f);
   uint32_t g = static_cast<uint32_t>(v.color[1] * 255.0f + 0.5f);
   uint32_t b = static_cast<uint32_t>(v.color[2] * 255.0f + 0.5f);
 
-  uint32_t colorLocal = m_colorCombinerLocal & 0xFFFF;
-  if (colorLocal == 1 || m_colorCombinerFactor == 1) {  // CONSTANT
-    r = (m_constantColor >> 16) & 0xFF;
-    g = (m_constantColor >> 8) & 0xFF;
-    b = m_constantColor & 0xFF;
-    if (m_pixelFormatOverride ==
-        1) {  // ABGR format override for packed constant color
+  uint32_t colorLocal = state.colorCombinerLocal & 0xFFFF;
+  if (colorLocal == 1 || state.colorCombinerFactor == 1) {
+    r = (state.constantColor >> 16) & 0xFF;
+    g = (state.constantColor >> 8) & 0xFF;
+    b = state.constantColor & 0xFF;
+    if (state.pixelFormatOverride == 1) {
       std::swap(r, b);
     }
   }
-  uint32_t alphaLocal = m_alphaCombinerLocal & 0xFFFF;
-  if (alphaLocal == 1 || m_alphaCombinerFactor == 1) {  // CONSTANT
-    a = (m_constantColor >> 24) & 0xFF;
+  uint32_t alphaLocal = state.alphaCombinerLocal & 0xFFFF;
+  if (alphaLocal == 1 || state.alphaCombinerFactor == 1) {
+    a = (state.constantColor >> 24) & 0xFF;
   }
 
   if (a < 128) a = 255;
 
   return (a << 24) | (r << 16) | (g << 8) | b;
 }
-
 template <bool HasTexture, bool BlendEnabled, bool DitherEnabled>
-inline void SoftwareBackend::RasterizeTriangleTemplate(const ModernVertex& a,
-                                                       const ModernVertex& b,
-                                                       const ModernVertex& c) {
-  int minX = std::max(
-      0,
-      static_cast<int>(std::floor(std::min({a.pos[0], b.pos[0], c.pos[0]}))));
-  int maxX = std::min(
-      static_cast<int>(m_headlessWidth) - 1,
-      static_cast<int>(std::ceil(std::max({a.pos[0], b.pos[0], c.pos[0]}))));
-  int minY = std::max(
-      0,
-      static_cast<int>(std::floor(std::min({a.pos[1], b.pos[1], c.pos[1]}))));
-  int maxY = std::min(
-      static_cast<int>(m_headlessHeight) - 1,
-      static_cast<int>(std::ceil(std::max({a.pos[1], b.pos[1], c.pos[1]}))));
+inline void SoftwareBackend::RasterizeTriangleTemplate(
+    const ModernVertex& a, const ModernVertex& b, const ModernVertex& c,
+    int tileMinX, int tileMaxX, int tileMinY, int tileMaxY,
+    const RasterizerState& state) {
+  int minX = std::max(tileMinX, static_cast<int>(std::floor(std::min({a.pos[0], b.pos[0], c.pos[0]}))));
+  int maxX = std::min(tileMaxX - 1, static_cast<int>(std::ceil(std::max({a.pos[0], b.pos[0], c.pos[0]}))));
+  int minY = std::max(tileMinY, static_cast<int>(std::floor(std::min({a.pos[1], b.pos[1], c.pos[1]}))));
+  int maxY = std::min(tileMaxY - 1, static_cast<int>(std::ceil(std::max({a.pos[1], b.pos[1], c.pos[1]}))));
 
-  // Resolve scissor boundaries in top-left space
-  int clipMinX_resolved = static_cast<int>(m_clipMinX);
-  int clipMaxX_resolved = static_cast<int>(m_clipMaxX);
-  int clipMinY_resolved = static_cast<int>(m_clipMinY);
-  int clipMaxY_resolved = static_cast<int>(m_clipMaxY);
-
-  if (m_sstOrigin == 1) {  // GR_ORIGIN_LOWER_LEFT: flip Y coordinates
-    clipMinY_resolved =
-        static_cast<int>(m_headlessHeight) - static_cast<int>(m_clipMaxY);
-    clipMaxY_resolved =
-        static_cast<int>(m_headlessHeight) - static_cast<int>(m_clipMinY);
+  if (minX > maxX || minY > maxY) {
+    return;
   }
-
-  minX = std::max({0, minX, clipMinX_resolved});
-  minY = std::max({0, minY, clipMinY_resolved});
-  maxX = std::min(
-      {static_cast<int>(m_headlessWidth) - 1, maxX, clipMaxX_resolved - 1});
-  maxY = std::min(
-      {static_cast<int>(m_headlessHeight) - 1, maxY, clipMaxY_resolved - 1});
 
   // Compute triangle area
   float area = (c.pos[0] - a.pos[0]) * (b.pos[1] - a.pos[1]) -
@@ -1195,7 +1018,7 @@ inline void SoftwareBackend::RasterizeTriangleTemplate(const ModernVertex& a,
   float b2 = a.pos[0] - b.pos[0];
   float c2 = a.pos[1] * b.pos[0] - a.pos[0] * b.pos[1];
 
-  auto* pixels = reinterpret_cast<uint32_t*>(m_headlessPixelMap);
+  auto* pixels = reinterpret_cast<uint32_t*>(m_cpuBuffers[state.activeRenderBufferIdx].data());
 
   // Pre-resolve active texture parameters once per triangle
   uint32_t texW = 0;
@@ -1219,25 +1042,25 @@ inline void SoftwareBackend::RasterizeTriangleTemplate(const ModernVertex& a,
   const VirtualTexture* tex = nullptr;
 
   if constexpr (HasTexture) {
-    tex = TextureManager::GetInstance().GetTexture(0, m_boundTexAddress[0]);
+    tex = TextureManager::GetInstance().GetTexture(0, state.boundTexAddress[0]);
     if (tex && !tex->swizzledMipLevels.empty()) {
       texW = tex->baseWidth;
       texH = tex->baseHeight;
-      clampS = m_texClampS[0];
-      clampT = m_texClampT[0];
-      minFilter = m_texMinFilter[0];
+      clampS = state.texClampS[0];
+      clampT = state.texClampT[0];
+      minFilter = state.texMinFilter[0];
       float maxDim = static_cast<float>(std::max(texW, texH));
       scaleU = maxDim / 256.0f;
       scaleV = maxDim / 256.0f;
 
-      mipmapMode = m_texMipMapMode[0];
-      lodBlend = m_texLodBlend[0];
+      mipmapMode = state.texMipMapMode[0];
+      lodBlend = state.texLodBlend[0];
       mipmappingEnabled = (mipmapMode != 0);
     }
   }
 
   // TMU 1 Setup (Upstream - runtime resolved)
-  bool hasTexture1 = (m_boundTexAddress[1] != 0xFFFFFFFF);
+  bool hasTexture1 = (state.boundTexAddress[1] != 0xFFFFFFFF);
   uint32_t texW1 = 0;
   uint32_t texH1 = 0;
   uint32_t clampS1 = 0;
@@ -1256,19 +1079,19 @@ inline void SoftwareBackend::RasterizeTriangleTemplate(const ModernVertex& a,
   const VirtualTexture* tex1 = nullptr;
 
   if (hasTexture1) {
-    tex1 = TextureManager::GetInstance().GetTexture(1, m_boundTexAddress[1]);
+    tex1 = TextureManager::GetInstance().GetTexture(1, state.boundTexAddress[1]);
     if (tex1 && !tex1->swizzledMipLevels.empty()) {
       texW1 = tex1->baseWidth;
       texH1 = tex1->baseHeight;
-      clampS1 = m_texClampS[1];
-      clampT1 = m_texClampT[1];
-      minFilter1 = m_texMinFilter[1];
+      clampS1 = state.texClampS[1];
+      clampT1 = state.texClampT[1];
+      minFilter1 = state.texMinFilter[1];
       float maxDim1 = static_cast<float>(std::max(texW1, texH1));
       scaleU1 = maxDim1 / 256.0f;
       scaleV1 = maxDim1 / 256.0f;
 
-      mipmapMode1 = m_texMipMapMode[1];
-      lodBlend1 = m_texLodBlend[1];
+      mipmapMode1 = state.texMipMapMode[1];
+      lodBlend1 = state.texLodBlend[1];
       mipmappingEnabled1 = (mipmapMode1 != 0);
     } else {
       hasTexture1 = false;
@@ -1294,7 +1117,7 @@ inline void SoftwareBackend::RasterizeTriangleTemplate(const ModernVertex& a,
     float qa = a.pos[3];
     float qb = b.pos[3];
     float qc = c.pos[3];
-    if (m_stwHintMask & 0x2) {  // GR_STWHINT_W_DIFF_TMU0
+    if (state.stwHintMask & 0x2) {  // GR_STWHINT_W_DIFF_TMU0
       qa = a.tmu_oow[0];
       qb = b.tmu_oow[0];
       qc = c.tmu_oow[0];
@@ -1312,7 +1135,7 @@ inline void SoftwareBackend::RasterizeTriangleTemplate(const ModernVertex& a,
     float qa = a.pos[3];
     float qb = b.pos[3];
     float qc = c.pos[3];
-    if (m_stwHintMask & 0x4) {  // GR_STWHINT_W_DIFF_TMU1
+    if (state.stwHintMask & 0x4) {  // GR_STWHINT_W_DIFF_TMU1
       qa = a.tmu_oow[1];
       qb = b.tmu_oow[1];
       qc = c.tmu_oow[1];
@@ -1333,11 +1156,11 @@ inline void SoftwareBackend::RasterizeTriangleTemplate(const ModernVertex& a,
     float blendAlphaVal = 1.0f;
 
     // Stipple Transparency Check
-    if (m_stippleMode != 0) {
-      int stippleX = (m_stippleMode == 2) ? ((x + y) & 7) : (x & 7);
+    if (state.stippleMode != 0) {
+      int stippleX = (state.stippleMode == 2) ? ((x + y) & 7) : (x & 7);
       int stippleY = y & 3;
       int stippleIndex = (stippleY << 3) | (7 - stippleX);
-      if (((m_stipplePattern >> stippleIndex) & 1) == 0) {
+      if (((state.stipplePattern >> stippleIndex) & 1) == 0) {
         keepPixel = false;
       }
     }
@@ -1345,7 +1168,7 @@ inline void SoftwareBackend::RasterizeTriangleTemplate(const ModernVertex& a,
     float wVal = w0 * a.pos[3] + w1 * b.pos[3] + w2 * c.pos[3];
 
     // Near-plane clipping
-    if (m_depthMode == 2) {  // GR_DEPTHBUFFER_WBUFFER
+    if (state.depthMode == 2) {  // GR_DEPTHBUFFER_WBUFFER
       if (wVal > 1.0001f) keepPixel = false;
     } else if constexpr (HasTexture) {
       if (wVal <= 0.0f) keepPixel = false;
@@ -1369,7 +1192,7 @@ inline void SoftwareBackend::RasterizeTriangleTemplate(const ModernVertex& a,
       float texT1 = w0 * a.tex[3] + w1 * b.tex[3] + w2 * c.tex[3];
 
       float divW1 = wVal;
-      if (m_stwHintMask & 0x4) {  // GR_STWHINT_W_DIFF_TMU1
+      if (state.stwHintMask & 0x4) {  // GR_STWHINT_W_DIFF_TMU1
         divW1 = w0 * a.tmu_oow[1] + w1 * b.tmu_oow[1] + w2 * c.tmu_oow[1];
       }
       float invW1 = 1.0f / divW1;
@@ -1391,7 +1214,7 @@ inline void SoftwareBackend::RasterizeTriangleTemplate(const ModernVertex& a,
         float d1 = std::max(du_dx1 * du_dx1 + dv_dx1 * dv_dx1,
                             du_dy1 * du_dy1 + dv_dy1 * dv_dy1);
         float lod1 = (d1 > 1e-8f) ? 0.5f * fast_log2(d1) : -10.0f;
-        lod1 += m_texLodBias[1];
+        lod1 += state.texLodBias[1];
 
         float clampedLod1 = std::clamp(lod1, static_cast<float>(tex1->largeLod),
                                        static_cast<float>(tex1->smallLod));
@@ -1408,9 +1231,9 @@ inline void SoftwareBackend::RasterizeTriangleTemplate(const ModernVertex& a,
           float lodFraction = clampedLod1 - std::floor(clampedLod1);
 
           uint32_t c0 = SampleTextureLevel(tex1, lodIdx0, trueS1, trueT1, clampS1,
-                                           clampT1, minFilter1, 1u);
+                                           clampT1, minFilter1, 1u, state);
           uint32_t c1 = SampleTextureLevel(tex1, lodIdx1, trueS1, trueT1, clampS1,
-                                           clampT1, minFilter1, 1u);
+                                           clampT1, minFilter1, 1u, state);
 
           int w1_frac = static_cast<int>(lodFraction * 256.0f);
           int w0_frac = 256 - w1_frac;
@@ -1432,11 +1255,11 @@ inline void SoftwareBackend::RasterizeTriangleTemplate(const ModernVertex& a,
               std::clamp(level - tex1->largeLod, 0,
                          static_cast<int>(tex1->swizzledMipLevels.size() - 1));
           tWord1 = SampleTextureLevel(tex1, lodIdx, trueS1, trueT1, clampS1, clampT1,
-                                     minFilter1, 1u);
+                                     minFilter1, 1u, state);
         }
       } else {
         tWord1 = SampleTextureLevel(tex1, 0, trueS1, trueT1, clampS1, clampT1,
-                                   minFilter1, 1u);
+                                   minFilter1, 1u, state);
       }
 
       tmu1Color.r = ((tWord1 >> 16) & 0xFF) / 255.0f;
@@ -1451,9 +1274,9 @@ inline void SoftwareBackend::RasterizeTriangleTemplate(const ModernVertex& a,
     TmuColor tmu1Out = iteratedColor;
     if (keepPixel && tmu1Active) {
       tmu1Out = EvaluateTmuStage(
-          m_texCombinerRgbFunc[1], m_texCombinerRgbFactor[1],
-          m_texCombinerAlphaFunc[1], m_texCombinerAlphaFactor[1],
-          m_texCombinerRgbInvert[1], m_texCombinerAlphaInvert[1], tmu1Color,
+          state.texCombinerRgbFunc[1], state.texCombinerRgbFactor[1],
+          state.texCombinerAlphaFunc[1], state.texCombinerAlphaFactor[1],
+          state.texCombinerRgbInvert[1], state.texCombinerAlphaInvert[1], tmu1Color,
           iteratedColor, iteratedColor);
     }
 
@@ -1465,7 +1288,7 @@ inline void SoftwareBackend::RasterizeTriangleTemplate(const ModernVertex& a,
         float texT = w0 * a.tex[1] + w1 * b.tex[1] + w2 * c.tex[1];
 
         float divW0 = wVal;
-        if (m_stwHintMask & 0x2) {  // GR_STWHINT_W_DIFF_TMU0
+        if (state.stwHintMask & 0x2) {  // GR_STWHINT_W_DIFF_TMU0
           divW0 = w0 * a.tmu_oow[0] + w1 * b.tmu_oow[0] + w2 * c.tmu_oow[0];
         }
         float invW = 1.0f / divW0;
@@ -1487,7 +1310,7 @@ inline void SoftwareBackend::RasterizeTriangleTemplate(const ModernVertex& a,
           float d = std::max(du_dx * du_dx + dv_dx * dv_dx,
                              du_dy * du_dy + dv_dy * dv_dy);
           float lod = (d > 1e-8f) ? 0.5f * fast_log2(d) : -10.0f;
-          lod += m_texLodBias[0];
+          lod += state.texLodBias[0];
 
           float clampedLod = std::clamp(lod, static_cast<float>(tex->largeLod),
                                         static_cast<float>(tex->smallLod));
@@ -1504,9 +1327,9 @@ inline void SoftwareBackend::RasterizeTriangleTemplate(const ModernVertex& a,
             float lodFraction = clampedLod - std::floor(clampedLod);
 
             uint32_t c0 = SampleTextureLevel(tex, lodIdx0, trueS, trueT, clampS, clampT,
-                                            minFilter, 0u);
+                                            minFilter, 0u, state);
             uint32_t c1 = SampleTextureLevel(tex, lodIdx1, trueS, trueT, clampS, clampT,
-                                            minFilter, 0u);
+                                            minFilter, 0u, state);
 
             int w1_frac = static_cast<int>(lodFraction * 256.0f);
             int w0_frac = 256 - w1_frac;
@@ -1528,11 +1351,11 @@ inline void SoftwareBackend::RasterizeTriangleTemplate(const ModernVertex& a,
                 std::clamp(level - tex->largeLod, 0,
                            static_cast<int>(tex->swizzledMipLevels.size() - 1));
             tWord = SampleTextureLevel(tex, lodIdx, trueS, trueT, clampS, clampT,
-                                      minFilter, 0u);
+                                      minFilter, 0u, state);
           }
         } else {
           tWord =
-              SampleTextureLevel(tex, 0, trueS, trueT, clampS, clampT, minFilter, 0u);
+              SampleTextureLevel(tex, 0, trueS, trueT, clampS, clampT, minFilter, 0u, state);
         }
 
         tmu0Color.r = ((tWord >> 16) & 0xFF) / 255.0f;
@@ -1547,9 +1370,9 @@ inline void SoftwareBackend::RasterizeTriangleTemplate(const ModernVertex& a,
     TmuColor tmu0Out = tmu1Out;
     if (keepPixel && tmu0Active) {
       tmu0Out = EvaluateTmuStage(
-          m_texCombinerRgbFunc[0], m_texCombinerRgbFactor[0],
-          m_texCombinerAlphaFunc[0], m_texCombinerAlphaFactor[0],
-          m_texCombinerRgbInvert[0], m_texCombinerAlphaInvert[0], tmu0Color,
+          state.texCombinerRgbFunc[0], state.texCombinerRgbFactor[0],
+          state.texCombinerAlphaFunc[0], state.texCombinerAlphaFactor[0],
+          state.texCombinerRgbInvert[0], state.texCombinerAlphaInvert[0], tmu0Color,
           tmu1Out, iteratedColor);
     }
 
@@ -1565,31 +1388,33 @@ inline void SoftwareBackend::RasterizeTriangleTemplate(const ModernVertex& a,
     float blue = 0.0f;
     float alpha = 0.0f;
     if (keepPixel) {
-      float aLocal = (m_alphaCombinerLocal == 0) ? iterA : ((m_constantColor >> 24) & 0xFF) / 255.0f;
-      float aOther = (m_alphaCombinerOther == 0) ? iterA : ((m_alphaCombinerOther == 1) ? texA : ((m_constantColor >> 24) & 0xFF) / 255.0f);
+      float aLocal = (state.alphaCombinerLocal == 0) ? iterA : ((state.constantColor >> 24) & 0xFF) / 255.0f;
+      float aOther = (state.alphaCombinerOther == 0) ? iterA : ((state.alphaCombinerOther == 1) ? texA : ((state.constantColor >> 24) & 0xFF) / 255.0f);
 
       float cLocalR = 0.0f;
       float cLocalG = 0.0f;
       float cLocalB = 0.0f;
-      if (m_colorCombinerLocal == 0) {  // GR_COMBINE_LOCAL_ITERATED
+      if (state.colorCombinerLocal == 0) {  // GR_COMBINE_LOCAL_ITERATED
         cLocalR = iterR;
         cLocalG = iterG;
         cLocalB = iterB;
-      } else if (m_colorCombinerLocal == 1) {  // GR_COMBINE_LOCAL_CONSTANT / NONE
-        cLocalR = ((m_constantColor >> 16) & 0xFF) / 255.0f;
-        cLocalG = ((m_constantColor >> 8) & 0xFF) / 255.0f;
-        cLocalB = (m_constantColor & 0xFF) / 255.0f;
-        if (m_pixelFormatOverride == 1) std::swap(cLocalR, cLocalB);
+      } else if (state.colorCombinerLocal == 1) {  // GR_COMBINE_LOCAL_CONSTANT / NONE
+        cLocalR = ((state.constantColor >> 16) & 0xFF) / 255.0f;
+        cLocalG = ((state.constantColor >> 8) & 0xFF) / 255.0f;
+        cLocalB = (state.constantColor & 0xFF) / 255.0f;
+        if (state.pixelFormatOverride == 1) std::swap(cLocalR, cLocalB);
+
       }
 
-      cOtherR = (m_colorCombinerOther == 0) ? iterR : ((m_colorCombinerOther == 1) ? texR : ((m_constantColor >> 16) & 0xFF) / 255.0f);
-      cOtherG = (m_colorCombinerOther == 0) ? iterG : ((m_colorCombinerOther == 1) ? texG : ((m_constantColor >> 8) & 0xFF) / 255.0f);
-      cOtherB = (m_colorCombinerOther == 0) ? iterB : ((m_colorCombinerOther == 1) ? texB : (m_constantColor & 0xFF) / 255.0f);
-      if (m_colorCombinerOther == 2 && m_pixelFormatOverride == 1) std::swap(cOtherR, cOtherB);
+      cOtherR = (state.colorCombinerOther == 0) ? iterR : ((state.colorCombinerOther == 1) ? texR : ((state.constantColor >> 16) & 0xFF) / 255.0f);
+      cOtherG = (state.colorCombinerOther == 0) ? iterG : ((state.colorCombinerOther == 1) ? texG : ((state.constantColor >> 8) & 0xFF) / 255.0f);
+      cOtherB = (state.colorCombinerOther == 0) ? iterB : ((state.colorCombinerOther == 1) ? texB : (state.constantColor & 0xFF) / 255.0f);
+      if (state.colorCombinerOther == 2 && state.pixelFormatOverride == 1) std::swap(cOtherR, cOtherB);
+
 
       // Evaluate Color Combiner Factor
       float factR = 0.0f; float factG = 0.0f; float factB = 0.0f;
-      switch (m_colorCombinerFactor) {
+      switch (state.colorCombinerFactor) {
         case 1: factR = cLocalR; factG = cLocalG; factB = cLocalB; break;
         case 2: factR = aOther; factG = aOther; factB = aOther; break;
         case 3: factR = aLocal; factG = aLocal; factB = aLocal; break;
@@ -1604,7 +1429,7 @@ inline void SoftwareBackend::RasterizeTriangleTemplate(const ModernVertex& a,
 
       // Evaluate Color Combiner Function
       float finalR = 0.0f; float finalG = 0.0f; float finalB = 0.0f;
-      switch (m_colorCombinerFunc) {
+      switch (state.colorCombinerFunc) {
         case 1: finalR = cLocalR; finalG = cLocalG; finalB = cLocalB; break;
         case 3: finalR = cOtherR * factR; finalG = cOtherG * factG; finalB = cOtherB * factB; break;
         case 4: finalR = cOtherR * factR + cLocalR; finalG = cOtherG * factG + cLocalG; finalB = cOtherB * factB + cLocalB; break;
@@ -1613,11 +1438,11 @@ inline void SoftwareBackend::RasterizeTriangleTemplate(const ModernVertex& a,
         case 7: finalR = (cOtherR - cLocalR) * factR + cLocalR; finalG = (cOtherG - cLocalG) * factR + cLocalG; finalB = (cOtherB - cLocalB) * factR + cLocalB; break;
         case 8: finalR = (cOtherR - cLocalR) * factR + aLocal; finalG = (cOtherG - cLocalG) * factR + aLocal; finalB = (cOtherB - cLocalB) * factR + aLocal; break;
       }
-      if (m_colorCombinerInvert) { finalR = 1.0f - finalR; finalG = 1.0f - finalG; finalB = 1.0f - finalB; }
+      if (state.colorCombinerInvert) { finalR = 1.0f - finalR; finalG = 1.0f - finalG; finalB = 1.0f - finalB; }
 
       // Evaluate Alpha Combiner Factor
       float factA = 0.0f;
-      switch (m_alphaCombinerFactor) {
+      switch (state.alphaCombinerFactor) {
         case 1: case 3: factA = aLocal; break;
         case 2: factA = aOther; break;
         case 4: factA = texA; break;
@@ -1629,14 +1454,14 @@ inline void SoftwareBackend::RasterizeTriangleTemplate(const ModernVertex& a,
 
       // Evaluate Alpha Combiner Function
       float finalA = 0.0f;
-      switch (m_alphaCombinerFunc) {
+      switch (state.alphaCombinerFunc) {
         case 1: finalA = aLocal; break;
         case 3: finalA = aOther * factA; break;
         case 4: case 5: finalA = aOther * factA + aLocal; break;
         case 6: finalA = (aOther - aLocal) * factA; break;
         case 7: case 8: finalA = (aOther - aLocal) * factA + aLocal; break;
       }
-      if (m_alphaCombinerInvert) finalA = 1.0f - finalA;
+      if (state.alphaCombinerInvert) finalA = 1.0f - finalA;
 
       red = finalR; green = finalG; blue = finalB; alpha = finalA;
       blendAlphaVal = alpha;
@@ -1645,52 +1470,53 @@ inline void SoftwareBackend::RasterizeTriangleTemplate(const ModernVertex& a,
         static const uint8_t dither_matrix_4x4[16] = {0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5};
         static const uint8_t dither_matrix_2x2[16] = {0, 2, 0, 2, 3, 1, 3, 1, 0, 2, 0, 2, 3, 1, 3, 1};
         int ditherX = x & 3; int ditherY = y & 3;
-        uint8_t dith = (m_ditherMode == 2) ? dither_matrix_4x4[ditherY * 4 + ditherX] : dither_matrix_2x2[ditherY * 4 + ditherX];
-        if ((m_alphaTestOp != 7) || (alpha < 0.99f)) {
+        uint8_t dith = (state.ditherMode == 2) ? dither_matrix_4x4[ditherY * 4 + ditherX] : dither_matrix_2x2[ditherY * 4 + ditherX];
+        if ((state.alphaTestOp != 7) || (alpha < 0.99f)) {
           float alpha255 = std::round(alpha * 255.0f);
-          if (alpha255 + (static_cast<float>(dith) * 128.0f / (m_ditherMode == 2 ? 16.0f : 4.0f)) < 128.0f) keepPixel = false;
+          if (alpha255 + (static_cast<float>(dith) * 128.0f / (state.ditherMode == 2 ? 16.0f : 4.0f)) < 128.0f) keepPixel = false;
           else blendAlphaVal = 1.0f;
         }
       }
     }
 
     // Chromakey Emulation
-    if (keepPixel && m_chromakeyMode == 1) {  // GR_CHROMAKEY_ENABLE
+    if (keepPixel && state.chromakeyMode == 1) {  // GR_CHROMAKEY_ENABLE
       bool hasTex = HasTexture || hasTexture1;
       float testR = hasTex ? cOtherR : red;
       float testG = hasTex ? cOtherG : green;
       float testB = hasTex ? cOtherB : blue;
 
-      bool rangeEnabled = ((m_chromakeyRangeMode >> 28) & 1) == 1;
+      bool rangeEnabled = ((state.chromakeyRangeMode >> 28) & 1) == 1;
       if (rangeEnabled) {
-        float minR = ((m_chromakeyRangeMin >> 16) & 0xFF) / 255.0f;
-        float minG = ((m_chromakeyRangeMin >> 8) & 0xFF) / 255.0f;
-        float minB = (m_chromakeyRangeMin & 0xFF) / 255.0f;
-        float maxR = ((m_chromakeyRangeMax >> 16) & 0xFF) / 255.0f;
-        float maxG = ((m_chromakeyRangeMax >> 8) & 0xFF) / 255.0f;
-        float maxB = (m_chromakeyRangeMax & 0xFF) / 255.0f;
-        if (m_pixelFormatOverride == 1) { std::swap(minR, minB); std::swap(maxR, maxB); }
+        float minR = ((state.chromakeyRangeMin >> 16) & 0xFF) / 255.0f;
+        float minG = ((state.chromakeyRangeMin >> 8) & 0xFF) / 255.0f;
+        float minB = (state.chromakeyRangeMin & 0xFF) / 255.0f;
+        float maxR = ((state.chromakeyRangeMax >> 16) & 0xFF) / 255.0f;
+        float maxG = ((state.chromakeyRangeMax >> 8) & 0xFF) / 255.0f;
+        float maxB = (state.chromakeyRangeMax & 0xFF) / 255.0f;
+
         bool rMatch = (testR >= minR && testR <= maxR);
         bool gMatch = (testG >= minG && testG <= maxG);
         bool bMatch = (testB >= minB && testB <= maxB);
-        bool rRes = rMatch != ((m_chromakeyRangeMode >> 26) & 1);
-        bool gRes = gMatch != ((m_chromakeyRangeMode >> 25) & 1);
-        bool bRes = bMatch != ((m_chromakeyRangeMode >> 24) & 1);
-        if (((m_chromakeyRangeMode >> 27) & 1) ? (rRes || gRes || bRes) : (rRes && gRes && bRes)) keepPixel = false;
+        bool rRes = rMatch != ((state.chromakeyRangeMode >> 26) & 1);
+        bool gRes = gMatch != ((state.chromakeyRangeMode >> 25) & 1);
+        bool bRes = bMatch != ((state.chromakeyRangeMode >> 24) & 1);
+        if (((state.chromakeyRangeMode >> 27) & 1) ? (rRes || gRes || bRes) : (rRes && gRes && bRes)) keepPixel = false;
       } else {
-        float chromaR = ((m_chromakeyValue >> 16) & 0xFF) / 255.0f;
-        float chromaG = ((m_chromakeyValue >> 8) & 0xFF) / 255.0f;
-        float chromaB = (m_chromakeyValue & 0xFF) / 255.0f;
-        if (m_pixelFormatOverride == 1) { std::swap(chromaR, chromaB); }
+        float chromaR = ((state.chromakeyValue >> 16) & 0xFF) / 255.0f;
+        float chromaG = ((state.chromakeyValue >> 8) & 0xFF) / 255.0f;
+        float chromaB = (state.chromakeyValue & 0xFF) / 255.0f;
+        if (state.pixelFormatOverride == 1) { std::swap(chromaR, chromaB); }
+
         if (std::abs(testR - chromaR) < 0.001f && std::abs(testG - chromaG) < 0.001f && std::abs(testB - chromaB) < 0.001f) keepPixel = false;
       }
     }
 
     // Alpha Testing
-    if (keepPixel && m_alphaTestOp != 7) {
-      float ref = static_cast<float>(m_alphaTestRefVal) / 255.0f;
+    if (keepPixel && state.alphaTestOp != 7) {
+      float ref = static_cast<float>(state.alphaTestRefVal) / 255.0f;
       bool alphaPass = false;
-      switch (m_alphaTestOp) {
+      switch (state.alphaTestOp) {
         case 0: alphaPass = false; break;
         case 1: alphaPass = (alpha < ref); break;
         case 2: alphaPass = (alpha == ref); break;
@@ -1705,18 +1531,18 @@ inline void SoftwareBackend::RasterizeTriangleTemplate(const ModernVertex& a,
     // Depth Testing
     if (keepPixel) {
       float targetDepth = 0.0f;
-      if (m_depthMode == 2) {
+      if (state.depthMode == 2) {
         float w = 1.0f / wVal;
-        float range = m_depthFar - m_depthNear;
-        targetDepth = (std::abs(range) > 1e-6f) ? ((w - m_depthNear) / range) : 0.0f;
+        float range = state.depthFar - state.depthNear;
+        targetDepth = (std::abs(range) > 1e-6f) ? ((w - state.depthNear) / range) : 0.0f;
       } else {
         targetDepth = w0 * a.pos[2] + w1 * b.pos[2] + w2 * c.pos[2];
       }
-      if (m_depthBiasLevel != 0) targetDepth = std::max(0.0f, std::min(1.0f, targetDepth + static_cast<float>(m_depthBiasLevel) / 65535.0f));
-      if (m_depthMode != 0 && m_depthCompareOp != 7 && !m_headlessDepthBuffer.empty()) {
+      if (state.depthBiasLevel != 0) targetDepth = std::max(0.0f, std::min(1.0f, targetDepth + static_cast<float>(state.depthBiasLevel) / 65535.0f));
+      if (state.depthMode != 0 && state.depthCompareOp != 7 && !m_headlessDepthBuffer.empty()) {
         float currentDepth = m_headlessDepthBuffer[pIdx];
         bool depthPass = false;
-        switch (m_depthCompareOp) {
+        switch (state.depthCompareOp) {
           case 1: depthPass = (targetDepth < currentDepth); break;
           case 2: depthPass = (targetDepth == currentDepth); break;
           case 3: depthPass = (targetDepth <= currentDepth); break;
@@ -1726,18 +1552,48 @@ inline void SoftwareBackend::RasterizeTriangleTemplate(const ModernVertex& a,
         }
         if (!depthPass) keepPixel = false;
       }
-      if (keepPixel && m_depthMode != 0 && m_depthMask && !m_headlessDepthBuffer.empty()) m_headlessDepthBuffer[pIdx] = targetDepth;
+      if (keepPixel && state.depthMode != 0 && state.depthMask && !m_headlessDepthBuffer.empty()) m_headlessDepthBuffer[pIdx] = targetDepth;
     }
 
     // Fog Application
-    if (keepPixel && (m_fogMode & 1)) {
-      float f = std::max(0.0f, std::min(1.0f, w0 * a.fog + w1 * b.fog + w2 * c.fog));
-      float fogR = ((m_fogColor >> 16) & 0xFF) / 255.0f;
-      float fogG = ((m_fogColor >> 8) & 0xFF) / 255.0f;
-      float fogB = (m_fogColor & 0xFF) / 255.0f;
-      if (m_pixelFormatOverride == 1) std::swap(fogR, fogB);
-      float mult = ((m_fogMode & 0x100) != 0) ? 1.0f : 0.0f;
-      float add = ((m_fogMode & 0x200) != 0) ? 1.0f : 0.0f;
+    if (keepPixel && (state.fogMode != 0)) {
+      uint32_t fogSource = state.fogMode & 0x0F;
+      float f = 0.0f;
+      if (fogSource == 4) { // UNIFIED_FOG_WITH_ITERATED_ALPHA
+        f = w0 * a.color[3] + w1 * b.color[3] + w2 * c.color[3];
+      } else { // Table-based fog
+        float eyeW = 1.0f / wVal;
+        if (eyeW < 1.0f) eyeW = 1.0f;
+
+        int idx = 0;
+        if (eyeW >= s_tableIndexToW[32]) idx += 32;
+        if (eyeW >= s_tableIndexToW[idx + 16]) idx += 16;
+        if (eyeW >= s_tableIndexToW[idx + 8]) idx += 8;
+        if (eyeW >= s_tableIndexToW[idx + 4]) idx += 4;
+        if (eyeW >= s_tableIndexToW[idx + 2]) idx += 2;
+        if (eyeW >= s_tableIndexToW[idx + 1]) idx += 1;
+
+        float w0_fog = s_tableIndexToW[idx];
+        float w1_fog = s_tableIndexToW[idx + 1];
+        float f0 = state.fogTable[idx] / 255.0f;
+        float f1 = state.fogTable[idx + 1] / 255.0f;
+
+        float t = 0.0f;
+        if (w1_fog > w0_fog) {
+          t = (eyeW - w0_fog) / (w1_fog - w0_fog);
+        }
+        t = std::max(0.0f, std::min(1.0f, t));
+        f = f0 * (1.0f - t) + f1 * t;
+      }
+
+      float fogR = ((state.fogColor >> 16) & 0xFF) / 255.0f;
+      float fogG = ((state.fogColor >> 8) & 0xFF) / 255.0f;
+      float fogB = (state.fogColor & 0xFF) / 255.0f;
+      if (state.pixelFormatOverride == 1) std::swap(fogR, fogB);
+
+      float mult = ((state.fogMode & 0x100) != 0) ? 1.0f : 0.0f;
+      float add = ((state.fogMode & 0x200) != 0) ? 1.0f : 0.0f;
+
       red = red * (1.0f - mult) * (1.0f - f) + fogR * (1.0f - add) * f;
       green = green * (1.0f - mult) * (1.0f - f) + fogG * (1.0f - add) * f;
       blue = blue * (1.0f - mult) * (1.0f - f) + fogB * (1.0f - add) * f;
@@ -1758,24 +1614,24 @@ inline void SoftwareBackend::RasterizeTriangleTemplate(const ModernVertex& a,
             case 15: return srcC; default: return 1.0f;
           }
         };
-        red = std::min(1.0f, red * getF(m_rgbSrcBlend, red, dstR, blendAlphaVal, dstA, false) + dstR * getF(m_rgbDstBlend, red, dstR, blendAlphaVal, dstA, true));
-        green = std::min(1.0f, green * getF(m_rgbSrcBlend, green, dstG, blendAlphaVal, dstA, false) + dstG * getF(m_rgbDstBlend, green, dstG, blendAlphaVal, dstA, true));
-        blue = std::min(1.0f, blue * getF(m_rgbSrcBlend, blue, dstB, blendAlphaVal, dstA, false) + dstB * getF(m_rgbDstBlend, blue, dstB, blendAlphaVal, dstA, true));
-        aVal = static_cast<uint32_t>(std::min(1.0f, blendAlphaVal * getF(m_alphaSrcBlend, 0,0,blendAlphaVal, dstA, false) + dstA * getF(m_alphaDstBlend, 0,0,blendAlphaVal, dstA, true)) * 255.0f + 0.5f);
+        red = std::min(1.0f, red * getF(state.rgbSrcBlend, red, dstR, blendAlphaVal, dstA, false) + dstR * getF(state.rgbDstBlend, red, dstR, blendAlphaVal, dstA, true));
+        green = std::min(1.0f, green * getF(state.rgbSrcBlend, green, dstG, blendAlphaVal, dstA, false) + dstG * getF(state.rgbDstBlend, green, dstG, blendAlphaVal, dstA, true));
+        blue = std::min(1.0f, blue * getF(state.rgbSrcBlend, blue, dstB, blendAlphaVal, dstA, false) + dstB * getF(state.rgbDstBlend, blue, dstB, blendAlphaVal, dstA, true));
+        aVal = static_cast<uint32_t>(std::min(1.0f, blendAlphaVal * getF(state.alphaSrcBlend, 0,0,blendAlphaVal, dstA, false) + dstA * getF(state.alphaDstBlend, 0,0,blendAlphaVal, dstA, true)) * 255.0f + 0.5f);
         rVal = static_cast<uint32_t>(red * 255.0f + 0.5f); gVal = static_cast<uint32_t>(green * 255.0f + 0.5f); bVal = static_cast<uint32_t>(blue * 255.0f + 0.5f);
       }
       if constexpr (DitherEnabled) {
         static const uint8_t dither_matrix_4x4[16] = {0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5};
         static const uint8_t dither_matrix_2x2[16] = {2, 10, 2, 10, 14, 6, 14, 6, 2, 10, 2, 10, 14, 6, 14, 6};
-        uint8_t dith = (m_ditherMode == 2) ? dither_matrix_4x4[(y&3)*4+(x&3)] : dither_matrix_2x2[(y&3)*4+(x&3)];
+        uint8_t dith = (state.ditherMode == 2) ? dither_matrix_4x4[(y&3)*4+(x&3)] : dither_matrix_2x2[(y&3)*4+(x&3)];
         uint32_t r = std::min(31u, (((rVal << 1) - (rVal >> 4) + (rVal >> 7) + dith) >> 1) >> 3);
         uint32_t g = std::min(63u, (((gVal << 2) - (gVal >> 4) + (gVal >> 6) + dith) >> 2) >> 2);
         uint32_t b = std::min(31u, (((bVal << 1) - (bVal >> 4) + (bVal >> 7) + dith) >> 1) >> 3);
         rVal = (r << 3) | (r >> 2); gVal = (g << 2) | (g >> 4); bVal = (b << 3) | (b >> 2);
       }
       uint32_t finalColor = (aVal << 24) | (rVal << 16) | (gVal << 8) | bVal;
-      if (!m_colorMaskRgb || !m_colorMaskAlpha) {
-        uint32_t mask = (m_colorMaskRgb ? 0x00FFFFFF : 0) | (m_colorMaskAlpha ? 0xFF000000 : 0);
+      if (!state.colorMaskRgb || !state.colorMaskAlpha) {
+        uint32_t mask = (state.colorMaskRgb ? 0x00FFFFFF : 0) | (state.colorMaskAlpha ? 0xFF000000 : 0);
         finalColor = (finalColor & mask) | (pixels[pIdx] & ~mask);
       }
       pixels[pIdx] = finalColor;
@@ -1783,7 +1639,7 @@ inline void SoftwareBackend::RasterizeTriangleTemplate(const ModernVertex& a,
   };
 
   if (invArea >= 0.0f) {
-#pragma omp parallel for schedule(guided) if (maxY - minY > 16)
+
     for (int y = minY; y <= maxY; ++y) {
       float E0 = a0 * startX + b0 * (static_cast<float>(y) + 0.5f) + c0;
       float E1 = a1 * startX + b1 * (static_cast<float>(y) + 0.5f) + c1;
@@ -1794,7 +1650,7 @@ inline void SoftwareBackend::RasterizeTriangleTemplate(const ModernVertex& a,
       }
     }
   } else {
-#pragma omp parallel for schedule(guided) if (maxY - minY > 16)
+
     for (int y = minY; y <= maxY; ++y) {
       float E0 = a0 * startX + b0 * (static_cast<float>(y) + 0.5f) + c0;
       float E1 = a1 * startX + b1 * (static_cast<float>(y) + 0.5f) + c1;
@@ -1807,59 +1663,438 @@ inline void SoftwareBackend::RasterizeTriangleTemplate(const ModernVertex& a,
   }
 }
 
-void SoftwareBackend::RasterizeSoftwareTriangleImpl(const ModernVertex& a,
-                                                    const ModernVertex& b,
-                                                    const ModernVertex& c) {
-  bool hasTexture = (m_boundTexAddress[0] != 0xFFFFFFFF);
-  bool blendEnabled = (m_rgbSrcBlend != 4 || m_rgbDstBlend != 0);
-  bool ditherEnabled = (m_ditherMode != 0);
+void SoftwareBackend::RasterizeSoftwareTriangleTile(const ModernVertex& a, const ModernVertex& b, const ModernVertex& c,
+                                                   int minX, int maxX, int minY, int maxY,
+                                                   const RasterizerState& state) {
+  RasterizeSoftwareTriangleTileSIMD(a, b, c, minX, maxX, minY, maxY, state);
+}
+
+void SoftwareBackend::RasterizeSoftwareTriangleTileImpl(const ModernVertex& a,
+                                                        const ModernVertex& b,
+                                                        const ModernVertex& c,
+                                                        int minX, int maxX, int minY, int maxY,
+                                                        const RasterizerState& state) {
+  bool hasTexture = (state.boundTexAddress[0] != 0xFFFFFFFF);
+  bool blendEnabled = (state.rgbSrcBlend != 4 || state.rgbDstBlend != 0);
+  bool ditherEnabled = (state.ditherMode != 0);
   uint32_t key = (hasTexture ? 4 : 0) | (blendEnabled ? 2 : 0) | (ditherEnabled ? 1 : 0);
   switch (key) {
-    case 0: RasterizeTriangleTemplate<false, false, false>(a, b, c); break;
-    case 1: RasterizeTriangleTemplate<false, false, true>(a, b, c); break;
-    case 2: RasterizeTriangleTemplate<false, true, false>(a, b, c); break;
-    case 3: RasterizeTriangleTemplate<false, true, true>(a, b, c); break;
-    case 4: RasterizeTriangleTemplate<true, false, false>(a, b, c); break;
-    case 5: RasterizeTriangleTemplate<true, false, true>(a, b, c); break;
-    case 6: RasterizeTriangleTemplate<true, true, false>(a, b, c); break;
-    case 7: RasterizeTriangleTemplate<true, true, true>(a, b, c); break;
+    case 0: RasterizeTriangleTemplate<false, false, false>(a, b, c, minX, maxX, minY, maxY, state); break;
+    case 1: RasterizeTriangleTemplate<false, false, true>(a, b, c, minX, maxX, minY, maxY, state); break;
+    case 2: RasterizeTriangleTemplate<false, true, false>(a, b, c, minX, maxX, minY, maxY, state); break;
+    case 3: RasterizeTriangleTemplate<false, true, true>(a, b, c, minX, maxX, minY, maxY, state); break;
+    case 4: RasterizeTriangleTemplate<true, false, false>(a, b, c, minX, maxX, minY, maxY, state); break;
+    case 5: RasterizeTriangleTemplate<true, false, true>(a, b, c, minX, maxX, minY, maxY, state); break;
+    case 6: RasterizeTriangleTemplate<true, true, false>(a, b, c, minX, maxX, minY, maxY, state); break;
+    case 7: RasterizeTriangleTemplate<true, true, true>(a, b, c, minX, maxX, minY, maxY, state); break;
   }
 }
 
 __attribute__((target("avx2,fma"))) void
-SoftwareBackend::RasterizeSoftwareTriangle(const ModernVertex& a,
-                                           const ModernVertex& b,
-                                           const ModernVertex& c) {
+SoftwareBackend::RasterizeSoftwareTriangleTileSIMD(const ModernVertex& a,
+                                                   const ModernVertex& b,
+                                                   const ModernVertex& c,
+                                                   int minX, int maxX, int minY, int maxY,
+                                                   const RasterizerState& state) {
   if (!m_simdLogged) {
     GLIDE_LOG(DEBUG, "SoftwareBackend",
               "Dispatched to AVX2 + FMA rasterizer path!");
     m_simdLogged = true;
   }
-  RasterizeSoftwareTriangleImpl(a, b, c);
+  RasterizeSoftwareTriangleTileImpl(a, b, c, minX, maxX, minY, maxY, state);
 }
 
 __attribute__((target("sse4.2"))) void
-SoftwareBackend::RasterizeSoftwareTriangle(const ModernVertex& a,
-                                           const ModernVertex& b,
-                                           const ModernVertex& c) {
+SoftwareBackend::RasterizeSoftwareTriangleTileSIMD(const ModernVertex& a,
+                                                   const ModernVertex& b,
+                                                   const ModernVertex& c,
+                                                   int minX, int maxX, int minY, int maxY,
+                                                   const RasterizerState& state) {
   if (!m_simdLogged) {
     GLIDE_LOG(DEBUG, "SoftwareBackend",
               "Dispatched to SSE4.2 rasterizer path!");
     m_simdLogged = true;
   }
-  RasterizeSoftwareTriangleImpl(a, b, c);
+  RasterizeSoftwareTriangleTileImpl(a, b, c, minX, maxX, minY, maxY, state);
 }
 
 __attribute__((target("default"))) void
-SoftwareBackend::RasterizeSoftwareTriangle(const ModernVertex& a,
-                                           const ModernVertex& b,
-                                           const ModernVertex& c) {
+SoftwareBackend::RasterizeSoftwareTriangleTileSIMD(const ModernVertex& a,
+                                                   const ModernVertex& b,
+                                                   const ModernVertex& c,
+                                                   int minX, int maxX, int minY, int maxY,
+                                                   const RasterizerState& state) {
   if (!m_simdLogged) {
     GLIDE_LOG(DEBUG, "SoftwareBackend",
               "Dispatched to default scalar rasterizer path!");
     m_simdLogged = true;
   }
-  RasterizeSoftwareTriangleImpl(a, b, c);
+  RasterizeSoftwareTriangleTileImpl(a, b, c, minX, maxX, minY, maxY, state);
 }
 
-}  // namespace GlideWrapper
+void SoftwareBackend::InitTileGrid() {
+  m_tileCols = (m_headlessWidth + 31) / 32;
+  m_tileRows = (m_headlessHeight + 31) / 32;
+  m_tiles.resize(m_tileCols * m_tileRows);
+  for (auto& tile : m_tiles) {
+    tile.commandIndices.clear();
+  }
+  GLIDE_LOG(INFO, "Software", "Initialized tile grid: " << m_tileCols << "x" << m_tileRows << " = " << m_tiles.size() << " tiles.");
+}
+
+void SoftwareBackend::BinTriangle(uint32_t cmdIdx, const ModernVertex& a, const ModernVertex& b, const ModernVertex& c) {
+  float minX = std::min({a.pos[0], b.pos[0], c.pos[0]});
+  float maxX = std::max({a.pos[0], b.pos[0], c.pos[0]});
+  float minY = std::min({a.pos[1], b.pos[1], c.pos[1]});
+  float maxY = std::max({a.pos[1], b.pos[1], c.pos[1]});
+
+  minX = std::max(0.0f, minX);
+  minY = std::max(0.0f, minY);
+  maxX = std::min((float)m_headlessWidth - 1.0f, maxX);
+  maxY = std::min((float)m_headlessHeight - 1.0f, maxY);
+
+  if (minX > maxX || minY > maxY) return;
+
+  int tileMinCol = (int)(minX) / 32;
+  int tileMaxCol = (int)(maxX) / 32;
+  int tileMinRow = (int)(minY) / 32;
+  int tileMaxRow = (int)(maxY) / 32;
+
+  for (int r = tileMinRow; r <= tileMaxRow; ++r) {
+    for (int c = tileMinCol; c <= tileMaxCol; ++c) {
+      m_tiles[r * m_tileCols + c].commandIndices.push_back(cmdIdx);
+    }
+  }
+}
+
+void SoftwareBackend::BinLine(uint32_t cmdIdx, const ModernVertex& v1, const ModernVertex& v2) {
+  float minX = std::min(v1.pos[0], v2.pos[0]);
+  float maxX = std::max(v1.pos[0], v2.pos[0]);
+  float minY = std::min(v1.pos[1], v2.pos[1]);
+  float maxY = std::max(v1.pos[1], v2.pos[1]);
+
+  minX = std::max(0.0f, minX);
+  minY = std::max(0.0f, minY);
+  maxX = std::min((float)m_headlessWidth - 1.0f, maxX);
+  maxY = std::min((float)m_headlessHeight - 1.0f, maxY);
+
+  if (minX > maxX || minY > maxY) return;
+
+  int tileMinCol = (int)(minX) / 32;
+  int tileMaxCol = (int)(maxX) / 32;
+  int tileMinRow = (int)(minY) / 32;
+  int tileMaxRow = (int)(maxY) / 32;
+
+  for (int r = tileMinRow; r <= tileMaxRow; ++r) {
+    for (int c = tileMinCol; c <= tileMaxCol; ++c) {
+      m_tiles[r * m_tileCols + c].commandIndices.push_back(cmdIdx);
+    }
+  }
+}
+
+void SoftwareBackend::BinPoint(uint32_t cmdIdx, const ModernVertex& pt) {
+  float px = pt.pos[0];
+  float py = pt.pos[1];
+
+  if (px < 0.0f || px >= (float)m_headlessWidth || py < 0.0f || py >= (float)m_headlessHeight) return;
+
+  int tileCol = (int)(px) / 32;
+  int tileRow = (int)(py) / 32;
+
+  m_tiles[tileRow * m_tileCols + tileCol].commandIndices.push_back(cmdIdx);
+}
+
+void SoftwareBackend::RasterizeTile(int tileIdx) {
+  int col = tileIdx % m_tileCols;
+  int row = tileIdx / m_tileCols;
+
+  int tileMinX = col * 32;
+  int tileMaxX = tileMinX + 32;
+  int tileMinY = row * 32;
+  int tileMaxY = tileMinY + 32;
+
+  const auto& cmdIndices = m_tiles[tileIdx].commandIndices;
+  for (uint32_t cmdIdx : cmdIndices) {
+    const auto& cmd = m_binnedCommands[cmdIdx];
+    const auto& state = m_stateCatalog[cmd.stateId];
+
+    int clipMinX = state.clipMinX;
+    int clipMaxX = state.clipMaxX;
+    int clipMinY = state.clipMinY;
+    int clipMaxY = state.clipMaxY;
+
+    if (state.sstOrigin == 1) { // LOWER_LEFT
+      clipMinY = m_headlessHeight - state.clipMaxY;
+      clipMaxY = m_headlessHeight - state.clipMinY;
+    }
+
+    int minX = std::max(tileMinX, clipMinX);
+    int maxX = std::min(tileMaxX, clipMaxX);
+    int minY = std::max(tileMinY, clipMinY);
+    int maxY = std::min(tileMaxY, clipMaxY);
+
+    if (minX >= maxX || minY >= maxY) continue;
+
+    if (cmd.type == CommandType::TRIANGLE) {
+      RasterizeSoftwareTriangleTile(cmd.vertices[0], cmd.vertices[1], cmd.vertices[2], minX, maxX, minY, maxY, state);
+    } else if (cmd.type == CommandType::LINE) {
+      RasterizeSoftwareLineTile(cmd.vertices[0], cmd.vertices[1], minX, maxX, minY, maxY, state);
+    } else if (cmd.type == CommandType::POINT) {
+      RasterizeSoftwarePointTile(cmd.vertices[0], minX, maxX, minY, maxY, state);
+    }
+  }
+}
+
+void SoftwareBackend::FlushBins() {
+  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  if (m_binnedCommands.empty()) return;
+
+  GLIDE_PROFILE_SCOPE("Software::FlushBins");
+
+  if (m_threadPool) {
+    m_threadPool->ParallelFor(m_tiles.size(), [this](int tileIdx) {
+      RasterizeTile(tileIdx);
+    });
+  } else {
+    for (size_t i = 0; i < m_tiles.size(); ++i) {
+      RasterizeTile(i);
+    }
+  }
+
+  m_binnedCommands.clear();
+  m_stateCatalog.clear();
+  for (auto& tile : m_tiles) {
+    tile.commandIndices.clear();
+  }
+  m_activeStateId = 0;
+  m_stateCacheDirty = true;
+}
+
+void SoftwareBackend::RasterizeSoftwareLineTile(
+    const ModernVertex& v1, const ModernVertex& v2,
+    int minX, int maxX, int minY, int maxY,
+    const RasterizerState& state) {
+  
+  if (state.aaEnabled) {
+    float x0_f = v1.pos[0];
+    float y0_f = v1.pos[1];
+    float x1_f = v2.pos[0];
+    float y1_f = v2.pos[1];
+
+    bool steep = std::abs(y1_f - y0_f) > std::abs(x1_f - x0_f);
+    if (steep) {
+      std::swap(x0_f, y0_f);
+      std::swap(x1_f, y1_f);
+    }
+    ModernVertex v1_temp = v1;
+    ModernVertex v2_temp = v2;
+    if (x0_f > x1_f) {
+      std::swap(x0_f, x1_f);
+      std::swap(y0_f, y1_f);
+      std::swap(v1_temp, v2_temp);
+    }
+
+    float dx = x1_f - x0_f;
+    float dy = y1_f - y0_f;
+    float gradient = (dx == 0.0f) ? 1.0f : dy / dx;
+
+    auto plot = [&](int px, int py, float c, float t) {
+      if (steep) std::swap(px, py);
+      ModernVertex vInterpolated;
+      for (int i = 0; i < 4; ++i) {
+        vInterpolated.color[i] = v1_temp.color[i] * (1.0f - t) + v2_temp.color[i] * t;
+      }
+      vInterpolated.fog = v1_temp.fog * (1.0f - t) + v2_temp.fog * t;
+      vInterpolated.pos[3] = v1_temp.pos[3] * (1.0f - t) + v2_temp.pos[3] * t;
+
+      WritePixelPipeline(px, py, vInterpolated, c, minX, maxX, minY, maxY, state);
+    };
+
+    float intery = y0_f;
+    for (int x = static_cast<int>(std::round(x0_f)); x <= static_cast<int>(std::round(x1_f)); ++x) {
+      float t = (dx == 0.0f) ? 0.0f : (x - x0_f) / dx;
+      t = std::max(0.0f, std::min(1.0f, t));
+      int ipart = static_cast<int>(std::floor(intery));
+      float fpart = intery - ipart;
+      plot(x, ipart, 1.0f - fpart, t);
+      plot(x, ipart + 1, fpart, t);
+      intery += gradient;
+    }
+  } else {
+    int x0 = static_cast<int>(v1.pos[0]);
+    int y0 = static_cast<int>(v1.pos[1]);
+    int x1 = static_cast<int>(v2.pos[0]);
+    int y1 = static_cast<int>(v2.pos[1]);
+
+    int dx = std::abs(x1 - x0);
+    int sx = x0 < x1 ? 1 : -1;
+    int dy = -std::abs(y1 - y0);
+    int sy = y0 < y1 ? 1 : -1;
+    int err = dx + dy;
+
+    int totalSteps = std::max(dx, -dy);
+    int step = 0;
+
+    while (true) {
+      float t = totalSteps > 0 ? static_cast<float>(step) / totalSteps : 0.0f;
+      ModernVertex vInterpolated;
+      for (int i = 0; i < 4; ++i) {
+        vInterpolated.color[i] = v1.color[i] * (1.0f - t) + v2.color[i] * t;
+      }
+      vInterpolated.fog = v1.fog * (1.0f - t) + v2.fog * t;
+      vInterpolated.pos[3] = v1.pos[3] * (1.0f - t) + v2.pos[3] * t;
+
+      WritePixelPipeline(x0, y0, vInterpolated, 1.0f, minX, maxX, minY, maxY, state);
+
+      if (x0 == x1 && y0 == y1) break;
+      int e2 = 2 * err;
+      if (e2 >= dy) {
+        err += dy;
+        x0 += sx;
+      }
+      if (e2 <= dx) {
+        err += dx;
+        y0 += sy;
+      }
+      step++;
+    }
+  }
+}
+
+void SoftwareBackend::RasterizeSoftwarePointTile(
+    const ModernVertex& pt,
+    int minX, int maxX, int minY, int maxY,
+    const RasterizerState& state) {
+  
+  if (state.aaEnabled) {
+    float x_f = pt.pos[0];
+    float y_f = pt.pos[1];
+    float r_max = 0.75f * static_cast<float>(m_ssaaScale);
+
+    int pmin_x = static_cast<int>(std::floor(x_f - r_max));
+    int pmax_x = static_cast<int>(std::ceil(x_f + r_max));
+    int pmin_y = static_cast<int>(std::floor(y_f - r_max));
+    int pmax_y = static_cast<int>(std::ceil(y_f + r_max));
+
+    for (int py = pmin_y; py <= pmax_y; ++py) {
+      for (int px = pmin_x; px <= pmax_x; ++px) {
+        float dx = (static_cast<float>(px) + 0.5f) - x_f;
+        float dy = (static_cast<float>(py) + 0.5f) - y_f;
+        float d = std::sqrt(dx * dx + dy * dy);
+        float C = 1.0f - (d / r_max);
+        if (C > 0.0f) {
+          C = std::max(0.0f, std::min(1.0f, C));
+          WritePixelPipeline(px, py, pt, C, minX, maxX, minY, maxY, state);
+        }
+      }
+    }
+  } else {
+    int x = static_cast<int>(pt.pos[0]);
+    int y = static_cast<int>(pt.pos[1]);
+    WritePixelPipeline(x, y, pt, 1.0f, minX, maxX, minY, maxY, state);
+  }
+}
+
+void SoftwareBackend::ResolveActiveState() {
+  if (!m_stateCacheDirty) return;
+
+  RasterizerState state;
+  state.depthMode = m_depthMode;
+  state.depthCompareOp = m_depthCompareOp;
+  state.depthMask = m_depthMask;
+  state.depthBiasLevel = m_depthBiasLevel;
+  state.depthNear = m_depthNear;
+  state.depthFar = m_depthFar;
+  state.ditherMode = m_ditherMode;
+  state.stippleMode = m_stippleMode;
+  state.stipplePattern = m_stipplePattern;
+  state.rgbSrcBlend = m_rgbSrcBlend;
+  state.rgbDstBlend = m_rgbDstBlend;
+  state.alphaSrcBlend = m_alphaSrcBlend;
+  state.alphaDstBlend = m_alphaDstBlend;
+  state.alphaTestOp = m_alphaTestOp;
+  state.alphaTestRefVal = m_alphaTestRefVal;
+  state.clipMinX = m_clipMinX;
+  state.clipMinY = m_clipMinY;
+  state.clipMaxX = m_clipMaxX;
+  state.clipMaxY = m_clipMaxY;
+  state.sstOrigin = m_sstOrigin;
+  state.fogMode = m_fogMode;
+  state.fogColor = m_fogColor;
+  std::memcpy(state.fogTable, m_fogTable, 64);
+  state.colorMaskRgb = m_colorMaskRgb;
+  state.colorMaskAlpha = m_colorMaskAlpha;
+  state.aaEnabled = m_aaEnabled;
+
+  state.boundTexAddress[0] = m_boundTexAddress[0];
+  state.boundTexAddress[1] = m_boundTexAddress[1];
+  state.texClampS[0] = m_texClampS[0];
+  state.texClampS[1] = m_texClampS[1];
+  state.texClampT[0] = m_texClampT[0];
+  state.texClampT[1] = m_texClampT[1];
+  state.texMinFilter[0] = m_texMinFilter[0];
+  state.texMinFilter[1] = m_texMinFilter[1];
+  state.texMagFilter[0] = m_texMagFilter[0];
+  state.texMagFilter[1] = m_texMagFilter[1];
+  state.texMipMapMode[0] = m_texMipMapMode[0];
+  state.texMipMapMode[1] = m_texMipMapMode[1];
+  state.texLodBlend[0] = m_texLodBlend[0];
+  state.texLodBlend[1] = m_texLodBlend[1];
+  state.texLodBias[0] = m_texLodBias[0];
+  state.texLodBias[1] = m_texLodBias[1];
+
+  state.colorCombinerFunc = m_colorCombinerFunc;
+  state.colorCombinerFactor = m_colorCombinerFactor;
+  state.colorCombinerLocal = m_colorCombinerLocal;
+  state.colorCombinerOther = m_colorCombinerOther;
+  state.colorCombinerInvert = m_colorCombinerInvert;
+  state.alphaCombinerFunc = m_alphaCombinerFunc;
+  state.alphaCombinerFactor = m_alphaCombinerFactor;
+  state.alphaCombinerLocal = m_alphaCombinerLocal;
+  state.alphaCombinerOther = m_alphaCombinerOther;
+  state.alphaCombinerInvert = m_alphaCombinerInvert;
+
+  state.texCombinerRgbFunc[0] = m_texCombinerRgbFunc[0];
+  state.texCombinerRgbFunc[1] = m_texCombinerRgbFunc[1];
+  state.texCombinerRgbFactor[0] = m_texCombinerRgbFactor[0];
+  state.texCombinerRgbFactor[1] = m_texCombinerRgbFactor[1];
+  state.texCombinerAlphaFunc[0] = m_texCombinerAlphaFunc[0];
+  state.texCombinerAlphaFunc[1] = m_texCombinerAlphaFunc[1];
+  state.texCombinerAlphaFactor[0] = m_texCombinerAlphaFactor[0];
+  state.texCombinerAlphaFactor[1] = m_texCombinerAlphaFactor[1];
+  state.texCombinerRgbInvert[0] = m_texCombinerRgbInvert[0];
+  state.texCombinerRgbInvert[1] = m_texCombinerRgbInvert[1];
+  state.texCombinerAlphaInvert[0] = m_texCombinerAlphaInvert[0];
+  state.texCombinerAlphaInvert[1] = m_texCombinerAlphaInvert[1];
+
+  state.constantColor = m_constantColor;
+  state.stwHintMask = m_stwHintMask;
+  state.pixelFormatOverride = m_pixelFormatOverride;
+
+  state.chromakeyMode = m_chromakeyMode;
+  state.chromakeyValue = m_chromakeyValue;
+  state.chromakeyRangeMin = m_chromakeyRangeMin;
+  state.chromakeyRangeMax = m_chromakeyRangeMax;
+  state.chromakeyRangeMode = m_chromakeyRangeMode;
+  state.texChromaMode[0] = m_texChromaMode[0];
+  state.texChromaMode[1] = m_texChromaMode[1];
+  state.texChromaMin[0] = m_texChromaMin[0];
+  state.texChromaMin[1] = m_texChromaMin[1];
+  state.texChromaMax[0] = m_texChromaMax[0];
+  state.texChromaMax[1] = m_texChromaMax[1];
+  state.texChromaRangeMode[0] = m_texChromaRangeMode[0];
+  state.texChromaRangeMode[1] = m_texChromaRangeMode[1];
+
+  state.activeRenderBufferIdx = (m_activeRenderBuffer == 0) ? m_frontBufferIdx : m_backBufferIdx;
+
+  auto it = std::find(m_stateCatalog.begin(), m_stateCatalog.end(), state);
+  if (it != m_stateCatalog.end()) {
+    m_activeStateId = std::distance(m_stateCatalog.begin(), it);
+  } else {
+    m_stateCatalog.push_back(state);
+    m_activeStateId = m_stateCatalog.size() - 1;
+  }
+  m_stateCacheDirty = false;
+}
+
+} // namespace GlideWrapper
