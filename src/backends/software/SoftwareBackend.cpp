@@ -70,10 +70,6 @@ union SDL12_Event {
 };
 
 thread_local bool g_inInjection = false;
-static std::chrono::steady_clock::time_point s_keyUpTime[512] = {};
-static bool s_keyState[512] = {false};
-static bool s_pendingKeyUp[512] = {false};
-static constexpr int KEY_DEBOUNCE_MS = 160;
 static std::chrono::steady_clock::time_point s_lastEventTime = std::chrono::steady_clock::now();
 static const std::chrono::steady_clock::time_point s_startTime = std::chrono::steady_clock::now();
 
@@ -121,56 +117,29 @@ static int AntiGrabBreakFilter(const void* rawEvent) {
       return 1;
     }
 
-    if (type == 2) { // KEYDOWN
-      // Cancel any pending release for this key
-      if (s_pendingKeyUp[sym]) {
-        std::cout << "[Wrapper-AntiGrab-Filter] DEBOUNCED: Cancelled pending release for sym=" << sym << std::endl;
-        s_pendingKeyUp[sym] = false;
-      }
+    // Proxy the event immediately with patched scancode
+    SDL12_Event cleanEvent;
+    std::memcpy(&cleanEvent, event, sizeof(SDL12_Event));
 
-      // If the key is not already marked as pressed, send the KEYDOWN to the game
-      if (!s_keyState[sym]) {
-        s_keyState[sym] = true;
-
-        SDL12_Event cleanEvent;
-        std::memset(&cleanEvent, 0, sizeof(cleanEvent));
-        cleanEvent.key.type = 2; // KEYDOWN
-        cleanEvent.key.state = 1; // Pressed
-        cleanEvent.key.which = event->key.which;
-        cleanEvent.key.keysym.sym = sym;
-        cleanEvent.key.keysym.mod = event->key.keysym.mod;
-        cleanEvent.key.keysym.unicode = event->key.keysym.unicode;
-
-        // Patch scancode if 0
-        if (scancode == 0) {
-          if (sym == 273)      cleanEvent.key.keysym.scancode = 111; // Up
-          else if (sym == 274) cleanEvent.key.keysym.scancode = 116; // Down
-          else if (sym == 275) cleanEvent.key.keysym.scancode = 114; // Right
-          else if (sym == 276) cleanEvent.key.keysym.scancode = 113; // Left
-          else if (sym == 27)  cleanEvent.key.keysym.scancode = 9;   // ESC
-          else if (sym == 13)  cleanEvent.key.keysym.scancode = 36;  // ENTER
-        } else {
-          cleanEvent.key.keysym.scancode = scancode;
-        }
-
-        std::cout << "[Wrapper-AntiGrab-Filter] PROXYING KEYDOWN to game: sym=" << sym 
-                  << ", patched_scancode=" << (int)cleanEvent.key.keysym.scancode << std::endl;
-
-        g_inInjection = true;
-        pfn_PushEvent(&cleanEvent);
-        g_inInjection = false;
-      } else {
-        std::cout << "[Wrapper-AntiGrab-Filter] IGNORED duplicate KEYDOWN (holding) for sym=" << sym << std::endl;
-      }
-      return 0; // Discard the original "dirty" physical event!
-    } 
-    else if (type == 3) { // KEYUP
-      // Delay the release of this key to debounce RDP micro-taps!
-      std::cout << "[Wrapper-AntiGrab-Filter] DEBOUNCING: Scheduled release for sym=" << sym << " in " << KEY_DEBOUNCE_MS << "ms" << std::endl;
-      s_pendingKeyUp[sym] = true;
-      s_keyUpTime[sym] = std::chrono::steady_clock::now() + std::chrono::milliseconds(KEY_DEBOUNCE_MS);
-      return 0; // Discard original event
+    // Patch scancode if 0
+    if (cleanEvent.key.keysym.scancode == 0) {
+      if (sym == 273)      cleanEvent.key.keysym.scancode = 111; // Up
+      else if (sym == 274) cleanEvent.key.keysym.scancode = 116; // Down
+      else if (sym == 275) cleanEvent.key.keysym.scancode = 114; // Right
+      else if (sym == 276) cleanEvent.key.keysym.scancode = 113; // Left
+      else if (sym == 27)  cleanEvent.key.keysym.scancode = 9;   // ESC
+      else if (sym == 13)  cleanEvent.key.keysym.scancode = 36;  // ENTER
     }
+
+    std::cout << "[Wrapper-AntiGrab-Filter] PROXYING " << (type == 2 ? "KEYDOWN" : "KEYUP") 
+              << " immediately: sym=" << sym 
+              << ", patched_scancode=" << (int)cleanEvent.key.keysym.scancode << std::endl;
+
+    g_inInjection = true;
+    pfn_PushEvent(&cleanEvent);
+    g_inInjection = false;
+
+    return 0; // Discard the original "dirty" physical event
   }
 
   return 1; // Keep other events
@@ -1023,45 +992,7 @@ bool SoftwareBackend::SwapBuffers() {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   if (!m_initialized || !m_windowAttached) return false;
 
-  // Process any pending debounced key releases in SwapBuffers!
-  static PFN_SDL12_PushEvent pfn_PushEvent = nullptr;
-  if (!pfn_PushEvent) {
-    void* sdlHandle = dlopen("libSDL-1.2.so.0", RTLD_LAZY | RTLD_NOLOAD);
-    if (sdlHandle) {
-      pfn_PushEvent = reinterpret_cast<PFN_SDL12_PushEvent>(dlsym(sdlHandle, "SDL_PushEvent"));
-    }
-  }
-
-  if (pfn_PushEvent) {
-    auto now = std::chrono::steady_clock::now();
-    for (uint32_t sym = 0; sym < 512; ++sym) {
-      if (s_pendingKeyUp[sym] && now >= s_keyUpTime[sym]) {
-        s_pendingKeyUp[sym] = false;
-        s_keyState[sym] = false;
-
-        SDL12_Event cleanEvent;
-        std::memset(&cleanEvent, 0, sizeof(cleanEvent));
-        cleanEvent.key.type = 3; // KEYUP
-        cleanEvent.key.state = 0; // Released
-        cleanEvent.key.keysym.sym = sym;
-
-        // Patch scancodes
-        if (sym == 273)      cleanEvent.key.keysym.scancode = 111; // Up
-        else if (sym == 274) cleanEvent.key.keysym.scancode = 116; // Down
-        else if (sym == 275) cleanEvent.key.keysym.scancode = 114; // Right
-        else if (sym == 276) cleanEvent.key.keysym.scancode = 113; // Left
-        else if (sym == 27)  cleanEvent.key.keysym.scancode = 9;   // ESC
-        else if (sym == 13)  cleanEvent.key.keysym.scancode = 36;  // ENTER
-
-        std::cout << "[Wrapper-AntiGrab-Filter] DISPATCHING debounced release for sym=" << sym 
-                  << ", scancode=" << (int)cleanEvent.key.keysym.scancode << std::endl;
-
-        g_inInjection = true;
-        pfn_PushEvent(&cleanEvent);
-        g_inInjection = false;
-      }
-    }
-  }
+  // No debouncing needed. Physical key releases are proxied immediately by the filter.
 
 
   GLIDE_LOG(DEBUG, "Software", "Executing SwapBuffers presentation dispatch.");
