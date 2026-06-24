@@ -429,8 +429,9 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
   {
     std::vector<PipelineStateKey> warmStates;
 
-    // State 1: Default opaque 3D rendering (both lower-left and upper-left origins, cull negative and disabled)
-    // Warm 4 pipelines for common 3D rendering
+    // State 1: Default opaque 3D rendering (both lower-left and upper-left
+    // origins, cull negative and disabled) Warm 4 pipelines for common 3D
+    // rendering
     for (uint32_t origin : {0u, 1u}) {
       for (uint32_t cull : {0u, 1u}) {
         PipelineStateKey k{};
@@ -450,7 +451,8 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
     }
 
     // State 2: Standard Translucent Text/UI (e.g. tlConRender - 2 pipelines)
-    // Note: Separate Alpha factors (RGB: SrcAlpha/OneMinusSrcAlpha, Alpha: One/Zero)
+    // Note: Separate Alpha factors (RGB: SrcAlpha/OneMinusSrcAlpha, Alpha:
+    // One/Zero)
     for (uint32_t origin : {0u, 1u}) {
       PipelineStateKey k{};
       k.cullMode = 0;  // None
@@ -458,8 +460,8 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
       k.depthMode = 0;  // Disabled (canonicalized)
       k.depthMask = false;
       k.depthCompareOp = 0;
-      k.rgbSrcBlend = 1;   // GR_BLEND_SRC_ALPHA
-      k.rgbDstBlend = 5;   // GR_BLEND_ONE_MINUS_SRC_ALPHA
+      k.rgbSrcBlend = 1;    // GR_BLEND_SRC_ALPHA
+      k.rgbDstBlend = 5;    // GR_BLEND_ONE_MINUS_SRC_ALPHA
       k.alphaSrcBlend = 4;  // GR_BLEND_ONE (separate Alpha factor!)
       k.alphaDstBlend = 0;  // GR_BLEND_ZERO
       k.colorMaskRgb = true;
@@ -475,8 +477,8 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
       k.depthMode = 0;  // Disabled (canonicalized)
       k.depthMask = false;
       k.depthCompareOp = 0;
-      k.rgbSrcBlend = 4;   // GR_BLEND_ONE
-      k.rgbDstBlend = 0;   // GR_BLEND_ZERO
+      k.rgbSrcBlend = 4;    // GR_BLEND_ONE
+      k.rgbDstBlend = 0;    // GR_BLEND_ZERO
       k.alphaSrcBlend = 4;  // GR_BLEND_ONE
       k.alphaDstBlend = 0;  // GR_BLEND_ZERO
       k.colorMaskRgb = true;
@@ -517,10 +519,11 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
     m_batchedDescSet = nullptr;
     m_batchedVertexCount = 0;
     m_batchedFirstVertex = 0;
-     GLIDE_LOG(INFO, "Vulkan",
-               "Allocated " << (m_vertexBufferSize / (1024 * 1024))
-                            << "MB host-visible dynamic ring vertex buffer and reset "
-                            "batching state.");
+    GLIDE_LOG(
+        INFO, "Vulkan",
+        "Allocated " << (m_vertexBufferSize / (1024 * 1024))
+                     << "MB host-visible dynamic ring vertex buffer and reset "
+                        "batching state.");
   } catch (const std::exception& e) {
     GLIDE_LOG(CRITICAL, "Vulkan",
               "Failed to allocate Vulkan vertex buffer: " << e.what());
@@ -574,7 +577,8 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
                     "Vulkan presentation surface created successfully!");
           if (CreateSwapchain(width * scale, height * scale)) {
             m_sdlWindow = win;
-            m_headlessMode = false; // We are NOT headless because we have a presentation window!
+            m_headlessMode = false;  // We are NOT headless because we have a
+                                     // presentation window!
             GLIDE_LOG(INFO, "Vulkan",
                       "Vulkan GPU-native swapchain presentation window "
                       "initialized successfully.");
@@ -1168,7 +1172,7 @@ bool VulkanBackend::SwapBuffers() {
   tracker.MarkFrameEnd(m_config.maxFps);
   tracker.MarkFrameStart();
 
-  GLIDE_PROFILE_SCOPE("Vulkan::SwapBuffersSubmit");
+  GLIDE_PROFILE_SCOPE("Vulkan::SwapBuffers");
 
   // 1. Flush any pending batch draws and terminate the active render pass
   if (m_batchedVertexCount > 0) {
@@ -1215,46 +1219,49 @@ bool VulkanBackend::SwapBuffers() {
     vk::ImageSubresourceRange range(vk::ImageAspectFlagBits::eColor, 0, 1, 0,
                                     1);
 
-    // Transition layouts: FBO to Src, Swapchain to Dst
-    TransitionImageLayout(*m_commandBuffer, m_headlessImages[activeIdx].get(),
-                          vk::ImageLayout::eColorAttachmentOptimal,
-                          vk::ImageLayout::eTransferSrcOptimal, range);
-    TransitionImageLayout(*m_commandBuffer, m_swapchainImages[imageIndex],
-                          vk::ImageLayout::eUndefined,
-                          vk::ImageLayout::eTransferDstOptimal, range);
+    {
+      GLIDE_PROFILE_SCOPE("Vulkan::SwapBuffers_Blit");
+      // Transition layouts: FBO to Src, Swapchain to Dst
+      TransitionImageLayout(*m_commandBuffer, m_headlessImages[activeIdx].get(),
+                            vk::ImageLayout::eColorAttachmentOptimal,
+                            vk::ImageLayout::eTransferSrcOptimal, range);
+      TransitionImageLayout(*m_commandBuffer, m_swapchainImages[imageIndex],
+                            vk::ImageLayout::eUndefined,
+                            vk::ImageLayout::eTransferDstOptimal, range);
 
-    vk::ImageBlit blitRegion;
-    blitRegion.srcSubresource =
-        vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
-    blitRegion.srcOffsets[0] = vk::Offset3D(0, 0, 0);
-    blitRegion.srcOffsets[1] =
-        vk::Offset3D(m_headlessWidth, m_headlessHeight, 1);
+      vk::ImageBlit blitRegion;
+      blitRegion.srcSubresource =
+          vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
+      blitRegion.srcOffsets[0] = vk::Offset3D(0, 0, 0);
+      blitRegion.srcOffsets[1] =
+          vk::Offset3D(m_headlessWidth, m_headlessHeight, 1);
 
-    blitRegion.dstSubresource =
-        vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
-    blitRegion.dstOffsets[0] = vk::Offset3D(0, 0, 0);
-    blitRegion.dstOffsets[1] =
-        vk::Offset3D(m_swapchainExtent.width, m_swapchainExtent.height, 1);
+      blitRegion.dstSubresource =
+          vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
+      blitRegion.dstOffsets[0] = vk::Offset3D(0, 0, 0);
+      blitRegion.dstOffsets[1] =
+          vk::Offset3D(m_swapchainExtent.width, m_swapchainExtent.height, 1);
 
-    vk::Filter filter = (m_config.presentationFilter == 0)
-                            ? vk::Filter::eNearest
-                            : vk::Filter::eLinear;
-    m_commandBuffer->blitImage(
-        m_headlessImages[activeIdx].get(), vk::ImageLayout::eTransferSrcOptimal,
-        m_swapchainImages[imageIndex], vk::ImageLayout::eTransferDstOptimal, 1,
-        &blitRegion, filter);
+      vk::Filter filter = (m_config.presentationFilter == 0)
+                              ? vk::Filter::eNearest
+                              : vk::Filter::eLinear;
+      m_commandBuffer->blitImage(
+          m_headlessImages[activeIdx].get(),
+          vk::ImageLayout::eTransferSrcOptimal, m_swapchainImages[imageIndex],
+          vk::ImageLayout::eTransferDstOptimal, 1, &blitRegion, filter);
 
-    // Transition layouts back: FBO to Attachment (for next frame draws),
-    // Swapchain to Present
-    TransitionImageLayout(*m_commandBuffer, m_headlessImages[activeIdx].get(),
-                          vk::ImageLayout::eTransferSrcOptimal,
-                          vk::ImageLayout::eColorAttachmentOptimal, range);
-    TransitionImageLayout(*m_commandBuffer, m_swapchainImages[imageIndex],
-                          vk::ImageLayout::eTransferDstOptimal,
-                          vk::ImageLayout::ePresentSrcKHR, range);
+      // Transition layouts back: FBO to Attachment (for next frame draws),
+      // Swapchain to Present
+      TransitionImageLayout(*m_commandBuffer, m_headlessImages[activeIdx].get(),
+                            vk::ImageLayout::eTransferSrcOptimal,
+                            vk::ImageLayout::eColorAttachmentOptimal, range);
+      TransitionImageLayout(*m_commandBuffer, m_swapchainImages[imageIndex],
+                            vk::ImageLayout::eTransferDstOptimal,
+                            vk::ImageLayout::ePresentSrcKHR, range);
 
-    // End command buffer recording
-    m_commandBuffer->end();
+      // End command buffer recording
+      m_commandBuffer->end();
+    }
 
     // 3. Submit GPU copy commands, waiting on image availability and signaling
     // render completion
@@ -1270,9 +1277,10 @@ bool VulkanBackend::SwapBuffers() {
     m_graphicsQueue.submit(submitInfo, m_fences[m_currentFrameSlot].get());
 
     // Show the window dynamically only AFTER the first frame is fully rendered,
-    // but BEFORE it is presented! We block the CPU thread on the frame's fence to guarantee
-    // llvmpipe has completed rendering, ensuring the compositor maps a fully
-    // populated front buffer immediately and avoiding any black flash.
+    // but BEFORE it is presented! We block the CPU thread on the frame's fence
+    // to guarantee llvmpipe has completed rendering, ensuring the compositor
+    // maps a fully populated front buffer immediately and avoiding any black
+    // flash.
     if (m_sdlWindow && !m_windowShown && !m_headlessMode) {
       try {
         if (m_device->waitForFences(1, &m_fences[m_currentFrameSlot].get(),
@@ -1291,19 +1299,22 @@ bool VulkanBackend::SwapBuffers() {
     }
 
     // 4. Queue the swapchain image for presentation on the screen!
-    vk::PresentInfoKHR presentInfo(
-        1, &m_renderFinishedSemaphores[m_currentFrameSlot].get(), 1,
-        &m_swapchain.get(), &imageIndex, nullptr);
+    {
+      GLIDE_PROFILE_SCOPE("Vulkan::SwapBuffers_Present");
+      vk::PresentInfoKHR presentInfo(
+          1, &m_renderFinishedSemaphores[m_currentFrameSlot].get(), 1,
+          &m_swapchain.get(), &imageIndex, nullptr);
 
-    vk::Result presentRes = m_graphicsQueue.presentKHR(presentInfo);
-    if (presentRes == vk::Result::eErrorOutOfDateKHR ||
-        presentRes == vk::Result::eSuboptimalKHR) {
-      GLIDE_LOG(WARN, "Vulkan",
-                "Present: Swapchain is out of date or suboptimal.");
-    } else if (presentRes != vk::Result::eSuccess) {
-      GLIDE_LOG(
-          CRITICAL, "Vulkan",
-          "Failed to present swapchain image: " << vk::to_string(presentRes));
+      vk::Result presentRes = m_graphicsQueue.presentKHR(presentInfo);
+      if (presentRes == vk::Result::eErrorOutOfDateKHR ||
+          presentRes == vk::Result::eSuboptimalKHR) {
+        GLIDE_LOG(WARN, "Vulkan",
+                  "Present: Swapchain is out of date or suboptimal.");
+      } else if (presentRes != vk::Result::eSuccess) {
+        GLIDE_LOG(
+            CRITICAL, "Vulkan",
+            "Failed to present swapchain image: " << vk::to_string(presentRes));
+      }
     }
 
     // 5. Advance to the next frame slot and wait for its fence to become free
@@ -1313,11 +1324,15 @@ bool VulkanBackend::SwapBuffers() {
         m_currentFrameSlot * m_texStagingSlotSize;
 
     m_commandBuffer = &m_commandBuffers[m_currentFrameSlot].get();
-    if (m_device->waitForFences(1, &m_fences[m_currentFrameSlot].get(), VK_TRUE,
-                                UINT64_MAX) != vk::Result::eSuccess) {
-      GLIDE_LOG(
-          CRITICAL, "Vulkan",
-          "Failed to wait for fence of next frame slot " << m_currentFrameSlot);
+    {
+      GLIDE_PROFILE_SCOPE("Vulkan::SwapBuffers_FenceWait");
+      if (m_device->waitForFences(1, &m_fences[m_currentFrameSlot].get(),
+                                  VK_TRUE,
+                                  UINT64_MAX) != vk::Result::eSuccess) {
+        GLIDE_LOG(CRITICAL, "Vulkan",
+                  "Failed to wait for fence of next frame slot "
+                      << m_currentFrameSlot);
+      }
     }
 
     m_commandBuffer->reset({});
@@ -1326,24 +1341,28 @@ bool VulkanBackend::SwapBuffers() {
 
   } else {
     // --- HEADLESS OFFSCREEN MODE (Asynchronous Staging Stash) ---
-    vk::ImageSubresourceRange range(vk::ImageAspectFlagBits::eColor, 0, 1, 0,
-                                    1);
-    TransitionImageLayout(*m_commandBuffer, m_headlessImages[activeIdx].get(),
-                          vk::ImageLayout::eColorAttachmentOptimal,
-                          vk::ImageLayout::eTransferSrcOptimal, range);
+    {
+      GLIDE_PROFILE_SCOPE("Vulkan::SwapBuffers_Copy");
+      vk::ImageSubresourceRange range(vk::ImageAspectFlagBits::eColor, 0, 1, 0,
+                                      1);
+      TransitionImageLayout(*m_commandBuffer, m_headlessImages[activeIdx].get(),
+                            vk::ImageLayout::eColorAttachmentOptimal,
+                            vk::ImageLayout::eTransferSrcOptimal, range);
 
-    vk::BufferImageCopy region;
-    region.imageSubresource =
-        vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
-    region.imageExtent = vk::Extent3D(m_headlessWidth, m_headlessHeight, 1);
+      vk::BufferImageCopy region;
+      region.imageSubresource =
+          vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
+      region.imageExtent = vk::Extent3D(m_headlessWidth, m_headlessHeight, 1);
 
-    m_commandBuffer->copyImageToBuffer(
-        m_headlessImages[activeIdx].get(), vk::ImageLayout::eTransferSrcOptimal,
-        m_headlessPixelBuffers[m_currentFrameSlot].get(), 1, &region);
+      m_commandBuffer->copyImageToBuffer(
+          m_headlessImages[activeIdx].get(),
+          vk::ImageLayout::eTransferSrcOptimal,
+          m_headlessPixelBuffers[m_currentFrameSlot].get(), 1, &region);
 
-    TransitionImageLayout(*m_commandBuffer, m_headlessImages[activeIdx].get(),
-                          vk::ImageLayout::eTransferSrcOptimal,
-                          vk::ImageLayout::eColorAttachmentOptimal, range);
+      TransitionImageLayout(*m_commandBuffer, m_headlessImages[activeIdx].get(),
+                            vk::ImageLayout::eTransferSrcOptimal,
+                            vk::ImageLayout::eColorAttachmentOptimal, range);
+    }
 
     GLIDE_LOG(DEBUG, "Vulkan",
               "SwapBuffers: Headless - Ending command buffer recording...");
@@ -1364,10 +1383,13 @@ bool VulkanBackend::SwapBuffers() {
     GLIDE_LOG(DEBUG, "Vulkan",
               "SwapBuffers: Headless - Waiting for fence of next slot "
                   << nextSlot << "...");
-    if (m_device->waitForFences(1, &m_fences[nextSlot].get(), VK_TRUE,
-                                UINT64_MAX) != vk::Result::eSuccess) {
-      GLIDE_LOG(CRITICAL, "Vulkan",
-                "Failed to wait for fence of next frame slot " << nextSlot);
+    {
+      GLIDE_PROFILE_SCOPE("Vulkan::SwapBuffers_FenceWait");
+      if (m_device->waitForFences(1, &m_fences[nextSlot].get(), VK_TRUE,
+                                  UINT64_MAX) != vk::Result::eSuccess) {
+        GLIDE_LOG(CRITICAL, "Vulkan",
+                  "Failed to wait for fence of next frame slot " << nextSlot);
+      }
     }
 
     m_currentFrameSlot = nextSlot;

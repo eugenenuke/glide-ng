@@ -113,8 +113,8 @@ class OpenGLESBackend : public SoftwareBackendBase {
   uint32_t m_glProgram{0};  // GLuint
 
   // Double-buffered offscreen GPU rendering targets
-  uint32_t m_headlessFBOs[2]{0, 0};                // GLuint
-  uint32_t m_fboTextures[2]{0, 0};                 // GLuint
+  uint32_t m_headlessFBOs[2]{0, 0};       // GLuint
+  uint32_t m_fboTextures[2]{0, 0};        // GLuint
   uint32_t m_sharedDepthRenderbuffer{0};  // GLuint
 
   // Milestone 3: GPU-Native Geometry Resources
@@ -125,7 +125,8 @@ class OpenGLESBackend : public SoftwareBackendBase {
   uint32_t m_geomVAO{0};      // GLuint
   uint32_t m_geomVBO{0};      // GLuint
   uint32_t m_geomVBOOffset{0};
-  uint32_t m_geomVBOSizeConfigured{1024 * 1024};  // Configurable dynamic ring buffer size in bytes
+  uint32_t m_geomVBOSizeConfigured{
+      8 * 1024 * 1024};  // Configurable dynamic ring buffer size in bytes
   std::unordered_map<uint32_t, uint32_t> m_glesTextures;
 
   // Geometry Batching State
@@ -145,6 +146,8 @@ class OpenGLESBackend : public SoftwareBackendBase {
   // GLES Gamma LUT Texture Resources
   uint32_t m_glGammaLutTex{0};
   bool m_useGammaLut{false};
+  bool m_forceShaderPresent{false};
+  int m_uUseGammaLutLoc{-1};
 
   // Cached Uniform Locations for geomProgram
   int m_uSstOriginLoc{-1};
@@ -195,7 +198,7 @@ class OpenGLESBackend : public SoftwareBackendBase {
   int m_uTexAlphaFactorLoc{-1};
   int m_uTexRgbInvertLoc{-1};
   int m_uTexAlphaInvertLoc{-1};
-  uint32_t m_glesSamplers[2]{0, 0}; // GLuint sampler objects for TMU0/1
+  uint32_t m_glesSamplers[2]{0, 0};  // GLuint sampler objects for TMU0/1
 };
 
 }  // namespace GlideWrapper
