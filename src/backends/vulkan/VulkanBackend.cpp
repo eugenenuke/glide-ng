@@ -529,6 +529,8 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
 
   m_headlessWidth = width;
   m_headlessHeight = height;
+  m_guestWidth = width;
+  m_guestHeight = height;
   ResetState();
   m_headlessMode = true;  // Headless-driven for visual regression
 
@@ -3825,8 +3827,8 @@ void VulkanBackend::EnsureRenderPassActive() {
 }
 
 void VulkanBackend::PopulatePushConstants(PushConstants& pcs) {
-  pcs.viewportWidth = (float)m_headlessWidth;
-  pcs.viewportHeight = (float)m_headlessHeight;
+  pcs.viewportWidth = (float)m_guestWidth;
+  pcs.viewportHeight = (float)m_guestHeight;
   pcs.depthBufferMode = m_depthMode;
 
   // Extract and normalize constant color components, then pack

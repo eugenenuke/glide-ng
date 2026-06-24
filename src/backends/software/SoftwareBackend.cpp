@@ -727,9 +727,17 @@ bool SoftwareBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
                 << width << "x" << height
                 << "), Windowed=" << (windowed ? "Yes" : "No"));
 
+#ifdef _OPENMP
+  if (getenv("OMP_NUM_THREADS") == nullptr) {
+    omp_set_num_threads(4);
+  }
+#endif
+
   ResolveAAMode();
   m_headlessWidth = width * m_ssaaScale;
   m_headlessHeight = height * m_ssaaScale;
+  m_guestWidth = width;
+  m_guestHeight = height;
   m_headlessMode = true;
 
   // Allocate the CPU framebuffer double buffers (scaled for SSAA!)
@@ -1161,7 +1169,16 @@ void SoftwareBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
   ModernVertex b_final = b;
   ModernVertex c_final = c;
 
-  if (m_ssaaScale > 1) {
+  if (m_useX11BlitFallback) {
+    float scaleX = (float)m_headlessWidth / m_guestWidth;
+    float scaleY = (float)m_headlessHeight / m_guestHeight;
+    a_final.pos[0] *= scaleX;
+    a_final.pos[1] *= scaleY;
+    b_final.pos[0] *= scaleX;
+    b_final.pos[1] *= scaleY;
+    c_final.pos[0] *= scaleX;
+    c_final.pos[1] *= scaleY;
+  } else if (m_ssaaScale > 1) {
     a_final.pos[0] *= static_cast<float>(m_ssaaScale);
     a_final.pos[1] *= static_cast<float>(m_ssaaScale);
     b_final.pos[0] *= static_cast<float>(m_ssaaScale);
@@ -1199,7 +1216,14 @@ void SoftwareBackend::DrawLine(const ModernVertex& v1, const ModernVertex& v2) {
   ModernVertex v1_final = v1;
   ModernVertex v2_final = v2;
 
-  if (m_ssaaScale > 1) {
+  if (m_useX11BlitFallback) {
+    float scaleX = (float)m_headlessWidth / m_guestWidth;
+    float scaleY = (float)m_headlessHeight / m_guestHeight;
+    v1_final.pos[0] *= scaleX;
+    v1_final.pos[1] *= scaleY;
+    v2_final.pos[0] *= scaleX;
+    v2_final.pos[1] *= scaleY;
+  } else if (m_ssaaScale > 1) {
     v1_final.pos[0] *= static_cast<float>(m_ssaaScale);
     v1_final.pos[1] *= static_cast<float>(m_ssaaScale);
     v2_final.pos[0] *= static_cast<float>(m_ssaaScale);
@@ -1231,7 +1255,12 @@ void SoftwareBackend::DrawPoint(const ModernVertex& pt) {
 
   ModernVertex pt_final = pt;
 
-  if (m_ssaaScale > 1) {
+  if (m_useX11BlitFallback) {
+    float scaleX = (float)m_headlessWidth / m_guestWidth;
+    float scaleY = (float)m_headlessHeight / m_guestHeight;
+    pt_final.pos[0] *= scaleX;
+    pt_final.pos[1] *= scaleY;
+  } else if (m_ssaaScale > 1) {
     pt_final.pos[0] *= static_cast<float>(m_ssaaScale);
     pt_final.pos[1] *= static_cast<float>(m_ssaaScale);
   }

@@ -203,6 +203,8 @@ class SoftwareBackendBase : public IGraphicsBackend {
   void* m_headlessPixelMap{nullptr};
   uint32_t m_headlessWidth{800};
   uint32_t m_headlessHeight{600};
+  uint32_t m_guestWidth{800};
+  uint32_t m_guestHeight{600};
   bool m_lfbDirty{false};
   bool m_lfbBufferDirty[2]{
       false, false};  // 0 = FRONTBUFFER dirty, 1 = BACKBUFFER dirty
