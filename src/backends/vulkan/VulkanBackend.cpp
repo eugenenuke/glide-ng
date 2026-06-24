@@ -1,7 +1,117 @@
 #include "VulkanBackend.h"
 
 #include <SDL2/SDL.h>
+#include <SDL2/SDL_syswm.h>
 #include <SDL2/SDL_vulkan.h>
+
+#if defined(__linux__)
+#include <X11/Xlib.h>
+#include <X11/Xutil.h>
+#include <dlfcn.h>
+
+// Undefine X11 macro pollution to prevent breaking other C++ headers
+#ifdef None
+#undef None
+#endif
+#ifdef Success
+#undef Success
+#endif
+
+// Binary-compatible layout of SDL 1.2's SysWMinfo structure on X11
+struct SDL12_SysWMinfo {
+  struct {
+    unsigned char major;
+    unsigned char minor;
+    unsigned char patch;
+  } version;
+  int subsystem;  // Expected to be SDL_SYSWM_X11 (1)
+  union {
+    struct {
+      Display* display;
+      Window window;
+    } x11;
+  } info;
+};
+typedef int (*PFN_SDL12_GetWMInfo)(SDL12_SysWMinfo* info);
+
+// Binary-compatible layout of SDL 1.2's keysym and event structures
+struct SDL12_keysym {
+  unsigned char scancode;
+  int sym;
+  int mod;
+  unsigned short unicode;
+};
+
+struct SDL12_KeyboardEvent {
+  unsigned char type;  // SDL_KEYDOWN (2) or SDL_KEYUP (3)
+  unsigned char which;
+  unsigned char state;  // SDL_PRESSED (1) or SDL_RELEASED (0)
+  unsigned char padding;
+  SDL12_keysym keysym;
+};
+
+union SDL12_Event {
+  unsigned char type;
+  SDL12_KeyboardEvent key;
+  unsigned char pad[24];  // SDL 1.2 events are exactly 24 bytes
+};
+
+typedef int (*PFN_SDL12_PushEvent)(void* event);
+
+static SDL12_Event TranslateSdl2ToSdl12Key(const SDL_Event& event2) {
+  SDL12_Event event12{};
+  event12.type = (event2.type == SDL_KEYDOWN) ? 2 : 3;
+  event12.key.type = event12.type;
+  event12.key.which = 0;
+  event12.key.state = (event2.key.state == SDL_PRESSED) ? 1 : 0;
+  event12.key.keysym.scancode = event2.key.keysym.scancode;
+
+  uint32_t sym2 = event2.key.keysym.sym;
+  uint32_t sym12 = sym2;  // Default fallback for matching ASCII values
+
+  switch (sym2) {
+    case SDLK_UP:
+      sym12 = 273;
+      break;
+    case SDLK_DOWN:
+      sym12 = 274;
+      break;
+    case SDLK_RIGHT:
+      sym12 = 275;
+      break;
+    case SDLK_LEFT:
+      sym12 = 276;
+      break;
+    case SDLK_LCTRL:
+      sym12 = 306;
+      break;
+    case SDLK_RCTRL:
+      sym12 = 305;
+      break;
+    case SDLK_LALT:
+      sym12 = 308;
+      break;
+    case SDLK_RALT:
+      sym12 = 307;
+      break;
+    case SDLK_LSHIFT:
+      sym12 = 304;
+      break;
+    case SDLK_RSHIFT:
+      sym12 = 303;
+      break;
+    default:
+      break;
+  }
+  event12.key.keysym.sym = sym12;
+  event12.key.keysym.mod = 0;
+  event12.key.keysym.unicode = event2.key.keysym.sym;
+  return event12;
+}
+
+#elif defined(_WIN32)
+#include <windows.h>
+#endif
 
 #include <algorithm>
 #include <chrono>
@@ -396,12 +506,21 @@ void VulkanBackend::Shutdown() {
   m_initialized = false;
 }
 
+#if defined(__linux__)
+static thread_local bool s_x11ErrorOccurred = false;
+static int VulkanX11ErrorHandler(Display* dpy, XErrorEvent* err) {
+  s_x11ErrorOccurred = true;
+  return 0;
+}
+#endif
+
 bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
                                  uint32_t height, bool windowed) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   if (!m_initialized) return false;
   m_windowShown = false;
   if (m_windowAttached) DetachWindow();
+  m_nativeWindow = nativeWindowHandle;
 
   GLIDE_LOG(INFO, "Vulkan",
             "Attaching Hybrid Vulkan window ("
@@ -555,33 +674,266 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
 
   SetClipWindow(0, 0, width, height);
 
-  if (!m_config.forceNoWindow) {
+  m_isWindowHooked = false;
+  m_sdlWindow = nullptr;
+  bool presentationSuccess = false;
+  bool isHookedFailed = false;
+
+  if (nativeWindowHandle && !m_config.forceNoWindow) {
+    // --- PATH A: Direct Hooked Raw Binding (No SDL2) ---
+    m_isWindowHooked = true;
     GLIDE_LOG(INFO, "Vulkan",
-              "Instantiating interactive SDL2 presentation console...");
-    if (SDL_Init(SDL_INIT_VIDEO) < 0) {
-      GLIDE_LOG(WARN, "Vulkan",
-                "SDL_Init failed: " << SDL_GetError()
-                                    << ". Running headless offscreen.");
+              "Bypassing SDL2 window wrapping for native window: "
+                  << nativeWindowHandle);
+
+    VkSurfaceKHR rawSurface = nullptr;
+    bool surfaceCreated = false;
+
+#if defined(__linux__)
+    m_nativeDisplay = nullptr;
+    m_nativeDisplayOwnedByUs = false;
+
+    // 1. Tier A: Try SDL2 Shared Context via Current Window
+    SDL_Window* currentSdl2Win = SDL_GL_GetCurrentWindow();
+    if (currentSdl2Win) {
+      SDL_SysWMinfo wmInfo;
+      SDL_VERSION(&wmInfo.version);
+      if (SDL_GetWindowWMInfo(currentSdl2Win, &wmInfo)) {
+        if (wmInfo.subsystem == SDL_SYSWM_X11) {
+          m_nativeDisplay = wmInfo.info.x11.display;
+          GLIDE_LOG(INFO, "Vulkan",
+                    "Extracted host X11 Display connection from active SDL2 GL "
+                    "context window.");
+        }
+      }
+    }
+
+    // 2. Tier B: Try SDL 1.2 Dynamic Lookup
+    if (!m_nativeDisplay) {
+      void* sdl12Symbol = dlsym(RTLD_DEFAULT, "SDL_GetWMInfo");
+      if (sdl12Symbol) {
+        auto sdl12_GetWMInfo =
+            reinterpret_cast<PFN_SDL12_GetWMInfo>(sdl12Symbol);
+        SDL12_SysWMinfo wminfo{};
+        wminfo.version.major = 1;
+        wminfo.version.minor = 2;
+        wminfo.version.patch = 0;
+        if (sdl12_GetWMInfo(&wminfo) == 1) {
+          m_nativeDisplay = wminfo.info.x11.display;
+          m_nativeWindow = reinterpret_cast<void*>(wminfo.info.x11.window); // Extract the REAL, UNTRUNCATED Window ID!
+          GLIDE_LOG(
+              INFO, "Vulkan",
+              "Extracted host X11 Display and Window from SDL 1.2 SysWMinfo. Window="
+                  << m_nativeWindow);
+        }
+      }
+    }
+
+    // 3. Tier C: Fallback to New Connection
+    if (!m_nativeDisplay) {
+      m_nativeDisplay = XOpenDisplay(nullptr);
+      if (m_nativeDisplay) {
+        m_nativeDisplayOwnedByUs = true;
+        GLIDE_LOG(INFO, "Vulkan",
+                  "Opened new X11 Display connection (Fallback).");
+      }
+    }
+
+    if (m_nativeDisplay) {
+      GLIDE_LOG(INFO, "Vulkan",
+                "Creating Vulkan Xlib surface directly from raw X11 Window...");
+      vk::XlibSurfaceCreateInfoKHR xlibInfo(
+          {}, m_nativeDisplay,
+          static_cast<::Window>(
+              reinterpret_cast<uintptr_t>(nativeWindowHandle)));
+      try {
+        m_surface = m_instance->createXlibSurfaceKHRUnique(xlibInfo);
+        surfaceCreated = true;
+      } catch (const std::exception& e) {
+        GLIDE_LOG(CRITICAL, "Vulkan",
+                  "Failed to create direct Xlib Vulkan surface: " << e.what());
+      }
     } else {
+      GLIDE_LOG(CRITICAL, "Vulkan",
+                "Failed to resolve X11 Display connection (all tiers failed)!");
+    }
+#elif defined(_WIN32)
+    GLIDE_LOG(INFO, "Vulkan",
+              "Creating Vulkan Win32 surface directly from raw HWND...");
+    HINSTANCE hInst = GetModuleHandle(nullptr);
+    vk::Win32SurfaceCreateInfoKHR win32Info(
+        {}, hInst, reinterpret_cast<HWND>(nativeWindowHandle));
+    try {
+      m_surface = m_instance->createWin32SurfaceKHRUnique(win32Info);
+      surfaceCreated = true;
+    } catch (const std::exception& e) {
+      GLIDE_LOG(CRITICAL, "Vulkan",
+                "Failed to create direct Win32 Vulkan surface: " << e.what());
+    }
+#endif
+
+    if (surfaceCreated) {
+      int actualWidth = width;
+      int actualHeight = height;
+
+      if (CreateSwapchain(actualWidth, actualHeight)) {
+        m_headlessMode = false;
+        presentationSuccess = true;
+      } else {
+        GLIDE_LOG(WARN, "Vulkan",
+                  "Direct swapchain failed. Attempting X11 Blit Fallback...");
+#if defined(__linux__)
+        if (m_nativeDisplay && m_nativeWindow) {
+          auto* dpy = reinterpret_cast<Display*>(m_nativeDisplay);
+          auto win = reinterpret_cast<::Window>(
+              reinterpret_cast<uintptr_t>(m_nativeWindow)); // Use resolved untruncated window!
+
+          // 1. Force immediate synchronization to let X11 server catch up with DOSBox's window creation
+          XSync(dpy, False);
+
+          // 2. Install unified temporary error handler
+          s_x11ErrorOccurred = false;
+          auto* oldHandler = XSetErrorHandler(VulkanX11ErrorHandler);
+
+          // 3. Query window attributes
+          XWindowAttributes attrs;
+          Status status = XGetWindowAttributes(dpy, win, &attrs);
+
+          // 4. Create GC with graphics exposures disabled to prevent event queue flooding!
+          GC gc = nullptr;
+          if (status != 0 && !s_x11ErrorOccurred) {
+            XGCValues values;
+            values.graphics_exposures = False;
+            gc = XCreateGC(dpy, win, GCGraphicsExposures, &values);
+          }
+
+          // 5. Sync again to catch any asynchronous protocol errors from the block
+          XSync(dpy, False);
+
+          // 6. Restore original error handler
+          XSetErrorHandler(oldHandler);
+
+          // 7. If everything succeeded cleanly, activate the X11 Blit Fallback!
+          if (status != 0 && gc != nullptr && !s_x11ErrorOccurred) {
+            m_x11Visual = attrs.visual;
+            m_x11Depth = attrs.depth;
+            m_x11GC = gc;
+
+            m_useX11BlitFallback = true;
+            m_isWindowHooked = true;  // KEEP HOOKED!
+            m_sdlWindow = nullptr;    // DO NOT create a standalone window!
+
+            // Extract the REAL window dimensions to fill the window perfectly!
+            int realWidth = attrs.width;
+            int realHeight = attrs.height;
+
+            GLIDE_LOG(INFO, "Vulkan",
+                      "X11 Blit Fallback activated successfully. Real Window Size="
+                          << realWidth << "x" << realHeight << ", Depth="
+                          << m_x11Depth);
+
+            m_headlessWidth = realWidth;
+            m_headlessHeight = realHeight;
+            m_headlessMode = true;
+
+            // Destroy the surface since swapchain failed and we won't present via Vulkan
+            m_surface.reset();
+
+            if (CreateHeadlessRenderTarget(realWidth, realHeight)) {
+              presentationSuccess = true;
+            } else {
+              GLIDE_LOG(CRITICAL, "Vulkan",
+                        "X11 Blit Fallback: Failed to allocate headless "
+                        "offscreen resources!");
+              isHookedFailed = true;
+            }
+          } else {
+            GLIDE_LOG(
+                WARN, "Vulkan",
+                "X11 Blit Fallback initialization failed (window not ready or "
+                "error). Falling back to standalone window...");
+            if (gc) {
+              XFreeGC(dpy, gc);
+            }
+            isHookedFailed = true;
+            // We do NOT return false here; we let it fall through to the standalone window creation path!
+          }
+        } else {
+          isHookedFailed = true;
+        }
+#else
+        isHookedFailed = true;
+#endif
+
+        if (isHookedFailed) {
+          GLIDE_LOG(CRITICAL, "Vulkan",
+                    "Failed to create Vulkan swapchain on direct surface.");
+          m_surface.reset();
+#if defined(__linux__)
+          if (m_nativeDisplay) {
+            if (m_nativeDisplayOwnedByUs) {
+              XCloseDisplay(m_nativeDisplay);
+            }
+            m_nativeDisplay = nullptr;
+          }
+          m_nativeDisplayOwnedByUs = false;
+#endif
+        }
+      }
+    } else {
+#if defined(__linux__)
+      if (m_nativeDisplay) {
+        if (m_nativeDisplayOwnedByUs) {
+          XCloseDisplay(m_nativeDisplay);
+        }
+        m_nativeDisplay = nullptr;
+      }
+      m_nativeDisplayOwnedByUs = false;
+#endif
+      isHookedFailed = true;
+    }
+  }
+
+  // --- PATH B: Standalone SDL2 Window (or Fallback if Hooked Failed) ---
+  if ((!nativeWindowHandle || isHookedFailed) && !m_config.forceNoWindow) {
+    if (isHookedFailed) {
+      GLIDE_LOG(WARN, "Vulkan",
+                "Direct hooked binding failed. Falling back to standalone SDL2 "
+                "window...");
+      m_isWindowHooked = false;
+    }
+
+    bool sdlReady = true;
+    if (!SDL_WasInit(SDL_INIT_VIDEO)) {
+      if (SDL_Init(SDL_INIT_VIDEO) < 0) {
+        GLIDE_LOG(WARN, "Vulkan",
+                  "SDL_Init failed: " << SDL_GetError()
+                                      << ". Running headless offscreen.");
+        sdlReady = false;
+      } else {
+        m_sdlVideoInitializedByUs = true;
+      }
+    }
+
+    if (sdlReady) {
       uint32_t scale = m_config.windowScale;
-      auto* win = SDL_CreateWindow(
+      SDL_Window* win = SDL_CreateWindow(
           "3dfx glide-ng Presentation Console (Vulkan)", SDL_WINDOWPOS_CENTERED,
           SDL_WINDOWPOS_CENTERED, width * scale, height * scale,
           SDL_WINDOW_VULKAN | SDL_WINDOW_HIDDEN);
+
       if (win) {
-        // Create Vulkan Surface associated with the SDL window
-        VkSurfaceKHR rawSurface;
+        VkSurfaceKHR rawSurface = nullptr;
         if (SDL_Vulkan_CreateSurface(win, m_instance.get(), &rawSurface)) {
           m_surface = vk::UniqueSurfaceKHR(rawSurface, m_instance.get());
-          GLIDE_LOG(INFO, "Vulkan",
-                    "Vulkan presentation surface created successfully!");
-          if (CreateSwapchain(width * scale, height * scale)) {
+          int actualWidth = width * scale;
+          int actualHeight = height * scale;
+          if (CreateSwapchain(actualWidth, actualHeight)) {
             m_sdlWindow = win;
-            m_headlessMode = false;  // We are NOT headless because we have a
-                                     // presentation window!
+            m_headlessMode = false;
+            presentationSuccess = true;
             GLIDE_LOG(INFO, "Vulkan",
-                      "Vulkan GPU-native swapchain presentation window "
-                      "initialized successfully.");
+                      "Vulkan standalone window initialized successfully.");
           } else {
             GLIDE_LOG(CRITICAL, "Vulkan",
                       "Failed to create Vulkan presentation swapchain.");
@@ -592,6 +944,16 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
           GLIDE_LOG(CRITICAL, "Vulkan",
                     "Failed to create Vulkan surface: " << SDL_GetError());
           SDL_DestroyWindow(win);
+        }
+      }
+
+      if (!presentationSuccess) {
+        GLIDE_LOG(INFO, "Vulkan",
+                  "Presentation setup failed. Cleaning up SDL video subsystem "
+                  "and running headless.");
+        if (m_sdlVideoInitializedByUs) {
+          SDL_QuitSubSystem(SDL_INIT_VIDEO);
+          m_sdlVideoInitializedByUs = false;
         }
       }
     }
@@ -657,49 +1019,75 @@ void VulkanBackend::DetachWindow() {
     SDL_DestroyWindow(reinterpret_cast<SDL_Window*>(m_sdlWindow));
     m_sdlWindow = nullptr;
   }
-  if (!m_config.forceNoWindow) SDL_QuitSubSystem(SDL_INIT_VIDEO);
-
-  if (m_headlessMode) {
-    // Phase 2: Unmap and reset vertex buffer
-    if (m_vertexBufferMap) {
-      m_device->unmapMemory(m_vertexBufferMemory.get());
-      m_vertexBufferMap = nullptr;
-    }
-    m_vertexBufferMemory.reset();
-    m_vertexBuffer.reset();
-
-    for (uint32_t i = 0; i < 2; ++i) {
-      if (m_gpuStagingMaps[i]) {
-        m_device->unmapMemory(m_headlessPixelMemories[i].get());
-        m_gpuStagingMaps[i] = nullptr;
-      }
-      m_headlessPixelBuffers[i].reset();
-      m_headlessPixelMemories[i].reset();
-    }
-    FreeCpuBuffers();
-    for (int i = 0; i < 2; ++i) {
-      m_headlessFramebuffers[i].reset();
-      m_headlessImageViews[i].reset();
-      m_headlessImageMemories[i].reset();
-      m_headlessImages[i].reset();
-    }
-
-    // Explicitly reset depth buffer resources to prevent leaks and shutdown
-    // crashes!
-    m_depthImageView.reset();
-    m_depthImageMemory.reset();
-    m_depthImage.reset();
-
-    // Explicitly reset MSAA resources
-    for (int i = 0; i < 2; ++i) {
-      m_msaaColorImageViews[i].reset();
-      m_msaaColorImageMemories[i].reset();
-      m_msaaColorImages[i].reset();
-    }
-    m_msaaDepthImageView.reset();
-    m_msaaDepthImageMemory.reset();
-    m_msaaDepthImage.reset();
+#if defined(__linux__)
+  if (m_x11GC && m_nativeDisplay) {
+    XFreeGC(reinterpret_cast<Display*>(m_nativeDisplay),
+            reinterpret_cast<GC>(m_x11GC));
+    m_x11GC = nullptr;
   }
+  m_x11Visual = nullptr;
+  m_x11Depth = 0;
+  m_useX11BlitFallback = false;
+
+  if (m_nativeDisplay) {
+    if (m_nativeDisplayOwnedByUs) {
+      XCloseDisplay(m_nativeDisplay);
+      GLIDE_LOG(INFO, "Vulkan", "Closed owned X11 Display connection.");
+    } else {
+      GLIDE_LOG(
+          INFO, "Vulkan",
+          "Detached from shared host X11 Display connection (keeping open).");
+    }
+    m_nativeDisplay = nullptr;
+  }
+  m_nativeDisplayOwnedByUs = false;
+#endif
+  if (m_sdlVideoInitializedByUs) {
+    SDL_QuitSubSystem(SDL_INIT_VIDEO);
+    m_sdlVideoInitializedByUs = false;
+  }
+  m_isWindowHooked = false;
+  m_nativeWindow = nullptr;
+
+  // Phase 2: Unmap and reset vertex buffer
+  if (m_vertexBufferMap) {
+    m_device->unmapMemory(m_vertexBufferMemory.get());
+    m_vertexBufferMap = nullptr;
+  }
+  m_vertexBufferMemory.reset();
+  m_vertexBuffer.reset();
+
+  for (uint32_t i = 0; i < 2; ++i) {
+    if (m_gpuStagingMaps[i]) {
+      m_device->unmapMemory(m_headlessPixelMemories[i].get());
+      m_gpuStagingMaps[i] = nullptr;
+    }
+    m_headlessPixelBuffers[i].reset();
+    m_headlessPixelMemories[i].reset();
+  }
+  FreeCpuBuffers();
+  for (int i = 0; i < 2; ++i) {
+    m_headlessFramebuffers[i].reset();
+    m_headlessImageViews[i].reset();
+    m_headlessImageMemories[i].reset();
+    m_headlessImages[i].reset();
+  }
+
+  // Explicitly reset depth buffer resources to prevent leaks and shutdown
+  // crashes!
+  m_depthImageView.reset();
+  m_depthImageMemory.reset();
+  m_depthImage.reset();
+
+  // Explicitly reset MSAA resources
+  for (int i = 0; i < 2; ++i) {
+    m_msaaColorImageViews[i].reset();
+    m_msaaColorImageMemories[i].reset();
+    m_msaaColorImages[i].reset();
+  }
+  m_msaaDepthImageView.reset();
+  m_msaaDepthImageMemory.reset();
+  m_msaaDepthImage.reset();
 
   m_windowAttached = false;
   m_headlessMode = false;
@@ -1174,6 +1562,68 @@ bool VulkanBackend::SwapBuffers() {
 
   GLIDE_PROFILE_SCOPE("Vulkan::SwapBuffers");
 
+  // Captures keyboard inputs on our standalone window and forwards them back
+  // to the host emulator's event queue.
+  if (m_sdlWindow) {
+    SDL_Event event;
+    while (SDL_PollEvent(&event)) {
+      if (event.type == SDL_KEYDOWN || event.type == SDL_KEYUP) {
+        GLIDE_LOG(INFO, "Vulkan",
+                  "Polled key event: type="
+                      << event.type << ", sym=" << event.key.keysym.sym
+                      << ", state=" << (int)event.key.state);
+        std::cout << "[Wrapper Event Telemetry] Polled key: type=" << event.type
+                  << ", sym=" << event.key.keysym.sym
+                  << ", state=" << (int)event.key.state << std::endl;
+#if defined(__linux__)
+        // Check if the host is running SDL 1.2
+        void* sdl12Handle = dlopen("libSDL-1.2.so.0", RTLD_LAZY | RTLD_NOLOAD);
+        if (sdl12Handle) {
+          auto* pushEvent12 = reinterpret_cast<PFN_SDL12_PushEvent>(
+              dlsym(sdl12Handle, "SDL_PushEvent"));
+          GLIDE_LOG(
+              INFO, "Vulkan",
+              "SDL 1.2 host detected. pushEvent12=" << (void*)pushEvent12);
+          std::cout
+              << "[Wrapper Event Telemetry] SDL 1.2 host detected. pushEvent12="
+              << (void*)pushEvent12 << std::endl;
+          if (pushEvent12) {
+            SDL12_Event event12 = TranslateSdl2ToSdl12Key(event);
+            GLIDE_LOG(INFO, "Vulkan",
+                      "Translated legacy key: type="
+                          << (int)event12.key.type
+                          << ", sym=" << event12.key.keysym.sym
+                          << ", state=" << (int)event12.key.state);
+            std::cout
+                << "[Wrapper Event Telemetry] Translated legacy key: type="
+                << (int)event12.key.type << ", sym=" << event12.key.keysym.sym
+                << ", state=" << (int)event12.key.state << std::endl;
+            int res = pushEvent12(&event12);
+            GLIDE_LOG(INFO, "Vulkan",
+                      "SDL 1.2 SDL_PushEvent returned: " << res);
+            std::cout << "[Wrapper Event Telemetry] SDL 1.2 push returned: "
+                      << res << std::endl;
+          }
+          dlclose(sdl12Handle);
+        } else {
+          // Host is SDL2: Push directly into the shared queue!
+          int res = SDL_PushEvent(&event);
+          GLIDE_LOG(INFO, "Vulkan", "SDL2 SDL_PushEvent returned: " << res);
+          std::cout << "[Wrapper Event Telemetry] SDL2 push returned: " << res
+                    << std::endl;
+        }
+#else
+        // Windows: Push directly into the shared queue (assuming same SDL2 DLL)
+        int res = SDL_PushEvent(&event);
+        GLIDE_LOG(INFO, "Vulkan",
+                  "SDL2 (Windows) SDL_PushEvent returned: " << res);
+        std::cout << "[Wrapper Event Telemetry] SDL2 (Windows) push returned: "
+                  << res << std::endl;
+#endif
+      }
+    }
+  }
+
   // 1. Flush any pending batch draws and terminate the active render pass
   if (m_batchedVertexCount > 0) {
     FlushBatch();
@@ -1281,7 +1731,7 @@ bool VulkanBackend::SwapBuffers() {
     // to guarantee llvmpipe has completed rendering, ensuring the compositor
     // maps a fully populated front buffer immediately and avoiding any black
     // flash.
-    if (m_sdlWindow && !m_windowShown && !m_headlessMode) {
+    if (m_sdlWindow && !m_windowShown && !m_headlessMode && !m_isWindowHooked) {
       try {
         if (m_device->waitForFences(1, &m_fences[m_currentFrameSlot].get(),
                                     VK_TRUE,
@@ -1377,6 +1827,45 @@ bool VulkanBackend::SwapBuffers() {
               "SwapBuffers: Headless - Submitting command buffer...");
     vk::SubmitInfo submitInfo(0, nullptr, nullptr, 1, m_commandBuffer);
     m_graphicsQueue.submit(submitInfo, m_fences[m_currentFrameSlot].get());
+
+#if defined(__linux__)
+    if (m_useX11BlitFallback) {
+      GLIDE_PROFILE_SCOPE("Vulkan::X11BlitFallback_Present");
+      // Wait for the copy submission to complete so pixels are ready on CPU
+      {
+        GLIDE_PROFILE_SCOPE("Vulkan::X11BlitFallback_FenceWait");
+        if (m_device->waitForFences(1, &m_fences[m_currentFrameSlot].get(),
+                                    VK_TRUE,
+                                    UINT64_MAX) != vk::Result::eSuccess) {
+          GLIDE_LOG(CRITICAL, "Vulkan",
+                    "X11 Blit Fallback: Failed to wait for copy fence!");
+        }
+      }
+
+      void* pixels = m_gpuStagingMaps[m_currentFrameSlot];
+      XImage* ximage = XCreateImage(
+          reinterpret_cast<Display*>(m_nativeDisplay),
+          reinterpret_cast<Visual*>(m_x11Visual), m_x11Depth, ZPixmap, 0,
+          reinterpret_cast<char*>(pixels), m_headlessWidth, m_headlessHeight,
+          32,                  // Bitmap pad
+          m_headlessWidth * 4  // Bytes per line
+      );
+
+      if (ximage) {
+        XPutImage(reinterpret_cast<Display*>(m_nativeDisplay),
+                  reinterpret_cast<::Window>(
+                      reinterpret_cast<uintptr_t>(m_nativeWindow)),
+                  reinterpret_cast<GC>(m_x11GC), ximage, 0, 0,  // Source X, Y
+                  0, 0,  // Destination X, Y
+                  m_headlessWidth, m_headlessHeight);
+        XFlush(reinterpret_cast<Display*>(m_nativeDisplay));
+
+        // Free the XImage shell without freeing our mapped staging buffer
+        ximage->data = nullptr;
+        XDestroyImage(ximage);
+      }
+    }
+#endif
 
     // Advance to the next slot and setup recording immediately
     uint32_t nextSlot = (m_currentFrameSlot + 1) % 2;
@@ -1563,12 +2052,29 @@ bool VulkanBackend::CreateInstance() {
   std::vector<const char*> requiredExtensions;
 
   // Load Vulkan instance extensions required by SDL2 for surface creation!
+  bool shouldLoadExtensions = !m_config.forceNoWindow;
+#if defined(__linux__)
   const char* display = std::getenv("DISPLAY");
-  if (!m_config.forceNoWindow && display && display[0] != '\0') {
-    if (SDL_Init(SDL_INIT_VIDEO) < 0) {
-      GLIDE_LOG(WARN, "Vulkan",
-                "SDL_Init video failed in CreateInstance: " << SDL_GetError());
-    } else {
+  const char* waylandDisplay = std::getenv("WAYLAND_DISPLAY");
+  if (!display && !waylandDisplay) {
+    shouldLoadExtensions = false;
+  }
+#endif
+
+  if (shouldLoadExtensions) {
+    bool sdlReady = true;
+    m_sdlVideoInitializedByUs = false;
+    if (!SDL_WasInit(SDL_INIT_VIDEO)) {
+      if (SDL_Init(SDL_INIT_VIDEO) < 0) {
+        GLIDE_LOG(
+            WARN, "Vulkan",
+            "SDL_Init video failed in CreateInstance: " << SDL_GetError());
+        sdlReady = false;
+      } else {
+        m_sdlVideoInitializedByUs = true;
+      }
+    }
+    if (sdlReady) {
       // Explicitly load the Vulkan driver library via SDL to initialize its
       // internal function pointers!
       if (SDL_Vulkan_LoadLibrary(nullptr) < 0) {
@@ -1596,7 +2102,7 @@ bool VulkanBackend::CreateInstance() {
     }
   } else {
     GLIDE_LOG(INFO, "Vulkan",
-              "No active DISPLAY environment variable or forceNoWindow is set. "
+              "No active display environment or forceNoWindow is set. "
               "Skipping SDL Vulkan instance extensions.");
   }
 

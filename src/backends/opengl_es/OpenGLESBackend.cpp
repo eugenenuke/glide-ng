@@ -344,7 +344,7 @@ bool OpenGLESBackend::SwapBuffers() {
     // Show the window dynamically on the first swap, with safety guards,
     // BEFORE swapping to ensure the compositor maps the first swapped frame
     // immediately!
-    if (m_sdlWindow && !m_windowShown && !m_headlessMode) {
+    if (m_sdlWindow && !m_windowShown && !m_headlessMode && !m_isWindowHooked) {
       SDL_ShowWindow(static_cast<SDL_Window*>(m_sdlWindow));
       m_windowShown = true;
     }
@@ -604,9 +604,14 @@ bool OpenGLESBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
 // Context Creation & Shaders Compiler Helpers
 bool OpenGLESBackend::CreateGLContext(void* nativeWindowHandle, uint32_t width,
                                       uint32_t height, bool windowed) {
-  if (SDL_InitSubSystem(SDL_INIT_VIDEO) < 0) {
-    GLIDE_LOG(CRITICAL, "GLES", "SDL_InitSubSystem failed: " << SDL_GetError());
-    return false;
+  m_sdlVideoInitializedByUs = false;
+  if (!SDL_WasInit(SDL_INIT_VIDEO)) {
+    if (SDL_InitSubSystem(SDL_INIT_VIDEO) < 0) {
+      GLIDE_LOG(CRITICAL, "GLES",
+                "SDL_InitSubSystem failed: " << SDL_GetError());
+      return false;
+    }
+    m_sdlVideoInitializedByUs = true;
   }
 
   // Configure OpenGL ES 3.2 attributes
@@ -624,12 +629,31 @@ bool OpenGLESBackend::CreateGLContext(void* nativeWindowHandle, uint32_t width,
   }
 
   uint32_t windowFlags = SDL_WINDOW_OPENGL | SDL_WINDOW_HIDDEN;
-
   uint32_t scale = m_config.windowScale;
-  auto* win =
-      SDL_CreateWindow("3dfx glide-ng Presentation Console (OpenGL ES 3.2)",
-                       SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-                       width * scale, height * scale, windowFlags);
+  SDL_Window* win = nullptr;
+  m_isWindowHooked = false;
+
+  if (nativeWindowHandle) {
+    GLIDE_LOG(INFO, "GLES",
+              "Attempting to hook native window handle for OpenGL ES: "
+                  << nativeWindowHandle);
+    win = SDL_CreateWindowFrom(nativeWindowHandle);
+    if (win) {
+      m_isWindowHooked = true;
+      GLIDE_LOG(INFO, "GLES", "Successfully hooked native window handle.");
+    } else {
+      GLIDE_LOG(WARN, "GLES",
+                "SDL_CreateWindowFrom failed: "
+                    << SDL_GetError()
+                    << ". Falling back to standalone window.");
+    }
+  }
+
+  if (!win) {
+    win = SDL_CreateWindow("3dfx glide-ng Presentation Console (OpenGL ES 3.2)",
+                           SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+                           width * scale, height * scale, windowFlags);
+  }
 
   if (!win) {
     GLIDE_LOG(CRITICAL, "GLES", "SDL_CreateWindow failed: " << SDL_GetError());
@@ -638,6 +662,24 @@ bool OpenGLESBackend::CreateGLContext(void* nativeWindowHandle, uint32_t width,
   }
 
   auto* ctx = SDL_GL_CreateContext(win);
+
+  // Fallback: If context creation fails on the hooked window, destroy it and
+  // fall back to standalone
+  if (!ctx && m_isWindowHooked) {
+    GLIDE_LOG(WARN, "GLES",
+              "Failed to create OpenGL ES context on hooked window: "
+                  << SDL_GetError() << ". Falling back to standalone window.");
+    SDL_DestroyWindow(win);
+    win = nullptr;
+    m_isWindowHooked = false;
+    win = SDL_CreateWindow("3dfx glide-ng Presentation Console (OpenGL ES 3.2)",
+                           SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+                           width * scale, height * scale, windowFlags);
+    if (win) {
+      ctx = SDL_GL_CreateContext(win);
+    }
+  }
+
   if (!ctx && m_msaaSamples > 1) {
     GLIDE_LOG(WARN, "GLES",
               "Failed to create multi-sampled OpenGL ES context. Falling back "
@@ -646,12 +688,43 @@ bool OpenGLESBackend::CreateGLContext(void* nativeWindowHandle, uint32_t width,
     SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, 0);
     SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, 0);
 
-    SDL_DestroyWindow(win);
-    win = SDL_CreateWindow("3dfx glide-ng Presentation Console (OpenGL ES 3.2)",
+    if (win) {
+      SDL_DestroyWindow(win);
+      win = nullptr;
+    }
+
+    // Fallback attempt 1: If we were hooked, try to hook again but without MSAA
+    if (m_isWindowHooked && nativeWindowHandle) {
+      GLIDE_LOG(INFO, "GLES",
+                "Attempting to re-hook native window without MSAA...");
+      win = SDL_CreateWindowFrom(nativeWindowHandle);
+      if (win) {
+        ctx = SDL_GL_CreateContext(win);
+        if (!ctx) {
+          GLIDE_LOG(WARN, "GLES",
+                    "Failed to create non-MSAA context on hooked window. "
+                    "Falling back to standalone.");
+          SDL_DestroyWindow(win);
+          win = nullptr;
+          m_isWindowHooked = false;
+        }
+      } else {
+        m_isWindowHooked = false;
+      }
+    } else {
+      m_isWindowHooked = false;
+    }
+
+    // Fallback attempt 2: Create standalone window if not hooked or if
+    // re-hooking failed
+    if (!win) {
+      win =
+          SDL_CreateWindow("3dfx glide-ng Presentation Console (OpenGL ES 3.2)",
                            SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
                            width * scale, height * scale, windowFlags);
-    if (win) {
-      ctx = SDL_GL_CreateContext(win);
+      if (win) {
+        ctx = SDL_GL_CreateContext(win);
+      }
     }
   }
 
@@ -882,7 +955,11 @@ void OpenGLESBackend::DestroyGLContext() {
     SDL_DestroyWindow(reinterpret_cast<SDL_Window*>(m_sdlWindow));
     m_sdlWindow = nullptr;
   }
-  SDL_QuitSubSystem(SDL_INIT_VIDEO);
+  if (m_sdlVideoInitializedByUs) {
+    SDL_QuitSubSystem(SDL_INIT_VIDEO);
+    m_sdlVideoInitializedByUs = false;
+  }
+  m_isWindowHooked = false;
 }
 
 static const char* geomVsSource = R"(#version 300 es
@@ -2404,7 +2481,8 @@ void OpenGLESBackend::FlushBatch() {
     }
   }
 
-  // Lazy State Synchronization (uniforms, sampler configs, and GL pipeline states)
+  // Lazy State Synchronization (uniforms, sampler configs, and GL pipeline
+  // states)
   if (m_stateCacheDirty) {
     m_is2DGeometry = m_batchIs2DGeometry;
     SyncDepthState();

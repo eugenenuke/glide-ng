@@ -4,9 +4,32 @@
 #include <mutex>
 #include <unordered_map>
 #include <vector>
+#if defined(_WIN32)
+#ifndef VK_USE_PLATFORM_WIN32_KHR
+#define VK_USE_PLATFORM_WIN32_KHR
+#endif
+#elif defined(__linux__)
+#ifndef VK_USE_PLATFORM_XLIB_KHR
+#define VK_USE_PLATFORM_XLIB_KHR
+#endif
+#endif
 #include <vulkan/vulkan.hpp>
 
+// Undefine X11 macro pollution to prevent breaking other C++ headers
+#ifdef None
+#undef None
+#endif
+#ifdef Success
+#undef Success
+#endif
+
 #include "backends/SoftwareBackendBase.h"
+
+#if defined(__linux__)
+struct _XDisplay;
+typedef struct _XDisplay Display;
+struct _XGC;
+#endif
 
 namespace GlideWrapper {
 
@@ -348,7 +371,18 @@ class VulkanBackend : public SoftwareBackendBase {
 
   // SDL2 Visual Presentation Console Singletons
   void* m_sdlWindow{nullptr};  // SDL_Window*
+  void* m_nativeWindow{nullptr};
   bool m_windowShown{false};
+  bool m_isWindowHooked{false};
+  bool m_sdlVideoInitializedByUs{false};
+#if defined(__linux__)
+  Display* m_nativeDisplay{nullptr};
+  bool m_nativeDisplayOwnedByUs{false};
+  bool m_useX11BlitFallback{false};
+  struct _XGC* m_x11GC{nullptr};
+  Visual* m_x11Visual{nullptr};
+  int m_x11Depth{0};
+#endif
   vk::UniqueSurfaceKHR
       m_surface;  // Vulkan presentation surface associated with m_sdlWindow
 

@@ -2810,4 +2810,37 @@ FX_ENTRY void FX_CALL grSplashCb(float x, float y, float w, float h,
   }
 }
 
+/**
+ * @brief Standard Glide 2.x hardware pipeline configuration function.
+ * Functions as a clean, logged stub.
+ */
+FX_ENTRY void FX_CALL grSstConfigPipeline(GrChipID_t chip, FxU32 reg,
+                                          FxU32 value) {
+  GLIDE_LOG(INFO, "Frontend",
+            "grSstConfigPipeline called. chip=" << chip << ", reg=" << reg
+                                                << ", value=" << value);
+}
+
+/**
+ * @brief DOSBox-specific configuration extension.
+ * Performs a handshake verification by setting the signature pointer to 'SDL2'.
+ */
+FX_ENTRY void FX_CALL setConfig(FxU32 flags, void* magic) {
+  GLIDE_LOG(INFO, "Frontend",
+            "setConfig (DOSBox extension) called. flags=" << flags);
+  if (magic) {
+    uint32_t signature = 0x324c4453;  // 'SDL2'
+    std::memcpy(magic, &signature, sizeof(signature));
+  }
+}
+
+/**
+ * @brief DOSBox-specific resolution configuration extension.
+ */
+FX_ENTRY void FX_CALL setConfigRes(int res, void (*swap12)()) {
+  GLIDE_LOG(INFO, "Frontend",
+            "setConfigRes (DOSBox extension) called. res=" << res << ", swap12="
+                                                           << (void*)swap12);
+}
+
 }  // extern "C"

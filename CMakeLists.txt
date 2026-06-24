@@ -23,6 +23,10 @@ find_package(Catch2 REQUIRED)
 find_package(OpenMP REQUIRED)
 find_package(SDL2 REQUIRED)
 
+if(UNIX AND NOT APPLE)
+    find_package(X11 REQUIRED)
+endif()
+
 # Setup Global Output Directories for compiled Binaries and Libraries
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/bin")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/lib")
