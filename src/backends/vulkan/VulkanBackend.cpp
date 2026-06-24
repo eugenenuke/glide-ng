@@ -694,51 +694,54 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
 #if defined(__linux__)
     m_nativeDisplay = nullptr;
     m_nativeDisplayOwnedByUs = false;
+    m_nativeWindow = nullptr;
 
-    // 1. Tier A: Try SDL2 Shared Context via Current Window
-    SDL_Window* currentSdl2Win = SDL_GL_GetCurrentWindow();
-    if (currentSdl2Win) {
-      SDL_SysWMinfo wmInfo;
-      SDL_VERSION(&wmInfo.version);
-      if (SDL_GetWindowWMInfo(currentSdl2Win, &wmInfo)) {
-        if (wmInfo.subsystem == SDL_SYSWM_X11) {
-          m_nativeDisplay = wmInfo.info.x11.display;
-          GLIDE_LOG(INFO, "Vulkan",
-                    "Extracted host X11 Display connection from active SDL2 GL "
-                    "context window.");
-        }
-      }
-    }
-
-    // 2. Tier B: Try SDL 1.2 Dynamic Lookup
-    if (!m_nativeDisplay) {
-      void* sdl12Symbol = dlsym(RTLD_DEFAULT, "SDL_GetWMInfo");
-      if (sdl12Symbol) {
-        auto sdl12_GetWMInfo =
-            reinterpret_cast<PFN_SDL12_GetWMInfo>(sdl12Symbol);
-        SDL12_SysWMinfo wminfo{};
-        wminfo.version.major = 1;
-        wminfo.version.minor = 2;
-        wminfo.version.patch = 0;
-        if (sdl12_GetWMInfo(&wminfo) == 1) {
-          m_nativeDisplay = wminfo.info.x11.display;
-          m_nativeWindow = reinterpret_cast<void*>(wminfo.info.x11.window); // Extract the REAL, UNTRUNCATED Window ID!
-          GLIDE_LOG(
-              INFO, "Vulkan",
-              "Extracted host X11 Display and Window from SDL 1.2 SysWMinfo. Window="
-                  << m_nativeWindow);
-        }
-      }
-    }
-
-    // 3. Tier C: Fallback to New Connection
-    if (!m_nativeDisplay) {
-      m_nativeDisplay = XOpenDisplay(nullptr);
-      if (m_nativeDisplay) {
-        m_nativeDisplayOwnedByUs = true;
+    // 1. Extract ONLY the host Window ID using Tier B (SDL 1.2) or Tier A (SDL2)
+    void* sdl12Symbol = dlsym(RTLD_DEFAULT, "SDL_GetWMInfo");
+    if (sdl12Symbol) {
+      auto sdl12_GetWMInfo =
+          reinterpret_cast<PFN_SDL12_GetWMInfo>(sdl12Symbol);
+      SDL12_SysWMinfo wminfo{};
+      wminfo.version.major = 1;
+      wminfo.version.minor = 2;
+      wminfo.version.patch = 0;
+      if (sdl12_GetWMInfo(&wminfo) == 1) {
+        m_nativeWindow = reinterpret_cast<void*>(wminfo.info.x11.window);
         GLIDE_LOG(INFO, "Vulkan",
-                  "Opened new X11 Display connection (Fallback).");
+                  "Extracted host X11 Window from SDL 1.2. Window="
+                      << m_nativeWindow);
       }
+    }
+
+    if (!m_nativeWindow) {
+      SDL_Window* currentSdl2Win = SDL_GL_GetCurrentWindow();
+      if (currentSdl2Win) {
+        SDL_SysWMinfo wmInfo;
+        SDL_VERSION(&wmInfo.version);
+        if (SDL_GetWindowWMInfo(currentSdl2Win, &wmInfo)) {
+          if (wmInfo.subsystem == SDL_SYSWM_X11) {
+            m_nativeWindow = reinterpret_cast<void*>(wmInfo.info.x11.window);
+            GLIDE_LOG(
+                INFO, "Vulkan",
+                "Extracted host X11 Window from active SDL2 GL context. Window="
+                    << m_nativeWindow);
+          }
+        }
+      }
+    }
+
+    // 2. ALWAYS open our own private, dedicated X11 Display connection for blitting!
+    // This completely isolates our rendering pipeline from SDL's event connection,
+    // restoring 100% responsiveness to keyboard and mouse inputs.
+    m_nativeDisplay = XOpenDisplay(nullptr);
+    if (m_nativeDisplay) {
+      m_nativeDisplayOwnedByUs = true;
+      GLIDE_LOG(
+          INFO, "Vulkan",
+          "Opened private, isolated X11 Display connection for blitting.");
+    } else {
+      GLIDE_LOG(CRITICAL, "Vulkan",
+                "Failed to open private X11 Display connection!");
     }
 
     if (m_nativeDisplay) {

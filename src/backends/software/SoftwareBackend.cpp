@@ -776,6 +776,7 @@ bool SoftwareBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
   if (!m_config.forceNoWindow) {
 #if defined(__linux__)
     m_nativeDisplay = nullptr;
+    m_nativeDisplayOwnedByUs = false;
     m_nativeWindow = nullptr;
     m_useX11BlitFallback = false;
     m_x11GC = nullptr;
@@ -783,7 +784,7 @@ bool SoftwareBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
     m_x11Depth = 0;
 
     if (nativeWindowHandle) {
-      // 1. Tier B: Try SDL 1.2 Dynamic Lookup for untruncated window extraction
+      // 1. Extract ONLY the host Window ID using Tier B (SDL 1.2)
       void* sdl12Symbol = dlsym(RTLD_DEFAULT, "SDL_GetWMInfo");
       if (sdl12Symbol) {
         auto sdl12_GetWMInfo =
@@ -793,15 +794,30 @@ bool SoftwareBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
         wminfo.version.minor = 2;
         wminfo.version.patch = 0;
         if (sdl12_GetWMInfo(&wminfo) == 1) {
-          m_nativeDisplay = wminfo.info.x11.display;
           m_nativeWindow = reinterpret_cast<void*>(wminfo.info.x11.window);
           GLIDE_LOG(INFO, "Software",
-                    "Extracted host X11 Display and Window from SDL 1.2. Window="
+                    "Extracted host X11 Window from SDL 1.2. Window="
                         << m_nativeWindow);
         }
       }
 
-      // 2. Try to activate the robust X11 Blit Fallback
+      // 2. ALWAYS open our own private, dedicated X11 Display connection for blitting!
+      // This completely isolates our rendering pipeline from SDL's event connection,
+      // restoring 100% responsiveness to keyboard and mouse inputs.
+      if (m_nativeWindow) {
+        m_nativeDisplay = XOpenDisplay(nullptr);
+        if (m_nativeDisplay) {
+          m_nativeDisplayOwnedByUs = true;
+          GLIDE_LOG(
+              INFO, "Software",
+              "Opened private, isolated X11 Display connection for blitting.");
+        } else {
+          GLIDE_LOG(CRITICAL, "Software",
+                    "Failed to open private X11 Display connection!");
+        }
+      }
+
+      // 3. Try to activate the robust X11 Blit Fallback
       if (m_nativeDisplay && m_nativeWindow) {
         auto* dpy = reinterpret_cast<Display*>(m_nativeDisplay);
         auto win = reinterpret_cast<::Window>(
@@ -965,7 +981,15 @@ void SoftwareBackend::DetachWindow() {
   }
   m_useX11BlitFallback = false;
   m_nativeWindow = nullptr;
-  m_nativeDisplay = nullptr;
+
+  if (m_nativeDisplay) {
+    if (m_nativeDisplayOwnedByUs) {
+      XCloseDisplay(reinterpret_cast<Display*>(m_nativeDisplay));
+      GLIDE_LOG(INFO, "Software", "Closed owned X11 Display connection.");
+    }
+    m_nativeDisplay = nullptr;
+  }
+  m_nativeDisplayOwnedByUs = false;
 #endif
 
   if (m_sdlTexture) {

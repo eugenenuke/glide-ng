@@ -118,7 +118,7 @@ class SoftwareBackend : public SoftwareBackendBase {
   void* m_x11GC{nullptr};
   void* m_x11Visual{nullptr};
   int m_x11Depth{0};
-  bool m_useX11BlitFallback{false};
+  bool m_nativeDisplayOwnedByUs{false};
 #endif
 
   std::unique_ptr<ThreadPool> m_threadPool;

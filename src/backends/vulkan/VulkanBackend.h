@@ -378,7 +378,6 @@ class VulkanBackend : public SoftwareBackendBase {
 #if defined(__linux__)
   Display* m_nativeDisplay{nullptr};
   bool m_nativeDisplayOwnedByUs{false};
-  bool m_useX11BlitFallback{false};
   struct _XGC* m_x11GC{nullptr};
   Visual* m_x11Visual{nullptr};
   int m_x11Depth{0};

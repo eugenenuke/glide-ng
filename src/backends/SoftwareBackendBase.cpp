@@ -272,10 +272,22 @@ void SoftwareBackendBase::SetClipWindow(uint32_t minX, uint32_t minY,
                                         uint32_t maxX, uint32_t maxY) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   MarkStateDirty();
-  m_clipMinX = minX;
-  m_clipMinY = minY;
-  m_clipMaxX = std::min(m_headlessWidth, maxX);
-  m_clipMaxY = std::min(m_headlessHeight, maxY);
+
+  if (m_useX11BlitFallback && m_guestWidth > 0 && m_guestHeight > 0) {
+    float scaleX = (float)m_headlessWidth / m_guestWidth;
+    float scaleY = (float)m_headlessHeight / m_guestHeight;
+
+    m_clipMinX = static_cast<uint32_t>(minX * scaleX);
+    m_clipMinY = static_cast<uint32_t>(minY * scaleY);
+    m_clipMaxX = static_cast<uint32_t>(maxX * scaleX);
+    m_clipMaxY = static_cast<uint32_t>(maxY * scaleY);
+  } else {
+    m_clipMinX = minX;
+    m_clipMinY = minY;
+    m_clipMaxX = std::min(m_headlessWidth, maxX);
+    m_clipMaxY = std::min(m_headlessHeight, maxY);
+  }
+
   GLIDE_LOG(DEBUG, "Rasterizer",
             "SetClipWindow: (" << m_clipMinX << "," << m_clipMinY << ") to ("
                                << m_clipMaxX << "," << m_clipMaxY << ")");
