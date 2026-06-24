@@ -41,9 +41,9 @@
 
 struct SDL12_SysWMinfo {
   struct {
-    int major;
-    int minor;
-    int patch;
+    unsigned char major;
+    unsigned char minor;
+    unsigned char patch;
   } version;
   int subsystem;
   union {
