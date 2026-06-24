@@ -21,50 +21,152 @@
 #endif
 
 #if defined(__linux__)
-#include <X11/Xlib.h>
-#include <X11/Xutil.h>
 #include <dlfcn.h>
 
-// Undefine X11 macro pollution to prevent breaking other C++ headers
-#ifdef True
-#undef True
-#endif
-#ifdef False
-#undef False
-#endif
-#ifdef None
-#undef None
-#endif
-#ifdef Success
-#undef Success
-#endif
-
-struct SDL12_SysWMinfo {
-  struct {
-    unsigned char major;
-    unsigned char minor;
-    unsigned char patch;
-  } version;
-  int subsystem;
-  union {
-    struct {
-      Display* display;
-      ::Window window;
-    } x11;
-  } info;
+struct SDL12_PixelFormat {
+  void* palette;
+  uint8_t BitsPerPixel;
+  uint8_t BytesPerPixel;
+  uint8_t Rloss, Gloss, Bloss, Aloss;
+  uint8_t Rshift, Gshift, Bshift, Ashift;
+  uint32_t Rmask, Gmask, Bmask, Amask;
 };
 
-typedef int (*PFN_SDL12_GetWMInfo)(SDL12_SysWMinfo* info);
+struct SDL12_Surface {
+  uint32_t flags;
+  SDL12_PixelFormat* format;
+  int w, h;
+  uint16_t pitch;
+  void* pixels;
+};
 
-static thread_local bool s_x11ErrorOccurred = false;
-static int SoftwareX11ErrorHandler(Display* dpy, XErrorEvent* err) {
-  s_x11ErrorOccurred = true;
-  char buf[256];
-  XGetErrorText(dpy, err->error_code, buf, sizeof(buf));
-  std::cerr << "[SoftwareX11] Caught asynchronous X11 protocol error: " << buf
-            << " (Major Opcode: " << (int)err->request_code
-            << ", Resource ID: " << err->resourceid << ")" << std::endl;
-  return 0;
+typedef SDL12_Surface* (*PFN_SDL12_GetVideoSurface)(void);
+typedef void (*PFN_SDL12_UpdateRect)(SDL12_Surface* screen, int32_t x, int32_t y, int32_t w, int32_t h);
+typedef int (*PFN_SDL12_LockSurface)(SDL12_Surface* surface);
+typedef void (*PFN_SDL12_UnlockSurface)(SDL12_Surface* surface);
+struct SDL12_ActiveEvent {
+  uint8_t type;
+  uint8_t gain;
+  uint8_t state;
+};
+
+struct SDL12_KeyboardEvent {
+  uint8_t type;
+  uint8_t which;
+  uint8_t state;
+  struct {
+    uint8_t scancode;
+    uint32_t sym;
+    uint32_t mod;
+    uint16_t unicode;
+  } keysym;
+};
+
+union SDL12_Event {
+  uint8_t type;
+  SDL12_ActiveEvent active;
+  SDL12_KeyboardEvent key;
+  uint8_t pad[24];
+};
+
+thread_local bool g_inInjection = false;
+static std::chrono::steady_clock::time_point s_keyUpTime[512] = {};
+static bool s_keyState[512] = {false};
+static bool s_pendingKeyUp[512] = {false};
+static constexpr int KEY_DEBOUNCE_MS = 180;
+
+typedef int (*PFN_SDL12_PushEvent)(void* event);
+
+static int AntiGrabBreakFilter(const void* rawEvent) {
+  const SDL12_Event* event = reinterpret_cast<const SDL12_Event*>(rawEvent);
+  uint8_t type = event->type;
+
+  if (type == 2 || type == 3) { // SDL_KEYDOWN or SDL_KEYUP
+    uint32_t sym = event->key.keysym.sym;
+    uint8_t state = event->key.state;
+    uint8_t scancode = event->key.keysym.scancode;
+
+    // Log EVERY intercepted physical event before any filtering/discarding!
+    std::cout << "[Wrapper-AntiGrab-Filter] INTERCEPTED physical event: type=" << (int)type
+              << " (" << (type == 2 ? "KEYDOWN" : "KEYUP") << "), sym=" << sym 
+              << ", original_scancode=" << (int)scancode 
+              << ", state=" << (int)state << ", thread_local_g_inInjection=" << g_inInjection << std::endl;
+
+    if (g_inInjection) {
+      std::cout << "[Wrapper-AntiGrab-Filter] PASSING injected event: type=" << (int)type 
+                << ", sym=" << sym << std::endl;
+      return 1; // Let recursive injection pass through!
+    }
+
+    if (sym >= 512) {
+      return 1; // Keep weird keys out
+    }
+
+    static PFN_SDL12_PushEvent pfn_PushEvent = nullptr;
+    if (!pfn_PushEvent) {
+      void* sdlHandle = dlopen("libSDL-1.2.so.0", RTLD_LAZY | RTLD_NOLOAD);
+      if (sdlHandle) {
+        pfn_PushEvent = reinterpret_cast<PFN_SDL12_PushEvent>(dlsym(sdlHandle, "SDL_PushEvent"));
+      }
+    }
+
+    if (!pfn_PushEvent) {
+      return 1;
+    }
+
+    if (type == 2) { // KEYDOWN
+      // Cancel any pending release for this key
+      if (s_pendingKeyUp[sym]) {
+        std::cout << "[Wrapper-AntiGrab-Filter] DEBOUNCED: Cancelled pending release for sym=" << sym << std::endl;
+        s_pendingKeyUp[sym] = false;
+      }
+
+      // If the key is not already marked as pressed, send the KEYDOWN to the game
+      if (!s_keyState[sym]) {
+        s_keyState[sym] = true;
+
+        SDL12_Event cleanEvent;
+        std::memset(&cleanEvent, 0, sizeof(cleanEvent));
+        cleanEvent.key.type = 2; // KEYDOWN
+        cleanEvent.key.state = 1; // Pressed
+        cleanEvent.key.which = event->key.which;
+        cleanEvent.key.keysym.sym = sym;
+        cleanEvent.key.keysym.mod = event->key.keysym.mod;
+        cleanEvent.key.keysym.unicode = event->key.keysym.unicode;
+
+        // Patch scancode if 0
+        if (scancode == 0) {
+          if (sym == 273)      cleanEvent.key.keysym.scancode = 111; // Up
+          else if (sym == 274) cleanEvent.key.keysym.scancode = 116; // Down
+          else if (sym == 275) cleanEvent.key.keysym.scancode = 114; // Right
+          else if (sym == 276) cleanEvent.key.keysym.scancode = 113; // Left
+          else if (sym == 27)  cleanEvent.key.keysym.scancode = 9;   // ESC
+          else if (sym == 13)  cleanEvent.key.keysym.scancode = 36;  // ENTER
+        } else {
+          cleanEvent.key.keysym.scancode = scancode;
+        }
+
+        std::cout << "[Wrapper-AntiGrab-Filter] PROXYING KEYDOWN to game: sym=" << sym 
+                  << ", patched_scancode=" << (int)cleanEvent.key.keysym.scancode << std::endl;
+
+        g_inInjection = true;
+        pfn_PushEvent(&cleanEvent);
+        g_inInjection = false;
+      } else {
+        std::cout << "[Wrapper-AntiGrab-Filter] IGNORED duplicate KEYDOWN (holding) for sym=" << sym << std::endl;
+      }
+      return 0; // Discard the original "dirty" physical event!
+    } 
+    else if (type == 3) { // KEYUP
+      // Delay the release of this key to debounce RDP micro-taps!
+      std::cout << "[Wrapper-AntiGrab-Filter] DEBOUNCING: Scheduled release for sym=" << sym << " in " << KEY_DEBOUNCE_MS << "ms" << std::endl;
+      s_pendingKeyUp[sym] = true;
+      s_keyUpTime[sym] = std::chrono::steady_clock::now() + std::chrono::milliseconds(KEY_DEBOUNCE_MS);
+      return 0; // Discard original event
+    }
+  }
+
+  return 1; // Keep other events
 }
 #endif
 
@@ -719,7 +821,6 @@ bool SoftwareBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
                                    uint32_t height, bool windowed) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   if (!m_initialized) return false;
-  m_windowShown = false;
   if (m_windowAttached) DetachWindow();
 
   GLIDE_LOG(INFO, "Software",
@@ -755,7 +856,7 @@ bool SoftwareBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
 
   std::ostringstream logStream;
   logStream << "\n--- Active Software Execution Adapter ---\n"
-            << "  Adapter     : Host CPU Reference Rasterizer\n"
+            << "  Adapter     : Host CPU Reference Rasterizer (Pure SDL Surface mode)\n"
             << "    Cores     : " << cores << " Hardware Threads\n"
             << "    Arch      : " << arch << "\n"
             << "    Engine    : glide-ng Software Reference Core (v0.1.0)\n"
@@ -771,327 +872,143 @@ bool SoftwareBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
   SetClipWindow(0, 0, m_headlessWidth, m_headlessHeight);
   InitTileGrid();
 
-  m_isWindowHooked = false;
-  m_sdlVideoInitializedByUs = false;
-  if (!m_config.forceNoWindow) {
-#if defined(__linux__)
-    m_nativeDisplay = nullptr;
-    m_nativeDisplayOwnedByUs = false;
-    m_nativeWindow = nullptr;
-    m_useX11BlitFallback = false;
-    m_x11GC = nullptr;
-    m_x11Visual = nullptr;
-    m_x11Depth = 0;
-
-    if (nativeWindowHandle) {
-      // 1. Extract ONLY the host Window ID using Tier B (SDL 1.2)
-      void* sdl12Symbol = dlsym(RTLD_DEFAULT, "SDL_GetWMInfo");
-      if (sdl12Symbol) {
-        auto sdl12_GetWMInfo =
-            reinterpret_cast<PFN_SDL12_GetWMInfo>(sdl12Symbol);
-        SDL12_SysWMinfo wminfo{};
-        wminfo.version.major = 1;
-        wminfo.version.minor = 2;
-        wminfo.version.patch = 0;
-        if (sdl12_GetWMInfo(&wminfo) == 1) {
-          m_nativeWindow = reinterpret_cast<void*>(wminfo.info.x11.window);
-          GLIDE_LOG(INFO, "Software",
-                    "Extracted host X11 Window from SDL 1.2. Window="
-                        << m_nativeWindow);
-        }
-      }
-
-      // 2. ALWAYS open our own private, dedicated X11 Display connection for blitting!
-      // This completely isolates our rendering pipeline from SDL's event connection,
-      // restoring 100% responsiveness to keyboard and mouse inputs.
-      if (m_nativeWindow) {
-        m_nativeDisplay = XOpenDisplay(nullptr);
-        if (m_nativeDisplay) {
-          m_nativeDisplayOwnedByUs = true;
-          GLIDE_LOG(
-              INFO, "Software",
-              "Opened private, isolated X11 Display connection for blitting.");
-        } else {
-          GLIDE_LOG(CRITICAL, "Software",
-                    "Failed to open private X11 Display connection!");
-        }
-      }
-
-      // 3. Try to activate the robust X11 Blit Fallback
-      if (m_nativeDisplay && m_nativeWindow) {
-        auto* dpy = reinterpret_cast<Display*>(m_nativeDisplay);
-        auto win = reinterpret_cast<::Window>(
-            reinterpret_cast<uintptr_t>(m_nativeWindow));
-
-        XSync(dpy, false);
-
-        s_x11ErrorOccurred = false;
-        auto* oldHandler = XSetErrorHandler(SoftwareX11ErrorHandler);
-
-        XWindowAttributes attrs;
-        Status status = XGetWindowAttributes(dpy, win, &attrs);
-
-        GC gc = nullptr;
-        if (status != 0 && !s_x11ErrorOccurred) {
-          XGCValues values;
-          values.graphics_exposures = false;  // Prevent event queue flooding!
-          gc = XCreateGC(dpy, win, GCGraphicsExposures, &values);
-        }
-
-        XSync(dpy, false);
-        XSetErrorHandler(oldHandler);
-
-        if (status != 0 && gc != nullptr && !s_x11ErrorOccurred) {
-          m_x11Visual = attrs.visual;
-          m_x11Depth = attrs.depth;
-          m_x11GC = gc;
-          m_useX11BlitFallback = true;
-          m_isWindowHooked = true;
-          m_sdlWindow = nullptr;  // Skip creating standalone SDL2 window
-
-          int realWidth = attrs.width;
-          int realHeight = attrs.height;
-
-          GLIDE_LOG(INFO, "Software",
-                    "X11 Blit Fallback activated successfully. Real Window Size="
-                        << realWidth << "x" << realHeight
-                        << ", Depth=" << m_x11Depth);
-
-          m_headlessWidth = realWidth * m_ssaaScale;
-          m_headlessHeight = realHeight * m_ssaaScale;
-          m_headlessMode = true;
-
-          // Re-allocate double buffers matching real window dimensions!
-          AllocateCpuBuffers(m_headlessWidth, m_headlessHeight);
-          m_allocatedBuffer = true;
-
-          // Resize depth buffer to match real window dimensions!
-          size_t rawDepthSize = (size_t)m_headlessWidth * m_headlessHeight * 4;
-          size_t paddedDepthSize = (rawDepthSize + 63) & ~63;
-          size_t allocatedDepthSize = paddedDepthSize + 64;
-          m_headlessDepthBuffer.resize(allocatedDepthSize / sizeof(float), 0.0f);
-
-          SetClipWindow(0, 0, m_headlessWidth, m_headlessHeight);
-          InitTileGrid();
-
-          m_headlessPixelMap = m_cpuBuffers[m_backBufferIdx].data();
-          m_windowAttached = true;
-
-          // Initialize the asynchronous blitter thread!
-          m_blitStagingBuffer.resize((size_t)m_headlessWidth * m_headlessHeight * 4, 0);
-          m_blitWidth = m_headlessWidth;
-          m_blitHeight = m_headlessHeight;
-          m_blitThreadRunning = true;
-          m_blitFrameReady = false;
-          m_blitThread = std::thread(&SoftwareBackend::BlitThreadLoop, this);
-          GLIDE_LOG(INFO, "Software", "Started Asynchronous Blitter Thread.");
-
-#if defined(__linux__)
-          // Intercept, log, and surgically patch SDL events to fix zero-scancode emulation blocks!
-          void* sdl12DiagHandle = dlopen("libSDL-1.2.so.0", RTLD_LAZY | RTLD_NOLOAD);
-          if (sdl12DiagHandle) {
-              typedef void (*PFN_SDL_SetEventFilter)(int (*filter)(const void* event));
-              auto pfn_SetEventFilter = reinterpret_cast<PFN_SDL_SetEventFilter>(dlsym(sdl12DiagHandle, "SDL_SetEventFilter"));
-              if (pfn_SetEventFilter) {
-                  struct LocalFilter {
-                      static int Filter(const void* rawEvent) {
-                          uint8_t* eventBytes = const_cast<uint8_t*>(reinterpret_cast<const uint8_t*>(rawEvent));
-                          uint8_t type = eventBytes[0];
-                          if (type == 2 || type == 3) { // SDL_KEYDOWN or SDL_KEYUP
-                              // Extract keysym.sym from offset 8 (32-bit little-endian)
-                              uint32_t sym = *reinterpret_cast<const uint32_t*>(&eventBytes[8]);
-                              uint8_t scancode = eventBytes[4];
-                              
-                              if (scancode == 0) {
-                                  // Dynamically patch the zero-scancodes with standard Linux X11/SDL 1.2 keycodes
-                                  if (sym == 273) {        // SDLK_UP
-                                      eventBytes[4] = 111;
-                                  } else if (sym == 274) { // SDLK_DOWN
-                                      eventBytes[4] = 116;
-                                  } else if (sym == 275) { // SDLK_RIGHT
-                                      eventBytes[4] = 114;
-                                  } else if (sym == 276) { // SDLK_LEFT
-                                      eventBytes[4] = 113;
-                                  }
-                              }
-                              
-                              uint8_t updatedScancode = eventBytes[4];
-                              std::cout << "[Wrapper-Diagnostics] KEYEVENT: type=" << (int)type 
-                                        << ", state=" << (int)eventBytes[2]
-                                        << ", original_scancode=" << (int)scancode
-                                        << ", patched_scancode=" << (int)updatedScancode
-                                        << ", sym=" << sym << std::endl;
-                          } else if (type == 1) { // SDL_ACTIVEEVENT
-                              uint8_t gain = eventBytes[1];
-                              uint8_t state = eventBytes[2];
-                              std::cout << "[Wrapper-Diagnostics] ACTIVEEVENT: gain=" << (int)gain 
-                                        << ", state=" << (int)state << std::endl;
-                          }
-                          return 1; // Keep event in the queue!
-                      }
-                  };
-                  pfn_SetEventFilter(LocalFilter::Filter);
-                  GLIDE_LOG(INFO, "Software", "Successfully registered diagnostic SDL event filter with live scancode patching.");
-              }
-              dlclose(sdl12DiagHandle);
-          }
-#endif
-
-          return true;  // Return successfully immediately!
-        } else {
-          GLIDE_LOG(
-              WARN, "Software",
-              "X11 Blit Fallback initialization failed. Falling back to native "
-              "SDL window hooking...");
-          if (gc) {
-            XFreeGC(dpy, gc);
-          }
-        }
-      }
-    }
-#endif
-
-    bool sdlReady = true;
-    if (!SDL_WasInit(SDL_INIT_VIDEO)) {
-      if (SDL_Init(SDL_INIT_VIDEO) < 0) {
-        GLIDE_LOG(
-            WARN, "Software",
-            "SDL_Init failed: " << SDL_GetError()
-                                << ". Running pure offscreen testing mode.");
-        sdlReady = false;
-      } else {
-        m_sdlVideoInitializedByUs = true;
-      }
-    }
-    if (sdlReady) {
-      SDL_Window* win = nullptr;
-      if (nativeWindowHandle) {
-        GLIDE_LOG(
-            INFO, "Software",
-            "Attempting to hook native window handle: " << nativeWindowHandle);
-        win = SDL_CreateWindowFrom(nativeWindowHandle);
-        if (win) {
-          m_isWindowHooked = true;
-          GLIDE_LOG(INFO, "Software",
-                    "Successfully hooked native window handle.");
-        } else {
-          GLIDE_LOG(WARN, "Software",
-                    "SDL_CreateWindowFrom failed: "
-                        << SDL_GetError()
-                        << ". Falling back to standalone window.");
-        }
-      }
-      if (!win) {
-        GLIDE_LOG(
-            INFO, "Software",
-            "Instantiating interactive SDL2 desktop presentation console...");
-        uint32_t scale = m_config.windowScale;
-        win =
-            SDL_CreateWindow("3dfx glide-ng Presentation Console (Software)",
-                             SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-                             width * scale, height * scale, SDL_WINDOW_HIDDEN);
-      }
-      if (win) {
-        const char* quality =
-            (m_config.presentationFilter == 0) ? "nearest" : "linear";
-        SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, quality);
-
-        Uint32 flags = SDL_RENDERER_ACCELERATED;
-        if (m_config.vsync) {
-          flags |= SDL_RENDERER_PRESENTVSYNC;
-        }
-        auto* ren = SDL_CreateRenderer(win, -1, flags);
-        if (!ren) ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_SOFTWARE);
-
-        if (ren) {
-          auto* tex =
-              SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888,
-                                SDL_TEXTUREACCESS_STREAMING, width, height);
-          if (tex) {
-            m_sdlWindow = win;
-            m_sdlRenderer = ren;
-            m_sdlTexture = tex;
-            GLIDE_LOG(INFO, "Software",
-                      "SDL2 live visual console structured beautifully.");
-          } else {
-            SDL_DestroyRenderer(ren);
-            SDL_DestroyWindow(win);
-          }
-        } else {
-          SDL_DestroyWindow(win);
-        }
-      }
-    }
-  }
-
   m_headlessPixelMap = m_cpuBuffers[m_backBufferIdx].data();
   m_windowAttached = true;
+
+  // Register the Web RDP Anti-Grab-Break filter dynamically!
+  void* sdl12DiagHandle = dlopen("libSDL-1.2.so.0", RTLD_LAZY | RTLD_NOLOAD);
+  if (sdl12DiagHandle) {
+    typedef void (*PFN_SDL_SetEventFilter)(int (*filter)(const void* event));
+    auto pfn_SetEventFilter = reinterpret_cast<PFN_SDL_SetEventFilter>(dlsym(sdl12DiagHandle, "SDL_SetEventFilter"));
+    if (pfn_SetEventFilter) {
+      pfn_SetEventFilter(AntiGrabBreakFilter);
+      GLIDE_LOG(INFO, "Software", "Registered Web RDP Anti-Grab-Break keyboard filter.");
+    }
+    dlclose(sdl12DiagHandle);
+  }
+
+  // Launch the 10-second Diagnostic Autopilot Thread!
+  std::thread([this]() {
+      std::this_thread::sleep_for(std::chrono::seconds(4));
+      
+      void* sdl12DiagHandle = dlopen("libSDL-1.2.so.0", RTLD_LAZY | RTLD_NOLOAD);
+      if (!sdl12DiagHandle) return;
+      
+      typedef int (*PFN_SDL12_PushEvent)(void* event);
+      auto pfn_PushEvent = reinterpret_cast<PFN_SDL12_PushEvent>(dlsym(sdl12DiagHandle, "SDL_PushEvent"));
+      if (!pfn_PushEvent) {
+          dlclose(sdl12DiagHandle);
+          return;
+      }
+      
+      std::cout << "\n[Autopilot] ==========================================" << std::endl;
+      std::cout << "[Autopilot] LAUNCHING 4-DIRECTION DIAGNOSTIC TIMELINE..." << std::endl;
+      std::cout << "[Autopilot] Testing: Up (2s) -> Left (2s) -> Right (2s) -> Down (2s)" << std::endl;
+      std::cout << "[Autopilot] ==========================================\n" << std::endl;
+      
+      SDL12_Event evDown;
+      std::memset(&evDown, 0, sizeof(evDown));
+      evDown.key.type = 2; // SDL_KEYDOWN
+      evDown.key.state = 1; // Pressed
+
+      SDL12_Event evUp;
+      std::memset(&evUp, 0, sizeof(evUp));
+      evUp.key.type = 3; // SDL_KEYUP
+      evUp.key.state = 0; // Released
+      
+      // 1. Up (sym=273, scancode=111)
+      std::cout << "[Autopilot] INJECTING SEQUENCE 1/4: Arrow Up (2s)" << std::endl;
+      evDown.key.keysym.sym = 273;
+      evDown.key.keysym.scancode = 111;
+      g_inInjection = true;
+      pfn_PushEvent(&evDown);
+      g_inInjection = false;
+      std::this_thread::sleep_for(std::chrono::seconds(2));
+      evUp.key.keysym.sym = 273;
+      evUp.key.keysym.scancode = 111;
+      g_inInjection = true;
+      pfn_PushEvent(&evUp);
+      g_inInjection = false;
+      std::this_thread::sleep_for(std::chrono::milliseconds(500));
+
+      // 2. Left (sym=276, scancode=113)
+      std::cout << "[Autopilot] INJECTING SEQUENCE 2/4: Arrow Left (2s)" << std::endl;
+      evDown.key.keysym.sym = 276;
+      evDown.key.keysym.scancode = 113;
+      g_inInjection = true;
+      pfn_PushEvent(&evDown);
+      g_inInjection = false;
+      std::this_thread::sleep_for(std::chrono::seconds(2));
+      evUp.key.keysym.sym = 276;
+      evUp.key.keysym.scancode = 113;
+      g_inInjection = true;
+      pfn_PushEvent(&evUp);
+      g_inInjection = false;
+      std::this_thread::sleep_for(std::chrono::milliseconds(500));
+
+      // 3. Right (sym=275, scancode=114)
+      std::cout << "[Autopilot] INJECTING SEQUENCE 3/4: Arrow Right (2s)" << std::endl;
+      evDown.key.keysym.sym = 275;
+      evDown.key.keysym.scancode = 114;
+      g_inInjection = true;
+      pfn_PushEvent(&evDown);
+      g_inInjection = false;
+      std::this_thread::sleep_for(std::chrono::seconds(2));
+      evUp.key.keysym.sym = 275;
+      evUp.key.keysym.scancode = 114;
+      g_inInjection = true;
+      pfn_PushEvent(&evUp);
+      g_inInjection = false;
+      std::this_thread::sleep_for(std::chrono::milliseconds(500));
+
+      // 4. Down (sym=274, scancode=116)
+      std::cout << "[Autopilot] INJECTING SEQUENCE 4/4: Arrow Down (2s)" << std::endl;
+      evDown.key.keysym.sym = 274;
+      evDown.key.keysym.scancode = 116;
+      g_inInjection = true;
+      pfn_PushEvent(&evDown);
+      g_inInjection = false;
+      std::this_thread::sleep_for(std::chrono::seconds(2));
+      evUp.key.keysym.sym = 274;
+      evUp.key.keysym.scancode = 116;
+      g_inInjection = true;
+      pfn_PushEvent(&evUp);
+      g_inInjection = false;
+      
+      std::cout << "\n[Autopilot] ==========================================" << std::endl;
+      std::cout << "[Autopilot] TIMELINE COMPLETED! Keyboard is now 100% yours!" << std::endl;
+      std::cout << "[Autopilot] Please try pressing Arrow Keys, ESC, and Enter now!" << std::endl;
+      std::cout << "[Autopilot] ==========================================\n" << std::endl;
+      
+      dlclose(sdl12DiagHandle);
+  }).detach();
+
   return true;
 }
 
 void SoftwareBackend::DetachWindow() {
   if (!m_windowAttached) return;
-  m_windowShown = false;
-
-  // Terminate the blitter thread first to prevent race conditions on X11 resources!
-  if (m_blitThreadRunning) {
-      {
-          std::lock_guard<std::mutex> lock(m_blitMutex);
-          m_blitThreadRunning = false;
-          m_blitFrameReady = true;
-      }
-      m_blitCond.notify_all();
-      if (m_blitThread.joinable()) {
-          m_blitThread.join();
-      }
-      GLIDE_LOG(INFO, "Software", "Stopped Asynchronous Blitter Thread.");
-  }
-  GLIDE_LOG(INFO, "Software", "Detaching active display attachment resources.");
-
-#if defined(__linux__)
-  if (m_x11GC && m_nativeDisplay) {
-    XFreeGC(reinterpret_cast<Display*>(m_nativeDisplay),
-            reinterpret_cast<GC>(m_x11GC));
-    m_x11GC = nullptr;
-  }
-  m_useX11BlitFallback = false;
-  m_nativeWindow = nullptr;
-
-  if (m_nativeDisplay) {
-    if (m_nativeDisplayOwnedByUs) {
-      XCloseDisplay(reinterpret_cast<Display*>(m_nativeDisplay));
-      GLIDE_LOG(INFO, "Software", "Closed owned X11 Display connection.");
-    }
-    m_nativeDisplay = nullptr;
-  }
-  m_nativeDisplayOwnedByUs = false;
-#endif
-
-  if (m_sdlTexture) {
-    SDL_DestroyTexture(reinterpret_cast<SDL_Texture*>(m_sdlTexture));
-    m_sdlTexture = nullptr;
-  }
-  if (m_sdlRenderer) {
-    SDL_DestroyRenderer(reinterpret_cast<SDL_Renderer*>(m_sdlRenderer));
-    m_sdlRenderer = nullptr;
-  }
-  if (m_sdlWindow) {
-    SDL_DestroyWindow(reinterpret_cast<SDL_Window*>(m_sdlWindow));
-    m_sdlWindow = nullptr;
-  }
-  if (m_sdlVideoInitializedByUs) {
-    SDL_QuitSubSystem(SDL_INIT_VIDEO);
-    m_sdlVideoInitializedByUs = false;
-  }
 
   if (m_allocatedBuffer) {
     FreeCpuBuffers();
     m_allocatedBuffer = false;
   }
 
-  m_isWindowHooked = false;
+  // Unregister the Web RDP Anti-Grab-Break filter dynamically!
+  void* sdl12DiagHandle = dlopen("libSDL-1.2.so.0", RTLD_LAZY | RTLD_NOLOAD);
+  if (sdl12DiagHandle) {
+    typedef void (*PFN_SDL_SetEventFilter)(int (*filter)(const void* event));
+    auto pfn_SetEventFilter = reinterpret_cast<PFN_SDL_SetEventFilter>(dlsym(sdl12DiagHandle, "SDL_SetEventFilter"));
+    if (pfn_SetEventFilter) {
+      pfn_SetEventFilter(nullptr);
+      GLIDE_LOG(INFO, "Software", "Unregistered Web RDP Anti-Grab-Break keyboard filter.");
+    }
+    dlclose(sdl12DiagHandle);
+  }
+
   m_windowAttached = false;
   m_headlessMode = false;
+  GLIDE_LOG(INFO, "Software", "Detached Software Backend.");
 }
 
 bool SoftwareBackend::SwapBuffers() {
@@ -1099,11 +1016,52 @@ bool SoftwareBackend::SwapBuffers() {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   if (!m_initialized || !m_windowAttached) return false;
 
+  // Process any pending debounced key releases in SwapBuffers!
+  static PFN_SDL12_PushEvent pfn_PushEvent = nullptr;
+  if (!pfn_PushEvent) {
+    void* sdlHandle = dlopen("libSDL-1.2.so.0", RTLD_LAZY | RTLD_NOLOAD);
+    if (sdlHandle) {
+      pfn_PushEvent = reinterpret_cast<PFN_SDL12_PushEvent>(dlsym(sdlHandle, "SDL_PushEvent"));
+    }
+  }
+
+  if (pfn_PushEvent) {
+    auto now = std::chrono::steady_clock::now();
+    for (uint32_t sym = 0; sym < 512; ++sym) {
+      if (s_pendingKeyUp[sym] && now >= s_keyUpTime[sym]) {
+        s_pendingKeyUp[sym] = false;
+        s_keyState[sym] = false;
+
+        SDL12_Event cleanEvent;
+        std::memset(&cleanEvent, 0, sizeof(cleanEvent));
+        cleanEvent.key.type = 3; // KEYUP
+        cleanEvent.key.state = 0; // Released
+        cleanEvent.key.keysym.sym = sym;
+
+        // Patch scancodes
+        if (sym == 273)      cleanEvent.key.keysym.scancode = 111; // Up
+        else if (sym == 274) cleanEvent.key.keysym.scancode = 116; // Down
+        else if (sym == 275) cleanEvent.key.keysym.scancode = 114; // Right
+        else if (sym == 276) cleanEvent.key.keysym.scancode = 113; // Left
+        else if (sym == 27)  cleanEvent.key.keysym.scancode = 9;   // ESC
+        else if (sym == 13)  cleanEvent.key.keysym.scancode = 36;  // ENTER
+
+        std::cout << "[Wrapper-AntiGrab-Filter] DISPATCHING debounced release for sym=" << sym 
+                  << ", scancode=" << (int)cleanEvent.key.keysym.scancode << std::endl;
+
+        g_inInjection = true;
+        pfn_PushEvent(&cleanEvent);
+        g_inInjection = false;
+      }
+    }
+  }
+
+
   GLIDE_LOG(DEBUG, "Software", "Executing SwapBuffers presentation dispatch.");
 
   // Enforce frame pacing and track frame timing using unified FrameTracker
   auto& tracker = TelemetryManager::GetInstance().GetFrameTracker();
-  tracker.MarkFrameEnd(m_useX11BlitFallback ? 0.0f : m_config.maxFps);
+  tracker.MarkFrameEnd(m_config.maxFps);
   tracker.MarkFrameStart();
 
   GLIDE_PROFILE_SCOPE("Software::SwapBuffers");
@@ -1135,68 +1093,110 @@ bool SoftwareBackend::SwapBuffers() {
   }
 
   // 3. Present the newly swapped front buffer (which holds the completed frame)
-#if defined(__linux__)
-  if (m_useX11BlitFallback && m_nativeDisplay && m_nativeWindow && m_x11GC) {
-    GLIDE_PROFILE_SCOPE("Software::SwapBuffers_BlitEnqueue");
-    {
-      std::lock_guard<std::mutex> lock(m_blitMutex);
-      // Copy the completed front buffer (holding the new frame) to the blit staging buffer
-      std::memcpy(m_blitStagingBuffer.data(), m_cpuBuffers[m_frontBufferIdx].data(), m_blitStagingBuffer.size());
-      m_blitFrameReady = true;
-    }
-    m_blitCond.notify_one();  // Wake up the blitter thread!
-    return true;
+  typedef int (*PFN_SDL12_WM_GrabInput)(int mode);
+  static PFN_SDL12_GetVideoSurface local_GetVideoSurface = nullptr;
+  static PFN_SDL12_UpdateRect local_UpdateRect = nullptr;
+  static PFN_SDL12_LockSurface local_LockSurface = nullptr;
+  static PFN_SDL12_UnlockSurface local_UnlockSurface = nullptr;
+  static PFN_SDL12_WM_GrabInput local_WM_GrabInput = nullptr;
+  static bool resolvedSdl12 = false;
+
+  if (!resolvedSdl12) {
+    // Resolve dynamically from the active process space!
+    local_GetVideoSurface = reinterpret_cast<PFN_SDL12_GetVideoSurface>(
+        dlsym(RTLD_DEFAULT, "SDL_GetVideoSurface"));
+    local_UpdateRect = reinterpret_cast<PFN_SDL12_UpdateRect>(
+        dlsym(RTLD_DEFAULT, "SDL_UpdateRect"));
+    local_LockSurface = reinterpret_cast<PFN_SDL12_LockSurface>(
+        dlsym(RTLD_DEFAULT, "SDL_LockSurface"));
+    local_UnlockSurface = reinterpret_cast<PFN_SDL12_UnlockSurface>(
+        dlsym(RTLD_DEFAULT, "SDL_UnlockSurface"));
+    local_WM_GrabInput = reinterpret_cast<PFN_SDL12_WM_GrabInput>(
+        dlsym(RTLD_DEFAULT, "SDL_WM_GrabInput"));
+    resolvedSdl12 = true;
   }
-#endif
 
-  if (m_sdlTexture && m_sdlRenderer &&
-      !m_cpuBuffers[m_frontBufferIdx].empty()) {
-    const void* textureData = m_cpuBuffers[m_frontBufferIdx].data();
-    uint32_t pitch = m_headlessWidth * 4;
+  // Forcefully bypass any keyboard/mouse grab!
+  if (local_WM_GrabInput) {
+    int currentGrab = local_WM_GrabInput(-1); // SDL_GRAB_QUERY
+    if (currentGrab != 0) { // Not SDL_GRAB_OFF
+      local_WM_GrabInput(0); // Force SDL_GRAB_OFF
+      std::cout << "[Wrapper-GrabBypass] FORCED grab release! (Was: " << currentGrab << ")" << std::endl;
+    }
+  }
 
-    if (m_ssaaScale > 1) {
-      uint32_t nativeWidth = m_headlessWidth / m_ssaaScale;
-      uint32_t nativeHeight = m_headlessHeight / m_ssaaScale;
-      const uint32_t* srcPixels = reinterpret_cast<const uint32_t*>(
-          m_cpuBuffers[m_frontBufferIdx].data());
-      uint32_t* dstPixels =
-          reinterpret_cast<uint32_t*>(m_resolvedBuffer.data());
+  if (local_GetVideoSurface && local_UpdateRect && !m_cpuBuffers[m_frontBufferIdx].empty()) {
+    SDL12_Surface* screen = local_GetVideoSurface();
+    if (screen) {
+      if (local_LockSurface) {
+        local_LockSurface(screen);
+      }
 
-#pragma omp parallel for collapse(2) if (nativeHeight * nativeWidth > 64000)
-      for (uint32_t y = 0; y < nativeHeight; ++y) {
-        for (uint32_t x = 0; x < nativeWidth; ++x) {
-          uint32_t r = 0, g = 0, b = 0, a = 0;
-          for (uint32_t dy = 0; dy < 2; ++dy) {
-            for (uint32_t dx = 0; dx < 2; ++dx) {
-              uint32_t srcIdx = (2 * y + dy) * m_headlessWidth + (2 * x + dx);
-              uint32_t p = srcPixels[srcIdx];
-              a += (p >> 24) & 0xFF;
-              r += (p >> 16) & 0xFF;
-              g += (p >> 8) & 0xFF;
-              b += p & 0xFF;
+      const uint32_t* srcPixels = reinterpret_cast<const uint32_t*>(m_cpuBuffers[m_frontBufferIdx].data());
+      uint32_t* dstPixels = reinterpret_cast<uint32_t*>(screen->pixels);
+
+      uint32_t srcW = m_headlessWidth;
+      uint32_t srcH = m_headlessHeight;
+      uint32_t dstW = screen->w;
+      uint32_t dstH = screen->h;
+
+      // Resolve SSAA if active (by downsampling 2x2 to 1x1) before blitting!
+      if (m_ssaaScale > 1) {
+        srcW /= m_ssaaScale;
+        srcH /= m_ssaaScale;
+        m_resolvedBuffer.resize(srcW * srcH);
+        uint32_t* resolvedData = reinterpret_cast<uint32_t*>(m_resolvedBuffer.data());
+        const uint32_t* fullSrc = reinterpret_cast<const uint32_t*>(m_cpuBuffers[m_frontBufferIdx].data());
+
+#pragma omp parallel for collapse(2) if (srcH * srcW > 64000)
+        for (uint32_t y = 0; y < srcH; ++y) {
+          for (uint32_t x = 0; x < srcW; ++x) {
+            uint32_t r = 0, g = 0, b = 0, a = 0;
+            for (uint32_t dy = 0; dy < 2; ++dy) {
+              for (uint32_t dx = 0; dx < 2; ++dx) {
+                uint32_t srcIdx = (2 * y + dy) * m_headlessWidth + (2 * x + dx);
+                uint32_t p = fullSrc[srcIdx];
+                a += (p >> 24) & 0xFF;
+                r += (p >> 16) & 0xFF;
+                g += (p >> 8) & 0xFF;
+                b += p & 0xFF;
+              }
             }
+            a /= 4; r /= 4; g /= 4; b /= 4;
+            resolvedData[y * srcW + x] = (a << 24) | (r << 16) | (g << 8) | b;
           }
-          a /= 4;
-          r /= 4;
-          g /= 4;
-          b /= 4;
-          dstPixels[y * nativeWidth + x] = (a << 24) | (r << 16) | (g << 8) | b;
+        }
+        srcPixels = resolvedData;
+      }
+
+      uint32_t dstPitchWords = screen->pitch / 4;
+      if (srcW == dstW && srcH == dstH) {
+        for (uint32_t y = 0; y < srcH; y++) {
+          std::memcpy(&dstPixels[y * dstPitchWords], &srcPixels[y * srcW], srcW * 4);
+        }
+      } else {
+        float scaleX = (float)srcW / dstW;
+        float scaleY = (float)srcH / dstH;
+#pragma omp parallel for if (dstH > 240)
+        for (uint32_t y = 0; y < dstH; y++) {
+          uint32_t srcY = (uint32_t)(y * scaleY);
+          if (srcY >= srcH) srcY = srcH - 1;
+          const uint32_t* srcRow = &srcPixels[srcY * srcW];
+          uint32_t* dstRow = &dstPixels[y * dstPitchWords];
+          for (uint32_t x = 0; x < dstW; x++) {
+            uint32_t srcX = (uint32_t)(x * scaleX);
+            if (srcX >= srcW) srcX = srcW - 1;
+            dstRow[x] = srcRow[srcX];
+          }
         }
       }
-      textureData = m_resolvedBuffer.data();
-      pitch = nativeWidth * 4;
-    }
 
-    SDL_UpdateTexture(reinterpret_cast<SDL_Texture*>(m_sdlTexture), nullptr,
-                      textureData, pitch);
-    SDL_RenderCopy(reinterpret_cast<SDL_Renderer*>(m_sdlRenderer),
-                   reinterpret_cast<SDL_Texture*>(m_sdlTexture), nullptr,
-                   nullptr);
-    if (m_sdlWindow && !m_windowShown && !m_isWindowHooked) {
-      SDL_ShowWindow(reinterpret_cast<SDL_Window*>(m_sdlWindow));
-      m_windowShown = true;
+      if (local_UnlockSurface) {
+        local_UnlockSurface(screen);
+      }
+
+      local_UpdateRect(screen, 0, 0, 0, 0);
     }
-    SDL_RenderPresent(reinterpret_cast<SDL_Renderer*>(m_sdlRenderer));
   }
 
   return true;
@@ -1220,16 +1220,7 @@ void SoftwareBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
   ModernVertex b_final = b;
   ModernVertex c_final = c;
 
-  if (m_useX11BlitFallback) {
-    float scaleX = (float)m_headlessWidth / m_guestWidth;
-    float scaleY = (float)m_headlessHeight / m_guestHeight;
-    a_final.pos[0] *= scaleX;
-    a_final.pos[1] *= scaleY;
-    b_final.pos[0] *= scaleX;
-    b_final.pos[1] *= scaleY;
-    c_final.pos[0] *= scaleX;
-    c_final.pos[1] *= scaleY;
-  } else if (m_ssaaScale > 1) {
+  if (m_ssaaScale > 1) {
     a_final.pos[0] *= static_cast<float>(m_ssaaScale);
     a_final.pos[1] *= static_cast<float>(m_ssaaScale);
     b_final.pos[0] *= static_cast<float>(m_ssaaScale);
@@ -1267,14 +1258,7 @@ void SoftwareBackend::DrawLine(const ModernVertex& v1, const ModernVertex& v2) {
   ModernVertex v1_final = v1;
   ModernVertex v2_final = v2;
 
-  if (m_useX11BlitFallback) {
-    float scaleX = (float)m_headlessWidth / m_guestWidth;
-    float scaleY = (float)m_headlessHeight / m_guestHeight;
-    v1_final.pos[0] *= scaleX;
-    v1_final.pos[1] *= scaleY;
-    v2_final.pos[0] *= scaleX;
-    v2_final.pos[1] *= scaleY;
-  } else if (m_ssaaScale > 1) {
+  if (m_ssaaScale > 1) {
     v1_final.pos[0] *= static_cast<float>(m_ssaaScale);
     v1_final.pos[1] *= static_cast<float>(m_ssaaScale);
     v2_final.pos[0] *= static_cast<float>(m_ssaaScale);
@@ -1306,12 +1290,7 @@ void SoftwareBackend::DrawPoint(const ModernVertex& pt) {
 
   ModernVertex pt_final = pt;
 
-  if (m_useX11BlitFallback) {
-    float scaleX = (float)m_headlessWidth / m_guestWidth;
-    float scaleY = (float)m_headlessHeight / m_guestHeight;
-    pt_final.pos[0] *= scaleX;
-    pt_final.pos[1] *= scaleY;
-  } else if (m_ssaaScale > 1) {
+  if (m_ssaaScale > 1) {
     pt_final.pos[0] *= static_cast<float>(m_ssaaScale);
     pt_final.pos[1] *= static_cast<float>(m_ssaaScale);
   }
@@ -4455,99 +4434,16 @@ SoftwareBackend::RasterizeTriangleLoopsSIMD<true, true, true, false>(
     int, int, const RasterizerState&, float, float, float, float, float, float,
     float, float, float, float);
 
-void SoftwareBackend::BlitThreadLoop() {
-#if defined(__linux__)
-  auto* dpy = reinterpret_cast<Display*>(m_nativeDisplay);
-  auto win = reinterpret_cast<::Window>(
-      reinterpret_cast<uintptr_t>(m_nativeWindow));
-  auto* gc = reinterpret_cast<GC>(m_x11GC);
-  auto* visual = reinterpret_cast<Visual*>(m_x11Visual);
-  int depth = m_x11Depth;
-
-  std::vector<uint8_t> localScaledBuffer;
-  std::vector<uint8_t> localResolvedBuffer;
-
-  while (m_blitThreadRunning) {
-    {
-      std::unique_lock<std::mutex> lock(m_blitMutex);
-      m_blitCond.wait(lock, [this] {
-        return m_blitFrameReady.load() || !m_blitThreadRunning.load();
-      });
-
-      if (!m_blitThreadRunning) {
-        break;
-      }
-
-      m_blitFrameReady = false;
-
-      // Copy the raw scaled buffer from staging buffer to local scaled buffer
-      if (localScaledBuffer.size() != m_blitStagingBuffer.size()) {
-        localScaledBuffer.resize(m_blitStagingBuffer.size());
-      }
-      std::memcpy(localScaledBuffer.data(), m_blitStagingBuffer.data(),
-                  m_blitStagingBuffer.size());
-    }  // Mutex is unlocked here!
-
-    GLIDE_PROFILE_SCOPE("Software::AsyncBlit_X11");
-
-    uint32_t width = m_blitWidth;
-    uint32_t height = m_blitHeight;
-    uint32_t pitch = width * 4;
-    const void* textureData = localScaledBuffer.data();
-
-    if (m_ssaaScale > 1) {
-      width /= m_ssaaScale;
-      height /= m_ssaaScale;
-      pitch = width * 4;
-
-      if (localResolvedBuffer.size() != width * height * 4) {
-        localResolvedBuffer.resize(width * height * 4);
-      }
-
-      const uint32_t* srcPixels =
-          reinterpret_cast<const uint32_t*>(localScaledBuffer.data());
-      uint32_t* dstPixels =
-          reinterpret_cast<uint32_t*>(localResolvedBuffer.data());
-
-      // Perform SSAA resolving asynchronously on the background thread!
-#pragma omp parallel for collapse(2) if (height * width > 64000)
-      for (uint32_t y = 0; y < height; ++y) {
-        for (uint32_t x = 0; x < width; ++x) {
-          uint32_t r = 0, g = 0, b = 0, a = 0;
-          for (uint32_t dy = 0; dy < m_ssaaScale; dy++) {
-            for (uint32_t dx = 0; dx < m_ssaaScale; dx++) {
-              uint32_t srcIdx = (m_ssaaScale * y + dy) * m_blitWidth +
-                                (m_ssaaScale * x + dx);
-              uint32_t p = srcPixels[srcIdx];
-              a += (p >> 24) & 0xFF;
-              r += (p >> 16) & 0xFF;
-              g += (p >> 8) & 0xFF;
-              b += p & 0xFF;
-            }
-          }
-          a /= (m_ssaaScale * m_ssaaScale);
-          r /= (m_ssaaScale * m_ssaaScale);
-          g /= (m_ssaaScale * m_ssaaScale);
-          b /= (m_ssaaScale * m_ssaaScale);
-          dstPixels[y * width + x] = (a << 24) | (r << 16) | (g << 8) | b;
-        }
-      }
-      textureData = localResolvedBuffer.data();
-    }
-
-    XImage* image = XCreateImage(
-        dpy, visual, depth, ZPixmap, 0,
-        const_cast<char*>(reinterpret_cast<const char*>(textureData)), width,
-        height, 32, pitch);
-
-    if (image) {
-      XPutImage(dpy, win, gc, image, 0, 0, 0, 0, width, height);
-      XFlush(dpy);
-      image->data = nullptr;  // Avoid freeing local buffer!
-      XDestroyImage(image);
-    }
-  }
-#endif
-}
 
 }  // namespace GlideWrapper
+
+#if defined(__linux__)
+extern "C" {
+  int SDL_WM_GrabInput(int mode) {
+      if (mode == 1) { // Only log when an active grab is requested!
+          std::cout << "[Wrapper-GrabOverride] INTERCEPTED SDL_WM_GrabInput(1) -> Forcing SDL_GRAB_OFF (0) to prevent RDP grab-break conflicts!" << std::endl;
+      }
+      return 0; // Force SDL_GRAB_OFF
+  }
+}
+#endif

@@ -5,6 +5,23 @@
 #include <cstring>
 #include <iostream>
 
+#if defined(__linux__)
+#include <dlfcn.h>
+__attribute__((constructor)) void InitializeX11Threads() {
+    void* x11Handle = dlopen("libX11.so.6", RTLD_LAZY | RTLD_GLOBAL);
+    if (x11Handle) {
+        typedef int (*PFN_XInitThreads)();
+        auto pfn_XInitThreads = reinterpret_cast<PFN_XInitThreads>(dlsym(x11Handle, "XInitThreads"));
+        if (pfn_XInitThreads) {
+            pfn_XInitThreads();
+            std::cout << "[Wrapper-Init] Successfully initialized X11 multi-threading support (XInitThreads)." << std::endl;
+        }
+        dlclose(x11Handle);
+    }
+}
+#endif
+
+
 #include "core/3dfParser.h"
 #include "core/BackendManager.h"
 #include "core/GlideSplashAnimator.h"
