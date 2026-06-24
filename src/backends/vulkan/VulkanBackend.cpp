@@ -2023,20 +2023,7 @@ bool VulkanBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
 }
 
 void VulkanBackend::PollEvents() {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
-  if (!m_windowAttached) return;
-
-  SDL_Event event;
-  while (SDL_PollEvent(&event)) {
-    if (event.type == SDL_QUIT) {
-      GLIDE_LOG(DEBUG, "Vulkan", "SDL window quit request.");
-    } else if (event.type == SDL_KEYDOWN) {
-      GLIDE_LOG(DEBUG, "Vulkan",
-                "SDL window keydown captured. Setting key hit hook flag.");
-      g_glideWrapperSdlKeyHit = 1;
-      g_glideWrapperLastKey = event.key.keysym.sym;
-    }
-  }
+  // No-op to prevent stealing SDL event queue inputs from the host application.
 }
 
 void VulkanBackend::SstIdle() {

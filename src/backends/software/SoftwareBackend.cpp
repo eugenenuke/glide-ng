@@ -73,7 +73,9 @@ thread_local bool g_inInjection = false;
 static std::chrono::steady_clock::time_point s_keyUpTime[512] = {};
 static bool s_keyState[512] = {false};
 static bool s_pendingKeyUp[512] = {false};
-static constexpr int KEY_DEBOUNCE_MS = 180;
+static constexpr int KEY_DEBOUNCE_MS = 160;
+static std::chrono::steady_clock::time_point s_lastEventTime = std::chrono::steady_clock::now();
+static const std::chrono::steady_clock::time_point s_startTime = std::chrono::steady_clock::now();
 
 typedef int (*PFN_SDL12_PushEvent)(void* event);
 
@@ -87,7 +89,12 @@ static int AntiGrabBreakFilter(const void* rawEvent) {
     uint8_t scancode = event->key.keysym.scancode;
 
     // Log EVERY intercepted physical event before any filtering/discarding!
-    std::cout << "[Wrapper-AntiGrab-Filter] INTERCEPTED physical event: type=" << (int)type
+    auto now = std::chrono::steady_clock::now();
+    auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - s_startTime).count();
+    auto gapMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - s_lastEventTime).count();
+    s_lastEventTime = now;
+
+    std::cout << "[Wrapper-AntiGrab-Filter] [" << (elapsedMs / 1000.0) << "s] (Gap since last: " << gapMs << "ms) INTERCEPTED physical event: type=" << (int)type
               << " (" << (type == 2 ? "KEYDOWN" : "KEYUP") << "), sym=" << sym 
               << ", original_scancode=" << (int)scancode 
               << ", state=" << (int)state << ", thread_local_g_inInjection=" << g_inInjection << std::endl;

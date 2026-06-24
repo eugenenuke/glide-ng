@@ -834,21 +834,7 @@ bool SoftwareBackendBase::WriteLFB(uint32_t buffer, uint32_t dstX,
 }
 
 void SoftwareBackendBase::PollEvents() {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
-  if (!m_windowAttached) return;
-
-  SDL_Event event;
-  while (SDL_PollEvent(&event)) {
-    if (event.type == SDL_QUIT) {
-      GLIDE_LOG(INFO, "Backend", "SDL window quit request received.");
-    } else if (event.type == SDL_KEYDOWN) {
-      GLIDE_LOG(
-          DEBUG, "Backend",
-          "SDL window keydown event captured! Setting keyboard hit hook flag.");
-      g_glideWrapperSdlKeyHit = 1;
-      g_glideWrapperLastKey = event.key.keysym.sym;
-    }
-  }
+  // No-op to prevent stealing SDL event queue inputs from the host application.
 }
 
 void SoftwareBackendBase::SstIdle() {
