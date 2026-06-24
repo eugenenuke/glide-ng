@@ -877,6 +877,15 @@ bool SoftwareBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
           m_headlessPixelMap = m_cpuBuffers[m_backBufferIdx].data();
           m_windowAttached = true;
 
+          // Initialize the asynchronous blitter thread!
+          m_blitStagingBuffer.resize((size_t)m_headlessWidth * m_headlessHeight * 4, 0);
+          m_blitWidth = m_headlessWidth;
+          m_blitHeight = m_headlessHeight;
+          m_blitThreadRunning = true;
+          m_blitFrameReady = false;
+          m_blitThread = std::thread(&SoftwareBackend::BlitThreadLoop, this);
+          GLIDE_LOG(INFO, "Software", "Started Asynchronous Blitter Thread.");
+
 #if defined(__linux__)
           // Intercept, log, and surgically patch SDL events to fix zero-scancode emulation blocks!
           void* sdl12DiagHandle = dlopen("libSDL-1.2.so.0", RTLD_LAZY | RTLD_NOLOAD);
@@ -1023,6 +1032,20 @@ bool SoftwareBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
 void SoftwareBackend::DetachWindow() {
   if (!m_windowAttached) return;
   m_windowShown = false;
+
+  // Terminate the blitter thread first to prevent race conditions on X11 resources!
+  if (m_blitThreadRunning) {
+      {
+          std::lock_guard<std::mutex> lock(m_blitMutex);
+          m_blitThreadRunning = false;
+          m_blitFrameReady = true;
+      }
+      m_blitCond.notify_all();
+      if (m_blitThread.joinable()) {
+          m_blitThread.join();
+      }
+      GLIDE_LOG(INFO, "Software", "Stopped Asynchronous Blitter Thread.");
+  }
   GLIDE_LOG(INFO, "Software", "Detaching active display attachment resources.");
 
 #if defined(__linux__)
@@ -1114,62 +1137,14 @@ bool SoftwareBackend::SwapBuffers() {
   // 3. Present the newly swapped front buffer (which holds the completed frame)
 #if defined(__linux__)
   if (m_useX11BlitFallback && m_nativeDisplay && m_nativeWindow && m_x11GC) {
-    auto* dpy = reinterpret_cast<Display*>(m_nativeDisplay);
-    auto win = reinterpret_cast<::Window>(
-        reinterpret_cast<uintptr_t>(m_nativeWindow));
-
-    const void* textureData = m_cpuBuffers[m_frontBufferIdx].data();
-    uint32_t pitch = m_headlessWidth * 4;
-    uint32_t width = m_headlessWidth;
-    uint32_t height = m_headlessHeight;
-
-    if (m_ssaaScale > 1) {
-      width /= m_ssaaScale;
-      height /= m_ssaaScale;
-
-      const uint32_t* srcPixels = reinterpret_cast<const uint32_t*>(
-          m_cpuBuffers[m_frontBufferIdx].data());
-      uint32_t* dstPixels =
-          reinterpret_cast<uint32_t*>(m_resolvedBuffer.data());
-
-#pragma omp parallel for collapse(2) if (height * width > 64000)
-      for (uint32_t y = 0; y < height; ++y) {
-        for (uint32_t x = 0; x < width; ++x) {
-          uint32_t r = 0, g = 0, b = 0, a = 0;
-          for (uint32_t dy = 0; dy < m_ssaaScale; ++dy) {
-            for (uint32_t dx = 0; dx < m_ssaaScale; ++dx) {
-              uint32_t srcIdx =
-                  (m_ssaaScale * y + dy) * m_headlessWidth + (m_ssaaScale * x + dx);
-              uint32_t p = srcPixels[srcIdx];
-              a += (p >> 24) & 0xFF;
-              r += (p >> 16) & 0xFF;
-              g += (p >> 8) & 0xFF;
-              b += p & 0xFF;
-            }
-          }
-          a /= (m_ssaaScale * m_ssaaScale);
-          r /= (m_ssaaScale * m_ssaaScale);
-          g /= (m_ssaaScale * m_ssaaScale);
-          b /= (m_ssaaScale * m_ssaaScale);
-          dstPixels[y * width + x] = (a << 24) | (r << 16) | (g << 8) | b;
-        }
-      }
-      textureData = m_resolvedBuffer.data();
-      pitch = width * 4;
+    GLIDE_PROFILE_SCOPE("Software::SwapBuffers_BlitEnqueue");
+    {
+      std::lock_guard<std::mutex> lock(m_blitMutex);
+      // Copy the completed front buffer (holding the new frame) to the blit staging buffer
+      std::memcpy(m_blitStagingBuffer.data(), m_cpuBuffers[m_frontBufferIdx].data(), m_blitStagingBuffer.size());
+      m_blitFrameReady = true;
     }
-
-    XImage* ximage = XCreateImage(
-        dpy, reinterpret_cast<Visual*>(m_x11Visual), m_x11Depth, ZPixmap, 0,
-        const_cast<char*>(reinterpret_cast<const char*>(textureData)), width,
-        height, 32, pitch);
-
-    if (ximage) {
-      XPutImage(dpy, win, reinterpret_cast<GC>(m_x11GC), ximage, 0, 0, 0, 0,
-                width, height);
-      XFlush(dpy);
-      ximage->data = nullptr;  // Prevent freeing our internal buffer!
-      XDestroyImage(ximage);
-    }
+    m_blitCond.notify_one();  // Wake up the blitter thread!
     return true;
   }
 #endif
@@ -4479,5 +4454,100 @@ SoftwareBackend::RasterizeTriangleLoopsSIMD<true, true, true, false>(
     const ModernVertex&, const ModernVertex&, const ModernVertex&, int, int,
     int, int, const RasterizerState&, float, float, float, float, float, float,
     float, float, float, float);
+
+void SoftwareBackend::BlitThreadLoop() {
+#if defined(__linux__)
+  auto* dpy = reinterpret_cast<Display*>(m_nativeDisplay);
+  auto win = reinterpret_cast<::Window>(
+      reinterpret_cast<uintptr_t>(m_nativeWindow));
+  auto* gc = reinterpret_cast<GC>(m_x11GC);
+  auto* visual = reinterpret_cast<Visual*>(m_x11Visual);
+  int depth = m_x11Depth;
+
+  std::vector<uint8_t> localScaledBuffer;
+  std::vector<uint8_t> localResolvedBuffer;
+
+  while (m_blitThreadRunning) {
+    {
+      std::unique_lock<std::mutex> lock(m_blitMutex);
+      m_blitCond.wait(lock, [this] {
+        return m_blitFrameReady.load() || !m_blitThreadRunning.load();
+      });
+
+      if (!m_blitThreadRunning) {
+        break;
+      }
+
+      m_blitFrameReady = false;
+
+      // Copy the raw scaled buffer from staging buffer to local scaled buffer
+      if (localScaledBuffer.size() != m_blitStagingBuffer.size()) {
+        localScaledBuffer.resize(m_blitStagingBuffer.size());
+      }
+      std::memcpy(localScaledBuffer.data(), m_blitStagingBuffer.data(),
+                  m_blitStagingBuffer.size());
+    }  // Mutex is unlocked here!
+
+    GLIDE_PROFILE_SCOPE("Software::AsyncBlit_X11");
+
+    uint32_t width = m_blitWidth;
+    uint32_t height = m_blitHeight;
+    uint32_t pitch = width * 4;
+    const void* textureData = localScaledBuffer.data();
+
+    if (m_ssaaScale > 1) {
+      width /= m_ssaaScale;
+      height /= m_ssaaScale;
+      pitch = width * 4;
+
+      if (localResolvedBuffer.size() != width * height * 4) {
+        localResolvedBuffer.resize(width * height * 4);
+      }
+
+      const uint32_t* srcPixels =
+          reinterpret_cast<const uint32_t*>(localScaledBuffer.data());
+      uint32_t* dstPixels =
+          reinterpret_cast<uint32_t*>(localResolvedBuffer.data());
+
+      // Perform SSAA resolving asynchronously on the background thread!
+#pragma omp parallel for collapse(2) if (height * width > 64000)
+      for (uint32_t y = 0; y < height; ++y) {
+        for (uint32_t x = 0; x < width; ++x) {
+          uint32_t r = 0, g = 0, b = 0, a = 0;
+          for (uint32_t dy = 0; dy < m_ssaaScale; dy++) {
+            for (uint32_t dx = 0; dx < m_ssaaScale; dx++) {
+              uint32_t srcIdx = (m_ssaaScale * y + dy) * m_blitWidth +
+                                (m_ssaaScale * x + dx);
+              uint32_t p = srcPixels[srcIdx];
+              a += (p >> 24) & 0xFF;
+              r += (p >> 16) & 0xFF;
+              g += (p >> 8) & 0xFF;
+              b += p & 0xFF;
+            }
+          }
+          a /= (m_ssaaScale * m_ssaaScale);
+          r /= (m_ssaaScale * m_ssaaScale);
+          g /= (m_ssaaScale * m_ssaaScale);
+          b /= (m_ssaaScale * m_ssaaScale);
+          dstPixels[y * width + x] = (a << 24) | (r << 16) | (g << 8) | b;
+        }
+      }
+      textureData = localResolvedBuffer.data();
+    }
+
+    XImage* image = XCreateImage(
+        dpy, visual, depth, ZPixmap, 0,
+        const_cast<char*>(reinterpret_cast<const char*>(textureData)), width,
+        height, 32, pitch);
+
+    if (image) {
+      XPutImage(dpy, win, gc, image, 0, 0, 0, 0, width, height);
+      XFlush(dpy);
+      image->data = nullptr;  // Avoid freeing local buffer!
+      XDestroyImage(image);
+    }
+  }
+#endif
+}
 
 }  // namespace GlideWrapper

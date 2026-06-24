@@ -3,6 +3,9 @@
 #include <atomic>
 #include <memory>
 #include <vector>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
 
 #include "backends/SoftwareBackendBase.h"
 #include "backends/software/RasterizerState.h"
@@ -131,6 +134,18 @@ class SoftwareBackend : public SoftwareBackendBase {
   uint32_t m_tileShift{5};
   uint32_t m_tileCols{0};
   uint32_t m_tileRows{0};
+
+  // Asynchronous Blitter Threading variables
+  std::thread m_blitThread;
+  std::mutex m_blitMutex;
+  std::condition_variable m_blitCond;
+  std::atomic<bool> m_blitThreadRunning{false};
+  std::atomic<bool> m_blitFrameReady{false};
+  std::vector<uint8_t> m_blitStagingBuffer;
+  int m_blitWidth{0};
+  int m_blitHeight{0};
+
+  void BlitThreadLoop();
 };
 
 }  // namespace GlideWrapper
