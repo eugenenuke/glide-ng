@@ -20,6 +20,54 @@
 #include <omp.h>
 #endif
 
+#if defined(__linux__)
+#include <X11/Xlib.h>
+#include <X11/Xutil.h>
+#include <dlfcn.h>
+
+// Undefine X11 macro pollution to prevent breaking other C++ headers
+#ifdef True
+#undef True
+#endif
+#ifdef False
+#undef False
+#endif
+#ifdef None
+#undef None
+#endif
+#ifdef Success
+#undef Success
+#endif
+
+struct SDL12_SysWMinfo {
+  struct {
+    int major;
+    int minor;
+    int patch;
+  } version;
+  int subsystem;
+  union {
+    struct {
+      Display* display;
+      ::Window window;
+    } x11;
+  } info;
+};
+
+typedef int (*PFN_SDL12_GetWMInfo)(SDL12_SysWMinfo* info);
+
+static thread_local bool s_x11ErrorOccurred = false;
+static int SoftwareX11ErrorHandler(Display* dpy, XErrorEvent* err) {
+  s_x11ErrorOccurred = true;
+  char buf[256];
+  XGetErrorText(dpy, err->error_code, buf, sizeof(buf));
+  std::cerr << "[SoftwareX11] Caught asynchronous X11 protocol error: " << buf
+            << " (Major Opcode: " << (int)err->request_code
+            << ", Resource ID: " << err->resourceid << ")" << std::endl;
+  return 0;
+}
+#endif
+
 namespace GlideWrapper {
 
 // Fast log2 approximation using IEEE-754 float exponent extraction
@@ -718,6 +766,106 @@ bool SoftwareBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
   m_isWindowHooked = false;
   m_sdlVideoInitializedByUs = false;
   if (!m_config.forceNoWindow) {
+#if defined(__linux__)
+    m_nativeDisplay = nullptr;
+    m_nativeWindow = nullptr;
+    m_useX11BlitFallback = false;
+    m_x11GC = nullptr;
+    m_x11Visual = nullptr;
+    m_x11Depth = 0;
+
+    if (nativeWindowHandle) {
+      // 1. Tier B: Try SDL 1.2 Dynamic Lookup for untruncated window extraction
+      void* sdl12Symbol = dlsym(RTLD_DEFAULT, "SDL_GetWMInfo");
+      if (sdl12Symbol) {
+        auto sdl12_GetWMInfo =
+            reinterpret_cast<PFN_SDL12_GetWMInfo>(sdl12Symbol);
+        SDL12_SysWMinfo wminfo{};
+        wminfo.version.major = 1;
+        wminfo.version.minor = 2;
+        wminfo.version.patch = 0;
+        if (sdl12_GetWMInfo(&wminfo) == 1) {
+          m_nativeDisplay = wminfo.info.x11.display;
+          m_nativeWindow = reinterpret_cast<void*>(wminfo.info.x11.window);
+          GLIDE_LOG(INFO, "Software",
+                    "Extracted host X11 Display and Window from SDL 1.2. Window="
+                        << m_nativeWindow);
+        }
+      }
+
+      // 2. Try to activate the robust X11 Blit Fallback
+      if (m_nativeDisplay && m_nativeWindow) {
+        auto* dpy = reinterpret_cast<Display*>(m_nativeDisplay);
+        auto win = reinterpret_cast<::Window>(
+            reinterpret_cast<uintptr_t>(m_nativeWindow));
+
+        XSync(dpy, false);
+
+        s_x11ErrorOccurred = false;
+        auto* oldHandler = XSetErrorHandler(SoftwareX11ErrorHandler);
+
+        XWindowAttributes attrs;
+        Status status = XGetWindowAttributes(dpy, win, &attrs);
+
+        GC gc = nullptr;
+        if (status != 0 && !s_x11ErrorOccurred) {
+          XGCValues values;
+          values.graphics_exposures = false;  // Prevent event queue flooding!
+          gc = XCreateGC(dpy, win, GCGraphicsExposures, &values);
+        }
+
+        XSync(dpy, false);
+        XSetErrorHandler(oldHandler);
+
+        if (status != 0 && gc != nullptr && !s_x11ErrorOccurred) {
+          m_x11Visual = attrs.visual;
+          m_x11Depth = attrs.depth;
+          m_x11GC = gc;
+          m_useX11BlitFallback = true;
+          m_isWindowHooked = true;
+          m_sdlWindow = nullptr;  // Skip creating standalone SDL2 window
+
+          int realWidth = attrs.width;
+          int realHeight = attrs.height;
+
+          GLIDE_LOG(INFO, "Software",
+                    "X11 Blit Fallback activated successfully. Real Window Size="
+                        << realWidth << "x" << realHeight
+                        << ", Depth=" << m_x11Depth);
+
+          m_headlessWidth = realWidth * m_ssaaScale;
+          m_headlessHeight = realHeight * m_ssaaScale;
+          m_headlessMode = true;
+
+          // Re-allocate double buffers matching real window dimensions!
+          AllocateCpuBuffers(m_headlessWidth, m_headlessHeight);
+          m_allocatedBuffer = true;
+
+          // Resize depth buffer to match real window dimensions!
+          size_t rawDepthSize = (size_t)m_headlessWidth * m_headlessHeight * 4;
+          size_t paddedDepthSize = (rawDepthSize + 63) & ~63;
+          size_t allocatedDepthSize = paddedDepthSize + 64;
+          m_headlessDepthBuffer.resize(allocatedDepthSize / sizeof(float), 0.0f);
+
+          SetClipWindow(0, 0, m_headlessWidth, m_headlessHeight);
+          InitTileGrid();
+
+          m_headlessPixelMap = m_cpuBuffers[m_backBufferIdx].data();
+          m_windowAttached = true;
+          return true;  // Return successfully immediately!
+        } else {
+          GLIDE_LOG(
+              WARN, "Software",
+              "X11 Blit Fallback initialization failed. Falling back to native "
+              "SDL window hooking...");
+          if (gc) {
+            XFreeGC(dpy, gc);
+          }
+        }
+      }
+    }
+#endif
+
     bool sdlReady = true;
     if (!SDL_WasInit(SDL_INIT_VIDEO)) {
       if (SDL_Init(SDL_INIT_VIDEO) < 0) {
@@ -801,6 +949,17 @@ void SoftwareBackend::DetachWindow() {
   m_windowShown = false;
   GLIDE_LOG(INFO, "Software", "Detaching active display attachment resources.");
 
+#if defined(__linux__)
+  if (m_x11GC && m_nativeDisplay) {
+    XFreeGC(reinterpret_cast<Display*>(m_nativeDisplay),
+            reinterpret_cast<GC>(m_x11GC));
+    m_x11GC = nullptr;
+  }
+  m_useX11BlitFallback = false;
+  m_nativeWindow = nullptr;
+  m_nativeDisplay = nullptr;
+#endif
+
   if (m_sdlTexture) {
     SDL_DestroyTexture(reinterpret_cast<SDL_Texture*>(m_sdlTexture));
     m_sdlTexture = nullptr;
@@ -869,6 +1028,68 @@ bool SoftwareBackend::SwapBuffers() {
   }
 
   // 3. Present the newly swapped front buffer (which holds the completed frame)
+#if defined(__linux__)
+  if (m_useX11BlitFallback && m_nativeDisplay && m_nativeWindow && m_x11GC) {
+    auto* dpy = reinterpret_cast<Display*>(m_nativeDisplay);
+    auto win = reinterpret_cast<::Window>(
+        reinterpret_cast<uintptr_t>(m_nativeWindow));
+
+    const void* textureData = m_cpuBuffers[m_frontBufferIdx].data();
+    uint32_t pitch = m_headlessWidth * 4;
+    uint32_t width = m_headlessWidth;
+    uint32_t height = m_headlessHeight;
+
+    if (m_ssaaScale > 1) {
+      width /= m_ssaaScale;
+      height /= m_ssaaScale;
+
+      const uint32_t* srcPixels = reinterpret_cast<const uint32_t*>(
+          m_cpuBuffers[m_frontBufferIdx].data());
+      uint32_t* dstPixels =
+          reinterpret_cast<uint32_t*>(m_resolvedBuffer.data());
+
+#pragma omp parallel for collapse(2) if (height * width > 64000)
+      for (uint32_t y = 0; y < height; ++y) {
+        for (uint32_t x = 0; x < width; ++x) {
+          uint32_t r = 0, g = 0, b = 0, a = 0;
+          for (uint32_t dy = 0; dy < m_ssaaScale; ++dy) {
+            for (uint32_t dx = 0; dx < m_ssaaScale; ++dx) {
+              uint32_t srcIdx =
+                  (m_ssaaScale * y + dy) * m_headlessWidth + (m_ssaaScale * x + dx);
+              uint32_t p = srcPixels[srcIdx];
+              a += (p >> 24) & 0xFF;
+              r += (p >> 16) & 0xFF;
+              g += (p >> 8) & 0xFF;
+              b += p & 0xFF;
+            }
+          }
+          a /= (m_ssaaScale * m_ssaaScale);
+          r /= (m_ssaaScale * m_ssaaScale);
+          g /= (m_ssaaScale * m_ssaaScale);
+          b /= (m_ssaaScale * m_ssaaScale);
+          dstPixels[y * width + x] = (a << 24) | (r << 16) | (g << 8) | b;
+        }
+      }
+      textureData = m_resolvedBuffer.data();
+      pitch = width * 4;
+    }
+
+    XImage* ximage = XCreateImage(
+        dpy, reinterpret_cast<Visual*>(m_x11Visual), m_x11Depth, ZPixmap, 0,
+        const_cast<char*>(reinterpret_cast<const char*>(textureData)), width,
+        height, 32, pitch);
+
+    if (ximage) {
+      XPutImage(dpy, win, reinterpret_cast<GC>(m_x11GC), ximage, 0, 0, 0, 0,
+                width, height);
+      XFlush(dpy);
+      ximage->data = nullptr;  // Prevent freeing our internal buffer!
+      XDestroyImage(ximage);
+    }
+    return true;
+  }
+#endif
+
   if (m_sdlTexture && m_sdlRenderer &&
       !m_cpuBuffers[m_frontBufferIdx].empty()) {
     const void* textureData = m_cpuBuffers[m_frontBufferIdx].data();

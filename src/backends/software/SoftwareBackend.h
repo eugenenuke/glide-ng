@@ -112,6 +112,15 @@ class SoftwareBackend : public SoftwareBackendBase {
   bool m_isWindowHooked{false};
   bool m_sdlVideoInitializedByUs{false};
 
+#if defined(__linux__)
+  void* m_nativeDisplay{nullptr};
+  void* m_nativeWindow{nullptr};
+  void* m_x11GC{nullptr};
+  void* m_x11Visual{nullptr};
+  int m_x11Depth{0};
+  bool m_useX11BlitFallback{false};
+#endif
+
   std::unique_ptr<ThreadPool> m_threadPool;
   std::vector<DrawCommand> m_binnedCommands;
   std::vector<RasterizerState> m_stateCatalog;
