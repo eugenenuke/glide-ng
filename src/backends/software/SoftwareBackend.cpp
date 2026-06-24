@@ -1028,7 +1028,7 @@ bool SoftwareBackend::SwapBuffers() {
 
   // Enforce frame pacing and track frame timing using unified FrameTracker
   auto& tracker = TelemetryManager::GetInstance().GetFrameTracker();
-  tracker.MarkFrameEnd(m_config.maxFps);
+  tracker.MarkFrameEnd(m_useX11BlitFallback ? 0.0f : m_config.maxFps);
   tracker.MarkFrameStart();
 
   GLIDE_PROFILE_SCOPE("Software::SwapBuffers");
