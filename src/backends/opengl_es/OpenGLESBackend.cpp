@@ -765,8 +765,20 @@ bool OpenGLESBackend::CreateGLContext(void* nativeWindowHandle, uint32_t width,
             << (glRenderer ? glRenderer : "Unknown") << " (GL Ver "
             << (glVersion ? glVersion : "Unknown") << ")\r\n";
 
-  uint32_t samplesVal = (m_msaaSamples > 1) ? m_msaaSamples : 0;
-  std::cout << "Info: Pixel Format RGBA8888 D24S8 nAux 0 nSamples "
+  GLint depthBits = 0;
+  GLint stencilBits = 0;
+  GLint samples = 0;
+  glGetIntegerv(GL_DEPTH_BITS, &depthBits);
+  glGetIntegerv(GL_STENCIL_BITS, &stencilBits);
+  glGetIntegerv(GL_SAMPLES, &samples);
+
+  std::string depthStr = "D24S8"; // Default fallback
+  if (depthBits > 0 || stencilBits > 0) {
+    depthStr = "D" + std::to_string(depthBits) + "S" + std::to_string(stencilBits);
+  }
+  uint32_t samplesVal = (samples > 1) ? static_cast<uint32_t>(samples) : 0;
+
+  std::cout << "Info: Pixel Format RGBA8888 " << depthStr << " nAux 0 nSamples "
             << samplesVal << " " << samplesVal << "\r\n";
   std::cout << "Info: Drawable Size: " << width << "x" << height << "\r\n"
             << std::flush;

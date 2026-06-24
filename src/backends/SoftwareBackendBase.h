@@ -310,6 +310,10 @@ class SoftwareBackendBase : public IGraphicsBackend {
   bool m_aaEnabled{false};
   void ResolveAAMode();
   void SetAAState(bool enabled) override;
+  bool m_isSdl2{false};
+  bool m_isHijacked{false};
+  void DetectHostEnvironment();
+  void HandleGrabBypass();
   void RegisterAntiGrabFilter();
   void UnregisterAntiGrabFilter();
   void ProcessPendingKeyReleases();

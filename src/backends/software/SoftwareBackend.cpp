@@ -722,13 +722,6 @@ bool SoftwareBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
   if (!m_initialized) return false;
   if (m_windowAttached) DetachWindow();
 
-  std::cout << "Info: InitialiseSoftwareWindow(wnd=" << nativeWindowHandle
-            << ", res=" << width << "x" << height << ")\r\n";
-  std::cout << "Info: Host Software Adapter: pure-software reference rasterizer (glide-ng Software Reference Core)\r\n";
-  std::cout << "Info: Pixel Format RGBA8888 D32S0 nAux 0 nSamples 0 0\r\n";
-  std::cout << "Info: Drawable Size: " << width << "x" << height << "\r\n"
-            << std::flush;
-
   GLIDE_LOG(INFO, "Software",
             "Attaching software execution window ("
                 << width << "x" << height
@@ -741,6 +734,17 @@ bool SoftwareBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
 #endif
 
   ResolveAAMode();
+
+  uint32_t samplesVal = m_ssaaScale * m_ssaaScale;
+  if (samplesVal == 1) samplesVal = 0;
+
+  std::cout << "Info: InitialiseSoftwareWindow(wnd=" << nativeWindowHandle
+            << ", res=" << width << "x" << height << ")\r\n";
+  std::cout << "Info: Host Software Adapter: pure-software reference rasterizer (glide-ng Software Reference Core)\r\n";
+  std::cout << "Info: Pixel Format RGBA8888 D32S0 nAux 0 nSamples "
+            << samplesVal << " " << samplesVal << "\r\n";
+  std::cout << "Info: Drawable Size: " << width << "x" << height << "\r\n"
+            << std::flush;
   m_headlessWidth = width * m_ssaaScale;
   m_headlessHeight = height * m_ssaaScale;
   m_guestWidth = width;
@@ -783,101 +787,7 @@ bool SoftwareBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
 
   RegisterAntiGrabFilter();
 
-  // Launch the 10-second Diagnostic Autopilot Thread!
-  std::thread([this]() {
-      std::this_thread::sleep_for(std::chrono::seconds(4));
-      
-      void* sdl12DiagHandle = dlopen("libSDL-1.2.so.0", RTLD_LAZY | RTLD_NOLOAD);
-      if (!sdl12DiagHandle) return;
-      
-      typedef int (*PFN_SDL12_PushEvent)(void* event);
-      auto pfn_PushEvent = reinterpret_cast<PFN_SDL12_PushEvent>(dlsym(sdl12DiagHandle, "SDL_PushEvent"));
-      if (!pfn_PushEvent) {
-          dlclose(sdl12DiagHandle);
-          return;
-      }
-      
-      std::cout << "\n[Autopilot] ==========================================" << std::endl;
-      std::cout << "[Autopilot] LAUNCHING 4-DIRECTION DIAGNOSTIC TIMELINE..." << std::endl;
-      std::cout << "[Autopilot] Testing: Up (2s) -> Left (2s) -> Right (2s) -> Down (2s)" << std::endl;
-      std::cout << "[Autopilot] ==========================================\n" << std::endl;
-      
-      SDL12_Event evDown;
-      std::memset(&evDown, 0, sizeof(evDown));
-      evDown.key.type = 2; // SDL_KEYDOWN
-      evDown.key.state = 1; // Pressed
 
-      SDL12_Event evUp;
-      std::memset(&evUp, 0, sizeof(evUp));
-      evUp.key.type = 3; // SDL_KEYUP
-      evUp.key.state = 0; // Released
-      
-      // 1. Up (sym=273, scancode=111)
-      std::cout << "[Autopilot] INJECTING SEQUENCE 1/4: Arrow Up (2s)" << std::endl;
-      evDown.key.keysym.sym = 273;
-      evDown.key.keysym.scancode = 111;
-      g_inInjection = true;
-      pfn_PushEvent(&evDown);
-      g_inInjection = false;
-      std::this_thread::sleep_for(std::chrono::seconds(2));
-      evUp.key.keysym.sym = 273;
-      evUp.key.keysym.scancode = 111;
-      g_inInjection = true;
-      pfn_PushEvent(&evUp);
-      g_inInjection = false;
-      std::this_thread::sleep_for(std::chrono::milliseconds(500));
-
-      // 2. Left (sym=276, scancode=113)
-      std::cout << "[Autopilot] INJECTING SEQUENCE 2/4: Arrow Left (2s)" << std::endl;
-      evDown.key.keysym.sym = 276;
-      evDown.key.keysym.scancode = 113;
-      g_inInjection = true;
-      pfn_PushEvent(&evDown);
-      g_inInjection = false;
-      std::this_thread::sleep_for(std::chrono::seconds(2));
-      evUp.key.keysym.sym = 276;
-      evUp.key.keysym.scancode = 113;
-      g_inInjection = true;
-      pfn_PushEvent(&evUp);
-      g_inInjection = false;
-      std::this_thread::sleep_for(std::chrono::milliseconds(500));
-
-      // 3. Right (sym=275, scancode=114)
-      std::cout << "[Autopilot] INJECTING SEQUENCE 3/4: Arrow Right (2s)" << std::endl;
-      evDown.key.keysym.sym = 275;
-      evDown.key.keysym.scancode = 114;
-      g_inInjection = true;
-      pfn_PushEvent(&evDown);
-      g_inInjection = false;
-      std::this_thread::sleep_for(std::chrono::seconds(2));
-      evUp.key.keysym.sym = 275;
-      evUp.key.keysym.scancode = 114;
-      g_inInjection = true;
-      pfn_PushEvent(&evUp);
-      g_inInjection = false;
-      std::this_thread::sleep_for(std::chrono::milliseconds(500));
-
-      // 4. Down (sym=274, scancode=116)
-      std::cout << "[Autopilot] INJECTING SEQUENCE 4/4: Arrow Down (2s)" << std::endl;
-      evDown.key.keysym.sym = 274;
-      evDown.key.keysym.scancode = 116;
-      g_inInjection = true;
-      pfn_PushEvent(&evDown);
-      g_inInjection = false;
-      std::this_thread::sleep_for(std::chrono::seconds(2));
-      evUp.key.keysym.sym = 274;
-      evUp.key.keysym.scancode = 116;
-      g_inInjection = true;
-      pfn_PushEvent(&evUp);
-      g_inInjection = false;
-      
-      std::cout << "\n[Autopilot] ==========================================" << std::endl;
-      std::cout << "[Autopilot] TIMELINE COMPLETED! Keyboard is now 100% yours!" << std::endl;
-      std::cout << "[Autopilot] Please try pressing Arrow Keys, ESC, and Enter now!" << std::endl;
-      std::cout << "[Autopilot] ==========================================\n" << std::endl;
-      
-      dlclose(sdl12DiagHandle);
-  }).detach();
 
   return true;
 }

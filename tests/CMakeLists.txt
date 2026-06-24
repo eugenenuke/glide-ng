@@ -1,6 +1,7 @@
 # --- Glide 2.x Test Suite ---
 add_executable(Glide2xWrapperTests
     test_architecture.cpp
+    test_key_handling.cpp
     tlib2_patched.c
     "${CMAKE_CURRENT_SOURCE_DIR}/../refs/3dfx-Glide-API/swlibs/fxmisc/linutil.c"
 )
