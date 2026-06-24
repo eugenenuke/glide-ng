@@ -531,6 +531,8 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
   m_headlessHeight = height;
   m_guestWidth = width;
   m_guestHeight = height;
+  m_realWindowWidth = width;
+  m_realWindowHeight = height;
   ResetState();
   m_headlessMode = true;  // Headless-driven for visual regression
 
@@ -835,6 +837,8 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
 
             m_headlessWidth = width;
             m_headlessHeight = height;
+            m_realWindowWidth = attrs.width;
+            m_realWindowHeight = attrs.height;
             m_headlessMode = true;
 
             // Destroy the surface since swapchain failed and we won't present via Vulkan
@@ -1842,12 +1846,50 @@ bool VulkanBackend::SwapBuffers() {
       }
 
       void* pixels = m_gpuStagingMaps[m_currentFrameSlot];
+      uint32_t srcW = m_headlessWidth;
+      uint32_t srcH = m_headlessHeight;
+      uint32_t dstW = m_realWindowWidth;
+      uint32_t dstH = m_realWindowHeight;
+
+      char* blitData = reinterpret_cast<char*>(pixels);
+      uint32_t blitWidth = srcW;
+      uint32_t blitHeight = srcH;
+      uint32_t blitPitch = srcW * 4;
+
+      if (srcW != dstW || srcH != dstH) {
+        // Perform fast CPU-based nearest-neighbor scaling for resolution mismatches (e.g. 512x384 in 640x480 window)
+        m_vulkanResolvedBuffer.resize(dstW * dstH);
+        uint32_t* dstPixels = m_vulkanResolvedBuffer.data();
+        const uint32_t* srcPixels = reinterpret_cast<const uint32_t*>(pixels);
+
+        float scaleX = (float)srcW / dstW;
+        float scaleY = (float)srcH / dstH;
+
+#pragma omp parallel for if (dstH > 240)
+        for (uint32_t y = 0; y < dstH; y++) {
+          uint32_t srcY = (uint32_t)(y * scaleY);
+          if (srcY >= srcH) srcY = srcH - 1;
+          const uint32_t* srcRow = &srcPixels[srcY * srcW];
+          uint32_t* dstRow = &dstPixels[y * dstW];
+          for (uint32_t x = 0; x < dstW; x++) {
+            uint32_t srcX = (uint32_t)(x * scaleX);
+            if (srcX >= srcW) srcX = srcW - 1;
+            dstRow[x] = srcRow[srcX];
+          }
+        }
+
+        blitData = reinterpret_cast<char*>(m_vulkanResolvedBuffer.data());
+        blitWidth = dstW;
+        blitHeight = dstH;
+        blitPitch = dstW * 4;
+      }
+
       XImage* ximage = XCreateImage(
           reinterpret_cast<Display*>(m_nativeDisplay),
           reinterpret_cast<Visual*>(m_x11Visual), m_x11Depth, ZPixmap, 0,
-          reinterpret_cast<char*>(pixels), m_headlessWidth, m_headlessHeight,
-          32,                  // Bitmap pad
-          m_headlessWidth * 4  // Bytes per line
+          blitData, blitWidth, blitHeight,
+          32,        // Bitmap pad
+          blitPitch  // Bytes per line
       );
 
       if (ximage) {
@@ -1856,10 +1898,10 @@ bool VulkanBackend::SwapBuffers() {
                       reinterpret_cast<uintptr_t>(m_nativeWindow)),
                   reinterpret_cast<GC>(m_x11GC), ximage, 0, 0,  // Source X, Y
                   0, 0,  // Destination X, Y
-                  m_headlessWidth, m_headlessHeight);
+                  blitWidth, blitHeight);
         XFlush(reinterpret_cast<Display*>(m_nativeDisplay));
 
-        // Free the XImage shell without freeing our mapped staging buffer
+        // Free the XImage shell without freeing our mapped/resolved buffers
         ximage->data = nullptr;
         XDestroyImage(ximage);
       }

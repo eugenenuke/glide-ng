@@ -722,6 +722,13 @@ bool SoftwareBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
   if (!m_initialized) return false;
   if (m_windowAttached) DetachWindow();
 
+  std::cout << "Info: InitialiseSoftwareWindow(wnd=" << nativeWindowHandle
+            << ", res=" << width << "x" << height << ")\r\n";
+  std::cout << "Info: Host Software Adapter: pure-software reference rasterizer (glide-ng Software Reference Core)\r\n";
+  std::cout << "Info: Pixel Format RGBA8888 D32S0 nAux 0 nSamples 0 0\r\n";
+  std::cout << "Info: Drawable Size: " << width << "x" << height << "\r\n"
+            << std::flush;
+
   GLIDE_LOG(INFO, "Software",
             "Attaching software execution window ("
                 << width << "x" << height

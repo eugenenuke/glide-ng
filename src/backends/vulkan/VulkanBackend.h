@@ -480,6 +480,11 @@ class VulkanBackend : public SoftwareBackendBase {
   uint8_t m_lutR[256];
   uint8_t m_lutG[256];
   uint8_t m_lutB[256];
+
+  // X11 Blit Fallback window scaling state
+  uint32_t m_realWindowWidth{0};
+  uint32_t m_realWindowHeight{0};
+  std::vector<uint32_t> m_vulkanResolvedBuffer;
 };
 
 }  // namespace GlideWrapper
