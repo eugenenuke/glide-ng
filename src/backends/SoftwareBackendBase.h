@@ -310,6 +310,11 @@ class SoftwareBackendBase : public IGraphicsBackend {
   bool m_aaEnabled{false};
   void ResolveAAMode();
   void SetAAState(bool enabled) override;
+  void RegisterAntiGrabFilter();
+  void UnregisterAntiGrabFilter();
+  void ProcessPendingKeyReleases();
 };
+
+extern thread_local bool g_inInjection;
 
 }  // namespace GlideWrapper

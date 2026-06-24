@@ -991,3 +991,224 @@ void SoftwareBackendBase::PurgeTextures() {
 }
 
 }  // namespace GlideWrapper
+
+#include <dlfcn.h>
+#include <chrono>
+#include <iostream>
+#include <cstring>
+
+namespace {
+
+// SDL 1.2 Event structures
+struct SDL12_ActiveEvent {
+  uint8_t type;
+  uint8_t gain;
+  uint8_t state;
+};
+
+struct SDL12_KeyboardEvent {
+  uint8_t type;
+  uint8_t which;
+  uint8_t state;
+  struct {
+    uint8_t scancode;
+    uint32_t sym;
+    uint32_t mod;
+    uint16_t unicode;
+  } keysym;
+};
+
+union SDL12_Event {
+  uint8_t type;
+  SDL12_ActiveEvent active;
+  SDL12_KeyboardEvent key;
+  uint8_t pad[24];
+};
+
+typedef int (*PFN_SDL12_PushEvent)(void* event);
+
+// Dynamic key debouncing & holding emulation state
+static std::chrono::steady_clock::time_point s_keyUpTime[512] = {};
+static bool s_keyState[512] = {false};
+static bool s_pendingKeyUp[512] = {false};
+static bool s_isHolding[512] = {false};
+
+// Configurable constants
+static constexpr int KEY_INITIAL_DEBOUNCE_MS = 650; // Bridges the ~500ms OS repeat delay
+static constexpr int KEY_HOLD_DEBOUNCE_MS = 180;    // Low latency once in holding state (bridges ~80ms repeat rate)
+
+static std::chrono::steady_clock::time_point s_lastEventTime = std::chrono::steady_clock::now();
+static const std::chrono::steady_clock::time_point s_startTime = std::chrono::steady_clock::now();
+
+int AntiGrabBreakFilter(const void* rawEvent) {
+  const SDL12_Event* event = reinterpret_cast<const SDL12_Event*>(rawEvent);
+  uint8_t type = event->type;
+
+  if (type == 2 || type == 3) { // SDL_KEYDOWN or SDL_KEYUP
+    uint32_t sym = event->key.keysym.sym;
+    uint8_t state = event->key.state;
+    uint8_t scancode = event->key.keysym.scancode;
+
+    auto now = std::chrono::steady_clock::now();
+    auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - s_startTime).count();
+    auto gapMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - s_lastEventTime).count();
+    s_lastEventTime = now;
+
+    std::cout << "[Wrapper-AntiGrab-Filter] [" << (elapsedMs / 1000.0) << "s] (Gap since last: " << gapMs << "ms) INTERCEPTED physical event: type=" << (int)type
+              << " (" << (type == 2 ? "KEYDOWN" : "KEYUP") << "), sym=" << sym 
+              << ", original_scancode=" << (int)scancode 
+              << ", state=" << (int)state << ", thread_local_g_inInjection=" << GlideWrapper::g_inInjection << std::endl;
+
+    if (GlideWrapper::g_inInjection) {
+      return 1; // Let recursive injection pass through!
+    }
+
+    if (sym >= 512) {
+      return 1; // Keep weird keys out
+    }
+
+    static PFN_SDL12_PushEvent pfn_PushEvent = nullptr;
+    if (!pfn_PushEvent) {
+      void* sdlHandle = dlopen("libSDL-1.2.so.0", RTLD_LAZY | RTLD_NOLOAD);
+      if (sdlHandle) {
+        pfn_PushEvent = reinterpret_cast<PFN_SDL12_PushEvent>(dlsym(sdlHandle, "SDL_PushEvent"));
+      }
+    }
+
+    if (!pfn_PushEvent) {
+      return 1;
+    }
+
+    if (type == 2) { // KEYDOWN
+      if (s_pendingKeyUp[sym]) {
+        s_pendingKeyUp[sym] = false;
+      }
+
+      if (!s_keyState[sym]) {
+        s_keyState[sym] = true;
+        s_isHolding[sym] = false;
+
+        SDL12_Event cleanEvent;
+        std::memset(&cleanEvent, 0, sizeof(cleanEvent));
+        cleanEvent.key.type = 2;
+        cleanEvent.key.state = 1;
+        cleanEvent.key.which = event->key.which;
+        cleanEvent.key.keysym.sym = sym;
+        cleanEvent.key.keysym.mod = event->key.keysym.mod;
+        cleanEvent.key.keysym.unicode = event->key.keysym.unicode;
+
+        if (scancode == 0) {
+          if (sym == 273)      cleanEvent.key.keysym.scancode = 111;
+          else if (sym == 274) cleanEvent.key.keysym.scancode = 116;
+          else if (sym == 275) cleanEvent.key.keysym.scancode = 114;
+          else if (sym == 276) cleanEvent.key.keysym.scancode = 113;
+          else if (sym == 27)  cleanEvent.key.keysym.scancode = 9;
+          else if (sym == 13)  cleanEvent.key.keysym.scancode = 36;
+        } else {
+          cleanEvent.key.keysym.scancode = scancode;
+        }
+
+        std::cout << "[Wrapper-AntiGrab-Filter] PROXYING KEYDOWN to game immediately: sym=" << sym 
+                  << ", patched_scancode=" << (int)cleanEvent.key.keysym.scancode << std::endl;
+
+        GlideWrapper::g_inInjection = true;
+        pfn_PushEvent(&cleanEvent);
+        GlideWrapper::g_inInjection = false;
+      } else {
+        if (!s_isHolding[sym]) {
+          s_isHolding[sym] = true;
+          std::cout << "[Wrapper-AntiGrab-Filter] KEY HOLD DETECTED: Transitioning sym=" << sym << " to high-precision hold mode." << std::endl;
+        } else {
+          std::cout << "[Wrapper-AntiGrab-Filter] IGNORED duplicate KEYDOWN (holding) for sym=" << sym << std::endl;
+        }
+      }
+      return 0;
+    } 
+    else if (type == 3) { // KEYUP
+      int debounceMs = s_isHolding[sym] ? KEY_HOLD_DEBOUNCE_MS : KEY_INITIAL_DEBOUNCE_MS;
+      std::cout << "[Wrapper-AntiGrab-Filter] DEBOUNCING: Scheduled release for sym=" << sym 
+                << " in " << debounceMs << "ms (hold_mode=" << (s_isHolding[sym] ? "Yes" : "No") << ")" << std::endl;
+      
+      s_pendingKeyUp[sym] = true;
+      s_keyUpTime[sym] = std::chrono::steady_clock::now() + std::chrono::milliseconds(debounceMs);
+      return 0;
+    }
+  }
+
+  return 1;
+}
+
+} // namespace
+
+namespace GlideWrapper {
+
+thread_local bool g_inInjection = false;
+
+void SoftwareBackendBase::RegisterAntiGrabFilter() {
+  void* sdl12DiagHandle = dlopen("libSDL-1.2.so.0", RTLD_LAZY | RTLD_NOLOAD);
+  if (sdl12DiagHandle) {
+    typedef void (*PFN_SDL_SetEventFilter)(int (*filter)(const void* event));
+    auto pfn_SetEventFilter = reinterpret_cast<PFN_SDL_SetEventFilter>(dlsym(sdl12DiagHandle, "SDL_SetEventFilter"));
+    if (pfn_SetEventFilter) {
+      pfn_SetEventFilter(AntiGrabBreakFilter);
+      GLIDE_LOG(INFO, "BackendBase", "Registered Web RDP Anti-Grab-Break keyboard filter on SDL 1.2.");
+    }
+    dlclose(sdl12DiagHandle);
+  }
+}
+
+void SoftwareBackendBase::UnregisterAntiGrabFilter() {
+  void* sdl12DiagHandle = dlopen("libSDL-1.2.so.0", RTLD_LAZY | RTLD_NOLOAD);
+  if (sdl12DiagHandle) {
+    typedef void (*PFN_SDL_SetEventFilter)(int (*filter)(const void* event));
+    auto pfn_SetEventFilter = reinterpret_cast<PFN_SDL_SetEventFilter>(dlsym(sdl12DiagHandle, "SDL_SetEventFilter"));
+    if (pfn_SetEventFilter) {
+      pfn_SetEventFilter(nullptr);
+      GLIDE_LOG(INFO, "BackendBase", "Unregistered Web RDP Anti-Grab-Break keyboard filter.");
+    }
+    dlclose(sdl12DiagHandle);
+  }
+}
+
+void SoftwareBackendBase::ProcessPendingKeyReleases() {
+  static PFN_SDL12_PushEvent pfn_PushEvent = nullptr;
+  if (!pfn_PushEvent) {
+    void* sdlHandle = dlopen("libSDL-1.2.so.0", RTLD_LAZY | RTLD_NOLOAD);
+    if (sdlHandle) {
+      pfn_PushEvent = reinterpret_cast<PFN_SDL12_PushEvent>(dlsym(sdlHandle, "SDL_PushEvent"));
+    }
+  }
+
+  if (pfn_PushEvent) {
+    auto now = std::chrono::steady_clock::now();
+    for (uint32_t sym = 0; sym < 512; ++sym) {
+      if (s_pendingKeyUp[sym] && now >= s_keyUpTime[sym]) {
+        s_pendingKeyUp[sym] = false;
+        s_keyState[sym] = false;
+        s_isHolding[sym] = false;
+
+        SDL12_Event cleanEvent;
+        std::memset(&cleanEvent, 0, sizeof(cleanEvent));
+        cleanEvent.key.type = 3;
+        cleanEvent.key.state = 0;
+        cleanEvent.key.keysym.sym = sym;
+
+        if (sym == 273)      cleanEvent.key.keysym.scancode = 111;
+        else if (sym == 274) cleanEvent.key.keysym.scancode = 116;
+        else if (sym == 275) cleanEvent.key.keysym.scancode = 114;
+        else if (sym == 276) cleanEvent.key.keysym.scancode = 113;
+        else if (sym == 27)  cleanEvent.key.keysym.scancode = 9;
+        else if (sym == 13)  cleanEvent.key.keysym.scancode = 36;
+
+        std::cout << "[Wrapper-AntiGrab-Filter] DISPATCHING debounced release for sym=" << sym 
+                  << ", scancode=" << (int)cleanEvent.key.keysym.scancode << std::endl;
+
+        g_inInjection = true;
+        pfn_PushEvent(&cleanEvent);
+        g_inInjection = false;
+      }
+    }
+  }
+}
+
+} // namespace GlideWrapper

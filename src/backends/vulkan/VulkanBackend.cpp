@@ -1005,6 +1005,7 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
   m_commandBuffer->begin(vk::CommandBufferBeginInfo(
       vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
 
+  RegisterAntiGrabFilter();
   m_windowAttached = true;
   return true;
 }
@@ -1096,6 +1097,7 @@ void VulkanBackend::DetachWindow() {
 
   m_windowAttached = false;
   m_headlessMode = false;
+  UnregisterAntiGrabFilter();
 }
 
 bool VulkanBackend::CreateSwapchain(uint32_t width, uint32_t height) {
@@ -1555,6 +1557,8 @@ void VulkanBackend::SetFogTable(const uint8_t* table) {
 bool VulkanBackend::SwapBuffers() {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   if (!m_initialized || !m_windowAttached) return false;
+
+  ProcessPendingKeyReleases();
 
   // Flush any pending CPU LFB writes to the GPU active image before we
   // swap/present!

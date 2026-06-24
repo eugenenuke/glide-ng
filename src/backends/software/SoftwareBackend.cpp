@@ -66,84 +66,7 @@ union SDL12_Event {
   uint8_t type;
   SDL12_ActiveEvent active;
   SDL12_KeyboardEvent key;
-  uint8_t pad[24];
 };
-
-thread_local bool g_inInjection = false;
-static std::chrono::steady_clock::time_point s_lastEventTime = std::chrono::steady_clock::now();
-static const std::chrono::steady_clock::time_point s_startTime = std::chrono::steady_clock::now();
-
-typedef int (*PFN_SDL12_PushEvent)(void* event);
-
-static int AntiGrabBreakFilter(const void* rawEvent) {
-  const SDL12_Event* event = reinterpret_cast<const SDL12_Event*>(rawEvent);
-  uint8_t type = event->type;
-
-  if (type == 2 || type == 3) { // SDL_KEYDOWN or SDL_KEYUP
-    uint32_t sym = event->key.keysym.sym;
-    uint8_t state = event->key.state;
-    uint8_t scancode = event->key.keysym.scancode;
-
-    // Log EVERY intercepted physical event before any filtering/discarding!
-    auto now = std::chrono::steady_clock::now();
-    auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - s_startTime).count();
-    auto gapMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - s_lastEventTime).count();
-    s_lastEventTime = now;
-
-    std::cout << "[Wrapper-AntiGrab-Filter] [" << (elapsedMs / 1000.0) << "s] (Gap since last: " << gapMs << "ms) INTERCEPTED physical event: type=" << (int)type
-              << " (" << (type == 2 ? "KEYDOWN" : "KEYUP") << "), sym=" << sym 
-              << ", original_scancode=" << (int)scancode 
-              << ", state=" << (int)state << ", thread_local_g_inInjection=" << g_inInjection << std::endl;
-
-    if (g_inInjection) {
-      std::cout << "[Wrapper-AntiGrab-Filter] PASSING injected event: type=" << (int)type 
-                << ", sym=" << sym << std::endl;
-      return 1; // Let recursive injection pass through!
-    }
-
-    if (sym >= 512) {
-      return 1; // Keep weird keys out
-    }
-
-    static PFN_SDL12_PushEvent pfn_PushEvent = nullptr;
-    if (!pfn_PushEvent) {
-      void* sdlHandle = dlopen("libSDL-1.2.so.0", RTLD_LAZY | RTLD_NOLOAD);
-      if (sdlHandle) {
-        pfn_PushEvent = reinterpret_cast<PFN_SDL12_PushEvent>(dlsym(sdlHandle, "SDL_PushEvent"));
-      }
-    }
-
-    if (!pfn_PushEvent) {
-      return 1;
-    }
-
-    // Proxy the event immediately with patched scancode
-    SDL12_Event cleanEvent;
-    std::memcpy(&cleanEvent, event, sizeof(SDL12_Event));
-
-    // Patch scancode if 0
-    if (cleanEvent.key.keysym.scancode == 0) {
-      if (sym == 273)      cleanEvent.key.keysym.scancode = 111; // Up
-      else if (sym == 274) cleanEvent.key.keysym.scancode = 116; // Down
-      else if (sym == 275) cleanEvent.key.keysym.scancode = 114; // Right
-      else if (sym == 276) cleanEvent.key.keysym.scancode = 113; // Left
-      else if (sym == 27)  cleanEvent.key.keysym.scancode = 9;   // ESC
-      else if (sym == 13)  cleanEvent.key.keysym.scancode = 36;  // ENTER
-    }
-
-    std::cout << "[Wrapper-AntiGrab-Filter] PROXYING " << (type == 2 ? "KEYDOWN" : "KEYUP") 
-              << " immediately: sym=" << sym 
-              << ", patched_scancode=" << (int)cleanEvent.key.keysym.scancode << std::endl;
-
-    g_inInjection = true;
-    pfn_PushEvent(&cleanEvent);
-    g_inInjection = false;
-
-    return 0; // Discard the original "dirty" physical event
-  }
-
-  return 1; // Keep other events
-}
 #endif
 
 namespace GlideWrapper {
@@ -851,17 +774,7 @@ bool SoftwareBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
   m_headlessPixelMap = m_cpuBuffers[m_backBufferIdx].data();
   m_windowAttached = true;
 
-  // Register the Web RDP Anti-Grab-Break filter dynamically!
-  void* sdl12DiagHandle = dlopen("libSDL-1.2.so.0", RTLD_LAZY | RTLD_NOLOAD);
-  if (sdl12DiagHandle) {
-    typedef void (*PFN_SDL_SetEventFilter)(int (*filter)(const void* event));
-    auto pfn_SetEventFilter = reinterpret_cast<PFN_SDL_SetEventFilter>(dlsym(sdl12DiagHandle, "SDL_SetEventFilter"));
-    if (pfn_SetEventFilter) {
-      pfn_SetEventFilter(AntiGrabBreakFilter);
-      GLIDE_LOG(INFO, "Software", "Registered Web RDP Anti-Grab-Break keyboard filter.");
-    }
-    dlclose(sdl12DiagHandle);
-  }
+  RegisterAntiGrabFilter();
 
   // Launch the 10-second Diagnostic Autopilot Thread!
   std::thread([this]() {
@@ -970,17 +883,7 @@ void SoftwareBackend::DetachWindow() {
     m_allocatedBuffer = false;
   }
 
-  // Unregister the Web RDP Anti-Grab-Break filter dynamically!
-  void* sdl12DiagHandle = dlopen("libSDL-1.2.so.0", RTLD_LAZY | RTLD_NOLOAD);
-  if (sdl12DiagHandle) {
-    typedef void (*PFN_SDL_SetEventFilter)(int (*filter)(const void* event));
-    auto pfn_SetEventFilter = reinterpret_cast<PFN_SDL_SetEventFilter>(dlsym(sdl12DiagHandle, "SDL_SetEventFilter"));
-    if (pfn_SetEventFilter) {
-      pfn_SetEventFilter(nullptr);
-      GLIDE_LOG(INFO, "Software", "Unregistered Web RDP Anti-Grab-Break keyboard filter.");
-    }
-    dlclose(sdl12DiagHandle);
-  }
+  UnregisterAntiGrabFilter();
 
   m_windowAttached = false;
   m_headlessMode = false;
@@ -992,7 +895,7 @@ bool SoftwareBackend::SwapBuffers() {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   if (!m_initialized || !m_windowAttached) return false;
 
-  // No debouncing needed. Physical key releases are proxied immediately by the filter.
+  ProcessPendingKeyReleases();
 
 
   GLIDE_LOG(DEBUG, "Software", "Executing SwapBuffers presentation dispatch.");
