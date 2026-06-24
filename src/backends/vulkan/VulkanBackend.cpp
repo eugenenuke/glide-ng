@@ -828,30 +828,20 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
             m_isWindowHooked = true;  // KEEP HOOKED!
             m_sdlWindow = nullptr;    // DO NOT create a standalone window!
 
-            // Extract the REAL window dimensions to fill the window perfectly!
-            int realWidth = attrs.width;
-            int realHeight = attrs.height;
-
             GLIDE_LOG(INFO, "Vulkan",
-                      "X11 Blit Fallback activated successfully. Real Window Size="
-                          << realWidth << "x" << realHeight << ", Depth="
+                      "X11 Blit Fallback activated successfully. Game Resolution="
+                          << width << "x" << height << ", Depth="
                           << m_x11Depth);
 
-            m_headlessWidth = realWidth;
-            m_headlessHeight = realHeight;
+            m_headlessWidth = width;
+            m_headlessHeight = height;
             m_headlessMode = true;
 
             // Destroy the surface since swapchain failed and we won't present via Vulkan
             m_surface.reset();
 
-            if (CreateHeadlessRenderTarget(realWidth, realHeight)) {
-              presentationSuccess = true;
-            } else {
-              GLIDE_LOG(CRITICAL, "Vulkan",
-                        "X11 Blit Fallback: Failed to allocate headless "
-                        "offscreen resources!");
-              isHookedFailed = true;
-            }
+            // Headless render target was already created at (width, height) in the main flow!
+            presentationSuccess = true;
           } else {
             GLIDE_LOG(
                 WARN, "Vulkan",

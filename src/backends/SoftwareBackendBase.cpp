@@ -1034,8 +1034,8 @@ static bool s_pendingKeyUp[512] = {false};
 static bool s_isHolding[512] = {false};
 
 // Configurable constants
-static constexpr int KEY_INITIAL_DEBOUNCE_MS = 320; // Bridges the ~500ms OS repeat delay (tuned for high responsiveness)
-static constexpr int KEY_HOLD_DEBOUNCE_MS = 130;    // Low latency once in holding state (bridges ~80ms repeat rate, tuned for zero-lag release)
+static constexpr int KEY_INITIAL_DEBOUNCE_MS = 280; // Bridges OS repeat delay while maintaining quick tap release latency
+static constexpr int KEY_HOLD_DEBOUNCE_MS = 100;    // Low latency once in holding state (bridges ~80ms repeat rate, tuned for near-zero-lag release)
 
 static std::chrono::steady_clock::time_point s_lastEventTime = std::chrono::steady_clock::now();
 static const std::chrono::steady_clock::time_point s_startTime = std::chrono::steady_clock::now();
