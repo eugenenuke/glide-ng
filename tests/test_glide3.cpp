@@ -2160,6 +2160,12 @@ TEST_CASE("Glide 3.x Perfect Bilinear Halo-Free Texture Chromakeying (TEXCHROMA)
             CHECK(px == 0);
         } else {
             // Blending transition zone: must be semi-transparent, contain no green, and some blue/red
+            if (!(g == 0 && a < 255 && a > 0 && colorVal < 255 && colorVal > 0)) {
+                std::cout << "FAIL at x=" << x << ": px=0x" << std::hex << px 
+                          << " (a=" << std::dec << (int)a << ", r=" << (int)r 
+                          << ", g=" << (int)g << ", b=" << (int)b 
+                          << ", colorVal=" << (int)colorVal << ")" << std::endl;
+            }
             CHECK(g == 0); // Crucial: no green halo!
             CHECK(a < 255);
             CHECK(a > 0);

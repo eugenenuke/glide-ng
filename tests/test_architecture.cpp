@@ -36,14 +36,16 @@ struct StandardVert {
 }  // namespace
 
 inline void* OpenGlide2Handle() {
-  void* h = ::dlopen("../lib/libglide2x.so", RTLD_LAZY);
+  void* h = ::dlopen("libglide2x.so", RTLD_LAZY);
+  if (!h) h = ::dlopen("../lib/libglide2x.so", RTLD_LAZY);
   if (!h) h = ::dlopen("lib/libglide2x.so", RTLD_LAZY);
   if (!h) h = ::dlopen("build/lib/libglide2x.so", RTLD_LAZY);
   return h;
 }
 
 inline void* OpenGlide3Handle() {
-  void* h = ::dlopen("../lib/libglide3x.so", RTLD_LAZY);
+  void* h = ::dlopen("libglide3x.so", RTLD_LAZY);
+  if (!h) h = ::dlopen("../lib/libglide3x.so", RTLD_LAZY);
   if (!h) h = ::dlopen("lib/libglide3x.so", RTLD_LAZY);
   if (!h) h = ::dlopen("build/lib/libglide3x.so", RTLD_LAZY);
   return h;
@@ -6174,7 +6176,8 @@ TEST_CASE("Glide 3.x grGet Unit Tests", "[Glide3][grGet]") {
 
 #include "core/VertexLayout.h"
 
-TEST_CASE("Glide 2.x/3.x TMU 1 Vertex Layout Decoding Integrity", "[VertexLayout][TMU1]") {
+TEST_CASE("Glide 2.x/3.x TMU 1 Vertex Layout Decoding Integrity",
+          "[VertexLayout][TMU1]") {
   auto& layout = GlideWrapper::VertexLayout::GetInstance();
 
   SECTION("Glide 2 TMU 1 Decoding (Canonical)") {
@@ -6188,7 +6191,7 @@ TEST_CASE("Glide 2.x/3.x TMU 1 Vertex Layout Decoding Integrity", "[VertexLayout
       float a;
       float oow;
       float s0, t0;
-      float padding[1]; // Pad to offset 48
+      float padding[1];  // Pad to offset 48
       float s1, t1;
     };
 
@@ -6196,12 +6199,16 @@ TEST_CASE("Glide 2.x/3.x TMU 1 Vertex Layout Decoding Integrity", "[VertexLayout
     v.x = 100.0f;
     v.y = 200.0f;
     v.z = 0.0f;
-    v.r = 255.0f; v.g = 255.0f; v.b = 255.0f;
+    v.r = 255.0f;
+    v.g = 255.0f;
+    v.b = 255.0f;
     v.ooz = 0.0f;
     v.a = 255.0f;
     v.oow = 1.0f;
-    v.s0 = 5.0f; v.t0 = 10.0f;
-    v.s1 = 15.0f; v.t1 = 20.0f;
+    v.s0 = 5.0f;
+    v.t0 = 10.0f;
+    v.s1 = 15.0f;
+    v.t1 = 20.0f;
 
     GlideWrapper::ModernVertex mv = layout.DecodeVertex(&v);
 
@@ -6211,12 +6218,12 @@ TEST_CASE("Glide 2.x/3.x TMU 1 Vertex Layout Decoding Integrity", "[VertexLayout
     REQUIRE(mv.tex[1] == 10.0f);
     REQUIRE(mv.tex[2] == 15.0f);
     REQUIRE(mv.tex[3] == 20.0f);
-    REQUIRE(mv.tmu_oow[1] == 1.0f); // Default when separate W disabled
+    REQUIRE(mv.tmu_oow[1] == 1.0f);  // Default when separate W disabled
   }
 
   SECTION("Glide 2 TMU 1 Decoding (Canonical with separate W)") {
     layout.ResetToGlide2Canonical();
-    layout.SetSTWHintMask(0x8); // GR_STWHINT_W_DIFF_TMU1
+    layout.SetSTWHintMask(0x8);  // GR_STWHINT_W_DIFF_TMU1
 
     struct MockGlide2TMU1Vertex {
       float x, y;
@@ -6226,7 +6233,7 @@ TEST_CASE("Glide 2.x/3.x TMU 1 Vertex Layout Decoding Integrity", "[VertexLayout
       float a;
       float oow;
       float s0, t0;
-      float padding[1]; // Pad to offset 48
+      float padding[1];  // Pad to offset 48
       float s1, t1, w1;
     };
 
@@ -6234,12 +6241,17 @@ TEST_CASE("Glide 2.x/3.x TMU 1 Vertex Layout Decoding Integrity", "[VertexLayout
     v.x = 100.0f;
     v.y = 200.0f;
     v.z = 0.0f;
-    v.r = 255.0f; v.g = 255.0f; v.b = 255.0f;
+    v.r = 255.0f;
+    v.g = 255.0f;
+    v.b = 255.0f;
     v.ooz = 0.0f;
     v.a = 255.0f;
     v.oow = 0.5f;
-    v.s0 = 5.0f; v.t0 = 10.0f;
-    v.s1 = 15.0f; v.t1 = 20.0f; v.w1 = 0.25f;
+    v.s0 = 5.0f;
+    v.t0 = 10.0f;
+    v.s1 = 15.0f;
+    v.t1 = 20.0f;
+    v.w1 = 0.25f;
 
     GlideWrapper::ModernVertex mv = layout.DecodeVertex(&v);
 
@@ -6269,15 +6281,20 @@ TEST_CASE("Glide 2.x/3.x TMU 1 Vertex Layout Decoding Integrity", "[VertexLayout
     };
 
     MockVoodoo2Vertex v;
-    v.x = 120.0f; v.y = 240.0f;
+    v.x = 120.0f;
+    v.y = 240.0f;
     v.z = 0.5f;
-    v.r = 255.0f; v.g = 128.0f; v.b = 0.0f;
+    v.r = 255.0f;
+    v.g = 128.0f;
+    v.b = 0.0f;
     v.ooz = 32768.0f;
     v.a = 255.0f;
     v.oow = 0.5f;
-    v.s0 = 10.0f; v.t0 = 20.0f;
+    v.s0 = 10.0f;
+    v.t0 = 20.0f;
     v.oow0 = 0.5f;
-    v.s1 = 100.0f; v.t1 = 200.0f;
+    v.s1 = 100.0f;
+    v.t1 = 200.0f;
     v.oow1 = 0.5f;
 
     GlideWrapper::ModernVertex mv = layout.DecodeVertex(&v);
@@ -6294,12 +6311,12 @@ TEST_CASE("Glide 2.x/3.x TMU 1 Vertex Layout Decoding Integrity", "[VertexLayout
   SECTION("Glide 3 TMU 1 Decoding (Glide 3 Custom Layout)") {
     layout.ResetToGlide3Canonical();
 
-    layout.SetParamOffsetGlide3(0x01, 0, 1);  // GR_PARAM_XY
-    layout.SetParamOffsetGlide3(0x04, 12, 1); // GR_PARAM_Q
-    layout.SetParamOffsetGlide3(0x20, 16, 1); // GR_PARAM_RGB
-    layout.SetParamOffsetGlide3(0x10, 28, 1); // GR_PARAM_A
-    layout.SetParamOffsetGlide3(0x40, 32, 1); // GR_PARAM_ST0
-    layout.SetParamOffsetGlide3(0x41, 40, 1); // GR_PARAM_ST1
+    layout.SetParamOffsetGlide3(0x01, 0, 1);   // GR_PARAM_XY
+    layout.SetParamOffsetGlide3(0x04, 12, 1);  // GR_PARAM_Q
+    layout.SetParamOffsetGlide3(0x20, 16, 1);  // GR_PARAM_RGB
+    layout.SetParamOffsetGlide3(0x10, 28, 1);  // GR_PARAM_A
+    layout.SetParamOffsetGlide3(0x40, 32, 1);  // GR_PARAM_ST0
+    layout.SetParamOffsetGlide3(0x41, 40, 1);  // GR_PARAM_ST1
 
     struct MockGlide3Vertex {
       float x, y;     // 0, 4
@@ -6312,12 +6329,17 @@ TEST_CASE("Glide 2.x/3.x TMU 1 Vertex Layout Decoding Integrity", "[VertexLayout
     };
 
     MockGlide3Vertex v;
-    v.x = 300.0f; v.y = 150.0f;
+    v.x = 300.0f;
+    v.y = 150.0f;
     v.q = 0.2f;
-    v.r = 0.0f; v.g = 255.0f; v.b = 255.0f;
+    v.r = 0.0f;
+    v.g = 255.0f;
+    v.b = 255.0f;
     v.a = 128.0f;
-    v.s0 = 5.0f; v.t0 = 8.0f;
-    v.s1 = 50.0f; v.t1 = 80.0f;
+    v.s0 = 5.0f;
+    v.t0 = 8.0f;
+    v.s1 = 50.0f;
+    v.t1 = 80.0f;
 
     GlideWrapper::ModernVertex mv = layout.DecodeVertex(&v);
 
@@ -6331,7 +6353,8 @@ TEST_CASE("Glide 2.x/3.x TMU 1 Vertex Layout Decoding Integrity", "[VertexLayout
   }
 }
 
-TEST_CASE("Glide 2.x LFB Readback Stride Validation [VULN-04]", "[Glide2][LFB]") {
+TEST_CASE("Glide 2.x LFB Readback Stride Validation [VULN-04]",
+          "[Glide2][LFB]") {
 #ifdef __linux__
   void* handle = OpenGlide2Handle();
   REQUIRE(handle != nullptr);
@@ -6358,16 +6381,19 @@ TEST_CASE("Glide 2.x LFB Readback Stride Validation [VULN-04]", "[Glide2][LFB]")
   REQUIRE(openOk == FXTRUE);
 
   // We read a 100x100 region.
-  // Native/determined format is 16-bit, so required stride is 100 * 2 = 200 bytes.
+  // Native/determined format is 16-bit, so required stride is 100 * 2 = 200
+  // bytes.
   std::vector<uint8_t> buffer(20000, 0);
 
   // Test case 1: Pass an invalid stride (100 bytes, which is less than 200)
-  FxBool status1 = readLfb(GR_BUFFER_BACKBUFFER, 0, 0, 100, 100, 100, buffer.data());
+  FxBool status1 =
+      readLfb(GR_BUFFER_BACKBUFFER, 0, 0, 100, 100, 100, buffer.data());
   // It should fail and return FXFALSE to prevent overflow!
   REQUIRE(status1 == FXFALSE);
 
   // Test case 2: Pass a valid stride (200 bytes)
-  FxBool status2 = readLfb(GR_BUFFER_BACKBUFFER, 0, 0, 100, 100, 200, buffer.data());
+  FxBool status2 =
+      readLfb(GR_BUFFER_BACKBUFFER, 0, 0, 100, 100, 200, buffer.data());
   // It should succeed and return FXTRUE!
   REQUIRE(status2 == FXTRUE);
 
@@ -6376,7 +6402,8 @@ TEST_CASE("Glide 2.x LFB Readback Stride Validation [VULN-04]", "[Glide2][LFB]")
 #endif
 }
 
-TEST_CASE("Glide 2.x Linear Draw Stride Validation [VULN-03]", "[Glide2][Draw]") {
+TEST_CASE("Glide 2.x Linear Draw Stride Validation [VULN-03]",
+          "[Glide2][Draw]") {
 #ifdef __linux__
   void* handle = OpenGlide2Handle();
   REQUIRE(handle != nullptr);
@@ -6404,21 +6431,25 @@ TEST_CASE("Glide 2.x Linear Draw Stride Validation [VULN-03]", "[Glide2][Draw]")
 
   // Set a custom layout to simulate active offsets
   auto& layout = GlideWrapper::VertexLayout::GetInstance();
-  layout.ResetToGlide2Canonical(); // m_offsetXY = 0, m_offsetRGB = 12, etc. (max offset is 48!)
+  layout.ResetToGlide2Canonical();  // m_offsetXY = 0, m_offsetRGB = 12, etc.
+                                    // (max offset is 48!)
   int32_t maxOffset = layout.GetMaxActiveOffset();
   REQUIRE(maxOffset > 0);
 
   // Create a buffer for 3 vertices.
   // Stride of 20 bytes is smaller than maxOffset (48 bytes).
-  // Calling grDrawVertexArrayLinear with stride = 20 should be caught and rejected!
+  // Calling grDrawVertexArrayLinear with stride = 20 should be caught and
+  // rejected!
   std::vector<uint8_t> dummyVertices(300, 0);
 
   // We check that this call runs without crashing!
-  // (In a real legacy app, this would have crashed or corrupted memory because maxOffset > 20)
-  // By returning early, the wrapper prevents the out-of-bounds read!
+  // (In a real legacy app, this would have crashed or corrupted memory because
+  // maxOffset > 20) By returning early, the wrapper prevents the out-of-bounds
+  // read!
   drawVertexArrayLinear(0, 3, dummyVertices.data(), 20);
 
-  // Now verify that it works fine with a valid stride (64 bytes, which is >= maxOffset)
+  // Now verify that it works fine with a valid stride (64 bytes, which is >=
+  // maxOffset)
   drawVertexArrayLinear(0, 3, dummyVertices.data(), 64);
 
   shutdown();
@@ -6426,7 +6457,10 @@ TEST_CASE("Glide 2.x Linear Draw Stride Validation [VULN-03]", "[Glide2][Draw]")
 #endif
 }
 
-TEST_CASE("Glide 2.x State Serialization & Fixed-Point LOD Bias Roundtrip [Glide2][State]", "[Glide2][State]") {
+TEST_CASE(
+    "Glide 2.x State Serialization & Fixed-Point LOD Bias Roundtrip "
+    "[Glide2][State]",
+    "[Glide2][State]") {
 #ifdef __linux__
   // Force the Software backend for this test
   ::setenv("GLIDE_WRAPPER_BACKEND", "sw", 1);
@@ -6442,12 +6476,18 @@ TEST_CASE("Glide 2.x State Serialization & Fixed-Point LOD Bias Roundtrip [Glide
   auto winClose = (FxBool (*)(FxU32))dlsym(handle, "grSstWinClose");
   auto shutdown = (void (*)(void))dlsym(handle, "grGlideShutdown");
 
-  auto texLodBiasValue = (void (*)(GrChipID_t, float))dlsym(handle, "grTexLodBiasValue");
+  auto texLodBiasValue =
+      (void (*)(GrChipID_t, float))dlsym(handle, "grTexLodBiasValue");
   auto glideGetState = (void (*)(GrState*))dlsym(handle, "grGlideGetState");
-  auto glideSetState = (void (*)(const GrState*))dlsym(handle, "grGlideSetState");
+  auto glideSetState =
+      (void (*)(const GrState*))dlsym(handle, "grGlideSetState");
   auto ditherMode = (void (*)(GrDitherMode_t))dlsym(handle, "grDitherMode");
 
-  auto texAllocateMemory = (GrMipMapId_t (*)(      GrChipID_t, FxU8, int, int, GrTextureFormat_t, GrMipMapMode_t, GrLOD_t,      GrLOD_t, GrAspectRatio_t, GrTextureClampMode_t, GrTextureClampMode_t,      GrTextureFilterMode_t, GrTextureFilterMode_t, float, FxBool))dlsym(handle, "guTexAllocateMemory");
+  auto texAllocateMemory = (GrMipMapId_t (*)(
+      GrChipID_t, FxU8, int, int, GrTextureFormat_t, GrMipMapMode_t, GrLOD_t,
+      GrLOD_t, GrAspectRatio_t, GrTextureClampMode_t, GrTextureClampMode_t,
+      GrTextureFilterMode_t, GrTextureFilterMode_t, float,
+      FxBool))dlsym(handle, "guTexAllocateMemory");
   auto texSource = (void (*)(GrMipMapId_t))dlsym(handle, "guTexSource");
 
   REQUIRE(glideInit != nullptr);
@@ -6502,8 +6542,9 @@ TEST_CASE("Glide 2.x State Serialization & Fixed-Point LOD Bias Roundtrip [Glide
   GrMipMapId_t idNeg = texAllocateMemory(
       GR_TMU0, 0, 256, 256, GR_TEXFMT_RGB_565, GR_MIPMAP_NEAREST, GR_LOD_256,
       GR_LOD_1, GR_ASPECT_1x1, GR_TEXTURECLAMP_CLAMP, GR_TEXTURECLAMP_CLAMP,
-      GR_TEXTUREFILTER_POINT_SAMPLED, GR_TEXTUREFILTER_POINT_SAMPLED, -1.75f, FXFALSE);
-  
+      GR_TEXTUREFILTER_POINT_SAMPLED, GR_TEXTUREFILTER_POINT_SAMPLED, -1.75f,
+      FXFALSE);
+
   texSource(idNeg);
   CHECK(sw_b->GetTexLodBias(0) == -1.75f);
 
@@ -6511,8 +6552,9 @@ TEST_CASE("Glide 2.x State Serialization & Fixed-Point LOD Bias Roundtrip [Glide
   GrMipMapId_t idPos = texAllocateMemory(
       GR_TMU0, 0, 256, 256, GR_TEXFMT_RGB_565, GR_MIPMAP_NEAREST, GR_LOD_256,
       GR_LOD_1, GR_ASPECT_1x1, GR_TEXTURECLAMP_CLAMP, GR_TEXTURECLAMP_CLAMP,
-      GR_TEXTUREFILTER_POINT_SAMPLED, GR_TEXTUREFILTER_POINT_SAMPLED, 2.25f, FXFALSE);
-  
+      GR_TEXTUREFILTER_POINT_SAMPLED, GR_TEXTUREFILTER_POINT_SAMPLED, 2.25f,
+      FXFALSE);
+
   texSource(idPos);
   CHECK(sw_b->GetTexLodBias(0) == 2.25f);
 
@@ -6522,7 +6564,6 @@ TEST_CASE("Glide 2.x State Serialization & Fixed-Point LOD Bias Roundtrip [Glide
   ::unsetenv("GLIDE_WRAPPER_BACKEND");
 #endif
 }
-
 
 TEST_CASE("Software Thread Scaling", "[Software][Scaling]") {
 #ifdef __linux__
@@ -6556,16 +6597,31 @@ TEST_CASE("Software Thread Scaling", "[Software][Scaling]") {
   void* handle = OpenGlide3Handle();
   REQUIRE(handle != nullptr);
 
-  auto glideInit = reinterpret_cast<void(*)(void)>(::dlsym(handle, "grGlideInit"));
-  auto sstSelect = reinterpret_cast<void(*)(int)>(::dlsym(handle, "grSstSelect"));
-  auto winOpen   = reinterpret_cast<unsigned long(*)(FxU32, GrScreenResolution_t, GrScreenRefresh_t, GrColorFormat_t, GrOriginLocation_t, int, int)>(::dlsym(handle, "grSstWinOpen"));
-  auto winClose  = reinterpret_cast<void(*)(unsigned long)>(::dlsym(handle, "grSstWinClose"));
-  auto shutdown  = reinterpret_cast<void(*)(void)>(::dlsym(handle, "grGlideShutdown"));
-  auto bufferClear = reinterpret_cast<void(*)(GrColor_t, GrAlpha_t, FxU32)>(::dlsym(handle, "grBufferClear"));
-  auto drawTriangle = reinterpret_cast<void(*)(const void*, const void*, const void*)>(::dlsym(handle, "grDrawTriangle"));
-  auto readLfb   = reinterpret_cast<FxBool(*)(GrBuffer_t, FxU32, FxU32, FxU32, FxU32, FxU32, void*)>(::dlsym(handle, "grLfbReadRegion"));
-  auto vertexLayout = reinterpret_cast<void(*)(FxU32, FxU32, FxBool)>(::dlsym(handle, "grVertexLayout"));
-  auto colorCombine = reinterpret_cast<void(*)(GrCombineFunction_t, GrCombineFactor_t, GrCombineLocal_t, GrCombineOther_t, FxBool)>(::dlsym(handle, "grColorCombine"));
+  auto glideInit =
+      reinterpret_cast<void (*)(void)>(::dlsym(handle, "grGlideInit"));
+  auto sstSelect =
+      reinterpret_cast<void (*)(int)>(::dlsym(handle, "grSstSelect"));
+  auto winOpen = reinterpret_cast<unsigned long (*)(
+      FxU32, GrScreenResolution_t, GrScreenRefresh_t, GrColorFormat_t,
+      GrOriginLocation_t, int, int)>(::dlsym(handle, "grSstWinOpen"));
+  auto winClose = reinterpret_cast<void (*)(unsigned long)>(
+      ::dlsym(handle, "grSstWinClose"));
+  auto shutdown =
+      reinterpret_cast<void (*)(void)>(::dlsym(handle, "grGlideShutdown"));
+  auto bufferClear = reinterpret_cast<void (*)(GrColor_t, GrAlpha_t, FxU32)>(
+      ::dlsym(handle, "grBufferClear"));
+  auto drawTriangle =
+      reinterpret_cast<void (*)(const void*, const void*, const void*)>(
+          ::dlsym(handle, "grDrawTriangle"));
+  auto readLfb =
+      reinterpret_cast<FxBool (*)(GrBuffer_t, FxU32, FxU32, FxU32, FxU32, FxU32,
+                                  void*)>(::dlsym(handle, "grLfbReadRegion"));
+  auto vertexLayout = reinterpret_cast<void (*)(FxU32, FxU32, FxBool)>(
+      ::dlsym(handle, "grVertexLayout"));
+  auto colorCombine =
+      reinterpret_cast<void (*)(GrCombineFunction_t, GrCombineFactor_t,
+                                GrCombineLocal_t, GrCombineOther_t, FxBool)>(
+          ::dlsym(handle, "grColorCombine"));
 
   REQUIRE(glideInit != nullptr);
   REQUIRE(winOpen != nullptr);
@@ -6582,21 +6638,24 @@ TEST_CASE("Software Thread Scaling", "[Software][Scaling]") {
 
   // Sweep threads: 1, 2, 4, 8, 12, 16, 24
   std::vector<int> threadCounts = {1, 2, 4, 8, 12, 16, 24};
-  
+
   for (int threads : threadCounts) {
     ::setenv("GLIDE_NUM_THREADS", std::to_string(threads).c_str(), 1);
 
     glideInit();
     sstSelect(0);
-    unsigned long ctx = winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz, GR_COLORFORMAT_ARGB, GR_ORIGIN_UPPER_LEFT, 2, 1);
+    unsigned long ctx =
+        winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz, GR_COLORFORMAT_ARGB,
+                GR_ORIGIN_UPPER_LEFT, 2, 1);
     REQUIRE(ctx != 0);
 
     // Setup basic rendering state
-    vertexLayout(0x01, 0, 1);  // GR_PARAM_XY at offset 0
-    vertexLayout(0x20, 12, 1); // GR_PARAM_RGB at offset 12
-    colorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE, GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_NONE, FXFALSE);
+    vertexLayout(0x01, 0, 1);   // GR_PARAM_XY at offset 0
+    vertexLayout(0x20, 12, 1);  // GR_PARAM_RGB at offset 12
+    colorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+                 GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_NONE, FXFALSE);
 
-    bufferClear(0xFF000000, 0, 0); // Clear to Black
+    bufferClear(0xFF000000, 0, 0);  // Clear to Black
 
     // Draw 10,000 shaded triangles to create a substantial workload
     struct GridVertex {
@@ -6608,16 +6667,19 @@ TEST_CASE("Software Thread Scaling", "[Software][Scaling]") {
 
     for (int i = 0; i < 100; ++i) {
       for (int j = 0; j < 100; ++j) {
-        GridVertex v0{ i * 6.4f, j * 4.8f, 0.5f, 255.0f, 0.0f, 0.0f, 255.0f };
-        GridVertex v1{ (i + 1) * 6.4f, j * 4.8f, 0.5f, 0.0f, 255.0f, 0.0f, 255.0f };
-        GridVertex v2{ i * 6.4f, (j + 1) * 4.8f, 0.5f, 0.0f, 0.0f, 255.0f, 255.0f };
+        GridVertex v0{i * 6.4f, j * 4.8f, 0.5f, 255.0f, 0.0f, 0.0f, 255.0f};
+        GridVertex v1{(i + 1) * 6.4f, j * 4.8f, 0.5f,  0.0f,
+                      255.0f,         0.0f,     255.0f};
+        GridVertex v2{i * 6.4f, (j + 1) * 4.8f, 0.5f,  0.0f,
+                      0.0f,     255.0f,         255.0f};
         drawTriangle(&v0, &v1, &v2);
       }
     }
 
     // Force rendering to finish by reading the framebuffer
     std::vector<uint32_t> fb(640 * 480);
-    FxBool ok = readLfb(GR_BUFFER_BACKBUFFER, 0, 0, 640, 480, 640 * 4, fb.data());
+    FxBool ok =
+        readLfb(GR_BUFFER_BACKBUFFER, 0, 0, 640, 480, 640 * 4, fb.data());
     REQUIRE(ok == FXTRUE);
 
     auto end = std::chrono::high_resolution_clock::now();
@@ -6632,7 +6694,7 @@ TEST_CASE("Software Thread Scaling", "[Software][Scaling]") {
     } else {
       // 1. Verify bit-identical rendering output!
       REQUIRE(fb == baselinePixels);
-      
+
       // 2. Assert no performance collapse!
       // Multi-threaded execution time must not exceed 1.5x the baseline.
       REQUIRE(elapsed.count() < baselineTime * 1.5);

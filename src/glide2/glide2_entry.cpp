@@ -1075,10 +1075,12 @@ FX_ENTRY void FX_CALL grGlideGetState(GrState* state) {
   ws->depthBias = s_depthBias;
   ws->alphaTestOp = s_alphaTestOp;
   ws->alphaTestRef = s_alphaTestRef;
-  std::memcpy(ws->clampS, s_clampS, sizeof(s_clampS));
-  std::memcpy(ws->clampT, s_clampT, sizeof(s_clampT));
-  std::memcpy(ws->minFilter, s_minFilter, sizeof(s_minFilter));
-  std::memcpy(ws->magFilter, s_magFilter, sizeof(s_magFilter));
+  for (int i = 0; i < 2; ++i) {
+    ws->clampS[i] = static_cast<uint8_t>(s_clampS[i]);
+    ws->clampT[i] = static_cast<uint8_t>(s_clampT[i]);
+    ws->minFilter[i] = static_cast<uint8_t>(s_minFilter[i]);
+    ws->magFilter[i] = static_cast<uint8_t>(s_magFilter[i]);
+  }
   ws->colorFunc = s_colorFunc;
   ws->colorFactor = s_colorFactor;
   ws->colorLocal = s_colorLocal;
@@ -1089,10 +1091,12 @@ FX_ENTRY void FX_CALL grGlideGetState(GrState* state) {
   ws->alphaLocal = s_alphaLocal;
   ws->alphaOther = s_alphaOther;
   ws->alphaInvert = s_alphaInvert ? 1 : 0;
-  std::memcpy(ws->texRgbFunc, s_texRgbFunc, sizeof(s_texRgbFunc));
-  std::memcpy(ws->texRgbFactor, s_texRgbFactor, sizeof(s_texRgbFactor));
-  std::memcpy(ws->texAlphaFunc, s_texAlphaFunc, sizeof(s_texAlphaFunc));
-  std::memcpy(ws->texAlphaFactor, s_texAlphaFactor, sizeof(s_texAlphaFactor));
+  for (int i = 0; i < 2; ++i) {
+    ws->texRgbFunc[i] = static_cast<uint8_t>(s_texRgbFunc[i]);
+    ws->texRgbFactor[i] = static_cast<uint8_t>(s_texRgbFactor[i]);
+    ws->texAlphaFunc[i] = static_cast<uint8_t>(s_texAlphaFunc[i]);
+    ws->texAlphaFactor[i] = static_cast<uint8_t>(s_texAlphaFactor[i]);
+  }
   std::memcpy(ws->boundTex, s_boundTex, sizeof(s_boundTex));
   ws->stwHintMask = s_stwHintMask;
   ws->constantColor = s_constantColor;
@@ -1121,7 +1125,9 @@ FX_ENTRY void FX_CALL grGlideGetState(GrState* state) {
     ws->texChromaState[i].minColor = s_texChromaState[i].minColor;
     ws->texChromaState[i].maxColor = s_texChromaState[i].maxColor;
   }
-  std::memcpy(ws->mipmapMode, s_mipmapMode, sizeof(s_mipmapMode));
+  for (int i = 0; i < 2; ++i) {
+    ws->mipmapMode[i] = static_cast<uint8_t>(s_mipmapMode[i]);
+  }
   for (int i = 0; i < 2; ++i) {
     ws->lodBlend[i] = s_lodBlend[i] ? 1 : 0;
   }
@@ -1140,10 +1146,12 @@ FX_ENTRY void FX_CALL grGlideSetState(const GrState* state) {
   s_depthBias = ws->depthBias;
   s_alphaTestOp = ws->alphaTestOp;
   s_alphaTestRef = ws->alphaTestRef;
-  std::memcpy(s_clampS, ws->clampS, sizeof(s_clampS));
-  std::memcpy(s_clampT, ws->clampT, sizeof(s_clampT));
-  std::memcpy(s_minFilter, ws->minFilter, sizeof(s_minFilter));
-  std::memcpy(s_magFilter, ws->magFilter, sizeof(s_magFilter));
+  for (int i = 0; i < 2; ++i) {
+    s_clampS[i] = ws->clampS[i];
+    s_clampT[i] = ws->clampT[i];
+    s_minFilter[i] = ws->minFilter[i];
+    s_magFilter[i] = ws->magFilter[i];
+  }
   s_colorFunc = ws->colorFunc;
   s_colorFactor = ws->colorFactor;
   s_colorLocal = ws->colorLocal;
@@ -1154,10 +1162,12 @@ FX_ENTRY void FX_CALL grGlideSetState(const GrState* state) {
   s_alphaLocal = ws->alphaLocal;
   s_alphaOther = ws->alphaOther;
   s_alphaInvert = ws->alphaInvert != 0;
-  std::memcpy(s_texRgbFunc, ws->texRgbFunc, sizeof(s_texRgbFunc));
-  std::memcpy(s_texRgbFactor, ws->texRgbFactor, sizeof(s_texRgbFactor));
-  std::memcpy(s_texAlphaFunc, ws->texAlphaFunc, sizeof(s_texAlphaFunc));
-  std::memcpy(s_texAlphaFactor, ws->texAlphaFactor, sizeof(s_texAlphaFactor));
+  for (int i = 0; i < 2; ++i) {
+    s_texRgbFunc[i] = ws->texRgbFunc[i];
+    s_texRgbFactor[i] = ws->texRgbFactor[i];
+    s_texAlphaFunc[i] = ws->texAlphaFunc[i];
+    s_texAlphaFactor[i] = ws->texAlphaFactor[i];
+  }
   std::memcpy(s_boundTex, ws->boundTex, sizeof(s_boundTex));
   s_stwHintMask = ws->stwHintMask;
   GlideWrapper::VertexLayout::GetInstance().SetSTWHintMask(s_stwHintMask);
@@ -1187,7 +1197,9 @@ FX_ENTRY void FX_CALL grGlideSetState(const GrState* state) {
     s_texChromaState[i].minColor = ws->texChromaState[i].minColor;
     s_texChromaState[i].maxColor = ws->texChromaState[i].maxColor;
   }
-  std::memcpy(s_mipmapMode, ws->mipmapMode, sizeof(s_mipmapMode));
+  for (int i = 0; i < 2; ++i) {
+    s_mipmapMode[i] = ws->mipmapMode[i];
+  }
   for (int i = 0; i < 2; ++i) {
     s_lodBlend[i] = ws->lodBlend[i] != 0;
   }
