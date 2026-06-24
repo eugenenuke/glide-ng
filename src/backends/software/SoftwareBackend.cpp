@@ -876,6 +876,58 @@ bool SoftwareBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
 
           m_headlessPixelMap = m_cpuBuffers[m_backBufferIdx].data();
           m_windowAttached = true;
+
+#if defined(__linux__)
+          // Intercept, log, and surgically patch SDL events to fix zero-scancode emulation blocks!
+          void* sdl12DiagHandle = dlopen("libSDL-1.2.so.0", RTLD_LAZY | RTLD_NOLOAD);
+          if (sdl12DiagHandle) {
+              typedef void (*PFN_SDL_SetEventFilter)(int (*filter)(const void* event));
+              auto pfn_SetEventFilter = reinterpret_cast<PFN_SDL_SetEventFilter>(dlsym(sdl12DiagHandle, "SDL_SetEventFilter"));
+              if (pfn_SetEventFilter) {
+                  struct LocalFilter {
+                      static int Filter(const void* rawEvent) {
+                          uint8_t* eventBytes = const_cast<uint8_t*>(reinterpret_cast<const uint8_t*>(rawEvent));
+                          uint8_t type = eventBytes[0];
+                          if (type == 2 || type == 3) { // SDL_KEYDOWN or SDL_KEYUP
+                              // Extract keysym.sym from offset 8 (32-bit little-endian)
+                              uint32_t sym = *reinterpret_cast<const uint32_t*>(&eventBytes[8]);
+                              uint8_t scancode = eventBytes[4];
+                              
+                              if (scancode == 0) {
+                                  // Dynamically patch the zero-scancodes with standard Linux X11/SDL 1.2 keycodes
+                                  if (sym == 273) {        // SDLK_UP
+                                      eventBytes[4] = 111;
+                                  } else if (sym == 274) { // SDLK_DOWN
+                                      eventBytes[4] = 116;
+                                  } else if (sym == 275) { // SDLK_RIGHT
+                                      eventBytes[4] = 114;
+                                  } else if (sym == 276) { // SDLK_LEFT
+                                      eventBytes[4] = 113;
+                                  }
+                              }
+                              
+                              uint8_t updatedScancode = eventBytes[4];
+                              std::cout << "[Wrapper-Diagnostics] KEYEVENT: type=" << (int)type 
+                                        << ", state=" << (int)eventBytes[2]
+                                        << ", original_scancode=" << (int)scancode
+                                        << ", patched_scancode=" << (int)updatedScancode
+                                        << ", sym=" << sym << std::endl;
+                          } else if (type == 1) { // SDL_ACTIVEEVENT
+                              uint8_t gain = eventBytes[1];
+                              uint8_t state = eventBytes[2];
+                              std::cout << "[Wrapper-Diagnostics] ACTIVEEVENT: gain=" << (int)gain 
+                                        << ", state=" << (int)state << std::endl;
+                          }
+                          return 1; // Keep event in the queue!
+                      }
+                  };
+                  pfn_SetEventFilter(LocalFilter::Filter);
+                  GLIDE_LOG(INFO, "Software", "Successfully registered diagnostic SDL event filter with live scancode patching.");
+              }
+              dlclose(sdl12DiagHandle);
+          }
+#endif
+
           return true;  // Return successfully immediately!
         } else {
           GLIDE_LOG(
