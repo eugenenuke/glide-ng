@@ -1,6 +1,13 @@
 #include "SoftwareBackendBase.h"
 
+#if defined(DIRECT_SDL12)
+#include <SDL/SDL.h>
+#elif defined(DIRECT_SDL2)
 #include <SDL2/SDL.h>
+#else
+#include <SDL2/SDL.h>
+#endif
+#include <dlfcn.h>
 
 #include <algorithm>
 #include <chrono>
@@ -219,7 +226,8 @@ void SoftwareBackendBase::SetDepthRange(float nearVal, float farVal) {
   MarkStateDirty();
   m_depthNear = nearVal;
   m_depthFar = farVal;
-  GLIDE_LOG(DEBUG, "Rasterizer", "SetDepthRange: Near=" << nearVal << ", Far=" << farVal);
+  GLIDE_LOG(DEBUG, "Rasterizer",
+            "SetDepthRange: Near=" << nearVal << ", Far=" << farVal);
 }
 
 void SoftwareBackendBase::SetDitherMode(uint32_t mode) {
@@ -234,7 +242,9 @@ void SoftwareBackendBase::SetStippleState(uint32_t mode, uint32_t pattern) {
   MarkStateDirty();
   m_stippleMode = mode;
   m_stipplePattern = pattern;
-  GLIDE_LOG(DEBUG, "Rasterizer", "SetStippleState: Mode=" << mode << ", Pattern=0x" << std::hex << pattern << std::dec);
+  GLIDE_LOG(DEBUG, "Rasterizer",
+            "SetStippleState: Mode=" << mode << ", Pattern=0x" << std::hex
+                                     << pattern << std::dec);
 }
 
 void SoftwareBackendBase::SetBlendState(uint32_t rgbSrcFactor,
@@ -392,8 +402,7 @@ void SoftwareBackendBase::SetTexCombinerMode(uint32_t tmu, uint32_t rgbFunc,
                                              uint32_t rgbFactor,
                                              uint32_t alphaFunc,
                                              uint32_t alphaFactor,
-                                             bool rgbInvert,
-                                             bool alphaInvert) {
+                                             bool rgbInvert, bool alphaInvert) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   MarkStateDirty();
   if (tmu < 2) {
@@ -545,13 +554,15 @@ bool SoftwareBackendBase::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
                 << ", srcHeight=" << srcHeight << ", dstStride=" << dstStride
                 << ", is32Bit=" << is32Bit);
 
-  // VULN-04: Prevent out-of-bounds row writes if dstStride is too small for the pixel format
+  // VULN-04: Prevent out-of-bounds row writes if dstStride is too small for the
+  // pixel format
   size_t requiredStride = is32Bit ? (srcWidth * 4) : (srcWidth * 2);
   if (dstStride < requiredStride) {
     GLIDE_LOG(WARN, "Backend",
-              "ReadLFB: dstStride (" << dstStride << ") is smaller than required stride ("
-                                     << requiredStride << ") for width " << srcWidth
-                                     << ". Rejecting read to prevent buffer overflow.");
+              "ReadLFB: dstStride ("
+                  << dstStride << ") is smaller than required stride ("
+                  << requiredStride << ") for width " << srcWidth
+                  << ". Rejecting read to prevent buffer overflow.");
     return false;
   }
 
@@ -562,9 +573,11 @@ bool SoftwareBackendBase::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
     if (is32Bit) {
       uint32_t* destRow32 =
           reinterpret_cast<uint32_t*>(outBytes + y * dstStride);
-      uint32_t safeWidth = (srcX >= width) ? 0 : std::min(srcWidth, width - srcX);
+      uint32_t safeWidth =
+          (srcX >= width) ? 0 : std::min(srcWidth, width - srcX);
       if (safeWidth > 0) {
-        std::memcpy(destRow32, &pixels[readY * width + srcX], safeWidth * sizeof(uint32_t));
+        std::memcpy(destRow32, &pixels[readY * width + srcX],
+                    safeWidth * sizeof(uint32_t));
       }
     } else {
       uint16_t* destRow16 =
@@ -588,14 +601,17 @@ bool SoftwareBackendBase::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
   return true;
 }
 
-template <uint32_t SrcFmt, bool ChromakeyEnabled, bool BlendEnabled, bool HasRefData>
+template <uint32_t SrcFmt, bool ChromakeyEnabled, bool BlendEnabled,
+          bool HasRefData>
 struct LfbRowProcessor {
-  static inline void ProcessRow(
-      uint32_t y, uint32_t dstX, uint32_t dstY, uint32_t srcWidth,
-      uint32_t m_headlessWidth, uint32_t m_headlessHeight, uint32_t m_pixelFormatOverride,
-      uint32_t* pixels, const uint8_t* inBytes, const uint8_t* refBytes,
-      int32_t srcStride, const LfbPipelineConfig& config, uint32_t& rowModifiedCount) {
-    
+  static inline void ProcessRow(uint32_t y, uint32_t dstX, uint32_t dstY,
+                                uint32_t srcWidth, uint32_t m_headlessWidth,
+                                uint32_t m_headlessHeight,
+                                uint32_t m_pixelFormatOverride,
+                                uint32_t* pixels, const uint8_t* inBytes,
+                                const uint8_t* refBytes, int32_t srcStride,
+                                const LfbPipelineConfig& config,
+                                uint32_t& rowModifiedCount) {
     uint32_t writeY = dstY + y;
     if (writeY >= m_headlessHeight) return;
 
@@ -604,14 +620,16 @@ struct LfbRowProcessor {
       if (writeX >= m_headlessWidth) break;
 
       // 1. Extract raw source pixel
-      constexpr bool is16Bit = (SrcFmt == 0 || SrcFmt == 1 || SrcFmt == 2 || 
-                                SrcFmt == 12 || SrcFmt == 13 || SrcFmt == 14 || 
-                                SrcFmt == 15);
+      constexpr bool is16Bit =
+          (SrcFmt == 0 || SrcFmt == 1 || SrcFmt == 2 || SrcFmt == 12 ||
+           SrcFmt == 13 || SrcFmt == 14 || SrcFmt == 15);
       uint16_t c16 = 0;
       uint32_t c32 = 0;
       if constexpr (is16Bit) {
         if constexpr (SrcFmt == 12 || SrcFmt == 13 || SrcFmt == 14) {
-          c16 = (uint16_t)(reinterpret_cast<const uint32_t*>(inBytes + y * srcStride)[x] & 0xFFFF);
+          c16 = (uint16_t)(reinterpret_cast<const uint32_t*>(inBytes +
+                                                             y * srcStride)[x] &
+                           0xFFFF);
         } else {
           c16 = reinterpret_cast<const uint16_t*>(inBytes + y * srcStride)[x];
         }
@@ -624,13 +642,17 @@ struct LfbRowProcessor {
         if constexpr (is16Bit) {
           uint16_t ref16;
           if constexpr (SrcFmt == 12 || SrcFmt == 13 || SrcFmt == 14) {
-            ref16 = (uint16_t)(reinterpret_cast<const uint32_t*>(refBytes + y * srcStride)[x] & 0xFFFF);
+            ref16 = (uint16_t)(reinterpret_cast<const uint32_t*>(
+                                   refBytes + y * srcStride)[x] &
+                               0xFFFF);
           } else {
-            ref16 = reinterpret_cast<const uint16_t*>(refBytes + y * srcStride)[x];
+            ref16 =
+                reinterpret_cast<const uint16_t*>(refBytes + y * srcStride)[x];
           }
           if (c16 == ref16) continue;
         } else {
-          uint32_t ref32 = reinterpret_cast<const uint32_t*>(refBytes + y * srcStride)[x];
+          uint32_t ref32 =
+              reinterpret_cast<const uint32_t*>(refBytes + y * srcStride)[x];
           if (c32 == ref32) continue;
         }
       }
@@ -651,11 +673,13 @@ struct LfbRowProcessor {
         uint32_t g = ((c16 >> 5) & 0x3F) * 255 / 63;
         uint32_t b = (c16 & 0x1F) * 255 / 31;
         pWord = (255u << 24) | (r << 16) | (g << 8) | b;
-      } else if constexpr (SrcFmt == 1 || SrcFmt == 2 || SrcFmt == 13 || SrcFmt == 14) {
+      } else if constexpr (SrcFmt == 1 || SrcFmt == 2 || SrcFmt == 13 ||
+                           SrcFmt == 14) {
         uint32_t r = ((c16 >> 10) & 0x1F) * 255 / 31;
         uint32_t g = ((c16 >> 5) & 0x1F) * 255 / 31;
         uint32_t b = (c16 & 0x1F) * 255 / 31;
-        uint32_t a = (SrcFmt == 2 || SrcFmt == 14) ? (((c16 >> 15) & 1) ? 255 : 0) : 255;
+        uint32_t a =
+            (SrcFmt == 2 || SrcFmt == 14) ? (((c16 >> 15) & 1) ? 255 : 0) : 255;
         pWord = (a << 24) | (r << 16) | (g << 8) | b;
       } else {
         uint32_t r, g, b;
@@ -685,7 +709,8 @@ struct LfbRowProcessor {
         uint32_t srcG = (pWord >> 8) & 0xFF;
         uint32_t srcB = pWord & 0xFF;
 
-        if constexpr (SrcFmt == 0 || SrcFmt == 4 || SrcFmt == 12 || SrcFmt == 15) {
+        if constexpr (SrcFmt == 0 || SrcFmt == 4 || SrcFmt == 12 ||
+                      SrcFmt == 15) {
           srcA = config.constantAlpha;
         }
 
@@ -709,9 +734,12 @@ struct LfbRowProcessor {
           dFactor = 1.0f;
         }
 
-        uint32_t finalR = static_cast<uint32_t>(srcR * sFactor + dstR * dFactor + 0.5f);
-        uint32_t finalG = static_cast<uint32_t>(srcG * sFactor + dstG * dFactor + 0.5f);
-        uint32_t finalB = static_cast<uint32_t>(srcB * sFactor + dstB * dFactor + 0.5f);
+        uint32_t finalR =
+            static_cast<uint32_t>(srcR * sFactor + dstR * dFactor + 0.5f);
+        uint32_t finalG =
+            static_cast<uint32_t>(srcG * sFactor + dstG * dFactor + 0.5f);
+        uint32_t finalB =
+            static_cast<uint32_t>(srcB * sFactor + dstB * dFactor + 0.5f);
 
         finalR = std::min(255u, finalR);
         finalG = std::min(255u, finalG);
@@ -726,20 +754,24 @@ struct LfbRowProcessor {
   }
 };
 
-template <uint32_t SrcFmt, bool ChromakeyEnabled, bool BlendEnabled, bool HasRefData>
-void RunWriteLFBParallel(
-    uint32_t srcHeight, uint32_t dstX, uint32_t dstY, uint32_t srcWidth,
-    uint32_t m_headlessWidth, uint32_t m_headlessHeight, uint32_t m_pixelFormatOverride,
-    uint32_t* pixels, const uint8_t* inBytes, const uint8_t* refBytes,
-    int32_t srcStride, const LfbPipelineConfig& config, uint32_t& modifiedCount) {
-  
-  #pragma omp parallel for reduction(+:modifiedCount)
+template <uint32_t SrcFmt, bool ChromakeyEnabled, bool BlendEnabled,
+          bool HasRefData>
+void RunWriteLFBParallel(uint32_t srcHeight, uint32_t dstX, uint32_t dstY,
+                         uint32_t srcWidth, uint32_t m_headlessWidth,
+                         uint32_t m_headlessHeight,
+                         uint32_t m_pixelFormatOverride, uint32_t* pixels,
+                         const uint8_t* inBytes, const uint8_t* refBytes,
+                         int32_t srcStride, const LfbPipelineConfig& config,
+                         uint32_t& modifiedCount) {
+#pragma omp parallel for reduction(+ : modifiedCount)
   for (uint32_t y = 0; y < srcHeight; ++y) {
     uint32_t rowModifiedCount = 0;
-    LfbRowProcessor<SrcFmt, ChromakeyEnabled, BlendEnabled, HasRefData>::ProcessRow(
-        y, dstX, dstY, srcWidth, m_headlessWidth, m_headlessHeight, m_pixelFormatOverride,
-        pixels, inBytes, refBytes, srcStride, config, rowModifiedCount
-    );
+    LfbRowProcessor<SrcFmt, ChromakeyEnabled, BlendEnabled,
+                    HasRefData>::ProcessRow(y, dstX, dstY, srcWidth,
+                                            m_headlessWidth, m_headlessHeight,
+                                            m_pixelFormatOverride, pixels,
+                                            inBytes, refBytes, srcStride,
+                                            config, rowModifiedCount);
     modifiedCount += rowModifiedCount;
   }
 }
@@ -799,7 +831,62 @@ bool SoftwareBackendBase::WriteLFB(uint32_t buffer, uint32_t dstX,
   bool blendEnabled = config.pixelPipeline;
   bool hasRefData = (refBytes != nullptr);
 
-  #define DISPATCH_CASE(Fmt)     case Fmt:       if (chromakeyEnabled) {         if (blendEnabled) {           if (hasRefData) {             RunWriteLFBParallel<Fmt, true, true, true>(srcHeight, dstX, dstY, srcWidth, m_headlessWidth, m_headlessHeight, m_pixelFormatOverride, pixels, inBytes, refBytes, srcStride, config, modifiedCount);           } else {             RunWriteLFBParallel<Fmt, true, true, false>(srcHeight, dstX, dstY, srcWidth, m_headlessWidth, m_headlessHeight, m_pixelFormatOverride, pixels, inBytes, refBytes, srcStride, config, modifiedCount);           }         } else {           if (hasRefData) {             RunWriteLFBParallel<Fmt, true, false, true>(srcHeight, dstX, dstY, srcWidth, m_headlessWidth, m_headlessHeight, m_pixelFormatOverride, pixels, inBytes, refBytes, srcStride, config, modifiedCount);           } else {             RunWriteLFBParallel<Fmt, true, false, false>(srcHeight, dstX, dstY, srcWidth, m_headlessWidth, m_headlessHeight, m_pixelFormatOverride, pixels, inBytes, refBytes, srcStride, config, modifiedCount);           }         }       } else {         if (blendEnabled) {           if (hasRefData) {             RunWriteLFBParallel<Fmt, false, true, true>(srcHeight, dstX, dstY, srcWidth, m_headlessWidth, m_headlessHeight, m_pixelFormatOverride, pixels, inBytes, refBytes, srcStride, config, modifiedCount);           } else {             RunWriteLFBParallel<Fmt, false, true, false>(srcHeight, dstX, dstY, srcWidth, m_headlessWidth, m_headlessHeight, m_pixelFormatOverride, pixels, inBytes, refBytes, srcStride, config, modifiedCount);           }         } else {           if (hasRefData) {             RunWriteLFBParallel<Fmt, false, false, true>(srcHeight, dstX, dstY, srcWidth, m_headlessWidth, m_headlessHeight, m_pixelFormatOverride, pixels, inBytes, refBytes, srcStride, config, modifiedCount);           } else {             RunWriteLFBParallel<Fmt, false, false, false>(srcHeight, dstX, dstY, srcWidth, m_headlessWidth, m_headlessHeight, m_pixelFormatOverride, pixels, inBytes, refBytes, srcStride, config, modifiedCount);           }         }       }       break;
+#define DISPATCH_CASE(Fmt)                                              \
+  case Fmt:                                                             \
+    if (chromakeyEnabled) {                                             \
+      if (blendEnabled) {                                               \
+        if (hasRefData) {                                               \
+          RunWriteLFBParallel<Fmt, true, true, true>(                   \
+              srcHeight, dstX, dstY, srcWidth, m_headlessWidth,         \
+              m_headlessHeight, m_pixelFormatOverride, pixels, inBytes, \
+              refBytes, srcStride, config, modifiedCount);              \
+        } else {                                                        \
+          RunWriteLFBParallel<Fmt, true, true, false>(                  \
+              srcHeight, dstX, dstY, srcWidth, m_headlessWidth,         \
+              m_headlessHeight, m_pixelFormatOverride, pixels, inBytes, \
+              refBytes, srcStride, config, modifiedCount);              \
+        }                                                               \
+      } else {                                                          \
+        if (hasRefData) {                                               \
+          RunWriteLFBParallel<Fmt, true, false, true>(                  \
+              srcHeight, dstX, dstY, srcWidth, m_headlessWidth,         \
+              m_headlessHeight, m_pixelFormatOverride, pixels, inBytes, \
+              refBytes, srcStride, config, modifiedCount);              \
+        } else {                                                        \
+          RunWriteLFBParallel<Fmt, true, false, false>(                 \
+              srcHeight, dstX, dstY, srcWidth, m_headlessWidth,         \
+              m_headlessHeight, m_pixelFormatOverride, pixels, inBytes, \
+              refBytes, srcStride, config, modifiedCount);              \
+        }                                                               \
+      }                                                                 \
+    } else {                                                            \
+      if (blendEnabled) {                                               \
+        if (hasRefData) {                                               \
+          RunWriteLFBParallel<Fmt, false, true, true>(                  \
+              srcHeight, dstX, dstY, srcWidth, m_headlessWidth,         \
+              m_headlessHeight, m_pixelFormatOverride, pixels, inBytes, \
+              refBytes, srcStride, config, modifiedCount);              \
+        } else {                                                        \
+          RunWriteLFBParallel<Fmt, false, true, false>(                 \
+              srcHeight, dstX, dstY, srcWidth, m_headlessWidth,         \
+              m_headlessHeight, m_pixelFormatOverride, pixels, inBytes, \
+              refBytes, srcStride, config, modifiedCount);              \
+        }                                                               \
+      } else {                                                          \
+        if (hasRefData) {                                               \
+          RunWriteLFBParallel<Fmt, false, false, true>(                 \
+              srcHeight, dstX, dstY, srcWidth, m_headlessWidth,         \
+              m_headlessHeight, m_pixelFormatOverride, pixels, inBytes, \
+              refBytes, srcStride, config, modifiedCount);              \
+        } else {                                                        \
+          RunWriteLFBParallel<Fmt, false, false, false>(                \
+              srcHeight, dstX, dstY, srcWidth, m_headlessWidth,         \
+              m_headlessHeight, m_pixelFormatOverride, pixels, inBytes, \
+              refBytes, srcStride, config, modifiedCount);              \
+        }                                                               \
+      }                                                                 \
+    }                                                                   \
+    break;
 
   switch (srcFmt) {
     DISPATCH_CASE(0)
@@ -814,7 +901,7 @@ bool SoftwareBackendBase::WriteLFB(uint32_t buffer, uint32_t dstX,
     default:
       break;
   }
-  #undef DISPATCH_CASE
+#undef DISPATCH_CASE
 
   bool wrotePixel = (modifiedCount > 0);
   if (wrotePixel) {
@@ -851,7 +938,8 @@ void SoftwareBackendBase::AllocateCpuBuffers(uint32_t width, uint32_t height) {
   m_cpuBuffers[0].resize(allocatedSize);
   m_cpuBuffers[1].resize(allocatedSize);
 
-  size_t resolvedRawSize = (size_t)(width / m_ssaaScale) * (height / m_ssaaScale) * 4;
+  size_t resolvedRawSize =
+      (size_t)(width / m_ssaaScale) * (height / m_ssaaScale) * 4;
   size_t resolvedPaddedSize = (resolvedRawSize + 63) & ~63;
   size_t resolvedAllocatedSize = resolvedPaddedSize + 64;
   m_resolvedBuffer.resize(resolvedAllocatedSize);
@@ -964,15 +1052,17 @@ void SoftwareBackendBase::SetTexLodBias(uint32_t tmu, float bias) {
   }
 }
 
-void SoftwareBackendBase::SetTexMipMapMode(uint32_t tmu, uint32_t mode, bool lodBlend) {
+void SoftwareBackendBase::SetTexMipMapMode(uint32_t tmu, uint32_t mode,
+                                           bool lodBlend) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   MarkStateDirty();
   if (tmu < 2) {
     m_texMipMapMode[tmu] = mode;
     m_texLodBlend[tmu] = lodBlend;
     GLIDE_LOG(DEBUG, "Rasterizer",
-              "SetTexMipMapMode TMU" << tmu << ": Mode=" << mode
-                                     << ", LodBlend=" << (lodBlend ? "Yes" : "No"));
+              "SetTexMipMapMode TMU"
+                  << tmu << ": Mode=" << mode
+                  << ", LodBlend=" << (lodBlend ? "Yes" : "No"));
   }
 }
 
@@ -993,9 +1083,10 @@ void SoftwareBackendBase::PurgeTextures() {
 }  // namespace GlideWrapper
 
 #include <dlfcn.h>
+
 #include <chrono>
-#include <iostream>
 #include <cstring>
+#include <iostream>
 
 namespace {
 
@@ -1034,7 +1125,8 @@ static bool s_keyState[512] = {false};
 static bool s_pendingKeyUp[512] = {false};
 static bool s_isHolding[512] = {false};
 
-static GlideWrapper::KeyHandlingMode s_keyHandlingMode = GlideWrapper::KeyHandlingMode::Bypass;
+static GlideWrapper::KeyHandlingMode s_keyHandlingMode =
+    GlideWrapper::KeyHandlingMode::Bypass;
 static bool s_isSdl2 = false;
 static bool s_isHijacked = false;
 
@@ -1063,30 +1155,31 @@ union SDL2_Event {
 
 typedef int (*PFN_SDL2_PushEvent)(SDL2_Event* event);
 
+#if !defined(DIRECT_SDL2)
 // SDL 1.2 Event Filter
 int AntiGrabBreakFilterSdl12(const void* rawEvent) {
   if (s_keyHandlingMode != GlideWrapper::KeyHandlingMode::Debounced) {
-    return 1; // Complete no-op bypass!
+    return 1;  // Complete no-op bypass!
   }
 
   const SDL12_Event* event = reinterpret_cast<const SDL12_Event*>(rawEvent);
   uint8_t type = event->type;
 
-  if (type == 2 || type == 3) { // SDL_KEYDOWN or SDL_KEYUP
+  if (type == 2 || type == 3) {  // SDL_KEYDOWN or SDL_KEYUP
     uint32_t sym = event->key.keysym.sym;
     uint8_t scancode = event->key.keysym.scancode;
 
     if (sym >= 512) {
-      return 1; // Keep weird keys out
+      return 1;  // Keep weird keys out
     }
 
     if (GlideWrapper::g_inInjection) {
-      return 1; // Let recursive injection pass through!
+      return 1;  // Let recursive injection pass through!
     }
 
     std::lock_guard<std::mutex> lock(s_keyMutex);
 
-    if (type == 2) { // KEYDOWN
+    if (type == 2) {  // KEYDOWN
       // Re-press Suppression Fix
       if (s_pendingKeyUp[sym]) {
         s_pendingKeyUp[sym] = false;
@@ -1095,7 +1188,7 @@ int AntiGrabBreakFilterSdl12(const void* rawEvent) {
 
         SDL12_Event cleanEvent;
         std::memset(&cleanEvent, 0, sizeof(cleanEvent));
-        cleanEvent.key.type = 3; // SDL_KEYUP
+        cleanEvent.key.type = 3;  // SDL_KEYUP
         cleanEvent.key.state = 0;
         cleanEvent.key.keysym.sym = sym;
         cleanEvent.key.keysym.scancode = scancode;
@@ -1104,11 +1197,14 @@ int AntiGrabBreakFilterSdl12(const void* rawEvent) {
         if (!pfn_PushEventSdl12) {
           void* sdlHandle = dlopen("libSDL-1.2.so.0", RTLD_LAZY | RTLD_NOLOAD);
           if (sdlHandle) {
-            pfn_PushEventSdl12 = reinterpret_cast<PFN_SDL12_PushEvent>(dlsym(sdlHandle, "SDL_PushEvent"));
+            pfn_PushEventSdl12 = reinterpret_cast<PFN_SDL12_PushEvent>(
+                dlsym(sdlHandle, "SDL_PushEvent"));
           }
         }
         if (pfn_PushEventSdl12) {
-          std::cout << "[Wrapper-AntiGrab-Filter] [SDL1.2] FORCE-DISPATCHING pending KEYUP first for sym=" << sym << std::endl;
+          std::cout << "[Wrapper-AntiGrab-Filter] [SDL1.2] FORCE-DISPATCHING "
+                       "pending KEYUP first for sym="
+                    << sym << std::endl;
           GlideWrapper::g_inInjection = true;
           pfn_PushEventSdl12(&cleanEvent);
           GlideWrapper::g_inInjection = false;
@@ -1125,41 +1221,43 @@ int AntiGrabBreakFilterSdl12(const void* rawEvent) {
         }
         return 0;
       }
-    }
-    else if (type == 3) { // KEYUP
-      int debounceMs = 20; // Uniform low debounce latency of 20ms!
+    } else if (type == 3) {  // KEYUP
+      int debounceMs = 20;   // Uniform low debounce latency of 20ms!
       s_pendingKeyUp[sym] = true;
-      s_keyUpTime[sym] = std::chrono::steady_clock::now() + std::chrono::milliseconds(debounceMs);
-      
-      std::cout << "[Wrapper-AntiGrab-Filter] [SDL1.2] DEBOUNCING: Scheduled release for sym=" << sym 
-                << " in " << debounceMs << "ms" << std::endl;
+      s_keyUpTime[sym] = std::chrono::steady_clock::now() +
+                         std::chrono::milliseconds(debounceMs);
+
+      std::cout << "[Wrapper-AntiGrab-Filter] [SDL1.2] DEBOUNCING: Scheduled "
+                   "release for sym="
+                << sym << " in " << debounceMs << "ms" << std::endl;
       return 0;
     }
   }
 
   return 1;
 }
+#endif
 
+#if !defined(DIRECT_SDL12)
 // SDL2 filter
 int AntiGrabBreakFilterSdl2(void* userdata, void* rawEvent) {
   const SDL2_Event* event = reinterpret_cast<const SDL2_Event*>(rawEvent);
 
   if (s_keyHandlingMode != GlideWrapper::KeyHandlingMode::Debounced) {
-    return 1; // Complete no-op bypass!
+    return 1;  // Complete no-op bypass!
   }
 
   uint32_t type = event->type;
 
-  if (type == 0x300 || type == 0x301) { // SDL_KEYDOWN or SDL_KEYUP
+  if (type == 0x300 || type == 0x301) {  // SDL_KEYDOWN or SDL_KEYUP
     uint32_t sym = event->key.keysym.sym;
-    uint8_t state = event->key.state;
     uint32_t scancode = event->key.keysym.scancode;
 
     uint32_t keyIndex = sym;
     if (keyIndex & (1 << 30)) {
       keyIndex = (keyIndex & ~(1 << 30)) + 256;
     }
-    
+
     if (keyIndex >= 512) {
       return 1;
     }
@@ -1170,7 +1268,7 @@ int AntiGrabBreakFilterSdl2(void* userdata, void* rawEvent) {
 
     std::lock_guard<std::mutex> lock(s_keyMutex);
 
-    if (type == 0x300) { // KEYDOWN
+    if (type == 0x300) {  // KEYDOWN
       if (s_pendingKeyUp[keyIndex]) {
         s_pendingKeyUp[keyIndex] = false;
         s_keyState[keyIndex] = false;
@@ -1178,20 +1276,24 @@ int AntiGrabBreakFilterSdl2(void* userdata, void* rawEvent) {
 
         SDL2_Event cleanEvent;
         std::memset(&cleanEvent, 0, sizeof(cleanEvent));
-        cleanEvent.key.type = 0x301; // SDL_KEYUP
+        cleanEvent.key.type = 0x301;  // SDL_KEYUP
         cleanEvent.key.state = 0;
         cleanEvent.key.keysym.sym = sym;
         cleanEvent.key.keysym.scancode = scancode;
 
         static PFN_SDL2_PushEvent pfn_PushEventSdl2 = nullptr;
         if (!pfn_PushEventSdl2) {
-          void* sdl2Handle = dlopen("libSDL2-2.0.so.0", RTLD_LAZY | RTLD_NOLOAD);
+          void* sdl2Handle =
+              dlopen("libSDL2-2.0.so.0", RTLD_LAZY | RTLD_NOLOAD);
           if (sdl2Handle) {
-            pfn_PushEventSdl2 = reinterpret_cast<PFN_SDL2_PushEvent>(dlsym(sdl2Handle, "SDL_PushEvent"));
+            pfn_PushEventSdl2 = reinterpret_cast<PFN_SDL2_PushEvent>(
+                dlsym(sdl2Handle, "SDL_PushEvent"));
           }
         }
         if (pfn_PushEventSdl2) {
-          std::cout << "[Wrapper-AntiGrab-Filter] [SDL2] FORCE-DISPATCHING pending KEYUP first for sym=" << sym << std::endl;
+          std::cout << "[Wrapper-AntiGrab-Filter] [SDL2] FORCE-DISPATCHING "
+                       "pending KEYUP first for sym="
+                    << sym << std::endl;
           GlideWrapper::g_inInjection = true;
           pfn_PushEventSdl2(&cleanEvent);
           GlideWrapper::g_inInjection = false;
@@ -1208,22 +1310,24 @@ int AntiGrabBreakFilterSdl2(void* userdata, void* rawEvent) {
         }
         return 0;
       }
-    }
-    else if (type == 0x301) { // KEYUP
-      int debounceMs = 20; // Uniform low debounce latency of 20ms!
+    } else if (type == 0x301) {  // KEYUP
+      int debounceMs = 20;       // Uniform low debounce latency of 20ms!
       s_pendingKeyUp[keyIndex] = true;
-      s_keyUpTime[keyIndex] = std::chrono::steady_clock::now() + std::chrono::milliseconds(debounceMs);
-      
-      std::cout << "[Wrapper-AntiGrab-Filter] [SDL2] DEBOUNCING: Scheduled release for sym=" << sym 
-                << " in " << debounceMs << "ms" << std::endl;
+      s_keyUpTime[keyIndex] = std::chrono::steady_clock::now() +
+                              std::chrono::milliseconds(debounceMs);
+
+      std::cout << "[Wrapper-AntiGrab-Filter] [SDL2] DEBOUNCING: Scheduled "
+                   "release for sym="
+                << sym << " in " << debounceMs << "ms" << std::endl;
       return 0;
     }
   }
 
   return 1;
 }
+#endif
 
-} // namespace
+}  // namespace
 
 namespace GlideWrapper {
 
@@ -1231,36 +1335,59 @@ thread_local bool g_inInjection = false;
 
 void SoftwareBackendBase::DetectHostEnvironment() {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
+#if defined(DIRECT_SDL12)
+  m_isSdl2 = false;
+  m_isHijacked = true;
+#elif defined(DIRECT_SDL2)
+  m_isSdl2 = true;
+  m_isHijacked = true;
+#else
   m_isSdl2 = false;
   m_isHijacked = false;
 
-  void* sdl2Handle = dlopen("libSDL2-2.0.so.0", RTLD_LAZY | RTLD_NOLOAD);
-  if (sdl2Handle) {
-    m_isSdl2 = true;
-    typedef void* (*PFN_SDL_GL_GetCurrentWindow)(void);
-    typedef void* (*PFN_SDL_GL_GetCurrentContext)(void);
-    auto pfn_GetCurrentWindow = reinterpret_cast<PFN_SDL_GL_GetCurrentWindow>(dlsym(sdl2Handle, "SDL_GL_GetCurrentWindow"));
-    auto pfn_GetCurrentContext = reinterpret_cast<PFN_SDL_GL_GetCurrentContext>(dlsym(sdl2Handle, "SDL_GL_GetCurrentContext"));
-    
-    if (pfn_GetCurrentWindow && pfn_GetCurrentContext) {
-      void* window = pfn_GetCurrentWindow();
-      void* context = pfn_GetCurrentContext();
-      if (window && context) {
-        m_isHijacked = true;
-      }
+  // Check if SDL 1.2 is loaded first. If so, this is an SDL 1.2 host (native or
+  // compat)
+  void* sdl12Handle = dlopen("libSDL-1.2.so.0", RTLD_LAZY | RTLD_NOLOAD);
+  if (!sdl12Handle) {
+    sdl12Handle = dlopen("libSDL.so", RTLD_LAZY | RTLD_NOLOAD);
+  }
+
+  if (sdl12Handle) {
+    m_isSdl2 = false;
+    typedef void* (*PFN_SDL_GetVideoSurface)(void);
+    auto pfn_GetVideoSurface = reinterpret_cast<PFN_SDL_GetVideoSurface>(
+        dlsym(sdl12Handle, "SDL_GetVideoSurface"));
+    if (pfn_GetVideoSurface && pfn_GetVideoSurface() != nullptr) {
+      m_isHijacked = true;
     }
-    dlclose(sdl2Handle);
+    dlclose(sdl12Handle);
   } else {
-    void* sdl12Handle = dlopen("libSDL-1.2.so.0", RTLD_LAZY | RTLD_NOLOAD);
-    if (sdl12Handle) {
-      typedef void* (*PFN_SDL_GetVideoSurface)(void);
-      auto pfn_GetVideoSurface = reinterpret_cast<PFN_SDL_GetVideoSurface>(dlsym(sdl12Handle, "SDL_GetVideoSurface"));
-      if (pfn_GetVideoSurface && pfn_GetVideoSurface() != nullptr) {
-        m_isHijacked = true;
+    // If SDL 1.2 is not loaded, check if SDL 2 is loaded
+    void* sdl2Handle = dlopen("libSDL2-2.0.so.0", RTLD_LAZY | RTLD_NOLOAD);
+    if (!sdl2Handle) {
+      sdl2Handle = dlopen("libSDL2.so", RTLD_LAZY | RTLD_NOLOAD);
+    }
+    if (sdl2Handle) {
+      m_isSdl2 = true;
+      typedef void* (*PFN_SDL_GL_GetCurrentWindow)(void);
+      typedef void* (*PFN_SDL_GL_GetCurrentContext)(void);
+      auto pfn_GetCurrentWindow = reinterpret_cast<PFN_SDL_GL_GetCurrentWindow>(
+          dlsym(sdl2Handle, "SDL_GL_GetCurrentWindow"));
+      auto pfn_GetCurrentContext =
+          reinterpret_cast<PFN_SDL_GL_GetCurrentContext>(
+              dlsym(sdl2Handle, "SDL_GL_GetCurrentContext"));
+
+      if (pfn_GetCurrentWindow && pfn_GetCurrentContext) {
+        void* window = pfn_GetCurrentWindow();
+        void* context = pfn_GetCurrentContext();
+        if (window && context) {
+          m_isHijacked = true;
+        }
       }
-      dlclose(sdl12Handle);
+      dlclose(sdl2Handle);
     }
   }
+#endif
 
   s_isSdl2 = m_isSdl2;
   s_isHijacked = m_isHijacked;
@@ -1271,6 +1398,24 @@ void SoftwareBackendBase::HandleGrabBypass() {
     return;
   }
 
+#if defined(DIRECT_SDL2)
+  void* window = SDL_GL_GetCurrentWindow();
+  if (window) {
+    int currentGrab = SDL_GetWindowGrab(static_cast<SDL_Window*>(window));
+    if (currentGrab != 0) {
+      SDL_SetWindowGrab(static_cast<SDL_Window*>(window), SDL_FALSE);
+      std::cout << "[Wrapper-GrabBypass] FORCED SDL2 grab release! (Was: "
+                << currentGrab << ")" << std::endl;
+    }
+  }
+#elif defined(DIRECT_SDL12)
+  int currentGrab = SDL_WM_GrabInput(SDL_GRAB_QUERY);
+  if (currentGrab != SDL_GRAB_OFF) {
+    SDL_WM_GrabInput(SDL_GRAB_OFF);
+    std::cout << "[Wrapper-GrabBypass] FORCED SDL1.2 grab release! (Was: "
+              << currentGrab << ")" << std::endl;
+  }
+#else
   if (m_isSdl2) {
     typedef int (*PFN_SDL_GetWindowGrab)(void* window);
     typedef void (*PFN_SDL_SetWindowGrab)(void* window, int grabbed);
@@ -1279,24 +1424,29 @@ void SoftwareBackendBase::HandleGrabBypass() {
     static PFN_SDL_SetWindowGrab local_SetWindowGrab = nullptr;
     static PFN_SDL_GL_GetCurrentWindow local_GetCurrentWindow = nullptr;
     static bool resolvedSdl2Grab = false;
-    
+
     if (!resolvedSdl2Grab) {
       void* sdl2Handle = dlopen("libSDL2-2.0.so.0", RTLD_LAZY | RTLD_NOLOAD);
       if (sdl2Handle) {
-        local_GetWindowGrab = reinterpret_cast<PFN_SDL_GetWindowGrab>(dlsym(sdl2Handle, "SDL_GetWindowGrab"));
-        local_SetWindowGrab = reinterpret_cast<PFN_SDL_SetWindowGrab>(dlsym(sdl2Handle, "SDL_SetWindowGrab"));
-        local_GetCurrentWindow = reinterpret_cast<PFN_SDL_GL_GetCurrentWindow>(dlsym(sdl2Handle, "SDL_GL_GetCurrentWindow"));
+        local_GetWindowGrab = reinterpret_cast<PFN_SDL_GetWindowGrab>(
+            dlsym(sdl2Handle, "SDL_GetWindowGrab"));
+        local_SetWindowGrab = reinterpret_cast<PFN_SDL_SetWindowGrab>(
+            dlsym(sdl2Handle, "SDL_SetWindowGrab"));
+        local_GetCurrentWindow = reinterpret_cast<PFN_SDL_GL_GetCurrentWindow>(
+            dlsym(sdl2Handle, "SDL_GL_GetCurrentWindow"));
       }
       resolvedSdl2Grab = true;
     }
-    
+
     if (local_GetCurrentWindow && local_SetWindowGrab) {
       void* window = local_GetCurrentWindow();
       if (window) {
-        int currentGrab = local_GetWindowGrab ? local_GetWindowGrab(window) : -1;
-        if (currentGrab != 0) { // SDL_FALSE
-          local_SetWindowGrab(window, 0); // SDL_FALSE
-          std::cout << "[Wrapper-GrabBypass] FORCED SDL2 grab release! (Was: " << currentGrab << ")" << std::endl;
+        int currentGrab =
+            local_GetWindowGrab ? local_GetWindowGrab(window) : -1;
+        if (currentGrab != 0) {            // SDL_FALSE
+          local_SetWindowGrab(window, 0);  // SDL_FALSE
+          std::cout << "[Wrapper-GrabBypass] FORCED SDL2 grab release! (Was: "
+                    << currentGrab << ")" << std::endl;
         }
       }
     }
@@ -1304,23 +1454,26 @@ void SoftwareBackendBase::HandleGrabBypass() {
     typedef int (*PFN_SDL12_WM_GrabInput)(int mode);
     static PFN_SDL12_WM_GrabInput local_WM_GrabInput = nullptr;
     static bool resolvedSdl12Grab = false;
-    
+
     if (!resolvedSdl12Grab) {
       void* sdl12Handle = dlopen("libSDL-1.2.so.0", RTLD_LAZY | RTLD_NOLOAD);
       if (sdl12Handle) {
-        local_WM_GrabInput = reinterpret_cast<PFN_SDL12_WM_GrabInput>(dlsym(sdl12Handle, "SDL_WM_GrabInput"));
+        local_WM_GrabInput = reinterpret_cast<PFN_SDL12_WM_GrabInput>(
+            dlsym(sdl12Handle, "SDL_WM_GrabInput"));
       }
       resolvedSdl12Grab = true;
     }
-    
+
     if (local_WM_GrabInput) {
-      int currentGrab = local_WM_GrabInput(-1); // SDL_GRAB_QUERY
-      if (currentGrab != 0) { // Not SDL_GRAB_OFF
-        local_WM_GrabInput(0); // Force SDL_GRAB_OFF
-        std::cout << "[Wrapper-GrabBypass] FORCED SDL1.2 grab release! (Was: " << currentGrab << ")" << std::endl;
+      int currentGrab = local_WM_GrabInput(-1);  // SDL_GRAB_QUERY
+      if (currentGrab != 0) {                    // Not SDL_GRAB_OFF
+        local_WM_GrabInput(0);                   // Force SDL_GRAB_OFF
+        std::cout << "[Wrapper-GrabBypass] FORCED SDL1.2 grab release! (Was: "
+                  << currentGrab << ")" << std::endl;
       }
     }
   }
+#endif
 }
 
 void SoftwareBackendBase::RegisterAntiGrabFilter() {
@@ -1339,25 +1492,46 @@ void SoftwareBackendBase::RegisterAntiGrabFilter() {
   DetectHostEnvironment();
 
   if (s_keyHandlingMode == KeyHandlingMode::Bypass) {
-    GLIDE_LOG(INFO, "BackendBase", "Key handling mode: BYPASS. Interceptor is disabled.");
+    GLIDE_LOG(INFO, "BackendBase",
+              "Key handling mode: BYPASS. Interceptor is disabled.");
     return;
   }
 
   if (s_keyHandlingMode == KeyHandlingMode::GrabOnly) {
-    GLIDE_LOG(INFO, "BackendBase", "Key handling mode: GRAB-ONLY. Hooks are active, key filtering is disabled.");
+    GLIDE_LOG(INFO, "BackendBase",
+              "Key handling mode: GRAB-ONLY. Hooks are active, key filtering "
+              "is disabled.");
     return;
   }
 
-  GLIDE_LOG(INFO, "BackendBase", "Key handling mode: DEBOUNCED. Registering event filter.");
+  GLIDE_LOG(INFO, "BackendBase",
+            "Key handling mode: DEBOUNCED. Registering event filter.");
 
+#if defined(DIRECT_SDL2)
+  SDL_SetEventFilter(reinterpret_cast<SDL_EventFilter>(AntiGrabBreakFilterSdl2),
+                     this);
+  GLIDE_LOG(
+      INFO, "BackendBase",
+      "Registered Web RDP Anti-Grab-Break keyboard filter on SDL 2 (Direct).");
+#elif defined(DIRECT_SDL12)
+  SDL_SetEventFilter(
+      reinterpret_cast<SDL_EventFilter>(AntiGrabBreakFilterSdl12));
+  GLIDE_LOG(INFO, "BackendBase",
+            "Registered Web RDP Anti-Grab-Break keyboard filter on SDL 1.2 "
+            "(Direct).");
+#else
   if (s_isSdl2) {
     void* sdl2Handle = dlopen("libSDL2-2.0.so.0", RTLD_LAZY | RTLD_NOLOAD);
     if (sdl2Handle) {
-      typedef void (*PFN_SDL_SetEventFilter)(int (*filter)(void* userdata, void* event), void* userdata);
-      auto pfn_SetEventFilter = reinterpret_cast<PFN_SDL_SetEventFilter>(dlsym(sdl2Handle, "SDL_SetEventFilter"));
+      typedef void (*PFN_SDL_SetEventFilter)(
+          int (*filter)(void* userdata, void* event), void* userdata);
+      auto pfn_SetEventFilter = reinterpret_cast<PFN_SDL_SetEventFilter>(
+          dlsym(sdl2Handle, "SDL_SetEventFilter"));
       if (pfn_SetEventFilter) {
         pfn_SetEventFilter(AntiGrabBreakFilterSdl2, this);
-        GLIDE_LOG(INFO, "BackendBase", "Registered Web RDP Anti-Grab-Break keyboard filter on SDL 2.");
+        GLIDE_LOG(
+            INFO, "BackendBase",
+            "Registered Web RDP Anti-Grab-Break keyboard filter on SDL 2.");
       }
       dlclose(sdl2Handle);
     }
@@ -1365,14 +1539,18 @@ void SoftwareBackendBase::RegisterAntiGrabFilter() {
     void* sdl12Handle = dlopen("libSDL-1.2.so.0", RTLD_LAZY | RTLD_NOLOAD);
     if (sdl12Handle) {
       typedef void (*PFN_SDL_SetEventFilter)(int (*filter)(const void* event));
-      auto pfn_SetEventFilter = reinterpret_cast<PFN_SDL_SetEventFilter>(dlsym(sdl12Handle, "SDL_SetEventFilter"));
+      auto pfn_SetEventFilter = reinterpret_cast<PFN_SDL_SetEventFilter>(
+          dlsym(sdl12Handle, "SDL_SetEventFilter"));
       if (pfn_SetEventFilter) {
         pfn_SetEventFilter(AntiGrabBreakFilterSdl12);
-        GLIDE_LOG(INFO, "BackendBase", "Registered Web RDP Anti-Grab-Break keyboard filter on SDL 1.2.");
+        GLIDE_LOG(
+            INFO, "BackendBase",
+            "Registered Web RDP Anti-Grab-Break keyboard filter on SDL 1.2.");
       }
       dlclose(sdl12Handle);
     }
   }
+#endif
 }
 
 void SoftwareBackendBase::UnregisterAntiGrabFilter() {
@@ -1389,11 +1567,20 @@ void SoftwareBackendBase::UnregisterAntiGrabFilter() {
     }
   }
 
+#if defined(DIRECT_SDL2)
+  SDL_SetEventFilter(nullptr, nullptr);
+  GLIDE_LOG(INFO, "BackendBase", "Unregistered SDL2 event filter (Direct).");
+#elif defined(DIRECT_SDL12)
+  SDL_SetEventFilter(nullptr);
+  GLIDE_LOG(INFO, "BackendBase", "Unregistered SDL 1.2 event filter (Direct).");
+#else
   if (s_isSdl2) {
     void* sdl2Handle = dlopen("libSDL2-2.0.so.0", RTLD_LAZY | RTLD_NOLOAD);
     if (sdl2Handle) {
-      typedef void (*PFN_SDL_SetEventFilter)(int (*filter)(void* userdata, void* event), void* userdata);
-      auto pfn_SetEventFilter = reinterpret_cast<PFN_SDL_SetEventFilter>(dlsym(sdl2Handle, "SDL_SetEventFilter"));
+      typedef void (*PFN_SDL_SetEventFilter)(
+          int (*filter)(void* userdata, void* event), void* userdata);
+      auto pfn_SetEventFilter = reinterpret_cast<PFN_SDL_SetEventFilter>(
+          dlsym(sdl2Handle, "SDL_SetEventFilter"));
       if (pfn_SetEventFilter) {
         pfn_SetEventFilter(nullptr, nullptr);
         GLIDE_LOG(INFO, "BackendBase", "Unregistered SDL2 event filter.");
@@ -1404,7 +1591,8 @@ void SoftwareBackendBase::UnregisterAntiGrabFilter() {
     void* sdl12Handle = dlopen("libSDL-1.2.so.0", RTLD_LAZY | RTLD_NOLOAD);
     if (sdl12Handle) {
       typedef void (*PFN_SDL_SetEventFilter)(int (*filter)(const void* event));
-      auto pfn_SetEventFilter = reinterpret_cast<PFN_SDL_SetEventFilter>(dlsym(sdl12Handle, "SDL_SetEventFilter"));
+      auto pfn_SetEventFilter = reinterpret_cast<PFN_SDL_SetEventFilter>(
+          dlsym(sdl12Handle, "SDL_SetEventFilter"));
       if (pfn_SetEventFilter) {
         pfn_SetEventFilter(nullptr);
         GLIDE_LOG(INFO, "BackendBase", "Unregistered SDL 1.2 event filter.");
@@ -1412,6 +1600,7 @@ void SoftwareBackendBase::UnregisterAntiGrabFilter() {
       dlclose(sdl12Handle);
     }
   }
+#endif
 }
 
 void SoftwareBackendBase::ProcessPendingKeyReleases() {
@@ -1424,12 +1613,63 @@ void SoftwareBackendBase::ProcessPendingKeyReleases() {
   std::lock_guard<std::mutex> lock(s_keyMutex);
   auto now = std::chrono::steady_clock::now();
 
+#if defined(DIRECT_SDL2)
+  for (uint32_t sym = 0; sym < 512; ++sym) {
+    if (s_pendingKeyUp[sym] && now >= s_keyUpTime[sym]) {
+      s_pendingKeyUp[sym] = false;
+      s_keyState[sym] = false;
+      s_isHolding[sym] = false;
+
+      SDL_Event cleanEvent;
+      std::memset(&cleanEvent, 0, sizeof(cleanEvent));
+      cleanEvent.key.type = SDL_KEYUP;
+      cleanEvent.key.state = SDL_RELEASED;
+
+      uint32_t sdl2Sym = sym;
+      if (sym >= 256) {
+        sdl2Sym = (sym - 256) | (1 << 30);
+      }
+      cleanEvent.key.keysym.sym = sdl2Sym;
+
+      std::cout << "[Wrapper-AntiGrab-Filter] [SDL2-Direct] DISPATCHING "
+                   "debounced release for sym="
+                << sdl2Sym << std::endl;
+
+      GlideWrapper::g_inInjection = true;
+      SDL_PushEvent(&cleanEvent);
+      GlideWrapper::g_inInjection = false;
+    }
+  }
+#elif defined(DIRECT_SDL12)
+  for (uint32_t sym = 0; sym < 512; ++sym) {
+    if (s_pendingKeyUp[sym] && now >= s_keyUpTime[sym]) {
+      s_pendingKeyUp[sym] = false;
+      s_keyState[sym] = false;
+      s_isHolding[sym] = false;
+
+      SDL_Event cleanEvent;
+      std::memset(&cleanEvent, 0, sizeof(cleanEvent));
+      cleanEvent.key.type = SDL_KEYUP;
+      cleanEvent.key.state = SDL_RELEASED;
+      cleanEvent.key.keysym.sym = static_cast<SDLKey>(sym);
+
+      std::cout << "[Wrapper-AntiGrab-Filter] [SDL1.2-Direct] DISPATCHING "
+                   "debounced release for sym="
+                << sym << std::endl;
+
+      GlideWrapper::g_inInjection = true;
+      SDL_PushEvent(&cleanEvent);
+      GlideWrapper::g_inInjection = false;
+    }
+  }
+#else
   if (m_isSdl2) {
     static PFN_SDL2_PushEvent pfn_PushEventSdl2 = nullptr;
     if (!pfn_PushEventSdl2) {
       void* sdl2Handle = dlopen("libSDL2-2.0.so.0", RTLD_LAZY | RTLD_NOLOAD);
       if (sdl2Handle) {
-        pfn_PushEventSdl2 = reinterpret_cast<PFN_SDL2_PushEvent>(dlsym(sdl2Handle, "SDL_PushEvent"));
+        pfn_PushEventSdl2 = reinterpret_cast<PFN_SDL2_PushEvent>(
+            dlsym(sdl2Handle, "SDL_PushEvent"));
       }
     }
 
@@ -1442,9 +1682,9 @@ void SoftwareBackendBase::ProcessPendingKeyReleases() {
 
           SDL2_Event cleanEvent;
           std::memset(&cleanEvent, 0, sizeof(cleanEvent));
-          cleanEvent.key.type = 0x301; // SDL_KEYUP
+          cleanEvent.key.type = 0x301;  // SDL_KEYUP
           cleanEvent.key.state = 0;
-          
+
           // Map index back to SDL2 sym
           uint32_t sdl2Sym = sym;
           if (sym >= 256) {
@@ -1452,7 +1692,9 @@ void SoftwareBackendBase::ProcessPendingKeyReleases() {
           }
           cleanEvent.key.keysym.sym = sdl2Sym;
 
-          std::cout << "[Wrapper-AntiGrab-Filter] [SDL2] DISPATCHING debounced release for sym=" << sdl2Sym << std::endl;
+          std::cout << "[Wrapper-AntiGrab-Filter] [SDL2] DISPATCHING debounced "
+                       "release for sym="
+                    << sdl2Sym << std::endl;
 
           GlideWrapper::g_inInjection = true;
           pfn_PushEventSdl2(&cleanEvent);
@@ -1465,7 +1707,8 @@ void SoftwareBackendBase::ProcessPendingKeyReleases() {
     if (!pfn_PushEventSdl12) {
       void* sdl12Handle = dlopen("libSDL-1.2.so.0", RTLD_LAZY | RTLD_NOLOAD);
       if (sdl12Handle) {
-        pfn_PushEventSdl12 = reinterpret_cast<PFN_SDL12_PushEvent>(dlsym(sdl12Handle, "SDL_PushEvent"));
+        pfn_PushEventSdl12 = reinterpret_cast<PFN_SDL12_PushEvent>(
+            dlsym(sdl12Handle, "SDL_PushEvent"));
       }
     }
 
@@ -1478,11 +1721,13 @@ void SoftwareBackendBase::ProcessPendingKeyReleases() {
 
           SDL12_Event cleanEvent;
           std::memset(&cleanEvent, 0, sizeof(cleanEvent));
-          cleanEvent.key.type = 3; // SDL_KEYUP
+          cleanEvent.key.type = 3;  // SDL_KEYUP
           cleanEvent.key.state = 0;
           cleanEvent.key.keysym.sym = sym;
 
-          std::cout << "[Wrapper-AntiGrab-Filter] [SDL1.2] DISPATCHING debounced release for sym=" << sym << std::endl;
+          std::cout << "[Wrapper-AntiGrab-Filter] [SDL1.2] DISPATCHING "
+                       "debounced release for sym="
+                    << sym << std::endl;
 
           GlideWrapper::g_inInjection = true;
           pfn_PushEventSdl12(&cleanEvent);
@@ -1491,6 +1736,252 @@ void SoftwareBackendBase::ProcessPendingKeyReleases() {
       }
     }
   }
+#endif
 }
 
-} // namespace GlideWrapper
+struct KeyMapping {
+  std::string name;
+  uint32_t sdl12_sym;
+  uint32_t sdl12_scancode;
+  uint32_t sdl2_sym;
+  uint32_t sdl2_scancode;
+};
+
+static const KeyMapping g_keyMappings[] = {{"UP", 273, 103, 1073741906, 82},
+                                           {"DOWN", 274, 108, 1073741905, 81},
+                                           {"LEFT", 276, 105, 1073741904, 80},
+                                           {"RIGHT", 275, 106, 1073741903, 79},
+                                           {"Q", 113, 24, 113, 20},
+                                           {"ESC", 27, 9, 27, 41},
+                                           {"ESCAPE", 27, 9, 27, 41}};
+
+void SoftwareBackendBase::ProcessKeySimulation() {
+#if !defined(DIRECT_SDL12) && !defined(DIRECT_SDL2)
+  static void* sdl12Handle = nullptr;
+  static void* sdl2Handle = nullptr;
+  static PFN_SDL12_PushEvent sdl12PushEvent = nullptr;
+  static PFN_SDL2_PushEvent sdl2PushEvent = nullptr;
+  static bool resolvedHandles = false;
+#endif
+
+  if (!m_simInit) {
+    m_simInit = true;
+    m_simStartRealTime = std::chrono::steady_clock::now();
+    m_simQueueIndex = 0;
+
+    const char* envSim = std::getenv("GLIDE_WRAPPER_SIMULATE_KEYS");
+    if (!envSim || envSim[0] == '\0') {
+      return;
+    }
+
+    std::string simStr(envSim);
+    std::vector<SimulatedKeyEvent> tempEvents;
+
+    // Parse comma-separated list of key specs: KEY:START:DURATION
+    size_t pos = 0;
+    while (pos < simStr.size()) {
+      size_t nextComma = simStr.find(',', pos);
+      std::string spec = simStr.substr(pos, nextComma - pos);
+      if (nextComma == std::string::npos) {
+        pos = simStr.size();
+      } else {
+        pos = nextComma + 1;
+      }
+
+      // Parse spec: KEY:START:DURATION
+      size_t colon1 = spec.find(':');
+      if (colon1 == std::string::npos) continue;
+      size_t colon2 = spec.find(':', colon1 + 1);
+      if (colon2 == std::string::npos) continue;
+
+      std::string keyName = spec.substr(0, colon1);
+      // Trim spaces
+      keyName.erase(0, keyName.find_first_not_of(" 	"));
+      keyName.erase(keyName.find_last_not_of(" 	") + 1);
+
+      std::string startStr = spec.substr(colon1 + 1, colon2 - colon1 - 1);
+      std::string durStr = spec.substr(colon2 + 1);
+
+      // Trim spaces from numbers
+      startStr.erase(0, startStr.find_first_not_of(" 	"));
+      startStr.erase(startStr.find_last_not_of(" 	") + 1);
+      durStr.erase(0, durStr.find_first_not_of(" 	"));
+      durStr.erase(durStr.find_last_not_of(" 	") + 1);
+
+      uint32_t startMs = 0;
+      uint32_t durMs = 0;
+      try {
+        startMs = std::stoul(startStr);
+        durMs = std::stoul(durStr);
+      } catch (...) {
+        std::cerr << "[Wrapper-Sim] Invalid timeline numbers in spec: " << spec
+                  << std::endl;
+        continue;
+      }
+
+      // Convert keyName to uppercase
+      std::transform(keyName.begin(), keyName.end(), keyName.begin(),
+                     ::toupper);
+
+      // Look up key mapping
+      const KeyMapping* mapping = nullptr;
+      for (const auto& m : g_keyMappings) {
+        if (m.name == keyName) {
+          mapping = &m;
+          break;
+        }
+      }
+
+      if (!mapping) {
+        std::cerr << "[Wrapper-Sim] Unknown key name: " << keyName << std::endl;
+        continue;
+      }
+
+      // 1. Generate initial KEYDOWN
+      SimulatedKeyEvent dn;
+      dn.keyName = keyName;
+      dn.down = true;
+      dn.sdl12_sym = mapping->sdl12_sym;
+      dn.sdl12_scancode = mapping->sdl12_scancode;
+      dn.sdl2_sym = mapping->sdl2_sym;
+      dn.sdl2_scancode = mapping->sdl2_scancode;
+      dn.triggerTimeMs = startMs;
+      tempEvents.push_back(dn);
+
+      // 2. Generate auto-repeat KEYDOWNs every 80ms during the active duration
+      uint32_t repeatOffset = 80;
+      while (repeatOffset < durMs) {
+        SimulatedKeyEvent rep = dn;
+        rep.triggerTimeMs = startMs + repeatOffset;
+        tempEvents.push_back(rep);
+        repeatOffset += 80;
+      }
+
+      // 3. Generate final KEYUP
+      SimulatedKeyEvent up = dn;
+      up.down = false;
+      up.triggerTimeMs = startMs + durMs;
+      tempEvents.push_back(up);
+    }
+
+    // Sort events by trigger time
+    std::sort(tempEvents.begin(), tempEvents.end(),
+              [](const SimulatedKeyEvent& a, const SimulatedKeyEvent& b) {
+                return a.triggerTimeMs < b.triggerTimeMs;
+              });
+
+    m_simQueue = std::move(tempEvents);
+
+    std::cout << "[Wrapper-Sim] Initialized timeline simulation with "
+              << m_simQueue.size() << " events." << std::endl;
+    for (const auto& ev : m_simQueue) {
+      std::cout << "  - Event: " << ev.keyName << " "
+                << (ev.down ? "DOWN" : "UP") << " at " << ev.triggerTimeMs
+                << "ms" << std::endl;
+    }
+  }
+
+  if (m_simQueue.empty() || m_simQueueIndex >= m_simQueue.size()) {
+    return;
+  }
+
+  // Resolve handles on demand (once)
+#if !defined(DIRECT_SDL12) && !defined(DIRECT_SDL2)
+  if (!resolvedHandles) {
+    resolvedHandles = true;
+
+    sdl12Handle = dlopen("libSDL-1.2.so.0", RTLD_LAZY | RTLD_NOLOAD);
+    if (!sdl12Handle) {
+      sdl12Handle = dlopen("libSDL.so", RTLD_LAZY | RTLD_NOLOAD);
+    }
+
+    sdl2Handle = dlopen("libSDL2-2.0.so.0", RTLD_LAZY | RTLD_NOLOAD);
+    if (!sdl2Handle) {
+      sdl2Handle = dlopen("libSDL2.so", RTLD_LAZY | RTLD_NOLOAD);
+    }
+
+    if (sdl12Handle) {
+      sdl12PushEvent = (PFN_SDL12_PushEvent)dlsym(sdl12Handle, "SDL_PushEvent");
+    }
+    if (sdl2Handle) {
+      sdl2PushEvent = (PFN_SDL2_PushEvent)dlsym(sdl2Handle, "SDL_PushEvent");
+    }
+  }
+#endif
+
+  auto now = std::chrono::steady_clock::now();
+  uint32_t elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                           now - m_simStartRealTime)
+                           .count();
+
+  while (m_simQueueIndex < m_simQueue.size() &&
+         m_simQueue[m_simQueueIndex].triggerTimeMs <= elapsedMs) {
+    const auto& simEvent = m_simQueue[m_simQueueIndex];
+
+    // Prefer SDL 1.2 event injection if the host game is SDL 1.2
+#if defined(DIRECT_SDL12)
+    SDL_Event event;
+    std::memset(&event, 0, sizeof(event));
+    event.type = simEvent.down ? SDL_KEYDOWN : SDL_KEYUP;
+    event.key.type = event.type;
+    event.key.state = simEvent.down ? SDL_PRESSED : SDL_RELEASED;
+    event.key.keysym.sym = static_cast<SDLKey>(simEvent.sdl12_sym);
+    event.key.keysym.scancode = static_cast<uint8_t>(simEvent.sdl12_scancode);
+
+    std::cout << "[Wrapper-Sim] Dispatching simulated key (SDL1.2-Direct): "
+              << simEvent.keyName << " " << (simEvent.down ? "DOWN" : "UP")
+              << " sym=" << simEvent.sdl12_sym << std::endl;
+    SDL_PushEvent(&event);
+#elif defined(DIRECT_SDL2)
+    SDL_Event event;
+    std::memset(&event, 0, sizeof(event));
+    event.type = simEvent.down ? SDL_KEYDOWN : SDL_KEYUP;
+    event.key.type = event.type;
+    event.key.state = simEvent.down ? SDL_PRESSED : SDL_RELEASED;
+    event.key.keysym.sym = simEvent.sdl2_sym;
+    event.key.keysym.scancode =
+        static_cast<SDL_Scancode>(simEvent.sdl2_scancode);
+
+    std::cout << "[Wrapper-Sim] Dispatching simulated key (SDL2-Direct): "
+              << simEvent.keyName << " " << (simEvent.down ? "DOWN" : "UP")
+              << " sym=" << simEvent.sdl2_sym << std::endl;
+    SDL_PushEvent(&event);
+#else
+    if (!m_isSdl2 && sdl12PushEvent) {
+      SDL12_Event event;
+      std::memset(&event, 0, sizeof(event));
+      event.type =
+          simEvent.down ? 2 : 3;  // SDL_KEYDOWN = 2, SDL_KEYUP = 3 in SDL 1.2
+      event.key.type = event.type;
+      event.key.state =
+          simEvent.down ? 1 : 0;  // SDL_PRESSED = 1, SDL_RELEASED = 0
+      event.key.keysym.sym = simEvent.sdl12_sym;
+      event.key.keysym.scancode = static_cast<uint8_t>(simEvent.sdl12_scancode);
+
+      std::cout << "[Wrapper-Sim] Dispatching simulated key (SDL1.2): "
+                << simEvent.keyName << " " << (simEvent.down ? "DOWN" : "UP")
+                << " sym=" << simEvent.sdl12_sym << std::endl;
+      sdl12PushEvent(&event);
+    } else if (m_isSdl2 && sdl2PushEvent) {
+      SDL2_Event event;
+      std::memset(&event, 0, sizeof(event));
+      event.type = simEvent.down
+                       ? 0x300
+                       : 0x301;  // SDL_KEYDOWN = 0x300, SDL_KEYUP = 0x301
+      event.key.type = event.type;
+      event.key.state =
+          simEvent.down ? 1 : 0;  // SDL_PRESSED = 1, SDL_RELEASED = 0
+      event.key.keysym.sym = simEvent.sdl2_sym;
+      event.key.keysym.scancode = simEvent.sdl2_scancode;
+
+      std::cout << "[Wrapper-Sim] Dispatching simulated key (SDL2): "
+                << simEvent.keyName << " " << (simEvent.down ? "DOWN" : "UP")
+                << " sym=" << simEvent.sdl2_sym << std::endl;
+      sdl2PushEvent(&event);
+    }
+#endif
+
+    m_simQueueIndex++;
+  }
+}
+}  // namespace GlideWrapper

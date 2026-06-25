@@ -1,11 +1,13 @@
 #pragma once
 
-#include <mutex>
-#include <vector>
-#include <new>
-#include <limits>
-#include <cstdlib>
 #include <algorithm>
+#include <chrono>
+#include <cstdlib>
+#include <limits>
+#include <mutex>
+#include <new>
+#include <string>
+#include <vector>
 
 #include "core/IGraphicsBackend.h"
 #include "core/WrapperConfig.h"
@@ -38,9 +40,7 @@ struct AlignedAllocator {
     return static_cast<T*>(ptr);
   }
 
-  void deallocate(T* p, std::size_t) noexcept {
-    std::free(p);
-  }
+  void deallocate(T* p, std::size_t) noexcept { std::free(p); }
 
   template <typename U>
   struct rebind {
@@ -49,6 +49,16 @@ struct AlignedAllocator {
 
   bool operator==(const AlignedAllocator&) const noexcept { return true; }
   bool operator!=(const AlignedAllocator&) const noexcept { return false; }
+};
+
+struct SimulatedKeyEvent {
+  std::string keyName;
+  bool down;
+  uint32_t sdl12_sym;
+  uint32_t sdl12_scancode;
+  uint32_t sdl2_sym;
+  uint32_t sdl2_scancode;
+  uint32_t triggerTimeMs;
 };
 
 class SoftwareBackendBase : public IGraphicsBackend {
@@ -82,9 +92,15 @@ class SoftwareBackendBase : public IGraphicsBackend {
   uint32_t GetClipMaxY() const { return m_clipMaxY; }
   bool GetColorMaskRgb() const { return m_colorMaskRgb; }
   bool GetColorMaskAlpha() const { return m_colorMaskAlpha; }
-  bool GetTexCombinerRgbInvert(uint32_t tmu) const { return tmu < 2 ? m_texCombinerRgbInvert[tmu] : false; }
-  bool GetTexCombinerAlphaInvert(uint32_t tmu) const { return tmu < 2 ? m_texCombinerAlphaInvert[tmu] : false; }
-  float GetTexLodBias(uint32_t tmu) const { return tmu < 2 ? m_texLodBias[tmu] : 0.0f; }
+  bool GetTexCombinerRgbInvert(uint32_t tmu) const {
+    return tmu < 2 ? m_texCombinerRgbInvert[tmu] : false;
+  }
+  bool GetTexCombinerAlphaInvert(uint32_t tmu) const {
+    return tmu < 2 ? m_texCombinerAlphaInvert[tmu] : false;
+  }
+  float GetTexLodBias(uint32_t tmu) const {
+    return tmu < 2 ? m_texLodBias[tmu] : 0.0f;
+  }
   float GetDepthNear() const { return m_depthNear; }
   float GetDepthFar() const { return m_depthFar; }
   uint32_t GetDitherMode() const { return m_ditherMode; }
@@ -96,7 +112,6 @@ class SoftwareBackendBase : public IGraphicsBackend {
     if (pIdx < m_headlessDepthBuffer.size()) return m_headlessDepthBuffer[pIdx];
     return 0.0f;
   }
-
 
   bool SwapBuffers() override = 0;
   void FlushBins() override = 0;
@@ -310,6 +325,12 @@ class SoftwareBackendBase : public IGraphicsBackend {
   bool m_aaEnabled{false};
   void ResolveAAMode();
   void SetAAState(bool enabled) override;
+  bool m_simInit{false};
+  std::vector<SimulatedKeyEvent> m_simQueue;
+  size_t m_simQueueIndex{0};
+  std::chrono::steady_clock::time_point m_simStartRealTime;
+  void ProcessKeySimulation();
+
   bool m_isSdl2{false};
   bool m_isHijacked{false};
   void DetectHostEnvironment();
