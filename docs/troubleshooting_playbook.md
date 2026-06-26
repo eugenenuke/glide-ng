@@ -148,31 +148,8 @@ cmake --build build -j$(nproc)
 4.  **Verification**:
     *   Added a Catch2 integration test calling `grSplash` and `grEnable(GR_SHAMELESS_PLUG)` to verify the animation frames and translucent watermarks execute and swap buffers with 100% stability.
 
-### Case Study 5: The `test10` Key Interception & Culling Winding Discrepancy Triage
-1.  **The Symptom**: In Glide 3.x, `test10.exe` (winding and culling test) displayed both triangles on startup and ignored the `<SPACE>` key pressed in the window, whereas the Glide 2.x version worked perfectly (showing a single blue triangle on startup and toggling on `<SPACE>`).
-2.  **Root Cause Analysis & TDD Loop**:
-    *   **Unit Testing**: We implemented a rigorous Catch2 unit test `Dynamic API Verification for Backface Culling and Winding` in [tests/test_glide3.cpp](file:///usr/local/google/home/eianiuk/gemini/3dfx/tests/test_glide3.cpp). This test draws a Clockwise triangle in Blue and a Counter-Clockwise triangle in Red, sets `grCullMode`, and uses `ReadLFB` to read back the center pixels of the backbuffer to verify culling is programmatically applied on the GPU/Software backends.
-    *   **The Result**: The unit test **passed 100% successfully**, proving that our wrapper's internal culling and winding engines were completely correct!
-    *   **Forensic Submodule Discovery**: We investigated why the space key was ignored *only* in Glide 3.x's interactive run. We discovered that there are **two distinct copies** of the test utility helper `linutil.c` in the repository submodules:
-        1.  [refs/3dfx-Glide-API/swlibs/fxmisc/linutil.c](file:///usr/local/google/home/eianiuk/gemini/3dfx/refs/3dfx-Glide-API/swlibs/fxmisc/linutil.c) (used by Glide 2.x tests), which was correctly patched with a weak symbol bridge to check the global flag `g_glideWrapperSdlKeyHit` set by GLFW/SDL window events.
-        2.  [refs/glide/swlibs/fxmisc/linutil.c](file:///usr/local/google/home/eianiuk/gemini/3dfx/refs/glide/swlibs/fxmisc/linutil.c) (used by Glide 3.x tests), which was **completely unpatched** and lacked the virtual keyboard hook! Because of this, it only polled `stdin` via terminal select, completely ignoring keypresses in the graphical window.
-    *   **Historical Source Reference**: Note that the Glide 2 original source files for tests are located in [refs/glide/glide2x/sst1/glide/tests](file:///usr/local/google/home/eianiuk/gemini/3dfx/refs/glide/glide2x/sst1/glide/tests).
-3.  **The Fix**:
-    *   **Keyboard Hook Porting**: Patched [refs/glide/swlibs/fxmisc/linutil.c](file:///usr/local/google/home/eianiuk/gemini/3dfx/refs/glide/swlibs/fxmisc/linutil.c) to port the weak symbol `g_glideWrapperSdlKeyHit` check and `isatty(0)` guard, matching the Glide 2.x bridge.
-    *   **Rebuilding Tests**: Rebuilt the Glide 3.x test suite with the patched `linutil.o` by overriding `TOP` on the command line:
-        ```bash
-        make -f Makefile.linux test06.exe test10.exe test12.exe test16.exe \
-            TOP=../../../.. \
-            CFLAGS="-std=gnu89 -Wall -O2 -I/usr/local/google/home/eianiuk/gemini/3dfx/include/glide3 -I/usr/local/google/home/eianiuk/gemini/3dfx/include/3dfx -I/usr/local/google/home/eianiuk/gemini/3dfx/refs/glide/swlibs/fxmisc -DH3" \
-            LDFLAGS="-L/usr/local/google/home/eianiuk/gemini/3dfx/build/lib -Wl,-rpath,/usr/local/google/home/eianiuk/gemini/3dfx/build/lib" \
-            LDLIBS="-lglide3x -lm"
-        ```
-4.  **Verification**:
-    *   Running the rebuilt `test10.exe` now successfully captures graphical keypresses in the window, enabling seamless culling toggling on `<SPACE>`.
-    *   All Catch2 unit tests pass cleanly, guarding against culling and winding regressions.
-
-### Case Study 6: The `test10` State Restoration Leak & Vertex Parameter Sanitization
-1.  **The Symptom**: Even with the keyboard input hook patched, `test10.exe` under Glide 3.x still displayed **both** triangles (Blue and Red) on startup under all backends (Vulkan, Software, and OpenGL ES), failing the culling test.
+### Case Study 5: The `test10` State Restoration Leak & Vertex Parameter Sanitization
+1.  **The Symptom**: In Glide 3.x, `test10.exe` (winding and culling test) displayed **both** triangles (Blue and Red) on startup under all backends (Vulkan, Software, and OpenGL ES), failing the culling test.
 2.  **The Investigation**:
     *   **Verbose Log Inspection**: We executed the test with verbose debug logs (`GLIDE_WRAPPER_LOG_LEVEL=4`).
     *   **State Analysis**: In the log, we noticed that during triangle rendering, the active culling state was reported as `m_cullMode = 0 (GR_CULL_DISABLE)`, disabling culling on the GPU despite `test10.c` having set `grCullMode(GR_CULL_POSITIVE)` on startup.
@@ -196,7 +173,7 @@ cmake --build build -j$(nproc)
         *   [Vulkan Fixed Screen](file:///usr/local/google/home/eianiuk/.gemini/jetski/brain/f96ca68c-6e31-4c86-a397-b3a8305ba563/test10_fixed_vk.png)
         *   [Software Fixed Screen](file:///usr/local/google/home/eianiuk/.gemini/jetski/brain/f96ca68c-6e31-4c86-a397-b3a8305ba563/test10_fixed_sw.png)
 
-### Case Study 7: The `test12` Texture Regression & Glide 3.x Utility Parser Omission
+### Case Study 6: The `test12` Texture Regression & Glide 3.x Utility Parser Omission
 1.  **The Symptom**: In Glide 3.x, `test12.exe` (LFB Write Modes) rendered a completely black background (missing texture) under all backends, whereas the Glide 2.x version worked perfectly (displaying the colorful 3Dfx decal logo).
 2.  **Triage & Offline Bisection**:
     *   We built an interactive C++ replica `test12_replica_demo` and added an offline PPM frame dump facility to dump the CPU-side backing buffer contents (`m_cpuBuffers`) immediately after `WriteLFB`.
@@ -217,7 +194,7 @@ cmake --build build -j$(nproc)
         *   [Software Fixed Screen (test12_replica_software.png)](file:///usr/local/google/home/eianiuk/.gemini/jetski/brain/f96ca68c-6e31-4c86-a397-b3a8305ba563/test12_replica_software.png)
         *   [Vulkan Fixed Screen (test12_replica_vulkan.png)](file:///usr/local/google/home/eianiuk/.gemini/jetski/brain/f96ca68c-6e31-4c86-a397-b3a8305ba563/test12_replica_vulkan.png)
 
-### Case Study 8: The Glide 3.x Splash Screen Blackout (Vertex Layout Save/Restore Omission)
+### Case Study 7: The Glide 3.x Splash Screen Blackout (Vertex Layout Save/Restore Omission)
 1.  **The Symptom**: In Glide 3.x, pressing **`S`** (splash) or **`R`** (continuous splash) inside `test16` produced a completely black screen under all backends, whereas the watermark plug (**`P`**) worked perfectly.
 2.  **The Root Cause**:
     *   The `GlideSplashAnimator` (a core class shared by both Glide 2.x and 3.x frontends) is compiled as a static library using Glide 2.x headers. When drawing the 3D powershield and spinning logo mesh, it populates and passes standard Glide 2.x `GrVertex` structs to `grDrawTriangle`.
@@ -233,7 +210,7 @@ cmake --build build -j$(nproc)
 4.  **Verification**:
     *   Rebuilt the wrapper. Running `test16` (Glide 3.x) now successfully displays the gorgeous full-screen spinning 3Dfx powershield and logo animation on all rendering backends!
 
-### Case Study 9: The Glide 2.x Shameless Plug Logo Corruption (Chromakey State Serialization Leak)
+### Case Study 8: The Glide 2.x Shameless Plug Logo Corruption (Chromakey State Serialization Leak)
 1.  **The Symptom**: In Glide 2.x, if the shameless plug (`P`) was enabled, pressing `S` correctly ran the splash animation. However, the letters `"fx"` in the `"3dfx"` word on the spinning logo were "damaged" and looked like hollow outlines.
 2.  **The Root Cause**:
     *   The shameless plug overlay (`grShamelessPlug`) is written directly to the linear framebuffer using CPU writes. To mask out the black background of the banner image, it enables chromakeying with a value of `0x0000` (black).
@@ -248,7 +225,7 @@ cmake --build build -j$(nproc)
 4.  **Verification**:
     *   Rebuilt the wrapper and verified that all 2318 Catch2 assertions pass cleanly. The Glide 2.x splash screen now renders the spinning logo with perfect solid text and pristine shading even when the shameless plug is active!
 
-### Case Study 10: The Glide 3.x Splash Screen Grey/Damaged Texture (Log2 Aspect Ratio & LOD Translation Mismatch)
+### Case Study 9: The Glide 3.x Splash Screen Grey/Damaged Texture (Log2 Aspect Ratio & LOD Translation Mismatch)
 1.  **The Symptom**: In Glide 3.x, the spinning 3Dfx splash logo rendered correctly, but the letters `"3Dfx"` in the center of the shield were a flat, dark grey/black color, completely lacking their bright, shiny, metallic red/orange/yellow shading, whereas Glide 2.x rendered it beautifully.
 2.  **The Root Cause**:
     *   The `GlideSplashAnimator` is compiled as Glide 2.x core code, meaning its internal texture definitions and `GrTexInfo` structs are populated using Glide 2.x canonical values (e.g. `smallLod` = `GR_LOD_1` (8), `largeLod` = `GR_LOD_256` (0), and `aspectRatio` = `GR_ASPECT_1x1` (0)).
@@ -266,7 +243,7 @@ cmake --build build -j$(nproc)
 4.  **Verification**:
     *   Rebuilt the project and ran `test16` (Glide 3.x) under the Vulkan backend. The spinning logo now displays its gorgeous, high-fidelity metallic red/orange/yellow shading, rendering identically to the Glide 2.x reference implementation!
 
-### Case Study 11: The `test34` Black Screen & Glide 3.x Combiner State Reset Omission
+### Case Study 10: The `test34` Black Screen & Glide 3.x Combiner State Reset Omission
 1.  **The Symptom**: `test34.exe` (Fogging with Table/FogCoord) rendered a completely black screen under all backends (Vulkan, OpenGL ES, and Software), despite the test executing successfully and generating thousands of frames.
 2.  **The Root Cause**:
     *   **State Analysis**: Inspected verbose traces (`GLIDE_WRAPPER_LOG_LEVEL=4`) and noticed that the alpha combiner state was reported as `Alpha(Func=0, Fac=0, Loc=0, Oth=0, Inv=0)`. `Func = 0` corresponds to `GR_COMBINE_FUNCTION_ZERO`.
@@ -277,7 +254,7 @@ cmake --build build -j$(nproc)
 4.  **Verification**:
     *   Rebuilt the project. Running `test34.exe` now displays the beautiful receding textured road smoothly fading into the green exponential fog on all backends with 100% pixel-perfect parity!
 
-### Case Study 12: The `test00` Segmentation Fault (Glide 2.x Opaque State ABI Overflow & Vertex Stack Garbage NaNs)
+### Case Study 11: The `test00` Segmentation Fault (Glide 2.x Opaque State ABI Overflow & Vertex Stack Garbage NaNs)
 1.  **The Symptom**: The pre-compiled binary `./test00` (Glide 2.x screen clearing test) crashed with a segmentation fault when run natively in the user's GUI session under both the Vulkan and Software backends, despite the wrapper working perfectly for custom, scratch-compiled tests. The crash disappeared under Valgrind or GDB, but under normal run, it occurred immediately after `grSstWinOpen` returned.
 2.  **The Investigation & Bisection**:
     *   **Logging Diagnostics**: We injected unbuffered `std::cerr` print logs inside key entry points (`grSstWinOpen`, `grBufferClear`, `grBufferSwap`, `grDrawTriangle`). The logs showed that the crash occurred immediately after `grBufferClear` returned, but *before* `grDrawTriangle` was ever called by the console text renderer `tlConRender()`.
@@ -298,7 +275,7 @@ cmake --build build -j$(nproc)
     *   Rebuilt the library. The compile-time assertion passed successfully.
     *   Running the genuine pre-compiled `./test00` binary under both **Software** and **Vulkan** backends now executes with 100% rock-solid stability, rendering a beautiful blue screen with crystal-clear, ungarbled text!
 
-### Case Study 13: Phase 2 Security Hardening & Opaque ABI Compatibility (VULN-01 to VULN-05)
+### Case Study 12: Phase 2 Security Hardening & Opaque ABI Compatibility (VULN-01 to VULN-05)
 1.  **The Objective**: Modernizing legacy graphics wrappers is not just about translating APIs, but also about securing them. Legacy games compiled decades ago are prone to memory safety violations, uninitialized stack variables, invalid enums, and out-of-bounds parameters. We systematically bisected, hardened, and secured the entire wrapper codebase against five major security vulnerabilities (VULN-01 to VULN-05) identified in code audits.
 2.  **The Vulnerabilities & Surgical Solutions**:
     *   **ABI Layout Corruption (VULN-02 / GAP-02)**:
