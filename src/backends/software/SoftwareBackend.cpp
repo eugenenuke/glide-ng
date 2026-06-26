@@ -875,6 +875,8 @@ bool SoftwareBackend::SwapBuffers() {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   if (!m_initialized || !m_windowAttached) return false;
 
+  SDL_PumpEvents();
+
   GLIDE_LOG(DEBUG, "Software", "Executing SwapBuffers presentation dispatch.");
 
   // Enforce frame pacing and track frame timing using unified FrameTracker

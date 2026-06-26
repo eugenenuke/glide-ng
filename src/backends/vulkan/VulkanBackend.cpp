@@ -1263,6 +1263,8 @@ bool VulkanBackend::SwapBuffers() {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   if (!m_initialized || !m_windowAttached) return false;
 
+  SDL_PumpEvents();
+
   // Flush any pending CPU LFB writes to the GPU active image before we
   // swap/present!
   FlushLFBToGPU();

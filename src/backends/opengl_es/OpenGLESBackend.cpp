@@ -290,6 +290,8 @@ bool OpenGLESBackend::SwapBuffers() {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   if (!m_initialized || !m_windowAttached) return false;
 
+  SDL_PumpEvents();
+
   // Flush any pending geometry batches first!
   FlushBatch();
 
