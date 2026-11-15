@@ -65,7 +65,7 @@ Recorded before any edits are made:
 | **T2.3** | Phase 2 | Implement Native Wayland `wl_subsurface` in `NativeSurfaceHost` + SVN DOSBox `setConfig('SDL2')` export + HiDPI scaling | Med–High | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `9865fc5` |
 | **T2.4** | Phase 2 | Migrate `VulkanBackend` to `NativeSurfaceHost` + aspect-ratio preserving letterbox/pillarbox blit | Med | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `2d75259`, `985e7fa`, `1d349ee` |
 | **T2.5** | Phase 2 | Migrate `OpenGLESBackend` to `NativeSurfaceHost` (Direct EGL) + aspect-ratio & Gamma LUT presentation pass | Med | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `df40756`, `8c416e2` |
-| **T2.6** | Phase 2 | Migrate `SoftwareBackend` to `NativeSurfaceHost` + aspect-ratio preserving presentation | Med | `[ ] PENDING` | — |
+| **T2.6** | Phase 2 | Migrate `SoftwareBackend` to `NativeSurfaceHost` + aspect-ratio preserving presentation | Med | `[~] IMPLEMENTED — AWAITING USER VERIFICATION` | `b0066fd` |
 | **T2.7** | Phase 2 | Retire old `PlatformWindowUtils` overlay code & late `XInitThreads()` constructor; run full Option A DOSBox matrix | Med | `[ ] PENDING` | — |
 | **T3.1** | Phase 3 | Extract `GlideStateTracker` from `SoftwareBackendBase` (remove CPU buffers from Vulkan/GLES inheritance) | Med | `[ ] PENDING` | — |
 | **T3.2** | Phase 3 | Deduplicate shared frontend code across `glide2_entry.cpp` & `glide3_entry.cpp` (`GlideEntryCommon`) | Med | `[ ] PENDING` | — |
@@ -465,7 +465,18 @@ Recorded before any edits are made:
 - **User Verification**: Test **GTA 1** on **DOSBox-X** (`output=opengl` AND `output=surface`, windowed + fullscreen, XWayland + Wayland) and **SVN DOSBox** using `GLIDE_WRAPPER_BACKEND=opengl_es`. Confirm gamma works, aspect ratio is preserved, and zero GL context crashes occur.
 
 #### `T2.6` — Migrate `SoftwareBackend` to `NativeSurfaceHost` + Aspect-Ratio Presentation
-- **Status**: `[ ] PENDING`
+- **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION` (Commit `b0066fd`)
+- **Automated Result**:
+  - Removed all DOSBox `SDL_Window*`/`SDL_Renderer*` hijacking and `SDL_PumpEvents()` from [SoftwareBackend.h](../../src/backends/software/SoftwareBackend.h) and [SoftwareBackend.cpp](../../src/backends/software/SoftwareBackend.cpp), migrating all 4 modes to `NativeSurfaceHost` (100% GPU/EGL-independent):
+    - `Headless`: zero SDL/X11/Wayland/EGL calls.
+    - `X11Child`: `X11Presenter` using `XShmPutImage` (with automatic `IPC_RMID` reclamation, trapped `XShmAttach` error fallback to `XPutImage`, and BGR mask detection) + OpenMP aspect-ratio preserving letterbox/pillarbox scaling (`BlitScaledLetterbox`).
+    - `WaylandSubsurface`: `WaylandShmPresenter` using triple-buffered anonymous `memfd_create` `wl_shm` pools (`WL_SHM_FORMAT_XRGB8888`, safe retired-buffer reaping across live resizes, `wl_surface_damage_buffer`) bound to `NativeSurfaceHost`'s private `wl_event_queue` and `wp_viewport` fractional-scale destination.
+    - `StandaloneSDL2`: owned `SDL_Renderer` + `SDL_Texture` presenting into `ComputePresentRect` with black bars, opaque alpha, and `m_surfaceHost.PollEvents()` clean quit / `SIGINT` exit.
+  - **Tests & Validation**:
+    - Headless `DISPLAY="" WAYLAND_DISPLAY="" GLIDE_HEADLESS=1 GLIDE_WRAPPER_BACKEND=software ./build/bin/Glide3xWrapperTests`: **40/40 passed (1894 assertions)** with zero display server / zero `libEGL`/`ZINK` warnings.
+    - `glide_embed_test` across all 6 modes (`Wayland`/`X11` × `--raw-handle`/`--sdl-window` × `--parent-gl`/2D + SSAA 2x): **all PASS**, resize `800x600 -> 1024x600` + close/reopen clean, **0 Wayland protocol errors** under `WAYLAND_DEBUG=client`, **0 leaked SysV SHM segments** (`ipcs -m`).
+    - Standalone `glide3_cube` on Wayland & X11: exits cleanly on `SIGINT`.
+    - Zero compiler warnings under `-Wall -Wextra -Wpedantic -Werror`.
 - **Target Files**:
   - `src/backends/software/SoftwareBackend.h`
   - `src/backends/software/SoftwareBackend.cpp`
