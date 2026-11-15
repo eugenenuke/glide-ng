@@ -63,7 +63,7 @@ Recorded before any edits are made:
 | **T2.1** | Phase 2 | Implement `NativeSurfaceHost` core + Headless + Standalone SDL2 + `ComputePresentRect` aspect math + tests | Low | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `ae65f8e` |
 | **T2.2** | Phase 2 | Implement X11 / XWayland native child window in `NativeSurfaceHost` (`XOpenDisplay`, `XCreateWindow`, `XShape`) + embed test harness | Med | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `4f40687` |
 | **T2.3** | Phase 2 | Implement Native Wayland `wl_subsurface` in `NativeSurfaceHost` + SVN DOSBox `setConfig('SDL2')` export + HiDPI scaling | Med–High | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `9865fc5` |
-| **T2.4** | Phase 2 | Migrate `VulkanBackend` to `NativeSurfaceHost` + aspect-ratio preserving letterbox/pillarbox blit | Med | `[~] IMPLEMENTED — AWAITING USER VERIFICATION` | `2d75259` |
+| **T2.4** | Phase 2 | Migrate `VulkanBackend` to `NativeSurfaceHost` + aspect-ratio preserving letterbox/pillarbox blit | Med | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `2d75259`, `985e7fa`, `1d349ee` |
 | **T2.5** | Phase 2 | Migrate `OpenGLESBackend` to `NativeSurfaceHost` (Direct EGL) + aspect-ratio & Gamma LUT presentation pass | Med | `[ ] PENDING` | — |
 | **T2.6** | Phase 2 | Migrate `SoftwareBackend` to `NativeSurfaceHost` + aspect-ratio preserving presentation | Med | `[ ] PENDING` | — |
 | **T2.7** | Phase 2 | Retire old `PlatformWindowUtils` overlay code & late `XInitThreads()` constructor; run full Option A DOSBox matrix | Med | `[ ] PENDING` | — |
@@ -388,7 +388,8 @@ Recorded before any edits are made:
 - **User Verification**: Run `SDL_VIDEODRIVER=wayland ./build/bin/child_surface_embed_test`, resize/maximize/fullscreen the host window, verify input pass-through and clean exit.
 
 #### `T2.4` — Migrate `VulkanBackend` to `NativeSurfaceHost` + Aspect-Ratio Blit
-- **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION` (Commit `2d75259`)
+- **Status**: `[x] DONE (USER CONFIRMED — 2026-11-15)` (Commits `2d75259`, `985e7fa`, `1d349ee`)
+- **User Verification Notes**: Confirmed on real GPU (CachyOS Wayland 133.33% fractional scale, `sdl2-compat`) across `glide_embed_test`, patched SVN DOSBox (GTA 1 windowed + 512/640/800 live resolution switching + startup fullscreen, zero stutter/sticky keys), and DOSBox-X (GTA 1 windowed + fullscreen). Mid-game fullscreen toggle deferring until resolution change in patched SVN DOSBox noted for Phase 4 Trigger #4.
 - **Automated Result**:
   - Replaced legacy `PlatformWindowUtils` overlay window / `SDL_PumpEvents()` in [VulkanBackend.h](../../src/backends/vulkan/VulkanBackend.h) and [VulkanBackend.cpp](../../src/backends/vulkan/VulkanBackend.cpp) with `NativeSurfaceHost`:
     - `CreateInstance()` enumerates Vulkan WSI extensions directly (`VK_KHR_surface`, `VK_KHR_xlib_surface`, `VK_KHR_xcb_surface`, `VK_KHR_wayland_surface`) without touching SDL during `Initialize()`.
@@ -558,3 +559,16 @@ After **Option A (`T2.7`)** is confirmed working by the user, evaluate these fou
 
 - **If all 4 are "Yes"** → **Close Phase 4 as Not Needed.** Option A delivers a 100% drop-in unpatched wrapper.
 - **If any trigger is "No"** → Draft a minimal `Option B` addendum building directly on `NativeSurfaceHost` (zero wasted work from Phase 2!).
+
+---
+
+### Post-Roadmap / Parked Game Compatibility Investigations
+
+> **Policy**: Parked until Phase 2 (Option A) and Phase 3 (Cleanup) complete so windowing/WSI changes stay isolated from game-specific rendering fixes.
+
+- **Carmageddon (`carma`) — Vulkan / Glide 2.x (Reported 2026-11-15)**
+  - **Observed Symptoms**:
+    1. Menu screens render completely black (blind navigation still allows starting a race).
+    2. In-game 3D renders, but some graphics/UI elements are missing (likely same root cause as the black menus — suspect LFB writes, palette/chroma-key, or Glide 2.x 2D/UI path).
+    3. Required switching window focus a couple of times after launch before keyboard input registered reliably.
+  - **Status**: `[ ] PARKED — Investigate after Option A & Cleanup stages`.
