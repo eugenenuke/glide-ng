@@ -67,7 +67,7 @@ Recorded before any edits are made:
 | **T2.5** | Phase 2 | Migrate `OpenGLESBackend` to `NativeSurfaceHost` (Direct EGL) + aspect-ratio & Gamma LUT presentation pass | Med | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `df40756`, `8c416e2` |
 | **T2.6** | Phase 2 | Migrate `SoftwareBackend` to `NativeSurfaceHost` + aspect-ratio preserving presentation | Med | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `b0066fd`, `47c21b4` |
 | **T2.7** | Phase 2 | Retire old `PlatformWindowUtils` overlay code & late `XInitThreads()` constructor; run full Option A DOSBox matrix | Med | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `ce4a354` |
-| **T3.1** | Phase 3 | Extract `GlideStateTracker` from `SoftwareBackendBase` (remove CPU buffers from Vulkan/GLES inheritance) | Med | `[ ] PENDING` | — |
+| **T3.1** | Phase 3 | Extract `GlideStateTracker` from `SoftwareBackendBase` (remove CPU buffers from Vulkan/GLES inheritance) | Med | `[~] IMPLEMENTED — AWAITING USER VERIFICATION` | `1edabe4` |
 | **T3.2** | Phase 3 | Deduplicate shared frontend code across `glide2_entry.cpp` & `glide3_entry.cpp` (`GlideEntryCommon`) | Med | `[ ] PENDING` | — |
 | **T3.3** | Phase 3 | Split monolithic backend `.cpp` files (`VulkanBackend`, `OpenGLESBackend`, `SoftwareBackend`) into cohesive units | Med | `[ ] PENDING` | — |
 | **T3.4** | Phase 3 | Audit & reduce `std::recursive_mutex` hot-path contention + benchmark regression check | Med | `[ ] PENDING` | — |
@@ -531,9 +531,20 @@ Recorded before any edits are made:
 > **Goal**: Clean up deep architectural debt *after* Option A is stable and verified, keeping every refactor pure (zero intended behavioral change) and verified against the full Phase 2 baseline.
 
 #### `T3.1` — Extract `GlideStateTracker` Out of `SoftwareBackendBase`
-- **Status**: `[ ] PENDING`
+- **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION` (Commit `1edabe4`)
+- **Automated Result**:
+  - Extracted pure Glide 2.x/3.x pipeline state tracking (combiners, depth, blend, fog, chromakey, clip, origin, gamma LUT, texture bindings, `WrapperConfig`, and unit-test getters) into [GlideStateTracker.h](../../src/backends/GlideStateTracker.h) and [GlideStateTracker.cpp](../../src/backends/GlideStateTracker.cpp).
+  - Extracted shared CPU LFB staging and pixel format conversion into [CpuLfbStaging.h](../../src/backends/CpuLfbStaging.h) and [CpuLfbStaging.cpp](../../src/backends/CpuLfbStaging.cpp) with **lazy allocation** (0 bytes allocated on GPU backends until an LFB read, write, or lock occurs).
+  - Migrated `VulkanBackend` and `OpenGLESBackend` to inherit directly from `GlideStateTracker` and compose `CpuLfbStaging`, removing `m_cpuBuffers[2]`, `m_resolvedBuffer`, `m_headlessDepthBuffer`, SSAA arrays, eager GLES `m_swizzleBuffer` allocation, and dead `m_useX11BlitFallback` from GPU backends. Slimmed `SoftwareBackendBase.{h,cpp}` by -1,174 LOC.
+  - Updated state-getter casts in `tests/test_architecture.cpp` and `tests/test_glide3.cpp` to `GlideStateTracker*` and added `[Architecture][GlideStateTracker]` unit tests verifying inheritance isolation (`!std::is_base_of_v<SoftwareBackendBase, VulkanBackend|OpenGLESBackend>`) and zero-byte lazy CPU LFB staging.
+  - **Verification**:
+    - Clean `cmake -S . -B build && cmake --build build -j$(nproc)` with **0 compiler warnings** under `-Werror`.
+    - `Glide3xWrapperTests` (headless): **41/41 passed (1914 assertions)** across all 3 backends (`software`, `vulkan`, `opengl_es`).
+    - `Glide2xWrapperTests` (`software`): **27/27 passed (2344 assertions)**; `"*LFB*"` on `vulkan` & `opengl_es`: **4/6 passed (107/110 assertions)** (exact match to baseline).
+    - `glide_embed_test --raw-handle --parent-gl --smoke-ms 600`: **6/6 PASS** across `{vulkan, opengl_es, software}` × `{wayland, x11}` (0 Vulkan validation errors).
+    - `./build/bin/sw_benchmark`: 416.3M LFB write px/s, 513.8k tris/s.
 - **Target Files**:
-  - *New*: `src/backends/GlideStateTracker.h`, `src/backends/GlideStateTracker.cpp`
+  - *New*: `src/backends/GlideStateTracker.h`, `src/backends/GlideStateTracker.cpp`, `src/backends/CpuLfbStaging.h`, `src/backends/CpuLfbStaging.cpp`
   - `src/backends/SoftwareBackendBase.{h,cpp}`
   - `src/backends/vulkan/VulkanBackend.{h,cpp}`
   - `src/backends/opengl_es/OpenGLESBackend.{h,cpp}`
