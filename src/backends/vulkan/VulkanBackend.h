@@ -224,6 +224,14 @@ class VulkanBackend : public SoftwareBackendBase {
   void DetachWindow() override;
   uint32_t GetMsaaSamples() const override { return m_msaaSamples; }
 
+  // Selects an optimal Vulkan swapchain present mode.
+  // On Wayland, prefers Mailbox even when VSync is enabled because Wayland
+  // compositors present tear-free at VBlank and Mailbox avoids Mesa WSI
+  // wp_fifo_v1 / wp_commit_timer_v1 stalls under RDP/Mutter.
+  static vk::PresentModeKHR SelectPresentMode(
+      const std::vector<vk::PresentModeKHR>& availableModes, bool vsyncEnabled,
+      bool isWaylandSurface, bool forceStrictFifo = false);
+
   // GPU-Driven Clearing & Swapchain Presentation
   void ClearBuffer(uint32_t color, uint32_t alpha, float z,
                    uint32_t clearMask) override;

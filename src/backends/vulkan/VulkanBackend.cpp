@@ -814,6 +814,32 @@ void VulkanBackend::DetachWindow() {
   m_headlessMode = false;
 }
 
+vk::PresentModeKHR VulkanBackend::SelectPresentMode(
+    const std::vector<vk::PresentModeKHR>& availableModes, bool vsyncEnabled,
+    bool isWaylandSurface, bool forceStrictFifo) {
+  bool foundMailbox = false;
+  bool foundImmediate = false;
+  for (const auto& pm : availableModes) {
+    if (pm == vk::PresentModeKHR::eMailbox) {
+      foundMailbox = true;
+    } else if (pm == vk::PresentModeKHR::eImmediate) {
+      foundImmediate = true;
+    }
+  }
+
+  if (!vsyncEnabled) {
+    if (foundMailbox) return vk::PresentModeKHR::eMailbox;
+    if (foundImmediate) return vk::PresentModeKHR::eImmediate;
+    return vk::PresentModeKHR::eFifo;
+  }
+
+  if (isWaylandSurface && !forceStrictFifo && foundMailbox) {
+    return vk::PresentModeKHR::eMailbox;
+  }
+
+  return vk::PresentModeKHR::eFifo;
+}
+
 bool VulkanBackend::CreateSwapchain(uint32_t width, uint32_t height) {
   if (!m_surface) {
     GLIDE_LOG(WARN, "Vulkan",
@@ -876,37 +902,41 @@ bool VulkanBackend::CreateSwapchain(uint32_t width, uint32_t height) {
       INFO, "Vulkan",
       "Selected swapchain format: " << vk::to_string(m_swapchainImageFormat));
 
-  // 3. Select the best present mode (FIFO is guaranteed, but let's log if
-  // Mailbox/Immediate are available)
-  vk::PresentModeKHR presentMode =
-      vk::PresentModeKHR::eFifo;  // VSync aligned, guaranteed by spec
-  if (!m_config.vsync) {
-    // Uncapped mode requested! Prefer Mailbox (uncapped triple-buffering), then
-    // Immediate (VSync off), falling back to FIFO.
-    bool found_mailbox = false;
-    bool found_immediate = false;
-    for (const auto& pm : presentModes) {
-      if (pm == vk::PresentModeKHR::eMailbox) {
-        found_mailbox = true;
-      } else if (pm == vk::PresentModeKHR::eImmediate) {
-        found_immediate = true;
-      }
-    }
-    if (found_mailbox) {
-      presentMode = vk::PresentModeKHR::eMailbox;
+  // 3. Select the best present mode.
+  // On Wayland, prefer Mailbox even with VSync enabled: Wayland compositors
+  // always composite atomically (tear-free), while Mailbox avoids Mesa WSI's
+  // wp_fifo_v1 / wp_commit_timer_v1 cadence stalls under Mutter/RDP. Users can
+  // still opt into strict FIFO via GLIDE_VSYNC=fifo.
+  const char* sdlVideoDriver = SDL_GetCurrentVideoDriver();
+  bool isWaylandSurface =
+      (sdlVideoDriver && std::strcmp(sdlVideoDriver, "wayland") == 0);
+  const char* envVsync = std::getenv("GLIDE_VSYNC");
+  bool forceStrictFifo =
+      (envVsync &&
+       (std::strcmp(envVsync, "fifo") == 0 || std::strcmp(envVsync, "FIFO") == 0));
+
+  vk::PresentModeKHR presentMode = SelectPresentMode(
+      presentModes, m_config.vsync, isWaylandSurface, forceStrictFifo);
+
+  if (presentMode == vk::PresentModeKHR::eMailbox) {
+    if (m_config.vsync && isWaylandSurface) {
+      GLIDE_LOG(INFO, "Vulkan",
+                "Wayland surface detected with VSync enabled: using Mailbox "
+                "present mode (tear-free via Wayland compositor, avoids "
+                "wp_fifo_v1 stalls; set GLIDE_VSYNC=fifo to force FIFO).");
+    } else {
       GLIDE_LOG(
           INFO, "Vulkan",
           "VSync Disabled: Using Mailbox present mode (Uncapped, no tearing).");
-    } else if (found_immediate) {
-      presentMode = vk::PresentModeKHR::eImmediate;
-      GLIDE_LOG(INFO, "Vulkan",
-                "VSync Disabled: Using Immediate present mode (Uncapped, "
-                "screen tearing may occur).");
-    } else {
-      GLIDE_LOG(WARN, "Vulkan",
-                "VSync Disabled: Uncapped present modes not supported by GPU, "
-                "falling back to FIFO.");
     }
+  } else if (presentMode == vk::PresentModeKHR::eImmediate) {
+    GLIDE_LOG(INFO, "Vulkan",
+              "VSync Disabled: Using Immediate present mode (Uncapped, "
+              "screen tearing may occur).");
+  } else if (!m_config.vsync) {
+    GLIDE_LOG(WARN, "Vulkan",
+              "VSync Disabled: Uncapped present modes not supported by GPU, "
+              "falling back to FIFO.");
   } else {
     GLIDE_LOG(INFO, "Vulkan",
               "VSync Enabled: Using FIFO present mode (Sync to vertical "

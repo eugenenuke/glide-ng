@@ -7,6 +7,7 @@
 #include "core/Logger.h"
 #include "core/BackendManager.h"
 #include "software/SoftwareBackend.h"
+#include "vulkan/VulkanBackend.h"
 #include <cstdio>
 #include <cstdlib>
 #include <dlfcn.h>
@@ -3548,4 +3549,34 @@ TEST_CASE("JsonConfigLoader uses key-scoped parsing and respects env overrides",
 
     std::remove(tmpPath.c_str());
   }
+}
+
+TEST_CASE("VulkanBackend::SelectPresentMode prefers Mailbox on Wayland VSync",
+          "[Vulkan][WSI][PresentMode]") {
+  const std::vector<vk::PresentModeKHR> allModes = {
+      vk::PresentModeKHR::eImmediate, vk::PresentModeKHR::eMailbox,
+      vk::PresentModeKHR::eFifo};
+  const std::vector<vk::PresentModeKHR> fifoOnly = {vk::PresentModeKHR::eFifo};
+  const std::vector<vk::PresentModeKHR> immAndFifo = {
+      vk::PresentModeKHR::eImmediate, vk::PresentModeKHR::eFifo};
+
+  // Wayland + VSync prefers Mailbox when available (tear-free, avoids wp_fifo_v1 stalls)
+  CHECK(GlideWrapper::VulkanBackend::SelectPresentMode(allModes, true, true, false) ==
+        vk::PresentModeKHR::eMailbox);
+  // Wayland + VSync falls back to FIFO when Mailbox is unavailable
+  CHECK(GlideWrapper::VulkanBackend::SelectPresentMode(immAndFifo, true, true, false) ==
+        vk::PresentModeKHR::eFifo);
+  // Explicit GLIDE_VSYNC=fifo forces FIFO even on Wayland
+  CHECK(GlideWrapper::VulkanBackend::SelectPresentMode(allModes, true, true, true) ==
+        vk::PresentModeKHR::eFifo);
+  // X11 + VSync retains FIFO
+  CHECK(GlideWrapper::VulkanBackend::SelectPresentMode(allModes, true, false, false) ==
+        vk::PresentModeKHR::eFifo);
+  // VSync disabled prefers Mailbox -> Immediate -> FIFO
+  CHECK(GlideWrapper::VulkanBackend::SelectPresentMode(allModes, false, false, false) ==
+        vk::PresentModeKHR::eMailbox);
+  CHECK(GlideWrapper::VulkanBackend::SelectPresentMode(immAndFifo, false, false, false) ==
+        vk::PresentModeKHR::eImmediate);
+  CHECK(GlideWrapper::VulkanBackend::SelectPresentMode(fifoOnly, false, false, false) ==
+        vk::PresentModeKHR::eFifo);
 }
