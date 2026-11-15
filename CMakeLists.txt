@@ -19,9 +19,18 @@ endif()
 
 # Discover System Graphics & Testing Dependencies
 find_package(Vulkan REQUIRED)
-find_package(Catch2 REQUIRED)
+find_package(Catch2 QUIET)
 find_package(OpenMP REQUIRED)
 find_package(SDL2 REQUIRED)
+
+# Optional external 3dfx reference SDK (untracked local directory used only by legacy SDK tests/demos)
+set(GLIDE_REF_SDK_DIR "${CMAKE_CURRENT_SOURCE_DIR}/refs/3dfx-Glide-API")
+if(EXISTS "${GLIDE_REF_SDK_DIR}/swlibs/fxmisc/linutil.c")
+    set(GLIDE_HAS_REF_SDK TRUE)
+else()
+    set(GLIDE_HAS_REF_SDK FALSE)
+    message(STATUS "Optional 3dfx reference SDK not found at ${GLIDE_REF_SDK_DIR}; skipping legacy SDK-dependent tests and demos")
+endif()
 
 if(UNIX AND NOT APPLE)
     find_package(X11 REQUIRED)
