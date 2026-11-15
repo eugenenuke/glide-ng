@@ -11,6 +11,7 @@
 #include "backends/SoftwareBackendBase.h"
 #include "backends/software/RasterizerState.h"
 #include "backends/software/ThreadPool.h"
+#include "core/NativeSurfaceHost.h"
 
 namespace GlideWrapper {
 
@@ -28,8 +29,8 @@ struct Tile {
 
 class SoftwareBackend : public SoftwareBackendBase {
  public:
-  SoftwareBackend() = default;
-  ~SoftwareBackend() override { Shutdown(); }
+  SoftwareBackend();
+  ~SoftwareBackend() override;
 
   bool Initialize(const WrapperConfig& config) override;
   void Shutdown() override;
@@ -49,7 +50,11 @@ class SoftwareBackend : public SoftwareBackendBase {
   bool ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY, uint32_t srcWidth,
                uint32_t srcHeight, uint32_t dstStride, void* dstData) override;
 
+ protected:
+  void FlushBins_Locked() override;
+
  private:
+  void DetachWindow_Locked();
   void InitTileGrid();
   void BinTriangle(uint32_t cmdIdx, const ModernVertex& a,
                    const ModernVertex& b, const ModernVertex& c);
@@ -85,7 +90,7 @@ class SoftwareBackend : public SoftwareBackendBase {
 
   template <bool HasTexture, bool BlendEnabled, bool DitherEnabled,
             bool Clockwise>
-  __attribute__((always_inline)) inline void RasterizeTriangleLoopsSIMD(
+  void RasterizeTriangleLoopsSIMD(
       const ModernVertex& a, const ModernVertex& b, const ModernVertex& c,
       int minX, int maxX, int minY, int maxY, const RasterizerState& state,
       float invArea, float a0, float b0, float c0, float a1, float b1, float c1,
@@ -120,11 +125,20 @@ class SoftwareBackend : public SoftwareBackendBase {
   uint32_t m_tileCols{0};
   uint32_t m_tileRows{0};
 
-  void* m_sdlWindow{nullptr};    // SDL_Window*
-  bool m_sdlWindowOwned{false};
-  void* m_sdlRenderer{nullptr};  // SDL_Renderer*
-  bool m_sdlRendererOwned{false}; // SDL_Renderer* ownership
-  void* m_sdlTexture{nullptr};   // SDL_Texture*
+  void ResolveFrontBuffer(const uint32_t*& outPixels, uint32_t& outW,
+                          uint32_t& outH);
+  bool InitPresentationSurface();
+  void ShutdownPresentationSurface();
+  void PresentFrame(const uint32_t* srcPixels, uint32_t srcW, uint32_t srcH);
+
+  struct X11Presenter;
+  struct WaylandShmPresenter;
+
+  NativeSurfaceHost m_surfaceHost;
+  void* m_sdlRenderer{nullptr};  // StandaloneSDL2 owned SDL_Renderer*
+  void* m_sdlTexture{nullptr};   // StandaloneSDL2 owned SDL_Texture*
+  std::unique_ptr<X11Presenter> m_x11Presenter;
+  std::unique_ptr<WaylandShmPresenter> m_wlShmPresenter;
 };
 
 }  // namespace GlideWrapper

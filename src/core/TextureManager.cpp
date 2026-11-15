@@ -147,7 +147,7 @@ bool TextureManager::DownloadMipMap(uint32_t tmu, uint32_t startAddress,
                                     int32_t lodMin, int32_t lodMax,
                                     uint32_t aspect, uint32_t format,
                                     const void* data) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (tmu >= 2 || !data) return false;
 
   // VULN-05: Strict validation of LOD limits and aspect ratios to prevent out-of-bounds memory access
@@ -556,7 +556,7 @@ bool TextureManager::DownloadMipMapPartial(uint32_t tmu, uint32_t startAddress,
                                            uint32_t aspectRatio,
                                            uint32_t format, const void* data,
                                            int startRow, int endRow) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (tmu >= 2 || !data) return false;
 
   // VULN-05: Strict validation of LOD limits and aspect ratios to prevent out-of-bounds memory access
@@ -777,7 +777,7 @@ bool TextureManager::DownloadMipMapPartial(uint32_t tmu, uint32_t startAddress,
 }
 bool TextureManager::DownloadTable(uint32_t tmu, uint32_t type,
                                    const void* data) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (tmu >= 2 || !data) return false;
 
   // type can be: GR_TEXTABLE_NCC0 (0), GR_TEXTABLE_NCC1 (1),
@@ -904,7 +904,7 @@ bool TextureManager::DownloadTable(uint32_t tmu, uint32_t type,
 }
 
 void TextureManager::SetActiveNccTable(uint32_t tmu, uint32_t table) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (tmu >= 2 || table >= 2) return;
 
   if (m_tmus[tmu].activeNccTable == table) return;  // No change
@@ -953,7 +953,7 @@ void TextureManager::SetActiveNccTable(uint32_t tmu, uint32_t table) {
 }
 
 void TextureManager::SetTmuMemoryLimitMb(uint32_t tmu, uint32_t limitMb) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (tmu < 2) {
     m_tmuMemoryLimits[tmu] = limitMb * 1024 * 1024;
     GLIDE_LOG(
@@ -964,14 +964,14 @@ void TextureManager::SetTmuMemoryLimitMb(uint32_t tmu, uint32_t limitMb) {
 
 VirtualTexture* TextureManager::GetTexture(uint32_t tmu,
                                            uint32_t startAddress) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (tmu >= 2) return nullptr;
   auto it = m_tmus[tmu].textures.find(startAddress);
   return (it != m_tmus[tmu].textures.end()) ? it->second.get() : nullptr;
 }
 
 void TextureManager::Reset() {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   for (int i = 0; i < 2; ++i) {
     m_tmus[i].allocatedBytes = 0;
     m_tmus[i].textures.clear();

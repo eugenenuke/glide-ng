@@ -31,7 +31,7 @@ IGraphicsBackend* BackendManager::GetBackend() {
 }
 
 bool BackendManager::EstablishBackend(const WrapperConfig& config) {
-    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    std::lock_guard<std::mutex> lock(m_mutex);
     GLIDE_LOG(INFO, "Backend", "EstablishBackend entered. config.backend='" << config.backend << "', m_backend=" << (m_backend ? "NON-NULL" : "NULL"));
 
     // Resolve requested backend name from config (already resolved/validated by JsonConfigLoader)
@@ -52,7 +52,7 @@ bool BackendManager::EstablishBackend(const WrapperConfig& config) {
             return m_backend->Initialize(config);
         } else {
             GLIDE_LOG(INFO, "Backend", "Switching backend: shutting down active " << m_activeBackendName << " to establish " << requested << ".");
-            ShutdownBackend();
+            ShutdownBackend_Locked();
         }
     }
 
@@ -78,13 +78,12 @@ bool BackendManager::EstablishBackend(const WrapperConfig& config) {
     return m_backend->Initialize(config);
 }
 
-void BackendManager::ShutdownBackend() {
-    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+void BackendManager::ShutdownBackend_Locked() {
     if (m_backend) {
         m_backend->Shutdown();
         m_backend.reset();
     }
-    SetSplashAnimator(nullptr);
+    m_splashAnimator.reset();
     m_activeBackendName.clear();
     // Purge the core texture manager cache to reset state for the next context
     TextureManager::GetInstance().Reset();
@@ -92,13 +91,18 @@ void BackendManager::ShutdownBackend() {
     TelemetryManager::GetInstance().Reset();
 }
 
+void BackendManager::ShutdownBackend() {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    ShutdownBackend_Locked();
+}
+
 ISplashAnimator* BackendManager::GetSplashAnimator() {
-    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    std::lock_guard<std::mutex> lock(m_mutex);
     return m_splashAnimator.get();
 }
 
 void BackendManager::SetSplashAnimator(std::unique_ptr<ISplashAnimator> animator) {
-    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    std::lock_guard<std::mutex> lock(m_mutex);
     m_splashAnimator = std::move(animator);
 }
 

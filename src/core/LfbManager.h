@@ -17,7 +17,7 @@ public:
 
     template <typename LfbInfoType>
     bool Lock(uint32_t type, uint32_t buffer, uint32_t writeMode, uint32_t origin, bool pixelPipeline, LfbInfoType* info) {
-        std::lock_guard<std::recursive_mutex> lock(m_mutex);
+        std::lock_guard<std::mutex> lock(m_mutex);
         if (!info) return false;
 
         auto* b = GetActiveBackend();
@@ -31,22 +31,28 @@ public:
             resolvedMode = 0;      // GR_LFBWRITEMODE_565
         }
 
-        // Resolving pixel size based on write mode
-        if (resolvedMode == 0 || // GR_LFBWRITEMODE_565
-            resolvedMode == 1 || // GR_LFBWRITEMODE_555
-            resolvedMode == 2 || // GR_LFBWRITEMODE_1555
-            resolvedMode == 4 || // GR_LFBWRITEMODE_565_DEPTH
-            resolvedMode == 5 || // GR_LFBWRITEMODE_555_DEPTH
-            resolvedMode == 6 || // GR_LFBWRITEMODE_1555_DEPTH
-            resolvedMode == 3) { // GR_LFBWRITEMODE_ZA16
-            m_lockState.pixelSize = 2;
-        } else if (resolvedMode == 7) { // GR_LFBWRITEMODE_888
-            m_lockState.pixelSize = 3;
-        } else if (resolvedMode == 8) { // GR_LFBWRITEMODE_8888
-            m_lockState.pixelSize = 4;
-        } else {
-            LogErrorUnsupportedWriteMode(writeMode);
-            return false;
+        // Resolve pixel size from Glide 2.x/3.x GR_LFBWRITEMODE_* enum values
+        // (matching 3dfx glfb.c):
+        //   2 BPP: 565 (0x0), 555 (0x1), 1555 (0x2), ZA16 (0xf)
+        //   4 BPP: 888 (0x4), 8888 (0x5), 565_DEPTH (0xc), 555_DEPTH (0xd),
+        //          1555_DEPTH (0xe)
+        switch (resolvedMode) {
+            case 0x0: // GR_LFBWRITEMODE_565
+            case 0x1: // GR_LFBWRITEMODE_555
+            case 0x2: // GR_LFBWRITEMODE_1555
+            case 0xf: // GR_LFBWRITEMODE_ZA16
+                m_lockState.pixelSize = 2;
+                break;
+            case 0x4: // GR_LFBWRITEMODE_888 (32-bit xRGB8888)
+            case 0x5: // GR_LFBWRITEMODE_8888 (32-bit ARGB8888)
+            case 0xc: // GR_LFBWRITEMODE_565_DEPTH
+            case 0xd: // GR_LFBWRITEMODE_555_DEPTH
+            case 0xe: // GR_LFBWRITEMODE_1555_DEPTH
+                m_lockState.pixelSize = 4;
+                break;
+            default:
+                LogErrorUnsupportedWriteMode(writeMode);
+                return false;
         }
 
         m_lockState.stride = m_lockState.width * m_lockState.pixelSize;
@@ -102,7 +108,7 @@ private:
     };
 
     LockState m_lockState;
-    mutable std::recursive_mutex m_mutex;
+    mutable std::mutex m_mutex;
 
     // Helper functions implemented in LfbManager.cpp to hide backend dependencies
     void* GetActiveBackend();

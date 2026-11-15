@@ -3,17 +3,18 @@
 #include <unordered_map>
 #include <vector>
 
-#include "backends/SoftwareBackendBase.h"
+#include "backends/CpuLfbStaging.h"
+#include "backends/GlideStateTracker.h"
+#include "core/NativeSurfaceHost.h"
 
 namespace GlideWrapper {
 
 /**
  * @brief Concrete OpenGL ES 3.2 translation engine.
- * Inherits from SoftwareBackendBase for 100% deterministic pixel-perfect
- * software rasterization. Employs SDL2-managed EGL context creation for
- * cross-platform portability.
+ * Employs NativeSurfaceHost + Direct EGL 1.5 (X11 child window, Wayland
+ * subsurface, surfaceless headless) with Standalone SDL2 fallback for demos.
  */
-class OpenGLESBackend : public SoftwareBackendBase {
+class OpenGLESBackend : public GlideStateTracker {
  public:
   OpenGLESBackend() = default;
   ~OpenGLESBackend() override { Shutdown(); }
@@ -27,14 +28,21 @@ class OpenGLESBackend : public SoftwareBackendBase {
                     bool windowed) override;
   void DetachWindow() override;
   uint32_t GetMsaaSamples() const override { return m_msaaSamples; }
+  bool HasAllocatedCpuLfbStaging() const { return m_lfbStaging.IsAllocated(); }
 
   bool SwapBuffers() override;
   void FlushBins() override {}
   void SstIdle() override;
   void ClearBuffer(uint32_t color, uint32_t alpha, float z,
                    uint32_t clearMask) override;
+  void* GetLfbWritePtr() override;
   bool ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY, uint32_t srcWidth,
                uint32_t srcHeight, uint32_t dstStride, void* dstData) override;
+  bool WriteLFB(uint32_t buffer, uint32_t dstX, uint32_t dstY,
+                uint32_t srcWidth, uint32_t srcHeight, int32_t srcStride,
+                uint32_t srcFmt, const void* srcData,
+                const void* refData = nullptr,
+                const LfbPipelineConfig& config = {}) override;
   void DrawPoint(const ModernVertex& pt) override;
   void DrawLine(const ModernVertex& v0, const ModernVertex& v1) override;
   void DrawTriangle(const ModernVertex& a, const ModernVertex& b,
@@ -89,42 +97,63 @@ class OpenGLESBackend : public SoftwareBackendBase {
   void SetFogColor(uint32_t color) override;
   void SetFogTable(const uint8_t* table) override;
 
+ protected:
+  void ResetState_Locked() override;
+
  private:
+  void DetachWindow_Locked();
+  void UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
+                            const struct VirtualTexture& tex);
+  void LoadGammaTable_Locked(uint32_t nentries, const uint32_t* rTable,
+                             const uint32_t* gTable, const uint32_t* bTable);
   bool CreateGLContext(void* nativeWindowHandle, uint32_t width,
                        uint32_t height, bool windowed);
   void DestroyGLContext();
+  bool CreateDirectEglContext();
+  bool CreateStandaloneSdlGlContext();
+  bool EnsureContextCurrent();
+  void SaveCurrentHostEglContext();
+  void RestoreHostContextIfSaved();
+  void PresentToWindowSurface(uint32_t hostW, uint32_t hostH);
   void SyncDepthState();
   void ApplyBlendingGLES();
   void ApplyColorMaskGLES();
-  void ApplyScissorGLES();
-  void SyncCullStateGLES();
+  void ApplyScissorGLES_Locked();
+  void SyncCullStateGLES_Locked();
   void PopulateUniforms();
   uint32_t GetActiveGpuFbo() const;
-  void SyncOverlayBounds();
 
-  // SDL2 & OpenGL ES Context Handles
-  void* m_sdlWindow{nullptr};  // SDL_Window*
-  void* m_glContext{nullptr};  // SDL_GLContext
-  bool m_windowShown{false};
-  bool m_isWindowHooked{false};
-  bool m_sdlVideoInitializedByUs{false};
-  bool m_sdlWindowOwnedByUs{false};
-  bool m_glContextOwnedByUs{false};
-  void* m_glesWindow{nullptr};  // SDL_Window* for isolated GLES context
-  void* m_sdlRenderer{
-      nullptr};  // SDL_Renderer* for hijacked window presentation
-  bool m_sdlRendererOwned{false};  // SDL_Renderer ownership flag
-  void* m_sdlTexture{nullptr};     // SDL_Texture* for presentation blitting
-  void* m_hostWindow{nullptr};  // SDL_Window* tracking the hijacked host window
+  // Unified native OS surface host (Option A: Headless / StandaloneSDL2 /
+  // X11Child / WaylandSubsurface).
+  NativeSurfaceHost m_surfaceHost;
 
-  // Asynchronous bounds sync cache to prevent resize storms
-  int m_lastRequestedX{0};
-  int m_lastRequestedY{0};
-  int m_lastRequestedW{0};
-  int m_lastRequestedH{0};
+  // Direct EGL 1.5 handles (opaque to keep EGL/X11/Wayland headers out of .h)
+  void* m_eglDisplay{nullptr};   // EGLDisplay
+  void* m_eglContext{nullptr};   // EGLContext
+  void* m_eglSurface{nullptr};   // EGLSurface
+  void* m_wlEglWindow{nullptr};  // wl_egl_window* (WaylandSubsurface only)
+  bool m_useDirectEgl{false};
+  bool m_eglDisplayOwned{false};  // Never eglTerminate borrowed wl_display*
 
-  // GLES 3.2 presentation resources for streaming our software pixel map
-  uint32_t m_glTexture{0};  // GLuint
+  // StandaloneSDL2 fallback context (hWnd == 0 demos only)
+  void* m_sdlGlContext{nullptr};  // SDL_GLContext
+
+  // Saved foreign host EGL or GLX context (preserves DOSBox-X output=opengl on
+  // both Wayland EGL and X11 GLX when host and wrapper share the same thread).
+  bool m_hasSavedHostEgl{false};
+  uint32_t m_savedHostEglApi{0};
+  void* m_savedHostEglDisplay{nullptr};
+  void* m_savedHostEglDraw{nullptr};
+  void* m_savedHostEglRead{nullptr};
+  void* m_savedHostEglContext{nullptr};
+
+  bool m_hasSavedHostGlx{false};
+  void* m_savedHostGlxDisplay{nullptr};
+  unsigned long m_savedHostGlxDraw{0};
+  unsigned long m_savedHostGlxRead{0};
+  void* m_savedHostGlxContext{nullptr};
+
+  // GLES 3.2 presentation quad & Gamma LUT shader resources
   uint32_t m_glVAO{0};      // GLuint
   uint32_t m_glVBO{0};      // GLuint
   uint32_t m_glProgram{0};  // GLuint
@@ -153,8 +182,9 @@ class OpenGLESBackend : public SoftwareBackendBase {
   bool m_batchIs2DGeometry{false};
   void FlushBatch();
 
-  // Unified GPU Framebuffer LFB Flushing
-  void FlushLFBToGPU();
+  // Unified GPU Framebuffer LFB Flushing (lazily allocated; caller holds m_mutex)
+  void FlushLFBToGPU_Locked();
+  CpuLfbStaging m_lfbStaging;
   std::vector<uint32_t> m_swizzleBuffer;
   uint32_t m_msaaSamples{1};
   bool m_is2DGeometry{true};
@@ -163,7 +193,6 @@ class OpenGLESBackend : public SoftwareBackendBase {
   // GLES Gamma LUT Texture Resources
   uint32_t m_glGammaLutTex{0};
   bool m_useGammaLut{false};
-  bool m_forceShaderPresent{false};
   int m_uUseGammaLutLoc{-1};
 
   // Cached Uniform Locations for geomProgram

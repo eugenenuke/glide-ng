@@ -2,12 +2,21 @@
 #include <iostream>
 #include <cmath>
 #include "core/WrapperConfig.h"
+#include "core/JsonConfigLoader.h"
 #include "core/TextureManager.h"
 #include "core/Logger.h"
 #include "core/BackendManager.h"
+#include "core/NativeSurfaceHost.h"
+#include "backends/GlideStateTracker.h"
+#include "opengl_es/OpenGLESBackend.h"
 #include "software/SoftwareBackend.h"
+#include "vulkan/VulkanBackend.h"
+#include <SDL2/SDL.h>
+#include <cstdio>
 #include <cstdlib>
 #include <dlfcn.h>
+#include <fstream>
+#include <type_traits>
 #include <vector>
 #include <algorithm>
 
@@ -409,7 +418,7 @@ TEST_CASE("Glide 3.x State Save & Restore Combiner Bug Verification", "[Glide3][
     REQUIRE(ctx != 0);
 
     // Get the reference to active backend
-    auto* backend = static_cast<GlideWrapper::SoftwareBackendBase*>(
+    auto* backend = dynamic_cast<GlideWrapper::GlideStateTracker*>(
         GlideWrapper::BackendManager::GetInstance().GetBackend()
     );
     REQUIRE(backend != nullptr);
@@ -1124,7 +1133,7 @@ TEST_CASE("Glide 3.x W-Buffering and Layout Q-Param Compatibility", "[Glide3][WB
         unsigned long ctx = winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz, GR_COLORFORMAT_ABGR, GR_ORIGIN_LOWER_LEFT, 2, 1);
         REQUIRE(ctx != 0);
 
-        auto* backend = static_cast<GlideWrapper::SoftwareBackendBase*>(
+        auto* backend = dynamic_cast<GlideWrapper::GlideStateTracker*>(
             GlideWrapper::BackendManager::GetInstance().GetBackend()
         );
         REQUIRE(backend != nullptr);
@@ -2439,7 +2448,7 @@ TEST_CASE("Glide 3.x State Save & Restore ClipWindow and ColorMask Verification"
     FxU32 ctx = winOpen(0, 8, 0, 0, 0, 2, 0); // 800x600 resolution
     REQUIRE(ctx != 0);
 
-    auto* backend = static_cast<GlideWrapper::SoftwareBackendBase*>(
+    auto* backend = dynamic_cast<GlideWrapper::GlideStateTracker*>(
         GlideWrapper::BackendManager::GetInstance().GetBackend()
     );
     REQUIRE(backend != nullptr);
@@ -3304,7 +3313,7 @@ TEST_CASE("Glide 3.x State Serialization & Phase 4 States [Glide3][State][Serial
   REQUIRE(ctx != 0);
 
   auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend();
-  auto* sw_b = dynamic_cast<GlideWrapper::SoftwareBackendBase*>(b);
+  auto* sw_b = dynamic_cast<GlideWrapper::GlideStateTracker*>(b);
   REQUIRE(sw_b != nullptr);
 
   // 1. Set custom states
@@ -3350,5 +3359,625 @@ TEST_CASE("Glide 3.x State Serialization & Phase 4 States [Glide3][State][Serial
   if (shutdown) shutdown();
   ::dlclose(handle);
   ::unsetenv("GLIDE_WRAPPER_BACKEND");
+#endif
+}
+
+TEST_CASE("SoftwareBackend honors forceNoWindow without creating SDL resources",
+          "[Software][Headless]") {
+  GlideWrapper::WrapperConfig config;
+  config.backend = "software";
+  config.forceNoWindow = true;
+  config.maxFps = 0.0;
+
+  GlideWrapper::SoftwareBackend backend;
+  REQUIRE(backend.Initialize(config));
+  REQUIRE(backend.AttachWindow(nullptr, 320, 240, true));
+  REQUIRE(backend.IsHeadlessMode());
+  REQUIRE(backend.GetWidth() == 320);
+  REQUIRE(backend.GetHeight() == 240);
+
+  backend.ClearBuffer(0xFF112233, 0xFF, 1.0f, 0x7);
+  REQUIRE(backend.SwapBuffers());
+
+  uint16_t pixel = 0;
+  REQUIRE(backend.ReadLFB(0, 160, 120, 1, 1, 2, &pixel));
+  CHECK(pixel != 0);
+
+  backend.DetachWindow();
+  CHECK_FALSE(backend.IsHeadlessMode());
+  backend.Shutdown();
+}
+
+TEST_CASE("Lazy CPU ClearBuffer defers fills until LFB access",
+          "[Software][LFB][LazyClear]") {
+  class LazyClearProbeBackend : public GlideWrapper::SoftwareBackend {
+   public:
+    void ClearBuffer(uint32_t color, uint32_t alpha, float z,
+                     uint32_t clearMask) override {
+      ScheduleLazyCpuClear(color, alpha, z, clearMask);
+    }
+    uint32_t PeekRawBackPixel(uint32_t x, uint32_t y) const {
+      const auto* px = reinterpret_cast<const uint32_t*>(
+          m_cpuBuffers[m_backBufferIdx].data());
+      return px[y * m_headlessWidth + x];
+    }
+  };
+
+  GlideWrapper::WrapperConfig config;
+  config.backend = "software";
+  config.forceNoWindow = true;
+  config.maxFps = 0.0;
+
+  LazyClearProbeBackend backend;
+  REQUIRE(backend.Initialize(config));
+  REQUIRE(backend.AttachWindow(nullptr, 64, 64, true));
+
+  // Clear backbuffer lazily to bright green (0x0000FF00 in ABGR/ARGB).
+  backend.ClearBuffer(0x0000FF00, 0xFF, 0.5f, 0x3);
+  CHECK(backend.HasPendingLazyCpuClear(1));
+  // Raw CPU backbuffer must remain untouched (0) until an LFB operation occurs.
+  CHECK(backend.PeekRawBackPixel(0, 0) == 0u);
+
+  // Perform a partial 1x1 LFB write at (10, 10) with pure white (RGB565 0xFFFF).
+  uint16_t white565 = 0xFFFF;
+  REQUIRE(backend.WriteLFB(1, 10, 10, 1, 1, 2, 0 /* GR_LFB_SRC_FMT_565 */,
+                           &white565));
+  CHECK_FALSE(backend.HasPendingLazyCpuClear(1));
+
+  // Read back both the written pixel and an untouched background pixel.
+  uint16_t writtenPx = 0;
+  uint16_t bgPx = 0;
+  REQUIRE(backend.ReadLFB(1, 10, 10, 1, 1, 2, &writtenPx));
+  REQUIRE(backend.ReadLFB(1, 0, 0, 1, 1, 2, &bgPx));
+  CHECK(writtenPx == 0xFFFF);
+  CHECK(bgPx == 0x07E0);  // Green in RGB565!
+
+  // Subsequent lazy clear followed by ReadLFB materializes cleanly too.
+  backend.ClearBuffer(0x00FF0000, 0xFF, 1.0f, 0x1);
+  CHECK(backend.HasPendingLazyCpuClear(1));
+  uint16_t afterClearPx = 0;
+  REQUIRE(backend.ReadLFB(1, 10, 10, 1, 1, 2, &afterClearPx));
+  CHECK_FALSE(backend.HasPendingLazyCpuClear(1));
+  CHECK(afterClearPx != 0xFFFF);
+
+  backend.DetachWindow();
+  backend.Shutdown();
+}
+
+TEST_CASE("JsonConfigLoader uses key-scoped parsing and respects env overrides",
+          "[Config][JsonConfigLoader]") {
+  const std::string tmpPath = "/tmp/glide_ng_test_config_t15.json";
+
+  // RAII helper to save/restore environment variables touched by this test.
+  struct EnvGuard {
+    std::string name;
+    bool hadValue{false};
+    std::string oldValue;
+    explicit EnvGuard(const char* n) : name(n) {
+      if (const char* v = ::getenv(n)) {
+        hadValue = true;
+        oldValue = v;
+      }
+      ::unsetenv(n);
+    }
+    ~EnvGuard() {
+      if (hadValue) {
+        ::setenv(name.c_str(), oldValue.c_str(), 1);
+      } else {
+        ::unsetenv(name.c_str());
+      }
+    }
+  };
+
+  EnvGuard guardBackend("GLIDE_WRAPPER_BACKEND");
+  EnvGuard guardLegacyBackend("GLIDE_BACKEND");
+  EnvGuard guardForceNoWin("GLIDE_FORCE_NO_WINDOW");
+  EnvGuard guardHeadless("GLIDE_HEADLESS");
+  EnvGuard guardConsole("GLIDE_WRAPPER_LOG_TO_CONSOLE");
+  EnvGuard guardVsync("GLIDE_VSYNC");
+  EnvGuard guardCard("GLIDE_WRAPPER_CARD_MODEL");
+  EnvGuard guardDevice("GLIDE_DEVICE");
+  EnvGuard guardApi("GLIDE_WRAPPER_API_VERSION");
+  EnvGuard guardApiLegacy("GLIDE_VERSION_OVERRIDE");
+  EnvGuard guardLogLevel("GLIDE_WRAPPER_LOG_LEVEL");
+  EnvGuard guardMaxFps("GLIDE_WRAPPER_MAX_FPS");
+  EnvGuard guardMsaa("GLIDE_WRAPPER_MSAA");
+  EnvGuard guardScale("GLIDE_WRAPPER_WINDOW_SCALE");
+
+  SECTION("Unrelated fields containing backend/model substrings do not hijack config") {
+    {
+      std::ofstream out(tmpPath);
+      out << "{\n"
+          << "  \"comment\": \"do not use \\\"vulkan\\\" or \\\"software\\\" or Voodoo5\",\n"
+          << "  \"nested\": { \"backend\": \"vulkan\", \"model\": \"Voodoo5\", \"logToConsole\": false },\n"
+          << "  \"backend\"   :   \"opengl_es\",\n"
+          << "  \"model\"  :  \"Voodoo3\",\n"
+          << "  \"apiVersion\" : \"2.42\",\n"
+          << "  \"logToConsole\"  :  true,\n"
+          << "  \"vsync\":false,\n"
+          << "  \"forceNoWindow\" : true,\n"
+          << "  \"maxFps\" : 120.5,\n"
+          << "  \"msaaSamples\" : 4,\n"
+          << "  \"windowScale\" : 2,\n"
+          << "  \"logLevel\" : 4\n"
+          << "}\n";
+    }
+
+    GlideWrapper::JsonConfigLoader loader;
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load(tmpPath, cfg));
+    CHECK(cfg.backend == "opengl_es");
+    CHECK(cfg.model == GlideWrapper::CardModel::Voodoo3);
+    CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_42);
+    CHECK(cfg.logToConsole == true);
+    CHECK(cfg.vsync == false);
+    CHECK(cfg.forceNoWindow == true);
+    CHECK(cfg.maxFps == 120.5f);
+    CHECK(cfg.msaaSamples == 4u);
+    CHECK(cfg.windowScale == 2u);
+    CHECK(cfg.logLevel == 4u);
+
+    std::remove(tmpPath.c_str());
+  }
+
+  SECTION("Boolean false and cardModel key parse cleanly, env overrides win") {
+    {
+      std::ofstream out(tmpPath);
+      out << "{\n"
+          << "  \"cardModel\": \"VoodooGraphics\",\n"
+          << "  \"backend\": \"gles\",\n"
+          << "  \"logToConsole\": false,\n"
+          << "  \"vsync\": true,\n"
+          << "  \"apiVersion\": 2.40\n"
+          << "}\n";
+    }
+
+    GlideWrapper::JsonConfigLoader loader;
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load(tmpPath, cfg));
+    CHECK(cfg.model == GlideWrapper::CardModel::VoodooGraphics);
+    CHECK(cfg.backend == "opengl_es");
+    CHECK(cfg.logToConsole == false);
+    CHECK(cfg.vsync == true);
+    CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_40);
+
+    // Environment variables must override JSON values.
+    ::setenv("GLIDE_WRAPPER_BACKEND", "sw", 1);
+    ::setenv("GLIDE_WRAPPER_LOG_TO_CONSOLE", "1", 1);
+    ::setenv("GLIDE_VSYNC", "0", 1);
+
+    GlideWrapper::WrapperConfig envCfg;
+    REQUIRE(loader.Load(tmpPath, envCfg));
+    CHECK(envCfg.backend == "software");
+    CHECK(envCfg.logToConsole == true);
+    CHECK(envCfg.vsync == false);
+
+    std::remove(tmpPath.c_str());
+  }
+}
+
+TEST_CASE("VulkanBackend::SelectPresentMode prefers Mailbox on Wayland VSync",
+          "[Vulkan][WSI][PresentMode]") {
+  const std::vector<vk::PresentModeKHR> allModes = {
+      vk::PresentModeKHR::eImmediate, vk::PresentModeKHR::eMailbox,
+      vk::PresentModeKHR::eFifo};
+  const std::vector<vk::PresentModeKHR> fifoOnly = {vk::PresentModeKHR::eFifo};
+  const std::vector<vk::PresentModeKHR> immAndFifo = {
+      vk::PresentModeKHR::eImmediate, vk::PresentModeKHR::eFifo};
+
+  // Wayland + VSync prefers Mailbox when available (tear-free, avoids wp_fifo_v1 stalls)
+  CHECK(GlideWrapper::VulkanBackend::SelectPresentMode(allModes, true, true, false) ==
+        vk::PresentModeKHR::eMailbox);
+  // Wayland + VSync falls back to FIFO when Mailbox is unavailable
+  CHECK(GlideWrapper::VulkanBackend::SelectPresentMode(immAndFifo, true, true, false) ==
+        vk::PresentModeKHR::eFifo);
+  // Explicit GLIDE_VSYNC=fifo forces FIFO even on Wayland
+  CHECK(GlideWrapper::VulkanBackend::SelectPresentMode(allModes, true, true, true) ==
+        vk::PresentModeKHR::eFifo);
+  // X11 + VSync retains FIFO
+  CHECK(GlideWrapper::VulkanBackend::SelectPresentMode(allModes, true, false, false) ==
+        vk::PresentModeKHR::eFifo);
+  // VSync disabled prefers Mailbox -> Immediate -> FIFO
+  CHECK(GlideWrapper::VulkanBackend::SelectPresentMode(allModes, false, false, false) ==
+        vk::PresentModeKHR::eMailbox);
+  CHECK(GlideWrapper::VulkanBackend::SelectPresentMode(immAndFifo, false, false, false) ==
+        vk::PresentModeKHR::eImmediate);
+  CHECK(GlideWrapper::VulkanBackend::SelectPresentMode(fifoOnly, false, false, false) ==
+        vk::PresentModeKHR::eFifo);
+}
+
+TEST_CASE("NativeSurfaceHost::ComputePresentRect preserves aspect ratio accurately",
+          "[WSI][NativeSurfaceHost][AspectRatio]") {
+  using GlideWrapper::NativeSurfaceHost;
+  using GlideWrapper::PresentRect;
+
+  // 4:3 guest (640x480) inside 16:9 host (1920x1080) -> pillarboxed
+  CHECK(NativeSurfaceHost::ComputePresentRect(640, 480, 1920, 1080, true) ==
+        PresentRect{240, 0, 1440, 1080});
+
+  // Exact aspect-ratio match (640x480 in 800x600)
+  CHECK(NativeSurfaceHost::ComputePresentRect(640, 480, 800, 600, true) ==
+        PresentRect{0, 0, 800, 600});
+
+  // Wider guest (640x400, 16:10) inside 4:3 host (640x480) -> letterboxed
+  CHECK(NativeSurfaceHost::ComputePresentRect(640, 400, 640, 480, true) ==
+        PresentRect{0, 40, 640, 400});
+
+  // 4:3 guest (800x600) inside 1440p host (2560x1440) -> pillarboxed
+  CHECK(NativeSurfaceHost::ComputePresentRect(800, 600, 2560, 1440, true) ==
+        PresentRect{320, 0, 1920, 1440});
+
+  // 4:3 guest (640x480) inside portrait host (1080x1920) -> letterboxed
+  CHECK(NativeSurfaceHost::ComputePresentRect(640, 480, 1080, 1920, true) ==
+        PresentRect{0, 555, 1080, 810});
+
+  // Stretch mode disables aspect-ratio preservation
+  CHECK(NativeSurfaceHost::ComputePresentRect(640, 480, 1920, 1080, false) ==
+        PresentRect{0, 0, 1920, 1080});
+
+  // Zero-size safety guards
+  CHECK(NativeSurfaceHost::ComputePresentRect(640, 480, 0, 1080, true) ==
+        PresentRect{0, 0, 0, 0});
+  CHECK(NativeSurfaceHost::ComputePresentRect(640, 480, 1920, 0, true) ==
+        PresentRect{0, 0, 0, 0});
+  CHECK(NativeSurfaceHost::ComputePresentRect(0, 480, 1920, 1080, true) ==
+        PresentRect{0, 0, 1920, 1080});
+  CHECK(NativeSurfaceHost::ComputePresentRect(640, 0, 1920, 1080, true) ==
+        PresentRect{0, 0, 1920, 1080});
+}
+
+TEST_CASE("NativeSurfaceHost headless lifecycle and idempotent detach",
+          "[WSI][NativeSurfaceHost][Headless]") {
+  using GlideWrapper::NativeSurfaceHost;
+
+  NativeSurfaceHost host;
+  CHECK(!host.IsAttached());
+  CHECK(host.GetMode() == NativeSurfaceHost::Mode::Detached);
+  CHECK(!host.WasQuitRequested());
+  CHECK(!host.IsWaylandSurface());
+  CHECK(!host.IsX11Surface());
+  CHECK(host.GetSDLWindow() == nullptr);
+  CHECK(host.GetX11Display() == nullptr);
+  CHECK(host.GetX11Window() == 0UL);
+  CHECK(host.GetWaylandDisplay() == nullptr);
+  CHECK(host.GetWaylandSurface() == nullptr);
+  CHECK(host.GetWaylandScale() == 1);
+
+  uint32_t pw = 999, ph = 999;
+  CHECK(!host.SyncBounds(pw, ph));
+  CHECK(pw == 0);
+  CHECK(ph == 0);
+  host.PollEvents();  // Safe no-op when detached
+
+  // Attach headless (zero OS/SDL calls)
+  REQUIRE(host.Attach(nullptr, 640, 480, false, /*forceNoWindow=*/true,
+                      "Headless Test"));
+  CHECK(host.IsAttached());
+  CHECK(host.GetMode() == NativeSurfaceHost::Mode::Headless);
+  CHECK(!host.IsWaylandSurface());
+  CHECK(!host.IsX11Surface());
+  CHECK(host.GetSDLWindow() == nullptr);
+
+  uint32_t gw = 0, gh = 0;
+  host.GetGuestSize(gw, gh);
+  CHECK(gw == 640);
+  CHECK(gh == 480);
+
+  host.GetDrawableSize(pw, ph);
+  CHECK(pw == 640);
+  CHECK(ph == 480);
+  CHECK(!host.SyncBounds(pw, ph));
+  CHECK(pw == 640);
+  CHECK(ph == 480);
+  host.PollEvents();
+  CHECK(!host.WasQuitRequested());
+
+  // Re-attaching with a foreign handle while forceNoWindow=true stays Headless
+  void* fakeHandle = reinterpret_cast<void*>(static_cast<uintptr_t>(0x12345));
+  REQUIRE(host.Attach(fakeHandle, 800, 600, true, /*forceNoWindow=*/true,
+                      "Headless Foreign"));
+  CHECK(host.GetMode() == NativeSurfaceHost::Mode::Headless);
+  host.GetDrawableSize(pw, ph);
+  CHECK(pw == 800);
+  CHECK(ph == 600);
+
+  // Detach resets cleanly and is idempotent
+  host.Detach();
+  CHECK(!host.IsAttached());
+  CHECK(host.GetMode() == NativeSurfaceHost::Mode::Detached);
+  host.Detach();
+  CHECK(!host.IsAttached());
+}
+
+TEST_CASE("NativeSurfaceHost StandaloneSDL2 handles scale, resize, and SDL_QUIT",
+          "[WSI][NativeSurfaceHost][Standalone]") {
+  using GlideWrapper::NativeSurfaceHost;
+
+  struct SdlDriverGuard {
+    bool hadPrev = false;
+    std::string prev;
+    SdlDriverGuard() {
+      if (const char* v = std::getenv("SDL_VIDEODRIVER")) {
+        hadPrev = true;
+        prev = v;
+      }
+      ::setenv("SDL_VIDEODRIVER", "dummy", 1);
+    }
+    ~SdlDriverGuard() {
+      if (hadPrev) {
+        ::setenv("SDL_VIDEODRIVER", prev.c_str(), 1);
+      } else {
+        ::unsetenv("SDL_VIDEODRIVER");
+      }
+    }
+  } driverGuard;
+
+  NativeSurfaceHost host;
+  REQUIRE(host.Attach(nullptr, 320, 240, false, /*forceNoWindow=*/false,
+                      "Standalone Unit Test", 0, /*windowScale=*/2));
+  CHECK(host.IsAttached());
+  CHECK(host.GetMode() == NativeSurfaceHost::Mode::StandaloneSDL2);
+  CHECK(host.GetSDLWindow() != nullptr);
+  CHECK(!host.IsWaylandSurface());
+  CHECK(!host.IsX11Surface());
+  CHECK(!host.WasQuitRequested());
+
+  // Verify SDL_HINT_NO_SIGNAL_HANDLERS was set so Ctrl+C works in demos.
+  const char* noSigHint = SDL_GetHint(SDL_HINT_NO_SIGNAL_HANDLERS);
+  REQUIRE(noSigHint != nullptr);
+  CHECK(std::string(noSigHint) == "1");
+
+  uint32_t pw = 0, ph = 0;
+  host.GetDrawableSize(pw, ph);
+  CHECK(pw == 640);
+  CHECK(ph == 480);
+  CHECK(!host.SyncBounds(pw, ph));
+
+  // Simulate user clicking window close / SDL_QUIT.
+  SDL_Event quitEv{};
+  quitEv.type = SDL_QUIT;
+  REQUIRE(SDL_PushEvent(&quitEv) == 1);
+  host.PollEvents();
+  CHECK(host.WasQuitRequested());
+
+  host.Detach();
+  CHECK(!host.IsAttached());
+  CHECK(host.GetSDLWindow() == nullptr);
+}
+
+TEST_CASE("NativeSurfaceHost rejects invalid X11 Window ID gracefully via error trap",
+          "[WSI][NativeSurfaceHost][X11]") {
+  using GlideWrapper::NativeSurfaceHost;
+
+  // Invalid 32-bit X11 XID must fail cleanly without Xlib aborting the process.
+  NativeSurfaceHost host;
+  void* badX11Win = reinterpret_cast<void*>(static_cast<uintptr_t>(0x0000DEADUL));
+  CHECK(!host.Attach(badX11Win, 640, 480, true, /*forceNoWindow=*/false,
+                     "Invalid X11 Test"));
+  CHECK(!host.IsAttached());
+  CHECK(host.GetMode() == NativeSurfaceHost::Mode::Detached);
+}
+
+TEST_CASE("DOSBox setConfig('SDL2') handshake exported by libglide2x and libglide3x",
+          "[WSI][DOSBox][setConfig]") {
+#ifdef __linux__
+  using SetConfigFn = void (*)(FxU32, void*);
+
+  for (bool glide3 : {false, true}) {
+    void* handle = glide3 ? OpenGlide3Handle() : OpenGlide2Handle();
+    REQUIRE(handle != nullptr);
+
+    auto setConfigFn = reinterpret_cast<SetConfigFn>(::dlsym(handle, "setConfig"));
+    auto setConfigResFn = ::dlsym(handle, "setConfigRes");
+    REQUIRE(setConfigFn != nullptr);
+    REQUIRE(setConfigResFn != nullptr);
+
+    uint32_t magic = 0x58326724;  // '$g2X' (SVN DOSBox initial sentinel)
+    setConfigFn(1, &magic);
+    CHECK(magic == 0x324c4453U);  // 'SDL2'
+
+    // Null magic pointer must be safe.
+    setConfigFn(0, nullptr);
+
+    ::dlclose(handle);
+  }
+#endif
+}
+
+TEST_CASE("GPU backends inherit GlideStateTracker without SoftwareBackendBase or eager CPU LFB buffers",
+          "[Architecture][GlideStateTracker]") {
+  static_assert(std::is_base_of_v<GlideWrapper::GlideStateTracker,
+                                  GlideWrapper::VulkanBackend>);
+  static_assert(std::is_base_of_v<GlideWrapper::GlideStateTracker,
+                                  GlideWrapper::OpenGLESBackend>);
+  static_assert(std::is_base_of_v<GlideWrapper::GlideStateTracker,
+                                  GlideWrapper::SoftwareBackend>);
+  static_assert(!std::is_base_of_v<GlideWrapper::SoftwareBackendBase,
+                                   GlideWrapper::VulkanBackend>);
+  static_assert(!std::is_base_of_v<GlideWrapper::SoftwareBackendBase,
+                                   GlideWrapper::OpenGLESBackend>);
+  static_assert(std::is_base_of_v<GlideWrapper::SoftwareBackendBase,
+                                  GlideWrapper::SoftwareBackend>);
+
+  SECTION("VulkanBackend allocates zero CPU LFB staging until LFB is touched") {
+    GlideWrapper::WrapperConfig config;
+    config.backend = "vulkan";
+    config.forceNoWindow = true;
+    config.maxFps = 0.0;
+
+    GlideWrapper::VulkanBackend backend;
+    GlideWrapper::IGraphicsBackend* basePtr = &backend;
+    CHECK(dynamic_cast<GlideWrapper::GlideStateTracker*>(basePtr) != nullptr);
+    CHECK(dynamic_cast<GlideWrapper::SoftwareBackendBase*>(basePtr) == nullptr);
+
+    if (backend.Initialize(config) && backend.AttachWindow(nullptr, 64, 64, true)) {
+      CHECK_FALSE(backend.HasAllocatedCpuLfbStaging());
+      backend.ClearBuffer(0x0000FF00, 0xFF, 1.0f, 0x3);
+      REQUIRE(backend.SwapBuffers());
+      // Pure 3D clear + swap must still keep CPU LFB staging unallocated.
+      CHECK_FALSE(backend.HasAllocatedCpuLfbStaging());
+
+      // First LFB write lazily allocates and survives GPU flush + readback.
+      uint16_t white565 = 0xFFFF;
+      REQUIRE(backend.WriteLFB(1, 4, 4, 1, 1, 2, 0 /* 565 */, &white565));
+      CHECK(backend.HasAllocatedCpuLfbStaging());
+
+      uint16_t readPx = 0;
+      REQUIRE(backend.ReadLFB(1, 4, 4, 1, 1, 2, &readPx));
+      CHECK(readPx == 0xFFFF);
+
+      backend.DetachWindow();
+      CHECK_FALSE(backend.HasAllocatedCpuLfbStaging());
+      backend.Shutdown();
+    }
+  }
+
+  SECTION("OpenGLESBackend allocates zero CPU LFB staging until LFB is touched") {
+    GlideWrapper::WrapperConfig config;
+    config.backend = "opengl_es";
+    config.forceNoWindow = true;
+    config.maxFps = 0.0;
+
+    GlideWrapper::OpenGLESBackend backend;
+    GlideWrapper::IGraphicsBackend* basePtr = &backend;
+    CHECK(dynamic_cast<GlideWrapper::GlideStateTracker*>(basePtr) != nullptr);
+    CHECK(dynamic_cast<GlideWrapper::SoftwareBackendBase*>(basePtr) == nullptr);
+
+    if (backend.Initialize(config) && backend.AttachWindow(nullptr, 64, 64, true)) {
+      CHECK_FALSE(backend.HasAllocatedCpuLfbStaging());
+      backend.ClearBuffer(0x0000FF00, 0xFF, 1.0f, 0x3);
+      REQUIRE(backend.SwapBuffers());
+      // Pure 3D clear + swap must still keep CPU LFB staging unallocated.
+      CHECK_FALSE(backend.HasAllocatedCpuLfbStaging());
+
+      // First LFB write lazily allocates and survives GPU flush + readback.
+      uint16_t white565 = 0xFFFF;
+      REQUIRE(backend.WriteLFB(1, 4, 4, 1, 1, 2, 0 /* 565 */, &white565));
+      CHECK(backend.HasAllocatedCpuLfbStaging());
+
+      uint16_t readPx = 0;
+      REQUIRE(backend.ReadLFB(1, 4, 4, 1, 1, 2, &readPx));
+      CHECK(readPx == 0xFFFF);
+
+      backend.DetachWindow();
+      CHECK_FALSE(backend.HasAllocatedCpuLfbStaging());
+      backend.Shutdown();
+    }
+  }
+}
+
+TEST_CASE("LfbManager maps GR_LFBWRITEMODE_888/8888/DEPTH/ZA16 strides and colors accurately",
+          "[Glide3][LFB][WriteModes]") {
+#ifdef __linux__
+  void* handle = OpenGlide3Handle();
+  REQUIRE(handle != nullptr);
+
+  auto glideInit = (void(FX_CALL*)())::dlsym(handle, "grGlideInit");
+  auto glideShutdown = (void(FX_CALL*)())::dlsym(handle, "grGlideShutdown");
+  auto sstSelect = (void(FX_CALL*)(int))::dlsym(handle, "grSstSelect");
+  auto winOpen = (FxU32(FX_CALL*)(FxU32, GrScreenResolution_t,
+                                  GrScreenRefresh_t, GrColorFormat_t,
+                                  GrOriginLocation_t, int, int))::dlsym(handle, "grSstWinOpen");
+  auto winClose = (FxBool(FX_CALL*)(FxU32))::dlsym(handle, "grSstWinClose");
+  auto bufferClear = (void(FX_CALL*)(GrColor_t, GrAlpha_t, FxU32))::dlsym(handle, "grBufferClear");
+  auto lfbLock = (FxBool(FX_CALL*)(GrLock_t, GrBuffer_t, GrLfbWriteMode_t,
+                                   GrOriginLocation_t, FxBool, GrLfbInfo_t*))::dlsym(handle, "grLfbLock");
+  auto lfbUnlock = (FxBool(FX_CALL*)(GrLock_t, GrBuffer_t))::dlsym(handle, "grLfbUnlock");
+
+  REQUIRE(glideInit != nullptr);
+  REQUIRE(glideShutdown != nullptr);
+  REQUIRE(sstSelect != nullptr);
+  REQUIRE(winOpen != nullptr);
+  REQUIRE(winClose != nullptr);
+  REQUIRE(bufferClear != nullptr);
+  REQUIRE(lfbLock != nullptr);
+  REQUIRE(lfbUnlock != nullptr);
+
+  glideInit();
+  sstSelect(0);
+  // Open with GR_COLORFORMAT_ABGR (same as 3dfx SDK test12) to ensure LFB
+  // 888/8888 pixel data still unpacks as 0x00RRGGBB / 0xAARRGGBB.
+  FxU32 ctx = winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                      GR_COLORFORMAT_ABGR, GR_ORIGIN_UPPER_LEFT, 2, 1);
+  REQUIRE(ctx != 0);
+
+  for (GrLfbWriteMode_t mode : {GR_LFBWRITEMODE_888, GR_LFBWRITEMODE_8888}) {
+    bufferClear(0, 0, 0);
+
+    GrLfbInfo_t info{};
+    info.size = sizeof(info);
+    REQUIRE(lfbLock(GR_LFB_WRITE_ONLY, GR_BUFFER_BACKBUFFER, mode,
+                    GR_ORIGIN_UPPER_LEFT, FXFALSE, &info) == FXTRUE);
+    REQUIRE(info.lfbPtr != nullptr);
+    REQUIRE(info.strideInBytes == 640 * 4);
+
+    auto* row = reinterpret_cast<uint32_t*>(
+        static_cast<uint8_t*>(info.lfbPtr) + 10 * info.strideInBytes);
+    row[10] = 0xFFFF0000;  // Pure Red (ARGB)
+    row[11] = 0xFF00FF00;  // Pure Green (ARGB)
+    row[12] = 0xFF0000FF;  // Pure Blue (ARGB)
+    REQUIRE(lfbUnlock(GR_LFB_WRITE_ONLY, GR_BUFFER_BACKBUFFER) == FXTRUE);
+
+    GrLfbInfo_t readInfo{};
+    readInfo.size = sizeof(readInfo);
+    REQUIRE(lfbLock(GR_LFB_READ_ONLY, GR_BUFFER_BACKBUFFER, GR_LFBWRITEMODE_ANY,
+                    GR_ORIGIN_UPPER_LEFT, FXFALSE, &readInfo) == FXTRUE);
+    REQUIRE(readInfo.strideInBytes == 640 * 2);
+    const auto* readRow = reinterpret_cast<const uint16_t*>(
+        static_cast<const uint8_t*>(readInfo.lfbPtr) + 10 * readInfo.strideInBytes);
+    CHECK(readRow[10] == 0xF800);  // Red in RGB565
+    CHECK(readRow[11] == 0x07E0);  // Green in RGB565
+    CHECK(readRow[12] == 0x001F);  // Blue in RGB565
+    REQUIRE(lfbUnlock(GR_LFB_READ_ONLY, GR_BUFFER_BACKBUFFER) == FXTRUE);
+  }
+
+  // 565_DEPTH (0xc) uses 4 BPP with RGB565 in the low 16 bits.
+  {
+    bufferClear(0, 0, 0);
+    GrLfbInfo_t info{};
+    info.size = sizeof(info);
+    REQUIRE(lfbLock(GR_LFB_WRITE_ONLY, GR_BUFFER_BACKBUFFER,
+                    GR_LFBWRITEMODE_565_DEPTH, GR_ORIGIN_UPPER_LEFT, FXFALSE,
+                    &info) == FXTRUE);
+    REQUIRE(info.strideInBytes == 640 * 4);
+    auto* row = reinterpret_cast<uint32_t*>(
+        static_cast<uint8_t*>(info.lfbPtr) + 12 * info.strideInBytes);
+    row[15] = 0x1234F800;  // Depth 0x1234 + Red RGB565
+    REQUIRE(lfbUnlock(GR_LFB_WRITE_ONLY, GR_BUFFER_BACKBUFFER) == FXTRUE);
+
+    GrLfbInfo_t readInfo{};
+    readInfo.size = sizeof(readInfo);
+    REQUIRE(lfbLock(GR_LFB_READ_ONLY, GR_BUFFER_BACKBUFFER, GR_LFBWRITEMODE_ANY,
+                    GR_ORIGIN_UPPER_LEFT, FXFALSE, &readInfo) == FXTRUE);
+    const auto* readRow = reinterpret_cast<const uint16_t*>(
+        static_cast<const uint8_t*>(readInfo.lfbPtr) + 12 * readInfo.strideInBytes);
+    CHECK(readRow[15] == 0xF800);
+    REQUIRE(lfbUnlock(GR_LFB_READ_ONLY, GR_BUFFER_BACKBUFFER) == FXTRUE);
+  }
+
+  // ZA16 (0xf) uses 2 BPP.
+  {
+    GrLfbInfo_t info{};
+    info.size = sizeof(info);
+    REQUIRE(lfbLock(GR_LFB_WRITE_ONLY, GR_BUFFER_BACKBUFFER,
+                    GR_LFBWRITEMODE_ZA16, GR_ORIGIN_UPPER_LEFT, FXFALSE,
+                    &info) == FXTRUE);
+    CHECK(info.strideInBytes == 640 * 2);
+    REQUIRE(lfbUnlock(GR_LFB_WRITE_ONLY, GR_BUFFER_BACKBUFFER) == FXTRUE);
+  }
+
+  // Reserved write modes must be rejected cleanly.
+  for (GrLfbWriteMode_t reserved :
+       {GR_LFBWRITEMODE_RESERVED1, GR_LFBWRITEMODE_RESERVED3,
+        GR_LFBWRITEMODE_RESERVED4}) {
+    GrLfbInfo_t info{};
+    info.size = sizeof(info);
+    CHECK(lfbLock(GR_LFB_WRITE_ONLY, GR_BUFFER_BACKBUFFER, reserved,
+                  GR_ORIGIN_UPPER_LEFT, FXFALSE, &info) == FXFALSE);
+  }
+
+  winClose(ctx);
+  glideShutdown();
+  ::dlclose(handle);
 #endif
 }

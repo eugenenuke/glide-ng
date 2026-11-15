@@ -2935,7 +2935,7 @@ TEST_CASE("Glide Per-TMU Texture Chromakey & State Serialization",
     texChromaRange(1, 0x00778899, 0x00AABBCC, 0);
 
     // Verify that backend immediately received them
-    auto* backend = static_cast<GlideWrapper::SoftwareBackendBase*>(
+    auto* backend = dynamic_cast<GlideWrapper::GlideStateTracker*>(
         GlideWrapper::BackendManager::GetInstance().GetBackend());
     REQUIRE(backend != nullptr);
     CHECK(backend->GetTexChromaMode(0) == 1);
@@ -3046,7 +3046,7 @@ TEST_CASE("Glide Per-TMU Texture Chromakey & State Serialization",
     texChromaRange(0, 0x00AABBCC, 0x00DDEEFF, 1);
     texChromaMode(1, 0);
 
-    auto* backend = static_cast<GlideWrapper::SoftwareBackendBase*>(
+    auto* backend = dynamic_cast<GlideWrapper::GlideStateTracker*>(
         GlideWrapper::BackendManager::GetInstance().GetBackend());
     REQUIRE(backend != nullptr);
     CHECK(backend->GetTexChromaMode(0) == 1);
@@ -6506,7 +6506,7 @@ TEST_CASE(
   REQUIRE(openOk == FXTRUE);
 
   auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend();
-  auto* sw_b = dynamic_cast<GlideWrapper::SoftwareBackendBase*>(b);
+  auto* sw_b = dynamic_cast<GlideWrapper::GlideStateTracker*>(b);
   REQUIRE(sw_b != nullptr);
 
   // 1. Set distinct LOD biases and verify backend receives them

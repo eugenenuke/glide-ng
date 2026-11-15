@@ -1,12 +1,192 @@
 #include "JsonConfigLoader.h"
 #include "Logger.h"
-#include <fstream>
-#include <sstream>
-#include <cstdlib>
-#include <iostream>
 #include <algorithm>
+#include <cctype>
+#include <cstdlib>
+#include <fstream>
+#include <iostream>
+#include <sstream>
 
 namespace GlideWrapper {
+
+namespace {
+
+bool IsJsonWhitespace(char c) {
+    return c == ' ' || c == '\t' || c == '\r' || c == '\n';
+}
+
+bool IsJsonValueDelimiter(char c) {
+    return IsJsonWhitespace(c) || c == ',' || c == '}' || c == ']';
+}
+
+// Parses a JSON string literal starting at `pos` (pointing at opening '"').
+// Advances `pos` to one past the closing '"' and returns true on success.
+bool ParseJsonStringLiteral(const std::string& content, size_t& pos, std::string& outStr) {
+    if (pos >= content.size() || content[pos] != '"') return false;
+    ++pos;
+    outStr.clear();
+    while (pos < content.size()) {
+        char c = content[pos++];
+        if (c == '\\') {
+            if (pos >= content.size()) return false;
+            char esc = content[pos++];
+            switch (esc) {
+                case '"':  outStr += '"'; break;
+                case '\\': outStr += '\\'; break;
+                case '/':  outStr += '/'; break;
+                case 'b':  outStr += '\b'; break;
+                case 'f':  outStr += '\f'; break;
+                case 'n':  outStr += '\n'; break;
+                case 'r':  outStr += '\r'; break;
+                case 't':  outStr += '\t'; break;
+                default:   outStr += esc; break;
+            }
+        } else if (c == '"') {
+            return true;
+        } else {
+            outStr += c;
+        }
+    }
+    return false;
+}
+
+// Finds the value start offset for a top-level JSON object key (depth == 1).
+// Skips string values and nested objects/arrays so values or nested keys cannot
+// spoof top-level configuration fields. If a key appears more than once, the
+// last occurrence wins.
+bool FindJsonKeyValue(const std::string& content, const std::string& targetKey, size_t& outValStart) {
+    int depth = 0;
+    bool found = false;
+    size_t i = 0;
+    const size_t n = content.size();
+
+    while (i < n) {
+        char c = content[i];
+        if (c == '{' || c == '[') {
+            ++depth;
+            ++i;
+            continue;
+        }
+        if (c == '}' || c == ']') {
+            --depth;
+            ++i;
+            continue;
+        }
+        if (c == '"') {
+            std::string str;
+            if (!ParseJsonStringLiteral(content, i, str)) {
+                return found;
+            }
+            // Only treat string literals at top-level object depth followed by ':' as keys.
+            if (depth == 1) {
+                size_t j = i;
+                while (j < n && IsJsonWhitespace(content[j])) ++j;
+                if (j < n && content[j] == ':') {
+                    ++j;
+                    while (j < n && IsJsonWhitespace(content[j])) ++j;
+                    if (str == targetKey && j < n) {
+                        outValStart = j;
+                        found = true;
+                    }
+                    i = j;
+                }
+            }
+            continue;
+        }
+        ++i;
+    }
+    return found;
+}
+
+bool ExtractJsonString(const std::string& content, const std::string& key, std::string& outVal) {
+    size_t pos = 0;
+    if (!FindJsonKeyValue(content, key, pos)) return false;
+    return ParseJsonStringLiteral(content, pos, outVal);
+}
+
+bool ExtractJsonStringOrNumber(const std::string& content, const std::string& key, std::string& outVal) {
+    size_t pos = 0;
+    if (!FindJsonKeyValue(content, key, pos)) return false;
+    if (content[pos] == '"') {
+        return ParseJsonStringLiteral(content, pos, outVal);
+    }
+    size_t start = pos;
+    while (pos < content.size() && !IsJsonValueDelimiter(content[pos])) {
+        ++pos;
+    }
+    if (pos == start) return false;
+    outVal = content.substr(start, pos - start);
+    return true;
+}
+
+bool ExtractJsonBool(const std::string& content, const std::string& key, bool& outVal) {
+    size_t pos = 0;
+    if (!FindJsonKeyValue(content, key, pos)) return false;
+    if (content.compare(pos, 4, "true") == 0 &&
+        (pos + 4 == content.size() || IsJsonValueDelimiter(content[pos + 4]))) {
+        outVal = true;
+        return true;
+    }
+    if (content.compare(pos, 5, "false") == 0 &&
+        (pos + 5 == content.size() || IsJsonValueDelimiter(content[pos + 5]))) {
+        outVal = false;
+        return true;
+    }
+    return false;
+}
+
+bool ExtractJsonDouble(const std::string& content, const std::string& key, double& outVal) {
+    size_t pos = 0;
+    if (!FindJsonKeyValue(content, key, pos)) return false;
+    const char* startPtr = content.c_str() + pos;
+    char* endPtr = nullptr;
+    double parsed = std::strtod(startPtr, &endPtr);
+    if (endPtr == startPtr) return false;
+    if (*endPtr != '\0' && !IsJsonValueDelimiter(*endPtr)) return false;
+    outVal = parsed;
+    return true;
+}
+
+bool ExtractJsonInt(const std::string& content, const std::string& key, int& outVal) {
+    size_t pos = 0;
+    if (!FindJsonKeyValue(content, key, pos)) return false;
+    const char* startPtr = content.c_str() + pos;
+    char* endPtr = nullptr;
+    long parsed = std::strtol(startPtr, &endPtr, 10);
+    if (endPtr == startPtr) return false;
+    if (*endPtr != '\0' && !IsJsonValueDelimiter(*endPtr)) return false;
+    outVal = static_cast<int>(parsed);
+    return true;
+}
+
+bool ParseCardModelString(const std::string& rawStr, CardModel& outModel) {
+    std::string m = rawStr;
+    std::transform(m.begin(), m.end(), m.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::toupper(ch)); });
+    if (m == "SST1" || m == "VOODOO1" || m == "VOODOOGRAPHICS") {
+        outModel = CardModel::VoodooGraphics;
+        return true;
+    }
+    if (m == "SST96" || m == "VOODOORUSH" || m == "VOODOO_RUSH" || m == "RUSH") {
+        outModel = CardModel::VoodooRush;
+        return true;
+    }
+    if (m == "CVG" || m == "VOODOO2") {
+        outModel = CardModel::Voodoo2;
+        return true;
+    }
+    if (m == "H3" || m == "VOODOO3") {
+        outModel = CardModel::Voodoo3;
+        return true;
+    }
+    if (m == "H5" || m == "VOODOO5") {
+        outModel = CardModel::Voodoo5;
+        return true;
+    }
+    return false;
+}
+
+}  // namespace
 
 bool JsonConfigLoader::Load(const std::string& configFilePath, WrapperConfig& outConfig) {
     // Reset to baseline defaults to prevent state leakage across dynamic library reloads
@@ -20,102 +200,67 @@ bool JsonConfigLoader::Load(const std::string& configFilePath, WrapperConfig& ou
         std::stringstream ss;
         ss << file.rdbuf();
         std::string content = ss.str();
-        
-        // Simple heuristic JSON parsing for our foundation layer
-        if (content.find("\"VoodooGraphics\"") != std::string::npos) outConfig.model = CardModel::VoodooGraphics;
-        if (content.find("\"VoodooRush\"") != std::string::npos)     outConfig.model = CardModel::VoodooRush;
-        if (content.find("\"Voodoo2\"") != std::string::npos)        outConfig.model = CardModel::Voodoo2;
-        if (content.find("\"Voodoo3\"") != std::string::npos)        outConfig.model = CardModel::Voodoo3;
-        if (content.find("\"Voodoo5\"") != std::string::npos)        outConfig.model = CardModel::Voodoo5;
-        
+
+        // Key-scoped JSON parsing (immune to unrelated fields containing substrings)
+        std::string modelStr;
+        if (ExtractJsonString(content, "cardModel", modelStr) ||
+            ExtractJsonString(content, "model", modelStr)) {
+            ParseCardModelString(modelStr, outConfig.model);
+        }
+
         // Parse API Version (e.g. "apiVersion": "2.43" or "apiVersion": 2.43)
-        hasApiVerInJson = false;
-        size_t apiVerPos = content.find("\"apiVersion\"");
-        if (apiVerPos != std::string::npos) {
-            size_t colonPos = content.find(":", apiVerPos);
-            if (colonPos != std::string::npos) {
-                size_t valPos = content.find_first_of("\"0123456789", colonPos);
-                if (valPos != std::string::npos) {
-                    std::string valStr;
-                    size_t idx = valPos;
-                    if (content[idx] == '\"') {
-                        idx++;
-                        while (idx < content.length() && content[idx] != '\"') {
-                            valStr += content[idx];
-                            idx++;
-                        }
-                    } else {
-                        while (idx < content.length() && content[idx] != ',' && content[idx] != '}' && content[idx] != '\n' && content[idx] != '\r' && content[idx] != ' ') {
-                            valStr += content[idx];
-                            idx++;
-                        }
-                    }
-                    
-                    if (valStr == "2.1") { outConfig.apiVersion = ApiVersion::GLIDE_2_1; hasApiVerInJson = true; }
-                    else if (valStr == "2.40" || valStr == "2.4") { outConfig.apiVersion = ApiVersion::GLIDE_2_40; hasApiVerInJson = true; }
-                    else if (valStr == "2.42") { outConfig.apiVersion = ApiVersion::GLIDE_2_42; hasApiVerInJson = true; }
-                    else if (valStr == "2.43") { outConfig.apiVersion = ApiVersion::GLIDE_2_43; hasApiVerInJson = true; }
-                    else if (valStr == "2.61") { outConfig.apiVersion = ApiVersion::GLIDE_2_61; hasApiVerInJson = true; }
-                }
+        std::string apiVerStr;
+        if (ExtractJsonStringOrNumber(content, "apiVersion", apiVerStr)) {
+            if (apiVerStr == "2.1") { outConfig.apiVersion = ApiVersion::GLIDE_2_1; hasApiVerInJson = true; }
+            else if (apiVerStr == "2.40" || apiVerStr == "2.4") { outConfig.apiVersion = ApiVersion::GLIDE_2_40; hasApiVerInJson = true; }
+            else if (apiVerStr == "2.42") { outConfig.apiVersion = ApiVersion::GLIDE_2_42; hasApiVerInJson = true; }
+            else if (apiVerStr == "2.43") { outConfig.apiVersion = ApiVersion::GLIDE_2_43; hasApiVerInJson = true; }
+            else if (apiVerStr == "2.61") { outConfig.apiVersion = ApiVersion::GLIDE_2_61; hasApiVerInJson = true; }
+        }
+
+        std::string backendStr;
+        if (ExtractJsonString(content, "backend", backendStr)) {
+            std::string bLower = backendStr;
+            std::transform(bLower.begin(), bLower.end(), bLower.begin(),
+                           [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+            if (bLower == "opengl_es" || bLower == "gles" || bLower == "goes") {
+                outConfig.backend = "opengl_es";
+            } else if (bLower == "vulkan" || bLower == "vk") {
+                outConfig.backend = "vulkan";
+            } else if (bLower == "software" || bLower == "sw") {
+                outConfig.backend = "software";
+            } else {
+                outConfig.backend = backendStr;
             }
         }
 
-        if (content.find("\"opengl_es\"") != std::string::npos ||
-            content.find("\"gles\"") != std::string::npos ||
-            content.find("\"goes\"") != std::string::npos) {
-            outConfig.backend = "opengl_es";
+        bool boolVal = false;
+        if (ExtractJsonBool(content, "logToConsole", boolVal)) {
+            outConfig.logToConsole = boolVal;
         }
-        if (content.find("\"vulkan\"") != std::string::npos ||
-            content.find("\"vk\"") != std::string::npos) {
-            outConfig.backend = "vulkan";
+        if (ExtractJsonBool(content, "vsync", boolVal)) {
+            outConfig.vsync = boolVal;
         }
-        if (content.find("\"software\"") != std::string::npos ||
-            content.find("\"sw\"") != std::string::npos) {
-            outConfig.backend = "software";
-        }
-        if (content.find("\"logToConsole\"") != std::string::npos) {
-            outConfig.logToConsole = (content.find("\"logToConsole\": true") != std::string::npos ||
-                                      content.find("\"logToConsole\":true") != std::string::npos);
-        }
-        
-        // Parse custom frame rate ceiling (e.g. "maxFps": 60 or 0 for uncapped)
-        size_t maxFpsPos = content.find("\"maxFps\"");
-        if (maxFpsPos != std::string::npos) {
-            size_t colonPos = content.find(":", maxFpsPos);
-            if (colonPos != std::string::npos) {
-                size_t valPos = content.find_first_of("-0123456789.", colonPos);
-                if (valPos != std::string::npos) {
-                    outConfig.maxFps = std::atof(content.c_str() + valPos);
-                }
-            }
-        }
-        
-        // Parse custom MSAA sample count (e.g. "msaaSamples": 4)
-        size_t msaaPos = content.find("\"msaaSamples\"");
-        if (msaaPos != std::string::npos) {
-            size_t colonPos = content.find(":", msaaPos);
-            if (colonPos != std::string::npos) {
-                size_t valPos = content.find_first_of("-0123456789", colonPos);
-                if (valPos != std::string::npos) {
-                    outConfig.msaaSamples = std::atoi(content.c_str() + valPos);
-                }
-            }
-        }
-        
-        // Parse custom window scale (e.g. "windowScale": 2)
-        size_t scalePos = content.find("\"windowScale\"");
-        if (scalePos != std::string::npos) {
-            size_t colonPos = content.find(":", scalePos);
-            if (colonPos != std::string::npos) {
-                size_t valPos = content.find_first_of("-0123456789", colonPos);
-                if (valPos != std::string::npos) {
-                    outConfig.windowScale = std::atoi(content.c_str() + valPos);
-                }
-            }
+        if (ExtractJsonBool(content, "forceNoWindow", boolVal)) {
+            outConfig.forceNoWindow = boolVal;
         }
 
+        double maxFpsVal = 0.0;
+        if (ExtractJsonDouble(content, "maxFps", maxFpsVal)) {
+            outConfig.maxFps = static_cast<float>(maxFpsVal);
+        }
 
-        
+        int intVal = 0;
+        if (ExtractJsonInt(content, "logLevel", intVal) && intVal >= 0) {
+            outConfig.logLevel = static_cast<uint32_t>(intVal);
+        }
+        if (ExtractJsonInt(content, "msaaSamples", intVal) && intVal >= 0) {
+            outConfig.msaaSamples = static_cast<uint32_t>(intVal);
+        }
+        if (ExtractJsonInt(content, "windowScale", intVal) && intVal >= 1 && intVal <= 8) {
+            outConfig.windowScale = static_cast<uint32_t>(intVal);
+        }
+
         GLIDE_LOG(INFO, "Config", "Parsed local JSON configuration file successfully.");
     } else {
         GLIDE_LOG(INFO, "Config", "No local glide_config.json file detected. Using baseline defaults.");

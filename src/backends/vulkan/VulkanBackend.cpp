@@ -1,10 +1,26 @@
 #include "VulkanBackend.h"
 
 #include <SDL2/SDL.h>
-#include <SDL2/SDL_syswm.h>
 #include <SDL2/SDL_vulkan.h>
 
-#include "core/PlatformWindowUtils.h"
+#if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_X11)
+#include <X11/Xlib.h>
+#ifdef None
+#undef None
+#endif
+#ifdef Bool
+#undef Bool
+#endif
+#ifdef Status
+#undef Status
+#endif
+#include <vulkan/vulkan_xlib.h>
+#endif
+
+#if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_WAYLAND)
+#include <wayland-client.h>
+#include <vulkan/vulkan_wayland.h>
+#endif
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -17,74 +33,53 @@
 #include <fstream>
 #include <iostream>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 
 #include "core/Logger.h"
 #include "core/Telemetry.h"
 #include "core/TextureManager.h"
 
-// Include build-time generated shader SPIR-V bytecode headers!
-#include "color_dualsrc_frag.spv.h"
-#include "color_frag.spv.h"
-#include "color_vert.spv.h"
-
 namespace GlideWrapper {
-
-static uint32_t PackRGBA(float r, float g, float b, float a) {
-  uint8_t ur = static_cast<uint8_t>(std::clamp(r * 255.0f, 0.0f, 255.0f));
-  uint8_t ug = static_cast<uint8_t>(std::clamp(g * 255.0f, 0.0f, 255.0f));
-  uint8_t ub = static_cast<uint8_t>(std::clamp(b * 255.0f, 0.0f, 255.0f));
-  uint8_t ua = static_cast<uint8_t>(std::clamp(a * 255.0f, 0.0f, 255.0f));
-  return (ur << 0) | (ug << 8) | (ub << 16) | (ua << 24);
-}
 
 // Authoritative Vulkan validation layer declarations
 const std::vector<const char*> validationLayers = {
     "VK_LAYER_KHRONOS_validation"};
 
-static vk::BlendFactor MapBlendFactorVulkan(uint32_t factor, bool isDest,
-                                            bool isAlpha) {
-  switch (factor) {
-    case 0:
-      return vk::BlendFactor::eZero;  // GR_BLEND_ZERO
-    case 1:
-      return vk::BlendFactor::eSrcAlpha;  // GR_BLEND_SRC_ALPHA
-    case 2:
-      return isDest
-                 ? vk::BlendFactor::eSrcColor
-                 : vk::BlendFactor::eDstColor;  // 2 = GR_BLEND_SRC_COLOR (dest)
-                                                // / GR_BLEND_DST_COLOR (src)
-    case 3:
-      return vk::BlendFactor::eDstAlpha;  // GR_BLEND_DST_ALPHA
-    case 4:
-      return vk::BlendFactor::eOne;  // GR_BLEND_ONE
-    case 5:
-      return vk::BlendFactor::
-          eOneMinusSrcAlpha;  // GR_BLEND_ONE_MINUS_SRC_ALPHA
-    case 6:
-      return isDest ? vk::BlendFactor::eOneMinusSrcColor
-                    : vk::BlendFactor::
-                          eOneMinusDstColor;  // 6 = ONE_MINUS_SRC_COLOR (dest)
-                                              // / ONE_MINUS_DST_COLOR (src)
-    case 7:
-      return vk::BlendFactor::
-          eOneMinusDstAlpha;  // GR_BLEND_ONE_MINUS_DST_ALPHA
-    case 15:
-      return isDest
-                 ? (isAlpha ? vk::BlendFactor::eSrc1Alpha
-                            : vk::BlendFactor::eSrc1Color)
-                 : vk::BlendFactor::
-                       eSrcAlphaSaturate;  // 15 = GR_BLEND_PREFOG_COLOR (dest)
-                                           // / GR_BLEND_ALPHA_SATURATE (src)
-    default:
-      return vk::BlendFactor::eOne;
+const bool enableValidationLayers = false;
+
+void Logger::LogHostVulkanCapabilities() {
+  if (m_activeLevel < LogLevel::INFO) return;
+
+  try {
+    vk::ApplicationInfo appInfo("3dfxGlideWrapper", 1, "AntigravityEngine", 1,
+                                VK_API_VERSION_1_2);
+    vk::InstanceCreateInfo createInfo({}, &appInfo);
+
+    vk::UniqueInstance instance = vk::createInstanceUnique(createInfo);
+    std::vector<vk::PhysicalDevice> devices =
+        instance->enumeratePhysicalDevices();
+
+    std::ostringstream ss;
+    ss << "\n--- Host Vulkan Execution Adapters Discovered ---\n";
+    for (size_t i = 0; i < devices.size(); ++i) {
+      vk::PhysicalDeviceProperties props = devices[i].getProperties();
+      ss << "  Adapter [" << i << "] : " << props.deviceName.data() << "\n"
+         << "    API Version : " << VK_VERSION_MAJOR(props.apiVersion) << "."
+         << VK_VERSION_MINOR(props.apiVersion) << "."
+         << VK_VERSION_PATCH(props.apiVersion) << "\n"
+         << "    Device Type : " << vk::to_string(props.deviceType) << "\n";
+    }
+    ss << "-------------------------------------------------";
+    Log(LogLevel::INFO, "Startup", ss.str());
+  } catch (const std::exception& e) {
+    Log(LogLevel::WARN, "Startup",
+        std::string("Vulkan Host Polling unavailable: ") + e.what());
   }
 }
 
-const bool enableValidationLayers = false;
-
 bool VulkanBackend::Initialize(const WrapperConfig& config) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (m_initialized) return true;
 
   GLIDE_LOG(INFO, "Vulkan",
@@ -270,7 +265,7 @@ bool VulkanBackend::Initialize(const WrapperConfig& config) {
 }
 
 void VulkanBackend::Shutdown() {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (!m_initialized) return;
 
   GLIDE_LOG(INFO, "Vulkan", "Shutting down Hybrid Vulkan context.");
@@ -281,7 +276,7 @@ void VulkanBackend::Shutdown() {
 
   // 1. Force-detach window resources first (handles active frame command
   // buffer, SDL, etc.)
-  DetachWindow();
+  DetachWindow_Locked();
 
   // 2. Explicitly destroy all device-owned pipelines, shaders, and caches
   m_pipelineCache.clear();
@@ -337,8 +332,8 @@ void VulkanBackend::Shutdown() {
   // Explicitly destroy presentation synchronization semaphores
   for (int i = 0; i < 2; ++i) {
     m_imageAvailableSemaphores[i].reset();
-    m_renderFinishedSemaphores[i].reset();
   }
+  m_renderFinishedSemaphores.clear();
 
   // 2.5. Save persistent Vulkan pipeline cache back to disk!
   if (m_device && m_vkPipelineCache) {
@@ -398,13 +393,21 @@ void VulkanBackend::Shutdown() {
   m_initialized = false;
 }
 
+void VulkanBackend::ResetState() {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  ResetState_Locked();
+}
+
+void VulkanBackend::ResetState_Locked() {
+  GlideStateTracker::ResetState_Locked();
+  m_lfbStaging.ResetPendingAndDirty();
+}
+
 bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
                                  uint32_t height, bool windowed) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (!m_initialized) return false;
-  m_windowShown = false;
-  if (m_windowAttached) DetachWindow();
-  m_nativeWindow = nativeWindowHandle;
+  if (m_windowAttached) DetachWindow_Locked();
 
   GLIDE_LOG(INFO, "Vulkan",
             "Attaching Hybrid Vulkan window ("
@@ -416,7 +419,7 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
   m_guestWidth = width;
   m_guestHeight = height;
 
-  ResetState();
+  ResetState_Locked();
   m_headlessMode = true;  // Headless-driven for visual regression
 
   if (!CreateHeadlessRenderTarget(width, height)) return false;
@@ -559,91 +562,39 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
   std::cout << "Info: Drawable Size: " << width << "x" << height << "\n"
             << std::flush;
 
-  SetClipWindow(0, 0, width, height);
+  SetClipWindow_Locked(0, 0, width, height);
 
-  m_isWindowHooked = false;
-  m_sdlWindow = nullptr;
-  m_hostWindow = nullptr;
-  m_sdlWindowOwnedByUs = false;
-  m_sdlRenderer = nullptr;
-  m_sdlRendererOwned = false;
-  m_sdlTexture = nullptr;
-
-  // Unconditionally run in headless mode internally!
+  // Unconditionally render to offscreen guest targets and present via blit.
   m_headlessMode = true;
 
-  if (nativeWindowHandle && !m_config.forceNoWindow) {
-    m_hostWindow = PlatformWindowUtils::HijackOrWrapWindow(nativeWindowHandle);
-    if (m_hostWindow) {
-      m_isWindowHooked = true;
-    }
+  if (!m_surfaceHost.Attach(nativeWindowHandle, width, height, windowed,
+                            m_config.forceNoWindow,
+                            "3dfx glide-ng Presentation Console (Vulkan)",
+                            SDL_WINDOW_VULKAN, m_config.windowScale)) {
+    GLIDE_LOG(CRITICAL, "Vulkan",
+              "Failed to attach NativeSurfaceHost for Vulkan presentation.");
+    return false;
   }
 
-  if (m_hostWindow && !m_config.forceNoWindow) {
-    m_sdlWindow = PlatformWindowUtils::CreateOverlayWindow(
-        reinterpret_cast<SDL_Window*>(m_hostWindow), SDL_WINDOW_VULKAN);
-    if (m_sdlWindow) {
-      m_sdlWindowOwnedByUs = true;
-      m_windowShown = true;
-    } else {
-      GLIDE_LOG(CRITICAL, "Vulkan",
-                "Failed to create overlay window: " << SDL_GetError());
+  // Create Vulkan WSI surface and swapchain when not in Headless mode.
+  if (m_surfaceHost.GetMode() != NativeSurfaceHost::Mode::Headless) {
+    if (!CreatePresentationSurface()) {
+      m_surfaceHost.Detach();
       return false;
     }
-  } else if (!m_hostWindow && !m_config.forceNoWindow) {
-    // Standalone fallback console
-    bool sdlReady = true;
-    if (!SDL_WasInit(SDL_INIT_VIDEO)) {
-      if (SDL_Init(SDL_INIT_VIDEO) < 0) {
-        GLIDE_LOG(CRITICAL, "Vulkan",
-                  "Failed to initialize SDL Video: " << SDL_GetError());
-        sdlReady = false;
-      } else {
-        m_sdlVideoInitializedByUs = true;
-      }
+
+    uint32_t surfW = width;
+    uint32_t surfH = height;
+    m_surfaceHost.GetDrawableSize(surfW, surfH);
+    if (surfW == 0 || surfH == 0) {
+      surfW = width;
+      surfH = height;
     }
 
-    if (sdlReady) {
-      uint32_t scale = m_config.windowScale;
-      m_sdlWindow = SDL_CreateWindow(
-          "3dfx glide-ng Presentation Console (Vulkan)", SDL_WINDOWPOS_CENTERED,
-          SDL_WINDOWPOS_CENTERED, width * scale, height * scale,
-          SDL_WINDOW_VULKAN | SDL_WINDOW_SHOWN);
-      if (m_sdlWindow) {
-        m_sdlWindowOwnedByUs = true;
-        m_windowShown = true;
-        GLIDE_LOG(INFO, "Vulkan",
-                  "Created standalone presentation window: " << m_sdlWindow);
-      } else {
-        GLIDE_LOG(WARN, "Vulkan",
-                  "Failed to create standalone presentation window: "
-                      << SDL_GetError() << ". Falling back to headless mode.");
-      }
-    }
-  }
-
-  // Cache initial overlay bounds to prevent async resize storms
-  if (m_sdlWindow) {
-    SDL_GetWindowPosition(reinterpret_cast<SDL_Window*>(m_sdlWindow),
-                          &m_lastRequestedX, &m_lastRequestedY);
-    SDL_GetWindowSize(reinterpret_cast<SDL_Window*>(m_sdlWindow),
-                      &m_lastRequestedW, &m_lastRequestedH);
-  }
-
-  // 3. Create Vulkan Surface and Swapchain on the rendering window
-  if (m_sdlWindow) {
-    VkSurfaceKHR surfaceHandle;
-    if (SDL_Vulkan_CreateSurface(reinterpret_cast<SDL_Window*>(m_sdlWindow),
-                                 static_cast<VkInstance>(m_instance.get()),
-                                 &surfaceHandle) != SDL_TRUE) {
-      GLIDE_LOG(CRITICAL, "Vulkan",
-                "Failed to create Vulkan surface: " << SDL_GetError());
-      return false;
-    }
-    m_surface = vk::UniqueSurfaceKHR(surfaceHandle, m_instance.get());
-
-    if (!CreateSwapchain(width, height)) {
+    if (!CreateSwapchain(surfW, surfH)) {
       GLIDE_LOG(CRITICAL, "Vulkan", "Failed to create Vulkan swapchain!");
+      m_surface.reset();
+      m_surfaceHost.Detach();
       return false;
     }
   }
@@ -694,51 +645,26 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
 }
 
 void VulkanBackend::DetachWindow() {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
+  DetachWindow_Locked();
+}
+
+void VulkanBackend::DetachWindow_Locked() {
   if (!m_windowAttached) return;
-  m_windowShown = false;
   GLIDE_LOG(INFO, "Vulkan", "Detaching Hybrid Vulkan window resources.");
 
+  // Strict WSI teardown order:
+  // 1. Wait for GPU idle
+  // 2. Destroy swapchain
+  // 3. Destroy VkSurfaceKHR
+  // 4. Detach NativeSurfaceHost (destroys X11 child / wl_subsurface / SDL window)
   if (m_device) {
     m_device->waitIdle();
   }
 
-  DestroySwapchain();
+  DestroySwapchain_Locked();
   m_surface.reset();
-  if (m_sdlTexture) {
-    SDL_DestroyTexture(reinterpret_cast<SDL_Texture*>(m_sdlTexture));
-    m_sdlTexture = nullptr;
-  }
-  if (m_sdlRenderer) {
-    if (m_sdlRendererOwned) {
-      SDL_DestroyRenderer(reinterpret_cast<SDL_Renderer*>(m_sdlRenderer));
-    }
-    m_sdlRenderer = nullptr;
-  }
-  if (m_sdlWindow) {
-    if (m_sdlWindowOwnedByUs) {
-      PlatformWindowUtils::DestroyOverlayWindow(
-          reinterpret_cast<SDL_Window*>(m_sdlWindow));
-    }
-    m_sdlWindow = nullptr;
-  }
-  m_sdlWindowOwnedByUs = false;
-  m_hostWindow = nullptr;
-
-  if (m_sdlVideoInitializedByUs) {
-    SDL_QuitSubSystem(SDL_INIT_VIDEO);
-    m_sdlVideoInitializedByUs = false;
-  }
-  SDL_Vulkan_UnloadLibrary();
-
-  // Reset bounds sync cache
-  m_lastRequestedX = 0;
-  m_lastRequestedY = 0;
-  m_lastRequestedW = 0;
-  m_lastRequestedH = 0;
-
-  m_isWindowHooked = false;
-  m_nativeWindow = nullptr;
+  m_surfaceHost.Detach();
 
   // Phase 2: Unmap and reset vertex buffer
   if (m_vertexBufferMap) {
@@ -756,7 +682,7 @@ void VulkanBackend::DetachWindow() {
     m_headlessPixelBuffers[i].reset();
     m_headlessPixelMemories[i].reset();
   }
-  FreeCpuBuffers();
+  m_lfbStaging.Release();
   for (int i = 0; i < 2; ++i) {
     m_headlessFramebuffers[i].reset();
     m_headlessImageViews[i].reset();
@@ -782,6 +708,134 @@ void VulkanBackend::DetachWindow() {
 
   m_windowAttached = false;
   m_headlessMode = false;
+}
+
+bool VulkanBackend::CreatePresentationSurface() {
+  m_surface.reset();
+  switch (m_surfaceHost.GetMode()) {
+    case NativeSurfaceHost::Mode::Detached:
+    case NativeSurfaceHost::Mode::Headless:
+      return true;
+
+    case NativeSurfaceHost::Mode::X11Child: {
+#if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_X11)
+      auto createXlibSurface = reinterpret_cast<PFN_vkCreateXlibSurfaceKHR>(
+          m_instance->getProcAddr("vkCreateXlibSurfaceKHR"));
+      if (!createXlibSurface) {
+        GLIDE_LOG(CRITICAL, "Vulkan",
+                  "vkCreateXlibSurfaceKHR is unavailable on Vulkan instance.");
+        return false;
+      }
+
+      VkXlibSurfaceCreateInfoKHR info{};
+      info.sType = VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR;
+      info.dpy = static_cast<Display*>(m_surfaceHost.GetX11Display());
+      info.window = static_cast<Window>(m_surfaceHost.GetX11Window());
+
+      VkSurfaceKHR rawSurface = VK_NULL_HANDLE;
+      VkResult res = createXlibSurface(
+          static_cast<VkInstance>(m_instance.get()), &info, nullptr,
+          &rawSurface);
+      if (res != VK_SUCCESS || rawSurface == VK_NULL_HANDLE) {
+        GLIDE_LOG(CRITICAL, "Vulkan",
+                  "vkCreateXlibSurfaceKHR failed with VkResult=" << res);
+        return false;
+      }
+      m_surface = vk::UniqueSurfaceKHR(rawSurface, m_instance.get());
+      GLIDE_LOG(INFO, "Vulkan",
+                "Created VK_KHR_xlib_surface on X11 child window 0x"
+                    << std::hex << m_surfaceHost.GetX11Window() << std::dec);
+      return true;
+#else
+      GLIDE_LOG(CRITICAL, "Vulkan",
+                "X11Child surface requested but HAVE_X11 is not compiled in.");
+      return false;
+#endif
+    }
+
+    case NativeSurfaceHost::Mode::WaylandSubsurface: {
+#if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_WAYLAND)
+      auto createWaylandSurface =
+          reinterpret_cast<PFN_vkCreateWaylandSurfaceKHR>(
+              m_instance->getProcAddr("vkCreateWaylandSurfaceKHR"));
+      if (!createWaylandSurface) {
+        GLIDE_LOG(
+            CRITICAL, "Vulkan",
+            "vkCreateWaylandSurfaceKHR is unavailable on Vulkan instance.");
+        return false;
+      }
+
+      VkWaylandSurfaceCreateInfoKHR info{};
+      info.sType = VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR;
+      info.display = static_cast<wl_display*>(m_surfaceHost.GetWaylandDisplay());
+      info.surface = static_cast<wl_surface*>(m_surfaceHost.GetWaylandSurface());
+
+      VkSurfaceKHR rawSurface = VK_NULL_HANDLE;
+      VkResult res = createWaylandSurface(
+          static_cast<VkInstance>(m_instance.get()), &info, nullptr,
+          &rawSurface);
+      if (res != VK_SUCCESS || rawSurface == VK_NULL_HANDLE) {
+        GLIDE_LOG(CRITICAL, "Vulkan",
+                  "vkCreateWaylandSurfaceKHR failed with VkResult=" << res);
+        return false;
+      }
+      m_surface = vk::UniqueSurfaceKHR(rawSurface, m_instance.get());
+      GLIDE_LOG(INFO, "Vulkan",
+                "Created VK_KHR_wayland_surface on Wayland subsurface "
+                    << m_surfaceHost.GetWaylandSurface());
+      return true;
+#else
+      GLIDE_LOG(
+          CRITICAL, "Vulkan",
+          "WaylandSubsurface requested but HAVE_WAYLAND is not compiled in.");
+      return false;
+#endif
+    }
+
+    case NativeSurfaceHost::Mode::StandaloneSDL2: {
+      VkSurfaceKHR rawSurface = VK_NULL_HANDLE;
+      if (SDL_Vulkan_CreateSurface(m_surfaceHost.GetSDLWindow(),
+                                   static_cast<VkInstance>(m_instance.get()),
+                                   &rawSurface) != SDL_TRUE) {
+        GLIDE_LOG(CRITICAL, "Vulkan",
+                  "SDL_Vulkan_CreateSurface failed for StandaloneSDL2: "
+                      << SDL_GetError());
+        return false;
+      }
+      m_surface = vk::UniqueSurfaceKHR(rawSurface, m_instance.get());
+      GLIDE_LOG(INFO, "Vulkan",
+                "Created Vulkan surface for StandaloneSDL2 window "
+                    << m_surfaceHost.GetSDLWindow());
+      return true;
+    }
+  }
+  return false;
+}
+
+vk::PresentModeKHR VulkanBackend::SelectPresentMode(
+    const std::vector<vk::PresentModeKHR>& availableModes, bool vsyncEnabled,
+    bool isWaylandSurface, bool forceStrictFifo) {
+  bool foundMailbox = false;
+  bool foundImmediate = false;
+  for (const auto& pm : availableModes) {
+    if (pm == vk::PresentModeKHR::eMailbox) {
+      foundMailbox = true;
+    } else if (pm == vk::PresentModeKHR::eImmediate) {
+      foundImmediate = true;
+    }
+  }
+
+  if (!vsyncEnabled) {
+    if (foundMailbox) return vk::PresentModeKHR::eMailbox;
+    if (foundImmediate) return vk::PresentModeKHR::eImmediate;
+    return vk::PresentModeKHR::eFifo;
+  }
+
+  if (isWaylandSurface && !forceStrictFifo && foundMailbox) {
+    return vk::PresentModeKHR::eMailbox;
+  }
+
+  return vk::PresentModeKHR::eFifo;
 }
 
 bool VulkanBackend::CreateSwapchain(uint32_t width, uint32_t height) {
@@ -846,37 +900,39 @@ bool VulkanBackend::CreateSwapchain(uint32_t width, uint32_t height) {
       INFO, "Vulkan",
       "Selected swapchain format: " << vk::to_string(m_swapchainImageFormat));
 
-  // 3. Select the best present mode (FIFO is guaranteed, but let's log if
-  // Mailbox/Immediate are available)
-  vk::PresentModeKHR presentMode =
-      vk::PresentModeKHR::eFifo;  // VSync aligned, guaranteed by spec
-  if (!m_config.vsync) {
-    // Uncapped mode requested! Prefer Mailbox (uncapped triple-buffering), then
-    // Immediate (VSync off), falling back to FIFO.
-    bool found_mailbox = false;
-    bool found_immediate = false;
-    for (const auto& pm : presentModes) {
-      if (pm == vk::PresentModeKHR::eMailbox) {
-        found_mailbox = true;
-      } else if (pm == vk::PresentModeKHR::eImmediate) {
-        found_immediate = true;
-      }
-    }
-    if (found_mailbox) {
-      presentMode = vk::PresentModeKHR::eMailbox;
+  // 3. Select the best present mode.
+  // On Wayland, prefer Mailbox even with VSync enabled: Wayland compositors
+  // always composite atomically (tear-free), while Mailbox avoids Mesa WSI's
+  // wp_fifo_v1 / wp_commit_timer_v1 cadence stalls under Mutter/RDP. Users can
+  // still opt into strict FIFO via GLIDE_VSYNC=fifo.
+  bool isWaylandSurface = m_surfaceHost.IsWaylandSurface();
+  const char* envVsync = std::getenv("GLIDE_VSYNC");
+  bool forceStrictFifo =
+      (envVsync &&
+       (std::strcmp(envVsync, "fifo") == 0 || std::strcmp(envVsync, "FIFO") == 0));
+
+  vk::PresentModeKHR presentMode = SelectPresentMode(
+      presentModes, m_config.vsync, isWaylandSurface, forceStrictFifo);
+
+  if (presentMode == vk::PresentModeKHR::eMailbox) {
+    if (m_config.vsync && isWaylandSurface) {
+      GLIDE_LOG(INFO, "Vulkan",
+                "Wayland surface detected with VSync enabled: using Mailbox "
+                "present mode (tear-free via Wayland compositor, avoids "
+                "wp_fifo_v1 stalls; set GLIDE_VSYNC=fifo to force FIFO).");
+    } else {
       GLIDE_LOG(
           INFO, "Vulkan",
           "VSync Disabled: Using Mailbox present mode (Uncapped, no tearing).");
-    } else if (found_immediate) {
-      presentMode = vk::PresentModeKHR::eImmediate;
-      GLIDE_LOG(INFO, "Vulkan",
-                "VSync Disabled: Using Immediate present mode (Uncapped, "
-                "screen tearing may occur).");
-    } else {
-      GLIDE_LOG(WARN, "Vulkan",
-                "VSync Disabled: Uncapped present modes not supported by GPU, "
-                "falling back to FIFO.");
     }
+  } else if (presentMode == vk::PresentModeKHR::eImmediate) {
+    GLIDE_LOG(INFO, "Vulkan",
+              "VSync Disabled: Using Immediate present mode (Uncapped, "
+              "screen tearing may occur).");
+  } else if (!m_config.vsync) {
+    GLIDE_LOG(WARN, "Vulkan",
+              "VSync Disabled: Uncapped present modes not supported by GPU, "
+              "falling back to FIFO.");
   } else {
     GLIDE_LOG(INFO, "Vulkan",
               "VSync Enabled: Using FIFO present mode (Sync to vertical "
@@ -893,6 +949,11 @@ bool VulkanBackend::CreateSwapchain(uint32_t width, uint32_t height) {
     extent.height = std::clamp(height, capabilities.minImageExtent.height,
                                capabilities.maxImageExtent.height);
   }
+  if (extent.width == 0 || extent.height == 0) {
+    GLIDE_LOG(WARN, "Vulkan",
+              "Deferring swapchain creation for zero-sized surface extent.");
+    return false;
+  }
   m_swapchainExtent = extent;
   GLIDE_LOG(
       INFO, "Vulkan",
@@ -907,16 +968,31 @@ bool VulkanBackend::CreateSwapchain(uint32_t width, uint32_t height) {
   GLIDE_LOG(INFO, "Vulkan",
             "Creating swapchain with " << imageCount << " images.");
 
+  // Pick a supported composite alpha mode (prefer opaque so letterbox bars
+  // are solid black and Wayland compositors don't blend behind the subsurface).
+  vk::CompositeAlphaFlagBitsKHR compositeAlpha =
+      vk::CompositeAlphaFlagBitsKHR::eOpaque;
+  if (!(capabilities.supportedCompositeAlpha &
+        vk::CompositeAlphaFlagBitsKHR::eOpaque)) {
+    if (capabilities.supportedCompositeAlpha &
+        vk::CompositeAlphaFlagBitsKHR::ePreMultiplied) {
+      compositeAlpha = vk::CompositeAlphaFlagBitsKHR::ePreMultiplied;
+    } else if (capabilities.supportedCompositeAlpha &
+               vk::CompositeAlphaFlagBitsKHR::eInherit) {
+      compositeAlpha = vk::CompositeAlphaFlagBitsKHR::eInherit;
+    }
+  }
+
   // 6. Create the Swapchain!
   vk::SwapchainCreateInfoKHR createInfo(
       {}, m_surface.get(), imageCount, m_swapchainImageFormat,
       selectedFormat.colorSpace, m_swapchainExtent,
       1,  // imageArrayLayers
       vk::ImageUsageFlagBits::eColorAttachment |
-          vk::ImageUsageFlagBits::eTransferDst,  // We will blit/copy to it!
+          vk::ImageUsageFlagBits::eTransferDst,  // We will clear/blit to it!
       vk::SharingMode::eExclusive, 0,
       nullptr,  // Queue family indices (exclusive mode doesn't need them)
-      capabilities.currentTransform, vk::CompositeAlphaFlagBitsKHR::eOpaque,
+      capabilities.currentTransform, compositeAlpha,
       presentMode,
       VK_TRUE,  // clipped
       {}        // oldSwapchain
@@ -940,13 +1016,17 @@ bool VulkanBackend::CreateSwapchain(uint32_t width, uint32_t height) {
   }
 
   // 9. Create synchronization semaphores for swapchain image acquisition &
-  // presentation pacing
+  // presentation pacing (renderFinished is sized per swapchain image!)
   vk::SemaphoreCreateInfo semaphoreInfo;
   for (int i = 0; i < 2; ++i) {
     m_imageAvailableSemaphores[i] =
         m_device->createSemaphoreUnique(semaphoreInfo);
-    m_renderFinishedSemaphores[i] =
-        m_device->createSemaphoreUnique(semaphoreInfo);
+  }
+  m_renderFinishedSemaphores.clear();
+  m_renderFinishedSemaphores.reserve(m_swapchainImages.size());
+  for (size_t i = 0; i < m_swapchainImages.size(); ++i) {
+    m_renderFinishedSemaphores.push_back(
+        m_device->createSemaphoreUnique(semaphoreInfo));
   }
 
   GLIDE_LOG(INFO, "Vulkan",
@@ -955,15 +1035,14 @@ bool VulkanBackend::CreateSwapchain(uint32_t width, uint32_t height) {
   return true;
 }
 
-void VulkanBackend::DestroySwapchain() {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+void VulkanBackend::DestroySwapchain_Locked() {
   if (m_device) {
     m_device->waitIdle();
   }
   for (int i = 0; i < 2; ++i) {
     if (m_imageAvailableSemaphores[i]) m_imageAvailableSemaphores[i].reset();
-    if (m_renderFinishedSemaphores[i]) m_renderFinishedSemaphores[i].reset();
   }
+  m_renderFinishedSemaphores.clear();
   m_swapchainImageViews.clear();
   m_swapchainImages.clear();
   if (m_swapchain) m_swapchain.reset();
@@ -972,181 +1051,131 @@ void VulkanBackend::DestroySwapchain() {
 }
 
 void VulkanBackend::RecreateSwapchain(uint32_t width, uint32_t height) {
-  if (!m_device || !m_sdlWindow || !m_surface) return;
+  if (!m_device || !m_surface || width == 0 || height == 0) return;
   m_device->waitIdle();
   GLIDE_LOG(INFO, "Vulkan",
             "Recreating swapchain with size: " << width << "x" << height);
-  DestroySwapchain();
+  DestroySwapchain_Locked();
   CreateSwapchain(width, height);
-}
-
-void VulkanBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z,
-                                uint32_t clearMask) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
-  if (!m_initialized || !m_windowAttached) return;
-
-  // Terminate active render pass if any (so next draw starts a new render pass
-  // that triggers LoadOp Clear!)
-  if (m_inRenderPass) {
-    FlushBatch();
-    m_commandBuffer->endRenderPass();
-    m_inRenderPass = false;
-  }
-
-  GLIDE_LOG(DEBUG, "Vulkan",
-            "ClearBuffer: color=" << std::hex << color
-                                  << ", clearMask=" << clearMask);
-
-  // 1. Call SoftwareBackendBase::ClearBuffer to clear the CPU-side framebuffer!
-  SoftwareBackendBase::ClearBuffer(color, alpha, z, clearMask);
-
-  // 2. Save clear state and mark pending for GPU clears when Render Pass
-  // starts!
-  uint32_t activeIdx = GetActiveGpuBufferIdx();
-  if (clearMask & 1) {  // Color clear
-    // Only schedule a GPU color clear if color or alpha writes are actually
-    // enabled!
-    if (m_colorMaskRgb || m_colorMaskAlpha) {
-      float a = ((alpha > 0) ? alpha : 255) / 255.0f;
-      float r = ((color >> 16) & 0xFF) / 255.0f;
-      float g = ((color >> 8) & 0xFF) / 255.0f;
-      float b = (color & 0xFF) / 255.0f;
-
-      // Respect the active pixel format from SoftwareBackendBase!
-      if (m_pixelFormatOverride == 1) {  // ABGR format override
-        std::swap(r, b);
-      }
-
-      m_clearColorValue[activeIdx] =
-          vk::ClearColorValue(std::array<float, 4>{r, g, b, a});
-      m_clearColorPending[activeIdx] = true;
-    }
-  }
-
-  if (clearMask & 2) {  // Depth clear
-    m_clearDepthValue[activeIdx] = z;
-    m_clearDepthPending[activeIdx] = true;
-  }
 }
 
 void VulkanBackend::SetDepthState(uint32_t depthMode, uint32_t compareOp,
                                   bool depthMask, int32_t biasLevel) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (depthMode != m_depthMode || compareOp != m_depthCompareOp ||
       depthMask != m_depthMask || biasLevel != m_depthBiasLevel) {
     FlushBatch();
   }
-  SoftwareBackendBase::SetDepthState(depthMode, compareOp, depthMask,
-                                     biasLevel);
+  GlideStateTracker::SetDepthState_Locked(depthMode, compareOp, depthMask, biasLevel);
 }
 
 void VulkanBackend::SetBlendState(uint32_t rgbSrcFactor, uint32_t rgbDstFactor,
                                   uint32_t alphaSrcFactor,
                                   uint32_t alphaDstFactor) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (rgbSrcFactor != m_rgbSrcBlend || rgbDstFactor != m_rgbDstBlend ||
       alphaSrcFactor != m_alphaSrcBlend || alphaDstFactor != m_alphaDstBlend) {
     FlushBatch();
   }
-  SoftwareBackendBase::SetBlendState(rgbSrcFactor, rgbDstFactor, alphaSrcFactor,
-                                     alphaDstFactor);
+  GlideStateTracker::SetBlendState_Locked(rgbSrcFactor, rgbDstFactor, alphaSrcFactor,
+                                   alphaDstFactor);
 }
 
 void VulkanBackend::SetCullState(uint32_t cullMode) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (cullMode != m_cullMode) {
     FlushBatch();
   }
-  SoftwareBackendBase::SetCullState(cullMode);
+  GlideStateTracker::SetCullState_Locked(cullMode);
 }
 
 void VulkanBackend::SetAlphaTestState(uint32_t compareOp, uint32_t refVal) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (compareOp != m_alphaTestOp || refVal != m_alphaTestRefVal) {
     FlushBatch();
   }
-  SoftwareBackendBase::SetAlphaTestState(compareOp, refVal);
+  GlideStateTracker::SetAlphaTestState_Locked(compareOp, refVal);
   // Note: Emulated in fragment shader via push constants. No pipeline
   // recompilation needed!
 }
 
 void VulkanBackend::SetSstOrigin(uint32_t origin) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (origin != m_sstOrigin) {
     FlushBatch();
   }
-  SoftwareBackendBase::SetSstOrigin(origin);
+  GlideStateTracker::SetSstOrigin_Locked(origin);
 }
 
 void VulkanBackend::SetClipWindow(uint32_t minX, uint32_t minY, uint32_t maxX,
                                   uint32_t maxY) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (minX != m_clipMinX || minY != m_clipMinY || maxX != m_clipMaxX ||
       maxY != m_clipMaxY) {
     FlushBatch();
   }
-  SoftwareBackendBase::SetClipWindow(minX, minY, maxX, maxY);
+  GlideStateTracker::SetClipWindow_Locked(minX, minY, maxX, maxY);
 
   if (m_initialized && m_device && m_inRenderPass) {
-    vk::Rect2D scissor = GetScissorRectVulkan();
+    vk::Rect2D scissor = GetScissorRectVulkan_Locked();
     m_commandBuffer->setScissor(0, 1, &scissor);
   }
 }
 
 void VulkanBackend::SetColorMask(bool rgb, bool alpha) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (rgb != m_colorMaskRgb || alpha != m_colorMaskAlpha) {
     FlushBatch();
   }
-  SoftwareBackendBase::SetColorMask(rgb, alpha);
+  GlideStateTracker::SetColorMask_Locked(rgb, alpha);
 }
 
 void VulkanBackend::SetDepthRange(float nearVal, float farVal) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (nearVal != m_depthNear || farVal != m_depthFar) {
     FlushBatch();
   }
-  SoftwareBackendBase::SetDepthRange(nearVal, farVal);
+  GlideStateTracker::SetDepthRange_Locked(nearVal, farVal);
 }
 
 void VulkanBackend::SetDitherMode(uint32_t mode) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (mode != m_ditherMode) {
     FlushBatch();
   }
-  SoftwareBackendBase::SetDitherMode(mode);
+  GlideStateTracker::SetDitherMode_Locked(mode);
 }
 
 void VulkanBackend::SetStippleState(uint32_t mode, uint32_t pattern) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (mode != m_stippleMode || pattern != m_stipplePattern) {
     FlushBatch();
   }
-  SoftwareBackendBase::SetStippleState(mode, pattern);
+  GlideStateTracker::SetStippleState_Locked(mode, pattern);
 }
 
 void VulkanBackend::SetConstantColor(uint32_t color) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (color != m_constantColor) {
     FlushBatch();
   }
-  SoftwareBackendBase::SetConstantColor(color);
+  GlideStateTracker::SetConstantColor_Locked(color);
 }
 
 void VulkanBackend::SetRenderBuffer(uint32_t target) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (target != m_activeRenderBuffer) {
     FlushBatch();
   }
-  SoftwareBackendBase::SetRenderBuffer(target);
+  GlideStateTracker::SetRenderBuffer_Locked(target);
 }
 
 void VulkanBackend::SetPixelFormat(uint32_t format) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (format != m_pixelFormatOverride) {
     FlushBatch();
   }
-  SoftwareBackendBase::SetPixelFormat(format);
+  GlideStateTracker::SetPixelFormat_Locked(format);
 }
 
 void VulkanBackend::SetCombinerMode(uint32_t colorFunc, uint32_t colorFactor,
@@ -1154,7 +1183,7 @@ void VulkanBackend::SetCombinerMode(uint32_t colorFunc, uint32_t colorFactor,
                                     bool colorInvert, uint32_t alphaFunc,
                                     uint32_t alphaFactor, uint32_t alphaLocal,
                                     uint32_t alphaOther, bool alphaInvert) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (colorFunc != m_colorCombinerFunc ||
       colorFactor != m_colorCombinerFactor ||
       colorLocal != m_colorCombinerLocal ||
@@ -1167,16 +1196,17 @@ void VulkanBackend::SetCombinerMode(uint32_t colorFunc, uint32_t colorFactor,
       alphaInvert != m_alphaCombinerInvert) {
     FlushBatch();
   }
-  SoftwareBackendBase::SetCombinerMode(
-      colorFunc, colorFactor, colorLocal, colorOther, colorInvert, alphaFunc,
-      alphaFactor, alphaLocal, alphaOther, alphaInvert);
+  GlideStateTracker::SetCombinerMode_Locked(colorFunc, colorFactor, colorLocal,
+                                     colorOther, colorInvert, alphaFunc,
+                                     alphaFactor, alphaLocal, alphaOther,
+                                     alphaInvert);
 }
 
 void VulkanBackend::SetTexCombinerMode(uint32_t tmu, uint32_t rgbFunc,
                                        uint32_t rgbFactor, uint32_t alphaFunc,
                                        uint32_t alphaFactor, bool rgbInvert,
                                        bool alphaInvert) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (tmu < 2 && (rgbFunc != m_texCombinerRgbFunc[tmu] ||
                   rgbFactor != m_texCombinerRgbFactor[tmu] ||
                   alphaFunc != m_texCombinerAlphaFunc[tmu] ||
@@ -1185,89 +1215,87 @@ void VulkanBackend::SetTexCombinerMode(uint32_t tmu, uint32_t rgbFunc,
                   alphaInvert != m_texCombinerAlphaInvert[tmu])) {
     FlushBatch();
   }
-  SoftwareBackendBase::SetTexCombinerMode(tmu, rgbFunc, rgbFactor, alphaFunc,
-                                          alphaFactor, rgbInvert, alphaInvert);
+  GlideStateTracker::SetTexCombinerMode_Locked(tmu, rgbFunc, rgbFactor, alphaFunc,
+                                        alphaFactor, rgbInvert, alphaInvert);
 }
 
 void VulkanBackend::SetSTWHintState(uint32_t hintMask) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (hintMask != m_stwHintMask) {
     FlushBatch();
   }
-  SoftwareBackendBase::SetSTWHintState(hintMask);
+  GlideStateTracker::SetSTWHintState_Locked(hintMask);
 }
 
 void VulkanBackend::SetChromakeyMode(uint32_t mode) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (mode != m_chromakeyMode) {
     FlushBatch();
   }
-  SoftwareBackendBase::SetChromakeyMode(mode);
+  GlideStateTracker::SetChromakeyMode_Locked(mode);
 }
 
 void VulkanBackend::SetChromakeyValue(uint32_t value) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (value != m_chromakeyValue) {
     FlushBatch();
   }
-  SoftwareBackendBase::SetChromakeyValue(value);
+  GlideStateTracker::SetChromakeyValue_Locked(value);
 }
 
 void VulkanBackend::SetChromakeyRange(uint32_t minColor, uint32_t maxColor,
                                       uint32_t mode) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (minColor != m_chromakeyRangeMin || maxColor != m_chromakeyRangeMax ||
       mode != m_chromakeyRangeMode) {
     FlushBatch();
   }
-  SoftwareBackendBase::SetChromakeyRange(minColor, maxColor, mode);
+  GlideStateTracker::SetChromakeyRange_Locked(minColor, maxColor, mode);
 }
 
 void VulkanBackend::SetFogMode(uint32_t mode) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (mode != m_fogMode) {
     FlushBatch();
   }
-  SoftwareBackendBase::SetFogMode(mode);
+  GlideStateTracker::SetFogMode_Locked(mode);
 }
 
 void VulkanBackend::SetFogColor(uint32_t color) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (color != m_fogColor) {
     FlushBatch();
   }
-  SoftwareBackendBase::SetFogColor(color);
+  GlideStateTracker::SetFogColor_Locked(color);
 }
 
 void VulkanBackend::SetFogTable(const uint8_t* table) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (table && std::memcmp(table, m_fogTable, 64) != 0) {
     FlushBatch();
   }
-  SoftwareBackendBase::SetFogTable(table);
-}
-
-void VulkanBackend::SyncOverlayBounds() {
-  if (m_hostWindow && m_sdlWindow) {
-    bool sizeChanged = PlatformWindowUtils::SyncOverlayWindowBounds(
-        reinterpret_cast<SDL_Window*>(m_hostWindow),
-        reinterpret_cast<SDL_Window*>(m_sdlWindow), m_lastRequestedX,
-        m_lastRequestedY, m_lastRequestedW, m_lastRequestedH);
-    if (sizeChanged) {
-      RecreateSwapchain(m_lastRequestedW, m_lastRequestedH);
-    }
-  }
+  GlideStateTracker::SetFogTable_Locked(table);
 }
 
 bool VulkanBackend::SwapBuffers() {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::unique_lock<std::mutex> lock(m_mutex);
   if (!m_initialized || !m_windowAttached) return false;
 
-  SDL_PumpEvents();
+  // Pump SDL events ONLY in StandaloneSDL2 mode (guaranteed no-op for DOSBox
+  // X11Child / WaylandSubsurface / Headless).
+  m_surfaceHost.PollEvents();
+  if (m_surfaceHost.GetMode() == NativeSurfaceHost::Mode::StandaloneSDL2 &&
+      m_surfaceHost.WasQuitRequested()) {
+    GLIDE_LOG(INFO, "Vulkan",
+              "Standalone window close requested; exiting cleanly.");
+    DetachWindow_Locked();
+    lock.unlock();
+    std::exit(0);
+  }
 
   // Flush any pending CPU LFB writes to the GPU active image before we
   // swap/present!
-  FlushLFBToGPU();
+  FlushLFBToGPU_Locked();
 
   // Enforce frame pacing and track frame timing using unified FrameTracker
   auto& tracker = TelemetryManager::GetInstance().GetFrameTracker();
@@ -1276,8 +1304,18 @@ bool VulkanBackend::SwapBuffers() {
 
   GLIDE_PROFILE_SCOPE("Vulkan::SwapBuffers");
 
-  // Sync overlay window bounds with host window if position/size changed!
-  SyncOverlayBounds();
+  // Sync child/standalone surface bounds with host window and recreate
+  // swapchain cleanly on resize or recovery from minimized state.
+  if (m_surface) {
+    uint32_t hostW = 0;
+    uint32_t hostH = 0;
+    bool sizeChanged = m_surfaceHost.SyncBounds(hostW, hostH);
+    if (sizeChanged && hostW > 0 && hostH > 0) {
+      RecreateSwapchain(hostW, hostH);
+    } else if (!m_swapchain && hostW > 0 && hostH > 0) {
+      CreateSwapchain(hostW, hostH);
+    }
+  }
 
   // 1. Flush any pending batch draws and terminate the active render pass
   if (m_batchedVertexCount > 0) {
@@ -1312,9 +1350,12 @@ bool VulkanBackend::SwapBuffers() {
     }
 
     if (acquireRes == vk::Result::eErrorOutOfDateKHR) {
-      int w = 0, h = 0;
-      SDL_GetWindowSize(reinterpret_cast<SDL_Window*>(m_sdlWindow), &w, &h);
-      RecreateSwapchain(w, h);
+      uint32_t hostW = 0;
+      uint32_t hostH = 0;
+      m_surfaceHost.SyncBounds(hostW, hostH);
+      if (hostW > 0 && hostH > 0) {
+        RecreateSwapchain(hostW, hostH);
+      }
       m_commandBuffer = &m_commandBuffers[m_currentFrameSlot].get();
       m_commandBuffer->reset({});
       m_commandBuffer->begin(vk::CommandBufferBeginInfo(
@@ -1341,23 +1382,59 @@ bool VulkanBackend::SwapBuffers() {
                           vk::ImageLayout::eColorAttachmentOptimal,
                           vk::ImageLayout::eTransferSrcOptimal, colorRange);
 
-    // Blit offscreen image to swapchain image (supports scaling!)
-    vk::ImageBlit blitRegion;
-    blitRegion.srcSubresource =
-        vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
-    blitRegion.srcOffsets[0] = vk::Offset3D(0, 0, 0);
-    blitRegion.srcOffsets[1] =
-        vk::Offset3D(m_headlessWidth, m_headlessHeight, 1);
-    blitRegion.dstSubresource =
-        vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
-    blitRegion.dstOffsets[0] = vk::Offset3D(0, 0, 0);
-    blitRegion.dstOffsets[1] =
-        vk::Offset3D(m_swapchainExtent.width, m_swapchainExtent.height, 1);
+    // Compute aspect-ratio-preserving presentation rectangle (black
+    // letterbox/pillarbox bars when host aspect != guest aspect).
+    const PresentRect dst = NativeSurfaceHost::ComputePresentRect(
+        m_headlessWidth, m_headlessHeight, m_swapchainExtent.width,
+        m_swapchainExtent.height, /*preserveAspect=*/true);
 
-    m_commandBuffer->blitImage(
-        m_headlessImages[activeIdx].get(), vk::ImageLayout::eTransferSrcOptimal,
-        m_swapchainImages[imageIdx], vk::ImageLayout::eTransferDstOptimal, 1,
-        &blitRegion, vk::Filter::eLinear);
+    const bool needsBars =
+        (dst.x > 0 || dst.y > 0 || dst.width < m_swapchainExtent.width ||
+         dst.height < m_swapchainExtent.height);
+    if (needsBars) {
+      vk::ClearColorValue blackClear(
+          std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f});
+      m_commandBuffer->clearColorImage(m_swapchainImages[imageIdx],
+                                       vk::ImageLayout::eTransferDstOptimal,
+                                       &blackClear, 1, &colorRange);
+
+      vk::ImageMemoryBarrier clearToBlitBarrier;
+      clearToBlitBarrier.oldLayout = vk::ImageLayout::eTransferDstOptimal;
+      clearToBlitBarrier.newLayout = vk::ImageLayout::eTransferDstOptimal;
+      clearToBlitBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+      clearToBlitBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+      clearToBlitBarrier.image = m_swapchainImages[imageIdx];
+      clearToBlitBarrier.subresourceRange = colorRange;
+      clearToBlitBarrier.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
+      clearToBlitBarrier.dstAccessMask = vk::AccessFlagBits::eTransferWrite;
+      m_commandBuffer->pipelineBarrier(
+          vk::PipelineStageFlagBits::eTransfer,
+          vk::PipelineStageFlagBits::eTransfer, {}, 0, nullptr, 0, nullptr, 1,
+          &clearToBlitBarrier);
+    }
+
+    // Blit offscreen guest framebuffer into the centered destination rect
+    if (dst.width > 0 && dst.height > 0) {
+      vk::ImageBlit blitRegion;
+      blitRegion.srcSubresource =
+          vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
+      blitRegion.srcOffsets[0] = vk::Offset3D(0, 0, 0);
+      blitRegion.srcOffsets[1] =
+          vk::Offset3D(static_cast<int32_t>(m_headlessWidth),
+                       static_cast<int32_t>(m_headlessHeight), 1);
+      blitRegion.dstSubresource =
+          vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
+      blitRegion.dstOffsets[0] = vk::Offset3D(dst.x, dst.y, 0);
+      blitRegion.dstOffsets[1] =
+          vk::Offset3D(dst.x + static_cast<int32_t>(dst.width),
+                       dst.y + static_cast<int32_t>(dst.height), 1);
+
+      m_commandBuffer->blitImage(
+          m_headlessImages[activeIdx].get(),
+          vk::ImageLayout::eTransferSrcOptimal, m_swapchainImages[imageIdx],
+          vk::ImageLayout::eTransferDstOptimal, 1, &blitRegion,
+          vk::Filter::eLinear);
+    }
 
     // Transition swapchain image to PresentSrcKHR
     TransitionImageLayout(*m_commandBuffer, m_swapchainImages[imageIdx],
@@ -1374,11 +1451,11 @@ bool VulkanBackend::SwapBuffers() {
     (void)m_device->resetFences(1, &m_fences[m_currentFrameSlot].get());
 
     vk::PipelineStageFlags waitStages[] = {
-        vk::PipelineStageFlagBits::eColorAttachmentOutput};
+        vk::PipelineStageFlagBits::eTransfer};
     vk::Semaphore waitSemaphores[] = {
         m_imageAvailableSemaphores[m_currentFrameSlot].get()};
     vk::Semaphore signalSemaphores[] = {
-        m_renderFinishedSemaphores[m_currentFrameSlot].get()};
+        m_renderFinishedSemaphores[imageIdx].get()};
 
     vk::SubmitInfo submitInfo(1, waitSemaphores, waitStages, 1, m_commandBuffer,
                               1, signalSemaphores);
@@ -1399,9 +1476,12 @@ bool VulkanBackend::SwapBuffers() {
 
     if (presentRes == vk::Result::eErrorOutOfDateKHR ||
         presentRes == vk::Result::eSuboptimalKHR) {
-      int w = 0, h = 0;
-      SDL_GetWindowSize(reinterpret_cast<SDL_Window*>(m_sdlWindow), &w, &h);
-      RecreateSwapchain(w, h);
+      uint32_t hostW = 0;
+      uint32_t hostH = 0;
+      m_surfaceHost.SyncBounds(hostW, hostH);
+      if (hostW > 0 && hostH > 0) {
+        RecreateSwapchain(hostW, hostH);
+      }
     } else if (presentRes != vk::Result::eSuccess) {
       GLIDE_LOG(
           CRITICAL, "Vulkan",
@@ -1465,17 +1545,8 @@ bool VulkanBackend::SwapBuffers() {
   m_commandBuffer->begin(vk::CommandBufferBeginInfo(
       vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
 
-  // Swap the CPU buffer indices for double-buffering (needed for LFB CPU-side
-  // tracking)
-  if (m_headlessPixelMap) {
-    std::swap(m_frontBufferIdx, m_backBufferIdx);
-    std::swap(m_lfbBufferDirty[0], m_lfbBufferDirty[1]);
-    if (m_activeRenderBuffer == 0) {
-      m_headlessPixelMap = m_cpuBuffers[m_frontBufferIdx].data();
-    } else {
-      m_headlessPixelMap = m_cpuBuffers[m_backBufferIdx].data();
-    }
-  }
+  // Swap CPU LFB staging indices for double-buffering (zero-cost when unused)
+  m_lfbStaging.SwapBuffers();
 
   // Swap the GPU color targets for physical double-buffering
   std::swap(m_headlessImages[0], m_headlessImages[1]);
@@ -1486,110 +1557,15 @@ bool VulkanBackend::SwapBuffers() {
   return true;
 }
 
-bool VulkanBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
-                            uint32_t srcWidth, uint32_t srcHeight,
-                            uint32_t dstStride, void* dstData) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
-  if (!m_initialized || !m_windowAttached) return false;
-
-  // If the CPU LFB buffer has pending writes, flush them to the GPU FBO first
-  // so they are included in the readback!
-  if (m_lfbDirty) {
-    FlushLFBToGPU();
-  }
-
-  // 1. Flush pending batch draws
-  if (m_batchedVertexCount > 0) {
-    FlushBatch();
-  }
-
-  // Resolve the GPU image index based on the requested buffer (0 = FRONT, 1 =
-  // BACK)
-  uint32_t readIdx = (buffer == m_activeRenderBuffer)
-                         ? GetActiveGpuBufferIdx()
-                         : (1u - GetActiveGpuBufferIdx());
-
-  // If the target read FBO has pending clears, we must execute them first!
-  if (!m_inRenderPass &&
-      (m_clearColorPending[readIdx] || m_clearDepthPending[readIdx])) {
-    uint32_t origActive = m_activeRenderBuffer;
-    m_activeRenderBuffer = buffer;
-    EnsureRenderPassActive();
-    m_commandBuffer->endRenderPass();
-    m_inRenderPass = false;
-    m_activeRenderBuffer = origActive;
-  }
-
-  if (m_inRenderPass) {
-    m_commandBuffer->endRenderPass();
-    m_inRenderPass = false;
-  }
-
-  // 2. Transition layout from ColorAttachmentOptimal to TransferSrcOptimal
-  vk::ImageSubresourceRange range(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1);
-  TransitionImageLayout(*m_commandBuffer, m_headlessImages[readIdx].get(),
-                        vk::ImageLayout::eColorAttachmentOptimal,
-                        vk::ImageLayout::eTransferSrcOptimal, range);
-
-  // 3. Record copy from GPU image to staging buffer
-  vk::BufferImageCopy region;
-  region.imageSubresource =
-      vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
-  region.imageExtent = vk::Extent3D(m_headlessWidth, m_headlessHeight, 1);
-  m_commandBuffer->copyImageToBuffer(
-      m_headlessImages[readIdx].get(), vk::ImageLayout::eTransferSrcOptimal,
-      m_headlessPixelBuffers[m_currentFrameSlot].get(), 1, &region);
-
-  // 4. End and submit the command buffer immediately
-  m_commandBuffer->end();
-  vk::SubmitInfo submitInfo(0, nullptr, nullptr, 1, m_commandBuffer);
-  m_graphicsQueue.submit(submitInfo, {});
-  m_device->waitIdle();
-
-  // Copy the GPU-rendered framebuffer from mapped staging memory into our
-  // CPU-side active buffer
-  void* readDst = (buffer == 0) ? m_cpuBuffers[m_frontBufferIdx].data()
-                                : m_cpuBuffers[m_backBufferIdx].data();
-  if (m_gpuStagingMaps[m_currentFrameSlot] && readDst) {
-    std::memcpy(readDst, m_gpuStagingMaps[m_currentFrameSlot],
-                m_headlessWidth * m_headlessHeight * 4);
-    if (m_pixelFormatOverride == 1) {
-      auto* dest = reinterpret_cast<uint32_t*>(readDst);
-      for (uint32_t i = 0; i < m_headlessWidth * m_headlessHeight; ++i) {
-        uint32_t argb = dest[i];
-        uint32_t b = argb & 0xFF;
-        uint32_t g = (argb >> 8) & 0xFF;
-        uint32_t r = (argb >> 16) & 0xFF;
-        uint32_t a = (argb >> 24) & 0xFF;
-        dest[i] = (a << 24) | (b << 16) | (g << 8) | r;
-      }
-    }
-  }
-
-  // 5. Reset and begin a new command buffer for subsequent commands in the
-  // frame!
-  m_commandBuffer->reset({});
-  m_commandBuffer->begin(vk::CommandBufferBeginInfo(
-      vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
-
-  // 6. Transition image layout back to ColorAttachmentOptimal so it is ready
-  // for any subsequent draw calls!
-  TransitionImageLayout(*m_commandBuffer, m_headlessImages[readIdx].get(),
-                        vk::ImageLayout::eTransferSrcOptimal,
-                        vk::ImageLayout::eColorAttachmentOptimal, range);
-
-  // 7. Now call the base class ReadLFB to copy the synchronized pixels to the
-  // client buffer!
-  return SoftwareBackendBase::ReadLFB(buffer, srcX, srcY, srcWidth, srcHeight,
-                                      dstStride, dstData);
-}
-
 void VulkanBackend::PollEvents() {
-  // No-op to prevent stealing SDL event queue inputs from the host application.
+  std::lock_guard<std::mutex> lock(m_mutex);
+  // Safe no-op in Headless, X11Child, and WaylandSubsurface modes; pumps SDL
+  // events only in StandaloneSDL2 mode.
+  m_surfaceHost.PollEvents();
 }
 
 void VulkanBackend::SstIdle() {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (m_device) {
     // Blocks the host CPU until all submitted GPU commands in all queues have
     // finished execution!
@@ -1616,48 +1592,39 @@ bool VulkanBackend::CreateInstance() {
 #endif
 
   if (shouldLoadExtensions) {
-    bool sdlReady = true;
-    m_sdlVideoInitializedByUs = false;
-    if (!SDL_WasInit(SDL_INIT_VIDEO)) {
-      if (SDL_Init(SDL_INIT_VIDEO) < 0) {
-        GLIDE_LOG(
-            WARN, "Vulkan",
-            "SDL_Init video failed in CreateInstance: " << SDL_GetError());
-        sdlReady = false;
-      } else {
-        m_sdlVideoInitializedByUs = true;
+    std::unordered_set<std::string> availableExtensions;
+    try {
+      for (const auto& ext : vk::enumerateInstanceExtensionProperties()) {
+        availableExtensions.insert(ext.extensionName.data());
       }
+    } catch (const std::exception& e) {
+      GLIDE_LOG(WARN, "Vulkan",
+                "Failed to enumerate Vulkan instance extensions: " << e.what());
     }
-    if (sdlReady) {
-      // Explicitly load the Vulkan driver library via SDL to initialize its
-      // internal function pointers!
-      if (SDL_Vulkan_LoadLibrary(nullptr) < 0) {
-        GLIDE_LOG(WARN, "Vulkan",
-                  "SDL_Vulkan_LoadLibrary failed in CreateInstance: "
-                      << SDL_GetError());
-      } else {
-        unsigned int extensionCount = 0;
-        if (SDL_Vulkan_GetInstanceExtensions(nullptr, &extensionCount,
-                                             nullptr)) {
-          std::vector<const char*> sdlExtensions(extensionCount);
-          if (SDL_Vulkan_GetInstanceExtensions(nullptr, &extensionCount,
-                                               sdlExtensions.data())) {
-            for (const auto& ext : sdlExtensions) {
-              requiredExtensions.push_back(ext);
-              GLIDE_LOG(INFO, "Vulkan", "Loaded SDL Vulkan extension: " << ext);
-            }
-          }
-        } else {
-          GLIDE_LOG(WARN, "Vulkan",
-                    "SDL_Vulkan_GetInstanceExtensions count query failed: "
-                        << SDL_GetError());
-        }
+
+    auto enableIfAvailable = [&](const char* extName) {
+      if (availableExtensions.count(extName) > 0) {
+        requiredExtensions.push_back(extName);
+        GLIDE_LOG(INFO, "Vulkan",
+                  "Enabled Vulkan WSI instance extension: " << extName);
       }
-    }
+    };
+
+    enableIfAvailable(VK_KHR_SURFACE_EXTENSION_NAME);
+#if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_X11)
+    enableIfAvailable(VK_KHR_XLIB_SURFACE_EXTENSION_NAME);
+    enableIfAvailable("VK_KHR_xcb_surface");
+#endif
+#if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_WAYLAND)
+    enableIfAvailable(VK_KHR_WAYLAND_SURFACE_EXTENSION_NAME);
+#endif
+#if defined(_WIN32)
+    enableIfAvailable(VK_KHR_WIN32_SURFACE_EXTENSION_NAME);
+#endif
   } else {
     GLIDE_LOG(INFO, "Vulkan",
               "No active display environment or forceNoWindow is set. "
-              "Skipping SDL Vulkan instance extensions.");
+              "Skipping Vulkan WSI instance extensions.");
   }
 
   createInfo.setEnabledExtensionCount(
@@ -1867,174 +1834,6 @@ bool VulkanBackend::CreateLogicalDevice() {
   return true;
 }
 
-bool VulkanBackend::CreateRenderPass() {
-  vk::SampleCountFlagBits samples =
-      static_cast<vk::SampleCountFlagBits>(m_msaaSamples);
-
-  if (m_msaaSamples > 1) {
-    // --- MSAA Render Pass Configuration (3 Attachments) ---
-
-    // Attachment 0: Multi-sampled Color Target
-    vk::AttachmentDescription colorAttachment(
-        {}, m_colorFormat, samples, vk::AttachmentLoadOp::eLoad,
-        vk::AttachmentStoreOp::eStore, vk::AttachmentLoadOp::eDontCare,
-        vk::AttachmentStoreOp::eDontCare,
-        vk::ImageLayout::eColorAttachmentOptimal,
-        vk::ImageLayout::eColorAttachmentOptimal);
-    vk::AttachmentReference colorRef(0,
-                                     vk::ImageLayout::eColorAttachmentOptimal);
-
-    // Attachment 1: Multi-sampled Depth Target
-    vk::AttachmentDescription depthAttachment(
-        {}, m_depthFormat, samples, vk::AttachmentLoadOp::eLoad,
-        vk::AttachmentStoreOp::eStore, vk::AttachmentLoadOp::eDontCare,
-        vk::AttachmentStoreOp::eDontCare,
-        vk::ImageLayout::eDepthStencilAttachmentOptimal,
-        vk::ImageLayout::eDepthStencilAttachmentOptimal);
-    vk::AttachmentReference depthRef(
-        1, vk::ImageLayout::eDepthStencilAttachmentOptimal);
-
-    // Attachment 2: Single-sampled Resolve Target (our presentation FBO color
-    // image)
-    vk::AttachmentDescription resolveAttachment(
-        {}, m_colorFormat, vk::SampleCountFlagBits::e1,
-        vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eStore,
-        vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare,
-        vk::ImageLayout::eColorAttachmentOptimal,
-        vk::ImageLayout::eColorAttachmentOptimal);
-    vk::AttachmentReference resolveRef(
-        2, vk::ImageLayout::eColorAttachmentOptimal);
-
-    // Subpass: renders to colorRef (0) with depthRef (1), and automatically
-    // resolves color to resolveRef (2)
-    vk::SubpassDescription subpass({}, vk::PipelineBindPoint::eGraphics, 0,
-                                   nullptr, 1, &colorRef, &resolveRef,
-                                   &depthRef);
-
-    // Setup subpass dependencies to enforce strict GPU synchronization between
-    // clear, draw, and copy stages
-    std::array<vk::SubpassDependency, 2> dependencies;
-
-    // Dependency 1: Sync Clear/Transfer writes to Color/Depth Attachments
-    dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
-    dependencies[0].dstSubpass = 0;
-    dependencies[0].srcStageMask =
-        vk::PipelineStageFlagBits::eTransfer |
-        vk::PipelineStageFlagBits::eColorAttachmentOutput |
-        vk::PipelineStageFlagBits::eEarlyFragmentTests;
-    dependencies[0].dstStageMask =
-        vk::PipelineStageFlagBits::eColorAttachmentOutput |
-        vk::PipelineStageFlagBits::eEarlyFragmentTests;
-    dependencies[0].srcAccessMask =
-        vk::AccessFlagBits::eTransferWrite |
-        vk::AccessFlagBits::eColorAttachmentWrite |
-        vk::AccessFlagBits::eDepthStencilAttachmentWrite;
-    dependencies[0].dstAccessMask =
-        vk::AccessFlagBits::eColorAttachmentWrite |
-        vk::AccessFlagBits::eColorAttachmentRead |
-        vk::AccessFlagBits::eDepthStencilAttachmentWrite |
-        vk::AccessFlagBits::eDepthStencilAttachmentRead;
-    dependencies[0].dependencyFlags = vk::DependencyFlagBits::eByRegion;
-
-    // Dependency 2: Sync Color/Depth Attachment writes to Transfer/Copy reads
-    // (in SwapBuffers)
-    dependencies[1].srcSubpass = 0;
-    dependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
-    dependencies[1].srcStageMask =
-        vk::PipelineStageFlagBits::eColorAttachmentOutput |
-        vk::PipelineStageFlagBits::eLateFragmentTests;
-    dependencies[1].dstStageMask = vk::PipelineStageFlagBits::eTransfer;
-    dependencies[1].srcAccessMask =
-        vk::AccessFlagBits::eColorAttachmentWrite |
-        vk::AccessFlagBits::eDepthStencilAttachmentWrite;
-    dependencies[1].dstAccessMask = vk::AccessFlagBits::eTransferRead;
-    dependencies[1].dependencyFlags = vk::DependencyFlagBits::eByRegion;
-
-    std::array<vk::AttachmentDescription, 3> attachments = {
-        colorAttachment, depthAttachment, resolveAttachment};
-    vk::RenderPassCreateInfo passInfo(
-        {}, static_cast<uint32_t>(attachments.size()), attachments.data(), 1,
-        &subpass, static_cast<uint32_t>(dependencies.size()),
-        dependencies.data());
-    m_renderPass = m_device->createRenderPassUnique(passInfo);
-  } else {
-    // --- Standard Render Pass Configuration (2 Attachments, 1x MSAA) ---
-
-    // 1. Color Attachment Description
-    vk::AttachmentDescription colorAttachment(
-        {}, m_colorFormat, vk::SampleCountFlagBits::e1,
-        vk::AttachmentLoadOp::eLoad, vk::AttachmentStoreOp::eStore,
-        vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare,
-        vk::ImageLayout::eColorAttachmentOptimal,
-        vk::ImageLayout::eColorAttachmentOptimal);
-    vk::AttachmentReference colorRef(0,
-                                     vk::ImageLayout::eColorAttachmentOptimal);
-
-    // 2. Depth Attachment Description
-    vk::AttachmentDescription depthAttachment(
-        {}, m_depthFormat, vk::SampleCountFlagBits::e1,
-        vk::AttachmentLoadOp::eLoad, vk::AttachmentStoreOp::eStore,
-        vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare,
-        vk::ImageLayout::eDepthStencilAttachmentOptimal,
-        vk::ImageLayout::eDepthStencilAttachmentOptimal);
-    vk::AttachmentReference depthRef(
-        1, vk::ImageLayout::eDepthStencilAttachmentOptimal);
-
-    // 3. Subpass Description (binds both color reference and depth stencil
-    // reference)
-    vk::SubpassDescription subpass({}, vk::PipelineBindPoint::eGraphics, 0,
-                                   nullptr, 1, &colorRef, nullptr, &depthRef);
-
-    // Setup subpass dependencies to enforce strict GPU synchronization between
-    // clear, draw, and copy stages
-    std::array<vk::SubpassDependency, 2> dependencies;
-
-    // Dependency 1: Sync Clear/Transfer writes to Color/Depth Attachments
-    dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
-    dependencies[0].dstSubpass = 0;
-    dependencies[0].srcStageMask =
-        vk::PipelineStageFlagBits::eTransfer |
-        vk::PipelineStageFlagBits::eColorAttachmentOutput |
-        vk::PipelineStageFlagBits::eEarlyFragmentTests;
-    dependencies[0].dstStageMask =
-        vk::PipelineStageFlagBits::eColorAttachmentOutput |
-        vk::PipelineStageFlagBits::eEarlyFragmentTests;
-    dependencies[0].srcAccessMask =
-        vk::AccessFlagBits::eTransferWrite |
-        vk::AccessFlagBits::eColorAttachmentWrite |
-        vk::AccessFlagBits::eDepthStencilAttachmentWrite;
-    dependencies[0].dstAccessMask =
-        vk::AccessFlagBits::eColorAttachmentWrite |
-        vk::AccessFlagBits::eColorAttachmentRead |
-        vk::AccessFlagBits::eDepthStencilAttachmentWrite |
-        vk::AccessFlagBits::eDepthStencilAttachmentRead;
-    dependencies[0].dependencyFlags = vk::DependencyFlagBits::eByRegion;
-
-    // Dependency 2: Sync Color/Depth Attachment writes to Transfer/Copy reads
-    // (in SwapBuffers)
-    dependencies[1].srcSubpass = 0;
-    dependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
-    dependencies[1].srcStageMask =
-        vk::PipelineStageFlagBits::eColorAttachmentOutput |
-        vk::PipelineStageFlagBits::eLateFragmentTests;
-    dependencies[1].dstStageMask = vk::PipelineStageFlagBits::eTransfer;
-    dependencies[1].srcAccessMask =
-        vk::AccessFlagBits::eColorAttachmentWrite |
-        vk::AccessFlagBits::eDepthStencilAttachmentWrite;
-    dependencies[1].dstAccessMask = vk::AccessFlagBits::eTransferRead;
-    dependencies[1].dependencyFlags = vk::DependencyFlagBits::eByRegion;
-
-    std::array<vk::AttachmentDescription, 2> attachments = {colorAttachment,
-                                                            depthAttachment};
-    vk::RenderPassCreateInfo passInfo(
-        {}, static_cast<uint32_t>(attachments.size()), attachments.data(), 1,
-        &subpass, static_cast<uint32_t>(dependencies.size()),
-        dependencies.data());
-    m_renderPass = m_device->createRenderPassUnique(passInfo);
-  }
-
-  return true;
-}
 bool VulkanBackend::CreateHeadlessRenderTarget(uint32_t width,
                                                uint32_t height) {
   vk::SampleCountFlagBits samples =
@@ -2190,8 +1989,9 @@ bool VulkanBackend::CreateHeadlessRenderTarget(uint32_t width,
     std::memset(m_gpuStagingMaps[i], 0xFF, width * height * 4);
   }
 
-  // Allocate CPU framebuffers for double-buffering
-  AllocateCpuBuffers(width, height);
+  // Configure lazily-allocated CPU LFB staging (0 bytes until LFB is touched)
+  m_lfbStaging.Configure(width, height, /*allocateEagerly=*/false);
+  m_activeRenderBuffer = 1;  // GR_BUFFER_BACKBUFFER
 
   return true;
 }
@@ -2281,1263 +2081,8 @@ void VulkanBackend::TransitionImageLayout(vk::CommandBuffer cmd,
                       1, &barrier);
 }
 
-void VulkanBackend::FlushLFBToGPU() {
-  if (!m_lfbDirty) return;
-
-  GLIDE_LOG(DEBUG, "Vulkan", "FlushLFBToGPU: Checking dirty buffers...");
-  if (!m_commandBuffer) {
-    GLIDE_LOG(
-        CRITICAL, "Vulkan",
-        "FlushLFBToGPU: CRITICAL ERROR - m_commandBuffer is NULL pointer!");
-    std::cerr << "[CRIT] FlushLFBToGPU: m_commandBuffer is NULL pointer!\n";
-  } else if (!(*m_commandBuffer)) {
-    GLIDE_LOG(
-        CRITICAL, "Vulkan",
-        "FlushLFBToGPU: CRITICAL ERROR - *m_commandBuffer is NULL handle!");
-    std::cerr << "[CRIT] FlushLFBToGPU: *m_commandBuffer is NULL handle!\n";
-  }
-
-  // Resolve the GPU image indices for FRONT and BACK buffers
-  uint32_t gpuFrontIdx = (0 == m_activeRenderBuffer)
-                             ? GetActiveGpuBufferIdx()
-                             : (1u - GetActiveGpuBufferIdx());
-  uint32_t gpuBackIdx = (1 == m_activeRenderBuffer)
-                            ? GetActiveGpuBufferIdx()
-                            : (1u - GetActiveGpuBufferIdx());
-
-  // We will flush the dirty buffer. In practice, only one is dirty at a time.
-  // If both are dirty, we warn and flush the back buffer.
-  uint32_t bufferToFlush = 2;  // 2 = none
-  uint32_t targetGpuIdx = 0;
-  void* srcCpuData = nullptr;
-
-  if (m_lfbBufferDirty[0] && m_lfbBufferDirty[1]) {
-    GLIDE_LOG(WARN, "Vulkan",
-              "FlushLFBToGPU: Both FRONT and BACK LFB buffers are dirty in the "
-              "same flush. Flushing BACK.");
-    bufferToFlush = 1;
-    targetGpuIdx = gpuBackIdx;
-    srcCpuData = m_cpuBuffers[m_backBufferIdx].data();
-  } else if (m_lfbBufferDirty[0]) {
-    bufferToFlush = 0;
-    targetGpuIdx = gpuFrontIdx;
-    srcCpuData = m_cpuBuffers[m_frontBufferIdx].data();
-  } else if (m_lfbBufferDirty[1]) {
-    bufferToFlush = 1;
-    targetGpuIdx = gpuBackIdx;
-    srcCpuData = m_cpuBuffers[m_backBufferIdx].data();
-  }
-
-  if (bufferToFlush == 2 || !srcCpuData) {
-    m_lfbDirty = false;
-    m_lfbBufferDirty[0] = false;
-    m_lfbBufferDirty[1] = false;
-    return;
-  }
-
-  // If there are pending clears on the target FBO, we MUST execute them on the
-  // GPU first! Otherwise, the subsequent copyBufferToImage will be overwritten
-  // when the clears are eventually executed!
-  if (!m_inRenderPass && (m_clearColorPending[targetGpuIdx] ||
-                          m_clearDepthPending[targetGpuIdx])) {
-    GLIDE_LOG(DEBUG, "Vulkan",
-              "FlushLFBToGPU: Executing pending clears on target FBO "
-                  << targetGpuIdx << " before LFB upload...");
-    uint32_t origActive = m_activeRenderBuffer;
-    m_activeRenderBuffer =
-        bufferToFlush;  // Temporarily set active buffer so
-                        // EnsureRenderPassActive targets bufferToFlush!
-    EnsureRenderPassActive();
-    m_commandBuffer->endRenderPass();
-    m_inRenderPass = false;
-    m_activeRenderBuffer = origActive;  // Restore
-  }
-
-  // 1. If we are inside an active render pass, we must end it first!
-  if (m_inRenderPass) {
-    FlushBatch();
-    GLIDE_LOG(DEBUG, "Vulkan",
-              "FlushLFBToGPU: Ending active render pass to perform CPU->GPU "
-              "transfer...");
-    m_commandBuffer->endRenderPass();
-    m_inRenderPass = false;
-  }
-
-  // Copy from CPU-side active buffer to GPU staging memory
-  GLIDE_LOG(DEBUG, "Vulkan",
-            "FlushLFBToGPU: [MEMCPY TRACE] m_currentFrameSlot = "
-                << m_currentFrameSlot);
-  GLIDE_LOG(DEBUG, "Vulkan",
-            "FlushLFBToGPU: [MEMCPY TRACE] m_gpuStagingMaps = "
-                << m_gpuStagingMaps[m_currentFrameSlot]);
-  GLIDE_LOG(DEBUG, "Vulkan",
-            "FlushLFBToGPU: [MEMCPY TRACE] srcCpuData = " << srcCpuData);
-  GLIDE_LOG(DEBUG, "Vulkan",
-            "FlushLFBToGPU: [MEMCPY TRACE] bufferToFlush = "
-                << bufferToFlush << ", m_frontBufferIdx = " << m_frontBufferIdx
-                << ", m_backBufferIdx = " << m_backBufferIdx);
-  GLIDE_LOG(DEBUG, "Vulkan",
-            "FlushLFBToGPU: [MEMCPY TRACE] m_cpuBuffers[0].size() = "
-                << m_cpuBuffers[0].size()
-                << ", m_cpuBuffers[1].size() = " << m_cpuBuffers[1].size());
-  GLIDE_LOG(DEBUG, "Vulkan",
-            "FlushLFBToGPU: [MEMCPY TRACE] Copy size = "
-                << (m_headlessWidth * m_headlessHeight * 4));
-
-  if (m_gpuStagingMaps[m_currentFrameSlot]) {
-    GLIDE_LOG(DEBUG, "Vulkan",
-              "FlushLFBToGPU: [MEMCPY TRACE] Executing std::memcpy...");
-    std::memcpy(m_gpuStagingMaps[m_currentFrameSlot], srcCpuData,
-                m_headlessWidth * m_headlessHeight * 4);
-    GLIDE_LOG(
-        DEBUG, "Vulkan",
-        "FlushLFBToGPU: [MEMCPY TRACE] std::memcpy finished successfully!");
-  }
-
-  // 2. Transition image to TransferDstOptimal
-  vk::ImageSubresourceRange range(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1);
-  TransitionImageLayout(*m_commandBuffer, m_headlessImages[targetGpuIdx].get(),
-                        vk::ImageLayout::eColorAttachmentOptimal,
-                        vk::ImageLayout::eTransferDstOptimal, range);
-
-  // 3. Record copy from buffer to image
-  vk::BufferImageCopy region;
-  region.imageSubresource =
-      vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
-  region.imageExtent = vk::Extent3D(m_headlessWidth, m_headlessHeight, 1);
-
-  // Flush mapped memory to ensure host writes are visible to GPU
-  vk::MappedMemoryRange memRange(
-      m_headlessPixelMemories[m_currentFrameSlot].get(), 0, VK_WHOLE_SIZE);
-  m_device->flushMappedMemoryRanges(memRange);
-
-  m_commandBuffer->copyBufferToImage(
-      m_headlessPixelBuffers[m_currentFrameSlot].get(),
-      m_headlessImages[targetGpuIdx].get(),
-      vk::ImageLayout::eTransferDstOptimal, 1, &region);
-
-  // 4. Transition image back to ColorAttachmentOptimal
-  TransitionImageLayout(*m_commandBuffer, m_headlessImages[targetGpuIdx].get(),
-                        vk::ImageLayout::eTransferDstOptimal,
-                        vk::ImageLayout::eColorAttachmentOptimal, range);
-
-  // End and submit the upload command buffer immediately to ensure GPU FBO is
-  // fully updated before any subsequent reads/draws!
-  m_commandBuffer->end();
-  vk::SubmitInfo submitInfo(0, nullptr, nullptr, 1, m_commandBuffer);
-  m_graphicsQueue.submit(submitInfo, {});
-  m_device->waitIdle();
-
-  // Reset and begin a new command buffer for subsequent operations in the
-  // frame!
-  m_commandBuffer->reset({});
-  m_commandBuffer->begin(vk::CommandBufferBeginInfo(
-      vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
-
-  // 5. Clear the dirty flags
-  m_lfbDirty = false;
-  m_lfbBufferDirty[0] = false;
-  m_lfbBufferDirty[1] = false;
-}
-
-// --- Phase 2: Dynamic Shader Modules & Pipeline State Creation ---
-bool VulkanBackend::CreateShaderModules() {
-  if (m_vertShaderModule && m_fragShaderModule && m_fragShaderModuleDualSrc) {
-    return true;  // Already persistent across window resets
-  }
-  try {
-    vk::ShaderModuleCreateInfo vertInfo({}, color_vert_spv_size,
-                                        color_vert_spv);
-    m_vertShaderModule = m_device->createShaderModuleUnique(vertInfo);
-
-    vk::ShaderModuleCreateInfo fragInfo({}, color_frag_spv_size,
-                                        color_frag_spv);
-    m_fragShaderModule = m_device->createShaderModuleUnique(fragInfo);
-
-    vk::ShaderModuleCreateInfo fragDualSrcInfo({}, color_dualsrc_frag_spv_size,
-                                               color_dualsrc_frag_spv);
-    m_fragShaderModuleDualSrc =
-        m_device->createShaderModuleUnique(fragDualSrcInfo);
-
-    GLIDE_LOG(INFO, "Vulkan",
-              "Loaded build-time compiled SPIR-V vertex and fragment shader "
-              "modules (including dual-source variant).");
-    return true;
-  } catch (const std::exception& e) {
-    GLIDE_LOG(CRITICAL, "Vulkan",
-              "Failed to create Vulkan Shader Modules: " << e.what());
-    return false;
-  }
-}
-
-PipelineStateKey VulkanBackend::GetCurrentStateKey() const {
-  PipelineStateKey key;
-  key.cullMode = m_cullMode;
-  key.sstOrigin = m_sstOrigin;
-  key.depthMode = m_depthMode;
-  if (m_depthMode != 0) {
-    key.depthMask = m_depthMask;
-    key.depthCompareOp = m_depthCompareOp;
-  } else {
-    key.depthMask = false;
-    key.depthCompareOp = 0;  // Canonical constant for depth disabled
-  }
-  key.rgbSrcBlend = m_rgbSrcBlend;
-  key.rgbDstBlend = m_rgbDstBlend;
-  key.alphaSrcBlend = m_alphaSrcBlend;
-  key.alphaDstBlend = m_alphaDstBlend;
-  key.colorMaskRgb = m_colorMaskRgb;
-  key.colorMaskAlpha = m_colorMaskAlpha;
-  return key;
-}
-
-vk::UniquePipeline VulkanBackend::CompileSinglePipeline(
-    const PipelineStateKey& key, vk::PrimitiveTopology topology) {
-  try {
-    // Determine if the pipeline key requires dual-source blending (factor 15 =
-    // GR_BLEND_PREFOG_COLOR)
-    bool useDualSrcBlend = (key.rgbSrcBlend == 15 || key.rgbDstBlend == 15 ||
-                            key.alphaSrcBlend == 15 || key.alphaDstBlend == 15);
-    vk::ShaderModule fragShader = useDualSrcBlend
-                                      ? m_fragShaderModuleDualSrc.get()
-                                      : m_fragShaderModule.get();
-
-    // Shader Stages
-    vk::PipelineShaderStageCreateInfo shaderStages[] = {
-        vk::PipelineShaderStageCreateInfo({}, vk::ShaderStageFlagBits::eVertex,
-                                          m_vertShaderModule.get(), "main"),
-        vk::PipelineShaderStageCreateInfo(
-            {}, vk::ShaderStageFlagBits::eFragment, fragShader, "main")};
-
-    // Vertex Input Bindings (matches ModernVertex exactly)
-    vk::VertexInputBindingDescription bindingDesc(0, sizeof(ModernVertex),
-                                                  vk::VertexInputRate::eVertex);
-    std::array<vk::VertexInputAttributeDescription, 5> attrDescs = {
-        vk::VertexInputAttributeDescription(
-            0, 0, vk::Format::eR32G32B32A32Sfloat, offsetof(ModernVertex, pos)),
-        vk::VertexInputAttributeDescription(1, 0,
-                                            vk::Format::eR32G32B32A32Sfloat,
-                                            offsetof(ModernVertex, color)),
-        vk::VertexInputAttributeDescription(
-            2, 0, vk::Format::eR32G32B32A32Sfloat, offsetof(ModernVertex, tex)),
-        vk::VertexInputAttributeDescription(3, 0, vk::Format::eR32G32Sfloat,
-                                            offsetof(ModernVertex, tmu_oow)),
-        vk::VertexInputAttributeDescription(4, 0, vk::Format::eR32Sfloat,
-                                            offsetof(ModernVertex, fog))};
-
-    vk::PipelineVertexInputStateCreateInfo vertexInputInfo(
-        {}, 1, &bindingDesc, static_cast<uint32_t>(attrDescs.size()),
-        attrDescs.data());
-
-    // Input Assembly Topology
-    vk::PipelineInputAssemblyStateCreateInfo inputAssembly({}, topology, false);
-
-    // Dynamic Viewport and Scissor States (prevents pipeline rebuilds on
-    // resolution change)
-    std::vector<vk::DynamicState> dynamicStates = {vk::DynamicState::eViewport,
-                                                   vk::DynamicState::eScissor};
-    vk::PipelineDynamicStateCreateInfo dynamicState(
-        {}, static_cast<uint32_t>(dynamicStates.size()), dynamicStates.data());
-    vk::PipelineViewportStateCreateInfo viewportState({}, 1, nullptr, 1,
-                                                      nullptr);
-
-    // Rasterization Configuration (Dynamic Depth Clamping prevents
-    // out-of-bounds Z clipping!)
-    vk::CullModeFlags vkCullMode = vk::CullModeFlagBits::eNone;
-    switch (key.cullMode) {
-      case 0:
-        vkCullMode = vk::CullModeFlagBits::eNone;
-        break;  // GR_CULL_DISABLE
-      case 1:
-        vkCullMode = vk::CullModeFlagBits::eBack;
-        break;  // GR_CULL_NEGATIVE (cull CCW / Back face)
-      case 2:
-        vkCullMode = vk::CullModeFlagBits::eFront;
-        break;  // GR_CULL_POSITIVE (cull CW / Front face)
-      default:
-        break;
-    }
-
-    vk::FrontFace frontFace = (key.sstOrigin == 1)
-                                  ? vk::FrontFace::eCounterClockwise
-                                  : vk::FrontFace::eClockwise;
-    vk::PipelineRasterizationStateCreateInfo rasterizer(
-        {}, m_depthClampEnabled, false, vk::PolygonMode::eFill, vkCullMode,
-        frontFace, false, 0.0f, 0.0f, 0.0f, 1.0f);
-
-    // Multisample Configuration
-    vk::PipelineMultisampleStateCreateInfo multisampling(
-        {}, static_cast<vk::SampleCountFlagBits>(m_msaaSamples), false, 1.0f,
-        nullptr, false, false);
-
-    // Depth Stencil Configuration based on Glide's active states
-    vk::PipelineDepthStencilStateCreateInfo depthStencil{};
-    if (key.depthMode != 0) {
-      depthStencil.depthTestEnable = true;
-      depthStencil.depthWriteEnable = key.depthMask ? true : false;
-
-      vk::CompareOp op = vk::CompareOp::eLess;
-      switch (key.depthCompareOp) {
-        case 0:
-          op = vk::CompareOp::eNever;
-          break;
-        case 1:
-          op = vk::CompareOp::eLess;
-          break;
-        case 2:
-          op = vk::CompareOp::eEqual;
-          break;
-        case 3:
-          op = vk::CompareOp::eLessOrEqual;
-          break;
-        case 4:
-          op = vk::CompareOp::eGreater;
-          break;
-        case 5:
-          op = vk::CompareOp::eNotEqual;
-          break;
-        case 6:
-          op = vk::CompareOp::eGreaterOrEqual;
-          break;
-        case 7:
-          op = vk::CompareOp::eAlways;
-          break;
-        default:
-          break;
-      }
-      depthStencil.depthCompareOp = op;
-    } else {
-      depthStencil.depthTestEnable = false;
-      depthStencil.depthWriteEnable = false;
-    }
-    depthStencil.depthBoundsTestEnable = false;
-    depthStencil.stencilTestEnable = false;
-
-    // Color Blending
-    vk::PipelineColorBlendAttachmentState colorBlendAttachment;
-    vk::ColorComponentFlags mask{};
-    if (key.colorMaskRgb) {
-      mask |= vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
-              vk::ColorComponentFlagBits::eB;
-    }
-    if (key.colorMaskAlpha) {
-      mask |= vk::ColorComponentFlagBits::eA;
-    }
-    colorBlendAttachment.colorWriteMask = mask;
-
-    colorBlendAttachment.blendEnable = true;
-    colorBlendAttachment.colorBlendOp = vk::BlendOp::eAdd;
-    colorBlendAttachment.srcColorBlendFactor =
-        MapBlendFactorVulkan(key.rgbSrcBlend, false, false);
-    colorBlendAttachment.dstColorBlendFactor =
-        MapBlendFactorVulkan(key.rgbDstBlend, true, false);
-    colorBlendAttachment.alphaBlendOp = vk::BlendOp::eAdd;
-    colorBlendAttachment.srcAlphaBlendFactor =
-        MapBlendFactorVulkan(key.alphaSrcBlend, false, true);
-    colorBlendAttachment.dstAlphaBlendFactor =
-        MapBlendFactorVulkan(key.alphaDstBlend, true, true);
-
-    vk::PipelineColorBlendStateCreateInfo colorBlending(
-        {}, false, vk::LogicOp::eCopy, 1, &colorBlendAttachment,
-        {0.0f, 0.0f, 0.0f, 0.0f});
-
-    // Push Constants Layout (ensure layout exists)
-    if (!m_pipelineLayout) {
-      vk::PushConstantRange pushRange(
-          vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment,
-          0, sizeof(PushConstants));
-      vk::PipelineLayoutCreateInfo pipelineLayoutInfo(
-          {}, 1, &m_descriptorSetLayout.get(), 1, &pushRange);
-      m_pipelineLayout =
-          m_device->createPipelineLayoutUnique(pipelineLayoutInfo);
-    }
-
-    // Assemble Graphics Pipeline
-    vk::GraphicsPipelineCreateInfo pipelineInfo(
-        {}, 2, shaderStages, &vertexInputInfo, &inputAssembly, nullptr,
-        &viewportState, &rasterizer, &multisampling, &depthStencil,
-        &colorBlending, &dynamicState, m_pipelineLayout.get(),
-        m_renderPass.get(), 0, {}, -1);
-
-    auto result = m_device->createGraphicsPipelineUnique(
-        m_vkPipelineCache.get(), pipelineInfo);
-    if (result.result != vk::Result::eSuccess) {
-      throw std::runtime_error("Failed to compile Vulkan pipeline!");
-    }
-    return std::move(result.value);
-  } catch (const std::exception& e) {
-    GLIDE_LOG(
-        CRITICAL, "Vulkan",
-        "Failed to compile single Vulkan graphics pipeline: " << e.what());
-  }
-  return vk::UniquePipeline();
-}
-
-static inline uint32_t PackPipelineCacheKey(const PipelineStateKey& state,
-                                            vk::PrimitiveTopology topology) {
-  uint32_t key = 0;
-  key |= (state.cullMode & 0x3) << 0;
-  key |= (state.sstOrigin & 0x1) << 2;
-  key |= (state.depthMode & 0x3) << 3;
-  key |= (state.depthMask ? 1 : 0) << 5;
-  key |= (state.depthCompareOp & 0x7) << 6;
-  key |= (state.rgbSrcBlend & 0xF) << 9;
-  key |= (state.rgbDstBlend & 0xF) << 13;
-  key |= (state.alphaSrcBlend & 0xF) << 17;
-  key |= (state.alphaDstBlend & 0xF) << 21;
-  key |= (state.colorMaskRgb ? 1 : 0) << 25;
-  key |= (state.colorMaskAlpha ? 1 : 0) << 26;
-  key |= (static_cast<uint32_t>(topology) & 0x7) << 27;
-  return key;
-}
-
-vk::Pipeline VulkanBackend::GetOrCreatePipeline(
-    const PipelineStateKey& key, vk::PrimitiveTopology topology) {
-  PipelineCacheKey cacheKey = PackPipelineCacheKey(key, topology);
-  auto it = m_pipelineCache.find(cacheKey);
-  if (it == m_pipelineCache.end()) {
-    GLIDE_LOG(
-        INFO, "Vulkan",
-        "Pipeline Cache Miss! Compiling new pipeline for state & topology. "
-        "Topology="
-            << vk::to_string(topology) << ", Cull=" << key.cullMode
-            << ", Origin=" << key.sstOrigin << ", DepthMode=" << key.depthMode
-            << ", DepthMask=" << key.depthMask
-            << ", DepthOp=" << key.depthCompareOp << ", RGBBlend("
-            << key.rgbSrcBlend << "," << key.rgbDstBlend << ")"
-            << ", AlphaBlend(" << key.alphaSrcBlend << "," << key.alphaDstBlend
-            << ")");
-
-    vk::UniquePipeline pipeline = CompileSinglePipeline(key, topology);
-    if (!pipeline) {
-      GLIDE_LOG(CRITICAL, "Vulkan",
-                "Failed to compile new pipeline in GetOrCreatePipeline!");
-      return vk::Pipeline();
-    }
-    vk::Pipeline rawPipeline = pipeline.get();
-    m_pipelineCache.emplace(cacheKey, std::move(pipeline));
-    return rawPipeline;
-  }
-  return it->second.get();
-}
-
-void VulkanBackend::DrawPoint(const ModernVertex& pt) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
-  if (!m_initialized || !m_windowAttached) return;
-
-  FlushLFBToGPU();
-
-  GLIDE_LOG(DEBUG, "Vulkan",
-            "DrawPoint GPU draw. Pos: (" << pt.pos[0] << ", " << pt.pos[1]
-                                         << ", " << pt.pos[2] << ")");
-
-  // 1. Determine active pipeline & descriptor set
-  vk::Pipeline reqPipeline = GetOrCreatePipeline(
-      GetCurrentStateKey(), vk::PrimitiveTopology::ePointList);
-
-  vk::ImageView view0 = m_dummyTexture.imageView.get();
-  vk::Sampler sampler0 = m_dummySampler.get();
-  if (m_boundTexAddress[0] != 0xFFFFFFFF) {
-    auto it = m_vulkanTextures.find(m_boundTexAddress[0]);
-    if (it != m_vulkanTextures.end()) {
-      auto& tex = it->second;
-      view0 = tex.imageView.get();
-      sampler0 = GetOrCreateSampler(tex.clampS, tex.clampT, tex.minFilter,
-                                    tex.magFilter, m_texLodBias[0],
-                                    m_texMipMapMode[0], m_texLodBlend[0]);
-    }
-  }
-
-  vk::ImageView view1 = m_dummyTexture.imageView.get();
-  vk::Sampler sampler1 = m_dummySampler.get();
-  if (m_boundTexAddress[1] != 0xFFFFFFFF) {
-    auto it = m_vulkanTextures.find(m_boundTexAddress[1]);
-    if (it != m_vulkanTextures.end()) {
-      auto& tex = it->second;
-      view1 = tex.imageView.get();
-      sampler1 = GetOrCreateSampler(tex.clampS, tex.clampT, tex.minFilter,
-                                    tex.magFilter, m_texLodBias[1],
-                                    m_texMipMapMode[1], m_texLodBlend[1]);
-    }
-  }
-
-  vk::DescriptorSet reqDescSet =
-      GetOrCreateDescriptorSet(view0, sampler0, view1, sampler1);
-
-  // 2. Check if we need to flush the active batch
-  bool stateChanged =
-      (reqPipeline != m_batchedPipeline || reqDescSet != m_batchedDescSet);
-  bool batchEmpty = (m_batchedVertexCount == 0);
-  bool bufferFull =
-      (m_vertexBufferOffset + sizeof(ModernVertex) > m_vertexBufferSize);
-
-  if (stateChanged || batchEmpty || bufferFull) {
-    if (stateChanged || bufferFull) {
-      FlushBatch();
-    }
-    if (bufferFull) {
-      GLIDE_LOG(WARN, "Vulkan",
-                "Dynamic Vertex Buffer wrap-around during DrawPoint! Stalling "
-                "GPU to prevent geometry corruption.");
-      FlushBatch();
-      if (m_inRenderPass) {
-        m_commandBuffer->endRenderPass();
-        m_inRenderPass = false;
-      }
-      m_commandBuffer->end();
-
-      vk::SubmitInfo submitInfo(0, nullptr, nullptr, 1, m_commandBuffer);
-      m_graphicsQueue.submit(submitInfo, {});
-      m_device->waitIdle();
-
-      m_commandBuffer->reset({});
-      m_commandBuffer->begin(vk::CommandBufferBeginInfo(
-          vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
-
-      m_vertexBufferOffset = 0;
-    }
-
-    m_batchedPipeline = reqPipeline;
-    m_batchedDescSet = reqDescSet;
-    m_batchedFirstVertex = m_vertexBufferOffset / sizeof(ModernVertex);
-  }
-
-  // 3. Append vertex to mapped buffer
-  if (!m_vertexBufferMap) {
-    GLIDE_LOG(CRITICAL, "Vulkan",
-              "Vertex buffer map is null during DrawPoint!");
-    return;
-  }
-  auto* dest = reinterpret_cast<ModernVertex*>(
-      reinterpret_cast<uint8_t*>(m_vertexBufferMap) + m_vertexBufferOffset);
-  if (m_sstOrigin == 1) {  // GR_ORIGIN_LOWER_LEFT: flip Y coordinate
-    *dest = pt;
-    dest->pos[1] = (float)m_headlessHeight - pt.pos[1];
-  } else {
-    *dest = pt;
-  }
-
-  // 4. Update batch & offset tracking
-  m_batchedVertexCount += 1;
-  m_vertexBufferOffset += sizeof(ModernVertex);
-}
-
-void VulkanBackend::DrawLine(const ModernVertex& v1, const ModernVertex& v2) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
-  if (!m_initialized || !m_windowAttached) return;
-
-  FlushLFBToGPU();
-
-  GLIDE_LOG(DEBUG, "Vulkan",
-            "DrawLine GPU draw. V1: (" << v1.pos[0] << ", " << v1.pos[1]
-                                       << "), V2: (" << v2.pos[0] << ", "
-                                       << v2.pos[1] << ")");
-
-  // 1. Determine active pipeline & descriptor set
-  vk::Pipeline reqPipeline = GetOrCreatePipeline(
-      GetCurrentStateKey(), vk::PrimitiveTopology::eLineList);
-
-  vk::ImageView view0 = m_dummyTexture.imageView.get();
-  vk::Sampler sampler0 = m_dummySampler.get();
-  if (m_boundTexAddress[0] != 0xFFFFFFFF) {
-    auto it = m_vulkanTextures.find(m_boundTexAddress[0]);
-    if (it != m_vulkanTextures.end()) {
-      auto& tex = it->second;
-      view0 = tex.imageView.get();
-      sampler0 = GetOrCreateSampler(tex.clampS, tex.clampT, tex.minFilter,
-                                    tex.magFilter, m_texLodBias[0],
-                                    m_texMipMapMode[0], m_texLodBlend[0]);
-    }
-  }
-
-  vk::ImageView view1 = m_dummyTexture.imageView.get();
-  vk::Sampler sampler1 = m_dummySampler.get();
-  if (m_boundTexAddress[1] != 0xFFFFFFFF) {
-    auto it = m_vulkanTextures.find(m_boundTexAddress[1]);
-    if (it != m_vulkanTextures.end()) {
-      auto& tex = it->second;
-      view1 = tex.imageView.get();
-      sampler1 = GetOrCreateSampler(tex.clampS, tex.clampT, tex.minFilter,
-                                    tex.magFilter, m_texLodBias[1],
-                                    m_texMipMapMode[1], m_texLodBlend[1]);
-    }
-  }
-
-  vk::DescriptorSet reqDescSet =
-      GetOrCreateDescriptorSet(view0, sampler0, view1, sampler1);
-
-  // 2. Check if we need to flush the active batch
-  bool stateChanged =
-      (reqPipeline != m_batchedPipeline || reqDescSet != m_batchedDescSet);
-  bool batchEmpty = (m_batchedVertexCount == 0);
-  bool bufferFull =
-      (m_vertexBufferOffset + 2 * sizeof(ModernVertex) > m_vertexBufferSize);
-
-  if (stateChanged || batchEmpty || bufferFull) {
-    if (stateChanged || bufferFull) {
-      FlushBatch();
-    }
-    if (bufferFull) {
-      GLIDE_LOG(WARN, "Vulkan",
-                "Dynamic Vertex Buffer wrap-around during DrawLine! Stalling "
-                "GPU to prevent geometry corruption.");
-      FlushBatch();
-      if (m_inRenderPass) {
-        m_commandBuffer->endRenderPass();
-        m_inRenderPass = false;
-      }
-      m_commandBuffer->end();
-
-      vk::SubmitInfo submitInfo(0, nullptr, nullptr, 1, m_commandBuffer);
-      m_graphicsQueue.submit(submitInfo, {});
-      m_device->waitIdle();
-
-      m_commandBuffer->reset({});
-      m_commandBuffer->begin(vk::CommandBufferBeginInfo(
-          vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
-
-      m_vertexBufferOffset = 0;
-    }
-
-    m_batchedPipeline = reqPipeline;
-    m_batchedDescSet = reqDescSet;
-    m_batchedFirstVertex = m_vertexBufferOffset / sizeof(ModernVertex);
-  }
-
-  // 3. Append vertices to mapped buffer
-  if (!m_vertexBufferMap) {
-    GLIDE_LOG(CRITICAL, "Vulkan", "Vertex buffer map is null during DrawLine!");
-    return;
-  }
-  auto* dest = reinterpret_cast<ModernVertex*>(
-      reinterpret_cast<uint8_t*>(m_vertexBufferMap) + m_vertexBufferOffset);
-  if (m_sstOrigin == 1) {  // GR_ORIGIN_LOWER_LEFT: flip Y coordinates
-    dest[0] = v1;
-    dest[0].pos[1] = (float)m_headlessHeight - v1.pos[1];
-    dest[1] = v2;
-    dest[1].pos[1] = (float)m_headlessHeight - v2.pos[1];
-  } else {
-    dest[0] = v1;
-    dest[1] = v2;
-  }
-
-  // 4. Update batch & offset tracking
-  m_batchedVertexCount += 2;
-  m_vertexBufferOffset += 2 * sizeof(ModernVertex);
-}
-
-void VulkanBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
-                                 const ModernVertex& c) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
-  if (!m_initialized || !m_windowAttached) return;
-
-  FlushLFBToGPU();
-
-  GLIDE_LOG(DEBUG, "Vulkan",
-            "DrawTriangle GPU draw. A pos: ("
-                << a.pos[0] << ", " << a.pos[1] << ", " << a.pos[2] << ", "
-                << a.pos[3] << ") color: (" << a.color[0] << ", " << a.color[1]
-                << ", " << a.color[2] << ", " << a.color[3] << ") tex: ("
-                << a.tex[0] << ", " << a.tex[1] << ")");
-
-  // 1. Determine active pipeline & descriptor set
-  vk::Pipeline reqPipeline = GetOrCreatePipeline(
-      GetCurrentStateKey(), vk::PrimitiveTopology::eTriangleList);
-
-  vk::ImageView view0 = m_dummyTexture.imageView.get();
-  vk::Sampler sampler0 = m_dummySampler.get();
-  if (m_boundTexAddress[0] != 0xFFFFFFFF) {
-    auto it = m_vulkanTextures.find(m_boundTexAddress[0]);
-    if (it != m_vulkanTextures.end()) {
-      auto& tex = it->second;
-      view0 = tex.imageView.get();
-      sampler0 = GetOrCreateSampler(tex.clampS, tex.clampT, tex.minFilter,
-                                    tex.magFilter, m_texLodBias[0],
-                                    m_texMipMapMode[0], m_texLodBlend[0]);
-    }
-  }
-
-  vk::ImageView view1 = m_dummyTexture.imageView.get();
-  vk::Sampler sampler1 = m_dummySampler.get();
-  if (m_boundTexAddress[1] != 0xFFFFFFFF) {
-    auto it = m_vulkanTextures.find(m_boundTexAddress[1]);
-    if (it != m_vulkanTextures.end()) {
-      auto& tex = it->second;
-      view1 = tex.imageView.get();
-      sampler1 = GetOrCreateSampler(tex.clampS, tex.clampT, tex.minFilter,
-                                    tex.magFilter, m_texLodBias[1],
-                                    m_texMipMapMode[1], m_texLodBlend[1]);
-    }
-  }
-
-  vk::DescriptorSet reqDescSet =
-      GetOrCreateDescriptorSet(view0, sampler0, view1, sampler1);
-
-  // 2. Check if we need to flush the active batch
-  bool stateChanged =
-      (reqPipeline != m_batchedPipeline || reqDescSet != m_batchedDescSet);
-  bool batchEmpty = (m_batchedVertexCount == 0);
-  bool bufferFull =
-      (m_vertexBufferOffset + 3 * sizeof(ModernVertex) > m_vertexBufferSize);
-
-  if (stateChanged || batchEmpty || bufferFull) {
-    if (stateChanged || bufferFull) {
-      FlushBatch();
-    }
-    if (bufferFull) {
-      GLIDE_LOG(WARN, "Vulkan",
-                "Dynamic Vertex Buffer wrap-around during DrawTriangle! "
-                "Stalling GPU to prevent geometry corruption.");
-      FlushBatch();
-      if (m_inRenderPass) {
-        m_commandBuffer->endRenderPass();
-        m_inRenderPass = false;
-      }
-      m_commandBuffer->end();
-
-      vk::SubmitInfo submitInfo(0, nullptr, nullptr, 1, m_commandBuffer);
-      m_graphicsQueue.submit(submitInfo, {});
-      m_device->waitIdle();
-
-      m_commandBuffer->reset({});
-      m_commandBuffer->begin(vk::CommandBufferBeginInfo(
-          vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
-
-      m_vertexBufferOffset = 0;
-    }
-
-    m_batchedPipeline = reqPipeline;
-    m_batchedDescSet = reqDescSet;
-    m_batchedFirstVertex = m_vertexBufferOffset / sizeof(ModernVertex);
-  }
-
-  // 3. Append vertices to mapped buffer
-  if (!m_vertexBufferMap) {
-    GLIDE_LOG(CRITICAL, "Vulkan",
-              "Vertex buffer map is null during DrawTriangle!");
-    return;
-  }
-  auto* dest = reinterpret_cast<ModernVertex*>(
-      reinterpret_cast<uint8_t*>(m_vertexBufferMap) + m_vertexBufferOffset);
-  if (m_sstOrigin == 1) {  // GR_ORIGIN_LOWER_LEFT: flip Y coordinates
-    dest[0] = a;
-    dest[0].pos[1] = (float)m_headlessHeight - a.pos[1];
-    dest[1] = b;
-    dest[1].pos[1] = (float)m_headlessHeight - b.pos[1];
-    dest[2] = c;
-    dest[2].pos[1] = (float)m_headlessHeight - c.pos[1];
-  } else {
-    dest[0] = a;
-    dest[1] = b;
-    dest[2] = c;
-  }
-
-  // 4. Update batch & offset tracking
-  m_batchedVertexCount += 3;
-  m_vertexBufferOffset += 3 * sizeof(ModernVertex);
-}
-
-void VulkanBackend::FlushBatch() {
-  if (m_batchedVertexCount == 0) return;
-
-  GLIDE_PROFILE_SCOPE("Vulkan::FlushBatch");
-  GLIDE_INCREMENT_TRIANGLES_DRAWN(m_batchedVertexCount / 3);
-
-  GLIDE_LOG(DEBUG, "Vulkan",
-            "FlushBatch: drawing "
-                << m_batchedVertexCount
-                << " vertices. FirstVertex=" << m_batchedFirstVertex);
-
-  EnsureRenderPassActive();
-
-  m_commandBuffer->bindPipeline(vk::PipelineBindPoint::eGraphics,
-                                m_batchedPipeline);
-  m_commandBuffer->bindDescriptorSets(vk::PipelineBindPoint::eGraphics,
-                                      m_pipelineLayout.get(), 0, 1,
-                                      &m_batchedDescSet, 0, nullptr);
-
-  PushConstants pcs{};
-  PopulatePushConstants(pcs);
-  m_commandBuffer->pushConstants<PushConstants>(
-      m_pipelineLayout.get(),
-      vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0,
-      pcs);
-
-  m_commandBuffer->draw(m_batchedVertexCount, 1, m_batchedFirstVertex, 0);
-
-  m_batchedVertexCount = 0;
-}
-
-static uint64_t CalculateTextureHash(const struct VirtualTexture& tex) {
-  uint64_t hash = 14695981039346656037ULL;
-  const uint64_t prime = 1099511628211ULL;
-
-  // Hash dimensions and mipmap count to protect against collisions
-  auto hash_integer = [&](uint32_t val) {
-    for (int i = 0; i < 4; ++i) {
-      hash ^= (val & 0xFF);
-      hash *= prime;
-      val >>= 8;
-    }
-  };
-
-  hash_integer(tex.baseWidth);
-  hash_integer(tex.baseHeight);
-  hash_integer(static_cast<uint32_t>(tex.swizzledMipLevels.size()));
-
-  // Hash raw swizzled mipmap pixel data
-  for (const auto& level : tex.swizzledMipLevels) {
-    const uint8_t* byteData = reinterpret_cast<const uint8_t*>(level.data());
-    size_t byteLength = level.size() * sizeof(uint32_t);
-    for (size_t i = 0; i < byteLength; ++i) {
-      hash ^= byteData[i];
-      hash *= prime;
-    }
-  }
-  return hash;
-}
-
-void VulkanBackend::UploadTexture(uint32_t tmu, uint32_t startAddress,
-                                  const struct VirtualTexture& tex) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
-  if (!m_initialized || !m_device) return;
-
-  if (tmu >= 2) {
-    GLIDE_LOG(WARN, "Vulkan",
-              "UploadTexture ignored for unsupported TMU " << tmu);
-    return;
-  }
-
-  // 1. Calculate incoming texture hash
-  uint64_t incomingHash = CalculateTextureHash(tex);
-
-  // 2. Check if texture already exists at this address and has matching data
-  auto it = m_vulkanTextures.find(startAddress);
-  if (it != m_vulkanTextures.end()) {
-    if (it->second.dataHash == incomingHash) {
-      GLIDE_LOG(DEBUG, "Vulkan",
-                "UploadTexture: Address=0x"
-                    << std::hex << startAddress << std::dec
-                    << " data unmodified (hash match: 0x" << std::hex
-                    << incomingHash << std::dec << "). Bypassing upload!");
-      return;
-    }
-  }
-
-  GLIDE_PROFILE_SCOPE("Vulkan::UploadTexture");
-
-  GLIDE_LOG(DEBUG, "Vulkan",
-            "UploadTexture TMU"
-                << tmu << ": Address=0x" << std::hex << startAddress << std::dec
-                << " Size: " << tex.baseWidth << "x" << tex.baseHeight
-                << " Mipmap levels: " << tex.swizzledMipLevels.size()
-                << " (Hash: 0x" << std::hex << incomingHash << std::dec << ")");
-
-  // Erase existing texture at the address if it exists to clean up its
-  // resources
-  m_vulkanTextures.erase(startAddress);
-
-  // Calculate size of this texture
-  size_t totalBytes = 0;
-  for (const auto& level : tex.swizzledMipLevels) {
-    totalBytes += level.size() * sizeof(uint32_t);
-  }
-
-  // Check if we have enough space in the active slot's staging buffer segment
-  uint32_t slotBase = m_currentFrameSlot * m_texStagingSlotSize;
-  uint32_t slotEnd = (m_currentFrameSlot + 1) * m_texStagingSlotSize;
-
-  if (m_texStagingOffsets[m_currentFrameSlot] + totalBytes > slotEnd) {
-    GLIDE_LOG(WARN, "Vulkan",
-              "Texture staging slot size exceeded! Stalling GPU on waitIdle() "
-              "and wrapping around...");
-    m_device->waitIdle();
-    m_texStagingOffsets[m_currentFrameSlot] = slotBase;
-  }
-
-  uint32_t currentOffset = m_texStagingOffsets[m_currentFrameSlot];
-
-  try {
-    // 1. Create vk::Image
-    vk::ImageCreateInfo imageInfo(
-        {}, vk::ImageType::e2D, vk::Format::eB8G8R8A8Unorm,
-        vk::Extent3D(tex.baseWidth, tex.baseHeight, 1),
-        static_cast<uint32_t>(tex.swizzledMipLevels.size()), 1,
-        vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal,
-        vk::ImageUsageFlagBits::eSampled |
-            vk::ImageUsageFlagBits::eTransferDst);
-    auto image = m_device->createImageUnique(imageInfo);
-
-    // 2. Allocate and bind memory
-    auto memReqs = m_device->getImageMemoryRequirements(image.get());
-    uint32_t typeIndex = FindMemoryType(
-        memReqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal);
-    vk::MemoryAllocateInfo allocInfo(memReqs.size, typeIndex);
-    auto memory = m_device->allocateMemoryUnique(allocInfo);
-    m_device->bindImageMemory(image.get(), memory.get(), 0);
-
-    // 3. Copy all mipmap levels data into our persistent staging memory map
-    uint8_t* mappedData =
-        static_cast<uint8_t*>(m_texStagingMap) + currentOffset;
-    size_t offset = 0;
-    std::vector<size_t> levelOffsets;
-    for (const auto& level : tex.swizzledMipLevels) {
-      levelOffsets.push_back(currentOffset + offset);
-      size_t levelBytes = level.size() * sizeof(uint32_t);
-      std::memcpy(mappedData + offset, level.data(), levelBytes);
-      offset += levelBytes;
-    }
-
-    // Flush mapped memory range to ensure visibility to GPU
-    vk::MappedMemoryRange memRange(m_texStagingMemory.get(), currentOffset,
-                                   totalBytes);
-    m_device->flushMappedMemoryRanges(memRange);
-
-    // 4. Update the offset in the staging buffer
-    m_texStagingOffsets[m_currentFrameSlot] += totalBytes;
-
-    // 5. Record copy commands into the active frame's command buffer!
-    // First, if we are in an active render pass, we must temporarily end it!
-    if (m_inRenderPass) {
-      FlushBatch();
-      m_commandBuffer->endRenderPass();
-      m_inRenderPass = false;
-    }
-
-    // Transition entire image to TransferDstOptimal
-    vk::ImageSubresourceRange entireImageRange(
-        vk::ImageAspectFlagBits::eColor, 0,
-        static_cast<uint32_t>(tex.swizzledMipLevels.size()), 0, 1);
-    TransitionImageLayout(
-        *m_commandBuffer, image.get(), vk::ImageLayout::eUndefined,
-        vk::ImageLayout::eTransferDstOptimal, entireImageRange);
-
-    // Copy each mipmap level from staging buffer to image
-    std::vector<vk::BufferImageCopy> copyRegions;
-    uint32_t width = tex.baseWidth;
-    uint32_t height = tex.baseHeight;
-    for (uint32_t i = 0; i < tex.swizzledMipLevels.size(); ++i) {
-      vk::BufferImageCopy region;
-      region.bufferOffset = levelOffsets[i];
-      region.bufferRowLength = 0;
-      region.bufferImageHeight = 0;
-      region.imageSubresource =
-          vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, i, 0, 1);
-      region.imageOffset = vk::Offset3D(0, 0, 0);
-      region.imageExtent = vk::Extent3D(width, height, 1);
-      copyRegions.push_back(region);
-
-      width = std::max(1u, width / 2);
-      height = std::max(1u, height / 2);
-    }
-
-    m_commandBuffer->copyBufferToImage(
-        m_texStagingBuffer.get(), image.get(),
-        vk::ImageLayout::eTransferDstOptimal,
-        static_cast<uint32_t>(copyRegions.size()), copyRegions.data());
-
-    // Transition entire image to ShaderReadOnlyOptimal
-    TransitionImageLayout(
-        *m_commandBuffer, image.get(), vk::ImageLayout::eTransferDstOptimal,
-        vk::ImageLayout::eShaderReadOnlyOptimal, entireImageRange);
-
-    // 6. Create Image View
-    vk::ImageViewCreateInfo viewInfo(
-        {}, image.get(), vk::ImageViewType::e2D, vk::Format::eB8G8R8A8Unorm, {},
-        {vk::ImageAspectFlagBits::eColor, 0,
-         static_cast<uint32_t>(tex.swizzledMipLevels.size()), 0, 1});
-    auto imageView = m_device->createImageViewUnique(viewInfo);
-
-    // 7. Save in texture cache map
-    VulkanTexture vulkanTex;
-    vulkanTex.image = std::move(image);
-    vulkanTex.memory = std::move(memory);
-    vulkanTex.imageView = std::move(imageView);
-    vulkanTex.clampS = m_texClampS[0];
-    vulkanTex.clampT = m_texClampT[0];
-    vulkanTex.minFilter = m_texMinFilter[0];
-    vulkanTex.magFilter = m_texMagFilter[0];
-    vulkanTex.dataHash = incomingHash;
-
-    m_vulkanTextures[startAddress] = std::move(vulkanTex);
-
-    GLIDE_LOG(DEBUG, "Vulkan",
-              "UploadTexture: Completed successfully for address 0x"
-                  << std::hex << startAddress << std::dec
-                  << " (No GPU block!)");
-  } catch (const std::exception& e) {
-    GLIDE_LOG(CRITICAL, "Vulkan",
-              "UploadTexture failed for Address=0x"
-                  << std::hex << startAddress << std::dec << ": " << e.what());
-  }
-}
-
-void VulkanBackend::BindTexture(uint32_t tmu, uint32_t startAddress,
-                                uint32_t clampS, uint32_t clampT,
-                                uint32_t minFilter, uint32_t magFilter) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
-  FlushBatch();
-
-  // 1. Call base class SoftwareBackendBase::BindTexture to update software
-  // states
-  SoftwareBackendBase::BindTexture(tmu, startAddress, clampS, clampT, minFilter,
-                                   magFilter);
-
-  if (!m_initialized || !m_device) return;
-
-  if (tmu >= 2) return;
-
-  if (startAddress == 0xFFFFFFFF) return;
-
-  auto it = m_vulkanTextures.find(startAddress);
-  if (it != m_vulkanTextures.end()) {
-    auto& tex = it->second;
-    tex.clampS = clampS;
-    tex.clampT = clampT;
-    tex.minFilter = minFilter;
-    tex.magFilter = magFilter;
-  }
-}
-
-vk::Rect2D VulkanBackend::GetScissorRectVulkan() {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
-  uint32_t vkScissorY = m_clipMinY;
-  if (m_sstOrigin == 1) {  // GR_ORIGIN_LOWER_LEFT is 1 (bottom-left)
-    // Flip Y to top-left coordinate system of Vulkan
-    vkScissorY = m_headlessHeight - m_clipMaxY;
-  }
-  uint32_t vkScissorW =
-      (m_clipMaxX > m_clipMinX) ? (m_clipMaxX - m_clipMinX) : 0;
-  uint32_t vkScissorH =
-      (m_clipMaxY > m_clipMinY) ? (m_clipMaxY - m_clipMinY) : 0;
-
-  vk::Offset2D offset(static_cast<int32_t>(m_clipMinX),
-                      static_cast<int32_t>(vkScissorY));
-  vk::Extent2D extent(vkScissorW, vkScissorH);
-  return vk::Rect2D(offset, extent);
-}
-
-void VulkanBackend::EnsureRenderPassActive() {
-  if (m_inRenderPass) return;
-
-  // Begin render pass with eLoad (no automatic clear)
-  vk::RenderPassBeginInfo renderPassInfo(
-      m_renderPass.get(), m_headlessFramebuffers[GetActiveGpuBufferIdx()].get(),
-      vk::Rect2D({0, 0}, {m_headlessWidth, m_headlessHeight}), 0,
-      nullptr);  // 0 clear values since we use eLoad!
-  m_commandBuffer->beginRenderPass(renderPassInfo,
-                                   vk::SubpassContents::eInline);
-
-  // Configure Dynamic Viewport & Scissor
-  vk::Viewport viewport(0.0f, 0.0f, (float)m_headlessWidth,
-                        (float)m_headlessHeight, 0.0f, 1.0f);
-  m_commandBuffer->setViewport(0, 1, &viewport);
-
-  vk::Rect2D scissor = GetScissorRectVulkan();
-  m_commandBuffer->setScissor(0, 1, &scissor);
-
-  // Bind vertex buffer
-  vk::DeviceSize zeroOffset = 0;
-  m_commandBuffer->bindVertexBuffers(0, 1, &m_vertexBuffer.get(), &zeroOffset);
-
-  m_inRenderPass = true;
-
-  // Perform explicit clears using vkCmdClearAttachments if pending on the
-  // active FBO!
-  std::vector<vk::ClearAttachment> clears;
-  uint32_t activeIdx = GetActiveGpuBufferIdx();
-  if (m_clearColorPending[activeIdx]) {
-    clears.push_back(vk::ClearAttachment(vk::ImageAspectFlagBits::eColor, 0,
-                                         m_clearColorValue[activeIdx]));
-    m_clearColorPending[activeIdx] = false;
-  }
-  if (m_clearDepthPending[activeIdx]) {
-    clears.push_back(
-        vk::ClearAttachment(vk::ImageAspectFlagBits::eDepth, 0,
-                            vk::ClearValue(vk::ClearDepthStencilValue(
-                                m_clearDepthValue[activeIdx], 0))));
-    m_clearDepthPending[activeIdx] = false;
-  }
-
-  if (!clears.empty()) {
-    vk::ClearRect clearRect(
-        vk::Rect2D({0, 0}, {m_headlessWidth, m_headlessHeight}), 0, 1);
-    m_commandBuffer->clearAttachments(static_cast<uint32_t>(clears.size()),
-                                      clears.data(), 1, &clearRect);
-    GLIDE_LOG(DEBUG, "Vulkan",
-              "Explicitly cleared " << clears.size()
-                                    << " attachments inside render pass.");
-  }
-}
-
-void VulkanBackend::PopulatePushConstants(PushConstants& pcs) {
-  pcs.viewportWidth = (float)m_guestWidth;
-  pcs.viewportHeight = (float)m_guestHeight;
-  pcs.depthBufferMode = m_depthMode;
-
-  // Extract and normalize constant color components, then pack
-  float constR = ((m_constantColor >> 16) & 0xFF) / 255.0f;
-  float constG = ((m_constantColor >> 8) & 0xFF) / 255.0f;
-  float constB = (m_constantColor & 0xFF) / 255.0f;
-  float constA = ((m_constantColor >> 24) & 0xFF) / 255.0f;
-  if (m_pixelFormatOverride == 1) {
-    std::swap(constR, constB);
-  }
-  pcs.constantColor = PackRGBA(constR, constG, constB, constA);
-
-  pcs.alphaTestOp = m_alphaTestOp;
-  pcs.alphaTestRef = (float)m_alphaTestRefVal / 255.0f;
-  pcs.depthBias = static_cast<float>(m_depthBiasLevel) / 65535.0f;
-
-  // Milestone 8: Fogging State (packed 128-byte layout)
-  pcs.fogMode = m_fogMode;
-
-  // Swizzle fog color if format override is active
-  uint32_t packedFogColor = m_fogColor;
-  if (m_pixelFormatOverride == 1) {
-    uint32_t r = (m_fogColor >> 16) & 0xFF;
-    uint32_t g = (m_fogColor >> 8) & 0xFF;
-    uint32_t b = m_fogColor & 0xFF;
-    uint32_t a = (m_fogColor >> 24) & 0xFF;
-    packedFogColor = (a << 24) | (b << 16) | (g << 8) | r;
-  }
-  pcs.fogColor = packedFogColor;
-
-  // Pack 64-entry 8-bit fog table into 16 uint32_t values
-  for (int i = 0; i < 16; ++i) {
-    uint32_t word = 0;
-    word |= static_cast<uint32_t>(m_fogTable[i * 4 + 0]) << 0;
-    word |= static_cast<uint32_t>(m_fogTable[i * 4 + 1]) << 8;
-    word |= static_cast<uint32_t>(m_fogTable[i * 4 + 2]) << 16;
-    word |= static_cast<uint32_t>(m_fogTable[i * 4 + 3]) << 24;
-    pcs.fogTable[i] = word;
-  }
-
-  // Milestone 9: Combiner & Texture State
-  pcs.colorFunc = m_colorCombinerFunc;
-  pcs.colorFactor = m_colorCombinerFactor;
-  pcs.colorLocal = m_colorCombinerLocal;
-  pcs.colorOther = m_colorCombinerOther;
-
-  pcs.alphaFunc = m_alphaCombinerFunc;
-  pcs.alphaFactor = m_alphaCombinerFactor;
-  pcs.alphaLocal = m_alphaCombinerLocal;
-  pcs.alphaOther = m_alphaCombinerOther;
-
-  uint32_t textureEnabled = 0;
-  if (m_boundTexAddress[0] != 0xFFFFFFFF) textureEnabled |= (1u << 0);
-  if (m_boundTexAddress[1] != 0xFFFFFFFF) textureEnabled |= (1u << 1);
-  if (m_texCombinerRgbInvert[0]) textureEnabled |= (1u << 2);
-  if (m_texCombinerAlphaInvert[0]) textureEnabled |= (1u << 3);
-  if (m_texCombinerRgbInvert[1]) textureEnabled |= (1u << 4);
-  if (m_texCombinerAlphaInvert[1]) textureEnabled |= (1u << 5);
-  pcs.textureEnabled = textureEnabled;
-
-  // Pack combiner modes (functions and factors) for both TMUs into separate
-  // uint32_t fields (8-bit precision)
-  uint32_t tmu0Comb = 0;
-  tmu0Comb |= (m_texCombinerRgbFunc[0] & 0xFF) << 0;
-  tmu0Comb |= (m_texCombinerRgbFactor[0] & 0xFF) << 8;
-  tmu0Comb |= (m_texCombinerAlphaFunc[0] & 0xFF) << 16;
-  tmu0Comb |= (m_texCombinerAlphaFactor[0] & 0xFF) << 24;
-  pcs.tmuCombinerModes0 = tmu0Comb;
-
-  uint32_t tmu1Comb = 0;
-  tmu1Comb |= (m_texCombinerRgbFunc[1] & 0xFF) << 0;
-  tmu1Comb |= (m_texCombinerRgbFactor[1] & 0xFF) << 8;
-  tmu1Comb |= (m_texCombinerAlphaFunc[1] & 0xFF) << 16;
-  tmu1Comb |= (m_texCombinerAlphaFactor[1] & 0xFF) << 24;
-  pcs.tmuCombinerModes1 = tmu1Comb;
-
-  // Milestone 10: Chromakey State
-  pcs.chromakeyRangeMode = m_chromakeyRangeMode;
-
-  float cValR = ((m_chromakeyValue >> 16) & 0xFF) / 255.0f;
-  float cValG = ((m_chromakeyValue >> 8) & 0xFF) / 255.0f;
-  float cValB = (m_chromakeyValue & 0xFF) / 255.0f;
-  float cValA = ((m_chromakeyValue >> 24) & 0xFF) / 255.0f;
-
-  float cMinR = ((m_chromakeyRangeMin >> 16) & 0xFF) / 255.0f;
-  float cMinG = ((m_chromakeyRangeMin >> 8) & 0xFF) / 255.0f;
-  float cMinB = (m_chromakeyRangeMin & 0xFF) / 255.0f;
-  float cMinA = ((m_chromakeyRangeMin >> 24) & 0xFF) / 255.0f;
-
-  float cMaxR = ((m_chromakeyRangeMax >> 16) & 0xFF) / 255.0f;
-  float cMaxG = ((m_chromakeyRangeMax >> 8) & 0xFF) / 255.0f;
-  float cMaxB = (m_chromakeyRangeMax & 0xFF) / 255.0f;
-  float cMaxA = ((m_chromakeyRangeMax >> 24) & 0xFF) / 255.0f;
-
-  if (m_pixelFormatOverride == 1) {
-    std::swap(cValR, cValB);
-    std::swap(cMinR, cMinB);
-    std::swap(cMaxR, cMaxB);
-  }
-
-  pcs.chromakeyValue = PackRGBA(cValR, cValG, cValB, cValA);
-  pcs.chromakeyRangeMin = PackRGBA(cMinR, cMinG, cMinB, cMinA);
-  pcs.chromakeyRangeMax = PackRGBA(cMaxR, cMaxG, cMaxB, cMaxA);
-
-  // Populate texture-specific chromakeying states for TMU0 and TMU1
-  for (int i = 0; i < 2; ++i) {
-    float minR = ((m_texChromaMin[i] >> 16) & 0xFF) / 255.0f;
-    float minG = ((m_texChromaMin[i] >> 8) & 0xFF) / 255.0f;
-    float minB = (m_texChromaMin[i] & 0xFF) / 255.0f;
-    float minA = ((m_texChromaMin[i] >> 24) & 0xFF) / 255.0f;
-
-    float maxR = ((m_texChromaMax[i] >> 16) & 0xFF) / 255.0f;
-    float maxG = ((m_texChromaMax[i] >> 8) & 0xFF) / 255.0f;
-    float maxB = (m_texChromaMax[i] & 0xFF) / 255.0f;
-    float maxA = ((m_texChromaMax[i] >> 24) & 0xFF) / 255.0f;
-
-    if (m_pixelFormatOverride == 1) {
-      std::swap(minR, minB);
-      std::swap(maxR, maxB);
-    }
-
-    pcs.texChromaMin[i][0] = minR;
-    pcs.texChromaMin[i][1] = minG;
-    pcs.texChromaMin[i][2] = minB;
-    pcs.texChromaMin[i][3] = minA;
-
-    pcs.texChromaMax[i][0] = maxR;
-    pcs.texChromaMax[i][1] = maxG;
-    pcs.texChromaMax[i][2] = maxB;
-    pcs.texChromaMax[i][3] = maxA;
-  }
-
-  // Phase 4 additions: depth range, stipple pattern, and packed flags
-  pcs.depthNear = m_depthNear;
-  pcs.depthFar = m_depthFar;
-  pcs.stipplePattern = m_stipplePattern;
-
-  uint32_t flags = 0;
-  if (m_colorCombinerInvert) flags |= (1u << 0);
-  if (m_alphaCombinerInvert) flags |= (1u << 1);
-  if (m_chromakeyMode != 0) flags |= (1u << 2);
-
-  uint32_t useTmuOow = 0;
-  if (m_stwHintMask & 0x2) useTmuOow |= (1u << 0);
-  if (m_stwHintMask & 0x8) useTmuOow |= (1u << 1);
-  flags |= (useTmuOow & 3u) << 3;
-
-  uint32_t texChromaEnabled = 0;
-  if (m_texChromaMode[0] != 0) texChromaEnabled |= (1u << 0);
-  if (m_texChromaMode[1] != 0) texChromaEnabled |= (1u << 1);
-  flags |= (texChromaEnabled & 3u) << 5;
-
-  uint32_t texChromaRangeMode = 0;
-  if (m_texChromaRangeMode[0] != 0) texChromaRangeMode |= (1u << 0);
-  if (m_texChromaRangeMode[1] != 0) texChromaRangeMode |= (1u << 1);
-  flags |= (texChromaRangeMode & 3u) << 7;
-
-  flags |= (m_ditherMode & 3u) << 9;
-  flags |= (m_stippleMode & 3u) << 11;
-
-  pcs.flags = flags;
-}
-
 void VulkanBackend::SetGamma(float gamma) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   GLIDE_LOG(INFO, "Vulkan", "SetGamma: value=" << gamma);
   m_gammaCorrectionValue = gamma;
   if (gamma <= 0.0f) gamma = 1.0f;
@@ -3553,7 +2098,7 @@ void VulkanBackend::SetGamma(float gamma) {
 void VulkanBackend::LoadGammaTable(uint32_t nentries, const uint32_t* rTable,
                                    const uint32_t* gTable,
                                    const uint32_t* bTable) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   GLIDE_LOG(INFO, "Vulkan", "LoadGammaTable: nentries=" << nentries);
   if (nentries != 256 || !rTable || !gTable || !bTable) return;
   for (int i = 0; i < 256; i++) {
@@ -3562,267 +2107,6 @@ void VulkanBackend::LoadGammaTable(uint32_t nentries, const uint32_t* rTable,
     m_lutB[i] = static_cast<uint8_t>(bTable[i]);
   }
   m_useGammaLut = true;
-}
-
-vk::Sampler VulkanBackend::GetOrCreateSampler(uint32_t clampS, uint32_t clampT,
-                                              uint32_t minFilter,
-                                              uint32_t magFilter, float lodBias,
-                                              uint32_t mipmapMode,
-                                              bool lodBlend) {
-  SamplerKey key{clampS,  clampT,     minFilter, magFilter,
-                 lodBias, mipmapMode, lodBlend};
-  auto it = m_samplerCache.find(key);
-  if (it != m_samplerCache.end()) {
-    return it->second.get();
-  }
-
-  vk::SamplerAddressMode addressModeS = vk::SamplerAddressMode::eRepeat;
-  if (clampS == 1)
-    addressModeS = vk::SamplerAddressMode::eClampToEdge;
-  else if (clampS == 2)
-    addressModeS = vk::SamplerAddressMode::eMirroredRepeat;
-
-  vk::SamplerAddressMode addressModeT = vk::SamplerAddressMode::eRepeat;
-  if (clampT == 1)
-    addressModeT = vk::SamplerAddressMode::eClampToEdge;
-  else if (clampT == 2)
-    addressModeT = vk::SamplerAddressMode::eMirroredRepeat;
-
-  // Dynamically map Glide filter modes:
-  // minFilter:
-  // 0: nearest, 1: bilinear, 2: nearest-nearest, 3: bilinear-nearest, 4:
-  // nearest-bilinear, 5: trilinear
-  bool minLinear = (minFilter == 1 || minFilter == 3 || minFilter == 5);
-  vk::Filter minF = minLinear ? vk::Filter::eLinear : vk::Filter::eNearest;
-  vk::Filter magF =
-      (magFilter == 1) ? vk::Filter::eLinear : vk::Filter::eNearest;
-
-  // Mipmap blending mode and maxLod are determined by the mipmapMode and
-  // lodBlend parameters
-  vk::SamplerMipmapMode vkMipmapMode = vk::SamplerMipmapMode::eNearest;
-  float maxLod = 0.0f;
-
-  if (mipmapMode != 0) {  // GR_MIPMAP_DISABLE is 0
-    maxLod = 15.0f;
-    if (lodBlend) {
-      vkMipmapMode = vk::SamplerMipmapMode::eLinear;
-    } else {
-      vkMipmapMode = vk::SamplerMipmapMode::eNearest;
-    }
-  } else {
-    maxLod = 0.0f;
-    vkMipmapMode = vk::SamplerMipmapMode::eNearest;
-  }
-
-  vk::SamplerCreateInfo samplerInfo;
-  samplerInfo.magFilter = magF;
-  samplerInfo.minFilter = minF;
-  samplerInfo.addressModeU = addressModeS;
-  samplerInfo.addressModeV = addressModeT;
-  samplerInfo.addressModeW = vk::SamplerAddressMode::eRepeat;
-  samplerInfo.anisotropyEnable = false;
-  samplerInfo.maxAnisotropy = 1.0f;
-  samplerInfo.borderColor = vk::BorderColor::eIntOpaqueBlack;
-  samplerInfo.unnormalizedCoordinates = false;
-  samplerInfo.compareEnable = false;
-  samplerInfo.compareOp = vk::CompareOp::eAlways;
-  samplerInfo.mipmapMode = vkMipmapMode;
-  samplerInfo.mipLodBias = lodBias;
-  samplerInfo.minLod = 0.0f;
-  samplerInfo.maxLod = maxLod;
-
-  auto sampler = m_device->createSamplerUnique(samplerInfo);
-  vk::Sampler res = sampler.get();
-  m_samplerCache.emplace(key, std::move(sampler));
-  return res;
-}
-
-vk::DescriptorSet VulkanBackend::GetOrCreateDescriptorSet(
-    vk::ImageView imageView0, vk::Sampler sampler0, vk::ImageView imageView1,
-    vk::Sampler sampler1) {
-  DescriptorKey key{imageView0, sampler0, imageView1, sampler1};
-  auto it = m_descriptorCache.find(key);
-  if (it != m_descriptorCache.end()) {
-    return it->second.get();
-  }
-
-  // Allocate Descriptor Set
-  vk::DescriptorSetAllocateInfo setAlloc(m_descriptorPool.get(), 1,
-                                         &m_descriptorSetLayout.get());
-  auto sets = m_device->allocateDescriptorSetsUnique(setAlloc);
-  vk::UniqueDescriptorSet descriptorSet = std::move(sets[0]);
-  vk::DescriptorSet rawSet = descriptorSet.get();
-
-  // Update Descriptor Set for both bindings
-  std::array<vk::DescriptorImageInfo, 2> imageInfos = {
-      vk::DescriptorImageInfo(sampler0, imageView0,
-                              vk::ImageLayout::eShaderReadOnlyOptimal),
-      vk::DescriptorImageInfo(sampler1, imageView1,
-                              vk::ImageLayout::eShaderReadOnlyOptimal)};
-  std::array<vk::WriteDescriptorSet, 2> descriptorWrites = {
-      vk::WriteDescriptorSet(rawSet, 0, 0, 1,
-                             vk::DescriptorType::eCombinedImageSampler,
-                             &imageInfos[0], nullptr, nullptr),
-      vk::WriteDescriptorSet(rawSet, 1, 0, 1,
-                             vk::DescriptorType::eCombinedImageSampler,
-                             &imageInfos[1], nullptr, nullptr)};
-  m_device->updateDescriptorSets(static_cast<uint32_t>(descriptorWrites.size()),
-                                 descriptorWrites.data(), 0, nullptr);
-
-  m_descriptorCache.emplace(key, std::move(descriptorSet));
-  return rawSet;
-}
-
-void VulkanBackend::SetTexLodBias(uint32_t tmu, float bias) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
-  if (tmu < 2) {
-    if (m_texLodBias[tmu] != bias) {
-      FlushBatch();
-      m_texLodBias[tmu] = bias;
-      GLIDE_LOG(DEBUG, "Vulkan",
-                "SetTexLodBias: TMU" << tmu << " set to " << bias);
-    }
-  }
-}
-
-void VulkanBackend::SetTexMipMapMode(uint32_t tmu, uint32_t mode,
-                                     bool lodBlend) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
-  if (tmu < 2) {
-    if (m_texMipMapMode[tmu] != mode || m_texLodBlend[tmu] != lodBlend) {
-      FlushBatch();
-      m_texMipMapMode[tmu] = mode;
-      m_texLodBlend[tmu] = lodBlend;
-      GLIDE_LOG(DEBUG, "Vulkan",
-                "SetTexMipMapMode: TMU"
-                    << tmu << " set to Mode=" << mode
-                    << ", LodBlend=" << (lodBlend ? "Yes" : "No"));
-    }
-  }
-}
-
-void VulkanBackend::UploadTexturePartial(uint32_t tmu, uint32_t startAddress,
-                                         const struct VirtualTexture& tex,
-                                         uint32_t lodLevel, uint32_t startRow,
-                                         uint32_t endRow) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
-  if (!m_initialized || !m_device) return;
-
-  if (tmu >= 2) {
-    GLIDE_LOG(WARN, "Vulkan",
-              "UploadTexturePartial ignored for unsupported TMU " << tmu);
-    return;
-  }
-
-  auto it = m_vulkanTextures.find(startAddress);
-  if (it == m_vulkanTextures.end()) {
-    GLIDE_LOG(WARN, "Vulkan",
-              "UploadTexturePartial: texture at address 0x"
-                  << std::hex << startAddress << std::dec
-                  << " does not exist! Promoting to full upload.");
-    UploadTexture(tmu, startAddress, tex);
-    return;
-  }
-
-  auto& vTex = it->second;
-
-  if (lodLevel >= tex.swizzledMipLevels.size()) {
-    GLIDE_LOG(WARN, "Vulkan",
-              "UploadTexturePartial: invalid lodLevel " << lodLevel);
-    return;
-  }
-
-  uint32_t w = std::max(1u, tex.baseWidth >> lodLevel);
-  uint32_t h = std::max(1u, tex.baseHeight >> lodLevel);
-  if (startRow >= h || endRow > h || startRow >= endRow) {
-    GLIDE_LOG(WARN, "Vulkan",
-              "UploadTexturePartial: invalid row range "
-                  << startRow << ".." << endRow << " for level height " << h);
-    return;
-  }
-
-  uint32_t numRows = endRow - startRow;
-  size_t rowBytes = w * sizeof(uint32_t);
-  size_t partialBytes = numRows * rowBytes;
-
-  uint32_t slotBase = m_currentFrameSlot * m_texStagingSlotSize;
-  uint32_t slotEnd = (m_currentFrameSlot + 1) * m_texStagingSlotSize;
-
-  if (m_texStagingOffsets[m_currentFrameSlot] + partialBytes > slotEnd) {
-    GLIDE_LOG(WARN, "Vulkan",
-              "Texture staging slot size exceeded during partial! Stalling GPU "
-              "and wrapping around...");
-    m_device->waitIdle();
-    m_texStagingOffsets[m_currentFrameSlot] = slotBase;
-  }
-
-  uint32_t currentOffset = m_texStagingOffsets[m_currentFrameSlot];
-
-  const uint32_t* srcPixels = tex.swizzledMipLevels[lodLevel].data();
-  uint8_t* mappedData = static_cast<uint8_t*>(m_texStagingMap) + currentOffset;
-
-  std::memcpy(mappedData, srcPixels + startRow * w, partialBytes);
-
-  vk::MappedMemoryRange memRange(m_texStagingMemory.get(), currentOffset,
-                                 partialBytes);
-  m_device->flushMappedMemoryRanges(memRange);
-
-  m_texStagingOffsets[m_currentFrameSlot] += partialBytes;
-
-  if (m_inRenderPass) {
-    FlushBatch();
-    m_commandBuffer->endRenderPass();
-    m_inRenderPass = false;
-  }
-
-  vk::ImageSubresourceRange levelRange(vk::ImageAspectFlagBits::eColor,
-                                       lodLevel, 1, 0, 1);
-  TransitionImageLayout(*m_commandBuffer, vTex.image.get(),
-                        vk::ImageLayout::eShaderReadOnlyOptimal,
-                        vk::ImageLayout::eTransferDstOptimal, levelRange);
-
-  vk::BufferImageCopy region;
-  region.bufferOffset = currentOffset;
-  region.bufferRowLength = w;
-  region.bufferImageHeight = h;
-  region.imageSubresource = vk::ImageSubresourceLayers(
-      vk::ImageAspectFlagBits::eColor, lodLevel, 0, 1);
-  region.imageOffset = vk::Offset3D(0, startRow, 0);
-  region.imageExtent = vk::Extent3D(w, numRows, 1);
-
-  m_commandBuffer->copyBufferToImage(m_texStagingBuffer.get(), vTex.image.get(),
-                                     vk::ImageLayout::eTransferDstOptimal, 1,
-                                     &region);
-
-  TransitionImageLayout(*m_commandBuffer, vTex.image.get(),
-                        vk::ImageLayout::eTransferDstOptimal,
-                        vk::ImageLayout::eShaderReadOnlyOptimal, levelRange);
-
-  vTex.dataHash = CalculateTextureHash(tex);
-
-  GLIDE_LOG(DEBUG, "Vulkan",
-            "UploadTexturePartial: Completed successfully for address 0x"
-                << std::hex << startAddress << std::dec << " level=" << lodLevel
-                << " rows=" << startRow << ".." << endRow);
-}
-
-void VulkanBackend::PurgeTextures() {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
-  if (!m_initialized || !m_device) return;
-
-  FlushBatch();
-
-  GLIDE_LOG(DEBUG, "Vulkan",
-            "PurgeTextures: destroying "
-                << m_vulkanTextures.size() << " textures, "
-                << m_samplerCache.size() << " samplers, and "
-                << m_descriptorCache.size() << " descriptors.");
-
-  m_descriptorCache.clear();
-  m_samplerCache.clear();
-  m_vulkanTextures.clear();
-
-  GLIDE_LOG(DEBUG, "Vulkan", "PurgeTextures completed successfully.");
 }
 
 }  // namespace GlideWrapper

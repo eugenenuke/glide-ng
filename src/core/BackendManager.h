@@ -28,8 +28,9 @@ public:
 private:
     BackendManager();
     ~BackendManager();
+    void ShutdownBackend_Locked();
 
-    std::recursive_mutex m_mutex;
+    std::mutex m_mutex;
     std::unique_ptr<IGraphicsBackend> m_backend;
     std::string m_activeBackendName;
     std::unique_ptr<ISplashAnimator> m_splashAnimator;

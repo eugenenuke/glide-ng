@@ -11,7 +11,9 @@
 #endif
 #include <vulkan/vulkan.hpp>
 
-#include "backends/SoftwareBackendBase.h"
+#include "backends/CpuLfbStaging.h"
+#include "backends/GlideStateTracker.h"
+#include "core/NativeSurfaceHost.h"
 
 namespace GlideWrapper {
 
@@ -205,11 +207,10 @@ using PipelineCacheKey = uint32_t;
 
 /**
  * @brief Concrete production Vulkan translation engine.
- * Inherits from SoftwareBackendBase to utilize the CPU rasterizer as a
- * progressive migration bridge. Rewrites core presentation, clearing, and
- * swapchain presentation on the GPU.
+ * Inherits pure pipeline state tracking from GlideStateTracker and composes
+ * lazily-allocated CpuLfbStaging for Linear Framebuffer access.
  */
-class VulkanBackend : public SoftwareBackendBase {
+class VulkanBackend : public GlideStateTracker {
  public:
   VulkanBackend() = default;
   ~VulkanBackend() override { Shutdown(); }
@@ -217,12 +218,22 @@ class VulkanBackend : public SoftwareBackendBase {
   // Foundational Core Lifecycle
   bool Initialize(const WrapperConfig& config) override;
   void Shutdown() override;
+  void ResetState() override;
 
   // Window Surface & Headless Swapchain Attachment
   bool AttachWindow(void* nativeWindowHandle, uint32_t width, uint32_t height,
                     bool windowed) override;
   void DetachWindow() override;
   uint32_t GetMsaaSamples() const override { return m_msaaSamples; }
+  bool HasAllocatedCpuLfbStaging() const { return m_lfbStaging.IsAllocated(); }
+
+  // Selects an optimal Vulkan swapchain present mode.
+  // On Wayland, prefers Mailbox even when VSync is enabled because Wayland
+  // compositors present tear-free at VBlank and Mailbox avoids Mesa WSI
+  // wp_fifo_v1 / wp_commit_timer_v1 stalls under RDP/Mutter.
+  static vk::PresentModeKHR SelectPresentMode(
+      const std::vector<vk::PresentModeKHR>& availableModes, bool vsyncEnabled,
+      bool isWaylandSurface, bool forceStrictFifo = false);
 
   // GPU-Driven Clearing & Swapchain Presentation
   void ClearBuffer(uint32_t color, uint32_t alpha, float z,
@@ -248,8 +259,14 @@ class VulkanBackend : public SoftwareBackendBase {
   void SetConstantColor(uint32_t color) override;
   void SetRenderBuffer(uint32_t target) override;
   void SetPixelFormat(uint32_t format) override;
+  void* GetLfbWritePtr() override;
   bool ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY, uint32_t srcWidth,
                uint32_t srcHeight, uint32_t dstStride, void* dstData) override;
+  bool WriteLFB(uint32_t buffer, uint32_t dstX, uint32_t dstY,
+                uint32_t srcWidth, uint32_t srcHeight, int32_t srcStride,
+                uint32_t srcFmt, const void* srcData,
+                const void* refData = nullptr,
+                const LfbPipelineConfig& config = {}) override;
   void PollEvents() override;
   void SstIdle() override;
 
@@ -286,14 +303,20 @@ class VulkanBackend : public SoftwareBackendBase {
   void SetFogColor(uint32_t color) override;
   void SetFogTable(const uint8_t* table) override;
 
+ protected:
+  void ResetState_Locked() override;
+
  private:
+  void DetachWindow_Locked();
+  void UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
+                            const struct VirtualTexture& tex);
   bool CreateInstance();
   bool SelectPhysicalDevice();
   bool CreateLogicalDevice();
   bool CreateRenderPass();
   bool CreateHeadlessRenderTarget(uint32_t width, uint32_t height);
   bool CreateSwapchain(uint32_t width, uint32_t height);
-  void DestroySwapchain();
+  void DestroySwapchain_Locked();
   void RecreateSwapchain(uint32_t width, uint32_t height);
   uint32_t FindMemoryType(uint32_t typeFilter,
                           vk::MemoryPropertyFlags properties);
@@ -301,7 +324,7 @@ class VulkanBackend : public SoftwareBackendBase {
                              vk::ImageLayout oldLayout,
                              vk::ImageLayout newLayout,
                              vk::ImageSubresourceRange range);
-  void FlushLFBToGPU();
+  void FlushLFBToGPU_Locked();
   void FlushBatch();
   uint32_t GetActiveGpuBufferIdx() const {
     return (m_activeRenderBuffer == 0) ? 1u : 0u;
@@ -352,29 +375,13 @@ class VulkanBackend : public SoftwareBackendBase {
   vk::UniqueBuffer m_headlessPixelBuffers[2];
   vk::UniqueDeviceMemory m_headlessPixelMemories[2];
 
-  // SDL2 Visual Presentation Console Singletons
-  void* m_sdlWindow{
-      nullptr};  // SDL_Window* (our rendering overlay or standalone window)
-  void* m_hostWindow{
-      nullptr};  // SDL_Window* (the hijacked or wrapped host window)
-  void* m_nativeWindow{nullptr};
-  bool m_windowShown{false};
-  bool m_isWindowHooked{false};
-  bool m_sdlVideoInitializedByUs{false};
-  bool m_sdlWindowOwnedByUs{false};
-  void* m_sdlRenderer{nullptr};    // SDL_Renderer*
-  bool m_sdlRendererOwned{false};  // SDL_Renderer ownership
-  void* m_sdlTexture{nullptr};     // SDL_Texture*
-
-  // Asynchronous bounds sync cache to prevent resize storms
-  int m_lastRequestedX{0};
-  int m_lastRequestedY{0};
-  int m_lastRequestedW{0};
-  int m_lastRequestedH{0};
-  void SyncOverlayBounds();
+  // Native surface / child window host (Headless, StandaloneSDL2, X11Child,
+  // WaylandSubsurface)
+  NativeSurfaceHost m_surfaceHost;
+  bool CreatePresentationSurface();
 
   vk::UniqueSurfaceKHR
-      m_surface;  // Vulkan presentation surface associated with m_sdlWindow
+      m_surface;  // Vulkan presentation surface backed by m_surfaceHost
 
   // --- Phase 9: Vulkan Swapchain Resources (Milestone 2) ---
   vk::UniqueSwapchainKHR m_swapchain;
@@ -383,9 +390,13 @@ class VulkanBackend : public SoftwareBackendBase {
   vk::Format m_swapchainImageFormat{vk::Format::eB8G8R8A8Unorm};
   vk::Extent2D m_swapchainExtent;
 
-  // Synchronization semaphores for swapchain presentation (Double-Buffered)
+  // Synchronization semaphores for swapchain presentation:
+  // - imageAvailableSemaphores: indexed per frame-in-flight slot (0..1)
+  // - renderFinishedSemaphores: indexed per swapchain image (imageIdx) so a
+  //   semaphore handed to vkQueuePresentKHR is never reused until that image
+  //   is re-acquired (fixes VUID-vkQueueSubmit-pSignalSemaphores-00067).
   vk::UniqueSemaphore m_imageAvailableSemaphores[2];
-  vk::UniqueSemaphore m_renderFinishedSemaphores[2];
+  std::vector<vk::UniqueSemaphore> m_renderFinishedSemaphores;
 
   // --- Phase 2: Dynamic Vertex Buffers & State Pipelines ---
   bool CreateShaderModules();
@@ -429,8 +440,8 @@ class VulkanBackend : public SoftwareBackendBase {
   float m_clearDepthValue[2]{1.0f, 1.0f};
   bool m_clearColorPending[2]{false, false};
   bool m_clearDepthPending[2]{false, false};
-  // Dynamic Scissor Helper
-  vk::Rect2D GetScissorRectVulkan();
+  // Dynamic Scissor Helper (caller must hold m_mutex)
+  vk::Rect2D GetScissorRectVulkan_Locked();
   void EnsureRenderPassActive();
   void PopulatePushConstants(PushConstants& pcs);
 
@@ -464,6 +475,9 @@ class VulkanBackend : public SoftwareBackendBase {
   uint32_t m_texStagingOffsets[2]{0, 0};
   const uint32_t m_texStagingSlotSize{32 * 1024 * 1024};  // 32MB per frame slot
   uint32_t m_msaaSamples{1};
+
+  // Lazily-allocated CPU LFB staging (0 bytes until first LFB operation)
+  CpuLfbStaging m_lfbStaging;
 
   // Vulkan Gamma LUT State variables
   float m_gammaCorrectionValue{1.0f};

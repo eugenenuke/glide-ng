@@ -7,7 +7,9 @@ layout(location = 3) in vec2 fragTmuOow;
 layout(location = 4) in float fragFogCoord;
 
 layout(location = 0) out vec4 outColor;
-// layout(location = 0, index = 1) out vec4 outPreFogColor;
+#ifdef USE_DUAL_SRC_BLEND
+layout(location = 0, index = 1) out vec4 outPreFogColor;
+#endif
 
 layout(push_constant) uniform PushConstants {
   // Block 0: Offset 0 (16 bytes)
@@ -672,5 +674,7 @@ void main() {
 
   // Apply Dithering to outColor and outPreFogColor
   outColor = applyDithering(col, ditherMode);
-  // outPreFogColor = applyDithering(preFogColor, ditherMode);
+#ifdef USE_DUAL_SRC_BLEND
+  outPreFogColor = applyDithering(preFogColor, ditherMode);
+#endif
 }

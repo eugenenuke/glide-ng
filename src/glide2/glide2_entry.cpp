@@ -5,28 +5,10 @@
 #include <cstring>
 #include <iostream>
 
-#if defined(__linux__)
-#include <dlfcn.h>
-__attribute__((constructor)) void InitializeX11Threads() {
-    void* x11Handle = dlopen("libX11.so.6", RTLD_LAZY | RTLD_GLOBAL);
-    if (x11Handle) {
-        typedef int (*PFN_XInitThreads)();
-        auto pfn_XInitThreads = reinterpret_cast<PFN_XInitThreads>(dlsym(x11Handle, "XInitThreads"));
-        if (pfn_XInitThreads) {
-            pfn_XInitThreads();
-            std::cout << "[Wrapper-Init] Successfully initialized X11 multi-threading support (XInitThreads)." << std::endl;
-        }
-        dlclose(x11Handle);
-    }
-}
-#endif
-
-
 #include "core/3dfParser.h"
 #include "core/BackendManager.h"
+#include "core/GlideEntryCommon.h"
 #include "core/GlideSplashAnimator.h"
-#include "core/IConfigLoader.h"
-#include "core/JsonConfigLoader.h"
 #include "core/LfbManager.h"
 #include "core/Logger.h"
 #include "core/MathUtils.h"
@@ -65,83 +47,27 @@ __attribute__((constructor)) void InitializeX11Threads() {
 extern "C" uint32_t s_sstOrigin;
 
 namespace {
+namespace EntryCommon = GlideWrapper::EntryCommon;
+
+EntryCommon::SharedFrontendState s_state;
+
 std::chrono::steady_clock::time_point s_lastSwapTime =
     std::chrono::steady_clock::now();
 
-uint32_t s_depthMode = 0;
-uint32_t s_depthCompare = 1;
-bool s_depthMask = true;
-int32_t s_depthBias = 0;
-
-uint32_t s_alphaTestOp = 7;
-uint32_t s_alphaTestRef = 0;
-
-uint32_t s_clampS[2] = {0, 0};  // 0=WRAP, 1=CLAMP
-uint32_t s_clampT[2] = {0, 0};
-uint32_t s_minFilter[2] = {0, 0};  // 0=POINT, 1=BILINEAR
-uint32_t s_magFilter[2] = {0, 0};
-uint32_t s_colorFunc = 0x3;    // GR_COMBINE_FUNCTION_SCALE_OTHER
-uint32_t s_colorFactor = 0x8;  // GR_COMBINE_FACTOR_ONE
-uint32_t s_colorLocal = 0x0;   // GR_COMBINE_LOCAL_ITERATED
-uint32_t s_colorOther = 0x0;   // GR_COMBINE_OTHER_ITERATED
-bool s_colorInvert = false;
-uint32_t s_alphaFunc = 0x3;    // GR_COMBINE_FUNCTION_SCALE_OTHER
-uint32_t s_alphaFactor = 0x8;  // GR_COMBINE_FACTOR_ONE
-uint32_t s_alphaLocal = 0x1;   // GR_COMBINE_LOCAL_NONE (constant)
-uint32_t s_alphaOther = 0x2;   // GR_COMBINE_OTHER_CONSTANT
-bool s_alphaInvert = false;
-uint32_t s_texRgbFunc[2] = {1, 1};
-uint32_t s_texRgbFactor[2] = {0, 0};
-uint32_t s_texAlphaFunc[2] = {1, 1};
-uint32_t s_texAlphaFactor[2] = {0, 0};
-uint32_t s_boundTex[2] = {0xFFFFFFFF, 0xFFFFFFFF};
-struct TexChromaState {
-  uint32_t mode;
-  GrColor_t minColor;
-  GrColor_t maxColor;
-};
-static TexChromaState s_texChromaState[2] = {{0, 0, 0}, {0, 0, 0}};
-uint32_t s_stwHintMask = 0;  // Default: 0 (GR_STWHINT_W_OK)
-
-uint32_t s_constantColor = 0xFFFFFFFF;
-uint32_t s_rgbSrcBlend = 4;  // GR_BLEND_ONE
-uint32_t s_rgbDstBlend = 0;  // GR_BLEND_ZERO
 typedef FxI32 GrChromaRangeMode_t;
-uint32_t s_alphaSrcBlend = 4;
-uint32_t s_alphaDstBlend = 0;
-uint32_t s_cullMode = 0;  // GR_CULL_DISABLE
-uint32_t s_clipMinX = 0;
-uint32_t s_clipMinY = 0;
-uint32_t s_clipMaxX = 640;
-uint32_t s_clipMaxY = 480;
-uint32_t s_fogMode = 0;
-uint32_t s_fogColor = 0xff000000;
-uint8_t s_fogTable[64] = {0};
 
-bool s_colorMaskRgb = true;
-bool s_colorMaskAlpha = true;
+uint32_t s_stwHintMask = 0;  // Default: 0 (GR_STWHINT_W_OK)
 bool s_shamelessPlugEnabled = false;
-uint8_t s_lfbConstantAlpha = 255;
-uint32_t s_lfbWriteColorFormat = 0;  // GR_COLORFORMAT_ARGB
-uint32_t s_chromakeyMode = 0;
-uint32_t s_chromakeyValue = 0;
-uint32_t s_chromakeyRangeMin = 0;
-uint32_t s_chromakeyRangeMax = 0;
-GrChromaRangeMode_t s_chromakeyRangeMode = 0;
 
 std::vector<GrMipMapInfo> s_guTextures;
 uint32_t s_guTexNextAddress = 0;
 GrMipMapId_t s_currentMipMap[2] = {GR_NULL_MIPMAP_HANDLE,
                                    GR_NULL_MIPMAP_HANDLE};
-float s_texLodBias[2] = {0.0f, 0.0f};
-uint32_t s_mipmapMode[2] = {0, 0};
-bool s_lodBlend[2] = {false, false};
 
 uint16_t s_lfbConstantDepth = 0;
 bool s_lfbWriteColorSwizzle = false;
 bool s_lfbWriteColorSwizzleSwap = false;
 bool s_alphaControlsITRGBLighting = false;
-uint32_t s_ditherMode = 0;
 GrErrorCallbackFnc_t s_errorCallback = nullptr;
 float s_gammaCorrectionValue = 1.0f;
 
@@ -170,83 +96,21 @@ static void Decompress3dfxRle(int width, int height, const uint8_t* src,
 }
 
 inline void SanitizeVertex(GlideWrapper::ModernVertex& mv) {
-  bool depthActive = (s_depthMode != 0);
-  bool textureActive =
-      (s_boundTex[0] != 0xFFFFFFFF || s_boundTex[1] != 0xFFFFFFFF);
-  bool fogActive = (s_fogMode != 0);
-  bool wActive = (s_depthMode == 2 || s_depthMode == 4);
-
-  if (!depthActive) {
-    mv.pos[2] = 0.0f;
-  }
-  if (!textureActive && !fogActive && !wActive) {
-    mv.pos[3] = 1.0f;
-  }
+  EntryCommon::SanitizeVertex(s_state, mv);
 }
 
 void ResetFrontendState() {
   s_lastSwapTime = std::chrono::steady_clock::now();
-  s_depthMode = 0;
-  s_depthCompare = 1;
-  s_depthMask = true;
-  s_depthBias = 0;
-  s_alphaTestOp = 7;
-  s_alphaTestRef = 0;
-  s_clampS[0] = s_clampS[1] = 0;
-  s_clampT[0] = s_clampT[1] = 0;
-  s_minFilter[0] = s_minFilter[1] = 0;
-  s_magFilter[0] = s_magFilter[1] = 0;
-  s_colorFunc = 0x3;
-  s_colorFactor = 0x8;
-  s_colorLocal = 0x0;
-  s_colorOther = 0x0;
-  s_colorInvert = false;
-  s_alphaFunc = 0x3;
-  s_alphaFactor = 0x8;
-  s_alphaLocal = 0x1;
-  s_alphaOther = 0x2;
-  s_alphaInvert = false;
-  s_texRgbFunc[0] = s_texRgbFunc[1] = 0;
-  s_texRgbFactor[0] = s_texRgbFactor[1] = 0;
-  s_texAlphaFunc[0] = s_texAlphaFunc[1] = 0;
-  s_texAlphaFactor[0] = s_texAlphaFactor[1] = 0;
-  s_boundTex[0] = s_boundTex[1] = 0xFFFFFFFF;
-  s_texChromaState[0] = s_texChromaState[1] = {0, 0, 0};
+  s_state.Reset(/*defaultLfbConstantAlpha=*/255, /*defaultTexCombineFunc=*/0);
   s_stwHintMask = 0;
-  s_constantColor = 0xFFFFFFFF;
-  s_rgbSrcBlend = 4;
-  s_rgbDstBlend = 0;
-  s_alphaSrcBlend = 4;
-  s_alphaDstBlend = 0;
-  s_cullMode = 0;
-  s_clipMinX = 0;
-  s_clipMinY = 0;
-  s_clipMaxX = 640;
-  s_clipMaxY = 480;
-  s_fogMode = 0;
-  s_fogColor = 0xff000000;
-  std::memset(s_fogTable, 0, sizeof(s_fogTable));
-  s_colorMaskRgb = true;
-  s_colorMaskAlpha = true;
   s_shamelessPlugEnabled = false;
-  s_lfbConstantAlpha = 255;
-  s_lfbWriteColorFormat = 0;
-  s_chromakeyMode = 0;
-  s_chromakeyValue = 0;
-  s_chromakeyRangeMin = 0;
-  s_chromakeyRangeMax = 0;
-  s_chromakeyRangeMode = 0;
   s_guTextures.clear();
   s_guTexNextAddress = 0;
   s_currentMipMap[0] = s_currentMipMap[1] = GR_NULL_MIPMAP_HANDLE;
-  s_texLodBias[0] = s_texLodBias[1] = 0.0f;
-  s_mipmapMode[0] = s_mipmapMode[1] = 0;
-  s_lodBlend[0] = s_lodBlend[1] = false;
   s_lfbConstantDepth = 0;
   s_lfbWriteColorSwizzle = false;
   s_lfbWriteColorSwizzleSwap = false;
   s_alphaControlsITRGBLighting = false;
-  s_ditherMode = 0;
   s_errorCallback = nullptr;
   s_gammaCorrectionValue = 1.0f;
   s_sstOrigin = 0;
@@ -336,58 +200,18 @@ static_assert(sizeof(GlideWrapperState) == 312,
               "compatibility!");
 
 FX_ENTRY void FX_CALL grGlideInit(void) {
-  ResetFrontendState();
-  auto& reg = GlideWrapper::EmulationRegistry::GetInstance();
-  GlideWrapper::JsonConfigLoader loader;
-  loader.Load("glide_config.json", reg.GetConfig());
-  auto& logger = GlideWrapper::Logger::GetInstance();
-  logger.Initialize(
-      std::string(GlideWrapper::WRAPPER_PROJECT_NAME) + ".log",
-      static_cast<GlideWrapper::LogLevel>(reg.GetConfig().logLevel),
-      reg.GetConfig().logToConsole);
-  GLIDE_LOG(INFO, "Frontend", "grGlideInit (Glide 2.x) invoked.");
-
-  // Dump dynamic startup summaries
-  logger.LogExecutionSummary(reg.GetConfig());
-
-  // Establish multi-target Vulkan rendering execution pipeline
-  GlideWrapper::BackendManager::GetInstance().EstablishBackend(reg.GetConfig());
-
-  // Set TMU memory limits based on emulated card config
-  for (uint32_t tmu = 0; tmu < reg.GetConfig().tmuCount; ++tmu) {
-    GlideWrapper::TextureManager::GetInstance().SetTmuMemoryLimitMb(
-        tmu, reg.GetConfig().tmuMemoryMb);
-  }
+  EntryCommon::InitGlide("Glide 2.x", ResetFrontendState);
 }
 
 inline void EnsureEngineInitialized() {
-  auto& reg = GlideWrapper::EmulationRegistry::GetInstance();
-  auto& bm = GlideWrapper::BackendManager::GetInstance();
-  if (!bm.GetBackend()) {
-    ResetFrontendState();
-    auto& logger = GlideWrapper::Logger::GetInstance();
-    logger.Initialize(
-        "glide-ng.log",
-        static_cast<GlideWrapper::LogLevel>(reg.GetConfig().logLevel),
-        reg.GetConfig().logToConsole);
-    bm.EstablishBackend(reg.GetConfig());
-    for (uint32_t tmu = 0; tmu < reg.GetConfig().tmuCount; ++tmu) {
-      GlideWrapper::TextureManager::GetInstance().SetTmuMemoryLimitMb(
-          tmu, reg.GetConfig().tmuMemoryMb);
-    }
-    GLIDE_LOG(INFO, "Frontend", "Implicit grGlideInit executed seamlessly.");
-  } else {
-    bm.GetBackend()->PollEvents();
-  }
+  EntryCommon::EnsureEngineInitialized(ResetFrontendState);
 }
 
 FX_ENTRY void FX_CALL grGlideShutdown(void) {
-  GLIDE_LOG(INFO, "Frontend", "grGlideShutdown (Glide 2.x) invoked.");
-  GlideWrapper::TelemetryManager::GetInstance().PrintReport();
-  GlideWrapper::BackendManager::GetInstance().ShutdownBackend();
+  EntryCommon::ShutdownGlide("Glide 2.x");
 }
 
-FX_ENTRY FxBool FX_CALL grSstWinOpen(FxU32 hWnd,
+FX_ENTRY FxBool FX_CALL grSstWinOpen(AnyPtr hWnd,
                                      GrScreenResolution_t resolution,
                                      GrScreenRefresh_t refresh,
                                      GrColorFormat_t format,
@@ -405,110 +229,18 @@ FX_ENTRY FxBool FX_CALL grSstWinOpen(FxU32 hWnd,
   auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
   if (!backend) return FXFALSE;
 
-  // Normalize classic resolution defines to pixel dimensions
-  uint32_t width = 640;
-  uint32_t height = 480;
-  if (resolution == GR_RESOLUTION_320x200) {
-    width = 320;
-    height = 200;
-  } else if (resolution == GR_RESOLUTION_320x240) {
-    width = 320;
-    height = 240;
-  } else if (resolution == GR_RESOLUTION_400x256) {
-    width = 400;
-    height = 256;
-  } else if (resolution == GR_RESOLUTION_400x300) {
-    width = 400;
-    height = 300;
-  } else if (resolution == GR_RESOLUTION_512x384) {
-    width = 512;
-    height = 384;
-  } else if (resolution == GR_RESOLUTION_640x200) {
-    width = 640;
-    height = 200;
-  } else if (resolution == GR_RESOLUTION_640x350) {
-    width = 640;
-    height = 350;
-  } else if (resolution == GR_RESOLUTION_640x400) {
-    width = 640;
-    height = 400;
-  } else if (resolution == GR_RESOLUTION_640x480) {
-    width = 640;
-    height = 480;
-  } else if (resolution == GR_RESOLUTION_800x600) {
-    width = 800;
-    height = 600;
-  } else if (resolution == GR_RESOLUTION_856x480) {
-    width = 856;
-    height = 480;
-  } else if (resolution == GR_RESOLUTION_960x720) {
-    width = 960;
-    height = 720;
-  } else if (resolution == GR_RESOLUTION_1024x768) {
-    width = 1024;
-    height = 768;
-  } else if (resolution == GR_RESOLUTION_1280x1024) {
-    width = 1280;
-    height = 1024;
-  } else if (resolution == GR_RESOLUTION_1600x1200) {
-    width = 1600;
-    height = 1200;
-  }
+  const auto dims = EntryCommon::ResolveResolution(resolution);
+  const uint32_t width = dims.width;
+  const uint32_t height = dims.height;
 
   // Reset all frontend static global states to canonical Glide defaults
-  s_depthMode = 0;
-  s_depthCompare = 1;
-  s_depthMask = true;
-  s_depthBias = 0;
-  s_alphaTestOp = 7;
-  s_alphaTestRef = 0;
-  s_clampS[0] = s_clampS[1] = 0;
-  s_clampT[0] = s_clampT[1] = 0;
-  s_minFilter[0] = s_minFilter[1] = 0;
-  s_magFilter[0] = s_magFilter[1] = 0;
-  s_colorFunc = 0x3;    // GR_COMBINE_FUNCTION_SCALE_OTHER
-  s_colorFactor = 0x8;  // GR_COMBINE_FACTOR_ONE
-  s_colorLocal = 0x0;   // GR_COMBINE_LOCAL_ITERATED
-  s_colorOther = 0x0;   // GR_COMBINE_OTHER_ITERATED
-  s_colorInvert = false;
-  s_alphaFunc = 0x3;    // GR_COMBINE_FUNCTION_SCALE_OTHER
-  s_alphaFactor = 0x8;  // GR_COMBINE_FACTOR_ONE
-  s_alphaLocal = 0x1;   // GR_COMBINE_LOCAL_NONE
-  s_alphaOther = 0x2;   // GR_COMBINE_OTHER_CONSTANT
-  s_alphaInvert = false;
-  s_texRgbFunc[0] = s_texRgbFunc[1] = 1;
-  s_texRgbFactor[0] = s_texRgbFactor[1] = 0;
-  s_texAlphaFunc[0] = s_texAlphaFunc[1] = 1;
-  s_texAlphaFactor[0] = s_texAlphaFactor[1] = 0;
-  s_boundTex[0] = s_boundTex[1] = 0xFFFFFFFF;
+  s_state.Reset(/*defaultLfbConstantAlpha=*/255, /*defaultTexCombineFunc=*/1,
+                width, height);
   s_stwHintMask = 0;
-  s_constantColor = 0xFFFFFFFF;
-  s_rgbSrcBlend = 4;  // GR_BLEND_ONE
-  s_rgbDstBlend = 0;  // GR_BLEND_ZERO
-  s_alphaSrcBlend = 4;
-  s_alphaDstBlend = 0;
-  s_cullMode = 0;
-  s_clipMinX = 0;
-  s_clipMinY = 0;
-  s_clipMaxX = width;
-  s_clipMaxY = height;
-  s_fogMode = 0;
-  s_fogColor = 0xff000000;
-  std::memset(s_fogTable, 0, sizeof(s_fogTable));
-  s_colorMaskRgb = true;
-  s_colorMaskAlpha = true;
   s_shamelessPlugEnabled = false;
-  s_lfbConstantAlpha = 255;
-  s_lfbWriteColorFormat = 0;
-  s_chromakeyMode = 0;
-  s_chromakeyValue = 0;
-  s_chromakeyRangeMin = 0;
-  s_chromakeyRangeMax = 0;
-  s_chromakeyRangeMode = 0;
   s_guTextures.clear();
   s_guTexNextAddress = 0;
   s_currentMipMap[0] = s_currentMipMap[1] = GR_NULL_MIPMAP_HANDLE;
-  s_texLodBias[0] = s_texLodBias[1] = 0.0f;
   s_lfbConstantDepth = 0;
   s_lfbWriteColorSwizzle = false;
   s_lfbWriteColorSwizzleSwap = false;
@@ -520,44 +252,17 @@ FX_ENTRY FxBool FX_CALL grSstWinOpen(FxU32 hWnd,
       hWnd != 0);
   backend->SetPixelFormat(format);
   if (attached) {
-    auto& reg = GlideWrapper::EmulationRegistry::GetInstance();
-    for (uint32_t tmu = 0; tmu < reg.GetConfig().tmuCount; ++tmu) {
-      GlideWrapper::TextureManager::GetInstance().SetTmuMemoryLimitMb(
-          tmu, reg.GetConfig().tmuMemoryMb);
-    }
-    backend->SetCombinerMode(
-        s_colorFunc, s_colorFactor, s_colorLocal, s_colorOther, s_colorInvert,
-        s_alphaFunc, s_alphaFactor, s_alphaLocal, s_alphaOther, s_alphaInvert);
-    backend->SetConstantColor(s_constantColor);
-    backend->SetBlendState(s_rgbSrcBlend, s_rgbDstBlend, s_alphaSrcBlend,
-                           s_alphaDstBlend);
-    backend->SetCullState(s_cullMode);
-    backend->SetDepthState(s_depthMode, s_depthCompare, s_depthMask,
-                           s_depthBias);
-    backend->SetAlphaTestState(s_alphaTestOp, s_alphaTestRef);
-    backend->SetClipWindow(s_clipMinX, s_clipMinY, s_clipMaxX, s_clipMaxY);
-    backend->SetSstOrigin(s_sstOrigin);
-    backend->SetFogMode(s_fogMode);
-    backend->SetFogColor(s_fogColor);
+    EntryCommon::ConfigureTmuMemoryLimits();
+    EntryCommon::ApplySharedStateToBackend(s_state, s_sstOrigin,
+                                           /*includeTexInvert=*/false);
     backend->SetSTWHintState(s_stwHintMask);
-    backend->SetFogTable(s_fogTable);
-    for (uint32_t tmu = 0; tmu < 2; ++tmu) {
-      backend->SetTexCombinerMode(tmu, s_texRgbFunc[tmu], s_texRgbFactor[tmu],
-                                  s_texAlphaFunc[tmu], s_texAlphaFactor[tmu],
-                                  false, false);
-      backend->BindTexture(tmu, s_boundTex[tmu], s_clampS[tmu], s_clampT[tmu],
-                           s_minFilter[tmu], s_magFilter[tmu]);
-    }
   }
   return attached ? FXTRUE : FXFALSE;
 }
 
 FX_ENTRY void FX_CALL grSstWinClose(void) {
   EnsureEngineInitialized();
-  GlideWrapper::BackendManager::GetInstance().SetSplashAnimator(nullptr);
-  GLIDE_LOG(INFO, "Frontend", "grSstWinClose invoked.");
-  auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
-  if (backend) backend->DetachWindow();
+  EntryCommon::CloseWindow("grSstWinClose invoked.");
 }
 
 FX_ENTRY void FX_CALL grHints(GrHint_t hintType, FxU32 hintMask) {
@@ -577,10 +282,7 @@ FX_ENTRY void FX_CALL grHints(GrHint_t hintType, FxU32 hintMask) {
 FX_ENTRY void FX_CALL grBufferClear(GrColor_t color, GrAlpha_t alpha,
                                     FxU16 depth) {
   EnsureEngineInitialized();
-  auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
-  if (backend)
-    backend->ClearBuffer(color, alpha, static_cast<float>(depth) / 65535.0f,
-                         0x3);
+  EntryCommon::ClearBuffer(color, alpha, depth);
 }
 
 FX_ENTRY void FX_CALL grBufferSwap(int swap_interval) {
@@ -589,15 +291,13 @@ FX_ENTRY void FX_CALL grBufferSwap(int swap_interval) {
     grShamelessPlug();
   }
   s_lastSwapTime = std::chrono::steady_clock::now();
-  auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
-  if (backend) backend->SwapBuffers();
+  EntryCommon::SwapBuffers();
 }
 
 FX_ENTRY void FX_CALL grRenderBuffer(GrBuffer_t buffer) {
   EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend", "grRenderBuffer invoked for Buffer=" << buffer);
-  auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
-  if (backend) backend->SetRenderBuffer(buffer);
+  EntryCommon::SetRenderBuffer(buffer);
 }
 
 FX_ENTRY void FX_CALL grDrawTriangle(const GrVertex* a, const GrVertex* b,
@@ -622,32 +322,20 @@ FX_ENTRY void FX_CALL grDrawTriangle(const GrVertex* a, const GrVertex* b,
 }
 
 FX_ENTRY void FX_CALL grTriStats(FxU32* processed, FxU32* drawn) {
-  if (processed) {
-    *processed = static_cast<FxU32>(
-        GlideWrapper::TelemetryManager::GetInstance().GetTrianglesProcessed());
-  }
-  if (drawn) {
-    *drawn = static_cast<FxU32>(
-        GlideWrapper::TelemetryManager::GetInstance().GetTrianglesDrawn());
-  }
+  EntryCommon::GetTriStats(processed, drawn);
 }
 
-FX_ENTRY void FX_CALL grResetTriStats(void) {
-  GlideWrapper::TelemetryManager::GetInstance().ResetTriangleStats();
-}
+FX_ENTRY void FX_CALL grResetTriStats(void) { EntryCommon::ResetTriStats(); }
 
 FX_ENTRY void FX_CALL grSstPerfStats(GrSstPerfStats_t* stats) {
   if (stats) {
-    auto& tracker =
-        GlideWrapper::TelemetryManager::GetInstance().GetFrameTracker();
     std::memset(stats, 0, sizeof(GrSstPerfStats_t));
-    stats->pixelsIn = static_cast<FxU32>(tracker.GetCurrentFps());
-    stats->chromaFail = static_cast<FxU32>(tracker.GetRenderTimeMs() * 1000.0f);
+    EntryCommon::GetPerfStats(stats->pixelsIn, stats->chromaFail);
   }
 }
 
 FX_ENTRY void FX_CALL grSstResetPerfStats(void) {
-  GlideWrapper::TelemetryManager::GetInstance().Reset();
+  EntryCommon::ResetPerfStats();
 }
 
 FX_ENTRY void FX_CALL grDrawLine(const GrVertex* a, const GrVertex* b) {
@@ -764,45 +452,6 @@ FX_ENTRY void FX_CALL guAADrawTriangleWithClip(const GrVertex* a,
   grDrawTriangle(a, b, c);
 }
 
-static void DrawVertexList(FxU32 mode, FxU32 count,
-                           const GlideWrapper::ModernVertex* vertices) {
-  auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
-  if (!backend || count == 0) return;
-
-  if (mode == GR_POINTS) {
-    for (FxU32 i = 0; i < count; ++i) {
-      backend->DrawPoint(vertices[i]);
-    }
-  } else if (mode == GR_LINES) {
-    for (FxU32 i = 0; i + 1 < count; i += 2) {
-      backend->DrawLine(vertices[i], vertices[i + 1]);
-    }
-  } else if (mode == GR_LINE_STRIP) {
-    for (FxU32 i = 0; i + 1 < count; ++i) {
-      backend->DrawLine(vertices[i], vertices[i + 1]);
-    }
-  } else if (mode == GR_TRIANGLES) {
-    GLIDE_INCREMENT_TRIANGLES_PROCESSED(count / 3);
-    for (FxU32 i = 0; i + 2 < count; i += 3) {
-      backend->DrawTriangle(vertices[i], vertices[i + 1], vertices[i + 2]);
-    }
-  } else if (mode == GR_TRIANGLE_STRIP) {
-    GLIDE_INCREMENT_TRIANGLES_PROCESSED(count > 2 ? count - 2 : 0);
-    for (FxU32 i = 0; i + 2 < count; ++i) {
-      if (i % 2 == 0) {
-        backend->DrawTriangle(vertices[i], vertices[i + 1], vertices[i + 2]);
-      } else {
-        backend->DrawTriangle(vertices[i], vertices[i + 2], vertices[i + 1]);
-      }
-    }
-  } else if (mode == GR_TRIANGLE_FAN || mode == GR_POLYGON) {
-    GLIDE_INCREMENT_TRIANGLES_PROCESSED(count > 2 ? count - 2 : 0);
-    for (FxU32 i = 1; i + 1 < count; ++i) {
-      backend->DrawTriangle(vertices[0], vertices[i], vertices[i + 1]);
-    }
-  }
-}
-
 FX_ENTRY void FX_CALL grDrawVertexArray(FxU32 mode, FxU32 count,
                                         void* pointers) {
   EnsureEngineInitialized();
@@ -820,7 +469,8 @@ FX_ENTRY void FX_CALL grDrawVertexArray(FxU32 mode, FxU32 count,
     SanitizeVertex(vertices[i]);
   }
 
-  DrawVertexList(mode, count, vertices.data());
+  EntryCommon::DrawVertexList(mode, count, vertices.data(),
+                              /*allowPointsAndLines=*/true);
 }
 
 FX_ENTRY void FX_CALL grDrawVertexArrayLinear(FxU32 mode, FxU32 count,
@@ -851,7 +501,8 @@ FX_ENTRY void FX_CALL grDrawVertexArrayLinear(FxU32 mode, FxU32 count,
     SanitizeVertex(vertices[i]);
   }
 
-  DrawVertexList(mode, count, vertices.data());
+  EntryCommon::DrawVertexList(mode, count, vertices.data(),
+                              /*allowPointsAndLines=*/true);
 }
 
 FX_ENTRY FxBool FX_CALL grSstQueryHardware(GrHwConfiguration* hwconfig) {
@@ -1023,14 +674,8 @@ FX_ENTRY const char* FX_CALL grGetString(FxU32 pname) {
     }
     case GR_VENDOR:
       return reg.GetConfig().reportedVendorOverride.c_str();
-    case GR_RENDERER: {
-      if (reg.GetConfig().backend == "opengl_es") {
-        return "3dfx glide-ng OpenGL ES Wrapper";
-      } else if (reg.GetConfig().backend == "software") {
-        return "3dfx glide-ng Software Wrapper";
-      }
-      return "3dfx glide-ng Vulkan Wrapper";
-    }
+    case GR_RENDERER:
+      return EntryCommon::GetRendererString();
     case GR_EXTENSION: {
       static std::string s_extensions;
       s_extensions = "";
@@ -1055,13 +700,7 @@ FX_ENTRY void FX_CALL grClipWindow(FxU32 minx, FxU32 miny, FxU32 maxx,
   GLIDE_LOG(DEBUG, "Frontend",
             "grClipWindow invoked: " << minx << "," << miny << " to " << maxx
                                      << "," << maxy);
-  s_clipMinX = minx;
-  s_clipMinY = miny;
-  s_clipMaxX = maxx;
-  s_clipMaxY = maxy;
-  if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
-    b->SetClipWindow(minx, miny, maxx, maxy);
-  }
+  EntryCommon::SetClipWindow(s_state, minx, miny, maxx, maxy);
 }
 
 FX_ENTRY FxU32 FX_CALL grTexMinAddress(GrChipID_t tmu) {
@@ -1086,70 +725,70 @@ FX_ENTRY void FX_CALL grGlideGetState(GrState* state) {
   GLIDE_LOG(DEBUG, "Frontend", "grGlideGetState invoked.");
   if (!state) return;
   auto* ws = reinterpret_cast<GlideWrapperState*>(state);
-  ws->depthMode = s_depthMode;
-  ws->depthCompare = s_depthCompare;
-  ws->depthMask = s_depthMask ? 1 : 0;
-  ws->depthBias = s_depthBias;
-  ws->alphaTestOp = s_alphaTestOp;
-  ws->alphaTestRef = s_alphaTestRef;
+  ws->depthMode = s_state.depthMode;
+  ws->depthCompare = s_state.depthCompare;
+  ws->depthMask = s_state.depthMask ? 1 : 0;
+  ws->depthBias = s_state.depthBias;
+  ws->alphaTestOp = s_state.alphaTestOp;
+  ws->alphaTestRef = s_state.alphaTestRef;
   for (int i = 0; i < 2; ++i) {
-    ws->clampS[i] = static_cast<uint8_t>(s_clampS[i]);
-    ws->clampT[i] = static_cast<uint8_t>(s_clampT[i]);
-    ws->minFilter[i] = static_cast<uint8_t>(s_minFilter[i]);
-    ws->magFilter[i] = static_cast<uint8_t>(s_magFilter[i]);
+    ws->clampS[i] = static_cast<uint8_t>(s_state.clampS[i]);
+    ws->clampT[i] = static_cast<uint8_t>(s_state.clampT[i]);
+    ws->minFilter[i] = static_cast<uint8_t>(s_state.minFilter[i]);
+    ws->magFilter[i] = static_cast<uint8_t>(s_state.magFilter[i]);
   }
-  ws->colorFunc = s_colorFunc;
-  ws->colorFactor = s_colorFactor;
-  ws->colorLocal = s_colorLocal;
-  ws->colorOther = s_colorOther;
-  ws->colorInvert = s_colorInvert ? 1 : 0;
-  ws->alphaFunc = s_alphaFunc;
-  ws->alphaFactor = s_alphaFactor;
-  ws->alphaLocal = s_alphaLocal;
-  ws->alphaOther = s_alphaOther;
-  ws->alphaInvert = s_alphaInvert ? 1 : 0;
+  ws->colorFunc = s_state.colorFunc;
+  ws->colorFactor = s_state.colorFactor;
+  ws->colorLocal = s_state.colorLocal;
+  ws->colorOther = s_state.colorOther;
+  ws->colorInvert = s_state.colorInvert ? 1 : 0;
+  ws->alphaFunc = s_state.alphaFunc;
+  ws->alphaFactor = s_state.alphaFactor;
+  ws->alphaLocal = s_state.alphaLocal;
+  ws->alphaOther = s_state.alphaOther;
+  ws->alphaInvert = s_state.alphaInvert ? 1 : 0;
   for (int i = 0; i < 2; ++i) {
-    ws->texRgbFunc[i] = static_cast<uint8_t>(s_texRgbFunc[i]);
-    ws->texRgbFactor[i] = static_cast<uint8_t>(s_texRgbFactor[i]);
-    ws->texAlphaFunc[i] = static_cast<uint8_t>(s_texAlphaFunc[i]);
-    ws->texAlphaFactor[i] = static_cast<uint8_t>(s_texAlphaFactor[i]);
+    ws->texRgbFunc[i] = static_cast<uint8_t>(s_state.texRgbFunc[i]);
+    ws->texRgbFactor[i] = static_cast<uint8_t>(s_state.texRgbFactor[i]);
+    ws->texAlphaFunc[i] = static_cast<uint8_t>(s_state.texAlphaFunc[i]);
+    ws->texAlphaFactor[i] = static_cast<uint8_t>(s_state.texAlphaFactor[i]);
   }
-  std::memcpy(ws->boundTex, s_boundTex, sizeof(s_boundTex));
+  std::memcpy(ws->boundTex, s_state.boundTex, sizeof(s_state.boundTex));
   ws->stwHintMask = s_stwHintMask;
-  ws->constantColor = s_constantColor;
-  ws->rgbSrcBlend = s_rgbSrcBlend;
-  ws->rgbDstBlend = s_rgbDstBlend;
-  ws->alphaSrcBlend = s_alphaSrcBlend;
-  ws->alphaDstBlend = s_alphaDstBlend;
-  ws->cullMode = s_cullMode;
+  ws->constantColor = s_state.constantColor;
+  ws->rgbSrcBlend = s_state.rgbSrcBlend;
+  ws->rgbDstBlend = s_state.rgbDstBlend;
+  ws->alphaSrcBlend = s_state.alphaSrcBlend;
+  ws->alphaDstBlend = s_state.alphaDstBlend;
+  ws->cullMode = s_state.cullMode;
   ws->sstOrigin = s_sstOrigin;
-  ws->clipMinX = s_clipMinX;
-  ws->clipMinY = s_clipMinY;
-  ws->clipMaxX = s_clipMaxX;
-  ws->clipMaxY = s_clipMaxY;
-  ws->fogMode = s_fogMode;
-  ws->fogColor = s_fogColor;
-  std::memcpy(ws->fogTable, s_fogTable, sizeof(s_fogTable));
-  ws->colorMaskRgb = s_colorMaskRgb ? 1 : 0;
-  ws->colorMaskAlpha = s_colorMaskAlpha ? 1 : 0;
-  ws->chromakeyMode = s_chromakeyMode;
-  ws->chromakeyValue = s_chromakeyValue;
-  ws->chromakeyRangeMin = s_chromakeyRangeMin;
-  ws->chromakeyRangeMax = s_chromakeyRangeMax;
-  ws->chromakeyRangeMode = s_chromakeyRangeMode;
+  ws->clipMinX = s_state.clipMinX;
+  ws->clipMinY = s_state.clipMinY;
+  ws->clipMaxX = s_state.clipMaxX;
+  ws->clipMaxY = s_state.clipMaxY;
+  ws->fogMode = s_state.fogMode;
+  ws->fogColor = s_state.fogColor;
+  std::memcpy(ws->fogTable, s_state.fogTable, sizeof(s_state.fogTable));
+  ws->colorMaskRgb = s_state.colorMaskRgb ? 1 : 0;
+  ws->colorMaskAlpha = s_state.colorMaskAlpha ? 1 : 0;
+  ws->chromakeyMode = s_state.chromakeyMode;
+  ws->chromakeyValue = s_state.chromakeyValue;
+  ws->chromakeyRangeMin = s_state.chromakeyRangeMin;
+  ws->chromakeyRangeMax = s_state.chromakeyRangeMax;
+  ws->chromakeyRangeMode = s_state.chromakeyRangeMode;
   for (int i = 0; i < 2; ++i) {
-    ws->texChromaState[i].mode = s_texChromaState[i].mode;
-    ws->texChromaState[i].minColor = s_texChromaState[i].minColor;
-    ws->texChromaState[i].maxColor = s_texChromaState[i].maxColor;
+    ws->texChromaState[i].mode = s_state.texChromaState[i].mode;
+    ws->texChromaState[i].minColor = s_state.texChromaState[i].minColor;
+    ws->texChromaState[i].maxColor = s_state.texChromaState[i].maxColor;
   }
   for (int i = 0; i < 2; ++i) {
-    ws->mipmapMode[i] = static_cast<uint8_t>(s_mipmapMode[i]);
+    ws->mipmapMode[i] = static_cast<uint8_t>(s_state.mipmapMode[i]);
   }
   for (int i = 0; i < 2; ++i) {
-    ws->lodBlend[i] = s_lodBlend[i] ? 1 : 0;
+    ws->lodBlend[i] = s_state.lodBlend[i] ? 1 : 0;
   }
-  std::memcpy(ws->texLodBias, s_texLodBias, sizeof(s_texLodBias));
-  ws->ditherMode = s_ditherMode;
+  std::memcpy(ws->texLodBias, s_state.texLodBias, sizeof(s_state.texLodBias));
+  ws->ditherMode = s_state.ditherMode;
 }
 
 FX_ENTRY void FX_CALL grGlideSetState(const GrState* state) {
@@ -1157,108 +796,76 @@ FX_ENTRY void FX_CALL grGlideSetState(const GrState* state) {
   if (!state) return;
   const auto* ws = reinterpret_cast<const GlideWrapperState*>(state);
 
-  s_depthMode = ws->depthMode;
-  s_depthCompare = ws->depthCompare;
-  s_depthMask = ws->depthMask != 0;
-  s_depthBias = ws->depthBias;
-  s_alphaTestOp = ws->alphaTestOp;
-  s_alphaTestRef = ws->alphaTestRef;
+  s_state.depthMode = ws->depthMode;
+  s_state.depthCompare = ws->depthCompare;
+  s_state.depthMask = ws->depthMask != 0;
+  s_state.depthBias = ws->depthBias;
+  s_state.alphaTestOp = ws->alphaTestOp;
+  s_state.alphaTestRef = ws->alphaTestRef;
   for (int i = 0; i < 2; ++i) {
-    s_clampS[i] = ws->clampS[i];
-    s_clampT[i] = ws->clampT[i];
-    s_minFilter[i] = ws->minFilter[i];
-    s_magFilter[i] = ws->magFilter[i];
+    s_state.clampS[i] = ws->clampS[i];
+    s_state.clampT[i] = ws->clampT[i];
+    s_state.minFilter[i] = ws->minFilter[i];
+    s_state.magFilter[i] = ws->magFilter[i];
   }
-  s_colorFunc = ws->colorFunc;
-  s_colorFactor = ws->colorFactor;
-  s_colorLocal = ws->colorLocal;
-  s_colorOther = ws->colorOther;
-  s_colorInvert = ws->colorInvert != 0;
-  s_alphaFunc = ws->alphaFunc;
-  s_alphaFactor = ws->alphaFactor;
-  s_alphaLocal = ws->alphaLocal;
-  s_alphaOther = ws->alphaOther;
-  s_alphaInvert = ws->alphaInvert != 0;
+  s_state.colorFunc = ws->colorFunc;
+  s_state.colorFactor = ws->colorFactor;
+  s_state.colorLocal = ws->colorLocal;
+  s_state.colorOther = ws->colorOther;
+  s_state.colorInvert = ws->colorInvert != 0;
+  s_state.alphaFunc = ws->alphaFunc;
+  s_state.alphaFactor = ws->alphaFactor;
+  s_state.alphaLocal = ws->alphaLocal;
+  s_state.alphaOther = ws->alphaOther;
+  s_state.alphaInvert = ws->alphaInvert != 0;
   for (int i = 0; i < 2; ++i) {
-    s_texRgbFunc[i] = ws->texRgbFunc[i];
-    s_texRgbFactor[i] = ws->texRgbFactor[i];
-    s_texAlphaFunc[i] = ws->texAlphaFunc[i];
-    s_texAlphaFactor[i] = ws->texAlphaFactor[i];
+    s_state.texRgbFunc[i] = ws->texRgbFunc[i];
+    s_state.texRgbFactor[i] = ws->texRgbFactor[i];
+    s_state.texAlphaFunc[i] = ws->texAlphaFunc[i];
+    s_state.texAlphaFactor[i] = ws->texAlphaFactor[i];
   }
-  std::memcpy(s_boundTex, ws->boundTex, sizeof(s_boundTex));
+  std::memcpy(s_state.boundTex, ws->boundTex, sizeof(s_state.boundTex));
   s_stwHintMask = ws->stwHintMask;
   GlideWrapper::VertexLayout::GetInstance().SetSTWHintMask(s_stwHintMask);
-  s_constantColor = ws->constantColor;
-  s_rgbSrcBlend = ws->rgbSrcBlend;
-  s_rgbDstBlend = ws->rgbDstBlend;
-  s_alphaSrcBlend = ws->alphaSrcBlend;
-  s_alphaDstBlend = ws->alphaDstBlend;
-  s_cullMode = ws->cullMode;
+  s_state.constantColor = ws->constantColor;
+  s_state.rgbSrcBlend = ws->rgbSrcBlend;
+  s_state.rgbDstBlend = ws->rgbDstBlend;
+  s_state.alphaSrcBlend = ws->alphaSrcBlend;
+  s_state.alphaDstBlend = ws->alphaDstBlend;
+  s_state.cullMode = ws->cullMode;
   s_sstOrigin = ws->sstOrigin;
-  s_clipMinX = ws->clipMinX;
-  s_clipMinY = ws->clipMinY;
-  s_clipMaxX = ws->clipMaxX;
-  s_clipMaxY = ws->clipMaxY;
-  s_fogMode = ws->fogMode;
-  s_fogColor = ws->fogColor;
-  std::memcpy(s_fogTable, ws->fogTable, sizeof(s_fogTable));
-  s_colorMaskRgb = ws->colorMaskRgb != 0;
-  s_colorMaskAlpha = ws->colorMaskAlpha != 0;
-  s_chromakeyMode = ws->chromakeyMode;
-  s_chromakeyValue = ws->chromakeyValue;
-  s_chromakeyRangeMin = ws->chromakeyRangeMin;
-  s_chromakeyRangeMax = ws->chromakeyRangeMax;
-  s_chromakeyRangeMode = ws->chromakeyRangeMode;
+  s_state.clipMinX = ws->clipMinX;
+  s_state.clipMinY = ws->clipMinY;
+  s_state.clipMaxX = ws->clipMaxX;
+  s_state.clipMaxY = ws->clipMaxY;
+  s_state.fogMode = ws->fogMode;
+  s_state.fogColor = ws->fogColor;
+  std::memcpy(s_state.fogTable, ws->fogTable, sizeof(s_state.fogTable));
+  s_state.colorMaskRgb = ws->colorMaskRgb != 0;
+  s_state.colorMaskAlpha = ws->colorMaskAlpha != 0;
+  s_state.chromakeyMode = ws->chromakeyMode;
+  s_state.chromakeyValue = ws->chromakeyValue;
+  s_state.chromakeyRangeMin = ws->chromakeyRangeMin;
+  s_state.chromakeyRangeMax = ws->chromakeyRangeMax;
+  s_state.chromakeyRangeMode = ws->chromakeyRangeMode;
   for (int i = 0; i < 2; ++i) {
-    s_texChromaState[i].mode = ws->texChromaState[i].mode;
-    s_texChromaState[i].minColor = ws->texChromaState[i].minColor;
-    s_texChromaState[i].maxColor = ws->texChromaState[i].maxColor;
+    s_state.texChromaState[i].mode = ws->texChromaState[i].mode;
+    s_state.texChromaState[i].minColor = ws->texChromaState[i].minColor;
+    s_state.texChromaState[i].maxColor = ws->texChromaState[i].maxColor;
   }
   for (int i = 0; i < 2; ++i) {
-    s_mipmapMode[i] = ws->mipmapMode[i];
+    s_state.mipmapMode[i] = ws->mipmapMode[i];
   }
   for (int i = 0; i < 2; ++i) {
-    s_lodBlend[i] = ws->lodBlend[i] != 0;
+    s_state.lodBlend[i] = ws->lodBlend[i] != 0;
   }
-  std::memcpy(s_texLodBias, ws->texLodBias, sizeof(s_texLodBias));
-  s_ditherMode = (ws->ditherMode > 2) ? 0 : ws->ditherMode;
+  std::memcpy(s_state.texLodBias, ws->texLodBias, sizeof(s_state.texLodBias));
+  s_state.ditherMode = (ws->ditherMode > 2) ? 0 : ws->ditherMode;
 
+  EntryCommon::ApplySharedStateToBackend(s_state, s_sstOrigin,
+                                         /*includeTexInvert=*/false);
   if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
-    b->SetDepthState(s_depthMode, s_depthCompare, s_depthMask, s_depthBias);
-    b->SetAlphaTestState(s_alphaTestOp, s_alphaTestRef);
-    b->SetCombinerMode(s_colorFunc, s_colorFactor, s_colorLocal, s_colorOther,
-                       s_colorInvert, s_alphaFunc, s_alphaFactor, s_alphaLocal,
-                       s_alphaOther, s_alphaInvert);
-    b->SetBlendState(s_rgbSrcBlend, s_rgbDstBlend, s_alphaSrcBlend,
-                     s_alphaDstBlend);
-    b->SetCullState(s_cullMode);
-    b->SetSstOrigin(s_sstOrigin);
-    b->SetClipWindow(s_clipMinX, s_clipMinY, s_clipMaxX, s_clipMaxY);
-    b->SetColorMask(s_colorMaskRgb, s_colorMaskAlpha);
-    b->SetDitherMode(s_ditherMode);
-    b->SetConstantColor(s_constantColor);
-    b->SetFogMode(s_fogMode);
-    b->SetFogColor(s_fogColor);
-    b->SetFogTable(s_fogTable);
     b->SetSTWHintState(s_stwHintMask);
-    b->SetChromakeyMode(s_chromakeyMode);
-    b->SetChromakeyValue(s_chromakeyValue);
-    b->SetChromakeyRange(s_chromakeyRangeMin, s_chromakeyRangeMax,
-                         s_chromakeyRangeMode);
-
-    for (uint32_t tmu = 0; tmu < 2; ++tmu) {
-      b->SetTexCombinerMode(tmu, s_texRgbFunc[tmu], s_texRgbFactor[tmu],
-                            s_texAlphaFunc[tmu], s_texAlphaFactor[tmu], false,
-                            false);
-      b->BindTexture(tmu, s_boundTex[tmu], s_clampS[tmu], s_clampT[tmu],
-                     s_minFilter[tmu], s_magFilter[tmu]);
-      b->SetTexChromakeyMode(tmu, s_texChromaState[tmu].mode);
-      b->SetTexChromakeyRange(tmu, s_texChromaState[tmu].minColor,
-                              s_texChromaState[tmu].maxColor,
-                              s_texChromaState[tmu].mode);
-      b->SetTexMipMapMode(tmu, s_mipmapMode[tmu], s_lodBlend[tmu]);
-      b->SetTexLodBias(tmu, s_texLodBias[tmu]);
-    }
   }
 }
 
@@ -1270,16 +877,7 @@ FX_ENTRY void FX_CALL grColorCombine(GrCombineFunction_t fnc,
             "grColorCombine invoked: Function="
                 << fnc << ", Factor=" << factor << ", Local=" << local
                 << ", Other=" << other << ", Invert=" << invert);
-  s_colorFunc = fnc;
-  s_colorFactor = factor;
-  s_colorLocal = local;
-  s_colorOther = other;
-  s_colorInvert = invert != 0;
-  if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
-    b->SetCombinerMode(s_colorFunc, s_colorFactor, s_colorLocal, s_colorOther,
-                       s_colorInvert, s_alphaFunc, s_alphaFactor, s_alphaLocal,
-                       s_alphaOther, s_alphaInvert);
-  }
+  EntryCommon::SetColorCombine(s_state, fnc, factor, local, other, invert != 0);
 }
 
 FX_ENTRY void FX_CALL grAlphaCombine(GrCombineFunction_t fnc,
@@ -1290,16 +888,7 @@ FX_ENTRY void FX_CALL grAlphaCombine(GrCombineFunction_t fnc,
             "grAlphaCombine invoked: Function="
                 << fnc << ", Factor=" << factor << ", Local=" << local
                 << ", Other=" << other << ", Invert=" << invert);
-  s_alphaFunc = fnc;
-  s_alphaFactor = factor;
-  s_alphaLocal = local;
-  s_alphaOther = other;
-  s_alphaInvert = invert != 0;
-  if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
-    b->SetCombinerMode(s_colorFunc, s_colorFactor, s_colorLocal, s_colorOther,
-                       s_colorInvert, s_alphaFunc, s_alphaFactor, s_alphaLocal,
-                       s_alphaOther, s_alphaInvert);
-  }
+  EntryCommon::SetAlphaCombine(s_state, fnc, factor, local, other, invert != 0);
 }
 
 FX_ENTRY void FX_CALL grTexCombine(GrChipID_t tmu, GrCombineFunction_t rgbFnc,
@@ -1308,16 +897,9 @@ FX_ENTRY void FX_CALL grTexCombine(GrChipID_t tmu, GrCombineFunction_t rgbFnc,
                                    GrCombineFactor_t alphaFactor,
                                    FxBool rgbInvert, FxBool alphaInvert) {
   GLIDE_LOG(DEBUG, "Frontend", "grTexCombine invoked for TMU=" << tmu);
-  if (tmu < 2) {
-    s_texRgbFunc[tmu] = rgbFnc;
-    s_texRgbFactor[tmu] = rgbFactor;
-    s_texAlphaFunc[tmu] = alphaFnc;
-    s_texAlphaFactor[tmu] = alphaFactor;
-    if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
-      b->SetTexCombinerMode(tmu, rgbFnc, rgbFactor, alphaFnc, alphaFactor,
-                            false, false);
-    }
-  }
+  EntryCommon::SetTexCombine(s_state, tmu, rgbFnc, rgbFactor, alphaFnc,
+                             alphaFactor, rgbInvert != 0, alphaInvert != 0,
+                             /*forwardInverts=*/false);
 }
 
 FX_ENTRY void FX_CALL grAlphaBlendFunction(GrAlphaBlendFnc_t rgbSf,
@@ -1325,58 +907,32 @@ FX_ENTRY void FX_CALL grAlphaBlendFunction(GrAlphaBlendFnc_t rgbSf,
                                            GrAlphaBlendFnc_t alphaSf,
                                            GrAlphaBlendFnc_t alphaDf) {
   GLIDE_LOG(DEBUG, "Frontend", "grAlphaBlendFunction invoked.");
-  s_rgbSrcBlend = rgbSf;
-  s_rgbDstBlend = rgbDf;
-  s_alphaSrcBlend = alphaSf;
-  s_alphaDstBlend = alphaDf;
-  if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
-    b->SetBlendState(rgbSf, rgbDf, alphaSf, alphaDf);
-  }
+  EntryCommon::SetAlphaBlendFunction(s_state, rgbSf, rgbDf, alphaSf, alphaDf);
 }
 
 FX_ENTRY void FX_CALL grAlphaTestFunction(GrCmpFnc_t fnc) {
   GLIDE_LOG(DEBUG, "Frontend", "grAlphaTestFunction invoked.");
-  s_alphaTestOp = fnc;
-  if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
-    b->SetAlphaTestState(s_alphaTestOp, s_alphaTestRef);
-  }
+  EntryCommon::SetAlphaTestFunction(s_state, fnc);
 }
 
 FX_ENTRY void FX_CALL grAlphaTestReferenceValue(GrAlpha_t refVal) {
   GLIDE_LOG(DEBUG, "Frontend",
             "grAlphaTestReferenceValue invoked: " << static_cast<int>(refVal));
-  s_alphaTestRef = refVal;
-  if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
-    b->SetAlphaTestState(s_alphaTestOp, s_alphaTestRef);
-  }
+  EntryCommon::SetAlphaTestReferenceValue(s_state, refVal);
 }
 
 FX_ENTRY void FX_CALL grTexFilterMode(GrChipID_t tmu,
                                       GrTextureFilterMode_t minfilter,
                                       GrTextureFilterMode_t magfilter) {
   GLIDE_LOG(DEBUG, "Frontend", "grTexFilterMode invoked for TMU=" << tmu);
-  if (tmu < 2) {
-    s_minFilter[tmu] = minfilter;
-    s_magFilter[tmu] = magfilter;
-    if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
-      b->BindTexture(tmu, s_boundTex[tmu], s_clampS[tmu], s_clampT[tmu],
-                     s_minFilter[tmu], s_magFilter[tmu]);
-    }
-  }
+  EntryCommon::SetTexFilterMode(s_state, tmu, minfilter, magfilter);
 }
 
 FX_ENTRY void FX_CALL grTexClampMode(GrChipID_t tmu,
                                      GrTextureClampMode_t s_clampmode,
                                      GrTextureClampMode_t t_clampmode) {
   GLIDE_LOG(DEBUG, "Frontend", "grTexClampMode invoked for TMU=" << tmu);
-  if (tmu < 2) {
-    s_clampS[tmu] = s_clampmode;
-    s_clampT[tmu] = t_clampmode;
-    if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
-      b->BindTexture(tmu, s_boundTex[tmu], s_clampS[tmu], s_clampT[tmu],
-                     s_minFilter[tmu], s_magFilter[tmu]);
-    }
-  }
+  EntryCommon::SetTexClampMode(s_state, tmu, s_clampmode, t_clampmode);
 }
 
 FX_ENTRY void FX_CALL grTexMipMapMode(GrChipID_t tmu, GrMipMapMode_t mode,
@@ -1384,68 +940,42 @@ FX_ENTRY void FX_CALL grTexMipMapMode(GrChipID_t tmu, GrMipMapMode_t mode,
   GLIDE_LOG(DEBUG, "Frontend",
             "grTexMipMapMode (Glide 2.x) invoked for TMU="
                 << tmu << ", mode=" << mode << ", lodBlend=" << lodBlend);
-  if (tmu < 2) {
-    s_mipmapMode[tmu] = mode;
-    s_lodBlend[tmu] = lodBlend;
-    if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
-      b->SetTexMipMapMode(tmu, mode, lodBlend);
-    }
-  }
+  EntryCommon::SetTexMipMapMode(s_state, tmu, mode, lodBlend != 0);
 }
 
 FX_ENTRY void FX_CALL grDepthBufferMode(GrDepthBufferMode_t mode) {
   GLIDE_LOG(DEBUG, "Frontend", "grDepthBufferMode invoked: " << mode);
-  s_depthMode = mode;
-  if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
-    b->SetDepthState(s_depthMode, s_depthCompare, s_depthMask, s_depthBias);
-  }
+  EntryCommon::SetDepthMode(s_state, mode);
 }
 
 FX_ENTRY void FX_CALL grDepthBufferFunction(GrCmpFnc_t fnc) {
   GLIDE_LOG(DEBUG, "Frontend", "grDepthBufferFunction invoked.");
-  s_depthCompare = fnc;
-  if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
-    b->SetDepthState(s_depthMode, s_depthCompare, s_depthMask, s_depthBias);
-  }
+  EntryCommon::SetDepthFunction(s_state, fnc);
 }
 
 FX_ENTRY void FX_CALL grDepthMask(FxBool mask) {
   GLIDE_LOG(DEBUG, "Frontend", "grDepthMask invoked: " << mask);
-  s_depthMask = mask;
-  if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
-    b->SetDepthState(s_depthMode, s_depthCompare, s_depthMask, s_depthBias);
-  }
+  EntryCommon::SetDepthMask(s_state, mask != 0);
 }
 
 FX_ENTRY void FX_CALL grDepthBiasLevel(FxI16 level) {
   GLIDE_LOG(DEBUG, "Frontend", "grDepthBiasLevel invoked: " << level);
-  s_depthBias = level;
-  if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
-    b->SetDepthState(s_depthMode, s_depthCompare, s_depthMask, s_depthBias);
-  }
+  EntryCommon::SetDepthBias(s_state, level);
 }
 
 FX_ENTRY void FX_CALL grSstOrigin(GrOriginLocation_t origin) {
   GLIDE_LOG(DEBUG, "Frontend", "grSstOrigin invoked: " << origin);
-  s_sstOrigin = origin;
-  if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
-    b->SetSstOrigin(origin);
-  }
+  EntryCommon::SetSstOrigin(s_sstOrigin, origin);
 }
 
 FX_ENTRY void FX_CALL grSstIdle(void) {
   GLIDE_LOG(DEBUG, "Frontend", "grSstIdle invoked.");
-  if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
-    b->SstIdle();
-  }
+  EntryCommon::SstIdle();
 }
 
 FX_ENTRY void FX_CALL grCullMode(GrCullMode_t mode) {
   GLIDE_LOG(DEBUG, "Frontend", "grCullMode invoked: " << mode);
-  s_cullMode = mode;
-  if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
-    b->SetCullState(mode);
-  }
+  EntryCommon::SetCullMode(s_state, mode);
 }
 
 FX_ENTRY void FX_CALL grTexDownloadMipMap(GrChipID_t tmu, FxU32 startAddress,
@@ -1504,13 +1034,7 @@ FX_ENTRY void FX_CALL grTexNCCTable(GrChipID_t tmu, GrNCCTable_t table) {
 FX_ENTRY void FX_CALL grTexSource(GrChipID_t tmu, FxU32 startAddress,
                                   FxU32 evenOdd, GrTexInfo* info) {
   GLIDE_LOG(DEBUG, "Frontend", "grTexSource invoked for TMU=" << tmu);
-  if (tmu < 2) {
-    s_boundTex[tmu] = startAddress;
-    if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
-      b->BindTexture(tmu, startAddress, s_clampS[tmu], s_clampT[tmu],
-                     s_minFilter[tmu], s_magFilter[tmu]);
-    }
-  }
+  EntryCommon::BindTexSource(s_state, tmu, startAddress);
 }
 
 FX_ENTRY FxU32 FX_CALL grTexTextureMemRequired(FxU32 evenOdd, GrTexInfo* info) {
@@ -1533,12 +1057,7 @@ FX_ENTRY void FX_CALL grTexLodBiasValue(GrChipID_t tmu, float bias) {
   EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend",
             "grTexLodBiasValue: tmu=" << tmu << ", bias=" << bias);
-  if (tmu < 2) {
-    s_texLodBias[tmu] = bias;
-    if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
-      b->SetTexLodBias(tmu, bias);
-    }
-  }
+  EntryCommon::SetTexLodBias(s_state, tmu, bias);
 }
 
 FX_ENTRY void FX_CALL grTexCombineFunction(GrChipID_t tmu,
@@ -1808,11 +1327,11 @@ FX_ENTRY void FX_CALL guTexMemReset(void) {
   GLIDE_LOG(DEBUG, "Frontend", "guTexMemReset invoked.");
   s_guTextures.clear();
   s_guTexNextAddress = 0;
-  s_boundTex[0] = s_boundTex[1] = 0xFFFFFFFF;
-  s_clampS[0] = s_clampS[1] = 0;
-  s_clampT[0] = s_clampT[1] = 0;
-  s_minFilter[0] = s_minFilter[1] = 0;
-  s_magFilter[0] = s_magFilter[1] = 0;
+  s_state.boundTex[0] = s_state.boundTex[1] = 0xFFFFFFFF;
+  s_state.clampS[0] = s_state.clampS[1] = 0;
+  s_state.clampT[0] = s_state.clampT[1] = 0;
+  s_state.minFilter[0] = s_state.minFilter[1] = 0;
+  s_state.magFilter[0] = s_state.magFilter[1] = 0;
 
   GlideWrapper::TextureManager::GetInstance().Reset();
   if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
@@ -1865,10 +1384,7 @@ FX_ENTRY void FX_CALL grConstantColorValue(GrColor_t value) {
   EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend",
             "grConstantColorValue invoked: " << std::hex << value << std::dec);
-  s_constantColor = value;
-  if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
-    b->SetConstantColor(value);
-  }
+  EntryCommon::SetConstantColor(s_state, value);
 }
 
 FX_ENTRY void FX_CALL grConstantColorValue4(float a, float r, float g,
@@ -1893,32 +1409,13 @@ FX_ENTRY void FX_CALL grColorMask(FxBool rgb, FxBool a) {
   EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend",
             "grColorMask invoked: rgb=" << rgb << ", a=" << a);
-  s_colorMaskRgb = (rgb != 0);
-  s_colorMaskAlpha = (a != 0);
-  if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
-    b->SetColorMask(s_colorMaskRgb, s_colorMaskAlpha);
-  }
+  EntryCommon::SetColorMask(s_state, rgb != 0, a != 0);
 }
 
 FX_ENTRY void FX_CALL grDisableAllEffects(void) {
   EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend", "grDisableAllEffects invoked");
-  s_rgbSrcBlend = 4;    // GR_BLEND_ONE
-  s_rgbDstBlend = 0;    // GR_BLEND_ZERO
-  s_alphaSrcBlend = 4;  // GR_BLEND_ONE
-  s_alphaDstBlend = 0;  // GR_BLEND_ZERO
-  s_depthCompare = 1;   // GR_CMP_ALWAYS
-  s_depthMask = false;
-  s_alphaTestOp = 7;  // GR_CMP_ALWAYS
-  s_fogMode = 0;      // GR_FOG_DISABLE
-  if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
-    b->SetBlendState(s_rgbSrcBlend, s_rgbDstBlend, s_alphaSrcBlend,
-                     s_alphaDstBlend);
-    b->SetDepthState(s_depthMode, s_depthCompare, s_depthMask, s_depthBias);
-    b->SetAlphaTestState(s_alphaTestOp, s_alphaTestRef);
-    b->SetFogMode(s_fogMode);
-    b->SetChromakeyMode(0);  // Disable chromakey
-  }
+  EntryCommon::DisableAllEffects(s_state, /*clearCachedFogMode=*/true);
 }
 
 FX_ENTRY void FX_CALL grGlideShamelessPlug(const FxBool on) {
@@ -1933,14 +1430,10 @@ FX_ENTRY FxBool FX_CALL grLfbReadRegion(GrBuffer_t srcBuf, FxU32 srcX,
                                         void* dstData) {
   EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend", "grLfbReadRegion invoked.");
-  if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
-    return b->ReadLFB(srcBuf, srcX, srcY, srcWidth, srcHeight, dstStride,
-                      dstData)
-               ? FXTRUE
-               : FXFALSE;
-  }
-  if (dstData) std::memset(dstData, 0, srcHeight * dstStride);
-  return FXTRUE;
+  return EntryCommon::LfbReadRegion(srcBuf, srcX, srcY, srcWidth, srcHeight,
+                                    dstStride, dstData)
+             ? FXTRUE
+             : FXFALSE;
 }
 
 FX_ENTRY FxBool FX_CALL grLfbWriteRegion(GrBuffer_t dstBuf, FxU32 dstX,
@@ -1950,13 +1443,10 @@ FX_ENTRY FxBool FX_CALL grLfbWriteRegion(GrBuffer_t dstBuf, FxU32 dstX,
   EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend",
             "grLfbWriteRegion invoked: " << srcWidth << "x" << srcHeight);
-  if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
-    return b->WriteLFB(dstBuf, dstX, dstY, srcWidth, srcHeight, srcStride,
-                       srcFmt, srcData)
-               ? FXTRUE
-               : FXFALSE;
-  }
-  return FXTRUE;
+  return EntryCommon::LfbWriteRegion(dstBuf, dstX, dstY, srcFmt, srcWidth,
+                                     srcHeight, srcStride, srcData)
+             ? FXTRUE
+             : FXFALSE;
 }
 
 // LFB locking, unlocking, and row-flipping are managed by the unified
@@ -1965,13 +1455,13 @@ FX_ENTRY FxBool FX_CALL grLfbWriteRegion(GrBuffer_t dstBuf, FxU32 dstX,
 FX_ENTRY void FX_CALL grLfbConstantAlpha(FxU8 alpha) {
   EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend", "grLfbConstantAlpha: " << (int)alpha);
-  s_lfbConstantAlpha = alpha;
+  s_state.lfbConstantAlpha = alpha;
 }
 
 FX_ENTRY void FX_CALL grLfbWriteColorFormat(GrColorFormat_t format) {
   EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend", "grLfbWriteColorFormat: " << format);
-  s_lfbWriteColorFormat = format;
+  s_state.lfbWriteColorFormat = format;
 }
 
 FX_ENTRY FxBool FX_CALL grLfbLock(GrLock_t type, GrBuffer_t buffer,
@@ -1991,21 +1481,8 @@ FX_ENTRY FxBool FX_CALL grLfbLock(GrLock_t type, GrBuffer_t buffer,
 FX_ENTRY FxBool FX_CALL grLfbUnlock(GrLock_t type, GrBuffer_t buffer) {
   EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend", "grLfbUnlock invoked.");
-
-  // Construct pipeline configuration for the backend to simulate blending &
-  // chroma keying
-  GlideWrapper::LfbPipelineConfig config;
-  config.pixelPipeline =
-      GlideWrapper::LfbManager::GetInstance().IsPixelPipeline();
-  config.chromakeyEnabled = (s_chromakeyMode != 0);
-  config.chromakeyValue = s_chromakeyValue;
-  config.constantAlpha = s_lfbConstantAlpha;
-  config.rgbSrcBlend = s_rgbSrcBlend;
-  config.rgbDstBlend = s_rgbDstBlend;
-
-  return GlideWrapper::LfbManager::GetInstance().Unlock(type, buffer, config)
-             ? FXTRUE
-             : FXFALSE;
+  return EntryCommon::LfbUnlockWithState(s_state, type, buffer) ? FXTRUE
+                                                                : FXFALSE;
 }
 
 FX_ENTRY FxBool FX_CALL gu3dfGetInfo(const char* filename, Gu3dfInfo* info) {
@@ -2020,44 +1497,14 @@ FX_ENTRY FxBool FX_CALL gu3dfGetInfo(const char* filename, Gu3dfInfo* info) {
     return FXFALSE;
   }
 
-  // Map sharedHeader to Glide 2.x specific types/enums
   info->header.format = static_cast<GrTextureFormat_t>(sharedHeader.format);
-
-  // Map aspect ratio
-  GrAspectRatio_t aspect = GR_ASPECT_1x1;
-  int aspectW = sharedHeader.aspectW;
-  int aspectH = sharedHeader.aspectH;
-  if (aspectW == 1 && aspectH == 1)
-    aspect = GR_ASPECT_1x1;
-  else if (aspectW == 1 && aspectH == 2)
-    aspect = GR_ASPECT_1x2;
-  else if (aspectW == 1 && aspectH == 4)
-    aspect = GR_ASPECT_1x4;
-  else if (aspectW == 1 && aspectH == 8)
-    aspect = GR_ASPECT_1x8;
-  else if (aspectW == 2 && aspectH == 1)
-    aspect = GR_ASPECT_2x1;
-  else if (aspectW == 4 && aspectH == 1)
-    aspect = GR_ASPECT_4x1;
-  else if (aspectW == 8 && aspectH == 1)
-    aspect = GR_ASPECT_8x1;
-  info->header.aspect_ratio = aspect;
-
-  // Map LODs
-  auto mapLod = [](int dim) -> GrLOD_t {
-    if (dim <= 1) return GR_LOD_1;
-    if (dim <= 2) return GR_LOD_2;
-    if (dim <= 4) return GR_LOD_4;
-    if (dim <= 8) return GR_LOD_8;
-    if (dim <= 16) return GR_LOD_16;
-    if (dim <= 32) return GR_LOD_32;
-    if (dim <= 64) return GR_LOD_64;
-    if (dim <= 128) return GR_LOD_128;
-    return GR_LOD_256;
-  };
-  info->header.small_lod = mapLod(sharedHeader.smallLod);
-  info->header.large_lod = mapLod(sharedHeader.largeLod);
-
+  info->header.aspect_ratio = static_cast<GrAspectRatio_t>(
+      EntryCommon::Map3dfAspectToGlide2(sharedHeader.aspectW,
+                                        sharedHeader.aspectH));
+  info->header.small_lod =
+      static_cast<GrLOD_t>(EntryCommon::Map3dfLodToGlide2(sharedHeader.smallLod));
+  info->header.large_lod =
+      static_cast<GrLOD_t>(EntryCommon::Map3dfLodToGlide2(sharedHeader.largeLod));
   info->header.width = sharedHeader.width;
   info->header.height = sharedHeader.height;
   info->mem_required = memRequired;
@@ -2070,7 +1517,6 @@ FX_ENTRY FxBool FX_CALL gu3dfLoad(const char* filename, Gu3dfInfo* info) {
             "gu3dfLoad invoked for: " << (filename ? filename : "unknown"));
   if (!filename || !info) return FXFALSE;
 
-  // We must first parse the header to map everything
   if (!gu3dfGetInfo(filename, info)) return FXFALSE;
 
   if (!info->data) {
@@ -2080,24 +1526,11 @@ FX_ENTRY FxBool FX_CALL gu3dfLoad(const char* filename, Gu3dfInfo* info) {
     return FXFALSE;
   }
 
-  GlideWrapper::Texture::Shared3dfInfo sharedInfo;
-  if (!GlideWrapper::Texture::Load3dfFile(filename, sharedInfo)) {
-    return FXFALSE;
-  }
-
-  // Copy palette if applicable
-  if (info->header.format == GR_TEXFMT_P_8 ||
-      info->header.format == GR_TEXFMT_P_8_6666) {
-    for (int i = 0; i < 256; ++i) {
-      info->table.palette.data[i] = sharedInfo.palette[i];
-    }
-  }
-
-  // Copy pixel data
-  std::memcpy(info->data, sharedInfo.pixelData.data(),
-              sharedInfo.pixelData.size());
-
-  return FXTRUE;
+  return EntryCommon::Load3dfPixelsAndPalette(filename, info->header.format,
+                                              info->table.palette.data,
+                                              info->data)
+             ? FXTRUE
+             : FXFALSE;
 }
 
 // ==========================================
@@ -2139,31 +1572,20 @@ FX_ENTRY void FX_CALL grFogMode(GrFogMode_t mode) {
     unifiedBase = 3;           // Unified Iterated Z
   }
 
-  s_fogMode = unifiedBase | flags;
-  if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
-    b->SetFogMode(s_fogMode);
-  }
+  EntryCommon::SetFogMode(s_state, unifiedBase | flags);
 }
 
 FX_ENTRY void FX_CALL grFogColorValue(GrColor_t fogcolor) {
   EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend",
             "grFogColorValue invoked: " << std::hex << fogcolor << std::dec);
-  s_fogColor = fogcolor;
-  if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
-    b->SetFogColor(s_fogColor);
-  }
+  EntryCommon::SetFogColor(s_state, fogcolor);
 }
 
 FX_ENTRY void FX_CALL grFogTable(const GrFog_t ft[]) {
   EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend", "grFogTable invoked.");
-  if (ft) {
-    std::memcpy(s_fogTable, ft, sizeof(s_fogTable));
-    if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
-      b->SetFogTable(s_fogTable);
-    }
-  }
+  EntryCommon::SetFogTable(s_state, ft);
 }
 
 FX_ENTRY FxU32 FX_CALL guEndianSwapWords(FxU32 value) {
@@ -2385,10 +1807,7 @@ FX_ENTRY FxU16* FX_CALL guTexCreateColorMipMap(void) {
 FX_ENTRY void FX_CALL grChromakeyMode(GrChromakeyMode_t mode) {
   EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend", "grChromakeyMode invoked: mode=" << mode);
-  s_chromakeyMode = mode;
-  if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
-    b->SetChromakeyMode(mode);
-  }
+  EntryCommon::SetChromakeyMode(s_state, mode);
 }
 
 FX_ENTRY void FX_CALL grChromakeyValue(GrColor_t value) {
@@ -2396,19 +1815,13 @@ FX_ENTRY void FX_CALL grChromakeyValue(GrColor_t value) {
   GLIDE_LOG(
       DEBUG, "Frontend",
       "grChromakeyValue invoked: value=0x" << std::hex << value << std::dec);
-  s_chromakeyValue = value;
-  if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
-    b->SetChromakeyValue(value);
-  }
+  EntryCommon::SetChromakeyValue(s_state, value);
 }
 
 FX_ENTRY void FX_CALL grDitherMode(GrDitherMode_t mode) {
   EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend", "grDitherMode invoked: mode=" << mode);
-  s_ditherMode = mode;
-  if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
-    b->SetDitherMode(s_ditherMode);
-  }
+  EntryCommon::SetDitherMode(s_state, mode);
 }
 
 FX_ENTRY FxU32 FX_CALL grSstScreenWidth(void) {
@@ -2569,12 +1982,7 @@ FX_ENTRY void FX_CALL grChromakeyRangeExt(GrColor_t minColor,
             "grChromakeyRangeExt: minColor=0x"
                 << std::hex << minColor << ", maxColor=0x" << maxColor
                 << ", mode=" << std::dec << mode);
-  s_chromakeyRangeMin = minColor;
-  s_chromakeyRangeMax = maxColor;
-  s_chromakeyRangeMode = mode;
-  if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
-    b->SetChromakeyRange(minColor, maxColor, mode);
-  }
+  EntryCommon::SetChromakeyRange(s_state, minColor, maxColor, mode);
 }
 
 FX_ENTRY void FX_CALL grTexChromaModeExt(GrChipID_t tmu, uint32_t mode) {
@@ -2588,12 +1996,7 @@ FX_ENTRY void FX_CALL grTexChromaModeExt(GrChipID_t tmu, uint32_t mode) {
   }
   GLIDE_LOG(DEBUG, "Frontend",
             "grTexChromaModeExt (Glide 2.x): tmu=" << tmu << ", mode=" << mode);
-  if (tmu < 2) {
-    s_texChromaState[tmu].mode = mode;
-    if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
-      b->SetTexChromakeyMode(tmu, mode);
-    }
-  }
+  EntryCommon::SetTexChromakeyMode(s_state, tmu, mode);
 }
 
 FX_ENTRY void FX_CALL grTexChromaRangeExt(GrChipID_t tmu, GrColor_t minColor,
@@ -2610,14 +2013,7 @@ FX_ENTRY void FX_CALL grTexChromaRangeExt(GrChipID_t tmu, GrColor_t minColor,
             "grTexChromaRangeExt (Glide 2.x): tmu="
                 << tmu << ", min=0x" << std::hex << minColor
                 << ", max=" << maxColor << ", mode=" << std::dec << mode);
-  if (tmu < 2) {
-    s_texChromaState[tmu].mode = mode;
-    s_texChromaState[tmu].minColor = minColor;
-    s_texChromaState[tmu].maxColor = maxColor;
-    if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
-      b->SetTexChromakeyRange(tmu, minColor, maxColor, mode);
-    }
-  }
+  EntryCommon::SetTexChromakeyRange(s_state, tmu, minColor, maxColor, mode);
 }
 
 // Extension Stub Implementations (Glide 2.x)
@@ -2723,9 +2119,7 @@ FX_ENTRY void FX_CALL grLoadGammaTable(FxU32 nentries, FxU32* red, FxU32* green,
                                        FxU32* blue) {
   EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend", "grLoadGammaTable: nentries=" << nentries);
-  if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
-    b->LoadGammaTable(nentries, red, green, blue);
-  }
+  EntryCommon::LoadGammaTable(nentries, red, green, blue);
 }
 
 FX_ENTRY void FX_CALL guGammaCorrectionRGB(FxFloat red, FxFloat green,
@@ -2786,28 +2180,13 @@ FX_ENTRY void FX_CALL ConvertAndDownloadRle(
 
 FX_ENTRY void FX_CALL grShamelessPlug(void) {
   EnsureEngineInitialized();
-  uint32_t scrWidth = 640;
-  uint32_t scrHeight = 480;
-  auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
-  if (backend) {
-    scrWidth = backend->GetWidth();
-    scrHeight = backend->GetHeight();
-  }
-  auto* animator =
-      GlideWrapper::BackendManager::GetInstance().GetSplashAnimator();
-  if (animator) {
-    animator->RenderBanner(scrWidth, scrHeight);
-  }
+  EntryCommon::RenderShamelessPlug();
 }
 
 FX_ENTRY void FX_CALL grSplash(float x, float y, float w, float h,
                                FxU32 frame) {
   EnsureEngineInitialized();
-  auto* animator =
-      GlideWrapper::BackendManager::GetInstance().GetSplashAnimator();
-  if (animator) {
-    animator->Render(x, y, w, h, frame, nullptr);
-  }
+  EntryCommon::RenderSplash(x, y, w, h, frame, nullptr);
 }
 
 FX_ENTRY void FX_CALL grSplashCb(float x, float y, float w, float h,
@@ -2820,11 +2199,7 @@ FX_ENTRY void FX_CALL grSplashCb(float x, float y, float w, float h,
               "version/device profile.");
     return;
   }
-  auto* animator =
-      GlideWrapper::BackendManager::GetInstance().GetSplashAnimator();
-  if (animator) {
-    animator->Render(x, y, w, h, frame, callback);
-  }
+  EntryCommon::RenderSplash(x, y, w, h, frame, callback);
 }
 
 /**
@@ -2843,21 +2218,14 @@ FX_ENTRY void FX_CALL grSstConfigPipeline(GrChipID_t chip, FxU32 reg,
  * Performs a handshake verification by setting the signature pointer to 'SDL2'.
  */
 FX_ENTRY void FX_CALL setConfig(FxU32 flags, void* magic) {
-  GLIDE_LOG(INFO, "Frontend",
-            "setConfig (DOSBox extension) called. flags=" << flags);
-  if (magic) {
-    uint32_t signature = 0x324c4453;  // 'SDL2'
-    std::memcpy(magic, &signature, sizeof(signature));
-  }
+  EntryCommon::HandleDosboxSetConfig("Glide 2.x", flags, magic);
 }
 
 /**
  * @brief DOSBox-specific resolution configuration extension.
  */
 FX_ENTRY void FX_CALL setConfigRes(int res, void (*swap12)()) {
-  GLIDE_LOG(INFO, "Frontend",
-            "setConfigRes (DOSBox extension) called. res=" << res << ", swap12="
-                                                           << (void*)swap12);
+  EntryCommon::HandleDosboxSetConfigRes("Glide 2.x", res, swap12);
 }
 
 }  // extern "C"

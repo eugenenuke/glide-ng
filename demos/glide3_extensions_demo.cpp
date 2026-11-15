@@ -92,9 +92,11 @@ GrTexChromaRangeExtProc grTexChromaRangeExt = nullptr;
 
 void ResolveExtensions() {
   grTexChromaModeExt = reinterpret_cast<GrTexChromaModeExtProc>(
-      grGetProcAddress(const_cast<char*>("grTexChromaModeExt")));
+      reinterpret_cast<void (*)()>(
+          grGetProcAddress(const_cast<char*>("grTexChromaModeExt"))));
   grTexChromaRangeExt = reinterpret_cast<GrTexChromaRangeExtProc>(
-      grGetProcAddress(const_cast<char*>("grTexChromaRangeExt")));
+      reinterpret_cast<void (*)()>(
+          grGetProcAddress(const_cast<char*>("grTexChromaRangeExt"))));
 }
 
 bool CheckVoodooModel(bool& hasMirror, bool& hasPalette6666) {

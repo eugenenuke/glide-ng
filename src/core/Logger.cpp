@@ -1,10 +1,27 @@
 #include "Logger.h"
-#include <vulkan/vulkan.hpp>
+#include "build_version.h"
 #include <iostream>
 #include <chrono>
 #include <iomanip>
+#if defined(__unix__) || defined(__APPLE__)
+#include <dlfcn.h>
+#endif
 
 namespace GlideWrapper {
+
+namespace {
+std::string GetLoadedModulePath() {
+#if defined(__unix__) || defined(__APPLE__)
+    static int s_moduleAnchor = 0;
+    Dl_info info{};
+    if (dladdr(&s_moduleAnchor, &info) != 0 &&
+        info.dli_fname != nullptr && info.dli_fname[0] != '\0') {
+        return std::string(info.dli_fname);
+    }
+#endif
+    return "unknown";
+}
+}  // namespace
 
 Logger& Logger::GetInstance() {
     static Logger instance;
@@ -29,7 +46,10 @@ void Logger::Initialize(const std::string& logFilePath, LogLevel level, bool log
 
     m_file.open(logFilePath, std::ios::out | std::ios::trunc);
     if (m_file.is_open()) {
-        m_file << "--- " << WRAPPER_FULL_NAME << " (" << WRAPPER_VERSION << ") Log ---\n";
+        m_file << "--- " << WRAPPER_FULL_NAME << " (" << WRAPPER_VERSION
+               << " | git:" << GLIDE_GIT_HASH
+               << " | " << GLIDE_BUILD_TYPE << ") Log ---\n";
+        m_file << "Module: " << GetLoadedModulePath() << "\n";
         m_file.flush();
     }
 }
@@ -71,8 +91,13 @@ void Logger::LogExecutionSummary(const WrapperConfig& config) {
 
     std::ostringstream ss;
     ss << "\n========================================================\n"
-       << "       3DFX " << WRAPPER_PROJECT_NAME << " (" << WRAPPER_VERSION << ") EMULATION PROFILE\n"
+       << "       3DFX " << WRAPPER_PROJECT_NAME << " (" << WRAPPER_VERSION
+       << " | git:" << GLIDE_GIT_HASH << ") EMULATION PROFILE\n"
        << "========================================================\n"
+       << "  Wrapper Build        : " << WRAPPER_VERSION
+       << " (git:" << GLIDE_GIT_HASH << ", branch:" << GLIDE_GIT_BRANCH
+       << ", " << GLIDE_BUILD_TYPE << ")\n"
+       << "  Loaded Module        : " << GetLoadedModulePath() << "\n"
        << "  Emulated Accelerator : ";
        
     switch (config.model) {
@@ -99,32 +124,6 @@ void Logger::LogExecutionSummary(const WrapperConfig& config) {
        << "\n========================================================";
 
     Log(LogLevel::INFO, "Startup", ss.str());
-}
-
-void Logger::LogHostVulkanCapabilities() {
-    if (m_activeLevel < LogLevel::INFO) return;
-
-    try {
-        vk::ApplicationInfo appInfo("3dfxGlideWrapper", 1, "AntigravityEngine", 1, VK_API_VERSION_1_2);
-        vk::InstanceCreateInfo createInfo({}, &appInfo);
-        
-        vk::UniqueInstance instance = vk::createInstanceUnique(createInfo);
-        std::vector<vk::PhysicalDevice> devices = instance->enumeratePhysicalDevices();
-        
-        std::ostringstream ss;
-        ss << "\n--- Host Vulkan Execution Adapters Discovered ---\n";
-        for (size_t i = 0; i < devices.size(); ++i) {
-            vk::PhysicalDeviceProperties props = devices[i].getProperties();
-            ss << "  Adapter [" << i << "] : " << props.deviceName.data() << "\n"
-               << "    API Version : " << VK_VERSION_MAJOR(props.apiVersion) << "."
-               << VK_VERSION_MINOR(props.apiVersion) << "." << VK_VERSION_PATCH(props.apiVersion) << "\n"
-               << "    Device Type : " << vk::to_string(props.deviceType) << "\n";
-        }
-        ss << "-------------------------------------------------";
-        Log(LogLevel::INFO, "Startup", ss.str());
-    } catch (const std::exception& e) {
-        Log(LogLevel::WARN, "Startup", std::string("Vulkan Host Polling unavailable: ") + e.what());
-    }
 }
 
 } // namespace GlideWrapper
