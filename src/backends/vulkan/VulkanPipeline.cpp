@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "core/Logger.h"
+#include "core/Telemetry.h"
 
 // Include build-time generated shader SPIR-V bytecode headers!
 #include "color_dualsrc_frag.spv.h"
@@ -497,6 +498,7 @@ vk::Pipeline VulkanBackend::GetOrCreatePipeline(
     }
     vk::Pipeline rawPipeline = pipeline.get();
     m_pipelineCache.emplace(cacheKey, std::move(pipeline));
+    TelemetryManager::GetInstance().RecordPsoBuild();
     return rawPipeline;
   }
   return it->second.get();

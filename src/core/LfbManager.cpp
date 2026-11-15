@@ -1,6 +1,7 @@
 #include "core/LfbManager.h"
 #include "core/BackendManager.h"
 #include "core/Logger.h"
+#include "core/Telemetry.h"
 #include <algorithm>
 
 namespace GlideWrapper {
@@ -41,17 +42,24 @@ void LfbManager::FlipRows(uint8_t* data, uint32_t height, uint32_t stride) {
 }
 
 void LfbManager::LogErrorUnsupportedWriteMode(uint32_t writeMode) {
-    GLIDE_LOG(CRITICAL, "Frontend", "LfbManager: Unsupported writeMode=" << writeMode);
+    GLIDE_LOG(CRITICAL, "LFB", "LfbManager: Unsupported writeMode=" << writeMode);
 }
 
 void LfbManager::LogLockSuccess(uint32_t buffer, uint32_t writeMode, uint32_t origin) {
-    GLIDE_LOG(DEBUG, "Frontend", "LfbManager: locked buffer=" << buffer << ", mode=" << writeMode << ", origin=" << origin);
+    if (m_lockState.type == 0) { // GR_LFB_READ_ONLY
+        TelemetryManager::GetInstance().RecordLfbRead(
+            static_cast<uint64_t>(m_lockState.height) * m_lockState.stride);
+    }
+    GLIDE_LOG(DEBUG, "LFB", "LfbManager: locked type=" << m_lockState.type
+              << ", buffer=" << buffer << ", mode=" << writeMode
+              << ", origin=" << origin << ", bytes="
+              << (static_cast<uint64_t>(m_lockState.height) * m_lockState.stride));
 }
 
 bool LfbManager::Unlock(uint32_t type, uint32_t buffer, const LfbPipelineConfig& config) {
     std::lock_guard<std::mutex> lock(m_mutex);
     if (!m_lockState.isLocked) {
-        GLIDE_LOG(WARN, "Frontend", "LfbManager::Unlock: No active LFB lock found!");
+        GLIDE_LOG(WARN, "LFB", "LfbManager::Unlock: No active LFB lock found!");
         return false;
     }
 
@@ -80,11 +88,13 @@ bool LfbManager::Unlock(uint32_t type, uint32_t buffer, const LfbPipelineConfig&
                 return false;
         }
 
+        TelemetryManager::GetInstance().RecordLfbWrite(
+            static_cast<uint64_t>(m_lockState.height) * m_lockState.stride);
         b->WriteLFB(m_lockState.buffer, 0, 0, m_lockState.width, m_lockState.height, m_lockState.stride, srcFmt, m_lockState.stagingBuffer.data(), m_lockState.originalBuffer.data(), config);
     }
 
     m_lockState.isLocked = false;
-    GLIDE_LOG(DEBUG, "Frontend", "LfbManager: unlocked buffer successfully.");
+    GLIDE_LOG(DEBUG, "LFB", "LfbManager: unlocked buffer=" << buffer << " (type=" << type << ") successfully.");
     return true;
 }
 

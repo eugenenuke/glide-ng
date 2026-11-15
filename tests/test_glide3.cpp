@@ -6,6 +6,7 @@
 #include "core/GlideEntryCommon.h"
 #include "core/TextureManager.h"
 #include "core/Logger.h"
+#include "core/Telemetry.h"
 #include "core/BackendManager.h"
 #include "core/NativeSurfaceHost.h"
 #include "backends/GlideStateTracker.h"
@@ -17,6 +18,7 @@
 #include <cstdlib>
 #include <dlfcn.h>
 #include <fstream>
+#include <regex>
 #include <type_traits>
 #include <vector>
 #include <algorithm>
@@ -4235,5 +4237,321 @@ TEST_CASE("Glide 3.x Shameless Plug Preserves W-Buffered Scene Across Swaps",
   glideShutdown();
   ::dlclose(handle);
   ::unsetenv("FX_GLIDE_SHAMELESS_PLUG");
+#endif
+}
+
+TEST_CASE(
+    "M2 Tiered Logger: levels, categories, frame-windowed trace, and "
+    "microsecond format",
+    "[Logger][M2]") {
+  using namespace GlideWrapper;
+
+  SECTION("Category parser & formatter round-trip and negation") {
+    uint32_t mask = 0u;
+    REQUIRE(ParseLogCategories("all", mask));
+    CHECK(mask == LOG_CAT_ALL);
+    CHECK(FormatLogCategories(mask) == "all");
+
+    REQUIRE(ParseLogCategories("none", mask));
+    CHECK(mask == LOG_CAT_NONE);
+    CHECK(FormatLogCategories(mask) == "none");
+
+    REQUIRE(ParseLogCategories("lfb, perf, api", mask));
+    CHECK((mask & LOG_CAT_LFB) != 0u);
+    CHECK((mask & LOG_CAT_PERF) != 0u);
+    CHECK((mask & LOG_CAT_API) != 0u);
+    CHECK((mask & LOG_CAT_DRAW) == 0u);
+    CHECK(FormatLogCategories(mask) == "api,lfb,perf");
+
+    // Negation starts from ALL and clears specified categories
+    REQUIRE(ParseLogCategories("-draw,-state", mask));
+    CHECK((mask & LOG_CAT_DRAW) == 0u);
+    CHECK((mask & LOG_CAT_STATE) == 0u);
+    CHECK((mask & LOG_CAT_LFB) != 0u);
+    CHECK((mask & LOG_CAT_API) != 0u);
+
+    // Unknown-only string returns false
+    uint32_t untouched = 0x1234u;
+    CHECK_FALSE(ParseLogCategories("bogus_category", untouched));
+    CHECK(untouched == 0x1234u);
+  }
+
+  SECTION("TRACE gating, category filtering, and microsecond + frame format") {
+    const std::string logPath = "/tmp/glide_ng_m2_logger_test.log";
+    std::remove(logPath.c_str());
+
+    WrapperConfig cfg{};
+    cfg.logFile = logPath;
+    cfg.logLevel = 5u;  // TRACE
+    cfg.logToConsole = false;
+    REQUIRE(ParseLogCategories("lfb,perf", cfg.logCategoryMask));
+    cfg.traceFrameWindowActive = true;
+    cfg.traceFrameStart = 2;
+    cfg.traceFrameEnd = 3;
+
+    auto& logger = Logger::GetInstance();
+    logger.Initialize(cfg);
+    REQUIRE(logger.GetLevel() == LogLevel::TRACE);
+
+    // Frame 1 (outside trace window [2,3]): TRACE suppressed, DEBUG on LFB passes
+    logger.SetCurrentFrame(1);
+    GLIDE_LOG(TRACE, "LFB", "frame1_trace_should_skip");
+    GLIDE_LOG(DEBUG, "LFB", "frame1_debug_lfb_pass");
+    GLIDE_LOG(DEBUG, "Vulkan", "frame1_debug_draw_filtered");
+    GLIDE_LOG(WARN, "Vulkan", "frame1_warn_bypasses_category");
+    GLIDE_LOG(INFO, "Startup", "frame1_startup_bypasses_category");
+
+    // Frame 2 & 3 (inside trace window [2,3]): TRACE on LFB passes, TRACE on State filtered
+    logger.SetCurrentFrame(2);
+    GLIDE_LOG(TRACE, "LFB", "frame2_trace_lfb_pass");
+    GLIDE_LOG(TRACE, "StateTracker", "frame2_trace_state_filtered");
+
+    logger.SetCurrentFrame(3);
+    GLIDE_TRACE(LOG_CAT_PERF, "Perf", "frame3_trace_perf_pass");
+
+    // Frame 4 (after trace window [2,3]): TRACE suppressed again
+    logger.SetCurrentFrame(4);
+    GLIDE_LOG(TRACE, "LFB", "frame4_trace_should_skip");
+    logger.Flush();
+
+    std::ifstream in(logPath);
+    REQUIRE(in.is_open());
+    std::string content((std::istreambuf_iterator<char>(in)),
+                        std::istreambuf_iterator<char>());
+    in.close();
+    std::remove(logPath.c_str());
+
+    // Restore clean logger state for subsequent tests
+    logger.Initialize("/tmp/glide_ng_test_restore.log", LogLevel::WARN, false);
+    std::remove("/tmp/glide_ng_test_restore.log");
+
+    CHECK(content.find("frame1_trace_should_skip") == std::string::npos);
+    CHECK(content.find("frame1_debug_lfb_pass") != std::string::npos);
+    CHECK(content.find("frame1_debug_draw_filtered") == std::string::npos);
+    CHECK(content.find("frame1_warn_bypasses_category") != std::string::npos);
+    CHECK(content.find("frame1_startup_bypasses_category") != std::string::npos);
+    CHECK(content.find("frame2_trace_lfb_pass") != std::string::npos);
+    CHECK(content.find("frame2_trace_state_filtered") == std::string::npos);
+    CHECK(content.find("frame3_trace_perf_pass") != std::string::npos);
+    CHECK(content.find("frame4_trace_should_skip") == std::string::npos);
+
+    // Verify monotonic microsecond timestamp + frame ID format:
+    // [+SSSSSS.UUUUUU] [F000002] [TRCE] [LFB] frame2_trace_lfb_pass
+    std::regex lineRe(
+        R"(\[\+\d{6}\.\d{6}\] \[F000002\] \[TRCE\] \[LFB\] frame2_trace_lfb_pass)");
+    CHECK(std::regex_search(content, lineRe));
+  }
+
+  SECTION("DEBUG level suppresses TRACE messages even without frame window") {
+    const std::string logPath = "/tmp/glide_ng_m2_debug_level_test.log";
+    std::remove(logPath.c_str());
+
+    auto& logger = Logger::GetInstance();
+    logger.Initialize(logPath, LogLevel::DEBUG, false);
+    GLIDE_LOG(DEBUG, "Frontend", "debug_msg_visible");
+    GLIDE_LOG(TRACE, "Frontend", "trace_msg_hidden");
+    logger.Flush();
+
+    std::ifstream in(logPath);
+    REQUIRE(in.is_open());
+    std::string content((std::istreambuf_iterator<char>(in)),
+                        std::istreambuf_iterator<char>());
+    in.close();
+    std::remove(logPath.c_str());
+    logger.Initialize("/tmp/glide_ng_test_restore.log", LogLevel::WARN, false);
+    std::remove("/tmp/glide_ng_test_restore.log");
+
+    CHECK(content.find("debug_msg_visible") != std::string::npos);
+    CHECK(content.find("trace_msg_hidden") == std::string::npos);
+  }
+}
+
+TEST_CASE(
+    "M2 Config & Per-Frame Perf Telemetry: JSON/env parity and CSV output",
+    "[Telemetry][Perf][M2]") {
+#ifdef __linux__
+  struct EnvGuardM2 {
+    std::string name;
+    bool hadValue{false};
+    std::string oldValue;
+    explicit EnvGuardM2(const char* n) : name(n) {
+      if (const char* v = std::getenv(n)) {
+        hadValue = true;
+        oldValue = v;
+      }
+      ::unsetenv(n);
+    }
+    ~EnvGuardM2() {
+      if (hadValue) ::setenv(name.c_str(), oldValue.c_str(), 1);
+      else ::unsetenv(name.c_str());
+    }
+  };
+
+  EnvGuardM2 gConfig("GLIDE_NG_CONFIG");
+  EnvGuardM2 gCats("GLIDE_NG_LOG_CATEGORIES");
+  EnvGuardM2 gFrames("GLIDE_NG_TRACE_FRAMES");
+  EnvGuardM2 gPerf("GLIDE_NG_PERF_LOG");
+  EnvGuardM2 gLogFile("GLIDE_NG_LOG_FILE");
+  EnvGuardM2 gLogLevel("GLIDE_NG_LOG_LEVEL");
+  EnvGuardM2 gHeadless("GLIDE_NG_HEADLESS");
+  EnvGuardM2 gMaxFps("GLIDE_NG_MAX_FPS");
+
+  SECTION("JSON & GLIDE_NG_* parsing for logCategories, traceFrames, perfLog") {
+    const std::string cfgPath = "/tmp/glide_ng_m2_cfg_test.json";
+    {
+      std::ofstream out(cfgPath);
+      out << "{\n"
+          << "  \"logCategories\": \"api,lfb\",\n"
+          << "  \"traceFrames\": \"10-20\",\n"
+          << "  \"perfLog\": \"/tmp/json_perf.csv\"\n"
+          << "}\n";
+    }
+
+    GlideWrapper::JsonConfigLoader loader;
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load(cfgPath, cfg));
+    CHECK(cfg.logCategoriesSpec == "api,lfb");
+    CHECK(cfg.traceFrameWindowActive == true);
+    CHECK(cfg.traceFrameStart == 10u);
+    CHECK(cfg.traceFrameEnd == 20u);
+    CHECK(cfg.perfLogEnabled == true);
+    CHECK(cfg.perfLogCsvPath == "/tmp/json_perf.csv");
+    CHECK(cfg.settingSources.at("logCategories") == "json");
+    CHECK(cfg.settingSources.at("traceFrames") == "json");
+    CHECK(cfg.settingSources.at("perfLog") == "json");
+
+    // Test single-frame, open-ended, and prefix ranges via env overrides
+    ::setenv("GLIDE_NG_TRACE_FRAMES", "7", 1);
+    REQUIRE(loader.Load(cfgPath, cfg));
+    CHECK(cfg.traceFrameWindowActive == true);
+    CHECK(cfg.traceFrameStart == 7u);
+    CHECK(cfg.traceFrameEnd == 7u);
+
+    ::setenv("GLIDE_NG_TRACE_FRAMES", "15-", 1);
+    REQUIRE(loader.Load(cfgPath, cfg));
+    CHECK(cfg.traceFrameWindowActive == true);
+    CHECK(cfg.traceFrameStart == 15u);
+    CHECK(cfg.traceFrameEnd == UINT64_MAX);
+
+    ::setenv("GLIDE_NG_TRACE_FRAMES", "-5", 1);
+    REQUIRE(loader.Load(cfgPath, cfg));
+    CHECK(cfg.traceFrameWindowActive == true);
+    CHECK(cfg.traceFrameStart == 0u);
+    CHECK(cfg.traceFrameEnd == 5u);
+
+    ::setenv("GLIDE_NG_LOG_CATEGORIES", "tex,perf", 1);
+    ::setenv("GLIDE_NG_PERF_LOG", "1", 1);
+    REQUIRE(loader.Load(cfgPath, cfg));
+    CHECK(cfg.logCategoriesSpec == "tex,perf");
+    CHECK(cfg.perfLogEnabled == true);
+    CHECK(cfg.perfLogCsvPath.empty());
+    CHECK(cfg.settingSources.at("perfLog") == "GLIDE_NG_PERF_LOG");
+
+    ::setenv("GLIDE_NG_PERF_LOG", "0", 1);
+    REQUIRE(loader.Load(cfgPath, cfg));
+    CHECK(cfg.perfLogEnabled == false);
+
+    std::remove(cfgPath.c_str());
+  }
+
+  SECTION("End-to-end Glide 3.x session produces valid CSV & [PERF] summary") {
+    const std::string csvPath = "/tmp/glide_ng_m2_perf_e2e.csv";
+    const std::string logPath = "/tmp/glide_ng_m2_perf_e2e.log";
+    std::remove(csvPath.c_str());
+    std::remove(logPath.c_str());
+
+    ::setenv("GLIDE_NG_HEADLESS", "1", 1);
+    ::setenv("GLIDE_NG_MAX_FPS", "0", 1);
+    ::setenv("GLIDE_NG_LOG_FILE", logPath.c_str(), 1);
+    ::setenv("GLIDE_NG_LOG_LEVEL", "info", 1);
+    ::setenv("GLIDE_NG_PERF_LOG", csvPath.c_str(), 1);
+
+    void* handle = OpenGlide3Handle();
+    REQUIRE(handle != nullptr);
+
+    auto glideInit = reinterpret_cast<void (*)()>(::dlsym(handle, "grGlideInit"));
+    auto glideShutdown = reinterpret_cast<void (*)()>(::dlsym(handle, "grGlideShutdown"));
+    auto sstSelect = reinterpret_cast<void (*)(int)>(::dlsym(handle, "grSstSelect"));
+    auto winOpen = reinterpret_cast<FxU32 (*)(FxU32, FxU32, FxU32, FxU32, FxU32, int, int)>(
+        ::dlsym(handle, "grSstWinOpen"));
+    auto winClose = reinterpret_cast<FxBool (*)(FxU32)>(::dlsym(handle, "grSstWinClose"));
+    auto vertexLayout = reinterpret_cast<void (*)(FxU32, FxI32, FxU32)>(
+        ::dlsym(handle, "grVertexLayout"));
+    auto colorCombine = reinterpret_cast<void (*)(GrCombineFunction_t, GrCombineFactor_t,
+                                                  GrCombineLocal_t, GrCombineOther_t, FxBool)>(
+        ::dlsym(handle, "grColorCombine"));
+    auto bufferClear = reinterpret_cast<void (*)(GrColor_t, GrAlpha_t, FxU32)>(
+        ::dlsym(handle, "grBufferClear"));
+    auto drawTri = reinterpret_cast<void (*)(const void*, const void*, const void*)>(
+        ::dlsym(handle, "grDrawTriangle"));
+    auto bufferSwap = reinterpret_cast<void (*)(FxU32)>(::dlsym(handle, "grBufferSwap"));
+    auto lfbWriteRegion = reinterpret_cast<FxBool (*)(
+        GrBuffer_t, FxU32, FxU32, GrLfbSrcFmt_t, FxU32, FxU32, FxBool, FxI32, void*)>(
+        ::dlsym(handle, "grLfbWriteRegion"));
+
+    REQUIRE(glideInit != nullptr);
+    REQUIRE(winOpen != nullptr);
+    REQUIRE(drawTri != nullptr);
+    REQUIRE(bufferSwap != nullptr);
+    REQUIRE(lfbWriteRegion != nullptr);
+
+    glideInit();
+    sstSelect(0);
+    FxU32 ctx = winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                        GR_COLORFORMAT_ARGB, GR_ORIGIN_UPPER_LEFT, 2, 1);
+    REQUIRE(ctx != 0);
+
+    vertexLayout(0x01, 0, 1);
+    vertexLayout(0x02, 8, 1);
+    vertexLayout(0x20, 12, 1);
+    vertexLayout(0x10, 28, 1);
+    vertexLayout(0x03, 32, 1);
+    colorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+                 GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_NONE, FXFALSE);
+
+    StandardVert v0 = {100.0f, 100.0f, 0.0f, 0.0f, 255.0f, 0.0f, 0.0f, 255.0f, 1.0f, 0.0f, 0.0f, 1.0f};
+    StandardVert v1 = {300.0f, 100.0f, 0.0f, 0.0f, 0.0f, 255.0f, 0.0f, 255.0f, 1.0f, 0.0f, 0.0f, 1.0f};
+    StandardVert v2 = {200.0f, 300.0f, 0.0f, 0.0f, 0.0f, 0.0f, 255.0f, 255.0f, 1.0f, 0.0f, 0.0f, 1.0f};
+    std::vector<uint16_t> patch(16 * 16, 0xF800);
+
+    for (int f = 0; f < 3; ++f) {
+      bufferClear(0x00000000, 0, 0xFFFF);
+      drawTri(&v0, &v1, &v2);
+      drawTri(&v0, &v1, &v2);
+      lfbWriteRegion(GR_BUFFER_BACKBUFFER, 0, 0, GR_LFB_SRC_FMT_565,
+                     16, 16, FXFALSE, 16 * 2, patch.data());
+      bufferSwap(0);
+    }
+
+    winClose(ctx);
+    glideShutdown();
+    ::dlclose(handle);
+
+    // Verify CSV header + 3 frame rows with expected counters
+    std::ifstream csvIn(csvPath);
+    REQUIRE(csvIn.is_open());
+    std::vector<std::string> lines;
+    std::string line;
+    while (std::getline(csvIn, line)) {
+      if (!line.empty()) lines.push_back(line);
+    }
+    csvIn.close();
+    REQUIRE(lines.size() == 4);  // 1 header + 3 frames
+    CHECK(lines[0].find("frame,timestamp_ms,frame_ms,render_ms,present_ms") == 0);
+    // Row 1 (frame 0): check tris_processed=2, tris_drawn=2, lfb_writes=1, lfb_write_bytes=512
+    CHECK(lines[1].find(",2,2,0,1,0,512,") != std::string::npos);
+
+    // Verify log file contains [Perf] summary emitted on ShutdownPerfLog
+    std::ifstream logIn(logPath);
+    REQUIRE(logIn.is_open());
+    std::string logContent((std::istreambuf_iterator<char>(logIn)),
+                           std::istreambuf_iterator<char>());
+    logIn.close();
+    CHECK(logContent.find("[Perf] FPS=") != std::string::npos);
+    CHECK(logContent.find("Perf Telemetry       : ENABLED") != std::string::npos);
+
+    std::remove(csvPath.c_str());
+    std::remove(logPath.c_str());
+  }
 #endif
 }

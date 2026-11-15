@@ -287,6 +287,85 @@ bool ParseVsyncString(const std::string& rawStr, bool& outVsync, bool& outStrict
     return false;
 }
 
+bool ParseUint64String(const std::string& raw, uint64_t& outVal) {
+    if (raw.empty()) return false;
+    for (char c : raw) {
+        if (!std::isdigit(static_cast<unsigned char>(c))) return false;
+    }
+    char* endPtr = nullptr;
+    unsigned long long parsed = std::strtoull(raw.c_str(), &endPtr, 10);
+    if (endPtr == raw.c_str() || *endPtr != '\0') return false;
+    outVal = static_cast<uint64_t>(parsed);
+    return true;
+}
+
+bool ParseTraceFramesString(const std::string& raw, bool& outActive,
+                            uint64_t& outStart, uint64_t& outEnd) {
+    std::string trimmed;
+    size_t s = 0;
+    while (s < raw.size() && std::isspace(static_cast<unsigned char>(raw[s]))) ++s;
+    size_t e = raw.size();
+    while (e > s && std::isspace(static_cast<unsigned char>(raw[e - 1]))) --e;
+    trimmed = raw.substr(s, e - s);
+    if (trimmed.empty()) return false;
+
+    std::string lower = ToLower(trimmed);
+    if (lower == "all" || lower == "*" || lower == "off" || lower == "none") {
+        outActive = false;
+        outStart = 0;
+        outEnd = UINT64_MAX;
+        return true;
+    }
+
+    size_t dash = trimmed.find('-');
+    if (dash == std::string::npos) {
+        uint64_t single = 0;
+        if (!ParseUint64String(trimmed, single)) return false;
+        outActive = true;
+        outStart = single;
+        outEnd = single;
+        return true;
+    }
+
+    // Reject multiple dashes (e.g. "1-2-3")
+    if (trimmed.find('-', dash + 1) != std::string::npos) return false;
+
+    std::string left = trimmed.substr(0, dash);
+    std::string right = trimmed.substr(dash + 1);
+    if (left.empty() && right.empty()) return false;
+
+    uint64_t startVal = 0;
+    uint64_t endVal = UINT64_MAX;
+    if (!left.empty() && !ParseUint64String(left, startVal)) return false;
+    if (!right.empty() && !ParseUint64String(right, endVal)) return false;
+    if (startVal > endVal) return false;
+
+    outActive = true;
+    outStart = startVal;
+    outEnd = endVal;
+    return true;
+}
+
+bool ParsePerfLogString(const std::string& raw, bool& outEnabled, std::string& outCsvPath) {
+    if (raw.empty()) return false;
+    bool b = false;
+    if (ParseBoolString(raw, b)) {
+        outEnabled = b;
+        outCsvPath.clear();
+        return true;
+    }
+    std::string lower = ToLower(raw);
+    if (lower == "log" || lower == "summary") {
+        outEnabled = true;
+        outCsvPath.clear();
+        return true;
+    }
+    // Any other non-empty string is treated as a CSV output path (and enables periodic [PERF] log)
+    outEnabled = true;
+    outCsvPath = raw;
+    return true;
+}
+
 const char* GetNonEmptyEnv(const char* name) {
     const char* val = std::getenv(name);
     return (val && val[0] != '\0') ? val : nullptr;
@@ -422,6 +501,39 @@ bool JsonConfigLoader::Load(const std::string& configFilePath, WrapperConfig& ou
         if (ExtractJsonString(content, "logFile", strVal) && !strVal.empty()) {
             outConfig.logFile = strVal;
             outConfig.settingSources["logFile"] = "json";
+        }
+        if (ExtractJsonString(content, "logCategories", strVal)) {
+            uint32_t mask = 0u;
+            if (ParseLogCategories(strVal, mask)) {
+                outConfig.logCategoryMask = mask;
+                outConfig.logCategoriesSpec = FormatLogCategories(mask);
+                outConfig.settingSources["logCategories"] = "json";
+            }
+        }
+        if (ExtractJsonStringOrNumber(content, "traceFrames", strVal)) {
+            bool active = false;
+            uint64_t startF = 0;
+            uint64_t endF = UINT64_MAX;
+            if (ParseTraceFramesString(strVal, active, startF, endF)) {
+                outConfig.traceFrameWindowActive = active;
+                outConfig.traceFrameStart = startF;
+                outConfig.traceFrameEnd = endF;
+                outConfig.traceFramesSpec = strVal;
+                outConfig.settingSources["traceFrames"] = "json";
+            }
+        }
+        if (ExtractJsonBool(content, "perfLog", boolVal)) {
+            outConfig.perfLogEnabled = boolVal;
+            outConfig.perfLogCsvPath.clear();
+            outConfig.settingSources["perfLog"] = "json";
+        } else if (ExtractJsonString(content, "perfLog", strVal)) {
+            if (ParsePerfLogString(strVal, outConfig.perfLogEnabled, outConfig.perfLogCsvPath)) {
+                outConfig.settingSources["perfLog"] = "json";
+            }
+        } else if (ExtractJsonInt(content, "perfLog", intVal)) {
+            outConfig.perfLogEnabled = (intVal != 0);
+            outConfig.perfLogCsvPath.clear();
+            outConfig.settingSources["perfLog"] = "json";
         }
 
         // Authentic Glide overrides in JSON
@@ -654,6 +766,34 @@ bool JsonConfigLoader::Load(const std::string& configFilePath, WrapperConfig& ou
     if (const char* envVal = GetNonEmptyEnv("GLIDE_NG_LOG_FILE")) {
         outConfig.logFile = envVal;
         outConfig.settingSources["logFile"] = "GLIDE_NG_LOG_FILE";
+    }
+
+    if (const char* envVal = GetNonEmptyEnv("GLIDE_NG_LOG_CATEGORIES")) {
+        uint32_t mask = 0u;
+        if (ParseLogCategories(envVal, mask)) {
+            outConfig.logCategoryMask = mask;
+            outConfig.logCategoriesSpec = FormatLogCategories(mask);
+            outConfig.settingSources["logCategories"] = "GLIDE_NG_LOG_CATEGORIES";
+        }
+    }
+
+    if (const char* envVal = GetNonEmptyEnv("GLIDE_NG_TRACE_FRAMES")) {
+        bool active = false;
+        uint64_t startF = 0;
+        uint64_t endF = UINT64_MAX;
+        if (ParseTraceFramesString(envVal, active, startF, endF)) {
+            outConfig.traceFrameWindowActive = active;
+            outConfig.traceFrameStart = startF;
+            outConfig.traceFrameEnd = endF;
+            outConfig.traceFramesSpec = envVal;
+            outConfig.settingSources["traceFrames"] = "GLIDE_NG_TRACE_FRAMES";
+        }
+    }
+
+    if (const char* envVal = GetNonEmptyEnv("GLIDE_NG_PERF_LOG")) {
+        if (ParsePerfLogString(envVal, outConfig.perfLogEnabled, outConfig.perfLogCsvPath)) {
+            outConfig.settingSources["perfLog"] = "GLIDE_NG_PERF_LOG";
+        }
     }
 
     if (const char* envVal = GetNonEmptyEnv("GLIDE_NG_NO_SPLASH")) {

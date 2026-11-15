@@ -288,7 +288,7 @@ FX_ENTRY void FX_CALL grVertexLayout(FxU32 param, FxI32 offset, FxU32 mode) {
 FX_ENTRY void FX_CALL grDrawTriangle(const void* a, const void* b,
                                      const void* c) {
   EnsureEngineInitialized();
-  GLIDE_LOG(DEBUG, "Frontend",
+  GLIDE_LOG(TRACE, "Frontend",
             "grDrawTriangle (Glide 3.x) invoked with a=" << a << ", b=" << b
                                                          << ", c=" << c);
   auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
@@ -317,14 +317,14 @@ FX_ENTRY void FX_CALL grDrawTriangle(const void* a, const void* b,
 FX_ENTRY void FX_CALL grAADrawTriangle(const void* a, const void* b,
                                        const void* c, FxBool ab_strong,
                                        FxBool bc_strong, FxBool ca_strong) {
-  GLIDE_LOG(DEBUG, "Frontend", "grAADrawTriangle (Glide 3.x) invoked.");
+  GLIDE_LOG(TRACE, "Frontend", "grAADrawTriangle (Glide 3.x) invoked.");
   grDrawTriangle(a, b, c);
 }
 
 FX_ENTRY void FX_CALL grDrawVertexArray(FxU32 mode, FxU32 count,
                                         void* pointers) {
   EnsureEngineInitialized();
-  GLIDE_LOG(DEBUG, "Frontend",
+  GLIDE_LOG(TRACE, "Frontend",
             "grDrawVertexArray (Glide 3.x) invoked: mode=" << mode << ", count="
                                                            << count);
   if (!pointers || count < 3) return;
@@ -347,7 +347,7 @@ FX_ENTRY void FX_CALL grDrawVertexArrayContiguous(FxU32 mode, FxU32 count,
                                                   void* pointers,
                                                   FxU32 stride) {
   EnsureEngineInitialized();
-  GLIDE_LOG(DEBUG, "Frontend",
+  GLIDE_LOG(TRACE, "Frontend",
             "grDrawVertexArrayContiguous (Glide 3.x) invoked: mode="
                 << mode << ", count=" << count << ", stride=" << stride);
   if (!pointers || count < 3 || stride == 0) return;
@@ -396,6 +396,7 @@ FX_ENTRY void FX_CALL grSstResetPerfStats(void) {
 
 FX_ENTRY void FX_CALL grDrawLine(const void* a, const void* b) {
   EnsureEngineInitialized();
+  GLIDE_LOG(TRACE, "Frontend", "grDrawLine (Glide 3.x) invoked.");
   auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
   if (!backend || !a || !b) return;
   auto& layout = GlideWrapper::VertexLayout::GetInstance();
@@ -410,6 +411,7 @@ FX_ENTRY void FX_CALL grDrawLine(const void* a, const void* b) {
 
 FX_ENTRY void FX_CALL grDrawPoint(const void* pt) {
   EnsureEngineInitialized();
+  GLIDE_LOG(TRACE, "Frontend", "grDrawPoint (Glide 3.x) invoked.");
   auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
   if (!backend || !pt) return;
   auto& layout = GlideWrapper::VertexLayout::GetInstance();

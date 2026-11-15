@@ -18,7 +18,7 @@
 | Milestone | Branch | Summary | Complexity | Status | Merge Commit |
 | :---: | :--- | :--- | :---: | :--- | :---: |
 | **M1** | `feat/m1-config-envvars` | Unified `GLIDE_NG_*` config & env var overhaul (no `GLIDE_WRAPPER_*` aliases) + Phase-1 authentic `FX_GLIDE_*` vars (`NO_SPLASH`, `SHAMELESS_PLUG`, `SWAPINTERVAL`) + authoritative env var reference doc | Low–Med | `[x] DONE (USER CONFIRMED — 2026-11-15)` | Merged to `main` |
-| **M2** | `feat/m2-logging-perf-trace` | Tiered logging (`OFF`..`TRACE`), category filtering, frame-windowed tracing, microsecond timestamps, buffered flushing, and runtime per-frame perf breakdown (+ CSV perf log) | Med | `[ ] PENDING` | — |
+| **M2** | `feat/m2-logging-perf-trace` | Tiered logging (`OFF`..`TRACE`), category filtering, frame-windowed tracing, microsecond timestamps, buffered flushing, and runtime per-frame perf breakdown (+ CSV perf log) | Med | `[~] IMPLEMENTED — AWAITING USER VERIFICATION` | — |
 | **M3** | `feat/m3-hud-fps` | DXVK-style on-screen HUD (`GLIDE_NG_HUD=fps`, extensible) rendered cleanly in each backend's post-scene presentation pass (Vulkan, GLES, SW) | Med | `[ ] PENDING` | — |
 | **M4** | `fix/m4-parked-sdk-tests` | Fix parked official SDK tests: `test16` ('P' plug state leak on VK/GLES), `test22` (SW multi-pass fog quality vs VK), `test25` & `test27` (hangs in all modes) + Catch2 regressions | Med | `[ ] PENDING` | — |
 | **M5** | `fix/m5-carmageddon` | Carmageddon (`carma`) compatibility & performance: black menus, missing in-game UI/HUD, perf bottleneck, initial focus/input behavior (using M2 traces & M3 HUD) | Med–High | `[ ] PENDING` | — |
@@ -70,12 +70,35 @@
 
 ---
 
-## 3. Upcoming Milestones (High-Level Scope — Detailed Just-In-Time)
+## 3. Milestone M2: Tiered Logging & Runtime Perf Tracing (`feat/m2-logging-perf-trace`)
 
-### Milestone M2 — Tiered Logging & Runtime Perf Tracing (`feat/m2-logging-perf-trace`)
-- 6 verbosity levels (`OFF`, `ERROR`, `WARN`, `INFO`, `DEBUG`, `TRACE`), category bitmask (`api,lfb,tex,state,draw,wsi,perf`), frame-windowed trace (`GLIDE_NG_TRACE_FRAMES`), microsecond monotonic timestamps + frame ID, buffered file flushing.
-- Always-compiled lightweight per-frame perf counters (`render_ms`, `swap_wait_ms`, draws, tris, batch flushes / state-change flushes, LFB locks R/W & bytes, tex uploads, PSO builds), periodic summary logging, and optional CSV dump (`GLIDE_NG_PERF_LOG`).
-- Instrumentation specifically enables measuring redundant GPU batch-flush overhead (e.g., `OpenGLESBackend::SetBlendState` unconditional `FlushBatch()`) before optimizing in M5.
+### Goals
+1. Upgrade `Logger` from 5 levels (`OFF`..`DEBUG`) with per-line `flush()` + wall-clock `localtime()` to 6 levels (`OFF`..`TRACE`) with lock-free `ShouldLog()` pre-filtering, category bitmask (`GLIDE_NG_LOG_CATEGORIES`), frame-windowed tracing (`GLIDE_NG_TRACE_FRAMES`), monotonic microsecond timestamps + frame ID (`[+SSSSSS.UUUUUU] [FNNNNNN]`), and buffered file flushing (32 KB / 250 ms / urgent `<= WARN`).
+2. Add always-compiled lightweight per-frame performance counters (`FrameMetrics`) independent of `ENABLE_TELEMETRY`, exposing render vs. present vs. cap-sleep breakdown, draw calls, mid-frame state flushes, triangles processed/drawn, LFB reads/writes & bytes, texture uploads & bytes, and Vulkan PSO builds — with periodic `[Perf]` log summaries and optional per-frame CSV output (`GLIDE_NG_PERF_LOG`).
+3. Instrument frontends (`GlideEntryCommon`, `glide2_entry`, `glide3_entry`), `LfbManager`, `TextureManager`, and all 3 backends (`Vulkan`, `GLES`, `Software`), demoting per-primitive draw logs from `DEBUG` to `TRACE` and fixing `FrameTracker::MarkFrameEnd` ordering so draw batches and present latency are attributed accurately to their own frame.
+
+### M2 Task Breakdown
+
+- **`M2.1`** — Config & env var parsing (`WrapperConfig.h`, `JsonConfigLoader.cpp`):
+  - Add `logCategoryMask`, `logCategoriesSpec`, `traceFramesSpec` (`traceFrameStart`/`End`/`Active`), `perfLogEnabled`, `perfLogCsvPath` with full JSON (`logCategories`, `traceFrames`, `perfLog`) and `GLIDE_NG_*` parity.
+  - **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION`
+- **`M2.2`** — Tiered Logger overhaul (`Logger.{h,cpp}`, `GlideEntryCommon.cpp`, `VulkanBackend.cpp`):
+  - Add `LogLevel::TRACE` (`5`), `LogCategory` bitmask (`general`, `api`, `lfb`, `tex`, `state`, `draw`, `wsi`, `perf`), `ParseLogCategories`/`FormatLogCategories`, lock-free `ShouldLog()`, `GLIDE_LOG_CAT`/`GLIDE_TRACE`, monotonic microsecond timestamps + `[FNNNNNN]`, buffered flushing, and updated startup profile banner.
+  - **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION`
+- **`M2.3`** — Always-compiled per-frame perf counters & CSV tracer (`Telemetry.{h,cpp}`):
+  - Add `FrameMetrics`, always-compiled atomic per-frame counters (`drawCalls`, `stateFlushes`, `tris`, `lfb`, `tex`, `pso`, `presentUs`), periodic 1-second `[Perf]` log summaries, and buffered CSV export (`GLIDE_NG_PERF_LOG=<path>`).
+  - Fix `FrameTracker::MarkFrameEnd` to measure true paced frame intervals (including cap sleep) and update FPS every 30 frames or 0.5s.
+  - **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION`
+- **`M2.4`** — Frontend & backend instrumentation (`GlideEntryCommon.cpp`, `LfbManager.cpp`, `TextureManager.cpp`, `glide2_entry.cpp`, `glide3_entry.cpp`, `Vulkan*`, `OpenGLES*`, `SoftwareBackend.cpp`):
+  - Wire `RecordDrawCall(fromStateFlush)`, `RecordPsoBuild`, `RecordLfbRead`/`Write`, `RecordTexUpload`, and per-frame `presentStart`->`presentEnd` timing; move `MarkFrameEnd()` to end of `SwapBuffers()`; demote per-primitive draw logs from `DEBUG` to `TRACE`.
+  - **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION`
+- **`M2.5`** — Unit tests, docs & verification (`tests/test_glide3.cpp`, `docs/glide_environment_variables.md`):
+  - Add Catch2 tests for levels/categories/frame-windowed trace/timestamp format/JSON+env parity/end-to-end CSV & `[Perf]` output; promote M2 vars to **Implemented** in env var reference; verify build (0 `-Werror` warnings), Catch2 suites, embed smoke matrix, live demo smoke test, and privacy scan.
+  - **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION`
+
+---
+
+## 4. Upcoming Milestones (High-Level Scope — Detailed Just-In-Time)
 
 ### Milestone M3 — DXVK-Style On-Screen HUD (`feat/m3-hud-fps`)
 - `GLIDE_NG_HUD` (and JSON `"hud"`) supporting `fps` first (with `scale=N`, `position=tl|tr|bl|br`), extensible to `frametimes`, `backend`, `api`, `drawcalls`, `lfb`.

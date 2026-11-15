@@ -52,9 +52,17 @@ struct WrapperConfig {
     uint32_t presentationFilter{0}; // 0 = Nearest-Neighbor, 1 = Linear/Bilinear
 
     // Logging & diagnostics
-    uint32_t logLevel{3};          // 0=OFF, 1=CRIT, 2=WARN, 3=INFO, 4=DEBUG, 5=TRACE
-    bool logToConsole{false};      // Mirror log output to stdout
+    uint32_t logLevel{3};                  // 0=OFF, 1=CRIT, 2=WARN, 3=INFO, 4=DEBUG, 5=TRACE
+    bool logToConsole{false};              // Mirror log output to stdout
     std::string logFile{"glide-ng.log"};
+    uint32_t logCategoryMask{0xFFFFFFFFu}; // Bitmask of LogCategory (GLIDE_NG_LOG_CATEGORIES)
+    std::string logCategoriesSpec{"all"};  // Normalized/raw category spec for summary
+    std::string traceFramesSpec{""};       // e.g. "120-125", "10", "50-", "-20" (GLIDE_NG_TRACE_FRAMES)
+    uint64_t traceFrameStart{0};
+    uint64_t traceFrameEnd{UINT64_MAX};
+    bool traceFrameWindowActive{false};
+    bool perfLogEnabled{false};            // Periodic [PERF] summary (GLIDE_NG_PERF_LOG)
+    std::string perfLogCsvPath{""};        // Optional per-frame CSV path (GLIDE_NG_PERF_LOG=<path>)
 
     // Authentic 3dfx Glide overrides (Phase 1)
     bool noSplash{false};          // FX_GLIDE_NO_SPLASH / GLIDE_NG_NO_SPLASH

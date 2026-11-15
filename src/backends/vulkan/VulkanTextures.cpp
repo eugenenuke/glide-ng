@@ -223,7 +223,7 @@ void VulkanBackend::BindTexture(uint32_t tmu, uint32_t startAddress,
                                 uint32_t clampS, uint32_t clampT,
                                 uint32_t minFilter, uint32_t magFilter) {
   std::lock_guard<std::mutex> lock(m_mutex);
-  FlushBatch();
+  FlushBatch(true);
 
   // 1. Call base class GlideStateTracker::BindTexture_Locked to update pipeline states
   GlideStateTracker::BindTexture_Locked(tmu, startAddress, clampS, clampT,
@@ -249,7 +249,7 @@ void VulkanBackend::SetTexLodBias(uint32_t tmu, float bias) {
   std::lock_guard<std::mutex> lock(m_mutex);
   if (tmu < 2) {
     if (m_texLodBias[tmu] != bias) {
-      FlushBatch();
+      FlushBatch(true);
       m_texLodBias[tmu] = bias;
       GLIDE_LOG(DEBUG, "Vulkan",
                 "SetTexLodBias: TMU" << tmu << " set to " << bias);
@@ -262,7 +262,7 @@ void VulkanBackend::SetTexMipMapMode(uint32_t tmu, uint32_t mode,
   std::lock_guard<std::mutex> lock(m_mutex);
   if (tmu < 2) {
     if (m_texMipMapMode[tmu] != mode || m_texLodBlend[tmu] != lodBlend) {
-      FlushBatch();
+      FlushBatch(true);
       m_texMipMapMode[tmu] = mode;
       m_texLodBlend[tmu] = lodBlend;
       GLIDE_LOG(DEBUG, "Vulkan",

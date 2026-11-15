@@ -142,7 +142,7 @@ void OpenGLESBackend::DrawPoint(const ModernVertex& pt) {
 
   if (primitiveMismatch || m_stateCacheDirty || projectionChanged ||
       capacityReached) {
-    FlushBatch();
+    FlushBatch(m_stateCacheDirty || primitiveMismatch || projectionChanged);
   }
 
   if (m_batchPrimitiveMode == BatchPrimitiveMode::None) {
@@ -171,7 +171,7 @@ void OpenGLESBackend::DrawLine(const ModernVertex& v0, const ModernVertex& v1) {
 
   if (primitiveMismatch || m_stateCacheDirty || projectionChanged ||
       capacityReached) {
-    FlushBatch();
+    FlushBatch(m_stateCacheDirty || primitiveMismatch || projectionChanged);
   }
 
   if (m_batchPrimitiveMode == BatchPrimitiveMode::None) {
@@ -204,7 +204,7 @@ void OpenGLESBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
 
   if (primitiveMismatch || m_stateCacheDirty || projectionChanged ||
       capacityReached) {
-    FlushBatch();
+    FlushBatch(m_stateCacheDirty || primitiveMismatch || projectionChanged);
   }
 
   if (m_batchPrimitiveMode == BatchPrimitiveMode::None) {
@@ -375,13 +375,15 @@ void OpenGLESBackend::SyncCullStateGLES_Locked() {
   }
 }
 
-void OpenGLESBackend::FlushBatch() {
+void OpenGLESBackend::FlushBatch(bool fromStateFlush) {
   if (m_batchVertices.empty()) return;
   if (!EnsureContextCurrent()) {
     m_batchVertices.clear();
     m_batchPrimitiveMode = BatchPrimitiveMode::None;
     return;
   }
+
+  TelemetryManager::GetInstance().RecordDrawCall(fromStateFlush);
 
   uint32_t uploadSize = m_batchVertices.size() * sizeof(ModernVertex);
 
