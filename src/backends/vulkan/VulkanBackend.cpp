@@ -83,6 +83,36 @@ static vk::BlendFactor MapBlendFactorVulkan(uint32_t factor, bool isDest,
 
 const bool enableValidationLayers = false;
 
+void Logger::LogHostVulkanCapabilities() {
+  if (m_activeLevel < LogLevel::INFO) return;
+
+  try {
+    vk::ApplicationInfo appInfo("3dfxGlideWrapper", 1, "AntigravityEngine", 1,
+                                VK_API_VERSION_1_2);
+    vk::InstanceCreateInfo createInfo({}, &appInfo);
+
+    vk::UniqueInstance instance = vk::createInstanceUnique(createInfo);
+    std::vector<vk::PhysicalDevice> devices =
+        instance->enumeratePhysicalDevices();
+
+    std::ostringstream ss;
+    ss << "\n--- Host Vulkan Execution Adapters Discovered ---\n";
+    for (size_t i = 0; i < devices.size(); ++i) {
+      vk::PhysicalDeviceProperties props = devices[i].getProperties();
+      ss << "  Adapter [" << i << "] : " << props.deviceName.data() << "\n"
+         << "    API Version : " << VK_VERSION_MAJOR(props.apiVersion) << "."
+         << VK_VERSION_MINOR(props.apiVersion) << "."
+         << VK_VERSION_PATCH(props.apiVersion) << "\n"
+         << "    Device Type : " << vk::to_string(props.deviceType) << "\n";
+    }
+    ss << "-------------------------------------------------";
+    Log(LogLevel::INFO, "Startup", ss.str());
+  } catch (const std::exception& e) {
+    Log(LogLevel::WARN, "Startup",
+        std::string("Vulkan Host Polling unavailable: ") + e.what());
+  }
+}
+
 bool VulkanBackend::Initialize(const WrapperConfig& config) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   if (m_initialized) return true;

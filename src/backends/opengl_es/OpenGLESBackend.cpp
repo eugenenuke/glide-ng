@@ -138,8 +138,7 @@ bool OpenGLESBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
                                    uint32_t height, bool windowed) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   if (!m_initialized) {
-    std::cout << "[DEBUG-GLES] AttachWindow failed: !m_initialized"
-              << std::endl;
+    GLIDE_LOG(CRITICAL, "GLES", "AttachWindow failed: !m_initialized");
     return false;
   }
   if (m_windowAttached) DetachWindow();
@@ -157,8 +156,6 @@ bool OpenGLESBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
 
   if (!CreateGLContext(nativeWindowHandle, width, height, windowed)) {
     GLIDE_LOG(CRITICAL, "GLES", "Failed to create OpenGL ES 3.2 context!");
-    std::cout << "[DEBUG-GLES] AttachWindow failed: CreateGLContext failed"
-              << std::endl;
     return false;
   }
 
@@ -207,8 +204,6 @@ bool OpenGLESBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
     // Verify FBO completeness
     if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
       GLIDE_LOG(CRITICAL, "GLES", "Headless FBO " << i << " is incomplete!");
-      std::cout << "[DEBUG-GLES] AttachWindow failed: FBO " << i
-                << " incomplete" << std::endl;
       DestroyGLContext();
       return false;
     }
@@ -228,15 +223,11 @@ bool OpenGLESBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
   // Milestone 3: Compile shaders and allocate dynamic VBO/VAO
   if (!CreateGeomShaders()) {
     GLIDE_LOG(CRITICAL, "GLES", "Failed to compile GLES geometry shaders!");
-    std::cout << "[DEBUG-GLES] AttachWindow failed: CreateGeomShaders failed"
-              << std::endl;
     DestroyGLContext();
     return false;
   }
   if (!CreateGeomBuffers()) {
     GLIDE_LOG(CRITICAL, "GLES", "Failed to allocate GLES geometry buffers!");
-    std::cout << "[DEBUG-GLES] AttachWindow failed: CreateGeomBuffers failed"
-              << std::endl;
     DestroyGLContext();
     return false;
   }
@@ -1630,9 +1621,6 @@ bool OpenGLESBackend::CreateGeomShaders() {
       glGetShaderInfoLog(s, 512, nullptr, log);
       GLIDE_LOG(CRITICAL, "GLES",
                 "Geometry Shader compilation failure: " << log);
-      std::cout << "[DEBUG-SHADER-ERROR] Type: "
-                << (type == GL_VERTEX_SHADER ? "VERT" : "FRAG")
-                << ", Error: " << log << std::endl;
     }
     return s;
   };
@@ -1654,7 +1642,6 @@ bool OpenGLESBackend::CreateGeomShaders() {
     char log[512];
     glGetProgramInfoLog(m_geomProgram, 512, nullptr, log);
     GLIDE_LOG(CRITICAL, "GLES", "Geometry Program linking failure: " << log);
-    std::cout << "[DEBUG-PROGRAM-ERROR] Error: " << log << std::endl;
     return false;
   }
 
