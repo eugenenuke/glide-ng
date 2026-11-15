@@ -6,8 +6,10 @@
 #include "core/TextureManager.h"
 #include "core/Logger.h"
 #include "core/BackendManager.h"
+#include "core/NativeSurfaceHost.h"
 #include "software/SoftwareBackend.h"
 #include "vulkan/VulkanBackend.h"
+#include <SDL2/SDL.h>
 #include <cstdio>
 #include <cstdlib>
 #include <dlfcn.h>
@@ -3579,4 +3581,163 @@ TEST_CASE("VulkanBackend::SelectPresentMode prefers Mailbox on Wayland VSync",
         vk::PresentModeKHR::eImmediate);
   CHECK(GlideWrapper::VulkanBackend::SelectPresentMode(fifoOnly, false, false, false) ==
         vk::PresentModeKHR::eFifo);
+}
+
+TEST_CASE("NativeSurfaceHost::ComputePresentRect preserves aspect ratio accurately",
+          "[WSI][NativeSurfaceHost][AspectRatio]") {
+  using GlideWrapper::NativeSurfaceHost;
+  using GlideWrapper::PresentRect;
+
+  // 4:3 guest (640x480) inside 16:9 host (1920x1080) -> pillarboxed
+  CHECK(NativeSurfaceHost::ComputePresentRect(640, 480, 1920, 1080, true) ==
+        PresentRect{240, 0, 1440, 1080});
+
+  // Exact aspect-ratio match (640x480 in 800x600)
+  CHECK(NativeSurfaceHost::ComputePresentRect(640, 480, 800, 600, true) ==
+        PresentRect{0, 0, 800, 600});
+
+  // Wider guest (640x400, 16:10) inside 4:3 host (640x480) -> letterboxed
+  CHECK(NativeSurfaceHost::ComputePresentRect(640, 400, 640, 480, true) ==
+        PresentRect{0, 40, 640, 400});
+
+  // 4:3 guest (800x600) inside 1440p host (2560x1440) -> pillarboxed
+  CHECK(NativeSurfaceHost::ComputePresentRect(800, 600, 2560, 1440, true) ==
+        PresentRect{320, 0, 1920, 1440});
+
+  // 4:3 guest (640x480) inside portrait host (1080x1920) -> letterboxed
+  CHECK(NativeSurfaceHost::ComputePresentRect(640, 480, 1080, 1920, true) ==
+        PresentRect{0, 555, 1080, 810});
+
+  // Stretch mode disables aspect-ratio preservation
+  CHECK(NativeSurfaceHost::ComputePresentRect(640, 480, 1920, 1080, false) ==
+        PresentRect{0, 0, 1920, 1080});
+
+  // Zero-size safety guards
+  CHECK(NativeSurfaceHost::ComputePresentRect(640, 480, 0, 1080, true) ==
+        PresentRect{0, 0, 0, 0});
+  CHECK(NativeSurfaceHost::ComputePresentRect(640, 480, 1920, 0, true) ==
+        PresentRect{0, 0, 0, 0});
+  CHECK(NativeSurfaceHost::ComputePresentRect(0, 480, 1920, 1080, true) ==
+        PresentRect{0, 0, 1920, 1080});
+  CHECK(NativeSurfaceHost::ComputePresentRect(640, 0, 1920, 1080, true) ==
+        PresentRect{0, 0, 1920, 1080});
+}
+
+TEST_CASE("NativeSurfaceHost headless lifecycle and idempotent detach",
+          "[WSI][NativeSurfaceHost][Headless]") {
+  using GlideWrapper::NativeSurfaceHost;
+
+  NativeSurfaceHost host;
+  CHECK(!host.IsAttached());
+  CHECK(host.GetMode() == NativeSurfaceHost::Mode::None);
+  CHECK(!host.WasQuitRequested());
+  CHECK(!host.IsWaylandSurface());
+  CHECK(!host.IsX11Surface());
+  CHECK(host.GetSDLWindow() == nullptr);
+  CHECK(host.GetX11Display() == nullptr);
+  CHECK(host.GetX11Window() == 0UL);
+  CHECK(host.GetWaylandDisplay() == nullptr);
+  CHECK(host.GetWaylandSurface() == nullptr);
+  CHECK(host.GetWaylandScale() == 1);
+
+  uint32_t pw = 999, ph = 999;
+  CHECK(!host.SyncBounds(pw, ph));
+  CHECK(pw == 0);
+  CHECK(ph == 0);
+  host.PollEvents();  // Safe no-op when detached
+
+  // Attach headless (zero OS/SDL calls)
+  REQUIRE(host.Attach(nullptr, 640, 480, false, /*forceNoWindow=*/true,
+                      "Headless Test"));
+  CHECK(host.IsAttached());
+  CHECK(host.GetMode() == NativeSurfaceHost::Mode::Headless);
+  CHECK(!host.IsWaylandSurface());
+  CHECK(!host.IsX11Surface());
+  CHECK(host.GetSDLWindow() == nullptr);
+
+  uint32_t gw = 0, gh = 0;
+  host.GetGuestSize(gw, gh);
+  CHECK(gw == 640);
+  CHECK(gh == 480);
+
+  host.GetDrawableSize(pw, ph);
+  CHECK(pw == 640);
+  CHECK(ph == 480);
+  CHECK(!host.SyncBounds(pw, ph));
+  CHECK(pw == 640);
+  CHECK(ph == 480);
+  host.PollEvents();
+  CHECK(!host.WasQuitRequested());
+
+  // Re-attaching with a foreign handle while forceNoWindow=true stays Headless
+  void* fakeHandle = reinterpret_cast<void*>(static_cast<uintptr_t>(0x12345));
+  REQUIRE(host.Attach(fakeHandle, 800, 600, true, /*forceNoWindow=*/true,
+                      "Headless Foreign"));
+  CHECK(host.GetMode() == NativeSurfaceHost::Mode::Headless);
+  host.GetDrawableSize(pw, ph);
+  CHECK(pw == 800);
+  CHECK(ph == 600);
+
+  // Detach resets cleanly and is idempotent
+  host.Detach();
+  CHECK(!host.IsAttached());
+  CHECK(host.GetMode() == NativeSurfaceHost::Mode::None);
+  host.Detach();
+  CHECK(!host.IsAttached());
+}
+
+TEST_CASE("NativeSurfaceHost StandaloneSDL2 handles scale, resize, and SDL_QUIT",
+          "[WSI][NativeSurfaceHost][Standalone]") {
+  using GlideWrapper::NativeSurfaceHost;
+
+  struct SdlDriverGuard {
+    bool hadPrev = false;
+    std::string prev;
+    SdlDriverGuard() {
+      if (const char* v = std::getenv("SDL_VIDEODRIVER")) {
+        hadPrev = true;
+        prev = v;
+      }
+      ::setenv("SDL_VIDEODRIVER", "dummy", 1);
+    }
+    ~SdlDriverGuard() {
+      if (hadPrev) {
+        ::setenv("SDL_VIDEODRIVER", prev.c_str(), 1);
+      } else {
+        ::unsetenv("SDL_VIDEODRIVER");
+      }
+    }
+  } driverGuard;
+
+  NativeSurfaceHost host;
+  REQUIRE(host.Attach(nullptr, 320, 240, false, /*forceNoWindow=*/false,
+                      "Standalone Unit Test", 0, /*windowScale=*/2));
+  CHECK(host.IsAttached());
+  CHECK(host.GetMode() == NativeSurfaceHost::Mode::StandaloneSDL2);
+  CHECK(host.GetSDLWindow() != nullptr);
+  CHECK(!host.IsWaylandSurface());
+  CHECK(!host.IsX11Surface());
+  CHECK(!host.WasQuitRequested());
+
+  // Verify SDL_HINT_NO_SIGNAL_HANDLERS was set so Ctrl+C works in demos.
+  const char* noSigHint = SDL_GetHint(SDL_HINT_NO_SIGNAL_HANDLERS);
+  REQUIRE(noSigHint != nullptr);
+  CHECK(std::string(noSigHint) == "1");
+
+  uint32_t pw = 0, ph = 0;
+  host.GetDrawableSize(pw, ph);
+  CHECK(pw == 640);
+  CHECK(ph == 480);
+  CHECK(!host.SyncBounds(pw, ph));
+
+  // Simulate user clicking window close / SDL_QUIT.
+  SDL_Event quitEv{};
+  quitEv.type = SDL_QUIT;
+  REQUIRE(SDL_PushEvent(&quitEv) == 1);
+  host.PollEvents();
+  CHECK(host.WasQuitRequested());
+
+  host.Detach();
+  CHECK(!host.IsAttached());
+  CHECK(host.GetSDLWindow() == nullptr);
 }

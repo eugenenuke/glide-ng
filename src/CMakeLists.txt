@@ -12,6 +12,7 @@ set(CORE_SOURCES
     core/3dfParser.cpp
     core/MathUtils.cpp
     core/LfbManager.cpp
+    core/NativeSurfaceHost.cpp
     core/PlatformWindowUtils.cpp
     backends/SoftwareBackendBase.cpp
     backends/vulkan/VulkanBackend.cpp
