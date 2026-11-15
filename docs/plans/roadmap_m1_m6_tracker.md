@@ -17,7 +17,7 @@
 
 | Milestone | Branch | Summary | Complexity | Status | Merge Commit |
 | :---: | :--- | :--- | :---: | :--- | :---: |
-| **M1** | `feat/m1-config-envvars` | Unified `GLIDE_NG_*` config & env var overhaul (no `GLIDE_WRAPPER_*` aliases) + Phase-1 authentic `FX_GLIDE_*` vars (`NO_SPLASH`, `SHAMELESS_PLUG`, `SWAPINTERVAL`) + authoritative env var reference doc | Low–Med | `[~] IMPLEMENTED — AWAITING USER VERIFICATION` | — |
+| **M1** | `feat/m1-config-envvars` | Unified `GLIDE_NG_*` config & env var overhaul (no `GLIDE_WRAPPER_*` aliases) + Phase-1 authentic `FX_GLIDE_*` vars (`NO_SPLASH`, `SHAMELESS_PLUG`, `SWAPINTERVAL`) + authoritative env var reference doc | Low–Med | `[x] DONE (USER CONFIRMED — 2026-11-15)` | Merged to `main` |
 | **M2** | `feat/m2-logging-perf-trace` | Tiered logging (`OFF`..`TRACE`), category filtering, frame-windowed tracing, microsecond timestamps, buffered flushing, and runtime per-frame perf breakdown (+ CSV perf log) | Med | `[ ] PENDING` | — |
 | **M3** | `feat/m3-hud-fps` | DXVK-style on-screen HUD (`GLIDE_NG_HUD=fps`, extensible) rendered cleanly in each backend's post-scene presentation pass (Vulkan, GLES, SW) | Med | `[ ] PENDING` | — |
 | **M4** | `fix/m4-parked-sdk-tests` | Fix parked official SDK tests: `test16` ('P' plug state leak on VK/GLES), `test22` (SW multi-pass fog quality vs VK), `test25` & `test27` (hangs in all modes) + Catch2 regressions | Med | `[ ] PENDING` | — |
@@ -43,30 +43,30 @@
 ### M1 Task Breakdown
 
 - **`M1.1`** — Add `/vendor/watcom/` to `.gitignore`, document optional Open Watcom v2 installation in `README.md`, and create this master roadmap tracker (`docs/plans/roadmap_m1_m6_tracker.md`).
-  - **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION`
+  - **Status**: `[x] DONE (USER CONFIRMED — 2026-11-15)`
 - **`M1.2`** — Overhaul `WrapperConfig.{h,cpp}`, `JsonConfigLoader.cpp`, and `Logger::LogExecutionSummary`:
   - Add unified fields to `WrapperConfig`: `logFile`, `vsyncStrictFifo`, `swapInterval`, `noSplash`, `shamelessPlugMode` (`-1` app / `0` off / `1` on), `swThreads`, `swUseSimd`, `swTileSize`, `swAaMode`, `vkCachePath`, `glesVboSizeMb`, plus value-source tracking (`default` / `json` / `fx_env` / `ng_env`) for startup diagnostics.
   - Implement clean precedence in `JsonConfigLoader::Load()`: `Defaults < JSON < FX_GLIDE_* < GLIDE_NG_*`.
   - Support `GLIDE_NG_CONFIG` for explicit config file override, `GLIDE_NG_LOG_LEVEL` accepting both integers (`0`–`5`) and names (`off`, `error`/`crit`, `warn`, `info`, `debug`, `trace`), and `GLIDE_NG_PRESENTATION_FILTER` accepting `nearest`/`0` and `linear`/`1`.
   - Remove duplicate env parsing from `EmulationRegistry` constructor and ensure `EnsureEngineInitialized()` loads config identically to `InitGlide()`.
-  - **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION`
+  - **Status**: `[x] DONE (USER CONFIRMED — 2026-11-15)`
 - **`M1.3`** — Remove all scattered `std::getenv()` calls from backends & wire authentic Phase-1 `FX_GLIDE_*` vars:
   - `SoftwareBackendBase.cpp`: read `swAaMode` from `WrapperConfig`.
   - `SoftwareBackend.cpp`: read `vsyncStrictFifo`, `swUseSimd`, `swThreads`, `swTileSize` from `m_config`.
   - `VulkanBackend.cpp`: read `vsyncStrictFifo` and `vkCachePath` from `m_config`.
   - `OpenGLESBackend.cpp`: read `vsyncStrictFifo` and `glesVboSizeMb` from `m_config`.
   - `GlideEntryCommon.{h,cpp}`, `glide2_entry.cpp`, `glide3_entry.cpp`: honor `noSplash` in `RenderSplash()`, honor `shamelessPlugMode` in `ShouldRenderShamelessPlug(appEnabled)`, use `config.logFile` in `Logger::Initialize()`.
-  - **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION`
+  - **Status**: `[x] DONE (USER CONFIRMED — 2026-11-15)`
 - **`M1.4`** — Migrate `tests/`, `tools/`, `demos/`, and `.agents/` from `GLIDE_WRAPPER_*`/legacy `GLIDE_*` to `GLIDE_NG_*` + add Catch2 unit tests covering:
   - Full `GLIDE_NG_*` parsing & JSON parity
   - Precedence (`Defaults < JSON < FX_GLIDE_* < GLIDE_NG_*`)
   - `FX_GLIDE_NO_SPLASH`, `FX_GLIDE_SHAMELESS_PLUG`, and `FX_GLIDE_SWAPINTERVAL` behavior
   - Rejection/ignoring of removed legacy names (confirming clean break)
-  - **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION`
+  - **Status**: `[x] DONE (USER CONFIRMED — 2026-11-15)`
 - **`M1.5`** — Overhaul [docs/glide_environment_variables.md](../glide_environment_variables.md) into the authoritative configuration & env var reference (glide-ng settings, authentic Glide vars, defaults, status tags, and roadmap).
-  - **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION`
+  - **Status**: `[x] DONE (USER CONFIRMED — 2026-11-15)`
 - **`M1.6`** — Full verification (`cmake --build build` with 0 `-Werror` warnings, Catch2 suites across `software`/`vulkan`/`opengl_es`, 6-cell `glide_embed_test` smoke matrix, privacy check) + commit & push.
-  - **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION`
+  - **Status**: `[x] DONE (USER CONFIRMED — 2026-11-15)`
 
 ---
 
@@ -74,7 +74,8 @@
 
 ### Milestone M2 — Tiered Logging & Runtime Perf Tracing (`feat/m2-logging-perf-trace`)
 - 6 verbosity levels (`OFF`, `ERROR`, `WARN`, `INFO`, `DEBUG`, `TRACE`), category bitmask (`api,lfb,tex,state,draw,wsi,perf`), frame-windowed trace (`GLIDE_NG_TRACE_FRAMES`), microsecond monotonic timestamps + frame ID, buffered file flushing.
-- Always-compiled lightweight per-frame perf counters (`render_ms`, `swap_wait_ms`, draws, tris, LFB locks R/W & bytes, tex uploads, PSO builds), periodic summary logging, and optional CSV dump (`GLIDE_NG_PERF_LOG`).
+- Always-compiled lightweight per-frame perf counters (`render_ms`, `swap_wait_ms`, draws, tris, batch flushes / state-change flushes, LFB locks R/W & bytes, tex uploads, PSO builds), periodic summary logging, and optional CSV dump (`GLIDE_NG_PERF_LOG`).
+- Instrumentation specifically enables measuring redundant GPU batch-flush overhead (e.g., `OpenGLESBackend::SetBlendState` unconditional `FlushBatch()`) before optimizing in M5.
 
 ### Milestone M3 — DXVK-Style On-Screen HUD (`feat/m3-hud-fps`)
 - `GLIDE_NG_HUD` (and JSON `"hud"`) supporting `fps` first (with `scale=N`, `position=tl|tr|bl|br`), extensible to `frametimes`, `backend`, `api`, `drawcalls`, `lfb`.
@@ -88,6 +89,7 @@
 ### Milestone M5 — Carmageddon (`carma`) Compatibility & Performance (`fix/m5-carmageddon`)
 - Capture M2 `LFB,API,PERF` logs & CSV traces from menus and race.
 - Fix black menus, missing in-game UI/HUD, performance bottleneck, and initial focus/input quirk; validate with M3 HUD across all backends.
+- **Deferred GPU State-Dedup & Batching Optimizations** (flagged during M1 verification): audit GPU backend state setters for unconditional `FlushBatch()` on no-op state updates (notably `OpenGLESBackend::SetBlendState` and sibling GLES/Vulkan setters) and hoist redundant per-face `grAlphaBlendFunction` calls in `GlideSplashAnimator`, verified with M2 draw-call/flush metrics.
 
 ### Milestone M6 — Optional DOS Diagnostics & GPU-Bound Benchmark (`feat/m6-dos-tools-bench`)
 - Optional Open Watcom v2 toolchain detection (`vendor/watcom` or `$WATCOM`); never blocks Linux builds when absent.
