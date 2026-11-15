@@ -3,15 +3,42 @@
 #include <GLES3/gl32.h>
 #include <SDL2/SDL.h>
 
+#if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_EGL)
+#include <dlfcn.h>
+#if defined(HAVE_WAYLAND_EGL)
+#include <wayland-egl.h>
+#endif
+#include <EGL/egl.h>
+#include <EGL/eglext.h>
+#if defined(HAVE_X11)
+#include <X11/Xlib.h>
+#ifdef None
+#undef None
+#endif
+#ifdef Success
+#undef Success
+#endif
+#ifdef Always
+#undef Always
+#endif
+#ifdef Status
+#undef Status
+#endif
+#ifdef Bool
+#undef Bool
+#endif
+#endif
+#endif
+
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <thread>
 #include <vector>
 
 #include "core/Logger.h"
-#include "core/PlatformWindowUtils.h"
 #include "core/Telemetry.h"
 #include "core/TextureManager.h"
 
@@ -20,14 +47,32 @@
 #define GL_BGRA_EXT 0x80E1
 #endif
 
+#if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_EGL)
+#ifndef EGL_PLATFORM_X11_EXT
+#define EGL_PLATFORM_X11_EXT 0x31D5
+#endif
+#ifndef EGL_PLATFORM_WAYLAND_KHR
+#define EGL_PLATFORM_WAYLAND_KHR 0x31D8
+#endif
+#ifndef EGL_PLATFORM_SURFACELESS_MESA
+#define EGL_PLATFORM_SURFACELESS_MESA 0x31DD
+#endif
+#endif
+
 namespace GlideWrapper {
 
 static void checkGLError(const char* label) {
   GLenum err;
   while ((err = glGetError()) != GL_NO_ERROR) {
     GLIDE_LOG(CRITICAL, "GLES",
-              "GL Error at " << label << ": 0x" << std::hex << err);
+              "GL Error at " << label << ": 0x" << std::hex << err << std::dec);
   }
+}
+
+static bool IsWaylandStrictFifoRequested() {
+  const char* env = std::getenv("GLIDE_VSYNC");
+  return env != nullptr &&
+         (std::strcmp(env, "fifo") == 0 || std::strcmp(env, "FIFO") == 0);
 }
 
 const char* vsSource = R"(#version 300 es
@@ -41,22 +86,22 @@ void main() {
 )";
 
 const char* fsSource = R"(#version 300 es
-precision mediump float;
+precision highp float;
 in vec2 fragTex;
 out vec4 outColor;
 uniform sampler2D uTex;
 uniform sampler2D uGammaLut;
 uniform bool uUseGammaLut;
 void main() {
-    vec4 texColor = texture(uTex, fragTex).bgra;
+    vec4 texColor = texture(uTex, fragTex);
     if (uUseGammaLut) {
         vec3 corrected;
-        corrected.r = texture(uGammaLut, vec2(texColor.r, 0.5)).r;
-        corrected.g = texture(uGammaLut, vec2(texColor.g, 0.5)).g;
-        corrected.b = texture(uGammaLut, vec2(texColor.b, 0.5)).b;
-        outColor = vec4(corrected, texColor.a);
+        corrected.r = texture(uGammaLut, vec2((texColor.r * 255.0 + 0.5) / 256.0, 0.5)).r;
+        corrected.g = texture(uGammaLut, vec2((texColor.g * 255.0 + 0.5) / 256.0, 0.5)).g;
+        corrected.b = texture(uGammaLut, vec2((texColor.b * 255.0 + 0.5) / 256.0, 0.5)).b;
+        outColor = vec4(corrected, 1.0);
     } else {
-        outColor = texColor;
+        outColor = vec4(texColor.rgb, 1.0);
     }
 }
 )";
@@ -94,18 +139,6 @@ bool OpenGLESBackend::Initialize(const WrapperConfig& config) {
     }
   }
 
-  // Experimental presentation override
-  m_forceShaderPresent = false;
-  if (const char* forceShaderEnv =
-          std::getenv("GLIDE_GLES_FORCE_SHADER_PRESENT")) {
-    m_forceShaderPresent = (std::strcmp(forceShaderEnv, "1") == 0 ||
-                            std::strcmp(forceShaderEnv, "true") == 0);
-    if (m_forceShaderPresent) {
-      GLIDE_LOG(INFO, "GLES",
-                "Forcing full-screen quad shader presentation path.");
-    }
-  }
-
   m_initialized = true;
   return true;
 }
@@ -122,7 +155,6 @@ void OpenGLESBackend::Shutdown() {
 void OpenGLESBackend::ResetState() {
   SoftwareBackendBase::ResetState();
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
-  m_windowShown = false;
   m_geomVBOOffset = 0;
   m_is2DGeometry = true;
   m_gammaCorrectionValue = 1.0f;
@@ -240,26 +272,18 @@ bool OpenGLESBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
   SetClipWindow(0, 0, width, height);
 
   m_windowAttached = true;
+
+  // Preserve any foreign host EGL context (e.g. DOSBox-X output=opengl on
+  // Wayland) when returning from grSstWinOpen.
+  RestoreHostContextIfSaved();
   return true;
 }
 
 void OpenGLESBackend::DetachWindow() {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   if (!m_windowAttached) return;
-  m_windowShown = false;
   GLIDE_LOG(INFO, "GLES",
             "Detaching OpenGL ES window surface and freeing buffers.");
-
-  if (m_sdlTexture) {
-    SDL_DestroyTexture(reinterpret_cast<SDL_Texture*>(m_sdlTexture));
-    m_sdlTexture = nullptr;
-  }
-  if (m_sdlRenderer) {
-    if (m_sdlRendererOwned) {
-      SDL_DestroyRenderer(reinterpret_cast<SDL_Renderer*>(m_sdlRenderer));
-    }
-    m_sdlRenderer = nullptr;
-  }
 
   DestroyGLContext();
 
@@ -268,20 +292,73 @@ void OpenGLESBackend::DetachWindow() {
   m_windowAttached = false;
 }
 
-void OpenGLESBackend::SyncOverlayBounds() {
-  if (m_hostWindow && m_sdlWindow) {
-    PlatformWindowUtils::SyncOverlayWindowBounds(
-        reinterpret_cast<SDL_Window*>(m_hostWindow),
-        reinterpret_cast<SDL_Window*>(m_sdlWindow), m_lastRequestedX,
-        m_lastRequestedY, m_lastRequestedW, m_lastRequestedH);
+void OpenGLESBackend::PresentToWindowSurface(uint32_t hostW, uint32_t hostH) {
+  if (hostW == 0 || hostH == 0) return;
+
+  GLIDE_PROFILE_SCOPE("GLES::SwapBuffers_PresentQuad");
+
+  glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+  // Neutralize guest rasterizer state for clean presentation blit.
+  glDisable(GL_SCISSOR_TEST);
+  glDisable(GL_DEPTH_TEST);
+  glDisable(GL_BLEND);
+  glDisable(GL_CULL_FACE);
+  glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+  glDepthMask(GL_FALSE);
+
+  // Clear full host surface to opaque black for letterbox/pillarbox bars.
+  glViewport(0, 0, static_cast<GLsizei>(hostW), static_cast<GLsizei>(hostH));
+  glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+  glClear(GL_COLOR_BUFFER_BIT);
+
+  // Compute aspect-ratio-preserving destination rect inside host surface.
+  const PresentRect dst = NativeSurfaceHost::ComputePresentRect(
+      m_headlessWidth, m_headlessHeight, hostW, hostH,
+      /*preserveAspect=*/true);
+  const int32_t glY =
+      static_cast<int32_t>(hostH) - dst.y - static_cast<int32_t>(dst.height);
+  glViewport(dst.x, glY, static_cast<GLsizei>(dst.width),
+             static_cast<GLsizei>(dst.height));
+
+  // Unbind guest TMU sampler objects so the presentation & Gamma LUT textures
+  // use their own texture parameters.
+  glBindSampler(0, 0);
+  glBindSampler(1, 0);
+
+  glUseProgram(m_glProgram);
+  if (m_uUseGammaLutLoc != -1) {
+    glUniform1i(m_uUseGammaLutLoc, m_useGammaLut ? 1 : 0);
   }
+
+  glActiveTexture(GL_TEXTURE0);
+  glBindTexture(GL_TEXTURE_2D, m_fboTextures[0]);
+
+  glActiveTexture(GL_TEXTURE1);
+  glBindTexture(GL_TEXTURE_2D, m_glGammaLutTex);
+
+  glBindVertexArray(m_glVAO);
+  glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+  glBindVertexArray(0);
+  glUseProgram(0);
+  glActiveTexture(GL_TEXTURE0);
+
+  checkGLError("PresentToWindowSurface");
 }
 
 bool OpenGLESBackend::SwapBuffers() {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   if (!m_initialized || !m_windowAttached) return false;
 
-  SDL_PumpEvents();
+  // Pump events ONLY in StandaloneSDL2 mode (guaranteed no-op for DOSBox).
+  m_surfaceHost.PollEvents();
+  if (m_surfaceHost.WasQuitRequested()) {
+    return false;
+  }
+
+  if (!EnsureContextCurrent()) {
+    return false;
+  }
 
   // Flush any pending geometry batches first!
   FlushBatch();
@@ -297,40 +374,43 @@ bool OpenGLESBackend::SwapBuffers() {
 
   GLIDE_PROFILE_SCOPE("GLES::SwapBuffers");
 
-  // Sync overlay window bounds with host window!
-  SyncOverlayBounds();
+  if (m_surfaceHost.GetMode() != NativeSurfaceHost::Mode::Headless) {
+    uint32_t hostW = 0;
+    uint32_t hostH = 0;
+    const bool resized = m_surfaceHost.SyncBounds(hostW, hostH);
+    if (hostW == 0 || hostH == 0) {
+      m_surfaceHost.GetDrawableSize(hostW, hostH);
+    }
 
-  if (m_sdlWindow) {
-    GLIDE_PROFILE_SCOPE("GLES::SwapBuffers_GPUBlit");
+#if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_WAYLAND_EGL)
+    if (resized && m_wlEglWindow && hostW > 0 && hostH > 0) {
+      wl_egl_window_resize(static_cast<wl_egl_window*>(m_wlEglWindow),
+                           static_cast<int>(hostW), static_cast<int>(hostH), 0,
+                           0);
+    }
+#else
+    (void)resized;
+#endif
 
-    // Bind default framebuffer (0) for drawing, and active FBO for reading
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, m_headlessFBOs[0]);
+    PresentToWindowSurface(hostW, hostH);
 
-    // Get actual overlay window drawable size
-    int winW = 0, winH = 0;
-    SDL_GL_GetDrawableSize(reinterpret_cast<SDL_Window*>(m_sdlWindow), &winW,
-                           &winH);
-
-    // Disable scissor test and enable all color writes to ensure the blit is
-    // not clipped or masked
-    glDisable(GL_SCISSOR_TEST);
-    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-
-    // Perform the blit (GPU-to-GPU copy)
-    glBlitFramebuffer(0, 0, m_headlessWidth, m_headlessHeight, 0, 0, winW, winH,
-                      GL_COLOR_BUFFER_BIT, GL_NEAREST);
-
-    checkGLError("SwapBuffers glBlitFramebuffer");
-
-    // Restore scissor and color mask state from local C++ cache variables (no GPU stalls!)
-    glEnable(GL_SCISSOR_TEST);
-    ApplyColorMaskGLES();
-
-    // Swap the window
-    SDL_GL_SwapWindow(reinterpret_cast<SDL_Window*>(m_sdlWindow));
+    // Swap the presentation surface.
+    if (m_useDirectEgl) {
+#if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_EGL)
+      if (m_eglDisplay && m_eglSurface) {
+        if (!eglSwapBuffers(static_cast<EGLDisplay>(m_eglDisplay),
+                            static_cast<EGLSurface>(m_eglSurface))) {
+          GLIDE_LOG(WARN, "GLES",
+                    "eglSwapBuffers failed: 0x" << std::hex << eglGetError()
+                                                << std::dec);
+        }
+      }
+#endif
+    } else if (m_surfaceHost.GetSDLWindow()) {
+      SDL_GL_SwapWindow(m_surfaceHost.GetSDLWindow());
+    }
   } else {
-    // Headless fallback
+    // Headless fallback: read back rendered color buffer into CPU shadow
     GLIDE_PROFILE_SCOPE("GLES::SwapBuffers_Readback");
     glBindFramebuffer(GL_FRAMEBUFFER, m_headlessFBOs[0]);
     glReadPixels(0, 0, m_headlessWidth, m_headlessHeight, GL_RGBA,
@@ -355,18 +435,30 @@ bool OpenGLESBackend::SwapBuffers() {
   std::swap(m_headlessFBOs[0], m_headlessFBOs[1]);
   std::swap(m_fboTextures[0], m_fboTextures[1]);
 
-  // Bind the new active drawing FBO
-  glBindFramebuffer(GL_FRAMEBUFFER, m_headlessFBOs[0]);
+  // Bind the new active drawing FBO and restore guest rasterizer state
+  glBindFramebuffer(GL_FRAMEBUFFER, GetActiveGpuFbo());
+  glViewport(0, 0, static_cast<GLsizei>(m_headlessWidth),
+             static_cast<GLsizei>(m_headlessHeight));
+  glEnable(GL_SCISSOR_TEST);
+  ApplyScissorGLES();
+  ApplyColorMaskGLES();
+  SyncDepthState();
+  SyncCullStateGLES();
+  ApplyBlendingGLES();
 
   // Force pipeline re-sync on the next frame's first draw
   MarkStateDirty();
+
+  // Restore any foreign host EGL context so host OpenGL rendering (e.g.
+  // DOSBox-X output=opengl on Wayland) runs cleanly between Glide frames.
+  RestoreHostContextIfSaved();
 
   return true;
 }
 
 void OpenGLESBackend::SstIdle() {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
-  if (m_initialized && m_windowAttached) {
+  if (m_initialized && m_windowAttached && EnsureContextCurrent()) {
     FlushBatch();
     // Blocks the host CPU until all GLES commands and drawing dispatches
     // have been fully processed by the hardware GPU!
@@ -377,7 +469,7 @@ void OpenGLESBackend::SstIdle() {
 void OpenGLESBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z,
                                   uint32_t clearMask) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
-  if (!m_initialized || !m_windowAttached) return;
+  if (!m_initialized || !m_windowAttached || !EnsureContextCurrent()) return;
 
   // Flush any pending geometry before clearing the buffers!
   FlushBatch();
@@ -443,6 +535,7 @@ void OpenGLESBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z,
 void OpenGLESBackend::FlushLFBToGPU() {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   if (!m_lfbDirty) return;
+  if (!EnsureContextCurrent()) return;
 
   GLint prevTexture = 0;
   glGetIntegerv(GL_TEXTURE_BINDING_2D, &prevTexture);
@@ -509,7 +602,9 @@ bool OpenGLESBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
                               uint32_t srcWidth, uint32_t srcHeight,
                               uint32_t dstStride, void* dstData) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
-  if (!m_initialized || !m_windowAttached) return false;
+  if (!m_initialized || !m_windowAttached || !EnsureContextCurrent()) {
+    return false;
+  }
 
   // Flush any pending geometry batches before CPU readback!
   FlushBatch();
@@ -583,185 +678,591 @@ bool OpenGLESBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
   return result;
 }
 
+#if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_EGL) && \
+    defined(HAVE_X11)
+namespace {
+struct GlxInterop {
+  using PfnGetCurrentContext = void* (*)();
+  using PfnGetCurrentDisplay = void* (*)();
+  using PfnGetCurrentDrawable = unsigned long (*)();
+  using PfnGetCurrentReadDrawable = unsigned long (*)();
+  using PfnMakeContextCurrent = int (*)(void*, unsigned long, unsigned long,
+                                        void*);
+  using PfnMakeCurrent = int (*)(void*, unsigned long, void*);
+
+  PfnGetCurrentContext getCurrentContext = nullptr;
+  PfnGetCurrentDisplay getCurrentDisplay = nullptr;
+  PfnGetCurrentDrawable getCurrentDrawable = nullptr;
+  PfnGetCurrentReadDrawable getCurrentReadDrawable = nullptr;
+  PfnMakeContextCurrent makeContextCurrent = nullptr;
+  PfnMakeCurrent makeCurrent = nullptr;
+  bool resolved = false;
+
+  void Resolve() {
+    if (resolved) return;
+    resolved = true;
+    auto sym = [](const char* name) -> void* {
+      return ::dlsym(RTLD_DEFAULT, name);
+    };
+    getCurrentContext =
+        reinterpret_cast<PfnGetCurrentContext>(sym("glXGetCurrentContext"));
+    getCurrentDisplay =
+        reinterpret_cast<PfnGetCurrentDisplay>(sym("glXGetCurrentDisplay"));
+    getCurrentDrawable =
+        reinterpret_cast<PfnGetCurrentDrawable>(sym("glXGetCurrentDrawable"));
+    getCurrentReadDrawable = reinterpret_cast<PfnGetCurrentReadDrawable>(
+        sym("glXGetCurrentReadDrawable"));
+    makeContextCurrent =
+        reinterpret_cast<PfnMakeContextCurrent>(sym("glXMakeContextCurrent"));
+    makeCurrent = reinterpret_cast<PfnMakeCurrent>(sym("glXMakeCurrent"));
+  }
+
+  bool Available() {
+    Resolve();
+    return getCurrentContext && getCurrentDisplay && getCurrentDrawable &&
+           (makeContextCurrent || makeCurrent);
+  }
+};
+
+GlxInterop& GetGlxInterop() {
+  static GlxInterop s_glx;
+  return s_glx;
+}
+}  // namespace
+#endif
+
+void OpenGLESBackend::SaveCurrentHostEglContext() {
+#if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_EGL)
+  if (!m_hasSavedHostEgl) {
+    const EGLenum curApi = eglQueryAPI();
+    const EGLContext curCtx = eglGetCurrentContext();
+    if (curCtx != EGL_NO_CONTEXT && curCtx != m_eglContext) {
+      m_savedHostEglApi = static_cast<uint32_t>(curApi);
+      m_savedHostEglDisplay = eglGetCurrentDisplay();
+      m_savedHostEglDraw = eglGetCurrentSurface(EGL_DRAW);
+      m_savedHostEglRead = eglGetCurrentSurface(EGL_READ);
+      m_savedHostEglContext = curCtx;
+      m_hasSavedHostEgl = true;
+    }
+  }
+#if defined(HAVE_X11)
+  // On Linux libglvnd, a thread cannot have both a GLX context (used by
+  // DOSBox-X output=opengl or SDL_Renderer on X11/XWayland) and an EGL context
+  // current simultaneously (eglMakeCurrent returns EGL_BAD_ACCESS = 0x3002).
+  // Dynamically save & suspend any active GLX context, then restore it cleanly
+  // in RestoreHostContextIfSaved().
+  if (!m_hasSavedHostGlx) {
+    auto& glx = GetGlxInterop();
+    if (glx.Available()) {
+      void* glxCtx = glx.getCurrentContext();
+      if (glxCtx != nullptr) {
+        void* glxDpy = glx.getCurrentDisplay();
+        unsigned long glxDraw = glx.getCurrentDrawable();
+        unsigned long glxRead = glx.getCurrentReadDrawable
+                                    ? glx.getCurrentReadDrawable()
+                                    : glxDraw;
+        m_savedHostGlxDisplay = glxDpy;
+        m_savedHostGlxDraw = glxDraw;
+        m_savedHostGlxRead = glxRead;
+        m_savedHostGlxContext = glxCtx;
+        m_hasSavedHostGlx = true;
+        if (glxDpy) {
+          if (glx.makeContextCurrent) {
+            glx.makeContextCurrent(glxDpy, 0, 0, nullptr);
+          } else if (glx.makeCurrent) {
+            glx.makeCurrent(glxDpy, 0, nullptr);
+          }
+        }
+      }
+    }
+  }
+#endif
+#endif
+}
+
+void OpenGLESBackend::RestoreHostContextIfSaved() {
+#if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_EGL)
+  if (m_hasSavedHostEgl) {
+    const EGLenum api = static_cast<EGLenum>(m_savedHostEglApi);
+    const EGLDisplay dpy = static_cast<EGLDisplay>(m_savedHostEglDisplay);
+    const EGLSurface draw = static_cast<EGLSurface>(m_savedHostEglDraw);
+    const EGLSurface read = static_cast<EGLSurface>(m_savedHostEglRead);
+    const EGLContext ctx = static_cast<EGLContext>(m_savedHostEglContext);
+    m_hasSavedHostEgl = false;
+    m_savedHostEglApi = 0;
+    m_savedHostEglDisplay = nullptr;
+    m_savedHostEglDraw = nullptr;
+    m_savedHostEglRead = nullptr;
+    m_savedHostEglContext = nullptr;
+    if (dpy != EGL_NO_DISPLAY && ctx != EGL_NO_CONTEXT) {
+      if (api == EGL_OPENGL_API || api == EGL_OPENGL_ES_API ||
+          api == EGL_OPENVG_API) {
+        eglBindAPI(api);
+      }
+      eglMakeCurrent(dpy, draw, read, ctx);
+    }
+  }
+#if defined(HAVE_X11)
+  if (m_hasSavedHostGlx) {
+    void* glxDpy = m_savedHostGlxDisplay;
+    const unsigned long glxDraw = m_savedHostGlxDraw;
+    const unsigned long glxRead = m_savedHostGlxRead;
+    void* glxCtx = m_savedHostGlxContext;
+    m_hasSavedHostGlx = false;
+    m_savedHostGlxDisplay = nullptr;
+    m_savedHostGlxDraw = 0;
+    m_savedHostGlxRead = 0;
+    m_savedHostGlxContext = nullptr;
+
+    // Release our EGL context on this thread before re-binding GLX so libglvnd
+    // never rejects glXMakeContextCurrent with BadAccess.
+    if (m_useDirectEgl && m_eglDisplay) {
+      eglBindAPI(EGL_OPENGL_ES_API);
+      eglMakeCurrent(static_cast<EGLDisplay>(m_eglDisplay), EGL_NO_SURFACE,
+                     EGL_NO_SURFACE, EGL_NO_CONTEXT);
+    }
+    auto& glx = GetGlxInterop();
+    if (glx.Available() && glxDpy && glxCtx) {
+      if (glx.makeContextCurrent) {
+        glx.makeContextCurrent(glxDpy, glxDraw, glxRead, glxCtx);
+      } else if (glx.makeCurrent) {
+        glx.makeCurrent(glxDpy, glxDraw, glxCtx);
+      }
+    }
+  }
+#endif
+#endif
+}
+
+bool OpenGLESBackend::EnsureContextCurrent() {
+  if (m_useDirectEgl) {
+#if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_EGL)
+    if (!m_eglDisplay || !m_eglContext) return false;
+    EGLDisplay dpy = static_cast<EGLDisplay>(m_eglDisplay);
+    EGLContext ctx = static_cast<EGLContext>(m_eglContext);
+    EGLSurface surf =
+        m_eglSurface ? static_cast<EGLSurface>(m_eglSurface) : EGL_NO_SURFACE;
+    const EGLenum curApi = eglQueryAPI();
+    const EGLContext curCtx = eglGetCurrentContext();
+    if (curApi == EGL_OPENGL_ES_API && curCtx == ctx &&
+        eglGetCurrentDisplay() == dpy &&
+        eglGetCurrentSurface(EGL_DRAW) == surf) {
+      return true;
+    }
+    SaveCurrentHostEglContext();
+    eglBindAPI(EGL_OPENGL_ES_API);
+    if (!eglMakeCurrent(dpy, surf, surf, ctx)) {
+      GLIDE_LOG(CRITICAL, "GLES",
+                "eglMakeCurrent failed: 0x" << std::hex << eglGetError()
+                                            << std::dec);
+      return false;
+    }
+    return true;
+#else
+    return false;
+#endif
+  }
+
+  if (m_sdlGlContext && m_surfaceHost.GetSDLWindow()) {
+    if (SDL_GL_GetCurrentContext() == m_sdlGlContext) {
+      return true;
+    }
+    if (SDL_GL_MakeCurrent(m_surfaceHost.GetSDLWindow(), m_sdlGlContext) < 0) {
+      GLIDE_LOG(CRITICAL, "GLES",
+                "SDL_GL_MakeCurrent failed: " << SDL_GetError());
+      return false;
+    }
+    return true;
+  }
+  return false;
+}
+
+bool OpenGLESBackend::CreateDirectEglContext() {
+#if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_EGL)
+  const auto mode = m_surfaceHost.GetMode();
+  EGLDisplay eglDpy = EGL_NO_DISPLAY;
+  bool ownedDisplay = false;
+  EGLint nativeVisualId = 0;
+
+  auto getPlatformDisplay = [&](EGLenum platform, void* nativeDpy) -> EGLDisplay {
+    // Prefer EGL 1.5 core eglGetPlatformDisplay when linked, falling back to
+    // EGL_EXT_platform_base if needed.
+    EGLDisplay d = eglGetPlatformDisplay(platform, nativeDpy, nullptr);
+    if (d == EGL_NO_DISPLAY) {
+      using PfnGetPlatformDisplayExt =
+          EGLDisplay (*)(EGLenum, void*, const EGLint*);
+      auto fn = reinterpret_cast<PfnGetPlatformDisplayExt>(
+          eglGetProcAddress("eglGetPlatformDisplayEXT"));
+      if (fn) {
+        d = fn(platform, nativeDpy, nullptr);
+      }
+    }
+    return d;
+  };
+
+  if (mode == NativeSurfaceHost::Mode::Headless) {
+    eglDpy = getPlatformDisplay(EGL_PLATFORM_SURFACELESS_MESA,
+                                EGL_DEFAULT_DISPLAY);
+    if (eglDpy == EGL_NO_DISPLAY) {
+      eglDpy = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+    }
+    ownedDisplay = true;
+  }
+#if defined(HAVE_X11)
+  else if (mode == NativeSurfaceHost::Mode::X11Child) {
+    Display* x11Dpy = static_cast<Display*>(m_surfaceHost.GetX11Display());
+    Window x11Win = static_cast<Window>(m_surfaceHost.GetX11Window());
+    if (!x11Dpy || x11Win == 0) {
+      GLIDE_LOG(CRITICAL, "GLES", "Missing X11Display or X11 child window.");
+      return false;
+    }
+    eglDpy = getPlatformDisplay(EGL_PLATFORM_X11_EXT, x11Dpy);
+    if (eglDpy == EGL_NO_DISPLAY) {
+      eglDpy = eglGetDisplay(reinterpret_cast<EGLNativeDisplayType>(x11Dpy));
+    }
+    // NativeSurfaceHost opens its own private XOpenDisplay(nullptr), so this
+    // EGLDisplay is exclusively ours.
+    ownedDisplay = true;
+
+    XWindowAttributes wa{};
+    if (XGetWindowAttributes(x11Dpy, x11Win, &wa) && wa.visual) {
+      nativeVisualId = static_cast<EGLint>(XVisualIDFromVisual(wa.visual));
+    }
+  }
+#endif
+#if defined(HAVE_WAYLAND) && defined(HAVE_WAYLAND_EGL)
+  else if (mode == NativeSurfaceHost::Mode::WaylandSubsurface) {
+    void* wlDpy = m_surfaceHost.GetWaylandDisplay();
+    if (!wlDpy || !m_surfaceHost.GetWaylandSurface()) {
+      GLIDE_LOG(CRITICAL, "GLES",
+                "Missing Wayland display or child subsurface.");
+      return false;
+    }
+    eglDpy = getPlatformDisplay(EGL_PLATFORM_WAYLAND_KHR, wlDpy);
+    // CRITICAL: wl_display* is borrowed from the host (DOSBox-X / SDL).
+    // eglTerminate() is NOT reference-counted, so NEVER terminate a borrowed
+    // Wayland EGLDisplay or we will destroy the host's OpenGL context!
+    ownedDisplay = false;
+  }
+#endif
+  else {
+    GLIDE_LOG(CRITICAL, "GLES",
+              "CreateDirectEglContext unsupported for mode="
+                  << NativeSurfaceHost::ModeToString(mode));
+    return false;
+  }
+
+  if (eglDpy == EGL_NO_DISPLAY) {
+    GLIDE_LOG(CRITICAL, "GLES",
+              "Failed to acquire EGLDisplay for mode="
+                  << NativeSurfaceHost::ModeToString(mode) << " (err=0x"
+                  << std::hex << eglGetError() << std::dec << ").");
+    return false;
+  }
+
+  EGLint major = 0;
+  EGLint minor = 0;
+  if (!eglInitialize(eglDpy, &major, &minor)) {
+    GLIDE_LOG(CRITICAL, "GLES",
+              "eglInitialize failed (err=0x" << std::hex << eglGetError()
+                                             << std::dec << ").");
+    return false;
+  }
+
+  m_eglDisplay = eglDpy;
+  m_eglDisplayOwned = ownedDisplay;
+  m_useDirectEgl = true;
+
+  if (!eglBindAPI(EGL_OPENGL_ES_API)) {
+    GLIDE_LOG(CRITICAL, "GLES",
+              "eglBindAPI(EGL_OPENGL_ES_API) failed (err=0x"
+                  << std::hex << eglGetError() << std::dec << ").");
+    return false;
+  }
+
+  // Choose an OpenGL ES 3.x EGLConfig matching the target surface type.
+  EGLConfig cfg = nullptr;
+  EGLint numConfigs = 0;
+
+  if (mode == NativeSurfaceHost::Mode::Headless) {
+    const EGLint pbufferAttribs[] = {
+        EGL_SURFACE_TYPE, EGL_PBUFFER_BIT,
+        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT,
+        EGL_RED_SIZE, 8,
+        EGL_GREEN_SIZE, 8,
+        EGL_BLUE_SIZE, 8,
+        EGL_ALPHA_SIZE, 8,
+        EGL_NONE,
+    };
+    eglChooseConfig(eglDpy, pbufferAttribs, &cfg, 1, &numConfigs);
+    if (numConfigs == 0) {
+      const EGLint surfacelessAttribs[] = {
+          EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT,
+          EGL_RED_SIZE, 8,
+          EGL_GREEN_SIZE, 8,
+          EGL_BLUE_SIZE, 8,
+          EGL_NONE,
+      };
+      eglChooseConfig(eglDpy, surfacelessAttribs, &cfg, 1, &numConfigs);
+    }
+  } else {
+    if (nativeVisualId != 0) {
+      const EGLint exactVisualAttribs[] = {
+          EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
+          EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT,
+          EGL_NATIVE_VISUAL_ID, nativeVisualId,
+          EGL_RED_SIZE, 8,
+          EGL_GREEN_SIZE, 8,
+          EGL_BLUE_SIZE, 8,
+          EGL_NONE,
+      };
+      eglChooseConfig(eglDpy, exactVisualAttribs, &cfg, 1, &numConfigs);
+    }
+    if (numConfigs == 0) {
+      const EGLint winAttribs[] = {
+          EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
+          EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT,
+          EGL_RED_SIZE, 8,
+          EGL_GREEN_SIZE, 8,
+          EGL_BLUE_SIZE, 8,
+          EGL_ALPHA_SIZE, 8,
+          EGL_NONE,
+      };
+      eglChooseConfig(eglDpy, winAttribs, &cfg, 1, &numConfigs);
+    }
+    if (numConfigs == 0) {
+      const EGLint fallbackAttribs[] = {
+          EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
+          EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT,
+          EGL_RED_SIZE, 8,
+          EGL_GREEN_SIZE, 8,
+          EGL_BLUE_SIZE, 8,
+          EGL_NONE,
+      };
+      eglChooseConfig(eglDpy, fallbackAttribs, &cfg, 1, &numConfigs);
+    }
+  }
+
+  if (numConfigs == 0 || !cfg) {
+    GLIDE_LOG(CRITICAL, "GLES",
+              "eglChooseConfig found no suitable OpenGL ES 3.x config for mode="
+                  << NativeSurfaceHost::ModeToString(mode) << ".");
+    return false;
+  }
+
+  // Create OpenGL ES 3.2 context (with graceful ES 3.0 fallback).
+  const EGLint ctxAttribs32[] = {
+      EGL_CONTEXT_MAJOR_VERSION, 3,
+      EGL_CONTEXT_MINOR_VERSION, 2,
+      EGL_NONE,
+  };
+  EGLContext eglCtx = eglCreateContext(eglDpy, cfg, EGL_NO_CONTEXT, ctxAttribs32);
+  if (eglCtx == EGL_NO_CONTEXT) {
+    const EGLint ctxAttribs30[] = {
+        EGL_CONTEXT_MAJOR_VERSION, 3,
+        EGL_CONTEXT_MINOR_VERSION, 0,
+        EGL_NONE,
+    };
+    eglCtx = eglCreateContext(eglDpy, cfg, EGL_NO_CONTEXT, ctxAttribs30);
+  }
+  if (eglCtx == EGL_NO_CONTEXT) {
+    GLIDE_LOG(CRITICAL, "GLES",
+              "eglCreateContext failed (err=0x" << std::hex << eglGetError()
+                                                << std::dec << ").");
+    return false;
+  }
+  m_eglContext = eglCtx;
+
+  // Create the EGLSurface for this mode (or surfaceless for Headless).
+  EGLSurface eglSurf = EGL_NO_SURFACE;
+  if (mode == NativeSurfaceHost::Mode::Headless) {
+    if (!eglMakeCurrent(eglDpy, EGL_NO_SURFACE, EGL_NO_SURFACE, eglCtx)) {
+      // Driver lacks surfaceless context -> create a minimal 1x1 Pbuffer.
+      const EGLint pbufSize[] = {EGL_WIDTH, 1, EGL_HEIGHT, 1, EGL_NONE};
+      eglSurf = eglCreatePbufferSurface(eglDpy, cfg, pbufSize);
+      if (eglSurf == EGL_NO_SURFACE ||
+          !eglMakeCurrent(eglDpy, eglSurf, eglSurf, eglCtx)) {
+        GLIDE_LOG(CRITICAL, "GLES",
+                  "Headless EGL makeCurrent failed (err=0x"
+                      << std::hex << eglGetError() << std::dec << ").");
+        if (eglSurf != EGL_NO_SURFACE) {
+          eglDestroySurface(eglDpy, eglSurf);
+        }
+        return false;
+      }
+      m_eglSurface = eglSurf;
+    }
+  }
+#if defined(HAVE_X11)
+  else if (mode == NativeSurfaceHost::Mode::X11Child) {
+    Window x11Win = static_cast<Window>(m_surfaceHost.GetX11Window());
+    eglSurf = eglCreatePlatformWindowSurface(eglDpy, cfg, &x11Win, nullptr);
+    if (eglSurf == EGL_NO_SURFACE) {
+      eglSurf = eglCreateWindowSurface(
+          eglDpy, cfg,
+          reinterpret_cast<EGLNativeWindowType>(
+              static_cast<uintptr_t>(x11Win)),
+          nullptr);
+    }
+    if (eglSurf == EGL_NO_SURFACE) {
+      GLIDE_LOG(CRITICAL, "GLES",
+                "eglCreatePlatformWindowSurface(X11Child) failed (err=0x"
+                    << std::hex << eglGetError() << std::dec << ").");
+      return false;
+    }
+    m_eglSurface = eglSurf;
+    if (!eglMakeCurrent(eglDpy, eglSurf, eglSurf, eglCtx)) {
+      GLIDE_LOG(CRITICAL, "GLES",
+                "eglMakeCurrent(X11Child) failed (err=0x"
+                    << std::hex << eglGetError() << std::dec << ").");
+      return false;
+    }
+    eglSwapInterval(eglDpy, m_config.vsync ? 1 : 0);
+  }
+#endif
+#if defined(HAVE_WAYLAND) && defined(HAVE_WAYLAND_EGL)
+  else if (mode == NativeSurfaceHost::Mode::WaylandSubsurface) {
+    uint32_t pixW = m_headlessWidth;
+    uint32_t pixH = m_headlessHeight;
+    m_surfaceHost.GetDrawableSize(pixW, pixH);
+    pixW = std::max<uint32_t>(1, pixW);
+    pixH = std::max<uint32_t>(1, pixH);
+
+    auto* wlSurf = static_cast<wl_surface*>(m_surfaceHost.GetWaylandSurface());
+    wl_egl_window* wlEglWin =
+        wl_egl_window_create(wlSurf, static_cast<int>(pixW),
+                             static_cast<int>(pixH));
+    if (!wlEglWin) {
+      GLIDE_LOG(CRITICAL, "GLES", "wl_egl_window_create failed.");
+      return false;
+    }
+    m_wlEglWindow = wlEglWin;
+
+    eglSurf = eglCreatePlatformWindowSurface(eglDpy, cfg, wlEglWin, nullptr);
+    if (eglSurf == EGL_NO_SURFACE) {
+      eglSurf = eglCreateWindowSurface(
+          eglDpy, cfg, reinterpret_cast<EGLNativeWindowType>(wlEglWin),
+          nullptr);
+    }
+    if (eglSurf == EGL_NO_SURFACE) {
+      GLIDE_LOG(CRITICAL, "GLES",
+                "eglCreatePlatformWindowSurface(WaylandSubsurface) failed "
+                "(err=0x"
+                    << std::hex << eglGetError() << std::dec << ").");
+      return false;
+    }
+    m_eglSurface = eglSurf;
+    if (!eglMakeCurrent(eglDpy, eglSurf, eglSurf, eglCtx)) {
+      GLIDE_LOG(CRITICAL, "GLES",
+                "eglMakeCurrent(WaylandSubsurface) failed (err=0x"
+                    << std::hex << eglGetError() << std::dec << ").");
+      return false;
+    }
+    // Wayland compositing is always tear-free and FrameTracker paces maxFps;
+    // avoid blocking on wl_surface.frame callbacks unless explicitly forced.
+    const EGLint swapInterval =
+        (m_config.vsync && IsWaylandStrictFifoRequested()) ? 1 : 0;
+    eglSwapInterval(eglDpy, swapInterval);
+  }
+#endif
+
+  GLIDE_LOG(INFO, "GLES",
+            "Created Direct EGL " << major << "." << minor
+                                  << " OpenGL ES context (mode="
+                                  << NativeSurfaceHost::ModeToString(mode)
+                                  << ", ownedDisplay="
+                                  << (m_eglDisplayOwned ? "yes" : "no")
+                                  << ").");
+  return true;
+#else
+  GLIDE_LOG(CRITICAL, "GLES",
+            "Direct EGL support not compiled in (HAVE_EGL=OFF).");
+  return false;
+#endif
+}
+
+bool OpenGLESBackend::CreateStandaloneSdlGlContext() {
+  SDL_Window* win = m_surfaceHost.GetSDLWindow();
+  if (!win) {
+    GLIDE_LOG(CRITICAL, "GLES",
+              "CreateStandaloneSdlGlContext: missing SDL_Window.");
+    return false;
+  }
+
+  SDL_GLContext ctx = SDL_GL_CreateContext(win);
+  if (!ctx) {
+    GLIDE_LOG(CRITICAL, "GLES",
+              "SDL_GL_CreateContext failed: " << SDL_GetError());
+    return false;
+  }
+  m_sdlGlContext = ctx;
+  m_useDirectEgl = false;
+
+  if (SDL_GL_MakeCurrent(win, ctx) < 0) {
+    GLIDE_LOG(CRITICAL, "GLES",
+              "SDL_GL_MakeCurrent failed: " << SDL_GetError());
+    return false;
+  }
+
+  const bool isWayland = m_surfaceHost.IsWaylandSurface();
+  const int swapInterval =
+      (m_config.vsync && (!isWayland || IsWaylandStrictFifoRequested())) ? 1
+                                                                         : 0;
+  SDL_GL_SetSwapInterval(swapInterval);
+  return true;
+}
+
 // Context Creation & Shaders Compiler Helpers
 bool OpenGLESBackend::CreateGLContext(void* nativeWindowHandle, uint32_t width,
                                       uint32_t height, bool windowed) {
-  m_sdlVideoInitializedByUs = false;
-  m_sdlWindowOwnedByUs = false;
-  m_glContextOwnedByUs = false;
-  m_glesWindow = nullptr;
+  SaveCurrentHostEglContext();
 
-  if (!SDL_WasInit(SDL_INIT_VIDEO)) {
-    // Dynamic Driver Isolation: Force SDL2 to use X11/XWayland if possible,
-    // to avoid Wayland co-existence conflicts with the host application's SDL3
-    // context.
-    const char* oldDriver = std::getenv("SDL_VIDEODRIVER");
-    ::setenv("SDL_VIDEODRIVER", "x11", 1);
+  const bool isStandaloneRequest =
+      (nativeWindowHandle == nullptr && !m_config.forceNoWindow);
 
-    if (SDL_InitSubSystem(SDL_INIT_VIDEO) < 0) {
-      GLIDE_LOG(WARN, "GLES",
-                "SDL_InitSubSystem with X11 driver failed: "
-                    << SDL_GetError() << ". Falling back to default driver.");
-
-      // Restore original driver environment and try again
-      if (oldDriver)
-        ::setenv("SDL_VIDEODRIVER", oldDriver, 1);
-      else
-        ::unsetenv("SDL_VIDEODRIVER");
-
-      if (SDL_InitSubSystem(SDL_INIT_VIDEO) < 0) {
-        GLIDE_LOG(CRITICAL, "GLES",
-                  "SDL_InitSubSystem fallback failed: " << SDL_GetError());
-        return false;
-      }
-    }
-    m_sdlVideoInitializedByUs = true;
-
-    // Restore original video driver environment to preserve host context
-    if (oldDriver)
-      ::setenv("SDL_VIDEODRIVER", oldDriver, 1);
-    else
-      ::unsetenv("SDL_VIDEODRIVER");
-  }
-
-  SDL_Window* win = nullptr;
-  SDL_GLContext ctx = nullptr;
-  m_isWindowHooked = false;
-
-  // 1. Configure OpenGL ES 3.2 context attributes (must be set before window
-  // creation)
-  SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
-  SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
-  SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
-  SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
-
-  if (m_msaaSamples > 1) {
-    SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, 1);
-    SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, m_msaaSamples);
-  } else {
-    SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, 0);
-    SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, 0);
-  }
-
-  if (m_config.forceNoWindow) {
-    // --- HEADLESS TEST PATH: Create a single hidden OpenGL window and bind
-    // context directly ---
-    uint32_t flags = SDL_WINDOW_OPENGL | SDL_WINDOW_HIDDEN;
-    win = SDL_CreateWindow("3dfx glide-ng Headless Context (OpenGL ES 3.2)",
-                           SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-                           width, height, flags);
-    if (!win) {
-      GLIDE_LOG(CRITICAL, "GLES",
-                "Failed to create headless GL window: " << SDL_GetError());
-      if (m_sdlVideoInitializedByUs) SDL_QuitSubSystem(SDL_INIT_VIDEO);
-      return false;
-    }
-    m_sdlWindowOwnedByUs = true;
-
-    ctx = SDL_GL_CreateContext(win);
-    if (!ctx) {
-      GLIDE_LOG(CRITICAL, "GLES",
-                "Failed to create headless GL context: " << SDL_GetError());
-      SDL_DestroyWindow(win);
-      if (m_sdlVideoInitializedByUs) SDL_QuitSubSystem(SDL_INIT_VIDEO);
-      return false;
-    }
-    m_glContextOwnedByUs = true;
-    m_glesWindow = nullptr;  // No separate dummy window in headless mode
-
-    if (SDL_GL_MakeCurrent(win, ctx) < 0) {
-      GLIDE_LOG(
-          CRITICAL, "GLES",
-          "SDL_GL_MakeCurrent failed on headless window: " << SDL_GetError());
-      SDL_GL_DeleteContext(ctx);
-      SDL_DestroyWindow(win);
-      if (m_sdlVideoInitializedByUs) SDL_QuitSubSystem(SDL_INIT_VIDEO);
-      return false;
-    }
-  } else {
-    // --- WINDOWED/HIJACKED PRESENTATION PATH: Standalone Overlay + Direct GLES
-    // Context ---
-    if (nativeWindowHandle) {
-      m_hostWindow =
-          PlatformWindowUtils::HijackOrWrapWindow(nativeWindowHandle);
-      if (m_hostWindow) {
-        m_isWindowHooked = true;
-      }
-    }
-
-    if (m_hostWindow) {
-      win = PlatformWindowUtils::CreateOverlayWindow(
-          reinterpret_cast<SDL_Window*>(m_hostWindow), SDL_WINDOW_OPENGL);
-      if (win) {
-        m_sdlWindowOwnedByUs = true;
-        m_windowShown = true;
-      } else {
-        GLIDE_LOG(CRITICAL, "GLES",
-                  "Failed to create overlay window: " << SDL_GetError());
-        if (m_sdlVideoInitializedByUs) SDL_QuitSubSystem(SDL_INIT_VIDEO);
-        return false;
-      }
+  // Configure SDL OpenGL ES 3.2 attributes ONLY when creating our own
+  // StandaloneSDL2 demo window (never touch host SDL GL state for DOSBox).
+  if (isStandaloneRequest) {
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK,
+                        SDL_GL_CONTEXT_PROFILE_ES);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
+    SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+    if (m_msaaSamples > 1) {
+      SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, 1);
+      SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES,
+                          static_cast<int>(m_msaaSamples));
     } else {
-      // Standalone presentation console (no host window)
-      uint32_t scale = m_config.windowScale;
-      uint32_t windowFlags = SDL_WINDOW_OPENGL | SDL_WINDOW_HIDDEN;
-      win =
-          SDL_CreateWindow("3dfx glide-ng Presentation Console (OpenGL ES 3.2)",
-                           SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-                           width * scale, height * scale, windowFlags);
-      if (win) {
-        m_sdlWindowOwnedByUs = true;
-        m_windowShown = false;
-        if (!m_config.forceNoWindow) {
-          SDL_ShowWindow(win);
-          m_windowShown = true;
-        }
-        GLIDE_LOG(INFO, "GLES",
-                  "Created standalone presentation window: " << win);
-      } else {
-        GLIDE_LOG(CRITICAL, "GLES",
-                  "Failed to create standalone presentation window: "
-                      << SDL_GetError());
-        if (m_sdlVideoInitializedByUs) SDL_QuitSubSystem(SDL_INIT_VIDEO);
-        return false;
-      }
-    }
-
-    // Cache initial overlay bounds
-    if (win) {
-      SDL_GetWindowPosition(win, &m_lastRequestedX, &m_lastRequestedY);
-      SDL_GetWindowSize(win, &m_lastRequestedW, &m_lastRequestedH);
-    }
-
-    m_sdlWindow = win;
-    m_glesWindow = nullptr;  // No separate dummy window!
-
-    // Create GLES context directly on m_sdlWindow (the overlay)
-    ctx = SDL_GL_CreateContext(win);
-    if (!ctx) {
-      GLIDE_LOG(CRITICAL, "GLES",
-                "Failed to create GLES context directly on window: "
-                    << SDL_GetError());
-      SDL_DestroyWindow(win);
-      m_sdlWindow = nullptr;
-      if (m_sdlVideoInitializedByUs) SDL_QuitSubSystem(SDL_INIT_VIDEO);
-      return false;
-    }
-    m_glContextOwnedByUs = true;
-
-    if (SDL_GL_MakeCurrent(win, ctx) < 0) {
-      GLIDE_LOG(CRITICAL, "GLES",
-                "SDL_GL_MakeCurrent failed on window: " << SDL_GetError());
-      SDL_GL_DeleteContext(ctx);
-      SDL_DestroyWindow(win);
-      m_sdlWindow = nullptr;
-      if (m_sdlVideoInitializedByUs) SDL_QuitSubSystem(SDL_INIT_VIDEO);
-      return false;
+      SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, 0);
+      SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, 0);
     }
   }
-  SDL_GL_SetSwapInterval(m_config.vsync ? 1 : 0);
 
-  // Query actual EGL samples allocated by host driver
+  const uint32_t extraFlags = isStandaloneRequest ? SDL_WINDOW_OPENGL : 0;
+  if (!m_surfaceHost.Attach(
+          nativeWindowHandle, width, height, windowed, m_config.forceNoWindow,
+          "3dfx glide-ng Presentation Console (OpenGL ES 3.2)", extraFlags,
+          m_config.windowScale)) {
+    GLIDE_LOG(CRITICAL, "GLES",
+              "NativeSurfaceHost::Attach failed for OpenGLESBackend.");
+    RestoreHostContextIfSaved();
+    return false;
+  }
+
+  const auto mode = m_surfaceHost.GetMode();
+  bool ctxOk = false;
+  if (mode == NativeSurfaceHost::Mode::StandaloneSDL2) {
+    ctxOk = CreateStandaloneSdlGlContext();
+  } else {
+    ctxOk = CreateDirectEglContext();
+  }
+
+  if (!ctxOk) {
+    DestroyGLContext();
+    return false;
+  }
+
+  // Query actual samples allocated by host driver
   GLint actualSamples = 0;
   glGetIntegerv(GL_SAMPLES, &actualSamples);
   m_msaaSamples =
@@ -805,7 +1306,7 @@ bool OpenGLESBackend::CreateGLContext(void* nativeWindowHandle, uint32_t width,
     GLuint s = glCreateShader(type);
     glShaderSource(s, 1, &src, nullptr);
     glCompileShader(s);
-    GLint status;
+    GLint status = 0;
     glGetShaderiv(s, GL_COMPILE_STATUS, &status);
     if (!status) {
       char log[512];
@@ -826,15 +1327,13 @@ bool OpenGLESBackend::CreateGLContext(void* nativeWindowHandle, uint32_t width,
   glDeleteShader(vs);
   glDeleteShader(fs);
 
-  GLint linkStatus;
+  GLint linkStatus = 0;
   glGetProgramiv(m_glProgram, GL_LINK_STATUS, &linkStatus);
   if (!linkStatus) {
     char log[512];
     glGetProgramInfoLog(m_glProgram, 512, nullptr, log);
     GLIDE_LOG(CRITICAL, "GLES", "Program linking failure: " << log);
-    SDL_GL_DeleteContext(ctx);
-    SDL_DestroyWindow(win);
-    SDL_QuitSubSystem(SDL_INIT_VIDEO);
+    DestroyGLContext();
     return false;
   }
 
@@ -857,13 +1356,13 @@ bool OpenGLESBackend::CreateGLContext(void* nativeWindowHandle, uint32_t width,
 
   m_uUseGammaLutLoc = glGetUniformLocation(m_glProgram, "uUseGammaLut");
 
-  // Set up presentation VBO/VAO quad
-  // Quad vertices (Positions: X,Y and TexCoords: U,V)
-  float quadVertices[] = {
-      -1.0f, 1.0f,  0.0f, 0.0f,  // Top-Left
-      -1.0f, -1.0f, 0.0f, 1.0f,  // Bottom-Left
-      1.0f,  -1.0f, 1.0f, 1.0f,  // Bottom-Right
-      1.0f,  1.0f,  1.0f, 0.0f   // Top-Right
+  // Fullscreen triangle-strip quad sampling the bottom-up offscreen FBO texture
+  // (no Y-flip: NDC +1 maps to V=1.0, NDC -1 maps to V=0.0).
+  const float quadVertices[] = {
+      -1.0f, 1.0f,  0.0f, 1.0f,  // Top-Left
+      -1.0f, -1.0f, 0.0f, 0.0f,  // Bottom-Left
+      1.0f,  1.0f,  1.0f, 1.0f,  // Top-Right
+      1.0f,  -1.0f, 1.0f, 0.0f,  // Bottom-Right
   };
 
   glGenVertexArrays(1, &m_glVAO);
@@ -875,21 +1374,14 @@ bool OpenGLESBackend::CreateGLContext(void* nativeWindowHandle, uint32_t width,
                GL_STATIC_DRAW);
 
   glEnableVertexAttribArray(0);  // Pos
-  glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
+  glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float),
+                        reinterpret_cast<void*>(0));
 
   glEnableVertexAttribArray(1);  // Tex
   glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float),
-                        (void*)(2 * sizeof(float)));
-
-  // Create the streaming presentation texture
-  glGenTextures(1, &m_glTexture);
-  glBindTexture(GL_TEXTURE_2D, m_glTexture);
-  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA,
-               GL_UNSIGNED_BYTE, nullptr);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+                        reinterpret_cast<void*>(2 * sizeof(float)));
+  glBindVertexArray(0);
+  glBindBuffer(GL_ARRAY_BUFFER, 0);
 
   // Create the 256x1 Gamma LUT texture
   glGenTextures(1, &m_glGammaLutTex);
@@ -914,8 +1406,8 @@ bool OpenGLESBackend::CreateGLContext(void* nativeWindowHandle, uint32_t width,
     glBindTexture(GL_TEXTURE_2D, m_fboTextures[i]);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA,
                  GL_UNSIGNED_BYTE, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
   }
@@ -924,95 +1416,121 @@ bool OpenGLESBackend::CreateGLContext(void* nativeWindowHandle, uint32_t width,
 
   glGenSamplers(2, m_glesSamplers);
 
-  m_sdlWindow = win;
-  m_glContext = ctx;
-
   return true;
 }
 
 void OpenGLESBackend::DestroyGLContext() {
-  if (m_glesSamplers[0] != 0) {
-    glDeleteSamplers(2, m_glesSamplers);
+  // 1. Delete all GL objects while our context is still current.
+  if (EnsureContextCurrent()) {
+    for (auto& pair : m_glesTextures) {
+      if (pair.second) {
+        glDeleteTextures(1, &pair.second);
+      }
+    }
+    m_glesTextures.clear();
+
+    if (m_glesSamplers[0] != 0) {
+      glDeleteSamplers(2, m_glesSamplers);
+      m_glesSamplers[0] = m_glesSamplers[1] = 0;
+    }
+    if (m_glGammaLutTex) {
+      glDeleteTextures(1, &m_glGammaLutTex);
+      m_glGammaLutTex = 0;
+    }
+    if (m_fboTextures[0]) {
+      glDeleteTextures(2, m_fboTextures);
+      m_fboTextures[0] = m_fboTextures[1] = 0;
+    }
+    if (m_glVBO) {
+      glDeleteBuffers(1, &m_glVBO);
+      m_glVBO = 0;
+    }
+    if (m_glVAO) {
+      glDeleteVertexArrays(1, &m_glVAO);
+      m_glVAO = 0;
+    }
+    if (m_glProgram) {
+      glDeleteProgram(m_glProgram);
+      m_glProgram = 0;
+    }
+    if (m_sharedDepthRenderbuffer) {
+      glDeleteRenderbuffers(1, &m_sharedDepthRenderbuffer);
+      m_sharedDepthRenderbuffer = 0;
+    }
+    if (m_headlessFBOs[0]) {
+      glDeleteFramebuffers(2, m_headlessFBOs);
+      m_headlessFBOs[0] = m_headlessFBOs[1] = 0;
+    }
+    if (m_geomVBO) {
+      glDeleteBuffers(1, &m_geomVBO);
+      m_geomVBO = 0;
+    }
+    if (m_geomVAO) {
+      glDeleteVertexArrays(1, &m_geomVAO);
+      m_geomVAO = 0;
+    }
+    if (m_geomProgram) {
+      glDeleteProgram(m_geomProgram);
+      m_geomProgram = 0;
+    }
+  } else {
+    m_glesTextures.clear();
     m_glesSamplers[0] = m_glesSamplers[1] = 0;
-  }
-  if (m_glTexture) {
-    glDeleteTextures(1, &m_glTexture);
-    m_glTexture = 0;
-  }
-  if (m_glGammaLutTex) {
-    glDeleteTextures(1, &m_glGammaLutTex);
     m_glGammaLutTex = 0;
-  }
-  if (m_fboTextures[0]) {
-    glDeleteTextures(2, m_fboTextures);
     m_fboTextures[0] = m_fboTextures[1] = 0;
-  }
-  if (m_glVBO) {
-    glDeleteBuffers(1, &m_glVBO);
     m_glVBO = 0;
-  }
-  if (m_glVAO) {
-    glDeleteVertexArrays(1, &m_glVAO);
     m_glVAO = 0;
-  }
-  if (m_glProgram) {
-    glDeleteProgram(m_glProgram);
     m_glProgram = 0;
-  }
-  if (m_sharedDepthRenderbuffer) {
-    glDeleteRenderbuffers(1, &m_sharedDepthRenderbuffer);
     m_sharedDepthRenderbuffer = 0;
-  }
-  if (m_headlessFBOs[0]) {
-    glDeleteFramebuffers(2, m_headlessFBOs);
     m_headlessFBOs[0] = m_headlessFBOs[1] = 0;
-  }
-  if (m_geomVBO) {
-    glDeleteBuffers(1, &m_geomVBO);
     m_geomVBO = 0;
-  }
-  if (m_geomVAO) {
-    glDeleteVertexArrays(1, &m_geomVAO);
     m_geomVAO = 0;
-  }
-  if (m_geomProgram) {
-    glDeleteProgram(m_geomProgram);
     m_geomProgram = 0;
   }
 
-  if (m_glContext) {
-    if (m_glContextOwnedByUs) {
-      // Unbind context first to avoid dangling thread-local references!
-      SDL_GL_MakeCurrent(nullptr, nullptr);
-      SDL_GL_DeleteContext(reinterpret_cast<SDL_GLContext>(m_glContext));
+  // 2. Strict EGL teardown order BEFORE NativeSurfaceHost::Detach():
+  //    eglMakeCurrent(NO) -> eglDestroyContext -> eglDestroySurface ->
+  //    wl_egl_window_destroy -> eglTerminate (if owned) -> m_surfaceHost.Detach
+  if (m_useDirectEgl) {
+#if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_EGL)
+    EGLDisplay dpy = static_cast<EGLDisplay>(m_eglDisplay);
+    if (dpy != EGL_NO_DISPLAY) {
+      eglBindAPI(EGL_OPENGL_ES_API);
+      eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+      if (m_eglContext) {
+        eglDestroyContext(dpy, static_cast<EGLContext>(m_eglContext));
+      }
+      if (m_eglSurface) {
+        eglDestroySurface(dpy, static_cast<EGLSurface>(m_eglSurface));
+      }
     }
-    m_glContext = nullptr;
-  }
-  if (m_glesWindow) {
-    SDL_DestroyWindow(reinterpret_cast<SDL_Window*>(m_glesWindow));
-    m_glesWindow = nullptr;
-  }
-  if (m_sdlWindow) {
-    if (m_sdlWindowOwnedByUs) {
-      PlatformWindowUtils::DestroyOverlayWindow(
-          reinterpret_cast<SDL_Window*>(m_sdlWindow));
+#if defined(HAVE_WAYLAND_EGL)
+    if (m_wlEglWindow) {
+      wl_egl_window_destroy(static_cast<wl_egl_window*>(m_wlEglWindow));
     }
-    m_sdlWindow = nullptr;
-  }
-  m_hostWindow = nullptr;
-  m_glContextOwnedByUs = false;
-  m_sdlWindowOwnedByUs = false;
-  if (m_sdlVideoInitializedByUs) {
-    SDL_QuitSubSystem(SDL_INIT_VIDEO);
-    m_sdlVideoInitializedByUs = false;
+#endif
+    if (dpy != EGL_NO_DISPLAY && m_eglDisplayOwned) {
+      eglTerminate(dpy);
+    }
+#endif
+  } else if (m_sdlGlContext) {
+    SDL_GL_MakeCurrent(nullptr, nullptr);
+    SDL_GL_DeleteContext(reinterpret_cast<SDL_GLContext>(m_sdlGlContext));
   }
 
-  // Reset bounds sync cache
-  m_lastRequestedX = 0;
-  m_lastRequestedY = 0;
-  m_lastRequestedW = 0;
-  m_lastRequestedH = 0;
-  m_isWindowHooked = false;
+  m_eglDisplay = nullptr;
+  m_eglContext = nullptr;
+  m_eglSurface = nullptr;
+  m_wlEglWindow = nullptr;
+  m_useDirectEgl = false;
+  m_eglDisplayOwned = false;
+  m_sdlGlContext = nullptr;
+
+  // 3. Detach native child surface / standalone SDL window LAST.
+  m_surfaceHost.Detach();
+
+  // 4. Restore any saved foreign host EGL context (e.g. DOSBox-X OpenGL).
+  RestoreHostContextIfSaved();
 }
 
 static const char* geomVsSource = R"(#version 300 es
@@ -1870,6 +2388,7 @@ void OpenGLESBackend::UploadTexture(uint32_t tmu, uint32_t startAddress,
               "ignoring.");
     return;
   }
+  if (!EnsureContextCurrent()) return;
 
   GLIDE_PROFILE_SCOPE("GLES::UploadTexture");
 
@@ -2032,7 +2551,7 @@ void OpenGLESBackend::SetRenderBuffer(uint32_t target) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   FlushBatch();
   SoftwareBackendBase::SetRenderBuffer(target);
-  if (m_initialized && m_windowAttached) {
+  if (m_initialized && m_windowAttached && EnsureContextCurrent()) {
     glBindFramebuffer(GL_FRAMEBUFFER, GetActiveGpuFbo());
   }
 }
@@ -2094,7 +2613,7 @@ void OpenGLESBackend::LoadGammaTable(uint32_t nentries, const uint32_t* rTable,
       "LoadGammaTable: nentries=" << nentries << ", tex=" << m_glGammaLutTex);
   if (nentries != 256 || !rTable || !gTable || !bTable) return;
 
-  if (m_glGammaLutTex) {
+  if (m_glGammaLutTex && EnsureContextCurrent()) {
     std::vector<uint8_t> lutData(256 * 3);
     for (int i = 0; i < 256; ++i) {
       lutData[i * 3 + 0] = static_cast<uint8_t>(rTable[i]);
@@ -2387,6 +2906,7 @@ void OpenGLESBackend::UploadTexturePartial(uint32_t tmu, uint32_t startAddress,
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   FlushBatch();
   if (!m_windowAttached && !m_headlessMode) return;
+  if (!EnsureContextCurrent()) return;
 
   GLIDE_PROFILE_SCOPE("GLES::UploadTexturePartial");
 
@@ -2472,16 +2992,19 @@ void OpenGLESBackend::UploadTexturePartial(uint32_t tmu, uint32_t startAddress,
 void OpenGLESBackend::PurgeTextures() {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   FlushBatch();
+  if (m_glesTextures.empty()) return;
   GLIDE_LOG(DEBUG, "GLES",
             "PurgeTextures: deleting " << m_glesTextures.size()
                                        << " textures from GPU.");
-  for (auto& pair : m_glesTextures) {
-    if (pair.second) {
-      glDeleteTextures(1, &pair.second);
+  if (EnsureContextCurrent()) {
+    for (auto& pair : m_glesTextures) {
+      if (pair.second) {
+        glDeleteTextures(1, &pair.second);
+      }
     }
+    checkGLError("PurgeTextures");
   }
   m_glesTextures.clear();
-  checkGLError("PurgeTextures");
 }
 
 }  // namespace GlideWrapper
@@ -2490,6 +3013,11 @@ namespace GlideWrapper {
 
 void OpenGLESBackend::FlushBatch() {
   if (m_batchVertices.empty()) return;
+  if (!EnsureContextCurrent()) {
+    m_batchVertices.clear();
+    m_batchPrimitiveMode = BatchPrimitiveMode::None;
+    return;
+  }
 
   uint32_t uploadSize = m_batchVertices.size() * sizeof(ModernVertex);
 
