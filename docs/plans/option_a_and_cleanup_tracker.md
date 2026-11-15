@@ -61,8 +61,8 @@ Recorded before any edits are made:
 | **T1.6** | Phase 1 | Add `wayland-egl`/`egl` CMake discovery & guard `#if defined(UNIX)` trap until T2.7 | Low | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `cad7d0d` |
 | **T1.7** | Phase 1 | Prefer `VK_PRESENT_MODE_MAILBOX_KHR` on Wayland VSync to fix Mesa `wp_fifo_v1` stutter + Catch2 tests | Low | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `15482fc` |
 | **T2.1** | Phase 2 | Implement `NativeSurfaceHost` core + Headless + Standalone SDL2 + `ComputePresentRect` aspect math + tests | Low | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `ae65f8e` |
-| **T2.2** | Phase 2 | Implement X11 / XWayland native child window in `NativeSurfaceHost` (`XOpenDisplay`, `XCreateWindow`, `XShape`) + embed test harness | Med | `[~] IMPLEMENTED — AWAITING USER VERIFICATION` | `4f40687` |
-| **T2.3** | Phase 2 | Implement Native Wayland `wl_subsurface` in `NativeSurfaceHost` + SVN DOSBox `setConfig('SDL2')` export + HiDPI scaling | Med–High | `[ ] PENDING` | — |
+| **T2.2** | Phase 2 | Implement X11 / XWayland native child window in `NativeSurfaceHost` (`XOpenDisplay`, `XCreateWindow`, `XShape`) + embed test harness | Med | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `4f40687` |
+| **T2.3** | Phase 2 | Implement Native Wayland `wl_subsurface` in `NativeSurfaceHost` + SVN DOSBox `setConfig('SDL2')` export + HiDPI scaling | Med–High | `[~] IMPLEMENTED — AWAITING USER VERIFICATION` | `9865fc5` |
 | **T2.4** | Phase 2 | Migrate `VulkanBackend` to `NativeSurfaceHost` + aspect-ratio preserving letterbox/pillarbox blit | Med | `[ ] PENDING` | — |
 | **T2.5** | Phase 2 | Migrate `OpenGLESBackend` to `NativeSurfaceHost` (Direct EGL) + aspect-ratio & Gamma LUT presentation pass | Med | `[ ] PENDING` | — |
 | **T2.6** | Phase 2 | Migrate `SoftwareBackend` to `NativeSurfaceHost` + aspect-ratio preserving presentation | Med | `[ ] PENDING` | — |
@@ -323,7 +323,7 @@ Recorded before any edits are made:
 - **User Verification**: Quick review of `NativeSurfaceHost.h` interface before X11/Wayland implementations begin.
 
 #### `T2.2` — X11 / XWayland Native Child Window in `NativeSurfaceHost` + Embed Harness
-- **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION` (Commit `4f40687`)
+- **Status**: `[x] DONE (USER CONFIRMED — 2026-11-15)` (Commit `4f40687`)
 - **Automated Result**: Implemented `Mode::X11Child` in [src/core/NativeSurfaceHost.cpp](file:///usr/local/google/home/eianiuk/gemini/3dfx/src/core/NativeSurfaceHost.cpp) with safe `SDL_Window*` / raw X11 Window ID resolution, private `XOpenDisplay(nullptr)`, scoped `XErrorHandler` trap, `XCreateWindow` + `XShapeCombineRectangles(ShapeInput, empty)` click-through, and zero-roundtrip `ConfigureNotify` resize tracking in `SyncBounds()`. Renamed `Mode::None` → `Mode::Detached` so callers including `<SDL2/SDL_syswm.h>` / `<X11/Xlib.h>` never hit Xlib's `#define None 0L`. Added [demos/child_surface_embed_test.cpp](file:///usr/local/google/home/eianiuk/gemini/3dfx/demos/child_surface_embed_test.cpp) and `[WSI][NativeSurfaceHost][X11]` invalid-handle test.
   - `Glide3xWrapperTests`: **39/39 test cases (1886 assertions) passed**.
   - `SDL_VIDEODRIVER=x11 ./build/bin/child_surface_embed_test --raw-handle --smoke-ms 1200`: PASS (`800x600 -> 1024x600`, `4:3 PresentRect: x=112 y=0 800x600`, `resize_1024x600_observed=1`).
@@ -348,7 +348,19 @@ Recorded before any edits are made:
 - **User Verification**: Run `SDL_VIDEODRIVER=x11 ./build/bin/child_surface_embed_test`, resize the window, click/press keys inside it, and confirm the parent receives all input and the child surface follows seamlessly without floating/detaching.
 
 #### `T2.3` — Native Wayland `wl_subsurface` in `NativeSurfaceHost` + SVN DOSBox `setConfig('SDL2')`
-- **Status**: `[ ] PENDING`
+- **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION` (Commit `9865fc5`)
+- **Automated Result**:
+  - **Critical 64-bit `hWnd` ABI Fix**: Changed `grSstWinOpen`'s first parameter from `FxU32 hWnd` (32-bit `unsigned int` on LP64 Linux, which truncated 64-bit `SDL_Window*` and `wl_surface*` pointers passed by DOSBox!) to `AnyPtr hWnd` (`unsigned long`) in [include/glide2/glide.h](file:///usr/local/google/home/eianiuk/gemini/3dfx/include/glide2/glide.h), [include/glide3/glide.h](file:///usr/local/google/home/eianiuk/gemini/3dfx/include/glide3/glide.h), [src/glide2/glide2_entry.cpp](file:///usr/local/google/home/eianiuk/gemini/3dfx/src/glide2/glide2_entry.cpp), and [src/glide3/glide3_entry.cpp](file:///usr/local/google/home/eianiuk/gemini/3dfx/src/glide3/glide3_entry.cpp).
+  - **SVN DOSBox `setConfig('SDL2')` Parity**: Exported `setConfig` (writes `0x324c4453` `'SDL2'`) and `setConfigRes` from `libglide3x.so` (matching `libglide2x.so`); verified via `nm -D` and new Catch2 test `[WSI][DOSBox][setConfig]`.
+  - **Native Wayland `wl_subsurface`**: Implemented `Mode::WaylandSubsurface` in [src/core/NativeSurfaceHost.cpp](file:///usr/local/google/home/eianiuk/gemini/3dfx/src/core/NativeSurfaceHost.cpp) with live `SDL_Window*` and DOSBox-X raw `wl_surface*` union-alias discovery, private `wl_event_queue` + `wl_proxy_create_wrapper`, roleless `wl_surface` + empty `wl_region` input mask, `wl_subsurface_set_desync`, `wl_shm` binding, HiDPI `wl_surface_set_buffer_scale` + `SyncBounds()` tracking, and strict `Detach()` teardown order (`wl_subsurface_destroy` → `wl_surface_destroy` → conditional parent commit → globals/queue cleanup, never disconnecting `hostDisplay`).
+  - **Interactive Wayland Harness**: Extended [demos/child_surface_embed_test.cpp](file:///usr/local/google/home/eianiuk/gemini/3dfx/demos/child_surface_embed_test.cpp) with double-buffered `wl_shm` rendering (`memfd_create` + `WL_SHM_FORMAT_XRGB8888`) matching the X11 visual overlay.
+  - **Tests & Protocol Check**:
+    - `Glide3xWrapperTests`: **40/40 test cases (1894 assertions) passed**.
+    - `Glide2xWrapperTests`: **27/27 test cases (2344 assertions) passed**.
+    - `SDL_VIDEODRIVER=wayland ./build/bin/child_surface_embed_test --raw-handle --smoke-ms 1200`: PASS (`Mode=WaylandSubsurface`, `800x600 -> 1024x600`, `resize_1024x600_observed=1`).
+    - `SDL_VIDEODRIVER=wayland ./build/bin/child_surface_embed_test --sdl-window --smoke-ms 1200`: PASS (`Mode=WaylandSubsurface`, `resize_1024x600_observed=1`).
+    - `SDL_VIDEODRIVER=x11 ./build/bin/child_surface_embed_test --raw-handle --smoke-ms 1200`: PASS (no X11 regression).
+    - `WAYLAND_DEBUG=client` trace: **0 protocol errors**, confirmed private event queue isolation, `set_input_region`, `get_subsurface`, `set_desync`, and clean `wl_subsurface.destroy()`.
 - **Target Files**:
   - `src/core/NativeSurfaceHost.cpp`
   - `src/glide2/glide2_entry.cpp` (export `setConfig` / `setConfigRes` for SVN DOSBox `sdl12-compat` handshake)
