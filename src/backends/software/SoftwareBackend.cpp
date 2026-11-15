@@ -3,13 +3,19 @@
 #include <SDL2/SDL.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
+#include <cerrno>
 #include <chrono>
+#include <climits>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <memory>
+#include <mutex>
 #include <thread>
+#include <vector>
 
 #include "backends/software/SimdVec.h"
 #include "core/Logger.h"
@@ -18,6 +24,36 @@
 
 #ifdef _OPENMP
 #include <omp.h>
+#endif
+
+#if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_X11)
+#include <X11/Xlib.h>
+#include <X11/Xutil.h>
+#include <X11/extensions/XShm.h>
+#include <sys/ipc.h>
+#include <sys/shm.h>
+#ifdef None
+#undef None
+#endif
+#ifdef Bool
+#undef Bool
+#endif
+#ifdef Status
+#undef Status
+#endif
+#ifdef True
+#undef True
+#endif
+#ifdef False
+#undef False
+#endif
+#endif
+
+#if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_WAYLAND)
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <unistd.h>
+#include <wayland-client.h>
 #endif
 
 namespace GlideWrapper {
@@ -594,6 +630,619 @@ static TmuColorSIMD EvaluateTmuStageSIMD(uint32_t rgbFunc, uint32_t rgbFactor,
   return {finalCR, finalCG, finalCB, finalA};
 }
 
+namespace {
+
+bool IsWaylandStrictFifoRequested() {
+  const char* env = std::getenv("GLIDE_VSYNC");
+  if (!env) return false;
+  std::string s(env);
+  for (char& ch : s) {
+    if (ch >= 'A' && ch <= 'Z') {
+      ch = static_cast<char>(ch - 'A' + 'a');
+    }
+  }
+  return s == "fifo" || s == "strict";
+}
+
+// Fast CPU aspect-ratio preserving blit with opaque black letterbox/pillarbox
+// bars into a 32-bit 0xXXRRGGBB (or 0xXXBBGGRR when swapRedBlue=true) surface.
+void BlitScaledLetterbox(const uint32_t* srcPixels, uint32_t srcW,
+                         uint32_t srcH, uint32_t* dstPixels,
+                         uint32_t dstPitchWords, uint32_t surfaceW,
+                         uint32_t surfaceH, bool swapRedBlue,
+                         std::vector<uint32_t>& xLutScratch) {
+  if (!srcPixels || !dstPixels || srcW == 0 || srcH == 0 || surfaceW == 0 ||
+      surfaceH == 0 || dstPitchWords < surfaceW) {
+    return;
+  }
+
+  const PresentRect rect =
+      NativeSurfaceHost::ComputePresentRect(srcW, srcH, surfaceW, surfaceH,
+                                            /*preserveAspect=*/true);
+  const uint32_t dstX0 = static_cast<uint32_t>(std::max(0, rect.x));
+  const uint32_t dstY0 = static_cast<uint32_t>(std::max(0, rect.y));
+  const uint32_t dstW = std::min(rect.width, surfaceW - dstX0);
+  const uint32_t dstH = std::min(rect.height, surfaceH - dstY0);
+  const uint32_t dstX1 = dstX0 + dstW;
+  const uint32_t dstY1 = dstY0 + dstH;
+
+  constexpr uint32_t kOpaqueBlack = 0xFF000000u;
+
+  // Top & bottom letterbox bars
+  for (uint32_t y = 0; y < dstY0; ++y) {
+    uint32_t* row = dstPixels + static_cast<size_t>(y) * dstPitchWords;
+    std::fill_n(row, surfaceW, kOpaqueBlack);
+  }
+  for (uint32_t y = dstY1; y < surfaceH; ++y) {
+    uint32_t* row = dstPixels + static_cast<size_t>(y) * dstPitchWords;
+    std::fill_n(row, surfaceW, kOpaqueBlack);
+  }
+
+  if (dstW == 0 || dstH == 0) {
+    return;
+  }
+
+  // Precompute horizontal source-pixel LUT once per frame.
+  xLutScratch.resize(dstW);
+  for (uint32_t x = 0; x < dstW; ++x) {
+    uint32_t sx = static_cast<uint32_t>((static_cast<uint64_t>(x) * srcW) /
+                                        dstW);
+    if (sx >= srcW) sx = srcW - 1;
+    xLutScratch[x] = sx;
+  }
+  const uint32_t* xLut = xLutScratch.data();
+
+#pragma omp parallel for if (dstH > 240)
+  for (uint32_t y = 0; y < dstH; ++y) {
+    uint32_t sy =
+        static_cast<uint32_t>((static_cast<uint64_t>(y) * srcH) / dstH);
+    if (sy >= srcH) sy = srcH - 1;
+    const uint32_t* srcRow = srcPixels + static_cast<size_t>(sy) * srcW;
+    uint32_t* dstRow =
+        dstPixels + static_cast<size_t>(dstY0 + y) * dstPitchWords;
+
+    if (dstX0 > 0) {
+      std::fill_n(dstRow, dstX0, kOpaqueBlack);
+    }
+    if (dstX1 < surfaceW) {
+      std::fill_n(dstRow + dstX1, surfaceW - dstX1, kOpaqueBlack);
+    }
+
+    uint32_t* out = dstRow + dstX0;
+    if (!swapRedBlue) {
+      for (uint32_t x = 0; x < dstW; ++x) {
+        out[x] = srcRow[xLut[x]] | kOpaqueBlack;
+      }
+    } else {
+      for (uint32_t x = 0; x < dstW; ++x) {
+        const uint32_t px = srcRow[xLut[x]];
+        const uint32_t r = (px >> 16) & 0xFFu;
+        const uint32_t g = (px >> 8) & 0xFFu;
+        const uint32_t b = px & 0xFFu;
+        out[x] = kOpaqueBlack | (b << 16) | (g << 8) | r;
+      }
+    }
+  }
+}
+
+#if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_X11)
+std::mutex g_swX11TrapMutex;
+bool g_swX11TrapHit = false;
+int HandleSwX11Error(Display* /*dpy*/, XErrorEvent* /*ev*/) {
+  g_swX11TrapHit = true;
+  return 0;
+}
+
+class ScopedSwX11Trap {
+ public:
+  ScopedSwX11Trap() : m_lock(g_swX11TrapMutex) {
+    g_swX11TrapHit = false;
+    m_prev = XSetErrorHandler(HandleSwX11Error);
+  }
+  ~ScopedSwX11Trap() { XSetErrorHandler(m_prev); }
+  bool Hit() const { return g_swX11TrapHit; }
+
+ private:
+  std::unique_lock<std::mutex> m_lock;
+  XErrorHandler m_prev = nullptr;
+};
+#endif
+
+#if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_WAYLAND)
+int CreateAnonymousShmFile(size_t byteSize) {
+  int fd = -1;
+#if defined(__linux__) && defined(MFD_CLOEXEC)
+  fd = ::memfd_create("glide-ng-wl-shm", MFD_CLOEXEC);
+#endif
+  if (fd < 0) {
+    char tmpl[] = "/tmp/glide-ng-wl-shm-XXXXXX";
+    fd = ::mkstemp(tmpl);
+    if (fd >= 0) {
+      ::unlink(tmpl);
+      ::fcntl(fd, F_SETFD, FD_CLOEXEC);
+    }
+  }
+  if (fd < 0) {
+    return -1;
+  }
+
+  int ret = -1;
+  do {
+    ret = ::ftruncate(fd, static_cast<off_t>(byteSize));
+  } while (ret < 0 && errno == EINTR);
+  if (ret < 0) {
+    ::close(fd);
+    return -1;
+  }
+  return fd;
+}
+#endif
+
+}  // namespace
+
+struct SoftwareBackend::X11Presenter {
+#if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_X11)
+  Display* display = nullptr;  // Borrowed from NativeSurfaceHost
+  Window window = 0;           // Borrowed from NativeSurfaceHost
+  GC gc = nullptr;
+  Visual* visual = nullptr;
+  int depth = 24;
+  bool swapRedBlue = false;
+  bool shmExtensionAvailable = false;
+
+  XImage* image = nullptr;
+  XShmSegmentInfo shmInfo{};
+  bool usingShm = false;
+  uint32_t width = 0;
+  uint32_t height = 0;
+  std::vector<uint32_t> xLutScratch;
+
+  bool Attach(Display* dpy, Window win, uint32_t w, uint32_t h) {
+    Detach();
+    if (!dpy || win == 0) return false;
+    display = dpy;
+    window = win;
+
+    XWindowAttributes wa{};
+    {
+      ScopedSwX11Trap trap;
+      if (!XGetWindowAttributes(display, window, &wa) || !wa.visual ||
+          trap.Hit()) {
+        GLIDE_LOG(CRITICAL, "Software",
+                  "X11Presenter: XGetWindowAttributes failed.");
+        Detach();
+        return false;
+      }
+      visual = wa.visual;
+      depth = wa.depth;
+      swapRedBlue = (visual->red_mask == 0x0000FFUL);
+      gc = XCreateGC(display, window, 0, nullptr);
+      XSync(display, 0);
+      if (!gc || trap.Hit()) {
+        GLIDE_LOG(CRITICAL, "Software", "X11Presenter: XCreateGC failed.");
+        Detach();
+        return false;
+      }
+    }
+
+    shmExtensionAvailable = (XShmQueryExtension(display) != 0);
+    if (!EnsureSize(std::max<uint32_t>(1, w), std::max<uint32_t>(1, h))) {
+      Detach();
+      return false;
+    }
+
+    GLIDE_LOG(INFO, "Software",
+              "X11Presenter attached (mode="
+                  << (usingShm ? "XShmPutImage" : "XPutImage")
+                  << ", depth=" << depth << ", bpp=" << image->bits_per_pixel
+                  << ", size=" << width << "x" << height << ").");
+    return true;
+  }
+
+  void DestroyImage() {
+    if (!image) return;
+    if (usingShm) {
+      if (display) {
+        ScopedSwX11Trap trap;
+        XShmDetach(display, &shmInfo);
+        XSync(display, 0);
+      }
+      XDestroyImage(image);
+      if (shmInfo.shmaddr && shmInfo.shmaddr != reinterpret_cast<char*>(-1)) {
+        ::shmdt(shmInfo.shmaddr);
+      }
+      shmInfo = XShmSegmentInfo{};
+      usingShm = false;
+    } else {
+      // XDestroyImage frees image->data allocated via std::malloc.
+      XDestroyImage(image);
+    }
+    image = nullptr;
+    width = 0;
+    height = 0;
+  }
+
+  bool EnsureSize(uint32_t newW, uint32_t newH) {
+    newW = std::max<uint32_t>(1, newW);
+    newH = std::max<uint32_t>(1, newH);
+    if (image && width == newW && height == newH) {
+      return true;
+    }
+    DestroyImage();
+
+    if (shmExtensionAvailable) {
+      XShmSegmentInfo info{};
+      info.shmid = -1;
+      info.shmaddr = reinterpret_cast<char*>(-1);
+      XImage* shmImg =
+          XShmCreateImage(display, visual, static_cast<unsigned int>(depth),
+                          ZPixmap, nullptr, &info, newW, newH);
+      if (shmImg) {
+        const size_t totalBytes =
+            static_cast<size_t>(shmImg->bytes_per_line) * newH;
+        info.shmid = ::shmget(IPC_PRIVATE, totalBytes, IPC_CREAT | 0600);
+        if (info.shmid >= 0) {
+          info.shmaddr = static_cast<char*>(::shmat(info.shmid, nullptr, 0));
+          if (info.shmaddr != reinterpret_cast<char*>(-1)) {
+            shmImg->data = info.shmaddr;
+            info.readOnly = 0;
+            bool attachedOk = false;
+            {
+              ScopedSwX11Trap trap;
+              attachedOk = (XShmAttach(display, &info) != 0);
+              XSync(display, 0);
+              if (trap.Hit()) {
+                attachedOk = false;
+              }
+            }
+            // Mark for automatic kernel reclamation on last detach/exit.
+            ::shmctl(info.shmid, IPC_RMID, nullptr);
+            if (attachedOk) {
+              image = shmImg;
+              shmInfo = info;
+              usingShm = true;
+              width = newW;
+              height = newH;
+              return true;
+            }
+            ::shmdt(info.shmaddr);
+          } else {
+            ::shmctl(info.shmid, IPC_RMID, nullptr);
+          }
+        }
+        shmImg->data = nullptr;
+        XDestroyImage(shmImg);
+      }
+      // Disable XShm for subsequent resizes if attach was rejected (e.g., remote
+      // X11 forwarding) and fall back cleanly to standard XPutImage.
+      shmExtensionAvailable = false;
+    }
+
+    // Standard XPutImage fallback (heap-backed XImage).
+    const size_t fallbackBytes = static_cast<size_t>(newW) * newH * 4;
+    char* data = static_cast<char*>(std::malloc(fallbackBytes));
+    if (!data) {
+      GLIDE_LOG(CRITICAL, "Software",
+                "X11Presenter: failed to allocate XImage buffer.");
+      return false;
+    }
+    XImage* plainImg =
+        XCreateImage(display, visual, static_cast<unsigned int>(depth), ZPixmap,
+                     0, data, newW, newH, 32, 0);
+    if (!plainImg) {
+      std::free(data);
+      GLIDE_LOG(CRITICAL, "Software", "X11Presenter: XCreateImage failed.");
+      return false;
+    }
+    const size_t requiredBytes =
+        static_cast<size_t>(plainImg->bytes_per_line) * newH;
+    if (requiredBytes > fallbackBytes) {
+      char* resized = static_cast<char*>(std::realloc(data, requiredBytes));
+      if (!resized) {
+        plainImg->data = data;
+        XDestroyImage(plainImg);
+        return false;
+      }
+      plainImg->data = resized;
+    }
+    image = plainImg;
+    usingShm = false;
+    width = newW;
+    height = newH;
+    return true;
+  }
+
+  void Present(const uint32_t* srcPixels, uint32_t srcW, uint32_t srcH,
+               uint32_t hostW, uint32_t hostH) {
+    if (!display || !gc || window == 0) return;
+    if (!EnsureSize(hostW, hostH) || !image || !image->data) return;
+
+    if (image->bits_per_pixel == 32 && image->byte_order == LSBFirst &&
+        (image->bytes_per_line % 4) == 0) {
+      BlitScaledLetterbox(
+          srcPixels, srcW, srcH, reinterpret_cast<uint32_t*>(image->data),
+          static_cast<uint32_t>(image->bytes_per_line / 4), width, height,
+          swapRedBlue, xLutScratch);
+    } else {
+      // Exotic X11 depth/endianness fallback via XPutPixel.
+      const PresentRect rect =
+          NativeSurfaceHost::ComputePresentRect(srcW, srcH, width, height,
+                                                /*preserveAspect=*/true);
+      for (uint32_t y = 0; y < height; ++y) {
+        const bool inY =
+            (static_cast<int32_t>(y) >= rect.y &&
+             static_cast<int32_t>(y) < rect.y + static_cast<int32_t>(rect.height));
+        uint32_t sy = 0;
+        if (inY && rect.height > 0) {
+          sy = static_cast<uint32_t>(
+              (static_cast<uint64_t>(y - static_cast<uint32_t>(rect.y)) *
+               srcH) /
+              rect.height);
+          if (sy >= srcH) sy = srcH - 1;
+        }
+        for (uint32_t x = 0; x < width; ++x) {
+          unsigned long pxVal = 0;
+          if (inY && static_cast<int32_t>(x) >= rect.x &&
+              static_cast<int32_t>(x) <
+                  rect.x + static_cast<int32_t>(rect.width) &&
+              rect.width > 0) {
+            uint32_t sx = static_cast<uint32_t>(
+                (static_cast<uint64_t>(x - static_cast<uint32_t>(rect.x)) *
+                 srcW) /
+                rect.width);
+            if (sx >= srcW) sx = srcW - 1;
+            pxVal = srcPixels[static_cast<size_t>(sy) * srcW + sx] & 0xFFFFFFUL;
+          }
+          XPutPixel(image, static_cast<int>(x), static_cast<int>(y), pxVal);
+        }
+      }
+    }
+
+    ScopedSwX11Trap trap;
+    if (usingShm) {
+      XShmPutImage(display, window, gc, image, 0, 0, 0, 0, width, height, 0);
+      // Wait for X server copy completion before next frame reuses SHM buffer.
+      XSync(display, 0);
+    } else {
+      XPutImage(display, window, gc, image, 0, 0, 0, 0, width, height);
+      XFlush(display);
+    }
+  }
+
+  void Detach() {
+    DestroyImage();
+    if (display && gc) {
+      ScopedSwX11Trap trap;
+      XFreeGC(display, gc);
+      XSync(display, 0);
+    }
+    gc = nullptr;
+    visual = nullptr;
+    display = nullptr;
+    window = 0;
+    shmExtensionAvailable = false;
+  }
+
+  ~X11Presenter() { Detach(); }
+#endif
+};
+
+struct SoftwareBackend::WaylandShmPresenter {
+#if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_WAYLAND)
+  struct ShmSlot {
+    wl_buffer* buffer = nullptr;
+    uint32_t* pixels = nullptr;
+    size_t byteSize = 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    bool busy = false;
+  };
+
+  static constexpr size_t kNumSlots = 3;
+
+  wl_display* display = nullptr;      // Borrowed from NativeSurfaceHost
+  wl_surface* surface = nullptr;      // Borrowed from NativeSurfaceHost
+  wl_shm* shm = nullptr;              // Borrowed from NativeSurfaceHost
+  wl_event_queue* queue = nullptr;    // Borrowed from NativeSurfaceHost
+  std::array<std::unique_ptr<ShmSlot>, kNumSlots> slots;
+  std::vector<std::unique_ptr<ShmSlot>> retired;
+  std::vector<uint32_t> xLutScratch;
+
+  static void OnBufferRelease(void* data, wl_buffer* /*buffer*/) {
+    auto* slot = static_cast<ShmSlot*>(data);
+    if (slot) {
+      slot->busy = false;
+    }
+  }
+
+  static void DestroySlot(std::unique_ptr<ShmSlot>& slot) {
+    if (!slot) return;
+    if (slot->buffer) {
+      wl_buffer_destroy(slot->buffer);
+      slot->buffer = nullptr;
+    }
+    if (slot->pixels && slot->byteSize > 0) {
+      ::munmap(slot->pixels, slot->byteSize);
+      slot->pixels = nullptr;
+      slot->byteSize = 0;
+    }
+    slot.reset();
+  }
+
+  std::unique_ptr<ShmSlot> CreateSlot(uint32_t w, uint32_t h) {
+    if (!shm || w == 0 || h == 0) return nullptr;
+    const uint32_t stride = w * 4;
+    const size_t byteSize = static_cast<size_t>(stride) * h;
+
+    const int fd = CreateAnonymousShmFile(byteSize);
+    if (fd < 0) {
+      GLIDE_LOG(CRITICAL, "Software",
+                "WaylandShmPresenter: failed to create SHM fd.");
+      return nullptr;
+    }
+
+    void* map =
+        ::mmap(nullptr, byteSize, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (map == MAP_FAILED) {
+      ::close(fd);
+      GLIDE_LOG(CRITICAL, "Software", "WaylandShmPresenter: mmap failed.");
+      return nullptr;
+    }
+
+    wl_shm_pool* pool =
+        wl_shm_create_pool(shm, fd, static_cast<int32_t>(byteSize));
+    ::close(fd);
+    if (!pool) {
+      ::munmap(map, byteSize);
+      GLIDE_LOG(CRITICAL, "Software",
+                "WaylandShmPresenter: wl_shm_create_pool failed.");
+      return nullptr;
+    }
+
+    wl_buffer* buf = wl_shm_pool_create_buffer(
+        pool, 0, static_cast<int32_t>(w), static_cast<int32_t>(h),
+        static_cast<int32_t>(stride), WL_SHM_FORMAT_XRGB8888);
+    wl_shm_pool_destroy(pool);
+    if (!buf) {
+      ::munmap(map, byteSize);
+      GLIDE_LOG(CRITICAL, "Software",
+                "WaylandShmPresenter: wl_shm_pool_create_buffer failed.");
+      return nullptr;
+    }
+
+    static const wl_buffer_listener kBufferListener = {OnBufferRelease};
+    auto slot = std::make_unique<ShmSlot>();
+    slot->buffer = buf;
+    slot->pixels = static_cast<uint32_t*>(map);
+    slot->byteSize = byteSize;
+    slot->width = w;
+    slot->height = h;
+    slot->busy = false;
+    wl_buffer_add_listener(slot->buffer, &kBufferListener, slot.get());
+    return slot;
+  }
+
+  void ReapRetired() {
+    auto it = retired.begin();
+    while (it != retired.end()) {
+      if (!(*it) || !(*it)->busy) {
+        DestroySlot(*it);
+        it = retired.erase(it);
+      } else {
+        ++it;
+      }
+    }
+  }
+
+  bool Attach(wl_display* dpy, wl_surface* surf, wl_shm* shmGlobal,
+              wl_event_queue* evQueue) {
+    Detach();
+    if (!dpy || !surf || !shmGlobal) {
+      GLIDE_LOG(CRITICAL, "Software",
+                "WaylandShmPresenter: missing wl_display, wl_surface, or "
+                "wl_shm.");
+      return false;
+    }
+    display = dpy;
+    surface = surf;
+    shm = shmGlobal;
+    queue = evQueue;
+    GLIDE_LOG(INFO, "Software",
+              "WaylandShmPresenter attached (format=XRGB8888, slots="
+                  << kNumSlots << ").");
+    return true;
+  }
+
+  void Present(const uint32_t* srcPixels, uint32_t srcW, uint32_t srcH,
+               uint32_t hostW, uint32_t hostH) {
+    if (!display || !surface || !shm) return;
+    hostW = std::max<uint32_t>(1, hostW);
+    hostH = std::max<uint32_t>(1, hostH);
+
+    if (queue) {
+      wl_display_dispatch_queue_pending(display, queue);
+    }
+    ReapRetired();
+
+    // Locate a free slot; if all slots are busy, flush our private queue once
+    // to process any pending wl_buffer.release events.
+    auto findFreeSlot = [&]() -> ShmSlot* {
+      for (auto& s : slots) {
+        if (!s) {
+          s = CreateSlot(hostW, hostH);
+          return s.get();
+        }
+        if (!s->busy) {
+          if (s->width != hostW || s->height != hostH) {
+            DestroySlot(s);
+            s = CreateSlot(hostW, hostH);
+          }
+          return s.get();
+        }
+      }
+      return nullptr;
+    };
+
+    ShmSlot* target = findFreeSlot();
+    if (!target && queue) {
+      wl_display_roundtrip_queue(display, queue);
+      ReapRetired();
+      target = findFreeSlot();
+    }
+    if (!target) {
+      // All slots are still held by the compositor: retire slot 0 (freed once
+      // its release event arrives) and allocate a fresh buffer of the target
+      // dimensions rather than overwriting in-flight scanout memory.
+      if (slots[0]) {
+        retired.push_back(std::move(slots[0]));
+      }
+      slots[0] = CreateSlot(hostW, hostH);
+      target = slots[0].get();
+    }
+    if (!target || !target->buffer || !target->pixels) {
+      return;
+    }
+
+    BlitScaledLetterbox(srcPixels, srcW, srcH, target->pixels, target->width,
+                        target->width, target->height, /*swapRedBlue=*/false,
+                        xLutScratch);
+
+    target->busy = true;
+    wl_surface_attach(surface, target->buffer, 0, 0);
+#ifdef WL_SURFACE_DAMAGE_BUFFER_SINCE_VERSION
+    if (wl_surface_get_version(surface) >=
+        WL_SURFACE_DAMAGE_BUFFER_SINCE_VERSION) {
+      wl_surface_damage_buffer(surface, 0, 0, INT32_MAX, INT32_MAX);
+    } else
+#endif
+    {
+      wl_surface_damage(surface, 0, 0, INT32_MAX, INT32_MAX);
+    }
+    wl_surface_commit(surface);
+    wl_display_flush(display);
+  }
+
+  void Detach() {
+    for (auto& s : slots) {
+      DestroySlot(s);
+    }
+    for (auto& r : retired) {
+      DestroySlot(r);
+    }
+    retired.clear();
+    display = nullptr;
+    surface = nullptr;
+    shm = nullptr;
+    queue = nullptr;
+  }
+
+  ~WaylandShmPresenter() { Detach(); }
+#endif
+};
+
+SoftwareBackend::SoftwareBackend() = default;
+SoftwareBackend::~SoftwareBackend() { Shutdown(); }
+
 bool SoftwareBackend::Initialize(const WrapperConfig& config) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   if (m_initialized) return true;
@@ -667,6 +1316,100 @@ void SoftwareBackend::Shutdown() {
   m_initialized = false;
 }
 
+bool SoftwareBackend::InitPresentationSurface() {
+  const auto mode = m_surfaceHost.GetMode();
+  if (mode == NativeSurfaceHost::Mode::Headless) {
+    return true;
+  }
+
+  if (mode == NativeSurfaceHost::Mode::StandaloneSDL2) {
+    SDL_Window* win = m_surfaceHost.GetSDLWindow();
+    if (!win) {
+      GLIDE_LOG(CRITICAL, "Software",
+                "StandaloneSDL2 mode missing SDL_Window.");
+      return false;
+    }
+    const bool usePresentVsync =
+        m_config.vsync &&
+        (!m_surfaceHost.IsWaylandSurface() || IsWaylandStrictFifoRequested());
+    Uint32 flags = SDL_RENDERER_ACCELERATED |
+                   (usePresentVsync ? SDL_RENDERER_PRESENTVSYNC : 0);
+    SDL_Renderer* renderer = SDL_CreateRenderer(win, -1, flags);
+    if (!renderer) {
+      renderer = SDL_CreateRenderer(win, -1, SDL_RENDERER_SOFTWARE);
+    }
+    if (!renderer) {
+      GLIDE_LOG(CRITICAL, "Software",
+                "Failed to create StandaloneSDL2 SDL_Renderer: "
+                    << SDL_GetError());
+      return false;
+    }
+    SDL_Texture* texture = SDL_CreateTexture(
+        renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING,
+        static_cast<int>(m_guestWidth), static_cast<int>(m_guestHeight));
+    if (!texture) {
+      GLIDE_LOG(CRITICAL, "Software",
+                "Failed to create StandaloneSDL2 SDL_Texture: "
+                    << SDL_GetError());
+      SDL_DestroyRenderer(renderer);
+      return false;
+    }
+    m_sdlRenderer = renderer;
+    m_sdlTexture = texture;
+    return true;
+  }
+
+#if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_X11)
+  if (mode == NativeSurfaceHost::Mode::X11Child) {
+    uint32_t pixW = m_guestWidth;
+    uint32_t pixH = m_guestHeight;
+    m_surfaceHost.GetDrawableSize(pixW, pixH);
+    m_x11Presenter = std::make_unique<X11Presenter>();
+    if (!m_x11Presenter->Attach(
+            static_cast<Display*>(m_surfaceHost.GetX11Display()),
+            static_cast<Window>(m_surfaceHost.GetX11Window()), pixW, pixH)) {
+      m_x11Presenter.reset();
+      return false;
+    }
+    return true;
+  }
+#endif
+
+#if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_WAYLAND)
+  if (mode == NativeSurfaceHost::Mode::WaylandSubsurface) {
+    m_wlShmPresenter = std::make_unique<WaylandShmPresenter>();
+    if (!m_wlShmPresenter->Attach(
+            static_cast<wl_display*>(m_surfaceHost.GetWaylandDisplay()),
+            static_cast<wl_surface*>(m_surfaceHost.GetWaylandSurface()),
+            static_cast<wl_shm*>(m_surfaceHost.GetWaylandShm()),
+            static_cast<wl_event_queue*>(
+                m_surfaceHost.GetWaylandEventQueue()))) {
+      m_wlShmPresenter.reset();
+      return false;
+    }
+    return true;
+  }
+#endif
+
+  GLIDE_LOG(CRITICAL, "Software",
+            "Unsupported NativeSurfaceHost mode="
+                << NativeSurfaceHost::ModeToString(mode) << ".");
+  return false;
+}
+
+void SoftwareBackend::ShutdownPresentationSurface() {
+  if (m_sdlTexture) {
+    SDL_DestroyTexture(static_cast<SDL_Texture*>(m_sdlTexture));
+    m_sdlTexture = nullptr;
+  }
+  if (m_sdlRenderer) {
+    SDL_DestroyRenderer(static_cast<SDL_Renderer*>(m_sdlRenderer));
+    m_sdlRenderer = nullptr;
+  }
+  m_x11Presenter.reset();
+  m_wlShmPresenter.reset();
+}
+
 bool SoftwareBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
                                    uint32_t height, bool windowed) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
@@ -707,6 +1450,36 @@ bool SoftwareBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
   AllocateCpuBuffers(m_headlessWidth, m_headlessHeight);
   m_allocatedBuffer = true;
 
+  size_t rawDepthSize = (size_t)m_headlessWidth * m_headlessHeight * 4;
+  size_t paddedDepthSize = (rawDepthSize + 63) & ~63;
+  size_t allocatedDepthSize = paddedDepthSize + 64;
+  m_headlessDepthBuffer.resize(allocatedDepthSize / sizeof(float), 0.0f);
+  SetClipWindow(0, 0, m_headlessWidth, m_headlessHeight);
+  InitTileGrid();
+
+  m_headlessPixelMap = m_cpuBuffers[m_backBufferIdx].data();
+
+  if (!m_surfaceHost.Attach(nativeWindowHandle, width, height, windowed,
+                            m_config.forceNoWindow,
+                            "3dfx glide-ng Presentation Console (Software)", 0,
+                            m_config.windowScale)) {
+    GLIDE_LOG(CRITICAL, "Software",
+              "NativeSurfaceHost::Attach failed for SoftwareBackend.");
+    FreeCpuBuffers();
+    m_allocatedBuffer = false;
+    m_headlessMode = false;
+    return false;
+  }
+
+  if (!InitPresentationSurface()) {
+    ShutdownPresentationSurface();
+    m_surfaceHost.Detach();
+    FreeCpuBuffers();
+    m_allocatedBuffer = false;
+    m_headlessMode = false;
+    return false;
+  }
+
   unsigned int cores = std::thread::hardware_concurrency();
 #if defined(__x86_64__) || defined(_M_X64)
   const char* arch = "x86_64";
@@ -718,8 +1491,9 @@ bool SoftwareBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
 
   std::ostringstream logStream;
   logStream << "\n--- Active Software Execution Adapter ---\n"
-            << "  Adapter     : Host CPU Reference Rasterizer (Pure SDL "
-               "Surface mode)\n"
+            << "  Adapter     : Host CPU Reference Rasterizer (Native "
+            << NativeSurfaceHost::ModeToString(m_surfaceHost.GetMode())
+            << ")\n"
             << "    Cores     : " << cores << " Hardware Threads\n"
             << "    Arch      : " << arch << "\n"
             << "    Engine    : glide-ng Software Reference Core (v0.1.0)\n"
@@ -728,156 +1502,141 @@ bool SoftwareBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
             << "------------------------------------------";
   GLIDE_LOG(INFO, "Software", logStream.str());
 
-  size_t rawDepthSize = (size_t)m_headlessWidth * m_headlessHeight * 4;
-  size_t paddedDepthSize = (rawDepthSize + 63) & ~63;
-  size_t allocatedDepthSize = paddedDepthSize + 64;
-  m_headlessDepthBuffer.resize(allocatedDepthSize / sizeof(float), 0.0f);
-  SetClipWindow(0, 0, m_headlessWidth, m_headlessHeight);
-  InitTileGrid();
-
-  m_headlessPixelMap = m_cpuBuffers[m_backBufferIdx].data();
-
-  m_sdlWindow = nullptr;
-  m_sdlWindowOwned = false;
-  m_sdlRenderer = nullptr;
-  m_sdlRendererOwned = false;
-  m_sdlTexture = nullptr;
-
-  if (m_config.forceNoWindow) {
-    GLIDE_LOG(INFO, "Software",
-              "Headless mode enabled (forceNoWindow=true); skipping SDL2 "
-              "window and renderer creation.");
-    m_headlessMode = true;
-    m_windowAttached = true;
-    return true;
-  }
-
-  if (nativeWindowHandle) {
-    SDL_Window* sdlWindow = SDL_GL_GetCurrentWindow();
-    if (sdlWindow) {
-      GLIDE_LOG(INFO, "Software", "Hijacked existing SDL2 window: " << sdlWindow);
-      m_sdlWindowOwned = false;
-    } else {
-      uintptr_t wndVal = reinterpret_cast<uintptr_t>(nativeWindowHandle);
-      if (wndVal > 0xFFFFFFFFUL) {
-        sdlWindow = reinterpret_cast<SDL_Window*>(nativeWindowHandle);
-        GLIDE_LOG(INFO, "Software", "Using direct SDL_Window* pointer: " << sdlWindow);
-        m_sdlWindowOwned = false;
-      } else {
-        sdlWindow = SDL_CreateWindowFrom(nativeWindowHandle);
-        if (sdlWindow) {
-          m_sdlWindowOwned = false; // We DO NOT own the foreign/hijacked window!
-          GLIDE_LOG(INFO, "Software", "Wrapped native X11 Window ID " << wndVal << " into SDL_Window* " << sdlWindow);
-        } else {
-          GLIDE_LOG(WARN, "Software", "Failed to wrap native Window ID " << wndVal << " into SDL_Window: " << SDL_GetError());
-        }
-      }
-    }
-
-    if (sdlWindow) {
-      m_sdlWindow = sdlWindow;
-      SDL_Renderer* renderer = SDL_GetRenderer(sdlWindow);
-      if (renderer) {
-        GLIDE_LOG(INFO, "Software", "Hijacked existing SDL2 Renderer: " << renderer);
-        m_sdlRenderer = renderer;
-        m_sdlRendererOwned = false;
-      } else {
-        renderer = SDL_CreateRenderer(sdlWindow, -1, SDL_RENDERER_ACCELERATED);
-        if (renderer) {
-          m_sdlRenderer = renderer;
-          m_sdlRendererOwned = true;
-          GLIDE_LOG(INFO, "Software", "Created SDL_Renderer " << renderer);
-        } else {
-          GLIDE_LOG(WARN, "Software", "Failed to create SDL_Renderer: " << SDL_GetError());
-        }
-      }
-
-      if (m_sdlRenderer) {
-        SDL_Texture* texture = SDL_CreateTexture(
-            reinterpret_cast<SDL_Renderer*>(m_sdlRenderer), SDL_PIXELFORMAT_ARGB8888,
-            SDL_TEXTUREACCESS_STREAMING, width, height);
-        if (texture) {
-          m_sdlTexture = texture;
-          GLIDE_LOG(INFO, "Software", "Created streaming SDL_Texture (" << width << "x" << height << ") " << texture);
-        } else {
-          GLIDE_LOG(WARN, "Software", "Failed to create streaming SDL_Texture: " << SDL_GetError());
-        }
-      }
-    }
-  } else {
-    // No window injection! Create our own window/surface.
-    if (SDL_WasInit(SDL_INIT_VIDEO) == 0) {
-      if (SDL_Init(SDL_INIT_VIDEO) < 0) {
-        GLIDE_LOG(CRITICAL, "Software", "Failed to initialize SDL Video: " << SDL_GetError());
-        return false;
-      }
-    }
-    SDL_Window* window = SDL_CreateWindow(
-        "Glide Software Rasterizer (SDL2)", SDL_WINDOWPOS_CENTERED,
-        SDL_WINDOWPOS_CENTERED, width, height, SDL_WINDOW_SHOWN);
-    if (window) {
-      m_sdlWindow = window;
-      m_sdlWindowOwned = true;
-      GLIDE_LOG(INFO, "Software", "Created own native SDL2 window: " << window);
-
-      SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
-      if (renderer) {
-        m_sdlRenderer = renderer;
-        m_sdlRendererOwned = true;
-        SDL_Texture* texture = SDL_CreateTexture(
-            renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING,
-            width, height);
-        if (texture) {
-          m_sdlTexture = texture;
-        } else {
-          GLIDE_LOG(CRITICAL, "Software", "Failed to create own SDL2 texture: " << SDL_GetError());
-          return false;
-        }
-      } else {
-        GLIDE_LOG(CRITICAL, "Software", "Failed to create own SDL2 renderer: " << SDL_GetError());
-        return false;
-      }
-    } else {
-      GLIDE_LOG(CRITICAL, "Software", "Failed to create own SDL2 window: " << SDL_GetError());
-      return false;
-    }
-  }
-
   m_windowAttached = true;
-
   return true;
 }
 
 void SoftwareBackend::DetachWindow() {
   if (!m_windowAttached) return;
 
+  // Strict WSI teardown order: destroy presenter objects BEFORE detaching the
+  // underlying X11 child window / Wayland subsurface / SDL_Window.
+  ShutdownPresentationSurface();
+  m_surfaceHost.Detach();
+
   if (m_allocatedBuffer) {
     FreeCpuBuffers();
     m_allocatedBuffer = false;
   }
 
-  if (m_sdlTexture) {
-    SDL_DestroyTexture(reinterpret_cast<SDL_Texture*>(m_sdlTexture));
-    m_sdlTexture = nullptr;
-  }
-  if (m_sdlRenderer) {
-    if (m_sdlRendererOwned) {
-      SDL_DestroyRenderer(reinterpret_cast<SDL_Renderer*>(m_sdlRenderer));
-    }
-    m_sdlRenderer = nullptr;
-  }
-  if (m_sdlWindow) {
-    if (m_sdlWindowOwned) {
-      SDL_DestroyWindow(reinterpret_cast<SDL_Window*>(m_sdlWindow));
-    }
-    m_sdlWindow = nullptr;
-  }
-  m_sdlRendererOwned = false;
-  m_sdlWindowOwned = false;
-
   m_windowAttached = false;
   m_headlessMode = false;
   GLIDE_LOG(INFO, "Software", "Detached Software Backend.");
+}
+
+void SoftwareBackend::ResolveFrontBuffer(const uint32_t*& outPixels,
+                                         uint32_t& outW, uint32_t& outH) {
+  const uint32_t* fullSrc =
+      reinterpret_cast<const uint32_t*>(m_cpuBuffers[m_frontBufferIdx].data());
+  if (m_ssaaScale <= 1) {
+    outPixels = fullSrc;
+    outW = m_headlessWidth;
+    outH = m_headlessHeight;
+    return;
+  }
+
+  const uint32_t dstW = m_headlessWidth / m_ssaaScale;
+  const uint32_t dstH = m_headlessHeight / m_ssaaScale;
+  m_resolvedBuffer.resize(static_cast<size_t>(dstW) * dstH * 4);
+  uint32_t* resolvedData =
+      reinterpret_cast<uint32_t*>(m_resolvedBuffer.data());
+
+#pragma omp parallel for collapse(2) if (dstH * dstW > 64000)
+  for (uint32_t y = 0; y < dstH; ++y) {
+    for (uint32_t x = 0; x < dstW; ++x) {
+      uint32_t r = 0, g = 0, b = 0, a = 0;
+      for (uint32_t dy = 0; dy < 2; ++dy) {
+        for (uint32_t dx = 0; dx < 2; ++dx) {
+          const uint32_t srcIdx =
+              (2 * y + dy) * m_headlessWidth + (2 * x + dx);
+          const uint32_t p = fullSrc[srcIdx];
+          a += (p >> 24) & 0xFFu;
+          r += (p >> 16) & 0xFFu;
+          g += (p >> 8) & 0xFFu;
+          b += p & 0xFFu;
+        }
+      }
+      resolvedData[static_cast<size_t>(y) * dstW + x] =
+          ((a / 4) << 24) | ((r / 4) << 16) | ((g / 4) << 8) | (b / 4);
+    }
+  }
+
+  outPixels = resolvedData;
+  outW = dstW;
+  outH = dstH;
+}
+
+void SoftwareBackend::PresentFrame(const uint32_t* srcPixels, uint32_t srcW,
+                                   uint32_t srcH) {
+  const auto mode = m_surfaceHost.GetMode();
+  if (mode == NativeSurfaceHost::Mode::Headless || !srcPixels || srcW == 0 ||
+      srcH == 0) {
+    return;
+  }
+
+  uint32_t hostW = m_guestWidth;
+  uint32_t hostH = m_guestHeight;
+  m_surfaceHost.SyncBounds(hostW, hostH);
+
+  if (mode == NativeSurfaceHost::Mode::StandaloneSDL2) {
+    if (!m_sdlRenderer || !m_sdlTexture) return;
+    GLIDE_PROFILE_SCOPE("Software::Sdl2Present");
+    SDL_Renderer* renderer = static_cast<SDL_Renderer*>(m_sdlRenderer);
+    SDL_Texture* texture = static_cast<SDL_Texture*>(m_sdlTexture);
+
+    void* texturePixels = nullptr;
+    int texturePitch = 0;
+    if (SDL_LockTexture(texture, nullptr, &texturePixels, &texturePitch) == 0) {
+      uint32_t* dstPixels = static_cast<uint32_t*>(texturePixels);
+      const uint32_t dstPitchWords = static_cast<uint32_t>(texturePitch / 4);
+      const uint32_t copyW = std::min(srcW, m_guestWidth);
+      const uint32_t copyH = std::min(srcH, m_guestHeight);
+      for (uint32_t y = 0; y < copyH; ++y) {
+        const uint32_t* srcRow = srcPixels + static_cast<size_t>(y) * srcW;
+        uint32_t* dstRow = dstPixels + static_cast<size_t>(y) * dstPitchWords;
+        for (uint32_t x = 0; x < copyW; ++x) {
+          dstRow[x] = srcRow[x] | 0xFF000000u;
+        }
+      }
+      SDL_UnlockTexture(texture);
+
+      int outW = static_cast<int>(hostW);
+      int outH = static_cast<int>(hostH);
+      SDL_GetRendererOutputSize(renderer, &outW, &outH);
+      const PresentRect rect =
+          NativeSurfaceHost::ComputePresentRect(
+              srcW, srcH, static_cast<uint32_t>(std::max(1, outW)),
+              static_cast<uint32_t>(std::max(1, outH)),
+              /*preserveAspect=*/true);
+      const SDL_Rect dstRect{rect.x, rect.y, static_cast<int>(rect.width),
+                             static_cast<int>(rect.height)};
+
+      SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+      SDL_RenderClear(renderer);
+      SDL_RenderCopy(renderer, texture, nullptr, &dstRect);
+      SDL_RenderPresent(renderer);
+    } else {
+      GLIDE_LOG(WARN, "Software",
+                "Failed to lock SDL_Texture: " << SDL_GetError());
+    }
+    return;
+  }
+
+#if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_X11)
+  if (mode == NativeSurfaceHost::Mode::X11Child && m_x11Presenter) {
+    GLIDE_PROFILE_SCOPE("Software::X11Present");
+    m_x11Presenter->Present(srcPixels, srcW, srcH, hostW, hostH);
+    return;
+  }
+#endif
+
+#if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_WAYLAND)
+  if (mode == NativeSurfaceHost::Mode::WaylandSubsurface && m_wlShmPresenter) {
+    GLIDE_PROFILE_SCOPE("Software::WaylandShmPresent");
+    m_wlShmPresenter->Present(srcPixels, srcW, srcH, hostW, hostH);
+    return;
+  }
+#endif
 }
 
 bool SoftwareBackend::SwapBuffers() {
@@ -885,8 +1644,13 @@ bool SoftwareBackend::SwapBuffers() {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   if (!m_initialized || !m_windowAttached) return false;
 
-  if (m_sdlWindow) {
-    SDL_PumpEvents();
+  // Strictly no-op for foreign hosts (X11Child / WaylandSubsurface / Headless);
+  // pumps events and handles clean quit ONLY for StandaloneSDL2 demos.
+  m_surfaceHost.PollEvents();
+  if (m_surfaceHost.WasQuitRequested()) {
+    GLIDE_LOG(INFO, "Software",
+              "Standalone window quit requested; shutting down cleanly.");
+    std::exit(0);
   }
 
   GLIDE_LOG(DEBUG, "Software", "Executing SwapBuffers presentation dispatch.");
@@ -924,87 +1688,14 @@ bool SoftwareBackend::SwapBuffers() {
     }
   }
 
-  if (m_sdlRenderer && m_sdlTexture && !m_cpuBuffers[m_frontBufferIdx].empty()) {
-    GLIDE_PROFILE_SCOPE("Software::Sdl2Present");
-    SDL_Renderer* renderer = reinterpret_cast<SDL_Renderer*>(m_sdlRenderer);
-    SDL_Texture* texture = reinterpret_cast<SDL_Texture*>(m_sdlTexture);
-
-    void* texturePixels = nullptr;
-    int texturePitch = 0;
-    if (SDL_LockTexture(texture, nullptr, &texturePixels, &texturePitch) == 0) {
-      uint32_t* dstPixels = reinterpret_cast<uint32_t*>(texturePixels);
-      const uint32_t* srcPixels = reinterpret_cast<const uint32_t*>(
-          m_cpuBuffers[m_frontBufferIdx].data());
-
-      uint32_t srcW = m_headlessWidth;
-      uint32_t srcH = m_headlessHeight;
-      uint32_t dstW = m_guestWidth;
-      uint32_t dstH = m_guestHeight;
-      uint32_t dstPitchWords = texturePitch / 4;
-
-      if (m_ssaaScale > 1) {
-        srcW /= m_ssaaScale;
-        srcH /= m_ssaaScale;
-        m_resolvedBuffer.resize(srcW * srcH * 4);
-        uint32_t* resolvedData =
-            reinterpret_cast<uint32_t*>(m_resolvedBuffer.data());
-        const uint32_t* fullSrc = reinterpret_cast<const uint32_t*>(
-            m_cpuBuffers[m_frontBufferIdx].data());
-
-#pragma omp parallel for collapse(2) if (srcH * srcW > 64000)
-        for (uint32_t y = 0; y < srcH; ++y) {
-          for (uint32_t x = 0; x < srcW; ++x) {
-            uint32_t r = 0, g = 0, b = 0, a = 0;
-            for (uint32_t dy = 0; dy < 2; ++dy) {
-              for (uint32_t dx = 0; dx < 2; ++dx) {
-                uint32_t srcIdx = (2 * y + dy) * m_headlessWidth + (2 * x + dx);
-                uint32_t p = fullSrc[srcIdx];
-                a += (p >> 24) & 0xFF;
-                r += (p >> 16) & 0xFF;
-                g += (p >> 8) & 0xFF;
-                b += p & 0xFF;
-              }
-            }
-            a /= 4;
-            r /= 4;
-            g /= 4;
-            b /= 4;
-            resolvedData[y * srcW + x] = (a << 24) | (r << 16) | (g << 8) | b;
-          }
-        }
-        srcPixels = resolvedData;
-      }
-
-      if (srcW == dstW && srcH == dstH) {
-        for (uint32_t y = 0; y < srcH; y++) {
-          std::memcpy(&dstPixels[y * dstPitchWords], &srcPixels[y * srcW],
-                      srcW * 4);
-        }
-      } else {
-        float scaleX = (float)srcW / dstW;
-        float scaleY = (float)srcH / dstH;
-#pragma omp parallel for if (dstH > 240)
-        for (uint32_t y = 0; y < dstH; y++) {
-          uint32_t srcY = (uint32_t)(y * scaleY);
-          if (srcY >= srcH) srcY = srcH - 1;
-          const uint32_t* srcRow = &srcPixels[srcY * srcW];
-          uint32_t* dstRow = &dstPixels[y * dstPitchWords];
-          for (uint32_t x = 0; x < dstW; x++) {
-            uint32_t srcX = (uint32_t)(x * scaleX);
-            if (srcX >= srcW) srcX = srcW - 1;
-            dstRow[x] = srcRow[srcX];
-          }
-        }
-      }
-
-      SDL_UnlockTexture(texture);
-
-      SDL_RenderClear(renderer);
-      SDL_RenderCopy(renderer, texture, nullptr, nullptr);
-      SDL_RenderPresent(renderer);
-    } else {
-      GLIDE_LOG(WARN, "Software", "Failed to lock SDL_Texture: " << SDL_GetError());
-    }
+  // 3. Present to active native surface (no-op in Headless mode).
+  if (m_surfaceHost.GetMode() != NativeSurfaceHost::Mode::Headless &&
+      !m_cpuBuffers[m_frontBufferIdx].empty()) {
+    const uint32_t* srcPixels = nullptr;
+    uint32_t srcW = 0;
+    uint32_t srcH = 0;
+    ResolveFrontBuffer(srcPixels, srcW, srcH);
+    PresentFrame(srcPixels, srcW, srcH);
   }
 
   return true;

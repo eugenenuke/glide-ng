@@ -1371,4 +1371,13 @@ bool NativeSurfaceHost::IsX11Surface() const {
   return false;
 }
 
+void* NativeSurfaceHost::GetWaylandEventQueue() const {
+#if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_WAYLAND)
+  if (m_mode == Mode::WaylandSubsurface && m_wlState) {
+    return static_cast<const WaylandSubsurfaceState*>(m_wlState)->queue;
+  }
+#endif
+  return nullptr;
+}
+
 }  // namespace GlideWrapper

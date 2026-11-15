@@ -11,6 +11,7 @@
 #include "backends/SoftwareBackendBase.h"
 #include "backends/software/RasterizerState.h"
 #include "backends/software/ThreadPool.h"
+#include "core/NativeSurfaceHost.h"
 
 namespace GlideWrapper {
 
@@ -28,8 +29,8 @@ struct Tile {
 
 class SoftwareBackend : public SoftwareBackendBase {
  public:
-  SoftwareBackend() = default;
-  ~SoftwareBackend() override { Shutdown(); }
+  SoftwareBackend();
+  ~SoftwareBackend() override;
 
   bool Initialize(const WrapperConfig& config) override;
   void Shutdown() override;
@@ -120,11 +121,20 @@ class SoftwareBackend : public SoftwareBackendBase {
   uint32_t m_tileCols{0};
   uint32_t m_tileRows{0};
 
-  void* m_sdlWindow{nullptr};    // SDL_Window*
-  bool m_sdlWindowOwned{false};
-  void* m_sdlRenderer{nullptr};  // SDL_Renderer*
-  bool m_sdlRendererOwned{false}; // SDL_Renderer* ownership
-  void* m_sdlTexture{nullptr};   // SDL_Texture*
+  void ResolveFrontBuffer(const uint32_t*& outPixels, uint32_t& outW,
+                          uint32_t& outH);
+  bool InitPresentationSurface();
+  void ShutdownPresentationSurface();
+  void PresentFrame(const uint32_t* srcPixels, uint32_t srcW, uint32_t srcH);
+
+  struct X11Presenter;
+  struct WaylandShmPresenter;
+
+  NativeSurfaceHost m_surfaceHost;
+  void* m_sdlRenderer{nullptr};  // StandaloneSDL2 owned SDL_Renderer*
+  void* m_sdlTexture{nullptr};   // StandaloneSDL2 owned SDL_Texture*
+  std::unique_ptr<X11Presenter> m_x11Presenter;
+  std::unique_ptr<WaylandShmPresenter> m_wlShmPresenter;
 };
 
 }  // namespace GlideWrapper

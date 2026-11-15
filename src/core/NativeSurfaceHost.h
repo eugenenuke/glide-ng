@@ -147,6 +147,7 @@ class NativeSurfaceHost {
   void* GetWaylandDisplay() const { return m_wlDisplay; }
   void* GetWaylandSurface() const { return m_wlChildSurface; }
   void* GetWaylandShm() const { return m_wlShm; }
+  void* GetWaylandEventQueue() const;
   int32_t GetWaylandScale() const { return m_wlBufferScale; }
   SDL_Window* GetSDLWindow() const { return m_sdlWindow; }
 
