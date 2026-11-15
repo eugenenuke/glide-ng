@@ -64,7 +64,7 @@ Recorded before any edits are made:
 | **T2.2** | Phase 2 | Implement X11 / XWayland native child window in `NativeSurfaceHost` (`XOpenDisplay`, `XCreateWindow`, `XShape`) + embed test harness | Med | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `4f40687` |
 | **T2.3** | Phase 2 | Implement Native Wayland `wl_subsurface` in `NativeSurfaceHost` + SVN DOSBox `setConfig('SDL2')` export + HiDPI scaling | Med–High | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `9865fc5` |
 | **T2.4** | Phase 2 | Migrate `VulkanBackend` to `NativeSurfaceHost` + aspect-ratio preserving letterbox/pillarbox blit | Med | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `2d75259`, `985e7fa`, `1d349ee` |
-| **T2.5** | Phase 2 | Migrate `OpenGLESBackend` to `NativeSurfaceHost` (Direct EGL) + aspect-ratio & Gamma LUT presentation pass | Med | `[ ] PENDING` | — |
+| **T2.5** | Phase 2 | Migrate `OpenGLESBackend` to `NativeSurfaceHost` (Direct EGL) + aspect-ratio & Gamma LUT presentation pass | Med | `[~] IMPLEMENTED — AWAITING USER VERIFICATION` | `df40756` |
 | **T2.6** | Phase 2 | Migrate `SoftwareBackend` to `NativeSurfaceHost` + aspect-ratio preserving presentation | Med | `[ ] PENDING` | — |
 | **T2.7** | Phase 2 | Retire old `PlatformWindowUtils` overlay code & late `XInitThreads()` constructor; run full Option A DOSBox matrix | Med | `[ ] PENDING` | — |
 | **T3.1** | Phase 3 | Extract `GlideStateTracker` from `SoftwareBackendBase` (remove CPU buffers from Vulkan/GLES inheritance) | Med | `[ ] PENDING` | — |
@@ -427,7 +427,21 @@ Recorded before any edits are made:
   - Keyboard/mouse work reliably and game exit returns cleanly to DOS prompt.
 
 #### `T2.5` — Migrate `OpenGLESBackend` to `NativeSurfaceHost` (Direct EGL) + Aspect-Ratio & Gamma LUT
-- **Status**: `[ ] PENDING`
+- **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION` (Commit `df40756`)
+- **Automated Result**:
+  - Replaced legacy `PlatformWindowUtils` overlay window / `SDL_PumpEvents()` in [OpenGLESBackend.h](../../src/backends/opengl_es/OpenGLESBackend.h) and [OpenGLESBackend.cpp](../../src/backends/opengl_es/OpenGLESBackend.cpp) with `NativeSurfaceHost` + Direct EGL 1.5:
+    - `Headless`: surfaceless EGL (`EGL_PLATFORM_SURFACELESS_MESA`, 1×1 Pbuffer fallback) with zero SDL/X11/Wayland calls.
+    - `X11Child`: Direct EGL (`EGL_PLATFORM_X11_EXT`, exact `EGL_NATIVE_VISUAL_ID` match to child X11 visual, private `EGLDisplay`) + dynamic `libglvnd` GLX suspend/restore via `dlsym` so host GLX (`DOSBox-X output=opengl` / `SDL_Renderer`) never conflicts with `EGL_BAD_ACCESS`.
+    - `WaylandSubsurface`: Direct EGL (`EGL_PLATFORM_WAYLAND_KHR` + `wl_egl_window_create` / `wl_egl_window_resize`, never calling `eglTerminate` on the host's borrowed `wl_display*`, `eglSwapInterval(0)` on Wayland unless `GLIDE_VSYNC=fifo`) + host EGL API/context save & restore (`EGL_OPENGL_API` ↔ `EGL_OPENGL_ES_API`).
+    - `StandaloneSDL2`: `SDL_WINDOW_OPENGL` + `SDL_GL_CreateContext` with `m_surfaceHost.PollEvents()` clean quit / Ctrl+C exit.
+  - Replaced raw `glBlitFramebuffer` in `SwapBuffers()` with `PresentToWindowSurface()` rendering a fullscreen quad via `m_glProgram` + `m_glGammaLutTex` into `NativeSurfaceHost::ComputePresentRect(...)` with black letterbox/pillarbox bars, exact texel-centered Gamma LUT sampling, opaque `alpha = 1.0` output (preventing Wayland subsurface transparency bleed), and unbound guest TMU samplers (`glBindSampler(0/1, 0)`).
+  - Strict WSI teardown order: delete GL objects (including `m_glesTextures`) → `eglMakeCurrent(NO)` → `eglDestroyContext` → `eglDestroySurface` → `wl_egl_window_destroy` → `eglTerminate` (if owned) → `m_surfaceHost.Detach()` → restore saved host GLX/EGL context.
+  - **Tests & Validation**:
+    - Headless `GLIDE_WRAPPER_BACKEND=opengl_es GLIDE_FORCE_NO_WINDOW=1 DISPLAY="" WAYLAND_DISPLAY="" ./build/bin/Glide3xWrapperTests`: **40/40 test cases passed (1894 assertions)** with zero display server.
+    - `Glide2xWrapperTests "OpenGL ES Gamma Correction Accuracy Validation"` (both Wayland & X11): **PASS (18/18 assertions)** — verified Gamma 1.0 → 128, Gamma 2.0 → 180, VRAM → 128.
+    - `glide_embed_test` (`--smoke-ms 600`) across all 6 modes (`Wayland`/`X11` × `--raw-handle`/`--sdl-window` × `--parent-gl`/2D): **all 6 PASS**, resize + close/reopen clean, **0 GL errors**, **0 Wayland protocol errors** under `WAYLAND_DEBUG=client`.
+    - Standalone `glide3_cube` on Wayland & X11: exits cleanly on `SIGINT` (`Ctrl+C`).
+    - Zero compiler warnings under `-Wall -Wextra -Wpedantic -Werror`.
 - **Target Files**:
   - `src/backends/opengl_es/OpenGLESBackend.h`
   - `src/backends/opengl_es/OpenGLESBackend.cpp`
