@@ -335,6 +335,7 @@ bool OpenGLESBackend::SwapBuffers() {
     glBindFramebuffer(GL_FRAMEBUFFER, m_headlessFBOs[0]);
     glReadPixels(0, 0, m_headlessWidth, m_headlessHeight, GL_RGBA,
                  GL_UNSIGNED_BYTE, m_cpuBuffers[m_backBufferIdx].data());
+    DiscardLazyCpuClear(m_backBufferIdx);
     checkGLError("SwapBuffers glReadPixels");
   }
 
@@ -381,8 +382,9 @@ void OpenGLESBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z,
   // Flush any pending geometry before clearing the buffers!
   FlushBatch();
 
-  // 1. Clear CPU-side framebuffer for progressive hybrid compatibility
-  SoftwareBackendBase::ClearBuffer(color, alpha, z, clearMask);
+  // 1. Defer CPU-side framebuffer clear lazily so pure 3D frames avoid
+  // full-frame CPU fills; materialized on demand before any LFB access/flush.
+  ScheduleLazyCpuClear(color, alpha, z, clearMask);
 
   // Bind active offscreen FBO
   glBindFramebuffer(GL_FRAMEBUFFER, GetActiveGpuFbo());
@@ -484,6 +486,7 @@ void OpenGLESBackend::FlushLFBToGPU() {
 
   // 1. Flush FRONTBUFFER if dirty
   if (m_lfbBufferDirty[0]) {
+    MaterializeLazyCpuClear(m_frontBufferIdx);
     flushBuffer(m_cpuBuffers[m_frontBufferIdx].data(), gpuFrontTexture);
     checkGLError("FlushLFBToGPU FrontBuffer glTexSubImage2D");
     m_lfbBufferDirty[0] = false;
@@ -491,6 +494,7 @@ void OpenGLESBackend::FlushLFBToGPU() {
 
   // 2. Flush BACKBUFFER if dirty
   if (m_lfbBufferDirty[1]) {
+    MaterializeLazyCpuClear(m_backBufferIdx);
     flushBuffer(m_cpuBuffers[m_backBufferIdx].data(), gpuBackTexture);
     checkGLError("FlushLFBToGPU BackBuffer glTexSubImage2D");
     m_lfbBufferDirty[1] = false;
@@ -526,10 +530,11 @@ bool OpenGLESBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
   glBindFramebuffer(GL_FRAMEBUFFER, fboToRead);
 
   // Resolve the destination CPU buffer based on the requested buffer
-  void* readDst = (buffer == 0) ? m_cpuBuffers[m_frontBufferIdx].data()
-                                : m_cpuBuffers[m_backBufferIdx].data();
+  uint32_t readSlot = (buffer == 0) ? m_frontBufferIdx : m_backBufferIdx;
+  void* readDst = m_cpuBuffers[readSlot].data();
 
   if (readDst) {
+    DiscardLazyCpuClear(readSlot);
     // Read pixels as GL_RGBA (which contains our R/B swapped BGRA-ordered
     // pixels) GLES glReadPixels is synchronous and guarantees the GPU finishes
     // all rendering before returning!

@@ -3378,3 +3378,59 @@ TEST_CASE("SoftwareBackend honors forceNoWindow without creating SDL resources",
   CHECK_FALSE(backend.IsHeadlessMode());
   backend.Shutdown();
 }
+
+TEST_CASE("Lazy CPU ClearBuffer defers fills until LFB access",
+          "[Software][LFB][LazyClear]") {
+  class LazyClearProbeBackend : public GlideWrapper::SoftwareBackend {
+   public:
+    void ClearBuffer(uint32_t color, uint32_t alpha, float z,
+                     uint32_t clearMask) override {
+      ScheduleLazyCpuClear(color, alpha, z, clearMask);
+    }
+    uint32_t PeekRawBackPixel(uint32_t x, uint32_t y) const {
+      const auto* px = reinterpret_cast<const uint32_t*>(
+          m_cpuBuffers[m_backBufferIdx].data());
+      return px[y * m_headlessWidth + x];
+    }
+  };
+
+  GlideWrapper::WrapperConfig config;
+  config.backend = "software";
+  config.forceNoWindow = true;
+  config.maxFps = 0.0;
+
+  LazyClearProbeBackend backend;
+  REQUIRE(backend.Initialize(config));
+  REQUIRE(backend.AttachWindow(nullptr, 64, 64, true));
+
+  // Clear backbuffer lazily to bright green (0x0000FF00 in ABGR/ARGB).
+  backend.ClearBuffer(0x0000FF00, 0xFF, 0.5f, 0x3);
+  CHECK(backend.HasPendingLazyCpuClear(1));
+  // Raw CPU backbuffer must remain untouched (0) until an LFB operation occurs.
+  CHECK(backend.PeekRawBackPixel(0, 0) == 0u);
+
+  // Perform a partial 1x1 LFB write at (10, 10) with pure white (RGB565 0xFFFF).
+  uint16_t white565 = 0xFFFF;
+  REQUIRE(backend.WriteLFB(1, 10, 10, 1, 1, 2, 0 /* GR_LFB_SRC_FMT_565 */,
+                           &white565));
+  CHECK_FALSE(backend.HasPendingLazyCpuClear(1));
+
+  // Read back both the written pixel and an untouched background pixel.
+  uint16_t writtenPx = 0;
+  uint16_t bgPx = 0;
+  REQUIRE(backend.ReadLFB(1, 10, 10, 1, 1, 2, &writtenPx));
+  REQUIRE(backend.ReadLFB(1, 0, 0, 1, 1, 2, &bgPx));
+  CHECK(writtenPx == 0xFFFF);
+  CHECK(bgPx == 0x07E0);  // Green in RGB565!
+
+  // Subsequent lazy clear followed by ReadLFB materializes cleanly too.
+  backend.ClearBuffer(0x00FF0000, 0xFF, 1.0f, 0x1);
+  CHECK(backend.HasPendingLazyCpuClear(1));
+  uint16_t afterClearPx = 0;
+  REQUIRE(backend.ReadLFB(1, 10, 10, 1, 1, 2, &afterClearPx));
+  CHECK_FALSE(backend.HasPendingLazyCpuClear(1));
+  CHECK(afterClearPx != 0xFFFF);
+
+  backend.DetachWindow();
+  backend.Shutdown();
+}

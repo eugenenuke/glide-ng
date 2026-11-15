@@ -110,6 +110,10 @@ void SoftwareBackendBase::ResetState() {
   m_texChromaMax[0] = m_texChromaMax[1] = 0;
   m_texChromaRangeMode[0] = m_texChromaRangeMode[1] = 0;
   m_lastCpuClearColor = 0;
+  m_pendingCpuColorClear[0] = {};
+  m_pendingCpuColorClear[1] = {};
+  m_pendingCpuDepthClear = false;
+  m_pendingCpuDepthValue = 1.0f;
   m_useGammaLut = false;
   for (int i = 0; i < 256; ++i) {
     m_lutR[i] = static_cast<uint8_t>(i);
@@ -131,7 +135,10 @@ void SoftwareBackendBase::ClearBuffer(uint32_t color, uint32_t alpha, float z,
                 << clearMask << std::dec << ", map=" << m_headlessPixelMap);
   if (!m_windowAttached || !m_headlessPixelMap) return;
 
+  uint32_t activeSlot =
+      (m_activeRenderBuffer == 0) ? m_frontBufferIdx : m_backBufferIdx;
   if (clearMask & 0x1) {  // Color Clear
+    m_pendingCpuColorClear[activeSlot].pending = false;
     uint32_t a = (alpha > 0) ? alpha : 255;
     uint32_t r = (color >> 16) & 0xFF;
     uint32_t g = (color >> 8) & 0xFF;
@@ -175,10 +182,102 @@ void SoftwareBackendBase::ClearBuffer(uint32_t color, uint32_t alpha, float z,
   }
 
   if (clearMask & 0x2) {  // Depth Clear
+    m_pendingCpuDepthClear = false;
     if (!m_headlessDepthBuffer.empty()) {
       std::fill(m_headlessDepthBuffer.begin(), m_headlessDepthBuffer.end(), z);
       GLIDE_LOG(DEBUG, "Rasterizer", "Cleared depth buffer with value " << z);
     }
+  }
+}
+
+void SoftwareBackendBase::ScheduleLazyCpuClear(uint32_t color, uint32_t alpha,
+                                               float z, uint32_t clearMask) {
+  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  if (!m_windowAttached || !m_headlessPixelMap) return;
+
+  uint32_t activeSlot =
+      (m_activeRenderBuffer == 0) ? m_frontBufferIdx : m_backBufferIdx;
+
+  if (clearMask & 0x1) {
+    if (m_colorMaskRgb || m_colorMaskAlpha) {
+      auto& slotState = m_pendingCpuColorClear[activeSlot];
+      // If a prior partial-mask clear is pending and this clear also uses a
+      // partial mask (not overwriting all channels), materialize the earlier
+      // clear first so masked-out channels retain their prior cleared bits.
+      if (slotState.pending && !(m_colorMaskRgb && m_colorMaskAlpha) &&
+          (slotState.maskRgb != m_colorMaskRgb ||
+           slotState.maskAlpha != m_colorMaskAlpha)) {
+        MaterializeLazyCpuClear(activeSlot);
+      }
+      slotState.pending = true;
+      slotState.color = color;
+      slotState.alpha = alpha;
+      slotState.pixelFormat = m_pixelFormatOverride;
+      slotState.maskRgb = m_colorMaskRgb;
+      slotState.maskAlpha = m_colorMaskAlpha;
+    }
+  }
+
+  if (clearMask & 0x2) {
+    m_pendingCpuDepthClear = true;
+    m_pendingCpuDepthValue = z;
+  }
+}
+
+void SoftwareBackendBase::MaterializeLazyCpuClear(uint32_t bufferSlot) {
+  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  if (bufferSlot >= 2 || !m_pendingCpuColorClear[bufferSlot].pending) return;
+
+  const PendingCpuColorClear pending = m_pendingCpuColorClear[bufferSlot];
+  m_pendingCpuColorClear[bufferSlot].pending = false;
+
+  if (m_cpuBuffers[bufferSlot].empty()) return;
+
+  uint32_t writeMask = 0;
+  if (pending.maskRgb) writeMask |= 0x00FFFFFF;
+  if (pending.maskAlpha) writeMask |= 0xFF000000;
+  if (writeMask == 0) return;
+
+  uint32_t a = (pending.alpha > 0) ? pending.alpha : 255;
+  uint32_t r = (pending.color >> 16) & 0xFF;
+  uint32_t g = (pending.color >> 8) & 0xFF;
+  uint32_t b = pending.color & 0xFF;
+  if (pending.pixelFormat == 1) {
+    std::swap(r, b);
+  }
+
+  uint32_t clearWord = (a << 24) | (r << 16) | (g << 8) | b;
+  m_lastCpuClearColor = clearWord & 0x00FFFFFF;
+
+  uint32_t* pixels =
+      reinterpret_cast<uint32_t*>(m_cpuBuffers[bufferSlot].data());
+  uint32_t totalPixels = m_headlessWidth * m_headlessHeight;
+
+  if (writeMask == 0xFFFFFFFF) {
+    std::fill_n(pixels, totalPixels, clearWord);
+  } else {
+    uint32_t keepMask = ~writeMask;
+    uint32_t maskedClearWord = clearWord & writeMask;
+    for (uint32_t i = 0; i < totalPixels; ++i) {
+      pixels[i] = (pixels[i] & keepMask) | maskedClearWord;
+    }
+  }
+}
+
+void SoftwareBackendBase::MaterializeLazyCpuDepthClear() {
+  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  if (!m_pendingCpuDepthClear) return;
+  m_pendingCpuDepthClear = false;
+  if (!m_headlessDepthBuffer.empty()) {
+    std::fill(m_headlessDepthBuffer.begin(), m_headlessDepthBuffer.end(),
+              m_pendingCpuDepthValue);
+  }
+}
+
+void SoftwareBackendBase::DiscardLazyCpuClear(uint32_t bufferSlot) {
+  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  if (bufferSlot < 2) {
+    m_pendingCpuColorClear[bufferSlot].pending = false;
   }
 }
 
@@ -478,6 +577,8 @@ void SoftwareBackendBase::SetTexChromakeyRange(uint32_t tmu, uint32_t minColor,
 
 void* SoftwareBackendBase::GetLfbWritePtr() {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  MaterializeLazyCpuClear(m_frontBufferIdx);
+  MaterializeLazyCpuClear(m_backBufferIdx);
   m_lfbDirty = true;
   m_lfbBufferDirty[0] = true;
   m_lfbBufferDirty[1] = true;
@@ -490,6 +591,8 @@ bool SoftwareBackendBase::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
   FlushBins();
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   if (!dstData || m_cpuBuffers[0].empty()) return false;
+  uint32_t readSlot = (buffer == 0) ? m_frontBufferIdx : m_backBufferIdx;
+  MaterializeLazyCpuClear(readSlot);
 
   const uint32_t* pixels = nullptr;
   uint32_t width = m_headlessWidth;
@@ -809,12 +912,10 @@ bool SoftwareBackendBase::WriteLFB(uint32_t buffer, uint32_t dstX,
     return false;
   }
 
-  uint32_t* pixels = nullptr;
-  if (buffer == 0) {  // FRONTBUFFER
-    pixels = reinterpret_cast<uint32_t*>(m_cpuBuffers[m_frontBufferIdx].data());
-  } else {  // BACKBUFFER
-    pixels = reinterpret_cast<uint32_t*>(m_cpuBuffers[m_backBufferIdx].data());
-  }
+  uint32_t targetSlot = (buffer == 0) ? m_frontBufferIdx : m_backBufferIdx;
+  MaterializeLazyCpuClear(targetSlot);
+  uint32_t* pixels =
+      reinterpret_cast<uint32_t*>(m_cpuBuffers[targetSlot].data());
   const auto* inBytes = reinterpret_cast<const uint8_t*>(srcData);
   const auto* refBytes = reinterpret_cast<const uint8_t*>(refData);
 
@@ -938,6 +1039,9 @@ void SoftwareBackendBase::AllocateCpuBuffers(uint32_t width, uint32_t height) {
   std::memset(m_cpuBuffers[0].data(), 0, m_cpuBuffers[0].size());
   std::memset(m_cpuBuffers[1].data(), 0, m_cpuBuffers[1].size());
   std::memset(m_resolvedBuffer.data(), 0, m_resolvedBuffer.size());
+  m_pendingCpuColorClear[0] = {};
+  m_pendingCpuColorClear[1] = {};
+  m_pendingCpuDepthClear = false;
   m_frontBufferIdx = 0;
   m_backBufferIdx = 1;
   m_activeRenderBuffer = 1;  // BACKBUFFER
@@ -956,6 +1060,9 @@ void SoftwareBackendBase::FreeCpuBuffers() {
   m_cpuBuffers[1].shrink_to_fit();
   m_resolvedBuffer.clear();
   m_resolvedBuffer.shrink_to_fit();
+  m_pendingCpuColorClear[0] = {};
+  m_pendingCpuColorClear[1] = {};
+  m_pendingCpuDepthClear = false;
   m_headlessPixelMap = nullptr;
   GLIDE_LOG(INFO, "SoftwareBackendBase", "Freed CPU double buffers.");
 }

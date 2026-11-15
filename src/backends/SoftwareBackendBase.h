@@ -67,6 +67,10 @@ class SoftwareBackendBase : public IGraphicsBackend {
   uint32_t GetHeight() const override { return m_headlessHeight; }
   uint32_t GetMsaaSamples() const override { return 1; }
   bool IsHeadlessMode() const { return m_headlessMode; }
+  bool HasPendingLazyCpuClear(uint32_t buffer = 1) const {
+    uint32_t slot = (buffer == 0) ? m_frontBufferIdx : m_backBufferIdx;
+    return m_pendingCpuColorClear[slot].pending;
+  }
 
   // State Getters for Testing
   uint32_t GetColorCombinerFunc() const { return m_colorCombinerFunc; }
@@ -98,7 +102,9 @@ class SoftwareBackendBase : public IGraphicsBackend {
   uint32_t GetStippleMode() const { return m_stippleMode; }
   uint32_t GetStipplePattern() const { return m_stipplePattern; }
   float GetDepthBufferPixel(uint32_t x, uint32_t y) const {
-    const_cast<SoftwareBackendBase*>(this)->FlushBins();
+    auto* self = const_cast<SoftwareBackendBase*>(this);
+    self->FlushBins();
+    self->MaterializeLazyCpuDepthClear();
     uint32_t pIdx = y * m_headlessWidth + x;
     if (pIdx < m_headlessDepthBuffer.size()) return m_headlessDepthBuffer[pIdx];
     return 0.0f;
@@ -219,6 +225,26 @@ class SoftwareBackendBase : public IGraphicsBackend {
   // Double buffering CPU emulation
   void AllocateCpuBuffers(uint32_t width, uint32_t height);
   void FreeCpuBuffers();
+
+  // Deferred CPU-side clear tracking for GPU backends (Vulkan/GLES) so normal
+  // 3D frames avoid full-frame CPU fills while preserving exact LFB semantics.
+  struct PendingCpuColorClear {
+    bool pending{false};
+    uint32_t color{0};
+    uint32_t alpha{255};
+    uint32_t pixelFormat{1};
+    bool maskRgb{true};
+    bool maskAlpha{true};
+  };
+  PendingCpuColorClear m_pendingCpuColorClear[2];
+  bool m_pendingCpuDepthClear{false};
+  float m_pendingCpuDepthValue{1.0f};
+
+  void ScheduleLazyCpuClear(uint32_t color, uint32_t alpha, float z,
+                            uint32_t clearMask);
+  void MaterializeLazyCpuClear(uint32_t bufferSlot);
+  void MaterializeLazyCpuDepthClear();
+  void DiscardLazyCpuClear(uint32_t bufferSlot);
 
   std::vector<uint8_t, AlignedAllocator<uint8_t, 64>> m_cpuBuffers[2];
   std::vector<uint8_t, AlignedAllocator<uint8_t, 64>> m_resolvedBuffer;

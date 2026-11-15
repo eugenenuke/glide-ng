@@ -1027,8 +1027,9 @@ void VulkanBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z,
             "ClearBuffer: color=" << std::hex << color
                                   << ", clearMask=" << clearMask);
 
-  // 1. Call SoftwareBackendBase::ClearBuffer to clear the CPU-side framebuffer!
-  SoftwareBackendBase::ClearBuffer(color, alpha, z, clearMask);
+  // 1. Defer CPU-side framebuffer clear lazily so pure 3D frames avoid
+  // full-frame CPU fills; materialized on demand before any LFB access/flush.
+  ScheduleLazyCpuClear(color, alpha, z, clearMask);
 
   // 2. Save clear state and mark pending for GPU clears when Render Pass
   // starts!
@@ -1578,9 +1579,10 @@ bool VulkanBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
 
   // Copy the GPU-rendered framebuffer from mapped staging memory into our
   // CPU-side active buffer
-  void* readDst = (buffer == 0) ? m_cpuBuffers[m_frontBufferIdx].data()
-                                : m_cpuBuffers[m_backBufferIdx].data();
+  uint32_t readSlot = (buffer == 0) ? m_frontBufferIdx : m_backBufferIdx;
+  void* readDst = m_cpuBuffers[readSlot].data();
   if (m_gpuStagingMaps[m_currentFrameSlot] && readDst) {
+    DiscardLazyCpuClear(readSlot);
     std::memcpy(readDst, m_gpuStagingMaps[m_currentFrameSlot],
                 m_headlessWidth * m_headlessHeight * 4);
     if (m_pixelFormatOverride == 1) {
@@ -2345,14 +2347,17 @@ void VulkanBackend::FlushLFBToGPU() {
     GLIDE_LOG(WARN, "Vulkan",
               "FlushLFBToGPU: Both FRONT and BACK LFB buffers are dirty in the "
               "same flush. Flushing BACK.");
+    MaterializeLazyCpuClear(m_backBufferIdx);
     bufferToFlush = 1;
     targetGpuIdx = gpuBackIdx;
     srcCpuData = m_cpuBuffers[m_backBufferIdx].data();
   } else if (m_lfbBufferDirty[0]) {
+    MaterializeLazyCpuClear(m_frontBufferIdx);
     bufferToFlush = 0;
     targetGpuIdx = gpuFrontIdx;
     srcCpuData = m_cpuBuffers[m_frontBufferIdx].data();
   } else if (m_lfbBufferDirty[1]) {
+    MaterializeLazyCpuClear(m_backBufferIdx);
     bufferToFlush = 1;
     targetGpuIdx = gpuBackIdx;
     srcCpuData = m_cpuBuffers[m_backBufferIdx].data();
