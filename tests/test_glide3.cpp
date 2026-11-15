@@ -3629,7 +3629,7 @@ TEST_CASE("NativeSurfaceHost headless lifecycle and idempotent detach",
 
   NativeSurfaceHost host;
   CHECK(!host.IsAttached());
-  CHECK(host.GetMode() == NativeSurfaceHost::Mode::None);
+  CHECK(host.GetMode() == NativeSurfaceHost::Mode::Detached);
   CHECK(!host.WasQuitRequested());
   CHECK(!host.IsWaylandSurface());
   CHECK(!host.IsX11Surface());
@@ -3681,7 +3681,7 @@ TEST_CASE("NativeSurfaceHost headless lifecycle and idempotent detach",
   // Detach resets cleanly and is idempotent
   host.Detach();
   CHECK(!host.IsAttached());
-  CHECK(host.GetMode() == NativeSurfaceHost::Mode::None);
+  CHECK(host.GetMode() == NativeSurfaceHost::Mode::Detached);
   host.Detach();
   CHECK(!host.IsAttached());
 }
@@ -3740,4 +3740,17 @@ TEST_CASE("NativeSurfaceHost StandaloneSDL2 handles scale, resize, and SDL_QUIT"
   host.Detach();
   CHECK(!host.IsAttached());
   CHECK(host.GetSDLWindow() == nullptr);
+}
+
+TEST_CASE("NativeSurfaceHost rejects invalid X11 Window ID gracefully via error trap",
+          "[WSI][NativeSurfaceHost][X11]") {
+  using GlideWrapper::NativeSurfaceHost;
+
+  // Invalid 32-bit X11 XID must fail cleanly without Xlib aborting the process.
+  NativeSurfaceHost host;
+  void* badX11Win = reinterpret_cast<void*>(static_cast<uintptr_t>(0x0000DEADUL));
+  CHECK(!host.Attach(badX11Win, 640, 480, true, /*forceNoWindow=*/false,
+                     "Invalid X11 Test"));
+  CHECK(!host.IsAttached());
+  CHECK(host.GetMode() == NativeSurfaceHost::Mode::Detached);
 }

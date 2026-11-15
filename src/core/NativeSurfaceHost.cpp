@@ -1,21 +1,73 @@
 #include "core/NativeSurfaceHost.h"
 
 #include <SDL2/SDL.h>
+#include <SDL2/SDL_syswm.h>
 #include <SDL2/SDL_version.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <cstring>
+#include <mutex>
 
 #include "core/Logger.h"
 
+#if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_X11)
+#include <X11/Xlib.h>
+#include <X11/extensions/shape.h>
+// Scrub infamous Xlib macros so they never collide with C++ identifiers.
+#ifdef None
+#undef None
+#endif
+#ifdef Bool
+#undef Bool
+#endif
+#ifdef Status
+#undef Status
+#endif
+#endif
+
 namespace GlideWrapper {
+
+namespace {
+
+#if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_X11)
+std::mutex g_x11ErrorTrapMutex;
+bool g_x11ErrorOccurred = false;
+int g_x11LastErrorCode = 0;
+
+int HandleTrappedX11Error(Display* /*dpy*/, XErrorEvent* ev) {
+  g_x11ErrorOccurred = true;
+  g_x11LastErrorCode = ev ? static_cast<int>(ev->error_code) : -1;
+  return 0;
+}
+
+class ScopedX11ErrorTrap {
+ public:
+  ScopedX11ErrorTrap() : m_lock(g_x11ErrorTrapMutex) {
+    g_x11ErrorOccurred = false;
+    g_x11LastErrorCode = 0;
+    m_prevHandler = XSetErrorHandler(&HandleTrappedX11Error);
+  }
+
+  ~ScopedX11ErrorTrap() { XSetErrorHandler(m_prevHandler); }
+
+  bool ErrorOccurred() const { return g_x11ErrorOccurred; }
+  int LastErrorCode() const { return g_x11LastErrorCode; }
+
+ private:
+  std::unique_lock<std::mutex> m_lock;
+  XErrorHandler m_prevHandler = nullptr;
+};
+#endif
+
+}  // namespace
 
 NativeSurfaceHost::~NativeSurfaceHost() { Detach(); }
 
 const char* NativeSurfaceHost::ModeToString(Mode mode) {
   switch (mode) {
-    case Mode::None:
-      return "None";
+    case Mode::Detached:
+      return "Detached";
     case Mode::Headless:
       return "Headless";
     case Mode::StandaloneSDL2:
@@ -101,12 +153,74 @@ bool NativeSurfaceHost::Attach(void* hostHandle, uint32_t guestW,
                                 extraSdlWindowFlags, windowScale);
   }
 
-  // X11Child (T2.2) and WaylandSubsurface (T2.3) will hook in here.
+#if defined(__unix__) && !defined(__APPLE__)
+  // Safely probe live SDL2 windows without blindly dereferencing hostHandle
+  // (which may be a numeric X11 Window XID).
+  if (SDL_WasInit(SDL_INIT_VIDEO) != 0) {
+    const char* videoDriver = SDL_GetCurrentVideoDriver();
+    const bool isWaylandDriver =
+        (videoDriver != nullptr && std::strcmp(videoDriver, "wayland") == 0);
+
+    for (Uint32 id = 1; id <= 64; ++id) {
+      SDL_Window* candidate = SDL_GetWindowFromID(id);
+      if (!candidate) {
+        continue;
+      }
+
+      SDL_SysWMinfo wmi{};
+      SDL_VERSION(&wmi.version);
+      if (!SDL_GetWindowWMInfo(candidate, &wmi)) {
+        continue;
+      }
+
+      if (static_cast<void*>(candidate) == hostHandle) {
+        if (wmi.subsystem == SDL_SYSWM_X11) {
+          GLIDE_LOG(INFO, "WSI",
+                    "Resolved host SDL_Window* "
+                        << hostHandle << " -> X11 Window 0x" << std::hex
+                        << static_cast<unsigned long>(wmi.info.x11.window)
+                        << std::dec);
+          return AttachX11Child(
+              static_cast<unsigned long>(wmi.info.x11.window));
+        }
+        if (wmi.subsystem == SDL_SYSWM_WAYLAND) {
+          GLIDE_LOG(WARN, "WSI",
+                    "Detected Wayland SDL_Window* hostHandle="
+                        << hostHandle
+                        << "; WaylandSubsurface attachment is scheduled for "
+                           "T2.3.");
+          m_guestWidth = 0;
+          m_guestHeight = 0;
+          return false;
+        }
+      } else if (isWaylandDriver && wmi.subsystem == SDL_SYSWM_WAYLAND &&
+                 static_cast<void*>(wmi.info.wl.surface) == hostHandle) {
+        // DOSBox-X statWMInfo() union alias on native Wayland.
+        GLIDE_LOG(WARN, "WSI",
+                  "Detected Wayland wl_surface* hostHandle="
+                      << hostHandle
+                      << "; WaylandSubsurface attachment is scheduled for "
+                         "T2.3.");
+        m_guestWidth = 0;
+        m_guestHeight = 0;
+        return false;
+      }
+    }
+  }
+
+  // Raw X11 Window ID path (DOSBox-X on X11/XWayland, SVN DOSBox without
+  // setConfig('SDL2'), or direct Xlib hosts). X11 XIDs are 32-bit integers.
+  const uintptr_t rawVal = reinterpret_cast<uintptr_t>(hostHandle);
+  if (rawVal != 0 && rawVal <= 0xFFFFFFFFUL) {
+    if (AttachX11Child(static_cast<unsigned long>(rawVal))) {
+      return true;
+    }
+  }
+#endif
+
   GLIDE_LOG(WARN, "WSI",
-            "NativeSurfaceHost: foreign hostHandle="
-                << hostHandle
-                << " attachment is not implemented yet (scheduled for "
-                   "T2.2/T2.3).");
+            "NativeSurfaceHost: failed to attach foreign hostHandle="
+                << hostHandle);
   m_guestWidth = 0;
   m_guestHeight = 0;
   return false;
@@ -166,6 +280,117 @@ bool NativeSurfaceHost::AttachStandaloneSDL2(uint32_t guestW, uint32_t guestH,
   return true;
 }
 
+bool NativeSurfaceHost::AttachX11Child(unsigned long parentWindow) {
+#if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_X11)
+  if (parentWindow == 0) {
+    return false;
+  }
+
+  // Open a dedicated private X11 Display connection so we never race with
+  // DOSBox's Xlib Display* and never need a late dlopen-time XInitThreads().
+  Display* dpy = XOpenDisplay(nullptr);
+  if (!dpy) {
+    GLIDE_LOG(CRITICAL, "WSI",
+              "NativeSurfaceHost: XOpenDisplay(nullptr) failed (is DISPLAY "
+              "set?).");
+    return false;
+  }
+
+  Window parent = static_cast<Window>(parentWindow);
+  Window root = 0;
+  int x = 0;
+  int y = 0;
+  unsigned int parentW = 0;
+  unsigned int parentH = 0;
+  unsigned int borderW = 0;
+  unsigned int depth = 0;
+  Window child = 0;
+
+  {
+    ScopedX11ErrorTrap trap;
+
+    // Select StructureNotifyMask on the parent via our private X11 connection
+    // BEFORE querying initial geometry so no resize event can be missed.
+    // (StructureNotifyMask is non-exclusive and isolated per X11 client.)
+    XSelectInput(dpy, parent, StructureNotifyMask);
+    int geomOk = XGetGeometry(dpy, parent, &root, &x, &y, &parentW, &parentH,
+                              &borderW, &depth);
+    XSync(dpy, False);
+
+    if (!geomOk || trap.ErrorOccurred() || parentW == 0 || parentH == 0) {
+      GLIDE_LOG(WARN, "WSI",
+                "NativeSurfaceHost: XGetGeometry failed for X11 parent 0x"
+                    << std::hex << parentWindow << std::dec
+                    << " (error_code=" << trap.LastErrorCode() << ").");
+      XCloseDisplay(dpy);
+      return false;
+    }
+
+    XSetWindowAttributes attrs{};
+    attrs.background_pixel = BlackPixel(dpy, DefaultScreen(dpy));
+    attrs.border_pixel = 0;
+    attrs.bit_gravity = NorthWestGravity;
+    // Never select ButtonPressMask/KeyPressMask/PointerMotionMask on the child.
+    attrs.event_mask = ExposureMask | StructureNotifyMask;
+
+    child = XCreateWindow(
+        dpy, parent, 0, 0, parentW, parentH, 0, CopyFromParent, InputOutput,
+        CopyFromParent,
+        CWBackPixel | CWBorderPixel | CWBitGravity | CWEventMask, &attrs);
+
+    int shapeEventBase = 0;
+    int shapeErrorBase = 0;
+    if (child != 0 &&
+        XShapeQueryExtension(dpy, &shapeEventBase, &shapeErrorBase)) {
+      // Empty ShapeInput region -> 100% mouse & keyboard pass-through to host.
+      XShapeCombineRectangles(dpy, child, ShapeInput, 0, 0, nullptr, 0,
+                              ShapeSet, Unsorted);
+    } else if (child != 0) {
+      GLIDE_LOG(WARN, "WSI",
+                "NativeSurfaceHost: X11 SHAPE extension unavailable; child "
+                "window may intercept pointer events.");
+    }
+
+    if (child != 0) {
+      XMapRaised(dpy, child);
+    }
+    XSync(dpy, False);
+
+    if (trap.ErrorOccurred() || child == 0) {
+      GLIDE_LOG(CRITICAL, "WSI",
+                "NativeSurfaceHost: failed to create/map X11 child window "
+                "under parent 0x"
+                    << std::hex << parentWindow << std::dec
+                    << " (error_code=" << trap.LastErrorCode() << ").");
+      if (child != 0) {
+        XDestroyWindow(dpy, child);
+        XSync(dpy, False);
+      }
+      XCloseDisplay(dpy);
+      return false;
+    }
+  }
+
+  m_x11Display = dpy;
+  m_x11ParentWindow = parentWindow;
+  m_x11ChildWindow = static_cast<unsigned long>(child);
+  m_x11ParentDestroyed = false;
+  m_pixelWidth = static_cast<uint32_t>(parentW);
+  m_pixelHeight = static_cast<uint32_t>(parentH);
+  m_mode = Mode::X11Child;
+
+  GLIDE_LOG(INFO, "WSI",
+            "NativeSurfaceHost attached in X11Child mode (parent=0x"
+                << std::hex << m_x11ParentWindow << ", child=0x"
+                << m_x11ChildWindow << std::dec << ", size=" << m_pixelWidth
+                << "x" << m_pixelHeight << ", input=click-through).");
+  return true;
+#else
+  (void)parentWindow;
+  return false;
+#endif
+}
+
 void NativeSurfaceHost::QueryStandaloneDrawableSize(uint32_t& outW,
                                                     uint32_t& outH) const {
   if (!m_sdlWindow) {
@@ -189,7 +414,7 @@ void NativeSurfaceHost::QueryStandaloneDrawableSize(uint32_t& outW,
 }
 
 void NativeSurfaceHost::Detach() {
-  if (m_mode == Mode::None) {
+  if (m_mode == Mode::Detached) {
     return;
   }
 
@@ -208,16 +433,30 @@ void NativeSurfaceHost::Detach() {
       m_sdlVideoInitializedByUs = false;
     }
   }
+#if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_X11)
+  else if (m_mode == Mode::X11Child && m_x11Display) {
+    Display* dpy = static_cast<Display*>(m_x11Display);
+    {
+      ScopedX11ErrorTrap trap;
+      if (m_x11ChildWindow != 0 && !m_x11ParentDestroyed) {
+        XDestroyWindow(dpy, static_cast<Window>(m_x11ChildWindow));
+      }
+      XSync(dpy, False);
+    }
+    XCloseDisplay(dpy);
+  }
+#endif
 
   m_x11Display = nullptr;
   m_x11ParentWindow = 0;
   m_x11ChildWindow = 0;
+  m_x11ParentDestroyed = false;
   m_wlDisplay = nullptr;
   m_wlChildSurface = nullptr;
   m_wlShm = nullptr;
   m_wlBufferScale = 1;
 
-  m_mode = Mode::None;
+  m_mode = Mode::Detached;
   m_guestWidth = 0;
   m_guestHeight = 0;
   m_pixelWidth = 0;
@@ -226,7 +465,7 @@ void NativeSurfaceHost::Detach() {
 }
 
 bool NativeSurfaceHost::SyncBounds(uint32_t& outPixelW, uint32_t& outPixelH) {
-  if (m_mode == Mode::None || m_mode == Mode::Headless) {
+  if (m_mode == Mode::Detached || m_mode == Mode::Headless) {
     outPixelW = m_pixelWidth;
     outPixelH = m_pixelHeight;
     return false;
@@ -243,6 +482,48 @@ bool NativeSurfaceHost::SyncBounds(uint32_t& outPixelW, uint32_t& outPixelH) {
     outPixelH = m_pixelHeight;
     return changed;
   }
+
+#if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_X11)
+  if (m_mode == Mode::X11Child && m_x11Display && m_x11ChildWindow != 0 &&
+      !m_x11ParentDestroyed) {
+    Display* dpy = static_cast<Display*>(m_x11Display);
+    uint32_t targetW = m_pixelWidth;
+    uint32_t targetH = m_pixelHeight;
+    bool sawConfigure = false;
+
+    while (XEventsQueued(dpy, QueuedAfterReading) > 0) {
+      XEvent ev;
+      XNextEvent(dpy, &ev);
+      if (ev.type == ConfigureNotify &&
+          ev.xconfigure.window == static_cast<Window>(m_x11ParentWindow)) {
+        if (ev.xconfigure.width > 0 && ev.xconfigure.height > 0) {
+          targetW = static_cast<uint32_t>(ev.xconfigure.width);
+          targetH = static_cast<uint32_t>(ev.xconfigure.height);
+          sawConfigure = true;
+        }
+      } else if (ev.type == DestroyNotify &&
+                 ev.xdestroywindow.window ==
+                     static_cast<Window>(m_x11ParentWindow)) {
+        m_x11ParentDestroyed = true;
+      }
+    }
+
+    if (!m_x11ParentDestroyed && sawConfigure &&
+        (targetW != m_pixelWidth || targetH != m_pixelHeight)) {
+      {
+        ScopedX11ErrorTrap trap;
+        XMoveResizeWindow(dpy, static_cast<Window>(m_x11ChildWindow), 0, 0,
+                          targetW, targetH);
+        XFlush(dpy);
+      }
+      m_pixelWidth = targetW;
+      m_pixelHeight = targetH;
+      outPixelW = m_pixelWidth;
+      outPixelH = m_pixelHeight;
+      return true;
+    }
+  }
+#endif
 
   outPixelW = m_pixelWidth;
   outPixelH = m_pixelHeight;

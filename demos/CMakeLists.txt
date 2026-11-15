@@ -278,3 +278,11 @@ target_link_libraries(Glide3xShowcaseDemo PRIVATE
     ${CMAKE_DL_LIBS}
     -lm
 )
+
+# --- Option A Native Child Surface Embed Harness (T2.2 / T2.3) ---
+add_executable(child_surface_embed_test
+    child_surface_embed_test.cpp
+)
+target_link_libraries(child_surface_embed_test PRIVATE
+    GlideWrapperCore
+)

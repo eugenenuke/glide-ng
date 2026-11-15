@@ -45,7 +45,7 @@ struct PresentRect {
 class NativeSurfaceHost {
  public:
   enum class Mode {
-    None,
+    Detached,
     Headless,
     StandaloneSDL2,
     X11Child,
@@ -115,7 +115,7 @@ class NativeSurfaceHost {
    */
   void PollEvents();
 
-  bool IsAttached() const { return m_mode != Mode::None; }
+  bool IsAttached() const { return m_mode != Mode::Detached; }
   bool WasQuitRequested() const { return m_quitRequested; }
   Mode GetMode() const { return m_mode; }
 
@@ -145,9 +145,10 @@ class NativeSurfaceHost {
   bool AttachStandaloneSDL2(uint32_t guestW, uint32_t guestH,
                             const std::string& title,
                             uint32_t extraSdlWindowFlags, uint32_t windowScale);
+  bool AttachX11Child(unsigned long parentWindow);
   void QueryStandaloneDrawableSize(uint32_t& outW, uint32_t& outH) const;
 
-  Mode m_mode = Mode::None;
+  Mode m_mode = Mode::Detached;
   uint32_t m_guestWidth = 0;
   uint32_t m_guestHeight = 0;
   uint32_t m_pixelWidth = 0;
@@ -160,10 +161,11 @@ class NativeSurfaceHost {
   bool m_sdlVideoInitializedByUs = false;
   std::string m_sdlVideoDriver;
 
-  // X11Child state (populated in T2.2)
+  // X11Child state
   void* m_x11Display = nullptr;
   unsigned long m_x11ParentWindow = 0;
   unsigned long m_x11ChildWindow = 0;
+  bool m_x11ParentDestroyed = false;
 
   // WaylandSubsurface state (populated in T2.3)
   void* m_wlDisplay = nullptr;
