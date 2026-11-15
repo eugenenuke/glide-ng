@@ -49,10 +49,10 @@ Recorded before any edits are made:
 
 | ID | Phase | Task Summary | Risk | Status | Commit |
 | :--- | :--- | :--- | :---: | :--- | :--- |
-| **T0.1** | Phase 0 | Fix `ctest` discovery (`enable_testing()`), update `tests/run_all_tests.py`, lock baseline | Low | `[~] IMPLEMENTED — AWAITING USER VERIFICATION` | `dd527a8` |
-| **T0.2** | Phase 0 | Fix `SoftwareBackend::AttachWindow` ignoring `forceNoWindow` & `m_sdlRendererOwned` leak | Low | `[~] IMPLEMENTED — AWAITING USER VERIFICATION` | `5e097b8` |
-| **T0.3** | Phase 0 | Audit & update `.agents/AGENTS.md`, existing 5 skills, add `wsi-window-injection` & `build-and-test` skills | Low | `[~] IMPLEMENTED — AWAITING USER VERIFICATION` | `415d0a1` |
-| **T0.4** | Phase 0 | User-approved repo hygiene (`.gitignore`, untracked logs/caches, stale `subagent-*` branches) | Low | `[~] IMPLEMENTED — AWAITING USER VERIFICATION` | `133e898` |
+| **T0.1** | Phase 0 | Fix `ctest` discovery (`enable_testing()`), update `tests/run_all_tests.py`, lock baseline | Low | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `dd527a8` |
+| **T0.2** | Phase 0 | Fix `SoftwareBackend::AttachWindow` ignoring `forceNoWindow` & `m_sdlRendererOwned` leak | Low | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `5e097b8` |
+| **T0.3** | Phase 0 | Audit & update `.agents/AGENTS.md`, existing 5 skills, add `wsi-window-injection` & `build-and-test` skills | Low | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `415d0a1` |
+| **T0.4** | Phase 0 | User-approved repo hygiene (`.gitignore`, untracked logs/caches, stale `subagent-*` branches) | Low | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `133e898` |
 | **T1.1** | Phase 1 | Remove `[DEBUG-GLES]` `std::cout` spam & decouple `Logger.cpp` from `<vulkan/vulkan.hpp>` | Low | `[ ] PENDING` | — |
 | **T1.2** | Phase 1 | Deduplicate `color.frag` / `color_dualsrc.frag` via `-DUSE_DUAL_SRC_BLEND`; delete stale checked-in `.spv.h` | Low | `[ ] PENDING` | — |
 | **T1.3** | Phase 1 | Fix `VulkanBackend::SwapBuffers` semaphore wait stage (`eColorAttachmentOutput` → `eTransfer`) | Low | `[ ] PENDING` | — |
@@ -291,6 +291,7 @@ Recorded before any edits are made:
      - `void PollEvents();` (only pumps SDL events in `StandaloneSDL2` mode; **never** steals DOSBox's SDL events in `X11Child` / `WaylandSubsurface` modes!).
      - Native handle accessors (`GetMode()`, `GetX11Display()`, `GetX11Window()`, `GetWaylandDisplay()`, `GetWaylandSurface()`, `GetWaylandScale()`, `GetSDLWindow()`, `GetDrawableSize()`).
   2. Implement `Headless` and `StandaloneSDL2` modes first (no backend switched yet — zero behavioral impact on existing code).
+     - In `StandaloneSDL2` mode (`hWnd == 0` ONLY, never when attached to DOSBox): set `SDL_SetHint(SDL_HINT_NO_SIGNAL_HANDLERS, "1")` so `Ctrl+C` terminates standalone demos immediately, and check `SDL_QUIT` cleanly during `PollEvents()` so clicking the window close (`X`) button exits standalone demos cleanly.
   3. Add Catch2 unit tests for `ComputePresentRect` (640×480 in 1920×1080 → `x=240, y=0, w=1440, h=1080`; 640×480 in 800×600 → `0,0,800,600`; 640×400 in 640×480 → `0,40,640,400`; `preserveAspect=false` → full stretch; zero-guard).
 - **Automated Gate**: Clean build + all `ComputePresentRect` and headless lifecycle unit tests pass.
 - **User Verification**: Quick review of `NativeSurfaceHost.h` interface before X11/Wayland implementations begin.
