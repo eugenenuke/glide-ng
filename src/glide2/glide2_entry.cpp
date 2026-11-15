@@ -287,7 +287,7 @@ FX_ENTRY void FX_CALL grBufferClear(GrColor_t color, GrAlpha_t alpha,
 
 FX_ENTRY void FX_CALL grBufferSwap(int swap_interval) {
   EnsureEngineInitialized();
-  if (s_shamelessPlugEnabled) {
+  if (EntryCommon::ShouldRenderShamelessPlug(s_shamelessPlugEnabled)) {
     grShamelessPlug();
   }
   s_lastSwapTime = std::chrono::steady_clock::now();

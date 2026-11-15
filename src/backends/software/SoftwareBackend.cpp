@@ -60,18 +60,6 @@ namespace GlideWrapper {
 
 namespace {
 
-bool IsWaylandStrictFifoRequested() {
-  const char* env = std::getenv("GLIDE_VSYNC");
-  if (!env) return false;
-  std::string s(env);
-  for (char& ch : s) {
-    if (ch >= 'A' && ch <= 'Z') {
-      ch = static_cast<char>(ch - 'A' + 'a');
-    }
-  }
-  return s == "fifo" || s == "strict";
-}
-
 // Fast CPU aspect-ratio preserving blit with opaque black letterbox/pillarbox
 // bars into a 32-bit 0xXXRRGGBB (or 0xXXBBGGRR when swapRedBlue=true) surface.
 void BlitScaledLetterbox(const uint32_t* srcPixels, uint32_t srcW,
@@ -728,11 +716,10 @@ bool SoftwareBackend::Initialize(const WrapperConfig& config) {
   m_config = config;
   ResetState_Locked();
 
-  const char* envSimd = std::getenv("GLIDE_USE_SIMD");
-  m_useSimd = (envSimd && std::atoi(envSimd) == 1);
+  m_useSimd = m_config.swUseSimd;
   if (m_useSimd) {
     GLIDE_LOG(INFO, "Software",
-              "SIMD optimization hook is ACTIVE (GLIDE_USE_SIMD=1).");
+              "SIMD optimization hook is ACTIVE (GLIDE_NG_SW_SIMD=1).");
   } else {
     GLIDE_LOG(INFO, "Software",
               "SIMD optimization hook is inactive. Using scalar reference "
@@ -741,31 +728,16 @@ bool SoftwareBackend::Initialize(const WrapperConfig& config) {
 
   int logicalCores =
       std::max(1, static_cast<int>(std::thread::hardware_concurrency()));
-  const char* envThreads = std::getenv("GLIDE_NUM_THREADS");
-  int numThreads = logicalCores;
-  if (envThreads) {
-    numThreads = std::max(1, std::atoi(envThreads));
-  }
+  int numThreads = (m_config.swThreads > 0)
+                       ? static_cast<int>(m_config.swThreads)
+                       : logicalCores;
   m_threadPool = std::make_unique<ThreadPool>(numThreads - 1);
   GLIDE_LOG(INFO, "Software",
             "Initialized Lock-Free Thread Pool with "
                 << (numThreads - 1)
                 << " worker threads (Total threads: " << numThreads << ").");
 
-  const char* envTileSize = std::getenv("GLIDE_WRAPPER_TILE_SIZE");
-  uint32_t rawTileSize = 32;
-  if (envTileSize) {
-    int configuredSize = std::atoi(envTileSize);
-    if (configuredSize < 16) {
-      GLIDE_LOG(WARN, "Software",
-                "Unsafe tile size "
-                    << configuredSize
-                    << " configured (minimum is 16). Overriding to 16.");
-      rawTileSize = 16;
-    } else {
-      rawTileSize = configuredSize;
-    }
-  }
+  uint32_t rawTileSize = std::max<uint32_t>(16, m_config.swTileSize);
   m_tileSize = 1;
   m_tileShift = 0;
   while (m_tileSize < rawTileSize) {
@@ -809,7 +781,7 @@ bool SoftwareBackend::InitPresentationSurface() {
     }
     const bool usePresentVsync =
         m_config.vsync &&
-        (!m_surfaceHost.IsWaylandSurface() || IsWaylandStrictFifoRequested());
+        (!m_surfaceHost.IsWaylandSurface() || m_config.vsyncStrictFifo);
     Uint32 flags = SDL_RENDERER_ACCELERATED |
                    (usePresentVsync ? SDL_RENDERER_PRESENTVSYNC : 0);
     SDL_Renderer* renderer = SDL_CreateRenderer(win, -1, flags);
@@ -951,7 +923,7 @@ bool SoftwareBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
   }
 #endif
 
-  ResolveAAMode();
+  ResolveAAMode(m_config.swAaMode);
 
   uint32_t samplesVal = m_ssaaScale * m_ssaaScale;
   if (samplesVal == 1) samplesVal = 0;

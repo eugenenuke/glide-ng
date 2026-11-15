@@ -1,5 +1,5 @@
 #include "WrapperConfig.h"
-#include <cstdlib>
+#include "JsonConfigLoader.h"
 #include <string>
 #include <unordered_map>
 
@@ -34,27 +34,10 @@ EmulationRegistry& EmulationRegistry::GetInstance() {
 }
 
 EmulationRegistry::EmulationRegistry() {
-    if (const char* env = std::getenv("GLIDE_FORCE_NO_WINDOW")) {
-        m_config.forceNoWindow = (std::string(env) == "1");
-    }
-    if (const char* env = std::getenv("GLIDE_HEADLESS")) {
-        m_config.forceNoWindow = (std::string(env) == "1");
-    }
-    if (const char* env = std::getenv("GLIDE_WRAPPER_LOG_LEVEL")) {
-        m_config.logLevel = std::stoul(env);
-    }
-    if (const char* env = std::getenv("GLIDE_WRAPPER_WINDOW_SCALE")) {
-        int val = std::atoi(env);
-        if (val >= 1 && val <= 8) {
-            m_config.windowScale = static_cast<uint32_t>(val);
-        }
-    }
-    if (const char* env = std::getenv("GLIDE_WRAPPER_PRESENTATION_FILTER")) {
-        int val = std::atoi(env);
-        if (val == 0 || val == 1) {
-            m_config.presentationFilter = static_cast<uint32_t>(val);
-        }
-    }
+    // Load baseline defaults + optional glide_config.json + FX_GLIDE_* + GLIDE_NG_*
+    // through the single authoritative config loader.
+    JsonConfigLoader loader;
+    loader.Load("glide_config.json", m_config);
 }
 
 bool EmulationRegistry::IsFunctionAvailable(const std::string& funcName) const {
@@ -80,4 +63,3 @@ bool EmulationRegistry::IsFunctionAvailable(const std::string& funcName) const {
 }
 
 } // namespace GlideWrapper
-

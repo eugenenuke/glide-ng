@@ -330,22 +330,15 @@ void SoftwareBackendBase::SetRenderBuffer(uint32_t target) {
                                        << ", map=" << m_headlessPixelMap);
 }
 
-void SoftwareBackendBase::ResolveAAMode() {
+void SoftwareBackendBase::ResolveAAMode(const std::string& aaMode) {
   m_softwareAaMode = "analytical";
   m_ssaaScale = 1;
-  const char* envMode = ::getenv("GLIDE_WRAPPER_SOFTWARE_AA");
-  if (envMode) {
-    std::string modeStr(envMode);
-    if (modeStr == "ssaa") {
-      m_softwareAaMode = "ssaa";
-      m_ssaaScale = 2;
-      GLIDE_LOG(
-          INFO, "Software",
-          "Supersampling Anti-Aliasing (SSAA) mode enabled (2x scaling).");
-    } else {
-      GLIDE_LOG(INFO, "Software",
-                "Analytical Point/Line Anti-Aliasing mode enabled (default).");
-    }
+  if (aaMode == "ssaa") {
+    m_softwareAaMode = "ssaa";
+    m_ssaaScale = 2;
+    GLIDE_LOG(
+        INFO, "Software",
+        "Supersampling Anti-Aliasing (SSAA) mode enabled (2x scaling).");
   } else {
     GLIDE_LOG(INFO, "Software",
               "Analytical Point/Line Anti-Aliasing mode enabled (default).");

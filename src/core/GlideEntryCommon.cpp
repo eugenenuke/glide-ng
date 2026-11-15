@@ -147,14 +147,15 @@ void InitGlide(const char* apiTag, void (*resetFrontendState)()) {
   JsonConfigLoader loader;
   loader.Load("glide_config.json", reg.GetConfig());
 
+  const auto& cfg = reg.GetConfig();
+  auto clampedLevel = static_cast<LogLevel>(
+      std::min<uint32_t>(cfg.logLevel, static_cast<uint32_t>(LogLevel::DEBUG)));
   auto& logger = Logger::GetInstance();
-  logger.Initialize(std::string(WRAPPER_PROJECT_NAME) + ".log",
-                    static_cast<LogLevel>(reg.GetConfig().logLevel),
-                    reg.GetConfig().logToConsole);
+  logger.Initialize(cfg.logFile, clampedLevel, cfg.logToConsole);
   GLIDE_LOG(INFO, "Frontend", "grGlideInit (" << apiTag << ") invoked.");
 
-  logger.LogExecutionSummary(reg.GetConfig());
-  BackendManager::GetInstance().EstablishBackend(reg.GetConfig());
+  logger.LogExecutionSummary(cfg);
+  BackendManager::GetInstance().EstablishBackend(cfg);
   ConfigureTmuMemoryLimits();
 }
 
@@ -163,11 +164,16 @@ void EnsureEngineInitialized(void (*resetFrontendState)()) {
   auto& bm = BackendManager::GetInstance();
   if (!bm.GetBackend()) {
     if (resetFrontendState) resetFrontendState();
+    JsonConfigLoader loader;
+    loader.Load("glide_config.json", reg.GetConfig());
+
+    const auto& cfg = reg.GetConfig();
+    auto clampedLevel = static_cast<LogLevel>(std::min<uint32_t>(
+        cfg.logLevel, static_cast<uint32_t>(LogLevel::DEBUG)));
     auto& logger = Logger::GetInstance();
-    logger.Initialize("glide-ng.log",
-                      static_cast<LogLevel>(reg.GetConfig().logLevel),
-                      reg.GetConfig().logToConsole);
-    bm.EstablishBackend(reg.GetConfig());
+    logger.Initialize(cfg.logFile, clampedLevel, cfg.logToConsole);
+    logger.LogExecutionSummary(cfg);
+    bm.EstablishBackend(cfg);
     ConfigureTmuMemoryLimits();
     GLIDE_LOG(INFO, "Frontend", "Implicit grGlideInit executed seamlessly.");
   } else {
@@ -746,6 +752,13 @@ bool Load3dfPixelsAndPalette(const char* filename, uint32_t format,
   return true;
 }
 
+bool ShouldRenderShamelessPlug(bool appEnabled) {
+  const int mode = EmulationRegistry::GetInstance().GetConfig().shamelessPlugMode;
+  if (mode > 0) return true;
+  if (mode == 0) return false;
+  return appEnabled;
+}
+
 void RenderShamelessPlug() {
   uint32_t scrWidth = 640;
   uint32_t scrHeight = 480;
@@ -760,6 +773,11 @@ void RenderShamelessPlug() {
 
 void RenderSplash(float x, float y, float w, float h, uint32_t frame,
                   void (*callback)(int frame)) {
+  if (EmulationRegistry::GetInstance().GetConfig().noSplash) {
+    GLIDE_LOG(DEBUG, "Frontend",
+              "grSplash suppressed by config (FX_GLIDE_NO_SPLASH / GLIDE_NG_NO_SPLASH).");
+    return;
+  }
   if (auto* animator = BackendManager::GetInstance().GetSplashAnimator()) {
     animator->Render(x, y, w, h, frame, callback);
   }

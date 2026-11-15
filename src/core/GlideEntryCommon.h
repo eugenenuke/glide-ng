@@ -186,6 +186,7 @@ bool Load3dfPixelsAndPalette(const char* filename, uint32_t format,
                              uint32_t* paletteOut256, void* pixelDataOut);
 
 // Splash / ShamelessPlug / DOSBox handshake helpers.
+bool ShouldRenderShamelessPlug(bool appEnabled);
 void RenderShamelessPlug();
 void RenderSplash(float x, float y, float w, float h, uint32_t frame,
                   void (*callback)(int frame));

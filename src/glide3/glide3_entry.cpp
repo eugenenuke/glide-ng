@@ -250,7 +250,7 @@ FX_ENTRY void FX_CALL grBufferClear(GrColor_t color, GrAlpha_t alpha,
 FX_ENTRY void FX_CALL grBufferSwap(FxU32 swapInterval) {
   EnsureEngineInitialized();
   (void)swapInterval;
-  if (s_shamelessPlug) {
+  if (EntryCommon::ShouldRenderShamelessPlug(s_shamelessPlug)) {
     grShamelessPlug();
   }
   EntryCommon::SwapBuffers();

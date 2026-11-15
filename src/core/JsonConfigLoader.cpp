@@ -4,12 +4,23 @@
 #include <cctype>
 #include <cstdlib>
 #include <fstream>
-#include <iostream>
 #include <sstream>
 
 namespace GlideWrapper {
 
 namespace {
+
+std::string ToLower(std::string s) {
+    std::transform(s.begin(), s.end(), s.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    return s;
+}
+
+std::string ToUpper(std::string s) {
+    std::transform(s.begin(), s.end(), s.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::toupper(ch)); });
+    return s;
+}
 
 bool IsJsonWhitespace(char c) {
     return c == ' ' || c == '\t' || c == '\r' || c == '\n';
@@ -19,8 +30,6 @@ bool IsJsonValueDelimiter(char c) {
     return IsJsonWhitespace(c) || c == ',' || c == '}' || c == ']';
 }
 
-// Parses a JSON string literal starting at `pos` (pointing at opening '"').
-// Advances `pos` to one past the closing '"' and returns true on success.
 bool ParseJsonStringLiteral(const std::string& content, size_t& pos, std::string& outStr) {
     if (pos >= content.size() || content[pos] != '"') return false;
     ++pos;
@@ -77,7 +86,6 @@ bool FindJsonKeyValue(const std::string& content, const std::string& targetKey, 
             if (!ParseJsonStringLiteral(content, i, str)) {
                 return found;
             }
-            // Only treat string literals at top-level object depth followed by ':' as keys.
             if (depth == 1) {
                 size_t j = i;
                 while (j < n && IsJsonWhitespace(content[j])) ++j;
@@ -159,10 +167,39 @@ bool ExtractJsonInt(const std::string& content, const std::string& key, int& out
     return true;
 }
 
+bool ParseBoolString(const std::string& raw, bool& outVal) {
+    std::string v = ToLower(raw);
+    if (v == "1" || v == "true" || v == "yes" || v == "on") {
+        outVal = true;
+        return true;
+    }
+    if (v == "0" || v == "false" || v == "no" || v == "off") {
+        outVal = false;
+        return true;
+    }
+    return false;
+}
+
+bool ParseIntString(const std::string& raw, int& outVal) {
+    if (raw.empty()) return false;
+    char* endPtr = nullptr;
+    long parsed = std::strtol(raw.c_str(), &endPtr, 10);
+    if (endPtr == raw.c_str() || *endPtr != '\0') return false;
+    outVal = static_cast<int>(parsed);
+    return true;
+}
+
+bool ParseDoubleString(const std::string& raw, double& outVal) {
+    if (raw.empty()) return false;
+    char* endPtr = nullptr;
+    double parsed = std::strtod(raw.c_str(), &endPtr);
+    if (endPtr == raw.c_str() || *endPtr != '\0') return false;
+    outVal = parsed;
+    return true;
+}
+
 bool ParseCardModelString(const std::string& rawStr, CardModel& outModel) {
-    std::string m = rawStr;
-    std::transform(m.begin(), m.end(), m.begin(),
-                   [](unsigned char ch) { return static_cast<char>(std::toupper(ch)); });
+    std::string m = ToUpper(rawStr);
     if (m == "SST1" || m == "VOODOO1" || m == "VOODOOGRAPHICS") {
         outModel = CardModel::VoodooGraphics;
         return true;
@@ -186,259 +223,515 @@ bool ParseCardModelString(const std::string& rawStr, CardModel& outModel) {
     return false;
 }
 
+bool ParseApiVersionString(const std::string& rawStr, ApiVersion& outVer) {
+    if (rawStr == "2.1") { outVer = ApiVersion::GLIDE_2_1; return true; }
+    if (rawStr == "2.40" || rawStr == "2.4") { outVer = ApiVersion::GLIDE_2_40; return true; }
+    if (rawStr == "2.42") { outVer = ApiVersion::GLIDE_2_42; return true; }
+    if (rawStr == "2.43") { outVer = ApiVersion::GLIDE_2_43; return true; }
+    if (rawStr == "2.61") { outVer = ApiVersion::GLIDE_2_61; return true; }
+    return false;
+}
+
+std::string NormalizeBackendString(const std::string& rawStr) {
+    std::string b = ToLower(rawStr);
+    if (b == "opengl_es" || b == "gles" || b == "goes") return "opengl_es";
+    if (b == "vulkan" || b == "vk") return "vulkan";
+    if (b == "software" || b == "sw") return "software";
+    return rawStr;
+}
+
+bool ParseLogLevelString(const std::string& rawStr, uint32_t& outLevel) {
+    int numeric = 0;
+    if (ParseIntString(rawStr, numeric)) {
+        if (numeric < 0) numeric = 0;
+        if (numeric > 5) numeric = 5;
+        outLevel = static_cast<uint32_t>(numeric);
+        return true;
+    }
+    std::string v = ToLower(rawStr);
+    if (v == "off" || v == "none") { outLevel = 0; return true; }
+    if (v == "crit" || v == "critical" || v == "error" || v == "err") { outLevel = 1; return true; }
+    if (v == "warn" || v == "warning") { outLevel = 2; return true; }
+    if (v == "info") { outLevel = 3; return true; }
+    if (v == "debug" || v == "dbug") { outLevel = 4; return true; }
+    if (v == "trace") { outLevel = 5; return true; }
+    return false;
+}
+
+bool ParsePresentationFilterString(const std::string& rawStr, uint32_t& outFilter) {
+    std::string v = ToLower(rawStr);
+    if (v == "0" || v == "nearest" || v == "sharp" || v == "point") {
+        outFilter = 0;
+        return true;
+    }
+    if (v == "1" || v == "linear" || v == "bilinear" || v == "smooth") {
+        outFilter = 1;
+        return true;
+    }
+    return false;
+}
+
+bool ParseVsyncString(const std::string& rawStr, bool& outVsync, bool& outStrictFifo) {
+    std::string v = ToLower(rawStr);
+    if (v == "fifo" || v == "strict") {
+        outVsync = true;
+        outStrictFifo = true;
+        return true;
+    }
+    bool b = false;
+    if (ParseBoolString(v, b)) {
+        outVsync = b;
+        outStrictFifo = false;
+        return true;
+    }
+    return false;
+}
+
+const char* GetNonEmptyEnv(const char* name) {
+    const char* val = std::getenv(name);
+    return (val && val[0] != '\0') ? val : nullptr;
+}
+
 }  // namespace
 
 bool JsonConfigLoader::Load(const std::string& configFilePath, WrapperConfig& outConfig) {
-    // Reset to baseline defaults to prevent state leakage across dynamic library reloads
+    // 1. Reset to baseline defaults to prevent state leakage across reloads
     outConfig = WrapperConfig{};
-    bool hasApiVerInJson = false;
 
-    GLIDE_LOG(INFO, "Config", "Attempting to load profile from: " << configFilePath);
+    bool hasApiVersion = false;
+    bool hasFbiMem = false;
+    bool hasTmuCount = false;
+    bool hasTmuMem = false;
 
-    std::ifstream file(configFilePath);
+    // Resolve config file path (GLIDE_NG_CONFIG overrides default path)
+    std::string effectivePath = configFilePath;
+    if (const char* envConfigPath = GetNonEmptyEnv("GLIDE_NG_CONFIG")) {
+        effectivePath = envConfigPath;
+        outConfig.settingSources["configFile"] = "GLIDE_NG_CONFIG";
+    }
+    outConfig.configFilePath = effectivePath;
+
+    // 2. Layer 2: JSON configuration file (overrides defaults)
+    std::ifstream file(effectivePath);
     if (file.is_open()) {
+        outConfig.configFileLoaded = true;
         std::stringstream ss;
         ss << file.rdbuf();
         std::string content = ss.str();
 
-        // Key-scoped JSON parsing (immune to unrelated fields containing substrings)
-        std::string modelStr;
-        if (ExtractJsonString(content, "cardModel", modelStr) ||
-            ExtractJsonString(content, "model", modelStr)) {
-            ParseCardModelString(modelStr, outConfig.model);
-        }
+        std::string strVal;
+        bool boolVal = false;
+        int intVal = 0;
+        double dblVal = 0.0;
 
-        // Parse API Version (e.g. "apiVersion": "2.43" or "apiVersion": 2.43)
-        std::string apiVerStr;
-        if (ExtractJsonStringOrNumber(content, "apiVersion", apiVerStr)) {
-            if (apiVerStr == "2.1") { outConfig.apiVersion = ApiVersion::GLIDE_2_1; hasApiVerInJson = true; }
-            else if (apiVerStr == "2.40" || apiVerStr == "2.4") { outConfig.apiVersion = ApiVersion::GLIDE_2_40; hasApiVerInJson = true; }
-            else if (apiVerStr == "2.42") { outConfig.apiVersion = ApiVersion::GLIDE_2_42; hasApiVerInJson = true; }
-            else if (apiVerStr == "2.43") { outConfig.apiVersion = ApiVersion::GLIDE_2_43; hasApiVerInJson = true; }
-            else if (apiVerStr == "2.61") { outConfig.apiVersion = ApiVersion::GLIDE_2_61; hasApiVerInJson = true; }
-        }
-
-        std::string backendStr;
-        if (ExtractJsonString(content, "backend", backendStr)) {
-            std::string bLower = backendStr;
-            std::transform(bLower.begin(), bLower.end(), bLower.begin(),
-                           [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-            if (bLower == "opengl_es" || bLower == "gles" || bLower == "goes") {
-                outConfig.backend = "opengl_es";
-            } else if (bLower == "vulkan" || bLower == "vk") {
-                outConfig.backend = "vulkan";
-            } else if (bLower == "software" || bLower == "sw") {
-                outConfig.backend = "software";
-            } else {
-                outConfig.backend = backendStr;
+        if (ExtractJsonString(content, "cardModel", strVal) ||
+            ExtractJsonString(content, "model", strVal)) {
+            if (ParseCardModelString(strVal, outConfig.model)) {
+                outConfig.settingSources["cardModel"] = "json";
             }
         }
 
-        bool boolVal = false;
-        if (ExtractJsonBool(content, "logToConsole", boolVal)) {
-            outConfig.logToConsole = boolVal;
+        if (ExtractJsonStringOrNumber(content, "apiVersion", strVal)) {
+            if (ParseApiVersionString(strVal, outConfig.apiVersion)) {
+                hasApiVersion = true;
+                outConfig.settingSources["apiVersion"] = "json";
+            }
         }
+
+        if (ExtractJsonString(content, "backend", strVal)) {
+            outConfig.backend = NormalizeBackendString(strVal);
+            outConfig.settingSources["backend"] = "json";
+        }
+
+        if (ExtractJsonInt(content, "fbiMemoryMb", intVal) && intVal > 0) {
+            outConfig.fbiMemoryMb = static_cast<uint32_t>(intVal);
+            hasFbiMem = true;
+            outConfig.settingSources["fbiMemoryMb"] = "json";
+        }
+        if (ExtractJsonInt(content, "tmuCount", intVal) && intVal >= 1 && intVal <= 3) {
+            outConfig.tmuCount = static_cast<uint32_t>(intVal);
+            hasTmuCount = true;
+            outConfig.settingSources["tmuCount"] = "json";
+        }
+        if (ExtractJsonInt(content, "tmuMemoryMb", intVal) && intVal > 0) {
+            outConfig.tmuMemoryMb = static_cast<uint32_t>(intVal);
+            hasTmuMem = true;
+            outConfig.settingSources["tmuMemoryMb"] = "json";
+        }
+        if (ExtractJsonBool(content, "enableSli", boolVal)) {
+            outConfig.enableSli = boolVal;
+            outConfig.settingSources["enableSli"] = "json";
+        }
+        if (ExtractJsonString(content, "vendor", strVal)) {
+            outConfig.reportedVendorOverride = strVal;
+            outConfig.settingSources["vendor"] = "json";
+        }
+        if (ExtractJsonString(content, "renderer", strVal)) {
+            outConfig.reportedRendererOverride = strVal;
+            outConfig.settingSources["renderer"] = "json";
+        }
+
+        if (ExtractJsonBool(content, "headless", boolVal) ||
+            ExtractJsonBool(content, "forceNoWindow", boolVal)) {
+            outConfig.forceNoWindow = boolVal;
+            outConfig.settingSources["headless"] = "json";
+        }
+
         if (ExtractJsonBool(content, "vsync", boolVal)) {
             outConfig.vsync = boolVal;
+            outConfig.vsyncStrictFifo = false;
+            outConfig.settingSources["vsync"] = "json";
+        } else if (ExtractJsonString(content, "vsync", strVal)) {
+            if (ParseVsyncString(strVal, outConfig.vsync, outConfig.vsyncStrictFifo)) {
+                outConfig.settingSources["vsync"] = "json";
+            }
         }
-        if (ExtractJsonBool(content, "forceNoWindow", boolVal)) {
-            outConfig.forceNoWindow = boolVal;
+        if (ExtractJsonBool(content, "vsyncStrictFifo", boolVal)) {
+            outConfig.vsyncStrictFifo = boolVal;
+            if (boolVal) outConfig.vsync = true;
+            outConfig.settingSources["vsyncStrictFifo"] = "json";
         }
 
-        double maxFpsVal = 0.0;
-        if (ExtractJsonDouble(content, "maxFps", maxFpsVal)) {
-            outConfig.maxFps = static_cast<float>(maxFpsVal);
-        }
-
-        int intVal = 0;
-        if (ExtractJsonInt(content, "logLevel", intVal) && intVal >= 0) {
-            outConfig.logLevel = static_cast<uint32_t>(intVal);
+        if (ExtractJsonDouble(content, "maxFps", dblVal) && dblVal >= 0.0) {
+            outConfig.maxFps = static_cast<float>(dblVal);
+            outConfig.settingSources["maxFps"] = "json";
         }
         if (ExtractJsonInt(content, "msaaSamples", intVal) && intVal >= 0) {
             outConfig.msaaSamples = static_cast<uint32_t>(intVal);
+            outConfig.settingSources["msaaSamples"] = "json";
         }
         if (ExtractJsonInt(content, "windowScale", intVal) && intVal >= 1 && intVal <= 8) {
             outConfig.windowScale = static_cast<uint32_t>(intVal);
+            outConfig.settingSources["windowScale"] = "json";
+        }
+        if (ExtractJsonStringOrNumber(content, "presentationFilter", strVal)) {
+            if (ParsePresentationFilterString(strVal, outConfig.presentationFilter)) {
+                outConfig.settingSources["presentationFilter"] = "json";
+            }
         }
 
-        GLIDE_LOG(INFO, "Config", "Parsed local JSON configuration file successfully.");
-    } else {
-        GLIDE_LOG(INFO, "Config", "No local glide_config.json file detected. Using baseline defaults.");
+        if (ExtractJsonStringOrNumber(content, "logLevel", strVal)) {
+            if (ParseLogLevelString(strVal, outConfig.logLevel)) {
+                outConfig.settingSources["logLevel"] = "json";
+            }
+        }
+        if (ExtractJsonBool(content, "logToConsole", boolVal)) {
+            outConfig.logToConsole = boolVal;
+            outConfig.settingSources["logToConsole"] = "json";
+        }
+        if (ExtractJsonString(content, "logFile", strVal) && !strVal.empty()) {
+            outConfig.logFile = strVal;
+            outConfig.settingSources["logFile"] = "json";
+        }
+
+        // Authentic Glide overrides in JSON
+        if (ExtractJsonBool(content, "noSplash", boolVal)) {
+            outConfig.noSplash = boolVal;
+            outConfig.settingSources["noSplash"] = "json";
+        }
+        if (ExtractJsonBool(content, "shamelessPlug", boolVal)) {
+            outConfig.shamelessPlugMode = boolVal ? 1 : 0;
+            outConfig.settingSources["shamelessPlug"] = "json";
+        } else if (ExtractJsonInt(content, "shamelessPlug", intVal)) {
+            outConfig.shamelessPlugMode = (intVal < 0) ? -1 : (intVal != 0 ? 1 : 0);
+            outConfig.settingSources["shamelessPlug"] = "json";
+        }
+
+        // Backend-specific tuning in JSON
+        if (ExtractJsonInt(content, "swThreads", intVal) && intVal >= 0) {
+            outConfig.swThreads = static_cast<uint32_t>(intVal);
+            outConfig.settingSources["swThreads"] = "json";
+        }
+        if (ExtractJsonBool(content, "swSimd", boolVal)) {
+            outConfig.swUseSimd = boolVal;
+            outConfig.settingSources["swSimd"] = "json";
+        }
+        if (ExtractJsonInt(content, "swTileSize", intVal) && intVal > 0) {
+            outConfig.swTileSize = static_cast<uint32_t>(intVal);
+            outConfig.settingSources["swTileSize"] = "json";
+        }
+        if (ExtractJsonString(content, "swAa", strVal)) {
+            outConfig.swAaMode = ToLower(strVal);
+            outConfig.settingSources["swAa"] = "json";
+        }
+        if (ExtractJsonString(content, "vkCachePath", strVal) && !strVal.empty()) {
+            outConfig.vkCachePath = strVal;
+            outConfig.settingSources["vkCachePath"] = "json";
+        }
+        if (ExtractJsonInt(content, "glesVboSize", intVal) && intVal > 0) {
+            outConfig.glesVboSizeMb = static_cast<uint32_t>(intVal);
+            outConfig.settingSources["glesVboSize"] = "json";
+        }
     }
 
-    // Process Environment Overrides (Highest Priority next to app arguments)
-    if (const char* envForceNoWin = std::getenv("GLIDE_FORCE_NO_WINDOW")) {
-        outConfig.forceNoWindow = (std::string(envForceNoWin) == "1");
-        GLIDE_LOG(WARN, "Config", "Overrode forceNoWindow via GLIDE_FORCE_NO_WINDOW=" << outConfig.forceNoWindow);
+    // 3. Card model & API version env overrides (evaluated before deriving card-model defaults)
+    if (const char* envCard = GetNonEmptyEnv("GLIDE_NG_CARD_MODEL")) {
+        if (ParseCardModelString(envCard, outConfig.model)) {
+            outConfig.settingSources["cardModel"] = "GLIDE_NG_CARD_MODEL";
+        }
     }
-    if (const char* envHeadless = std::getenv("GLIDE_HEADLESS")) {
-        outConfig.forceNoWindow = (std::string(envHeadless) == "1");
-        GLIDE_LOG(WARN, "Config", "Overrode forceNoWindow via GLIDE_HEADLESS=" << outConfig.forceNoWindow);
-    }
-
-    const char* envWrapperBackend = std::getenv("GLIDE_WRAPPER_BACKEND");
-    const char* envLegacyBackend  = std::getenv("GLIDE_BACKEND");
-
-    if (envWrapperBackend && envLegacyBackend) {
-        GLIDE_LOG(CRITICAL, "Config", "ENVIRONMENT CONFLICT: Both 'GLIDE_WRAPPER_BACKEND' ("
-            << envWrapperBackend << ") and legacy alias 'GLIDE_BACKEND' ("
-            << envLegacyBackend << ") are set simultaneously! This is highly ambiguous. "
-            << "Please unset one of these variables to resolve the conflict.");
-        std::cerr << "\n===============================================================================\n"
-                  << "[CRIT] [Config] ENVIRONMENT CONFLICT: Both 'GLIDE_WRAPPER_BACKEND' and 'GLIDE_BACKEND'\n"
-                  << "               are set simultaneously! This is ambiguous. Aborting execution.\n"
-                  << "               Please unset one of these environment variables.\n"
-                  << "===============================================================================\n\n";
-        std::exit(EXIT_FAILURE);
+    if (const char* envApi = GetNonEmptyEnv("GLIDE_NG_API_VERSION")) {
+        if (ParseApiVersionString(envApi, outConfig.apiVersion)) {
+            hasApiVersion = true;
+            outConfig.settingSources["apiVersion"] = "GLIDE_NG_API_VERSION";
+        }
     }
 
-    const char* envBackend = envWrapperBackend ? envWrapperBackend : envLegacyBackend;
-    if (envBackend) {
-        outConfig.backend = envBackend;
-        GLIDE_LOG(WARN, "Config", "Overrode active Rendering Backend via environment=" << outConfig.backend);
-    }
-
-    // Normalize backend aliases
-    if (outConfig.backend == "gles" || outConfig.backend == "goes") {
-        std::string original = outConfig.backend;
-        outConfig.backend = "opengl_es";
-        GLIDE_LOG(INFO, "Config", "Normalized backend alias '" << original << "' to 'opengl_es'");
-    } else if (outConfig.backend == "vk") {
-        outConfig.backend = "vulkan";
-        GLIDE_LOG(INFO, "Config", "Normalized backend alias 'vk' to 'vulkan'");
-    } else if (outConfig.backend == "sw") {
-        outConfig.backend = "software";
-        GLIDE_LOG(INFO, "Config", "Normalized backend alias 'sw' to 'software'");
-    }
-
-    // Parse Card Model Override (GLIDE_WRAPPER_CARD_MODEL or GLIDE_DEVICE)
-    const char* envCardOverride = std::getenv("GLIDE_WRAPPER_CARD_MODEL") ? std::getenv("GLIDE_WRAPPER_CARD_MODEL") : std::getenv("GLIDE_DEVICE");
-    if (envCardOverride) {
-        std::string rawStr(envCardOverride);
-        std::string m = rawStr;
-        std::transform(m.begin(), m.end(), m.begin(), ::toupper);
-        
-        if (m == "SST1" || m == "VOODOO1" || m == "VOODOOGRAPHICS") outConfig.model = CardModel::VoodooGraphics;
-        else if (m == "SST96" || m == "VOODOORUSH" || m == "VOODOO_RUSH" || m == "RUSH") outConfig.model = CardModel::VoodooRush;
-        else if (m == "CVG" || m == "VOODOO2")  outConfig.model = CardModel::Voodoo2;
-        else if (m == "H3" || m == "VOODOO3")   outConfig.model = CardModel::Voodoo3;
-        else if (m == "H5" || m == "VOODOO5")   outConfig.model = CardModel::Voodoo5;
-        
-        GLIDE_LOG(WARN, "Config", "Overrode emulated Card Model via environment=" << rawStr << " (matched: " << m << ")");
-    }
-
-    // Parse API Version Override (GLIDE_WRAPPER_API_VERSION or GLIDE_VERSION_OVERRIDE)
-    const char* envApiOverride = std::getenv("GLIDE_WRAPPER_API_VERSION") ? std::getenv("GLIDE_WRAPPER_API_VERSION") : std::getenv("GLIDE_VERSION_OVERRIDE");
-    bool overrideApi = false;
-    if (envApiOverride) {
-        std::string v(envApiOverride);
-        if (v == "2.1") outConfig.apiVersion = ApiVersion::GLIDE_2_1;
-        else if (v == "2.40" || v == "2.4") outConfig.apiVersion = ApiVersion::GLIDE_2_40;
-        else if (v == "2.42") outConfig.apiVersion = ApiVersion::GLIDE_2_42;
-        else if (v == "2.43") outConfig.apiVersion = ApiVersion::GLIDE_2_43;
-        else if (v == "2.61") outConfig.apiVersion = ApiVersion::GLIDE_2_61;
-        GLIDE_LOG(WARN, "Config", "Overrode emulated API Version via environment=" << v);
-        overrideApi = true;
-    }
-
-    // Auto-default API version, VRAM sizes, and TMU counts based on selected Card Model if not overridden
+    // Derive hardware defaults from selected CardModel ONLY for fields not explicitly overridden
     switch (outConfig.model) {
         case CardModel::VoodooGraphics:
-            if (!overrideApi && !hasApiVerInJson) outConfig.apiVersion = ApiVersion::GLIDE_2_40;
-            outConfig.tmuCount = 1;
-            outConfig.fbiMemoryMb = 4;
-            outConfig.tmuMemoryMb = 2;
+            if (!hasApiVersion) outConfig.apiVersion = ApiVersion::GLIDE_2_40;
+            if (!hasTmuCount) outConfig.tmuCount = 1;
+            if (!hasFbiMem) outConfig.fbiMemoryMb = 4;
+            if (!hasTmuMem) outConfig.tmuMemoryMb = 2;
             break;
         case CardModel::VoodooRush:
-            if (!overrideApi && !hasApiVerInJson) outConfig.apiVersion = ApiVersion::GLIDE_2_40;
-            outConfig.tmuCount = 1;
-            outConfig.fbiMemoryMb = 6;
-            outConfig.tmuMemoryMb = 2;
+            if (!hasApiVersion) outConfig.apiVersion = ApiVersion::GLIDE_2_40;
+            if (!hasTmuCount) outConfig.tmuCount = 1;
+            if (!hasFbiMem) outConfig.fbiMemoryMb = 6;
+            if (!hasTmuMem) outConfig.tmuMemoryMb = 2;
             break;
         case CardModel::Voodoo2:
-            if (!overrideApi && !hasApiVerInJson) outConfig.apiVersion = ApiVersion::GLIDE_2_43;
-            outConfig.tmuCount = 2;
-            outConfig.fbiMemoryMb = 16;
-            outConfig.tmuMemoryMb = 16;
+            if (!hasApiVersion) outConfig.apiVersion = ApiVersion::GLIDE_2_43;
+            if (!hasTmuCount) outConfig.tmuCount = 2;
+            if (!hasFbiMem) outConfig.fbiMemoryMb = 16;
+            if (!hasTmuMem) outConfig.tmuMemoryMb = 16;
             break;
         case CardModel::Voodoo3:
-            if (!overrideApi && !hasApiVerInJson) outConfig.apiVersion = ApiVersion::GLIDE_2_61;
-            outConfig.tmuCount = 2;      // Authentic Voodoo3 2-TMU driver compatibility illusion!
-            outConfig.fbiMemoryMb = 16;
-            outConfig.tmuMemoryMb = 16;
+            if (!hasApiVersion) outConfig.apiVersion = ApiVersion::GLIDE_2_61;
+            if (!hasTmuCount) outConfig.tmuCount = 2;
+            if (!hasFbiMem) outConfig.fbiMemoryMb = 16;
+            if (!hasTmuMem) outConfig.tmuMemoryMb = 16;
             break;
         case CardModel::Voodoo5:
-            if (!overrideApi && !hasApiVerInJson) outConfig.apiVersion = ApiVersion::GLIDE_2_61;
-            outConfig.tmuCount = 2;      // Dual VSA-100 SLI!
-            outConfig.fbiMemoryMb = 64;
-            outConfig.tmuMemoryMb = 32;
+            if (!hasApiVersion) outConfig.apiVersion = ApiVersion::GLIDE_2_61;
+            if (!hasTmuCount) outConfig.tmuCount = 2;
+            if (!hasFbiMem) outConfig.fbiMemoryMb = 64;
+            if (!hasTmuMem) outConfig.tmuMemoryMb = 32;
             break;
     }
-    GLIDE_LOG(INFO, "Config", "Auto-configured hardware specs (TMUs, VRAM, API) based on active Card Model.");
 
-    
-    if (const char* envFbi = std::getenv("GLIDE_WRAPPER_FBI_MEM_MB")) {
-        outConfig.fbiMemoryMb = std::atoi(envFbi);
-        GLIDE_LOG(WARN, "Config", "Overrode FBI Memory via GLIDE_WRAPPER_FBI_MEM_MB=" << outConfig.fbiMemoryMb);
-    }
-    
-    if (const char* envLog = std::getenv("GLIDE_WRAPPER_LOG_LEVEL")) {
-        outConfig.logLevel = std::atoi(envLog);
-        GLIDE_LOG(WARN, "Config", "Overrode Log Level via GLIDE_WRAPPER_LOG_LEVEL=" << outConfig.logLevel);
-    }
-    
-    if (const char* envMaxFps = std::getenv("GLIDE_WRAPPER_MAX_FPS")) {
-        outConfig.maxFps = std::atof(envMaxFps);
-        GLIDE_LOG(WARN, "Config", "Overrode Max FPS via GLIDE_WRAPPER_MAX_FPS=" << outConfig.maxFps);
-    }
-    
-    if (const char* envVendor = std::getenv("GLIDE_WRAPPER_VENDOR")) {
-        outConfig.reportedVendorOverride = envVendor;
-        GLIDE_LOG(WARN, "Config", "Overrode Reported Vendor via GLIDE_WRAPPER_VENDOR=" << outConfig.reportedVendorOverride);
-    }
-    
-    if (const char* envRenderer = std::getenv("GLIDE_WRAPPER_RENDERER")) {
-        outConfig.reportedRendererOverride = envRenderer;
-        GLIDE_LOG(WARN, "Config", "Overrode Reported Renderer via GLIDE_WRAPPER_RENDERER=" << outConfig.reportedRendererOverride);
+    // 4. Layer 3: Authentic 3dfx Glide environment variables (Phase 1)
+    // Precedence: Defaults < JSON < Authentic FX_GLIDE_* < GLIDE_NG_*
+    if (const char* envNoSplash = GetNonEmptyEnv("FX_GLIDE_NO_SPLASH")) {
+        bool b = true;
+        if (!ParseBoolString(envNoSplash, b)) {
+            // Authentic 3dfx convention: any non-zero/non-empty value enables suppression
+            b = true;
+        }
+        outConfig.noSplash = b;
+        outConfig.settingSources["noSplash"] = "FX_GLIDE_NO_SPLASH";
     }
 
-    if (const char* envConsole = std::getenv("GLIDE_WRAPPER_LOG_TO_CONSOLE")) {
-        std::string val(envConsole);
-        outConfig.logToConsole = (val == "1" || val == "true" || val == "TRUE");
-        GLIDE_LOG(WARN, "Config", "Overrode Log To Console via GLIDE_WRAPPER_LOG_TO_CONSOLE=" << outConfig.logToConsole);
+    if (const char* envPlug = GetNonEmptyEnv("FX_GLIDE_SHAMELESS_PLUG")) {
+        bool b = true;
+        if (!ParseBoolString(envPlug, b)) {
+            int n = 1;
+            b = ParseIntString(envPlug, n) ? (n != 0) : true;
+        }
+        outConfig.shamelessPlugMode = b ? 1 : 0;
+        outConfig.settingSources["shamelessPlug"] = "FX_GLIDE_SHAMELESS_PLUG";
     }
 
-    if (const char* envMsaa = std::getenv("GLIDE_WRAPPER_MSAA")) {
-        outConfig.msaaSamples = std::atoi(envMsaa);
-        GLIDE_LOG(WARN, "Config", "Overrode MSAA Sample Count via GLIDE_WRAPPER_MSAA=" << outConfig.msaaSamples);
-    }
-
-    if (const char* envVsync = std::getenv("GLIDE_VSYNC")) {
-        std::string val(envVsync);
-        outConfig.vsync = !(val == "0" || val == "false" || val == "FALSE" || val == "off" || val == "OFF");
-        GLIDE_LOG(WARN, "Config", "Overrode VSync via GLIDE_VSYNC=" << (outConfig.vsync ? "ENABLED" : "DISABLED"));
-    }
-
-    if (const char* envScale = std::getenv("GLIDE_WRAPPER_WINDOW_SCALE")) {
-        int val = std::atoi(envScale);
-        if (val >= 1 && val <= 8) {
-            outConfig.windowScale = static_cast<uint32_t>(val);
-            GLIDE_LOG(WARN, "Config", "Overrode Window Scale via GLIDE_WRAPPER_WINDOW_SCALE=" << outConfig.windowScale);
+    if (const char* envSwapInterval = GetNonEmptyEnv("FX_GLIDE_SWAPINTERVAL")) {
+        int interval = 0;
+        if (ParseIntString(envSwapInterval, interval) && interval >= 0) {
+            outConfig.swapInterval = interval;
+            outConfig.vsync = (interval > 0);
+            outConfig.vsyncStrictFifo = false;
+            outConfig.settingSources["vsync"] = "FX_GLIDE_SWAPINTERVAL";
+            outConfig.settingSources["swapInterval"] = "FX_GLIDE_SWAPINTERVAL";
         }
     }
 
-    // Normalize MSAA sample count to valid GPU powers of two
-    if (outConfig.msaaSamples != 1 && outConfig.msaaSamples != 2 && 
-        outConfig.msaaSamples != 4 && outConfig.msaaSamples != 8 && 
-        outConfig.msaaSamples != 16) {
-        uint32_t original = outConfig.msaaSamples;
-        outConfig.msaaSamples = 1;
-        GLIDE_LOG(WARN, "Config", "Invalid MSAA sample count '" << original << "' requested. Defaulting to 1 (MSAA disabled).");
+    // 5. Layer 4: glide-ng Wrapper Environment Overrides (GLIDE_NG_* — highest priority)
+    if (const char* envVal = GetNonEmptyEnv("GLIDE_NG_BACKEND")) {
+        outConfig.backend = NormalizeBackendString(envVal);
+        outConfig.settingSources["backend"] = "GLIDE_NG_BACKEND";
     }
 
+    if (const char* envVal = GetNonEmptyEnv("GLIDE_NG_HEADLESS")) {
+        bool b = false;
+        if (ParseBoolString(envVal, b)) {
+            outConfig.forceNoWindow = b;
+            outConfig.settingSources["headless"] = "GLIDE_NG_HEADLESS";
+        }
+    }
 
+    if (const char* envVal = GetNonEmptyEnv("GLIDE_NG_FBI_MEM_MB")) {
+        int v = 0;
+        if (ParseIntString(envVal, v) && v > 0) {
+            outConfig.fbiMemoryMb = static_cast<uint32_t>(v);
+            outConfig.settingSources["fbiMemoryMb"] = "GLIDE_NG_FBI_MEM_MB";
+        }
+    }
+
+    if (const char* envVal = GetNonEmptyEnv("GLIDE_NG_TMU_COUNT")) {
+        int v = 0;
+        if (ParseIntString(envVal, v) && v >= 1 && v <= 3) {
+            outConfig.tmuCount = static_cast<uint32_t>(v);
+            outConfig.settingSources["tmuCount"] = "GLIDE_NG_TMU_COUNT";
+        }
+    }
+
+    if (const char* envVal = GetNonEmptyEnv("GLIDE_NG_TMU_MEM_MB")) {
+        int v = 0;
+        if (ParseIntString(envVal, v) && v > 0) {
+            outConfig.tmuMemoryMb = static_cast<uint32_t>(v);
+            outConfig.settingSources["tmuMemoryMb"] = "GLIDE_NG_TMU_MEM_MB";
+        }
+    }
+
+    if (const char* envVal = GetNonEmptyEnv("GLIDE_NG_SLI")) {
+        bool b = false;
+        if (ParseBoolString(envVal, b)) {
+            outConfig.enableSli = b;
+            outConfig.settingSources["enableSli"] = "GLIDE_NG_SLI";
+        }
+    }
+
+    if (const char* envVal = GetNonEmptyEnv("GLIDE_NG_VENDOR")) {
+        outConfig.reportedVendorOverride = envVal;
+        outConfig.settingSources["vendor"] = "GLIDE_NG_VENDOR";
+    }
+
+    if (const char* envVal = GetNonEmptyEnv("GLIDE_NG_RENDERER")) {
+        outConfig.reportedRendererOverride = envVal;
+        outConfig.settingSources["renderer"] = "GLIDE_NG_RENDERER";
+    }
+
+    if (const char* envVal = GetNonEmptyEnv("GLIDE_NG_VSYNC")) {
+        if (ParseVsyncString(envVal, outConfig.vsync, outConfig.vsyncStrictFifo)) {
+            outConfig.swapInterval = outConfig.vsync ? 1 : 0;
+            outConfig.settingSources["vsync"] = "GLIDE_NG_VSYNC";
+        }
+    }
+
+    if (const char* envVal = GetNonEmptyEnv("GLIDE_NG_MAX_FPS")) {
+        double v = 0.0;
+        if (ParseDoubleString(envVal, v) && v >= 0.0) {
+            outConfig.maxFps = static_cast<float>(v);
+            outConfig.settingSources["maxFps"] = "GLIDE_NG_MAX_FPS";
+        }
+    }
+
+    if (const char* envVal = GetNonEmptyEnv("GLIDE_NG_MSAA")) {
+        int v = 0;
+        if (ParseIntString(envVal, v) && v >= 0) {
+            outConfig.msaaSamples = static_cast<uint32_t>(v);
+            outConfig.settingSources["msaaSamples"] = "GLIDE_NG_MSAA";
+        }
+    }
+
+    if (const char* envVal = GetNonEmptyEnv("GLIDE_NG_WINDOW_SCALE")) {
+        int v = 0;
+        if (ParseIntString(envVal, v) && v >= 1 && v <= 8) {
+            outConfig.windowScale = static_cast<uint32_t>(v);
+            outConfig.settingSources["windowScale"] = "GLIDE_NG_WINDOW_SCALE";
+        }
+    }
+
+    if (const char* envVal = GetNonEmptyEnv("GLIDE_NG_PRESENTATION_FILTER")) {
+        if (ParsePresentationFilterString(envVal, outConfig.presentationFilter)) {
+            outConfig.settingSources["presentationFilter"] = "GLIDE_NG_PRESENTATION_FILTER";
+        }
+    }
+
+    if (const char* envVal = GetNonEmptyEnv("GLIDE_NG_LOG_LEVEL")) {
+        if (ParseLogLevelString(envVal, outConfig.logLevel)) {
+            outConfig.settingSources["logLevel"] = "GLIDE_NG_LOG_LEVEL";
+        }
+    }
+
+    if (const char* envVal = GetNonEmptyEnv("GLIDE_NG_LOG_CONSOLE")) {
+        bool b = false;
+        if (ParseBoolString(envVal, b)) {
+            outConfig.logToConsole = b;
+            outConfig.settingSources["logToConsole"] = "GLIDE_NG_LOG_CONSOLE";
+        }
+    }
+
+    if (const char* envVal = GetNonEmptyEnv("GLIDE_NG_LOG_FILE")) {
+        outConfig.logFile = envVal;
+        outConfig.settingSources["logFile"] = "GLIDE_NG_LOG_FILE";
+    }
+
+    if (const char* envVal = GetNonEmptyEnv("GLIDE_NG_NO_SPLASH")) {
+        bool b = false;
+        if (ParseBoolString(envVal, b)) {
+            outConfig.noSplash = b;
+            outConfig.settingSources["noSplash"] = "GLIDE_NG_NO_SPLASH";
+        }
+    }
+
+    if (const char* envVal = GetNonEmptyEnv("GLIDE_NG_SHAMELESS_PLUG")) {
+        bool b = false;
+        if (ParseBoolString(envVal, b)) {
+            outConfig.shamelessPlugMode = b ? 1 : 0;
+            outConfig.settingSources["shamelessPlug"] = "GLIDE_NG_SHAMELESS_PLUG";
+        }
+    }
+
+    // Backend-specific tuning overrides
+    if (const char* envVal = GetNonEmptyEnv("GLIDE_NG_SW_THREADS")) {
+        int v = 0;
+        if (ParseIntString(envVal, v) && v >= 0) {
+            outConfig.swThreads = static_cast<uint32_t>(v);
+            outConfig.settingSources["swThreads"] = "GLIDE_NG_SW_THREADS";
+        }
+    }
+
+    if (const char* envVal = GetNonEmptyEnv("GLIDE_NG_SW_SIMD")) {
+        bool b = false;
+        if (ParseBoolString(envVal, b)) {
+            outConfig.swUseSimd = b;
+            outConfig.settingSources["swSimd"] = "GLIDE_NG_SW_SIMD";
+        }
+    }
+
+    if (const char* envVal = GetNonEmptyEnv("GLIDE_NG_SW_TILE_SIZE")) {
+        int v = 0;
+        if (ParseIntString(envVal, v) && v > 0) {
+            outConfig.swTileSize = static_cast<uint32_t>(v);
+            outConfig.settingSources["swTileSize"] = "GLIDE_NG_SW_TILE_SIZE";
+        }
+    }
+
+    if (const char* envVal = GetNonEmptyEnv("GLIDE_NG_SW_AA")) {
+        outConfig.swAaMode = ToLower(envVal);
+        outConfig.settingSources["swAa"] = "GLIDE_NG_SW_AA";
+    }
+
+    if (const char* envVal = GetNonEmptyEnv("GLIDE_NG_VK_CACHE_PATH")) {
+        outConfig.vkCachePath = envVal;
+        outConfig.settingSources["vkCachePath"] = "GLIDE_NG_VK_CACHE_PATH";
+    }
+
+    if (const char* envVal = GetNonEmptyEnv("GLIDE_NG_GLES_VBO_SIZE")) {
+        int v = 0;
+        if (ParseIntString(envVal, v) && v > 0) {
+            outConfig.glesVboSizeMb = static_cast<uint32_t>(v);
+            outConfig.settingSources["glesVboSize"] = "GLIDE_NG_GLES_VBO_SIZE";
+        }
+    }
+
+    // 6. Final validation & normalization
+    if (outConfig.msaaSamples != 1 && outConfig.msaaSamples != 2 &&
+        outConfig.msaaSamples != 4 && outConfig.msaaSamples != 8 &&
+        outConfig.msaaSamples != 16) {
+        outConfig.msaaSamples = 1;
+    }
+    if (outConfig.swTileSize < 16) {
+        outConfig.swTileSize = 16;
+    }
+    if (outConfig.glesVboSizeMb < 1) {
+        outConfig.glesVboSizeMb = 8;
+    }
+    if (outConfig.swAaMode != "ssaa") {
+        outConfig.swAaMode = "analytical";
+    }
 
     return true;
 }
 
-} // namespace GlideWrapper
+}  // namespace GlideWrapper

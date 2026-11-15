@@ -337,13 +337,9 @@ void VulkanBackend::Shutdown() {
 
   // 2.5. Save persistent Vulkan pipeline cache back to disk!
   if (m_device && m_vkPipelineCache) {
-    std::string cachePath = "";
-    const char* envCache = std::getenv("GLIDE_WRAPPER_CACHE_PATH");
-    if (envCache && envCache[0] != '\0') {
-      cachePath = envCache;
-    } else {
-      cachePath = ".glide-vulkan-cache.bin";
-    }
+    const std::string& cachePath =
+        m_config.vkCachePath.empty() ? std::string(".glide-vulkan-cache.bin")
+                                     : m_config.vkCachePath;
 
     try {
       auto data = m_device->getPipelineCacheData(m_vkPipelineCache.get());
@@ -904,12 +900,9 @@ bool VulkanBackend::CreateSwapchain(uint32_t width, uint32_t height) {
   // On Wayland, prefer Mailbox even with VSync enabled: Wayland compositors
   // always composite atomically (tear-free), while Mailbox avoids Mesa WSI's
   // wp_fifo_v1 / wp_commit_timer_v1 cadence stalls under Mutter/RDP. Users can
-  // still opt into strict FIFO via GLIDE_VSYNC=fifo.
+  // still opt into strict FIFO via GLIDE_NG_VSYNC=fifo.
   bool isWaylandSurface = m_surfaceHost.IsWaylandSurface();
-  const char* envVsync = std::getenv("GLIDE_VSYNC");
-  bool forceStrictFifo =
-      (envVsync &&
-       (std::strcmp(envVsync, "fifo") == 0 || std::strcmp(envVsync, "FIFO") == 0));
+  bool forceStrictFifo = m_config.vsyncStrictFifo;
 
   vk::PresentModeKHR presentMode = SelectPresentMode(
       presentModes, m_config.vsync, isWaylandSurface, forceStrictFifo);
@@ -919,7 +912,7 @@ bool VulkanBackend::CreateSwapchain(uint32_t width, uint32_t height) {
       GLIDE_LOG(INFO, "Vulkan",
                 "Wayland surface detected with VSync enabled: using Mailbox "
                 "present mode (tear-free via Wayland compositor, avoids "
-                "wp_fifo_v1 stalls; set GLIDE_VSYNC=fifo to force FIFO).");
+                "wp_fifo_v1 stalls; set GLIDE_NG_VSYNC=fifo to force FIFO).");
     } else {
       GLIDE_LOG(
           INFO, "Vulkan",
@@ -1747,13 +1740,9 @@ bool VulkanBackend::CreateLogicalDevice() {
   m_graphicsQueue = m_device->getQueue(m_graphicsQueueFamilyIndex, 0);
 
   // 2.5. Initialize persistent Vulkan pipeline cache from disk!
-  std::string cachePath = "";
-  const char* envCache = std::getenv("GLIDE_WRAPPER_CACHE_PATH");
-  if (envCache && envCache[0] != '\0') {
-    cachePath = envCache;
-  } else {
-    cachePath = ".glide-vulkan-cache.bin";
-  }
+  const std::string& cachePath =
+      m_config.vkCachePath.empty() ? std::string(".glide-vulkan-cache.bin")
+                                   : m_config.vkCachePath;
 
   std::vector<char> cacheData;
   std::ifstream cacheFile(cachePath, std::ios::binary | std::ios::ate);
