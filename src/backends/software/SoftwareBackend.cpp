@@ -1147,16 +1147,19 @@ void SoftwareBackend::PresentFrame(const uint32_t* srcPixels, uint32_t srcW,
 }
 
 bool SoftwareBackend::SwapBuffers() {
-  std::lock_guard<std::mutex> lock(m_mutex);
+  std::unique_lock<std::mutex> lock(m_mutex);
   FlushBins_Locked();
   if (!m_initialized || !m_windowAttached) return false;
 
   // Strictly no-op for foreign hosts (X11Child / WaylandSubsurface / Headless);
   // pumps events and handles clean quit ONLY for StandaloneSDL2 demos.
-  m_surfaceHost.PollEvents();
-  if (m_surfaceHost.WasQuitRequested()) {
+  m_surfaceHost.PollEvents(/*force=*/true);
+  if (m_surfaceHost.GetMode() == NativeSurfaceHost::Mode::StandaloneSDL2 &&
+      m_surfaceHost.WasQuitRequested()) {
     GLIDE_LOG(INFO, "Software",
               "Standalone window quit requested; shutting down cleanly.");
+    DetachWindow_Locked();
+    lock.unlock();
     std::exit(0);
   }
 
@@ -1218,13 +1221,26 @@ bool SoftwareBackend::SwapBuffers() {
   const auto presentUs = std::chrono::duration_cast<std::chrono::microseconds>(
                              std::chrono::steady_clock::now() - presentStart)
                              .count();
+  const float maxFps = m_config.maxFps;
+  if (m_surfaceHost.GetMode() == NativeSurfaceHost::Mode::StandaloneSDL2) {
+    m_surfaceHost.PollEvents(/*force=*/true);
+  }
+  lock.unlock();
+
   auto& telemetry = TelemetryManager::GetInstance();
   telemetry.RecordPresentTimeUs(presentUs);
   auto& tracker = telemetry.GetFrameTracker();
-  tracker.MarkFrameEnd(m_config.maxFps);
+  tracker.MarkFrameEnd(maxFps);
   tracker.MarkFrameStart();
 
   return true;
+}
+
+void SoftwareBackend::PollEvents() {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  // Safe no-op in Headless, X11Child, and WaylandSubsurface modes; throttled
+  // SDL event pumping in StandaloneSDL2 mode.
+  m_surfaceHost.PollEvents(/*force=*/false);
 }
 
 void SoftwareBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,

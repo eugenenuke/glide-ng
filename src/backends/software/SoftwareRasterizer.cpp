@@ -542,19 +542,16 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
             float lod1 = (d1 > 1e-8f) ? 0.5f * fast_log2(d1) : -10.0f;
             lod1 += state.texLodBias[1];
 
+            const int maxMipIdx1 =
+                static_cast<int>(tex1->swizzledMipLevels.size()) - 1;
             float clampedLod1 =
-                std::clamp(lod1, static_cast<float>(tex1->largeLod),
-                           static_cast<float>(tex1->smallLod));
+                std::clamp(lod1, 0.0f, static_cast<float>(maxMipIdx1));
 
             if (lodBlend1) {  // Trilinear
               int level0 = static_cast<int>(std::floor(clampedLod1));
               int level1 = level0 + 1;
-              int lodIdx0 = std::clamp(
-                  level0 - tex1->largeLod, 0,
-                  static_cast<int>(tex1->swizzledMipLevels.size() - 1));
-              int lodIdx1 = std::clamp(
-                  level1 - tex1->largeLod, 0,
-                  static_cast<int>(tex1->swizzledMipLevels.size() - 1));
+              int lodIdx0 = std::clamp(level0, 0, maxMipIdx1);
+              int lodIdx1 = std::clamp(level1, 0, maxMipIdx1);
               float lodFraction = clampedLod1 - std::floor(clampedLod1);
 
               uint32_t c0 =
@@ -580,9 +577,7 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
               tWord1 = (a_val << 24) | (r << 16) | (g << 8) | b;
             } else {  // Nearest Mipmap
               int level = static_cast<int>(std::round(clampedLod1));
-              int lodIdx = std::clamp(
-                  level - tex1->largeLod, 0,
-                  static_cast<int>(tex1->swizzledMipLevels.size() - 1));
+              int lodIdx = std::clamp(level, 0, maxMipIdx1);
               tWord1 = SampleTextureLevel(tex1, lodIdx, trueS1, trueT1, clampS1,
                                           clampT1, minFilter1, 1u, state);
             }
@@ -641,19 +636,16 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
               float lod = (d > 1e-8f) ? 0.5f * fast_log2(d) : -10.0f;
               lod += state.texLodBias[0];
 
+              const int maxMipIdx =
+                  static_cast<int>(tex->swizzledMipLevels.size()) - 1;
               float clampedLod =
-                  std::clamp(lod, static_cast<float>(tex->largeLod),
-                             static_cast<float>(tex->smallLod));
+                  std::clamp(lod, 0.0f, static_cast<float>(maxMipIdx));
 
               if (lodBlend) {  // Trilinear
                 int level0 = static_cast<int>(std::floor(clampedLod));
                 int level1 = level0 + 1;
-                int lodIdx0 = std::clamp(
-                    level0 - tex->largeLod, 0,
-                    static_cast<int>(tex->swizzledMipLevels.size() - 1));
-                int lodIdx1 = std::clamp(
-                    level1 - tex->largeLod, 0,
-                    static_cast<int>(tex->swizzledMipLevels.size() - 1));
+                int lodIdx0 = std::clamp(level0, 0, maxMipIdx);
+                int lodIdx1 = std::clamp(level1, 0, maxMipIdx);
                 float lodFraction = clampedLod - std::floor(clampedLod);
 
                 uint32_t c0 =
@@ -679,9 +671,7 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
                 tWord = (a_val << 24) | (r << 16) | (g << 8) | b;
               } else {  // Nearest Mipmap
                 int level = static_cast<int>(std::round(clampedLod));
-                int lodIdx = std::clamp(
-                    level - tex->largeLod, 0,
-                    static_cast<int>(tex->swizzledMipLevels.size() - 1));
+                int lodIdx = std::clamp(level, 0, maxMipIdx);
                 tWord = SampleTextureLevel(tex, lodIdx, trueS, trueT, clampS,
                                            clampT, minFilter, 0u, state);
               }
@@ -1045,6 +1035,11 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
           }
         }
 
+        // Capture pre-fog color for GR_BLEND_PREFOG_COLOR (multi-pass fog)
+        const float preFogR = red;
+        const float preFogG = green;
+        const float preFogB = blue;
+
         // Fog Stage
         if (keepPixel && (fogMode != 0)) {
           uint32_t fogSource = fogMode & 0x0F;
@@ -1062,6 +1057,7 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
             if (eyeW >= s_tableIndexToW[idx + 4]) idx += 4;
             if (eyeW >= s_tableIndexToW[idx + 2]) idx += 2;
             if (eyeW >= s_tableIndexToW[idx + 1]) idx += 1;
+            idx = std::min(idx, 62);
 
             float w0_fog = s_tableIndexToW[idx];
             float w1_fog = s_tableIndexToW[idx + 1];
@@ -1094,8 +1090,8 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
             float dstB = (currentPixel & 0xFF) / 255.0f;
             float dstA = ((currentPixel >> 24) & 0xFF) / 255.0f;
 
-            auto getF = [&](uint32_t mode, float srcC, float dstC, float srcA,
-                            float dstA, bool isDest) {
+            auto getF = [&](uint32_t mode, float srcC, float preFogC,
+                            float dstC, float srcA, float dstA, bool isDest) {
               switch (mode) {
                 case 0:
                   return 0.0f;
@@ -1114,28 +1110,34 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
                 case 7:
                   return 1.0f - dstA;
                 case 15:
-                  return srcC;
+                  return isDest ? preFogC : std::min(srcA, 1.0f - dstA);
                 default:
                   return 1.0f;
               }
             };
-            red = std::min(1.0f, red * getF(rgbSrcBlend, red, dstR,
-                                            blendAlphaVal, dstA, false) +
-                                     dstR * getF(rgbDstBlend, red, dstR,
-                                                 blendAlphaVal, dstA, true));
-            green = std::min(1.0f, green * getF(rgbSrcBlend, green, dstG,
-                                                blendAlphaVal, dstA, false) +
-                                       dstG * getF(rgbDstBlend, green, dstG,
-                                                   blendAlphaVal, dstA, true));
-            blue = std::min(1.0f, blue * getF(rgbSrcBlend, blue, dstB,
-                                              blendAlphaVal, dstA, false) +
-                                      dstB * getF(rgbDstBlend, blue, dstB,
-                                                  blendAlphaVal, dstA, true));
+            red = std::min(
+                1.0f,
+                red * getF(rgbSrcBlend, red, preFogR, dstR, blendAlphaVal, dstA,
+                           false) +
+                    dstR * getF(rgbDstBlend, red, preFogR, dstR, blendAlphaVal,
+                                dstA, true));
+            green = std::min(
+                1.0f,
+                green * getF(rgbSrcBlend, green, preFogG, dstG, blendAlphaVal,
+                             dstA, false) +
+                    dstG * getF(rgbDstBlend, green, preFogG, dstG,
+                                blendAlphaVal, dstA, true));
+            blue = std::min(
+                1.0f,
+                blue * getF(rgbSrcBlend, blue, preFogB, dstB, blendAlphaVal,
+                            dstA, false) +
+                    dstB * getF(rgbDstBlend, blue, preFogB, dstB, blendAlphaVal,
+                                dstA, true));
             aVal = static_cast<uint32_t>(
                 std::min(1.0f,
-                         blendAlphaVal * getF(alphaSrcBlend, 0, 0,
+                         blendAlphaVal * getF(alphaSrcBlend, 0, 0, 0,
                                               blendAlphaVal, dstA, false) +
-                             dstA * getF(alphaDstBlend, 0, 0, blendAlphaVal,
+                             dstA * getF(alphaDstBlend, 0, 0, 0, blendAlphaVal,
                                          dstA, true)) *
                     255.0f +
                 0.5f);

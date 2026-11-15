@@ -41,6 +41,7 @@ class SoftwareBackend : public SoftwareBackendBase {
   void DetachWindow() override;
 
   bool SwapBuffers() override;
+  void PollEvents() override;
   void FlushBins() override;
 
   void DrawTriangle(const ModernVertex& a, const ModernVertex& b,

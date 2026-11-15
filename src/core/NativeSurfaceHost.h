@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <string>
 
@@ -112,8 +113,13 @@ class NativeSurfaceHost {
    *
    * Guaranteed no-op in `Headless`, `X11Child`, and `WaylandSubsurface` modes
    * so foreign host event loops (DOSBox-X / SVN DOSBox) are never disturbed.
+   *
+   * @param force When true (default), pumps immediately (used at frame
+   *     boundaries, window creation, and direct calls). Pass false from
+   *     high-frequency Glide API hooks to throttle polling to at most once
+   *     every 4 ms.
    */
-  void PollEvents();
+  void PollEvents(bool force = true);
 
   bool IsAttached() const { return m_mode != Mode::Detached; }
   bool WasQuitRequested() const { return m_quitRequested; }
@@ -170,7 +176,7 @@ class NativeSurfaceHost {
   // StandaloneSDL2 state
   SDL_Window* m_sdlWindow = nullptr;
   uint32_t m_sdlWindowId = 0;
-  bool m_sdlVideoInitializedByUs = false;
+  std::chrono::steady_clock::time_point m_lastPollTime{};
   std::string m_sdlVideoDriver;
 
   // X11Child state

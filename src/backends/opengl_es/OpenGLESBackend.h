@@ -32,6 +32,7 @@ class OpenGLESBackend : public GlideStateTracker {
   bool HasAllocatedCpuLfbStaging() const { return m_lfbStaging.IsAllocated(); }
 
   bool SwapBuffers() override;
+  void PollEvents() override;
   void FlushBins() override {}
   void SstIdle() override;
   void ClearBuffer(uint32_t color, uint32_t alpha, float z,

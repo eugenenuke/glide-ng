@@ -449,19 +449,17 @@ TEST_CASE("Architectural Core Validation", "[Architecture]") {
     logger.Initialize("test_pacing.log", GlideWrapper::LogLevel::INFO);
     manager.EstablishBackend(reg.GetConfig());
 
-    auto start = std::chrono::steady_clock::now();
-
     // Execute 10 simulated frame presentation swaps
     auto* backend = manager.GetBackend();
     REQUIRE(backend != nullptr);
 
     backend->AttachWindow(nullptr, 800, 600, false);
+    auto start = std::chrono::steady_clock::now();
     for (int i = 0; i < 10; ++i) {
       backend->SwapBuffers();
     }
-    backend->DetachWindow();
-
     auto end = std::chrono::steady_clock::now();
+    backend->DetachWindow();
     auto elapsedMs =
         std::chrono::duration_cast<std::chrono::milliseconds>(end - start)
             .count();
@@ -6717,5 +6715,436 @@ TEST_CASE("Software Thread Scaling", "[Software][Scaling]") {
   }
 
   ::dlclose(handle);
+#endif
+}
+
+TEST_CASE("M4.1: Shameless Plug ABGR Readback & State Preservation [test16]",
+          "[Glide2][M4]") {
+#ifdef __linux__
+  // Ensure splash does not run during automated headless test
+  const char* prevNoSplash = std::getenv("FX_GLIDE_NO_SPLASH");
+  std::string savedNoSplash = prevNoSplash ? prevNoSplash : "";
+  ::setenv("FX_GLIDE_NO_SPLASH", "1", 1);
+  struct EnvRestorer {
+    bool hadPrev;
+    std::string val;
+    ~EnvRestorer() {
+      if (hadPrev) {
+        ::setenv("FX_GLIDE_NO_SPLASH", val.c_str(), 1);
+      } else {
+        ::unsetenv("FX_GLIDE_NO_SPLASH");
+      }
+    }
+  } restorer{prevNoSplash != nullptr, savedNoSplash};
+
+  grGlideInit();
+  grSstSelect(0);
+  FxBool openOk =
+      grSstWinOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                   GR_COLORFORMAT_ABGR, GR_ORIGIN_UPPER_LEFT, 2, 1);
+  REQUIRE(openOk == FXTRUE);
+
+  // Verify grGlideGetState / grGlideSetState preserves LFB constant alpha and
+  // LFB write color format (used by RenderBanner / grShamelessPlug).
+  grLfbConstantAlpha(0x7A);
+  grLfbWriteColorFormat(GR_COLORFORMAT_ARGB);
+  GrState savedState{};
+  grGlideGetState(&savedState);
+
+  grLfbConstantAlpha(0x11);
+  grLfbWriteColorFormat(GR_COLORFORMAT_ABGR);
+  grGlideSetState(&savedState);
+
+  // Restore standard ABGR window state before drawing test16 pattern.
+  grLfbConstantAlpha(0xFF);
+  grLfbWriteColorFormat(GR_COLORFORMAT_ABGR);
+  grDitherMode(GR_DITHER_DISABLE);
+  grColorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+                 GR_COMBINE_LOCAL_CONSTANT, GR_COMBINE_OTHER_NONE, FXFALSE);
+
+  // Draw RED (0x000000FF in ABGR) and BLUE (0x00FF0000 in ABGR) quads away
+  // from the 180x90 lower-right shameless plug banner.
+  grBufferClear(0x00000000, 0, GR_WDEPTHVALUE_FARTHEST);
+
+  auto drawQuad = [](float x0, float y0, float x1, float y1, GrColor_t abgr) {
+    grConstantColorValue(abgr);
+    GrVertex a{}, b{}, c{}, d{};
+    a.x = x0;
+    a.y = y0;
+    a.oow = 1.0f;
+    b.x = x1;
+    b.y = y0;
+    b.oow = 1.0f;
+    c.x = x1;
+    c.y = y1;
+    c.oow = 1.0f;
+    d.x = x0;
+    d.y = y1;
+    d.oow = 1.0f;
+    grDrawTriangle(&a, &b, &c);
+    grDrawTriangle(&a, &c, &d);
+  };
+
+  drawQuad(20.0f, 20.0f, 220.0f, 220.0f, 0x000000FFu);   // Pure RED in ABGR
+  drawQuad(260.0f, 20.0f, 440.0f, 220.0f, 0x00FF0000u);  // Pure BLUE in ABGR
+
+  // Enable Shameless Plug and swap: RenderBanner() performs LFB readback +
+  // banner write + FlushLFBToGPU before swapping back->front.
+  grGlideShamelessPlug(FXTRUE);
+  grBufferSwap(1);
+
+  // Read back from FRONTBUFFER in 32-bit ABGR (R in bits 0..7, G in 8..15, B
+  // in 16..23) and verify R/B channels were NOT swapped by LFB readback.
+  uint32_t redPx = 0;
+  uint32_t bluePx = 0;
+  REQUIRE(grLfbReadRegion(GR_BUFFER_FRONTBUFFER, 100, 100, 1, 1, 4, &redPx) ==
+          FXTRUE);
+  REQUIRE(grLfbReadRegion(GR_BUFFER_FRONTBUFFER, 340, 100, 1, 1, 4, &bluePx) ==
+          FXTRUE);
+
+  const uint32_t redR = redPx & 0xFFu;
+  const uint32_t redG = (redPx >> 8) & 0xFFu;
+  const uint32_t redB = (redPx >> 16) & 0xFFu;
+  REQUIRE(redR >= 245);
+  REQUIRE(redG <= 10);
+  REQUIRE(redB <= 10);
+
+  const uint32_t blueR = bluePx & 0xFFu;
+  const uint32_t blueG = (bluePx >> 8) & 0xFFu;
+  const uint32_t blueB = (bluePx >> 16) & 0xFFu;
+  REQUIRE(blueB >= 245);
+  REQUIRE(blueG <= 10);
+  REQUIRE(blueR <= 10);
+
+  // Also verify the 180x90 shameless plug banner actually drew into the
+  // lower-right corner.
+  std::vector<uint32_t> bannerPixels(180 * 90, 0);
+  REQUIRE(grLfbReadRegion(GR_BUFFER_FRONTBUFFER, 640 - 180, 480 - 90, 180, 90,
+                          180 * 4, bannerPixels.data()) == FXTRUE);
+  int nonBlackBannerPixels = 0;
+  for (uint32_t px : bannerPixels) {
+    if ((px & 0x00FFFFFFu) != 0) {
+      ++nonBlackBannerPixels;
+    }
+  }
+  REQUIRE(nonBlackBannerPixels > 1000);
+
+  grGlideShamelessPlug(FXFALSE);
+  grSstWinClose();
+  grGlideShutdown();
+#endif
+}
+
+TEST_CASE(
+    "M4.2: Multi-Pass Fog (ADD2/MULT2 + PREFOG_COLOR) & Mipmap largeLod Offset "
+    "[test22]",
+    "[Glide2][M4]") {
+#ifdef __linux__
+  const char* prevNoSplash = std::getenv("FX_GLIDE_NO_SPLASH");
+  std::string savedNoSplash = prevNoSplash ? prevNoSplash : "";
+  ::setenv("FX_GLIDE_NO_SPLASH", "1", 1);
+  struct EnvRestorer {
+    bool hadPrev;
+    std::string val;
+    ~EnvRestorer() {
+      if (hadPrev) {
+        ::setenv("FX_GLIDE_NO_SPLASH", val.c_str(), 1);
+      } else {
+        ::unsetenv("FX_GLIDE_NO_SPLASH");
+      }
+    }
+  } restorer{prevNoSplash != nullptr, savedNoSplash};
+
+  grGlideInit();
+  grSstSelect(0);
+  FxBool openOk =
+      grSstWinOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                   GR_COLORFORMAT_ABGR, GR_ORIGIN_LOWER_LEFT, 2, 1);
+  REQUIRE(openOk == FXTRUE);
+  grDitherMode(GR_DITHER_DISABLE);
+
+  SECTION("Two-pass GR_FOG_ADD2 + GR_FOG_MULT2 with GR_BLEND_PREFOG_COLOR") {
+    GrFog_t fogTable[GR_FOG_TABLE_SIZE];
+    std::memset(fogTable, 128, sizeof(fogTable));  // f = 128/255 (~0.502)
+    grFogColorValue(0x00404040u);                  // Cf = (64, 64, 64)
+    grFogTable(fogTable);
+
+    grColorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+                   GR_COMBINE_LOCAL_CONSTANT, GR_COMBINE_OTHER_NONE, FXFALSE);
+    grBufferClear(0x00000000, 0, GR_WDEPTHVALUE_FARTHEST);
+
+    auto drawFullQuad = [](float oow) {
+      GrVertex a{}, b{}, c{}, d{};
+      a.x = 100.0f;
+      a.y = 100.0f;
+      a.oow = oow;
+      b.x = 300.0f;
+      b.y = 100.0f;
+      b.oow = oow;
+      c.x = 300.0f;
+      c.y = 300.0f;
+      c.oow = oow;
+      d.x = 100.0f;
+      d.y = 300.0f;
+      d.oow = oow;
+      grDrawTriangle(&a, &b, &c);
+      grDrawTriangle(&a, &c, &d);
+    };
+
+    // Pass 1: C1 = (R=200, G=160, B=80) in ABGR -> 0x0050A0C8
+    grConstantColorValue(0x0050A0C8u);
+    grAlphaBlendFunction(GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_ZERO,
+                         GR_BLEND_ZERO);
+    grFogMode(GR_FOG_WITH_TABLE | GR_FOG_ADD2);
+    drawFullQuad(0.1f);
+
+    // Pass 2: C2 = (R=128, G=255, B=192) in ABGR -> 0x00C0FF80
+    // Expected: Cf * f + (1 - f) * (C1 * C2)
+    //   R = 64*(128/255) + (127/255)*(200*(128/255)) = 82.1
+    //   G = 64*(128/255) + (127/255)*(160*(255/255)) = 111.8
+    //   B = 64*(128/255) + (127/255)*(80*(192/255))  = 62.1
+    grConstantColorValue(0x00C0FF80u);
+    grAlphaBlendFunction(GR_BLEND_ONE, GR_BLEND_PREFOG_COLOR, GR_BLEND_ZERO,
+                         GR_BLEND_ZERO);
+    grFogMode(GR_FOG_WITH_TABLE | GR_FOG_MULT2);
+    drawFullQuad(0.1f);
+
+    // Sample center of quad (x=200, y=200 in screen coords; y=200 is inside
+    // [100, 300] under both lower-left and upper-left interpretations).
+    uint32_t px = 0;
+    REQUIRE(grLfbReadRegion(GR_BUFFER_BACKBUFFER, 200, 200, 1, 1, 4, &px) ==
+            FXTRUE);
+    const int r = static_cast<int>(px & 0xFFu);
+    const int g = static_cast<int>((px >> 8) & 0xFFu);
+    const int b = static_cast<int>((px >> 16) & 0xFFu);
+    REQUIRE(std::abs(r - 82) <= 4);
+    REQUIRE(std::abs(g - 112) <= 4);
+    REQUIRE(std::abs(b - 62) <= 4);
+
+    // Boundary safety check: eyeW far beyond s_tableIndexToW[63] must not OOB
+    // and must saturate cleanly to fogTable[63].
+    fogTable[62] = 255;
+    fogTable[63] = 255;
+    grFogTable(fogTable);
+    grFogMode(GR_FOG_WITH_TABLE);
+    grAlphaBlendFunction(GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_ZERO,
+                         GR_BLEND_ZERO);
+    grConstantColorValue(0x00FFFFFFu);
+    drawFullQuad(1e-6f);
+    uint32_t farPx = 0;
+    REQUIRE(grLfbReadRegion(GR_BUFFER_BACKBUFFER, 200, 200, 1, 1, 4, &farPx) ==
+            FXTRUE);
+    REQUIRE(std::abs(static_cast<int>(farPx & 0xFFu) - 64) <= 4);
+    REQUIRE(std::abs(static_cast<int>((farPx >> 8) & 0xFFu) - 64) <= 4);
+    REQUIRE(std::abs(static_cast<int>((farPx >> 16) & 0xFFu) - 64) <= 4);
+  }
+
+  SECTION("Mipmapped texture with largeLod=GR_LOD_64 selects correct mip") {
+    // Build a 64x64..1x1 RGB565 mip chain (largeLod=GR_LOD_64=2, smallLod=8):
+    //   mip 0 (64x64): pure RED   (0xF800)
+    //   mip 1 (32x32): pure BLUE  (0x001F)
+    //   mip 2 (16x16): pure GREEN (0x07E0)
+    //   mips 3..6    : pure GREEN (0x07E0)
+    std::vector<uint16_t> mipData;
+    auto appendLevel = [&](int dim, uint16_t color565) {
+      mipData.insert(mipData.end(), static_cast<size_t>(dim * dim), color565);
+    };
+    appendLevel(64, 0xF800u);  // mip 0 -> RED
+    appendLevel(32, 0x001Fu);  // mip 1 -> BLUE
+    appendLevel(16, 0x07E0u);  // mip 2 -> GREEN
+    appendLevel(8, 0x07E0u);
+    appendLevel(4, 0x07E0u);
+    appendLevel(2, 0x07E0u);
+    appendLevel(1, 0x07E0u);
+
+    GrTexInfo texInfo{};
+    texInfo.largeLod = GR_LOD_64;
+    texInfo.smallLod = GR_LOD_1;
+    texInfo.aspectRatio = GR_ASPECT_1x1;
+    texInfo.format = GR_TEXFMT_RGB_565;
+    texInfo.data = mipData.data();
+
+    const FxU32 texAddr = grTexMinAddress(GR_TMU0);
+    grTexDownloadMipMap(GR_TMU0, texAddr, GR_MIPMAPLEVELMASK_BOTH, &texInfo);
+    grTexSource(GR_TMU0, texAddr, GR_MIPMAPLEVELMASK_BOTH, &texInfo);
+    grTexMipMapMode(GR_TMU0, GR_MIPMAP_NEAREST, FXFALSE);
+    grTexFilterMode(GR_TMU0, GR_TEXTUREFILTER_POINT_SAMPLED,
+                    GR_TEXTUREFILTER_POINT_SAMPLED);
+    grTexClampMode(GR_TMU0, GR_TEXTURECLAMP_CLAMP, GR_TEXTURECLAMP_CLAMP);
+    grTexLodBiasValue(GR_TMU0, 0.0f);
+    grFogMode(GR_FOG_DISABLE);
+    grAlphaBlendFunction(GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_ZERO,
+                         GR_BLEND_ZERO);
+    grColorCombine(GR_COMBINE_FUNCTION_SCALE_OTHER, GR_COMBINE_FACTOR_ONE,
+                   GR_COMBINE_LOCAL_NONE, GR_COMBINE_OTHER_TEXTURE, FXFALSE);
+
+    grBufferClear(0x00000000, 0, GR_WDEPTHVALUE_FARTHEST);
+
+    // Map full 64x64 texture onto a 16x16 screen quad -> minification ratio =
+    // 4x -> relative LOD = log2(4) = 2.0 -> MUST sample mip 2 (GREEN), NOT mip
+    // 0 (RED).
+    GrVertex a{}, b{}, c{}, d{};
+    a.x = 100.0f;
+    a.y = 200.0f;
+    a.oow = 1.0f;
+    a.tmuvtx[0].sow = 0.0f;
+    a.tmuvtx[0].tow = 0.0f;
+    b.x = 116.0f;
+    b.y = 200.0f;
+    b.oow = 1.0f;
+    b.tmuvtx[0].sow = 255.0f;
+    b.tmuvtx[0].tow = 0.0f;
+    c.x = 116.0f;
+    c.y = 216.0f;
+    c.oow = 1.0f;
+    c.tmuvtx[0].sow = 255.0f;
+    c.tmuvtx[0].tow = 255.0f;
+    d.x = 100.0f;
+    d.y = 216.0f;
+    d.oow = 1.0f;
+    d.tmuvtx[0].sow = 0.0f;
+    d.tmuvtx[0].tow = 255.0f;
+    grDrawTriangle(&a, &b, &c);
+    grDrawTriangle(&a, &c, &d);
+
+    // Under GR_ORIGIN_LOWER_LEFT, y in [200, 216] maps to LFB upper-left y in
+    // [480 - 216, 480 - 200] = [264, 280]; center is (108, 272).
+    uint32_t px = 0;
+    REQUIRE(grLfbReadRegion(GR_BUFFER_BACKBUFFER, 108, 272, 1, 1, 4, &px) ==
+            FXTRUE);
+    const uint32_t r = px & 0xFFu;
+    const uint32_t g = (px >> 8) & 0xFFu;
+    const uint32_t bCh = (px >> 16) & 0xFFu;
+    REQUIRE(g >= 240);
+    REQUIRE(r <= 10);
+    REQUIRE(bCh <= 10);
+  }
+
+  grSstWinClose();
+  grGlideShutdown();
+#endif
+}
+
+TEST_CASE(
+    "M4.3: Anti-Aliased Lower-Left Rendering & Repeated WinOpen/WinClose "
+    "Cycles [test25][test27]",
+    "[Glide2][M4]") {
+#ifdef __linux__
+  const char* prevNoSplash = std::getenv("FX_GLIDE_NO_SPLASH");
+  std::string savedNoSplash = prevNoSplash ? prevNoSplash : "";
+  ::setenv("FX_GLIDE_NO_SPLASH", "1", 1);
+  struct EnvRestorer {
+    bool hadPrev;
+    std::string val;
+    ~EnvRestorer() {
+      if (hadPrev) {
+        ::setenv("FX_GLIDE_NO_SPLASH", val.c_str(), 1);
+      } else {
+        ::unsetenv("FX_GLIDE_NO_SPLASH");
+      }
+    }
+  } restorer{prevNoSplash != nullptr, savedNoSplash};
+
+  grGlideInit();
+  grSstSelect(0);
+
+  SECTION("test25: guTex + grGlideGet/SetState + grAADrawTriangle") {
+    REQUIRE(grSstWinOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                         GR_COLORFORMAT_ABGR, GR_ORIGIN_LOWER_LEFT, 2,
+                         1) == FXTRUE);
+    grDitherMode(GR_DITHER_DISABLE);
+
+    std::vector<uint16_t> texBuf(32 * 32, 0x07E0u);  // 32x32 pure GREEN RGB565
+    GrMipMapId_t mmid = guTexAllocateMemory(
+        GR_TMU0, GR_MIPMAPLEVELMASK_BOTH, 32, 32, GR_TEXFMT_RGB_565,
+        GR_MIPMAP_DISABLE, GR_LOD_32, GR_LOD_32, GR_ASPECT_1x1,
+        GR_TEXTURECLAMP_WRAP, GR_TEXTURECLAMP_WRAP, GR_TEXTUREFILTER_BILINEAR,
+        GR_TEXTUREFILTER_BILINEAR, 0.0f, FXFALSE);
+    REQUIRE(mmid != GR_NULL_MIPMAP_HANDLE);
+    guTexDownloadMipMap(mmid, texBuf.data(), nullptr);
+    guTexSource(mmid);
+
+    grColorCombine(GR_COMBINE_FUNCTION_SCALE_OTHER, GR_COMBINE_FACTOR_ONE,
+                   GR_COMBINE_LOCAL_NONE, GR_COMBINE_OTHER_TEXTURE, FXFALSE);
+    guAlphaSource(GR_ALPHASOURCE_ITERATED_ALPHA);
+    grAlphaBlendFunction(GR_BLEND_SRC_ALPHA, GR_BLEND_ONE_MINUS_SRC_ALPHA,
+                         GR_BLEND_ONE, GR_BLEND_ZERO);
+
+    GrState st{};
+    grGlideGetState(&st);
+    grGlideSetState(&st);
+
+    grBufferClear(0x00000000, 0, GR_WDEPTHVALUE_FARTHEST);
+    GrVertex a{}, b{}, c{};
+    a.x = 200.0f;
+    a.y = 140.0f;
+    a.oow = 1.0f;
+    a.a = 255.0f;
+    a.tmuvtx[0].sow = 0.0f;
+    a.tmuvtx[0].tow = 0.0f;
+    b.x = 440.0f;
+    b.y = 140.0f;
+    b.oow = 1.0f;
+    b.a = 255.0f;
+    b.tmuvtx[0].sow = 255.0f;
+    b.tmuvtx[0].tow = 0.0f;
+    c.x = 320.0f;
+    c.y = 340.0f;
+    c.oow = 1.0f;
+    c.a = 255.0f;
+    c.tmuvtx[0].sow = 128.0f;
+    c.tmuvtx[0].tow = 255.0f;
+    grAADrawTriangle(&a, &b, &c, FXTRUE, FXTRUE, FXTRUE);
+
+    grBufferSwap(1);
+    uint32_t px = 0;
+    REQUIRE(grLfbReadRegion(GR_BUFFER_FRONTBUFFER, 320, 240, 1, 1, 4, &px) ==
+            FXTRUE);
+    REQUIRE(((px >> 8) & 0xFFu) >= 240);  // Green channel from AA triangle
+
+    grSstWinClose();
+  }
+
+  SECTION("test27: 5 consecutive grSstWinOpen / grSstWinClose cycles") {
+    const GrColor_t cycleColors[5] = {
+        0x000000FFu,  // RED
+        0x0000FF00u,  // GREEN
+        0x00FF0000u,  // BLUE
+        0x0000FFFFu,  // YELLOW
+        0x00FF00FFu,  // MAGENTA
+    };
+    for (int cycle = 0; cycle < 5; ++cycle) {
+      REQUIRE(grSstWinOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                           GR_COLORFORMAT_ABGR, GR_ORIGIN_UPPER_LEFT, 2,
+                           1) == FXTRUE);
+      grDitherMode(GR_DITHER_DISABLE);
+      grColorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+                     GR_COMBINE_LOCAL_CONSTANT, GR_COMBINE_OTHER_NONE, FXFALSE);
+      grBufferClear(0x00000000, 0, GR_WDEPTHVALUE_FARTHEST);
+      grConstantColorValue(cycleColors[cycle]);
+
+      GrVertex a{}, b{}, c{};
+      a.x = 100.0f;
+      a.y = 100.0f;
+      a.oow = 1.0f;
+      b.x = 540.0f;
+      b.y = 100.0f;
+      b.oow = 1.0f;
+      c.x = 320.0f;
+      c.y = 380.0f;
+      c.oow = 1.0f;
+      grDrawTriangle(&a, &b, &c);
+
+      grBufferSwap(1);
+      uint32_t px = 0;
+      REQUIRE(grLfbReadRegion(GR_BUFFER_FRONTBUFFER, 320, 200, 1, 1, 4, &px) ==
+              FXTRUE);
+      REQUIRE((px & 0x00FFFFFFu) == (cycleColors[cycle] & 0x00FFFFFFu));
+
+      grSstWinClose();
+    }
+  }
+
+  grGlideShutdown();
 #endif
 }
