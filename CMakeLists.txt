@@ -76,6 +76,7 @@ compile_shader("${CMAKE_CURRENT_SOURCE_DIR}/src/backends/vulkan/shaders/color_du
 add_custom_target(CompileShaders DEPENDS ${GENERATED_SHADER_HEADERS})
 
 # Add Primary Source Directories
+enable_testing()
 add_subdirectory(src)
 add_subdirectory(tests)
 add_subdirectory(tools)
