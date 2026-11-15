@@ -47,5 +47,15 @@ tests/software_dumps/
 # External test suites, demos, and third-party emulators
 /ext_tests/
 
+# Untracked local reference clones under refs/
+/refs/dosbox-x/
+/refs/mesa/
+/refs/openglide/
+/refs/openglide-ng/
+/refs/wrappers/
+
+# Runtime shader/pipeline cache files
+.glide-vulkan-cache.bin
+
 # Local release build directories
 build_release/
