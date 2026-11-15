@@ -11,6 +11,12 @@
 
 #include "core/Logger.h"
 
+// NOTE(T1.6): GCC/Clang define `__unix__`, NOT `UNIX`, so the X11/Wayland
+// overlay blocks below are intentionally inactive dead code in this legacy
+// helper. Do NOT flip `UNIX` -> `__unix__` here: doing so would activate the
+// broken SDL_CreateWindow + wl_subcompositor_get_subsurface protocol violation.
+// Phase 2 introduces NativeSurfaceHost (using `__unix__` + HAVE_X11/HAVE_WAYLAND)
+// and T2.7 retires PlatformWindowUtils completely.
 #if defined(UNIX) && !defined(__APPLE__)
 #include <X11/Xlib.h>
 #include <X11/extensions/shape.h>

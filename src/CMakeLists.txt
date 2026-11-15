@@ -40,7 +40,14 @@ add_dependencies(GlideWrapperCore CompileShaders)
 target_link_libraries(GlideWrapperCore PUBLIC Vulkan::Vulkan SDL2::SDL2 GLESv2 OpenMP::OpenMP_CXX)
 if(UNIX AND NOT APPLE)
     target_link_libraries(GlideWrapperCore PUBLIC X11::X11 X11::Xext)
-    # Discover Wayland Client via PkgConfig
+    target_compile_definitions(GlideWrapperCore PUBLIC HAVE_X11=1)
+
+    set(_GLIDE_WSI_X11 "ON")
+    set(_GLIDE_WSI_WAYLAND "OFF")
+    set(_GLIDE_WSI_WAYLAND_EGL "OFF")
+    set(_GLIDE_WSI_EGL "OFF")
+
+    # Discover Wayland Client, Wayland-EGL, and EGL via PkgConfig
     find_package(PkgConfig QUIET)
     if(PKG_CONFIG_FOUND)
         pkg_check_modules(WAYLAND_CLIENT wayland-client)
@@ -48,8 +55,27 @@ if(UNIX AND NOT APPLE)
             target_include_directories(GlideWrapperCore PRIVATE ${WAYLAND_CLIENT_INCLUDE_DIRS})
             target_link_libraries(GlideWrapperCore PUBLIC ${WAYLAND_CLIENT_LIBRARIES})
             target_compile_definitions(GlideWrapperCore PUBLIC HAVE_WAYLAND=1)
+            set(_GLIDE_WSI_WAYLAND "ON (${WAYLAND_CLIENT_VERSION})")
+        endif()
+
+        pkg_check_modules(WAYLAND_EGL wayland-egl)
+        if(WAYLAND_EGL_FOUND)
+            target_include_directories(GlideWrapperCore PRIVATE ${WAYLAND_EGL_INCLUDE_DIRS})
+            target_link_libraries(GlideWrapperCore PUBLIC ${WAYLAND_EGL_LIBRARIES})
+            target_compile_definitions(GlideWrapperCore PUBLIC HAVE_WAYLAND_EGL=1)
+            set(_GLIDE_WSI_WAYLAND_EGL "ON (${WAYLAND_EGL_VERSION})")
+        endif()
+
+        pkg_check_modules(EGL egl)
+        if(EGL_FOUND)
+            target_include_directories(GlideWrapperCore PRIVATE ${EGL_INCLUDE_DIRS})
+            target_link_libraries(GlideWrapperCore PUBLIC ${EGL_LIBRARIES})
+            target_compile_definitions(GlideWrapperCore PUBLIC HAVE_EGL=1)
+            set(_GLIDE_WSI_EGL "ON (${EGL_VERSION})")
         endif()
     endif()
+
+    message(STATUS "WSI Backends: HAVE_X11=${_GLIDE_WSI_X11}, HAVE_WAYLAND=${_GLIDE_WSI_WAYLAND}, HAVE_WAYLAND_EGL=${_GLIDE_WSI_WAYLAND_EGL}, HAVE_EGL=${_GLIDE_WSI_EGL}")
 endif()
 
 
