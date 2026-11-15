@@ -58,3 +58,6 @@ tests/software_dumps/
 
 # Local release build directories
 build_release/
+
+# Optional local DOS cross-compiler toolchain (Open Watcom v2)
+/vendor/watcom/
