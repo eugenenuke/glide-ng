@@ -31,6 +31,9 @@ set(CORE_SOURCES
     backends/opengl_es/OpenGLESTextures.cpp
     backends/opengl_es/OpenGLESDraw.cpp
     backends/software/SoftwareBackend.cpp
+    backends/software/SoftwareCombiner.cpp
+    backends/software/SoftwareRasterizer.cpp
+    backends/software/SoftwareRasterizerSimd.cpp
 )
 
 # --- TARGET 1: Universal GlideWrapperCore ---
@@ -38,6 +41,9 @@ add_library(GlideWrapperCore STATIC ${CORE_SOURCES})
 set_source_files_properties(
     backends/SoftwareBackendBase.cpp
     backends/software/SoftwareBackend.cpp
+    backends/software/SoftwareCombiner.cpp
+    backends/software/SoftwareRasterizer.cpp
+    backends/software/SoftwareRasterizerSimd.cpp
     PROPERTIES COMPILE_FLAGS "-mavx2"
 )
 set_target_properties(GlideWrapperCore PROPERTIES POSITION_INDEPENDENT_CODE ON)

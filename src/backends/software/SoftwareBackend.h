@@ -86,7 +86,7 @@ class SoftwareBackend : public SoftwareBackendBase {
 
   template <bool HasTexture, bool BlendEnabled, bool DitherEnabled,
             bool Clockwise>
-  __attribute__((always_inline)) inline void RasterizeTriangleLoopsSIMD(
+  void RasterizeTriangleLoopsSIMD(
       const ModernVertex& a, const ModernVertex& b, const ModernVertex& c,
       int minX, int maxX, int minY, int maxY, const RasterizerState& state,
       float invArea, float a0, float b0, float c0, float a1, float b1, float c1,
