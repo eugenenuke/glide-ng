@@ -66,7 +66,7 @@ Recorded before any edits are made:
 | **T2.4** | Phase 2 | Migrate `VulkanBackend` to `NativeSurfaceHost` + aspect-ratio preserving letterbox/pillarbox blit | Med | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `2d75259`, `985e7fa`, `1d349ee` |
 | **T2.5** | Phase 2 | Migrate `OpenGLESBackend` to `NativeSurfaceHost` (Direct EGL) + aspect-ratio & Gamma LUT presentation pass | Med | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `df40756`, `8c416e2` |
 | **T2.6** | Phase 2 | Migrate `SoftwareBackend` to `NativeSurfaceHost` + aspect-ratio preserving presentation | Med | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `b0066fd`, `47c21b4` |
-| **T2.7** | Phase 2 | Retire old `PlatformWindowUtils` overlay code & late `XInitThreads()` constructor; run full Option A DOSBox matrix | Med | `[ ] PENDING` | — |
+| **T2.7** | Phase 2 | Retire old `PlatformWindowUtils` overlay code & late `XInitThreads()` constructor; run full Option A DOSBox matrix | Med | `[~] IMPLEMENTED — AWAITING USER VERIFICATION` | `ce4a354` |
 | **T3.1** | Phase 3 | Extract `GlideStateTracker` from `SoftwareBackendBase` (remove CPU buffers from Vulkan/GLES inheritance) | Med | `[ ] PENDING` | — |
 | **T3.2** | Phase 3 | Deduplicate shared frontend code across `glide2_entry.cpp` & `glide3_entry.cpp` (`GlideEntryCommon`) | Med | `[ ] PENDING` | — |
 | **T3.3** | Phase 3 | Split monolithic backend `.cpp` files (`VulkanBackend`, `OpenGLESBackend`, `SoftwareBackend`) into cohesive units | Med | `[ ] PENDING` | — |
@@ -493,7 +493,14 @@ Recorded before any edits are made:
 - **User Verification**: Test **GTA 1** on **DOSBox-X** and **SVN DOSBox** using `GLIDE_WRAPPER_BACKEND=software` (windowed + fullscreen). Confirm aspect ratio and clean exit.
 
 #### `T2.7` — Retire Legacy Overlay Code & Late `XInitThreads()`, Run Full Option A Matrix
-- **Status**: `[ ] PENDING`
+- **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION` (Commit `ce4a354`)
+- **Automated Result**:
+  - Deleted `src/core/PlatformWindowUtils.{h,cpp}` (-471 LOC total across `T2.7`), removed from `src/CMakeLists.txt`, and removed `__attribute__((constructor)) InitializeX11Threads()` from `src/glide2/glide2_entry.cpp` and `src/glide3/glide3_entry.cpp`.
+  - Clean `cmake -S . -B build && cmake --build build -j$(nproc)` with 0 compiler warnings under `-Werror`.
+  - Verified zero `InitializeX11Threads` / `PlatformWindowUtils` symbols in `libglide2x.so` and `libglide3x.so` and zero `[Wrapper-Init]` stdout output.
+  - Headless `Glide3xWrapperTests` (`DISPLAY="" WAYLAND_DISPLAY="" GLIDE_FORCE_NO_WINDOW=1`): **40/40 passed (1894 assertions)** across all 3 backends (`software`, `vulkan`, `opengl_es`).
+  - Embedded host matrix (`glide_embed_test --smoke-ms 600`): **18/18 PASS** across `{vulkan, opengl_es, software}` × `{wayland, x11}` × `{--raw-handle --parent-gl, --raw-handle, --sdl-window}` (all resize + reopen clean, **0 Vulkan VUID errors** under `VK_LAYER_KHRONOS_validation`).
+  - Standalone `glide3_cube` (`hWnd=0`): clean `SIGINT` exit across all 3 backends; **0 leaked SysV SHM segments** (`ipcs -m` delta = 0).
 - **Target Files**:
   - `src/core/PlatformWindowUtils.h`, `src/core/PlatformWindowUtils.cpp` (delete or trim to empty if unused; update `src/CMakeLists.txt`)
   - `src/glide2/glide2_entry.cpp` (L10–21: remove `__attribute__((constructor))` `XInitThreads()`)
