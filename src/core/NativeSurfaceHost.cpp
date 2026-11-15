@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 
@@ -138,6 +139,74 @@ void WpViewportSetDestination(wp_viewport* viewport, int32_t width,
                          wl_proxy_get_version(proxy), 0, width, height);
 }
 
+// Minimal self-contained client bindings for the Wayland `fractional-scale-v1`
+// protocol (wp_fractional_scale_manager_v1 / wp_fractional_scale_v1, MIT) so
+// we query the exact compositor preferred_scale (numerator / 120) directly on
+// our child subsurface without requiring `wayland-protocols` at build time.
+struct wp_fractional_scale_manager_v1;
+struct wp_fractional_scale_v1;
+
+extern const wl_interface g_wpFractionalScaleV1Interface;
+
+const wl_interface* g_wpFractionalScaleGetTypes[] = {
+    &g_wpFractionalScaleV1Interface,
+    &wl_surface_interface,
+};
+
+const wl_message g_wpFractionalScaleManagerRequests[] = {
+    {"destroy", "", g_wpViewportNullTypes},
+    {"get_fractional_scale", "no", g_wpFractionalScaleGetTypes},
+};
+
+const wl_interface g_wpFractionalScaleManagerV1Interface = {
+    "wp_fractional_scale_manager_v1", 1, 2, g_wpFractionalScaleManagerRequests,
+    0, nullptr,
+};
+
+const wl_message g_wpFractionalScaleRequests[] = {
+    {"destroy", "", g_wpViewportNullTypes},
+};
+
+const wl_message g_wpFractionalScaleEvents[] = {
+    {"preferred_scale", "u", g_wpViewportNullTypes},
+};
+
+const wl_interface g_wpFractionalScaleV1Interface = {
+    "wp_fractional_scale_v1", 1, 1, g_wpFractionalScaleRequests,
+    1, g_wpFractionalScaleEvents,
+};
+
+struct WpFractionalScaleV1Listener {
+  void (*preferred_scale)(void* data, wp_fractional_scale_v1* obj,
+                          uint32_t scale);
+};
+
+constexpr uint32_t kWpFractionalScaleManagerDestroy = 0;
+constexpr uint32_t kWpFractionalScaleManagerGetFractionalScale = 1;
+constexpr uint32_t kWpFractionalScaleDestroy = 0;
+
+void WpFractionalScaleManagerDestroy(wp_fractional_scale_manager_v1* mgr) {
+  auto* proxy = reinterpret_cast<wl_proxy*>(mgr);
+  wl_proxy_marshal_flags(proxy, kWpFractionalScaleManagerDestroy, nullptr,
+                         wl_proxy_get_version(proxy), WL_MARSHAL_FLAG_DESTROY);
+}
+
+wp_fractional_scale_v1* WpFractionalScaleManagerGetFractionalScale(
+    wp_fractional_scale_manager_v1* mgr, wl_surface* surface) {
+  auto* proxy = reinterpret_cast<wl_proxy*>(mgr);
+  wl_proxy* id = wl_proxy_marshal_flags(
+      proxy, kWpFractionalScaleManagerGetFractionalScale,
+      &g_wpFractionalScaleV1Interface, wl_proxy_get_version(proxy), 0, nullptr,
+      surface);
+  return reinterpret_cast<wp_fractional_scale_v1*>(id);
+}
+
+void WpFractionalScaleDestroy(wp_fractional_scale_v1* fs) {
+  auto* proxy = reinterpret_cast<wl_proxy*>(fs);
+  wl_proxy_marshal_flags(proxy, kWpFractionalScaleDestroy, nullptr,
+                         wl_proxy_get_version(proxy), WL_MARSHAL_FLAG_DESTROY);
+}
+
 struct WaylandSubsurfaceState {
   wl_display* hostDisplay = nullptr;  // Borrowed from host; NEVER disconnect!
   wl_surface* hostSurface = nullptr;  // Borrowed from host; NEVER destroy!
@@ -153,10 +222,25 @@ struct WaylandSubsurfaceState {
   wl_shm* shm = nullptr;
   wp_viewporter* viewporter = nullptr;
   wp_viewport* viewport = nullptr;
+  wp_fractional_scale_manager_v1* fractionalScaleManager = nullptr;
+  wp_fractional_scale_v1* fractionalScale = nullptr;
   wl_surface* childSurface = nullptr;
   wl_subsurface* subsurface = nullptr;
+  uint32_t preferredScale120 = 120;  // Wayland 120ths (120 = 1.0x, 160 = 4/3x)
   uint32_t logicalWidth = 0;
   uint32_t logicalHeight = 0;
+};
+
+void WaylandPreferredScale(void* data, wp_fractional_scale_v1* /*obj*/,
+                           uint32_t scale) {
+  auto* state = static_cast<WaylandSubsurfaceState*>(data);
+  if (state && scale > 0) {
+    state->preferredScale120 = scale;
+  }
+}
+
+const WpFractionalScaleV1Listener g_wpFractionalScaleListener = {
+    WaylandPreferredScale,
 };
 
 void WaylandRegistryGlobal(void* data, wl_registry* registry, uint32_t name,
@@ -184,6 +268,12 @@ void WaylandRegistryGlobal(void* data, wl_registry* registry, uint32_t name,
              !state->viewporter) {
     state->viewporter = static_cast<wp_viewporter*>(
         wl_registry_bind(registry, name, &g_wpViewporterInterface, 1));
+  } else if (std::strcmp(interface,
+                         g_wpFractionalScaleManagerV1Interface.name) == 0 &&
+             !state->fractionalScaleManager) {
+    state->fractionalScaleManager =
+        static_cast<wp_fractional_scale_manager_v1*>(wl_registry_bind(
+            registry, name, &g_wpFractionalScaleManagerV1Interface, 1));
   }
 }
 
@@ -201,7 +291,11 @@ void DestroyWaylandSubsurfaceState(WaylandSubsurfaceState* state,
     return;
   }
 
-  // Destroy wp_viewport BEFORE childSurface (per viewporter protocol spec).
+  // Destroy surface-attached extensions BEFORE childSurface.
+  if (state->fractionalScale) {
+    WpFractionalScaleDestroy(state->fractionalScale);
+    state->fractionalScale = nullptr;
+  }
   if (state->viewport) {
     WpViewportDestroy(state->viewport);
     state->viewport = nullptr;
@@ -226,6 +320,10 @@ void DestroyWaylandSubsurfaceState(WaylandSubsurfaceState* state,
     }
   }
 
+  if (state->fractionalScaleManager) {
+    WpFractionalScaleManagerDestroy(state->fractionalScaleManager);
+    state->fractionalScaleManager = nullptr;
+  }
   if (state->viewporter) {
     WpViewporterDestroy(state->viewporter);
     state->viewporter = nullptr;
@@ -258,38 +356,107 @@ void DestroyWaylandSubsurfaceState(WaylandSubsurfaceState* state,
   delete state;
 }
 
+bool IsWaylandHostScaleToDisplay(SDL_Window* hostWin, uint32_t winW,
+                                 uint32_t winH, uint32_t pixW, uint32_t pixH,
+                                 uint32_t preferredScale120) {
+  // No display scaling active -> logical == physical.
+  if (!hostWin || preferredScale120 <= 120) {
+    return false;
+  }
+  // If SDL already separated logical (win) and physical (pix) sizes, winW x
+  // winH is already in Wayland logical surface coordinates.
+  if (pixW != winW || pixH != winH) {
+    return false;
+  }
+
+  // Respect explicit SDL hint / environment override if present.
+  const char* hint = SDL_GetHint("SDL_VIDEO_WAYLAND_SCALE_TO_DISPLAY");
+  if (!hint || hint[0] == '\0') {
+    hint = std::getenv("SDL_VIDEO_WAYLAND_SCALE_TO_DISPLAY");
+  }
+  if (hint && hint[0] != '\0') {
+    return (std::strcmp(hint, "1") == 0 || std::strcmp(hint, "true") == 0 ||
+            std::strcmp(hint, "TRUE") == 0);
+  }
+
+  // If ALLOW_HIGHDPI is set on a scaled display yet SDL reports win == pix,
+  // SDL is operating in 1:1 physical-pixel scale-to-display mode (where SDL
+  // sets wp_viewport.set_destination(pix * 120 / preferred_scale)).
+  if (hostWin &&
+      (SDL_GetWindowFlags(hostWin) & SDL_WINDOW_ALLOW_HIGHDPI) != 0) {
+    return true;
+  }
+
+  // sdl2-compat (SDL 2.32.50+ backed by SDL3, default on Arch/CachyOS/Fedora)
+  // enables scale-to-display by default on Wayland even for non-ALLOW_HIGHDPI
+  // apps (including DOSBox-X and patched SVN DOSBox).
+  SDL_version ver{};
+  SDL_GetVersion(&ver);
+  const char* rev = SDL_GetRevision();
+  const bool isSdl2Compat =
+      (ver.major == 2 &&
+       (ver.minor > 32 || (ver.minor == 32 && ver.patch >= 50))) ||
+      (rev != nullptr && (std::strstr(rev, "sdl2-compat") != nullptr ||
+                          std::strstr(rev, "release-3.") != nullptr ||
+                          std::strstr(rev, "SDL3") != nullptr));
+  return isSdl2Compat;
+}
+
 void QueryWaylandHostSizes(SDL_Window* hostWin, uint32_t fallbackW,
-                           uint32_t fallbackH, uint32_t& outLogicalW,
-                           uint32_t& outLogicalH, uint32_t& outPixelW,
-                           uint32_t& outPixelH, int32_t& outScale) {
-  int logW = 0;
-  int logH = 0;
+                           uint32_t fallbackH, uint32_t preferredScale120,
+                           uint32_t& outLogicalW, uint32_t& outLogicalH,
+                           uint32_t& outPixelW, uint32_t& outPixelH,
+                           int32_t& outScale, bool& outScaleToDisplay) {
+  int winW = 0;
+  int winH = 0;
   int pixW = 0;
   int pixH = 0;
 
   if (hostWin) {
-    SDL_GetWindowSize(hostWin, &logW, &logH);
+    SDL_GetWindowSize(hostWin, &winW, &winH);
 #if SDL_VERSION_ATLEAST(2, 26, 0)
     SDL_GetWindowSizeInPixels(hostWin, &pixW, &pixH);
 #else
-    pixW = logW;
-    pixH = logH;
+    pixW = winW;
+    pixH = winH;
 #endif
   }
 
-  if (logW <= 0 || logH <= 0) {
-    logW = (pixW > 0) ? pixW : static_cast<int>(fallbackW);
-    logH = (pixH > 0) ? pixH : static_cast<int>(fallbackH);
+  if (winW <= 0 || winH <= 0) {
+    winW = (pixW > 0) ? pixW : static_cast<int>(fallbackW);
+    winH = (pixH > 0) ? pixH : static_cast<int>(fallbackH);
   }
   if (pixW <= 0 || pixH <= 0) {
-    pixW = logW;
-    pixH = logH;
+    pixW = winW;
+    pixH = winH;
   }
 
-  outLogicalW = static_cast<uint32_t>(std::max(1, logW));
-  outLogicalH = static_cast<uint32_t>(std::max(1, logH));
+  const uint32_t clampedWinW = static_cast<uint32_t>(std::max(1, winW));
+  const uint32_t clampedWinH = static_cast<uint32_t>(std::max(1, winH));
   outPixelW = static_cast<uint32_t>(std::max(1, pixW));
   outPixelH = static_cast<uint32_t>(std::max(1, pixH));
+
+  outScaleToDisplay = IsWaylandHostScaleToDisplay(
+      hostWin, clampedWinW, clampedWinH, outPixelW, outPixelH,
+      preferredScale120);
+
+  if (outScaleToDisplay && preferredScale120 > 0) {
+    // Match SDL3's scale-to-display wp_viewport destination size:
+    // logical = round(pixels * 120 / preferred_scale).
+    outLogicalW = std::max<uint32_t>(
+        1, static_cast<uint32_t>(
+               (static_cast<uint64_t>(outPixelW) * 120ULL +
+                preferredScale120 / 2ULL) /
+               preferredScale120));
+    outLogicalH = std::max<uint32_t>(
+        1, static_cast<uint32_t>(
+               (static_cast<uint64_t>(outPixelH) * 120ULL +
+                preferredScale120 / 2ULL) /
+               preferredScale120));
+  } else {
+    outLogicalW = clampedWinW;
+    outLogicalH = clampedWinH;
+  }
 
   if (outLogicalW > 0 && outPixelW >= outLogicalW) {
     outScale = std::max<int32_t>(
@@ -719,23 +886,55 @@ bool NativeSurfaceHost::AttachWaylandSubsurface(void* hostDisplayPtr,
   wl_subsurface_set_position(state->subsurface, 0, 0);
   wl_subsurface_set_desync(state->subsurface);
 
-  uint32_t logW = m_guestWidth;
-  uint32_t logH = m_guestHeight;
-  uint32_t pixW = m_guestWidth;
-  uint32_t pixH = m_guestHeight;
-  int32_t scale = 1;
-  QueryWaylandHostSizes(hostSdlWindow, m_guestWidth, m_guestHeight, logW, logH,
-                        pixW, pixH, scale);
+  if (state->fractionalScaleManager) {
+    state->fractionalScale = WpFractionalScaleManagerGetFractionalScale(
+        state->fractionalScaleManager, state->childSurface);
+    if (state->fractionalScale) {
+      wl_proxy_add_listener(
+          reinterpret_cast<wl_proxy*>(state->fractionalScale),
+          reinterpret_cast<void (**)(void)>(
+              const_cast<WpFractionalScaleV1Listener*>(
+                  &g_wpFractionalScaleListener)),
+          state);
+    }
+  }
 
   if (state->viewporter) {
     state->viewport =
         WpViewporterGetViewport(state->viewporter, state->childSurface);
   }
 
+  // Commit child + parent and roundtrip BEFORE computing the initial viewport
+  // destination so compositors that immediately emit preferred_scale for a
+  // mapped parent surface deliver it right here.
+  wl_surface_commit(state->childSurface);
+  wl_surface_commit(state->hostSurface);
+  wl_display_flush(state->hostDisplay);
+
+  if (wl_display_roundtrip_queue(state->hostDisplay, state->queue) < 0 ||
+      wl_display_get_error(state->hostDisplay) != 0) {
+    GLIDE_LOG(CRITICAL, "WSI",
+              "NativeSurfaceHost: Wayland protocol error during subsurface "
+              "attachment (err="
+                  << wl_display_get_error(state->hostDisplay) << ").");
+    DestroyWaylandSubsurfaceState(state, false);
+    return false;
+  }
+
+  uint32_t logW = m_guestWidth;
+  uint32_t logH = m_guestHeight;
+  uint32_t pixW = m_guestWidth;
+  uint32_t pixH = m_guestHeight;
+  int32_t scale = 1;
+  bool scaleToDisplay = false;
+  QueryWaylandHostSizes(hostSdlWindow, m_guestWidth, m_guestHeight,
+                        state->preferredScale120, logW, logH, pixW, pixH, scale,
+                        scaleToDisplay);
+
   if (state->viewport) {
     // Use wp_viewport.set_destination(logicalW, logicalH) with buffer_scale=1
-    // so fractional & integer HiDPI scales (125%, 150%, 175%, 200%, ...) map
-    // the full physical pixel swapchain 1:1 into the host's logical window
+    // so fractional & integer HiDPI scales (125%, 133%, 150%, 175%, 200%, ...)
+    // map the full physical pixel swapchain 1:1 into the host's logical window
     // without rounding mismatches or invalid_size protocol errors.
     scale = 1;
     if (state->compositorVersion >= 3) {
@@ -753,17 +952,14 @@ bool NativeSurfaceHost::AttachWaylandSubsurface(void* hostDisplayPtr,
   state->logicalWidth = logW;
   state->logicalHeight = logH;
 
-  // Commit child state and issue ONE parent commit so the compositor latches
-  // our subsurface into the parent's surface tree immediately.
   wl_surface_commit(state->childSurface);
-  wl_surface_commit(state->hostSurface);
   wl_display_flush(state->hostDisplay);
 
   if (wl_display_roundtrip_queue(state->hostDisplay, state->queue) < 0 ||
       wl_display_get_error(state->hostDisplay) != 0) {
     GLIDE_LOG(CRITICAL, "WSI",
-              "NativeSurfaceHost: Wayland protocol error during subsurface "
-              "attachment (err="
+              "NativeSurfaceHost: Wayland protocol error configuring viewport "
+              "(err="
                   << wl_display_get_error(state->hostDisplay) << ").");
     DestroyWaylandSubsurfaceState(state, false);
     return false;
@@ -778,6 +974,8 @@ bool NativeSurfaceHost::AttachWaylandSubsurface(void* hostDisplayPtr,
   m_pixelHeight = pixH;
   m_mode = Mode::WaylandSubsurface;
 
+  SDL_version sdlVer{};
+  SDL_GetVersion(&sdlVer);
   GLIDE_LOG(INFO, "WSI",
             "NativeSurfaceHost attached in WaylandSubsurface mode "
             "(hostSurface="
@@ -786,8 +984,12 @@ bool NativeSurfaceHost::AttachWaylandSubsurface(void* hostDisplayPtr,
                 << ", logical=" << state->logicalWidth << "x"
                 << state->logicalHeight << ", pixels=" << m_pixelWidth << "x"
                 << m_pixelHeight
+                << ", preferredScale=" << state->preferredScale120 << "/120"
+                << ", scaleToDisplay=" << (scaleToDisplay ? "yes" : "no")
                 << ", viewporter=" << (state->viewport ? "yes" : "no")
-                << ", scale=" << m_wlBufferScale
+                << ", sdl=" << static_cast<int>(sdlVer.major) << "."
+                << static_cast<int>(sdlVer.minor) << "."
+                << static_cast<int>(sdlVer.patch)
                 << ", shm=" << (m_wlShm ? "yes" : "no")
                 << ", input=click-through).");
   return true;
@@ -958,8 +1160,10 @@ bool NativeSurfaceHost::SyncBounds(uint32_t& outPixelW, uint32_t& outPixelH) {
       uint32_t newPixW = m_pixelWidth;
       uint32_t newPixH = m_pixelHeight;
       int32_t newScale = m_wlBufferScale;
+      bool scaleToDisplay = false;
       QueryWaylandHostSizes(state->hostSdlWindow, m_guestWidth, m_guestHeight,
-                            newLogW, newLogH, newPixW, newPixH, newScale);
+                            state->preferredScale120, newLogW, newLogH, newPixW,
+                            newPixH, newScale, scaleToDisplay);
 
       bool changed = false;
       if (state->viewport) {
@@ -992,12 +1196,18 @@ bool NativeSurfaceHost::SyncBounds(uint32_t& outPixelW, uint32_t& outPixelH) {
       }
 
       if (changed) {
+        if (state->hostDisplay) {
+          wl_display_flush(state->hostDisplay);
+        }
         m_pixelWidth = newPixW;
         m_pixelHeight = newPixH;
         GLIDE_LOG(INFO, "WSI",
                   "WaylandSubsurface resized: logical="
                       << state->logicalWidth << "x" << state->logicalHeight
                       << ", pixels=" << m_pixelWidth << "x" << m_pixelHeight
+                      << ", preferredScale=" << state->preferredScale120
+                      << "/120, scaleToDisplay="
+                      << (scaleToDisplay ? "yes" : "no")
                       << ", viewporter=" << (state->viewport ? "yes" : "no"));
         outPixelW = m_pixelWidth;
         outPixelH = m_pixelHeight;
