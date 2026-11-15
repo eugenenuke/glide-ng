@@ -36,9 +36,10 @@ target_include_directories(GlideWrapperCore PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/../include/glide2"
     "${CMAKE_CURRENT_SOURCE_DIR}/../include/3dfx"
     "${CMAKE_BINARY_DIR}/generated_shaders"
+    "${CMAKE_BINARY_DIR}/generated_version"
 )
-add_dependencies(GlideWrapperCore CompileShaders)
-target_link_libraries(GlideWrapperCore PUBLIC Vulkan::Vulkan SDL2::SDL2 GLESv2 OpenMP::OpenMP_CXX)
+add_dependencies(GlideWrapperCore CompileShaders GenerateBuildVersion)
+target_link_libraries(GlideWrapperCore PUBLIC Vulkan::Vulkan SDL2::SDL2 GLESv2 OpenMP::OpenMP_CXX ${CMAKE_DL_LIBS})
 if(UNIX AND NOT APPLE)
     target_link_libraries(GlideWrapperCore PUBLIC X11::X11 X11::Xext)
     target_compile_definitions(GlideWrapperCore PUBLIC HAVE_X11=1)

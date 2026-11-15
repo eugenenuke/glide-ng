@@ -85,6 +85,27 @@ compile_shader("${CMAKE_CURRENT_SOURCE_DIR}/src/backends/vulkan/shaders/color.fr
 # Create a custom target for all shaders
 add_custom_target(CompileShaders DEPENDS ${GENERATED_SHADER_HEADERS})
 
+# --- Build Version & Git Hash Generation ---
+set(GENERATED_VERSION_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated_version")
+set(GENERATED_VERSION_HEADER "${GENERATED_VERSION_DIR}/build_version.h")
+# Generate once at configure time so IDEs see the header immediately,
+# and refresh on every build (only rewrites on change to avoid rebuilds).
+execute_process(
+    COMMAND "${CMAKE_COMMAND}"
+        "-DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+        "-DOUTPUT_FILE=${GENERATED_VERSION_HEADER}"
+        "-DBUILD_TYPE=${CMAKE_BUILD_TYPE}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tools/gen_version_header.cmake"
+)
+add_custom_target(GenerateBuildVersion ALL
+    COMMAND "${CMAKE_COMMAND}"
+        "-DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+        "-DOUTPUT_FILE=${GENERATED_VERSION_HEADER}"
+        "-DBUILD_TYPE=${CMAKE_BUILD_TYPE}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tools/gen_version_header.cmake"
+    COMMENT "Checking git revision for build_version.h"
+)
+
 # Add Primary Source Directories
 enable_testing()
 add_subdirectory(src)

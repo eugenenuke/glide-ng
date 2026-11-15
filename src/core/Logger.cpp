@@ -1,9 +1,27 @@
 #include "Logger.h"
+#include "build_version.h"
 #include <iostream>
 #include <chrono>
 #include <iomanip>
+#if defined(__unix__) || defined(__APPLE__)
+#include <dlfcn.h>
+#endif
 
 namespace GlideWrapper {
+
+namespace {
+std::string GetLoadedModulePath() {
+#if defined(__unix__) || defined(__APPLE__)
+    static int s_moduleAnchor = 0;
+    Dl_info info{};
+    if (dladdr(&s_moduleAnchor, &info) != 0 &&
+        info.dli_fname != nullptr && info.dli_fname[0] != '\0') {
+        return std::string(info.dli_fname);
+    }
+#endif
+    return "unknown";
+}
+}  // namespace
 
 Logger& Logger::GetInstance() {
     static Logger instance;
@@ -28,7 +46,10 @@ void Logger::Initialize(const std::string& logFilePath, LogLevel level, bool log
 
     m_file.open(logFilePath, std::ios::out | std::ios::trunc);
     if (m_file.is_open()) {
-        m_file << "--- " << WRAPPER_FULL_NAME << " (" << WRAPPER_VERSION << ") Log ---\n";
+        m_file << "--- " << WRAPPER_FULL_NAME << " (" << WRAPPER_VERSION
+               << " | git:" << GLIDE_GIT_HASH
+               << " | " << GLIDE_BUILD_TYPE << ") Log ---\n";
+        m_file << "Module: " << GetLoadedModulePath() << "\n";
         m_file.flush();
     }
 }
@@ -70,8 +91,13 @@ void Logger::LogExecutionSummary(const WrapperConfig& config) {
 
     std::ostringstream ss;
     ss << "\n========================================================\n"
-       << "       3DFX " << WRAPPER_PROJECT_NAME << " (" << WRAPPER_VERSION << ") EMULATION PROFILE\n"
+       << "       3DFX " << WRAPPER_PROJECT_NAME << " (" << WRAPPER_VERSION
+       << " | git:" << GLIDE_GIT_HASH << ") EMULATION PROFILE\n"
        << "========================================================\n"
+       << "  Wrapper Build        : " << WRAPPER_VERSION
+       << " (git:" << GLIDE_GIT_HASH << ", branch:" << GLIDE_GIT_BRANCH
+       << ", " << GLIDE_BUILD_TYPE << ")\n"
+       << "  Loaded Module        : " << GetLoadedModulePath() << "\n"
        << "  Emulated Accelerator : ";
        
     switch (config.model) {
