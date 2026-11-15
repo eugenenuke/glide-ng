@@ -65,7 +65,7 @@ Recorded before any edits are made:
 | **T2.3** | Phase 2 | Implement Native Wayland `wl_subsurface` in `NativeSurfaceHost` + SVN DOSBox `setConfig('SDL2')` export + HiDPI scaling | Med–High | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `9865fc5` |
 | **T2.4** | Phase 2 | Migrate `VulkanBackend` to `NativeSurfaceHost` + aspect-ratio preserving letterbox/pillarbox blit | Med | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `2d75259`, `985e7fa`, `1d349ee` |
 | **T2.5** | Phase 2 | Migrate `OpenGLESBackend` to `NativeSurfaceHost` (Direct EGL) + aspect-ratio & Gamma LUT presentation pass | Med | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `df40756`, `8c416e2` |
-| **T2.6** | Phase 2 | Migrate `SoftwareBackend` to `NativeSurfaceHost` + aspect-ratio preserving presentation | Med | `[~] IMPLEMENTED — AWAITING USER VERIFICATION` | `b0066fd` |
+| **T2.6** | Phase 2 | Migrate `SoftwareBackend` to `NativeSurfaceHost` + aspect-ratio preserving presentation | Med | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `b0066fd`, `47c21b4` |
 | **T2.7** | Phase 2 | Retire old `PlatformWindowUtils` overlay code & late `XInitThreads()` constructor; run full Option A DOSBox matrix | Med | `[ ] PENDING` | — |
 | **T3.1** | Phase 3 | Extract `GlideStateTracker` from `SoftwareBackendBase` (remove CPU buffers from Vulkan/GLES inheritance) | Med | `[ ] PENDING` | — |
 | **T3.2** | Phase 3 | Deduplicate shared frontend code across `glide2_entry.cpp` & `glide3_entry.cpp` (`GlideEntryCommon`) | Med | `[ ] PENDING` | — |
@@ -465,7 +465,8 @@ Recorded before any edits are made:
 - **User Verification**: Test **GTA 1** on **DOSBox-X** (`output=opengl` AND `output=surface`, windowed + fullscreen, XWayland + Wayland) and **SVN DOSBox** using `GLIDE_WRAPPER_BACKEND=opengl_es`. Confirm gamma works, aspect ratio is preserved, and zero GL context crashes occur.
 
 #### `T2.6` — Migrate `SoftwareBackend` to `NativeSurfaceHost` + Aspect-Ratio Presentation
-- **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION` (Commit `b0066fd`)
+- **Status**: `[x] DONE (USER CONFIRMED — 2026-11-15)` (Commits `b0066fd`, `47c21b4`)
+- **User Verification Notes**: Confirmed working on both Wayland (`wl_shm`) and X11 (`XShmPutImage` on `TrueColor`, after `47c21b4` fixed dangling `XShmSegmentInfo` `obdata` and `DirectColor` visual inheritance).
 - **Automated Result**:
   - Removed all DOSBox `SDL_Window*`/`SDL_Renderer*` hijacking and `SDL_PumpEvents()` from [SoftwareBackend.h](../../src/backends/software/SoftwareBackend.h) and [SoftwareBackend.cpp](../../src/backends/software/SoftwareBackend.cpp), migrating all 4 modes to `NativeSurfaceHost` (100% GPU/EGL-independent):
     - `Headless`: zero SDL/X11/Wayland/EGL calls.
@@ -597,4 +598,21 @@ After **Option A (`T2.7`)** is confirmed working by the user, evaluate these fou
     1. Menu screens render completely black (blind navigation still allows starting a race).
     2. In-game 3D renders, but some graphics/UI elements are missing (likely same root cause as the black menus — suspect LFB writes, palette/chroma-key, or Glide 2.x 2D/UI path).
     3. Required switching window focus a couple of times after launch before keyboard input registered reliably.
+  - **Status**: `[ ] PARKED — Investigate after Option A & Cleanup stages`.
+
+- **Glide 2.x SDK `test16.exe` — Shameless Plug State Leak on GPU Backends (Reported 2026-11-15)**
+  - **Reference**: `refs/glide/glide2x/sst1/glide/tests/test16.c` (`grGlideShamelessPlug` toggled via `'P'`)
+  - **Observed Symptoms**:
+    1. Pressing `'P'` in `software` mode shows the 3dfx shameless plug overlay normally.
+    2. Pressing `'P'` in `vulkan` and `opengl_es` modes shows the plug **and** inverts the triangle colors (or mirrors the picture) — likely the GPU shameless-plug overlay pass mutates backend/Glide render state (color format, combiner, or origin/projection) without restoring it.
+  - **Status**: `[ ] PARKED — Investigate after Option A & Cleanup stages`.
+
+- **Glide 2.x SDK `test22.exe` — Visual Quality Regression in Software Mode (Reported 2026-11-15)**
+  - **Reference**: `refs/glide/glide2x/sst1/glide/tests/test22.c`
+  - **Observed Symptoms**: Renders noticeably worse in `software` mode compared to `vulkan`.
+  - **Status**: `[ ] PARKED — Investigate after Option A & Cleanup stages`.
+
+- **Glide 2.x SDK `test25.exe` & `test27.exe` — Hang Across All Backends (Reported 2026-11-15)**
+  - **Reference**: `refs/glide/glide2x/sst1/glide/tests/test25.c`, `test27.c`
+  - **Observed Symptoms**: Both tests hang in all backend modes (`vulkan`, `opengl_es`, `software`).
   - **Status**: `[ ] PARKED — Investigate after Option A & Cleanup stages`.
