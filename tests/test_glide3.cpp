@@ -7,6 +7,8 @@
 #include "core/Logger.h"
 #include "core/BackendManager.h"
 #include "core/NativeSurfaceHost.h"
+#include "backends/GlideStateTracker.h"
+#include "opengl_es/OpenGLESBackend.h"
 #include "software/SoftwareBackend.h"
 #include "vulkan/VulkanBackend.h"
 #include <SDL2/SDL.h>
@@ -14,6 +16,7 @@
 #include <cstdlib>
 #include <dlfcn.h>
 #include <fstream>
+#include <type_traits>
 #include <vector>
 #include <algorithm>
 
@@ -415,7 +418,7 @@ TEST_CASE("Glide 3.x State Save & Restore Combiner Bug Verification", "[Glide3][
     REQUIRE(ctx != 0);
 
     // Get the reference to active backend
-    auto* backend = static_cast<GlideWrapper::SoftwareBackendBase*>(
+    auto* backend = dynamic_cast<GlideWrapper::GlideStateTracker*>(
         GlideWrapper::BackendManager::GetInstance().GetBackend()
     );
     REQUIRE(backend != nullptr);
@@ -1130,7 +1133,7 @@ TEST_CASE("Glide 3.x W-Buffering and Layout Q-Param Compatibility", "[Glide3][WB
         unsigned long ctx = winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz, GR_COLORFORMAT_ABGR, GR_ORIGIN_LOWER_LEFT, 2, 1);
         REQUIRE(ctx != 0);
 
-        auto* backend = static_cast<GlideWrapper::SoftwareBackendBase*>(
+        auto* backend = dynamic_cast<GlideWrapper::GlideStateTracker*>(
             GlideWrapper::BackendManager::GetInstance().GetBackend()
         );
         REQUIRE(backend != nullptr);
@@ -2445,7 +2448,7 @@ TEST_CASE("Glide 3.x State Save & Restore ClipWindow and ColorMask Verification"
     FxU32 ctx = winOpen(0, 8, 0, 0, 0, 2, 0); // 800x600 resolution
     REQUIRE(ctx != 0);
 
-    auto* backend = static_cast<GlideWrapper::SoftwareBackendBase*>(
+    auto* backend = dynamic_cast<GlideWrapper::GlideStateTracker*>(
         GlideWrapper::BackendManager::GetInstance().GetBackend()
     );
     REQUIRE(backend != nullptr);
@@ -3310,7 +3313,7 @@ TEST_CASE("Glide 3.x State Serialization & Phase 4 States [Glide3][State][Serial
   REQUIRE(ctx != 0);
 
   auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend();
-  auto* sw_b = dynamic_cast<GlideWrapper::SoftwareBackendBase*>(b);
+  auto* sw_b = dynamic_cast<GlideWrapper::GlideStateTracker*>(b);
   REQUIRE(sw_b != nullptr);
 
   // 1. Set custom states
@@ -3779,4 +3782,86 @@ TEST_CASE("DOSBox setConfig('SDL2') handshake exported by libglide2x and libglid
     ::dlclose(handle);
   }
 #endif
+}
+
+TEST_CASE("GPU backends inherit GlideStateTracker without SoftwareBackendBase or eager CPU LFB buffers",
+          "[Architecture][GlideStateTracker]") {
+  static_assert(std::is_base_of_v<GlideWrapper::GlideStateTracker,
+                                  GlideWrapper::VulkanBackend>);
+  static_assert(std::is_base_of_v<GlideWrapper::GlideStateTracker,
+                                  GlideWrapper::OpenGLESBackend>);
+  static_assert(std::is_base_of_v<GlideWrapper::GlideStateTracker,
+                                  GlideWrapper::SoftwareBackend>);
+  static_assert(!std::is_base_of_v<GlideWrapper::SoftwareBackendBase,
+                                   GlideWrapper::VulkanBackend>);
+  static_assert(!std::is_base_of_v<GlideWrapper::SoftwareBackendBase,
+                                   GlideWrapper::OpenGLESBackend>);
+  static_assert(std::is_base_of_v<GlideWrapper::SoftwareBackendBase,
+                                  GlideWrapper::SoftwareBackend>);
+
+  SECTION("VulkanBackend allocates zero CPU LFB staging until LFB is touched") {
+    GlideWrapper::WrapperConfig config;
+    config.backend = "vulkan";
+    config.forceNoWindow = true;
+    config.maxFps = 0.0;
+
+    GlideWrapper::VulkanBackend backend;
+    GlideWrapper::IGraphicsBackend* basePtr = &backend;
+    CHECK(dynamic_cast<GlideWrapper::GlideStateTracker*>(basePtr) != nullptr);
+    CHECK(dynamic_cast<GlideWrapper::SoftwareBackendBase*>(basePtr) == nullptr);
+
+    if (backend.Initialize(config) && backend.AttachWindow(nullptr, 64, 64, true)) {
+      CHECK_FALSE(backend.HasAllocatedCpuLfbStaging());
+      backend.ClearBuffer(0x0000FF00, 0xFF, 1.0f, 0x3);
+      REQUIRE(backend.SwapBuffers());
+      // Pure 3D clear + swap must still keep CPU LFB staging unallocated.
+      CHECK_FALSE(backend.HasAllocatedCpuLfbStaging());
+
+      // First LFB write lazily allocates and survives GPU flush + readback.
+      uint16_t white565 = 0xFFFF;
+      REQUIRE(backend.WriteLFB(1, 4, 4, 1, 1, 2, 0 /* 565 */, &white565));
+      CHECK(backend.HasAllocatedCpuLfbStaging());
+
+      uint16_t readPx = 0;
+      REQUIRE(backend.ReadLFB(1, 4, 4, 1, 1, 2, &readPx));
+      CHECK(readPx == 0xFFFF);
+
+      backend.DetachWindow();
+      CHECK_FALSE(backend.HasAllocatedCpuLfbStaging());
+      backend.Shutdown();
+    }
+  }
+
+  SECTION("OpenGLESBackend allocates zero CPU LFB staging until LFB is touched") {
+    GlideWrapper::WrapperConfig config;
+    config.backend = "opengl_es";
+    config.forceNoWindow = true;
+    config.maxFps = 0.0;
+
+    GlideWrapper::OpenGLESBackend backend;
+    GlideWrapper::IGraphicsBackend* basePtr = &backend;
+    CHECK(dynamic_cast<GlideWrapper::GlideStateTracker*>(basePtr) != nullptr);
+    CHECK(dynamic_cast<GlideWrapper::SoftwareBackendBase*>(basePtr) == nullptr);
+
+    if (backend.Initialize(config) && backend.AttachWindow(nullptr, 64, 64, true)) {
+      CHECK_FALSE(backend.HasAllocatedCpuLfbStaging());
+      backend.ClearBuffer(0x0000FF00, 0xFF, 1.0f, 0x3);
+      REQUIRE(backend.SwapBuffers());
+      // Pure 3D clear + swap must still keep CPU LFB staging unallocated.
+      CHECK_FALSE(backend.HasAllocatedCpuLfbStaging());
+
+      // First LFB write lazily allocates and survives GPU flush + readback.
+      uint16_t white565 = 0xFFFF;
+      REQUIRE(backend.WriteLFB(1, 4, 4, 1, 1, 2, 0 /* 565 */, &white565));
+      CHECK(backend.HasAllocatedCpuLfbStaging());
+
+      uint16_t readPx = 0;
+      REQUIRE(backend.ReadLFB(1, 4, 4, 1, 1, 2, &readPx));
+      CHECK(readPx == 0xFFFF);
+
+      backend.DetachWindow();
+      CHECK_FALSE(backend.HasAllocatedCpuLfbStaging());
+      backend.Shutdown();
+    }
+  }
 }

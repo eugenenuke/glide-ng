@@ -11,7 +11,8 @@
 #endif
 #include <vulkan/vulkan.hpp>
 
-#include "backends/SoftwareBackendBase.h"
+#include "backends/CpuLfbStaging.h"
+#include "backends/GlideStateTracker.h"
 #include "core/NativeSurfaceHost.h"
 
 namespace GlideWrapper {
@@ -206,11 +207,10 @@ using PipelineCacheKey = uint32_t;
 
 /**
  * @brief Concrete production Vulkan translation engine.
- * Inherits from SoftwareBackendBase to utilize the CPU rasterizer as a
- * progressive migration bridge. Rewrites core presentation, clearing, and
- * swapchain presentation on the GPU.
+ * Inherits pure pipeline state tracking from GlideStateTracker and composes
+ * lazily-allocated CpuLfbStaging for Linear Framebuffer access.
  */
-class VulkanBackend : public SoftwareBackendBase {
+class VulkanBackend : public GlideStateTracker {
  public:
   VulkanBackend() = default;
   ~VulkanBackend() override { Shutdown(); }
@@ -218,12 +218,14 @@ class VulkanBackend : public SoftwareBackendBase {
   // Foundational Core Lifecycle
   bool Initialize(const WrapperConfig& config) override;
   void Shutdown() override;
+  void ResetState() override;
 
   // Window Surface & Headless Swapchain Attachment
   bool AttachWindow(void* nativeWindowHandle, uint32_t width, uint32_t height,
                     bool windowed) override;
   void DetachWindow() override;
   uint32_t GetMsaaSamples() const override { return m_msaaSamples; }
+  bool HasAllocatedCpuLfbStaging() const { return m_lfbStaging.IsAllocated(); }
 
   // Selects an optimal Vulkan swapchain present mode.
   // On Wayland, prefers Mailbox even when VSync is enabled because Wayland
@@ -257,8 +259,14 @@ class VulkanBackend : public SoftwareBackendBase {
   void SetConstantColor(uint32_t color) override;
   void SetRenderBuffer(uint32_t target) override;
   void SetPixelFormat(uint32_t format) override;
+  void* GetLfbWritePtr() override;
   bool ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY, uint32_t srcWidth,
                uint32_t srcHeight, uint32_t dstStride, void* dstData) override;
+  bool WriteLFB(uint32_t buffer, uint32_t dstX, uint32_t dstY,
+                uint32_t srcWidth, uint32_t srcHeight, int32_t srcStride,
+                uint32_t srcFmt, const void* srcData,
+                const void* refData = nullptr,
+                const LfbPipelineConfig& config = {}) override;
   void PollEvents() override;
   void SstIdle() override;
 
@@ -461,6 +469,9 @@ class VulkanBackend : public SoftwareBackendBase {
   uint32_t m_texStagingOffsets[2]{0, 0};
   const uint32_t m_texStagingSlotSize{32 * 1024 * 1024};  // 32MB per frame slot
   uint32_t m_msaaSamples{1};
+
+  // Lazily-allocated CPU LFB staging (0 bytes until first LFB operation)
+  CpuLfbStaging m_lfbStaging;
 
   // Vulkan Gamma LUT State variables
   float m_gammaCorrectionValue{1.0f};

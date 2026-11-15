@@ -3,7 +3,8 @@
 #include <unordered_map>
 #include <vector>
 
-#include "backends/SoftwareBackendBase.h"
+#include "backends/CpuLfbStaging.h"
+#include "backends/GlideStateTracker.h"
 #include "core/NativeSurfaceHost.h"
 
 namespace GlideWrapper {
@@ -13,7 +14,7 @@ namespace GlideWrapper {
  * Employs NativeSurfaceHost + Direct EGL 1.5 (X11 child window, Wayland
  * subsurface, surfaceless headless) with Standalone SDL2 fallback for demos.
  */
-class OpenGLESBackend : public SoftwareBackendBase {
+class OpenGLESBackend : public GlideStateTracker {
  public:
   OpenGLESBackend() = default;
   ~OpenGLESBackend() override { Shutdown(); }
@@ -27,14 +28,21 @@ class OpenGLESBackend : public SoftwareBackendBase {
                     bool windowed) override;
   void DetachWindow() override;
   uint32_t GetMsaaSamples() const override { return m_msaaSamples; }
+  bool HasAllocatedCpuLfbStaging() const { return m_lfbStaging.IsAllocated(); }
 
   bool SwapBuffers() override;
   void FlushBins() override {}
   void SstIdle() override;
   void ClearBuffer(uint32_t color, uint32_t alpha, float z,
                    uint32_t clearMask) override;
+  void* GetLfbWritePtr() override;
   bool ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY, uint32_t srcWidth,
                uint32_t srcHeight, uint32_t dstStride, void* dstData) override;
+  bool WriteLFB(uint32_t buffer, uint32_t dstX, uint32_t dstY,
+                uint32_t srcWidth, uint32_t srcHeight, int32_t srcStride,
+                uint32_t srcFmt, const void* srcData,
+                const void* refData = nullptr,
+                const LfbPipelineConfig& config = {}) override;
   void DrawPoint(const ModernVertex& pt) override;
   void DrawLine(const ModernVertex& v0, const ModernVertex& v1) override;
   void DrawTriangle(const ModernVertex& a, const ModernVertex& b,
@@ -166,8 +174,9 @@ class OpenGLESBackend : public SoftwareBackendBase {
   bool m_batchIs2DGeometry{false};
   void FlushBatch();
 
-  // Unified GPU Framebuffer LFB Flushing
+  // Unified GPU Framebuffer LFB Flushing (lazily allocated)
   void FlushLFBToGPU();
+  CpuLfbStaging m_lfbStaging;
   std::vector<uint32_t> m_swizzleBuffer;
   uint32_t m_msaaSamples{1};
   bool m_is2DGeometry{true};

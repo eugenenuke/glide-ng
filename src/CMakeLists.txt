@@ -17,6 +17,8 @@ set(CORE_SOURCES
     core/MathUtils.cpp
     core/LfbManager.cpp
     core/NativeSurfaceHost.cpp
+    backends/GlideStateTracker.cpp
+    backends/CpuLfbStaging.cpp
     backends/SoftwareBackendBase.cpp
     backends/vulkan/VulkanBackend.cpp
     backends/opengl_es/OpenGLESBackend.cpp

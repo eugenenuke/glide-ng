@@ -445,6 +445,12 @@ void VulkanBackend::Shutdown() {
   m_initialized = false;
 }
 
+void VulkanBackend::ResetState() {
+  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  GlideStateTracker::ResetState();
+  m_lfbStaging.ResetPendingAndDirty();
+}
+
 bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
                                  uint32_t height, bool windowed) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
@@ -720,7 +726,7 @@ void VulkanBackend::DetachWindow() {
     m_headlessPixelBuffers[i].reset();
     m_headlessPixelMemories[i].reset();
   }
-  FreeCpuBuffers();
+  m_lfbStaging.Release();
   for (int i = 0; i < 2; ++i) {
     m_headlessFramebuffers[i].reset();
     m_headlessImageViews[i].reset();
@@ -1115,9 +1121,13 @@ void VulkanBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z,
             "ClearBuffer: color=" << std::hex << color
                                   << ", clearMask=" << clearMask);
 
-  // 1. Defer CPU-side framebuffer clear lazily so pure 3D frames avoid
-  // full-frame CPU fills; materialized on demand before any LFB access/flush.
-  ScheduleLazyCpuClear(color, alpha, z, clearMask);
+  // 1. Defer CPU-side framebuffer clear lazily so pure 3D frames allocate 0
+  // bytes and avoid CPU fills; materialized on demand before any LFB access.
+  if (clearMask & 1) {
+    m_lfbStaging.ScheduleLazyClear(m_activeRenderBuffer, color, alpha,
+                                   m_pixelFormatOverride, m_colorMaskRgb,
+                                   m_colorMaskAlpha);
+  }
 
   // 2. Save clear state and mark pending for GPU clears when Render Pass
   // starts!
@@ -1131,7 +1141,7 @@ void VulkanBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z,
       float g = ((color >> 8) & 0xFF) / 255.0f;
       float b = (color & 0xFF) / 255.0f;
 
-      // Respect the active pixel format from SoftwareBackendBase!
+      // Respect the active pixel format from GlideStateTracker!
       if (m_pixelFormatOverride == 1) {  // ABGR format override
         std::swap(r, b);
       }
@@ -1155,8 +1165,7 @@ void VulkanBackend::SetDepthState(uint32_t depthMode, uint32_t compareOp,
       depthMask != m_depthMask || biasLevel != m_depthBiasLevel) {
     FlushBatch();
   }
-  SoftwareBackendBase::SetDepthState(depthMode, compareOp, depthMask,
-                                     biasLevel);
+  GlideStateTracker::SetDepthState(depthMode, compareOp, depthMask, biasLevel);
 }
 
 void VulkanBackend::SetBlendState(uint32_t rgbSrcFactor, uint32_t rgbDstFactor,
@@ -1167,8 +1176,8 @@ void VulkanBackend::SetBlendState(uint32_t rgbSrcFactor, uint32_t rgbDstFactor,
       alphaSrcFactor != m_alphaSrcBlend || alphaDstFactor != m_alphaDstBlend) {
     FlushBatch();
   }
-  SoftwareBackendBase::SetBlendState(rgbSrcFactor, rgbDstFactor, alphaSrcFactor,
-                                     alphaDstFactor);
+  GlideStateTracker::SetBlendState(rgbSrcFactor, rgbDstFactor, alphaSrcFactor,
+                                   alphaDstFactor);
 }
 
 void VulkanBackend::SetCullState(uint32_t cullMode) {
@@ -1176,7 +1185,7 @@ void VulkanBackend::SetCullState(uint32_t cullMode) {
   if (cullMode != m_cullMode) {
     FlushBatch();
   }
-  SoftwareBackendBase::SetCullState(cullMode);
+  GlideStateTracker::SetCullState(cullMode);
 }
 
 void VulkanBackend::SetAlphaTestState(uint32_t compareOp, uint32_t refVal) {
@@ -1184,7 +1193,7 @@ void VulkanBackend::SetAlphaTestState(uint32_t compareOp, uint32_t refVal) {
   if (compareOp != m_alphaTestOp || refVal != m_alphaTestRefVal) {
     FlushBatch();
   }
-  SoftwareBackendBase::SetAlphaTestState(compareOp, refVal);
+  GlideStateTracker::SetAlphaTestState(compareOp, refVal);
   // Note: Emulated in fragment shader via push constants. No pipeline
   // recompilation needed!
 }
@@ -1194,7 +1203,7 @@ void VulkanBackend::SetSstOrigin(uint32_t origin) {
   if (origin != m_sstOrigin) {
     FlushBatch();
   }
-  SoftwareBackendBase::SetSstOrigin(origin);
+  GlideStateTracker::SetSstOrigin(origin);
 }
 
 void VulkanBackend::SetClipWindow(uint32_t minX, uint32_t minY, uint32_t maxX,
@@ -1204,7 +1213,7 @@ void VulkanBackend::SetClipWindow(uint32_t minX, uint32_t minY, uint32_t maxX,
       maxY != m_clipMaxY) {
     FlushBatch();
   }
-  SoftwareBackendBase::SetClipWindow(minX, minY, maxX, maxY);
+  GlideStateTracker::SetClipWindow(minX, minY, maxX, maxY);
 
   if (m_initialized && m_device && m_inRenderPass) {
     vk::Rect2D scissor = GetScissorRectVulkan();
@@ -1217,7 +1226,7 @@ void VulkanBackend::SetColorMask(bool rgb, bool alpha) {
   if (rgb != m_colorMaskRgb || alpha != m_colorMaskAlpha) {
     FlushBatch();
   }
-  SoftwareBackendBase::SetColorMask(rgb, alpha);
+  GlideStateTracker::SetColorMask(rgb, alpha);
 }
 
 void VulkanBackend::SetDepthRange(float nearVal, float farVal) {
@@ -1225,7 +1234,7 @@ void VulkanBackend::SetDepthRange(float nearVal, float farVal) {
   if (nearVal != m_depthNear || farVal != m_depthFar) {
     FlushBatch();
   }
-  SoftwareBackendBase::SetDepthRange(nearVal, farVal);
+  GlideStateTracker::SetDepthRange(nearVal, farVal);
 }
 
 void VulkanBackend::SetDitherMode(uint32_t mode) {
@@ -1233,7 +1242,7 @@ void VulkanBackend::SetDitherMode(uint32_t mode) {
   if (mode != m_ditherMode) {
     FlushBatch();
   }
-  SoftwareBackendBase::SetDitherMode(mode);
+  GlideStateTracker::SetDitherMode(mode);
 }
 
 void VulkanBackend::SetStippleState(uint32_t mode, uint32_t pattern) {
@@ -1241,7 +1250,7 @@ void VulkanBackend::SetStippleState(uint32_t mode, uint32_t pattern) {
   if (mode != m_stippleMode || pattern != m_stipplePattern) {
     FlushBatch();
   }
-  SoftwareBackendBase::SetStippleState(mode, pattern);
+  GlideStateTracker::SetStippleState(mode, pattern);
 }
 
 void VulkanBackend::SetConstantColor(uint32_t color) {
@@ -1249,7 +1258,7 @@ void VulkanBackend::SetConstantColor(uint32_t color) {
   if (color != m_constantColor) {
     FlushBatch();
   }
-  SoftwareBackendBase::SetConstantColor(color);
+  GlideStateTracker::SetConstantColor(color);
 }
 
 void VulkanBackend::SetRenderBuffer(uint32_t target) {
@@ -1257,7 +1266,7 @@ void VulkanBackend::SetRenderBuffer(uint32_t target) {
   if (target != m_activeRenderBuffer) {
     FlushBatch();
   }
-  SoftwareBackendBase::SetRenderBuffer(target);
+  GlideStateTracker::SetRenderBuffer(target);
 }
 
 void VulkanBackend::SetPixelFormat(uint32_t format) {
@@ -1265,7 +1274,7 @@ void VulkanBackend::SetPixelFormat(uint32_t format) {
   if (format != m_pixelFormatOverride) {
     FlushBatch();
   }
-  SoftwareBackendBase::SetPixelFormat(format);
+  GlideStateTracker::SetPixelFormat(format);
 }
 
 void VulkanBackend::SetCombinerMode(uint32_t colorFunc, uint32_t colorFactor,
@@ -1286,9 +1295,10 @@ void VulkanBackend::SetCombinerMode(uint32_t colorFunc, uint32_t colorFactor,
       alphaInvert != m_alphaCombinerInvert) {
     FlushBatch();
   }
-  SoftwareBackendBase::SetCombinerMode(
-      colorFunc, colorFactor, colorLocal, colorOther, colorInvert, alphaFunc,
-      alphaFactor, alphaLocal, alphaOther, alphaInvert);
+  GlideStateTracker::SetCombinerMode(colorFunc, colorFactor, colorLocal,
+                                     colorOther, colorInvert, alphaFunc,
+                                     alphaFactor, alphaLocal, alphaOther,
+                                     alphaInvert);
 }
 
 void VulkanBackend::SetTexCombinerMode(uint32_t tmu, uint32_t rgbFunc,
@@ -1304,8 +1314,8 @@ void VulkanBackend::SetTexCombinerMode(uint32_t tmu, uint32_t rgbFunc,
                   alphaInvert != m_texCombinerAlphaInvert[tmu])) {
     FlushBatch();
   }
-  SoftwareBackendBase::SetTexCombinerMode(tmu, rgbFunc, rgbFactor, alphaFunc,
-                                          alphaFactor, rgbInvert, alphaInvert);
+  GlideStateTracker::SetTexCombinerMode(tmu, rgbFunc, rgbFactor, alphaFunc,
+                                        alphaFactor, rgbInvert, alphaInvert);
 }
 
 void VulkanBackend::SetSTWHintState(uint32_t hintMask) {
@@ -1313,7 +1323,7 @@ void VulkanBackend::SetSTWHintState(uint32_t hintMask) {
   if (hintMask != m_stwHintMask) {
     FlushBatch();
   }
-  SoftwareBackendBase::SetSTWHintState(hintMask);
+  GlideStateTracker::SetSTWHintState(hintMask);
 }
 
 void VulkanBackend::SetChromakeyMode(uint32_t mode) {
@@ -1321,7 +1331,7 @@ void VulkanBackend::SetChromakeyMode(uint32_t mode) {
   if (mode != m_chromakeyMode) {
     FlushBatch();
   }
-  SoftwareBackendBase::SetChromakeyMode(mode);
+  GlideStateTracker::SetChromakeyMode(mode);
 }
 
 void VulkanBackend::SetChromakeyValue(uint32_t value) {
@@ -1329,7 +1339,7 @@ void VulkanBackend::SetChromakeyValue(uint32_t value) {
   if (value != m_chromakeyValue) {
     FlushBatch();
   }
-  SoftwareBackendBase::SetChromakeyValue(value);
+  GlideStateTracker::SetChromakeyValue(value);
 }
 
 void VulkanBackend::SetChromakeyRange(uint32_t minColor, uint32_t maxColor,
@@ -1339,7 +1349,7 @@ void VulkanBackend::SetChromakeyRange(uint32_t minColor, uint32_t maxColor,
       mode != m_chromakeyRangeMode) {
     FlushBatch();
   }
-  SoftwareBackendBase::SetChromakeyRange(minColor, maxColor, mode);
+  GlideStateTracker::SetChromakeyRange(minColor, maxColor, mode);
 }
 
 void VulkanBackend::SetFogMode(uint32_t mode) {
@@ -1347,7 +1357,7 @@ void VulkanBackend::SetFogMode(uint32_t mode) {
   if (mode != m_fogMode) {
     FlushBatch();
   }
-  SoftwareBackendBase::SetFogMode(mode);
+  GlideStateTracker::SetFogMode(mode);
 }
 
 void VulkanBackend::SetFogColor(uint32_t color) {
@@ -1355,7 +1365,7 @@ void VulkanBackend::SetFogColor(uint32_t color) {
   if (color != m_fogColor) {
     FlushBatch();
   }
-  SoftwareBackendBase::SetFogColor(color);
+  GlideStateTracker::SetFogColor(color);
 }
 
 void VulkanBackend::SetFogTable(const uint8_t* table) {
@@ -1363,7 +1373,7 @@ void VulkanBackend::SetFogTable(const uint8_t* table) {
   if (table && std::memcmp(table, m_fogTable, 64) != 0) {
     FlushBatch();
   }
-  SoftwareBackendBase::SetFogTable(table);
+  GlideStateTracker::SetFogTable(table);
 }
 
 bool VulkanBackend::SwapBuffers() {
@@ -1634,17 +1644,8 @@ bool VulkanBackend::SwapBuffers() {
   m_commandBuffer->begin(vk::CommandBufferBeginInfo(
       vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
 
-  // Swap the CPU buffer indices for double-buffering (needed for LFB CPU-side
-  // tracking)
-  if (m_headlessPixelMap) {
-    std::swap(m_frontBufferIdx, m_backBufferIdx);
-    std::swap(m_lfbBufferDirty[0], m_lfbBufferDirty[1]);
-    if (m_activeRenderBuffer == 0) {
-      m_headlessPixelMap = m_cpuBuffers[m_frontBufferIdx].data();
-    } else {
-      m_headlessPixelMap = m_cpuBuffers[m_backBufferIdx].data();
-    }
-  }
+  // Swap CPU LFB staging indices for double-buffering (zero-cost when unused)
+  m_lfbStaging.SwapBuffers();
 
   // Swap the GPU color targets for physical double-buffering
   std::swap(m_headlessImages[0], m_headlessImages[1]);
@@ -1655,6 +1656,24 @@ bool VulkanBackend::SwapBuffers() {
   return true;
 }
 
+void* VulkanBackend::GetLfbWritePtr() {
+  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  if (!m_initialized || !m_windowAttached) return nullptr;
+  return m_lfbStaging.GetWritePtr(m_activeRenderBuffer);
+}
+
+bool VulkanBackend::WriteLFB(uint32_t buffer, uint32_t dstX, uint32_t dstY,
+                             uint32_t srcWidth, uint32_t srcHeight,
+                             int32_t srcStride, uint32_t srcFmt,
+                             const void* srcData, const void* refData,
+                             const LfbPipelineConfig& config) {
+  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  if (!m_initialized || !m_windowAttached) return false;
+  return m_lfbStaging.WriteLFB(buffer, dstX, dstY, srcWidth, srcHeight,
+                               srcStride, srcFmt, srcData, refData, config,
+                               m_pixelFormatOverride);
+}
+
 bool VulkanBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
                             uint32_t srcWidth, uint32_t srcHeight,
                             uint32_t dstStride, void* dstData) {
@@ -1663,7 +1682,7 @@ bool VulkanBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
 
   // If the CPU LFB buffer has pending writes, flush them to the GPU FBO first
   // so they are included in the readback!
-  if (m_lfbDirty) {
+  if (m_lfbStaging.IsDirty()) {
     FlushLFBToGPU();
   }
 
@@ -1716,11 +1735,9 @@ bool VulkanBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
   m_device->waitIdle();
 
   // Copy the GPU-rendered framebuffer from mapped staging memory into our
-  // CPU-side active buffer
-  uint32_t readSlot = (buffer == 0) ? m_frontBufferIdx : m_backBufferIdx;
-  void* readDst = m_cpuBuffers[readSlot].data();
+  // lazily-allocated CPU LFB staging buffer
+  void* readDst = m_lfbStaging.PrepareBufferForGpuReadback(buffer);
   if (m_gpuStagingMaps[m_currentFrameSlot] && readDst) {
-    DiscardLazyCpuClear(readSlot);
     std::memcpy(readDst, m_gpuStagingMaps[m_currentFrameSlot],
                 m_headlessWidth * m_headlessHeight * 4);
     if (m_pixelFormatOverride == 1) {
@@ -1748,10 +1765,9 @@ bool VulkanBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
                         vk::ImageLayout::eTransferSrcOptimal,
                         vk::ImageLayout::eColorAttachmentOptimal, range);
 
-  // 7. Now call the base class ReadLFB to copy the synchronized pixels to the
-  // client buffer!
-  return SoftwareBackendBase::ReadLFB(buffer, srcX, srcY, srcWidth, srcHeight,
-                                      dstStride, dstData);
+  // 7. Convert and copy the synchronized pixels to the client buffer!
+  return m_lfbStaging.ReadRegion(buffer, srcX, srcY, srcWidth, srcHeight,
+                                 dstStride, dstData);
 }
 
 void VulkanBackend::PollEvents() {
@@ -2354,8 +2370,9 @@ bool VulkanBackend::CreateHeadlessRenderTarget(uint32_t width,
     std::memset(m_gpuStagingMaps[i], 0xFF, width * height * 4);
   }
 
-  // Allocate CPU framebuffers for double-buffering
-  AllocateCpuBuffers(width, height);
+  // Configure lazily-allocated CPU LFB staging (0 bytes until LFB is touched)
+  m_lfbStaging.Configure(width, height, /*allocateEagerly=*/false);
+  m_activeRenderBuffer = 1;  // GR_BUFFER_BACKBUFFER
 
   return true;
 }
@@ -2446,7 +2463,7 @@ void VulkanBackend::TransitionImageLayout(vk::CommandBuffer cmd,
 }
 
 void VulkanBackend::FlushLFBToGPU() {
-  if (!m_lfbDirty) return;
+  if (!m_lfbStaging.IsDirty()) return;
 
   GLIDE_LOG(DEBUG, "Vulkan", "FlushLFBToGPU: Checking dirty buffers...");
   if (!m_commandBuffer) {
@@ -2473,32 +2490,29 @@ void VulkanBackend::FlushLFBToGPU() {
   // If both are dirty, we warn and flush the back buffer.
   uint32_t bufferToFlush = 2;  // 2 = none
   uint32_t targetGpuIdx = 0;
-  void* srcCpuData = nullptr;
+  const void* srcCpuData = nullptr;
 
-  if (m_lfbBufferDirty[0] && m_lfbBufferDirty[1]) {
+  const bool frontDirty = m_lfbStaging.IsBufferDirty(0);
+  const bool backDirty = m_lfbStaging.IsBufferDirty(1);
+  if (frontDirty && backDirty) {
     GLIDE_LOG(WARN, "Vulkan",
               "FlushLFBToGPU: Both FRONT and BACK LFB buffers are dirty in the "
               "same flush. Flushing BACK.");
-    MaterializeLazyCpuClear(m_backBufferIdx);
     bufferToFlush = 1;
     targetGpuIdx = gpuBackIdx;
-    srcCpuData = m_cpuBuffers[m_backBufferIdx].data();
-  } else if (m_lfbBufferDirty[0]) {
-    MaterializeLazyCpuClear(m_frontBufferIdx);
+    srcCpuData = m_lfbStaging.PrepareBufferForGpuUpload(1);
+  } else if (frontDirty) {
     bufferToFlush = 0;
     targetGpuIdx = gpuFrontIdx;
-    srcCpuData = m_cpuBuffers[m_frontBufferIdx].data();
-  } else if (m_lfbBufferDirty[1]) {
-    MaterializeLazyCpuClear(m_backBufferIdx);
+    srcCpuData = m_lfbStaging.PrepareBufferForGpuUpload(0);
+  } else if (backDirty) {
     bufferToFlush = 1;
     targetGpuIdx = gpuBackIdx;
-    srcCpuData = m_cpuBuffers[m_backBufferIdx].data();
+    srcCpuData = m_lfbStaging.PrepareBufferForGpuUpload(1);
   }
 
   if (bufferToFlush == 2 || !srcCpuData) {
-    m_lfbDirty = false;
-    m_lfbBufferDirty[0] = false;
-    m_lfbBufferDirty[1] = false;
+    m_lfbStaging.ClearDirtyFlags();
     return;
   }
 
@@ -2533,32 +2547,13 @@ void VulkanBackend::FlushLFBToGPU() {
   // Copy from CPU-side active buffer to GPU staging memory
   GLIDE_LOG(DEBUG, "Vulkan",
             "FlushLFBToGPU: [MEMCPY TRACE] m_currentFrameSlot = "
-                << m_currentFrameSlot);
-  GLIDE_LOG(DEBUG, "Vulkan",
-            "FlushLFBToGPU: [MEMCPY TRACE] m_gpuStagingMaps = "
-                << m_gpuStagingMaps[m_currentFrameSlot]);
-  GLIDE_LOG(DEBUG, "Vulkan",
-            "FlushLFBToGPU: [MEMCPY TRACE] srcCpuData = " << srcCpuData);
-  GLIDE_LOG(DEBUG, "Vulkan",
-            "FlushLFBToGPU: [MEMCPY TRACE] bufferToFlush = "
-                << bufferToFlush << ", m_frontBufferIdx = " << m_frontBufferIdx
-                << ", m_backBufferIdx = " << m_backBufferIdx);
-  GLIDE_LOG(DEBUG, "Vulkan",
-            "FlushLFBToGPU: [MEMCPY TRACE] m_cpuBuffers[0].size() = "
-                << m_cpuBuffers[0].size()
-                << ", m_cpuBuffers[1].size() = " << m_cpuBuffers[1].size());
-  GLIDE_LOG(DEBUG, "Vulkan",
-            "FlushLFBToGPU: [MEMCPY TRACE] Copy size = "
-                << (m_headlessWidth * m_headlessHeight * 4));
+                << m_currentFrameSlot
+                << ", bufferToFlush = " << bufferToFlush
+                << ", copySize = " << (m_headlessWidth * m_headlessHeight * 4));
 
   if (m_gpuStagingMaps[m_currentFrameSlot]) {
-    GLIDE_LOG(DEBUG, "Vulkan",
-              "FlushLFBToGPU: [MEMCPY TRACE] Executing std::memcpy...");
     std::memcpy(m_gpuStagingMaps[m_currentFrameSlot], srcCpuData,
                 m_headlessWidth * m_headlessHeight * 4);
-    GLIDE_LOG(
-        DEBUG, "Vulkan",
-        "FlushLFBToGPU: [MEMCPY TRACE] std::memcpy finished successfully!");
   }
 
   // 2. Transition image to TransferDstOptimal
@@ -2602,9 +2597,7 @@ void VulkanBackend::FlushLFBToGPU() {
       vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
 
   // 5. Clear the dirty flags
-  m_lfbDirty = false;
-  m_lfbBufferDirty[0] = false;
-  m_lfbBufferDirty[1] = false;
+  m_lfbStaging.ClearDirtyFlags();
 }
 
 // --- Phase 2: Dynamic Shader Modules & Pipeline State Creation ---
@@ -3445,10 +3438,9 @@ void VulkanBackend::BindTexture(uint32_t tmu, uint32_t startAddress,
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   FlushBatch();
 
-  // 1. Call base class SoftwareBackendBase::BindTexture to update software
-  // states
-  SoftwareBackendBase::BindTexture(tmu, startAddress, clampS, clampT, minFilter,
-                                   magFilter);
+  // 1. Call base class GlideStateTracker::BindTexture to update pipeline states
+  GlideStateTracker::BindTexture(tmu, startAddress, clampS, clampT, minFilter,
+                                 magFilter);
 
   if (!m_initialized || !m_device) return;
 

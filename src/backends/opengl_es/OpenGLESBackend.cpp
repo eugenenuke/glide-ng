@@ -153,8 +153,9 @@ void OpenGLESBackend::Shutdown() {
 }
 
 void OpenGLESBackend::ResetState() {
-  SoftwareBackendBase::ResetState();
+  GlideStateTracker::ResetState();
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  m_lfbStaging.ResetPendingAndDirty();
   m_geomVBOOffset = 0;
   m_is2DGeometry = true;
   m_gammaCorrectionValue = 1.0f;
@@ -264,11 +265,12 @@ bool OpenGLESBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
     return false;
   }
 
-  // Allocate software staging memory
-  AllocateCpuBuffers(width, height);
-  m_swizzleBuffer.resize(width * height);
+  // Configure lazily-allocated CPU LFB staging (0 bytes until LFB is touched)
+  m_lfbStaging.Configure(width, height, /*allocateEagerly=*/false);
+  m_activeRenderBuffer = 1;  // GR_BUFFER_BACKBUFFER
+  m_swizzleBuffer.clear();
+  m_swizzleBuffer.shrink_to_fit();
 
-  m_headlessDepthBuffer.resize(width * height, 0.0f);
   SetClipWindow(0, 0, width, height);
 
   m_windowAttached = true;
@@ -287,7 +289,9 @@ void OpenGLESBackend::DetachWindow() {
 
   DestroyGLContext();
 
-  FreeCpuBuffers();
+  m_lfbStaging.Release();
+  m_swizzleBuffer.clear();
+  m_swizzleBuffer.shrink_to_fit();
 
   m_windowAttached = false;
 }
@@ -410,26 +414,13 @@ bool OpenGLESBackend::SwapBuffers() {
       SDL_GL_SwapWindow(m_surfaceHost.GetSDLWindow());
     }
   } else {
-    // Headless fallback: read back rendered color buffer into CPU shadow
-    GLIDE_PROFILE_SCOPE("GLES::SwapBuffers_Readback");
-    glBindFramebuffer(GL_FRAMEBUFFER, m_headlessFBOs[0]);
-    glReadPixels(0, 0, m_headlessWidth, m_headlessHeight, GL_RGBA,
-                 GL_UNSIGNED_BYTE, m_cpuBuffers[m_backBufferIdx].data());
-    DiscardLazyCpuClear(m_backBufferIdx);
-    checkGLError("SwapBuffers glReadPixels");
+    // Headless mode: ensure offscreen GPU work completes without forcing an
+    // eager CPU readback (ReadLFB reads directly from the GPU FBO on demand).
+    glFinish();
   }
 
-  // Swap the front and back CPU buffer indices for double-buffering (LFB
-  // CPU-side tracking)
-  if (m_headlessPixelMap) {
-    std::swap(m_frontBufferIdx, m_backBufferIdx);
-    std::swap(m_lfbBufferDirty[0], m_lfbBufferDirty[1]);
-    if (m_activeRenderBuffer == 0) {
-      m_headlessPixelMap = m_cpuBuffers[m_frontBufferIdx].data();
-    } else {
-      m_headlessPixelMap = m_cpuBuffers[m_backBufferIdx].data();
-    }
-  }
+  // Swap CPU LFB staging indices for double-buffering (zero-cost when unused)
+  m_lfbStaging.SwapBuffers();
 
   // Swap the GPU color targets for physical double-buffering!
   std::swap(m_headlessFBOs[0], m_headlessFBOs[1]);
@@ -474,9 +465,13 @@ void OpenGLESBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z,
   // Flush any pending geometry before clearing the buffers!
   FlushBatch();
 
-  // 1. Defer CPU-side framebuffer clear lazily so pure 3D frames avoid
-  // full-frame CPU fills; materialized on demand before any LFB access/flush.
-  ScheduleLazyCpuClear(color, alpha, z, clearMask);
+  // 1. Defer CPU-side framebuffer clear lazily so pure 3D frames allocate 0
+  // bytes and avoid CPU fills; materialized on demand before any LFB access.
+  if (clearMask & 0x1) {
+    m_lfbStaging.ScheduleLazyClear(m_activeRenderBuffer, color, alpha,
+                                   m_pixelFormatOverride, m_colorMaskRgb,
+                                   m_colorMaskAlpha);
+  }
 
   // Bind active offscreen FBO
   glBindFramebuffer(GL_FRAMEBUFFER, GetActiveGpuFbo());
@@ -532,10 +527,34 @@ void OpenGLESBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z,
   glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
+void* OpenGLESBackend::GetLfbWritePtr() {
+  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  if (!m_initialized || !m_windowAttached) return nullptr;
+  return m_lfbStaging.GetWritePtr(m_activeRenderBuffer);
+}
+
+bool OpenGLESBackend::WriteLFB(uint32_t buffer, uint32_t dstX, uint32_t dstY,
+                               uint32_t srcWidth, uint32_t srcHeight,
+                               int32_t srcStride, uint32_t srcFmt,
+                               const void* srcData, const void* refData,
+                               const LfbPipelineConfig& config) {
+  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  if (!m_initialized || !m_windowAttached) return false;
+  return m_lfbStaging.WriteLFB(buffer, dstX, dstY, srcWidth, srcHeight,
+                               srcStride, srcFmt, srcData, refData, config,
+                               m_pixelFormatOverride);
+}
+
 void OpenGLESBackend::FlushLFBToGPU() {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
-  if (!m_lfbDirty) return;
+  if (!m_lfbStaging.IsDirty()) return;
   if (!EnsureContextCurrent()) return;
+
+  const size_t requiredPixels =
+      static_cast<size_t>(m_headlessWidth) * m_headlessHeight;
+  if (m_swizzleBuffer.size() < requiredPixels) {
+    m_swizzleBuffer.resize(requiredPixels);
+  }
 
   GLint prevTexture = 0;
   glGetIntegerv(GL_TEXTURE_BINDING_2D, &prevTexture);
@@ -566,36 +585,32 @@ void OpenGLESBackend::FlushLFBToGPU() {
   };
 
   // Determine which FBO texture corresponds to FRONTBUFFER and BACKBUFFER.
-  // - If m_activeRenderBuffer == 0 (FRONTBUFFER):
-  //   m_fboTextures[0] is the GPU FRONTBUFFER, m_fboTextures[1] is the GPU
-  //   BACKBUFFER.
-  // - If m_activeRenderBuffer == 1 (BACKBUFFER):
-  //   m_fboTextures[0] is the GPU BACKBUFFER, m_fboTextures[1] is the GPU
-  //   FRONTBUFFER.
   uint32_t gpuFrontTexture =
       (m_activeRenderBuffer == 0) ? m_fboTextures[0] : m_fboTextures[1];
   uint32_t gpuBackTexture =
       (m_activeRenderBuffer == 0) ? m_fboTextures[1] : m_fboTextures[0];
 
   // 1. Flush FRONTBUFFER if dirty
-  if (m_lfbBufferDirty[0]) {
-    MaterializeLazyCpuClear(m_frontBufferIdx);
-    flushBuffer(m_cpuBuffers[m_frontBufferIdx].data(), gpuFrontTexture);
-    checkGLError("FlushLFBToGPU FrontBuffer glTexSubImage2D");
-    m_lfbBufferDirty[0] = false;
+  if (m_lfbStaging.IsBufferDirty(0)) {
+    if (const uint8_t* data = m_lfbStaging.PrepareBufferForGpuUpload(0)) {
+      flushBuffer(data, gpuFrontTexture);
+      checkGLError("FlushLFBToGPU FrontBuffer glTexSubImage2D");
+    }
+    m_lfbStaging.ClearBufferDirty(0);
   }
 
   // 2. Flush BACKBUFFER if dirty
-  if (m_lfbBufferDirty[1]) {
-    MaterializeLazyCpuClear(m_backBufferIdx);
-    flushBuffer(m_cpuBuffers[m_backBufferIdx].data(), gpuBackTexture);
-    checkGLError("FlushLFBToGPU BackBuffer glTexSubImage2D");
-    m_lfbBufferDirty[1] = false;
+  if (m_lfbStaging.IsBufferDirty(1)) {
+    if (const uint8_t* data = m_lfbStaging.PrepareBufferForGpuUpload(1)) {
+      flushBuffer(data, gpuBackTexture);
+      checkGLError("FlushLFBToGPU BackBuffer glTexSubImage2D");
+    }
+    m_lfbStaging.ClearBufferDirty(1);
   }
 
   glBindTexture(GL_TEXTURE_2D, prevTexture);
 
-  m_lfbDirty = false;
+  m_lfbStaging.ClearDirtyFlags();
 }
 
 bool OpenGLESBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
@@ -624,12 +639,10 @@ bool OpenGLESBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
   GLuint fboToRead = (buffer == 0) ? m_headlessFBOs[1] : m_headlessFBOs[0];
   glBindFramebuffer(GL_FRAMEBUFFER, fboToRead);
 
-  // Resolve the destination CPU buffer based on the requested buffer
-  uint32_t readSlot = (buffer == 0) ? m_frontBufferIdx : m_backBufferIdx;
-  void* readDst = m_cpuBuffers[readSlot].data();
+  // Resolve the lazily-allocated destination CPU buffer for the requested slot
+  void* readDst = m_lfbStaging.PrepareBufferForGpuReadback(buffer);
 
   if (readDst) {
-    DiscardLazyCpuClear(readSlot);
     // Read pixels as GL_RGBA (which contains our R/B swapped BGRA-ordered
     // pixels) GLES glReadPixels is synchronous and guarantees the GPU finishes
     // all rendering before returning!
@@ -638,9 +651,7 @@ bool OpenGLESBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
     checkGLError("ReadLFB glReadPixels");
 
     // Convert RGBA from GPU glReadPixels to BGRA and vertically flip the image
-    // in-place. The swizzle is necessary because SoftwareBackendBase::ReadLFB
-    // expects the internal CPU buffer to be in BGRA layout before applying
-    // client-facing format conversions!
+    // in-place so CpuLfbStaging::ReadRegion applies client-facing conversions!
     auto* dest = reinterpret_cast<uint32_t*>(readDst);
     // 1. Swizzle RGBA to BGRA (only if not in ABGR override mode, since GL_RGBA
     // is already ABGR)
@@ -672,10 +683,8 @@ bool OpenGLESBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
   glBindFramebuffer(GL_FRAMEBUFFER, previousFBO);
 
   // --- STEP 2: Convert and copy to client ---
-  bool result = SoftwareBackendBase::ReadLFB(buffer, srcX, srcY, srcWidth,
-                                             srcHeight, dstStride, dstData);
-
-  return result;
+  return m_lfbStaging.ReadRegion(buffer, srcX, srcY, srcWidth, srcHeight,
+                                 dstStride, dstData);
 }
 
 #if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_EGL) && \
@@ -2692,14 +2701,14 @@ void OpenGLESBackend::SetBlendState(uint32_t rgbSrcFactor,
                                     uint32_t alphaDstFactor) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   FlushBatch();
-  SoftwareBackendBase::SetBlendState(rgbSrcFactor, rgbDstFactor, alphaSrcFactor,
-                                     alphaDstFactor);
+  GlideStateTracker::SetBlendState(rgbSrcFactor, rgbDstFactor, alphaSrcFactor,
+                                   alphaDstFactor);
 }
 
 void OpenGLESBackend::SetRenderBuffer(uint32_t target) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   FlushBatch();
-  SoftwareBackendBase::SetRenderBuffer(target);
+  GlideStateTracker::SetRenderBuffer(target);
   if (m_initialized && m_windowAttached && EnsureContextCurrent()) {
     glBindFramebuffer(GL_FRAMEBUFFER, GetActiveGpuFbo());
   }
@@ -2708,19 +2717,19 @@ void OpenGLESBackend::SetRenderBuffer(uint32_t target) {
 void OpenGLESBackend::SetDepthRange(float nearVal, float farVal) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   FlushBatch();
-  SoftwareBackendBase::SetDepthRange(nearVal, farVal);
+  GlideStateTracker::SetDepthRange(nearVal, farVal);
 }
 
 void OpenGLESBackend::SetDitherMode(uint32_t mode) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   FlushBatch();
-  SoftwareBackendBase::SetDitherMode(mode);
+  GlideStateTracker::SetDitherMode(mode);
 }
 
 void OpenGLESBackend::SetStippleState(uint32_t mode, uint32_t pattern) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   FlushBatch();
-  SoftwareBackendBase::SetStippleState(mode, pattern);
+  GlideStateTracker::SetStippleState(mode, pattern);
 }
 
 uint32_t OpenGLESBackend::GetActiveGpuFbo() const {
@@ -2733,7 +2742,7 @@ uint32_t OpenGLESBackend::GetActiveGpuFbo() const {
 void OpenGLESBackend::SetColorMask(bool rgb, bool alpha) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   FlushBatch();
-  SoftwareBackendBase::SetColorMask(rgb, alpha);
+  GlideStateTracker::SetColorMask(rgb, alpha);
 }
 
 void OpenGLESBackend::SetGamma(float gamma) {
@@ -3315,45 +3324,44 @@ void OpenGLESBackend::SetDepthState(uint32_t depthMode, uint32_t compareOp,
                                     bool depthMask, int32_t biasLevel) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   FlushBatch();
-  SoftwareBackendBase::SetDepthState(depthMode, compareOp, depthMask,
-                                     biasLevel);
+  GlideStateTracker::SetDepthState(depthMode, compareOp, depthMask, biasLevel);
 }
 
 void OpenGLESBackend::SetCullState(uint32_t cullMode) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   FlushBatch();
-  SoftwareBackendBase::SetCullState(cullMode);
+  GlideStateTracker::SetCullState(cullMode);
 }
 
 void OpenGLESBackend::SetAlphaTestState(uint32_t compareOp, uint32_t refVal) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   FlushBatch();
-  SoftwareBackendBase::SetAlphaTestState(compareOp, refVal);
+  GlideStateTracker::SetAlphaTestState(compareOp, refVal);
 }
 
 void OpenGLESBackend::SetSstOrigin(uint32_t origin) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   FlushBatch();
-  SoftwareBackendBase::SetSstOrigin(origin);
+  GlideStateTracker::SetSstOrigin(origin);
 }
 
 void OpenGLESBackend::SetClipWindow(uint32_t minX, uint32_t minY, uint32_t maxX,
                                     uint32_t maxY) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   FlushBatch();
-  SoftwareBackendBase::SetClipWindow(minX, minY, maxX, maxY);
+  GlideStateTracker::SetClipWindow(minX, minY, maxX, maxY);
 }
 
 void OpenGLESBackend::SetConstantColor(uint32_t color) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   FlushBatch();
-  SoftwareBackendBase::SetConstantColor(color);
+  GlideStateTracker::SetConstantColor(color);
 }
 
 void OpenGLESBackend::SetPixelFormat(uint32_t format) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   FlushBatch();
-  SoftwareBackendBase::SetPixelFormat(format);
+  GlideStateTracker::SetPixelFormat(format);
 }
 
 void OpenGLESBackend::BindTexture(uint32_t tmu, uint32_t startAddress,
@@ -3361,21 +3369,21 @@ void OpenGLESBackend::BindTexture(uint32_t tmu, uint32_t startAddress,
                                   uint32_t minFilter, uint32_t magFilter) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   FlushBatch();
-  SoftwareBackendBase::BindTexture(tmu, startAddress, clampS, clampT, minFilter,
-                                   magFilter);
+  GlideStateTracker::BindTexture(tmu, startAddress, clampS, clampT, minFilter,
+                                 magFilter);
 }
 
 void OpenGLESBackend::SetTexLodBias(uint32_t tmu, float bias) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   FlushBatch();
-  SoftwareBackendBase::SetTexLodBias(tmu, bias);
+  GlideStateTracker::SetTexLodBias(tmu, bias);
 }
 
 void OpenGLESBackend::SetTexMipMapMode(uint32_t tmu, uint32_t mode,
                                        bool lodBlend) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   FlushBatch();
-  SoftwareBackendBase::SetTexMipMapMode(tmu, mode, lodBlend);
+  GlideStateTracker::SetTexMipMapMode(tmu, mode, lodBlend);
 }
 
 void OpenGLESBackend::SetCombinerMode(uint32_t colorFunc, uint32_t colorFactor,
@@ -3385,9 +3393,10 @@ void OpenGLESBackend::SetCombinerMode(uint32_t colorFunc, uint32_t colorFactor,
                                       uint32_t alphaOther, bool alphaInvert) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   FlushBatch();
-  SoftwareBackendBase::SetCombinerMode(
-      colorFunc, colorFactor, colorLocal, colorOther, colorInvert, alphaFunc,
-      alphaFactor, alphaLocal, alphaOther, alphaInvert);
+  GlideStateTracker::SetCombinerMode(colorFunc, colorFactor, colorLocal,
+                                     colorOther, colorInvert, alphaFunc,
+                                     alphaFactor, alphaLocal, alphaOther,
+                                     alphaInvert);
 }
 
 void OpenGLESBackend::SetTexCombinerMode(uint32_t tmu, uint32_t rgbFunc,
@@ -3396,64 +3405,64 @@ void OpenGLESBackend::SetTexCombinerMode(uint32_t tmu, uint32_t rgbFunc,
                                          bool alphaInvert) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   FlushBatch();
-  SoftwareBackendBase::SetTexCombinerMode(tmu, rgbFunc, rgbFactor, alphaFunc,
-                                          alphaFactor, rgbInvert, alphaInvert);
+  GlideStateTracker::SetTexCombinerMode(tmu, rgbFunc, rgbFactor, alphaFunc,
+                                        alphaFactor, rgbInvert, alphaInvert);
 }
 
 void OpenGLESBackend::SetSTWHintState(uint32_t hintMask) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   FlushBatch();
-  SoftwareBackendBase::SetSTWHintState(hintMask);
+  GlideStateTracker::SetSTWHintState(hintMask);
 }
 
 void OpenGLESBackend::SetChromakeyMode(uint32_t mode) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   FlushBatch();
-  SoftwareBackendBase::SetChromakeyMode(mode);
+  GlideStateTracker::SetChromakeyMode(mode);
 }
 
 void OpenGLESBackend::SetChromakeyValue(uint32_t value) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   FlushBatch();
-  SoftwareBackendBase::SetChromakeyValue(value);
+  GlideStateTracker::SetChromakeyValue(value);
 }
 
 void OpenGLESBackend::SetChromakeyRange(uint32_t minColor, uint32_t maxColor,
                                         uint32_t mode) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   FlushBatch();
-  SoftwareBackendBase::SetChromakeyRange(minColor, maxColor, mode);
+  GlideStateTracker::SetChromakeyRange(minColor, maxColor, mode);
 }
 
 void OpenGLESBackend::SetTexChromakeyMode(uint32_t tmu, uint32_t mode) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   FlushBatch();
-  SoftwareBackendBase::SetTexChromakeyMode(tmu, mode);
+  GlideStateTracker::SetTexChromakeyMode(tmu, mode);
 }
 
 void OpenGLESBackend::SetTexChromakeyRange(uint32_t tmu, uint32_t minColor,
                                            uint32_t maxColor, uint32_t mode) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   FlushBatch();
-  SoftwareBackendBase::SetTexChromakeyRange(tmu, minColor, maxColor, mode);
+  GlideStateTracker::SetTexChromakeyRange(tmu, minColor, maxColor, mode);
 }
 
 void OpenGLESBackend::SetFogMode(uint32_t mode) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   FlushBatch();
-  SoftwareBackendBase::SetFogMode(mode);
+  GlideStateTracker::SetFogMode(mode);
 }
 
 void OpenGLESBackend::SetFogColor(uint32_t color) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   FlushBatch();
-  SoftwareBackendBase::SetFogColor(color);
+  GlideStateTracker::SetFogColor(color);
 }
 
 void OpenGLESBackend::SetFogTable(const uint8_t* table) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   FlushBatch();
-  SoftwareBackendBase::SetFogTable(table);
+  GlideStateTracker::SetFogTable(table);
 }
 
 }  // namespace GlideWrapper
