@@ -1404,7 +1404,7 @@ bool VulkanBackend::SwapBuffers() {
     (void)m_device->resetFences(1, &m_fences[m_currentFrameSlot].get());
 
     vk::PipelineStageFlags waitStages[] = {
-        vk::PipelineStageFlagBits::eColorAttachmentOutput};
+        vk::PipelineStageFlagBits::eTransfer};
     vk::Semaphore waitSemaphores[] = {
         m_imageAvailableSemaphores[m_currentFrameSlot].get()};
     vk::Semaphore signalSemaphores[] = {
