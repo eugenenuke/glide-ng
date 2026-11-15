@@ -307,6 +307,11 @@ FX_ENTRY void FX_CALL grDrawTriangle(const GrVertex* a, const GrVertex* b,
   if (!backend || !a || !b || !c) return;
 
   GLIDE_PROFILE_SCOPE("API::grDrawTriangle");
+  GLIDE_LOG(TRACE, "Frontend",
+            "grDrawTriangle (Glide 2.x) invoked: a=(" << a->x << "," << a->y
+                                                      << ") b=(" << b->x << ","
+                                                      << b->y << ") c=(" << c->x
+                                                      << "," << c->y << ")");
   GLIDE_INCREMENT_TRIANGLES_PROCESSED(1);
 
   auto& layout = GlideWrapper::VertexLayout::GetInstance();
@@ -340,6 +345,7 @@ FX_ENTRY void FX_CALL grSstResetPerfStats(void) {
 
 FX_ENTRY void FX_CALL grDrawLine(const GrVertex* a, const GrVertex* b) {
   EnsureEngineInitialized();
+  GLIDE_LOG(TRACE, "Frontend", "grDrawLine (Glide 2.x) invoked.");
   auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
   if (!backend || !a || !b) return;
   auto& layout = GlideWrapper::VertexLayout::GetInstance();
@@ -352,7 +358,7 @@ FX_ENTRY void FX_CALL grDrawLine(const GrVertex* a, const GrVertex* b) {
 
 FX_ENTRY void FX_CALL grDrawPoint(const GrVertex* pt) {
   EnsureEngineInitialized();
-  GLIDE_LOG(DEBUG, "Frontend", "grDrawPoint invoked!");
+  GLIDE_LOG(TRACE, "Frontend", "grDrawPoint (Glide 2.x) invoked.");
   auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
   if (!backend || !pt) return;
   auto& layout = GlideWrapper::VertexLayout::GetInstance();
@@ -455,7 +461,7 @@ FX_ENTRY void FX_CALL guAADrawTriangleWithClip(const GrVertex* a,
 FX_ENTRY void FX_CALL grDrawVertexArray(FxU32 mode, FxU32 count,
                                         void* pointers) {
   EnsureEngineInitialized();
-  GLIDE_LOG(DEBUG, "Frontend",
+  GLIDE_LOG(TRACE, "Frontend",
             "grDrawVertexArray (Glide 2.x) invoked: mode=" << mode << ", count="
                                                            << count);
   if (!pointers || count == 0) return;
@@ -476,7 +482,7 @@ FX_ENTRY void FX_CALL grDrawVertexArray(FxU32 mode, FxU32 count,
 FX_ENTRY void FX_CALL grDrawVertexArrayLinear(FxU32 mode, FxU32 count,
                                               void* pointers, FxU32 stride) {
   EnsureEngineInitialized();
-  GLIDE_LOG(DEBUG, "Frontend",
+  GLIDE_LOG(TRACE, "Frontend",
             "grDrawVertexArrayLinear (Glide 2.x) invoked: mode="
                 << mode << ", count=" << count << ", stride=" << stride);
   if (!pointers || count == 0 || stride == 0) return;

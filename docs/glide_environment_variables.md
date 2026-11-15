@@ -69,9 +69,24 @@ When a card model is chosen (via JSON or `GLIDE_NG_CARD_MODEL`), its hardware de
 
 | Environment Variable | JSON Key | Accepted Values | Default | Status | Description |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `GLIDE_NG_LOG_LEVEL` | `"logLevel"` | `0`/`off`, `1`/`error`, `2`/`warn`, `3`/`info`, `4`/`debug`, `5`/`trace` | `3` (`info`) | **Implemented** *(level `5`/`trace` accepted by parser; full trace instrumentation arrives in M2)* | Controls diagnostic log verbosity. |
-| `GLIDE_NG_LOG_CONSOLE` | `"logToConsole"` | `0`/`1`, `true`/`false` | `false` | **Implemented** | Mirrors log output to `stderr`/`stdout` in addition to the log file. |
+| `GLIDE_NG_LOG_LEVEL` | `"logLevel"` | `0`/`off`, `1`/`crit`/`error`, `2`/`warn`, `3`/`info`, `4`/`debug`, `5`/`trace` | `3` (`info`) | **Implemented** | Controls diagnostic log verbosity. Every line includes a monotonic microsecond timestamp (`[+SSSSSS.UUUUUU]`) and frame index (`[FNNNNNN]`) with buffered file flushing. |
+| `GLIDE_NG_LOG_CONSOLE` | `"logToConsole"` | `0`/`1`, `true`/`false` | `false` | **Implemented** | Mirrors log output to `stdout` in addition to the log file. |
 | `GLIDE_NG_LOG_FILE` | `"logFile"` | File path | `glide-ng.log` | **Implemented** | Output file path for wrapper diagnostic logs. |
+| `GLIDE_NG_LOG_CATEGORIES` | `"logCategories"` | `all`, `none`, or comma-separated subset of `general`, `api`, `lfb`, `tex`, `state`, `draw`, `wsi`, `perf` (supports `-cat` negation, e.g. `-draw`) | `all` | **Implemented** | Filters `INFO`/`DEBUG`/`TRACE` log lines by subsystem category. `CRIT`, `WARN`, and the `Startup` summary banner always pass so errors and active config are never hidden. |
+| `GLIDE_NG_TRACE_FRAMES` | `"traceFrames"` | Frame index or range: `N`, `A-B`, `A-`, `-B`, or `all` | *(unbounded)* | **Implemented** | Restricts high-frequency `TRACE` (`level=5`) output to the specified frame window (0-indexed by `grBufferSwap`) so deep per-primitive traces do not overwhelm disk or CPU. |
+| `GLIDE_NG_PERF_LOG` | `"perfLog"` | `0`/`false`/`off` (disabled), `1`/`true`/`on`/`log` (periodic `[Perf]` summary every ~1s), or a file path (periodic `[Perf]` summary **plus** per-frame CSV trace) | `false` | **Implemented** | Enables lightweight always-compiled per-frame telemetry: FPS, frame/render/present/cap-sleep ms, draw calls, mid-frame state flushes, triangles, LFB reads/writes & bytes, texture uploads & bytes, and Vulkan PSO builds. |
+
+#### Diagnostic Tracing Recipes
+
+```bash
+# 1. Measure performance bottlenecks without flooding logs (periodic [Perf] + per-frame CSV)
+GLIDE_NG_PERF_LOG=/tmp/perf.csv GLIDE_NG_LOG_CONSOLE=1 ./build/bin/glide3_cube
+
+# 2. Capture LFB + API + Perf trace for frames 120..125 only (e.g., debugging black menus / HUD)
+GLIDE_NG_LOG_LEVEL=trace GLIDE_NG_LOG_CATEGORIES=api,lfb,perf \
+  GLIDE_NG_TRACE_FRAMES=120-125 GLIDE_NG_LOG_FILE=/tmp/trace.log \
+  GLIDE_NG_PERF_LOG=/tmp/perf.csv <game_command>
+```
 
 ### 1.6 Backend-Specific Tuning
 
@@ -149,11 +164,8 @@ Low-level 3dfx PCI, SDRAM, clock-delay, DAC, and FIFO hardware register variable
 
 The configuration namespace is designed to grow cleanly alongside upcoming diagnostics and usability milestones (tracked in [docs/plans/roadmap_m1_m6_tracker.md](plans/roadmap_m1_m6_tracker.md)):
 
-### Milestone M2 — Tiered Logging, Category Filtering & Per-Frame Performance Tracing
-- **`GLIDE_NG_LOG_LEVEL=trace` (`5`)**: Full high-frequency API / state / LFB / texture call tracing with microsecond monotonic timestamps and frame numbers, plus buffered flushing so verbose captures do not stall real-time games.
-- **`GLIDE_NG_LOG_CATEGORIES`** *(Planned)*: Comma-separated category filter (e.g., `api,lfb,tex,state,draw,wsi,perf`) to capture only the subsystem under investigation.
-- **`GLIDE_NG_TRACE_FRAMES`** *(Planned)*: Frame range window (e.g., `120-125`) to restrict heavy `TRACE` logging to specific problematic frames.
-- **`GLIDE_NG_PERF_LOG`** *(Planned)*: Optional per-frame timing breakdown (frame time, draw calls, triangles, LFB transfers, texture uploads, swap/present latency) logged periodically or exported as CSV for bottleneck analysis.
+### Milestone M2 — Tiered Logging, Category Filtering & Per-Frame Performance Tracing *(Implemented)*
+- **`GLIDE_NG_LOG_LEVEL=trace` (`5`)**, **`GLIDE_NG_LOG_CATEGORIES`**, **`GLIDE_NG_TRACE_FRAMES`**, and **`GLIDE_NG_PERF_LOG`** are now implemented and documented in [Section 1.5](#15-logging--diagnostics).
 
 ### Milestone M3 — DXVK-Style On-Screen HUD (`GLIDE_NG_HUD`)
 - **`GLIDE_NG_HUD`** *(Planned)*: Comma-separated overlay elements rendered directly in the backend presentation pass without mutating Glide render state.

@@ -49,7 +49,7 @@ const std::vector<const char*> validationLayers = {
 const bool enableValidationLayers = false;
 
 void Logger::LogHostVulkanCapabilities() {
-  if (m_activeLevel < LogLevel::INFO) return;
+  if (GetLevel() < LogLevel::INFO) return;
 
   try {
     vk::ApplicationInfo appInfo("3dfxGlideWrapper", 1, "AntigravityEngine", 1,
@@ -1057,7 +1057,7 @@ void VulkanBackend::SetDepthState(uint32_t depthMode, uint32_t compareOp,
   std::lock_guard<std::mutex> lock(m_mutex);
   if (depthMode != m_depthMode || compareOp != m_depthCompareOp ||
       depthMask != m_depthMask || biasLevel != m_depthBiasLevel) {
-    FlushBatch();
+    FlushBatch(true);
   }
   GlideStateTracker::SetDepthState_Locked(depthMode, compareOp, depthMask, biasLevel);
 }
@@ -1068,7 +1068,7 @@ void VulkanBackend::SetBlendState(uint32_t rgbSrcFactor, uint32_t rgbDstFactor,
   std::lock_guard<std::mutex> lock(m_mutex);
   if (rgbSrcFactor != m_rgbSrcBlend || rgbDstFactor != m_rgbDstBlend ||
       alphaSrcFactor != m_alphaSrcBlend || alphaDstFactor != m_alphaDstBlend) {
-    FlushBatch();
+    FlushBatch(true);
   }
   GlideStateTracker::SetBlendState_Locked(rgbSrcFactor, rgbDstFactor, alphaSrcFactor,
                                    alphaDstFactor);
@@ -1077,7 +1077,7 @@ void VulkanBackend::SetBlendState(uint32_t rgbSrcFactor, uint32_t rgbDstFactor,
 void VulkanBackend::SetCullState(uint32_t cullMode) {
   std::lock_guard<std::mutex> lock(m_mutex);
   if (cullMode != m_cullMode) {
-    FlushBatch();
+    FlushBatch(true);
   }
   GlideStateTracker::SetCullState_Locked(cullMode);
 }
@@ -1085,7 +1085,7 @@ void VulkanBackend::SetCullState(uint32_t cullMode) {
 void VulkanBackend::SetAlphaTestState(uint32_t compareOp, uint32_t refVal) {
   std::lock_guard<std::mutex> lock(m_mutex);
   if (compareOp != m_alphaTestOp || refVal != m_alphaTestRefVal) {
-    FlushBatch();
+    FlushBatch(true);
   }
   GlideStateTracker::SetAlphaTestState_Locked(compareOp, refVal);
   // Note: Emulated in fragment shader via push constants. No pipeline
@@ -1095,7 +1095,7 @@ void VulkanBackend::SetAlphaTestState(uint32_t compareOp, uint32_t refVal) {
 void VulkanBackend::SetSstOrigin(uint32_t origin) {
   std::lock_guard<std::mutex> lock(m_mutex);
   if (origin != m_sstOrigin) {
-    FlushBatch();
+    FlushBatch(true);
   }
   GlideStateTracker::SetSstOrigin_Locked(origin);
 }
@@ -1105,7 +1105,7 @@ void VulkanBackend::SetClipWindow(uint32_t minX, uint32_t minY, uint32_t maxX,
   std::lock_guard<std::mutex> lock(m_mutex);
   if (minX != m_clipMinX || minY != m_clipMinY || maxX != m_clipMaxX ||
       maxY != m_clipMaxY) {
-    FlushBatch();
+    FlushBatch(true);
   }
   GlideStateTracker::SetClipWindow_Locked(minX, minY, maxX, maxY);
 
@@ -1118,7 +1118,7 @@ void VulkanBackend::SetClipWindow(uint32_t minX, uint32_t minY, uint32_t maxX,
 void VulkanBackend::SetColorMask(bool rgb, bool alpha) {
   std::lock_guard<std::mutex> lock(m_mutex);
   if (rgb != m_colorMaskRgb || alpha != m_colorMaskAlpha) {
-    FlushBatch();
+    FlushBatch(true);
   }
   GlideStateTracker::SetColorMask_Locked(rgb, alpha);
 }
@@ -1126,7 +1126,7 @@ void VulkanBackend::SetColorMask(bool rgb, bool alpha) {
 void VulkanBackend::SetDepthRange(float nearVal, float farVal) {
   std::lock_guard<std::mutex> lock(m_mutex);
   if (nearVal != m_depthNear || farVal != m_depthFar) {
-    FlushBatch();
+    FlushBatch(true);
   }
   GlideStateTracker::SetDepthRange_Locked(nearVal, farVal);
 }
@@ -1134,7 +1134,7 @@ void VulkanBackend::SetDepthRange(float nearVal, float farVal) {
 void VulkanBackend::SetDitherMode(uint32_t mode) {
   std::lock_guard<std::mutex> lock(m_mutex);
   if (mode != m_ditherMode) {
-    FlushBatch();
+    FlushBatch(true);
   }
   GlideStateTracker::SetDitherMode_Locked(mode);
 }
@@ -1142,7 +1142,7 @@ void VulkanBackend::SetDitherMode(uint32_t mode) {
 void VulkanBackend::SetStippleState(uint32_t mode, uint32_t pattern) {
   std::lock_guard<std::mutex> lock(m_mutex);
   if (mode != m_stippleMode || pattern != m_stipplePattern) {
-    FlushBatch();
+    FlushBatch(true);
   }
   GlideStateTracker::SetStippleState_Locked(mode, pattern);
 }
@@ -1150,7 +1150,7 @@ void VulkanBackend::SetStippleState(uint32_t mode, uint32_t pattern) {
 void VulkanBackend::SetConstantColor(uint32_t color) {
   std::lock_guard<std::mutex> lock(m_mutex);
   if (color != m_constantColor) {
-    FlushBatch();
+    FlushBatch(true);
   }
   GlideStateTracker::SetConstantColor_Locked(color);
 }
@@ -1158,7 +1158,7 @@ void VulkanBackend::SetConstantColor(uint32_t color) {
 void VulkanBackend::SetRenderBuffer(uint32_t target) {
   std::lock_guard<std::mutex> lock(m_mutex);
   if (target != m_activeRenderBuffer) {
-    FlushBatch();
+    FlushBatch(true);
   }
   GlideStateTracker::SetRenderBuffer_Locked(target);
 }
@@ -1166,7 +1166,7 @@ void VulkanBackend::SetRenderBuffer(uint32_t target) {
 void VulkanBackend::SetPixelFormat(uint32_t format) {
   std::lock_guard<std::mutex> lock(m_mutex);
   if (format != m_pixelFormatOverride) {
-    FlushBatch();
+    FlushBatch(true);
   }
   GlideStateTracker::SetPixelFormat_Locked(format);
 }
@@ -1187,7 +1187,7 @@ void VulkanBackend::SetCombinerMode(uint32_t colorFunc, uint32_t colorFactor,
       alphaLocal != m_alphaCombinerLocal ||
       alphaOther != m_alphaCombinerOther ||
       alphaInvert != m_alphaCombinerInvert) {
-    FlushBatch();
+    FlushBatch(true);
   }
   GlideStateTracker::SetCombinerMode_Locked(colorFunc, colorFactor, colorLocal,
                                      colorOther, colorInvert, alphaFunc,
@@ -1206,7 +1206,7 @@ void VulkanBackend::SetTexCombinerMode(uint32_t tmu, uint32_t rgbFunc,
                   alphaFactor != m_texCombinerAlphaFactor[tmu] ||
                   rgbInvert != m_texCombinerRgbInvert[tmu] ||
                   alphaInvert != m_texCombinerAlphaInvert[tmu])) {
-    FlushBatch();
+    FlushBatch(true);
   }
   GlideStateTracker::SetTexCombinerMode_Locked(tmu, rgbFunc, rgbFactor, alphaFunc,
                                         alphaFactor, rgbInvert, alphaInvert);
@@ -1215,7 +1215,7 @@ void VulkanBackend::SetTexCombinerMode(uint32_t tmu, uint32_t rgbFunc,
 void VulkanBackend::SetSTWHintState(uint32_t hintMask) {
   std::lock_guard<std::mutex> lock(m_mutex);
   if (hintMask != m_stwHintMask) {
-    FlushBatch();
+    FlushBatch(true);
   }
   GlideStateTracker::SetSTWHintState_Locked(hintMask);
 }
@@ -1223,7 +1223,7 @@ void VulkanBackend::SetSTWHintState(uint32_t hintMask) {
 void VulkanBackend::SetChromakeyMode(uint32_t mode) {
   std::lock_guard<std::mutex> lock(m_mutex);
   if (mode != m_chromakeyMode) {
-    FlushBatch();
+    FlushBatch(true);
   }
   GlideStateTracker::SetChromakeyMode_Locked(mode);
 }
@@ -1231,7 +1231,7 @@ void VulkanBackend::SetChromakeyMode(uint32_t mode) {
 void VulkanBackend::SetChromakeyValue(uint32_t value) {
   std::lock_guard<std::mutex> lock(m_mutex);
   if (value != m_chromakeyValue) {
-    FlushBatch();
+    FlushBatch(true);
   }
   GlideStateTracker::SetChromakeyValue_Locked(value);
 }
@@ -1241,7 +1241,7 @@ void VulkanBackend::SetChromakeyRange(uint32_t minColor, uint32_t maxColor,
   std::lock_guard<std::mutex> lock(m_mutex);
   if (minColor != m_chromakeyRangeMin || maxColor != m_chromakeyRangeMax ||
       mode != m_chromakeyRangeMode) {
-    FlushBatch();
+    FlushBatch(true);
   }
   GlideStateTracker::SetChromakeyRange_Locked(minColor, maxColor, mode);
 }
@@ -1249,7 +1249,7 @@ void VulkanBackend::SetChromakeyRange(uint32_t minColor, uint32_t maxColor,
 void VulkanBackend::SetFogMode(uint32_t mode) {
   std::lock_guard<std::mutex> lock(m_mutex);
   if (mode != m_fogMode) {
-    FlushBatch();
+    FlushBatch(true);
   }
   GlideStateTracker::SetFogMode_Locked(mode);
 }
@@ -1257,7 +1257,7 @@ void VulkanBackend::SetFogMode(uint32_t mode) {
 void VulkanBackend::SetFogColor(uint32_t color) {
   std::lock_guard<std::mutex> lock(m_mutex);
   if (color != m_fogColor) {
-    FlushBatch();
+    FlushBatch(true);
   }
   GlideStateTracker::SetFogColor_Locked(color);
 }
@@ -1265,7 +1265,7 @@ void VulkanBackend::SetFogColor(uint32_t color) {
 void VulkanBackend::SetFogTable(const uint8_t* table) {
   std::lock_guard<std::mutex> lock(m_mutex);
   if (table && std::memcmp(table, m_fogTable, 64) != 0) {
-    FlushBatch();
+    FlushBatch(true);
   }
   GlideStateTracker::SetFogTable_Locked(table);
 }
@@ -1289,11 +1289,6 @@ bool VulkanBackend::SwapBuffers() {
   // Flush any pending CPU LFB writes to the GPU active image before we
   // swap/present!
   FlushLFBToGPU_Locked();
-
-  // Enforce frame pacing and track frame timing using unified FrameTracker
-  auto& tracker = TelemetryManager::GetInstance().GetFrameTracker();
-  tracker.MarkFrameEnd(m_config.maxFps);
-  tracker.MarkFrameStart();
 
   GLIDE_PROFILE_SCOPE("Vulkan::SwapBuffers");
 
@@ -1327,6 +1322,7 @@ bool VulkanBackend::SwapBuffers() {
     m_inRenderPass = false;
   }
 
+  const auto presentStart = std::chrono::steady_clock::now();
   bool useSwapchain = (m_swapchain.get() != nullptr);
   uint32_t imageIdx = 0;
 
@@ -1546,6 +1542,15 @@ bool VulkanBackend::SwapBuffers() {
   std::swap(m_headlessImageMemories[0], m_headlessImageMemories[1]);
   std::swap(m_headlessImageViews[0], m_headlessImageViews[1]);
   std::swap(m_headlessFramebuffers[0], m_headlessFramebuffers[1]);
+
+  const auto presentUs = std::chrono::duration_cast<std::chrono::microseconds>(
+                             std::chrono::steady_clock::now() - presentStart)
+                             .count();
+  auto& telemetry = TelemetryManager::GetInstance();
+  telemetry.RecordPresentTimeUs(presentUs);
+  auto& tracker = telemetry.GetFrameTracker();
+  tracker.MarkFrameEnd(m_config.maxFps);
+  tracker.MarkFrameStart();
 
   return true;
 }

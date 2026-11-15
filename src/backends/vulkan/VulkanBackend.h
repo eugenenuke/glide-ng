@@ -325,7 +325,7 @@ class VulkanBackend : public GlideStateTracker {
                              vk::ImageLayout newLayout,
                              vk::ImageSubresourceRange range);
   void FlushLFBToGPU_Locked();
-  void FlushBatch();
+  void FlushBatch(bool fromStateFlush = false);
   uint32_t GetActiveGpuBufferIdx() const {
     return (m_activeRenderBuffer == 0) ? 1u : 0u;
   }

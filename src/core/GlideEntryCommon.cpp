@@ -1,5 +1,6 @@
 #include "core/GlideEntryCommon.h"
 
+#include <cstdlib>
 #include <cstring>
 #include <string>
 
@@ -148,10 +149,10 @@ void InitGlide(const char* apiTag, void (*resetFrontendState)()) {
   loader.Load("glide_config.json", reg.GetConfig());
 
   const auto& cfg = reg.GetConfig();
-  auto clampedLevel = static_cast<LogLevel>(
-      std::min<uint32_t>(cfg.logLevel, static_cast<uint32_t>(LogLevel::DEBUG)));
   auto& logger = Logger::GetInstance();
-  logger.Initialize(cfg.logFile, clampedLevel, cfg.logToConsole);
+  logger.Initialize(cfg);
+  TelemetryManager::GetInstance().ConfigurePerfLog(cfg.perfLogEnabled,
+                                                   cfg.perfLogCsvPath);
   GLIDE_LOG(INFO, "Frontend", "grGlideInit (" << apiTag << ") invoked.");
 
   logger.LogExecutionSummary(cfg);
@@ -168,10 +169,10 @@ void EnsureEngineInitialized(void (*resetFrontendState)()) {
     loader.Load("glide_config.json", reg.GetConfig());
 
     const auto& cfg = reg.GetConfig();
-    auto clampedLevel = static_cast<LogLevel>(std::min<uint32_t>(
-        cfg.logLevel, static_cast<uint32_t>(LogLevel::DEBUG)));
     auto& logger = Logger::GetInstance();
-    logger.Initialize(cfg.logFile, clampedLevel, cfg.logToConsole);
+    logger.Initialize(cfg);
+    TelemetryManager::GetInstance().ConfigurePerfLog(cfg.perfLogEnabled,
+                                                     cfg.perfLogCsvPath);
     logger.LogExecutionSummary(cfg);
     bm.EstablishBackend(cfg);
     ConfigureTmuMemoryLimits();
@@ -183,8 +184,10 @@ void EnsureEngineInitialized(void (*resetFrontendState)()) {
 
 void ShutdownGlide(const char* apiTag) {
   GLIDE_LOG(INFO, "Frontend", "grGlideShutdown (" << apiTag << ") invoked.");
+  TelemetryManager::GetInstance().ShutdownPerfLog();
   TelemetryManager::GetInstance().PrintReport();
   BackendManager::GetInstance().ShutdownBackend();
+  Logger::GetInstance().Flush();
 }
 
 void CloseWindow(const char* logMessage) {
@@ -643,6 +646,8 @@ void ResetPerfStats() { TelemetryManager::GetInstance().Reset(); }
 bool LfbReadRegion(uint32_t srcBuf, uint32_t srcX, uint32_t srcY,
                    uint32_t srcWidth, uint32_t srcHeight, uint32_t dstStride,
                    void* dstData) {
+  TelemetryManager::GetInstance().RecordLfbRead(
+      static_cast<uint64_t>(srcHeight) * dstStride);
   if (auto* b = BackendManager::GetInstance().GetBackend()) {
     return b->ReadLFB(srcBuf, srcX, srcY, srcWidth, srcHeight, dstStride,
                       dstData);
@@ -656,6 +661,11 @@ bool LfbReadRegion(uint32_t srcBuf, uint32_t srcX, uint32_t srcY,
 bool LfbWriteRegion(uint32_t dstBuf, uint32_t dstX, uint32_t dstY,
                     uint32_t srcFmt, uint32_t srcWidth, uint32_t srcHeight,
                     int32_t srcStride, const void* srcData) {
+  const uint64_t absStride =
+      static_cast<uint64_t>(srcStride < 0 ? -static_cast<int64_t>(srcStride)
+                                          : static_cast<int64_t>(srcStride));
+  TelemetryManager::GetInstance().RecordLfbWrite(
+      static_cast<uint64_t>(srcHeight) * absStride);
   if (auto* b = BackendManager::GetInstance().GetBackend()) {
     return b->WriteLFB(dstBuf, dstX, dstY, srcWidth, srcHeight, srcStride,
                        srcFmt, srcData);

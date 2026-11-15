@@ -123,7 +123,7 @@ void VulkanBackend::DrawPoint(const ModernVertex& pt) {
 
   if (stateChanged || batchEmpty || bufferFull) {
     if (stateChanged || bufferFull) {
-      FlushBatch();
+      FlushBatch(stateChanged);
     }
     if (bufferFull) {
       GLIDE_LOG(WARN, "Vulkan",
@@ -225,7 +225,7 @@ void VulkanBackend::DrawLine(const ModernVertex& v1, const ModernVertex& v2) {
 
   if (stateChanged || batchEmpty || bufferFull) {
     if (stateChanged || bufferFull) {
-      FlushBatch();
+      FlushBatch(stateChanged);
     }
     if (bufferFull) {
       GLIDE_LOG(WARN, "Vulkan",
@@ -283,7 +283,7 @@ void VulkanBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
 
   FlushLFBToGPU_Locked();
 
-  GLIDE_LOG(DEBUG, "Vulkan",
+  GLIDE_LOG(TRACE, "Vulkan",
             "DrawTriangle GPU draw. A pos: ("
                 << a.pos[0] << ", " << a.pos[1] << ", " << a.pos[2] << ", "
                 << a.pos[3] << ") color: (" << a.color[0] << ", " << a.color[1]
@@ -332,7 +332,7 @@ void VulkanBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
 
   if (stateChanged || batchEmpty || bufferFull) {
     if (stateChanged || bufferFull) {
-      FlushBatch();
+      FlushBatch(stateChanged);
     }
     if (bufferFull) {
       GLIDE_LOG(WARN, "Vulkan",
@@ -387,16 +387,18 @@ void VulkanBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
   m_vertexBufferOffset += 3 * sizeof(ModernVertex);
 }
 
-void VulkanBackend::FlushBatch() {
+void VulkanBackend::FlushBatch(bool fromStateFlush) {
   if (m_batchedVertexCount == 0) return;
 
   GLIDE_PROFILE_SCOPE("Vulkan::FlushBatch");
+  TelemetryManager::GetInstance().RecordDrawCall(fromStateFlush);
   GLIDE_INCREMENT_TRIANGLES_DRAWN(m_batchedVertexCount / 3);
 
-  GLIDE_LOG(DEBUG, "Vulkan",
+  GLIDE_LOG(TRACE, "Vulkan",
             "FlushBatch: drawing "
                 << m_batchedVertexCount
-                << " vertices. FirstVertex=" << m_batchedFirstVertex);
+                << " vertices. FirstVertex=" << m_batchedFirstVertex
+                << (fromStateFlush ? " [state-flush]" : ""));
 
   EnsureRenderPassActive();
 

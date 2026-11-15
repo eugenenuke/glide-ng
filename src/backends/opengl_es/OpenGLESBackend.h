@@ -180,7 +180,7 @@ class OpenGLESBackend : public GlideStateTracker {
   BatchPrimitiveMode m_batchPrimitiveMode{BatchPrimitiveMode::None};
   std::vector<ModernVertex> m_batchVertices;
   bool m_batchIs2DGeometry{false};
-  void FlushBatch();
+  void FlushBatch(bool fromStateFlush = false);
 
   // Unified GPU Framebuffer LFB Flushing (lazily allocated; caller holds m_mutex)
   void FlushLFBToGPU_Locked();

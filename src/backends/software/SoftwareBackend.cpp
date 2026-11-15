@@ -1156,12 +1156,9 @@ bool SoftwareBackend::SwapBuffers() {
 
   GLIDE_LOG(DEBUG, "Software", "Executing SwapBuffers presentation dispatch.");
 
-  // Enforce frame pacing and track frame timing using unified FrameTracker
-  auto& tracker = TelemetryManager::GetInstance().GetFrameTracker();
-  tracker.MarkFrameEnd(m_config.maxFps);
-  tracker.MarkFrameStart();
-
   GLIDE_PROFILE_SCOPE("Software::SwapBuffers");
+
+  const auto presentStart = std::chrono::steady_clock::now();
 
   // 1. Swap the front and back CPU buffer indices
   std::swap(m_frontBufferIdx, m_backBufferIdx);
@@ -1198,6 +1195,15 @@ bool SoftwareBackend::SwapBuffers() {
     ResolveFrontBuffer(srcPixels, srcW, srcH);
     PresentFrame(srcPixels, srcW, srcH);
   }
+
+  const auto presentUs = std::chrono::duration_cast<std::chrono::microseconds>(
+                             std::chrono::steady_clock::now() - presentStart)
+                             .count();
+  auto& telemetry = TelemetryManager::GetInstance();
+  telemetry.RecordPresentTimeUs(presentUs);
+  auto& tracker = telemetry.GetFrameTracker();
+  tracker.MarkFrameEnd(m_config.maxFps);
+  tracker.MarkFrameStart();
 
   return true;
 }
@@ -1443,6 +1449,7 @@ void SoftwareBackend::FlushBins_Locked() {
   if (m_binnedCommands.empty()) return;
 
   GLIDE_PROFILE_SCOPE("Software::FlushBins");
+  TelemetryManager::GetInstance().RecordDrawCall(false);
 
   if (m_threadPool) {
     std::vector<int> activeTiles;

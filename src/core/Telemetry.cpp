@@ -1,9 +1,11 @@
 #include "Telemetry.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <iomanip>
 #include <sstream>
 #include <thread>
+#include <vector>
 
 #include "Logger.h"
 
@@ -15,7 +17,7 @@ namespace GlideWrapper {
 
 FrameTracker::FrameTracker() {
   m_frameStart = Clock::now();
-  m_lastFrameEnd = Clock::now();
+  m_lastFrameEnd = m_frameStart;
 }
 
 void FrameTracker::MarkFrameStart() { m_frameStart = Clock::now(); }
@@ -23,45 +25,62 @@ void FrameTracker::MarkFrameStart() { m_frameStart = Clock::now(); }
 void FrameTracker::MarkFrameEnd(float maxFps) {
   auto now = Clock::now();
 
-  // 1. Calculate active rendering time for this frame
-  auto activeDuration =
-      std::chrono::duration_cast<std::chrono::microseconds>(now - m_frameStart);
-  m_lastRenderTimeUs = activeDuration.count();
+  // 1. Active rendering + present duration for this frame (before cap sleep)
+  int64_t activeUs = std::chrono::duration_cast<std::chrono::microseconds>(
+                         now - m_frameStart)
+                         .count();
+  if (activeUs < 0) activeUs = 0;
+  m_lastRenderTimeUs = std::max<int64_t>(1, activeUs);
 
-  // 2. Calculate interval since the previous frame ended
-  auto interval = std::chrono::duration_cast<std::chrono::microseconds>(
-      now - m_lastFrameEnd);
-  m_lastFrameIntervalUs = interval.count();
-  m_lastFrameEnd = now;
-
-  // 3. Update stats with this interval
-  UpdateStats(m_lastFrameIntervalUs);
-
-  // 4. Implement mathematically correct frame limiter
+  // 2. Enforce mathematically correct frame limiter and measure sleep time
+  int64_t sleepUs = 0;
+  auto postSleepNow = now;
   if (maxFps > 0.0f) {
     auto targetInterval =
-        std::chrono::microseconds(static_cast<int>(1000000.0f / maxFps));
-    auto totalElapsed = std::chrono::duration_cast<std::chrono::microseconds>(
-        Clock::now() - m_frameStart);
-
-    if (totalElapsed < targetInterval) {
-      auto sleepTime = targetInterval - totalElapsed;
+        std::chrono::microseconds(static_cast<int64_t>(1000000.0 / maxFps));
+    if (activeUs < targetInterval.count()) {
+      auto sleepTime = targetInterval - std::chrono::microseconds(activeUs);
       std::this_thread::sleep_for(sleepTime);
-      m_lastFrameEnd = Clock::now();  // Update frame end post-sleep
+      postSleepNow = Clock::now();
+      sleepUs = std::chrono::duration_cast<std::chrono::microseconds>(
+                    postSleepNow - now)
+                    .count();
+      if (sleepUs < 0) sleepUs = 0;
     }
   }
+
+  // 3. Calculate total wall-clock frame-to-frame interval
+  int64_t intervalUs = std::chrono::duration_cast<std::chrono::microseconds>(
+                           postSleepNow - m_lastFrameEnd)
+                           .count();
+  if (intervalUs <= 0) {
+    intervalUs = std::max<int64_t>(1, activeUs + sleepUs);
+  }
+  m_lastFrameIntervalUs = intervalUs;
+  m_lastFrameEnd = postSleepNow;
+
+  // 4. Update smoothed stats with this interval
+  UpdateStats(intervalUs);
+
+  // 5. Snapshot per-frame counters, update Logger frame ID, write optional
+  //    CSV trace row, and emit periodic [PERF] summary.
+  TelemetryManager::GetInstance().OnFrameComplete(intervalUs, activeUs, sleepUs,
+                                                  m_currentFps);
 }
 
 void FrameTracker::UpdateStats(int64_t intervalUs) {
   m_frameCount++;
   m_accumulatedTimeUs += intervalUs;
 
-  // Update statistics every 30 frames to prevent HUD flickering
-  if (m_frameCount >= 30) {
-    double avgIntervalSec = (m_accumulatedTimeUs / 30.0) / 1000000.0;
-    m_currentFps = static_cast<float>(1.0 / avgIntervalSec);
-    m_avgFrameTimeMs =
-        static_cast<float>((m_accumulatedTimeUs / 30.0) / 1000.0);
+  // Update every 30 frames or 0.5 seconds (whichever comes first) so both
+  // high-FPS and low-FPS workloads report responsive, non-flickering FPS.
+  if (m_frameCount >= 30 || m_accumulatedTimeUs >= 500000) {
+    double avgIntervalUs =
+        static_cast<double>(m_accumulatedTimeUs) / m_frameCount;
+    if (avgIntervalUs > 0.0) {
+      m_currentFps = static_cast<float>(1000000.0 / avgIntervalUs);
+      m_avgFrameTimeMs = static_cast<float>(avgIntervalUs / 1000.0);
+    }
 
     m_frameCount = 0;
     m_accumulatedTimeUs = 0;
@@ -72,15 +91,254 @@ void FrameTracker::UpdateStats(int64_t intervalUs) {
 // TelemetryManager Implementation
 // ==========================================
 
-TelemetryManager::TelemetryManager() {
-#ifdef ENABLE_TELEMETRY
+TelemetryManager::TelemetryManager()
+    : m_perfStartTime(std::chrono::steady_clock::now()),
+      m_lastSummaryTime(m_perfStartTime) {
   ResetTriangleStats();
-#endif
+  ResetFrameCounters();
 }
+
+TelemetryManager::~TelemetryManager() { ShutdownPerfLog(); }
 
 TelemetryManager& TelemetryManager::GetInstance() {
   static TelemetryManager instance;
   return instance;
+}
+
+void TelemetryManager::ResetFrameCounters() {
+  m_frameDrawCalls.store(0, std::memory_order_relaxed);
+  m_frameStateFlushes.store(0, std::memory_order_relaxed);
+  m_frameTrianglesProcessed.store(0, std::memory_order_relaxed);
+  m_frameTrianglesDrawn.store(0, std::memory_order_relaxed);
+  m_frameLfbReadLocks.store(0, std::memory_order_relaxed);
+  m_frameLfbWriteLocks.store(0, std::memory_order_relaxed);
+  m_frameLfbBytesRead.store(0, std::memory_order_relaxed);
+  m_frameLfbBytesWritten.store(0, std::memory_order_relaxed);
+  m_frameTexUploads.store(0, std::memory_order_relaxed);
+  m_frameTexUploadBytes.store(0, std::memory_order_relaxed);
+  m_framePsoBuilds.store(0, std::memory_order_relaxed);
+  m_framePresentUs.store(0, std::memory_order_relaxed);
+}
+
+void TelemetryManager::ConfigurePerfLog(bool enabled,
+                                        const std::string& csvPath) {
+  std::lock_guard<std::mutex> lock(m_perfMutex);
+  if (m_csvFile.is_open()) {
+    m_csvFile.flush();
+    m_csvFile.close();
+  }
+
+  m_perfLogEnabled = enabled;
+  m_csvRowsSinceFlush = 0;
+  m_frameIndex.store(0, std::memory_order_relaxed);
+  m_lastFrameMetrics = FrameMetrics{};
+  m_perfStartTime = std::chrono::steady_clock::now();
+  m_lastSummaryTime = m_perfStartTime;
+
+  m_summaryFrames = 0;
+  m_summaryFrameMs = 0.0;
+  m_summaryRenderMs = 0.0;
+  m_summaryPresentMs = 0.0;
+  m_summarySleepMs = 0.0;
+  m_summaryDrawCalls = 0;
+  m_summaryStateFlushes = 0;
+  m_summaryTrisDrawn = 0;
+  m_summaryLfbReads = 0;
+  m_summaryLfbWrites = 0;
+  m_summaryLfbBytes = 0;
+  m_summaryTexUploads = 0;
+  m_summaryTexBytes = 0;
+  m_summaryPsoBuilds = 0;
+
+  ResetFrameCounters();
+  Logger::GetInstance().SetCurrentFrame(0);
+
+  if (enabled && !csvPath.empty()) {
+    m_csvFile.open(csvPath, std::ios::out | std::ios::trunc);
+    if (m_csvFile.is_open()) {
+      m_csvFile << "frame,timestamp_ms,frame_ms,render_ms,present_ms,"
+                   "cap_sleep_ms,fps,draw_calls,state_flushes,tris_processed,"
+                   "tris_drawn,lfb_reads,lfb_writes,lfb_read_bytes,"
+                   "lfb_write_bytes,tex_uploads,tex_upload_bytes,pso_builds\n";
+      m_csvFile.flush();
+    } else {
+      GLIDE_LOG(WARN, "Perf",
+                "Failed to open perf CSV output file: " << csvPath);
+    }
+  }
+}
+
+void TelemetryManager::ShutdownPerfLog() {
+  std::lock_guard<std::mutex> lock(m_perfMutex);
+  if (m_perfLogEnabled && m_summaryFrames > 0) {
+    EmitPerfSummaryLocked();
+  }
+  if (m_csvFile.is_open()) {
+    m_csvFile.flush();
+    m_csvFile.close();
+  }
+  m_perfLogEnabled = false;
+  m_csvRowsSinceFlush = 0;
+}
+
+void TelemetryManager::EmitPerfSummaryLocked() {
+  if (m_summaryFrames == 0) return;
+  const double invF = 1.0 / static_cast<double>(m_summaryFrames);
+  const double avgFrameMs = m_summaryFrameMs * invF;
+  const double avgRenderMs = m_summaryRenderMs * invF;
+  const double avgPresentMs = m_summaryPresentMs * invF;
+  const double avgSleepMs = m_summarySleepMs * invF;
+  const double avgFps = (avgFrameMs > 0.0) ? (1000.0 / avgFrameMs) : 0.0;
+  const double avgDraws = static_cast<double>(m_summaryDrawCalls) * invF;
+  const double avgFlushes = static_cast<double>(m_summaryStateFlushes) * invF;
+  const double avgTris = static_cast<double>(m_summaryTrisDrawn) * invF;
+  const double avgLfbR = static_cast<double>(m_summaryLfbReads) * invF;
+  const double avgLfbW = static_cast<double>(m_summaryLfbWrites) * invF;
+  const double avgLfbKb = (static_cast<double>(m_summaryLfbBytes) * invF) / 1024.0;
+  const double avgTex = static_cast<double>(m_summaryTexUploads) * invF;
+  const double avgTexKb = (static_cast<double>(m_summaryTexBytes) * invF) / 1024.0;
+
+  char buf[384];
+  std::snprintf(
+      buf, sizeof(buf),
+      "FPS=%.1f | frame=%.2fms (render=%.2fms present=%.2fms cap=%.2fms) | "
+      "draws=%.1f/f (flushes=%.1f/f) tris=%.0f/f | "
+      "lfb=%.1fR/%.1fW (%.1fKB/f) | tex=%.1f/f (%.1fKB/f) | pso=+%llu",
+      avgFps, avgFrameMs, avgRenderMs, avgPresentMs, avgSleepMs, avgDraws,
+      avgFlushes, avgTris, avgLfbR, avgLfbW, avgLfbKb, avgTex, avgTexKb,
+      static_cast<unsigned long long>(m_summaryPsoBuilds));
+
+  GLIDE_LOG_CAT(INFO, LOG_CAT_PERF, "Perf", buf);
+
+  m_summaryFrames = 0;
+  m_summaryFrameMs = 0.0;
+  m_summaryRenderMs = 0.0;
+  m_summaryPresentMs = 0.0;
+  m_summarySleepMs = 0.0;
+  m_summaryDrawCalls = 0;
+  m_summaryStateFlushes = 0;
+  m_summaryTrisDrawn = 0;
+  m_summaryLfbReads = 0;
+  m_summaryLfbWrites = 0;
+  m_summaryLfbBytes = 0;
+  m_summaryTexUploads = 0;
+  m_summaryTexBytes = 0;
+  m_summaryPsoBuilds = 0;
+}
+
+void TelemetryManager::OnFrameComplete(int64_t intervalUs, int64_t activeUs,
+                                       int64_t sleepUs, float smoothedFps) {
+  // Atomically harvest and reset per-frame counters
+  const uint32_t drawCalls = m_frameDrawCalls.exchange(0, std::memory_order_relaxed);
+  const uint32_t stateFlushes = m_frameStateFlushes.exchange(0, std::memory_order_relaxed);
+  const uint32_t trisProc = m_frameTrianglesProcessed.exchange(0, std::memory_order_relaxed);
+  const uint32_t trisDrawn = m_frameTrianglesDrawn.exchange(0, std::memory_order_relaxed);
+  const uint32_t lfbReads = m_frameLfbReadLocks.exchange(0, std::memory_order_relaxed);
+  const uint32_t lfbWrites = m_frameLfbWriteLocks.exchange(0, std::memory_order_relaxed);
+  const uint64_t lfbReadBytes = m_frameLfbBytesRead.exchange(0, std::memory_order_relaxed);
+  const uint64_t lfbWriteBytes = m_frameLfbBytesWritten.exchange(0, std::memory_order_relaxed);
+  const uint32_t texUploads = m_frameTexUploads.exchange(0, std::memory_order_relaxed);
+  const uint64_t texUploadBytes = m_frameTexUploadBytes.exchange(0, std::memory_order_relaxed);
+  const uint32_t psoBuilds = m_framePsoBuilds.exchange(0, std::memory_order_relaxed);
+  const int64_t presentUs = m_framePresentUs.exchange(0, std::memory_order_relaxed);
+
+  const uint64_t completedFrame = m_frameIndex.fetch_add(1, std::memory_order_relaxed);
+  // Advance Logger frame ID for the upcoming frame
+  Logger::GetInstance().SetCurrentFrame(completedFrame + 1);
+
+  const int64_t renderUs = std::max<int64_t>(0, activeUs - presentUs);
+  const auto now = std::chrono::steady_clock::now();
+
+  FrameMetrics m{};
+  m.frameIndex = completedFrame;
+  m.timestampMs =
+      std::chrono::duration<double, std::milli>(now - m_perfStartTime).count();
+  m.frameTimeMs = static_cast<float>(intervalUs / 1000.0);
+  m.renderTimeMs = static_cast<float>(renderUs / 1000.0);
+  m.swapPresentMs = static_cast<float>(presentUs / 1000.0);
+  m.fpsCapSleepMs = static_cast<float>(sleepUs / 1000.0);
+  m.smoothedFps = (smoothedFps > 0.0f)
+                      ? smoothedFps
+                      : (m.frameTimeMs > 0.001f ? (1000.0f / m.frameTimeMs) : 0.0f);
+  m.drawCalls = drawCalls;
+  m.stateFlushes = stateFlushes;
+  m.trianglesProcessed = trisProc;
+  m.trianglesDrawn = trisDrawn;
+  m.lfbReadLocks = lfbReads;
+  m.lfbWriteLocks = lfbWrites;
+  m.lfbBytesRead = lfbReadBytes;
+  m.lfbBytesWritten = lfbWriteBytes;
+  m.texUploads = texUploads;
+  m.texUploadBytes = texUploadBytes;
+  m.psoBuilds = psoBuilds;
+
+  std::lock_guard<std::mutex> lock(m_perfMutex);
+  m_lastFrameMetrics = m;
+
+  if (!m_perfLogEnabled) return;
+
+  if (m_csvFile.is_open()) {
+    char row[320];
+    const int len = std::snprintf(
+        row, sizeof(row),
+        "%llu,%.3f,%.3f,%.3f,%.3f,%.3f,%.2f,%u,%u,%u,%u,%u,%u,%llu,%llu,%u,%llu,%u\n",
+        static_cast<unsigned long long>(m.frameIndex), m.timestampMs,
+        static_cast<double>(m.frameTimeMs), static_cast<double>(m.renderTimeMs),
+        static_cast<double>(m.swapPresentMs), static_cast<double>(m.fpsCapSleepMs),
+        static_cast<double>(m.smoothedFps), m.drawCalls, m.stateFlushes,
+        m.trianglesProcessed, m.trianglesDrawn, m.lfbReadLocks, m.lfbWriteLocks,
+        static_cast<unsigned long long>(m.lfbBytesRead),
+        static_cast<unsigned long long>(m.lfbBytesWritten), m.texUploads,
+        static_cast<unsigned long long>(m.texUploadBytes), m.psoBuilds);
+    if (len > 0) {
+      m_csvFile.write(row, std::min<size_t>(static_cast<size_t>(len), sizeof(row) - 1));
+    }
+    if (++m_csvRowsSinceFlush >= 60) {
+      m_csvFile.flush();
+      m_csvRowsSinceFlush = 0;
+    }
+  }
+
+  m_summaryFrames++;
+  m_summaryFrameMs += m.frameTimeMs;
+  m_summaryRenderMs += m.renderTimeMs;
+  m_summaryPresentMs += m.swapPresentMs;
+  m_summarySleepMs += m.fpsCapSleepMs;
+  m_summaryDrawCalls += m.drawCalls;
+  m_summaryStateFlushes += m.stateFlushes;
+  m_summaryTrisDrawn += m.trianglesDrawn;
+  m_summaryLfbReads += m.lfbReadLocks;
+  m_summaryLfbWrites += m.lfbWriteLocks;
+  m_summaryLfbBytes += (m.lfbBytesRead + m.lfbBytesWritten);
+  m_summaryTexUploads += m.texUploads;
+  m_summaryTexBytes += m.texUploadBytes;
+  m_summaryPsoBuilds += m.psoBuilds;
+
+  if ((now - m_lastSummaryTime) >= std::chrono::seconds(1)) {
+    EmitPerfSummaryLocked();
+    if (m_csvFile.is_open() && m_csvRowsSinceFlush > 0) {
+      m_csvFile.flush();
+      m_csvRowsSinceFlush = 0;
+    }
+    m_lastSummaryTime = now;
+  }
+}
+
+FrameMetrics TelemetryManager::GetLastFrameMetrics() const {
+  std::lock_guard<std::mutex> lock(m_perfMutex);
+  return m_lastFrameMetrics;
+}
+
+void TelemetryManager::Reset() {
+#ifdef ENABLE_TELEMETRY
+  {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_stats.clear();
+  }
+#endif
+  ResetTriangleStats();
+  ResetFrameCounters();
+  m_frameTracker = FrameTracker();
 }
 
 #ifdef ENABLE_TELEMETRY
@@ -92,13 +350,6 @@ void TelemetryManager::RecordScope(const std::string& name,
   stats.totalDurationUs += durationUs;
   stats.minDurationUs = std::min(stats.minDurationUs, durationUs);
   stats.maxDurationUs = std::max(stats.maxDurationUs, durationUs);
-}
-
-void TelemetryManager::Reset() {
-  std::lock_guard<std::mutex> lock(m_mutex);
-  m_stats.clear();
-  ResetTriangleStats();
-  m_frameTracker = FrameTracker();
 }
 
 void TelemetryManager::PrintReport() {

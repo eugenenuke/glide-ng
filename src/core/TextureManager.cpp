@@ -6,11 +6,19 @@
 
 #include "core/BackendManager.h"
 #include "core/IGraphicsBackend.h"
+#include "core/Telemetry.h"
 #include "core/WrapperConfig.h"
 
 namespace GlideWrapper {
 
 namespace {
+uint64_t CalcSwizzledUploadBytes(const VirtualTexture& tex) {
+  uint64_t total = 0;
+  for (const auto& lvl : tex.swizzledMipLevels) {
+    total += static_cast<uint64_t>(lvl.size()) * sizeof(uint32_t);
+  }
+  return total;
+}
 GuNccTable GetActiveNccTableOrDefault(const GuNccTable* nccTables,
                                       const bool* nccTablesLoaded,
                                       uint32_t activeNccTable) {
@@ -544,6 +552,8 @@ bool TextureManager::DownloadMipMap(uint32_t tmu, uint32_t startAddress,
   // pre-loaded table), upload it immediately!
   if (!tex->isPaletted || m_tmus[tmu].paletteTableLoaded) {
     if (auto* b = BackendManager::GetInstance().GetBackend()) {
+      TelemetryManager::GetInstance().RecordTexUpload(
+          CalcSwizzledUploadBytes(*tex));
       b->UploadTexture(tmu, startAddress, *tex);
     }
   }
@@ -770,6 +780,8 @@ bool TextureManager::DownloadMipMapPartial(uint32_t tmu, uint32_t startAddress,
 
   // Call the backend to perform the partial GPU upload
   if (auto* b = BackendManager::GetInstance().GetBackend()) {
+    TelemetryManager::GetInstance().RecordTexUpload(
+        static_cast<uint64_t>(partialTexels) * sizeof(uint32_t));
     b->UploadTexturePartial(tmu, startAddress, *tex, lodIdx, startRow, endRow);
   }
 
@@ -823,6 +835,8 @@ bool TextureManager::DownloadTable(uint32_t tmu, uint32_t type,
           }
           swizzledCount++;
           if (auto* b = BackendManager::GetInstance().GetBackend()) {
+            TelemetryManager::GetInstance().RecordTexUpload(
+                CalcSwizzledUploadBytes(*tex));
             b->UploadTexture(tmu, tex->startAddress, *tex);
           }
         }
@@ -890,6 +904,8 @@ bool TextureManager::DownloadTable(uint32_t tmu, uint32_t type,
 
         // Upload the fully swizzled texture to the GPU!
         if (auto* b = BackendManager::GetInstance().GetBackend()) {
+          TelemetryManager::GetInstance().RecordTexUpload(
+              CalcSwizzledUploadBytes(*tex));
           b->UploadTexture(tmu, tex->startAddress, *tex);
         }
       }
@@ -943,6 +959,8 @@ void TextureManager::SetActiveNccTable(uint32_t tmu, uint32_t table) {
       }
       swizzledCount++;
       if (auto* b = BackendManager::GetInstance().GetBackend()) {
+        TelemetryManager::GetInstance().RecordTexUpload(
+            CalcSwizzledUploadBytes(*tex));
         b->UploadTexture(tmu, tex->startAddress, *tex);
       }
     }
