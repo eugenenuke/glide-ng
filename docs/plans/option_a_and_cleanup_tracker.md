@@ -66,7 +66,7 @@ Recorded before any edits are made:
 | **T2.4** | Phase 2 | Migrate `VulkanBackend` to `NativeSurfaceHost` + aspect-ratio preserving letterbox/pillarbox blit | Med | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `2d75259`, `985e7fa`, `1d349ee` |
 | **T2.5** | Phase 2 | Migrate `OpenGLESBackend` to `NativeSurfaceHost` (Direct EGL) + aspect-ratio & Gamma LUT presentation pass | Med | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `df40756`, `8c416e2` |
 | **T2.6** | Phase 2 | Migrate `SoftwareBackend` to `NativeSurfaceHost` + aspect-ratio preserving presentation | Med | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `b0066fd`, `47c21b4` |
-| **T2.7** | Phase 2 | Retire old `PlatformWindowUtils` overlay code & late `XInitThreads()` constructor; run full Option A DOSBox matrix | Med | `[~] IMPLEMENTED — AWAITING USER VERIFICATION` | `ce4a354` |
+| **T2.7** | Phase 2 | Retire old `PlatformWindowUtils` overlay code & late `XInitThreads()` constructor; run full Option A DOSBox matrix | Med | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `ce4a354` |
 | **T3.1** | Phase 3 | Extract `GlideStateTracker` from `SoftwareBackendBase` (remove CPU buffers from Vulkan/GLES inheritance) | Med | `[ ] PENDING` | — |
 | **T3.2** | Phase 3 | Deduplicate shared frontend code across `glide2_entry.cpp` & `glide3_entry.cpp` (`GlideEntryCommon`) | Med | `[ ] PENDING` | — |
 | **T3.3** | Phase 3 | Split monolithic backend `.cpp` files (`VulkanBackend`, `OpenGLESBackend`, `SoftwareBackend`) into cohesive units | Med | `[ ] PENDING` | — |
@@ -493,7 +493,8 @@ Recorded before any edits are made:
 - **User Verification**: Test **GTA 1** on **DOSBox-X** and **SVN DOSBox** using `GLIDE_WRAPPER_BACKEND=software` (windowed + fullscreen). Confirm aspect ratio and clean exit.
 
 #### `T2.7` — Retire Legacy Overlay Code & Late `XInitThreads()`, Run Full Option A Matrix
-- **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION` (Commit `ce4a354`)
+- **Status**: `[x] DONE (USER CONFIRMED — 2026-11-15)` (Commit `ce4a354`)
+- **User Verification Notes**: Confirmed across the full matrix on real hardware (both DOSBox-X and SVN DOSBox, all 3 backends `vulkan`/`opengl_es`/`software`, X11 and native Wayland, `output=opengl` and `output=surface`). **Phase 2 (Option A) complete!**
 - **Automated Result**:
   - Deleted `src/core/PlatformWindowUtils.{h,cpp}` (-471 LOC total across `T2.7`), removed from `src/CMakeLists.txt`, and removed `__attribute__((constructor)) InitializeX11Threads()` from `src/glide2/glide2_entry.cpp` and `src/glide3/glide3_entry.cpp`.
   - Clean `cmake -S . -B build && cmake --build build -j$(nproc)` with 0 compiler warnings under `-Werror`.
@@ -512,14 +513,14 @@ Recorded before any edits are made:
 
 | Client | Display Mode | Output Mode | `vulkan` | `opengl_es` | `software` |
 | :--- | :--- | :--- | :---: | :---: | :---: |
-| **DOSBox-X** | XWayland Windowed | `output=opengl` | `[ ]` | `[ ]` | `[ ]` |
-| **DOSBox-X** | XWayland Windowed | `output=surface` | `[ ]` | `[ ]` | `[ ]` |
-| **DOSBox-X** | XWayland Startup Fullscreen | `output=opengl` | `[ ]` | `[ ]` | `[ ]` |
-| **DOSBox-X** | Native Wayland Windowed | `output=opengl` | `[ ]` | `[ ]` | `[ ]` |
-| **DOSBox-X** | Native Wayland Startup Fullscreen | `output=opengl` | `[ ]` | `[ ]` | `[ ]` |
-| **SVN DOSBox (`dosbox-0`)** | X11/XWayland (`sdl12-compat`) Windowed | `surface` | `[ ]` | `[ ]` | `[ ]` |
-| **SVN DOSBox (`dosbox-0`)** | X11/XWayland (`sdl12-compat`) Fullscreen | `surface` | `[ ]` | `[ ]` | `[ ]` |
-| **Standalone Demos** | Windowed (`hWnd=0`) | N/A | `[ ]` | `[ ]` | `[ ]` |
+| **DOSBox-X** | XWayland Windowed | `output=opengl` | `[x]` | `[x]` | `[x]` |
+| **DOSBox-X** | XWayland Windowed | `output=surface` | `[x]` | `[x]` | `[x]` |
+| **DOSBox-X** | XWayland Startup Fullscreen | `output=opengl` | `[x]` | `[x]` | `[x]` |
+| **DOSBox-X** | Native Wayland Windowed | `output=opengl` | `[x]` | `[x]` | `[x]` |
+| **DOSBox-X** | Native Wayland Startup Fullscreen | `output=opengl` | `[x]` | `[x]` | `[x]` |
+| **SVN DOSBox (`dosbox-0`)** | X11/XWayland (`sdl12-compat`) Windowed | `surface` | `[x]` | `[x]` | `[x]` |
+| **SVN DOSBox (`dosbox-0`)** | X11/XWayland (`sdl12-compat`) Fullscreen | `surface` | `[x]` | `[x]` | `[x]` |
+| **Standalone Demos** | Windowed (`hWnd=0`) | N/A | `[x]` | `[x]` | `[x]` |
 
 - **User Verification**: User tests GTA 1 (and optionally a second Glide game) across the matrix above and confirms Option A behavior before Phase 3 or Phase 4.
 
