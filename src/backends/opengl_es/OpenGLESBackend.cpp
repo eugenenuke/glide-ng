@@ -340,13 +340,18 @@ void OpenGLESBackend::PresentToWindowSurface(uint32_t hostW, uint32_t hostH) {
 }
 
 bool OpenGLESBackend::SwapBuffers() {
-  std::lock_guard<std::mutex> lock(m_mutex);
+  std::unique_lock<std::mutex> lock(m_mutex);
   if (!m_initialized || !m_windowAttached) return false;
 
   // Pump events ONLY in StandaloneSDL2 mode (guaranteed no-op for DOSBox).
-  m_surfaceHost.PollEvents();
-  if (m_surfaceHost.WasQuitRequested()) {
-    return false;
+  m_surfaceHost.PollEvents(/*force=*/true);
+  if (m_surfaceHost.GetMode() == NativeSurfaceHost::Mode::StandaloneSDL2 &&
+      m_surfaceHost.WasQuitRequested()) {
+    GLIDE_LOG(INFO, "GLES",
+              "Standalone window close requested; exiting cleanly.");
+    DetachWindow_Locked();
+    lock.unlock();
+    std::exit(0);
   }
 
   if (!EnsureContextCurrent()) {
@@ -432,13 +437,26 @@ bool OpenGLESBackend::SwapBuffers() {
   const auto presentUs = std::chrono::duration_cast<std::chrono::microseconds>(
                              std::chrono::steady_clock::now() - presentStart)
                              .count();
+  const float maxFps = m_config.maxFps;
+  if (m_surfaceHost.GetMode() == NativeSurfaceHost::Mode::StandaloneSDL2) {
+    m_surfaceHost.PollEvents(/*force=*/true);
+  }
+  lock.unlock();
+
   auto& telemetry = TelemetryManager::GetInstance();
   telemetry.RecordPresentTimeUs(presentUs);
   auto& tracker = telemetry.GetFrameTracker();
-  tracker.MarkFrameEnd(m_config.maxFps);
+  tracker.MarkFrameEnd(maxFps);
   tracker.MarkFrameStart();
 
   return true;
+}
+
+void OpenGLESBackend::PollEvents() {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  // Safe no-op in Headless, X11Child, and WaylandSubsurface modes; throttled
+  // SDL event pumping in StandaloneSDL2 mode.
+  m_surfaceHost.PollEvents(/*force=*/false);
 }
 
 void OpenGLESBackend::SstIdle() {
@@ -573,20 +591,19 @@ bool OpenGLESBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
                  GL_UNSIGNED_BYTE, readDst);
     checkGLError("ReadLFB glReadPixels");
 
-    // Convert RGBA from GPU glReadPixels to BGRA and vertically flip the image
-    // in-place so CpuLfbStaging::ReadRegion applies client-facing conversions!
+    // Convert RGBA from GPU glReadPixels to canonical 0xAARRGGBB (BGRA bytes)
+    // and vertically flip the image in-place so CpuLfbStaging always holds
+    // canonical ARGB pixels (required when LfbManager write-locks snapshot and
+    // re-upload the buffer, e.g. grShamelessPlug under GR_COLORFORMAT_ABGR).
     auto* dest = reinterpret_cast<uint32_t*>(readDst);
-    // 1. Swizzle RGBA to BGRA (only if not in ABGR override mode, since GL_RGBA
-    // is already ABGR)
-    if (m_pixelFormatOverride == 0) {
-      for (uint32_t i = 0; i < m_headlessWidth * m_headlessHeight; ++i) {
-        uint32_t rgba = dest[i];
-        uint32_t r = rgba & 0xFF;
-        uint32_t g = (rgba >> 8) & 0xFF;
-        uint32_t b = (rgba >> 16) & 0xFF;
-        uint32_t a = (rgba >> 24) & 0xFF;
-        dest[i] = (a << 24) | (r << 16) | (g << 8) | b;
-      }
+    // 1. Always swizzle GL_RGBA -> canonical 0xAARRGGBB
+    for (uint32_t i = 0; i < m_headlessWidth * m_headlessHeight; ++i) {
+      uint32_t rgba = dest[i];
+      uint32_t r = rgba & 0xFFu;
+      uint32_t g = (rgba >> 8) & 0xFFu;
+      uint32_t b = (rgba >> 16) & 0xFFu;
+      uint32_t a = (rgba >> 24) & 0xFFu;
+      dest[i] = (a << 24) | (r << 16) | (g << 8) | b;
     }
     // 2. Vertically flip rows to convert OpenGL's bottom-up layout to host's
     // top-down layout
@@ -606,8 +623,29 @@ bool OpenGLESBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
   glBindFramebuffer(GL_FRAMEBUFFER, previousFBO);
 
   // --- STEP 2: Convert and copy to client ---
-  return m_lfbStaging.ReadRegion(buffer, srcX, srcY, srcWidth, srcHeight,
-                                 dstStride, dstData);
+  if (!m_lfbStaging.ReadRegion(buffer, srcX, srcY, srcWidth, srcHeight,
+                               dstStride, dstData)) {
+    return false;
+  }
+
+  // Swizzle 32-bit client output from canonical ARGB -> ABGR only when the
+  // window was opened with GR_COLORFORMAT_ABGR (matches SoftwareBackend).
+  if (m_pixelFormatOverride == 1 && dstData && srcWidth > 0 &&
+      dstStride >= srcWidth * 4) {
+    auto* outBytes = reinterpret_cast<uint8_t*>(dstData);
+    for (uint32_t y = 0; y < srcHeight; ++y) {
+      auto* row32 = reinterpret_cast<uint32_t*>(outBytes + y * dstStride);
+      for (uint32_t x = 0; x < srcWidth; ++x) {
+        uint32_t val = row32[x];
+        uint32_t a = val & 0xFF000000u;
+        uint32_t g = val & 0x0000FF00u;
+        uint32_t r = (val >> 16) & 0xFFu;
+        uint32_t b = val & 0xFFu;
+        row32[x] = a | (b << 16) | g | r;
+      }
+    }
+  }
+  return true;
 }
 
 #if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_EGL) && \

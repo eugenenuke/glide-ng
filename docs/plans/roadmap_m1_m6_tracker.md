@@ -20,7 +20,7 @@
 | **M1** | `feat/m1-config-envvars` | Unified `GLIDE_NG_*` config & env var overhaul (no `GLIDE_WRAPPER_*` aliases) + Phase-1 authentic `FX_GLIDE_*` vars (`NO_SPLASH`, `SHAMELESS_PLUG`, `SWAPINTERVAL`) + authoritative env var reference doc | Low–Med | `[x] DONE (USER CONFIRMED — 2026-11-15)` | Merged to `main` |
 | **M2** | `feat/m2-logging-perf-trace` | Tiered logging (`OFF`..`TRACE`), category filtering, frame-windowed tracing, microsecond timestamps, buffered flushing, and runtime per-frame perf breakdown (+ CSV perf log) | Med | `[x] DONE (USER CONFIRMED — 2026-11-15)` | Merged to `main` |
 | **M3** | `feat/m3-hud-fps` | DXVK-style on-screen HUD (`GLIDE_NG_HUD=fps`, extensible) rendered cleanly in each backend's post-scene presentation pass (Vulkan, GLES, SW) | Med | `[x] DONE (USER CONFIRMED — 2026-11-15)` | Merged to `main` |
-| **M4** | `fix/m4-parked-sdk-tests` | Fix parked official SDK tests: `test16` ('P' plug state leak on VK/GLES), `test22` (SW multi-pass fog quality vs VK), `test25` & `test27` (hangs in all modes) + Catch2 regressions | Med | `[ ] PENDING` | — |
+| **M4** | `fix/m4-parked-sdk-tests` | Fix parked official SDK tests: `test16` ('P' plug R/B inversion on VK/GLES), `test22` (SW multi-pass fog + `largeLod` mip offset), `test25` & `test27` + standalone WSI event responsiveness + Catch2 regressions | Med | `[x] DONE (USER CONFIRMED — 2026-11-15)` | Merged to `main` |
 | **M5** | `fix/m5-carmageddon` | Carmageddon (`carma`) compatibility & performance: black menus, missing in-game UI/HUD, perf bottleneck, initial focus/input behavior (using M2 traces & M3 HUD) | Med–High | `[ ] PENDING` | — |
 | **M6** | `feat/m6-dos-tools-bench` | Optional Open Watcom v2 DOS cross-build (`vendor/watcom`) + dual Linux/DOS `glide_info` + GPU/Glide-bound active visual benchmark (`glide_bench`) with in-Glide on-screen FPS & diagnostics | High | `[ ] PENDING` | — |
 | *(Future)* **M7** | `feat/m7-glide-envvars-p2` | Phase-2 authentic `FX_GLIDE_*` / `SST_*` expansion (`FX_GLIDE_FBRAM`, `FX_GLIDE_TMU_MEMSIZE`, `SSTV2_NUM_TMUS`, `SST_GAMMA`, `FX_GLIDE_IGNORE_REOPEN`, `FX_GLIDE_NO_DITHER_SUB`, `FX_GLIDE_BOUNDS_CHECK`, `FX_SNAPSHOT`) | Low | `[ ] DEFERRED` | — |
@@ -123,12 +123,40 @@
 
 ---
 
-## 5. Upcoming Milestones (High-Level Scope — Detailed Just-In-Time)
+## 5. Milestone M4: Parked Official SDK Test Fixes & Standalone WSI Responsiveness (`fix/m4-parked-sdk-tests`)
 
-### Milestone M4 — Parked Official SDK Test Fixes (`fix/m4-parked-sdk-tests`)
-- `test16`: fix `RenderBanner()` / `grGlideGetState`/`grGlideSetState` color/state leak on Vulkan & GLES.
-- `test22`: fix Software backend multi-pass fog (`GR_FOG_ADD2`/`MULT2`, `GR_BLEND_PREFOG_COLOR`) quality parity vs Vulkan.
-- `test25` & `test27`: diagnose hang with M2 tracing and fix across all backends.
+### Goals
+1. Fix `test16.exe` color inversion (R/B swap) when toggling the 3dfx Shameless Plug (`'P'`) on Vulkan and OpenGL ES, and preserve full LFB write state in `grGlideGetState`/`grGlideSetState`.
+2. Fix `test22.exe` visual quality regression in Software mode (both scalar and SIMD) so multi-pass fog (`GR_FOG_ADD2`/`GR_FOG_MULT2` + `GR_BLEND_PREFOG_COLOR`) and non-zero `largeLod` mipmapped textures match Vulkan/GLES pixel-for-pixel.
+3. Diagnose `test25.exe` & `test27.exe` hangs and improve standalone `StandaloneSDL2` window responsiveness / clean close / repeated `grSstWinOpen`/`grSstWinClose` lifecycle across all 3 backends.
+
+### M4 Task Breakdown
+
+- **`M4.1`** — `test16.exe` Shameless Plug ABGR Readback & State Preservation (`VulkanLfb.cpp`, `OpenGLESBackend.cpp`, `GlideSplashAnimator.cpp`, `glide2_entry.cpp`):
+  - Keep `m_lfbStaging` strictly in canonical `0xAARRGGBB` (`BGRA` bytes) in `VulkanBackend::ReadLFB` and `OpenGLESBackend::ReadLFB`, applying the 32-bit-only `ARGB -> ABGR` swizzle only to `dstData` after `m_lfbStaging.ReadRegion(...)` (matching `SoftwareBackend::ReadLFB`). Previously, `m_pixelFormatOverride == 1` (`GR_COLORFORMAT_ABGR`) swizzled `m_lfbStaging` in-place, causing `grShamelessPlug`'s readback + banner write + `FlushLFBToGPU_Locked` to re-upload the entire framebuffer with R and B inverted.
+  - Guard `RenderBanner()`'s screen-dimension check before locking LFB so early returns never leak locks or skip `grGlideSetState(&state)`.
+  - Save and restore `lfbConstantAlpha` and `lfbWriteColorFormat` in `GlideWrapperState` (`grGlideGetState`/`grGlideSetState`) while preserving the exact 312-byte ABI struct size.
+  - **Status**: `[x] DONE (USER CONFIRMED — 2026-11-15)`
+- **`M4.2`** — `test22.exe` Software Multi-Pass Fog & Mipmap LOD Parity (`SoftwareRasterizer.cpp`, `SoftwareRasterizerSimd.cpp`, `SoftwareCombiner.cpp`):
+  - Capture `preFogR`/`preFogG`/`preFogB` prior to the fog stage and pass them into `GR_BLEND_PREFOG_COLOR` (`case 15`) across scalar, SIMD, and combiner paths (previously passed post-fog `srcC`, breaking `GR_FOG_MULT2` + `GR_BLEND_PREFOG_COLOR` multi-pass lightmaps).
+  - Fix mipmap LOD clamping in `SoftwareRasterizer.cpp` and `SoftwareRasterizerSimd.cpp`: `scaleU = maxDim / 256.0f` already computes LOD relative to mip 0, so clamping to `[tex->largeLod, tex->smallLod]` and subtracting `tex->largeLod` shifted mip selection on textures with `largeLod > 0` (such as `test22`'s 64×64 `light.3df`, `largeLod = 2`).
+  - Clamp fog-table index `idx = std::min(idx, 62)` before interpolating `[idx]` and `[idx + 1]` to prevent OOB reads at maximum `eyeW`.
+  - Verified pixel parity on `test22` (`decal1.3df` + `light.3df`): Software vs. Vulkan mean max-channel diff dropped from **32.69 (max 120)** to **0.06 scalar / 0.04 SIMD (max 2)** across 307,200 pixels.
+  - **Status**: `[x] DONE (USER CONFIRMED — 2026-11-15)`
+- **`M4.3`** — `test25.exe`, `test27.exe`, & Standalone Window Responsiveness (`NativeSurfaceHost.{h,cpp}`, `VulkanBackend.cpp`, `OpenGLESBackend.{h,cpp}`, `SoftwareBackend.{h,cpp}`):
+  - Root-caused `test25.exe` (`doHelp()` keymap screen) and `test27.exe` (hardware-cycle prompt): both prebuilt SDK binaries block their own main thread inside `tlGetCH()` (`read(0)` on terminal stdin) immediately after a single `grBufferSwap(1)`, starving `SDL_PollEvent()` on Wayland CSD (`libdecor-gtk`) and losing keyboard focus from the terminal when the new Glide window appears.
+  - Added 4 ms throttling to `NativeSurfaceHost::PollEvents(bool force = false)`, pumped initial configure events inside `AttachStandaloneSDL2()`, and added post-present `PollEvents(true)` + unlocked `m_mutex` during `FrameTracker::MarkFrameEnd()` across Vulkan, OpenGL ES, and Software.
+  - Implemented `PollEvents()` overrides on `OpenGLESBackend` and `SoftwareBackend` (previously inherited empty no-op), fixed `OpenGLESBackend::SwapBuffers()` to cleanly detach and exit on `StandaloneSDL2` close (previously returned `false` and stayed frozen), and fixed `SoftwareBackend::SwapBuffers()` to call `DetachWindow_Locked()` + unlock `m_mutex` before `std::exit(0)`.
+  - Preserved `SDL_INIT_VIDEO` across `StandaloneSDL2` open/close cycles via a RAII lifetime guard (avoiding repeated `libdecor-gtk` `gtk_init()` teardown/re-init during `test27.exe` cycling).
+  - **Status**: `[x] DONE (USER CONFIRMED — 2026-11-15)`
+- **`M4.4`** — Automated Catch2 `[M4]` Regressions & Full Verification (`tests/test_architecture.cpp`):
+  - Added 3 `[Glide2][M4]` Catch2 test cases (44 assertions): `test16` ABGR shameless-plug readback & state preservation, `test22` two-pass `GR_FOG_ADD2`/`GR_FOG_MULT2` + `GR_BLEND_PREFOG_COLOR` + `GR_LOD_64` mip selection + fog-table boundary, and `test25`/`test27` lower-left `grAADrawTriangle` + 5 consecutive `grSstWinOpen`/`grSstWinClose` cycles.
+  - Verified build (0 `-Werror` warnings), `[M4]` tests across `software` (scalar & SIMD), `vulkan`, and `opengl_es`, full `Glide2xWrapperTests` / `Glide3xWrapperTests`, prebuilt `test16`/`test22`/`test25`/`test27` PTY runs, 6-cell `child_surface_embed_test` smoke matrix, and privacy scan.
+  - **Status**: `[x] DONE (USER CONFIRMED — 2026-11-15)`
+
+---
+
+## 6. Upcoming Milestones (High-Level Scope — Detailed Just-In-Time)
 
 ### Milestone M5 — Carmageddon (`carma`) Compatibility & Performance (`fix/m5-carmageddon`)
 - Capture M2 `LFB,API,PERF` logs & CSV traces from menus and race.

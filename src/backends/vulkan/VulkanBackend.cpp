@@ -1288,7 +1288,7 @@ bool VulkanBackend::SwapBuffers() {
 
   // Pump SDL events ONLY in StandaloneSDL2 mode (guaranteed no-op for DOSBox
   // X11Child / WaylandSubsurface / Headless).
-  m_surfaceHost.PollEvents();
+  m_surfaceHost.PollEvents(/*force=*/true);
   if (m_surfaceHost.GetMode() == NativeSurfaceHost::Mode::StandaloneSDL2 &&
       m_surfaceHost.WasQuitRequested()) {
     GLIDE_LOG(INFO, "Vulkan",
@@ -1563,10 +1563,18 @@ bool VulkanBackend::SwapBuffers() {
   const auto presentUs = std::chrono::duration_cast<std::chrono::microseconds>(
                              std::chrono::steady_clock::now() - presentStart)
                              .count();
+  const float maxFps = m_config.maxFps;
+  if (m_surfaceHost.GetMode() == NativeSurfaceHost::Mode::StandaloneSDL2) {
+    // Dispatch any post-commit Wayland/X11 events (configure, ping, move)
+    // immediately so single-frame-then-block apps stay responsive.
+    m_surfaceHost.PollEvents(/*force=*/true);
+  }
+  lock.unlock();
+
   auto& telemetry = TelemetryManager::GetInstance();
   telemetry.RecordPresentTimeUs(presentUs);
   auto& tracker = telemetry.GetFrameTracker();
-  tracker.MarkFrameEnd(m_config.maxFps);
+  tracker.MarkFrameEnd(maxFps);
   tracker.MarkFrameStart();
 
   return true;
@@ -1574,9 +1582,9 @@ bool VulkanBackend::SwapBuffers() {
 
 void VulkanBackend::PollEvents() {
   std::lock_guard<std::mutex> lock(m_mutex);
-  // Safe no-op in Headless, X11Child, and WaylandSubsurface modes; pumps SDL
-  // events only in StandaloneSDL2 mode.
-  m_surfaceHost.PollEvents();
+  // Safe no-op in Headless, X11Child, and WaylandSubsurface modes; throttled
+  // SDL event pumping in StandaloneSDL2 mode.
+  m_surfaceHost.PollEvents(/*force=*/false);
 }
 
 void VulkanBackend::SstIdle() {

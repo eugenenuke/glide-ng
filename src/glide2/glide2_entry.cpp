@@ -189,10 +189,12 @@ struct __attribute__((packed)) GlideWrapperState {
   uint8_t lodBlend[2];
   float texLodBias[2];  // Added to support save/restore of LOD bias
   uint8_t ditherMode;
+  uint8_t lfbConstantAlpha;
+  uint32_t lfbWriteColorFormat;
 
   // Explicit padding to align exactly to the Glide 2.x standard 312-byte layout
   // size
-  uint8_t pad[117];
+  uint8_t pad[112];
 };
 
 static_assert(sizeof(GlideWrapperState) == 312,
@@ -816,6 +818,8 @@ FX_ENTRY void FX_CALL grGlideGetState(GrState* state) {
   }
   std::memcpy(ws->texLodBias, s_state.texLodBias, sizeof(s_state.texLodBias));
   ws->ditherMode = s_state.ditherMode;
+  ws->lfbConstantAlpha = s_state.lfbConstantAlpha;
+  ws->lfbWriteColorFormat = s_state.lfbWriteColorFormat;
 }
 
 FX_ENTRY void FX_CALL grGlideSetState(const GrState* state) {
@@ -888,6 +892,8 @@ FX_ENTRY void FX_CALL grGlideSetState(const GrState* state) {
   }
   std::memcpy(s_state.texLodBias, ws->texLodBias, sizeof(s_state.texLodBias));
   s_state.ditherMode = (ws->ditherMode > 2) ? 0 : ws->ditherMode;
+  s_state.lfbConstantAlpha = ws->lfbConstantAlpha;
+  s_state.lfbWriteColorFormat = ws->lfbWriteColorFormat;
 
   EntryCommon::ApplySharedStateToBackend(s_state, s_sstOrigin,
                                          /*includeTexInvert=*/false);

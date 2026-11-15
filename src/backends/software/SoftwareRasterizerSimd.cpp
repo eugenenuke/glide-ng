@@ -226,8 +226,8 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
   int startX = minX & ~3;
   int startY = minY & ~1;
 
-  auto getFSIMD = [](uint32_t mode, const Simd8f& srcC, const Simd8f& dstC,
-                     const Simd8f& srcA, const Simd8f& dstA,
+  auto getFSIMD = [](uint32_t mode, const Simd8f& srcC, const Simd8f& preFogC,
+                     const Simd8f& dstC, const Simd8f& srcA, const Simd8f& dstA,
                      bool isDest) -> Simd8f {
     switch (mode) {
       case 0:
@@ -247,7 +247,7 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
       case 7:
         return Simd8f(1.0f) - dstA;
       case 15:
-        return srcC;
+        return isDest ? preFogC : Min(srcA, Simd8f(1.0f) - dstA);
       default:
         return Simd8f(1.0f);
     }
@@ -466,9 +466,10 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
             lod1 += state.texLodBias[1];
           }
 
+          const int maxMipIdx1 =
+              static_cast<int>(tex1->swizzledMipLevels.size()) - 1;
           float clampedLod1 =
-              std::clamp(lod1, static_cast<float>(tex1->largeLod),
-                         static_cast<float>(tex1->smallLod));
+              std::clamp(lod1, 0.0f, static_cast<float>(maxMipIdx1));
 
           auto sampleLevel = [&](int lodIdx) -> TmuColorSIMD {
             const uint32_t* levelPixels =
@@ -596,12 +597,8 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
           if (lodBlend1) {  // Trilinear
             int level0 = static_cast<int>(std::floor(clampedLod1));
             int level1 = level0 + 1;
-            int lodIdx0 = std::clamp(
-                level0 - tex1->largeLod, 0,
-                static_cast<int>(tex1->swizzledMipLevels.size() - 1));
-            int lodIdx1 = std::clamp(
-                level1 - tex1->largeLod, 0,
-                static_cast<int>(tex1->swizzledMipLevels.size() - 1));
+            int lodIdx0 = std::clamp(level0, 0, maxMipIdx1);
+            int lodIdx1 = std::clamp(level1, 0, maxMipIdx1);
             float lodFraction = clampedLod1 - std::floor(clampedLod1);
 
             TmuColorSIMD c0 = sampleLevel(lodIdx0);
@@ -614,9 +611,7 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
             tmu1Color.a = Fma(c1.a - c0.a, frac, c0.a);
           } else {  // Nearest
             int level = static_cast<int>(std::round(clampedLod1));
-            int lodIdx = std::clamp(
-                level - tex1->largeLod, 0,
-                static_cast<int>(tex1->swizzledMipLevels.size() - 1));
+            int lodIdx = std::clamp(level, 0, maxMipIdx1);
             tmu1Color = sampleLevel(lodIdx);
           }
         }
@@ -688,8 +683,10 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
             lod += state.texLodBias[0];
           }
 
-          float clampedLod = std::clamp(lod, static_cast<float>(tex->largeLod),
-                                        static_cast<float>(tex->smallLod));
+          const int maxMipIdx =
+              static_cast<int>(tex->swizzledMipLevels.size()) - 1;
+          float clampedLod =
+              std::clamp(lod, 0.0f, static_cast<float>(maxMipIdx));
 
           auto sampleLevel = [&](int lodIdx) -> TmuColorSIMD {
             const uint32_t* levelPixels = tex->swizzledMipLevels[lodIdx].data();
@@ -816,12 +813,8 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
           if (lodBlend) {  // Trilinear
             int level0 = static_cast<int>(std::floor(clampedLod));
             int level1 = level0 + 1;
-            int lodIdx0 =
-                std::clamp(level0 - tex->largeLod, 0,
-                           static_cast<int>(tex->swizzledMipLevels.size() - 1));
-            int lodIdx1 =
-                std::clamp(level1 - tex->largeLod, 0,
-                           static_cast<int>(tex->swizzledMipLevels.size() - 1));
+            int lodIdx0 = std::clamp(level0, 0, maxMipIdx);
+            int lodIdx1 = std::clamp(level1, 0, maxMipIdx);
             float lodFraction = clampedLod - std::floor(clampedLod);
 
             TmuColorSIMD c0 = sampleLevel(lodIdx0);
@@ -834,9 +827,7 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
             tmu0Color.a = Fma(c1.a - c0.a, frac, c0.a);
           } else {  // Nearest
             int level = static_cast<int>(std::round(clampedLod));
-            int lodIdx =
-                std::clamp(level - tex->largeLod, 0,
-                           static_cast<int>(tex->swizzledMipLevels.size() - 1));
+            int lodIdx = std::clamp(level, 0, maxMipIdx);
             tmu0Color = sampleLevel(lodIdx);
           }
         }
@@ -1190,6 +1181,11 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
         Simd8f::Store2x4(&depthBuffer[y * width + x], width, newDepth);
       }
 
+      // Capture pre-fog color for GR_BLEND_PREFOG_COLOR (multi-pass fog)
+      const Simd8f preFogR = red;
+      const Simd8f preFogG = green;
+      const Simd8f preFogB = blue;
+
       // 12. Fog Stage
       if (fogMode != 0) {
         Simd8f f_vec(0.0f);
@@ -1213,6 +1209,7 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
             if (ew >= s_tableIndexToW[idx + 4]) idx += 4;
             if (ew >= s_tableIndexToW[idx + 2]) idx += 2;
             if (ew >= s_tableIndexToW[idx + 1]) idx += 1;
+            idx = std::min(idx, 62);
 
             float w0_fog = s_tableIndexToW[idx];
             float w1_fog = s_tableIndexToW[idx + 1];
@@ -1262,28 +1259,31 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
         blendedR = Min(
             Simd8f(1.0f),
             Fma(red,
-                getFSIMD(rgbSrcBlend, red, dstR, blendAlphaVal, dstA, false),
-                dstR * getFSIMD(rgbDstBlend, red, dstR, blendAlphaVal, dstA,
-                                true)));
+                getFSIMD(rgbSrcBlend, red, preFogR, dstR, blendAlphaVal, dstA,
+                         false),
+                dstR * getFSIMD(rgbDstBlend, red, preFogR, dstR, blendAlphaVal,
+                                dstA, true)));
         blendedG = Min(
             Simd8f(1.0f),
             Fma(green,
-                getFSIMD(rgbSrcBlend, green, dstG, blendAlphaVal, dstA, false),
-                dstG * getFSIMD(rgbDstBlend, green, dstG, blendAlphaVal, dstA,
-                                true)));
+                getFSIMD(rgbSrcBlend, green, preFogG, dstG, blendAlphaVal, dstA,
+                         false),
+                dstG * getFSIMD(rgbDstBlend, green, preFogG, dstG,
+                                blendAlphaVal, dstA, true)));
         blendedB = Min(
             Simd8f(1.0f),
             Fma(blue,
-                getFSIMD(rgbSrcBlend, blue, dstB, blendAlphaVal, dstA, false),
-                dstB * getFSIMD(rgbDstBlend, blue, dstB, blendAlphaVal, dstA,
-                                true)));
+                getFSIMD(rgbSrcBlend, blue, preFogB, dstB, blendAlphaVal, dstA,
+                         false),
+                dstB * getFSIMD(rgbDstBlend, blue, preFogB, dstB, blendAlphaVal,
+                                dstA, true)));
         blendedA =
             Min(Simd8f(1.0f),
                 Fma(blendAlphaVal,
                     getFSIMD(alphaSrcBlend, Simd8f(0.0f), Simd8f(0.0f),
-                             blendAlphaVal, dstA, false),
+                             Simd8f(0.0f), blendAlphaVal, dstA, false),
                     dstA * getFSIMD(alphaDstBlend, Simd8f(0.0f), Simd8f(0.0f),
-                                    blendAlphaVal, dstA, true)));
+                                    Simd8f(0.0f), blendAlphaVal, dstA, true)));
       }
 
       Simd8i rVal = Simd8i::Convert(

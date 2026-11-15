@@ -631,13 +631,12 @@ void GlideSplashAnimator::RenderBanner(uint32_t scrWidth, uint32_t scrHeight) {
 
     /* Attempt to lock with linear frame buffer pixel pipeline enabled */
     info.size = sizeof(info);
-    if (grLfbLock(GR_LFB_WRITE_ONLY, GR_BUFFER_BACKBUFFER,
+    if (scrWidth >= static_cast<FxU32>(banner_width) &&
+        scrHeight >= static_cast<FxU32>(banner_height) &&
+        grLfbLock(GR_LFB_WRITE_ONLY, GR_BUFFER_BACKBUFFER,
                   GR_LFBWRITEMODE_565, GR_ORIGIN_UPPER_LEFT,
                   FXTRUE, &info)) {
         /* Draw Banner in lower right of screen */
-        if (scrWidth < static_cast<FxU32>(banner_width)) return;
-        if (scrHeight < static_cast<FxU32>(banner_height)) return;
-
         auto* dstData = static_cast<FxU32*>(info.lfbPtr);
 
         // Calculate destination address with proper C++ pointer arithmetic

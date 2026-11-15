@@ -87,22 +87,14 @@ bool VulkanBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
   m_device->waitIdle();
 
   // Copy the GPU-rendered framebuffer from mapped staging memory into our
-  // lazily-allocated CPU LFB staging buffer
+  // lazily-allocated CPU LFB staging buffer (strictly canonical 0xAARRGGBB /
+  // BGRA bytes — never mutate staging in-place for GR_COLORFORMAT_ABGR or
+  // subsequent LFB write-locks like grShamelessPlug will upload R/B-swapped
+  // pixels back to the GPU!).
   void* readDst = m_lfbStaging.PrepareBufferForGpuReadback(buffer);
   if (m_gpuStagingMaps[m_currentFrameSlot] && readDst) {
     std::memcpy(readDst, m_gpuStagingMaps[m_currentFrameSlot],
                 m_headlessWidth * m_headlessHeight * 4);
-    if (m_pixelFormatOverride == 1) {
-      auto* dest = reinterpret_cast<uint32_t*>(readDst);
-      for (uint32_t i = 0; i < m_headlessWidth * m_headlessHeight; ++i) {
-        uint32_t argb = dest[i];
-        uint32_t b = argb & 0xFF;
-        uint32_t g = (argb >> 8) & 0xFF;
-        uint32_t r = (argb >> 16) & 0xFF;
-        uint32_t a = (argb >> 24) & 0xFF;
-        dest[i] = (a << 24) | (b << 16) | (g << 8) | r;
-      }
-    }
   }
 
   // 5. Reset and begin a new command buffer for subsequent commands in the
@@ -118,8 +110,29 @@ bool VulkanBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
                         vk::ImageLayout::eColorAttachmentOptimal, range);
 
   // 7. Convert and copy the synchronized pixels to the client buffer!
-  return m_lfbStaging.ReadRegion(buffer, srcX, srcY, srcWidth, srcHeight,
-                                 dstStride, dstData);
+  if (!m_lfbStaging.ReadRegion(buffer, srcX, srcY, srcWidth, srcHeight,
+                               dstStride, dstData)) {
+    return false;
+  }
+
+  // Swizzle 32-bit client output from canonical ARGB -> ABGR only when the
+  // window was opened with GR_COLORFORMAT_ABGR (matches SoftwareBackend).
+  if (m_pixelFormatOverride == 1 && dstData && srcWidth > 0 &&
+      dstStride >= srcWidth * 4) {
+    auto* outBytes = reinterpret_cast<uint8_t*>(dstData);
+    for (uint32_t y = 0; y < srcHeight; ++y) {
+      auto* row32 = reinterpret_cast<uint32_t*>(outBytes + y * dstStride);
+      for (uint32_t x = 0; x < srcWidth; ++x) {
+        uint32_t val = row32[x];
+        uint32_t a = val & 0xFF000000u;
+        uint32_t g = val & 0x0000FF00u;
+        uint32_t r = (val >> 16) & 0xFFu;
+        uint32_t b = val & 0xFFu;
+        row32[x] = a | (b << 16) | g | r;
+      }
+    }
+  }
+  return true;
 }
 
 void VulkanBackend::FlushLFBToGPU_Locked() {

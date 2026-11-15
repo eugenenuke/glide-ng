@@ -416,6 +416,11 @@ void SoftwareBackend::WritePixelPipeline(int x, int y, const ModernVertex& v,
 
   alpha *= coverage;
 
+  // Capture pre-fog color for GR_BLEND_PREFOG_COLOR
+  const float preFogR = red;
+  const float preFogG = green;
+  const float preFogB = blue;
+
   // 3. Fogging
   uint32_t fogSource = state.fogMode & 0x0F;
   if (fogSource != 0) {
@@ -438,6 +443,7 @@ void SoftwareBackend::WritePixelPipeline(int x, int y, const ModernVertex& v,
       if (eyeW >= s_tableIndexToW[idx + 4]) idx += 4;
       if (eyeW >= s_tableIndexToW[idx + 2]) idx += 2;
       if (eyeW >= s_tableIndexToW[idx + 1]) idx += 1;
+      idx = std::min(idx, 62);
 
       float w0_fog = s_tableIndexToW[idx];
       float w1_fog = s_tableIndexToW[idx + 1];
@@ -493,10 +499,6 @@ void SoftwareBackend::WritePixelPipeline(int x, int y, const ModernVertex& v,
     }
   }
 
-  uint32_t rVal = static_cast<uint32_t>(std::min(255.0f, red * 255.0f + 0.5f));
-  uint32_t gVal =
-      static_cast<uint32_t>(std::min(255.0f, green * 255.0f + 0.5f));
-  uint32_t bVal = static_cast<uint32_t>(std::min(255.0f, blue * 255.0f + 0.5f));
   uint32_t aVal =
       static_cast<uint32_t>(std::min(255.0f, blendAlphaVal * 255.0f + 0.5f));
 
@@ -504,39 +506,59 @@ void SoftwareBackend::WritePixelPipeline(int x, int y, const ModernVertex& v,
   uint32_t* pixels = reinterpret_cast<uint32_t*>(
       m_cpuBuffers[state.activeRenderBufferIdx].data());
   uint32_t dstWord = pixels[y * m_headlessWidth + x];
-  uint32_t dstR = (dstWord >> 16) & 0xFF;
-  uint32_t dstG = (dstWord >> 8) & 0xFF;
-  uint32_t dstB = dstWord & 0xFF;
+  float dstR = ((dstWord >> 16) & 0xFF) / 255.0f;
+  float dstG = ((dstWord >> 8) & 0xFF) / 255.0f;
+  float dstB = (dstWord & 0xFF) / 255.0f;
+  float dstA = ((dstWord >> 24) & 0xFF) / 255.0f;
 
-  float sFactor = 1.0f;
-  float dFactor = 0.0f;
+  auto getF = [](uint32_t mode, float srcC, float preFogC, float dstC,
+                 float srcA, float dstA, bool isDest) -> float {
+    switch (mode) {
+      case 0:
+        return 0.0f;
+      case 1:
+        return srcA;
+      case 2:
+        return isDest ? srcC : dstC;
+      case 3:
+        return dstA;
+      case 4:
+        return 1.0f;
+      case 5:
+        return 1.0f - srcA;
+      case 6:
+        return isDest ? (1.0f - srcC) : (1.0f - dstC);
+      case 7:
+        return 1.0f - dstA;
+      case 15:
+        return isDest ? preFogC : std::min(srcA, 1.0f - dstA);
+      default:
+        return isDest ? 0.0f : 1.0f;
+    }
+  };
 
-  if (state.rgbSrcBlend == 1) {
-    sFactor = aVal / 255.0f;
-  } else if (state.rgbSrcBlend == 0) {
-    sFactor = 0.0f;
-  } else if (state.rgbSrcBlend == 4) {
-    sFactor = 1.0f;
-  } else {
-    sFactor = 1.0f;
-  }
+  float outR = std::min(
+      1.0f,
+      red * getF(state.rgbSrcBlend, red, preFogR, dstR, blendAlphaVal, dstA,
+                 false) +
+          dstR * getF(state.rgbDstBlend, red, preFogR, dstR, blendAlphaVal,
+                      dstA, true));
+  float outG = std::min(
+      1.0f,
+      green * getF(state.rgbSrcBlend, green, preFogG, dstG, blendAlphaVal, dstA,
+                   false) +
+          dstG * getF(state.rgbDstBlend, green, preFogG, dstG, blendAlphaVal,
+                      dstA, true));
+  float outB = std::min(
+      1.0f,
+      blue * getF(state.rgbSrcBlend, blue, preFogB, dstB, blendAlphaVal, dstA,
+                  false) +
+          dstB * getF(state.rgbDstBlend, blue, preFogB, dstB, blendAlphaVal,
+                      dstA, true));
 
-  if (state.rgbDstBlend == 5) {
-    dFactor = 1.0f - (aVal / 255.0f);
-  } else if (state.rgbDstBlend == 0) {
-    dFactor = 0.0f;
-  } else if (state.rgbDstBlend == 4) {
-    dFactor = 1.0f;
-  } else {
-    dFactor = 0.0f;
-  }
-
-  uint32_t finalR =
-      static_cast<uint32_t>(rVal * sFactor + dstR * dFactor + 0.5f);
-  uint32_t finalG =
-      static_cast<uint32_t>(gVal * sFactor + dstG * dFactor + 0.5f);
-  uint32_t finalB =
-      static_cast<uint32_t>(bVal * sFactor + dstB * dFactor + 0.5f);
+  uint32_t finalR = static_cast<uint32_t>(outR * 255.0f + 0.5f);
+  uint32_t finalG = static_cast<uint32_t>(outG * 255.0f + 0.5f);
+  uint32_t finalB = static_cast<uint32_t>(outB * 255.0f + 0.5f);
   uint32_t finalA = aVal;
 
   finalR = std::min(255u, finalR);

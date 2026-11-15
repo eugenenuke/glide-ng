@@ -5,6 +5,7 @@
 #include <SDL2/SDL_version.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -35,6 +36,20 @@
 namespace GlideWrapper {
 
 namespace {
+
+// Keep SDL_INIT_VIDEO alive across StandaloneSDL2 open/close cycles (e.g.,
+// test27.exe) so Wayland/libdecor-gtk does not repeatedly tear down and
+// re-initialize GTK on every grSstWinClose()/grSstWinOpen(), while still
+// shutting down cleanly on process exit or library unload.
+struct SdlVideoLifetimeGuard {
+  bool ownedByUs = false;
+  ~SdlVideoLifetimeGuard() {
+    if (ownedByUs && SDL_WasInit(SDL_INIT_VIDEO) != 0) {
+      SDL_QuitSubSystem(SDL_INIT_VIDEO);
+    }
+  }
+};
+SdlVideoLifetimeGuard g_sdlVideoGuard;
 
 #if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_X11)
 std::mutex g_x11ErrorTrapMutex;
@@ -645,7 +660,7 @@ bool NativeSurfaceHost::AttachStandaloneSDL2(uint32_t guestW, uint32_t guestH,
                     << SDL_GetError());
       return false;
     }
-    m_sdlVideoInitializedByUs = true;
+    g_sdlVideoGuard.ownedByUs = true;
   }
 
   const uint32_t clampedScale = std::clamp<uint32_t>(windowScale, 1, 8);
@@ -661,10 +676,6 @@ bool NativeSurfaceHost::AttachStandaloneSDL2(uint32_t guestW, uint32_t guestH,
   if (!m_sdlWindow) {
     GLIDE_LOG(CRITICAL, "WSI",
               "NativeSurfaceHost: SDL_CreateWindow failed: " << SDL_GetError());
-    if (m_sdlVideoInitializedByUs) {
-      SDL_QuitSubSystem(SDL_INIT_VIDEO);
-      m_sdlVideoInitializedByUs = false;
-    }
     return false;
   }
 
@@ -672,6 +683,11 @@ bool NativeSurfaceHost::AttachStandaloneSDL2(uint32_t guestW, uint32_t guestH,
   const char* drv = SDL_GetCurrentVideoDriver();
   m_sdlVideoDriver = drv ? std::string(drv) : std::string();
   m_mode = Mode::StandaloneSDL2;
+  m_lastPollTime = {};
+
+  // Immediately pump initial Wayland/libdecor/X11 configure events so the
+  // window is mapped and responsive even before the first SwapBuffers().
+  PollEvents(/*force=*/true);
 
   QueryStandaloneDrawableSize(m_pixelWidth, m_pixelHeight);
 
@@ -1143,11 +1159,8 @@ void NativeSurfaceHost::Detach() {
       m_sdlWindow = nullptr;
     }
     m_sdlWindowId = 0;
+    m_lastPollTime = {};
     m_sdlVideoDriver.clear();
-    if (m_sdlVideoInitializedByUs) {
-      SDL_QuitSubSystem(SDL_INIT_VIDEO);
-      m_sdlVideoInitializedByUs = false;
-    }
   }
 #if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_X11)
   else if (m_mode == Mode::X11Child && m_x11Display) {
@@ -1332,11 +1345,18 @@ bool NativeSurfaceHost::SyncBounds(uint32_t& outPixelW, uint32_t& outPixelH) {
   return false;
 }
 
-void NativeSurfaceHost::PollEvents() {
+void NativeSurfaceHost::PollEvents(bool force) {
   // Strictly isolated to StandaloneSDL2 so we never steal DOSBox's SDL events.
   if (m_mode != Mode::StandaloneSDL2 || !m_sdlWindow) {
     return;
   }
+
+  const auto now = std::chrono::steady_clock::now();
+  if (!force && m_lastPollTime.time_since_epoch().count() != 0 &&
+      (now - m_lastPollTime) < std::chrono::milliseconds(4)) {
+    return;
+  }
+  m_lastPollTime = now;
 
   SDL_Event ev;
   while (SDL_PollEvent(&ev)) {
