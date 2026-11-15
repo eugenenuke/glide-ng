@@ -425,11 +425,21 @@ int main(int argc, char** argv) {
     }
 
     int winW = 0, winH = 0;
+    int pixW = 0, pixH = 0;
     SDL_GetWindowSize(parentWin, &winW, &winH);
+#if SDL_VERSION_ATLEAST(2, 26, 0)
+    SDL_GetWindowSizeInPixels(parentWin, &pixW, &pixH);
+#else
+    pixW = winW;
+    pixH = winH;
+#endif
     std::ostringstream title;
     title << "Glide Embed Test | " << (driver ? driver : "?")
-          << (parentOpenGL ? " +GL" : "") << " | host=" << winW << "x" << winH
-          << " | glide=" << (glideActive ? "ON" : "OFF")
+          << (parentOpenGL ? " +GL" : "") << " | host=" << winW << "x" << winH;
+    if (pixW != winW || pixH != winH) {
+      title << " (px=" << pixW << "x" << pixH << ")";
+    }
+    title << " | glide=" << (glideActive ? "ON" : "OFF")
           << " | clicks=" << clickCount << " keys=" << keyCount
           << " reopens=" << reopenCount;
     SDL_SetWindowTitle(parentWin, title.str().c_str());

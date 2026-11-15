@@ -65,6 +65,79 @@ class ScopedX11ErrorTrap {
 #endif
 
 #if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_WAYLAND)
+// Minimal self-contained client bindings for the stable Wayland `viewporter`
+// protocol (wp_viewporter v1 / wp_viewport v1, Collabora MIT license) so we
+// handle arbitrary HiDPI integer & fractional scaling (125%, 150%, 175%, 200%)
+// without requiring `wayland-protocols` at build time.
+struct wp_viewporter;
+struct wp_viewport;
+
+extern const wl_interface g_wpViewportInterface;
+
+const wl_interface* g_wpViewporterGetViewportTypes[] = {
+    &g_wpViewportInterface,
+    &wl_surface_interface,
+};
+
+const wl_interface* g_wpViewportNullTypes[] = {
+    nullptr,
+    nullptr,
+    nullptr,
+    nullptr,
+};
+
+const wl_message g_wpViewporterRequests[] = {
+    {"destroy", "", g_wpViewportNullTypes},
+    {"get_viewport", "no", g_wpViewporterGetViewportTypes},
+};
+
+const wl_interface g_wpViewporterInterface = {
+    "wp_viewporter", 1, 2, g_wpViewporterRequests, 0, nullptr,
+};
+
+const wl_message g_wpViewportRequests[] = {
+    {"destroy", "", g_wpViewportNullTypes},
+    {"set_source", "ffff", g_wpViewportNullTypes},
+    {"set_destination", "ii", g_wpViewportNullTypes},
+};
+
+const wl_interface g_wpViewportInterface = {
+    "wp_viewport", 1, 3, g_wpViewportRequests, 0, nullptr,
+};
+
+constexpr uint32_t kWpViewporterDestroy = 0;
+constexpr uint32_t kWpViewporterGetViewport = 1;
+constexpr uint32_t kWpViewportDestroy = 0;
+constexpr uint32_t kWpViewportSetDestination = 2;
+
+void WpViewporterDestroy(wp_viewporter* viewporter) {
+  auto* proxy = reinterpret_cast<wl_proxy*>(viewporter);
+  wl_proxy_marshal_flags(proxy, kWpViewporterDestroy, nullptr,
+                         wl_proxy_get_version(proxy), WL_MARSHAL_FLAG_DESTROY);
+}
+
+wp_viewport* WpViewporterGetViewport(wp_viewporter* viewporter,
+                                     wl_surface* surface) {
+  auto* proxy = reinterpret_cast<wl_proxy*>(viewporter);
+  wl_proxy* id = wl_proxy_marshal_flags(
+      proxy, kWpViewporterGetViewport, &g_wpViewportInterface,
+      wl_proxy_get_version(proxy), 0, nullptr, surface);
+  return reinterpret_cast<wp_viewport*>(id);
+}
+
+void WpViewportDestroy(wp_viewport* viewport) {
+  auto* proxy = reinterpret_cast<wl_proxy*>(viewport);
+  wl_proxy_marshal_flags(proxy, kWpViewportDestroy, nullptr,
+                         wl_proxy_get_version(proxy), WL_MARSHAL_FLAG_DESTROY);
+}
+
+void WpViewportSetDestination(wp_viewport* viewport, int32_t width,
+                              int32_t height) {
+  auto* proxy = reinterpret_cast<wl_proxy*>(viewport);
+  wl_proxy_marshal_flags(proxy, kWpViewportSetDestination, nullptr,
+                         wl_proxy_get_version(proxy), 0, width, height);
+}
+
 struct WaylandSubsurfaceState {
   wl_display* hostDisplay = nullptr;  // Borrowed from host; NEVER disconnect!
   wl_surface* hostSurface = nullptr;  // Borrowed from host; NEVER destroy!
@@ -78,8 +151,12 @@ struct WaylandSubsurfaceState {
   uint32_t compositorVersion = 0;
   wl_subcompositor* subcompositor = nullptr;
   wl_shm* shm = nullptr;
+  wp_viewporter* viewporter = nullptr;
+  wp_viewport* viewport = nullptr;
   wl_surface* childSurface = nullptr;
   wl_subsurface* subsurface = nullptr;
+  uint32_t logicalWidth = 0;
+  uint32_t logicalHeight = 0;
 };
 
 void WaylandRegistryGlobal(void* data, wl_registry* registry, uint32_t name,
@@ -103,6 +180,10 @@ void WaylandRegistryGlobal(void* data, wl_registry* registry, uint32_t name,
              !state->shm) {
     state->shm = static_cast<wl_shm*>(
         wl_registry_bind(registry, name, &wl_shm_interface, 1));
+  } else if (std::strcmp(interface, g_wpViewporterInterface.name) == 0 &&
+             !state->viewporter) {
+    state->viewporter = static_cast<wp_viewporter*>(
+        wl_registry_bind(registry, name, &g_wpViewporterInterface, 1));
   }
 }
 
@@ -120,6 +201,11 @@ void DestroyWaylandSubsurfaceState(WaylandSubsurfaceState* state,
     return;
   }
 
+  // Destroy wp_viewport BEFORE childSurface (per viewporter protocol spec).
+  if (state->viewport) {
+    WpViewportDestroy(state->viewport);
+    state->viewport = nullptr;
+  }
   if (state->subsurface) {
     wl_subsurface_destroy(state->subsurface);
     state->subsurface = nullptr;
@@ -140,6 +226,10 @@ void DestroyWaylandSubsurfaceState(WaylandSubsurfaceState* state,
     }
   }
 
+  if (state->viewporter) {
+    WpViewporterDestroy(state->viewporter);
+    state->viewporter = nullptr;
+  }
   if (state->shm) {
     wl_shm_destroy(state->shm);
     state->shm = nullptr;
@@ -169,7 +259,8 @@ void DestroyWaylandSubsurfaceState(WaylandSubsurfaceState* state,
 }
 
 void QueryWaylandHostSizes(SDL_Window* hostWin, uint32_t fallbackW,
-                           uint32_t fallbackH, uint32_t& outPixelW,
+                           uint32_t fallbackH, uint32_t& outLogicalW,
+                           uint32_t& outLogicalH, uint32_t& outPixelW,
                            uint32_t& outPixelH, int32_t& outScale) {
   int logW = 0;
   int logH = 0;
@@ -186,19 +277,23 @@ void QueryWaylandHostSizes(SDL_Window* hostWin, uint32_t fallbackW,
 #endif
   }
 
-  if (pixW <= 0 || pixH <= 0) {
-    pixW = (logW > 0) ? logW : static_cast<int>(fallbackW);
-    pixH = (logH > 0) ? logH : static_cast<int>(fallbackH);
-  }
   if (logW <= 0 || logH <= 0) {
-    logW = pixW;
-    logH = pixH;
+    logW = (pixW > 0) ? pixW : static_cast<int>(fallbackW);
+    logH = (pixH > 0) ? pixH : static_cast<int>(fallbackH);
+  }
+  if (pixW <= 0 || pixH <= 0) {
+    pixW = logW;
+    pixH = logH;
   }
 
+  outLogicalW = static_cast<uint32_t>(std::max(1, logW));
+  outLogicalH = static_cast<uint32_t>(std::max(1, logH));
   outPixelW = static_cast<uint32_t>(std::max(1, pixW));
   outPixelH = static_cast<uint32_t>(std::max(1, pixH));
-  if (logW > 0 && pixW >= logW) {
-    outScale = std::max<int32_t>(1, (pixW + logW / 2) / logW);
+
+  if (outLogicalW > 0 && outPixelW >= outLogicalW) {
+    outScale = std::max<int32_t>(
+        1, static_cast<int32_t>((outPixelW + outLogicalW / 2) / outLogicalW));
   } else {
     outScale = 1;
   }
@@ -624,15 +719,39 @@ bool NativeSurfaceHost::AttachWaylandSubsurface(void* hostDisplayPtr,
   wl_subsurface_set_position(state->subsurface, 0, 0);
   wl_subsurface_set_desync(state->subsurface);
 
+  uint32_t logW = m_guestWidth;
+  uint32_t logH = m_guestHeight;
   uint32_t pixW = m_guestWidth;
   uint32_t pixH = m_guestHeight;
   int32_t scale = 1;
-  QueryWaylandHostSizes(hostSdlWindow, m_guestWidth, m_guestHeight, pixW, pixH,
-                        scale);
+  QueryWaylandHostSizes(hostSdlWindow, m_guestWidth, m_guestHeight, logW, logH,
+                        pixW, pixH, scale);
 
-  if (state->compositorVersion >= 3) {
-    wl_surface_set_buffer_scale(state->childSurface, scale);
+  if (state->viewporter) {
+    state->viewport =
+        WpViewporterGetViewport(state->viewporter, state->childSurface);
   }
+
+  if (state->viewport) {
+    // Use wp_viewport.set_destination(logicalW, logicalH) with buffer_scale=1
+    // so fractional & integer HiDPI scales (125%, 150%, 175%, 200%, ...) map
+    // the full physical pixel swapchain 1:1 into the host's logical window
+    // without rounding mismatches or invalid_size protocol errors.
+    scale = 1;
+    if (state->compositorVersion >= 3) {
+      wl_surface_set_buffer_scale(state->childSurface, 1);
+    }
+    WpViewportSetDestination(state->viewport, static_cast<int32_t>(logW),
+                             static_cast<int32_t>(logH));
+  } else {
+    pixW = logW * static_cast<uint32_t>(scale);
+    pixH = logH * static_cast<uint32_t>(scale);
+    if (state->compositorVersion >= 3) {
+      wl_surface_set_buffer_scale(state->childSurface, scale);
+    }
+  }
+  state->logicalWidth = logW;
+  state->logicalHeight = logH;
 
   // Commit child state and issue ONE parent commit so the compositor latches
   // our subsurface into the parent's surface tree immediately.
@@ -664,7 +783,10 @@ bool NativeSurfaceHost::AttachWaylandSubsurface(void* hostDisplayPtr,
             "(hostSurface="
                 << state->hostSurface
                 << ", childSurface=" << state->childSurface
-                << ", size=" << m_pixelWidth << "x" << m_pixelHeight
+                << ", logical=" << state->logicalWidth << "x"
+                << state->logicalHeight << ", pixels=" << m_pixelWidth << "x"
+                << m_pixelHeight
+                << ", viewporter=" << (state->viewport ? "yes" : "no")
                 << ", scale=" << m_wlBufferScale
                 << ", shm=" << (m_wlShm ? "yes" : "no")
                 << ", input=click-through).");
@@ -831,25 +953,52 @@ bool NativeSurfaceHost::SyncBounds(uint32_t& outPixelW, uint32_t& outPixelH) {
         (SDL_WasInit(SDL_INIT_VIDEO) != 0) &&
         (SDL_GetWindowFromID(state->hostSdlWindowId) == state->hostSdlWindow);
     if (parentStillAlive) {
-      uint32_t newW = m_pixelWidth;
-      uint32_t newH = m_pixelHeight;
+      uint32_t newLogW = state->logicalWidth;
+      uint32_t newLogH = state->logicalHeight;
+      uint32_t newPixW = m_pixelWidth;
+      uint32_t newPixH = m_pixelHeight;
       int32_t newScale = m_wlBufferScale;
       QueryWaylandHostSizes(state->hostSdlWindow, m_guestWidth, m_guestHeight,
-                            newW, newH, newScale);
+                            newLogW, newLogH, newPixW, newPixH, newScale);
 
-      const bool scaleChanged = (newScale != m_wlBufferScale);
-      const bool sizeChanged = (newW != m_pixelWidth || newH != m_pixelHeight);
-
-      if (scaleChanged) {
-        m_wlBufferScale = newScale;
-        if (state->childSurface && state->compositorVersion >= 3) {
-          wl_surface_set_buffer_scale(state->childSurface, m_wlBufferScale);
+      bool changed = false;
+      if (state->viewport) {
+        if (newLogW != state->logicalWidth || newLogH != state->logicalHeight) {
+          state->logicalWidth = newLogW;
+          state->logicalHeight = newLogH;
+          WpViewportSetDestination(state->viewport,
+                                   static_cast<int32_t>(newLogW),
+                                   static_cast<int32_t>(newLogH));
+          changed = true;
         }
+        if (newPixW != m_pixelWidth || newPixH != m_pixelHeight) {
+          changed = true;
+        }
+      } else {
+        newPixW = newLogW * static_cast<uint32_t>(newScale);
+        newPixH = newLogH * static_cast<uint32_t>(newScale);
+        if (newScale != m_wlBufferScale) {
+          m_wlBufferScale = newScale;
+          if (state->childSurface && state->compositorVersion >= 3) {
+            wl_surface_set_buffer_scale(state->childSurface, m_wlBufferScale);
+          }
+          changed = true;
+        }
+        if (newPixW != m_pixelWidth || newPixH != m_pixelHeight) {
+          changed = true;
+        }
+        state->logicalWidth = newLogW;
+        state->logicalHeight = newLogH;
       }
 
-      if (sizeChanged || scaleChanged) {
-        m_pixelWidth = newW;
-        m_pixelHeight = newH;
+      if (changed) {
+        m_pixelWidth = newPixW;
+        m_pixelHeight = newPixH;
+        GLIDE_LOG(INFO, "WSI",
+                  "WaylandSubsurface resized: logical="
+                      << state->logicalWidth << "x" << state->logicalHeight
+                      << ", pixels=" << m_pixelWidth << "x" << m_pixelHeight
+                      << ", viewporter=" << (state->viewport ? "yes" : "no"));
         outPixelW = m_pixelWidth;
         outPixelH = m_pixelHeight;
         return true;
