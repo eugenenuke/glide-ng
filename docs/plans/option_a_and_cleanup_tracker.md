@@ -49,10 +49,10 @@ Recorded before any edits are made:
 
 | ID | Phase | Task Summary | Risk | Status | Commit |
 | :--- | :--- | :--- | :---: | :--- | :--- |
-| **T0.1** | Phase 0 | Fix `ctest` discovery (`enable_testing()`), update `tests/run_all_tests.py`, lock baseline | Low | `[ ] PENDING` | — |
-| **T0.2** | Phase 0 | Fix `SoftwareBackend::AttachWindow` ignoring `forceNoWindow` & `m_sdlRendererOwned` leak | Low | `[ ] PENDING` | — |
-| **T0.3** | Phase 0 | Audit & update `.agents/AGENTS.md`, existing 5 skills, add `wsi-window-injection` & `build-and-test` skills | Low | `[ ] PENDING` | — |
-| **T0.4** | Phase 0 | User-approved repo hygiene (`.gitignore`, untracked logs/caches, stale `subagent-*` branches) | Low | `[ ] PENDING` | — |
+| **T0.1** | Phase 0 | Fix `ctest` discovery (`enable_testing()`), update `tests/run_all_tests.py`, lock baseline | Low | `[~] IMPLEMENTED — AWAITING USER VERIFICATION` | `dd527a8` |
+| **T0.2** | Phase 0 | Fix `SoftwareBackend::AttachWindow` ignoring `forceNoWindow` & `m_sdlRendererOwned` leak | Low | `[~] IMPLEMENTED — AWAITING USER VERIFICATION` | `5e097b8` |
+| **T0.3** | Phase 0 | Audit & update `.agents/AGENTS.md`, existing 5 skills, add `wsi-window-injection` & `build-and-test` skills | Low | `[~] IMPLEMENTED — AWAITING USER VERIFICATION` | `415d0a1` |
+| **T0.4** | Phase 0 | User-approved repo hygiene (`.gitignore`, untracked logs/caches, stale `subagent-*` branches) | Low | `[~] IMPLEMENTED — AWAITING USER VERIFICATION` | `133e898` |
 | **T1.1** | Phase 1 | Remove `[DEBUG-GLES]` `std::cout` spam & decouple `Logger.cpp` from `<vulkan/vulkan.hpp>` | Low | `[ ] PENDING` | — |
 | **T1.2** | Phase 1 | Deduplicate `color.frag` / `color_dualsrc.frag` via `-DUSE_DUAL_SRC_BLEND`; delete stale checked-in `.spv.h` | Low | `[ ] PENDING` | — |
 | **T1.3** | Phase 1 | Fix `VulkanBackend::SwapBuffers` semaphore wait stage (`eColorAttachmentOutput` → `eTransfer`) | Low | `[ ] PENDING` | — |
@@ -81,7 +81,8 @@ Recorded before any edits are made:
 > **Goal**: Establish a trustworthy, fast, quiet test loop and accurate agent skills *before* touching rendering or windowing code.
 
 #### `T0.1` — Fix CTest Discovery, Repair `tests/run_all_tests.py`, and Lock Baseline
-- **Status**: `[ ] PENDING`
+- **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION` (Commit `dd527a8`)
+- **Automated Result**: `ctest --test-dir build -N` now discovers **60 tests**; `python3 tests/run_all_tests.py --suite g3 --backend sw` passed (1/1, 7.83s).
 - **Target Files**:
   - `CMakeLists.txt`
   - `tests/run_all_tests.py`
@@ -95,7 +96,8 @@ Recorded before any edits are made:
 - **User Verification**: Confirm `ctest` and `python3 tests/run_all_tests.py --backend sw` work cleanly from repo root.
 
 #### `T0.2` — Fix `SoftwareBackend::AttachWindow` Headless Guard & Renderer Leak
-- **Status**: `[ ] PENDING`
+- **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION` (Commit `5e097b8`)
+- **Automated Result**: `GLIDE_WRAPPER_BACKEND=software GLIDE_FORCE_NO_WINDOW=1 ./build/bin/Glide3xWrapperTests` passed **32/32 test cases (1780 assertions)** including new `[Software][Headless]` test, with **0** `libEGL`/`MESA ZINK` warnings.
 - **Target Files**:
   - `src/backends/software/SoftwareBackend.cpp` (L746–834)
   - `tests/test_glide3.cpp` (add headless attach/detach check)
@@ -107,7 +109,8 @@ Recorded before any edits are made:
 - **User Verification**: Confirm headless tests run quietly and standalone software demos (`GLIDE_WRAPPER_BACKEND=software ./build/bin/glide3_cube`) still open and close cleanly.
 
 #### `T0.3` — Update `.agents/` Manifest & Skills, Reconcile `docs/GEMINI.md`
-- **Status**: `[ ] PENDING`
+- **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION` (Commit `415d0a1`)
+- **Notes**: Consolidated `.agents/AGENTS.md` (with `docs/GEMINI.md` pointing to it), updated all 5 existing skills, added `wsi-window-injection` and `build-and-test` skills, removed `.agents/` from `.gitignore`, and tracked `.agents/` in git.
 - **Target Files**:
   - `.agents/AGENTS.md` (and `docs/GEMINI.md`)
   - `.agents/skills/3dfx-expert/SKILL.md`
@@ -146,7 +149,8 @@ Recorded before any edits are made:
 - **User Verification**: User reviews updated `.agents/` files and decides whether `.agents/` should remain gitignored or be tracked in git.
 
 #### `T0.4` — User-Approved Repository Hygiene
-- **Status**: `[ ] PENDING`
+- **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION` (Commit `133e898`, backup branch `backup/wip-dirty-before-option-a` at `7493494`)
+- **Notes**: Preserved dirty files (`docs/glide_environment_variables.md`, `docs/env_vars_research_report.md`, `vk_perf_impacted.patch`, deleted `glide_config.json`) on `backup/wip-dirty-before-option-a`; removed all 49 stale `subagent-*` worktrees and branches; gitignored untracked `refs/{dosbox-x,mesa,openglide,openglide-ng,wrappers}/` and `.glide-vulkan-cache.bin` (untracked from git); created clean feature branch `feature/option-a-native-child-surface` off `main`.
 - **What to Do** (*ONLY with explicit user confirmation per item*):
   1. Decide fate of currently modified/untracked files: `docs/glide_environment_variables.md`, deleted `glide_config.json`, `docs/env_vars_research_report.md`, `vk_perf_impacted.patch`.
   2. Clean root-level runtime artifacts (`.glide-vulkan-cache.bin`, `*.log`, `tests/sw_validate.o`) and verify `.gitignore` covers `.glide-vulkan-cache.bin` and `*.spv.h` if appropriate.
