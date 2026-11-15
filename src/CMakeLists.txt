@@ -27,6 +27,9 @@ set(CORE_SOURCES
     backends/vulkan/VulkanLfb.cpp
     backends/vulkan/VulkanDraw.cpp
     backends/opengl_es/OpenGLESBackend.cpp
+    backends/opengl_es/OpenGLESShaders.cpp
+    backends/opengl_es/OpenGLESTextures.cpp
+    backends/opengl_es/OpenGLESDraw.cpp
     backends/software/SoftwareBackend.cpp
 )
 
