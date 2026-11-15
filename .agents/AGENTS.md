@@ -2,7 +2,7 @@
 
 This document is the single authoritative system-level manifest for AI coding agents collaborating on the **`project-ng` (3dfx Glide 2.x / 3.x Wrapper)** repository.
 
-> **Active Tracking Plan**: See [docs/plans/option_a_and_cleanup_tracker.md](file:///usr/local/google/home/eianiuk/gemini/3dfx/docs/plans/option_a_and_cleanup_tracker.md) for the current phased roadmap, baseline test results, and per-task verification checklists.
+> **Active Tracking Plan**: See [docs/plans/option_a_and_cleanup_tracker.md](../docs/plans/option_a_and_cleanup_tracker.md) for the current phased roadmap, baseline test results, and per-task verification checklists.
 
 ---
 
@@ -37,7 +37,7 @@ This document is the single authoritative system-level manifest for AI coding ag
 ## 2. Mandatory Execution & Tracking Policies
 
 ### Policy A: Strict 3-State Task Confirmation Gate
-When working from [docs/plans/option_a_and_cleanup_tracker.md](file:///usr/local/google/home/eianiuk/gemini/3dfx/docs/plans/option_a_and_cleanup_tracker.md) or any project tracker:
+When working from [docs/plans/option_a_and_cleanup_tracker.md](../docs/plans/option_a_and_cleanup_tracker.md) or any project tracker:
 - `[ ] PENDING` — Not started.
 - `[~] IMPLEMENTED — AWAITING USER VERIFICATION` — Code compiles cleanly and automated tests pass. **Agents MUST stop at this state and ask the developer to confirm.**
 - `[x] DONE (USER CONFIRMED — YYYY-MM-DD)` — **NEVER** mark a task `DONE` until the developer explicitly confirms it works as intended.
@@ -48,7 +48,7 @@ When working from [docs/plans/option_a_and_cleanup_tracker.md](file:///usr/local
 - Prefer `git revert` / `git bisect` over layering speculative workarounds when a regression appears.
 
 ### Policy C: Catch2 TDD Mandate
-- Every bug fix, config parser change, state addition, or math/geometry helper **must** be accompanied by a Catch2 unit test in [tests/test_glide3.cpp](file:///usr/local/google/home/eianiuk/gemini/3dfx/tests/test_glide3.cpp) or [tests/test_architecture.cpp](file:///usr/local/google/home/eianiuk/gemini/3dfx/tests/test_architecture.cpp).
+- Every bug fix, config parser change, state addition, or math/geometry helper **must** be accompanied by a Catch2 unit test in [tests/test_glide3.cpp](../tests/test_glide3.cpp) or [tests/test_architecture.cpp](../tests/test_architecture.cpp).
 - Run headless verification with `GLIDE_WRAPPER_BACKEND=software GLIDE_FORCE_NO_WINDOW=1` (see the `build-and-test` skill for exact commands and known pre-existing baseline quirks).
 
 ### Policy D: Pristine Reference & External Directories (`refs/` and `ext_tests/`)

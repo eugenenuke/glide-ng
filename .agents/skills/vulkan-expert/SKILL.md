@@ -5,7 +5,7 @@ description: Specialized Vulkan 1.4 backend, SPIR-V shader build, and WSI swapch
 
 # Workspace Skill: Vulkan Backend Expert
 
-Activate this skill when analyzing, modifying, or debugging the Vulkan backend inside [src/backends/vulkan/](file:///usr/local/google/home/eianiuk/gemini/3dfx/src/backends/vulkan/).
+Activate this skill when analyzing, modifying, or debugging the Vulkan backend inside [src/backends/vulkan/](../../../src/backends/vulkan/).
 
 ## 1. WSI Surface & Swapchain Rules
 

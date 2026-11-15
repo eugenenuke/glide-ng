@@ -5,7 +5,7 @@ description: Software reference rasterizer, winding math, LFB coordinate mapping
 
 # Workspace Skill: Software Backend & Rasterizer Oracle
 
-Activate this skill when analyzing, modifying, or debugging the CPU reference rasterizer inside [src/backends/software/](file:///usr/local/google/home/eianiuk/gemini/3dfx/src/backends/software/) or [src/backends/SoftwareBackendBase.h](file:///usr/local/google/home/eianiuk/gemini/3dfx/src/backends/SoftwareBackendBase.h).
+Activate this skill when analyzing, modifying, or debugging the CPU reference rasterizer inside [src/backends/software/](../../../src/backends/software/) or [src/backends/SoftwareBackendBase.h](../../../src/backends/SoftwareBackendBase.h).
 
 ## 1. Ground-Truth Oracle & Math
 

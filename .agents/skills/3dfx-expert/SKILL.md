@@ -5,7 +5,7 @@ description: Canonical domain authority on 3dfx Voodoo hardware architectures, G
 
 # Workspace Skill: 3dfx Voodoo Architecture & Glide API Expert
 
-Activate this skill when analyzing, modifying, or auditing Glide frontend entry points inside [src/glide2/](file:///usr/local/google/home/eianiuk/gemini/3dfx/src/glide2/), [src/glide3/](file:///usr/local/google/home/eianiuk/gemini/3dfx/src/glide3/), or verifying 3dfx Voodoo hardware specifications.
+Activate this skill when analyzing, modifying, or auditing Glide frontend entry points inside [src/glide2/](../../../src/glide2/), [src/glide3/](../../../src/glide3/), or verifying 3dfx Voodoo hardware specifications.
 
 ## 1. 3dfx Voodoo Hardware Specifications & Limits
 
@@ -36,17 +36,17 @@ Whenever a new pipeline state variable is added, symmetrically serialize and res
 
 - `hWnd == 0`: Standalone application/demo/test — wrapper creates and owns its own window (unless `forceNoWindow` is set).
 - `hWnd != 0`: Host emulator injection:
-  - **DOSBox-X** ([refs/dosbox-x/src/hardware/glide.cpp](file:///usr/local/google/home/eianiuk/gemini/3dfx/refs/dosbox-x/src/hardware/glide.cpp)): Passes `wmi.info.x11.window` from `statWMInfo()` (on X11/XWayland this is a 32-bit X11 `Window` ID; on native Wayland it aliases `wmi.info.wl.surface` inside `SDL_SysWMinfo`).
+  - **DOSBox-X** ([refs/dosbox-x/src/hardware/glide.cpp](../../../refs/dosbox-x/src/hardware/glide.cpp)): Passes `wmi.info.x11.window` from `statWMInfo()` (on X11/XWayland this is a 32-bit X11 `Window` ID; on native Wayland it aliases `wmi.info.wl.surface` inside `SDL_SysWMinfo`).
   - **Patched SVN DOSBox (`dosbox-0`)**: Queries optional `dlsym` symbol `setConfig(uint32_t flags, uint32_t* magic)` and `setConfigRes`. If our wrapper exports `setConfig` and writes `0x324c4453` (`'SDL2'`) to `*magic`, SVN DOSBox under `sdl12-compat` passes the live `SDL_Window*` pointer instead of a raw X11 Window ID!
 - Always verify exported C ABI symbols after frontend refactors using `nm -D --defined-only build/lib/libglide2x.so` and `libglide3x.so`.
 
 ## 5. Authoritative Grounding Sources (READ-ONLY)
 
 - **Glide 2.x / 3.x Official Headers & Tests**:
-  - [refs/glide/glide2x/sst1/include/](file:///usr/local/google/home/eianiuk/gemini/3dfx/refs/glide/glide2x/sst1/include/)
-  - [refs/glide/glide3x/h3/glide3/src/](file:///usr/local/google/home/eianiuk/gemini/3dfx/refs/glide/glide3x/h3/glide3/src/)
-  - [refs/3dfx-Glide-API/](file:///usr/local/google/home/eianiuk/gemini/3dfx/refs/3dfx-Glide-API/)
+  - [refs/glide/glide2x/sst1/include/](../../../refs/glide/glide2x/sst1/include/)
+  - [refs/glide/glide3x/h3/glide3/src/](../../../refs/glide/glide3x/h3/glide3/src/)
+  - [refs/3dfx-Glide-API/](../../../refs/3dfx-Glide-API/)
 - **DOSBox Glide Integration References**:
-  - DOSBox-X: [refs/dosbox-x/src/hardware/glide.cpp](file:///usr/local/google/home/eianiuk/gemini/3dfx/refs/dosbox-x/src/hardware/glide.cpp)
-  - Patched SVN DOSBox (`qemu-3dfx`): `/usr/local/google/home/eianiuk/gemini/dosbox/qemu-xtra/dosbox/dosbox-0/src/hardware/glide.cpp`
-  - OpenGLide reference: [refs/openglide/](file:///usr/local/google/home/eianiuk/gemini/3dfx/refs/openglide/) and [refs/openglide-ng/](file:///usr/local/google/home/eianiuk/gemini/3dfx/refs/openglide-ng/)
+  - DOSBox-X: [refs/dosbox-x/src/hardware/glide.cpp](../../../refs/dosbox-x/src/hardware/glide.cpp)
+  - Patched SVN DOSBox (`qemu-3dfx`): `../dosbox/qemu-xtra/dosbox/dosbox-0/src/hardware/glide.cpp`
+  - OpenGLide reference: [refs/openglide/](../../../refs/openglide/) and [refs/openglide-ng/](../../../refs/openglide-ng/)

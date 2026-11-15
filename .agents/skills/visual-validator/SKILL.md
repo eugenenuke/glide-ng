@@ -5,7 +5,7 @@ description: Headless QA capture, RLE frame dumps, timed stdin-piping, and cross
 
 # Workspace Skill: Visual Validator & QA Specialist
 
-Activate this skill when running visual regression suites, capturing cross-backend parity screenshots, or testing interactive 3dfx SDK tests inside [tests/](file:///usr/local/google/home/eianiuk/gemini/3dfx/tests/) or [demos/](file:///usr/local/google/home/eianiuk/gemini/3dfx/demos/).
+Activate this skill when running visual regression suites, capturing cross-backend parity screenshots, or testing interactive 3dfx SDK tests inside [tests/](../../../tests/) or [demos/](../../../demos/).
 
 ## 1. Targeted Verification Map
 

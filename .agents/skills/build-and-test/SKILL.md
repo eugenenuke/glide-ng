@@ -10,7 +10,7 @@ Activate this skill whenever configuring CMake, compiling targets, running Catch
 ## 1. Configure & Build
 
 ```bash
-# Configure (from repo root /usr/local/google/home/eianiuk/gemini/3dfx)
+# Configure (from repo root)
 cmake -S . -B build
 
 # Build everything (core libs, tests, demos, tools)
@@ -42,7 +42,7 @@ python3 tests/run_all_tests.py --suite g3 --backend sw
 ```
 
 > [!NOTE]
-> **Known Baseline Status** (see [option_a_and_cleanup_tracker.md](file:///usr/local/google/home/eianiuk/gemini/3dfx/docs/plans/option_a_and_cleanup_tracker.md)):
+> **Known Baseline Status** (see [option_a_and_cleanup_tracker.md](../../../docs/plans/option_a_and_cleanup_tracker.md)):
 > - `Glide3xWrapperTests` on `software` is 100% green (32/32 tests after `T0.2`, zero `libEGL`/`ZINK` stderr warnings).
 > - `Glide2xWrapperTests` currently has 3 pre-existing failures in `test_architecture.cpp` (plus a timing flake at line 466 on `llvmpipe` Vulkan). Always compare against the recorded baseline rather than assuming 0 failures before those are fixed.
 

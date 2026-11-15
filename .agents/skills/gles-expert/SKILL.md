@@ -5,7 +5,7 @@ description: Specialized EGL & OpenGL ES 3.2 backend graphics driver wrapper exp
 
 # Workspace Skill: OpenGL ES 3.2 & EGL Backend Expert
 
-Activate this skill when analyzing, modifying, or debugging the OpenGL ES 3.2 backend inside [src/backends/opengl_es/](file:///usr/local/google/home/eianiuk/gemini/3dfx/src/backends/opengl_es/) (`OpenGLESBackend.h` / `OpenGLESBackend.cpp`).
+Activate this skill when analyzing, modifying, or debugging the OpenGL ES 3.2 backend inside [src/backends/opengl_es/](../../../src/backends/opengl_es/) (`OpenGLESBackend.h` / `OpenGLESBackend.cpp`).
 
 ## 1. EGL Surface & Context Isolation (DOSBox Co-existence)
 
