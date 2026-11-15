@@ -645,14 +645,14 @@ After **Option A (`T2.7`)** is confirmed working by the user, evaluate these fou
   - **Observed Symptoms**:
     1. Pressing `'P'` in `software` mode shows the 3dfx shameless plug overlay normally.
     2. Pressing `'P'` in `vulkan` and `opengl_es` modes shows the plug **and** inverts the triangle colors (or mirrors the picture) — likely the GPU shameless-plug overlay pass mutates backend/Glide render state (color format, combiner, or origin/projection) without restoring it.
-  - **Status**: `[~] IMPLEMENTED IN M4 — AWAITING USER VERIFICATION` (fixed in-place ABGR swizzle corruption of `m_lfbStaging` in `VulkanBackend::ReadLFB` & `OpenGLESBackend::ReadLFB`, guarded `RenderBanner()` early-exit, and saved/restored `lfbConstantAlpha` & `lfbWriteColorFormat` in `grGlideGetState`/`grGlideSetState`).
+  - **Status**: `[x] DONE IN M4 (USER CONFIRMED — 2026-11-15)` (fixed in-place ABGR swizzle corruption of `m_lfbStaging` in `VulkanBackend::ReadLFB` & `OpenGLESBackend::ReadLFB`, guarded `RenderBanner()` early-exit, and saved/restored `lfbConstantAlpha` & `lfbWriteColorFormat` in `grGlideGetState`/`grGlideSetState`).
 
 - **Glide 2.x SDK `test22.exe` — Visual Quality Regression in Software Mode (Reported 2026-11-15)**
   - **Reference**: `refs/glide/glide2x/sst1/glide/tests/test22.c`
   - **Observed Symptoms**: Renders noticeably worse in `software` mode compared to `vulkan`.
-  - **Status**: `[~] IMPLEMENTED IN M4 — AWAITING USER VERIFICATION` (fixed `GR_BLEND_PREFOG_COLOR` using post-fog color, `largeLod > 0` mipmap LOD offset in scalar & SIMD rasterizers, and `idx == 63` fog-table OOB read; SW vs. VK mean pixel diff reduced from 32.69 to 0.06 scalar / 0.04 SIMD).
+  - **Status**: `[x] DONE IN M4 (USER CONFIRMED — 2026-11-15)` (fixed `GR_BLEND_PREFOG_COLOR` using post-fog color, `largeLod > 0` mipmap LOD offset in scalar & SIMD rasterizers, and `idx == 63` fog-table OOB read; SW vs. VK mean pixel diff reduced from 32.69 to 0.06 scalar / 0.04 SIMD).
 
 - **Glide 2.x SDK `test25.exe` & `test27.exe` — Hang Across All Backends (Reported 2026-11-15)**
   - **Reference**: `refs/glide/glide2x/sst1/glide/tests/test25.c`, `test27.c`
   - **Observed Symptoms**: Both tests hang in all backend modes (`vulkan`, `opengl_es`, `software`).
-  - **Status**: `[~] IMPLEMENTED IN M4 — AWAITING USER VERIFICATION` (diagnosed blocking terminal stdin `tlGetCH()` after frame 1 on Wayland CSD; fixed standalone event pumping, OpenGL ES/Software `PollEvents()` & clean close, unlocked `m_mutex` during frame pacing, and kept `SDL_INIT_VIDEO` alive across `test27` open/close cycles).
+  - **Status**: `[x] DONE IN M4 (USER CONFIRMED — 2026-11-15)` (diagnosed blocking terminal stdin `tlGetCH()` after frame 1 on Wayland CSD; fixed standalone event pumping, OpenGL ES/Software `PollEvents()` & clean close, unlocked `m_mutex` during frame pacing, and kept `SDL_INIT_VIDEO` alive across `test27` open/close cycles).
