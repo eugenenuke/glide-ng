@@ -14,6 +14,7 @@
 
 #if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_X11)
 #include <X11/Xlib.h>
+#include <X11/Xutil.h>
 #include <X11/extensions/shape.h>
 // Scrub infamous Xlib macros so they never collide with C++ identifiers.
 #ifdef None
@@ -794,6 +795,111 @@ bool NativeSurfaceHost::AttachX11Child(unsigned long parentWindow) {
 #endif
 }
 
+bool NativeSurfaceHost::RecreateX11ChildForVisual(unsigned long visualId) {
+#if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_X11)
+  if (m_mode != Mode::X11Child || !m_x11Display || m_x11ParentWindow == 0 ||
+      visualId == 0) {
+    return false;
+  }
+
+  Display* dpy = static_cast<Display*>(m_x11Display);
+  Window parent = static_cast<Window>(m_x11ParentWindow);
+
+  XVisualInfo vtmpl{};
+  vtmpl.visualid = static_cast<VisualID>(visualId);
+  int numVisuals = 0;
+  XVisualInfo* vi = XGetVisualInfo(dpy, VisualIDMask, &vtmpl, &numVisuals);
+  if (!vi || numVisuals <= 0) {
+    if (vi) XFree(vi);
+    GLIDE_LOG(WARN, "WSI",
+              "NativeSurfaceHost: XGetVisualInfo found no visual for id 0x"
+                  << std::hex << visualId << std::dec << ".");
+    return false;
+  }
+
+  Window newChild = 0;
+  Colormap newCmap = 0;
+  const unsigned int w = std::max<uint32_t>(1, m_pixelWidth);
+  const unsigned int h = std::max<uint32_t>(1, m_pixelHeight);
+
+  {
+    ScopedX11ErrorTrap trap;
+
+    // A dedicated Colormap + explicit CWBorderPixel/CWBackPixel is mandatory
+    // in X11 whenever the child's visual or depth differs from its parent
+    // (otherwise XCreateWindow fails with BadMatch).
+    newCmap = XCreateColormap(dpy, RootWindow(dpy, vi->screen), vi->visual,
+                              AllocNone);
+    XSetWindowAttributes attrs{};
+    attrs.colormap = newCmap;
+    attrs.background_pixel = 0;
+    attrs.border_pixel = 0;
+    attrs.bit_gravity = NorthWestGravity;
+    attrs.event_mask = ExposureMask | StructureNotifyMask;
+
+    newChild = XCreateWindow(
+        dpy, parent, 0, 0, w, h, 0, vi->depth, InputOutput, vi->visual,
+        CWColormap | CWBackPixel | CWBorderPixel | CWBitGravity | CWEventMask,
+        &attrs);
+
+    int shapeEventBase = 0;
+    int shapeErrorBase = 0;
+    if (newChild != 0 &&
+        XShapeQueryExtension(dpy, &shapeEventBase, &shapeErrorBase)) {
+      XShapeCombineRectangles(dpy, newChild, ShapeInput, 0, 0, nullptr, 0,
+                              ShapeSet, Unsorted);
+    }
+
+    if (newChild != 0) {
+      XMapRaised(dpy, newChild);
+    }
+    XSync(dpy, False);
+
+    if (trap.ErrorOccurred() || newChild == 0) {
+      GLIDE_LOG(WARN, "WSI",
+                "NativeSurfaceHost: failed to recreate X11Child for visual 0x"
+                    << std::hex << visualId << std::dec << " (depth="
+                    << vi->depth << ", error_code=" << trap.LastErrorCode()
+                    << "); keeping existing child.");
+      if (newChild != 0) {
+        XDestroyWindow(dpy, newChild);
+      }
+      if (newCmap != 0) {
+        XFreeColormap(dpy, newCmap);
+      }
+      XSync(dpy, False);
+      XFree(vi);
+      return false;
+    }
+
+    // Swap in the new child window and tear down the previous child/colormap.
+    if (m_x11ChildWindow != 0 && !m_x11ParentDestroyed) {
+      XDestroyWindow(dpy, static_cast<Window>(m_x11ChildWindow));
+    }
+    if (m_x11Colormap != 0) {
+      XFreeColormap(dpy, static_cast<Colormap>(m_x11Colormap));
+    }
+    XSync(dpy, False);
+  }
+
+  const int depth = vi->depth;
+  XFree(vi);
+
+  m_x11ChildWindow = static_cast<unsigned long>(newChild);
+  m_x11Colormap = static_cast<unsigned long>(newCmap);
+
+  GLIDE_LOG(INFO, "WSI",
+            "NativeSurfaceHost recreated X11Child for visual 0x"
+                << std::hex << visualId << " (child=0x" << m_x11ChildWindow
+                << std::dec << ", depth=" << depth << ", size=" << m_pixelWidth
+                << "x" << m_pixelHeight << ", input=click-through).");
+  return true;
+#else
+  (void)visualId;
+  return false;
+#endif
+}
+
 bool NativeSurfaceHost::AttachWaylandSubsurface(void* hostDisplayPtr,
                                                 void* hostSurfacePtr,
                                                 SDL_Window* hostSdlWindow) {
@@ -1051,6 +1157,9 @@ void NativeSurfaceHost::Detach() {
       if (m_x11ChildWindow != 0 && !m_x11ParentDestroyed) {
         XDestroyWindow(dpy, static_cast<Window>(m_x11ChildWindow));
       }
+      if (m_x11Colormap != 0) {
+        XFreeColormap(dpy, static_cast<Colormap>(m_x11Colormap));
+      }
       XSync(dpy, False);
     }
     XCloseDisplay(dpy);
@@ -1067,6 +1176,7 @@ void NativeSurfaceHost::Detach() {
   m_x11Display = nullptr;
   m_x11ParentWindow = 0;
   m_x11ChildWindow = 0;
+  m_x11Colormap = 0;
   m_x11ParentDestroyed = false;
   m_wlDisplay = nullptr;
   m_wlChildSurface = nullptr;

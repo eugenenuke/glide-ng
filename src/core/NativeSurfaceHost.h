@@ -135,6 +135,15 @@ class NativeSurfaceHost {
   // Native handles (opaque to keep X11/Wayland headers out of this header).
   void* GetX11Display() const { return m_x11Display; }
   unsigned long GetX11Window() const { return m_x11ChildWindow; }
+  /**
+   * @brief Recreates the owned X11 child window using a specific X11 VisualID
+   *        and matching depth/colormap (preserving click-through ShapeInput).
+   *
+   * Needed by Direct EGL on X11 when the parent host window uses a visual
+   * (e.g., DirectColor or GLX-chosen visual) that has no matching OpenGL ES 3.x
+   * EGLConfig, preventing strict real-GPU drivers from returning EGL_BAD_CONFIG.
+   */
+  bool RecreateX11ChildForVisual(unsigned long visualId);
   void* GetWaylandDisplay() const { return m_wlDisplay; }
   void* GetWaylandSurface() const { return m_wlChildSurface; }
   void* GetWaylandShm() const { return m_wlShm; }
@@ -167,6 +176,7 @@ class NativeSurfaceHost {
   void* m_x11Display = nullptr;
   unsigned long m_x11ParentWindow = 0;
   unsigned long m_x11ChildWindow = 0;
+  unsigned long m_x11Colormap = 0;
   bool m_x11ParentDestroyed = false;
 
   // WaylandSubsurface state (internal details live in NativeSurfaceHost.cpp)

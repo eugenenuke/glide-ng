@@ -696,25 +696,51 @@ struct GlxInterop {
   PfnGetCurrentReadDrawable getCurrentReadDrawable = nullptr;
   PfnMakeContextCurrent makeContextCurrent = nullptr;
   PfnMakeCurrent makeCurrent = nullptr;
-  bool resolved = false;
+  void* dlHandle = nullptr;
 
-  void Resolve() {
-    if (resolved) return;
-    resolved = true;
-    auto sym = [](const char* name) -> void* {
-      return ::dlsym(RTLD_DEFAULT, name);
+  bool TryLoadFrom(void* handle) {
+    auto sym = [handle](const char* name) -> void* {
+      return ::dlsym(handle, name);
     };
-    getCurrentContext =
+    auto ctxFn =
         reinterpret_cast<PfnGetCurrentContext>(sym("glXGetCurrentContext"));
-    getCurrentDisplay =
+    auto dpyFn =
         reinterpret_cast<PfnGetCurrentDisplay>(sym("glXGetCurrentDisplay"));
-    getCurrentDrawable =
+    auto drawFn =
         reinterpret_cast<PfnGetCurrentDrawable>(sym("glXGetCurrentDrawable"));
+    auto makeCtxCurFn =
+        reinterpret_cast<PfnMakeContextCurrent>(sym("glXMakeContextCurrent"));
+    auto makeCurFn = reinterpret_cast<PfnMakeCurrent>(sym("glXMakeCurrent"));
+    if (!ctxFn || !dpyFn || !drawFn || (!makeCtxCurFn && !makeCurFn)) {
+      return false;
+    }
+    getCurrentContext = ctxFn;
+    getCurrentDisplay = dpyFn;
+    getCurrentDrawable = drawFn;
     getCurrentReadDrawable = reinterpret_cast<PfnGetCurrentReadDrawable>(
         sym("glXGetCurrentReadDrawable"));
-    makeContextCurrent =
-        reinterpret_cast<PfnMakeContextCurrent>(sym("glXMakeContextCurrent"));
-    makeCurrent = reinterpret_cast<PfnMakeCurrent>(sym("glXMakeCurrent"));
+    makeContextCurrent = makeCtxCurFn;
+    makeCurrent = makeCurFn;
+    return true;
+  }
+
+  void Resolve() {
+    if (getCurrentContext) return;
+    if (TryLoadFrom(RTLD_DEFAULT)) return;
+
+    // SDL2 / SDL3 (sdl2-compat) typically dlopen()s libGLX.so.0 or libGL.so.1
+    // with RTLD_LOCAL, so RTLD_DEFAULT cannot see their symbols. Probe only
+    // already-loaded libraries via RTLD_NOLOAD (never force-load GLX).
+    static constexpr const char* kGlxLibs[] = {"libGLX.so.0", "libGL.so.1"};
+    for (const char* lib : kGlxLibs) {
+      void* h = ::dlopen(lib, RTLD_NOW | RTLD_NOLOAD);
+      if (!h) continue;
+      if (TryLoadFrom(h)) {
+        dlHandle = h;
+        return;
+      }
+      ::dlclose(h);
+    }
   }
 
   bool Available() {
@@ -1006,18 +1032,109 @@ bool OpenGLESBackend::CreateDirectEglContext() {
       eglChooseConfig(eglDpy, surfacelessAttribs, &cfg, 1, &numConfigs);
     }
   } else {
+    // Per EGL 1.5 spec (Table 3.4), eglChooseConfig IGNORES
+    // EGL_NATIVE_VISUAL_ID in the input attribute list. For X11 child windows,
+    // we MUST enumerate candidate configs and match EGL_NATIVE_VISUAL_ID via
+    // eglGetConfigAttrib(), otherwise real-GPU drivers reject the window
+    // surface with EGL_BAD_CONFIG (0x3005).
+    auto findConfigForVisual = [&](const EGLint* attribs,
+                                   EGLint targetVisualId) -> EGLConfig {
+      EGLint total = 0;
+      if (!eglChooseConfig(eglDpy, attribs, nullptr, 0, &total) || total <= 0) {
+        return nullptr;
+      }
+      std::vector<EGLConfig> candidates(static_cast<size_t>(total));
+      EGLint returned = 0;
+      if (!eglChooseConfig(eglDpy, attribs, candidates.data(), total,
+                           &returned) ||
+          returned <= 0) {
+        return nullptr;
+      }
+      candidates.resize(static_cast<size_t>(returned));
+
+      EGLConfig firstMatch = nullptr;
+      for (EGLConfig c : candidates) {
+        EGLint visId = 0;
+        if (!eglGetConfigAttrib(eglDpy, c, EGL_NATIVE_VISUAL_ID, &visId) ||
+            visId != targetVisualId) {
+          continue;
+        }
+        if (!firstMatch) {
+          firstMatch = c;
+        }
+        // Prefer a non-MSAA default framebuffer config because our internal
+        // FBO handles Glide rendering and MSAA resolves explicitly.
+        EGLint samples = 0;
+        if (eglGetConfigAttrib(eglDpy, c, EGL_SAMPLES, &samples) &&
+            samples == 0) {
+          return c;
+        }
+      }
+      return firstMatch;
+    };
+
     if (nativeVisualId != 0) {
-      const EGLint exactVisualAttribs[] = {
+      // Omit EGL_ALPHA_SIZE here so 24-bit TrueColor X11 visuals (alpha=0)
+      // match on the first pass.
+      const EGLint rgb8WinAttribs[] = {
           EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
           EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT,
-          EGL_NATIVE_VISUAL_ID, nativeVisualId,
           EGL_RED_SIZE, 8,
           EGL_GREEN_SIZE, 8,
           EGL_BLUE_SIZE, 8,
           EGL_NONE,
       };
-      eglChooseConfig(eglDpy, exactVisualAttribs, &cfg, 1, &numConfigs);
+      cfg = findConfigForVisual(rgb8WinAttribs, nativeVisualId);
+
+      if (!cfg) {
+        const EGLint anyEs3WinAttribs[] = {
+            EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
+            EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT,
+            EGL_NONE,
+        };
+        cfg = findConfigForVisual(anyEs3WinAttribs, nativeVisualId);
+      }
+
+      if (!cfg) {
+        // Last-resort scan of every EGLConfig on the display for an exact
+        // X11 visual match supporting windowed ES3.
+        EGLint total = 0;
+        if (eglGetConfigs(eglDpy, nullptr, 0, &total) && total > 0) {
+          std::vector<EGLConfig> allConfigs(static_cast<size_t>(total));
+          EGLint returned = 0;
+          if (eglGetConfigs(eglDpy, allConfigs.data(), total, &returned) &&
+              returned > 0) {
+            allConfigs.resize(static_cast<size_t>(returned));
+            for (EGLConfig c : allConfigs) {
+              EGLint visId = 0;
+              EGLint surfType = 0;
+              EGLint rendType = 0;
+              if (eglGetConfigAttrib(eglDpy, c, EGL_NATIVE_VISUAL_ID, &visId) &&
+                  visId == nativeVisualId &&
+                  eglGetConfigAttrib(eglDpy, c, EGL_SURFACE_TYPE, &surfType) &&
+                  (surfType & EGL_WINDOW_BIT) != 0 &&
+                  eglGetConfigAttrib(eglDpy, c, EGL_RENDERABLE_TYPE,
+                                     &rendType) &&
+                  (rendType & EGL_OPENGL_ES3_BIT) != 0) {
+                cfg = c;
+                break;
+              }
+            }
+          }
+        }
+      }
+
+      if (cfg) {
+        numConfigs = 1;
+      } else {
+        GLIDE_LOG(INFO, "GLES",
+                  "No OpenGL ES 3.x window EGLConfig matched parent X11 visual "
+                  "0x" << std::hex << nativeVisualId << std::dec
+                       << "; selecting preferred EGL visual and recreating "
+                          "X11Child.");
+      }
     }
+
     if (numConfigs == 0) {
       const EGLint winAttribs[] = {
           EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
@@ -1049,6 +1166,16 @@ bool OpenGLESBackend::CreateDirectEglContext() {
                   << NativeSurfaceHost::ModeToString(mode) << ".");
     return false;
   }
+
+  EGLint chosenConfigId = 0;
+  EGLint chosenVisualId = 0;
+  EGLint chosenR = 0, chosenG = 0, chosenB = 0, chosenA = 0;
+  eglGetConfigAttrib(eglDpy, cfg, EGL_CONFIG_ID, &chosenConfigId);
+  eglGetConfigAttrib(eglDpy, cfg, EGL_NATIVE_VISUAL_ID, &chosenVisualId);
+  eglGetConfigAttrib(eglDpy, cfg, EGL_RED_SIZE, &chosenR);
+  eglGetConfigAttrib(eglDpy, cfg, EGL_GREEN_SIZE, &chosenG);
+  eglGetConfigAttrib(eglDpy, cfg, EGL_BLUE_SIZE, &chosenB);
+  eglGetConfigAttrib(eglDpy, cfg, EGL_ALPHA_SIZE, &chosenA);
 
   // Create OpenGL ES 3.2 context (with graceful ES 3.0 fallback).
   const EGLint ctxAttribs32[] = {
@@ -1095,8 +1222,20 @@ bool OpenGLESBackend::CreateDirectEglContext() {
   }
 #if defined(HAVE_X11)
   else if (mode == NativeSurfaceHost::Mode::X11Child) {
+    // If the parent host window uses an X11 visual that has no matching
+    // OpenGL ES 3.x EGLConfig (e.g., DirectColor or GLX-chosen visual),
+    // recreate our click-through X11Child with the chosen EGLConfig's exact
+    // EGL_NATIVE_VISUAL_ID so strict real-GPU drivers never reject it with
+    // EGL_BAD_CONFIG (0x3005).
+    if (chosenVisualId != 0 && chosenVisualId != nativeVisualId) {
+      if (m_surfaceHost.RecreateX11ChildForVisual(
+              static_cast<unsigned long>(chosenVisualId))) {
+        nativeVisualId = chosenVisualId;
+      }
+    }
     Window x11Win = static_cast<Window>(m_surfaceHost.GetX11Window());
     eglSurf = eglCreatePlatformWindowSurface(eglDpy, cfg, &x11Win, nullptr);
+    const EGLint platformErr = (eglSurf == EGL_NO_SURFACE) ? eglGetError() : EGL_SUCCESS;
     if (eglSurf == EGL_NO_SURFACE) {
       eglSurf = eglCreateWindowSurface(
           eglDpy, cfg,
@@ -1106,8 +1245,13 @@ bool OpenGLESBackend::CreateDirectEglContext() {
     }
     if (eglSurf == EGL_NO_SURFACE) {
       GLIDE_LOG(CRITICAL, "GLES",
-                "eglCreatePlatformWindowSurface(X11Child) failed (err=0x"
-                    << std::hex << eglGetError() << std::dec << ").");
+                "eglCreatePlatformWindowSurface(X11Child) failed (platformErr=0x"
+                    << std::hex << platformErr << ", legacyErr=0x"
+                    << eglGetError() << ", configId=" << std::dec
+                    << chosenConfigId << ", cfgVisual=0x" << std::hex
+                    << chosenVisualId << ", targetVisual=0x" << nativeVisualId
+                    << std::dec << ", rgba=" << chosenR << "/" << chosenG
+                    << "/" << chosenB << "/" << chosenA << ").");
       return false;
     }
     m_eglSurface = eglSurf;
@@ -1170,6 +1314,11 @@ bool OpenGLESBackend::CreateDirectEglContext() {
             "Created Direct EGL " << major << "." << minor
                                   << " OpenGL ES context (mode="
                                   << NativeSurfaceHost::ModeToString(mode)
+                                  << ", configId=" << chosenConfigId
+                                  << ", visual=0x" << std::hex << chosenVisualId
+                                  << "/0x" << nativeVisualId << std::dec
+                                  << ", rgba=" << chosenR << "/" << chosenG
+                                  << "/" << chosenB << "/" << chosenA
                                   << ", ownedDisplay="
                                   << (m_eglDisplayOwned ? "yes" : "no")
                                   << ").");
