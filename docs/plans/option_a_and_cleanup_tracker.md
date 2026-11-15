@@ -70,8 +70,8 @@ Recorded before any edits are made:
 | **T3.1** | Phase 3 | Extract `GlideStateTracker` from `SoftwareBackendBase` (remove CPU buffers from Vulkan/GLES inheritance) | Med | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `1edabe4` |
 | **T3.2** | Phase 3 | Deduplicate shared frontend code across `glide2_entry.cpp` & `glide3_entry.cpp` (`GlideEntryCommon`) | Med | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `4ea66b7` |
 | **T3.3** | Phase 3 | Split monolithic backend `.cpp` files (`VulkanBackend`, `OpenGLESBackend`, `SoftwareBackend`) into cohesive units | Med | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `f857e49`, `1765199`, `4f00b30` |
-| **T3.4** | Phase 3 | Audit & reduce `std::recursive_mutex` hot-path contention + benchmark regression check | Med | `[~] IMPLEMENTED — AWAITING USER VERIFICATION` | `4d64eeb` |
-| **T4.0** | Phase 4 | **Decision Gate**: Evaluate Option A real-world behavior vs. triggers for Option B (~50 LOC DOSBox patch) | Gate | `[ ] PENDING` | — |
+| **T3.4** | Phase 3 | Audit & reduce `std::recursive_mutex` hot-path contention + benchmark regression check | Med | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `4d64eeb` |
+| **T4.0** | Phase 4 | **Decision Gate**: Evaluate Option A real-world behavior vs. triggers for Option B (~50 LOC DOSBox patch) | Gate | `[x] CLOSED — NOT NEEDED (USER CONFIRMED — 2026-11-15)` | — |
 
 ---
 
@@ -589,7 +589,7 @@ Recorded before any edits are made:
 - **User Verification**: Quick spot-check after all 3 splits complete.
 
 #### `T3.4` — Audit & Reduce `std::recursive_mutex` Hot-Path Contention
-- **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION` (Commit `4d64eeb`)
+- **Status**: `[x] DONE (USER CONFIRMED — 2026-11-15)` (Commit `4d64eeb`)
 - **Automated Result**:
   - **100% of `std::recursive_mutex` eliminated across `src/`** (all 161 occurrences replaced with non-recursive `std::mutex` + `_Locked` internal helpers across `BackendManager`, `LfbManager`, `TextureManager`, `GlideStateTracker`, `SoftwareBackendBase`, `SoftwareBackend`, `VulkanBackend`, and `OpenGLESBackend`).
   - Eliminated redundant double-locking on every backend state setter (`VulkanBackend::Set*`, `OpenGLESBackend::Set*`, `BindTexture`), scissor/cull sync (`GetScissorRectVulkan_Locked`, `ApplyScissorGLES_Locked`, `SyncCullStateGLES_Locked`), LFB flush (`FlushLFBToGPU_Locked`), and lazy clear materialization (`FlushBins_Locked`, `MaterializeLazyCpuClear_Locked`).
@@ -613,7 +613,7 @@ Recorded before any edits are made:
 
 ### Phase 4: Optional Decision Gate — Evaluate Option B (Thin ~50 LOC DOSBox Patch)
 
-> **Status**: `[ ] PENDING — DO NOT START UNTIL T2.7 IS USER-CONFIRMED`
+> **Status**: `[x] CLOSED — NOT NEEDED (USER CONFIRMED — 2026-11-15)` — Option A works cleanly across unpatched DOSBox-X and DOSBox SVN without modifying upstream emulators. Revisit only if a future DOSBox SVN edge case requires it.
 
 After **Option A (`T2.7`)** is confirmed working by the user, evaluate these four concrete triggers:
 
