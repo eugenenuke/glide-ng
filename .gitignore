@@ -32,7 +32,6 @@ tests/software_dumps/
 .vscode/
 .idea/
 .DS_Store
-.agents/
 
 # Scratch and local configuration files
 /scratch/
