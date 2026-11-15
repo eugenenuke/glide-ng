@@ -60,8 +60,8 @@ Recorded before any edits are made:
 | **T1.5** | Phase 1 | Replace fragile substring matching in `JsonConfigLoader.cpp` with key-scoped parser + Catch2 tests | Low | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `d8b7d03` |
 | **T1.6** | Phase 1 | Add `wayland-egl`/`egl` CMake discovery & guard `#if defined(UNIX)` trap until T2.7 | Low | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `cad7d0d` |
 | **T1.7** | Phase 1 | Prefer `VK_PRESENT_MODE_MAILBOX_KHR` on Wayland VSync to fix Mesa `wp_fifo_v1` stutter + Catch2 tests | Low | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `15482fc` |
-| **T2.1** | Phase 2 | Implement `NativeSurfaceHost` core + Headless + Standalone SDL2 + `ComputePresentRect` aspect math + tests | Low | `[~] IMPLEMENTED — AWAITING USER VERIFICATION` | `ae65f8e` |
-| **T2.2** | Phase 2 | Implement X11 / XWayland native child window in `NativeSurfaceHost` (`XOpenDisplay`, `XCreateWindow`, `XShape`) + embed test harness | Med | `[ ] PENDING` | — |
+| **T2.1** | Phase 2 | Implement `NativeSurfaceHost` core + Headless + Standalone SDL2 + `ComputePresentRect` aspect math + tests | Low | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `ae65f8e` |
+| **T2.2** | Phase 2 | Implement X11 / XWayland native child window in `NativeSurfaceHost` (`XOpenDisplay`, `XCreateWindow`, `XShape`) + embed test harness | Med | `[~] IMPLEMENTED — AWAITING USER VERIFICATION` | `4f40687` |
 | **T2.3** | Phase 2 | Implement Native Wayland `wl_subsurface` in `NativeSurfaceHost` + SVN DOSBox `setConfig('SDL2')` export + HiDPI scaling | Med–High | `[ ] PENDING` | — |
 | **T2.4** | Phase 2 | Migrate `VulkanBackend` to `NativeSurfaceHost` + aspect-ratio preserving letterbox/pillarbox blit | Med | `[ ] PENDING` | — |
 | **T2.5** | Phase 2 | Migrate `OpenGLESBackend` to `NativeSurfaceHost` (Direct EGL) + aspect-ratio & Gamma LUT presentation pass | Med | `[ ] PENDING` | — |
@@ -298,7 +298,7 @@ Recorded before any edits are made:
 ```
 
 #### `T2.1` — `NativeSurfaceHost` Interface, Headless/Standalone Modes & Aspect-Ratio Math
-- **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION` (Commit `ae65f8e`)
+- **Status**: `[x] DONE (USER CONFIRMED — 2026-11-15)` (Commit `ae65f8e`)
 - **Automated Result**: Added [src/core/NativeSurfaceHost.h](file:///usr/local/google/home/eianiuk/gemini/3dfx/src/core/NativeSurfaceHost.h) (zero X11/Wayland header pollution; opaque native handle getters) and [src/core/NativeSurfaceHost.cpp](file:///usr/local/google/home/eianiuk/gemini/3dfx/src/core/NativeSurfaceHost.cpp) with exact 64-bit integer `ComputePresentRect`, `Headless` mode, and `StandaloneSDL2` mode (`SDL_HINT_NO_SIGNAL_HANDLERS=1`, resizable HiDPI window, `SyncBounds`, `SDL_QUIT`/`SDL_WINDOWEVENT_CLOSE` detection in `PollEvents`). Compiled with zero warnings across all targets; `Glide3xWrapperTests` passed **38/38 test cases (1883 assertions)** including `[WSI][NativeSurfaceHost][AspectRatio]`, `[Headless]`, and `[Standalone]`.
 - **Target Files**:
   - *New*: `src/core/NativeSurfaceHost.h`
@@ -323,7 +323,11 @@ Recorded before any edits are made:
 - **User Verification**: Quick review of `NativeSurfaceHost.h` interface before X11/Wayland implementations begin.
 
 #### `T2.2` — X11 / XWayland Native Child Window in `NativeSurfaceHost` + Embed Harness
-- **Status**: `[ ] PENDING`
+- **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION` (Commit `4f40687`)
+- **Automated Result**: Implemented `Mode::X11Child` in [src/core/NativeSurfaceHost.cpp](file:///usr/local/google/home/eianiuk/gemini/3dfx/src/core/NativeSurfaceHost.cpp) with safe `SDL_Window*` / raw X11 Window ID resolution, private `XOpenDisplay(nullptr)`, scoped `XErrorHandler` trap, `XCreateWindow` + `XShapeCombineRectangles(ShapeInput, empty)` click-through, and zero-roundtrip `ConfigureNotify` resize tracking in `SyncBounds()`. Renamed `Mode::None` → `Mode::Detached` so callers including `<SDL2/SDL_syswm.h>` / `<X11/Xlib.h>` never hit Xlib's `#define None 0L`. Added [demos/child_surface_embed_test.cpp](file:///usr/local/google/home/eianiuk/gemini/3dfx/demos/child_surface_embed_test.cpp) and `[WSI][NativeSurfaceHost][X11]` invalid-handle test.
+  - `Glide3xWrapperTests`: **39/39 test cases (1886 assertions) passed**.
+  - `SDL_VIDEODRIVER=x11 ./build/bin/child_surface_embed_test --raw-handle --smoke-ms 1200`: PASS (`800x600 -> 1024x600`, `4:3 PresentRect: x=112 y=0 800x600`, `resize_1024x600_observed=1`).
+  - `SDL_VIDEODRIVER=x11 ./build/bin/child_surface_embed_test --sdl-window --smoke-ms 1200`: PASS (`800x600 -> 1024x600`, `resize_1024x600_observed=1`).
 - **Target Files**:
   - `src/core/NativeSurfaceHost.cpp`
   - *New test tool*: `demos/child_surface_embed_test.cpp` (or `tools/`) — small standalone host app creating a parent SDL2 (or X11) window and calling our child-surface attach/resize/click-through test
