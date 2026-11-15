@@ -2,6 +2,7 @@
 #include "Logger.h"
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <sstream>
@@ -366,6 +367,171 @@ bool ParsePerfLogString(const std::string& raw, bool& outEnabled, std::string& o
     return true;
 }
 
+const char* HudPositionToShortString(HudPosition pos) {
+    switch (pos) {
+        case HudPosition::TOP_LEFT:     return "tl";
+        case HudPosition::TOP_RIGHT:    return "tr";
+        case HudPosition::BOTTOM_LEFT:  return "bl";
+        case HudPosition::BOTTOM_RIGHT: return "br";
+    }
+    return "tl";
+}
+
+std::string FormatHudMask(uint32_t mask) {
+    if (mask == HUD_NONE) return "off";
+    if (mask == HUD_FULL) return "full";
+    std::string out;
+    auto add = [&](uint32_t bit, const char* name) {
+        if (mask & bit) {
+            if (!out.empty()) out += ",";
+            out += name;
+        }
+    };
+    add(HUD_FPS, "fps");
+    add(HUD_FRAMETIMES, "frametimes");
+    add(HUD_BACKEND, "backend");
+    add(HUD_API, "api");
+    add(HUD_DRAWCALLS, "drawcalls");
+    add(HUD_LFB, "lfb");
+    return out;
+}
+
+bool ParseHudString(const std::string& raw,
+                    uint32_t& outMask,
+                    HudPosition& outPos,
+                    float& outScale,
+                    float& outOpacity,
+                    std::string& outSpec) {
+    std::string trimmed = raw;
+    while (!trimmed.empty() && std::isspace(static_cast<unsigned char>(trimmed.front()))) {
+        trimmed.erase(trimmed.begin());
+    }
+    while (!trimmed.empty() && std::isspace(static_cast<unsigned char>(trimmed.back()))) {
+        trimmed.pop_back();
+    }
+    if (trimmed.empty()) return false;
+
+    const std::string wholeLower = ToLower(trimmed);
+    if (wholeLower == "0" || wholeLower == "false" || wholeLower == "off" || wholeLower == "none") {
+        outMask = HUD_NONE;
+        outSpec = "off";
+        return true;
+    }
+    if (wholeLower == "1" || wholeLower == "true" || wholeLower == "on") {
+        outMask = HUD_FPS;
+        outSpec = "fps";
+        return true;
+    }
+
+    uint32_t mask = HUD_NONE;
+    HudPosition pos = outPos;
+    float scale = outScale;
+    float opacity = outOpacity;
+    bool recognizedAny = false;
+    bool hasExplicitElement = false;
+    bool explicitlyDisabled = false;
+
+    size_t start = 0;
+    while (start <= trimmed.size()) {
+        size_t sep = trimmed.find_first_of(",;", start);
+        if (sep == std::string::npos) sep = trimmed.size();
+        std::string tok = trimmed.substr(start, sep - start);
+        while (!tok.empty() && std::isspace(static_cast<unsigned char>(tok.front()))) tok.erase(tok.begin());
+        while (!tok.empty() && std::isspace(static_cast<unsigned char>(tok.back()))) tok.pop_back();
+
+        if (!tok.empty()) {
+            const std::string lowerTok = ToLower(tok);
+            const size_t eq = lowerTok.find('=');
+            if (eq != std::string::npos) {
+                const std::string key = lowerTok.substr(0, eq);
+                const std::string val = lowerTok.substr(eq + 1);
+                if (key == "scale") {
+                    double d = 1.0;
+                    if (ParseDoubleString(val, d)) {
+                        scale = static_cast<float>(std::clamp(d, 0.5, 4.0));
+                        recognizedAny = true;
+                    }
+                } else if (key == "opacity") {
+                    double d = 0.78;
+                    if (ParseDoubleString(val, d)) {
+                        opacity = static_cast<float>(std::clamp(d, 0.0, 1.0));
+                        recognizedAny = true;
+                    }
+                } else if (key == "position" || key == "pos") {
+                    if (val == "tl" || val == "top-left" || val == "topleft") {
+                        pos = HudPosition::TOP_LEFT;
+                        recognizedAny = true;
+                    } else if (val == "tr" || val == "top-right" || val == "topright") {
+                        pos = HudPosition::TOP_RIGHT;
+                        recognizedAny = true;
+                    } else if (val == "bl" || val == "bottom-left" || val == "bottomleft") {
+                        pos = HudPosition::BOTTOM_LEFT;
+                        recognizedAny = true;
+                    } else if (val == "br" || val == "bottom-right" || val == "bottomright") {
+                        pos = HudPosition::BOTTOM_RIGHT;
+                        recognizedAny = true;
+                    }
+                }
+            } else {
+                if (lowerTok == "0" || lowerTok == "off" || lowerTok == "none" || lowerTok == "false") {
+                    mask = HUD_NONE;
+                    explicitlyDisabled = true;
+                    recognizedAny = true;
+                } else if (lowerTok == "1" || lowerTok == "on" || lowerTok == "true" || lowerTok == "fps") {
+                    mask |= HUD_FPS;
+                    hasExplicitElement = true;
+                    recognizedAny = true;
+                } else if (lowerTok == "frametimes" || lowerTok == "frametime") {
+                    mask |= HUD_FRAMETIMES;
+                    hasExplicitElement = true;
+                    recognizedAny = true;
+                } else if (lowerTok == "backend" || lowerTok == "devinfo") {
+                    mask |= HUD_BACKEND;
+                    hasExplicitElement = true;
+                    recognizedAny = true;
+                } else if (lowerTok == "api") {
+                    mask |= HUD_API;
+                    hasExplicitElement = true;
+                    recognizedAny = true;
+                } else if (lowerTok == "drawcalls" || lowerTok == "draws") {
+                    mask |= HUD_DRAWCALLS;
+                    hasExplicitElement = true;
+                    recognizedAny = true;
+                } else if (lowerTok == "lfb") {
+                    mask |= HUD_LFB;
+                    hasExplicitElement = true;
+                    recognizedAny = true;
+                } else if (lowerTok == "full" || lowerTok == "all") {
+                    mask |= HUD_FULL;
+                    hasExplicitElement = true;
+                    recognizedAny = true;
+                }
+            }
+        }
+        if (sep == trimmed.size()) break;
+        start = sep + 1;
+    }
+
+    if (!recognizedAny) return false;
+    if (!hasExplicitElement && !explicitlyDisabled) {
+        // Options-only spec (e.g. "scale=2,position=tr") implies default FPS readout
+        mask = HUD_FPS;
+    }
+
+    outMask = mask;
+    outPos = pos;
+    outScale = scale;
+    outOpacity = opacity;
+    outSpec = FormatHudMask(mask);
+    if (mask != HUD_NONE) {
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), ",pos=%s,scale=%.2g",
+                      HudPositionToShortString(pos), static_cast<double>(scale));
+        outSpec += buf;
+    }
+    return true;
+}
+
 const char* GetNonEmptyEnv(const char* name) {
     const char* val = std::getenv(name);
     return (val && val[0] != '\0') ? val : nullptr;
@@ -534,6 +700,20 @@ bool JsonConfigLoader::Load(const std::string& configFilePath, WrapperConfig& ou
             outConfig.perfLogEnabled = (intVal != 0);
             outConfig.perfLogCsvPath.clear();
             outConfig.settingSources["perfLog"] = "json";
+        }
+        if (ExtractJsonBool(content, "hud", boolVal)) {
+            outConfig.hudMask = boolVal ? HUD_FPS : HUD_NONE;
+            outConfig.hudSpec = boolVal ? "fps" : "off";
+            outConfig.settingSources["hud"] = "json";
+        } else if (ExtractJsonString(content, "hud", strVal)) {
+            if (ParseHudString(strVal, outConfig.hudMask, outConfig.hudPosition,
+                               outConfig.hudScale, outConfig.hudOpacity, outConfig.hudSpec)) {
+                outConfig.settingSources["hud"] = "json";
+            }
+        } else if (ExtractJsonInt(content, "hud", intVal)) {
+            outConfig.hudMask = (intVal != 0) ? HUD_FPS : HUD_NONE;
+            outConfig.hudSpec = (intVal != 0) ? "fps" : "off";
+            outConfig.settingSources["hud"] = "json";
         }
 
         // Authentic Glide overrides in JSON
@@ -793,6 +973,13 @@ bool JsonConfigLoader::Load(const std::string& configFilePath, WrapperConfig& ou
     if (const char* envVal = GetNonEmptyEnv("GLIDE_NG_PERF_LOG")) {
         if (ParsePerfLogString(envVal, outConfig.perfLogEnabled, outConfig.perfLogCsvPath)) {
             outConfig.settingSources["perfLog"] = "GLIDE_NG_PERF_LOG";
+        }
+    }
+
+    if (const char* envVal = GetNonEmptyEnv("GLIDE_NG_HUD")) {
+        if (ParseHudString(envVal, outConfig.hudMask, outConfig.hudPosition,
+                           outConfig.hudScale, outConfig.hudOpacity, outConfig.hudSpec)) {
+            outConfig.settingSources["hud"] = "GLIDE_NG_HUD";
         }
     }
 

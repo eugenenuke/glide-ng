@@ -147,6 +147,7 @@ void InitGlide(const char* apiTag, void (*resetFrontendState)()) {
   auto& reg = EmulationRegistry::GetInstance();
   JsonConfigLoader loader;
   loader.Load("glide_config.json", reg.GetConfig());
+  reg.GetConfig().activeFrontendApi = apiTag ? apiTag : "";
 
   const auto& cfg = reg.GetConfig();
   auto& logger = Logger::GetInstance();

@@ -5,6 +5,7 @@
 
 #include "backends/CpuLfbStaging.h"
 #include "backends/GlideStateTracker.h"
+#include "core/HudOverlay.h"
 #include "core/NativeSurfaceHost.h"
 
 namespace GlideWrapper {
@@ -194,6 +195,11 @@ class OpenGLESBackend : public GlideStateTracker {
   uint32_t m_glGammaLutTex{0};
   bool m_useGammaLut{false};
   int m_uUseGammaLutLoc{-1};
+
+  // On-screen HUD Overlay Resources
+  HudOverlay m_hudOverlay;
+  uint32_t m_glHudTex{0};
+  uint64_t m_hudUploadedRev{0};
 
   // Cached Uniform Locations for geomProgram
   int m_uSstOriginLoc{-1};

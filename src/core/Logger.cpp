@@ -424,6 +424,13 @@ void Logger::LogExecutionSummary(const WrapperConfig& config) {
         ss << "ENABLED (periodic [PERF] log summary)";
     }
 
+    ss << "\n  HUD Overlay          : ";
+    if (config.hudMask == HUD_NONE) {
+        ss << "DISABLED";
+    } else {
+        ss << "ENABLED (" << (config.hudSpec.empty() ? "fps" : config.hudSpec) << ")";
+    }
+
     std::string backendPretty = "Vulkan 1.1 GPU Port";
     if (config.backend == "opengl_es") backendPretty = "OpenGL ES 3.2 GPU Port";
     else if (config.backend == "software") backendPretty = "Host CPU Software Reference";

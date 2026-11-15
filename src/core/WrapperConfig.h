@@ -27,6 +27,24 @@ enum class ApiVersion {
     GLIDE_2_61 = 261
 };
 
+enum HudElementFlags : uint32_t {
+    HUD_NONE       = 0u,
+    HUD_FPS        = 1u << 0,
+    HUD_FRAMETIMES = 1u << 1,
+    HUD_BACKEND    = 1u << 2,
+    HUD_API        = 1u << 3,
+    HUD_DRAWCALLS  = 1u << 4,
+    HUD_LFB        = 1u << 5,
+    HUD_FULL       = HUD_FPS | HUD_FRAMETIMES | HUD_BACKEND | HUD_API | HUD_DRAWCALLS | HUD_LFB
+};
+
+enum class HudPosition : uint32_t {
+    TOP_LEFT = 0,
+    TOP_RIGHT = 1,
+    BOTTOM_LEFT = 2,
+    BOTTOM_RIGHT = 3
+};
+
 struct WrapperConfig {
     // Emulated hardware profile
     CardModel model{CardModel::Voodoo2};
@@ -63,6 +81,14 @@ struct WrapperConfig {
     bool traceFrameWindowActive{false};
     bool perfLogEnabled{false};            // Periodic [PERF] summary (GLIDE_NG_PERF_LOG)
     std::string perfLogCsvPath{""};        // Optional per-frame CSV path (GLIDE_NG_PERF_LOG=<path>)
+
+    // On-screen HUD overlay (DXVK-style GLIDE_NG_HUD / JSON "hud")
+    uint32_t hudMask{HUD_NONE};            // Bitmask of HudElementFlags
+    HudPosition hudPosition{HudPosition::TOP_LEFT};
+    float hudScale{1.0f};                  // 0.5 .. 4.0
+    float hudOpacity{0.78f};               // Backdrop opacity 0.0 .. 1.0
+    std::string hudSpec{""};               // Raw/normalized HUD spec for summary
+    std::string activeFrontendApi{""};     // Populated at InitGlide ("Glide 2.x" / "Glide 3.x")
 
     // Authentic 3dfx Glide overrides (Phase 1)
     bool noSplash{false};          // FX_GLIDE_NO_SPLASH / GLIDE_NG_NO_SPLASH

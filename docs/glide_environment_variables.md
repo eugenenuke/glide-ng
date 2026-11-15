@@ -88,7 +88,36 @@ GLIDE_NG_LOG_LEVEL=trace GLIDE_NG_LOG_CATEGORIES=api,lfb,perf \
   GLIDE_NG_PERF_LOG=/tmp/perf.csv <game_command>
 ```
 
-### 1.6 Backend-Specific Tuning
+### 1.6 On-Screen HUD Overlay
+
+| Environment Variable | JSON Key | Accepted Values | Default | Status | Description |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `GLIDE_NG_HUD` | `"hud"` | `0`/`false`/`off` (disabled), `1`/`fps` (live FPS counter), `full`/`all` (all metrics), or comma-separated tokens below | `0` *(disabled)* | **Implemented** | DXVK-style on-screen performance overlay rendered in each backend's post-scene presentation pass (Vulkan, OpenGL ES, Software) using an embedded bitmap font with zero Glide state or guest framebuffer mutation. |
+
+#### Supported `GLIDE_NG_HUD` Tokens
+
+| Token | Meaning |
+| :--- | :--- |
+| `fps` *(or `1`)* | Live rolling FPS counter and current frame pacing status (`60cap`, `VSync`, `Uncap`). |
+| `frametimes` *(or `frametime`)* | Frame / render / present breakdown in milliseconds plus a 64-frame color-coded bar graph. |
+| `backend` *(or `devinfo`)* | Active backend (`VK`, `GLES`, `SW`), emulated card model, guest resolution, and MSAA factor. |
+| `api` | Active Glide frontend (`Glide2x` / `Glide3x`) and reported API version. |
+| `drawcalls` *(or `draws`)* | Per-frame draw calls, mid-frame state flushes, and drawn triangles. |
+| `lfb` | Per-frame LFB read/write counts and texture upload counts. |
+| `full` *(or `all`)* | Shorthand enabling all HUD elements (`fps,frametimes,backend,api,drawcalls,lfb`). |
+| `scale=<0.5..4.0>` | Display scale multiplier (default `1.0`). |
+| `position=<corner>` *(or `pos=`)* | Corner placement: `tl`/`top-left` (default), `tr`/`top-right`, `bl`/`bottom-left`, `br`/`bottom-right`. |
+| `opacity=<0.0..1.0>` | Backdrop opacity (default `0.78`). |
+
+```bash
+# Minimal FPS counter (top-left)
+GLIDE_NG_HUD=fps ./build/bin/glide3_cube
+
+# Full telemetry HUD in bottom-right corner at 1.5x scale
+GLIDE_NG_HUD=full,position=br,scale=1.5 ./build/bin/glide3_cube
+```
+
+### 1.7 Backend-Specific Tuning
 
 | Environment Variable | JSON Key | Accepted Values | Default | Status | Description |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -99,7 +128,7 @@ GLIDE_NG_LOG_LEVEL=trace GLIDE_NG_LOG_CATEGORIES=api,lfb,perf \
 | `GLIDE_NG_VK_CACHE_PATH` | `"vkCachePath"` | File path | `.glide-vulkan-cache.bin` | **Implemented** | File path for persisting Vulkan `VkPipelineCache` data across runs. |
 | `GLIDE_NG_GLES_VBO_SIZE` | `"glesVboSize"` | Integer `>= 1` (MB) | `8` | **Implemented** | OpenGL ES streaming vertex buffer size in megabytes. |
 
-### 1.7 Stubs / Unimplemented Fields
+### 1.8 Stubs / Unimplemented Fields
 
 | Environment Variable | JSON Key | Accepted Values | Default | Status | Description |
 | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -167,10 +196,8 @@ The configuration namespace is designed to grow cleanly alongside upcoming diagn
 ### Milestone M2 — Tiered Logging, Category Filtering & Per-Frame Performance Tracing *(Implemented)*
 - **`GLIDE_NG_LOG_LEVEL=trace` (`5`)**, **`GLIDE_NG_LOG_CATEGORIES`**, **`GLIDE_NG_TRACE_FRAMES`**, and **`GLIDE_NG_PERF_LOG`** are now implemented and documented in [Section 1.5](#15-logging--diagnostics).
 
-### Milestone M3 — DXVK-Style On-Screen HUD (`GLIDE_NG_HUD`)
-- **`GLIDE_NG_HUD`** *(Planned)*: Comma-separated overlay elements rendered directly in the backend presentation pass without mutating Glide render state.
-  - Phase 1 starts with **`GLIDE_NG_HUD=fps`** (live FPS counter) and `GLIDE_NG_HUD=full` / `1` convenience presets.
-  - Designed to expand incrementally to additional metrics (frame time graph, active backend & Glide API version, resolution, draw calls / triangles per frame, LFB/texture upload counters, VSync/FPS cap status).
+### Milestone M3 — DXVK-Style On-Screen HUD (`GLIDE_NG_HUD`) *(Implemented)*
+- **`GLIDE_NG_HUD`** (and JSON `"hud"`) is now implemented across Vulkan, OpenGL ES, and Software backends and documented in [Section 1.6](#16-on-screen-hud-overlay).
 
 ### Milestone M7 — Phase-2 Authentic 3dfx Environment Variables
 - Expands `FX_GLIDE_*` / `SST_*` coverage with the compatibility, rendering, and diagnostic variables listed in [Section 2.2](#22-planned-phase-2--future-milestone-m7).

@@ -13,6 +13,7 @@
 
 #include "backends/CpuLfbStaging.h"
 #include "backends/GlideStateTracker.h"
+#include "core/HudOverlay.h"
 #include "core/NativeSurfaceHost.h"
 
 namespace GlideWrapper {
@@ -485,6 +486,36 @@ class VulkanBackend : public GlideStateTracker {
   uint8_t m_lutR[256];
   uint8_t m_lutG[256];
   uint8_t m_lutB[256];
+
+  // --- M3: Post-Scene On-Screen HUD Overlay (zero Glide state mutation) ---
+  bool InitHudPipeline_Locked();
+  bool CreateHudSwapchainFramebuffers_Locked();
+  void DestroyHudSwapchainFramebuffers_Locked();
+  void DestroyHudResources_Locked();
+  bool EnsureHudTexture_Locked(uint32_t width, uint32_t height);
+  bool RenderHudToSwapchain_Locked(uint32_t imageIdx, const PresentRect& dst);
+
+  HudOverlay m_hudOverlay;
+  vk::Format m_hudPipelineFormat{vk::Format::eUndefined};
+  vk::UniqueRenderPass m_hudRenderPass;
+  std::vector<vk::UniqueFramebuffer> m_hudFramebuffers;
+  vk::UniqueDescriptorSetLayout m_hudDescSetLayout;
+  vk::UniqueDescriptorPool m_hudDescPool;
+  vk::DescriptorSet m_hudDescSet;
+  vk::UniquePipelineLayout m_hudPipelineLayout;
+  vk::UniquePipeline m_hudPipeline;
+  vk::UniqueSampler m_hudSampler;
+  vk::UniqueImage m_hudImage;
+  vk::UniqueDeviceMemory m_hudImageMemory;
+  vk::UniqueImageView m_hudImageView;
+  vk::ImageLayout m_hudImageLayout{vk::ImageLayout::eUndefined};
+  uint32_t m_hudTexW{0};
+  uint32_t m_hudTexH{0};
+  uint64_t m_hudUploadedRev{0};
+  vk::UniqueBuffer m_hudStagingBuffers[2];
+  vk::UniqueDeviceMemory m_hudStagingMemories[2];
+  void* m_hudStagingMaps[2]{nullptr, nullptr};
+  vk::DeviceSize m_hudStagingSizes[2]{0, 0};
 };
 
 }  // namespace GlideWrapper
