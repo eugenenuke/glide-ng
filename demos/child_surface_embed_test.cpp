@@ -1,6 +1,7 @@
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_syswm.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -24,6 +25,12 @@
 #endif
 #endif
 
+#if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_WAYLAND)
+#include <sys/mman.h>
+#include <unistd.h>
+#include <wayland-client.h>
+#endif
+
 using GlideWrapper::NativeSurfaceHost;
 using GlideWrapper::PresentRect;
 
@@ -40,6 +47,17 @@ void PrintUsage(const char* argv0) {
             << "  --help             Show this help\n";
 }
 
+void PaintParentBackground(SDL_Window* parentWin) {
+  // On native Wayland, an xdg_toplevel parent window is not mapped by the
+  // compositor until at least one buffer is committed to it (DOSBox-X does
+  // this via SDL_UpdateWindowSurface or SDL_GL_SwapWindow).
+  SDL_Surface* surf = SDL_GetWindowSurface(parentWin);
+  if (surf) {
+    SDL_FillRect(surf, nullptr, SDL_MapRGB(surf->format, 24, 24, 32));
+    SDL_UpdateWindowSurface(parentWin);
+  }
+}
+
 #if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_X11)
 void DrawX11TestPattern(Display* dpy, Window childWin, GC gc, uint32_t hostW,
                         uint32_t hostH, uint32_t guestW, uint32_t guestH,
@@ -49,15 +67,12 @@ void DrawX11TestPattern(Display* dpy, Window childWin, GC gc, uint32_t hostW,
     return;
   }
 
-  // 1. Fill full child window with dark letterbox/pillarbox black.
   XSetForeground(dpy, gc, 0x00080810UL);
   XFillRectangle(dpy, childWin, gc, 0, 0, hostW, hostH);
 
-  // 2. Compute 4:3 aspect-preserving PresentRect.
   PresentRect dst =
       NativeSurfaceHost::ComputePresentRect(guestW, guestH, hostW, hostH, true);
 
-  // 3. Draw 4:3 guest viewport interior (deep blue) + bright cyan frame.
   XSetForeground(dpy, gc, 0x00102850UL);
   XFillRectangle(dpy, childWin, gc, dst.x, dst.y, dst.width, dst.height);
 
@@ -70,8 +85,6 @@ void DrawX11TestPattern(Display* dpy, Window childWin, GC gc, uint32_t hostW,
                    (dst.height > 5) ? dst.height - 5 : 1);
   }
 
-  // 4. Draw animated bouncing box inside the 4:3 region so frame pacing and
-  //    bounds tracking are immediately visible.
   const uint32_t boxSize =
       std::max<uint32_t>(24, std::min(dst.width, dst.height) / 6);
   const double phase = static_cast<double>(frameIdx) * 0.04;
@@ -80,13 +93,11 @@ void DrawX11TestPattern(Display* dpy, Window childWin, GC gc, uint32_t hostW,
   const int32_t bx = dst.x + static_cast<int32_t>(nx * (dst.width - boxSize));
   const int32_t by = dst.y + static_cast<int32_t>(ny * (dst.height - boxSize));
 
-  // Color shifts on clicks/keys so input pass-through is visually confirmed!
   const unsigned long boxColor =
       ((clickCount + keyCount) % 2 == 0) ? 0x0033FF66UL : 0x00FFAA22UL;
   XSetForeground(dpy, gc, boxColor);
   XFillRectangle(dpy, childWin, gc, bx, by, boxSize, boxSize);
 
-  // 5. Draw center crosshair.
   XSetForeground(dpy, gc, 0x00FFFFFFUL);
   const int32_t cx = dst.x + static_cast<int32_t>(dst.width / 2);
   const int32_t cy = dst.y + static_cast<int32_t>(dst.height / 2);
@@ -95,6 +106,197 @@ void DrawX11TestPattern(Display* dpy, Window childWin, GC gc, uint32_t hostW,
 
   XFlush(dpy);
 }
+#endif
+
+#if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_WAYLAND)
+class WaylandShmDrawer {
+ public:
+  ~WaylandShmDrawer() { DestroyBuffers(); }
+
+  void Init(wl_display* dpy, wl_shm* shm, wl_surface* surface) {
+    m_dpy = dpy;
+    m_shm = shm;
+    m_surface = surface;
+  }
+
+  void DestroyBuffers() {
+    for (auto& slot : m_slots) {
+      if (slot.buffer) {
+        wl_buffer_destroy(slot.buffer);
+        slot.buffer = nullptr;
+      }
+      if (slot.pixels && slot.pixels != MAP_FAILED) {
+        munmap(slot.pixels, slot.byteSize);
+        slot.pixels = nullptr;
+      }
+      slot.byteSize = 0;
+      slot.busy = false;
+    }
+    m_width = 0;
+    m_height = 0;
+  }
+
+  bool DrawFrame(uint32_t hostW, uint32_t hostH, uint32_t guestW,
+                 uint32_t guestH, uint32_t frameIdx, uint32_t clickCount,
+                 uint32_t keyCount) {
+    if (!m_dpy || !m_shm || !m_surface || hostW == 0 || hostH == 0) {
+      return false;
+    }
+
+    if (hostW != m_width || hostH != m_height) {
+      if (!AllocateBuffers(hostW, hostH)) {
+        return false;
+      }
+    }
+
+    BufferSlot* slot = nullptr;
+    for (auto& candidate : m_slots) {
+      if (!candidate.busy) {
+        slot = &candidate;
+        break;
+      }
+    }
+    if (!slot) {
+      // Both buffers temporarily held by compositor; skip this tick cleanly.
+      return true;
+    }
+
+    uint32_t* px = static_cast<uint32_t*>(slot->pixels);
+    const uint32_t bgColor = 0xFF080810U;
+    std::fill(px, px + static_cast<size_t>(hostW) * hostH, bgColor);
+
+    auto fillRect = [&](int32_t rx, int32_t ry, uint32_t rw, uint32_t rh,
+                        uint32_t argb) {
+      const int32_t x0 = std::max<int32_t>(0, rx);
+      const int32_t y0 = std::max<int32_t>(0, ry);
+      const int32_t x1 =
+          std::min<int32_t>(static_cast<int32_t>(hostW), rx + static_cast<int32_t>(rw));
+      const int32_t y1 =
+          std::min<int32_t>(static_cast<int32_t>(hostH), ry + static_cast<int32_t>(rh));
+      for (int32_t y = y0; y < y1; ++y) {
+        uint32_t* row = px + static_cast<size_t>(y) * hostW;
+        std::fill(row + x0, row + x1, argb);
+      }
+    };
+
+    PresentRect dst = NativeSurfaceHost::ComputePresentRect(
+        guestW, guestH, hostW, hostH, true);
+
+    // 4:3 viewport interior + 3px cyan border.
+    fillRect(dst.x, dst.y, dst.width, dst.height, 0xFF102850U);
+    if (dst.width > 6 && dst.height > 6) {
+      const uint32_t border = 0xFF00E5FFU;
+      fillRect(dst.x, dst.y, dst.width, 3, border);
+      fillRect(dst.x, dst.y + static_cast<int32_t>(dst.height) - 3, dst.width, 3,
+               border);
+      fillRect(dst.x, dst.y, 3, dst.height, border);
+      fillRect(dst.x + static_cast<int32_t>(dst.width) - 3, dst.y, 3,
+               dst.height, border);
+    }
+
+    // Animated bouncing box (flips color on clicks/keys).
+    const uint32_t boxSize =
+        std::max<uint32_t>(24, std::min(dst.width, dst.height) / 6);
+    const double phase = static_cast<double>(frameIdx) * 0.04;
+    const double nx = 0.5 + 0.35 * std::cos(phase);
+    const double ny = 0.5 + 0.35 * std::sin(phase * 1.3);
+    const int32_t bx = dst.x + static_cast<int32_t>(nx * (dst.width - boxSize));
+    const int32_t by =
+        dst.y + static_cast<int32_t>(ny * (dst.height - boxSize));
+    const uint32_t boxColor =
+        ((clickCount + keyCount) % 2 == 0) ? 0xFF33FF66U : 0xFFFFAA22U;
+    fillRect(bx, by, boxSize, boxSize, boxColor);
+
+    // White center crosshair.
+    const int32_t cx = dst.x + static_cast<int32_t>(dst.width / 2);
+    const int32_t cy = dst.y + static_cast<int32_t>(dst.height / 2);
+    fillRect(cx - 16, cy - 1, 33, 3, 0xFFFFFFFFU);
+    fillRect(cx - 1, cy - 16, 3, 33, 0xFFFFFFFFU);
+
+    slot->busy = true;
+    wl_surface_attach(m_surface, slot->buffer, 0, 0);
+    wl_surface_damage_buffer(m_surface, 0, 0, static_cast<int32_t>(hostW),
+                             static_cast<int32_t>(hostH));
+    wl_surface_commit(m_surface);
+    wl_display_flush(m_dpy);
+    return true;
+  }
+
+ private:
+  struct BufferSlot {
+    wl_buffer* buffer = nullptr;
+    void* pixels = nullptr;
+    size_t byteSize = 0;
+    bool busy = false;
+  };
+
+  static void OnBufferRelease(void* data, wl_buffer* /*buffer*/) {
+    auto* slot = static_cast<BufferSlot*>(data);
+    if (slot) {
+      slot->busy = false;
+    }
+  }
+
+  bool AllocateBuffers(uint32_t w, uint32_t h) {
+    DestroyBuffers();
+    const uint32_t stride = w * 4;
+    const size_t size = static_cast<size_t>(stride) * h;
+
+    static const wl_buffer_listener kBufListener = {OnBufferRelease};
+
+    for (auto& slot : m_slots) {
+      int fd = memfd_create("glide_embed_test", MFD_CLOEXEC);
+      if (fd < 0) {
+        DestroyBuffers();
+        return false;
+      }
+      if (ftruncate(fd, static_cast<off_t>(size)) < 0) {
+        close(fd);
+        DestroyBuffers();
+        return false;
+      }
+      void* map = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+      if (map == MAP_FAILED) {
+        close(fd);
+        DestroyBuffers();
+        return false;
+      }
+      wl_shm_pool* pool =
+          wl_shm_create_pool(m_shm, fd, static_cast<int32_t>(size));
+      close(fd);
+      if (!pool) {
+        munmap(map, size);
+        DestroyBuffers();
+        return false;
+      }
+      wl_buffer* buf = wl_shm_pool_create_buffer(
+          pool, 0, static_cast<int32_t>(w), static_cast<int32_t>(h),
+          static_cast<int32_t>(stride), WL_SHM_FORMAT_XRGB8888);
+      wl_shm_pool_destroy(pool);
+      if (!buf) {
+        munmap(map, size);
+        DestroyBuffers();
+        return false;
+      }
+      wl_buffer_add_listener(buf, &kBufListener, &slot);
+      slot.buffer = buf;
+      slot.pixels = map;
+      slot.byteSize = size;
+      slot.busy = false;
+    }
+
+    m_width = w;
+    m_height = h;
+    return true;
+  }
+
+  wl_display* m_dpy = nullptr;
+  wl_shm* m_shm = nullptr;
+  wl_surface* m_surface = nullptr;
+  uint32_t m_width = 0;
+  uint32_t m_height = 0;
+  BufferSlot m_slots[2];
+};
 #endif
 
 }  // namespace
@@ -140,6 +342,9 @@ int main(int argc, char** argv) {
     return 1;
   }
 
+  // Commit initial parent frame (maps xdg_toplevel on Wayland immediately).
+  PaintParentBackground(parentWin);
+
   SDL_SysWMinfo wmi{};
   SDL_VERSION(&wmi.version);
   if (!SDL_GetWindowWMInfo(parentWin, &wmi)) {
@@ -184,7 +389,8 @@ int main(int argc, char** argv) {
   surfaceHost.GetDrawableSize(curW, curH);
   std::cout << "[EmbedTest] Attached mode="
             << NativeSurfaceHost::ModeToString(surfaceHost.GetMode())
-            << " initial_size=" << curW << "x" << curH << "\n";
+            << " initial_size=" << curW << "x" << curH
+            << " scale=" << surfaceHost.GetWaylandScale() << "\n";
   std::cout << "[EmbedTest] Controls: Click/type anywhere inside window to "
                "verify input passthrough, F or Alt+Enter=Fullscreen, "
                "ESC/Q=Quit.\n"
@@ -196,6 +402,15 @@ int main(int argc, char** argv) {
     Display* dpy = static_cast<Display*>(surfaceHost.GetX11Display());
     Window child = static_cast<Window>(surfaceHost.GetX11Window());
     x11Gc = XCreateGC(dpy, child, 0, nullptr);
+  }
+#endif
+
+#if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_WAYLAND)
+  WaylandShmDrawer wlDrawer;
+  if (surfaceHost.GetMode() == NativeSurfaceHost::Mode::WaylandSubsurface) {
+    wlDrawer.Init(static_cast<wl_display*>(surfaceHost.GetWaylandDisplay()),
+                  static_cast<wl_shm*>(surfaceHost.GetWaylandShm()),
+                  static_cast<wl_surface*>(surfaceHost.GetWaylandSurface()));
   }
 #endif
 
@@ -226,6 +441,10 @@ int main(int argc, char** argv) {
     while (SDL_PollEvent(&ev)) {
       if (ev.type == SDL_QUIT) {
         running = false;
+      } else if (ev.type == SDL_WINDOWEVENT &&
+                 (ev.window.event == SDL_WINDOWEVENT_SIZE_CHANGED ||
+                  ev.window.event == SDL_WINDOWEVENT_EXPOSED)) {
+        PaintParentBackground(parentWin);
       } else if (ev.type == SDL_MOUSEBUTTONDOWN) {
         ++clickCount;
         std::cout << "[EmbedTest] Parent received click #" << clickCount
@@ -258,11 +477,14 @@ int main(int argc, char** argv) {
       PresentRect dst = NativeSurfaceHost::ComputePresentRect(
           guestW, guestH, curW, curH, true);
       std::cout << "[EmbedTest] SyncBounds resize #" << resizeCount << " -> "
-                << curW << "x" << curH << " (4:3 PresentRect: x=" << dst.x
-                << " y=" << dst.y << " " << dst.width << "x" << dst.height
-                << ")\n"
+                << curW << "x" << curH
+                << " (scale=" << surfaceHost.GetWaylandScale()
+                << ", 4:3 PresentRect: x=" << dst.x << " y=" << dst.y << " "
+                << dst.width << "x" << dst.height << ")\n"
                 << std::flush;
-      if (smokeResizeIssued && curW == 1024 && curH == 600) {
+      const int32_t scale = std::max<int32_t>(1, surfaceHost.GetWaylandScale());
+      if (smokeResizeIssued && curW == static_cast<uint32_t>(1024 * scale) &&
+          curH == static_cast<uint32_t>(600 * scale)) {
         smokeResizeObserved = true;
       }
       updateTitle();
@@ -273,6 +495,13 @@ int main(int argc, char** argv) {
       DrawX11TestPattern(static_cast<Display*>(surfaceHost.GetX11Display()),
                          static_cast<Window>(surfaceHost.GetX11Window()), x11Gc,
                          curW, curH, guestW, guestH, frameIdx, clickCount,
+                         keyCount);
+    }
+#endif
+
+#if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_WAYLAND)
+    if (surfaceHost.GetMode() == NativeSurfaceHost::Mode::WaylandSubsurface) {
+      wlDrawer.DrawFrame(curW, curH, guestW, guestH, frameIdx, clickCount,
                          keyCount);
     }
 #endif
@@ -289,6 +518,7 @@ int main(int argc, char** argv) {
         std::cout << "[EmbedTest] Smoke test: resizing parent to 1024x600...\n"
                   << std::flush;
         SDL_SetWindowSize(parentWin, 1024, 600);
+        PaintParentBackground(parentWin);
       }
       if (elapsedMs >= smokeMs) {
         running = false;
@@ -297,6 +527,10 @@ int main(int argc, char** argv) {
 
     SDL_Delay(16);
   }
+
+#if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_WAYLAND)
+  wlDrawer.DestroyBuffers();
+#endif
 
 #if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_X11)
   if (x11Gc && surfaceHost.GetX11Display()) {

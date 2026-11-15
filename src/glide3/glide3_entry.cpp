@@ -376,7 +376,7 @@ FX_ENTRY void FX_CALL grGlideShutdown(void) {
   GlideWrapper::BackendManager::GetInstance().ShutdownBackend();
 }
 
-FX_ENTRY GrContext_t FX_CALL grSstWinOpen(FxU32 hWnd,
+FX_ENTRY GrContext_t FX_CALL grSstWinOpen(AnyPtr hWnd,
                                           GrScreenResolution_t resolution,
                                           GrScreenRefresh_t refresh,
                                           GrColorFormat_t format,
@@ -2094,6 +2094,28 @@ FX_ENTRY void FX_CALL grSplash(float x, float y, float w, float h,
   GlideWrapper::VertexLayout::GetInstance().SetLayoutState(&savedLayout);
 
   g_inSplash = false;
+}
+
+/**
+ * @brief DOSBox-specific configuration extension.
+ * Performs a handshake verification by setting the signature pointer to 'SDL2'.
+ */
+FX_ENTRY void FX_CALL setConfig(FxU32 flags, void* magic) {
+  GLIDE_LOG(INFO, "Frontend",
+            "setConfig (DOSBox extension, Glide 3.x) called. flags=" << flags);
+  if (magic) {
+    uint32_t signature = 0x324c4453;  // 'SDL2'
+    std::memcpy(magic, &signature, sizeof(signature));
+  }
+}
+
+/**
+ * @brief DOSBox-specific resolution configuration extension.
+ */
+FX_ENTRY void FX_CALL setConfigRes(int res, void (*swap12)()) {
+  GLIDE_LOG(INFO, "Frontend",
+            "setConfigRes (DOSBox extension, Glide 3.x) called. res="
+                << res << ", swap12=" << reinterpret_cast<void*>(swap12));
 }
 
 }  // extern "C"

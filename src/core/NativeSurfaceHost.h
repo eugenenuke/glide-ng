@@ -146,6 +146,8 @@ class NativeSurfaceHost {
                             const std::string& title,
                             uint32_t extraSdlWindowFlags, uint32_t windowScale);
   bool AttachX11Child(unsigned long parentWindow);
+  bool AttachWaylandSubsurface(void* hostDisplay, void* hostSurface,
+                               SDL_Window* hostSdlWindow);
   void QueryStandaloneDrawableSize(uint32_t& outW, uint32_t& outH) const;
 
   Mode m_mode = Mode::Detached;
@@ -167,11 +169,12 @@ class NativeSurfaceHost {
   unsigned long m_x11ChildWindow = 0;
   bool m_x11ParentDestroyed = false;
 
-  // WaylandSubsurface state (populated in T2.3)
+  // WaylandSubsurface state (internal details live in NativeSurfaceHost.cpp)
   void* m_wlDisplay = nullptr;
   void* m_wlChildSurface = nullptr;
   void* m_wlShm = nullptr;
   int32_t m_wlBufferScale = 1;
+  void* m_wlState = nullptr;
 };
 
 }  // namespace GlideWrapper

@@ -26,6 +26,10 @@
 #endif
 #endif
 
+#if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_WAYLAND)
+#include <wayland-client.h>
+#endif
+
 namespace GlideWrapper {
 
 namespace {
@@ -58,6 +62,147 @@ class ScopedX11ErrorTrap {
   std::unique_lock<std::mutex> m_lock;
   XErrorHandler m_prevHandler = nullptr;
 };
+#endif
+
+#if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_WAYLAND)
+struct WaylandSubsurfaceState {
+  wl_display* hostDisplay = nullptr;  // Borrowed from host; NEVER disconnect!
+  wl_surface* hostSurface = nullptr;  // Borrowed from host; NEVER destroy!
+  SDL_Window* hostSdlWindow = nullptr;
+  Uint32 hostSdlWindowId = 0;
+
+  wl_event_queue* queue = nullptr;
+  wl_display* displayWrapper = nullptr;
+  wl_registry* registry = nullptr;
+  wl_compositor* compositor = nullptr;
+  uint32_t compositorVersion = 0;
+  wl_subcompositor* subcompositor = nullptr;
+  wl_shm* shm = nullptr;
+  wl_surface* childSurface = nullptr;
+  wl_subsurface* subsurface = nullptr;
+};
+
+void WaylandRegistryGlobal(void* data, wl_registry* registry, uint32_t name,
+                           const char* interface, uint32_t version) {
+  auto* state = static_cast<WaylandSubsurfaceState*>(data);
+  if (!state || !interface) {
+    return;
+  }
+
+  if (std::strcmp(interface, wl_compositor_interface.name) == 0 &&
+      !state->compositor) {
+    const uint32_t bindVer = std::min<uint32_t>(version, 4);
+    state->compositor = static_cast<wl_compositor*>(
+        wl_registry_bind(registry, name, &wl_compositor_interface, bindVer));
+    state->compositorVersion = bindVer;
+  } else if (std::strcmp(interface, wl_subcompositor_interface.name) == 0 &&
+             !state->subcompositor) {
+    state->subcompositor = static_cast<wl_subcompositor*>(
+        wl_registry_bind(registry, name, &wl_subcompositor_interface, 1));
+  } else if (std::strcmp(interface, wl_shm_interface.name) == 0 &&
+             !state->shm) {
+    state->shm = static_cast<wl_shm*>(
+        wl_registry_bind(registry, name, &wl_shm_interface, 1));
+  }
+}
+
+void WaylandRegistryGlobalRemove(void* /*data*/, wl_registry* /*registry*/,
+                                 uint32_t /*name*/) {}
+
+const wl_registry_listener g_waylandRegistryListener = {
+    WaylandRegistryGlobal,
+    WaylandRegistryGlobalRemove,
+};
+
+void DestroyWaylandSubsurfaceState(WaylandSubsurfaceState* state,
+                                   bool commitParentIfAlive) {
+  if (!state) {
+    return;
+  }
+
+  if (state->subsurface) {
+    wl_subsurface_destroy(state->subsurface);
+    state->subsurface = nullptr;
+  }
+  if (state->childSurface) {
+    wl_surface_destroy(state->childSurface);
+    state->childSurface = nullptr;
+  }
+
+  if (commitParentIfAlive && state->hostDisplay && state->hostSurface) {
+    const bool parentStillAlive =
+        (state->hostSdlWindow == nullptr) ||
+        (SDL_WasInit(SDL_INIT_VIDEO) != 0 &&
+         SDL_GetWindowFromID(state->hostSdlWindowId) == state->hostSdlWindow);
+    if (parentStillAlive) {
+      wl_surface_commit(state->hostSurface);
+      wl_display_flush(state->hostDisplay);
+    }
+  }
+
+  if (state->shm) {
+    wl_shm_destroy(state->shm);
+    state->shm = nullptr;
+  }
+  if (state->subcompositor) {
+    wl_subcompositor_destroy(state->subcompositor);
+    state->subcompositor = nullptr;
+  }
+  if (state->compositor) {
+    wl_compositor_destroy(state->compositor);
+    state->compositor = nullptr;
+  }
+  if (state->registry) {
+    wl_registry_destroy(state->registry);
+    state->registry = nullptr;
+  }
+  if (state->displayWrapper) {
+    wl_proxy_wrapper_destroy(state->displayWrapper);
+    state->displayWrapper = nullptr;
+  }
+  if (state->queue) {
+    wl_event_queue_destroy(state->queue);
+    state->queue = nullptr;
+  }
+
+  delete state;
+}
+
+void QueryWaylandHostSizes(SDL_Window* hostWin, uint32_t fallbackW,
+                           uint32_t fallbackH, uint32_t& outPixelW,
+                           uint32_t& outPixelH, int32_t& outScale) {
+  int logW = 0;
+  int logH = 0;
+  int pixW = 0;
+  int pixH = 0;
+
+  if (hostWin) {
+    SDL_GetWindowSize(hostWin, &logW, &logH);
+#if SDL_VERSION_ATLEAST(2, 26, 0)
+    SDL_GetWindowSizeInPixels(hostWin, &pixW, &pixH);
+#else
+    pixW = logW;
+    pixH = logH;
+#endif
+  }
+
+  if (pixW <= 0 || pixH <= 0) {
+    pixW = (logW > 0) ? logW : static_cast<int>(fallbackW);
+    pixH = (logH > 0) ? logH : static_cast<int>(fallbackH);
+  }
+  if (logW <= 0 || logH <= 0) {
+    logW = pixW;
+    logH = pixH;
+  }
+
+  outPixelW = static_cast<uint32_t>(std::max(1, pixW));
+  outPixelH = static_cast<uint32_t>(std::max(1, pixH));
+  if (logW > 0 && pixW >= logW) {
+    outScale = std::max<int32_t>(1, (pixW + logW / 2) / logW);
+  } else {
+    outScale = 1;
+  }
+}
 #endif
 
 }  // namespace
@@ -184,26 +329,22 @@ bool NativeSurfaceHost::Attach(void* hostHandle, uint32_t guestW,
               static_cast<unsigned long>(wmi.info.x11.window));
         }
         if (wmi.subsystem == SDL_SYSWM_WAYLAND) {
-          GLIDE_LOG(WARN, "WSI",
-                    "Detected Wayland SDL_Window* hostHandle="
-                        << hostHandle
-                        << "; WaylandSubsurface attachment is scheduled for "
-                           "T2.3.");
-          m_guestWidth = 0;
-          m_guestHeight = 0;
-          return false;
+          GLIDE_LOG(INFO, "WSI",
+                    "Resolved host SDL_Window* "
+                        << hostHandle << " -> Wayland surface "
+                        << wmi.info.wl.surface);
+          return AttachWaylandSubsurface(wmi.info.wl.display,
+                                         wmi.info.wl.surface, candidate);
         }
       } else if (isWaylandDriver && wmi.subsystem == SDL_SYSWM_WAYLAND &&
                  static_cast<void*>(wmi.info.wl.surface) == hostHandle) {
-        // DOSBox-X statWMInfo() union alias on native Wayland.
-        GLIDE_LOG(WARN, "WSI",
-                  "Detected Wayland wl_surface* hostHandle="
-                      << hostHandle
-                      << "; WaylandSubsurface attachment is scheduled for "
-                         "T2.3.");
-        m_guestWidth = 0;
-        m_guestHeight = 0;
-        return false;
+        // DOSBox-X statWMInfo() union alias on native Wayland:
+        // wmi.info.x11.window aliases wmi.info.wl.surface!
+        GLIDE_LOG(INFO, "WSI",
+                  "Resolved DOSBox-X Wayland wl_surface* alias "
+                      << hostHandle << " -> SDL_Window* " << candidate);
+        return AttachWaylandSubsurface(wmi.info.wl.display,
+                                       wmi.info.wl.surface, candidate);
       }
     }
   }
@@ -391,6 +532,151 @@ bool NativeSurfaceHost::AttachX11Child(unsigned long parentWindow) {
 #endif
 }
 
+bool NativeSurfaceHost::AttachWaylandSubsurface(void* hostDisplayPtr,
+                                                void* hostSurfacePtr,
+                                                SDL_Window* hostSdlWindow) {
+#if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_WAYLAND)
+  if (!hostDisplayPtr || !hostSurfacePtr) {
+    GLIDE_LOG(CRITICAL, "WSI",
+              "NativeSurfaceHost: null Wayland display or host surface.");
+    return false;
+  }
+
+  auto* state = new WaylandSubsurfaceState();
+  state->hostDisplay = static_cast<wl_display*>(hostDisplayPtr);
+  state->hostSurface = static_cast<wl_surface*>(hostSurfacePtr);
+  state->hostSdlWindow = hostSdlWindow;
+  state->hostSdlWindowId = hostSdlWindow ? SDL_GetWindowID(hostSdlWindow) : 0;
+
+  // Create a private Wayland event queue + proxy wrapper so roundtrips and
+  // registry events NEVER race with or steal events from SDL/DOSBox's queue.
+  state->queue = wl_display_create_queue(state->hostDisplay);
+  if (!state->queue) {
+    GLIDE_LOG(CRITICAL, "WSI",
+              "NativeSurfaceHost: wl_display_create_queue failed.");
+    DestroyWaylandSubsurfaceState(state, false);
+    return false;
+  }
+
+  state->displayWrapper =
+      static_cast<wl_display*>(wl_proxy_create_wrapper(state->hostDisplay));
+  if (!state->displayWrapper) {
+    GLIDE_LOG(CRITICAL, "WSI",
+              "NativeSurfaceHost: wl_proxy_create_wrapper failed.");
+    DestroyWaylandSubsurfaceState(state, false);
+    return false;
+  }
+  wl_proxy_set_queue(reinterpret_cast<wl_proxy*>(state->displayWrapper),
+                     state->queue);
+
+  state->registry = wl_display_get_registry(state->displayWrapper);
+  if (!state->registry) {
+    GLIDE_LOG(CRITICAL, "WSI",
+              "NativeSurfaceHost: wl_display_get_registry failed.");
+    DestroyWaylandSubsurfaceState(state, false);
+    return false;
+  }
+  wl_registry_add_listener(state->registry, &g_waylandRegistryListener, state);
+
+  if (wl_display_roundtrip_queue(state->hostDisplay, state->queue) < 0) {
+    GLIDE_LOG(CRITICAL, "WSI",
+              "NativeSurfaceHost: Wayland registry roundtrip failed.");
+    DestroyWaylandSubsurfaceState(state, false);
+    return false;
+  }
+
+  if (!state->compositor || !state->subcompositor) {
+    GLIDE_LOG(CRITICAL, "WSI",
+              "NativeSurfaceHost: Wayland compositor missing required globals "
+              "(compositor="
+                  << state->compositor
+                  << ", subcompositor=" << state->subcompositor << ").");
+    DestroyWaylandSubsurfaceState(state, false);
+    return false;
+  }
+
+  // Create a fresh, roleless wl_surface (NEVER use SDL_CreateWindow here, as
+  // xdg_toplevel + wl_subsurface is a fatal Wayland role violation).
+  state->childSurface = wl_compositor_create_surface(state->compositor);
+  if (!state->childSurface) {
+    GLIDE_LOG(CRITICAL, "WSI",
+              "NativeSurfaceHost: wl_compositor_create_surface failed.");
+    DestroyWaylandSubsurfaceState(state, false);
+    return false;
+  }
+
+  // Empty input region -> 100% mouse & keyboard pass-through to host DOSBox.
+  wl_region* emptyRegion = wl_compositor_create_region(state->compositor);
+  if (emptyRegion) {
+    wl_surface_set_input_region(state->childSurface, emptyRegion);
+    wl_region_destroy(emptyRegion);
+  }
+
+  state->subsurface = wl_subcompositor_get_subsurface(
+      state->subcompositor, state->childSurface, state->hostSurface);
+  if (!state->subsurface) {
+    GLIDE_LOG(CRITICAL, "WSI",
+              "NativeSurfaceHost: wl_subcompositor_get_subsurface failed.");
+    DestroyWaylandSubsurfaceState(state, false);
+    return false;
+  }
+
+  wl_subsurface_set_position(state->subsurface, 0, 0);
+  wl_subsurface_set_desync(state->subsurface);
+
+  uint32_t pixW = m_guestWidth;
+  uint32_t pixH = m_guestHeight;
+  int32_t scale = 1;
+  QueryWaylandHostSizes(hostSdlWindow, m_guestWidth, m_guestHeight, pixW, pixH,
+                        scale);
+
+  if (state->compositorVersion >= 3) {
+    wl_surface_set_buffer_scale(state->childSurface, scale);
+  }
+
+  // Commit child state and issue ONE parent commit so the compositor latches
+  // our subsurface into the parent's surface tree immediately.
+  wl_surface_commit(state->childSurface);
+  wl_surface_commit(state->hostSurface);
+  wl_display_flush(state->hostDisplay);
+
+  if (wl_display_roundtrip_queue(state->hostDisplay, state->queue) < 0 ||
+      wl_display_get_error(state->hostDisplay) != 0) {
+    GLIDE_LOG(CRITICAL, "WSI",
+              "NativeSurfaceHost: Wayland protocol error during subsurface "
+              "attachment (err="
+                  << wl_display_get_error(state->hostDisplay) << ").");
+    DestroyWaylandSubsurfaceState(state, false);
+    return false;
+  }
+
+  m_wlState = state;
+  m_wlDisplay = state->hostDisplay;
+  m_wlChildSurface = state->childSurface;
+  m_wlShm = state->shm;
+  m_wlBufferScale = scale;
+  m_pixelWidth = pixW;
+  m_pixelHeight = pixH;
+  m_mode = Mode::WaylandSubsurface;
+
+  GLIDE_LOG(INFO, "WSI",
+            "NativeSurfaceHost attached in WaylandSubsurface mode "
+            "(hostSurface="
+                << state->hostSurface
+                << ", childSurface=" << state->childSurface
+                << ", size=" << m_pixelWidth << "x" << m_pixelHeight
+                << ", scale=" << m_wlBufferScale
+                << ", shm=" << (m_wlShm ? "yes" : "no")
+                << ", input=click-through).");
+  return true;
+#else
+  (void)hostDisplayPtr;
+  (void)hostSurfacePtr;
+  (void)hostSdlWindow;
+  return false;
+#endif
+}
+
 void NativeSurfaceHost::QueryStandaloneDrawableSize(uint32_t& outW,
                                                     uint32_t& outH) const {
   if (!m_sdlWindow) {
@@ -446,6 +732,13 @@ void NativeSurfaceHost::Detach() {
     XCloseDisplay(dpy);
   }
 #endif
+#if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_WAYLAND)
+  else if (m_mode == Mode::WaylandSubsurface && m_wlState) {
+    DestroyWaylandSubsurfaceState(
+        static_cast<WaylandSubsurfaceState*>(m_wlState),
+        /*commitParentIfAlive=*/true);
+  }
+#endif
 
   m_x11Display = nullptr;
   m_x11ParentWindow = 0;
@@ -455,6 +748,7 @@ void NativeSurfaceHost::Detach() {
   m_wlChildSurface = nullptr;
   m_wlShm = nullptr;
   m_wlBufferScale = 1;
+  m_wlState = nullptr;
 
   m_mode = Mode::Detached;
   m_guestWidth = 0;
@@ -521,6 +815,45 @@ bool NativeSurfaceHost::SyncBounds(uint32_t& outPixelW, uint32_t& outPixelH) {
       outPixelW = m_pixelWidth;
       outPixelH = m_pixelHeight;
       return true;
+    }
+  }
+#endif
+
+#if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_WAYLAND)
+  if (m_mode == Mode::WaylandSubsurface && m_wlState) {
+    auto* state = static_cast<WaylandSubsurfaceState*>(m_wlState);
+    if (state->hostDisplay && state->queue) {
+      wl_display_dispatch_queue_pending(state->hostDisplay, state->queue);
+    }
+
+    const bool parentStillAlive =
+        (state->hostSdlWindow != nullptr) &&
+        (SDL_WasInit(SDL_INIT_VIDEO) != 0) &&
+        (SDL_GetWindowFromID(state->hostSdlWindowId) == state->hostSdlWindow);
+    if (parentStillAlive) {
+      uint32_t newW = m_pixelWidth;
+      uint32_t newH = m_pixelHeight;
+      int32_t newScale = m_wlBufferScale;
+      QueryWaylandHostSizes(state->hostSdlWindow, m_guestWidth, m_guestHeight,
+                            newW, newH, newScale);
+
+      const bool scaleChanged = (newScale != m_wlBufferScale);
+      const bool sizeChanged = (newW != m_pixelWidth || newH != m_pixelHeight);
+
+      if (scaleChanged) {
+        m_wlBufferScale = newScale;
+        if (state->childSurface && state->compositorVersion >= 3) {
+          wl_surface_set_buffer_scale(state->childSurface, m_wlBufferScale);
+        }
+      }
+
+      if (sizeChanged || scaleChanged) {
+        m_pixelWidth = newW;
+        m_pixelHeight = newH;
+        outPixelW = m_pixelWidth;
+        outPixelH = m_pixelHeight;
+        return true;
+      }
     }
   }
 #endif

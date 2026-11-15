@@ -387,7 +387,7 @@ FX_ENTRY void FX_CALL grGlideShutdown(void) {
   GlideWrapper::BackendManager::GetInstance().ShutdownBackend();
 }
 
-FX_ENTRY FxBool FX_CALL grSstWinOpen(FxU32 hWnd,
+FX_ENTRY FxBool FX_CALL grSstWinOpen(AnyPtr hWnd,
                                      GrScreenResolution_t resolution,
                                      GrScreenRefresh_t refresh,
                                      GrColorFormat_t format,

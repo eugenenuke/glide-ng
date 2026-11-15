@@ -3754,3 +3754,29 @@ TEST_CASE("NativeSurfaceHost rejects invalid X11 Window ID gracefully via error 
   CHECK(!host.IsAttached());
   CHECK(host.GetMode() == NativeSurfaceHost::Mode::Detached);
 }
+
+TEST_CASE("DOSBox setConfig('SDL2') handshake exported by libglide2x and libglide3x",
+          "[WSI][DOSBox][setConfig]") {
+#ifdef __linux__
+  using SetConfigFn = void (*)(FxU32, void*);
+
+  for (bool glide3 : {false, true}) {
+    void* handle = glide3 ? OpenGlide3Handle() : OpenGlide2Handle();
+    REQUIRE(handle != nullptr);
+
+    auto setConfigFn = reinterpret_cast<SetConfigFn>(::dlsym(handle, "setConfig"));
+    auto setConfigResFn = ::dlsym(handle, "setConfigRes");
+    REQUIRE(setConfigFn != nullptr);
+    REQUIRE(setConfigResFn != nullptr);
+
+    uint32_t magic = 0x58326724;  // '$g2X' (SVN DOSBox initial sentinel)
+    setConfigFn(1, &magic);
+    CHECK(magic == 0x324c4453U);  // 'SDL2'
+
+    // Null magic pointer must be safe.
+    setConfigFn(0, nullptr);
+
+    ::dlclose(handle);
+  }
+#endif
+}
