@@ -11,6 +11,7 @@
 #include "backends/SoftwareBackendBase.h"
 #include "backends/software/RasterizerState.h"
 #include "backends/software/ThreadPool.h"
+#include "core/HudOverlay.h"
 #include "core/NativeSurfaceHost.h"
 
 namespace GlideWrapper {
@@ -139,6 +140,8 @@ class SoftwareBackend : public SoftwareBackendBase {
   void* m_sdlTexture{nullptr};   // StandaloneSDL2 owned SDL_Texture*
   std::unique_ptr<X11Presenter> m_x11Presenter;
   std::unique_ptr<WaylandShmPresenter> m_wlShmPresenter;
+  HudOverlay m_hudOverlay;
+  std::vector<uint32_t> m_hudPresentBuffer;
 };
 
 }  // namespace GlideWrapper

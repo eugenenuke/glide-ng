@@ -11,6 +11,7 @@ set(CORE_SOURCES
     core/BackendManager.cpp
     core/TextureManager.cpp
     core/Telemetry.cpp
+    core/HudOverlay.cpp
     core/EmbeddedAssets.cpp
     core/GlideSplashAnimator.cpp
     core/3dfParser.cpp
@@ -26,6 +27,7 @@ set(CORE_SOURCES
     backends/vulkan/VulkanTextures.cpp
     backends/vulkan/VulkanLfb.cpp
     backends/vulkan/VulkanDraw.cpp
+    backends/vulkan/VulkanHud.cpp
     backends/opengl_es/OpenGLESBackend.cpp
     backends/opengl_es/OpenGLESShaders.cpp
     backends/opengl_es/OpenGLESTextures.cpp

@@ -998,6 +998,9 @@ bool SoftwareBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
             << "------------------------------------------";
   GLIDE_LOG(INFO, "Software", logStream.str());
 
+  m_hudOverlay.Configure(m_config, {"SW", width, height});
+  m_hudPresentBuffer.clear();
+
   m_windowAttached = true;
   return true;
 }
@@ -1019,6 +1022,9 @@ void SoftwareBackend::DetachWindow_Locked() {
     FreeCpuBuffers_Locked();
     m_allocatedBuffer = false;
   }
+
+  m_hudOverlay.Reset();
+  m_hudPresentBuffer.clear();
 
   m_windowAttached = false;
   m_headlessMode = false;
@@ -1193,7 +1199,20 @@ bool SoftwareBackend::SwapBuffers() {
     uint32_t srcW = 0;
     uint32_t srcH = 0;
     ResolveFrontBuffer(srcPixels, srcW, srcH);
-    PresentFrame(srcPixels, srcW, srcH);
+    if (m_hudOverlay.IsEnabled() && srcPixels && srcW > 0 && srcH > 0) {
+      m_hudOverlay.Update(TelemetryManager::GetInstance().GetLastFrameMetrics());
+      const size_t pixelCount = static_cast<size_t>(srcW) * srcH;
+      if (m_hudPresentBuffer.size() != pixelCount) {
+        m_hudPresentBuffer.resize(pixelCount);
+      }
+      std::memcpy(m_hudPresentBuffer.data(), srcPixels,
+                  pixelCount * sizeof(uint32_t));
+      m_hudOverlay.CompositeOverBgra32(m_hudPresentBuffer.data(), srcW, srcH,
+                                       srcW);
+      PresentFrame(m_hudPresentBuffer.data(), srcW, srcH);
+    } else {
+      PresentFrame(srcPixels, srcW, srcH);
+    }
   }
 
   const auto presentUs = std::chrono::duration_cast<std::chrono::microseconds>(

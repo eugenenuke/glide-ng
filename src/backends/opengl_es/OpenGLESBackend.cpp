@@ -210,6 +210,9 @@ bool OpenGLESBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
 
   SetClipWindow_Locked(0, 0, width, height);
 
+  m_hudOverlay.Configure(m_config, {"GLES", width, height});
+  m_hudUploadedRev = 0;
+
   m_windowAttached = true;
 
   // Preserve any foreign host EGL context (e.g. DOSBox-X output=opengl on
@@ -284,6 +287,51 @@ void OpenGLESBackend::PresentToWindowSurface(uint32_t hostW, uint32_t hostH) {
 
   glBindVertexArray(m_glVAO);
   glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+
+  if (m_hudOverlay.IsEnabled()) {
+    m_hudOverlay.Update(TelemetryManager::GetInstance().GetLastFrameMetrics());
+    const uint8_t* hudPixels = m_hudOverlay.GetRgbaBottomUp();
+    const uint32_t hudW = m_hudOverlay.GetWidth();
+    const uint32_t hudH = m_hudOverlay.GetHeight();
+    if (hudPixels && hudW > 0 && hudH > 0) {
+      if (m_glHudTex == 0) {
+        glGenTextures(1, &m_glHudTex);
+      }
+      glActiveTexture(GL_TEXTURE0);
+      glBindTexture(GL_TEXTURE_2D, m_glHudTex);
+      if (m_hudOverlay.GetRevision() != m_hudUploadedRev) {
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, static_cast<GLsizei>(hudW),
+                     static_cast<GLsizei>(hudH), 0, GL_RGBA, GL_UNSIGNED_BYTE,
+                     hudPixels);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        m_hudUploadedRev = m_hudOverlay.GetRevision();
+      }
+      int32_t hx = 0;
+      int32_t hy = 0;
+      uint32_t hw = 0;
+      uint32_t hh = 0;
+      m_hudOverlay.ComputePlacement(dst.x, dst.y, dst.width, dst.height,
+                                    hx, hy, hw, hh);
+      if (hw > 0 && hh > 0) {
+        const int32_t glHudY =
+            static_cast<int32_t>(hostH) - hy - static_cast<int32_t>(hh);
+        glViewport(hx, glHudY, static_cast<GLsizei>(hw),
+                   static_cast<GLsizei>(hh));
+        if (m_uUseGammaLutLoc != -1) {
+          glUniform1i(m_uUseGammaLutLoc, 0);
+        }
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        glDisable(GL_BLEND);
+      }
+    }
+  }
+
   glBindVertexArray(0);
   glUseProgram(0);
   glActiveTexture(GL_TEXTURE0);
@@ -1469,6 +1517,11 @@ void OpenGLESBackend::DestroyGLContext() {
       glDeleteTextures(1, &m_glGammaLutTex);
       m_glGammaLutTex = 0;
     }
+    if (m_glHudTex) {
+      glDeleteTextures(1, &m_glHudTex);
+      m_glHudTex = 0;
+    }
+    m_hudUploadedRev = 0;
     if (m_fboTextures[0]) {
       glDeleteTextures(2, m_fboTextures);
       m_fboTextures[0] = m_fboTextures[1] = 0;
@@ -1509,6 +1562,8 @@ void OpenGLESBackend::DestroyGLContext() {
     m_glesTextures.clear();
     m_glesSamplers[0] = m_glesSamplers[1] = 0;
     m_glGammaLutTex = 0;
+    m_glHudTex = 0;
+    m_hudUploadedRev = 0;
     m_fboTextures[0] = m_fboTextures[1] = 0;
     m_glVBO = 0;
     m_glVAO = 0;

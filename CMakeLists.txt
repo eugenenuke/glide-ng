@@ -82,6 +82,8 @@ endfunction()
 compile_shader("${CMAKE_CURRENT_SOURCE_DIR}/src/backends/vulkan/shaders/color.vert" "color_vert_spv" "color_vert.spv.h")
 compile_shader("${CMAKE_CURRENT_SOURCE_DIR}/src/backends/vulkan/shaders/color.frag" "color_frag_spv" "color_frag.spv.h")
 compile_shader("${CMAKE_CURRENT_SOURCE_DIR}/src/backends/vulkan/shaders/color.frag" "color_dualsrc_frag_spv" "color_dualsrc_frag.spv.h" -DUSE_DUAL_SRC_BLEND)
+compile_shader("${CMAKE_CURRENT_SOURCE_DIR}/src/backends/vulkan/shaders/hud.vert" "hud_vert_spv" "hud_vert.spv.h")
+compile_shader("${CMAKE_CURRENT_SOURCE_DIR}/src/backends/vulkan/shaders/hud.frag" "hud_frag_spv" "hud_frag.spv.h")
 
 # Create a custom target for all shaders
 add_custom_target(CompileShaders DEPENDS ${GENERATED_SHADER_HEADERS})

@@ -7,6 +7,7 @@
 #include "core/TextureManager.h"
 #include "core/Logger.h"
 #include "core/Telemetry.h"
+#include "core/HudOverlay.h"
 #include "core/BackendManager.h"
 #include "core/NativeSurfaceHost.h"
 #include "backends/GlideStateTracker.h"
@@ -4551,6 +4552,236 @@ TEST_CASE(
     CHECK(logContent.find("Perf Telemetry       : ENABLED") != std::string::npos);
 
     std::remove(csvPath.c_str());
+    std::remove(logPath.c_str());
+  }
+#endif
+}
+
+TEST_CASE("M3 DXVK-Style On-Screen HUD Config, Rendering & Isolation [HUD][M3]",
+          "[HUD][M3]") {
+#ifdef __linux__
+  using namespace GlideWrapper;
+
+  struct HudEnvGuard {
+    std::vector<std::pair<std::string, std::string>> saved;
+    std::vector<std::string> unsetKeys;
+    const std::vector<std::string> keys = {
+        "GLIDE_NG_HUD", "GLIDE_NG_CONFIG", "GLIDE_NG_HEADLESS",
+        "GLIDE_NG_LOG_FILE", "GLIDE_NG_LOG_LEVEL", "GLIDE_NG_MAX_FPS"};
+    HudEnvGuard() {
+      for (const auto& k : keys) {
+        const char* v = std::getenv(k.c_str());
+        if (v) {
+          saved.emplace_back(k, v);
+        } else {
+          unsetKeys.push_back(k);
+        }
+        ::unsetenv(k.c_str());
+      }
+    }
+    ~HudEnvGuard() {
+      for (const auto& k : keys) ::unsetenv(k.c_str());
+      for (const auto& kv : saved) ::setenv(kv.first.c_str(), kv.second.c_str(), 1);
+    }
+  } guard;
+
+  SECTION("GLIDE_NG_HUD and JSON hud parsing + precedence") {
+    const std::string cfgPath = "/tmp/glide_ng_m3_hud_cfg.json";
+    {
+      std::ofstream out(cfgPath);
+      out << R"({"hud": "fps,backend,position=br,scale=1.5,opacity=0.6"})";
+    }
+
+    JsonConfigLoader loader;
+    WrapperConfig cfg;
+    REQUIRE(loader.Load(cfgPath, cfg));
+    CHECK(cfg.hudMask == (HUD_FPS | HUD_BACKEND));
+    CHECK(cfg.hudPosition == HudPosition::BOTTOM_RIGHT);
+    CHECK(std::fabs(cfg.hudScale - 1.5f) < 1e-4f);
+    CHECK(std::fabs(cfg.hudOpacity - 0.6f) < 1e-4f);
+    CHECK(cfg.settingSources.at("hud") == "json");
+
+    // GLIDE_NG_HUD=full overrides JSON
+    ::setenv("GLIDE_NG_HUD", "full,position=tr,scale=2.0,opacity=0.9", 1);
+    REQUIRE(loader.Load(cfgPath, cfg));
+    CHECK(cfg.hudMask == HUD_FULL);
+    CHECK(cfg.hudPosition == HudPosition::TOP_RIGHT);
+    CHECK(std::fabs(cfg.hudScale - 2.0f) < 1e-4f);
+    CHECK(std::fabs(cfg.hudOpacity - 0.9f) < 1e-4f);
+    CHECK(cfg.settingSources.at("hud") == "GLIDE_NG_HUD");
+
+    // GLIDE_NG_HUD=1 enables FPS shorthand
+    ::setenv("GLIDE_NG_HUD", "1", 1);
+    REQUIRE(loader.Load(cfgPath, cfg));
+    CHECK(cfg.hudMask == HUD_FPS);
+
+    // GLIDE_NG_HUD=0 disables even when JSON enabled it
+    ::setenv("GLIDE_NG_HUD", "0", 1);
+    REQUIRE(loader.Load(cfgPath, cfg));
+    CHECK(cfg.hudMask == HUD_NONE);
+
+    // Specific multi-token & clamping checks
+    ::setenv("GLIDE_NG_HUD", "frametimes,api,drawcalls,lfb,pos=bl,scale=9.0,opacity=2.5", 1);
+    REQUIRE(loader.Load(cfgPath, cfg));
+    CHECK(cfg.hudMask == (HUD_FRAMETIMES | HUD_API | HUD_DRAWCALLS | HUD_LFB));
+    CHECK(cfg.hudPosition == HudPosition::BOTTOM_LEFT);
+    CHECK(std::fabs(cfg.hudScale - 4.0f) < 1e-4f);
+    CHECK(std::fabs(cfg.hudOpacity - 1.0f) < 1e-4f);
+
+    std::remove(cfgPath.c_str());
+  }
+
+  SECTION("HudOverlay bitmap rasterization, placement & BGRA32 compositing") {
+    WrapperConfig cfg;
+    cfg.hudMask = HUD_FULL;
+    cfg.hudPosition = HudPosition::TOP_LEFT;
+    cfg.hudScale = 1.0f;
+    cfg.hudOpacity = 0.8f;
+    cfg.model = CardModel::Voodoo2;
+    cfg.activeFrontendApi = "Glide3x";
+    cfg.maxFps = 60.0f;
+
+    HudOverlay hud;
+    hud.Configure(cfg, {"VK", 640, 480});
+    REQUIRE(hud.IsEnabled());
+
+    FrameMetrics m{};
+    m.frameTimeMs = 16.6f;
+    m.renderTimeMs = 4.2f;
+    m.swapPresentMs = 1.1f;
+    m.drawCalls = 12;
+    m.stateFlushes = 2;
+    m.trianglesDrawn = 480;
+    m.lfbWriteLocks = 3;
+    m.lfbBytesWritten = 4096;
+    m.texUploads = 1;
+    m.texUploadBytes = 8192;
+
+    hud.ForceRender(m, 60.0f);
+    REQUIRE(hud.GetWidth() >= 100);
+    REQUIRE(hud.GetHeight() >= 40);
+    REQUIRE(hud.GetRevision() == 1);
+    REQUIRE(hud.GetRgbaTopDown() != nullptr);
+    REQUIRE(hud.GetRgbaBottomUp() != nullptr);
+
+    // Verify lines cover all full elements
+    const auto& lines = hud.GetLinesForTest();
+    REQUIRE(lines.size() >= 6);
+    CHECK(lines[0].find("FPS") != std::string::npos);
+    CHECK(lines[0].find("60.0") != std::string::npos);
+
+    // Top row of top-down buffer matches bottom row of bottom-up buffer
+    const uint32_t w = hud.GetWidth();
+    const uint32_t h = hud.GetHeight();
+    const uint8_t* topDown = hud.GetRgbaTopDown();
+    const uint8_t* bottomUp = hud.GetRgbaBottomUp();
+    CHECK(std::memcmp(topDown, bottomUp + static_cast<size_t>(h - 1) * w * 4,
+                      w * 4) == 0);
+
+    // Border pixel at (0,0) should have non-zero alpha and amber color (R > G > B)
+    CHECK(topDown[3] > 180);
+    CHECK(topDown[0] > topDown[1]);
+    CHECK(topDown[1] > topDown[2]);
+
+    // Check corner placement math + small-viewport clamping
+    int32_t x = 0, y = 0;
+    uint32_t dw = 0, dh = 0;
+    hud.ComputePlacement(0, 0, 640, 480, x, y, dw, dh);
+    CHECK(x == 8);
+    CHECK(y == 8);
+    CHECK(dw == w);
+    CHECK(dh == h);
+
+    cfg.hudPosition = HudPosition::BOTTOM_RIGHT;
+    hud.Configure(cfg, {"VK", 640, 480});
+    hud.ForceRender(m, 60.0f);
+    hud.ComputePlacement(100, 20, 640, 480, x, y, dw, dh);
+    CHECK(x + static_cast<int32_t>(dw) == 100 + 640 - 8);
+    CHECK(y + static_cast<int32_t>(dh) == 20 + 480 - 8);
+
+    // Small viewport forces proportional clamp without overflowing bounds
+    hud.ComputePlacement(0, 0, 80, 60, x, y, dw, dh);
+    CHECK(dw <= 80);
+    CHECK(dh <= 60);
+
+    // BGRA32 composite modifies inside HUD rect and leaves outside pixels untouched
+    cfg.hudPosition = HudPosition::TOP_LEFT;
+    hud.Configure(cfg, {"SW", 640, 480});
+    hud.ForceRender(m, 60.0f);
+    std::vector<uint32_t> frame(640 * 480, 0xFF112233u);
+    hud.CompositeOverBgra32(frame.data(), 640, 480, 640);
+    CHECK(frame[8 * 640 + 8] != 0xFF112233u);          // Inside HUD top-left border
+    CHECK(frame[470 * 640 + 630] == 0xFF112233u);      // Outside HUD (bottom-right)
+  }
+
+  SECTION("End-to-end Glide 3.x session with GLIDE_NG_HUD=full keeps guest LFB pristine") {
+    const std::string logPath = "/tmp/glide_ng_m3_hud_e2e.log";
+    std::remove(logPath.c_str());
+
+    ::setenv("GLIDE_NG_HEADLESS", "1", 1);
+    ::setenv("GLIDE_NG_MAX_FPS", "0", 1);
+    ::setenv("GLIDE_NG_LOG_FILE", logPath.c_str(), 1);
+    ::setenv("GLIDE_NG_LOG_LEVEL", "info", 1);
+    ::setenv("GLIDE_NG_HUD", "full", 1);
+
+    void* handle = OpenGlide3Handle();
+    REQUIRE(handle != nullptr);
+
+    auto glideInit = reinterpret_cast<void (*)()>(::dlsym(handle, "grGlideInit"));
+    auto glideShutdown = reinterpret_cast<void (*)()>(::dlsym(handle, "grGlideShutdown"));
+    auto sstSelect = reinterpret_cast<void (*)(int)>(::dlsym(handle, "grSstSelect"));
+    auto winOpen = reinterpret_cast<FxU32 (*)(FxU32, FxU32, FxU32, FxU32, FxU32, int, int)>(
+        ::dlsym(handle, "grSstWinOpen"));
+    auto winClose = reinterpret_cast<FxBool (*)(FxU32)>(::dlsym(handle, "grSstWinClose"));
+    auto bufferClear = reinterpret_cast<void (*)(GrColor_t, GrAlpha_t, FxU32)>(
+        ::dlsym(handle, "grBufferClear"));
+    auto bufferSwap = reinterpret_cast<void (*)(FxU32)>(::dlsym(handle, "grBufferSwap"));
+    auto lfbReadRegion = reinterpret_cast<FxBool (*)(
+        GrBuffer_t, FxU32, FxU32, FxU32, FxU32, FxU32, void*)>(
+        ::dlsym(handle, "grLfbReadRegion"));
+
+    REQUIRE(glideInit != nullptr);
+    REQUIRE(winOpen != nullptr);
+    REQUIRE(bufferClear != nullptr);
+    REQUIRE(bufferSwap != nullptr);
+    REQUIRE(lfbReadRegion != nullptr);
+
+    glideInit();
+    sstSelect(0);
+    FxU32 ctx = winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                        GR_COLORFORMAT_ARGB, GR_ORIGIN_UPPER_LEFT, 2, 1);
+    REQUIRE(ctx != 0);
+
+    // Clear both buffers to solid bright green (ARGB 0xFF00FF00)
+    for (int f = 0; f < 3; ++f) {
+      bufferClear(0xFF00FF00, 0xFF, 0xFFFF);
+      bufferSwap(0);
+    }
+
+    // Read top-left 16x16 region of frontbuffer where top-left HUD is drawn
+    // during presentation: guest framebuffer must remain pure green (not overwritten by HUD).
+    std::vector<uint16_t> pixels565(16 * 16, 0);
+    FxBool ok = lfbReadRegion(GR_BUFFER_FRONTBUFFER, 8, 8, 16, 16, 16 * 2,
+                              pixels565.data());
+    REQUIRE(ok == FXTRUE);
+    int pureGreenCount = 0;
+    for (uint16_t p : pixels565) {
+      if (p == 0x07E0) ++pureGreenCount;
+    }
+    CHECK(pureGreenCount == 16 * 16);
+
+    winClose(ctx);
+    glideShutdown();
+    ::dlclose(handle);
+
+    std::ifstream logIn(logPath);
+    REQUIRE(logIn.is_open());
+    std::string logContent((std::istreambuf_iterator<char>(logIn)),
+                           std::istreambuf_iterator<char>());
+    logIn.close();
+    CHECK(logContent.find("HUD Overlay          : ENABLED") != std::string::npos);
+    CHECK(logContent.find("hud <- GLIDE_NG_HUD") != std::string::npos);
+
     std::remove(logPath.c_str());
   }
 #endif

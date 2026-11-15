@@ -277,6 +277,7 @@ void VulkanBackend::Shutdown() {
   // 1. Force-detach window resources first (handles active frame command
   // buffer, SDL, etc.)
   DetachWindow_Locked();
+  DestroyHudResources_Locked();
 
   // 2. Explicitly destroy all device-owned pipelines, shaders, and caches
   m_pipelineCache.clear();
@@ -560,6 +561,10 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
 
   SetClipWindow_Locked(0, 0, width, height);
 
+  // Configure M3 on-screen HUD before swapchain creation so swapchain
+  // framebuffers can lazily build the HUD pass only when enabled.
+  m_hudOverlay.Configure(m_config, {"VK", width, height});
+
   // Unconditionally render to offscreen guest targets and present via blit.
   m_headlessMode = true;
 
@@ -659,6 +664,8 @@ void VulkanBackend::DetachWindow_Locked() {
   }
 
   DestroySwapchain_Locked();
+  DestroyHudResources_Locked();
+  m_hudOverlay.Reset();
   m_surface.reset();
   m_surfaceHost.Detach();
 
@@ -1022,6 +1029,10 @@ bool VulkanBackend::CreateSwapchain(uint32_t width, uint32_t height) {
         m_device->createSemaphoreUnique(semaphoreInfo));
   }
 
+  if (m_hudOverlay.IsEnabled()) {
+    CreateHudSwapchainFramebuffers_Locked();
+  }
+
   GLIDE_LOG(INFO, "Vulkan",
             "Vulkan Swapchain and " << m_swapchainImageViews.size()
                                     << " image views successfully allocated.");
@@ -1032,6 +1043,7 @@ void VulkanBackend::DestroySwapchain_Locked() {
   if (m_device) {
     m_device->waitIdle();
   }
+  DestroyHudSwapchainFramebuffers_Locked();
   for (int i = 0; i < 2; ++i) {
     if (m_imageAvailableSemaphores[i]) m_imageAvailableSemaphores[i].reset();
   }
@@ -1425,10 +1437,14 @@ bool VulkanBackend::SwapBuffers() {
           vk::Filter::eLinear);
     }
 
-    // Transition swapchain image to PresentSrcKHR
-    TransitionImageLayout(*m_commandBuffer, m_swapchainImages[imageIdx],
-                          vk::ImageLayout::eTransferDstOptimal,
-                          vk::ImageLayout::ePresentSrcKHR, colorRange);
+    // Render M3 post-scene HUD directly onto the swapchain image (when
+    // enabled); the HUD render pass transitions eTransferDstOptimal ->
+    // ePresentSrcKHR. When disabled, do the layout transition directly.
+    if (!RenderHudToSwapchain_Locked(imageIdx, dst)) {
+      TransitionImageLayout(*m_commandBuffer, m_swapchainImages[imageIdx],
+                            vk::ImageLayout::eTransferDstOptimal,
+                            vk::ImageLayout::ePresentSrcKHR, colorRange);
+    }
 
     // Transition offscreen image back to ColorAttachmentOptimal
     TransitionImageLayout(*m_commandBuffer, m_headlessImages[activeIdx].get(),
@@ -1440,7 +1456,8 @@ bool VulkanBackend::SwapBuffers() {
     (void)m_device->resetFences(1, &m_fences[m_currentFrameSlot].get());
 
     vk::PipelineStageFlags waitStages[] = {
-        vk::PipelineStageFlagBits::eTransfer};
+        vk::PipelineStageFlagBits::eTransfer |
+        vk::PipelineStageFlagBits::eColorAttachmentOutput};
     vk::Semaphore waitSemaphores[] = {
         m_imageAvailableSemaphores[m_currentFrameSlot].get()};
     vk::Semaphore signalSemaphores[] = {

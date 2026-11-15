@@ -19,7 +19,7 @@
 | :---: | :--- | :--- | :---: | :--- | :---: |
 | **M1** | `feat/m1-config-envvars` | Unified `GLIDE_NG_*` config & env var overhaul (no `GLIDE_WRAPPER_*` aliases) + Phase-1 authentic `FX_GLIDE_*` vars (`NO_SPLASH`, `SHAMELESS_PLUG`, `SWAPINTERVAL`) + authoritative env var reference doc | Low–Med | `[x] DONE (USER CONFIRMED — 2026-11-15)` | Merged to `main` |
 | **M2** | `feat/m2-logging-perf-trace` | Tiered logging (`OFF`..`TRACE`), category filtering, frame-windowed tracing, microsecond timestamps, buffered flushing, and runtime per-frame perf breakdown (+ CSV perf log) | Med | `[x] DONE (USER CONFIRMED — 2026-11-15)` | Merged to `main` |
-| **M3** | `feat/m3-hud-fps` | DXVK-style on-screen HUD (`GLIDE_NG_HUD=fps`, extensible) rendered cleanly in each backend's post-scene presentation pass (Vulkan, GLES, SW) | Med | `[ ] PENDING` | — |
+| **M3** | `feat/m3-hud-fps` | DXVK-style on-screen HUD (`GLIDE_NG_HUD=fps`, extensible) rendered cleanly in each backend's post-scene presentation pass (Vulkan, GLES, SW) | Med | `[~] IMPLEMENTED — AWAITING USER VERIFICATION` | — |
 | **M4** | `fix/m4-parked-sdk-tests` | Fix parked official SDK tests: `test16` ('P' plug state leak on VK/GLES), `test22` (SW multi-pass fog quality vs VK), `test25` & `test27` (hangs in all modes) + Catch2 regressions | Med | `[ ] PENDING` | — |
 | **M5** | `fix/m5-carmageddon` | Carmageddon (`carma`) compatibility & performance: black menus, missing in-game UI/HUD, perf bottleneck, initial focus/input behavior (using M2 traces & M3 HUD) | Med–High | `[ ] PENDING` | — |
 | **M6** | `feat/m6-dos-tools-bench` | Optional Open Watcom v2 DOS cross-build (`vendor/watcom`) + dual Linux/DOS `glide_info` + GPU/Glide-bound active visual benchmark (`glide_bench`) with in-Glide on-screen FPS & diagnostics | High | `[ ] PENDING` | — |
@@ -98,11 +98,32 @@
 
 ---
 
-## 4. Upcoming Milestones (High-Level Scope — Detailed Just-In-Time)
+## 4. Milestone M3: DXVK-Style On-Screen HUD (`feat/m3-hud-fps`)
 
-### Milestone M3 — DXVK-Style On-Screen HUD (`feat/m3-hud-fps`)
-- `GLIDE_NG_HUD` (and JSON `"hud"`) supporting `fps` first (with `scale=N`, `position=tl|tr|bl|br`), extensible to `frametimes`, `backend`, `api`, `drawcalls`, `lfb`.
-- Crisp embedded bitmap font composited in each backend's post-scene presentation pass (Vulkan, GLES, SW) with zero Glide state mutation.
+### Goals
+1. Provide a DXVK-style comma-separated on-screen HUD controlled via `GLIDE_NG_HUD` and JSON `"hud"`, starting with `fps` (`GLIDE_NG_HUD=fps` / `1`) and supporting extensible telemetry tokens (`frametimes`, `backend`, `api`, `drawcalls`, `lfb`, `full`) plus layout controls (`scale=`, `position=`, `opacity=`).
+2. Render the HUD cleanly in each backend's post-scene presentation pass (**Vulkan**, **OpenGL ES**, **Software**) using a zero-dependency embedded bitmap font with **zero Glide state mutation** and **zero guest framebuffer/LFB mutation**.
+
+### M3 Task Breakdown
+
+- **`M3.1`** — Config & env var parsing (`WrapperConfig.h`, `JsonConfigLoader.cpp`, `Logger.cpp`, `GlideEntryCommon.cpp`):
+  - Add `HudElementFlags`, `HudPosition`, `hudMask`, `hudPosition`, `hudScale`, `hudOpacity`, `hudSpec`, `activeFrontendApi`, parser with full JSON + `GLIDE_NG_HUD` parity, and `HUD Overlay` summary banner line.
+  - **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION`
+- **`M3.2`** — Self-contained `HudOverlay` bitmap renderer (`HudOverlay.{h,cpp}`):
+  - Embedded 8×8 ASCII bitmap font, fast-converging rolling FPS estimator, 64-frame color-coded frametime sparkline, 3dfx amber/slate themed translucent surface with revision tracking (throttled redraws so GPU textures only re-upload on change), corner placement & small-viewport clamp, and `CompositeOverBgra32` alpha-blender.
+  - **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION`
+- **`M3.3`** — Post-scene backend presentation integration:
+  - **Software** (`SoftwareBackend.{h,cpp}`): non-destructive copy & alpha-blend into `m_hudPresentBuffer` before `PresentFrame()`.
+  - **OpenGL ES** (`OpenGLESBackend.{h,cpp}`): dedicated RGBA8 HUD texture with revision-gated upload and alpha-blended quad pass in `PresentToWindowSurface()` (zero Glide FBO/state mutation).
+  - **Vulkan** (`hud.vert`, `hud.frag`, `VulkanHud.cpp`, `VulkanBackend.{h,cpp}`, `CMakeLists.txt`): dedicated SPIR-V HUD shaders, `eLoad` swapchain render pass (`eTransferDstOptimal -> ePresentSrcKHR`), double-buffered staging buffers, and swapchain resize/recreation support (0 overhead when disabled).
+  - **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION`
+- **`M3.4`** — Tests, documentation & verification (`tests/test_glide3.cpp`, `docs/glide_environment_variables.md`):
+  - Add `[HUD][M3]` Catch2 tests (config parsing, rasterization, placement, BGRA32 compositing, and guest LFB isolation); promote `GLIDE_NG_HUD` to **Implemented** in env var docs; verify build (0 `-Werror` warnings), Catch2 suites, 6-cell `glide_embed_test` HUD smoke matrix, and privacy scan.
+  - **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION`
+
+---
+
+## 5. Upcoming Milestones (High-Level Scope — Detailed Just-In-Time)
 
 ### Milestone M4 — Parked Official SDK Test Fixes (`fix/m4-parked-sdk-tests`)
 - `test16`: fix `RenderBanner()` / `grGlideGetState`/`grGlideSetState` color/state leak on Vulkan & GLES.
