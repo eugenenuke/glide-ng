@@ -44,15 +44,16 @@ set(GENERATED_SHADER_HEADERS "")
 
 function(compile_shader SHADER_PATH VAR_NAME HEADER_OUT)
     get_filename_component(SHADER_NAME ${SHADER_PATH} NAME)
-    set(SPV_OUT "${CMAKE_CURRENT_BINARY_DIR}/${SHADER_NAME}.spv")
+    set(SPV_OUT "${CMAKE_CURRENT_BINARY_DIR}/${VAR_NAME}.spv")
     set(HEADER_FILE "${GENERATED_SHADERS_DIR}/${HEADER_OUT}")
+    set(EXTRA_GLSL_FLAGS ${ARGN})
     
     # 1. Compile GLSL to SPIR-V
     add_custom_command(
         OUTPUT ${SPV_OUT}
-        COMMAND ${GLSLANG_VALIDATOR} -V ${SHADER_PATH} -o ${SPV_OUT}
+        COMMAND ${GLSLANG_VALIDATOR} -V ${EXTRA_GLSL_FLAGS} ${SHADER_PATH} -o ${SPV_OUT}
         DEPENDS ${SHADER_PATH}
-        COMMENT "Compiling GLSL shader ${SHADER_NAME} to SPIR-V"
+        COMMENT "Compiling GLSL shader ${SHADER_NAME} (${VAR_NAME}) to SPIR-V"
     )
     
     # 2. Convert SPIR-V to C++ Header
@@ -60,17 +61,17 @@ function(compile_shader SHADER_PATH VAR_NAME HEADER_OUT)
         OUTPUT ${HEADER_FILE}
         COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tools/spv_to_hex.py" ${SPV_OUT} ${HEADER_FILE} ${VAR_NAME}
         DEPENDS ${SPV_OUT} "${CMAKE_CURRENT_SOURCE_DIR}/tools/spv_to_hex.py"
-        COMMENT "Converting SPIR-V binary ${SHADER_NAME}.spv to C++ inline header ${HEADER_OUT}"
+        COMMENT "Converting SPIR-V binary ${VAR_NAME}.spv to C++ inline header ${HEADER_OUT}"
     )
     
     # Append to global list in parent scope
     set(GENERATED_SHADER_HEADERS ${GENERATED_SHADER_HEADERS} ${HEADER_FILE} PARENT_SCOPE)
 endfunction()
 
-# Register our shaders
+# Register our shaders (single-source color.frag compiled for standard & dual-source blend)
 compile_shader("${CMAKE_CURRENT_SOURCE_DIR}/src/backends/vulkan/shaders/color.vert" "color_vert_spv" "color_vert.spv.h")
 compile_shader("${CMAKE_CURRENT_SOURCE_DIR}/src/backends/vulkan/shaders/color.frag" "color_frag_spv" "color_frag.spv.h")
-compile_shader("${CMAKE_CURRENT_SOURCE_DIR}/src/backends/vulkan/shaders/color_dualsrc.frag" "color_dualsrc_frag_spv" "color_dualsrc_frag.spv.h")
+compile_shader("${CMAKE_CURRENT_SOURCE_DIR}/src/backends/vulkan/shaders/color.frag" "color_dualsrc_frag_spv" "color_dualsrc_frag.spv.h" -DUSE_DUAL_SRC_BLEND)
 
 # Create a custom target for all shaders
 add_custom_target(CompileShaders DEPENDS ${GENERATED_SHADER_HEADERS})
