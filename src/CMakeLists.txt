@@ -17,7 +17,6 @@ set(CORE_SOURCES
     core/MathUtils.cpp
     core/LfbManager.cpp
     core/NativeSurfaceHost.cpp
-    core/PlatformWindowUtils.cpp
     backends/SoftwareBackendBase.cpp
     backends/vulkan/VulkanBackend.cpp
     backends/opengl_es/OpenGLESBackend.cpp
