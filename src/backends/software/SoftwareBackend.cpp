@@ -728,8 +728,14 @@ void BlitScaledLetterbox(const uint32_t* srcPixels, uint32_t srcW,
 #if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_X11)
 std::mutex g_swX11TrapMutex;
 bool g_swX11TrapHit = false;
-int HandleSwX11Error(Display* /*dpy*/, XErrorEvent* /*ev*/) {
+unsigned char g_swX11ErrorCode = 0;
+unsigned char g_swX11RequestCode = 0;
+int HandleSwX11Error(Display* /*dpy*/, XErrorEvent* ev) {
   g_swX11TrapHit = true;
+  if (ev) {
+    g_swX11ErrorCode = ev->error_code;
+    g_swX11RequestCode = ev->request_code;
+  }
   return 0;
 }
 
@@ -737,10 +743,14 @@ class ScopedSwX11Trap {
  public:
   ScopedSwX11Trap() : m_lock(g_swX11TrapMutex) {
     g_swX11TrapHit = false;
+    g_swX11ErrorCode = 0;
+    g_swX11RequestCode = 0;
     m_prev = XSetErrorHandler(HandleSwX11Error);
   }
   ~ScopedSwX11Trap() { XSetErrorHandler(m_prev); }
   bool Hit() const { return g_swX11TrapHit; }
+  int ErrorCode() const { return static_cast<int>(g_swX11ErrorCode); }
+  int RequestCode() const { return static_cast<int>(g_swX11RequestCode); }
 
  private:
   std::unique_lock<std::mutex> m_lock;
@@ -834,6 +844,8 @@ struct SoftwareBackend::X11Presenter {
     GLIDE_LOG(INFO, "Software",
               "X11Presenter attached (mode="
                   << (usingShm ? "XShmPutImage" : "XPutImage")
+                  << ", visual=0x" << std::hex << XVisualIDFromVisual(visual)
+                  << std::dec << ", class=" << visual->c_class
                   << ", depth=" << depth << ", bpp=" << image->bits_per_pixel
                   << ", size=" << width << "x" << height << ").");
     return true;
@@ -847,6 +859,7 @@ struct SoftwareBackend::X11Presenter {
         XShmDetach(display, &shmInfo);
         XSync(display, 0);
       }
+      image->data = nullptr;
       XDestroyImage(image);
       if (shmInfo.shmaddr && shmInfo.shmaddr != reinterpret_cast<char*>(-1)) {
         ::shmdt(shmInfo.shmaddr);
@@ -871,48 +884,52 @@ struct SoftwareBackend::X11Presenter {
     DestroyImage();
 
     if (shmExtensionAvailable) {
-      XShmSegmentInfo info{};
-      info.shmid = -1;
-      info.shmaddr = reinterpret_cast<char*>(-1);
+      // CRITICAL: XShmCreateImage stores the pointer `&shmInfo` inside
+      // `shmImg->obdata`, which XShmPutImage dereferences on every frame.
+      // It MUST point to the persistent member `shmInfo`, never a stack local.
+      shmInfo = XShmSegmentInfo{};
+      shmInfo.shmid = -1;
+      shmInfo.shmaddr = reinterpret_cast<char*>(-1);
       XImage* shmImg =
           XShmCreateImage(display, visual, static_cast<unsigned int>(depth),
-                          ZPixmap, nullptr, &info, newW, newH);
+                          ZPixmap, nullptr, &shmInfo, newW, newH);
       if (shmImg) {
         const size_t totalBytes =
             static_cast<size_t>(shmImg->bytes_per_line) * newH;
-        info.shmid = ::shmget(IPC_PRIVATE, totalBytes, IPC_CREAT | 0600);
-        if (info.shmid >= 0) {
-          info.shmaddr = static_cast<char*>(::shmat(info.shmid, nullptr, 0));
-          if (info.shmaddr != reinterpret_cast<char*>(-1)) {
-            shmImg->data = info.shmaddr;
-            info.readOnly = 0;
+        shmInfo.shmid = ::shmget(IPC_PRIVATE, totalBytes, IPC_CREAT | 0600);
+        if (shmInfo.shmid >= 0) {
+          shmInfo.shmaddr =
+              static_cast<char*>(::shmat(shmInfo.shmid, nullptr, 0));
+          if (shmInfo.shmaddr != reinterpret_cast<char*>(-1)) {
+            shmImg->data = shmInfo.shmaddr;
+            shmInfo.readOnly = 0;
             bool attachedOk = false;
             {
               ScopedSwX11Trap trap;
-              attachedOk = (XShmAttach(display, &info) != 0);
+              attachedOk = (XShmAttach(display, &shmInfo) != 0);
               XSync(display, 0);
               if (trap.Hit()) {
                 attachedOk = false;
               }
             }
             // Mark for automatic kernel reclamation on last detach/exit.
-            ::shmctl(info.shmid, IPC_RMID, nullptr);
+            ::shmctl(shmInfo.shmid, IPC_RMID, nullptr);
             if (attachedOk) {
               image = shmImg;
-              shmInfo = info;
               usingShm = true;
               width = newW;
               height = newH;
               return true;
             }
-            ::shmdt(info.shmaddr);
+            ::shmdt(shmInfo.shmaddr);
           } else {
-            ::shmctl(info.shmid, IPC_RMID, nullptr);
+            ::shmctl(shmInfo.shmid, IPC_RMID, nullptr);
           }
         }
         shmImg->data = nullptr;
         XDestroyImage(shmImg);
       }
+      shmInfo = XShmSegmentInfo{};
       // Disable XShm for subsequent resizes if attach was rejected (e.g., remote
       // X11 forwarding) and fall back cleanly to standard XPutImage.
       shmExtensionAvailable = false;
@@ -998,14 +1015,47 @@ struct SoftwareBackend::X11Presenter {
       }
     }
 
-    ScopedSwX11Trap trap;
-    if (usingShm) {
-      XShmPutImage(display, window, gc, image, 0, 0, 0, 0, width, height, 0);
-      // Wait for X server copy completion before next frame reuses SHM buffer.
-      XSync(display, 0);
-    } else {
-      XPutImage(display, window, gc, image, 0, 0, 0, 0, width, height);
-      XFlush(display);
+    bool shmFailed = false;
+    int errCode = 0;
+    int reqCode = 0;
+    {
+      ScopedSwX11Trap trap;
+      if (usingShm) {
+        XShmPutImage(display, window, gc, image, 0, 0, 0, 0, width, height, 0);
+        // Wait for X server copy completion before next frame reuses SHM buffer.
+        XSync(display, 0);
+        if (trap.Hit()) {
+          shmFailed = true;
+          errCode = trap.ErrorCode();
+          reqCode = trap.RequestCode();
+        }
+      } else {
+        XPutImage(display, window, gc, image, 0, 0, 0, 0, width, height);
+        XFlush(display);
+        if (trap.Hit()) {
+          GLIDE_LOG(WARN, "Software",
+                    "X11Presenter: XPutImage failed (err="
+                        << trap.ErrorCode() << ", req=" << trap.RequestCode()
+                        << ").");
+        }
+      }
+    }
+    if (shmFailed) {
+      GLIDE_LOG(WARN, "Software",
+                "X11Presenter: XShmPutImage failed (err="
+                    << errCode << ", req=" << reqCode
+                    << "); falling back to XPutImage.");
+      shmExtensionAvailable = false;
+      DestroyImage();
+      if (EnsureSize(hostW, hostH) && image && image->data) {
+        BlitScaledLetterbox(
+            srcPixels, srcW, srcH, reinterpret_cast<uint32_t*>(image->data),
+            static_cast<uint32_t>(image->bytes_per_line / 4), width, height,
+            swapRedBlue, xLutScratch);
+        ScopedSwX11Trap fallbackTrap;
+        XPutImage(display, window, gc, image, 0, 0, 0, 0, width, height);
+        XFlush(display);
+      }
     }
   }
 
@@ -1361,13 +1411,59 @@ bool SoftwareBackend::InitPresentationSurface() {
 
 #if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_X11)
   if (mode == NativeSurfaceHost::Mode::X11Child) {
+    Display* x11Dpy = static_cast<Display*>(m_surfaceHost.GetX11Display());
+    Window x11Win = static_cast<Window>(m_surfaceHost.GetX11Window());
+    if (x11Dpy && x11Win != 0) {
+      XWindowAttributes wa{};
+      bool needTrueColor = false;
+      unsigned long inheritedVisualId = 0;
+      int inheritedClass = -1;
+      {
+        ScopedSwX11Trap trap;
+        if (XGetWindowAttributes(x11Dpy, x11Win, &wa) && !trap.Hit() &&
+            wa.visual) {
+          inheritedVisualId =
+              static_cast<unsigned long>(XVisualIDFromVisual(wa.visual));
+          inheritedClass = wa.visual->c_class;
+          // XShmPutImage/XPutImage write direct RGB values; on DirectColor
+          // visuals (commonly inherited from SDL2 on XWayland), an unpopulated
+          // colormap maps every pixel through an all-zero LUT -> pure black.
+          needTrueColor = (wa.visual->c_class != TrueColor);
+        }
+      }
+      if (needTrueColor) {
+        const int screen = DefaultScreen(x11Dpy);
+        XVisualInfo vinfo{};
+        unsigned long trueColorVisualId = 0;
+        if (XMatchVisualInfo(x11Dpy, screen, 24, TrueColor, &vinfo)) {
+          trueColorVisualId = static_cast<unsigned long>(vinfo.visualid);
+        } else if (XMatchVisualInfo(x11Dpy, screen, 32, TrueColor, &vinfo)) {
+          trueColorVisualId = static_cast<unsigned long>(vinfo.visualid);
+        } else {
+          Visual* defVis = DefaultVisual(x11Dpy, screen);
+          if (defVis && defVis->c_class == TrueColor) {
+            trueColorVisualId =
+                static_cast<unsigned long>(XVisualIDFromVisual(defVis));
+          }
+        }
+        if (trueColorVisualId != 0) {
+          GLIDE_LOG(INFO, "Software",
+                    "X11Child inherited non-TrueColor visual 0x"
+                        << std::hex << inheritedVisualId << std::dec
+                        << " (class=" << inheritedClass
+                        << "); recreating X11Child with TrueColor visual 0x"
+                        << std::hex << trueColorVisualId << std::dec << ".");
+          if (m_surfaceHost.RecreateX11ChildForVisual(trueColorVisualId)) {
+            x11Win = static_cast<Window>(m_surfaceHost.GetX11Window());
+          }
+        }
+      }
+    }
     uint32_t pixW = m_guestWidth;
     uint32_t pixH = m_guestHeight;
     m_surfaceHost.GetDrawableSize(pixW, pixH);
     m_x11Presenter = std::make_unique<X11Presenter>();
-    if (!m_x11Presenter->Attach(
-            static_cast<Display*>(m_surfaceHost.GetX11Display()),
-            static_cast<Window>(m_surfaceHost.GetX11Window()), pixW, pixH)) {
+    if (!m_x11Presenter->Attach(x11Dpy, x11Win, pixW, pixH)) {
       m_x11Presenter.reset();
       return false;
     }
