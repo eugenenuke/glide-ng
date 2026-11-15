@@ -64,7 +64,7 @@ static bool IsWaylandStrictFifoRequested() {
 }
 
 bool OpenGLESBackend::Initialize(const WrapperConfig& config) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (m_initialized) return true;
 
   GLIDE_LOG(INFO, "GLES", "Initializing OpenGL ES 3.2 staging context...");
@@ -101,17 +101,21 @@ bool OpenGLESBackend::Initialize(const WrapperConfig& config) {
 }
 
 void OpenGLESBackend::Shutdown() {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (!m_initialized) return;
 
   GLIDE_LOG(INFO, "GLES", "Shutting down OpenGL ES 3.2 staging context.");
-  DetachWindow();
+  DetachWindow_Locked();
   m_initialized = false;
 }
 
 void OpenGLESBackend::ResetState() {
-  GlideStateTracker::ResetState();
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
+  ResetState_Locked();
+}
+
+void OpenGLESBackend::ResetState_Locked() {
+  GlideStateTracker::ResetState_Locked();
   m_lfbStaging.ResetPendingAndDirty();
   m_geomVBOOffset = 0;
   m_is2DGeometry = true;
@@ -126,12 +130,12 @@ void OpenGLESBackend::ResetState() {
 
 bool OpenGLESBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
                                    uint32_t height, bool windowed) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (!m_initialized) {
     GLIDE_LOG(CRITICAL, "GLES", "AttachWindow failed: !m_initialized");
     return false;
   }
-  if (m_windowAttached) DetachWindow();
+  if (m_windowAttached) DetachWindow_Locked();
 
   GLIDE_LOG(INFO, "GLES",
             "Attaching OpenGL ES window surface ("
@@ -140,7 +144,7 @@ bool OpenGLESBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
 
   m_headlessWidth = width;
   m_headlessHeight = height;
-  ResetState();
+  ResetState_Locked();
   m_headlessMode = true;  // Force offscreen rendering unconditionally for
                           // hybrid presentation
 
@@ -228,7 +232,7 @@ bool OpenGLESBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
   m_swizzleBuffer.clear();
   m_swizzleBuffer.shrink_to_fit();
 
-  SetClipWindow(0, 0, width, height);
+  SetClipWindow_Locked(0, 0, width, height);
 
   m_windowAttached = true;
 
@@ -239,7 +243,11 @@ bool OpenGLESBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
 }
 
 void OpenGLESBackend::DetachWindow() {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
+  DetachWindow_Locked();
+}
+
+void OpenGLESBackend::DetachWindow_Locked() {
   if (!m_windowAttached) return;
   GLIDE_LOG(INFO, "GLES",
             "Detaching OpenGL ES window surface and freeing buffers.");
@@ -308,7 +316,7 @@ void OpenGLESBackend::PresentToWindowSurface(uint32_t hostW, uint32_t hostH) {
 }
 
 bool OpenGLESBackend::SwapBuffers() {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (!m_initialized || !m_windowAttached) return false;
 
   // Pump events ONLY in StandaloneSDL2 mode (guaranteed no-op for DOSBox).
@@ -326,7 +334,7 @@ bool OpenGLESBackend::SwapBuffers() {
 
   // Proactively flush any pending CPU LFB writes to the GPU FBO before
   // presenting/swapping!
-  FlushLFBToGPU();
+  FlushLFBToGPU_Locked();
 
   // Enforce frame pacing and track frame timing using unified FrameTracker
   auto& tracker = TelemetryManager::GetInstance().GetFrameTracker();
@@ -388,10 +396,10 @@ bool OpenGLESBackend::SwapBuffers() {
   glViewport(0, 0, static_cast<GLsizei>(m_headlessWidth),
              static_cast<GLsizei>(m_headlessHeight));
   glEnable(GL_SCISSOR_TEST);
-  ApplyScissorGLES();
+  ApplyScissorGLES_Locked();
   ApplyColorMaskGLES();
   SyncDepthState();
-  SyncCullStateGLES();
+  SyncCullStateGLES_Locked();
   ApplyBlendingGLES();
 
   // Force pipeline re-sync on the next frame's first draw
@@ -405,7 +413,7 @@ bool OpenGLESBackend::SwapBuffers() {
 }
 
 void OpenGLESBackend::SstIdle() {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (m_initialized && m_windowAttached && EnsureContextCurrent()) {
     FlushBatch();
     // Blocks the host CPU until all GLES commands and drawing dispatches
@@ -415,7 +423,7 @@ void OpenGLESBackend::SstIdle() {
 }
 
 void* OpenGLESBackend::GetLfbWritePtr() {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (!m_initialized || !m_windowAttached) return nullptr;
   return m_lfbStaging.GetWritePtr(m_activeRenderBuffer);
 }
@@ -425,15 +433,14 @@ bool OpenGLESBackend::WriteLFB(uint32_t buffer, uint32_t dstX, uint32_t dstY,
                                int32_t srcStride, uint32_t srcFmt,
                                const void* srcData, const void* refData,
                                const LfbPipelineConfig& config) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (!m_initialized || !m_windowAttached) return false;
   return m_lfbStaging.WriteLFB(buffer, dstX, dstY, srcWidth, srcHeight,
                                srcStride, srcFmt, srcData, refData, config,
                                m_pixelFormatOverride);
 }
 
-void OpenGLESBackend::FlushLFBToGPU() {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+void OpenGLESBackend::FlushLFBToGPU_Locked() {
   if (!m_lfbStaging.IsDirty()) return;
   if (!EnsureContextCurrent()) return;
 
@@ -503,7 +510,7 @@ void OpenGLESBackend::FlushLFBToGPU() {
 bool OpenGLESBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
                               uint32_t srcWidth, uint32_t srcHeight,
                               uint32_t dstStride, void* dstData) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (!m_initialized || !m_windowAttached || !EnsureContextCurrent()) {
     return false;
   }
@@ -513,7 +520,7 @@ bool OpenGLESBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
 
   // Flush any pending CPU LFB writes to the GPU first, ensuring they are
   // not obliterated by the subsequent glReadPixels readback!
-  FlushLFBToGPU();
+  FlushLFBToGPU_Locked();
 
   // --- STEP 1: GPU Readback Flush ---
   // Query the currently bound FBO to restore it at the end, preventing state
@@ -1582,37 +1589,37 @@ void OpenGLESBackend::SetBlendState(uint32_t rgbSrcFactor,
                                     uint32_t rgbDstFactor,
                                     uint32_t alphaSrcFactor,
                                     uint32_t alphaDstFactor) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   FlushBatch();
-  GlideStateTracker::SetBlendState(rgbSrcFactor, rgbDstFactor, alphaSrcFactor,
+  GlideStateTracker::SetBlendState_Locked(rgbSrcFactor, rgbDstFactor, alphaSrcFactor,
                                    alphaDstFactor);
 }
 
 void OpenGLESBackend::SetRenderBuffer(uint32_t target) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   FlushBatch();
-  GlideStateTracker::SetRenderBuffer(target);
+  GlideStateTracker::SetRenderBuffer_Locked(target);
   if (m_initialized && m_windowAttached && EnsureContextCurrent()) {
     glBindFramebuffer(GL_FRAMEBUFFER, GetActiveGpuFbo());
   }
 }
 
 void OpenGLESBackend::SetDepthRange(float nearVal, float farVal) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   FlushBatch();
-  GlideStateTracker::SetDepthRange(nearVal, farVal);
+  GlideStateTracker::SetDepthRange_Locked(nearVal, farVal);
 }
 
 void OpenGLESBackend::SetDitherMode(uint32_t mode) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   FlushBatch();
-  GlideStateTracker::SetDitherMode(mode);
+  GlideStateTracker::SetDitherMode_Locked(mode);
 }
 
 void OpenGLESBackend::SetStippleState(uint32_t mode, uint32_t pattern) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   FlushBatch();
-  GlideStateTracker::SetStippleState(mode, pattern);
+  GlideStateTracker::SetStippleState_Locked(mode, pattern);
 }
 
 uint32_t OpenGLESBackend::GetActiveGpuFbo() const {
@@ -1623,13 +1630,13 @@ uint32_t OpenGLESBackend::GetActiveGpuFbo() const {
 }
 
 void OpenGLESBackend::SetColorMask(bool rgb, bool alpha) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   FlushBatch();
-  GlideStateTracker::SetColorMask(rgb, alpha);
+  GlideStateTracker::SetColorMask_Locked(rgb, alpha);
 }
 
 void OpenGLESBackend::SetGamma(float gamma) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   GLIDE_LOG(INFO, "GLES", "SetGamma: value=" << gamma);
   m_gammaCorrectionValue = gamma;
   if (gamma <= 0.0f) gamma = 1.0f;
@@ -1641,14 +1648,21 @@ void OpenGLESBackend::SetGamma(float gamma) {
     gTable[i] = rTable[i];
     bTable[i] = rTable[i];
   }
-  LoadGammaTable(256, rTable, gTable, bTable);
+  LoadGammaTable_Locked(256, rTable, gTable, bTable);
   m_useGammaLut = (gamma != 1.0f);
 }
 
 void OpenGLESBackend::LoadGammaTable(uint32_t nentries, const uint32_t* rTable,
                                      const uint32_t* gTable,
                                      const uint32_t* bTable) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
+  LoadGammaTable_Locked(nentries, rTable, gTable, bTable);
+}
+
+void OpenGLESBackend::LoadGammaTable_Locked(uint32_t nentries,
+                                            const uint32_t* rTable,
+                                            const uint32_t* gTable,
+                                            const uint32_t* bTable) {
   GLIDE_LOG(
       INFO, "GLES",
       "LoadGammaTable: nentries=" << nentries << ", tex=" << m_glGammaLutTex);
@@ -1672,46 +1686,46 @@ void OpenGLESBackend::LoadGammaTable(uint32_t nentries, const uint32_t* rTable,
 
 void OpenGLESBackend::SetDepthState(uint32_t depthMode, uint32_t compareOp,
                                     bool depthMask, int32_t biasLevel) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   FlushBatch();
-  GlideStateTracker::SetDepthState(depthMode, compareOp, depthMask, biasLevel);
+  GlideStateTracker::SetDepthState_Locked(depthMode, compareOp, depthMask, biasLevel);
 }
 
 void OpenGLESBackend::SetCullState(uint32_t cullMode) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   FlushBatch();
-  GlideStateTracker::SetCullState(cullMode);
+  GlideStateTracker::SetCullState_Locked(cullMode);
 }
 
 void OpenGLESBackend::SetAlphaTestState(uint32_t compareOp, uint32_t refVal) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   FlushBatch();
-  GlideStateTracker::SetAlphaTestState(compareOp, refVal);
+  GlideStateTracker::SetAlphaTestState_Locked(compareOp, refVal);
 }
 
 void OpenGLESBackend::SetSstOrigin(uint32_t origin) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   FlushBatch();
-  GlideStateTracker::SetSstOrigin(origin);
+  GlideStateTracker::SetSstOrigin_Locked(origin);
 }
 
 void OpenGLESBackend::SetClipWindow(uint32_t minX, uint32_t minY, uint32_t maxX,
                                     uint32_t maxY) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   FlushBatch();
-  GlideStateTracker::SetClipWindow(minX, minY, maxX, maxY);
+  GlideStateTracker::SetClipWindow_Locked(minX, minY, maxX, maxY);
 }
 
 void OpenGLESBackend::SetConstantColor(uint32_t color) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   FlushBatch();
-  GlideStateTracker::SetConstantColor(color);
+  GlideStateTracker::SetConstantColor_Locked(color);
 }
 
 void OpenGLESBackend::SetPixelFormat(uint32_t format) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   FlushBatch();
-  GlideStateTracker::SetPixelFormat(format);
+  GlideStateTracker::SetPixelFormat_Locked(format);
 }
 
 void OpenGLESBackend::SetCombinerMode(uint32_t colorFunc, uint32_t colorFactor,
@@ -1719,9 +1733,9 @@ void OpenGLESBackend::SetCombinerMode(uint32_t colorFunc, uint32_t colorFactor,
                                       bool colorInvert, uint32_t alphaFunc,
                                       uint32_t alphaFactor, uint32_t alphaLocal,
                                       uint32_t alphaOther, bool alphaInvert) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   FlushBatch();
-  GlideStateTracker::SetCombinerMode(colorFunc, colorFactor, colorLocal,
+  GlideStateTracker::SetCombinerMode_Locked(colorFunc, colorFactor, colorLocal,
                                      colorOther, colorInvert, alphaFunc,
                                      alphaFactor, alphaLocal, alphaOther,
                                      alphaInvert);
@@ -1731,66 +1745,66 @@ void OpenGLESBackend::SetTexCombinerMode(uint32_t tmu, uint32_t rgbFunc,
                                          uint32_t rgbFactor, uint32_t alphaFunc,
                                          uint32_t alphaFactor, bool rgbInvert,
                                          bool alphaInvert) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   FlushBatch();
-  GlideStateTracker::SetTexCombinerMode(tmu, rgbFunc, rgbFactor, alphaFunc,
+  GlideStateTracker::SetTexCombinerMode_Locked(tmu, rgbFunc, rgbFactor, alphaFunc,
                                         alphaFactor, rgbInvert, alphaInvert);
 }
 
 void OpenGLESBackend::SetSTWHintState(uint32_t hintMask) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   FlushBatch();
-  GlideStateTracker::SetSTWHintState(hintMask);
+  GlideStateTracker::SetSTWHintState_Locked(hintMask);
 }
 
 void OpenGLESBackend::SetChromakeyMode(uint32_t mode) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   FlushBatch();
-  GlideStateTracker::SetChromakeyMode(mode);
+  GlideStateTracker::SetChromakeyMode_Locked(mode);
 }
 
 void OpenGLESBackend::SetChromakeyValue(uint32_t value) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   FlushBatch();
-  GlideStateTracker::SetChromakeyValue(value);
+  GlideStateTracker::SetChromakeyValue_Locked(value);
 }
 
 void OpenGLESBackend::SetChromakeyRange(uint32_t minColor, uint32_t maxColor,
                                         uint32_t mode) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   FlushBatch();
-  GlideStateTracker::SetChromakeyRange(minColor, maxColor, mode);
+  GlideStateTracker::SetChromakeyRange_Locked(minColor, maxColor, mode);
 }
 
 void OpenGLESBackend::SetTexChromakeyMode(uint32_t tmu, uint32_t mode) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   FlushBatch();
-  GlideStateTracker::SetTexChromakeyMode(tmu, mode);
+  GlideStateTracker::SetTexChromakeyMode_Locked(tmu, mode);
 }
 
 void OpenGLESBackend::SetTexChromakeyRange(uint32_t tmu, uint32_t minColor,
                                            uint32_t maxColor, uint32_t mode) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   FlushBatch();
-  GlideStateTracker::SetTexChromakeyRange(tmu, minColor, maxColor, mode);
+  GlideStateTracker::SetTexChromakeyRange_Locked(tmu, minColor, maxColor, mode);
 }
 
 void OpenGLESBackend::SetFogMode(uint32_t mode) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   FlushBatch();
-  GlideStateTracker::SetFogMode(mode);
+  GlideStateTracker::SetFogMode_Locked(mode);
 }
 
 void OpenGLESBackend::SetFogColor(uint32_t color) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   FlushBatch();
-  GlideStateTracker::SetFogColor(color);
+  GlideStateTracker::SetFogColor_Locked(color);
 }
 
 void OpenGLESBackend::SetFogTable(const uint8_t* table) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   FlushBatch();
-  GlideStateTracker::SetFogTable(table);
+  GlideStateTracker::SetFogTable_Locked(table);
 }
 
 }  // namespace GlideWrapper

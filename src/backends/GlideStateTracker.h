@@ -138,9 +138,59 @@ class GlideStateTracker : public IGraphicsBackend {
   void SetAAState(bool enabled) override;
 
  protected:
-  std::recursive_mutex m_mutex;
+  mutable std::mutex m_mutex;
   bool m_stateCacheDirty{true};
   void MarkStateDirty() { m_stateCacheDirty = true; }
+
+  // Internal lock-held hooks (callers MUST hold m_mutex)
+  virtual void ResetState_Locked();
+  virtual void FlushBins_Locked() {}
+
+  void SetConstantColor_Locked(uint32_t color);
+  void SetPixelFormat_Locked(uint32_t format);
+  void SetRenderBuffer_Locked(uint32_t target);
+  void SetDepthState_Locked(uint32_t depthMode, uint32_t compareOp,
+                            bool depthMask, int32_t biasLevel);
+  void SetDepthRange_Locked(float nearVal, float farVal);
+  void SetDitherMode_Locked(uint32_t mode);
+  void SetStippleState_Locked(uint32_t mode, uint32_t pattern);
+  void SetBlendState_Locked(uint32_t rgbSrcFactor, uint32_t rgbDstFactor,
+                            uint32_t alphaSrcFactor, uint32_t alphaDstFactor);
+  void SetAlphaTestState_Locked(uint32_t compareOp, uint32_t refVal);
+  void SetCullState_Locked(uint32_t cullMode);
+  void SetClipWindow_Locked(uint32_t minX, uint32_t minY, uint32_t maxX,
+                            uint32_t maxY);
+  void SetSstOrigin_Locked(uint32_t origin);
+  void SetColorMask_Locked(bool rgb, bool alpha);
+  void SetGamma_Locked(float gamma);
+  void LoadGammaTable_Locked(uint32_t nentries, const uint32_t* rTable,
+                             const uint32_t* gTable, const uint32_t* bTable);
+  void SetFogMode_Locked(uint32_t mode);
+  void SetFogColor_Locked(uint32_t color);
+  void SetFogTable_Locked(const uint8_t* table);
+  void BindTexture_Locked(uint32_t tmu, uint32_t startAddress, uint32_t clampS,
+                          uint32_t clampT, uint32_t minFilter,
+                          uint32_t magFilter);
+  void SetTexLodBias_Locked(uint32_t tmu, float bias);
+  void SetTexMipMapMode_Locked(uint32_t tmu, uint32_t mode, bool lodBlend);
+  void SetCombinerMode_Locked(uint32_t colorFunc, uint32_t colorFactor,
+                              uint32_t colorLocal, uint32_t colorOther,
+                              bool colorInvert, uint32_t alphaFunc,
+                              uint32_t alphaFactor, uint32_t alphaLocal,
+                              uint32_t alphaOther, bool alphaInvert);
+  void SetTexCombinerMode_Locked(uint32_t tmu, uint32_t rgbFunc,
+                                 uint32_t rgbFactor, uint32_t alphaFunc,
+                                 uint32_t alphaFactor, bool rgbInvert,
+                                 bool alphaInvert);
+  void SetSTWHintState_Locked(uint32_t hintMask);
+  void SetChromakeyMode_Locked(uint32_t mode);
+  void SetChromakeyValue_Locked(uint32_t value);
+  void SetChromakeyRange_Locked(uint32_t minColor, uint32_t maxColor,
+                                uint32_t mode);
+  void SetTexChromakeyMode_Locked(uint32_t tmu, uint32_t mode);
+  void SetTexChromakeyRange_Locked(uint32_t tmu, uint32_t minColor,
+                                   uint32_t maxColor, uint32_t mode);
+  void SetAAState_Locked(bool enabled);
   bool m_initialized{false};
   bool m_windowAttached{false};
   bool m_headlessMode{false};

@@ -13,8 +13,12 @@
 namespace GlideWrapper {
 
 void SoftwareBackendBase::ResetState() {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
-  GlideStateTracker::ResetState();
+  std::lock_guard<std::mutex> lock(m_mutex);
+  ResetState_Locked();
+}
+
+void SoftwareBackendBase::ResetState_Locked() {
+  GlideStateTracker::ResetState_Locked();
   m_pendingCpuColorClear[0] = {};
   m_pendingCpuColorClear[1] = {};
   m_pendingCpuDepthClear = false;
@@ -23,8 +27,8 @@ void SoftwareBackendBase::ResetState() {
 
 void SoftwareBackendBase::ClearBuffer(uint32_t color, uint32_t alpha, float z,
                                       uint32_t clearMask) {
-  FlushBins();
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
+  FlushBins_Locked();
   GLIDE_LOG(DEBUG, "Rasterizer",
             "ClearBuffer CPU side invoked: color=0x"
                 << std::hex << color << ", alpha=" << alpha << ", mask="
@@ -84,7 +88,7 @@ void SoftwareBackendBase::ClearBuffer(uint32_t color, uint32_t alpha, float z,
 
 void SoftwareBackendBase::ScheduleLazyCpuClear(uint32_t color, uint32_t alpha,
                                                float z, uint32_t clearMask) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (!m_windowAttached || !m_headlessPixelMap) return;
 
   uint32_t activeSlot =
@@ -96,7 +100,7 @@ void SoftwareBackendBase::ScheduleLazyCpuClear(uint32_t color, uint32_t alpha,
       if (slotState.pending && !(m_colorMaskRgb && m_colorMaskAlpha) &&
           (slotState.maskRgb != m_colorMaskRgb ||
            slotState.maskAlpha != m_colorMaskAlpha)) {
-        MaterializeLazyCpuClear(activeSlot);
+        MaterializeLazyCpuClear_Locked(activeSlot);
       }
       slotState.pending = true;
       slotState.color = color;
@@ -113,8 +117,7 @@ void SoftwareBackendBase::ScheduleLazyCpuClear(uint32_t color, uint32_t alpha,
   }
 }
 
-void SoftwareBackendBase::MaterializeLazyCpuClear(uint32_t bufferSlot) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+void SoftwareBackendBase::MaterializeLazyCpuClear_Locked(uint32_t bufferSlot) {
   if (bufferSlot >= 2 || !m_pendingCpuColorClear[bufferSlot].pending) return;
 
   const PendingCpuColorClear pending = m_pendingCpuColorClear[bufferSlot];
@@ -151,8 +154,7 @@ void SoftwareBackendBase::MaterializeLazyCpuClear(uint32_t bufferSlot) {
   }
 }
 
-void SoftwareBackendBase::MaterializeLazyCpuDepthClear() {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+void SoftwareBackendBase::MaterializeLazyCpuDepthClear_Locked() {
   if (!m_pendingCpuDepthClear) return;
   m_pendingCpuDepthClear = false;
   if (!m_headlessDepthBuffer.empty()) {
@@ -161,17 +163,16 @@ void SoftwareBackendBase::MaterializeLazyCpuDepthClear() {
   }
 }
 
-void SoftwareBackendBase::DiscardLazyCpuClear(uint32_t bufferSlot) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+void SoftwareBackendBase::DiscardLazyCpuClear_Locked(uint32_t bufferSlot) {
   if (bufferSlot < 2) {
     m_pendingCpuColorClear[bufferSlot].pending = false;
   }
 }
 
 void* SoftwareBackendBase::GetLfbWritePtr() {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
-  MaterializeLazyCpuClear(m_frontBufferIdx);
-  MaterializeLazyCpuClear(m_backBufferIdx);
+  std::lock_guard<std::mutex> lock(m_mutex);
+  MaterializeLazyCpuClear_Locked(m_frontBufferIdx);
+  MaterializeLazyCpuClear_Locked(m_backBufferIdx);
   m_lfbDirty = true;
   m_lfbBufferDirty[0] = true;
   m_lfbBufferDirty[1] = true;
@@ -181,11 +182,11 @@ void* SoftwareBackendBase::GetLfbWritePtr() {
 bool SoftwareBackendBase::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
                                   uint32_t srcWidth, uint32_t srcHeight,
                                   uint32_t dstStride, void* dstData) {
-  FlushBins();
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
+  FlushBins_Locked();
   if (!dstData || m_cpuBuffers[0].empty()) return false;
   uint32_t readSlot = (buffer == 0) ? m_frontBufferIdx : m_backBufferIdx;
-  MaterializeLazyCpuClear(readSlot);
+  MaterializeLazyCpuClear_Locked(readSlot);
 
   const uint32_t* pixels = nullptr;
   uint32_t width = m_headlessWidth;
@@ -237,8 +238,8 @@ bool SoftwareBackendBase::WriteLFB(uint32_t buffer, uint32_t dstX,
                                    uint32_t srcFmt, const void* srcData,
                                    const void* refData,
                                    const LfbPipelineConfig& config) {
-  FlushBins();
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
+  FlushBins_Locked();
   if (!srcData || m_cpuBuffers[0].empty()) return false;
 
   if (!CpuLfbStaging::IsValidSrcFormat(srcFmt)) {
@@ -248,7 +249,7 @@ bool SoftwareBackendBase::WriteLFB(uint32_t buffer, uint32_t dstX,
   }
 
   uint32_t targetSlot = (buffer == 0) ? m_frontBufferIdx : m_backBufferIdx;
-  MaterializeLazyCpuClear(targetSlot);
+  MaterializeLazyCpuClear_Locked(targetSlot);
   uint32_t* pixels =
       reinterpret_cast<uint32_t*>(m_cpuBuffers[targetSlot].data());
 
@@ -270,8 +271,8 @@ bool SoftwareBackendBase::WriteLFB(uint32_t buffer, uint32_t dstX,
   return true;
 }
 
-void SoftwareBackendBase::AllocateCpuBuffers(uint32_t width, uint32_t height) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+void SoftwareBackendBase::AllocateCpuBuffers_Locked(uint32_t width,
+                                                    uint32_t height) {
   size_t rawSize = static_cast<size_t>(width) * height * 4;
   size_t paddedSize = (rawSize + 63) & ~size_t(63);
   size_t allocatedSize = paddedSize + 64;
@@ -301,8 +302,7 @@ void SoftwareBackendBase::AllocateCpuBuffers(uint32_t width, uint32_t height) {
                 << ", resolved size=" << m_resolvedBuffer.size());
 }
 
-void SoftwareBackendBase::FreeCpuBuffers() {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+void SoftwareBackendBase::FreeCpuBuffers_Locked() {
   m_cpuBuffers[0].clear();
   m_cpuBuffers[0].shrink_to_fit();
   m_cpuBuffers[1].clear();
@@ -319,8 +319,8 @@ void SoftwareBackendBase::FreeCpuBuffers() {
 }
 
 void SoftwareBackendBase::SetRenderBuffer(uint32_t target) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
-  GlideStateTracker::SetRenderBuffer(target);
+  std::lock_guard<std::mutex> lock(m_mutex);
+  GlideStateTracker::SetRenderBuffer_Locked(target);
   uint32_t slot = (m_activeRenderBuffer == 0) ? m_frontBufferIdx
                                               : m_backBufferIdx;
   m_headlessPixelMap =

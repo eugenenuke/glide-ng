@@ -97,7 +97,15 @@ class OpenGLESBackend : public GlideStateTracker {
   void SetFogColor(uint32_t color) override;
   void SetFogTable(const uint8_t* table) override;
 
+ protected:
+  void ResetState_Locked() override;
+
  private:
+  void DetachWindow_Locked();
+  void UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
+                            const struct VirtualTexture& tex);
+  void LoadGammaTable_Locked(uint32_t nentries, const uint32_t* rTable,
+                             const uint32_t* gTable, const uint32_t* bTable);
   bool CreateGLContext(void* nativeWindowHandle, uint32_t width,
                        uint32_t height, bool windowed);
   void DestroyGLContext();
@@ -110,8 +118,8 @@ class OpenGLESBackend : public GlideStateTracker {
   void SyncDepthState();
   void ApplyBlendingGLES();
   void ApplyColorMaskGLES();
-  void ApplyScissorGLES();
-  void SyncCullStateGLES();
+  void ApplyScissorGLES_Locked();
+  void SyncCullStateGLES_Locked();
   void PopulateUniforms();
   uint32_t GetActiveGpuFbo() const;
 
@@ -174,8 +182,8 @@ class OpenGLESBackend : public GlideStateTracker {
   bool m_batchIs2DGeometry{false};
   void FlushBatch();
 
-  // Unified GPU Framebuffer LFB Flushing (lazily allocated)
-  void FlushLFBToGPU();
+  // Unified GPU Framebuffer LFB Flushing (lazily allocated; caller holds m_mutex)
+  void FlushLFBToGPU_Locked();
   CpuLfbStaging m_lfbStaging;
   std::vector<uint32_t> m_swizzleBuffer;
   uint32_t m_msaaSamples{1};

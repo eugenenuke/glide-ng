@@ -41,7 +41,12 @@ static uint64_t CalculateTextureHash(const struct VirtualTexture& tex) {
 
 void VulkanBackend::UploadTexture(uint32_t tmu, uint32_t startAddress,
                                   const struct VirtualTexture& tex) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
+  UploadTexture_Locked(tmu, startAddress, tex);
+}
+
+void VulkanBackend::UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
+                                         const struct VirtualTexture& tex) {
   if (!m_initialized || !m_device) return;
 
   if (tmu >= 2) {
@@ -217,12 +222,12 @@ void VulkanBackend::UploadTexture(uint32_t tmu, uint32_t startAddress,
 void VulkanBackend::BindTexture(uint32_t tmu, uint32_t startAddress,
                                 uint32_t clampS, uint32_t clampT,
                                 uint32_t minFilter, uint32_t magFilter) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   FlushBatch();
 
-  // 1. Call base class GlideStateTracker::BindTexture to update pipeline states
-  GlideStateTracker::BindTexture(tmu, startAddress, clampS, clampT, minFilter,
-                                 magFilter);
+  // 1. Call base class GlideStateTracker::BindTexture_Locked to update pipeline states
+  GlideStateTracker::BindTexture_Locked(tmu, startAddress, clampS, clampT,
+                                        minFilter, magFilter);
 
   if (!m_initialized || !m_device) return;
 
@@ -241,7 +246,7 @@ void VulkanBackend::BindTexture(uint32_t tmu, uint32_t startAddress,
 }
 
 void VulkanBackend::SetTexLodBias(uint32_t tmu, float bias) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (tmu < 2) {
     if (m_texLodBias[tmu] != bias) {
       FlushBatch();
@@ -254,7 +259,7 @@ void VulkanBackend::SetTexLodBias(uint32_t tmu, float bias) {
 
 void VulkanBackend::SetTexMipMapMode(uint32_t tmu, uint32_t mode,
                                      bool lodBlend) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (tmu < 2) {
     if (m_texMipMapMode[tmu] != mode || m_texLodBlend[tmu] != lodBlend) {
       FlushBatch();
@@ -272,7 +277,7 @@ void VulkanBackend::UploadTexturePartial(uint32_t tmu, uint32_t startAddress,
                                          const struct VirtualTexture& tex,
                                          uint32_t lodLevel, uint32_t startRow,
                                          uint32_t endRow) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (!m_initialized || !m_device) return;
 
   if (tmu >= 2) {
@@ -287,7 +292,7 @@ void VulkanBackend::UploadTexturePartial(uint32_t tmu, uint32_t startAddress,
               "UploadTexturePartial: texture at address 0x"
                   << std::hex << startAddress << std::dec
                   << " does not exist! Promoting to full upload.");
-    UploadTexture(tmu, startAddress, tex);
+    UploadTexture_Locked(tmu, startAddress, tex);
     return;
   }
 
@@ -374,7 +379,7 @@ void VulkanBackend::UploadTexturePartial(uint32_t tmu, uint32_t startAddress,
 }
 
 void VulkanBackend::PurgeTextures() {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (!m_initialized || !m_device) return;
 
   FlushBatch();

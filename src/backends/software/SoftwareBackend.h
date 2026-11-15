@@ -50,7 +50,11 @@ class SoftwareBackend : public SoftwareBackendBase {
   bool ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY, uint32_t srcWidth,
                uint32_t srcHeight, uint32_t dstStride, void* dstData) override;
 
+ protected:
+  void FlushBins_Locked() override;
+
  private:
+  void DetachWindow_Locked();
   void InitTileGrid();
   void BinTriangle(uint32_t cmdIdx, const ModernVertex& a,
                    const ModernVertex& b, const ModernVertex& c);

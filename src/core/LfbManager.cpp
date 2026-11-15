@@ -49,7 +49,7 @@ void LfbManager::LogLockSuccess(uint32_t buffer, uint32_t writeMode, uint32_t or
 }
 
 bool LfbManager::Unlock(uint32_t type, uint32_t buffer, const LfbPipelineConfig& config) {
-    std::lock_guard<std::recursive_mutex> lock(m_mutex);
+    std::lock_guard<std::mutex> lock(m_mutex);
     if (!m_lockState.isLocked) {
         GLIDE_LOG(WARN, "Frontend", "LfbManager::Unlock: No active LFB lock found!");
         return false;

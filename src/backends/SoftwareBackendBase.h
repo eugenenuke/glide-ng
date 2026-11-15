@@ -30,9 +30,10 @@ class SoftwareBackendBase : public GlideStateTracker {
   }
 
   float GetDepthBufferPixel(uint32_t x, uint32_t y) const {
+    std::lock_guard<std::mutex> lock(m_mutex);
     auto* self = const_cast<SoftwareBackendBase*>(this);
-    self->FlushBins();
-    self->MaterializeLazyCpuDepthClear();
+    self->FlushBins_Locked();
+    self->MaterializeLazyCpuDepthClear_Locked();
     uint32_t pIdx = y * m_headlessWidth + x;
     if (pIdx < m_headlessDepthBuffer.size()) return m_headlessDepthBuffer[pIdx];
     return 0.0f;
@@ -53,13 +54,15 @@ class SoftwareBackendBase : public GlideStateTracker {
                 const LfbPipelineConfig& config = {}) override;
 
  protected:
+  void ResetState_Locked() override;
+
   void* m_headlessPixelMap{nullptr};
   bool m_lfbDirty{false};
   bool m_lfbBufferDirty[2]{
       false, false};  // 0 = FRONTBUFFER dirty, 1 = BACKBUFFER dirty
 
-  void AllocateCpuBuffers(uint32_t width, uint32_t height);
-  void FreeCpuBuffers();
+  void AllocateCpuBuffers_Locked(uint32_t width, uint32_t height);
+  void FreeCpuBuffers_Locked();
 
   // Deferred CPU-side clear tracking (used by lazy-clear probes and software
   // LFB materialization).
@@ -77,9 +80,9 @@ class SoftwareBackendBase : public GlideStateTracker {
 
   void ScheduleLazyCpuClear(uint32_t color, uint32_t alpha, float z,
                             uint32_t clearMask);
-  void MaterializeLazyCpuClear(uint32_t bufferSlot);
-  void MaterializeLazyCpuDepthClear();
-  void DiscardLazyCpuClear(uint32_t bufferSlot);
+  void MaterializeLazyCpuClear_Locked(uint32_t bufferSlot);
+  void MaterializeLazyCpuDepthClear_Locked();
+  void DiscardLazyCpuClear_Locked(uint32_t bufferSlot);
 
   std::vector<uint8_t, AlignedAllocator<uint8_t, 64>> m_cpuBuffers[2];
   std::vector<uint8_t, AlignedAllocator<uint8_t, 64>> m_resolvedBuffer;

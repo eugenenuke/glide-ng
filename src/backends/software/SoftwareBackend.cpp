@@ -722,11 +722,11 @@ SoftwareBackend::SoftwareBackend() = default;
 SoftwareBackend::~SoftwareBackend() { Shutdown(); }
 
 bool SoftwareBackend::Initialize(const WrapperConfig& config) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (m_initialized) return true;
 
   m_config = config;
-  ResetState();
+  ResetState_Locked();
 
   const char* envSimd = std::getenv("GLIDE_USE_SIMD");
   m_useSimd = (envSimd && std::atoi(envSimd) == 1);
@@ -784,11 +784,11 @@ bool SoftwareBackend::Initialize(const WrapperConfig& config) {
 }
 
 void SoftwareBackend::Shutdown() {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (!m_initialized) return;
 
   GLIDE_LOG(INFO, "Software", "Shutting down Pure Software backend.");
-  DetachWindow();
+  DetachWindow_Locked();
   m_threadPool.reset();
 
   m_initialized = false;
@@ -936,9 +936,9 @@ void SoftwareBackend::ShutdownPresentationSurface() {
 
 bool SoftwareBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
                                    uint32_t height, bool windowed) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (!m_initialized) return false;
-  if (m_windowAttached) DetachWindow();
+  if (m_windowAttached) DetachWindow_Locked();
 
   GLIDE_LOG(INFO, "Software",
             "Attaching software execution window ("
@@ -971,14 +971,14 @@ bool SoftwareBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
   m_headlessMode = true;
 
   // Allocate the CPU framebuffer double buffers (scaled for SSAA!)
-  AllocateCpuBuffers(m_headlessWidth, m_headlessHeight);
+  AllocateCpuBuffers_Locked(m_headlessWidth, m_headlessHeight);
   m_allocatedBuffer = true;
 
   size_t rawDepthSize = (size_t)m_headlessWidth * m_headlessHeight * 4;
   size_t paddedDepthSize = (rawDepthSize + 63) & ~63;
   size_t allocatedDepthSize = paddedDepthSize + 64;
   m_headlessDepthBuffer.resize(allocatedDepthSize / sizeof(float), 0.0f);
-  SetClipWindow(0, 0, m_headlessWidth, m_headlessHeight);
+  SetClipWindow_Locked(0, 0, m_headlessWidth, m_headlessHeight);
   InitTileGrid();
 
   m_headlessPixelMap = m_cpuBuffers[m_backBufferIdx].data();
@@ -989,7 +989,7 @@ bool SoftwareBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
                             m_config.windowScale)) {
     GLIDE_LOG(CRITICAL, "Software",
               "NativeSurfaceHost::Attach failed for SoftwareBackend.");
-    FreeCpuBuffers();
+    FreeCpuBuffers_Locked();
     m_allocatedBuffer = false;
     m_headlessMode = false;
     return false;
@@ -998,7 +998,7 @@ bool SoftwareBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
   if (!InitPresentationSurface()) {
     ShutdownPresentationSurface();
     m_surfaceHost.Detach();
-    FreeCpuBuffers();
+    FreeCpuBuffers_Locked();
     m_allocatedBuffer = false;
     m_headlessMode = false;
     return false;
@@ -1031,6 +1031,11 @@ bool SoftwareBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
 }
 
 void SoftwareBackend::DetachWindow() {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  DetachWindow_Locked();
+}
+
+void SoftwareBackend::DetachWindow_Locked() {
   if (!m_windowAttached) return;
 
   // Strict WSI teardown order: destroy presenter objects BEFORE detaching the
@@ -1039,7 +1044,7 @@ void SoftwareBackend::DetachWindow() {
   m_surfaceHost.Detach();
 
   if (m_allocatedBuffer) {
-    FreeCpuBuffers();
+    FreeCpuBuffers_Locked();
     m_allocatedBuffer = false;
   }
 
@@ -1164,8 +1169,8 @@ void SoftwareBackend::PresentFrame(const uint32_t* srcPixels, uint32_t srcW,
 }
 
 bool SoftwareBackend::SwapBuffers() {
-  FlushBins();
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
+  FlushBins_Locked();
   if (!m_initialized || !m_windowAttached) return false;
 
   // Strictly no-op for foreign hosts (X11Child / WaylandSubsurface / Headless);
@@ -1458,7 +1463,11 @@ void SoftwareBackend::RasterizeTile(int tileIdx) {
 }
 
 void SoftwareBackend::FlushBins() {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
+  FlushBins_Locked();
+}
+
+void SoftwareBackend::FlushBins_Locked() {
   if (m_binnedCommands.empty()) return;
 
   GLIDE_PROFILE_SCOPE("Software::FlushBins");

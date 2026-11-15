@@ -13,7 +13,12 @@ namespace GlideWrapper {
 
 void OpenGLESBackend::UploadTexture(uint32_t tmu, uint32_t startAddress,
                                     const struct VirtualTexture& tex) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
+  UploadTexture_Locked(tmu, startAddress, tex);
+}
+
+void OpenGLESBackend::UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
+                                           const struct VirtualTexture& tex) {
   FlushBatch();
   if (!m_windowAttached && !m_headlessMode) {
     GLIDE_LOG(WARN, "GLES",
@@ -93,7 +98,7 @@ void OpenGLESBackend::UploadTexturePartial(uint32_t tmu, uint32_t startAddress,
                                            const struct VirtualTexture& tex,
                                            uint32_t lodLevel, uint32_t startRow,
                                            uint32_t endRow) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   FlushBatch();
   if (!m_windowAttached && !m_headlessMode) return;
   if (!EnsureContextCurrent()) return;
@@ -107,7 +112,7 @@ void OpenGLESBackend::UploadTexturePartial(uint32_t tmu, uint32_t startAddress,
               "UploadTexturePartial: Texture at 0x"
                   << std::hex << startAddress << std::dec
                   << " not found. Promoting to full upload.");
-    UploadTexture(tmu, startAddress, tex);
+    UploadTexture_Locked(tmu, startAddress, tex);
     return;
   }
   GLuint texId = it->second;
@@ -180,7 +185,7 @@ void OpenGLESBackend::UploadTexturePartial(uint32_t tmu, uint32_t startAddress,
 }
 
 void OpenGLESBackend::PurgeTextures() {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   FlushBatch();
   if (m_glesTextures.empty()) return;
   GLIDE_LOG(DEBUG, "GLES",
@@ -200,23 +205,23 @@ void OpenGLESBackend::PurgeTextures() {
 void OpenGLESBackend::BindTexture(uint32_t tmu, uint32_t startAddress,
                                   uint32_t clampS, uint32_t clampT,
                                   uint32_t minFilter, uint32_t magFilter) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   FlushBatch();
-  GlideStateTracker::BindTexture(tmu, startAddress, clampS, clampT, minFilter,
+  GlideStateTracker::BindTexture_Locked(tmu, startAddress, clampS, clampT, minFilter,
                                  magFilter);
 }
 
 void OpenGLESBackend::SetTexLodBias(uint32_t tmu, float bias) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   FlushBatch();
-  GlideStateTracker::SetTexLodBias(tmu, bias);
+  GlideStateTracker::SetTexLodBias_Locked(tmu, bias);
 }
 
 void OpenGLESBackend::SetTexMipMapMode(uint32_t tmu, uint32_t mode,
                                        bool lodBlend) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   FlushBatch();
-  GlideStateTracker::SetTexMipMapMode(tmu, mode, lodBlend);
+  GlideStateTracker::SetTexMipMapMode_Locked(tmu, mode, lodBlend);
 }
 
 }  // namespace GlideWrapper

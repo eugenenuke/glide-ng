@@ -79,7 +79,7 @@ void Logger::LogHostVulkanCapabilities() {
 }
 
 bool VulkanBackend::Initialize(const WrapperConfig& config) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (m_initialized) return true;
 
   GLIDE_LOG(INFO, "Vulkan",
@@ -265,7 +265,7 @@ bool VulkanBackend::Initialize(const WrapperConfig& config) {
 }
 
 void VulkanBackend::Shutdown() {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (!m_initialized) return;
 
   GLIDE_LOG(INFO, "Vulkan", "Shutting down Hybrid Vulkan context.");
@@ -276,7 +276,7 @@ void VulkanBackend::Shutdown() {
 
   // 1. Force-detach window resources first (handles active frame command
   // buffer, SDL, etc.)
-  DetachWindow();
+  DetachWindow_Locked();
 
   // 2. Explicitly destroy all device-owned pipelines, shaders, and caches
   m_pipelineCache.clear();
@@ -394,16 +394,20 @@ void VulkanBackend::Shutdown() {
 }
 
 void VulkanBackend::ResetState() {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
-  GlideStateTracker::ResetState();
+  std::lock_guard<std::mutex> lock(m_mutex);
+  ResetState_Locked();
+}
+
+void VulkanBackend::ResetState_Locked() {
+  GlideStateTracker::ResetState_Locked();
   m_lfbStaging.ResetPendingAndDirty();
 }
 
 bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
                                  uint32_t height, bool windowed) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (!m_initialized) return false;
-  if (m_windowAttached) DetachWindow();
+  if (m_windowAttached) DetachWindow_Locked();
 
   GLIDE_LOG(INFO, "Vulkan",
             "Attaching Hybrid Vulkan window ("
@@ -415,7 +419,7 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
   m_guestWidth = width;
   m_guestHeight = height;
 
-  ResetState();
+  ResetState_Locked();
   m_headlessMode = true;  // Headless-driven for visual regression
 
   if (!CreateHeadlessRenderTarget(width, height)) return false;
@@ -558,7 +562,7 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
   std::cout << "Info: Drawable Size: " << width << "x" << height << "\n"
             << std::flush;
 
-  SetClipWindow(0, 0, width, height);
+  SetClipWindow_Locked(0, 0, width, height);
 
   // Unconditionally render to offscreen guest targets and present via blit.
   m_headlessMode = true;
@@ -641,7 +645,11 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
 }
 
 void VulkanBackend::DetachWindow() {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
+  DetachWindow_Locked();
+}
+
+void VulkanBackend::DetachWindow_Locked() {
   if (!m_windowAttached) return;
   GLIDE_LOG(INFO, "Vulkan", "Detaching Hybrid Vulkan window resources.");
 
@@ -654,7 +662,7 @@ void VulkanBackend::DetachWindow() {
     m_device->waitIdle();
   }
 
-  DestroySwapchain();
+  DestroySwapchain_Locked();
   m_surface.reset();
   m_surfaceHost.Detach();
 
@@ -1027,8 +1035,7 @@ bool VulkanBackend::CreateSwapchain(uint32_t width, uint32_t height) {
   return true;
 }
 
-void VulkanBackend::DestroySwapchain() {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+void VulkanBackend::DestroySwapchain_Locked() {
   if (m_device) {
     m_device->waitIdle();
   }
@@ -1048,127 +1055,127 @@ void VulkanBackend::RecreateSwapchain(uint32_t width, uint32_t height) {
   m_device->waitIdle();
   GLIDE_LOG(INFO, "Vulkan",
             "Recreating swapchain with size: " << width << "x" << height);
-  DestroySwapchain();
+  DestroySwapchain_Locked();
   CreateSwapchain(width, height);
 }
 
 void VulkanBackend::SetDepthState(uint32_t depthMode, uint32_t compareOp,
                                   bool depthMask, int32_t biasLevel) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (depthMode != m_depthMode || compareOp != m_depthCompareOp ||
       depthMask != m_depthMask || biasLevel != m_depthBiasLevel) {
     FlushBatch();
   }
-  GlideStateTracker::SetDepthState(depthMode, compareOp, depthMask, biasLevel);
+  GlideStateTracker::SetDepthState_Locked(depthMode, compareOp, depthMask, biasLevel);
 }
 
 void VulkanBackend::SetBlendState(uint32_t rgbSrcFactor, uint32_t rgbDstFactor,
                                   uint32_t alphaSrcFactor,
                                   uint32_t alphaDstFactor) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (rgbSrcFactor != m_rgbSrcBlend || rgbDstFactor != m_rgbDstBlend ||
       alphaSrcFactor != m_alphaSrcBlend || alphaDstFactor != m_alphaDstBlend) {
     FlushBatch();
   }
-  GlideStateTracker::SetBlendState(rgbSrcFactor, rgbDstFactor, alphaSrcFactor,
+  GlideStateTracker::SetBlendState_Locked(rgbSrcFactor, rgbDstFactor, alphaSrcFactor,
                                    alphaDstFactor);
 }
 
 void VulkanBackend::SetCullState(uint32_t cullMode) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (cullMode != m_cullMode) {
     FlushBatch();
   }
-  GlideStateTracker::SetCullState(cullMode);
+  GlideStateTracker::SetCullState_Locked(cullMode);
 }
 
 void VulkanBackend::SetAlphaTestState(uint32_t compareOp, uint32_t refVal) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (compareOp != m_alphaTestOp || refVal != m_alphaTestRefVal) {
     FlushBatch();
   }
-  GlideStateTracker::SetAlphaTestState(compareOp, refVal);
+  GlideStateTracker::SetAlphaTestState_Locked(compareOp, refVal);
   // Note: Emulated in fragment shader via push constants. No pipeline
   // recompilation needed!
 }
 
 void VulkanBackend::SetSstOrigin(uint32_t origin) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (origin != m_sstOrigin) {
     FlushBatch();
   }
-  GlideStateTracker::SetSstOrigin(origin);
+  GlideStateTracker::SetSstOrigin_Locked(origin);
 }
 
 void VulkanBackend::SetClipWindow(uint32_t minX, uint32_t minY, uint32_t maxX,
                                   uint32_t maxY) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (minX != m_clipMinX || minY != m_clipMinY || maxX != m_clipMaxX ||
       maxY != m_clipMaxY) {
     FlushBatch();
   }
-  GlideStateTracker::SetClipWindow(minX, minY, maxX, maxY);
+  GlideStateTracker::SetClipWindow_Locked(minX, minY, maxX, maxY);
 
   if (m_initialized && m_device && m_inRenderPass) {
-    vk::Rect2D scissor = GetScissorRectVulkan();
+    vk::Rect2D scissor = GetScissorRectVulkan_Locked();
     m_commandBuffer->setScissor(0, 1, &scissor);
   }
 }
 
 void VulkanBackend::SetColorMask(bool rgb, bool alpha) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (rgb != m_colorMaskRgb || alpha != m_colorMaskAlpha) {
     FlushBatch();
   }
-  GlideStateTracker::SetColorMask(rgb, alpha);
+  GlideStateTracker::SetColorMask_Locked(rgb, alpha);
 }
 
 void VulkanBackend::SetDepthRange(float nearVal, float farVal) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (nearVal != m_depthNear || farVal != m_depthFar) {
     FlushBatch();
   }
-  GlideStateTracker::SetDepthRange(nearVal, farVal);
+  GlideStateTracker::SetDepthRange_Locked(nearVal, farVal);
 }
 
 void VulkanBackend::SetDitherMode(uint32_t mode) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (mode != m_ditherMode) {
     FlushBatch();
   }
-  GlideStateTracker::SetDitherMode(mode);
+  GlideStateTracker::SetDitherMode_Locked(mode);
 }
 
 void VulkanBackend::SetStippleState(uint32_t mode, uint32_t pattern) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (mode != m_stippleMode || pattern != m_stipplePattern) {
     FlushBatch();
   }
-  GlideStateTracker::SetStippleState(mode, pattern);
+  GlideStateTracker::SetStippleState_Locked(mode, pattern);
 }
 
 void VulkanBackend::SetConstantColor(uint32_t color) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (color != m_constantColor) {
     FlushBatch();
   }
-  GlideStateTracker::SetConstantColor(color);
+  GlideStateTracker::SetConstantColor_Locked(color);
 }
 
 void VulkanBackend::SetRenderBuffer(uint32_t target) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (target != m_activeRenderBuffer) {
     FlushBatch();
   }
-  GlideStateTracker::SetRenderBuffer(target);
+  GlideStateTracker::SetRenderBuffer_Locked(target);
 }
 
 void VulkanBackend::SetPixelFormat(uint32_t format) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (format != m_pixelFormatOverride) {
     FlushBatch();
   }
-  GlideStateTracker::SetPixelFormat(format);
+  GlideStateTracker::SetPixelFormat_Locked(format);
 }
 
 void VulkanBackend::SetCombinerMode(uint32_t colorFunc, uint32_t colorFactor,
@@ -1176,7 +1183,7 @@ void VulkanBackend::SetCombinerMode(uint32_t colorFunc, uint32_t colorFactor,
                                     bool colorInvert, uint32_t alphaFunc,
                                     uint32_t alphaFactor, uint32_t alphaLocal,
                                     uint32_t alphaOther, bool alphaInvert) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (colorFunc != m_colorCombinerFunc ||
       colorFactor != m_colorCombinerFactor ||
       colorLocal != m_colorCombinerLocal ||
@@ -1189,7 +1196,7 @@ void VulkanBackend::SetCombinerMode(uint32_t colorFunc, uint32_t colorFactor,
       alphaInvert != m_alphaCombinerInvert) {
     FlushBatch();
   }
-  GlideStateTracker::SetCombinerMode(colorFunc, colorFactor, colorLocal,
+  GlideStateTracker::SetCombinerMode_Locked(colorFunc, colorFactor, colorLocal,
                                      colorOther, colorInvert, alphaFunc,
                                      alphaFactor, alphaLocal, alphaOther,
                                      alphaInvert);
@@ -1199,7 +1206,7 @@ void VulkanBackend::SetTexCombinerMode(uint32_t tmu, uint32_t rgbFunc,
                                        uint32_t rgbFactor, uint32_t alphaFunc,
                                        uint32_t alphaFactor, bool rgbInvert,
                                        bool alphaInvert) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (tmu < 2 && (rgbFunc != m_texCombinerRgbFunc[tmu] ||
                   rgbFactor != m_texCombinerRgbFactor[tmu] ||
                   alphaFunc != m_texCombinerAlphaFunc[tmu] ||
@@ -1208,70 +1215,70 @@ void VulkanBackend::SetTexCombinerMode(uint32_t tmu, uint32_t rgbFunc,
                   alphaInvert != m_texCombinerAlphaInvert[tmu])) {
     FlushBatch();
   }
-  GlideStateTracker::SetTexCombinerMode(tmu, rgbFunc, rgbFactor, alphaFunc,
+  GlideStateTracker::SetTexCombinerMode_Locked(tmu, rgbFunc, rgbFactor, alphaFunc,
                                         alphaFactor, rgbInvert, alphaInvert);
 }
 
 void VulkanBackend::SetSTWHintState(uint32_t hintMask) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (hintMask != m_stwHintMask) {
     FlushBatch();
   }
-  GlideStateTracker::SetSTWHintState(hintMask);
+  GlideStateTracker::SetSTWHintState_Locked(hintMask);
 }
 
 void VulkanBackend::SetChromakeyMode(uint32_t mode) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (mode != m_chromakeyMode) {
     FlushBatch();
   }
-  GlideStateTracker::SetChromakeyMode(mode);
+  GlideStateTracker::SetChromakeyMode_Locked(mode);
 }
 
 void VulkanBackend::SetChromakeyValue(uint32_t value) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (value != m_chromakeyValue) {
     FlushBatch();
   }
-  GlideStateTracker::SetChromakeyValue(value);
+  GlideStateTracker::SetChromakeyValue_Locked(value);
 }
 
 void VulkanBackend::SetChromakeyRange(uint32_t minColor, uint32_t maxColor,
                                       uint32_t mode) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (minColor != m_chromakeyRangeMin || maxColor != m_chromakeyRangeMax ||
       mode != m_chromakeyRangeMode) {
     FlushBatch();
   }
-  GlideStateTracker::SetChromakeyRange(minColor, maxColor, mode);
+  GlideStateTracker::SetChromakeyRange_Locked(minColor, maxColor, mode);
 }
 
 void VulkanBackend::SetFogMode(uint32_t mode) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (mode != m_fogMode) {
     FlushBatch();
   }
-  GlideStateTracker::SetFogMode(mode);
+  GlideStateTracker::SetFogMode_Locked(mode);
 }
 
 void VulkanBackend::SetFogColor(uint32_t color) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (color != m_fogColor) {
     FlushBatch();
   }
-  GlideStateTracker::SetFogColor(color);
+  GlideStateTracker::SetFogColor_Locked(color);
 }
 
 void VulkanBackend::SetFogTable(const uint8_t* table) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (table && std::memcmp(table, m_fogTable, 64) != 0) {
     FlushBatch();
   }
-  GlideStateTracker::SetFogTable(table);
+  GlideStateTracker::SetFogTable_Locked(table);
 }
 
 bool VulkanBackend::SwapBuffers() {
-  std::unique_lock<std::recursive_mutex> lock(m_mutex);
+  std::unique_lock<std::mutex> lock(m_mutex);
   if (!m_initialized || !m_windowAttached) return false;
 
   // Pump SDL events ONLY in StandaloneSDL2 mode (guaranteed no-op for DOSBox
@@ -1281,14 +1288,14 @@ bool VulkanBackend::SwapBuffers() {
       m_surfaceHost.WasQuitRequested()) {
     GLIDE_LOG(INFO, "Vulkan",
               "Standalone window close requested; exiting cleanly.");
-    DetachWindow();
+    DetachWindow_Locked();
     lock.unlock();
     std::exit(0);
   }
 
   // Flush any pending CPU LFB writes to the GPU active image before we
   // swap/present!
-  FlushLFBToGPU();
+  FlushLFBToGPU_Locked();
 
   // Enforce frame pacing and track frame timing using unified FrameTracker
   auto& tracker = TelemetryManager::GetInstance().GetFrameTracker();
@@ -1551,14 +1558,14 @@ bool VulkanBackend::SwapBuffers() {
 }
 
 void VulkanBackend::PollEvents() {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   // Safe no-op in Headless, X11Child, and WaylandSubsurface modes; pumps SDL
   // events only in StandaloneSDL2 mode.
   m_surfaceHost.PollEvents();
 }
 
 void VulkanBackend::SstIdle() {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (m_device) {
     // Blocks the host CPU until all submitted GPU commands in all queues have
     // finished execution!
@@ -2075,7 +2082,7 @@ void VulkanBackend::TransitionImageLayout(vk::CommandBuffer cmd,
 }
 
 void VulkanBackend::SetGamma(float gamma) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   GLIDE_LOG(INFO, "Vulkan", "SetGamma: value=" << gamma);
   m_gammaCorrectionValue = gamma;
   if (gamma <= 0.0f) gamma = 1.0f;
@@ -2091,7 +2098,7 @@ void VulkanBackend::SetGamma(float gamma) {
 void VulkanBackend::LoadGammaTable(uint32_t nentries, const uint32_t* rTable,
                                    const uint32_t* gTable,
                                    const uint32_t* bTable) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   GLIDE_LOG(INFO, "Vulkan", "LoadGammaTable: nentries=" << nentries);
   if (nentries != 256 || !rTable || !gTable || !bTable) return;
   for (int i = 0; i < 256; i++) {

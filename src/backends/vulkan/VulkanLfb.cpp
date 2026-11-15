@@ -9,7 +9,7 @@
 namespace GlideWrapper {
 
 void* VulkanBackend::GetLfbWritePtr() {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (!m_initialized || !m_windowAttached) return nullptr;
   return m_lfbStaging.GetWritePtr(m_activeRenderBuffer);
 }
@@ -19,7 +19,7 @@ bool VulkanBackend::WriteLFB(uint32_t buffer, uint32_t dstX, uint32_t dstY,
                              int32_t srcStride, uint32_t srcFmt,
                              const void* srcData, const void* refData,
                              const LfbPipelineConfig& config) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (!m_initialized || !m_windowAttached) return false;
   return m_lfbStaging.WriteLFB(buffer, dstX, dstY, srcWidth, srcHeight,
                                srcStride, srcFmt, srcData, refData, config,
@@ -29,13 +29,13 @@ bool VulkanBackend::WriteLFB(uint32_t buffer, uint32_t dstX, uint32_t dstY,
 bool VulkanBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
                             uint32_t srcWidth, uint32_t srcHeight,
                             uint32_t dstStride, void* dstData) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (!m_initialized || !m_windowAttached) return false;
 
   // If the CPU LFB buffer has pending writes, flush them to the GPU FBO first
   // so they are included in the readback!
   if (m_lfbStaging.IsDirty()) {
-    FlushLFBToGPU();
+    FlushLFBToGPU_Locked();
   }
 
   // 1. Flush pending batch draws
@@ -122,7 +122,7 @@ bool VulkanBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
                                  dstStride, dstData);
 }
 
-void VulkanBackend::FlushLFBToGPU() {
+void VulkanBackend::FlushLFBToGPU_Locked() {
   if (!m_lfbStaging.IsDirty()) return;
 
   GLIDE_LOG(DEBUG, "Vulkan", "FlushLFBToGPU: Checking dirty buffers...");

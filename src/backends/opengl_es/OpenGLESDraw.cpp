@@ -12,7 +12,7 @@ namespace GlideWrapper {
 
 void OpenGLESBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z,
                                   uint32_t clearMask) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (!m_initialized || !m_windowAttached || !EnsureContextCurrent()) return;
 
   // Flush any pending geometry before clearing the buffers!
@@ -125,10 +125,10 @@ bool OpenGLESBackend::CreateGeomBuffers() {
 }
 
 void OpenGLESBackend::DrawPoint(const ModernVertex& pt) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (!m_initialized || !m_windowAttached) return;
 
-  FlushLFBToGPU();
+  FlushLFBToGPU_Locked();
 
   bool incomingIs2D = (pt.pos[3] == 1.0f);
 
@@ -154,10 +154,10 @@ void OpenGLESBackend::DrawPoint(const ModernVertex& pt) {
 }
 
 void OpenGLESBackend::DrawLine(const ModernVertex& v0, const ModernVertex& v1) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (!m_initialized || !m_windowAttached) return;
 
-  FlushLFBToGPU();
+  FlushLFBToGPU_Locked();
 
   bool incomingIs2D = (v0.pos[3] == 1.0f && v1.pos[3] == 1.0f);
 
@@ -185,10 +185,10 @@ void OpenGLESBackend::DrawLine(const ModernVertex& v0, const ModernVertex& v1) {
 
 void OpenGLESBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
                                    const ModernVertex& c) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (!m_initialized || !m_windowAttached) return;
 
-  FlushLFBToGPU();
+  FlushLFBToGPU_Locked();
 
   bool incomingIs2D =
       (a.pos[3] == 1.0f && b.pos[3] == 1.0f && c.pos[3] == 1.0f);
@@ -319,8 +319,7 @@ void OpenGLESBackend::ApplyColorMaskGLES() {
               m_colorMaskAlpha ? GL_TRUE : GL_FALSE);
 }
 
-void OpenGLESBackend::ApplyScissorGLES() {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+void OpenGLESBackend::ApplyScissorGLES_Locked() {
   glEnable(GL_SCISSOR_TEST);
 
   // OpenGL scissor box expects bottom-up coordinates (0 = bottom).
@@ -338,8 +337,7 @@ void OpenGLESBackend::ApplyScissorGLES() {
   glScissor(m_clipMinX, glScissorY, glScissorW, glScissorH);
 }
 
-void OpenGLESBackend::SyncCullStateGLES() {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+void OpenGLESBackend::SyncCullStateGLES_Locked() {
   GLIDE_LOG(DEBUG, "GLES",
             "SyncCullStateGLES: m_cullMode=" << m_cullMode << ", m_sstOrigin="
                                              << m_sstOrigin);
@@ -430,8 +428,8 @@ void OpenGLESBackend::FlushBatch() {
     m_is2DGeometry = m_batchIs2DGeometry;
     SyncDepthState();
     ApplyBlendingGLES();
-    ApplyScissorGLES();
-    SyncCullStateGLES();
+    ApplyScissorGLES_Locked();
+    SyncCullStateGLES_Locked();
     ApplyColorMaskGLES();
 
     PopulateUniforms();

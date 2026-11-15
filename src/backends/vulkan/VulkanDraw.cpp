@@ -19,7 +19,7 @@ static uint32_t PackRGBA(float r, float g, float b, float a) {
 
 void VulkanBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z,
                                 uint32_t clearMask) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (!m_initialized || !m_windowAttached) return;
 
   // Terminate active render pass if any (so next draw starts a new render pass
@@ -72,10 +72,10 @@ void VulkanBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z,
 }
 
 void VulkanBackend::DrawPoint(const ModernVertex& pt) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (!m_initialized || !m_windowAttached) return;
 
-  FlushLFBToGPU();
+  FlushLFBToGPU_Locked();
 
   GLIDE_LOG(DEBUG, "Vulkan",
             "DrawPoint GPU draw. Pos: (" << pt.pos[0] << ", " << pt.pos[1]
@@ -173,10 +173,10 @@ void VulkanBackend::DrawPoint(const ModernVertex& pt) {
 }
 
 void VulkanBackend::DrawLine(const ModernVertex& v1, const ModernVertex& v2) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (!m_initialized || !m_windowAttached) return;
 
-  FlushLFBToGPU();
+  FlushLFBToGPU_Locked();
 
   GLIDE_LOG(DEBUG, "Vulkan",
             "DrawLine GPU draw. V1: (" << v1.pos[0] << ", " << v1.pos[1]
@@ -278,10 +278,10 @@ void VulkanBackend::DrawLine(const ModernVertex& v1, const ModernVertex& v2) {
 
 void VulkanBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
                                  const ModernVertex& c) {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (!m_initialized || !m_windowAttached) return;
 
-  FlushLFBToGPU();
+  FlushLFBToGPU_Locked();
 
   GLIDE_LOG(DEBUG, "Vulkan",
             "DrawTriangle GPU draw. A pos: ("
@@ -418,8 +418,7 @@ void VulkanBackend::FlushBatch() {
   m_batchedVertexCount = 0;
 }
 
-vk::Rect2D VulkanBackend::GetScissorRectVulkan() {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+vk::Rect2D VulkanBackend::GetScissorRectVulkan_Locked() {
   uint32_t vkScissorY = m_clipMinY;
   if (m_sstOrigin == 1) {  // GR_ORIGIN_LOWER_LEFT is 1 (bottom-left)
     // Flip Y to top-left coordinate system of Vulkan
@@ -452,7 +451,7 @@ void VulkanBackend::EnsureRenderPassActive() {
                         (float)m_headlessHeight, 0.0f, 1.0f);
   m_commandBuffer->setViewport(0, 1, &viewport);
 
-  vk::Rect2D scissor = GetScissorRectVulkan();
+  vk::Rect2D scissor = GetScissorRectVulkan_Locked();
   m_commandBuffer->setScissor(0, 1, &scissor);
 
   // Bind vertex buffer

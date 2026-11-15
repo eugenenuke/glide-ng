@@ -104,7 +104,7 @@ class TextureManager {
     uint32_t activeNccTable = 0;  // Default: NCC0 (0)
   };
 
-  std::recursive_mutex m_mutex;
+  std::mutex m_mutex;
   TmuState m_tmus[2];
   uint32_t m_tmuMemoryLimits[2];
 };

@@ -303,14 +303,20 @@ class VulkanBackend : public GlideStateTracker {
   void SetFogColor(uint32_t color) override;
   void SetFogTable(const uint8_t* table) override;
 
+ protected:
+  void ResetState_Locked() override;
+
  private:
+  void DetachWindow_Locked();
+  void UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
+                            const struct VirtualTexture& tex);
   bool CreateInstance();
   bool SelectPhysicalDevice();
   bool CreateLogicalDevice();
   bool CreateRenderPass();
   bool CreateHeadlessRenderTarget(uint32_t width, uint32_t height);
   bool CreateSwapchain(uint32_t width, uint32_t height);
-  void DestroySwapchain();
+  void DestroySwapchain_Locked();
   void RecreateSwapchain(uint32_t width, uint32_t height);
   uint32_t FindMemoryType(uint32_t typeFilter,
                           vk::MemoryPropertyFlags properties);
@@ -318,7 +324,7 @@ class VulkanBackend : public GlideStateTracker {
                              vk::ImageLayout oldLayout,
                              vk::ImageLayout newLayout,
                              vk::ImageSubresourceRange range);
-  void FlushLFBToGPU();
+  void FlushLFBToGPU_Locked();
   void FlushBatch();
   uint32_t GetActiveGpuBufferIdx() const {
     return (m_activeRenderBuffer == 0) ? 1u : 0u;
@@ -434,8 +440,8 @@ class VulkanBackend : public GlideStateTracker {
   float m_clearDepthValue[2]{1.0f, 1.0f};
   bool m_clearColorPending[2]{false, false};
   bool m_clearDepthPending[2]{false, false};
-  // Dynamic Scissor Helper
-  vk::Rect2D GetScissorRectVulkan();
+  // Dynamic Scissor Helper (caller must hold m_mutex)
+  vk::Rect2D GetScissorRectVulkan_Locked();
   void EnsureRenderPassActive();
   void PopulatePushConstants(PushConstants& pcs);
 

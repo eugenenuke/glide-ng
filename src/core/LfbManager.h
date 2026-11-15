@@ -17,7 +17,7 @@ public:
 
     template <typename LfbInfoType>
     bool Lock(uint32_t type, uint32_t buffer, uint32_t writeMode, uint32_t origin, bool pixelPipeline, LfbInfoType* info) {
-        std::lock_guard<std::recursive_mutex> lock(m_mutex);
+        std::lock_guard<std::mutex> lock(m_mutex);
         if (!info) return false;
 
         auto* b = GetActiveBackend();
@@ -108,7 +108,7 @@ private:
     };
 
     LockState m_lockState;
-    mutable std::recursive_mutex m_mutex;
+    mutable std::mutex m_mutex;
 
     // Helper functions implemented in LfbManager.cpp to hide backend dependencies
     void* GetActiveBackend();
