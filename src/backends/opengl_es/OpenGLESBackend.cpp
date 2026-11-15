@@ -57,12 +57,6 @@
 
 namespace GlideWrapper {
 
-static bool IsWaylandStrictFifoRequested() {
-  const char* env = std::getenv("GLIDE_VSYNC");
-  return env != nullptr &&
-         (std::strcmp(env, "fifo") == 0 || std::strcmp(env, "FIFO") == 0);
-}
-
 bool OpenGLESBackend::Initialize(const WrapperConfig& config) {
   std::lock_guard<std::mutex> lock(m_mutex);
   if (m_initialized) return true;
@@ -71,30 +65,12 @@ bool OpenGLESBackend::Initialize(const WrapperConfig& config) {
   m_config = config;
   m_msaaSamples = config.msaaSamples;
 
-  // Configurable VBO size via environment variable GLIDE_GLES_VBO_SIZE (in MB)
-  m_geomVBOSizeConfigured = 8 * 1024 * 1024;  // Default to 8MB
-  if (const char* vboSizeEnv = std::getenv("GLIDE_GLES_VBO_SIZE")) {
-    try {
-      int sizeMB = std::stoi(vboSizeEnv);
-      if (sizeMB > 0) {
-        m_geomVBOSizeConfigured = sizeMB * 1024 * 1024;
-        GLIDE_LOG(INFO, "GLES",
-                  "Configured GLES Geometry VBO size to "
-                      << sizeMB << " MB (" << m_geomVBOSizeConfigured
-                      << " bytes)");
-      } else {
-        m_geomVBOSizeConfigured = 8 * 1024 * 1024;
-        GLIDE_LOG(WARN, "GLES",
-                  "Invalid GLIDE_GLES_VBO_SIZE: " << vboSizeEnv
-                                                  << ". Using default 8MB.");
-      }
-    } catch (const std::exception& e) {
-      m_geomVBOSizeConfigured = 8 * 1024 * 1024;
-      GLIDE_LOG(WARN, "GLES",
-                "Exception parsing GLIDE_GLES_VBO_SIZE: "
-                    << e.what() << ". Using default 8MB.");
-    }
-  }
+  uint32_t vboSizeMb = (m_config.glesVboSizeMb > 0) ? m_config.glesVboSizeMb : 8;
+  m_geomVBOSizeConfigured = static_cast<size_t>(vboSizeMb) * 1024 * 1024;
+  GLIDE_LOG(INFO, "GLES",
+            "Configured GLES Geometry VBO size to "
+                << vboSizeMb << " MB (" << m_geomVBOSizeConfigured
+                << " bytes)");
 
   m_initialized = true;
   return true;
@@ -1208,7 +1184,7 @@ bool OpenGLESBackend::CreateDirectEglContext() {
     // Wayland compositing is always tear-free and FrameTracker paces maxFps;
     // avoid blocking on wl_surface.frame callbacks unless explicitly forced.
     const EGLint swapInterval =
-        (m_config.vsync && IsWaylandStrictFifoRequested()) ? 1 : 0;
+        (m_config.vsync && m_config.vsyncStrictFifo) ? 1 : 0;
     eglSwapInterval(eglDpy, swapInterval);
   }
 #endif
@@ -1258,8 +1234,7 @@ bool OpenGLESBackend::CreateStandaloneSdlGlContext() {
 
   const bool isWayland = m_surfaceHost.IsWaylandSurface();
   const int swapInterval =
-      (m_config.vsync && (!isWayland || IsWaylandStrictFifoRequested())) ? 1
-                                                                         : 0;
+      (m_config.vsync && (!isWayland || m_config.vsyncStrictFifo)) ? 1 : 0;
   SDL_GL_SetSwapInterval(swapInterval);
   return true;
 }

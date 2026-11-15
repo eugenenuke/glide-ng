@@ -7,10 +7,10 @@ def run_benchmark(test_name, frames=120):
     cmd = f"./{test_name} -n {frames}"
     env = {
         "LD_LIBRARY_PATH": "../../build/lib",
-        "GLIDE_HEADLESS": "1",
-        "GLIDE_BACKEND": os.environ.get("GLIDE_BACKEND", "vulkan"),
-        "GLIDE_WRAPPER_MAX_FPS": "0",
-        "GLIDE_WRAPPER_SOFTWARE_AA": os.environ.get("GLIDE_WRAPPER_SOFTWARE_AA", "analytical")
+        "GLIDE_NG_HEADLESS": "1",
+        "GLIDE_NG_BACKEND": os.environ.get("GLIDE_NG_BACKEND", "vulkan"),
+        "GLIDE_NG_MAX_FPS": "0",
+        "GLIDE_NG_SW_AA": os.environ.get("GLIDE_NG_SW_AA", "analytical")
     }
     
     print(f"Running benchmark: {test_name} for {frames} frames...")
@@ -36,8 +36,8 @@ def run_benchmark(test_name, frames=120):
     return fps, frame_time_ms
 
 if __name__ == "__main__":
-    backend = os.environ.get("GLIDE_BACKEND", "vulkan")
-    aa_mode = os.environ.get("GLIDE_WRAPPER_SOFTWARE_AA", "analytical")
+    backend = os.environ.get("GLIDE_NG_BACKEND", "vulkan")
+    aa_mode = os.environ.get("GLIDE_NG_SW_AA", "analytical")
     print("====================================================")
     print(f"    GLIDE BENCHMARK: {backend.upper()} ({aa_mode.upper()}) ")
     print("====================================================")

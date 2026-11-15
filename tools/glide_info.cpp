@@ -32,11 +32,17 @@ int main(int argc, char* argv[]) {
     grGet(GR_GAMMA_TABLE_ENTRIES, 4, &gammaEntries);
 #else
     // Glide 2.x equivalent queries via grSstQueryHardware
-    GrHwConfiguration hwconfig;
+    GrHwConfiguration hwconfig = {};
     if (grSstQueryHardware(&hwconfig)) {
-        numTmus = hwconfig.SSTs[0].sstBoard.VoodooConfig.nTexelfx;
-        fbiMem = hwconfig.SSTs[0].sstBoard.VoodooConfig.fbRam * 1024 * 1024;
-        tmuMem = hwconfig.SSTs[0].sstBoard.VoodooConfig.tmuConfig[0].tmuRam * 1024 * 1024;
+        if (hwconfig.SSTs[0].type == GR_SSTTYPE_SST96) {
+            numTmus = hwconfig.SSTs[0].sstBoard.SST96Config.nTexelfx;
+            fbiMem = hwconfig.SSTs[0].sstBoard.SST96Config.fbRam * 1024 * 1024;
+            tmuMem = hwconfig.SSTs[0].sstBoard.SST96Config.tmuConfig.tmuRam * 1024 * 1024;
+        } else {
+            numTmus = hwconfig.SSTs[0].sstBoard.VoodooConfig.nTexelfx;
+            fbiMem = hwconfig.SSTs[0].sstBoard.VoodooConfig.fbRam * 1024 * 1024;
+            tmuMem = hwconfig.SSTs[0].sstBoard.VoodooConfig.tmuConfig[0].tmuRam * 1024 * 1024;
+        }
         maxTexSize = 256; // Glide 2.x standard limit
         maxAspect = 3;    // 8:1
         depthBits = 16;
@@ -59,15 +65,21 @@ int main(int argc, char* argv[]) {
 
     // 3. Print active environment variables
     std::cout << "  ENVIRONMENT VARIABLES:\n";
-    const char* envCard = std::getenv("GLIDE_WRAPPER_CARD_MODEL");
-    const char* envDev = std::getenv("GLIDE_DEVICE");
-    const char* envBackend = std::getenv("GLIDE_WRAPPER_BACKEND");
-    const char* envLog = std::getenv("GLIDE_WRAPPER_LOG_LEVEL");
+    const char* envConfig = std::getenv("GLIDE_NG_CONFIG");
+    const char* envCard = std::getenv("GLIDE_NG_CARD_MODEL");
+    const char* envBackend = std::getenv("GLIDE_NG_BACKEND");
+    const char* envLog = std::getenv("GLIDE_NG_LOG_LEVEL");
+    const char* envNoSplash = std::getenv("FX_GLIDE_NO_SPLASH");
+    const char* envPlug = std::getenv("FX_GLIDE_SHAMELESS_PLUG");
+    const char* envSwap = std::getenv("FX_GLIDE_SWAPINTERVAL");
 
-    std::cout << "    GLIDE_WRAPPER_CARD_MODEL : " << (envCard ? envCard : "(not set)") << "\n";
-    std::cout << "    GLIDE_DEVICE             : " << (envDev ? envDev : "(not set)") << "\n";
-    std::cout << "    GLIDE_WRAPPER_BACKEND    : " << (envBackend ? envBackend : "(not set)") << "\n";
-    std::cout << "    GLIDE_WRAPPER_LOG_LEVEL  : " << (envLog ? envLog : "(not set)") << "\n";
+    std::cout << "    GLIDE_NG_CONFIG          : " << (envConfig ? envConfig : "(not set)") << "\n";
+    std::cout << "    GLIDE_NG_CARD_MODEL      : " << (envCard ? envCard : "(not set)") << "\n";
+    std::cout << "    GLIDE_NG_BACKEND         : " << (envBackend ? envBackend : "(not set)") << "\n";
+    std::cout << "    GLIDE_NG_LOG_LEVEL       : " << (envLog ? envLog : "(not set)") << "\n";
+    std::cout << "    FX_GLIDE_NO_SPLASH       : " << (envNoSplash ? envNoSplash : "(not set)") << "\n";
+    std::cout << "    FX_GLIDE_SHAMELESS_PLUG  : " << (envPlug ? envPlug : "(not set)") << "\n";
+    std::cout << "    FX_GLIDE_SWAPINTERVAL    : " << (envSwap ? envSwap : "(not set)") << "\n";
     std::cout << "======================================================================\n";
 
     grGlideShutdown();

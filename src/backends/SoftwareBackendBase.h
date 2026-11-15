@@ -93,7 +93,7 @@ class SoftwareBackendBase : public GlideStateTracker {
   // Software Anti-Aliasing (AA / SSAA) configuration
   std::string m_softwareAaMode{"analytical"};
   uint32_t m_ssaaScale{1};
-  void ResolveAAMode();
+  void ResolveAAMode(const std::string& aaMode);
 };
 
 }  // namespace GlideWrapper

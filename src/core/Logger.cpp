@@ -108,20 +108,48 @@ void Logger::LogExecutionSummary(const WrapperConfig& config) {
         case CardModel::Voodoo5:        ss << "Voodoo5 (H5)"; break;
     }
     
-    ss << "\n  FBI Framebuffer RAM  : " << config.fbiMemoryMb << " MB"
+    ss << "\n  Config File          : " << config.configFilePath
+       << (config.configFileLoaded ? " (loaded)" : " (not found, defaults)")
+       << "\n  FBI Framebuffer RAM  : " << config.fbiMemoryMb << " MB"
        << "\n  Active TMU Chips     : " << config.tmuCount
        << "\n  Dedicated RAM / TMU  : " << config.tmuMemoryMb << " MB"
-       << "\n  Target Presentation  : " << config.maxFps << " FPS"
-       << "\n  AGP Bus Draw Latency : " << config.drawCallDelayUs << " us";
+       << "\n  Target Presentation  : "
+       << (config.maxFps > 0.0f ? (std::to_string(static_cast<int>(config.maxFps)) + " FPS") : "Uncapped")
+       << " (VSync=" << (config.vsync ? (config.vsyncStrictFifo ? "FIFO" : "ON") : "OFF") << ")"
+       << "\n  MSAA / Scale / Filter: " << config.msaaSamples << "x / "
+       << config.windowScale << "x / "
+       << (config.presentationFilter == 1 ? "Linear" : "Nearest")
+       << "\n  Splash / Plug Policy : Splash=" << (config.noSplash ? "SUPPRESSED" : "ENABLED")
+       << ", Plug=" << (config.shamelessPlugMode < 0 ? "APP" : (config.shamelessPlugMode > 0 ? "FORCED_ON" : "FORCED_OFF"))
+       << "\n  Log Output           : " << config.logFile
+       << " (level=" << config.logLevel
+       << ", console=" << (config.logToConsole ? "ON" : "OFF") << ")";
 
     std::string backendPretty = "Vulkan 1.1 GPU Port";
     if (config.backend == "opengl_es") backendPretty = "OpenGL ES 3.2 GPU Port";
     else if (config.backend == "software") backendPretty = "Host CPU Software Reference";
 
+    const char* apiBaseStr = "2.43";
+    switch (config.apiVersion) {
+        case ApiVersion::GLIDE_2_1:  apiBaseStr = "2.1"; break;
+        case ApiVersion::GLIDE_2_40: apiBaseStr = "2.40"; break;
+        case ApiVersion::GLIDE_2_42: apiBaseStr = "2.42"; break;
+        case ApiVersion::GLIDE_2_43: apiBaseStr = "2.43"; break;
+        case ApiVersion::GLIDE_2_61: apiBaseStr = "2.61"; break;
+    }
+
     ss << "\n  Voodoo2 SLI Mode     : " << (config.enableSli ? "ENABLED" : "DISABLED")
-       << "\n  Reported API Base    : " << config.apiVersionOverride
-       << "\n  Active Emulation     : " << backendPretty
-       << "\n========================================================";
+       << "\n  Reported API Base    : " << apiBaseStr
+       << "\n  Active Emulation     : " << backendPretty;
+
+    if (!config.settingSources.empty()) {
+        ss << "\n  Active Overrides     :";
+        for (const auto& kv : config.settingSources) {
+            ss << "\n    - " << kv.first << " <- " << kv.second;
+        }
+    }
+
+    ss << "\n========================================================";
 
     Log(LogLevel::INFO, "Startup", ss.str());
 }

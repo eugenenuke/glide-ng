@@ -10,12 +10,12 @@ YELLOW = "\033[93m"
 RESET = "\033[0m"
 
 # Paths
-WORKSPACE = "/usr/local/google/home/eianiuk/gemini/3dfx"
+WORKSPACE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TEST_RUNNER = "./build/bin/test_runner"
 REF_DIR = "tests/reference_dumps"
 
 # Dynamically resolve test dumps directory based on active backend
-backend = os.environ.get("GLIDE_BACKEND", "vulkan").lower()
+backend = os.environ.get("GLIDE_NG_BACKEND", "vulkan").lower()
 if backend in ["gles", "goes"]:
     backend = "opengl_es"
 elif backend == "sw":
@@ -75,11 +75,11 @@ def run_command_with_env(cmd, library_path, force_no_window=False, use_xvfb=Fals
     env["LD_LIBRARY_PATH"] = os.path.join(WORKSPACE, library_path)
     
     # Default to uncapped FPS for all test executions to run at maximum speed!
-    if "GLIDE_WRAPPER_MAX_FPS" not in env:
-        env["GLIDE_WRAPPER_MAX_FPS"] = "0"
+    if "GLIDE_NG_MAX_FPS" not in env:
+        env["GLIDE_NG_MAX_FPS"] = "0"
         
     if force_no_window:
-        env["GLIDE_FORCE_NO_WINDOW"] = "1"
+        env["GLIDE_NG_HEADLESS"] = "1"
     else:
         # Preload SDL2 for openglide
         env["LD_PRELOAD"] = SDL2_PRELOAD

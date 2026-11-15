@@ -36,9 +36,9 @@ You can change the active card model to match different generations of 3dfx hard
 ### Configuration Methods
 
 #### Method A: Environment Variables (Highest Priority)
-Set `GLIDE_DEVICE` or `GLIDE_WRAPPER_CARD_MODEL` in your shell before launching the application:
+Set `GLIDE_NG_CARD_MODEL` in your shell before launching the application:
 ```bash
-export GLIDE_DEVICE=voodoo3
+export GLIDE_NG_CARD_MODEL=voodoo3
 ```
 
 #### Method B: JSON Configuration File
@@ -70,9 +70,9 @@ While the card model determines the default API version, you can explicitly over
 ### Configuration Methods
 
 #### Method A: Environment Variables (Highest Priority)
-Set `GLIDE_VERSION_OVERRIDE` or `GLIDE_WRAPPER_API_VERSION` in your shell:
+Set `GLIDE_NG_API_VERSION` in your shell:
 ```bash
-export GLIDE_VERSION_OVERRIDE=2.40
+export GLIDE_NG_API_VERSION=2.40
 ```
 
 #### Method B: JSON Configuration File
@@ -96,7 +96,7 @@ The wrapper supports the following Glide major/minor specifications:
 | `2.61` | **Voodoo3 Interop Profile** | Adds callback-driven splash execution: `grSplashCb`. |
 
 > [!NOTE]
-> **Automatic Version Gating Fallback**: If you do not specify an `apiVersion` or `GLIDE_VERSION_OVERRIDE`, the wrapper automatically selects the authentic API version that was paired with the selected hardware model (e.g., selecting `VOODOO1` automatically restricts the API footprint to `2.40`!).
+> **Automatic Version Gating Fallback**: If you do not specify an `apiVersion` or `GLIDE_NG_API_VERSION`, the wrapper automatically selects the authentic API version that was paired with the selected hardware model (e.g., selecting `VOODOO1` automatically restricts the API footprint to `2.40`!).
 
 ---
 
@@ -108,20 +108,20 @@ This allows you to create **"Super Hardware"** profiles—for example, emulating
 
 ### Customizing Hardware Memory and Limits
 
-You can tune these limits via environment variables or in `glide_config.json`:
+You can tune these limits via environment variables or in `glide_config.json` (see [docs/glide_environment_variables.md](glide_environment_variables.md) for the complete reference):
 
 | Environment Variable | JSON Config Property | Default Value | Description |
 | :--- | :--- | :--- | :--- |
-| `GLIDE_WRAPPER_FBI_MEM_MB` | `"fbiMemoryMb"` | `16` | Total FBI Framebuffer memory in MB. Controls resolution limits. |
-| `GLIDE_WRAPPER_MAX_FPS` | `"maxFps"` | `60.0` | Maximum frame rate ceiling (use `0` to uncap frame rate). |
-| `GLIDE_VSYNC` | `"vsync"` | `true` | Vertical synchronization. Set to `0` or `false` to disable. |
-| `GLIDE_WRAPPER_MSAA` | `"msaaSamples"` | `1` | MSAA sample count. Supports `1` (disabled), `2`, `4`, `8`, `16`. |
+| `GLIDE_NG_FBI_MEM_MB` | `"fbiMemoryMb"` | `16` | Total FBI Framebuffer memory in MB. Controls resolution limits. |
+| `GLIDE_NG_MAX_FPS` | `"maxFps"` | `60.0` | Maximum frame rate ceiling (use `0` to uncap frame rate). |
+| `GLIDE_NG_VSYNC` | `"vsync"` | `true` | Vertical synchronization (`0`/`1`, `true`/`false`, or `fifo`). |
+| `GLIDE_NG_MSAA` | `"msaaSamples"` | `1` | MSAA sample count. Supports `1` (disabled), `2`, `4`, `8`, `16`. |
 
 > [!TIP]
 > To run a Voodoo1 game at 800x600 in authentic `2.40` mode without stockouts, launch it like this:
 > ```bash
-> export GLIDE_DEVICE=voodoo1
-> export GLIDE_WRAPPER_FBI_MEM_MB=16
+> export GLIDE_NG_CARD_MODEL=voodoo1
+> export GLIDE_NG_FBI_MEM_MB=16
 > ./your_classic_game
 > ```
 

@@ -53,9 +53,13 @@ inline void* OpenGlide3Handle() {
 
 TEST_CASE("Architectural Core Validation", "[Architecture]") {
   SECTION("EmulationRegistry Singleton Access") {
+    GlideWrapper::WrapperConfig defaults;
+    REQUIRE(defaults.model == GlideWrapper::CardModel::Voodoo2);
+    REQUIRE(defaults.fbiMemoryMb == 16);
+
     auto& reg = GlideWrapper::EmulationRegistry::GetInstance();
-    REQUIRE(reg.GetConfig().model == GlideWrapper::CardModel::Voodoo2);
-    REQUIRE(reg.GetConfig().fbiMemoryMb == 16);
+    REQUIRE(reg.GetConfig().fbiMemoryMb > 0);
+    REQUIRE(reg.GetConfig().tmuCount >= 1);
   }
 
   SECTION("Logger Lifecycle") {
@@ -77,8 +81,8 @@ TEST_CASE("Architectural Core Validation", "[Architecture]") {
       "Extensible Configuration Hierarchy (Task 1.3 Environment Overrides)") {
 #ifdef __linux__
     // Mock environment variables
-    ::setenv("GLIDE_WRAPPER_FBI_MEM_MB", "32", 1);
-    ::setenv("GLIDE_WRAPPER_VENDOR", "Antigravity Test Vendor", 1);
+    ::setenv("GLIDE_NG_FBI_MEM_MB", "32", 1);
+    ::setenv("GLIDE_NG_VENDOR", "Antigravity Test Vendor", 1);
 
     GlideWrapper::JsonConfigLoader loader;
     GlideWrapper::WrapperConfig cfg;
@@ -88,8 +92,8 @@ TEST_CASE("Architectural Core Validation", "[Architecture]") {
     REQUIRE(cfg.reportedVendorOverride == "Antigravity Test Vendor");
 
     // Clean up environment
-    ::unsetenv("GLIDE_WRAPPER_FBI_MEM_MB");
-    ::unsetenv("GLIDE_WRAPPER_VENDOR");
+    ::unsetenv("GLIDE_NG_FBI_MEM_MB");
+    ::unsetenv("GLIDE_NG_VENDOR");
 #endif
   }
 
@@ -143,10 +147,14 @@ TEST_CASE("Architectural Core Validation", "[Architecture]") {
     REQUIRE(std::string(getString(0xa3)) == "3Dfx Interactive");  // GR_VENDOR
 
     GrHwConfiguration hw;
+    std::memset(&hw, 0xA5, sizeof(hw));  // Ensure grSstQueryHardware initializes all fields
     FxBool success = queryHw(&hw);
     REQUIRE(success == FXTRUE);
     REQUIRE(hw.num_sst == 1);
     REQUIRE(hw.SSTs[0].type == GR_SSTTYPE_Voodoo2);
+    CHECK(hw.SSTs[0].sstBoard.Voodoo2Config.fbRam > 0);
+    CHECK(hw.SSTs[0].sstBoard.Voodoo2Config.nTexelfx >= 1);
+    CHECK(hw.SSTs[0].sstBoard.Voodoo2Config.tmuConfig[0].tmuRam > 0);
 
     ::dlclose(handle);
 #endif
@@ -337,7 +345,7 @@ TEST_CASE("Architectural Core Validation", "[Architecture]") {
 #ifdef __linux__
     // Cycle through all 4 official 3dfx card permutations using Catch2 GENERATE
     auto modelName = GENERATE("SST1", "CVG", "H3", "H5");
-    ::setenv("GLIDE_WRAPPER_CARD_MODEL", modelName, 1);
+    ::setenv("GLIDE_NG_CARD_MODEL", modelName, 1);
 
     // 1. Validate Glide 2.x Dynamic Exports
     {
@@ -426,7 +434,7 @@ TEST_CASE("Architectural Core Validation", "[Architecture]") {
       ::dlclose(handle);
     }
 
-    ::unsetenv("GLIDE_WRAPPER_CARD_MODEL");
+    ::unsetenv("GLIDE_NG_CARD_MODEL");
 #endif
   }
 
@@ -769,8 +777,8 @@ TEST_CASE("Architectural Core Validation", "[Architecture]") {
 
   SECTION("Milestone 2: Anti-Aliasing & Transparent MSAA") {
 #ifdef __linux__
-    // 1. Temporarily set the environment variable GLIDE_WRAPPER_MSAA to 4
-    ::setenv("GLIDE_WRAPPER_MSAA", "4", 1);
+    // 1. Temporarily set the environment variable GLIDE_NG_MSAA to 4
+    ::setenv("GLIDE_NG_MSAA", "4", 1);
 
     void* handle = OpenGlide2Handle();
     REQUIRE(handle != nullptr);
@@ -865,7 +873,7 @@ TEST_CASE("Architectural Core Validation", "[Architecture]") {
     ::dlclose(handle);
 
     // Reset the environment variable to avoid affecting other tests
-    ::unsetenv("GLIDE_WRAPPER_MSAA");
+    ::unsetenv("GLIDE_NG_MSAA");
 #endif
   }
 
@@ -2254,9 +2262,13 @@ TEST_CASE("OpenGL ES Gamma Correction Accuracy Validation") {
 #ifdef __linux__
   // 1. Ensure we only run this test if the OpenGL ES backend is active at
   // process start
-  const char* envBackend = std::getenv("GLIDE_BACKEND");
+  const char* envBackend = std::getenv("GLIDE_NG_BACKEND");
   if (!envBackend || std::string(envBackend) != "opengl_es") {
     return;  // Safely skip if not explicitly running GLES
+  }
+  const char* envHeadless = std::getenv("GLIDE_NG_HEADLESS");
+  if (envHeadless && std::string(envHeadless) == "1") {
+    return;  // Default framebuffer (FBO 0) readback requires a non-headless EGL surface
   }
 
   // Load the shared library dynamically
@@ -2296,9 +2308,9 @@ TEST_CASE("OpenGL ES Gamma Correction Accuracy Validation") {
   REQUIRE(gammaCorrection != nullptr);
 
   // 1. Force the OpenGL ES backend (saving original for restoration)
-  const char* origBackend = std::getenv("GLIDE_BACKEND");
+  const char* origBackend = std::getenv("GLIDE_NG_BACKEND");
   std::string origBackendStr = origBackend ? origBackend : "";
-  ::setenv("GLIDE_BACKEND", "opengl_es", 1);
+  ::setenv("GLIDE_NG_BACKEND", "opengl_es", 1);
 
   // 2. Initialize Glide and open the window (windowed mode so it runs
   // headlessly)
@@ -2367,16 +2379,16 @@ TEST_CASE("OpenGL ES Gamma Correction Accuracy Validation") {
 
   // Restore environment faithfully
   if (!origBackendStr.empty()) {
-    ::setenv("GLIDE_BACKEND", origBackendStr.c_str(), 1);
+    ::setenv("GLIDE_NG_BACKEND", origBackendStr.c_str(), 1);
   } else {
-    ::unsetenv("GLIDE_BACKEND");
+    ::unsetenv("GLIDE_NG_BACKEND");
   }
 #endif
 }
 
 TEST_CASE("Glide Chroma-Key Range Rendering Verification") {
 #ifdef __linux__
-  const char* envBackend = std::getenv("GLIDE_BACKEND");
+  const char* envBackend = std::getenv("GLIDE_NG_BACKEND");
   std::string activeBackend = envBackend ? envBackend : "vulkan";
 
   INFO("Testing Chroma-Key Range on Backend: " << activeBackend);
@@ -2919,7 +2931,7 @@ TEST_CASE("Glide Per-TMU Texture Chromakey & State Serialization",
     REQUIRE(winClose != nullptr);
 
     // Force software backend so we can access it directly
-    ::setenv("GLIDE_WRAPPER_BACKEND", "software", 1);
+    ::setenv("GLIDE_NG_BACKEND", "software", 1);
 
     init();
     sstSelect(0);
@@ -2972,7 +2984,7 @@ TEST_CASE("Glide Per-TMU Texture Chromakey & State Serialization",
 
     winClose();
     shutdown();
-    ::unsetenv("GLIDE_WRAPPER_BACKEND");
+    ::unsetenv("GLIDE_NG_BACKEND");
     ::dlclose(handle);
   }
 
@@ -3032,7 +3044,7 @@ TEST_CASE("Glide Per-TMU Texture Chromakey & State Serialization",
     REQUIRE(texChromaMode != nullptr);
     REQUIRE(texChromaRange != nullptr);
 
-    ::setenv("GLIDE_WRAPPER_BACKEND", "software", 1);
+    ::setenv("GLIDE_NG_BACKEND", "software", 1);
 
     init();
     sstSelect(0);
@@ -3072,7 +3084,7 @@ TEST_CASE("Glide Per-TMU Texture Chromakey & State Serialization",
 
     winClose();
     shutdown();
-    ::unsetenv("GLIDE_WRAPPER_BACKEND");
+    ::unsetenv("GLIDE_NG_BACKEND");
     ::dlclose(handle);
   }
 #endif
@@ -5844,14 +5856,14 @@ TEST_CASE("Glide 2.x Dynamic Version and Hardware Gating", "[Glide2][Gating]") {
   // Helper to setup and initialize under specific env profiles
   auto init_with_profile = [&](const char* card, const char* version) {
     if (card)
-      ::setenv("GLIDE_DEVICE", card, 1);
+      ::setenv("GLIDE_NG_CARD_MODEL", card, 1);
     else
-      ::unsetenv("GLIDE_DEVICE");
+      ::unsetenv("GLIDE_NG_CARD_MODEL");
 
     if (version)
-      ::setenv("GLIDE_VERSION_OVERRIDE", version, 1);
+      ::setenv("GLIDE_NG_API_VERSION", version, 1);
     else
-      ::unsetenv("GLIDE_VERSION_OVERRIDE");
+      ::unsetenv("GLIDE_NG_API_VERSION");
 
     init();
     sstSelect(0);
@@ -6463,7 +6475,7 @@ TEST_CASE(
     "[Glide2][State]") {
 #ifdef __linux__
   // Force the Software backend for this test
-  ::setenv("GLIDE_WRAPPER_BACKEND", "sw", 1);
+  ::setenv("GLIDE_NG_BACKEND", "sw", 1);
 
   void* handle = OpenGlide2Handle();
   REQUIRE(handle != nullptr);
@@ -6561,7 +6573,7 @@ TEST_CASE(
   if (winClose) winClose(0);
   shutdown();
   ::dlclose(handle);
-  ::unsetenv("GLIDE_WRAPPER_BACKEND");
+  ::unsetenv("GLIDE_NG_BACKEND");
 #endif
 }
 
@@ -6586,13 +6598,13 @@ TEST_CASE("Software Thread Scaling", "[Software][Scaling]") {
   };
 
   // Save and restore environment variables to prevent test contamination
-  EnvRestorer restorerBackend("GLIDE_WRAPPER_BACKEND");
-  EnvRestorer restorerLogLevel("GLIDE_WRAPPER_LOG_LEVEL");
+  EnvRestorer restorerBackend("GLIDE_NG_BACKEND");
+  EnvRestorer restorerLogLevel("GLIDE_NG_LOG_LEVEL");
   EnvRestorer restorerThreads("GLIDE_NUM_THREADS");
 
   // Force software backend and disable logs during sweep
-  ::setenv("GLIDE_WRAPPER_BACKEND", "software", 1);
-  ::setenv("GLIDE_WRAPPER_LOG_LEVEL", "0", 1);
+  ::setenv("GLIDE_NG_BACKEND", "software", 1);
+  ::setenv("GLIDE_NG_LOG_LEVEL", "0", 1);
 
   void* handle = OpenGlide3Handle();
   REQUIRE(handle != nullptr);

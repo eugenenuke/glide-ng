@@ -25,7 +25,7 @@ Activate this skill when analyzing, modifying, or debugging the CPU reference ra
 ## 3. Headless Execution, Presentation & Base-Class Coupling
 
 - **Headless Mode (`forceNoWindow`)**:
-  - `SoftwareBackend::AttachWindow()` MUST respect `m_config.forceNoWindow` (`GLIDE_FORCE_NO_WINDOW=1` / `GLIDE_HEADLESS=1`) and skip all OS window/SDL/EGL initialization. Never call `SDL_PumpEvents()` when headless.
+  - `SoftwareBackend::AttachWindow()` MUST respect `m_config.forceNoWindow` (`GLIDE_NG_HEADLESS=1`) and skip all OS window/SDL/EGL initialization. Never call `SDL_PumpEvents()` when headless.
 - **Presentation (`NativeSurfaceHost`)**:
   - Do not hijack DOSBox's `SDL_Window*` / `SDL_Renderer*`. Present `m_resolvedBuffer` through `NativeSurfaceHost` (`XPutImage`/`XShmPutImage` on X11 child windows, `wl_shm` on Wayland subsurfaces, SDL2 only in standalone `hWnd == 0` mode) with aspect-ratio letterboxing.
   - Always track resource ownership flags (`m_sdlWindowOwned`, `m_sdlRendererOwned`) cleanly on standalone paths.

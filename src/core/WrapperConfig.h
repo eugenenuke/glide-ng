@@ -1,7 +1,8 @@
 #pragma once
 
-#include <string>
 #include <cstdint>
+#include <map>
+#include <string>
 
 namespace GlideWrapper {
 
@@ -27,25 +28,50 @@ enum class ApiVersion {
 };
 
 struct WrapperConfig {
+    // Emulated hardware profile
     CardModel model{CardModel::Voodoo2};
     ApiVersion apiVersion{ApiVersion::GLIDE_2_43};
     uint32_t fbiMemoryMb{16};
     uint32_t tmuCount{2};
     uint32_t tmuMemoryMb{16};
-    float maxFps{60.0f};
-    float drawCallDelayUs{0.0f};
     bool enableSli{false}; // Disabled by default for maximum classic interop
     std::string apiVersionOverride{"2.43 (Latest)"};
-    std::string reportedVendorOverride{"3Dfx Interactive"}; // Authentic retro default!
+    std::string reportedVendorOverride{"3Dfx Interactive"}; // Authentic retro default
     std::string reportedRendererOverride{"3dfx glide-ng Vulkan Wrapper"};
-    uint32_t logLevel{3}; // 3 = INFO
-    bool forceNoWindow{false}; // Enforces headless offscreen CI mode upon hWnd=0
-    bool logToConsole{false}; // Enforces console logging to stdout/stderr in addition to file
-    std::string backend{"vulkan"}; // "vulkan" or "opengl_es"
-    uint32_t msaaSamples{1}; // 1 = MSAA disabled, 4 = 4x MSAA, etc.
-    bool vsync{true}; // Enables swapchain vertical synchronization (capping to refresh rate)
-    uint32_t windowScale{1}; // 1 = 1x, 2 = 2x, etc.
-    uint32_t presentationFilter{0}; // 0 = Nearest-Neighbor (Sharp), 1 = Linear/Bilinear (Smooth)
+
+    // Core & presentation
+    std::string backend{"vulkan"}; // "vulkan", "opengl_es", or "software"
+    bool forceNoWindow{false};     // Headless offscreen CI mode (GLIDE_NG_HEADLESS)
+    float maxFps{60.0f};           // 0 = uncapped
+    float drawCallDelayUs{0.0f};   // Stub / planned AGP bus delay
+    uint32_t msaaSamples{1};       // 1, 2, 4, 8, 16
+    bool vsync{true};              // Swapchain vertical sync
+    bool vsyncStrictFifo{false};   // Opt-in strict FIFO on Wayland (GLIDE_NG_VSYNC=fifo)
+    int swapInterval{-1};          // -1 = app-controlled, 0 = off, >=1 = interval (FX_GLIDE_SWAPINTERVAL)
+    uint32_t windowScale{1};       // 1..8
+    uint32_t presentationFilter{0}; // 0 = Nearest-Neighbor, 1 = Linear/Bilinear
+
+    // Logging & diagnostics
+    uint32_t logLevel{3};          // 0=OFF, 1=CRIT, 2=WARN, 3=INFO, 4=DEBUG, 5=TRACE
+    bool logToConsole{false};      // Mirror log output to stdout
+    std::string logFile{"glide-ng.log"};
+
+    // Authentic 3dfx Glide overrides (Phase 1)
+    bool noSplash{false};          // FX_GLIDE_NO_SPLASH / GLIDE_NG_NO_SPLASH
+    int shamelessPlugMode{-1};     // -1 = app-controlled, 0 = force off, 1 = force on
+
+    // Backend-specific tuning (unified; zero direct std::getenv() in backends)
+    uint32_t swThreads{0};         // 0 = auto (hardware_concurrency)
+    bool swUseSimd{false};         // AVX2 rasterizer hook (GLIDE_NG_SW_SIMD)
+    uint32_t swTileSize{32};       // >= 16, rounded to power-of-two
+    std::string swAaMode{"analytical"}; // "analytical" or "ssaa"
+    std::string vkCachePath{".glide-vulkan-cache.bin"};
+    uint32_t glesVboSizeMb{8};     // GLES geometry VBO size in MB
+
+    // Config resolution metadata (for startup diagnostic summary)
+    std::string configFilePath{"glide_config.json"};
+    bool configFileLoaded{false};
+    std::map<std::string, std::string> settingSources;
 };
 
 class EmulationRegistry {
@@ -64,4 +90,3 @@ private:
 };
 
 } // namespace GlideWrapper
-

@@ -26,11 +26,11 @@ static void splashCallback(int frame) {
 
 int main(int argc, char** argv) {
     // Force default device to voodoo3 if not set, to make sure 2.61 is active!
-    if (!std::getenv("GLIDE_DEVICE") && !std::getenv("GLIDE_WRAPPER_CARD_MODEL")) {
-        ::setenv("GLIDE_DEVICE", "voodoo3", 1);
+    if (!std::getenv("GLIDE_NG_CARD_MODEL")) {
+        ::setenv("GLIDE_NG_CARD_MODEL", "voodoo3", 1);
     }
-    if (!std::getenv("GLIDE_VERSION_OVERRIDE") && !std::getenv("GLIDE_WRAPPER_API_VERSION")) {
-        ::setenv("GLIDE_VERSION_OVERRIDE", "2.61", 1);
+    if (!std::getenv("GLIDE_NG_API_VERSION")) {
+        ::setenv("GLIDE_NG_API_VERSION", "2.61", 1);
     }
 
     // Initialize Glide, parse CLI, print header, and resolve resolution
@@ -54,16 +54,21 @@ int main(int argc, char** argv) {
     if (!s_grSplashCb) {
         std::printf("[CRITICAL] grSplashCb is NOT supported under the active profile/device!\r\n");
         std::printf("Please ensure you run this demo with a Voodoo3+ profile and Glide 2.61+:\r\n");
-        std::printf("  GLIDE_DEVICE=voodoo3 GLIDE_VERSION_OVERRIDE=2.61 %s\r\n\r\n", argv[0]);
+        std::printf("  GLIDE_NG_CARD_MODEL=voodoo3 GLIDE_NG_API_VERSION=2.61 %s\r\n\r\n", argv[0]);
         grGlideShutdown();
         return EXIT_FAILURE;
     }
 
-    std::printf("\n[SPLASH] Showcase initialized. Playing initial splash sequence...\n");
+    std::printf("\n[SPLASH] Showcase initialized. Requesting initial splash sequence...\n");
     
-    // Play full animation loop automatically on startup!
+    // Play full animation loop automatically on startup (skipped if FX_GLIDE_NO_SPLASH=1)
     s_animationFinished = false;
     s_grSplashCb(0.0f, 0.0f, (float)runConfig.width, (float)runConfig.height, 0, splashCallback);
+    if (!s_animationFinished) {
+        std::printf("[SPLASH] Splash sequence skipped (suppressed by FX_GLIDE_NO_SPLASH / GLIDE_NG_NO_SPLASH).\n");
+        std::fflush(stdout);
+        s_animationFinished = true;
+    }
 
     bool running = true;
     int manualFrame = 1;
@@ -80,6 +85,11 @@ int main(int argc, char** argv) {
                 std::printf("\n[SPLASH] Replaying full 3D splash animation loop...\n");
                 s_animationFinished = false;
                 s_grSplashCb(0.0f, 0.0f, (float)runConfig.width, (float)runConfig.height, 0, splashCallback);
+                if (!s_animationFinished) {
+                    std::printf("[SPLASH] Splash sequence skipped (suppressed by FX_GLIDE_NO_SPLASH / GLIDE_NG_NO_SPLASH).\n");
+                    std::fflush(stdout);
+                    s_animationFinished = true;
+                }
             } else if (key == ' ') {
                 // Manual frame-by-frame stepping
                 std::printf("\r[SPLASH] Stepping manual frame %d / 74\033[K", manualFrame);
@@ -99,6 +109,8 @@ int main(int argc, char** argv) {
 
         // Keep running a simple background scene if animation is not active
         if (s_animationFinished) {
+            grColorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+                           GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_NONE, FXFALSE);
             grBufferClear(0x001A0033, 0, 0); // Dark purple background
 
             // Draw a simple glowing background triangle to show the window remains active

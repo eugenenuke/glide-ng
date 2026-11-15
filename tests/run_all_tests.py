@@ -64,7 +64,7 @@ def main():
     parser.add_argument(
         '--windowed',
         action='store_true',
-        help="Disable GLIDE_FORCE_NO_WINDOW=1 (default runs headlessly)",
+        help="Disable GLIDE_NG_HEADLESS=1 (default runs headlessly)",
     )
     args = parser.parse_args()
 
@@ -106,15 +106,14 @@ def main():
             print(f"Running {label:<7} on {Colors.BLUE}{backend:<10}{Colors.END} ... ", end='', flush=True)
             total_count += 1
             env_override = {
-                'GLIDE_WRAPPER_BACKEND': backend,
-                'GLIDE_WRAPPER_MAX_FPS': '0',
+                'GLIDE_NG_BACKEND': backend,
+                'GLIDE_NG_MAX_FPS': '0',
             }
             if not args.windowed:
-                env_override['GLIDE_FORCE_NO_WINDOW'] = '1'
+                env_override['GLIDE_NG_HEADLESS'] = '1'
             success, stdout, stderr, elapsed = run_command(
                 [bin_path],
                 env_override=env_override,
-                env_remove=['GLIDE_BACKEND'],
             )
             status_str = f"{Colors.GREEN}[PASS]{Colors.END}" if success else f"{Colors.RED}[FAIL]{Colors.END}"
             print(f"{status_str} ({elapsed:.2f}s)")

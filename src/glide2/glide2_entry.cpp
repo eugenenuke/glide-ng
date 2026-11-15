@@ -287,7 +287,7 @@ FX_ENTRY void FX_CALL grBufferClear(GrColor_t color, GrAlpha_t alpha,
 
 FX_ENTRY void FX_CALL grBufferSwap(int swap_interval) {
   EnsureEngineInitialized();
-  if (s_shamelessPlugEnabled) {
+  if (EntryCommon::ShouldRenderShamelessPlug(s_shamelessPlugEnabled)) {
     grShamelessPlug();
   }
   s_lastSwapTime = std::chrono::steady_clock::now();
@@ -513,23 +513,44 @@ FX_ENTRY FxBool FX_CALL grSstQueryHardware(GrHwConfiguration* hwconfig) {
   auto& reg = GlideWrapper::EmulationRegistry::GetInstance();
   auto& config = reg.GetConfig();
 
+  std::memset(hwconfig, 0, sizeof(*hwconfig));
+  const int tmuCount = static_cast<int>(config.tmuCount);
+  const int clampedTmus = std::min(tmuCount, GLIDE_NUM_TMU);
+
   hwconfig->num_sst = 1;
   if (config.model == GlideWrapper::CardModel::VoodooGraphics) {
     hwconfig->SSTs[0].type = GR_SSTTYPE_VOODOO;
-    hwconfig->SSTs[0].sstBoard.VoodooConfig.fbRam = config.fbiMemoryMb;
+    auto& v = hwconfig->SSTs[0].sstBoard.VoodooConfig;
+    v.fbRam = static_cast<int>(config.fbiMemoryMb);
+    v.fbiRev = 2;
+    v.nTexelfx = tmuCount;
+    v.sliDetect = FXFALSE;
+    for (int i = 0; i < clampedTmus; ++i) {
+      v.tmuConfig[i].tmuRev = 1;
+      v.tmuConfig[i].tmuRam = static_cast<int>(config.tmuMemoryMb);
+    }
   } else if (config.model == GlideWrapper::CardModel::VoodooRush) {
     hwconfig->SSTs[0].type = GR_SSTTYPE_SST96;
-    hwconfig->SSTs[0].sstBoard.SST96Config.fbRam = config.fbiMemoryMb;
-    hwconfig->SSTs[0].sstBoard.SST96Config.nTexelfx = config.tmuCount;
+    auto& r = hwconfig->SSTs[0].sstBoard.SST96Config;
+    r.fbRam = static_cast<int>(config.fbiMemoryMb);
+    r.nTexelfx = tmuCount;
+    r.tmuConfig.tmuRev = 1;
+    r.tmuConfig.tmuRam = static_cast<int>(config.tmuMemoryMb);
   } else {
     // Voodoo2, Voodoo3, Voodoo5 (Banshee/Avenger/Napalm)
     hwconfig->SSTs[0].type = GR_SSTTYPE_Voodoo2;
-    hwconfig->SSTs[0].sstBoard.Voodoo2Config.fbRam = config.fbiMemoryMb;
-    hwconfig->SSTs[0].sstBoard.Voodoo2Config.nTexelfx = config.tmuCount;
-    hwconfig->SSTs[0].sstBoard.Voodoo2Config.sliDetect =
+    auto& v2 = hwconfig->SSTs[0].sstBoard.Voodoo2Config;
+    v2.fbRam = static_cast<int>(config.fbiMemoryMb);
+    v2.fbiRev = 2;
+    v2.nTexelfx = tmuCount;
+    v2.sliDetect =
         (config.model == GlideWrapper::CardModel::Voodoo2 && config.enableSli)
             ? FXTRUE
             : FXFALSE;
+    for (int i = 0; i < clampedTmus; ++i) {
+      v2.tmuConfig[i].tmuRev = 1;
+      v2.tmuConfig[i].tmuRam = static_cast<int>(config.tmuMemoryMb);
+    }
   }
 
   return FXTRUE;

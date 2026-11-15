@@ -5,8 +5,8 @@ echo "[CAPTURE] Creating output directory docs/images..."
 mkdir -p docs/images
 
 WIN_TITLE="3dfx glide-ng Presentation Console (Vulkan)"
-export GLIDE_WRAPPER_BACKEND=vulkan
-export GLIDE_WRAPPER_API_VERSION=3.0
+export GLIDE_NG_BACKEND=vulkan
+export GLIDE_NG_API_VERSION=3.0
 
 echo "[CAPTURE] Running unified Xvfb session for interactive demo and captures..."
 

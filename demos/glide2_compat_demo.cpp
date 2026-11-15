@@ -73,9 +73,9 @@ int main(int argc, char* argv[]) {
     tlSetScreen((float)runConfig.width, (float)runConfig.height);
 
     // Enforce Glide 2.x mode in the environment variables
-    ::setenv("GLIDE_VERSION_OVERRIDE", "2.61", 1);
-    if (!std::getenv("GLIDE_WRAPPER_BACKEND")) {
-        ::setenv("GLIDE_WRAPPER_BACKEND", "software", 1); // Default to software rasterizer
+    ::setenv("GLIDE_NG_API_VERSION", "2.61", 1);
+    if (!std::getenv("GLIDE_NG_BACKEND")) {
+        ::setenv("GLIDE_NG_BACKEND", "software", 1); // Default to software rasterizer
     }
 
     // Open standard double-buffered window using resolved resolution.

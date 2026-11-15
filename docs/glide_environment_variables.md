@@ -1,43 +1,164 @@
-# 3dfx Glide Wrapper Environment Variables Guide
+# glide-ng Configuration & Environment Variables Reference
 
-Legacy 3dfx Glide applications and games frequently tune their rendering capabilities and diagnostic reporting through environment variables. To maximize compatibility and provide powerful emulation controls, this modernized Glide wrapper fully supports both the **authentic 3dfx SDK environment variables** and a new set of **Modernized Wrapper Configuration Overrides**.
+This document is the authoritative reference for configuring **glide-ng** via `glide_config.json` and environment variables.
 
----
-
-## 1. Authentic 3dfx SDK Environment Variables
-
-The following environment variables are natively parsed by the legacy Glide 2.x and Glide 3.x core libraries (`gpci.c`, `minihwc.c`, etc.). Our modernized wrapper intercepts these variables to preserve classic behavior and diagnostic overrides.
-
-| Environment Variable | Description | Emulated Wrapper Behavior |
-| :--- | :--- | :--- |
-| **`FX_GLIDE_SWAPINTERVAL`** | Natively overrides the VSync presentation interval (`grBufferSwap`). | Overrides swapchain FIFO sync. `0` disables VSync (immediate present), `1+` enforces frame synchronization. |
-| **`FX_GLIDE_NO_SPLASH`** | Disables the rotating 3dfx Glide splash screen on application startup (`grSplash`). | Surpresses legacy startup boot animations. |
-| **`FX_GLIDE_SHAMELESS_PLUG`**| Enables or disables the semi-transparent 3dfx corner watermark logo during rendering. | Toggles custom overlay watermark. |
-| **`FX_GLIDE_FBRAM`** | Overrides detected Frame Buffer Interface (FBI) video RAM in megabytes. | Forces `grSstQueryHardware` to report exactly `N` MB of frame RAM. |
-| **`FX_GLIDE_TMU_MEMSIZE`** | Overrides Texture Mapping Unit (TMU) dedicated memory capacity. | Scales maximum reported texture budget per chip. |
-| **`FX_GLIDE_BOUNDS_CHECK`** | Enables internal geometry and triangle clipping coordinate verification. | Activates strict viewport coordinate debugging logs. |
-| **`FX_GLIDE_IGNORE_REOPEN`** | Forces Glide to ignore subsequent `grSstWinOpen` calls if a context is already active. | Prevents legacy window re-initialization crashes. |
-| **`FX_GLIDE_NO_DITHER_SUB`** | Disables legacy 16-bit dither subtraction algorithms. | Overrides automated dither dithering state passes. |
-| **`FX_CPU`** | Overrides automated assembly CPU detection (`cpuid`). | Changes reported host capabilities (Pentium, MMX, 3DNow!). |
-| **`FX_SNAPSHOT`** | Automated hotkey trigger to capture framebuffer raw image dumps. | Saves current swapchain presentation image to disk as an artifact. |
-| **`FX_GLIDE_LOG_FILE`** | Redirects all `GDBG_INFO` and Glide internal diagnostic output to a specified file. | Pipes wrapper debug execution traces to custom logs. |
-| **`SST_DUALHEAD`** | Controls dual-monitor initialization and multi-screen SST context sharing. | Allocates multi-window display surfaces. |
-| **`SSTV2_FASTMEM`** | Enables ultra-fast SDRAM timing configurations on Voodoo2 chipsets. | Disables artificial wrapper bus latency constraints. |
-| **`H3_MEM_CLOCK` / `H5`** | Overrides operating memory clock frequency in MHz for Voodoo3/4/5 series cards. | Scales internal game performance multiplier math. |
+> **Namespace Policy**: All wrapper-specific variables use the canonical **`GLIDE_NG_*`** prefix. Legacy `GLIDE_WRAPPER_*` and unprefixed `GLIDE_*` names are **not** supported.
 
 ---
 
-## 2. Modernized Wrapper Configuration Overrides
+## Configuration Precedence
 
-In addition to legacy parameters, our wrapper introduces the `GLIDE_WRAPPER_` namespace. These variables allow users and testers to override the physical hardware properties of the emulated Voodoo accelerator without modifying configuration files (`glide_config.json`).
+Settings are resolved in strict order from lowest to highest priority:
 
-| Modern Variable | Target Options / Format | Rationale & Practical Effect |
-| :--- | :--- | :--- |
-| **`GLIDE_WRAPPER_BACKEND`** | `VULKAN`, `EGL`, `OPENGL` | Hot-swaps the underlying active rendering engine at runtime. Excellent for instant cross-backend verification. |
-| **`GLIDE_WRAPPER_CARD_MODEL`**| `SST1` (Voodoo1), `CVG` (Voodoo2), `H3` (Voodoo3), `H5` (Voodoo5) | Instantly alters the reported `GrSstType` and architectural layout exposed to the legacy application. |
-| **`GLIDE_WRAPPER_FBI_MEM_MB`**| Integer (e.g., `2`, `4`, `16`, `32`) | Overrides the primary Framebuffer RAM. Games that fail to launch due to low video memory can be bypassed instantly. |
-| **`GLIDE_WRAPPER_TMU_COUNT`** | `1`, `2`, `3` | Defines active Texture Mapping Units. Allows testing classic multi-texturing single-pass (`grTexCombine`) vs multi-pass fallback code. |
-| **`GLIDE_WRAPPER_TMU_MEM_MB`**| Integer (e.g., `4`, `8`, `32`) | Overrides dedicated texture RAM per TMU chip. |
-| **`GLIDE_WRAPPER_DRAW_DELAY_US`**| Microsecond float (e.g., `2.5`) | Emulates old AGP bus bandwidth. Introduces a micro-sleep per draw call to fix physics speedups in retro games. |
-| **`GLIDE_WRAPPER_MAX_FPS`** | Integer (e.g., `30`, `60`, `120`) | Enforces a strict presentation frame cap independent of application game loops. |
-| **`GLIDE_WRAPPER_SLI_MODE`** | `TRUE`, `FALSE` | Activates Voodoo2 SLI Emulation (doubling theoretical fill-rate reporting). |
+1. **Built-in Defaults** (`WrapperConfig` defaults + selected card-model hardware profile defaults)
+2. **JSON Config File** (`./glide_config.json`, or the path specified by `GLIDE_NG_CONFIG`)
+3. **Authentic 3dfx Glide Variables** (`FX_GLIDE_*` / `SST_*`)
+4. **glide-ng Wrapper Overrides** (`GLIDE_NG_*` — highest priority)
+
+When a card model is chosen (via JSON or `GLIDE_NG_CARD_MODEL`), its hardware defaults (`apiVersion`, `fbiMemoryMb`, `tmuCount`, `tmuMemoryMb`) only populate fields that were **not** explicitly overridden by JSON or `GLIDE_NG_*`. On startup, `glide-ng` logs the effective configuration and the source (`json`, `FX_GLIDE_*`, `GLIDE_NG_*`) of every active override into the log file.
+
+### Status Legend
+
+- **Implemented**: Parsed and wired into runtime behavior.
+- **Stub**: Struct field or placeholder exists, but runtime behavior is not yet wired.
+- **Planned**: Scheduled for an upcoming milestone (see [Roadmap](#3-configuration--diagnostics-roadmap)).
+
+---
+
+## 1. glide-ng Wrapper Configuration (`GLIDE_NG_*` & `glide_config.json`)
+
+### 1.1 Core & Config Loading
+
+| Environment Variable | JSON Key | Accepted Values | Default | Status | Description |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `GLIDE_NG_CONFIG` | *(N/A)* | File path | `./glide_config.json` | **Implemented** | Path to the JSON configuration file to load instead of `./glide_config.json`. |
+| `GLIDE_NG_BACKEND` | `"backend"` | `vulkan` (`vk`), `opengl_es` (`gles`, `goes`), `software` (`sw`) | `vulkan` | **Implemented** | Selects the active rendering backend. Case-insensitive. |
+| `GLIDE_NG_HEADLESS` | `"headless"` *(or `"forceNoWindow"`)* | `0`/`1`, `true`/`false`, `on`/`off`, `yes`/`no` | `false` | **Implemented** | Disables OS window / surface creation for headless CI, tests, and benchmarks. |
+
+### 1.2 Emulated 3dfx Hardware Profile
+
+| Environment Variable | JSON Key | Accepted Values | Default | Status | Description |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `GLIDE_NG_CARD_MODEL` | `"cardModel"` *(or `"model"`)* | `voodoo1`/`sst1`, `voodoo_rush`/`rush`/`sst96`, `voodoo2`/`cvg`, `voodoo3`/`h3`, `voodoo5`/`h5` | `Voodoo2` | **Implemented** | Selects the emulated 3dfx board profile and default VRAM/TMU/API limits. |
+| `GLIDE_NG_API_VERSION` | `"apiVersion"` | `2.1`, `2.40` (`2.4`), `2.42`, `2.43`, `2.61`, `3.0` | Derived from card (`2.43` for Voodoo2) | **Implemented** | Overrides the reported Glide API version and feature-gating footprint. |
+| `GLIDE_NG_FBI_MEM_MB` | `"fbiMemoryMb"` | Positive integer (MB) | Derived from card (`16` for Voodoo2) | **Implemented** | Overrides reported Frame Buffer Interface (FBI) memory in MB. |
+| `GLIDE_NG_TMU_COUNT` | `"tmuCount"` | `1`, `2`, `3` | Derived from card (`2` for Voodoo2) | **Implemented** | Overrides the number of reported Texture Mapping Units (TMUs). |
+| `GLIDE_NG_TMU_MEM_MB` | `"tmuMemoryMb"` | Positive integer (MB) | Derived from card (`16` for Voodoo2) | **Implemented** | Overrides dedicated texture memory per TMU in MB. |
+| `GLIDE_NG_SLI` | `"enableSli"` | `0`/`1`, `true`/`false` | `false` | **Implemented** | Reports Voodoo2 SLI capability via hardware query APIs. |
+| `GLIDE_NG_VENDOR` | `"vendor"` | Arbitrary string | `""` *(authentic 3dfx string)* | **Implemented** | Overrides the string returned by `grGetString(GR_VENDOR)` / hardware vendor query. |
+| `GLIDE_NG_RENDERER` | `"renderer"` | Arbitrary string | `""` *(backend default)* | **Implemented** | Overrides the string returned by `grGetString(GR_RENDERER)`. |
+
+### 1.3 Display, Presentation & Frame Pacing
+
+| Environment Variable | JSON Key | Accepted Values | Default | Status | Description |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `GLIDE_NG_VSYNC` | `"vsync"` *(and `"vsyncStrictFifo"`)* | `0`/`false`/`off`, `1`/`true`/`on`, `fifo`/`strict` | `true` *(Mailbox preferred on Wayland)* | **Implemented** | Controls vertical synchronization. Use `fifo` / `strict` to force strict FIFO sync even on Wayland. Overrides `FX_GLIDE_SWAPINTERVAL`. |
+| `GLIDE_NG_MAX_FPS` | `"maxFps"` | Float `>= 0` (`0` = uncapped) | `60.0` | **Implemented** | Software frame rate limiter in frames per second. Set `0` to disable capping. |
+| `GLIDE_NG_MSAA` | `"msaaSamples"` | `1`, `2`, `4`, `8`, `16` | `1` *(disabled)* | **Implemented** | Multi-sample anti-aliasing sample count (invalid values normalize to `1`). |
+| `GLIDE_NG_WINDOW_SCALE` | `"windowScale"` | Integer `1`..`8` | `1` | **Implemented** | Integer window scaling factor for standalone mode (`hWnd == 0`). |
+| `GLIDE_NG_PRESENTATION_FILTER` | `"presentationFilter"` | `nearest` (`0`), `linear` (`1`) | `nearest` (`0`) | **Implemented** | Sampling filter used when blitting the emulated framebuffer to the presentation surface. |
+
+### 1.4 Splash & Watermark Overrides
+
+| Environment Variable | JSON Key | Accepted Values | Default | Status | Description |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `GLIDE_NG_NO_SPLASH` | `"noSplash"` | `0`/`1`, `true`/`false` | `false` | **Implemented** | Suppresses the 3dfx startup splash screen (`grSplash`). Overrides `FX_GLIDE_NO_SPLASH`. |
+| `GLIDE_NG_SHAMELESS_PLUG` | `"shamelessPlug"` | `0`/`false` (force off), `1`/`true` (force on); JSON also accepts `-1` (app-controlled) | `-1` *(app-controlled)* | **Implemented** | Overrides the 3dfx corner watermark (`grEnable(GR_SHAMELESS_PLUG)`). Overrides `FX_GLIDE_SHAMELESS_PLUG`. |
+
+### 1.5 Logging & Diagnostics
+
+| Environment Variable | JSON Key | Accepted Values | Default | Status | Description |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `GLIDE_NG_LOG_LEVEL` | `"logLevel"` | `0`/`off`, `1`/`error`, `2`/`warn`, `3`/`info`, `4`/`debug`, `5`/`trace` | `3` (`info`) | **Implemented** *(level `5`/`trace` accepted by parser; full trace instrumentation arrives in M2)* | Controls diagnostic log verbosity. |
+| `GLIDE_NG_LOG_CONSOLE` | `"logToConsole"` | `0`/`1`, `true`/`false` | `false` | **Implemented** | Mirrors log output to `stderr`/`stdout` in addition to the log file. |
+| `GLIDE_NG_LOG_FILE` | `"logFile"` | File path | `glide-ng.log` | **Implemented** | Output file path for wrapper diagnostic logs. |
+
+### 1.6 Backend-Specific Tuning
+
+| Environment Variable | JSON Key | Accepted Values | Default | Status | Description |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `GLIDE_NG_SW_THREADS` | `"swThreads"` | Integer `>= 0` (`0` = auto) | `0` *(auto hardware concurrency)* | **Implemented** | Software backend worker thread count (`0` uses hardware thread count or `OMP_NUM_THREADS`). |
+| `GLIDE_NG_SW_SIMD` | `"swSimd"` | `0`/`1`, `true`/`false` | `false` | **Implemented** | Enables/disables AVX2 SIMD rasterization fast paths in the software backend. |
+| `GLIDE_NG_SW_TILE_SIZE` | `"swTileSize"` | Integer `>= 16` | `32` | **Implemented** | Tile dimension (pixels) used by the tiled software rasterizer. |
+| `GLIDE_NG_SW_AA` | `"swAa"` | `analytical`, `ssaa` | `analytical` | **Implemented** | Software backend anti-aliasing mode. |
+| `GLIDE_NG_VK_CACHE_PATH` | `"vkCachePath"` | File path | `.glide-vulkan-cache.bin` | **Implemented** | File path for persisting Vulkan `VkPipelineCache` data across runs. |
+| `GLIDE_NG_GLES_VBO_SIZE` | `"glesVboSize"` | Integer `>= 1` (MB) | `8` | **Implemented** | OpenGL ES streaming vertex buffer size in megabytes. |
+
+### 1.7 Stubs / Unimplemented Fields
+
+| Environment Variable | JSON Key | Accepted Values | Default | Status | Description |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| *(None yet)* | *(None yet)* | `drawCallDelayUs` (`WrapperConfig` field) | `0.0` | **Stub** | Placeholder field for optional AGP/PCI bus draw-call pacing; not parsed or applied at runtime. |
+
+### Example `glide_config.json`
+
+```json
+{
+  "backend": "vulkan",
+  "cardModel": "Voodoo2",
+  "apiVersion": "2.43",
+  "vsync": true,
+  "maxFps": 60,
+  "msaaSamples": 1,
+  "presentationFilter": "linear",
+  "noSplash": false,
+  "logLevel": "info",
+  "logToConsole": false,
+  "logFile": "glide-ng.log"
+}
+```
+
+---
+
+## 2. Authentic 3dfx Glide Environment Variables (`FX_GLIDE_*` / `SST_*`)
+
+Classic 3dfx Glide 2.x/3.x drivers honored a collection of `FX_GLIDE_*` and `SST_*` / `SSTV2_*` environment variables (see the historical 3dfx reference lists under `docs/Glide envvars/`). `glide-ng` implements high-value user-facing variables incrementally while keeping hardware-register-only knobs out of scope.
+
+### 2.1 Implemented (Phase 1 — Milestone M1)
+
+| Variable | Accepted Values | Default | Status | Wrapper Behavior & Precedence |
+| :--- | :--- | :--- | :--- | :--- |
+| `FX_GLIDE_NO_SPLASH` | `1`/`true` (or any non-zero value) to suppress; `0`/`false` to allow | Unset *(splash allowed)* | **Implemented** | Suppresses the 3dfx startup splash screen (`grSplash`). Overrides JSON `"noSplash"`, overridden by `GLIDE_NG_NO_SPLASH`. |
+| `FX_GLIDE_SHAMELESS_PLUG` | `1`/`true`/non-zero (force on), `0`/`false` (force off) | Unset *(app-controlled)* | **Implemented** | Forces the 3dfx corner watermark logo on or off during `grBufferSwap`. Overrides JSON `"shamelessPlug"`, overridden by `GLIDE_NG_SHAMELESS_PLUG`. |
+| `FX_GLIDE_SWAPINTERVAL` | Integer `>= 0` (`0` = VSync off, `>= 1` = VSync on) | Unset *(uses wrapper default `vsync=true`)* | **Implemented** | Controls swap synchronization (`0` disables VSync; `1+` enables VSync; intervals `> 1` currently map to standard VSync=1). Overrides JSON `"vsync"`, overridden by `GLIDE_NG_VSYNC`. |
+
+### 2.2 Planned (Phase 2 — Future Milestone M7)
+
+These authentic Glide variables are high-value for classic game compatibility, visual tweaking, and debugging, and are scheduled for Phase 2 implementation:
+
+| Variable | Category | Status | Planned Behavior |
+| :--- | :--- | :--- | :--- |
+| `SST_GAMMA` / `SSTV2_GAMMA` | Display | **Planned** | Initial gamma correction factor override before application gamma calls. |
+| `SST_SCREENREFRESH` / `SSTV2_SCREENREFRESH` | Display | **Planned** | Requested display refresh rate hint / pacing target. |
+| `FX_GLIDE_BOUNDS_CHECK` | Debug | **Planned** | Enables strict vertex/viewport bounds diagnostics when tracing rendering bugs. |
+| `FX_GLIDE_IGNORE_REOPEN` | Compatibility | **Planned** | Safely handles redundant `grSstWinOpen` calls without tearing down active contexts. |
+| `FX_GLIDE_NO_DITHER_SUB` | Rendering | **Planned** | Disables 16-bit dither subtraction in the color pipeline. |
+| `FX_GLIDE_LOD_DITHER` | Rendering | **Planned** | Controls texture LOD dithering behavior. |
+| `SSTV2_FORCE_BILINEAR` / `SSTV2_FORCE_TRILINEAR` | Rendering | **Planned** | Forces bilinear or trilinear texture filtering regardless of application state. |
+| `SST_TEXMAP_DISABLE` | Debug | **Planned** | Diagnostic switch to bypass texture sampling (useful for isolating combiner vs. texture bugs). |
+| `FX_GLIDE_ALLOC_COLOR` / `FX_GLIDE_ALLOC_AUX` | Buffering | **Planned** | Overrides allocated color/aux buffer counts (`2`/`3` color, `0`/`1` aux). |
+| `FX_GLIDE_SNAPSHOT` | Diagnostics | **Planned** | Framebuffer capture trigger for dumping presentation frames to disk. |
+
+### 2.3 Hardware-Only / Out-of-Scope Variables
+
+Low-level 3dfx PCI, SDRAM, clock-delay, DAC, and FIFO hardware register variables (`SST_GRXCLK`, `SST_FT_CLK_DEL`, `SST_PTF*_CLK_DEL`, `SST_SLIM_*`, `SST_MEMFIFO*`, `SST_PCIFIFO_LWM`, `SST_BACKPORCH`, `SST_HSYNC`, `SST_VSYNC`, `SST_DIMENSIONS`, `SST_TREX*INIT*`, `SST_FASTMEM*`, `SST_VGA_PASS`, etc.) target physical SST-1/CVG board timing registers and are **not applicable** to a modern graphics API wrapper. See `docs/Glide envvars/` for the archived original 3dfx SDK lists.
+
+---
+
+## 3. Configuration & Diagnostics Roadmap
+
+The configuration namespace is designed to grow cleanly alongside upcoming diagnostics and usability milestones (tracked in [docs/plans/roadmap_m1_m6_tracker.md](plans/roadmap_m1_m6_tracker.md)):
+
+### Milestone M2 — Tiered Logging, Category Filtering & Per-Frame Performance Tracing
+- **`GLIDE_NG_LOG_LEVEL=trace` (`5`)**: Full high-frequency API / state / LFB / texture call tracing with microsecond monotonic timestamps and frame numbers, plus buffered flushing so verbose captures do not stall real-time games.
+- **`GLIDE_NG_LOG_CATEGORIES`** *(Planned)*: Comma-separated category filter (e.g., `api,lfb,tex,state,draw,wsi,perf`) to capture only the subsystem under investigation.
+- **`GLIDE_NG_TRACE_FRAMES`** *(Planned)*: Frame range window (e.g., `120-125`) to restrict heavy `TRACE` logging to specific problematic frames.
+- **`GLIDE_NG_PERF_LOG`** *(Planned)*: Optional per-frame timing breakdown (frame time, draw calls, triangles, LFB transfers, texture uploads, swap/present latency) logged periodically or exported as CSV for bottleneck analysis.
+
+### Milestone M3 — DXVK-Style On-Screen HUD (`GLIDE_NG_HUD`)
+- **`GLIDE_NG_HUD`** *(Planned)*: Comma-separated overlay elements rendered directly in the backend presentation pass without mutating Glide render state.
+  - Phase 1 starts with **`GLIDE_NG_HUD=fps`** (live FPS counter) and `GLIDE_NG_HUD=full` / `1` convenience presets.
+  - Designed to expand incrementally to additional metrics (frame time graph, active backend & Glide API version, resolution, draw calls / triangles per frame, LFB/texture upload counters, VSync/FPS cap status).
+
+### Milestone M7 — Phase-2 Authentic 3dfx Environment Variables
+- Expands `FX_GLIDE_*` / `SST_*` coverage with the compatibility, rendering, and diagnostic variables listed in [Section 2.2](#22-planned-phase-2--future-milestone-m7).
