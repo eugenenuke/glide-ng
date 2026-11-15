@@ -3865,3 +3865,119 @@ TEST_CASE("GPU backends inherit GlideStateTracker without SoftwareBackendBase or
     }
   }
 }
+
+TEST_CASE("LfbManager maps GR_LFBWRITEMODE_888/8888/DEPTH/ZA16 strides and colors accurately",
+          "[Glide3][LFB][WriteModes]") {
+#ifdef __linux__
+  void* handle = OpenGlide3Handle();
+  REQUIRE(handle != nullptr);
+
+  auto glideInit = (void(FX_CALL*)())::dlsym(handle, "grGlideInit");
+  auto glideShutdown = (void(FX_CALL*)())::dlsym(handle, "grGlideShutdown");
+  auto sstSelect = (void(FX_CALL*)(int))::dlsym(handle, "grSstSelect");
+  auto winOpen = (FxU32(FX_CALL*)(FxU32, GrScreenResolution_t,
+                                  GrScreenRefresh_t, GrColorFormat_t,
+                                  GrOriginLocation_t, int, int))::dlsym(handle, "grSstWinOpen");
+  auto winClose = (FxBool(FX_CALL*)(FxU32))::dlsym(handle, "grSstWinClose");
+  auto bufferClear = (void(FX_CALL*)(GrColor_t, GrAlpha_t, FxU32))::dlsym(handle, "grBufferClear");
+  auto lfbLock = (FxBool(FX_CALL*)(GrLock_t, GrBuffer_t, GrLfbWriteMode_t,
+                                   GrOriginLocation_t, FxBool, GrLfbInfo_t*))::dlsym(handle, "grLfbLock");
+  auto lfbUnlock = (FxBool(FX_CALL*)(GrLock_t, GrBuffer_t))::dlsym(handle, "grLfbUnlock");
+
+  REQUIRE(glideInit != nullptr);
+  REQUIRE(glideShutdown != nullptr);
+  REQUIRE(sstSelect != nullptr);
+  REQUIRE(winOpen != nullptr);
+  REQUIRE(winClose != nullptr);
+  REQUIRE(bufferClear != nullptr);
+  REQUIRE(lfbLock != nullptr);
+  REQUIRE(lfbUnlock != nullptr);
+
+  glideInit();
+  sstSelect(0);
+  // Open with GR_COLORFORMAT_ABGR (same as 3dfx SDK test12) to ensure LFB
+  // 888/8888 pixel data still unpacks as 0x00RRGGBB / 0xAARRGGBB.
+  FxU32 ctx = winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                      GR_COLORFORMAT_ABGR, GR_ORIGIN_UPPER_LEFT, 2, 1);
+  REQUIRE(ctx != 0);
+
+  for (GrLfbWriteMode_t mode : {GR_LFBWRITEMODE_888, GR_LFBWRITEMODE_8888}) {
+    bufferClear(0, 0, 0);
+
+    GrLfbInfo_t info{};
+    info.size = sizeof(info);
+    REQUIRE(lfbLock(GR_LFB_WRITE_ONLY, GR_BUFFER_BACKBUFFER, mode,
+                    GR_ORIGIN_UPPER_LEFT, FXFALSE, &info) == FXTRUE);
+    REQUIRE(info.lfbPtr != nullptr);
+    REQUIRE(info.strideInBytes == 640 * 4);
+
+    auto* row = reinterpret_cast<uint32_t*>(
+        static_cast<uint8_t*>(info.lfbPtr) + 10 * info.strideInBytes);
+    row[10] = 0xFFFF0000;  // Pure Red (ARGB)
+    row[11] = 0xFF00FF00;  // Pure Green (ARGB)
+    row[12] = 0xFF0000FF;  // Pure Blue (ARGB)
+    REQUIRE(lfbUnlock(GR_LFB_WRITE_ONLY, GR_BUFFER_BACKBUFFER) == FXTRUE);
+
+    GrLfbInfo_t readInfo{};
+    readInfo.size = sizeof(readInfo);
+    REQUIRE(lfbLock(GR_LFB_READ_ONLY, GR_BUFFER_BACKBUFFER, GR_LFBWRITEMODE_ANY,
+                    GR_ORIGIN_UPPER_LEFT, FXFALSE, &readInfo) == FXTRUE);
+    REQUIRE(readInfo.strideInBytes == 640 * 2);
+    const auto* readRow = reinterpret_cast<const uint16_t*>(
+        static_cast<const uint8_t*>(readInfo.lfbPtr) + 10 * readInfo.strideInBytes);
+    CHECK(readRow[10] == 0xF800);  // Red in RGB565
+    CHECK(readRow[11] == 0x07E0);  // Green in RGB565
+    CHECK(readRow[12] == 0x001F);  // Blue in RGB565
+    REQUIRE(lfbUnlock(GR_LFB_READ_ONLY, GR_BUFFER_BACKBUFFER) == FXTRUE);
+  }
+
+  // 565_DEPTH (0xc) uses 4 BPP with RGB565 in the low 16 bits.
+  {
+    bufferClear(0, 0, 0);
+    GrLfbInfo_t info{};
+    info.size = sizeof(info);
+    REQUIRE(lfbLock(GR_LFB_WRITE_ONLY, GR_BUFFER_BACKBUFFER,
+                    GR_LFBWRITEMODE_565_DEPTH, GR_ORIGIN_UPPER_LEFT, FXFALSE,
+                    &info) == FXTRUE);
+    REQUIRE(info.strideInBytes == 640 * 4);
+    auto* row = reinterpret_cast<uint32_t*>(
+        static_cast<uint8_t*>(info.lfbPtr) + 12 * info.strideInBytes);
+    row[15] = 0x1234F800;  // Depth 0x1234 + Red RGB565
+    REQUIRE(lfbUnlock(GR_LFB_WRITE_ONLY, GR_BUFFER_BACKBUFFER) == FXTRUE);
+
+    GrLfbInfo_t readInfo{};
+    readInfo.size = sizeof(readInfo);
+    REQUIRE(lfbLock(GR_LFB_READ_ONLY, GR_BUFFER_BACKBUFFER, GR_LFBWRITEMODE_ANY,
+                    GR_ORIGIN_UPPER_LEFT, FXFALSE, &readInfo) == FXTRUE);
+    const auto* readRow = reinterpret_cast<const uint16_t*>(
+        static_cast<const uint8_t*>(readInfo.lfbPtr) + 12 * readInfo.strideInBytes);
+    CHECK(readRow[15] == 0xF800);
+    REQUIRE(lfbUnlock(GR_LFB_READ_ONLY, GR_BUFFER_BACKBUFFER) == FXTRUE);
+  }
+
+  // ZA16 (0xf) uses 2 BPP.
+  {
+    GrLfbInfo_t info{};
+    info.size = sizeof(info);
+    REQUIRE(lfbLock(GR_LFB_WRITE_ONLY, GR_BUFFER_BACKBUFFER,
+                    GR_LFBWRITEMODE_ZA16, GR_ORIGIN_UPPER_LEFT, FXFALSE,
+                    &info) == FXTRUE);
+    CHECK(info.strideInBytes == 640 * 2);
+    REQUIRE(lfbUnlock(GR_LFB_WRITE_ONLY, GR_BUFFER_BACKBUFFER) == FXTRUE);
+  }
+
+  // Reserved write modes must be rejected cleanly.
+  for (GrLfbWriteMode_t reserved :
+       {GR_LFBWRITEMODE_RESERVED1, GR_LFBWRITEMODE_RESERVED3,
+        GR_LFBWRITEMODE_RESERVED4}) {
+    GrLfbInfo_t info{};
+    info.size = sizeof(info);
+    CHECK(lfbLock(GR_LFB_WRITE_ONLY, GR_BUFFER_BACKBUFFER, reserved,
+                  GR_ORIGIN_UPPER_LEFT, FXFALSE, &info) == FXFALSE);
+  }
+
+  winClose(ctx);
+  glideShutdown();
+  ::dlclose(handle);
+#endif
+}

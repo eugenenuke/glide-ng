@@ -94,16 +94,13 @@ struct LfbRowProcessor {
             (SrcFmt == 2 || SrcFmt == 14) ? (((c16 >> 15) & 1) ? 255 : 0) : 255;
         pWord = (a << 24) | (r << 16) | (g << 8) | b;
       } else {
-        uint32_t r, g, b;
-        if (pixelFormatOverride == 1) {
-          r = (c32 & 0xFF) >> 3;
-          g = ((c32 >> 8) & 0xFF) >> 2;
-          b = ((c32 >> 16) & 0xFF) >> 3;
-        } else {
-          r = ((c32 >> 16) & 0xFF) >> 3;
-          g = ((c32 >> 8) & 0xFF) >> 2;
-          b = (c32 & 0xFF) >> 3;
-        }
+        // Glide LFB 888/8888 pixel words are always 0x00RRGGBB / 0xAARRGGBB
+        // regardless of grSstWinOpen's GrColorFormat_t (which only governs
+        // GrColor_t API parameters).
+        (void)pixelFormatOverride;
+        uint32_t r = ((c32 >> 16) & 0xFF) >> 3;
+        uint32_t g = ((c32 >> 8) & 0xFF) >> 2;
+        uint32_t b = (c32 & 0xFF) >> 3;
         uint32_t r8 = r * 255 / 31;
         uint32_t g8 = g * 255 / 63;
         uint32_t b8 = b * 255 / 31;

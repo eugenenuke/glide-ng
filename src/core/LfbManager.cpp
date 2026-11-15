@@ -64,15 +64,21 @@ bool LfbManager::Unlock(uint32_t type, uint32_t buffer, const LfbPipelineConfig&
         }
 
         uint32_t srcFmt = 0;
-        if (m_lockState.writeMode == 0) srcFmt = 0;      // GR_LFBWRITEMODE_565
-        else if (m_lockState.writeMode == 1) srcFmt = 1; // GR_LFBWRITEMODE_555
-        else if (m_lockState.writeMode == 2) srcFmt = 2; // GR_LFBWRITEMODE_1555
-        else if (m_lockState.writeMode == 7) srcFmt = 4; // GR_LFBWRITEMODE_888
-        else if (m_lockState.writeMode == 8) srcFmt = 5; // GR_LFBWRITEMODE_8888
-        else if (m_lockState.writeMode == 4) srcFmt = 12; // GR_LFBWRITEMODE_565_DEPTH
-        else if (m_lockState.writeMode == 5) srcFmt = 13; // GR_LFBWRITEMODE_555_DEPTH
-        else if (m_lockState.writeMode == 6) srcFmt = 14; // GR_LFBWRITEMODE_1555_DEPTH
-        else if (m_lockState.writeMode == 3) srcFmt = 15; // GR_LFBWRITEMODE_ZA16
+        switch (m_lockState.writeMode) {
+            case 0x0: srcFmt = 0x0; break; // GR_LFBWRITEMODE_565
+            case 0x1: srcFmt = 0x1; break; // GR_LFBWRITEMODE_555
+            case 0x2: srcFmt = 0x2; break; // GR_LFBWRITEMODE_1555
+            case 0x4: srcFmt = 0x4; break; // GR_LFBWRITEMODE_888
+            case 0x5: srcFmt = 0x5; break; // GR_LFBWRITEMODE_8888
+            case 0xc: srcFmt = 0xc; break; // GR_LFBWRITEMODE_565_DEPTH
+            case 0xd: srcFmt = 0xd; break; // GR_LFBWRITEMODE_555_DEPTH
+            case 0xe: srcFmt = 0xe; break; // GR_LFBWRITEMODE_1555_DEPTH
+            case 0xf: srcFmt = 0xf; break; // GR_LFBWRITEMODE_ZA16
+            default:
+                LogErrorUnsupportedWriteMode(m_lockState.writeMode);
+                m_lockState.isLocked = false;
+                return false;
+        }
 
         b->WriteLFB(m_lockState.buffer, 0, 0, m_lockState.width, m_lockState.height, m_lockState.stride, srcFmt, m_lockState.stagingBuffer.data(), m_lockState.originalBuffer.data(), config);
     }
