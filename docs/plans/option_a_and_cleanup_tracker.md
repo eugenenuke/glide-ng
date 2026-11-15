@@ -53,12 +53,13 @@ Recorded before any edits are made:
 | **T0.2** | Phase 0 | Fix `SoftwareBackend::AttachWindow` ignoring `forceNoWindow` & `m_sdlRendererOwned` leak | Low | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `5e097b8` |
 | **T0.3** | Phase 0 | Audit & update `.agents/AGENTS.md`, existing 5 skills, add `wsi-window-injection` & `build-and-test` skills | Low | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `415d0a1` |
 | **T0.4** | Phase 0 | User-approved repo hygiene (`.gitignore`, untracked logs/caches, stale `subagent-*` branches) | Low | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `133e898` |
-| **T1.1** | Phase 1 | Remove `[DEBUG-GLES]` `std::cout` spam & decouple `Logger.cpp` from `<vulkan/vulkan.hpp>` | Low | `[~] IMPLEMENTED — AWAITING USER VERIFICATION` | `c477e39` |
-| **T1.2** | Phase 1 | Deduplicate `color.frag` / `color_dualsrc.frag` via `-DUSE_DUAL_SRC_BLEND`; delete stale checked-in `.spv.h` | Low | `[~] IMPLEMENTED — AWAITING USER VERIFICATION` | `5f3bc86` |
-| **T1.3** | Phase 1 | Fix `VulkanBackend::SwapBuffers` semaphore wait stage (`eColorAttachmentOutput` → `eTransfer`) | Low | `[~] IMPLEMENTED — AWAITING USER VERIFICATION` | `72495ce` |
-| **T1.4** | Phase 1 | Stop GPU backends from calling `SoftwareBackendBase::ClearBuffer(...)` every frame | Low–Med | `[~] IMPLEMENTED — AWAITING USER VERIFICATION` | `c87df26` |
-| **T1.5** | Phase 1 | Replace fragile substring matching in `JsonConfigLoader.cpp` with key-scoped parser + Catch2 tests | Low | `[~] IMPLEMENTED — AWAITING USER VERIFICATION` | `d8b7d03` |
-| **T1.6** | Phase 1 | Add `wayland-egl`/`egl` CMake discovery & guard `#if defined(UNIX)` trap until T2.7 | Low | `[~] IMPLEMENTED — AWAITING USER VERIFICATION` | `cad7d0d` |
+| **T1.1** | Phase 1 | Remove `[DEBUG-GLES]` `std::cout` spam & decouple `Logger.cpp` from `<vulkan/vulkan.hpp>` | Low | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `c477e39` |
+| **T1.2** | Phase 1 | Deduplicate `color.frag` / `color_dualsrc.frag` via `-DUSE_DUAL_SRC_BLEND`; delete stale checked-in `.spv.h` | Low | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `5f3bc86` |
+| **T1.3** | Phase 1 | Fix `VulkanBackend::SwapBuffers` semaphore wait stage (`eColorAttachmentOutput` → `eTransfer`) | Low | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `72495ce` |
+| **T1.4** | Phase 1 | Stop GPU backends from calling `SoftwareBackendBase::ClearBuffer(...)` every frame | Low–Med | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `c87df26` |
+| **T1.5** | Phase 1 | Replace fragile substring matching in `JsonConfigLoader.cpp` with key-scoped parser + Catch2 tests | Low | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `d8b7d03` |
+| **T1.6** | Phase 1 | Add `wayland-egl`/`egl` CMake discovery & guard `#if defined(UNIX)` trap until T2.7 | Low | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `cad7d0d` |
+| **T1.7** | Phase 1 | Prefer `VK_PRESENT_MODE_MAILBOX_KHR` on Wayland VSync to fix Mesa `wp_fifo_v1` stutter + Catch2 tests | Low | `[~] IMPLEMENTED — AWAITING USER VERIFICATION` | `15482fc` |
 | **T2.1** | Phase 2 | Implement `NativeSurfaceHost` core + Headless + Standalone SDL2 + `ComputePresentRect` aspect math + tests | Low | `[ ] PENDING` | — |
 | **T2.2** | Phase 2 | Implement X11 / XWayland native child window in `NativeSurfaceHost` (`XOpenDisplay`, `XCreateWindow`, `XShape`) + embed test harness | Med | `[ ] PENDING` | — |
 | **T2.3** | Phase 2 | Implement Native Wayland `wl_subsurface` in `NativeSurfaceHost` + SVN DOSBox `setConfig('SDL2')` export + HiDPI scaling | Med–High | `[ ] PENDING` | — |
@@ -164,7 +165,7 @@ Recorded before any edits are made:
 > **Goal**: Remove noise, compiler-macro traps, shader duplication, and wasted CPU work so Phase 2 diffs stay laser-focused on windowing/presentation.
 
 #### `T1.1` — Remove `[DEBUG-GLES]` Spam & Decouple `Logger` from Vulkan
-- **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION` (Commit `c477e39`)
+- **Status**: `[x] DONE (USER CONFIRMED — 2026-11-15)` (Commit `c477e39`)
 - **Automated Result**: Removed all 7 `[DEBUG-GLES]`/`[DEBUG-SHADER-ERROR]`/`[DEBUG-PROGRAM-ERROR]` `std::cout` prints from `OpenGLESBackend.cpp` and moved `Logger::LogHostVulkanCapabilities()` into `VulkanBackend.cpp` so `Logger.cpp` no longer includes `<vulkan/vulkan.hpp>`. `Glide3xWrapperTests` passed 32/32 (1780 assertions).
 - **Target Files**:
   - `src/backends/opengl_es/OpenGLESBackend.cpp` (L141–238, L1633, L1657)
@@ -176,7 +177,7 @@ Recorded before any edits are made:
 - **User Verification**: Confirm clean console output on a GLES demo run (`GLIDE_WRAPPER_BACKEND=opengl_es ./build/bin/glide3_cube`).
 
 #### `T1.2` — Single-Source Vulkan Fragment Shader & Remove Checked-In `.spv.h`
-- **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION` (Commit `5f3bc86`)
+- **Status**: `[x] DONE (USER CONFIRMED — 2026-11-15)` (Commit `5f3bc86`)
 - **Automated Result**: Deleted `color_dualsrc.frag` and stale checked-in `color_frag.spv.h` / `color_vert.spv.h`; guarded `outPreFogColor` in `color.frag` with `#ifdef USE_DUAL_SRC_BLEND`; updated `compile_shader` in `CMakeLists.txt` to pass `-DUSE_DUAL_SRC_BLEND`. Verified clean rebuild from wiped `build/generated_shaders` generates distinct `color_frag.spv.h` (170,749 B) and `color_dualsrc_frag.spv.h` (171,505 B); `Glide3xWrapperTests` passed 32/32 (1780 assertions).
 - **Target Files**:
   - `src/backends/vulkan/shaders/color.frag`
@@ -192,7 +193,7 @@ Recorded before any edits are made:
 - **User Verification**: Confirm Vulkan dual-source & standard blending demos (`glide3_cube`, `fog_showcase_demo`) render identically.
 
 #### `T1.3` — Fix Vulkan Swapchain Semaphore Wait Stage
-- **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION` (Commit `72495ce`)
+- **Status**: `[x] DONE (USER CONFIRMED — 2026-11-15)` (Commit `72495ce`)
 - **Automated Result**: Changed `waitStages` in `VulkanBackend::SwapBuffers()` from `vk::PipelineStageFlagBits::eColorAttachmentOutput` to `vk::PipelineStageFlagBits::eTransfer`. Clean rebuild + `Glide3xWrapperTests` passed 32/32 on SW and `[Glide3][Phase4]` passed (107 assertions) on Vulkan.
 - **Target Files**:
   - `src/backends/vulkan/VulkanBackend.cpp` (L1376–1377)
@@ -202,7 +203,7 @@ Recorded before any edits are made:
 - **User Verification**: Confirm Vulkan windowed demo & GTA 1 show no flicker/tearing or validation errors.
 
 #### `T1.4` — Eliminate Redundant CPU `ClearBuffer` on GPU Backends
-- **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION` (Commit `c87df26`)
+- **Status**: `[x] DONE (USER CONFIRMED — 2026-11-15)` (Commit `c87df26`)
 - **Automated Result**: Added lazy deferred CPU clear (`ScheduleLazyCpuClear`, `MaterializeLazyCpuClear`, `MaterializeLazyCpuDepthClear`, `DiscardLazyCpuClear`) in `SoftwareBackendBase` so `VulkanBackend::ClearBuffer` and `OpenGLESBackend::ClearBuffer` do zero per-frame CPU memory fills on pure 3D frames while materializing on demand before LFB writes/flushes and discarding on GPU readback. Added `[Software][LFB][LazyClear]` unit test; `Glide3xWrapperTests` passed **33/33 (1794 assertions)**, and `Glide2xWrapperTests "*LFB*"` on Vulkan & GLES matched baseline (4/6 passed, only the 2 pre-existing ABGR/BGRA swizzle failures).
 - **Target Files**:
   - `src/backends/vulkan/VulkanBackend.cpp` (L1001)
@@ -214,7 +215,7 @@ Recorded before any edits are made:
 - **User Verification**: Confirm LFB-heavy demos (`test12_replica_demo`, GTA 1) render cleanly with improved frame pacing.
 
 #### `T1.5` — Fix `JsonConfigLoader` Key-Scoped Parsing + Unit Tests
-- **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION` (Commit `d8b7d03`)
+- **Status**: `[x] DONE (USER CONFIRMED — 2026-11-15)` (Commit `d8b7d03`)
 - **Automated Result**: Replaced global substring matching in `JsonConfigLoader.cpp` with depth-aware, escape-safe key-scoped JSON extractors supporting `"cardModel"`/`"model"`, `"apiVersion"`, `"backend"`, `"logToConsole"`, `"vsync"`, `"forceNoWindow"`, `"maxFps"`, `"logLevel"`, `"msaaSamples"`, `"windowScale"`. Added hermetic `[Config][JsonConfigLoader]` Catch2 tests (21 assertions); `Glide3xWrapperTests` passed **34/34 (1815 assertions)**.
 - **Target Files**:
   - `src/core/JsonConfigLoader.cpp` (L24–79)
@@ -226,7 +227,7 @@ Recorded before any edits are made:
 - **User Verification**: Confirm existing `glide_config.json` profiles load as expected.
 
 #### `T1.6` — Prepare WSI Build Dependencies & Fix `#if defined(UNIX)` Macro Trap
-- **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION` (Commit `cad7d0d`)
+- **Status**: `[x] DONE (USER CONFIRMED — 2026-11-15)` (Commit `cad7d0d`)
 - **Automated Result**: Wired `HAVE_X11=1`, `wayland-egl` (`HAVE_WAYLAND_EGL=1`), and `egl` (`HAVE_EGL=1`) in `src/CMakeLists.txt` with status line `-- WSI Backends: HAVE_X11=ON, HAVE_WAYLAND=ON (1.24.0), HAVE_WAYLAND_EGL=ON (18.1.0), HAVE_EGL=ON (1.5)`. Documented `#if defined(UNIX)` guard in legacy `PlatformWindowUtils.cpp` until `T2.7` retires it. Full project rebuild (`cmake -S . -B build && cmake --build build -j$(nproc)`) + `Glide3xWrapperTests` passed **34/34 (1815 assertions)**.
 - **Target Files**:
   - `src/CMakeLists.txt` (L40–53)
@@ -240,6 +241,24 @@ Recorded before any edits are made:
   2. **Important Caution**: Do **not** blindly flip `#if defined(UNIX)` to `#if defined(__unix__)` inside the *old* `PlatformWindowUtils.cpp` before `T2.2`/`T2.3`, because flipping it would immediately activate the broken `SDL_CreateWindow` + `wl_subsurface` crash path! Instead, add a `#error`/comment guard or build `NativeSurfaceHost` cleanly with `#if defined(__unix__) && !defined(__APPLE__)` in Phase 2, then retire `PlatformWindowUtils.cpp` in `T2.7`.
 - **Automated Gate**: `cmake -S . -B build && cmake --build build -j$(nproc)` confirms `HAVE_X11`, `HAVE_WAYLAND`, `HAVE_WAYLAND_EGL`, and `HAVE_EGL` are detected and linked cleanly.
 - **User Verification**: Confirm CMake summary output shows all four WSI flags enabled.
+
+#### `T1.7` — Fix Wayland Vulkan `VK_PRESENT_MODE_FIFO_KHR` (`wp_fifo_v1`) Stutter
+- **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION` (Commit `15482fc`)
+- **Root Cause**: Under Gnome Mutter over RDP + Mesa 26.1.6 `llvmpipe`, `VK_PRESENT_MODE_FIFO_KHR` uses Wayland `wp_fifo_v1` + `wp_commit_timer_v1` on a 30 Hz virtual output, scheduling commits +166 ms into the future and causing bursty stutter (12.6 FPS with **966.1 ms** max frame gap). Because Wayland compositors always composite atomically at VBlank (tear-free) and `FrameTracker` caps at `maxFps=60`, selecting `VK_PRESENT_MODE_MAILBOX_KHR` on Wayland surfaces avoids the stall with zero tearing.
+- **Automated Result**:
+  - Added `VulkanBackend::SelectPresentMode(availableModes, vsyncEnabled, isWaylandSurface, forceStrictFifo)` in `VulkanBackend.{h,cpp}` and wired it into `CreateSwapchain()` with `GLIDE_VSYNC=fifo` escape hatch.
+  - Added `[Vulkan][WSI][PresentMode]` Catch2 unit test in `tests/test_glide3.cpp` covering all 7 branches; `Glide3xWrapperTests` passed **35/35 test cases (1822 assertions)**.
+  - Live Wayland `WAYLAND_DEBUG=client` frame pacing check (default env, no `GLIDE_VSYNC` override):
+    - `glide3_cube` (T1.7 Mailbox): **59.4 FPS**, median gap **16.8 ms**, max gap **20.3 ms** (vs. `GLIDE_VSYNC=fifo`: **12.6 FPS**, max gap **966.1 ms**).
+    - `glide3_gears` (T1.7 Mailbox): **31.0 FPS**, median gap **32.7 ms**, max gap **38.8 ms**.
+    - `fog_showcase_demo` (T1.7 Mailbox): **35.7 FPS**, median gap **27.7 ms**, max gap **42.3 ms**.
+    - XWayland (`SDL_VIDEODRIVER=x11`) still selects `FIFO` cleanly.
+- **Target Files**:
+  - `src/backends/vulkan/VulkanBackend.h`
+  - `src/backends/vulkan/VulkanBackend.cpp`
+  - `tests/test_glide3.cpp`
+- **Phase 2 Note**: When `T2.4` migrates `VulkanBackend` to `NativeSurfaceHost`, keep passing `isWaylandSurface` derived from `m_surfaceHost.GetMode()` (`WaylandSubsurface` or `StandaloneSDL2` on Wayland) to `SelectPresentMode(...)`.
+- **User Verification**: Run default Vulkan demos (`GLIDE_WRAPPER_BACKEND=vulkan ./build/bin/glide3_cube`, `glide3_gears`, `fog_showcase_demo`) *without* `GLIDE_VSYNC=0` and confirm stutter is gone.
 
 ---
 
@@ -363,6 +382,7 @@ Recorded before any edits are made:
      - `X11Child` → `vkCreateXlibSurfaceKHR(instance, {dpy, childWin})`
      - `WaylandSubsurface` → `vkCreateWaylandSurfaceKHR(instance, {wlDpy, wlChildSurface})`
      - `StandaloneSDL2` → `SDL_Vulkan_CreateSurface(m_surfaceHost.GetSDLWindow(), ...)`
+     - Keep `T1.7`'s `SelectPresentMode(..., isWaylandSurface, forceStrictFifo)` wired to `m_surfaceHost.GetMode()` (`WaylandSubsurface` or `StandaloneSDL2` on Wayland) so Wayland VSync continues to prefer Mailbox.
   4. Update `VulkanBackend::SwapBuffers()`:
      - Call `m_surfaceHost.SyncBounds(hostW, hostH)`; if resized or `VK_ERROR_OUT_OF_DATE_KHR` / `VK_SUBOPTIMAL_KHR`, recreate swapchain cleanly.
      - Compute `PresentRect dst = NativeSurfaceHost::ComputePresentRect(m_guestWidth, m_guestHeight, m_swapchainExtent.width, m_swapchainExtent.height, /*preserveAspect=*/true)` (respecting config option if user wants stretch override later).
