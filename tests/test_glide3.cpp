@@ -3352,3 +3352,29 @@ TEST_CASE("Glide 3.x State Serialization & Phase 4 States [Glide3][State][Serial
   ::unsetenv("GLIDE_WRAPPER_BACKEND");
 #endif
 }
+
+TEST_CASE("SoftwareBackend honors forceNoWindow without creating SDL resources",
+          "[Software][Headless]") {
+  GlideWrapper::WrapperConfig config;
+  config.backend = "software";
+  config.forceNoWindow = true;
+  config.maxFps = 0.0;
+
+  GlideWrapper::SoftwareBackend backend;
+  REQUIRE(backend.Initialize(config));
+  REQUIRE(backend.AttachWindow(nullptr, 320, 240, true));
+  REQUIRE(backend.IsHeadlessMode());
+  REQUIRE(backend.GetWidth() == 320);
+  REQUIRE(backend.GetHeight() == 240);
+
+  backend.ClearBuffer(0xFF112233, 0xFF, 1.0f, 0x7);
+  REQUIRE(backend.SwapBuffers());
+
+  uint16_t pixel = 0;
+  REQUIRE(backend.ReadLFB(0, 160, 120, 1, 1, 2, &pixel));
+  CHECK(pixel != 0);
+
+  backend.DetachWindow();
+  CHECK_FALSE(backend.IsHeadlessMode());
+  backend.Shutdown();
+}

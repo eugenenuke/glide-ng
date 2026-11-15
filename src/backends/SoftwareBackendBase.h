@@ -66,6 +66,7 @@ class SoftwareBackendBase : public IGraphicsBackend {
   uint32_t GetWidth() const override { return m_headlessWidth; }
   uint32_t GetHeight() const override { return m_headlessHeight; }
   uint32_t GetMsaaSamples() const override { return 1; }
+  bool IsHeadlessMode() const { return m_headlessMode; }
 
   // State Getters for Testing
   uint32_t GetColorCombinerFunc() const { return m_colorCombinerFunc; }

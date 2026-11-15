@@ -743,6 +743,15 @@ bool SoftwareBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
   m_sdlRendererOwned = false;
   m_sdlTexture = nullptr;
 
+  if (m_config.forceNoWindow) {
+    GLIDE_LOG(INFO, "Software",
+              "Headless mode enabled (forceNoWindow=true); skipping SDL2 "
+              "window and renderer creation.");
+    m_headlessMode = true;
+    m_windowAttached = true;
+    return true;
+  }
+
   if (nativeWindowHandle) {
     SDL_Window* sdlWindow = SDL_GL_GetCurrentWindow();
     if (sdlWindow) {
@@ -814,6 +823,7 @@ bool SoftwareBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
       SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
       if (renderer) {
         m_sdlRenderer = renderer;
+        m_sdlRendererOwned = true;
         SDL_Texture* texture = SDL_CreateTexture(
             renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING,
             width, height);
@@ -875,7 +885,9 @@ bool SoftwareBackend::SwapBuffers() {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   if (!m_initialized || !m_windowAttached) return false;
 
-  SDL_PumpEvents();
+  if (m_sdlWindow) {
+    SDL_PumpEvents();
+  }
 
   GLIDE_LOG(DEBUG, "Software", "Executing SwapBuffers presentation dispatch.");
 
