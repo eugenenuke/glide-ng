@@ -51,8 +51,8 @@ float s_viewportX = 0.0f;
 float s_viewportY = 0.0f;
 float s_viewportWidth = 640.0f;
 float s_viewportHeight = 480.0f;
-float s_depthRangeNear = 0.0f;
-float s_depthRangeFar = 1.0f;
+float s_depthRangeNear = 1.0f;
+float s_depthRangeFar = 65535.0f;
 
 // Enable states
 bool s_aaOrdered = false;
@@ -84,8 +84,8 @@ void ResetFrontendState() {
   s_viewportY = 0.0f;
   s_viewportWidth = 640.0f;
   s_viewportHeight = 480.0f;
-  s_depthRangeNear = 0.0f;
-  s_depthRangeFar = 1.0f;
+  s_depthRangeNear = 1.0f;
+  s_depthRangeFar = 65535.0f;
   s_aaOrdered = false;
   s_shamelessPlug = false;
   s_sstOrigin = 0;
@@ -211,8 +211,8 @@ FX_ENTRY GrContext_t FX_CALL grSstWinOpen(AnyPtr hWnd,
   s_viewportY = 0.0f;
   s_viewportWidth = static_cast<float>(width);
   s_viewportHeight = static_cast<float>(height);
-  s_depthRangeNear = 0.0f;
-  s_depthRangeFar = 1.0f;
+  s_depthRangeNear = 1.0f;
+  s_depthRangeFar = 65535.0f;
   s_aaOrdered = false;
   s_shamelessPlug = false;
 

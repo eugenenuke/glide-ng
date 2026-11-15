@@ -4137,3 +4137,103 @@ TEST_CASE("LfbManager maps GR_LFBWRITEMODE_888/8888/DEPTH/ZA16 strides and color
   ::dlclose(handle);
 #endif
 }
+
+TEST_CASE("Glide 3.x Shameless Plug Preserves W-Buffered Scene Across Swaps",
+          "[Glide3][State][ShamelessPlug]") {
+#ifdef __linux__
+  ::setenv("FX_GLIDE_SHAMELESS_PLUG", "1", 1);
+  ::unsetenv("GLIDE_NG_SHAMELESS_PLUG");
+
+  void* handle = OpenGlide3Handle();
+  REQUIRE(handle != nullptr);
+
+  auto glideInit = reinterpret_cast<void (*)(void)>(::dlsym(handle, "grGlideInit"));
+  auto glideShutdown = reinterpret_cast<void (*)(void)>(::dlsym(handle, "grGlideShutdown"));
+  auto sstSelect = reinterpret_cast<void (*)(int)>(::dlsym(handle, "grSstSelect"));
+  auto winOpen = reinterpret_cast<FxU32 (*)(FxU32, FxI32, FxI32, FxI32, FxI32, int, int)>(
+      ::dlsym(handle, "grSstWinOpen"));
+  auto winClose = reinterpret_cast<FxBool (*)(FxU32)>(::dlsym(handle, "grSstWinClose"));
+  auto depthBufferMode = reinterpret_cast<void (*)(GrDepthBufferMode_t)>(
+      ::dlsym(handle, "grDepthBufferMode"));
+  auto depthBufferFunction = reinterpret_cast<void (*)(GrCmpFnc_t)>(
+      ::dlsym(handle, "grDepthBufferFunction"));
+  auto depthMask = reinterpret_cast<void (*)(FxBool)>(::dlsym(handle, "grDepthMask"));
+  auto colorCombine = reinterpret_cast<void (*)(
+      GrCombineFunction_t, GrCombineFactor_t, GrCombineLocal_t,
+      GrCombineOther_t, FxBool)>(::dlsym(handle, "grColorCombine"));
+  auto bufferClear = reinterpret_cast<void (*)(GrColor_t, GrAlpha_t, FxU32)>(
+      ::dlsym(handle, "grBufferClear"));
+  auto drawTri = reinterpret_cast<void (*)(const void*, const void*, const void*)>(
+      ::dlsym(handle, "grDrawTriangle"));
+  auto bufferSwap = reinterpret_cast<void (*)(FxU32)>(::dlsym(handle, "grBufferSwap"));
+  auto vertexLayout = reinterpret_cast<void (*)(FxU32, FxI32, FxU32)>(
+      ::dlsym(handle, "grVertexLayout"));
+  auto readLfb = reinterpret_cast<FxBool (*)(GrBuffer_t, FxU32, FxU32, FxU32,
+                                             FxU32, FxU32, void*)>(
+      ::dlsym(handle, "grLfbReadRegion"));
+
+  REQUIRE(glideInit != nullptr);
+  REQUIRE(winOpen != nullptr);
+  REQUIRE(depthBufferMode != nullptr);
+  REQUIRE(depthBufferFunction != nullptr);
+  REQUIRE(depthMask != nullptr);
+  REQUIRE(colorCombine != nullptr);
+  REQUIRE(bufferClear != nullptr);
+  REQUIRE(drawTri != nullptr);
+  REQUIRE(bufferSwap != nullptr);
+  REQUIRE(vertexLayout != nullptr);
+  REQUIRE(readLfb != nullptr);
+
+  glideInit();
+  sstSelect(0);
+  FxU32 ctx = winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                      GR_COLORFORMAT_ARGB, GR_ORIGIN_LOWER_LEFT, 2, 1);
+  REQUIRE(ctx != 0);
+
+  // Match glide3_cube: W-buffering with GR_CMP_LESS and NO explicit grDepthRange.
+  vertexLayout(0x01, 0, 1);   // GR_PARAM_XY
+  vertexLayout(0x02, 8, 1);   // GR_PARAM_Z
+  vertexLayout(0x20, 12, 1);  // GR_PARAM_RGB
+  vertexLayout(0x10, 28, 1);  // GR_PARAM_A
+  vertexLayout(0x03, 32, 1);  // GR_PARAM_W (oow)
+  depthBufferMode(GR_DEPTHBUFFER_WBUFFER);
+  depthBufferFunction(GR_CMP_LESS);
+  depthMask(FXTRUE);
+  colorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+               GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_NONE, FXFALSE);
+
+  StandardVert v0 = {120.0f, 120.0f, 0.0f, 0.0f, 255.0f, 255.0f, 0.0f, 255.0f, 0.2f, 0.0f, 0.0f, 1.0f};
+  StandardVert v1 = {380.0f, 120.0f, 0.0f, 0.0f, 255.0f, 255.0f, 0.0f, 255.0f, 0.2f, 0.0f, 0.0f, 1.0f};
+  StandardVert v2 = {250.0f, 360.0f, 0.0f, 0.0f, 255.0f, 255.0f, 0.0f, 255.0f, 0.2f, 0.0f, 0.0f, 1.0f};
+
+  // Frame 1 triggers grShamelessPlug() -> grGlideGetState()/grGlideSetState().
+  // Frame 2 verifies W-buffer depth range (1..65535) was NOT clobbered to (0..1).
+  for (int frame = 1; frame <= 2; ++frame) {
+    INFO("Checking W-buffered triangle + shameless plug on frame " << frame);
+    bufferClear(0x00000000, 0, 0xFFFF);
+    drawTri(&v0, &v1, &v2);
+    bufferSwap(1);
+
+    std::vector<uint16_t> front(640 * 480, 0);
+    REQUIRE(readLfb(GR_BUFFER_FRONTBUFFER, 0, 0, 640, 480, 640 * 2,
+                    front.data()) == FXTRUE);
+
+    // Triangle interior at (250, 240) must remain non-black on both frames.
+    CHECK(front[240 * 640 + 250] != 0);
+
+    // Lower-right shameless plug area (180x90) must also contain non-black pixels.
+    int plugNonBlack = 0;
+    for (int y = 390; y < 480; ++y) {
+      for (int x = 460; x < 640; ++x) {
+        if (front[y * 640 + x] != 0) ++plugNonBlack;
+      }
+    }
+    CHECK(plugNonBlack > 100);
+  }
+
+  winClose(ctx);
+  glideShutdown();
+  ::dlclose(handle);
+  ::unsetenv("FX_GLIDE_SHAMELESS_PLUG");
+#endif
+}

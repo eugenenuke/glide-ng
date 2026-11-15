@@ -32,11 +32,17 @@ int main(int argc, char* argv[]) {
     grGet(GR_GAMMA_TABLE_ENTRIES, 4, &gammaEntries);
 #else
     // Glide 2.x equivalent queries via grSstQueryHardware
-    GrHwConfiguration hwconfig;
+    GrHwConfiguration hwconfig = {};
     if (grSstQueryHardware(&hwconfig)) {
-        numTmus = hwconfig.SSTs[0].sstBoard.VoodooConfig.nTexelfx;
-        fbiMem = hwconfig.SSTs[0].sstBoard.VoodooConfig.fbRam * 1024 * 1024;
-        tmuMem = hwconfig.SSTs[0].sstBoard.VoodooConfig.tmuConfig[0].tmuRam * 1024 * 1024;
+        if (hwconfig.SSTs[0].type == GR_SSTTYPE_SST96) {
+            numTmus = hwconfig.SSTs[0].sstBoard.SST96Config.nTexelfx;
+            fbiMem = hwconfig.SSTs[0].sstBoard.SST96Config.fbRam * 1024 * 1024;
+            tmuMem = hwconfig.SSTs[0].sstBoard.SST96Config.tmuConfig.tmuRam * 1024 * 1024;
+        } else {
+            numTmus = hwconfig.SSTs[0].sstBoard.VoodooConfig.nTexelfx;
+            fbiMem = hwconfig.SSTs[0].sstBoard.VoodooConfig.fbRam * 1024 * 1024;
+            tmuMem = hwconfig.SSTs[0].sstBoard.VoodooConfig.tmuConfig[0].tmuRam * 1024 * 1024;
+        }
         maxTexSize = 256; // Glide 2.x standard limit
         maxAspect = 3;    // 8:1
         depthBits = 16;

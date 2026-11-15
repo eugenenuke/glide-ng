@@ -147,10 +147,14 @@ TEST_CASE("Architectural Core Validation", "[Architecture]") {
     REQUIRE(std::string(getString(0xa3)) == "3Dfx Interactive");  // GR_VENDOR
 
     GrHwConfiguration hw;
+    std::memset(&hw, 0xA5, sizeof(hw));  // Ensure grSstQueryHardware initializes all fields
     FxBool success = queryHw(&hw);
     REQUIRE(success == FXTRUE);
     REQUIRE(hw.num_sst == 1);
     REQUIRE(hw.SSTs[0].type == GR_SSTTYPE_Voodoo2);
+    CHECK(hw.SSTs[0].sstBoard.Voodoo2Config.fbRam > 0);
+    CHECK(hw.SSTs[0].sstBoard.Voodoo2Config.nTexelfx >= 1);
+    CHECK(hw.SSTs[0].sstBoard.Voodoo2Config.tmuConfig[0].tmuRam > 0);
 
     ::dlclose(handle);
 #endif
