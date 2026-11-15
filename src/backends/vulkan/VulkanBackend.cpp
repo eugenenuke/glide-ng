@@ -1,10 +1,26 @@
 #include "VulkanBackend.h"
 
 #include <SDL2/SDL.h>
-#include <SDL2/SDL_syswm.h>
 #include <SDL2/SDL_vulkan.h>
 
-#include "core/PlatformWindowUtils.h"
+#if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_X11)
+#include <X11/Xlib.h>
+#ifdef None
+#undef None
+#endif
+#ifdef Bool
+#undef Bool
+#endif
+#ifdef Status
+#undef Status
+#endif
+#include <vulkan/vulkan_xlib.h>
+#endif
+
+#if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_WAYLAND)
+#include <wayland-client.h>
+#include <vulkan/vulkan_wayland.h>
+#endif
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -17,6 +33,7 @@
 #include <fstream>
 #include <iostream>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 
 #include "core/Logger.h"
@@ -367,8 +384,8 @@ void VulkanBackend::Shutdown() {
   // Explicitly destroy presentation synchronization semaphores
   for (int i = 0; i < 2; ++i) {
     m_imageAvailableSemaphores[i].reset();
-    m_renderFinishedSemaphores[i].reset();
   }
+  m_renderFinishedSemaphores.clear();
 
   // 2.5. Save persistent Vulkan pipeline cache back to disk!
   if (m_device && m_vkPipelineCache) {
@@ -432,9 +449,7 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
                                  uint32_t height, bool windowed) {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   if (!m_initialized) return false;
-  m_windowShown = false;
   if (m_windowAttached) DetachWindow();
-  m_nativeWindow = nativeWindowHandle;
 
   GLIDE_LOG(INFO, "Vulkan",
             "Attaching Hybrid Vulkan window ("
@@ -591,89 +606,37 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
 
   SetClipWindow(0, 0, width, height);
 
-  m_isWindowHooked = false;
-  m_sdlWindow = nullptr;
-  m_hostWindow = nullptr;
-  m_sdlWindowOwnedByUs = false;
-  m_sdlRenderer = nullptr;
-  m_sdlRendererOwned = false;
-  m_sdlTexture = nullptr;
-
-  // Unconditionally run in headless mode internally!
+  // Unconditionally render to offscreen guest targets and present via blit.
   m_headlessMode = true;
 
-  if (nativeWindowHandle && !m_config.forceNoWindow) {
-    m_hostWindow = PlatformWindowUtils::HijackOrWrapWindow(nativeWindowHandle);
-    if (m_hostWindow) {
-      m_isWindowHooked = true;
-    }
+  if (!m_surfaceHost.Attach(nativeWindowHandle, width, height, windowed,
+                            m_config.forceNoWindow,
+                            "3dfx glide-ng Presentation Console (Vulkan)",
+                            SDL_WINDOW_VULKAN, m_config.windowScale)) {
+    GLIDE_LOG(CRITICAL, "Vulkan",
+              "Failed to attach NativeSurfaceHost for Vulkan presentation.");
+    return false;
   }
 
-  if (m_hostWindow && !m_config.forceNoWindow) {
-    m_sdlWindow = PlatformWindowUtils::CreateOverlayWindow(
-        reinterpret_cast<SDL_Window*>(m_hostWindow), SDL_WINDOW_VULKAN);
-    if (m_sdlWindow) {
-      m_sdlWindowOwnedByUs = true;
-      m_windowShown = true;
-    } else {
-      GLIDE_LOG(CRITICAL, "Vulkan",
-                "Failed to create overlay window: " << SDL_GetError());
+  // Create Vulkan WSI surface and swapchain when not in Headless mode.
+  if (m_surfaceHost.GetMode() != NativeSurfaceHost::Mode::Headless) {
+    if (!CreatePresentationSurface()) {
+      m_surfaceHost.Detach();
       return false;
     }
-  } else if (!m_hostWindow && !m_config.forceNoWindow) {
-    // Standalone fallback console
-    bool sdlReady = true;
-    if (!SDL_WasInit(SDL_INIT_VIDEO)) {
-      if (SDL_Init(SDL_INIT_VIDEO) < 0) {
-        GLIDE_LOG(CRITICAL, "Vulkan",
-                  "Failed to initialize SDL Video: " << SDL_GetError());
-        sdlReady = false;
-      } else {
-        m_sdlVideoInitializedByUs = true;
-      }
+
+    uint32_t surfW = width;
+    uint32_t surfH = height;
+    m_surfaceHost.GetDrawableSize(surfW, surfH);
+    if (surfW == 0 || surfH == 0) {
+      surfW = width;
+      surfH = height;
     }
 
-    if (sdlReady) {
-      uint32_t scale = m_config.windowScale;
-      m_sdlWindow = SDL_CreateWindow(
-          "3dfx glide-ng Presentation Console (Vulkan)", SDL_WINDOWPOS_CENTERED,
-          SDL_WINDOWPOS_CENTERED, width * scale, height * scale,
-          SDL_WINDOW_VULKAN | SDL_WINDOW_SHOWN);
-      if (m_sdlWindow) {
-        m_sdlWindowOwnedByUs = true;
-        m_windowShown = true;
-        GLIDE_LOG(INFO, "Vulkan",
-                  "Created standalone presentation window: " << m_sdlWindow);
-      } else {
-        GLIDE_LOG(WARN, "Vulkan",
-                  "Failed to create standalone presentation window: "
-                      << SDL_GetError() << ". Falling back to headless mode.");
-      }
-    }
-  }
-
-  // Cache initial overlay bounds to prevent async resize storms
-  if (m_sdlWindow) {
-    SDL_GetWindowPosition(reinterpret_cast<SDL_Window*>(m_sdlWindow),
-                          &m_lastRequestedX, &m_lastRequestedY);
-    SDL_GetWindowSize(reinterpret_cast<SDL_Window*>(m_sdlWindow),
-                      &m_lastRequestedW, &m_lastRequestedH);
-  }
-
-  // 3. Create Vulkan Surface and Swapchain on the rendering window
-  if (m_sdlWindow) {
-    VkSurfaceKHR surfaceHandle;
-    if (SDL_Vulkan_CreateSurface(reinterpret_cast<SDL_Window*>(m_sdlWindow),
-                                 static_cast<VkInstance>(m_instance.get()),
-                                 &surfaceHandle) != SDL_TRUE) {
-      GLIDE_LOG(CRITICAL, "Vulkan",
-                "Failed to create Vulkan surface: " << SDL_GetError());
-      return false;
-    }
-    m_surface = vk::UniqueSurfaceKHR(surfaceHandle, m_instance.get());
-
-    if (!CreateSwapchain(width, height)) {
+    if (!CreateSwapchain(surfW, surfH)) {
       GLIDE_LOG(CRITICAL, "Vulkan", "Failed to create Vulkan swapchain!");
+      m_surface.reset();
+      m_surfaceHost.Detach();
       return false;
     }
   }
@@ -726,49 +689,20 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
 void VulkanBackend::DetachWindow() {
   std::lock_guard<std::recursive_mutex> lock(m_mutex);
   if (!m_windowAttached) return;
-  m_windowShown = false;
   GLIDE_LOG(INFO, "Vulkan", "Detaching Hybrid Vulkan window resources.");
 
+  // Strict WSI teardown order:
+  // 1. Wait for GPU idle
+  // 2. Destroy swapchain
+  // 3. Destroy VkSurfaceKHR
+  // 4. Detach NativeSurfaceHost (destroys X11 child / wl_subsurface / SDL window)
   if (m_device) {
     m_device->waitIdle();
   }
 
   DestroySwapchain();
   m_surface.reset();
-  if (m_sdlTexture) {
-    SDL_DestroyTexture(reinterpret_cast<SDL_Texture*>(m_sdlTexture));
-    m_sdlTexture = nullptr;
-  }
-  if (m_sdlRenderer) {
-    if (m_sdlRendererOwned) {
-      SDL_DestroyRenderer(reinterpret_cast<SDL_Renderer*>(m_sdlRenderer));
-    }
-    m_sdlRenderer = nullptr;
-  }
-  if (m_sdlWindow) {
-    if (m_sdlWindowOwnedByUs) {
-      PlatformWindowUtils::DestroyOverlayWindow(
-          reinterpret_cast<SDL_Window*>(m_sdlWindow));
-    }
-    m_sdlWindow = nullptr;
-  }
-  m_sdlWindowOwnedByUs = false;
-  m_hostWindow = nullptr;
-
-  if (m_sdlVideoInitializedByUs) {
-    SDL_QuitSubSystem(SDL_INIT_VIDEO);
-    m_sdlVideoInitializedByUs = false;
-  }
-  SDL_Vulkan_UnloadLibrary();
-
-  // Reset bounds sync cache
-  m_lastRequestedX = 0;
-  m_lastRequestedY = 0;
-  m_lastRequestedW = 0;
-  m_lastRequestedH = 0;
-
-  m_isWindowHooked = false;
-  m_nativeWindow = nullptr;
+  m_surfaceHost.Detach();
 
   // Phase 2: Unmap and reset vertex buffer
   if (m_vertexBufferMap) {
@@ -812,6 +746,108 @@ void VulkanBackend::DetachWindow() {
 
   m_windowAttached = false;
   m_headlessMode = false;
+}
+
+bool VulkanBackend::CreatePresentationSurface() {
+  m_surface.reset();
+  switch (m_surfaceHost.GetMode()) {
+    case NativeSurfaceHost::Mode::Detached:
+    case NativeSurfaceHost::Mode::Headless:
+      return true;
+
+    case NativeSurfaceHost::Mode::X11Child: {
+#if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_X11)
+      auto createXlibSurface = reinterpret_cast<PFN_vkCreateXlibSurfaceKHR>(
+          m_instance->getProcAddr("vkCreateXlibSurfaceKHR"));
+      if (!createXlibSurface) {
+        GLIDE_LOG(CRITICAL, "Vulkan",
+                  "vkCreateXlibSurfaceKHR is unavailable on Vulkan instance.");
+        return false;
+      }
+
+      VkXlibSurfaceCreateInfoKHR info{};
+      info.sType = VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR;
+      info.dpy = static_cast<Display*>(m_surfaceHost.GetX11Display());
+      info.window = static_cast<Window>(m_surfaceHost.GetX11Window());
+
+      VkSurfaceKHR rawSurface = VK_NULL_HANDLE;
+      VkResult res = createXlibSurface(
+          static_cast<VkInstance>(m_instance.get()), &info, nullptr,
+          &rawSurface);
+      if (res != VK_SUCCESS || rawSurface == VK_NULL_HANDLE) {
+        GLIDE_LOG(CRITICAL, "Vulkan",
+                  "vkCreateXlibSurfaceKHR failed with VkResult=" << res);
+        return false;
+      }
+      m_surface = vk::UniqueSurfaceKHR(rawSurface, m_instance.get());
+      GLIDE_LOG(INFO, "Vulkan",
+                "Created VK_KHR_xlib_surface on X11 child window 0x"
+                    << std::hex << m_surfaceHost.GetX11Window() << std::dec);
+      return true;
+#else
+      GLIDE_LOG(CRITICAL, "Vulkan",
+                "X11Child surface requested but HAVE_X11 is not compiled in.");
+      return false;
+#endif
+    }
+
+    case NativeSurfaceHost::Mode::WaylandSubsurface: {
+#if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_WAYLAND)
+      auto createWaylandSurface =
+          reinterpret_cast<PFN_vkCreateWaylandSurfaceKHR>(
+              m_instance->getProcAddr("vkCreateWaylandSurfaceKHR"));
+      if (!createWaylandSurface) {
+        GLIDE_LOG(
+            CRITICAL, "Vulkan",
+            "vkCreateWaylandSurfaceKHR is unavailable on Vulkan instance.");
+        return false;
+      }
+
+      VkWaylandSurfaceCreateInfoKHR info{};
+      info.sType = VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR;
+      info.display = static_cast<wl_display*>(m_surfaceHost.GetWaylandDisplay());
+      info.surface = static_cast<wl_surface*>(m_surfaceHost.GetWaylandSurface());
+
+      VkSurfaceKHR rawSurface = VK_NULL_HANDLE;
+      VkResult res = createWaylandSurface(
+          static_cast<VkInstance>(m_instance.get()), &info, nullptr,
+          &rawSurface);
+      if (res != VK_SUCCESS || rawSurface == VK_NULL_HANDLE) {
+        GLIDE_LOG(CRITICAL, "Vulkan",
+                  "vkCreateWaylandSurfaceKHR failed with VkResult=" << res);
+        return false;
+      }
+      m_surface = vk::UniqueSurfaceKHR(rawSurface, m_instance.get());
+      GLIDE_LOG(INFO, "Vulkan",
+                "Created VK_KHR_wayland_surface on Wayland subsurface "
+                    << m_surfaceHost.GetWaylandSurface());
+      return true;
+#else
+      GLIDE_LOG(
+          CRITICAL, "Vulkan",
+          "WaylandSubsurface requested but HAVE_WAYLAND is not compiled in.");
+      return false;
+#endif
+    }
+
+    case NativeSurfaceHost::Mode::StandaloneSDL2: {
+      VkSurfaceKHR rawSurface = VK_NULL_HANDLE;
+      if (SDL_Vulkan_CreateSurface(m_surfaceHost.GetSDLWindow(),
+                                   static_cast<VkInstance>(m_instance.get()),
+                                   &rawSurface) != SDL_TRUE) {
+        GLIDE_LOG(CRITICAL, "Vulkan",
+                  "SDL_Vulkan_CreateSurface failed for StandaloneSDL2: "
+                      << SDL_GetError());
+        return false;
+      }
+      m_surface = vk::UniqueSurfaceKHR(rawSurface, m_instance.get());
+      GLIDE_LOG(INFO, "Vulkan",
+                "Created Vulkan surface for StandaloneSDL2 window "
+                    << m_surfaceHost.GetSDLWindow());
+      return true;
+    }
+  }
+  return false;
 }
 
 vk::PresentModeKHR VulkanBackend::SelectPresentMode(
@@ -907,9 +943,7 @@ bool VulkanBackend::CreateSwapchain(uint32_t width, uint32_t height) {
   // always composite atomically (tear-free), while Mailbox avoids Mesa WSI's
   // wp_fifo_v1 / wp_commit_timer_v1 cadence stalls under Mutter/RDP. Users can
   // still opt into strict FIFO via GLIDE_VSYNC=fifo.
-  const char* sdlVideoDriver = SDL_GetCurrentVideoDriver();
-  bool isWaylandSurface =
-      (sdlVideoDriver && std::strcmp(sdlVideoDriver, "wayland") == 0);
+  bool isWaylandSurface = m_surfaceHost.IsWaylandSurface();
   const char* envVsync = std::getenv("GLIDE_VSYNC");
   bool forceStrictFifo =
       (envVsync &&
@@ -953,6 +987,11 @@ bool VulkanBackend::CreateSwapchain(uint32_t width, uint32_t height) {
     extent.height = std::clamp(height, capabilities.minImageExtent.height,
                                capabilities.maxImageExtent.height);
   }
+  if (extent.width == 0 || extent.height == 0) {
+    GLIDE_LOG(WARN, "Vulkan",
+              "Deferring swapchain creation for zero-sized surface extent.");
+    return false;
+  }
   m_swapchainExtent = extent;
   GLIDE_LOG(
       INFO, "Vulkan",
@@ -967,16 +1006,31 @@ bool VulkanBackend::CreateSwapchain(uint32_t width, uint32_t height) {
   GLIDE_LOG(INFO, "Vulkan",
             "Creating swapchain with " << imageCount << " images.");
 
+  // Pick a supported composite alpha mode (prefer opaque so letterbox bars
+  // are solid black and Wayland compositors don't blend behind the subsurface).
+  vk::CompositeAlphaFlagBitsKHR compositeAlpha =
+      vk::CompositeAlphaFlagBitsKHR::eOpaque;
+  if (!(capabilities.supportedCompositeAlpha &
+        vk::CompositeAlphaFlagBitsKHR::eOpaque)) {
+    if (capabilities.supportedCompositeAlpha &
+        vk::CompositeAlphaFlagBitsKHR::ePreMultiplied) {
+      compositeAlpha = vk::CompositeAlphaFlagBitsKHR::ePreMultiplied;
+    } else if (capabilities.supportedCompositeAlpha &
+               vk::CompositeAlphaFlagBitsKHR::eInherit) {
+      compositeAlpha = vk::CompositeAlphaFlagBitsKHR::eInherit;
+    }
+  }
+
   // 6. Create the Swapchain!
   vk::SwapchainCreateInfoKHR createInfo(
       {}, m_surface.get(), imageCount, m_swapchainImageFormat,
       selectedFormat.colorSpace, m_swapchainExtent,
       1,  // imageArrayLayers
       vk::ImageUsageFlagBits::eColorAttachment |
-          vk::ImageUsageFlagBits::eTransferDst,  // We will blit/copy to it!
+          vk::ImageUsageFlagBits::eTransferDst,  // We will clear/blit to it!
       vk::SharingMode::eExclusive, 0,
       nullptr,  // Queue family indices (exclusive mode doesn't need them)
-      capabilities.currentTransform, vk::CompositeAlphaFlagBitsKHR::eOpaque,
+      capabilities.currentTransform, compositeAlpha,
       presentMode,
       VK_TRUE,  // clipped
       {}        // oldSwapchain
@@ -1000,13 +1054,17 @@ bool VulkanBackend::CreateSwapchain(uint32_t width, uint32_t height) {
   }
 
   // 9. Create synchronization semaphores for swapchain image acquisition &
-  // presentation pacing
+  // presentation pacing (renderFinished is sized per swapchain image!)
   vk::SemaphoreCreateInfo semaphoreInfo;
   for (int i = 0; i < 2; ++i) {
     m_imageAvailableSemaphores[i] =
         m_device->createSemaphoreUnique(semaphoreInfo);
-    m_renderFinishedSemaphores[i] =
-        m_device->createSemaphoreUnique(semaphoreInfo);
+  }
+  m_renderFinishedSemaphores.clear();
+  m_renderFinishedSemaphores.reserve(m_swapchainImages.size());
+  for (size_t i = 0; i < m_swapchainImages.size(); ++i) {
+    m_renderFinishedSemaphores.push_back(
+        m_device->createSemaphoreUnique(semaphoreInfo));
   }
 
   GLIDE_LOG(INFO, "Vulkan",
@@ -1022,8 +1080,8 @@ void VulkanBackend::DestroySwapchain() {
   }
   for (int i = 0; i < 2; ++i) {
     if (m_imageAvailableSemaphores[i]) m_imageAvailableSemaphores[i].reset();
-    if (m_renderFinishedSemaphores[i]) m_renderFinishedSemaphores[i].reset();
   }
+  m_renderFinishedSemaphores.clear();
   m_swapchainImageViews.clear();
   m_swapchainImages.clear();
   if (m_swapchain) m_swapchain.reset();
@@ -1032,7 +1090,7 @@ void VulkanBackend::DestroySwapchain() {
 }
 
 void VulkanBackend::RecreateSwapchain(uint32_t width, uint32_t height) {
-  if (!m_device || !m_sdlWindow || !m_surface) return;
+  if (!m_device || !m_surface || width == 0 || height == 0) return;
   m_device->waitIdle();
   GLIDE_LOG(INFO, "Vulkan",
             "Recreating swapchain with size: " << width << "x" << height);
@@ -1308,23 +1366,21 @@ void VulkanBackend::SetFogTable(const uint8_t* table) {
   SoftwareBackendBase::SetFogTable(table);
 }
 
-void VulkanBackend::SyncOverlayBounds() {
-  if (m_hostWindow && m_sdlWindow) {
-    bool sizeChanged = PlatformWindowUtils::SyncOverlayWindowBounds(
-        reinterpret_cast<SDL_Window*>(m_hostWindow),
-        reinterpret_cast<SDL_Window*>(m_sdlWindow), m_lastRequestedX,
-        m_lastRequestedY, m_lastRequestedW, m_lastRequestedH);
-    if (sizeChanged) {
-      RecreateSwapchain(m_lastRequestedW, m_lastRequestedH);
-    }
-  }
-}
-
 bool VulkanBackend::SwapBuffers() {
-  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  std::unique_lock<std::recursive_mutex> lock(m_mutex);
   if (!m_initialized || !m_windowAttached) return false;
 
-  SDL_PumpEvents();
+  // Pump SDL events ONLY in StandaloneSDL2 mode (guaranteed no-op for DOSBox
+  // X11Child / WaylandSubsurface / Headless).
+  m_surfaceHost.PollEvents();
+  if (m_surfaceHost.GetMode() == NativeSurfaceHost::Mode::StandaloneSDL2 &&
+      m_surfaceHost.WasQuitRequested()) {
+    GLIDE_LOG(INFO, "Vulkan",
+              "Standalone window close requested; exiting cleanly.");
+    DetachWindow();
+    lock.unlock();
+    std::exit(0);
+  }
 
   // Flush any pending CPU LFB writes to the GPU active image before we
   // swap/present!
@@ -1337,8 +1393,18 @@ bool VulkanBackend::SwapBuffers() {
 
   GLIDE_PROFILE_SCOPE("Vulkan::SwapBuffers");
 
-  // Sync overlay window bounds with host window if position/size changed!
-  SyncOverlayBounds();
+  // Sync child/standalone surface bounds with host window and recreate
+  // swapchain cleanly on resize or recovery from minimized state.
+  if (m_surface) {
+    uint32_t hostW = 0;
+    uint32_t hostH = 0;
+    bool sizeChanged = m_surfaceHost.SyncBounds(hostW, hostH);
+    if (sizeChanged && hostW > 0 && hostH > 0) {
+      RecreateSwapchain(hostW, hostH);
+    } else if (!m_swapchain && hostW > 0 && hostH > 0) {
+      CreateSwapchain(hostW, hostH);
+    }
+  }
 
   // 1. Flush any pending batch draws and terminate the active render pass
   if (m_batchedVertexCount > 0) {
@@ -1373,9 +1439,12 @@ bool VulkanBackend::SwapBuffers() {
     }
 
     if (acquireRes == vk::Result::eErrorOutOfDateKHR) {
-      int w = 0, h = 0;
-      SDL_GetWindowSize(reinterpret_cast<SDL_Window*>(m_sdlWindow), &w, &h);
-      RecreateSwapchain(w, h);
+      uint32_t hostW = 0;
+      uint32_t hostH = 0;
+      m_surfaceHost.SyncBounds(hostW, hostH);
+      if (hostW > 0 && hostH > 0) {
+        RecreateSwapchain(hostW, hostH);
+      }
       m_commandBuffer = &m_commandBuffers[m_currentFrameSlot].get();
       m_commandBuffer->reset({});
       m_commandBuffer->begin(vk::CommandBufferBeginInfo(
@@ -1402,23 +1471,59 @@ bool VulkanBackend::SwapBuffers() {
                           vk::ImageLayout::eColorAttachmentOptimal,
                           vk::ImageLayout::eTransferSrcOptimal, colorRange);
 
-    // Blit offscreen image to swapchain image (supports scaling!)
-    vk::ImageBlit blitRegion;
-    blitRegion.srcSubresource =
-        vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
-    blitRegion.srcOffsets[0] = vk::Offset3D(0, 0, 0);
-    blitRegion.srcOffsets[1] =
-        vk::Offset3D(m_headlessWidth, m_headlessHeight, 1);
-    blitRegion.dstSubresource =
-        vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
-    blitRegion.dstOffsets[0] = vk::Offset3D(0, 0, 0);
-    blitRegion.dstOffsets[1] =
-        vk::Offset3D(m_swapchainExtent.width, m_swapchainExtent.height, 1);
+    // Compute aspect-ratio-preserving presentation rectangle (black
+    // letterbox/pillarbox bars when host aspect != guest aspect).
+    const PresentRect dst = NativeSurfaceHost::ComputePresentRect(
+        m_headlessWidth, m_headlessHeight, m_swapchainExtent.width,
+        m_swapchainExtent.height, /*preserveAspect=*/true);
 
-    m_commandBuffer->blitImage(
-        m_headlessImages[activeIdx].get(), vk::ImageLayout::eTransferSrcOptimal,
-        m_swapchainImages[imageIdx], vk::ImageLayout::eTransferDstOptimal, 1,
-        &blitRegion, vk::Filter::eLinear);
+    const bool needsBars =
+        (dst.x > 0 || dst.y > 0 || dst.width < m_swapchainExtent.width ||
+         dst.height < m_swapchainExtent.height);
+    if (needsBars) {
+      vk::ClearColorValue blackClear(
+          std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f});
+      m_commandBuffer->clearColorImage(m_swapchainImages[imageIdx],
+                                       vk::ImageLayout::eTransferDstOptimal,
+                                       &blackClear, 1, &colorRange);
+
+      vk::ImageMemoryBarrier clearToBlitBarrier;
+      clearToBlitBarrier.oldLayout = vk::ImageLayout::eTransferDstOptimal;
+      clearToBlitBarrier.newLayout = vk::ImageLayout::eTransferDstOptimal;
+      clearToBlitBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+      clearToBlitBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+      clearToBlitBarrier.image = m_swapchainImages[imageIdx];
+      clearToBlitBarrier.subresourceRange = colorRange;
+      clearToBlitBarrier.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
+      clearToBlitBarrier.dstAccessMask = vk::AccessFlagBits::eTransferWrite;
+      m_commandBuffer->pipelineBarrier(
+          vk::PipelineStageFlagBits::eTransfer,
+          vk::PipelineStageFlagBits::eTransfer, {}, 0, nullptr, 0, nullptr, 1,
+          &clearToBlitBarrier);
+    }
+
+    // Blit offscreen guest framebuffer into the centered destination rect
+    if (dst.width > 0 && dst.height > 0) {
+      vk::ImageBlit blitRegion;
+      blitRegion.srcSubresource =
+          vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
+      blitRegion.srcOffsets[0] = vk::Offset3D(0, 0, 0);
+      blitRegion.srcOffsets[1] =
+          vk::Offset3D(static_cast<int32_t>(m_headlessWidth),
+                       static_cast<int32_t>(m_headlessHeight), 1);
+      blitRegion.dstSubresource =
+          vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
+      blitRegion.dstOffsets[0] = vk::Offset3D(dst.x, dst.y, 0);
+      blitRegion.dstOffsets[1] =
+          vk::Offset3D(dst.x + static_cast<int32_t>(dst.width),
+                       dst.y + static_cast<int32_t>(dst.height), 1);
+
+      m_commandBuffer->blitImage(
+          m_headlessImages[activeIdx].get(),
+          vk::ImageLayout::eTransferSrcOptimal, m_swapchainImages[imageIdx],
+          vk::ImageLayout::eTransferDstOptimal, 1, &blitRegion,
+          vk::Filter::eLinear);
+    }
 
     // Transition swapchain image to PresentSrcKHR
     TransitionImageLayout(*m_commandBuffer, m_swapchainImages[imageIdx],
@@ -1439,7 +1544,7 @@ bool VulkanBackend::SwapBuffers() {
     vk::Semaphore waitSemaphores[] = {
         m_imageAvailableSemaphores[m_currentFrameSlot].get()};
     vk::Semaphore signalSemaphores[] = {
-        m_renderFinishedSemaphores[m_currentFrameSlot].get()};
+        m_renderFinishedSemaphores[imageIdx].get()};
 
     vk::SubmitInfo submitInfo(1, waitSemaphores, waitStages, 1, m_commandBuffer,
                               1, signalSemaphores);
@@ -1460,9 +1565,12 @@ bool VulkanBackend::SwapBuffers() {
 
     if (presentRes == vk::Result::eErrorOutOfDateKHR ||
         presentRes == vk::Result::eSuboptimalKHR) {
-      int w = 0, h = 0;
-      SDL_GetWindowSize(reinterpret_cast<SDL_Window*>(m_sdlWindow), &w, &h);
-      RecreateSwapchain(w, h);
+      uint32_t hostW = 0;
+      uint32_t hostH = 0;
+      m_surfaceHost.SyncBounds(hostW, hostH);
+      if (hostW > 0 && hostH > 0) {
+        RecreateSwapchain(hostW, hostH);
+      }
     } else if (presentRes != vk::Result::eSuccess) {
       GLIDE_LOG(
           CRITICAL, "Vulkan",
@@ -1647,7 +1755,10 @@ bool VulkanBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
 }
 
 void VulkanBackend::PollEvents() {
-  // No-op to prevent stealing SDL event queue inputs from the host application.
+  std::lock_guard<std::recursive_mutex> lock(m_mutex);
+  // Safe no-op in Headless, X11Child, and WaylandSubsurface modes; pumps SDL
+  // events only in StandaloneSDL2 mode.
+  m_surfaceHost.PollEvents();
 }
 
 void VulkanBackend::SstIdle() {
@@ -1678,48 +1789,39 @@ bool VulkanBackend::CreateInstance() {
 #endif
 
   if (shouldLoadExtensions) {
-    bool sdlReady = true;
-    m_sdlVideoInitializedByUs = false;
-    if (!SDL_WasInit(SDL_INIT_VIDEO)) {
-      if (SDL_Init(SDL_INIT_VIDEO) < 0) {
-        GLIDE_LOG(
-            WARN, "Vulkan",
-            "SDL_Init video failed in CreateInstance: " << SDL_GetError());
-        sdlReady = false;
-      } else {
-        m_sdlVideoInitializedByUs = true;
+    std::unordered_set<std::string> availableExtensions;
+    try {
+      for (const auto& ext : vk::enumerateInstanceExtensionProperties()) {
+        availableExtensions.insert(ext.extensionName.data());
       }
+    } catch (const std::exception& e) {
+      GLIDE_LOG(WARN, "Vulkan",
+                "Failed to enumerate Vulkan instance extensions: " << e.what());
     }
-    if (sdlReady) {
-      // Explicitly load the Vulkan driver library via SDL to initialize its
-      // internal function pointers!
-      if (SDL_Vulkan_LoadLibrary(nullptr) < 0) {
-        GLIDE_LOG(WARN, "Vulkan",
-                  "SDL_Vulkan_LoadLibrary failed in CreateInstance: "
-                      << SDL_GetError());
-      } else {
-        unsigned int extensionCount = 0;
-        if (SDL_Vulkan_GetInstanceExtensions(nullptr, &extensionCount,
-                                             nullptr)) {
-          std::vector<const char*> sdlExtensions(extensionCount);
-          if (SDL_Vulkan_GetInstanceExtensions(nullptr, &extensionCount,
-                                               sdlExtensions.data())) {
-            for (const auto& ext : sdlExtensions) {
-              requiredExtensions.push_back(ext);
-              GLIDE_LOG(INFO, "Vulkan", "Loaded SDL Vulkan extension: " << ext);
-            }
-          }
-        } else {
-          GLIDE_LOG(WARN, "Vulkan",
-                    "SDL_Vulkan_GetInstanceExtensions count query failed: "
-                        << SDL_GetError());
-        }
+
+    auto enableIfAvailable = [&](const char* extName) {
+      if (availableExtensions.count(extName) > 0) {
+        requiredExtensions.push_back(extName);
+        GLIDE_LOG(INFO, "Vulkan",
+                  "Enabled Vulkan WSI instance extension: " << extName);
       }
-    }
+    };
+
+    enableIfAvailable(VK_KHR_SURFACE_EXTENSION_NAME);
+#if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_X11)
+    enableIfAvailable(VK_KHR_XLIB_SURFACE_EXTENSION_NAME);
+    enableIfAvailable("VK_KHR_xcb_surface");
+#endif
+#if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_WAYLAND)
+    enableIfAvailable(VK_KHR_WAYLAND_SURFACE_EXTENSION_NAME);
+#endif
+#if defined(_WIN32)
+    enableIfAvailable(VK_KHR_WIN32_SURFACE_EXTENSION_NAME);
+#endif
   } else {
     GLIDE_LOG(INFO, "Vulkan",
               "No active display environment or forceNoWindow is set. "
-              "Skipping SDL Vulkan instance extensions.");
+              "Skipping Vulkan WSI instance extensions.");
   }
 
   createInfo.setEnabledExtensionCount(

@@ -286,3 +286,18 @@ add_executable(child_surface_embed_test
 target_link_libraries(child_surface_embed_test PRIVATE
     GlideWrapperCore
 )
+
+# --- Live Glide-in-Host Embed Harness (T2.4 / T2.5 / T2.6) ---
+add_executable(glide_embed_test
+    glide_embed_test.cpp
+)
+target_include_directories(glide_embed_test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../include/3dfx"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../include/glide3"
+)
+target_compile_definitions(glide_embed_test PRIVATE -D__linux__ -DGLIDE_VERSION=3)
+target_link_libraries(glide_embed_test PRIVATE
+    glide3x
+    SDL2::SDL2
+    -lm
+)
