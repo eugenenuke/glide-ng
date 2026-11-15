@@ -1559,17 +1559,22 @@ FX_ENTRY GrProc FX_CALL grGetProcAddress(char* procName) {
             "grGetProcAddress (Glide 3.x): " << (procName ? procName : "NULL"));
   if (!procName) return nullptr;
 
+  auto toGrProc = [](auto fn) -> GrProc {
+    // Cast through void(*)() to satisfy -Wcast-function-type under -Wpedantic.
+    return reinterpret_cast<GrProc>(reinterpret_cast<void (*)()>(fn));
+  };
+
   if (std::strcmp(procName, "grChromaRangeModeExt") == 0) {
-    return (GrProc)grChromaRangeModeExt;
+    return toGrProc(grChromaRangeModeExt);
   }
   if (std::strcmp(procName, "grChromaRangeExt") == 0) {
-    return (GrProc)grChromaRangeExt;
+    return toGrProc(grChromaRangeExt);
   }
   if (std::strcmp(procName, "grTexChromaModeExt") == 0) {
-    return (GrProc)grTexChromaModeExt;
+    return toGrProc(grTexChromaModeExt);
   }
   if (std::strcmp(procName, "grTexChromaRangeExt") == 0) {
-    return (GrProc)grTexChromaRangeExt;
+    return toGrProc(grTexChromaRangeExt);
   }
 
   GLIDE_LOG(WARN, "Frontend",

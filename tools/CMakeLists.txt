@@ -1,3 +1,7 @@
+if(GLIDE_STRICT_WARNINGS AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    add_compile_options(-Werror)
+endif()
+
 # --- Self-Contained Test Library Compatibility Layer (tlib_compat) ---
 add_library(tlib_compat STATIC 
     tlib_compat.cpp

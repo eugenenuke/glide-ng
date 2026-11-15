@@ -1,3 +1,7 @@
+if(GLIDE_STRICT_WARNINGS AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    add_compile_options(-Werror)
+endif()
+
 # 1. Define Core Sources
 set(CORE_SOURCES
     core/WrapperConfig.cpp

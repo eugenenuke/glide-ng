@@ -13,6 +13,7 @@ if(ENABLE_TELEMETRY)
 endif()
 
 # Expose strict, clean compile warnings
+option(GLIDE_STRICT_WARNINGS "Treat compiler warnings as errors on project targets" ON)
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     add_compile_options(-Wall -Wextra -Wpedantic -Wno-unused-parameter)
 endif()
