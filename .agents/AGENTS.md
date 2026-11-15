@@ -49,7 +49,7 @@ When working from [docs/plans/option_a_and_cleanup_tracker.md](../docs/plans/opt
 
 ### Policy C: Catch2 TDD Mandate
 - Every bug fix, config parser change, state addition, or math/geometry helper **must** be accompanied by a Catch2 unit test in [tests/test_glide3.cpp](../tests/test_glide3.cpp) or [tests/test_architecture.cpp](../tests/test_architecture.cpp).
-- Run headless verification with `GLIDE_WRAPPER_BACKEND=software GLIDE_FORCE_NO_WINDOW=1` (see the `build-and-test` skill for exact commands and known pre-existing baseline quirks).
+- Run headless verification with `GLIDE_NG_BACKEND=software GLIDE_NG_HEADLESS=1` (see the `build-and-test` skill for exact commands and known pre-existing baseline quirks).
 
 ### Policy D: Pristine Reference & External Directories (`refs/` and `ext_tests/`)
 - **NEVER** edit, stage, or commit files inside `refs/` or `ext_tests/`.
@@ -60,7 +60,7 @@ When working from [docs/plans/option_a_and_cleanup_tracker.md](../docs/plans/opt
 - Use standard compiler macros: `#if defined(__unix__) && !defined(__APPLE__)` (NEVER `#if defined(UNIX)` — GCC/Clang do not define `UNIX`).
 - Never call `SDL_CreateWindow()` and attempt `wl_subcompositor_get_subsurface()` on the same `wl_surface` (fatal Wayland role violation).
 - Never call `XInitThreads()` inside a `dlopen` constructor after a host client (DOSBox) has already opened X11; use a private `XOpenDisplay(nullptr)` connection instead.
-- All backends must honor `m_config.forceNoWindow` (`GLIDE_FORCE_NO_WINDOW=1` / `GLIDE_HEADLESS=1`) without initializing OS windowing/EGL/Vulkan presentation surfaces.
+- All backends must honor `m_config.forceNoWindow` (`GLIDE_NG_HEADLESS=1`) without initializing OS windowing/EGL/Vulkan presentation surfaces.
 
 ---
 

@@ -110,9 +110,9 @@ int main(int argc, char* argv[]) {
     tlSetScreen(s_screenWidth, s_screenHeight);
 
     // Enforce Glide 3.x mode in the environment variables
-    ::setenv("GLIDE_VERSION_OVERRIDE", "3.0", 1);
-    if (!std::getenv("GLIDE_WRAPPER_BACKEND")) {
-        ::setenv("GLIDE_WRAPPER_BACKEND", "vulkan", 1); // Default to vulkan
+    ::setenv("GLIDE_NG_API_VERSION", "3.0", 1);
+    if (!std::getenv("GLIDE_NG_BACKEND")) {
+        ::setenv("GLIDE_NG_BACKEND", "vulkan", 1); // Default to vulkan
     }
 
     // Open standard double-buffered window using resolved resolution.

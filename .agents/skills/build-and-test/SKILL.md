@@ -25,17 +25,17 @@ cmake --build build -j$(nproc) --target Glide2xWrapperTests Glide3xWrapperTests
 
 ## 2. Automated Unit Tests (Headless)
 
-Always use `GLIDE_WRAPPER_BACKEND` (do not set both `GLIDE_WRAPPER_BACKEND` and legacy `GLIDE_BACKEND`, as `JsonConfigLoader` flags that as an environment conflict) and `GLIDE_FORCE_NO_WINDOW=1`:
+Always use the canonical `GLIDE_NG_*` environment variables (legacy `GLIDE_WRAPPER_*` and `GLIDE_*` names are not honored) with `GLIDE_NG_HEADLESS=1`:
 
 ```bash
 # Run Glide 3.x Catch2 suite on Software backend (expected: 100% PASS)
-GLIDE_WRAPPER_BACKEND=software GLIDE_FORCE_NO_WINDOW=1 ./build/bin/Glide3xWrapperTests
+GLIDE_NG_BACKEND=software GLIDE_NG_HEADLESS=1 ./build/bin/Glide3xWrapperTests
 
 # Run Glide 2.x Catch2 suite on Software backend
-GLIDE_WRAPPER_BACKEND=software GLIDE_FORCE_NO_WINDOW=1 ./build/bin/Glide2xWrapperTests
+GLIDE_NG_BACKEND=software GLIDE_NG_HEADLESS=1 ./build/bin/Glide2xWrapperTests
 
 # Discover & run via CTest
-GLIDE_WRAPPER_BACKEND=software GLIDE_FORCE_NO_WINDOW=1 ctest --test-dir build --output-on-failure
+GLIDE_NG_BACKEND=software GLIDE_NG_HEADLESS=1 ctest --test-dir build --output-on-failure
 
 # Unified matrix script (supports --suite all|g2|g3 and --backend sw|vk|gles)
 python3 tests/run_all_tests.py --suite g3 --backend sw
@@ -50,7 +50,7 @@ python3 tests/run_all_tests.py --suite g3 --backend sw
 
 ```bash
 python3 tests/benchmark.py
-GLIDE_FORCE_NO_WINDOW=1 ./build/bin/sw_benchmark
+GLIDE_NG_HEADLESS=1 ./build/bin/sw_benchmark
 ```
 
 Performance deltas within $\pm 3\%$ on `llvmpipe` are expected system noise.
@@ -61,19 +61,19 @@ Never overwrite reference libraries under `ext_tests/`. Always inject our freshl
 
 ```bash
 # Standalone demo (hWnd == 0)
-GLIDE_WRAPPER_BACKEND=vulkan ./build/bin/glide3_cube
-GLIDE_WRAPPER_BACKEND=opengl_es ./build/bin/gamma_showcase_demo
-GLIDE_WRAPPER_BACKEND=software ./build/bin/glide3_cube
+GLIDE_NG_BACKEND=vulkan ./build/bin/glide3_cube
+GLIDE_NG_BACKEND=opengl_es ./build/bin/gamma_showcase_demo
+GLIDE_NG_BACKEND=software ./build/bin/glide3_cube
 
 # Enable verbose wrapper logging (outputs to ./glide-ng.log and console)
-GLIDE_WRAPPER_LOG_LEVEL=4 GLIDE_WRAPPER_LOG_TO_CONSOLE=1 ...
+GLIDE_NG_LOG_LEVEL=debug GLIDE_NG_LOG_CONSOLE=1 ...
 
 # Run with Vulkan validation layers
-VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation GLIDE_WRAPPER_BACKEND=vulkan ./build/bin/glide3_cube
+VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation GLIDE_NG_BACKEND=vulkan ./build/bin/glide3_cube
 
 # Launch DOSBox-X against our wrapper (XWayland vs. native Wayland)
-LD_LIBRARY_PATH="$PWD/build/lib:${LD_LIBRARY_PATH:-}" GLIDE_WRAPPER_BACKEND=vulkan SDL_VIDEODRIVER=x11 dosbox-x ...
-LD_LIBRARY_PATH="$PWD/build/lib:${LD_LIBRARY_PATH:-}" GLIDE_WRAPPER_BACKEND=vulkan SDL_VIDEODRIVER=wayland dosbox-x ...
+LD_LIBRARY_PATH="$PWD/build/lib:${LD_LIBRARY_PATH:-}" GLIDE_NG_BACKEND=vulkan SDL_VIDEODRIVER=x11 dosbox-x ...
+LD_LIBRARY_PATH="$PWD/build/lib:${LD_LIBRARY_PATH:-}" GLIDE_NG_BACKEND=vulkan SDL_VIDEODRIVER=wayland dosbox-x ...
 ```
 
 ## 5. ABI Symbol Verification (After Frontend Refactors)

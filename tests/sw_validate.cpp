@@ -31,11 +31,10 @@ bool SaveTGA(const char* filename, int width, int height, const uint32_t* pixels
 }
 
 void SetHeadless() {
-  setenv("GLIDE_HEADLESS", "1", 1);
-  setenv("GLIDE_WRAPPER_BACKEND", "software", 1);
-  setenv("GLIDE_WRAPPER_FORCE_NO_WINDOW", "1", 1);
-  setenv("GLIDE_WRAPPER_LOG_LEVEL", "2", 1); // 2 = WARN (keep basic warning output)
-  setenv("GLIDE_WRAPPER_LOG_TO_CONSOLE", "1", 1);
+  setenv("GLIDE_NG_HEADLESS", "1", 1);
+  setenv("GLIDE_NG_BACKEND", "software", 1);
+  setenv("GLIDE_NG_LOG_LEVEL", "2", 1); // 2 = WARN (keep basic warning output)
+  setenv("GLIDE_NG_LOG_CONSOLE", "1", 1);
 }
 
 int main(int argc, char** argv) {

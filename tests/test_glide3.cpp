@@ -3,6 +3,7 @@
 #include <cmath>
 #include "core/WrapperConfig.h"
 #include "core/JsonConfigLoader.h"
+#include "core/GlideEntryCommon.h"
 #include "core/TextureManager.h"
 #include "core/Logger.h"
 #include "core/BackendManager.h"
@@ -270,7 +271,7 @@ TEST_CASE("Glide 3.x State Control & Dynamic Capabilities", "[Glide3][State]") {
 
     SECTION("Dynamic Card Capabilities (Voodoo 1 vs 2 vs 3)") {
         // Test Voodoo 3 configuration
-        ::setenv("GLIDE_WRAPPER_CARD_MODEL", "voodoo3", 1);
+        ::setenv("GLIDE_NG_CARD_MODEL", "voodoo3", 1);
         glideInit();
         
         FxI32 params[4] = {0};
@@ -284,10 +285,10 @@ TEST_CASE("Glide 3.x State Control & Dynamic Capabilities", "[Glide3][State]") {
         REQUIRE(params[0] == 16 * 1024 * 1024); // Voodoo3 default is 16MB
 
         shutdown();
-        ::unsetenv("GLIDE_WRAPPER_CARD_MODEL");
+        ::unsetenv("GLIDE_NG_CARD_MODEL");
 
         // Test Voodoo 1 configuration
-        ::setenv("GLIDE_WRAPPER_CARD_MODEL", "voodoo1", 1);
+        ::setenv("GLIDE_NG_CARD_MODEL", "voodoo1", 1);
         glideInit();
 
         grGetVal(GR_NUM_TMU, 4, params);
@@ -297,11 +298,11 @@ TEST_CASE("Glide 3.x State Control & Dynamic Capabilities", "[Glide3][State]") {
         REQUIRE(params[0] == 256);
 
         shutdown();
-        ::unsetenv("GLIDE_WRAPPER_CARD_MODEL");
+        ::unsetenv("GLIDE_NG_CARD_MODEL");
     }
 
     SECTION("Viewport & Depth Range Queries") {
-        ::setenv("GLIDE_WRAPPER_BACKEND", "software", 1);
+        ::setenv("GLIDE_NG_BACKEND", "software", 1);
         glideInit();
         
         FxU32 ctx = winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz, GR_COLORFORMAT_ARGB, GR_ORIGIN_LOWER_LEFT, 2, 1);
@@ -325,11 +326,11 @@ TEST_CASE("Glide 3.x State Control & Dynamic Capabilities", "[Glide3][State]") {
 
         winClose(ctx);
         shutdown();
-        ::unsetenv("GLIDE_WRAPPER_BACKEND");
+        ::unsetenv("GLIDE_NG_BACKEND");
     }
 
     SECTION("Clip Space Coordinates Projection Verification") {
-        ::setenv("GLIDE_WRAPPER_BACKEND", "software", 1);
+        ::setenv("GLIDE_NG_BACKEND", "software", 1);
         glideInit();
         
         FxU32 ctx = winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz, GR_COLORFORMAT_ARGB, GR_ORIGIN_LOWER_LEFT, 2, 1);
@@ -367,7 +368,7 @@ TEST_CASE("Glide 3.x State Control & Dynamic Capabilities", "[Glide3][State]") {
 
         winClose(ctx);
         shutdown();
-        ::unsetenv("GLIDE_WRAPPER_BACKEND");
+        ::unsetenv("GLIDE_NG_BACKEND");
     }
     
     ::dlclose(handle);
@@ -409,8 +410,8 @@ TEST_CASE("Glide 3.x State Save & Restore Combiner Bug Verification", "[Glide3][
     REQUIRE(glideShutdown != nullptr);
 
     // Force headless software reference backend for testing
-    ::setenv("GLIDE_WRAPPER_BACKEND", "software", 1);
-    ::setenv("GLIDE_WRAPPER_LOG_LEVEL", "3", 1); // INFO
+    ::setenv("GLIDE_NG_BACKEND", "software", 1);
+    ::setenv("GLIDE_NG_LOG_LEVEL", "3", 1); // INFO
 
     glideInit();
     sstSelect(0);
@@ -480,8 +481,8 @@ TEST_CASE("Glide 3.x grBufferClear Depth Scaling Verification", "[Glide3][Depth]
     REQUIRE(glideShutdown != nullptr);
 
     // Force headless software reference backend for testing
-    ::setenv("GLIDE_WRAPPER_BACKEND", "software", 1);
-    ::setenv("GLIDE_WRAPPER_LOG_LEVEL", "3", 1); // INFO
+    ::setenv("GLIDE_NG_BACKEND", "software", 1);
+    ::setenv("GLIDE_NG_LOG_LEVEL", "3", 1); // INFO
 
     glideInit();
     sstSelect(0);
@@ -540,8 +541,8 @@ TEST_CASE("Vulkan Backend grBufferClear and Readback Verification [Vulkan_Clear]
     REQUIRE(glideShutdown != nullptr);
 
     // Force headless Vulkan backend for testing
-    ::setenv("GLIDE_WRAPPER_BACKEND", "vulkan", 1);
-    ::setenv("GLIDE_WRAPPER_LOG_LEVEL", "3", 1); // INFO
+    ::setenv("GLIDE_NG_BACKEND", "vulkan", 1);
+    ::setenv("GLIDE_NG_LOG_LEVEL", "3", 1); // INFO
 
     glideInit();
     sstSelect(0);
@@ -1124,7 +1125,7 @@ TEST_CASE("Glide 3.x W-Buffering and Layout Q-Param Compatibility", "[Glide3][WB
         REQUIRE(shutdown != nullptr);
 
         // Force headless software reference backend for testing
-        ::setenv("GLIDE_WRAPPER_BACKEND", "software", 1);
+        ::setenv("GLIDE_NG_BACKEND", "software", 1);
 
         glideInit();
         if (sstSelect) sstSelect(0);
@@ -1154,7 +1155,7 @@ TEST_CASE("Glide 3.x W-Buffering and Layout Q-Param Compatibility", "[Glide3][WB
         winClose();
         shutdown();
         ::dlclose(handle);
-        ::unsetenv("GLIDE_WRAPPER_BACKEND");
+        ::unsetenv("GLIDE_NG_BACKEND");
     }
 #endif // matches line 678
 } // matches line 645
@@ -1206,8 +1207,8 @@ TEST_CASE("Vulkan Backend Multi-pass Pre-Fog Blending Verification [Vulkan_PreFo
     REQUIRE(glideShutdown != nullptr);
 
     // Force headless Vulkan backend for testing
-    ::setenv("GLIDE_WRAPPER_BACKEND", "vulkan", 1);
-    ::setenv("GLIDE_WRAPPER_LOG_LEVEL", "3", 1); // INFO
+    ::setenv("GLIDE_NG_BACKEND", "vulkan", 1);
+    ::setenv("GLIDE_NG_LOG_LEVEL", "3", 1); // INFO
 
     glideInit();
     if (sstSelect) sstSelect(0);
@@ -1302,7 +1303,7 @@ TEST_CASE("Vulkan Backend Multi-pass Pre-Fog Blending Verification [Vulkan_PreFo
     winClose();
     glideShutdown();
     ::dlclose(handle);
-    ::unsetenv("GLIDE_WRAPPER_BACKEND");
+    ::unsetenv("GLIDE_NG_BACKEND");
 }
 
 TEST_CASE("OpenGL ES Backend Multi-pass Pre-Fog Blending Verification [GLES_PreFog]", "[Glide3][GLES][PreFog]") {
@@ -1351,8 +1352,8 @@ TEST_CASE("OpenGL ES Backend Multi-pass Pre-Fog Blending Verification [GLES_PreF
     REQUIRE(glideShutdown != nullptr);
 
     // Force headless OpenGL ES backend for testing
-    ::setenv("GLIDE_WRAPPER_BACKEND", "opengl_es", 1);
-    ::setenv("GLIDE_WRAPPER_LOG_LEVEL", "3", 1); // INFO
+    ::setenv("GLIDE_NG_BACKEND", "opengl_es", 1);
+    ::setenv("GLIDE_NG_LOG_LEVEL", "3", 1); // INFO
 
     glideInit();
     if (sstSelect) sstSelect(0);
@@ -1447,7 +1448,7 @@ TEST_CASE("OpenGL ES Backend Multi-pass Pre-Fog Blending Verification [GLES_PreF
     winClose();
     glideShutdown();
     ::dlclose(handle);
-    ::unsetenv("GLIDE_WRAPPER_BACKEND");
+    ::unsetenv("GLIDE_NG_BACKEND");
 }
 #endif
 
@@ -1494,7 +1495,7 @@ TEST_CASE("Glide 2.x Coordinate Unsnapping Verification", "[Glide2][Unsnap][Glid
     REQUIRE(shutdown != nullptr);
 
     // 3. Initialize Glide 2 and open a window (defaulting to Software backend for speed & sanity)
-    ::setenv("GLIDE_WRAPPER_BACKEND", "SOFTWARE", 1);
+    ::setenv("GLIDE_NG_BACKEND", "SOFTWARE", 1);
     glideInit();
     FxBool ok = winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz, GR_COLORFORMAT_ABGR, GR_ORIGIN_UPPER_LEFT, 2, 1);
     REQUIRE(ok == FXTRUE);
@@ -1558,7 +1559,7 @@ TEST_CASE("Glide 2.x Coordinate Unsnapping Verification", "[Glide2][Unsnap][Glid
     winClose();
     shutdown();
     ::dlclose(handle);
-    ::unsetenv("GLIDE_WRAPPER_BACKEND");
+    ::unsetenv("GLIDE_NG_BACKEND");
 #endif
 }
 
@@ -1641,7 +1642,7 @@ TEST_CASE("Glide FOGCOORD Extension and Fog Mode Mapping Verification", "[Glide]
         REQUIRE(shutdown != nullptr);
 
         // Run with software backend to isolate
-        ::setenv("GLIDE_WRAPPER_BACKEND", "software", 1);
+        ::setenv("GLIDE_NG_BACKEND", "software", 1);
         glideInit();
         FxU32 ctx = winOpen(0, 8, 0, 0, 0, 2, 1); // 800x600
         REQUIRE(ctx != 0);
@@ -1664,7 +1665,7 @@ TEST_CASE("Glide FOGCOORD Extension and Fog Mode Mapping Verification", "[Glide]
         winClose(ctx);
         shutdown();
         ::dlclose(handle);
-        ::unsetenv("GLIDE_WRAPPER_BACKEND");
+        ::unsetenv("GLIDE_NG_BACKEND");
 #endif
     }
 
@@ -1692,7 +1693,7 @@ TEST_CASE("Glide FOGCOORD Extension and Fog Mode Mapping Verification", "[Glide]
         REQUIRE(winClose != nullptr);
         REQUIRE(shutdown != nullptr);
 
-        ::setenv("GLIDE_WRAPPER_BACKEND", "software", 1);
+        ::setenv("GLIDE_NG_BACKEND", "software", 1);
         glideInit();
         // Resolution GR_RESOLUTION_640x480 = 0x4
         FxBool ok = winOpen(0, 0x4, 0, 0, 0, 2, 1);
@@ -1708,7 +1709,7 @@ TEST_CASE("Glide FOGCOORD Extension and Fog Mode Mapping Verification", "[Glide]
         winClose();
         shutdown();
         ::dlclose(handle);
-        ::unsetenv("GLIDE_WRAPPER_BACKEND");
+        ::unsetenv("GLIDE_NG_BACKEND");
 #endif
     }
 }
@@ -1814,8 +1815,8 @@ TEST_CASE("Software Backend Anti-Aliasing (AA) Modes & Verification", "[Software
     };
 
     SECTION("Option A: Analytical Point AA Coverage") {
-        ::setenv("GLIDE_WRAPPER_BACKEND", "software", 1);
-        ::setenv("GLIDE_WRAPPER_SOFTWARE_AA", "analytical", 1);
+        ::setenv("GLIDE_NG_BACKEND", "software", 1);
+        ::setenv("GLIDE_NG_SW_AA", "analytical", 1);
 
         glideInit();
         if (sstSelect) sstSelect(0);
@@ -1862,13 +1863,13 @@ TEST_CASE("Software Backend Anti-Aliasing (AA) Modes & Verification", "[Software
 
         winClose();
         shutdown();
-        ::unsetenv("GLIDE_WRAPPER_BACKEND");
-        ::unsetenv("GLIDE_WRAPPER_SOFTWARE_AA");
+        ::unsetenv("GLIDE_NG_BACKEND");
+        ::unsetenv("GLIDE_NG_SW_AA");
     }
 
     SECTION("Option B: SSAA Resolution Scaling & Downsampling") {
-        ::setenv("GLIDE_WRAPPER_BACKEND", "software", 1);
-        ::setenv("GLIDE_WRAPPER_SOFTWARE_AA", "ssaa", 1);
+        ::setenv("GLIDE_NG_BACKEND", "software", 1);
+        ::setenv("GLIDE_NG_SW_AA", "ssaa", 1);
 
         glideInit();
         if (sstSelect) sstSelect(0);
@@ -1886,8 +1887,8 @@ TEST_CASE("Software Backend Anti-Aliasing (AA) Modes & Verification", "[Software
 
         winClose();
         shutdown();
-        ::unsetenv("GLIDE_WRAPPER_BACKEND");
-        ::unsetenv("GLIDE_WRAPPER_SOFTWARE_AA");
+        ::unsetenv("GLIDE_NG_BACKEND");
+        ::unsetenv("GLIDE_NG_SW_AA");
     }
 }
 #endif
@@ -1946,8 +1947,8 @@ TEST_CASE("Glide 3.x Texture Coordinate Mirroring (TEXMIRROR) [Glide3][TexMirror
     REQUIRE(shutdown != nullptr);
 
     // Force headless software backend
-    ::setenv("GLIDE_WRAPPER_BACKEND", "software", 1);
-    ::setenv("GLIDE_WRAPPER_LOG_LEVEL", "3", 1);
+    ::setenv("GLIDE_NG_BACKEND", "software", 1);
+    ::setenv("GLIDE_NG_LOG_LEVEL", "3", 1);
 
     glideInit();
     sstSelect(0);
@@ -2017,7 +2018,7 @@ TEST_CASE("Glide 3.x Texture Coordinate Mirroring (TEXMIRROR) [Glide3][TexMirror
 
     winClose();
     shutdown();
-    ::unsetenv("GLIDE_WRAPPER_BACKEND");
+    ::unsetenv("GLIDE_NG_BACKEND");
 }
 
 TEST_CASE("Glide 3.x Perfect Bilinear Halo-Free Texture Chromakeying (TEXCHROMA) [Glide3][TexChroma]", "[Glide3][TexChroma]") {
@@ -2083,8 +2084,8 @@ TEST_CASE("Glide 3.x Perfect Bilinear Halo-Free Texture Chromakeying (TEXCHROMA)
     REQUIRE(texChromaRange != nullptr);
 
     // Force headless software backend
-    ::setenv("GLIDE_WRAPPER_BACKEND", "software", 1);
-    ::setenv("GLIDE_WRAPPER_LOG_LEVEL", "3", 1);
+    ::setenv("GLIDE_NG_BACKEND", "software", 1);
+    ::setenv("GLIDE_NG_LOG_LEVEL", "3", 1);
 
     glideInit();
     sstSelect(0);
@@ -2185,7 +2186,7 @@ TEST_CASE("Glide 3.x Perfect Bilinear Halo-Free Texture Chromakeying (TEXCHROMA)
 
     winClose();
     shutdown();
-    ::unsetenv("GLIDE_WRAPPER_BACKEND");
+    ::unsetenv("GLIDE_NG_BACKEND");
 }
 
 TEST_CASE("Glide 3.x Mipmapping State & grGlideGetState/SetState Round-Trip [Glide3][Mipmap]", "[Glide3][Mipmap]") {
@@ -2217,7 +2218,7 @@ TEST_CASE("Glide 3.x Mipmapping State & grGlideGetState/SetState Round-Trip [Gli
     REQUIRE(shutdown != nullptr);
 
     // Force headless software backend
-    ::setenv("GLIDE_WRAPPER_BACKEND", "software", 1);
+    ::setenv("GLIDE_NG_BACKEND", "software", 1);
 
     glideInit();
     FxU32 ctx = winOpen(0, 8, 0, 0, 0, 2, 1); // 800x600
@@ -2313,7 +2314,7 @@ TEST_CASE("Glide 3.x Mipmapping State & grGlideGetState/SetState Round-Trip [Gli
 
     winClose();
     shutdown();
-    ::unsetenv("GLIDE_WRAPPER_BACKEND");
+    ::unsetenv("GLIDE_NG_BACKEND");
     ::dlclose(handle);
 }
 
@@ -2362,7 +2363,7 @@ TEST_CASE("Avenger Voodoo3 2048x2048 Texture Support & LOD Bounds Verification [
 
 TEST_CASE("Software Reference Backend Mipmapping & LOD Bias Verification [Glide3][Software]", "[Glide3][Software]") {
     // Force the Software backend for this test
-    ::setenv("GLIDE_WRAPPER_BACKEND", "sw", 1);
+    ::setenv("GLIDE_NG_BACKEND", "sw", 1);
 
     // Initialize Glide
     GrScreenResolution_t res = GR_RESOLUTION_1024x768;
@@ -2396,7 +2397,7 @@ TEST_CASE("Software Reference Backend Mipmapping & LOD Bias Verification [Glide3
     // Clean up
     grSstWinClose(ctx);
     grGlideShutdown();
-    ::unsetenv("GLIDE_WRAPPER_BACKEND");
+    ::unsetenv("GLIDE_NG_BACKEND");
 }
 
 #endif
@@ -2440,8 +2441,8 @@ TEST_CASE("Glide 3.x State Save & Restore ClipWindow and ColorMask Verification"
     REQUIRE(glideShutdown != nullptr);
 
     // Force headless software reference backend for testing
-    ::setenv("GLIDE_WRAPPER_BACKEND", "software", 1);
-    ::setenv("GLIDE_WRAPPER_LOG_LEVEL", "3", 1); // INFO
+    ::setenv("GLIDE_NG_BACKEND", "software", 1);
+    ::setenv("GLIDE_NG_LOG_LEVEL", "3", 1); // INFO
 
     glideInit();
     sstSelect(0);
@@ -2567,8 +2568,8 @@ TEST_CASE("Glide 3.x Software Reference Backend Multi-Texturing Parity", "[Glide
     REQUIRE(vertexLayout != nullptr);
 
     // Force headless software reference backend for TDD validation
-    ::setenv("GLIDE_WRAPPER_BACKEND", "software", 1);
-    ::setenv("GLIDE_WRAPPER_LOG_LEVEL", "3", 1); // INFO
+    ::setenv("GLIDE_NG_BACKEND", "software", 1);
+    ::setenv("GLIDE_NG_LOG_LEVEL", "3", 1); // INFO
 
     glideInit();
     if (sstSelect) sstSelect(0);
@@ -2876,7 +2877,7 @@ TEST_CASE("Glide 3.x Texture LOD & Aspect Bounds Validation [VULN-05]", "[Glide3
 TEST_CASE("Mathematical LOD y-derivative Calculation Verification [Glide3][LOD]", "[Glide3][LOD]") {
 #ifdef __linux__
     // Force the Software backend for this test
-    ::setenv("GLIDE_WRAPPER_BACKEND", "sw", 1);
+    ::setenv("GLIDE_NG_BACKEND", "sw", 1);
 
     void* handle = OpenGlide3Handle();
     REQUIRE(handle != nullptr);
@@ -3008,15 +3009,15 @@ TEST_CASE("Mathematical LOD y-derivative Calculation Verification [Glide3][LOD]"
     winClose(ctx);
     glideShutdown();
     ::dlclose(handle);
-    ::unsetenv("GLIDE_WRAPPER_BACKEND");
+    ::unsetenv("GLIDE_NG_BACKEND");
 #endif
 }
 
 TEST_CASE("Glide 3.x Phase 4 Retro Aesthetic & Advanced Features [Glide3][Phase4][Retro]", "[Glide3][Phase4]") {
 #ifdef __linux__
     // Force headless software reference backend for testing
-    ::setenv("GLIDE_WRAPPER_BACKEND", "software", 1);
-    ::setenv("GLIDE_WRAPPER_LOG_LEVEL", "3", 1); // INFO
+    ::setenv("GLIDE_NG_BACKEND", "software", 1);
+    ::setenv("GLIDE_NG_LOG_LEVEL", "3", 1); // INFO
 
     void* handle = OpenGlide3Handle();
     REQUIRE(handle != nullptr);
@@ -3275,14 +3276,14 @@ TEST_CASE("Glide 3.x Phase 4 Retro Aesthetic & Advanced Features [Glide3][Phase4
     winClose();
     shutdown();
     ::dlclose(handle);
-    ::unsetenv("GLIDE_WRAPPER_BACKEND");
+    ::unsetenv("GLIDE_NG_BACKEND");
 #endif
 }
 
 TEST_CASE("Glide 3.x State Serialization & Phase 4 States [Glide3][State][Serialization]", "[Glide3][State]") {
 #ifdef __linux__
   // Force the Software backend for this test
-  ::setenv("GLIDE_WRAPPER_BACKEND", "sw", 1);
+  ::setenv("GLIDE_NG_BACKEND", "sw", 1);
 
   void* handle = OpenGlide3Handle();
   REQUIRE(handle != nullptr);
@@ -3358,7 +3359,7 @@ TEST_CASE("Glide 3.x State Serialization & Phase 4 States [Glide3][State][Serial
   if (winClose) winClose();
   if (shutdown) shutdown();
   ::dlclose(handle);
-  ::unsetenv("GLIDE_WRAPPER_BACKEND");
+  ::unsetenv("GLIDE_NG_BACKEND");
 #endif
 }
 
@@ -3469,20 +3470,44 @@ TEST_CASE("JsonConfigLoader uses key-scoped parsing and respects env overrides",
     }
   };
 
-  EnvGuard guardBackend("GLIDE_WRAPPER_BACKEND");
-  EnvGuard guardLegacyBackend("GLIDE_BACKEND");
-  EnvGuard guardForceNoWin("GLIDE_FORCE_NO_WINDOW");
-  EnvGuard guardHeadless("GLIDE_HEADLESS");
-  EnvGuard guardConsole("GLIDE_WRAPPER_LOG_TO_CONSOLE");
-  EnvGuard guardVsync("GLIDE_VSYNC");
-  EnvGuard guardCard("GLIDE_WRAPPER_CARD_MODEL");
-  EnvGuard guardDevice("GLIDE_DEVICE");
-  EnvGuard guardApi("GLIDE_WRAPPER_API_VERSION");
-  EnvGuard guardApiLegacy("GLIDE_VERSION_OVERRIDE");
-  EnvGuard guardLogLevel("GLIDE_WRAPPER_LOG_LEVEL");
-  EnvGuard guardMaxFps("GLIDE_WRAPPER_MAX_FPS");
-  EnvGuard guardMsaa("GLIDE_WRAPPER_MSAA");
-  EnvGuard guardScale("GLIDE_WRAPPER_WINDOW_SCALE");
+  EnvGuard guardConfig("GLIDE_NG_CONFIG");
+  EnvGuard guardBackend("GLIDE_NG_BACKEND");
+  EnvGuard guardHeadless("GLIDE_NG_HEADLESS");
+  EnvGuard guardCard("GLIDE_NG_CARD_MODEL");
+  EnvGuard guardApi("GLIDE_NG_API_VERSION");
+  EnvGuard guardFbiMem("GLIDE_NG_FBI_MEM_MB");
+  EnvGuard guardTmuCount("GLIDE_NG_TMU_COUNT");
+  EnvGuard guardTmuMem("GLIDE_NG_TMU_MEM_MB");
+  EnvGuard guardSli("GLIDE_NG_SLI");
+  EnvGuard guardVendor("GLIDE_NG_VENDOR");
+  EnvGuard guardRenderer("GLIDE_NG_RENDERER");
+  EnvGuard guardVsync("GLIDE_NG_VSYNC");
+  EnvGuard guardMaxFps("GLIDE_NG_MAX_FPS");
+  EnvGuard guardMsaa("GLIDE_NG_MSAA");
+  EnvGuard guardScale("GLIDE_NG_WINDOW_SCALE");
+  EnvGuard guardFilter("GLIDE_NG_PRESENTATION_FILTER");
+  EnvGuard guardLogLevel("GLIDE_NG_LOG_LEVEL");
+  EnvGuard guardConsole("GLIDE_NG_LOG_CONSOLE");
+  EnvGuard guardLogFile("GLIDE_NG_LOG_FILE");
+  EnvGuard guardNoSplash("GLIDE_NG_NO_SPLASH");
+  EnvGuard guardPlug("GLIDE_NG_SHAMELESS_PLUG");
+  EnvGuard guardSwThreads("GLIDE_NG_SW_THREADS");
+  EnvGuard guardSwSimd("GLIDE_NG_SW_SIMD");
+  EnvGuard guardSwTile("GLIDE_NG_SW_TILE_SIZE");
+  EnvGuard guardSwAa("GLIDE_NG_SW_AA");
+  EnvGuard guardVkCache("GLIDE_NG_VK_CACHE_PATH");
+  EnvGuard guardGlesVbo("GLIDE_NG_GLES_VBO_SIZE");
+  EnvGuard guardFxNoSplash("FX_GLIDE_NO_SPLASH");
+  EnvGuard guardFxPlug("FX_GLIDE_SHAMELESS_PLUG");
+  EnvGuard guardFxSwap("FX_GLIDE_SWAPINTERVAL");
+  // Legacy env vars guarded for clean-break tests
+  EnvGuard guardOldBackend("GLIDE_WRAPPER_BACKEND");
+  EnvGuard guardOldShortBackend("GLIDE_BACKEND");
+  EnvGuard guardOldVsync("GLIDE_VSYNC");
+  EnvGuard guardOldDevice("GLIDE_DEVICE");
+  EnvGuard guardOldVersion("GLIDE_VERSION_OVERRIDE");
+  EnvGuard guardOldHeadless("GLIDE_HEADLESS");
+  EnvGuard guardOldForceNoWin("GLIDE_FORCE_NO_WINDOW");
 
   SECTION("Unrelated fields containing backend/model substrings do not hijack config") {
     {
@@ -3542,9 +3567,9 @@ TEST_CASE("JsonConfigLoader uses key-scoped parsing and respects env overrides",
     CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_40);
 
     // Environment variables must override JSON values.
-    ::setenv("GLIDE_WRAPPER_BACKEND", "sw", 1);
-    ::setenv("GLIDE_WRAPPER_LOG_TO_CONSOLE", "1", 1);
-    ::setenv("GLIDE_VSYNC", "0", 1);
+    ::setenv("GLIDE_NG_BACKEND", "sw", 1);
+    ::setenv("GLIDE_NG_LOG_CONSOLE", "1", 1);
+    ::setenv("GLIDE_NG_VSYNC", "0", 1);
 
     GlideWrapper::WrapperConfig envCfg;
     REQUIRE(loader.Load(tmpPath, envCfg));
@@ -3553,6 +3578,137 @@ TEST_CASE("JsonConfigLoader uses key-scoped parsing and respects env overrides",
     CHECK(envCfg.vsync == false);
 
     std::remove(tmpPath.c_str());
+  }
+
+  SECTION("Strict 4-layer precedence: Defaults < JSON < FX_GLIDE_* < GLIDE_NG_*") {
+    const std::string customPath = "/tmp/glide_ng_custom_cfg_test.json";
+    {
+      std::ofstream out(customPath);
+      out << "{\n"
+          << "  \"noSplash\": false,\n"
+          << "  \"shamelessPlug\": false,\n"
+          << "  \"vsync\": true,\n"
+          << "  \"logLevel\": \"warn\",\n"
+          << "  \"presentationFilter\": \"nearest\",\n"
+          << "  \"logFile\": \"custom_json.log\",\n"
+          << "  \"swThreads\": 4,\n"
+          << "  \"swSimd\": false,\n"
+          << "  \"swTileSize\": 64,\n"
+          << "  \"swAa\": \"ssaa\",\n"
+          << "  \"vkCachePath\": \"/tmp/custom_vk.bin\",\n"
+          << "  \"glesVboSize\": 16\n"
+          << "}\n";
+    }
+
+    // GLIDE_NG_CONFIG redirects loader away from default path
+    ::setenv("GLIDE_NG_CONFIG", customPath.c_str(), 1);
+    GlideWrapper::JsonConfigLoader loader;
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load("nonexistent_default.json", cfg));
+    CHECK(cfg.configFileLoaded == true);
+    CHECK(cfg.configFilePath == customPath);
+    CHECK(cfg.noSplash == false);
+    CHECK(cfg.shamelessPlugMode == 0);
+    CHECK(cfg.vsync == true);
+    CHECK(cfg.logLevel == 2u);
+    CHECK(cfg.presentationFilter == 0u);
+    CHECK(cfg.logFile == "custom_json.log");
+    CHECK(cfg.swThreads == 4u);
+    CHECK(cfg.swUseSimd == false);
+    CHECK(cfg.swTileSize == 64u);
+    CHECK(cfg.swAaMode == "ssaa");
+    CHECK(cfg.vkCachePath == "/tmp/custom_vk.bin");
+    CHECK(cfg.glesVboSizeMb == 16u);
+    CHECK(cfg.settingSources.at("noSplash") == "json");
+
+    // Layer 3: Authentic FX_GLIDE_* overrides JSON
+    ::setenv("FX_GLIDE_NO_SPLASH", "1", 1);
+    ::setenv("FX_GLIDE_SHAMELESS_PLUG", "1", 1);
+    ::setenv("FX_GLIDE_SWAPINTERVAL", "0", 1);
+    REQUIRE(loader.Load("nonexistent_default.json", cfg));
+    CHECK(cfg.noSplash == true);
+    CHECK(cfg.shamelessPlugMode == 1);
+    CHECK(cfg.vsync == false);
+    CHECK(cfg.swapInterval == 0);
+    CHECK(cfg.settingSources.at("noSplash") == "FX_GLIDE_NO_SPLASH");
+    CHECK(cfg.settingSources.at("shamelessPlug") == "FX_GLIDE_SHAMELESS_PLUG");
+    CHECK(cfg.settingSources.at("vsync") == "FX_GLIDE_SWAPINTERVAL");
+
+    // Layer 4: GLIDE_NG_* overrides FX_GLIDE_* and JSON
+    ::setenv("GLIDE_NG_NO_SPLASH", "0", 1);
+    ::setenv("GLIDE_NG_SHAMELESS_PLUG", "0", 1);
+    ::setenv("GLIDE_NG_VSYNC", "fifo", 1);
+    ::setenv("GLIDE_NG_LOG_LEVEL", "trace", 1);
+    ::setenv("GLIDE_NG_PRESENTATION_FILTER", "linear", 1);
+    ::setenv("GLIDE_NG_LOG_FILE", "override.log", 1);
+    ::setenv("GLIDE_NG_SW_THREADS", "8", 1);
+    ::setenv("GLIDE_NG_SW_SIMD", "1", 1);
+    ::setenv("GLIDE_NG_SW_TILE_SIZE", "32", 1);
+    ::setenv("GLIDE_NG_SW_AA", "analytical", 1);
+    ::setenv("GLIDE_NG_VK_CACHE_PATH", "/tmp/env_vk.bin", 1);
+    ::setenv("GLIDE_NG_GLES_VBO_SIZE", "32", 1);
+    REQUIRE(loader.Load("nonexistent_default.json", cfg));
+    CHECK(cfg.noSplash == false);
+    CHECK(cfg.shamelessPlugMode == 0);
+    CHECK(cfg.vsync == true);
+    CHECK(cfg.vsyncStrictFifo == true);
+    CHECK(cfg.swapInterval == 1);
+    CHECK(cfg.logLevel == 5u);
+    CHECK(cfg.presentationFilter == 1u);
+    CHECK(cfg.logFile == "override.log");
+    CHECK(cfg.swThreads == 8u);
+    CHECK(cfg.swUseSimd == true);
+    CHECK(cfg.swTileSize == 32u);
+    CHECK(cfg.swAaMode == "analytical");
+    CHECK(cfg.vkCachePath == "/tmp/env_vk.bin");
+    CHECK(cfg.glesVboSizeMb == 32u);
+    CHECK(cfg.settingSources.at("noSplash") == "GLIDE_NG_NO_SPLASH");
+    CHECK(cfg.settingSources.at("shamelessPlug") == "GLIDE_NG_SHAMELESS_PLUG");
+    CHECK(cfg.settingSources.at("vsync") == "GLIDE_NG_VSYNC");
+
+    std::remove(customPath.c_str());
+  }
+
+  SECTION("Clean break: legacy GLIDE_WRAPPER_* and GLIDE_* env vars are ignored") {
+    ::setenv("GLIDE_WRAPPER_BACKEND", "software", 1);
+    ::setenv("GLIDE_BACKEND", "software", 1);
+    ::setenv("GLIDE_VSYNC", "0", 1);
+    ::setenv("GLIDE_DEVICE", "voodoo1", 1);
+    ::setenv("GLIDE_VERSION_OVERRIDE", "2.40", 1);
+    ::setenv("GLIDE_HEADLESS", "1", 1);
+    ::setenv("GLIDE_FORCE_NO_WINDOW", "1", 1);
+
+    GlideWrapper::JsonConfigLoader loader;
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load("nonexistent_default.json", cfg));
+    CHECK(cfg.backend == "vulkan");
+    CHECK(cfg.vsync == true);
+    CHECK(cfg.model == GlideWrapper::CardModel::Voodoo2);
+    CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_43);
+    CHECK(cfg.forceNoWindow == false);
+  }
+
+  SECTION("Shameless plug resolution respects app-controlled vs forced modes") {
+    auto& reg = GlideWrapper::EmulationRegistry::GetInstance();
+    auto saved = reg.GetConfig();
+
+    GlideWrapper::WrapperConfig cfg = saved;
+    cfg.shamelessPlugMode = -1;  // app-controlled
+    reg.GetConfig() = cfg;
+    CHECK(GlideWrapper::EntryCommon::ShouldRenderShamelessPlug(false) == false);
+    CHECK(GlideWrapper::EntryCommon::ShouldRenderShamelessPlug(true) == true);
+
+    cfg.shamelessPlugMode = 1;  // forced ON
+    reg.GetConfig() = cfg;
+    CHECK(GlideWrapper::EntryCommon::ShouldRenderShamelessPlug(false) == true);
+    CHECK(GlideWrapper::EntryCommon::ShouldRenderShamelessPlug(true) == true);
+
+    cfg.shamelessPlugMode = 0;  // forced OFF
+    reg.GetConfig() = cfg;
+    CHECK(GlideWrapper::EntryCommon::ShouldRenderShamelessPlug(false) == false);
+    CHECK(GlideWrapper::EntryCommon::ShouldRenderShamelessPlug(true) == false);
+
+    reg.GetConfig() = saved;
   }
 }
 
@@ -3571,7 +3727,7 @@ TEST_CASE("VulkanBackend::SelectPresentMode prefers Mailbox on Wayland VSync",
   // Wayland + VSync falls back to FIFO when Mailbox is unavailable
   CHECK(GlideWrapper::VulkanBackend::SelectPresentMode(immAndFifo, true, true, false) ==
         vk::PresentModeKHR::eFifo);
-  // Explicit GLIDE_VSYNC=fifo forces FIFO even on Wayland
+  // Explicit GLIDE_NG_VSYNC=fifo forces FIFO even on Wayland
   CHECK(GlideWrapper::VulkanBackend::SelectPresentMode(allModes, true, true, true) ==
         vk::PresentModeKHR::eFifo);
   // X11 + VSync retains FIFO

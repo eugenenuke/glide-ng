@@ -26,11 +26,11 @@ static void splashCallback(int frame) {
 
 int main(int argc, char** argv) {
     // Force default device to voodoo3 if not set, to make sure 2.61 is active!
-    if (!std::getenv("GLIDE_DEVICE") && !std::getenv("GLIDE_WRAPPER_CARD_MODEL")) {
-        ::setenv("GLIDE_DEVICE", "voodoo3", 1);
+    if (!std::getenv("GLIDE_NG_CARD_MODEL")) {
+        ::setenv("GLIDE_NG_CARD_MODEL", "voodoo3", 1);
     }
-    if (!std::getenv("GLIDE_VERSION_OVERRIDE") && !std::getenv("GLIDE_WRAPPER_API_VERSION")) {
-        ::setenv("GLIDE_VERSION_OVERRIDE", "2.61", 1);
+    if (!std::getenv("GLIDE_NG_API_VERSION")) {
+        ::setenv("GLIDE_NG_API_VERSION", "2.61", 1);
     }
 
     // Initialize Glide, parse CLI, print header, and resolve resolution
@@ -54,7 +54,7 @@ int main(int argc, char** argv) {
     if (!s_grSplashCb) {
         std::printf("[CRITICAL] grSplashCb is NOT supported under the active profile/device!\r\n");
         std::printf("Please ensure you run this demo with a Voodoo3+ profile and Glide 2.61+:\r\n");
-        std::printf("  GLIDE_DEVICE=voodoo3 GLIDE_VERSION_OVERRIDE=2.61 %s\r\n\r\n", argv[0]);
+        std::printf("  GLIDE_NG_CARD_MODEL=voodoo3 GLIDE_NG_API_VERSION=2.61 %s\r\n\r\n", argv[0]);
         grGlideShutdown();
         return EXIT_FAILURE;
     }

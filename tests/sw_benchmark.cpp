@@ -12,12 +12,11 @@ struct BenchmarkVert {
 };
 
 void SetHeadless() {
-  setenv("GLIDE_HEADLESS", "1", 1);
+  setenv("GLIDE_NG_HEADLESS", "1", 1);
   const char* backend = std::getenv("GLIDE_BENCHMARK_BACKEND");
-  setenv("GLIDE_WRAPPER_BACKEND", backend ? backend : "software", 1);
-  setenv("GLIDE_WRAPPER_FORCE_NO_WINDOW", "1", 1);
-  setenv("GLIDE_WRAPPER_LOG_LEVEL", "0", 1); // 0 = OFF (fully disable logging overhead)
-  setenv("GLIDE_WRAPPER_LOG_TO_CONSOLE", "0", 1);
+  setenv("GLIDE_NG_BACKEND", backend ? backend : "software", 1);
+  setenv("GLIDE_NG_LOG_LEVEL", "0", 1); // 0 = OFF (fully disable logging overhead)
+  setenv("GLIDE_NG_LOG_CONSOLE", "0", 1);
 }
 
 int main() {

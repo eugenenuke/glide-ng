@@ -38,6 +38,6 @@ Activate this skill when analyzing, modifying, or debugging the Vulkan backend i
 
 - Run with Vulkan validation layers to verify barrier, layout, and WSI correctness:
   ```bash
-  VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation GLIDE_WRAPPER_BACKEND=vulkan ./build/bin/glide3_cube
+  VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation GLIDE_NG_BACKEND=vulkan ./build/bin/glide3_cube
   ```
 - Inspect `glide-ng.log` for `[Vulkan]` warnings/errors. Note that this host runs Mesa `llvmpipe` (software Vulkan), so timing-sensitive tests may run slower than on discrete GPUs.

@@ -124,11 +124,11 @@ int main(int argc, char** argv) {
     std::cout << "======================================================================\r\n";
 
     // Enforce default profile variables in the environment to ensure a robust test surface
-    if (!std::getenv("GLIDE_VERSION_OVERRIDE") && !std::getenv("GLIDE_WRAPPER_API_VERSION")) {
-        ::setenv("GLIDE_VERSION_OVERRIDE", "2.43", 1);
+    if (!std::getenv("GLIDE_NG_API_VERSION")) {
+        ::setenv("GLIDE_NG_API_VERSION", "2.43", 1);
     }
-    if (!std::getenv("GLIDE_DEVICE") && !std::getenv("GLIDE_WRAPPER_CARD_MODEL")) {
-        ::setenv("GLIDE_DEVICE", "Voodoo2", 1);
+    if (!std::getenv("GLIDE_NG_CARD_MODEL")) {
+        ::setenv("GLIDE_NG_CARD_MODEL", "Voodoo2", 1);
     }
 
     // Initialize Glide

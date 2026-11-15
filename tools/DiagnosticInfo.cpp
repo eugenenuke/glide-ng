@@ -267,7 +267,7 @@ ToolRunConfig InitializeAndParse(
     SafePrint(std::cout, "SLI Detect:      " + std::string(sysConfig.sli ? "Yes (Dual-Card Board)" : "No"));
     SafePrint(std::cout, "----------------------------------------------------------------------");
     SafePrint(std::cout, "Active Driver:   " + std::string(rendererName ? rendererName : "Unknown"));
-    const char* msaa_env = std::getenv("GLIDE_WRAPPER_MSAA");
+    const char* msaa_env = std::getenv("GLIDE_NG_MSAA");
     std::string msaa_str;
     bool is_software = (rendererName && std::string(rendererName).find("Software") != std::string::npos);
     

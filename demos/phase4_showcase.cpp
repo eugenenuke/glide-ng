@@ -129,9 +129,9 @@ int main(int argc, char* argv[]) {
     tlSetScreen(s_screenWidth, s_screenHeight);
 
     // Force API version and backend environment configurations
-    ::setenv("GLIDE_VERSION_OVERRIDE", "3.0", 1);
-    if (!std::getenv("GLIDE_WRAPPER_BACKEND")) {
-        ::setenv("GLIDE_WRAPPER_BACKEND", "software", 1); // Fallback to software reference backend
+    ::setenv("GLIDE_NG_API_VERSION", "3.0", 1);
+    if (!std::getenv("GLIDE_NG_BACKEND")) {
+        ::setenv("GLIDE_NG_BACKEND", "software", 1); // Fallback to software reference backend
     }
 
     // Open standard window

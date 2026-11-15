@@ -258,11 +258,11 @@ void DrawBackgroundStripes(int screenWidth, int screenHeight) {
 
 int main(int argc, char* argv[]) {
   // 1. Setup default environments if not present
-  if (!std::getenv("GLIDE_WRAPPER_API_VERSION")) {
-    ::setenv("GLIDE_WRAPPER_API_VERSION", "3.0", 1);
+  if (!std::getenv("GLIDE_NG_API_VERSION")) {
+    ::setenv("GLIDE_NG_API_VERSION", "3.0", 1);
   }
-  if (!std::getenv("GLIDE_WRAPPER_BACKEND")) {
-    ::setenv("GLIDE_WRAPPER_BACKEND", "vulkan", 1);
+  if (!std::getenv("GLIDE_NG_BACKEND")) {
+    ::setenv("GLIDE_NG_BACKEND", "vulkan", 1);
   }
 
   // 2. Parse arguments and initialize Glide
@@ -322,10 +322,10 @@ int main(int argc, char* argv[]) {
   ResolveExtensions();
 
   // 4. Headless mode fast-exit (CI/CD friendly)
-  const char* forceNoWindow = std::getenv("GLIDE_FORCE_NO_WINDOW");
+  const char* forceNoWindow = std::getenv("GLIDE_NG_HEADLESS");
   if (forceNoWindow && std::string(forceNoWindow) == "1") {
     std::printf(
-        "[HEADLESS] Running in headless mode (GLIDE_FORCE_NO_WINDOW=1)\n");
+        "[HEADLESS] Running in headless mode (GLIDE_NG_HEADLESS=1)\n");
     std::printf("[HEADLESS] Hardware Device : %s\n", grGetString(GR_HARDWARE));
     std::printf("[HEADLESS] Resolved Extension Pointers:\n");
     std::printf("  grTexChromaModeExt:  %p\n", (void*)grTexChromaModeExt);
