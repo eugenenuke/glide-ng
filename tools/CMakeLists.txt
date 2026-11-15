@@ -13,6 +13,7 @@ target_include_directories(tlib_compat PUBLIC
 # --- Shared Diagnostic Helper for Glide 2.x ---
 add_library(tool_info2 STATIC DiagnosticInfo.cpp)
 target_compile_definitions(tool_info2 PRIVATE GLIDE_VERSION=2)
+target_link_libraries(tool_info2 PUBLIC ${CMAKE_DL_LIBS})
 target_include_directories(tool_info2 PUBLIC 
     "${CMAKE_CURRENT_SOURCE_DIR}" 
     "${CMAKE_SOURCE_DIR}/include/glide2"

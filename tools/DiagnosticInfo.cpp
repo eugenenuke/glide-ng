@@ -10,9 +10,32 @@
 
 #if GLIDE_VERSION == 2
 #include <sst1vid.h>
+#if defined(__unix__) || defined(__APPLE__)
+#include <dlfcn.h>
+#endif
 #endif
 
 namespace Tools {
+#if GLIDE_VERSION == 2
+    // grGetString is a Glide 3.x API (exported by glide-ng's libglide2x as an
+    // extension, but absent in authentic Glide 2.x / OpenGlide). Resolve it
+    // optionally at runtime so Glide 2.x tools run cleanly on any libglide2x.
+    static const char* OptionalGlide2GetString(FxU32 pname) {
+#if defined(__unix__) || defined(__APPLE__)
+        using GetStringFn = const char* (FX_CALL *)(FxU32);
+        static GetStringFn fn = []() -> GetStringFn {
+            void* sym = dlsym(RTLD_DEFAULT, "grGetString");
+            GetStringFn res = nullptr;
+            std::memcpy(&res, &sym, sizeof(res));
+            return res;
+        }();
+        return fn ? fn(pname) : nullptr;
+#else
+        (void)pname;
+        return nullptr;
+#endif
+    }
+#endif
     // Helper to print message safely under raw terminal modes by ensuring carriage returns
     void SafePrint(std::ostream& os, const std::string& msg, bool newline) {
         std::string formatted;
@@ -240,11 +263,24 @@ ToolRunConfig InitializeAndParse(
     }
 
     // 6. Print Startup Diagnostic Header
+#if GLIDE_VERSION == 3
     const char* driverVersion = grGetString(GR_VERSION);
     const char* hardwareName = grGetString(GR_HARDWARE);
     const char* vendorName = grGetString(GR_VENDOR);
     const char* rendererName = grGetString(GR_RENDERER);
     const char* extString = grGetString(GR_EXTENSION);
+#else
+    char g2VersionBuf[80] = {};
+    const char* driverVersion = OptionalGlide2GetString(GR_VERSION);
+    if (!driverVersion) {
+        grGlideGetVersion(g2VersionBuf);
+        driverVersion = g2VersionBuf[0] ? g2VersionBuf : nullptr;
+    }
+    const char* hardwareName = OptionalGlide2GetString(GR_HARDWARE);
+    const char* vendorName = OptionalGlide2GetString(GR_VENDOR);
+    const char* rendererName = OptionalGlide2GetString(GR_RENDERER);
+    const char* extString = OptionalGlide2GetString(GR_EXTENSION);
+#endif
 
     SafePrint(std::cout, "======================================================================");
     SafePrint(std::cout, toolName + " (Glide " + std::to_string(GLIDE_VERSION) + ".x API)");
