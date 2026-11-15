@@ -68,7 +68,7 @@ Recorded before any edits are made:
 | **T2.6** | Phase 2 | Migrate `SoftwareBackend` to `NativeSurfaceHost` + aspect-ratio preserving presentation | Med | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `b0066fd`, `47c21b4` |
 | **T2.7** | Phase 2 | Retire old `PlatformWindowUtils` overlay code & late `XInitThreads()` constructor; run full Option A DOSBox matrix | Med | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `ce4a354` |
 | **T3.1** | Phase 3 | Extract `GlideStateTracker` from `SoftwareBackendBase` (remove CPU buffers from Vulkan/GLES inheritance) | Med | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `1edabe4` |
-| **T3.2** | Phase 3 | Deduplicate shared frontend code across `glide2_entry.cpp` & `glide3_entry.cpp` (`GlideEntryCommon`) | Med | `[ ] PENDING` | — |
+| **T3.2** | Phase 3 | Deduplicate shared frontend code across `glide2_entry.cpp` & `glide3_entry.cpp` (`GlideEntryCommon`) | Med | `[~] IMPLEMENTED — AWAITING USER VERIFICATION` | `4ea66b7` |
 | **T3.3** | Phase 3 | Split monolithic backend `.cpp` files (`VulkanBackend`, `OpenGLESBackend`, `SoftwareBackend`) into cohesive units | Med | `[ ] PENDING` | — |
 | **T3.4** | Phase 3 | Audit & reduce `std::recursive_mutex` hot-path contention + benchmark regression check | Med | `[ ] PENDING` | — |
 | **T4.0** | Phase 4 | **Decision Gate**: Evaluate Option A real-world behavior vs. triggers for Option B (~50 LOC DOSBox patch) | Gate | `[ ] PENDING` | — |
@@ -557,7 +557,13 @@ Recorded before any edits are made:
 - **User Verification**: Confirm all 3 backends run GTA 1 and demos identically with lower RSS memory footprint on Vulkan/GLES.
 
 #### `T3.2` — Deduplicate Glide 2 & Glide 3 Frontend Entry Helpers
-- **Status**: `[ ] PENDING`
+- **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION` (Commit `4ea66b7`)
+- **Automated Result**:
+  - Extracted shared frontend helpers into `src/core/GlideEntryCommon.h` (196 LOC) and `src/core/GlideEntryCommon.cpp` (786 LOC): `SharedFrontendState`, lifecycle (`InitGlide`, `EnsureEngineInitialized`, `ShutdownGlide`, `CloseWindow`), `ResolveResolution`, `ConfigureTmuMemoryLimits`, `ApplySharedStateToBackend`, combiner/blend/alpha/depth/texture/fog/chromakey/dither/gamma dispatchers, `SanitizeVertex`, `DrawVertexList`, telemetry stats, LFB helpers, 3df mapping/loading, splash/banner rendering, and DOSBox `setConfig`/`setConfigRes` handshakes.
+  - Line counts: `src/glide2/glide2_entry.cpp` 2,846 → 2,231 LOC (−615); `src/glide3/glide3_entry.cpp` 2,109 → 1,509 LOC (−600); removed unused `tableIndexToW[64]` in `glide3_entry.cpp`.
+  - Clean build (`cmake --build build -j$(nproc)`): **0 warnings, 0 errors** under `-Wall -Wextra -Wpedantic -Werror`.
+  - ABI export parity (`nm -D --defined-only` before vs. after): `libglide2x.so` **145/145 identical** (0 missing, 0 added); `libglide3x.so` **104/104 identical** (0 missing, 0 added).
+  - Automated suites: `Glide3xWrapperTests` **42/42 passed (1956 assertions)** on `software`, `vulkan`, and `opengl_es`; `Glide2xWrapperTests` **27/27 passed (2344 assertions)** on `software`; `glide_embed_test --raw-handle --parent-gl --smoke-ms 600` **6/6 PASS** across `{wayland, x11} × {vulkan, opengl_es, software}`.
 - **Target Files**:
   - *New*: `src/core/GlideEntryCommon.h`, `src/core/GlideEntryCommon.cpp`
   - `src/glide2/glide2_entry.cpp` (2,796 LOC)
