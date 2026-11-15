@@ -22,6 +22,10 @@ set(CORE_SOURCES
     backends/CpuLfbStaging.cpp
     backends/SoftwareBackendBase.cpp
     backends/vulkan/VulkanBackend.cpp
+    backends/vulkan/VulkanPipeline.cpp
+    backends/vulkan/VulkanTextures.cpp
+    backends/vulkan/VulkanLfb.cpp
+    backends/vulkan/VulkanDraw.cpp
     backends/opengl_es/OpenGLESBackend.cpp
     backends/software/SoftwareBackend.cpp
 )
