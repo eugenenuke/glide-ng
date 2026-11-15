@@ -69,7 +69,7 @@ Recorded before any edits are made:
 | **T2.7** | Phase 2 | Retire old `PlatformWindowUtils` overlay code & late `XInitThreads()` constructor; run full Option A DOSBox matrix | Med | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `ce4a354` |
 | **T3.1** | Phase 3 | Extract `GlideStateTracker` from `SoftwareBackendBase` (remove CPU buffers from Vulkan/GLES inheritance) | Med | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `1edabe4` |
 | **T3.2** | Phase 3 | Deduplicate shared frontend code across `glide2_entry.cpp` & `glide3_entry.cpp` (`GlideEntryCommon`) | Med | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `4ea66b7` |
-| **T3.3** | Phase 3 | Split monolithic backend `.cpp` files (`VulkanBackend`, `OpenGLESBackend`, `SoftwareBackend`) into cohesive units | Med | `[~] IMPLEMENTED — AWAITING USER VERIFICATION` | `f857e49`, `1765199`, `4f00b30` |
+| **T3.3** | Phase 3 | Split monolithic backend `.cpp` files (`VulkanBackend`, `OpenGLESBackend`, `SoftwareBackend`) into cohesive units | Med | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `f857e49`, `1765199`, `4f00b30` |
 | **T3.4** | Phase 3 | Audit & reduce `std::recursive_mutex` hot-path contention + benchmark regression check | Med | `[ ] PENDING` | — |
 | **T4.0** | Phase 4 | **Decision Gate**: Evaluate Option A real-world behavior vs. triggers for Option B (~50 LOC DOSBox patch) | Gate | `[ ] PENDING` | — |
 
@@ -575,7 +575,7 @@ Recorded before any edits are made:
 - **User Verification**: Confirm both Glide 2.x and Glide 3.x demos + DOSBox games load and run identically.
 
 #### `T3.3` — Split Monolithic Backend Implementation Files
-- **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION` (Commits `f857e49`, `1765199`, `4f00b30`)
+- **Status**: `[x] DONE (USER CONFIRMED — 2026-11-15)` (Commits `f857e49`, `1765199`, `4f00b30`)
 - **Automated Result**:
   - **T3.3a (`f857e49`) — Vulkan**: Split `VulkanBackend.cpp` (3,987 LOC) into `VulkanBackend.cpp` (2,105), `VulkanPipeline.cpp` (614), `VulkanTextures.cpp` (394), `VulkanLfb.cpp` (262), and `VulkanDraw.cpp` (658). 0 `-Werror` warnings; `Glide3xWrapperTests` (`vulkan`) 42/42 + `Glide2xWrapperTests` 27/27 passed.
   - **T3.3b (`1765199`) — OpenGL ES**: Split `OpenGLESBackend.cpp` (3,468 LOC) into `OpenGLESBackend.cpp` (1,796), `OpenGLESShaders.cpp` (942), `OpenGLESTextures.cpp` (222), `OpenGLESDraw.cpp` (531), plus internal `OpenGLESInternal.h`. 0 `-Werror` warnings; `Glide3xWrapperTests` (`opengl_es`) 42/42 + `Glide2xWrapperTests` 27/27 passed.
