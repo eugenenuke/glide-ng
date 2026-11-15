@@ -64,7 +64,7 @@ Recorded before any edits are made:
 | **T2.2** | Phase 2 | Implement X11 / XWayland native child window in `NativeSurfaceHost` (`XOpenDisplay`, `XCreateWindow`, `XShape`) + embed test harness | Med | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `4f40687` |
 | **T2.3** | Phase 2 | Implement Native Wayland `wl_subsurface` in `NativeSurfaceHost` + SVN DOSBox `setConfig('SDL2')` export + HiDPI scaling | Med–High | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `9865fc5` |
 | **T2.4** | Phase 2 | Migrate `VulkanBackend` to `NativeSurfaceHost` + aspect-ratio preserving letterbox/pillarbox blit | Med | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `2d75259`, `985e7fa`, `1d349ee` |
-| **T2.5** | Phase 2 | Migrate `OpenGLESBackend` to `NativeSurfaceHost` (Direct EGL) + aspect-ratio & Gamma LUT presentation pass | Med | `[~] IMPLEMENTED — AWAITING USER VERIFICATION` | `df40756` |
+| **T2.5** | Phase 2 | Migrate `OpenGLESBackend` to `NativeSurfaceHost` (Direct EGL) + aspect-ratio & Gamma LUT presentation pass | Med | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `df40756`, `8c416e2` |
 | **T2.6** | Phase 2 | Migrate `SoftwareBackend` to `NativeSurfaceHost` + aspect-ratio preserving presentation | Med | `[ ] PENDING` | — |
 | **T2.7** | Phase 2 | Retire old `PlatformWindowUtils` overlay code & late `XInitThreads()` constructor; run full Option A DOSBox matrix | Med | `[ ] PENDING` | — |
 | **T3.1** | Phase 3 | Extract `GlideStateTracker` from `SoftwareBackendBase` (remove CPU buffers from Vulkan/GLES inheritance) | Med | `[ ] PENDING` | — |
@@ -427,7 +427,8 @@ Recorded before any edits are made:
   - Keyboard/mouse work reliably and game exit returns cleanly to DOS prompt.
 
 #### `T2.5` — Migrate `OpenGLESBackend` to `NativeSurfaceHost` (Direct EGL) + Aspect-Ratio & Gamma LUT
-- **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION` (Commit `df40756`)
+- **Status**: `[x] DONE (USER CONFIRMED — 2026-11-15)` (Commits `df40756`, `8c416e2`)
+- **User Verification Notes**: Confirmed on real GPU (CachyOS) across both native Wayland (`glide_embed_test` + GTA 1 in patched SVN DOSBox) and X11 (`glide_embed_test --raw-handle --parent-gl` and `--raw-handle` after `8c416e2` fixed X11 `EGL_NATIVE_VISUAL_ID` matching and `RecreateX11ChildForVisual`).
 - **Automated Result**:
   - Replaced legacy `PlatformWindowUtils` overlay window / `SDL_PumpEvents()` in [OpenGLESBackend.h](../../src/backends/opengl_es/OpenGLESBackend.h) and [OpenGLESBackend.cpp](../../src/backends/opengl_es/OpenGLESBackend.cpp) with `NativeSurfaceHost` + Direct EGL 1.5:
     - `Headless`: surfaceless EGL (`EGL_PLATFORM_SURFACELESS_MESA`, 1×1 Pbuffer fallback) with zero SDL/X11/Wayland calls.
