@@ -17,6 +17,7 @@ set(CORE_SOURCES
     core/MathUtils.cpp
     core/LfbManager.cpp
     core/NativeSurfaceHost.cpp
+    core/GlideEntryCommon.cpp
     backends/GlideStateTracker.cpp
     backends/CpuLfbStaging.cpp
     backends/SoftwareBackendBase.cpp
