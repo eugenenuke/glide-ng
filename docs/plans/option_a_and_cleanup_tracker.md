@@ -62,8 +62,8 @@ Recorded before any edits are made:
 | **T1.7** | Phase 1 | Prefer `VK_PRESENT_MODE_MAILBOX_KHR` on Wayland VSync to fix Mesa `wp_fifo_v1` stutter + Catch2 tests | Low | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `15482fc` |
 | **T2.1** | Phase 2 | Implement `NativeSurfaceHost` core + Headless + Standalone SDL2 + `ComputePresentRect` aspect math + tests | Low | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `ae65f8e` |
 | **T2.2** | Phase 2 | Implement X11 / XWayland native child window in `NativeSurfaceHost` (`XOpenDisplay`, `XCreateWindow`, `XShape`) + embed test harness | Med | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `4f40687` |
-| **T2.3** | Phase 2 | Implement Native Wayland `wl_subsurface` in `NativeSurfaceHost` + SVN DOSBox `setConfig('SDL2')` export + HiDPI scaling | Med–High | `[~] IMPLEMENTED — AWAITING USER VERIFICATION` | `9865fc5` |
-| **T2.4** | Phase 2 | Migrate `VulkanBackend` to `NativeSurfaceHost` + aspect-ratio preserving letterbox/pillarbox blit | Med | `[ ] PENDING` | — |
+| **T2.3** | Phase 2 | Implement Native Wayland `wl_subsurface` in `NativeSurfaceHost` + SVN DOSBox `setConfig('SDL2')` export + HiDPI scaling | Med–High | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `9865fc5` |
+| **T2.4** | Phase 2 | Migrate `VulkanBackend` to `NativeSurfaceHost` + aspect-ratio preserving letterbox/pillarbox blit | Med | `[~] IMPLEMENTED — AWAITING USER VERIFICATION` | `2d75259` |
 | **T2.5** | Phase 2 | Migrate `OpenGLESBackend` to `NativeSurfaceHost` (Direct EGL) + aspect-ratio & Gamma LUT presentation pass | Med | `[ ] PENDING` | — |
 | **T2.6** | Phase 2 | Migrate `SoftwareBackend` to `NativeSurfaceHost` + aspect-ratio preserving presentation | Med | `[ ] PENDING` | — |
 | **T2.7** | Phase 2 | Retire old `PlatformWindowUtils` overlay code & late `XInitThreads()` constructor; run full Option A DOSBox matrix | Med | `[ ] PENDING` | — |
@@ -348,7 +348,7 @@ Recorded before any edits are made:
 - **User Verification**: Run `SDL_VIDEODRIVER=x11 ./build/bin/child_surface_embed_test`, resize the window, click/press keys inside it, and confirm the parent receives all input and the child surface follows seamlessly without floating/detaching.
 
 #### `T2.3` — Native Wayland `wl_subsurface` in `NativeSurfaceHost` + SVN DOSBox `setConfig('SDL2')`
-- **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION` (Commit `9865fc5`)
+- **Status**: `[x] DONE (USER CONFIRMED — 2026-11-15)` (Commit `9865fc5`)
 - **Automated Result**:
   - **Critical 64-bit `hWnd` ABI Fix**: Changed `grSstWinOpen`'s first parameter from `FxU32 hWnd` (32-bit `unsigned int` on LP64 Linux, which truncated 64-bit `SDL_Window*` and `wl_surface*` pointers passed by DOSBox!) to `AnyPtr hWnd` (`unsigned long`) in [include/glide2/glide.h](file:///usr/local/google/home/eianiuk/gemini/3dfx/include/glide2/glide.h), [include/glide3/glide.h](file:///usr/local/google/home/eianiuk/gemini/3dfx/include/glide3/glide.h), [src/glide2/glide2_entry.cpp](file:///usr/local/google/home/eianiuk/gemini/3dfx/src/glide2/glide2_entry.cpp), and [src/glide3/glide3_entry.cpp](file:///usr/local/google/home/eianiuk/gemini/3dfx/src/glide3/glide3_entry.cpp).
   - **SVN DOSBox `setConfig('SDL2')` Parity**: Exported `setConfig` (writes `0x324c4453` `'SDL2'`) and `setConfigRes` from `libglide3x.so` (matching `libglide2x.so`); verified via `nm -D` and new Catch2 test `[WSI][DOSBox][setConfig]`.
@@ -388,7 +388,21 @@ Recorded before any edits are made:
 - **User Verification**: Run `SDL_VIDEODRIVER=wayland ./build/bin/child_surface_embed_test`, resize/maximize/fullscreen the host window, verify input pass-through and clean exit.
 
 #### `T2.4` — Migrate `VulkanBackend` to `NativeSurfaceHost` + Aspect-Ratio Blit
-- **Status**: `[ ] PENDING`
+- **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION` (Commit `2d75259`)
+- **Automated Result**:
+  - Replaced legacy `PlatformWindowUtils` overlay window / `SDL_PumpEvents()` in [VulkanBackend.h](file:///usr/local/google/home/eianiuk/gemini/3dfx/src/backends/vulkan/VulkanBackend.h) and [VulkanBackend.cpp](file:///usr/local/google/home/eianiuk/gemini/3dfx/src/backends/vulkan/VulkanBackend.cpp) with `NativeSurfaceHost`:
+    - `CreateInstance()` enumerates Vulkan WSI extensions directly (`VK_KHR_surface`, `VK_KHR_xlib_surface`, `VK_KHR_xcb_surface`, `VK_KHR_wayland_surface`) without touching SDL during `Initialize()`.
+    - `CreatePresentationSurface()` creates `VK_KHR_xlib_surface` (`X11Child`), `VK_KHR_wayland_surface` (`WaylandSubsurface`), or `SDL_Vulkan_CreateSurface` (`StandaloneSDL2`).
+    - Preserves `T1.7`'s Wayland Mailbox present-mode preference via `m_surfaceHost.IsWaylandSurface()`.
+    - `SwapBuffers()` delegates event pumping to `m_surfaceHost.PollEvents()` (strict no-op for DOSBox; clean `X`/Ctrl+C exit for standalone demos), syncs resize bounds via `m_surfaceHost.SyncBounds()`, clears letterbox/pillarbox bars to opaque black with a `TransferWrite -> TransferWrite` barrier, and blits into `ComputePresentRect(...)`.
+    - Fixed pre-existing `VUID-vkQueueSubmit-pSignalSemaphores-00067` validation error by sizing `m_renderFinishedSemaphores` per swapchain image (`[imageIdx]`) instead of per frame-in-flight (`[2]`).
+    - Strict WSI teardown order in `DetachWindow()`: `waitIdle()` → `DestroySwapchain()` → `m_surface.reset()` → `m_surfaceHost.Detach()`.
+  - Added interactive Glide 3.x host-embed harness [demos/glide_embed_test.cpp](file:///usr/local/google/home/eianiuk/gemini/3dfx/demos/glide_embed_test.cpp) supporting `--raw-handle`, `--sdl-window`, `--parent-gl` (simulates DOSBox-X `output=opengl`), resize, fullscreen, `grSstWinClose`+`grSstWinOpen` reopen, and `--smoke-ms`.
+  - **Tests & Validation**:
+    - `Glide3xWrapperTests` (software & vulkan headless): **40/40 passed (1894 assertions)** on both.
+    - `VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation` on `glide_embed_test` (`Wayland`, `X11`, `Wayland --parent-gl`, `X11 --parent-gl`): **0 VUID errors**, **0 Wayland protocol errors**, all resized + reopened cleanly.
+    - `WAYLAND_DEBUG=client` on Vulkan `glide_embed_test`: **0 protocol errors**.
+    - Standalone `GLIDE_WRAPPER_BACKEND=vulkan ./build/bin/glide3_cube`: exits cleanly on `SIGINT` (`Ctrl+C`) without `kill -9`.
 - **Target Files**:
   - `src/backends/vulkan/VulkanBackend.h`
   - `src/backends/vulkan/VulkanBackend.cpp`
