@@ -2,12 +2,15 @@
 #include <iostream>
 #include <cmath>
 #include "core/WrapperConfig.h"
+#include "core/JsonConfigLoader.h"
 #include "core/TextureManager.h"
 #include "core/Logger.h"
 #include "core/BackendManager.h"
 #include "software/SoftwareBackend.h"
+#include <cstdio>
 #include <cstdlib>
 #include <dlfcn.h>
+#include <fstream>
 #include <vector>
 #include <algorithm>
 
@@ -3433,4 +3436,116 @@ TEST_CASE("Lazy CPU ClearBuffer defers fills until LFB access",
 
   backend.DetachWindow();
   backend.Shutdown();
+}
+
+TEST_CASE("JsonConfigLoader uses key-scoped parsing and respects env overrides",
+          "[Config][JsonConfigLoader]") {
+  const std::string tmpPath = "/tmp/glide_ng_test_config_t15.json";
+
+  // RAII helper to save/restore environment variables touched by this test.
+  struct EnvGuard {
+    std::string name;
+    bool hadValue{false};
+    std::string oldValue;
+    explicit EnvGuard(const char* n) : name(n) {
+      if (const char* v = ::getenv(n)) {
+        hadValue = true;
+        oldValue = v;
+      }
+      ::unsetenv(n);
+    }
+    ~EnvGuard() {
+      if (hadValue) {
+        ::setenv(name.c_str(), oldValue.c_str(), 1);
+      } else {
+        ::unsetenv(name.c_str());
+      }
+    }
+  };
+
+  EnvGuard guardBackend("GLIDE_WRAPPER_BACKEND");
+  EnvGuard guardLegacyBackend("GLIDE_BACKEND");
+  EnvGuard guardForceNoWin("GLIDE_FORCE_NO_WINDOW");
+  EnvGuard guardHeadless("GLIDE_HEADLESS");
+  EnvGuard guardConsole("GLIDE_WRAPPER_LOG_TO_CONSOLE");
+  EnvGuard guardVsync("GLIDE_VSYNC");
+  EnvGuard guardCard("GLIDE_WRAPPER_CARD_MODEL");
+  EnvGuard guardDevice("GLIDE_DEVICE");
+  EnvGuard guardApi("GLIDE_WRAPPER_API_VERSION");
+  EnvGuard guardApiLegacy("GLIDE_VERSION_OVERRIDE");
+  EnvGuard guardLogLevel("GLIDE_WRAPPER_LOG_LEVEL");
+  EnvGuard guardMaxFps("GLIDE_WRAPPER_MAX_FPS");
+  EnvGuard guardMsaa("GLIDE_WRAPPER_MSAA");
+  EnvGuard guardScale("GLIDE_WRAPPER_WINDOW_SCALE");
+
+  SECTION("Unrelated fields containing backend/model substrings do not hijack config") {
+    {
+      std::ofstream out(tmpPath);
+      out << "{\n"
+          << "  \"comment\": \"do not use \\\"vulkan\\\" or \\\"software\\\" or Voodoo5\",\n"
+          << "  \"nested\": { \"backend\": \"vulkan\", \"model\": \"Voodoo5\", \"logToConsole\": false },\n"
+          << "  \"backend\"   :   \"opengl_es\",\n"
+          << "  \"model\"  :  \"Voodoo3\",\n"
+          << "  \"apiVersion\" : \"2.42\",\n"
+          << "  \"logToConsole\"  :  true,\n"
+          << "  \"vsync\":false,\n"
+          << "  \"forceNoWindow\" : true,\n"
+          << "  \"maxFps\" : 120.5,\n"
+          << "  \"msaaSamples\" : 4,\n"
+          << "  \"windowScale\" : 2,\n"
+          << "  \"logLevel\" : 4\n"
+          << "}\n";
+    }
+
+    GlideWrapper::JsonConfigLoader loader;
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load(tmpPath, cfg));
+    CHECK(cfg.backend == "opengl_es");
+    CHECK(cfg.model == GlideWrapper::CardModel::Voodoo3);
+    CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_42);
+    CHECK(cfg.logToConsole == true);
+    CHECK(cfg.vsync == false);
+    CHECK(cfg.forceNoWindow == true);
+    CHECK(cfg.maxFps == 120.5f);
+    CHECK(cfg.msaaSamples == 4u);
+    CHECK(cfg.windowScale == 2u);
+    CHECK(cfg.logLevel == 4u);
+
+    std::remove(tmpPath.c_str());
+  }
+
+  SECTION("Boolean false and cardModel key parse cleanly, env overrides win") {
+    {
+      std::ofstream out(tmpPath);
+      out << "{\n"
+          << "  \"cardModel\": \"VoodooGraphics\",\n"
+          << "  \"backend\": \"gles\",\n"
+          << "  \"logToConsole\": false,\n"
+          << "  \"vsync\": true,\n"
+          << "  \"apiVersion\": 2.40\n"
+          << "}\n";
+    }
+
+    GlideWrapper::JsonConfigLoader loader;
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load(tmpPath, cfg));
+    CHECK(cfg.model == GlideWrapper::CardModel::VoodooGraphics);
+    CHECK(cfg.backend == "opengl_es");
+    CHECK(cfg.logToConsole == false);
+    CHECK(cfg.vsync == true);
+    CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_40);
+
+    // Environment variables must override JSON values.
+    ::setenv("GLIDE_WRAPPER_BACKEND", "sw", 1);
+    ::setenv("GLIDE_WRAPPER_LOG_TO_CONSOLE", "1", 1);
+    ::setenv("GLIDE_VSYNC", "0", 1);
+
+    GlideWrapper::WrapperConfig envCfg;
+    REQUIRE(loader.Load(tmpPath, envCfg));
+    CHECK(envCfg.backend == "software");
+    CHECK(envCfg.logToConsole == true);
+    CHECK(envCfg.vsync == false);
+
+    std::remove(tmpPath.c_str());
+  }
 }
