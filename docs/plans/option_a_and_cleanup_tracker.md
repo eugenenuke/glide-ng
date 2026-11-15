@@ -53,12 +53,12 @@ Recorded before any edits are made:
 | **T0.2** | Phase 0 | Fix `SoftwareBackend::AttachWindow` ignoring `forceNoWindow` & `m_sdlRendererOwned` leak | Low | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `5e097b8` |
 | **T0.3** | Phase 0 | Audit & update `.agents/AGENTS.md`, existing 5 skills, add `wsi-window-injection` & `build-and-test` skills | Low | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `415d0a1` |
 | **T0.4** | Phase 0 | User-approved repo hygiene (`.gitignore`, untracked logs/caches, stale `subagent-*` branches) | Low | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `133e898` |
-| **T1.1** | Phase 1 | Remove `[DEBUG-GLES]` `std::cout` spam & decouple `Logger.cpp` from `<vulkan/vulkan.hpp>` | Low | `[ ] PENDING` | — |
-| **T1.2** | Phase 1 | Deduplicate `color.frag` / `color_dualsrc.frag` via `-DUSE_DUAL_SRC_BLEND`; delete stale checked-in `.spv.h` | Low | `[ ] PENDING` | — |
-| **T1.3** | Phase 1 | Fix `VulkanBackend::SwapBuffers` semaphore wait stage (`eColorAttachmentOutput` → `eTransfer`) | Low | `[ ] PENDING` | — |
-| **T1.4** | Phase 1 | Stop GPU backends from calling `SoftwareBackendBase::ClearBuffer(...)` every frame | Low–Med | `[ ] PENDING` | — |
-| **T1.5** | Phase 1 | Replace fragile substring matching in `JsonConfigLoader.cpp` with key-scoped parser + Catch2 tests | Low | `[ ] PENDING` | — |
-| **T1.6** | Phase 1 | Add `wayland-egl`/`egl` CMake discovery & fix `#if defined(UNIX)` → `#if defined(__unix__)` | Low | `[ ] PENDING` | — |
+| **T1.1** | Phase 1 | Remove `[DEBUG-GLES]` `std::cout` spam & decouple `Logger.cpp` from `<vulkan/vulkan.hpp>` | Low | `[~] IMPLEMENTED — AWAITING USER VERIFICATION` | `c477e39` |
+| **T1.2** | Phase 1 | Deduplicate `color.frag` / `color_dualsrc.frag` via `-DUSE_DUAL_SRC_BLEND`; delete stale checked-in `.spv.h` | Low | `[~] IMPLEMENTED — AWAITING USER VERIFICATION` | `5f3bc86` |
+| **T1.3** | Phase 1 | Fix `VulkanBackend::SwapBuffers` semaphore wait stage (`eColorAttachmentOutput` → `eTransfer`) | Low | `[~] IMPLEMENTED — AWAITING USER VERIFICATION` | `72495ce` |
+| **T1.4** | Phase 1 | Stop GPU backends from calling `SoftwareBackendBase::ClearBuffer(...)` every frame | Low–Med | `[~] IMPLEMENTED — AWAITING USER VERIFICATION` | `c87df26` |
+| **T1.5** | Phase 1 | Replace fragile substring matching in `JsonConfigLoader.cpp` with key-scoped parser + Catch2 tests | Low | `[~] IMPLEMENTED — AWAITING USER VERIFICATION` | `d8b7d03` |
+| **T1.6** | Phase 1 | Add `wayland-egl`/`egl` CMake discovery & guard `#if defined(UNIX)` trap until T2.7 | Low | `[~] IMPLEMENTED — AWAITING USER VERIFICATION` | `cad7d0d` |
 | **T2.1** | Phase 2 | Implement `NativeSurfaceHost` core + Headless + Standalone SDL2 + `ComputePresentRect` aspect math + tests | Low | `[ ] PENDING` | — |
 | **T2.2** | Phase 2 | Implement X11 / XWayland native child window in `NativeSurfaceHost` (`XOpenDisplay`, `XCreateWindow`, `XShape`) + embed test harness | Med | `[ ] PENDING` | — |
 | **T2.3** | Phase 2 | Implement Native Wayland `wl_subsurface` in `NativeSurfaceHost` + SVN DOSBox `setConfig('SDL2')` export + HiDPI scaling | Med–High | `[ ] PENDING` | — |
@@ -81,7 +81,7 @@ Recorded before any edits are made:
 > **Goal**: Establish a trustworthy, fast, quiet test loop and accurate agent skills *before* touching rendering or windowing code.
 
 #### `T0.1` — Fix CTest Discovery, Repair `tests/run_all_tests.py`, and Lock Baseline
-- **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION` (Commit `dd527a8`)
+- **Status**: `[x] DONE (USER CONFIRMED — 2026-11-15)` (Commit `dd527a8`)
 - **Automated Result**: `ctest --test-dir build -N` now discovers **60 tests**; `python3 tests/run_all_tests.py --suite g3 --backend sw` passed (1/1, 7.83s).
 - **Target Files**:
   - `CMakeLists.txt`
@@ -96,7 +96,7 @@ Recorded before any edits are made:
 - **User Verification**: Confirm `ctest` and `python3 tests/run_all_tests.py --backend sw` work cleanly from repo root.
 
 #### `T0.2` — Fix `SoftwareBackend::AttachWindow` Headless Guard & Renderer Leak
-- **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION` (Commit `5e097b8`)
+- **Status**: `[x] DONE (USER CONFIRMED — 2026-11-15)` (Commit `5e097b8`)
 - **Automated Result**: `GLIDE_WRAPPER_BACKEND=software GLIDE_FORCE_NO_WINDOW=1 ./build/bin/Glide3xWrapperTests` passed **32/32 test cases (1780 assertions)** including new `[Software][Headless]` test, with **0** `libEGL`/`MESA ZINK` warnings.
 - **Target Files**:
   - `src/backends/software/SoftwareBackend.cpp` (L746–834)
@@ -109,7 +109,7 @@ Recorded before any edits are made:
 - **User Verification**: Confirm headless tests run quietly and standalone software demos (`GLIDE_WRAPPER_BACKEND=software ./build/bin/glide3_cube`) still open and close cleanly.
 
 #### `T0.3` — Update `.agents/` Manifest & Skills, Reconcile `docs/GEMINI.md`
-- **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION` (Commit `415d0a1`)
+- **Status**: `[x] DONE (USER CONFIRMED — 2026-11-15)` (Commit `415d0a1`)
 - **Notes**: Consolidated `.agents/AGENTS.md` (with `docs/GEMINI.md` pointing to it), updated all 5 existing skills, added `wsi-window-injection` and `build-and-test` skills, removed `.agents/` from `.gitignore`, and tracked `.agents/` in git.
 - **Target Files**:
   - `.agents/AGENTS.md` (and `docs/GEMINI.md`)
@@ -149,7 +149,7 @@ Recorded before any edits are made:
 - **User Verification**: User reviews updated `.agents/` files and decides whether `.agents/` should remain gitignored or be tracked in git.
 
 #### `T0.4` — User-Approved Repository Hygiene
-- **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION` (Commit `133e898`, backup branch `backup/wip-dirty-before-option-a` at `7493494`)
+- **Status**: `[x] DONE (USER CONFIRMED — 2026-11-15)` (Commit `133e898`, backup branch `backup/wip-dirty-before-option-a` at `7493494`)
 - **Notes**: Preserved dirty files (`docs/glide_environment_variables.md`, `docs/env_vars_research_report.md`, `vk_perf_impacted.patch`, deleted `glide_config.json`) on `backup/wip-dirty-before-option-a`; removed all 49 stale `subagent-*` worktrees and branches; gitignored untracked `refs/{dosbox-x,mesa,openglide,openglide-ng,wrappers}/` and `.glide-vulkan-cache.bin` (untracked from git); created clean feature branch `feature/option-a-native-child-surface` off `main`.
 - **What to Do** (*ONLY with explicit user confirmation per item*):
   1. Decide fate of currently modified/untracked files: `docs/glide_environment_variables.md`, deleted `glide_config.json`, `docs/env_vars_research_report.md`, `vk_perf_impacted.patch`.
@@ -164,7 +164,8 @@ Recorded before any edits are made:
 > **Goal**: Remove noise, compiler-macro traps, shader duplication, and wasted CPU work so Phase 2 diffs stay laser-focused on windowing/presentation.
 
 #### `T1.1` — Remove `[DEBUG-GLES]` Spam & Decouple `Logger` from Vulkan
-- **Status**: `[ ] PENDING`
+- **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION` (Commit `c477e39`)
+- **Automated Result**: Removed all 7 `[DEBUG-GLES]`/`[DEBUG-SHADER-ERROR]`/`[DEBUG-PROGRAM-ERROR]` `std::cout` prints from `OpenGLESBackend.cpp` and moved `Logger::LogHostVulkanCapabilities()` into `VulkanBackend.cpp` so `Logger.cpp` no longer includes `<vulkan/vulkan.hpp>`. `Glide3xWrapperTests` passed 32/32 (1780 assertions).
 - **Target Files**:
   - `src/backends/opengl_es/OpenGLESBackend.cpp` (L141–238, L1633, L1657)
   - `src/core/Logger.cpp` (L2)
@@ -175,7 +176,8 @@ Recorded before any edits are made:
 - **User Verification**: Confirm clean console output on a GLES demo run (`GLIDE_WRAPPER_BACKEND=opengl_es ./build/bin/glide3_cube`).
 
 #### `T1.2` — Single-Source Vulkan Fragment Shader & Remove Checked-In `.spv.h`
-- **Status**: `[ ] PENDING`
+- **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION` (Commit `5f3bc86`)
+- **Automated Result**: Deleted `color_dualsrc.frag` and stale checked-in `color_frag.spv.h` / `color_vert.spv.h`; guarded `outPreFogColor` in `color.frag` with `#ifdef USE_DUAL_SRC_BLEND`; updated `compile_shader` in `CMakeLists.txt` to pass `-DUSE_DUAL_SRC_BLEND`. Verified clean rebuild from wiped `build/generated_shaders` generates distinct `color_frag.spv.h` (170,749 B) and `color_dualsrc_frag.spv.h` (171,505 B); `Glide3xWrapperTests` passed 32/32 (1780 assertions).
 - **Target Files**:
   - `src/backends/vulkan/shaders/color.frag`
   - Delete `src/backends/vulkan/shaders/color_dualsrc.frag`
@@ -190,7 +192,8 @@ Recorded before any edits are made:
 - **User Verification**: Confirm Vulkan dual-source & standard blending demos (`glide3_cube`, `fog_showcase_demo`) render identically.
 
 #### `T1.3` — Fix Vulkan Swapchain Semaphore Wait Stage
-- **Status**: `[ ] PENDING`
+- **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION` (Commit `72495ce`)
+- **Automated Result**: Changed `waitStages` in `VulkanBackend::SwapBuffers()` from `vk::PipelineStageFlagBits::eColorAttachmentOutput` to `vk::PipelineStageFlagBits::eTransfer`. Clean rebuild + `Glide3xWrapperTests` passed 32/32 on SW and `[Glide3][Phase4]` passed (107 assertions) on Vulkan.
 - **Target Files**:
   - `src/backends/vulkan/VulkanBackend.cpp` (L1376–1377)
 - **What to Do**:
@@ -199,7 +202,8 @@ Recorded before any edits are made:
 - **User Verification**: Confirm Vulkan windowed demo & GTA 1 show no flicker/tearing or validation errors.
 
 #### `T1.4` — Eliminate Redundant CPU `ClearBuffer` on GPU Backends
-- **Status**: `[ ] PENDING`
+- **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION` (Commit `c87df26`)
+- **Automated Result**: Added lazy deferred CPU clear (`ScheduleLazyCpuClear`, `MaterializeLazyCpuClear`, `MaterializeLazyCpuDepthClear`, `DiscardLazyCpuClear`) in `SoftwareBackendBase` so `VulkanBackend::ClearBuffer` and `OpenGLESBackend::ClearBuffer` do zero per-frame CPU memory fills on pure 3D frames while materializing on demand before LFB writes/flushes and discarding on GPU readback. Added `[Software][LFB][LazyClear]` unit test; `Glide3xWrapperTests` passed **33/33 (1794 assertions)**, and `Glide2xWrapperTests "*LFB*"` on Vulkan & GLES matched baseline (4/6 passed, only the 2 pre-existing ABGR/BGRA swizzle failures).
 - **Target Files**:
   - `src/backends/vulkan/VulkanBackend.cpp` (L1001)
   - `src/backends/opengl_es/OpenGLESBackend.cpp` (L394)
@@ -210,7 +214,8 @@ Recorded before any edits are made:
 - **User Verification**: Confirm LFB-heavy demos (`test12_replica_demo`, GTA 1) render cleanly with improved frame pacing.
 
 #### `T1.5` — Fix `JsonConfigLoader` Key-Scoped Parsing + Unit Tests
-- **Status**: `[ ] PENDING`
+- **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION` (Commit `d8b7d03`)
+- **Automated Result**: Replaced global substring matching in `JsonConfigLoader.cpp` with depth-aware, escape-safe key-scoped JSON extractors supporting `"cardModel"`/`"model"`, `"apiVersion"`, `"backend"`, `"logToConsole"`, `"vsync"`, `"forceNoWindow"`, `"maxFps"`, `"logLevel"`, `"msaaSamples"`, `"windowScale"`. Added hermetic `[Config][JsonConfigLoader]` Catch2 tests (21 assertions); `Glide3xWrapperTests` passed **34/34 (1815 assertions)**.
 - **Target Files**:
   - `src/core/JsonConfigLoader.cpp` (L24–79)
   - `tests/test_glide3.cpp` (or `tests/test_architecture.cpp`)
@@ -221,7 +226,8 @@ Recorded before any edits are made:
 - **User Verification**: Confirm existing `glide_config.json` profiles load as expected.
 
 #### `T1.6` — Prepare WSI Build Dependencies & Fix `#if defined(UNIX)` Macro Trap
-- **Status**: `[ ] PENDING`
+- **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION` (Commit `cad7d0d`)
+- **Automated Result**: Wired `HAVE_X11=1`, `wayland-egl` (`HAVE_WAYLAND_EGL=1`), and `egl` (`HAVE_EGL=1`) in `src/CMakeLists.txt` with status line `-- WSI Backends: HAVE_X11=ON, HAVE_WAYLAND=ON (1.24.0), HAVE_WAYLAND_EGL=ON (18.1.0), HAVE_EGL=ON (1.5)`. Documented `#if defined(UNIX)` guard in legacy `PlatformWindowUtils.cpp` until `T2.7` retires it. Full project rebuild (`cmake -S . -B build && cmake --build build -j$(nproc)`) + `Glide3xWrapperTests` passed **34/34 (1815 assertions)**.
 - **Target Files**:
   - `src/CMakeLists.txt` (L40–53)
   - `src/core/PlatformWindowUtils.cpp` (L14, L70, L88, L189 — audit only or guard safely until T2.7 replaces it)
