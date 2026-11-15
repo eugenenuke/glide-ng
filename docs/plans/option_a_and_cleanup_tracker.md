@@ -59,8 +59,8 @@ Recorded before any edits are made:
 | **T1.4** | Phase 1 | Stop GPU backends from calling `SoftwareBackendBase::ClearBuffer(...)` every frame | Low–Med | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `c87df26` |
 | **T1.5** | Phase 1 | Replace fragile substring matching in `JsonConfigLoader.cpp` with key-scoped parser + Catch2 tests | Low | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `d8b7d03` |
 | **T1.6** | Phase 1 | Add `wayland-egl`/`egl` CMake discovery & guard `#if defined(UNIX)` trap until T2.7 | Low | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `cad7d0d` |
-| **T1.7** | Phase 1 | Prefer `VK_PRESENT_MODE_MAILBOX_KHR` on Wayland VSync to fix Mesa `wp_fifo_v1` stutter + Catch2 tests | Low | `[~] IMPLEMENTED — AWAITING USER VERIFICATION` | `15482fc` |
-| **T2.1** | Phase 2 | Implement `NativeSurfaceHost` core + Headless + Standalone SDL2 + `ComputePresentRect` aspect math + tests | Low | `[ ] PENDING` | — |
+| **T1.7** | Phase 1 | Prefer `VK_PRESENT_MODE_MAILBOX_KHR` on Wayland VSync to fix Mesa `wp_fifo_v1` stutter + Catch2 tests | Low | `[x] DONE (USER CONFIRMED — 2026-11-15)` | `15482fc` |
+| **T2.1** | Phase 2 | Implement `NativeSurfaceHost` core + Headless + Standalone SDL2 + `ComputePresentRect` aspect math + tests | Low | `[~] IMPLEMENTED — AWAITING USER VERIFICATION` | `ae65f8e` |
 | **T2.2** | Phase 2 | Implement X11 / XWayland native child window in `NativeSurfaceHost` (`XOpenDisplay`, `XCreateWindow`, `XShape`) + embed test harness | Med | `[ ] PENDING` | — |
 | **T2.3** | Phase 2 | Implement Native Wayland `wl_subsurface` in `NativeSurfaceHost` + SVN DOSBox `setConfig('SDL2')` export + HiDPI scaling | Med–High | `[ ] PENDING` | — |
 | **T2.4** | Phase 2 | Migrate `VulkanBackend` to `NativeSurfaceHost` + aspect-ratio preserving letterbox/pillarbox blit | Med | `[ ] PENDING` | — |
@@ -243,7 +243,7 @@ Recorded before any edits are made:
 - **User Verification**: Confirm CMake summary output shows all four WSI flags enabled.
 
 #### `T1.7` — Fix Wayland Vulkan `VK_PRESENT_MODE_FIFO_KHR` (`wp_fifo_v1`) Stutter
-- **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION` (Commit `15482fc`)
+- **Status**: `[x] DONE (USER CONFIRMED — 2026-11-15)` (Commit `15482fc`)
 - **Root Cause**: Under Gnome Mutter over RDP + Mesa 26.1.6 `llvmpipe`, `VK_PRESENT_MODE_FIFO_KHR` uses Wayland `wp_fifo_v1` + `wp_commit_timer_v1` on a 30 Hz virtual output, scheduling commits +166 ms into the future and causing bursty stutter (12.6 FPS with **966.1 ms** max frame gap). Because Wayland compositors always composite atomically at VBlank (tear-free) and `FrameTracker` caps at `maxFps=60`, selecting `VK_PRESENT_MODE_MAILBOX_KHR` on Wayland surfaces avoids the stall with zero tearing.
 - **Automated Result**:
   - Added `VulkanBackend::SelectPresentMode(availableModes, vsyncEnabled, isWaylandSurface, forceStrictFifo)` in `VulkanBackend.{h,cpp}` and wired it into `CreateSwapchain()` with `GLIDE_VSYNC=fifo` escape hatch.
@@ -298,7 +298,8 @@ Recorded before any edits are made:
 ```
 
 #### `T2.1` — `NativeSurfaceHost` Interface, Headless/Standalone Modes & Aspect-Ratio Math
-- **Status**: `[ ] PENDING`
+- **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION` (Commit `ae65f8e`)
+- **Automated Result**: Added [src/core/NativeSurfaceHost.h](file:///usr/local/google/home/eianiuk/gemini/3dfx/src/core/NativeSurfaceHost.h) (zero X11/Wayland header pollution; opaque native handle getters) and [src/core/NativeSurfaceHost.cpp](file:///usr/local/google/home/eianiuk/gemini/3dfx/src/core/NativeSurfaceHost.cpp) with exact 64-bit integer `ComputePresentRect`, `Headless` mode, and `StandaloneSDL2` mode (`SDL_HINT_NO_SIGNAL_HANDLERS=1`, resizable HiDPI window, `SyncBounds`, `SDL_QUIT`/`SDL_WINDOWEVENT_CLOSE` detection in `PollEvents`). Compiled with zero warnings across all targets; `Glide3xWrapperTests` passed **38/38 test cases (1883 assertions)** including `[WSI][NativeSurfaceHost][AspectRatio]`, `[Headless]`, and `[Standalone]`.
 - **Target Files**:
   - *New*: `src/core/NativeSurfaceHost.h`
   - *New*: `src/core/NativeSurfaceHost.cpp`
