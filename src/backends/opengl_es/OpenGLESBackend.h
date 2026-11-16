@@ -196,11 +196,17 @@ class OpenGLESBackend : public GlideStateTracker {
   uint32_t m_glGammaLutTex{0};
   bool m_useGammaLut{false};
   int m_uUseGammaLutLoc{-1};
+  int m_uPreserveAlphaLoc{-1};
 
   // On-screen HUD Overlay Resources
   HudOverlay m_hudOverlay;
   uint32_t m_glHudTex{0};
   uint64_t m_hudUploadedRev{0};
+
+  // Sparse LFB Overlay Composite Texture (lazily allocated on first LFB write)
+  uint32_t m_glLfbOverlayTex{0};
+  uint32_t m_glLfbOverlayWidth{0};
+  uint32_t m_glLfbOverlayHeight{0};
 
   // Cached Uniform Locations for geomProgram
   int m_uSstOriginLoc{-1};

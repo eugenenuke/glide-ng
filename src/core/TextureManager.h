@@ -2,6 +2,7 @@
 
 #include <glide.h>
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -38,6 +39,10 @@ struct VirtualTexture {
   bool isPaletted = false;
   bool isNcc = false;
   uint64_t rawDataHash{0};
+  uint64_t swizzledTableHash{0};
+  uint64_t uploadedTableHash{0};
+  bool swizzledWithTable{false};
+  bool uploadedToBackend{false};
 };
 
 class TextureManager {
@@ -77,8 +82,22 @@ class TextureManager {
   void SetTmuMemoryLimitMb(uint32_t tmu, uint32_t limitMb);
 
   // 4. Retrieve bound virtual textures for rendering or software sampler
-  // verification
+  // verification (lazily re-swizzles on CPU if the active palette/NCC table
+  // changed since this texture was last decoded).
   VirtualTexture* GetTexture(uint32_t tmu, uint32_t startAddress);
+
+  // Lazily re-swizzle & upload ONLY the texture being bound when the active
+  // palette or NCC table has changed (avoids O(N_resident) upload storms on
+  // runtime palette swaps).
+  void PrepareTextureForBind(uint32_t tmu, uint32_t startAddress);
+
+  // Fast lock-free check before draw calls for games that change the active
+  // palette/NCC table while keeping the same texture bound.
+  bool HasPendingTableSync() const {
+    return m_tmuTableDirty[0].load(std::memory_order_acquire) ||
+           m_tmuTableDirty[1].load(std::memory_order_acquire);
+  }
+  void SyncBoundTextures();
 
   // 5. Purge and reset TMU memory state
   void Reset();
@@ -95,18 +114,29 @@ class TextureManager {
   struct TmuState {
     uint32_t allocatedBytes = 0;
     std::unordered_map<uint32_t, std::shared_ptr<VirtualTexture>> textures;
-    uint32_t paletteTable[256];
+    uint32_t paletteTable[256]{};
     bool paletteTableLoaded = false;
+    uint64_t paletteHash = 0;
 
     // Two hardware NCC tables (NCC0 and NCC1)
-    GuNccTable nccTables[2];
+    GuNccTable nccTables[2]{};
     bool nccTablesLoaded[2] = {false, false};
+    uint64_t nccHashes[2] = {0, 0};
     uint32_t activeNccTable = 0;  // Default: NCC0 (0)
+    uint32_t boundAddress = 0xFFFFFFFFu;
   };
+
+  static uint64_t GetActiveTableHash_Locked(const TmuState& state,
+                                            const VirtualTexture& tex);
+  static void ReswizzleTexture_Locked(const TmuState& state,
+                                      VirtualTexture& tex);
+  void EnsureTextureReady_Locked(uint32_t tmu, VirtualTexture& tex,
+                                 bool uploadToBackend);
 
   std::mutex m_mutex;
   TmuState m_tmus[2];
   uint32_t m_tmuMemoryLimits[2];
+  std::atomic<bool> m_tmuTableDirty[2]{false, false};
 };
 
 }  // namespace GlideWrapper

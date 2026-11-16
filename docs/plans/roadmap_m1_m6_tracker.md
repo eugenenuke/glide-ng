@@ -21,7 +21,7 @@
 | **M2** | `feat/m2-logging-perf-trace` | Tiered logging (`OFF`..`TRACE`), category filtering, frame-windowed tracing, microsecond timestamps, buffered flushing, and runtime per-frame perf breakdown (+ CSV perf log) | Med | `[x] DONE (USER CONFIRMED — 2026-11-15)` | Merged to `main` |
 | **M3** | `feat/m3-hud-fps` | DXVK-style on-screen HUD (`GLIDE_NG_HUD=fps`, extensible) rendered cleanly in each backend's post-scene presentation pass (Vulkan, GLES, SW) | Med | `[x] DONE (USER CONFIRMED — 2026-11-15)` | Merged to `main` |
 | **M4** | `fix/m4-parked-sdk-tests` | Fix parked official SDK tests: `test16` ('P' plug R/B inversion on VK/GLES), `test22` (SW multi-pass fog + `largeLod` mip offset), `test25` & `test27` + standalone WSI event responsiveness + Catch2 regressions | Med | `[x] DONE (USER CONFIRMED — 2026-11-15)` | Merged to `main` |
-| **M5** | `fix/m5-carmageddon` | Carmageddon (`carma`) compatibility & performance: black menus, missing in-game UI/HUD, perf bottleneck, initial focus/input behavior (using M2 traces & M3 HUD) | Med–High | `[ ] PENDING` | — |
+| **M5** | `fix/m5-carmageddon` | Carmageddon (`carma`) compatibility & performance: black menus, missing in-game UI/HUD, perf bottleneck, initial focus/input behavior + deferred GPU state-dedup & batching optimizations | Med–High | `[~] IMPLEMENTED — AWAITING USER VERIFICATION` | — |
 | **M6** | `feat/m6-dos-tools-bench` | Optional Open Watcom v2 DOS cross-build (`vendor/watcom`) + dual Linux/DOS `glide_info` + GPU/Glide-bound active visual benchmark (`glide_bench`) with in-Glide on-screen FPS & diagnostics | High | `[ ] PENDING` | — |
 | *(Future)* **M7** | `feat/m7-glide-envvars-p2` | Phase-2 authentic `FX_GLIDE_*` / `SST_*` expansion (`FX_GLIDE_FBRAM`, `FX_GLIDE_TMU_MEMSIZE`, `SSTV2_NUM_TMUS`, `SST_GAMMA`, `FX_GLIDE_IGNORE_REOPEN`, `FX_GLIDE_NO_DITHER_SUB`, `FX_GLIDE_BOUNDS_CHECK`, `FX_SNAPSHOT`) | Low | `[ ] DEFERRED` | — |
 
@@ -156,12 +156,44 @@
 
 ---
 
-## 6. Upcoming Milestones (High-Level Scope — Detailed Just-In-Time)
+## 6. Milestone M5: Carmageddon (`carma`) Compatibility & Performance + GPU State-Dedup (`fix/m5-carmageddon`)
 
-### Milestone M5 — Carmageddon (`carma`) Compatibility & Performance (`fix/m5-carmageddon`)
-- Capture M2 `LFB,API,PERF` logs & CSV traces from menus and race.
-- Fix black menus, missing in-game UI/HUD, performance bottleneck, and initial focus/input quirk; validate with M3 HUD across all backends.
-- **Deferred GPU State-Dedup & Batching Optimizations** (flagged during M1 verification): audit GPU backend state setters for unconditional `FlushBatch()` on no-op state updates (notably `OpenGLESBackend::SetBlendState` and sibling GLES/Vulkan setters) and hoist redundant per-face `grAlphaBlendFunction` calls in `GlideSplashAnimator`, verified with M2 draw-call/flush metrics.
+### Root Causes Identified from Live M2 Traces (`carma`, DOSBox SVN `output=surface`, Wayland)
+1. **Black Menus & Missing In-Game 2D UI/HUD (All 3 Backends)**:
+   - Carmageddon acquires a **persistent `GR_LFB_WRITE_ONLY` lock** (`grLfbLock(GR_LFB_WRITE_ONLY, GR_BUFFER_BACKBUFFER, ...)`) and writes 2D menu screens and in-game HUD elements directly into the locked staging pointer across multiple frames **without calling `grLfbUnlock` before each `grBufferSwap`**. Previously, `LfbManager` only flushed staging pixels on `Unlock()`.
+   - `LfbManager::Lock()` compared `type == GR_LFB_WRITE_ONLY` instead of masking `(type & 0x0Fu)`, rejecting `GR_LFB_NOIDLE` (`0x10`) write locks; and write-only locks eagerly called synchronous `ReadLFBData()` (stalling GPU pipelines every frame).
+   - `GlideSplashAnimator::RenderBanner()` (`grShamelessPlug`) previously called `grLfbLock`/`grLfbUnlock`, which clobbered persistent guest LFB locks and churned Glide state on every swap.
+   - `CpuLfbStaging` had inverted `GR_BLEND_*` enum factors (`GR_BLEND_SRC_ALPHA=1` vs `GR_BLEND_ONE=4`), signed negative `srcStride` bugs, and full-frame GPU upload/readback paths that either clobbered 3D geometry or stalled the GPU.
+2. **Severe In-Race Performance Bottleneck (~4–10 FPS)**:
+   - Carmageddon switches `GR_TEXTABLE_PALETTE` frequently each frame while ~100+ `P_8` textures remain resident in TMU VRAM. `TextureManager::LoadTable()` eagerly CPU-swizzled and re-uploaded *every* resident texture on every palette change (**1,226 texture uploads / 47 MB per frame**!).
+   - `VulkanDraw` performed per-triangle pipeline/descriptor map lookups, wrapped a single shared vertex buffer with `waitIdle()`, and lacked deferred retirement for overwritten textures/descriptor sets.
+   - `OpenGLESBackend` flushed batches unconditionally on redundant no-op state setters, and `OpenGLESDraw` split batches on `m_stateCacheDirty` after every state change.
+   - `GlideSplashAnimator::DrawFaces` called `grAlphaBlendFunction` redundantly inside the per-face loop.
+
+### M5 Task Breakdown
+
+- **`M5.1`** — Persistent LFB Write-Locks & Sparse Alpha-Masked GPU Overlay Compositing (`LfbManager.{h,cpp}`, `CpuLfbStaging.{h,cpp}`, `GlideEntryCommon.{h,cpp}`, `glide2_entry.cpp`, `glide3_entry.cpp`, `GlideSplashAnimator.cpp`, `VulkanLfb.cpp`, `VulkanBackend.{h,cpp}`, `VulkanDraw.cpp`, `OpenGLESBackend.{h,cpp}`, `OpenGLESDraw.cpp`, `OpenGLESShaders.cpp`):
+  - Mask `GR_LFB_NOIDLE` (`type & 0x0Fu`) in `LfbManager`; separate `WriteLockState` from `ReadLockState`; initialize write-only staging buffers with a sentinel color instead of synchronous GPU `ReadLFBData()`; add lock-free `FlushActiveWriteLock()` invoked in `grBufferSwap` before `grShamelessPlug` and `SwapBuffers()`, resetting staging to sentinel in-place without reallocating the guest pointer; add `LfbManager::Reset()` on window close / shutdown.
+  - Refactor `GlideSplashAnimator::RenderBanner()` to write directly via `backend->WriteLFB(...)` using a one-time flipped static 180×90 buffer — never touching `grLfbLock`/`grLfbUnlock` or Glide pipeline state.
+  - Fix `CpuLfbStaging` `GR_BLEND_*` enum factors, chromakey matching, and negative `srcStride`; add sparse alpha-masked overlay tracking (`WriteOverlayLFB` with Porter-Duff `SRC OVER DST` stacking and tight `[minY..maxY]` bounds).
+  - Implement zero-readback, zero-`waitIdle()` sparse LFB overlay compositing in both **Vulkan** (`VulkanLfb.cpp` reusing `hud_vert`/`hud_frag` SPIR-V, `eB8G8R8A8Unorm`, `m_renderPass`, per-frame staging ring, flushing both FRONT and BACK buffers after `FlushBatch()`) and **OpenGL ES** (`OpenGLESBackend.cpp` + `uPreserveAlpha` uniform in `OpenGLESShaders.cpp`, fixing both sparse LFB overlay and HUD alpha blending without breaking Wayland window opacity).
+  - **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION`
+- **`M5.2`** — Lazy Palette/NCC Texture Swizzling & Deferred GPU State-Dedup / Batching (`TextureManager.{h,cpp}`, `GlideEntryCommon.{h,cpp}`, `glide2_entry.cpp`, `glide3_entry.cpp`, `GlideSplashAnimator.cpp`, `VulkanBackend.{h,cpp}`, `VulkanDraw.cpp`, `VulkanTextures.cpp`, `OpenGLESBackend.cpp`, `OpenGLESDraw.cpp`, `OpenGLESTextures.cpp`):
+  - Replace eager per-palette re-uploads in `TextureManager::LoadTable()` with FNV-1a table hashing, identical-table `memcmp` early-out, and lazy per-TMU dirty flags (`PrepareTextureForBind` / `SyncBoundTextures`), so only bound textures drawn with a changed palette are re-swizzled and uploaded.
+  - Deduplicate all ~23 state/texture setters in `OpenGLESBackend` against `GlideStateTracker` before `FlushBatch(true)`, and fix the mid-batch `m_stateCacheDirty` split bug in `OpenGLESDraw.cpp`.
+  - Add cached active pipeline & descriptor resolution (`ResolveDrawState_Locked`), per-frame double-buffered vertex buffer slots (eliminating wrap `waitIdle()` stalls), and fence-synchronized deferred retirement queues (`m_retiredTextures[2]`, `m_retiredDescriptorSets[2]`) in `VulkanBackend` / `VulkanDraw` / `VulkanTextures`.
+  - Hoist redundant per-face `grAlphaBlendFunction` out of the face loop in `GlideSplashAnimator::DrawFaces`.
+  - Verified with M2 `GLIDE_NG_PERF_LOG` on `splash_showcase_demo`: reduced draw calls from ~1,700/frame to **13/frame** on both Vulkan (`9.39 ms` median) and OpenGL ES (`8.29 ms` median) on `llvmpipe`.
+  - **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION`
+- **`M5.3`** — Automated `[M5]` Regressions & Full Verification Matrix (`tests/test_architecture.cpp`):
+  - Added `[Glide2][M5]` Catch2 suites (`M5.1` persistent LFB write-lock menus, 3D + sparse HUD + Shameless Plug coexistence with in-band 3D preservation check, `GR_LFB_WRITE_ONLY | GR_LFB_NOIDLE`; `M5.2` lazy `TextureManager` palette switching & state-setter deduplication).
+  - Updated 3 stale `test16` shameless-plug golden values in `tests/test_architecture.cpp` to match authentic 3dfx `gbanner.c` `GR_BLEND_SRC_ALPHA` (`90/255`) translucency after fixing the `CpuLfbStaging` blend-enum bug.
+  - Verified clean build (0 `-Werror` warnings), `Glide2xWrapperTests` 100% pass across `software`/`vulkan`/`opengl_es`, `Glide3xWrapperTests` 45/46 (+ `[WSI][NativeSurfaceHost]` 64/64 with `SDL_VIDEODRIVER=dummy`), 6-cell `child_surface_embed_test` matrix across X11 & Wayland, and privacy scan (0 hits).
+  - **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION`
+
+---
+
+## 7. Upcoming Milestones (High-Level Scope — Detailed Just-In-Time)
 
 ### Milestone M6 — Optional DOS Diagnostics & GPU-Bound Benchmark (`feat/m6-dos-tools-bench`)
 - Optional Open Watcom v2 toolchain detection (`vendor/watcom` or `$WATCOM`); never blocks Linux builds when absent.

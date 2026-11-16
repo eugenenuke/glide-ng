@@ -91,6 +91,7 @@ void OpenGLESBackend::UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
 
   glBindTexture(GL_TEXTURE_2D, 0);
+  MarkStateDirty();
   checkGLError("UploadTexture");
 }
 
@@ -206,13 +207,19 @@ void OpenGLESBackend::BindTexture(uint32_t tmu, uint32_t startAddress,
                                   uint32_t clampS, uint32_t clampT,
                                   uint32_t minFilter, uint32_t magFilter) {
   std::lock_guard<std::mutex> lock(m_mutex);
+  if (tmu < 2 && m_boundTexAddress[tmu] == startAddress &&
+      m_texClampS[tmu] == clampS && m_texClampT[tmu] == clampT &&
+      m_texMinFilter[tmu] == minFilter && m_texMagFilter[tmu] == magFilter) {
+    return;
+  }
   FlushBatch(true);
-  GlideStateTracker::BindTexture_Locked(tmu, startAddress, clampS, clampT, minFilter,
-                                 magFilter);
+  GlideStateTracker::BindTexture_Locked(tmu, startAddress, clampS, clampT,
+                                        minFilter, magFilter);
 }
 
 void OpenGLESBackend::SetTexLodBias(uint32_t tmu, float bias) {
   std::lock_guard<std::mutex> lock(m_mutex);
+  if (tmu < 2 && m_texLodBias[tmu] == bias) return;
   FlushBatch(true);
   GlideStateTracker::SetTexLodBias_Locked(tmu, bias);
 }
@@ -220,6 +227,10 @@ void OpenGLESBackend::SetTexLodBias(uint32_t tmu, float bias) {
 void OpenGLESBackend::SetTexMipMapMode(uint32_t tmu, uint32_t mode,
                                        bool lodBlend) {
   std::lock_guard<std::mutex> lock(m_mutex);
+  if (tmu < 2 && m_texMipMapMode[tmu] == mode &&
+      m_texLodBlend[tmu] == lodBlend) {
+    return;
+  }
   FlushBatch(true);
   GlideStateTracker::SetTexMipMapMode_Locked(tmu, mode, lodBlend);
 }

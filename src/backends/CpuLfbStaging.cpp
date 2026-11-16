@@ -13,6 +13,88 @@ namespace GlideWrapper {
 
 namespace {
 
+inline uint16_t Color24ToRgb565(uint32_t color, uint32_t pixelFormatOverride) {
+  uint32_t r = (color >> 16) & 0xFF;
+  uint32_t g = (color >> 8) & 0xFF;
+  uint32_t b = color & 0xFF;
+  if (pixelFormatOverride == 1) {  // GR_COLORFORMAT_ABGR
+    std::swap(r, b);
+  }
+  return static_cast<uint16_t>(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
+}
+
+inline uint16_t Color24ToRgb555(uint32_t color, uint32_t pixelFormatOverride) {
+  uint32_t r = (color >> 16) & 0xFF;
+  uint32_t g = (color >> 8) & 0xFF;
+  uint32_t b = color & 0xFF;
+  if (pixelFormatOverride == 1) {  // GR_COLORFORMAT_ABGR
+    std::swap(r, b);
+  }
+  return static_cast<uint16_t>(((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3));
+}
+
+inline uint32_t Color24ToRgb888(uint32_t color, uint32_t pixelFormatOverride) {
+  uint32_t r = (color >> 16) & 0xFF;
+  uint32_t g = (color >> 8) & 0xFF;
+  uint32_t b = color & 0xFF;
+  if (pixelFormatOverride == 1) {  // GR_COLORFORMAT_ABGR
+    std::swap(r, b);
+  }
+  return (r << 16) | (g << 8) | b;
+}
+
+inline void EvalRgbBlendFactor(uint32_t factorEnum, bool isSrc, uint32_t srcA,
+                               uint32_t dstA, uint32_t srcR, uint32_t srcG,
+                               uint32_t srcB, uint32_t dstR, uint32_t dstG,
+                               uint32_t dstB, float& fR, float& fG,
+                               float& fB) {
+  switch (factorEnum) {
+    case 0:  // GR_BLEND_ZERO
+      fR = fG = fB = 0.0f;
+      return;
+    case 1:  // GR_BLEND_SRC_ALPHA
+      fR = fG = fB = srcA / 255.0f;
+      return;
+    case 2:  // GR_BLEND_DST_COLOR (src) / GR_BLEND_SRC_COLOR (dst)
+      if (isSrc) {
+        fR = dstR / 255.0f;
+        fG = dstG / 255.0f;
+        fB = dstB / 255.0f;
+      } else {
+        fR = srcR / 255.0f;
+        fG = srcG / 255.0f;
+        fB = srcB / 255.0f;
+      }
+      return;
+    case 3:  // GR_BLEND_DST_ALPHA
+      fR = fG = fB = dstA / 255.0f;
+      return;
+    case 4:  // GR_BLEND_ONE
+      fR = fG = fB = 1.0f;
+      return;
+    case 5:  // GR_BLEND_ONE_MINUS_SRC_ALPHA
+      fR = fG = fB = 1.0f - (srcA / 255.0f);
+      return;
+    case 6:  // GR_BLEND_ONE_MINUS_DST_COLOR (src) / ONE_MINUS_SRC_COLOR (dst)
+      if (isSrc) {
+        fR = 1.0f - (dstR / 255.0f);
+        fG = 1.0f - (dstG / 255.0f);
+        fB = 1.0f - (dstB / 255.0f);
+      } else {
+        fR = 1.0f - (srcR / 255.0f);
+        fG = 1.0f - (srcG / 255.0f);
+        fB = 1.0f - (srcB / 255.0f);
+      }
+      return;
+    case 7:  // GR_BLEND_ONE_MINUS_DST_ALPHA
+      fR = fG = fB = 1.0f - (dstA / 255.0f);
+      return;
+    default:
+      fR = fG = fB = isSrc ? 1.0f : 0.0f;
+      return;
+  }
+}
+
 template <uint32_t SrcFmt, bool ChromakeyEnabled, bool BlendEnabled,
           bool HasRefData>
 struct LfbRowProcessor {
@@ -27,6 +109,24 @@ struct LfbRowProcessor {
     uint32_t writeY = dstY + y;
     if (writeY >= fbHeight) return;
 
+    const std::ptrdiff_t rowOffset =
+        static_cast<std::ptrdiff_t>(y) * static_cast<std::ptrdiff_t>(srcStride);
+    const uint8_t* rowIn = inBytes + rowOffset;
+    const uint8_t* rowRef = HasRefData ? (refBytes + rowOffset) : nullptr;
+
+    uint16_t chroma16 = 0;
+    uint32_t chroma24 = 0;
+    if constexpr (ChromakeyEnabled) {
+      if constexpr (SrcFmt == 0 || SrcFmt == 12) {
+        chroma16 = Color24ToRgb565(config.chromakeyValue, pixelFormatOverride);
+      } else if constexpr (SrcFmt == 1 || SrcFmt == 2 || SrcFmt == 13 ||
+                           SrcFmt == 14) {
+        chroma16 = Color24ToRgb555(config.chromakeyValue, pixelFormatOverride);
+      } else {
+        chroma24 = Color24ToRgb888(config.chromakeyValue, pixelFormatOverride);
+      }
+    }
+
     for (uint32_t x = 0; x < srcWidth; ++x) {
       uint32_t writeX = dstX + x;
       if (writeX >= fbWidth) break;
@@ -40,13 +140,12 @@ struct LfbRowProcessor {
       if constexpr (is16Bit) {
         if constexpr (SrcFmt == 12 || SrcFmt == 13 || SrcFmt == 14) {
           c16 = static_cast<uint16_t>(
-              reinterpret_cast<const uint32_t*>(inBytes + y * srcStride)[x] &
-              0xFFFF);
+              reinterpret_cast<const uint32_t*>(rowIn)[x] & 0xFFFF);
         } else {
-          c16 = reinterpret_cast<const uint16_t*>(inBytes + y * srcStride)[x];
+          c16 = reinterpret_cast<const uint16_t*>(rowIn)[x];
         }
       } else {
-        c32 = reinterpret_cast<const uint32_t*>(inBytes + y * srcStride)[x];
+        c32 = reinterpret_cast<const uint32_t*>(rowIn)[x];
       }
 
       // 2. Dirty tracking check
@@ -55,30 +154,30 @@ struct LfbRowProcessor {
           uint16_t ref16;
           if constexpr (SrcFmt == 12 || SrcFmt == 13 || SrcFmt == 14) {
             ref16 = static_cast<uint16_t>(
-                reinterpret_cast<const uint32_t*>(refBytes + y * srcStride)[x] &
-                0xFFFF);
+                reinterpret_cast<const uint32_t*>(rowRef)[x] & 0xFFFF);
           } else {
-            ref16 =
-                reinterpret_cast<const uint16_t*>(refBytes + y * srcStride)[x];
+            ref16 = reinterpret_cast<const uint16_t*>(rowRef)[x];
           }
           if (c16 == ref16) continue;
         } else {
-          uint32_t ref32 =
-              reinterpret_cast<const uint32_t*>(refBytes + y * srcStride)[x];
+          uint32_t ref32 = reinterpret_cast<const uint32_t*>(rowRef)[x];
           if (c32 == ref32) continue;
         }
       }
 
       // 3. Chroma Keying check
       if constexpr (ChromakeyEnabled) {
-        if constexpr (is16Bit) {
-          if (c16 == static_cast<uint16_t>(config.chromakeyValue)) continue;
-        } else {
-          if (c32 == config.chromakeyValue) continue;
+        if constexpr (SrcFmt == 0 || SrcFmt == 12) {
+          if (c16 == chroma16) continue;
+        } else if constexpr (SrcFmt == 1 || SrcFmt == 2 || SrcFmt == 13 ||
+                             SrcFmt == 14) {
+          if ((c16 & 0x7FFFu) == chroma16) continue;
+        } else if constexpr (!is16Bit) {
+          if ((c32 & 0x00FFFFFFu) == chroma24) continue;
         }
       }
 
-      // 4. Unpack pixel to 32-bit ARGB/BGRA
+      // 4. Unpack pixel to 32-bit ARGB
       uint32_t pWord = 0xFF000000;
       if constexpr (SrcFmt == 0 || SrcFmt == 12) {
         uint32_t r = ((c16 >> 11) & 0x1F) * 255 / 31;
@@ -118,37 +217,29 @@ struct LfbRowProcessor {
         uint32_t srcG = (pWord >> 8) & 0xFF;
         uint32_t srcB = pWord & 0xFF;
 
-        if constexpr (SrcFmt == 0 || SrcFmt == 4 || SrcFmt == 12 ||
-                      SrcFmt == 15) {
+        if constexpr (SrcFmt == 0 || SrcFmt == 1 || SrcFmt == 4 ||
+                      SrcFmt == 12 || SrcFmt == 13 || SrcFmt == 15) {
           srcA = config.constantAlpha;
         }
 
         uint32_t dstWord = pixels[writeY * fbWidth + writeX];
+        uint32_t dstA = (dstWord >> 24) & 0xFF;
         uint32_t dstR = (dstWord >> 16) & 0xFF;
         uint32_t dstG = (dstWord >> 8) & 0xFF;
         uint32_t dstB = dstWord & 0xFF;
 
-        float sFactor = 1.0f;
-        float dFactor = 0.0f;
-
-        if (config.rgbSrcBlend == 4) {
-          sFactor = srcA / 255.0f;
-        } else if (config.rgbSrcBlend == 0) {
-          sFactor = 0.0f;
-        }
-
-        if (config.rgbDstBlend == 5) {
-          dFactor = 1.0f - (srcA / 255.0f);
-        } else if (config.rgbDstBlend == 1) {
-          dFactor = 1.0f;
-        }
+        float sR, sG, sB, dR, dG, dB;
+        EvalRgbBlendFactor(config.rgbSrcBlend, true, srcA, dstA, srcR, srcG,
+                           srcB, dstR, dstG, dstB, sR, sG, sB);
+        EvalRgbBlendFactor(config.rgbDstBlend, false, srcA, dstA, srcR, srcG,
+                           srcB, dstR, dstG, dstB, dR, dG, dB);
 
         uint32_t finalR =
-            static_cast<uint32_t>(srcR * sFactor + dstR * dFactor + 0.5f);
+            static_cast<uint32_t>(srcR * sR + dstR * dR + 0.5f);
         uint32_t finalG =
-            static_cast<uint32_t>(srcG * sFactor + dstG * dFactor + 0.5f);
+            static_cast<uint32_t>(srcG * sG + dstG * dG + 0.5f);
         uint32_t finalB =
-            static_cast<uint32_t>(srcB * sFactor + dstB * dFactor + 0.5f);
+            static_cast<uint32_t>(srcB * sB + dstB * dB + 0.5f);
 
         finalR = std::min(255u, finalR);
         finalG = std::min(255u, finalG);
@@ -162,6 +253,178 @@ struct LfbRowProcessor {
     }
   }
 };
+
+template <uint32_t SrcFmt, bool ChromakeyEnabled, bool AlphaBlendOverlay,
+          bool HasRefData>
+struct LfbOverlayRowProcessor {
+  static inline void ProcessRow(uint32_t y, uint32_t dstX, uint32_t dstY,
+                                uint32_t srcWidth, uint32_t fbWidth,
+                                uint32_t fbHeight,
+                                uint32_t pixelFormatOverride, uint32_t* overlay,
+                                const uint8_t* inBytes, const uint8_t* refBytes,
+                                int32_t srcStride,
+                                const LfbPipelineConfig& config,
+                                uint32_t& rowModifiedCount) {
+    uint32_t writeY = dstY + y;
+    if (writeY >= fbHeight) return;
+
+    const std::ptrdiff_t rowOffset =
+        static_cast<std::ptrdiff_t>(y) * static_cast<std::ptrdiff_t>(srcStride);
+    const uint8_t* rowIn = inBytes + rowOffset;
+    const uint8_t* rowRef = HasRefData ? (refBytes + rowOffset) : nullptr;
+
+    uint16_t chroma16 = 0;
+    uint32_t chroma24 = 0;
+    if constexpr (ChromakeyEnabled) {
+      if constexpr (SrcFmt == 0 || SrcFmt == 12) {
+        chroma16 = Color24ToRgb565(config.chromakeyValue, pixelFormatOverride);
+      } else if constexpr (SrcFmt == 1 || SrcFmt == 2 || SrcFmt == 13 ||
+                           SrcFmt == 14) {
+        chroma16 = Color24ToRgb555(config.chromakeyValue, pixelFormatOverride);
+      } else {
+        chroma24 = Color24ToRgb888(config.chromakeyValue, pixelFormatOverride);
+      }
+    }
+
+    uint32_t* dstRow = overlay + static_cast<size_t>(writeY) * fbWidth;
+    for (uint32_t x = 0; x < srcWidth; ++x) {
+      uint32_t writeX = dstX + x;
+      if (writeX >= fbWidth) break;
+
+      constexpr bool is16Bit =
+          (SrcFmt == 0 || SrcFmt == 1 || SrcFmt == 2 || SrcFmt == 12 ||
+           SrcFmt == 13 || SrcFmt == 14 || SrcFmt == 15);
+      uint16_t c16 = 0;
+      uint32_t c32 = 0;
+      if constexpr (is16Bit) {
+        if constexpr (SrcFmt == 12 || SrcFmt == 13 || SrcFmt == 14) {
+          c16 = static_cast<uint16_t>(
+              reinterpret_cast<const uint32_t*>(rowIn)[x] & 0xFFFF);
+        } else {
+          c16 = reinterpret_cast<const uint16_t*>(rowIn)[x];
+        }
+      } else {
+        c32 = reinterpret_cast<const uint32_t*>(rowIn)[x];
+      }
+
+      if constexpr (HasRefData) {
+        if constexpr (is16Bit) {
+          uint16_t ref16;
+          if constexpr (SrcFmt == 12 || SrcFmt == 13 || SrcFmt == 14) {
+            ref16 = static_cast<uint16_t>(
+                reinterpret_cast<const uint32_t*>(rowRef)[x] & 0xFFFF);
+          } else {
+            ref16 = reinterpret_cast<const uint16_t*>(rowRef)[x];
+          }
+          if (c16 == ref16) continue;
+        } else {
+          uint32_t ref32 = reinterpret_cast<const uint32_t*>(rowRef)[x];
+          if (c32 == ref32) continue;
+        }
+      }
+
+      if constexpr (ChromakeyEnabled) {
+        if constexpr (SrcFmt == 0 || SrcFmt == 12) {
+          if (c16 == chroma16) continue;
+        } else if constexpr (SrcFmt == 1 || SrcFmt == 2 || SrcFmt == 13 ||
+                             SrcFmt == 14) {
+          if ((c16 & 0x7FFFu) == chroma16) continue;
+        } else if constexpr (!is16Bit) {
+          if ((c32 & 0x00FFFFFFu) == chroma24) continue;
+        }
+      }
+
+      uint32_t r = 0, g = 0, b = 0, a = 255;
+      if constexpr (SrcFmt == 0 || SrcFmt == 12) {
+        r = ((c16 >> 11) & 0x1F) * 255 / 31;
+        g = ((c16 >> 5) & 0x3F) * 255 / 63;
+        b = (c16 & 0x1F) * 255 / 31;
+      } else if constexpr (SrcFmt == 1 || SrcFmt == 2 || SrcFmt == 13 ||
+                           SrcFmt == 14) {
+        r = ((c16 >> 10) & 0x1F) * 255 / 31;
+        g = ((c16 >> 5) & 0x1F) * 255 / 31;
+        b = (c16 & 0x1F) * 255 / 31;
+        a = (SrcFmt == 2 || SrcFmt == 14) ? (((c16 >> 15) & 1) ? 255 : 0) : 255;
+      } else {
+        (void)pixelFormatOverride;
+        r = (((c32 >> 16) & 0xFF) >> 3) * 255 / 31;
+        g = (((c32 >> 8) & 0xFF) >> 2) * 255 / 63;
+        b = ((c32 & 0xFF) >> 3) * 255 / 31;
+        a = (SrcFmt == 4 || SrcFmt == 15) ? 255 : ((c32 >> 24) & 0xFF);
+      }
+
+      uint32_t outA = 255;
+      if constexpr (AlphaBlendOverlay) {
+        if constexpr (SrcFmt == 0 || SrcFmt == 1 || SrcFmt == 4 ||
+                      SrcFmt == 12 || SrcFmt == 13 || SrcFmt == 15) {
+          outA = config.constantAlpha;
+        } else {
+          outA = a;
+        }
+      }
+
+      if (outA == 0) {
+        continue;
+      }
+
+      const uint32_t existing = dstRow[writeX];
+      const uint32_t existingA = (existing >> 24) & 0xFF;
+      if (outA == 255 || existingA == 0) {
+        dstRow[writeX] = (outA << 24) | (r << 16) | (g << 8) | b;
+      } else {
+        // Porter-Duff SRC OVER DST when stacking two LFB overlays before flush
+        // (e.g., persistent guest LFB write followed by grShamelessPlug).
+        const float sa = outA / 255.0f;
+        const float da = existingA / 255.0f;
+        const float resA = sa + da * (1.0f - sa);
+        const float invResA = (resA > 0.0f) ? (1.0f / resA) : 0.0f;
+        const uint32_t er = (existing >> 16) & 0xFF;
+        const uint32_t eg = (existing >> 8) & 0xFF;
+        const uint32_t eb = existing & 0xFF;
+        const uint32_t rr = std::min(
+            255u, static_cast<uint32_t>((r * sa + er * da * (1.0f - sa)) * invResA + 0.5f));
+        const uint32_t rg = std::min(
+            255u, static_cast<uint32_t>((g * sa + eg * da * (1.0f - sa)) * invResA + 0.5f));
+        const uint32_t rb = std::min(
+            255u, static_cast<uint32_t>((b * sa + eb * da * (1.0f - sa)) * invResA + 0.5f));
+        const uint32_t ra = std::min(255u, static_cast<uint32_t>(resA * 255.0f + 0.5f));
+        dstRow[writeX] = (ra << 24) | (rr << 16) | (rg << 8) | rb;
+      }
+      rowModifiedCount++;
+    }
+  }
+};
+
+template <uint32_t SrcFmt, bool ChromakeyEnabled, bool AlphaBlendOverlay,
+          bool HasRefData>
+void RunWriteOverlayParallel(uint32_t srcHeight, uint32_t dstX, uint32_t dstY,
+                             uint32_t srcWidth, uint32_t fbWidth,
+                             uint32_t fbHeight, uint32_t pixelFormatOverride,
+                             uint32_t* overlay, const uint8_t* inBytes,
+                             const uint8_t* refBytes, int32_t srcStride,
+                             const LfbPipelineConfig& config,
+                             uint32_t& modifiedCount, uint32_t& outMinY,
+                             uint32_t& outMaxY) {
+  uint32_t localMinY = fbHeight;
+  uint32_t localMaxY = 0;
+  for (uint32_t y = 0; y < srcHeight; ++y) {
+    uint32_t rowModifiedCount = 0;
+    LfbOverlayRowProcessor<SrcFmt, ChromakeyEnabled, AlphaBlendOverlay,
+                           HasRefData>::ProcessRow(y, dstX, dstY, srcWidth,
+                                                   fbWidth, fbHeight,
+                                                   pixelFormatOverride, overlay,
+                                                   inBytes, refBytes, srcStride,
+                                                   config, rowModifiedCount);
+    if (rowModifiedCount > 0) {
+      const uint32_t wy = dstY + y;
+      if (wy < localMinY) localMinY = wy;
+      if (wy > localMaxY) localMaxY = wy;
+      modifiedCount += rowModifiedCount;
+    }
+  }
+  outMinY = localMinY;
+  outMaxY = localMaxY;
+}
 
 template <uint32_t SrcFmt, bool ChromakeyEnabled, bool BlendEnabled,
           bool HasRefData>
@@ -195,8 +458,17 @@ void CpuLfbStaging::Configure(uint32_t width, uint32_t height,
   m_dirty = false;
   m_bufferDirty[0] = false;
   m_bufferDirty[1] = false;
+  m_overlayDirty[0] = false;
+  m_overlayDirty[1] = false;
+  m_overlayMinY[0] = m_overlayMinY[1] = 0;
+  m_overlayMaxY[0] = m_overlayMaxY[1] = 0;
   m_pendingClear[0] = {};
   m_pendingClear[1] = {};
+
+  m_overlayBuffers[0].clear();
+  m_overlayBuffers[0].shrink_to_fit();
+  m_overlayBuffers[1].clear();
+  m_overlayBuffers[1].shrink_to_fit();
 
   if (allocateEagerly) {
     EnsureAllocated();
@@ -215,6 +487,10 @@ void CpuLfbStaging::Release() {
   m_buffers[0].shrink_to_fit();
   m_buffers[1].clear();
   m_buffers[1].shrink_to_fit();
+  m_overlayBuffers[0].clear();
+  m_overlayBuffers[0].shrink_to_fit();
+  m_overlayBuffers[1].clear();
+  m_overlayBuffers[1].shrink_to_fit();
   m_width = 0;
   m_height = 0;
   m_frontIdx = 0;
@@ -222,6 +498,10 @@ void CpuLfbStaging::Release() {
   m_dirty = false;
   m_bufferDirty[0] = false;
   m_bufferDirty[1] = false;
+  m_overlayDirty[0] = false;
+  m_overlayDirty[1] = false;
+  m_overlayMinY[0] = m_overlayMinY[1] = 0;
+  m_overlayMaxY[0] = m_overlayMaxY[1] = 0;
   m_pendingClear[0] = {};
   m_pendingClear[1] = {};
 }
@@ -230,8 +510,180 @@ void CpuLfbStaging::ResetPendingAndDirty() {
   m_dirty = false;
   m_bufferDirty[0] = false;
   m_bufferDirty[1] = false;
+  ClearOverlay(0);
+  ClearOverlay(1);
   m_pendingClear[0] = {};
   m_pendingClear[1] = {};
+}
+
+bool CpuLfbStaging::EnsureOverlayAllocated() {
+  if (m_width == 0 || m_height == 0) return false;
+  const size_t totalPixels = static_cast<size_t>(m_width) * m_height;
+  if (m_overlayBuffers[0].size() == totalPixels &&
+      m_overlayBuffers[1].size() == totalPixels) {
+    return true;
+  }
+  m_overlayBuffers[0].assign(totalPixels, 0u);
+  m_overlayBuffers[1].assign(totalPixels, 0u);
+  m_overlayDirty[0] = false;
+  m_overlayDirty[1] = false;
+  m_overlayMinY[0] = m_overlayMinY[1] = m_height;
+  m_overlayMaxY[0] = m_overlayMaxY[1] = 0;
+  GLIDE_LOG(INFO, "CpuLfbStaging",
+            "Lazily allocated sparse LFB overlay buffers: "
+                << m_width << "x" << m_height << " ("
+                << (totalPixels * sizeof(uint32_t) * 2) << " bytes).");
+  return true;
+}
+
+void CpuLfbStaging::ClearOverlay(uint32_t logicalBuffer) {
+  const uint32_t idx = (logicalBuffer == 0) ? 0u : 1u;
+  if (m_overlayDirty[idx] && !m_overlayBuffers[idx].empty() && m_width > 0 &&
+      m_overlayMinY[idx] <= m_overlayMaxY[idx] && m_overlayMaxY[idx] < m_height) {
+    const size_t startPx = static_cast<size_t>(m_overlayMinY[idx]) * m_width;
+    const size_t clearRows =
+        static_cast<size_t>(m_overlayMaxY[idx] - m_overlayMinY[idx] + 1);
+    std::memset(m_overlayBuffers[idx].data() + startPx, 0,
+                clearRows * m_width * sizeof(uint32_t));
+  }
+  m_overlayDirty[idx] = false;
+  m_overlayMinY[idx] = m_height;
+  m_overlayMaxY[idx] = 0;
+}
+
+bool CpuLfbStaging::CanUseOverlayQuad(const LfbPipelineConfig& config) {
+  if (!config.pixelPipeline) return true;
+  // Opaque replacement (ONE, ZERO) or standard alpha blend (SRC_ALPHA, ONE_MINUS_SRC_ALPHA).
+  if (config.rgbSrcBlend == 4u && config.rgbDstBlend == 0u) return true;
+  if (config.rgbSrcBlend == 1u && config.rgbDstBlend == 5u) return true;
+  return false;
+}
+
+bool CpuLfbStaging::WriteOverlayLFB(uint32_t logicalBuffer, uint32_t dstX,
+                                    uint32_t dstY, uint32_t srcWidth,
+                                    uint32_t srcHeight, int32_t srcStride,
+                                    uint32_t srcFmt, const void* srcData,
+                                    const void* refData,
+                                    const LfbPipelineConfig& config,
+                                    uint32_t pixelFormatOverride) {
+  if (!srcData || m_width == 0 || m_height == 0) return false;
+  if (!IsValidSrcFormat(srcFmt)) {
+    GLIDE_LOG(WARN, "WriteLFB",
+              "Invalid or undefined LFB source format: " << srcFmt);
+    return false;
+  }
+  if (!EnsureOverlayAllocated()) return false;
+
+  const uint32_t idx = (logicalBuffer == 0) ? 0u : 1u;
+  uint32_t* overlay = m_overlayBuffers[idx].data();
+  const auto* inBytes = reinterpret_cast<const uint8_t*>(srcData);
+  const auto* refBytes = reinterpret_cast<const uint8_t*>(refData);
+
+  const bool chromakeyEnabled = config.pixelPipeline && config.chromakeyEnabled;
+  const bool alphaBlendOverlay =
+      config.pixelPipeline &&
+      (config.rgbSrcBlend == 1u && config.rgbDstBlend == 5u);
+  const bool hasRefData = (refBytes != nullptr);
+
+  uint32_t modifiedCount = 0;
+  uint32_t minY = m_height;
+  uint32_t maxY = 0;
+
+#define DISPATCH_OVERLAY_CASE(Fmt)                                           \
+  case Fmt:                                                                  \
+    if (chromakeyEnabled) {                                                  \
+      if (alphaBlendOverlay) {                                               \
+        if (hasRefData) {                                                    \
+          RunWriteOverlayParallel<Fmt, true, true, true>(                    \
+              srcHeight, dstX, dstY, srcWidth, m_width, m_height,            \
+              pixelFormatOverride, overlay, inBytes, refBytes, srcStride,    \
+              config, modifiedCount, minY, maxY);                            \
+        } else {                                                             \
+          RunWriteOverlayParallel<Fmt, true, true, false>(                   \
+              srcHeight, dstX, dstY, srcWidth, m_width, m_height,            \
+              pixelFormatOverride, overlay, inBytes, refBytes, srcStride,    \
+              config, modifiedCount, minY, maxY);                            \
+        }                                                                    \
+      } else {                                                               \
+        if (hasRefData) {                                                    \
+          RunWriteOverlayParallel<Fmt, true, false, true>(                   \
+              srcHeight, dstX, dstY, srcWidth, m_width, m_height,            \
+              pixelFormatOverride, overlay, inBytes, refBytes, srcStride,    \
+              config, modifiedCount, minY, maxY);                            \
+        } else {                                                             \
+          RunWriteOverlayParallel<Fmt, true, false, false>(                  \
+              srcHeight, dstX, dstY, srcWidth, m_width, m_height,            \
+              pixelFormatOverride, overlay, inBytes, refBytes, srcStride,    \
+              config, modifiedCount, minY, maxY);                            \
+        }                                                                    \
+      }                                                                      \
+    } else {                                                                 \
+      if (alphaBlendOverlay) {                                               \
+        if (hasRefData) {                                                    \
+          RunWriteOverlayParallel<Fmt, false, true, true>(                   \
+              srcHeight, dstX, dstY, srcWidth, m_width, m_height,            \
+              pixelFormatOverride, overlay, inBytes, refBytes, srcStride,    \
+              config, modifiedCount, minY, maxY);                            \
+        } else {                                                             \
+          RunWriteOverlayParallel<Fmt, false, true, false>(                  \
+              srcHeight, dstX, dstY, srcWidth, m_width, m_height,            \
+              pixelFormatOverride, overlay, inBytes, refBytes, srcStride,    \
+              config, modifiedCount, minY, maxY);                            \
+        }                                                                    \
+      } else {                                                               \
+        if (hasRefData) {                                                    \
+          RunWriteOverlayParallel<Fmt, false, false, true>(                  \
+              srcHeight, dstX, dstY, srcWidth, m_width, m_height,            \
+              pixelFormatOverride, overlay, inBytes, refBytes, srcStride,    \
+              config, modifiedCount, minY, maxY);                            \
+        } else {                                                             \
+          RunWriteOverlayParallel<Fmt, false, false, false>(                 \
+              srcHeight, dstX, dstY, srcWidth, m_width, m_height,            \
+              pixelFormatOverride, overlay, inBytes, refBytes, srcStride,    \
+              config, modifiedCount, minY, maxY);                            \
+        }                                                                    \
+      }                                                                      \
+    }                                                                        \
+    break;
+
+  switch (srcFmt) {
+    DISPATCH_OVERLAY_CASE(0)
+    DISPATCH_OVERLAY_CASE(1)
+    DISPATCH_OVERLAY_CASE(2)
+    DISPATCH_OVERLAY_CASE(4)
+    DISPATCH_OVERLAY_CASE(5)
+    DISPATCH_OVERLAY_CASE(12)
+    DISPATCH_OVERLAY_CASE(13)
+    DISPATCH_OVERLAY_CASE(14)
+    DISPATCH_OVERLAY_CASE(15)
+    default:
+      break;
+  }
+#undef DISPATCH_OVERLAY_CASE
+
+  if (modifiedCount > 0) {
+    if (!m_overlayDirty[idx]) {
+      m_overlayDirty[idx] = true;
+      m_overlayMinY[idx] = minY;
+      m_overlayMaxY[idx] = maxY;
+    } else {
+      m_overlayMinY[idx] = std::min(m_overlayMinY[idx], minY);
+      m_overlayMaxY[idx] = std::max(m_overlayMaxY[idx], maxY);
+    }
+  }
+  return true;
+}
+
+const uint32_t* CpuLfbStaging::GetOverlayForGpuUpload(uint32_t logicalBuffer,
+                                                      uint32_t& outMinY,
+                                                      uint32_t& outMaxY) const {
+  const uint32_t idx = (logicalBuffer == 0) ? 0u : 1u;
+  if (!m_overlayDirty[idx] || m_overlayBuffers[idx].empty()) {
+    return nullptr;
+  }
+  outMinY = m_overlayMinY[idx];
+  outMaxY = m_overlayMaxY[idx];
+  return m_overlayBuffers[idx].data();
 }
 
 bool CpuLfbStaging::EnsureAllocated() {

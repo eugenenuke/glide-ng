@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/IGraphicsBackend.h"
+#include <atomic>
 #include <cstdint>
 #include <vector>
 #include <mutex>
@@ -15,6 +16,14 @@ public:
         return instance;
     }
 
+    // Glide 2.x/3.x lock type bitmask:
+    //   GR_LFB_READ_ONLY = 0x00, GR_LFB_WRITE_ONLY = 0x01,
+    //   GR_LFB_WRITE_ONLY_EXPLICIT_EXT = 0x02, GR_LFB_NOIDLE = 0x10.
+    static constexpr bool IsWriteLockType(uint32_t type) {
+        const uint32_t baseType = type & 0x0Fu;
+        return baseType == 1u || baseType == 2u;
+    }
+
     template <typename LfbInfoType>
     bool Lock(uint32_t type, uint32_t buffer, uint32_t writeMode, uint32_t origin, bool pixelPipeline, LfbInfoType* info) {
         std::lock_guard<std::mutex> lock(m_mutex);
@@ -23,8 +32,8 @@ public:
         auto* b = GetActiveBackend();
         if (!b) return false;
 
-        m_lockState.width = GetBackendWidth();
-        m_lockState.height = GetBackendHeight();
+        const uint32_t width = GetBackendWidth();
+        const uint32_t height = GetBackendHeight();
 
         uint32_t resolvedMode = writeMode;
         if (resolvedMode == 0xFF) { // GR_LFBWRITEMODE_ANY
@@ -36,63 +45,109 @@ public:
         //   2 BPP: 565 (0x0), 555 (0x1), 1555 (0x2), ZA16 (0xf)
         //   4 BPP: 888 (0x4), 8888 (0x5), 565_DEPTH (0xc), 555_DEPTH (0xd),
         //          1555_DEPTH (0xe)
+        uint32_t pixelSize = 0;
         switch (resolvedMode) {
             case 0x0: // GR_LFBWRITEMODE_565
             case 0x1: // GR_LFBWRITEMODE_555
             case 0x2: // GR_LFBWRITEMODE_1555
             case 0xf: // GR_LFBWRITEMODE_ZA16
-                m_lockState.pixelSize = 2;
+                pixelSize = 2;
                 break;
             case 0x4: // GR_LFBWRITEMODE_888 (32-bit xRGB8888)
             case 0x5: // GR_LFBWRITEMODE_8888 (32-bit ARGB8888)
             case 0xc: // GR_LFBWRITEMODE_565_DEPTH
             case 0xd: // GR_LFBWRITEMODE_555_DEPTH
             case 0xe: // GR_LFBWRITEMODE_1555_DEPTH
-                m_lockState.pixelSize = 4;
+                pixelSize = 4;
                 break;
             default:
                 LogErrorUnsupportedWriteMode(writeMode);
                 return false;
         }
 
-        m_lockState.stride = m_lockState.width * m_lockState.pixelSize;
-        m_lockState.stagingBuffer.resize(m_lockState.stride * m_lockState.height);
+        const uint32_t stride = width * pixelSize;
+        const size_t byteSize = static_cast<size_t>(stride) * height;
 
-        ReadLFBData(buffer, m_lockState.stagingBuffer.data());
-        m_lockState.originalBuffer = m_lockState.stagingBuffer;
+        if (IsWriteLockType(type)) {
+            m_writeLock.width = width;
+            m_writeLock.height = height;
+            m_writeLock.pixelSize = pixelSize;
+            m_writeLock.stride = stride;
+            m_writeLock.stagingBuffer.resize(byteSize);
+            m_writeLock.originalBuffer.resize(byteSize);
+
+            // Fill with a non-black, non-cyan sentinel instead of performing a
+            // synchronous GPU ReadLFB stall (write-only locks may only be
+            // written, never read, per the Glide 2.x/3.x specification).
+            FillSentinel(m_writeLock.originalBuffer.data(), width * height, pixelSize);
+            std::memcpy(m_writeLock.stagingBuffer.data(),
+                        m_writeLock.originalBuffer.data(), byteSize);
+
+            info->size = sizeof(*info);
+            info->writeMode = static_cast<decltype(info->writeMode)>(resolvedMode);
+            info->origin = static_cast<decltype(info->origin)>(origin);
+            info->strideInBytes = m_writeLock.stride;
+            info->lfbPtr = m_writeLock.stagingBuffer.data();
+
+            m_writeLock.isLocked = true;
+            m_writeLock.type = type;
+            m_writeLock.buffer = buffer;
+            m_writeLock.writeMode = resolvedMode;
+            m_writeLock.origin = origin;
+            m_writeLock.pixelPipeline = pixelPipeline;
+            m_writeLocked.store(true, std::memory_order_release);
+
+            LogLockSuccess(type, buffer, writeMode, origin, byteSize);
+            return true;
+        }
+
+        // Read-only lock uses an independent staging buffer so it never
+        // disturbs a persistent write-only lock pointer (e.g. DOSBox LFB map).
+        m_readLock.width = width;
+        m_readLock.height = height;
+        m_readLock.pixelSize = pixelSize;
+        m_readLock.stride = stride;
+        m_readLock.stagingBuffer.resize(byteSize);
+
+        ReadLFBData(buffer, width, height, stride, m_readLock.stagingBuffer.data());
 
         if (origin == 1) { // GR_ORIGIN_LOWER_LEFT
-            FlipRows(m_lockState.stagingBuffer.data(), m_lockState.height, m_lockState.stride);
+            FlipRows(m_readLock.stagingBuffer.data(), height, stride);
         }
 
         info->size = sizeof(*info);
         info->writeMode = static_cast<decltype(info->writeMode)>(resolvedMode);
         info->origin = static_cast<decltype(info->origin)>(origin);
-        info->strideInBytes = m_lockState.stride;
-        info->lfbPtr = m_lockState.stagingBuffer.data();
+        info->strideInBytes = m_readLock.stride;
+        info->lfbPtr = m_readLock.stagingBuffer.data();
 
-        m_lockState.isLocked = true;
-        m_lockState.type = type;
-        m_lockState.buffer = buffer;
-        m_lockState.writeMode = resolvedMode;
-        m_lockState.origin = origin;
-        m_lockState.pixelPipeline = pixelPipeline;
+        m_readLock.isLocked = true;
+        m_readLock.buffer = buffer;
 
-        LogLockSuccess(buffer, writeMode, origin);
+        LogLockSuccess(type, buffer, writeMode, origin, byteSize);
         return true;
     }
 
     bool Unlock(uint32_t type, uint32_t buffer, const LfbPipelineConfig& config);
 
-    // Expose whether a lock is active for verification/telemetry
-    bool IsLocked() const { return m_lockState.isLocked; }
-    bool IsPixelPipeline() const { return m_lockState.pixelPipeline; }
+    // Flush any modified pixels from a persistent write-only lock (games like
+    // Carmageddon lock BACK once at startup and never call grLfbUnlock) without
+    // invalidating or reallocating the mapped lfbPtr.
+    bool FlushActiveWriteLock(const LfbPipelineConfig& config);
+
+    // Clear lock flags when closing a window or shutting down Glide.
+    void Reset();
+
+    // Expose lock state for verification/telemetry and fast-path swap checks.
+    bool IsLocked() const { return m_writeLock.isLocked || m_readLock.isLocked; }
+    bool IsWriteLocked() const { return m_writeLocked.load(std::memory_order_acquire); }
+    bool IsPixelPipeline() const { return m_writeLock.pixelPipeline; }
 
 private:
     LfbManager() = default;
     ~LfbManager() = default;
 
-    struct LockState {
+    struct WriteLockState {
         bool isLocked{false};
         uint32_t type{0};
         uint32_t buffer{0};
@@ -103,21 +158,36 @@ private:
         uint32_t height{0};
         std::vector<uint8_t> stagingBuffer;
         std::vector<uint8_t> originalBuffer;
+        std::vector<uint8_t> flipScratch;
         uint32_t stride{0};
         uint32_t pixelSize{0};
     };
 
-    LockState m_lockState;
+    struct ReadLockState {
+        bool isLocked{false};
+        uint32_t buffer{0};
+        uint32_t width{0};
+        uint32_t height{0};
+        std::vector<uint8_t> stagingBuffer;
+        uint32_t stride{0};
+        uint32_t pixelSize{0};
+    };
+
+    WriteLockState m_writeLock;
+    ReadLockState m_readLock;
+    std::atomic<bool> m_writeLocked{false};
     mutable std::mutex m_mutex;
 
     // Helper functions implemented in LfbManager.cpp to hide backend dependencies
     void* GetActiveBackend();
     uint32_t GetBackendWidth();
     uint32_t GetBackendHeight();
-    void ReadLFBData(uint32_t buffer, uint8_t* dest);
+    void ReadLFBData(uint32_t buffer, uint32_t width, uint32_t height, uint32_t stride, uint8_t* dest);
     void FlipRows(uint8_t* data, uint32_t height, uint32_t stride);
+    static void FillSentinel(uint8_t* dst, uint32_t pixelCount, uint32_t pixelSize);
+    bool SubmitWriteLock_Locked(const LfbPipelineConfig& config, bool keepLocked);
     void LogErrorUnsupportedWriteMode(uint32_t writeMode);
-    void LogLockSuccess(uint32_t buffer, uint32_t writeMode, uint32_t origin);
+    void LogLockSuccess(uint32_t type, uint32_t buffer, uint32_t writeMode, uint32_t origin, size_t byteSize);
 };
 
 } // namespace GlideWrapper

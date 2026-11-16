@@ -417,21 +417,35 @@ class VulkanBackend : public GlideStateTracker {
   vk::UniquePipelineCache
       m_vkPipelineCache;  // Persistent Vulkan driver-level pipeline cache
 
-  // Dynamic Ring Vertex Buffer
+  // Dynamic Ring Vertex Buffer (partitioned into two per-frame slots aligned to
+  // sizeof(ModernVertex) so active GPU draws never collide with CPU writes and
+  // normal frames never stall on waitIdle()).
+  static constexpr uint32_t kVertexSlotCapacityVerts =
+      (8 * 1024 * 1024) / sizeof(ModernVertex);
+  static constexpr uint32_t kVertexSlotBytes =
+      kVertexSlotCapacityVerts * sizeof(ModernVertex);
   vk::UniqueBuffer m_vertexBuffer;
   vk::UniqueDeviceMemory m_vertexBufferMemory;
   void* m_vertexBufferMap{nullptr};
   uint32_t m_vertexBufferOffset{0};
-  const uint32_t m_vertexBufferSize{16 * 1024 * 1024};  // 16MB
+  const uint32_t m_vertexBufferSize{kVertexSlotBytes * 2};
 
   // Unified Frame Render Pass State
   bool m_inRenderPass{false};
 
-  // Draw Batching State
+  // Draw Batching State & Cached Draw Pipeline/Descriptor Handles
   uint32_t m_batchedVertexCount{0};
   uint32_t m_batchedFirstVertex{0};
   vk::Pipeline m_batchedPipeline;
   vk::DescriptorSet m_batchedDescSet;
+  bool m_pipelineStateDirty{true};
+  bool m_descriptorStateDirty{true};
+  vk::Pipeline m_cachedPipeline;
+  vk::PrimitiveTopology m_cachedTopology{vk::PrimitiveTopology::eTriangleList};
+  vk::DescriptorSet m_cachedDescSet;
+  void ResolveDrawState_Locked(vk::PrimitiveTopology topology,
+                               vk::Pipeline& outPipeline,
+                               vk::DescriptorSet& outDescSet);
 
   // Clear state tracking for Render Pass LoadOp clears (tracked per physical
   // GPU framebuffer FBO 0 and 1)
@@ -469,6 +483,13 @@ class VulkanBackend : public GlideStateTracker {
   std::unordered_map<DescriptorKey, vk::UniqueDescriptorSet, DescriptorKeyHash>
       m_descriptorCache;
 
+  // Deferred per-frame-slot retirement queues so overwritten/purged textures
+  // and descriptor sets stay alive until the GPU fence for that slot signals.
+  void RetireTextureAtAddress_Locked(uint32_t startAddress);
+  void ReclaimRetiredResources_Locked(uint32_t slot);
+  std::vector<VulkanTexture> m_retiredTextures[2];
+  std::vector<vk::UniqueDescriptorSet> m_retiredDescriptorSets[2];
+
   // Persistent Texture Staging Buffer (Asynchronous Uploads)
   vk::UniqueBuffer m_texStagingBuffer;
   vk::UniqueDeviceMemory m_texStagingMemory;
@@ -479,6 +500,34 @@ class VulkanBackend : public GlideStateTracker {
 
   // Lazily-allocated CPU LFB staging (0 bytes until first LFB operation)
   CpuLfbStaging m_lfbStaging;
+
+  // --- M5: Sparse LFB Overlay Compositing Resources (lazily allocated) ---
+  bool InitLfbOverlayPipeline_Locked();
+  bool EnsureLfbOverlayResources_Locked(uint32_t width, uint32_t height,
+                                        vk::DeviceSize requiredBytes);
+  void DestroyLfbOverlayResources_Locked();
+  void ReadbackGpuToStaging_Locked(uint32_t buffer);
+  void CompositeLfbOverlay_Locked(uint32_t buffer, uint32_t targetGpuIdx,
+                                  const uint32_t* pixels, uint32_t width,
+                                  uint32_t height, uint32_t minY,
+                                  uint32_t maxY);
+  vk::UniqueSampler m_lfbOverlaySampler;
+  vk::UniqueDescriptorSetLayout m_lfbOverlayDescSetLayout;
+  vk::UniqueDescriptorPool m_lfbOverlayDescPool;
+  vk::DescriptorSet m_lfbOverlayDescSet;
+  vk::UniquePipelineLayout m_lfbOverlayPipelineLayout;
+  vk::UniquePipeline m_lfbOverlayPipeline;
+  vk::UniqueImage m_lfbOverlayImage;
+  vk::UniqueDeviceMemory m_lfbOverlayImageMemory;
+  vk::UniqueImageView m_lfbOverlayImageView;
+  vk::ImageLayout m_lfbOverlayImageLayout{vk::ImageLayout::eUndefined};
+  uint32_t m_lfbOverlayTexW{0};
+  uint32_t m_lfbOverlayTexH{0};
+  vk::UniqueBuffer m_lfbOverlayStagingBuffers[2];
+  vk::UniqueDeviceMemory m_lfbOverlayStagingMemories[2];
+  void* m_lfbOverlayStagingMaps[2]{nullptr, nullptr};
+  vk::DeviceSize m_lfbOverlayStagingSizes[2]{0, 0};
+  vk::DeviceSize m_lfbOverlayStagingOffsets[2]{0, 0};
 
   // Vulkan Gamma LUT State variables
   float m_gammaCorrectionValue{1.0f};

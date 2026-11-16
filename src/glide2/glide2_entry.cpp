@@ -289,6 +289,7 @@ FX_ENTRY void FX_CALL grBufferClear(GrColor_t color, GrAlpha_t alpha,
 
 FX_ENTRY void FX_CALL grBufferSwap(int swap_interval) {
   EnsureEngineInitialized();
+  EntryCommon::FlushActiveLfbWriteLock(s_state);
   if (EntryCommon::ShouldRenderShamelessPlug(s_shamelessPlugEnabled)) {
     grShamelessPlug();
   }
@@ -325,6 +326,7 @@ FX_ENTRY void FX_CALL grDrawTriangle(const GrVertex* a, const GrVertex* b,
   SanitizeVertex(vb);
   SanitizeVertex(vc);
 
+  EntryCommon::SyncTexturesBeforeDraw();
   backend->DrawTriangle(va, vb, vc);
 }
 
@@ -355,6 +357,7 @@ FX_ENTRY void FX_CALL grDrawLine(const GrVertex* a, const GrVertex* b) {
   GlideWrapper::ModernVertex vb = layout.DecodeVertex(b);
   SanitizeVertex(va);
   SanitizeVertex(vb);
+  EntryCommon::SyncTexturesBeforeDraw();
   backend->DrawLine(va, vb);
 }
 
@@ -366,6 +369,7 @@ FX_ENTRY void FX_CALL grDrawPoint(const GrVertex* pt) {
   auto& layout = GlideWrapper::VertexLayout::GetInstance();
   GlideWrapper::ModernVertex vpt = layout.DecodeVertex(pt);
   SanitizeVertex(vpt);
+  EntryCommon::SyncTexturesBeforeDraw();
   backend->DrawPoint(vpt);
 }
 

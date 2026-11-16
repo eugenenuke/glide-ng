@@ -34,9 +34,14 @@ void VulkanBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z,
             "ClearBuffer: color=" << std::hex << color
                                   << ", clearMask=" << clearMask);
 
-  // 1. Defer CPU-side framebuffer clear lazily so pure 3D frames allocate 0
-  // bytes and avoid CPU fills; materialized on demand before any LFB access.
+  // 1. Handle any pending sparse LFB overlay before clearing, and defer
+  // CPU-side full framebuffer clear lazily so pure 3D frames allocate 0 bytes.
   if (clearMask & 1) {
+    if (m_colorMaskRgb && m_colorMaskAlpha) {
+      m_lfbStaging.ClearOverlay(m_activeRenderBuffer);
+    } else if (m_lfbStaging.IsOverlayDirty(m_activeRenderBuffer)) {
+      FlushLFBToGPU_Locked();
+    }
     m_lfbStaging.ScheduleLazyClear(m_activeRenderBuffer, color, alpha,
                                    m_pixelFormatOverride, m_colorMaskRgb,
                                    m_colorMaskAlpha);
@@ -71,55 +76,77 @@ void VulkanBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z,
   }
 }
 
+void VulkanBackend::ResolveDrawState_Locked(vk::PrimitiveTopology topology,
+                                            vk::Pipeline& outPipeline,
+                                            vk::DescriptorSet& outDescSet) {
+  if (m_pipelineStateDirty || !m_cachedPipeline ||
+      topology != m_cachedTopology) {
+    m_cachedPipeline = GetOrCreatePipeline(GetCurrentStateKey(), topology);
+    m_cachedTopology = topology;
+    m_pipelineStateDirty = false;
+  }
+
+  if (m_descriptorStateDirty || !m_cachedDescSet) {
+    vk::ImageView view0 = m_dummyTexture.imageView.get();
+    vk::Sampler sampler0 = m_dummySampler.get();
+    if (m_boundTexAddress[0] != 0xFFFFFFFF) {
+      auto it = m_vulkanTextures.find(m_boundTexAddress[0]);
+      if (it != m_vulkanTextures.end()) {
+        view0 = it->second.imageView.get();
+        sampler0 = GetOrCreateSampler(m_texClampS[0], m_texClampT[0],
+                                      m_texMinFilter[0], m_texMagFilter[0],
+                                      m_texLodBias[0], m_texMipMapMode[0],
+                                      m_texLodBlend[0]);
+      }
+    }
+
+    vk::ImageView view1 = m_dummyTexture.imageView.get();
+    vk::Sampler sampler1 = m_dummySampler.get();
+    if (m_boundTexAddress[1] != 0xFFFFFFFF) {
+      auto it = m_vulkanTextures.find(m_boundTexAddress[1]);
+      if (it != m_vulkanTextures.end()) {
+        view1 = it->second.imageView.get();
+        sampler1 = GetOrCreateSampler(m_texClampS[1], m_texClampT[1],
+                                      m_texMinFilter[1], m_texMagFilter[1],
+                                      m_texLodBias[1], m_texMipMapMode[1],
+                                      m_texLodBlend[1]);
+      }
+    }
+
+    m_cachedDescSet =
+        GetOrCreateDescriptorSet(view0, sampler0, view1, sampler1);
+    m_descriptorStateDirty = false;
+  }
+
+  outPipeline = m_cachedPipeline;
+  outDescSet = m_cachedDescSet;
+}
+
 void VulkanBackend::DrawPoint(const ModernVertex& pt) {
   std::lock_guard<std::mutex> lock(m_mutex);
   if (!m_initialized || !m_windowAttached) return;
 
-  FlushLFBToGPU_Locked();
+  if (m_lfbStaging.IsDirty()) {
+    FlushLFBToGPU_Locked();
+  }
 
   GLIDE_LOG(DEBUG, "Vulkan",
             "DrawPoint GPU draw. Pos: (" << pt.pos[0] << ", " << pt.pos[1]
                                          << ", " << pt.pos[2] << ")");
 
-  // 1. Determine active pipeline & descriptor set
-  vk::Pipeline reqPipeline = GetOrCreatePipeline(
-      GetCurrentStateKey(), vk::PrimitiveTopology::ePointList);
-
-  vk::ImageView view0 = m_dummyTexture.imageView.get();
-  vk::Sampler sampler0 = m_dummySampler.get();
-  if (m_boundTexAddress[0] != 0xFFFFFFFF) {
-    auto it = m_vulkanTextures.find(m_boundTexAddress[0]);
-    if (it != m_vulkanTextures.end()) {
-      auto& tex = it->second;
-      view0 = tex.imageView.get();
-      sampler0 = GetOrCreateSampler(tex.clampS, tex.clampT, tex.minFilter,
-                                    tex.magFilter, m_texLodBias[0],
-                                    m_texMipMapMode[0], m_texLodBlend[0]);
-    }
-  }
-
-  vk::ImageView view1 = m_dummyTexture.imageView.get();
-  vk::Sampler sampler1 = m_dummySampler.get();
-  if (m_boundTexAddress[1] != 0xFFFFFFFF) {
-    auto it = m_vulkanTextures.find(m_boundTexAddress[1]);
-    if (it != m_vulkanTextures.end()) {
-      auto& tex = it->second;
-      view1 = tex.imageView.get();
-      sampler1 = GetOrCreateSampler(tex.clampS, tex.clampT, tex.minFilter,
-                                    tex.magFilter, m_texLodBias[1],
-                                    m_texMipMapMode[1], m_texLodBlend[1]);
-    }
-  }
-
-  vk::DescriptorSet reqDescSet =
-      GetOrCreateDescriptorSet(view0, sampler0, view1, sampler1);
+  // 1. Resolve cached active pipeline & descriptor set
+  vk::Pipeline reqPipeline;
+  vk::DescriptorSet reqDescSet;
+  ResolveDrawState_Locked(vk::PrimitiveTopology::ePointList, reqPipeline,
+                          reqDescSet);
 
   // 2. Check if we need to flush the active batch
+  const uint32_t slotBase = m_currentFrameSlot * kVertexSlotBytes;
+  const uint32_t slotEnd = slotBase + kVertexSlotBytes;
   bool stateChanged =
       (reqPipeline != m_batchedPipeline || reqDescSet != m_batchedDescSet);
   bool batchEmpty = (m_batchedVertexCount == 0);
-  bool bufferFull =
-      (m_vertexBufferOffset + sizeof(ModernVertex) > m_vertexBufferSize);
+  bool bufferFull = (m_vertexBufferOffset + sizeof(ModernVertex) > slotEnd);
 
   if (stateChanged || batchEmpty || bufferFull) {
     if (stateChanged || bufferFull) {
@@ -127,8 +154,8 @@ void VulkanBackend::DrawPoint(const ModernVertex& pt) {
     }
     if (bufferFull) {
       GLIDE_LOG(WARN, "Vulkan",
-                "Dynamic Vertex Buffer wrap-around during DrawPoint! Stalling "
-                "GPU to prevent geometry corruption.");
+                "Dynamic Vertex Buffer slot overflow during DrawPoint! "
+                "Stalling GPU to prevent geometry corruption.");
       FlushBatch();
       if (m_inRenderPass) {
         m_commandBuffer->endRenderPass();
@@ -144,7 +171,7 @@ void VulkanBackend::DrawPoint(const ModernVertex& pt) {
       m_commandBuffer->begin(vk::CommandBufferBeginInfo(
           vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
 
-      m_vertexBufferOffset = 0;
+      m_vertexBufferOffset = slotBase;
     }
 
     m_batchedPipeline = reqPipeline;
@@ -176,52 +203,28 @@ void VulkanBackend::DrawLine(const ModernVertex& v1, const ModernVertex& v2) {
   std::lock_guard<std::mutex> lock(m_mutex);
   if (!m_initialized || !m_windowAttached) return;
 
-  FlushLFBToGPU_Locked();
+  if (m_lfbStaging.IsDirty()) {
+    FlushLFBToGPU_Locked();
+  }
 
   GLIDE_LOG(DEBUG, "Vulkan",
             "DrawLine GPU draw. V1: (" << v1.pos[0] << ", " << v1.pos[1]
                                        << "), V2: (" << v2.pos[0] << ", "
                                        << v2.pos[1] << ")");
 
-  // 1. Determine active pipeline & descriptor set
-  vk::Pipeline reqPipeline = GetOrCreatePipeline(
-      GetCurrentStateKey(), vk::PrimitiveTopology::eLineList);
-
-  vk::ImageView view0 = m_dummyTexture.imageView.get();
-  vk::Sampler sampler0 = m_dummySampler.get();
-  if (m_boundTexAddress[0] != 0xFFFFFFFF) {
-    auto it = m_vulkanTextures.find(m_boundTexAddress[0]);
-    if (it != m_vulkanTextures.end()) {
-      auto& tex = it->second;
-      view0 = tex.imageView.get();
-      sampler0 = GetOrCreateSampler(tex.clampS, tex.clampT, tex.minFilter,
-                                    tex.magFilter, m_texLodBias[0],
-                                    m_texMipMapMode[0], m_texLodBlend[0]);
-    }
-  }
-
-  vk::ImageView view1 = m_dummyTexture.imageView.get();
-  vk::Sampler sampler1 = m_dummySampler.get();
-  if (m_boundTexAddress[1] != 0xFFFFFFFF) {
-    auto it = m_vulkanTextures.find(m_boundTexAddress[1]);
-    if (it != m_vulkanTextures.end()) {
-      auto& tex = it->second;
-      view1 = tex.imageView.get();
-      sampler1 = GetOrCreateSampler(tex.clampS, tex.clampT, tex.minFilter,
-                                    tex.magFilter, m_texLodBias[1],
-                                    m_texMipMapMode[1], m_texLodBlend[1]);
-    }
-  }
-
-  vk::DescriptorSet reqDescSet =
-      GetOrCreateDescriptorSet(view0, sampler0, view1, sampler1);
+  // 1. Resolve cached active pipeline & descriptor set
+  vk::Pipeline reqPipeline;
+  vk::DescriptorSet reqDescSet;
+  ResolveDrawState_Locked(vk::PrimitiveTopology::eLineList, reqPipeline,
+                          reqDescSet);
 
   // 2. Check if we need to flush the active batch
+  const uint32_t slotBase = m_currentFrameSlot * kVertexSlotBytes;
+  const uint32_t slotEnd = slotBase + kVertexSlotBytes;
   bool stateChanged =
       (reqPipeline != m_batchedPipeline || reqDescSet != m_batchedDescSet);
   bool batchEmpty = (m_batchedVertexCount == 0);
-  bool bufferFull =
-      (m_vertexBufferOffset + 2 * sizeof(ModernVertex) > m_vertexBufferSize);
+  bool bufferFull = (m_vertexBufferOffset + 2 * sizeof(ModernVertex) > slotEnd);
 
   if (stateChanged || batchEmpty || bufferFull) {
     if (stateChanged || bufferFull) {
@@ -229,7 +232,7 @@ void VulkanBackend::DrawLine(const ModernVertex& v1, const ModernVertex& v2) {
     }
     if (bufferFull) {
       GLIDE_LOG(WARN, "Vulkan",
-                "Dynamic Vertex Buffer wrap-around during DrawLine! Stalling "
+                "Dynamic Vertex Buffer slot overflow during DrawLine! Stalling "
                 "GPU to prevent geometry corruption.");
       FlushBatch();
       if (m_inRenderPass) {
@@ -246,7 +249,7 @@ void VulkanBackend::DrawLine(const ModernVertex& v1, const ModernVertex& v2) {
       m_commandBuffer->begin(vk::CommandBufferBeginInfo(
           vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
 
-      m_vertexBufferOffset = 0;
+      m_vertexBufferOffset = slotBase;
     }
 
     m_batchedPipeline = reqPipeline;
@@ -281,7 +284,9 @@ void VulkanBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
   std::lock_guard<std::mutex> lock(m_mutex);
   if (!m_initialized || !m_windowAttached) return;
 
-  FlushLFBToGPU_Locked();
+  if (m_lfbStaging.IsDirty()) {
+    FlushLFBToGPU_Locked();
+  }
 
   GLIDE_LOG(TRACE, "Vulkan",
             "DrawTriangle GPU draw. A pos: ("
@@ -290,45 +295,19 @@ void VulkanBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
                 << ", " << a.color[2] << ", " << a.color[3] << ") tex: ("
                 << a.tex[0] << ", " << a.tex[1] << ")");
 
-  // 1. Determine active pipeline & descriptor set
-  vk::Pipeline reqPipeline = GetOrCreatePipeline(
-      GetCurrentStateKey(), vk::PrimitiveTopology::eTriangleList);
-
-  vk::ImageView view0 = m_dummyTexture.imageView.get();
-  vk::Sampler sampler0 = m_dummySampler.get();
-  if (m_boundTexAddress[0] != 0xFFFFFFFF) {
-    auto it = m_vulkanTextures.find(m_boundTexAddress[0]);
-    if (it != m_vulkanTextures.end()) {
-      auto& tex = it->second;
-      view0 = tex.imageView.get();
-      sampler0 = GetOrCreateSampler(tex.clampS, tex.clampT, tex.minFilter,
-                                    tex.magFilter, m_texLodBias[0],
-                                    m_texMipMapMode[0], m_texLodBlend[0]);
-    }
-  }
-
-  vk::ImageView view1 = m_dummyTexture.imageView.get();
-  vk::Sampler sampler1 = m_dummySampler.get();
-  if (m_boundTexAddress[1] != 0xFFFFFFFF) {
-    auto it = m_vulkanTextures.find(m_boundTexAddress[1]);
-    if (it != m_vulkanTextures.end()) {
-      auto& tex = it->second;
-      view1 = tex.imageView.get();
-      sampler1 = GetOrCreateSampler(tex.clampS, tex.clampT, tex.minFilter,
-                                    tex.magFilter, m_texLodBias[1],
-                                    m_texMipMapMode[1], m_texLodBlend[1]);
-    }
-  }
-
-  vk::DescriptorSet reqDescSet =
-      GetOrCreateDescriptorSet(view0, sampler0, view1, sampler1);
+  // 1. Resolve cached active pipeline & descriptor set
+  vk::Pipeline reqPipeline;
+  vk::DescriptorSet reqDescSet;
+  ResolveDrawState_Locked(vk::PrimitiveTopology::eTriangleList, reqPipeline,
+                          reqDescSet);
 
   // 2. Check if we need to flush the active batch
+  const uint32_t slotBase = m_currentFrameSlot * kVertexSlotBytes;
+  const uint32_t slotEnd = slotBase + kVertexSlotBytes;
   bool stateChanged =
       (reqPipeline != m_batchedPipeline || reqDescSet != m_batchedDescSet);
   bool batchEmpty = (m_batchedVertexCount == 0);
-  bool bufferFull =
-      (m_vertexBufferOffset + 3 * sizeof(ModernVertex) > m_vertexBufferSize);
+  bool bufferFull = (m_vertexBufferOffset + 3 * sizeof(ModernVertex) > slotEnd);
 
   if (stateChanged || batchEmpty || bufferFull) {
     if (stateChanged || bufferFull) {
@@ -336,7 +315,7 @@ void VulkanBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
     }
     if (bufferFull) {
       GLIDE_LOG(WARN, "Vulkan",
-                "Dynamic Vertex Buffer wrap-around during DrawTriangle! "
+                "Dynamic Vertex Buffer slot overflow during DrawTriangle! "
                 "Stalling GPU to prevent geometry corruption.");
       FlushBatch();
       if (m_inRenderPass) {
@@ -353,7 +332,7 @@ void VulkanBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
       m_commandBuffer->begin(vk::CommandBufferBeginInfo(
           vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
 
-      m_vertexBufferOffset = 0;
+      m_vertexBufferOffset = slotBase;
     }
 
     m_batchedPipeline = reqPipeline;

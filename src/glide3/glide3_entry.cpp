@@ -250,6 +250,7 @@ FX_ENTRY void FX_CALL grBufferClear(GrColor_t color, GrAlpha_t alpha,
 FX_ENTRY void FX_CALL grBufferSwap(FxU32 swapInterval) {
   EnsureEngineInitialized();
   (void)swapInterval;
+  EntryCommon::FlushActiveLfbWriteLock(s_state);
   if (EntryCommon::ShouldRenderShamelessPlug(s_shamelessPlug)) {
     grShamelessPlug();
   }
@@ -311,6 +312,7 @@ FX_ENTRY void FX_CALL grDrawTriangle(const void* a, const void* b,
   TransformVertexIfNecessary(vb);
   TransformVertexIfNecessary(vc);
 
+  EntryCommon::SyncTexturesBeforeDraw();
   backend->DrawTriangle(va, vb, vc);
 }
 
@@ -406,6 +408,7 @@ FX_ENTRY void FX_CALL grDrawLine(const void* a, const void* b) {
   TransformVertexIfNecessary(va);
   TransformVertexIfNecessary(vb);
 
+  EntryCommon::SyncTexturesBeforeDraw();
   backend->DrawLine(va, vb);
 }
 
@@ -419,6 +422,7 @@ FX_ENTRY void FX_CALL grDrawPoint(const void* pt) {
 
   TransformVertexIfNecessary(mv);
 
+  EntryCommon::SyncTexturesBeforeDraw();
   backend->DrawPoint(mv);
 }
 

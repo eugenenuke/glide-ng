@@ -185,6 +185,7 @@ void EnsureEngineInitialized(void (*resetFrontendState)()) {
 
 void ShutdownGlide(const char* apiTag) {
   GLIDE_LOG(INFO, "Frontend", "grGlideShutdown (" << apiTag << ") invoked.");
+  LfbManager::GetInstance().Reset();
   TelemetryManager::GetInstance().ShutdownPerfLog();
   TelemetryManager::GetInstance().PrintReport();
   BackendManager::GetInstance().ShutdownBackend();
@@ -192,6 +193,7 @@ void ShutdownGlide(const char* apiTag) {
 }
 
 void CloseWindow(const char* logMessage) {
+  LfbManager::GetInstance().Reset();
   BackendManager::GetInstance().SetSplashAnimator(nullptr);
   GLIDE_LOG(INFO, "Frontend", logMessage);
   if (auto* backend = BackendManager::GetInstance().GetBackend()) {
@@ -395,6 +397,7 @@ void BindTexSource(SharedFrontendState& st, uint32_t tmu,
                    uint32_t startAddress) {
   if (tmu >= 2) return;
   st.boundTex[tmu] = startAddress;
+  TextureManager::GetInstance().PrepareTextureForBind(tmu, startAddress);
   if (auto* b = BackendManager::GetInstance().GetBackend()) {
     b->BindTexture(tmu, startAddress, st.clampS[tmu], st.clampT[tmu],
                    st.minFilter[tmu], st.magFilter[tmu]);
@@ -558,6 +561,13 @@ void LoadGammaTable(uint32_t nentries, uint32_t* red, uint32_t* green,
   }
 }
 
+void SyncTexturesBeforeDraw() {
+  auto& tm = TextureManager::GetInstance();
+  if (tm.HasPendingTableSync()) {
+    tm.SyncBoundTextures();
+  }
+}
+
 void SanitizeVertex(const SharedFrontendState& st, ModernVertex& mv) {
   const bool depthActive = (st.depthMode != 0);
   const bool textureActive =
@@ -577,6 +587,7 @@ void DrawVertexList(uint32_t mode, uint32_t count, const ModernVertex* vertices,
                     bool allowPointsAndLines) {
   auto* backend = BackendManager::GetInstance().GetBackend();
   if (!backend || !vertices || count == 0) return;
+  SyncTexturesBeforeDraw();
 
   if (allowPointsAndLines) {
     if (mode == kGrPoints) {
@@ -684,6 +695,19 @@ bool LfbUnlockWithState(const SharedFrontendState& st, uint32_t type,
   config.rgbSrcBlend = st.rgbSrcBlend;
   config.rgbDstBlend = st.rgbDstBlend;
   return LfbManager::GetInstance().Unlock(type, buffer, config);
+}
+
+void FlushActiveLfbWriteLock(const SharedFrontendState& st) {
+  auto& lfb = LfbManager::GetInstance();
+  if (!lfb.IsWriteLocked()) return;
+  LfbPipelineConfig config;
+  config.pixelPipeline = lfb.IsPixelPipeline();
+  config.chromakeyEnabled = (st.chromakeyMode != 0);
+  config.chromakeyValue = st.chromakeyValue;
+  config.constantAlpha = st.lfbConstantAlpha;
+  config.rgbSrcBlend = st.rgbSrcBlend;
+  config.rgbDstBlend = st.rgbDstBlend;
+  lfb.FlushActiveWriteLock(config);
 }
 
 const char* GetRendererString() {

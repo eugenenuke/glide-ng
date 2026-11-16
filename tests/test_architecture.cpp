@@ -21,6 +21,7 @@
 #include <thread>
 
 #include "core/BackendManager.h"
+#include "core/Telemetry.h"
 
 namespace {
 struct StandardVert {
@@ -2210,14 +2211,14 @@ TEST_CASE("Texture Decoders & LFB Pipeline Simulation Correctness",
     backend.ReadLFB(1, 0, 0, 1, 1, 4, &pixel);
     REQUIRE(pixel == 0xFF0000FF);
 
-    // 1. Chroma Keying test: Write Green (0x07E0) with Chroma Keying matching
-    // Green
+    // 1. Chroma Keying test: Write Green (0x07E0 -> RGB 0x0000FF00) with
+    // Chroma Keying matching 24-bit GrColor_t Green
     uint16_t green565 = 0x07E0;
 
     GlideWrapper::LfbPipelineConfig chromaConfig;
     chromaConfig.pixelPipeline = true;
     chromaConfig.chromakeyEnabled = true;
-    chromaConfig.chromakeyValue = 0x07E0;  // Match green
+    chromaConfig.chromakeyValue = 0x0000FF00;  // 24-bit GrColor_t Green
 
     // Write to (0, 0)
     ok =
@@ -2234,7 +2235,7 @@ TEST_CASE("Texture Decoders & LFB Pipeline Simulation Correctness",
     blendConfig.pixelPipeline = true;
     blendConfig.chromakeyEnabled = false;
     blendConfig.constantAlpha = 128;  // ~50%
-    blendConfig.rgbSrcBlend = 4;      // GR_BLEND_SRC_ALPHA
+    blendConfig.rgbSrcBlend = 1;      // GR_BLEND_SRC_ALPHA (1 in Glide enum)
     blendConfig.rgbDstBlend = 5;      // GR_BLEND_ONE_MINUS_SRC_ALPHA
 
     ok = backend.WriteLFB(1, 0, 0, 1, 1, 2, 0, &green565, nullptr, blendConfig);
@@ -5802,9 +5803,11 @@ TEST_CASE(
     assertColorClose(fb[50 * 640 + 50], 0x00FF0000);    // Red background
     assertColorClose(fb[240 * 640 + 320], 0x000000FF);  // Blue background
     assertColorClose(fb[430 * 640 + 50], 0x000000FF);   // Blue background
-    assertColorClose(fb[450 * 640 + 550], 0xFFFFE6E6);  // Logo pink/white
-    assertColorClose(fb[440 * 640 + 580], 0xFF4144E6);  // Logo purple
-    assertColorClose(fb[450 * 640 + 600], 0xFFDEDAFF);  // Logo yellow/white
+    // Authentic 3dfx gbanner.c translucency: GR_BLEND_SRC_ALPHA (90/255) +
+    // GR_BLEND_ONE_MINUS_SRC_ALPHA (165/255) over the red/blue checkerboard.
+    assertColorClose(fb[450 * 640 + 550], 0xFFF65151);  // Logo over red
+    assertColorClose(fb[440 * 640 + 580], 0xFF1718BC);  // Logo over blue
+    assertColorClose(fb[450 * 640 + 600], 0xFF4E4DF3);  // Logo highlight over blue
     assertColorClose(fb[460 * 640 + 620],
                      0x00FF0000);  // Red background near edge
 
@@ -7145,6 +7148,392 @@ TEST_CASE(
     }
   }
 
+  grGlideShutdown();
+#endif
+}
+
+TEST_CASE(
+    "M5.1: Persistent LFB Write-Lock, 3D+HUD Overlay, Shameless Plug, and "
+    "NOIDLE [M5]",
+    "[Glide2][M5]") {
+#ifdef __linux__
+  const char* prevNoSplash = std::getenv("FX_GLIDE_NO_SPLASH");
+  const char* prevPlug = std::getenv("FX_GLIDE_SHAMELESS_PLUG");
+  std::string savedNoSplash = prevNoSplash ? prevNoSplash : "";
+  std::string savedPlug = prevPlug ? prevPlug : "";
+  ::setenv("FX_GLIDE_NO_SPLASH", "1", 1);
+  ::unsetenv("FX_GLIDE_SHAMELESS_PLUG");
+  struct EnvRestorer {
+    bool hadSplash;
+    std::string splashVal;
+    bool hadPlug;
+    std::string plugVal;
+    ~EnvRestorer() {
+      if (hadSplash)
+        ::setenv("FX_GLIDE_NO_SPLASH", splashVal.c_str(), 1);
+      else
+        ::unsetenv("FX_GLIDE_NO_SPLASH");
+      if (hadPlug)
+        ::setenv("FX_GLIDE_SHAMELESS_PLUG", plugVal.c_str(), 1);
+      else
+        ::unsetenv("FX_GLIDE_SHAMELESS_PLUG");
+    }
+  } restorer{prevNoSplash != nullptr, savedNoSplash, prevPlug != nullptr,
+             savedPlug};
+
+  SECTION("Persistent LFB write-lock flushes across grBufferSwap (menus)") {
+    grGlideInit();
+    grSstSelect(0);
+    REQUIRE(grSstWinOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                         GR_COLORFORMAT_ARGB, GR_ORIGIN_UPPER_LEFT, 2,
+                         1) == FXTRUE);
+    grDitherMode(GR_DITHER_DISABLE);
+
+    // Carmageddon menu pattern: lock ONCE, draw frame 1, swap, draw frame 2,
+    // swap, without calling grLfbUnlock between swaps.
+    GrLfbInfo_t info{};
+    info.size = sizeof(info);
+    REQUIRE(grLfbLock(GR_LFB_WRITE_ONLY, GR_BUFFER_BACKBUFFER,
+                      GR_LFBWRITEMODE_565, GR_ORIGIN_UPPER_LEFT, FXFALSE,
+                      &info) == FXTRUE);
+    REQUIRE(info.lfbPtr != nullptr);
+    REQUIRE(info.strideInBytes >= 640 * 2);
+
+    auto* base = static_cast<uint8_t*>(info.lfbPtr);
+    // Frame 1: draw a pure RED (0xF800) rectangle at x=[100..200), y=[100..150)
+    for (uint32_t y = 100; y < 150; ++y) {
+      auto* row = reinterpret_cast<uint16_t*>(base + y * info.strideInBytes);
+      for (uint32_t x = 100; x < 200; ++x) {
+        row[x] = 0xF800u;
+      }
+    }
+    grBufferSwap(0);
+
+    uint32_t px = 0;
+    REQUIRE(grLfbReadRegion(GR_BUFFER_FRONTBUFFER, 150, 125, 1, 1, 4, &px) ==
+            FXTRUE);
+    REQUIRE(((px >> 16) & 0xFFu) >= 240);  // R
+    REQUIRE(((px >> 8) & 0xFFu) <= 10);    // G
+    REQUIRE((px & 0xFFu) <= 10);           // B
+
+    // Frame 2 (still locked! no grLfbUnlock!): clear and draw pure GREEN
+    // (0x07E0) at x=[300..400), y=[200..250).
+    grBufferClear(0x00000000, 0, GR_WDEPTHVALUE_FARTHEST);
+    for (uint32_t y = 200; y < 250; ++y) {
+      auto* row = reinterpret_cast<uint16_t*>(base + y * info.strideInBytes);
+      for (uint32_t x = 300; x < 400; ++x) {
+        row[x] = 0x07E0u;
+      }
+    }
+    grBufferSwap(0);
+
+    REQUIRE(grLfbReadRegion(GR_BUFFER_FRONTBUFFER, 350, 225, 1, 1, 4, &px) ==
+            FXTRUE);
+    REQUIRE(((px >> 16) & 0xFFu) <= 10);   // R
+    REQUIRE(((px >> 8) & 0xFFu) >= 240);   // G
+    REQUIRE((px & 0xFFu) <= 10);           // B
+
+    // Frame 1's old pixels should NOT have leaked into Frame 2 (staging reset
+    // to sentinel after swap).
+    REQUIRE(grLfbReadRegion(GR_BUFFER_FRONTBUFFER, 150, 125, 1, 1, 4, &px) ==
+            FXTRUE);
+    REQUIRE((px & 0x00FFFFFFu) == 0x00000000u);
+
+    REQUIRE(grLfbUnlock(GR_LFB_WRITE_ONLY, GR_BUFFER_BACKBUFFER) == FXTRUE);
+    grSstWinClose();
+    grGlideShutdown();
+  }
+
+  SECTION("3D geometry + persistent 2D HUD overlay + Shameless Plug") {
+    ::setenv("FX_GLIDE_SHAMELESS_PLUG", "1", 1);
+    grGlideInit();
+    grSstSelect(0);
+    REQUIRE(grSstWinOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                         GR_COLORFORMAT_ARGB, GR_ORIGIN_UPPER_LEFT, 2,
+                         1) == FXTRUE);
+    grDitherMode(GR_DITHER_DISABLE);
+    grColorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+                   GR_COMBINE_LOCAL_CONSTANT, GR_COMBINE_OTHER_NONE, FXFALSE);
+
+    GrLfbInfo_t info{};
+    info.size = sizeof(info);
+    REQUIRE(grLfbLock(GR_LFB_WRITE_ONLY, GR_BUFFER_BACKBUFFER,
+                      GR_LFBWRITEMODE_565, GR_ORIGIN_UPPER_LEFT, FXFALSE,
+                      &info) == FXTRUE);
+    auto* base = static_cast<uint8_t*>(info.lfbPtr);
+
+    for (int frame = 0; frame < 2; ++frame) {
+      grBufferClear(0x00000000, 0, GR_WDEPTHVALUE_FARTHEST);
+      // Draw large 3D GREEN triangle covering (320, 200) and extending into the
+      // HUD/plug scanline band at (320, 425) to verify untouched pixels on the
+      // same scanlines as the sparse overlay remain green.
+      grConstantColorValue(0xFF00FF00);
+      GrVertex a{}, b{}, c{};
+      a.x = 120.0f;
+      a.y = 60.0f;
+      a.oow = 1.0f;
+      b.x = 520.0f;
+      b.y = 60.0f;
+      b.oow = 1.0f;
+      c.x = 320.0f;
+      c.y = 460.0f;
+      c.oow = 1.0f;
+      grDrawTriangle(&a, &b, &c);
+
+      // Write 2D HUD bar at y=[410..440), x=[40..240) via persistent LFB ptr:
+      // frame 0 = RED (0xF800), frame 1 = BLUE (0x001F).
+      const uint16_t hudColor = (frame == 0) ? 0xF800u : 0x001Fu;
+      for (uint32_t y = 410; y < 440; ++y) {
+        auto* row = reinterpret_cast<uint16_t*>(base + y * info.strideInBytes);
+        for (uint32_t x = 40; x < 240; ++x) {
+          row[x] = hudColor;
+        }
+      }
+
+      grBufferSwap(0);
+
+      // 1. 3D triangle interior (both outside and inside the HUD scanline band)
+      // must still be GREEN (NOT clobbered by sparse LFB overlay!).
+      uint32_t px3d = 0;
+      REQUIRE(grLfbReadRegion(GR_BUFFER_FRONTBUFFER, 320, 200, 1, 1, 4,
+                              &px3d) == FXTRUE);
+      REQUIRE(((px3d >> 16) & 0xFFu) <= 10);
+      REQUIRE(((px3d >> 8) & 0xFFu) >= 240);
+      REQUIRE((px3d & 0xFFu) <= 10);
+
+      uint32_t px3dInBand = 0;
+      REQUIRE(grLfbReadRegion(GR_BUFFER_FRONTBUFFER, 320, 425, 1, 1, 4,
+                              &px3dInBand) == FXTRUE);
+      REQUIRE(((px3dInBand >> 16) & 0xFFu) <= 10);
+      REQUIRE(((px3dInBand >> 8) & 0xFFu) >= 240);
+      REQUIRE((px3dInBand & 0xFFu) <= 10);
+
+      // 2. 2D HUD bar must be visible with the current frame's color
+      uint32_t pxHud = 0;
+      REQUIRE(grLfbReadRegion(GR_BUFFER_FRONTBUFFER, 140, 425, 1, 1, 4,
+                              &pxHud) == FXTRUE);
+      if (frame == 0) {
+        REQUIRE(((pxHud >> 16) & 0xFFu) >= 240);  // R
+        REQUIRE((pxHud & 0xFFu) <= 10);           // B
+      } else {
+        REQUIRE(((pxHud >> 16) & 0xFFu) <= 10);  // R
+        REQUIRE((pxHud & 0xFFu) >= 240);         // B
+      }
+
+      // 3. Shameless Plug (lower-right 180x90) must also be non-black AND must
+      // not have broken the persistent write lock!
+      std::vector<uint32_t> plugRegion(180 * 90, 0);
+      REQUIRE(grLfbReadRegion(GR_BUFFER_FRONTBUFFER, 640 - 180, 480 - 90, 180,
+                              90, 180 * 4, plugRegion.data()) == FXTRUE);
+      uint32_t nonBlackPlugPixels = 0;
+      for (uint32_t p : plugRegion) {
+        if ((p & 0x00FFFFFFu) != 0) ++nonBlackPlugPixels;
+      }
+      REQUIRE(nonBlackPlugPixels > 100);
+    }
+
+    REQUIRE(grLfbUnlock(GR_LFB_WRITE_ONLY, GR_BUFFER_BACKBUFFER) == FXTRUE);
+    grSstWinClose();
+    grGlideShutdown();
+  }
+
+  SECTION("GR_LFB_WRITE_ONLY | GR_LFB_NOIDLE lock/unlock writes work") {
+    grGlideInit();
+    grSstSelect(0);
+    REQUIRE(grSstWinOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                         GR_COLORFORMAT_ARGB, GR_ORIGIN_UPPER_LEFT, 2,
+                         1) == FXTRUE);
+    grBufferClear(0x00000000, 0, GR_WDEPTHVALUE_FARTHEST);
+
+    GrLfbInfo_t info{};
+    info.size = sizeof(info);
+    const GrLock_t writeNoIdle = GR_LFB_WRITE_ONLY | GR_LFB_NOIDLE;
+    REQUIRE(grLfbLock(writeNoIdle, GR_BUFFER_BACKBUFFER, GR_LFBWRITEMODE_565,
+                      GR_ORIGIN_UPPER_LEFT, FXFALSE, &info) == FXTRUE);
+    auto* base = static_cast<uint8_t*>(info.lfbPtr);
+    for (uint32_t y = 50; y < 80; ++y) {
+      auto* row = reinterpret_cast<uint16_t*>(base + y * info.strideInBytes);
+      for (uint32_t x = 50; x < 80; ++x) {
+        row[x] = 0x001Fu;  // Pure BLUE
+      }
+    }
+    REQUIRE(grLfbUnlock(writeNoIdle, GR_BUFFER_BACKBUFFER) == FXTRUE);
+
+    uint32_t px = 0;
+    REQUIRE(grLfbReadRegion(GR_BUFFER_BACKBUFFER, 65, 65, 1, 1, 4, &px) ==
+            FXTRUE);
+    REQUIRE(((px >> 16) & 0xFFu) <= 10);
+    REQUIRE(((px >> 8) & 0xFFu) <= 10);
+    REQUIRE((px & 0xFFu) >= 240);
+
+    grSstWinClose();
+    grGlideShutdown();
+  }
+#endif
+}
+
+TEST_CASE(
+    "M5.2: Lazy TextureManager Palette Switching & State-Setter Deduplication "
+    "[M5]",
+    "[Glide2][M5]") {
+#ifdef __linux__
+  const char* prevNoSplash = std::getenv("FX_GLIDE_NO_SPLASH");
+  std::string savedNoSplash = prevNoSplash ? prevNoSplash : "";
+  ::setenv("FX_GLIDE_NO_SPLASH", "1", 1);
+  struct EnvRestorer {
+    bool hadSplash;
+    std::string splashVal;
+    ~EnvRestorer() {
+      if (hadSplash)
+        ::setenv("FX_GLIDE_NO_SPLASH", splashVal.c_str(), 1);
+      else
+        ::unsetenv("FX_GLIDE_NO_SPLASH");
+    }
+  } restorer{prevNoSplash != nullptr, savedNoSplash};
+
+  grGlideInit();
+  grSstSelect(0);
+  REQUIRE(grSstWinOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                       GR_COLORFORMAT_ARGB, GR_ORIGIN_UPPER_LEFT, 2,
+                       1) == FXTRUE);
+  grDitherMode(GR_DITHER_DISABLE);
+
+  SECTION("20 resident P_8 textures + 10 palette swaps only upload bound tex") {
+    // Upload initial palette
+    GuTexPalette pal{};
+    for (int i = 0; i < 256; ++i) pal.data[i] = 0x00FF0000u;  // Red
+    grTexDownloadTable(GR_TMU0, GR_TEXTABLE_PALETTE, &pal);
+
+    // Download 20 distinct 16x16 P_8 textures into TMU0
+    std::vector<uint8_t> texData(16 * 16, 42);
+    GrTexInfo ti{};
+    ti.smallLod = GR_LOD_16;
+    ti.largeLod = GR_LOD_16;
+    ti.aspectRatio = GR_ASPECT_1x1;
+    ti.format = GR_TEXFMT_P_8;
+    ti.data = texData.data();
+
+    const uint32_t stride =
+        grTexCalcMemRequired(GR_LOD_16, GR_LOD_16, GR_ASPECT_1x1,
+                             GR_TEXFMT_P_8);
+    std::vector<uint32_t> addrs(20);
+    for (int i = 0; i < 20; ++i) {
+      addrs[i] = grTexMinAddress(GR_TMU0) + static_cast<uint32_t>(i) * stride;
+      grTexDownloadMipMap(GR_TMU0, addrs[i], GR_MIPMAPLEVELMASK_BOTH, &ti);
+    }
+
+    grColorCombine(GR_COMBINE_FUNCTION_SCALE_OTHER, GR_COMBINE_FACTOR_ONE,
+                   GR_COMBINE_LOCAL_NONE, GR_COMBINE_OTHER_TEXTURE, FXFALSE);
+    grTexCombine(GR_TMU0, GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+                 GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE, FXFALSE,
+                 FXFALSE);
+
+    // Flush initial upload frame
+    grBufferClear(0, 0, GR_WDEPTHVALUE_FARTHEST);
+    grBufferSwap(0);
+
+    // Frame A: swap palette 10 times, only ever binding/drawing texture #0!
+    // Eager re-upload would trigger 20 * 10 = 200 uploads; lazy re-upload
+    // triggers at most 10 (only texture #0 when drawn with each new palette).
+    grBufferClear(0, 0, GR_WDEPTHVALUE_FARTHEST);
+    grTexSource(GR_TMU0, addrs[0], GR_MIPMAPLEVELMASK_BOTH, &ti);
+    GrVertex a{}, b{}, c{};
+    a.x = 100.0f;
+    a.y = 100.0f;
+    a.oow = 1.0f;
+    a.tmuvtx[0].sow = 0.0f;
+    a.tmuvtx[0].tow = 0.0f;
+    b.x = 300.0f;
+    b.y = 100.0f;
+    b.oow = 1.0f;
+    b.tmuvtx[0].sow = 255.0f;
+    b.tmuvtx[0].tow = 0.0f;
+    c.x = 200.0f;
+    c.y = 300.0f;
+    c.oow = 1.0f;
+    c.tmuvtx[0].sow = 128.0f;
+    c.tmuvtx[0].tow = 255.0f;
+
+    for (int p = 0; p < 10; ++p) {
+      // Make last palette pure GREEN so we also verify visual correctness!
+      uint32_t col = (p == 9) ? 0x0000FF00u : static_cast<uint32_t>(p * 20 + 5);
+      pal.data[42] = col;
+      grTexDownloadTable(GR_TMU0, GR_TEXTABLE_PALETTE, &pal);
+      grDrawTriangle(&a, &b, &c);
+    }
+    grBufferSwap(0);
+
+    const auto mA =
+        GlideWrapper::TelemetryManager::GetInstance().GetLastFrameMetrics();
+    REQUIRE(mA.texUploads <= 10);
+
+    // Verify rendered pixel reflects the final GREEN palette!
+    uint32_t px = 0;
+    REQUIRE(grLfbReadRegion(GR_BUFFER_FRONTBUFFER, 200, 180, 1, 1, 4, &px) ==
+            FXTRUE);
+    REQUIRE(((px >> 16) & 0xFFu) <= 10);
+    REQUIRE(((px >> 8) & 0xFFu) >= 240);
+    REQUIRE((px & 0xFFu) <= 10);
+
+    // Frame B: re-submitting the EXACT same palette and drawing again -> 0
+    // uploads!
+    grBufferClear(0, 0, GR_WDEPTHVALUE_FARTHEST);
+    grTexDownloadTable(GR_TMU0, GR_TEXTABLE_PALETTE, &pal);
+    grTexSource(GR_TMU0, addrs[0], GR_MIPMAPLEVELMASK_BOTH, &ti);
+    grDrawTriangle(&a, &b, &c);
+    grBufferSwap(0);
+
+    const auto mB =
+        GlideWrapper::TelemetryManager::GetInstance().GetLastFrameMetrics();
+    REQUIRE(mB.texUploads == 0);
+  }
+
+  SECTION("Redundant state setters do not cause extra GPU state flushes") {
+    grColorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+                   GR_COMBINE_LOCAL_CONSTANT, GR_COMBINE_OTHER_NONE, FXFALSE);
+    grAlphaBlendFunction(GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_ONE,
+                         GR_BLEND_ZERO);
+    grDepthBufferMode(GR_DEPTHBUFFER_DISABLE);
+    grConstantColorValue(0xFFFF0000);
+
+    // Warm one frame so baseline state is established
+    grBufferClear(0, 0, GR_WDEPTHVALUE_FARTHEST);
+    grBufferSwap(0);
+
+    grBufferClear(0, 0, GR_WDEPTHVALUE_FARTHEST);
+    GrVertex a{}, b{}, c{};
+    a.oow = b.oow = c.oow = 1.0f;
+    for (int i = 0; i < 16; ++i) {
+      // Repeat identical state calls before every triangle (matches splash /
+      // real game loops).
+      grColorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+                     GR_COMBINE_LOCAL_CONSTANT, GR_COMBINE_OTHER_NONE, FXFALSE);
+      grAlphaBlendFunction(GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_ONE,
+                           GR_BLEND_ZERO);
+      grDepthBufferMode(GR_DEPTHBUFFER_DISABLE);
+      grConstantColorValue(0xFFFF0000);
+      a.x = 10.0f + i * 20.0f;
+      a.y = 10.0f;
+      b.x = 25.0f + i * 20.0f;
+      b.y = 10.0f;
+      c.x = 18.0f + i * 20.0f;
+      c.y = 40.0f;
+      grDrawTriangle(&a, &b, &c);
+    }
+    grBufferSwap(0);
+
+    const auto m =
+        GlideWrapper::TelemetryManager::GetInstance().GetLastFrameMetrics();
+    REQUIRE(m.stateFlushes == 0);
+    // On Vulkan & OpenGL ES, all 16 triangles batch into 1 draw call.
+    const char* envBackend = std::getenv("GLIDE_NG_BACKEND");
+    if (envBackend && (std::string(envBackend) == "vulkan" ||
+                       std::string(envBackend) == "opengl_es")) {
+      REQUIRE(m.drawCalls == 1);
+    }
+  }
+
+  grSstWinClose();
   grGlideShutdown();
 #endif
 }

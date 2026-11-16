@@ -26,16 +26,18 @@ out vec4 outColor;
 uniform sampler2D uTex;
 uniform sampler2D uGammaLut;
 uniform bool uUseGammaLut;
+uniform bool uPreserveAlpha;
 void main() {
     vec4 texColor = texture(uTex, fragTex);
+    float outAlpha = uPreserveAlpha ? texColor.a : 1.0;
     if (uUseGammaLut) {
         vec3 corrected;
         corrected.r = texture(uGammaLut, vec2((texColor.r * 255.0 + 0.5) / 256.0, 0.5)).r;
         corrected.g = texture(uGammaLut, vec2((texColor.g * 255.0 + 0.5) / 256.0, 0.5)).g;
         corrected.b = texture(uGammaLut, vec2((texColor.b * 255.0 + 0.5) / 256.0, 0.5)).b;
-        outColor = vec4(corrected, 1.0);
+        outColor = vec4(corrected, outAlpha);
     } else {
-        outColor = vec4(texColor.rgb, 1.0);
+        outColor = vec4(texColor.rgb, outAlpha);
     }
 }
 )";

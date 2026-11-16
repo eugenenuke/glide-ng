@@ -158,6 +158,7 @@ void LoadGammaTable(uint32_t nentries, uint32_t* red, uint32_t* green,
                     uint32_t* blue);
 
 // Vertex sanitization, primitive batch dispatch, and telemetry helpers.
+void SyncTexturesBeforeDraw();
 void SanitizeVertex(const SharedFrontendState& st, ModernVertex& mv);
 void DrawVertexList(uint32_t mode, uint32_t count, const ModernVertex* vertices,
                     bool allowPointsAndLines);
@@ -175,6 +176,7 @@ bool LfbWriteRegion(uint32_t dstBuf, uint32_t dstX, uint32_t dstY,
                     int32_t srcStride, const void* srcData);
 bool LfbUnlockWithState(const SharedFrontendState& st, uint32_t type,
                         uint32_t buffer);
+void FlushActiveLfbWriteLock(const SharedFrontendState& st);
 
 // String & 3df texture file helpers.
 const char* GetRendererString();
