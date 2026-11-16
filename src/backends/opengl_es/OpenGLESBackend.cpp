@@ -1705,8 +1705,8 @@ void OpenGLESBackend::DestroyGLContext() {
   if (EnsureContextCurrent()) {
     for (uint32_t t = 0; t < 2; ++t) {
       for (auto& pair : m_glesTextures[t]) {
-        if (pair.second) {
-          glDeleteTextures(1, &pair.second);
+        if (pair.second.id) {
+          glDeleteTextures(1, &pair.second.id);
         }
       }
       m_glesTextures[t].clear();

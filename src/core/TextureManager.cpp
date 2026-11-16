@@ -1,7 +1,7 @@
 #include "TextureManager.h"
 
 #include <algorithm>
-#include <cmath>
+#include <array>
 #include <cstring>
 
 #include "core/BackendManager.h"
@@ -102,6 +102,220 @@ uint64_t HashTableBytes(const void* data, size_t len) {
     h *= kPrime;
   }
   return (h == 0) ? 1ULL : h;
+}
+
+// Fast 64-bit word-at-a-time hash for raw texture mipmap deduplication.
+// Processes 8 bytes per iteration (aligned or unaligned via memcpy) and mixes
+// with a 64-bit odd multiplier + xorshift for strong avalanche.
+inline uint64_t FastHashBytes64(uint64_t h, const uint8_t* data, size_t len) {
+  constexpr uint64_t kMul = 0x9E3779B97F4A7C15ULL;
+  constexpr uint64_t kMul2 = 0xBF58476D1CE4E5B9ULL;
+  size_t i = 0;
+  for (; i + 8 <= len; i += 8) {
+    uint64_t w = 0;
+    std::memcpy(&w, data + i, sizeof(w));
+    h ^= w * kMul;
+    h = (h ^ (h >> 27)) * kMul2;
+  }
+  if (i < len) {
+    uint64_t tail = 0;
+    std::memcpy(&tail, data + i, len - i);
+    h ^= (tail ^ static_cast<uint64_t>(len)) * kMul;
+    h = (h ^ (h >> 27)) * kMul2;
+  }
+  h ^= (h >> 31);
+  return (h == 0) ? 1ULL : h;
+}
+
+template <size_t N, uint32_t MaxVal>
+constexpr std::array<uint8_t, N> MakeExpandLut() {
+  std::array<uint8_t, N> lut{};
+  for (size_t i = 0; i < N; ++i) {
+    lut[i] = static_cast<uint8_t>((i * 255u) / MaxVal);
+  }
+  return lut;
+}
+
+constexpr auto kExpand5 = MakeExpandLut<32, 31>();
+constexpr auto kExpand6 = MakeExpandLut<64, 63>();
+constexpr auto kExpand3 = MakeExpandLut<8, 7>();
+
+// Hoisted per-format texel decoder producing canonical 32-bit BGRA (0xAARRGGBB).
+// Optional raw output pointers are populated when non-null for paletted/NCC
+// formats so later palette/NCC table reloads can re-swizzle without guest data.
+void DecodeTexelsToBgra(uint32_t format, const uint8_t* rawSrc, size_t count,
+                        uint32_t* dstBgra, bool paletteLoaded,
+                        const uint32_t* paletteTable,
+                        const GuNccTable* activeNcc, uint8_t* dstRaw8,
+                        uint8_t* dstRawYiq, uint16_t* dstRawAyiq,
+                        uint16_t* dstRawAp88) {
+  if (count == 0) return;
+
+  if (format >= 0x10) {
+    // 32-bit ARGB_8888 is already canonical 0xAARRGGBB in little-endian memory.
+    std::memcpy(dstBgra, rawSrc, count * sizeof(uint32_t));
+    return;
+  }
+
+  switch (format) {
+    case 0xa: {  // RGB_565
+      const auto* src16 = reinterpret_cast<const uint16_t*>(rawSrc);
+      for (size_t i = 0; i < count; ++i) {
+        const uint16_t val = src16[i];
+        const uint32_t r = kExpand5[(val >> 11) & 0x1Fu];
+        const uint32_t g = kExpand6[(val >> 5) & 0x3Fu];
+        const uint32_t b = kExpand5[val & 0x1Fu];
+        dstBgra[i] = 0xFF000000u | (r << 16) | (g << 8) | b;
+      }
+      return;
+    }
+    case 0xc: {  // ARGB_4444
+      const auto* src16 = reinterpret_cast<const uint16_t*>(rawSrc);
+      for (size_t i = 0; i < count; ++i) {
+        const uint16_t val = src16[i];
+        const uint32_t a = ((val >> 12) & 0xFu) * 17u;
+        const uint32_t r = ((val >> 8) & 0xFu) * 17u;
+        const uint32_t g = ((val >> 4) & 0xFu) * 17u;
+        const uint32_t b = (val & 0xFu) * 17u;
+        dstBgra[i] = (a << 24) | (r << 16) | (g << 8) | b;
+      }
+      return;
+    }
+    case 0xb: {  // ARGB_1555
+      const auto* src16 = reinterpret_cast<const uint16_t*>(rawSrc);
+      for (size_t i = 0; i < count; ++i) {
+        const uint16_t val = src16[i];
+        const uint32_t a = (val & 0x8000u) ? 0xFF000000u : 0u;
+        const uint32_t r = kExpand5[(val >> 10) & 0x1Fu];
+        const uint32_t g = kExpand5[(val >> 5) & 0x1Fu];
+        const uint32_t b = kExpand5[val & 0x1Fu];
+        dstBgra[i] = a | (r << 16) | (g << 8) | b;
+      }
+      return;
+    }
+    case 0xd: {  // ALPHA_INTENSITY_88
+      const auto* src16 = reinterpret_cast<const uint16_t*>(rawSrc);
+      for (size_t i = 0; i < count; ++i) {
+        const uint16_t val = src16[i];
+        const uint32_t a = (val >> 8) & 0xFFu;
+        const uint32_t intensity = val & 0xFFu;
+        dstBgra[i] = (a << 24) | (intensity * 0x00010101u);
+      }
+      return;
+    }
+    case 0x8: {  // ARGB_8332
+      const auto* src16 = reinterpret_cast<const uint16_t*>(rawSrc);
+      for (size_t i = 0; i < count; ++i) {
+        const uint16_t val = src16[i];
+        const uint32_t a = (val >> 8) & 0xFFu;
+        const uint32_t r = kExpand3[(val >> 5) & 0x7u];
+        const uint32_t g = kExpand3[(val >> 2) & 0x7u];
+        const uint32_t b = (val & 0x3u) * 85u;
+        dstBgra[i] = (a << 24) | (r << 16) | (g << 8) | b;
+      }
+      return;
+    }
+    case 0x9: {  // AYIQ_8422
+      const auto* src16 = reinterpret_cast<const uint16_t*>(rawSrc);
+      if (dstRawAyiq) {
+        std::memcpy(dstRawAyiq, src16, count * sizeof(uint16_t));
+      }
+      for (size_t i = 0; i < count; ++i) {
+        dstBgra[i] = swizzleAyiq(src16[i], *activeNcc);
+      }
+      return;
+    }
+    case 0xe: {  // AP_88
+      const auto* src16 = reinterpret_cast<const uint16_t*>(rawSrc);
+      if (dstRawAp88) {
+        std::memcpy(dstRawAp88, src16, count * sizeof(uint16_t));
+      }
+      if (paletteLoaded) {
+        for (size_t i = 0; i < count; ++i) {
+          dstBgra[i] = swizzleAp88(src16[i], paletteTable);
+        }
+      } else {
+        for (size_t i = 0; i < count; ++i) {
+          const uint16_t val = src16[i];
+          const uint32_t a = (val >> 8) & 0xFFu;
+          const uint32_t idx = val & 0xFFu;
+          dstBgra[i] = (a << 24) | (idx * 0x00010101u);
+        }
+      }
+      return;
+    }
+    case 0x5:
+    case 0x6: {  // P_8 or P_8_6666
+      if (dstRaw8) {
+        std::memcpy(dstRaw8, rawSrc, count);
+      }
+      if (paletteLoaded) {
+        for (size_t i = 0; i < count; ++i) {
+          dstBgra[i] = paletteTable[rawSrc[i]];
+        }
+      } else {
+        for (size_t i = 0; i < count; ++i) {
+          const uint32_t val = rawSrc[i];
+          dstBgra[i] = 0xFF000000u | (val * 0x00010101u);
+        }
+      }
+      return;
+    }
+    case 0x2: {  // ALPHA_8
+      for (size_t i = 0; i < count; ++i) {
+        const uint32_t val = rawSrc[i];
+        dstBgra[i] = val * 0x01010101u;
+      }
+      return;
+    }
+    case 0x3: {  // INTENSITY_8
+      for (size_t i = 0; i < count; ++i) {
+        const uint32_t val = rawSrc[i];
+        dstBgra[i] = 0xFF000000u | (val * 0x00010101u);
+      }
+      return;
+    }
+    case 0x0: {  // RGB_332
+      for (size_t i = 0; i < count; ++i) {
+        const uint8_t val = rawSrc[i];
+        const uint32_t r = kExpand3[(val >> 5) & 0x7u];
+        const uint32_t g = kExpand3[(val >> 2) & 0x7u];
+        const uint32_t b = (val & 0x3u) * 85u;
+        dstBgra[i] = 0xFF000000u | (r << 16) | (g << 8) | b;
+      }
+      return;
+    }
+    case 0x1: {  // YIQ_422
+      if (dstRawYiq) {
+        std::memcpy(dstRawYiq, rawSrc, count);
+      }
+      for (size_t i = 0; i < count; ++i) {
+        dstBgra[i] = swizzleYiq(rawSrc[i], *activeNcc);
+      }
+      return;
+    }
+    case 0x4: {  // ALPHA_INTENSITY_44
+      for (size_t i = 0; i < count; ++i) {
+        const uint8_t val = rawSrc[i];
+        const uint32_t a = ((val >> 4) & 0xFu) * 17u;
+        const uint32_t intensity = (val & 0xFu) * 17u;
+        dstBgra[i] = (a << 24) | (intensity * 0x00010101u);
+      }
+      return;
+    }
+    default: {
+      if (format >= 0x8) {
+        // Unknown 16-bit format fallback (matches prior default: a=255, r=g=b=0)
+        std::fill(dstBgra, dstBgra + count, 0xFF000000u);
+      } else {
+        for (size_t i = 0; i < count; ++i) {
+          const uint32_t val = rawSrc[i];
+          dstBgra[i] = 0xFF000000u | (val * 0x00010101u);
+        }
+      }
+      return;
+    }
+  }
 }
 
 uint32_t LodToDimension(int32_t lod) {
@@ -337,10 +551,9 @@ bool TextureManager::DownloadMipMap(uint32_t tmu, uint32_t startAddress,
     return false;
   }
 
-  // Card-specific bounds check
+  // Card-specific bounds check (Voodoo3+: 2048 -> LOD -3, Voodoo1/2: 256 -> LOD 0)
   auto model = EmulationRegistry::GetInstance().GetConfig().model;
-  uint32_t maxDimension = (model >= CardModel::Voodoo3) ? 2048 : 256;
-  int32_t minValidLod = 8 - static_cast<int32_t>(std::log2(maxDimension));
+  int32_t minValidLod = (model >= CardModel::Voodoo3) ? -3 : 0;
   if (lodMin < minValidLod || lodMin > 8 || lodMax < minValidLod || lodMax > 8) {
     GLIDE_LOG(CRITICAL, "TextureManager", "DownloadMipMap: LOD index out of emulated card bounds!");
     return false;
@@ -356,26 +569,17 @@ bool TextureManager::DownloadMipMap(uint32_t tmu, uint32_t startAddress,
       lodMin, lodMax, aspect, format,
       true);  // Use packed unaligned size for raw input data hashing!
 
-  // 1. Calculate FNV-1a 64-bit hash of raw input data including metadata
-  uint64_t incomingHash = 14695981039346656037ULL;
-  const uint64_t prime = 1099511628211ULL;
-  auto hash_integer = [&](uint32_t val) {
-    for (int i = 0; i < 4; ++i) {
-      incomingHash ^= (val & 0xFF);
-      incomingHash *= prime;
-      val >>= 8;
-    }
-  };
-  hash_integer(static_cast<uint32_t>(lodMin));
-  hash_integer(static_cast<uint32_t>(lodMax));
-  hash_integer(aspect);
-  hash_integer(format);
+  // 1. Fast 64-bit word hash of metadata + raw input mipmap bytes
+  uint64_t metaSeed = 14695981039346656037ULL;
+  metaSeed ^= (static_cast<uint64_t>(static_cast<uint32_t>(lodMin)) << 32) |
+              static_cast<uint64_t>(static_cast<uint32_t>(lodMax));
+  metaSeed *= 0x9E3779B97F4A7C15ULL;
+  metaSeed ^= (static_cast<uint64_t>(aspect) << 32) |
+              static_cast<uint64_t>(format);
+  metaSeed = (metaSeed ^ (metaSeed >> 27)) * 0xBF58476D1CE4E5B9ULL;
 
   const uint8_t* byteData = reinterpret_cast<const uint8_t*>(data);
-  for (size_t i = 0; i < rawBytes; ++i) {
-    incomingHash ^= byteData[i];
-    incomingHash *= prime;
-  }
+  const uint64_t incomingHash = FastHashBytes64(metaSeed, byteData, rawBytes);
 
   // 2. Intercept and bypass if an identical complete texture is already loaded
   auto it = m_tmus[tmu].textures.find(startAddress);
@@ -434,7 +638,9 @@ bool TextureManager::DownloadMipMap(uint32_t tmu, uint32_t startAddress,
   // incoming texture footprint [startAddress, startAddress + newBytes).
   const uint64_t newRangeStart = static_cast<uint64_t>(startAddress);
   const uint64_t newRangeEnd = newRangeStart + static_cast<uint64_t>(newBytes);
-  std::vector<uint32_t> overlappingAddrs;
+  uint32_t overlapStack[8];
+  size_t overlapStackCount = 0;
+  std::vector<uint32_t> overlapOverflow;
   uint64_t evictedBytes = 0;
 
   for (const auto& entry : m_tmus[tmu].textures) {
@@ -448,7 +654,11 @@ bool TextureManager::DownloadMipMap(uint32_t tmu, uint32_t startAddress,
     const uint64_t eEnd = eStart + eSize;
     if (entry.first == startAddress ||
         (eStart < newRangeEnd && newRangeStart < eEnd)) {
-      overlappingAddrs.push_back(entry.first);
+      if (overlapStackCount < 8) {
+        overlapStack[overlapStackCount++] = entry.first;
+      } else {
+        overlapOverflow.push_back(entry.first);
+      }
       evictedBytes += eSize;
     }
   }
@@ -519,6 +729,16 @@ bool TextureManager::DownloadMipMap(uint32_t tmu, uint32_t startAddress,
   size_t byteOffset = 0;
   uint32_t bytesPerTexel = (format >= 0x10) ? 4 : ((format >= 0x8) ? 2 : 1);
 
+  const bool needsNcc = (format == 0x1 || format == 0x9);
+  GuNccTable activeNcc{};
+  if (needsNcc) {
+    activeNcc = GetActiveNccTableOrDefault(m_tmus[tmu].nccTables,
+                                           m_tmus[tmu].nccTablesLoaded,
+                                           m_tmus[tmu].activeNccTable);
+  }
+  const bool paletteLoaded = m_tmus[tmu].paletteTableLoaded;
+  const uint32_t* paletteTable = m_tmus[tmu].paletteTable;
+
   for (int32_t i = start; i <= end; ++i) {
     uint32_t maxDim = LodToDimension(i);
     uint32_t w = maxDim;
@@ -547,141 +767,37 @@ bool TextureManager::DownloadMipMap(uint32_t tmu, uint32_t startAddress,
         break;  // 1x8
     }
 
-    std::vector<uint32_t> levelPixels(w * h, 0);
+    const size_t texelCount = static_cast<size_t>(w) * h;
+    std::vector<uint32_t> levelPixels(texelCount);
     std::vector<uint8_t> levelRaw;
     if (format == 0x5 ||
         format == 0x6) {  // GR_TEXFMT_P_8 or GR_TEXFMT_P_8_6666
       tex->isPaletted = true;
-      levelRaw.resize(w * h, 0);
+      levelRaw.resize(texelCount);
     }
     std::vector<uint8_t> levelYiq;
     if (format == 0x1) {  // GR_TEXFMT_YIQ_422
       tex->isNcc = true;
-      levelYiq.resize(w * h, 0);
+      levelYiq.resize(texelCount);
     }
     std::vector<uint16_t> levelAyiq;
     if (format == 0x9) {  // GR_TEXFMT_AYIQ_8422
       tex->isNcc = true;
-      levelAyiq.resize(w * h, 0);
+      levelAyiq.resize(texelCount);
     }
     std::vector<uint16_t> levelAp88;
     if (format == 0xe) {  // GR_TEXFMT_AP_88
       tex->isPaletted = true;
-      levelAp88.resize(w * h, 0);
+      levelAp88.resize(texelCount);
     }
 
-    GuNccTable activeNcc = GetActiveNccTableOrDefault(
-        m_tmus[tmu].nccTables, m_tmus[tmu].nccTablesLoaded,
-        m_tmus[tmu].activeNccTable);
-
-    for (size_t pIdx = 0; pIdx < w * h; ++pIdx) {
-      uint32_t a = 255;
-      uint32_t r = 0;
-      uint32_t g = 0;
-      uint32_t b = 0;
-
-      if (format >= 0x10) {  // 32-bit ARGB_8888
-        const auto* p =
-            reinterpret_cast<const uint32_t*>(rawData + byteOffset) + pIdx;
-        uint32_t val = *p;
-        a = (val >> 24) & 0xFF;
-        r = (val >> 16) & 0xFF;
-        g = (val >> 8) & 0xFF;
-        b = val & 0xFF;
-        levelPixels[pIdx] = (a << 24) | (r << 16) | (g << 8) | b;
-      } else if (format >= 0x8) {  // 16-bit
-        const auto* p =
-            reinterpret_cast<const uint16_t*>(rawData + byteOffset) + pIdx;
-        uint16_t val = *p;
-        if (format == 0xa) {  // RGB_565
-          r = ((val >> 11) & 0x1F) * 255 / 31;
-          g = ((val >> 5) & 0x3F) * 255 / 63;
-          b = (val & 0x1F) * 255 / 31;
-          a = 255;
-        } else if (format == 0xc) {  // ARGB_4444
-          a = ((val >> 12) & 0xF) * 255 / 15;
-          r = ((val >> 8) & 0xF) * 255 / 15;
-          g = ((val >> 4) & 0xF) * 255 / 15;
-          b = (val & 0xF) * 255 / 15;
-        } else if (format == 0xb) {  // ARGB_1555
-          a = (val & 0x8000) ? 255 : 0;
-          r = ((val >> 10) & 0x1F) * 255 / 31;
-          g = ((val >> 5) & 0x1F) * 255 / 31;
-          b = (val & 0x1F) * 255 / 31;
-        } else if (format == 0xd) {  // ALPHA_INTENSITY_88
-          a = (val >> 8) & 0xFF;
-          r = val & 0xFF;
-          g = r;
-          b = r;
-        } else if (format == 0x8) {  // ARGB_8332
-          a = (val >> 8) & 0xFF;
-          r = ((val >> 5) & 0x7) * 255 / 7;
-          g = ((val >> 2) & 0x7) * 255 / 7;
-          b = (val & 0x3) * 255 / 3;
-        } else if (format == 0x9) {  // AYIQ_8422
-          levelAyiq[pIdx] = val;
-          levelPixels[pIdx] = swizzleAyiq(val, activeNcc);
-        } else if (format == 0xe) {  // AP_88
-          levelAp88[pIdx] = val;
-          if (m_tmus[tmu].paletteTableLoaded) {
-            levelPixels[pIdx] = swizzleAp88(val, m_tmus[tmu].paletteTable);
-          } else {
-            uint8_t alphaVal = (val >> 8) & 0xFF;
-            uint8_t indexVal = val & 0xFF;
-            levelPixels[pIdx] = (alphaVal << 24) | (indexVal << 16) |
-                                (indexVal << 8) | indexVal;
-          }
-        }
-        if (format != 0x9 && format != 0xe) {
-          levelPixels[pIdx] = (a << 24) | (r << 16) | (g << 8) | b;
-        }
-      } else {  // 8-bit
-        uint8_t val = rawData[byteOffset + pIdx];
-        if (format == 0x2) {  // ALPHA_8
-          a = val;
-          r = val;
-          g = val;
-          b = val;
-          levelPixels[pIdx] = (a << 24) | (r << 16) | (g << 8) | b;
-        } else if (format == 0x3) {  // INTENSITY_8
-          r = val;
-          g = val;
-          b = val;
-          a = 255;
-          levelPixels[pIdx] = (a << 24) | (r << 16) | (g << 8) | b;
-        } else if (format == 0x5 || format == 0x6) {  // P_8 or P_8_6666
-          levelRaw[pIdx] = val;
-          if (m_tmus[tmu].paletteTableLoaded) {
-            levelPixels[pIdx] = m_tmus[tmu].paletteTable[val];
-          } else {
-            // Greyscale fallback before palette download
-            levelPixels[pIdx] = (255u << 24) | (val << 16) | (val << 8) | val;
-          }
-        } else if (format == 0x0) {  // RGB_332
-          r = ((val >> 5) & 0x7) * 255 / 7;
-          g = ((val >> 2) & 0x7) * 255 / 7;
-          b = (val & 0x3) * 255 / 3;
-          a = 255;
-          levelPixels[pIdx] = (a << 24) | (r << 16) | (g << 8) | b;
-        } else if (format == 0x1) {  // YIQ_422
-          levelYiq[pIdx] = val;
-          levelPixels[pIdx] = swizzleYiq(val, activeNcc);
-        } else if (format == 0x4) {  // ALPHA_INTENSITY_44
-          a = ((val >> 4) & 0xF) * 255 / 15;
-          uint32_t iVal = (val & 0xF) * 255 / 15;
-          r = iVal;
-          g = iVal;
-          b = iVal;
-          levelPixels[pIdx] = (a << 24) | (r << 16) | (g << 8) | b;
-        } else {  // Unknown 8-bit format
-          r = val;
-          g = val;
-          b = val;
-          a = 255;
-          levelPixels[pIdx] = (a << 24) | (r << 16) | (g << 8) | b;
-        }
-      }
-    }
+    DecodeTexelsToBgra(
+        format, rawData + byteOffset, texelCount, levelPixels.data(),
+        paletteLoaded, paletteTable, needsNcc ? &activeNcc : nullptr,
+        levelRaw.empty() ? nullptr : levelRaw.data(),
+        levelYiq.empty() ? nullptr : levelYiq.data(),
+        levelAyiq.empty() ? nullptr : levelAyiq.data(),
+        levelAp88.empty() ? nullptr : levelAp88.data());
 
     uint32_t destIdx = static_cast<uint32_t>(i - newLarge);
     newSwizzled[destIdx] = std::move(levelPixels);
@@ -750,7 +866,10 @@ bool TextureManager::DownloadMipMap(uint32_t tmu, uint32_t startAddress,
   tex->uploadedToBackend = false;
 
   // Commit overlapping evictions and insert the new VirtualTexture
-  for (uint32_t addr : overlappingAddrs) {
+  for (size_t oi = 0; oi < overlapStackCount; ++oi) {
+    m_tmus[tmu].textures.erase(overlapStack[oi]);
+  }
+  for (uint32_t addr : overlapOverflow) {
     m_tmus[tmu].textures.erase(addr);
   }
   m_tmus[tmu].allocatedBytes = static_cast<uint32_t>(usedAfterEvict + newBytes);
@@ -797,10 +916,9 @@ bool TextureManager::DownloadMipMapPartial(uint32_t tmu, uint32_t startAddress,
     return false;
   }
 
-  // Card-specific bounds check
+  // Card-specific bounds check (Voodoo3+: 2048 -> LOD -3, Voodoo1/2: 256 -> LOD 0)
   auto model = EmulationRegistry::GetInstance().GetConfig().model;
-  uint32_t maxDimension = (model >= CardModel::Voodoo3) ? 2048 : 256;
-  int32_t minValidLod = 8 - static_cast<int32_t>(std::log2(maxDimension));
+  int32_t minValidLod = (model >= CardModel::Voodoo3) ? -3 : 0;
   if (thisLod < minValidLod || thisLod > 8 || largeLod < minValidLod || largeLod > 8) {
     GLIDE_LOG(CRITICAL, "TextureManager", "DownloadMipMapPartial: LOD index out of emulated card bounds!");
     return false;
@@ -879,9 +997,13 @@ bool TextureManager::DownloadMipMapPartial(uint32_t tmu, uint32_t startAddress,
   size_t partialTexels = numRows * w;
 
   const auto* rawData = reinterpret_cast<const uint8_t*>(data);
-  GuNccTable activeNcc = GetActiveNccTableOrDefault(m_tmus[tmu].nccTables,
-                                                    m_tmus[tmu].nccTablesLoaded,
-                                                    m_tmus[tmu].activeNccTable);
+  const bool needsNcc = (format == 0x1 || format == 0x9);
+  GuNccTable activeNcc{};
+  if (needsNcc) {
+    activeNcc = GetActiveNccTableOrDefault(m_tmus[tmu].nccTables,
+                                           m_tmus[tmu].nccTablesLoaded,
+                                           m_tmus[tmu].activeNccTable);
+  }
 
   // If a paletted/NCC texture was previously swizzled with a different table,
   // re-swizzle its existing levels first so partial rows don't mix palettes.
@@ -892,121 +1014,30 @@ bool TextureManager::DownloadMipMapPartial(uint32_t tmu, uint32_t startAddress,
 
   // Update swizzled mip levels
   auto& levelPixels = tex->swizzledMipLevels[lodIdx];
+  const size_t baseOffset = static_cast<size_t>(startRow) * w;
 
-  for (size_t pIdx = 0; pIdx < partialTexels; ++pIdx) {
-    size_t destIdx = startRow * w + pIdx;
-    uint32_t a = 255;
-    uint32_t r = 0;
-    uint32_t g = 0;
-    uint32_t b = 0;
+  uint8_t* dstRaw8 =
+      ((format == 0x5 || format == 0x6) && lodIdx < tex->raw8BitMipLevels.size())
+          ? (tex->raw8BitMipLevels[lodIdx].data() + baseOffset)
+          : nullptr;
+  uint8_t* dstRawYiq =
+      (format == 0x1 && lodIdx < tex->rawYiqMipLevels.size())
+          ? (tex->rawYiqMipLevels[lodIdx].data() + baseOffset)
+          : nullptr;
+  uint16_t* dstRawAyiq =
+      (format == 0x9 && lodIdx < tex->rawAyiqMipLevels.size())
+          ? (tex->rawAyiqMipLevels[lodIdx].data() + baseOffset)
+          : nullptr;
+  uint16_t* dstRawAp88 =
+      (format == 0xe && lodIdx < tex->rawAp88MipLevels.size())
+          ? (tex->rawAp88MipLevels[lodIdx].data() + baseOffset)
+          : nullptr;
 
-    if (format >= 0x10) {
-      const auto* p = reinterpret_cast<const uint32_t*>(rawData) + pIdx;
-      uint32_t val = *p;
-      a = (val >> 24) & 0xFF;
-      r = (val >> 16) & 0xFF;
-      g = (val >> 8) & 0xFF;
-      b = val & 0xFF;
-      levelPixels[destIdx] = (a << 24) | (r << 16) | (g << 8) | b;
-    } else if (format >= 0x8) {
-      const auto* p = reinterpret_cast<const uint16_t*>(rawData) + pIdx;
-      uint16_t val = *p;
-      if (format == 0xa) {
-        r = ((val >> 11) & 0x1F) * 255 / 31;
-        g = ((val >> 5) & 0x3F) * 255 / 63;
-        b = (val & 0x1F) * 255 / 31;
-        a = 255;
-      } else if (format == 0xc) {
-        a = ((val >> 12) & 0xF) * 255 / 15;
-        r = ((val >> 8) & 0xF) * 255 / 15;
-        g = ((val >> 4) & 0xF) * 255 / 15;
-        b = (val & 0xF) * 255 / 15;
-      } else if (format == 0xb) {
-        a = (val & 0x8000) ? 255 : 0;
-        r = ((val >> 10) & 0x1F) * 255 / 31;
-        g = ((val >> 5) & 0x1F) * 255 / 31;
-        b = (val & 0x1F) * 255 / 31;
-      } else if (format == 0xd) {
-        a = (val >> 8) & 0xFF;
-        r = val & 0xFF;
-        g = r;
-        b = r;
-      } else if (format == 0x8) {
-        a = (val >> 8) & 0xFF;
-        r = ((val >> 5) & 0x7) * 255 / 7;
-        g = ((val >> 2) & 0x7) * 255 / 7;
-        b = (val & 0x3) * 255 / 3;
-      } else if (format == 0x9) {
-        if (lodIdx < tex->rawAyiqMipLevels.size()) {
-          tex->rawAyiqMipLevels[lodIdx][destIdx] = val;
-        }
-        levelPixels[destIdx] = swizzleAyiq(val, activeNcc);
-      } else if (format == 0xe) {
-        if (lodIdx < tex->rawAp88MipLevels.size()) {
-          tex->rawAp88MipLevels[lodIdx][destIdx] = val;
-        }
-        if (m_tmus[tmu].paletteTableLoaded) {
-          levelPixels[destIdx] = swizzleAp88(val, m_tmus[tmu].paletteTable);
-        } else {
-          uint8_t alphaVal = (val >> 8) & 0xFF;
-          uint8_t indexVal = val & 0xFF;
-          levelPixels[destIdx] =
-              (alphaVal << 24) | (indexVal << 16) | (indexVal << 8) | indexVal;
-        }
-      }
-      if (format != 0x9 && format != 0xe) {
-        levelPixels[destIdx] = (a << 24) | (r << 16) | (g << 8) | b;
-      }
-    } else {
-      uint8_t val = rawData[pIdx];
-      if (format == 0x2) {
-        a = val;
-        r = val;
-        g = val;
-        b = val;
-        levelPixels[destIdx] = (a << 24) | (r << 16) | (g << 8) | b;
-      } else if (format == 0x3) {
-        r = val;
-        g = val;
-        b = val;
-        a = 255;
-        levelPixels[destIdx] = (a << 24) | (r << 16) | (g << 8) | b;
-      } else if (format == 0x5 || format == 0x6) {
-        if (lodIdx < tex->raw8BitMipLevels.size()) {
-          tex->raw8BitMipLevels[lodIdx][destIdx] = val;
-        }
-        if (m_tmus[tmu].paletteTableLoaded) {
-          levelPixels[destIdx] = m_tmus[tmu].paletteTable[val];
-        } else {
-          levelPixels[destIdx] = (255u << 24) | (val << 16) | (val << 8) | val;
-        }
-      } else if (format == 0x0) {
-        r = ((val >> 5) & 0x7) * 255 / 7;
-        g = ((val >> 2) & 0x7) * 255 / 7;
-        b = (val & 0x3) * 255 / 3;
-        a = 255;
-        levelPixels[destIdx] = (a << 24) | (r << 16) | (g << 8) | b;
-      } else if (format == 0x1) {
-        if (lodIdx < tex->rawYiqMipLevels.size()) {
-          tex->rawYiqMipLevels[lodIdx][destIdx] = val;
-        }
-        levelPixels[destIdx] = swizzleYiq(val, activeNcc);
-      } else if (format == 0x4) {
-        a = ((val >> 4) & 0xF) * 255 / 15;
-        uint32_t iVal = (val & 0xF) * 255 / 15;
-        r = iVal;
-        g = iVal;
-        b = iVal;
-        levelPixels[destIdx] = (a << 24) | (r << 16) | (g << 8) | b;
-      } else {
-        r = val;
-        g = val;
-        b = val;
-        a = 255;
-        levelPixels[destIdx] = (a << 24) | (r << 16) | (g << 8) | b;
-      }
-    }
-  }
+  DecodeTexelsToBgra(format, rawData, partialTexels,
+                     levelPixels.data() + baseOffset,
+                     m_tmus[tmu].paletteTableLoaded, m_tmus[tmu].paletteTable,
+                     needsNcc ? &activeNcc : nullptr, dstRaw8, dstRawYiq,
+                     dstRawAyiq, dstRawAp88);
 
   // Call the backend to perform the partial (or full, if palette changed) GPU upload
   if (auto* b = BackendManager::GetInstance().GetBackend()) {

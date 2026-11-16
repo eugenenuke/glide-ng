@@ -156,21 +156,7 @@ void VulkanBackend::DrawPoint(const ModernVertex& pt) {
       GLIDE_LOG(WARN, "Vulkan",
                 "Dynamic Vertex Buffer slot overflow during DrawPoint! "
                 "Stalling GPU to prevent geometry corruption.");
-      FlushBatch();
-      if (m_inRenderPass) {
-        m_commandBuffer->endRenderPass();
-        m_inRenderPass = false;
-      }
-      m_commandBuffer->end();
-
-      vk::SubmitInfo submitInfo(0, nullptr, nullptr, 1, m_commandBuffer);
-      m_graphicsQueue.submit(submitInfo, {});
-      m_device->waitIdle();
-
-      m_commandBuffer->reset({});
-      m_commandBuffer->begin(vk::CommandBufferBeginInfo(
-          vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
-
+      SubmitMidFrameAndWaitIdle_Locked(true);
       m_vertexBufferOffset = slotBase;
     }
 
@@ -234,21 +220,7 @@ void VulkanBackend::DrawLine(const ModernVertex& v1, const ModernVertex& v2) {
       GLIDE_LOG(WARN, "Vulkan",
                 "Dynamic Vertex Buffer slot overflow during DrawLine! Stalling "
                 "GPU to prevent geometry corruption.");
-      FlushBatch();
-      if (m_inRenderPass) {
-        m_commandBuffer->endRenderPass();
-        m_inRenderPass = false;
-      }
-      m_commandBuffer->end();
-
-      vk::SubmitInfo submitInfo(0, nullptr, nullptr, 1, m_commandBuffer);
-      m_graphicsQueue.submit(submitInfo, {});
-      m_device->waitIdle();
-
-      m_commandBuffer->reset({});
-      m_commandBuffer->begin(vk::CommandBufferBeginInfo(
-          vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
-
+      SubmitMidFrameAndWaitIdle_Locked(true);
       m_vertexBufferOffset = slotBase;
     }
 
@@ -349,21 +321,7 @@ void VulkanBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
       GLIDE_LOG(WARN, "Vulkan",
                 "Dynamic Vertex Buffer slot overflow during DrawTriangle! "
                 "Stalling GPU to prevent geometry corruption.");
-      FlushBatch();
-      if (m_inRenderPass) {
-        m_commandBuffer->endRenderPass();
-        m_inRenderPass = false;
-      }
-      m_commandBuffer->end();
-
-      vk::SubmitInfo submitInfo(0, nullptr, nullptr, 1, m_commandBuffer);
-      m_graphicsQueue.submit(submitInfo, {});
-      m_device->waitIdle();
-
-      m_commandBuffer->reset({});
-      m_commandBuffer->begin(vk::CommandBufferBeginInfo(
-          vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
-
+      SubmitMidFrameAndWaitIdle_Locked(true);
       m_vertexBufferOffset = slotBase;
     }
 

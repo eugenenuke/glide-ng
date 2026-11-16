@@ -346,11 +346,17 @@ class VulkanBackend : public GlideStateTracker {
   // Command submission infrastructure (Double-Buffered)
   vk::UniqueCommandPool m_commandPools[2];
   vk::UniqueCommandBuffer m_commandBuffers[2];
+  vk::UniqueCommandBuffer m_uploadCommandBuffers[2];
+  bool m_uploadCmdHasWork[2]{false, false};
   vk::CommandBuffer* m_commandBuffer{
       nullptr};  // Non-owning pointer pointing to active command buffer
   vk::UniqueFence
       m_fences[2];  // Fences to track CPU-GPU synchronization per frame slot
   uint32_t m_currentFrameSlot{0};  // Active frame slot (0 or 1)
+
+  vk::CommandBuffer& BeginUploadCommandBuffer_Locked();
+  void SubmitPendingUploadsAndWaitIdle_Locked();
+  void SubmitMidFrameAndWaitIdle_Locked(bool reopenDrawCmd = true);
 
   // Render Pass abstraction
   vk::UniqueRenderPass m_renderPass;
@@ -488,6 +494,10 @@ class VulkanBackend : public GlideStateTracker {
       m_samplerCache;
   std::unordered_map<DescriptorKey, vk::UniqueDescriptorSet, DescriptorKeyHash>
       m_descriptorCache;
+  // Reverse index from non-dummy VkImageView handle -> DescriptorKeys for O(1)
+  // descriptor set retirement in RetireTextureAtAddress_Locked.
+  std::unordered_map<uint64_t, std::vector<DescriptorKey>>
+      m_viewToDescriptorKeys;
 
   // Deferred per-frame-slot retirement queues so overwritten/purged textures
   // and descriptor sets stay alive until the GPU fence for that slot signals.
@@ -498,7 +508,7 @@ class VulkanBackend : public GlideStateTracker {
 
   // Bounded free-list of fence-reclaimed textures for zero-allocation reuse on
   // same-dimension uploads during TMU cache churn.
-  static constexpr size_t kMaxPooledTextures = 64;
+  static constexpr size_t kMaxPooledTextures = 128;
   std::vector<VulkanTexture> m_texturePool;
   uint64_t m_texturePoolReuses{0};
 

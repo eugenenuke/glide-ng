@@ -351,10 +351,7 @@ void VulkanBackend::ReadbackGpuToStaging_Locked(uint32_t buffer) {
       m_headlessImages[readIdx].get(), vk::ImageLayout::eTransferSrcOptimal,
       m_headlessPixelBuffers[m_currentFrameSlot].get(), 1, &region);
 
-  m_commandBuffer->end();
-  vk::SubmitInfo submitInfo(0, nullptr, nullptr, 1, m_commandBuffer);
-  m_graphicsQueue.submit(submitInfo, {});
-  m_device->waitIdle();
+  SubmitMidFrameAndWaitIdle_Locked(false);
 
   void* readDst = m_lfbStaging.PrepareBufferForGpuReadback(buffer);
   if (m_gpuStagingMaps[m_currentFrameSlot] && readDst) {
@@ -449,13 +446,7 @@ void VulkanBackend::CompositeLfbOverlay_Locked(uint32_t /*buffer*/,
       m_lfbOverlayStagingSizes[slot]) {
     // Rare single-frame staging overflow (>4 fullscreen LFB flushes in 1
     // frame): flush current command buffer and reset slot staging offset.
-    m_commandBuffer->end();
-    vk::SubmitInfo submitInfo(0, nullptr, nullptr, 1, m_commandBuffer);
-    m_graphicsQueue.submit(submitInfo, {});
-    m_device->waitIdle();
-    m_commandBuffer->reset({});
-    m_commandBuffer->begin(vk::CommandBufferBeginInfo(
-        vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
+    SubmitMidFrameAndWaitIdle_Locked(true);
     m_lfbOverlayStagingOffsets[slot] = 0;
   }
 
@@ -640,14 +631,7 @@ void VulkanBackend::FlushLFBToGPU_Locked() {
 
         // Full-buffer path shares m_headlessPixelBuffers[slot], so synchronize
         // before returning to avoid clobbering on subsequent reads/uploads.
-        m_commandBuffer->end();
-        vk::SubmitInfo submitInfo(0, nullptr, nullptr, 1, m_commandBuffer);
-        m_graphicsQueue.submit(submitInfo, {});
-        m_device->waitIdle();
-
-        m_commandBuffer->reset({});
-        m_commandBuffer->begin(vk::CommandBufferBeginInfo(
-            vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
+        SubmitMidFrameAndWaitIdle_Locked(true);
       }
       m_lfbStaging.ClearBufferDirty(buf);
     }

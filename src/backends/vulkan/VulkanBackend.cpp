@@ -284,6 +284,7 @@ void VulkanBackend::Shutdown() {
   // Clear sampler and descriptor caches after GPU is idle
   m_samplerCache.clear();
   m_descriptorCache.clear();
+  m_viewToDescriptorKeys.clear();
 
   // 2. Explicitly destroy all device-owned pipelines, shaders, and caches
   m_pipelineCache.clear();
@@ -377,6 +378,8 @@ void VulkanBackend::Shutdown() {
   // (Double-Buffered)
   m_commandBuffer = nullptr;
   for (int i = 0; i < 2; ++i) {
+    m_uploadCmdHasWork[i] = false;
+    m_uploadCommandBuffers[i].reset();
     m_commandBuffers[i].reset();
     m_commandPools[i].reset();
     m_fences[i].reset();
@@ -673,13 +676,16 @@ void VulkanBackend::DetachWindow_Locked() {
   GLIDE_LOG(INFO, "Vulkan", "Detaching Hybrid Vulkan window resources.");
 
   // Strict WSI teardown order:
-  // 1. Wait for GPU idle
+  // 1. Flush any pending pre-frame texture uploads & wait for GPU idle
   // 2. Destroy swapchain
   // 3. Destroy VkSurfaceKHR
   // 4. Detach NativeSurfaceHost (destroys X11 child / wl_subsurface / SDL window)
   if (m_device) {
+    SubmitPendingUploadsAndWaitIdle_Locked();
     m_device->waitIdle();
   }
+  m_uploadCmdHasWork[0] = false;
+  m_uploadCmdHasWork[1] = false;
 
   DestroySwapchain_Locked();
   DestroyHudResources_Locked();
@@ -1385,6 +1391,7 @@ bool VulkanBackend::SwapBuffers() {
     }
 
     if (acquireRes == vk::Result::eErrorOutOfDateKHR) {
+      SubmitPendingUploadsAndWaitIdle_Locked();
       uint32_t hostW = 0;
       uint32_t hostH = 0;
       m_surfaceHost.SyncBounds(hostW, hostH);
@@ -1487,6 +1494,16 @@ bool VulkanBackend::SwapBuffers() {
 
     m_commandBuffer->end();
 
+    vk::CommandBuffer submitCmds[2];
+    uint32_t submitCmdCount = 0;
+    if (m_uploadCmdHasWork[m_currentFrameSlot]) {
+      auto& uploadCmd = m_uploadCommandBuffers[m_currentFrameSlot].get();
+      uploadCmd.end();
+      submitCmds[submitCmdCount++] = uploadCmd;
+      m_uploadCmdHasWork[m_currentFrameSlot] = false;
+    }
+    submitCmds[submitCmdCount++] = *m_commandBuffer;
+
     (void)m_device->resetFences(1, &m_fences[m_currentFrameSlot].get());
 
     vk::PipelineStageFlags waitStages[] = {
@@ -1497,8 +1514,8 @@ bool VulkanBackend::SwapBuffers() {
     vk::Semaphore signalSemaphores[] = {
         m_renderFinishedSemaphores[imageIdx].get()};
 
-    vk::SubmitInfo submitInfo(1, waitSemaphores, waitStages, 1, m_commandBuffer,
-                              1, signalSemaphores);
+    vk::SubmitInfo submitInfo(1, waitSemaphores, waitStages, submitCmdCount,
+                              submitCmds, 1, signalSemaphores);
 
     m_graphicsQueue.submit(submitInfo, m_fences[m_currentFrameSlot].get());
 
@@ -1565,9 +1582,19 @@ bool VulkanBackend::SwapBuffers() {
 
     m_commandBuffer->end();
 
+    vk::CommandBuffer submitCmds[2];
+    uint32_t submitCmdCount = 0;
+    if (m_uploadCmdHasWork[m_currentFrameSlot]) {
+      auto& uploadCmd = m_uploadCommandBuffers[m_currentFrameSlot].get();
+      uploadCmd.end();
+      submitCmds[submitCmdCount++] = uploadCmd;
+      m_uploadCmdHasWork[m_currentFrameSlot] = false;
+    }
+    submitCmds[submitCmdCount++] = *m_commandBuffer;
+
     (void)m_device->resetFences(1, &m_fences[m_currentFrameSlot].get());
 
-    vk::SubmitInfo submitInfo(0, nullptr, nullptr, 1, m_commandBuffer);
+    vk::SubmitInfo submitInfo(0, nullptr, nullptr, submitCmdCount, submitCmds);
     m_graphicsQueue.submit(submitInfo, m_fences[m_currentFrameSlot].get());
 
     uint32_t nextSlot = (m_currentFrameSlot + 1) % 2;
@@ -1852,9 +1879,11 @@ bool VulkanBackend::CreateLogicalDevice() {
     m_commandPools[i] = m_device->createCommandPoolUnique(poolInfo);
 
     vk::CommandBufferAllocateInfo allocInfo(
-        m_commandPools[i].get(), vk::CommandBufferLevel::ePrimary, 1);
+        m_commandPools[i].get(), vk::CommandBufferLevel::ePrimary, 2);
     auto bufs = m_device->allocateCommandBuffersUnique(allocInfo);
     m_commandBuffers[i] = std::move(bufs[0]);
+    m_uploadCommandBuffers[i] = std::move(bufs[1]);
+    m_uploadCmdHasWork[i] = false;
 
     m_fences[i] = m_device->createFenceUnique(fenceInfo);
   }
@@ -2095,6 +2124,18 @@ void VulkanBackend::TransitionImageLayout(vk::CommandBuffer cmd,
     sourceStage = vk::PipelineStageFlagBits::eTopOfPipe;
     destinationStage = vk::PipelineStageFlagBits::eTransfer;
   } else if (oldLayout == vk::ImageLayout::eTransferDstOptimal &&
+             newLayout == vk::ImageLayout::eShaderReadOnlyOptimal) {
+    barrier.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
+    barrier.dstAccessMask = vk::AccessFlagBits::eShaderRead;
+    sourceStage = vk::PipelineStageFlagBits::eTransfer;
+    destinationStage = vk::PipelineStageFlagBits::eFragmentShader;
+  } else if (oldLayout == vk::ImageLayout::eShaderReadOnlyOptimal &&
+             newLayout == vk::ImageLayout::eTransferDstOptimal) {
+    barrier.srcAccessMask = vk::AccessFlagBits::eShaderRead;
+    barrier.dstAccessMask = vk::AccessFlagBits::eTransferWrite;
+    sourceStage = vk::PipelineStageFlagBits::eFragmentShader;
+    destinationStage = vk::PipelineStageFlagBits::eTransfer;
+  } else if (oldLayout == vk::ImageLayout::eTransferDstOptimal &&
              newLayout == vk::ImageLayout::eTransferSrcOptimal) {
     barrier.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
     barrier.dstAccessMask = vk::AccessFlagBits::eTransferRead;
@@ -2136,6 +2177,57 @@ void VulkanBackend::TransitionImageLayout(vk::CommandBuffer cmd,
 
   cmd.pipelineBarrier(sourceStage, destinationStage, {}, 0, nullptr, 0, nullptr,
                       1, &barrier);
+}
+
+vk::CommandBuffer& VulkanBackend::BeginUploadCommandBuffer_Locked() {
+  auto& uploadCmd = m_uploadCommandBuffers[m_currentFrameSlot].get();
+  if (!m_uploadCmdHasWork[m_currentFrameSlot]) {
+    uploadCmd.reset({});
+    uploadCmd.begin(vk::CommandBufferBeginInfo(
+        vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
+    m_uploadCmdHasWork[m_currentFrameSlot] = true;
+  }
+  return uploadCmd;
+}
+
+void VulkanBackend::SubmitPendingUploadsAndWaitIdle_Locked() {
+  if (!m_device || !m_uploadCmdHasWork[m_currentFrameSlot]) return;
+  auto& uploadCmd = m_uploadCommandBuffers[m_currentFrameSlot].get();
+  uploadCmd.end();
+  vk::SubmitInfo submitInfo(0, nullptr, nullptr, 1, &uploadCmd);
+  m_graphicsQueue.submit(submitInfo, {});
+  m_device->waitIdle();
+  m_uploadCmdHasWork[m_currentFrameSlot] = false;
+}
+
+void VulkanBackend::SubmitMidFrameAndWaitIdle_Locked(bool reopenDrawCmd) {
+  if (!m_device || !m_commandBuffer) return;
+  if (m_inRenderPass) {
+    FlushBatch();
+    m_commandBuffer->endRenderPass();
+    m_inRenderPass = false;
+  }
+  m_commandBuffer->end();
+
+  vk::CommandBuffer submitCmds[2];
+  uint32_t submitCmdCount = 0;
+  if (m_uploadCmdHasWork[m_currentFrameSlot]) {
+    auto& uploadCmd = m_uploadCommandBuffers[m_currentFrameSlot].get();
+    uploadCmd.end();
+    submitCmds[submitCmdCount++] = uploadCmd;
+    m_uploadCmdHasWork[m_currentFrameSlot] = false;
+  }
+  submitCmds[submitCmdCount++] = *m_commandBuffer;
+
+  vk::SubmitInfo submitInfo(0, nullptr, nullptr, submitCmdCount, submitCmds);
+  m_graphicsQueue.submit(submitInfo, {});
+  m_device->waitIdle();
+
+  if (reopenDrawCmd) {
+    m_commandBuffer->reset({});
+    m_commandBuffer->begin(vk::CommandBufferBeginInfo(
+        vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
+  }
 }
 
 void VulkanBackend::SetGamma(float gamma) {

@@ -459,7 +459,7 @@ void OpenGLESBackend::FlushBatch(bool fromStateFlush) {
     if (addr != 0xFFFFFFFF) {
       auto it = m_glesTextures[tmu].find(addr);
       if (it != m_glesTextures[tmu].end()) {
-        const uint32_t texId = it->second;
+        const uint32_t texId = it->second.id;
         if (m_cachedBoundTex[tmu] != texId) {
           if (m_cachedActiveTexUnit != tmu) {
             glActiveTexture(GL_TEXTURE0 + tmu);
