@@ -560,8 +560,6 @@ void OpenGLESBackend::FlushLFBToGPU_Locked() {
   if (!EnsureContextCurrent()) return;
 
   glActiveTexture(GL_TEXTURE0);
-  GLint prevTexture = 0;
-  glGetIntegerv(GL_TEXTURE_BINDING_2D, &prevTexture);
 
   // Mapping invariant (matching GetActiveGpuFbo() & ReadLFB()):
   //   logical 0 (GR_BUFFER_FRONTBUFFER) -> m_headlessFBOs[1] / m_fboTextures[1]
@@ -628,89 +626,98 @@ void OpenGLESBackend::FlushLFBToGPU_Locked() {
       m_glLfbOverlayHeight = m_headlessHeight;
     }
 
-    GLint prevFBO = 0;
-    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prevFBO);
-
+    bool overlayStateBound = false;
     for (uint32_t buf = 0; buf < 2; ++buf) {
-      uint32_t minY = 0;
-      uint32_t maxY = 0;
+      const CpuLfbStaging::DirtyBand* bands = nullptr;
+      size_t bandCount = 0;
       const uint32_t* overlay =
-          m_lfbStaging.GetOverlayForGpuUpload(buf, minY, maxY);
-      if (!overlay || minY > maxY || maxY >= m_headlessHeight) continue;
+          m_lfbStaging.GetOverlayBandsForGpuUpload(buf, bands, bandCount);
+      if (!overlay || !bands || bandCount == 0) continue;
 
-      const uint32_t numRows = maxY - minY + 1;
-      const size_t bandPixels = static_cast<size_t>(numRows) * m_headlessWidth;
-      if (m_swizzleBuffer.size() < bandPixels) {
-        m_swizzleBuffer.resize(bandPixels);
-      }
-
-      // Flip dirty band [minY..maxY] top-down -> bottom-up and swizzle ARGB -> RGBA.
-      for (uint32_t rIdx = 0; rIdx < numRows; ++rIdx) {
-        const uint32_t srcY = maxY - rIdx;
-        const uint32_t* srcRow = overlay + static_cast<size_t>(srcY) * m_headlessWidth;
-        uint32_t* dstRow =
-            m_swizzleBuffer.data() + static_cast<size_t>(rIdx) * m_headlessWidth;
-        for (uint32_t x = 0; x < m_headlessWidth; ++x) {
-          uint32_t argb = srcRow[x];
-          dstRow[x] = (argb & 0xFF00FF00u) | ((argb & 0xFFu) << 16) |
-                      ((argb >> 16) & 0xFFu);
-        }
-      }
-
-      const uint32_t glMinY = m_headlessHeight - 1 - maxY;
       glActiveTexture(GL_TEXTURE0);
       glBindSampler(0, 0);
       glBindTexture(GL_TEXTURE_2D, m_glLfbOverlayTex);
       glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-      glTexSubImage2D(GL_TEXTURE_2D, 0, 0, static_cast<GLint>(glMinY),
-                      static_cast<GLsizei>(m_headlessWidth),
-                      static_cast<GLsizei>(numRows), GL_RGBA, GL_UNSIGNED_BYTE,
-                      m_swizzleBuffer.data());
+
+      // Upload ONLY the disjoint dirty row bands (skipping untouched rows).
+      for (size_t bi = 0; bi < bandCount; ++bi) {
+        const uint32_t minY = bands[bi].minY;
+        const uint32_t maxY = bands[bi].maxY;
+        if (minY > maxY || maxY >= m_headlessHeight) continue;
+
+        const uint32_t numRows = maxY - minY + 1;
+        const size_t bandPixels = static_cast<size_t>(numRows) * m_headlessWidth;
+        if (m_swizzleBuffer.size() < bandPixels) {
+          m_swizzleBuffer.resize(bandPixels);
+        }
+
+        // Flip dirty band [minY..maxY] top-down -> bottom-up and swizzle ARGB -> RGBA.
+        for (uint32_t rIdx = 0; rIdx < numRows; ++rIdx) {
+          const uint32_t srcY = maxY - rIdx;
+          const uint32_t* srcRow = overlay + static_cast<size_t>(srcY) * m_headlessWidth;
+          uint32_t* dstRow =
+              m_swizzleBuffer.data() + static_cast<size_t>(rIdx) * m_headlessWidth;
+          for (uint32_t x = 0; x < m_headlessWidth; ++x) {
+            uint32_t argb = srcRow[x];
+            dstRow[x] = (argb & 0xFF00FF00u) | ((argb & 0xFFu) << 16) |
+                        ((argb >> 16) & 0xFFu);
+          }
+        }
+
+        const uint32_t glMinY = m_headlessHeight - 1 - maxY;
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, static_cast<GLint>(glMinY),
+                        static_cast<GLsizei>(m_headlessWidth),
+                        static_cast<GLsizei>(numRows), GL_RGBA, GL_UNSIGNED_BYTE,
+                        m_swizzleBuffer.data());
+      }
 
       glBindFramebuffer(GL_FRAMEBUFFER, gpuFbos[buf]);
-      glViewport(0, 0, static_cast<GLsizei>(m_headlessWidth),
-                 static_cast<GLsizei>(m_headlessHeight));
-      // Scissor tightly to the uploaded dirty band so untouched rows in
-      // m_glLfbOverlayTex are never sampled.
-      glEnable(GL_SCISSOR_TEST);
-      glScissor(0, static_cast<GLint>(glMinY),
-                static_cast<GLsizei>(m_headlessWidth),
-                static_cast<GLsizei>(numRows));
-      glDisable(GL_DEPTH_TEST);
-      glDepthMask(GL_FALSE);
-      glDisable(GL_CULL_FACE);
-      glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-      glEnable(GL_BLEND);
-      glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE,
-                          GL_ONE_MINUS_SRC_ALPHA);
+      if (!overlayStateBound) {
+        glViewport(0, 0, static_cast<GLsizei>(m_headlessWidth),
+                   static_cast<GLsizei>(m_headlessHeight));
+        glEnable(GL_SCISSOR_TEST);
+        glDisable(GL_DEPTH_TEST);
+        glDepthMask(GL_FALSE);
+        glDisable(GL_CULL_FACE);
+        glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+        glEnable(GL_BLEND);
+        glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE,
+                            GL_ONE_MINUS_SRC_ALPHA);
+        glUseProgram(m_glProgram);
+        if (m_uUseGammaLutLoc != -1) {
+          glUniform1i(m_uUseGammaLutLoc, 0);
+        }
+        if (m_uPreserveAlphaLoc != -1) {
+          glUniform1i(m_uPreserveAlphaLoc, 1);
+        }
+        glBindVertexArray(m_glVAO);
+        overlayStateBound = true;
+      }
 
-      glUseProgram(m_glProgram);
-      if (m_uUseGammaLutLoc != -1) {
-        glUniform1i(m_uUseGammaLutLoc, 0);
+      // Composite each dirty band tightly with scissor so untouched rows in
+      // m_glLfbOverlayTex are never sampled.
+      for (size_t bi = 0; bi < bandCount; ++bi) {
+        const uint32_t minY = bands[bi].minY;
+        const uint32_t maxY = bands[bi].maxY;
+        if (minY > maxY || maxY >= m_headlessHeight) continue;
+        const uint32_t numRows = maxY - minY + 1;
+        const uint32_t glMinY = m_headlessHeight - 1 - maxY;
+        glScissor(0, static_cast<GLint>(glMinY),
+                  static_cast<GLsizei>(m_headlessWidth),
+                  static_cast<GLsizei>(numRows));
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
       }
-      if (m_uPreserveAlphaLoc != -1) {
-        glUniform1i(m_uPreserveAlphaLoc, 1);
-      }
-      glBindVertexArray(m_glVAO);
-      glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 
       m_lfbStaging.ClearOverlay(buf);
       checkGLError("FlushLFBToGPU OverlayQuad");
     }
 
-    glBindVertexArray(0);
-    glUseProgram(0);
-    glBindFramebuffer(GL_FRAMEBUFFER, prevFBO);
-    glViewport(0, 0, static_cast<GLsizei>(m_headlessWidth),
-               static_cast<GLsizei>(m_headlessHeight));
-    ApplyScissorGLES_Locked();
-    ApplyColorMaskGLES();
-    SyncDepthState();
-    SyncCullStateGLES_Locked();
-    ApplyBlendingGLES();
+    // Mark modified fixed-function state dirty so the next 3D FlushBatch lazily
+    // restores it without redundant GL calls at SwapBuffers time.
+    m_glesDirtyMask |= kGlesDirtyScissor | kGlesDirtyColorMask |
+                       kGlesDirtyDepth | kGlesDirtyCull | kGlesDirtyBlend;
   }
 
-  glBindTexture(GL_TEXTURE_2D, prevTexture);
   InvalidateGlBindingCache();
 }
 

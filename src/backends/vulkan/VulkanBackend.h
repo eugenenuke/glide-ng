@@ -531,8 +531,9 @@ class VulkanBackend : public GlideStateTracker {
   void ReadbackGpuToStaging_Locked(uint32_t buffer);
   void CompositeLfbOverlay_Locked(uint32_t buffer, uint32_t targetGpuIdx,
                                   const uint32_t* pixels, uint32_t width,
-                                  uint32_t height, uint32_t minY,
-                                  uint32_t maxY);
+                                  uint32_t height,
+                                  const CpuLfbStaging::DirtyBand* bands,
+                                  size_t bandCount);
   vk::UniqueSampler m_lfbOverlaySampler;
   vk::UniqueDescriptorSetLayout m_lfbOverlayDescSetLayout;
   vk::UniqueDescriptorPool m_lfbOverlayDescPool;

@@ -1,6 +1,7 @@
 #include "CpuLfbStaging.h"
 
 #include <algorithm>
+#include <array>
 #include <cstring>
 
 #include "core/Logger.h"
@@ -12,6 +13,18 @@
 namespace GlideWrapper {
 
 namespace {
+
+template <size_t N, uint32_t MaxVal>
+constexpr std::array<uint8_t, N> MakeExpandLut() {
+  std::array<uint8_t, N> lut{};
+  for (size_t i = 0; i < N; ++i) {
+    lut[i] = static_cast<uint8_t>((i * 255u) / MaxVal);
+  }
+  return lut;
+}
+
+constexpr auto kExpand5 = MakeExpandLut<32, 31>();
+constexpr auto kExpand6 = MakeExpandLut<64, 63>();
 
 inline uint16_t Color24ToRgb565(uint32_t color, uint32_t pixelFormatOverride) {
   uint32_t r = (color >> 16) & 0xFF;
@@ -114,6 +127,20 @@ struct LfbRowProcessor {
     const uint8_t* rowIn = inBytes + rowOffset;
     const uint8_t* rowRef = HasRefData ? (refBytes + rowOffset) : nullptr;
 
+    if (dstX >= fbWidth) return;
+    const uint32_t activeWidth = std::min(srcWidth, fbWidth - dstX);
+    constexpr bool is16Bit =
+        (SrcFmt == 0 || SrcFmt == 1 || SrcFmt == 2 || SrcFmt == 12 ||
+         SrcFmt == 13 || SrcFmt == 14 || SrcFmt == 15);
+    constexpr size_t srcElemBytes =
+        (SrcFmt == 0 || SrcFmt == 1 || SrcFmt == 2 || SrcFmt == 15) ? 2u : 4u;
+    if constexpr (HasRefData) {
+      if (std::memcmp(rowIn, rowRef,
+                      static_cast<size_t>(activeWidth) * srcElemBytes) == 0) {
+        return;
+      }
+    }
+
     uint16_t chroma16 = 0;
     uint32_t chroma24 = 0;
     if constexpr (ChromakeyEnabled) {
@@ -127,14 +154,10 @@ struct LfbRowProcessor {
       }
     }
 
-    for (uint32_t x = 0; x < srcWidth; ++x) {
+    for (uint32_t x = 0; x < activeWidth; ++x) {
       uint32_t writeX = dstX + x;
-      if (writeX >= fbWidth) break;
 
       // 1. Extract raw source pixel
-      constexpr bool is16Bit =
-          (SrcFmt == 0 || SrcFmt == 1 || SrcFmt == 2 || SrcFmt == 12 ||
-           SrcFmt == 13 || SrcFmt == 14 || SrcFmt == 15);
       uint16_t c16 = 0;
       uint32_t c32 = 0;
       if constexpr (is16Bit) {
@@ -180,15 +203,15 @@ struct LfbRowProcessor {
       // 4. Unpack pixel to 32-bit ARGB
       uint32_t pWord = 0xFF000000;
       if constexpr (SrcFmt == 0 || SrcFmt == 12) {
-        uint32_t r = ((c16 >> 11) & 0x1F) * 255 / 31;
-        uint32_t g = ((c16 >> 5) & 0x3F) * 255 / 63;
-        uint32_t b = (c16 & 0x1F) * 255 / 31;
+        uint32_t r = kExpand5[(c16 >> 11) & 0x1F];
+        uint32_t g = kExpand6[(c16 >> 5) & 0x3F];
+        uint32_t b = kExpand5[c16 & 0x1F];
         pWord = (255u << 24) | (r << 16) | (g << 8) | b;
       } else if constexpr (SrcFmt == 1 || SrcFmt == 2 || SrcFmt == 13 ||
                            SrcFmt == 14) {
-        uint32_t r = ((c16 >> 10) & 0x1F) * 255 / 31;
-        uint32_t g = ((c16 >> 5) & 0x1F) * 255 / 31;
-        uint32_t b = (c16 & 0x1F) * 255 / 31;
+        uint32_t r = kExpand5[(c16 >> 10) & 0x1F];
+        uint32_t g = kExpand5[(c16 >> 5) & 0x1F];
+        uint32_t b = kExpand5[c16 & 0x1F];
         uint32_t a =
             (SrcFmt == 2 || SrcFmt == 14) ? (((c16 >> 15) & 1) ? 255 : 0) : 255;
         pWord = (a << 24) | (r << 16) | (g << 8) | b;
@@ -197,12 +220,9 @@ struct LfbRowProcessor {
         // regardless of grSstWinOpen's GrColorFormat_t (which only governs
         // GrColor_t API parameters).
         (void)pixelFormatOverride;
-        uint32_t r = ((c32 >> 16) & 0xFF) >> 3;
-        uint32_t g = ((c32 >> 8) & 0xFF) >> 2;
-        uint32_t b = (c32 & 0xFF) >> 3;
-        uint32_t r8 = r * 255 / 31;
-        uint32_t g8 = g * 255 / 63;
-        uint32_t b8 = b * 255 / 31;
+        uint32_t r8 = kExpand5[((c32 >> 16) & 0xFF) >> 3];
+        uint32_t g8 = kExpand6[((c32 >> 8) & 0xFF) >> 2];
+        uint32_t b8 = kExpand5[(c32 & 0xFF) >> 3];
         uint32_t a8 = (c32 >> 24) & 0xFF;
         if constexpr (SrcFmt == 4 || SrcFmt == 15) {
           a8 = 255;
@@ -273,6 +293,20 @@ struct LfbOverlayRowProcessor {
     const uint8_t* rowIn = inBytes + rowOffset;
     const uint8_t* rowRef = HasRefData ? (refBytes + rowOffset) : nullptr;
 
+    if (dstX >= fbWidth) return;
+    const uint32_t activeWidth = std::min(srcWidth, fbWidth - dstX);
+    constexpr bool is16Bit =
+        (SrcFmt == 0 || SrcFmt == 1 || SrcFmt == 2 || SrcFmt == 12 ||
+         SrcFmt == 13 || SrcFmt == 14 || SrcFmt == 15);
+    constexpr size_t srcElemBytes =
+        (SrcFmt == 0 || SrcFmt == 1 || SrcFmt == 2 || SrcFmt == 15) ? 2u : 4u;
+    if constexpr (HasRefData) {
+      if (std::memcmp(rowIn, rowRef,
+                      static_cast<size_t>(activeWidth) * srcElemBytes) == 0) {
+        return;
+      }
+    }
+
     uint16_t chroma16 = 0;
     uint32_t chroma24 = 0;
     if constexpr (ChromakeyEnabled) {
@@ -287,13 +321,9 @@ struct LfbOverlayRowProcessor {
     }
 
     uint32_t* dstRow = overlay + static_cast<size_t>(writeY) * fbWidth;
-    for (uint32_t x = 0; x < srcWidth; ++x) {
+    for (uint32_t x = 0; x < activeWidth; ++x) {
       uint32_t writeX = dstX + x;
-      if (writeX >= fbWidth) break;
 
-      constexpr bool is16Bit =
-          (SrcFmt == 0 || SrcFmt == 1 || SrcFmt == 2 || SrcFmt == 12 ||
-           SrcFmt == 13 || SrcFmt == 14 || SrcFmt == 15);
       uint16_t c16 = 0;
       uint32_t c32 = 0;
       if constexpr (is16Bit) {
@@ -336,20 +366,20 @@ struct LfbOverlayRowProcessor {
 
       uint32_t r = 0, g = 0, b = 0, a = 255;
       if constexpr (SrcFmt == 0 || SrcFmt == 12) {
-        r = ((c16 >> 11) & 0x1F) * 255 / 31;
-        g = ((c16 >> 5) & 0x3F) * 255 / 63;
-        b = (c16 & 0x1F) * 255 / 31;
+        r = kExpand5[(c16 >> 11) & 0x1F];
+        g = kExpand6[(c16 >> 5) & 0x3F];
+        b = kExpand5[c16 & 0x1F];
       } else if constexpr (SrcFmt == 1 || SrcFmt == 2 || SrcFmt == 13 ||
                            SrcFmt == 14) {
-        r = ((c16 >> 10) & 0x1F) * 255 / 31;
-        g = ((c16 >> 5) & 0x1F) * 255 / 31;
-        b = (c16 & 0x1F) * 255 / 31;
+        r = kExpand5[(c16 >> 10) & 0x1F];
+        g = kExpand5[(c16 >> 5) & 0x1F];
+        b = kExpand5[c16 & 0x1F];
         a = (SrcFmt == 2 || SrcFmt == 14) ? (((c16 >> 15) & 1) ? 255 : 0) : 255;
       } else {
         (void)pixelFormatOverride;
-        r = (((c32 >> 16) & 0xFF) >> 3) * 255 / 31;
-        g = (((c32 >> 8) & 0xFF) >> 2) * 255 / 63;
-        b = ((c32 & 0xFF) >> 3) * 255 / 31;
+        r = kExpand5[((c32 >> 16) & 0xFF) >> 3];
+        g = kExpand6[((c32 >> 8) & 0xFF) >> 2];
+        b = kExpand5[(c32 & 0xFF) >> 3];
         a = (SrcFmt == 4 || SrcFmt == 15) ? 255 : ((c32 >> 24) & 0xFF);
       }
 
@@ -403,10 +433,25 @@ void RunWriteOverlayParallel(uint32_t srcHeight, uint32_t dstX, uint32_t dstY,
                              uint32_t* overlay, const uint8_t* inBytes,
                              const uint8_t* refBytes, int32_t srcStride,
                              const LfbPipelineConfig& config,
-                             uint32_t& modifiedCount, uint32_t& outMinY,
-                             uint32_t& outMaxY) {
-  uint32_t localMinY = fbHeight;
-  uint32_t localMaxY = 0;
+                             uint32_t& modifiedCount,
+                             CpuLfbStaging::DirtyBand* outBands,
+                             size_t& outBandCount) {
+  outBandCount = 0;
+  bool inBand = false;
+  uint32_t bandStart = 0;
+  uint32_t bandEnd = 0;
+  auto pushBand = [&](uint32_t bMin, uint32_t bMax) {
+    if (outBandCount > 0 && outBands[outBandCount - 1].maxY + 5 >= bMin) {
+      outBands[outBandCount - 1].maxY = std::max(outBands[outBandCount - 1].maxY, bMax);
+      return;
+    }
+    if (outBandCount < CpuLfbStaging::kMaxOverlayBands) {
+      outBands[outBandCount++] = {bMin, bMax};
+    } else {
+      // Collapse into the last band to keep band count bounded.
+      outBands[outBandCount - 1].maxY = std::max(outBands[outBandCount - 1].maxY, bMax);
+    }
+  };
   for (uint32_t y = 0; y < srcHeight; ++y) {
     uint32_t rowModifiedCount = 0;
     LfbOverlayRowProcessor<SrcFmt, ChromakeyEnabled, AlphaBlendOverlay,
@@ -417,13 +462,22 @@ void RunWriteOverlayParallel(uint32_t srcHeight, uint32_t dstX, uint32_t dstY,
                                                    config, rowModifiedCount);
     if (rowModifiedCount > 0) {
       const uint32_t wy = dstY + y;
-      if (wy < localMinY) localMinY = wy;
-      if (wy > localMaxY) localMaxY = wy;
+      if (!inBand) {
+        inBand = true;
+        bandStart = wy;
+        bandEnd = wy;
+      } else {
+        bandEnd = wy;
+      }
       modifiedCount += rowModifiedCount;
+    } else if (inBand) {
+      pushBand(bandStart, bandEnd);
+      inBand = false;
     }
   }
-  outMinY = localMinY;
-  outMaxY = localMaxY;
+  if (inBand) {
+    pushBand(bandStart, bandEnd);
+  }
 }
 
 template <uint32_t SrcFmt, bool ChromakeyEnabled, bool BlendEnabled,
@@ -460,8 +514,8 @@ void CpuLfbStaging::Configure(uint32_t width, uint32_t height,
   m_bufferDirty[1] = false;
   m_overlayDirty[0] = false;
   m_overlayDirty[1] = false;
-  m_overlayMinY[0] = m_overlayMinY[1] = 0;
-  m_overlayMaxY[0] = m_overlayMaxY[1] = 0;
+  m_overlayBandCount[0] = 0;
+  m_overlayBandCount[1] = 0;
   m_pendingClear[0] = {};
   m_pendingClear[1] = {};
 
@@ -500,8 +554,8 @@ void CpuLfbStaging::Release() {
   m_bufferDirty[1] = false;
   m_overlayDirty[0] = false;
   m_overlayDirty[1] = false;
-  m_overlayMinY[0] = m_overlayMinY[1] = 0;
-  m_overlayMaxY[0] = m_overlayMaxY[1] = 0;
+  m_overlayBandCount[0] = 0;
+  m_overlayBandCount[1] = 0;
   m_pendingClear[0] = {};
   m_pendingClear[1] = {};
 }
@@ -527,8 +581,8 @@ bool CpuLfbStaging::EnsureOverlayAllocated() {
   m_overlayBuffers[1].assign(totalPixels, 0u);
   m_overlayDirty[0] = false;
   m_overlayDirty[1] = false;
-  m_overlayMinY[0] = m_overlayMinY[1] = m_height;
-  m_overlayMaxY[0] = m_overlayMaxY[1] = 0;
+  m_overlayBandCount[0] = 0;
+  m_overlayBandCount[1] = 0;
   GLIDE_LOG(INFO, "CpuLfbStaging",
             "Lazily allocated sparse LFB overlay buffers: "
                 << m_width << "x" << m_height << " ("
@@ -536,19 +590,78 @@ bool CpuLfbStaging::EnsureOverlayAllocated() {
   return true;
 }
 
+void CpuLfbStaging::AddOverlayBand(uint32_t idx, uint32_t minY, uint32_t maxY) {
+  if (minY > maxY || maxY >= m_height) return;
+  auto* bands = m_overlayBands[idx];
+  size_t& count = m_overlayBandCount[idx];
+
+  // Insert and coalesce overlapping or nearby bands (gap <= 4 rows).
+  constexpr uint32_t kMergeGap = 4;
+  DirtyBand merged{minY, maxY};
+  DirtyBand next[kMaxOverlayBands + 1];
+  size_t nextCount = 0;
+  bool inserted = false;
+
+  for (size_t i = 0; i < count; ++i) {
+    const DirtyBand& cur = bands[i];
+    if (cur.maxY + kMergeGap + 1 < merged.minY) {
+      next[nextCount++] = cur;
+    } else if (merged.maxY + kMergeGap + 1 < cur.minY) {
+      if (!inserted) {
+        next[nextCount++] = merged;
+        inserted = true;
+      }
+      next[nextCount++] = cur;
+    } else {
+      merged.minY = std::min(merged.minY, cur.minY);
+      merged.maxY = std::max(merged.maxY, cur.maxY);
+    }
+  }
+  if (!inserted) {
+    next[nextCount++] = merged;
+  }
+
+  // If still above kMaxOverlayBands, merge the two adjacent bands with the
+  // smallest gap so we stay within kMaxOverlayBands while minimizing wasted rows.
+  while (nextCount > kMaxOverlayBands) {
+    size_t bestIdx = 0;
+    uint32_t bestGap = UINT32_MAX;
+    for (size_t i = 0; i + 1 < nextCount; ++i) {
+      const uint32_t gap = next[i + 1].minY - next[i].maxY;
+      if (gap < bestGap) {
+        bestGap = gap;
+        bestIdx = i;
+      }
+    }
+    next[bestIdx].maxY = next[bestIdx + 1].maxY;
+    for (size_t i = bestIdx + 1; i + 1 < nextCount; ++i) {
+      next[i] = next[i + 1];
+    }
+    --nextCount;
+  }
+
+  for (size_t i = 0; i < nextCount; ++i) {
+    bands[i] = next[i];
+  }
+  count = nextCount;
+  m_overlayDirty[idx] = (count > 0);
+}
+
 void CpuLfbStaging::ClearOverlay(uint32_t logicalBuffer) {
   const uint32_t idx = (logicalBuffer == 0) ? 0u : 1u;
-  if (m_overlayDirty[idx] && !m_overlayBuffers[idx].empty() && m_width > 0 &&
-      m_overlayMinY[idx] <= m_overlayMaxY[idx] && m_overlayMaxY[idx] < m_height) {
-    const size_t startPx = static_cast<size_t>(m_overlayMinY[idx]) * m_width;
-    const size_t clearRows =
-        static_cast<size_t>(m_overlayMaxY[idx] - m_overlayMinY[idx] + 1);
-    std::memset(m_overlayBuffers[idx].data() + startPx, 0,
-                clearRows * m_width * sizeof(uint32_t));
+  if (m_overlayDirty[idx] && !m_overlayBuffers[idx].empty() && m_width > 0) {
+    for (size_t i = 0; i < m_overlayBandCount[idx]; ++i) {
+      const DirtyBand& b = m_overlayBands[idx][i];
+      if (b.minY <= b.maxY && b.maxY < m_height) {
+        const size_t startPx = static_cast<size_t>(b.minY) * m_width;
+        const size_t clearRows = static_cast<size_t>(b.maxY - b.minY + 1);
+        std::memset(m_overlayBuffers[idx].data() + startPx, 0,
+                    clearRows * m_width * sizeof(uint32_t));
+      }
+    }
   }
   m_overlayDirty[idx] = false;
-  m_overlayMinY[idx] = m_height;
-  m_overlayMaxY[idx] = 0;
+  m_overlayBandCount[idx] = 0;
 }
 
 bool CpuLfbStaging::CanUseOverlayQuad(const LfbPipelineConfig& config) {
@@ -586,8 +699,8 @@ bool CpuLfbStaging::WriteOverlayLFB(uint32_t logicalBuffer, uint32_t dstX,
   const bool hasRefData = (refBytes != nullptr);
 
   uint32_t modifiedCount = 0;
-  uint32_t minY = m_height;
-  uint32_t maxY = 0;
+  DirtyBand localBands[kMaxOverlayBands]{};
+  size_t localBandCount = 0;
 
 #define DISPATCH_OVERLAY_CASE(Fmt)                                           \
   case Fmt:                                                                  \
@@ -597,24 +710,24 @@ bool CpuLfbStaging::WriteOverlayLFB(uint32_t logicalBuffer, uint32_t dstX,
           RunWriteOverlayParallel<Fmt, true, true, true>(                    \
               srcHeight, dstX, dstY, srcWidth, m_width, m_height,            \
               pixelFormatOverride, overlay, inBytes, refBytes, srcStride,    \
-              config, modifiedCount, minY, maxY);                            \
+              config, modifiedCount, localBands, localBandCount);            \
         } else {                                                             \
           RunWriteOverlayParallel<Fmt, true, true, false>(                   \
               srcHeight, dstX, dstY, srcWidth, m_width, m_height,            \
               pixelFormatOverride, overlay, inBytes, refBytes, srcStride,    \
-              config, modifiedCount, minY, maxY);                            \
+              config, modifiedCount, localBands, localBandCount);            \
         }                                                                    \
       } else {                                                               \
         if (hasRefData) {                                                    \
           RunWriteOverlayParallel<Fmt, true, false, true>(                   \
               srcHeight, dstX, dstY, srcWidth, m_width, m_height,            \
               pixelFormatOverride, overlay, inBytes, refBytes, srcStride,    \
-              config, modifiedCount, minY, maxY);                            \
+              config, modifiedCount, localBands, localBandCount);            \
         } else {                                                             \
           RunWriteOverlayParallel<Fmt, true, false, false>(                  \
               srcHeight, dstX, dstY, srcWidth, m_width, m_height,            \
               pixelFormatOverride, overlay, inBytes, refBytes, srcStride,    \
-              config, modifiedCount, minY, maxY);                            \
+              config, modifiedCount, localBands, localBandCount);            \
         }                                                                    \
       }                                                                      \
     } else {                                                                 \
@@ -623,24 +736,24 @@ bool CpuLfbStaging::WriteOverlayLFB(uint32_t logicalBuffer, uint32_t dstX,
           RunWriteOverlayParallel<Fmt, false, true, true>(                   \
               srcHeight, dstX, dstY, srcWidth, m_width, m_height,            \
               pixelFormatOverride, overlay, inBytes, refBytes, srcStride,    \
-              config, modifiedCount, minY, maxY);                            \
+              config, modifiedCount, localBands, localBandCount);            \
         } else {                                                             \
           RunWriteOverlayParallel<Fmt, false, true, false>(                  \
               srcHeight, dstX, dstY, srcWidth, m_width, m_height,            \
               pixelFormatOverride, overlay, inBytes, refBytes, srcStride,    \
-              config, modifiedCount, minY, maxY);                            \
+              config, modifiedCount, localBands, localBandCount);            \
         }                                                                    \
       } else {                                                               \
         if (hasRefData) {                                                    \
           RunWriteOverlayParallel<Fmt, false, false, true>(                  \
               srcHeight, dstX, dstY, srcWidth, m_width, m_height,            \
               pixelFormatOverride, overlay, inBytes, refBytes, srcStride,    \
-              config, modifiedCount, minY, maxY);                            \
+              config, modifiedCount, localBands, localBandCount);            \
         } else {                                                             \
           RunWriteOverlayParallel<Fmt, false, false, false>(                 \
               srcHeight, dstX, dstY, srcWidth, m_width, m_height,            \
               pixelFormatOverride, overlay, inBytes, refBytes, srcStride,    \
-              config, modifiedCount, minY, maxY);                            \
+              config, modifiedCount, localBands, localBandCount);            \
         }                                                                    \
       }                                                                      \
     }                                                                        \
@@ -662,13 +775,8 @@ bool CpuLfbStaging::WriteOverlayLFB(uint32_t logicalBuffer, uint32_t dstX,
 #undef DISPATCH_OVERLAY_CASE
 
   if (modifiedCount > 0) {
-    if (!m_overlayDirty[idx]) {
-      m_overlayDirty[idx] = true;
-      m_overlayMinY[idx] = minY;
-      m_overlayMaxY[idx] = maxY;
-    } else {
-      m_overlayMinY[idx] = std::min(m_overlayMinY[idx], minY);
-      m_overlayMaxY[idx] = std::max(m_overlayMaxY[idx], maxY);
+    for (size_t i = 0; i < localBandCount; ++i) {
+      AddOverlayBand(idx, localBands[i].minY, localBands[i].maxY);
     }
   }
   return true;
@@ -678,11 +786,27 @@ const uint32_t* CpuLfbStaging::GetOverlayForGpuUpload(uint32_t logicalBuffer,
                                                       uint32_t& outMinY,
                                                       uint32_t& outMaxY) const {
   const uint32_t idx = (logicalBuffer == 0) ? 0u : 1u;
-  if (!m_overlayDirty[idx] || m_overlayBuffers[idx].empty()) {
+  if (!m_overlayDirty[idx] || m_overlayBandCount[idx] == 0 ||
+      m_overlayBuffers[idx].empty()) {
     return nullptr;
   }
-  outMinY = m_overlayMinY[idx];
-  outMaxY = m_overlayMaxY[idx];
+  outMinY = m_overlayBands[idx][0].minY;
+  outMaxY = m_overlayBands[idx][m_overlayBandCount[idx] - 1].maxY;
+  return m_overlayBuffers[idx].data();
+}
+
+const uint32_t* CpuLfbStaging::GetOverlayBandsForGpuUpload(
+    uint32_t logicalBuffer, const DirtyBand*& outBands,
+    size_t& outCount) const {
+  const uint32_t idx = (logicalBuffer == 0) ? 0u : 1u;
+  if (!m_overlayDirty[idx] || m_overlayBandCount[idx] == 0 ||
+      m_overlayBuffers[idx].empty()) {
+    outBands = nullptr;
+    outCount = 0;
+    return nullptr;
+  }
+  outBands = m_overlayBands[idx];
+  outCount = m_overlayBandCount[idx];
   return m_overlayBuffers[idx].data();
 }
 

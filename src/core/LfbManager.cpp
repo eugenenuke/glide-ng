@@ -76,16 +76,12 @@ bool LfbManager::SubmitWriteLock_Locked(const LfbPipelineConfig& config, bool ke
     auto* b = BackendManager::GetInstance().GetBackend();
     if (!b) return false;
 
-    const size_t byteSize = static_cast<size_t>(m_writeLock.height) * m_writeLock.stride;
+    const uint32_t height = m_writeLock.height;
+    const uint32_t stride = m_writeLock.stride;
+    const size_t byteSize = static_cast<size_t>(height) * stride;
     if (byteSize == 0 || m_writeLock.stagingBuffer.size() < byteSize ||
         m_writeLock.originalBuffer.size() < byteSize) {
         return false;
-    }
-
-    // Fast path: if the guest wrote nothing since the last flush/lock, skip.
-    if (std::memcmp(m_writeLock.stagingBuffer.data(),
-                    m_writeLock.originalBuffer.data(), byteSize) == 0) {
-        return true;
     }
 
     uint32_t srcFmt = 0;
@@ -104,34 +100,86 @@ bool LfbManager::SubmitWriteLock_Locked(const LfbPipelineConfig& config, bool ke
             return false;
     }
 
-    const void* submitPtr = m_writeLock.stagingBuffer.data();
-    if (m_writeLock.origin == 1) { // GR_ORIGIN_LOWER_LEFT
-        if (keepLocked) {
-            // Preserve stagingBuffer layout/address for persistent locks.
-            m_writeLock.flipScratch.resize(byteSize);
-            for (uint32_t y = 0; y < m_writeLock.height; ++y) {
-                const uint8_t* srcRow = m_writeLock.stagingBuffer.data() +
-                                        static_cast<size_t>(m_writeLock.height - 1 - y) * m_writeLock.stride;
-                uint8_t* dstRow = m_writeLock.flipScratch.data() +
-                                  static_cast<size_t>(y) * m_writeLock.stride;
-                std::memcpy(dstRow, srcRow, m_writeLock.stride);
+    uint8_t* stagingData = m_writeLock.stagingBuffer.data();
+    const uint8_t* origData = m_writeLock.originalBuffer.data();
+
+    // Scan rows to find disjoint contiguous dirty bands so sparse HUD writes
+    // (e.g. top + bottom status bars) skip all untouched middle rows on CPU and GPU.
+    struct RowBand {
+        uint32_t startY;
+        uint32_t endY;
+    };
+    std::vector<RowBand> dirtyBands;
+    dirtyBands.reserve(8);
+    uint32_t y = 0;
+    while (y < height) {
+        const size_t rowOff = static_cast<size_t>(y) * stride;
+        if (std::memcmp(stagingData + rowOff, origData + rowOff, stride) != 0) {
+            const uint32_t bandStart = y;
+            uint32_t bandEnd = y;
+            ++y;
+            while (y < height) {
+                const size_t nextOff = static_cast<size_t>(y) * stride;
+                if (std::memcmp(stagingData + nextOff, origData + nextOff, stride) != 0) {
+                    bandEnd = y;
+                    ++y;
+                } else {
+                    break;
+                }
             }
-            submitPtr = m_writeLock.flipScratch.data();
+            dirtyBands.push_back({bandStart, bandEnd});
         } else {
-            FlipRows(m_writeLock.stagingBuffer.data(), m_writeLock.height, m_writeLock.stride);
+            ++y;
         }
     }
 
-    TelemetryManager::GetInstance().RecordLfbWrite(byteSize);
-    b->WriteLFB(m_writeLock.buffer, 0, 0, m_writeLock.width, m_writeLock.height,
-                m_writeLock.stride, srcFmt, submitPtr,
-                m_writeLock.originalBuffer.data(), config);
+    if (dirtyBands.empty()) {
+        if (!keepLocked) {
+            m_writeLock.stagingClean = true;
+        }
+        return true;
+    }
 
-    if (keepLocked) {
-        // Reset stagingBuffer back to sentinel in-place (pointer never moves!)
-        // so next frame detects newly written pixels cleanly.
-        std::memcpy(m_writeLock.stagingBuffer.data(),
-                    m_writeLock.originalBuffer.data(), byteSize);
+    if (m_writeLock.origin == 0) { // GR_ORIGIN_UPPER_LEFT
+        for (const auto& band : dirtyBands) {
+            const uint32_t bandRows = band.endY - band.startY + 1;
+            const size_t bandOffset = static_cast<size_t>(band.startY) * stride;
+            const size_t bandBytes = static_cast<size_t>(bandRows) * stride;
+            TelemetryManager::GetInstance().RecordLfbWrite(bandBytes);
+            b->WriteLFB(m_writeLock.buffer, 0, band.startY, m_writeLock.width,
+                        bandRows, stride, srcFmt, stagingData + bandOffset,
+                        origData + bandOffset, config);
+            // Reset only the modified band back to sentinel (pointer never moves!).
+            std::memcpy(stagingData + bandOffset, origData + bandOffset, bandBytes);
+        }
+    } else { // GR_ORIGIN_LOWER_LEFT: map each guest band [startY..endY] to top-down dstY
+        for (const auto& band : dirtyBands) {
+            const uint32_t bandRows = band.endY - band.startY + 1;
+            const size_t bandBytes = static_cast<size_t>(bandRows) * stride;
+            if (m_writeLock.flipScratch.size() < bandBytes) {
+                m_writeLock.flipScratch.resize(bandBytes);
+            }
+            for (uint32_t r = 0; r < bandRows; ++r) {
+                const uint32_t guestRow = band.endY - r;
+                const uint8_t* srcRow = stagingData + static_cast<size_t>(guestRow) * stride;
+                uint8_t* dstRow = m_writeLock.flipScratch.data() + static_cast<size_t>(r) * stride;
+                std::memcpy(dstRow, srcRow, stride);
+            }
+            const uint32_t dstY = height - 1 - band.endY;
+            TelemetryManager::GetInstance().RecordLfbWrite(bandBytes);
+            // originalBuffer is uniform sentinel across all rows, so offset 0 matches any band.
+            b->WriteLFB(m_writeLock.buffer, 0, dstY, m_writeLock.width,
+                        bandRows, stride, srcFmt, m_writeLock.flipScratch.data(),
+                        origData, config);
+            const size_t bandOffset = static_cast<size_t>(band.startY) * stride;
+            std::memcpy(stagingData + bandOffset, origData + bandOffset, bandBytes);
+        }
+    }
+
+    if (!keepLocked) {
+        // Every modified row has been restored to sentinel; next Lock() of the
+        // same resolution/mode can skip the full-buffer sentinel memcpy.
+        m_writeLock.stagingClean = true;
     }
     return true;
 }
@@ -184,6 +232,7 @@ bool LfbManager::FlushActiveWriteLock(const LfbPipelineConfig& config) {
 void LfbManager::Reset() {
     std::lock_guard<std::mutex> lock(m_mutex);
     m_writeLock.isLocked = false;
+    m_writeLock.stagingClean = false;
     m_readLock.isLocked = false;
     m_writeLocked.store(false, std::memory_order_release);
 }

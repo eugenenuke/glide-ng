@@ -73,15 +73,26 @@ public:
             m_writeLock.height = height;
             m_writeLock.pixelSize = pixelSize;
             m_writeLock.stride = stride;
-            m_writeLock.stagingBuffer.resize(byteSize);
-            m_writeLock.originalBuffer.resize(byteSize);
 
             // Fill with a non-black, non-cyan sentinel instead of performing a
             // synchronous GPU ReadLFB stall (write-only locks may only be
             // written, never read, per the Glide 2.x/3.x specification).
-            FillSentinel(m_writeLock.originalBuffer.data(), width * height, pixelSize);
-            std::memcpy(m_writeLock.stagingBuffer.data(),
-                        m_writeLock.originalBuffer.data(), byteSize);
+            // Reuse the existing sentinel reference buffer and already-cleaned
+            // staging buffer across frames of the same resolution/format.
+            if (m_writeLock.originalBuffer.size() != byteSize ||
+                m_writeLock.originalSentinelPixelSize != pixelSize) {
+                m_writeLock.originalBuffer.resize(byteSize);
+                FillSentinel(m_writeLock.originalBuffer.data(), width * height, pixelSize);
+                m_writeLock.originalSentinelPixelSize = pixelSize;
+                m_writeLock.stagingClean = false;
+            }
+            if (!m_writeLock.stagingClean || m_writeLock.stagingBuffer.size() != byteSize) {
+                m_writeLock.stagingBuffer.resize(byteSize);
+                std::memcpy(m_writeLock.stagingBuffer.data(),
+                            m_writeLock.originalBuffer.data(), byteSize);
+            }
+            // Staging buffer is now handed to the guest and may be modified.
+            m_writeLock.stagingClean = false;
 
             info->size = sizeof(*info);
             info->writeMode = static_cast<decltype(info->writeMode)>(resolvedMode);
@@ -161,6 +172,8 @@ private:
         std::vector<uint8_t> flipScratch;
         uint32_t stride{0};
         uint32_t pixelSize{0};
+        uint32_t originalSentinelPixelSize{0};
+        bool stagingClean{false};
     };
 
     struct ReadLockState {
