@@ -53,7 +53,12 @@ void OpenGLESBackend::UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
                   << startAddress << std::dec);
   }
 
+  if (m_cachedActiveTexUnit != 0) {
+    glActiveTexture(GL_TEXTURE0);
+    m_cachedActiveTexUnit = 0;
+  }
   glBindTexture(GL_TEXTURE_2D, texId);
+  m_cachedBoundTex[0] = texId;
 
   uint32_t baseW = tex.baseWidth;
   uint32_t baseH = tex.baseHeight;
@@ -99,8 +104,9 @@ void OpenGLESBackend::UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
 
-  glBindTexture(GL_TEXTURE_2D, 0);
-  MarkStateDirty();
+  m_glesDirtyMask |=
+      kGlesDirtyTexBinding |
+      (tmu == 0 ? kGlesDirtyTexSampler0 : kGlesDirtyTexSampler1);
   checkGLError("UploadTexture");
 }
 
@@ -162,11 +168,12 @@ void OpenGLESBackend::UploadTexturePartial(uint32_t tmu, uint32_t startAddress,
     return;
   }
 
-  // Save current texture binding to restore later
-  GLint previousTexture = 0;
-  glGetIntegerv(GL_TEXTURE_BINDING_2D, &previousTexture);
-
+  if (m_cachedActiveTexUnit != 0) {
+    glActiveTexture(GL_TEXTURE0);
+    m_cachedActiveTexUnit = 0;
+  }
   glBindTexture(GL_TEXTURE_2D, texId);
+  m_cachedBoundTex[0] = texId;
 
   // Swizzle only the modified sub-image rows
   const uint32_t* pixels = tex.swizzledMipLevels[lodLevel].data();
@@ -192,7 +199,6 @@ void OpenGLESBackend::UploadTexturePartial(uint32_t tmu, uint32_t startAddress,
                 << " level=" << lodLevel << " rows=" << startRow << ".."
                 << endRow << " uploaded via glTexSubImage2D.");
 
-  glBindTexture(GL_TEXTURE_2D, previousTexture);
   checkGLError("UploadTexturePartial");
 }
 
@@ -215,6 +221,9 @@ void OpenGLESBackend::PurgeTextures() {
   }
   m_glesTextures[0].clear();
   m_glesTextures[1].clear();
+  m_cachedBoundTex[0] = 0xFFFFFFFFu;
+  m_cachedBoundTex[1] = 0xFFFFFFFFu;
+  m_glesDirtyMask |= kGlesDirtyTexBinding;
 }
 
 void OpenGLESBackend::BindTexture(uint32_t tmu, uint32_t startAddress,
@@ -227,8 +236,20 @@ void OpenGLESBackend::BindTexture(uint32_t tmu, uint32_t startAddress,
     return;
   }
   FlushBatch(true);
+  const bool addrChanged = (tmu < 2 && m_boundTexAddress[tmu] != startAddress);
+  const bool samplerChanged =
+      (tmu < 2 && (m_texClampS[tmu] != clampS || m_texClampT[tmu] != clampT ||
+                   m_texMinFilter[tmu] != minFilter ||
+                   m_texMagFilter[tmu] != magFilter));
   GlideStateTracker::BindTexture_Locked(tmu, startAddress, clampS, clampT,
                                         minFilter, magFilter);
+  if (addrChanged) {
+    m_glesDirtyMask |= kGlesDirtyTexBinding;
+  }
+  if (samplerChanged) {
+    m_glesDirtyMask |=
+        (tmu == 0 ? kGlesDirtyTexSampler0 : kGlesDirtyTexSampler1);
+  }
 }
 
 void OpenGLESBackend::SetTexLodBias(uint32_t tmu, float bias) {
@@ -236,6 +257,7 @@ void OpenGLESBackend::SetTexLodBias(uint32_t tmu, float bias) {
   if (tmu < 2 && m_texLodBias[tmu] == bias) return;
   FlushBatch(true);
   GlideStateTracker::SetTexLodBias_Locked(tmu, bias);
+  m_glesDirtyMask |= kGlesDirtyTexBinding;
 }
 
 void OpenGLESBackend::SetTexMipMapMode(uint32_t tmu, uint32_t mode,
@@ -247,6 +269,8 @@ void OpenGLESBackend::SetTexMipMapMode(uint32_t tmu, uint32_t mode,
   }
   FlushBatch(true);
   GlideStateTracker::SetTexMipMapMode_Locked(tmu, mode, lodBlend);
+  m_glesDirtyMask |=
+      (tmu == 0 ? kGlesDirtyTexSampler0 : kGlesDirtyTexSampler1);
 }
 
 }  // namespace GlideWrapper

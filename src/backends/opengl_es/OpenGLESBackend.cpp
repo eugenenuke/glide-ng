@@ -90,6 +90,19 @@ void OpenGLESBackend::ResetState() {
   ResetState_Locked();
 }
 
+void OpenGLESBackend::InvalidateGlBindingCache() {
+  m_cachedBoundFbo = 0xFFFFFFFFu;
+  m_cachedBoundProgram = 0xFFFFFFFFu;
+  m_cachedBoundVao = 0xFFFFFFFFu;
+  m_cachedBoundVbo = 0xFFFFFFFFu;
+  m_cachedBoundTex[0] = 0xFFFFFFFFu;
+  m_cachedBoundTex[1] = 0xFFFFFFFFu;
+  m_cachedBoundSampler[0] = 0xFFFFFFFFu;
+  m_cachedBoundSampler[1] = 0xFFFFFFFFu;
+  m_cachedActiveTexUnit = 0xFFFFFFFFu;
+  m_cachedViewportValid = false;
+}
+
 void OpenGLESBackend::ResetState_Locked() {
   GlideStateTracker::ResetState_Locked();
   m_lfbStaging.ResetPendingAndDirty();
@@ -102,6 +115,8 @@ void OpenGLESBackend::ResetState_Locked() {
   m_batchVertices.clear();
   m_batchPrimitiveMode = BatchPrimitiveMode::None;
   m_batchIs2DGeometry = false;
+  m_glesDirtyMask = kGlesDirtyAll;
+  InvalidateGlBindingCache();
 }
 
 bool OpenGLESBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
@@ -434,8 +449,10 @@ bool OpenGLESBackend::SwapBuffers() {
   SyncCullStateGLES_Locked();
   ApplyBlendingGLES();
 
-  // Force pipeline re-sync on the next frame's first draw
-  MarkStateDirty();
+  // Invalidate cached GL object bindings for next frame's first draw
+  // (m_geomProgram uniforms persist in our private EGL/GL context across
+  // frames, so no full 43-uniform re-upload is needed).
+  InvalidateGlBindingCache();
 
   // Restore any foreign host EGL context so host OpenGL rendering (e.g.
   // DOSBox-X output=opengl on Wayland) runs cleanly between Glide frames.
@@ -528,6 +545,7 @@ bool OpenGLESBackend::WriteLFB(uint32_t buffer, uint32_t dstX, uint32_t dstY,
         std::memcpy(botRow, rowBuf.data(), m_headlessWidth * sizeof(uint32_t));
       }
       glBindFramebuffer(GL_FRAMEBUFFER, prevFBO);
+      InvalidateGlBindingCache();
     }
   }
 
@@ -541,6 +559,7 @@ void OpenGLESBackend::FlushLFBToGPU_Locked() {
   GLIDE_CPU_SCOPE(CpuBucket::Lfb);
   if (!EnsureContextCurrent()) return;
 
+  glActiveTexture(GL_TEXTURE0);
   GLint prevTexture = 0;
   glGetIntegerv(GL_TEXTURE_BINDING_2D, &prevTexture);
 
@@ -689,10 +708,10 @@ void OpenGLESBackend::FlushLFBToGPU_Locked() {
     SyncDepthState();
     SyncCullStateGLES_Locked();
     ApplyBlendingGLES();
-    MarkStateDirty();
   }
 
   glBindTexture(GL_TEXTURE_2D, prevTexture);
+  InvalidateGlBindingCache();
 }
 
 bool OpenGLESBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
@@ -762,6 +781,7 @@ bool OpenGLESBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
 
   // Restore the previously bound framebuffer to prevent state leakage!
   glBindFramebuffer(GL_FRAMEBUFFER, previousFBO);
+  InvalidateGlBindingCache();
 
   // --- STEP 2: Convert and copy to client ---
   if (!m_lfbStaging.ReadRegion(buffer, srcX, srcY, srcWidth, srcHeight,
@@ -918,6 +938,7 @@ void OpenGLESBackend::SaveCurrentHostEglContext() {
 }
 
 void OpenGLESBackend::RestoreHostContextIfSaved() {
+  InvalidateGlBindingCache();
 #if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_EGL)
   if (m_hasSavedHostEgl) {
     const EGLenum api = static_cast<EGLenum>(m_savedHostEglApi);
@@ -1824,6 +1845,7 @@ void OpenGLESBackend::SetBlendState(uint32_t rgbSrcFactor,
   FlushBatch(true);
   GlideStateTracker::SetBlendState_Locked(rgbSrcFactor, rgbDstFactor, alphaSrcFactor,
                                    alphaDstFactor);
+  m_glesDirtyMask |= kGlesDirtyBlend;
 }
 
 void OpenGLESBackend::SetRenderBuffer(uint32_t target) {
@@ -1832,7 +1854,11 @@ void OpenGLESBackend::SetRenderBuffer(uint32_t target) {
   FlushBatch(true);
   GlideStateTracker::SetRenderBuffer_Locked(target);
   if (m_initialized && m_windowAttached && EnsureContextCurrent()) {
-    glBindFramebuffer(GL_FRAMEBUFFER, GetActiveGpuFbo());
+    const uint32_t activeFbo = GetActiveGpuFbo();
+    glBindFramebuffer(GL_FRAMEBUFFER, activeFbo);
+    m_cachedBoundFbo = activeFbo;
+  } else {
+    m_cachedBoundFbo = 0xFFFFFFFFu;
   }
 }
 
@@ -1841,6 +1867,7 @@ void OpenGLESBackend::SetDepthRange(float nearVal, float farVal) {
   if (m_depthNear == nearVal && m_depthFar == farVal) return;
   FlushBatch(true);
   GlideStateTracker::SetDepthRange_Locked(nearVal, farVal);
+  m_glesDirtyMask |= kGlesDirtyDepthRange;
 }
 
 void OpenGLESBackend::SetDitherMode(uint32_t mode) {
@@ -1848,6 +1875,7 @@ void OpenGLESBackend::SetDitherMode(uint32_t mode) {
   if (m_ditherMode == mode) return;
   FlushBatch(true);
   GlideStateTracker::SetDitherMode_Locked(mode);
+  m_glesDirtyMask |= kGlesDirtyDitherStipple;
 }
 
 void OpenGLESBackend::SetStippleState(uint32_t mode, uint32_t pattern) {
@@ -1855,6 +1883,7 @@ void OpenGLESBackend::SetStippleState(uint32_t mode, uint32_t pattern) {
   if (m_stippleMode == mode && m_stipplePattern == pattern) return;
   FlushBatch(true);
   GlideStateTracker::SetStippleState_Locked(mode, pattern);
+  m_glesDirtyMask |= kGlesDirtyDitherStipple;
 }
 
 uint32_t OpenGLESBackend::GetActiveGpuFbo() const {
@@ -1869,6 +1898,7 @@ void OpenGLESBackend::SetColorMask(bool rgb, bool alpha) {
   if (m_colorMaskRgb == rgb && m_colorMaskAlpha == alpha) return;
   FlushBatch(true);
   GlideStateTracker::SetColorMask_Locked(rgb, alpha);
+  m_glesDirtyMask |= kGlesDirtyColorMask;
 }
 
 void OpenGLESBackend::SetGamma(float gamma) {
@@ -1911,10 +1941,13 @@ void OpenGLESBackend::LoadGammaTable_Locked(uint32_t nentries,
       lutData[i * 3 + 1] = static_cast<uint8_t>(gTable[i]);
       lutData[i * 3 + 2] = static_cast<uint8_t>(bTable[i]);
     }
+    glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, m_glGammaLutTex);
     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 256, 1, GL_RGB, GL_UNSIGNED_BYTE,
                     lutData.data());
     glBindTexture(GL_TEXTURE_2D, 0);
+    m_cachedActiveTexUnit = 0;
+    m_cachedBoundTex[0] = 0;
     checkGLError("LoadGammaTable glTexSubImage2D");
   }
   m_useGammaLut = true;
@@ -1929,6 +1962,7 @@ void OpenGLESBackend::SetDepthState(uint32_t depthMode, uint32_t compareOp,
   }
   FlushBatch(true);
   GlideStateTracker::SetDepthState_Locked(depthMode, compareOp, depthMask, biasLevel);
+  m_glesDirtyMask |= kGlesDirtyDepth;
 }
 
 void OpenGLESBackend::SetCullState(uint32_t cullMode) {
@@ -1936,6 +1970,7 @@ void OpenGLESBackend::SetCullState(uint32_t cullMode) {
   if (m_cullMode == cullMode) return;
   FlushBatch(true);
   GlideStateTracker::SetCullState_Locked(cullMode);
+  m_glesDirtyMask |= kGlesDirtyCull;
 }
 
 void OpenGLESBackend::SetAlphaTestState(uint32_t compareOp, uint32_t refVal) {
@@ -1943,6 +1978,7 @@ void OpenGLESBackend::SetAlphaTestState(uint32_t compareOp, uint32_t refVal) {
   if (m_alphaTestOp == compareOp && m_alphaTestRefVal == refVal) return;
   FlushBatch(true);
   GlideStateTracker::SetAlphaTestState_Locked(compareOp, refVal);
+  m_glesDirtyMask |= kGlesDirtyAlphaTest;
 }
 
 void OpenGLESBackend::SetSstOrigin(uint32_t origin) {
@@ -1950,6 +1986,8 @@ void OpenGLESBackend::SetSstOrigin(uint32_t origin) {
   if (m_sstOrigin == origin) return;
   FlushBatch(true);
   GlideStateTracker::SetSstOrigin_Locked(origin);
+  m_glesDirtyMask |=
+      (kGlesDirtyViewportAndOrigin | kGlesDirtyScissor | kGlesDirtyCull);
 }
 
 void OpenGLESBackend::SetClipWindow(uint32_t minX, uint32_t minY, uint32_t maxX,
@@ -1961,6 +1999,7 @@ void OpenGLESBackend::SetClipWindow(uint32_t minX, uint32_t minY, uint32_t maxX,
   }
   FlushBatch(true);
   GlideStateTracker::SetClipWindow_Locked(minX, minY, maxX, maxY);
+  m_glesDirtyMask |= kGlesDirtyScissor;
 }
 
 void OpenGLESBackend::SetConstantColor(uint32_t color) {
@@ -1968,6 +2007,7 @@ void OpenGLESBackend::SetConstantColor(uint32_t color) {
   if (m_constantColor == color) return;
   FlushBatch(true);
   GlideStateTracker::SetConstantColor_Locked(color);
+  m_glesDirtyMask |= kGlesDirtyConstantColor;
 }
 
 void OpenGLESBackend::SetPixelFormat(uint32_t format) {
@@ -1975,6 +2015,8 @@ void OpenGLESBackend::SetPixelFormat(uint32_t format) {
   if (m_pixelFormatOverride == format) return;
   FlushBatch(true);
   GlideStateTracker::SetPixelFormat_Locked(format);
+  m_glesDirtyMask |= (kGlesDirtyConstantColor | kGlesDirtyChromakey |
+                      kGlesDirtyFogModeAndColor | kGlesDirtyTexChromakey);
 }
 
 void OpenGLESBackend::SetCombinerMode(uint32_t colorFunc, uint32_t colorFactor,
@@ -2000,6 +2042,7 @@ void OpenGLESBackend::SetCombinerMode(uint32_t colorFunc, uint32_t colorFactor,
                                      colorOther, colorInvert, alphaFunc,
                                      alphaFactor, alphaLocal, alphaOther,
                                      alphaInvert);
+  m_glesDirtyMask |= kGlesDirtyColorCombiner;
 }
 
 void OpenGLESBackend::SetTexCombinerMode(uint32_t tmu, uint32_t rgbFunc,
@@ -2019,6 +2062,7 @@ void OpenGLESBackend::SetTexCombinerMode(uint32_t tmu, uint32_t rgbFunc,
   FlushBatch(true);
   GlideStateTracker::SetTexCombinerMode_Locked(tmu, rgbFunc, rgbFactor, alphaFunc,
                                         alphaFactor, rgbInvert, alphaInvert);
+  m_glesDirtyMask |= kGlesDirtyTexCombiner;
 }
 
 void OpenGLESBackend::SetSTWHintState(uint32_t hintMask) {
@@ -2026,6 +2070,7 @@ void OpenGLESBackend::SetSTWHintState(uint32_t hintMask) {
   if (m_stwHintMask == hintMask) return;
   FlushBatch(true);
   GlideStateTracker::SetSTWHintState_Locked(hintMask);
+  m_glesDirtyMask |= kGlesDirtyStwHint;
 }
 
 void OpenGLESBackend::SetChromakeyMode(uint32_t mode) {
@@ -2033,6 +2078,7 @@ void OpenGLESBackend::SetChromakeyMode(uint32_t mode) {
   if (m_chromakeyMode == mode) return;
   FlushBatch(true);
   GlideStateTracker::SetChromakeyMode_Locked(mode);
+  m_glesDirtyMask |= kGlesDirtyChromakey;
 }
 
 void OpenGLESBackend::SetChromakeyValue(uint32_t value) {
@@ -2040,6 +2086,7 @@ void OpenGLESBackend::SetChromakeyValue(uint32_t value) {
   if (m_chromakeyValue == value) return;
   FlushBatch(true);
   GlideStateTracker::SetChromakeyValue_Locked(value);
+  m_glesDirtyMask |= kGlesDirtyChromakey;
 }
 
 void OpenGLESBackend::SetChromakeyRange(uint32_t minColor, uint32_t maxColor,
@@ -2051,6 +2098,7 @@ void OpenGLESBackend::SetChromakeyRange(uint32_t minColor, uint32_t maxColor,
   }
   FlushBatch(true);
   GlideStateTracker::SetChromakeyRange_Locked(minColor, maxColor, mode);
+  m_glesDirtyMask |= kGlesDirtyChromakey;
 }
 
 void OpenGLESBackend::SetTexChromakeyMode(uint32_t tmu, uint32_t mode) {
@@ -2058,6 +2106,7 @@ void OpenGLESBackend::SetTexChromakeyMode(uint32_t tmu, uint32_t mode) {
   if (tmu >= 2 || m_texChromaMode[tmu] == mode) return;
   FlushBatch(true);
   GlideStateTracker::SetTexChromakeyMode_Locked(tmu, mode);
+  m_glesDirtyMask |= kGlesDirtyTexChromakey;
 }
 
 void OpenGLESBackend::SetTexChromakeyRange(uint32_t tmu, uint32_t minColor,
@@ -2070,6 +2119,7 @@ void OpenGLESBackend::SetTexChromakeyRange(uint32_t tmu, uint32_t minColor,
   }
   FlushBatch(true);
   GlideStateTracker::SetTexChromakeyRange_Locked(tmu, minColor, maxColor, mode);
+  m_glesDirtyMask |= kGlesDirtyTexChromakey;
 }
 
 void OpenGLESBackend::SetFogMode(uint32_t mode) {
@@ -2077,6 +2127,7 @@ void OpenGLESBackend::SetFogMode(uint32_t mode) {
   if (m_fogMode == mode) return;
   FlushBatch(true);
   GlideStateTracker::SetFogMode_Locked(mode);
+  m_glesDirtyMask |= kGlesDirtyFogModeAndColor;
 }
 
 void OpenGLESBackend::SetFogColor(uint32_t color) {
@@ -2084,6 +2135,7 @@ void OpenGLESBackend::SetFogColor(uint32_t color) {
   if (m_fogColor == color) return;
   FlushBatch(true);
   GlideStateTracker::SetFogColor_Locked(color);
+  m_glesDirtyMask |= kGlesDirtyFogModeAndColor;
 }
 
 void OpenGLESBackend::SetFogTable(const uint8_t* table) {
@@ -2093,6 +2145,7 @@ void OpenGLESBackend::SetFogTable(const uint8_t* table) {
   }
   FlushBatch(true);
   GlideStateTracker::SetFogTable_Locked(table);
+  m_glesDirtyMask |= kGlesDirtyFogTable;
 }
 
 }  // namespace GlideWrapper
