@@ -1,4 +1,5 @@
 #pragma once
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -18,6 +19,15 @@ struct ScopeStats {
   int64_t maxDurationUs{0};
 };
 #endif
+
+// Per-frame CPU time attribution buckets (exclusive of nested child buckets).
+enum class CpuBucket : uint8_t {
+  Draw = 0,
+  Tex = 1,
+  Lfb = 2,
+  State = 3,
+  Count = 4,
+};
 
 // Always-compiled lightweight per-frame performance snapshot (used by M2 perf
 // logging/CSV tracing and M3 HUD).
@@ -40,6 +50,13 @@ struct FrameMetrics {
   uint32_t texUploads{0};
   uint64_t texUploadBytes{0};
   uint32_t psoBuilds{0};
+  // M6.1 CPU time split (populated when GLIDE_NG_PERF_LOG is enabled)
+  float wrapperCpuMs{0.0f};     // Total CPU time inside glide-ng buckets
+  float appCpuMs{0.0f};         // Guest/app/emulator CPU time outside glide-ng
+  float drawCpuMs{0.0f};        // Draw submission + SW tile rasterization CPU time
+  float texCpuMs{0.0f};         // Texture download / swizzle / GPU upload CPU time
+  float lfbCpuMs{0.0f};         // LFB lock/unlock/diff/overlay flush CPU time
+  float stateCpuMs{0.0f};       // Glide state-setter CPU time
 };
 
 class FrameTracker {
@@ -137,6 +154,16 @@ class TelemetryManager {
       m_framePresentUs.fetch_add(us, std::memory_order_relaxed);
     }
   }
+  bool IsPerfTimingEnabled() const {
+    return m_perfTimingEnabled.load(std::memory_order_relaxed);
+  }
+  void RecordCpuBucketNs(CpuBucket bucket, int64_t ns) {
+    if (ns <= 0) return;
+    const size_t idx = static_cast<size_t>(bucket);
+    if (idx < static_cast<size_t>(CpuBucket::Count)) {
+      m_frameCpuBucketNs[idx].fetch_add(ns, std::memory_order_relaxed);
+    }
+  }
 
   // Invoked once per completed frame from FrameTracker::MarkFrameEnd
   void OnFrameComplete(int64_t intervalUs, int64_t activeUs, int64_t sleepUs,
@@ -179,6 +206,8 @@ class TelemetryManager {
   std::atomic<uint64_t> m_frameTexUploadBytes{0};
   std::atomic<uint32_t> m_framePsoBuilds{0};
   std::atomic<int64_t> m_framePresentUs{0};
+  std::atomic<int64_t> m_frameCpuBucketNs[static_cast<size_t>(CpuBucket::Count)]{};
+  std::atomic<bool> m_perfTimingEnabled{false};
   std::atomic<uint64_t> m_frameIndex{0};
 
   // Perf logging, CSV writer, and last-frame snapshot
@@ -196,6 +225,12 @@ class TelemetryManager {
   double m_summaryRenderMs{0.0};
   double m_summaryPresentMs{0.0};
   double m_summarySleepMs{0.0};
+  double m_summaryWrapperCpuMs{0.0};
+  double m_summaryAppCpuMs{0.0};
+  double m_summaryDrawCpuMs{0.0};
+  double m_summaryTexCpuMs{0.0};
+  double m_summaryLfbCpuMs{0.0};
+  double m_summaryStateCpuMs{0.0};
   uint64_t m_summaryDrawCalls{0};
   uint64_t m_summaryStateFlushes{0};
   uint64_t m_summaryTrisDrawn{0};
@@ -205,6 +240,55 @@ class TelemetryManager {
   uint64_t m_summaryTexUploads{0};
   uint64_t m_summaryTexBytes{0};
   uint64_t m_summaryPsoBuilds{0};
+};
+
+// Lightweight exclusive-stack RAII timer for per-frame wrapper CPU breakdown.
+// Zero clock calls when perf logging is disabled or when nested inside the
+// same bucket; subtracts child time when nested inside a different bucket.
+class CpuBucketScope {
+ public:
+  explicit CpuBucketScope(CpuBucket bucket) noexcept {
+    auto& tm = TelemetryManager::GetInstance();
+    if (!tm.IsPerfTimingEnabled()) return;
+    CpuBucketScope*& current = CurrentScope();
+    if (current && current->m_bucket == bucket) return;
+    m_bucket = bucket;
+    m_prev = current;
+    m_startNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch())
+                    .count();
+    m_active = true;
+    current = this;
+  }
+
+  ~CpuBucketScope() noexcept {
+    if (!m_active) return;
+    const int64_t endNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                              std::chrono::steady_clock::now().time_since_epoch())
+                              .count();
+    const int64_t totalNs = std::max<int64_t>(0, endNs - m_startNs);
+    const int64_t selfNs = std::max<int64_t>(0, totalNs - m_childNs);
+    TelemetryManager::GetInstance().RecordCpuBucketNs(m_bucket, selfNs);
+    if (m_prev) {
+      m_prev->m_childNs += totalNs;
+    }
+    CurrentScope() = m_prev;
+  }
+
+  CpuBucketScope(const CpuBucketScope&) = delete;
+  CpuBucketScope& operator=(const CpuBucketScope&) = delete;
+
+ private:
+  static CpuBucketScope*& CurrentScope() noexcept {
+    static thread_local CpuBucketScope* s_current = nullptr;
+    return s_current;
+  }
+
+  CpuBucket m_bucket{CpuBucket::Draw};
+  bool m_active{false};
+  int64_t m_startNs{0};
+  int64_t m_childNs{0};
+  CpuBucketScope* m_prev{nullptr};
 };
 
 #ifdef ENABLE_TELEMETRY
@@ -237,6 +321,13 @@ class TelemetryScope {
   do {                            \
   } while (0)
 #endif
+
+// Always-compiled lightweight per-frame CPU attribution macro (zero clock
+// overhead when GLIDE_NG_PERF_LOG is disabled).
+#define GLIDE_CPU_SCOPE_CONCAT_INNER(a, b) a##b
+#define GLIDE_CPU_SCOPE_CONCAT(a, b) GLIDE_CPU_SCOPE_CONCAT_INNER(a, b)
+#define GLIDE_CPU_SCOPE(bucket) \
+  GlideWrapper::CpuBucketScope GLIDE_CPU_SCOPE_CONCAT(_glideCpuScope_, __LINE__)(bucket)
 
 // Always-compiled lightweight triangle stat macros
 #define GLIDE_INCREMENT_TRIANGLES_PROCESSED(count)                           \

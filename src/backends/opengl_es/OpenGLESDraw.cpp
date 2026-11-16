@@ -382,6 +382,7 @@ void OpenGLESBackend::SyncCullStateGLES_Locked() {
 
 void OpenGLESBackend::FlushBatch(bool fromStateFlush) {
   if (m_batchVertices.empty()) return;
+  GLIDE_CPU_SCOPE(CpuBucket::Draw);
   if (!EnsureContextCurrent()) {
     m_batchVertices.clear();
     m_batchPrimitiveMode = BatchPrimitiveMode::None;

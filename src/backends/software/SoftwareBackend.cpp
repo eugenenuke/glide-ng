@@ -1483,6 +1483,7 @@ void SoftwareBackend::FlushBins() {
 void SoftwareBackend::FlushBins_Locked() {
   if (m_binnedCommands.empty()) return;
 
+  GLIDE_CPU_SCOPE(CpuBucket::Draw);
   GLIDE_PROFILE_SCOPE("Software::FlushBins");
   TelemetryManager::GetInstance().RecordDrawCall(false);
 

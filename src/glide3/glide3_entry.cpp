@@ -243,6 +243,7 @@ FX_ENTRY FxBool FX_CALL grSstWinClose(GrContext_t context) {
 
 FX_ENTRY void FX_CALL grBufferClear(GrColor_t color, GrAlpha_t alpha,
                                     FxU32 depth) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::Draw);
   EnsureEngineInitialized();
   EntryCommon::ClearBuffer(color, alpha, depth);
 }
@@ -265,6 +266,7 @@ FX_ENTRY FxBool FX_CALL grSelectContext(GrContext_t context) {
 }
 
 FX_ENTRY void FX_CALL grRenderBuffer(GrBuffer_t buffer) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend",
             "grRenderBuffer (Glide 3.x) invoked for Buffer=" << buffer);
@@ -278,6 +280,7 @@ FX_ENTRY void FX_CALL grSstSelect(int which_sst) {
 }
 
 FX_ENTRY void FX_CALL grVertexLayout(FxU32 param, FxI32 offset, FxU32 mode) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend",
             "grVertexLayout (Glide 3.x) invoked. Param="
@@ -288,6 +291,7 @@ FX_ENTRY void FX_CALL grVertexLayout(FxU32 param, FxI32 offset, FxU32 mode) {
 
 FX_ENTRY void FX_CALL grDrawTriangle(const void* a, const void* b,
                                      const void* c) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::Draw);
   EnsureEngineInitialized();
   GLIDE_LOG(TRACE, "Frontend",
             "grDrawTriangle (Glide 3.x) invoked with a=" << a << ", b=" << b
@@ -319,12 +323,14 @@ FX_ENTRY void FX_CALL grDrawTriangle(const void* a, const void* b,
 FX_ENTRY void FX_CALL grAADrawTriangle(const void* a, const void* b,
                                        const void* c, FxBool ab_strong,
                                        FxBool bc_strong, FxBool ca_strong) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::Draw);
   GLIDE_LOG(TRACE, "Frontend", "grAADrawTriangle (Glide 3.x) invoked.");
   grDrawTriangle(a, b, c);
 }
 
 FX_ENTRY void FX_CALL grDrawVertexArray(FxU32 mode, FxU32 count,
                                         void* pointers) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::Draw);
   EnsureEngineInitialized();
   GLIDE_LOG(TRACE, "Frontend",
             "grDrawVertexArray (Glide 3.x) invoked: mode=" << mode << ", count="
@@ -348,6 +354,7 @@ FX_ENTRY void FX_CALL grDrawVertexArray(FxU32 mode, FxU32 count,
 FX_ENTRY void FX_CALL grDrawVertexArrayContiguous(FxU32 mode, FxU32 count,
                                                   void* pointers,
                                                   FxU32 stride) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::Draw);
   EnsureEngineInitialized();
   GLIDE_LOG(TRACE, "Frontend",
             "grDrawVertexArrayContiguous (Glide 3.x) invoked: mode="
@@ -397,6 +404,7 @@ FX_ENTRY void FX_CALL grSstResetPerfStats(void) {
 }
 
 FX_ENTRY void FX_CALL grDrawLine(const void* a, const void* b) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::Draw);
   EnsureEngineInitialized();
   GLIDE_LOG(TRACE, "Frontend", "grDrawLine (Glide 3.x) invoked.");
   auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
@@ -413,6 +421,7 @@ FX_ENTRY void FX_CALL grDrawLine(const void* a, const void* b) {
 }
 
 FX_ENTRY void FX_CALL grDrawPoint(const void* pt) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::Draw);
   EnsureEngineInitialized();
   GLIDE_LOG(TRACE, "Frontend", "grDrawPoint (Glide 3.x) invoked.");
   auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
@@ -606,6 +615,7 @@ FX_ENTRY const char* FX_CALL grGetString(FxU32 pname) {
 
 FX_ENTRY void FX_CALL grClipWindow(FxU32 minx, FxU32 miny, FxU32 maxx,
                                    FxU32 maxy) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   GLIDE_LOG(DEBUG, "Frontend",
             "grClipWindow (Glide 3.x) invoked: "
                 << minx << "," << miny << " to " << maxx << "," << maxy);
@@ -650,6 +660,7 @@ FX_ENTRY FxU32 FX_CALL grTexTextureMemRequired(FxU32 evenOdd, GrTexInfo* info) {
 }
 
 FX_ENTRY void FX_CALL grTexDownloadTable(GrTexTable_t type, void* data) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::Tex);
   EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend",
             "grTexDownloadTable (Glide 3.x) invoked for Type=" << type);
@@ -661,6 +672,7 @@ FX_ENTRY void FX_CALL grTexDownloadTable(GrTexTable_t type, void* data) {
 
 FX_ENTRY void FX_CALL grTexDownloadTablePartial(GrTexTable_t type, void* data,
                                                 int start, int end) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::Tex);
   EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend",
             "grTexDownloadTablePartial (Glide 3.x) invoked for Type="
@@ -673,12 +685,14 @@ FX_ENTRY void FX_CALL grTexDownloadTablePartial(GrTexTable_t type, void* data,
 
 FX_ENTRY void FX_CALL grTexDetailControl(GrChipID_t tmu, int lod_bias,
                                          FxU8 detail_scale, float detail_max) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   GLIDE_LOG(
       DEBUG, "Frontend",
       "grTexDetailControl (Glide 3.x) invoked for TMU=" << tmu << " (Stubbed)");
 }
 
 FX_ENTRY void FX_CALL grTexLodBiasValue(GrChipID_t tmu, float bias) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend",
             "grTexLodBiasValue (Glide 3.x): tmu=" << tmu << ", bias=" << bias);
@@ -686,6 +700,7 @@ FX_ENTRY void FX_CALL grTexLodBiasValue(GrChipID_t tmu, float bias) {
 }
 
 FX_ENTRY void FX_CALL grGlideGetState(void* state) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   GLIDE_LOG(DEBUG, "Frontend", "grGlideGetState (Glide 3.x) invoked.");
   if (!state) return;
   auto* ws = reinterpret_cast<GlideWrapperState*>(state);
@@ -770,6 +785,7 @@ FX_ENTRY void FX_CALL grGlideGetState(void* state) {
 }
 
 FX_ENTRY void FX_CALL grGlideSetState(const void* state) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   GLIDE_LOG(DEBUG, "Frontend", "grGlideSetState (Glide 3.x) invoked.");
   if (!state) return;
   auto* ws = reinterpret_cast<const GlideWrapperState*>(state);
@@ -890,6 +906,7 @@ FX_ENTRY void FX_CALL grColorCombine(GrCombineFunction_t fnc,
                                      GrCombineFactor_t factor,
                                      GrCombineLocal_t local,
                                      GrCombineOther_t other, FxBool invert) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   GLIDE_LOG(DEBUG, "Frontend",
             "grColorCombine (Glide 3.x) invoked: Function="
                 << fnc << ", Factor=" << factor << ", Local=" << local
@@ -901,6 +918,7 @@ FX_ENTRY void FX_CALL grAlphaCombine(GrCombineFunction_t fnc,
                                      GrCombineFactor_t factor,
                                      GrCombineLocal_t local,
                                      GrCombineOther_t other, FxBool invert) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   GLIDE_LOG(DEBUG, "Frontend",
             "grAlphaCombine (Glide 3.x) invoked: Function="
                 << fnc << ", Factor=" << factor << ", Local=" << local
@@ -913,6 +931,7 @@ FX_ENTRY void FX_CALL grTexCombine(GrChipID_t tmu, GrCombineFunction_t rgbFnc,
                                    GrCombineFunction_t alphaFnc,
                                    GrCombineFactor_t alphaFactor,
                                    FxBool rgbInvert, FxBool alphaInvert) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   GLIDE_LOG(DEBUG, "Frontend",
             "grTexCombine (Glide 3.x) invoked for TMU=" << tmu);
   EntryCommon::SetTexCombine(s_state, tmu, rgbFnc, rgbFactor, alphaFnc,
@@ -924,16 +943,19 @@ FX_ENTRY void FX_CALL grAlphaBlendFunction(GrAlphaBlendFnc_t rgbSf,
                                            GrAlphaBlendFnc_t rgbDf,
                                            GrAlphaBlendFnc_t alphaSf,
                                            GrAlphaBlendFnc_t alphaDf) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   GLIDE_LOG(DEBUG, "Frontend", "grAlphaBlendFunction (Glide 3.x) invoked.");
   EntryCommon::SetAlphaBlendFunction(s_state, rgbSf, rgbDf, alphaSf, alphaDf);
 }
 
 FX_ENTRY void FX_CALL grAlphaTestFunction(GrCmpFnc_t fnc) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   GLIDE_LOG(DEBUG, "Frontend", "grAlphaTestFunction (Glide 3.x) invoked.");
   EntryCommon::SetAlphaTestFunction(s_state, fnc);
 }
 
 FX_ENTRY void FX_CALL grAlphaTestReferenceValue(GrAlpha_t refVal) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   GLIDE_LOG(DEBUG, "Frontend",
             "grAlphaTestReferenceValue (Glide 3.x) invoked: "
                 << static_cast<int>(refVal));
@@ -943,6 +965,7 @@ FX_ENTRY void FX_CALL grAlphaTestReferenceValue(GrAlpha_t refVal) {
 FX_ENTRY void FX_CALL grTexFilterMode(GrChipID_t tmu,
                                       GrTextureFilterMode_t minfilter,
                                       GrTextureFilterMode_t magfilter) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   GLIDE_LOG(DEBUG, "Frontend",
             "grTexFilterMode (Glide 3.x) invoked for TMU=" << tmu);
   EntryCommon::SetTexFilterMode(s_state, tmu, minfilter, magfilter);
@@ -951,6 +974,7 @@ FX_ENTRY void FX_CALL grTexFilterMode(GrChipID_t tmu,
 FX_ENTRY void FX_CALL grTexClampMode(GrChipID_t tmu,
                                      GrTextureClampMode_t s_clampmode,
                                      GrTextureClampMode_t t_clampmode) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   GLIDE_LOG(DEBUG, "Frontend",
             "grTexClampMode (Glide 3.x) invoked for TMU=" << tmu);
   EntryCommon::SetTexClampMode(s_state, tmu, s_clampmode, t_clampmode);
@@ -958,6 +982,7 @@ FX_ENTRY void FX_CALL grTexClampMode(GrChipID_t tmu,
 
 FX_ENTRY void FX_CALL grTexMipMapMode(GrChipID_t tmu, GrMipMapMode_t mode,
                                       FxBool lodBlend) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   GLIDE_LOG(DEBUG, "Frontend",
             "grTexMipMapMode (Glide 3.x) invoked for TMU="
                 << tmu << ", mode=" << mode << ", lodBlend=" << lodBlend);
@@ -965,22 +990,26 @@ FX_ENTRY void FX_CALL grTexMipMapMode(GrChipID_t tmu, GrMipMapMode_t mode,
 }
 
 FX_ENTRY void FX_CALL grDepthBufferMode(GrDepthBufferMode_t mode) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   GLIDE_LOG(DEBUG, "Frontend",
             "grDepthBufferMode (Glide 3.x) invoked: " << mode);
   EntryCommon::SetDepthMode(s_state, mode);
 }
 
 FX_ENTRY void FX_CALL grDepthBufferFunction(GrCmpFnc_t fnc) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   GLIDE_LOG(DEBUG, "Frontend", "grDepthBufferFunction (Glide 3.x) invoked.");
   EntryCommon::SetDepthFunction(s_state, fnc);
 }
 
 FX_ENTRY void FX_CALL grDepthMask(FxBool mask) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   GLIDE_LOG(DEBUG, "Frontend", "grDepthMask (Glide 3.x) invoked: " << mask);
   EntryCommon::SetDepthMask(s_state, mask != 0);
 }
 
 FX_ENTRY void FX_CALL grDepthBiasLevel(FxI32 level) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   GLIDE_LOG(DEBUG, "Frontend",
             "grDepthBiasLevel (Glide 3.x) invoked: " << level);
   EntryCommon::SetDepthBias(s_state, level);
@@ -991,24 +1020,29 @@ FX_ENTRY float FX_CALL guFogTableIndexToW(int i) {
 }
 
 FX_ENTRY void FX_CALL guFogGenerateExp(GrFog_t* fogtable, float density) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   GlideWrapper::MathUtils::FogGenerateExp(fogtable, density);
 }
 
 FX_ENTRY void FX_CALL guFogGenerateExp2(GrFog_t* fogtable, float density) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   GlideWrapper::MathUtils::FogGenerateExp2(fogtable, density);
 }
 
 FX_ENTRY void FX_CALL guFogGenerateLinear(GrFog_t* fogtable, float nearZ,
                                           float farZ) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   GlideWrapper::MathUtils::FogGenerateLinear(fogtable, nearZ, farZ);
 }
 
 FX_ENTRY void FX_CALL grFogMode(GrFogMode_t mode) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   GLIDE_LOG(DEBUG, "Frontend", "grFogMode (Glide 3.x) invoked: " << mode);
   EntryCommon::SetFogMode(s_state, mode);
 }
 
 FX_ENTRY void FX_CALL grFogColorValue(GrColor_t fogcolor) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   GLIDE_LOG(DEBUG, "Frontend",
             "grFogColorValue (Glide 3.x) invoked: " << std::hex << fogcolor
                                                     << std::dec);
@@ -1016,20 +1050,24 @@ FX_ENTRY void FX_CALL grFogColorValue(GrColor_t fogcolor) {
 }
 
 FX_ENTRY void FX_CALL grFogTable(const GrFog_t ft[]) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   GLIDE_LOG(DEBUG, "Frontend", "grFogTable (Glide 3.x) invoked.");
   EntryCommon::SetFogTable(s_state, ft);
 }
 
 FX_ENTRY void FX_CALL grFinish(void) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::Draw);
   GLIDE_LOG(DEBUG, "Frontend", "grFinish (Glide 3.x) invoked.");
   EntryCommon::SstIdle();
 }
 
 FX_ENTRY void FX_CALL grFlush(void) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::Draw);
   GLIDE_LOG(DEBUG, "Frontend", "grFlush (Glide 3.x) invoked.");
 }
 
 FX_ENTRY void FX_CALL grChromaRangeModeExt(GrChromakeyMode_t mode) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   GLIDE_LOG(DEBUG, "Frontend",
             "grChromaRangeModeExt (Glide 3.x): mode=" << mode);
   s_state.chromakeyRangeMode = mode;
@@ -1038,6 +1076,7 @@ FX_ENTRY void FX_CALL grChromaRangeModeExt(GrChromakeyMode_t mode) {
 
 FX_ENTRY void FX_CALL grChromaRangeExt(GrColor_t minColor, GrColor_t maxColor,
                                        GrChromaRangeMode_t mode) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   GLIDE_LOG(DEBUG, "Frontend",
             "grChromaRangeExt (Glide 3.x): min=0x"
                 << std::hex << minColor << ", max=0x" << maxColor
@@ -1048,6 +1087,7 @@ FX_ENTRY void FX_CALL grChromaRangeExt(GrColor_t minColor, GrColor_t maxColor,
 
 FX_ENTRY void FX_CALL grTexChromaMode(GrChipID_t tmu,
                                       GrTexChromakeyMode_t mode) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend",
             "grTexChromaMode (Glide 3.x): tmu=" << tmu << ", mode=" << mode);
@@ -1056,12 +1096,14 @@ FX_ENTRY void FX_CALL grTexChromaMode(GrChipID_t tmu,
 
 FX_ENTRY void FX_CALL grTexChromaModeExt(GrChipID_t tmu,
                                          GrTexChromakeyMode_t mode) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   grTexChromaMode(tmu, mode);
 }
 
 FX_ENTRY void FX_CALL grTexChromaRange(GrChipID_t tmu, GrColor_t minColor,
                                        GrColor_t maxColor,
                                        GrTexChromakeyMode_t mode) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend",
             "grTexChromaRange (Glide 3.x): tmu="
@@ -1073,6 +1115,7 @@ FX_ENTRY void FX_CALL grTexChromaRange(GrChipID_t tmu, GrColor_t minColor,
 FX_ENTRY void FX_CALL grTexChromaRangeExt(GrChipID_t tmu, GrColor_t minColor,
                                           GrColor_t maxColor,
                                           GrTexChromakeyMode_t mode) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   grTexChromaRange(tmu, minColor, maxColor, mode);
 }
 
@@ -1110,17 +1153,20 @@ FX_ENTRY void FX_CALL grSstVidMode(FxU32 whichSst, void* vidTimings) {
 }
 
 FX_ENTRY void FX_CALL grSstOrigin(GrOriginLocation_t origin) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   GLIDE_LOG(DEBUG, "Frontend", "grSstOrigin (Glide 3.x) invoked: " << origin);
   EntryCommon::SetSstOrigin(s_sstOrigin, origin);
 }
 
 FX_ENTRY void FX_CALL grCullMode(GrCullMode_t mode) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   GLIDE_LOG(DEBUG, "Frontend", "grCullMode (Glide 3.x) invoked: " << mode);
   EntryCommon::SetCullMode(s_state, mode);
 }
 
 FX_ENTRY void FX_CALL grTexDownloadMipMap(GrChipID_t tmu, FxU32 startAddress,
                                           FxU32 evenOdd, GrTexInfo* info) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::Tex);
   GLIDE_LOG(DEBUG, "Frontend",
             "grTexDownloadMipMap (Glide 3.x) invoked for TMU=" << tmu);
   if (info && info->data) {
@@ -1165,6 +1211,7 @@ FX_ENTRY FxBool FX_CALL grTexDownloadMipMapLevelPartial(
     GrChipID_t tmu, FxU32 startAddress, GrLOD_t thisLod, GrLOD_t largeLod,
     GrAspectRatio_t aspectRatio, GrTextureFormat_t format, FxU32 evenOdd,
     void* data, int startRow, int endRow) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::Tex);
   EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend",
             "grTexDownloadMipMapLevelPartial (Glide 3.x) invoked for TMU="
@@ -1181,12 +1228,14 @@ FX_ENTRY FxBool FX_CALL grTexDownloadMipMapLevelPartial(
 
 FX_ENTRY void FX_CALL grTexSource(GrChipID_t tmu, FxU32 startAddress,
                                   FxU32 evenOdd, GrTexInfo* info) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::Tex);
   GLIDE_LOG(DEBUG, "Frontend",
             "grTexSource (Glide 3.x) invoked for TMU=" << tmu);
   EntryCommon::BindTexSource(s_state, tmu, startAddress);
 }
 
 FX_ENTRY void FX_CALL grConstantColorValue(GrColor_t value) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend",
             "grConstantColorValue (Glide 3.x) invoked: " << std::hex << value
@@ -1198,6 +1247,7 @@ FX_ENTRY FxBool FX_CALL grLfbReadRegion(GrBuffer_t srcBuf, FxU32 srcX,
                                         FxU32 srcY, FxU32 srcWidth,
                                         FxU32 srcHeight, FxU32 dstStride,
                                         void* dstData) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::Lfb);
   EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend", "grLfbReadRegion (Glide 3.x) invoked.");
   return EntryCommon::LfbReadRegion(srcBuf, srcX, srcY, srcWidth, srcHeight,
@@ -1211,6 +1261,7 @@ FX_ENTRY FxBool FX_CALL grLfbWriteRegion(GrBuffer_t dstBuf, FxU32 dstX,
                                          FxU32 srcWidth, FxU32 srcHeight,
                                          FxBool pixelPipeline, FxI32 srcStride,
                                          void* srcData) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::Lfb);
   EnsureEngineInitialized();
   (void)pixelPipeline;
   GLIDE_LOG(
@@ -1229,6 +1280,7 @@ FX_ENTRY FxBool FX_CALL grLfbLock(GrLock_t type, GrBuffer_t buffer,
                                   GrLfbWriteMode_t writeMode,
                                   GrOriginLocation_t origin,
                                   FxBool pixelPipeline, GrLfbInfo_t* info) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::Lfb);
   EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend",
             "grLfbLock (Glide 3.x) invoked: buffer="
@@ -1240,6 +1292,7 @@ FX_ENTRY FxBool FX_CALL grLfbLock(GrLock_t type, GrBuffer_t buffer,
 }
 
 FX_ENTRY FxBool FX_CALL grLfbUnlock(GrLock_t type, GrBuffer_t buffer) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::Lfb);
   EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend", "grLfbUnlock (Glide 3.x) invoked.");
   return EntryCommon::LfbUnlockWithState(s_state, type, buffer) ? FXTRUE
@@ -1297,6 +1350,7 @@ FX_ENTRY FxBool FX_CALL gu3dfLoad(const char* filename, Gu3dfInfo* info) {
 }
 
 FX_ENTRY void FX_CALL grDitherMode(GrDitherMode_t mode) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend",
             "grDitherMode (Glide 3.x) invoked: mode=" << mode);
@@ -1304,6 +1358,7 @@ FX_ENTRY void FX_CALL grDitherMode(GrDitherMode_t mode) {
 }
 
 FX_ENTRY void FX_CALL grStippleMode(GrStippleMode_t mode) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend",
             "grStippleMode (Glide 3.x) invoked: mode=" << mode);
@@ -1314,6 +1369,7 @@ FX_ENTRY void FX_CALL grStippleMode(GrStippleMode_t mode) {
 }
 
 FX_ENTRY void FX_CALL grStipplePattern(GrStipplePattern_t pattern) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend",
             "grStipplePattern (Glide 3.x) invoked: pattern=" << pattern);
@@ -1324,12 +1380,14 @@ FX_ENTRY void FX_CALL grStipplePattern(GrStipplePattern_t pattern) {
 }
 
 FX_ENTRY void FX_CALL grCoordinateSpace(GrCoordinateSpaceMode_t mode) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   GLIDE_LOG(DEBUG, "Frontend",
             "grCoordinateSpace (Glide 3.x) set to mode=" << mode);
   s_coordSpace = (mode == GR_CLIP_COORDS) ? 1 : 0;
 }
 
 FX_ENTRY void FX_CALL grViewport(FxI32 x, FxI32 y, FxI32 width, FxI32 height) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   GLIDE_LOG(DEBUG, "Frontend",
             "grViewport (Glide 3.x) set to x=" << x << ", y=" << y << ", w="
                                                << width << ", h=" << height);
@@ -1340,6 +1398,7 @@ FX_ENTRY void FX_CALL grViewport(FxI32 x, FxI32 y, FxI32 width, FxI32 height) {
 }
 
 FX_ENTRY void FX_CALL grDepthRange(FxFloat n, FxFloat f) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   GLIDE_LOG(DEBUG, "Frontend",
             "grDepthRange (Glide 3.x) set to near=" << n << ", far=" << f);
   s_depthRangeNear = n;
@@ -1350,6 +1409,7 @@ FX_ENTRY void FX_CALL grDepthRange(FxFloat n, FxFloat f) {
 }
 
 FX_ENTRY void FX_CALL grEnable(GrEnableMode_t mode) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   GLIDE_LOG(DEBUG, "Frontend", "grEnable (Glide 3.x) mode=" << mode);
   switch (mode) {
     case GR_AA_ORDERED:
@@ -1370,6 +1430,7 @@ FX_ENTRY void FX_CALL grEnable(GrEnableMode_t mode) {
 }
 
 FX_ENTRY void FX_CALL grDisable(GrEnableMode_t mode) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   GLIDE_LOG(DEBUG, "Frontend", "grDisable (Glide 3.x) mode=" << mode);
   switch (mode) {
     case GR_AA_ORDERED:
@@ -1390,6 +1451,7 @@ FX_ENTRY void FX_CALL grDisable(GrEnableMode_t mode) {
 }
 
 FX_ENTRY void FX_CALL grTexMultibase(GrChipID_t tmu, FxBool enable) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   GLIDE_LOG(DEBUG, "Frontend",
             "grTexMultibase (Glide 3.x) stub invoked for TMU="
                 << tmu << ", enable=" << enable);
@@ -1399,6 +1461,7 @@ FX_ENTRY void FX_CALL grTexMultibaseAddress(GrChipID_t tmu,
                                             GrTexBaseRange_t level,
                                             FxU32 startAddress, FxU32 evenOdd,
                                             GrTexInfo* info) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   GLIDE_LOG(DEBUG, "Frontend",
             "grTexMultibaseAddress (Glide 3.x) stub: tmu=" << tmu << ", level="
                                                            << level);
@@ -1434,12 +1497,14 @@ FX_ENTRY void FX_CALL guGammaCorrectionRGB(FxFloat red, FxFloat green,
 }
 
 FX_ENTRY void FX_CALL grDisableAllEffects(void) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend", "grDisableAllEffects (Glide 3.x) invoked");
   EntryCommon::DisableAllEffects(s_state, /*clearCachedFogMode=*/false);
 }
 
 FX_ENTRY void FX_CALL grChromakeyMode(GrChromakeyMode_t mode) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend",
             "grChromakeyMode (Glide 3.x) invoked: mode=" << mode);
@@ -1447,6 +1512,7 @@ FX_ENTRY void FX_CALL grChromakeyMode(GrChromakeyMode_t mode) {
 }
 
 FX_ENTRY void FX_CALL grChromakeyValue(GrColor_t value) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend",
             "grChromakeyValue (Glide 3.x) invoked: value=0x"
@@ -1455,6 +1521,7 @@ FX_ENTRY void FX_CALL grChromakeyValue(GrColor_t value) {
 }
 
 FX_ENTRY void FX_CALL grLfbConstantAlpha(GrAlpha_t alpha) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::Lfb);
   EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend",
             "grLfbConstantAlpha (Glide 3.x) invoked: alpha="
@@ -1463,6 +1530,7 @@ FX_ENTRY void FX_CALL grLfbConstantAlpha(GrAlpha_t alpha) {
 }
 
 FX_ENTRY void FX_CALL grLfbWriteColorFormat(GrColorFormat_t colorFormat) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::Lfb);
   EnsureEngineInitialized();
   GLIDE_LOG(
       DEBUG, "Frontend",
@@ -1471,6 +1539,7 @@ FX_ENTRY void FX_CALL grLfbWriteColorFormat(GrColorFormat_t colorFormat) {
 }
 
 FX_ENTRY void FX_CALL grColorMask(FxBool rgb, FxBool a) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend",
             "grColorMask (Glide 3.x) invoked: rgb=" << rgb << ", a=" << a);

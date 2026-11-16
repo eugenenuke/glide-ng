@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "core/Logger.h"
+#include "core/Telemetry.h"
 
 #include "hud_frag.spv.h"
 #include "hud_vert.spv.h"
@@ -570,6 +571,7 @@ void VulkanBackend::CompositeLfbOverlay_Locked(uint32_t /*buffer*/,
 
 void VulkanBackend::FlushLFBToGPU_Locked() {
   if (!m_lfbStaging.IsDirty()) return;
+  GLIDE_CPU_SCOPE(CpuBucket::Lfb);
 
   if (!m_commandBuffer || !(*m_commandBuffer)) {
     GLIDE_LOG(CRITICAL, "Vulkan",

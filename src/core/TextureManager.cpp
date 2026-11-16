@@ -1189,6 +1189,7 @@ std::shared_ptr<const VirtualTexture> TextureManager::GetTextureSnapshot(
 
 void TextureManager::PrepareTextureForBind(uint32_t tmu,
                                            uint32_t startAddress) {
+  GLIDE_CPU_SCOPE(CpuBucket::Tex);
   std::lock_guard<std::mutex> lock(m_mutex);
   if (tmu >= 2) return;
   m_tmus[tmu].boundAddress = startAddress;
@@ -1200,6 +1201,7 @@ void TextureManager::PrepareTextureForBind(uint32_t tmu,
 }
 
 void TextureManager::SyncBoundTextures() {
+  GLIDE_CPU_SCOPE(CpuBucket::Tex);
   std::lock_guard<std::mutex> lock(m_mutex);
   for (uint32_t tmu = 0; tmu < 2; ++tmu) {
     if (!m_tmuTableDirty[tmu].exchange(false, std::memory_order_acq_rel)) {
