@@ -17,7 +17,7 @@ class BackendManager {
 public:
     static BackendManager& GetInstance();
 
-    IGraphicsBackend* GetBackend();
+    IGraphicsBackend* GetBackend() const { return m_backend.get(); }
     bool EstablishBackend(const WrapperConfig& config);
     void ShutdownBackend();
 

@@ -176,6 +176,7 @@ class NativeSurfaceHost {
   // StandaloneSDL2 state
   SDL_Window* m_sdlWindow = nullptr;
   uint32_t m_sdlWindowId = 0;
+  uint32_t m_postAttachForcePolls = 0;
   std::chrono::steady_clock::time_point m_lastPollTime{};
   std::string m_sdlVideoDriver;
 

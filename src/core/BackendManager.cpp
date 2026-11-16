@@ -26,10 +26,6 @@ BackendManager::~BackendManager() {
     ShutdownBackend();
 }
 
-IGraphicsBackend* BackendManager::GetBackend() {
-    return m_backend.get();
-}
-
 bool BackendManager::EstablishBackend(const WrapperConfig& config) {
     std::lock_guard<std::mutex> lock(m_mutex);
     GLIDE_LOG(INFO, "Backend", "EstablishBackend entered. config.backend='" << config.backend << "', m_backend=" << (m_backend ? "NON-NULL" : "NULL"));

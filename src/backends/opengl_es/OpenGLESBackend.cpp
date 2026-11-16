@@ -351,7 +351,7 @@ bool OpenGLESBackend::SwapBuffers() {
   if (!m_initialized || !m_windowAttached) return false;
 
   // Pump events ONLY in StandaloneSDL2 mode (guaranteed no-op for DOSBox).
-  m_surfaceHost.PollEvents(/*force=*/true);
+  m_surfaceHost.PollEvents(/*force=*/false);
   if (m_surfaceHost.GetMode() == NativeSurfaceHost::Mode::StandaloneSDL2 &&
       m_surfaceHost.WasQuitRequested()) {
     GLIDE_LOG(INFO, "GLES",
@@ -446,7 +446,7 @@ bool OpenGLESBackend::SwapBuffers() {
                              .count();
   const float maxFps = m_config.maxFps;
   if (m_surfaceHost.GetMode() == NativeSurfaceHost::Mode::StandaloneSDL2) {
-    m_surfaceHost.PollEvents(/*force=*/true);
+    m_surfaceHost.PollEvents(/*force=*/false);
   }
   lock.unlock();
 

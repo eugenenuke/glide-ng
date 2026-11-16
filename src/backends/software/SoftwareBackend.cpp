@@ -1153,7 +1153,7 @@ bool SoftwareBackend::SwapBuffers() {
 
   // Strictly no-op for foreign hosts (X11Child / WaylandSubsurface / Headless);
   // pumps events and handles clean quit ONLY for StandaloneSDL2 demos.
-  m_surfaceHost.PollEvents(/*force=*/true);
+  m_surfaceHost.PollEvents(/*force=*/false);
   if (m_surfaceHost.GetMode() == NativeSurfaceHost::Mode::StandaloneSDL2 &&
       m_surfaceHost.WasQuitRequested()) {
     GLIDE_LOG(INFO, "Software",
@@ -1223,7 +1223,7 @@ bool SoftwareBackend::SwapBuffers() {
                              .count();
   const float maxFps = m_config.maxFps;
   if (m_surfaceHost.GetMode() == NativeSurfaceHost::Mode::StandaloneSDL2) {
-    m_surfaceHost.PollEvents(/*force=*/true);
+    m_surfaceHost.PollEvents(/*force=*/false);
   }
   lock.unlock();
 

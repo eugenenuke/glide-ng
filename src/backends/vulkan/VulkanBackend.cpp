@@ -1319,7 +1319,7 @@ bool VulkanBackend::SwapBuffers() {
 
   // Pump SDL events ONLY in StandaloneSDL2 mode (guaranteed no-op for DOSBox
   // X11Child / WaylandSubsurface / Headless).
-  m_surfaceHost.PollEvents(/*force=*/true);
+  m_surfaceHost.PollEvents(/*force=*/false);
   if (m_surfaceHost.GetMode() == NativeSurfaceHost::Mode::StandaloneSDL2 &&
       m_surfaceHost.WasQuitRequested()) {
     GLIDE_LOG(INFO, "Vulkan",
@@ -1601,9 +1601,9 @@ bool VulkanBackend::SwapBuffers() {
                              .count();
   const float maxFps = m_config.maxFps;
   if (m_surfaceHost.GetMode() == NativeSurfaceHost::Mode::StandaloneSDL2) {
-    // Dispatch any post-commit Wayland/X11 events (configure, ping, move)
-    // immediately so single-frame-then-block apps stay responsive.
-    m_surfaceHost.PollEvents(/*force=*/true);
+    // Dispatch any post-commit Wayland/X11 events (forced on initial frames,
+    // throttled at 4ms during steady-state high-FPS rendering).
+    m_surfaceHost.PollEvents(/*force=*/false);
   }
   lock.unlock();
 

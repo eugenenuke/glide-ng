@@ -161,7 +161,7 @@ void InitGlide(const char* apiTag, void (*resetFrontendState)()) {
   ConfigureTmuMemoryLimits();
 }
 
-void EnsureEngineInitialized(void (*resetFrontendState)()) {
+void EnsureEngineInitializedSlow(void (*resetFrontendState)()) {
   auto& reg = EmulationRegistry::GetInstance();
   auto& bm = BackendManager::GetInstance();
   if (!bm.GetBackend()) {
@@ -178,8 +178,6 @@ void EnsureEngineInitialized(void (*resetFrontendState)()) {
     bm.EstablishBackend(cfg);
     ConfigureTmuMemoryLimits();
     GLIDE_LOG(INFO, "Frontend", "Implicit grGlideInit executed seamlessly.");
-  } else {
-    bm.GetBackend()->PollEvents();
   }
 }
 
@@ -222,6 +220,7 @@ void SetRenderBuffer(uint32_t buffer) {
 
 void SstIdle() {
   if (auto* backend = BackendManager::GetInstance().GetBackend()) {
+    backend->PollEvents();
     backend->SstIdle();
   }
 }

@@ -2,6 +2,7 @@
 
 #include <cstdint>
 
+#include "core/BackendManager.h"
 #include "core/IGraphicsBackend.h"
 
 namespace GlideWrapper {
@@ -99,7 +100,14 @@ ResolutionDims ResolveResolution(uint32_t resolutionEnum);
 // Lifecycle & initialization helpers.
 void ConfigureTmuMemoryLimits();
 void InitGlide(const char* apiTag, void (*resetFrontendState)());
-void EnsureEngineInitialized(void (*resetFrontendState)());
+void EnsureEngineInitializedSlow(void (*resetFrontendState)());
+inline void EnsureEngineInitialized(void (*resetFrontendState)()) {
+  if (__builtin_expect(
+          BackendManager::GetInstance().GetBackend() != nullptr, 1)) {
+    return;
+  }
+  EnsureEngineInitializedSlow(resetFrontendState);
+}
 void ShutdownGlide(const char* apiTag);
 void CloseWindow(const char* logMessage);
 
