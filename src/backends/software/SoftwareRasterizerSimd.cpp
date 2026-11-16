@@ -117,7 +117,7 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
   const VirtualTexture* tex = nullptr;
 
   if constexpr (HasTexture) {
-    tex = TextureManager::GetInstance().GetTexture(0, state.boundTexAddress[0]);
+    tex = state.boundTex[0].get();
     if (tex && !tex->swizzledMipLevels.empty()) {
       texW = tex->baseWidth;
       texH = tex->baseHeight;
@@ -148,8 +148,7 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
   const VirtualTexture* tex1 = nullptr;
 
   if (hasTexture1) {
-    tex1 =
-        TextureManager::GetInstance().GetTexture(1, state.boundTexAddress[1]);
+    tex1 = state.boundTex[1].get();
     if (tex1 && !tex1->swizzledMipLevels.empty()) {
       texW1 = tex1->baseWidth;
       texH1 = tex1->baseHeight;
@@ -214,7 +213,7 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
     float qa = a.pos[3];
     float qb = b.pos[3];
     float qc = c.pos[3];
-    if (stwHintMask & 0x4) {
+    if (stwHintMask & 0x8) {  // GR_STWHINT_W_DIFF_TMU1
       qa = a.tmu_oow[1];
       qb = b.tmu_oow[1];
       qc = c.tmu_oow[1];
@@ -353,12 +352,29 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
       Simd8f wVal =
           Fma(w0_vec, Simd8f(a.pos[3]),
               Fma(w1_vec, Simd8f(b.pos[3]), w2_vec * Simd8f(c.pos[3])));
+      Simd8f divW0 =
+          (stwHintMask & 0x2)
+              ? Fma(w0_vec, Simd8f(a.tmu_oow[0]),
+                    Fma(w1_vec, Simd8f(b.tmu_oow[0]),
+                        w2_vec * Simd8f(c.tmu_oow[0])))
+              : wVal;
+      Simd8f divW1 =
+          (stwHintMask & 0x8)
+              ? Fma(w0_vec, Simd8f(a.tmu_oow[1]),
+                    Fma(w1_vec, Simd8f(b.tmu_oow[1]),
+                        w2_vec * Simd8f(c.tmu_oow[1])))
+              : wVal;
 
       SimdMask depthClipMask = SimdMask::True();
       if (depthMode == 2) {
         depthClipMask = wVal <= Simd8f(1.0001f);
-      } else if constexpr (HasTexture) {
-        depthClipMask = wVal > Simd8f(0.0f);
+      } else {
+        if constexpr (HasTexture) {
+          depthClipMask = depthClipMask & (divW0 > Simd8f(0.0f));
+        }
+        if (hasTexture1) {
+          depthClipMask = depthClipMask & (divW1 > Simd8f(0.0f));
+        }
       }
       coverageMask = coverageMask & depthClipMask;
       if (coverageMask.AllZero()) continue;
@@ -415,12 +431,6 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
             Fma(w0_vec, Simd8f(a.tex[3]),
                 Fma(w1_vec, Simd8f(b.tex[3]), w2_vec * Simd8f(c.tex[3])));
 
-        Simd8f divW1 = wVal;
-        if (stwHintMask & 0x4) {
-          divW1 = Fma(
-              w0_vec, Simd8f(a.tmu_oow[1]),
-              Fma(w1_vec, Simd8f(b.tmu_oow[1]), w2_vec * Simd8f(c.tmu_oow[1])));
-        }
         Simd8f invW1 = Simd8f(1.0f) / divW1;
         Simd8f trueS1 = texS1 * invW1;
         Simd8f trueT1 = texT1 * invW1;
@@ -438,7 +448,7 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
             float centerWVal =
                 centerW0 * a.pos[3] + centerW1 * b.pos[3] + centerW2 * c.pos[3];
             float centerDivW1 = centerWVal;
-            if (stwHintMask & 0x4) {
+            if (stwHintMask & 0x8) {  // GR_STWHINT_W_DIFF_TMU1
               centerDivW1 = centerW0 * a.tmu_oow[1] + centerW1 * b.tmu_oow[1] +
                             centerW2 * c.tmu_oow[1];
             }
@@ -632,12 +642,6 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
             Fma(w0_vec, Simd8f(a.tex[1]),
                 Fma(w1_vec, Simd8f(b.tex[1]), w2_vec * Simd8f(c.tex[1])));
 
-        Simd8f divW0 = wVal;
-        if (stwHintMask & 0x2) {
-          divW0 = Fma(
-              w0_vec, Simd8f(a.tmu_oow[0]),
-              Fma(w1_vec, Simd8f(b.tmu_oow[0]), w2_vec * Simd8f(c.tmu_oow[0])));
-        }
         Simd8f invW = Simd8f(1.0f) / divW0;
         Simd8f trueS = texS * invW;
         Simd8f trueT = texT * invW;
@@ -1194,7 +1198,7 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
           f_vec = iterA;
         } else {
           alignas(32) float eyeW_arr[8];
-          Simd8f eyeW = Simd8f(1.0f) / wVal;
+          Simd8f eyeW = Simd8f(1.0f) / Max(wVal, Simd8f(1e-6f));
           Simd8f::Store(eyeW_arr, eyeW);
 
           float f_arr[8];

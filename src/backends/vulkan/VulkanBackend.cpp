@@ -270,14 +270,20 @@ void VulkanBackend::Shutdown() {
 
   GLIDE_LOG(INFO, "Vulkan", "Shutting down Hybrid Vulkan context.");
 
-  // Clear sampler and descriptor caches
-  m_samplerCache.clear();
-  m_descriptorCache.clear();
-
   // 1. Force-detach window resources first (handles active frame command
   // buffer, SDL, etc.)
+  if (m_device) {
+    m_device->waitIdle();
+  }
   DetachWindow_Locked();
   DestroyHudResources_Locked();
+  DestroyLfbOverlayResources_Locked();
+  ReclaimRetiredResources_Locked(0);
+  ReclaimRetiredResources_Locked(1);
+
+  // Clear sampler and descriptor caches after GPU is idle
+  m_samplerCache.clear();
+  m_descriptorCache.clear();
 
   // 2. Explicitly destroy all device-owned pipelines, shaders, and caches
   m_pipelineCache.clear();
@@ -287,7 +293,9 @@ void VulkanBackend::Shutdown() {
   m_fragShaderModuleDualSrc.reset();
 
   // Reset descriptor layout, pool, and textures
-  m_vulkanTextures.clear();
+  m_vulkanTextures[0].clear();
+  m_vulkanTextures[1].clear();
+  m_texturePool.clear();
   m_dummyTexture.imageView.reset();
   m_dummySampler.reset();
   m_dummyTexture.memory.reset();
@@ -398,6 +406,10 @@ void VulkanBackend::ResetState() {
 void VulkanBackend::ResetState_Locked() {
   GlideStateTracker::ResetState_Locked();
   m_lfbStaging.ResetPendingAndDirty();
+  m_pipelineStateDirty = true;
+  m_descriptorStateDirty = true;
+  m_cachedPipeline = vk::Pipeline{};
+  m_cachedDescSet = vk::DescriptorSet{};
 }
 
 bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
@@ -520,11 +532,15 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
 
     m_vertexBufferMap =
         m_device->mapMemory(m_vertexBufferMemory.get(), 0, m_vertexBufferSize);
-    m_vertexBufferOffset = 0;
+    m_vertexBufferOffset = m_currentFrameSlot * kVertexSlotBytes;
     m_batchedPipeline = nullptr;
     m_batchedDescSet = nullptr;
     m_batchedVertexCount = 0;
     m_batchedFirstVertex = 0;
+    m_pipelineStateDirty = true;
+    m_descriptorStateDirty = true;
+    m_cachedPipeline = vk::Pipeline{};
+    m_cachedDescSet = vk::DescriptorSet{};
     GLIDE_LOG(
         INFO, "Vulkan",
         "Allocated " << (m_vertexBufferSize / (1024 * 1024))
@@ -665,6 +681,13 @@ void VulkanBackend::DetachWindow_Locked() {
 
   DestroySwapchain_Locked();
   DestroyHudResources_Locked();
+  DestroyLfbOverlayResources_Locked();
+  ReclaimRetiredResources_Locked(0);
+  ReclaimRetiredResources_Locked(1);
+  m_pipelineStateDirty = true;
+  m_descriptorStateDirty = true;
+  m_cachedPipeline = vk::Pipeline{};
+  m_cachedDescSet = vk::DescriptorSet{};
   m_hudOverlay.Reset();
   m_surface.reset();
   m_surfaceHost.Detach();
@@ -1070,6 +1093,10 @@ void VulkanBackend::SetDepthState(uint32_t depthMode, uint32_t compareOp,
   if (depthMode != m_depthMode || compareOp != m_depthCompareOp ||
       depthMask != m_depthMask || biasLevel != m_depthBiasLevel) {
     FlushBatch(true);
+    if (depthMode != m_depthMode || compareOp != m_depthCompareOp ||
+        depthMask != m_depthMask) {
+      m_pipelineStateDirty = true;
+    }
   }
   GlideStateTracker::SetDepthState_Locked(depthMode, compareOp, depthMask, biasLevel);
 }
@@ -1081,6 +1108,7 @@ void VulkanBackend::SetBlendState(uint32_t rgbSrcFactor, uint32_t rgbDstFactor,
   if (rgbSrcFactor != m_rgbSrcBlend || rgbDstFactor != m_rgbDstBlend ||
       alphaSrcFactor != m_alphaSrcBlend || alphaDstFactor != m_alphaDstBlend) {
     FlushBatch(true);
+    m_pipelineStateDirty = true;
   }
   GlideStateTracker::SetBlendState_Locked(rgbSrcFactor, rgbDstFactor, alphaSrcFactor,
                                    alphaDstFactor);
@@ -1090,6 +1118,7 @@ void VulkanBackend::SetCullState(uint32_t cullMode) {
   std::lock_guard<std::mutex> lock(m_mutex);
   if (cullMode != m_cullMode) {
     FlushBatch(true);
+    m_pipelineStateDirty = true;
   }
   GlideStateTracker::SetCullState_Locked(cullMode);
 }
@@ -1108,6 +1137,7 @@ void VulkanBackend::SetSstOrigin(uint32_t origin) {
   std::lock_guard<std::mutex> lock(m_mutex);
   if (origin != m_sstOrigin) {
     FlushBatch(true);
+    m_pipelineStateDirty = true;
   }
   GlideStateTracker::SetSstOrigin_Locked(origin);
 }
@@ -1131,6 +1161,7 @@ void VulkanBackend::SetColorMask(bool rgb, bool alpha) {
   std::lock_guard<std::mutex> lock(m_mutex);
   if (rgb != m_colorMaskRgb || alpha != m_colorMaskAlpha) {
     FlushBatch(true);
+    m_pipelineStateDirty = true;
   }
   GlideStateTracker::SetColorMask_Locked(rgb, alpha);
 }
@@ -1298,10 +1329,6 @@ bool VulkanBackend::SwapBuffers() {
     std::exit(0);
   }
 
-  // Flush any pending CPU LFB writes to the GPU active image before we
-  // swap/present!
-  FlushLFBToGPU_Locked();
-
   GLIDE_PROFILE_SCOPE("Vulkan::SwapBuffers");
 
   // Sync child/standalone surface bounds with host window and recreate
@@ -1317,10 +1344,15 @@ bool VulkanBackend::SwapBuffers() {
     }
   }
 
-  // 1. Flush any pending batch draws and terminate the active render pass
+  // 1. Flush any pending 3D batch draws FIRST so subsequent 2D LFB overlays
+  // (e.g., persistent write-lock HUDs and grShamelessPlug) composite ON TOP OF
+  // the 3D scene rather than underneath it!
   if (m_batchedVertexCount > 0) {
     FlushBatch();
   }
+
+  // 2. Flush any pending CPU LFB writes / sparse overlays onto the GPU targets.
+  FlushLFBToGPU_Locked();
 
   // Check if we have any pending LoadOp clears. If yes, execute them now.
   uint32_t activeIdx = GetActiveGpuBufferIdx();
@@ -1504,6 +1536,8 @@ bool VulkanBackend::SwapBuffers() {
     m_currentFrameSlot = nextSlot;
     m_texStagingOffsets[m_currentFrameSlot] =
         m_currentFrameSlot * m_texStagingSlotSize;
+    m_vertexBufferOffset = m_currentFrameSlot * kVertexSlotBytes;
+    ReclaimRetiredResources_Locked(m_currentFrameSlot);
 
   } else {
     // Headless fallback (pure offscreen render copy to CPU staging)
@@ -1544,6 +1578,8 @@ bool VulkanBackend::SwapBuffers() {
     m_currentFrameSlot = nextSlot;
     m_texStagingOffsets[m_currentFrameSlot] =
         m_currentFrameSlot * m_texStagingSlotSize;
+    m_vertexBufferOffset = m_currentFrameSlot * kVertexSlotBytes;
+    ReclaimRetiredResources_Locked(m_currentFrameSlot);
   }
 
   m_commandBuffer = &m_commandBuffers[m_currentFrameSlot].get();

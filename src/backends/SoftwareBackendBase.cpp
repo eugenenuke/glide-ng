@@ -77,7 +77,7 @@ void SoftwareBackendBase::ClearBuffer(uint32_t color, uint32_t alpha, float z,
     }
   }
 
-  if (clearMask & 0x2) {  // Depth Clear
+  if ((clearMask & 0x2) && m_depthMask) {  // Depth Clear (obeys grDepthMask)
     m_pendingCpuDepthClear = false;
     if (!m_headlessDepthBuffer.empty()) {
       std::fill(m_headlessDepthBuffer.begin(), m_headlessDepthBuffer.end(), z);
@@ -111,7 +111,7 @@ void SoftwareBackendBase::ScheduleLazyCpuClear(uint32_t color, uint32_t alpha,
     }
   }
 
-  if (clearMask & 0x2) {
+  if ((clearMask & 0x2) && m_depthMask) {
     m_pendingCpuDepthClear = true;
     m_pendingCpuDepthValue = z;
   }

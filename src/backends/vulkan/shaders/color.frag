@@ -240,7 +240,9 @@ bool IsColorInRange(vec3 color, vec3 minColor, vec3 maxColor, uint rangeMode) {
       return rRes && gRes && bRes;
     }
   } else {
-    return distance(color, minColor) < 0.01;
+    // Exact 8-bit channel match (< 0.5 / 255) so dark non-key colors like
+    // RGB(1,1,1) or RGB(2,2,2) are not punched out when keying on black.
+    return all(lessThan(abs(color - minColor), vec3(0.0019)));
   }
 }
 
@@ -395,11 +397,16 @@ void main() {
   uint alphaFunc1 = (pcs.tmuCombinerModes1 >> 16u) & 0xFFu;
   uint alphaFactor1 = (pcs.tmuCombinerModes1 >> 24u) & 0xFFu;
 
-  // Near-plane clipping
+  float divW0 = (useTmuOow & 1u) != 0u ? fragTmuOow.x : fragOOW;
+  float divW1 = ((useTmuOow >> 1u) & 1u) != 0u ? fragTmuOow.y : fragOOW;
+
+  // Near-plane clipping (respect per-TMU oow when GR_STWHINT_W_DIFF_TMU* is set)
   if (pcs.depthBufferMode == 2u) {
     if (fragOOW > 1.0) discard;
-  } else if ((pcs.textureEnabled & 3u) != 0u) {
-    if (fragOOW <= 0.0) discard;
+  } else {
+    if ((tmu0Active && divW0 <= 0.0) || (tmu1Active && divW1 <= 0.0)) {
+      discard;
+    }
   }
 
   // 1. Sample TMU 1 (upstream)
@@ -408,7 +415,6 @@ void main() {
     ivec2 texSize = textureSize(texSampler1, 0);
     float tw = float(texSize.x);
     float th = float(texSize.y);
-    float divW1 = ((useTmuOow >> 1u) & 1u) != 0u ? fragTmuOow.y : fragOOW;
     vec2 uv1 = (fragTex.zw / divW1) / 256.0;
     tmu1Color = sampleTexture(texSampler1, uv1, 1u, tw, th);
   }
@@ -426,7 +432,6 @@ void main() {
     ivec2 texSize = textureSize(texSampler0, 0);
     float tw = float(texSize.x);
     float th = float(texSize.y);
-    float divW0 = (useTmuOow & 1u) != 0u ? fragTmuOow.x : fragOOW;
     vec2 uv0 = (fragTex.xy / divW0) / 256.0;
     tmu0Color = sampleTexture(texSampler0, uv0, 0u, tw, th);
   }
@@ -554,7 +559,7 @@ void main() {
 
   // Chromakey Emulation
   if (chromakeyEnabled) {
-    vec3 chromaTestColor = (pcs.textureEnabled == 1u) ? cOther : col.rgb;
+    vec3 chromaTestColor = ((pcs.textureEnabled & 3u) != 0u) ? cOther : col.rgb;
     bool rangeEnabled = ((pcs.chromakeyRangeMode >> 28u) & 1u) == 1u;
     bool discardPixel = false;
     if (rangeEnabled) {
@@ -583,7 +588,7 @@ void main() {
       if (fogSource == 1u) {  // UNIFIED_FOG_WITH_TABLE_ON_FOGCOORD
         eyeW = fragFogCoord;
       } else {  // UNIFIED_FOG_WITH_TABLE_ON_W
-        eyeW = 1.0 / fragOOW;
+        eyeW = 1.0 / max(fragOOW, 1e-6);
       }
       if (eyeW < 1.0) eyeW = 1.0;
 

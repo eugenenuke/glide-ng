@@ -18,9 +18,18 @@ void OpenGLESBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z,
   // Flush any pending geometry before clearing the buffers!
   FlushBatch();
 
-  // 1. Defer CPU-side framebuffer clear lazily so pure 3D frames allocate 0
-  // bytes and avoid CPU fills; materialized on demand before any LFB access.
+  // 1. Handle any pending sparse LFB overlay before clearing, and defer
+  // CPU-side full framebuffer clear lazily so pure 3D frames allocate 0 bytes.
   if (clearMask & 0x1) {
+    if (m_colorMaskRgb && m_colorMaskAlpha) {
+      // Full color clear overwrites every pixel, so any pending overlay is
+      // superseded.
+      m_lfbStaging.ClearOverlay(m_activeRenderBuffer);
+    } else if (m_lfbStaging.IsOverlayDirty(m_activeRenderBuffer)) {
+      // Partial color mask leaves unmasked channels intact; flush pending
+      // overlay first so those channels retain their LFB pixels.
+      FlushLFBToGPU_Locked();
+    }
     m_lfbStaging.ScheduleLazyClear(m_activeRenderBuffer, color, alpha,
                                    m_pixelFormatOverride, m_colorMaskRgb,
                                    m_colorMaskAlpha);
@@ -32,7 +41,7 @@ void OpenGLESBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z,
   GLbitfield mask = 0;
   GLboolean oldDepthMask = m_depthMask ? GL_TRUE : GL_FALSE;
 
-  if (clearMask & 0x1) {  // Color Clear
+  if ((clearMask & 0x1) && (m_colorMaskRgb || m_colorMaskAlpha)) {  // Color Clear
     float a = ((alpha > 0) ? alpha : 255) / 255.0f;
     float r = ((color >> 16) & 0xFF) / 255.0f;
     float g = ((color >> 8) & 0xFF) / 255.0f;
@@ -47,9 +56,8 @@ void OpenGLESBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z,
     mask |= GL_COLOR_BUFFER_BIT;
   }
 
-  if (clearMask & 0x2) {  // Depth Clear
-    glDepthMask(GL_TRUE);  // Force depth write enabled so glClear actually
-                           // clears the depth buffer!
+  if ((clearMask & 0x2) && m_depthMask) {  // Depth Clear (obeys grDepthMask)
+    glDepthMask(GL_TRUE);
     glClearDepthf(z);
     mask |= GL_DEPTH_BUFFER_BIT;
   }
@@ -140,9 +148,8 @@ void OpenGLESBackend::DrawPoint(const ModernVertex& pt) {
       (m_geomVBOOffset + (m_batchVertices.size() + 1) * sizeof(ModernVertex) >
        m_geomVBOSizeConfigured);
 
-  if (primitiveMismatch || m_stateCacheDirty || projectionChanged ||
-      capacityReached) {
-    FlushBatch(m_stateCacheDirty || primitiveMismatch || projectionChanged);
+  if (primitiveMismatch || projectionChanged || capacityReached) {
+    FlushBatch(primitiveMismatch || projectionChanged);
   }
 
   if (m_batchPrimitiveMode == BatchPrimitiveMode::None) {
@@ -169,9 +176,8 @@ void OpenGLESBackend::DrawLine(const ModernVertex& v0, const ModernVertex& v1) {
       (m_geomVBOOffset + (m_batchVertices.size() + 2) * sizeof(ModernVertex) >
        m_geomVBOSizeConfigured);
 
-  if (primitiveMismatch || m_stateCacheDirty || projectionChanged ||
-      capacityReached) {
-    FlushBatch(m_stateCacheDirty || primitiveMismatch || projectionChanged);
+  if (primitiveMismatch || projectionChanged || capacityReached) {
+    FlushBatch(primitiveMismatch || projectionChanged);
   }
 
   if (m_batchPrimitiveMode == BatchPrimitiveMode::None) {
@@ -202,9 +208,8 @@ void OpenGLESBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
       (m_geomVBOOffset + (m_batchVertices.size() + 3) * sizeof(ModernVertex) >
        m_geomVBOSizeConfigured);
 
-  if (primitiveMismatch || m_stateCacheDirty || projectionChanged ||
-      capacityReached) {
-    FlushBatch(m_stateCacheDirty || primitiveMismatch || projectionChanged);
+  if (primitiveMismatch || projectionChanged || capacityReached) {
+    FlushBatch(primitiveMismatch || projectionChanged);
   }
 
   if (m_batchPrimitiveMode == BatchPrimitiveMode::None) {
@@ -389,7 +394,7 @@ void OpenGLESBackend::FlushBatch(bool fromStateFlush) {
 
   // Handle VBO ring buffer wrapping and orphaning
   if (m_geomVBOOffset + uploadSize > m_geomVBOSizeConfigured) {
-    GLIDE_LOG(WARN, "GLES",
+    GLIDE_LOG(DEBUG, "GLES",
               "Dynamic Geometry VBO ring buffer wrap-around & orphaning! "
               "Offset reset to 0.");
     m_geomVBOOffset = 0;
@@ -415,8 +420,8 @@ void OpenGLESBackend::FlushBatch(bool fromStateFlush) {
   for (uint32_t tmu = 0; tmu < 2; ++tmu) {
     uint32_t addr = m_boundTexAddress[tmu];
     if (addr != 0xFFFFFFFF) {
-      auto it = m_glesTextures.find(addr);
-      if (it != m_glesTextures.end()) {
+      auto it = m_glesTextures[tmu].find(addr);
+      if (it != m_glesTextures[tmu].end()) {
         glActiveTexture(GL_TEXTURE0 + tmu);
         glBindTexture(GL_TEXTURE_2D, it->second);
         glBindSampler(tmu, m_glesSamplers[tmu]);
@@ -426,7 +431,7 @@ void OpenGLESBackend::FlushBatch(bool fromStateFlush) {
 
   // Lazy State Synchronization (uniforms, sampler configs, and GL pipeline
   // states)
-  if (m_stateCacheDirty) {
+  if (m_stateCacheDirty || m_is2DGeometry != m_batchIs2DGeometry) {
     m_is2DGeometry = m_batchIs2DGeometry;
     SyncDepthState();
     ApplyBlendingGLES();
@@ -440,8 +445,8 @@ void OpenGLESBackend::FlushBatch(bool fromStateFlush) {
     for (uint32_t tmu = 0; tmu < 2; ++tmu) {
       uint32_t addr = m_boundTexAddress[tmu];
       if (addr != 0xFFFFFFFF) {
-        auto it = m_glesTextures.find(addr);
-        if (it != m_glesTextures.end()) {
+        auto it = m_glesTextures[tmu].find(addr);
+        if (it != m_glesTextures[tmu].end()) {
           // Set sampler wrap modes
           GLint wrapS = GL_REPEAT;
           if (m_texClampS[tmu] == 1) {

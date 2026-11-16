@@ -284,11 +284,17 @@ FX_ENTRY void FX_CALL grHints(GrHint_t hintType, FxU32 hintMask) {
 FX_ENTRY void FX_CALL grBufferClear(GrColor_t color, GrAlpha_t alpha,
                                     FxU16 depth) {
   EnsureEngineInitialized();
+  GLIDE_LOG(DEBUG, "Frontend",
+            "grBufferClear invoked: color=0x"
+                << std::hex << color << std::dec
+                << ", alpha=" << static_cast<uint32_t>(alpha)
+                << ", depth=" << depth);
   EntryCommon::ClearBuffer(color, alpha, depth);
 }
 
 FX_ENTRY void FX_CALL grBufferSwap(int swap_interval) {
   EnsureEngineInitialized();
+  EntryCommon::FlushActiveLfbWriteLock(s_state);
   if (EntryCommon::ShouldRenderShamelessPlug(s_shamelessPlugEnabled)) {
     grShamelessPlug();
   }
@@ -325,6 +331,7 @@ FX_ENTRY void FX_CALL grDrawTriangle(const GrVertex* a, const GrVertex* b,
   SanitizeVertex(vb);
   SanitizeVertex(vc);
 
+  EntryCommon::SyncTexturesBeforeDraw();
   backend->DrawTriangle(va, vb, vc);
 }
 
@@ -355,6 +362,7 @@ FX_ENTRY void FX_CALL grDrawLine(const GrVertex* a, const GrVertex* b) {
   GlideWrapper::ModernVertex vb = layout.DecodeVertex(b);
   SanitizeVertex(va);
   SanitizeVertex(vb);
+  EntryCommon::SyncTexturesBeforeDraw();
   backend->DrawLine(va, vb);
 }
 
@@ -366,6 +374,7 @@ FX_ENTRY void FX_CALL grDrawPoint(const GrVertex* pt) {
   auto& layout = GlideWrapper::VertexLayout::GetInstance();
   GlideWrapper::ModernVertex vpt = layout.DecodeVertex(pt);
   SanitizeVertex(vpt);
+  EntryCommon::SyncTexturesBeforeDraw();
   backend->DrawPoint(vpt);
 }
 
@@ -598,9 +607,8 @@ FX_ENTRY void FX_CALL grGet(FxU32 pname, FxU32 plength, FxI32* params) {
       break;
     case GR_MEMORY_TMU:
       if (plength >= 4) {
-        params[0] = (card >= GlideWrapper::CardModel::Voodoo3)
-                        ? 16 * 1024 * 1024
-                        : 2 * 1024 * 1024;
+        const uint32_t tmuMb = std::max(2u, config.tmuMemoryMb);
+        params[0] = static_cast<FxI32>(tmuMb * 1024u * 1024u);
       }
       break;
     case GR_NUM_BOARDS:
@@ -738,8 +746,13 @@ FX_ENTRY FxU32 FX_CALL grTexMinAddress(GrChipID_t tmu) {
 }
 
 FX_ENTRY FxU32 FX_CALL grTexMaxAddress(GrChipID_t tmu) {
-  GLIDE_LOG(DEBUG, "Frontend", "grTexMaxAddress invoked for TMU=" << tmu);
-  return 0x200000;
+  EnsureEngineInitialized();
+  const auto& config = GlideWrapper::EmulationRegistry::GetInstance().GetConfig();
+  const uint32_t tmuBytes = std::max(2u, config.tmuMemoryMb) * 1024u * 1024u;
+  GLIDE_LOG(DEBUG, "Frontend",
+            "grTexMaxAddress invoked for TMU=" << tmu << " -> 0x" << std::hex
+                                               << tmuBytes << std::dec);
+  return tmuBytes;
 }
 
 FX_ENTRY FxU32 FX_CALL grTexCalcMemRequired(GrLOD_t lodmin, GrLOD_t lodmax,
@@ -939,12 +952,15 @@ FX_ENTRY void FX_CALL grAlphaBlendFunction(GrAlphaBlendFnc_t rgbSf,
                                            GrAlphaBlendFnc_t rgbDf,
                                            GrAlphaBlendFnc_t alphaSf,
                                            GrAlphaBlendFnc_t alphaDf) {
-  GLIDE_LOG(DEBUG, "Frontend", "grAlphaBlendFunction invoked.");
+  GLIDE_LOG(DEBUG, "Frontend",
+            "grAlphaBlendFunction invoked: rgb=("
+                << rgbSf << "," << rgbDf << "), alpha=(" << alphaSf << ","
+                << alphaDf << ")");
   EntryCommon::SetAlphaBlendFunction(s_state, rgbSf, rgbDf, alphaSf, alphaDf);
 }
 
 FX_ENTRY void FX_CALL grAlphaTestFunction(GrCmpFnc_t fnc) {
-  GLIDE_LOG(DEBUG, "Frontend", "grAlphaTestFunction invoked.");
+  GLIDE_LOG(DEBUG, "Frontend", "grAlphaTestFunction invoked: fnc=" << fnc);
   EntryCommon::SetAlphaTestFunction(s_state, fnc);
 }
 
@@ -957,14 +973,18 @@ FX_ENTRY void FX_CALL grAlphaTestReferenceValue(GrAlpha_t refVal) {
 FX_ENTRY void FX_CALL grTexFilterMode(GrChipID_t tmu,
                                       GrTextureFilterMode_t minfilter,
                                       GrTextureFilterMode_t magfilter) {
-  GLIDE_LOG(DEBUG, "Frontend", "grTexFilterMode invoked for TMU=" << tmu);
+  GLIDE_LOG(DEBUG, "Frontend",
+            "grTexFilterMode invoked for TMU=" << tmu << ", min=" << minfilter
+                                               << ", mag=" << magfilter);
   EntryCommon::SetTexFilterMode(s_state, tmu, minfilter, magfilter);
 }
 
 FX_ENTRY void FX_CALL grTexClampMode(GrChipID_t tmu,
                                      GrTextureClampMode_t s_clampmode,
                                      GrTextureClampMode_t t_clampmode) {
-  GLIDE_LOG(DEBUG, "Frontend", "grTexClampMode invoked for TMU=" << tmu);
+  GLIDE_LOG(DEBUG, "Frontend",
+            "grTexClampMode invoked for TMU=" << tmu << ", s=" << s_clampmode
+                                              << ", t=" << t_clampmode);
   EntryCommon::SetTexClampMode(s_state, tmu, s_clampmode, t_clampmode);
 }
 
@@ -982,7 +1002,7 @@ FX_ENTRY void FX_CALL grDepthBufferMode(GrDepthBufferMode_t mode) {
 }
 
 FX_ENTRY void FX_CALL grDepthBufferFunction(GrCmpFnc_t fnc) {
-  GLIDE_LOG(DEBUG, "Frontend", "grDepthBufferFunction invoked.");
+  GLIDE_LOG(DEBUG, "Frontend", "grDepthBufferFunction invoked: fnc=" << fnc);
   EntryCommon::SetDepthFunction(s_state, fnc);
 }
 
@@ -1013,11 +1033,22 @@ FX_ENTRY void FX_CALL grCullMode(GrCullMode_t mode) {
 
 FX_ENTRY void FX_CALL grTexDownloadMipMap(GrChipID_t tmu, FxU32 startAddress,
                                           FxU32 evenOdd, GrTexInfo* info) {
-  GLIDE_LOG(DEBUG, "Frontend", "grTexDownloadMipMap invoked for TMU=" << tmu);
+  if (info) {
+    GLIDE_LOG(DEBUG, "Frontend",
+              "grTexDownloadMipMap invoked for TMU="
+                  << tmu << ", addr=0x" << std::hex << startAddress << std::dec
+                  << ", largeLod=" << info->largeLod
+                  << ", smallLod=" << info->smallLod
+                  << ", aspect=" << info->aspectRatio
+                  << ", fmt=" << info->format);
+  } else {
+    GLIDE_LOG(DEBUG, "Frontend",
+              "grTexDownloadMipMap invoked for TMU=" << tmu << " (info=NULL)");
+  }
   if (info && info->data) {
     GlideWrapper::TextureManager::GetInstance().DownloadMipMap(
         tmu, startAddress, info->largeLod, info->smallLod, info->aspectRatio,
-        info->format, info->data);
+        info->format, info->data, /*replaceExisting=*/true);
   }
 }
 
@@ -1030,7 +1061,8 @@ grTexDownloadMipMapLevel(GrChipID_t tmu, FxU32 startAddress, GrLOD_t thisLod,
                                                         << ", LOD=" << thisLod);
   if (data) {
     GlideWrapper::TextureManager::GetInstance().DownloadMipMap(
-        tmu, startAddress, thisLod, thisLod, aspectRatio, format, data);
+        tmu, startAddress, thisLod, thisLod, aspectRatio, format, data,
+        /*replaceExisting=*/false, /*baseLargeLod=*/largeLod);
   }
 }
 
@@ -1066,7 +1098,9 @@ FX_ENTRY void FX_CALL grTexNCCTable(GrChipID_t tmu, GrNCCTable_t table) {
 
 FX_ENTRY void FX_CALL grTexSource(GrChipID_t tmu, FxU32 startAddress,
                                   FxU32 evenOdd, GrTexInfo* info) {
-  GLIDE_LOG(DEBUG, "Frontend", "grTexSource invoked for TMU=" << tmu);
+  GLIDE_LOG(DEBUG, "Frontend",
+            "grTexSource invoked for TMU=" << tmu << ", addr=0x" << std::hex
+                                           << startAddress << std::dec);
   EntryCommon::BindTexSource(s_state, tmu, startAddress);
 }
 
@@ -1223,8 +1257,12 @@ FX_ENTRY GrMipMapId_t FX_CALL guTexAllocateMemory(
 FX_ENTRY void FX_CALL guTexSource(GrMipMapId_t id) {
   EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend", "guTexSource: id=" << id);
-  if (id == GR_NULL_MIPMAP_HANDLE || id >= (GrMipMapId_t)s_guTextures.size() ||
-      !s_guTextures[id].valid) {
+  if (id == GR_NULL_MIPMAP_HANDLE) {
+    EntryCommon::BindTexSource(s_state, 0, 0xFFFFFFFFu);
+    s_currentMipMap[0] = GR_NULL_MIPMAP_HANDLE;
+    return;
+  }
+  if (id >= (GrMipMapId_t)s_guTextures.size() || !s_guTextures[id].valid) {
     return;
   }
 
@@ -1376,13 +1414,9 @@ FX_ENTRY FxU32 FX_CALL guTexMemQueryAvail(GrChipID_t tmu) {
   EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend", "guTexMemQueryAvail: tmu=" << tmu);
 
-  auto& config = GlideWrapper::EmulationRegistry::GetInstance().GetConfig();
-  GlideWrapper::CardModel card = config.model;
-  uint32_t totalBytes =
-      (card >= GlideWrapper::CardModel::Voodoo3)
-          ? 16 * 1024 * 1024
-          : ((card >= GlideWrapper::CardModel::Voodoo2) ? 4 * 1024 * 1024
-                                                        : 2 * 1024 * 1024);
+  const auto& config = GlideWrapper::EmulationRegistry::GetInstance().GetConfig();
+  const uint32_t totalBytes =
+      std::max(2u, config.tmuMemoryMb) * 1024u * 1024u;
 
   return (s_guTexNextAddress < totalBytes) ? (totalBytes - s_guTexNextAddress)
                                            : 0;
@@ -1503,8 +1537,10 @@ FX_ENTRY FxBool FX_CALL grLfbLock(GrLock_t type, GrBuffer_t buffer,
                                   FxBool pixelPipeline, GrLfbInfo_t* info) {
   EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend",
-            "grLfbLock invoked: buffer=" << buffer << ", mode=" << writeMode
-                                         << ", origin=" << origin);
+            "grLfbLock invoked: type="
+                << type << ", buffer=" << buffer << ", mode=" << writeMode
+                << ", origin=" << origin
+                << ", pixelPipeline=" << pixelPipeline);
   return GlideWrapper::LfbManager::GetInstance().Lock(
              type, buffer, writeMode, origin, pixelPipeline != 0, info)
              ? FXTRUE
@@ -1513,7 +1549,8 @@ FX_ENTRY FxBool FX_CALL grLfbLock(GrLock_t type, GrBuffer_t buffer,
 
 FX_ENTRY FxBool FX_CALL grLfbUnlock(GrLock_t type, GrBuffer_t buffer) {
   EnsureEngineInitialized();
-  GLIDE_LOG(DEBUG, "Frontend", "grLfbUnlock invoked.");
+  GLIDE_LOG(DEBUG, "Frontend",
+            "grLfbUnlock invoked: type=" << type << ", buffer=" << buffer);
   return EntryCommon::LfbUnlockWithState(s_state, type, buffer) ? FXTRUE
                                                                 : FXFALSE;
 }
@@ -1674,6 +1711,10 @@ FX_ENTRY void FX_CALL guColorCombineFunction(GrColorCombineFnc_t fnc) {
       break;
 
     case GR_COLORCOMBINE_ITRGB_DELTA0:
+      grColorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+                     GR_COMBINE_LOCAL_CONSTANT, GR_COMBINE_OTHER_NONE, FXFALSE);
+      break;
+
     case GR_COLORCOMBINE_ITRGB:
       grColorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
                      GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_NONE, FXFALSE);
@@ -1691,6 +1732,11 @@ FX_ENTRY void FX_CALL guColorCombineFunction(GrColorCombineFnc_t fnc) {
       break;
 
     case GR_COLORCOMBINE_TEXTURE_TIMES_ITRGB_DELTA0:
+      grColorCombine(GR_COMBINE_FUNCTION_SCALE_OTHER, GR_COMBINE_FACTOR_LOCAL,
+                     GR_COMBINE_LOCAL_CONSTANT, GR_COMBINE_OTHER_TEXTURE,
+                     FXFALSE);
+      break;
+
     case GR_COLORCOMBINE_TEXTURE_TIMES_ITRGB:
       grColorCombine(GR_COMBINE_FUNCTION_SCALE_OTHER, GR_COMBINE_FACTOR_LOCAL,
                      GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_TEXTURE,

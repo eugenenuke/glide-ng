@@ -353,7 +353,7 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
   const VirtualTexture* tex = nullptr;
 
   if constexpr (HasTexture) {
-    tex = TextureManager::GetInstance().GetTexture(0, state.boundTexAddress[0]);
+    tex = state.boundTex[0].get();
     if (tex && !tex->swizzledMipLevels.empty()) {
       texW = tex->baseWidth;
       texH = tex->baseHeight;
@@ -390,8 +390,7 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
   const VirtualTexture* tex1 = nullptr;
 
   if (hasTexture1) {
-    tex1 =
-        TextureManager::GetInstance().GetTexture(1, state.boundTexAddress[1]);
+    tex1 = state.boundTex[1].get();
     if (tex1 && !tex1->swizzledMipLevels.empty()) {
       texW1 = tex1->baseWidth;
       texH1 = tex1->baseHeight;
@@ -447,7 +446,7 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
     float qa = a.pos[3];
     float qb = b.pos[3];
     float qc = c.pos[3];
-    if (stwHintMask & 0x4) {  // GR_STWHINT_W_DIFF_TMU1
+    if (stwHintMask & 0x8) {  // GR_STWHINT_W_DIFF_TMU1
       qa = a.tmu_oow[1];
       qb = b.tmu_oow[1];
       qc = c.tmu_oow[1];
@@ -492,12 +491,24 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
         }
 
         float wVal = w0 * a.pos[3] + w1 * b.pos[3] + w2 * c.pos[3];
+        float divW0 =
+            (stwHintMask & 0x2)
+                ? (w0 * a.tmu_oow[0] + w1 * b.tmu_oow[0] + w2 * c.tmu_oow[0])
+                : wVal;
+        float divW1 =
+            (stwHintMask & 0x8)
+                ? (w0 * a.tmu_oow[1] + w1 * b.tmu_oow[1] + w2 * c.tmu_oow[1])
+                : wVal;
 
-        // Near-plane clipping
+        // Near-plane clipping (respect per-TMU oow when GR_STWHINT_W_DIFF_TMU*
+        // is active)
         if (depthMode == 2) {  // GR_DEPTHBUFFER_WBUFFER
           if (wVal > 1.0001f) keepPixel = false;
-        } else if constexpr (HasTexture) {
-          if (wVal <= 0.0f) keepPixel = false;
+        } else {
+          if constexpr (HasTexture) {
+            if (divW0 <= 0.0f) keepPixel = false;
+          }
+          if (hasTexture1 && divW1 <= 0.0f) keepPixel = false;
         }
 
         float iterR = 0.0f;
@@ -517,10 +528,6 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
           float texS1 = w0 * a.tex[2] + w1 * b.tex[2] + w2 * c.tex[2];
           float texT1 = w0 * a.tex[3] + w1 * b.tex[3] + w2 * c.tex[3];
 
-          float divW1 = wVal;
-          if (stwHintMask & 0x4) {  // GR_STWHINT_W_DIFF_TMU1
-            divW1 = w0 * a.tmu_oow[1] + w1 * b.tmu_oow[1] + w2 * c.tmu_oow[1];
-          }
           float invW1 = 1.0f / divW1;
           float trueS1 = texS1 * invW1;
           float trueT1 = texT1 * invW1;
@@ -611,10 +618,6 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
             float texS = w0 * a.tex[0] + w1 * b.tex[0] + w2 * c.tex[0];
             float texT = w0 * a.tex[1] + w1 * b.tex[1] + w2 * c.tex[1];
 
-            float divW0 = wVal;
-            if (stwHintMask & 0x2) {  // GR_STWHINT_W_DIFF_TMU0
-              divW0 = w0 * a.tmu_oow[0] + w1 * b.tmu_oow[0] + w2 * c.tmu_oow[0];
-            }
             float invW = 1.0f / divW0;
             float trueS = texS * invW;
             float trueT = texT * invW;
@@ -1047,7 +1050,7 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
           if (fogSource == 4) {  // UNIFIED_FOG_WITH_ITERATED_ALPHA
             f = w0 * a.color[3] + w1 * b.color[3] + w2 * c.color[3];
           } else {  // Table-based fog
-            float eyeW = 1.0f / wVal;
+            float eyeW = 1.0f / std::max(wVal, 1e-6f);
             if (eyeW < 1.0f) eyeW = 1.0f;
 
             int idx = 0;

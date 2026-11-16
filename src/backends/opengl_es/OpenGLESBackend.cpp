@@ -97,8 +97,8 @@ void OpenGLESBackend::ResetState_Locked() {
   m_is2DGeometry = true;
   m_gammaCorrectionValue = 1.0f;
   m_useGammaLut = false;
-  m_glesTextures.clear();  // Clear the stale texture cache to prevent reusing
-                           // dead GL texture IDs in new contexts!
+  m_glesTextures[0].clear();  // Clear stale texture caches to prevent reusing
+  m_glesTextures[1].clear();  // dead GL texture IDs in new contexts!
   m_batchVertices.clear();
   m_batchPrimitiveMode = BatchPrimitiveMode::None;
   m_batchIs2DGeometry = false;
@@ -278,6 +278,9 @@ void OpenGLESBackend::PresentToWindowSurface(uint32_t hostW, uint32_t hostH) {
   if (m_uUseGammaLutLoc != -1) {
     glUniform1i(m_uUseGammaLutLoc, m_useGammaLut ? 1 : 0);
   }
+  if (m_uPreserveAlphaLoc != -1) {
+    glUniform1i(m_uPreserveAlphaLoc, 0);
+  }
 
   glActiveTexture(GL_TEXTURE0);
   glBindTexture(GL_TEXTURE_2D, m_fboTextures[0]);
@@ -324,8 +327,12 @@ void OpenGLESBackend::PresentToWindowSurface(uint32_t hostW, uint32_t hostH) {
         if (m_uUseGammaLutLoc != -1) {
           glUniform1i(m_uUseGammaLutLoc, 0);
         }
+        if (m_uPreserveAlphaLoc != -1) {
+          glUniform1i(m_uPreserveAlphaLoc, 1);
+        }
         glEnable(GL_BLEND);
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ZERO,
+                            GL_ONE);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         glDisable(GL_BLEND);
       }
@@ -482,6 +489,48 @@ bool OpenGLESBackend::WriteLFB(uint32_t buffer, uint32_t dstX, uint32_t dstY,
                                const LfbPipelineConfig& config) {
   std::lock_guard<std::mutex> lock(m_mutex);
   if (!m_initialized || !m_windowAttached) return false;
+
+  // Fast path: opaque LFB writes and standard (SRC_ALPHA, ONE_MINUS_SRC_ALPHA)
+  // overlays composite directly onto the GPU FBO via a single alpha-blended
+  // quad with ZERO GPU readback stalls, preserving any 3D geometry underneath!
+  if (CpuLfbStaging::CanUseOverlayQuad(config)) {
+    return m_lfbStaging.WriteOverlayLFB(buffer, dstX, dstY, srcWidth, srcHeight,
+                                        srcStride, srcFmt, srcData, refData,
+                                        config, m_pixelFormatOverride);
+  }
+
+  // Fallback for exotic LFB blend modes (e.g., additive/multiply): snapshot the
+  // current GPU FBO into CpuLfbStaging once so CPU blending sees the 3D scene.
+  if (!m_lfbStaging.IsFullBufferDirty(buffer) && EnsureContextCurrent()) {
+    FlushBatch();
+    FlushLFBToGPU_Locked();
+    if (void* readDst = m_lfbStaging.PrepareBufferForGpuReadback(buffer)) {
+      GLint prevFBO = 0;
+      glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prevFBO);
+      const GLuint fboToRead =
+          (buffer == 0) ? m_headlessFBOs[1] : m_headlessFBOs[0];
+      glBindFramebuffer(GL_FRAMEBUFFER, fboToRead);
+      glReadPixels(0, 0, m_headlessWidth, m_headlessHeight, GL_RGBA,
+                   GL_UNSIGNED_BYTE, readDst);
+      auto* dest = reinterpret_cast<uint32_t*>(readDst);
+      for (uint32_t i = 0; i < m_headlessWidth * m_headlessHeight; ++i) {
+        uint32_t rgba = dest[i];
+        dest[i] = (rgba & 0xFF00FF00u) | ((rgba & 0xFFu) << 16) |
+                  ((rgba >> 16) & 0xFFu);
+      }
+      std::vector<uint32_t> rowBuf(m_headlessWidth);
+      for (uint32_t y = 0; y < m_headlessHeight / 2; ++y) {
+        uint32_t* topRow = dest + static_cast<size_t>(y) * m_headlessWidth;
+        uint32_t* botRow =
+            dest + static_cast<size_t>(m_headlessHeight - 1 - y) * m_headlessWidth;
+        std::memcpy(rowBuf.data(), topRow, m_headlessWidth * sizeof(uint32_t));
+        std::memcpy(topRow, botRow, m_headlessWidth * sizeof(uint32_t));
+        std::memcpy(botRow, rowBuf.data(), m_headlessWidth * sizeof(uint32_t));
+      }
+      glBindFramebuffer(GL_FRAMEBUFFER, prevFBO);
+    }
+  }
+
   return m_lfbStaging.WriteLFB(buffer, dstX, dstY, srcWidth, srcHeight,
                                srcStride, srcFmt, srcData, refData, config,
                                m_pixelFormatOverride);
@@ -491,67 +540,158 @@ void OpenGLESBackend::FlushLFBToGPU_Locked() {
   if (!m_lfbStaging.IsDirty()) return;
   if (!EnsureContextCurrent()) return;
 
-  const size_t requiredPixels =
-      static_cast<size_t>(m_headlessWidth) * m_headlessHeight;
-  if (m_swizzleBuffer.size() < requiredPixels) {
-    m_swizzleBuffer.resize(requiredPixels);
-  }
-
   GLint prevTexture = 0;
   glGetIntegerv(GL_TEXTURE_BINDING_2D, &prevTexture);
 
-  // Helper lambda to swizzle and upload a CPU buffer to a specific GPU texture
-  auto flushBuffer = [this](const uint8_t* cpuBufferData, uint32_t gpuTexture) {
-    const auto* src = reinterpret_cast<const uint32_t*>(cpuBufferData);
-    if (!src || m_swizzleBuffer.empty()) return;
-    for (uint32_t y = 0; y < m_headlessHeight; ++y) {
-      uint32_t srcY = y;
-      uint32_t dstY =
-          m_headlessHeight - 1 - y;  // Flip to match bottom-up FBO layout
-      const uint32_t* srcRow = src + srcY * m_headlessWidth;
-      uint32_t* dstRow = m_swizzleBuffer.data() + dstY * m_headlessWidth;
+  // Mapping invariant (matching GetActiveGpuFbo() & ReadLFB()):
+  //   logical 0 (GR_BUFFER_FRONTBUFFER) -> m_headlessFBOs[1] / m_fboTextures[1]
+  //   logical 1 (GR_BUFFER_BACKBUFFER)  -> m_headlessFBOs[0] / m_fboTextures[0]
+  const uint32_t gpuTextures[2] = {m_fboTextures[1], m_fboTextures[0]};
+  const uint32_t gpuFbos[2] = {m_headlessFBOs[1], m_headlessFBOs[0]};
 
-      for (uint32_t x = 0; x < m_headlessWidth; ++x) {
-        uint32_t bgra = srcRow[x];
-        uint32_t b = bgra & 0xFF;
-        uint32_t g = (bgra >> 8) & 0xFF;
-        uint32_t r = (bgra >> 16) & 0xFF;
-        uint32_t a = (bgra >> 24) & 0xFF;
-        dstRow[x] = (a << 24) | (b << 16) | (g << 8) | r;  // RGBA
+  // 1. Full-buffer upload path (GetLfbWritePtr or exotic blend fallback).
+  if (m_lfbStaging.IsFullBufferDirty(0) || m_lfbStaging.IsFullBufferDirty(1)) {
+    const size_t requiredPixels =
+        static_cast<size_t>(m_headlessWidth) * m_headlessHeight;
+    if (m_swizzleBuffer.size() < requiredPixels) {
+      m_swizzleBuffer.resize(requiredPixels);
+    }
+    auto flushFullBuffer = [this](const uint8_t* cpuBufferData,
+                                  uint32_t gpuTexture) {
+      const auto* src = reinterpret_cast<const uint32_t*>(cpuBufferData);
+      if (!src || m_swizzleBuffer.empty()) return;
+      for (uint32_t y = 0; y < m_headlessHeight; ++y) {
+        const uint32_t dstY = m_headlessHeight - 1 - y;
+        const uint32_t* srcRow = src + static_cast<size_t>(y) * m_headlessWidth;
+        uint32_t* dstRow =
+            m_swizzleBuffer.data() + static_cast<size_t>(dstY) * m_headlessWidth;
+        for (uint32_t x = 0; x < m_headlessWidth; ++x) {
+          uint32_t bgra = srcRow[x];
+          dstRow[x] = (bgra & 0xFF00FF00u) | ((bgra & 0xFFu) << 16) |
+                      ((bgra >> 16) & 0xFFu);
+        }
+      }
+      glBindTexture(GL_TEXTURE_2D, gpuTexture);
+      glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+      glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, m_headlessWidth, m_headlessHeight,
+                      GL_RGBA, GL_UNSIGNED_BYTE, m_swizzleBuffer.data());
+    };
+
+    for (uint32_t buf = 0; buf < 2; ++buf) {
+      if (m_lfbStaging.IsFullBufferDirty(buf)) {
+        if (const uint8_t* data = m_lfbStaging.PrepareBufferForGpuUpload(buf)) {
+          flushFullBuffer(data, gpuTextures[buf]);
+          checkGLError("FlushLFBToGPU FullBuffer glTexSubImage2D");
+        }
+        m_lfbStaging.ClearBufferDirty(buf);
       }
     }
-    glBindTexture(GL_TEXTURE_2D, gpuTexture);
-    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, m_headlessWidth, m_headlessHeight,
-                    GL_RGBA, GL_UNSIGNED_BYTE, m_swizzleBuffer.data());
-  };
-
-  // Determine which FBO texture corresponds to FRONTBUFFER and BACKBUFFER.
-  uint32_t gpuFrontTexture =
-      (m_activeRenderBuffer == 0) ? m_fboTextures[0] : m_fboTextures[1];
-  uint32_t gpuBackTexture =
-      (m_activeRenderBuffer == 0) ? m_fboTextures[1] : m_fboTextures[0];
-
-  // 1. Flush FRONTBUFFER if dirty
-  if (m_lfbStaging.IsBufferDirty(0)) {
-    if (const uint8_t* data = m_lfbStaging.PrepareBufferForGpuUpload(0)) {
-      flushBuffer(data, gpuFrontTexture);
-      checkGLError("FlushLFBToGPU FrontBuffer glTexSubImage2D");
-    }
-    m_lfbStaging.ClearBufferDirty(0);
   }
 
-  // 2. Flush BACKBUFFER if dirty
-  if (m_lfbStaging.IsBufferDirty(1)) {
-    if (const uint8_t* data = m_lfbStaging.PrepareBufferForGpuUpload(1)) {
-      flushBuffer(data, gpuBackTexture);
-      checkGLError("FlushLFBToGPU BackBuffer glTexSubImage2D");
+  // 2. Sparse alpha-masked overlay composite path (zero readback, preserves 3D!).
+  if (m_lfbStaging.IsOverlayDirty(0) || m_lfbStaging.IsOverlayDirty(1)) {
+    if (m_glLfbOverlayTex == 0 || m_glLfbOverlayWidth != m_headlessWidth ||
+        m_glLfbOverlayHeight != m_headlessHeight) {
+      if (m_glLfbOverlayTex == 0) {
+        glGenTextures(1, &m_glLfbOverlayTex);
+      }
+      glBindTexture(GL_TEXTURE_2D, m_glLfbOverlayTex);
+      glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8,
+                   static_cast<GLsizei>(m_headlessWidth),
+                   static_cast<GLsizei>(m_headlessHeight), 0, GL_RGBA,
+                   GL_UNSIGNED_BYTE, nullptr);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+      m_glLfbOverlayWidth = m_headlessWidth;
+      m_glLfbOverlayHeight = m_headlessHeight;
     }
-    m_lfbStaging.ClearBufferDirty(1);
+
+    GLint prevFBO = 0;
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prevFBO);
+
+    for (uint32_t buf = 0; buf < 2; ++buf) {
+      uint32_t minY = 0;
+      uint32_t maxY = 0;
+      const uint32_t* overlay =
+          m_lfbStaging.GetOverlayForGpuUpload(buf, minY, maxY);
+      if (!overlay || minY > maxY || maxY >= m_headlessHeight) continue;
+
+      const uint32_t numRows = maxY - minY + 1;
+      const size_t bandPixels = static_cast<size_t>(numRows) * m_headlessWidth;
+      if (m_swizzleBuffer.size() < bandPixels) {
+        m_swizzleBuffer.resize(bandPixels);
+      }
+
+      // Flip dirty band [minY..maxY] top-down -> bottom-up and swizzle ARGB -> RGBA.
+      for (uint32_t rIdx = 0; rIdx < numRows; ++rIdx) {
+        const uint32_t srcY = maxY - rIdx;
+        const uint32_t* srcRow = overlay + static_cast<size_t>(srcY) * m_headlessWidth;
+        uint32_t* dstRow =
+            m_swizzleBuffer.data() + static_cast<size_t>(rIdx) * m_headlessWidth;
+        for (uint32_t x = 0; x < m_headlessWidth; ++x) {
+          uint32_t argb = srcRow[x];
+          dstRow[x] = (argb & 0xFF00FF00u) | ((argb & 0xFFu) << 16) |
+                      ((argb >> 16) & 0xFFu);
+        }
+      }
+
+      const uint32_t glMinY = m_headlessHeight - 1 - maxY;
+      glActiveTexture(GL_TEXTURE0);
+      glBindSampler(0, 0);
+      glBindTexture(GL_TEXTURE_2D, m_glLfbOverlayTex);
+      glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+      glTexSubImage2D(GL_TEXTURE_2D, 0, 0, static_cast<GLint>(glMinY),
+                      static_cast<GLsizei>(m_headlessWidth),
+                      static_cast<GLsizei>(numRows), GL_RGBA, GL_UNSIGNED_BYTE,
+                      m_swizzleBuffer.data());
+
+      glBindFramebuffer(GL_FRAMEBUFFER, gpuFbos[buf]);
+      glViewport(0, 0, static_cast<GLsizei>(m_headlessWidth),
+                 static_cast<GLsizei>(m_headlessHeight));
+      // Scissor tightly to the uploaded dirty band so untouched rows in
+      // m_glLfbOverlayTex are never sampled.
+      glEnable(GL_SCISSOR_TEST);
+      glScissor(0, static_cast<GLint>(glMinY),
+                static_cast<GLsizei>(m_headlessWidth),
+                static_cast<GLsizei>(numRows));
+      glDisable(GL_DEPTH_TEST);
+      glDepthMask(GL_FALSE);
+      glDisable(GL_CULL_FACE);
+      glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+      glEnable(GL_BLEND);
+      glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE,
+                          GL_ONE_MINUS_SRC_ALPHA);
+
+      glUseProgram(m_glProgram);
+      if (m_uUseGammaLutLoc != -1) {
+        glUniform1i(m_uUseGammaLutLoc, 0);
+      }
+      if (m_uPreserveAlphaLoc != -1) {
+        glUniform1i(m_uPreserveAlphaLoc, 1);
+      }
+      glBindVertexArray(m_glVAO);
+      glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+
+      m_lfbStaging.ClearOverlay(buf);
+      checkGLError("FlushLFBToGPU OverlayQuad");
+    }
+
+    glBindVertexArray(0);
+    glUseProgram(0);
+    glBindFramebuffer(GL_FRAMEBUFFER, prevFBO);
+    glViewport(0, 0, static_cast<GLsizei>(m_headlessWidth),
+               static_cast<GLsizei>(m_headlessHeight));
+    ApplyScissorGLES_Locked();
+    ApplyColorMaskGLES();
+    SyncDepthState();
+    SyncCullStateGLES_Locked();
+    ApplyBlendingGLES();
+    MarkStateDirty();
   }
 
   glBindTexture(GL_TEXTURE_2D, prevTexture);
-
-  m_lfbStaging.ClearDirtyFlags();
 }
 
 bool OpenGLESBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
@@ -1473,6 +1613,7 @@ bool OpenGLESBackend::CreateGLContext(void* nativeWindowHandle, uint32_t width,
   }
 
   m_uUseGammaLutLoc = glGetUniformLocation(m_glProgram, "uUseGammaLut");
+  m_uPreserveAlphaLoc = glGetUniformLocation(m_glProgram, "uPreserveAlpha");
 
   // Fullscreen triangle-strip quad sampling the bottom-up offscreen FBO texture
   // (no Y-flip: NDC +1 maps to V=1.0, NDC -1 maps to V=0.0).
@@ -1540,12 +1681,14 @@ bool OpenGLESBackend::CreateGLContext(void* nativeWindowHandle, uint32_t width,
 void OpenGLESBackend::DestroyGLContext() {
   // 1. Delete all GL objects while our context is still current.
   if (EnsureContextCurrent()) {
-    for (auto& pair : m_glesTextures) {
-      if (pair.second) {
-        glDeleteTextures(1, &pair.second);
+    for (uint32_t t = 0; t < 2; ++t) {
+      for (auto& pair : m_glesTextures[t]) {
+        if (pair.second) {
+          glDeleteTextures(1, &pair.second);
+        }
       }
+      m_glesTextures[t].clear();
     }
-    m_glesTextures.clear();
 
     if (m_glesSamplers[0] != 0) {
       glDeleteSamplers(2, m_glesSamplers);
@@ -1560,6 +1703,12 @@ void OpenGLESBackend::DestroyGLContext() {
       m_glHudTex = 0;
     }
     m_hudUploadedRev = 0;
+    if (m_glLfbOverlayTex) {
+      glDeleteTextures(1, &m_glLfbOverlayTex);
+      m_glLfbOverlayTex = 0;
+    }
+    m_glLfbOverlayWidth = 0;
+    m_glLfbOverlayHeight = 0;
     if (m_fboTextures[0]) {
       glDeleteTextures(2, m_fboTextures);
       m_fboTextures[0] = m_fboTextures[1] = 0;
@@ -1597,11 +1746,15 @@ void OpenGLESBackend::DestroyGLContext() {
       m_geomProgram = 0;
     }
   } else {
-    m_glesTextures.clear();
+    m_glesTextures[0].clear();
+    m_glesTextures[1].clear();
     m_glesSamplers[0] = m_glesSamplers[1] = 0;
     m_glGammaLutTex = 0;
     m_glHudTex = 0;
     m_hudUploadedRev = 0;
+    m_glLfbOverlayTex = 0;
+    m_glLfbOverlayWidth = 0;
+    m_glLfbOverlayHeight = 0;
     m_fboTextures[0] = m_fboTextures[1] = 0;
     m_glVBO = 0;
     m_glVAO = 0;
@@ -1663,6 +1816,10 @@ void OpenGLESBackend::SetBlendState(uint32_t rgbSrcFactor,
                                     uint32_t alphaSrcFactor,
                                     uint32_t alphaDstFactor) {
   std::lock_guard<std::mutex> lock(m_mutex);
+  if (m_rgbSrcBlend == rgbSrcFactor && m_rgbDstBlend == rgbDstFactor &&
+      m_alphaSrcBlend == alphaSrcFactor && m_alphaDstBlend == alphaDstFactor) {
+    return;
+  }
   FlushBatch(true);
   GlideStateTracker::SetBlendState_Locked(rgbSrcFactor, rgbDstFactor, alphaSrcFactor,
                                    alphaDstFactor);
@@ -1670,6 +1827,7 @@ void OpenGLESBackend::SetBlendState(uint32_t rgbSrcFactor,
 
 void OpenGLESBackend::SetRenderBuffer(uint32_t target) {
   std::lock_guard<std::mutex> lock(m_mutex);
+  if (m_activeRenderBuffer == target) return;
   FlushBatch(true);
   GlideStateTracker::SetRenderBuffer_Locked(target);
   if (m_initialized && m_windowAttached && EnsureContextCurrent()) {
@@ -1679,18 +1837,21 @@ void OpenGLESBackend::SetRenderBuffer(uint32_t target) {
 
 void OpenGLESBackend::SetDepthRange(float nearVal, float farVal) {
   std::lock_guard<std::mutex> lock(m_mutex);
+  if (m_depthNear == nearVal && m_depthFar == farVal) return;
   FlushBatch(true);
   GlideStateTracker::SetDepthRange_Locked(nearVal, farVal);
 }
 
 void OpenGLESBackend::SetDitherMode(uint32_t mode) {
   std::lock_guard<std::mutex> lock(m_mutex);
+  if (m_ditherMode == mode) return;
   FlushBatch(true);
   GlideStateTracker::SetDitherMode_Locked(mode);
 }
 
 void OpenGLESBackend::SetStippleState(uint32_t mode, uint32_t pattern) {
   std::lock_guard<std::mutex> lock(m_mutex);
+  if (m_stippleMode == mode && m_stipplePattern == pattern) return;
   FlushBatch(true);
   GlideStateTracker::SetStippleState_Locked(mode, pattern);
 }
@@ -1704,6 +1865,7 @@ uint32_t OpenGLESBackend::GetActiveGpuFbo() const {
 
 void OpenGLESBackend::SetColorMask(bool rgb, bool alpha) {
   std::lock_guard<std::mutex> lock(m_mutex);
+  if (m_colorMaskRgb == rgb && m_colorMaskAlpha == alpha) return;
   FlushBatch(true);
   GlideStateTracker::SetColorMask_Locked(rgb, alpha);
 }
@@ -1760,24 +1922,31 @@ void OpenGLESBackend::LoadGammaTable_Locked(uint32_t nentries,
 void OpenGLESBackend::SetDepthState(uint32_t depthMode, uint32_t compareOp,
                                     bool depthMask, int32_t biasLevel) {
   std::lock_guard<std::mutex> lock(m_mutex);
+  if (m_depthMode == depthMode && m_depthCompareOp == compareOp &&
+      m_depthMask == depthMask && m_depthBiasLevel == biasLevel) {
+    return;
+  }
   FlushBatch(true);
   GlideStateTracker::SetDepthState_Locked(depthMode, compareOp, depthMask, biasLevel);
 }
 
 void OpenGLESBackend::SetCullState(uint32_t cullMode) {
   std::lock_guard<std::mutex> lock(m_mutex);
+  if (m_cullMode == cullMode) return;
   FlushBatch(true);
   GlideStateTracker::SetCullState_Locked(cullMode);
 }
 
 void OpenGLESBackend::SetAlphaTestState(uint32_t compareOp, uint32_t refVal) {
   std::lock_guard<std::mutex> lock(m_mutex);
+  if (m_alphaTestOp == compareOp && m_alphaTestRefVal == refVal) return;
   FlushBatch(true);
   GlideStateTracker::SetAlphaTestState_Locked(compareOp, refVal);
 }
 
 void OpenGLESBackend::SetSstOrigin(uint32_t origin) {
   std::lock_guard<std::mutex> lock(m_mutex);
+  if (m_sstOrigin == origin) return;
   FlushBatch(true);
   GlideStateTracker::SetSstOrigin_Locked(origin);
 }
@@ -1785,18 +1954,24 @@ void OpenGLESBackend::SetSstOrigin(uint32_t origin) {
 void OpenGLESBackend::SetClipWindow(uint32_t minX, uint32_t minY, uint32_t maxX,
                                     uint32_t maxY) {
   std::lock_guard<std::mutex> lock(m_mutex);
+  if (m_clipMinX == minX && m_clipMinY == minY && m_clipMaxX == maxX &&
+      m_clipMaxY == maxY) {
+    return;
+  }
   FlushBatch(true);
   GlideStateTracker::SetClipWindow_Locked(minX, minY, maxX, maxY);
 }
 
 void OpenGLESBackend::SetConstantColor(uint32_t color) {
   std::lock_guard<std::mutex> lock(m_mutex);
+  if (m_constantColor == color) return;
   FlushBatch(true);
   GlideStateTracker::SetConstantColor_Locked(color);
 }
 
 void OpenGLESBackend::SetPixelFormat(uint32_t format) {
   std::lock_guard<std::mutex> lock(m_mutex);
+  if (m_pixelFormatOverride == format) return;
   FlushBatch(true);
   GlideStateTracker::SetPixelFormat_Locked(format);
 }
@@ -1807,6 +1982,18 @@ void OpenGLESBackend::SetCombinerMode(uint32_t colorFunc, uint32_t colorFactor,
                                       uint32_t alphaFactor, uint32_t alphaLocal,
                                       uint32_t alphaOther, bool alphaInvert) {
   std::lock_guard<std::mutex> lock(m_mutex);
+  if (m_colorCombinerFunc == colorFunc &&
+      m_colorCombinerFactor == colorFactor &&
+      m_colorCombinerLocal == colorLocal &&
+      m_colorCombinerOther == colorOther &&
+      m_colorCombinerInvert == colorInvert &&
+      m_alphaCombinerFunc == alphaFunc &&
+      m_alphaCombinerFactor == alphaFactor &&
+      m_alphaCombinerLocal == alphaLocal &&
+      m_alphaCombinerOther == alphaOther &&
+      m_alphaCombinerInvert == alphaInvert) {
+    return;
+  }
   FlushBatch(true);
   GlideStateTracker::SetCombinerMode_Locked(colorFunc, colorFactor, colorLocal,
                                      colorOther, colorInvert, alphaFunc,
@@ -1819,6 +2006,15 @@ void OpenGLESBackend::SetTexCombinerMode(uint32_t tmu, uint32_t rgbFunc,
                                          uint32_t alphaFactor, bool rgbInvert,
                                          bool alphaInvert) {
   std::lock_guard<std::mutex> lock(m_mutex);
+  if (tmu >= 2) return;
+  if (m_texCombinerRgbFunc[tmu] == rgbFunc &&
+      m_texCombinerRgbFactor[tmu] == rgbFactor &&
+      m_texCombinerAlphaFunc[tmu] == alphaFunc &&
+      m_texCombinerAlphaFactor[tmu] == alphaFactor &&
+      m_texCombinerRgbInvert[tmu] == rgbInvert &&
+      m_texCombinerAlphaInvert[tmu] == alphaInvert) {
+    return;
+  }
   FlushBatch(true);
   GlideStateTracker::SetTexCombinerMode_Locked(tmu, rgbFunc, rgbFactor, alphaFunc,
                                         alphaFactor, rgbInvert, alphaInvert);
@@ -1826,18 +2022,21 @@ void OpenGLESBackend::SetTexCombinerMode(uint32_t tmu, uint32_t rgbFunc,
 
 void OpenGLESBackend::SetSTWHintState(uint32_t hintMask) {
   std::lock_guard<std::mutex> lock(m_mutex);
+  if (m_stwHintMask == hintMask) return;
   FlushBatch(true);
   GlideStateTracker::SetSTWHintState_Locked(hintMask);
 }
 
 void OpenGLESBackend::SetChromakeyMode(uint32_t mode) {
   std::lock_guard<std::mutex> lock(m_mutex);
+  if (m_chromakeyMode == mode) return;
   FlushBatch(true);
   GlideStateTracker::SetChromakeyMode_Locked(mode);
 }
 
 void OpenGLESBackend::SetChromakeyValue(uint32_t value) {
   std::lock_guard<std::mutex> lock(m_mutex);
+  if (m_chromakeyValue == value) return;
   FlushBatch(true);
   GlideStateTracker::SetChromakeyValue_Locked(value);
 }
@@ -1845,12 +2044,17 @@ void OpenGLESBackend::SetChromakeyValue(uint32_t value) {
 void OpenGLESBackend::SetChromakeyRange(uint32_t minColor, uint32_t maxColor,
                                         uint32_t mode) {
   std::lock_guard<std::mutex> lock(m_mutex);
+  if (m_chromakeyRangeMin == minColor && m_chromakeyRangeMax == maxColor &&
+      m_chromakeyRangeMode == mode) {
+    return;
+  }
   FlushBatch(true);
   GlideStateTracker::SetChromakeyRange_Locked(minColor, maxColor, mode);
 }
 
 void OpenGLESBackend::SetTexChromakeyMode(uint32_t tmu, uint32_t mode) {
   std::lock_guard<std::mutex> lock(m_mutex);
+  if (tmu >= 2 || m_texChromaMode[tmu] == mode) return;
   FlushBatch(true);
   GlideStateTracker::SetTexChromakeyMode_Locked(tmu, mode);
 }
@@ -1858,24 +2062,34 @@ void OpenGLESBackend::SetTexChromakeyMode(uint32_t tmu, uint32_t mode) {
 void OpenGLESBackend::SetTexChromakeyRange(uint32_t tmu, uint32_t minColor,
                                            uint32_t maxColor, uint32_t mode) {
   std::lock_guard<std::mutex> lock(m_mutex);
+  if (tmu >= 2) return;
+  if (m_texChromaMin[tmu] == minColor && m_texChromaMax[tmu] == maxColor &&
+      m_texChromaRangeMode[tmu] == mode) {
+    return;
+  }
   FlushBatch(true);
   GlideStateTracker::SetTexChromakeyRange_Locked(tmu, minColor, maxColor, mode);
 }
 
 void OpenGLESBackend::SetFogMode(uint32_t mode) {
   std::lock_guard<std::mutex> lock(m_mutex);
+  if (m_fogMode == mode) return;
   FlushBatch(true);
   GlideStateTracker::SetFogMode_Locked(mode);
 }
 
 void OpenGLESBackend::SetFogColor(uint32_t color) {
   std::lock_guard<std::mutex> lock(m_mutex);
+  if (m_fogColor == color) return;
   FlushBatch(true);
   GlideStateTracker::SetFogColor_Locked(color);
 }
 
 void OpenGLESBackend::SetFogTable(const uint8_t* table) {
   std::lock_guard<std::mutex> lock(m_mutex);
+  if (!table || std::memcmp(m_fogTable, table, sizeof(m_fogTable)) == 0) {
+    return;
+  }
   FlushBatch(true);
   GlideStateTracker::SetFogTable_Locked(table);
 }

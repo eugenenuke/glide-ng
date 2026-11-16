@@ -63,7 +63,9 @@ class CpuLfbStaging {
   void Release();
   void ResetPendingAndDirty();
 
-  bool IsAllocated() const { return !m_buffers[0].empty(); }
+  bool IsAllocated() const {
+    return !m_buffers[0].empty() || !m_overlayBuffers[0].empty();
+  }
   uint32_t GetWidth() const { return m_width; }
   uint32_t GetHeight() const { return m_height; }
 
@@ -76,14 +78,23 @@ class CpuLfbStaging {
 
   void SwapBuffers();
 
-  bool IsDirty() const { return m_dirty; }
-  bool IsBufferDirty(uint32_t logicalBuffer) const {
+  bool IsDirty() const { return m_dirty || m_overlayDirty[0] || m_overlayDirty[1]; }
+  bool IsFullBufferDirty(uint32_t logicalBuffer) const {
     return m_bufferDirty[logicalBuffer == 0 ? 0 : 1];
+  }
+  bool IsBufferDirty(uint32_t logicalBuffer) const {
+    const uint32_t idx = logicalBuffer == 0 ? 0 : 1;
+    return m_bufferDirty[idx] || m_overlayDirty[idx];
+  }
+  bool IsOverlayDirty(uint32_t logicalBuffer) const {
+    return m_overlayDirty[logicalBuffer == 0 ? 0 : 1];
   }
   void ClearDirtyFlags() {
     m_dirty = false;
     m_bufferDirty[0] = false;
     m_bufferDirty[1] = false;
+    ClearOverlay(0);
+    ClearOverlay(1);
   }
   void ClearBufferDirty(uint32_t logicalBuffer) {
     m_bufferDirty[logicalBuffer == 0 ? 0 : 1] = false;
@@ -91,6 +102,26 @@ class CpuLfbStaging {
       m_dirty = false;
     }
   }
+  void ClearOverlay(uint32_t logicalBuffer);
+
+  // Returns true if the given LFB pipeline configuration can be composited
+  // directly onto a GPU framebuffer via a standard (SRC_ALPHA, ONE_MINUS_SRC_ALPHA)
+  // overlay quad without reading back the GPU framebuffer.
+  static bool CanUseOverlayQuad(const LfbPipelineConfig& config);
+
+  // Write modified/non-chromakeyed pixels into a sparse ARGB overlay buffer
+  // (untouched pixels keep alpha=0) for zero-readback GPU compositing.
+  bool WriteOverlayLFB(uint32_t logicalBuffer, uint32_t dstX, uint32_t dstY,
+                       uint32_t srcWidth, uint32_t srcHeight, int32_t srcStride,
+                       uint32_t srcFmt, const void* srcData,
+                       const void* refData, const LfbPipelineConfig& config,
+                       uint32_t pixelFormatOverride);
+
+  // Returns pointer to the full ARGB overlay buffer (row 0 = top) and outputs
+  // the inclusive dirty row range [outMinY, outMaxY]. Returns nullptr if clean.
+  const uint32_t* GetOverlayForGpuUpload(uint32_t logicalBuffer,
+                                         uint32_t& outMinY,
+                                         uint32_t& outMaxY) const;
 
   uint8_t* PrepareBufferForGpuReadback(uint32_t logicalBuffer);
   const uint8_t* PrepareBufferForGpuUpload(uint32_t logicalBuffer);
@@ -134,15 +165,20 @@ class CpuLfbStaging {
     return (logicalBuffer == 0) ? m_frontIdx : m_backIdx;
   }
   bool EnsureAllocated();
+  bool EnsureOverlayAllocated();
   void MaterializeSlot(uint32_t slot);
 
   std::vector<uint8_t, AlignedAllocator<uint8_t, 64>> m_buffers[2];
+  std::vector<uint32_t, AlignedAllocator<uint32_t, 64>> m_overlayBuffers[2];
   uint32_t m_width{0};
   uint32_t m_height{0};
   uint32_t m_frontIdx{0};
   uint32_t m_backIdx{1};
   bool m_dirty{false};
   bool m_bufferDirty[2]{false, false};
+  bool m_overlayDirty[2]{false, false};
+  uint32_t m_overlayMinY[2]{0, 0};
+  uint32_t m_overlayMaxY[2]{0, 0};
   PendingColorClear m_pendingClear[2];
 };
 

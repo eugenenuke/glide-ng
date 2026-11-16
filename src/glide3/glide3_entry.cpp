@@ -250,6 +250,7 @@ FX_ENTRY void FX_CALL grBufferClear(GrColor_t color, GrAlpha_t alpha,
 FX_ENTRY void FX_CALL grBufferSwap(FxU32 swapInterval) {
   EnsureEngineInitialized();
   (void)swapInterval;
+  EntryCommon::FlushActiveLfbWriteLock(s_state);
   if (EntryCommon::ShouldRenderShamelessPlug(s_shamelessPlug)) {
     grShamelessPlug();
   }
@@ -311,6 +312,7 @@ FX_ENTRY void FX_CALL grDrawTriangle(const void* a, const void* b,
   TransformVertexIfNecessary(vb);
   TransformVertexIfNecessary(vc);
 
+  EntryCommon::SyncTexturesBeforeDraw();
   backend->DrawTriangle(va, vb, vc);
 }
 
@@ -406,6 +408,7 @@ FX_ENTRY void FX_CALL grDrawLine(const void* a, const void* b) {
   TransformVertexIfNecessary(va);
   TransformVertexIfNecessary(vb);
 
+  EntryCommon::SyncTexturesBeforeDraw();
   backend->DrawLine(va, vb);
 }
 
@@ -419,6 +422,7 @@ FX_ENTRY void FX_CALL grDrawPoint(const void* pt) {
 
   TransformVertexIfNecessary(mv);
 
+  EntryCommon::SyncTexturesBeforeDraw();
   backend->DrawPoint(mv);
 }
 
@@ -615,9 +619,13 @@ FX_ENTRY FxU32 FX_CALL grTexMinAddress(GrChipID_t tmu) {
 }
 
 FX_ENTRY FxU32 FX_CALL grTexMaxAddress(GrChipID_t tmu) {
+  EnsureEngineInitialized();
+  const auto& config = GlideWrapper::EmulationRegistry::GetInstance().GetConfig();
+  const uint32_t tmuBytes = std::max(2u, config.tmuMemoryMb) * 1024u * 1024u;
   GLIDE_LOG(DEBUG, "Frontend",
-            "grTexMaxAddress (Glide 3.x) invoked for TMU=" << tmu);
-  return 0x200000;
+            "grTexMaxAddress (Glide 3.x) invoked for TMU="
+                << tmu << " -> 0x" << std::hex << tmuBytes << std::dec);
+  return tmuBytes;
 }
 
 FX_ENTRY FxU32 FX_CALL grTexCalcMemRequired(GrLOD_t lodmin, GrLOD_t lodmax,
@@ -1124,13 +1132,15 @@ FX_ENTRY void FX_CALL grTexDownloadMipMap(GrChipID_t tmu, FxU32 startAddress,
       // Glide 2.x smallLod, largeLod, aspectRatio.
       GlideWrapper::TextureManager::GetInstance().DownloadMipMap(
           tmu, startAddress, info->largeLodLog2, info->smallLodLog2,
-          info->aspectRatioLog2, info->format, info->data);
+          info->aspectRatioLog2, info->format, info->data,
+          /*replaceExisting=*/true);
     } else {
       // Translate Glide 3.x signed log2 aspect ratio and LOD to Glide 2.x core
       // format
       GlideWrapper::TextureManager::GetInstance().DownloadMipMap(
           tmu, startAddress, 8 - info->largeLodLog2, 8 - info->smallLodLog2,
-          3 - info->aspectRatioLog2, info->format, info->data);
+          3 - info->aspectRatioLog2, info->format, info->data,
+          /*replaceExisting=*/true);
     }
   }
 }
@@ -1147,7 +1157,7 @@ grTexDownloadMipMapLevel(GrChipID_t tmu, FxU32 startAddress, GrLOD_t thisLod,
     // format
     GlideWrapper::TextureManager::GetInstance().DownloadMipMap(
         tmu, startAddress, 8 - thisLod, 8 - thisLod, 3 - aspectRatio, format,
-        data);
+        data, /*replaceExisting=*/false, /*baseLargeLod=*/8 - largeLod);
   }
 }
 

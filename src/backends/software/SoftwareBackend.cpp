@@ -1529,7 +1529,10 @@ void SoftwareBackend::FlushBins_Locked() {
 }
 
 void SoftwareBackend::ResolveActiveState() {
-  if (!m_stateCacheDirty) return;
+  const uint64_t texRev =
+      m_textureUploadRevision.load(std::memory_order_acquire);
+  if (!m_stateCacheDirty && texRev == m_resolvedTextureRevision) return;
+  m_resolvedTextureRevision = texRev;
 
   RasterizerState state;
   state.depthMode = m_depthMode;
@@ -1561,6 +1564,16 @@ void SoftwareBackend::ResolveActiveState() {
 
   state.boundTexAddress[0] = m_boundTexAddress[0];
   state.boundTexAddress[1] = m_boundTexAddress[1];
+  state.boundTex[0] =
+      (m_boundTexAddress[0] != 0xFFFFFFFFu)
+          ? TextureManager::GetInstance().GetTextureSnapshot(
+                0, m_boundTexAddress[0])
+          : nullptr;
+  state.boundTex[1] =
+      (m_boundTexAddress[1] != 0xFFFFFFFFu)
+          ? TextureManager::GetInstance().GetTextureSnapshot(
+                1, m_boundTexAddress[1])
+          : nullptr;
   state.texClampS[0] = m_texClampS[0];
   state.texClampS[1] = m_texClampS[1];
   state.texClampT[0] = m_texClampT[0];
@@ -1629,6 +1642,32 @@ void SoftwareBackend::ResolveActiveState() {
     m_activeStateId = m_stateCatalog.size() - 1;
   }
   m_stateCacheDirty = false;
+}
+
+void SoftwareBackend::UploadTexture(uint32_t tmu, uint32_t startAddress,
+                                    const struct VirtualTexture& tex) {
+  (void)tmu;
+  (void)startAddress;
+  (void)tex;
+  // Lock-free atomic bump avoids AB-BA lock inversion with TextureManager::m_mutex.
+  m_textureUploadRevision.fetch_add(1, std::memory_order_release);
+}
+
+void SoftwareBackend::UploadTexturePartial(uint32_t tmu, uint32_t startAddress,
+                                           const struct VirtualTexture& tex,
+                                           uint32_t lodLevel, uint32_t startRow,
+                                           uint32_t endRow) {
+  (void)tmu;
+  (void)startAddress;
+  (void)tex;
+  (void)lodLevel;
+  (void)startRow;
+  (void)endRow;
+  m_textureUploadRevision.fetch_add(1, std::memory_order_release);
+}
+
+void SoftwareBackend::PurgeTextures() {
+  m_textureUploadRevision.fetch_add(1, std::memory_order_release);
 }
 
 bool SoftwareBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,

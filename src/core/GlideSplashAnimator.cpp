@@ -225,6 +225,10 @@ void GlideSplashAnimator::DrawFaces(int frame, int objnum) {
     const Face* faces = face_arrays[objnum];
     const Vert* verts = vert_arrays[objnum];
 
+    if (m_pass != 2) {
+        grAlphaBlendFunction(GR_BLEND_SRC_ALPHA, GR_BLEND_ONE_MINUS_SRC_ALPHA, GR_BLEND_ONE, GR_BLEND_ZERO);
+    }
+
     for (facenum = 0; facenum < num_faces[objnum]; facenum++) {
         material_index = faces[facenum].mat_index;
         if (material_index != m_prev_mat_index) {
@@ -283,7 +287,6 @@ void GlideSplashAnimator::DrawFaces(int frame, int objnum) {
             continue;
         }
 
-        grAlphaBlendFunction(GR_BLEND_SRC_ALPHA, GR_BLEND_ONE_MINUS_SRC_ALPHA, GR_BLEND_ONE, GR_BLEND_ZERO);
         if (material_index == 0) {
             SourceTexture(&m_textImage);
             grAADrawTriangle(&gvert[0], &gvert[1], &gvert[2], aa_a, aa_b, aa_c);
@@ -594,75 +597,46 @@ void GlideSplashAnimator::xfAndProj(int frame, int obj) {
 }
 
 void GlideSplashAnimator::RenderBanner(uint32_t scrWidth, uint32_t scrHeight) {
-    GrState state;
-    GrLfbInfo_t info;
-
-    grGlideGetState(&state);
-    grDisableAllEffects();
-
-    grAlphaCombine(GR_COMBINE_FUNCTION_SCALE_OTHER,
-                   GR_COMBINE_FACTOR_ONE,
-                   GR_COMBINE_LOCAL_CONSTANT,
-                   GR_COMBINE_OTHER_TEXTURE, FXFALSE);
-    grColorCombine(GR_COMBINE_FUNCTION_SCALE_OTHER,
-                   GR_COMBINE_FACTOR_ONE,
-                   GR_COMBINE_LOCAL_NONE,
-                   GR_COMBINE_OTHER_TEXTURE,
-                   FXFALSE);
-    grAlphaBlendFunction(GR_BLEND_SRC_ALPHA,
-                         GR_BLEND_ONE_MINUS_SRC_ALPHA,
-                         GR_BLEND_ZERO, GR_BLEND_ZERO);
-
-    constexpr int banner_width = 180;
-    constexpr int banner_height = 90;
-    const auto* banner_data = reinterpret_cast<const unsigned short*>(GlideWrapper::Assets::banner_raw);
-
-    grClipWindow(0, 0,
-                 static_cast<FxI32>(scrWidth - 1),
-                 static_cast<FxI32>(scrHeight - 1));
-    grDepthMask(FXFALSE);
-    grDepthBufferFunction(GR_CMP_ALWAYS);
-    grDepthBufferMode(GR_DEPTHBUFFER_DISABLE);
-
-    grChromakeyValue(0x0000);
-    grChromakeyMode(GR_CHROMAKEY_ENABLE);
-    grLfbConstantAlpha(static_cast<FxU8>(90));
-    grLfbWriteColorFormat(GR_COLORFORMAT_ARGB);
-
-    /* Attempt to lock with linear frame buffer pixel pipeline enabled */
-    info.size = sizeof(info);
-    if (scrWidth >= static_cast<FxU32>(banner_width) &&
-        scrHeight >= static_cast<FxU32>(banner_height) &&
-        grLfbLock(GR_LFB_WRITE_ONLY, GR_BUFFER_BACKBUFFER,
-                  GR_LFBWRITEMODE_565, GR_ORIGIN_UPPER_LEFT,
-                  FXTRUE, &info)) {
-        /* Draw Banner in lower right of screen */
-        auto* dstData = static_cast<FxU32*>(info.lfbPtr);
-
-        // Calculate destination address with proper C++ pointer arithmetic
-        dstData = reinterpret_cast<FxU32*>(
-            reinterpret_cast<char*>(dstData) +
-            (info.strideInBytes * ((scrHeight - 1) - banner_height)) +
-            ((scrWidth - banner_width) << 1)
-        );
-
-        FxU32 dstJump = ((info.strideInBytes >> 1) - banner_width) >> 1;
-        const auto* srcData = reinterpret_cast<const FxU32*>(&banner_data[banner_width * (banner_height - 1)]);
-        FxU32 srcScanlineLength = banner_width >> 1;
-        FxI32 srcJump = -banner_width;
-
-        for (FxU32 scanline = 0; scanline < static_cast<FxU32>(banner_height); scanline++) {
-            const FxU32* end = srcData + srcScanlineLength;
-            while (srcData < end) {
-                *dstData++ = *srcData++;
-            }
-            dstData += dstJump;
-            srcData += srcJump;
-        }
-
-        grLfbUnlock(GR_LFB_WRITE_ONLY, GR_BUFFER_BACKBUFFER);
+    constexpr uint32_t kBannerWidth = 180;
+    constexpr uint32_t kBannerHeight = 90;
+    if (scrWidth < kBannerWidth || scrHeight < kBannerHeight) {
+        return;
     }
-    grGlideSetState(&state);
+
+    auto* backend = BackendManager::GetInstance().GetBackend();
+    if (!backend) {
+        return;
+    }
+
+    // Embedded banner_raw is stored bottom-up in RGB565; flip once into a
+    // top-down static buffer so we can write directly to the backend without
+    // calling grLfbLock/grLfbUnlock (which would clobber persistent guest LFB
+    // locks such as Carmageddon's) or churning Glide pipeline state every swap.
+    static uint16_t s_bannerTopDown[kBannerWidth * kBannerHeight];
+    static bool s_bannerInitialized = false;
+    if (!s_bannerInitialized) {
+        const auto* srcRaw = reinterpret_cast<const uint16_t*>(GlideWrapper::Assets::banner_raw);
+        for (uint32_t y = 0; y < kBannerHeight; ++y) {
+            const uint16_t* srcRow = srcRaw + (kBannerHeight - 1 - y) * kBannerWidth;
+            uint16_t* dstRow = s_bannerTopDown + y * kBannerWidth;
+            std::memcpy(dstRow, srcRow, kBannerWidth * sizeof(uint16_t));
+        }
+        s_bannerInitialized = true;
+    }
+
+    LfbPipelineConfig cfg;
+    cfg.pixelPipeline = true;
+    cfg.chromakeyEnabled = true;
+    cfg.chromakeyValue = 0x00000000u;  // Black transparent key (24-bit RGB)
+    cfg.constantAlpha = 90;
+    cfg.rgbSrcBlend = 1;  // GR_BLEND_SRC_ALPHA
+    cfg.rgbDstBlend = 5;  // GR_BLEND_ONE_MINUS_SRC_ALPHA
+
+    const uint32_t dstX = scrWidth - kBannerWidth;
+    const uint32_t dstY = (scrHeight > kBannerHeight) ? (scrHeight - 1 - kBannerHeight) : 0;
+    backend->WriteLFB(1 /* GR_BUFFER_BACKBUFFER */, dstX, dstY, kBannerWidth,
+                      kBannerHeight, static_cast<int32_t>(kBannerWidth * sizeof(uint16_t)),
+                      0 /* GR_LFB_SRC_FMT_565 */, s_bannerTopDown, nullptr, cfg);
 }
 
 } // namespace GlideWrapper
