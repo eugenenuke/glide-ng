@@ -3137,8 +3137,10 @@ TEST_CASE("Glide 3.x Phase 4 Retro Aesthetic & Advanced Features [Glide3][Phase4
         CHECK(gChan > 240);
         
         // 2. Depth mask test
-        depthMask(FXFALSE); // disable depth writes
+        // Authentic Glide grBufferClear obeys grDepthMask (SST_ZAWRMASK), so
+        // clear depth to 1.0f while depthMask is enabled, then disable writes.
         bufferClear(0x00000000, 0, 0xFFFF);
+        depthMask(FXFALSE); // disable depth writes
 
         // Draw green triangle at Z = 0.5f again
         drawTri(&v0, &v1, &v2);
@@ -4783,6 +4785,106 @@ TEST_CASE("M3 DXVK-Style On-Screen HUD Config, Rendering & Isolation [HUD][M3]",
     CHECK(logContent.find("hud <- GLIDE_NG_HUD") != std::string::npos);
 
     std::remove(logPath.c_str());
+  }
+#endif
+}
+
+TEST_CASE("M5 Pass 3 Glide3 TMU Budget and Vulkan Texture Pool Reuse",
+          "[Glide3][M5][Pass3]") {
+#ifdef __linux__
+  SECTION("Glide 3.x grTexMaxAddress honors configured tmuMemoryMb") {
+    void* handle = OpenGlide3Handle();
+    REQUIRE(handle != nullptr);
+
+    auto glideInit = (void(FX_CALL*)())::dlsym(handle, "grGlideInit");
+    auto glideShutdown = (void(FX_CALL*)())::dlsym(handle, "grGlideShutdown");
+    auto texMaxAddress =
+        (FxU32(FX_CALL*)(GrChipID_t))::dlsym(handle, "grTexMaxAddress");
+    auto grGetFn =
+        (FxU32(FX_CALL*)(FxU32, FxU32, FxI32*))::dlsym(handle, "grGet");
+    REQUIRE(glideInit != nullptr);
+    REQUIRE(glideShutdown != nullptr);
+    REQUIRE(texMaxAddress != nullptr);
+    REQUIRE(grGetFn != nullptr);
+
+    glideInit();
+    FxI32 tmuBytes = 0;
+    grGetFn(GR_MEMORY_TMU, sizeof(tmuBytes), &tmuBytes);
+    REQUIRE(tmuBytes >= 2 * 1024 * 1024);
+    CHECK(texMaxAddress(GR_TMU0) == static_cast<FxU32>(tmuBytes));
+    glideShutdown();
+    ::dlclose(handle);
+  }
+
+  SECTION("VulkanBackend pools and reuses retired same-dimension textures") {
+    GlideWrapper::WrapperConfig config;
+    config.backend = "vulkan";
+    config.forceNoWindow = true;
+    config.maxFps = 0.0;
+
+    GlideWrapper::VulkanBackend backend;
+    if (backend.Initialize(config) &&
+        backend.AttachWindow(nullptr, 64, 64, true)) {
+      auto makeTex = [](uint32_t argb, uint64_t rawHash) {
+        GlideWrapper::VirtualTexture vt;
+        vt.baseWidth = 32;
+        vt.baseHeight = 32;
+        vt.format = 0x5;
+        vt.rawDataHash = rawHash;
+        vt.swizzledTableHash = 1;
+        vt.swizzledWithTable = true;
+        vt.swizzledMipLevels.emplace_back(32 * 32, argb);
+        return vt;
+      };
+
+      // Frame 0: upload red texture at addr=0, then overwrite with green so the
+      // red VkImage is retired into slot 0's retirement queue.
+      backend.UploadTexture(0, 0, makeTex(0xFFFF0000u, 0x1111u));
+      backend.UploadTexture(0, 0, makeTex(0xFF00FF00u, 0x2222u));
+      REQUIRE(backend.SwapBuffers());
+      // Frame 1: swap again so slot 0's fence completes and reclaims the
+      // retired 32x32x1 texture into m_texturePool.
+      REQUIRE(backend.SwapBuffers());
+
+      // Frame 2: upload a blue 32x32x1 texture at addr=0 -> must reuse the
+      // pooled VkImage/DeviceMemory/ImageView!
+      const uint64_t reusesBefore = backend.GetTexturePoolReuseCount();
+      backend.UploadTexture(0, 0, makeTex(0xFF0000FFu, 0x3333u));
+      CHECK(backend.GetTexturePoolReuseCount() == reusesBefore + 1);
+
+      // Draw a full-screen textured quad to prove the reused VkImage renders
+      // the new blue pixels cleanly (not stale red/green).
+      backend.ClearBuffer(0x00000000u, 0xFF, 1.0f, 0x3);
+      backend.SetCombinerMode(3, 8, 1, 1, false, 1, 0, 1, 2, false);
+      backend.SetTexCombinerMode(0, 1, 0, 1, 0, false, false);
+      backend.BindTexture(0, 0, 1, 1, 0, 0);
+      GlideWrapper::ModernVertex v0{}, v1{}, v2{}, v3{};
+      auto setV = [](GlideWrapper::ModernVertex& v, float x, float y, float s,
+                     float t) {
+        v.pos[0] = x;
+        v.pos[1] = y;
+        v.pos[2] = 0.5f;
+        v.pos[3] = 1.0f;
+        v.color[0] = v.color[1] = v.color[2] = v.color[3] = 1.0f;
+        v.tex[0] = s;
+        v.tex[1] = t;
+        v.tmu_oow[0] = 1.0f;
+      };
+      setV(v0, 0.0f, 0.0f, 0.0f, 0.0f);
+      setV(v1, 64.0f, 0.0f, 255.0f, 0.0f);
+      setV(v2, 64.0f, 64.0f, 255.0f, 255.0f);
+      setV(v3, 0.0f, 64.0f, 0.0f, 255.0f);
+      backend.DrawTriangle(v0, v1, v2);
+      backend.DrawTriangle(v0, v2, v3);
+      REQUIRE(backend.SwapBuffers());
+
+      uint16_t px565 = 0;
+      REQUIRE(backend.ReadLFB(0, 32, 32, 1, 1, 2, &px565));
+      CHECK(px565 == 0x001Fu);  // Pure Blue in RGB565!
+
+      backend.DetachWindow();
+      backend.Shutdown();
+    }
   }
 #endif
 }

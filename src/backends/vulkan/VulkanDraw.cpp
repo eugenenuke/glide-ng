@@ -70,7 +70,7 @@ void VulkanBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z,
     }
   }
 
-  if (clearMask & 2) {  // Depth clear
+  if ((clearMask & 2) && m_depthMask) {  // Depth clear (obeys grDepthMask)
     m_clearDepthValue[activeIdx] = z;
     m_clearDepthPending[activeIdx] = true;
   }

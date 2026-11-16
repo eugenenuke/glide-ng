@@ -327,16 +327,21 @@ void main() {
         }
     }
 
-    // W-based coordinate near-plane and camera-space clipping
-    if (uDepthBufferMode == 2) {
-        if (fragOOW > 1.0) discard;
-    } else if (uTextureEnabled[0] == 1 || uTextureEnabled[1] == 1) {
-        if (fragOOW <= 0.0) discard;
-    }
-
     // Unpack texture active flags
     bool tmu0Active = uTextureEnabled[0] == 1;
     bool tmu1Active = uTextureEnabled[1] == 1;
+    float divW0 = (uUseTmuOow[0] == 1) ? fragTmuOow.x : fragOOW;
+    float divW1 = (uUseTmuOow[1] == 1) ? fragTmuOow.y : fragOOW;
+
+    // W-based coordinate near-plane and camera-space clipping
+    // (respect per-TMU oow when GR_STWHINT_W_DIFF_TMU* is active)
+    if (uDepthBufferMode == 2) {
+        if (fragOOW > 1.0) discard;
+    } else {
+        if ((tmu0Active && divW0 <= 0.0) || (tmu1Active && divW1 <= 0.0)) {
+            discard;
+        }
+    }
 
     // 1. Sample TMU 1 (upstream)
     vec4 tmu1Color = vec4(1.0);
@@ -344,7 +349,6 @@ void main() {
         ivec2 texSize = textureSize(uTexture1, 0);
         float tw = float(texSize.x);
         float th = float(texSize.y);
-        float divW1 = (uUseTmuOow[1] == 1) ? fragTmuOow.y : fragOOW;
         vec2 uv1 = (fragTexCoord.zw / divW1) / 256.0;
         tmu1Color = sampleTextureGLES(uTexture1, uv1, 1, tw, th);
     }
@@ -362,7 +366,6 @@ void main() {
         ivec2 texSize = textureSize(uTexture0, 0);
         float tw = float(texSize.x);
         float th = float(texSize.y);
-        float divW0 = (uUseTmuOow[0] == 1) ? fragTmuOow.x : fragOOW;
         vec2 uv0 = (fragTexCoord.xy / divW0) / 256.0;
         tmu0Color = sampleTextureGLES(uTexture0, uv0, 0, tw, th);
     }
@@ -488,7 +491,7 @@ void main() {
             if (fogSource == 1) { // UNIFIED_FOG_WITH_TABLE_ON_FOGCOORD
                 eyeW = fragFogCoord;
             } else { // UNIFIED_FOG_WITH_TABLE_ON_W
-                eyeW = 1.0 / fragOOW;
+                eyeW = 1.0 / max(fragOOW, 1e-6);
             }
             if (eyeW < 1.0) eyeW = 1.0;
 

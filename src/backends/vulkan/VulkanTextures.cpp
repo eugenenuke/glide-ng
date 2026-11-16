@@ -15,19 +15,36 @@ static uint64_t CalculateTextureHash(const struct VirtualTexture& tex) {
   const uint64_t prime = 1099511628211ULL;
 
   // Hash dimensions and mipmap count to protect against collisions
-  auto hash_integer = [&](uint32_t val) {
+  auto hash_u32 = [&](uint32_t val) {
     for (int i = 0; i < 4; ++i) {
       hash ^= (val & 0xFF);
       hash *= prime;
       val >>= 8;
     }
   };
+  auto hash_u64 = [&](uint64_t val) {
+    for (int i = 0; i < 8; ++i) {
+      hash ^= (val & 0xFF);
+      hash *= prime;
+      val >>= 8;
+    }
+  };
 
-  hash_integer(tex.baseWidth);
-  hash_integer(tex.baseHeight);
-  hash_integer(static_cast<uint32_t>(tex.swizzledMipLevels.size()));
+  hash_u32(tex.baseWidth);
+  hash_u32(tex.baseHeight);
+  hash_u32(static_cast<uint32_t>(tex.swizzledMipLevels.size()));
 
-  // Hash raw swizzled mipmap pixel data
+  // Fast O(1) path when TextureManager already hashed the full raw mipmap chain
+  // (rawDataHash == 0 after partial sub-updates or direct unit-test setup).
+  if (tex.rawDataHash != 0) {
+    hash_u32(tex.format);
+    hash_u32(tex.swizzledWithTable ? 1u : 0u);
+    hash_u64(tex.rawDataHash);
+    hash_u64(tex.swizzledTableHash);
+    return hash;
+  }
+
+  // Fallback: hash raw swizzled mipmap pixel data
   for (const auto& level : tex.swizzledMipLevels) {
     const uint8_t* byteData = reinterpret_cast<const uint8_t*>(level.data());
     size_t byteLength = level.size() * sizeof(uint32_t);
@@ -67,7 +84,14 @@ void VulkanBackend::RetireTextureAtAddress_Locked(uint32_t tmu,
 
 void VulkanBackend::ReclaimRetiredResources_Locked(uint32_t slot) {
   if (slot >= 2) return;
+  // Release retired descriptor sets first so no set references reclaimed views.
   m_retiredDescriptorSets[slot].clear();
+  for (auto& tex : m_retiredTextures[slot]) {
+    if (m_texturePool.size() < kMaxPooledTextures && tex.image && tex.memory &&
+        tex.imageView && tex.width > 0 && tex.height > 0 && tex.mipLevels > 0) {
+      m_texturePool.push_back(std::move(tex));
+    }
+  }
   m_retiredTextures[slot].clear();
   m_lfbOverlayStagingOffsets[slot] = 0;
 }
@@ -156,23 +180,53 @@ void VulkanBackend::UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
   uint32_t currentOffset = m_texStagingOffsets[m_currentFrameSlot];
 
   try {
-    // 1. Create vk::Image
-    vk::ImageCreateInfo imageInfo(
-        {}, vk::ImageType::e2D, vk::Format::eB8G8R8A8Unorm,
-        vk::Extent3D(tex.baseWidth, tex.baseHeight, 1),
-        static_cast<uint32_t>(tex.swizzledMipLevels.size()), 1,
-        vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal,
-        vk::ImageUsageFlagBits::eSampled |
-            vk::ImageUsageFlagBits::eTransferDst);
-    auto image = m_device->createImageUnique(imageInfo);
+    const uint32_t mipCount =
+        static_cast<uint32_t>(tex.swizzledMipLevels.size());
+    VulkanTexture vulkanTex;
+    bool reusedFromPool = false;
 
-    // 2. Allocate and bind memory
-    auto memReqs = m_device->getImageMemoryRequirements(image.get());
-    uint32_t typeIndex = FindMemoryType(
-        memReqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal);
-    vk::MemoryAllocateInfo allocInfo(memReqs.size, typeIndex);
-    auto memory = m_device->allocateMemoryUnique(allocInfo);
-    m_device->bindImageMemory(image.get(), memory.get(), 0);
+    // 1. Try to reuse a fence-reclaimed VkImage/DeviceMemory/ImageView of the
+    //    exact same dimensions & mip count before allocating new GPU memory.
+    for (auto pit = m_texturePool.begin(); pit != m_texturePool.end(); ++pit) {
+      if (pit->width == tex.baseWidth && pit->height == tex.baseHeight &&
+          pit->mipLevels == mipCount) {
+        vulkanTex = std::move(*pit);
+        m_texturePool.erase(pit);
+        reusedFromPool = true;
+        ++m_texturePoolReuses;
+        break;
+      }
+    }
+
+    if (!reusedFromPool) {
+      // Create vk::Image
+      vk::ImageCreateInfo imageInfo(
+          {}, vk::ImageType::e2D, vk::Format::eB8G8R8A8Unorm,
+          vk::Extent3D(tex.baseWidth, tex.baseHeight, 1), mipCount, 1,
+          vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal,
+          vk::ImageUsageFlagBits::eSampled |
+              vk::ImageUsageFlagBits::eTransferDst);
+      vulkanTex.image = m_device->createImageUnique(imageInfo);
+
+      // Allocate and bind memory
+      auto memReqs = m_device->getImageMemoryRequirements(vulkanTex.image.get());
+      uint32_t typeIndex = FindMemoryType(
+          memReqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal);
+      vk::MemoryAllocateInfo allocInfo(memReqs.size, typeIndex);
+      vulkanTex.memory = m_device->allocateMemoryUnique(allocInfo);
+      m_device->bindImageMemory(vulkanTex.image.get(), vulkanTex.memory.get(),
+                                0);
+
+      // Create Image View
+      vk::ImageViewCreateInfo viewInfo(
+          {}, vulkanTex.image.get(), vk::ImageViewType::e2D,
+          vk::Format::eB8G8R8A8Unorm, {},
+          {vk::ImageAspectFlagBits::eColor, 0, mipCount, 0, 1});
+      vulkanTex.imageView = m_device->createImageViewUnique(viewInfo);
+      vulkanTex.width = tex.baseWidth;
+      vulkanTex.height = tex.baseHeight;
+      vulkanTex.mipLevels = mipCount;
+    }
 
     // 3. Copy all mipmap levels data into our persistent staging memory map
     uint8_t* mappedData =
@@ -216,19 +270,21 @@ void VulkanBackend::UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
       m_inRenderPass = false;
     }
 
-    // Transition entire image to TransferDstOptimal
-    vk::ImageSubresourceRange entireImageRange(
-        vk::ImageAspectFlagBits::eColor, 0,
-        static_cast<uint32_t>(tex.swizzledMipLevels.size()), 0, 1);
-    TransitionImageLayout(
-        *m_commandBuffer, image.get(), vk::ImageLayout::eUndefined,
-        vk::ImageLayout::eTransferDstOptimal, entireImageRange);
+    // Transition entire image to TransferDstOptimal (eUndefined discards any
+    // previous contents for pooled images, which we fully overwrite below)
+    vk::ImageSubresourceRange entireImageRange(vk::ImageAspectFlagBits::eColor,
+                                               0, mipCount, 0, 1);
+    TransitionImageLayout(*m_commandBuffer, vulkanTex.image.get(),
+                          vk::ImageLayout::eUndefined,
+                          vk::ImageLayout::eTransferDstOptimal,
+                          entireImageRange);
 
     // Copy each mipmap level from staging buffer to image
     std::vector<vk::BufferImageCopy> copyRegions;
+    copyRegions.reserve(mipCount);
     uint32_t width = tex.baseWidth;
     uint32_t height = tex.baseHeight;
-    for (uint32_t i = 0; i < tex.swizzledMipLevels.size(); ++i) {
+    for (uint32_t i = 0; i < mipCount; ++i) {
       vk::BufferImageCopy region;
       region.bufferOffset = levelOffsets[i];
       region.bufferRowLength = 0;
@@ -244,27 +300,17 @@ void VulkanBackend::UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
     }
 
     m_commandBuffer->copyBufferToImage(
-        m_texStagingBuffer.get(), image.get(),
+        m_texStagingBuffer.get(), vulkanTex.image.get(),
         vk::ImageLayout::eTransferDstOptimal,
         static_cast<uint32_t>(copyRegions.size()), copyRegions.data());
 
     // Transition entire image to ShaderReadOnlyOptimal
-    TransitionImageLayout(
-        *m_commandBuffer, image.get(), vk::ImageLayout::eTransferDstOptimal,
-        vk::ImageLayout::eShaderReadOnlyOptimal, entireImageRange);
+    TransitionImageLayout(*m_commandBuffer, vulkanTex.image.get(),
+                          vk::ImageLayout::eTransferDstOptimal,
+                          vk::ImageLayout::eShaderReadOnlyOptimal,
+                          entireImageRange);
 
-    // 6. Create Image View
-    vk::ImageViewCreateInfo viewInfo(
-        {}, image.get(), vk::ImageViewType::e2D, vk::Format::eB8G8R8A8Unorm, {},
-        {vk::ImageAspectFlagBits::eColor, 0,
-         static_cast<uint32_t>(tex.swizzledMipLevels.size()), 0, 1});
-    auto imageView = m_device->createImageViewUnique(viewInfo);
-
-    // 7. Save in texture cache map
-    VulkanTexture vulkanTex;
-    vulkanTex.image = std::move(image);
-    vulkanTex.memory = std::move(memory);
-    vulkanTex.imageView = std::move(imageView);
+    // 6. Save in texture cache map
     vulkanTex.clampS = m_texClampS[tmu];
     vulkanTex.clampT = m_texClampT[tmu];
     vulkanTex.minFilter = m_texMinFilter[tmu];
@@ -277,7 +323,8 @@ void VulkanBackend::UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
     GLIDE_LOG(DEBUG, "Vulkan",
               "UploadTexture: Completed successfully for address 0x"
                   << std::hex << startAddress << std::dec
-                  << " (No GPU block!)");
+                  << (reusedFromPool ? " (reused pooled VkImage)"
+                                     : " (allocated new VkImage)"));
   } catch (const std::exception& e) {
     GLIDE_LOG(CRITICAL, "Vulkan",
               "UploadTexture failed for Address=0x"
@@ -475,6 +522,7 @@ void VulkanBackend::PurgeTextures() {
     }
     m_vulkanTextures[t].clear();
   }
+  m_texturePool.clear();
   m_descriptorStateDirty = true;
   m_cachedDescSet = vk::DescriptorSet{};
 

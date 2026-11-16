@@ -81,6 +81,9 @@ struct VulkanTexture {
   vk::UniqueImage image;
   vk::UniqueDeviceMemory memory;
   vk::UniqueImageView imageView;
+  uint32_t width{0};
+  uint32_t height{0};
+  uint32_t mipLevels{0};
   uint32_t clampS{0};
   uint32_t clampT{0};
   uint32_t minFilter{0};
@@ -227,6 +230,7 @@ class VulkanBackend : public GlideStateTracker {
   void DetachWindow() override;
   uint32_t GetMsaaSamples() const override { return m_msaaSamples; }
   bool HasAllocatedCpuLfbStaging() const { return m_lfbStaging.IsAllocated(); }
+  uint64_t GetTexturePoolReuseCount() const { return m_texturePoolReuses; }
 
   // Selects an optimal Vulkan swapchain present mode.
   // On Wayland, prefers Mailbox even when VSync is enabled because Wayland
@@ -489,6 +493,12 @@ class VulkanBackend : public GlideStateTracker {
   void ReclaimRetiredResources_Locked(uint32_t slot);
   std::vector<VulkanTexture> m_retiredTextures[2];
   std::vector<vk::UniqueDescriptorSet> m_retiredDescriptorSets[2];
+
+  // Bounded free-list of fence-reclaimed textures for zero-allocation reuse on
+  // same-dimension uploads during TMU cache churn.
+  static constexpr size_t kMaxPooledTextures = 64;
+  std::vector<VulkanTexture> m_texturePool;
+  uint64_t m_texturePoolReuses{0};
 
   // Persistent Texture Staging Buffer (Asynchronous Uploads)
   vk::UniqueBuffer m_texStagingBuffer;

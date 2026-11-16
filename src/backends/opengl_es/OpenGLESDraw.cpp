@@ -41,7 +41,7 @@ void OpenGLESBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z,
   GLbitfield mask = 0;
   GLboolean oldDepthMask = m_depthMask ? GL_TRUE : GL_FALSE;
 
-  if (clearMask & 0x1) {  // Color Clear
+  if ((clearMask & 0x1) && (m_colorMaskRgb || m_colorMaskAlpha)) {  // Color Clear
     float a = ((alpha > 0) ? alpha : 255) / 255.0f;
     float r = ((color >> 16) & 0xFF) / 255.0f;
     float g = ((color >> 8) & 0xFF) / 255.0f;
@@ -56,9 +56,8 @@ void OpenGLESBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z,
     mask |= GL_COLOR_BUFFER_BIT;
   }
 
-  if (clearMask & 0x2) {  // Depth Clear
-    glDepthMask(GL_TRUE);  // Force depth write enabled so glClear actually
-                           // clears the depth buffer!
+  if ((clearMask & 0x2) && m_depthMask) {  // Depth Clear (obeys grDepthMask)
+    glDepthMask(GL_TRUE);
     glClearDepthf(z);
     mask |= GL_DEPTH_BUFFER_BIT;
   }

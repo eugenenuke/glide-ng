@@ -1083,7 +1083,11 @@ bool TextureManager::DownloadTable(uint32_t tmu, uint32_t type,
     uint32_t newPalette[256];
     const auto* paletteData = reinterpret_cast<const uint32_t*>(data);
     if (type == 2) {
-      std::memcpy(newPalette, paletteData, sizeof(newPalette));
+      // GR_TEXTABLE_PALETTE entries are 24-bit 0x00RRGGBB; top byte is unused
+      // by hardware and P_8 texels have implicit opaque alpha (0xFF).
+      for (int i = 0; i < 256; ++i) {
+        newPalette[i] = paletteData[i] | 0xFF000000u;
+      }
     } else {
       for (int i = 0; i < 256; ++i) {
         uint32_t val = paletteData[i];

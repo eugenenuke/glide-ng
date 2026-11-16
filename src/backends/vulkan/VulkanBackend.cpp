@@ -295,6 +295,7 @@ void VulkanBackend::Shutdown() {
   // Reset descriptor layout, pool, and textures
   m_vulkanTextures[0].clear();
   m_vulkanTextures[1].clear();
+  m_texturePool.clear();
   m_dummyTexture.imageView.reset();
   m_dummySampler.reset();
   m_dummyTexture.memory.reset();

@@ -5161,7 +5161,7 @@ TEST_CASE(
 
     for (int y = 0; y < 10; y++) {
       for (int x = 0; x < 10; x++) {
-        GrVertex vtxA, vtxB, vtxC, vtxD;
+        GrVertex vtxA{}, vtxB{}, vtxC{}, vtxD{};
         vtxA.oow = vtxB.oow = vtxC.oow = vtxD.oow = 1.0f;
 
         vtxA.x = vtxB.x = tlScaleX(((float)x) / 10.0f);
@@ -5267,6 +5267,8 @@ TEST_CASE(
       int b_exp = (expected >> 16) & 0xFF;
       int g_exp = (expected >> 8) & 0xFF;
       int r_exp = expected & 0xFF;
+      INFO("actual=0x" << std::hex << actual << " expected=0x" << expected
+                       << std::dec);
       REQUIRE(std::abs(b_act - b_exp) <= 15);
       REQUIRE(std::abs(g_act - g_exp) <= 15);
       REQUIRE(std::abs(r_act - r_exp) <= 15);
@@ -5278,7 +5280,7 @@ TEST_CASE(
                 GR_TEXTUREFILTER_POINT_SAMPLED);
       bufferClear(0, 0, GR_ZDEPTHVALUE_FARTHEST);
 
-      GrVertex vtxA, vtxB, vtxC, vtxD;
+      GrVertex vtxA{}, vtxB{}, vtxC{}, vtxD{};
       vtxA.oow = 1.0f;
       vtxB = vtxC = vtxD = vtxA;
 
@@ -5307,7 +5309,7 @@ TEST_CASE(
       texFilter(GR_TMU0, GR_TEXTUREFILTER_BILINEAR, GR_TEXTUREFILTER_BILINEAR);
       bufferClear(0, 0, GR_ZDEPTHVALUE_FARTHEST);
 
-      GrVertex vtxA, vtxB, vtxC, vtxD;
+      GrVertex vtxA{}, vtxB{}, vtxC{}, vtxD{};
       vtxA.oow = 1.0f;
       vtxB = vtxC = vtxD = vtxA;
 
@@ -5337,7 +5339,7 @@ TEST_CASE(
                 GR_TEXTUREFILTER_POINT_SAMPLED);
       bufferClear(0, 0, GR_ZDEPTHVALUE_FARTHEST);
 
-      GrVertex vtxA, vtxB, vtxC, vtxD;
+      GrVertex vtxA{}, vtxB{}, vtxC{}, vtxD{};
       vtxA.oow = 1.0f;
       vtxB = vtxC = vtxD = vtxA;
 
@@ -5367,7 +5369,7 @@ TEST_CASE(
       texFilter(GR_TMU0, GR_TEXTUREFILTER_BILINEAR, GR_TEXTUREFILTER_BILINEAR);
       bufferClear(0, 0, GR_ZDEPTHVALUE_FARTHEST);
 
-      GrVertex vtxA, vtxB, vtxC, vtxD;
+      GrVertex vtxA{}, vtxB{}, vtxC{}, vtxD{};
       vtxA.oow = 1.0f;
       vtxB = vtxC = vtxD = vtxA;
 
@@ -5469,6 +5471,8 @@ TEST_CASE(
       int b_exp = (expected >> 16) & 0xFF;
       int g_exp = (expected >> 8) & 0xFF;
       int r_exp = expected & 0xFF;
+      INFO("actual=0x" << std::hex << actual << " expected=0x" << expected
+                       << std::dec);
       REQUIRE(std::abs(b_act - b_exp) <= 15);
       REQUIRE(std::abs(g_act - g_exp) <= 15);
       REQUIRE(std::abs(r_act - r_exp) <= 15);
@@ -5483,7 +5487,7 @@ TEST_CASE(
       colorCombine(GR_COMBINE_FUNCTION_SCALE_OTHER, GR_COMBINE_FACTOR_ONE,
                    GR_COMBINE_LOCAL_NONE, GR_COMBINE_OTHER_TEXTURE, FXFALSE);
 
-      GrVertex vtxA, vtxB, vtxC, vtxD;
+      GrVertex vtxA{}, vtxB{}, vtxC{}, vtxD{};
       TlVertex3D xfVerts[4];
       TlVertex3D prjVerts[4];
 
@@ -5583,8 +5587,11 @@ TEST_CASE(
     assertColorClose(fb[50 * 640 + 50], 0xFF414041);
 
     // Mode 2: DETAIL
+    // At distance=1.01f with detail_bias=2, detail_scale=7, detail_max=1.0,
+    // detail_factor clamps to 1.0 (100% baseTexture, 0% detailTexture) and
+    // GR_TEXFMT_P_8 (lava.3df) has opaque 0xFF alpha on authentic hardware.
     renderCompositingFrame(2);
-    assertColorClose(fb[300 * 640 + 320], 0xFFFF34E6);
+    assertColorClose(fb[300 * 640 + 320], 0xFFFF0000);
     assertColorClose(fb[50 * 640 + 50], 0xFF414041);
   }
 
@@ -5618,6 +5625,8 @@ TEST_CASE(
       int b_exp = (expected >> 16) & 0xFF;
       int g_exp = (expected >> 8) & 0xFF;
       int r_exp = expected & 0xFF;
+      INFO("actual=0x" << std::hex << actual << " expected=0x" << expected
+                       << std::dec);
       REQUIRE(std::abs(b_act - b_exp) <= 15);
       REQUIRE(std::abs(g_act - g_exp) <= 15);
       REQUIRE(std::abs(r_act - r_exp) <= 15);
@@ -5667,7 +5676,7 @@ TEST_CASE(
       alphaBlendFunction(GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_ZERO,
                          GR_BLEND_ZERO);
 
-      GrVertex v[4];
+      GrVertex v[4]{};
       float distance = 1.2f;  // Frame 0 distance
       float angle = -20.0f * 3.14159265f / 180.0f;
       float cos_t = std::cos(angle);
@@ -5763,7 +5772,7 @@ TEST_CASE(
 #define BLACK_COLOR 0x00000000
       bufferClear(BLACK_COLOR, 0, GR_ZDEPTHVALUE_FARTHEST);
 
-      GrVertex vtxA, vtxB, vtxC, vtxD;
+      GrVertex vtxA{}, vtxB{}, vtxC{}, vtxD{};
       vtxA.oow = vtxB.oow = vtxC.oow = vtxD.oow = 1.0f;
       for (int y = 0; y < 10; y++) {
         for (int x = 0; x < 10; x++) {
@@ -7807,6 +7816,265 @@ TEST_CASE(
     REQUIRE(((pxNear2 >> 16) & 0xFFu) <= 5);
     REQUIRE(((pxNear2 >> 8) & 0xFFu) <= 5);
     REQUIRE((pxNear2 & 0xFFu) <= 5);
+  }
+
+  grSstWinClose();
+  grGlideShutdown();
+#endif
+}
+
+TEST_CASE("M5 Carmageddon Pass 3 Regression Fixes", "[M5][Carmageddon][Pass3]") {
+#ifdef __linux__
+  setenv("GLIDE_NG_FORCE_NO_WINDOW", "1", 1);
+  setenv("GLIDE_NG_SPLASH", "0", 1);
+  setenv("GLIDE_NG_SHAMELESS_PLUG", "0", 1);
+
+  grGlideInit();
+  grSstSelect(0);
+  REQUIRE(grSstWinOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                       GR_COLORFORMAT_ARGB, GR_ORIGIN_UPPER_LEFT, 2,
+                       1) == FXTRUE);
+
+  grDepthBufferMode(GR_DEPTHBUFFER_DISABLE);
+  grCullMode(GR_CULL_DISABLE);
+  grAlphaBlendFunction(GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_ONE, GR_BLEND_ZERO);
+  grAlphaTestFunction(GR_CMP_ALWAYS);
+  grChromakeyMode(GR_CHROMAKEY_DISABLE);
+  grFogMode(GR_FOG_DISABLE);
+  grColorMask(FXTRUE, FXTRUE);
+  grDepthMask(FXTRUE);
+
+  auto drawColoredQuad = [](float x0, float y0, float x1, float y1, float r,
+                            float g, float b, float oow, float tmu0Oow,
+                            float ooz = 0.5f) {
+    GrVertex v0{}, v1{}, v2{}, v3{};
+    auto initV = [&](GrVertex& v, float x, float y, float s, float t) {
+      v.x = x;
+      v.y = y;
+      v.z = ooz;
+      v.ooz = ooz;
+      v.r = r;
+      v.g = g;
+      v.b = b;
+      v.a = 255.0f;
+      v.oow = oow;
+      v.tmuvtx[0].sow = s;
+      v.tmuvtx[0].tow = t;
+      v.tmuvtx[0].oow = tmu0Oow;
+    };
+    initV(v0, x0, y0, 0.0f, 0.0f);
+    initV(v1, x1, y0, 255.0f, 0.0f);
+    initV(v2, x1, y1, 255.0f, 255.0f);
+    initV(v3, x0, y1, 0.0f, 255.0f);
+    grDrawTriangle(&v0, &v1, &v2);
+    grDrawTriangle(&v0, &v2, &v3);
+  };
+
+  SECTION(
+      "ITRGB_DELTA0 and TEXTURE_TIMES_ITRGB_DELTA0 use constant color, not "
+      "iterated RGB") {
+    grBufferClear(0x00000000u, 0xFF, GR_WDEPTHVALUE_FARTHEST);
+    grConstantColorValue(0xFF0080FFu);  // R=0, G=128, B=255
+    guColorCombineFunction(GR_COLORCOMBINE_ITRGB_DELTA0);
+    // Deliberately pass bright magenta vertex RGB (255, 0, 255) — must be
+    // ignored in favor of constantColor (0, 128, 255).
+    drawColoredQuad(40.0f, 40.0f, 160.0f, 160.0f, 255.0f, 0.0f, 255.0f, 1.0f,
+                    1.0f);
+
+    // Also verify GR_COLORCOMBINE_TEXTURE_TIMES_ITRGB_DELTA0 with a white
+    // texture multiplied by constantColor (0, 255, 0), ignoring magenta vertex
+    // RGB.
+    const FxU32 addr = grTexMinAddress(GR_TMU0);
+    GuTexPalette pal{};
+    pal.data[1] = 0x00FFFFFFu;  // White (no top-byte alpha!)
+    grTexDownloadTable(GR_TMU0, GR_TEXTABLE_PALETTE, &pal);
+    std::vector<uint8_t> white16(16 * 16, 1);
+    GrTexInfo ti{};
+    ti.smallLod = GR_LOD_16;
+    ti.largeLod = GR_LOD_16;
+    ti.aspectRatio = GR_ASPECT_1x1;
+    ti.format = GR_TEXFMT_P_8;
+    ti.data = white16.data();
+    grTexDownloadMipMap(GR_TMU0, addr, GR_MIPMAPLEVELMASK_BOTH, &ti);
+    grTexSource(GR_TMU0, addr, GR_MIPMAPLEVELMASK_BOTH, &ti);
+    grTexCombineFunction(GR_TMU0, GR_TEXTURECOMBINE_DECAL);
+    grConstantColorValue(0xFF00FF00u);  // Pure green
+    guColorCombineFunction(GR_COLORCOMBINE_TEXTURE_TIMES_ITRGB_DELTA0);
+    drawColoredQuad(240.0f, 40.0f, 360.0f, 160.0f, 255.0f, 0.0f, 255.0f, 1.0f,
+                    1.0f);
+
+    grBufferSwap(0);
+
+    uint32_t pxFlat = 0, pxTex = 0;
+    REQUIRE(grLfbReadRegion(GR_BUFFER_FRONTBUFFER, 100, 100, 1, 1, 4,
+                            &pxFlat) == FXTRUE);
+    REQUIRE(grLfbReadRegion(GR_BUFFER_FRONTBUFFER, 300, 100, 1, 1, 4, &pxTex) ==
+            FXTRUE);
+
+    // Flat ITRGB_DELTA0 -> constantColor (0, 128, 255)
+    CHECK(((pxFlat >> 16) & 0xFFu) <= 10);
+    CHECK(((pxFlat >> 8) & 0xFFu) >= 118);
+    CHECK(((pxFlat >> 8) & 0xFFu) <= 138);
+    CHECK((pxFlat & 0xFFu) >= 240);
+
+    // TEXTURE_TIMES_ITRGB_DELTA0 -> white * green = (0, 255, 0)
+    CHECK(((pxTex >> 16) & 0xFFu) <= 10);
+    CHECK(((pxTex >> 8) & 0xFFu) >= 240);
+    CHECK((pxTex & 0xFFu) <= 10);
+  }
+
+  SECTION(
+      "guTexSource(GR_NULL_MIPMAP_HANDLE) unbinds TMU0 so untextured oow=0 "
+      "quads render cleanly") {
+    // First bind a real texture on TMU0 (simulating previous frame's state).
+    const FxU32 addr = grTexMinAddress(GR_TMU0);
+    GuTexPalette pal{};
+    pal.data[1] = 0x00FF0000u;
+    grTexDownloadTable(GR_TMU0, GR_TEXTABLE_PALETTE, &pal);
+    std::vector<uint8_t> red16(16 * 16, 1);
+    GrTexInfo ti{};
+    ti.smallLod = GR_LOD_16;
+    ti.largeLod = GR_LOD_16;
+    ti.aspectRatio = GR_ASPECT_1x1;
+    ti.format = GR_TEXFMT_P_8;
+    ti.data = red16.data();
+    grTexDownloadMipMap(GR_TMU0, addr, GR_MIPMAPLEVELMASK_BOTH, &ti);
+    grTexSource(GR_TMU0, addr, GR_MIPMAPLEVELMASK_BOTH, &ti);
+
+    // Clear to bright yellow so any discarded sky quad is immediately visible.
+    grBufferClear(0x00FFFF00u, 0xFF, GR_WDEPTHVALUE_FARTHEST);
+
+    // Replicate Carmageddon's sky-quad setup: unbind TMU0 via guTexSource(NULL)
+    // and draw a dark-blue untextured quad with v->oow == 0.0f.
+    guTexSource(GR_NULL_MIPMAP_HANDLE);
+    grTexCombineFunction(GR_TMU0, GR_TEXTURECOMBINE_ZERO);
+    grConstantColorValue(0xFF000040u);  // Dark blue
+    guColorCombineFunction(GR_COLORCOMBINE_ITRGB_DELTA0);
+    drawColoredQuad(50.0f, 50.0f, 300.0f, 200.0f, 255.0f, 255.0f, 0.0f,
+                    /*oow=*/0.0f, /*tmu0Oow=*/0.0f);
+
+    grBufferSwap(0);
+
+    uint32_t px = 0;
+    REQUIRE(grLfbReadRegion(GR_BUFFER_FRONTBUFFER, 150, 120, 1, 1, 4, &px) ==
+            FXTRUE);
+    CHECK(((px >> 16) & 0xFFu) <= 10);
+    CHECK(((px >> 8) & 0xFFu) <= 10);
+    CHECK((px & 0xFFu) >= 54);
+    CHECK((px & 0xFFu) <= 74);
+  }
+
+  SECTION(
+      "GR_TEXTABLE_PALETTE forces opaque alpha for P_8 and STW_HINT_W_DIFF_TMU0 "
+      "renders with v->oow == 0") {
+    const FxU32 addr = grTexMinAddress(GR_TMU0);
+    GuTexPalette pal{};
+    // Top byte intentionally 0x00 (standard Glide 24-bit 0x00RRGGBB palette).
+    pal.data[1] = 0x0000FF80u;  // R=0, G=255, B=128
+    grTexDownloadTable(GR_TMU0, GR_TEXTABLE_PALETTE, &pal);
+
+    std::vector<uint8_t> tex16(16 * 16, 1);
+    GrTexInfo ti{};
+    ti.smallLod = GR_LOD_16;
+    ti.largeLod = GR_LOD_16;
+    ti.aspectRatio = GR_ASPECT_1x1;
+    ti.format = GR_TEXFMT_P_8;
+    ti.data = tex16.data();
+    grTexDownloadMipMap(GR_TMU0, addr, GR_MIPMAPLEVELMASK_BOTH, &ti);
+    grTexSource(GR_TMU0, addr, GR_MIPMAPLEVELMASK_BOTH, &ti);
+    grTexFilterMode(GR_TMU0, GR_TEXTUREFILTER_POINT_SAMPLED,
+                    GR_TEXTUREFILTER_POINT_SAMPLED);
+    grTexClampMode(GR_TMU0, GR_TEXTURECLAMP_CLAMP, GR_TEXTURECLAMP_CLAMP);
+    grTexCombineFunction(GR_TMU0, GR_TEXTURECOMBINE_DECAL);
+    guColorCombineFunction(GR_COLORCOMBINE_DECAL_TEXTURE);
+
+    // Use texture alpha for standard alpha blending — if P_8 palette didn't
+    // force 0xFF alpha, this quad would blend to 0% (invisible).
+    grAlphaCombine(GR_COMBINE_FUNCTION_SCALE_OTHER, GR_COMBINE_FACTOR_ONE,
+                   GR_COMBINE_LOCAL_NONE, GR_COMBINE_OTHER_TEXTURE, FXFALSE);
+    grAlphaBlendFunction(GR_BLEND_SRC_ALPHA, GR_BLEND_ONE_MINUS_SRC_ALPHA,
+                         GR_BLEND_ONE, GR_BLEND_ZERO);
+
+    // Also enable table fog with an all-zero fog table and pass v->oow == 0.0f
+    // with GR_STWHINT_W_DIFF_TMU0 (tmuvtx[0].oow == 1.0f) to verify neither
+    // near-plane clipping nor fog 1/oow discards or NaN-corrupts the quad.
+    GrFog_t fogTbl[GR_FOG_TABLE_SIZE] = {};
+    grFogTable(fogTbl);
+    grFogColorValue(0x00FF0000u);
+    grFogMode(GR_FOG_WITH_TABLE);
+    grHints(GR_HINT_STWHINT, GR_STWHINT_W_DIFF_TMU0);
+
+    grBufferClear(0x00FF0000u, 0xFF, GR_WDEPTHVALUE_FARTHEST);
+    drawColoredQuad(100.0f, 100.0f, 260.0f, 260.0f, 0.0f, 0.0f, 0.0f,
+                    /*oow=*/0.0f, /*tmu0Oow=*/1.0f);
+
+    grHints(GR_HINT_STWHINT, 0);
+    grFogMode(GR_FOG_DISABLE);
+    grAlphaBlendFunction(GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_ONE,
+                         GR_BLEND_ZERO);
+    grBufferSwap(0);
+
+    uint32_t px = 0;
+    REQUIRE(grLfbReadRegion(GR_BUFFER_FRONTBUFFER, 180, 180, 1, 1, 4, &px) ==
+            FXTRUE);
+    CHECK(((px >> 16) & 0xFFu) <= 10);
+    CHECK(((px >> 8) & 0xFFu) >= 240);
+    CHECK((px & 0xFFu) >= 118);
+    CHECK((px & 0xFFu) <= 138);
+  }
+
+  SECTION("grBufferClear obeys grDepthMask(FXFALSE) and grColorMask(FXFALSE)") {
+    guTexSource(GR_NULL_MIPMAP_HANDLE);
+    grTexCombineFunction(GR_TMU0, GR_TEXTURECOMBINE_ZERO);
+    guColorCombineFunction(GR_COLORCOMBINE_CCRGB);
+    grDepthBufferMode(GR_DEPTHBUFFER_ZBUFFER);
+    grDepthBufferFunction(GR_CMP_LESS);
+    grDepthMask(FXTRUE);
+    grColorMask(FXTRUE, FXTRUE);
+
+    // Clear color to black and depth to far (1.0), then draw a near red quad at
+    // Z=0.2 so depth buffer holds 0.2.
+    grBufferClear(0x00000000u, 0xFF, GR_WDEPTHVALUE_FARTHEST);
+    grConstantColorValue(0xFFFF0000u);  // Red
+    drawColoredQuad(100.0f, 100.0f, 260.0f, 260.0f, 0.0f, 0.0f, 0.0f, 1.0f,
+                    1.0f, /*ooz=*/0.2f);
+
+    // Disable BOTH color and depth write masks, then call grBufferClear to blue
+    // + far depth. Neither color (red) nor depth (0.2) should be overwritten!
+    grColorMask(FXFALSE, FXFALSE);
+    grDepthMask(FXFALSE);
+    grBufferClear(0x000000FFu, 0xFF, GR_WDEPTHVALUE_FARTHEST);
+
+    // Re-enable color writes and draw a farther green quad at Z=0.6.
+    // Because depth (0.2) was NOT cleared, 0.6 < 0.2 is FALSE -> green must be
+    // rejected and red must remain visible!
+    grColorMask(FXTRUE, FXTRUE);
+    grConstantColorValue(0xFF00FF00u);  // Green
+    drawColoredQuad(100.0f, 100.0f, 260.0f, 260.0f, 0.0f, 0.0f, 0.0f, 1.0f,
+                    1.0f, /*ooz=*/0.6f);
+
+    grDepthMask(FXTRUE);
+    grDepthBufferMode(GR_DEPTHBUFFER_DISABLE);
+    grBufferSwap(0);
+
+    uint32_t px = 0;
+    REQUIRE(grLfbReadRegion(GR_BUFFER_FRONTBUFFER, 180, 180, 1, 1, 4, &px) ==
+            FXTRUE);
+    CHECK(((px >> 16) & 0xFFu) >= 240);  // Red preserved!
+    CHECK(((px >> 8) & 0xFFu) <= 10);
+    CHECK((px & 0xFFu) <= 10);
+  }
+
+  SECTION("Glide 2.x TMU memory queries honor configured tmuMemoryMb") {
+    const auto& cfg =
+        GlideWrapper::EmulationRegistry::GetInstance().GetConfig();
+    const FxU32 expectedBytes =
+        std::max(2u, cfg.tmuMemoryMb) * 1024u * 1024u;
+    CHECK(grTexMaxAddress(GR_TMU0) == expectedBytes);
+    CHECK(guTexMemQueryAvail(GR_TMU0) == expectedBytes);
+    FxI32 reportedMem = 0;
+    grGet(GR_MEMORY_TMU, sizeof(reportedMem), &reportedMem);
+    CHECK(static_cast<FxU32>(reportedMem) == expectedBytes);
   }
 
   grSstWinClose();

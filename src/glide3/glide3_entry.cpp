@@ -619,9 +619,13 @@ FX_ENTRY FxU32 FX_CALL grTexMinAddress(GrChipID_t tmu) {
 }
 
 FX_ENTRY FxU32 FX_CALL grTexMaxAddress(GrChipID_t tmu) {
+  EnsureEngineInitialized();
+  const auto& config = GlideWrapper::EmulationRegistry::GetInstance().GetConfig();
+  const uint32_t tmuBytes = std::max(2u, config.tmuMemoryMb) * 1024u * 1024u;
   GLIDE_LOG(DEBUG, "Frontend",
-            "grTexMaxAddress (Glide 3.x) invoked for TMU=" << tmu);
-  return 0x200000;
+            "grTexMaxAddress (Glide 3.x) invoked for TMU="
+                << tmu << " -> 0x" << std::hex << tmuBytes << std::dec);
+  return tmuBytes;
 }
 
 FX_ENTRY FxU32 FX_CALL grTexCalcMemRequired(GrLOD_t lodmin, GrLOD_t lodmax,
