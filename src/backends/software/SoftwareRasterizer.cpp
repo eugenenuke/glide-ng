@@ -353,7 +353,7 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
   const VirtualTexture* tex = nullptr;
 
   if constexpr (HasTexture) {
-    tex = TextureManager::GetInstance().GetTexture(0, state.boundTexAddress[0]);
+    tex = state.boundTex[0].get();
     if (tex && !tex->swizzledMipLevels.empty()) {
       texW = tex->baseWidth;
       texH = tex->baseHeight;
@@ -390,8 +390,7 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
   const VirtualTexture* tex1 = nullptr;
 
   if (hasTexture1) {
-    tex1 =
-        TextureManager::GetInstance().GetTexture(1, state.boundTexAddress[1]);
+    tex1 = state.boundTex[1].get();
     if (tex1 && !tex1->swizzledMipLevels.empty()) {
       texW1 = tex1->baseWidth;
       texH1 = tex1->baseHeight;

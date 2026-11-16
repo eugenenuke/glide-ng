@@ -1021,7 +1021,7 @@ FX_ENTRY void FX_CALL grTexDownloadMipMap(GrChipID_t tmu, FxU32 startAddress,
   if (info && info->data) {
     GlideWrapper::TextureManager::GetInstance().DownloadMipMap(
         tmu, startAddress, info->largeLod, info->smallLod, info->aspectRatio,
-        info->format, info->data);
+        info->format, info->data, /*replaceExisting=*/true);
   }
 }
 
@@ -1034,7 +1034,8 @@ grTexDownloadMipMapLevel(GrChipID_t tmu, FxU32 startAddress, GrLOD_t thisLod,
                                                         << ", LOD=" << thisLod);
   if (data) {
     GlideWrapper::TextureManager::GetInstance().DownloadMipMap(
-        tmu, startAddress, thisLod, thisLod, aspectRatio, format, data);
+        tmu, startAddress, thisLod, thisLod, aspectRatio, format, data,
+        /*replaceExisting=*/false, /*baseLargeLod=*/largeLod);
   }
 }
 

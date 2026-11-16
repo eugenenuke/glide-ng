@@ -462,7 +462,7 @@ class VulkanBackend : public GlideStateTracker {
 
   vk::UniqueDescriptorSetLayout m_descriptorSetLayout;
   vk::UniqueDescriptorPool m_descriptorPool;
-  std::unordered_map<uint32_t, VulkanTexture> m_vulkanTextures;
+  std::unordered_map<uint32_t, VulkanTexture> m_vulkanTextures[2];
   VulkanTexture m_dummyTexture;
   vk::UniqueSampler m_dummySampler;
   vk::DescriptorSet m_dummyDescriptorSet;
@@ -485,7 +485,7 @@ class VulkanBackend : public GlideStateTracker {
 
   // Deferred per-frame-slot retirement queues so overwritten/purged textures
   // and descriptor sets stay alive until the GPU fence for that slot signals.
-  void RetireTextureAtAddress_Locked(uint32_t startAddress);
+  void RetireTextureAtAddress_Locked(uint32_t tmu, uint32_t startAddress);
   void ReclaimRetiredResources_Locked(uint32_t slot);
   std::vector<VulkanTexture> m_retiredTextures[2];
   std::vector<vk::UniqueDescriptorSet> m_retiredDescriptorSets[2];

@@ -240,7 +240,9 @@ bool IsColorInRange(vec3 color, vec3 minColor, vec3 maxColor, uint rangeMode) {
       return rRes && gRes && bRes;
     }
   } else {
-    return distance(color, minColor) < 0.01;
+    // Exact 8-bit channel match (< 0.5 / 255) so dark non-key colors like
+    // RGB(1,1,1) or RGB(2,2,2) are not punched out when keying on black.
+    return all(lessThan(abs(color - minColor), vec3(0.0019)));
   }
 }
 

@@ -39,9 +39,12 @@ static uint64_t CalculateTextureHash(const struct VirtualTexture& tex) {
   return hash;
 }
 
-void VulkanBackend::RetireTextureAtAddress_Locked(uint32_t startAddress) {
-  auto it = m_vulkanTextures.find(startAddress);
-  if (it == m_vulkanTextures.end()) return;
+void VulkanBackend::RetireTextureAtAddress_Locked(uint32_t tmu,
+                                                  uint32_t startAddress) {
+  if (tmu >= 2) return;
+  auto& tmuMap = m_vulkanTextures[tmu];
+  auto it = tmuMap.find(startAddress);
+  if (it == tmuMap.end()) return;
 
   vk::ImageView oldView = it->second.imageView.get();
   if (oldView) {
@@ -58,7 +61,7 @@ void VulkanBackend::RetireTextureAtAddress_Locked(uint32_t startAddress) {
   }
 
   m_retiredTextures[m_currentFrameSlot].push_back(std::move(it->second));
-  m_vulkanTextures.erase(it);
+  tmuMap.erase(it);
   m_descriptorStateDirty = true;
 }
 
@@ -89,8 +92,9 @@ void VulkanBackend::UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
   uint64_t incomingHash = CalculateTextureHash(tex);
 
   // 2. Check if texture already exists at this address and has matching data
-  auto it = m_vulkanTextures.find(startAddress);
-  if (it != m_vulkanTextures.end()) {
+  auto& tmuMap = m_vulkanTextures[tmu];
+  auto it = tmuMap.find(startAddress);
+  if (it != tmuMap.end()) {
     if (it->second.dataHash == incomingHash) {
       GLIDE_LOG(DEBUG, "Vulkan",
                 "UploadTexture: Address=0x"
@@ -99,6 +103,11 @@ void VulkanBackend::UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
                     << incomingHash << std::dec << "). Bypassing upload!");
       return;
     }
+  }
+
+  if (tex.baseWidth == 0 || tex.baseHeight == 0 ||
+      tex.swizzledMipLevels.empty()) {
+    return;
   }
 
   GLIDE_PROFILE_SCOPE("Vulkan::UploadTexture");
@@ -110,15 +119,26 @@ void VulkanBackend::UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
                 << " Mipmap levels: " << tex.swizzledMipLevels.size()
                 << " (Hash: 0x" << std::hex << incomingHash << std::dec << ")");
 
+  // Flush any queued geometry referencing the previous texture before retiring
+  // its descriptor sets and image views.
+  FlushBatch();
+
   // Retire any existing texture at this address (and its cached descriptor
   // sets) into the current frame slot's deferred destruction queue so in-flight
   // GPU draws never read a freed image/view.
-  RetireTextureAtAddress_Locked(startAddress);
+  RetireTextureAtAddress_Locked(tmu, startAddress);
 
-  // Calculate size of this texture
+  // Calculate exact expected staging size across all mip levels (matches
+  // copyBufferToImage extents even if a mip level is defensively short).
   size_t totalBytes = 0;
-  for (const auto& level : tex.swizzledMipLevels) {
-    totalBytes += level.size() * sizeof(uint32_t);
+  {
+    uint32_t lw = tex.baseWidth;
+    uint32_t lh = tex.baseHeight;
+    for (size_t i = 0; i < tex.swizzledMipLevels.size(); ++i) {
+      totalBytes += static_cast<size_t>(lw) * lh * sizeof(uint32_t);
+      lw = std::max(1u, lw / 2);
+      lh = std::max(1u, lh / 2);
+    }
   }
 
   // Check if we have enough space in the active slot's staging buffer segment
@@ -159,11 +179,25 @@ void VulkanBackend::UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
         static_cast<uint8_t*>(m_texStagingMap) + currentOffset;
     size_t offset = 0;
     std::vector<size_t> levelOffsets;
+    levelOffsets.reserve(tex.swizzledMipLevels.size());
+    uint32_t lw = tex.baseWidth;
+    uint32_t lh = tex.baseHeight;
     for (const auto& level : tex.swizzledMipLevels) {
       levelOffsets.push_back(currentOffset + offset);
-      size_t levelBytes = level.size() * sizeof(uint32_t);
-      std::memcpy(mappedData + offset, level.data(), levelBytes);
-      offset += levelBytes;
+      const size_t expectedBytes =
+          static_cast<size_t>(lw) * lh * sizeof(uint32_t);
+      const size_t availBytes = level.size() * sizeof(uint32_t);
+      const size_t copyBytes = std::min(expectedBytes, availBytes);
+      if (copyBytes > 0) {
+        std::memcpy(mappedData + offset, level.data(), copyBytes);
+      }
+      if (copyBytes < expectedBytes) {
+        std::memset(mappedData + offset + copyBytes, 0,
+                    expectedBytes - copyBytes);
+      }
+      offset += expectedBytes;
+      lw = std::max(1u, lw / 2);
+      lh = std::max(1u, lh / 2);
     }
 
     // Flush mapped memory range to ensure visibility to GPU
@@ -231,13 +265,13 @@ void VulkanBackend::UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
     vulkanTex.image = std::move(image);
     vulkanTex.memory = std::move(memory);
     vulkanTex.imageView = std::move(imageView);
-    vulkanTex.clampS = m_texClampS[0];
-    vulkanTex.clampT = m_texClampT[0];
-    vulkanTex.minFilter = m_texMinFilter[0];
-    vulkanTex.magFilter = m_texMagFilter[0];
+    vulkanTex.clampS = m_texClampS[tmu];
+    vulkanTex.clampT = m_texClampT[tmu];
+    vulkanTex.minFilter = m_texMinFilter[tmu];
+    vulkanTex.magFilter = m_texMagFilter[tmu];
     vulkanTex.dataHash = incomingHash;
 
-    m_vulkanTextures[startAddress] = std::move(vulkanTex);
+    tmuMap[startAddress] = std::move(vulkanTex);
     m_descriptorStateDirty = true;
 
     GLIDE_LOG(DEBUG, "Vulkan",
@@ -274,8 +308,8 @@ void VulkanBackend::BindTexture(uint32_t tmu, uint32_t startAddress,
 
   if (startAddress == 0xFFFFFFFF) return;
 
-  auto it = m_vulkanTextures.find(startAddress);
-  if (it != m_vulkanTextures.end()) {
+  auto it = m_vulkanTextures[tmu].find(startAddress);
+  if (it != m_vulkanTextures[tmu].end()) {
     auto& tex = it->second;
     tex.clampS = clampS;
     tex.clampT = clampT;
@@ -327,8 +361,8 @@ void VulkanBackend::UploadTexturePartial(uint32_t tmu, uint32_t startAddress,
     return;
   }
 
-  auto it = m_vulkanTextures.find(startAddress);
-  if (it == m_vulkanTextures.end()) {
+  auto it = m_vulkanTextures[tmu].find(startAddress);
+  if (it == m_vulkanTextures[tmu].end()) {
     GLIDE_LOG(WARN, "Vulkan",
               "UploadTexturePartial: texture at address 0x"
                   << std::hex << startAddress << std::dec
@@ -427,17 +461,20 @@ void VulkanBackend::PurgeTextures() {
 
   GLIDE_LOG(DEBUG, "Vulkan",
             "PurgeTextures: retiring "
-                << m_vulkanTextures.size() << " textures, "
-                << m_descriptorCache.size() << " descriptors.");
+                << (m_vulkanTextures[0].size() + m_vulkanTextures[1].size())
+                << " textures, " << m_descriptorCache.size()
+                << " descriptors.");
 
   for (auto& kv : m_descriptorCache) {
     m_retiredDescriptorSets[m_currentFrameSlot].push_back(std::move(kv.second));
   }
   m_descriptorCache.clear();
-  for (auto& kv : m_vulkanTextures) {
-    m_retiredTextures[m_currentFrameSlot].push_back(std::move(kv.second));
+  for (uint32_t t = 0; t < 2; ++t) {
+    for (auto& kv : m_vulkanTextures[t]) {
+      m_retiredTextures[m_currentFrameSlot].push_back(std::move(kv.second));
+    }
+    m_vulkanTextures[t].clear();
   }
-  m_vulkanTextures.clear();
   m_descriptorStateDirty = true;
   m_cachedDescSet = vk::DescriptorSet{};
 

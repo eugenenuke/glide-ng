@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -15,13 +16,18 @@
 namespace GlideWrapper {
 
 struct VirtualTexture {
-  uint32_t startAddress;
-  uint32_t format;
-  uint32_t aspectRatio;
-  uint32_t baseWidth;
-  uint32_t baseHeight;
-  int32_t smallLod;
-  int32_t largeLod;
+  static constexpr int32_t kNoDeclaredLargeLod =
+      std::numeric_limits<int32_t>::min();
+
+  uint32_t startAddress{0};
+  uint32_t format{0};
+  uint32_t aspectRatio{0};
+  uint32_t baseWidth{0};
+  uint32_t baseHeight{0};
+  int32_t smallLod{0};
+  int32_t largeLod{0};
+  int32_t declaredLargeLod{kNoDeclaredLargeLod};
+  uint32_t allocatedByteSize{0};
   std::vector<std::vector<uint32_t>>
       swizzledMipLevels;  // Completely swizzled into 32-bit ARGB (0xAARRGGBB)
                           // per level
@@ -47,6 +53,9 @@ struct VirtualTexture {
 
 class TextureManager {
  public:
+  static constexpr int32_t kNoBaseLargeLod =
+      VirtualTexture::kNoDeclaredLargeLod;
+
   static TextureManager& GetInstance() {
     static TextureManager* instance = new TextureManager();
     return *instance;
@@ -59,10 +68,15 @@ class TextureManager {
                                    bool packed = false);
 
   // 2. Decode retro formats across full MIP-map chain and upload into active
-  // virtual TMU pool
+  // virtual TMU pool.
+  // When replaceExisting is true (grTexDownloadMipMap), any existing texture at
+  // startAddress or overlapping its TMU byte range is evicted cleanly.
+  // When replaceExisting is false (grTexDownloadMipMapLevel), levels belonging
+  // to the same baseLargeLod/format/aspect are merged using copy-on-write.
   bool DownloadMipMap(uint32_t tmu, uint32_t startAddress, int32_t lodMin,
                       int32_t lodMax, uint32_t aspect, uint32_t format,
-                      const void* data);
+                      const void* data, bool replaceExisting = true,
+                      int32_t baseLargeLod = kNoBaseLargeLod);
 
   // Download a partial sub-region of a specific mipmap level
   bool DownloadMipMapPartial(uint32_t tmu, uint32_t startAddress,
@@ -85,6 +99,12 @@ class TextureManager {
   // verification (lazily re-swizzles on CPU if the active palette/NCC table
   // changed since this texture was last decoded).
   VirtualTexture* GetTexture(uint32_t tmu, uint32_t startAddress);
+
+  // Return an immutable copy-on-write snapshot for deferred rasterizers
+  // (SoftwareBackend tile bins), guaranteeing earlier draws in a frame are
+  // never corrupted by subsequent TMU overwrites or palette swaps.
+  std::shared_ptr<const VirtualTexture> GetTextureSnapshot(
+      uint32_t tmu, uint32_t startAddress);
 
   // Lazily re-swizzle & upload ONLY the texture being bound when the active
   // palette or NCC table has changed (avoids O(N_resident) upload storms on
@@ -130,7 +150,8 @@ class TextureManager {
                                             const VirtualTexture& tex);
   static void ReswizzleTexture_Locked(const TmuState& state,
                                       VirtualTexture& tex);
-  void EnsureTextureReady_Locked(uint32_t tmu, VirtualTexture& tex,
+  void EnsureTextureReady_Locked(uint32_t tmu,
+                                 std::shared_ptr<VirtualTexture>& texPtr,
                                  bool uploadToBackend);
 
   std::mutex m_mutex;

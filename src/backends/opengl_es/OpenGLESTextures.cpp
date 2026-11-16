@@ -20,6 +20,11 @@ void OpenGLESBackend::UploadTexture(uint32_t tmu, uint32_t startAddress,
 void OpenGLESBackend::UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
                                            const struct VirtualTexture& tex) {
   FlushBatch();
+  if (tmu >= 2) return;
+  if (tex.baseWidth == 0 || tex.baseHeight == 0 ||
+      tex.swizzledMipLevels.empty()) {
+    return;
+  }
   if (!m_windowAttached && !m_headlessMode) {
     GLIDE_LOG(WARN, "GLES",
               "UploadTexture called without active GL context! Postponing or "
@@ -30,21 +35,22 @@ void OpenGLESBackend::UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
 
   GLIDE_PROFILE_SCOPE("GLES::UploadTexture");
 
+  auto& tmuMap = m_glesTextures[tmu];
   GLuint texId = 0;
-  auto it = m_glesTextures.find(startAddress);
-  if (it == m_glesTextures.end()) {
+  auto it = tmuMap.find(startAddress);
+  if (it == tmuMap.end()) {
     glGenTextures(1, &texId);
-    m_glesTextures[startAddress] = texId;
+    tmuMap[startAddress] = texId;
     GLIDE_LOG(DEBUG, "GLES",
-              "Generated new GLES Texture ID " << texId << " for Address 0x"
-                                               << std::hex << startAddress
-                                               << std::dec);
+              "Generated new GLES Texture ID " << texId << " for TMU" << tmu
+                                               << " Address 0x" << std::hex
+                                               << startAddress << std::dec);
   } else {
     texId = it->second;
     GLIDE_LOG(DEBUG, "GLES",
               "Re-uploading to existing GLES Texture ID "
-                  << texId << " for Address 0x" << std::hex << startAddress
-                  << std::dec);
+                  << texId << " for TMU" << tmu << " Address 0x" << std::hex
+                  << startAddress << std::dec);
   }
 
   glBindTexture(GL_TEXTURE_2D, texId);
@@ -55,12 +61,15 @@ void OpenGLESBackend::UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
   for (size_t i = 0; i < tex.swizzledMipLevels.size(); ++i) {
     uint32_t w = std::max(1u, baseW >> i);
     uint32_t h = std::max(1u, baseH >> i);
-    const uint32_t* pixels = tex.swizzledMipLevels[i].data();
+    const auto& levelVec = tex.swizzledMipLevels[i];
+    const size_t expectedPixels = static_cast<size_t>(w) * h;
+    const size_t copyCount = std::min(expectedPixels, levelVec.size());
+    const uint32_t* pixels = levelVec.data();
 
     // Swizzle BGRA from TextureManager to RGBA on the CPU before uploading to
-    // GLES
-    std::vector<uint32_t> rgbaPixels(w * h);
-    for (uint32_t j = 0; j < w * h; ++j) {
+    // GLES; defensively zero-fill any missing texels to prevent OOB reads.
+    std::vector<uint32_t> rgbaPixels(expectedPixels, 0);
+    for (size_t j = 0; j < copyCount; ++j) {
       uint32_t bgra = pixels[j];
       uint32_t b = bgra & 0xFF;
       uint32_t g = (bgra >> 8) & 0xFF;
@@ -106,9 +115,11 @@ void OpenGLESBackend::UploadTexturePartial(uint32_t tmu, uint32_t startAddress,
 
   GLIDE_PROFILE_SCOPE("GLES::UploadTexturePartial");
 
+  if (tmu >= 2) return;
+
   // 1. Check if the texture exists. If not, promote to a full upload!
-  auto it = m_glesTextures.find(startAddress);
-  if (it == m_glesTextures.end()) {
+  auto it = m_glesTextures[tmu].find(startAddress);
+  if (it == m_glesTextures[tmu].end()) {
     GLIDE_LOG(INFO, "GLES",
               "UploadTexturePartial: Texture at 0x"
                   << std::hex << startAddress << std::dec
@@ -188,19 +199,22 @@ void OpenGLESBackend::UploadTexturePartial(uint32_t tmu, uint32_t startAddress,
 void OpenGLESBackend::PurgeTextures() {
   std::lock_guard<std::mutex> lock(m_mutex);
   FlushBatch();
-  if (m_glesTextures.empty()) return;
+  const size_t total = m_glesTextures[0].size() + m_glesTextures[1].size();
+  if (total == 0) return;
   GLIDE_LOG(DEBUG, "GLES",
-            "PurgeTextures: deleting " << m_glesTextures.size()
-                                       << " textures from GPU.");
+            "PurgeTextures: deleting " << total << " textures from GPU.");
   if (EnsureContextCurrent()) {
-    for (auto& pair : m_glesTextures) {
-      if (pair.second) {
-        glDeleteTextures(1, &pair.second);
+    for (uint32_t t = 0; t < 2; ++t) {
+      for (auto& pair : m_glesTextures[t]) {
+        if (pair.second) {
+          glDeleteTextures(1, &pair.second);
+        }
       }
     }
     checkGLError("PurgeTextures");
   }
-  m_glesTextures.clear();
+  m_glesTextures[0].clear();
+  m_glesTextures[1].clear();
 }
 
 void OpenGLESBackend::BindTexture(uint32_t tmu, uint32_t startAddress,

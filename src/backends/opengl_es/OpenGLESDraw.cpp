@@ -395,7 +395,7 @@ void OpenGLESBackend::FlushBatch(bool fromStateFlush) {
 
   // Handle VBO ring buffer wrapping and orphaning
   if (m_geomVBOOffset + uploadSize > m_geomVBOSizeConfigured) {
-    GLIDE_LOG(WARN, "GLES",
+    GLIDE_LOG(DEBUG, "GLES",
               "Dynamic Geometry VBO ring buffer wrap-around & orphaning! "
               "Offset reset to 0.");
     m_geomVBOOffset = 0;
@@ -421,8 +421,8 @@ void OpenGLESBackend::FlushBatch(bool fromStateFlush) {
   for (uint32_t tmu = 0; tmu < 2; ++tmu) {
     uint32_t addr = m_boundTexAddress[tmu];
     if (addr != 0xFFFFFFFF) {
-      auto it = m_glesTextures.find(addr);
-      if (it != m_glesTextures.end()) {
+      auto it = m_glesTextures[tmu].find(addr);
+      if (it != m_glesTextures[tmu].end()) {
         glActiveTexture(GL_TEXTURE0 + tmu);
         glBindTexture(GL_TEXTURE_2D, it->second);
         glBindSampler(tmu, m_glesSamplers[tmu]);
@@ -446,8 +446,8 @@ void OpenGLESBackend::FlushBatch(bool fromStateFlush) {
     for (uint32_t tmu = 0; tmu < 2; ++tmu) {
       uint32_t addr = m_boundTexAddress[tmu];
       if (addr != 0xFFFFFFFF) {
-        auto it = m_glesTextures.find(addr);
-        if (it != m_glesTextures.end()) {
+        auto it = m_glesTextures[tmu].find(addr);
+        if (it != m_glesTextures[tmu].end()) {
           // Set sampler wrap modes
           GLint wrapS = GL_REPEAT;
           if (m_texClampS[tmu] == 1) {

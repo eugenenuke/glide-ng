@@ -213,7 +213,7 @@ bool IsColorInRange(vec3 color, vec3 minColor, vec3 maxColor, uint rangeMode) {
             return rRes && gRes && bRes;
         }
     } else {
-        return distance(color, minColor) < 0.01;
+        return all(lessThan(abs(color - minColor), vec3(0.0019)));
     }
 }
 
@@ -469,7 +469,7 @@ void main() {
                 discard;
             }
         } else {
-            if (distance(chromaTestColor, uChromakeyValue.rgb) < 0.01) {
+            if (all(lessThan(abs(chromaTestColor - uChromakeyValue.rgb), vec3(0.0019)))) {
                 discard;
             }
         }

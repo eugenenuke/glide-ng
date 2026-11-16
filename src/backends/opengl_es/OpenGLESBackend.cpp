@@ -97,8 +97,8 @@ void OpenGLESBackend::ResetState_Locked() {
   m_is2DGeometry = true;
   m_gammaCorrectionValue = 1.0f;
   m_useGammaLut = false;
-  m_glesTextures.clear();  // Clear the stale texture cache to prevent reusing
-                           // dead GL texture IDs in new contexts!
+  m_glesTextures[0].clear();  // Clear stale texture caches to prevent reusing
+  m_glesTextures[1].clear();  // dead GL texture IDs in new contexts!
   m_batchVertices.clear();
   m_batchPrimitiveMode = BatchPrimitiveMode::None;
   m_batchIs2DGeometry = false;
@@ -1681,12 +1681,14 @@ bool OpenGLESBackend::CreateGLContext(void* nativeWindowHandle, uint32_t width,
 void OpenGLESBackend::DestroyGLContext() {
   // 1. Delete all GL objects while our context is still current.
   if (EnsureContextCurrent()) {
-    for (auto& pair : m_glesTextures) {
-      if (pair.second) {
-        glDeleteTextures(1, &pair.second);
+    for (uint32_t t = 0; t < 2; ++t) {
+      for (auto& pair : m_glesTextures[t]) {
+        if (pair.second) {
+          glDeleteTextures(1, &pair.second);
+        }
       }
+      m_glesTextures[t].clear();
     }
-    m_glesTextures.clear();
 
     if (m_glesSamplers[0] != 0) {
       glDeleteSamplers(2, m_glesSamplers);
@@ -1744,7 +1746,8 @@ void OpenGLESBackend::DestroyGLContext() {
       m_geomProgram = 0;
     }
   } else {
-    m_glesTextures.clear();
+    m_glesTextures[0].clear();
+    m_glesTextures[1].clear();
     m_glesSamplers[0] = m_glesSamplers[1] = 0;
     m_glGammaLutTex = 0;
     m_glHudTex = 0;

@@ -1128,13 +1128,15 @@ FX_ENTRY void FX_CALL grTexDownloadMipMap(GrChipID_t tmu, FxU32 startAddress,
       // Glide 2.x smallLod, largeLod, aspectRatio.
       GlideWrapper::TextureManager::GetInstance().DownloadMipMap(
           tmu, startAddress, info->largeLodLog2, info->smallLodLog2,
-          info->aspectRatioLog2, info->format, info->data);
+          info->aspectRatioLog2, info->format, info->data,
+          /*replaceExisting=*/true);
     } else {
       // Translate Glide 3.x signed log2 aspect ratio and LOD to Glide 2.x core
       // format
       GlideWrapper::TextureManager::GetInstance().DownloadMipMap(
           tmu, startAddress, 8 - info->largeLodLog2, 8 - info->smallLodLog2,
-          3 - info->aspectRatioLog2, info->format, info->data);
+          3 - info->aspectRatioLog2, info->format, info->data,
+          /*replaceExisting=*/true);
     }
   }
 }
@@ -1151,7 +1153,7 @@ grTexDownloadMipMapLevel(GrChipID_t tmu, FxU32 startAddress, GrLOD_t thisLod,
     // format
     GlideWrapper::TextureManager::GetInstance().DownloadMipMap(
         tmu, startAddress, 8 - thisLod, 8 - thisLod, 3 - aspectRatio, format,
-        data);
+        data, /*replaceExisting=*/false, /*baseLargeLod=*/8 - largeLod);
   }
 }
 

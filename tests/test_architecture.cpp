@@ -7537,3 +7537,279 @@ TEST_CASE(
   grGlideShutdown();
 #endif
 }
+
+TEST_CASE(
+    "M5.3: Carmageddon Texture Replacement, Mid-Frame Snapshots & Exact "
+    "Chromakey [M5]",
+    "[Glide2][M5]") {
+#ifdef __linux__
+  const char* prevNoSplash = std::getenv("FX_GLIDE_NO_SPLASH");
+  std::string savedNoSplash = prevNoSplash ? prevNoSplash : "";
+  ::setenv("FX_GLIDE_NO_SPLASH", "1", 1);
+  struct EnvRestorer {
+    bool hadSplash;
+    std::string splashVal;
+    ~EnvRestorer() {
+      if (hadSplash)
+        ::setenv("FX_GLIDE_NO_SPLASH", splashVal.c_str(), 1);
+      else
+        ::unsetenv("FX_GLIDE_NO_SPLASH");
+    }
+  } restorer{prevNoSplash != nullptr, savedNoSplash};
+
+  grGlideInit();
+  grSstSelect(0);
+  REQUIRE(grSstWinOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                       GR_COLORFORMAT_ARGB, GR_ORIGIN_UPPER_LEFT, 2,
+                       1) == FXTRUE);
+  grDitherMode(GR_DITHER_DISABLE);
+  grDepthBufferMode(GR_DEPTHBUFFER_DISABLE);
+  grAlphaBlendFunction(GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_ONE,
+                       GR_BLEND_ZERO);
+  grColorCombine(GR_COMBINE_FUNCTION_SCALE_OTHER, GR_COMBINE_FACTOR_ONE,
+                 GR_COMBINE_LOCAL_NONE, GR_COMBINE_OTHER_TEXTURE, FXFALSE);
+  grTexCombine(GR_TMU0, GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+               GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE, FXFALSE,
+               FXFALSE);
+  grTexFilterMode(GR_TMU0, GR_TEXTUREFILTER_POINT_SAMPLED,
+                  GR_TEXTUREFILTER_POINT_SAMPLED);
+  grTexMipMapMode(GR_TMU0, GR_MIPMAP_DISABLE, FXFALSE);
+  grTexClampMode(GR_TMU0, GR_TEXTURECLAMP_CLAMP, GR_TEXTURECLAMP_CLAMP);
+
+  auto drawTexturedQuad = [](float x0, float y0, float x1, float y1) {
+    GrVertex v0{}, v1{}, v2{}, v3{};
+    v0.x = x0;
+    v0.y = y0;
+    v0.oow = 1.0f;
+    v0.tmuvtx[0].sow = 0.0f;
+    v0.tmuvtx[0].tow = 0.0f;
+
+    v1.x = x1;
+    v1.y = y0;
+    v1.oow = 1.0f;
+    v1.tmuvtx[0].sow = 255.0f;
+    v1.tmuvtx[0].tow = 0.0f;
+
+    v2.x = x1;
+    v2.y = y1;
+    v2.oow = 1.0f;
+    v2.tmuvtx[0].sow = 255.0f;
+    v2.tmuvtx[0].tow = 255.0f;
+
+    v3.x = x0;
+    v3.y = y1;
+    v3.oow = 1.0f;
+    v3.tmuvtx[0].sow = 0.0f;
+    v3.tmuvtx[0].tow = 255.0f;
+
+    grDrawTriangle(&v0, &v1, &v2);
+    grDrawTriangle(&v0, &v2, &v3);
+  };
+
+  SECTION("Replacing 256x256 with 64x64 at same address does not merge/crash") {
+    GuTexPalette pal{};
+    pal.data[1] = 0xFFFF0000u;  // Red
+    pal.data[2] = 0xFF00FF00u;  // Green
+    grTexDownloadTable(GR_TMU0, GR_TEXTABLE_PALETTE, &pal);
+
+    const FxU32 addr = grTexMinAddress(GR_TMU0);
+    std::vector<uint8_t> red256(256 * 256, 1);
+    GrTexInfo ti256{};
+    ti256.smallLod = GR_LOD_256;
+    ti256.largeLod = GR_LOD_256;
+    ti256.aspectRatio = GR_ASPECT_1x1;
+    ti256.format = GR_TEXFMT_P_8;
+    ti256.data = red256.data();
+    grTexDownloadMipMap(GR_TMU0, addr, GR_MIPMAPLEVELMASK_BOTH, &ti256);
+
+    // Replace with a smaller 64x64 green texture at the exact same address.
+    // Previously this merged LODs 0..2 with an empty LOD 1 vector, causing
+    // SIGSEGV on GLES and keeping red at mip 0 across all backends.
+    std::vector<uint8_t> green64(64 * 64, 2);
+    GrTexInfo ti64{};
+    ti64.smallLod = GR_LOD_64;
+    ti64.largeLod = GR_LOD_64;
+    ti64.aspectRatio = GR_ASPECT_1x1;
+    ti64.format = GR_TEXFMT_P_8;
+    ti64.data = green64.data();
+    grTexDownloadMipMap(GR_TMU0, addr, GR_MIPMAPLEVELMASK_BOTH, &ti64);
+
+    auto* tex =
+        GlideWrapper::TextureManager::GetInstance().GetTexture(GR_TMU0, addr);
+    REQUIRE(tex != nullptr);
+    REQUIRE(tex->baseWidth == 64);
+    REQUIRE(tex->baseHeight == 64);
+    REQUIRE(tex->swizzledMipLevels.size() == 1);
+
+    grBufferClear(0, 0, GR_WDEPTHVALUE_FARTHEST);
+    grTexSource(GR_TMU0, addr, GR_MIPMAPLEVELMASK_BOTH, &ti64);
+    drawTexturedQuad(100.0f, 100.0f, 300.0f, 300.0f);
+    grBufferSwap(0);
+
+    uint32_t px = 0;
+    REQUIRE(grLfbReadRegion(GR_BUFFER_FRONTBUFFER, 200, 200, 1, 1, 4, &px) ==
+            FXTRUE);
+    REQUIRE(((px >> 16) & 0xFFu) <= 10);
+    REQUIRE(((px >> 8) & 0xFFu) >= 240);
+    REQUIRE((px & 0xFFu) <= 10);
+  }
+
+  SECTION("Overlapping TMU byte ranges evict stale textures cleanly") {
+    auto& tm = GlideWrapper::TextureManager::GetInstance();
+    const FxU32 base = grTexMinAddress(GR_TMU0);
+    std::vector<uint8_t> buf256(256 * 256, 1);
+    std::vector<uint8_t> buf64(64 * 64, 2);
+
+    GrTexInfo ti256{};
+    ti256.smallLod = GR_LOD_256;
+    ti256.largeLod = GR_LOD_256;
+    ti256.aspectRatio = GR_ASPECT_1x1;
+    ti256.format = GR_TEXFMT_P_8;
+    ti256.data = buf256.data();
+
+    GrTexInfo ti64{};
+    ti64.smallLod = GR_LOD_64;
+    ti64.largeLod = GR_LOD_64;
+    ti64.aspectRatio = GR_ASPECT_1x1;
+    ti64.format = GR_TEXFMT_P_8;
+    ti64.data = buf64.data();
+
+    grTexDownloadMipMap(GR_TMU0, base, GR_MIPMAPLEVELMASK_BOTH, &ti256);
+    REQUIRE(tm.GetTexture(GR_TMU0, base) != nullptr);
+
+    // Downloading inside [base, base + 65536) evicts the enclosing 256x256 tex.
+    const FxU32 innerAddr = base + 0x4000u;
+    grTexDownloadMipMap(GR_TMU0, innerAddr, GR_MIPMAPLEVELMASK_BOTH, &ti64);
+    REQUIRE(tm.GetTexture(GR_TMU0, base) == nullptr);
+    REQUIRE(tm.GetTexture(GR_TMU0, innerAddr) != nullptr);
+
+    // Downloading back at base evicts the overlapping inner 64x64 texture.
+    grTexDownloadMipMap(GR_TMU0, base, GR_MIPMAPLEVELMASK_BOTH, &ti256);
+    REQUIRE(tm.GetTexture(GR_TMU0, innerAddr) == nullptr);
+    REQUIRE(tm.GetTexture(GR_TMU0, base) != nullptr);
+  }
+
+  SECTION("Mid-frame palette swap and TMU overwrite preserve earlier draws") {
+    const FxU32 addr = grTexMinAddress(GR_TMU0);
+    GuTexPalette pal{};
+    pal.data[1] = 0xFFFF0000u;  // Red
+    pal.data[2] = 0xFF0000FFu;  // Blue
+    grTexDownloadTable(GR_TMU0, GR_TEXTABLE_PALETTE, &pal);
+
+    std::vector<uint8_t> texIdx1(16 * 16, 1);
+    std::vector<uint8_t> texIdx2(16 * 16, 2);
+    GrTexInfo ti{};
+    ti.smallLod = GR_LOD_16;
+    ti.largeLod = GR_LOD_16;
+    ti.aspectRatio = GR_ASPECT_1x1;
+    ti.format = GR_TEXFMT_P_8;
+    ti.data = texIdx1.data();
+
+    grBufferClear(0, 0, GR_WDEPTHVALUE_FARTHEST);
+
+    // 1. Left quad: Red (idx 1, palette 1)
+    grTexDownloadMipMap(GR_TMU0, addr, GR_MIPMAPLEVELMASK_BOTH, &ti);
+    grTexSource(GR_TMU0, addr, GR_MIPMAPLEVELMASK_BOTH, &ti);
+    drawTexturedQuad(40.0f, 100.0f, 140.0f, 200.0f);
+
+    // 2. Center quad: Green (same address, mid-frame palette swap)
+    pal.data[1] = 0xFF00FF00u;
+    grTexDownloadTable(GR_TMU0, GR_TEXTABLE_PALETTE, &pal);
+    drawTexturedQuad(240.0f, 100.0f, 340.0f, 200.0f);
+
+    // 3. Right quad: Blue (same address, mid-frame texture overwrite)
+    ti.data = texIdx2.data();
+    grTexDownloadMipMap(GR_TMU0, addr, GR_MIPMAPLEVELMASK_BOTH, &ti);
+    grTexSource(GR_TMU0, addr, GR_MIPMAPLEVELMASK_BOTH, &ti);
+    drawTexturedQuad(440.0f, 100.0f, 540.0f, 200.0f);
+
+    grBufferSwap(0);
+
+    uint32_t leftPx = 0, centerPx = 0, rightPx = 0;
+    REQUIRE(grLfbReadRegion(GR_BUFFER_FRONTBUFFER, 90, 150, 1, 1, 4, &leftPx) ==
+            FXTRUE);
+    REQUIRE(grLfbReadRegion(GR_BUFFER_FRONTBUFFER, 290, 150, 1, 1, 4,
+                            &centerPx) == FXTRUE);
+    REQUIRE(grLfbReadRegion(GR_BUFFER_FRONTBUFFER, 490, 150, 1, 1, 4,
+                            &rightPx) == FXTRUE);
+
+    // Left = Red
+    REQUIRE(((leftPx >> 16) & 0xFFu) >= 240);
+    REQUIRE(((leftPx >> 8) & 0xFFu) <= 10);
+    REQUIRE((leftPx & 0xFFu) <= 10);
+    // Center = Green
+    REQUIRE(((centerPx >> 16) & 0xFFu) <= 10);
+    REQUIRE(((centerPx >> 8) & 0xFFu) >= 240);
+    REQUIRE((centerPx & 0xFFu) <= 10);
+    // Right = Blue
+    REQUIRE(((rightPx >> 16) & 0xFFu) <= 10);
+    REQUIRE(((rightPx >> 8) & 0xFFu) <= 10);
+    REQUIRE((rightPx & 0xFFu) >= 240);
+  }
+
+  SECTION(
+      "Exact 8-bit chromakey discards RGB(0,0,0) but keeps "
+      "RGB(1,1,1)/(2,2,2)") {
+    const FxU32 addr = grTexMinAddress(GR_TMU0);
+    GuTexPalette pal{};
+    pal.data[0] = 0xFF000000u;  // Exact black (chromakey target)
+    pal.data[1] = 0xFF010101u;  // Near-black RGB(1,1,1) — must survive!
+    pal.data[2] = 0xFF020202u;  // Near-black RGB(2,2,2) — must survive!
+    grTexDownloadTable(GR_TMU0, GR_TEXTABLE_PALETTE, &pal);
+
+    // 64x64 texture split into 3 vertical stripes: [0..20]=0, [21..42]=1,
+    // [43..63]=2
+    std::vector<uint8_t> texBuf(64 * 64, 0);
+    for (int y = 0; y < 64; ++y) {
+      for (int x = 0; x < 64; ++x) {
+        uint8_t idx = (x < 21) ? 0 : ((x < 43) ? 1 : 2);
+        texBuf[static_cast<size_t>(y) * 64 + x] = idx;
+      }
+    }
+
+    GrTexInfo ti{};
+    ti.smallLod = GR_LOD_64;
+    ti.largeLod = GR_LOD_64;
+    ti.aspectRatio = GR_ASPECT_1x1;
+    ti.format = GR_TEXFMT_P_8;
+    ti.data = texBuf.data();
+
+    grTexDownloadMipMap(GR_TMU0, addr, GR_MIPMAPLEVELMASK_BOTH, &ti);
+    grTexSource(GR_TMU0, addr, GR_MIPMAPLEVELMASK_BOTH, &ti);
+
+    // Bright magenta background to clearly detect chromakey punch-through.
+    grBufferClear(0x00FF00FFu, 0xFF, GR_WDEPTHVALUE_FARTHEST);
+    grChromakeyValue(0x00000000u);
+    grChromakeyMode(GR_CHROMAKEY_ENABLE);
+    drawTexturedQuad(100.0f, 100.0f, 400.0f, 200.0f);
+    grChromakeyMode(GR_CHROMAKEY_DISABLE);
+    grBufferSwap(0);
+
+    uint32_t pxKey = 0, pxNear1 = 0, pxNear2 = 0;
+    REQUIRE(grLfbReadRegion(GR_BUFFER_FRONTBUFFER, 150, 150, 1, 1, 4, &pxKey) ==
+            FXTRUE);
+    REQUIRE(grLfbReadRegion(GR_BUFFER_FRONTBUFFER, 250, 150, 1, 1, 4,
+                            &pxNear1) == FXTRUE);
+    REQUIRE(grLfbReadRegion(GR_BUFFER_FRONTBUFFER, 350, 150, 1, 1, 4,
+                            &pxNear2) == FXTRUE);
+
+    // Stripe 0: exact black discarded -> Magenta background visible
+    REQUIRE(((pxKey >> 16) & 0xFFu) >= 240);
+    REQUIRE(((pxKey >> 8) & 0xFFu) <= 10);
+    REQUIRE((pxKey & 0xFFu) >= 240);
+
+    // Stripe 1: RGB(1,1,1) NOT discarded -> solid dark pixel
+    REQUIRE(((pxNear1 >> 16) & 0xFFu) <= 5);
+    REQUIRE(((pxNear1 >> 8) & 0xFFu) <= 5);
+    REQUIRE((pxNear1 & 0xFFu) <= 5);
+
+    // Stripe 2: RGB(2,2,2) NOT discarded -> solid dark pixel
+    REQUIRE(((pxNear2 >> 16) & 0xFFu) <= 5);
+    REQUIRE(((pxNear2 >> 8) & 0xFFu) <= 5);
+    REQUIRE((pxNear2 & 0xFFu) <= 5);
+  }
+
+  grSstWinClose();
+  grGlideShutdown();
+#endif
+}

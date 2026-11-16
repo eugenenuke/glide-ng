@@ -3,8 +3,11 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <memory>
 
 namespace GlideWrapper {
+
+struct VirtualTexture;
 
 struct RasterizerState {
   uint32_t depthMode{0};
@@ -36,6 +39,9 @@ struct RasterizerState {
 
   // TMU 0 and 1
   uint32_t boundTexAddress[2]{0xFFFFFFFF, 0xFFFFFFFF};
+  // Immutable copy-on-write texture snapshots captured at bin time so
+  // mid-frame TMU overwrites or palette swaps never corrupt earlier triangles.
+  std::shared_ptr<const VirtualTexture> boundTex[2];
   uint32_t texClampS[2]{0, 0};
   uint32_t texClampT[2]{0, 0};
   uint32_t texMinFilter[2]{0, 0};
@@ -96,6 +102,7 @@ struct RasterizerState {
            colorMaskAlpha == o.colorMaskAlpha && aaEnabled == o.aaEnabled &&
            boundTexAddress[0] == o.boundTexAddress[0] &&
            boundTexAddress[1] == o.boundTexAddress[1] &&
+           boundTex[0] == o.boundTex[0] && boundTex[1] == o.boundTex[1] &&
            texClampS[0] == o.texClampS[0] && texClampS[1] == o.texClampS[1] &&
            texClampT[0] == o.texClampT[0] && texClampT[1] == o.texClampT[1] &&
            texMinFilter[0] == o.texMinFilter[0] &&

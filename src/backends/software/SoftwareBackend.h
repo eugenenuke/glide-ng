@@ -48,6 +48,12 @@ class SoftwareBackend : public SoftwareBackendBase {
                     const ModernVertex& c) override;
   void DrawLine(const ModernVertex& v1, const ModernVertex& v2) override;
   void DrawPoint(const ModernVertex& pt) override;
+  void UploadTexture(uint32_t tmu, uint32_t startAddress,
+                     const struct VirtualTexture& tex) override;
+  void UploadTexturePartial(uint32_t tmu, uint32_t startAddress,
+                            const struct VirtualTexture& tex, uint32_t lodLevel,
+                            uint32_t startRow, uint32_t endRow) override;
+  void PurgeTextures() override;
 
   bool ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY, uint32_t srcWidth,
                uint32_t srcHeight, uint32_t dstStride, void* dstData) override;
@@ -122,6 +128,8 @@ class SoftwareBackend : public SoftwareBackendBase {
   std::vector<Tile> m_tiles;
 
   uint32_t m_activeStateId{0};
+  std::atomic<uint64_t> m_textureUploadRevision{0};
+  uint64_t m_resolvedTextureRevision{0};
   uint32_t m_tileSize{32};
   uint32_t m_tileShift{5};
   uint32_t m_tileCols{0};

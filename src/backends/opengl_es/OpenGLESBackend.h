@@ -175,7 +175,7 @@ class OpenGLESBackend : public GlideStateTracker {
   uint32_t m_geomVBOOffset{0};
   uint32_t m_geomVBOSizeConfigured{
       8 * 1024 * 1024};  // Configurable dynamic ring buffer size in bytes
-  std::unordered_map<uint32_t, uint32_t> m_glesTextures;
+  std::unordered_map<uint32_t, uint32_t> m_glesTextures[2];
 
   // Geometry Batching State
   enum class BatchPrimitiveMode { None, Points, Lines, Triangles };

@@ -293,7 +293,8 @@ void VulkanBackend::Shutdown() {
   m_fragShaderModuleDualSrc.reset();
 
   // Reset descriptor layout, pool, and textures
-  m_vulkanTextures.clear();
+  m_vulkanTextures[0].clear();
+  m_vulkanTextures[1].clear();
   m_dummyTexture.imageView.reset();
   m_dummySampler.reset();
   m_dummyTexture.memory.reset();
