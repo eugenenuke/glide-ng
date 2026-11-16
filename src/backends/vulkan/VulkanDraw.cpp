@@ -282,9 +282,9 @@ void VulkanBackend::DrawLine(const ModernVertex& v1, const ModernVertex& v2) {
 void VulkanBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
                                  const ModernVertex& c) {
   std::lock_guard<std::mutex> lock(m_mutex);
-  if (!m_initialized || !m_windowAttached) return;
+  if (__builtin_expect(!m_initialized || !m_windowAttached, 0)) return;
 
-  if (m_lfbStaging.IsDirty()) {
+  if (__builtin_expect(m_lfbStaging.IsDirty(), 0)) {
     FlushLFBToGPU_Locked();
   }
 
@@ -295,6 +295,40 @@ void VulkanBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
                 << ", " << a.color[2] << ", " << a.color[3] << ") tex: ("
                 << a.tex[0] << ", " << a.tex[1] << ")");
 
+  const uint32_t slotBase = m_currentFrameSlot * kVertexSlotBytes;
+  const uint32_t slotEnd = slotBase + kVertexSlotBytes;
+
+  // Fast path: pipeline & descriptor set already resolved for active triangle
+  // batch and vertex slot has room — bypass ResolveDrawState_Locked entirely.
+  if (__builtin_expect(
+          !m_pipelineStateDirty && !m_descriptorStateDirty &&
+              m_batchedVertexCount > 0 &&
+              m_cachedTopology == vk::PrimitiveTopology::eTriangleList &&
+              m_batchedPipeline == m_cachedPipeline &&
+              m_batchedDescSet == m_cachedDescSet &&
+              m_vertexBufferOffset + 3 * sizeof(ModernVertex) <= slotEnd &&
+              m_vertexBufferMap != nullptr,
+          1)) {
+    auto* dest = reinterpret_cast<ModernVertex*>(
+        reinterpret_cast<uint8_t*>(m_vertexBufferMap) + m_vertexBufferOffset);
+    if (__builtin_expect(m_sstOrigin == 0, 1)) {
+      dest[0] = a;
+      dest[1] = b;
+      dest[2] = c;
+    } else {
+      const float h = static_cast<float>(m_headlessHeight);
+      dest[0] = a;
+      dest[0].pos[1] = h - a.pos[1];
+      dest[1] = b;
+      dest[1].pos[1] = h - b.pos[1];
+      dest[2] = c;
+      dest[2].pos[1] = h - c.pos[1];
+    }
+    m_batchedVertexCount += 3;
+    m_vertexBufferOffset += 3 * sizeof(ModernVertex);
+    return;
+  }
+
   // 1. Resolve cached active pipeline & descriptor set
   vk::Pipeline reqPipeline;
   vk::DescriptorSet reqDescSet;
@@ -302,8 +336,6 @@ void VulkanBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
                           reqDescSet);
 
   // 2. Check if we need to flush the active batch
-  const uint32_t slotBase = m_currentFrameSlot * kVertexSlotBytes;
-  const uint32_t slotEnd = slotBase + kVertexSlotBytes;
   bool stateChanged =
       (reqPipeline != m_batchedPipeline || reqDescSet != m_batchedDescSet);
   bool batchEmpty = (m_batchedVertexCount == 0);
@@ -349,12 +381,13 @@ void VulkanBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
   auto* dest = reinterpret_cast<ModernVertex*>(
       reinterpret_cast<uint8_t*>(m_vertexBufferMap) + m_vertexBufferOffset);
   if (m_sstOrigin == 1) {  // GR_ORIGIN_LOWER_LEFT: flip Y coordinates
+    const float h = static_cast<float>(m_headlessHeight);
     dest[0] = a;
-    dest[0].pos[1] = (float)m_headlessHeight - a.pos[1];
+    dest[0].pos[1] = h - a.pos[1];
     dest[1] = b;
-    dest[1].pos[1] = (float)m_headlessHeight - b.pos[1];
+    dest[1].pos[1] = h - b.pos[1];
     dest[2] = c;
-    dest[2].pos[1] = (float)m_headlessHeight - c.pos[1];
+    dest[2].pos[1] = h - c.pos[1];
   } else {
     dest[0] = a;
     dest[1] = b;
@@ -382,11 +415,17 @@ void VulkanBackend::FlushBatch(bool fromStateFlush) {
 
   EnsureRenderPassActive();
 
-  m_commandBuffer->bindPipeline(vk::PipelineBindPoint::eGraphics,
-                                m_batchedPipeline);
-  m_commandBuffer->bindDescriptorSets(vk::PipelineBindPoint::eGraphics,
-                                      m_pipelineLayout.get(), 0, 1,
-                                      &m_batchedDescSet, 0, nullptr);
+  if (m_batchedPipeline != m_boundPipelineInPass) {
+    m_commandBuffer->bindPipeline(vk::PipelineBindPoint::eGraphics,
+                                  m_batchedPipeline);
+    m_boundPipelineInPass = m_batchedPipeline;
+  }
+  if (m_batchedDescSet != m_boundDescSetInPass) {
+    m_commandBuffer->bindDescriptorSets(vk::PipelineBindPoint::eGraphics,
+                                        m_pipelineLayout.get(), 0, 1,
+                                        &m_batchedDescSet, 0, nullptr);
+    m_boundDescSetInPass = m_batchedDescSet;
+  }
 
   PushConstants pcs{};
   PopulatePushConstants(pcs);
@@ -440,32 +479,34 @@ void VulkanBackend::EnsureRenderPassActive() {
   vk::DeviceSize zeroOffset = 0;
   m_commandBuffer->bindVertexBuffers(0, 1, &m_vertexBuffer.get(), &zeroOffset);
 
+  m_boundPipelineInPass = vk::Pipeline{};
+  m_boundDescSetInPass = vk::DescriptorSet{};
   m_inRenderPass = true;
 
   // Perform explicit clears using vkCmdClearAttachments if pending on the
   // active FBO!
-  std::vector<vk::ClearAttachment> clears;
+  std::array<vk::ClearAttachment, 2> clears;
+  uint32_t clearCount = 0;
   uint32_t activeIdx = GetActiveGpuBufferIdx();
   if (m_clearColorPending[activeIdx]) {
-    clears.push_back(vk::ClearAttachment(vk::ImageAspectFlagBits::eColor, 0,
-                                         m_clearColorValue[activeIdx]));
+    clears[clearCount++] = vk::ClearAttachment(vk::ImageAspectFlagBits::eColor,
+                                               0, m_clearColorValue[activeIdx]);
     m_clearColorPending[activeIdx] = false;
   }
   if (m_clearDepthPending[activeIdx]) {
-    clears.push_back(
-        vk::ClearAttachment(vk::ImageAspectFlagBits::eDepth, 0,
-                            vk::ClearValue(vk::ClearDepthStencilValue(
-                                m_clearDepthValue[activeIdx], 0))));
+    clears[clearCount++] = vk::ClearAttachment(
+        vk::ImageAspectFlagBits::eDepth, 0,
+        vk::ClearValue(
+            vk::ClearDepthStencilValue(m_clearDepthValue[activeIdx], 0)));
     m_clearDepthPending[activeIdx] = false;
   }
 
-  if (!clears.empty()) {
+  if (clearCount > 0) {
     vk::ClearRect clearRect(
         vk::Rect2D({0, 0}, {m_headlessWidth, m_headlessHeight}), 0, 1);
-    m_commandBuffer->clearAttachments(static_cast<uint32_t>(clears.size()),
-                                      clears.data(), 1, &clearRect);
+    m_commandBuffer->clearAttachments(clearCount, clears.data(), 1, &clearRect);
     GLIDE_LOG(DEBUG, "Vulkan",
-              "Explicitly cleared " << clears.size()
+              "Explicitly cleared " << clearCount
                                     << " attachments inside render pass.");
   }
 }
@@ -504,6 +545,11 @@ void VulkanBackend::PopulatePushConstants(PushConstants& pcs) {
   pcs.fogColor = packedFogColor;
 
   // Pack 64-entry 8-bit fog table into 16 uint32_t values
+#if defined(__BYTE_ORDER__) && (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)
+  static_assert(sizeof(pcs.fogTable) == sizeof(m_fogTable),
+                "PushConstants::fogTable size mismatch");
+  std::memcpy(pcs.fogTable, m_fogTable, sizeof(m_fogTable));
+#else
   for (int i = 0; i < 16; ++i) {
     uint32_t word = 0;
     word |= static_cast<uint32_t>(m_fogTable[i * 4 + 0]) << 0;
@@ -512,6 +558,7 @@ void VulkanBackend::PopulatePushConstants(PushConstants& pcs) {
     word |= static_cast<uint32_t>(m_fogTable[i * 4 + 3]) << 24;
     pcs.fogTable[i] = word;
   }
+#endif
 
   // Milestone 9: Combiner & Texture State
   pcs.colorFunc = m_colorCombinerFunc;

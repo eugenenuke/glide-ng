@@ -128,15 +128,19 @@ bool OpenGLESBackend::CreateGeomBuffers() {
   glBindVertexArray(0);
   glBindBuffer(GL_ARRAY_BUFFER, 0);
 
+  m_batchVertices.reserve(16384);
+
   checkGLError("CreateGeomBuffers");
   return true;
 }
 
 void OpenGLESBackend::DrawPoint(const ModernVertex& pt) {
   std::lock_guard<std::mutex> lock(m_mutex);
-  if (!m_initialized || !m_windowAttached) return;
+  if (__builtin_expect(!m_initialized || !m_windowAttached, 0)) return;
 
-  FlushLFBToGPU_Locked();
+  if (__builtin_expect(m_lfbStaging.IsDirty(), 0)) {
+    FlushLFBToGPU_Locked();
+  }
 
   bool incomingIs2D = (pt.pos[3] == 1.0f);
 
@@ -162,9 +166,11 @@ void OpenGLESBackend::DrawPoint(const ModernVertex& pt) {
 
 void OpenGLESBackend::DrawLine(const ModernVertex& v0, const ModernVertex& v1) {
   std::lock_guard<std::mutex> lock(m_mutex);
-  if (!m_initialized || !m_windowAttached) return;
+  if (__builtin_expect(!m_initialized || !m_windowAttached, 0)) return;
 
-  FlushLFBToGPU_Locked();
+  if (__builtin_expect(m_lfbStaging.IsDirty(), 0)) {
+    FlushLFBToGPU_Locked();
+  }
 
   bool incomingIs2D = (v0.pos[3] == 1.0f && v1.pos[3] == 1.0f);
 
@@ -192,12 +198,27 @@ void OpenGLESBackend::DrawLine(const ModernVertex& v0, const ModernVertex& v1) {
 void OpenGLESBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
                                    const ModernVertex& c) {
   std::lock_guard<std::mutex> lock(m_mutex);
-  if (!m_initialized || !m_windowAttached) return;
+  if (__builtin_expect(!m_initialized || !m_windowAttached, 0)) return;
 
-  FlushLFBToGPU_Locked();
+  if (__builtin_expect(m_lfbStaging.IsDirty(), 0)) {
+    FlushLFBToGPU_Locked();
+  }
 
-  bool incomingIs2D =
+  const bool incomingIs2D =
       (a.pos[3] == 1.0f && b.pos[3] == 1.0f && c.pos[3] == 1.0f);
+  const size_t curVerts = m_batchVertices.size();
+
+  if (__builtin_expect(
+          m_batchPrimitiveMode == BatchPrimitiveMode::Triangles &&
+              m_batchIs2DGeometry == incomingIs2D &&
+              m_geomVBOOffset + (curVerts + 3) * sizeof(ModernVertex) <=
+                  m_geomVBOSizeConfigured,
+          1)) {
+    m_batchVertices.push_back(a);
+    m_batchVertices.push_back(b);
+    m_batchVertices.push_back(c);
+    return;
+  }
 
   bool primitiveMismatch =
       (m_batchPrimitiveMode != BatchPrimitiveMode::None &&
@@ -205,7 +226,7 @@ void OpenGLESBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
   bool projectionChanged = (m_batchPrimitiveMode != BatchPrimitiveMode::None &&
                             m_batchIs2DGeometry != incomingIs2D);
   bool capacityReached =
-      (m_geomVBOOffset + (m_batchVertices.size() + 3) * sizeof(ModernVertex) >
+      (m_geomVBOOffset + (curVerts + 3) * sizeof(ModernVertex) >
        m_geomVBOSizeConfigured);
 
   if (primitiveMismatch || projectionChanged || capacityReached) {

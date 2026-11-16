@@ -410,6 +410,8 @@ void VulkanBackend::ResetState_Locked() {
   m_descriptorStateDirty = true;
   m_cachedPipeline = vk::Pipeline{};
   m_cachedDescSet = vk::DescriptorSet{};
+  m_boundPipelineInPass = vk::Pipeline{};
+  m_boundDescSetInPass = vk::DescriptorSet{};
 }
 
 bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,

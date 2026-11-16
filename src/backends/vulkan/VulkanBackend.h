@@ -442,6 +442,8 @@ class VulkanBackend : public GlideStateTracker {
   uint32_t m_batchedFirstVertex{0};
   vk::Pipeline m_batchedPipeline;
   vk::DescriptorSet m_batchedDescSet;
+  vk::Pipeline m_boundPipelineInPass;
+  vk::DescriptorSet m_boundDescSetInPass;
   bool m_pipelineStateDirty{true};
   bool m_descriptorStateDirty{true};
   vk::Pipeline m_cachedPipeline;
