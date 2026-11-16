@@ -96,7 +96,7 @@ struct WrapperConfig {
 
     // Backend-specific tuning (unified; zero direct std::getenv() in backends)
     uint32_t swThreads{0};         // 0 = auto (hardware_concurrency)
-    bool swUseSimd{false};         // AVX2 rasterizer hook (GLIDE_NG_SW_SIMD)
+    bool swUseSimd{true};          // AVX2 rasterizer hook (GLIDE_NG_SW_SIMD)
     uint32_t swTileSize{32};       // >= 16, rounded to power-of-two
     std::string swAaMode{"analytical"}; // "analytical" or "ssaa"
     std::string vkCachePath{".glide-vulkan-cache.bin"};

@@ -604,11 +604,18 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
         bool tmu1Active = hasTexture1;
         TmuColor tmu1Out = iteratedColor;
         if (keepPixel && tmu1Active) {
-          tmu1Out = EvaluateTmuStage(
-              state.texCombinerRgbFunc[1], state.texCombinerRgbFactor[1],
-              state.texCombinerAlphaFunc[1], state.texCombinerAlphaFactor[1],
-              state.texCombinerRgbInvert[1], state.texCombinerAlphaInvert[1],
-              tmu1Color, iteratedColor, iteratedColor);
+          if (state.texCombinerRgbFunc[1] == 1 &&
+              state.texCombinerAlphaFunc[1] == 1 &&
+              !state.texCombinerRgbInvert[1] &&
+              !state.texCombinerAlphaInvert[1]) {
+            tmu1Out = tmu1Color;
+          } else {
+            tmu1Out = EvaluateTmuStage(
+                state.texCombinerRgbFunc[1], state.texCombinerRgbFactor[1],
+                state.texCombinerAlphaFunc[1], state.texCombinerAlphaFactor[1],
+                state.texCombinerRgbInvert[1], state.texCombinerAlphaInvert[1],
+                tmu1Color, iteratedColor, iteratedColor);
+          }
         }
 
         // 3. Sample TMU 0 (Downstream)
@@ -694,11 +701,18 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
         TmuColor tmu0Out = tmu1Out;
         if constexpr (HasTexture) {
           if (keepPixel) {
-            tmu0Out = EvaluateTmuStage(
-                state.texCombinerRgbFunc[0], state.texCombinerRgbFactor[0],
-                state.texCombinerAlphaFunc[0], state.texCombinerAlphaFactor[0],
-                state.texCombinerRgbInvert[0], state.texCombinerAlphaInvert[0],
-                tmu0Color, tmu1Out, iteratedColor);
+            if (state.texCombinerRgbFunc[0] == 1 &&
+                state.texCombinerAlphaFunc[0] == 1 &&
+                !state.texCombinerRgbInvert[0] &&
+                !state.texCombinerAlphaInvert[0]) {
+              tmu0Out = tmu0Color;
+            } else {
+              tmu0Out = EvaluateTmuStage(
+                  state.texCombinerRgbFunc[0], state.texCombinerRgbFactor[0],
+                  state.texCombinerAlphaFunc[0], state.texCombinerAlphaFactor[0],
+                  state.texCombinerRgbInvert[0], state.texCombinerAlphaInvert[0],
+                  tmu0Color, tmu1Out, iteratedColor);
+            }
           }
         }
 
@@ -925,7 +939,7 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
                                ? dither_matrix_4x4[ditherY * 4 + ditherX]
                                : dither_matrix_2x2[ditherY * 4 + ditherX];
             if ((alphaTestOp != 7) || (alpha < 0.99f)) {
-              float alpha255 = std::round(alpha * 255.0f);
+              float alpha255 = std::floor(alpha * 255.0f + 0.5f);
               if (alpha255 + (static_cast<float>(dith) * 128.0f /
                               (state.ditherMode == 2 ? 16.0f : 4.0f)) <
                   128.0f)
@@ -992,7 +1006,8 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
         }
 
         // Depth Testing
-        if (keepPixel) {
+        if (keepPixel && depthMode != 0 && depthBuffer &&
+            (depthCompareOp != 7 || depthMask)) {
           float targetDepth = 0.0f;
           if (depthMode == 2) {
             float w = 1.0f / wVal;
@@ -1005,7 +1020,7 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
                 0.0f, std::min(1.0f, targetDepth +
                                          static_cast<float>(depthBiasLevel) /
                                              65535.0f));
-          if (depthMode != 0 && depthCompareOp != 7 && depthBuffer) {
+          if (depthCompareOp != 7) {
             float currentDepth = depthBuffer[pIdx];
             bool depthPass = false;
             switch (depthCompareOp) {
@@ -1031,10 +1046,8 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
             if (!depthPass) keepPixel = false;
           }
 
-          if (keepPixel) {
-            if (depthMode != 0 && depthMask && depthBuffer) {
-              depthBuffer[pIdx] = targetDepth;
-            }
+          if (keepPixel && depthMask) {
+            depthBuffer[pIdx] = targetDepth;
           }
         }
 

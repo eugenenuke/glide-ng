@@ -35,29 +35,34 @@ public:
             return;
         }
 
+        const int chunkSize = (totalTasks >= 64) ? 4 : 1;
         {
             std::unique_lock<std::mutex> lock(m_mutex);
             m_taskFunc = &taskFunc;
-            m_nextTaskIndex.store(0);
+            m_nextTaskIndex.store(0, std::memory_order_relaxed);
             m_totalTasks = totalTasks;
-            m_completedThreads.store(0);
-            m_frameId++;
+            m_chunkSize = chunkSize;
+            m_completedThreads.store(0, std::memory_order_relaxed);
+            m_frameId.fetch_add(1, std::memory_order_release);
         }
         m_cvStart.notify_all();
 
         // Main thread helps with the work
         while (true) {
-            int taskIdx = m_nextTaskIndex.fetch_add(1);
-            if (taskIdx >= totalTasks) {
+            int startIdx = m_nextTaskIndex.fetch_add(chunkSize, std::memory_order_relaxed);
+            if (startIdx >= totalTasks) {
                 break;
             }
-            taskFunc(taskIdx);
+            const int endIdx = (startIdx + chunkSize < totalTasks) ? (startIdx + chunkSize) : totalTasks;
+            for (int taskIdx = startIdx; taskIdx < endIdx; ++taskIdx) {
+                taskFunc(taskIdx);
+            }
         }
 
         // Wait for workers to finish via condition variable
         std::unique_lock<std::mutex> lock(m_mutex);
         m_cvEnd.wait(lock, [this]() {
-            return m_completedThreads.load() == m_threads.size() || m_shutdown.load();
+            return m_completedThreads.load(std::memory_order_acquire) == m_threads.size() || m_shutdown.load(std::memory_order_relaxed);
         });
     }
 
@@ -70,25 +75,31 @@ private:
             {
                 std::unique_lock<std::mutex> lock(m_mutex);
                 m_cvStart.wait(lock, [this, localFrameId]() {
-                    return m_frameId.load() > localFrameId || m_shutdown.load();
+                    return m_frameId.load(std::memory_order_acquire) > localFrameId || m_shutdown.load(std::memory_order_relaxed);
                 });
             }
 
-            if (m_shutdown.load()) return;
+            if (m_shutdown.load(std::memory_order_relaxed)) return;
 
-            // Lock-free task processing loop
+            const int totalTasks = m_totalTasks;
+            const int chunkSize = m_chunkSize;
+            const auto* func = m_taskFunc;
+            localFrameId = m_frameId.load(std::memory_order_relaxed);
+
+            // Lock-free chunked task processing loop
             while (true) {
-                int taskIdx = m_nextTaskIndex.fetch_add(1);
-                if (taskIdx >= m_totalTasks) {
+                int startIdx = m_nextTaskIndex.fetch_add(chunkSize, std::memory_order_relaxed);
+                if (startIdx >= totalTasks) {
                     break;
                 }
-                (*m_taskFunc)(taskIdx);
+                const int endIdx = (startIdx + chunkSize < totalTasks) ? (startIdx + chunkSize) : totalTasks;
+                for (int taskIdx = startIdx; taskIdx < endIdx; ++taskIdx) {
+                    (*func)(taskIdx);
+                }
             }
 
             // Mark completion
-            size_t completed = m_completedThreads.fetch_add(1) + 1;
-            localFrameId = m_frameId.load(std::memory_order_relaxed);
-            
+            size_t completed = m_completedThreads.fetch_add(1, std::memory_order_acq_rel) + 1;
             if (completed == m_threads.size()) {
                 std::unique_lock<std::mutex> lock(m_mutex);
                 m_cvEnd.notify_all();
@@ -100,9 +111,10 @@ private:
     std::mutex m_mutex;
     std::condition_variable m_cvStart;
     std::condition_variable m_cvEnd;
-    std::atomic<int> m_nextTaskIndex{0};
+    alignas(64) std::atomic<int> m_nextTaskIndex{0};
     int m_totalTasks{0};
-    std::atomic<size_t> m_completedThreads{0};
+    int m_chunkSize{1};
+    alignas(64) std::atomic<size_t> m_completedThreads{0};
     std::atomic<bool> m_shutdown{false};
     std::atomic<uint32_t> m_frameId{0};
     const std::function<void(int)>* m_taskFunc{nullptr};
