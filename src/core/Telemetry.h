@@ -244,51 +244,69 @@ class TelemetryManager {
 
 // Lightweight exclusive-stack RAII timer for per-frame wrapper CPU breakdown.
 // Zero clock calls when perf logging is disabled or when nested inside the
-// same bucket; subtracts child time when nested inside a different bucket.
+// same bucket; stores active state by value (no stack-frame pointers) and
+// flushes/resumes the parent bucket cleanly across nested bucket transitions.
 class CpuBucketScope {
  public:
   explicit CpuBucketScope(CpuBucket bucket) noexcept {
     auto& tm = TelemetryManager::GetInstance();
     if (!tm.IsPerfTimingEnabled()) return;
-    CpuBucketScope*& current = CurrentScope();
-    if (current && current->m_bucket == bucket) return;
+    ActiveState& state = CurrentState();
+    if (state.active && state.bucket == bucket) return;
+    const int64_t nowNs = NowNs();
+    if (state.active) {
+      const int64_t parentSliceNs = std::max<int64_t>(0, nowNs - state.resumeNs);
+      tm.RecordCpuBucketNs(state.bucket, parentSliceNs);
+      m_prevActive = true;
+      m_prevBucket = state.bucket;
+    }
+    state.active = true;
+    state.bucket = bucket;
+    state.resumeNs = nowNs;
     m_bucket = bucket;
-    m_prev = current;
-    m_startNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                    std::chrono::steady_clock::now().time_since_epoch())
-                    .count();
     m_active = true;
-    current = this;
   }
 
   ~CpuBucketScope() noexcept {
     if (!m_active) return;
-    const int64_t endNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                              std::chrono::steady_clock::now().time_since_epoch())
-                              .count();
-    const int64_t totalNs = std::max<int64_t>(0, endNs - m_startNs);
-    const int64_t selfNs = std::max<int64_t>(0, totalNs - m_childNs);
-    TelemetryManager::GetInstance().RecordCpuBucketNs(m_bucket, selfNs);
-    if (m_prev) {
-      m_prev->m_childNs += totalNs;
+    const int64_t nowNs = NowNs();
+    ActiveState& state = CurrentState();
+    const int64_t selfSliceNs = std::max<int64_t>(0, nowNs - state.resumeNs);
+    TelemetryManager::GetInstance().RecordCpuBucketNs(m_bucket, selfSliceNs);
+    if (m_prevActive) {
+      state.active = true;
+      state.bucket = m_prevBucket;
+      state.resumeNs = nowNs;
+    } else {
+      state.active = false;
     }
-    CurrentScope() = m_prev;
   }
 
   CpuBucketScope(const CpuBucketScope&) = delete;
   CpuBucketScope& operator=(const CpuBucketScope&) = delete;
 
  private:
-  static CpuBucketScope*& CurrentScope() noexcept {
-    static thread_local CpuBucketScope* s_current = nullptr;
-    return s_current;
+  struct ActiveState {
+    bool active{false};
+    CpuBucket bucket{CpuBucket::Draw};
+    int64_t resumeNs{0};
+  };
+
+  static int64_t NowNs() noexcept {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+  }
+
+  static ActiveState& CurrentState() noexcept {
+    static thread_local ActiveState s_state;
+    return s_state;
   }
 
   CpuBucket m_bucket{CpuBucket::Draw};
+  CpuBucket m_prevBucket{CpuBucket::Draw};
   bool m_active{false};
-  int64_t m_startNs{0};
-  int64_t m_childNs{0};
-  CpuBucketScope* m_prev{nullptr};
+  bool m_prevActive{false};
 };
 
 #ifdef ENABLE_TELEMETRY
