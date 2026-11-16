@@ -1,6 +1,7 @@
 #include "GlideSplashAnimator.h"
 #include "EmbeddedAssets.h"
 #include "BackendManager.h"
+#include "Telemetry.h"
 #include <math.h>
 #include <cstring>
 #include <cstdint>
@@ -597,6 +598,7 @@ void GlideSplashAnimator::xfAndProj(int frame, int obj) {
 }
 
 void GlideSplashAnimator::RenderBanner(uint32_t scrWidth, uint32_t scrHeight) {
+    GLIDE_CPU_SCOPE(CpuBucket::Lfb);
     constexpr uint32_t kBannerWidth = 180;
     constexpr uint32_t kBannerHeight = 90;
     if (scrWidth < kBannerWidth || scrHeight < kBannerHeight) {

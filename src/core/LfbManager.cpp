@@ -137,6 +137,7 @@ bool LfbManager::SubmitWriteLock_Locked(const LfbPipelineConfig& config, bool ke
 }
 
 bool LfbManager::Unlock(uint32_t type, uint32_t buffer, const LfbPipelineConfig& config) {
+    GLIDE_CPU_SCOPE(CpuBucket::Lfb);
     std::lock_guard<std::mutex> lock(m_mutex);
     if (IsWriteLockType(type)) {
         if (!m_writeLock.isLocked) {
@@ -171,6 +172,7 @@ bool LfbManager::FlushActiveWriteLock(const LfbPipelineConfig& config) {
     if (!m_writeLocked.load(std::memory_order_acquire)) {
         return false;
     }
+    GLIDE_CPU_SCOPE(CpuBucket::Lfb);
     std::lock_guard<std::mutex> lock(m_mutex);
     if (!m_writeLock.isLocked) {
         m_writeLocked.store(false, std::memory_order_release);

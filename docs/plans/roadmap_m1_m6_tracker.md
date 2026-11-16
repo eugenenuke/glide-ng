@@ -22,9 +22,9 @@
 | **M3** | `feat/m3-hud-fps` | DXVK-style on-screen HUD (`GLIDE_NG_HUD=fps`, extensible) rendered cleanly in each backend's post-scene presentation pass (Vulkan, GLES, SW) | Med | `[x] DONE (USER CONFIRMED — 2026-11-15)` | Merged to `main` |
 | **M4** | `fix/m4-parked-sdk-tests` | Fix parked official SDK tests: `test16` ('P' plug R/B inversion on VK/GLES), `test22` (SW multi-pass fog + `largeLod` mip offset), `test25` & `test27` + standalone WSI event responsiveness + Catch2 regressions | Med | `[x] DONE (USER CONFIRMED — 2026-11-15)` | Merged to `main` |
 | **M5** | `fix/m5-carmageddon` | Carmageddon (`carma`) compatibility & performance: black menus, missing in-game UI/HUD, texture/seam/sky/Pratcam glitches, lazy palette swizzling, GPU state-dedup & batching, TMU budget & Vulkan texture pool | Med–High | `[x] DONE (USER CONFIRMED — 2026-11-16)` | Merged to `main` |
-| **M6** | `feat/m6-dos-tools-bench` | Telemetry `app_cpu_ms`/`wrapper_cpu_ms` breakdown + optional Open Watcom v2 DOS cross-build (`vendor/watcom`) + dual Linux/DOS `glide_info` + GPU/Glide-bound active visual benchmark (`glide_bench`) | High | `[ ] PENDING` | — |
+| **M6** | `feat/m6-dos-tools-bench` | Telemetry `app_cpu_ms`/`wrapper_cpu_ms` breakdown + single-source-of-truth `env_vars.h` + Glide 2/3 override fixes + optional Open Watcom v2 DOS cross-build (`vendor/watcom`) + dual Linux/DOS `glide_info` + GPU-bound `glide_bench` with GlideMark score | High | `[x] DONE (USER CONFIRMED — 2026-11-16)` | Merged to `main` |
 | **M7** | `perf/m7-profiling-optimization` | Systematic performance profiling & optimization using M6 telemetry + `glide_bench` (Linux & DOSBox) and Carmageddon dense-scene traces across Vulkan, OpenGL ES, and Software | Med–High | `[ ] PENDING` | — |
-| *(Future)* **M8** | `feat/m8-glide-envvars-p2` | Phase-2 authentic `FX_GLIDE_*` / `SST_*` expansion (`FX_GLIDE_FBRAM`, `FX_GLIDE_TMU_MEMSIZE`, `SSTV2_NUM_TMUS`, `SST_GAMMA`, `FX_GLIDE_IGNORE_REOPEN`, `FX_GLIDE_NO_DITHER_SUB`, `FX_GLIDE_BOUNDS_CHECK`, `FX_SNAPSHOT`) | Low | `[ ] DEFERRED` | — |
+| *(Future)* **M8** | `feat/m8-glide-envvars-p2` | Phase-2 authentic `FX_GLIDE_*` / `SST_*` expansion (`FX_GLIDE_FBRAM`, `FX_GLIDE_TMU_MEMSIZE`, `SSTV2_NUM_TMUS`, `SST_GAMMA`, `FX_GLIDE_IGNORE_REOPEN`, `FX_GLIDE_NO_DITHER_SUB`, `FX_GLIDE_BOUNDS_CHECK`, `FX_SNAPSHOT`) + 3DMark-style interactive mini-scene / mini-game showcase (`glide_bench` cinematic/playable mode) | Low–Med | `[ ] DEFERRED` | — |
 
 ---
 
@@ -217,14 +217,37 @@
 
 ---
 
-## 7. Upcoming Milestones (High-Level Scope — Detailed Just-In-Time)
+## 7. Milestone M6: Telemetry CPU Split, Optional DOS Diagnostics & GPU-Bound Benchmark (`feat/m6-dos-tools-bench`)
 
-### Milestone M6 — Telemetry CPU Split, Optional DOS Diagnostics & GPU-Bound Benchmark (`feat/m6-dos-tools-bench`)
-- Enriched per-frame telemetry (`wrapper_cpu_ms` vs `app_cpu_ms` + `draw`/`tex`/`lfb`/`state` CPU buckets) to separate guest/DOSBox CPU time from shared `glide-ng` CPU time.
-- Optional Open Watcom v2 toolchain detection (`vendor/watcom` or `$WATCOM`); never blocks Linux builds when absent.
-- Dual Linux + DOS (`glide_info` / `glide_info.exe`) hardware/config reporter.
-- Dual Linux + DOS (`glide_bench` / `glide_bench.exe`) low-CPU, Glide/GPU-bound visual benchmark (fillrate/overdraw, triangle throughput, multi-pass+fog, LFB write bandwidth) with in-Glide on-screen FPS & diagnostics HUD.
+### M6 Task Breakdown
+
+- **`M6.1`** — Per-Frame `app_cpu_ms` vs. `wrapper_cpu_ms` CPU Breakdown (`Telemetry.{h,cpp}`, `glide2_entry.cpp`, `glide3_entry.cpp`, `TextureManager.cpp`, `LfbManager.cpp`, `GlideSplashAnimator.cpp`, `SoftwareBackend.cpp`, `Vulkan{Draw,Lfb}.cpp`, `OpenGLES{Backend,Draw}.cpp`, `docs/glide_environment_variables.md`, `tests/test_glide3.cpp`):
+  - Add always-compiled, zero-overhead-when-off `CpuBucketScope` (`GLIDE_CPU_SCOPE`) with an exclusive thread-local nesting stack so same-bucket nested calls are no-ops and cross-bucket nested calls (e.g., `grDrawTriangle` triggering lazy `TextureManager::SyncBoundTextures`, or `grColorCombine` flushing `VulkanDraw::FlushBatch`) attribute exclusive nanosecond durations without double-counting.
+  - Append 6 columns (`wrapper_cpu_ms`, `app_cpu_ms`, `draw_cpu_ms`, `tex_cpu_ms`, `lfb_cpu_ms`, `state_cpu_ms`) to `GLIDE_NG_PERF_LOG` CSV output (preserving full compatibility with the 18 existing columns) and surface `[app=... wrap=...: draw=... tex=... lfb=... state=...]` in the 1-second `[Perf]` summary.
+  - Instrument all hot Glide 2.x/3.x entry points plus internal choke points (`FlushBins_Locked`, `FlushBatch`, `FlushLFBToGPU_Locked`, `FlushActiveWriteLock`, `RenderBanner`, `PrepareTextureForBind`, `SyncBoundTextures`).
+  - Add `[Telemetry][M6]` Catch2 tests verifying disabled zero-overhead behavior, same/cross-bucket exclusivity, and end-to-end `app_cpu_ms` vs. `wrapper_cpu_ms` CSV separation.
+  - **Status**: `[x] DONE (USER CONFIRMED — 2026-11-16)`
+- **`M6.2`** — Single-Source Env Var Registry, Override Consistency Fixes, Optional Open Watcom v2 DOS Cross-Build & Unified Linux/DOS `glide_info` (`include/glide_ng/env_vars.h`, `src/core/JsonConfigLoader.cpp`, `src/glide2/glide2_entry.cpp`, `src/glide3/glide3_entry.cpp`, `cmake/OpenWatcomDos.cmake`, `CMakeLists.txt`, `tools/CMakeLists.txt`, `tools/common/glide_tool_platform.h`, `tools/common/glide2_dos_ovl.h`, `tools/glide_info/glide_info.c`, `tests/test_architecture.cpp`):
+  - Extracted all 31 `GLIDE_NG_*` and 3 `FX_GLIDE_*` env var names + X-macro metadata into pure C89/C99/C++ `include/glide_ng/env_vars.h`, shared by both `JsonConfigLoader` and `glide_info`.
+  - Fixed Glide 2.x/3.x override inconsistencies: `grGlideGetVersion` and `grGetString(GR_VERSION)` now honor `config.apiVersion`, `grGet(GR_MEMORY_FB)` and `grGet(GR_NUM_TMU)` read `config.fbiMemoryMb` / `config.tmuCount` after `EnsureEngineInitialized()`, and `grTexMaxAddress`/`guTexMemQueryAvail` return `0` for `tmu >= config.tmuCount` (covered by Catch2 `[Overrides][M6]`).
+  - Added optional Open Watcom v2 DOS/32 CauseWay CMake cross-build (`cmake/OpenWatcomDos.cmake`) auto-detecting `vendor/watcom` or `$WATCOM`, embedding `cwstub.exe` for self-contained `.exe` binaries, and cleanly skipping when absent.
+  - Built portable CauseWay LE DLL loader (`tools/common/glide2_dos_ovl.h`, `cw_safe_load_ovl` / `cw_safe_free_ovl`) working around CauseWay `cwdll.lib`'s null-`initial_EIP` far-call GPF on DOSBox/OpenGlide `GLIDE2X.OVL` while still delegating to `LoadLibrary` on authentic 3dfx hardware OVLs (`entry_cs != 0`).
+  - Implemented unified C99 `glide_info` compiling for Linux (`glide2_info`, `glide3_info`), DOS/32 (`build/dos/glide_info.exe`), and Windows-ready: strictly ≤23 lines × ≤78 cols default non-graphical summary, dynamic active-only env var display, `-v`/`--verbose`, `-p`/`--probe` (resolution/LFB/TMU live verification), `-o <file>`, `--pause`, and `-h`/`--help`.
+  - **Status**: `[x] DONE (USER CONFIRMED — 2026-11-16)`
+- **`M6.3`** — Unified Linux/DOS GPU-Bound Visual Benchmark (`glide_bench`) (`tools/glide_bench/{glide_bench.h,bench_hud.c,bench_scenes.c,glide_bench.c}`, `tools/CMakeLists.txt`):
+  - Built unified C99 `glide_bench` compiling for Linux (`glide2_bench`, `glide3_bench`), DOS/32 (`build/dos/glide_bench.exe`), and Windows-ready, using 100% authentic Glide 2.x/3.x calls and zero `glide-ng`-specific hooks.
+  - Extensible `BenchScene` vtable registry (`kBenchScenes[]`) with 6 precomputed low-CPU scenes: `fillrate` (16x alpha overdraw), `tris` (4K-tri waving mesh), `state` (120 batches/frame state thrash), `tex` (64x `P_8` texture + palette streaming), `lfb` (3D + sparse 565 HUD write), and `multipass` (2-pass `GR_FOG_ADD2`/`MULT2` + `PREFOG_COLOR` + mipmaps + chromakey).
+  - Pure-Glide textured-quad in-scene HUD (4×6 bitmap font atlas in TMU0, toggled via `--no-hud`), full CLI (`--scene`, `--res`, `--seconds`, `--frames`, `--loop`, `--no-hud`, `-o`, `--csv`, `--list`, `--pause`, `-h`), 60 Hz pacing detector (`GLIDE_NG_VSYNC=0` / `GLIDE_NG_MAX_FPS=0`), and 3DMark-style weighted geometric-mean **GlideMark Score** (`30 FPS ref = 1000 pts`).
+  - **Status**: `[x] DONE (USER CONFIRMED — 2026-11-16)`
+
+---
+
+## 8. Upcoming Milestones (High-Level Scope — Detailed Just-In-Time)
 
 ### Milestone M7 — Performance Profiling & Optimization (`perf/m7-profiling-optimization`)
 - Profile `glide_bench` (Linux vs. DOSBox) and Carmageddon dense scenes using M6 `app_cpu_ms`/`wrapper_cpu_ms` CSV traces and host CPU profiling (`perf`).
-- Target confirmed wrapper CPU/GPU bottlenecks across Vulkan, OpenGL ES, and Software with before/after benchmark and Carmageddon CSV proof.
+- Target confirmed wrapper CPU/GPU bottlenecks across Vulkan, OpenGL ES, and Software (initial `glide_bench` signal: `tex` P8/palette streaming is 18.5 FPS on Vulkan / 29.6 FPS on GLES vs. >100 FPS on `tris`/`state`/`lfb`) with before/after benchmark and Carmageddon CSV proof.
+
+### Milestone M8 — Phase-2 Authentic Glide Env Vars & 3DMark-Style Mini-Scene Showcase *(Deferred)*
+- Expand authentic `FX_GLIDE_*` / `SST_*` environment variables (`FX_GLIDE_FBRAM`, `FX_GLIDE_TMU_MEMSIZE`, `SSTV2_NUM_TMUS`, `SST_GAMMA`, `FX_GLIDE_IGNORE_REOPEN`, `FX_GLIDE_NO_DITHER_SUB`, `FX_GLIDE_BOUNDS_CHECK`, `FX_SNAPSHOT`).
+- Add a 3DMark-style deterministic fly-through mini-scene / playable mini-game to `glide_bench` (e.g., *Voodoo Canyon* flight/racer fly-through, *3dfx Temple* multi-pass lightmap + fog showcase, or *Retro Outrun* playable Glide 2.x/3.x demo) combining geometry, mipmapped textures, additive particles, fog, and LFB HUD into a single visual showcase & composite benchmark scene.

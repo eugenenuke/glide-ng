@@ -369,6 +369,7 @@ void VulkanBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
 void VulkanBackend::FlushBatch(bool fromStateFlush) {
   if (m_batchedVertexCount == 0) return;
 
+  GLIDE_CPU_SCOPE(CpuBucket::Draw);
   GLIDE_PROFILE_SCOPE("Vulkan::FlushBatch");
   TelemetryManager::GetInstance().RecordDrawCall(fromStateFlush);
   GLIDE_INCREMENT_TRIANGLES_DRAWN(m_batchedVertexCount / 3);

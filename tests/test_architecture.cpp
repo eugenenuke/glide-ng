@@ -8081,3 +8081,118 @@ TEST_CASE("M5 Carmageddon Pass 3 Regression Fixes", "[M5][Carmageddon][Pass3]") 
   grGlideShutdown();
 #endif
 }
+
+TEST_CASE("Glide 2.x Hardware & Version Override Consistency (M6.2)",
+          "[Overrides][M6]") {
+#ifdef __linux__
+  struct ScopedEnv {
+    std::string key;
+    bool hadPrev = false;
+    std::string prevVal;
+    ScopedEnv(const char* k, const char* v) : key(k) {
+      if (const char* cur = std::getenv(k)) {
+        hadPrev = true;
+        prevVal = cur;
+      }
+      if (v) {
+        ::setenv(k, v, 1);
+      } else {
+        ::unsetenv(k);
+      }
+    }
+    ~ScopedEnv() {
+      if (hadPrev) {
+        ::setenv(key.c_str(), prevVal.c_str(), 1);
+      } else {
+        ::unsetenv(key.c_str());
+      }
+    }
+  };
+
+  SECTION("Voodoo Graphics (1-TMU) + custom API version/memory overrides") {
+    ScopedEnv eCard("GLIDE_NG_CARD_MODEL", "VOODOO1");
+    ScopedEnv eVer("GLIDE_NG_API_VERSION", "2.61");
+    ScopedEnv eFb("GLIDE_NG_FBI_MEM_MB", "8");
+    ScopedEnv eTmuCnt("GLIDE_NG_TMU_COUNT", "1");
+    ScopedEnv eTmuMem("GLIDE_NG_TMU_MEM_MB", "4");
+
+    grGlideInit();
+
+    char verBuf[80] = {};
+    grGlideGetVersion(verBuf);
+    CHECK(std::string(verBuf) == "2.61 (glide-ng)");
+    CHECK(std::string(grGetString(GR_VERSION)) == "2.61 (glide-ng)");
+    CHECK(std::string(grGetString(GR_HARDWARE)) == "Voodoo Graphics");
+
+    FxI32 fbBytes = 0;
+    FxI32 tmuBytes = 0;
+    FxI32 numTmu = 0;
+    grGet(GR_MEMORY_FB, sizeof(fbBytes), &fbBytes);
+    grGet(GR_MEMORY_TMU, sizeof(tmuBytes), &tmuBytes);
+    grGet(GR_NUM_TMU, sizeof(numTmu), &numTmu);
+    CHECK(fbBytes == 8 * 1024 * 1024);
+    CHECK(tmuBytes == 4 * 1024 * 1024);
+    CHECK(numTmu == 1);
+
+    GrHwConfiguration hw;
+    std::memset(&hw, 0, sizeof(hw));
+    REQUIRE(grSstQueryHardware(&hw) == FXTRUE);
+    CHECK(hw.num_sst == 1);
+    CHECK(hw.SSTs[0].type == GR_SSTTYPE_VOODOO);
+    CHECK(hw.SSTs[0].sstBoard.VoodooConfig.fbRam == 8);
+    CHECK(hw.SSTs[0].sstBoard.VoodooConfig.nTexelfx == 1);
+    CHECK(hw.SSTs[0].sstBoard.VoodooConfig.tmuConfig[0].tmuRam == 4);
+
+    CHECK(grTexMinAddress(GR_TMU0) == 0u);
+    CHECK(grTexMaxAddress(GR_TMU0) == 4u * 1024u * 1024u);
+    CHECK(guTexMemQueryAvail(GR_TMU0) == 4u * 1024u * 1024u);
+    // TMU1 does not exist on a 1-TMU configuration -> must report 0 bytes
+    CHECK(grTexMaxAddress(GR_TMU1) == 0u);
+    CHECK(guTexMemQueryAvail(GR_TMU1) == 0u);
+
+    grGlideShutdown();
+  }
+
+  SECTION("Voodoo2 SLI + 2-TMU + custom FBI/TMU memory overrides") {
+    ScopedEnv eCard("GLIDE_NG_CARD_MODEL", "VOODOO2");
+    ScopedEnv eVer("GLIDE_NG_API_VERSION", "2.42");
+    ScopedEnv eFb("GLIDE_NG_FBI_MEM_MB", "12");
+    ScopedEnv eTmuCnt("GLIDE_NG_TMU_COUNT", "2");
+    ScopedEnv eTmuMem("GLIDE_NG_TMU_MEM_MB", "8");
+    ScopedEnv eSli("GLIDE_NG_SLI", "1");
+
+    grGlideInit();
+
+    char verBuf[80] = {};
+    grGlideGetVersion(verBuf);
+    CHECK(std::string(verBuf) == "2.42 (glide-ng)");
+    CHECK(std::string(grGetString(GR_VERSION)) == "2.42 (glide-ng)");
+
+    FxI32 fbBytes = 0;
+    FxI32 tmuBytes = 0;
+    FxI32 numTmu = 0;
+    grGet(GR_MEMORY_FB, sizeof(fbBytes), &fbBytes);
+    grGet(GR_MEMORY_TMU, sizeof(tmuBytes), &tmuBytes);
+    grGet(GR_NUM_TMU, sizeof(numTmu), &numTmu);
+    CHECK(fbBytes == 12 * 1024 * 1024);
+    CHECK(tmuBytes == 8 * 1024 * 1024);
+    CHECK(numTmu == 2);
+
+    GrHwConfiguration hw;
+    std::memset(&hw, 0, sizeof(hw));
+    REQUIRE(grSstQueryHardware(&hw) == FXTRUE);
+    CHECK(hw.SSTs[0].type == GR_SSTTYPE_Voodoo2);
+    CHECK(hw.SSTs[0].sstBoard.Voodoo2Config.fbRam == 12);
+    CHECK(hw.SSTs[0].sstBoard.Voodoo2Config.nTexelfx == 2);
+    CHECK(hw.SSTs[0].sstBoard.Voodoo2Config.sliDetect == FXTRUE);
+    CHECK(hw.SSTs[0].sstBoard.Voodoo2Config.tmuConfig[0].tmuRam == 8);
+    CHECK(hw.SSTs[0].sstBoard.Voodoo2Config.tmuConfig[1].tmuRam == 8);
+
+    CHECK(grTexMaxAddress(GR_TMU0) == 8u * 1024u * 1024u);
+    CHECK(grTexMaxAddress(GR_TMU1) == 8u * 1024u * 1024u);
+    CHECK(guTexMemQueryAvail(GR_TMU1) == 8u * 1024u * 1024u);
+
+    grGlideShutdown();
+  }
+#endif
+}

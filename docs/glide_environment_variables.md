@@ -3,6 +3,8 @@
 This document is the authoritative reference for configuring **glide-ng** via `glide_config.json` and environment variables.
 
 > **Namespace Policy**: All wrapper-specific variables use the canonical **`GLIDE_NG_*`** prefix. Legacy `GLIDE_WRAPPER_*` and unprefixed `GLIDE_*` names are **not** supported.
+>
+> **Single Source of Truth**: All implemented variable names and X-macro registries live in [`include/glide_ng/env_vars.h`](../include/glide_ng/env_vars.h), shared by both `JsonConfigLoader` and `glide_info`. When adding a new environment variable, register it there first so tooling picks it up automatically.
 
 ---
 
@@ -74,7 +76,7 @@ When a card model is chosen (via JSON or `GLIDE_NG_CARD_MODEL`), its hardware de
 | `GLIDE_NG_LOG_FILE` | `"logFile"` | File path | `glide-ng.log` | **Implemented** | Output file path for wrapper diagnostic logs. |
 | `GLIDE_NG_LOG_CATEGORIES` | `"logCategories"` | `all`, `none`, or comma-separated subset of `general`, `api`, `lfb`, `tex`, `state`, `draw`, `wsi`, `perf` (supports `-cat` negation, e.g. `-draw`) | `all` | **Implemented** | Filters `INFO`/`DEBUG`/`TRACE` log lines by subsystem category. `CRIT`, `WARN`, and the `Startup` summary banner always pass so errors and active config are never hidden. |
 | `GLIDE_NG_TRACE_FRAMES` | `"traceFrames"` | Frame index or range: `N`, `A-B`, `A-`, `-B`, or `all` | *(unbounded)* | **Implemented** | Restricts high-frequency `TRACE` (`level=5`) output to the specified frame window (0-indexed by `grBufferSwap`) so deep per-primitive traces do not overwhelm disk or CPU. |
-| `GLIDE_NG_PERF_LOG` | `"perfLog"` | `0`/`false`/`off` (disabled), `1`/`true`/`on`/`log` (periodic `[Perf]` summary every ~1s), or a file path (periodic `[Perf]` summary **plus** per-frame CSV trace) | `false` | **Implemented** | Enables lightweight always-compiled per-frame telemetry: FPS, frame/render/present/cap-sleep ms, draw calls, mid-frame state flushes, triangles, LFB reads/writes & bytes, texture uploads & bytes, and Vulkan PSO builds. |
+| `GLIDE_NG_PERF_LOG` | `"perfLog"` | `0`/`false`/`off` (disabled), `1`/`true`/`on`/`log` (periodic `[Perf]` summary every ~1s), or a file path (periodic `[Perf]` summary **plus** per-frame CSV trace) | `false` | **Implemented** | Enables lightweight always-compiled per-frame telemetry: FPS, frame/render/present/cap-sleep ms, **wrapper vs. app/emulator CPU breakdown** (`wrapper_cpu_ms`, `app_cpu_ms`, `draw_cpu_ms`, `tex_cpu_ms`, `lfb_cpu_ms`, `state_cpu_ms`), draw calls, mid-frame state flushes, triangles, LFB reads/writes & bytes, texture uploads & bytes, and Vulkan PSO builds. |
 
 #### Diagnostic Tracing Recipes
 

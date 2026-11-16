@@ -118,6 +118,9 @@ void TelemetryManager::ResetFrameCounters() {
   m_frameTexUploadBytes.store(0, std::memory_order_relaxed);
   m_framePsoBuilds.store(0, std::memory_order_relaxed);
   m_framePresentUs.store(0, std::memory_order_relaxed);
+  for (auto& ns : m_frameCpuBucketNs) {
+    ns.store(0, std::memory_order_relaxed);
+  }
 }
 
 void TelemetryManager::ConfigurePerfLog(bool enabled,
@@ -129,6 +132,7 @@ void TelemetryManager::ConfigurePerfLog(bool enabled,
   }
 
   m_perfLogEnabled = enabled;
+  m_perfTimingEnabled.store(enabled, std::memory_order_relaxed);
   m_csvRowsSinceFlush = 0;
   m_frameIndex.store(0, std::memory_order_relaxed);
   m_lastFrameMetrics = FrameMetrics{};
@@ -140,6 +144,12 @@ void TelemetryManager::ConfigurePerfLog(bool enabled,
   m_summaryRenderMs = 0.0;
   m_summaryPresentMs = 0.0;
   m_summarySleepMs = 0.0;
+  m_summaryWrapperCpuMs = 0.0;
+  m_summaryAppCpuMs = 0.0;
+  m_summaryDrawCpuMs = 0.0;
+  m_summaryTexCpuMs = 0.0;
+  m_summaryLfbCpuMs = 0.0;
+  m_summaryStateCpuMs = 0.0;
   m_summaryDrawCalls = 0;
   m_summaryStateFlushes = 0;
   m_summaryTrisDrawn = 0;
@@ -159,7 +169,9 @@ void TelemetryManager::ConfigurePerfLog(bool enabled,
       m_csvFile << "frame,timestamp_ms,frame_ms,render_ms,present_ms,"
                    "cap_sleep_ms,fps,draw_calls,state_flushes,tris_processed,"
                    "tris_drawn,lfb_reads,lfb_writes,lfb_read_bytes,"
-                   "lfb_write_bytes,tex_uploads,tex_upload_bytes,pso_builds\n";
+                   "lfb_write_bytes,tex_uploads,tex_upload_bytes,pso_builds,"
+                   "wrapper_cpu_ms,app_cpu_ms,draw_cpu_ms,tex_cpu_ms,"
+                   "lfb_cpu_ms,state_cpu_ms\n";
       m_csvFile.flush();
     } else {
       GLIDE_LOG(WARN, "Perf",
@@ -178,6 +190,7 @@ void TelemetryManager::ShutdownPerfLog() {
     m_csvFile.close();
   }
   m_perfLogEnabled = false;
+  m_perfTimingEnabled.store(false, std::memory_order_relaxed);
   m_csvRowsSinceFlush = 0;
 }
 
@@ -188,6 +201,12 @@ void TelemetryManager::EmitPerfSummaryLocked() {
   const double avgRenderMs = m_summaryRenderMs * invF;
   const double avgPresentMs = m_summaryPresentMs * invF;
   const double avgSleepMs = m_summarySleepMs * invF;
+  const double avgWrapMs = m_summaryWrapperCpuMs * invF;
+  const double avgAppMs = m_summaryAppCpuMs * invF;
+  const double avgDrawMs = m_summaryDrawCpuMs * invF;
+  const double avgTexMs = m_summaryTexCpuMs * invF;
+  const double avgLfbMs = m_summaryLfbCpuMs * invF;
+  const double avgStateMs = m_summaryStateCpuMs * invF;
   const double avgFps = (avgFrameMs > 0.0) ? (1000.0 / avgFrameMs) : 0.0;
   const double avgDraws = static_cast<double>(m_summaryDrawCalls) * invF;
   const double avgFlushes = static_cast<double>(m_summaryStateFlushes) * invF;
@@ -198,14 +217,16 @@ void TelemetryManager::EmitPerfSummaryLocked() {
   const double avgTex = static_cast<double>(m_summaryTexUploads) * invF;
   const double avgTexKb = (static_cast<double>(m_summaryTexBytes) * invF) / 1024.0;
 
-  char buf[384];
+  char buf[512];
   std::snprintf(
       buf, sizeof(buf),
-      "FPS=%.1f | frame=%.2fms (render=%.2fms present=%.2fms cap=%.2fms) | "
+      "FPS=%.1f | frame=%.2fms (render=%.2fms [app=%.2f wrap=%.2f: "
+      "draw=%.2f tex=%.2f lfb=%.2f state=%.2f] present=%.2fms cap=%.2fms) | "
       "draws=%.1f/f (flushes=%.1f/f) tris=%.0f/f | "
       "lfb=%.1fR/%.1fW (%.1fKB/f) | tex=%.1f/f (%.1fKB/f) | pso=+%llu",
-      avgFps, avgFrameMs, avgRenderMs, avgPresentMs, avgSleepMs, avgDraws,
-      avgFlushes, avgTris, avgLfbR, avgLfbW, avgLfbKb, avgTex, avgTexKb,
+      avgFps, avgFrameMs, avgRenderMs, avgAppMs, avgWrapMs, avgDrawMs, avgTexMs,
+      avgLfbMs, avgStateMs, avgPresentMs, avgSleepMs, avgDraws, avgFlushes,
+      avgTris, avgLfbR, avgLfbW, avgLfbKb, avgTex, avgTexKb,
       static_cast<unsigned long long>(m_summaryPsoBuilds));
 
   GLIDE_LOG_CAT(INFO, LOG_CAT_PERF, "Perf", buf);
@@ -215,6 +236,12 @@ void TelemetryManager::EmitPerfSummaryLocked() {
   m_summaryRenderMs = 0.0;
   m_summaryPresentMs = 0.0;
   m_summarySleepMs = 0.0;
+  m_summaryWrapperCpuMs = 0.0;
+  m_summaryAppCpuMs = 0.0;
+  m_summaryDrawCpuMs = 0.0;
+  m_summaryTexCpuMs = 0.0;
+  m_summaryLfbCpuMs = 0.0;
+  m_summaryStateCpuMs = 0.0;
   m_summaryDrawCalls = 0;
   m_summaryStateFlushes = 0;
   m_summaryTrisDrawn = 0;
@@ -241,12 +268,31 @@ void TelemetryManager::OnFrameComplete(int64_t intervalUs, int64_t activeUs,
   const uint64_t texUploadBytes = m_frameTexUploadBytes.exchange(0, std::memory_order_relaxed);
   const uint32_t psoBuilds = m_framePsoBuilds.exchange(0, std::memory_order_relaxed);
   const int64_t presentUs = m_framePresentUs.exchange(0, std::memory_order_relaxed);
+  const int64_t drawNs =
+      m_frameCpuBucketNs[static_cast<size_t>(CpuBucket::Draw)].exchange(
+          0, std::memory_order_relaxed);
+  const int64_t texNs =
+      m_frameCpuBucketNs[static_cast<size_t>(CpuBucket::Tex)].exchange(
+          0, std::memory_order_relaxed);
+  const int64_t lfbNs =
+      m_frameCpuBucketNs[static_cast<size_t>(CpuBucket::Lfb)].exchange(
+          0, std::memory_order_relaxed);
+  const int64_t stateNs =
+      m_frameCpuBucketNs[static_cast<size_t>(CpuBucket::State)].exchange(
+          0, std::memory_order_relaxed);
 
   const uint64_t completedFrame = m_frameIndex.fetch_add(1, std::memory_order_relaxed);
   // Advance Logger frame ID for the upcoming frame
   Logger::GetInstance().SetCurrentFrame(completedFrame + 1);
 
   const int64_t renderUs = std::max<int64_t>(0, activeUs - presentUs);
+  const double drawMs = static_cast<double>(drawNs) / 1e6;
+  const double texMs = static_cast<double>(texNs) / 1e6;
+  const double lfbMs = static_cast<double>(lfbNs) / 1e6;
+  const double stateMs = static_cast<double>(stateNs) / 1e6;
+  const double wrapperMs = drawMs + texMs + lfbMs + stateMs;
+  const double renderMs = static_cast<double>(renderUs) / 1000.0;
+  const double appMs = std::max(0.0, renderMs - wrapperMs);
   const auto now = std::chrono::steady_clock::now();
 
   FrameMetrics m{};
@@ -254,7 +300,7 @@ void TelemetryManager::OnFrameComplete(int64_t intervalUs, int64_t activeUs,
   m.timestampMs =
       std::chrono::duration<double, std::milli>(now - m_perfStartTime).count();
   m.frameTimeMs = static_cast<float>(intervalUs / 1000.0);
-  m.renderTimeMs = static_cast<float>(renderUs / 1000.0);
+  m.renderTimeMs = static_cast<float>(renderMs);
   m.swapPresentMs = static_cast<float>(presentUs / 1000.0);
   m.fpsCapSleepMs = static_cast<float>(sleepUs / 1000.0);
   m.smoothedFps = (smoothedFps > 0.0f)
@@ -271,6 +317,12 @@ void TelemetryManager::OnFrameComplete(int64_t intervalUs, int64_t activeUs,
   m.texUploads = texUploads;
   m.texUploadBytes = texUploadBytes;
   m.psoBuilds = psoBuilds;
+  m.wrapperCpuMs = static_cast<float>(wrapperMs);
+  m.appCpuMs = static_cast<float>(appMs);
+  m.drawCpuMs = static_cast<float>(drawMs);
+  m.texCpuMs = static_cast<float>(texMs);
+  m.lfbCpuMs = static_cast<float>(lfbMs);
+  m.stateCpuMs = static_cast<float>(stateMs);
 
   std::lock_guard<std::mutex> lock(m_perfMutex);
   m_lastFrameMetrics = m;
@@ -278,10 +330,11 @@ void TelemetryManager::OnFrameComplete(int64_t intervalUs, int64_t activeUs,
   if (!m_perfLogEnabled) return;
 
   if (m_csvFile.is_open()) {
-    char row[320];
+    char row[512];
     const int len = std::snprintf(
         row, sizeof(row),
-        "%llu,%.3f,%.3f,%.3f,%.3f,%.3f,%.2f,%u,%u,%u,%u,%u,%u,%llu,%llu,%u,%llu,%u\n",
+        "%llu,%.3f,%.3f,%.3f,%.3f,%.3f,%.2f,%u,%u,%u,%u,%u,%u,%llu,%llu,%u,"
+        "%llu,%u,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\n",
         static_cast<unsigned long long>(m.frameIndex), m.timestampMs,
         static_cast<double>(m.frameTimeMs), static_cast<double>(m.renderTimeMs),
         static_cast<double>(m.swapPresentMs), static_cast<double>(m.fpsCapSleepMs),
@@ -289,7 +342,10 @@ void TelemetryManager::OnFrameComplete(int64_t intervalUs, int64_t activeUs,
         m.trianglesProcessed, m.trianglesDrawn, m.lfbReadLocks, m.lfbWriteLocks,
         static_cast<unsigned long long>(m.lfbBytesRead),
         static_cast<unsigned long long>(m.lfbBytesWritten), m.texUploads,
-        static_cast<unsigned long long>(m.texUploadBytes), m.psoBuilds);
+        static_cast<unsigned long long>(m.texUploadBytes), m.psoBuilds,
+        static_cast<double>(m.wrapperCpuMs), static_cast<double>(m.appCpuMs),
+        static_cast<double>(m.drawCpuMs), static_cast<double>(m.texCpuMs),
+        static_cast<double>(m.lfbCpuMs), static_cast<double>(m.stateCpuMs));
     if (len > 0) {
       m_csvFile.write(row, std::min<size_t>(static_cast<size_t>(len), sizeof(row) - 1));
     }
@@ -304,6 +360,12 @@ void TelemetryManager::OnFrameComplete(int64_t intervalUs, int64_t activeUs,
   m_summaryRenderMs += m.renderTimeMs;
   m_summaryPresentMs += m.swapPresentMs;
   m_summarySleepMs += m.fpsCapSleepMs;
+  m_summaryWrapperCpuMs += m.wrapperCpuMs;
+  m_summaryAppCpuMs += m.appCpuMs;
+  m_summaryDrawCpuMs += m.drawCpuMs;
+  m_summaryTexCpuMs += m.texCpuMs;
+  m_summaryLfbCpuMs += m.lfbCpuMs;
+  m_summaryStateCpuMs += m.stateCpuMs;
   m_summaryDrawCalls += m.drawCalls;
   m_summaryStateFlushes += m.stateFlushes;
   m_summaryTrisDrawn += m.trianglesDrawn;

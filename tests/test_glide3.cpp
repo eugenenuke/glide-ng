@@ -4541,6 +4541,8 @@ TEST_CASE(
     csvIn.close();
     REQUIRE(lines.size() == 4);  // 1 header + 3 frames
     CHECK(lines[0].find("frame,timestamp_ms,frame_ms,render_ms,present_ms") == 0);
+    CHECK(lines[0].find(",wrapper_cpu_ms,app_cpu_ms,draw_cpu_ms,tex_cpu_ms,"
+                        "lfb_cpu_ms,state_cpu_ms") != std::string::npos);
     // Row 1 (frame 0): check tris_processed=2, tris_drawn=2, lfb_writes=1, lfb_write_bytes=512
     CHECK(lines[1].find(",2,2,0,1,0,512,") != std::string::npos);
 
@@ -4551,6 +4553,8 @@ TEST_CASE(
                            std::istreambuf_iterator<char>());
     logIn.close();
     CHECK(logContent.find("[Perf] FPS=") != std::string::npos);
+    CHECK(logContent.find("[app=") != std::string::npos);
+    CHECK(logContent.find("wrap=") != std::string::npos);
     CHECK(logContent.find("Perf Telemetry       : ENABLED") != std::string::npos);
 
     std::remove(csvPath.c_str());
@@ -4885,6 +4889,222 @@ TEST_CASE("M5 Pass 3 Glide3 TMU Budget and Vulkan Texture Pool Reuse",
       backend.DetachWindow();
       backend.Shutdown();
     }
+  }
+#endif
+}
+
+TEST_CASE("M6.1 Telemetry CPU Bucket Attribution & App vs Wrapper Split",
+          "[Telemetry][M6]") {
+  using namespace GlideWrapper;
+  auto& tm = TelemetryManager::GetInstance();
+
+  SECTION("Disabled perf log keeps timing inactive with zero bucket time") {
+    tm.ShutdownPerfLog();
+    CHECK_FALSE(tm.IsPerfTimingEnabled());
+    {
+      GLIDE_CPU_SCOPE(CpuBucket::Draw);
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    tm.OnFrameComplete(2000, 2000, 0, 500.0f);
+    const FrameMetrics m = tm.GetLastFrameMetrics();
+    CHECK(m.wrapperCpuMs == 0.0f);
+    CHECK(m.drawCpuMs == 0.0f);
+    CHECK(m.texCpuMs == 0.0f);
+    CHECK(m.lfbCpuMs == 0.0f);
+    CHECK(m.stateCpuMs == 0.0f);
+  }
+
+  SECTION("Exclusive stack prevents double-counting on same & cross-bucket nesting") {
+    tm.ConfigurePerfLog(true, "");
+    REQUIRE(tm.IsPerfTimingEnabled());
+
+    // 1. Same-bucket nesting: outer Draw sleeps ~2ms + inner Draw sleeps ~2ms
+    //    -> total elapsed is ~4ms (NOT ~6ms from double-counting).
+    const auto t0 = std::chrono::steady_clock::now();
+    {
+      GLIDE_CPU_SCOPE(CpuBucket::Draw);
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+      {
+        GLIDE_CPU_SCOPE(CpuBucket::Draw);
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+      }
+    }
+    // 2. Cross-bucket nesting: outer Draw sleeps ~2ms, inner Tex sleeps ~4ms
+    //    -> Draw gains ~2ms, Tex gains ~4ms (Draw does NOT include Tex's 4ms).
+    {
+      GLIDE_CPU_SCOPE(CpuBucket::Draw);
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+      {
+        GLIDE_CPU_SCOPE(CpuBucket::Tex);
+        std::this_thread::sleep_for(std::chrono::milliseconds(4));
+      }
+    }
+    const auto elapsedUs = std::chrono::duration_cast<std::chrono::microseconds>(
+                               std::chrono::steady_clock::now() - t0)
+                               .count();
+    const int64_t simulatedAppUs = 5000;
+    const int64_t totalActiveUs = elapsedUs + simulatedAppUs;
+
+    tm.OnFrameComplete(totalActiveUs, totalActiveUs, 0, 0.0f);
+    const FrameMetrics m = tm.GetLastFrameMetrics();
+
+    // Total wrapper CPU time must not exceed total measured elapsed wall time
+    // (+ small scheduling epsilon), proving zero double-counting.
+    const double elapsedMs = static_cast<double>(elapsedUs) / 1000.0;
+    CHECK(m.drawCpuMs >= 5.0f);
+    CHECK(m.texCpuMs >= 3.0f);
+    CHECK(m.lfbCpuMs == 0.0f);
+    CHECK(m.stateCpuMs == 0.0f);
+    CHECK(std::fabs(m.wrapperCpuMs - (m.drawCpuMs + m.texCpuMs)) < 0.05f);
+    CHECK(m.wrapperCpuMs <= static_cast<float>(elapsedMs + 0.5));
+    CHECK(m.appCpuMs >= 4.0f);
+    CHECK(std::fabs((m.appCpuMs + m.wrapperCpuMs) - m.renderTimeMs) < 0.05f);
+
+    tm.ShutdownPerfLog();
+    CHECK_FALSE(tm.IsPerfTimingEnabled());
+  }
+
+#ifdef __linux__
+  SECTION("End-to-end Glide 3.x session splits app_cpu_ms from wrapper buckets in CSV") {
+    const std::string csvPath = "/tmp/glide_ng_m6_cpu_split.csv";
+    std::remove(csvPath.c_str());
+
+    struct EnvGuardM6 {
+      std::vector<std::string> keys = {
+          "GLIDE_NG_HEADLESS", "GLIDE_NG_MAX_FPS", "GLIDE_NG_PERF_LOG",
+          "GLIDE_NG_LOG_LEVEL", "GLIDE_NG_NO_SPLASH"};
+      std::vector<std::pair<std::string, std::string>> saved;
+      EnvGuardM6() {
+        for (const auto& k : keys) {
+          const char* v = std::getenv(k.c_str());
+          saved.emplace_back(k, v ? std::string(v) : std::string("\x01UNSET"));
+        }
+      }
+      ~EnvGuardM6() {
+        for (const auto& kv : saved) {
+          if (kv.second == "\x01UNSET") {
+            ::unsetenv(kv.first.c_str());
+          } else {
+            ::setenv(kv.first.c_str(), kv.second.c_str(), 1);
+          }
+        }
+      }
+    } guard;
+
+    ::setenv("GLIDE_NG_HEADLESS", "1", 1);
+    ::setenv("GLIDE_NG_MAX_FPS", "0", 1);
+    ::setenv("GLIDE_NG_NO_SPLASH", "1", 1);
+    ::setenv("GLIDE_NG_LOG_LEVEL", "warn", 1);
+    ::setenv("GLIDE_NG_PERF_LOG", csvPath.c_str(), 1);
+
+    void* handle = OpenGlide3Handle();
+    REQUIRE(handle != nullptr);
+
+    auto glideInit = reinterpret_cast<void (*)()>(::dlsym(handle, "grGlideInit"));
+    auto glideShutdown = reinterpret_cast<void (*)()>(::dlsym(handle, "grGlideShutdown"));
+    auto sstSelect = reinterpret_cast<void (*)(int)>(::dlsym(handle, "grSstSelect"));
+    auto winOpen = reinterpret_cast<FxU32 (*)(FxU32, FxU32, FxU32, FxU32, FxU32, int, int)>(
+        ::dlsym(handle, "grSstWinOpen"));
+    auto winClose = reinterpret_cast<FxBool (*)(FxU32)>(::dlsym(handle, "grSstWinClose"));
+    auto vertexLayout = reinterpret_cast<void (*)(FxU32, FxI32, FxU32)>(
+        ::dlsym(handle, "grVertexLayout"));
+    auto colorCombine = reinterpret_cast<void (*)(GrCombineFunction_t, GrCombineFactor_t,
+                                                  GrCombineLocal_t, GrCombineOther_t, FxBool)>(
+        ::dlsym(handle, "grColorCombine"));
+    auto bufferClear = reinterpret_cast<void (*)(GrColor_t, GrAlpha_t, FxU32)>(
+        ::dlsym(handle, "grBufferClear"));
+    auto drawTri = reinterpret_cast<void (*)(const void*, const void*, const void*)>(
+        ::dlsym(handle, "grDrawTriangle"));
+    auto lfbWriteRegion = reinterpret_cast<FxBool (*)(
+        GrBuffer_t, FxU32, FxU32, GrLfbSrcFmt_t, FxU32, FxU32, FxBool, FxI32, void*)>(
+        ::dlsym(handle, "grLfbWriteRegion"));
+    auto bufferSwap = reinterpret_cast<void (*)(FxU32)>(::dlsym(handle, "grBufferSwap"));
+
+    glideInit();
+    sstSelect(0);
+    FxU32 ctx = winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                        GR_COLORFORMAT_ARGB, GR_ORIGIN_UPPER_LEFT, 2, 1);
+    REQUIRE(ctx != 0);
+
+    vertexLayout(0x01, 0, 1);
+    vertexLayout(0x02, 8, 1);
+    vertexLayout(0x20, 12, 1);
+    vertexLayout(0x10, 28, 1);
+    vertexLayout(0x03, 32, 1);
+    colorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+                 GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_NONE, FXFALSE);
+
+    StandardVert v0 = {100.0f, 100.0f, 0.0f, 0.0f, 255.0f, 0.0f, 0.0f, 255.0f, 1.0f, 0.0f, 0.0f, 1.0f};
+    StandardVert v1 = {300.0f, 100.0f, 0.0f, 0.0f, 0.0f, 255.0f, 0.0f, 255.0f, 1.0f, 0.0f, 0.0f, 1.0f};
+    StandardVert v2 = {200.0f, 300.0f, 0.0f, 0.0f, 0.0f, 0.0f, 255.0f, 255.0f, 1.0f, 0.0f, 0.0f, 1.0f};
+    std::vector<uint16_t> patch(32 * 32, 0x07E0);
+
+    for (int f = 0; f < 2; ++f) {
+      // Simulate external app/DOSBox CPU work outside Glide API calls.
+      std::this_thread::sleep_for(std::chrono::milliseconds(6));
+      colorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+                   GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_NONE, FXFALSE);
+      bufferClear(0x00000000, 0, 0xFFFF);
+      for (int t = 0; t < 20; ++t) {
+        drawTri(&v0, &v1, &v2);
+      }
+      lfbWriteRegion(GR_BUFFER_BACKBUFFER, 0, 0, GR_LFB_SRC_FMT_565,
+                     32, 32, FXFALSE, 32 * 2, patch.data());
+      bufferSwap(0);
+    }
+
+    winClose(ctx);
+    glideShutdown();
+    ::dlclose(handle);
+
+    std::ifstream csvIn(csvPath);
+    REQUIRE(csvIn.is_open());
+    std::vector<std::string> lines;
+    std::string line;
+    while (std::getline(csvIn, line)) {
+      if (!line.empty()) lines.push_back(line);
+    }
+    csvIn.close();
+    REQUIRE(lines.size() == 3);  // header + 2 frames
+
+    auto splitCsv = [](const std::string& row) {
+      std::vector<std::string> cols;
+      size_t start = 0;
+      while (start <= row.size()) {
+        size_t pos = row.find(',', start);
+        if (pos == std::string::npos) {
+          cols.push_back(row.substr(start));
+          break;
+        }
+        cols.push_back(row.substr(start, pos - start));
+        start = pos + 1;
+      }
+      return cols;
+    };
+
+    const auto hdr = splitCsv(lines[0]);
+    REQUIRE(hdr.size() == 24);
+    CHECK(hdr[18] == "wrapper_cpu_ms");
+    CHECK(hdr[19] == "app_cpu_ms");
+    CHECK(hdr[20] == "draw_cpu_ms");
+    CHECK(hdr[21] == "tex_cpu_ms");
+    CHECK(hdr[22] == "lfb_cpu_ms");
+    CHECK(hdr[23] == "state_cpu_ms");
+
+    // Frame 1 (lines[2]) has a clean frameStart->frameEnd interval including
+    // the 6 ms simulated app sleep.
+    const auto f1 = splitCsv(lines[2]);
+    REQUIRE(f1.size() == 24);
+    const double wrapMs = std::stod(f1[18]);
+    const double appMs = std::stod(f1[19]);
+    const double drawMs = std::stod(f1[20]);
+    const double lfbMs = std::stod(f1[22]);
+    CHECK(wrapMs > 0.0);
+    CHECK(drawMs > 0.0);
+    CHECK(lfbMs >= 0.0);
+    CHECK(appMs >= 4.0);
+
+    std::remove(csvPath.c_str());
   }
 #endif
 }

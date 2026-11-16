@@ -538,6 +538,7 @@ bool OpenGLESBackend::WriteLFB(uint32_t buffer, uint32_t dstX, uint32_t dstY,
 
 void OpenGLESBackend::FlushLFBToGPU_Locked() {
   if (!m_lfbStaging.IsDirty()) return;
+  GLIDE_CPU_SCOPE(CpuBucket::Lfb);
   if (!EnsureContextCurrent()) return;
 
   GLint prevTexture = 0;
