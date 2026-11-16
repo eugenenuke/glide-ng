@@ -133,6 +133,7 @@ void TelemetryManager::ConfigurePerfLog(bool enabled,
 
   m_perfLogEnabled = enabled;
   m_perfTimingEnabled.store(enabled, std::memory_order_relaxed);
+  s_perfTimingEnabled.store(enabled, std::memory_order_relaxed);
   m_csvRowsSinceFlush = 0;
   m_frameIndex.store(0, std::memory_order_relaxed);
   m_lastFrameMetrics = FrameMetrics{};
@@ -191,6 +192,7 @@ void TelemetryManager::ShutdownPerfLog() {
   }
   m_perfLogEnabled = false;
   m_perfTimingEnabled.store(false, std::memory_order_relaxed);
+  s_perfTimingEnabled.store(false, std::memory_order_relaxed);
   m_csvRowsSinceFlush = 0;
 }
 

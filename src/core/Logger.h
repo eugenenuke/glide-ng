@@ -140,6 +140,12 @@ public:
         return static_cast<LogLevel>(m_activeLevel.load(std::memory_order_relaxed));
     }
 
+    static bool IsLevelEnabledFast(LogLevel level) noexcept {
+        return level != LogLevel::OFF &&
+               s_activeLevel.load(std::memory_order_relaxed) >=
+                   static_cast<uint32_t>(level);
+    }
+
 private:
     Logger();
     ~Logger();
@@ -148,6 +154,8 @@ private:
 
     std::ofstream m_file;
     std::atomic<uint32_t> m_activeLevel{static_cast<uint32_t>(LogLevel::WARN)};
+    inline static std::atomic<uint32_t> s_activeLevel{
+        static_cast<uint32_t>(LogLevel::WARN)};
     std::atomic<uint32_t> m_categoryMask{LOG_CAT_ALL};
     std::atomic<bool> m_traceWindowActive{false};
     std::atomic<uint64_t> m_traceFrameStart{0};
@@ -165,21 +173,25 @@ private:
 
 #define GLIDE_LOG(level, component, msg) \
     do { \
-        auto& __glide_logger = GlideWrapper::Logger::GetInstance(); \
-        if (__glide_logger.ShouldLog(GlideWrapper::LogLevel::level, component)) { \
-            std::ostringstream __log_ss; \
-            __log_ss << msg; \
-            __glide_logger.Log(GlideWrapper::LogLevel::level, component, __log_ss.str()); \
+        if (__builtin_expect(GlideWrapper::Logger::IsLevelEnabledFast(GlideWrapper::LogLevel::level), 0)) { \
+            auto& __glide_logger = GlideWrapper::Logger::GetInstance(); \
+            if (__glide_logger.ShouldLog(GlideWrapper::LogLevel::level, component)) { \
+                std::ostringstream __log_ss; \
+                __log_ss << msg; \
+                __glide_logger.Log(GlideWrapper::LogLevel::level, component, __log_ss.str()); \
+            } \
         } \
     } while (0)
 
 #define GLIDE_LOG_CAT(level, category, component, msg) \
     do { \
-        auto& __glide_logger = GlideWrapper::Logger::GetInstance(); \
-        if (__glide_logger.ShouldLog(GlideWrapper::LogLevel::level, GlideWrapper::category)) { \
-            std::ostringstream __log_ss; \
-            __log_ss << msg; \
-            __glide_logger.LogCategoryMessage(GlideWrapper::LogLevel::level, GlideWrapper::category, component, __log_ss.str()); \
+        if (__builtin_expect(GlideWrapper::Logger::IsLevelEnabledFast(GlideWrapper::LogLevel::level), 0)) { \
+            auto& __glide_logger = GlideWrapper::Logger::GetInstance(); \
+            if (__glide_logger.ShouldLog(GlideWrapper::LogLevel::level, GlideWrapper::category)) { \
+                std::ostringstream __log_ss; \
+                __log_ss << msg; \
+                __glide_logger.LogCategoryMessage(GlideWrapper::LogLevel::level, GlideWrapper::category, component, __log_ss.str()); \
+            } \
         } \
     } while (0)
 

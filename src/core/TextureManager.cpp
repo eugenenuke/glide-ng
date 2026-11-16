@@ -5,6 +5,7 @@
 #include <cstring>
 
 #include "core/BackendManager.h"
+#include "core/GlideEntryCommon.h"
 #include "core/IGraphicsBackend.h"
 #include "core/Telemetry.h"
 #include "core/WrapperConfig.h"
@@ -1055,6 +1056,8 @@ bool TextureManager::DownloadTable(uint32_t tmu, uint32_t type,
 
     if (m_tmus[tmu].activeNccTable == type) {
       m_tmuTableDirty[tmu].store(true, std::memory_order_release);
+      s_anyTableDirty.store(true, std::memory_order_release);
+      EntryCommon::g_anyTmuTableDirty.store(true, std::memory_order_release);
       if (!wasLoaded) {
         // First-ever NCC table load: decode any pre-downloaded NCC textures
         // on CPU immediately (GPU upload remains lazy on bind/draw).
@@ -1110,6 +1113,8 @@ bool TextureManager::DownloadTable(uint32_t tmu, uint32_t type,
     m_tmus[tmu].paletteTableLoaded = true;
     m_tmus[tmu].paletteHash = HashTableBytes(newPalette, sizeof(newPalette));
     m_tmuTableDirty[tmu].store(true, std::memory_order_release);
+    s_anyTableDirty.store(true, std::memory_order_release);
+    EntryCommon::g_anyTmuTableDirty.store(true, std::memory_order_release);
 
     if (!wasLoaded) {
       // First-ever palette load: decode any pre-downloaded paletted textures
@@ -1148,6 +1153,8 @@ void TextureManager::SetActiveNccTable(uint32_t tmu, uint32_t table) {
 
   m_tmus[tmu].activeNccTable = table;
   m_tmuTableDirty[tmu].store(true, std::memory_order_release);
+  s_anyTableDirty.store(true, std::memory_order_release);
+  EntryCommon::g_anyTmuTableDirty.store(true, std::memory_order_release);
   GLIDE_LOG(DEBUG, "TextureManager",
             "TMU" << tmu << " active NCC table switched to: NCC" << table
                   << " (lazy per-bind swizzle enabled).");
@@ -1203,6 +1210,8 @@ void TextureManager::PrepareTextureForBind(uint32_t tmu,
 void TextureManager::SyncBoundTextures() {
   GLIDE_CPU_SCOPE(CpuBucket::Tex);
   std::lock_guard<std::mutex> lock(m_mutex);
+  s_anyTableDirty.store(false, std::memory_order_release);
+  EntryCommon::g_anyTmuTableDirty.store(false, std::memory_order_release);
   for (uint32_t tmu = 0; tmu < 2; ++tmu) {
     if (!m_tmuTableDirty[tmu].exchange(false, std::memory_order_acq_rel)) {
       continue;
@@ -1218,6 +1227,8 @@ void TextureManager::SyncBoundTextures() {
 
 void TextureManager::Reset() {
   std::lock_guard<std::mutex> lock(m_mutex);
+  s_anyTableDirty.store(false, std::memory_order_release);
+  EntryCommon::g_anyTmuTableDirty.store(false, std::memory_order_release);
   for (int i = 0; i < 2; ++i) {
     m_tmus[i].allocatedBytes = 0;
     m_tmus[i].textures.clear();

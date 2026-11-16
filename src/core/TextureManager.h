@@ -117,6 +117,9 @@ class TextureManager {
     return m_tmuTableDirty[0].load(std::memory_order_acquire) ||
            m_tmuTableDirty[1].load(std::memory_order_acquire);
   }
+  static bool HasPendingTableSyncFast() noexcept {
+    return s_anyTableDirty.load(std::memory_order_acquire);
+  }
   void SyncBoundTextures();
 
   // 5. Purge and reset TMU memory state
@@ -158,6 +161,7 @@ class TextureManager {
   TmuState m_tmus[2];
   uint32_t m_tmuMemoryLimits[2];
   std::atomic<bool> m_tmuTableDirty[2]{false, false};
+  inline static std::atomic<bool> s_anyTableDirty{false};
 };
 
 }  // namespace GlideWrapper

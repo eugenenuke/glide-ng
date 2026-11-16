@@ -327,13 +327,14 @@ FX_ENTRY void FX_CALL grDrawTriangle(const GrVertex* a, const GrVertex* b,
   GLIDE_INCREMENT_TRIANGLES_PROCESSED(1);
 
   auto& layout = GlideWrapper::VertexLayout::GetInstance();
-  GlideWrapper::ModernVertex va = layout.DecodeVertex(a);
-  GlideWrapper::ModernVertex vb = layout.DecodeVertex(b);
-  GlideWrapper::ModernVertex vc = layout.DecodeVertex(c);
+  GlideWrapper::ModernVertex va;
+  GlideWrapper::ModernVertex vb;
+  GlideWrapper::ModernVertex vc;
+  layout.DecodeVertexInto(a, va);
+  layout.DecodeVertexInto(b, vb);
+  layout.DecodeVertexInto(c, vc);
 
-  SanitizeVertex(va);
-  SanitizeVertex(vb);
-  SanitizeVertex(vc);
+  EntryCommon::SanitizeTriangle(s_state, va, vb, vc);
 
   EntryCommon::SyncTexturesBeforeDraw();
   backend->DrawTriangle(va, vb, vc);
@@ -389,16 +390,54 @@ FX_ENTRY void FX_CALL grDrawPoint(const GrVertex* pt) {
 // =============================================================================
 static void DrawPolygonHelper(const int nverts, const GrVertex vlist[]) {
   if (nverts < 3 || !vlist) return;
+  auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
+  if (!backend) return;
+
+  GLIDE_INCREMENT_TRIANGLES_PROCESSED(static_cast<uint64_t>(nverts - 2));
+  EntryCommon::SyncTexturesBeforeDraw();
+
+  auto& layout = GlideWrapper::VertexLayout::GetInstance();
+  constexpr int kStackCap = 32;
+  GlideWrapper::ModernVertex stackVerts[kStackCap];
+  std::vector<GlideWrapper::ModernVertex> heapVerts;
+  GlideWrapper::ModernVertex* verts = stackVerts;
+  if (nverts > kStackCap) {
+    heapVerts.resize(static_cast<size_t>(nverts));
+    verts = heapVerts.data();
+  }
+  for (int i = 0; i < nverts; ++i) {
+    layout.DecodeVertexInto(&vlist[i], verts[i]);
+    SanitizeVertex(verts[i]);
+  }
   for (int i = 1; i < nverts - 1; ++i) {
-    grDrawTriangle(&vlist[0], &vlist[i], &vlist[i + 1]);
+    backend->DrawTriangle(verts[0], verts[i], verts[i + 1]);
   }
 }
 
 static void DrawPolygonIndexedHelper(const int nverts, const int ilist[],
                                      const GrVertex vlist[]) {
   if (nverts < 3 || !ilist || !vlist) return;
+  auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
+  if (!backend) return;
+
+  GLIDE_INCREMENT_TRIANGLES_PROCESSED(static_cast<uint64_t>(nverts - 2));
+  EntryCommon::SyncTexturesBeforeDraw();
+
+  auto& layout = GlideWrapper::VertexLayout::GetInstance();
+  constexpr int kStackCap = 32;
+  GlideWrapper::ModernVertex stackVerts[kStackCap];
+  std::vector<GlideWrapper::ModernVertex> heapVerts;
+  GlideWrapper::ModernVertex* verts = stackVerts;
+  if (nverts > kStackCap) {
+    heapVerts.resize(static_cast<size_t>(nverts));
+    verts = heapVerts.data();
+  }
+  for (int i = 0; i < nverts; ++i) {
+    layout.DecodeVertexInto(&vlist[ilist[i]], verts[i]);
+    SanitizeVertex(verts[i]);
+  }
   for (int i = 1; i < nverts - 1; ++i) {
-    grDrawTriangle(&vlist[ilist[0]], &vlist[ilist[i]], &vlist[ilist[i + 1]]);
+    backend->DrawTriangle(verts[0], verts[i], verts[i + 1]);
   }
 }
 
