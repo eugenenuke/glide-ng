@@ -109,6 +109,9 @@ add_custom_target(GenerateBuildVersion ALL
     COMMENT "Checking git revision for build_version.h"
 )
 
+# Optional Open Watcom v2 DOS/32 CauseWay cross-build integration
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/OpenWatcomDos.cmake")
+
 # Add Primary Source Directories
 enable_testing()
 add_subdirectory(src)

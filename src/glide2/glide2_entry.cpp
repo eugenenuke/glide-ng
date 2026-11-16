@@ -595,10 +595,31 @@ FX_ENTRY FxBool FX_CALL grSstQueryBoards(GrHwConfiguration* hwconfig) {
   return grSstQueryHardware(hwconfig);
 }
 
+namespace {
+const char* GetGlide2VersionString(GlideWrapper::ApiVersion apiVersion) {
+  switch (apiVersion) {
+    case GlideWrapper::ApiVersion::GLIDE_2_1:
+      return "2.10 (glide-ng)";
+    case GlideWrapper::ApiVersion::GLIDE_2_40:
+      return "2.40 (glide-ng)";
+    case GlideWrapper::ApiVersion::GLIDE_2_42:
+      return "2.42 (glide-ng)";
+    case GlideWrapper::ApiVersion::GLIDE_2_43:
+      return "2.43 (glide-ng)";
+    case GlideWrapper::ApiVersion::GLIDE_2_61:
+      return "2.61 (glide-ng)";
+  }
+  return "2.43 (glide-ng)";
+}
+}  // namespace
+
 FX_ENTRY void FX_CALL grGlideGetVersion(char version[80]) {
+  EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend", "grGlideGetVersion invoked.");
   if (version) {
-    std::strncpy(version, "2.43 (glide-ng)", 80);
+    const auto& config =
+        GlideWrapper::EmulationRegistry::GetInstance().GetConfig();
+    std::strncpy(version, GetGlide2VersionString(config.apiVersion), 80);
     version[79] = '\0';
   }
 }
@@ -608,19 +629,20 @@ FX_ENTRY void FX_CALL grSstSelect(int which_sst) {
 }
 
 FX_ENTRY void FX_CALL grGet(FxU32 pname, FxU32 plength, FxI32* params) {
+  EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend",
             "grGet (Glide 2.x) invoked for pname: " << pname);
   if (!params) return;
 
-  auto& config = GlideWrapper::EmulationRegistry::GetInstance().GetConfig();
+  const auto& config =
+      GlideWrapper::EmulationRegistry::GetInstance().GetConfig();
   GlideWrapper::CardModel card = config.model;
 
   switch (pname) {
     case GR_MEMORY_FB:
       if (plength >= 4) {
-        params[0] = (card >= GlideWrapper::CardModel::Voodoo3)
-                        ? 16 * 1024 * 1024
-                        : 4 * 1024 * 1024;
+        const uint32_t fbMb = std::max(2u, config.fbiMemoryMb);
+        params[0] = static_cast<FxI32>(fbMb * 1024u * 1024u);
       }
       break;
     case GR_MEMORY_TMU:
@@ -636,7 +658,7 @@ FX_ENTRY void FX_CALL grGet(FxU32 pname, FxU32 plength, FxI32* params) {
       break;
     case GR_NUM_TMU:
       if (plength >= 4) {
-        params[0] = (card >= GlideWrapper::CardModel::Voodoo2) ? 2 : 1;
+        params[0] = static_cast<FxI32>(config.tmuCount);
       }
       break;
     case GR_MAX_TEXTURE_SIZE:
@@ -694,24 +716,12 @@ FX_ENTRY void FX_CALL grGet(FxU32 pname, FxU32 plength, FxI32* params) {
 }
 
 FX_ENTRY const char* FX_CALL grGetString(FxU32 pname) {
+  EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend", "grGetString invoked for pname: " << pname);
   auto& reg = GlideWrapper::EmulationRegistry::GetInstance();
   switch (pname) {
-    case GR_VERSION: {
-      switch (reg.GetConfig().apiVersion) {
-        case GlideWrapper::ApiVersion::GLIDE_2_1:
-          return "2.10 (glide-ng)";
-        case GlideWrapper::ApiVersion::GLIDE_2_40:
-          return "2.40 (glide-ng)";
-        case GlideWrapper::ApiVersion::GLIDE_2_42:
-          return "2.42 (glide-ng)";
-        case GlideWrapper::ApiVersion::GLIDE_2_43:
-          return "2.43 (glide-ng)";
-        case GlideWrapper::ApiVersion::GLIDE_2_61:
-          return "2.61 (glide-ng)";
-      }
-      return "2.43 (glide-ng)";
-    }
+    case GR_VERSION:
+      return GetGlide2VersionString(reg.GetConfig().apiVersion);
     case GR_HARDWARE: {
       switch (reg.GetConfig().model) {
         case GlideWrapper::CardModel::VoodooGraphics:
@@ -767,6 +777,11 @@ FX_ENTRY FxU32 FX_CALL grTexMinAddress(GrChipID_t tmu) {
 FX_ENTRY FxU32 FX_CALL grTexMaxAddress(GrChipID_t tmu) {
   EnsureEngineInitialized();
   const auto& config = GlideWrapper::EmulationRegistry::GetInstance().GetConfig();
+  if (tmu < 0 || static_cast<uint32_t>(tmu) >= config.tmuCount) {
+    GLIDE_LOG(DEBUG, "Frontend",
+              "grTexMaxAddress invoked for unavailable TMU=" << tmu << " -> 0");
+    return 0;
+  }
   const uint32_t tmuBytes = std::max(2u, config.tmuMemoryMb) * 1024u * 1024u;
   GLIDE_LOG(DEBUG, "Frontend",
             "grTexMaxAddress invoked for TMU=" << tmu << " -> 0x" << std::hex
@@ -1465,6 +1480,9 @@ FX_ENTRY FxU32 FX_CALL guTexMemQueryAvail(GrChipID_t tmu) {
   GLIDE_LOG(DEBUG, "Frontend", "guTexMemQueryAvail: tmu=" << tmu);
 
   const auto& config = GlideWrapper::EmulationRegistry::GetInstance().GetConfig();
+  if (tmu < 0 || static_cast<uint32_t>(tmu) >= config.tmuCount) {
+    return 0;
+  }
   const uint32_t totalBytes =
       std::max(2u, config.tmuMemoryMb) * 1024u * 1024u;
 

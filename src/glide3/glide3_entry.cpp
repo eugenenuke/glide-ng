@@ -436,6 +436,7 @@ FX_ENTRY void FX_CALL grDrawPoint(const void* pt) {
 }
 
 FX_ENTRY FxU32 FX_CALL grGet(FxU32 pname, FxU32 plength, FxI32* params) {
+  EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend",
             "grGet (Glide 3.x) invoked for pname: " << pname);
   if (!params || plength < 4) return 0;
@@ -563,6 +564,7 @@ FX_ENTRY FxBool FX_CALL grReset(FxU32 what) {
 }
 
 FX_ENTRY const char* FX_CALL grGetString(FxU32 pname) {
+  EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend",
             "grGetString (Glide 3.x) invoked for pname: " << pname);
   auto& reg = GlideWrapper::EmulationRegistry::GetInstance();
@@ -631,6 +633,12 @@ FX_ENTRY FxU32 FX_CALL grTexMinAddress(GrChipID_t tmu) {
 FX_ENTRY FxU32 FX_CALL grTexMaxAddress(GrChipID_t tmu) {
   EnsureEngineInitialized();
   const auto& config = GlideWrapper::EmulationRegistry::GetInstance().GetConfig();
+  if (tmu < 0 || static_cast<uint32_t>(tmu) >= config.tmuCount) {
+    GLIDE_LOG(DEBUG, "Frontend",
+              "grTexMaxAddress (Glide 3.x) invoked for unavailable TMU="
+                  << tmu << " -> 0");
+    return 0;
+  }
   const uint32_t tmuBytes = std::max(2u, config.tmuMemoryMb) * 1024u * 1024u;
   GLIDE_LOG(DEBUG, "Frontend",
             "grTexMaxAddress (Glide 3.x) invoked for TMU="

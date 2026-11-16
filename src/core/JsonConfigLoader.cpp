@@ -1,5 +1,6 @@
 #include "JsonConfigLoader.h"
 #include "Logger.h"
+#include "glide_ng/env_vars.h"
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
@@ -550,9 +551,9 @@ bool JsonConfigLoader::Load(const std::string& configFilePath, WrapperConfig& ou
 
     // Resolve config file path (GLIDE_NG_CONFIG overrides default path)
     std::string effectivePath = configFilePath;
-    if (const char* envConfigPath = GetNonEmptyEnv("GLIDE_NG_CONFIG")) {
+    if (const char* envConfigPath = GetNonEmptyEnv(GLIDE_NG_ENV_CONFIG)) {
         effectivePath = envConfigPath;
-        outConfig.settingSources["configFile"] = "GLIDE_NG_CONFIG";
+        outConfig.settingSources["configFile"] = GLIDE_NG_ENV_CONFIG;
     }
     outConfig.configFilePath = effectivePath;
 
@@ -757,15 +758,15 @@ bool JsonConfigLoader::Load(const std::string& configFilePath, WrapperConfig& ou
     }
 
     // 3. Card model & API version env overrides (evaluated before deriving card-model defaults)
-    if (const char* envCard = GetNonEmptyEnv("GLIDE_NG_CARD_MODEL")) {
+    if (const char* envCard = GetNonEmptyEnv(GLIDE_NG_ENV_CARD_MODEL)) {
         if (ParseCardModelString(envCard, outConfig.model)) {
-            outConfig.settingSources["cardModel"] = "GLIDE_NG_CARD_MODEL";
+            outConfig.settingSources["cardModel"] = GLIDE_NG_ENV_CARD_MODEL;
         }
     }
-    if (const char* envApi = GetNonEmptyEnv("GLIDE_NG_API_VERSION")) {
+    if (const char* envApi = GetNonEmptyEnv(GLIDE_NG_ENV_API_VERSION)) {
         if (ParseApiVersionString(envApi, outConfig.apiVersion)) {
             hasApiVersion = true;
-            outConfig.settingSources["apiVersion"] = "GLIDE_NG_API_VERSION";
+            outConfig.settingSources["apiVersion"] = GLIDE_NG_ENV_API_VERSION;
         }
     }
 
@@ -805,159 +806,159 @@ bool JsonConfigLoader::Load(const std::string& configFilePath, WrapperConfig& ou
 
     // 4. Layer 3: Authentic 3dfx Glide environment variables (Phase 1)
     // Precedence: Defaults < JSON < Authentic FX_GLIDE_* < GLIDE_NG_*
-    if (const char* envNoSplash = GetNonEmptyEnv("FX_GLIDE_NO_SPLASH")) {
+    if (const char* envNoSplash = GetNonEmptyEnv(GLIDE_FX_ENV_NO_SPLASH)) {
         bool b = true;
         if (!ParseBoolString(envNoSplash, b)) {
             // Authentic 3dfx convention: any non-zero/non-empty value enables suppression
             b = true;
         }
         outConfig.noSplash = b;
-        outConfig.settingSources["noSplash"] = "FX_GLIDE_NO_SPLASH";
+        outConfig.settingSources["noSplash"] = GLIDE_FX_ENV_NO_SPLASH;
     }
 
-    if (const char* envPlug = GetNonEmptyEnv("FX_GLIDE_SHAMELESS_PLUG")) {
+    if (const char* envPlug = GetNonEmptyEnv(GLIDE_FX_ENV_SHAMELESS_PLUG)) {
         bool b = true;
         if (!ParseBoolString(envPlug, b)) {
             int n = 1;
             b = ParseIntString(envPlug, n) ? (n != 0) : true;
         }
         outConfig.shamelessPlugMode = b ? 1 : 0;
-        outConfig.settingSources["shamelessPlug"] = "FX_GLIDE_SHAMELESS_PLUG";
+        outConfig.settingSources["shamelessPlug"] = GLIDE_FX_ENV_SHAMELESS_PLUG;
     }
 
-    if (const char* envSwapInterval = GetNonEmptyEnv("FX_GLIDE_SWAPINTERVAL")) {
+    if (const char* envSwapInterval = GetNonEmptyEnv(GLIDE_FX_ENV_SWAPINTERVAL)) {
         int interval = 0;
         if (ParseIntString(envSwapInterval, interval) && interval >= 0) {
             outConfig.swapInterval = interval;
             outConfig.vsync = (interval > 0);
             outConfig.vsyncStrictFifo = false;
-            outConfig.settingSources["vsync"] = "FX_GLIDE_SWAPINTERVAL";
-            outConfig.settingSources["swapInterval"] = "FX_GLIDE_SWAPINTERVAL";
+            outConfig.settingSources["vsync"] = GLIDE_FX_ENV_SWAPINTERVAL;
+            outConfig.settingSources["swapInterval"] = GLIDE_FX_ENV_SWAPINTERVAL;
         }
     }
 
     // 5. Layer 4: glide-ng Wrapper Environment Overrides (GLIDE_NG_* — highest priority)
-    if (const char* envVal = GetNonEmptyEnv("GLIDE_NG_BACKEND")) {
+    if (const char* envVal = GetNonEmptyEnv(GLIDE_NG_ENV_BACKEND)) {
         outConfig.backend = NormalizeBackendString(envVal);
-        outConfig.settingSources["backend"] = "GLIDE_NG_BACKEND";
+        outConfig.settingSources["backend"] = GLIDE_NG_ENV_BACKEND;
     }
 
-    if (const char* envVal = GetNonEmptyEnv("GLIDE_NG_HEADLESS")) {
+    if (const char* envVal = GetNonEmptyEnv(GLIDE_NG_ENV_HEADLESS)) {
         bool b = false;
         if (ParseBoolString(envVal, b)) {
             outConfig.forceNoWindow = b;
-            outConfig.settingSources["headless"] = "GLIDE_NG_HEADLESS";
+            outConfig.settingSources["headless"] = GLIDE_NG_ENV_HEADLESS;
         }
     }
 
-    if (const char* envVal = GetNonEmptyEnv("GLIDE_NG_FBI_MEM_MB")) {
+    if (const char* envVal = GetNonEmptyEnv(GLIDE_NG_ENV_FBI_MEM_MB)) {
         int v = 0;
         if (ParseIntString(envVal, v) && v > 0) {
             outConfig.fbiMemoryMb = static_cast<uint32_t>(v);
-            outConfig.settingSources["fbiMemoryMb"] = "GLIDE_NG_FBI_MEM_MB";
+            outConfig.settingSources["fbiMemoryMb"] = GLIDE_NG_ENV_FBI_MEM_MB;
         }
     }
 
-    if (const char* envVal = GetNonEmptyEnv("GLIDE_NG_TMU_COUNT")) {
+    if (const char* envVal = GetNonEmptyEnv(GLIDE_NG_ENV_TMU_COUNT)) {
         int v = 0;
         if (ParseIntString(envVal, v) && v >= 1 && v <= 3) {
             outConfig.tmuCount = static_cast<uint32_t>(v);
-            outConfig.settingSources["tmuCount"] = "GLIDE_NG_TMU_COUNT";
+            outConfig.settingSources["tmuCount"] = GLIDE_NG_ENV_TMU_COUNT;
         }
     }
 
-    if (const char* envVal = GetNonEmptyEnv("GLIDE_NG_TMU_MEM_MB")) {
+    if (const char* envVal = GetNonEmptyEnv(GLIDE_NG_ENV_TMU_MEM_MB)) {
         int v = 0;
         if (ParseIntString(envVal, v) && v > 0) {
             outConfig.tmuMemoryMb = static_cast<uint32_t>(v);
-            outConfig.settingSources["tmuMemoryMb"] = "GLIDE_NG_TMU_MEM_MB";
+            outConfig.settingSources["tmuMemoryMb"] = GLIDE_NG_ENV_TMU_MEM_MB;
         }
     }
 
-    if (const char* envVal = GetNonEmptyEnv("GLIDE_NG_SLI")) {
+    if (const char* envVal = GetNonEmptyEnv(GLIDE_NG_ENV_SLI)) {
         bool b = false;
         if (ParseBoolString(envVal, b)) {
             outConfig.enableSli = b;
-            outConfig.settingSources["enableSli"] = "GLIDE_NG_SLI";
+            outConfig.settingSources["enableSli"] = GLIDE_NG_ENV_SLI;
         }
     }
 
-    if (const char* envVal = GetNonEmptyEnv("GLIDE_NG_VENDOR")) {
+    if (const char* envVal = GetNonEmptyEnv(GLIDE_NG_ENV_VENDOR)) {
         outConfig.reportedVendorOverride = envVal;
-        outConfig.settingSources["vendor"] = "GLIDE_NG_VENDOR";
+        outConfig.settingSources["vendor"] = GLIDE_NG_ENV_VENDOR;
     }
 
-    if (const char* envVal = GetNonEmptyEnv("GLIDE_NG_RENDERER")) {
+    if (const char* envVal = GetNonEmptyEnv(GLIDE_NG_ENV_RENDERER)) {
         outConfig.reportedRendererOverride = envVal;
-        outConfig.settingSources["renderer"] = "GLIDE_NG_RENDERER";
+        outConfig.settingSources["renderer"] = GLIDE_NG_ENV_RENDERER;
     }
 
-    if (const char* envVal = GetNonEmptyEnv("GLIDE_NG_VSYNC")) {
+    if (const char* envVal = GetNonEmptyEnv(GLIDE_NG_ENV_VSYNC)) {
         if (ParseVsyncString(envVal, outConfig.vsync, outConfig.vsyncStrictFifo)) {
             outConfig.swapInterval = outConfig.vsync ? 1 : 0;
-            outConfig.settingSources["vsync"] = "GLIDE_NG_VSYNC";
+            outConfig.settingSources["vsync"] = GLIDE_NG_ENV_VSYNC;
         }
     }
 
-    if (const char* envVal = GetNonEmptyEnv("GLIDE_NG_MAX_FPS")) {
+    if (const char* envVal = GetNonEmptyEnv(GLIDE_NG_ENV_MAX_FPS)) {
         double v = 0.0;
         if (ParseDoubleString(envVal, v) && v >= 0.0) {
             outConfig.maxFps = static_cast<float>(v);
-            outConfig.settingSources["maxFps"] = "GLIDE_NG_MAX_FPS";
+            outConfig.settingSources["maxFps"] = GLIDE_NG_ENV_MAX_FPS;
         }
     }
 
-    if (const char* envVal = GetNonEmptyEnv("GLIDE_NG_MSAA")) {
+    if (const char* envVal = GetNonEmptyEnv(GLIDE_NG_ENV_MSAA)) {
         int v = 0;
         if (ParseIntString(envVal, v) && v >= 0) {
             outConfig.msaaSamples = static_cast<uint32_t>(v);
-            outConfig.settingSources["msaaSamples"] = "GLIDE_NG_MSAA";
+            outConfig.settingSources["msaaSamples"] = GLIDE_NG_ENV_MSAA;
         }
     }
 
-    if (const char* envVal = GetNonEmptyEnv("GLIDE_NG_WINDOW_SCALE")) {
+    if (const char* envVal = GetNonEmptyEnv(GLIDE_NG_ENV_WINDOW_SCALE)) {
         int v = 0;
         if (ParseIntString(envVal, v) && v >= 1 && v <= 8) {
             outConfig.windowScale = static_cast<uint32_t>(v);
-            outConfig.settingSources["windowScale"] = "GLIDE_NG_WINDOW_SCALE";
+            outConfig.settingSources["windowScale"] = GLIDE_NG_ENV_WINDOW_SCALE;
         }
     }
 
-    if (const char* envVal = GetNonEmptyEnv("GLIDE_NG_PRESENTATION_FILTER")) {
+    if (const char* envVal = GetNonEmptyEnv(GLIDE_NG_ENV_PRESENTATION_FILTER)) {
         if (ParsePresentationFilterString(envVal, outConfig.presentationFilter)) {
-            outConfig.settingSources["presentationFilter"] = "GLIDE_NG_PRESENTATION_FILTER";
+            outConfig.settingSources["presentationFilter"] = GLIDE_NG_ENV_PRESENTATION_FILTER;
         }
     }
 
-    if (const char* envVal = GetNonEmptyEnv("GLIDE_NG_LOG_LEVEL")) {
+    if (const char* envVal = GetNonEmptyEnv(GLIDE_NG_ENV_LOG_LEVEL)) {
         if (ParseLogLevelString(envVal, outConfig.logLevel)) {
-            outConfig.settingSources["logLevel"] = "GLIDE_NG_LOG_LEVEL";
+            outConfig.settingSources["logLevel"] = GLIDE_NG_ENV_LOG_LEVEL;
         }
     }
 
-    if (const char* envVal = GetNonEmptyEnv("GLIDE_NG_LOG_CONSOLE")) {
+    if (const char* envVal = GetNonEmptyEnv(GLIDE_NG_ENV_LOG_CONSOLE)) {
         bool b = false;
         if (ParseBoolString(envVal, b)) {
             outConfig.logToConsole = b;
-            outConfig.settingSources["logToConsole"] = "GLIDE_NG_LOG_CONSOLE";
+            outConfig.settingSources["logToConsole"] = GLIDE_NG_ENV_LOG_CONSOLE;
         }
     }
 
-    if (const char* envVal = GetNonEmptyEnv("GLIDE_NG_LOG_FILE")) {
+    if (const char* envVal = GetNonEmptyEnv(GLIDE_NG_ENV_LOG_FILE)) {
         outConfig.logFile = envVal;
-        outConfig.settingSources["logFile"] = "GLIDE_NG_LOG_FILE";
+        outConfig.settingSources["logFile"] = GLIDE_NG_ENV_LOG_FILE;
     }
 
-    if (const char* envVal = GetNonEmptyEnv("GLIDE_NG_LOG_CATEGORIES")) {
+    if (const char* envVal = GetNonEmptyEnv(GLIDE_NG_ENV_LOG_CATEGORIES)) {
         uint32_t mask = 0u;
         if (ParseLogCategories(envVal, mask)) {
             outConfig.logCategoryMask = mask;
             outConfig.logCategoriesSpec = FormatLogCategories(mask);
-            outConfig.settingSources["logCategories"] = "GLIDE_NG_LOG_CATEGORIES";
+            outConfig.settingSources["logCategories"] = GLIDE_NG_ENV_LOG_CATEGORIES;
         }
     }
 
-    if (const char* envVal = GetNonEmptyEnv("GLIDE_NG_TRACE_FRAMES")) {
+    if (const char* envVal = GetNonEmptyEnv(GLIDE_NG_ENV_TRACE_FRAMES)) {
         bool active = false;
         uint64_t startF = 0;
         uint64_t endF = UINT64_MAX;
@@ -966,79 +967,79 @@ bool JsonConfigLoader::Load(const std::string& configFilePath, WrapperConfig& ou
             outConfig.traceFrameStart = startF;
             outConfig.traceFrameEnd = endF;
             outConfig.traceFramesSpec = envVal;
-            outConfig.settingSources["traceFrames"] = "GLIDE_NG_TRACE_FRAMES";
+            outConfig.settingSources["traceFrames"] = GLIDE_NG_ENV_TRACE_FRAMES;
         }
     }
 
-    if (const char* envVal = GetNonEmptyEnv("GLIDE_NG_PERF_LOG")) {
+    if (const char* envVal = GetNonEmptyEnv(GLIDE_NG_ENV_PERF_LOG)) {
         if (ParsePerfLogString(envVal, outConfig.perfLogEnabled, outConfig.perfLogCsvPath)) {
-            outConfig.settingSources["perfLog"] = "GLIDE_NG_PERF_LOG";
+            outConfig.settingSources["perfLog"] = GLIDE_NG_ENV_PERF_LOG;
         }
     }
 
-    if (const char* envVal = GetNonEmptyEnv("GLIDE_NG_HUD")) {
+    if (const char* envVal = GetNonEmptyEnv(GLIDE_NG_ENV_HUD)) {
         if (ParseHudString(envVal, outConfig.hudMask, outConfig.hudPosition,
                            outConfig.hudScale, outConfig.hudOpacity, outConfig.hudSpec)) {
-            outConfig.settingSources["hud"] = "GLIDE_NG_HUD";
+            outConfig.settingSources["hud"] = GLIDE_NG_ENV_HUD;
         }
     }
 
-    if (const char* envVal = GetNonEmptyEnv("GLIDE_NG_NO_SPLASH")) {
+    if (const char* envVal = GetNonEmptyEnv(GLIDE_NG_ENV_NO_SPLASH)) {
         bool b = false;
         if (ParseBoolString(envVal, b)) {
             outConfig.noSplash = b;
-            outConfig.settingSources["noSplash"] = "GLIDE_NG_NO_SPLASH";
+            outConfig.settingSources["noSplash"] = GLIDE_NG_ENV_NO_SPLASH;
         }
     }
 
-    if (const char* envVal = GetNonEmptyEnv("GLIDE_NG_SHAMELESS_PLUG")) {
+    if (const char* envVal = GetNonEmptyEnv(GLIDE_NG_ENV_SHAMELESS_PLUG)) {
         bool b = false;
         if (ParseBoolString(envVal, b)) {
             outConfig.shamelessPlugMode = b ? 1 : 0;
-            outConfig.settingSources["shamelessPlug"] = "GLIDE_NG_SHAMELESS_PLUG";
+            outConfig.settingSources["shamelessPlug"] = GLIDE_NG_ENV_SHAMELESS_PLUG;
         }
     }
 
     // Backend-specific tuning overrides
-    if (const char* envVal = GetNonEmptyEnv("GLIDE_NG_SW_THREADS")) {
+    if (const char* envVal = GetNonEmptyEnv(GLIDE_NG_ENV_SW_THREADS)) {
         int v = 0;
         if (ParseIntString(envVal, v) && v >= 0) {
             outConfig.swThreads = static_cast<uint32_t>(v);
-            outConfig.settingSources["swThreads"] = "GLIDE_NG_SW_THREADS";
+            outConfig.settingSources["swThreads"] = GLIDE_NG_ENV_SW_THREADS;
         }
     }
 
-    if (const char* envVal = GetNonEmptyEnv("GLIDE_NG_SW_SIMD")) {
+    if (const char* envVal = GetNonEmptyEnv(GLIDE_NG_ENV_SW_SIMD)) {
         bool b = false;
         if (ParseBoolString(envVal, b)) {
             outConfig.swUseSimd = b;
-            outConfig.settingSources["swSimd"] = "GLIDE_NG_SW_SIMD";
+            outConfig.settingSources["swSimd"] = GLIDE_NG_ENV_SW_SIMD;
         }
     }
 
-    if (const char* envVal = GetNonEmptyEnv("GLIDE_NG_SW_TILE_SIZE")) {
+    if (const char* envVal = GetNonEmptyEnv(GLIDE_NG_ENV_SW_TILE_SIZE)) {
         int v = 0;
         if (ParseIntString(envVal, v) && v > 0) {
             outConfig.swTileSize = static_cast<uint32_t>(v);
-            outConfig.settingSources["swTileSize"] = "GLIDE_NG_SW_TILE_SIZE";
+            outConfig.settingSources["swTileSize"] = GLIDE_NG_ENV_SW_TILE_SIZE;
         }
     }
 
-    if (const char* envVal = GetNonEmptyEnv("GLIDE_NG_SW_AA")) {
+    if (const char* envVal = GetNonEmptyEnv(GLIDE_NG_ENV_SW_AA)) {
         outConfig.swAaMode = ToLower(envVal);
-        outConfig.settingSources["swAa"] = "GLIDE_NG_SW_AA";
+        outConfig.settingSources["swAa"] = GLIDE_NG_ENV_SW_AA;
     }
 
-    if (const char* envVal = GetNonEmptyEnv("GLIDE_NG_VK_CACHE_PATH")) {
+    if (const char* envVal = GetNonEmptyEnv(GLIDE_NG_ENV_VK_CACHE_PATH)) {
         outConfig.vkCachePath = envVal;
-        outConfig.settingSources["vkCachePath"] = "GLIDE_NG_VK_CACHE_PATH";
+        outConfig.settingSources["vkCachePath"] = GLIDE_NG_ENV_VK_CACHE_PATH;
     }
 
-    if (const char* envVal = GetNonEmptyEnv("GLIDE_NG_GLES_VBO_SIZE")) {
+    if (const char* envVal = GetNonEmptyEnv(GLIDE_NG_ENV_GLES_VBO_SIZE)) {
         int v = 0;
         if (ParseIntString(envVal, v) && v > 0) {
             outConfig.glesVboSizeMb = static_cast<uint32_t>(v);
-            outConfig.settingSources["glesVboSize"] = "GLIDE_NG_GLES_VBO_SIZE";
+            outConfig.settingSources["glesVboSize"] = GLIDE_NG_ENV_GLES_VBO_SIZE;
         }
     }
 

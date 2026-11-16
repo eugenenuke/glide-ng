@@ -3,6 +3,8 @@
 This document is the authoritative reference for configuring **glide-ng** via `glide_config.json` and environment variables.
 
 > **Namespace Policy**: All wrapper-specific variables use the canonical **`GLIDE_NG_*`** prefix. Legacy `GLIDE_WRAPPER_*` and unprefixed `GLIDE_*` names are **not** supported.
+>
+> **Single Source of Truth**: All implemented variable names and X-macro registries live in [`include/glide_ng/env_vars.h`](../include/glide_ng/env_vars.h), shared by both `JsonConfigLoader` and `glide_info`. When adding a new environment variable, register it there first so tooling picks it up automatically.
 
 ---
 
