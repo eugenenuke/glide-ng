@@ -21,9 +21,10 @@
 | **M2** | `feat/m2-logging-perf-trace` | Tiered logging (`OFF`..`TRACE`), category filtering, frame-windowed tracing, microsecond timestamps, buffered flushing, and runtime per-frame perf breakdown (+ CSV perf log) | Med | `[x] DONE (USER CONFIRMED — 2026-11-15)` | Merged to `main` |
 | **M3** | `feat/m3-hud-fps` | DXVK-style on-screen HUD (`GLIDE_NG_HUD=fps`, extensible) rendered cleanly in each backend's post-scene presentation pass (Vulkan, GLES, SW) | Med | `[x] DONE (USER CONFIRMED — 2026-11-15)` | Merged to `main` |
 | **M4** | `fix/m4-parked-sdk-tests` | Fix parked official SDK tests: `test16` ('P' plug R/B inversion on VK/GLES), `test22` (SW multi-pass fog + `largeLod` mip offset), `test25` & `test27` + standalone WSI event responsiveness + Catch2 regressions | Med | `[x] DONE (USER CONFIRMED — 2026-11-15)` | Merged to `main` |
-| **M5** | `fix/m5-carmageddon` | Carmageddon (`carma`) compatibility & performance: black menus, missing in-game UI/HUD, perf bottleneck, initial focus/input behavior + deferred GPU state-dedup & batching optimizations | Med–High | `[~] IMPLEMENTED — AWAITING USER VERIFICATION` | — |
-| **M6** | `feat/m6-dos-tools-bench` | Optional Open Watcom v2 DOS cross-build (`vendor/watcom`) + dual Linux/DOS `glide_info` + GPU/Glide-bound active visual benchmark (`glide_bench`) with in-Glide on-screen FPS & diagnostics | High | `[ ] PENDING` | — |
-| *(Future)* **M7** | `feat/m7-glide-envvars-p2` | Phase-2 authentic `FX_GLIDE_*` / `SST_*` expansion (`FX_GLIDE_FBRAM`, `FX_GLIDE_TMU_MEMSIZE`, `SSTV2_NUM_TMUS`, `SST_GAMMA`, `FX_GLIDE_IGNORE_REOPEN`, `FX_GLIDE_NO_DITHER_SUB`, `FX_GLIDE_BOUNDS_CHECK`, `FX_SNAPSHOT`) | Low | `[ ] DEFERRED` | — |
+| **M5** | `fix/m5-carmageddon` | Carmageddon (`carma`) compatibility & performance: black menus, missing in-game UI/HUD, texture/seam/sky/Pratcam glitches, lazy palette swizzling, GPU state-dedup & batching, TMU budget & Vulkan texture pool | Med–High | `[x] DONE (USER CONFIRMED — 2026-11-16)` | Merged to `main` |
+| **M6** | `feat/m6-dos-tools-bench` | Telemetry `app_cpu_ms`/`wrapper_cpu_ms` breakdown + optional Open Watcom v2 DOS cross-build (`vendor/watcom`) + dual Linux/DOS `glide_info` + GPU/Glide-bound active visual benchmark (`glide_bench`) | High | `[ ] PENDING` | — |
+| **M7** | `perf/m7-profiling-optimization` | Systematic performance profiling & optimization using M6 telemetry + `glide_bench` (Linux & DOSBox) and Carmageddon dense-scene traces across Vulkan, OpenGL ES, and Software | Med–High | `[ ] PENDING` | — |
+| *(Future)* **M8** | `feat/m8-glide-envvars-p2` | Phase-2 authentic `FX_GLIDE_*` / `SST_*` expansion (`FX_GLIDE_FBRAM`, `FX_GLIDE_TMU_MEMSIZE`, `SSTV2_NUM_TMUS`, `SST_GAMMA`, `FX_GLIDE_IGNORE_REOPEN`, `FX_GLIDE_NO_DITHER_SUB`, `FX_GLIDE_BOUNDS_CHECK`, `FX_SNAPSHOT`) | Low | `[ ] DEFERRED` | — |
 
 ---
 
@@ -187,38 +188,43 @@
   - Refactor `GlideSplashAnimator::RenderBanner()` to write directly via `backend->WriteLFB(...)` using a one-time flipped static 180×90 buffer — never touching `grLfbLock`/`grLfbUnlock` or Glide pipeline state.
   - Fix `CpuLfbStaging` `GR_BLEND_*` enum factors, chromakey matching, and negative `srcStride`; add sparse alpha-masked overlay tracking (`WriteOverlayLFB` with Porter-Duff `SRC OVER DST` stacking and tight `[minY..maxY]` bounds).
   - Implement zero-readback, zero-`waitIdle()` sparse LFB overlay compositing in both **Vulkan** (`VulkanLfb.cpp` reusing `hud_vert`/`hud_frag` SPIR-V, `eB8G8R8A8Unorm`, `m_renderPass`, per-frame staging ring, flushing both FRONT and BACK buffers after `FlushBatch()`) and **OpenGL ES** (`OpenGLESBackend.cpp` + `uPreserveAlpha` uniform in `OpenGLESShaders.cpp`, fixing both sparse LFB overlay and HUD alpha blending without breaking Wayland window opacity).
-  - **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION`
+  - **Status**: `[x] DONE (USER CONFIRMED — 2026-11-16)`
 - **`M5.2`** — Lazy Palette/NCC Texture Swizzling & Deferred GPU State-Dedup / Batching (`TextureManager.{h,cpp}`, `GlideEntryCommon.{h,cpp}`, `glide2_entry.cpp`, `glide3_entry.cpp`, `GlideSplashAnimator.cpp`, `VulkanBackend.{h,cpp}`, `VulkanDraw.cpp`, `VulkanTextures.cpp`, `OpenGLESBackend.cpp`, `OpenGLESDraw.cpp`, `OpenGLESTextures.cpp`):
   - Replace eager per-palette re-uploads in `TextureManager::LoadTable()` with FNV-1a table hashing, identical-table `memcmp` early-out, and lazy per-TMU dirty flags (`PrepareTextureForBind` / `SyncBoundTextures`), so only bound textures drawn with a changed palette are re-swizzled and uploaded.
   - Deduplicate all ~23 state/texture setters in `OpenGLESBackend` against `GlideStateTracker` before `FlushBatch(true)`, and fix the mid-batch `m_stateCacheDirty` split bug in `OpenGLESDraw.cpp`.
   - Add cached active pipeline & descriptor resolution (`ResolveDrawState_Locked`), per-frame double-buffered vertex buffer slots (eliminating wrap `waitIdle()` stalls), and fence-synchronized deferred retirement queues (`m_retiredTextures[2]`, `m_retiredDescriptorSets[2]`) in `VulkanBackend` / `VulkanDraw` / `VulkanTextures`.
   - Hoist redundant per-face `grAlphaBlendFunction` out of the face loop in `GlideSplashAnimator::DrawFaces`.
   - Verified with M2 `GLIDE_NG_PERF_LOG` on `splash_showcase_demo`: reduced draw calls from ~1,700/frame to **13/frame** on both Vulkan (`9.39 ms` median) and OpenGL ES (`8.29 ms` median) on `llvmpipe`.
-  - **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION`
+  - **Status**: `[x] DONE (USER CONFIRMED — 2026-11-16)`
 - **`M5.3`** — Pass 2 Texture Replacement / COW Snapshots, Exact GPU Chromakey & GLES Crash Fix (`TextureManager.{h,cpp}`, `glide2_entry.cpp`, `glide3_entry.cpp`, `color.frag`, `OpenGLESShaders.cpp`, `RasterizerState.h`, `SoftwareBackend.{h,cpp}`, `SoftwareRasterizer.cpp`, `SoftwareRasterizerSimd.cpp`, `Vulkan{Backend,Draw,Textures}.*`, `OpenGLES{Backend,Draw,Textures}.*`):
   - Separate full `grTexDownloadMipMap` (`replaceExisting=true`, fresh `VirtualTexture` + overlapping byte-range eviction on the TMU) from partial `grTexDownloadMipMapLevel` (`replaceExisting=false`, safe same-format/aspect/base-LOD COW merge with all gap mip slots pre-sized); enforce copy-on-write before mutating any shared `VirtualTexture` in `EnsureTextureReady_Locked`, `DownloadMipMapPartial`, and `DownloadTable`.
   - Tighten GPU chromakey matching from `distance < 0.01` to exact 8-bit per-channel match (`all(lessThan(abs(color - key), vec3(0.0019)))`) in both Vulkan `color.frag` (recompiled to both SPIR-V variants) and `OpenGLESShaders.cpp`.
   - Capture immutable `std::shared_ptr<const VirtualTexture> boundTex[2]` snapshots in `SoftwareBackend`'s `RasterizerState` tracked by a lock-free `m_textureUploadRevision` atomic (avoiding lock inversion and removing per-triangle `TextureManager` mutex contention in both scalar and SIMD rasterizers).
   - Split GPU texture maps into per-TMU arrays (`m_vulkanTextures[2]`, `m_glesTextures[2]`), fix `VulkanBackend` TMU1 `m_texClampS[tmu]` lookup, flush batches before retiring overwritten Vulkan textures, defensively zero-fill any short mip uploads in Vulkan & GLES so `OpenGLESBackend::UploadTexture_Locked` can never segfault, and demote normal GLES VBO ring-buffer orphaning log from `WARN` to `DEBUG`.
-  - **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION`
+  - **Status**: `[x] DONE (USER CONFIRMED — 2026-11-16)`
 - **`M5.4`** — Pass 3 `ITRGB_DELTA0` / `P_8` Alpha / `grBufferClear` Masking, STW Near-Plane Guard, TMU Budget & Vulkan Texture Pool (`glide2_entry.cpp`, `glide3_entry.cpp`, `TextureManager.cpp`, `color.frag`, `OpenGLES{Draw,Shaders}.cpp`, `SoftwareBackendBase.cpp`, `SoftwareRasterizer{,Simd}.cpp`, `Vulkan{Backend,Draw,Textures}.*`):
   - Fix `GR_COLORCOMBINE_ITRGB_DELTA0` / `TEXTURE_TIMES_ITRGB_DELTA0` to use `GR_COMBINE_LOCAL_CONSTANT`, fix `guTexSource(GR_NULL_MIPMAP_HANDLE)` to unbind TMU0 (`0xFFFFFFFFu`), and force `| 0xFF000000u` opaque alpha on `GR_TEXTABLE_PALETTE` (`P_8`) entries in `TextureManager::DownloadTable`.
   - Gate `grBufferClear` depth clear on `m_depthMask` across Vulkan, OpenGL ES, and Software (and color clear on `m_colorMaskRgb || m_colorMaskAlpha` in OpenGL ES) to match authentic Glide 2.x/3.x `SST_ZAWRMASK` semantics.
   - Add STW-hint-aware `divW0`/`divW1 <= 0` near-plane fragment clipping and `1.0 / max(oow, 1e-6)` table-fog guard across Vulkan `color.frag` (both SPIR-V variants rebuilt), `OpenGLESShaders.cpp`, `SoftwareRasterizer.cpp`, and `SoftwareRasterizerSimd.cpp`; fix Vulkan TMU1 chromakey enable check (`(textureEnabled & 3u) != 0u`) and Software TMU1 STW-hint bitmask (`0x8`).
   - Report full `std::max(2u, config.tmuMemoryMb)` (default 16 MB) from `grTexMaxAddress`, `grGet(GR_MEMORY_TMU)`, and `guTexMemQueryAvail` in Glide 2.x & 3.x; add a bounded 64-slot `m_texturePool` in `VulkanBackend` to recycle fence-reclaimed `(width, height, mipLevels)` `VkImage`/`DeviceMemory`/`ImageView` handles and switch `CalculateTextureHash` to O(1) `tex.rawDataHash` when populated.
   - Enrich `glide2_entry.cpp` `DEBUG` logs with full call arguments for `grBufferClear`, `grAlphaBlendFunction`, `grAlphaTestFunction`, `grTexFilterMode`, `grTexClampMode`, `grDepthBufferFunction`, `grTexDownloadMipMap`, `grTexSource`, `grLfbLock`, and `grLfbUnlock`.
-  - **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION`
+  - **Status**: `[x] DONE (USER CONFIRMED — 2026-11-16)`
 - **`M5.5`** — Automated `[M5]` Regressions & Full Verification Matrix (`tests/test_architecture.cpp`, `tests/test_glide3.cpp`):
   - Added `[Glide2][M5]` Catch2 suites covering Pass 1 (`M5.1` persistent LFB write-lock menus, 3D + sparse HUD + Shameless Plug coexistence, `GR_LFB_WRITE_ONLY | GR_LFB_NOIDLE`), Pass 2 (`M5.2` lazy `TextureManager` palette switching & state-setter deduplication; `M5.3` full-mipmap replacement & overlapping TMU range eviction, partial `grTexDownloadMipMapLevel` gap safety, mid-frame texture/palette overwrite isolation on deferred SW rasterizer, exact 8-bit chromakey preservation on near-black RGB `(1,1,1)`/`(2,2,2)`), and Pass 3 (`[M5][Carmageddon][Pass3]`: `ITRGB_DELTA0` constant color, `P_8` palette opaque alpha, `grBufferClear` `depthMask` gating, `guTexSource(GR_NULL_MIPMAP_HANDLE)` unbind, `divW <= 0` clipping, 16 MB `grTexMaxAddress` / `guTexMemQueryAvail`; plus Glide 3 `[Glide3][M5][Pass3]` TMU budget & Vulkan texture pool reuse).
   - Updated 3 stale `test16` shameless-plug golden values (authentic `GR_BLEND_SRC_ALPHA` translucency), updated `test21` Mode 2 golden pixel to `0xFFFF0000` (authentic `P_8` opaque alpha), zero-initialized stack `GrVertex` structs in `[Glide2][Texture]` (fixing a latent Vulkan stack-garbage flake), and reordered `tests/test_glide3.cpp` `Depth Buffering` to call `bufferClear` before `depthMask(FXFALSE)`.
   - Verified clean build (0 `-Werror` warnings across `src/`, `tools/`, `demos/`), `Glide2xWrapperTests` **34/34 (2,525 assertions)** across `software` (`SW_SIMD=0` & `SW_SIMD=1`), `vulkan`, and `opengl_es` (+ 10/10 deterministic `[Glide2][Texture]` Vulkan passes), `Glide3xWrapperTests` **47/47 (2,176 assertions)** across `software`, `vulkan`, and `opengl_es`, 6-cell `glide_embed_test` matrix across X11 & Wayland, and privacy scan (0 hits).
-  - **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION`
+  - **Status**: `[x] DONE (USER CONFIRMED — 2026-11-16)`
 
 ---
 
 ## 7. Upcoming Milestones (High-Level Scope — Detailed Just-In-Time)
 
-### Milestone M6 — Optional DOS Diagnostics & GPU-Bound Benchmark (`feat/m6-dos-tools-bench`)
+### Milestone M6 — Telemetry CPU Split, Optional DOS Diagnostics & GPU-Bound Benchmark (`feat/m6-dos-tools-bench`)
+- Enriched per-frame telemetry (`wrapper_cpu_ms` vs `app_cpu_ms` + `draw`/`tex`/`lfb`/`state` CPU buckets) to separate guest/DOSBox CPU time from shared `glide-ng` CPU time.
 - Optional Open Watcom v2 toolchain detection (`vendor/watcom` or `$WATCOM`); never blocks Linux builds when absent.
 - Dual Linux + DOS (`glide_info` / `glide_info.exe`) hardware/config reporter.
 - Dual Linux + DOS (`glide_bench` / `glide_bench.exe`) low-CPU, Glide/GPU-bound visual benchmark (fillrate/overdraw, triangle throughput, multi-pass+fog, LFB write bandwidth) with in-Glide on-screen FPS & diagnostics HUD.
+
+### Milestone M7 — Performance Profiling & Optimization (`perf/m7-profiling-optimization`)
+- Profile `glide_bench` (Linux vs. DOSBox) and Carmageddon dense scenes using M6 `app_cpu_ms`/`wrapper_cpu_ms` CSV traces and host CPU profiling (`perf`).
+- Target confirmed wrapper CPU/GPU bottlenecks across Vulkan, OpenGL ES, and Software with before/after benchmark and Carmageddon CSV proof.
