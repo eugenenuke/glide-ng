@@ -351,10 +351,7 @@ void VulkanBackend::ReadbackGpuToStaging_Locked(uint32_t buffer) {
       m_headlessImages[readIdx].get(), vk::ImageLayout::eTransferSrcOptimal,
       m_headlessPixelBuffers[m_currentFrameSlot].get(), 1, &region);
 
-  m_commandBuffer->end();
-  vk::SubmitInfo submitInfo(0, nullptr, nullptr, 1, m_commandBuffer);
-  m_graphicsQueue.submit(submitInfo, {});
-  m_device->waitIdle();
+  SubmitMidFrameAndWaitIdle_Locked(false);
 
   void* readDst = m_lfbStaging.PrepareBufferForGpuReadback(buffer);
   if (m_gpuStagingMaps[m_currentFrameSlot] && readDst) {
@@ -428,42 +425,62 @@ bool VulkanBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
   return true;
 }
 
-void VulkanBackend::CompositeLfbOverlay_Locked(uint32_t /*buffer*/,
-                                               uint32_t targetGpuIdx,
-                                               const uint32_t* pixels,
-                                               uint32_t width, uint32_t height,
-                                               uint32_t minY, uint32_t maxY) {
-  if (!pixels || width == 0 || height == 0 || minY > maxY || maxY >= height) {
+void VulkanBackend::CompositeLfbOverlay_Locked(
+    uint32_t /*buffer*/, uint32_t targetGpuIdx, const uint32_t* pixels,
+    uint32_t width, uint32_t height, const CpuLfbStaging::DirtyBand* bands,
+    size_t bandCount) {
+  if (!pixels || !bands || bandCount == 0 || width == 0 || height == 0) {
     return;
   }
 
-  const uint32_t numRows = maxY - minY + 1;
-  const vk::DeviceSize byteSize =
-      static_cast<vk::DeviceSize>(width) * numRows * 4;
-  if (!EnsureLfbOverlayResources_Locked(width, height, byteSize)) {
+  vk::DeviceSize totalBytes = 0;
+  size_t validCount = 0;
+  CpuLfbStaging::DirtyBand validBands[CpuLfbStaging::kMaxOverlayBands]{};
+  for (size_t i = 0; i < bandCount && validCount < CpuLfbStaging::kMaxOverlayBands;
+       ++i) {
+    if (bands[i].minY <= bands[i].maxY && bands[i].maxY < height) {
+      validBands[validCount++] = bands[i];
+      const uint32_t rows = bands[i].maxY - bands[i].minY + 1;
+      totalBytes += static_cast<vk::DeviceSize>(width) * rows * 4;
+    }
+  }
+  if (validCount == 0 || totalBytes == 0) return;
+
+  if (!EnsureLfbOverlayResources_Locked(width, height, totalBytes)) {
     return;
   }
 
   const uint32_t slot = m_currentFrameSlot;
-  if (m_lfbOverlayStagingOffsets[slot] + byteSize >
+  if (m_lfbOverlayStagingOffsets[slot] + totalBytes >
       m_lfbOverlayStagingSizes[slot]) {
     // Rare single-frame staging overflow (>4 fullscreen LFB flushes in 1
     // frame): flush current command buffer and reset slot staging offset.
-    m_commandBuffer->end();
-    vk::SubmitInfo submitInfo(0, nullptr, nullptr, 1, m_commandBuffer);
-    m_graphicsQueue.submit(submitInfo, {});
-    m_device->waitIdle();
-    m_commandBuffer->reset({});
-    m_commandBuffer->begin(vk::CommandBufferBeginInfo(
-        vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
+    SubmitMidFrameAndWaitIdle_Locked(true);
     m_lfbOverlayStagingOffsets[slot] = 0;
   }
 
-  const vk::DeviceSize stagingOffset = m_lfbOverlayStagingOffsets[slot];
-  std::memcpy(
-      static_cast<uint8_t*>(m_lfbOverlayStagingMaps[slot]) + stagingOffset,
-      pixels + static_cast<size_t>(minY) * width, static_cast<size_t>(byteSize));
-  m_lfbOverlayStagingOffsets[slot] += byteSize;
+  vk::BufferImageCopy copyRegions[CpuLfbStaging::kMaxOverlayBands]{};
+  uint8_t* stagingBase =
+      static_cast<uint8_t*>(m_lfbOverlayStagingMaps[slot]);
+  for (size_t i = 0; i < validCount; ++i) {
+    const uint32_t minY = validBands[i].minY;
+    const uint32_t numRows = validBands[i].maxY - minY + 1;
+    const vk::DeviceSize bandBytes =
+        static_cast<vk::DeviceSize>(width) * numRows * 4;
+    const vk::DeviceSize stagingOffset = m_lfbOverlayStagingOffsets[slot];
+
+    std::memcpy(stagingBase + stagingOffset,
+                pixels + static_cast<size_t>(minY) * width,
+                static_cast<size_t>(bandBytes));
+    m_lfbOverlayStagingOffsets[slot] += bandBytes;
+
+    vk::BufferImageCopy& region = copyRegions[i];
+    region.bufferOffset = stagingOffset;
+    region.imageSubresource =
+        vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
+    region.imageOffset = vk::Offset3D(0, static_cast<int32_t>(minY), 0);
+    region.imageExtent = vk::Extent3D(width, numRows, 1);
+  }
 
   vk::ImageSubresourceRange imgRange(vk::ImageAspectFlagBits::eColor, 0, 1, 0,
                                      1);
@@ -489,15 +506,10 @@ void VulkanBackend::CompositeLfbOverlay_Locked(uint32_t /*buffer*/,
                                    vk::PipelineStageFlagBits::eTransfer, {}, 0,
                                    nullptr, 0, nullptr, 1, &toTransfer);
 
-  vk::BufferImageCopy region{};
-  region.bufferOffset = stagingOffset;
-  region.imageSubresource =
-      vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
-  region.imageOffset = vk::Offset3D(0, static_cast<int32_t>(minY), 0);
-  region.imageExtent = vk::Extent3D(width, numRows, 1);
   m_commandBuffer->copyBufferToImage(
       m_lfbOverlayStagingBuffers[slot].get(), m_lfbOverlayImage.get(),
-      vk::ImageLayout::eTransferDstOptimal, 1, &region);
+      vk::ImageLayout::eTransferDstOptimal, static_cast<uint32_t>(validCount),
+      copyRegions);
 
   // Transition overlay texture to ShaderReadOnlyOptimal for fragment sampling.
   vk::ImageMemoryBarrier toSample{};
@@ -515,8 +527,8 @@ void VulkanBackend::CompositeLfbOverlay_Locked(uint32_t /*buffer*/,
       &toSample);
   m_lfbOverlayImageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
 
-  // Composite the dirty row band directly onto the target framebuffer inside
-  // the current command buffer (zero waitIdle(), works for both 1x and MSAA!).
+  // Composite all dirty row bands inside a single RenderPass (zero waitIdle(),
+  // works for both 1x and MSAA!).
   vk::RenderPassBeginInfo rpBegin(
       m_renderPass.get(), m_headlessFramebuffers[targetGpuIdx].get(),
       vk::Rect2D({0, 0}, {m_headlessWidth, m_headlessHeight}), 0, nullptr);
@@ -554,18 +566,23 @@ void VulkanBackend::CompositeLfbOverlay_Locked(uint32_t /*buffer*/,
 
   vk::Viewport vp(0.0f, 0.0f, static_cast<float>(m_headlessWidth),
                   static_cast<float>(m_headlessHeight), 0.0f, 1.0f);
-  const uint32_t scW = std::min(width, m_headlessWidth);
-  const uint32_t scY = std::min(minY, m_headlessHeight);
-  const uint32_t scH = std::min(numRows, m_headlessHeight - scY);
-  vk::Rect2D sc({0, static_cast<int32_t>(scY)}, {scW, scH});
   m_commandBuffer->setViewport(0, 1, &vp);
-  m_commandBuffer->setScissor(0, 1, &sc);
 
   const float rectNdc[4] = {-1.0f, -1.0f, 1.0f, 1.0f};
   m_commandBuffer->pushConstants(m_lfbOverlayPipelineLayout.get(),
                                  vk::ShaderStageFlagBits::eVertex, 0,
                                  sizeof(rectNdc), rectNdc);
-  m_commandBuffer->draw(4, 1, 0, 0);
+
+  const uint32_t scW = std::min(width, m_headlessWidth);
+  for (size_t i = 0; i < validCount; ++i) {
+    const uint32_t scY = std::min(validBands[i].minY, m_headlessHeight);
+    const uint32_t numRows = validBands[i].maxY - validBands[i].minY + 1;
+    const uint32_t scH = std::min(numRows, m_headlessHeight - scY);
+    if (scW == 0 || scH == 0) continue;
+    vk::Rect2D sc({0, static_cast<int32_t>(scY)}, {scW, scH});
+    m_commandBuffer->setScissor(0, 1, &sc);
+    m_commandBuffer->draw(4, 1, 0, 0);
+  }
   m_commandBuffer->endRenderPass();
 }
 
@@ -640,28 +657,21 @@ void VulkanBackend::FlushLFBToGPU_Locked() {
 
         // Full-buffer path shares m_headlessPixelBuffers[slot], so synchronize
         // before returning to avoid clobbering on subsequent reads/uploads.
-        m_commandBuffer->end();
-        vk::SubmitInfo submitInfo(0, nullptr, nullptr, 1, m_commandBuffer);
-        m_graphicsQueue.submit(submitInfo, {});
-        m_device->waitIdle();
-
-        m_commandBuffer->reset({});
-        m_commandBuffer->begin(vk::CommandBufferBeginInfo(
-            vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
+        SubmitMidFrameAndWaitIdle_Locked(true);
       }
       m_lfbStaging.ClearBufferDirty(buf);
     }
 
     // 2. Fast sparse alpha-masked overlay quad compositing (zero waitIdle()).
     if (m_lfbStaging.IsOverlayDirty(buf)) {
-      uint32_t minY = 0;
-      uint32_t maxY = 0;
+      const CpuLfbStaging::DirtyBand* bands = nullptr;
+      size_t bandCount = 0;
       const uint32_t* overlayPixels =
-          m_lfbStaging.GetOverlayForGpuUpload(buf, minY, maxY);
-      if (overlayPixels) {
+          m_lfbStaging.GetOverlayBandsForGpuUpload(buf, bands, bandCount);
+      if (overlayPixels && bands && bandCount > 0) {
         CompositeLfbOverlay_Locked(buf, targetGpuIdx, overlayPixels,
                                    m_lfbStaging.GetWidth(),
-                                   m_lfbStaging.GetHeight(), minY, maxY);
+                                   m_lfbStaging.GetHeight(), bands, bandCount);
       }
       m_lfbStaging.ClearOverlay(buf);
     }

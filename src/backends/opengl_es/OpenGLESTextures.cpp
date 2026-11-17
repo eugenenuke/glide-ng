@@ -36,24 +36,38 @@ void OpenGLESBackend::UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
   GLIDE_PROFILE_SCOPE("GLES::UploadTexture");
 
   auto& tmuMap = m_glesTextures[tmu];
+  const uint32_t mipCount =
+      static_cast<uint32_t>(tex.swizzledMipLevels.size());
   GLuint texId = 0;
+  bool canSubImage = false;
   auto it = tmuMap.find(startAddress);
   if (it == tmuMap.end()) {
     glGenTextures(1, &texId);
-    tmuMap[startAddress] = texId;
+    it = tmuMap.emplace(startAddress, GlesTexEntry{texId, 0, 0, 0}).first;
     GLIDE_LOG(DEBUG, "GLES",
               "Generated new GLES Texture ID " << texId << " for TMU" << tmu
                                                << " Address 0x" << std::hex
                                                << startAddress << std::dec);
   } else {
-    texId = it->second;
+    texId = it->second.id;
+    canSubImage = (it->second.width == tex.baseWidth &&
+                   it->second.height == tex.baseHeight &&
+                   it->second.mipLevels == mipCount);
     GLIDE_LOG(DEBUG, "GLES",
               "Re-uploading to existing GLES Texture ID "
                   << texId << " for TMU" << tmu << " Address 0x" << std::hex
-                  << startAddress << std::dec);
+                  << startAddress << std::dec
+                  << (canSubImage ? " (glTexSubImage2D)" : " (glTexImage2D)"));
   }
 
-  glBindTexture(GL_TEXTURE_2D, texId);
+  if (m_cachedActiveTexUnit != 0) {
+    glActiveTexture(GL_TEXTURE0);
+    m_cachedActiveTexUnit = 0;
+  }
+  if (m_cachedBoundTex[0] != texId) {
+    glBindTexture(GL_TEXTURE_2D, texId);
+    m_cachedBoundTex[0] = texId;
+  }
 
   uint32_t baseW = tex.baseWidth;
   uint32_t baseH = tex.baseHeight;
@@ -66,41 +80,56 @@ void OpenGLESBackend::UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
     const size_t copyCount = std::min(expectedPixels, levelVec.size());
     const uint32_t* pixels = levelVec.data();
 
-    // Swizzle BGRA from TextureManager to RGBA on the CPU before uploading to
-    // GLES; defensively zero-fill any missing texels to prevent OOB reads.
-    std::vector<uint32_t> rgbaPixels(expectedPixels, 0);
+    // Swizzle BGRA from TextureManager to RGBA into persistent scratch buffer;
+    // defensively zero-fill any missing texels to prevent OOB reads.
+    if (m_texUploadScratch.size() < expectedPixels) {
+      m_texUploadScratch.resize(expectedPixels);
+    }
+    uint32_t* dst = m_texUploadScratch.data();
     for (size_t j = 0; j < copyCount; ++j) {
-      uint32_t bgra = pixels[j];
-      uint32_t b = bgra & 0xFF;
-      uint32_t g = (bgra >> 8) & 0xFF;
-      uint32_t r = (bgra >> 16) & 0xFF;
-      uint32_t a = (bgra >> 24) & 0xFF;
-      rgbaPixels[j] = (a << 24) | (b << 16) | (g << 8) | r;
+      const uint32_t bgra = pixels[j];
+      dst[j] = (bgra & 0xFF00FF00u) | ((bgra & 0xFFu) << 16) |
+               ((bgra >> 16) & 0xFFu);
+    }
+    if (copyCount < expectedPixels) {
+      std::memset(dst + copyCount, 0,
+                  (expectedPixels - copyCount) * sizeof(uint32_t));
     }
 
-    glTexImage2D(GL_TEXTURE_2D, static_cast<GLint>(i), GL_RGBA,
-                 static_cast<GLsizei>(w), static_cast<GLsizei>(h), 0, GL_RGBA,
-                 GL_UNSIGNED_BYTE, rgbaPixels.data());
+    if (canSubImage) {
+      glTexSubImage2D(GL_TEXTURE_2D, static_cast<GLint>(i), 0, 0,
+                      static_cast<GLsizei>(w), static_cast<GLsizei>(h), GL_RGBA,
+                      GL_UNSIGNED_BYTE, dst);
+    } else {
+      glTexImage2D(GL_TEXTURE_2D, static_cast<GLint>(i), GL_RGBA,
+                   static_cast<GLsizei>(w), static_cast<GLsizei>(h), 0, GL_RGBA,
+                   GL_UNSIGNED_BYTE, dst);
+    }
 
     GLIDE_LOG(DEBUG, "GLES",
               "Uploaded Mip Level " << i << " (" << w << "x" << h
                                     << ") to GLES Texture ID " << texId);
   }
 
-  // Set default wrap/filter parameters so texture is complete
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
-                  tex.swizzledMipLevels.size() > 1 ? GL_NEAREST_MIPMAP_NEAREST
-                                                   : GL_NEAREST);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-  if (!tex.swizzledMipLevels.empty()) {
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL,
-                    static_cast<GLint>(tex.swizzledMipLevels.size() - 1));
+  if (!canSubImage) {
+    it->second.width = baseW;
+    it->second.height = baseH;
+    it->second.mipLevels = mipCount;
+    // Set default wrap/filter parameters so texture is complete
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
+                    mipCount > 1 ? GL_NEAREST_MIPMAP_NEAREST : GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    if (mipCount > 0) {
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL,
+                      static_cast<GLint>(mipCount - 1));
+    }
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
   }
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
 
-  glBindTexture(GL_TEXTURE_2D, 0);
-  MarkStateDirty();
+  m_glesDirtyMask |=
+      kGlesDirtyTexBinding |
+      (tmu == 0 ? kGlesDirtyTexSampler0 : kGlesDirtyTexSampler1);
   checkGLError("UploadTexture");
 }
 
@@ -127,7 +156,7 @@ void OpenGLESBackend::UploadTexturePartial(uint32_t tmu, uint32_t startAddress,
     UploadTexture_Locked(tmu, startAddress, tex);
     return;
   }
-  GLuint texId = it->second;
+  GLuint texId = it->second.id;
 
   // 2. Validate existence of LOD level in the virtual texture
   if (lodLevel >= tex.swizzledMipLevels.size()) {
@@ -162,29 +191,33 @@ void OpenGLESBackend::UploadTexturePartial(uint32_t tmu, uint32_t startAddress,
     return;
   }
 
-  // Save current texture binding to restore later
-  GLint previousTexture = 0;
-  glGetIntegerv(GL_TEXTURE_BINDING_2D, &previousTexture);
+  if (m_cachedActiveTexUnit != 0) {
+    glActiveTexture(GL_TEXTURE0);
+    m_cachedActiveTexUnit = 0;
+  }
+  if (m_cachedBoundTex[0] != texId) {
+    glBindTexture(GL_TEXTURE_2D, texId);
+    m_cachedBoundTex[0] = texId;
+  }
 
-  glBindTexture(GL_TEXTURE_2D, texId);
-
-  // Swizzle only the modified sub-image rows
+  // Swizzle only the modified sub-image rows into persistent scratch buffer
   const uint32_t* pixels = tex.swizzledMipLevels[lodLevel].data();
-  std::vector<uint32_t> rgbaSubPixels(w * numRows);
-  for (uint32_t j = 0; j < w * numRows; ++j) {
-    uint32_t bgra = pixels[startPixelIndex + j];
-    uint32_t b = bgra & 0xFF;
-    uint32_t g = (bgra >> 8) & 0xFF;
-    uint32_t r = (bgra >> 16) & 0xFF;
-    uint32_t a = (bgra >> 24) & 0xFF;
-    rgbaSubPixels[j] = (a << 24) | (b << 16) | (g << 8) | r;
+  const size_t subPixels = static_cast<size_t>(w) * numRows;
+  if (m_texUploadScratch.size() < subPixels) {
+    m_texUploadScratch.resize(subPixels);
+  }
+  uint32_t* dst = m_texUploadScratch.data();
+  for (size_t j = 0; j < subPixels; ++j) {
+    const uint32_t bgra = pixels[startPixelIndex + j];
+    dst[j] = (bgra & 0xFF00FF00u) | ((bgra & 0xFFu) << 16) |
+             ((bgra >> 16) & 0xFFu);
   }
 
   // Upload using glTexSubImage2D
   glTexSubImage2D(GL_TEXTURE_2D, static_cast<GLint>(lodLevel), 0,
                   static_cast<GLint>(startRow), static_cast<GLsizei>(w),
                   static_cast<GLsizei>(numRows), GL_RGBA, GL_UNSIGNED_BYTE,
-                  rgbaSubPixels.data());
+                  dst);
 
   GLIDE_LOG(DEBUG, "GLES",
             "UploadTexturePartial TMU"
@@ -192,7 +225,6 @@ void OpenGLESBackend::UploadTexturePartial(uint32_t tmu, uint32_t startAddress,
                 << " level=" << lodLevel << " rows=" << startRow << ".."
                 << endRow << " uploaded via glTexSubImage2D.");
 
-  glBindTexture(GL_TEXTURE_2D, previousTexture);
   checkGLError("UploadTexturePartial");
 }
 
@@ -206,8 +238,8 @@ void OpenGLESBackend::PurgeTextures() {
   if (EnsureContextCurrent()) {
     for (uint32_t t = 0; t < 2; ++t) {
       for (auto& pair : m_glesTextures[t]) {
-        if (pair.second) {
-          glDeleteTextures(1, &pair.second);
+        if (pair.second.id) {
+          glDeleteTextures(1, &pair.second.id);
         }
       }
     }
@@ -215,6 +247,9 @@ void OpenGLESBackend::PurgeTextures() {
   }
   m_glesTextures[0].clear();
   m_glesTextures[1].clear();
+  m_cachedBoundTex[0] = 0xFFFFFFFFu;
+  m_cachedBoundTex[1] = 0xFFFFFFFFu;
+  m_glesDirtyMask |= kGlesDirtyTexBinding;
 }
 
 void OpenGLESBackend::BindTexture(uint32_t tmu, uint32_t startAddress,
@@ -227,8 +262,20 @@ void OpenGLESBackend::BindTexture(uint32_t tmu, uint32_t startAddress,
     return;
   }
   FlushBatch(true);
+  const bool addrChanged = (tmu < 2 && m_boundTexAddress[tmu] != startAddress);
+  const bool samplerChanged =
+      (tmu < 2 && (m_texClampS[tmu] != clampS || m_texClampT[tmu] != clampT ||
+                   m_texMinFilter[tmu] != minFilter ||
+                   m_texMagFilter[tmu] != magFilter));
   GlideStateTracker::BindTexture_Locked(tmu, startAddress, clampS, clampT,
                                         minFilter, magFilter);
+  if (addrChanged) {
+    m_glesDirtyMask |= kGlesDirtyTexBinding;
+  }
+  if (samplerChanged) {
+    m_glesDirtyMask |=
+        (tmu == 0 ? kGlesDirtyTexSampler0 : kGlesDirtyTexSampler1);
+  }
 }
 
 void OpenGLESBackend::SetTexLodBias(uint32_t tmu, float bias) {
@@ -236,6 +283,7 @@ void OpenGLESBackend::SetTexLodBias(uint32_t tmu, float bias) {
   if (tmu < 2 && m_texLodBias[tmu] == bias) return;
   FlushBatch(true);
   GlideStateTracker::SetTexLodBias_Locked(tmu, bias);
+  m_glesDirtyMask |= kGlesDirtyTexBinding;
 }
 
 void OpenGLESBackend::SetTexMipMapMode(uint32_t tmu, uint32_t mode,
@@ -247,6 +295,8 @@ void OpenGLESBackend::SetTexMipMapMode(uint32_t tmu, uint32_t mode,
   }
   FlushBatch(true);
   GlideStateTracker::SetTexMipMapMode_Locked(tmu, mode, lodBlend);
+  m_glesDirtyMask |=
+      (tmu == 0 ? kGlesDirtyTexSampler0 : kGlesDirtyTexSampler1);
 }
 
 }  // namespace GlideWrapper

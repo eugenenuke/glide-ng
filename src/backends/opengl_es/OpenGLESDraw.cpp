@@ -86,6 +86,7 @@ void OpenGLESBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z,
 
   // Restore default framebuffer binding
   glBindFramebuffer(GL_FRAMEBUFFER, 0);
+  InvalidateGlBindingCache();
 }
 
 bool OpenGLESBackend::CreateGeomBuffers() {
@@ -127,6 +128,9 @@ bool OpenGLESBackend::CreateGeomBuffers() {
 
   glBindVertexArray(0);
   glBindBuffer(GL_ARRAY_BUFFER, 0);
+  InvalidateGlBindingCache();
+
+  m_batchVertices.reserve(16384);
 
   checkGLError("CreateGeomBuffers");
   return true;
@@ -134,9 +138,11 @@ bool OpenGLESBackend::CreateGeomBuffers() {
 
 void OpenGLESBackend::DrawPoint(const ModernVertex& pt) {
   std::lock_guard<std::mutex> lock(m_mutex);
-  if (!m_initialized || !m_windowAttached) return;
+  if (__builtin_expect(!m_initialized || !m_windowAttached, 0)) return;
 
-  FlushLFBToGPU_Locked();
+  if (__builtin_expect(m_lfbStaging.IsDirty(), 0)) {
+    FlushLFBToGPU_Locked();
+  }
 
   bool incomingIs2D = (pt.pos[3] == 1.0f);
 
@@ -162,9 +168,11 @@ void OpenGLESBackend::DrawPoint(const ModernVertex& pt) {
 
 void OpenGLESBackend::DrawLine(const ModernVertex& v0, const ModernVertex& v1) {
   std::lock_guard<std::mutex> lock(m_mutex);
-  if (!m_initialized || !m_windowAttached) return;
+  if (__builtin_expect(!m_initialized || !m_windowAttached, 0)) return;
 
-  FlushLFBToGPU_Locked();
+  if (__builtin_expect(m_lfbStaging.IsDirty(), 0)) {
+    FlushLFBToGPU_Locked();
+  }
 
   bool incomingIs2D = (v0.pos[3] == 1.0f && v1.pos[3] == 1.0f);
 
@@ -192,12 +200,27 @@ void OpenGLESBackend::DrawLine(const ModernVertex& v0, const ModernVertex& v1) {
 void OpenGLESBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
                                    const ModernVertex& c) {
   std::lock_guard<std::mutex> lock(m_mutex);
-  if (!m_initialized || !m_windowAttached) return;
+  if (__builtin_expect(!m_initialized || !m_windowAttached, 0)) return;
 
-  FlushLFBToGPU_Locked();
+  if (__builtin_expect(m_lfbStaging.IsDirty(), 0)) {
+    FlushLFBToGPU_Locked();
+  }
 
-  bool incomingIs2D =
+  const bool incomingIs2D =
       (a.pos[3] == 1.0f && b.pos[3] == 1.0f && c.pos[3] == 1.0f);
+  const size_t curVerts = m_batchVertices.size();
+
+  if (__builtin_expect(
+          m_batchPrimitiveMode == BatchPrimitiveMode::Triangles &&
+              m_batchIs2DGeometry == incomingIs2D &&
+              m_geomVBOOffset + (curVerts + 3) * sizeof(ModernVertex) <=
+                  m_geomVBOSizeConfigured,
+          1)) {
+    m_batchVertices.push_back(a);
+    m_batchVertices.push_back(b);
+    m_batchVertices.push_back(c);
+    return;
+  }
 
   bool primitiveMismatch =
       (m_batchPrimitiveMode != BatchPrimitiveMode::None &&
@@ -205,7 +228,7 @@ void OpenGLESBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
   bool projectionChanged = (m_batchPrimitiveMode != BatchPrimitiveMode::None &&
                             m_batchIs2DGeometry != incomingIs2D);
   bool capacityReached =
-      (m_geomVBOOffset + (m_batchVertices.size() + 3) * sizeof(ModernVertex) >
+      (m_geomVBOOffset + (curVerts + 3) * sizeof(ModernVertex) >
        m_geomVBOSizeConfigured);
 
   if (primitiveMismatch || projectionChanged || capacityReached) {
@@ -393,62 +416,91 @@ void OpenGLESBackend::FlushBatch(bool fromStateFlush) {
 
   uint32_t uploadSize = m_batchVertices.size() * sizeof(ModernVertex);
 
+  // Bind dynamic VBO once and keep bound across consecutive batches
+  if (m_cachedBoundVbo != m_geomVBO) {
+    glBindBuffer(GL_ARRAY_BUFFER, m_geomVBO);
+    m_cachedBoundVbo = m_geomVBO;
+  }
+
   // Handle VBO ring buffer wrapping and orphaning
   if (m_geomVBOOffset + uploadSize > m_geomVBOSizeConfigured) {
     GLIDE_LOG(DEBUG, "GLES",
               "Dynamic Geometry VBO ring buffer wrap-around & orphaning! "
               "Offset reset to 0.");
     m_geomVBOOffset = 0;
-    glBindBuffer(GL_ARRAY_BUFFER, m_geomVBO);
     glBufferData(GL_ARRAY_BUFFER, m_geomVBOSizeConfigured, nullptr,
                  GL_DYNAMIC_DRAW);
   }
 
   // Upload the entire accumulated vertex array in a single contiguous transfer
-  glBindBuffer(GL_ARRAY_BUFFER, m_geomVBO);
   glBufferSubData(GL_ARRAY_BUFFER, m_geomVBOOffset, uploadSize,
                   m_batchVertices.data());
-  glBindBuffer(GL_ARRAY_BUFFER, 0);
 
-  // Bind active offscreen headless FBO and configure viewport
-  glBindFramebuffer(GL_FRAMEBUFFER, GetActiveGpuFbo());
-  glViewport(0, 0, m_headlessWidth, m_headlessHeight);
+  // Bind active offscreen headless FBO and configure viewport only when changed
+  const uint32_t activeFbo = GetActiveGpuFbo();
+  if (m_cachedBoundFbo != activeFbo) {
+    glBindFramebuffer(GL_FRAMEBUFFER, activeFbo);
+    m_cachedBoundFbo = activeFbo;
+  }
+  if (!m_cachedViewportValid) {
+    glViewport(0, 0, m_headlessWidth, m_headlessHeight);
+    m_cachedViewportValid = true;
+  }
 
-  // Always bind the geometry shader program
-  glUseProgram(m_geomProgram);
+  // Bind geometry shader program only when changed
+  if (m_cachedBoundProgram != m_geomProgram) {
+    glUseProgram(m_geomProgram);
+    m_cachedBoundProgram = m_geomProgram;
+  }
 
-  // Always bind active textures and samplers to their texture units
+  // Bind active textures and samplers to their texture units only when changed
   for (uint32_t tmu = 0; tmu < 2; ++tmu) {
     uint32_t addr = m_boundTexAddress[tmu];
     if (addr != 0xFFFFFFFF) {
       auto it = m_glesTextures[tmu].find(addr);
       if (it != m_glesTextures[tmu].end()) {
-        glActiveTexture(GL_TEXTURE0 + tmu);
-        glBindTexture(GL_TEXTURE_2D, it->second);
-        glBindSampler(tmu, m_glesSamplers[tmu]);
+        const uint32_t texId = it->second.id;
+        if (m_cachedBoundTex[tmu] != texId) {
+          if (m_cachedActiveTexUnit != tmu) {
+            glActiveTexture(GL_TEXTURE0 + tmu);
+            m_cachedActiveTexUnit = tmu;
+          }
+          glBindTexture(GL_TEXTURE_2D, texId);
+          m_cachedBoundTex[tmu] = texId;
+        }
+        if (m_cachedBoundSampler[tmu] != m_glesSamplers[tmu]) {
+          glBindSampler(tmu, m_glesSamplers[tmu]);
+          m_cachedBoundSampler[tmu] = m_glesSamplers[tmu];
+        }
       }
     }
   }
 
-  // Lazy State Synchronization (uniforms, sampler configs, and GL pipeline
-  // states)
-  if (m_stateCacheDirty || m_is2DGeometry != m_batchIs2DGeometry) {
+  // Fine-grained lazy state synchronization (only touch dirty GL state &
+  // uniforms)
+  if (m_is2DGeometry != m_batchIs2DGeometry) {
     m_is2DGeometry = m_batchIs2DGeometry;
-    SyncDepthState();
-    ApplyBlendingGLES();
-    ApplyScissorGLES_Locked();
-    SyncCullStateGLES_Locked();
-    ApplyColorMaskGLES();
+    m_glesDirtyMask |= kGlesDirtyDepth;
+  }
+  if (m_glesDirtyMask != 0) {
+    const uint32_t dirty = m_glesDirtyMask;
+    if (dirty & kGlesDirtyDepth) SyncDepthState();
+    if (dirty & kGlesDirtyBlend) ApplyBlendingGLES();
+    if (dirty & kGlesDirtyScissor) ApplyScissorGLES_Locked();
+    if (dirty & kGlesDirtyCull) SyncCullStateGLES_Locked();
+    if (dirty & kGlesDirtyColorMask) ApplyColorMaskGLES();
 
-    PopulateUniforms();
+    PopulateUniforms(dirty);
 
-    // Configure active texture samplers (only if state is dirty)
+    // Configure active texture samplers only when that TMU's sampler changed
     for (uint32_t tmu = 0; tmu < 2; ++tmu) {
+      const uint32_t samplerBit =
+          (tmu == 0) ? kGlesDirtyTexSampler0 : kGlesDirtyTexSampler1;
+      if (!(dirty & samplerBit)) continue;
       uint32_t addr = m_boundTexAddress[tmu];
       if (addr != 0xFFFFFFFF) {
         auto it = m_glesTextures[tmu].find(addr);
         if (it != m_glesTextures[tmu].end()) {
-          // Set sampler wrap modes
           GLint wrapS = GL_REPEAT;
           if (m_texClampS[tmu] == 1) {
             wrapS = GL_CLAMP_TO_EDGE;
@@ -466,7 +518,6 @@ void OpenGLESBackend::FlushBatch(bool fromStateFlush) {
           glSamplerParameteri(m_glesSamplers[tmu], GL_TEXTURE_WRAP_S, wrapS);
           glSamplerParameteri(m_glesSamplers[tmu], GL_TEXTURE_WRAP_T, wrapT);
 
-          // Set sampler filter modes
           GLint minFilter = GL_NEAREST;
           if (m_texMipMapMode[tmu] == 0) {  // Mipmap Disabled
             minFilter = (m_texMinFilter[tmu] == 1) ? GL_LINEAR : GL_NEAREST;
@@ -487,11 +538,15 @@ void OpenGLESBackend::FlushBatch(bool fromStateFlush) {
         }
       }
     }
+    m_glesDirtyMask = 0;
     m_stateCacheDirty = false;
   }
 
-  // Bind geometry VAO
-  glBindVertexArray(m_geomVAO);
+  // Bind geometry VAO only when changed
+  if (m_cachedBoundVao != m_geomVAO) {
+    glBindVertexArray(m_geomVAO);
+    m_cachedBoundVao = m_geomVAO;
+  }
   uint32_t firstVertex = m_geomVBOOffset / sizeof(ModernVertex);
 
   // Dispatch a single glDrawArrays call for the batch
@@ -509,20 +564,6 @@ void OpenGLESBackend::FlushBatch(bool fromStateFlush) {
   if (m_batchPrimitiveMode == BatchPrimitiveMode::Triangles) {
     GLIDE_INCREMENT_TRIANGLES_DRAWN(vertexCount / 3);
   }
-
-  // Cleanup state bindings
-  glBindVertexArray(0);
-  glUseProgram(0);
-  for (uint32_t tmu = 0; tmu < 2; ++tmu) {
-    if (m_boundTexAddress[tmu] != 0xFFFFFFFF) {
-      glActiveTexture(GL_TEXTURE0 + tmu);
-      glBindTexture(GL_TEXTURE_2D, 0);
-    }
-  }
-  glBindSampler(0, 0);
-  glBindSampler(1, 0);
-  glActiveTexture(GL_TEXTURE0);  // Reset active texture unit to 0
-  glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
   // Advance ring buffer offset
   m_geomVBOOffset += uploadSize;

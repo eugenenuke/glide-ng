@@ -243,6 +243,7 @@ Logger::~Logger() {
 void Logger::Initialize(const std::string& logFilePath, LogLevel level, bool logToConsole) {
     std::lock_guard<std::mutex> lock(m_mutex);
     m_activeLevel.store(static_cast<uint32_t>(level), std::memory_order_relaxed);
+    s_activeLevel.store(static_cast<uint32_t>(level), std::memory_order_relaxed);
     m_categoryMask.store(LOG_CAT_ALL, std::memory_order_relaxed);
     m_traceWindowActive.store(false, std::memory_order_relaxed);
     m_traceFrameStart.store(0, std::memory_order_relaxed);

@@ -161,7 +161,7 @@ void InitGlide(const char* apiTag, void (*resetFrontendState)()) {
   ConfigureTmuMemoryLimits();
 }
 
-void EnsureEngineInitialized(void (*resetFrontendState)()) {
+void EnsureEngineInitializedSlow(void (*resetFrontendState)()) {
   auto& reg = EmulationRegistry::GetInstance();
   auto& bm = BackendManager::GetInstance();
   if (!bm.GetBackend()) {
@@ -178,8 +178,6 @@ void EnsureEngineInitialized(void (*resetFrontendState)()) {
     bm.EstablishBackend(cfg);
     ConfigureTmuMemoryLimits();
     GLIDE_LOG(INFO, "Frontend", "Implicit grGlideInit executed seamlessly.");
-  } else {
-    bm.GetBackend()->PollEvents();
   }
 }
 
@@ -222,6 +220,7 @@ void SetRenderBuffer(uint32_t buffer) {
 
 void SstIdle() {
   if (auto* backend = BackendManager::GetInstance().GetBackend()) {
+    backend->PollEvents();
     backend->SstIdle();
   }
 }
@@ -561,25 +560,10 @@ void LoadGammaTable(uint32_t nentries, uint32_t* red, uint32_t* green,
   }
 }
 
-void SyncTexturesBeforeDraw() {
+void SyncTexturesBeforeDrawSlow() {
   auto& tm = TextureManager::GetInstance();
   if (tm.HasPendingTableSync()) {
     tm.SyncBoundTextures();
-  }
-}
-
-void SanitizeVertex(const SharedFrontendState& st, ModernVertex& mv) {
-  const bool depthActive = (st.depthMode != 0);
-  const bool textureActive =
-      (st.boundTex[0] != 0xFFFFFFFFu || st.boundTex[1] != 0xFFFFFFFFu);
-  const bool fogActive = (st.fogMode != 0);
-  const bool wActive = (st.depthMode == 2 || st.depthMode == 4);
-
-  if (!depthActive) {
-    mv.pos[2] = 0.0f;
-  }
-  if (!textureActive && !fogActive && !wActive) {
-    mv.pos[3] = 1.0f;
   }
 }
 

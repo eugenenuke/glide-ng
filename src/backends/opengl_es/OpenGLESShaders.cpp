@@ -749,199 +749,235 @@ bool OpenGLESBackend::CreateGeomShaders() {
               "be resolved.");
   }
 
+  m_glesDirtyMask = kGlesDirtyAll;
+  InvalidateGlBindingCache();
+
   checkGLError("CreateGeomShaders");
   return true;
 }
 
-void OpenGLESBackend::PopulateUniforms() {
-  glUniform1i(m_uSstOriginLoc, (int)m_sstOrigin);
-  glUniform2f(m_uViewportSizeLoc, (float)m_headlessWidth,
-              (float)m_headlessHeight);
-  bool depthClipOverride =
-      (m_depthMode == 0) ||
-      (m_depthCompareOp == 7 &&
-       (!m_depthMask ||
-        m_is2DGeometry));  // 7 = GR_CMP_ALWAYS (prevents uninitialized ooz
-                           // stack garbage clipping in text overlays, but only
-                           // if depth writes are disabled OR if it's 2D
-                           // geometry!)
-  glUniform1i(m_uDepthClipOverrideLoc, depthClipOverride ? 1 : 0);
-  GLint dbgLoc = m_uDepthBufferModeLoc;
-  GLIDE_LOG(DEBUG, "GLES",
-            "Uploading uDepthBufferMode. Location: " << dbgLoc << ", Value: "
-                                                     << m_depthMode);
-  glUniform1i(dbgLoc, m_depthMode);
-
-  float cr = ((m_constantColor >> 16) & 0xFF) / 255.0f;
-  float cg = ((m_constantColor >> 8) & 0xFF) / 255.0f;
-  float cb = (m_constantColor & 0xFF) / 255.0f;
-  float ca = ((m_constantColor >> 24) & 0xFF) / 255.0f;
-  if (m_pixelFormatOverride == 1) {
-    std::swap(cr, cb);
+void OpenGLESBackend::PopulateUniforms(uint32_t dirtyMask) {
+  if (dirtyMask & kGlesDirtyViewportAndOrigin) {
+    glUniform1i(m_uSstOriginLoc, (int)m_sstOrigin);
+    glUniform2f(m_uViewportSizeLoc, (float)m_headlessWidth,
+                (float)m_headlessHeight);
   }
-  glUniform4f(m_uConstantColorLoc, cr, cg, cb, ca);
 
-  // Upload Chromakey State Uniforms
-  glUniform1i(m_uChromakeyEnabledLoc, (int)m_chromakeyMode);
-  float chR = ((m_chromakeyValue >> 16) & 0xFF) / 255.0f;
-  float chG = ((m_chromakeyValue >> 8) & 0xFF) / 255.0f;
-  float chB = (m_chromakeyValue & 0xFF) / 255.0f;
-  float chA = ((m_chromakeyValue >> 24) & 0xFF) / 255.0f;
-  if (m_pixelFormatOverride == 1) {
-    std::swap(chR, chB);
+  if (dirtyMask & kGlesDirtyDepth) {
+    bool depthClipOverride =
+        (m_depthMode == 0) ||
+        (m_depthCompareOp == 7 &&
+         (!m_depthMask ||
+          m_is2DGeometry));  // 7 = GR_CMP_ALWAYS (prevents uninitialized ooz
+                             // stack garbage clipping in text overlays, but only
+                             // if depth writes are disabled OR if it's 2D
+                             // geometry!)
+    glUniform1i(m_uDepthClipOverrideLoc, depthClipOverride ? 1 : 0);
+    GLint dbgLoc = m_uDepthBufferModeLoc;
+    GLIDE_LOG(DEBUG, "GLES",
+              "Uploading uDepthBufferMode. Location: " << dbgLoc << ", Value: "
+                                                       << m_depthMode);
+    glUniform1i(dbgLoc, m_depthMode);
+    glUniform1f(m_uDepthBiasLoc,
+                static_cast<float>(m_depthBiasLevel) / 65535.0f);
   }
-  glUniform4f(m_uChromakeyValueLoc, chR, chG, chB, chA);
 
-  // Upload Chromakey Range Uniforms
-  bool rangeEnabled = ((m_chromakeyRangeMode >> 28) & 1) != 0;
-  glUniform1i(m_uChromakeyRangeEnabledLoc, rangeEnabled ? 1 : 0);
-
-  float rMin = ((m_chromakeyRangeMin >> 16) & 0xFF) / 255.0f;
-  float gMin = ((m_chromakeyRangeMin >> 8) & 0xFF) / 255.0f;
-  float bMin = (m_chromakeyRangeMin & 0xFF) / 255.0f;
-
-  float rMax = ((m_chromakeyRangeMax >> 16) & 0xFF) / 255.0f;
-  float gMax = ((m_chromakeyRangeMax >> 8) & 0xFF) / 255.0f;
-  float bMax = (m_chromakeyRangeMax & 0xFF) / 255.0f;
-
-  if (m_pixelFormatOverride == 1) {
-    std::swap(rMin, bMin);
-    std::swap(rMax, bMax);
+  if (dirtyMask & kGlesDirtyConstantColor) {
+    float cr = ((m_constantColor >> 16) & 0xFF) / 255.0f;
+    float cg = ((m_constantColor >> 8) & 0xFF) / 255.0f;
+    float cb = (m_constantColor & 0xFF) / 255.0f;
+    float ca = ((m_constantColor >> 24) & 0xFF) / 255.0f;
+    if (m_pixelFormatOverride == 1) {
+      std::swap(cr, cb);
+    }
+    glUniform4f(m_uConstantColorLoc, cr, cg, cb, ca);
   }
-  GLIDE_LOG(DEBUG, "GLES",
-            "ChromaRangeMin: R=" << rMin << ", G=" << gMin << ", B=" << bMin);
-  GLIDE_LOG(DEBUG, "GLES",
-            "ChromaRangeMax: R=" << rMax << ", G=" << gMax << ", B=" << bMax);
-  GLIDE_LOG(
-      DEBUG, "GLES",
-      "ChromaRangeMode: 0x" << std::hex << m_chromakeyRangeMode << std::dec);
-  GLIDE_LOG(DEBUG, "GLES", "PixelFormatOverride: " << m_pixelFormatOverride);
 
-  glUniform3f(m_uChromakeyRangeMinLoc, rMin, gMin, bMin);
-  glUniform3f(m_uChromakeyRangeMaxLoc, rMax, gMax, bMax);
+  if (dirtyMask & kGlesDirtyChromakey) {
+    // Upload Chromakey State Uniforms
+    glUniform1i(m_uChromakeyEnabledLoc, (int)m_chromakeyMode);
+    float chR = ((m_chromakeyValue >> 16) & 0xFF) / 255.0f;
+    float chG = ((m_chromakeyValue >> 8) & 0xFF) / 255.0f;
+    float chB = (m_chromakeyValue & 0xFF) / 255.0f;
+    float chA = ((m_chromakeyValue >> 24) & 0xFF) / 255.0f;
+    if (m_pixelFormatOverride == 1) {
+      std::swap(chR, chB);
+    }
+    glUniform4f(m_uChromakeyValueLoc, chR, chG, chB, chA);
 
-  int blueExcl = ((m_chromakeyRangeMode >> 24) & 1);
-  int greenExcl = ((m_chromakeyRangeMode >> 25) & 1);
-  int redExcl = ((m_chromakeyRangeMode >> 26) & 1);
-  glUniform3i(m_uChromakeyRangeExclusiveLoc, redExcl, greenExcl, blueExcl);
+    // Upload Chromakey Range Uniforms
+    bool rangeEnabled = ((m_chromakeyRangeMode >> 28) & 1) != 0;
+    glUniform1i(m_uChromakeyRangeEnabledLoc, rangeEnabled ? 1 : 0);
 
-  int unionMode = ((m_chromakeyRangeMode >> 27) & 1);
-  glUniform1i(m_uChromakeyRangeUnionLoc, unionMode);
+    float rMin = ((m_chromakeyRangeMin >> 16) & 0xFF) / 255.0f;
+    float gMin = ((m_chromakeyRangeMin >> 8) & 0xFF) / 255.0f;
+    float bMin = (m_chromakeyRangeMin & 0xFF) / 255.0f;
 
-  // Upload Combiner State Uniforms
-  glUniform1i(m_uColorFuncLoc, (int)m_colorCombinerFunc);
-  glUniform1i(m_uColorFactorLoc, (int)m_colorCombinerFactor);
-  glUniform1i(m_uColorLocalLoc, (int)m_colorCombinerLocal);
-  glUniform1i(m_uColorOtherLoc, (int)m_colorCombinerOther);
-  glUniform1i(m_uColorInvertLoc, m_colorCombinerInvert ? 1 : 0);
-
-  glUniform1i(m_uAlphaFuncLoc, (int)m_alphaCombinerFunc);
-  glUniform1i(m_uAlphaFactorLoc, (int)m_alphaCombinerFactor);
-  glUniform1i(m_uAlphaLocalLoc, (int)m_alphaCombinerLocal);
-  glUniform1i(m_uAlphaOtherLoc, (int)m_alphaCombinerOther);
-  glUniform1i(m_uAlphaInvertLoc, m_alphaCombinerInvert ? 1 : 0);
-
-  // Upload Texture Binding State (double bindings for multi-texturing)
-  int texEnabled[2] = {(m_boundTexAddress[0] != 0xFFFFFFFF) ? 1 : 0,
-                       (m_boundTexAddress[1] != 0xFFFFFFFF) ? 1 : 0};
-  glUniform1iv(m_uTextureEnabledLoc, 2, texEnabled);
-  glUniform1i(m_uTexture0Loc, 0);  // Always texture unit 0 for TMU0
-  glUniform1i(m_uTexture1Loc, 1);  // Always texture unit 1 for TMU1
-  float lodBias[2] = {m_texLodBias[0], m_texLodBias[1]};
-  glUniform1fv(m_uTexLodBiasLoc, 2, lodBias);
-
-  int useTmuOow[2] = {(m_stwHintMask & 0x2) ? 1 : 0,
-                      (m_stwHintMask & 0x8) ? 1 : 0};
-  glUniform1iv(m_uUseTmuOowLoc, 2, useTmuOow);
-
-  // Upload TMU combiner states (functions, factors, and inverts)
-  int rgbFuncs[2] = {(int)m_texCombinerRgbFunc[0],
-                     (int)m_texCombinerRgbFunc[1]};
-  int rgbFactors[2] = {(int)m_texCombinerRgbFactor[0],
-                       (int)m_texCombinerRgbFactor[1]};
-  int alphaFuncs[2] = {(int)m_texCombinerAlphaFunc[0],
-                       (int)m_texCombinerAlphaFunc[1]};
-  int alphaFactors[2] = {(int)m_texCombinerAlphaFactor[0],
-                         (int)m_texCombinerAlphaFactor[1]};
-  int rgbInverts[2] = {m_texCombinerRgbInvert[0] ? 1 : 0,
-                       m_texCombinerRgbInvert[1] ? 1 : 0};
-  int alphaInverts[2] = {m_texCombinerAlphaInvert[0] ? 1 : 0,
-                         m_texCombinerAlphaInvert[1] ? 1 : 0};
-
-  glUniform1iv(m_uTexRgbFuncLoc, 2, rgbFuncs);
-  glUniform1iv(m_uTexRgbFactorLoc, 2, rgbFactors);
-  glUniform1iv(m_uTexAlphaFuncLoc, 2, alphaFuncs);
-  glUniform1iv(m_uTexAlphaFactorLoc, 2, alphaFactors);
-  glUniform1iv(m_uTexRgbInvertLoc, 2, rgbInverts);
-  glUniform1iv(m_uTexAlphaInvertLoc, 2, alphaInverts);
-
-  glUniform1i(m_uAlphaTestOpLoc, (int)m_alphaTestOp);
-  glUniform1f(m_uAlphaTestRefLoc, (float)m_alphaTestRefVal / 255.0f);
-  glUniform1f(m_uDepthBiasLoc, static_cast<float>(m_depthBiasLevel) / 65535.0f);
-
-  // Milestone 8: Fogging State
-  glUniform1i(m_uFogModeLoc, (int)m_fogMode);
-
-  float fogR = ((m_fogColor >> 16) & 0xFF) / 255.0f;
-  float fogG = ((m_fogColor >> 8) & 0xFF) / 255.0f;
-  float fogB = (m_fogColor & 0xFF) / 255.0f;
-  if (m_pixelFormatOverride == 1) {
-    std::swap(fogR, fogB);
-  }
-  glUniform4f(m_uFogColorLoc, fogR, fogG, fogB, 1.0f);
-
-  float glesFogTable[64];
-  for (int i = 0; i < 64; ++i) {
-    glesFogTable[i] = m_fogTable[i] / 255.0f;
-  }
-  glUniform1fv(m_uFogTableLoc, 64, glesFogTable);
-
-  // Upload Texture-specific Chromakey Uniforms for TMU0 and TMU1
-  uint32_t enabled[2];
-  uint32_t rangeMode[2];
-  float minColor[8];  // 2 vec4s flat
-  float maxColor[8];  // 2 vec4s flat
-
-  for (int i = 0; i < 2; ++i) {
-    enabled[i] = m_texChromaMode[i];
-    rangeMode[i] = m_texChromaRangeMode[i];
-
-    float rMin = ((m_texChromaMin[i] >> 16) & 0xFF) / 255.0f;
-    float gMin = ((m_texChromaMin[i] >> 8) & 0xFF) / 255.0f;
-    float bMin = (m_texChromaMin[i] & 0xFF) / 255.0f;
-    float aMin = ((m_texChromaMin[i] >> 24) & 0xFF) / 255.0f;
-
-    float rMax = ((m_texChromaMax[i] >> 16) & 0xFF) / 255.0f;
-    float gMax = ((m_texChromaMax[i] >> 8) & 0xFF) / 255.0f;
-    float bMax = (m_texChromaMax[i] & 0xFF) / 255.0f;
-    float aMax = ((m_texChromaMax[i] >> 24) & 0xFF) / 255.0f;
+    float rMax = ((m_chromakeyRangeMax >> 16) & 0xFF) / 255.0f;
+    float gMax = ((m_chromakeyRangeMax >> 8) & 0xFF) / 255.0f;
+    float bMax = (m_chromakeyRangeMax & 0xFF) / 255.0f;
 
     if (m_pixelFormatOverride == 1) {
       std::swap(rMin, bMin);
       std::swap(rMax, bMax);
     }
+    GLIDE_LOG(DEBUG, "GLES",
+              "ChromaRangeMin: R=" << rMin << ", G=" << gMin << ", B=" << bMin);
+    GLIDE_LOG(DEBUG, "GLES",
+              "ChromaRangeMax: R=" << rMax << ", G=" << gMax << ", B=" << bMax);
+    GLIDE_LOG(
+        DEBUG, "GLES",
+        "ChromaRangeMode: 0x" << std::hex << m_chromakeyRangeMode << std::dec);
+    GLIDE_LOG(DEBUG, "GLES", "PixelFormatOverride: " << m_pixelFormatOverride);
 
-    minColor[i * 4 + 0] = rMin;
-    minColor[i * 4 + 1] = gMin;
-    minColor[i * 4 + 2] = bMin;
-    minColor[i * 4 + 3] = aMin;
+    glUniform3f(m_uChromakeyRangeMinLoc, rMin, gMin, bMin);
+    glUniform3f(m_uChromakeyRangeMaxLoc, rMax, gMax, bMax);
 
-    maxColor[i * 4 + 0] = rMax;
-    maxColor[i * 4 + 1] = gMax;
-    maxColor[i * 4 + 2] = bMax;
-    maxColor[i * 4 + 3] = aMax;
+    int blueExcl = ((m_chromakeyRangeMode >> 24) & 1);
+    int greenExcl = ((m_chromakeyRangeMode >> 25) & 1);
+    int redExcl = ((m_chromakeyRangeMode >> 26) & 1);
+    glUniform3i(m_uChromakeyRangeExclusiveLoc, redExcl, greenExcl, blueExcl);
+
+    int unionMode = ((m_chromakeyRangeMode >> 27) & 1);
+    glUniform1i(m_uChromakeyRangeUnionLoc, unionMode);
   }
 
-  glUniform1uiv(m_uTexChromaEnabledLoc, 2, enabled);
-  glUniform1uiv(m_uTexChromaRangeModeLoc, 2, rangeMode);
-  glUniform4fv(m_uTexChromaMinLoc, 2, minColor);
-  glUniform4fv(m_uTexChromaMaxLoc, 2, maxColor);
+  if (dirtyMask & kGlesDirtyColorCombiner) {
+    // Upload Combiner State Uniforms
+    glUniform1i(m_uColorFuncLoc, (int)m_colorCombinerFunc);
+    glUniform1i(m_uColorFactorLoc, (int)m_colorCombinerFactor);
+    glUniform1i(m_uColorLocalLoc, (int)m_colorCombinerLocal);
+    glUniform1i(m_uColorOtherLoc, (int)m_colorCombinerOther);
+    glUniform1i(m_uColorInvertLoc, m_colorCombinerInvert ? 1 : 0);
 
-  glUniform1f(m_uDepthNearLoc, m_depthNear);
-  glUniform1f(m_uDepthFarLoc, m_depthFar);
-  glUniform1ui(m_uDitherModeLoc, m_ditherMode);
-  glUniform1ui(m_uStippleModeLoc, m_stippleMode);
-  glUniform1ui(m_uStipplePatternLoc, m_stipplePattern);
+    glUniform1i(m_uAlphaFuncLoc, (int)m_alphaCombinerFunc);
+    glUniform1i(m_uAlphaFactorLoc, (int)m_alphaCombinerFactor);
+    glUniform1i(m_uAlphaLocalLoc, (int)m_alphaCombinerLocal);
+    glUniform1i(m_uAlphaOtherLoc, (int)m_alphaCombinerOther);
+    glUniform1i(m_uAlphaInvertLoc, m_alphaCombinerInvert ? 1 : 0);
+  }
+
+  if (dirtyMask & kGlesDirtyTexBinding) {
+    int texEnabled[2] = {(m_boundTexAddress[0] != 0xFFFFFFFF) ? 1 : 0,
+                         (m_boundTexAddress[1] != 0xFFFFFFFF) ? 1 : 0};
+    glUniform1iv(m_uTextureEnabledLoc, 2, texEnabled);
+    float lodBias[2] = {m_texLodBias[0], m_texLodBias[1]};
+    glUniform1fv(m_uTexLodBiasLoc, 2, lodBias);
+  }
+
+  if (dirtyMask & kGlesDirtySamplerUnits) {
+    glUniform1i(m_uTexture0Loc, 0);  // Always texture unit 0 for TMU0
+    glUniform1i(m_uTexture1Loc, 1);  // Always texture unit 1 for TMU1
+  }
+
+  if (dirtyMask & kGlesDirtyStwHint) {
+    int useTmuOow[2] = {(m_stwHintMask & 0x2) ? 1 : 0,
+                        (m_stwHintMask & 0x8) ? 1 : 0};
+    glUniform1iv(m_uUseTmuOowLoc, 2, useTmuOow);
+  }
+
+  if (dirtyMask & kGlesDirtyTexCombiner) {
+    // Upload TMU combiner states (functions, factors, and inverts)
+    int rgbFuncs[2] = {(int)m_texCombinerRgbFunc[0],
+                       (int)m_texCombinerRgbFunc[1]};
+    int rgbFactors[2] = {(int)m_texCombinerRgbFactor[0],
+                         (int)m_texCombinerRgbFactor[1]};
+    int alphaFuncs[2] = {(int)m_texCombinerAlphaFunc[0],
+                         (int)m_texCombinerAlphaFunc[1]};
+    int alphaFactors[2] = {(int)m_texCombinerAlphaFactor[0],
+                           (int)m_texCombinerAlphaFactor[1]};
+    int rgbInverts[2] = {m_texCombinerRgbInvert[0] ? 1 : 0,
+                         m_texCombinerRgbInvert[1] ? 1 : 0};
+    int alphaInverts[2] = {m_texCombinerAlphaInvert[0] ? 1 : 0,
+                           m_texCombinerAlphaInvert[1] ? 1 : 0};
+
+    glUniform1iv(m_uTexRgbFuncLoc, 2, rgbFuncs);
+    glUniform1iv(m_uTexRgbFactorLoc, 2, rgbFactors);
+    glUniform1iv(m_uTexAlphaFuncLoc, 2, alphaFuncs);
+    glUniform1iv(m_uTexAlphaFactorLoc, 2, alphaFactors);
+    glUniform1iv(m_uTexRgbInvertLoc, 2, rgbInverts);
+    glUniform1iv(m_uTexAlphaInvertLoc, 2, alphaInverts);
+  }
+
+  if (dirtyMask & kGlesDirtyAlphaTest) {
+    glUniform1i(m_uAlphaTestOpLoc, (int)m_alphaTestOp);
+    glUniform1f(m_uAlphaTestRefLoc, (float)m_alphaTestRefVal / 255.0f);
+  }
+
+  if (dirtyMask & kGlesDirtyFogModeAndColor) {
+    // Milestone 8: Fogging State
+    glUniform1i(m_uFogModeLoc, (int)m_fogMode);
+
+    float fogR = ((m_fogColor >> 16) & 0xFF) / 255.0f;
+    float fogG = ((m_fogColor >> 8) & 0xFF) / 255.0f;
+    float fogB = (m_fogColor & 0xFF) / 255.0f;
+    if (m_pixelFormatOverride == 1) {
+      std::swap(fogR, fogB);
+    }
+    glUniform4f(m_uFogColorLoc, fogR, fogG, fogB, 1.0f);
+  }
+
+  if (dirtyMask & kGlesDirtyFogTable) {
+    float glesFogTable[64];
+    for (int i = 0; i < 64; ++i) {
+      glesFogTable[i] = m_fogTable[i] / 255.0f;
+    }
+    glUniform1fv(m_uFogTableLoc, 64, glesFogTable);
+  }
+
+  if (dirtyMask & kGlesDirtyTexChromakey) {
+    // Upload Texture-specific Chromakey Uniforms for TMU0 and TMU1
+    uint32_t enabled[2];
+    uint32_t rangeMode[2];
+    float minColor[8];  // 2 vec4s flat
+    float maxColor[8];  // 2 vec4s flat
+
+    for (int i = 0; i < 2; ++i) {
+      enabled[i] = m_texChromaMode[i];
+      rangeMode[i] = m_texChromaRangeMode[i];
+
+      float rMin = ((m_texChromaMin[i] >> 16) & 0xFF) / 255.0f;
+      float gMin = ((m_texChromaMin[i] >> 8) & 0xFF) / 255.0f;
+      float bMin = (m_texChromaMin[i] & 0xFF) / 255.0f;
+      float aMin = ((m_texChromaMin[i] >> 24) & 0xFF) / 255.0f;
+
+      float rMax = ((m_texChromaMax[i] >> 16) & 0xFF) / 255.0f;
+      float gMax = ((m_texChromaMax[i] >> 8) & 0xFF) / 255.0f;
+      float bMax = (m_texChromaMax[i] & 0xFF) / 255.0f;
+      float aMax = ((m_texChromaMax[i] >> 24) & 0xFF) / 255.0f;
+
+      if (m_pixelFormatOverride == 1) {
+        std::swap(rMin, bMin);
+        std::swap(rMax, bMax);
+      }
+
+      minColor[i * 4 + 0] = rMin;
+      minColor[i * 4 + 1] = gMin;
+      minColor[i * 4 + 2] = bMin;
+      minColor[i * 4 + 3] = aMin;
+
+      maxColor[i * 4 + 0] = rMax;
+      maxColor[i * 4 + 1] = gMax;
+      maxColor[i * 4 + 2] = bMax;
+      maxColor[i * 4 + 3] = aMax;
+    }
+
+    glUniform1uiv(m_uTexChromaEnabledLoc, 2, enabled);
+    glUniform1uiv(m_uTexChromaRangeModeLoc, 2, rangeMode);
+    glUniform4fv(m_uTexChromaMinLoc, 2, minColor);
+    glUniform4fv(m_uTexChromaMaxLoc, 2, maxColor);
+  }
+
+  if (dirtyMask & kGlesDirtyDepthRange) {
+    glUniform1f(m_uDepthNearLoc, m_depthNear);
+    glUniform1f(m_uDepthFarLoc, m_depthFar);
+  }
+
+  if (dirtyMask & kGlesDirtyDitherStipple) {
+    glUniform1ui(m_uDitherModeLoc, m_ditherMode);
+    glUniform1ui(m_uStippleModeLoc, m_stippleMode);
+    glUniform1ui(m_uStipplePatternLoc, m_stipplePattern);
+  }
 }
 
 }  // namespace GlideWrapper

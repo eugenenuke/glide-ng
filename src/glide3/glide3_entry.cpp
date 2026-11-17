@@ -308,9 +308,12 @@ FX_ENTRY void FX_CALL grDrawTriangle(const void* a, const void* b,
   GLIDE_INCREMENT_TRIANGLES_PROCESSED(1);
 
   auto& layout = GlideWrapper::VertexLayout::GetInstance();
-  GlideWrapper::ModernVertex va = layout.DecodeVertex(a);
-  GlideWrapper::ModernVertex vb = layout.DecodeVertex(b);
-  GlideWrapper::ModernVertex vc = layout.DecodeVertex(c);
+  GlideWrapper::ModernVertex va;
+  GlideWrapper::ModernVertex vb;
+  GlideWrapper::ModernVertex vc;
+  layout.DecodeVertexInto(a, va);
+  layout.DecodeVertexInto(b, vb);
+  layout.DecodeVertexInto(c, vc);
 
   TransformVertexIfNecessary(va);
   TransformVertexIfNecessary(vb);
@@ -341,13 +344,20 @@ FX_ENTRY void FX_CALL grDrawVertexArray(FxU32 mode, FxU32 count,
   auto& layout = GlideWrapper::VertexLayout::GetInstance();
   const void* const* ptrs = static_cast<const void* const*>(pointers);
 
-  std::vector<GlideWrapper::ModernVertex> vertices(count);
+  constexpr FxU32 kStackCap = 64;
+  GlideWrapper::ModernVertex stackVerts[kStackCap];
+  std::vector<GlideWrapper::ModernVertex> heapVerts;
+  GlideWrapper::ModernVertex* verts = stackVerts;
+  if (count > kStackCap) {
+    heapVerts.resize(count);
+    verts = heapVerts.data();
+  }
   for (FxU32 i = 0; i < count; ++i) {
-    vertices[i] = layout.DecodeVertex(ptrs[i]);
-    TransformVertexIfNecessary(vertices[i]);
+    layout.DecodeVertexInto(ptrs[i], verts[i]);
+    TransformVertexIfNecessary(verts[i]);
   }
 
-  EntryCommon::DrawVertexList(mode, count, vertices.data(),
+  EntryCommon::DrawVertexList(mode, count, verts,
                               /*allowPointsAndLines=*/false);
 }
 
@@ -376,13 +386,20 @@ FX_ENTRY void FX_CALL grDrawVertexArrayContiguous(FxU32 mode, FxU32 count,
   GLIDE_PROFILE_SCOPE("API::grDrawVertexArrayContiguous");
   const char* rawBytes = static_cast<const char*>(pointers);
 
-  std::vector<GlideWrapper::ModernVertex> vertices(count);
+  constexpr FxU32 kStackCap = 64;
+  GlideWrapper::ModernVertex stackVerts[kStackCap];
+  std::vector<GlideWrapper::ModernVertex> heapVerts;
+  GlideWrapper::ModernVertex* verts = stackVerts;
+  if (count > kStackCap) {
+    heapVerts.resize(count);
+    verts = heapVerts.data();
+  }
   for (FxU32 i = 0; i < count; ++i) {
-    vertices[i] = layout.DecodeVertex(rawBytes + i * stride);
-    TransformVertexIfNecessary(vertices[i]);
+    layout.DecodeVertexInto(rawBytes + i * stride, verts[i]);
+    TransformVertexIfNecessary(verts[i]);
   }
 
-  EntryCommon::DrawVertexList(mode, count, vertices.data(),
+  EntryCommon::DrawVertexList(mode, count, verts,
                               /*allowPointsAndLines=*/false);
 }
 

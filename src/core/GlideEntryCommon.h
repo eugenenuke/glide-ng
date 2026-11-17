@@ -1,7 +1,9 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 
+#include "core/BackendManager.h"
 #include "core/IGraphicsBackend.h"
 
 namespace GlideWrapper {
@@ -99,7 +101,14 @@ ResolutionDims ResolveResolution(uint32_t resolutionEnum);
 // Lifecycle & initialization helpers.
 void ConfigureTmuMemoryLimits();
 void InitGlide(const char* apiTag, void (*resetFrontendState)());
-void EnsureEngineInitialized(void (*resetFrontendState)());
+void EnsureEngineInitializedSlow(void (*resetFrontendState)());
+inline void EnsureEngineInitialized(void (*resetFrontendState)()) {
+  if (__builtin_expect(
+          BackendManager::GetInstance().GetBackend() != nullptr, 1)) {
+    return;
+  }
+  EnsureEngineInitializedSlow(resetFrontendState);
+}
 void ShutdownGlide(const char* apiTag);
 void CloseWindow(const char* logMessage);
 
@@ -158,8 +167,39 @@ void LoadGammaTable(uint32_t nentries, uint32_t* red, uint32_t* green,
                     uint32_t* blue);
 
 // Vertex sanitization, primitive batch dispatch, and telemetry helpers.
-void SyncTexturesBeforeDraw();
-void SanitizeVertex(const SharedFrontendState& st, ModernVertex& mv);
+inline std::atomic<bool> g_anyTmuTableDirty{false};
+void SyncTexturesBeforeDrawSlow();
+inline void SyncTexturesBeforeDraw() {
+  if (__builtin_expect(g_anyTmuTableDirty.load(std::memory_order_acquire), 0)) {
+    SyncTexturesBeforeDrawSlow();
+  }
+}
+
+inline void SanitizeVertex(const SharedFrontendState& st, ModernVertex& mv) {
+  if (st.depthMode == 0) {
+    mv.pos[2] = 0.0f;
+  }
+  if (st.boundTex[0] == 0xFFFFFFFFu && st.boundTex[1] == 0xFFFFFFFFu &&
+      st.fogMode == 0 && st.depthMode != 2 && st.depthMode != 4) {
+    mv.pos[3] = 1.0f;
+  }
+}
+
+inline void SanitizeTriangle(const SharedFrontendState& st, ModernVertex& va,
+                             ModernVertex& vb, ModernVertex& vc) {
+  if (st.depthMode == 0) {
+    va.pos[2] = 0.0f;
+    vb.pos[2] = 0.0f;
+    vc.pos[2] = 0.0f;
+  }
+  if (st.boundTex[0] == 0xFFFFFFFFu && st.boundTex[1] == 0xFFFFFFFFu &&
+      st.fogMode == 0 && st.depthMode != 2 && st.depthMode != 4) {
+    va.pos[3] = 1.0f;
+    vb.pos[3] = 1.0f;
+    vc.pos[3] = 1.0f;
+  }
+}
+
 void DrawVertexList(uint32_t mode, uint32_t count, const ModernVertex* vertices,
                     bool allowPointsAndLines);
 void GetTriStats(uint32_t* processed, uint32_t* drawn);

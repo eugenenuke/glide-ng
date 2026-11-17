@@ -122,8 +122,46 @@ class OpenGLESBackend : public GlideStateTracker {
   void ApplyColorMaskGLES();
   void ApplyScissorGLES_Locked();
   void SyncCullStateGLES_Locked();
-  void PopulateUniforms();
+  void PopulateUniforms(uint32_t dirtyMask);
+  void InvalidateGlBindingCache();
   uint32_t GetActiveGpuFbo() const;
+
+  enum GlesDirtyBits : uint32_t {
+    kGlesDirtyViewportAndOrigin = 1u << 0,
+    kGlesDirtyDepth             = 1u << 1,
+    kGlesDirtyBlend             = 1u << 2,
+    kGlesDirtyColorMask         = 1u << 3,
+    kGlesDirtyScissor           = 1u << 4,
+    kGlesDirtyCull              = 1u << 5,
+    kGlesDirtyConstantColor     = 1u << 6,
+    kGlesDirtyChromakey         = 1u << 7,
+    kGlesDirtyColorCombiner     = 1u << 8,
+    kGlesDirtyTexBinding        = 1u << 9,
+    kGlesDirtyTexSampler0       = 1u << 10,
+    kGlesDirtyTexSampler1       = 1u << 11,
+    kGlesDirtyTexCombiner       = 1u << 12,
+    kGlesDirtyStwHint           = 1u << 13,
+    kGlesDirtyAlphaTest         = 1u << 14,
+    kGlesDirtyFogModeAndColor   = 1u << 15,
+    kGlesDirtyFogTable          = 1u << 16,
+    kGlesDirtyTexChromakey      = 1u << 17,
+    kGlesDirtyDepthRange        = 1u << 18,
+    kGlesDirtyDitherStipple     = 1u << 19,
+    kGlesDirtySamplerUnits      = 1u << 20,
+    kGlesDirtyAll               = 0xFFFFFFFFu,
+  };
+  uint32_t m_glesDirtyMask{kGlesDirtyAll};
+
+  // Cached GL object bindings to avoid redundant bind/unbind churn across
+  // consecutive FlushBatch calls within a frame.
+  uint32_t m_cachedBoundFbo{0xFFFFFFFFu};
+  uint32_t m_cachedBoundProgram{0xFFFFFFFFu};
+  uint32_t m_cachedBoundVao{0xFFFFFFFFu};
+  uint32_t m_cachedBoundVbo{0xFFFFFFFFu};
+  uint32_t m_cachedBoundTex[2]{0xFFFFFFFFu, 0xFFFFFFFFu};
+  uint32_t m_cachedBoundSampler[2]{0xFFFFFFFFu, 0xFFFFFFFFu};
+  uint32_t m_cachedActiveTexUnit{0xFFFFFFFFu};
+  bool m_cachedViewportValid{false};
 
   // Unified native OS surface host (Option A: Headless / StandaloneSDL2 /
   // X11Child / WaylandSubsurface).
@@ -175,7 +213,14 @@ class OpenGLESBackend : public GlideStateTracker {
   uint32_t m_geomVBOOffset{0};
   uint32_t m_geomVBOSizeConfigured{
       8 * 1024 * 1024};  // Configurable dynamic ring buffer size in bytes
-  std::unordered_map<uint32_t, uint32_t> m_glesTextures[2];
+  struct GlesTexEntry {
+    uint32_t id{0};
+    uint32_t width{0};
+    uint32_t height{0};
+    uint32_t mipLevels{0};
+  };
+  std::unordered_map<uint32_t, GlesTexEntry> m_glesTextures[2];
+  std::vector<uint32_t> m_texUploadScratch;
 
   // Geometry Batching State
   enum class BatchPrimitiveMode { None, Points, Lines, Triangles };

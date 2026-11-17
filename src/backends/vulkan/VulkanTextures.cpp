@@ -1,6 +1,7 @@
 #include "VulkanBackend.h"
 
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <vector>
 
@@ -56,6 +57,31 @@ static uint64_t CalculateTextureHash(const struct VirtualTexture& tex) {
   return hash;
 }
 
+void VulkanBackend::EvictDescriptorsForView_Locked(vk::ImageView view,
+                                                   bool deferDestruction) {
+  if (!view) return;
+  const uint64_t viewHandle = static_cast<uint64_t>(
+      reinterpret_cast<uintptr_t>(static_cast<VkImageView>(view)));
+  auto vit = m_viewToDescriptorKeys.find(viewHandle);
+  if (vit == m_viewToDescriptorKeys.end()) return;
+
+  for (const auto& dkey : vit->second) {
+    auto dit = m_descriptorCache.find(dkey);
+    if (dit != m_descriptorCache.end()) {
+      if (m_cachedDescSet == dit->second.get()) {
+        m_cachedDescSet = vk::DescriptorSet{};
+        m_descriptorStateDirty = true;
+      }
+      if (deferDestruction) {
+        m_retiredDescriptorSets[m_currentFrameSlot].push_back(
+            std::move(dit->second));
+      }
+      m_descriptorCache.erase(dit);
+    }
+  }
+  m_viewToDescriptorKeys.erase(vit);
+}
+
 void VulkanBackend::RetireTextureAtAddress_Locked(uint32_t tmu,
                                                   uint32_t startAddress) {
   if (tmu >= 2) return;
@@ -63,18 +89,12 @@ void VulkanBackend::RetireTextureAtAddress_Locked(uint32_t tmu,
   auto it = tmuMap.find(startAddress);
   if (it == tmuMap.end()) return;
 
-  vk::ImageView oldView = it->second.imageView.get();
-  if (oldView) {
-    for (auto dit = m_descriptorCache.begin(); dit != m_descriptorCache.end();) {
-      if (dit->first.imageView0 == oldView ||
-          dit->first.imageView1 == oldView) {
-        m_retiredDescriptorSets[m_currentFrameSlot].push_back(
-            std::move(dit->second));
-        dit = m_descriptorCache.erase(dit);
-      } else {
-        ++dit;
-      }
-    }
+  // Keep cached VkDescriptorSets alive while the VkImageView moves through
+  // m_retiredTextures into m_texturePool so pooled texture reuse hits
+  // m_descriptorCache with zero vkAllocateDescriptorSets/vkUpdateDescriptorSets
+  // calls. Only evict early if approaching descriptor pool capacity.
+  if (m_descriptorCache.size() >= kDescriptorCacheHighWater) {
+    EvictDescriptorsForView_Locked(it->second.imageView.get(), true);
   }
 
   m_retiredTextures[m_currentFrameSlot].push_back(std::move(it->second));
@@ -90,6 +110,10 @@ void VulkanBackend::ReclaimRetiredResources_Locked(uint32_t slot) {
     if (m_texturePool.size() < kMaxPooledTextures && tex.image && tex.memory &&
         tex.imageView && tex.width > 0 && tex.height > 0 && tex.mipLevels > 0) {
       m_texturePool.push_back(std::move(tex));
+    } else if (tex.imageView) {
+      // Texture is not pooled and will be destroyed immediately below (its
+      // GPU fence already signaled), so evict its cached descriptor sets now.
+      EvictDescriptorsForView_Locked(tex.imageView.get(), false);
     }
   }
   m_retiredTextures[slot].clear();
@@ -171,9 +195,9 @@ void VulkanBackend::UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
 
   if (m_texStagingOffsets[m_currentFrameSlot] + totalBytes > slotEnd) {
     GLIDE_LOG(WARN, "Vulkan",
-              "Texture staging slot size exceeded! Stalling GPU on waitIdle() "
-              "and wrapping around...");
-    m_device->waitIdle();
+              "Texture staging slot size exceeded! Flushing mid-frame and "
+              "wrapping around...");
+    SubmitMidFrameAndWaitIdle_Locked(true);
     m_texStagingOffsets[m_currentFrameSlot] = slotBase;
   }
 
@@ -228,16 +252,27 @@ void VulkanBackend::UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
       vulkanTex.mipLevels = mipCount;
     }
 
-    // 3. Copy all mipmap levels data into our persistent staging memory map
+    // 3. Copy all mipmap levels data into our persistent HOST_COHERENT staging
+    //    memory map (no flushMappedMemoryRanges needed).
     uint8_t* mappedData =
         static_cast<uint8_t*>(m_texStagingMap) + currentOffset;
     size_t offset = 0;
-    std::vector<size_t> levelOffsets;
-    levelOffsets.reserve(tex.swizzledMipLevels.size());
+    constexpr size_t kMaxStackMips = 16;
+    std::array<size_t, kMaxStackMips> stackLevelOffsets{};
+    std::vector<size_t> heapLevelOffsets;
+    const bool useStack = (mipCount <= kMaxStackMips);
+    if (!useStack) {
+      heapLevelOffsets.reserve(mipCount);
+    }
     uint32_t lw = tex.baseWidth;
     uint32_t lh = tex.baseHeight;
-    for (const auto& level : tex.swizzledMipLevels) {
-      levelOffsets.push_back(currentOffset + offset);
+    for (uint32_t i = 0; i < mipCount; ++i) {
+      const auto& level = tex.swizzledMipLevels[i];
+      if (useStack) {
+        stackLevelOffsets[i] = currentOffset + offset;
+      } else {
+        heapLevelOffsets.push_back(currentOffset + offset);
+      }
       const size_t expectedBytes =
           static_cast<size_t>(lw) * lh * sizeof(uint32_t);
       const size_t availBytes = level.size() * sizeof(uint32_t);
@@ -254,58 +289,58 @@ void VulkanBackend::UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
       lh = std::max(1u, lh / 2);
     }
 
-    // Flush mapped memory range to ensure visibility to GPU
-    vk::MappedMemoryRange memRange(m_texStagingMemory.get(), currentOffset,
-                                   totalBytes);
-    m_device->flushMappedMemoryRanges(memRange);
-
     // 4. Update the offset in the staging buffer
     m_texStagingOffsets[m_currentFrameSlot] += totalBytes;
 
-    // 5. Record copy commands into the active frame's command buffer!
-    // First, if we are in an active render pass, we must temporarily end it!
-    if (m_inRenderPass) {
-      FlushBatch();
-      m_commandBuffer->endRenderPass();
-      m_inRenderPass = false;
-    }
+    // 5. Record copy commands into the per-frame pre-render upload command
+    //    buffer! Because UploadTexture_Locked is Copy-on-Write (every upload
+    //    targets a fresh or fence-reclaimed VkImage never read by earlier draws
+    //    in this frame), recording here avoids ending/splitting the active
+    //    RenderPass mid-frame.
+    vk::CommandBuffer& uploadCmd = BeginUploadCommandBuffer_Locked();
 
     // Transition entire image to TransferDstOptimal (eUndefined discards any
     // previous contents for pooled images, which we fully overwrite below)
     vk::ImageSubresourceRange entireImageRange(vk::ImageAspectFlagBits::eColor,
                                                0, mipCount, 0, 1);
-    TransitionImageLayout(*m_commandBuffer, vulkanTex.image.get(),
+    TransitionImageLayout(uploadCmd, vulkanTex.image.get(),
                           vk::ImageLayout::eUndefined,
                           vk::ImageLayout::eTransferDstOptimal,
                           entireImageRange);
 
     // Copy each mipmap level from staging buffer to image
-    std::vector<vk::BufferImageCopy> copyRegions;
-    copyRegions.reserve(mipCount);
+    std::array<vk::BufferImageCopy, kMaxStackMips> stackCopyRegions{};
+    std::vector<vk::BufferImageCopy> heapCopyRegions;
+    if (!useStack) {
+      heapCopyRegions.resize(mipCount);
+    }
+    vk::BufferImageCopy* copyRegionsPtr =
+        useStack ? stackCopyRegions.data() : heapCopyRegions.data();
+    const size_t* levelOffsetsPtr =
+        useStack ? stackLevelOffsets.data() : heapLevelOffsets.data();
+
     uint32_t width = tex.baseWidth;
     uint32_t height = tex.baseHeight;
     for (uint32_t i = 0; i < mipCount; ++i) {
-      vk::BufferImageCopy region;
-      region.bufferOffset = levelOffsets[i];
+      vk::BufferImageCopy& region = copyRegionsPtr[i];
+      region.bufferOffset = levelOffsetsPtr[i];
       region.bufferRowLength = 0;
       region.bufferImageHeight = 0;
       region.imageSubresource =
           vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, i, 0, 1);
       region.imageOffset = vk::Offset3D(0, 0, 0);
       region.imageExtent = vk::Extent3D(width, height, 1);
-      copyRegions.push_back(region);
 
       width = std::max(1u, width / 2);
       height = std::max(1u, height / 2);
     }
 
-    m_commandBuffer->copyBufferToImage(
+    uploadCmd.copyBufferToImage(
         m_texStagingBuffer.get(), vulkanTex.image.get(),
-        vk::ImageLayout::eTransferDstOptimal,
-        static_cast<uint32_t>(copyRegions.size()), copyRegions.data());
+        vk::ImageLayout::eTransferDstOptimal, mipCount, copyRegionsPtr);
 
     // Transition entire image to ShaderReadOnlyOptimal
-    TransitionImageLayout(*m_commandBuffer, vulkanTex.image.get(),
+    TransitionImageLayout(uploadCmd, vulkanTex.image.get(),
                           vk::ImageLayout::eTransferDstOptimal,
                           vk::ImageLayout::eShaderReadOnlyOptimal,
                           entireImageRange);
@@ -444,10 +479,16 @@ void VulkanBackend::UploadTexturePartial(uint32_t tmu, uint32_t startAddress,
 
   if (m_texStagingOffsets[m_currentFrameSlot] + partialBytes > slotEnd) {
     GLIDE_LOG(WARN, "Vulkan",
-              "Texture staging slot size exceeded during partial! Stalling GPU "
-              "and wrapping around...");
-    m_device->waitIdle();
+              "Texture staging slot size exceeded during partial! Flushing "
+              "mid-frame and wrapping around...");
+    SubmitMidFrameAndWaitIdle_Locked(true);
     m_texStagingOffsets[m_currentFrameSlot] = slotBase;
+  }
+
+  // If any pre-frame COW uploads are queued, flush them so vTex is guaranteed
+  // to already be in eShaderReadOnlyOptimal before this in-order partial update.
+  if (m_uploadCmdHasWork[m_currentFrameSlot]) {
+    SubmitPendingUploadsAndWaitIdle_Locked();
   }
 
   uint32_t currentOffset = m_texStagingOffsets[m_currentFrameSlot];
@@ -456,10 +497,6 @@ void VulkanBackend::UploadTexturePartial(uint32_t tmu, uint32_t startAddress,
   uint8_t* mappedData = static_cast<uint8_t*>(m_texStagingMap) + currentOffset;
 
   std::memcpy(mappedData, srcPixels + startRow * w, partialBytes);
-
-  vk::MappedMemoryRange memRange(m_texStagingMemory.get(), currentOffset,
-                                 partialBytes);
-  m_device->flushMappedMemoryRanges(memRange);
 
   m_texStagingOffsets[m_currentFrameSlot] += partialBytes;
 
@@ -512,17 +549,26 @@ void VulkanBackend::PurgeTextures() {
                 << " textures, " << m_descriptorCache.size()
                 << " descriptors.");
 
+  // Evict descriptor sets for idle pooled textures before destroying them so
+  // no descriptor set ever outlives its VkImageView.
+  for (auto& tex : m_texturePool) {
+    if (tex.imageView) {
+      EvictDescriptorsForView_Locked(tex.imageView.get(), false);
+    }
+  }
+  m_texturePool.clear();
+
   for (auto& kv : m_descriptorCache) {
     m_retiredDescriptorSets[m_currentFrameSlot].push_back(std::move(kv.second));
   }
   m_descriptorCache.clear();
+  m_viewToDescriptorKeys.clear();
   for (uint32_t t = 0; t < 2; ++t) {
     for (auto& kv : m_vulkanTextures[t]) {
       m_retiredTextures[m_currentFrameSlot].push_back(std::move(kv.second));
     }
     m_vulkanTextures[t].clear();
   }
-  m_texturePool.clear();
   m_descriptorStateDirty = true;
   m_cachedDescSet = vk::DescriptorSet{};
 

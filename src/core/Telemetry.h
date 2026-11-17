@@ -105,16 +105,25 @@ class TelemetryManager {
   void ShutdownPerfLog();
   void Reset();
 
-  // Geometry / Triangle Tracking (always compiled; relaxed atomics)
+  // Geometry / Triangle Tracking (always compiled; single-writer render thread,
+  // relaxed load+store avoids locked RMW instructions on every triangle)
   void IncrementTrianglesProcessed(uint64_t count) {
-    m_trianglesProcessed.fetch_add(count, std::memory_order_relaxed);
-    m_frameTrianglesProcessed.fetch_add(static_cast<uint32_t>(count),
-                                        std::memory_order_relaxed);
+    m_trianglesProcessed.store(
+        m_trianglesProcessed.load(std::memory_order_relaxed) + count,
+        std::memory_order_relaxed);
+    m_frameTrianglesProcessed.store(
+        m_frameTrianglesProcessed.load(std::memory_order_relaxed) +
+            static_cast<uint32_t>(count),
+        std::memory_order_relaxed);
   }
   void IncrementTrianglesDrawn(uint64_t count) {
-    m_trianglesDrawn.fetch_add(count, std::memory_order_relaxed);
-    m_frameTrianglesDrawn.fetch_add(static_cast<uint32_t>(count),
-                                    std::memory_order_relaxed);
+    m_trianglesDrawn.store(
+        m_trianglesDrawn.load(std::memory_order_relaxed) + count,
+        std::memory_order_relaxed);
+    m_frameTrianglesDrawn.store(
+        m_frameTrianglesDrawn.load(std::memory_order_relaxed) +
+            static_cast<uint32_t>(count),
+        std::memory_order_relaxed);
   }
   uint64_t GetTrianglesProcessed() const {
     return m_trianglesProcessed.load(std::memory_order_relaxed);
@@ -156,6 +165,9 @@ class TelemetryManager {
   }
   bool IsPerfTimingEnabled() const {
     return m_perfTimingEnabled.load(std::memory_order_relaxed);
+  }
+  static bool IsPerfTimingEnabledFast() noexcept {
+    return s_perfTimingEnabled.load(std::memory_order_relaxed);
   }
   void RecordCpuBucketNs(CpuBucket bucket, int64_t ns) {
     if (ns <= 0) return;
@@ -208,6 +220,7 @@ class TelemetryManager {
   std::atomic<int64_t> m_framePresentUs{0};
   std::atomic<int64_t> m_frameCpuBucketNs[static_cast<size_t>(CpuBucket::Count)]{};
   std::atomic<bool> m_perfTimingEnabled{false};
+  inline static std::atomic<bool> s_perfTimingEnabled{false};
   std::atomic<uint64_t> m_frameIndex{0};
 
   // Perf logging, CSV writer, and last-frame snapshot
@@ -249,8 +262,8 @@ class TelemetryManager {
 class CpuBucketScope {
  public:
   explicit CpuBucketScope(CpuBucket bucket) noexcept {
+    if (__builtin_expect(!TelemetryManager::IsPerfTimingEnabledFast(), 1)) return;
     auto& tm = TelemetryManager::GetInstance();
-    if (!tm.IsPerfTimingEnabled()) return;
     ActiveState& state = CurrentState();
     if (state.active && state.bucket == bucket) return;
     const int64_t nowNs = NowNs();

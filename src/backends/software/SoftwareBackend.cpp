@@ -717,6 +717,15 @@ bool SoftwareBackend::Initialize(const WrapperConfig& config) {
   ResetState_Locked();
 
   m_useSimd = m_config.swUseSimd;
+#if defined(__AVX2__) && (defined(__GNUC__) || defined(__clang__)) && \
+    (defined(__x86_64__) || defined(__i386__))
+  if (m_useSimd && !__builtin_cpu_supports("avx2")) {
+    GLIDE_LOG(WARN, "Software",
+              "Host CPU lacks AVX2 support; falling back to scalar software "
+              "rasterizer.");
+    m_useSimd = false;
+  }
+#endif
   if (m_useSimd) {
     GLIDE_LOG(INFO, "Software",
               "SIMD optimization hook is ACTIVE (GLIDE_NG_SW_SIMD=1).");
@@ -1153,7 +1162,7 @@ bool SoftwareBackend::SwapBuffers() {
 
   // Strictly no-op for foreign hosts (X11Child / WaylandSubsurface / Headless);
   // pumps events and handles clean quit ONLY for StandaloneSDL2 demos.
-  m_surfaceHost.PollEvents(/*force=*/true);
+  m_surfaceHost.PollEvents(/*force=*/false);
   if (m_surfaceHost.GetMode() == NativeSurfaceHost::Mode::StandaloneSDL2 &&
       m_surfaceHost.WasQuitRequested()) {
     GLIDE_LOG(INFO, "Software",
@@ -1223,7 +1232,7 @@ bool SoftwareBackend::SwapBuffers() {
                              .count();
   const float maxFps = m_config.maxFps;
   if (m_surfaceHost.GetMode() == NativeSurfaceHost::Mode::StandaloneSDL2) {
-    m_surfaceHost.PollEvents(/*force=*/true);
+    m_surfaceHost.PollEvents(/*force=*/false);
   }
   lock.unlock();
 

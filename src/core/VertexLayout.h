@@ -1,6 +1,7 @@
 #pragma once
 #include <array>
 #include <cstdint>
+#include <cstring>
 
 namespace GlideWrapper {
 
@@ -58,13 +59,107 @@ public:
     void SetSTWHintMask(uint32_t mask) { m_stwHintMask = mask; }
     uint32_t GetSTWHintMask() const { return m_stwHintMask; }
 
-    ModernVertex DecodeVertex(const void* gameVertex) const;
+    ModernVertex DecodeVertex(const void* gameVertex) const {
+        ModernVertex v;
+        DecodeVertexInto(gameVertex, v);
+        return v;
+    }
+
+    inline void DecodeVertexInto(const void* gameVertex, ModernVertex& v) const {
+        if (__builtin_expect(m_isGlide2Canonical && gameVertex != nullptr, 1)) {
+            DecodeGlide2CanonicalInto(gameVertex, v);
+            return;
+        }
+        v = DecodeVertexSlow(gameVertex);
+    }
+
     int32_t GetMaxActiveOffset() const;
+
+    static inline bool IsFiniteFloat(float f) noexcept {
+        uint32_t bits;
+        std::memcpy(&bits, &f, sizeof(bits));
+        return (bits & 0x7F800000u) != 0x7F800000u;
+    }
+
+    static inline float UnsnapAndSanitizeXY(float c) noexcept {
+        if (__builtin_expect(!IsFiniteFloat(c), 0)) return 0.0f;
+        // Unsnap Voodoo coordinate snap bias (3<<18 = 786432 or 3<<19 = 1572864)
+        if (__builtin_expect(c >= 784384.0f, 0)) {
+            if (c <= 788480.0f) {
+                c -= 786432.0f;
+            } else if (c >= 1570816.0f && c <= 1574912.0f) {
+                c -= 1572864.0f;
+            }
+        }
+        return c;
+    }
+
+    static inline float SanitizeColorNorm(float raw) noexcept {
+        if (__builtin_expect(!IsFiniteFloat(raw), 0)) return 1.0f;
+        const float c = raw / 255.0f;
+        return c <= 0.0f ? 0.0f : (c >= 1.0f ? 1.0f : c);
+    }
+
+    static inline float SanitizeFiniteZero(float f) noexcept {
+        return __builtin_expect(IsFiniteFloat(f), 1) ? f : 0.0f;
+    }
+
+    static inline float SanitizePositiveOow(float f) noexcept {
+        return __builtin_expect(IsFiniteFloat(f) && f > 0.0f, 1) ? f : 1.0f;
+    }
 
 private:
     VertexLayout();
+    ModernVertex DecodeVertexSlow(const void* gameVertex) const;
+    void RefreshCanonicalFlags();
+
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Warray-bounds"
+#endif
+    inline void DecodeGlide2CanonicalInto(const void* gameVertex,
+                                          ModernVertex& v) const noexcept {
+        const auto* rawBytes = reinterpret_cast<const uint8_t*>(gameVertex);
+        auto loadF = [rawBytes](size_t off) noexcept -> float {
+            float val;
+            std::memcpy(&val, rawBytes + off, sizeof(float));
+            return val;
+        };
+
+        v.pos[0] = UnsnapAndSanitizeXY(loadF(0));
+        v.pos[1] = UnsnapAndSanitizeXY(loadF(4));
+        v.pos[2] = SanitizeFiniteZero(loadF(24)) / 65535.0f;
+        v.pos[3] = SanitizePositiveOow(loadF(32));
+
+        v.color[0] = SanitizeColorNorm(loadF(12));
+        v.color[1] = SanitizeColorNorm(loadF(16));
+        v.color[2] = SanitizeColorNorm(loadF(20));
+        v.color[3] = SanitizeColorNorm(loadF(28));
+
+        v.tex[0] = SanitizeFiniteZero(loadF(36));
+        v.tex[1] = SanitizeFiniteZero(loadF(40));
+        v.tex[2] = SanitizeFiniteZero(loadF(48));
+        v.tex[3] = SanitizeFiniteZero(loadF(52));
+
+        if (__builtin_expect(m_stwHintMask == 0, 1)) {
+            v.tmu_oow[0] = 1.0f;
+            v.tmu_oow[1] = 1.0f;
+        } else {
+            v.tmu_oow[0] = (m_stwHintMask & 0x2)
+                               ? SanitizePositiveOow(loadF(44))
+                               : 1.0f;
+            v.tmu_oow[1] = (m_stwHintMask & 0x8)
+                               ? SanitizePositiveOow(loadF(56))
+                               : 1.0f;
+        }
+        v.fog = 0.0f;
+    }
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
     uint32_t m_stwHintMask{0};
+    bool m_isGlide2Canonical{true};
     Glide3VertexLayout m_glide3LayoutState;
 
     // Byte offsets for each parameter component (-1 if disabled)

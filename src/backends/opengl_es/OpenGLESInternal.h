@@ -15,6 +15,9 @@ extern const char* vsSource;
 extern const char* fsSource;
 
 inline void checkGLError(const char* label) {
+  if (__builtin_expect(!Logger::IsLevelEnabledFast(LogLevel::DEBUG), 1)) {
+    return;
+  }
   GLenum err;
   while ((err = glGetError()) != GL_NO_ERROR) {
     GLIDE_LOG(CRITICAL, "GLES",

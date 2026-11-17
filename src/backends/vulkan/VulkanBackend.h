@@ -346,11 +346,17 @@ class VulkanBackend : public GlideStateTracker {
   // Command submission infrastructure (Double-Buffered)
   vk::UniqueCommandPool m_commandPools[2];
   vk::UniqueCommandBuffer m_commandBuffers[2];
+  vk::UniqueCommandBuffer m_uploadCommandBuffers[2];
+  bool m_uploadCmdHasWork[2]{false, false};
   vk::CommandBuffer* m_commandBuffer{
       nullptr};  // Non-owning pointer pointing to active command buffer
   vk::UniqueFence
       m_fences[2];  // Fences to track CPU-GPU synchronization per frame slot
   uint32_t m_currentFrameSlot{0};  // Active frame slot (0 or 1)
+
+  vk::CommandBuffer& BeginUploadCommandBuffer_Locked();
+  void SubmitPendingUploadsAndWaitIdle_Locked();
+  void SubmitMidFrameAndWaitIdle_Locked(bool reopenDrawCmd = true);
 
   // Render Pass abstraction
   vk::UniqueRenderPass m_renderPass;
@@ -442,6 +448,8 @@ class VulkanBackend : public GlideStateTracker {
   uint32_t m_batchedFirstVertex{0};
   vk::Pipeline m_batchedPipeline;
   vk::DescriptorSet m_batchedDescSet;
+  vk::Pipeline m_boundPipelineInPass;
+  vk::DescriptorSet m_boundDescSetInPass;
   bool m_pipelineStateDirty{true};
   bool m_descriptorStateDirty{true};
   vk::Pipeline m_cachedPipeline;
@@ -486,17 +494,24 @@ class VulkanBackend : public GlideStateTracker {
       m_samplerCache;
   std::unordered_map<DescriptorKey, vk::UniqueDescriptorSet, DescriptorKeyHash>
       m_descriptorCache;
+  // Reverse index from non-dummy VkImageView handle -> DescriptorKeys for O(1)
+  // descriptor set retirement in RetireTextureAtAddress_Locked.
+  std::unordered_map<uint64_t, std::vector<DescriptorKey>>
+      m_viewToDescriptorKeys;
 
   // Deferred per-frame-slot retirement queues so overwritten/purged textures
   // and descriptor sets stay alive until the GPU fence for that slot signals.
+  void EvictDescriptorsForView_Locked(vk::ImageView view,
+                                      bool deferDestruction);
   void RetireTextureAtAddress_Locked(uint32_t tmu, uint32_t startAddress);
   void ReclaimRetiredResources_Locked(uint32_t slot);
+  static constexpr size_t kDescriptorCacheHighWater = 3072;
   std::vector<VulkanTexture> m_retiredTextures[2];
   std::vector<vk::UniqueDescriptorSet> m_retiredDescriptorSets[2];
 
   // Bounded free-list of fence-reclaimed textures for zero-allocation reuse on
   // same-dimension uploads during TMU cache churn.
-  static constexpr size_t kMaxPooledTextures = 64;
+  static constexpr size_t kMaxPooledTextures = 128;
   std::vector<VulkanTexture> m_texturePool;
   uint64_t m_texturePoolReuses{0};
 
@@ -519,8 +534,9 @@ class VulkanBackend : public GlideStateTracker {
   void ReadbackGpuToStaging_Locked(uint32_t buffer);
   void CompositeLfbOverlay_Locked(uint32_t buffer, uint32_t targetGpuIdx,
                                   const uint32_t* pixels, uint32_t width,
-                                  uint32_t height, uint32_t minY,
-                                  uint32_t maxY);
+                                  uint32_t height,
+                                  const CpuLfbStaging::DirtyBand* bands,
+                                  size_t bandCount);
   vk::UniqueSampler m_lfbOverlaySampler;
   vk::UniqueDescriptorSetLayout m_lfbOverlayDescSetLayout;
   vk::UniqueDescriptorPool m_lfbOverlayDescPool;

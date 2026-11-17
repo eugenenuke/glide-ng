@@ -84,13 +84,13 @@ class SoftwareBackend : public SoftwareBackendBase {
                                   const RasterizerState& state);
 
   template <bool HasTexture, bool BlendEnabled, bool DitherEnabled>
-  __attribute__((always_inline)) inline void RasterizeTriangleTemplate(
+  inline void RasterizeTriangleTemplate(
       const ModernVertex& a, const ModernVertex& b, const ModernVertex& c,
       int minX, int maxX, int minY, int maxY, const RasterizerState& state);
 
   template <bool HasTexture, bool BlendEnabled, bool DitherEnabled,
             bool Clockwise>
-  __attribute__((always_inline)) inline void RasterizeTriangleLoops(
+  void RasterizeTriangleLoops(
       const ModernVertex& a, const ModernVertex& b, const ModernVertex& c,
       int minX, int maxX, int minY, int maxY, const RasterizerState& state,
       float invArea, float a0, float b0, float c0, float a1, float b1, float c1,

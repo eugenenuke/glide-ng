@@ -46,7 +46,7 @@ set_source_files_properties(
     backends/software/SoftwareCombiner.cpp
     backends/software/SoftwareRasterizer.cpp
     backends/software/SoftwareRasterizerSimd.cpp
-    PROPERTIES COMPILE_FLAGS "-mavx2"
+    PROPERTIES COMPILE_FLAGS "-mavx2 -mfma"
 )
 set_target_properties(GlideWrapperCore PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_include_directories(GlideWrapperCore PUBLIC

@@ -684,6 +684,7 @@ bool NativeSurfaceHost::AttachStandaloneSDL2(uint32_t guestW, uint32_t guestH,
   m_sdlVideoDriver = drv ? std::string(drv) : std::string();
   m_mode = Mode::StandaloneSDL2;
   m_lastPollTime = {};
+  m_postAttachForcePolls = 4;
 
   // Immediately pump initial Wayland/libdecor/X11 configure events so the
   // window is mapped and responsive even before the first SwapBuffers().
@@ -1203,6 +1204,7 @@ void NativeSurfaceHost::Detach() {
   m_pixelWidth = 0;
   m_pixelHeight = 0;
   m_quitRequested = false;
+  m_postAttachForcePolls = 0;
 }
 
 bool NativeSurfaceHost::SyncBounds(uint32_t& outPixelW, uint32_t& outPixelH) {
@@ -1351,8 +1353,14 @@ void NativeSurfaceHost::PollEvents(bool force) {
     return;
   }
 
+  bool doForce = force;
+  if (!doForce && m_postAttachForcePolls > 0) {
+    --m_postAttachForcePolls;
+    doForce = true;
+  }
+
   const auto now = std::chrono::steady_clock::now();
-  if (!force && m_lastPollTime.time_since_epoch().count() != 0 &&
+  if (!doForce && m_lastPollTime.time_since_epoch().count() != 0 &&
       (now - m_lastPollTime) < std::chrono::milliseconds(4)) {
     return;
   }

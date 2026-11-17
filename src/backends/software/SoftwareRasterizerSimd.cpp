@@ -10,6 +10,265 @@
 
 namespace GlideWrapper {
 
+namespace {
+
+inline bool IsPow2(uint32_t v) { return v != 0u && (v & (v - 1u)) == 0u; }
+
+inline int Pow2Shift(uint32_t v) {
+  int s = 0;
+  while (v > 1u) {
+    v >>= 1;
+    ++s;
+  }
+  return s;
+}
+
+inline Simd8f GetBlendFactorSIMD(uint32_t mode, const Simd8f& srcC,
+                                 const Simd8f& preFogC, const Simd8f& dstC,
+                                 const Simd8f& srcA, const Simd8f& dstA,
+                                 bool isDest) {
+  switch (mode) {
+    case 0:
+      return Simd8f(0.0f);
+    case 1:
+      return srcA;
+    case 2:
+      return isDest ? srcC : dstC;
+    case 3:
+      return dstA;
+    case 4:
+      return Simd8f(1.0f);
+    case 5:
+      return Simd8f(1.0f) - srcA;
+    case 6:
+      return isDest ? (Simd8f(1.0f) - srcC) : (Simd8f(1.0f) - dstC);
+    case 7:
+      return Simd8f(1.0f) - dstA;
+    case 15:
+      return isDest ? preFogC : Min(srcA, Simd8f(1.0f) - dstA);
+    default:
+      return Simd8f(1.0f);
+  }
+}
+
+inline Simd8i MirrorCoordSIMD(const Simd8i& coord, uint32_t size) {
+  Simd8i doubleSize(static_cast<int>(size * 2));
+  Simd8i mask = doubleSize - Simd8i(1);
+  Simd8i wrapped = coord & mask;
+  Simd8i limit(static_cast<int>(size));
+  SimdMask cond = wrapped < limit;
+  return Select(cond, wrapped, mask - wrapped);
+}
+
+inline Simd8i ApplyTexChromaSIMD(const Simd8i& color, uint32_t tmu,
+                                 const RasterizerState& state) {
+  const Simd8i maskFF(0xFF);
+  Simd8i r = (color >> 16) & maskFF;
+  Simd8i g = (color >> 8) & maskFF;
+  Simd8i b = color & maskFF;
+
+  const bool rangeEnabled = ((state.texChromaRangeMode[tmu] >> 28) & 1u) == 1u;
+  SimdMask chromaMask;
+  if (rangeEnabled) {
+    Simd8i minR(static_cast<int32_t>((state.texChromaMin[tmu] >> 16) & 0xFF));
+    Simd8i minG(static_cast<int32_t>((state.texChromaMin[tmu] >> 8) & 0xFF));
+    Simd8i minB(static_cast<int32_t>(state.texChromaMin[tmu] & 0xFF));
+
+    Simd8i maxR(static_cast<int32_t>((state.texChromaMax[tmu] >> 16) & 0xFF));
+    Simd8i maxG(static_cast<int32_t>((state.texChromaMax[tmu] >> 8) & 0xFF));
+    Simd8i maxB(static_cast<int32_t>(state.texChromaMax[tmu] & 0xFF));
+
+    SimdMask rMatch = (r >= minR) & (r <= maxR);
+    SimdMask gMatch = (g >= minG) & (g <= maxG);
+    SimdMask bMatch = (b >= minB) & (b <= maxB);
+
+    const bool blueExcl = ((state.texChromaRangeMode[tmu] >> 24) & 1u) == 1u;
+    const bool greenExcl = ((state.texChromaRangeMode[tmu] >> 25) & 1u) == 1u;
+    const bool redExcl = ((state.texChromaRangeMode[tmu] >> 26) & 1u) == 1u;
+
+    SimdMask rRes = redExcl ? !rMatch : rMatch;
+    SimdMask gRes = greenExcl ? !gMatch : gMatch;
+    SimdMask bRes = blueExcl ? !bMatch : bMatch;
+
+    const bool unionMode = ((state.texChromaRangeMode[tmu] >> 27) & 1u) == 1u;
+    chromaMask = unionMode ? (rRes | gRes | bRes) : (rRes & gRes & bRes);
+  } else {
+    Simd8i chromaR(
+        static_cast<int32_t>((state.texChromaMin[tmu] >> 16) & 0xFF));
+    Simd8i chromaG(
+        static_cast<int32_t>((state.texChromaMin[tmu] >> 8) & 0xFF));
+    Simd8i chromaB(static_cast<int32_t>(state.texChromaMin[tmu] & 0xFF));
+
+    chromaMask = (r == chromaR) & (g == chromaG) & (b == chromaB);
+  }
+  return Select(chromaMask, Simd8i(0), color);
+}
+
+__attribute__((always_inline)) inline Simd8f ChannelFloatSIMD(
+    const Simd8i& color, int shift, const Simd8i& maskFF) {
+  return Simd8f::Convert((color >> shift) & maskFF);
+}
+
+__attribute__((always_inline)) inline TmuColorSIMD SampleTextureLevelSIMD(
+    const uint32_t* levelPixels, uint32_t levelW, uint32_t levelH,
+    uint32_t levelWMask, uint32_t levelHMask, bool isPow2W, int levelWShift,
+    const Simd8f& lTexU, const Simd8f& lTexV, uint32_t clampS, uint32_t clampT,
+    uint32_t minFilter, bool texChromaEnabled, uint32_t tmuIdx,
+    const RasterizerState& state) {
+  const Simd8i maskFF(0xFF);
+  const Simd8f inv255(1.0f / 255.0f);
+
+  if (minFilter == 1) {  // BILINEAR
+    const Simd8f half(0.5f);
+    Simd8f u_sub = lTexU - half;
+    Simd8f v_sub = lTexV - half;
+    Simd8f floor_u = Floor(u_sub);
+    Simd8f floor_v = Floor(v_sub);
+    Simd8i u0_vec = Simd8i::Convert(floor_u);
+    Simd8i v0_vec = Simd8i::Convert(floor_v);
+
+    const Simd8i oneI(1);
+    Simd8i u1_vec = u0_vec + oneI;
+    Simd8i v1_vec = v0_vec + oneI;
+
+    Simd8i x0, x1, y0, y1;
+    if (clampS == 0) {
+      Simd8i mask(static_cast<int>(levelWMask));
+      x0 = u0_vec & mask;
+      x1 = u1_vec & mask;
+    } else if (clampS == 1) {
+      Simd8i zeroI(0);
+      Simd8i limit(static_cast<int>(levelW - 1));
+      x0 = Max(zeroI, Min(limit, u0_vec));
+      x1 = Max(zeroI, Min(limit, u1_vec));
+    } else {
+      x0 = MirrorCoordSIMD(u0_vec, levelW);
+      x1 = MirrorCoordSIMD(u1_vec, levelW);
+    }
+
+    if (clampT == 0) {
+      Simd8i mask(static_cast<int>(levelHMask));
+      y0 = v0_vec & mask;
+      y1 = v1_vec & mask;
+    } else if (clampT == 1) {
+      Simd8i zeroI(0);
+      Simd8i limit(static_cast<int>(levelH - 1));
+      y0 = Max(zeroI, Min(limit, v0_vec));
+      y1 = Max(zeroI, Min(limit, v1_vec));
+    } else {
+      y0 = MirrorCoordSIMD(v0_vec, levelH);
+      y1 = MirrorCoordSIMD(v1_vec, levelH);
+    }
+
+    Simd8i y0Row, y1Row;
+    if (isPow2W) {
+      y0Row = y0 << levelWShift;
+      y1Row = y1 << levelWShift;
+    } else {
+      Simd8i levelW_vec(static_cast<int>(levelW));
+      y0Row = y0 * levelW_vec;
+      y1Row = y1 * levelW_vec;
+    }
+
+    Simd8i c00 = Simd8i::Gather(levelPixels, y0Row + x0);
+    Simd8i c10 = Simd8i::Gather(levelPixels, y0Row + x1);
+    Simd8i c01 = Simd8i::Gather(levelPixels, y1Row + x0);
+    Simd8i c11 = Simd8i::Gather(levelPixels, y1Row + x1);
+
+    if (texChromaEnabled) {
+      c00 = ApplyTexChromaSIMD(c00, tmuIdx, state);
+      c10 = ApplyTexChromaSIMD(c10, tmuIdx, state);
+      c01 = ApplyTexChromaSIMD(c01, tmuIdx, state);
+      c11 = ApplyTexChromaSIMD(c11, tmuIdx, state);
+    }
+
+    const Simd8f one(1.0f);
+    Simd8f fx = u_sub - floor_u;
+    Simd8f fy = v_sub - floor_v;
+    Simd8f om_fx = one - fx;
+    Simd8f fy_s = fy * inv255;
+    Simd8f om_fy_s = (one - fy) * inv255;
+
+    Simd8f w00_f = om_fx * om_fy_s;
+    Simd8f w10_f = fx * om_fy_s;
+    Simd8f w01_f = om_fx * fy_s;
+    Simd8f w11_f = fx * fy_s;
+
+    Simd8f r = Fma(ChannelFloatSIMD(c00, 16, maskFF), w00_f,
+                   Fma(ChannelFloatSIMD(c10, 16, maskFF), w10_f,
+                       Fma(ChannelFloatSIMD(c01, 16, maskFF), w01_f,
+                           ChannelFloatSIMD(c11, 16, maskFF) * w11_f)));
+    Simd8f g = Fma(ChannelFloatSIMD(c00, 8, maskFF), w00_f,
+                   Fma(ChannelFloatSIMD(c10, 8, maskFF), w10_f,
+                       Fma(ChannelFloatSIMD(c01, 8, maskFF), w01_f,
+                           ChannelFloatSIMD(c11, 8, maskFF) * w11_f)));
+    Simd8f b = Fma(Simd8f::Convert(c00 & maskFF), w00_f,
+                   Fma(Simd8f::Convert(c10 & maskFF), w10_f,
+                       Fma(Simd8f::Convert(c01 & maskFF), w01_f,
+                           Simd8f::Convert(c11 & maskFF) * w11_f)));
+    Simd8f a_val = Fma(ChannelFloatSIMD(c00, 24, maskFF), w00_f,
+                       Fma(ChannelFloatSIMD(c10, 24, maskFF), w10_f,
+                           Fma(ChannelFloatSIMD(c01, 24, maskFF), w01_f,
+                               ChannelFloatSIMD(c11, 24, maskFF) * w11_f)));
+
+    return {r, g, b, a_val};
+  } else {  // POINT
+    const Simd8f eps(0.0001f);
+    Simd8i u0_vec = Simd8i::Convert(lTexU + eps);
+    Simd8i v0_vec = Simd8i::Convert(lTexV + eps);
+
+    Simd8i x0, y0;
+    if (clampS == 0) {
+      x0 = u0_vec & Simd8i(static_cast<int>(levelWMask));
+    } else if (clampS == 1) {
+      x0 = Max(Simd8i(0), Min(Simd8i(static_cast<int>(levelW - 1)), u0_vec));
+    } else {
+      x0 = MirrorCoordSIMD(u0_vec, levelW);
+    }
+
+    if (clampT == 0) {
+      y0 = v0_vec & Simd8i(static_cast<int>(levelHMask));
+    } else if (clampT == 1) {
+      y0 = Max(Simd8i(0), Min(Simd8i(static_cast<int>(levelH - 1)), v0_vec));
+    } else {
+      y0 = MirrorCoordSIMD(v0_vec, levelH);
+    }
+
+    Simd8i y0Row = isPow2W ? (y0 << levelWShift)
+                           : (y0 * Simd8i(static_cast<int>(levelW)));
+    Simd8i val = Simd8i::Gather(levelPixels, y0Row + x0);
+    if (texChromaEnabled) {
+      val = ApplyTexChromaSIMD(val, tmuIdx, state);
+    }
+
+    return {ChannelFloatSIMD(val, 16, maskFF) * inv255,
+            ChannelFloatSIMD(val, 8, maskFF) * inv255,
+            Simd8f::Convert(val & maskFF) * inv255,
+            ChannelFloatSIMD(val, 24, maskFF) * inv255};
+  }
+}
+
+__attribute__((always_inline)) inline TmuColorSIMD SampleMipLevelSIMD(
+    const VirtualTexture* tex, int lodIdx, const Simd8f& trueS,
+    const Simd8f& trueT, float scaleU, float scaleV, uint32_t clampS,
+    uint32_t clampT, uint32_t minFilter, bool texChromaEnabled, uint32_t tmuIdx,
+    const RasterizerState& state) {
+  const uint32_t* levelPixels = tex->swizzledMipLevels[lodIdx].data();
+  const uint32_t levelW = std::max(1u, tex->baseWidth >> lodIdx);
+  const uint32_t levelH = std::max(1u, tex->baseHeight >> lodIdx);
+  const bool isPow2W = IsPow2(levelW);
+  const int levelWShift = isPow2W ? Pow2Shift(levelW) : 0;
+  const float invPow = 1.0f / static_cast<float>(1 << lodIdx);
+  const Simd8f lTexU = trueS * Simd8f(scaleU * invPow);
+  const Simd8f lTexV = trueT * Simd8f(scaleV * invPow);
+  return SampleTextureLevelSIMD(levelPixels, levelW, levelH, levelW - 1u,
+                                levelH - 1u, isPow2W, levelWShift, lTexU, lTexV,
+                                clampS, clampT, minFilter, texChromaEnabled,
+                                tmuIdx, state);
+}
+
+}  // namespace
+
 template <bool HasTexture, bool BlendEnabled, bool DitherEnabled,
           bool Clockwise>
 void SoftwareBackend::RasterizeTriangleLoopsSIMD(
@@ -112,24 +371,32 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
   float scaleU = 0.0f;
   float scaleV = 0.0f;
   bool mipmappingEnabled = false;
-  uint32_t mipmapMode = 0;
   bool lodBlend = false;
   const VirtualTexture* tex = nullptr;
+  const uint32_t* tex0Mip0Pixels = nullptr;
+  bool tex0IsPow2W = false;
+  int tex0WShift = 0;
+  const bool tex0ChromaEnabled = (state.texChromaMode[0] == 1);
+  const bool tmu0Passthrough =
+      (state.texCombinerRgbFunc[0] == 1 && state.texCombinerAlphaFunc[0] == 1 &&
+       !state.texCombinerRgbInvert[0] && !state.texCombinerAlphaInvert[0]);
 
   if constexpr (HasTexture) {
     tex = state.boundTex[0].get();
     if (tex && !tex->swizzledMipLevels.empty()) {
       texW = tex->baseWidth;
       texH = tex->baseHeight;
+      tex0Mip0Pixels = tex->swizzledMipLevels[0].data();
+      tex0IsPow2W = IsPow2(texW);
+      tex0WShift = tex0IsPow2W ? Pow2Shift(texW) : 0;
       clampS = state.texClampS[0];
       clampT = state.texClampT[0];
       minFilter = state.texMinFilter[0];
       float maxDim = static_cast<float>(std::max(texW, texH));
       scaleU = maxDim / 256.0f;
       scaleV = maxDim / 256.0f;
-      mipmapMode = state.texMipMapMode[0];
       lodBlend = state.texLodBlend[0];
-      mipmappingEnabled = (mipmapMode != 0);
+      mipmappingEnabled = (state.texMipMapMode[0] != 0);
     }
   }
 
@@ -143,24 +410,32 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
   float scaleU1 = 0.0f;
   float scaleV1 = 0.0f;
   bool mipmappingEnabled1 = false;
-  uint32_t mipmapMode1 = 0;
   bool lodBlend1 = false;
   const VirtualTexture* tex1 = nullptr;
+  const uint32_t* tex1Mip0Pixels = nullptr;
+  bool tex1IsPow2W = false;
+  int tex1WShift = 0;
+  const bool tex1ChromaEnabled = (state.texChromaMode[1] == 1);
+  const bool tmu1Passthrough =
+      (state.texCombinerRgbFunc[1] == 1 && state.texCombinerAlphaFunc[1] == 1 &&
+       !state.texCombinerRgbInvert[1] && !state.texCombinerAlphaInvert[1]);
 
   if (hasTexture1) {
     tex1 = state.boundTex[1].get();
     if (tex1 && !tex1->swizzledMipLevels.empty()) {
       texW1 = tex1->baseWidth;
       texH1 = tex1->baseHeight;
+      tex1Mip0Pixels = tex1->swizzledMipLevels[0].data();
+      tex1IsPow2W = IsPow2(texW1);
+      tex1WShift = tex1IsPow2W ? Pow2Shift(texW1) : 0;
       clampS1 = state.texClampS[1];
       clampT1 = state.texClampT[1];
       minFilter1 = state.texMinFilter[1];
       float maxDim1 = static_cast<float>(std::max(texW1, texH1));
       scaleU1 = maxDim1 / 256.0f;
       scaleV1 = maxDim1 / 256.0f;
-      mipmapMode1 = state.texMipMapMode[1];
       lodBlend1 = state.texLodBlend[1];
-      mipmappingEnabled1 = (mipmapMode1 != 0);
+      mipmappingEnabled1 = (state.texMipMapMode[1] != 0);
     } else {
       hasTexture1 = false;
     }
@@ -213,7 +488,7 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
     float qa = a.pos[3];
     float qb = b.pos[3];
     float qc = c.pos[3];
-    if (stwHintMask & 0x8) {  // GR_STWHINT_W_DIFF_TMU1
+    if (stwHintMask & 0x8) {
       qa = a.tmu_oow[1];
       qb = b.tmu_oow[1];
       qc = c.tmu_oow[1];
@@ -222,136 +497,168 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
     dQ1_dy = dw0_dy * qa + dw1_dy * qb + dw2_dy * qc;
   }
 
-  int startX = minX & ~3;
-  int startY = minY & ~1;
+  // Hoist combiner & attribute flags out of the pixel loops
+  const bool needIterRgb =
+      (colorCombinerLocal == 0) || (colorCombinerOther == 0) || hasTexture1 ||
+      (HasTexture && !tmu0Passthrough) || (!HasTexture && !hasTexture1);
+  const bool needIterAlpha =
+      (alphaCombinerLocal == 0) || (alphaCombinerOther == 0) ||
+      ((fogMode & 0x0Fu) == 4) || hasTexture1 ||
+      (HasTexture && !tmu0Passthrough) || (!HasTexture && !hasTexture1);
 
-  auto getFSIMD = [](uint32_t mode, const Simd8f& srcC, const Simd8f& preFogC,
-                     const Simd8f& dstC, const Simd8f& srcA, const Simd8f& dstA,
-                     bool isDest) -> Simd8f {
-    switch (mode) {
-      case 0:
-        return Simd8f(0.0f);
-      case 1:
-        return srcA;
-      case 2:
-        return isDest ? srcC : dstC;
-      case 3:
-        return dstA;
-      case 4:
-        return Simd8f(1.0f);
-      case 5:
-        return Simd8f(1.0f) - srcA;
-      case 6:
-        return isDest ? (Simd8f(1.0f) - srcC) : (Simd8f(1.0f) - dstC);
-      case 7:
-        return Simd8f(1.0f) - dstA;
-      case 15:
-        return isDest ? preFogC : Min(srcA, Simd8f(1.0f) - dstA);
-      default:
-        return Simd8f(1.0f);
+  uint8_t ccFastPath = 0;
+  if (!colorCombinerInvert) {
+    if (colorCombinerFunc == 3 && colorCombinerOther == 1 &&
+        colorCombinerFactor == 8) {
+      ccFastPath = 1;  // Decal texture: texRGB
+    } else if (colorCombinerFunc == 3 && colorCombinerOther == 1 &&
+               colorCombinerFactor == 1) {
+      ccFastPath = 2;  // Modulated texture: texRGB * cLocalRGB
+    } else if (colorCombinerFunc == 1) {
+      ccFastPath = 3;  // Local only: cLocalRGB
     }
-  };
+  }
 
-  auto mirrorCoordSIMD = [](const Simd8i& coord, uint32_t size) -> Simd8i {
-    Simd8i doubleSize(static_cast<int>(size * 2));
-    Simd8i mask = doubleSize - Simd8i(1);
-    Simd8i wrapped = coord & mask;
-    Simd8i limit(static_cast<int>(size));
-    SimdMask cond = wrapped < limit;
-    return Select(cond, wrapped, mask - wrapped);
-  };
-
-  auto applyTexChromaSIMD = [&](const Simd8i& color, uint32_t tmu) -> Simd8i {
-    if (state.texChromaMode[tmu] != 1) return color;
-
-    Simd8i r = (color >> 16) & Simd8i(0xFF);
-    Simd8i g = (color >> 8) & Simd8i(0xFF);
-    Simd8i b = color & Simd8i(0xFF);
-
-    bool rangeEnabled = ((state.texChromaRangeMode[tmu] >> 28) & 1) == 1;
-    SimdMask chromaMask;
-    if (rangeEnabled) {
-      Simd8i minR(static_cast<int32_t>((state.texChromaMin[tmu] >> 16) & 0xFF));
-      Simd8i minG(static_cast<int32_t>((state.texChromaMin[tmu] >> 8) & 0xFF));
-      Simd8i minB(static_cast<int32_t>(state.texChromaMin[tmu] & 0xFF));
-
-      Simd8i maxR(static_cast<int32_t>((state.texChromaMax[tmu] >> 16) & 0xFF));
-      Simd8i maxG(static_cast<int32_t>((state.texChromaMax[tmu] >> 8) & 0xFF));
-      Simd8i maxB(static_cast<int32_t>(state.texChromaMax[tmu] & 0xFF));
-
-      SimdMask rMatch = (r >= minR) & (r <= maxR);
-      SimdMask gMatch = (g >= minG) & (g <= maxG);
-      SimdMask bMatch = (b >= minB) & (b <= maxB);
-
-      bool blueExcl = ((state.texChromaRangeMode[tmu] >> 24) & 1) == 1;
-      bool greenExcl = ((state.texChromaRangeMode[tmu] >> 25) & 1) == 1;
-      bool redExcl = ((state.texChromaRangeMode[tmu] >> 26) & 1) == 1;
-
-      SimdMask rRes = redExcl ? !rMatch : rMatch;
-      SimdMask gRes = greenExcl ? !gMatch : gMatch;
-      SimdMask bRes = blueExcl ? !bMatch : bMatch;
-
-      bool unionMode = ((state.texChromaRangeMode[tmu] >> 27) & 1) == 1;
-      chromaMask = unionMode ? (rRes | gRes | bRes) : (rRes & gRes & bRes);
-    } else {
-      Simd8i chromaR(
-          static_cast<int32_t>((state.texChromaMin[tmu] >> 16) & 0xFF));
-      Simd8i chromaG(
-          static_cast<int32_t>((state.texChromaMin[tmu] >> 8) & 0xFF));
-      Simd8i chromaB(static_cast<int32_t>(state.texChromaMin[tmu] & 0xFF));
-
-      chromaMask = (r == chromaR) & (g == chromaG) & (b == chromaB);
+  uint8_t acFastPath = 0;
+  if (!alphaCombinerInvert) {
+    if (alphaCombinerFunc == 1) {
+      acFastPath = 1;  // Local alpha
+    } else if (alphaCombinerFunc == 3 && alphaCombinerOther == 1 &&
+               alphaCombinerFactor == 8) {
+      acFastPath = 2;  // Texture alpha
+    } else if (alphaCombinerFunc == 3 && alphaCombinerOther == 1 &&
+               (alphaCombinerFactor == 1 || alphaCombinerFactor == 3)) {
+      acFastPath = 3;  // texA * aLocal
     }
-    return Select(chromaMask, Simd8i(0), color);
-  };
+  }
 
-  auto getChannelFloat = [](const Simd8i& color, int shift) -> Simd8f {
-    return Simd8f::Convert((color >> shift) & Simd8i(0xFF));
-  };
+  const bool needDepthOp =
+      (depthMode != 0 && depthBuffer != nullptr &&
+       (depthCompareOp != 7 || depthMask));
 
-  for (int y = startY; y <= maxY; y += 2) {
-    for (int x = startX; x <= maxX; x += 4) {
-      // 1. Coordinate Setup
-      Simd8f X_vec(static_cast<float>(x) + 0.5f, static_cast<float>(x) + 1.5f,
-                   static_cast<float>(x) + 2.5f, static_cast<float>(x) + 3.5f,
-                   static_cast<float>(x) + 0.5f, static_cast<float>(x) + 1.5f,
-                   static_cast<float>(x) + 2.5f, static_cast<float>(x) + 3.5f);
-      Simd8f Y_vec(static_cast<float>(y) + 0.5f, static_cast<float>(y) + 0.5f,
-                   static_cast<float>(y) + 0.5f, static_cast<float>(y) + 0.5f,
-                   static_cast<float>(y) + 1.5f, static_cast<float>(y) + 1.5f,
-                   static_cast<float>(y) + 1.5f, static_cast<float>(y) + 1.5f);
+  // Fast-path classification for BlendEnabled
+  uint8_t blendFastPath = 0;
+  bool blendNeedsDstA = true;
+  if constexpr (BlendEnabled) {
+    const bool alphaSimple = (alphaSrcBlend == 4 && alphaDstBlend == 0);
+    if (rgbSrcBlend == 1 && rgbDstBlend == 5 && alphaSimple) {
+      blendFastPath = 1;  // SRC_ALPHA, ONE_MINUS_SRC_ALPHA
+      blendNeedsDstA = false;
+    } else if (rgbSrcBlend == 2 && rgbDstBlend == 0 && alphaSimple) {
+      blendFastPath = 2;  // DST_COLOR, ZERO (lightmap multiply)
+      blendNeedsDstA = false;
+    } else if (rgbSrcBlend == 4 && rgbDstBlend == 4 && alphaSimple) {
+      blendFastPath = 3;  // ONE, ONE (additive)
+      blendNeedsDstA = false;
+    }
+  }
 
-      // 2. Edge Equations
-      Simd8f E0 = Fma(Simd8f(a0), X_vec, Fma(Simd8f(b0), Y_vec, Simd8f(c0)));
-      Simd8f E1 = Fma(Simd8f(a1), X_vec, Fma(Simd8f(b1), Y_vec, Simd8f(c1)));
-      Simd8f E2 = Fma(Simd8f(a2), X_vec, Fma(Simd8f(b2), Y_vec, Simd8f(c2)));
+  const int startX = minX & ~3;
+  const int startY = minY & ~1;
 
+  // Pre-broadcast triangle constants outside the pixel loops
+  const Simd8f invArea_vec(invArea);
+  const Simd8f a_oow(a.pos[3]), b_oow(b.pos[3]), c_oow(c.pos[3]);
+  const Simd8f a_r(a.color[0]), b_r(b.color[0]), c_r(c.color[0]);
+  const Simd8f a_g(a.color[1]), b_g(b.color[1]), c_g(c.color[1]);
+  const Simd8f a_b(a.color[2]), b_b(b.color[2]), c_b(c.color[2]);
+  const Simd8f a_a(a.color[3]), b_a(b.color[3]), c_a(c.color[3]);
+  const Simd8f a_s0(a.tex[0]), b_s0(b.tex[0]), c_s0(c.tex[0]);
+  const Simd8f a_t0(a.tex[1]), b_t0(b.tex[1]), c_t0(c.tex[1]);
+  const Simd8f scaleU0_vec(scaleU), scaleV0_vec(scaleV);
+  const Simd8f one_vec(1.0f);
+  const Simd8f zero_vec(0.0f);
+  const Simd8f c255_vec(255.0f);
+  const Simd8f half_vec(0.5f);
+  const Simd8f inv255_vec(1.0f / 255.0f);
+  const Simd8i maskFF_i(0xFF);
+  const Simd8f constR_vec(constantR), constG_vec(constantG),
+      constB_vec(constantB), constA_vec(constantAlpha);
+  const Simd8f minX_f(static_cast<float>(minX));
+  const Simd8f maxX_f(static_cast<float>(maxX) + 1.0f);
+  const Simd8f minY_f(static_cast<float>(minY));
+  const Simd8f maxY_f(static_cast<float>(maxY) + 1.0f);
+  const Simd8f edgeEps_vec(Clockwise ? -1e-5f : 1e-5f);
+  const float ditherAlphaScale =
+      128.0f / ((state.ditherMode == 2) ? 16.0f : 4.0f);
+  const Simd8f ditherAlphaScale_vec(ditherAlphaScale);
+  const uint32_t colorMaskVal =
+      (colorMaskRgb ? 0x00FFFFFFu : 0u) | (colorMaskAlpha ? 0xFF000000u : 0u);
+  const bool fullColorMask = (colorMaskRgb && colorMaskAlpha);
+  const Simd8i colorMask_vec(static_cast<int32_t>(colorMaskVal));
+  const Simd8i invColorMask_vec(static_cast<int32_t>(~colorMaskVal));
+
+  // Incremental 2x4 edge equation setup
+  const Simd8f X_init(
+      static_cast<float>(startX) + 0.5f, static_cast<float>(startX) + 1.5f,
+      static_cast<float>(startX) + 2.5f, static_cast<float>(startX) + 3.5f,
+      static_cast<float>(startX) + 0.5f, static_cast<float>(startX) + 1.5f,
+      static_cast<float>(startX) + 2.5f, static_cast<float>(startX) + 3.5f);
+  const Simd8f Y_init(
+      static_cast<float>(startY) + 0.5f, static_cast<float>(startY) + 0.5f,
+      static_cast<float>(startY) + 0.5f, static_cast<float>(startY) + 0.5f,
+      static_cast<float>(startY) + 1.5f, static_cast<float>(startY) + 1.5f,
+      static_cast<float>(startY) + 1.5f, static_cast<float>(startY) + 1.5f);
+
+  Simd8f E0_row = Fma(Simd8f(a0), X_init, Fma(Simd8f(b0), Y_init, Simd8f(c0)));
+  Simd8f E1_row = Fma(Simd8f(a1), X_init, Fma(Simd8f(b1), Y_init, Simd8f(c1)));
+  Simd8f E2_row = Fma(Simd8f(a2), X_init, Fma(Simd8f(b2), Y_init, Simd8f(c2)));
+  const Simd8f E0_stepX(a0 * 4.0f), E1_stepX(a1 * 4.0f), E2_stepX(a2 * 4.0f);
+  const Simd8f E0_stepY(b0 * 2.0f), E1_stepY(b1 * 2.0f), E2_stepY(b2 * 2.0f);
+
+  for (int y = startY; y <= maxY;
+       y += 2, E0_row += E0_stepY, E1_row += E1_stepY, E2_row += E2_stepY) {
+    const bool rowInsideY = (y >= minY) && (y + 1 <= maxY);
+    Simd8i rowDith;
+    Simd8f rowDithAlpha;
+    if constexpr (DitherEnabled) {
+      rowDith = (state.ditherMode == 2) ? GetDitherVector4x4(y)
+                                        : GetDitherVector2x2(y);
+      rowDithAlpha = Simd8f::Convert(rowDith) * ditherAlphaScale_vec;
+    }
+
+    Simd8f E0 = E0_row;
+    Simd8f E1 = E1_row;
+    Simd8f E2 = E2_row;
+
+    for (int x = startX; x <= maxX;
+         x += 4, E0 += E0_stepX, E1 += E1_stepX, E2 += E2_stepX) {
+      // 1. Edge Coverage Test
       SimdMask insideMask;
       if constexpr (Clockwise) {
-        insideMask = (E0 >= Simd8f(-1e-5f)) & (E1 >= Simd8f(-1e-5f)) &
-                     (E2 >= Simd8f(-1e-5f));
+        insideMask =
+            (E0 >= edgeEps_vec) & (E1 >= edgeEps_vec) & (E2 >= edgeEps_vec);
       } else {
-        insideMask = (E0 <= Simd8f(1e-5f)) & (E1 <= Simd8f(1e-5f)) &
-                     (E2 <= Simd8f(1e-5f));
+        insideMask =
+            (E0 <= edgeEps_vec) & (E1 <= edgeEps_vec) & (E2 <= edgeEps_vec);
       }
 
-      SimdMask boundaryMask =
-          (X_vec >= Simd8f(static_cast<float>(minX))) &
-          (X_vec <= Simd8f(static_cast<float>(maxX) + 1.0f)) &
-          (Y_vec >= Simd8f(static_cast<float>(minY))) &
-          (Y_vec <= Simd8f(static_cast<float>(maxY) + 1.0f));
-
-      SimdMask coverageMask = insideMask & boundaryMask;
+      SimdMask coverageMask;
+      if (rowInsideY && x >= minX && x + 3 <= maxX) {
+        coverageMask = insideMask;
+      } else {
+        Simd8f X_vec(
+            static_cast<float>(x) + 0.5f, static_cast<float>(x) + 1.5f,
+            static_cast<float>(x) + 2.5f, static_cast<float>(x) + 3.5f,
+            static_cast<float>(x) + 0.5f, static_cast<float>(x) + 1.5f,
+            static_cast<float>(x) + 2.5f, static_cast<float>(x) + 3.5f);
+        Simd8f Y_vec(
+            static_cast<float>(y) + 0.5f, static_cast<float>(y) + 0.5f,
+            static_cast<float>(y) + 0.5f, static_cast<float>(y) + 0.5f,
+            static_cast<float>(y) + 1.5f, static_cast<float>(y) + 1.5f,
+            static_cast<float>(y) + 1.5f, static_cast<float>(y) + 1.5f);
+        SimdMask boundaryMask = (X_vec >= minX_f) & (X_vec <= maxX_f) &
+                                (Y_vec >= minY_f) & (Y_vec <= maxY_f);
+        coverageMask = insideMask & boundaryMask;
+      }
       if (coverageMask.AllZero()) continue;
 
-      // 3. Barycentric & Perspective Correction
-      Simd8f w0_vec = E0 * Simd8f(invArea);
-      Simd8f w1_vec = E1 * Simd8f(invArea);
-      Simd8f w2_vec = E2 * Simd8f(invArea);
+      // 2. Barycentric & Perspective Correction
+      Simd8f w0_vec = E0 * invArea_vec;
+      Simd8f w1_vec = E1 * invArea_vec;
+      Simd8f w2_vec = E2 * invArea_vec;
 
-      Simd8f wVal =
-          Fma(w0_vec, Simd8f(a.pos[3]),
-              Fma(w1_vec, Simd8f(b.pos[3]), w2_vec * Simd8f(c.pos[3])));
+      Simd8f wVal = Fma(w0_vec, a_oow, Fma(w1_vec, b_oow, w2_vec * c_oow));
       Simd8f divW0 =
           (stwHintMask & 0x2)
               ? Fma(w0_vec, Simd8f(a.tmu_oow[0]),
@@ -365,64 +672,60 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
                         w2_vec * Simd8f(c.tmu_oow[1])))
               : wVal;
 
-      SimdMask depthClipMask = SimdMask::True();
       if (depthMode == 2) {
-        depthClipMask = wVal <= Simd8f(1.0001f);
+        coverageMask = coverageMask & (wVal <= Simd8f(1.0001f));
+        if (coverageMask.AllZero()) continue;
       } else {
         if constexpr (HasTexture) {
-          depthClipMask = depthClipMask & (divW0 > Simd8f(0.0f));
+          coverageMask = coverageMask & (divW0 > zero_vec);
+          if (coverageMask.AllZero()) continue;
         }
         if (hasTexture1) {
-          depthClipMask = depthClipMask & (divW1 > Simd8f(0.0f));
+          coverageMask = coverageMask & (divW1 > zero_vec);
+          if (coverageMask.AllZero()) continue;
         }
       }
-      coverageMask = coverageMask & depthClipMask;
-      if (coverageMask.AllZero()) continue;
 
-      // 4. Stipple Transparency
+      // 3. Stipple Transparency
       if (stippleMode != 0) {
-        Simd8i stippleX;
-        if (stippleMode == 2) {
-          stippleX = (Simd8i::Convert(X_vec - Simd8f(0.5f)) +
-                      Simd8i::Convert(Y_vec - Simd8f(0.5f))) &
-                     Simd8i(7);
-        } else {
-          stippleX = Simd8i::Convert(X_vec - Simd8f(0.5f)) & Simd8i(7);
-        }
-        Simd8i stippleY = Simd8i::Convert(Y_vec - Simd8f(0.5f)) & Simd8i(3);
+        Simd8i x_i(x, x + 1, x + 2, x + 3, x, x + 1, x + 2, x + 3);
+        Simd8i y_i(y, y, y, y, y + 1, y + 1, y + 1, y + 1);
+        Simd8i stippleX = (stippleMode == 2) ? ((x_i + y_i) & Simd8i(7))
+                                             : (x_i & Simd8i(7));
+        Simd8i stippleY = y_i & Simd8i(3);
         Simd8i stippleIndex = (stippleY << 3) | (Simd8i(7) - stippleX);
 
         alignas(32) int32_t index_arr[8];
         Simd8i::Store(index_arr, stippleIndex);
         alignas(32) int32_t result_arr[8];
         for (int i = 0; i < 8; ++i) {
-          result_arr[i] = (stipplePattern >> index_arr[i]) & 1;
+          result_arr[i] =
+              static_cast<int32_t>((stipplePattern >> index_arr[i]) & 1u);
         }
         Simd8i bit = Simd8i::Load(result_arr);
-
         coverageMask = coverageMask & (bit != Simd8i(0));
         if (coverageMask.AllZero()) continue;
       }
 
-      // 5. Interpolate Attributes
-      Simd8f iterR =
-          Fma(w0_vec, Simd8f(a.color[0]),
-              Fma(w1_vec, Simd8f(b.color[0]), w2_vec * Simd8f(c.color[0])));
-      Simd8f iterG =
-          Fma(w0_vec, Simd8f(a.color[1]),
-              Fma(w1_vec, Simd8f(b.color[1]), w2_vec * Simd8f(c.color[1])));
-      Simd8f iterB =
-          Fma(w0_vec, Simd8f(a.color[2]),
-              Fma(w1_vec, Simd8f(b.color[2]), w2_vec * Simd8f(c.color[2])));
-      Simd8f iterA =
-          Fma(w0_vec, Simd8f(a.color[3]),
-              Fma(w1_vec, Simd8f(b.color[3]), w2_vec * Simd8f(c.color[3])));
+      // 4. Interpolate Iterated Attributes (only when referenced)
+      Simd8f iterR = zero_vec;
+      Simd8f iterG = zero_vec;
+      Simd8f iterB = zero_vec;
+      Simd8f iterA = zero_vec;
+      if (needIterRgb) {
+        iterR = Fma(w0_vec, a_r, Fma(w1_vec, b_r, w2_vec * c_r));
+        iterG = Fma(w0_vec, a_g, Fma(w1_vec, b_g, w2_vec * c_g));
+        iterB = Fma(w0_vec, a_b, Fma(w1_vec, b_b, w2_vec * c_b));
+      }
+      if (needIterAlpha) {
+        iterA = Fma(w0_vec, a_a, Fma(w1_vec, b_a, w2_vec * c_a));
+      }
 
-      // 6. Texture Sampling Stage
+      // 5. Texture Sampling Stage
       TmuColorSIMD tmu0Out = {iterR, iterG, iterB, iterA};
+      TmuColorSIMD tmu1Out = {iterR, iterG, iterB, iterA};
 
       // --- TMU 1 (Upstream) ---
-      TmuColorSIMD tmu1Out = {iterR, iterG, iterB, iterA};
       if (hasTexture1) {
         Simd8f texS1 =
             Fma(w0_vec, Simd8f(a.tex[2]),
@@ -431,646 +734,436 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
             Fma(w0_vec, Simd8f(a.tex[3]),
                 Fma(w1_vec, Simd8f(b.tex[3]), w2_vec * Simd8f(c.tex[3])));
 
-        Simd8f invW1 = Simd8f(1.0f) / divW1;
+        Simd8f invW1 = one_vec / divW1;
         Simd8f trueS1 = texS1 * invW1;
         Simd8f trueT1 = texT1 * invW1;
 
-        TmuColorSIMD tmu1Color = {Simd8f(1.0f), Simd8f(1.0f), Simd8f(1.0f),
-                                  Simd8f(1.0f)};
+        TmuColorSIMD tmu1Color = {one_vec, one_vec, one_vec, one_vec};
         if (tex1) {
-          float lod1 = 0.0f;
-          if (mipmappingEnabled1) {
+          if (!mipmappingEnabled1) {
+            tmu1Color = SampleTextureLevelSIMD(
+                tex1Mip0Pixels, texW1, texH1, texW1 - 1u, texH1 - 1u,
+                tex1IsPow2W, tex1WShift, trueS1 * Simd8f(scaleU1),
+                trueT1 * Simd8f(scaleV1), clampS1, clampT1, minFilter1,
+                tex1ChromaEnabled, 1u, state);
+          } else {
             float centerX = static_cast<float>(x) + 1.5f;
             float centerY = static_cast<float>(y) + 0.5f;
             float centerW0 = (a0 * centerX + b0 * centerY + c0) * invArea;
             float centerW1 = (a1 * centerX + b1 * centerY + c1) * invArea;
             float centerW2 = (a2 * centerX + b2 * centerY + c2) * invArea;
-            float centerWVal =
-                centerW0 * a.pos[3] + centerW1 * b.pos[3] + centerW2 * c.pos[3];
-            float centerDivW1 = centerWVal;
-            if (stwHintMask & 0x8) {  // GR_STWHINT_W_DIFF_TMU1
-              centerDivW1 = centerW0 * a.tmu_oow[1] + centerW1 * b.tmu_oow[1] +
-                            centerW2 * c.tmu_oow[1];
-            }
+            float centerDivW1 =
+                (stwHintMask & 0x8)
+                    ? (centerW0 * a.tmu_oow[1] + centerW1 * b.tmu_oow[1] +
+                       centerW2 * c.tmu_oow[1])
+                    : (centerW0 * a.pos[3] + centerW1 * b.pos[3] +
+                       centerW2 * c.pos[3]);
             float centerInvW1 = 1.0f / centerDivW1;
-            float centerTexS1 =
-                centerW0 * a.tex[2] + centerW1 * b.tex[2] + centerW2 * c.tex[2];
-            float centerTexT1 =
-                centerW0 * a.tex[3] + centerW1 * b.tex[3] + centerW2 * c.tex[3];
-            float centerTrueS1 = centerTexS1 * centerInvW1;
-            float centerTrueT1 = centerTexT1 * centerInvW1;
+            float centerTrueS1 =
+                (centerW0 * a.tex[2] + centerW1 * b.tex[2] +
+                 centerW2 * c.tex[2]) *
+                centerInvW1;
+            float centerTrueT1 =
+                (centerW0 * a.tex[3] + centerW1 * b.tex[3] +
+                 centerW2 * c.tex[3]) *
+                centerInvW1;
 
-            float ds_dx1 = (dSp1_dx - centerTrueS1 * dQ1_dx) * centerInvW1;
-            float ds_dy1 = (dSp1_dy - centerTrueS1 * dQ1_dy) * centerInvW1;
-            float dt_dx1 = (dTp1_dx - centerTrueT1 * dQ1_dx) * centerInvW1;
-            float dt_dy1 = (dTp1_dy - centerTrueT1 * dQ1_dy) * centerInvW1;
-
-            float du_dx1 = ds_dx1 * scaleU1;
-            float du_dy1 = ds_dy1 * scaleU1;
-            float dv_dx1 = dt_dx1 * scaleV1;
-            float dv_dy1 = dt_dy1 * scaleV1;
+            float du_dx1 = (dSp1_dx - centerTrueS1 * dQ1_dx) * centerInvW1 *
+                           scaleU1;
+            float du_dy1 = (dSp1_dy - centerTrueS1 * dQ1_dy) * centerInvW1 *
+                           scaleU1;
+            float dv_dx1 = (dTp1_dx - centerTrueT1 * dQ1_dx) * centerInvW1 *
+                           scaleV1;
+            float dv_dy1 = (dTp1_dy - centerTrueT1 * dQ1_dy) * centerInvW1 *
+                           scaleV1;
 
             float d1 = std::max(du_dx1 * du_dx1 + dv_dx1 * dv_dx1,
                                 du_dy1 * du_dy1 + dv_dy1 * dv_dy1);
-            lod1 = (d1 > 1e-8f) ? 0.5f * fast_log2(d1) : -10.0f;
-            lod1 += state.texLodBias[1];
-          }
+            float lod1 =
+                ((d1 > 1e-8f) ? 0.5f * fast_log2(d1) : -10.0f) +
+                state.texLodBias[1];
 
-          const int maxMipIdx1 =
-              static_cast<int>(tex1->swizzledMipLevels.size()) - 1;
-          float clampedLod1 =
-              std::clamp(lod1, 0.0f, static_cast<float>(maxMipIdx1));
+            const int maxMipIdx1 =
+                static_cast<int>(tex1->swizzledMipLevels.size()) - 1;
+            float clampedLod1 =
+                std::clamp(lod1, 0.0f, static_cast<float>(maxMipIdx1));
 
-          auto sampleLevel = [&](int lodIdx) -> TmuColorSIMD {
-            const uint32_t* levelPixels =
-                tex1->swizzledMipLevels[lodIdx].data();
-            uint32_t levelW = std::max(1u, tex1->baseWidth >> lodIdx);
-            uint32_t levelH = std::max(1u, tex1->baseHeight >> lodIdx);
-            uint32_t levelWMask = levelW - 1;
-            uint32_t levelHMask = levelH - 1;
+            if (lodBlend1) {
+              int level0 = static_cast<int>(std::floor(clampedLod1));
+              int lodIdx0 = std::clamp(level0, 0, maxMipIdx1);
+              int lodIdx1 = std::clamp(level0 + 1, 0, maxMipIdx1);
+              float lodFraction = clampedLod1 - static_cast<float>(level0);
 
-            Simd8f lScale(1.0f / static_cast<float>(1 << lodIdx));
-            Simd8f lTexU = trueS1 * Simd8f(scaleU1) * lScale;
-            Simd8f lTexV = trueT1 * Simd8f(scaleV1) * lScale;
+              TmuColorSIMD c0_m = SampleMipLevelSIMD(
+                  tex1, lodIdx0, trueS1, trueT1, scaleU1, scaleV1, clampS1,
+                  clampT1, minFilter1, tex1ChromaEnabled, 1u, state);
+              TmuColorSIMD c1_m = SampleMipLevelSIMD(
+                  tex1, lodIdx1, trueS1, trueT1, scaleU1, scaleV1, clampS1,
+                  clampT1, minFilter1, tex1ChromaEnabled, 1u, state);
 
-            Simd8i levelW_vec(static_cast<int>(levelW));
-
-            if (minFilter1 == 1) {  // BILINEAR
-              Simd8f u_sub = lTexU - Simd8f(0.5f);
-              Simd8f v_sub = lTexV - Simd8f(0.5f);
-              Simd8f floor_u = Floor(u_sub);
-              Simd8f floor_v = Floor(v_sub);
-              Simd8i u0_vec = Simd8i::Convert(floor_u);
-              Simd8i v0_vec = Simd8i::Convert(floor_v);
-
-              Simd8f fx_f = (u_sub - floor_u) * Simd8f(256.0f);
-              Simd8f fy_f = (v_sub - floor_v) * Simd8f(256.0f);
-
-              Simd8i x0, x1, y0, y1;
-              if (clampS1 == 1) {
-                Simd8i limit(static_cast<int>(levelW - 1));
-                x0 = Max(Simd8i(0), Min(limit, u0_vec));
-                x1 = Max(Simd8i(0), Min(limit, u0_vec + Simd8i(1)));
-              } else if (clampS1 == 2) {
-                x0 = mirrorCoordSIMD(u0_vec, levelW);
-                x1 = mirrorCoordSIMD(u0_vec + Simd8i(1), levelW);
-              } else {
-                Simd8i mask(static_cast<int>(levelWMask));
-                x0 = u0_vec & mask;
-                x1 = (u0_vec + Simd8i(1)) & mask;
-              }
-
-              if (clampT1 == 1) {
-                Simd8i limit(static_cast<int>(levelH - 1));
-                y0 = Max(Simd8i(0), Min(limit, v0_vec));
-                y1 = Max(Simd8i(0), Min(limit, v0_vec + Simd8i(1)));
-              } else if (clampT1 == 2) {
-                y0 = mirrorCoordSIMD(v0_vec, levelH);
-                y1 = mirrorCoordSIMD(v0_vec + Simd8i(1), levelH);
-              } else {
-                Simd8i mask(static_cast<int>(levelHMask));
-                y0 = v0_vec & mask;
-                y1 = (v0_vec + Simd8i(1)) & mask;
-              }
-
-              Simd8i c00 = Simd8i::Gather(levelPixels, y0 * levelW_vec + x0);
-              Simd8i c10 = Simd8i::Gather(levelPixels, y0 * levelW_vec + x1);
-              Simd8i c01 = Simd8i::Gather(levelPixels, y1 * levelW_vec + x0);
-              Simd8i c11 = Simd8i::Gather(levelPixels, y1 * levelW_vec + x1);
-
-              c00 = applyTexChromaSIMD(c00, 1u);
-              c10 = applyTexChromaSIMD(c10, 1u);
-              c01 = applyTexChromaSIMD(c01, 1u);
-              c11 = applyTexChromaSIMD(c11, 1u);
-
-              Simd8f w00_f = (Simd8f(256.0f) - fx_f) * (Simd8f(256.0f) - fy_f) *
-                             Simd8f(1.0f / 65536.0f);
-              Simd8f w10_f =
-                  fx_f * (Simd8f(256.0f) - fy_f) * Simd8f(1.0f / 65536.0f);
-              Simd8f w01_f =
-                  (Simd8f(256.0f) - fx_f) * fy_f * Simd8f(1.0f / 65536.0f);
-              Simd8f w11_f = fx_f * fy_f * Simd8f(1.0f / 65536.0f);
-
-              Simd8f r = Fma(getChannelFloat(c00, 16), w00_f,
-                             Fma(getChannelFloat(c10, 16), w10_f,
-                                 Fma(getChannelFloat(c01, 16), w01_f,
-                                     getChannelFloat(c11, 16) * w11_f))) *
-                         Simd8f(1.0f / 255.0f);
-              Simd8f g = Fma(getChannelFloat(c00, 8), w00_f,
-                             Fma(getChannelFloat(c10, 8), w10_f,
-                                 Fma(getChannelFloat(c01, 8), w01_f,
-                                     getChannelFloat(c11, 8) * w11_f))) *
-                         Simd8f(1.0f / 255.0f);
-              Simd8f b = Fma(getChannelFloat(c00, 0), w00_f,
-                             Fma(getChannelFloat(c10, 0), w10_f,
-                                 Fma(getChannelFloat(c01, 0), w01_f,
-                                     getChannelFloat(c11, 0) * w11_f))) *
-                         Simd8f(1.0f / 255.0f);
-              Simd8f a_val = Fma(getChannelFloat(c00, 24), w00_f,
-                                 Fma(getChannelFloat(c10, 24), w10_f,
-                                     Fma(getChannelFloat(c01, 24), w01_f,
-                                         getChannelFloat(c11, 24) * w11_f))) *
-                             Simd8f(1.0f / 255.0f);
-
-              return {r, g, b, a_val};
-            } else {  // POINT
-              Simd8i u0_vec = Simd8i::Convert(lTexU + Simd8f(0.0001f));
-              Simd8i v0_vec = Simd8i::Convert(lTexV + Simd8f(0.0001f));
-
-              Simd8i x0, y0;
-              if (clampS1 == 1) {
-                x0 = Max(Simd8i(0), Min(Simd8i(levelW - 1), u0_vec));
-              } else if (clampS1 == 2) {
-                x0 = mirrorCoordSIMD(u0_vec, levelW);
-              } else {
-                x0 = u0_vec & Simd8i(levelWMask);
-              }
-
-              if (clampT1 == 1) {
-                y0 = Max(Simd8i(0), Min(Simd8i(levelH - 1), v0_vec));
-              } else if (clampT1 == 2) {
-                y0 = mirrorCoordSIMD(v0_vec, levelH);
-              } else {
-                y0 = v0_vec & Simd8i(levelHMask);
-              }
-
-              Simd8i val = Simd8i::Gather(levelPixels, y0 * levelW_vec + x0);
-              val = applyTexChromaSIMD(val, 1u);
-
-              return {getChannelFloat(val, 16) * Simd8f(1.0f / 255.0f),
-                      getChannelFloat(val, 8) * Simd8f(1.0f / 255.0f),
-                      getChannelFloat(val, 0) * Simd8f(1.0f / 255.0f),
-                      getChannelFloat(val, 24) * Simd8f(1.0f / 255.0f)};
+              Simd8f frac(lodFraction);
+              tmu1Color.r = Fma(c1_m.r - c0_m.r, frac, c0_m.r);
+              tmu1Color.g = Fma(c1_m.g - c0_m.g, frac, c0_m.g);
+              tmu1Color.b = Fma(c1_m.b - c0_m.b, frac, c0_m.b);
+              tmu1Color.a = Fma(c1_m.a - c0_m.a, frac, c0_m.a);
+            } else {
+              int lodIdx = std::clamp(
+                  static_cast<int>(clampedLod1 + 0.5f), 0, maxMipIdx1);
+              tmu1Color = SampleMipLevelSIMD(
+                  tex1, lodIdx, trueS1, trueT1, scaleU1, scaleV1, clampS1,
+                  clampT1, minFilter1, tex1ChromaEnabled, 1u, state);
             }
-          };
-
-          if (lodBlend1) {  // Trilinear
-            int level0 = static_cast<int>(std::floor(clampedLod1));
-            int level1 = level0 + 1;
-            int lodIdx0 = std::clamp(level0, 0, maxMipIdx1);
-            int lodIdx1 = std::clamp(level1, 0, maxMipIdx1);
-            float lodFraction = clampedLod1 - std::floor(clampedLod1);
-
-            TmuColorSIMD c0 = sampleLevel(lodIdx0);
-            TmuColorSIMD c1 = sampleLevel(lodIdx1);
-
-            Simd8f frac(lodFraction);
-            tmu1Color.r = Fma(c1.r - c0.r, frac, c0.r);
-            tmu1Color.g = Fma(c1.g - c0.g, frac, c0.g);
-            tmu1Color.b = Fma(c1.b - c0.b, frac, c0.b);
-            tmu1Color.a = Fma(c1.a - c0.a, frac, c0.a);
-          } else {  // Nearest
-            int level = static_cast<int>(std::round(clampedLod1));
-            int lodIdx = std::clamp(level, 0, maxMipIdx1);
-            tmu1Color = sampleLevel(lodIdx);
           }
         }
 
-        tmu1Out = EvaluateTmuStageSIMD(
-            state.texCombinerRgbFunc[1], state.texCombinerRgbFactor[1],
-            state.texCombinerAlphaFunc[1], state.texCombinerAlphaFactor[1],
-            state.texCombinerRgbInvert[1], state.texCombinerAlphaInvert[1],
-            tmu1Color, tmu0Out, tmu0Out);
+        if (tmu1Passthrough) {
+          tmu1Out = tmu1Color;
+        } else {
+          tmu1Out = EvaluateTmuStageSIMD(
+              state.texCombinerRgbFunc[1], state.texCombinerRgbFactor[1],
+              state.texCombinerAlphaFunc[1], state.texCombinerAlphaFactor[1],
+              state.texCombinerRgbInvert[1], state.texCombinerAlphaInvert[1],
+              tmu1Color, tmu0Out, tmu0Out);
+        }
       }
 
       // --- TMU 0 (Downstream) ---
       if constexpr (HasTexture) {
-        Simd8f texS =
-            Fma(w0_vec, Simd8f(a.tex[0]),
-                Fma(w1_vec, Simd8f(b.tex[0]), w2_vec * Simd8f(c.tex[0])));
-        Simd8f texT =
-            Fma(w0_vec, Simd8f(a.tex[1]),
-                Fma(w1_vec, Simd8f(b.tex[1]), w2_vec * Simd8f(c.tex[1])));
-
-        Simd8f invW = Simd8f(1.0f) / divW0;
-        Simd8f trueS = texS * invW;
-        Simd8f trueT = texT * invW;
-
-        TmuColorSIMD tmu0Color = {Simd8f(1.0f), Simd8f(1.0f), Simd8f(1.0f),
-                                  Simd8f(1.0f)};
+        TmuColorSIMD tmu0Color = {one_vec, one_vec, one_vec, one_vec};
         if (tex) {
-          float lod = 0.0f;
-          if (mipmappingEnabled) {
+          Simd8f texS = Fma(w0_vec, a_s0, Fma(w1_vec, b_s0, w2_vec * c_s0));
+          Simd8f texT = Fma(w0_vec, a_t0, Fma(w1_vec, b_t0, w2_vec * c_t0));
+
+          Simd8f invW = one_vec / divW0;
+          Simd8f trueS = texS * invW;
+          Simd8f trueT = texT * invW;
+
+          if (!mipmappingEnabled) {
+            tmu0Color = SampleTextureLevelSIMD(
+                tex0Mip0Pixels, texW, texH, texW - 1u, texH - 1u, tex0IsPow2W,
+                tex0WShift, trueS * scaleU0_vec, trueT * scaleV0_vec, clampS,
+                clampT, minFilter, tex0ChromaEnabled, 0u, state);
+          } else {
             float centerX = static_cast<float>(x) + 1.5f;
             float centerY = static_cast<float>(y) + 0.5f;
             float centerW0 = (a0 * centerX + b0 * centerY + c0) * invArea;
             float centerW1 = (a1 * centerX + b1 * centerY + c1) * invArea;
             float centerW2 = (a2 * centerX + b2 * centerY + c2) * invArea;
-            float centerWVal =
-                centerW0 * a.pos[3] + centerW1 * b.pos[3] + centerW2 * c.pos[3];
-            float centerDivW0 = centerWVal;
-            if (stwHintMask & 0x2) {
-              centerDivW0 = centerW0 * a.tmu_oow[0] + centerW1 * b.tmu_oow[0] +
-                            centerW2 * c.tmu_oow[0];
-            }
+            float centerDivW0 =
+                (stwHintMask & 0x2)
+                    ? (centerW0 * a.tmu_oow[0] + centerW1 * b.tmu_oow[0] +
+                       centerW2 * c.tmu_oow[0])
+                    : (centerW0 * a.pos[3] + centerW1 * b.pos[3] +
+                       centerW2 * c.pos[3]);
             float centerInvW = 1.0f / centerDivW0;
-            float centerTexS =
-                centerW0 * a.tex[0] + centerW1 * b.tex[0] + centerW2 * c.tex[0];
-            float centerTexT =
-                centerW0 * a.tex[1] + centerW1 * b.tex[1] + centerW2 * c.tex[1];
-            float centerTrueS = centerTexS * centerInvW;
-            float centerTrueT = centerTexT * centerInvW;
+            float centerTrueS =
+                (centerW0 * a.tex[0] + centerW1 * b.tex[0] +
+                 centerW2 * c.tex[0]) *
+                centerInvW;
+            float centerTrueT =
+                (centerW0 * a.tex[1] + centerW1 * b.tex[1] +
+                 centerW2 * c.tex[1]) *
+                centerInvW;
 
-            float ds_dx = (dSp_dx - centerTrueS * dQ_dx) * centerInvW;
-            float ds_dy = (dSp_dy - centerTrueS * dQ_dy) * centerInvW;
-            float dt_dx = (dTp_dx - centerTrueT * dQ_dx) * centerInvW;
-            float dt_dy = (dTp_dy - centerTrueT * dQ_dy) * centerInvW;
-
-            float du_dx = ds_dx * scaleU;
-            float du_dy = ds_dy * scaleU;
-            float dv_dx = dt_dx * scaleV;
-            float dv_dy = dt_dy * scaleV;
+            float du_dx =
+                (dSp_dx - centerTrueS * dQ_dx) * centerInvW * scaleU;
+            float du_dy =
+                (dSp_dy - centerTrueS * dQ_dy) * centerInvW * scaleU;
+            float dv_dx =
+                (dTp_dx - centerTrueT * dQ_dx) * centerInvW * scaleV;
+            float dv_dy =
+                (dTp_dy - centerTrueT * dQ_dy) * centerInvW * scaleV;
 
             float d = std::max(du_dx * du_dx + dv_dx * dv_dx,
                                du_dy * du_dy + dv_dy * dv_dy);
-            lod = (d > 1e-8f) ? 0.5f * fast_log2(d) : -10.0f;
-            lod += state.texLodBias[0];
-          }
+            float lod =
+                ((d > 1e-8f) ? 0.5f * fast_log2(d) : -10.0f) +
+                state.texLodBias[0];
 
-          const int maxMipIdx =
-              static_cast<int>(tex->swizzledMipLevels.size()) - 1;
-          float clampedLod =
-              std::clamp(lod, 0.0f, static_cast<float>(maxMipIdx));
+            const int maxMipIdx =
+                static_cast<int>(tex->swizzledMipLevels.size()) - 1;
+            float clampedLod =
+                std::clamp(lod, 0.0f, static_cast<float>(maxMipIdx));
 
-          auto sampleLevel = [&](int lodIdx) -> TmuColorSIMD {
-            const uint32_t* levelPixels = tex->swizzledMipLevels[lodIdx].data();
-            uint32_t levelW = std::max(1u, tex->baseWidth >> lodIdx);
-            uint32_t levelH = std::max(1u, tex->baseHeight >> lodIdx);
-            uint32_t levelWMask = levelW - 1;
-            uint32_t levelHMask = levelH - 1;
+            if (lodBlend) {
+              int level0 = static_cast<int>(std::floor(clampedLod));
+              int lodIdx0 = std::clamp(level0, 0, maxMipIdx);
+              int lodIdx1 = std::clamp(level0 + 1, 0, maxMipIdx);
+              float lodFraction = clampedLod - static_cast<float>(level0);
 
-            Simd8f lScale(1.0f / static_cast<float>(1 << lodIdx));
-            Simd8f lTexU = trueS * Simd8f(scaleU) * lScale;
-            Simd8f lTexV = trueT * Simd8f(scaleV) * lScale;
+              TmuColorSIMD c0_m = SampleMipLevelSIMD(
+                  tex, lodIdx0, trueS, trueT, scaleU, scaleV, clampS, clampT,
+                  minFilter, tex0ChromaEnabled, 0u, state);
+              TmuColorSIMD c1_m = SampleMipLevelSIMD(
+                  tex, lodIdx1, trueS, trueT, scaleU, scaleV, clampS, clampT,
+                  minFilter, tex0ChromaEnabled, 0u, state);
 
-            Simd8i levelW_vec(static_cast<int>(levelW));
-
-            if (minFilter == 1) {  // BILINEAR
-              Simd8f u_sub = lTexU - Simd8f(0.5f);
-              Simd8f v_sub = lTexV - Simd8f(0.5f);
-              Simd8f floor_u = Floor(u_sub);
-              Simd8f floor_v = Floor(v_sub);
-              Simd8i u0_vec = Simd8i::Convert(floor_u);
-              Simd8i v0_vec = Simd8i::Convert(floor_v);
-
-              Simd8f fx_f = (u_sub - floor_u) * Simd8f(256.0f);
-              Simd8f fy_f = (v_sub - floor_v) * Simd8f(256.0f);
-
-              Simd8i x0, x1, y0, y1;
-              if (clampS == 1) {
-                Simd8i limit(static_cast<int>(levelW - 1));
-                x0 = Max(Simd8i(0), Min(limit, u0_vec));
-                x1 = Max(Simd8i(0), Min(limit, u0_vec + Simd8i(1)));
-              } else if (clampS == 2) {
-                x0 = mirrorCoordSIMD(u0_vec, levelW);
-                x1 = mirrorCoordSIMD(u0_vec + Simd8i(1), levelW);
-              } else {
-                Simd8i mask(static_cast<int>(levelWMask));
-                x0 = u0_vec & mask;
-                x1 = (u0_vec + Simd8i(1)) & mask;
-              }
-
-              if (clampT == 1) {
-                Simd8i limit(static_cast<int>(levelH - 1));
-                y0 = Max(Simd8i(0), Min(limit, v0_vec));
-                y1 = Max(Simd8i(0), Min(limit, v0_vec + Simd8i(1)));
-              } else if (clampT == 2) {
-                y0 = mirrorCoordSIMD(v0_vec, levelH);
-                y1 = mirrorCoordSIMD(v0_vec + Simd8i(1), levelH);
-              } else {
-                Simd8i mask(static_cast<int>(levelHMask));
-                y0 = v0_vec & mask;
-                y1 = (v0_vec + Simd8i(1)) & mask;
-              }
-
-              Simd8i c00 = Simd8i::Gather(levelPixels, y0 * levelW_vec + x0);
-              Simd8i c10 = Simd8i::Gather(levelPixels, y0 * levelW_vec + x1);
-              Simd8i c01 = Simd8i::Gather(levelPixels, y1 * levelW_vec + x0);
-              Simd8i c11 = Simd8i::Gather(levelPixels, y1 * levelW_vec + x1);
-
-              c00 = applyTexChromaSIMD(c00, 0u);
-              c10 = applyTexChromaSIMD(c10, 0u);
-              c01 = applyTexChromaSIMD(c01, 0u);
-              c11 = applyTexChromaSIMD(c11, 0u);
-
-              Simd8f w00_f = (Simd8f(256.0f) - fx_f) * (Simd8f(256.0f) - fy_f) *
-                             Simd8f(1.0f / 65536.0f);
-              Simd8f w10_f =
-                  fx_f * (Simd8f(256.0f) - fy_f) * Simd8f(1.0f / 65536.0f);
-              Simd8f w01_f =
-                  (Simd8f(256.0f) - fx_f) * fy_f * Simd8f(1.0f / 65536.0f);
-              Simd8f w11_f = fx_f * fy_f * Simd8f(1.0f / 65536.0f);
-
-              Simd8f r = Fma(getChannelFloat(c00, 16), w00_f,
-                             Fma(getChannelFloat(c10, 16), w10_f,
-                                 Fma(getChannelFloat(c01, 16), w01_f,
-                                     getChannelFloat(c11, 16) * w11_f))) *
-                         Simd8f(1.0f / 255.0f);
-              Simd8f g = Fma(getChannelFloat(c00, 8), w00_f,
-                             Fma(getChannelFloat(c10, 8), w10_f,
-                                 Fma(getChannelFloat(c01, 8), w01_f,
-                                     getChannelFloat(c11, 8) * w11_f))) *
-                         Simd8f(1.0f / 255.0f);
-              Simd8f b = Fma(getChannelFloat(c00, 0), w00_f,
-                             Fma(getChannelFloat(c10, 0), w10_f,
-                                 Fma(getChannelFloat(c01, 0), w01_f,
-                                     getChannelFloat(c11, 0) * w11_f))) *
-                         Simd8f(1.0f / 255.0f);
-              Simd8f a_val = Fma(getChannelFloat(c00, 24), w00_f,
-                                 Fma(getChannelFloat(c10, 24), w10_f,
-                                     Fma(getChannelFloat(c01, 24), w01_f,
-                                         getChannelFloat(c11, 24) * w11_f))) *
-                             Simd8f(1.0f / 255.0f);
-
-              return {r, g, b, a_val};
-            } else {  // POINT
-              Simd8i u0_vec = Simd8i::Convert(lTexU + Simd8f(0.0001f));
-              Simd8i v0_vec = Simd8i::Convert(lTexV + Simd8f(0.0001f));
-
-              Simd8i x0, y0;
-              if (clampS == 1) {
-                x0 = Max(Simd8i(0), Min(Simd8i(levelW - 1), u0_vec));
-              } else if (clampS == 2) {
-                x0 = mirrorCoordSIMD(u0_vec, levelW);
-              } else {
-                x0 = u0_vec & Simd8i(levelWMask);
-              }
-
-              if (clampT == 1) {
-                y0 = Max(Simd8i(0), Min(Simd8i(levelH - 1), v0_vec));
-              } else if (clampT == 2) {
-                y0 = mirrorCoordSIMD(v0_vec, levelH);
-              } else {
-                y0 = v0_vec & Simd8i(levelHMask);
-              }
-
-              Simd8i val = Simd8i::Gather(levelPixels, y0 * levelW_vec + x0);
-              val = applyTexChromaSIMD(val, 0u);
-
-              return {getChannelFloat(val, 16) * Simd8f(1.0f / 255.0f),
-                      getChannelFloat(val, 8) * Simd8f(1.0f / 255.0f),
-                      getChannelFloat(val, 0) * Simd8f(1.0f / 255.0f),
-                      getChannelFloat(val, 24) * Simd8f(1.0f / 255.0f)};
+              Simd8f frac(lodFraction);
+              tmu0Color.r = Fma(c1_m.r - c0_m.r, frac, c0_m.r);
+              tmu0Color.g = Fma(c1_m.g - c0_m.g, frac, c0_m.g);
+              tmu0Color.b = Fma(c1_m.b - c0_m.b, frac, c0_m.b);
+              tmu0Color.a = Fma(c1_m.a - c0_m.a, frac, c0_m.a);
+            } else {
+              int lodIdx = std::clamp(
+                  static_cast<int>(clampedLod + 0.5f), 0, maxMipIdx);
+              tmu0Color = SampleMipLevelSIMD(
+                  tex, lodIdx, trueS, trueT, scaleU, scaleV, clampS, clampT,
+                  minFilter, tex0ChromaEnabled, 0u, state);
             }
-          };
-
-          if (lodBlend) {  // Trilinear
-            int level0 = static_cast<int>(std::floor(clampedLod));
-            int level1 = level0 + 1;
-            int lodIdx0 = std::clamp(level0, 0, maxMipIdx);
-            int lodIdx1 = std::clamp(level1, 0, maxMipIdx);
-            float lodFraction = clampedLod - std::floor(clampedLod);
-
-            TmuColorSIMD c0 = sampleLevel(lodIdx0);
-            TmuColorSIMD c1 = sampleLevel(lodIdx1);
-
-            Simd8f frac(lodFraction);
-            tmu0Color.r = Fma(c1.r - c0.r, frac, c0.r);
-            tmu0Color.g = Fma(c1.g - c0.g, frac, c0.g);
-            tmu0Color.b = Fma(c1.b - c0.b, frac, c0.b);
-            tmu0Color.a = Fma(c1.a - c0.a, frac, c0.a);
-          } else {  // Nearest
-            int level = static_cast<int>(std::round(clampedLod));
-            int lodIdx = std::clamp(level, 0, maxMipIdx);
-            tmu0Color = sampleLevel(lodIdx);
           }
         }
 
-        tmu0Out = EvaluateTmuStageSIMD(
-            state.texCombinerRgbFunc[0], state.texCombinerRgbFactor[0],
-            state.texCombinerAlphaFunc[0], state.texCombinerAlphaFactor[0],
-            state.texCombinerRgbInvert[0], state.texCombinerAlphaInvert[0],
-            tmu0Color, tmu1Out, tmu0Out);
+        if (tmu0Passthrough) {
+          tmu0Out = tmu0Color;
+        } else {
+          tmu0Out = EvaluateTmuStageSIMD(
+              state.texCombinerRgbFunc[0], state.texCombinerRgbFactor[0],
+              state.texCombinerAlphaFunc[0], state.texCombinerAlphaFactor[0],
+              state.texCombinerRgbInvert[0], state.texCombinerAlphaInvert[0],
+              tmu0Color, tmu1Out, tmu0Out);
+        }
+      } else if (hasTexture1) {
+        tmu0Out = tmu1Out;
       }
 
-      Simd8f cOtherR_chroma = tmu0Out.r;
-      Simd8f cOtherG_chroma = tmu0Out.g;
-      Simd8f cOtherB_chroma = tmu0Out.b;
+      // 6. Color & Alpha Combiner Stage
+      const Simd8f texR = tmu0Out.r;
+      const Simd8f texG = tmu0Out.g;
+      const Simd8f texB = tmu0Out.b;
+      const Simd8f texA = tmu0Out.a;
 
-      // 7. Color Combiner Stage
-      Simd8f texR = tmu0Out.r;
-      Simd8f texG = tmu0Out.g;
-      Simd8f texB = tmu0Out.b;
-      Simd8f texA = tmu0Out.a;
+      Simd8f red, green, blue, alpha;
 
-      Simd8f aLocal_comb =
-          (alphaCombinerLocal == 0) ? iterA : Simd8f(constantAlpha);
-      Simd8f aOther_comb =
-          (alphaCombinerOther == 0)
-              ? iterA
-              : ((alphaCombinerOther == 1) ? texA : Simd8f(constantAlpha));
-
-      Simd8f cLocalR_comb, cLocalG_comb, cLocalB_comb;
-      if (colorCombinerLocal == 0) {
-        cLocalR_comb = iterR;
-        cLocalG_comb = iterG;
-        cLocalB_comb = iterB;
+      // Fast paths for dominant Color Combiner configurations
+      if (ccFastPath == 1) {
+        red = texR;
+        green = texG;
+        blue = texB;
+      } else if (ccFastPath == 2) {
+        const Simd8f cLocalR = (colorCombinerLocal == 0) ? iterR : constR_vec;
+        const Simd8f cLocalG = (colorCombinerLocal == 0) ? iterG : constG_vec;
+        const Simd8f cLocalB = (colorCombinerLocal == 0) ? iterB : constB_vec;
+        red = texR * cLocalR;
+        green = texG * cLocalG;
+        blue = texB * cLocalB;
+      } else if (ccFastPath == 3) {
+        red = (colorCombinerLocal == 0) ? iterR : constR_vec;
+        green = (colorCombinerLocal == 0) ? iterG : constG_vec;
+        blue = (colorCombinerLocal == 0) ? iterB : constB_vec;
       } else {
-        cLocalR_comb = Simd8f(constantR);
-        cLocalG_comb = Simd8f(constantG);
-        cLocalB_comb = Simd8f(constantB);
+        Simd8f aLocal_comb = (alphaCombinerLocal == 0) ? iterA : constA_vec;
+        Simd8f aOther_comb =
+            (alphaCombinerOther == 0)
+                ? iterA
+                : ((alphaCombinerOther == 1) ? texA : constA_vec);
+
+        Simd8f cLocalR_comb = (colorCombinerLocal == 0) ? iterR : constR_vec;
+        Simd8f cLocalG_comb = (colorCombinerLocal == 0) ? iterG : constG_vec;
+        Simd8f cLocalB_comb = (colorCombinerLocal == 0) ? iterB : constB_vec;
+
+        Simd8f cOtherR_comb =
+            (colorCombinerOther == 0)
+                ? iterR
+                : ((colorCombinerOther == 1) ? texR : constR_vec);
+        Simd8f cOtherG_comb =
+            (colorCombinerOther == 0)
+                ? iterG
+                : ((colorCombinerOther == 1) ? texG : constG_vec);
+        Simd8f cOtherB_comb =
+            (colorCombinerOther == 0)
+                ? iterB
+                : ((colorCombinerOther == 1) ? texB : constB_vec);
+
+        Simd8f factR_comb = zero_vec, factG_comb = zero_vec,
+               factB_comb = zero_vec;
+        switch (colorCombinerFactor) {
+          case 1:
+            factR_comb = cLocalR_comb;
+            factG_comb = cLocalG_comb;
+            factB_comb = cLocalB_comb;
+            break;
+          case 2:
+            factR_comb = aOther_comb;
+            factG_comb = aOther_comb;
+            factB_comb = aOther_comb;
+            break;
+          case 3:
+            factR_comb = aLocal_comb;
+            factG_comb = aLocal_comb;
+            factB_comb = aLocal_comb;
+            break;
+          case 4:
+            factR_comb = texA;
+            factG_comb = texA;
+            factB_comb = texA;
+            break;
+          case 5:
+            factR_comb = texR;
+            factG_comb = texG;
+            factB_comb = texB;
+            break;
+          case 8:
+            factR_comb = one_vec;
+            factG_comb = one_vec;
+            factB_comb = one_vec;
+            break;
+          case 9:
+            factR_comb = one_vec - cLocalR_comb;
+            factG_comb = one_vec - cLocalG_comb;
+            factB_comb = one_vec - cLocalB_comb;
+            break;
+          case 10:
+            factR_comb = one_vec - aOther_comb;
+            factG_comb = one_vec - aOther_comb;
+            factB_comb = one_vec - aOther_comb;
+            break;
+          case 11:
+            factR_comb = one_vec - aLocal_comb;
+            factG_comb = one_vec - aLocal_comb;
+            factB_comb = one_vec - aLocal_comb;
+            break;
+          case 12:
+            factR_comb = one_vec - texA;
+            factG_comb = one_vec - texA;
+            factB_comb = one_vec - texA;
+            break;
+        }
+
+        red = zero_vec;
+        green = zero_vec;
+        blue = zero_vec;
+        switch (colorCombinerFunc) {
+          case 1:
+            red = cLocalR_comb;
+            green = cLocalG_comb;
+            blue = cLocalB_comb;
+            break;
+          case 3:
+            red = cOtherR_comb * factR_comb;
+            green = cOtherG_comb * factG_comb;
+            blue = cOtherB_comb * factB_comb;
+            break;
+          case 4:
+            red = Fma(cOtherR_comb, factR_comb, cLocalR_comb);
+            green = Fma(cOtherG_comb, factG_comb, cLocalG_comb);
+            blue = Fma(cOtherB_comb, factB_comb, cLocalB_comb);
+            break;
+          case 5:
+            red = Fma(cOtherR_comb, factR_comb, aLocal_comb);
+            green = Fma(cOtherG_comb, factG_comb, aLocal_comb);
+            blue = Fma(cOtherB_comb, factB_comb, aLocal_comb);
+            break;
+          case 6:
+            red = (cOtherR_comb - cLocalR_comb) * factR_comb;
+            green = (cOtherG_comb - cLocalG_comb) * factR_comb;
+            blue = (cOtherB_comb - cLocalB_comb) * factR_comb;
+            break;
+          case 7:
+            red = Fma(cOtherR_comb - cLocalR_comb, factR_comb, cLocalR_comb);
+            green = Fma(cOtherG_comb - cLocalG_comb, factR_comb, cLocalG_comb);
+            blue = Fma(cOtherB_comb - cLocalB_comb, factR_comb, cLocalB_comb);
+            break;
+          case 8:
+            red = Fma(cOtherR_comb - cLocalR_comb, factR_comb, aLocal_comb);
+            green = Fma(cOtherG_comb - cLocalG_comb, factR_comb, aLocal_comb);
+            blue = Fma(cOtherB_comb - cLocalB_comb, factR_comb, aLocal_comb);
+            break;
+        }
+        if (colorCombinerInvert) {
+          red = one_vec - red;
+          green = one_vec - green;
+          blue = one_vec - blue;
+        }
       }
 
-      Simd8f cOtherR_comb =
-          (colorCombinerOther == 0)
-              ? iterR
-              : ((colorCombinerOther == 1) ? texR : Simd8f(constantR));
-      Simd8f cOtherG_comb =
-          (colorCombinerOther == 0)
-              ? iterG
-              : ((colorCombinerOther == 1) ? texG : Simd8f(constantG));
-      Simd8f cOtherB_comb =
-          (colorCombinerOther == 0)
-              ? iterB
-              : ((colorCombinerOther == 1) ? texB : Simd8f(constantB));
+      // Fast paths for dominant Alpha Combiner configurations
+      if (acFastPath == 1) {
+        alpha = (alphaCombinerLocal == 0) ? iterA : constA_vec;
+      } else if (acFastPath == 2) {
+        alpha = texA;
+      } else if (acFastPath == 3) {
+        alpha = texA * ((alphaCombinerLocal == 0) ? iterA : constA_vec);
+      } else {
+        Simd8f aLocal_comb = (alphaCombinerLocal == 0) ? iterA : constA_vec;
+        Simd8f aOther_comb =
+            (alphaCombinerOther == 0)
+                ? iterA
+                : ((alphaCombinerOther == 1) ? texA : constA_vec);
 
-      Simd8f factR_comb(0.0f), factG_comb(0.0f), factB_comb(0.0f);
-      switch (colorCombinerFactor) {
-        case 1:
-          factR_comb = cLocalR_comb;
-          factG_comb = cLocalG_comb;
-          factB_comb = cLocalB_comb;
-          break;
-        case 2:
-          factR_comb = aOther_comb;
-          factG_comb = aOther_comb;
-          factB_comb = aOther_comb;
-          break;
-        case 3:
-          factR_comb = aLocal_comb;
-          factG_comb = aLocal_comb;
-          factB_comb = aLocal_comb;
-          break;
-        case 4:
-          factR_comb = texA;
-          factG_comb = texA;
-          factB_comb = texA;
-          break;
-        case 5:
-          factR_comb = texR;
-          factG_comb = texG;
-          factB_comb = texB;
-          break;
-        case 8:
-          factR_comb = Simd8f(1.0f);
-          factG_comb = Simd8f(1.0f);
-          factB_comb = Simd8f(1.0f);
-          break;
-        case 9:
-          factR_comb = Simd8f(1.0f) - cLocalR_comb;
-          factG_comb = Simd8f(1.0f) - cLocalG_comb;
-          factB_comb = Simd8f(1.0f) - cLocalB_comb;
-          break;
-        case 10:
-          factR_comb = Simd8f(1.0f) - aOther_comb;
-          factG_comb = Simd8f(1.0f) - aOther_comb;
-          factB_comb = Simd8f(1.0f) - aOther_comb;
-          break;
-        case 11:
-          factR_comb = Simd8f(1.0f) - aLocal_comb;
-          factG_comb = Simd8f(1.0f) - aLocal_comb;
-          factB_comb = Simd8f(1.0f) - aLocal_comb;
-          break;
-        case 12:
-          factR_comb = Simd8f(1.0f) - texA;
-          factG_comb = Simd8f(1.0f) - texA;
-          factB_comb = Simd8f(1.0f) - texA;
-          break;
+        Simd8f factA_comb = zero_vec;
+        switch (alphaCombinerFactor) {
+          case 1:
+          case 3:
+            factA_comb = aLocal_comb;
+            break;
+          case 2:
+            factA_comb = aOther_comb;
+            break;
+          case 4:
+            factA_comb = texA;
+            break;
+          case 8:
+            factA_comb = one_vec;
+            break;
+          case 9:
+          case 11:
+            factA_comb = one_vec - aLocal_comb;
+            break;
+          case 10:
+            factA_comb = one_vec - aOther_comb;
+            break;
+          case 12:
+            factA_comb = one_vec - texA;
+            break;
+        }
+
+        alpha = zero_vec;
+        switch (alphaCombinerFunc) {
+          case 1:
+            alpha = aLocal_comb;
+            break;
+          case 3:
+            alpha = aOther_comb * factA_comb;
+            break;
+          case 4:
+          case 5:
+            alpha = Fma(aOther_comb, factA_comb, aLocal_comb);
+            break;
+          case 6:
+            alpha = (aOther_comb - aLocal_comb) * factA_comb;
+            break;
+          case 7:
+          case 8:
+            alpha = Fma(aOther_comb - aLocal_comb, factA_comb, aLocal_comb);
+            break;
+        }
+        if (alphaCombinerInvert) alpha = one_vec - alpha;
       }
 
-      Simd8f finalR_comb(0.0f), finalG_comb(0.0f), finalB_comb(0.0f);
-      switch (colorCombinerFunc) {
-        case 1:
-          finalR_comb = cLocalR_comb;
-          finalG_comb = cLocalG_comb;
-          finalB_comb = cLocalB_comb;
-          break;
-        case 3:
-          finalR_comb = cOtherR_comb * factR_comb;
-          finalG_comb = cOtherG_comb * factG_comb;
-          finalB_comb = cOtherB_comb * factB_comb;
-          break;
-        case 4:
-          finalR_comb = Fma(cOtherR_comb, factR_comb, cLocalR_comb);
-          finalG_comb = Fma(cOtherG_comb, factG_comb, cLocalG_comb);
-          finalB_comb = Fma(cOtherB_comb, factB_comb, cLocalB_comb);
-          break;
-        case 5:
-          finalR_comb = Fma(cOtherR_comb, factR_comb, aLocal_comb);
-          finalG_comb = Fma(cOtherG_comb, factG_comb, aLocal_comb);
-          finalB_comb = Fma(cOtherB_comb, factB_comb, aLocal_comb);
-          break;
-        case 6:
-          finalR_comb = (cOtherR_comb - cLocalR_comb) * factR_comb;
-          finalG_comb = (cOtherG_comb - cLocalG_comb) * factR_comb;
-          finalB_comb = (cOtherB_comb - cLocalB_comb) * factR_comb;
-          break;
-        case 7:
-          finalR_comb =
-              Fma(cOtherR_comb - cLocalR_comb, factR_comb, cLocalR_comb);
-          finalG_comb =
-              Fma(cOtherG_comb - cLocalG_comb, factR_comb, cLocalG_comb);
-          finalB_comb =
-              Fma(cOtherB_comb - cLocalB_comb, factR_comb, cLocalB_comb);
-          break;
-        case 8:
-          finalR_comb =
-              Fma(cOtherR_comb - cLocalR_comb, factR_comb, aLocal_comb);
-          finalG_comb =
-              Fma(cOtherG_comb - cLocalG_comb, factR_comb, aLocal_comb);
-          finalB_comb =
-              Fma(cOtherB_comb - cLocalB_comb, factR_comb, aLocal_comb);
-          break;
-      }
-      if (colorCombinerInvert) {
-        finalR_comb = Simd8f(1.0f) - finalR_comb;
-        finalG_comb = Simd8f(1.0f) - finalG_comb;
-        finalB_comb = Simd8f(1.0f) - finalB_comb;
-      }
-
-      Simd8f factA_comb(0.0f);
-      switch (alphaCombinerFactor) {
-        case 1:
-        case 3:
-          factA_comb = aLocal_comb;
-          break;
-        case 2:
-          factA_comb = aOther_comb;
-          break;
-        case 4:
-          factA_comb = texA;
-          break;
-        case 8:
-          factA_comb = Simd8f(1.0f);
-          break;
-        case 9:
-        case 11:
-          factA_comb = Simd8f(1.0f) - aLocal_comb;
-          break;
-        case 10:
-          factA_comb = Simd8f(1.0f) - aOther_comb;
-          break;
-        case 12:
-          factA_comb = Simd8f(1.0f) - texA;
-          break;
-      }
-
-      Simd8f finalA_comb(0.0f);
-      switch (alphaCombinerFunc) {
-        case 1:
-          finalA_comb = aLocal_comb;
-          break;
-        case 3:
-          finalA_comb = aOther_comb * factA_comb;
-          break;
-        case 4:
-        case 5:
-          finalA_comb = aOther_comb * factA_comb + aLocal_comb;
-          break;
-        case 6:
-          finalA_comb = (aOther_comb - aLocal_comb) * factA_comb;
-          break;
-        case 7:
-        case 8:
-          finalA_comb = (aOther_comb - aLocal_comb) * factA_comb + aLocal_comb;
-          break;
-      }
-      if (alphaCombinerInvert) finalA_comb = Simd8f(1.0f) - finalA_comb;
-
-      Simd8f red = finalR_comb;
-      Simd8f green = finalG_comb;
-      Simd8f blue = finalB_comb;
-      Simd8f alpha = finalA_comb;
       Simd8f blendAlphaVal = alpha;
 
-      // 8. Pre-blend Alpha Dithering / Quantization
+      // 7. Pre-blend Alpha Dithering / Quantization
       if constexpr (DitherEnabled) {
-        Simd8i dith = (state.ditherMode == 2) ? GetDitherVector4x4(y)
-                                              : GetDitherVector2x2(y);
-        Simd8f dith_f = Simd8f::Convert(dith);
-        Simd8f alpha255 = Floor(alpha * Simd8f(255.0f) + Simd8f(0.5f));
-        float matrixSize = (state.ditherMode == 2) ? 16.0f : 4.0f;
-        Simd8f ditherVal = dith_f * Simd8f(128.0f / matrixSize);
-
-        SimdMask ditherPass = (alpha255 + ditherVal) >= Simd8f(128.0f);
-        SimdMask applies =
-            (Simd8f(alphaTestOp) != Simd8f(7.0f)) | (alpha < Simd8f(0.99f));
-
-        coverageMask = coverageMask & ((!applies) | ditherPass);
-        blendAlphaVal =
-            Select(applies & ditherPass, Simd8f(1.0f), blendAlphaVal);
-        if (coverageMask.AllZero()) continue;
+        SimdMask applies = (alphaTestOp != 7) ? SimdMask::True()
+                                              : (alpha < Simd8f(0.99f));
+        if (applies.AnyTrue()) {
+          Simd8f alpha255 = Floor(Fma(alpha, c255_vec, half_vec));
+          SimdMask ditherPass = (alpha255 + rowDithAlpha) >= Simd8f(128.0f);
+          coverageMask = coverageMask & ((!applies) | ditherPass);
+          blendAlphaVal = Select(applies & ditherPass, one_vec, blendAlphaVal);
+          if (coverageMask.AllZero()) continue;
+        }
       }
 
-      // 9. Chromakey Emulation
+      // 8. Chromakey Emulation
       if (chromakeyMode == 1) {
-        bool hasTex = HasTexture || hasTexture1;
-        Simd8f testR = hasTex ? cOtherR_chroma : red;
-        Simd8f testG = hasTex ? cOtherG_chroma : green;
-        Simd8f testB = hasTex ? cOtherB_chroma : blue;
+        const bool hasTex = HasTexture || hasTexture1;
+        Simd8f testR = hasTex ? texR : red;
+        Simd8f testG = hasTex ? texG : green;
+        Simd8f testB = hasTex ? texB : blue;
 
         SimdMask chromaFail;
-        bool rangeEnabled = ((chromakeyRangeMode >> 28) & 1) == 1;
+        const bool rangeEnabled = ((chromakeyRangeMode >> 28) & 1u) == 1u;
         if (rangeEnabled) {
           SimdMask rMatch =
               (testR >= Simd8f(chromaMinR)) & (testR <= Simd8f(chromaMaxR));
@@ -1097,7 +1190,7 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
         if (coverageMask.AllZero()) continue;
       }
 
-      // 10. Alpha Testing
+      // 9. Alpha Testing
       if (alphaTestOp != 7) {
         SimdMask alphaPass;
         Simd8f ref(alphaTestRef);
@@ -1131,58 +1224,57 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
         if (coverageMask.AllZero()) continue;
       }
 
-      // 11. Depth Testing
-      Simd8f targetDepth;
-      if (depthMode == 2) {
-        Simd8f w = Simd8f(1.0f) / wVal;
-        targetDepth = (w - Simd8f(depthNear)) * Simd8f(depthRangeInv);
-      } else {
-        targetDepth =
-            Fma(w0_vec, Simd8f(a.pos[2]),
-                Fma(w1_vec, Simd8f(b.pos[2]), w2_vec * Simd8f(c.pos[2])));
-      }
-      if (depthBiasLevel != 0) {
-        targetDepth =
-            Max(Simd8f(0.0f),
-                Min(Simd8f(1.0f),
-                    targetDepth +
-                        Simd8f(static_cast<float>(depthBiasLevel) / 65535.0f)));
-      }
-
-      if (depthMode != 0 && depthCompareOp != 7 && depthBuffer) {
-        Simd8f currentDepth =
-            Simd8f::Load2x4(&depthBuffer[y * width + x], width);
-        SimdMask depthPass = SimdMask::True();
-        Simd8f ref = targetDepth;
-        switch (depthCompareOp) {
-          case 1:
-            depthPass = ref < currentDepth;
-            break;
-          case 2:
-            depthPass = ref == currentDepth;
-            break;
-          case 3:
-            depthPass = ref <= currentDepth;
-            break;
-          case 4:
-            depthPass = ref > currentDepth;
-            break;
-          case 5:
-            depthPass = ref != currentDepth;
-            break;
-          case 6:
-            depthPass = ref >= currentDepth;
-            break;
+      // 10. Depth Testing (skipped completely when depthMode == 0)
+      if (needDepthOp) {
+        Simd8f targetDepth;
+        if (depthMode == 2) {
+          Simd8f w = one_vec / wVal;
+          targetDepth = (w - Simd8f(depthNear)) * Simd8f(depthRangeInv);
+        } else {
+          targetDepth =
+              Fma(w0_vec, Simd8f(a.pos[2]),
+                  Fma(w1_vec, Simd8f(b.pos[2]), w2_vec * Simd8f(c.pos[2])));
         }
-        coverageMask = coverageMask & depthPass;
-        if (coverageMask.AllZero()) continue;
-      }
+        if (depthBiasLevel != 0) {
+          targetDepth = Max(
+              zero_vec,
+              Min(one_vec,
+                  targetDepth +
+                      Simd8f(static_cast<float>(depthBiasLevel) / 65535.0f)));
+        }
 
-      if (depthMode != 0 && depthMask && depthBuffer) {
-        Simd8f currentDepth =
-            Simd8f::Load2x4(&depthBuffer[y * width + x], width);
-        Simd8f newDepth = Select(coverageMask, targetDepth, currentDepth);
-        Simd8f::Store2x4(&depthBuffer[y * width + x], width, newDepth);
+        float* depthPtr = &depthBuffer[y * width + x];
+        Simd8f currentDepth = Simd8f::Load2x4(depthPtr, width);
+        if (depthCompareOp != 7) {
+          SimdMask depthPass = SimdMask::True();
+          switch (depthCompareOp) {
+            case 1:
+              depthPass = targetDepth < currentDepth;
+              break;
+            case 2:
+              depthPass = targetDepth == currentDepth;
+              break;
+            case 3:
+              depthPass = targetDepth <= currentDepth;
+              break;
+            case 4:
+              depthPass = targetDepth > currentDepth;
+              break;
+            case 5:
+              depthPass = targetDepth != currentDepth;
+              break;
+            case 6:
+              depthPass = targetDepth >= currentDepth;
+              break;
+          }
+          coverageMask = coverageMask & depthPass;
+          if (coverageMask.AllZero()) continue;
+        }
+
+        if (depthMask) {
+          Simd8f newDepth = Select(coverageMask, targetDepth, currentDepth);
+          Simd8f::Store2x4(depthPtr, width, newDepth);
+        }
       }
 
       // Capture pre-fog color for GR_BLEND_PREFOG_COLOR (multi-pass fog)
@@ -1190,18 +1282,18 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
       const Simd8f preFogG = green;
       const Simd8f preFogB = blue;
 
-      // 12. Fog Stage
+      // 11. Fog Stage
       if (fogMode != 0) {
-        Simd8f f_vec(0.0f);
+        Simd8f f_vec = zero_vec;
         uint32_t fogSource = fogMode & 0x0F;
         if (fogSource == 4) {
           f_vec = iterA;
         } else {
           alignas(32) float eyeW_arr[8];
-          Simd8f eyeW = Simd8f(1.0f) / Max(wVal, Simd8f(1e-6f));
+          Simd8f eyeW = one_vec / Max(wVal, Simd8f(1e-6f));
           Simd8f::Store(eyeW_arr, eyeW);
 
-          float f_arr[8];
+          alignas(32) float f_arr[8];
           for (int i = 0; i < 8; ++i) {
             float ew = eyeW_arr[i];
             if (ew < 1.0f) ew = 1.0f;
@@ -1227,92 +1319,105 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
             t = std::max(0.0f, std::min(1.0f, t));
             f_arr[i] = f0 * (1.0f - t) + f1 * t;
           }
-          f_vec = Simd8f(f_arr[0], f_arr[1], f_arr[2], f_arr[3], f_arr[4],
-                         f_arr[5], f_arr[6], f_arr[7]);
+          f_vec = Simd8f::LoadAligned(f_arr);
         }
 
-        Simd8f mult = ((fogMode & 0x100) != 0) ? Simd8f(1.0f) : Simd8f(0.0f);
-        Simd8f add = ((fogMode & 0x200) != 0) ? Simd8f(1.0f) : Simd8f(0.0f);
+        Simd8f srcScale =
+            ((fogMode & 0x100) != 0) ? zero_vec : (one_vec - f_vec);
+        Simd8f fogScale = ((fogMode & 0x200) != 0) ? zero_vec : f_vec;
 
-        red = red * (Simd8f(1.0f) - mult) * (Simd8f(1.0f) - f_vec) +
-              Simd8f(fogR) * (Simd8f(1.0f) - add) * f_vec;
-        green = green * (Simd8f(1.0f) - mult) * (Simd8f(1.0f) - f_vec) +
-                Simd8f(fogG) * (Simd8f(1.0f) - add) * f_vec;
-        blue = blue * (Simd8f(1.0f) - mult) * (Simd8f(1.0f) - f_vec) +
-               Simd8f(fogB) * (Simd8f(1.0f) - add) * f_vec;
+        red = Fma(red, srcScale, Simd8f(fogR) * fogScale);
+        green = Fma(green, srcScale, Simd8f(fogG) * fogScale);
+        blue = Fma(blue, srcScale, Simd8f(fogB) * fogScale);
       }
 
-      // 13. Framebuffer Write & Alpha Blending
-      Simd8i dstWord = Simd8i::Load2x4(&pixels[y * width + x], width);
-
-      Simd8f dstR = Simd8f::Convert((dstWord >> 16) & Simd8i(0xFF)) *
-                    Simd8f(1.0f / 255.0f);
-      Simd8f dstG = Simd8f::Convert((dstWord >> 8) & Simd8i(0xFF)) *
-                    Simd8f(1.0f / 255.0f);
-      Simd8f dstB =
-          Simd8f::Convert(dstWord & Simd8i(0xFF)) * Simd8f(1.0f / 255.0f);
-      Simd8f dstA = Simd8f::Convert((dstWord >> 24) & Simd8i(0xFF)) *
-                    Simd8f(1.0f / 255.0f);
-
+      // 12. Framebuffer Write & Alpha Blending
+      uint32_t* pixPtr = &pixels[y * width + x];
       Simd8f blendedR = red;
       Simd8f blendedG = green;
       Simd8f blendedB = blue;
       Simd8f blendedA = alpha;
+      Simd8i dstWord;
 
       if constexpr (BlendEnabled) {
-        blendedR = Min(
-            Simd8f(1.0f),
-            Fma(red,
-                getFSIMD(rgbSrcBlend, red, preFogR, dstR, blendAlphaVal, dstA,
-                         false),
-                dstR * getFSIMD(rgbDstBlend, red, preFogR, dstR, blendAlphaVal,
-                                dstA, true)));
-        blendedG = Min(
-            Simd8f(1.0f),
-            Fma(green,
-                getFSIMD(rgbSrcBlend, green, preFogG, dstG, blendAlphaVal, dstA,
-                         false),
-                dstG * getFSIMD(rgbDstBlend, green, preFogG, dstG,
-                                blendAlphaVal, dstA, true)));
-        blendedB = Min(
-            Simd8f(1.0f),
-            Fma(blue,
-                getFSIMD(rgbSrcBlend, blue, preFogB, dstB, blendAlphaVal, dstA,
-                         false),
-                dstB * getFSIMD(rgbDstBlend, blue, preFogB, dstB, blendAlphaVal,
-                                dstA, true)));
-        blendedA =
-            Min(Simd8f(1.0f),
-                Fma(blendAlphaVal,
-                    getFSIMD(alphaSrcBlend, Simd8f(0.0f), Simd8f(0.0f),
-                             Simd8f(0.0f), blendAlphaVal, dstA, false),
-                    dstA * getFSIMD(alphaDstBlend, Simd8f(0.0f), Simd8f(0.0f),
-                                    Simd8f(0.0f), blendAlphaVal, dstA, true)));
+        dstWord = Simd8i::Load2x4(pixPtr, width);
+        Simd8f dstR = Simd8f::Convert((dstWord >> 16) & maskFF_i) * inv255_vec;
+        Simd8f dstG = Simd8f::Convert((dstWord >> 8) & maskFF_i) * inv255_vec;
+        Simd8f dstB = Simd8f::Convert(dstWord & maskFF_i) * inv255_vec;
+
+        if (blendFastPath == 1) {
+          Simd8f omA = one_vec - blendAlphaVal;
+          blendedR = Min(one_vec, Fma(red, blendAlphaVal, dstR * omA));
+          blendedG = Min(one_vec, Fma(green, blendAlphaVal, dstG * omA));
+          blendedB = Min(one_vec, Fma(blue, blendAlphaVal, dstB * omA));
+          blendedA = Min(one_vec, blendAlphaVal);
+        } else if (blendFastPath == 2) {
+          blendedR = Min(one_vec, red * dstR);
+          blendedG = Min(one_vec, green * dstG);
+          blendedB = Min(one_vec, blue * dstB);
+          blendedA = Min(one_vec, blendAlphaVal);
+        } else if (blendFastPath == 3) {
+          blendedR = Min(one_vec, red + dstR);
+          blendedG = Min(one_vec, green + dstG);
+          blendedB = Min(one_vec, blue + dstB);
+          blendedA = Min(one_vec, blendAlphaVal);
+        } else {
+          Simd8f dstA = blendNeedsDstA
+                            ? (Simd8f::Convert((dstWord >> 24) & maskFF_i) *
+                               inv255_vec)
+                            : zero_vec;
+          blendedR = Min(
+              one_vec,
+              Fma(red,
+                  GetBlendFactorSIMD(rgbSrcBlend, red, preFogR, dstR,
+                                     blendAlphaVal, dstA, false),
+                  dstR * GetBlendFactorSIMD(rgbDstBlend, red, preFogR, dstR,
+                                            blendAlphaVal, dstA, true)));
+          blendedG = Min(
+              one_vec,
+              Fma(green,
+                  GetBlendFactorSIMD(rgbSrcBlend, green, preFogG, dstG,
+                                     blendAlphaVal, dstA, false),
+                  dstG * GetBlendFactorSIMD(rgbDstBlend, green, preFogG, dstG,
+                                            blendAlphaVal, dstA, true)));
+          blendedB = Min(
+              one_vec,
+              Fma(blue,
+                  GetBlendFactorSIMD(rgbSrcBlend, blue, preFogB, dstB,
+                                     blendAlphaVal, dstA, false),
+                  dstB * GetBlendFactorSIMD(rgbDstBlend, blue, preFogB, dstB,
+                                            blendAlphaVal, dstA, true)));
+          blendedA = Min(
+              one_vec,
+              Fma(blendAlphaVal,
+                  GetBlendFactorSIMD(alphaSrcBlend, zero_vec, zero_vec,
+                                     zero_vec, blendAlphaVal, dstA, false),
+                  dstA * GetBlendFactorSIMD(alphaDstBlend, zero_vec, zero_vec,
+                                            zero_vec, blendAlphaVal, dstA,
+                                            true)));
+        }
       }
 
-      Simd8i rVal = Simd8i::Convert(
-          Min(Simd8f(255.0f), blendedR * Simd8f(255.0f) + Simd8f(0.5f)));
-      Simd8i gVal = Simd8i::Convert(
-          Min(Simd8f(255.0f), blendedG * Simd8f(255.0f) + Simd8f(0.5f)));
-      Simd8i bVal = Simd8i::Convert(
-          Min(Simd8f(255.0f), blendedB * Simd8f(255.0f) + Simd8f(0.5f)));
-      Simd8i aVal = Simd8i::Convert(
-          Min(Simd8f(255.0f), blendedA * Simd8f(255.0f) + Simd8f(0.5f)));
+      Simd8i rVal =
+          Simd8i::Convert(Min(c255_vec, Fma(blendedR, c255_vec, half_vec)));
+      Simd8i gVal =
+          Simd8i::Convert(Min(c255_vec, Fma(blendedG, c255_vec, half_vec)));
+      Simd8i bVal =
+          Simd8i::Convert(Min(c255_vec, Fma(blendedB, c255_vec, half_vec)));
+      Simd8i aVal =
+          Simd8i::Convert(Min(c255_vec, Fma(blendedA, c255_vec, half_vec)));
 
       if constexpr (DitherEnabled) {
-        Simd8i dith = (state.ditherMode == 2) ? GetDitherVector4x4(y)
-                                              : GetDitherVector2x2(y);
-
         Simd8i ditheredR =
-            ((rVal << 1) - (rVal >> 4) + (rVal >> 7) + dith) >> 1;
+            ((rVal << 1) - (rVal >> 4) + (rVal >> 7) + rowDith) >> 1;
         Simd8i r = Min(Simd8i(31), ditheredR >> 3);
 
         Simd8i ditheredG =
-            ((gVal << 2) - (gVal >> 4) + (gVal >> 6) + dith) >> 2;
+            ((gVal << 2) - (gVal >> 4) + (gVal >> 6) + rowDith) >> 2;
         Simd8i g = Min(Simd8i(63), ditheredG >> 2);
 
         Simd8i ditheredB =
-            ((bVal << 1) - (bVal >> 4) + (bVal >> 7) + dith) >> 1;
+            ((bVal << 1) - (bVal >> 4) + (bVal >> 7) + rowDith) >> 1;
         Simd8i b = Min(Simd8i(31), ditheredB >> 3);
 
         rVal = (r << 3) | (r >> 2);
@@ -1321,15 +1426,21 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
       }
 
       Simd8i finalColor = (aVal << 24) | (rVal << 16) | (gVal << 8) | bVal;
-      if (!colorMaskRgb || !colorMaskAlpha) {
-        uint32_t maskVal =
-            (colorMaskRgb ? 0x00FFFFFF : 0) | (colorMaskAlpha ? 0xFF000000 : 0);
-        Simd8i mask(static_cast<int32_t>(maskVal));
-        finalColor = (finalColor & mask) | (dstWord & ~mask);
+
+      if constexpr (!BlendEnabled) {
+        if (fullColorMask && coverageMask.AllTrue()) {
+          Simd8i::Store2x4(pixPtr, width, finalColor);
+          continue;
+        }
+        dstWord = Simd8i::Load2x4(pixPtr, width);
+      }
+
+      if (!fullColorMask) {
+        finalColor = (finalColor & colorMask_vec) | (dstWord & invColorMask_vec);
       }
 
       Simd8i writeColor = Select(coverageMask, finalColor, dstWord);
-      Simd8i::Store2x4(&pixels[y * width + x], width, writeColor);
+      Simd8i::Store2x4(pixPtr, width, writeColor);
     }
   }
 }

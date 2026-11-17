@@ -117,11 +117,24 @@ class CpuLfbStaging {
                        const void* refData, const LfbPipelineConfig& config,
                        uint32_t pixelFormatOverride);
 
+  // Inclusive row band [minY..maxY] in top-down framebuffer coordinates.
+  struct DirtyBand {
+    uint32_t minY{0};
+    uint32_t maxY{0};
+  };
+  static constexpr size_t kMaxOverlayBands = 8;
+
   // Returns pointer to the full ARGB overlay buffer (row 0 = top) and outputs
   // the inclusive dirty row range [outMinY, outMaxY]. Returns nullptr if clean.
   const uint32_t* GetOverlayForGpuUpload(uint32_t logicalBuffer,
                                          uint32_t& outMinY,
                                          uint32_t& outMaxY) const;
+
+  // Returns pointer to the full ARGB overlay buffer and outputs the sorted list
+  // of disjoint dirty row bands (at most kMaxOverlayBands). Returns nullptr if clean.
+  const uint32_t* GetOverlayBandsForGpuUpload(uint32_t logicalBuffer,
+                                              const DirtyBand*& outBands,
+                                              size_t& outCount) const;
 
   uint8_t* PrepareBufferForGpuReadback(uint32_t logicalBuffer);
   const uint8_t* PrepareBufferForGpuUpload(uint32_t logicalBuffer);
@@ -167,6 +180,7 @@ class CpuLfbStaging {
   bool EnsureAllocated();
   bool EnsureOverlayAllocated();
   void MaterializeSlot(uint32_t slot);
+  void AddOverlayBand(uint32_t idx, uint32_t minY, uint32_t maxY);
 
   std::vector<uint8_t, AlignedAllocator<uint8_t, 64>> m_buffers[2];
   std::vector<uint32_t, AlignedAllocator<uint32_t, 64>> m_overlayBuffers[2];
@@ -177,8 +191,8 @@ class CpuLfbStaging {
   bool m_dirty{false};
   bool m_bufferDirty[2]{false, false};
   bool m_overlayDirty[2]{false, false};
-  uint32_t m_overlayMinY[2]{0, 0};
-  uint32_t m_overlayMaxY[2]{0, 0};
+  DirtyBand m_overlayBands[2][kMaxOverlayBands]{};
+  size_t m_overlayBandCount[2]{0, 0};
   PendingColorClear m_pendingClear[2];
 };
 
