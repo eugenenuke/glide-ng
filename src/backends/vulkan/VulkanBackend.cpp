@@ -1328,6 +1328,10 @@ void VulkanBackend::SetRenderBuffer(uint32_t target) {
   std::lock_guard<std::mutex> lock(m_mutex);
   if (target != m_activeRenderBuffer) {
     FlushBatch(true);
+    if (m_inRenderPass) {
+      m_commandBuffer->endRenderPass();
+      m_inRenderPass = false;
+    }
   }
   GlideStateTracker::SetRenderBuffer_Locked(target);
 }

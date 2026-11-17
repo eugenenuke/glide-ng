@@ -22,58 +22,97 @@ void VulkanBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z,
   std::lock_guard<std::mutex> lock(m_mutex);
   if (!m_initialized || !m_windowAttached) return;
 
-  // Terminate active render pass if any (so next draw starts a new render pass
-  // that triggers LoadOp Clear!)
-  if (m_inRenderPass) {
-    FlushBatch();
-    m_commandBuffer->endRenderPass();
-    m_inRenderPass = false;
+  const vk::Rect2D clipRect = GetScissorRectVulkan_Locked();
+  if (clipRect.extent.width == 0 || clipRect.extent.height == 0) {
+    return;
   }
+  const bool fullClip = (clipRect.offset.x == 0 && clipRect.offset.y == 0 &&
+                         clipRect.extent.width == m_headlessWidth &&
+                         clipRect.extent.height == m_headlessHeight);
 
   GLIDE_LOG(DEBUG, "Vulkan",
             "ClearBuffer: color=" << std::hex << color
-                                  << ", clearMask=" << clearMask);
+                                  << ", clearMask=" << clearMask << std::dec
+                                  << ", rect=(" << clipRect.offset.x << ","
+                                  << clipRect.offset.y << " "
+                                  << clipRect.extent.width << "x"
+                                  << clipRect.extent.height << ")");
 
   // 1. Handle any pending sparse LFB overlay before clearing, and defer
   // CPU-side full framebuffer clear lazily so pure 3D frames allocate 0 bytes.
   if (clearMask & 1) {
-    if (m_colorMaskRgb && m_colorMaskAlpha) {
+    if (fullClip && m_colorMaskRgb && m_colorMaskAlpha) {
       m_lfbStaging.ClearOverlay(m_activeRenderBuffer);
     } else if (m_lfbStaging.IsOverlayDirty(m_activeRenderBuffer)) {
       FlushLFBToGPU_Locked();
     }
-    m_lfbStaging.ScheduleLazyClear(m_activeRenderBuffer, color, alpha,
-                                   m_pixelFormatOverride, m_colorMaskRgb,
-                                   m_colorMaskAlpha);
-  }
-
-  // 2. Save clear state and mark pending for GPU clears when Render Pass
-  // starts!
-  uint32_t activeIdx = GetActiveGpuBufferIdx();
-  if (clearMask & 1) {  // Color clear
-    // Only schedule a GPU color clear if color or alpha writes are actually
-    // enabled!
-    if (m_colorMaskRgb || m_colorMaskAlpha) {
-      float a = ((alpha > 0) ? alpha : 255) / 255.0f;
-      float r = ((color >> 16) & 0xFF) / 255.0f;
-      float g = ((color >> 8) & 0xFF) / 255.0f;
-      float b = (color & 0xFF) / 255.0f;
-
-      // Respect the active pixel format from GlideStateTracker!
-      if (m_pixelFormatOverride == 1) {  // ABGR format override
-        std::swap(r, b);
-      }
-
-      m_clearColorValue[activeIdx] =
-          vk::ClearColorValue(std::array<float, 4>{r, g, b, a});
-      m_clearColorPending[activeIdx] = true;
+    if (fullClip) {
+      m_lfbStaging.ScheduleLazyClear(m_activeRenderBuffer, color, alpha,
+                                     m_pixelFormatOverride, m_colorMaskRgb,
+                                     m_colorMaskAlpha);
     }
   }
 
-  if ((clearMask & 2) && m_depthMask) {  // Depth clear (obeys grDepthMask)
-    m_clearDepthValue[activeIdx] = z;
-    m_clearDepthPending[activeIdx] = true;
+  // 2. Prepare color and depth clear values respecting active write masks.
+  std::array<vk::ClearAttachment, 2> clears;
+  uint32_t clearCount = 0;
+  vk::ClearColorValue colorClearVal;
+  bool doColorClear = false;
+  bool doDepthClear = false;
+
+  if ((clearMask & 1) && (m_colorMaskRgb || m_colorMaskAlpha)) {
+    float a = ((alpha > 0) ? alpha : 255) / 255.0f;
+    float r = ((color >> 16) & 0xFF) / 255.0f;
+    float g = ((color >> 8) & 0xFF) / 255.0f;
+    float b = (color & 0xFF) / 255.0f;
+
+    // Respect the active pixel format from GlideStateTracker!
+    if (m_pixelFormatOverride == 1) {  // ABGR format override
+      std::swap(r, b);
+    }
+
+    colorClearVal = vk::ClearColorValue(std::array<float, 4>{r, g, b, a});
+    clears[clearCount++] =
+        vk::ClearAttachment(vk::ImageAspectFlagBits::eColor, 0, colorClearVal);
+    doColorClear = true;
   }
+
+  if ((clearMask & 2) && m_depthMask) {  // Depth clear (obeys grDepthMask)
+    clears[clearCount++] = vk::ClearAttachment(
+        vk::ImageAspectFlagBits::eDepth, 0,
+        vk::ClearValue(vk::ClearDepthStencilValue(z, 0)));
+    doDepthClear = true;
+  }
+
+  if (clearCount == 0) return;
+
+  // 3. Full-screen clears outside an active render pass stay deferred so
+  // frame-start clears coalesce cleanly before LFB overlays or geometry.
+  // Clipped sub-rect clears (e.g., split-screen panes / divider stripes) or
+  // clears inside an active render pass execute immediately via
+  // vkCmdClearAttachments so exact clip bounds and call ordering are preserved.
+  if (fullClip && !m_inRenderPass) {
+    uint32_t activeIdx = GetActiveGpuBufferIdx();
+    if (doColorClear) {
+      m_clearColorValue[activeIdx] = colorClearVal;
+      m_clearColorPending[activeIdx] = true;
+    }
+    if (doDepthClear) {
+      m_clearDepthValue[activeIdx] = z;
+      m_clearDepthPending[activeIdx] = true;
+    }
+    return;
+  }
+
+  if (m_inRenderPass) {
+    FlushBatch();
+  } else {
+    // Materializes any prior deferred full-screen clear on this target first.
+    EnsureRenderPassActive();
+  }
+
+  vk::ClearRect clearRect(clipRect, 0, 1);
+  m_commandBuffer->clearAttachments(clearCount, clears.data(), 1, &clearRect);
 }
 
 void VulkanBackend::ResolveDrawState_Locked(vk::PrimitiveTopology topology,
@@ -398,20 +437,13 @@ void VulkanBackend::FlushBatch(bool fromStateFlush) {
 }
 
 vk::Rect2D VulkanBackend::GetScissorRectVulkan_Locked() {
-  uint32_t vkScissorY = m_clipMinY;
-  if (m_sstOrigin == 1) {  // GR_ORIGIN_LOWER_LEFT is 1 (bottom-left)
-    // Flip Y to top-left coordinate system of Vulkan
-    vkScissorY = m_headlessHeight - m_clipMaxY;
+  uint32_t x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+  if (!ComputeClipRectTopDown_Locked(x0, y0, x1, y1)) {
+    return vk::Rect2D({0, 0}, {0, 0});
   }
-  uint32_t vkScissorW =
-      (m_clipMaxX > m_clipMinX) ? (m_clipMaxX - m_clipMinX) : 0;
-  uint32_t vkScissorH =
-      (m_clipMaxY > m_clipMinY) ? (m_clipMaxY - m_clipMinY) : 0;
-
-  vk::Offset2D offset(static_cast<int32_t>(m_clipMinX),
-                      static_cast<int32_t>(vkScissorY));
-  vk::Extent2D extent(vkScissorW, vkScissorH);
-  return vk::Rect2D(offset, extent);
+  return vk::Rect2D(
+      vk::Offset2D(static_cast<int32_t>(x0), static_cast<int32_t>(y0)),
+      vk::Extent2D(x1 - x0, y1 - y0));
 }
 
 void VulkanBackend::EnsureRenderPassActive() {

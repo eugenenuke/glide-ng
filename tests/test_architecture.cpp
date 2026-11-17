@@ -1534,8 +1534,10 @@ TEST_CASE("Architectural Core Validation", "[Architecture]") {
     std::vector<uint32_t> lfbData(800 * 600, 0);
 
     // 1. Validate Scissor Box Containment
-    clipWin(100, 100, 200, 200);
+    // Authentic 3dfx grBufferClear respects grClipWindow, so clear full screen
+    // first before restricting the clip rectangle (matching official test15).
     clearBuf(0xFF000000, 0, 1);  // Black
+    clipWin(100, 100, 200, 200);
 
     StandardVert q0{0.0f, 0.0f,   0.5f, 255.0f, 255.0f, 0.0f,
                     1.0f, 255.0f, 1.0f, 0.0f,   0.0f,   1.0f};
@@ -4173,9 +4175,12 @@ TEST_CASE(
   SECTION("test15: Screen Clipping") {
     depthBufferMode(GR_DEPTHBUFFER_DISABLE);
 
+    // Clear full screen before narrowing clip window (matching official test15)
+    clipWindow(0, 0, 640, 480);
+    bufferClear(0x00, 0, 0);
+
     // Mode 0: Centered large clip window: x=[128, 512], y=[96, 384]
     clipWindow(128, 96, 512, 384);
-    bufferClear(0x00, 0, 0);
 
     // Draw a grid of gray triangles covering the entire screen
     GrVertex vtxA, vtxB, vtxC;

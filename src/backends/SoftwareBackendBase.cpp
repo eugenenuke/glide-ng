@@ -28,6 +28,11 @@ void SoftwareBackendBase::ResetState_Locked() {
 void SoftwareBackendBase::ClearBuffer(uint32_t color, uint32_t alpha, float z,
                                       uint32_t clearMask) {
   std::lock_guard<std::mutex> lock(m_mutex);
+  ClearBuffer_Locked(color, alpha, z, clearMask);
+}
+
+void SoftwareBackendBase::ClearBuffer_Locked(uint32_t color, uint32_t alpha,
+                                             float z, uint32_t clearMask) {
   FlushBins_Locked();
   GLIDE_LOG(DEBUG, "Rasterizer",
             "ClearBuffer CPU side invoked: color=0x"
@@ -35,10 +40,24 @@ void SoftwareBackendBase::ClearBuffer(uint32_t color, uint32_t alpha, float z,
                 << clearMask << std::dec << ", map=" << m_headlessPixelMap);
   if (!m_windowAttached || !m_headlessPixelMap) return;
 
+  uint32_t x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+  if (!ComputeClipRectTopDown_Locked(x0, y0, x1, y1)) {
+    return;
+  }
+  const bool fullClip =
+      (x0 == 0 && y0 == 0 && x1 == m_headlessWidth && y1 == m_headlessHeight);
+
   uint32_t activeSlot =
       (m_activeRenderBuffer == 0) ? m_frontBufferIdx : m_backBufferIdx;
   if (clearMask & 0x1) {  // Color Clear
-    m_pendingCpuColorClear[activeSlot].pending = false;
+    if (fullClip) {
+      m_pendingCpuColorClear[activeSlot].pending = false;
+    } else {
+      // Materialize any prior deferred full-screen clear before modifying a
+      // clipped sub-rectangle so pixels outside the clip window are up to date.
+      MaterializeLazyCpuClear_Locked(activeSlot);
+    }
+
     uint32_t a = (alpha > 0) ? alpha : 255;
     uint32_t r = (color >> 16) & 0xFF;
     uint32_t g = (color >> 8) & 0xFF;
@@ -59,29 +78,66 @@ void SoftwareBackendBase::ClearBuffer(uint32_t color, uint32_t alpha, float z,
     } else {
       uint32_t clearWord = (a << 24) | (r << 16) | (g << 8) | b;
       uint32_t* pixels = reinterpret_cast<uint32_t*>(m_headlessPixelMap);
-      uint32_t totalPixels = m_headlessWidth * m_headlessHeight;
+      const uint32_t spanW = x1 - x0;
 
-      if (writeMask == 0xFFFFFFFF) {
-        std::fill_n(pixels, totalPixels, clearWord);
+      if (fullClip) {
+        uint32_t totalPixels = m_headlessWidth * m_headlessHeight;
+        if (writeMask == 0xFFFFFFFF) {
+          std::fill_n(pixels, totalPixels, clearWord);
+        } else {
+          uint32_t keepMask = ~writeMask;
+          uint32_t maskedClearWord = clearWord & writeMask;
+          for (uint32_t i = 0; i < totalPixels; ++i) {
+            pixels[i] = (pixels[i] & keepMask) | maskedClearWord;
+          }
+        }
+      } else if (writeMask == 0xFFFFFFFF) {
+        for (uint32_t y = y0; y < y1; ++y) {
+          std::fill_n(pixels + static_cast<size_t>(y) * m_headlessWidth + x0,
+                      spanW, clearWord);
+        }
       } else {
         uint32_t keepMask = ~writeMask;
         uint32_t maskedClearWord = clearWord & writeMask;
-        for (uint32_t i = 0; i < totalPixels; ++i) {
-          pixels[i] = (pixels[i] & keepMask) | maskedClearWord;
+        for (uint32_t y = y0; y < y1; ++y) {
+          uint32_t* row =
+              pixels + static_cast<size_t>(y) * m_headlessWidth + x0;
+          for (uint32_t i = 0; i < spanW; ++i) {
+            row[i] = (row[i] & keepMask) | maskedClearWord;
+          }
         }
       }
       GLIDE_LOG(DEBUG, "Rasterizer",
-                "Cleared color buffer with word 0x" << std::hex << clearWord
-                                                    << " using write mask 0x"
-                                                    << writeMask << std::dec);
+                "Cleared color buffer rect (" << x0 << "," << y0 << ")-(" << x1
+                                              << "," << y1 << ") with word 0x"
+                                              << std::hex << clearWord
+                                              << " using write mask 0x"
+                                              << writeMask << std::dec);
     }
   }
 
   if ((clearMask & 0x2) && m_depthMask) {  // Depth Clear (obeys grDepthMask)
-    m_pendingCpuDepthClear = false;
-    if (!m_headlessDepthBuffer.empty()) {
-      std::fill(m_headlessDepthBuffer.begin(), m_headlessDepthBuffer.end(), z);
-      GLIDE_LOG(DEBUG, "Rasterizer", "Cleared depth buffer with value " << z);
+    if (fullClip) {
+      m_pendingCpuDepthClear = false;
+      if (!m_headlessDepthBuffer.empty()) {
+        std::fill(m_headlessDepthBuffer.begin(), m_headlessDepthBuffer.end(),
+                  z);
+        GLIDE_LOG(DEBUG, "Rasterizer", "Cleared depth buffer with value " << z);
+      }
+    } else {
+      MaterializeLazyCpuDepthClear_Locked();
+      if (!m_headlessDepthBuffer.empty()) {
+        const uint32_t spanW = x1 - x0;
+        for (uint32_t y = y0; y < y1; ++y) {
+          std::fill_n(m_headlessDepthBuffer.data() +
+                          static_cast<size_t>(y) * m_headlessWidth + x0,
+                      spanW, z);
+        }
+        GLIDE_LOG(DEBUG, "Rasterizer",
+                  "Cleared depth buffer rect (" << x0 << "," << y0 << ")-("
+                                                << x1 << "," << y1
+                                                << ") with value " << z);
+      }
     }
   }
 }
@@ -90,6 +146,11 @@ void SoftwareBackendBase::ScheduleLazyCpuClear(uint32_t color, uint32_t alpha,
                                                float z, uint32_t clearMask) {
   std::lock_guard<std::mutex> lock(m_mutex);
   if (!m_windowAttached || !m_headlessPixelMap) return;
+
+  if (!IsFullScreenClip_Locked()) {
+    ClearBuffer_Locked(color, alpha, z, clearMask);
+    return;
+  }
 
   uint32_t activeSlot =
       (m_activeRenderBuffer == 0) ? m_frontBufferIdx : m_backBufferIdx;

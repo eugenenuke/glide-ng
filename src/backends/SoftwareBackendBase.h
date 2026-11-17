@@ -80,6 +80,8 @@ class SoftwareBackendBase : public GlideStateTracker {
 
   void ScheduleLazyCpuClear(uint32_t color, uint32_t alpha, float z,
                             uint32_t clearMask);
+  void ClearBuffer_Locked(uint32_t color, uint32_t alpha, float z,
+                          uint32_t clearMask);
   void MaterializeLazyCpuClear_Locked(uint32_t bufferSlot);
   void MaterializeLazyCpuDepthClear_Locked();
   void DiscardLazyCpuClear_Locked(uint32_t bufferSlot);

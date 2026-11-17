@@ -15,24 +15,33 @@ void OpenGLESBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z,
   std::lock_guard<std::mutex> lock(m_mutex);
   if (!m_initialized || !m_windowAttached || !EnsureContextCurrent()) return;
 
+  uint32_t x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+  if (!ComputeClipRectTopDown_Locked(x0, y0, x1, y1)) {
+    return;
+  }
+  const bool fullClip =
+      (x0 == 0 && y0 == 0 && x1 == m_headlessWidth && y1 == m_headlessHeight);
+
   // Flush any pending geometry before clearing the buffers!
   FlushBatch();
 
   // 1. Handle any pending sparse LFB overlay before clearing, and defer
   // CPU-side full framebuffer clear lazily so pure 3D frames allocate 0 bytes.
   if (clearMask & 0x1) {
-    if (m_colorMaskRgb && m_colorMaskAlpha) {
-      // Full color clear overwrites every pixel, so any pending overlay is
-      // superseded.
+    if (fullClip && m_colorMaskRgb && m_colorMaskAlpha) {
+      // Full unmasked color clear overwrites every pixel, so any pending
+      // overlay is superseded.
       m_lfbStaging.ClearOverlay(m_activeRenderBuffer);
     } else if (m_lfbStaging.IsOverlayDirty(m_activeRenderBuffer)) {
-      // Partial color mask leaves unmasked channels intact; flush pending
-      // overlay first so those channels retain their LFB pixels.
+      // Partial clip window or partial color mask leaves outside pixels or
+      // unmasked channels intact; flush pending overlay first.
       FlushLFBToGPU_Locked();
     }
-    m_lfbStaging.ScheduleLazyClear(m_activeRenderBuffer, color, alpha,
-                                   m_pixelFormatOverride, m_colorMaskRgb,
-                                   m_colorMaskAlpha);
+    if (fullClip) {
+      m_lfbStaging.ScheduleLazyClear(m_activeRenderBuffer, color, alpha,
+                                     m_pixelFormatOverride, m_colorMaskRgb,
+                                     m_colorMaskAlpha);
+    }
   }
 
   // Bind active offscreen FBO
@@ -69,15 +78,12 @@ void OpenGLESBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z,
       ApplyColorMaskGLES();
     }
 
-    // In OpenGL, glClear is affected by the active scissor box.
-    // But Glide grBufferClear always clears the entire screen.
-    // We must temporarily disable the scissor test to force a full-screen
-    // clear!
-    glDisable(GL_SCISSOR_TEST);
+    // Authentic 3dfx Glide grBufferClear clears ONLY within the active
+    // grClipWindow rectangle (e.g., split-screen panes and divider stripes).
+    ApplyScissorGLES_Locked();
+    m_glesDirtyMask &= ~kGlesDirtyScissor;
 
     glClear(mask);
-
-    glEnable(GL_SCISSOR_TEST);
   }
 
   if (clearMask & 0x2) {
@@ -351,18 +357,16 @@ void OpenGLESBackend::ApplyScissorGLES_Locked() {
   glEnable(GL_SCISSOR_TEST);
 
   // OpenGL scissor box expects bottom-up coordinates (0 = bottom).
-  // If origin is UPPER_LEFT (0, top-down), we must flip Y.
-  // If origin is LOWER_LEFT (1, bottom-up), we use raw coordinates.
-  uint32_t glScissorY = m_clipMinY;
-  if (m_sstOrigin == 0) {  // GR_ORIGIN_UPPER_LEFT
-    glScissorY = m_headlessHeight - m_clipMaxY;
+  // ComputeClipRectTopDown_Locked gives top-down [x0, x1) x [y0, y1) already
+  // clamped and origin-adjusted, so flipping Y once gives bottom-up GL coords.
+  uint32_t x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+  if (!ComputeClipRectTopDown_Locked(x0, y0, x1, y1)) {
+    glScissor(0, 0, 0, 0);
+    return;
   }
-  uint32_t glScissorW =
-      (m_clipMaxX > m_clipMinX) ? (m_clipMaxX - m_clipMinX) : 0;
-  uint32_t glScissorH =
-      (m_clipMaxY > m_clipMinY) ? (m_clipMaxY - m_clipMinY) : 0;
-
-  glScissor(m_clipMinX, glScissorY, glScissorW, glScissorH);
+  const uint32_t glScissorY = m_headlessHeight - y1;
+  glScissor(static_cast<GLint>(x0), static_cast<GLint>(glScissorY),
+            static_cast<GLsizei>(x1 - x0), static_cast<GLsizei>(y1 - y0));
 }
 
 void OpenGLESBackend::SyncCullStateGLES_Locked() {

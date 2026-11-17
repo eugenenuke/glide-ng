@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 #include <mutex>
 
@@ -160,6 +161,26 @@ class GlideStateTracker : public IGraphicsBackend {
   void SetCullState_Locked(uint32_t cullMode);
   void SetClipWindow_Locked(uint32_t minX, uint32_t minY, uint32_t maxX,
                             uint32_t maxY);
+  bool ComputeClipRectTopDown_Locked(uint32_t& x0, uint32_t& y0, uint32_t& x1,
+                                     uint32_t& y1) const {
+    x0 = std::min(m_clipMinX, m_headlessWidth);
+    x1 = std::min(m_clipMaxX, m_headlessWidth);
+    uint32_t rawMinY = std::min(m_clipMinY, m_headlessHeight);
+    uint32_t rawMaxY = std::min(m_clipMaxY, m_headlessHeight);
+    if (m_sstOrigin == 1) {  // GR_ORIGIN_LOWER_LEFT -> top-down framebuffer Y
+      y0 = m_headlessHeight - rawMaxY;
+      y1 = m_headlessHeight - rawMinY;
+    } else {
+      y0 = rawMinY;
+      y1 = rawMaxY;
+    }
+    return (x0 < x1) && (y0 < y1);
+  }
+  bool IsFullScreenClip_Locked() const {
+    uint32_t x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+    return ComputeClipRectTopDown_Locked(x0, y0, x1, y1) && x0 == 0 &&
+           y0 == 0 && x1 == m_headlessWidth && y1 == m_headlessHeight;
+  }
   void SetSstOrigin_Locked(uint32_t origin);
   void SetColorMask_Locked(bool rgb, bool alpha);
   void SetGamma_Locked(float gamma);

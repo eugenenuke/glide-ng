@@ -615,17 +615,17 @@ FX_ENTRY const char* FX_CALL grGetString(FxU32 pname) {
     case GR_HARDWARE: {
       switch (reg.GetConfig().model) {
         case GlideWrapper::CardModel::VoodooGraphics:
-          return "Voodoo Graphics (SST-1) (Modernized Wrapper Emulation)";
+          return "Voodoo Graphics";
         case GlideWrapper::CardModel::VoodooRush:
-          return "Voodoo Rush (SST-96) (Modernized Wrapper Emulation)";
+          return "Voodoo Rush";
         case GlideWrapper::CardModel::Voodoo2:
-          return "Voodoo2 (CVG) (Modernized Wrapper Emulation)";
+          return "Voodoo2";
         case GlideWrapper::CardModel::Voodoo3:
-          return "Voodoo3 (H3) (Modernized Wrapper Emulation)";
+          return "Voodoo3";
         case GlideWrapper::CardModel::Voodoo5:
-          return "Voodoo5 (H5) (Modernized Wrapper Emulation)";
+          return "Voodoo5";
         default:
-          return "3dfx Voodoo Accelerator (Modernized Wrapper Emulation)";
+          return "Voodoo2";
       }
     }
     case GR_VENDOR:

@@ -5769,3 +5769,231 @@ TEST_CASE("Glide 3.x GR_PARAM_PARGB Packed Color & VSA-100 Enable/Disable Modes"
   }
 #endif
 }
+
+TEST_CASE("Glide 3.x grBufferClear Respects grClipWindow & Origin",
+          "[Glide3][ClipWindow][ClearBuffer]") {
+#ifdef __linux__
+  void* handle = OpenGlide3Handle();
+  REQUIRE(handle != nullptr);
+
+  using InitFunc = void (*)(void);
+  using SelectSstFunc = void (*)(int);
+  using OpenWinFunc = FxU32 (*)(AnyPtr, GrScreenResolution_t,
+                                GrScreenRefresh_t, GrColorFormat_t,
+                                GrOriginLocation_t, int, int);
+  using CloseWinFunc = FxBool (*)(FxU32);
+  using ShutdownFunc = void (*)(void);
+  using ClearFunc = void (*)(GrColor_t, GrAlpha_t, FxU32);
+  using ClipWinFunc = void (*)(FxU32, FxU32, FxU32, FxU32);
+  using OriginFunc = void (*)(GrOriginLocation_t);
+  using VertexLayoutFunc = void (*)(FxU32, FxI32, FxU32);
+  using ColorCombineFunc = void (*)(GrCombineFunction_t, GrCombineFactor_t,
+                                    GrCombineLocal_t, GrCombineOther_t, FxBool);
+  using ConstColorFunc = void (*)(GrColor_t);
+  using DrawTriFunc = void (*)(const void*, const void*, const void*);
+  using LfbReadFunc = FxBool (*)(GrBuffer_t, FxU32, FxU32, FxU32, FxU32, FxU32,
+                                 void*);
+
+  auto glideInit = reinterpret_cast<InitFunc>(::dlsym(handle, "grGlideInit"));
+  auto sstSelect =
+      reinterpret_cast<SelectSstFunc>(::dlsym(handle, "grSstSelect"));
+  auto winOpen =
+      reinterpret_cast<OpenWinFunc>(::dlsym(handle, "grSstWinOpen"));
+  auto winClose =
+      reinterpret_cast<CloseWinFunc>(::dlsym(handle, "grSstWinClose"));
+  auto glideShutdown =
+      reinterpret_cast<ShutdownFunc>(::dlsym(handle, "grGlideShutdown"));
+  auto bufferClear =
+      reinterpret_cast<ClearFunc>(::dlsym(handle, "grBufferClear"));
+  auto clipWin =
+      reinterpret_cast<ClipWinFunc>(::dlsym(handle, "grClipWindow"));
+  auto sstOrigin =
+      reinterpret_cast<OriginFunc>(::dlsym(handle, "grSstOrigin"));
+  auto vertexLayout =
+      reinterpret_cast<VertexLayoutFunc>(::dlsym(handle, "grVertexLayout"));
+  auto colorCombine =
+      reinterpret_cast<ColorCombineFunc>(::dlsym(handle, "grColorCombine"));
+  auto constColor =
+      reinterpret_cast<ConstColorFunc>(::dlsym(handle, "grConstantColorValue"));
+  auto drawTri =
+      reinterpret_cast<DrawTriFunc>(::dlsym(handle, "grDrawTriangle"));
+  auto lfbRead =
+      reinterpret_cast<LfbReadFunc>(::dlsym(handle, "grLfbReadRegion"));
+
+  REQUIRE(glideInit != nullptr);
+  REQUIRE(sstSelect != nullptr);
+  REQUIRE(winOpen != nullptr);
+  REQUIRE(winClose != nullptr);
+  REQUIRE(glideShutdown != nullptr);
+  REQUIRE(bufferClear != nullptr);
+  REQUIRE(clipWin != nullptr);
+  REQUIRE(sstOrigin != nullptr);
+  REQUIRE(vertexLayout != nullptr);
+  REQUIRE(colorCombine != nullptr);
+  REQUIRE(constColor != nullptr);
+  REQUIRE(drawTri != nullptr);
+  REQUIRE(lfbRead != nullptr);
+
+  glideInit();
+  sstSelect(0);
+  FxU32 ctx = winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                      GR_COLORFORMAT_ARGB, GR_ORIGIN_UPPER_LEFT, 2, 1);
+  REQUIRE(ctx != 0);
+
+  auto readRGB = [&](FxU32 x, FxU32 y, int& r, int& g, int& b) {
+    uint16_t px = 0;
+    REQUIRE(lfbRead(GR_BUFFER_BACKBUFFER, x, y, 1, 1, 2, &px) == FXTRUE);
+    r = ((px >> 11) & 31) << 3;
+    g = ((px >> 5) & 63) << 2;
+    b = (px & 31) << 3;
+  };
+
+  // 1. Split-screen panes + narrow 4px center divider stripe (reproduces
+  //    3dfx aademo.exe F9 split-screen sequence: clipped clear immediately
+  //    followed by widening grClipWindow before drawing an overlay quad).
+  clipWin(0, 0, 640, 480);
+  bufferClear(0xFF0010F0u, 0xFF, 0xFFFFu);  // Full blue base
+
+  clipWin(0, 0, 318, 480);
+  bufferClear(0xFFF01010u, 0xFF, 0xFFFFu);  // Left pane: Red
+
+  clipWin(322, 0, 640, 480);
+  bufferClear(0xFF10F010u, 0xFF, 0xFFFFu);  // Right pane: Green
+
+  clipWin(318, 0, 322, 480);
+  bufferClear(0xFFF7F700u, 0xFF, 0xFFFFu);  // Center 4px divider: Yellow
+
+  // Widen clip window immediately (no draw between yellow clear and clip
+  // restore), then draw a white overlay quad in the bottom-right corner.
+  clipWin(0, 0, 640, 480);
+  vertexLayout(0x01, 0, 1);  // GR_PARAM_XY
+  colorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+               GR_COMBINE_LOCAL_CONSTANT, GR_COMBINE_OTHER_NONE, FXFALSE);
+  constColor(0xFFFFFFFFu);
+  struct XYVert {
+    float x, y;
+  };
+  XYVert tl{560.0f, 400.0f}, tr{620.0f, 400.0f}, br{620.0f, 460.0f},
+      bl{560.0f, 460.0f};
+  drawTri(&tl, &tr, &br);
+  drawTri(&tl, &br, &bl);
+
+  int r = 0, g = 0, b = 0;
+  // Left pane remains red
+  readRGB(160, 240, r, g, b);
+  CHECK(r > 210);
+  CHECK(g < 40);
+  CHECK(b < 40);
+
+  // Center 4px divider is bright yellow
+  readRGB(320, 240, r, g, b);
+  CHECK(r > 210);
+  CHECK(g > 210);
+  CHECK(b < 40);
+
+  // Right pane remains green
+  readRGB(480, 240, r, g, b);
+  CHECK(r < 40);
+  CHECK(g > 210);
+  CHECK(b < 40);
+
+  // Bottom-right overlay quad is white
+  readRGB(590, 430, r, g, b);
+  CHECK(r > 220);
+  CHECK(g > 220);
+  CHECK(b > 220);
+
+  // 2. Empty clip rect clear must be a no-op (must not clobber pixels or crash)
+  clipWin(200, 200, 200, 200);
+  bufferClear(0xFFFF00FFu, 0xFF, 0xFFFFu);
+  readRGB(160, 240, r, g, b);
+  CHECK(r > 210);
+  CHECK(g < 40);
+  CHECK(b < 40);
+
+  // 3. GR_ORIGIN_LOWER_LEFT clipped clear must flip Y into bottom-up space
+  sstOrigin(GR_ORIGIN_LOWER_LEFT);
+  clipWin(0, 0, 640, 480);
+  bufferClear(0xFF000000u, 0xFF, 0xFFFFu);  // Full black
+
+  // Bottom-left Y in [50, 150) maps to top-down Y in [330, 430)
+  clipWin(100, 50, 200, 150);
+  bufferClear(0xFF00F0F0u, 0xFF, 0xFFFFu);  // Cyan sub-rect near bottom
+
+  // Top-down y=380 (inside bottom-origin [50..150)) -> Cyan
+  readRGB(150, 380, r, g, b);
+  CHECK(r < 40);
+  CHECK(g > 210);
+  CHECK(b > 210);
+
+  // Top-down y=100 (outside bottom-origin [50..150)) -> Untouched Black
+  readRGB(150, 100, r, g, b);
+  CHECK(r < 20);
+  CHECK(g < 20);
+  CHECK(b < 20);
+
+  winClose(ctx);
+  glideShutdown();
+  ::dlclose(handle);
+#endif
+}
+
+TEST_CASE(
+    "Glide 3.x grGetString(GR_HARDWARE) Returns Authentic Short Card Names",
+    "[Glide3][GetString][Hardware]") {
+#ifdef __linux__
+  struct CardExpectation {
+    const char* envVal;
+    const char* expectedName;
+  };
+  const CardExpectation cases[] = {
+      {"voodoo1", "Voodoo Graphics"},
+      {"rush", "Voodoo Rush"},
+      {"voodoo2", "Voodoo2"},
+      {"voodoo3", "Voodoo3"},
+      {"voodoo5", "Voodoo5"},
+  };
+
+  const char* origCard = std::getenv("GLIDE_NG_CARD_MODEL");
+  std::string savedCard = origCard ? origCard : "";
+
+  for (const auto& tc : cases) {
+    ::setenv("GLIDE_NG_CARD_MODEL", tc.envVal, 1);
+
+    void* handle = OpenGlide3Handle();
+    REQUIRE(handle != nullptr);
+
+    using InitFunc = void (*)(void);
+    using GetStringFunc = const char* (*)(FxU32);
+    using ShutdownFunc = void (*)(void);
+
+    auto glideInit = reinterpret_cast<InitFunc>(::dlsym(handle, "grGlideInit"));
+    auto getString =
+        reinterpret_cast<GetStringFunc>(::dlsym(handle, "grGetString"));
+    auto glideShutdown =
+        reinterpret_cast<ShutdownFunc>(::dlsym(handle, "grGlideShutdown"));
+
+    REQUIRE(glideInit != nullptr);
+    REQUIRE(getString != nullptr);
+    REQUIRE(glideShutdown != nullptr);
+
+    glideInit();
+    const char* hw = getString(0xa1);  // GR_HARDWARE
+    REQUIRE(hw != nullptr);
+    CHECK(std::string(hw) == tc.expectedName);
+    // Authentic 3dfx hardware strings fit inside legacy fixed-size HUD buffers
+    // (e.g., 3dfx aademo.exe formats "%s, 4 sample, Spatial Anti-Aliasing"
+    // into a 60-byte stack buffer).
+    CHECK(std::strlen(hw) <= 20u);
+
+    glideShutdown();
+    ::dlclose(handle);
+  }
+
+  if (origCard) {
+    ::setenv("GLIDE_NG_CARD_MODEL", savedCard.c_str(), 1);
+  } else {
+    ::unsetenv("GLIDE_NG_CARD_MODEL");
+  }
+#endif
+}
