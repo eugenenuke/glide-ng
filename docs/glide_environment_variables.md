@@ -177,38 +177,99 @@ Classic 3dfx Glide 2.x/3.x drivers honored a collection of `FX_GLIDE_*` and `SST
 | `FX_GLIDE_SHAMELESS_PLUG` | `1`/`true`/non-zero (force on), `0`/`false` (force off) | Unset *(app-controlled)* | **Implemented** | Forces the 3dfx corner watermark logo on or off during `grBufferSwap`. Overrides INI `[glide] shameless_plug`, overridden by `GLIDE_NG_SHAMELESS_PLUG`. |
 | `FX_GLIDE_SWAPINTERVAL` | Integer `>= 0` (`0` = VSync off, `>= 1` = VSync on) | Unset *(uses wrapper default `vsync=true`)* | **Implemented** | Controls swap synchronization (`0` disables VSync; `1+` enables VSync; intervals `> 1` currently map to standard VSync=1). Overrides INI `[display] vsync`, overridden by `GLIDE_NG_VSYNC`. |
 
-### 2.2 Planned (Phase 2 — Future Milestone M7)
+### 2.2 Implemented (Phase 2 — Milestone M8)
 
-These authentic Glide variables are high-value for classic game compatibility, visual tweaking, and debugging, and are scheduled for Phase 2 implementation:
+All Phase-2 authentic 3dfx compatibility, hardware sizing, display, rendering, and diagnostic variables are implemented across both Glide 2.x and Glide 3.x frontends with full `glide-ng.ini` parity (`Defaults < glide-ng.ini < Authentic FX_GLIDE_*/SST_* < GLIDE_NG_*`):
 
-| Variable | Category | Status | Planned Behavior |
-| :--- | :--- | :--- | :--- |
-| `SST_GAMMA` / `SSTV2_GAMMA` | Display | **Planned** | Initial gamma correction factor override before application gamma calls. |
-| `SST_SCREENREFRESH` / `SSTV2_SCREENREFRESH` | Display | **Planned** | Requested display refresh rate hint / pacing target. |
-| `FX_GLIDE_BOUNDS_CHECK` | Debug | **Planned** | Enables strict vertex/viewport bounds diagnostics when tracing rendering bugs. |
-| `FX_GLIDE_IGNORE_REOPEN` | Compatibility | **Planned** | Safely handles redundant `grSstWinOpen` calls without tearing down active contexts. |
-| `FX_GLIDE_NO_DITHER_SUB` | Rendering | **Planned** | Disables 16-bit dither subtraction in the color pipeline. |
-| `FX_GLIDE_LOD_DITHER` | Rendering | **Planned** | Controls texture LOD dithering behavior. |
-| `SSTV2_FORCE_BILINEAR` / `SSTV2_FORCE_TRILINEAR` | Rendering | **Planned** | Forces bilinear or trilinear texture filtering regardless of application state. |
-| `SST_TEXMAP_DISABLE` | Debug | **Planned** | Diagnostic switch to bypass texture sampling (useful for isolating combiner vs. texture bugs). |
-| `FX_GLIDE_ALLOC_COLOR` / `FX_GLIDE_ALLOC_AUX` | Buffering | **Planned** | Overrides allocated color/aux buffer counts (`2`/`3` color, `0`/`1` aux). |
-| `FX_GLIDE_SNAPSHOT` | Diagnostics | **Planned** | Framebuffer capture trigger for dumping presentation frames to disk. |
+| Variable | INI Key (`section.key`) | Accepted Values | Default | Status | Wrapper Behavior & Precedence |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `FX_GLIDE_FBRAM` | `[hardware] fbi_memory_mb` | Positive integer (MB) | Derived from card | **Implemented** | Overrides reported FBI memory in `grSstQueryHardware` and `grGet(GR_MEMORY_FB)`. Overridden by `GLIDE_NG_FBI_MEM_MB`. |
+| `FX_GLIDE_TMU_MEMSIZE` | `[hardware] tmu_memory_mb` | Positive integer (MB) | Derived from card | **Implemented** | Overrides dedicated texture RAM per TMU in `grSstQueryHardware`, `grGet(GR_MEMORY_TMU)`, `grTexMaxAddress`, and `TextureManager` silicon budget. Overridden by `GLIDE_NG_TMU_MEM_MB`. |
+| `SSTV2_NUM_TMUS` | `[hardware] tmu_count` | `1`, `2`, `3` | Derived from card | **Implemented** | Overrides reported TMU count (`grGet(GR_NUM_TMU)`, `grSstQueryHardware`, and `grTexMaxAddress(GR_TMU1) == 0` when set to `1`). Overridden by `GLIDE_NG_TMU_COUNT`. |
+| `SST_GAMMA` / `SSTV2_GAMMA` | `[display] gamma` *(or `[glide] gamma`)* | Float `0.1`..`10.0` | Unset *(app-controlled)* | **Implemented** | Forces hardware gamma LUT correction at `grSstWinOpen` and retains the override across subsequent `grGammaCorrectionValue` / `grLoadGammaTable` calls. `SSTV2_GAMMA` takes precedence over `SST_GAMMA`. |
+| `SST_SCREENREFRESH` / `SSTV2_SCREENREFRESH` | `[display] screen_refresh` *(or `[glide] screen_refresh`)* | Positive integer (Hz) | Unset *(uses `max_fps`)* | **Implemented** | Sets the display refresh pacing target (`maxFps`). `SSTV2_SCREENREFRESH` beats `SST_SCREENREFRESH`; overridden by `GLIDE_NG_MAX_FPS`. |
+| `FX_GLIDE_IGNORE_REOPEN` | `[glide] ignore_reopen` | `0`/`1`, `true`/`false` | `false` | **Implemented** | Treats redundant `grSstWinOpen` calls while a window is already open as a safe no-op returning success without tearing down or resetting the active framebuffer/state. |
+| `FX_GLIDE_NO_DITHER_SUB` | `[glide] no_dither_sub` | `0`/`1`, `true`/`false` | `false` | **Implemented** | Disables 16-bit 2×2 / 4×4 color dithering (forces effective `GR_DITHER_DISABLE`) across Vulkan, OpenGL ES, and Software backends. |
+| `SSTV2_FORCE_BILINEAR` | `[glide] force_bilinear` | `0`/`1`, `true`/`false` | `false` | **Implemented** | Forces `GR_TEXTUREFILTER_BILINEAR` min/mag filtering regardless of application `grTexFilterMode` calls. |
+| `SSTV2_FORCE_TRILINEAR` | `[glide] force_trilinear` | `0`/`1`, `true`/`false` | `false` | **Implemented** | Forces bilinear filtering **plus** trilinear mipmap blending (`lodBlend = true`, upgrading `GR_MIPMAP_DISABLE` to `GR_MIPMAP_NEAREST`). |
+| `SST_TEXMAP_DISABLE` | `[glide] texmap_disable` | `0`/`1`, `true`/`false` | `false` | **Implemented** | Diagnostic switch that bypasses texture binding/sampling (all TMU stages pass through iterated color so combiner vs. texture bugs can be isolated). |
+| `FX_GLIDE_BOUNDS_CHECK` | `[glide] bounds_check` | `0`/`1`, `true`/`false` | `false` | **Implemented** | Validates every submitted vertex against screen bounds (`[-1..W+1] x [-1..H+1]`, finite coords, `oow > 0`) with zero overhead when off; emits `[WARN] [BoundsCheck]` diagnostics (capped at 16 per session + total count summary on window close/shutdown). |
+| `FX_GLIDE_ALLOC_COLOR` | `[glide] alloc_color` | `2`, `3` | App-requested (`-1`) | **Implemented** | Overrides the effective color buffer count (`2` = double, `3` = triple) logged at `grSstWinOpen`. |
+| `FX_GLIDE_ALLOC_AUX` | `[glide] alloc_aux` | `0`, `1` | App-requested (`-1`) | **Implemented** | Overrides auxiliary depth/alpha buffer allocation. Setting `0` disables hardware depth testing and depth writes (`depthMode=0, depthMask=false`) regardless of `grDepthBufferMode`/`grDepthMask` calls. |
+| `FX_GLIDE_SNAPSHOT` / `FX_SNAPSHOT` | `[glide] snapshot` | `0`/`off`, `1`/`true` (frame 0), `@N` or `N>=2` (frame `N`), `<path>` (frame 0), or `<path>@N` (frame `N`) | Unset *(disabled)* | **Implemented** | Captures the backbuffer on frame `N` right before `grBufferSwap` and writes an uncompressed binary `P6` `.ppm` image (`glide_snapshot_NNNNNN.ppm` by default) with accurate RGB channel order under both `ARGB` and `ABGR`. `FX_GLIDE_SNAPSHOT` takes precedence over `FX_SNAPSHOT`. |
 
-### 2.3 Hardware-Only / Out-of-Scope Variables
+### 2.3 Verifying Environment Variables with `glide2_envtest` / `glide3_envtest`
 
-Low-level 3dfx PCI, SDRAM, clock-delay, DAC, and FIFO hardware register variables (`SST_GRXCLK`, `SST_FT_CLK_DEL`, `SST_PTF*_CLK_DEL`, `SST_SLIM_*`, `SST_MEMFIFO*`, `SST_PCIFIFO_LWM`, `SST_BACKPORCH`, `SST_HSYNC`, `SST_VSYNC`, `SST_DIMENSIONS`, `SST_TREX*INIT*`, `SST_FASTMEM*`, `SST_VGA_PASS`, etc.) target physical SST-1/CVG board timing registers and are **not applicable** to a modern graphics API wrapper. See `docs/Glide envvars/` for the archived original 3dfx SDK lists.
+`glide-ng` ships a permanent pure-C99 verification tool — **`glide2_envtest`**, **`glide3_envtest`**, and DOS/32 **`build/dos/glide_envtest.exe`** — built with 100% authentic Glide API calls. It draws a 4-quadrant visual test card (TL: 16×16 mipmapped B/W seam + minified mip strip; TR: smooth gradient + flat 4×4 dither probe; BL: overlapping W-buffered depth quads + 5-step gray gamma wedge; BR: reopen signature panel) and runs LFB RGB565 readbacks + hardware queries in `--verify` mode:
+
+```bash
+# Baseline (all defaults — point-sampled, mipmap off, 4x4 dither on, depth active, reopen resets)
+GLIDE_NG_HEADLESS=1 ./build/bin/glide2_envtest --verify --test-reopen
+
+# Interactive visual inspection window (press Q or ESC to quit; on Wayland RDP add SDL_VIDEODRIVER=x11)
+SDL_VIDEODRIVER=x11 ./build/bin/glide2_envtest
+
+# 1. Hardware sizing overrides (FBI=4 MB, TMU=8 MB, 1 TMU -> TMU1=0x0)
+GLIDE_NG_HEADLESS=1 FX_GLIDE_FBRAM=4 FX_GLIDE_TMU_MEMSIZE=8 SSTV2_NUM_TMUS=1 \
+  ./build/bin/glide2_envtest --verify
+
+# 2. Force bilinear filtering across the point-sampled B/W seam
+GLIDE_NG_HEADLESS=1 SSTV2_FORCE_BILINEAR=1 ./build/bin/glide2_envtest --verify
+
+# 3. Force trilinear mipmap blending (minified strip switches from Mip0 B/W to Mip1/2 green-cyan)
+GLIDE_NG_HEADLESS=1 SSTV2_FORCE_TRILINEAR=1 ./build/bin/glide2_envtest --verify
+
+# 4. Bypass texture mapping (TL left half turns pure magenta)
+GLIDE_NG_HEADLESS=1 SST_TEXMAP_DISABLE=1 ./build/bin/glide2_envtest --verify
+
+# 5. Disable 16-bit 4x4 dithering (TR flat swatch R5 spread drops to 0)
+GLIDE_NG_HEADLESS=1 FX_GLIDE_NO_DITHER_SUB=1 ./build/bin/glide2_envtest --verify
+
+# 6. Disable auxiliary depth buffer (BL far blue quad overwrites near red quad)
+GLIDE_NG_HEADLESS=1 FX_GLIDE_ALLOC_AUX=0 ./build/bin/glide2_envtest --verify
+
+# 7. Ignore redundant grSstWinOpen (BR orange signature is preserved across second WinOpen)
+GLIDE_NG_HEADLESS=1 FX_GLIDE_IGNORE_REOPEN=1 \
+  ./build/bin/glide2_envtest --verify --test-reopen
+
+# 8. Out-of-bounds vertex diagnostic logging
+GLIDE_NG_HEADLESS=1 FX_GLIDE_BOUNDS_CHECK=1 GLIDE_NG_LOG_CONSOLE=1 \
+  ./build/bin/glide2_envtest --verify --test-bounds
+
+# 9. Framebuffer PPM snapshot capture on frame 0
+GLIDE_NG_HEADLESS=1 FX_GLIDE_SNAPSHOT=/tmp/envtest_f0.ppm@0 \
+  ./build/bin/glide2_envtest --verify --frames 1
+
+# 10. Visual gamma override (brightens the BL 5-step gray wedge despite app gamma=1.0)
+SDL_VIDEODRIVER=x11 SSTV2_GAMMA=2.2 ./build/bin/glide2_envtest
+
+# 11. Refresh-rate pacing target (30 Hz across 15 frames -> ~30.0 FPS)
+GLIDE_NG_HEADLESS=1 GLIDE_NG_VSYNC=0 SSTV2_SCREENREFRESH=30 \
+  ./build/bin/glide2_envtest --verify --frames 15
+
+# 12. Splash & Shameless Plug toggles (run interactively to see splash / corner badge)
+SDL_VIDEODRIVER=x11 FX_GLIDE_NO_SPLASH=1 FX_GLIDE_SHAMELESS_PLUG=1 \
+  ./build/bin/glide2_envtest --splash
+
+# Replace glide2_envtest with glide3_envtest (and GLIDE_NG_BACKEND=vulkan|opengl_es|software)
+# to verify identical behavior across Glide 3.x and all three rendering backends.
+```
+
+### 2.4 Hardware-Only / Out-of-Scope Variables
+
+Low-level 3dfx PCI, SDRAM, clock-delay, DAC, and FIFO hardware register variables (`SST_GRXCLK`, `SST_FT_CLK_DEL`, `SST_PTF*_CLK_DEL`, `SST_SLIM_*`, `SST_MEMFIFO*`, `SST_PCIFIFO_LWM`, `SST_BACKPORCH`, `SST_HSYNC`, `SST_VSYNC`, `SST_DIMENSIONS`, `SST_TREX*INIT*`, `SST_FASTMEM*`, `SST_VGA_PASS`, `FX_GLIDE_LOD_DITHER`, etc.) target physical SST-1/CVG board timing or silicon-specific dithering registers and are **not applicable** to a modern graphics API wrapper. See `docs/Glide envvars/` for the archived original 3dfx SDK lists.
 
 ---
 
 ## 3. Configuration & Diagnostics Roadmap
 
-The configuration namespace is designed to grow cleanly alongside upcoming diagnostics and usability milestones (tracked in [docs/plans/roadmap_m1_m6_tracker.md](plans/roadmap_m1_m6_tracker.md)):
+The configuration namespace is designed to grow cleanly alongside upcoming milestones (tracked in [docs/plans/roadmap_m1_m6_tracker.md](plans/roadmap_m1_m6_tracker.md)):
 
 ### Milestone M2 — Tiered Logging, Category Filtering & Per-Frame Performance Tracing *(Implemented)*
-- **`GLIDE_NG_LOG_LEVEL=trace` (`5`)**, **`GLIDE_NG_LOG_CATEGORIES`**, **`GLIDE_NG_TRACE_FRAMES`**, and **`GLIDE_NG_PERF_LOG`** are now implemented and documented in [Section 1.5](#15-logging--diagnostics).
+- **`GLIDE_NG_LOG_LEVEL=trace` (`5`)**, **`GLIDE_NG_LOG_CATEGORIES`**, **`GLIDE_NG_TRACE_FRAMES`**, and **`GLIDE_NG_PERF_LOG`** are implemented and documented in [Section 1.5](#15-logging--diagnostics).
 
 ### Milestone M3 — DXVK-Style On-Screen HUD (`GLIDE_NG_HUD`) *(Implemented)*
-- **`GLIDE_NG_HUD`** (and JSON `"hud"`) is now implemented across Vulkan, OpenGL ES, and Software backends and documented in [Section 1.6](#16-on-screen-hud-overlay).
+- **`GLIDE_NG_HUD`** (and INI `[hud]`) is implemented across Vulkan, OpenGL ES, and Software backends and documented in [Section 1.6](#16-on-screen-hud-overlay).
 
-### Milestone M7 — Phase-2 Authentic 3dfx Environment Variables
-- Expands `FX_GLIDE_*` / `SST_*` coverage with the compatibility, rendering, and diagnostic variables listed in [Section 2.2](#22-planned-phase-2--future-milestone-m7).
+### Milestone M8 — Unified `glide-ng.ini` & Phase-2 Authentic 3dfx Environment Variables *(Implemented)*
+- Clean break from `glide_config.json` to unified `glide-ng.ini` (`IniConfigLoader`, tracked `glide-ng.ini.example`), unified `.glide-ng-vkcache.bin` and `glide-ng.log` naming, all 17 Phase-2 authentic 3dfx variables documented in [Section 2.2](#22-implemented-phase-2--milestone-m8), and the permanent `glide2_envtest` / `glide3_envtest` / `glide_envtest.exe` verifier tool.

@@ -69,10 +69,21 @@ categories = all
 # opacity = 0.78             # 0.0 .. 1.0
 
 [glide]
-# Authentic 3dfx overrides (equivalent to FX_GLIDE_* environment variables)
+# Authentic 3dfx overrides (equivalent to FX_GLIDE_* / SST_* / SSTV2_* env vars)
 no_splash = false            # Suppress 3dfx startup splash animation
 # shameless_plug = -1        # -1 = app-controlled | 0 = force off | 1 = force on
 # swap_interval = 1          # 0 = vsync off | >=1 = swap interval
+# gamma = 1.0                # Gamma correction override (SST_GAMMA / SSTV2_GAMMA)
+# screen_refresh = 60        # Refresh pacing hint in Hz (SST_SCREENREFRESH / SSTV2_SCREENREFRESH)
+# ignore_reopen = false      # Ignore redundant grSstWinOpen while window is active
+# no_dither_sub = false      # Disable 16-bit dither quantization (FX_GLIDE_NO_DITHER_SUB)
+# force_bilinear = false     # Force bilinear texture filtering (SSTV2_FORCE_BILINEAR)
+# force_trilinear = false    # Force trilinear mipmap filtering (SSTV2_FORCE_TRILINEAR)
+# texmap_disable = false     # Bypass texture sampling for diagnostics (SST_TEXMAP_DISABLE)
+# bounds_check = false       # Warn on out-of-bounds / non-finite vertices (FX_GLIDE_BOUNDS_CHECK)
+# alloc_color = 2            # Override color buffer count: 2 | 3 (FX_GLIDE_ALLOC_COLOR)
+# alloc_aux = 1              # Override aux/depth buffer count: 0 | 1 (FX_GLIDE_ALLOC_AUX)
+# snapshot = /tmp/snap.ppm   # Capture PPM framebuffer snapshot: 1 | @N | path | path@N
 
 [software]
 # Worker threads for Software backend (0 = auto-detect hardware concurrency)

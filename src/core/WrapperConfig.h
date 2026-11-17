@@ -96,9 +96,22 @@ struct WrapperConfig {
     std::string hudSpec{""};               // Raw/normalized HUD spec for summary
     std::string activeFrontendApi{""};     // Populated at InitGlide ("Glide 2.x" / "Glide 3.x")
 
-    // Authentic 3dfx Glide overrides (Phase 1)
+    // Authentic 3dfx Glide overrides (Phase 1 & Phase 2)
     bool noSplash{false};          // FX_GLIDE_NO_SPLASH / GLIDE_NG_NO_SPLASH
     int shamelessPlugMode{-1};     // -1 = app-controlled, 0 = force off, 1 = force on
+    float gammaOverride{0.0f};     // <= 0 = app-controlled, > 0 = SST_GAMMA / SSTV2_GAMMA
+    uint32_t screenRefreshHz{0};   // 0 = unset, > 0 = SST_SCREENREFRESH / SSTV2_SCREENREFRESH
+    bool ignoreReopen{false};      // FX_GLIDE_IGNORE_REOPEN
+    bool noDitherSub{false};       // FX_GLIDE_NO_DITHER_SUB
+    bool forceBilinear{false};     // SSTV2_FORCE_BILINEAR
+    bool forceTrilinear{false};    // SSTV2_FORCE_TRILINEAR
+    bool texmapDisable{false};     // SST_TEXMAP_DISABLE
+    bool boundsCheck{false};       // FX_GLIDE_BOUNDS_CHECK
+    int allocColorBuffers{-1};     // -1 = app-controlled, 2 or 3 (FX_GLIDE_ALLOC_COLOR)
+    int allocAuxBuffers{-1};       // -1 = app-controlled, 0 or 1 (FX_GLIDE_ALLOC_AUX)
+    bool snapshotEnabled{false};   // FX_GLIDE_SNAPSHOT / FX_SNAPSHOT
+    uint64_t snapshotFrame{0};     // 0-indexed frame to capture
+    std::string snapshotPath{""};  // Explicit output PPM path (empty = auto glide_snapshot_NNNNNN.ppm)
 
     // Backend-specific tuning (unified; zero direct std::getenv() in backends)
     uint32_t swThreads{0};         // 0 = auto (hardware_concurrency)

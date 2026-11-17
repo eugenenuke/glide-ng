@@ -36,12 +36,12 @@ GLIDE_NG_HEADLESS=1 ./bin/Glide3xWrapperTests
 ```
 
 ### Optional: DOS Cross-Compiler (Open Watcom v2)
-DOS diagnostic and benchmark `.exe` tools (`build/dos/glide_info.exe`, `build/dos/glide_bench.exe`) are **completely optional** — CMake skips them automatically if Open Watcom v2 is not installed, so standard Linux builds never fail without it.
+DOS diagnostic, benchmark, and verification `.exe` tools (`build/dos/glide_info.exe`, `build/dos/glide_bench.exe`, `build/dos/glide_envtest.exe`) are **completely optional** — CMake skips them automatically if Open Watcom v2 is not installed, so standard Linux builds never fail without it.
 
 To enable DOS `.exe` builds (identical across Debian, Fedora, and Arch, no root required):
 1. Download the official Linux x64 release tarball from [Open Watcom v2 Releases](https://github.com/open-watcom/open-watcom-v2/releases) (e.g. `open-watcom-2_0-c-linux-x64.tar.xz`).
 2. Extract it into `./vendor/watcom/` (git-ignored) so `./vendor/watcom/binl64/wcc386` exists (or point `WATCOM` to an existing installation).
-3. Re-run CMake configure — when detected, the `dos_tools` target automatically produces self-contained CauseWay DOS/32 executables (`build/dos/glide_info.exe` and `build/dos/glide_bench.exe`) that dynamically load `GLIDE2X.OVL`.
+3. Re-run CMake configure — when detected, the `dos_tools` target automatically produces self-contained CauseWay DOS/32 executables (`build/dos/glide_info.exe`, `build/dos/glide_bench.exe`, `build/dos/glide_envtest.exe`) that dynamically load `GLIDE2X.OVL`.
 
 ### Optional: Win32 Cross-Compiler (MinGW-w64) & Wine (for `glide2x.dll` / `glide3x.dll`)
 32-bit Win32 PE builds (`glide2x.dll`, `glide3x.dll`, and Win32 tools for running Windows Glide games under Wine/Proton) require a 32-bit (`i686`) MinGW-w64 POSIX-threads toolchain and Wine:

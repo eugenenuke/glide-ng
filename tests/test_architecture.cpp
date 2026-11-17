@@ -8196,3 +8196,189 @@ TEST_CASE("Glide 2.x Hardware & Version Override Consistency (M6.2)",
   }
 #endif
 }
+
+TEST_CASE("Glide 2.x Phase-2 Authentic 3dfx Env Vars Runtime Verification (M8.2)",
+          "[Overrides][EnvVars][M8]") {
+#ifdef __linux__
+  struct ScopedEnvM8G2 {
+    std::vector<std::string> keys = {
+        "GLIDE_NG_HEADLESS", "GLIDE_NG_MAX_FPS", "GLIDE_NG_VSYNC",
+        "GLIDE_NG_LOG_LEVEL", "GLIDE_NG_LOG_FILE",
+        "FX_GLIDE_FBRAM", "FX_GLIDE_TMU_MEMSIZE", "SSTV2_NUM_TMUS",
+        "SST_GAMMA", "FX_GLIDE_IGNORE_REOPEN", "FX_GLIDE_NO_DITHER_SUB",
+        "SSTV2_FORCE_BILINEAR", "SST_TEXMAP_DISABLE", "FX_GLIDE_ALLOC_AUX",
+        "FX_GLIDE_BOUNDS_CHECK", "FX_GLIDE_SNAPSHOT"};
+    std::vector<std::pair<std::string, std::string>> saved;
+    ScopedEnvM8G2() {
+      for (const auto& k : keys) {
+        const char* v = std::getenv(k.c_str());
+        saved.emplace_back(k, v ? std::string(v) : std::string("\x01UNSET"));
+        ::unsetenv(k.c_str());
+      }
+    }
+    ~ScopedEnvM8G2() {
+      for (const auto& kv : saved) {
+        if (kv.second == "\x01UNSET") {
+          ::unsetenv(kv.first.c_str());
+        } else {
+          ::setenv(kv.first.c_str(), kv.second.c_str(), 1);
+        }
+      }
+    }
+  } guard;
+
+  SECTION("Authentic hardware sizing + SSTV2_FORCE_BILINEAR seam blending") {
+    ::setenv("GLIDE_NG_HEADLESS", "1", 1);
+    ::setenv("GLIDE_NG_MAX_FPS", "0", 1);
+    ::setenv("GLIDE_NG_VSYNC", "0", 1);
+    ::setenv("FX_GLIDE_FBRAM", "4", 1);
+    ::setenv("FX_GLIDE_TMU_MEMSIZE", "8", 1);
+    ::setenv("SSTV2_NUM_TMUS", "1", 1);
+    ::setenv("SSTV2_FORCE_BILINEAR", "1", 1);
+
+    grGlideInit();
+    GrHwConfiguration hw;
+    std::memset(&hw, 0, sizeof(hw));
+    REQUIRE(grSstQueryHardware(&hw) == FXTRUE);
+    CHECK(hw.SSTs[0].sstBoard.Voodoo2Config.fbRam == 4);
+    CHECK(hw.SSTs[0].sstBoard.Voodoo2Config.nTexelfx == 1);
+    CHECK(hw.SSTs[0].sstBoard.Voodoo2Config.tmuConfig[0].tmuRam == 8);
+    CHECK(grTexMaxAddress(GR_TMU0) == 8u * 1024u * 1024u);
+    CHECK(grTexMaxAddress(GR_TMU1) == 0u);
+
+    grSstSelect(0);
+    REQUIRE(grSstWinOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                         GR_COLORFORMAT_ABGR, GR_ORIGIN_UPPER_LEFT, 2, 1) == FXTRUE);
+
+    // 16x16 RGB565 texture: left half black, right half white
+    uint16_t texData[16 * 16];
+    for (int y = 0; y < 16; ++y) {
+      for (int x = 0; x < 16; ++x) {
+        texData[y * 16 + x] = (x < 8) ? 0x0000u : 0xFFFFu;
+      }
+    }
+    GrTexInfo ti{};
+    ti.smallLod = GR_LOD_16;
+    ti.largeLod = GR_LOD_16;
+    ti.aspectRatio = GR_ASPECT_1x1;
+    ti.format = GR_TEXFMT_RGB_565;
+    ti.data = texData;
+    grTexDownloadMipMap(GR_TMU0, 0, GR_MIPMAPLEVELMASK_BOTH, &ti);
+    grTexSource(GR_TMU0, 0, GR_MIPMAPLEVELMASK_BOTH, &ti);
+    grTexCombine(GR_TMU0, GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+                 GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE, FXFALSE, FXFALSE);
+    // App requests POINT_SAMPLED -> SSTV2_FORCE_BILINEAR=1 must force linear blend at seam
+    grTexFilterMode(GR_TMU0, GR_TEXTUREFILTER_POINT_SAMPLED,
+                    GR_TEXTUREFILTER_POINT_SAMPLED);
+    grTexClampMode(GR_TMU0, GR_TEXTURECLAMP_CLAMP, GR_TEXTURECLAMP_CLAMP);
+    grColorCombine(GR_COMBINE_FUNCTION_SCALE_OTHER, GR_COMBINE_FACTOR_ONE,
+                   GR_COMBINE_LOCAL_NONE, GR_COMBINE_OTHER_TEXTURE, FXFALSE);
+    grBufferClear(0xFF000000u, 0xFF, 0xFFFF);
+
+    auto makeV = [](float x, float y, float s, float t) {
+      GrVertex v{};
+      v.x = x; v.y = y; v.oow = 1.0f;
+      v.r = 255.0f; v.g = 255.0f; v.b = 255.0f; v.a = 255.0f;
+      v.tmuvtx[0].sow = s; v.tmuvtx[0].tow = t; v.tmuvtx[0].oow = 1.0f;
+      return v;
+    };
+    GrVertex tl = makeV(0.0f, 0.0f, 0.0f, 0.0f);
+    GrVertex tr = makeV(320.0f, 0.0f, 256.0f, 0.0f);
+    GrVertex br = makeV(320.0f, 240.0f, 256.0f, 256.0f);
+    GrVertex bl = makeV(0.0f, 240.0f, 0.0f, 256.0f);
+    grDrawTriangle(&tl, &tr, &br);
+    grDrawTriangle(&tl, &br, &bl);
+
+    uint16_t seamRow[32] = {};
+    REQUIRE(grLfbReadRegion(GR_BUFFER_BACKBUFFER, 144, 120, 32, 1, 32 * 2, seamRow) == FXTRUE);
+    int blendedCount = 0;
+    for (uint16_t px : seamRow) {
+      int r = ((px >> 11) & 31) << 3;
+      if (r >= 24 && r <= 230) blendedCount++;
+    }
+    CHECK(blendedCount >= 4);
+
+    grSstWinClose();
+    grGlideShutdown();
+  }
+
+  SECTION("FX_GLIDE_IGNORE_REOPEN, SST_GAMMA, bounds check, and PPM snapshot") {
+    const std::string logPath = "/tmp/glide_ng_m82_g2_runtime.log";
+    const std::string snapPath = "/tmp/glide_ng_m82_g2_snap.ppm";
+    std::remove(logPath.c_str());
+    std::remove(snapPath.c_str());
+
+    ::setenv("GLIDE_NG_HEADLESS", "1", 1);
+    ::setenv("GLIDE_NG_MAX_FPS", "0", 1);
+    ::setenv("GLIDE_NG_VSYNC", "0", 1);
+    ::setenv("GLIDE_NG_LOG_LEVEL", "info", 1);
+    ::setenv("GLIDE_NG_LOG_FILE", logPath.c_str(), 1);
+    ::setenv("SST_GAMMA", "1.8", 1);
+    ::setenv("FX_GLIDE_IGNORE_REOPEN", "1", 1);
+    ::setenv("FX_GLIDE_BOUNDS_CHECK", "1", 1);
+    const std::string snapArg = snapPath + "@0";
+    ::setenv("FX_GLIDE_SNAPSHOT", snapArg.c_str(), 1);
+
+    grGlideInit();
+    grSstSelect(0);
+    REQUIRE(grSstWinOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                         GR_COLORFORMAT_ABGR, GR_ORIGIN_UPPER_LEFT, 2, 1) == FXTRUE);
+    grGammaCorrectionValue(1.0f);
+    grColorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+                   GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_NONE, FXFALSE);
+    grBufferClear(0xFF000000u, 0xFF, 0xFFFF);
+
+    auto makeV = [](float x, float y, float r, float g, float b) {
+      GrVertex v{};
+      v.x = x; v.y = y; v.oow = 1.0f;
+      v.r = r; v.g = g; v.b = b; v.a = 255.0f;
+      return v;
+    };
+    // Green patch to verify reopen preservation & PPM snapshot RGB channel accuracy
+    GrVertex tl = makeV(40.0f, 40.0f, 16.0f, 240.0f, 32.0f);
+    GrVertex tr = makeV(140.0f, 40.0f, 16.0f, 240.0f, 32.0f);
+    GrVertex br = makeV(140.0f, 140.0f, 16.0f, 240.0f, 32.0f);
+    GrVertex bl = makeV(40.0f, 140.0f, 16.0f, 240.0f, 32.0f);
+    grDrawTriangle(&tl, &tr, &br);
+    grDrawTriangle(&tl, &br, &bl);
+
+    // Off-screen triangle triggers FX_GLIDE_BOUNDS_CHECK
+    GrVertex oa = makeV(700.0f, 520.0f, 255.0f, 0.0f, 0.0f);
+    GrVertex ob = makeV(800.0f, 520.0f, 255.0f, 0.0f, 0.0f);
+    GrVertex oc = makeV(750.0f, 620.0f, 255.0f, 0.0f, 0.0f);
+    grDrawTriangle(&oa, &ob, &oc);
+
+    // Redundant grSstWinOpen must be ignored, preserving the green patch
+    REQUIRE(grSstWinOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                         GR_COLORFORMAT_ABGR, GR_ORIGIN_UPPER_LEFT, 2, 1) == FXTRUE);
+    uint16_t px = 0;
+    REQUIRE(grLfbReadRegion(GR_BUFFER_BACKBUFFER, 90, 90, 1, 1, 2, &px) == FXTRUE);
+    CHECK((((px >> 5) & 63) << 2) > 200);
+
+    grBufferSwap(0);
+    grSstWinClose();
+    grGlideShutdown();
+
+    std::ifstream snapIn(snapPath, std::ios::binary);
+    REQUIRE(snapIn.is_open());
+    std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(snapIn)),
+                               std::istreambuf_iterator<char>());
+    const std::string hdr = "P6\n640 480\n255\n";
+    REQUIRE(bytes.size() == hdr.size() + 640u * 480u * 3u);
+    const size_t off = hdr.size() + (90u * 640u + 90u) * 3u;
+    CHECK(bytes[off + 0] < 40);   // R
+    CHECK(bytes[off + 1] > 200);  // G
+    CHECK(bytes[off + 2] < 60);   // B
+
+    std::ifstream logIn(logPath);
+    REQUIRE(logIn.is_open());
+    const std::string logContent((std::istreambuf_iterator<char>(logIn)),
+                                 std::istreambuf_iterator<char>());
+    CHECK(logContent.find("[BoundsCheck]") != std::string::npos);
+    CHECK(logContent.find("Applying authentic gamma override: 1.8") != std::string::npos);
+
+    std::remove(logPath.c_str());
+    std::remove(snapPath.c_str());
+  }
+#endif
+}

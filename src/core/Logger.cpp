@@ -401,8 +401,29 @@ void Logger::LogExecutionSummary(const WrapperConfig& config) {
        << config.windowScale << "x / "
        << (config.presentationFilter == 1 ? "Linear" : "Nearest")
        << "\n  Splash / Plug Policy : Splash=" << (config.noSplash ? "SUPPRESSED" : "ENABLED")
-       << ", Plug=" << (config.shamelessPlugMode < 0 ? "APP" : (config.shamelessPlugMode > 0 ? "FORCED_ON" : "FORCED_OFF"))
-       << "\n  Log Output           : " << config.logFile
+       << ", Plug=" << (config.shamelessPlugMode < 0 ? "APP" : (config.shamelessPlugMode > 0 ? "FORCED_ON" : "FORCED_OFF"));
+    if (config.gammaOverride > 0.0f || config.screenRefreshHz > 0 ||
+        config.ignoreReopen || config.noDitherSub || config.forceBilinear ||
+        config.forceTrilinear || config.texmapDisable || config.boundsCheck ||
+        config.allocColorBuffers >= 2 || config.allocAuxBuffers >= 0 ||
+        config.snapshotEnabled) {
+        ss << "\n  Authentic 3dfx Flags :";
+        if (config.gammaOverride > 0.0f) ss << " gamma=" << config.gammaOverride;
+        if (config.screenRefreshHz > 0) ss << " refresh=" << config.screenRefreshHz << "Hz";
+        if (config.ignoreReopen) ss << " ignore_reopen=1";
+        if (config.noDitherSub) ss << " no_dither_sub=1";
+        if (config.forceBilinear) ss << " force_bilinear=1";
+        if (config.forceTrilinear) ss << " force_trilinear=1";
+        if (config.texmapDisable) ss << " texmap_disable=1";
+        if (config.boundsCheck) ss << " bounds_check=1";
+        if (config.allocColorBuffers >= 2) ss << " alloc_color=" << config.allocColorBuffers;
+        if (config.allocAuxBuffers >= 0) ss << " alloc_aux=" << config.allocAuxBuffers;
+        if (config.snapshotEnabled) {
+            ss << " snapshot=" << (config.snapshotPath.empty() ? "auto" : config.snapshotPath)
+               << "@" << config.snapshotFrame;
+        }
+    }
+    ss << "\n  Log Output           : " << config.logFile
        << " (level=" << config.logLevel << "/" << LogLevelToName(clampedLevel)
        << ", categories=" << FormatLogCategories(config.logCategoryMask)
        << ", console=" << (config.logToConsole ? "ON" : "OFF") << ")";

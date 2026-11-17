@@ -99,9 +99,12 @@ inline void SanitizeVertex(GlideWrapper::ModernVertex& mv) {
   EntryCommon::SanitizeVertex(s_state, mv);
 }
 
+static bool s_windowOpen = false;
+
 void ResetFrontendState() {
   s_lastSwapTime = std::chrono::steady_clock::now();
   s_state.Reset(/*defaultLfbConstantAlpha=*/255, /*defaultTexCombineFunc=*/0);
+  s_windowOpen = false;
   s_stwHintMask = 0;
   s_shamelessPlugEnabled = false;
   s_guTextures.clear();
@@ -210,6 +213,7 @@ inline void EnsureEngineInitialized() {
 }
 
 FX_ENTRY void FX_CALL grGlideShutdown(void) {
+  s_windowOpen = false;
   EntryCommon::ShutdownGlide("Glide 2.x");
 }
 
@@ -220,12 +224,19 @@ FX_ENTRY FxBool FX_CALL grSstWinOpen(AnyPtr hWnd,
                                      GrOriginLocation_t origin, int nColBuffers,
                                      int nAuxBuffers) {
   EnsureEngineInitialized();
+  const auto& cfg = GlideWrapper::EmulationRegistry::GetInstance().GetConfig();
+  if (s_windowOpen && cfg.ignoreReopen) {
+    GLIDE_LOG(INFO, "Frontend",
+              "grSstWinOpen (Glide 2.x) ignored while window is active "
+              "(FX_GLIDE_IGNORE_REOPEN=1).");
+    return FXTRUE;
+  }
   GlideWrapper::BackendManager::GetInstance().SetSplashAnimator(
       std::make_unique<GlideWrapper::GlideSplashAnimator>());
   GLIDE_LOG(INFO, "Frontend",
             "grSstWinOpen (Glide 2.x) invoked. Res="
                 << resolution << ", Buffers=" << nColBuffers
-                << ", Origin=" << origin);
+                << ", Aux=" << nAuxBuffers << ", Origin=" << origin);
   s_sstOrigin = origin;
   GlideWrapper::VertexLayout::GetInstance().ResetToGlide2Canonical();
   auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
@@ -254,9 +265,12 @@ FX_ENTRY FxBool FX_CALL grSstWinOpen(AnyPtr hWnd,
       hWnd != 0);
   backend->SetPixelFormat(format);
   if (attached) {
+    s_windowOpen = true;
     EntryCommon::ConfigureTmuMemoryLimits();
     EntryCommon::ApplySharedStateToBackend(s_state, s_sstOrigin,
                                            /*includeTexInvert=*/false);
+    EntryCommon::ApplyPostWinOpenOverrides(s_state, format, nColBuffers,
+                                           nAuxBuffers);
     backend->SetSTWHintState(s_stwHintMask);
   }
   return attached ? FXTRUE : FXFALSE;
@@ -264,6 +278,7 @@ FX_ENTRY FxBool FX_CALL grSstWinOpen(AnyPtr hWnd,
 
 FX_ENTRY void FX_CALL grSstWinClose(void) {
   EnsureEngineInitialized();
+  s_windowOpen = false;
   EntryCommon::CloseWindow("grSstWinClose invoked.");
 }
 
@@ -680,13 +695,13 @@ FX_ENTRY void FX_CALL grGet(FxU32 pname, FxU32 plength, FxI32* params) {
   switch (pname) {
     case GR_MEMORY_FB:
       if (plength >= 4) {
-        const uint32_t fbMb = std::max(2u, config.fbiMemoryMb);
+        const uint32_t fbMb = std::max(1u, config.fbiMemoryMb);
         params[0] = static_cast<FxI32>(fbMb * 1024u * 1024u);
       }
       break;
     case GR_MEMORY_TMU:
       if (plength >= 4) {
-        const uint32_t tmuMb = std::max(2u, config.tmuMemoryMb);
+        const uint32_t tmuMb = std::max(1u, config.tmuMemoryMb);
         params[0] = static_cast<FxI32>(tmuMb * 1024u * 1024u);
       }
       break;
@@ -821,7 +836,7 @@ FX_ENTRY FxU32 FX_CALL grTexMaxAddress(GrChipID_t tmu) {
               "grTexMaxAddress invoked for unavailable TMU=" << tmu << " -> 0");
     return 0;
   }
-  const uint32_t tmuBytes = std::max(2u, config.tmuMemoryMb) * 1024u * 1024u;
+  const uint32_t tmuBytes = std::max(1u, config.tmuMemoryMb) * 1024u * 1024u;
   GLIDE_LOG(DEBUG, "Frontend",
             "grTexMaxAddress invoked for TMU=" << tmu << " -> 0x" << std::hex
                                                << tmuBytes << std::dec);
@@ -1523,7 +1538,7 @@ FX_ENTRY FxU32 FX_CALL guTexMemQueryAvail(GrChipID_t tmu) {
     return 0;
   }
   const uint32_t totalBytes =
-      std::max(2u, config.tmuMemoryMb) * 1024u * 1024u;
+      std::max(1u, config.tmuMemoryMb) * 1024u * 1024u;
 
   return (s_guTexNextAddress < totalBytes) ? (totalBytes - s_guTexNextAddress)
                                            : 0;
@@ -2328,9 +2343,7 @@ FX_ENTRY void FX_CALL grGammaCorrectionValue(float value) {
   EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend", "grGammaCorrectionValue: " << value);
   s_gammaCorrectionValue = value;
-  if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
-    b->SetGamma(value);
-  }
+  EntryCommon::SetGammaCorrection(value);
 }
 
 FX_ENTRY void FX_CALL grLoadGammaTable(FxU32 nentries, FxU32* red, FxU32* green,

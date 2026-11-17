@@ -86,6 +86,12 @@ struct SharedFrontendState {
   uint32_t chromakeyRangeMax{0};
   uint32_t chromakeyRangeMode{0};
 
+  uint32_t screenWidth{640};
+  uint32_t screenHeight{480};
+  uint32_t colorFormat{0};
+  int effectiveColorBuffers{2};
+  int effectiveAuxBuffers{1};
+
   void Reset(uint8_t defaultLfbConstantAlpha, uint32_t defaultTexCombineFunc = 1,
              uint32_t clipWidth = 640, uint32_t clipHeight = 480);
 };
@@ -121,6 +127,10 @@ void SstIdle();
 // Shared state synchronization & backend dispatchers.
 void ApplySharedStateToBackend(const SharedFrontendState& st,
                                uint32_t sstOrigin, bool includeTexInvert);
+void ApplyPostWinOpenOverrides(SharedFrontendState& st, uint32_t colorFormat,
+                               int reqColBuffers, int reqAuxBuffers);
+void SetGammaCorrection(float value);
+uint64_t GetBoundsCheckViolationCount();
 void SetClipWindow(SharedFrontendState& st, uint32_t minx, uint32_t miny,
                    uint32_t maxx, uint32_t maxy);
 void SetColorCombine(SharedFrontendState& st, uint32_t fnc, uint32_t factor,
@@ -168,6 +178,9 @@ void LoadGammaTable(uint32_t nentries, uint32_t* red, uint32_t* green,
 
 // Vertex sanitization, primitive batch dispatch, and telemetry helpers.
 inline std::atomic<bool> g_anyTmuTableDirty{false};
+inline std::atomic<bool> g_boundsCheckEnabled{false};
+void CheckVertexBoundsSlow(const SharedFrontendState& st,
+                           const ModernVertex& mv);
 void SyncTexturesBeforeDrawSlow();
 inline void SyncTexturesBeforeDraw() {
   if (__builtin_expect(g_anyTmuTableDirty.load(std::memory_order_acquire), 0)) {
@@ -176,6 +189,9 @@ inline void SyncTexturesBeforeDraw() {
 }
 
 inline void SanitizeVertex(const SharedFrontendState& st, ModernVertex& mv) {
+  if (__builtin_expect(g_boundsCheckEnabled.load(std::memory_order_relaxed), 0)) {
+    CheckVertexBoundsSlow(st, mv);
+  }
   if (st.depthMode == 0) {
     mv.pos[2] = 0.0f;
   }
@@ -187,6 +203,11 @@ inline void SanitizeVertex(const SharedFrontendState& st, ModernVertex& mv) {
 
 inline void SanitizeTriangle(const SharedFrontendState& st, ModernVertex& va,
                              ModernVertex& vb, ModernVertex& vc) {
+  if (__builtin_expect(g_boundsCheckEnabled.load(std::memory_order_relaxed), 0)) {
+    CheckVertexBoundsSlow(st, va);
+    CheckVertexBoundsSlow(st, vb);
+    CheckVertexBoundsSlow(st, vc);
+  }
   if (st.depthMode == 0) {
     va.pos[2] = 0.0f;
     vb.pos[2] = 0.0f;

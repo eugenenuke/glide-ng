@@ -342,6 +342,63 @@ bool ParsePerfLogString(const std::string& raw, bool& outEnabled, std::string& o
     return true;
 }
 
+bool ParseSnapshotString(const std::string& raw, bool& outEnabled,
+                         uint64_t& outFrame, std::string& outPath) {
+    std::string trimmed = Trim(raw);
+    if (trimmed.empty()) return false;
+
+    std::string lower = ToLower(trimmed);
+    if (lower == "0" || lower == "false" || lower == "off" || lower == "no" || lower == "none") {
+        outEnabled = false;
+        outFrame = 0;
+        outPath.clear();
+        return true;
+    }
+    if (lower == "1" || lower == "true" || lower == "on" || lower == "yes") {
+        outEnabled = true;
+        outFrame = 0;
+        outPath.clear();
+        return true;
+    }
+
+    // "@N" -> capture frame N to auto-generated path
+    if (trimmed[0] == '@') {
+        uint64_t frame = 0;
+        if (!ParseUint64String(trimmed.substr(1), frame)) return false;
+        outEnabled = true;
+        outFrame = frame;
+        outPath.clear();
+        return true;
+    }
+
+    // Pure integer >= 2 -> capture frame N to auto-generated path
+    uint64_t numericFrame = 0;
+    if (ParseUint64String(trimmed, numericFrame)) {
+        outEnabled = true;
+        outFrame = numericFrame;
+        outPath.clear();
+        return true;
+    }
+
+    // "<path>@N" -> capture frame N to <path>
+    size_t atPos = trimmed.rfind('@');
+    if (atPos != std::string::npos && atPos > 0 && atPos + 1 < trimmed.size()) {
+        uint64_t frame = 0;
+        if (ParseUint64String(trimmed.substr(atPos + 1), frame)) {
+            outEnabled = true;
+            outFrame = frame;
+            outPath = trimmed.substr(0, atPos);
+            return true;
+        }
+    }
+
+    // Plain file path -> capture frame 0 to <path>
+    outEnabled = true;
+    outFrame = 0;
+    outPath = trimmed;
+    return true;
+}
+
 const char* HudPositionToShortString(HudPosition pos) {
     switch (pos) {
         case HudPosition::TOP_LEFT:     return "tl";
@@ -532,6 +589,7 @@ bool IniConfigLoader::Load(const std::string& configFilePath, WrapperConfig& out
     bool hasFbiMem = false;
     bool hasTmuCount = false;
     bool hasTmuMem = false;
+    bool hasIniMaxFps = false;
 
     // Resolve config file path (GLIDE_NG_CONFIG overrides default path)
     std::string effectivePath = configFilePath.empty() ? std::string(DEFAULT_CONFIG_FILE)
@@ -644,6 +702,7 @@ bool IniConfigLoader::Load(const std::string& configFilePath, WrapperConfig& out
                 handled = true;
                 if (ParseDoubleString(val, dblVal) && dblVal >= 0.0) {
                     outConfig.maxFps = static_cast<float>(dblVal);
+                    hasIniMaxFps = true;
                     outConfig.settingSources["maxFps"] = "ini";
                 }
             } else if (SectionMatches(sec, "display") &&
@@ -768,6 +827,77 @@ bool IniConfigLoader::Load(const std::string& configFilePath, WrapperConfig& out
                     outConfig.vsyncStrictFifo = false;
                     outConfig.settingSources["swapInterval"] = "ini";
                     outConfig.settingSources["vsync"] = "ini";
+                }
+            } else if ((SectionMatches(sec, "glide") || sec == "display") && key == "gamma") {
+                handled = true;
+                if (ParseDoubleString(val, dblVal) && dblVal > 0.0) {
+                    outConfig.gammaOverride = static_cast<float>(std::clamp(dblVal, 0.1, 10.0));
+                    outConfig.settingSources["gamma"] = "ini";
+                }
+            } else if ((SectionMatches(sec, "glide") || sec == "display") &&
+                       key == "screen_refresh") {
+                handled = true;
+                if (ParseIntString(val, intVal) && intVal > 0) {
+                    outConfig.screenRefreshHz = static_cast<uint32_t>(intVal);
+                    outConfig.settingSources["screenRefresh"] = "ini";
+                    if (!hasIniMaxFps) {
+                        outConfig.maxFps = static_cast<float>(intVal);
+                        outConfig.settingSources["maxFps"] = "ini";
+                    }
+                }
+            } else if (SectionMatches(sec, "glide") && key == "ignore_reopen") {
+                handled = true;
+                if (ParseBoolString(val, boolVal)) {
+                    outConfig.ignoreReopen = boolVal;
+                    outConfig.settingSources["ignoreReopen"] = "ini";
+                }
+            } else if (SectionMatches(sec, "glide") && key == "no_dither_sub") {
+                handled = true;
+                if (ParseBoolString(val, boolVal)) {
+                    outConfig.noDitherSub = boolVal;
+                    outConfig.settingSources["noDitherSub"] = "ini";
+                }
+            } else if (SectionMatches(sec, "glide") && key == "force_bilinear") {
+                handled = true;
+                if (ParseBoolString(val, boolVal)) {
+                    outConfig.forceBilinear = boolVal;
+                    outConfig.settingSources["forceBilinear"] = "ini";
+                }
+            } else if (SectionMatches(sec, "glide") && key == "force_trilinear") {
+                handled = true;
+                if (ParseBoolString(val, boolVal)) {
+                    outConfig.forceTrilinear = boolVal;
+                    outConfig.settingSources["forceTrilinear"] = "ini";
+                }
+            } else if (SectionMatches(sec, "glide") && key == "texmap_disable") {
+                handled = true;
+                if (ParseBoolString(val, boolVal)) {
+                    outConfig.texmapDisable = boolVal;
+                    outConfig.settingSources["texmapDisable"] = "ini";
+                }
+            } else if (SectionMatches(sec, "glide") && key == "bounds_check") {
+                handled = true;
+                if (ParseBoolString(val, boolVal)) {
+                    outConfig.boundsCheck = boolVal;
+                    outConfig.settingSources["boundsCheck"] = "ini";
+                }
+            } else if (SectionMatches(sec, "glide") && key == "alloc_color") {
+                handled = true;
+                if (ParseIntString(val, intVal) && (intVal == 2 || intVal == 3)) {
+                    outConfig.allocColorBuffers = intVal;
+                    outConfig.settingSources["allocColor"] = "ini";
+                }
+            } else if (SectionMatches(sec, "glide") && key == "alloc_aux") {
+                handled = true;
+                if (ParseIntString(val, intVal) && (intVal == 0 || intVal == 1)) {
+                    outConfig.allocAuxBuffers = intVal;
+                    outConfig.settingSources["allocAux"] = "ini";
+                }
+            } else if (SectionMatches(sec, "glide") && key == "snapshot") {
+                handled = true;
+                if (ParseSnapshotString(val, outConfig.snapshotEnabled,
+                                        outConfig.snapshotFrame, outConfig.snapshotPath)) {
+                    outConfig.settingSources["snapshot"] = "ini";
                 }
             }
             // [software]
@@ -910,6 +1040,102 @@ bool IniConfigLoader::Load(const std::string& configFilePath, WrapperConfig& out
             outConfig.settingSources["swapInterval"] = GLIDE_FX_ENV_SWAPINTERVAL;
         }
     }
+
+    // Layer 3 (Phase 2): Authentic hardware sizing, display, compatibility & diagnostic env vars
+    if (const char* envVal = GetNonEmptyEnv(GLIDE_FX_ENV_FBRAM)) {
+        int v = 0;
+        if (ParseIntString(envVal, v) && v > 0) {
+            outConfig.fbiMemoryMb = static_cast<uint32_t>(v);
+            outConfig.settingSources["fbiMemoryMb"] = GLIDE_FX_ENV_FBRAM;
+        }
+    }
+
+    if (const char* envVal = GetNonEmptyEnv(GLIDE_FX_ENV_TMU_MEMSIZE)) {
+        int v = 0;
+        if (ParseIntString(envVal, v) && v > 0) {
+            outConfig.tmuMemoryMb = static_cast<uint32_t>(v);
+            outConfig.settingSources["tmuMemoryMb"] = GLIDE_FX_ENV_TMU_MEMSIZE;
+        }
+    }
+
+    if (const char* envVal = GetNonEmptyEnv(GLIDE_FX_ENV_NUM_TMUS)) {
+        int v = 0;
+        if (ParseIntString(envVal, v) && v >= 1 && v <= 3) {
+            outConfig.tmuCount = static_cast<uint32_t>(v);
+            outConfig.settingSources["tmuCount"] = GLIDE_FX_ENV_NUM_TMUS;
+        }
+    }
+
+    auto applyGammaEnv = [&](const char* envName) {
+        if (const char* envVal = GetNonEmptyEnv(envName)) {
+            double g = 0.0;
+            if (ParseDoubleString(envVal, g) && g > 0.0) {
+                outConfig.gammaOverride = static_cast<float>(std::clamp(g, 0.1, 10.0));
+                outConfig.settingSources["gamma"] = envName;
+            }
+        }
+    };
+    applyGammaEnv(GLIDE_FX_ENV_GAMMA);
+    applyGammaEnv(GLIDE_FX_ENV_V2_GAMMA);
+
+    auto applyRefreshEnv = [&](const char* envName) {
+        if (const char* envVal = GetNonEmptyEnv(envName)) {
+            int hz = 0;
+            if (ParseIntString(envVal, hz) && hz > 0) {
+                outConfig.screenRefreshHz = static_cast<uint32_t>(hz);
+                outConfig.maxFps = static_cast<float>(hz);
+                outConfig.settingSources["screenRefresh"] = envName;
+                outConfig.settingSources["maxFps"] = envName;
+            }
+        }
+    };
+    applyRefreshEnv(GLIDE_FX_ENV_SCREENREFRESH);
+    applyRefreshEnv(GLIDE_FX_ENV_V2_SCREENREFRESH);
+
+    auto applyFxBoolEnv = [&](const char* envName, const char* sourceKey, bool& target) {
+        if (const char* envVal = GetNonEmptyEnv(envName)) {
+            bool b = true;
+            if (!ParseBoolString(envVal, b)) {
+                int n = 1;
+                b = ParseIntString(envVal, n) ? (n != 0) : true;
+            }
+            target = b;
+            outConfig.settingSources[sourceKey] = envName;
+        }
+    };
+    applyFxBoolEnv(GLIDE_FX_ENV_IGNORE_REOPEN, "ignoreReopen", outConfig.ignoreReopen);
+    applyFxBoolEnv(GLIDE_FX_ENV_NO_DITHER_SUB, "noDitherSub", outConfig.noDitherSub);
+    applyFxBoolEnv(GLIDE_FX_ENV_FORCE_BILINEAR, "forceBilinear", outConfig.forceBilinear);
+    applyFxBoolEnv(GLIDE_FX_ENV_FORCE_TRILINEAR, "forceTrilinear", outConfig.forceTrilinear);
+    applyFxBoolEnv(GLIDE_FX_ENV_TEXMAP_DISABLE, "texmapDisable", outConfig.texmapDisable);
+    applyFxBoolEnv(GLIDE_FX_ENV_BOUNDS_CHECK, "boundsCheck", outConfig.boundsCheck);
+
+    if (const char* envVal = GetNonEmptyEnv(GLIDE_FX_ENV_ALLOC_COLOR)) {
+        int v = 0;
+        if (ParseIntString(envVal, v) && (v == 2 || v == 3)) {
+            outConfig.allocColorBuffers = v;
+            outConfig.settingSources["allocColor"] = GLIDE_FX_ENV_ALLOC_COLOR;
+        }
+    }
+
+    if (const char* envVal = GetNonEmptyEnv(GLIDE_FX_ENV_ALLOC_AUX)) {
+        int v = 0;
+        if (ParseIntString(envVal, v) && (v == 0 || v == 1)) {
+            outConfig.allocAuxBuffers = v;
+            outConfig.settingSources["allocAux"] = GLIDE_FX_ENV_ALLOC_AUX;
+        }
+    }
+
+    auto applySnapshotEnv = [&](const char* envName) {
+        if (const char* envVal = GetNonEmptyEnv(envName)) {
+            if (ParseSnapshotString(envVal, outConfig.snapshotEnabled,
+                                    outConfig.snapshotFrame, outConfig.snapshotPath)) {
+                outConfig.settingSources["snapshot"] = envName;
+            }
+        }
+    };
+    applySnapshotEnv(GLIDE_FX_ENV_SNAPSHOT_ALIAS);
+    applySnapshotEnv(GLIDE_FX_ENV_SNAPSHOT);
 
     // 5. Layer 4: glide-ng Wrapper Environment Overrides (GLIDE_NG_* — highest priority)
     if (const char* envVal = GetNonEmptyEnv(GLIDE_NG_ENV_BACKEND)) {

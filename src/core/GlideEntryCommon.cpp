@@ -1,8 +1,12 @@
 #include "core/GlideEntryCommon.h"
 
+#include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <string>
+#include <vector>
 
 #include "core/3dfParser.h"
 #include "core/BackendManager.h"
@@ -30,6 +34,121 @@ constexpr uint32_t kGrTriangles = 6;
 // Glide 2.x/3.x shared paletted texture format IDs.
 constexpr uint32_t kGrTexFmtP8 = 0x5;
 constexpr uint32_t kGrTexFmtP8_6666 = 0x6;
+
+// Phase-2 diagnostic state (bounds check & framebuffer snapshots).
+std::atomic<uint64_t> s_boundsViolations{0};
+std::atomic<uint64_t> s_boundsWarnEmitted{0};
+constexpr uint64_t kMaxBoundsWarnings = 16;
+
+uint64_t s_snapshotFrameCounter = 0;
+bool s_snapshotCaptured = false;
+uint32_t s_activeColorFormat = 0;
+
+inline uint32_t ResolveEffectiveFilter(uint32_t filter,
+                                       const WrapperConfig& cfg) {
+  if (cfg.forceBilinear || cfg.forceTrilinear) {
+    return 1u;  // GR_TEXTUREFILTER_BILINEAR
+  }
+  return filter;
+}
+
+inline void ResolveEffectiveMipMap(uint32_t& mode, bool& lodBlend,
+                                   const WrapperConfig& cfg) {
+  if (cfg.forceTrilinear) {
+    if (mode == 0u) {
+      mode = 1u;  // Upgrade GR_MIPMAP_DISABLE -> GR_MIPMAP_NEAREST
+    }
+    lodBlend = true;
+  }
+}
+
+inline uint32_t ResolveEffectiveBoundTex(uint32_t addr,
+                                         const WrapperConfig& cfg) {
+  return cfg.texmapDisable ? 0xFFFFFFFFu : addr;
+}
+
+inline uint32_t ResolveEffectiveDither(uint32_t mode,
+                                       const WrapperConfig& cfg) {
+  return cfg.noDitherSub ? 0u : mode;
+}
+
+void MaybeCaptureSnapshot(IGraphicsBackend* backend) {
+  const auto& cfg = EmulationRegistry::GetInstance().GetConfig();
+  const uint64_t frameIdx = s_snapshotFrameCounter++;
+  if (!cfg.snapshotEnabled || s_snapshotCaptured ||
+      frameIdx != cfg.snapshotFrame || !backend) {
+    return;
+  }
+
+  const uint32_t w = backend->GetWidth();
+  const uint32_t h = backend->GetHeight();
+  if (w == 0 || h == 0) return;
+
+  std::vector<uint32_t> pixels(static_cast<size_t>(w) * h, 0u);
+  // GR_BUFFER_BACKBUFFER == 1
+  if (!backend->ReadLFB(1u, 0, 0, w, h, w * 4u, pixels.data())) {
+    GLIDE_LOG(WARN, "Snapshot",
+              "FX_GLIDE_SNAPSHOT failed to read backbuffer on frame "
+                  << frameIdx);
+    s_snapshotCaptured = true;
+    return;
+  }
+
+  std::string outPath = cfg.snapshotPath;
+  if (outPath.empty()) {
+    char nameBuf[64];
+    std::snprintf(nameBuf, sizeof(nameBuf), "glide_snapshot_%06llu.ppm",
+                  static_cast<unsigned long long>(frameIdx));
+    outPath = nameBuf;
+  }
+
+  std::ofstream out(outPath, std::ios::binary | std::ios::trunc);
+  if (!out.is_open()) {
+    GLIDE_LOG(WARN, "Snapshot",
+              "FX_GLIDE_SNAPSHOT could not open output file: " << outPath);
+    s_snapshotCaptured = true;
+    return;
+  }
+
+  const std::string header =
+      "P6\n" + std::to_string(w) + " " + std::to_string(h) + "\n255\n";
+  out.write(header.data(), static_cast<std::streamsize>(header.size()));
+
+  const bool isAbgr = (s_activeColorFormat == 1u);  // GR_COLORFORMAT_ABGR
+  std::vector<uint8_t> rgbRow(static_cast<size_t>(w) * 3u);
+  for (uint32_t y = 0; y < h; ++y) {
+    const uint32_t* srcRow = pixels.data() + static_cast<size_t>(y) * w;
+    for (uint32_t x = 0; x < w; ++x) {
+      const uint32_t p = srcRow[x];
+      if (isAbgr) {
+        rgbRow[x * 3u + 0u] = static_cast<uint8_t>(p & 0xFFu);
+        rgbRow[x * 3u + 1u] = static_cast<uint8_t>((p >> 8) & 0xFFu);
+        rgbRow[x * 3u + 2u] = static_cast<uint8_t>((p >> 16) & 0xFFu);
+      } else {
+        rgbRow[x * 3u + 0u] = static_cast<uint8_t>((p >> 16) & 0xFFu);
+        rgbRow[x * 3u + 1u] = static_cast<uint8_t>((p >> 8) & 0xFFu);
+        rgbRow[x * 3u + 2u] = static_cast<uint8_t>(p & 0xFFu);
+      }
+    }
+    out.write(reinterpret_cast<const char*>(rgbRow.data()),
+              static_cast<std::streamsize>(rgbRow.size()));
+  }
+  out.close();
+  s_snapshotCaptured = true;
+  GLIDE_LOG(INFO, "Snapshot",
+            "Saved " << w << "x" << h << " backbuffer snapshot (frame "
+                     << frameIdx << ") to " << outPath);
+}
+
+void LogBoundsCheckSummaryIfAny() {
+  const uint64_t total = s_boundsViolations.load(std::memory_order_relaxed);
+  if (total > 0) {
+    GLIDE_LOG(WARN, "BoundsCheck",
+              "FX_GLIDE_BOUNDS_CHECK recorded " << total
+                                                << " out-of-bounds / invalid "
+                                                   "vertex event(s).");
+  }
+}
 }  // namespace
 
 void SharedFrontendState::Reset(uint8_t defaultLfbConstantAlpha,
@@ -102,6 +221,12 @@ void SharedFrontendState::Reset(uint8_t defaultLfbConstantAlpha,
   chromakeyRangeMin = 0;
   chromakeyRangeMax = 0;
   chromakeyRangeMode = 0;
+
+  screenWidth = clipWidth;
+  screenHeight = clipHeight;
+  colorFormat = 0;
+  effectiveColorBuffers = 2;
+  effectiveAuxBuffers = 1;
 }
 
 ResolutionDims ResolveResolution(uint32_t resolutionEnum) {
@@ -183,6 +308,8 @@ void EnsureEngineInitializedSlow(void (*resetFrontendState)()) {
 
 void ShutdownGlide(const char* apiTag) {
   GLIDE_LOG(INFO, "Frontend", "grGlideShutdown (" << apiTag << ") invoked.");
+  LogBoundsCheckSummaryIfAny();
+  g_boundsCheckEnabled.store(false, std::memory_order_relaxed);
   LfbManager::GetInstance().Reset();
   TelemetryManager::GetInstance().ShutdownPerfLog();
   TelemetryManager::GetInstance().PrintReport();
@@ -191,6 +318,7 @@ void ShutdownGlide(const char* apiTag) {
 }
 
 void CloseWindow(const char* logMessage) {
+  LogBoundsCheckSummaryIfAny();
   LfbManager::GetInstance().Reset();
   BackendManager::GetInstance().SetSplashAnimator(nullptr);
   GLIDE_LOG(INFO, "Frontend", logMessage);
@@ -208,6 +336,7 @@ void ClearBuffer(uint32_t color, uint8_t alpha, uint32_t depth) {
 
 void SwapBuffers() {
   if (auto* backend = BackendManager::GetInstance().GetBackend()) {
+    MaybeCaptureSnapshot(backend);
     backend->SwapBuffers();
   }
 }
@@ -229,8 +358,11 @@ void ApplySharedStateToBackend(const SharedFrontendState& st,
                                uint32_t sstOrigin, bool includeTexInvert) {
   auto* b = BackendManager::GetInstance().GetBackend();
   if (!b) return;
+  const auto& cfg = EmulationRegistry::GetInstance().GetConfig();
 
-  b->SetDepthState(st.depthMode, st.depthCompare, st.depthMask, st.depthBias);
+  const bool auxEnabled = (st.effectiveAuxBuffers > 0);
+  b->SetDepthState(auxEnabled ? st.depthMode : 0u, st.depthCompare,
+                   auxEnabled ? st.depthMask : false, st.depthBias);
   b->SetAlphaTestState(st.alphaTestOp, st.alphaTestRef);
   b->SetCombinerMode(st.colorFunc, st.colorFactor, st.colorLocal, st.colorOther,
                      st.colorInvert, st.alphaFunc, st.alphaFactor,
@@ -241,7 +373,7 @@ void ApplySharedStateToBackend(const SharedFrontendState& st,
   b->SetSstOrigin(sstOrigin);
   b->SetClipWindow(st.clipMinX, st.clipMinY, st.clipMaxX, st.clipMaxY);
   b->SetColorMask(st.colorMaskRgb, st.colorMaskAlpha);
-  b->SetDitherMode(st.ditherMode);
+  b->SetDitherMode(ResolveEffectiveDither(st.ditherMode, cfg));
   b->SetConstantColor(st.constantColor);
   b->SetFogMode(st.fogMode);
   b->SetFogColor(st.fogColor);
@@ -256,14 +388,118 @@ void ApplySharedStateToBackend(const SharedFrontendState& st,
                           st.texAlphaFunc[tmu], st.texAlphaFactor[tmu],
                           includeTexInvert ? st.texRgbInvert[tmu] : false,
                           includeTexInvert ? st.texAlphaInvert[tmu] : false);
-    b->BindTexture(tmu, st.boundTex[tmu], st.clampS[tmu], st.clampT[tmu],
-                   st.minFilter[tmu], st.magFilter[tmu]);
+    b->BindTexture(tmu, ResolveEffectiveBoundTex(st.boundTex[tmu], cfg),
+                   st.clampS[tmu], st.clampT[tmu],
+                   ResolveEffectiveFilter(st.minFilter[tmu], cfg),
+                   ResolveEffectiveFilter(st.magFilter[tmu], cfg));
     b->SetTexChromakeyMode(tmu, st.texChromaState[tmu].mode);
     b->SetTexChromakeyRange(tmu, st.texChromaState[tmu].minColor,
                             st.texChromaState[tmu].maxColor,
                             st.texChromaState[tmu].mode);
-    b->SetTexMipMapMode(tmu, st.mipmapMode[tmu], st.lodBlend[tmu]);
+    uint32_t effMipMode = st.mipmapMode[tmu];
+    bool effLodBlend = st.lodBlend[tmu];
+    ResolveEffectiveMipMap(effMipMode, effLodBlend, cfg);
+    b->SetTexMipMapMode(tmu, effMipMode, effLodBlend);
     b->SetTexLodBias(tmu, st.texLodBias[tmu]);
+  }
+}
+
+void ApplyPostWinOpenOverrides(SharedFrontendState& st, uint32_t colorFormat,
+                               int reqColBuffers, int reqAuxBuffers) {
+  const auto& cfg = EmulationRegistry::GetInstance().GetConfig();
+  st.colorFormat = colorFormat;
+  s_activeColorFormat = colorFormat;
+  st.effectiveColorBuffers =
+      (cfg.allocColorBuffers >= 2) ? cfg.allocColorBuffers : reqColBuffers;
+  // Preserve legacy compatibility when apps pass nAuxBuffers=0 yet still call
+  // grDepthBufferMode(); only an explicit FX_GLIDE_ALLOC_AUX=0 / alloc_aux=0
+  // override disables the auxiliary depth buffer.
+  st.effectiveAuxBuffers = (cfg.allocAuxBuffers >= 0)
+                               ? cfg.allocAuxBuffers
+                               : (reqAuxBuffers > 0 ? reqAuxBuffers : 1);
+
+  if (cfg.allocColorBuffers >= 2 || cfg.allocAuxBuffers >= 0) {
+    GLIDE_LOG(INFO, "Frontend",
+              "Effective buffer allocation: color="
+                  << st.effectiveColorBuffers << " (requested " << reqColBuffers
+                  << "), aux=" << st.effectiveAuxBuffers << " (requested "
+                  << reqAuxBuffers << ")");
+  }
+
+  s_boundsViolations.store(0, std::memory_order_relaxed);
+  s_boundsWarnEmitted.store(0, std::memory_order_relaxed);
+  g_boundsCheckEnabled.store(cfg.boundsCheck, std::memory_order_relaxed);
+  s_snapshotFrameCounter = 0;
+  s_snapshotCaptured = false;
+
+  auto* b = BackendManager::GetInstance().GetBackend();
+  if (!b) return;
+
+  if (cfg.gammaOverride > 0.0f) {
+    GLIDE_LOG(INFO, "Frontend",
+              "Applying authentic gamma override: " << cfg.gammaOverride);
+    b->SetGamma(cfg.gammaOverride);
+  }
+  if (cfg.noDitherSub) {
+    b->SetDitherMode(0u);
+  }
+  if (st.effectiveAuxBuffers == 0) {
+    b->SetDepthState(0u, st.depthCompare, false, st.depthBias);
+  }
+  if (cfg.forceBilinear || cfg.forceTrilinear || cfg.texmapDisable) {
+    for (uint32_t tmu = 0; tmu < 2; ++tmu) {
+      b->BindTexture(tmu, ResolveEffectiveBoundTex(st.boundTex[tmu], cfg),
+                     st.clampS[tmu], st.clampT[tmu],
+                     ResolveEffectiveFilter(st.minFilter[tmu], cfg),
+                     ResolveEffectiveFilter(st.magFilter[tmu], cfg));
+      if (cfg.forceTrilinear) {
+        uint32_t effMipMode = st.mipmapMode[tmu];
+        bool effLodBlend = st.lodBlend[tmu];
+        ResolveEffectiveMipMap(effMipMode, effLodBlend, cfg);
+        b->SetTexMipMapMode(tmu, effMipMode, effLodBlend);
+      }
+    }
+  }
+}
+
+void SetGammaCorrection(float value) {
+  const auto& cfg = EmulationRegistry::GetInstance().GetConfig();
+  const float effective = (cfg.gammaOverride > 0.0f) ? cfg.gammaOverride : value;
+  if (cfg.gammaOverride > 0.0f && std::fabs(value - cfg.gammaOverride) > 1e-4f) {
+    GLIDE_LOG(DEBUG, "Frontend",
+              "App requested gamma=" << value
+                                     << ", keeping SST_GAMMA/SSTV2_GAMMA override="
+                                     << cfg.gammaOverride);
+  }
+  if (auto* b = BackendManager::GetInstance().GetBackend()) {
+    b->SetGamma(effective);
+  }
+}
+
+uint64_t GetBoundsCheckViolationCount() {
+  return s_boundsViolations.load(std::memory_order_relaxed);
+}
+
+void CheckVertexBoundsSlow(const SharedFrontendState& st,
+                           const ModernVertex& mv) {
+  const float maxX = static_cast<float>(st.screenWidth) + 1.0f;
+  const float maxY = static_cast<float>(st.screenHeight) + 1.0f;
+  const bool badFinite = !std::isfinite(mv.pos[0]) || !std::isfinite(mv.pos[1]) ||
+                         !std::isfinite(mv.pos[2]) || !std::isfinite(mv.pos[3]);
+  const bool badRange = (mv.pos[0] < -1.0f || mv.pos[0] > maxX ||
+                         mv.pos[1] < -1.0f || mv.pos[1] > maxY ||
+                         mv.pos[3] <= 0.0f);
+  if (!badFinite && !badRange) return;
+
+  s_boundsViolations.fetch_add(1, std::memory_order_relaxed);
+  const uint64_t emitted =
+      s_boundsWarnEmitted.fetch_add(1, std::memory_order_relaxed);
+  if (emitted < kMaxBoundsWarnings) {
+    GLIDE_LOG(WARN, "BoundsCheck",
+              "Vertex out of bounds/invalid: pos=("
+                  << mv.pos[0] << ", " << mv.pos[1] << ", z=" << mv.pos[2]
+                  << ", oow=" << mv.pos[3] << "), screen=" << st.screenWidth
+                  << "x" << st.screenHeight);
   }
 }
 
@@ -358,8 +594,11 @@ void SetTexFilterMode(SharedFrontendState& st, uint32_t tmu, uint32_t minFilter,
   st.minFilter[tmu] = minFilter;
   st.magFilter[tmu] = magFilter;
   if (auto* b = BackendManager::GetInstance().GetBackend()) {
-    b->BindTexture(tmu, st.boundTex[tmu], st.clampS[tmu], st.clampT[tmu],
-                   st.minFilter[tmu], st.magFilter[tmu]);
+    const auto& cfg = EmulationRegistry::GetInstance().GetConfig();
+    b->BindTexture(tmu, ResolveEffectiveBoundTex(st.boundTex[tmu], cfg),
+                   st.clampS[tmu], st.clampT[tmu],
+                   ResolveEffectiveFilter(st.minFilter[tmu], cfg),
+                   ResolveEffectiveFilter(st.magFilter[tmu], cfg));
   }
 }
 
@@ -369,8 +608,11 @@ void SetTexClampMode(SharedFrontendState& st, uint32_t tmu, uint32_t sClamp,
   st.clampS[tmu] = sClamp;
   st.clampT[tmu] = tClamp;
   if (auto* b = BackendManager::GetInstance().GetBackend()) {
-    b->BindTexture(tmu, st.boundTex[tmu], st.clampS[tmu], st.clampT[tmu],
-                   st.minFilter[tmu], st.magFilter[tmu]);
+    const auto& cfg = EmulationRegistry::GetInstance().GetConfig();
+    b->BindTexture(tmu, ResolveEffectiveBoundTex(st.boundTex[tmu], cfg),
+                   st.clampS[tmu], st.clampT[tmu],
+                   ResolveEffectiveFilter(st.minFilter[tmu], cfg),
+                   ResolveEffectiveFilter(st.magFilter[tmu], cfg));
   }
 }
 
@@ -380,7 +622,11 @@ void SetTexMipMapMode(SharedFrontendState& st, uint32_t tmu, uint32_t mode,
   st.mipmapMode[tmu] = mode;
   st.lodBlend[tmu] = lodBlend;
   if (auto* b = BackendManager::GetInstance().GetBackend()) {
-    b->SetTexMipMapMode(tmu, mode, lodBlend);
+    const auto& cfg = EmulationRegistry::GetInstance().GetConfig();
+    uint32_t effMode = mode;
+    bool effLodBlend = lodBlend;
+    ResolveEffectiveMipMap(effMode, effLodBlend, cfg);
+    b->SetTexMipMapMode(tmu, effMode, effLodBlend);
   }
 }
 
@@ -396,38 +642,51 @@ void BindTexSource(SharedFrontendState& st, uint32_t tmu,
                    uint32_t startAddress) {
   if (tmu >= 2) return;
   st.boundTex[tmu] = startAddress;
-  TextureManager::GetInstance().PrepareTextureForBind(tmu, startAddress);
+  const auto& cfg = EmulationRegistry::GetInstance().GetConfig();
+  if (!cfg.texmapDisable) {
+    TextureManager::GetInstance().PrepareTextureForBind(tmu, startAddress);
+  }
   if (auto* b = BackendManager::GetInstance().GetBackend()) {
-    b->BindTexture(tmu, startAddress, st.clampS[tmu], st.clampT[tmu],
-                   st.minFilter[tmu], st.magFilter[tmu]);
+    b->BindTexture(tmu, ResolveEffectiveBoundTex(startAddress, cfg),
+                   st.clampS[tmu], st.clampT[tmu],
+                   ResolveEffectiveFilter(st.minFilter[tmu], cfg),
+                   ResolveEffectiveFilter(st.magFilter[tmu], cfg));
   }
 }
 
 void SetDepthMode(SharedFrontendState& st, uint32_t mode) {
   st.depthMode = mode;
   if (auto* b = BackendManager::GetInstance().GetBackend()) {
-    b->SetDepthState(st.depthMode, st.depthCompare, st.depthMask, st.depthBias);
+    const bool auxEnabled = (st.effectiveAuxBuffers > 0);
+    b->SetDepthState(auxEnabled ? st.depthMode : 0u, st.depthCompare,
+                     auxEnabled ? st.depthMask : false, st.depthBias);
   }
 }
 
 void SetDepthFunction(SharedFrontendState& st, uint32_t fnc) {
   st.depthCompare = fnc;
   if (auto* b = BackendManager::GetInstance().GetBackend()) {
-    b->SetDepthState(st.depthMode, st.depthCompare, st.depthMask, st.depthBias);
+    const bool auxEnabled = (st.effectiveAuxBuffers > 0);
+    b->SetDepthState(auxEnabled ? st.depthMode : 0u, st.depthCompare,
+                     auxEnabled ? st.depthMask : false, st.depthBias);
   }
 }
 
 void SetDepthMask(SharedFrontendState& st, bool mask) {
   st.depthMask = mask;
   if (auto* b = BackendManager::GetInstance().GetBackend()) {
-    b->SetDepthState(st.depthMode, st.depthCompare, st.depthMask, st.depthBias);
+    const bool auxEnabled = (st.effectiveAuxBuffers > 0);
+    b->SetDepthState(auxEnabled ? st.depthMode : 0u, st.depthCompare,
+                     auxEnabled ? st.depthMask : false, st.depthBias);
   }
 }
 
 void SetDepthBias(SharedFrontendState& st, int32_t level) {
   st.depthBias = level;
   if (auto* b = BackendManager::GetInstance().GetBackend()) {
-    b->SetDepthState(st.depthMode, st.depthCompare, st.depthMask, st.depthBias);
+    const bool auxEnabled = (st.effectiveAuxBuffers > 0);
+    b->SetDepthState(auxEnabled ? st.depthMode : 0u, st.depthCompare,
+                     auxEnabled ? st.depthMask : false, st.depthBias);
   }
 }
 
@@ -463,7 +722,8 @@ void SetColorMask(SharedFrontendState& st, bool rgb, bool alpha) {
 void SetDitherMode(SharedFrontendState& st, uint32_t mode) {
   st.ditherMode = mode;
   if (auto* b = BackendManager::GetInstance().GetBackend()) {
-    b->SetDitherMode(mode);
+    const auto& cfg = EmulationRegistry::GetInstance().GetConfig();
+    b->SetDitherMode(ResolveEffectiveDither(mode, cfg));
   }
 }
 
@@ -544,9 +804,11 @@ void DisableAllEffects(SharedFrontendState& st, bool clearCachedFogMode) {
     st.fogMode = 0;      // GR_FOG_DISABLE
   }
   if (auto* b = BackendManager::GetInstance().GetBackend()) {
+    const bool auxEnabled = (st.effectiveAuxBuffers > 0);
     b->SetBlendState(st.rgbSrcBlend, st.rgbDstBlend, st.alphaSrcBlend,
                      st.alphaDstBlend);
-    b->SetDepthState(st.depthMode, st.depthCompare, st.depthMask, st.depthBias);
+    b->SetDepthState(auxEnabled ? st.depthMode : 0u, st.depthCompare,
+                     auxEnabled ? st.depthMask : false, st.depthBias);
     b->SetAlphaTestState(st.alphaTestOp, st.alphaTestRef);
     b->SetFogMode(0);
     b->SetChromakeyMode(0);
@@ -555,6 +817,16 @@ void DisableAllEffects(SharedFrontendState& st, bool clearCachedFogMode) {
 
 void LoadGammaTable(uint32_t nentries, uint32_t* red, uint32_t* green,
                     uint32_t* blue) {
+  const auto& cfg = EmulationRegistry::GetInstance().GetConfig();
+  if (cfg.gammaOverride > 0.0f) {
+    GLIDE_LOG(DEBUG, "Frontend",
+              "App called grLoadGammaTable, keeping SST_GAMMA/SSTV2_GAMMA "
+              "override=" << cfg.gammaOverride);
+    if (auto* b = BackendManager::GetInstance().GetBackend()) {
+      b->SetGamma(cfg.gammaOverride);
+    }
+    return;
+  }
   if (auto* b = BackendManager::GetInstance().GetBackend()) {
     b->LoadGammaTable(nentries, red, green, blue);
   }

@@ -5141,3 +5141,358 @@ TEST_CASE("M6.1 Telemetry CPU Bucket Attribution & App vs Wrapper Split",
   }
 #endif
 }
+
+TEST_CASE("M8.2 Phase-2 Authentic 3dfx Env Vars: INI Parsing, Precedence & Runtime Behavior",
+          "[Config][EnvVars][M8]") {
+  struct ScopedEnvM8 {
+    std::vector<std::string> keys = {
+        "GLIDE_NG_CONFIG", "GLIDE_NG_HEADLESS", "GLIDE_NG_CARD_MODEL",
+        "GLIDE_NG_FBI_MEM_MB", "GLIDE_NG_TMU_MEM_MB", "GLIDE_NG_TMU_COUNT",
+        "GLIDE_NG_MAX_FPS", "GLIDE_NG_VSYNC", "GLIDE_NG_LOG_LEVEL",
+        "GLIDE_NG_LOG_FILE", "GLIDE_NG_NO_SPLASH",
+        "FX_GLIDE_FBRAM", "FX_GLIDE_TMU_MEMSIZE", "SSTV2_NUM_TMUS",
+        "SST_GAMMA", "SSTV2_GAMMA", "SST_SCREENREFRESH", "SSTV2_SCREENREFRESH",
+        "FX_GLIDE_IGNORE_REOPEN", "FX_GLIDE_NO_DITHER_SUB",
+        "SSTV2_FORCE_BILINEAR", "SSTV2_FORCE_TRILINEAR", "SST_TEXMAP_DISABLE",
+        "FX_GLIDE_BOUNDS_CHECK", "FX_GLIDE_ALLOC_COLOR", "FX_GLIDE_ALLOC_AUX",
+        "FX_GLIDE_SNAPSHOT", "FX_SNAPSHOT"};
+    std::vector<std::pair<std::string, std::string>> saved;
+    ScopedEnvM8() {
+      for (const auto& k : keys) {
+        const char* v = std::getenv(k.c_str());
+        saved.emplace_back(k, v ? std::string(v) : std::string("\x01UNSET"));
+        ::unsetenv(k.c_str());
+      }
+    }
+    ~ScopedEnvM8() {
+      for (const auto& kv : saved) {
+        if (kv.second == "\x01UNSET") {
+          ::unsetenv(kv.first.c_str());
+        } else {
+          ::setenv(kv.first.c_str(), kv.second.c_str(), 1);
+        }
+      }
+    }
+  } guard;
+
+  SECTION("INI [glide]/[display] Phase-2 keys and snapshot syntax parsing") {
+    const std::string iniPath = "/tmp/glide_ng_m82_ini_test.ini";
+    {
+      std::ofstream out(iniPath);
+      out << "[hardware]\n"
+          << "fbi_memory_mb = 6\n"
+          << "tmu_memory_mb = 4\n"
+          << "tmu_count = 1\n"
+          << "[display]\n"
+          << "screen_refresh = 75\n"
+          << "gamma = 1.7\n"
+          << "[glide]\n"
+          << "ignore_reopen = true\n"
+          << "no_dither_sub = true\n"
+          << "force_bilinear = true\n"
+          << "force_trilinear = false\n"
+          << "texmap_disable = true\n"
+          << "bounds_check = true\n"
+          << "alloc_color = 3\n"
+          << "alloc_aux = 0\n"
+          << "snapshot = /tmp/ini_snap.ppm@4\n";
+    }
+
+    GlideWrapper::IniConfigLoader loader;
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load(iniPath, cfg));
+    CHECK(cfg.fbiMemoryMb == 6u);
+    CHECK(cfg.tmuMemoryMb == 4u);
+    CHECK(cfg.tmuCount == 1u);
+    CHECK(cfg.screenRefreshHz == 75u);
+    CHECK(cfg.maxFps == 75.0f);
+    CHECK(std::fabs(cfg.gammaOverride - 1.7f) < 1e-4f);
+    CHECK(cfg.ignoreReopen == true);
+    CHECK(cfg.noDitherSub == true);
+    CHECK(cfg.forceBilinear == true);
+    CHECK(cfg.forceTrilinear == false);
+    CHECK(cfg.texmapDisable == true);
+    CHECK(cfg.boundsCheck == true);
+    CHECK(cfg.allocColorBuffers == 3);
+    CHECK(cfg.allocAuxBuffers == 0);
+    CHECK(cfg.snapshotEnabled == true);
+    CHECK(cfg.snapshotFrame == 4u);
+    CHECK(cfg.snapshotPath == "/tmp/ini_snap.ppm");
+    CHECK(cfg.settingSources.at("gamma") == "ini");
+    CHECK(cfg.settingSources.at("screenRefresh") == "ini");
+    CHECK(cfg.settingSources.at("snapshot") == "ini");
+    std::remove(iniPath.c_str());
+  }
+
+  SECTION("Strict 4-layer precedence across all 17 Phase-2 env vars and aliases") {
+    const std::string iniPath = "/tmp/glide_ng_m82_prec_test.ini";
+    {
+      std::ofstream out(iniPath);
+      out << "[hardware]\n"
+          << "fbi_memory_mb = 6\n"
+          << "tmu_memory_mb = 4\n"
+          << "tmu_count = 1\n"
+          << "[display]\n"
+          << "max_fps = 60\n"
+          << "[glide]\n"
+          << "gamma = 1.2\n"
+          << "ignore_reopen = false\n"
+          << "alloc_color = 2\n"
+          << "alloc_aux = 1\n";
+    }
+    ::setenv("GLIDE_NG_CONFIG", iniPath.c_str(), 1);
+
+    // Layer 3: Authentic 3dfx vars override INI; V2/primary aliases beat SST_/FX_ aliases
+    ::setenv("FX_GLIDE_FBRAM", "8", 1);
+    ::setenv("FX_GLIDE_TMU_MEMSIZE", "12", 1);
+    ::setenv("SSTV2_NUM_TMUS", "2", 1);
+    ::setenv("SST_GAMMA", "1.5", 1);
+    ::setenv("SSTV2_GAMMA", "2.1", 1);
+    ::setenv("SST_SCREENREFRESH", "72", 1);
+    ::setenv("SSTV2_SCREENREFRESH", "85", 1);
+    ::setenv("FX_GLIDE_IGNORE_REOPEN", "1", 1);
+    ::setenv("FX_GLIDE_NO_DITHER_SUB", "1", 1);
+    ::setenv("SSTV2_FORCE_BILINEAR", "1", 1);
+    ::setenv("SSTV2_FORCE_TRILINEAR", "1", 1);
+    ::setenv("SST_TEXMAP_DISABLE", "1", 1);
+    ::setenv("FX_GLIDE_BOUNDS_CHECK", "1", 1);
+    ::setenv("FX_GLIDE_ALLOC_COLOR", "3", 1);
+    ::setenv("FX_GLIDE_ALLOC_AUX", "0", 1);
+    ::setenv("FX_SNAPSHOT", "/tmp/alias.ppm@2", 1);
+    ::setenv("FX_GLIDE_SNAPSHOT", "/tmp/primary.ppm@7", 1);
+
+    GlideWrapper::IniConfigLoader loader;
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load("nonexistent.ini", cfg));
+    CHECK(cfg.fbiMemoryMb == 8u);
+    CHECK(cfg.tmuMemoryMb == 12u);
+    CHECK(cfg.tmuCount == 2u);
+    CHECK(std::fabs(cfg.gammaOverride - 2.1f) < 1e-4f);
+    CHECK(cfg.screenRefreshHz == 85u);
+    CHECK(cfg.maxFps == 85.0f);
+    CHECK(cfg.ignoreReopen == true);
+    CHECK(cfg.noDitherSub == true);
+    CHECK(cfg.forceBilinear == true);
+    CHECK(cfg.forceTrilinear == true);
+    CHECK(cfg.texmapDisable == true);
+    CHECK(cfg.boundsCheck == true);
+    CHECK(cfg.allocColorBuffers == 3);
+    CHECK(cfg.allocAuxBuffers == 0);
+    CHECK(cfg.snapshotEnabled == true);
+    CHECK(cfg.snapshotFrame == 7u);
+    CHECK(cfg.snapshotPath == "/tmp/primary.ppm");
+    CHECK(cfg.settingSources.at("fbiMemoryMb") == "FX_GLIDE_FBRAM");
+    CHECK(cfg.settingSources.at("tmuMemoryMb") == "FX_GLIDE_TMU_MEMSIZE");
+    CHECK(cfg.settingSources.at("tmuCount") == "SSTV2_NUM_TMUS");
+    CHECK(cfg.settingSources.at("gamma") == "SSTV2_GAMMA");
+    CHECK(cfg.settingSources.at("screenRefresh") == "SSTV2_SCREENREFRESH");
+    CHECK(cfg.settingSources.at("snapshot") == "FX_GLIDE_SNAPSHOT");
+
+    // Verify numeric-only and @N snapshot formats
+    ::unsetenv("FX_GLIDE_SNAPSHOT");
+    ::setenv("FX_SNAPSHOT", "@3", 1);
+    REQUIRE(loader.Load("nonexistent.ini", cfg));
+    CHECK(cfg.snapshotEnabled == true);
+    CHECK(cfg.snapshotFrame == 3u);
+    CHECK(cfg.snapshotPath.empty());
+
+    ::setenv("FX_SNAPSHOT", "0", 1);
+    REQUIRE(loader.Load("nonexistent.ini", cfg));
+    CHECK(cfg.snapshotEnabled == false);
+
+    // Layer 4: GLIDE_NG_* overrides authentic 3dfx vars
+    ::setenv("GLIDE_NG_FBI_MEM_MB", "32", 1);
+    ::setenv("GLIDE_NG_TMU_MEM_MB", "16", 1);
+    ::setenv("GLIDE_NG_TMU_COUNT", "1", 1);
+    ::setenv("GLIDE_NG_MAX_FPS", "144", 1);
+    REQUIRE(loader.Load("nonexistent.ini", cfg));
+    CHECK(cfg.fbiMemoryMb == 32u);
+    CHECK(cfg.tmuMemoryMb == 16u);
+    CHECK(cfg.tmuCount == 1u);
+    CHECK(cfg.maxFps == 144.0f);
+    CHECK(cfg.settingSources.at("fbiMemoryMb") == "GLIDE_NG_FBI_MEM_MB");
+    CHECK(cfg.settingSources.at("tmuMemoryMb") == "GLIDE_NG_TMU_MEM_MB");
+    CHECK(cfg.settingSources.at("tmuCount") == "GLIDE_NG_TMU_COUNT");
+    CHECK(cfg.settingSources.at("maxFps") == "GLIDE_NG_MAX_FPS");
+
+    std::remove(iniPath.c_str());
+  }
+
+#ifdef __linux__
+  SECTION("End-to-end Glide 3.x runtime verification (sizing, aux=0, no_dither, texmap_disable, reopen, bounds, gamma, PPM snapshot)") {
+    const std::string logPath = "/tmp/glide_ng_m82_g3_runtime.log";
+    const std::string snapPath = "/tmp/glide_ng_m82_g3_snap.ppm";
+    std::remove(logPath.c_str());
+    std::remove(snapPath.c_str());
+
+    ::setenv("GLIDE_NG_HEADLESS", "1", 1);
+    ::setenv("GLIDE_NG_MAX_FPS", "0", 1);
+    ::setenv("GLIDE_NG_VSYNC", "0", 1);
+    ::setenv("GLIDE_NG_LOG_LEVEL", "info", 1);
+    ::setenv("GLIDE_NG_LOG_FILE", logPath.c_str(), 1);
+    ::setenv("FX_GLIDE_FBRAM", "4", 1);
+    ::setenv("FX_GLIDE_TMU_MEMSIZE", "8", 1);
+    ::setenv("SSTV2_NUM_TMUS", "1", 1);
+    ::setenv("SSTV2_GAMMA", "2.0", 1);
+    ::setenv("FX_GLIDE_IGNORE_REOPEN", "1", 1);
+    ::setenv("FX_GLIDE_NO_DITHER_SUB", "1", 1);
+    ::setenv("SST_TEXMAP_DISABLE", "1", 1);
+    ::setenv("FX_GLIDE_ALLOC_AUX", "0", 1);
+    ::setenv("FX_GLIDE_BOUNDS_CHECK", "1", 1);
+    const std::string snapArg = snapPath + "@0";
+    ::setenv("FX_GLIDE_SNAPSHOT", snapArg.c_str(), 1);
+
+    void* handle = OpenGlide3Handle();
+    REQUIRE(handle != nullptr);
+
+    auto glideInit = reinterpret_cast<void (*)()>(::dlsym(handle, "grGlideInit"));
+    auto glideShutdown = reinterpret_cast<void (*)()>(::dlsym(handle, "grGlideShutdown"));
+    auto grGetFn = reinterpret_cast<FxU32 (*)(FxU32, FxU32, FxI32*)>(::dlsym(handle, "grGet"));
+    auto texMaxAddr = reinterpret_cast<FxU32 (*)(GrChipID_t)>(::dlsym(handle, "grTexMaxAddress"));
+    auto winOpen = reinterpret_cast<FxU32 (*)(FxU32, FxU32, FxU32, FxU32, FxU32, int, int)>(
+        ::dlsym(handle, "grSstWinOpen"));
+    auto winClose = reinterpret_cast<FxBool (*)(FxU32)>(::dlsym(handle, "grSstWinClose"));
+    auto vertexLayout = reinterpret_cast<void (*)(FxU32, FxI32, FxU32)>(::dlsym(handle, "grVertexLayout"));
+    auto bufferClear = reinterpret_cast<void (*)(GrColor_t, GrAlpha_t, FxU32)>(::dlsym(handle, "grBufferClear"));
+    auto depthMode = reinterpret_cast<void (*)(GrDepthBufferMode_t)>(::dlsym(handle, "grDepthBufferMode"));
+    auto depthFunc = reinterpret_cast<void (*)(GrCmpFnc_t)>(::dlsym(handle, "grDepthBufferFunction"));
+    auto depthMask = reinterpret_cast<void (*)(FxBool)>(::dlsym(handle, "grDepthMask"));
+    auto ditherMode = reinterpret_cast<void (*)(GrDitherMode_t)>(::dlsym(handle, "grDitherMode"));
+    auto colorCombine = reinterpret_cast<void (*)(GrCombineFunction_t, GrCombineFactor_t,
+                                                  GrCombineLocal_t, GrCombineOther_t, FxBool)>(
+        ::dlsym(handle, "grColorCombine"));
+    auto drawTri = reinterpret_cast<void (*)(const void*, const void*, const void*)>(
+        ::dlsym(handle, "grDrawTriangle"));
+    auto lfbRead = reinterpret_cast<FxBool (*)(GrBuffer_t, FxU32, FxU32, FxU32, FxU32, FxU32, void*)>(
+        ::dlsym(handle, "grLfbReadRegion"));
+    auto loadGamma = reinterpret_cast<void (*)(FxU32, FxU32*, FxU32*, FxU32*)>(
+        ::dlsym(handle, "grLoadGammaTable"));
+    auto bufferSwap = reinterpret_cast<void (*)(FxU32)>(::dlsym(handle, "grBufferSwap"));
+
+    glideInit();
+
+    // 1. Hardware sizing queries
+    FxI32 fbBytes = 0, tmuBytes = 0, numTmus = 0;
+    REQUIRE(grGetFn(GR_MEMORY_FB, 4, &fbBytes) == 4);
+    REQUIRE(grGetFn(GR_MEMORY_TMU, 4, &tmuBytes) == 4);
+    REQUIRE(grGetFn(GR_NUM_TMU, 4, &numTmus) == 4);
+    CHECK(fbBytes == 4 * 1024 * 1024);
+    CHECK(tmuBytes == 8 * 1024 * 1024);
+    CHECK(numTmus == 1);
+    CHECK(texMaxAddr(GR_TMU0) == 8u * 1024u * 1024u);
+    CHECK(texMaxAddr(GR_TMU1) == 0u);
+
+    FxU32 ctx = winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                        GR_COLORFORMAT_ABGR, GR_ORIGIN_UPPER_LEFT, 2, 1);
+    REQUIRE(ctx != 0);
+
+    // App tries to reset gamma to linear -> SSTV2_GAMMA=2.0 override remains active
+    FxU32 linearRamp[256];
+    for (FxU32 i = 0; i < 256; ++i) linearRamp[i] = i;
+    loadGamma(256, linearRamp, linearRamp, linearRamp);
+
+    vertexLayout(0x01, 0, 1);
+    vertexLayout(0x02, 8, 1);
+    vertexLayout(0x20, 12, 1);
+    vertexLayout(0x10, 28, 1);
+    vertexLayout(0x03, 32, 1);
+
+    depthMask(FXTRUE);
+    bufferClear(0xFF000000u, 0xFF, 0xFFFF);
+
+    auto drawQuad = [&](float x0, float y0, float x1, float y1, float oow,
+                        float r, float g, float b) {
+      StandardVert tl = {x0, y0, 0.0f, r, g, b, 0.0f, 255.0f, oow, 0.0f, 0.0f, oow};
+      StandardVert tr = {x1, y0, 0.0f, r, g, b, 0.0f, 255.0f, oow, 0.0f, 0.0f, oow};
+      StandardVert br = {x1, y1, 0.0f, r, g, b, 0.0f, 255.0f, oow, 0.0f, 0.0f, oow};
+      StandardVert bl = {x0, y1, 0.0f, r, g, b, 0.0f, 255.0f, oow, 0.0f, 0.0f, oow};
+      drawTri(&tl, &tr, &br);
+      drawTri(&tl, &br, &bl);
+    };
+
+    // 2. FX_GLIDE_ALLOC_AUX=0: depth test disabled -> far BLUE overwrites near RED
+    colorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+                 GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_NONE, FXFALSE);
+    depthMode(GR_DEPTHBUFFER_WBUFFER);
+    depthFunc(GR_CMP_LESS);
+    depthMask(FXTRUE);
+    drawQuad(20.0f, 20.0f, 120.0f, 120.0f, 0.10f, 240.0f, 20.0f, 20.0f);
+    drawQuad(30.0f, 30.0f, 110.0f, 110.0f, 0.01f, 20.0f, 40.0f, 240.0f);
+    depthMode(GR_DEPTHBUFFER_DISABLE);
+    depthMask(FXFALSE);
+
+    // Pure RED patch at (150..250, 20..120) to verify PPM ABGR->RGB channel order
+    drawQuad(150.0f, 20.0f, 250.0f, 120.0f, 1.0f, 240.0f, 16.0f, 16.0f);
+
+    // 3. FX_GLIDE_NO_DITHER_SUB=1: flat (124,122,124) with GR_DITHER_4x4 has 0 R5 spread
+    ditherMode(GR_DITHER_4x4);
+    drawQuad(300.0f, 20.0f, 360.0f, 80.0f, 1.0f, 124.0f, 122.0f, 124.0f);
+    ditherMode(GR_DITHER_DISABLE);
+
+    // 4. FX_GLIDE_BOUNDS_CHECK=1: submit off-screen triangle
+    StandardVert oa = {720.0f, 540.0f, 0.0f, 255.0f, 255.0f, 0.0f, 0.0f, 255.0f, 1.0f, 0.0f, 0.0f, 1.0f};
+    StandardVert ob = {820.0f, 540.0f, 0.0f, 255.0f, 255.0f, 0.0f, 0.0f, 255.0f, 1.0f, 0.0f, 0.0f, 1.0f};
+    StandardVert oc = {770.0f, 640.0f, 0.0f, 255.0f, 255.0f, 0.0f, 0.0f, 255.0f, 1.0f, 0.0f, 0.0f, 1.0f};
+    drawTri(&oa, &ob, &oc);
+
+    // 5. Verify depth disabled (center of 30..110 is BLUE)
+    uint16_t auxPx = 0;
+    REQUIRE(lfbRead(GR_BUFFER_BACKBUFFER, 70, 70, 1, 1, 2, &auxPx) == FXTRUE);
+    const int auxR = ((auxPx >> 11) & 31) << 3;
+    const int auxB = (auxPx & 31) << 3;
+    CHECK(auxB > 180);
+    CHECK(auxR < 60);
+
+    // 6. Verify dither suppressed (16x16 block inside 300..360 has uniform R5)
+    uint16_t dithBlock[16 * 16] = {};
+    REQUIRE(lfbRead(GR_BUFFER_BACKBUFFER, 316, 36, 16, 16, 16 * 2, dithBlock) == FXTRUE);
+    int r5Min = 31, r5Max = 0;
+    for (uint16_t p : dithBlock) {
+      int r5 = (p >> 11) & 31;
+      r5Min = std::min(r5Min, r5);
+      r5Max = std::max(r5Max, r5);
+    }
+    CHECK(r5Min == r5Max);
+
+    // 7. FX_GLIDE_IGNORE_REOPEN=1: redundant grSstWinOpen preserves red patch
+    FxU32 ctx2 = winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                         GR_COLORFORMAT_ABGR, GR_ORIGIN_UPPER_LEFT, 2, 1);
+    CHECK(ctx2 != 0);
+    uint16_t redPx = 0;
+    REQUIRE(lfbRead(GR_BUFFER_BACKBUFFER, 200, 70, 1, 1, 2, &redPx) == FXTRUE);
+    CHECK((((redPx >> 11) & 31) << 3) > 200);
+    CHECK(((redPx & 31) << 3) < 40);
+
+    // 8. Swap frame 0 -> triggers FX_GLIDE_SNAPSHOT
+    bufferSwap(0);
+
+    winClose(ctx);
+    glideShutdown();
+    ::dlclose(handle);
+
+    // Verify PPM snapshot file exists, has exact binary P6 size, and accurate RGB (no R/B swap)
+    std::ifstream snapIn(snapPath, std::ios::binary);
+    REQUIRE(snapIn.is_open());
+    std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(snapIn)),
+                               std::istreambuf_iterator<char>());
+    const std::string expectedHdr = "P6\n640 480\n255\n";
+    REQUIRE(bytes.size() == expectedHdr.size() + 640u * 480u * 3u);
+    CHECK(std::string(bytes.begin(), bytes.begin() + expectedHdr.size()) == expectedHdr);
+    const size_t redOffset = expectedHdr.size() + (70u * 640u + 200u) * 3u;
+    CHECK(bytes[redOffset + 0] > 200);  // R
+    CHECK(bytes[redOffset + 1] < 40);   // G
+    CHECK(bytes[redOffset + 2] < 40);   // B (proves ABGR -> RGB unpack is exact)
+
+    // Verify bounds check and gamma override were logged
+    std::ifstream logIn(logPath);
+    REQUIRE(logIn.is_open());
+    const std::string logContent((std::istreambuf_iterator<char>(logIn)),
+                                 std::istreambuf_iterator<char>());
+    CHECK(logContent.find("[BoundsCheck]") != std::string::npos);
+    CHECK(logContent.find("Applying authentic gamma override: 2") != std::string::npos);
+
+    std::remove(logPath.c_str());
+    std::remove(snapPath.c_str());
+  }
+#endif
+}

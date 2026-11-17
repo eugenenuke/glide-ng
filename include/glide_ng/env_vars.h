@@ -42,10 +42,27 @@
 #define GLIDE_NG_ENV_VK_CACHE_PATH       "GLIDE_NG_VK_CACHE_PATH"
 #define GLIDE_NG_ENV_GLES_VBO_SIZE       "GLIDE_NG_GLES_VBO_SIZE"
 
-/* Implemented authentic 3dfx Glide environment variable names */
+/* Implemented authentic 3dfx Glide environment variable names (Phase 1 & Phase 2) */
 #define GLIDE_FX_ENV_NO_SPLASH           "FX_GLIDE_NO_SPLASH"
 #define GLIDE_FX_ENV_SHAMELESS_PLUG      "FX_GLIDE_SHAMELESS_PLUG"
 #define GLIDE_FX_ENV_SWAPINTERVAL        "FX_GLIDE_SWAPINTERVAL"
+#define GLIDE_FX_ENV_FBRAM               "FX_GLIDE_FBRAM"
+#define GLIDE_FX_ENV_TMU_MEMSIZE         "FX_GLIDE_TMU_MEMSIZE"
+#define GLIDE_FX_ENV_NUM_TMUS            "SSTV2_NUM_TMUS"
+#define GLIDE_FX_ENV_GAMMA               "SST_GAMMA"
+#define GLIDE_FX_ENV_V2_GAMMA            "SSTV2_GAMMA"
+#define GLIDE_FX_ENV_SCREENREFRESH       "SST_SCREENREFRESH"
+#define GLIDE_FX_ENV_V2_SCREENREFRESH    "SSTV2_SCREENREFRESH"
+#define GLIDE_FX_ENV_IGNORE_REOPEN       "FX_GLIDE_IGNORE_REOPEN"
+#define GLIDE_FX_ENV_NO_DITHER_SUB       "FX_GLIDE_NO_DITHER_SUB"
+#define GLIDE_FX_ENV_FORCE_BILINEAR      "SSTV2_FORCE_BILINEAR"
+#define GLIDE_FX_ENV_FORCE_TRILINEAR     "SSTV2_FORCE_TRILINEAR"
+#define GLIDE_FX_ENV_TEXMAP_DISABLE      "SST_TEXMAP_DISABLE"
+#define GLIDE_FX_ENV_BOUNDS_CHECK        "FX_GLIDE_BOUNDS_CHECK"
+#define GLIDE_FX_ENV_ALLOC_COLOR         "FX_GLIDE_ALLOC_COLOR"
+#define GLIDE_FX_ENV_ALLOC_AUX           "FX_GLIDE_ALLOC_AUX"
+#define GLIDE_FX_ENV_SNAPSHOT            "FX_GLIDE_SNAPSHOT"
+#define GLIDE_FX_ENV_SNAPSHOT_ALIAS      "FX_SNAPSHOT"
 
 /* X-macro registry for glide-ng environment variables:
  *   X(SYMBOL_SUFFIX, ENV_NAME, INI_KEY, CATEGORY)
@@ -89,7 +106,24 @@
 #define GLIDE_FX_ENV_VARS_X(X)                                                                      \
   X(NO_SPLASH,           GLIDE_FX_ENV_NO_SPLASH,           "glide.no_splash",          "3dfx")      \
   X(SHAMELESS_PLUG,      GLIDE_FX_ENV_SHAMELESS_PLUG,      "glide.shameless_plug",     "3dfx")      \
-  X(SWAPINTERVAL,        GLIDE_FX_ENV_SWAPINTERVAL,        "glide.swap_interval",      "3dfx")
+  X(SWAPINTERVAL,        GLIDE_FX_ENV_SWAPINTERVAL,        "glide.swap_interval",      "3dfx")      \
+  X(FBRAM,               GLIDE_FX_ENV_FBRAM,               "hardware.fbi_memory_mb",   "3dfx")      \
+  X(TMU_MEMSIZE,         GLIDE_FX_ENV_TMU_MEMSIZE,         "hardware.tmu_memory_mb",   "3dfx")      \
+  X(NUM_TMUS,            GLIDE_FX_ENV_NUM_TMUS,            "hardware.tmu_count",       "3dfx")      \
+  X(GAMMA,               GLIDE_FX_ENV_GAMMA,               "glide.gamma",              "3dfx")      \
+  X(V2_GAMMA,            GLIDE_FX_ENV_V2_GAMMA,            "glide.gamma",              "3dfx")      \
+  X(SCREENREFRESH,       GLIDE_FX_ENV_SCREENREFRESH,       "glide.screen_refresh",     "3dfx")      \
+  X(V2_SCREENREFRESH,    GLIDE_FX_ENV_V2_SCREENREFRESH,    "glide.screen_refresh",     "3dfx")      \
+  X(IGNORE_REOPEN,       GLIDE_FX_ENV_IGNORE_REOPEN,       "glide.ignore_reopen",      "3dfx")      \
+  X(NO_DITHER_SUB,       GLIDE_FX_ENV_NO_DITHER_SUB,       "glide.no_dither_sub",      "3dfx")      \
+  X(FORCE_BILINEAR,      GLIDE_FX_ENV_FORCE_BILINEAR,      "glide.force_bilinear",     "3dfx")      \
+  X(FORCE_TRILINEAR,     GLIDE_FX_ENV_FORCE_TRILINEAR,     "glide.force_trilinear",    "3dfx")      \
+  X(TEXMAP_DISABLE,      GLIDE_FX_ENV_TEXMAP_DISABLE,      "glide.texmap_disable",     "3dfx")      \
+  X(BOUNDS_CHECK,        GLIDE_FX_ENV_BOUNDS_CHECK,        "glide.bounds_check",       "3dfx")      \
+  X(ALLOC_COLOR,         GLIDE_FX_ENV_ALLOC_COLOR,         "glide.alloc_color",        "3dfx")      \
+  X(ALLOC_AUX,           GLIDE_FX_ENV_ALLOC_AUX,           "glide.alloc_aux",          "3dfx")      \
+  X(SNAPSHOT,            GLIDE_FX_ENV_SNAPSHOT,            "glide.snapshot",           "3dfx")      \
+  X(SNAPSHOT_ALIAS,      GLIDE_FX_ENV_SNAPSHOT_ALIAS,      "glide.snapshot",           "3dfx")
 
 /* Prefixes scanned dynamically by diagnostic tools so user-set 3dfx/SST
  * variables appear automatically even on third-party wrappers or real HW.

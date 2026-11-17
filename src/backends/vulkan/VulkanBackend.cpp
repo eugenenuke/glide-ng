@@ -686,6 +686,14 @@ void VulkanBackend::DetachWindow_Locked() {
   }
   m_uploadCmdHasWork[0] = false;
   m_uploadCmdHasWork[1] = false;
+  m_inRenderPass = false;
+  m_batchedVertexCount = 0;
+  m_vertexBufferOffset = 0;
+  m_clearColorPending[0] = m_clearColorPending[1] = false;
+  m_clearDepthPending[0] = m_clearDepthPending[1] = false;
+  if (m_commandBuffer) {
+    m_commandBuffer->reset({});
+  }
 
   DestroySwapchain_Locked();
   DestroyHudResources_Locked();

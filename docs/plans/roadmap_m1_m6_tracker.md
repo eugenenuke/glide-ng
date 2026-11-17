@@ -1,4 +1,4 @@
-# glide-ng Roadmap & Milestone Tracker (M1–M6)
+# glide-ng Roadmap & Milestone Tracker (M1–M10)
 
 > **Status Legend (Strict 3-State Verification Rule)**
 > - `[ ] PENDING` — Not started yet.
@@ -23,8 +23,10 @@
 | **M4** | `fix/m4-parked-sdk-tests` | Fix parked official SDK tests: `test16` ('P' plug R/B inversion on VK/GLES), `test22` (SW multi-pass fog + `largeLod` mip offset), `test25` & `test27` + standalone WSI event responsiveness + Catch2 regressions | Med | `[x] DONE (USER CONFIRMED — 2026-11-15)` | Merged to `main` |
 | **M5** | `fix/m5-carmageddon` | Carmageddon (`carma`) compatibility & performance: black menus, missing in-game UI/HUD, texture/seam/sky/Pratcam glitches, lazy palette swizzling, GPU state-dedup & batching, TMU budget & Vulkan texture pool | Med–High | `[x] DONE (USER CONFIRMED — 2026-11-16)` | Merged to `main` |
 | **M6** | `feat/m6-dos-tools-bench` | Telemetry `app_cpu_ms`/`wrapper_cpu_ms` breakdown + single-source-of-truth `env_vars.h` + Glide 2/3 override fixes + optional Open Watcom v2 DOS cross-build (`vendor/watcom`) + dual Linux/DOS `glide_info` + GPU-bound `glide_bench` with GlideMark score | High | `[x] DONE (USER CONFIRMED — 2026-11-16)` | Merged to `main` |
-| **M7** | `perf/m7-profiling-optimization` | Systematic performance profiling & optimization across frontend, Vulkan, OpenGL ES, LFB overlay, texture streaming, and AVX2+FMA Software rasterizer | Med–High | `[x] DONE (USER CONFIRMED — 2026-11-17)` | Merged to `main` |
-| *(Future)* **M8** | `feat/m8-glide-envvars-p2` | Phase-2 authentic `FX_GLIDE_*` / `SST_*` expansion (`FX_GLIDE_FBRAM`, `FX_GLIDE_TMU_MEMSIZE`, `SSTV2_NUM_TMUS`, `SST_GAMMA`, `FX_GLIDE_IGNORE_REOPEN`, `FX_GLIDE_NO_DITHER_SUB`, `FX_GLIDE_BOUNDS_CHECK`, `FX_SNAPSHOT`) + 3DMark-style interactive mini-scene / mini-game showcase (`glide_bench` cinematic/playable mode) | Low–Med | `[ ] DEFERRED` | — |
+| **M7** | `perf/m7-profiling-optimization` | Systematic performance profiling & optimization across frontend, Vulkan, OpenGL ES, LFB overlay, texture streaming, and AVX2+FMA Software rasterizer | Med–High | `[x] DONE (USER CONFIRMED — 2026-11-17)` | Merged to `main` (`beed43a`) |
+| **M8** | `feat/m8-ini-config-envvars-p2` | Clean break to unified `glide-ng.ini` (`IniConfigLoader`) + Phase-2 authentic 3dfx env vars (`FX_GLIDE_FBRAM`, `FX_GLIDE_TMU_MEMSIZE`, `SSTV2_NUM_TMUS`, `SST_GAMMA`, `SST_SCREENREFRESH`, `FX_GLIDE_IGNORE_REOPEN`, `FX_GLIDE_NO_DITHER_SUB`, `SSTV2_FORCE_BILINEAR/TRILINEAR`, `SST_TEXMAP_DISABLE`, `FX_GLIDE_BOUNDS_CHECK`, `FX_GLIDE_ALLOC_COLOR/AUX`, `FX_GLIDE_SNAPSHOT`) + permanent `glide_envtest` tool | Low–Med | `[~] IMPLEMENTED — AWAITING USER VERIFICATION` | — |
+| **M9** | `feat/m9-win32-dll-wine` | 32-bit Win32 (`i686` MinGW-w64) `glide2x.dll` & `glide3x.dll` for Wine/Proton (zero external runtime DLLs: `vulkan-1.dll` + WGL `opengl32.dll` + GDI Software, `__stdcall` + `.def` `@N` exports) + Win32 `glide_info.exe` & `glide_bench.exe` | High | `[ ] PENDING` | — |
+| **M10** | `feat/m10-shrine-torus-demos` | Standalone flagship 3dfx demos: `glide_shrine` (*Voodoo Temple*) and `glide_torus` (*3dfx Reflective Hall*) targeting Linux, DOS/32, and Win32 | Med | `[ ] PENDING` | — |
 
 ---
 
@@ -283,8 +285,29 @@
 
 ---
 
-## 9. Upcoming Milestones (High-Level Scope — Detailed Just-In-Time)
+## 9. Milestone M8: Unified `glide-ng.ini` & Phase-2 Authentic 3dfx Env Vars (`feat/m8-ini-config-envvars-p2`)
 
-### Milestone M8 — Phase-2 Authentic Glide Env Vars & 3DMark-Style Mini-Scene Showcase *(Deferred)*
-- Expand authentic `FX_GLIDE_*` / `SST_*` environment variables (`FX_GLIDE_FBRAM`, `FX_GLIDE_TMU_MEMSIZE`, `SSTV2_NUM_TMUS`, `SST_GAMMA`, `FX_GLIDE_IGNORE_REOPEN`, `FX_GLIDE_NO_DITHER_SUB`, `FX_GLIDE_BOUNDS_CHECK`, `FX_SNAPSHOT`).
-- Add a 3DMark-style deterministic fly-through mini-scene / playable mini-game to `glide_bench` (e.g., *Voodoo Canyon* flight/racer fly-through, *3dfx Temple* multi-pass lightmap + fog showcase, or *Retro Outrun* playable Glide 2.x/3.x demo) combining geometry, mipmapped textures, additive particles, fog, and LFB HUD into a single visual showcase & composite benchmark scene.
+### M8 Task Breakdown
+
+- **`M8.1`** (`745f6ca`) — Clean Break from `glide_config.json` to Unified `glide-ng.ini` (`IniConfigLoader.{h,cpp}`, `WrapperConfig.{h,cpp}`, `Logger.cpp`, `env_vars.h`, `glide-ng.ini.example`, `README.md`, `docs/`):
+  - Replaced `JsonConfigLoader` and `glide_config.json` with a zero-dependency sectioned INI parser (`IniConfigLoader`) supporting `#`/`;` comments, inline comments, UTF-8 BOM, CRLF, quoted strings, unknown-key `[WARN]` diagnostics, and strict 4-layer precedence (`Defaults < glide-ng.ini < Authentic 3dfx < GLIDE_NG_*`).
+  - Unified default runtime file names (`glide-ng.ini`, `glide-ng.log`, `.glide-ng-vkcache.bin`), tracked `glide-ng.ini.example`, added `/glide-ng.ini` to `.gitignore`, removed all live JSON config references across code/tools/demos/tests/docs, and documented optional MinGW-w64 (`i686-posix`) + Wine prerequisites in `README.md`.
+  - **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION`
+- **`M8.2`** — Phase-2 Authentic 3dfx Env Vars, Permanent `glide_envtest` Verifier, Vulkan Reopen Fix, Tests & Docs (`env_vars.h`, `WrapperConfig.h`, `IniConfigLoader.cpp`, `GlideEntryCommon.{h,cpp}`, `glide2_entry.cpp`, `glide3_entry.cpp`, `VulkanBackend.cpp`, `Logger.cpp`, `tools/glide_envtest/glide_envtest.c`, `tools/common/glide2_dos_ovl.h`, `tools/CMakeLists.txt`, `tests/test_glide3.cpp`, `tests/test_architecture.cpp`, `docs/glide_environment_variables.md`):
+  - Implemented all 17 Phase-2 authentic 3dfx variables with full `glide-ng.ini` parity: `FX_GLIDE_FBRAM`, `FX_GLIDE_TMU_MEMSIZE`, `SSTV2_NUM_TMUS`, `SST_GAMMA`/`SSTV2_GAMMA`, `SST_SCREENREFRESH`/`SSTV2_SCREENREFRESH`, `FX_GLIDE_IGNORE_REOPEN`, `FX_GLIDE_NO_DITHER_SUB`, `SSTV2_FORCE_BILINEAR`, `SSTV2_FORCE_TRILINEAR`, `SST_TEXMAP_DISABLE`, `FX_GLIDE_BOUNDS_CHECK`, `FX_GLIDE_ALLOC_COLOR`, `FX_GLIDE_ALLOC_AUX`, and `FX_GLIDE_SNAPSHOT`/`FX_SNAPSHOT` (binary `P6` PPM capture honoring `ARGB`/`ABGR`).
+  - Fixed a Vulkan segfault (`vkCmdEndRenderPass` with stale `m_inRenderPass = true`) in `VulkanBackend::DetachWindow_Locked()` when an application re-invokes `grSstWinOpen` mid-frame without `FX_GLIDE_IGNORE_REOPEN=1`.
+  - Created permanent pure-C99 verification tool (`glide2_envtest`, `glide3_envtest`, and DOS/32 `build/dos/glide_envtest.exe`) with 4-quadrant visual test card + automated RGB565 LFB probe verdicts (`--verify`, `--test-reopen`, `--test-bounds`, `--splash`, `--shameless-plug`), plus comprehensive Catch2 `[Config][EnvVars][M8]` and `[Overrides][EnvVars][M8]` tests and copy-paste usage examples in `docs/glide_environment_variables.md`.
+  - **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION`
+
+---
+
+## 10. Upcoming Milestones (High-Level Scope — Detailed Just-In-Time)
+
+### Milestone M9 — Win32 32-bit `glide2x.dll` & `glide3x.dll` for Wine/Proton (`feat/m9-win32-dll-wine`) *(Pending)*
+- Cross-compile 32-bit (`i686-w64-mingw32`, POSIX threads) `glide2x.dll` and `glide3x.dll` with authentic `__stdcall` ABI, `.def` `@N` exports, and zero external runtime DLL dependencies (`vulkan-1.dll` via winevulkan + WGL `opengl32.dll` + Win32 GDI `StretchDIBits` Software, native Win32 `HWND` hosting without SDL2).
+- Cross-compile Win32 `glide_info.exe`, `glide_bench.exe`, and `glide_envtest.exe` and validate end-to-end under Wine (`wine` / `wine32:i386`) across all 3 backends.
+
+### Milestone M10 — Flagship Standalone 3dfx Demos (`feat/m10-shrine-torus-demos`) *(Pending)*
+- Build two standalone, authentic Glide 2.x/3.x showcase tools targeting Linux, DOS/32, and Win32:
+  - **`glide_shrine` (*Voodoo Temple*)**: Two-pass `GR_FOG_ADD2`/`MULT2` + `PREFOG_COLOR` lightmapped temple hall with mipmapped pillars, exponential fog, and additive torch sprites.
+  - **`glide_torus` (*3dfx Reflective Hall*)**: Multi-texturing (`TMU0 + TMU1` environment-mapped specular chrome) rotating torus knot with translucent floor reflections, dynamic colored lights, and smooth camera orbit.

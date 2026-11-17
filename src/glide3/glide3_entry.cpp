@@ -61,10 +61,9 @@ bool s_shamelessPlug = false;
 // Phase 4 states
 uint32_t s_stippleMode = 0;
 uint32_t s_stipplePattern = 0xFFFFFFFF;
+bool s_windowOpen = false;
 
 inline void TransformVertexIfNecessary(GlideWrapper::ModernVertex& mv) {
-  EntryCommon::SanitizeVertex(s_state, mv);
-
   if (s_coordSpace == 1) {  // GR_CLIP_COORDS
     const bool depthActive = (s_state.depthMode != 0);
     mv.pos[0] = (mv.pos[0] + 1.0f) * 0.5f * s_viewportWidth + s_viewportX;
@@ -75,10 +74,12 @@ inline void TransformVertexIfNecessary(GlideWrapper::ModernVertex& mv) {
           s_depthRangeNear;
     }
   }
+  EntryCommon::SanitizeVertex(s_state, mv);
 }
 
 void ResetFrontendState() {
   s_state.Reset(/*defaultLfbConstantAlpha=*/0, /*defaultTexCombineFunc=*/1);
+  s_windowOpen = false;
   s_coordSpace = 0;
   s_viewportX = 0.0f;
   s_viewportY = 0.0f;
@@ -182,6 +183,7 @@ inline void EnsureEngineInitialized() {
 }
 
 FX_ENTRY void FX_CALL grGlideShutdown(void) {
+  s_windowOpen = false;
   EntryCommon::ShutdownGlide("Glide 3.x");
 }
 
@@ -192,11 +194,19 @@ FX_ENTRY GrContext_t FX_CALL grSstWinOpen(AnyPtr hWnd,
                                           GrOriginLocation_t origin,
                                           int nColBuffers, int nAuxBuffers) {
   EnsureEngineInitialized();
+  const auto& cfg = GlideWrapper::EmulationRegistry::GetInstance().GetConfig();
+  if (s_windowOpen && cfg.ignoreReopen) {
+    GLIDE_LOG(INFO, "Frontend",
+              "grSstWinOpen (Glide 3.x) ignored while window is active "
+              "(FX_GLIDE_IGNORE_REOPEN=1).");
+    return 1;
+  }
   GlideWrapper::BackendManager::GetInstance().SetSplashAnimator(
       std::make_unique<GlideWrapper::GlideSplashAnimator>());
   GLIDE_LOG(INFO, "Frontend",
             "grSstWinOpen (Glide 3.x) invoked. Res="
-                << resolution << ", Buffers=" << nColBuffers);
+                << resolution << ", Buffers=" << nColBuffers
+                << ", Aux=" << nAuxBuffers);
 
   const auto dims = EntryCommon::ResolveResolution(resolution);
   const uint32_t width = dims.width;
@@ -228,7 +238,10 @@ FX_ENTRY GrContext_t FX_CALL grSstWinOpen(AnyPtr hWnd,
   backend->SetSstOrigin(origin);
 
   if (attached) {
+    s_windowOpen = true;
     EntryCommon::ConfigureTmuMemoryLimits();
+    EntryCommon::ApplyPostWinOpenOverrides(s_state, format, nColBuffers,
+                                           nAuxBuffers);
   }
 
   return attached ? 1 : 0;
@@ -237,6 +250,7 @@ FX_ENTRY GrContext_t FX_CALL grSstWinOpen(AnyPtr hWnd,
 FX_ENTRY FxBool FX_CALL grSstWinClose(GrContext_t context) {
   EnsureEngineInitialized();
   (void)context;
+  s_windowOpen = false;
   EntryCommon::CloseWindow("grSstWinClose (Glide 3.x) invoked.");
   return FXTRUE;
 }
@@ -463,10 +477,12 @@ FX_ENTRY FxU32 FX_CALL grGet(FxU32 pname, FxU32 plength, FxI32* params) {
 
   switch (pname) {
     case GR_MEMORY_FB:
-      *params = static_cast<FxI32>(config.fbiMemoryMb * 1024 * 1024);
+      *params = static_cast<FxI32>(std::max(1u, config.fbiMemoryMb) * 1024u *
+                                   1024u);
       return 4;
     case GR_MEMORY_TMU:
-      *params = static_cast<FxI32>(config.tmuMemoryMb * 1024 * 1024);
+      *params = static_cast<FxI32>(std::max(1u, config.tmuMemoryMb) * 1024u *
+                                   1024u);
       return 4;
     case GR_NUM_BOARDS:
       *params = 1;
@@ -656,7 +672,7 @@ FX_ENTRY FxU32 FX_CALL grTexMaxAddress(GrChipID_t tmu) {
                   << tmu << " -> 0");
     return 0;
   }
-  const uint32_t tmuBytes = std::max(2u, config.tmuMemoryMb) * 1024u * 1024u;
+  const uint32_t tmuBytes = std::max(1u, config.tmuMemoryMb) * 1024u * 1024u;
   GLIDE_LOG(DEBUG, "Frontend",
             "grTexMaxAddress (Glide 3.x) invoked for TMU="
                 << tmu << " -> 0x" << std::hex << tmuBytes << std::dec);
