@@ -1,4 +1,4 @@
-#include "JsonConfigLoader.h"
+#include "IniConfigLoader.h"
 #include "Logger.h"
 #include "glide_ng/env_vars.h"
 #include <algorithm>
@@ -7,6 +7,8 @@
 #include <cstdlib>
 #include <fstream>
 #include <sstream>
+#include <utility>
+#include <vector>
 
 namespace GlideWrapper {
 
@@ -24,149 +26,128 @@ std::string ToUpper(std::string s) {
     return s;
 }
 
-bool IsJsonWhitespace(char c) {
-    return c == ' ' || c == '\t' || c == '\r' || c == '\n';
+std::string Trim(const std::string& s) {
+    size_t start = 0;
+    while (start < s.size() && std::isspace(static_cast<unsigned char>(s[start]))) {
+        ++start;
+    }
+    size_t end = s.size();
+    while (end > start && std::isspace(static_cast<unsigned char>(s[end - 1]))) {
+        --end;
+    }
+    return s.substr(start, end - start);
 }
 
-bool IsJsonValueDelimiter(char c) {
-    return IsJsonWhitespace(c) || c == ',' || c == '}' || c == ']';
-}
+// Strips inline '#' or ';' comments outside quotes when preceded by whitespace
+// (or at position 0), then unquotes matching "..." or '...' literals.
+std::string ParseIniValue(const std::string& raw) {
+    std::string trimmed = Trim(raw);
+    if (trimmed.empty()) return "";
 
-bool ParseJsonStringLiteral(const std::string& content, size_t& pos, std::string& outStr) {
-    if (pos >= content.size() || content[pos] != '"') return false;
-    ++pos;
-    outStr.clear();
-    while (pos < content.size()) {
-        char c = content[pos++];
-        if (c == '\\') {
-            if (pos >= content.size()) return false;
-            char esc = content[pos++];
-            switch (esc) {
-                case '"':  outStr += '"'; break;
-                case '\\': outStr += '\\'; break;
-                case '/':  outStr += '/'; break;
-                case 'b':  outStr += '\b'; break;
-                case 'f':  outStr += '\f'; break;
-                case 'n':  outStr += '\n'; break;
-                case 'r':  outStr += '\r'; break;
-                case 't':  outStr += '\t'; break;
-                default:   outStr += esc; break;
+    char quote = '\0';
+    size_t cutPos = trimmed.size();
+    for (size_t i = 0; i < trimmed.size(); ++i) {
+        char c = trimmed[i];
+        if (quote != '\0') {
+            if (c == '\\' && i + 1 < trimmed.size()) {
+                ++i;
+                continue;
             }
-        } else if (c == '"') {
-            return true;
-        } else {
-            outStr += c;
+            if (c == quote) {
+                quote = '\0';
+            }
+            continue;
+        }
+        if (c == '"' || c == '\'') {
+            quote = c;
+            continue;
+        }
+        if ((c == '#' || c == ';') &&
+            (i == 0 || std::isspace(static_cast<unsigned char>(trimmed[i - 1])))) {
+            cutPos = i;
+            break;
         }
     }
-    return false;
-}
 
-// Finds the value start offset for a top-level JSON object key (depth == 1).
-// Skips string values and nested objects/arrays so values or nested keys cannot
-// spoof top-level configuration fields. If a key appears more than once, the
-// last occurrence wins.
-bool FindJsonKeyValue(const std::string& content, const std::string& targetKey, size_t& outValStart) {
-    int depth = 0;
-    bool found = false;
-    size_t i = 0;
-    const size_t n = content.size();
-
-    while (i < n) {
-        char c = content[i];
-        if (c == '{' || c == '[') {
-            ++depth;
-            ++i;
-            continue;
-        }
-        if (c == '}' || c == ']') {
-            --depth;
-            ++i;
-            continue;
-        }
-        if (c == '"') {
-            std::string str;
-            if (!ParseJsonStringLiteral(content, i, str)) {
-                return found;
-            }
-            if (depth == 1) {
-                size_t j = i;
-                while (j < n && IsJsonWhitespace(content[j])) ++j;
-                if (j < n && content[j] == ':') {
-                    ++j;
-                    while (j < n && IsJsonWhitespace(content[j])) ++j;
-                    if (str == targetKey && j < n) {
-                        outValStart = j;
-                        found = true;
-                    }
-                    i = j;
+    std::string val = Trim(trimmed.substr(0, cutPos));
+    if (val.size() >= 2 &&
+        ((val.front() == '"' && val.back() == '"') ||
+         (val.front() == '\'' && val.back() == '\''))) {
+        const char q = val.front();
+        std::string unquoted;
+        unquoted.reserve(val.size() - 2);
+        for (size_t i = 1; i + 1 < val.size(); ++i) {
+            if (val[i] == '\\' && i + 2 < val.size()) {
+                char next = val[++i];
+                if (next == q || next == '\\') {
+                    unquoted.push_back(next);
+                } else {
+                    unquoted.push_back('\\');
+                    unquoted.push_back(next);
                 }
+            } else {
+                unquoted.push_back(val[i]);
+            }
+        }
+        return unquoted;
+    }
+    return val;
+}
+
+struct IniEntry {
+    std::string section;  // normalized lowercase, empty if before any [section]
+    std::string key;      // normalized lowercase
+    std::string value;
+};
+
+std::vector<IniEntry> ParseIniDocument(const std::string& content) {
+    std::vector<IniEntry> entries;
+    size_t pos = 0;
+    // Strip UTF-8 BOM if present
+    if (content.size() >= 3 &&
+        static_cast<unsigned char>(content[0]) == 0xEF &&
+        static_cast<unsigned char>(content[1]) == 0xBB &&
+        static_cast<unsigned char>(content[2]) == 0xBF) {
+        pos = 3;
+    }
+
+    std::string currentSection;
+    while (pos < content.size()) {
+        size_t nl = content.find('\n', pos);
+        if (nl == std::string::npos) nl = content.size();
+        std::string line = content.substr(pos, nl - pos);
+        pos = (nl < content.size()) ? nl + 1 : content.size();
+
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        std::string trimmed = Trim(line);
+        if (trimmed.empty() || trimmed[0] == '#' || trimmed[0] == ';') {
+            continue;
+        }
+
+        // Section header: [section] (optional trailing inline comment)
+        if (trimmed.front() == '[') {
+            size_t closeBracket = trimmed.find(']');
+            if (closeBracket != std::string::npos) {
+                currentSection = ToLower(Trim(trimmed.substr(1, closeBracket - 1)));
             }
             continue;
         }
-        ++i;
-    }
-    return found;
-}
 
-bool ExtractJsonString(const std::string& content, const std::string& key, std::string& outVal) {
-    size_t pos = 0;
-    if (!FindJsonKeyValue(content, key, pos)) return false;
-    return ParseJsonStringLiteral(content, pos, outVal);
-}
+        // Key = Value
+        size_t eq = trimmed.find('=');
+        if (eq == std::string::npos) {
+            // Non-INI line (e.g. stray braces or JSON lines) — ignore cleanly
+            continue;
+        }
 
-bool ExtractJsonStringOrNumber(const std::string& content, const std::string& key, std::string& outVal) {
-    size_t pos = 0;
-    if (!FindJsonKeyValue(content, key, pos)) return false;
-    if (content[pos] == '"') {
-        return ParseJsonStringLiteral(content, pos, outVal);
+        std::string key = ToLower(Trim(trimmed.substr(0, eq)));
+        if (key.empty()) continue;
+        std::string value = ParseIniValue(trimmed.substr(eq + 1));
+        entries.push_back({currentSection, std::move(key), std::move(value)});
     }
-    size_t start = pos;
-    while (pos < content.size() && !IsJsonValueDelimiter(content[pos])) {
-        ++pos;
-    }
-    if (pos == start) return false;
-    outVal = content.substr(start, pos - start);
-    return true;
-}
-
-bool ExtractJsonBool(const std::string& content, const std::string& key, bool& outVal) {
-    size_t pos = 0;
-    if (!FindJsonKeyValue(content, key, pos)) return false;
-    if (content.compare(pos, 4, "true") == 0 &&
-        (pos + 4 == content.size() || IsJsonValueDelimiter(content[pos + 4]))) {
-        outVal = true;
-        return true;
-    }
-    if (content.compare(pos, 5, "false") == 0 &&
-        (pos + 5 == content.size() || IsJsonValueDelimiter(content[pos + 5]))) {
-        outVal = false;
-        return true;
-    }
-    return false;
-}
-
-bool ExtractJsonDouble(const std::string& content, const std::string& key, double& outVal) {
-    size_t pos = 0;
-    if (!FindJsonKeyValue(content, key, pos)) return false;
-    const char* startPtr = content.c_str() + pos;
-    char* endPtr = nullptr;
-    double parsed = std::strtod(startPtr, &endPtr);
-    if (endPtr == startPtr) return false;
-    if (*endPtr != '\0' && !IsJsonValueDelimiter(*endPtr)) return false;
-    outVal = parsed;
-    return true;
-}
-
-bool ExtractJsonInt(const std::string& content, const std::string& key, int& outVal) {
-    size_t pos = 0;
-    if (!FindJsonKeyValue(content, key, pos)) return false;
-    const char* startPtr = content.c_str() + pos;
-    char* endPtr = nullptr;
-    long parsed = std::strtol(startPtr, &endPtr, 10);
-    if (endPtr == startPtr) return false;
-    if (*endPtr != '\0' && !IsJsonValueDelimiter(*endPtr)) return false;
-    outVal = static_cast<int>(parsed);
-    return true;
+    return entries;
 }
 
 bool ParseBoolString(const std::string& raw, bool& outVal) {
@@ -303,12 +284,7 @@ bool ParseUint64String(const std::string& raw, uint64_t& outVal) {
 
 bool ParseTraceFramesString(const std::string& raw, bool& outActive,
                             uint64_t& outStart, uint64_t& outEnd) {
-    std::string trimmed;
-    size_t s = 0;
-    while (s < raw.size() && std::isspace(static_cast<unsigned char>(raw[s]))) ++s;
-    size_t e = raw.size();
-    while (e > s && std::isspace(static_cast<unsigned char>(raw[e - 1]))) --e;
-    trimmed = raw.substr(s, e - s);
+    std::string trimmed = Trim(raw);
     if (trimmed.empty()) return false;
 
     std::string lower = ToLower(trimmed);
@@ -329,7 +305,6 @@ bool ParseTraceFramesString(const std::string& raw, bool& outActive,
         return true;
     }
 
-    // Reject multiple dashes (e.g. "1-2-3")
     if (trimmed.find('-', dash + 1) != std::string::npos) return false;
 
     std::string left = trimmed.substr(0, dash);
@@ -362,7 +337,6 @@ bool ParsePerfLogString(const std::string& raw, bool& outEnabled, std::string& o
         outCsvPath.clear();
         return true;
     }
-    // Any other non-empty string is treated as a CSV output path (and enables periodic [PERF] log)
     outEnabled = true;
     outCsvPath = raw;
     return true;
@@ -376,6 +350,27 @@ const char* HudPositionToShortString(HudPosition pos) {
         case HudPosition::BOTTOM_RIGHT: return "br";
     }
     return "tl";
+}
+
+bool ParseHudPositionString(const std::string& raw, HudPosition& outPos) {
+    const std::string val = ToLower(Trim(raw));
+    if (val == "tl" || val == "top-left" || val == "topleft") {
+        outPos = HudPosition::TOP_LEFT;
+        return true;
+    }
+    if (val == "tr" || val == "top-right" || val == "topright") {
+        outPos = HudPosition::TOP_RIGHT;
+        return true;
+    }
+    if (val == "bl" || val == "bottom-left" || val == "bottomleft") {
+        outPos = HudPosition::BOTTOM_LEFT;
+        return true;
+    }
+    if (val == "br" || val == "bottom-right" || val == "bottomright") {
+        outPos = HudPosition::BOTTOM_RIGHT;
+        return true;
+    }
+    return false;
 }
 
 std::string FormatHudMask(uint32_t mask) {
@@ -397,19 +392,23 @@ std::string FormatHudMask(uint32_t mask) {
     return out;
 }
 
+std::string BuildHudSpec(uint32_t mask, HudPosition pos, float scale) {
+    if (mask == HUD_NONE) return "off";
+    std::string spec = FormatHudMask(mask);
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), ",pos=%s,scale=%.2g",
+                  HudPositionToShortString(pos), static_cast<double>(scale));
+    spec += buf;
+    return spec;
+}
+
 bool ParseHudString(const std::string& raw,
                     uint32_t& outMask,
                     HudPosition& outPos,
                     float& outScale,
                     float& outOpacity,
                     std::string& outSpec) {
-    std::string trimmed = raw;
-    while (!trimmed.empty() && std::isspace(static_cast<unsigned char>(trimmed.front()))) {
-        trimmed.erase(trimmed.begin());
-    }
-    while (!trimmed.empty() && std::isspace(static_cast<unsigned char>(trimmed.back()))) {
-        trimmed.pop_back();
-    }
+    std::string trimmed = Trim(raw);
     if (trimmed.empty()) return false;
 
     const std::string wholeLower = ToLower(trimmed);
@@ -436,9 +435,7 @@ bool ParseHudString(const std::string& raw,
     while (start <= trimmed.size()) {
         size_t sep = trimmed.find_first_of(",;", start);
         if (sep == std::string::npos) sep = trimmed.size();
-        std::string tok = trimmed.substr(start, sep - start);
-        while (!tok.empty() && std::isspace(static_cast<unsigned char>(tok.front()))) tok.erase(tok.begin());
-        while (!tok.empty() && std::isspace(static_cast<unsigned char>(tok.back()))) tok.pop_back();
+        std::string tok = Trim(trimmed.substr(start, sep - start));
 
         if (!tok.empty()) {
             const std::string lowerTok = ToLower(tok);
@@ -459,17 +456,7 @@ bool ParseHudString(const std::string& raw,
                         recognizedAny = true;
                     }
                 } else if (key == "position" || key == "pos") {
-                    if (val == "tl" || val == "top-left" || val == "topleft") {
-                        pos = HudPosition::TOP_LEFT;
-                        recognizedAny = true;
-                    } else if (val == "tr" || val == "top-right" || val == "topright") {
-                        pos = HudPosition::TOP_RIGHT;
-                        recognizedAny = true;
-                    } else if (val == "bl" || val == "bottom-left" || val == "bottomleft") {
-                        pos = HudPosition::BOTTOM_LEFT;
-                        recognizedAny = true;
-                    } else if (val == "br" || val == "bottom-right" || val == "bottomright") {
-                        pos = HudPosition::BOTTOM_RIGHT;
+                    if (ParseHudPositionString(val, pos)) {
                         recognizedAny = true;
                     }
                 }
@@ -515,7 +502,6 @@ bool ParseHudString(const std::string& raw,
 
     if (!recognizedAny) return false;
     if (!hasExplicitElement && !explicitlyDisabled) {
-        // Options-only spec (e.g. "scale=2,position=tr") implies default FPS readout
         mask = HUD_FPS;
     }
 
@@ -523,13 +509,7 @@ bool ParseHudString(const std::string& raw,
     outPos = pos;
     outScale = scale;
     outOpacity = opacity;
-    outSpec = FormatHudMask(mask);
-    if (mask != HUD_NONE) {
-        char buf[64];
-        std::snprintf(buf, sizeof(buf), ",pos=%s,scale=%.2g",
-                      HudPositionToShortString(pos), static_cast<double>(scale));
-        outSpec += buf;
-    }
+    outSpec = BuildHudSpec(mask, pos, scale);
     return true;
 }
 
@@ -538,9 +518,13 @@ const char* GetNonEmptyEnv(const char* name) {
     return (val && val[0] != '\0') ? val : nullptr;
 }
 
+bool SectionMatches(const std::string& sec, const char* expected) {
+    return sec.empty() || sec == expected;
+}
+
 }  // namespace
 
-bool JsonConfigLoader::Load(const std::string& configFilePath, WrapperConfig& outConfig) {
+bool IniConfigLoader::Load(const std::string& configFilePath, WrapperConfig& outConfig) {
     // 1. Reset to baseline defaults to prevent state leakage across reloads
     outConfig = WrapperConfig{};
 
@@ -550,210 +534,301 @@ bool JsonConfigLoader::Load(const std::string& configFilePath, WrapperConfig& ou
     bool hasTmuMem = false;
 
     // Resolve config file path (GLIDE_NG_CONFIG overrides default path)
-    std::string effectivePath = configFilePath;
+    std::string effectivePath = configFilePath.empty() ? std::string(DEFAULT_CONFIG_FILE)
+                                                       : configFilePath;
     if (const char* envConfigPath = GetNonEmptyEnv(GLIDE_NG_ENV_CONFIG)) {
         effectivePath = envConfigPath;
         outConfig.settingSources["configFile"] = GLIDE_NG_ENV_CONFIG;
     }
     outConfig.configFilePath = effectivePath;
 
-    // 2. Layer 2: JSON configuration file (overrides defaults)
+    // 2. Layer 2: INI configuration file (overrides defaults)
     std::ifstream file(effectivePath);
     if (file.is_open()) {
         outConfig.configFileLoaded = true;
         std::stringstream ss;
         ss << file.rdbuf();
-        std::string content = ss.str();
+        const std::vector<IniEntry> entries = ParseIniDocument(ss.str());
 
-        std::string strVal;
-        bool boolVal = false;
-        int intVal = 0;
-        double dblVal = 0.0;
+        bool hudSubOptionSet = false;
 
-        if (ExtractJsonString(content, "cardModel", strVal) ||
-            ExtractJsonString(content, "model", strVal)) {
-            if (ParseCardModelString(strVal, outConfig.model)) {
-                outConfig.settingSources["cardModel"] = "json";
+        for (const auto& entry : entries) {
+            const std::string& sec = entry.section;
+            const std::string& key = entry.key;
+            const std::string& val = entry.value;
+
+            bool handled = false;
+            bool boolVal = false;
+            int intVal = 0;
+            double dblVal = 0.0;
+
+            // [core]
+            if (SectionMatches(sec, "core") && key == "backend") {
+                handled = true;
+                if (!val.empty()) {
+                    outConfig.backend = NormalizeBackendString(val);
+                    outConfig.settingSources["backend"] = "ini";
+                }
+            } else if (SectionMatches(sec, "core") &&
+                       (key == "headless" || key == "force_no_window")) {
+                handled = true;
+                if (ParseBoolString(val, boolVal)) {
+                    outConfig.forceNoWindow = boolVal;
+                    outConfig.settingSources["headless"] = "ini";
+                }
+            }
+            // [hardware]
+            else if (SectionMatches(sec, "hardware") &&
+                     (key == "card_model" || key == "model")) {
+                handled = true;
+                if (ParseCardModelString(val, outConfig.model)) {
+                    outConfig.settingSources["cardModel"] = "ini";
+                }
+            } else if (SectionMatches(sec, "hardware") && key == "api_version") {
+                handled = true;
+                if (ParseApiVersionString(val, outConfig.apiVersion)) {
+                    hasApiVersion = true;
+                    outConfig.settingSources["apiVersion"] = "ini";
+                }
+            } else if (SectionMatches(sec, "hardware") && key == "fbi_memory_mb") {
+                handled = true;
+                if (ParseIntString(val, intVal) && intVal > 0) {
+                    outConfig.fbiMemoryMb = static_cast<uint32_t>(intVal);
+                    hasFbiMem = true;
+                    outConfig.settingSources["fbiMemoryMb"] = "ini";
+                }
+            } else if (SectionMatches(sec, "hardware") && key == "tmu_count") {
+                handled = true;
+                if (ParseIntString(val, intVal) && intVal >= 1 && intVal <= 3) {
+                    outConfig.tmuCount = static_cast<uint32_t>(intVal);
+                    hasTmuCount = true;
+                    outConfig.settingSources["tmuCount"] = "ini";
+                }
+            } else if (SectionMatches(sec, "hardware") && key == "tmu_memory_mb") {
+                handled = true;
+                if (ParseIntString(val, intVal) && intVal > 0) {
+                    outConfig.tmuMemoryMb = static_cast<uint32_t>(intVal);
+                    hasTmuMem = true;
+                    outConfig.settingSources["tmuMemoryMb"] = "ini";
+                }
+            } else if (SectionMatches(sec, "hardware") &&
+                       (key == "sli" || key == "enable_sli")) {
+                handled = true;
+                if (ParseBoolString(val, boolVal)) {
+                    outConfig.enableSli = boolVal;
+                    outConfig.settingSources["enableSli"] = "ini";
+                }
+            } else if (SectionMatches(sec, "hardware") && key == "vendor") {
+                handled = true;
+                outConfig.reportedVendorOverride = val;
+                outConfig.settingSources["vendor"] = "ini";
+            } else if (SectionMatches(sec, "hardware") && key == "renderer") {
+                handled = true;
+                outConfig.reportedRendererOverride = val;
+                outConfig.settingSources["renderer"] = "ini";
+            }
+            // [display]
+            else if (SectionMatches(sec, "display") && key == "vsync") {
+                handled = true;
+                if (ParseVsyncString(val, outConfig.vsync, outConfig.vsyncStrictFifo)) {
+                    outConfig.settingSources["vsync"] = "ini";
+                }
+            } else if (SectionMatches(sec, "display") && key == "vsync_strict_fifo") {
+                handled = true;
+                if (ParseBoolString(val, boolVal)) {
+                    outConfig.vsyncStrictFifo = boolVal;
+                    if (boolVal) outConfig.vsync = true;
+                    outConfig.settingSources["vsyncStrictFifo"] = "ini";
+                }
+            } else if (SectionMatches(sec, "display") && key == "max_fps") {
+                handled = true;
+                if (ParseDoubleString(val, dblVal) && dblVal >= 0.0) {
+                    outConfig.maxFps = static_cast<float>(dblVal);
+                    outConfig.settingSources["maxFps"] = "ini";
+                }
+            } else if (SectionMatches(sec, "display") &&
+                       (key == "msaa" || key == "msaa_samples")) {
+                handled = true;
+                if (ParseIntString(val, intVal) && intVal >= 0) {
+                    outConfig.msaaSamples = static_cast<uint32_t>(intVal);
+                    outConfig.settingSources["msaaSamples"] = "ini";
+                }
+            } else if (SectionMatches(sec, "display") && key == "window_scale") {
+                handled = true;
+                if (ParseIntString(val, intVal) && intVal >= 1 && intVal <= 8) {
+                    outConfig.windowScale = static_cast<uint32_t>(intVal);
+                    outConfig.settingSources["windowScale"] = "ini";
+                }
+            } else if (SectionMatches(sec, "display") && key == "presentation_filter") {
+                handled = true;
+                if (ParsePresentationFilterString(val, outConfig.presentationFilter)) {
+                    outConfig.settingSources["presentationFilter"] = "ini";
+                }
+            }
+            // [logging]
+            else if ((sec == "logging" && (key == "level" || key == "log_level")) ||
+                     (sec.empty() && key == "log_level")) {
+                handled = true;
+                if (ParseLogLevelString(val, outConfig.logLevel)) {
+                    outConfig.settingSources["logLevel"] = "ini";
+                }
+            } else if ((sec == "logging" && (key == "console" || key == "log_to_console")) ||
+                       (sec.empty() && key == "log_to_console")) {
+                handled = true;
+                if (ParseBoolString(val, boolVal)) {
+                    outConfig.logToConsole = boolVal;
+                    outConfig.settingSources["logToConsole"] = "ini";
+                }
+            } else if ((sec == "logging" && (key == "file" || key == "log_file")) ||
+                       (sec.empty() && key == "log_file")) {
+                handled = true;
+                if (!val.empty()) {
+                    outConfig.logFile = val;
+                    outConfig.settingSources["logFile"] = "ini";
+                }
+            } else if ((sec == "logging" && (key == "categories" || key == "log_categories")) ||
+                       (sec.empty() && key == "log_categories")) {
+                handled = true;
+                uint32_t mask = 0u;
+                if (ParseLogCategories(val, mask)) {
+                    outConfig.logCategoryMask = mask;
+                    outConfig.logCategoriesSpec = FormatLogCategories(mask);
+                    outConfig.settingSources["logCategories"] = "ini";
+                }
+            } else if (SectionMatches(sec, "logging") && key == "trace_frames") {
+                handled = true;
+                bool active = false;
+                uint64_t startF = 0;
+                uint64_t endF = UINT64_MAX;
+                if (ParseTraceFramesString(val, active, startF, endF)) {
+                    outConfig.traceFrameWindowActive = active;
+                    outConfig.traceFrameStart = startF;
+                    outConfig.traceFrameEnd = endF;
+                    outConfig.traceFramesSpec = val;
+                    outConfig.settingSources["traceFrames"] = "ini";
+                }
+            } else if (SectionMatches(sec, "logging") && key == "perf_log") {
+                handled = true;
+                if (ParsePerfLogString(val, outConfig.perfLogEnabled, outConfig.perfLogCsvPath)) {
+                    outConfig.settingSources["perfLog"] = "ini";
+                }
+            }
+            // [hud]
+            else if ((sec == "hud" && (key == "elements" || key == "hud")) ||
+                     (sec.empty() && key == "hud")) {
+                handled = true;
+                if (ParseHudString(val, outConfig.hudMask, outConfig.hudPosition,
+                                   outConfig.hudScale, outConfig.hudOpacity, outConfig.hudSpec)) {
+                    outConfig.settingSources["hud"] = "ini";
+                }
+            } else if (sec == "hud" && (key == "position" || key == "pos")) {
+                handled = true;
+                if (ParseHudPositionString(val, outConfig.hudPosition)) {
+                    hudSubOptionSet = true;
+                    outConfig.settingSources["hud"] = "ini";
+                }
+            } else if (sec == "hud" && key == "scale") {
+                handled = true;
+                if (ParseDoubleString(val, dblVal)) {
+                    outConfig.hudScale = static_cast<float>(std::clamp(dblVal, 0.5, 4.0));
+                    hudSubOptionSet = true;
+                    outConfig.settingSources["hud"] = "ini";
+                }
+            } else if (sec == "hud" && key == "opacity") {
+                handled = true;
+                if (ParseDoubleString(val, dblVal)) {
+                    outConfig.hudOpacity = static_cast<float>(std::clamp(dblVal, 0.0, 1.0));
+                    hudSubOptionSet = true;
+                    outConfig.settingSources["hud"] = "ini";
+                }
+            }
+            // [glide] (authentic 3dfx overrides)
+            else if ((SectionMatches(sec, "glide") || sec == "display") && key == "no_splash") {
+                handled = true;
+                if (ParseBoolString(val, boolVal)) {
+                    outConfig.noSplash = boolVal;
+                    outConfig.settingSources["noSplash"] = "ini";
+                }
+            } else if ((SectionMatches(sec, "glide") || sec == "display") &&
+                       key == "shameless_plug") {
+                handled = true;
+                if (ParseBoolString(val, boolVal)) {
+                    outConfig.shamelessPlugMode = boolVal ? 1 : 0;
+                    outConfig.settingSources["shamelessPlug"] = "ini";
+                } else if (ParseIntString(val, intVal)) {
+                    outConfig.shamelessPlugMode = (intVal < 0) ? -1 : (intVal != 0 ? 1 : 0);
+                    outConfig.settingSources["shamelessPlug"] = "ini";
+                }
+            } else if ((SectionMatches(sec, "glide") || sec == "display") &&
+                       key == "swap_interval") {
+                handled = true;
+                if (ParseIntString(val, intVal) && intVal >= 0) {
+                    outConfig.swapInterval = intVal;
+                    outConfig.vsync = (intVal > 0);
+                    outConfig.vsyncStrictFifo = false;
+                    outConfig.settingSources["swapInterval"] = "ini";
+                    outConfig.settingSources["vsync"] = "ini";
+                }
+            }
+            // [software]
+            else if ((sec == "software" && (key == "threads" || key == "sw_threads")) ||
+                     (sec.empty() && key == "sw_threads")) {
+                handled = true;
+                if (ParseIntString(val, intVal) && intVal >= 0) {
+                    outConfig.swThreads = static_cast<uint32_t>(intVal);
+                    outConfig.settingSources["swThreads"] = "ini";
+                }
+            } else if ((sec == "software" && (key == "simd" || key == "sw_simd")) ||
+                       (sec.empty() && key == "sw_simd")) {
+                handled = true;
+                if (ParseBoolString(val, boolVal)) {
+                    outConfig.swUseSimd = boolVal;
+                    outConfig.settingSources["swSimd"] = "ini";
+                }
+            } else if ((sec == "software" && (key == "tile_size" || key == "sw_tile_size")) ||
+                       (sec.empty() && key == "sw_tile_size")) {
+                handled = true;
+                if (ParseIntString(val, intVal) && intVal > 0) {
+                    outConfig.swTileSize = static_cast<uint32_t>(intVal);
+                    outConfig.settingSources["swTileSize"] = "ini";
+                }
+            } else if ((sec == "software" && (key == "aa" || key == "sw_aa")) ||
+                       (sec.empty() && key == "sw_aa")) {
+                handled = true;
+                if (!val.empty()) {
+                    outConfig.swAaMode = ToLower(val);
+                    outConfig.settingSources["swAa"] = "ini";
+                }
+            }
+            // [vulkan]
+            else if ((sec == "vulkan" && (key == "cache_path" || key == "vk_cache_path")) ||
+                     (sec.empty() && key == "vk_cache_path")) {
+                handled = true;
+                if (!val.empty()) {
+                    outConfig.vkCachePath = val;
+                    outConfig.settingSources["vkCachePath"] = "ini";
+                }
+            }
+            // [opengl_es]
+            else if (((sec == "opengl_es" || sec == "gles") &&
+                      (key == "vbo_size_mb" || key == "gles_vbo_size")) ||
+                     (sec.empty() && key == "gles_vbo_size")) {
+                handled = true;
+                if (ParseIntString(val, intVal) && intVal > 0) {
+                    outConfig.glesVboSizeMb = static_cast<uint32_t>(intVal);
+                    outConfig.settingSources["glesVboSize"] = "ini";
+                }
+            }
+
+            if (!handled) {
+                std::string fullKey = sec.empty() ? key : (sec + "." + key);
+                outConfig.unknownConfigKeys.push_back(std::move(fullKey));
             }
         }
 
-        if (ExtractJsonStringOrNumber(content, "apiVersion", strVal)) {
-            if (ParseApiVersionString(strVal, outConfig.apiVersion)) {
-                hasApiVersion = true;
-                outConfig.settingSources["apiVersion"] = "json";
-            }
-        }
-
-        if (ExtractJsonString(content, "backend", strVal)) {
-            outConfig.backend = NormalizeBackendString(strVal);
-            outConfig.settingSources["backend"] = "json";
-        }
-
-        if (ExtractJsonInt(content, "fbiMemoryMb", intVal) && intVal > 0) {
-            outConfig.fbiMemoryMb = static_cast<uint32_t>(intVal);
-            hasFbiMem = true;
-            outConfig.settingSources["fbiMemoryMb"] = "json";
-        }
-        if (ExtractJsonInt(content, "tmuCount", intVal) && intVal >= 1 && intVal <= 3) {
-            outConfig.tmuCount = static_cast<uint32_t>(intVal);
-            hasTmuCount = true;
-            outConfig.settingSources["tmuCount"] = "json";
-        }
-        if (ExtractJsonInt(content, "tmuMemoryMb", intVal) && intVal > 0) {
-            outConfig.tmuMemoryMb = static_cast<uint32_t>(intVal);
-            hasTmuMem = true;
-            outConfig.settingSources["tmuMemoryMb"] = "json";
-        }
-        if (ExtractJsonBool(content, "enableSli", boolVal)) {
-            outConfig.enableSli = boolVal;
-            outConfig.settingSources["enableSli"] = "json";
-        }
-        if (ExtractJsonString(content, "vendor", strVal)) {
-            outConfig.reportedVendorOverride = strVal;
-            outConfig.settingSources["vendor"] = "json";
-        }
-        if (ExtractJsonString(content, "renderer", strVal)) {
-            outConfig.reportedRendererOverride = strVal;
-            outConfig.settingSources["renderer"] = "json";
-        }
-
-        if (ExtractJsonBool(content, "headless", boolVal) ||
-            ExtractJsonBool(content, "forceNoWindow", boolVal)) {
-            outConfig.forceNoWindow = boolVal;
-            outConfig.settingSources["headless"] = "json";
-        }
-
-        if (ExtractJsonBool(content, "vsync", boolVal)) {
-            outConfig.vsync = boolVal;
-            outConfig.vsyncStrictFifo = false;
-            outConfig.settingSources["vsync"] = "json";
-        } else if (ExtractJsonString(content, "vsync", strVal)) {
-            if (ParseVsyncString(strVal, outConfig.vsync, outConfig.vsyncStrictFifo)) {
-                outConfig.settingSources["vsync"] = "json";
-            }
-        }
-        if (ExtractJsonBool(content, "vsyncStrictFifo", boolVal)) {
-            outConfig.vsyncStrictFifo = boolVal;
-            if (boolVal) outConfig.vsync = true;
-            outConfig.settingSources["vsyncStrictFifo"] = "json";
-        }
-
-        if (ExtractJsonDouble(content, "maxFps", dblVal) && dblVal >= 0.0) {
-            outConfig.maxFps = static_cast<float>(dblVal);
-            outConfig.settingSources["maxFps"] = "json";
-        }
-        if (ExtractJsonInt(content, "msaaSamples", intVal) && intVal >= 0) {
-            outConfig.msaaSamples = static_cast<uint32_t>(intVal);
-            outConfig.settingSources["msaaSamples"] = "json";
-        }
-        if (ExtractJsonInt(content, "windowScale", intVal) && intVal >= 1 && intVal <= 8) {
-            outConfig.windowScale = static_cast<uint32_t>(intVal);
-            outConfig.settingSources["windowScale"] = "json";
-        }
-        if (ExtractJsonStringOrNumber(content, "presentationFilter", strVal)) {
-            if (ParsePresentationFilterString(strVal, outConfig.presentationFilter)) {
-                outConfig.settingSources["presentationFilter"] = "json";
-            }
-        }
-
-        if (ExtractJsonStringOrNumber(content, "logLevel", strVal)) {
-            if (ParseLogLevelString(strVal, outConfig.logLevel)) {
-                outConfig.settingSources["logLevel"] = "json";
-            }
-        }
-        if (ExtractJsonBool(content, "logToConsole", boolVal)) {
-            outConfig.logToConsole = boolVal;
-            outConfig.settingSources["logToConsole"] = "json";
-        }
-        if (ExtractJsonString(content, "logFile", strVal) && !strVal.empty()) {
-            outConfig.logFile = strVal;
-            outConfig.settingSources["logFile"] = "json";
-        }
-        if (ExtractJsonString(content, "logCategories", strVal)) {
-            uint32_t mask = 0u;
-            if (ParseLogCategories(strVal, mask)) {
-                outConfig.logCategoryMask = mask;
-                outConfig.logCategoriesSpec = FormatLogCategories(mask);
-                outConfig.settingSources["logCategories"] = "json";
-            }
-        }
-        if (ExtractJsonStringOrNumber(content, "traceFrames", strVal)) {
-            bool active = false;
-            uint64_t startF = 0;
-            uint64_t endF = UINT64_MAX;
-            if (ParseTraceFramesString(strVal, active, startF, endF)) {
-                outConfig.traceFrameWindowActive = active;
-                outConfig.traceFrameStart = startF;
-                outConfig.traceFrameEnd = endF;
-                outConfig.traceFramesSpec = strVal;
-                outConfig.settingSources["traceFrames"] = "json";
-            }
-        }
-        if (ExtractJsonBool(content, "perfLog", boolVal)) {
-            outConfig.perfLogEnabled = boolVal;
-            outConfig.perfLogCsvPath.clear();
-            outConfig.settingSources["perfLog"] = "json";
-        } else if (ExtractJsonString(content, "perfLog", strVal)) {
-            if (ParsePerfLogString(strVal, outConfig.perfLogEnabled, outConfig.perfLogCsvPath)) {
-                outConfig.settingSources["perfLog"] = "json";
-            }
-        } else if (ExtractJsonInt(content, "perfLog", intVal)) {
-            outConfig.perfLogEnabled = (intVal != 0);
-            outConfig.perfLogCsvPath.clear();
-            outConfig.settingSources["perfLog"] = "json";
-        }
-        if (ExtractJsonBool(content, "hud", boolVal)) {
-            outConfig.hudMask = boolVal ? HUD_FPS : HUD_NONE;
-            outConfig.hudSpec = boolVal ? "fps" : "off";
-            outConfig.settingSources["hud"] = "json";
-        } else if (ExtractJsonString(content, "hud", strVal)) {
-            if (ParseHudString(strVal, outConfig.hudMask, outConfig.hudPosition,
-                               outConfig.hudScale, outConfig.hudOpacity, outConfig.hudSpec)) {
-                outConfig.settingSources["hud"] = "json";
-            }
-        } else if (ExtractJsonInt(content, "hud", intVal)) {
-            outConfig.hudMask = (intVal != 0) ? HUD_FPS : HUD_NONE;
-            outConfig.hudSpec = (intVal != 0) ? "fps" : "off";
-            outConfig.settingSources["hud"] = "json";
-        }
-
-        // Authentic Glide overrides in JSON
-        if (ExtractJsonBool(content, "noSplash", boolVal)) {
-            outConfig.noSplash = boolVal;
-            outConfig.settingSources["noSplash"] = "json";
-        }
-        if (ExtractJsonBool(content, "shamelessPlug", boolVal)) {
-            outConfig.shamelessPlugMode = boolVal ? 1 : 0;
-            outConfig.settingSources["shamelessPlug"] = "json";
-        } else if (ExtractJsonInt(content, "shamelessPlug", intVal)) {
-            outConfig.shamelessPlugMode = (intVal < 0) ? -1 : (intVal != 0 ? 1 : 0);
-            outConfig.settingSources["shamelessPlug"] = "json";
-        }
-
-        // Backend-specific tuning in JSON
-        if (ExtractJsonInt(content, "swThreads", intVal) && intVal >= 0) {
-            outConfig.swThreads = static_cast<uint32_t>(intVal);
-            outConfig.settingSources["swThreads"] = "json";
-        }
-        if (ExtractJsonBool(content, "swSimd", boolVal)) {
-            outConfig.swUseSimd = boolVal;
-            outConfig.settingSources["swSimd"] = "json";
-        }
-        if (ExtractJsonInt(content, "swTileSize", intVal) && intVal > 0) {
-            outConfig.swTileSize = static_cast<uint32_t>(intVal);
-            outConfig.settingSources["swTileSize"] = "json";
-        }
-        if (ExtractJsonString(content, "swAa", strVal)) {
-            outConfig.swAaMode = ToLower(strVal);
-            outConfig.settingSources["swAa"] = "json";
-        }
-        if (ExtractJsonString(content, "vkCachePath", strVal) && !strVal.empty()) {
-            outConfig.vkCachePath = strVal;
-            outConfig.settingSources["vkCachePath"] = "json";
-        }
-        if (ExtractJsonInt(content, "glesVboSize", intVal) && intVal > 0) {
-            outConfig.glesVboSizeMb = static_cast<uint32_t>(intVal);
-            outConfig.settingSources["glesVboSize"] = "json";
+        if (hudSubOptionSet && outConfig.hudMask != HUD_NONE) {
+            outConfig.hudSpec = BuildHudSpec(outConfig.hudMask, outConfig.hudPosition,
+                                             outConfig.hudScale);
         }
     }
 
@@ -804,12 +879,11 @@ bool JsonConfigLoader::Load(const std::string& configFilePath, WrapperConfig& ou
             break;
     }
 
-    // 4. Layer 3: Authentic 3dfx Glide environment variables (Phase 1)
-    // Precedence: Defaults < JSON < Authentic FX_GLIDE_* < GLIDE_NG_*
+    // 4. Layer 3: Authentic 3dfx Glide environment variables
+    // Precedence: Defaults < INI < Authentic FX_GLIDE_*/SST_* < GLIDE_NG_*
     if (const char* envNoSplash = GetNonEmptyEnv(GLIDE_FX_ENV_NO_SPLASH)) {
         bool b = true;
         if (!ParseBoolString(envNoSplash, b)) {
-            // Authentic 3dfx convention: any non-zero/non-empty value enables suppression
             b = true;
         }
         outConfig.noSplash = b;

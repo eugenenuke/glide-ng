@@ -44,13 +44,12 @@ Within a specific specification tier (e.g., Glide 2), games were released across
 ### Our Zero-Friction Emulation Strategy
 Our wrapper implements an authoritative **Supersets ABI**. For example, our `libglide2x.so` binary exports every single C symbol ever introduced up to specification `2.61`. When an older `2.40` game launches, it binds perfectly to our exported function pointers without encountering missing symbol faults.
 
-You can configure exactly what API version string our wrapper reports back to the game by setting the `"ApiVersionOverride"` field in `glide_config.json`:
+You can configure exactly what API version string our wrapper reports back to the game by setting `api_version` under `[hardware]` in `glide-ng.ini`:
 
-```json
-{
-  "CardModel": "Voodoo2",
-  "ApiVersionOverride": "2.40"
-}
+```ini
+[hardware]
+card_model = Voodoo2
+api_version = 2.40
 ```
 This forces rigid retro games to follow their authentic retro software execution branches flawlessly!
 

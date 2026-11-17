@@ -4,7 +4,7 @@
 #include <cmath>
 #include <cstdlib>
 
-#include "core/JsonConfigLoader.h"
+#include "core/IniConfigLoader.h"
 #include "core/Logger.h"
 #include "core/TextureManager.h"
 #include "core/WrapperConfig.h"
@@ -69,10 +69,10 @@ TEST_CASE("Architectural Core Validation", "[Architecture]") {
     REQUIRE(logger.GetLevel() == GlideWrapper::LogLevel::INFO);
   }
 
-  SECTION("JsonConfigLoader Fallback Resolution") {
-    GlideWrapper::JsonConfigLoader loader;
+  SECTION("IniConfigLoader Fallback Resolution") {
+    GlideWrapper::IniConfigLoader loader;
     GlideWrapper::WrapperConfig cfg;
-    bool loaded = loader.Load("non_existent_config.json", cfg);
+    bool loaded = loader.Load("non_existent_config.ini", cfg);
     REQUIRE(loaded == true);
     // Should preserve defaults if file missing and no env vars
     REQUIRE(cfg.tmuCount == 2);
@@ -83,14 +83,14 @@ TEST_CASE("Architectural Core Validation", "[Architecture]") {
 #ifdef __linux__
     // Mock environment variables
     ::setenv("GLIDE_NG_FBI_MEM_MB", "32", 1);
-    ::setenv("GLIDE_NG_VENDOR", "Antigravity Test Vendor", 1);
+    ::setenv("GLIDE_NG_VENDOR", "Test Vendor Override", 1);
 
-    GlideWrapper::JsonConfigLoader loader;
+    GlideWrapper::IniConfigLoader loader;
     GlideWrapper::WrapperConfig cfg;
-    loader.Load("non_existent.json", cfg);
+    loader.Load("non_existent.ini", cfg);
 
     REQUIRE(cfg.fbiMemoryMb == 32);
-    REQUIRE(cfg.reportedVendorOverride == "Antigravity Test Vendor");
+    REQUIRE(cfg.reportedVendorOverride == "Test Vendor Override");
 
     // Clean up environment
     ::unsetenv("GLIDE_NG_FBI_MEM_MB");

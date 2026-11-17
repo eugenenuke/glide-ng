@@ -1,5 +1,5 @@
 #include "WrapperConfig.h"
-#include "JsonConfigLoader.h"
+#include "IniConfigLoader.h"
 #include <string>
 #include <unordered_map>
 
@@ -34,10 +34,10 @@ EmulationRegistry& EmulationRegistry::GetInstance() {
 }
 
 EmulationRegistry::EmulationRegistry() {
-    // Load baseline defaults + optional glide_config.json + FX_GLIDE_* + GLIDE_NG_*
+    // Load baseline defaults + optional glide-ng.ini + FX_GLIDE_* + GLIDE_NG_*
     // through the single authoritative config loader.
-    JsonConfigLoader loader;
-    loader.Load("glide_config.json", m_config);
+    IniConfigLoader loader;
+    loader.Load(DEFAULT_CONFIG_FILE, m_config);
 }
 
 bool EmulationRegistry::IsFunctionAvailable(const std::string& funcName) const {

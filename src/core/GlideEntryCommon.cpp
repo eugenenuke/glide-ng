@@ -7,7 +7,7 @@
 #include "core/3dfParser.h"
 #include "core/BackendManager.h"
 #include "core/GlideSplashAnimator.h"
-#include "core/JsonConfigLoader.h"
+#include "core/IniConfigLoader.h"
 #include "core/LfbManager.h"
 #include "core/Logger.h"
 #include "core/Telemetry.h"
@@ -145,8 +145,8 @@ void ConfigureTmuMemoryLimits() {
 void InitGlide(const char* apiTag, void (*resetFrontendState)()) {
   if (resetFrontendState) resetFrontendState();
   auto& reg = EmulationRegistry::GetInstance();
-  JsonConfigLoader loader;
-  loader.Load("glide_config.json", reg.GetConfig());
+  IniConfigLoader loader;
+  loader.Load(DEFAULT_CONFIG_FILE, reg.GetConfig());
   reg.GetConfig().activeFrontendApi = apiTag ? apiTag : "";
 
   const auto& cfg = reg.GetConfig();
@@ -166,8 +166,8 @@ void EnsureEngineInitializedSlow(void (*resetFrontendState)()) {
   auto& bm = BackendManager::GetInstance();
   if (!bm.GetBackend()) {
     if (resetFrontendState) resetFrontendState();
-    JsonConfigLoader loader;
-    loader.Load("glide_config.json", reg.GetConfig());
+    IniConfigLoader loader;
+    loader.Load(DEFAULT_CONFIG_FILE, reg.GetConfig());
 
     const auto& cfg = reg.GetConfig();
     auto& logger = Logger::GetInstance();

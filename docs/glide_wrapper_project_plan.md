@@ -91,9 +91,9 @@ public:
     virtual bool Load(const std::string& configFilePath, WrapperConfig& outConfig) = 0;
 };
 ```
-* **Default File Name & Format**: `glide_config.json`. We choose **JSON** (`JsonConfigLoader`) for its hierarchical structure, making it ideal for defining per-TMU parameters and complex swizzles.
-* **Extensibility**: If modders prefer **INI** (`glide_wrapper.ini`) or **YAML** in the future, simply implement `IniConfigLoader` and swap the provider in the core registry.
-* **Resolution Priority**: (1) Application Direct API Arguments -> (2) Environment Variables (`GLIDE_WRAPPER_*`) -> (3) Local `glide_config.json` -> (4) Base Fallback Defaults.
+* **Default File Name & Format**: `glide-ng.ini`. We use **INI** (`IniConfigLoader`) with logical sections (`[core]`, `[hardware]`, `[display]`, `[logging]`, `[hud]`, `[glide]`, `[software]`, `[vulkan]`, `[opengl_es]`) and native `#`/`;` comments.
+* **Extensibility**: Configuration loading is abstracted behind `IConfigLoader`, allowing alternate loaders if ever needed.
+* **Resolution Priority**: (1) Application Direct API Arguments -> (2) `GLIDE_NG_*` Environment Variables -> (3) Authentic `FX_GLIDE_*`/`SST_*` Variables -> (4) Local `glide-ng.ini` -> (5) Base Fallback Defaults.
 
 | Parameter | Options / Description | Example Impact |
 | :--- | :--- | :--- |
@@ -137,7 +137,7 @@ gantt
 * **Automated Startup Logging**: When `grGlideInit` is called, automatically instantiate a runtime logger that writes `glide_wrapper.log` in the current game folder. It polls and logs:
   1. *Game Requirements*: Requested resolution, auxiliary buffers, and format.
   2. *Host Capabilities*: Available Vulkan/EGL devices, extensions, and host memory.
-  3. *Active Emulation Profile*: The exact Voodoo card model, TMU limits, and delay parameters loaded from `glide_config.json` or `GLIDE_WRAPPER_*` environment overrides.
+  3. *Active Emulation Profile*: The exact Voodoo card model, TMU limits, and delay parameters loaded from `glide-ng.ini` or `GLIDE_NG_*` environment overrides.
 * **Target APIs**: `grGlideInit`, `grGlideShutdown`, `grSstQueryHardware`, `grSstQueryBoards`, `grGetString`, `grGetProcAddress`.
 * **Verification Suite**: 
   * `test27.c` (Cycles 3D hardware on and off, exercises open/close).

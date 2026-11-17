@@ -118,11 +118,10 @@ bool CheckVoodooModel(bool& hasMirror, bool& hasPalette6666) {
     if (!hasMirror) std::printf("  - TEXMIRROR is NOT supported!\n");
     if (!hasPalette6666) std::printf("  - PALETTE6666 is NOT supported!\n");
     std::printf(
-        "[WARNING] To enable these extensions, please configure your "
-        "'glide_config.json'\n");
+        "[WARNING] To enable these extensions, configure 'glide-ng.ini'\n");
     std::printf(
-        "[WARNING] to emulate a Voodoo3 or Voodoo5 (e.g., set \"model\": "
-        "\"Voodoo3\").\n\n");
+        "[WARNING] under [hardware] (card_model = Voodoo3) or set "
+        "GLIDE_NG_CARD_MODEL=Voodoo3.\n\n");
     return false;
   }
   return true;
@@ -670,8 +669,8 @@ int main(int argc, char* argv[]) {
           "hardware!\n",
           grGetString(GR_HARDWARE));
       tlConOutput(
-          "          Please set \"model\": \"Voodoo3\" in your "
-          "glide_config.json.\n");
+          "          Set card_model = Voodoo3 under [hardware] in "
+          "glide-ng.ini (or GLIDE_NG_CARD_MODEL=Voodoo3).\n");
     }
     tlConRender();
 

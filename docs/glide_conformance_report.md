@@ -121,7 +121,7 @@ To achieve 100% conformance and authentic rendering, we propose a 4-phase implem
 3.  **OpenGL ES Sampler Integration**: Combine `minFilter` with `mipmapMode` to select correct OpenGL mipmapped filters (e.g., `GL_LINEAR_MIPMAP_LINEAR`).
 4.  **Software Sampler Integration**:
     *   Implement LOD calculation in `SoftwareBackend::renderPixel` using analytical barycentric gradients from the triangle rasterizer (rather than numerical finite differences) for optimal performance.
-    *   Gate this feature behind a configuration toggle in `glide_config.json`.
+    *   Gate this feature behind a configuration toggle in `glide-ng.ini`.
 
 ### Phase 4: Authentic Retro Aesthetic & Advanced Features (Medium-Low Priority)
 *Objective: Restore the authentic 16-bit dithered look and advanced hardware features.*

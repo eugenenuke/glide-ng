@@ -348,7 +348,7 @@ void VulkanBackend::Shutdown() {
   // 2.5. Save persistent Vulkan pipeline cache back to disk!
   if (m_device && m_vkPipelineCache) {
     const std::string& cachePath =
-        m_config.vkCachePath.empty() ? std::string(".glide-vulkan-cache.bin")
+        m_config.vkCachePath.empty() ? std::string(DEFAULT_VK_CACHE_FILE)
                                      : m_config.vkCachePath;
 
     try {
@@ -1836,7 +1836,7 @@ bool VulkanBackend::CreateLogicalDevice() {
 
   // 2.5. Initialize persistent Vulkan pipeline cache from disk!
   const std::string& cachePath =
-      m_config.vkCachePath.empty() ? std::string(".glide-vulkan-cache.bin")
+      m_config.vkCachePath.empty() ? std::string(DEFAULT_VK_CACHE_FILE)
                                    : m_config.vkCachePath;
 
   std::vector<char> cacheData;

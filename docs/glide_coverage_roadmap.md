@@ -71,7 +71,7 @@ gantt
     *   `guAADrawTriangleWithClip(const GrVertex *a, const GrVertex *b, const GrVertex *c)`
 *   **Implementation Strategy**:
     1.  **C Entry Point Forwarding**: In `glide2_entry.cpp`, we will forward all 6 anti-aliased geometry calls directly to their standard, non-anti-aliased counterparts.
-    2.  **MSAA Configuration**: Add `msaaSamples` to `WrapperConfig` (defaulting to 1), and wire it to `JsonConfigLoader` to support `"msaaSamples"` in `glide-ng.json` and the environment override `GLIDE_WRAPPER_MSAA`.
+    2.  **MSAA Configuration**: Add `msaaSamples` to `WrapperConfig` (defaulting to 1), and wire it to `IniConfigLoader` to support `[display] msaa` in `glide-ng.ini` and the environment override `GLIDE_NG_MSAA`.
     3.  **Vulkan Backend Integration**: Wire the dynamic sample count to the Vulkan render pass, color/depth attachments, framebuffers, and the `vk::PipelineMultisampleStateCreateInfo` pipeline state. Resolve multi-sampled targets to single-sampled swapchain images before presentation.
     4.  **OpenGL ES Backend Integration**: Wire the dynamic sample count to EGL context creation, requesting multi-sampled config attributes from the host OS.
     5.  **Dynamic Telemetry Logging**: Locate and replace the hardcoded `"Info: Pixel Format RGBA8888..."` printout with a dynamically formatted log string reflecting the actual pixel format, depth/stencil bounds, and multi-sample count successfully initialized by the driver.
@@ -243,7 +243,6 @@ This phase focuses on three core pillars: simulating the hardware pixel pipeline
     4.  **Register in Test Suite**: Added `test16` to the master list of visual tests in [tests/run_all_tests.py](file:///usr/local/google/home/eianiuk/gemini/3dfx/tests/run_all_tests.py).
     5.  **GLES Pass Ratio Override**: Configured `"test16": 0.98` inside `TEST_PASS_RATIOS` in [tests/run_tests.py](file:///usr/local/google/home/eianiuk/gemini/3dfx/tests/run_tests.py) to perfectly and robustly accommodate minor driver-specific sub-pixel rasterization and texture filtering precision differences on OpenGL ES, while maintaining a strict 100.00% matching yield on Vulkan and Software backends!
 
-### 4. Dual Environment Variable Support [STATUS: COMPLETED & VERIFIED]
-*   **Feature**: Configured [src/core/JsonConfigLoader.cpp](file:///usr/local/google/home/eianiuk/gemini/3dfx/src/core/JsonConfigLoader.cpp) to check **both** `GLIDE_BACKEND` and **`GLIDE_WRAPPER_BACKEND`** to select the active rendering backend, ensuring maximum flexibility and resolving user-facing configuration friction.
-dering bugs entirely.
+### 4. Unified Configuration & Environment Variable Support [STATUS: COMPLETED & VERIFIED]
+*   **Feature**: Configured [`src/core/IniConfigLoader.cpp`](../src/core/IniConfigLoader.cpp) to support `glide-ng.ini`, authentic `FX_GLIDE_*`/`SST_*` variables, and canonical `GLIDE_NG_*` environment overrides.
 

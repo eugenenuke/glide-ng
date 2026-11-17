@@ -2,7 +2,7 @@
 #include <iostream>
 #include <cmath>
 #include "core/WrapperConfig.h"
-#include "core/JsonConfigLoader.h"
+#include "core/IniConfigLoader.h"
 #include "core/GlideEntryCommon.h"
 #include "core/TextureManager.h"
 #include "core/Logger.h"
@@ -3450,9 +3450,9 @@ TEST_CASE("Lazy CPU ClearBuffer defers fills until LFB access",
   backend.Shutdown();
 }
 
-TEST_CASE("JsonConfigLoader uses key-scoped parsing and respects env overrides",
-          "[Config][JsonConfigLoader]") {
-  const std::string tmpPath = "/tmp/glide_ng_test_config_t15.json";
+TEST_CASE("IniConfigLoader parses sections/comments and respects env overrides",
+          "[Config][IniConfigLoader]") {
+  const std::string tmpPath = "/tmp/glide_ng_test_config_m8.ini";
 
   // RAII helper to save/restore environment variables touched by this test.
   struct EnvGuard {
@@ -3514,31 +3514,43 @@ TEST_CASE("JsonConfigLoader uses key-scoped parsing and respects env overrides",
   EnvGuard guardOldHeadless("GLIDE_HEADLESS");
   EnvGuard guardOldForceNoWin("GLIDE_FORCE_NO_WINDOW");
 
-  SECTION("Unrelated fields containing backend/model substrings do not hijack config") {
+  SECTION("Sections, comments, inline comments, quotes, BOM/CRLF, and unknown keys") {
     {
-      std::ofstream out(tmpPath);
-      out << "{\n"
-          << "  \"comment\": \"do not use \\\"vulkan\\\" or \\\"software\\\" or Voodoo5\",\n"
-          << "  \"nested\": { \"backend\": \"vulkan\", \"model\": \"Voodoo5\", \"logToConsole\": false },\n"
-          << "  \"backend\"   :   \"opengl_es\",\n"
-          << "  \"model\"  :  \"Voodoo3\",\n"
-          << "  \"apiVersion\" : \"2.42\",\n"
-          << "  \"logToConsole\"  :  true,\n"
-          << "  \"vsync\":false,\n"
-          << "  \"forceNoWindow\" : true,\n"
-          << "  \"maxFps\" : 120.5,\n"
-          << "  \"msaaSamples\" : 4,\n"
-          << "  \"windowScale\" : 2,\n"
-          << "  \"logLevel\" : 4\n"
-          << "}\n";
+      std::ofstream out(tmpPath, std::ios::binary);
+      // Include UTF-8 BOM + CRLF line endings
+      out << "\xEF\xBB\xBF"
+          << "# Full line comment: backend = vulkan\r\n"
+          << "; Semicolon comment: card_model = Voodoo5\r\n"
+          << "[core]\r\n"
+          << "backend = opengl_es  # inline hash comment\r\n"
+          << "headless = true ; inline semicolon comment\r\n"
+          << "\r\n"
+          << "[hardware]\r\n"
+          << "card_model = Voodoo3\r\n"
+          << "api_version = 2.42\r\n"
+          << "vendor = \"3dfx # Custom ; Vendor\"\r\n"
+          << "\r\n"
+          << "[display]\r\n"
+          << "vsync = false\r\n"
+          << "max_fps = 120.5\r\n"
+          << "msaa = 4\r\n"
+          << "window_scale = 2\r\n"
+          << "\r\n"
+          << "[logging]\r\n"
+          << "level = 4\r\n"
+          << "console = true\r\n"
+          << "\r\n"
+          << "[unknown_section]\r\n"
+          << "bogus_key = 123\r\n";
     }
 
-    GlideWrapper::JsonConfigLoader loader;
+    GlideWrapper::IniConfigLoader loader;
     GlideWrapper::WrapperConfig cfg;
     REQUIRE(loader.Load(tmpPath, cfg));
     CHECK(cfg.backend == "opengl_es");
     CHECK(cfg.model == GlideWrapper::CardModel::Voodoo3);
     CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_42);
+    CHECK(cfg.reportedVendorOverride == "3dfx # Custom ; Vendor");
     CHECK(cfg.logToConsole == true);
     CHECK(cfg.vsync == false);
     CHECK(cfg.forceNoWindow == true);
@@ -3546,23 +3558,23 @@ TEST_CASE("JsonConfigLoader uses key-scoped parsing and respects env overrides",
     CHECK(cfg.msaaSamples == 4u);
     CHECK(cfg.windowScale == 2u);
     CHECK(cfg.logLevel == 4u);
+    REQUIRE(cfg.unknownConfigKeys.size() == 1u);
+    CHECK(cfg.unknownConfigKeys[0] == "unknown_section.bogus_key");
 
     std::remove(tmpPath.c_str());
   }
 
-  SECTION("Boolean false and cardModel key parse cleanly, env overrides win") {
+  SECTION("Flat sectionless INI parses cleanly, legacy JSON syntax is ignored, env overrides win") {
     {
       std::ofstream out(tmpPath);
-      out << "{\n"
-          << "  \"cardModel\": \"VoodooGraphics\",\n"
-          << "  \"backend\": \"gles\",\n"
-          << "  \"logToConsole\": false,\n"
-          << "  \"vsync\": true,\n"
-          << "  \"apiVersion\": 2.40\n"
-          << "}\n";
+      out << "card_model = VoodooGraphics\n"
+          << "backend = gles\n"
+          << "log_to_console = false\n"
+          << "vsync = true\n"
+          << "api_version = 2.40\n";
     }
 
-    GlideWrapper::JsonConfigLoader loader;
+    GlideWrapper::IniConfigLoader loader;
     GlideWrapper::WrapperConfig cfg;
     REQUIRE(loader.Load(tmpPath, cfg));
     CHECK(cfg.model == GlideWrapper::CardModel::VoodooGraphics);
@@ -3571,7 +3583,7 @@ TEST_CASE("JsonConfigLoader uses key-scoped parsing and respects env overrides",
     CHECK(cfg.vsync == true);
     CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_40);
 
-    // Environment variables must override JSON values.
+    // Environment variables must override INI values.
     ::setenv("GLIDE_NG_BACKEND", "sw", 1);
     ::setenv("GLIDE_NG_LOG_CONSOLE", "1", 1);
     ::setenv("GLIDE_NG_VSYNC", "0", 1);
@@ -3582,34 +3594,52 @@ TEST_CASE("JsonConfigLoader uses key-scoped parsing and respects env overrides",
     CHECK(envCfg.logToConsole == true);
     CHECK(envCfg.vsync == false);
 
+    // Clean break: a raw JSON file must NOT be parsed as config.
+    ::unsetenv("GLIDE_NG_BACKEND");
+    ::unsetenv("GLIDE_NG_LOG_CONSOLE");
+    ::unsetenv("GLIDE_NG_VSYNC");
+    {
+      std::ofstream out(tmpPath);
+      out << "{ \"backend\": \"software\", \"model\": \"Voodoo3\", \"vsync\": false }\n";
+    }
+    GlideWrapper::WrapperConfig jsonCfg;
+    REQUIRE(loader.Load(tmpPath, jsonCfg));
+    CHECK(jsonCfg.backend == "vulkan");
+    CHECK(jsonCfg.model == GlideWrapper::CardModel::Voodoo2);
+    CHECK(jsonCfg.vsync == true);
+
     std::remove(tmpPath.c_str());
   }
 
-  SECTION("Strict 4-layer precedence: Defaults < JSON < FX_GLIDE_* < GLIDE_NG_*") {
-    const std::string customPath = "/tmp/glide_ng_custom_cfg_test.json";
+  SECTION("Strict 4-layer precedence: Defaults < INI < FX_GLIDE_* < GLIDE_NG_*") {
+    const std::string customPath = "/tmp/glide_ng_custom_cfg_test.ini";
     {
       std::ofstream out(customPath);
-      out << "{\n"
-          << "  \"noSplash\": false,\n"
-          << "  \"shamelessPlug\": false,\n"
-          << "  \"vsync\": true,\n"
-          << "  \"logLevel\": \"warn\",\n"
-          << "  \"presentationFilter\": \"nearest\",\n"
-          << "  \"logFile\": \"custom_json.log\",\n"
-          << "  \"swThreads\": 4,\n"
-          << "  \"swSimd\": false,\n"
-          << "  \"swTileSize\": 64,\n"
-          << "  \"swAa\": \"ssaa\",\n"
-          << "  \"vkCachePath\": \"/tmp/custom_vk.bin\",\n"
-          << "  \"glesVboSize\": 16\n"
-          << "}\n";
+      out << "[glide]\n"
+          << "no_splash = false\n"
+          << "shameless_plug = false\n"
+          << "[display]\n"
+          << "vsync = true\n"
+          << "presentation_filter = nearest\n"
+          << "[logging]\n"
+          << "level = warn\n"
+          << "file = custom_ini.log\n"
+          << "[software]\n"
+          << "threads = 4\n"
+          << "simd = false\n"
+          << "tile_size = 64\n"
+          << "aa = ssaa\n"
+          << "[vulkan]\n"
+          << "cache_path = /tmp/custom_vk.bin\n"
+          << "[opengl_es]\n"
+          << "vbo_size_mb = 16\n";
     }
 
     // GLIDE_NG_CONFIG redirects loader away from default path
     ::setenv("GLIDE_NG_CONFIG", customPath.c_str(), 1);
-    GlideWrapper::JsonConfigLoader loader;
+    GlideWrapper::IniConfigLoader loader;
     GlideWrapper::WrapperConfig cfg;
-    REQUIRE(loader.Load("nonexistent_default.json", cfg));
+    REQUIRE(loader.Load("nonexistent_default.ini", cfg));
     CHECK(cfg.configFileLoaded == true);
     CHECK(cfg.configFilePath == customPath);
     CHECK(cfg.noSplash == false);
@@ -3617,20 +3647,20 @@ TEST_CASE("JsonConfigLoader uses key-scoped parsing and respects env overrides",
     CHECK(cfg.vsync == true);
     CHECK(cfg.logLevel == 2u);
     CHECK(cfg.presentationFilter == 0u);
-    CHECK(cfg.logFile == "custom_json.log");
+    CHECK(cfg.logFile == "custom_ini.log");
     CHECK(cfg.swThreads == 4u);
     CHECK(cfg.swUseSimd == false);
     CHECK(cfg.swTileSize == 64u);
     CHECK(cfg.swAaMode == "ssaa");
     CHECK(cfg.vkCachePath == "/tmp/custom_vk.bin");
     CHECK(cfg.glesVboSizeMb == 16u);
-    CHECK(cfg.settingSources.at("noSplash") == "json");
+    CHECK(cfg.settingSources.at("noSplash") == "ini");
 
-    // Layer 3: Authentic FX_GLIDE_* overrides JSON
+    // Layer 3: Authentic FX_GLIDE_* overrides INI
     ::setenv("FX_GLIDE_NO_SPLASH", "1", 1);
     ::setenv("FX_GLIDE_SHAMELESS_PLUG", "1", 1);
     ::setenv("FX_GLIDE_SWAPINTERVAL", "0", 1);
-    REQUIRE(loader.Load("nonexistent_default.json", cfg));
+    REQUIRE(loader.Load("nonexistent_default.ini", cfg));
     CHECK(cfg.noSplash == true);
     CHECK(cfg.shamelessPlugMode == 1);
     CHECK(cfg.vsync == false);
@@ -3639,7 +3669,7 @@ TEST_CASE("JsonConfigLoader uses key-scoped parsing and respects env overrides",
     CHECK(cfg.settingSources.at("shamelessPlug") == "FX_GLIDE_SHAMELESS_PLUG");
     CHECK(cfg.settingSources.at("vsync") == "FX_GLIDE_SWAPINTERVAL");
 
-    // Layer 4: GLIDE_NG_* overrides FX_GLIDE_* and JSON
+    // Layer 4: GLIDE_NG_* overrides FX_GLIDE_* and INI
     ::setenv("GLIDE_NG_NO_SPLASH", "0", 1);
     ::setenv("GLIDE_NG_SHAMELESS_PLUG", "0", 1);
     ::setenv("GLIDE_NG_VSYNC", "fifo", 1);
@@ -3652,7 +3682,7 @@ TEST_CASE("JsonConfigLoader uses key-scoped parsing and respects env overrides",
     ::setenv("GLIDE_NG_SW_AA", "analytical", 1);
     ::setenv("GLIDE_NG_VK_CACHE_PATH", "/tmp/env_vk.bin", 1);
     ::setenv("GLIDE_NG_GLES_VBO_SIZE", "32", 1);
-    REQUIRE(loader.Load("nonexistent_default.json", cfg));
+    REQUIRE(loader.Load("nonexistent_default.ini", cfg));
     CHECK(cfg.noSplash == false);
     CHECK(cfg.shamelessPlugMode == 0);
     CHECK(cfg.vsync == true);
@@ -3683,9 +3713,9 @@ TEST_CASE("JsonConfigLoader uses key-scoped parsing and respects env overrides",
     ::setenv("GLIDE_HEADLESS", "1", 1);
     ::setenv("GLIDE_FORCE_NO_WINDOW", "1", 1);
 
-    GlideWrapper::JsonConfigLoader loader;
+    GlideWrapper::IniConfigLoader loader;
     GlideWrapper::WrapperConfig cfg;
-    REQUIRE(loader.Load("nonexistent_default.json", cfg));
+    REQUIRE(loader.Load("nonexistent_default.ini", cfg));
     CHECK(cfg.backend == "vulkan");
     CHECK(cfg.vsync == true);
     CHECK(cfg.model == GlideWrapper::CardModel::Voodoo2);
@@ -4399,18 +4429,17 @@ TEST_CASE(
   EnvGuardM2 gHeadless("GLIDE_NG_HEADLESS");
   EnvGuardM2 gMaxFps("GLIDE_NG_MAX_FPS");
 
-  SECTION("JSON & GLIDE_NG_* parsing for logCategories, traceFrames, perfLog") {
-    const std::string cfgPath = "/tmp/glide_ng_m2_cfg_test.json";
+  SECTION("INI & GLIDE_NG_* parsing for logCategories, traceFrames, perfLog") {
+    const std::string cfgPath = "/tmp/glide_ng_m2_cfg_test.ini";
     {
       std::ofstream out(cfgPath);
-      out << "{\n"
-          << "  \"logCategories\": \"api,lfb\",\n"
-          << "  \"traceFrames\": \"10-20\",\n"
-          << "  \"perfLog\": \"/tmp/json_perf.csv\"\n"
-          << "}\n";
+      out << "[logging]\n"
+          << "categories = api,lfb\n"
+          << "trace_frames = 10-20\n"
+          << "perf_log = /tmp/ini_perf.csv\n";
     }
 
-    GlideWrapper::JsonConfigLoader loader;
+    GlideWrapper::IniConfigLoader loader;
     GlideWrapper::WrapperConfig cfg;
     REQUIRE(loader.Load(cfgPath, cfg));
     CHECK(cfg.logCategoriesSpec == "api,lfb");
@@ -4418,10 +4447,10 @@ TEST_CASE(
     CHECK(cfg.traceFrameStart == 10u);
     CHECK(cfg.traceFrameEnd == 20u);
     CHECK(cfg.perfLogEnabled == true);
-    CHECK(cfg.perfLogCsvPath == "/tmp/json_perf.csv");
-    CHECK(cfg.settingSources.at("logCategories") == "json");
-    CHECK(cfg.settingSources.at("traceFrames") == "json");
-    CHECK(cfg.settingSources.at("perfLog") == "json");
+    CHECK(cfg.perfLogCsvPath == "/tmp/ini_perf.csv");
+    CHECK(cfg.settingSources.at("logCategories") == "ini");
+    CHECK(cfg.settingSources.at("traceFrames") == "ini");
+    CHECK(cfg.settingSources.at("perfLog") == "ini");
 
     // Test single-frame, open-ended, and prefix ranges via env overrides
     ::setenv("GLIDE_NG_TRACE_FRAMES", "7", 1);
@@ -4591,23 +4620,27 @@ TEST_CASE("M3 DXVK-Style On-Screen HUD Config, Rendering & Isolation [HUD][M3]",
     }
   } guard;
 
-  SECTION("GLIDE_NG_HUD and JSON hud parsing + precedence") {
-    const std::string cfgPath = "/tmp/glide_ng_m3_hud_cfg.json";
+  SECTION("GLIDE_NG_HUD and INI [hud] parsing + precedence") {
+    const std::string cfgPath = "/tmp/glide_ng_m3_hud_cfg.ini";
     {
       std::ofstream out(cfgPath);
-      out << R"({"hud": "fps,backend,position=br,scale=1.5,opacity=0.6"})";
+      out << "[hud]\n"
+          << "elements = fps,backend\n"
+          << "position = br\n"
+          << "scale = 1.5\n"
+          << "opacity = 0.6\n";
     }
 
-    JsonConfigLoader loader;
+    IniConfigLoader loader;
     WrapperConfig cfg;
     REQUIRE(loader.Load(cfgPath, cfg));
     CHECK(cfg.hudMask == (HUD_FPS | HUD_BACKEND));
     CHECK(cfg.hudPosition == HudPosition::BOTTOM_RIGHT);
     CHECK(std::fabs(cfg.hudScale - 1.5f) < 1e-4f);
     CHECK(std::fabs(cfg.hudOpacity - 0.6f) < 1e-4f);
-    CHECK(cfg.settingSources.at("hud") == "json");
+    CHECK(cfg.settingSources.at("hud") == "ini");
 
-    // GLIDE_NG_HUD=full overrides JSON
+    // GLIDE_NG_HUD=full overrides INI
     ::setenv("GLIDE_NG_HUD", "full,position=tr,scale=2.0,opacity=0.9", 1);
     REQUIRE(loader.Load(cfgPath, cfg));
     CHECK(cfg.hudMask == HUD_FULL);
@@ -4621,7 +4654,7 @@ TEST_CASE("M3 DXVK-Style On-Screen HUD Config, Rendering & Isolation [HUD][M3]",
     REQUIRE(loader.Load(cfgPath, cfg));
     CHECK(cfg.hudMask == HUD_FPS);
 
-    // GLIDE_NG_HUD=0 disables even when JSON enabled it
+    // GLIDE_NG_HUD=0 disables even when INI enabled it
     ::setenv("GLIDE_NG_HUD", "0", 1);
     REQUIRE(loader.Load(cfgPath, cfg));
     CHECK(cfg.hudMask == HUD_NONE);

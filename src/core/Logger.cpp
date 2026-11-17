@@ -459,6 +459,16 @@ void Logger::LogExecutionSummary(const WrapperConfig& config) {
     ss << "\n========================================================";
 
     Log(LogLevel::INFO, "Startup", ss.str());
+
+    if (!config.unknownConfigKeys.empty()) {
+        std::stringstream warnSs;
+        warnSs << "Unrecognized key(s) in " << config.configFilePath << ": ";
+        for (size_t i = 0; i < config.unknownConfigKeys.size(); ++i) {
+            if (i > 0) warnSs << ", ";
+            warnSs << config.unknownConfigKeys[i];
+        }
+        Log(LogLevel::WARN, "Config", warnSs.str());
+    }
 }
 
 } // namespace GlideWrapper

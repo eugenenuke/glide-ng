@@ -41,12 +41,11 @@ Set `GLIDE_NG_CARD_MODEL` in your shell before launching the application:
 export GLIDE_NG_CARD_MODEL=voodoo3
 ```
 
-#### Method B: JSON Configuration File
-Create or modify a file named `glide_config.json` in the application's working directory:
-```json
-{
-  "model": "Voodoo3"
-}
+#### Method B: INI Configuration File
+Create or modify a file named `glide-ng.ini` in the application's working directory:
+```ini
+[hardware]
+card_model = Voodoo3
 ```
 
 ### Supported Device Identifiers
@@ -75,12 +74,11 @@ Set `GLIDE_NG_API_VERSION` in your shell:
 export GLIDE_NG_API_VERSION=2.40
 ```
 
-#### Method B: JSON Configuration File
-Set `"apiVersion"` in `glide_config.json`:
-```json
-{
-  "apiVersion": "2.40"
-}
+#### Method B: INI Configuration File
+Set `api_version` under `[hardware]` in `glide-ng.ini`:
+```ini
+[hardware]
+api_version = 2.40
 ```
 
 ### Supported API Versions
@@ -108,14 +106,14 @@ This allows you to create **"Super Hardware"** profiles—for example, emulating
 
 ### Customizing Hardware Memory and Limits
 
-You can tune these limits via environment variables or in `glide_config.json` (see [docs/glide_environment_variables.md](glide_environment_variables.md) for the complete reference):
+You can tune these limits via environment variables or in `glide-ng.ini` (see [docs/glide_environment_variables.md](glide_environment_variables.md) for the complete reference):
 
-| Environment Variable | JSON Config Property | Default Value | Description |
+| Environment Variable | INI Config Property | Default Value | Description |
 | :--- | :--- | :--- | :--- |
-| `GLIDE_NG_FBI_MEM_MB` | `"fbiMemoryMb"` | `16` | Total FBI Framebuffer memory in MB. Controls resolution limits. |
-| `GLIDE_NG_MAX_FPS` | `"maxFps"` | `60.0` | Maximum frame rate ceiling (use `0` to uncap frame rate). |
-| `GLIDE_NG_VSYNC` | `"vsync"` | `true` | Vertical synchronization (`0`/`1`, `true`/`false`, or `fifo`). |
-| `GLIDE_NG_MSAA` | `"msaaSamples"` | `1` | MSAA sample count. Supports `1` (disabled), `2`, `4`, `8`, `16`. |
+| `GLIDE_NG_FBI_MEM_MB` | `[hardware] fbi_memory_mb` | `16` | Total FBI Framebuffer memory in MB. Controls resolution limits. |
+| `GLIDE_NG_MAX_FPS` | `[display] max_fps` | `60.0` | Maximum frame rate ceiling (use `0` to uncap frame rate). |
+| `GLIDE_NG_VSYNC` | `[display] vsync` | `true` | Vertical synchronization (`0`/`1`, `true`/`false`, or `fifo`). |
+| `GLIDE_NG_MSAA` | `[display] msaa` | `1` | MSAA sample count. Supports `1` (disabled), `2`, `4`, `8`, `16`. |
 
 > [!TIP]
 > To run a Voodoo1 game at 800x600 in authentic `2.40` mode without stockouts, launch it like this:

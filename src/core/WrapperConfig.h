@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <map>
 #include <string>
+#include <vector>
 
 namespace GlideWrapper {
 
@@ -10,6 +11,11 @@ namespace GlideWrapper {
 constexpr const char* WRAPPER_PROJECT_NAME = "glide-ng";
 constexpr const char* WRAPPER_VERSION      = "v0.1.0-dev";
 constexpr const char* WRAPPER_FULL_NAME    = "3dfx glide-ng (Glide Next Generation) Modernization Wrapper";
+
+// Unified Default Runtime Filenames
+constexpr const char* DEFAULT_CONFIG_FILE   = "glide-ng.ini";
+constexpr const char* DEFAULT_LOG_FILE      = "glide-ng.log";
+constexpr const char* DEFAULT_VK_CACHE_FILE = ".glide-ng-vkcache.bin";
 
 enum class CardModel {
     VoodooGraphics, // SST-1
@@ -72,7 +78,7 @@ struct WrapperConfig {
     // Logging & diagnostics
     uint32_t logLevel{3};                  // 0=OFF, 1=CRIT, 2=WARN, 3=INFO, 4=DEBUG, 5=TRACE
     bool logToConsole{false};              // Mirror log output to stdout
-    std::string logFile{"glide-ng.log"};
+    std::string logFile{DEFAULT_LOG_FILE};
     uint32_t logCategoryMask{0xFFFFFFFFu}; // Bitmask of LogCategory (GLIDE_NG_LOG_CATEGORIES)
     std::string logCategoriesSpec{"all"};  // Normalized/raw category spec for summary
     std::string traceFramesSpec{""};       // e.g. "120-125", "10", "50-", "-20" (GLIDE_NG_TRACE_FRAMES)
@@ -82,7 +88,7 @@ struct WrapperConfig {
     bool perfLogEnabled{false};            // Periodic [PERF] summary (GLIDE_NG_PERF_LOG)
     std::string perfLogCsvPath{""};        // Optional per-frame CSV path (GLIDE_NG_PERF_LOG=<path>)
 
-    // On-screen HUD overlay (DXVK-style GLIDE_NG_HUD / JSON "hud")
+    // On-screen HUD overlay (DXVK-style GLIDE_NG_HUD / INI [hud])
     uint32_t hudMask{HUD_NONE};            // Bitmask of HudElementFlags
     HudPosition hudPosition{HudPosition::TOP_LEFT};
     float hudScale{1.0f};                  // 0.5 .. 4.0
@@ -99,13 +105,14 @@ struct WrapperConfig {
     bool swUseSimd{true};          // AVX2 rasterizer hook (GLIDE_NG_SW_SIMD)
     uint32_t swTileSize{32};       // >= 16, rounded to power-of-two
     std::string swAaMode{"analytical"}; // "analytical" or "ssaa"
-    std::string vkCachePath{".glide-vulkan-cache.bin"};
+    std::string vkCachePath{DEFAULT_VK_CACHE_FILE};
     uint32_t glesVboSizeMb{8};     // GLES geometry VBO size in MB
 
     // Config resolution metadata (for startup diagnostic summary)
-    std::string configFilePath{"glide_config.json"};
+    std::string configFilePath{DEFAULT_CONFIG_FILE};
     bool configFileLoaded{false};
     std::map<std::string, std::string> settingSources;
+    std::vector<std::string> unknownConfigKeys;
 };
 
 class EmulationRegistry {

@@ -53,7 +53,7 @@ if (m_config.maxFps > 0.0f) {
 ```
 Because `maxFps` defaults to `60.0f`, the wrapper **slept the CPU main thread for exactly 16.66 ms on every single frame**, adding a huge constant delay that completely compressed our rendering speedups.
 
-*   **Action**: Upgraded [JsonConfigLoader.cpp](file:///usr/local/google/home/eianiuk/gemini/3dfx/src/core/JsonConfigLoader.cpp) to parse `"maxFps"` from the JSON profile, and added the `GLIDE_WRAPPER_MAX_FPS` environment variable override.
+*   **Action**: Upgraded [`IniConfigLoader.cpp`](../src/core/IniConfigLoader.cpp) to parse `[display] max_fps` from `glide-ng.ini`, and added the `GLIDE_NG_MAX_FPS` environment variable override.
 *   **Result**: By setting `GLIDE_WRAPPER_MAX_FPS=0` during benchmarking, we completely bypassed the pacing sleep, instantly unlocking the true rendering performance of our emulation stack!
 
 ---

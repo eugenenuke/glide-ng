@@ -9,12 +9,11 @@ This document outlines the authoritative diagnostic procedures, logging systems,
 Our wrapper features a unified logging architecture that tracks API entry points, backend transitions, shader compilation, and texture allocation.
 
 ### A. Configuring Log Levels
-Logging is controlled globally via a local JSON profile named `glide_config.json` placed in the application's working directory:
+Logging is controlled globally via a local INI profile named `glide-ng.ini` placed in the application's working directory:
 
-```json
-{
-  "logLevel": 4
-}
+```ini
+[logging]
+level = debug   # 0=off, 1=crit, 2=warn, 3=info, 4=debug, 5=trace
 ```
 
 The supported log levels correspond to the following enumeration:
@@ -23,16 +22,18 @@ The supported log levels correspond to the following enumeration:
 *   `2` (**WARN**): Unexpected behaviors, unimplemented features, or fallback paths.
 *   `3` (**INFO**): Key life cycle steps, emulation profiles, and performance telemetry.
 *   `4` (**DEBUG**): Verbose trace logs (e.g., texture allocations, shader bindings, individual draw states).
+*   `5` (**TRACE**): Per-primitive diagnostic trace (use with `GLIDE_NG_TRACE_FRAMES`).
 
 #### Environment Variable Overrides & Precedence
 Log levels and console targets can also be dynamically overridden using environment variables:
-*   `GLIDE_WRAPPER_LOG_LEVEL=<0-4>`: Sets the active log level.
-*   `GLIDE_WRAPPER_LOG_TO_CONSOLE=1`: Routes all log messages to standard output (useful for unit test runner visibility).
+*   `GLIDE_NG_LOG_LEVEL=<0-5|off|crit|warn|info|debug|trace>`: Sets the active log level.
+*   `GLIDE_NG_LOG_CONSOLE=1`: Routes all log messages to standard output (useful for unit test runner visibility).
 
 **Precedence / Preference Order**:
-1.  **Environment Variables** (Highest precedence; overrides all others).
-2.  **`glide_config.json`** (Medium precedence; overrides default settings).
-3.  **Baseline Defaults** (Lowest precedence; fallback when no variables/config are present).
+1.  **`GLIDE_NG_*` Environment Variables** (Highest precedence; overrides all others).
+2.  **Authentic `FX_GLIDE_*` / `SST_*` Variables** (Overrides INI).
+3.  **`glide-ng.ini`** (Overrides default settings).
+4.  **Baseline Defaults** (Lowest precedence; fallback when no variables/config are present).
 
 ### B. Output Destination
 By default, the active Glide frontend initializes logging to **`glide-ng.log`** inside the current working directory of the executing application. When troubleshooting a test:
