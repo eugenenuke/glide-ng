@@ -23,7 +23,7 @@
 | **M4** | `fix/m4-parked-sdk-tests` | Fix parked official SDK tests: `test16` ('P' plug R/B inversion on VK/GLES), `test22` (SW multi-pass fog + `largeLod` mip offset), `test25` & `test27` + standalone WSI event responsiveness + Catch2 regressions | Med | `[x] DONE (USER CONFIRMED — 2026-11-15)` | Merged to `main` |
 | **M5** | `fix/m5-carmageddon` | Carmageddon (`carma`) compatibility & performance: black menus, missing in-game UI/HUD, texture/seam/sky/Pratcam glitches, lazy palette swizzling, GPU state-dedup & batching, TMU budget & Vulkan texture pool | Med–High | `[x] DONE (USER CONFIRMED — 2026-11-16)` | Merged to `main` |
 | **M6** | `feat/m6-dos-tools-bench` | Telemetry `app_cpu_ms`/`wrapper_cpu_ms` breakdown + single-source-of-truth `env_vars.h` + Glide 2/3 override fixes + optional Open Watcom v2 DOS cross-build (`vendor/watcom`) + dual Linux/DOS `glide_info` + GPU-bound `glide_bench` with GlideMark score | High | `[x] DONE (USER CONFIRMED — 2026-11-16)` | Merged to `main` |
-| **M7** | `perf/m7-profiling-optimization` | Systematic performance profiling & optimization using M6 telemetry + `glide_bench` (Linux & DOSBox) and Carmageddon dense-scene traces across Vulkan, OpenGL ES, and Software | Med–High | `[ ] PENDING` | — |
+| **M7** | `perf/m7-profiling-optimization` | Systematic performance profiling & optimization across frontend, Vulkan, OpenGL ES, LFB overlay, texture streaming, and AVX2+FMA Software rasterizer | Med–High | `[~] IMPLEMENTED — AWAITING USER VERIFICATION` | — |
 | *(Future)* **M8** | `feat/m8-glide-envvars-p2` | Phase-2 authentic `FX_GLIDE_*` / `SST_*` expansion (`FX_GLIDE_FBRAM`, `FX_GLIDE_TMU_MEMSIZE`, `SSTV2_NUM_TMUS`, `SST_GAMMA`, `FX_GLIDE_IGNORE_REOPEN`, `FX_GLIDE_NO_DITHER_SUB`, `FX_GLIDE_BOUNDS_CHECK`, `FX_SNAPSHOT`) + 3DMark-style interactive mini-scene / mini-game showcase (`glide_bench` cinematic/playable mode) | Low–Med | `[ ] DEFERRED` | — |
 
 ---
@@ -242,11 +242,48 @@
 
 ---
 
-## 8. Upcoming Milestones (High-Level Scope — Detailed Just-In-Time)
+## 8. Milestone M7: Performance Profiling & Optimization (`perf/m7-profiling-optimization`)
 
-### Milestone M7 — Performance Profiling & Optimization (`perf/m7-profiling-optimization`)
-- Profile `glide_bench` (Linux vs. DOSBox) and Carmageddon dense scenes using M6 `app_cpu_ms`/`wrapper_cpu_ms` CSV traces and host CPU profiling (`perf`).
-- Target confirmed wrapper CPU/GPU bottlenecks across Vulkan, OpenGL ES, and Software (initial `glide_bench` signal: `tex` P8/palette streaming is 18.5 FPS on Vulkan / 29.6 FPS on GLES vs. >100 FPS on `tris`/`state`/`lfb`) with before/after benchmark and Carmageddon CSV proof.
+### M7 Task Breakdown
+
+- **`M7.1`** (`96f449a`) — Eliminate Per-API-Call `PollEvents()` & Inline Init Fast-Path (`GlideEntryCommon.{h,cpp}`, `glide2_entry.cpp`, `glide3_entry.cpp`):
+  - Removed redundant per-API-call `PollEvents()` invocations from hot draw/state/texture paths (pumping WSI events cleanly at frame swap) and inlined the atomic engine-init fast-path guard.
+  - **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION`
+- **`M7.2`** (`0581a24`, `4cd02d1`) — Frontend Per-Triangle Decode, Sanitization & Static Fast-Path Guards (`VertexLayout.{h,cpp}`, `glide2_entry.cpp`, `glide3_entry.cpp`):
+  - Added canonical inline Glide 2.x vertex decoding (`DecodeGlide2CanonicalInto`) with branch-predicted finite/clamp sanitization and lightweight static fast-path guards on hot draw/state/texture entry points.
+  - **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION`
+- **`M7.3`** (`f164625`) — Vulkan & OpenGL ES `DrawTriangle` Fast Paths & In-Pass Bind Deduplication (`Vulkan{Backend,Draw}.*`, `OpenGLES{Backend,Draw}.*`):
+  - Bypassed `ResolveDrawState_Locked` on steady-state Vulkan triangle batches, deduplicated `vkCmdBindPipeline`/`vkCmdBindDescriptorSets` within an active render pass, and added a matching steady-state triangle append fast path in `OpenGLESDraw`.
+  - **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION`
+- **`M7.4`** (`2d72da4`) — OpenGL ES Dirty-Bitmask Uniforms, Binding Cache & Debug-Gated `glGetError` (`OpenGLES{Backend,Draw,Textures}.*`):
+  - Replaced unconditional per-flush uniform uploads with a dirty-bitmask update path, cached active GL texture/program bindings, and gated `glGetError` checks so Release draw/flush paths avoid synchronous driver error polls.
+  - **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION`
+- **`M7.5`** (`2cd09f1`) — Texture Decode/Hash, GLES Subimage Reuse & Vulkan Pre-Frame Upload Command Buffer (`TextureManager.{h,cpp}`, `OpenGLESTextures.cpp`, `Vulkan{Backend,Textures}.*`):
+  - Optimized P8/RGB565/ARGB4444 texture decoding and hashing in `TextureManager`, reused existing GLES texture storage via `glTexSubImage2D` on same-size re-uploads, and recorded Vulkan COW texture uploads onto a per-frame pre-render command buffer so mid-frame uploads no longer split the active render pass (cutting Vulkan `tex` frame time by **−88%**).
+  - **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION`
+- **`M7.6`** (`657d26a`) — Disjoint LFB Dirty Bands, Reused Sentinel Staging & Band-Scissored GPU Overlays (`CpuLfbStaging.{h,cpp}`, `LfbManager.{h,cpp}`, `VulkanLfb.cpp`, `OpenGLESBackend.cpp`, `SoftwareBackend.cpp`):
+  - Tracked disjoint horizontal dirty bands (`DirtyBand`) instead of a single merged bounding box, reused sentinel staging buffers in place without per-frame reallocation/full-screen clears, and uploaded/composited only dirty bands via scissored GPU overlay draws (cutting `lfb` wrapper CPU by **−70% to −79%** across all 3 backends).
+  - **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION`
+- **`M7.7`** (`a807726`) — Software Rasterizer AVX2+FMA SIMD Default & Inner-Loop / ThreadPool Optimization (`src/CMakeLists.txt`, `WrapperConfig.h`, `SoftwareBackend.{h,cpp}`, `SoftwareInternal.h`, `SoftwareCombiner.cpp`, `SoftwareRasterizer{,Simd}.cpp`, `ThreadPool.h`):
+  - Default-enabled AVX2+FMA SIMD rasterization (`swUseSimd = true`, guarded at runtime by `__builtin_cpu_supports("avx2")`, still overridable via `GLIDE_NG_SW_SIMD=0` or `"swSimd": false`).
+  - Guided by Callgrind profiling: inlined `EvaluateTmuStage`/`EvaluateTmuStageSIMD` and `SampleTextureLevelSIMD`/`SampleMipLevelSIMD` with a non-mipmapped mip-0 fast path and power-of-two shift indexing, added incremental edge stepping, hoisted interior boundary/combiner/dither checks, eliminated FB reads on full-coverage opaque quads, added fast-path alpha blending, removed `always_inline` bloat on scalar templates, and eliminated `ThreadPool` atomic false sharing with chunked work-stealing.
+  - **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION`
+- **`M7.8`** (`7b6966c`) — Vulkan Pooled-Texture Descriptor Set Reuse (`VulkanBackend.h`, `VulkanTextures.cpp`):
+  - Retained cached `VkDescriptorSet`s across `m_texturePool` reuse (only evicting descriptors when non-pooled textures are destroyed, on `PurgeTextures()`, or at high-water capacity `3072 / 4096`), eliminating per-frame `vkAllocateDescriptorSets`/`vkUpdateDescriptorSets`/`vkFreeDescriptorSets` churn during TMU streaming and palette swaps (cutting Vulkan `tex` `draw_cpu_ms` by **−87.2%**).
+  - **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION`
+
+### M7 End-to-End Verification & Headless Release Results (`final_m7` vs. `base_clean`)
+- **Build**: 0 compiler warnings across `src/`, `tools/`, `demos/` in both Release (`-O3`, `ENABLE_TELEMETRY=OFF`) and Debug builds, including Open Watcom v2 DOS/32 CauseWay tools (`glide_info.exe`, `glide_bench.exe`).
+- **Automated Tests**: All 8 Catch2 suites passed (`Glide2xWrapperTests` 35/35 [2,557 assertions] and `Glide3xWrapperTests` 48/48 [2,211 assertions] across `vulkan`, `opengl_es`, `software` SIMD, and `software` scalar `GLIDE_NG_SW_SIMD=0`), all 4 X11 `glide_embed_test --smoke-ms 1500` runs passed (including `opengl_es --parent-gl`), and `glide2_info --probe` passed on all 3 backends.
+- **Headless Release `glide2_bench` (no-HUD, median, software-rendered Mesa `llvmpipe` for GPU backends)**:
+  - **Vulkan**: Geomean FPS `111.7 -> 175.7` (**+57.3%**); `wrapper_cpu_ms` cut across all 6 scenes (`fillrate` −24.9%, `tris` −26.7%, `state` −18.2%, `tex` −42.3% / `tot` −88.4%, `lfb` −79.2%, `multipass` −31.5%).
+  - **OpenGL ES**: Geomean FPS `185.3 -> 241.6` (**+30.4%**); `wrapper_cpu_ms` cut across all 6 scenes (`fillrate` −12.3%, `tris` −7.9% / `tot` −18.9%, `state` −22.0%, `tex` −20.1%, `lfb` −69.7% / `tot` −49.6%, `multipass` −12.8%).
+  - **Software**: Geomean FPS `218.4 -> 658.8` (**+201.7%**, 3.0×); `tot_ms` cut across all 6 scenes (`fillrate` −87.3%, `tris` −45.3%, `state` −59.5%, `tex` −46.9%, `lfb` −75.7%, `multipass` −63.4%).
+  - **StandaloneSDL2 (Xvfb X11)**: Vulkan `fillrate` −7.1% / `tris` −15.6% / `state` −11.6%; OpenGL ES `fillrate` −12.0% / `tris` −20.1% / `state` −17.1%.
+
+---
+
+## 9. Upcoming Milestones (High-Level Scope — Detailed Just-In-Time)
 
 ### Milestone M8 — Phase-2 Authentic Glide Env Vars & 3DMark-Style Mini-Scene Showcase *(Deferred)*
 - Expand authentic `FX_GLIDE_*` / `SST_*` environment variables (`FX_GLIDE_FBRAM`, `FX_GLIDE_TMU_MEMSIZE`, `SSTV2_NUM_TMUS`, `SST_GAMMA`, `FX_GLIDE_IGNORE_REOPEN`, `FX_GLIDE_NO_DITHER_SUB`, `FX_GLIDE_BOUNDS_CHECK`, `FX_SNAPSHOT`).
