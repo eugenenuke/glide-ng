@@ -109,6 +109,7 @@ ctest --output-on-failure
 
 ## Documentation & Project Roadmap
 
-For detailed architectural breakdown, API milestone schedules, and environment variable specifications, please explore the `./docs` directory:
-* **[Implementation Blueprint & Roadmap](./docs/glide_wrapper_project_plan.md)**
+For detailed architectural breakdown, API milestone schedules, per-title quirks, and environment variable specifications, please explore the `./docs` directory:
+* **[Game, Demo & Tool Compatibility Library](./docs/compatibility_library.md)**
 * **[Environment Variables & Overrides Guide](./docs/glide_environment_variables.md)**
+* **[Implementation Blueprint & Roadmap](./docs/glide_wrapper_project_plan.md)**
