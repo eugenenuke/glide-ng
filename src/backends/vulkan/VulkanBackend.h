@@ -501,8 +501,11 @@ class VulkanBackend : public GlideStateTracker {
 
   // Deferred per-frame-slot retirement queues so overwritten/purged textures
   // and descriptor sets stay alive until the GPU fence for that slot signals.
+  void EvictDescriptorsForView_Locked(vk::ImageView view,
+                                      bool deferDestruction);
   void RetireTextureAtAddress_Locked(uint32_t tmu, uint32_t startAddress);
   void ReclaimRetiredResources_Locked(uint32_t slot);
+  static constexpr size_t kDescriptorCacheHighWater = 3072;
   std::vector<VulkanTexture> m_retiredTextures[2];
   std::vector<vk::UniqueDescriptorSet> m_retiredDescriptorSets[2];
 

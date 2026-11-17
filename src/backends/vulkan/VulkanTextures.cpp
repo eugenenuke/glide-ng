@@ -57,6 +57,31 @@ static uint64_t CalculateTextureHash(const struct VirtualTexture& tex) {
   return hash;
 }
 
+void VulkanBackend::EvictDescriptorsForView_Locked(vk::ImageView view,
+                                                   bool deferDestruction) {
+  if (!view) return;
+  const uint64_t viewHandle = static_cast<uint64_t>(
+      reinterpret_cast<uintptr_t>(static_cast<VkImageView>(view)));
+  auto vit = m_viewToDescriptorKeys.find(viewHandle);
+  if (vit == m_viewToDescriptorKeys.end()) return;
+
+  for (const auto& dkey : vit->second) {
+    auto dit = m_descriptorCache.find(dkey);
+    if (dit != m_descriptorCache.end()) {
+      if (m_cachedDescSet == dit->second.get()) {
+        m_cachedDescSet = vk::DescriptorSet{};
+        m_descriptorStateDirty = true;
+      }
+      if (deferDestruction) {
+        m_retiredDescriptorSets[m_currentFrameSlot].push_back(
+            std::move(dit->second));
+      }
+      m_descriptorCache.erase(dit);
+    }
+  }
+  m_viewToDescriptorKeys.erase(vit);
+}
+
 void VulkanBackend::RetireTextureAtAddress_Locked(uint32_t tmu,
                                                   uint32_t startAddress) {
   if (tmu >= 2) return;
@@ -64,22 +89,12 @@ void VulkanBackend::RetireTextureAtAddress_Locked(uint32_t tmu,
   auto it = tmuMap.find(startAddress);
   if (it == tmuMap.end()) return;
 
-  vk::ImageView oldView = it->second.imageView.get();
-  if (oldView) {
-    const uint64_t viewHandle = static_cast<uint64_t>(
-        reinterpret_cast<uintptr_t>(static_cast<VkImageView>(oldView)));
-    auto vit = m_viewToDescriptorKeys.find(viewHandle);
-    if (vit != m_viewToDescriptorKeys.end()) {
-      for (const auto& dkey : vit->second) {
-        auto dit = m_descriptorCache.find(dkey);
-        if (dit != m_descriptorCache.end()) {
-          m_retiredDescriptorSets[m_currentFrameSlot].push_back(
-              std::move(dit->second));
-          m_descriptorCache.erase(dit);
-        }
-      }
-      m_viewToDescriptorKeys.erase(vit);
-    }
+  // Keep cached VkDescriptorSets alive while the VkImageView moves through
+  // m_retiredTextures into m_texturePool so pooled texture reuse hits
+  // m_descriptorCache with zero vkAllocateDescriptorSets/vkUpdateDescriptorSets
+  // calls. Only evict early if approaching descriptor pool capacity.
+  if (m_descriptorCache.size() >= kDescriptorCacheHighWater) {
+    EvictDescriptorsForView_Locked(it->second.imageView.get(), true);
   }
 
   m_retiredTextures[m_currentFrameSlot].push_back(std::move(it->second));
@@ -95,6 +110,10 @@ void VulkanBackend::ReclaimRetiredResources_Locked(uint32_t slot) {
     if (m_texturePool.size() < kMaxPooledTextures && tex.image && tex.memory &&
         tex.imageView && tex.width > 0 && tex.height > 0 && tex.mipLevels > 0) {
       m_texturePool.push_back(std::move(tex));
+    } else if (tex.imageView) {
+      // Texture is not pooled and will be destroyed immediately below (its
+      // GPU fence already signaled), so evict its cached descriptor sets now.
+      EvictDescriptorsForView_Locked(tex.imageView.get(), false);
     }
   }
   m_retiredTextures[slot].clear();
@@ -530,6 +549,15 @@ void VulkanBackend::PurgeTextures() {
                 << " textures, " << m_descriptorCache.size()
                 << " descriptors.");
 
+  // Evict descriptor sets for idle pooled textures before destroying them so
+  // no descriptor set ever outlives its VkImageView.
+  for (auto& tex : m_texturePool) {
+    if (tex.imageView) {
+      EvictDescriptorsForView_Locked(tex.imageView.get(), false);
+    }
+  }
+  m_texturePool.clear();
+
   for (auto& kv : m_descriptorCache) {
     m_retiredDescriptorSets[m_currentFrameSlot].push_back(std::move(kv.second));
   }
@@ -541,7 +569,6 @@ void VulkanBackend::PurgeTextures() {
     }
     m_vulkanTextures[t].clear();
   }
-  m_texturePool.clear();
   m_descriptorStateDirty = true;
   m_cachedDescSet = vk::DescriptorSet{};
 
