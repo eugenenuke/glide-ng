@@ -130,6 +130,71 @@ void EnsureWin32WindowClassesRegistered(HINSTANCE hInst) {
 
   s_registered = true;
 }
+
+bool IsUsableWin32HostWindow(HWND hwnd) {
+  if (!hwnd || !IsWindow(hwnd) || !IsWindowVisible(hwnd) || IsIconic(hwnd)) {
+    return false;
+  }
+  DWORD pid = 0;
+  GetWindowThreadProcessId(hwnd, &pid);
+  if (pid != GetCurrentProcessId()) {
+    return false;
+  }
+  const LONG style = GetWindowLongA(hwnd, GWL_STYLE);
+  if ((style & WS_CHILD) != 0) {
+    return false;
+  }
+  char cls[128] = {};
+  if (GetClassNameA(hwnd, cls, static_cast<int>(sizeof(cls))) > 0) {
+    if (std::strcmp(cls, kWin32StandaloneClass) == 0 ||
+        std::strcmp(cls, kWin32ChildClass) == 0 ||
+        std::strcmp(cls, "ConsoleWindowClass") == 0 ||
+        std::strcmp(cls, "PseudoConsoleWindow") == 0 ||
+        std::strcmp(cls, "IME") == 0 ||
+        std::strcmp(cls, "Default IME") == 0 ||
+        std::strcmp(cls, "MSCTFIME UI") == 0 ||
+        std::strcmp(cls, "tooltips_class32") == 0) {
+      return false;
+    }
+  }
+  RECT rc{};
+  if (!GetClientRect(hwnd, &rc) || (rc.right - rc.left) < 64 ||
+      (rc.bottom - rc.top) < 64) {
+    return false;
+  }
+  return true;
+}
+
+BOOL CALLBACK EnumProcessGlideHostProc(HWND hwnd, LPARAM lParam) {
+  if (IsUsableWin32HostWindow(hwnd)) {
+    *reinterpret_cast<HWND*>(lParam) = hwnd;
+    return FALSE;
+  }
+  return TRUE;
+}
+
+// Authentic 3dfx Win32 behavior: fullscreen Glide games (e.g. Donut, Unreal,
+// Tomb Raider, NFS) create a top-level WS_POPUP window and pass hWnd=0 to
+// grSstWinOpen(), expecting Glide to attach to GetActiveWindow() / the app's
+// main window instead of spawning a second overlapping window.
+HWND FindWin32ProcessHostHwnd() {
+  HWND active = GetActiveWindow();
+  if (IsUsableWin32HostWindow(active)) {
+    return active;
+  }
+  HWND fg = GetForegroundWindow();
+  if (IsUsableWin32HostWindow(fg)) {
+    return fg;
+  }
+  HWND found = nullptr;
+  EnumThreadWindows(GetCurrentThreadId(), EnumProcessGlideHostProc,
+                    reinterpret_cast<LPARAM>(&found));
+  if (found) {
+    return found;
+  }
+  EnumWindows(EnumProcessGlideHostProc, reinterpret_cast<LPARAM>(&found));
+  return found;
+}
 #endif
 
 #if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_X11)
@@ -659,6 +724,15 @@ bool NativeSurfaceHost::Attach(void* hostHandle, uint32_t guestW,
   if (hostHandle == nullptr) {
 #if defined(_WIN32)
     (void)extraSdlWindowFlags;
+    if (HWND appHwnd = FindWin32ProcessHostHwnd()) {
+      GLIDE_LOG(INFO, "WSI",
+                "NativeSurfaceHost: hWnd=0 resolved to active process HWND "
+                    << static_cast<void*>(appHwnd)
+                    << " (authentic 3dfx Win32 attachment).");
+      if (AttachWin32Embedded(static_cast<void*>(appHwnd))) {
+        return true;
+      }
+    }
     return AttachWin32Standalone(m_guestWidth, m_guestHeight, title,
                                  windowScale);
 #else

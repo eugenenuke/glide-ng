@@ -1267,9 +1267,17 @@ FX_ENTRY FxBool FX_CALL grTexDownloadMipMapLevelPartial(
                 << tmu << ", LOD=" << thisLod << " rows=" << startRow << ".."
                 << endRow);
   if (data && tmu < 2) {
+    const int32_t g2ThisLod = 8 - thisLod;
+    if (evenOdd != 0) {
+      const FxU32 levelMask =
+          (g2ThisLod & 1) ? GR_MIPMAPLEVELMASK_ODD : GR_MIPMAPLEVELMASK_EVEN;
+      if ((evenOdd & levelMask) == 0) return FXTRUE;
+    }
+    // Authentic Glide 3.x row bounds [startRow..endRow] are inclusive;
+    // TextureManager::DownloadMipMapPartial uses half-open [startRow, endRow).
     GlideWrapper::TextureManager::GetInstance().DownloadMipMapPartial(
-        tmu, startAddress, 8 - thisLod, 8 - largeLod, 3 - aspectRatio, format,
-        data, startRow, endRow);
+        tmu, startAddress, g2ThisLod, 8 - largeLod, 3 - aspectRatio, format,
+        data, startRow, endRow + 1);
     return FXTRUE;
   }
   return FXFALSE;

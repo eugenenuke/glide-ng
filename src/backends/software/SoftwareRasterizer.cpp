@@ -490,20 +490,25 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
           }
         }
 
-        float wVal = w0 * a.pos[3] + w1 * b.pos[3] + w2 * c.pos[3];
+        // Anchor interpolation at vertex a so constant-oow quads are bit-exact
+        // across triangles (prevents coplanar W-buffer Z-fighting).
+        float wVal =
+            a.pos[3] + w1 * (b.pos[3] - a.pos[3]) + w2 * (c.pos[3] - a.pos[3]);
         float divW0 =
             (stwHintMask & 0x2)
-                ? (w0 * a.tmu_oow[0] + w1 * b.tmu_oow[0] + w2 * c.tmu_oow[0])
+                ? (a.tmu_oow[0] + w1 * (b.tmu_oow[0] - a.tmu_oow[0]) +
+                   w2 * (c.tmu_oow[0] - a.tmu_oow[0]))
                 : wVal;
         float divW1 =
             (stwHintMask & 0x8)
-                ? (w0 * a.tmu_oow[1] + w1 * b.tmu_oow[1] + w2 * c.tmu_oow[1])
+                ? (a.tmu_oow[1] + w1 * (b.tmu_oow[1] - a.tmu_oow[1]) +
+                   w2 * (c.tmu_oow[1] - a.tmu_oow[1]))
                 : wVal;
 
         // Near-plane clipping (respect per-TMU oow when GR_STWHINT_W_DIFF_TMU*
         // is active)
         if (depthMode == 2) {  // GR_DEPTHBUFFER_WBUFFER
-          if (wVal > 1.0001f) keepPixel = false;
+          if (wVal <= 0.0f || wVal > 1.0001f) keepPixel = false;
         } else {
           if constexpr (HasTexture) {
             if (divW0 <= 0.0f) keepPixel = false;
@@ -855,13 +860,13 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
               break;
             case 7:
               finalR = (cOtherR - cLocalR) * factR + cLocalR;
-              finalG = (cOtherG - cLocalG) * factR + cLocalG;
-              finalB = (cOtherB - cLocalB) * factR + cLocalB;
+              finalG = (cOtherG - cLocalG) * factG + cLocalG;
+              finalB = (cOtherB - cLocalB) * factB + cLocalB;
               break;
             case 8:
               finalR = (cOtherR - cLocalR) * factR + aLocal;
-              finalG = (cOtherG - cLocalG) * factR + aLocal;
-              finalB = (cOtherB - cLocalB) * factR + aLocal;
+              finalG = (cOtherG - cLocalG) * factG + aLocal;
+              finalB = (cOtherB - cLocalB) * factB + aLocal;
               break;
           }
           if (colorCombinerInvert) {
@@ -921,10 +926,10 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
           }
           if (alphaCombinerInvert) finalA = 1.0f - finalA;
 
-          red = finalR;
-          green = finalG;
-          blue = finalB;
-          alpha = finalA;
+          red = std::clamp(finalR, 0.0f, 1.0f);
+          green = std::clamp(finalG, 0.0f, 1.0f);
+          blue = std::clamp(finalB, 0.0f, 1.0f);
+          alpha = std::clamp(finalA, 0.0f, 1.0f);
           blendAlphaVal = alpha;
 
           // Pre-blend Alpha Dithering / Quantization
@@ -1011,9 +1016,13 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
           float targetDepth = 0.0f;
           if (depthMode == 2) {
             float w = 1.0f / wVal;
-            targetDepth = (w - depthNear) * depthRangeInv;
+            targetDepth =
+                std::clamp((w - depthNear) * depthRangeInv, 0.0f, 1.0f);
           } else {
-            targetDepth = w0 * a.pos[2] + w1 * b.pos[2] + w2 * c.pos[2];
+            targetDepth = std::clamp(
+                a.pos[2] + w1 * (b.pos[2] - a.pos[2]) +
+                    w2 * (c.pos[2] - a.pos[2]),
+                0.0f, 1.0f);
           }
           if (depthBiasLevel != 0)
             targetDepth = std::max(
@@ -1131,40 +1140,41 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
                   return 1.0f;
               }
             };
-            red = std::min(
-                1.0f,
+            red = std::clamp(
                 red * getF(rgbSrcBlend, red, preFogR, dstR, blendAlphaVal, dstA,
                            false) +
                     dstR * getF(rgbDstBlend, red, preFogR, dstR, blendAlphaVal,
-                                dstA, true));
-            green = std::min(
-                1.0f,
+                                dstA, true),
+                0.0f, 1.0f);
+            green = std::clamp(
                 green * getF(rgbSrcBlend, green, preFogG, dstG, blendAlphaVal,
                              dstA, false) +
                     dstG * getF(rgbDstBlend, green, preFogG, dstG,
-                                blendAlphaVal, dstA, true));
-            blue = std::min(
-                1.0f,
+                                blendAlphaVal, dstA, true),
+                0.0f, 1.0f);
+            blue = std::clamp(
                 blue * getF(rgbSrcBlend, blue, preFogB, dstB, blendAlphaVal,
                             dstA, false) +
                     dstB * getF(rgbDstBlend, blue, preFogB, dstB, blendAlphaVal,
-                                dstA, true));
+                                dstA, true),
+                0.0f, 1.0f);
             aVal = static_cast<uint32_t>(
-                std::min(1.0f,
-                         blendAlphaVal * getF(alphaSrcBlend, 0, 0, 0,
-                                              blendAlphaVal, dstA, false) +
-                             dstA * getF(alphaDstBlend, 0, 0, 0, blendAlphaVal,
-                                         dstA, true)) *
+                std::clamp(
+                    blendAlphaVal * getF(alphaSrcBlend, 0, 0, 0, blendAlphaVal,
+                                         dstA, false) +
+                        dstA * getF(alphaDstBlend, 0, 0, 0, blendAlphaVal, dstA,
+                                    true),
+                    0.0f, 1.0f) *
                     255.0f +
                 0.5f);
             rVal = static_cast<uint32_t>(red * 255.0f + 0.5f);
             gVal = static_cast<uint32_t>(green * 255.0f + 0.5f);
             bVal = static_cast<uint32_t>(blue * 255.0f + 0.5f);
           } else {
-            aVal = static_cast<uint32_t>(alpha * 255.0f + 0.5f);
-            rVal = static_cast<uint32_t>(red * 255.0f + 0.5f);
-            gVal = static_cast<uint32_t>(green * 255.0f + 0.5f);
-            bVal = static_cast<uint32_t>(blue * 255.0f + 0.5f);
+            aVal = static_cast<uint32_t>(std::clamp(alpha, 0.0f, 1.0f) * 255.0f + 0.5f);
+            rVal = static_cast<uint32_t>(std::clamp(red, 0.0f, 1.0f) * 255.0f + 0.5f);
+            gVal = static_cast<uint32_t>(std::clamp(green, 0.0f, 1.0f) * 255.0f + 0.5f);
+            bVal = static_cast<uint32_t>(std::clamp(blue, 0.0f, 1.0f) * 255.0f + 0.5f);
           }
           if constexpr (DitherEnabled) {
             static const uint8_t dither_matrix_4x4[16] = {

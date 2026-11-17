@@ -434,7 +434,7 @@ void VulkanBackend::UploadTexturePartial(uint32_t tmu, uint32_t startAddress,
                                          uint32_t lodLevel, uint32_t startRow,
                                          uint32_t endRow) {
   std::lock_guard<std::mutex> lock(m_mutex);
-  if (!m_initialized || !m_device) return;
+  if (!m_initialized || !m_device || !m_commandBuffer) return;
 
   if (tmu >= 2) {
     GLIDE_LOG(WARN, "Vulkan",
@@ -514,7 +514,7 @@ void VulkanBackend::UploadTexturePartial(uint32_t tmu, uint32_t startAddress,
   vk::BufferImageCopy region;
   region.bufferOffset = currentOffset;
   region.bufferRowLength = w;
-  region.bufferImageHeight = h;
+  region.bufferImageHeight = numRows;
   region.imageSubresource = vk::ImageSubresourceLayers(
       vk::ImageAspectFlagBits::eColor, lodLevel, 0, 1);
   region.imageOffset = vk::Offset3D(0, startRow, 0);

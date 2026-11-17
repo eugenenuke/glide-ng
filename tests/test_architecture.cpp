@@ -8382,3 +8382,170 @@ TEST_CASE("Glide 2.x Phase-2 Authentic 3dfx Env Vars Runtime Verification (M8.2)
   }
 #endif
 }
+
+TEST_CASE("Glide 2.x Partial MipMap Rows, Coplanar W-Buffer & Negative Combiner Clamping (M9)",
+          "[Glide2][M9]") {
+#ifdef __linux__
+  ::setenv("GLIDE_NG_HEADLESS", "1", 1);
+  ::setenv("GLIDE_NG_MAX_FPS", "0", 1);
+  ::setenv("GLIDE_NG_VSYNC", "0", 1);
+
+  grGlideInit();
+  grSstSelect(0);
+  REQUIRE(grSstWinOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                       GR_COLORFORMAT_ARGB, GR_ORIGIN_UPPER_LEFT, 2, 1) == FXTRUE);
+
+  auto makeV = [](float x, float y, float s, float t, float r, float g,
+                  float b) {
+    GrVertex v{};
+    v.x = x;
+    v.y = y;
+    v.oow = 1.0f;
+    v.r = r;
+    v.g = g;
+    v.b = b;
+    v.a = 255.0f;
+    v.tmuvtx[0].oow = 1.0f;
+    v.tmuvtx[0].sow = s;
+    v.tmuvtx[0].tow = t;
+    v.tmuvtx[1].oow = 1.0f;
+    v.tmuvtx[1].sow = s;
+    v.tmuvtx[1].tow = t;
+    return v;
+  };
+
+  SECTION("grTexDownloadMipMapLevelPartial updates inclusive [start..end] rows only") {
+    constexpr uint32_t kDim = 16;
+    std::vector<uint16_t> redTex(kDim * kDim, 0xF800u);   // Pure red RGB565
+    std::vector<uint16_t> greenBand(4 * kDim, 0x07E0u);   // Rows 4..7 inclusive
+    std::vector<uint16_t> blueRow(1 * kDim, 0x001Fu);     // Row 12..12 single row
+
+    GrTexInfo info{};
+    info.smallLod = GR_LOD_16;
+    info.largeLod = GR_LOD_16;
+    info.aspectRatio = GR_ASPECT_1x1;
+    info.format = GR_TEXFMT_RGB_565;
+    info.data = redTex.data();
+
+    const FxU32 addr = grTexMinAddress(GR_TMU0);
+    grTexDownloadMipMap(GR_TMU0, addr, GR_MIPMAPLEVELMASK_BOTH, &info);
+    grTexDownloadMipMapLevelPartial(GR_TMU0, addr, GR_LOD_16, GR_LOD_16,
+                                    GR_ASPECT_1x1, GR_TEXFMT_RGB_565,
+                                    GR_MIPMAPLEVELMASK_BOTH, greenBand.data(),
+                                    4, 7);
+    grTexDownloadMipMapLevelPartial(GR_TMU0, addr, GR_LOD_16, GR_LOD_16,
+                                    GR_ASPECT_1x1, GR_TEXFMT_RGB_565,
+                                    GR_MIPMAPLEVELMASK_BOTH, blueRow.data(),
+                                    12, 12);
+
+    grBufferClear(0xFF000000u, 0xFF, GR_WDEPTHVALUE_FARTHEST);
+    grDepthBufferMode(GR_DEPTHBUFFER_DISABLE);
+    grDitherMode(GR_DITHER_DISABLE);
+    grAlphaBlendFunction(GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_ONE,
+                         GR_BLEND_ZERO);
+    grTexSource(GR_TMU0, addr, GR_MIPMAPLEVELMASK_BOTH, &info);
+    grTexFilterMode(GR_TMU0, GR_TEXTUREFILTER_POINT_SAMPLED,
+                    GR_TEXTUREFILTER_POINT_SAMPLED);
+    grTexMipMapMode(GR_TMU0, GR_MIPMAP_DISABLE, FXFALSE);
+    grTexCombine(GR_TMU0, GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+                 GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE, FXFALSE,
+                 FXFALSE);
+    grColorCombine(GR_COMBINE_FUNCTION_SCALE_OTHER, GR_COMBINE_FACTOR_ONE,
+                   GR_COMBINE_LOCAL_NONE, GR_COMBINE_OTHER_TEXTURE, FXFALSE);
+
+    // Map 16x16 texels onto 160x160 pixels (10 screen px per texel row)
+    GrVertex tl = makeV(0.0f, 0.0f, 0.0f, 0.0f, 255.0f, 255.0f, 255.0f);
+    GrVertex tr = makeV(160.0f, 0.0f, 256.0f, 0.0f, 255.0f, 255.0f, 255.0f);
+    GrVertex br = makeV(160.0f, 160.0f, 256.0f, 256.0f, 255.0f, 255.0f, 255.0f);
+    GrVertex bl = makeV(0.0f, 160.0f, 0.0f, 256.0f, 255.0f, 255.0f, 255.0f);
+    grDrawTriangle(&tl, &tr, &br);
+    grDrawTriangle(&tl, &br, &bl);
+
+    auto readPx = [](uint32_t x, uint32_t y) -> uint16_t {
+      uint16_t px = 0;
+      REQUIRE(grLfbReadRegion(GR_BUFFER_BACKBUFFER, x, y, 1, 1, 2, &px) ==
+              FXTRUE);
+      return px;
+    };
+
+    // Row 2 -> untouched RED; Row 5 & Row 7 -> GREEN; Row 10 -> RED; Row 12 -> BLUE
+    const uint16_t pRow2 = readPx(80, 25);
+    const uint16_t pRow5 = readPx(80, 55);
+    const uint16_t pRow7 = readPx(80, 75);
+    const uint16_t pRow10 = readPx(80, 105);
+    const uint16_t pRow12 = readPx(80, 125);
+    const uint16_t pRow14 = readPx(80, 145);
+
+    CHECK(((pRow2 >> 11) & 31) >= 28);
+    CHECK(((pRow2 >> 5) & 63) <= 4);
+    CHECK(((pRow5 >> 5) & 63) >= 58);
+    CHECK(((pRow5 >> 11) & 31) <= 2);
+    CHECK(((pRow7 >> 5) & 63) >= 58);
+    CHECK(((pRow10 >> 11) & 31) >= 28);
+    CHECK(((pRow10 >> 5) & 63) <= 4);
+    CHECK((pRow12 & 31) >= 28);
+    CHECK(((pRow12 >> 11) & 31) <= 2);
+    CHECK(((pRow14 >> 11) & 31) >= 28);
+  }
+
+  SECTION("Coplanar W-buffer LEQUAL passes & negative combiner differences clamp cleanly to 0") {
+    grBufferClear(0xFF000000u, 0xFF, GR_WDEPTHVALUE_FARTHEST);
+    grDitherMode(GR_DITHER_DISABLE);
+    grDepthBufferMode(GR_DEPTHBUFFER_WBUFFER);
+    grDepthBufferFunction(GR_CMP_LEQUAL);
+    grDepthMask(FXTRUE);
+    grAlphaBlendFunction(GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_ONE,
+                         GR_BLEND_ZERO);
+    grColorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+                   GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_NONE, FXFALSE);
+
+    // Pass 1: Large quad at oow=1.0 (green)
+    GrVertex a0 = makeV(0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 240.0f, 0.0f);
+    GrVertex a1 = makeV(320.0f, 0.0f, 0.0f, 0.0f, 0.0f, 240.0f, 0.0f);
+    GrVertex a2 = makeV(320.0f, 240.0f, 0.0f, 0.0f, 0.0f, 240.0f, 0.0f);
+    GrVertex a3 = makeV(0.0f, 240.0f, 0.0f, 0.0f, 0.0f, 240.0f, 0.0f);
+    grDrawTriangle(&a0, &a1, &a2);
+    grDrawTriangle(&a0, &a2, &a3);
+
+    // Pass 2: Offset coplanar quad at identical oow=1.0 (blue) with different diagonal
+    GrVertex b0 = makeV(17.0f, 13.0f, 0.0f, 0.0f, 0.0f, 0.0f, 240.0f);
+    GrVertex b1 = makeV(299.0f, 13.0f, 0.0f, 0.0f, 0.0f, 0.0f, 240.0f);
+    GrVertex b2 = makeV(299.0f, 211.0f, 0.0f, 0.0f, 0.0f, 0.0f, 240.0f);
+    GrVertex b3 = makeV(17.0f, 211.0f, 0.0f, 0.0f, 0.0f, 0.0f, 240.0f);
+    grDrawTriangle(&b0, &b1, &b3);
+    grDrawTriangle(&b1, &b2, &b3);
+
+    // Every interior sample must be BLUE (zero coplanar W-buffer Z-fighting)
+    for (uint32_t sx : {50u, 110u, 160u, 220u, 270u}) {
+      for (uint32_t sy : {40u, 110u, 180u}) {
+        uint16_t px = 0;
+        REQUIRE(grLfbReadRegion(GR_BUFFER_BACKBUFFER, sx, sy, 1, 1, 2, &px) ==
+                FXTRUE);
+        CHECK((px & 31) >= 26);
+        CHECK(((px >> 5) & 63) <= 4);
+      }
+    }
+
+    // Negative combiner result: (other=0 - local=1) * 1 -> must clamp to 0 (never wrap)
+    grDepthBufferMode(GR_DEPTHBUFFER_DISABLE);
+    grConstantColorValue(0x00000000u);  // other = 0
+    grColorCombine(GR_COMBINE_FUNCTION_SCALE_OTHER_MINUS_LOCAL,
+                   GR_COMBINE_FACTOR_ONE, GR_COMBINE_LOCAL_ITERATED,
+                   GR_COMBINE_OTHER_CONSTANT, FXFALSE);
+    GrVertex n0 = makeV(360.0f, 40.0f, 0.0f, 0.0f, 255.0f, 255.0f, 255.0f);
+    GrVertex n1 = makeV(440.0f, 40.0f, 0.0f, 0.0f, 255.0f, 255.0f, 255.0f);
+    GrVertex n2 = makeV(440.0f, 120.0f, 0.0f, 0.0f, 255.0f, 255.0f, 255.0f);
+    GrVertex n3 = makeV(360.0f, 120.0f, 0.0f, 0.0f, 255.0f, 255.0f, 255.0f);
+    grDrawTriangle(&n0, &n1, &n2);
+    grDrawTriangle(&n0, &n2, &n3);
+
+    uint16_t negPx = 0xFFFFu;
+    REQUIRE(grLfbReadRegion(GR_BUFFER_BACKBUFFER, 400, 80, 1, 1, 2, &negPx) ==
+            FXTRUE);
+    CHECK(negPx == 0x0000u);
+  }
+
+  grSstWinClose();
+  grGlideShutdown();
+#endif
+}

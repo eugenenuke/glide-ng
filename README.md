@@ -50,9 +50,9 @@ To enable DOS `.exe` builds (identical across Debian, Fedora, and Arch, no root 
   ```bash
   sudo dpkg --add-architecture i386
   sudo apt-get update
-  sudo apt-get install -y g++-mingw-w64-i686-posix gcc-mingw-w64-i686-posix mingw-w64-tools wine wine32:i386
+  sudo apt-get install -y g++-mingw-w64-i686-posix gcc-mingw-w64-i686-posix mingw-w64-tools wine wine32:i386 wine64
   ```
-  *(Use the `-posix` MinGW variant so C++17 `std::thread`/`std::mutex` are supported; `libvulkan-dev` already provides `vulkan_win32.h`.)*
+  *(Use the `-posix` MinGW variant so C++17 `std::thread`/`std::mutex` are supported; `libvulkan-dev` already provides `vulkan_win32.h`. If you install only `wine32:i386` without `wine64`, initialize your Wine prefix once with `WINEARCH=win32 wineboot -u`.)*
 * **Arch Linux**:
   ```bash
   sudo pacman -S mingw-w64-gcc wine

@@ -2406,11 +2406,19 @@ FX_ENTRY void FX_CALL grTexDownloadMipMapLevelPartial(
   EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend",
             "grTexDownloadMipMapLevelPartial invoked for TMU="
-                << tmu << ", LOD=" << thisLod << ", rows=" << start << ".."
-                << end << " (Promoting to full download)");
-  // Promote to full level download for simplicity and visual correctness!
-  grTexDownloadMipMapLevel(tmu, startAddress, thisLod, largeLod, aspectRatio,
-                           format, evenOdd, data);
+                << tmu << ", addr=0x" << std::hex << startAddress << std::dec
+                << ", LOD=" << thisLod << ", rows=" << start << ".." << end);
+  if (!data || tmu >= 2) return;
+  if (evenOdd != 0) {
+    const FxU32 levelMask =
+        (thisLod & 1) ? GR_MIPMAPLEVELMASK_ODD : GR_MIPMAPLEVELMASK_EVEN;
+    if ((evenOdd & levelMask) == 0) return;
+  }
+  // Authentic Glide 2.x row bounds [start..end] are inclusive;
+  // TextureManager::DownloadMipMapPartial uses half-open [startRow, endRow).
+  GlideWrapper::TextureManager::GetInstance().DownloadMipMapPartial(
+      tmu, startAddress, thisLod, largeLod, aspectRatio, format, data, start,
+      end + 1);
 }
 
 FX_ENTRY void FX_CALL guDrawPolygonVertexListWithClip(int nverts,
