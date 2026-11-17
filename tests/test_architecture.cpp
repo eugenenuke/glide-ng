@@ -8572,6 +8572,41 @@ TEST_CASE("Glide 2.x Partial MipMap Rows, Coplanar W-Buffer & Negative Combiner 
     }
   }
 
+  SECTION("RAMDAC Gamma LUT switches cleanly across backends while keeping backbuffer VRAM linear") {
+    // 1. Mid-grey linear clear + gamma=1.7 presentation swap
+    grGammaCorrectionValue(1.7f);
+    grBufferClear(0xFF808080u, 0xFF, GR_WDEPTHVALUE_FARTHEST);
+    uint16_t backPx = 0;
+    REQUIRE(grLfbReadRegion(GR_BUFFER_BACKBUFFER, 80, 80, 1, 1, 2, &backPx) ==
+            FXTRUE);
+    // Backbuffer VRAM must remain linear mid-grey (~16/31 R, ~32/63 G, ~16/31 B)
+    CHECK(((backPx >> 11) & 31) >= 14);
+    CHECK(((backPx >> 11) & 31) <= 18);
+    CHECK(((backPx >> 5) & 63) >= 29);
+    CHECK(((backPx >> 5) & 63) <= 35);
+    REQUIRE_NOTHROW(grBufferSwap(0));
+
+    // 2. Dynamic custom LUT update (grLoadGammaTable) + second swap
+    using LoadGammaTableFunc = void (*)(FxU32, FxU32*, FxU32*, FxU32*);
+    auto loadGammaTable = reinterpret_cast<LoadGammaTableFunc>(
+        ::dlsym(RTLD_DEFAULT, "grLoadGammaTable"));
+    REQUIRE(loadGammaTable != nullptr);
+    FxU32 rTab[256], gTab[256], bTab[256];
+    for (int i = 0; i < 256; ++i) {
+      rTab[i] = static_cast<FxU32>(std::min(255, i * 2));
+      gTab[i] = static_cast<FxU32>(i);
+      bTab[i] = static_cast<FxU32>(i / 2);
+    }
+    REQUIRE_NOTHROW(loadGammaTable(256, rTab, gTab, bTab));
+    grBufferClear(0xFF808080u, 0xFF, GR_WDEPTHVALUE_FARTHEST);
+    REQUIRE_NOTHROW(grBufferSwap(0));
+
+    // 3. Reset back to linear 1.0 (restores fast direct-blit path on Vulkan)
+    REQUIRE_NOTHROW(grGammaCorrectionValue(1.0f));
+    grBufferClear(0xFF808080u, 0xFF, GR_WDEPTHVALUE_FARTHEST);
+    REQUIRE_NOTHROW(grBufferSwap(0));
+  }
+
   grSstWinClose();
   grGlideShutdown();
 #endif

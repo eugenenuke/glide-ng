@@ -140,6 +140,13 @@ bool VulkanBackend::Initialize(const WrapperConfig& config) {
             "Initializing Hybrid hardware Vulkan GPU context...");
   m_config = config;
   m_msaaSamples = config.msaaSamples;
+  for (int i = 0; i < 256; ++i) {
+    m_lutR[i] = static_cast<uint8_t>(i);
+    m_lutG[i] = static_cast<uint8_t>(i);
+    m_lutB[i] = static_cast<uint8_t>(i);
+  }
+  m_useGammaLut = false;
+  m_gammaLutDirty = true;
 
 #if defined(_WIN32)
   if (!LoadWin32VulkanProcAddr()) {
@@ -339,6 +346,7 @@ void VulkanBackend::Shutdown() {
   }
   DetachWindow_Locked();
   DestroyHudResources_Locked();
+  DestroyGammaPresentResources_Locked();
   DestroyLfbOverlayResources_Locked();
   ReclaimRetiredResources_Locked(0);
   ReclaimRetiredResources_Locked(1);
@@ -764,6 +772,7 @@ void VulkanBackend::DetachWindow_Locked() {
 
   DestroySwapchain_Locked();
   DestroyHudResources_Locked();
+  DestroyGammaPresentResources_Locked();
   DestroyLfbOverlayResources_Locked();
   ReclaimRetiredResources_Locked(0);
   ReclaimRetiredResources_Locked(1);
@@ -1183,6 +1192,7 @@ void VulkanBackend::DestroySwapchain_Locked() {
     m_device->waitIdle();
   }
   DestroyHudSwapchainFramebuffers_Locked();
+  DestroyGammaPresentSwapchainFramebuffers_Locked();
   for (int i = 0; i < 2; ++i) {
     if (m_imageAvailableSemaphores[i]) m_imageAvailableSemaphores[i].reset();
   }
@@ -1521,68 +1531,79 @@ bool VulkanBackend::SwapBuffers() {
     vk::ImageSubresourceRange colorRange(vk::ImageAspectFlagBits::eColor, 0, 1,
                                          0, 1);
 
-    // Transition swapchain image to TransferDstOptimal
-    TransitionImageLayout(*m_commandBuffer, m_swapchainImages[imageIdx],
-                          vk::ImageLayout::eUndefined,
-                          vk::ImageLayout::eTransferDstOptimal, colorRange);
-
-    // Transition offscreen image to TransferSrcOptimal
-    TransitionImageLayout(*m_commandBuffer, m_headlessImages[activeIdx].get(),
-                          vk::ImageLayout::eColorAttachmentOptimal,
-                          vk::ImageLayout::eTransferSrcOptimal, colorRange);
-
     // Compute aspect-ratio-preserving presentation rectangle (black
     // letterbox/pillarbox bars when host aspect != guest aspect).
     const PresentRect dst = NativeSurfaceHost::ComputePresentRect(
         m_headlessWidth, m_headlessHeight, m_swapchainExtent.width,
         m_swapchainExtent.height, /*preserveAspect=*/true);
 
-    const bool needsBars =
-        (dst.x > 0 || dst.y > 0 || dst.width < m_swapchainExtent.width ||
-         dst.height < m_swapchainExtent.height);
-    if (needsBars) {
-      vk::ClearColorValue blackClear(
-          std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f});
-      m_commandBuffer->clearColorImage(m_swapchainImages[imageIdx],
-                                       vk::ImageLayout::eTransferDstOptimal,
-                                       &blackClear, 1, &colorRange);
+    const bool presentedViaGamma =
+        m_useGammaLut && PresentGammaToSwapchain_Locked(activeIdx, imageIdx, dst);
 
-      vk::ImageMemoryBarrier clearToBlitBarrier;
-      clearToBlitBarrier.oldLayout = vk::ImageLayout::eTransferDstOptimal;
-      clearToBlitBarrier.newLayout = vk::ImageLayout::eTransferDstOptimal;
-      clearToBlitBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-      clearToBlitBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-      clearToBlitBarrier.image = m_swapchainImages[imageIdx];
-      clearToBlitBarrier.subresourceRange = colorRange;
-      clearToBlitBarrier.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
-      clearToBlitBarrier.dstAccessMask = vk::AccessFlagBits::eTransferWrite;
-      m_commandBuffer->pipelineBarrier(
-          vk::PipelineStageFlagBits::eTransfer,
-          vk::PipelineStageFlagBits::eTransfer, {}, 0, nullptr, 0, nullptr, 1,
-          &clearToBlitBarrier);
-    }
+    if (!presentedViaGamma) {
+      // Transition swapchain image to TransferDstOptimal
+      TransitionImageLayout(*m_commandBuffer, m_swapchainImages[imageIdx],
+                            vk::ImageLayout::eUndefined,
+                            vk::ImageLayout::eTransferDstOptimal, colorRange);
 
-    // Blit offscreen guest framebuffer into the centered destination rect
-    if (dst.width > 0 && dst.height > 0) {
-      vk::ImageBlit blitRegion;
-      blitRegion.srcSubresource =
-          vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
-      blitRegion.srcOffsets[0] = vk::Offset3D(0, 0, 0);
-      blitRegion.srcOffsets[1] =
-          vk::Offset3D(static_cast<int32_t>(m_headlessWidth),
-                       static_cast<int32_t>(m_headlessHeight), 1);
-      blitRegion.dstSubresource =
-          vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
-      blitRegion.dstOffsets[0] = vk::Offset3D(dst.x, dst.y, 0);
-      blitRegion.dstOffsets[1] =
-          vk::Offset3D(dst.x + static_cast<int32_t>(dst.width),
-                       dst.y + static_cast<int32_t>(dst.height), 1);
+      // Transition offscreen image to TransferSrcOptimal
+      TransitionImageLayout(*m_commandBuffer, m_headlessImages[activeIdx].get(),
+                            vk::ImageLayout::eColorAttachmentOptimal,
+                            vk::ImageLayout::eTransferSrcOptimal, colorRange);
 
-      m_commandBuffer->blitImage(
-          m_headlessImages[activeIdx].get(),
-          vk::ImageLayout::eTransferSrcOptimal, m_swapchainImages[imageIdx],
-          vk::ImageLayout::eTransferDstOptimal, 1, &blitRegion,
-          vk::Filter::eLinear);
+      const bool needsBars =
+          (dst.x > 0 || dst.y > 0 || dst.width < m_swapchainExtent.width ||
+           dst.height < m_swapchainExtent.height);
+      if (needsBars) {
+        vk::ClearColorValue blackClear(
+            std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f});
+        m_commandBuffer->clearColorImage(m_swapchainImages[imageIdx],
+                                         vk::ImageLayout::eTransferDstOptimal,
+                                         &blackClear, 1, &colorRange);
+
+        vk::ImageMemoryBarrier clearToBlitBarrier;
+        clearToBlitBarrier.oldLayout = vk::ImageLayout::eTransferDstOptimal;
+        clearToBlitBarrier.newLayout = vk::ImageLayout::eTransferDstOptimal;
+        clearToBlitBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        clearToBlitBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        clearToBlitBarrier.image = m_swapchainImages[imageIdx];
+        clearToBlitBarrier.subresourceRange = colorRange;
+        clearToBlitBarrier.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
+        clearToBlitBarrier.dstAccessMask = vk::AccessFlagBits::eTransferWrite;
+        m_commandBuffer->pipelineBarrier(
+            vk::PipelineStageFlagBits::eTransfer,
+            vk::PipelineStageFlagBits::eTransfer, {}, 0, nullptr, 0, nullptr, 1,
+            &clearToBlitBarrier);
+      }
+
+      // Blit offscreen guest framebuffer into the centered destination rect
+      if (dst.width > 0 && dst.height > 0) {
+        vk::ImageBlit blitRegion;
+        blitRegion.srcSubresource =
+            vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
+        blitRegion.srcOffsets[0] = vk::Offset3D(0, 0, 0);
+        blitRegion.srcOffsets[1] =
+            vk::Offset3D(static_cast<int32_t>(m_headlessWidth),
+                         static_cast<int32_t>(m_headlessHeight), 1);
+        blitRegion.dstSubresource =
+            vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
+        blitRegion.dstOffsets[0] = vk::Offset3D(dst.x, dst.y, 0);
+        blitRegion.dstOffsets[1] =
+            vk::Offset3D(dst.x + static_cast<int32_t>(dst.width),
+                         dst.y + static_cast<int32_t>(dst.height), 1);
+
+        m_commandBuffer->blitImage(
+            m_headlessImages[activeIdx].get(),
+            vk::ImageLayout::eTransferSrcOptimal, m_swapchainImages[imageIdx],
+            vk::ImageLayout::eTransferDstOptimal, 1, &blitRegion,
+            vk::Filter::eLinear);
+      }
+
+      // Transition offscreen image back to ColorAttachmentOptimal
+      TransitionImageLayout(*m_commandBuffer, m_headlessImages[activeIdx].get(),
+                            vk::ImageLayout::eTransferSrcOptimal,
+                            vk::ImageLayout::eColorAttachmentOptimal,
+                            colorRange);
     }
 
     // Render M3 post-scene HUD directly onto the swapchain image (when
@@ -1593,11 +1614,6 @@ bool VulkanBackend::SwapBuffers() {
                             vk::ImageLayout::eTransferDstOptimal,
                             vk::ImageLayout::ePresentSrcKHR, colorRange);
     }
-
-    // Transition offscreen image back to ColorAttachmentOptimal
-    TransitionImageLayout(*m_commandBuffer, m_headlessImages[activeIdx].get(),
-                          vk::ImageLayout::eTransferSrcOptimal,
-                          vk::ImageLayout::eColorAttachmentOptimal, colorRange);
 
     m_commandBuffer->end();
 
@@ -2093,6 +2109,7 @@ bool VulkanBackend::CreateHeadlessRenderTarget(uint32_t width,
         {}, vk::ImageType::e2D, m_colorFormat, vk::Extent3D(width, height, 1),
         1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal,
         vk::ImageUsageFlagBits::eColorAttachment |
+            vk::ImageUsageFlagBits::eSampled |
             vk::ImageUsageFlagBits::eTransferSrc |
             vk::ImageUsageFlagBits::eTransferDst);
 
@@ -2267,6 +2284,19 @@ void VulkanBackend::TransitionImageLayout(vk::CommandBuffer cmd,
                             vk::AccessFlagBits::eColorAttachmentRead;
     sourceStage = vk::PipelineStageFlagBits::eTransfer;
     destinationStage = vk::PipelineStageFlagBits::eColorAttachmentOutput;
+  } else if (oldLayout == vk::ImageLayout::eColorAttachmentOptimal &&
+             newLayout == vk::ImageLayout::eShaderReadOnlyOptimal) {
+    barrier.srcAccessMask = vk::AccessFlagBits::eColorAttachmentWrite;
+    barrier.dstAccessMask = vk::AccessFlagBits::eShaderRead;
+    sourceStage = vk::PipelineStageFlagBits::eColorAttachmentOutput;
+    destinationStage = vk::PipelineStageFlagBits::eFragmentShader;
+  } else if (oldLayout == vk::ImageLayout::eShaderReadOnlyOptimal &&
+             newLayout == vk::ImageLayout::eColorAttachmentOptimal) {
+    barrier.srcAccessMask = vk::AccessFlagBits::eShaderRead;
+    barrier.dstAccessMask = vk::AccessFlagBits::eColorAttachmentWrite |
+                            vk::AccessFlagBits::eColorAttachmentRead;
+    sourceStage = vk::PipelineStageFlagBits::eFragmentShader;
+    destinationStage = vk::PipelineStageFlagBits::eColorAttachmentOutput;
   } else if (oldLayout == vk::ImageLayout::eTransferDstOptimal &&
              newLayout == vk::ImageLayout::ePresentSrcKHR) {
     barrier.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
@@ -2355,6 +2385,7 @@ void VulkanBackend::SetGamma(float gamma) {
     m_lutB[i] = m_lutR[i];
   }
   m_useGammaLut = (gamma != 1.0f);
+  m_gammaLutDirty = true;
 }
 
 void VulkanBackend::LoadGammaTable(uint32_t nentries, const uint32_t* rTable,
@@ -2369,6 +2400,7 @@ void VulkanBackend::LoadGammaTable(uint32_t nentries, const uint32_t* rTable,
     m_lutB[i] = static_cast<uint8_t>(bTable[i]);
   }
   m_useGammaLut = true;
+  m_gammaLutDirty = true;
 }
 
 }  // namespace GlideWrapper

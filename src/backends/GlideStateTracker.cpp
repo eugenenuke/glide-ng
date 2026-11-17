@@ -611,9 +611,10 @@ void GlideStateTracker::SetAAState(bool enabled) {
 }
 
 void GlideStateTracker::SetAAState_Locked(bool enabled) {
+  if (m_aaEnabled == enabled) return;
   MarkStateDirty();
   m_aaEnabled = enabled;
-  GLIDE_LOG(INFO, "StateTracker",
+  GLIDE_LOG(DEBUG, "StateTracker",
             "SetAAState: AA active=" << (enabled ? "Yes" : "No"));
 }
 

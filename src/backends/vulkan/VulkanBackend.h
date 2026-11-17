@@ -572,12 +572,39 @@ class VulkanBackend : public GlideStateTracker {
   vk::DeviceSize m_lfbOverlayStagingSizes[2]{0, 0};
   vk::DeviceSize m_lfbOverlayStagingOffsets[2]{0, 0};
 
-  // Vulkan Gamma LUT State variables
+  // Vulkan Gamma LUT State variables & swapchain RAMDAC presentation pass
+  bool InitGammaPresentPipeline_Locked();
+  bool CreateGammaPresentSwapchainFramebuffers_Locked();
+  void DestroyGammaPresentSwapchainFramebuffers_Locked();
+  void DestroyGammaPresentResources_Locked();
+  bool EnsureGammaLutTexture_Locked();
+  bool PresentGammaToSwapchain_Locked(uint32_t activeIdx, uint32_t imageIdx,
+                                      const PresentRect& dst);
+
   float m_gammaCorrectionValue{1.0f};
   bool m_useGammaLut{false};
-  uint8_t m_lutR[256];
-  uint8_t m_lutG[256];
-  uint8_t m_lutB[256];
+  bool m_gammaLutDirty{true};
+  uint8_t m_lutR[256]{};
+  uint8_t m_lutG[256]{};
+  uint8_t m_lutB[256]{};
+  vk::Format m_gammaPresentPipelineFormat{vk::Format::eUndefined};
+  vk::UniqueRenderPass m_gammaPresentRenderPass;
+  std::vector<vk::UniqueFramebuffer> m_gammaPresentFramebuffers;
+  vk::UniqueDescriptorSetLayout m_gammaPresentDescSetLayout;
+  vk::UniqueDescriptorPool m_gammaPresentDescPool;
+  vk::DescriptorSet m_gammaPresentDescSets[2];
+  vk::ImageView m_gammaPresentBoundSrcView[2];
+  vk::UniquePipelineLayout m_gammaPresentPipelineLayout;
+  vk::UniquePipeline m_gammaPresentPipeline;
+  vk::UniqueSampler m_gammaSrcSampler;
+  vk::UniqueSampler m_gammaLutSampler;
+  vk::UniqueImage m_gammaLutImage;
+  vk::UniqueDeviceMemory m_gammaLutImageMemory;
+  vk::UniqueImageView m_gammaLutImageView;
+  vk::ImageLayout m_gammaLutImageLayout{vk::ImageLayout::eUndefined};
+  vk::UniqueBuffer m_gammaLutStagingBuffers[2];
+  vk::UniqueDeviceMemory m_gammaLutStagingMemories[2];
+  void* m_gammaLutStagingMaps[2]{nullptr, nullptr};
 
   // --- M3: Post-Scene On-Screen HUD Overlay (zero Glide state mutation) ---
   bool InitHudPipeline_Locked();
