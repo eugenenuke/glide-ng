@@ -932,7 +932,8 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
           alpha = std::clamp(finalA, 0.0f, 1.0f);
           blendAlphaVal = alpha;
 
-          // Pre-blend Alpha Dithering / Quantization
+          // Pre-blend Alpha Dithering / Quantization (matches Vulkan/GLES
+          // 1-bit alpha quantization without discarding fragments).
           if constexpr (DitherEnabled) {
             static const uint8_t dither_matrix_4x4[16] = {
                 0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5};
@@ -945,12 +946,12 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
                                : dither_matrix_2x2[ditherY * 4 + ditherX];
             if ((alphaTestOp != 7) || (alpha < 0.99f)) {
               float alpha255 = std::floor(alpha * 255.0f + 0.5f);
-              if (alpha255 + (static_cast<float>(dith) * 128.0f /
-                              (state.ditherMode == 2 ? 16.0f : 4.0f)) <
-                  128.0f)
-                keepPixel = false;
-              else
-                blendAlphaVal = 1.0f;
+              blendAlphaVal =
+                  (alpha255 + (static_cast<float>(dith) * 128.0f /
+                               (state.ditherMode == 2 ? 16.0f : 4.0f)) >=
+                   128.0f)
+                      ? 1.0f
+                      : 0.0f;
             }
           }
         }
@@ -1171,7 +1172,8 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
             gVal = static_cast<uint32_t>(green * 255.0f + 0.5f);
             bVal = static_cast<uint32_t>(blue * 255.0f + 0.5f);
           } else {
-            aVal = static_cast<uint32_t>(std::clamp(alpha, 0.0f, 1.0f) * 255.0f + 0.5f);
+            aVal = static_cast<uint32_t>(
+                std::clamp(blendAlphaVal, 0.0f, 1.0f) * 255.0f + 0.5f);
             rVal = static_cast<uint32_t>(std::clamp(red, 0.0f, 1.0f) * 255.0f + 0.5f);
             gVal = static_cast<uint32_t>(std::clamp(green, 0.0f, 1.0f) * 255.0f + 0.5f);
             bVal = static_cast<uint32_t>(std::clamp(blue, 0.0f, 1.0f) * 255.0f + 0.5f);

@@ -8570,6 +8570,62 @@ TEST_CASE("Glide 2.x Partial MipMap Rows, Coplanar W-Buffer & Negative Combiner 
         CHECK(((px >> 5) & 63) >= 56);
       }
     }
+
+    // Opaque draw (GR_BLEND_ONE, GR_BLEND_ZERO) with GR_DITHER_2x2 and
+    // alpha=0 (e.g. untextured Gouraud mesh with TMU0 ZERO + AlphaCombine
+    // reading TEXTURE, as in 3dfx Demo Room's 3D light-direction arrow) must
+    // NOT be discarded by alpha dithering.
+    grBufferClear(0xFF000000u, 0xFF, GR_WDEPTHVALUE_FARTHEST);
+    grDitherMode(GR_DITHER_2x2);
+    grAlphaTestFunction(GR_CMP_ALWAYS);
+    grAlphaBlendFunction(GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_ZERO,
+                         GR_BLEND_ZERO);
+    grTexCombine(GR_TMU0, GR_COMBINE_FUNCTION_ZERO, GR_COMBINE_FACTOR_NONE,
+                 GR_COMBINE_FUNCTION_ZERO, GR_COMBINE_FACTOR_NONE, FXFALSE,
+                 FXFALSE);
+    grColorCombine(GR_COMBINE_FUNCTION_SCALE_OTHER_ADD_LOCAL,
+                   GR_COMBINE_FACTOR_ONE, GR_COMBINE_LOCAL_ITERATED,
+                   GR_COMBINE_OTHER_TEXTURE, FXFALSE);
+    grAlphaCombine(GR_COMBINE_FUNCTION_SCALE_OTHER, GR_COMBINE_FACTOR_ONE,
+                   GR_COMBINE_LOCAL_CONSTANT, GR_COMBINE_OTHER_TEXTURE,
+                   FXFALSE);
+    GrVertex o0 = makeV(20.0f, 20.0f, 0.0f, 0.0f, 255.0f, 255.0f, 255.0f);
+    GrVertex o1 = makeV(100.0f, 20.0f, 0.0f, 0.0f, 255.0f, 255.0f, 255.0f);
+    GrVertex o2 = makeV(100.0f, 100.0f, 0.0f, 0.0f, 255.0f, 255.0f, 255.0f);
+    GrVertex o3 = makeV(20.0f, 100.0f, 0.0f, 0.0f, 255.0f, 255.0f, 255.0f);
+    grDrawTriangle(&o0, &o1, &o2);
+    grDrawTriangle(&o0, &o2, &o3);
+    for (uint32_t dx = 0; dx < 2; ++dx) {
+      for (uint32_t dy = 0; dy < 2; ++dy) {
+        uint16_t px = 0;
+        REQUIRE(grLfbReadRegion(GR_BUFFER_BACKBUFFER, 40 + dx, 40 + dy, 1, 1, 2,
+                                &px) == FXTRUE);
+        CHECK(((px >> 11) & 31) >= 28);
+        CHECK(((px >> 5) & 63) >= 56);
+        CHECK((px & 31) >= 28);
+      }
+    }
+
+    // Opaque draw with GR_DITHER_4x4 and GR_CMP_LESS alpha test must pass
+    // when combiner alpha < ref (40 < 100), not get culled by alpha dithering.
+    grBufferClear(0xFF000000u, 0xFF, GR_WDEPTHVALUE_FARTHEST);
+    grDitherMode(GR_DITHER_4x4);
+    grAlphaTestFunction(GR_CMP_LESS);
+    grAlphaTestReferenceValue(100);
+    grAlphaBlendFunction(GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_ONE,
+                         GR_BLEND_ZERO);
+    grColorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+                   GR_COMBINE_LOCAL_CONSTANT, GR_COMBINE_OTHER_NONE, FXFALSE);
+    grAlphaCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+                   GR_COMBINE_LOCAL_CONSTANT, GR_COMBINE_OTHER_NONE, FXFALSE);
+    grConstantColorValue(0x28FF0000u);  // alpha = 40 (< 100), bright red/blue
+    grDrawTriangle(&o0, &o1, &o2);
+    grDrawTriangle(&o0, &o2, &o3);
+    uint16_t ltPx = 0;
+    REQUIRE(grLfbReadRegion(GR_BUFFER_BACKBUFFER, 40, 40, 1, 1, 2, &ltPx) ==
+            FXTRUE);
+    CHECK(ltPx != 0x0000u);
+    grAlphaTestFunction(GR_CMP_ALWAYS);
   }
 
   SECTION("RAMDAC Gamma LUT switches cleanly across backends while keeping backbuffer VRAM linear") {

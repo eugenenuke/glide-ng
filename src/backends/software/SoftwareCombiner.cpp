@@ -112,10 +112,7 @@ void SoftwareBackend::WritePixelPipeline(int x, int y, const ModernVertex& v,
       float alpha255 = std::round(alpha * 255.0f);
       float ditherVal =
           (static_cast<float>(dith) * 128.0f) / static_cast<float>(matrixSize);
-      if (alpha255 + ditherVal < 128.0f) {
-        return;
-      }
-      blendAlphaVal = 1.0f;
+      blendAlphaVal = (alpha255 + ditherVal >= 128.0f) ? 1.0f : 0.0f;
     }
   }
 

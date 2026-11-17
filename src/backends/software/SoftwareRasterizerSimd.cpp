@@ -1153,16 +1153,17 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
 
       Simd8f blendAlphaVal = alpha;
 
-      // 7. Pre-blend Alpha Dithering / Quantization
+      // 7. Pre-blend Alpha Dithering / Quantization (matches Vulkan/GLES 1-bit
+      // alpha quantization without discarding fragments, so opaque / additive /
+      // multiplicative blends and GR_CMP_LESS alpha tests match GPU backends).
       if constexpr (DitherEnabled) {
         SimdMask applies = (alphaTestOp != 7) ? SimdMask::True()
                                               : (alpha < Simd8f(0.99f));
         if (applies.AnyTrue()) {
           Simd8f alpha255 = Floor(Fma(alpha, c255_vec, half_vec));
           SimdMask ditherPass = (alpha255 + rowDithAlpha) >= Simd8f(128.0f);
-          coverageMask = coverageMask & ((!applies) | ditherPass);
-          blendAlphaVal = Select(applies & ditherPass, one_vec, blendAlphaVal);
-          if (coverageMask.AllZero()) continue;
+          Simd8f quantAlpha = Select(ditherPass, one_vec, zero_vec);
+          blendAlphaVal = Select(applies, quantAlpha, blendAlphaVal);
         }
       }
 
@@ -1348,7 +1349,7 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
       Simd8f blendedR = red;
       Simd8f blendedG = green;
       Simd8f blendedB = blue;
-      Simd8f blendedA = alpha;
+      Simd8f blendedA = blendAlphaVal;
       Simd8i dstWord;
 
       if constexpr (BlendEnabled) {
