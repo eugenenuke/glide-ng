@@ -113,6 +113,10 @@ private:
     ModernVertex DecodeVertexSlow(const void* gameVertex) const;
     void RefreshCanonicalFlags();
 
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Warray-bounds"
+#endif
     inline void DecodeGlide2CanonicalInto(const void* gameVertex,
                                           ModernVertex& v) const noexcept {
         const auto* rawBytes = reinterpret_cast<const uint8_t*>(gameVertex);
@@ -150,6 +154,9 @@ private:
         }
         v.fog = 0.0f;
     }
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
     uint32_t m_stwHintMask{0};
     bool m_isGlide2Canonical{true};
