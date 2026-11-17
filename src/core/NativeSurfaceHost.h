@@ -51,6 +51,8 @@ class NativeSurfaceHost {
     StandaloneSDL2,
     X11Child,
     WaylandSubsurface,
+    Win32Window,
+    Win32Embedded,
   };
 
   NativeSurfaceHost() = default;
@@ -124,6 +126,12 @@ class NativeSurfaceHost {
   bool IsAttached() const { return m_mode != Mode::Detached; }
   bool WasQuitRequested() const { return m_quitRequested; }
   Mode GetMode() const { return m_mode; }
+  bool IsStandaloneMode() const {
+    return m_mode == Mode::StandaloneSDL2 || m_mode == Mode::Win32Window;
+  }
+  bool IsWin32Surface() const {
+    return m_mode == Mode::Win32Window || m_mode == Mode::Win32Embedded;
+  }
 
   bool IsWaylandSurface() const;
   bool IsX11Surface() const;
@@ -156,6 +164,8 @@ class NativeSurfaceHost {
   void* GetWaylandEventQueue() const;
   int32_t GetWaylandScale() const { return m_wlBufferScale; }
   SDL_Window* GetSDLWindow() const { return m_sdlWindow; }
+  void* GetWin32Hwnd() const { return m_win32Hwnd; }
+  void* GetWin32Hinstance() const { return m_win32Hinstance; }
 
  private:
   bool AttachStandaloneSDL2(uint32_t guestW, uint32_t guestH,
@@ -164,6 +174,9 @@ class NativeSurfaceHost {
   bool AttachX11Child(unsigned long parentWindow);
   bool AttachWaylandSubsurface(void* hostDisplay, void* hostSurface,
                                SDL_Window* hostSdlWindow);
+  bool AttachWin32Standalone(uint32_t guestW, uint32_t guestH,
+                             const std::string& title, uint32_t windowScale);
+  bool AttachWin32Embedded(void* parentHwnd);
   void QueryStandaloneDrawableSize(uint32_t& outW, uint32_t& outH) const;
 
   Mode m_mode = Mode::Detached;
@@ -193,6 +206,12 @@ class NativeSurfaceHost {
   void* m_wlShm = nullptr;
   int32_t m_wlBufferScale = 1;
   void* m_wlState = nullptr;
+
+  // Win32 native surface state (opaque handles; zero <windows.h> in header)
+  void* m_win32Hinstance = nullptr;
+  void* m_win32ParentHwnd = nullptr;
+  void* m_win32Hwnd = nullptr;
+  bool m_win32OwnsHwnd = false;
 };
 
 }  // namespace GlideWrapper

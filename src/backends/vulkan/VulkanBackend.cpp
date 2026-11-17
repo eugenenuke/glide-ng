@@ -1,7 +1,9 @@
 #include "VulkanBackend.h"
 
+#if !defined(_WIN32)
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_vulkan.h>
+#endif
 
 #if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_X11)
 #include <X11/Xlib.h>
@@ -28,6 +30,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
@@ -40,7 +43,37 @@
 #include "core/Telemetry.h"
 #include "core/TextureManager.h"
 
+#if defined(_WIN32)
+VULKAN_HPP_DEFAULT_DISPATCH_LOADER_DYNAMIC_STORAGE
+#endif
+
 namespace GlideWrapper {
+
+#if defined(_WIN32)
+namespace {
+PFN_vkGetInstanceProcAddr LoadWin32VulkanProcAddr() {
+  static std::mutex s_vkLoadMutex;
+  static HMODULE s_vkModule = nullptr;
+  static PFN_vkGetInstanceProcAddr s_gipa = nullptr;
+  static bool s_attempted = false;
+
+  std::lock_guard<std::mutex> lock(s_vkLoadMutex);
+  if (!s_attempted) {
+    s_attempted = true;
+    s_vkModule = LoadLibraryA("vulkan-1.dll");
+    if (s_vkModule) {
+      s_gipa = reinterpret_cast<PFN_vkGetInstanceProcAddr>(
+          reinterpret_cast<void*>(
+              GetProcAddress(s_vkModule, "vkGetInstanceProcAddr")));
+      if (s_gipa) {
+        VULKAN_HPP_DEFAULT_DISPATCHER.init(s_gipa);
+      }
+    }
+  }
+  return s_gipa;
+}
+}  // namespace
+#endif
 
 // Authoritative Vulkan validation layer declarations
 const std::vector<const char*> validationLayers = {
@@ -52,18 +85,39 @@ void Logger::LogHostVulkanCapabilities() {
   if (GetLevel() < LogLevel::INFO) return;
 
   try {
-    vk::ApplicationInfo appInfo("3dfxGlideWrapper", 1, "AntigravityEngine", 1,
+#if defined(_WIN32)
+    PFN_vkGetInstanceProcAddr gipa = LoadWin32VulkanProcAddr();
+    if (!gipa) {
+      Log(LogLevel::WARN, "Startup",
+          "Vulkan Host Polling unavailable: vulkan-1.dll not found.");
+      return;
+    }
+    vk::detail::DispatchLoaderDynamic localDisp(gipa);
+    vk::ApplicationInfo appInfo("glide-ng", 1, "glide-ng", 1,
+                                VK_API_VERSION_1_2);
+    vk::InstanceCreateInfo createInfo({}, &appInfo);
+    auto instance = vk::createInstanceUnique(createInfo, nullptr, localDisp);
+    localDisp.init(*instance);
+    std::vector<vk::PhysicalDevice> devices =
+        instance->enumeratePhysicalDevices(localDisp);
+#else
+    vk::ApplicationInfo appInfo("glide-ng", 1, "glide-ng", 1,
                                 VK_API_VERSION_1_2);
     vk::InstanceCreateInfo createInfo({}, &appInfo);
 
     vk::UniqueInstance instance = vk::createInstanceUnique(createInfo);
     std::vector<vk::PhysicalDevice> devices =
         instance->enumeratePhysicalDevices();
+#endif
 
     std::ostringstream ss;
     ss << "\n--- Host Vulkan Execution Adapters Discovered ---\n";
     for (size_t i = 0; i < devices.size(); ++i) {
+#if defined(_WIN32)
+      vk::PhysicalDeviceProperties props = devices[i].getProperties(localDisp);
+#else
       vk::PhysicalDeviceProperties props = devices[i].getProperties();
+#endif
       ss << "  Adapter [" << i << "] : " << props.deviceName.data() << "\n"
          << "    API Version : " << VK_VERSION_MAJOR(props.apiVersion) << "."
          << VK_VERSION_MINOR(props.apiVersion) << "."
@@ -86,6 +140,14 @@ bool VulkanBackend::Initialize(const WrapperConfig& config) {
             "Initializing Hybrid hardware Vulkan GPU context...");
   m_config = config;
   m_msaaSamples = config.msaaSamples;
+
+#if defined(_WIN32)
+  if (!LoadWin32VulkanProcAddr()) {
+    GLIDE_LOG(CRITICAL, "Vulkan",
+              "Failed to load vulkan-1.dll or vkGetInstanceProcAddr.");
+    return false;
+  }
+#endif
 
   Logger::GetInstance().LogHostVulkanCapabilities();
 
@@ -589,10 +651,15 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
   // Unconditionally render to offscreen guest targets and present via blit.
   m_headlessMode = true;
 
+#if defined(_WIN32)
+  const uint32_t extraHostFlags = 0u;
+#else
+  const uint32_t extraHostFlags = SDL_WINDOW_VULKAN;
+#endif
   if (!m_surfaceHost.Attach(nativeWindowHandle, width, height, windowed,
                             m_config.forceNoWindow,
                             "3dfx glide-ng Presentation Console (Vulkan)",
-                            SDL_WINDOW_VULKAN, m_config.windowScale)) {
+                            extraHostFlags, m_config.windowScale)) {
     GLIDE_LOG(CRITICAL, "Vulkan",
               "Failed to attach NativeSurfaceHost for Vulkan presentation.");
     return false;
@@ -835,6 +902,7 @@ bool VulkanBackend::CreatePresentationSurface() {
     }
 
     case NativeSurfaceHost::Mode::StandaloneSDL2: {
+#if !defined(_WIN32)
       VkSurfaceKHR rawSurface = VK_NULL_HANDLE;
       if (SDL_Vulkan_CreateSurface(m_surfaceHost.GetSDLWindow(),
                                    static_cast<VkInstance>(m_instance.get()),
@@ -849,6 +917,38 @@ bool VulkanBackend::CreatePresentationSurface() {
                 "Created Vulkan surface for StandaloneSDL2 window "
                     << m_surfaceHost.GetSDLWindow());
       return true;
+#else
+      return false;
+#endif
+    }
+
+    case NativeSurfaceHost::Mode::Win32Window:
+    case NativeSurfaceHost::Mode::Win32Embedded: {
+#if defined(_WIN32)
+      if (!VULKAN_HPP_DEFAULT_DISPATCHER.vkCreateWin32SurfaceKHR) {
+        GLIDE_LOG(CRITICAL, "Vulkan",
+                  "vkCreateWin32SurfaceKHR is unavailable on Vulkan instance.");
+        return false;
+      }
+
+      try {
+        vk::Win32SurfaceCreateInfoKHR info(
+            {},
+            static_cast<HINSTANCE>(m_surfaceHost.GetWin32Hinstance()),
+            static_cast<HWND>(m_surfaceHost.GetWin32Hwnd()));
+        m_surface = m_instance->createWin32SurfaceKHRUnique(info);
+        GLIDE_LOG(INFO, "Vulkan",
+                  "Created VK_KHR_win32_surface on HWND "
+                      << m_surfaceHost.GetWin32Hwnd());
+        return true;
+      } catch (const std::exception& e) {
+        GLIDE_LOG(CRITICAL, "Vulkan",
+                  "createWin32SurfaceKHRUnique failed: " << e.what());
+        return false;
+      }
+#else
+      return false;
+#endif
     }
   }
   return false;
@@ -1333,11 +1433,10 @@ bool VulkanBackend::SwapBuffers() {
   std::unique_lock<std::mutex> lock(m_mutex);
   if (!m_initialized || !m_windowAttached) return false;
 
-  // Pump SDL events ONLY in StandaloneSDL2 mode (guaranteed no-op for DOSBox
-  // X11Child / WaylandSubsurface / Headless).
+  // Pump events ONLY in standalone mode (guaranteed no-op for embedded hosts /
+  // Headless).
   m_surfaceHost.PollEvents(/*force=*/false);
-  if (m_surfaceHost.GetMode() == NativeSurfaceHost::Mode::StandaloneSDL2 &&
-      m_surfaceHost.WasQuitRequested()) {
+  if (m_surfaceHost.IsStandaloneMode() && m_surfaceHost.WasQuitRequested()) {
     GLIDE_LOG(INFO, "Vulkan",
               "Standalone window close requested; exiting cleanly.");
     DetachWindow_Locked();
@@ -1637,8 +1736,8 @@ bool VulkanBackend::SwapBuffers() {
                              std::chrono::steady_clock::now() - presentStart)
                              .count();
   const float maxFps = m_config.maxFps;
-  if (m_surfaceHost.GetMode() == NativeSurfaceHost::Mode::StandaloneSDL2) {
-    // Dispatch any post-commit Wayland/X11 events (forced on initial frames,
+  if (m_surfaceHost.IsStandaloneMode()) {
+    // Dispatch any post-commit window events (forced on initial frames,
     // throttled at 4ms during steady-state high-FPS rendering).
     m_surfaceHost.PollEvents(/*force=*/false);
   }
@@ -1736,6 +1835,9 @@ bool VulkanBackend::CreateInstance() {
   }
 
   m_instance = vk::createInstanceUnique(createInfo);
+#if defined(_WIN32)
+  VULKAN_HPP_DEFAULT_DISPATCHER.init(*m_instance);
+#endif
   return true;
 }
 
@@ -1840,6 +1942,9 @@ bool VulkanBackend::CreateLogicalDevice() {
   deviceInfo.setPpEnabledExtensionNames(deviceExtensions.data());
 
   m_device = m_physicalDevice.createDeviceUnique(deviceInfo);
+#if defined(_WIN32)
+  VULKAN_HPP_DEFAULT_DISPATCHER.init(*m_device);
+#endif
   m_graphicsQueue = m_device->getQueue(m_graphicsQueueFamilyIndex, 0);
 
   // 2.5. Initialize persistent Vulkan pipeline cache from disk!

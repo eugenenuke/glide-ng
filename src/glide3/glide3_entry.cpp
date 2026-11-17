@@ -14,7 +14,7 @@
 #include "core/VertexLayout.h"
 #include "core/WrapperConfig.h"
 
-#ifndef __linux__
+#if !defined(_WIN32) && !defined(__linux__)
 #define __linux__
 #endif
 
@@ -37,7 +37,7 @@ extern "C" {
 uint32_t s_sstOrigin = 0;
 bool g_inSplash = false;  // Execution context flag for internally loaded
                           // Glide 2.x splash textures
-void grShamelessPlug(void);
+FX_ENTRY void FX_CALL grShamelessPlug(void);
 }  // Close extern "C"
 
 namespace {
@@ -418,7 +418,11 @@ FX_ENTRY void FX_CALL grDrawVertexArrayContiguous(FxU32 mode, FxU32 count,
 }
 
 FX_ENTRY void FX_CALL grTriStats(FxU32* processed, FxU32* drawn) {
-  EntryCommon::GetTriStats(processed, drawn);
+  uint32_t p = 0;
+  uint32_t d = 0;
+  EntryCommon::GetTriStats(processed ? &p : nullptr, drawn ? &d : nullptr);
+  if (processed) *processed = static_cast<FxU32>(p);
+  if (drawn) *drawn = static_cast<FxU32>(d);
 }
 
 FX_ENTRY void FX_CALL grResetTriStats(void) { EntryCommon::ResetTriStats(); }
@@ -426,7 +430,11 @@ FX_ENTRY void FX_CALL grResetTriStats(void) { EntryCommon::ResetTriStats(); }
 FX_ENTRY void FX_CALL grSstPerfStats(GrSstPerfStats_t* stats) {
   if (stats) {
     std::memset(stats, 0, sizeof(GrSstPerfStats_t));
-    EntryCommon::GetPerfStats(stats->pixelsIn, stats->chromaFail);
+    uint32_t pixelsIn = 0;
+    uint32_t chromaFail = 0;
+    EntryCommon::GetPerfStats(pixelsIn, chromaFail);
+    stats->pixelsIn = static_cast<FxU32>(pixelsIn);
+    stats->chromaFail = static_cast<FxU32>(chromaFail);
   }
 }
 
@@ -1383,11 +1391,18 @@ FX_ENTRY FxBool FX_CALL gu3dfLoad(const char* filename, Gu3dfInfo* info) {
     return FXFALSE;
   }
 
-  return EntryCommon::Load3dfPixelsAndPalette(filename, info->header.format,
-                                              info->table.palette.data,
-                                              info->data)
-             ? FXTRUE
-             : FXFALSE;
+  const bool isPalettized = (info->header.format == GR_TEXFMT_P_8 ||
+                             info->header.format == GR_TEXFMT_AP_88);
+  uint32_t paletteTmp[256] = {};
+  const bool ok = EntryCommon::Load3dfPixelsAndPalette(
+      filename, info->header.format, isPalettized ? paletteTmp : nullptr,
+      info->data);
+  if (ok && isPalettized) {
+    for (int i = 0; i < 256; ++i) {
+      info->table.palette.data[i] = static_cast<FxU32>(paletteTmp[i]);
+    }
+  }
+  return ok ? FXTRUE : FXFALSE;
 }
 
 FX_ENTRY void FX_CALL grDitherMode(GrDitherMode_t mode) {
@@ -1525,7 +1540,22 @@ FX_ENTRY void FX_CALL grLoadGammaTable(FxU32 nentries, FxU32* red, FxU32* green,
   EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend",
             "grLoadGammaTable (Glide 3.x): nentries=" << nentries);
-  EntryCommon::LoadGammaTable(nentries, red, green, blue);
+  std::vector<uint32_t> rBuf;
+  std::vector<uint32_t> gBuf;
+  std::vector<uint32_t> bBuf;
+  if (red && nentries > 0) {
+    rBuf.assign(red, red + nentries);
+  }
+  if (green && nentries > 0) {
+    gBuf.assign(green, green + nentries);
+  }
+  if (blue && nentries > 0) {
+    bBuf.assign(blue, blue + nentries);
+  }
+  EntryCommon::LoadGammaTable(
+      static_cast<uint32_t>(nentries), rBuf.empty() ? nullptr : rBuf.data(),
+      gBuf.empty() ? nullptr : gBuf.data(),
+      bBuf.empty() ? nullptr : bBuf.data());
 }
 
 FX_ENTRY void FX_CALL guGammaCorrectionRGB(FxFloat red, FxFloat green,

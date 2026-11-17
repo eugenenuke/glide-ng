@@ -19,22 +19,31 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 
 # Discover System Graphics & Testing Dependencies
-find_package(Vulkan REQUIRED)
-find_package(Catch2 QUIET)
-find_package(OpenMP REQUIRED)
-find_package(SDL2 REQUIRED)
-
-# Optional external 3dfx reference SDK (untracked local directory used only by legacy SDK tests/demos)
-set(GLIDE_REF_SDK_DIR "${CMAKE_CURRENT_SOURCE_DIR}/refs/3dfx-Glide-API")
-if(EXISTS "${GLIDE_REF_SDK_DIR}/swlibs/fxmisc/linutil.c")
-    set(GLIDE_HAS_REF_SDK TRUE)
-else()
+if(WIN32)
+    # Zero-external-runtime-DLL Win32 build:
+    # - Vulkan loaded dynamically at runtime via vulkan-1.dll (headers only)
+    # - OpenGL 3.3 Core via Win32 WGL (opengl32.dll)
+    # - Software via Win32 GDI StretchDIBits (gdi32.dll)
+    # - Native Win32 HWND windowing (user32.dll, zero SDL2 dependency)
     set(GLIDE_HAS_REF_SDK FALSE)
-    message(STATUS "Optional 3dfx reference SDK not found at ${GLIDE_REF_SDK_DIR}; skipping legacy SDK-dependent tests and demos")
-endif()
+else()
+    find_package(Vulkan REQUIRED)
+    find_package(Catch2 QUIET)
+    find_package(OpenMP REQUIRED)
+    find_package(SDL2 REQUIRED)
 
-if(UNIX AND NOT APPLE)
-    find_package(X11 REQUIRED)
+    # Optional external 3dfx reference SDK (untracked local directory used only by legacy SDK tests/demos)
+    set(GLIDE_REF_SDK_DIR "${CMAKE_CURRENT_SOURCE_DIR}/refs/3dfx-Glide-API")
+    if(EXISTS "${GLIDE_REF_SDK_DIR}/swlibs/fxmisc/linutil.c")
+        set(GLIDE_HAS_REF_SDK TRUE)
+    else()
+        set(GLIDE_HAS_REF_SDK FALSE)
+        message(STATUS "Optional 3dfx reference SDK not found at ${GLIDE_REF_SDK_DIR}; skipping legacy SDK-dependent tests and demos")
+    endif()
+
+    if(UNIX AND NOT APPLE)
+        find_package(X11 REQUIRED)
+    endif()
 endif()
 
 # Setup Global Output Directories for compiled Binaries and Libraries
@@ -109,12 +118,18 @@ add_custom_target(GenerateBuildVersion ALL
     COMMENT "Checking git revision for build_version.h"
 )
 
-# Optional Open Watcom v2 DOS/32 CauseWay cross-build integration
-include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/OpenWatcomDos.cmake")
+# Optional Open Watcom v2 DOS/32 CauseWay cross-build integration (Linux host)
+if(NOT WIN32)
+    include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/OpenWatcomDos.cmake")
+endif()
 
 # Add Primary Source Directories
 enable_testing()
 add_subdirectory(src)
-add_subdirectory(tests)
-add_subdirectory(tools)
-add_subdirectory(demos)
+if(NOT WIN32)
+    add_subdirectory(tests)
+    add_subdirectory(tools)
+    add_subdirectory(demos)
+else()
+    add_subdirectory(tools)
+endif()

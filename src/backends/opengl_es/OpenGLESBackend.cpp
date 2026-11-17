@@ -1,7 +1,9 @@
 #include "OpenGLESBackend.h"
 #include "OpenGLESInternal.h"
 
+#if !defined(_WIN32)
 #include <SDL2/SDL.h>
+#endif
 
 #if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_EGL)
 #include <dlfcn.h>
@@ -56,6 +58,50 @@
 #endif
 
 namespace GlideWrapper {
+
+#if defined(_WIN32)
+namespace Win32Gl {
+
+#define GLIDE_W32_DEF_(pfnType, name) pfnType pfn_##name = nullptr;
+GLIDE_WIN32_GL_FUNCS_X(GLIDE_W32_DEF_)
+#undef GLIDE_W32_DEF_
+
+namespace {
+void* ResolveWin32GlSymbol(HMODULE opengl32Mod, const char* name) {
+  PROC proc = wglGetProcAddress(name);
+  const uintptr_t addr = reinterpret_cast<uintptr_t>(proc);
+  if (addr == 0 || addr == 1 || addr == 2 || addr == 3 ||
+      addr == static_cast<uintptr_t>(-1)) {
+    if (opengl32Mod) {
+      proc = GetProcAddress(opengl32Mod, name);
+    } else {
+      proc = nullptr;
+    }
+  }
+  return reinterpret_cast<void*>(proc);
+}
+}  // namespace
+
+bool LoadCoreFunctions() {
+  HMODULE opengl32Mod = GetModuleHandleA("opengl32.dll");
+  bool allOk = true;
+#define GLIDE_W32_LOAD_(pfnType, name)                                     \
+  do {                                                                     \
+    void* sym = ResolveWin32GlSymbol(opengl32Mod, #name);                  \
+    std::memcpy(&pfn_##name, &sym, sizeof(pfn_##name));                    \
+    if (!pfn_##name) {                                                     \
+      GLIDE_LOG(CRITICAL, "GLES",                                          \
+                "WGL missing required OpenGL function: " << #name);        \
+      allOk = false;                                                       \
+    }                                                                      \
+  } while (0);
+  GLIDE_WIN32_GL_FUNCS_X(GLIDE_W32_LOAD_)
+#undef GLIDE_W32_LOAD_
+  return allOk;
+}
+
+}  // namespace Win32Gl
+#endif
 
 bool OpenGLESBackend::Initialize(const WrapperConfig& config) {
   std::lock_guard<std::mutex> lock(m_mutex);
@@ -365,10 +411,9 @@ bool OpenGLESBackend::SwapBuffers() {
   std::unique_lock<std::mutex> lock(m_mutex);
   if (!m_initialized || !m_windowAttached) return false;
 
-  // Pump events ONLY in StandaloneSDL2 mode (guaranteed no-op for DOSBox).
+  // Pump events ONLY in standalone mode (guaranteed no-op for embedded hosts).
   m_surfaceHost.PollEvents(/*force=*/false);
-  if (m_surfaceHost.GetMode() == NativeSurfaceHost::Mode::StandaloneSDL2 &&
-      m_surfaceHost.WasQuitRequested()) {
+  if (m_surfaceHost.IsStandaloneMode() && m_surfaceHost.WasQuitRequested()) {
     GLIDE_LOG(INFO, "GLES",
               "Standalone window close requested; exiting cleanly.");
     DetachWindow_Locked();
@@ -411,7 +456,16 @@ bool OpenGLESBackend::SwapBuffers() {
     PresentToWindowSurface(hostW, hostH);
 
     // Swap the presentation surface.
-    if (m_useDirectEgl) {
+    if (m_useWgl) {
+#if defined(_WIN32)
+      if (m_wglHdc) {
+        if (!::SwapBuffers(static_cast<HDC>(m_wglHdc))) {
+          GLIDE_LOG(WARN, "GLES",
+                    "Win32 SwapBuffers failed: err=" << GetLastError());
+        }
+      }
+#endif
+    } else if (m_useDirectEgl) {
 #if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_EGL)
       if (m_eglDisplay && m_eglSurface) {
         if (!eglSwapBuffers(static_cast<EGLDisplay>(m_eglDisplay),
@@ -422,9 +476,12 @@ bool OpenGLESBackend::SwapBuffers() {
         }
       }
 #endif
-    } else if (m_surfaceHost.GetSDLWindow()) {
+    }
+#if !defined(_WIN32)
+    else if (m_surfaceHost.GetSDLWindow()) {
       SDL_GL_SwapWindow(m_surfaceHost.GetSDLWindow());
     }
+#endif
   } else {
     // Headless mode: ensure offscreen GPU work completes without forcing an
     // eager CPU readback (ReadLFB reads directly from the GPU FBO on demand).
@@ -462,7 +519,7 @@ bool OpenGLESBackend::SwapBuffers() {
                              std::chrono::steady_clock::now() - presentStart)
                              .count();
   const float maxFps = m_config.maxFps;
-  if (m_surfaceHost.GetMode() == NativeSurfaceHost::Mode::StandaloneSDL2) {
+  if (m_surfaceHost.IsStandaloneMode()) {
     m_surfaceHost.PollEvents(/*force=*/false);
   }
   lock.unlock();
@@ -1000,6 +1057,25 @@ void OpenGLESBackend::RestoreHostContextIfSaved() {
 }
 
 bool OpenGLESBackend::EnsureContextCurrent() {
+  if (m_useWgl) {
+#if defined(_WIN32)
+    if (!m_wglHdc || !m_wglContext) return false;
+    HDC hdc = static_cast<HDC>(m_wglHdc);
+    HGLRC ctx = static_cast<HGLRC>(m_wglContext);
+    if (wglGetCurrentContext() == ctx && wglGetCurrentDC() == hdc) {
+      return true;
+    }
+    if (!wglMakeCurrent(hdc, ctx)) {
+      GLIDE_LOG(CRITICAL, "GLES",
+                "wglMakeCurrent failed: err=" << GetLastError());
+      return false;
+    }
+    return true;
+#else
+    return false;
+#endif
+  }
+
   if (m_useDirectEgl) {
 #if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_EGL)
     if (!m_eglDisplay || !m_eglContext) return false;
@@ -1028,6 +1104,7 @@ bool OpenGLESBackend::EnsureContextCurrent() {
 #endif
   }
 
+#if !defined(_WIN32)
   if (m_sdlGlContext && m_surfaceHost.GetSDLWindow()) {
     if (SDL_GL_GetCurrentContext() == m_sdlGlContext) {
       return true;
@@ -1039,6 +1116,7 @@ bool OpenGLESBackend::EnsureContextCurrent() {
     }
     return true;
   }
+#endif
   return false;
 }
 
@@ -1470,6 +1548,7 @@ bool OpenGLESBackend::CreateDirectEglContext() {
 }
 
 bool OpenGLESBackend::CreateStandaloneSdlGlContext() {
+#if !defined(_WIN32)
   SDL_Window* win = m_surfaceHost.GetSDLWindow();
   if (!win) {
     GLIDE_LOG(CRITICAL, "GLES",
@@ -1497,6 +1576,130 @@ bool OpenGLESBackend::CreateStandaloneSdlGlContext() {
       (m_config.vsync && (!isWayland || m_config.vsyncStrictFifo)) ? 1 : 0;
   SDL_GL_SetSwapInterval(swapInterval);
   return true;
+#else
+  return false;
+#endif
+}
+
+bool OpenGLESBackend::CreateWin32WglContext() {
+#if defined(_WIN32)
+  const auto mode = m_surfaceHost.GetMode();
+  HWND targetHwnd = nullptr;
+  if (mode == NativeSurfaceHost::Mode::Headless) {
+    // WGL requires a valid window DC even for offscreen FBO-only rendering.
+    targetHwnd = CreateWindowExA(0, "STATIC", "", WS_POPUP, 0, 0, 1, 1,
+                                 nullptr, nullptr, GetModuleHandleA(nullptr),
+                                 nullptr);
+    if (!targetHwnd) {
+      GLIDE_LOG(CRITICAL, "GLES",
+                "CreateWin32WglContext: failed to create hidden dummy HWND "
+                "(err=" << GetLastError() << ").");
+      return false;
+    }
+    m_wglDummyHwnd = static_cast<void*>(targetHwnd);
+  } else {
+    targetHwnd = static_cast<HWND>(m_surfaceHost.GetWin32Hwnd());
+    if (!targetHwnd) {
+      GLIDE_LOG(CRITICAL, "GLES",
+                "CreateWin32WglContext: NativeSurfaceHost missing HWND.");
+      return false;
+    }
+  }
+
+  HDC hdc = GetDC(targetHwnd);
+  if (!hdc) {
+    GLIDE_LOG(CRITICAL, "GLES",
+              "CreateWin32WglContext: GetDC failed (err=" << GetLastError()
+                                                          << ").");
+    return false;
+  }
+  m_wglHdc = static_cast<void*>(hdc);
+  m_wglTargetHwnd = static_cast<void*>(targetHwnd);
+
+  PIXELFORMATDESCRIPTOR pfd{};
+  pfd.nSize = sizeof(pfd);
+  pfd.nVersion = 1;
+  pfd.dwFlags = PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER;
+  pfd.iPixelType = PFD_TYPE_RGBA;
+  pfd.cColorBits = 32;
+  pfd.cAlphaBits = 8;
+  pfd.cDepthBits = 24;
+  pfd.cStencilBits = 8;
+  pfd.iLayerType = PFD_MAIN_PLANE;
+
+  int pixelFormat = ::ChoosePixelFormat(hdc, &pfd);
+  if (pixelFormat == 0 || !::SetPixelFormat(hdc, pixelFormat, &pfd)) {
+    GLIDE_LOG(CRITICAL, "GLES",
+              "CreateWin32WglContext: ChoosePixelFormat/SetPixelFormat failed "
+              "(err=" << GetLastError() << ").");
+    return false;
+  }
+
+  HGLRC tempCtx = wglCreateContext(hdc);
+  if (!tempCtx) {
+    GLIDE_LOG(CRITICAL, "GLES",
+              "CreateWin32WglContext: wglCreateContext failed (err="
+                  << GetLastError() << ").");
+    return false;
+  }
+  if (!wglMakeCurrent(hdc, tempCtx)) {
+    wglDeleteContext(tempCtx);
+    GLIDE_LOG(CRITICAL, "GLES",
+              "CreateWin32WglContext: wglMakeCurrent(temp) failed (err="
+                  << GetLastError() << ").");
+    return false;
+  }
+
+  // Upgrade to an OpenGL 3.3 Core Profile context when supported.
+  HGLRC finalCtx = tempCtx;
+  auto createCtxAttribs = reinterpret_cast<PFNWGLCREATECONTEXTATTRIBSARBPROC>(
+      reinterpret_cast<void*>(wglGetProcAddress("wglCreateContextAttribsARB")));
+  if (createCtxAttribs) {
+    const int attribs[] = {
+        WGL_CONTEXT_MAJOR_VERSION_ARB, 3,
+        WGL_CONTEXT_MINOR_VERSION_ARB, 3,
+        WGL_CONTEXT_PROFILE_MASK_ARB, WGL_CONTEXT_CORE_PROFILE_BIT_ARB,
+        0};
+    HGLRC coreCtx = createCtxAttribs(hdc, nullptr, attribs);
+    if (coreCtx) {
+      wglMakeCurrent(nullptr, nullptr);
+      wglDeleteContext(tempCtx);
+      if (!wglMakeCurrent(hdc, coreCtx)) {
+        wglDeleteContext(coreCtx);
+        GLIDE_LOG(CRITICAL, "GLES",
+                  "CreateWin32WglContext: wglMakeCurrent(3.3 Core) failed.");
+        return false;
+      }
+      finalCtx = coreCtx;
+    }
+  }
+
+  m_wglContext = static_cast<void*>(finalCtx);
+  m_useWgl = true;
+  m_useDirectEgl = false;
+
+  if (!Win32Gl::LoadCoreFunctions()) {
+    GLIDE_LOG(CRITICAL, "GLES",
+              "CreateWin32WglContext: required OpenGL 3.3 functions missing.");
+    return false;
+  }
+
+  // Enable shader-controlled gl_PointSize on Desktop OpenGL.
+  glEnable(GL_PROGRAM_POINT_SIZE);
+
+  auto swapIntervalExt = reinterpret_cast<PFNWGLSWAPINTERVALEXTPROC>(
+      reinterpret_cast<void*>(wglGetProcAddress("wglSwapIntervalEXT")));
+  if (swapIntervalExt) {
+    swapIntervalExt(m_config.vsync ? 1 : 0);
+  }
+
+  GLIDE_LOG(INFO, "GLES",
+            "Created Win32 WGL OpenGL 3.3 Core context (mode="
+                << NativeSurfaceHost::ModeToString(mode) << ").");
+  return true;
+#else
+  return false;
+#endif
 }
 
 // Context Creation & Shaders Compiler Helpers
@@ -1507,6 +1710,7 @@ bool OpenGLESBackend::CreateGLContext(void* nativeWindowHandle, uint32_t width,
   const bool isStandaloneRequest =
       (nativeWindowHandle == nullptr && !m_config.forceNoWindow);
 
+#if !defined(_WIN32)
   // Configure SDL OpenGL ES 3.2 attributes ONLY when creating our own
   // StandaloneSDL2 demo window (never touch host SDL GL state for DOSBox).
   if (isStandaloneRequest) {
@@ -1524,11 +1728,14 @@ bool OpenGLESBackend::CreateGLContext(void* nativeWindowHandle, uint32_t width,
       SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, 0);
     }
   }
-
   const uint32_t extraFlags = isStandaloneRequest ? SDL_WINDOW_OPENGL : 0;
+#else
+  (void)isStandaloneRequest;
+  const uint32_t extraFlags = 0u;
+#endif
   if (!m_surfaceHost.Attach(
           nativeWindowHandle, width, height, windowed, m_config.forceNoWindow,
-          "3dfx glide-ng Presentation Console (OpenGL ES 3.2)", extraFlags,
+          "3dfx glide-ng Presentation Console (OpenGL)", extraFlags,
           m_config.windowScale)) {
     GLIDE_LOG(CRITICAL, "GLES",
               "NativeSurfaceHost::Attach failed for OpenGLESBackend.");
@@ -1538,11 +1745,16 @@ bool OpenGLESBackend::CreateGLContext(void* nativeWindowHandle, uint32_t width,
 
   const auto mode = m_surfaceHost.GetMode();
   bool ctxOk = false;
+#if defined(_WIN32)
+  (void)mode;
+  ctxOk = CreateWin32WglContext();
+#else
   if (mode == NativeSurfaceHost::Mode::StandaloneSDL2) {
     ctxOk = CreateStandaloneSdlGlContext();
   } else {
     ctxOk = CreateDirectEglContext();
   }
+#endif
 
   if (!ctxOk) {
     DestroyGLContext();
@@ -1590,8 +1802,10 @@ bool OpenGLESBackend::CreateGLContext(void* nativeWindowHandle, uint32_t width,
 
   // Setup full-screen quad presentation shaders
   auto compileShader = [](GLenum type, const char* src) -> GLuint {
+    const std::string adapted = AdaptGlslSourceForPlatform(src);
+    const char* adaptedPtr = adapted.c_str();
     GLuint s = glCreateShader(type);
-    glShaderSource(s, 1, &src, nullptr);
+    glShaderSource(s, 1, &adaptedPtr, nullptr);
     glCompileShader(s);
     GLint status = 0;
     glGetShaderiv(s, GL_COMPILE_STATUS, &status);
@@ -1795,10 +2009,21 @@ void OpenGLESBackend::DestroyGLContext() {
     m_geomProgram = 0;
   }
 
-  // 2. Strict EGL teardown order BEFORE NativeSurfaceHost::Detach():
-  //    eglMakeCurrent(NO) -> eglDestroyContext -> eglDestroySurface ->
-  //    wl_egl_window_destroy -> eglTerminate (if owned) -> m_surfaceHost.Detach
-  if (m_useDirectEgl) {
+  // 2. Strict WGL / EGL / SDL teardown order BEFORE NativeSurfaceHost::Detach()
+  if (m_useWgl) {
+#if defined(_WIN32)
+    if (m_wglContext) {
+      wglMakeCurrent(nullptr, nullptr);
+      wglDeleteContext(static_cast<HGLRC>(m_wglContext));
+    }
+    if (m_wglHdc && m_wglTargetHwnd) {
+      ReleaseDC(static_cast<HWND>(m_wglTargetHwnd), static_cast<HDC>(m_wglHdc));
+    }
+    if (m_wglDummyHwnd) {
+      DestroyWindow(static_cast<HWND>(m_wglDummyHwnd));
+    }
+#endif
+  } else if (m_useDirectEgl) {
 #if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_EGL)
     EGLDisplay dpy = static_cast<EGLDisplay>(m_eglDisplay);
     if (dpy != EGL_NO_DISPLAY) {
@@ -1820,10 +2045,13 @@ void OpenGLESBackend::DestroyGLContext() {
       eglTerminate(dpy);
     }
 #endif
-  } else if (m_sdlGlContext) {
+  }
+#if !defined(_WIN32)
+  else if (m_sdlGlContext) {
     SDL_GL_MakeCurrent(nullptr, nullptr);
     SDL_GL_DeleteContext(reinterpret_cast<SDL_GLContext>(m_sdlGlContext));
   }
+#endif
 
   m_eglDisplay = nullptr;
   m_eglContext = nullptr;
@@ -1832,6 +2060,11 @@ void OpenGLESBackend::DestroyGLContext() {
   m_useDirectEgl = false;
   m_eglDisplayOwned = false;
   m_sdlGlContext = nullptr;
+  m_wglHdc = nullptr;
+  m_wglContext = nullptr;
+  m_wglDummyHwnd = nullptr;
+  m_wglTargetHwnd = nullptr;
+  m_useWgl = false;
 
   // 3. Detach native child surface / standalone SDL window LAST.
   m_surfaceHost.Detach();

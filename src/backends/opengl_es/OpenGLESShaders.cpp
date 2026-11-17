@@ -646,8 +646,10 @@ void main() {
 
 bool OpenGLESBackend::CreateGeomShaders() {
   auto compileShader = [](GLenum type, const char* src) -> GLuint {
+    const std::string adapted = AdaptGlslSourceForPlatform(src);
+    const char* adaptedPtr = adapted.c_str();
     GLuint s = glCreateShader(type);
-    glShaderSource(s, 1, &src, nullptr);
+    glShaderSource(s, 1, &adaptedPtr, nullptr);
     glCompileShader(s);
     GLint status;
     glGetShaderiv(s, GL_COMPILE_STATUS, &status);

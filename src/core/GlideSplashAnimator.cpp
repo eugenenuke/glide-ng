@@ -2,6 +2,7 @@
 #include "EmbeddedAssets.h"
 #include "BackendManager.h"
 #include "Telemetry.h"
+#include "TextureManager.h"
 #include <math.h>
 #include <cstring>
 #include <cstdint>
@@ -112,7 +113,7 @@ void GlideSplashAnimator::SourceTexture(Texture* texture) {
     if (texture != m_lastTexture && m_useTextures) {
         grTexSource(GR_TMU0, texture->addr, GR_MIPMAPLEVELMASK_BOTH, &texture->info);
         if (texture->tableType != NO_TABLE) {
-            grTexDownloadTable(GR_TMU0, texture->tableType, &texture->tableData);
+            TextureManager::GetInstance().DownloadTable(GR_TMU0, texture->tableType, &texture->tableData);
         }
         m_lastTexture = texture;
     }
@@ -218,7 +219,7 @@ void GlideSplashAnimator::CalculateIntensity(int material_index, Vector intensit
 void GlideSplashAnimator::DrawFaces(int frame, int objnum) {
     int facenum;
     int material_index;
-    float intensity_factor[3];
+    float intensity_factor[3] = {1.0f, 1.0f, 1.0f};
     GrVertex gvert[3];
     int i;
     FxBool aa_a, aa_b, aa_c;

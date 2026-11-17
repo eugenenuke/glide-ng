@@ -60,8 +60,7 @@ static uint64_t CalculateTextureHash(const struct VirtualTexture& tex) {
 void VulkanBackend::EvictDescriptorsForView_Locked(vk::ImageView view,
                                                    bool deferDestruction) {
   if (!view) return;
-  const uint64_t viewHandle = static_cast<uint64_t>(
-      reinterpret_cast<uintptr_t>(static_cast<VkImageView>(view)));
+  const uint64_t viewHandle = VkHandleToU64(static_cast<VkImageView>(view));
   auto vit = m_viewToDescriptorKeys.find(viewHandle);
   if (vit == m_viewToDescriptorKeys.end()) return;
 

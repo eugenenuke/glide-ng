@@ -8,6 +8,14 @@
 #include <iostream>
 #if defined(__unix__) || defined(__APPLE__)
 #include <dlfcn.h>
+#elif defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
 #endif
 
 namespace GlideWrapper {
@@ -24,6 +32,20 @@ std::string GetLoadedModulePath() {
     if (dladdr(&s_moduleAnchor, &info) != 0 &&
         info.dli_fname != nullptr && info.dli_fname[0] != '\0') {
         return std::string(info.dli_fname);
+    }
+#elif defined(_WIN32)
+    static int s_moduleAnchor = 0;
+    HMODULE hMod = nullptr;
+    if (GetModuleHandleExA(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            reinterpret_cast<LPCSTR>(&s_moduleAnchor), &hMod) &&
+        hMod != nullptr) {
+        char pathBuf[MAX_PATH] = {};
+        DWORD len = GetModuleFileNameA(hMod, pathBuf, MAX_PATH);
+        if (len > 0 && len < MAX_PATH) {
+            return std::string(pathBuf, len);
+        }
     }
 #endif
     return "unknown";

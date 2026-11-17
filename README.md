@@ -62,6 +62,27 @@ To enable DOS `.exe` builds (identical across Debian, Fedora, and Arch, no root 
   sudo dnf install mingw32-gcc-c++ mingw32-winpthreads-static wine
   ```
 
+#### Cross-Building Win32 DLLs & Tools (`build_win32/`)
+```bash
+cmake -B build_win32 -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/mingw-w64-i686.cmake -DCMAKE_BUILD_TYPE=Release
+cmake --build build_win32 -j$(nproc)
+```
+This produces self-contained 32-bit PE binaries in `build_win32/bin/` with **zero external runtime DLL dependencies** (only standard Windows/Wine system DLLs: `KERNEL32.dll`, `msvcrt.dll`, `USER32.dll`, `GDI32.dll`, `OPENGL32.dll`, plus `vulkan-1.dll` loaded dynamically at runtime):
+* `glide2x.dll` & `glide3x.dll` — authentic 3dfx `__stdcall` ABI (`_grFoo@N` canonical exports + undecorated `grFoo` aliases) with Vulkan (`VK_KHR_win32_surface`), OpenGL 3.3 Core (WGL), and Software (GDI `StretchDIBits`) backends, supporting both standalone and parent-embedded `HWND` hosting.
+* `glide2_info.exe`, `glide3_info.exe`, `glide2_bench.exe`, `glide3_bench.exe`, `glide2_envtest.exe`, `glide3_envtest.exe` — Win32 diagnostic, benchmark, and environment-variable verification tools.
+
+#### Using `glide2x.dll` / `glide3x.dll` Under Wine & Steam Proton
+1. Copy `glide2x.dll` and/or `glide3x.dll` (and an optional `glide-ng.ini`) into the same directory as the Windows game `.exe`.
+2. Tell Wine/Proton to load the native DLL next to the game instead of any built-in stub:
+   ```bash
+   # Wine (standalone)
+   WINEDLLOVERRIDES="glide2x,glide3x=n" GLIDE_NG_BACKEND=vulkan wine ./game.exe
+
+   # Steam Proton Launch Options
+   WINEDLLOVERRIDES="glide2x,glide3x=n" GLIDE_NG_BACKEND=vulkan %command%
+   ```
+3. You can switch backends at launch with `GLIDE_NG_BACKEND=vulkan` (default, requires 32-bit Vulkan ICD such as `mesa-vulkan-drivers:i386` / NVIDIA 32-bit Vulkan), `GLIDE_NG_BACKEND=opengl_es` (WGL OpenGL 3.3 Core), or `GLIDE_NG_BACKEND=software` (pure CPU AVX2+FMA rasterizer presented via GDI).
+
 ### Windows (Native MinGW-w64 / MSVC)
 * **CMake**: Version 3.20 or newer.
 * **Vulkan SDK**: Download and install the official LunarG Vulkan SDK.

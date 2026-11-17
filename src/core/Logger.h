@@ -10,6 +10,10 @@
 #include <sstream>
 #include <string>
 
+#ifdef ERROR
+#undef ERROR
+#endif
+
 namespace GlideWrapper {
 
 enum class LogLevel : uint32_t {

@@ -24,8 +24,8 @@
 | **M5** | `fix/m5-carmageddon` | Carmageddon (`carma`) compatibility & performance: black menus, missing in-game UI/HUD, texture/seam/sky/Pratcam glitches, lazy palette swizzling, GPU state-dedup & batching, TMU budget & Vulkan texture pool | Med–High | `[x] DONE (USER CONFIRMED — 2026-11-16)` | Merged to `main` |
 | **M6** | `feat/m6-dos-tools-bench` | Telemetry `app_cpu_ms`/`wrapper_cpu_ms` breakdown + single-source-of-truth `env_vars.h` + Glide 2/3 override fixes + optional Open Watcom v2 DOS cross-build (`vendor/watcom`) + dual Linux/DOS `glide_info` + GPU-bound `glide_bench` with GlideMark score | High | `[x] DONE (USER CONFIRMED — 2026-11-16)` | Merged to `main` |
 | **M7** | `perf/m7-profiling-optimization` | Systematic performance profiling & optimization across frontend, Vulkan, OpenGL ES, LFB overlay, texture streaming, and AVX2+FMA Software rasterizer | Med–High | `[x] DONE (USER CONFIRMED — 2026-11-17)` | Merged to `main` (`beed43a`) |
-| **M8** | `feat/m8-ini-config-envvars-p2` | Clean break to unified `glide-ng.ini` (`IniConfigLoader`) + Phase-2 authentic 3dfx env vars (`FX_GLIDE_FBRAM`, `FX_GLIDE_TMU_MEMSIZE`, `SSTV2_NUM_TMUS`, `SST_GAMMA`, `SST_SCREENREFRESH`, `FX_GLIDE_IGNORE_REOPEN`, `FX_GLIDE_NO_DITHER_SUB`, `SSTV2_FORCE_BILINEAR/TRILINEAR`, `SST_TEXMAP_DISABLE`, `FX_GLIDE_BOUNDS_CHECK`, `FX_GLIDE_ALLOC_COLOR/AUX`, `FX_GLIDE_SNAPSHOT`) + permanent `glide_envtest` tool | Low–Med | `[x] DONE (USER CONFIRMED — 2026-11-17)` | Merged to `main` |
-| **M9** | `feat/m9-win32-dll-wine` | 32-bit Win32 (`i686` MinGW-w64) `glide2x.dll` & `glide3x.dll` for Wine/Proton (zero external runtime DLLs: `vulkan-1.dll` + WGL `opengl32.dll` + GDI Software, `__stdcall` + `.def` `@N` exports) + Win32 `glide_info.exe` & `glide_bench.exe` | High | `[ ] PENDING` | — |
+| **M8** | `feat/m8-ini-config-envvars-p2` | Clean break to unified `glide-ng.ini` (`IniConfigLoader`) + Phase-2 authentic 3dfx env vars (`FX_GLIDE_FBRAM`, `FX_GLIDE_TMU_MEMSIZE`, `SSTV2_NUM_TMUS`, `SST_GAMMA`, `SST_SCREENREFRESH`, `FX_GLIDE_IGNORE_REOPEN`, `FX_GLIDE_NO_DITHER_SUB`, `SSTV2_FORCE_BILINEAR/TRILINEAR`, `SST_TEXMAP_DISABLE`, `FX_GLIDE_BOUNDS_CHECK`, `FX_GLIDE_ALLOC_COLOR/AUX`, `FX_GLIDE_SNAPSHOT`) + permanent `glide_envtest` tool | Low–Med | `[x] DONE (USER CONFIRMED — 2026-11-17)` | Merged to `main` (`04034f8`) |
+| **M9** | `feat/m9-win32-dll-wine` | 32-bit Win32 (`i686` MinGW-w64) `glide2x.dll` & `glide3x.dll` for Wine/Proton (zero external runtime DLLs: dynamic `vulkan-1.dll` + WGL OpenGL 3.3 Core + GDI Software, authentic `__stdcall` + `.def` `_Func@N` exports) + Win32 `glide_info.exe`, `glide_bench.exe`, `glide_envtest.exe` | High | `[~] IMPLEMENTED — AWAITING USER VERIFICATION` | — |
 | **M10** | `feat/m10-shrine-torus-demos` | Standalone flagship 3dfx demos: `glide_shrine` (*Voodoo Temple*) and `glide_torus` (*3dfx Reflective Hall*) targeting Linux, DOS/32, and Win32 | Med | `[ ] PENDING` | — |
 
 ---
@@ -301,11 +301,38 @@
 
 ---
 
-## 10. Upcoming Milestones (High-Level Scope — Detailed Just-In-Time)
+## 10. Milestone M9: Win32 32-bit `glide2x.dll` & `glide3x.dll` for Wine/Proton (`feat/m9-win32-dll-wine`)
 
-### Milestone M9 — Win32 32-bit `glide2x.dll` & `glide3x.dll` for Wine/Proton (`feat/m9-win32-dll-wine`) *(Pending)*
-- Cross-compile 32-bit (`i686-w64-mingw32`, POSIX threads) `glide2x.dll` and `glide3x.dll` with authentic `__stdcall` ABI, `.def` `@N` exports, and zero external runtime DLL dependencies (`vulkan-1.dll` via winevulkan + WGL `opengl32.dll` + Win32 GDI `StretchDIBits` Software, native Win32 `HWND` hosting without SDL2).
-- Cross-compile Win32 `glide_info.exe`, `glide_bench.exe`, and `glide_envtest.exe` and validate end-to-end under Wine (`wine` / `wine32:i386`) across all 3 backends.
+### M9 Task Breakdown
+
+- **`M9.1`** — MinGW-w64 `i686` Cross-Compile Toolchain, Zero-Dependency Static Linking & Authentic 3dfx `.def` Exports (`cmake/toolchains/mingw-w64-i686.cmake`, `CMakeLists.txt`, `src/CMakeLists.txt`, `src/glide2/glide2x.def`, `src/glide3/glide3x.def`, `.gitignore`):
+  - Added `cmake/toolchains/mingw-w64-i686.cmake` auto-selecting `i686-w64-mingw32-{gcc,g++}-posix` (with non-suffixed fallback for Arch/Fedora) while running host `glslangValidator`/`python3` natively.
+  - Staged isolated `${CMAKE_BINARY_DIR}/win32_vk_inc/{vulkan,vk_video}` header symlinks, enabled `-mstackrealign` (protecting 32-bit AVX2/SSE against 4-byte-aligned 1990s caller stacks), and statically linked MinGW C++/winpthreads runtimes (`-static`) so `glide2x.dll`, `glide3x.dll`, and all Win32 tools depend **exclusively** on built-in Win32 system DLLs (`KERNEL32.dll`, `msvcrt.dll`, `USER32.dll`, `GDI32.dll`, `OPENGL32.dll`).
+  - Added compiler-verified `src/glide2/glide2x.def` (288 exports: 144 canonical `_Func@N` + 144 undecorated `Func`) and `src/glide3/glide3x.def` (204 exports: 102 canonical `_Func@N` + 102 undecorated `Func`), eliminating internal C++ symbol leaks, plus `i686-w64-mingw32-dlltool` canonical 3dfx import libraries (`libglide2x_3dfx.dll.a`, `libglide3x_3dfx.dll.a`) so MinGW-built tools import authentic `_Func@N` symbols compatible with `glide-ng`, real 3dfx drivers, nGlide, and dgVoodoo2.
+  - Fixed a latent cross-API bug caught by Win32 `__stdcall` decoration: `GlideSplashAnimator::SourceTexture()` called 3-arg Glide 2 `grTexDownloadTable(GR_TMU0, ...)` (`@12`) even inside `glide3x` (where Glide 3's `grTexDownloadTable` takes 2 args, `@8`); routed directly to `TextureManager::GetInstance().DownloadTable(...)`.
+  - Fixed 32-bit portability across `Logger.h` (`#undef ERROR`), `Logger.cpp` (`GetModuleHandleExA`/`GetModuleFileNameA`), `CpuLfbStaging.h` (`_aligned_malloc`/`_aligned_free`), `VulkanBackend.h`/`VulkanTextures.cpp`/`VulkanPipeline.cpp` (`VkHandleToU64` for 64-bit non-dispatchable handles on 32-bit x86), and `glide2_entry.cpp`/`glide3_entry.cpp` (`FxU32*` = `unsigned long*` vs `uint32_t*` adapters and `FX_CALL` forward declarations).
+  - **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION`
+- **`M9.2`** — Native Win32 `HWND` Surface Hosting (`src/core/NativeSurfaceHost.{h,cpp}`):
+  - Implemented `Mode::Win32Window` (standalone centered Win32 `HWND` with `CS_OWNDC` and non-blocking `PeekMessageA` pump) and `Mode::Win32Embedded` (click-through child `HWND` with `WM_NCHITTEST -> HTTRANSPARENT`, `CS_OWNDC`, automatic client-rect `SyncBounds()`, and fallback to standalone if `!IsWindow`), with zero SDL2 dependency on `_WIN32`.
+  - **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION`
+- **`M9.3`** — All Three Backends Native on Win32 (`VulkanBackend.{h,cpp}`, `OpenGLESBackend.{h,cpp}`, `OpenGLESInternal.h`, `OpenGLESShaders.cpp`, `Win32GlLoader.h`, `SoftwareBackend.{h,cpp}`, `SoftwareBackendBase.cpp`, `CpuLfbStaging.cpp`):
+  - **Vulkan**: Enabled `VULKAN_HPP_DISPATCH_LOADER_DYNAMIC=1`, dynamic `LoadLibraryA("vulkan-1.dll")` loader (graceful fallback if Vulkan ICD absent), and `VK_KHR_win32_surface` via `createWin32SurfaceKHRUnique`.
+  - **OpenGL (WGL)**: Implemented native WGL OpenGL 3.3 Core context creation (including hidden dummy `HWND` for `GLIDE_NG_HEADLESS=1`, `wglCreateContextAttribsARB`, `wglSwapIntervalEXT`, `::SwapBuffers`), zero-dependency `Win32GlLoader.h` (52 GL 1.3–3.3 entry points + `glClearDepthf` shim), and `#version 300 es` → `#version 330 core` GLSL shader adaptation (with core dual-source blend `#if 1`).
+  - **Software**: Implemented `Win32GdiPresenter` (`StretchDIBits` top-down 32-bit BGRA with aspect-preserving black letterbox/pillarbox bars) and `#ifdef _OPENMP` guards.
+  - **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION`
+- **`M9.4`** — Win32 Diagnostic, Benchmark & EnvVar Verification Tools (`tools/CMakeLists.txt`, `tools/common/glide2_dos_ovl.h`, `README.md`):
+  - Cross-compiled all 6 pure-C99 Win32 tools (`glide2_info.exe`, `glide3_info.exe`, `glide2_bench.exe`, `glide3_bench.exe`, `glide2_envtest.exe`, `glide3_envtest.exe`) with zero external runtime DLLs; Glide 2 tools dynamically load `glide2x.dll` via `LoadLibraryA` + `GetProcAddress("_gr...@N")`, while Glide 3 tools link against canonical `libglide3x_3dfx.dll.a` (`_gr...@N`).
+  - Updated `README.md` with Win32 cross-build and Wine/Steam Proton `WINEDLLOVERRIDES="glide2x,glide3x=n"` instructions.
+  - **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION`
+- **`M9.5`** — End-to-End PE Audit, Live Wine Validation & Linux/DOS Regression Matrix:
+  - **Win32 PE Audit (`i686-w64-mingw32-objdump -p`)**: Verified all 8 PE32 `i386` binaries import zero external runtime DLLs; `glide2x.dll` (288 exports) and `glide3x.dll` (204 exports) export exact canonical `_Func@N` + undecorated `Func` tables with zero C++ leaks; `glide3_{info,bench,envtest}.exe` import 100% canonical `_Func@N` symbols matching `glide3x.dll`.
+  - **Live Wine Validation (`wine32-stable`)**: Passed 100% across all 3 backends (`software`, `opengl_es` WGL 3.3 Core, `vulkan` dynamic `vulkan-1.dll`): `glide2_info.exe --probe` & `glide3_info.exe --probe` (6/6), `glide2_envtest.exe` & `glide3_envtest.exe` `--verify --test-reopen --test-bounds` (6/6 + authentic 3dfx override checks), `glide2_bench.exe` & `glide3_bench.exe` headless (6/6) and windowed under Xvfb (6/6), plus live `Win32Embedded` parent-`HWND` hosting with resize, 3dfx splash enabled, and LFB RGB565 pixel verification across all 3 backends (3/3).
+  - **Linux & DOS Regression Matrix**: Zero compiler warnings across Win32 Release, Linux Debug, Linux Release, and Open Watcom v2 DOS/32 CauseWay tools; all 8 Catch2 suites passed (`Glide2xWrapperTests` 36/36 [2,578 assertions] and `Glide3xWrapperTests` 49/49 [2,306 assertions] across `vulkan`, `opengl_es`, `software` SIMD, and `software` scalar with splash enabled); X11 `child_surface_embed_test` passed across all backends.
+  - **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION`
+
+---
+
+## 11. Upcoming Milestones (High-Level Scope — Detailed Just-In-Time)
 
 ### Milestone M10 — Flagship Standalone 3dfx Demos (`feat/m10-shrine-torus-demos`) *(Pending)*
 - Build two standalone, authentic Glide 2.x/3.x showcase tools targeting Linux, DOS/32, and Win32:

@@ -113,6 +113,7 @@ class OpenGLESBackend : public GlideStateTracker {
   void DestroyGLContext();
   bool CreateDirectEglContext();
   bool CreateStandaloneSdlGlContext();
+  bool CreateWin32WglContext();
   bool EnsureContextCurrent();
   void SaveCurrentHostEglContext();
   void RestoreHostContextIfSaved();
@@ -173,6 +174,13 @@ class OpenGLESBackend : public GlideStateTracker {
   void* m_eglSurface{nullptr};   // EGLSurface
   void* m_wlEglWindow{nullptr};  // wl_egl_window* (WaylandSubsurface only)
   bool m_useDirectEgl{false};
+
+  // Win32 WGL OpenGL 3.3 Core handles (opaque to keep <windows.h> out of .h)
+  void* m_wglHdc{nullptr};        // HDC
+  void* m_wglContext{nullptr};    // HGLRC
+  void* m_wglDummyHwnd{nullptr};  // Hidden HWND for headless WGL
+  void* m_wglTargetHwnd{nullptr}; // HWND associated with m_wglHdc
+  bool m_useWgl{false};
   bool m_eglDisplayOwned{false};  // Never eglTerminate borrowed wl_display*
 
   // StandaloneSDL2 fallback context (hWnd == 0 demos only)

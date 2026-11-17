@@ -1,12 +1,23 @@
 #pragma once
 
+#include <cstdint>
 #include <functional>
 #include <mutex>
+#include <type_traits>
 #include <unordered_map>
 #include <vector>
 #if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #ifndef VK_USE_PLATFORM_WIN32_KHR
 #define VK_USE_PLATFORM_WIN32_KHR
+#endif
+#ifndef VULKAN_HPP_DISPATCH_LOADER_DYNAMIC
+#define VULKAN_HPP_DISPATCH_LOADER_DYNAMIC 1
 #endif
 #endif
 #include <vulkan/vulkan.hpp>
@@ -140,20 +151,26 @@ struct DescriptorKey {
   }
 };
 
+template <typename VkHandle>
+inline uint64_t VkHandleToU64(VkHandle h) {
+  if constexpr (std::is_pointer_v<VkHandle>) {
+    return static_cast<uint64_t>(reinterpret_cast<std::uintptr_t>(h));
+  } else {
+    return static_cast<uint64_t>(h);
+  }
+}
+
 struct DescriptorKeyHash {
   std::size_t operator()(const DescriptorKey& k) const {
     std::size_t h = 0;
-    auto combine = [&h](std::size_t val) {
-      h ^= val + 0x9e3779b9 + (h << 6) + (h >> 2);
+    auto combine = [&h](uint64_t val) {
+      std::size_t hv = std::hash<uint64_t>{}(val);
+      h ^= hv + 0x9e3779b9 + (h << 6) + (h >> 2);
     };
-    combine(reinterpret_cast<std::uintptr_t>(
-        static_cast<VkImageView>(k.imageView0)));
-    combine(
-        reinterpret_cast<std::uintptr_t>(static_cast<VkSampler>(k.sampler0)));
-    combine(reinterpret_cast<std::uintptr_t>(
-        static_cast<VkImageView>(k.imageView1)));
-    combine(
-        reinterpret_cast<std::uintptr_t>(static_cast<VkSampler>(k.sampler1)));
+    combine(VkHandleToU64(static_cast<VkImageView>(k.imageView0)));
+    combine(VkHandleToU64(static_cast<VkSampler>(k.sampler0)));
+    combine(VkHandleToU64(static_cast<VkImageView>(k.imageView1)));
+    combine(VkHandleToU64(static_cast<VkSampler>(k.sampler1)));
     return h;
   }
 };

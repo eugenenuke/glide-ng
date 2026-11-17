@@ -1,8 +1,18 @@
 #include "core/NativeSurfaceHost.h"
 
+#if !defined(_WIN32)
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_syswm.h>
 #include <SDL2/SDL_version.h>
+#else
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 #include <algorithm>
 #include <chrono>
@@ -37,6 +47,7 @@ namespace GlideWrapper {
 
 namespace {
 
+#if !defined(_WIN32)
 // Keep SDL_INIT_VIDEO alive across StandaloneSDL2 open/close cycles (e.g.,
 // test27.exe) so Wayland/libdecor-gtk does not repeatedly tear down and
 // re-initialize GTK on every grSstWinClose()/grSstWinOpen(), while still
@@ -50,6 +61,76 @@ struct SdlVideoLifetimeGuard {
   }
 };
 SdlVideoLifetimeGuard g_sdlVideoGuard;
+#else
+HINSTANCE GetWin32ModuleInstance() {
+  static int s_anchor = 0;
+  HMODULE mod = nullptr;
+  if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                             GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                         reinterpret_cast<LPCSTR>(&s_anchor), &mod) &&
+      mod != nullptr) {
+    return static_cast<HINSTANCE>(mod);
+  }
+  return GetModuleHandleA(nullptr);
+}
+
+LRESULT CALLBACK GlideWin32StandaloneWndProc(HWND hwnd, UINT msg,
+                                             WPARAM wParam, LPARAM lParam) {
+  auto* quitFlag =
+      reinterpret_cast<bool*>(GetWindowLongPtrA(hwnd, GWLP_USERDATA));
+  switch (msg) {
+    case WM_CLOSE:
+      if (quitFlag) *quitFlag = true;
+      return 0;
+    case WM_DESTROY:
+      if (quitFlag) *quitFlag = true;
+      return 0;
+    case WM_ERASEBKGND:
+      return 1;
+    default:
+      return DefWindowProcA(hwnd, msg, wParam, lParam);
+  }
+}
+
+LRESULT CALLBACK GlideWin32ChildWndProc(HWND hwnd, UINT msg, WPARAM wParam,
+                                        LPARAM lParam) {
+  switch (msg) {
+    case WM_NCHITTEST:
+      return HTTRANSPARENT;
+    case WM_ERASEBKGND:
+      return 1;
+    default:
+      return DefWindowProcA(hwnd, msg, wParam, lParam);
+  }
+}
+
+const char* kWin32StandaloneClass = "GlideNGStandaloneWnd";
+const char* kWin32ChildClass = "GlideNGChildWnd";
+
+void EnsureWin32WindowClassesRegistered(HINSTANCE hInst) {
+  static std::mutex s_regMutex;
+  static bool s_registered = false;
+  std::lock_guard<std::mutex> lock(s_regMutex);
+  if (s_registered) return;
+
+  WNDCLASSA wc{};
+  wc.style = CS_OWNDC | CS_HREDRAW | CS_VREDRAW;
+  wc.lpfnWndProc = GlideWin32StandaloneWndProc;
+  wc.hInstance = hInst;
+  wc.hCursor = LoadCursorA(nullptr, IDC_ARROW);
+  wc.lpszClassName = kWin32StandaloneClass;
+  RegisterClassA(&wc);
+
+  WNDCLASSA cwc{};
+  cwc.style = CS_OWNDC | CS_HREDRAW | CS_VREDRAW;
+  cwc.lpfnWndProc = GlideWin32ChildWndProc;
+  cwc.hInstance = hInst;
+  cwc.lpszClassName = kWin32ChildClass;
+  RegisterClassA(&cwc);
+
+  s_registered = true;
+}
+#endif
 
 #if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_X11)
 std::mutex g_x11ErrorTrapMutex;
@@ -499,6 +580,10 @@ const char* NativeSurfaceHost::ModeToString(Mode mode) {
       return "X11Child";
     case Mode::WaylandSubsurface:
       return "WaylandSubsurface";
+    case Mode::Win32Window:
+      return "Win32Window";
+    case Mode::Win32Embedded:
+      return "Win32Embedded";
   }
   return "Unknown";
 }
@@ -572,9 +657,27 @@ bool NativeSurfaceHost::Attach(void* hostHandle, uint32_t guestW,
   }
 
   if (hostHandle == nullptr) {
+#if defined(_WIN32)
+    (void)extraSdlWindowFlags;
+    return AttachWin32Standalone(m_guestWidth, m_guestHeight, title,
+                                 windowScale);
+#else
     return AttachStandaloneSDL2(m_guestWidth, m_guestHeight, title,
                                 extraSdlWindowFlags, windowScale);
+#endif
   }
+
+#if defined(_WIN32)
+  (void)extraSdlWindowFlags;
+  if (AttachWin32Embedded(hostHandle)) {
+    return true;
+  }
+  GLIDE_LOG(WARN, "WSI",
+            "NativeSurfaceHost: foreign Win32 handle "
+                << hostHandle
+                << " is not a valid HWND; falling back to standalone Win32 window.");
+  return AttachWin32Standalone(m_guestWidth, m_guestHeight, title, windowScale);
+#endif
 
 #if defined(__unix__) && !defined(__APPLE__)
   // Safely probe live SDL2 windows without blindly dereferencing hostHandle
@@ -649,6 +752,7 @@ bool NativeSurfaceHost::AttachStandaloneSDL2(uint32_t guestW, uint32_t guestH,
                                              const std::string& title,
                                              uint32_t extraSdlWindowFlags,
                                              uint32_t windowScale) {
+#if !defined(_WIN32)
   // Never let SDL hijack SIGINT/SIGTERM in standalone demos: Ctrl+C and
   // SIGTERM should terminate immediately instead of requiring kill -9.
   SDL_SetHint(SDL_HINT_NO_SIGNAL_HANDLERS, "1");
@@ -699,6 +803,140 @@ bool NativeSurfaceHost::AttachStandaloneSDL2(uint32_t guestW, uint32_t guestH,
                 << ", drawable=" << m_pixelWidth << "x" << m_pixelHeight
                 << ").");
   return true;
+#else
+  (void)guestW;
+  (void)guestH;
+  (void)title;
+  (void)extraSdlWindowFlags;
+  (void)windowScale;
+  return false;
+#endif
+}
+
+bool NativeSurfaceHost::AttachWin32Standalone(uint32_t guestW, uint32_t guestH,
+                                              const std::string& title,
+                                              uint32_t windowScale) {
+#if defined(_WIN32)
+  HINSTANCE hInst = GetWin32ModuleInstance();
+  EnsureWin32WindowClassesRegistered(hInst);
+
+  const uint32_t clampedScale = std::clamp<uint32_t>(windowScale, 1u, 8u);
+  const int clientW = static_cast<int>(guestW * clampedScale);
+  const int clientH = static_cast<int>(guestH * clampedScale);
+
+  const DWORD style = WS_OVERLAPPEDWINDOW | WS_VISIBLE;
+  RECT rc{0, 0, clientW, clientH};
+  AdjustWindowRect(&rc, style, FALSE);
+  const int winW = rc.right - rc.left;
+  const int winH = rc.bottom - rc.top;
+
+  const int screenW = GetSystemMetrics(SM_CXSCREEN);
+  const int screenH = GetSystemMetrics(SM_CYSCREEN);
+  const int posX = (screenW > winW) ? (screenW - winW) / 2 : CW_USEDEFAULT;
+  const int posY = (screenH > winH) ? (screenH - winH) / 2 : CW_USEDEFAULT;
+
+  const char* windowTitle =
+      title.empty() ? "3dfx glide-ng Presentation Console" : title.c_str();
+  HWND hwnd = CreateWindowExA(0, kWin32StandaloneClass, windowTitle, style,
+                              posX, posY, winW, winH, nullptr, nullptr, hInst,
+                              nullptr);
+  if (!hwnd) {
+    GLIDE_LOG(CRITICAL, "WSI",
+              "NativeSurfaceHost: CreateWindowExA failed (err="
+                  << GetLastError() << ").");
+    return false;
+  }
+
+  SetWindowLongPtrA(hwnd, GWLP_USERDATA,
+                    reinterpret_cast<LONG_PTR>(&m_quitRequested));
+  ShowWindow(hwnd, SW_SHOW);
+  UpdateWindow(hwnd);
+
+  RECT actualRc{};
+  GetClientRect(hwnd, &actualRc);
+  m_win32Hinstance = static_cast<void*>(hInst);
+  m_win32ParentHwnd = nullptr;
+  m_win32Hwnd = static_cast<void*>(hwnd);
+  m_win32OwnsHwnd = true;
+  m_mode = Mode::Win32Window;
+  m_pixelWidth = (actualRc.right > actualRc.left)
+                     ? static_cast<uint32_t>(actualRc.right - actualRc.left)
+                     : static_cast<uint32_t>(clientW);
+  m_pixelHeight = (actualRc.bottom > actualRc.top)
+                      ? static_cast<uint32_t>(actualRc.bottom - actualRc.top)
+                      : static_cast<uint32_t>(clientH);
+  m_lastPollTime = {};
+  m_postAttachForcePolls = 4;
+
+  PollEvents(/*force=*/true);
+
+  GLIDE_LOG(INFO, "WSI",
+            "NativeSurfaceHost attached in Win32Window mode (hwnd="
+                << m_win32Hwnd << ", guest=" << m_guestWidth << "x"
+                << m_guestHeight << ", drawable=" << m_pixelWidth << "x"
+                << m_pixelHeight << ").");
+  return true;
+#else
+  (void)guestW;
+  (void)guestH;
+  (void)title;
+  (void)windowScale;
+  return false;
+#endif
+}
+
+bool NativeSurfaceHost::AttachWin32Embedded(void* parentHwndPtr) {
+#if defined(_WIN32)
+  HWND parent = static_cast<HWND>(parentHwndPtr);
+  if (!parent || !IsWindow(parent)) {
+    return false;
+  }
+
+  HINSTANCE hInst = GetWin32ModuleInstance();
+  EnsureWin32WindowClassesRegistered(hInst);
+
+  RECT rc{};
+  GetClientRect(parent, &rc);
+  const int w = (rc.right > rc.left) ? (rc.right - rc.left)
+                                     : static_cast<int>(m_guestWidth);
+  const int h = (rc.bottom > rc.top) ? (rc.bottom - rc.top)
+                                     : static_cast<int>(m_guestHeight);
+
+  HWND child = CreateWindowExA(
+      0, kWin32ChildClass, "",
+      WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | WS_CLIPCHILDREN, 0, 0, w, h,
+      parent, nullptr, hInst, nullptr);
+  if (!child) {
+    GLIDE_LOG(WARN, "WSI",
+              "NativeSurfaceHost: child CreateWindowExA failed (err="
+                  << GetLastError()
+                  << "); attaching directly to parent HWND " << parentHwndPtr);
+    m_win32Hinstance = static_cast<void*>(hInst);
+    m_win32ParentHwnd = parentHwndPtr;
+    m_win32Hwnd = parentHwndPtr;
+    m_win32OwnsHwnd = false;
+  } else {
+    m_win32Hinstance = static_cast<void*>(hInst);
+    m_win32ParentHwnd = parentHwndPtr;
+    m_win32Hwnd = static_cast<void*>(child);
+    m_win32OwnsHwnd = true;
+  }
+
+  m_mode = Mode::Win32Embedded;
+  m_pixelWidth = static_cast<uint32_t>(std::max(1, w));
+  m_pixelHeight = static_cast<uint32_t>(std::max(1, h));
+
+  GLIDE_LOG(INFO, "WSI",
+            "NativeSurfaceHost attached in Win32Embedded mode (parent="
+                << m_win32ParentHwnd << ", surface=" << m_win32Hwnd
+                << ", ownedChild=" << (m_win32OwnsHwnd ? "yes" : "no")
+                << ", drawable=" << m_pixelWidth << "x" << m_pixelHeight
+                << ").");
+  return true;
+#else
+  (void)parentHwndPtr;
+  return false;
+#endif
 }
 
 bool NativeSurfaceHost::AttachX11Child(unsigned long parentWindow) {
@@ -1126,6 +1364,7 @@ bool NativeSurfaceHost::AttachWaylandSubsurface(void* hostDisplayPtr,
 
 void NativeSurfaceHost::QueryStandaloneDrawableSize(uint32_t& outW,
                                                     uint32_t& outH) const {
+#if !defined(_WIN32)
   if (!m_sdlWindow) {
     outW = m_guestWidth;
     outH = m_guestHeight;
@@ -1144,6 +1383,10 @@ void NativeSurfaceHost::QueryStandaloneDrawableSize(uint32_t& outW,
   }
   outW = (w > 0) ? static_cast<uint32_t>(w) : m_guestWidth;
   outH = (h > 0) ? static_cast<uint32_t>(h) : m_guestHeight;
+#else
+  outW = m_guestWidth;
+  outH = m_guestHeight;
+#endif
 }
 
 void NativeSurfaceHost::Detach() {
@@ -1154,6 +1397,7 @@ void NativeSurfaceHost::Detach() {
   GLIDE_LOG(INFO, "WSI",
             "NativeSurfaceHost detaching mode=" << ModeToString(m_mode));
 
+#if !defined(_WIN32)
   if (m_mode == Mode::StandaloneSDL2) {
     if (m_sdlWindow) {
       SDL_DestroyWindow(m_sdlWindow);
@@ -1163,6 +1407,16 @@ void NativeSurfaceHost::Detach() {
     m_lastPollTime = {};
     m_sdlVideoDriver.clear();
   }
+#else
+  if ((m_mode == Mode::Win32Window || m_mode == Mode::Win32Embedded) &&
+      m_win32Hwnd) {
+    HWND hwnd = static_cast<HWND>(m_win32Hwnd);
+    if (m_win32OwnsHwnd && IsWindow(hwnd)) {
+      SetWindowLongPtrA(hwnd, GWLP_USERDATA, 0);
+      DestroyWindow(hwnd);
+    }
+  }
+#endif
 #if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_X11)
   else if (m_mode == Mode::X11Child && m_x11Display) {
     Display* dpy = static_cast<Display*>(m_x11Display);
@@ -1197,6 +1451,10 @@ void NativeSurfaceHost::Detach() {
   m_wlShm = nullptr;
   m_wlBufferScale = 1;
   m_wlState = nullptr;
+  m_win32Hinstance = nullptr;
+  m_win32ParentHwnd = nullptr;
+  m_win32Hwnd = nullptr;
+  m_win32OwnsHwnd = false;
 
   m_mode = Mode::Detached;
   m_guestWidth = 0;
@@ -1342,12 +1600,86 @@ bool NativeSurfaceHost::SyncBounds(uint32_t& outPixelW, uint32_t& outPixelH) {
   }
 #endif
 
+#if defined(_WIN32)
+  if (m_mode == Mode::Win32Window && m_win32Hwnd) {
+    HWND hwnd = static_cast<HWND>(m_win32Hwnd);
+    if (IsWindow(hwnd)) {
+      RECT rc{};
+      if (GetClientRect(hwnd, &rc) && rc.right > rc.left &&
+          rc.bottom > rc.top) {
+        const uint32_t newW = static_cast<uint32_t>(rc.right - rc.left);
+        const uint32_t newH = static_cast<uint32_t>(rc.bottom - rc.top);
+        const bool changed = (newW != m_pixelWidth || newH != m_pixelHeight);
+        m_pixelWidth = newW;
+        m_pixelHeight = newH;
+        outPixelW = m_pixelWidth;
+        outPixelH = m_pixelHeight;
+        return changed;
+      }
+    }
+  } else if (m_mode == Mode::Win32Embedded && m_win32ParentHwnd) {
+    HWND parent = static_cast<HWND>(m_win32ParentHwnd);
+    if (IsWindow(parent)) {
+      RECT rc{};
+      if (GetClientRect(parent, &rc) && rc.right > rc.left &&
+          rc.bottom > rc.top) {
+        const uint32_t newW = static_cast<uint32_t>(rc.right - rc.left);
+        const uint32_t newH = static_cast<uint32_t>(rc.bottom - rc.top);
+        const bool changed = (newW != m_pixelWidth || newH != m_pixelHeight);
+        if (changed) {
+          if (m_win32OwnsHwnd && m_win32Hwnd &&
+              IsWindow(static_cast<HWND>(m_win32Hwnd))) {
+            SetWindowPos(static_cast<HWND>(m_win32Hwnd), nullptr, 0, 0,
+                         static_cast<int>(newW), static_cast<int>(newH),
+                         SWP_NOZORDER | SWP_NOACTIVATE);
+          }
+          m_pixelWidth = newW;
+          m_pixelHeight = newH;
+        }
+        outPixelW = m_pixelWidth;
+        outPixelH = m_pixelHeight;
+        return changed;
+      }
+    }
+  }
+#endif
+
   outPixelW = m_pixelWidth;
   outPixelH = m_pixelHeight;
   return false;
 }
 
 void NativeSurfaceHost::PollEvents(bool force) {
+#if defined(_WIN32)
+  // Strictly isolated to Win32Window so foreign game HWND loops are untouched.
+  if (m_mode != Mode::Win32Window || !m_win32Hwnd) {
+    return;
+  }
+
+  bool doForce = force;
+  if (!doForce && m_postAttachForcePolls > 0) {
+    --m_postAttachForcePolls;
+    doForce = true;
+  }
+
+  const auto now = std::chrono::steady_clock::now();
+  if (!doForce && m_lastPollTime.time_since_epoch().count() != 0 &&
+      (now - m_lastPollTime) < std::chrono::milliseconds(4)) {
+    return;
+  }
+  m_lastPollTime = now;
+
+  HWND hwnd = static_cast<HWND>(m_win32Hwnd);
+  MSG msg{};
+  while (PeekMessageA(&msg, hwnd, 0, 0, PM_REMOVE)) {
+    if (msg.message == WM_QUIT) {
+      m_quitRequested = true;
+      break;
+    }
+    TranslateMessage(&msg);
+    DispatchMessageA(&msg);
+  }
+#else
   // Strictly isolated to StandaloneSDL2 so we never steal DOSBox's SDL events.
   if (m_mode != Mode::StandaloneSDL2 || !m_sdlWindow) {
     return;
@@ -1377,6 +1709,7 @@ void NativeSurfaceHost::PollEvents(bool force) {
       }
     }
   }
+#endif
 }
 
 bool NativeSurfaceHost::IsWaylandSurface() const {

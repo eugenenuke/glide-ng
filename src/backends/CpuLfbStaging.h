@@ -6,6 +6,9 @@
 #include <limits>
 #include <new>
 #include <vector>
+#if defined(_WIN32)
+#include <malloc.h>
+#endif
 
 #include "core/IGraphicsBackend.h"
 
@@ -31,13 +34,26 @@ struct AlignedAllocator {
     if (remainder != 0) {
       size += actual_alignment - remainder;
     }
+#if defined(_WIN32)
+    ptr = _aligned_malloc(size, actual_alignment);
+    if (!ptr) {
+      throw std::bad_alloc();
+    }
+#else
     if (posix_memalign(&ptr, actual_alignment, size) != 0) {
       throw std::bad_alloc();
     }
+#endif
     return static_cast<T*>(ptr);
   }
 
-  void deallocate(T* p, std::size_t) noexcept { std::free(p); }
+  void deallocate(T* p, std::size_t) noexcept {
+#if defined(_WIN32)
+    _aligned_free(p);
+#else
+    std::free(p);
+#endif
+  }
 
   template <typename U>
   struct rebind {

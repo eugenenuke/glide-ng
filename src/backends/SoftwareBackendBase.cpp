@@ -199,7 +199,9 @@ bool SoftwareBackendBase::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
     uint32_t nativeWidth = m_headlessWidth / m_ssaaScale;
     uint32_t nativeHeight = m_headlessHeight / m_ssaaScale;
 
+#ifdef _OPENMP
 #pragma omp parallel for collapse(2) if (nativeHeight * nativeWidth > 64000)
+#endif
     for (uint32_t y = 0; y < nativeHeight; ++y) {
       for (uint32_t x = 0; x < nativeWidth; ++x) {
         uint32_t r = 0, g = 0, b = 0, a = 0;

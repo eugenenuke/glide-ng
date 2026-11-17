@@ -612,13 +612,11 @@ vk::DescriptorSet VulkanBackend::GetOrCreateDescriptorSet(
   m_descriptorCache.emplace(key, std::move(descriptorSet));
   const vk::ImageView dummyView = m_dummyTexture.imageView.get();
   if (imageView0 && imageView0 != dummyView) {
-    const uint64_t h0 = static_cast<uint64_t>(
-        reinterpret_cast<uintptr_t>(static_cast<VkImageView>(imageView0)));
+    const uint64_t h0 = VkHandleToU64(static_cast<VkImageView>(imageView0));
     m_viewToDescriptorKeys[h0].push_back(key);
   }
   if (imageView1 && imageView1 != imageView0 && imageView1 != dummyView) {
-    const uint64_t h1 = static_cast<uint64_t>(
-        reinterpret_cast<uintptr_t>(static_cast<VkImageView>(imageView1)));
+    const uint64_t h1 = VkHandleToU64(static_cast<VkImageView>(imageView1));
     m_viewToDescriptorKeys[h1].push_back(key);
   }
   return rawSet;

@@ -1,7 +1,17 @@
 #include "SoftwareBackend.h"
 #include "SoftwareInternal.h"
 
+#if !defined(_WIN32)
 #include <SDL2/SDL.h>
+#else
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 #include <algorithm>
 #include <array>
@@ -60,6 +70,7 @@ namespace GlideWrapper {
 
 namespace {
 
+#if !defined(_WIN32)
 // Fast CPU aspect-ratio preserving blit with opaque black letterbox/pillarbox
 // bars into a 32-bit 0xXXRRGGBB (or 0xXXBBGGRR when swapRedBlue=true) surface.
 void BlitScaledLetterbox(const uint32_t* srcPixels, uint32_t srcW,
@@ -108,7 +119,9 @@ void BlitScaledLetterbox(const uint32_t* srcPixels, uint32_t srcW,
   }
   const uint32_t* xLut = xLutScratch.data();
 
+#ifdef _OPENMP
 #pragma omp parallel for if (dstH > 240)
+#endif
   for (uint32_t y = 0; y < dstH; ++y) {
     uint32_t sy =
         static_cast<uint32_t>((static_cast<uint64_t>(y) * srcH) / dstH);
@@ -140,6 +153,7 @@ void BlitScaledLetterbox(const uint32_t* srcPixels, uint32_t srcW,
     }
   }
 }
+#endif  // !defined(_WIN32)
 
 #if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_X11)
 std::mutex g_swX11TrapMutex;
@@ -706,6 +720,79 @@ struct SoftwareBackend::WaylandShmPresenter {
 #endif
 };
 
+struct SoftwareBackend::Win32GdiPresenter {
+#if defined(_WIN32)
+  HWND hwnd = nullptr;
+  HDC hdc = nullptr;
+  HBRUSH blackBrush = nullptr;
+  bool linearFilter = false;
+
+  bool Attach(HWND targetHwnd, bool useLinear) {
+    Detach();
+    if (!targetHwnd || !IsWindow(targetHwnd)) return false;
+    hdc = GetDC(targetHwnd);
+    if (!hdc) return false;
+    hwnd = targetHwnd;
+    linearFilter = useLinear;
+    blackBrush = static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
+    return true;
+  }
+
+  void Present(const uint32_t* srcPixels, uint32_t srcW, uint32_t srcH,
+               uint32_t hostW, uint32_t hostH) {
+    if (!hdc || !srcPixels || srcW == 0 || srcH == 0 || hostW == 0 ||
+        hostH == 0) {
+      return;
+    }
+    const PresentRect rect = NativeSurfaceHost::ComputePresentRect(
+        srcW, srcH, hostW, hostH, /*preserveAspect=*/true);
+
+    // Fill letterbox / pillarbox bars cleanly without flickering the active rect.
+    if (rect.x > 0) {
+      RECT leftBar{0, 0, rect.x, static_cast<LONG>(hostH)};
+      RECT rightBar{rect.x + static_cast<LONG>(rect.width), 0,
+                    static_cast<LONG>(hostW), static_cast<LONG>(hostH)};
+      FillRect(hdc, &leftBar, blackBrush);
+      FillRect(hdc, &rightBar, blackBrush);
+    } else if (rect.y > 0) {
+      RECT topBar{0, 0, static_cast<LONG>(hostW), rect.y};
+      RECT botBar{0, rect.y + static_cast<LONG>(rect.height),
+                  static_cast<LONG>(hostW), static_cast<LONG>(hostH)};
+      FillRect(hdc, &topBar, blackBrush);
+      FillRect(hdc, &botBar, blackBrush);
+    }
+
+    BITMAPINFO bmi{};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = static_cast<LONG>(srcW);
+    bmi.bmiHeader.biHeight = -static_cast<LONG>(srcH);  // top-down 0xAARRGGBB
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+
+    SetStretchBltMode(hdc, linearFilter ? HALFTONE : COLORONCOLOR);
+    if (linearFilter) {
+      SetBrushOrgEx(hdc, 0, 0, nullptr);
+    }
+    StretchDIBits(hdc, rect.x, rect.y, static_cast<int>(rect.width),
+                  static_cast<int>(rect.height), 0, 0, static_cast<int>(srcW),
+                  static_cast<int>(srcH), srcPixels, &bmi, DIB_RGB_COLORS,
+                  SRCCOPY);
+  }
+
+  void Detach() {
+    if (hdc && hwnd) {
+      ReleaseDC(hwnd, hdc);
+    }
+    hdc = nullptr;
+    hwnd = nullptr;
+    blackBrush = nullptr;
+  }
+
+  ~Win32GdiPresenter() { Detach(); }
+#endif
+};
+
 SoftwareBackend::SoftwareBackend() = default;
 SoftwareBackend::~SoftwareBackend() { Shutdown(); }
 
@@ -781,6 +868,7 @@ bool SoftwareBackend::InitPresentationSurface() {
     return true;
   }
 
+#if !defined(_WIN32)
   if (mode == NativeSurfaceHost::Mode::StandaloneSDL2) {
     SDL_Window* win = m_surfaceHost.GetSDLWindow();
     if (!win) {
@@ -817,6 +905,25 @@ bool SoftwareBackend::InitPresentationSurface() {
     m_sdlTexture = texture;
     return true;
   }
+#endif
+
+#if defined(_WIN32)
+  if (mode == NativeSurfaceHost::Mode::Win32Window ||
+      mode == NativeSurfaceHost::Mode::Win32Embedded) {
+    HWND hwnd = static_cast<HWND>(m_surfaceHost.GetWin32Hwnd());
+    if (!hwnd) {
+      GLIDE_LOG(CRITICAL, "Software",
+                "Win32 presentation surface missing HWND.");
+      return false;
+    }
+    m_win32Presenter = std::make_unique<Win32GdiPresenter>();
+    if (!m_win32Presenter->Attach(hwnd, m_config.presentationFilter != 0)) {
+      m_win32Presenter.reset();
+      return false;
+    }
+    return true;
+  }
+#endif
 
 #if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_X11)
   if (mode == NativeSurfaceHost::Mode::X11Child) {
@@ -903,6 +1010,7 @@ bool SoftwareBackend::InitPresentationSurface() {
 }
 
 void SoftwareBackend::ShutdownPresentationSurface() {
+#if !defined(_WIN32)
   if (m_sdlTexture) {
     SDL_DestroyTexture(static_cast<SDL_Texture*>(m_sdlTexture));
     m_sdlTexture = nullptr;
@@ -911,8 +1019,10 @@ void SoftwareBackend::ShutdownPresentationSurface() {
     SDL_DestroyRenderer(static_cast<SDL_Renderer*>(m_sdlRenderer));
     m_sdlRenderer = nullptr;
   }
+#endif
   m_x11Presenter.reset();
   m_wlShmPresenter.reset();
+  m_win32Presenter.reset();
 }
 
 bool SoftwareBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
@@ -1057,7 +1167,9 @@ void SoftwareBackend::ResolveFrontBuffer(const uint32_t*& outPixels,
   uint32_t* resolvedData =
       reinterpret_cast<uint32_t*>(m_resolvedBuffer.data());
 
+#ifdef _OPENMP
 #pragma omp parallel for collapse(2) if (dstH * dstW > 64000)
+#endif
   for (uint32_t y = 0; y < dstH; ++y) {
     for (uint32_t x = 0; x < dstW; ++x) {
       uint32_t r = 0, g = 0, b = 0, a = 0;
@@ -1094,6 +1206,7 @@ void SoftwareBackend::PresentFrame(const uint32_t* srcPixels, uint32_t srcW,
   uint32_t hostH = m_guestHeight;
   m_surfaceHost.SyncBounds(hostW, hostH);
 
+#if !defined(_WIN32)
   if (mode == NativeSurfaceHost::Mode::StandaloneSDL2) {
     if (!m_sdlRenderer || !m_sdlTexture) return;
     GLIDE_PROFILE_SCOPE("Software::Sdl2Present");
@@ -1137,6 +1250,17 @@ void SoftwareBackend::PresentFrame(const uint32_t* srcPixels, uint32_t srcW,
     }
     return;
   }
+#endif
+
+#if defined(_WIN32)
+  if ((mode == NativeSurfaceHost::Mode::Win32Window ||
+       mode == NativeSurfaceHost::Mode::Win32Embedded) &&
+      m_win32Presenter) {
+    GLIDE_PROFILE_SCOPE("Software::Win32GdiPresent");
+    m_win32Presenter->Present(srcPixels, srcW, srcH, hostW, hostH);
+    return;
+  }
+#endif
 
 #if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_X11)
   if (mode == NativeSurfaceHost::Mode::X11Child && m_x11Presenter) {
@@ -1160,11 +1284,11 @@ bool SoftwareBackend::SwapBuffers() {
   FlushBins_Locked();
   if (!m_initialized || !m_windowAttached) return false;
 
-  // Strictly no-op for foreign hosts (X11Child / WaylandSubsurface / Headless);
-  // pumps events and handles clean quit ONLY for StandaloneSDL2 demos.
+  // Strictly no-op for foreign hosts (X11Child / WaylandSubsurface /
+  // Win32Embedded / Headless); pumps events and handles clean quit ONLY for
+  // standalone windows.
   m_surfaceHost.PollEvents(/*force=*/false);
-  if (m_surfaceHost.GetMode() == NativeSurfaceHost::Mode::StandaloneSDL2 &&
-      m_surfaceHost.WasQuitRequested()) {
+  if (m_surfaceHost.IsStandaloneMode() && m_surfaceHost.WasQuitRequested()) {
     GLIDE_LOG(INFO, "Software",
               "Standalone window quit requested; shutting down cleanly.");
     DetachWindow_Locked();
@@ -1193,7 +1317,9 @@ bool SoftwareBackend::SwapBuffers() {
     auto* pixels =
         reinterpret_cast<uint32_t*>(m_cpuBuffers[m_frontBufferIdx].data());
     int totalPixels = m_headlessWidth * m_headlessHeight;
+#ifdef _OPENMP
 #pragma omp parallel for if (totalPixels > 64000)
+#endif
     for (int i = 0; i < totalPixels; ++i) {
       uint32_t pixel = pixels[i];
       uint8_t a = (pixel >> 24) & 0xFF;
@@ -1231,7 +1357,7 @@ bool SoftwareBackend::SwapBuffers() {
                              std::chrono::steady_clock::now() - presentStart)
                              .count();
   const float maxFps = m_config.maxFps;
-  if (m_surfaceHost.GetMode() == NativeSurfaceHost::Mode::StandaloneSDL2) {
+  if (m_surfaceHost.IsStandaloneMode()) {
     m_surfaceHost.PollEvents(/*force=*/false);
   }
   lock.unlock();

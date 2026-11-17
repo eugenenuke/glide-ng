@@ -25,7 +25,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#if defined(__DOS__) || defined(__MSDOS__) || defined(_WIN32)
+#if defined(__DOS__) || defined(__MSDOS__) || (defined(_WIN32) && GLIDE_VERSION == 2)
 #  define FX_GLIDE_NO_FUNC_PROTO 1
 #  include <glide.h>
 #  if defined(__DOS__) || defined(__MSDOS__)
@@ -64,7 +64,7 @@
 #  define GR_VERSION   0xa4
 #endif
 
-#if defined(__DOS__) || defined(__MSDOS__) || defined(_WIN32)
+#if defined(__DOS__) || defined(__MSDOS__) || (defined(_WIN32) && GLIDE_VERSION == 2)
 
 /* Every Glide 2.x entry point used across glide_info and glide_bench.
  * Format: X(ret, name, upper_sym, mixed_sym, params)
@@ -293,10 +293,13 @@ static void cw_safe_free_ovl(unsigned short mod_sel) {
 }
 
 static void* gtool_ovl_resolve(void* mod, const char* upper_name,
-                               const char* mixed_name) {
+                               const char* mixed_name, const char* plain_name) {
   void* p = GetProcAddress(mod, upper_name);
   if (!p && mixed_name) {
     p = GetProcAddress(mod, mixed_name);
+  }
+  if (!p && plain_name) {
+    p = GetProcAddress(mod, plain_name);
   }
   return p;
 }
@@ -304,15 +307,20 @@ static void* gtool_ovl_resolve(void* mod, const char* upper_name,
 static HMODULE g_g2ovl_handle = NULL;
 
 static void* gtool_ovl_resolve(HMODULE mod, const char* upper_name,
-                               const char* mixed_name) {
+                               const char* mixed_name, const char* plain_name) {
   FARPROC p = NULL;
+  void* out = NULL;
   if (mixed_name) {
     p = GetProcAddress(mod, mixed_name);
+  }
+  if (!p && plain_name) {
+    p = GetProcAddress(mod, plain_name);
   }
   if (!p && upper_name) {
     p = GetProcAddress(mod, upper_name);
   }
-  return (void*)p;
+  memcpy(&out, &p, sizeof(out));
+  return out;
 }
 #endif
 
@@ -359,7 +367,7 @@ int gtool_glide_load(char* source_out, size_t source_sz,
 
 #define GLIDE2_RESOLVE_REQ_(ret, name, u, m, params)                                    \
   do {                                                                                  \
-    void* _sym = gtool_ovl_resolve(g_g2ovl_handle, u, m);                               \
+    void* _sym = gtool_ovl_resolve(g_g2ovl_handle, u, m, #name);                        \
     if (!_sym) {                                                                        \
       if (err_out && err_sz > 0) {                                                      \
         snprintf(err_out, err_sz, "Missing required symbol %s in %s", #name,            \
@@ -373,7 +381,7 @@ int gtool_glide_load(char* source_out, size_t source_sz,
 
 #define GLIDE2_RESOLVE_OPT_(ret, name, u, m, params)                                    \
   do {                                                                                  \
-    void* _sym = gtool_ovl_resolve(g_g2ovl_handle, u, m);                               \
+    void* _sym = gtool_ovl_resolve(g_g2ovl_handle, u, m, #name);                        \
     if (_sym) {                                                                         \
       memcpy(&g_g2ovl_##name, &_sym, sizeof(g_g2ovl_##name));                           \
     } else {                                                                            \
@@ -422,7 +430,13 @@ static inline int gtool_glide_load(char* source_out, size_t source_sz,
   (void)err_out;
   (void)err_sz;
   if (source_out && source_sz > 0) {
-#if GLIDE_VERSION == 3
+#if defined(_WIN32)
+#  if GLIDE_VERSION == 3
+    snprintf(source_out, source_sz, "glide3x.dll");
+#  else
+    snprintf(source_out, source_sz, "glide2x.dll");
+#  endif
+#elif GLIDE_VERSION == 3
     snprintf(source_out, source_sz, "libglide3x.so");
 #else
     snprintf(source_out, source_sz, "libglide2x.so");
