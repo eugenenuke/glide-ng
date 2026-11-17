@@ -92,20 +92,7 @@ LRESULT CALLBACK GlideWin32StandaloneWndProc(HWND hwnd, UINT msg,
   }
 }
 
-LRESULT CALLBACK GlideWin32ChildWndProc(HWND hwnd, UINT msg, WPARAM wParam,
-                                        LPARAM lParam) {
-  switch (msg) {
-    case WM_NCHITTEST:
-      return HTTRANSPARENT;
-    case WM_ERASEBKGND:
-      return 1;
-    default:
-      return DefWindowProcA(hwnd, msg, wParam, lParam);
-  }
-}
-
 const char* kWin32StandaloneClass = "GlideNGStandaloneWnd";
-const char* kWin32ChildClass = "GlideNGChildWnd";
 
 void EnsureWin32WindowClassesRegistered(HINSTANCE hInst) {
   static std::mutex s_regMutex;
@@ -120,13 +107,6 @@ void EnsureWin32WindowClassesRegistered(HINSTANCE hInst) {
   wc.hCursor = LoadCursorA(nullptr, IDC_ARROW);
   wc.lpszClassName = kWin32StandaloneClass;
   RegisterClassA(&wc);
-
-  WNDCLASSA cwc{};
-  cwc.style = CS_OWNDC | CS_HREDRAW | CS_VREDRAW;
-  cwc.lpfnWndProc = GlideWin32ChildWndProc;
-  cwc.hInstance = hInst;
-  cwc.lpszClassName = kWin32ChildClass;
-  RegisterClassA(&cwc);
 
   s_registered = true;
 }
@@ -147,7 +127,6 @@ bool IsUsableWin32HostWindow(HWND hwnd) {
   char cls[128] = {};
   if (GetClassNameA(hwnd, cls, static_cast<int>(sizeof(cls))) > 0) {
     if (std::strcmp(cls, kWin32StandaloneClass) == 0 ||
-        std::strcmp(cls, kWin32ChildClass) == 0 ||
         std::strcmp(cls, "ConsoleWindowClass") == 0 ||
         std::strcmp(cls, "PseudoConsoleWindow") == 0 ||
         std::strcmp(cls, "IME") == 0 ||
@@ -976,25 +955,15 @@ bool NativeSurfaceHost::AttachWin32Embedded(void* parentHwndPtr) {
   const int h = (rc.bottom > rc.top) ? (rc.bottom - rc.top)
                                      : static_cast<int>(m_guestHeight);
 
-  HWND child = CreateWindowExA(
-      0, kWin32ChildClass, "",
-      WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | WS_CLIPCHILDREN, 0, 0, w, h,
-      parent, nullptr, hInst, nullptr);
-  if (!child) {
-    GLIDE_LOG(WARN, "WSI",
-              "NativeSurfaceHost: child CreateWindowExA failed (err="
-                  << GetLastError()
-                  << "); attaching directly to parent HWND " << parentHwndPtr);
-    m_win32Hinstance = static_cast<void*>(hInst);
-    m_win32ParentHwnd = parentHwndPtr;
-    m_win32Hwnd = parentHwndPtr;
-    m_win32OwnsHwnd = false;
-  } else {
-    m_win32Hinstance = static_cast<void*>(hInst);
-    m_win32ParentHwnd = parentHwndPtr;
-    m_win32Hwnd = static_cast<void*>(child);
-    m_win32OwnsHwnd = true;
-  }
+  // Attach directly to the host HWND (matching authentic Win32 3dfx Glide).
+  // Creating a WS_CHILD overlay inside a top-level HWND forces Wine's
+  // winex11.drv Vulkan/WGL onto a child-window blit fallback that gets wiped
+  // to black whenever the parent flushes its GDI window_surface (e.g. while an
+  // app pauses at a "Press any key" screen without calling grBufferSwap).
+  m_win32Hinstance = static_cast<void*>(hInst);
+  m_win32ParentHwnd = parentHwndPtr;
+  m_win32Hwnd = parentHwndPtr;
+  m_win32OwnsHwnd = false;
 
   m_mode = Mode::Win32Embedded;
   m_pixelWidth = static_cast<uint32_t>(std::max(1, w));

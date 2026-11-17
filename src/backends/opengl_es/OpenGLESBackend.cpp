@@ -1627,12 +1627,29 @@ bool OpenGLESBackend::CreateWin32WglContext() {
   pfd.cStencilBits = 8;
   pfd.iLayerType = PFD_MAIN_PLANE;
 
-  int pixelFormat = ::ChoosePixelFormat(hdc, &pfd);
-  if (pixelFormat == 0 || !::SetPixelFormat(hdc, pixelFormat, &pfd)) {
-    GLIDE_LOG(CRITICAL, "GLES",
-              "CreateWin32WglContext: ChoosePixelFormat/SetPixelFormat failed "
-              "(err=" << GetLastError() << ").");
-    return false;
+  // Win32 allows SetPixelFormat only once per HWND; when re-attaching to the
+  // same host HWND (e.g. resolution change), reuse its OpenGL pixel format if
+  // already configured.
+  int existingFormat = ::GetPixelFormat(hdc);
+  bool needSetPixelFormat = true;
+  if (existingFormat != 0) {
+    PIXELFORMATDESCRIPTOR existingPfd{};
+    existingPfd.nSize = sizeof(existingPfd);
+    if (::DescribePixelFormat(hdc, existingFormat, sizeof(existingPfd),
+                              &existingPfd) != 0 &&
+        (existingPfd.dwFlags & (PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL)) ==
+            (PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL)) {
+      needSetPixelFormat = false;
+    }
+  }
+  if (needSetPixelFormat) {
+    int pixelFormat = ::ChoosePixelFormat(hdc, &pfd);
+    if (pixelFormat == 0 || !::SetPixelFormat(hdc, pixelFormat, &pfd)) {
+      GLIDE_LOG(CRITICAL, "GLES",
+                "CreateWin32WglContext: ChoosePixelFormat/SetPixelFormat failed "
+                "(err=" << GetLastError() << ").");
+      return false;
+    }
   }
 
   HGLRC tempCtx = wglCreateContext(hdc);
