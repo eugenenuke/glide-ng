@@ -2749,6 +2749,9 @@ struct MockGlideWrapperState {
   uint32_t ditherMode;
   uint32_t stippleMode;
   uint32_t stipplePattern;
+  int hasTbufferState;
+  int aaMultiSample;
+  uint32_t tbufferWriteMask;
 };
 
 TEST_CASE("Glide 3.x State Restoration Sanitization [VULN-01]", "[Glide3][State]") {
@@ -2774,8 +2777,9 @@ TEST_CASE("Glide 3.x State Restoration Sanitization [VULN-01]", "[Glide3][State]
     FxU32 ctx = winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz, GR_COLORFORMAT_ABGR, GR_ORIGIN_UPPER_LEFT, 2, 1);
     REQUIRE(ctx != 0);
 
-    // Get current state
-    std::vector<uint8_t> stateBuffer(sizeof(MockGlideWrapperState), 0);
+    // Get current state (allocate full GR_GLIDE_STATE_SIZE = 1024 bytes)
+    std::vector<uint8_t> stateBuffer(
+        std::max<size_t>(1024u, sizeof(MockGlideWrapperState)), 0);
     getState(stateBuffer.data());
 
     auto* statePtr = reinterpret_cast<MockGlideWrapperState*>(stateBuffer.data());
@@ -2797,7 +2801,8 @@ TEST_CASE("Glide 3.x State Restoration Sanitization [VULN-01]", "[Glide3][State]
     setState(stateBuffer.data());
 
     // Read back state again to verify that sanitization took place!
-    std::vector<uint8_t> checkBuffer(sizeof(MockGlideWrapperState), 0);
+    std::vector<uint8_t> checkBuffer(
+        std::max<size_t>(1024u, sizeof(MockGlideWrapperState)), 0);
     getState(checkBuffer.data());
 
     auto* checkPtr = reinterpret_cast<MockGlideWrapperState*>(checkBuffer.data());
@@ -5995,5 +6000,372 @@ TEST_CASE(
   } else {
     ::unsetenv("GLIDE_NG_CARD_MODEL");
   }
+#endif
+}
+
+TEST_CASE(
+    "Glide 3.x Voodoo5 Spatial AA & T-Buffer Extensions "
+    "(grSstWinOpenExt / GR_AA_MULTI_SAMPLE / grTBufferWriteMaskExt)",
+    "[Glide3][SpatialAA][TBuffer]") {
+#ifdef __linux__
+  void* handle = OpenGlide3Handle();
+  REQUIRE(handle != nullptr);
+
+  using InitFunc = void (*)(void);
+  using SelectSstFunc = void (*)(int);
+  using GetProcAddrFunc = GrProc (*)(char*);
+  using WinOpenFunc = FxU32 (*)(FxU32, FxI32, FxI32, FxI32, FxI32, int, int);
+  using WinOpenExtFunc =
+      FxU32 (*)(FxU32, FxI32, FxI32, FxI32, FxI32, GrPixelFormat_t, int, int);
+  using WinCloseFunc = FxBool (*)(FxU32);
+  using ShutdownFunc = void (*)(void);
+  using EnableFunc = void (*)(GrEnableMode_t);
+  using DisableFunc = void (*)(GrEnableMode_t);
+  using TBufferMaskFunc = void (*)(FxU32);
+  using BufferClearFunc = void (*)(GrColor_t, GrAlpha_t, FxU32);
+  using ClipWinFunc = void (*)(FxU32, FxU32, FxU32, FxU32);
+  using VertexLayoutFunc = void (*)(FxU32, FxI32, FxU32);
+  using ColorCombineFunc = void (*)(GrCombineFunction_t, GrCombineFactor_t,
+                                    GrCombineLocal_t, GrCombineOther_t, FxBool);
+  using ConstColorFunc = void (*)(GrColor_t);
+  using DepthModeFunc = void (*)(GrDepthBufferMode_t);
+  using DepthFuncFunc = void (*)(GrCmpFnc_t);
+  using DepthMaskFunc = void (*)(FxBool);
+  using DrawTriFunc = void (*)(const void*, const void*, const void*);
+  using LfbReadFunc =
+      FxBool (*)(GrBuffer_t, FxU32, FxU32, FxU32, FxU32, FxU32, void*);
+  using LfbWriteFunc = FxBool (*)(GrBuffer_t, FxU32, FxU32, GrLfbSrcFmt_t,
+                                  FxU32, FxU32, FxBool, FxI32, void*);
+  using GetStateFunc = void (*)(void*);
+  using SetStateFunc = void (*)(const void*);
+  using GetFunc = FxU32 (*)(FxU32, FxU32, FxI32*);
+
+  auto glideInit = reinterpret_cast<InitFunc>(::dlsym(handle, "grGlideInit"));
+  auto sstSelect =
+      reinterpret_cast<SelectSstFunc>(::dlsym(handle, "grSstSelect"));
+  auto getProc =
+      reinterpret_cast<GetProcAddrFunc>(::dlsym(handle, "grGetProcAddress"));
+  auto winOpen =
+      reinterpret_cast<WinOpenFunc>(::dlsym(handle, "grSstWinOpen"));
+  auto winClose =
+      reinterpret_cast<WinCloseFunc>(::dlsym(handle, "grSstWinClose"));
+  auto glideShutdown =
+      reinterpret_cast<ShutdownFunc>(::dlsym(handle, "grGlideShutdown"));
+  auto grEnableFn = reinterpret_cast<EnableFunc>(::dlsym(handle, "grEnable"));
+  auto grDisableFn =
+      reinterpret_cast<DisableFunc>(::dlsym(handle, "grDisable"));
+  auto bufferClear =
+      reinterpret_cast<BufferClearFunc>(::dlsym(handle, "grBufferClear"));
+  auto clipWin =
+      reinterpret_cast<ClipWinFunc>(::dlsym(handle, "grClipWindow"));
+  auto vertexLayout =
+      reinterpret_cast<VertexLayoutFunc>(::dlsym(handle, "grVertexLayout"));
+  auto colorCombine =
+      reinterpret_cast<ColorCombineFunc>(::dlsym(handle, "grColorCombine"));
+  auto constColor =
+      reinterpret_cast<ConstColorFunc>(::dlsym(handle, "grConstantColorValue"));
+  auto depthMode =
+      reinterpret_cast<DepthModeFunc>(::dlsym(handle, "grDepthBufferMode"));
+  auto depthFunc =
+      reinterpret_cast<DepthFuncFunc>(::dlsym(handle, "grDepthBufferFunction"));
+  auto depthMask =
+      reinterpret_cast<DepthMaskFunc>(::dlsym(handle, "grDepthMask"));
+  auto drawTri =
+      reinterpret_cast<DrawTriFunc>(::dlsym(handle, "grDrawTriangle"));
+  auto lfbRead =
+      reinterpret_cast<LfbReadFunc>(::dlsym(handle, "grLfbReadRegion"));
+  auto lfbWrite =
+      reinterpret_cast<LfbWriteFunc>(::dlsym(handle, "grLfbWriteRegion"));
+  auto getState =
+      reinterpret_cast<GetStateFunc>(::dlsym(handle, "grGlideGetState"));
+  auto setState =
+      reinterpret_cast<SetStateFunc>(::dlsym(handle, "grGlideSetState"));
+  auto grGetFn = reinterpret_cast<GetFunc>(::dlsym(handle, "grGet"));
+
+  REQUIRE(glideInit != nullptr);
+  REQUIRE(sstSelect != nullptr);
+  REQUIRE(getProc != nullptr);
+  REQUIRE(winOpen != nullptr);
+  REQUIRE(winClose != nullptr);
+  REQUIRE(glideShutdown != nullptr);
+  REQUIRE(grEnableFn != nullptr);
+  REQUIRE(grDisableFn != nullptr);
+  REQUIRE(bufferClear != nullptr);
+  REQUIRE(clipWin != nullptr);
+  REQUIRE(vertexLayout != nullptr);
+  REQUIRE(colorCombine != nullptr);
+  REQUIRE(constColor != nullptr);
+  REQUIRE(depthMode != nullptr);
+  REQUIRE(depthFunc != nullptr);
+  REQUIRE(depthMask != nullptr);
+  REQUIRE(drawTri != nullptr);
+  REQUIRE(lfbRead != nullptr);
+  REQUIRE(lfbWrite != nullptr);
+  REQUIRE(getState != nullptr);
+  REQUIRE(setState != nullptr);
+  REQUIRE(grGetFn != nullptr);
+
+  struct AaVertex {
+    float x, y, ooz, oow;
+  };
+
+  auto makeQuad = [&](float x0, float y0, float x1, float y1, float z,
+                      GrColor_t col) {
+    constColor(col);
+    AaVertex v0{x0, y0, z, 1.0f};
+    AaVertex v1{x1, y0, z, 1.0f};
+    AaVertex v2{x1, y1, z, 1.0f};
+    AaVertex v3{x0, y1, z, 1.0f};
+    drawTri(&v0, &v1, &v2);
+    drawTri(&v0, &v2, &v3);
+  };
+
+  // 1. Dynamic extension lookup (all 8 PIXEXT entry points required by 3dfx
+  //    tlib / Napalm demos such as Museum) & 4-sample context via
+  //    grSstWinOpenExt.
+  glideInit();
+  char winOpenExtName[] = "grSstWinOpenExt";
+  char tbufMaskName[] = "grTBufferWriteMaskExt";
+  char colorMaskExtName[] = "grColorMaskExt";
+  char stencilFuncExtName[] = "grStencilFuncExt";
+  char stencilMaskExtName[] = "grStencilMaskExt";
+  char stencilOpExtName[] = "grStencilOpExt";
+  char bufClearExtName[] = "grBufferClearExt";
+  char lfbStencilExtName[] = "grLfbConstantStencilExt";
+  auto winOpenExt = reinterpret_cast<WinOpenExtFunc>(
+      reinterpret_cast<void*>(getProc(winOpenExtName)));
+  auto tbufMaskExt = reinterpret_cast<TBufferMaskFunc>(
+      reinterpret_cast<void*>(getProc(tbufMaskName)));
+  REQUIRE(winOpenExt != nullptr);
+  REQUIRE(tbufMaskExt != nullptr);
+  CHECK(getProc(colorMaskExtName) != nullptr);
+  CHECK(getProc(stencilFuncExtName) != nullptr);
+  CHECK(getProc(stencilMaskExtName) != nullptr);
+  CHECK(getProc(stencilOpExtName) != nullptr);
+  CHECK(getProc(bufClearExtName) != nullptr);
+  CHECK(getProc(lfbStencilExtName) != nullptr);
+
+  sstSelect(0);
+  FxU32 ctx =
+      winOpenExt(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz, GR_COLORFORMAT_ARGB,
+                 GR_ORIGIN_UPPER_LEFT, GR_PIXFMT_AA_4_RGB_565, 2, 1);
+  REQUIRE(ctx != 0);
+
+  auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
+  REQUIRE(backend != nullptr);
+  CHECK(backend->GetMsaaSamples() >= 4u);
+  CHECK(backend->GetGuestWidth() == 640u);
+  CHECK(backend->GetGuestHeight() == 480u);
+
+  vertexLayout(GR_PARAM_XY, static_cast<FxI32>(offsetof(AaVertex, x)),
+               GR_PARAM_ENABLE);
+  vertexLayout(GR_PARAM_Z, static_cast<FxI32>(offsetof(AaVertex, ooz)),
+               GR_PARAM_ENABLE);
+  vertexLayout(GR_PARAM_Q, static_cast<FxI32>(offsetof(AaVertex, oow)),
+               GR_PARAM_ENABLE);
+  colorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+               GR_COMBINE_LOCAL_CONSTANT, GR_COMBINE_OTHER_NONE, FXFALSE);
+
+  // 2. Single-frame split-screen live GR_AA_MULTI_SAMPLE toggle (Kitty Hawk F9):
+  //    Left half (AA OFF) must produce strictly binary aliased edges;
+  //    Right half (AA ON) must produce genuine intermediate blended edge pixels.
+  clipWin(0, 0, 640, 480);
+  tbufMaskExt(0xFu);
+  depthMode(GR_DEPTHBUFFER_DISABLE);
+  bufferClear(0xFF000000u, 0xFF, 0xFFFFu);
+
+  constColor(0xFFFF0000u);  // Pure Red (ARGB)
+
+  // Left half: AA OFF
+  grDisableFn(GR_AA_MULTI_SAMPLE);
+  clipWin(0, 0, 320, 480);
+  {
+    AaVertex a{40.0f, 100.0f, 0.5f, 1.0f};
+    AaVertex b{260.0f, 190.0f, 0.5f, 1.0f};
+    AaVertex c{40.0f, 340.0f, 0.5f, 1.0f};
+    drawTri(&a, &b, &c);
+  }
+
+  // Right half: AA ON
+  grEnableFn(GR_AA_MULTI_SAMPLE);
+  clipWin(320, 0, 640, 480);
+  {
+    AaVertex a{360.0f, 100.0f, 0.5f, 1.0f};
+    AaVertex b{580.0f, 190.0f, 0.5f, 1.0f};
+    AaVertex c{360.0f, 340.0f, 0.5f, 1.0f};
+    drawTri(&a, &b, &c);
+  }
+
+  std::vector<uint32_t> frame(640u * 480u, 0u);
+  REQUIRE(lfbRead(GR_BUFFER_BACKBUFFER, 0, 0, 640, 480, 640 * 4,
+                  frame.data()) == FXTRUE);
+
+  auto pxAt = [&](uint32_t x, uint32_t y) -> uint32_t {
+    return frame[y * 640u + x];
+  };
+
+  // Both interiors must be solid Red
+  CHECK(((pxAt(100, 200) >> 16) & 0xFFu) > 240u);
+  CHECK(((pxAt(100, 200) >> 8) & 0xFFu) < 10u);
+  CHECK(((pxAt(420, 200) >> 16) & 0xFFu) > 240u);
+  CHECK(((pxAt(420, 200) >> 8) & 0xFFu) < 10u);
+
+  uint32_t leftIntermediate = 0;
+  uint32_t rightIntermediate = 0;
+  for (uint32_t y = 90; y < 350; ++y) {
+    for (uint32_t x = 30; x < 280; ++x) {
+      uint32_t r = (pxAt(x, y) >> 16) & 0xFFu;
+      if (r > 20u && r < 235u) ++leftIntermediate;
+    }
+    for (uint32_t x = 350; x < 600; ++x) {
+      uint32_t r = (pxAt(x, y) >> 16) & 0xFFu;
+      if (r > 20u && r < 235u) ++rightIntermediate;
+    }
+  }
+  CHECK(leftIntermediate == 0u);
+  CHECK(rightIntermediate >= 40u);
+
+  // 3. Authentic VSA-100 T-Buffer sample masking + sample-masked grBufferClear
+  //    + per-sample depth isolation (Rocket Burger Motion Blur / DoF pattern).
+  clipWin(0, 0, 640, 480);
+  grEnableFn(GR_AA_MULTI_SAMPLE);
+  depthMode(GR_DEPTHBUFFER_ZBUFFER);
+  depthFunc(GR_CMP_LESS);
+  depthMask(FXTRUE);
+  tbufMaskExt(0xFu);
+  bufferClear(0xFF000000u, 0xFF, 0xFFFFu);
+
+  // Samples 0 & 1: masked clear to Red (depth 1.0), draw closer Green at z=0.25
+  tbufMaskExt(0x3u);
+  bufferClear(0xFFFF0000u, 0xFF, 0xFFFFu);
+  makeQuad(100.0f, 100.0f, 200.0f, 200.0f, 0.25f * 65535.0f, 0xFF00FF00u);
+
+  // Samples 2 & 3: masked clear to Blue (depth 1.0), draw deeper Red at z=0.75
+  // (must NOT be occluded by z=0.25 written only to samples 0 & 1!).
+  tbufMaskExt(0xCu);
+  bufferClear(0xFF0000FFu, 0xFF, 0xFFFFu);
+  makeQuad(100.0f, 100.0f, 200.0f, 200.0f, 0.75f * 65535.0f, 0xFFFF0000u);
+
+  tbufMaskExt(0xFu);
+  REQUIRE(lfbRead(GR_BUFFER_BACKBUFFER, 0, 0, 640, 480, 640 * 4,
+                  frame.data()) == FXTRUE);
+
+  // Background (samples 0,1 = Red, samples 2,3 = Blue) -> Purple (~127, 0, ~127)
+  {
+    const uint32_t bg = pxAt(30, 30);
+    const uint32_t r = (bg >> 16) & 0xFFu;
+    const uint32_t g = (bg >> 8) & 0xFFu;
+    const uint32_t b = bg & 0xFFu;
+    CHECK(r >= 110u);
+    CHECK(r <= 145u);
+    CHECK(g < 15u);
+    CHECK(b >= 110u);
+    CHECK(b <= 145u);
+  }
+  // Center quad (samples 0,1 = Green z=0.25, samples 2,3 = Red z=0.75) ->
+  // Yellow-Olive (~127, ~127, 0)
+  {
+    const uint32_t mid = pxAt(150, 150);
+    const uint32_t r = (mid >> 16) & 0xFFu;
+    const uint32_t g = (mid >> 8) & 0xFFu;
+    const uint32_t b = mid & 0xFFu;
+    CHECK(r >= 110u);
+    CHECK(r <= 145u);
+    CHECK(g >= 110u);
+    CHECK(g <= 145u);
+    CHECK(b < 15u);
+  }
+
+  // 4. Guest-coordinate clipped grBufferClear + grLfbWriteRegion under 4-sample
+  //    AA (verifies Software 2x2 SSAA + GPU 4x MSAA exact coordinate parity).
+  depthMode(GR_DEPTHBUFFER_DISABLE);
+  clipWin(0, 0, 640, 480);
+  bufferClear(0xFF000000u, 0xFF, 0xFFFFu);
+
+  clipWin(319, 0, 321, 480);
+  bufferClear(0xFFFFFF00u, 0xFF, 0xFFFFu);  // 2px Yellow divider
+
+  std::vector<uint16_t> cyanTile(16u * 16u, 0x07FFu);  // RGB565 Cyan
+  REQUIRE(lfbWrite(GR_BUFFER_BACKBUFFER, 500, 400, GR_LFB_SRC_FMT_565, 16, 16,
+                   FXFALSE, 16 * 2, cyanTile.data()) == FXTRUE);
+
+  REQUIRE(lfbRead(GR_BUFFER_BACKBUFFER, 0, 0, 640, 480, 640 * 4,
+                  frame.data()) == FXTRUE);
+  {
+    const uint32_t divPx = pxAt(320, 240);
+    CHECK(((divPx >> 16) & 0xFFu) > 230u);
+    CHECK(((divPx >> 8) & 0xFFu) > 230u);
+    CHECK((divPx & 0xFFu) < 20u);
+
+    const uint32_t outsideDiv = pxAt(310, 240);
+    CHECK(((outsideDiv >> 16) & 0xFFu) < 20u);
+    CHECK(((outsideDiv >> 8) & 0xFFu) < 20u);
+
+    const uint32_t lfbPx = pxAt(508, 408);
+    CHECK(((lfbPx >> 16) & 0xFFu) < 20u);
+    CHECK(((lfbPx >> 8) & 0xFFu) > 230u);
+    CHECK((lfbPx & 0xFFu) > 230u);
+  }
+
+  // 5. grGlideGetState / grGlideSetState preserves T-Buffer write mask
+  FxI32 stateSize = 0;
+  REQUIRE(grGetFn(GR_GLIDE_STATE_SIZE, 4, &stateSize) == 4u);
+  REQUIRE(stateSize > 0);
+  std::vector<uint8_t> savedState(static_cast<size_t>(stateSize), 0u);
+  clipWin(0, 0, 640, 480);
+  tbufMaskExt(0x5u);  // 2 of 4 samples (bits 0 and 2)
+  getState(savedState.data());
+
+  tbufMaskExt(0xFu);
+  bufferClear(0xFF000000u, 0xFF, 0xFFFFu);
+  setState(savedState.data());  // Restores tbufMask = 0x5
+  bufferClear(0xFF00FF00u, 0xFF, 0xFFFFu);  // Masked clear -> 2/4 Green = ~127
+  tbufMaskExt(0xFu);
+
+  uint32_t statePx = 0u;
+  REQUIRE(lfbRead(GR_BUFFER_BACKBUFFER, 50, 50, 1, 1, 4, &statePx) == FXTRUE);
+  {
+    const uint32_t g = (statePx >> 8) & 0xFFu;
+    CHECK(g >= 110u);
+    CHECK(g <= 145u);
+  }
+
+  winClose(ctx);
+  glideShutdown();
+
+  // 6. Forced GLIDE_NG_MSAA=4 parity on standard grSstWinOpen across all 3
+  //    backends (Vulkan, OpenGL ES, Software 2x2 SSAA).
+  const char* origMsaa = std::getenv("GLIDE_NG_MSAA");
+  std::string savedMsaa = origMsaa ? origMsaa : "";
+  const char* origSwAa = std::getenv("GLIDE_NG_SW_AA");
+  std::string savedSwAa = origSwAa ? origSwAa : "";
+  ::unsetenv("GLIDE_NG_SW_AA");
+  ::setenv("GLIDE_NG_MSAA", "4", 1);
+
+  glideInit();
+  sstSelect(0);
+  FxU32 ctxForced =
+      winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz, GR_COLORFORMAT_ARGB,
+              GR_ORIGIN_UPPER_LEFT, 2, 1);
+  REQUIRE(ctxForced != 0);
+  auto* backendForced =
+      GlideWrapper::BackendManager::GetInstance().GetBackend();
+  REQUIRE(backendForced != nullptr);
+  CHECK(backendForced->GetMsaaSamples() >= 4u);
+  winClose(ctxForced);
+  glideShutdown();
+
+  if (origMsaa) {
+    ::setenv("GLIDE_NG_MSAA", savedMsaa.c_str(), 1);
+  } else {
+    ::unsetenv("GLIDE_NG_MSAA");
+  }
+  if (origSwAa) {
+    ::setenv("GLIDE_NG_SW_AA", savedSwAa.c_str(), 1);
+  } else {
+    ::unsetenv("GLIDE_NG_SW_AA");
+  }
+
+  ::dlclose(handle);
 #endif
 }

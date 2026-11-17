@@ -260,6 +260,7 @@ FX_ENTRY FxBool FX_CALL grSstWinOpen(AnyPtr hWnd,
   s_alphaControlsITRGBLighting = false;
   s_gammaCorrectionValue = 1.0f;
 
+  backend->SetRequestedMsaaSamples(0u);
   bool attached = backend->AttachWindow(
       reinterpret_cast<void*>(static_cast<uintptr_t>(hWnd)), width, height,
       hWnd != 0);
@@ -2066,7 +2067,7 @@ FX_ENTRY void FX_CALL grDitherMode(GrDitherMode_t mode) {
 FX_ENTRY FxU32 FX_CALL grSstScreenWidth(void) {
   EnsureEngineInitialized();
   if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
-    return b->GetWidth();
+    return b->GetGuestWidth();
   }
   return 0;
 }
@@ -2074,7 +2075,7 @@ FX_ENTRY FxU32 FX_CALL grSstScreenWidth(void) {
 FX_ENTRY FxU32 FX_CALL grSstScreenHeight(void) {
   EnsureEngineInitialized();
   if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
-    return b->GetHeight();
+    return b->GetGuestHeight();
   }
   return 0;
 }
@@ -2095,7 +2096,7 @@ FX_ENTRY FxU32 FX_CALL grSstStatus(void) {
 FX_ENTRY FxU32 FX_CALL grSstVideoLine(void) {
   EnsureEngineInitialized();
   auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
-  uint32_t height = backend ? backend->GetHeight() : 480;
+  uint32_t height = backend ? backend->GetGuestHeight() : 480;
   if (height == 0) height = 480;
 
   uint32_t totalLines = height + 30;  // height + 30 VBLANK lines
@@ -2113,7 +2114,7 @@ FX_ENTRY FxU32 FX_CALL grSstVideoLine(void) {
 FX_ENTRY FxBool FX_CALL grSstVRetraceOn(void) {
   EnsureEngineInitialized();
   auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
-  uint32_t height = backend ? backend->GetHeight() : 480;
+  uint32_t height = backend ? backend->GetGuestHeight() : 480;
   if (height == 0) height = 480;
 
   return (grSstVideoLine() >= height) ? FXTRUE : FXFALSE;

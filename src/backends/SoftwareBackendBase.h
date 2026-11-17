@@ -23,6 +23,7 @@ class SoftwareBackendBase : public GlideStateTracker {
   ~SoftwareBackendBase() override = default;
 
   void ResetState() override;
+  uint32_t GetMsaaSamples() const override { return m_ssaaScale * m_ssaaScale; }
 
   bool HasPendingLazyCpuClear(uint32_t buffer = 1) const {
     uint32_t slot = (buffer == 0) ? m_frontBufferIdx : m_backBufferIdx;

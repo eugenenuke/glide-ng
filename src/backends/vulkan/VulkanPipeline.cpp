@@ -11,6 +11,8 @@
 #include "color_dualsrc_frag.spv.h"
 #include "color_frag.spv.h"
 #include "color_vert.spv.h"
+#include "hud_frag.spv.h"
+#include "hud_vert.spv.h"
 
 namespace GlideWrapper {
 
@@ -54,13 +56,8 @@ static vk::BlendFactor MapBlendFactorVulkan(uint32_t factor, bool isDest,
 }
 
 bool VulkanBackend::CreateRenderPass() {
-  vk::SampleCountFlagBits samples =
-      static_cast<vk::SampleCountFlagBits>(m_msaaSamples);
-
-  if (m_msaaSamples > 1) {
-    // --- MSAA Render Pass Configuration (3 Attachments) ---
-
-    // Attachment 0: Multi-sampled Color Target
+  auto buildPass = [this](vk::SampleCountFlagBits samples) -> vk::UniqueRenderPass {
+    // Attachment 0: Color Target
     vk::AttachmentDescription colorAttachment(
         {}, m_colorFormat, samples, vk::AttachmentLoadOp::eLoad,
         vk::AttachmentStoreOp::eStore, vk::AttachmentLoadOp::eDontCare,
@@ -70,7 +67,7 @@ bool VulkanBackend::CreateRenderPass() {
     vk::AttachmentReference colorRef(0,
                                      vk::ImageLayout::eColorAttachmentOptimal);
 
-    // Attachment 1: Multi-sampled Depth Target
+    // Attachment 1: Depth Target
     vk::AttachmentDescription depthAttachment(
         {}, m_depthFormat, samples, vk::AttachmentLoadOp::eLoad,
         vk::AttachmentStoreOp::eStore, vk::AttachmentLoadOp::eDontCare,
@@ -80,102 +77,12 @@ bool VulkanBackend::CreateRenderPass() {
     vk::AttachmentReference depthRef(
         1, vk::ImageLayout::eDepthStencilAttachmentOptimal);
 
-    // Attachment 2: Single-sampled Resolve Target (our presentation FBO color
-    // image)
-    vk::AttachmentDescription resolveAttachment(
-        {}, m_colorFormat, vk::SampleCountFlagBits::e1,
-        vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eStore,
-        vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare,
-        vk::ImageLayout::eColorAttachmentOptimal,
-        vk::ImageLayout::eColorAttachmentOptimal);
-    vk::AttachmentReference resolveRef(
-        2, vk::ImageLayout::eColorAttachmentOptimal);
-
-    // Subpass: renders to colorRef (0) with depthRef (1), and automatically
-    // resolves color to resolveRef (2)
-    vk::SubpassDescription subpass({}, vk::PipelineBindPoint::eGraphics, 0,
-                                   nullptr, 1, &colorRef, &resolveRef,
-                                   &depthRef);
-
-    // Setup subpass dependencies to enforce strict GPU synchronization between
-    // clear, draw, and copy stages
-    std::array<vk::SubpassDependency, 2> dependencies;
-
-    // Dependency 1: Sync Clear/Transfer writes to Color/Depth Attachments
-    dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
-    dependencies[0].dstSubpass = 0;
-    dependencies[0].srcStageMask =
-        vk::PipelineStageFlagBits::eTransfer |
-        vk::PipelineStageFlagBits::eColorAttachmentOutput |
-        vk::PipelineStageFlagBits::eEarlyFragmentTests;
-    dependencies[0].dstStageMask =
-        vk::PipelineStageFlagBits::eColorAttachmentOutput |
-        vk::PipelineStageFlagBits::eEarlyFragmentTests;
-    dependencies[0].srcAccessMask =
-        vk::AccessFlagBits::eTransferWrite |
-        vk::AccessFlagBits::eColorAttachmentWrite |
-        vk::AccessFlagBits::eDepthStencilAttachmentWrite;
-    dependencies[0].dstAccessMask =
-        vk::AccessFlagBits::eColorAttachmentWrite |
-        vk::AccessFlagBits::eColorAttachmentRead |
-        vk::AccessFlagBits::eDepthStencilAttachmentWrite |
-        vk::AccessFlagBits::eDepthStencilAttachmentRead;
-    dependencies[0].dependencyFlags = vk::DependencyFlagBits::eByRegion;
-
-    // Dependency 2: Sync Color/Depth Attachment writes to Transfer/Copy reads
-    // (in SwapBuffers)
-    dependencies[1].srcSubpass = 0;
-    dependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
-    dependencies[1].srcStageMask =
-        vk::PipelineStageFlagBits::eColorAttachmentOutput |
-        vk::PipelineStageFlagBits::eLateFragmentTests;
-    dependencies[1].dstStageMask = vk::PipelineStageFlagBits::eTransfer;
-    dependencies[1].srcAccessMask =
-        vk::AccessFlagBits::eColorAttachmentWrite |
-        vk::AccessFlagBits::eDepthStencilAttachmentWrite;
-    dependencies[1].dstAccessMask = vk::AccessFlagBits::eTransferRead;
-    dependencies[1].dependencyFlags = vk::DependencyFlagBits::eByRegion;
-
-    std::array<vk::AttachmentDescription, 3> attachments = {
-        colorAttachment, depthAttachment, resolveAttachment};
-    vk::RenderPassCreateInfo passInfo(
-        {}, static_cast<uint32_t>(attachments.size()), attachments.data(), 1,
-        &subpass, static_cast<uint32_t>(dependencies.size()),
-        dependencies.data());
-    m_renderPass = m_device->createRenderPassUnique(passInfo);
-  } else {
-    // --- Standard Render Pass Configuration (2 Attachments, 1x MSAA) ---
-
-    // 1. Color Attachment Description
-    vk::AttachmentDescription colorAttachment(
-        {}, m_colorFormat, vk::SampleCountFlagBits::e1,
-        vk::AttachmentLoadOp::eLoad, vk::AttachmentStoreOp::eStore,
-        vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare,
-        vk::ImageLayout::eColorAttachmentOptimal,
-        vk::ImageLayout::eColorAttachmentOptimal);
-    vk::AttachmentReference colorRef(0,
-                                     vk::ImageLayout::eColorAttachmentOptimal);
-
-    // 2. Depth Attachment Description
-    vk::AttachmentDescription depthAttachment(
-        {}, m_depthFormat, vk::SampleCountFlagBits::e1,
-        vk::AttachmentLoadOp::eLoad, vk::AttachmentStoreOp::eStore,
-        vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare,
-        vk::ImageLayout::eDepthStencilAttachmentOptimal,
-        vk::ImageLayout::eDepthStencilAttachmentOptimal);
-    vk::AttachmentReference depthRef(
-        1, vk::ImageLayout::eDepthStencilAttachmentOptimal);
-
-    // 3. Subpass Description (binds both color reference and depth stencil
-    // reference)
     vk::SubpassDescription subpass({}, vk::PipelineBindPoint::eGraphics, 0,
                                    nullptr, 1, &colorRef, nullptr, &depthRef);
 
-    // Setup subpass dependencies to enforce strict GPU synchronization between
-    // clear, draw, and copy stages
     std::array<vk::SubpassDependency, 2> dependencies;
 
-    // Dependency 1: Sync Clear/Transfer writes to Color/Depth Attachments
+    // Dependency 1: Sync Clear/Transfer/Prior writes to Color/Depth Attachments
     dependencies[0].srcSubpass = VK_SUBPASS_EXTERNAL;
     dependencies[0].dstSubpass = 0;
     dependencies[0].srcStageMask =
@@ -196,18 +103,20 @@ bool VulkanBackend::CreateRenderPass() {
         vk::AccessFlagBits::eDepthStencilAttachmentRead;
     dependencies[0].dependencyFlags = vk::DependencyFlagBits::eByRegion;
 
-    // Dependency 2: Sync Color/Depth Attachment writes to Transfer/Copy reads
-    // (in SwapBuffers)
+    // Dependency 2: Sync Color/Depth Attachment writes to Transfer/Resolve/Shader
+    // reads (SwapBuffers, explicit vkCmdResolveImage, or 1x->MSAA copy)
     dependencies[1].srcSubpass = 0;
     dependencies[1].dstSubpass = VK_SUBPASS_EXTERNAL;
     dependencies[1].srcStageMask =
         vk::PipelineStageFlagBits::eColorAttachmentOutput |
         vk::PipelineStageFlagBits::eLateFragmentTests;
-    dependencies[1].dstStageMask = vk::PipelineStageFlagBits::eTransfer;
+    dependencies[1].dstStageMask = vk::PipelineStageFlagBits::eTransfer |
+                                   vk::PipelineStageFlagBits::eFragmentShader;
     dependencies[1].srcAccessMask =
         vk::AccessFlagBits::eColorAttachmentWrite |
         vk::AccessFlagBits::eDepthStencilAttachmentWrite;
-    dependencies[1].dstAccessMask = vk::AccessFlagBits::eTransferRead;
+    dependencies[1].dstAccessMask =
+        vk::AccessFlagBits::eTransferRead | vk::AccessFlagBits::eShaderRead;
     dependencies[1].dependencyFlags = vk::DependencyFlagBits::eByRegion;
 
     std::array<vk::AttachmentDescription, 2> attachments = {colorAttachment,
@@ -216,7 +125,16 @@ bool VulkanBackend::CreateRenderPass() {
         {}, static_cast<uint32_t>(attachments.size()), attachments.data(), 1,
         &subpass, static_cast<uint32_t>(dependencies.size()),
         dependencies.data());
-    m_renderPass = m_device->createRenderPassUnique(passInfo);
+    return m_device->createRenderPassUnique(passInfo);
+  };
+
+  const vk::SampleCountFlagBits samples =
+      static_cast<vk::SampleCountFlagBits>(m_msaaSamples);
+  m_renderPass = buildPass(samples);
+  if (m_msaaSamples > 1) {
+    m_singleSampleRenderPass = buildPass(vk::SampleCountFlagBits::e1);
+  } else {
+    m_singleSampleRenderPass.reset();
   }
 
   return true;
@@ -270,6 +188,13 @@ PipelineStateKey VulkanBackend::GetCurrentStateKey() const {
   key.alphaDstBlend = m_alphaDstBlend;
   key.colorMaskRgb = m_colorMaskRgb;
   key.colorMaskAlpha = m_colorMaskAlpha;
+  if (m_msaaSamples > 1) {
+    key.singleSample = ShouldUseSingleSamplePass_Locked();
+    key.sampleMask = key.singleSample ? 1u : GetEffectiveSampleMask_Locked();
+  } else {
+    key.singleSample = false;
+    key.sampleMask = 1u;
+  }
   return key;
 }
 
@@ -347,10 +272,19 @@ vk::UniquePipeline VulkanBackend::CompileSinglePipeline(
         {}, m_depthClampEnabled, false, vk::PolygonMode::eFill, vkCullMode,
         frontFace, false, 0.0f, 0.0f, 0.0f, 1.0f);
 
-    // Multisample Configuration
+    // Multisample Configuration (supports live 1x/MSAA switching and
+    // VSA-100 grTBufferWriteMaskExt per-sample write masks)
+    const bool useMsaa = (m_msaaSamples > 1 && !key.singleSample);
+    const vk::SampleCountFlagBits sampleCount =
+        useMsaa ? static_cast<vk::SampleCountFlagBits>(m_msaaSamples)
+                : vk::SampleCountFlagBits::e1;
+    const uint32_t fullMask =
+        (m_msaaSamples >= 32) ? 0xFFFFFFFFu : ((1u << m_msaaSamples) - 1u);
+    vk::SampleMask vkSampleMask = static_cast<vk::SampleMask>(key.sampleMask);
+    const bool applySampleMask = (useMsaa && key.sampleMask != fullMask);
     vk::PipelineMultisampleStateCreateInfo multisampling(
-        {}, static_cast<vk::SampleCountFlagBits>(m_msaaSamples), false, 1.0f,
-        nullptr, false, false);
+        {}, sampleCount, false, 1.0f,
+        applySampleMask ? &vkSampleMask : nullptr, false, false);
 
     // Depth Stencil Configuration based on Glide's active states
     vk::PipelineDepthStencilStateCreateInfo depthStencil{};
@@ -435,11 +369,15 @@ vk::UniquePipeline VulkanBackend::CompileSinglePipeline(
     }
 
     // Assemble Graphics Pipeline
+    const vk::RenderPass targetRenderPass =
+        (m_msaaSamples > 1 && key.singleSample)
+            ? m_singleSampleRenderPass.get()
+            : m_renderPass.get();
     vk::GraphicsPipelineCreateInfo pipelineInfo(
         {}, 2, shaderStages, &vertexInputInfo, &inputAssembly, nullptr,
         &viewportState, &rasterizer, &multisampling, &depthStencil,
         &colorBlending, &dynamicState, m_pipelineLayout.get(),
-        m_renderPass.get(), 0, {}, -1);
+        targetRenderPass, 0, {}, -1);
 
     auto result = m_device->createGraphicsPipelineUnique(
         m_vkPipelineCache.get(), pipelineInfo);
@@ -455,21 +393,23 @@ vk::UniquePipeline VulkanBackend::CompileSinglePipeline(
   return vk::UniquePipeline();
 }
 
-static inline uint32_t PackPipelineCacheKey(const PipelineStateKey& state,
-                                            vk::PrimitiveTopology topology) {
-  uint32_t key = 0;
-  key |= (state.cullMode & 0x3) << 0;
-  key |= (state.sstOrigin & 0x1) << 2;
-  key |= (state.depthMode & 0x3) << 3;
-  key |= (state.depthMask ? 1 : 0) << 5;
-  key |= (state.depthCompareOp & 0x7) << 6;
-  key |= (state.rgbSrcBlend & 0xF) << 9;
-  key |= (state.rgbDstBlend & 0xF) << 13;
-  key |= (state.alphaSrcBlend & 0xF) << 17;
-  key |= (state.alphaDstBlend & 0xF) << 21;
-  key |= (state.colorMaskRgb ? 1 : 0) << 25;
-  key |= (state.colorMaskAlpha ? 1 : 0) << 26;
-  key |= (static_cast<uint32_t>(topology) & 0x7) << 27;
+static inline PipelineCacheKey PackPipelineCacheKey(
+    const PipelineStateKey& state, vk::PrimitiveTopology topology) {
+  uint64_t key = 0;
+  key |= static_cast<uint64_t>(state.cullMode & 0x3u) << 0;
+  key |= static_cast<uint64_t>(state.sstOrigin & 0x1u) << 2;
+  key |= static_cast<uint64_t>(state.depthMode & 0x3u) << 3;
+  key |= static_cast<uint64_t>(state.depthMask ? 1u : 0u) << 5;
+  key |= static_cast<uint64_t>(state.depthCompareOp & 0x7u) << 6;
+  key |= static_cast<uint64_t>(state.rgbSrcBlend & 0xFu) << 9;
+  key |= static_cast<uint64_t>(state.rgbDstBlend & 0xFu) << 13;
+  key |= static_cast<uint64_t>(state.alphaSrcBlend & 0xFu) << 17;
+  key |= static_cast<uint64_t>(state.alphaDstBlend & 0xFu) << 21;
+  key |= static_cast<uint64_t>(state.colorMaskRgb ? 1u : 0u) << 25;
+  key |= static_cast<uint64_t>(state.colorMaskAlpha ? 1u : 0u) << 26;
+  key |= static_cast<uint64_t>(static_cast<uint32_t>(topology) & 0x7u) << 27;
+  key |= static_cast<uint64_t>(state.singleSample ? 1u : 0u) << 30;
+  key |= static_cast<uint64_t>(state.sampleMask & 0xFFFFu) << 31;
   return key;
 }
 
@@ -620,6 +560,278 @@ vk::DescriptorSet VulkanBackend::GetOrCreateDescriptorSet(
     m_viewToDescriptorKeys[h1].push_back(key);
   }
   return rawSet;
+}
+
+uint32_t VulkanBackend::GetEffectiveSampleMask_Locked() const {
+  if (m_msaaSamples <= 1) return 1u;
+  const uint32_t fullMask =
+      (m_msaaSamples >= 32) ? 0xFFFFFFFFu : ((1u << m_msaaSamples) - 1u);
+  return m_tbufferWriteMask & fullMask;
+}
+
+bool VulkanBackend::ShouldUseSingleSamplePass_Locked() const {
+  if (m_msaaSamples <= 1) return false;
+  const uint32_t fullMask =
+      (m_msaaSamples >= 32) ? 0xFFFFFFFFu : ((1u << m_msaaSamples) - 1u);
+  return !m_aaMultiSample && ((m_tbufferWriteMask & fullMask) == fullMask);
+}
+
+void VulkanBackend::ResolveMsaaToSingle_Locked(uint32_t gpuIdx) {
+  if (m_msaaSamples <= 1 || gpuIdx >= 2 || !m_msaaColorDirty[gpuIdx] ||
+      !m_commandBuffer || !m_msaaColorImages[gpuIdx] ||
+      !m_headlessImages[gpuIdx]) {
+    return;
+  }
+
+  vk::ImageSubresourceRange colorRange(vk::ImageAspectFlagBits::eColor, 0, 1, 0,
+                                       1);
+  TransitionImageLayout(*m_commandBuffer, m_msaaColorImages[gpuIdx].get(),
+                        vk::ImageLayout::eColorAttachmentOptimal,
+                        vk::ImageLayout::eTransferSrcOptimal, colorRange);
+  TransitionImageLayout(*m_commandBuffer, m_headlessImages[gpuIdx].get(),
+                        vk::ImageLayout::eColorAttachmentOptimal,
+                        vk::ImageLayout::eTransferDstOptimal, colorRange);
+
+  vk::ImageResolve resolveRegion{};
+  resolveRegion.srcSubresource =
+      vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
+  resolveRegion.dstSubresource =
+      vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
+  resolveRegion.extent = vk::Extent3D(m_headlessWidth, m_headlessHeight, 1);
+
+  m_commandBuffer->resolveImage(
+      m_msaaColorImages[gpuIdx].get(), vk::ImageLayout::eTransferSrcOptimal,
+      m_headlessImages[gpuIdx].get(), vk::ImageLayout::eTransferDstOptimal, 1,
+      &resolveRegion);
+
+  TransitionImageLayout(*m_commandBuffer, m_msaaColorImages[gpuIdx].get(),
+                        vk::ImageLayout::eTransferSrcOptimal,
+                        vk::ImageLayout::eColorAttachmentOptimal, colorRange);
+  TransitionImageLayout(*m_commandBuffer, m_headlessImages[gpuIdx].get(),
+                        vk::ImageLayout::eTransferDstOptimal,
+                        vk::ImageLayout::eColorAttachmentOptimal, colorRange);
+
+  m_msaaColorDirty[gpuIdx] = false;
+  m_singleSampleColorDirty[gpuIdx] = false;
+}
+
+bool VulkanBackend::InitMsaaCopyResources_Locked() {
+  if (!m_device || !m_renderPass || m_msaaSamples <= 1) return false;
+  if (m_msaaCopyPipeline) return true;
+
+  try {
+    if (!m_msaaCopySampler) {
+      vk::SamplerCreateInfo samplerInfo{};
+      samplerInfo.magFilter = vk::Filter::eNearest;
+      samplerInfo.minFilter = vk::Filter::eNearest;
+      samplerInfo.mipmapMode = vk::SamplerMipmapMode::eNearest;
+      samplerInfo.addressModeU = vk::SamplerAddressMode::eClampToEdge;
+      samplerInfo.addressModeV = vk::SamplerAddressMode::eClampToEdge;
+      samplerInfo.addressModeW = vk::SamplerAddressMode::eClampToEdge;
+      m_msaaCopySampler = m_device->createSamplerUnique(samplerInfo);
+    }
+
+    if (!m_msaaCopyDescSetLayout) {
+      vk::DescriptorSetLayoutBinding binding{};
+      binding.binding = 0;
+      binding.descriptorType = vk::DescriptorType::eCombinedImageSampler;
+      binding.descriptorCount = 1;
+      binding.stageFlags = vk::ShaderStageFlagBits::eFragment;
+
+      vk::DescriptorSetLayoutCreateInfo layoutInfo{};
+      layoutInfo.bindingCount = 1;
+      layoutInfo.pBindings = &binding;
+      m_msaaCopyDescSetLayout =
+          m_device->createDescriptorSetLayoutUnique(layoutInfo);
+    }
+
+    if (!m_msaaCopyDescPool) {
+      vk::DescriptorPoolSize poolSize(
+          vk::DescriptorType::eCombinedImageSampler, 2);
+      vk::DescriptorPoolCreateInfo poolInfo{};
+      poolInfo.maxSets = 2;
+      poolInfo.poolSizeCount = 1;
+      poolInfo.pPoolSizes = &poolSize;
+      m_msaaCopyDescPool = m_device->createDescriptorPoolUnique(poolInfo);
+
+      std::array<vk::DescriptorSetLayout, 2> layouts = {
+          m_msaaCopyDescSetLayout.get(), m_msaaCopyDescSetLayout.get()};
+      vk::DescriptorSetAllocateInfo allocInfo{};
+      allocInfo.descriptorPool = m_msaaCopyDescPool.get();
+      allocInfo.descriptorSetCount = 2;
+      allocInfo.pSetLayouts = layouts.data();
+      auto sets = m_device->allocateDescriptorSets(allocInfo);
+      m_msaaCopyDescSets[0] = sets[0];
+      m_msaaCopyDescSets[1] = sets[1];
+      m_msaaCopyBoundView[0] = vk::ImageView{};
+      m_msaaCopyBoundView[1] = vk::ImageView{};
+    }
+
+    if (!m_msaaCopyPipelineLayout) {
+      vk::PushConstantRange pushRange{};
+      pushRange.stageFlags = vk::ShaderStageFlagBits::eVertex;
+      pushRange.offset = 0;
+      pushRange.size = sizeof(float) * 4;
+
+      vk::DescriptorSetLayout setLayout = m_msaaCopyDescSetLayout.get();
+      vk::PipelineLayoutCreateInfo plInfo{};
+      plInfo.setLayoutCount = 1;
+      plInfo.pSetLayouts = &setLayout;
+      plInfo.pushConstantRangeCount = 1;
+      plInfo.pPushConstantRanges = &pushRange;
+      m_msaaCopyPipelineLayout = m_device->createPipelineLayoutUnique(plInfo);
+    }
+
+    vk::UniqueShaderModule vertMod = m_device->createShaderModuleUnique(
+        vk::ShaderModuleCreateInfo({}, hud_vert_spv_size, hud_vert_spv));
+    vk::UniqueShaderModule fragMod = m_device->createShaderModuleUnique(
+        vk::ShaderModuleCreateInfo({}, hud_frag_spv_size, hud_frag_spv));
+
+    std::array<vk::PipelineShaderStageCreateInfo, 2> stages = {
+        vk::PipelineShaderStageCreateInfo({}, vk::ShaderStageFlagBits::eVertex,
+                                          vertMod.get(), "main"),
+        vk::PipelineShaderStageCreateInfo(
+            {}, vk::ShaderStageFlagBits::eFragment, fragMod.get(), "main"),
+    };
+
+    vk::PipelineVertexInputStateCreateInfo vertexInput{};
+    vk::PipelineInputAssemblyStateCreateInfo inputAsm(
+        {}, vk::PrimitiveTopology::eTriangleStrip, VK_FALSE);
+    vk::PipelineViewportStateCreateInfo viewportState({}, 1, nullptr, 1,
+                                                      nullptr);
+    std::array<vk::DynamicState, 2> dynStates = {vk::DynamicState::eViewport,
+                                                 vk::DynamicState::eScissor};
+    vk::PipelineDynamicStateCreateInfo dynamicState(
+        {}, static_cast<uint32_t>(dynStates.size()), dynStates.data());
+
+    vk::PipelineRasterizationStateCreateInfo raster{};
+    raster.polygonMode = vk::PolygonMode::eFill;
+    raster.cullMode = vk::CullModeFlagBits::eNone;
+    raster.frontFace = vk::FrontFace::eClockwise;
+    raster.lineWidth = 1.0f;
+
+    vk::PipelineMultisampleStateCreateInfo multisample{};
+    multisample.rasterizationSamples =
+        static_cast<vk::SampleCountFlagBits>(m_msaaSamples);
+
+    vk::PipelineDepthStencilStateCreateInfo depthStencil{};
+    depthStencil.depthTestEnable = VK_FALSE;
+    depthStencil.depthWriteEnable = VK_FALSE;
+    depthStencil.depthCompareOp = vk::CompareOp::eAlways;
+
+    vk::PipelineColorBlendAttachmentState blendAtt{};
+    blendAtt.blendEnable = VK_FALSE;
+    blendAtt.colorWriteMask =
+        vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
+        vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA;
+
+    vk::PipelineColorBlendStateCreateInfo colorBlend{};
+    colorBlend.attachmentCount = 1;
+    colorBlend.pAttachments = &blendAtt;
+
+    vk::GraphicsPipelineCreateInfo pipeInfo{};
+    pipeInfo.stageCount = static_cast<uint32_t>(stages.size());
+    pipeInfo.pStages = stages.data();
+    pipeInfo.pVertexInputState = &vertexInput;
+    pipeInfo.pInputAssemblyState = &inputAsm;
+    pipeInfo.pViewportState = &viewportState;
+    pipeInfo.pRasterizationState = &raster;
+    pipeInfo.pMultisampleState = &multisample;
+    pipeInfo.pDepthStencilState = &depthStencil;
+    pipeInfo.pColorBlendState = &colorBlend;
+    pipeInfo.pDynamicState = &dynamicState;
+    pipeInfo.layout = m_msaaCopyPipelineLayout.get();
+    pipeInfo.renderPass = m_renderPass.get();
+    pipeInfo.subpass = 0;
+
+    auto res = m_device->createGraphicsPipelineUnique(
+        m_vkPipelineCache ? m_vkPipelineCache.get() : vk::PipelineCache{},
+        pipeInfo);
+    if (res.result != vk::Result::eSuccess) {
+      GLIDE_LOG(WARN, "Vulkan",
+                "Failed to create Vulkan 1x->MSAA copy pipeline: "
+                    << vk::to_string(res.result));
+      return false;
+    }
+    m_msaaCopyPipeline = std::move(res.value);
+    return true;
+  } catch (const std::exception& e) {
+    GLIDE_LOG(WARN, "Vulkan",
+              "Failed to initialize Vulkan 1x->MSAA copy resources: "
+                  << e.what());
+    return false;
+  }
+}
+
+void VulkanBackend::DestroyMsaaCopyResources_Locked() {
+  m_msaaCopyPipeline.reset();
+  m_msaaCopyPipelineLayout.reset();
+  m_msaaCopyDescSets[0] = vk::DescriptorSet{};
+  m_msaaCopyDescSets[1] = vk::DescriptorSet{};
+  m_msaaCopyBoundView[0] = vk::ImageView{};
+  m_msaaCopyBoundView[1] = vk::ImageView{};
+  m_msaaCopyDescPool.reset();
+  m_msaaCopyDescSetLayout.reset();
+  m_msaaCopySampler.reset();
+}
+
+void VulkanBackend::CopySingleToMsaa_Locked(uint32_t gpuIdx) {
+  if (m_msaaSamples <= 1 || gpuIdx >= 2 || !m_singleSampleColorDirty[gpuIdx] ||
+      !m_commandBuffer || !m_headlessImages[gpuIdx] ||
+      !m_headlessFramebuffers[gpuIdx]) {
+    return;
+  }
+  if (!InitMsaaCopyResources_Locked()) return;
+
+  const vk::ImageView srcView = m_headlessImageViews[gpuIdx].get();
+  if (m_msaaCopyBoundView[gpuIdx] != srcView) {
+    vk::DescriptorImageInfo descImg(m_msaaCopySampler.get(), srcView,
+                                    vk::ImageLayout::eShaderReadOnlyOptimal);
+    vk::WriteDescriptorSet write{};
+    write.dstSet = m_msaaCopyDescSets[gpuIdx];
+    write.dstBinding = 0;
+    write.descriptorCount = 1;
+    write.descriptorType = vk::DescriptorType::eCombinedImageSampler;
+    write.pImageInfo = &descImg;
+    m_device->updateDescriptorSets(1, &write, 0, nullptr);
+    m_msaaCopyBoundView[gpuIdx] = srcView;
+  }
+
+  vk::ImageSubresourceRange colorRange(vk::ImageAspectFlagBits::eColor, 0, 1, 0,
+                                       1);
+  TransitionImageLayout(*m_commandBuffer, m_headlessImages[gpuIdx].get(),
+                        vk::ImageLayout::eColorAttachmentOptimal,
+                        vk::ImageLayout::eShaderReadOnlyOptimal, colorRange);
+
+  vk::RenderPassBeginInfo rpBegin(
+      m_renderPass.get(), m_headlessFramebuffers[gpuIdx].get(),
+      vk::Rect2D({0, 0}, {m_headlessWidth, m_headlessHeight}), 0, nullptr);
+  m_commandBuffer->beginRenderPass(rpBegin, vk::SubpassContents::eInline);
+  m_commandBuffer->bindPipeline(vk::PipelineBindPoint::eGraphics,
+                                m_msaaCopyPipeline.get());
+  m_commandBuffer->bindDescriptorSets(vk::PipelineBindPoint::eGraphics,
+                                      m_msaaCopyPipelineLayout.get(), 0, 1,
+                                      &m_msaaCopyDescSets[gpuIdx], 0, nullptr);
+
+  vk::Viewport vp(0.0f, 0.0f, static_cast<float>(m_headlessWidth),
+                  static_cast<float>(m_headlessHeight), 0.0f, 1.0f);
+  m_commandBuffer->setViewport(0, 1, &vp);
+  vk::Rect2D sc({0, 0}, {m_headlessWidth, m_headlessHeight});
+  m_commandBuffer->setScissor(0, 1, &sc);
+
+  const float rectNdc[4] = {-1.0f, -1.0f, 1.0f, 1.0f};
+  m_commandBuffer->pushConstants(m_msaaCopyPipelineLayout.get(),
+                                 vk::ShaderStageFlagBits::eVertex, 0,
+                                 sizeof(rectNdc), rectNdc);
+  m_commandBuffer->draw(4, 1, 0, 0);
+  m_commandBuffer->endRenderPass();
+
+  TransitionImageLayout(*m_commandBuffer, m_headlessImages[gpuIdx].get(),
+                        vk::ImageLayout::eShaderReadOnlyOptimal,
+                        vk::ImageLayout::eColorAttachmentOptimal, colorRange);
+
+  m_singleSampleColorDirty[gpuIdx] = false;
+  m_msaaColorDirty[gpuIdx] = false;
 }
 
 }  // namespace GlideWrapper

@@ -57,6 +57,8 @@ float s_depthRangeFar = 65535.0f;
 // Enable states
 bool s_aaOrdered = false;
 bool s_shamelessPlug = false;
+bool s_aaMultiSample = true;
+uint32_t s_tbufferWriteMask = 0xFFFFFFFFu;
 
 // Phase 4 states
 uint32_t s_stippleMode = 0;
@@ -89,6 +91,8 @@ void ResetFrontendState() {
   s_depthRangeFar = 65535.0f;
   s_aaOrdered = false;
   s_shamelessPlug = false;
+  s_aaMultiSample = true;
+  s_tbufferWriteMask = 0xFFFFFFFFu;
   s_sstOrigin = 0;
   g_inSplash = false;
   s_stippleMode = 0;
@@ -168,6 +172,9 @@ struct GlideWrapperState {
   uint32_t ditherMode;
   uint32_t stippleMode;
   uint32_t stipplePattern;
+  uint32_t hasTbufferState;
+  int aaMultiSample;
+  uint32_t tbufferWriteMask;
 };
 
 static_assert(sizeof(GlideWrapperState) <= 1024,
@@ -187,13 +194,34 @@ FX_ENTRY void FX_CALL grGlideShutdown(void) {
   EntryCommon::ShutdownGlide("Glide 3.x");
 }
 
-FX_ENTRY GrContext_t FX_CALL grSstWinOpen(AnyPtr hWnd,
-                                          GrScreenResolution_t resolution,
-                                          GrScreenRefresh_t refresh,
-                                          GrColorFormat_t format,
-                                          GrOriginLocation_t origin,
-                                          int nColBuffers, int nAuxBuffers) {
+static uint32_t DecodePixelFormatSamples(GrPixelFormat_t pixelFormat) {
+  switch (pixelFormat) {
+    case GR_PIXFMT_AA_2_RGB_565:
+    case GR_PIXFMT_AA_2_ARGB_1555:
+    case GR_PIXFMT_AA_2_ARGB_8888:
+      return 2u;
+    case GR_PIXFMT_AA_4_RGB_565:
+    case GR_PIXFMT_AA_4_ARGB_1555:
+    case GR_PIXFMT_AA_4_ARGB_8888:
+      return 4u;
+    case GR_PIXFMT_AA_8_RGB_565:
+    case GR_PIXFMT_AA_8_ARGB_1555:
+    case GR_PIXFMT_AA_8_ARGB_8888:
+      return 8u;
+    default:
+      return 1u;
+  }
+}
+
+static GrContext_t OpenWindowGlide3(AnyPtr hWnd,
+                                    GrScreenResolution_t resolution,
+                                    GrScreenRefresh_t refresh,
+                                    GrColorFormat_t format,
+                                    GrOriginLocation_t origin,
+                                    uint32_t requestedSamples,
+                                    int nColBuffers, int nAuxBuffers) {
   EnsureEngineInitialized();
+  (void)refresh;
   const auto& cfg = GlideWrapper::EmulationRegistry::GetInstance().GetConfig();
   if (s_windowOpen && cfg.ignoreReopen) {
     GLIDE_LOG(INFO, "Frontend",
@@ -204,9 +232,11 @@ FX_ENTRY GrContext_t FX_CALL grSstWinOpen(AnyPtr hWnd,
   GlideWrapper::BackendManager::GetInstance().SetSplashAnimator(
       std::make_unique<GlideWrapper::GlideSplashAnimator>());
   GLIDE_LOG(INFO, "Frontend",
-            "grSstWinOpen (Glide 3.x) invoked. Res="
-                << resolution << ", Buffers=" << nColBuffers
-                << ", Aux=" << nAuxBuffers);
+            "grSstWinOpen" << (requestedSamples > 0 ? "Ext" : "")
+                           << " (Glide 3.x) invoked. Res=" << resolution
+                           << ", Buffers=" << nColBuffers
+                           << ", Aux=" << nAuxBuffers
+                           << ", ReqSamples=" << requestedSamples);
 
   const auto dims = EntryCommon::ResolveResolution(resolution);
   const uint32_t width = dims.width;
@@ -225,17 +255,22 @@ FX_ENTRY GrContext_t FX_CALL grSstWinOpen(AnyPtr hWnd,
   s_depthRangeFar = 65535.0f;
   s_aaOrdered = false;
   s_shamelessPlug = false;
+  s_aaMultiSample = true;
+  s_tbufferWriteMask = 0xFFFFFFFFu;
 
   GlideWrapper::VertexLayout::GetInstance().ResetToGlide3Canonical();
   auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
   if (!backend) return 0;
 
+  backend->SetRequestedMsaaSamples(requestedSamples);
   bool attached = backend->AttachWindow(
       reinterpret_cast<void*>(static_cast<uintptr_t>(hWnd)), width, height,
       hWnd != 0);
   backend->SetPixelFormat(format);
   s_sstOrigin = origin;
   backend->SetSstOrigin(origin);
+  backend->SetAAMultiSample(true);
+  backend->SetTBufferWriteMask(0xFFFFFFFFu);
 
   if (attached) {
     s_windowOpen = true;
@@ -245,6 +280,100 @@ FX_ENTRY GrContext_t FX_CALL grSstWinOpen(AnyPtr hWnd,
   }
 
   return attached ? 1 : 0;
+}
+
+FX_ENTRY GrContext_t FX_CALL grSstWinOpen(AnyPtr hWnd,
+                                          GrScreenResolution_t resolution,
+                                          GrScreenRefresh_t refresh,
+                                          GrColorFormat_t format,
+                                          GrOriginLocation_t origin,
+                                          int nColBuffers, int nAuxBuffers) {
+  return OpenWindowGlide3(hWnd, resolution, refresh, format, origin,
+                          /*requestedSamples=*/0u, nColBuffers, nAuxBuffers);
+}
+
+FX_ENTRY GrContext_t FX_CALL grSstWinOpenExt(AnyPtr hWnd,
+                                             GrScreenResolution_t resolution,
+                                             GrScreenRefresh_t refresh,
+                                             GrColorFormat_t format,
+                                             GrOriginLocation_t origin,
+                                             GrPixelFormat_t pixelFormat,
+                                             int nColBuffers, int nAuxBuffers) {
+  const uint32_t reqSamples = DecodePixelFormatSamples(pixelFormat);
+  GLIDE_LOG(INFO, "Frontend",
+            "grSstWinOpenExt (Glide 3.x): pixelFormat=0x"
+                << std::hex << pixelFormat << std::dec
+                << " -> requestedSamples=" << reqSamples);
+  return OpenWindowGlide3(hWnd, resolution, refresh, format, origin, reqSamples,
+                          nColBuffers, nAuxBuffers);
+}
+
+FX_ENTRY void FX_CALL grTBufferWriteMaskExt(FxU32 tmask) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
+  EnsureEngineInitialized();
+  s_tbufferWriteMask = static_cast<uint32_t>(tmask);
+  GLIDE_LOG(DEBUG, "Frontend",
+            "grTBufferWriteMaskExt (Glide 3.x): mask=0x" << std::hex << tmask
+                                                         << std::dec);
+  if (auto* backend =
+          GlideWrapper::BackendManager::GetInstance().GetBackend()) {
+    backend->SetTBufferWriteMask(s_tbufferWriteMask);
+  }
+}
+
+FX_ENTRY void FX_CALL grColorMaskExt(FxBool r, FxBool g, FxBool b, FxBool a) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
+  EnsureEngineInitialized();
+  GLIDE_LOG(DEBUG, "Frontend",
+            "grColorMaskExt (Glide 3.x): R=" << r << ", G=" << g
+                                             << ", B=" << b << ", A=" << a);
+  EntryCommon::SetColorMask(s_state, (r || g || b), a != 0);
+}
+
+FX_ENTRY void FX_CALL grStencilFuncExt(GrCmpFnc_t fnc, GrStencil_t ref,
+                                       GrStencil_t mask) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
+  EnsureEngineInitialized();
+  GLIDE_LOG(DEBUG, "Frontend",
+            "grStencilFuncExt (Glide 3.x): fnc=" << fnc
+                                                 << ", ref=" << static_cast<int>(ref)
+                                                 << ", mask=" << static_cast<int>(mask));
+}
+
+FX_ENTRY void FX_CALL grStencilMaskExt(GrStencil_t mask) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
+  EnsureEngineInitialized();
+  GLIDE_LOG(DEBUG, "Frontend",
+            "grStencilMaskExt (Glide 3.x): mask=" << static_cast<int>(mask));
+}
+
+FX_ENTRY void FX_CALL grStencilOpExt(GrStencilOp_t fail, GrStencilOp_t zfail,
+                                     GrStencilOp_t zpass) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
+  EnsureEngineInitialized();
+  GLIDE_LOG(DEBUG, "Frontend",
+            "grStencilOpExt (Glide 3.x): fail=" << fail << ", zfail=" << zfail
+                                                << ", zpass=" << zpass);
+}
+
+FX_ENTRY void FX_CALL grBufferClearExt(GrColor_t color, GrAlpha_t alpha,
+                                       FxU32 depth, GrStencil_t stencil) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::Draw);
+  EnsureEngineInitialized();
+  GLIDE_LOG(DEBUG, "Frontend",
+            "grBufferClearExt (Glide 3.x): color=0x"
+                << std::hex << color << std::dec
+                << ", alpha=" << static_cast<int>(alpha) << ", depth=" << depth
+                << ", stencil=" << static_cast<int>(stencil));
+  grBufferClear(color, alpha, depth);
+}
+
+FX_ENTRY void FX_CALL grLfbConstantStencilExt(GrStencil_t stencil) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::Lfb);
+  EnsureEngineInitialized();
+  GLIDE_LOG(DEBUG, "Frontend",
+            "grLfbConstantStencilExt (Glide 3.x): stencil="
+                << static_cast<int>(stencil));
 }
 
 FX_ENTRY FxBool FX_CALL grSstWinClose(GrContext_t context) {
@@ -831,6 +960,9 @@ FX_ENTRY void FX_CALL grGlideGetState(void* state) {
   ws->ditherMode = s_state.ditherMode;
   ws->stippleMode = s_stippleMode;
   ws->stipplePattern = s_stipplePattern;
+  ws->hasTbufferState = 1u;
+  ws->aaMultiSample = s_aaMultiSample ? 1 : 0;
+  ws->tbufferWriteMask = s_tbufferWriteMask;
 }
 
 FX_ENTRY void FX_CALL grGlideSetState(const void* state) {
@@ -925,8 +1057,8 @@ FX_ENTRY void FX_CALL grGlideSetState(const void* state) {
   uint32_t winWidth = 640;
   uint32_t winHeight = 480;
   if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
-    winWidth = b->GetWidth();
-    winHeight = b->GetHeight();
+    winWidth = b->GetGuestWidth();
+    winHeight = b->GetGuestHeight();
   }
   s_state.clipMinX = std::max(0u, std::min(ws->clipMinX, winWidth));
   s_state.clipMinY = std::max(0u, std::min(ws->clipMinY, winHeight));
@@ -940,6 +1072,10 @@ FX_ENTRY void FX_CALL grGlideSetState(const void* state) {
     s_state.texRgbInvert[i] = ws->texRgbInvert[i] != 0;
     s_state.texAlphaInvert[i] = ws->texAlphaInvert[i] != 0;
   }
+  if (ws->hasTbufferState != 0) {
+    s_aaMultiSample = ws->aaMultiSample != 0;
+    s_tbufferWriteMask = ws->tbufferWriteMask;
+  }
 
   // Apply states to backend
   EntryCommon::ApplySharedStateToBackend(s_state, s_sstOrigin,
@@ -948,6 +1084,10 @@ FX_ENTRY void FX_CALL grGlideSetState(const void* state) {
     b->SetAAState(s_aaOrdered);
     b->SetDepthRange(s_depthRangeNear, s_depthRangeFar);
     b->SetStippleState(s_stippleMode, s_stipplePattern);
+    if (ws->hasTbufferState != 0) {
+      b->SetAAMultiSample(s_aaMultiSample);
+      b->SetTBufferWriteMask(s_tbufferWriteMask);
+    }
   }
 }
 
@@ -1189,6 +1329,30 @@ FX_ENTRY GrProc FX_CALL grGetProcAddress(char* procName) {
   }
   if (std::strcmp(procName, "grTexChromaRangeExt") == 0) {
     return toGrProc(grTexChromaRangeExt);
+  }
+  if (std::strcmp(procName, "grSstWinOpenExt") == 0) {
+    return toGrProc(grSstWinOpenExt);
+  }
+  if (std::strcmp(procName, "grTBufferWriteMaskExt") == 0) {
+    return toGrProc(grTBufferWriteMaskExt);
+  }
+  if (std::strcmp(procName, "grColorMaskExt") == 0) {
+    return toGrProc(grColorMaskExt);
+  }
+  if (std::strcmp(procName, "grStencilFuncExt") == 0) {
+    return toGrProc(grStencilFuncExt);
+  }
+  if (std::strcmp(procName, "grStencilMaskExt") == 0) {
+    return toGrProc(grStencilMaskExt);
+  }
+  if (std::strcmp(procName, "grStencilOpExt") == 0) {
+    return toGrProc(grStencilOpExt);
+  }
+  if (std::strcmp(procName, "grBufferClearExt") == 0) {
+    return toGrProc(grBufferClearExt);
+  }
+  if (std::strcmp(procName, "grLfbConstantStencilExt") == 0) {
+    return toGrProc(grLfbConstantStencilExt);
   }
 
   GLIDE_LOG(WARN, "Frontend",
@@ -1494,7 +1658,13 @@ FX_ENTRY void FX_CALL grEnable(GrEnableMode_t mode) {
     case 0x08:        // GR_OPENGL_MODE_EXT
     case 0x09:        // GR_MULTIRENDERING_EXT
     case 0x80000001u: // GR_COMBINEEXT_MODE (VSA-100 / Napalm)
-    case 0x80000002u: // GR_AA_MULTI_SAMPLE (VSA-100 / Napalm)
+      break;
+    case GR_AA_MULTI_SAMPLE:
+      s_aaMultiSample = true;
+      if (auto* backend =
+              GlideWrapper::BackendManager::GetInstance().GetBackend()) {
+        backend->SetAAMultiSample(true);
+      }
       break;
     default:
       GLIDE_LOG(WARN, "Frontend",
@@ -1525,7 +1695,13 @@ FX_ENTRY void FX_CALL grDisable(GrEnableMode_t mode) {
     case 0x08:        // GR_OPENGL_MODE_EXT
     case 0x09:        // GR_MULTIRENDERING_EXT
     case 0x80000001u: // GR_COMBINEEXT_MODE (VSA-100 / Napalm)
-    case 0x80000002u: // GR_AA_MULTI_SAMPLE (VSA-100 / Napalm)
+      break;
+    case GR_AA_MULTI_SAMPLE:
+      s_aaMultiSample = false;
+      if (auto* backend =
+              GlideWrapper::BackendManager::GetInstance().GetBackend()) {
+        backend->SetAAMultiSample(false);
+      }
       break;
     default:
       GLIDE_LOG(WARN, "Frontend",

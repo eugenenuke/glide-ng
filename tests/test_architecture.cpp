@@ -8631,6 +8631,31 @@ TEST_CASE("Glide 2.x Partial MipMap Rows, Coplanar W-Buffer & Negative Combiner 
             FXTRUE);
     CHECK(ltPx != 0x0000u);
     grAlphaTestFunction(GR_CMP_ALWAYS);
+
+    // Translucent 50% blend (alpha=128) with GR_DITHER_4x4 + SRC_ALPHA /
+    // ONE_MINUS_SRC_ALPHA must smoothly preserve 8-bit blend alpha (e.g.
+    // 3dfx Museum's reflective marble floor), never quantizing alpha to 1-bit.
+    grBufferClear(0xFF00FF00u, 0xFF, GR_WDEPTHVALUE_FARTHEST);
+    grDitherMode(GR_DITHER_4x4);
+    grAlphaBlendFunction(GR_BLEND_SRC_ALPHA, GR_BLEND_ONE_MINUS_SRC_ALPHA,
+                         GR_BLEND_ONE, GR_BLEND_ZERO);
+    grColorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+                   GR_COMBINE_LOCAL_CONSTANT, GR_COMBINE_OTHER_NONE, FXFALSE);
+    grAlphaCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+                   GR_COMBINE_LOCAL_CONSTANT, GR_COMBINE_OTHER_NONE, FXFALSE);
+    grConstantColorValue(0x80000000u);  // black RGB, alpha = 128 (~50%)
+    grDrawTriangle(&o0, &o1, &o2);
+    grDrawTriangle(&o0, &o2, &o3);
+    for (uint32_t dx = 0; dx < 4; ++dx) {
+      for (uint32_t dy = 0; dy < 4; ++dy) {
+        uint16_t px = 0;
+        REQUIRE(grLfbReadRegion(GR_BUFFER_BACKBUFFER, 40 + dx, 40 + dy, 1, 1, 2,
+                                &px) == FXTRUE);
+        const uint32_t g6 = (px >> 5) & 63u;
+        CHECK(g6 >= 24u);
+        CHECK(g6 <= 40u);
+      }
+    }
   }
 
   SECTION("RAMDAC Gamma LUT switches cleanly across backends while keeping backbuffer VRAM linear") {

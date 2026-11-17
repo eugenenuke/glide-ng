@@ -181,18 +181,31 @@ bool OpenGLESBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
 
   m_headlessWidth = width;
   m_headlessHeight = height;
+  m_guestWidth = width;
+  m_guestHeight = height;
   ResetState_Locked();
   m_headlessMode = true;  // Force offscreen rendering unconditionally for
                           // hybrid presentation
+  m_msaaSamples = ResolveDesiredMsaaSamples_Locked();
 
   if (!CreateGLContext(nativeWindowHandle, width, height, windowed)) {
     GLIDE_LOG(CRITICAL, "GLES", "Failed to create OpenGL ES 3.2 context!");
     return false;
   }
 
-  // Presentation is now handled GPU-natively via glBlitFramebuffer and
-  // SDL_GL_SwapWindow in SwapBuffers. No SDL_Renderer or SDL_Texture is
-  // required on the overlay window.
+  // Detect glSampleMaski support (core in Desktop GL 3.2+ and GLES 3.1+).
+#if defined(_WIN32)
+  m_supportsSampleMask = (Win32Gl::pfn_glSampleMaski != nullptr);
+  glEnable(GL_MULTISAMPLE);
+#else
+  GLint glMajor = 3, glMinor = 0;
+  glGetIntegerv(GL_MAJOR_VERSION, &glMajor);
+  glGetIntegerv(GL_MINOR_VERSION, &glMinor);
+  m_supportsSampleMask = (glMajor > 3) || (glMajor == 3 && glMinor >= 1);
+#endif
+
+  // Presentation is now handled GPU-natively via presentation quad and
+  // SwapBuffers. No SDL_Renderer or SDL_Texture is required on the window.
 
   // Dynamic queries of the real hardware renderer!
   const char* renderer =
@@ -212,7 +225,7 @@ bool OpenGLESBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
   GLIDE_LOG(DEBUG, "GLES", logStream.str());
 
   // Milestone 1: Setup Offscreen Framebuffer Objects (FBOs) for GPU-native
-  // rendering (Double-Buffered)
+  // rendering (Double-Buffered 1x resolved/aliased targets)
   glGenFramebuffers(2, m_headlessFBOs);
   glGenRenderbuffers(1, &m_sharedDepthRenderbuffer);
 
@@ -238,11 +251,118 @@ bool OpenGLESBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
       DestroyGLContext();
       return false;
     }
+
+    glDisable(GL_SCISSOR_TEST);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glDepthMask(GL_TRUE);
+    glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+    glClearDepthf(1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+  }
+
+  // Allocate offscreen MSAA FBOs when MSAA > 1 (supports grSstWinOpenExt
+  // VSA-100 Spatial AA, live GR_AA_MULTI_SAMPLE toggling, and T-Buffer masks).
+  const uint32_t desiredMsaa = m_msaaSamples;
+  m_msaaSamples = 1;
+  m_msaaColorDirty[0] = m_msaaColorDirty[1] = false;
+  m_singleSampleColorDirty[0] = m_singleSampleColorDirty[1] = false;
+
+  if (desiredMsaa > 1) {
+    GLint maxSamples = 1;
+    glGetIntegerv(GL_MAX_SAMPLES, &maxSamples);
+    uint32_t targetSamples = 1;
+    if (maxSamples >= 2) {
+      targetSamples =
+          std::min<uint32_t>(desiredMsaa, static_cast<uint32_t>(maxSamples));
+      if (targetSamples >= 8) {
+        targetSamples = 8;
+      } else if (targetSamples >= 4) {
+        targetSamples = 4;
+      } else if (targetSamples >= 2) {
+        targetSamples = 2;
+      } else {
+        targetSamples = 1;
+      }
+    }
+
+    if (targetSamples > 1) {
+      glGenFramebuffers(2, m_msaaFBOs);
+      glGenRenderbuffers(2, m_msaaColorRBOs);
+      glGenRenderbuffers(1, &m_msaaDepthRBO);
+
+      glBindRenderbuffer(GL_RENDERBUFFER, m_msaaDepthRBO);
+      glRenderbufferStorageMultisample(
+          GL_RENDERBUFFER, static_cast<GLsizei>(targetSamples),
+          GL_DEPTH_COMPONENT24, static_cast<GLsizei>(width),
+          static_cast<GLsizei>(height));
+
+      bool msaaComplete = true;
+      for (int i = 0; i < 2; ++i) {
+        glBindRenderbuffer(GL_RENDERBUFFER, m_msaaColorRBOs[i]);
+        glRenderbufferStorageMultisample(
+            GL_RENDERBUFFER, static_cast<GLsizei>(targetSamples), GL_RGBA8,
+            static_cast<GLsizei>(width), static_cast<GLsizei>(height));
+
+        glBindFramebuffer(GL_FRAMEBUFFER, m_msaaFBOs[i]);
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                  GL_RENDERBUFFER, m_msaaColorRBOs[i]);
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
+                                  GL_RENDERBUFFER, m_msaaDepthRBO);
+
+        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) !=
+            GL_FRAMEBUFFER_COMPLETE) {
+          msaaComplete = false;
+          break;
+        }
+
+        glDisable(GL_SCISSOR_TEST);
+        glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+        glDepthMask(GL_TRUE);
+        glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+        glClearDepthf(1.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+      }
+
+      if (msaaComplete) {
+        glBindFramebuffer(GL_FRAMEBUFFER, m_msaaFBOs[0]);
+        GLint actualSamples = 0;
+        glGetIntegerv(GL_SAMPLES, &actualSamples);
+        m_msaaSamples = (actualSamples > 1)
+                            ? static_cast<uint32_t>(actualSamples)
+                            : targetSamples;
+        GLIDE_LOG(INFO, "GLES",
+                  "Offscreen MSAA FBOs initialized: "
+                      << m_msaaSamples << "x MSAA (requested=" << desiredMsaa
+                      << ", max=" << maxSamples << ", sampleMask="
+                      << (m_supportsSampleMask ? "yes" : "no") << ").");
+      } else {
+        GLIDE_LOG(WARN, "GLES",
+                  "Offscreen MSAA FBO incomplete for "
+                      << targetSamples << "x; falling back to 1x.");
+        glDeleteRenderbuffers(1, &m_msaaDepthRBO);
+        glDeleteRenderbuffers(2, m_msaaColorRBOs);
+        glDeleteFramebuffers(2, m_msaaFBOs);
+        m_msaaDepthRBO = 0;
+        m_msaaColorRBOs[0] = m_msaaColorRBOs[1] = 0;
+        m_msaaFBOs[0] = m_msaaFBOs[1] = 0;
+        m_msaaSamples = 1;
+      }
+    }
   }
 
   glBindRenderbuffer(GL_RENDERBUFFER, 0);
   // Restore default framebuffer binding
   glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+  // Print dynamic startup telemetry info with the actual offscreen FBO samples
+  {
+    const uint32_t samplesVal = (m_msaaSamples > 1) ? m_msaaSamples : 0;
+    std::cout << "Info: Pixel Format RGBA8888 D24S0 nAux 0 nSamples "
+              << samplesVal << " " << samplesVal << "\r\n";
+    std::cout << "Info: Drawable Size: " << width << "x" << height << "\r\n"
+              << std::flush;
+  }
+
   GLIDE_LOG(INFO, "GLES",
             "Double-buffered offscreen FBOs & Depth Renderbuffers initialized "
             "successfully.");
@@ -313,6 +433,9 @@ void OpenGLESBackend::PresentToWindowSurface(uint32_t hostW, uint32_t hostH) {
   glDisable(GL_DEPTH_TEST);
   glDisable(GL_BLEND);
   glDisable(GL_CULL_FACE);
+  if (m_supportsSampleMask) {
+    glDisable(GL_SAMPLE_MASK);
+  }
   glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
   glDepthMask(GL_FALSE);
 
@@ -432,6 +555,12 @@ bool OpenGLESBackend::SwapBuffers() {
   // presenting/swapping!
   FlushLFBToGPU_Locked();
 
+  // Resolve any pending MSAA draws into the 1x presentation/readback textures.
+  ResolveMsaaToSingle_Locked(0u);
+  if (m_msaaColorDirty[1]) {
+    ResolveMsaaToSingle_Locked(1u);
+  }
+
   GLIDE_PROFILE_SCOPE("GLES::SwapBuffers");
 
   const auto presentStart = std::chrono::steady_clock::now();
@@ -494,6 +623,10 @@ bool OpenGLESBackend::SwapBuffers() {
   // Swap the GPU color targets for physical double-buffering!
   std::swap(m_headlessFBOs[0], m_headlessFBOs[1]);
   std::swap(m_fboTextures[0], m_fboTextures[1]);
+  std::swap(m_msaaFBOs[0], m_msaaFBOs[1]);
+  std::swap(m_msaaColorRBOs[0], m_msaaColorRBOs[1]);
+  std::swap(m_msaaColorDirty[0], m_msaaColorDirty[1]);
+  std::swap(m_singleSampleColorDirty[0], m_singleSampleColorDirty[1]);
 
   // Bind the new active drawing FBO and restore guest rasterizer state
   glBindFramebuffer(GL_FRAMEBUFFER, GetActiveGpuFbo());
@@ -505,6 +638,7 @@ bool OpenGLESBackend::SwapBuffers() {
   SyncDepthState();
   SyncCullStateGLES_Locked();
   ApplyBlendingGLES();
+  ApplySampleMaskGLES_Locked();
 
   // Invalidate cached GL object bindings for next frame's first draw
   // (m_geomProgram uniforms persist in our private EGL/GL context across
@@ -578,11 +712,12 @@ bool OpenGLESBackend::WriteLFB(uint32_t buffer, uint32_t dstX, uint32_t dstY,
   if (!m_lfbStaging.IsFullBufferDirty(buffer) && EnsureContextCurrent()) {
     FlushBatch();
     FlushLFBToGPU_Locked();
+    const uint32_t readSlot = (buffer == 0) ? 1u : 0u;
+    ResolveMsaaToSingle_Locked(readSlot);
     if (void* readDst = m_lfbStaging.PrepareBufferForGpuReadback(buffer)) {
       GLint prevFBO = 0;
       glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prevFBO);
-      const GLuint fboToRead =
-          (buffer == 0) ? m_headlessFBOs[1] : m_headlessFBOs[0];
+      const GLuint fboToRead = m_headlessFBOs[readSlot];
       glBindFramebuffer(GL_FRAMEBUFFER, fboToRead);
       glReadPixels(0, 0, m_headlessWidth, m_headlessHeight, GL_RGBA,
                    GL_UNSIGNED_BYTE, readDst);
@@ -657,6 +792,11 @@ void OpenGLESBackend::FlushLFBToGPU_Locked() {
         if (const uint8_t* data = m_lfbStaging.PrepareBufferForGpuUpload(buf)) {
           flushFullBuffer(data, gpuTextures[buf]);
           checkGLError("FlushLFBToGPU FullBuffer glTexSubImage2D");
+          if (m_msaaSamples > 1) {
+            const uint32_t slot = (buf == 0) ? 1u : 0u;
+            m_singleSampleColorDirty[slot] = true;
+            m_msaaColorDirty[slot] = false;
+          }
         }
         m_lfbStaging.ClearBufferDirty(buf);
       }
@@ -665,6 +805,14 @@ void OpenGLESBackend::FlushLFBToGPU_Locked() {
 
   // 2. Sparse alpha-masked overlay composite path (zero readback, preserves 3D!).
   if (m_lfbStaging.IsOverlayDirty(0) || m_lfbStaging.IsOverlayDirty(1)) {
+    // Resolve any pending MSAA 3D content into the 1x target BEFORE compositing
+    // the 2D LFB overlay on top of it.
+    for (uint32_t buf = 0; buf < 2; ++buf) {
+      if (m_lfbStaging.IsOverlayDirty(buf)) {
+        const uint32_t slot = (buf == 0) ? 1u : 0u;
+        ResolveMsaaToSingle_Locked(slot);
+      }
+    }
     if (m_glLfbOverlayTex == 0 || m_glLfbOverlayWidth != m_headlessWidth ||
         m_glLfbOverlayHeight != m_headlessHeight) {
       if (m_glLfbOverlayTex == 0) {
@@ -736,6 +884,9 @@ void OpenGLESBackend::FlushLFBToGPU_Locked() {
         glDisable(GL_DEPTH_TEST);
         glDepthMask(GL_FALSE);
         glDisable(GL_CULL_FACE);
+        if (m_supportsSampleMask) {
+          glDisable(GL_SAMPLE_MASK);
+        }
         glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
         glEnable(GL_BLEND);
         glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE,
@@ -766,13 +917,19 @@ void OpenGLESBackend::FlushLFBToGPU_Locked() {
       }
 
       m_lfbStaging.ClearOverlay(buf);
+      if (m_msaaSamples > 1) {
+        const uint32_t slot = (buf == 0) ? 1u : 0u;
+        m_singleSampleColorDirty[slot] = true;
+        m_msaaColorDirty[slot] = false;
+      }
       checkGLError("FlushLFBToGPU OverlayQuad");
     }
 
     // Mark modified fixed-function state dirty so the next 3D FlushBatch lazily
     // restores it without redundant GL calls at SwapBuffers time.
     m_glesDirtyMask |= kGlesDirtyScissor | kGlesDirtyColorMask |
-                       kGlesDirtyDepth | kGlesDirtyCull | kGlesDirtyBlend;
+                       kGlesDirtyDepth | kGlesDirtyCull | kGlesDirtyBlend |
+                       kGlesDirtySampleMask;
   }
 
   InvalidateGlBindingCache();
@@ -793,6 +950,10 @@ bool OpenGLESBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
   // not obliterated by the subsequent glReadPixels readback!
   FlushLFBToGPU_Locked();
 
+  // Resolve any pending MSAA draws into the 1x FBO before glReadPixels.
+  const uint32_t readSlot = (buffer == 0) ? 1u : 0u;
+  ResolveMsaaToSingle_Locked(readSlot);
+
   // --- STEP 1: GPU Readback Flush ---
   // Query the currently bound FBO to restore it at the end, preventing state
   // leakage!
@@ -801,7 +962,7 @@ bool OpenGLESBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
 
   // Bind the correct offscreen FBO based on the requested buffer (0 = FRONT, 1
   // = BACK)
-  GLuint fboToRead = (buffer == 0) ? m_headlessFBOs[1] : m_headlessFBOs[0];
+  GLuint fboToRead = m_headlessFBOs[readSlot];
   glBindFramebuffer(GL_FRAMEBUFFER, fboToRead);
 
   // Resolve the lazily-allocated destination CPU buffer for the requested slot
@@ -1736,14 +1897,10 @@ bool OpenGLESBackend::CreateGLContext(void* nativeWindowHandle, uint32_t width,
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
-    if (m_msaaSamples > 1) {
-      SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, 1);
-      SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES,
-                          static_cast<int>(m_msaaSamples));
-    } else {
-      SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, 0);
-      SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, 0);
-    }
+    // Keep the presentation window 1x: MSAA is rendered to offscreen FBOs and
+    // resolved to m_fboTextures before presentation.
+    SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, 0);
+    SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, 0);
   }
   const uint32_t extraFlags = isStandaloneRequest ? SDL_WINDOW_OPENGL : 0;
 #else
@@ -1778,13 +1935,8 @@ bool OpenGLESBackend::CreateGLContext(void* nativeWindowHandle, uint32_t width,
     return false;
   }
 
-  // Query actual samples allocated by host driver
-  GLint actualSamples = 0;
-  glGetIntegerv(GL_SAMPLES, &actualSamples);
-  m_msaaSamples =
-      (actualSamples > 1) ? static_cast<uint32_t>(actualSamples) : 1;
-
-  // Output dynamic startup telemetry info
+  // Output dynamic startup adapter info (Pixel Format + nSamples printed in
+  // AttachWindow once offscreen MSAA FBOs are finalized).
   const char* glVendor = reinterpret_cast<const char*>(glGetString(GL_VENDOR));
   const char* glRenderer =
       reinterpret_cast<const char*>(glGetString(GL_RENDERER));
@@ -1796,25 +1948,7 @@ bool OpenGLESBackend::CreateGLContext(void* nativeWindowHandle, uint32_t width,
   std::cout << "Info: Host OpenGL Adapter: "
             << (glVendor ? glVendor : "Unknown") << " - "
             << (glRenderer ? glRenderer : "Unknown") << " (GL Ver "
-            << (glVersion ? glVersion : "Unknown") << ")\r\n";
-
-  GLint depthBits = 0;
-  GLint stencilBits = 0;
-  GLint samples = 0;
-  glGetIntegerv(GL_DEPTH_BITS, &depthBits);
-  glGetIntegerv(GL_STENCIL_BITS, &stencilBits);
-  glGetIntegerv(GL_SAMPLES, &samples);
-
-  std::string depthStr = "D24S8";  // Default fallback
-  if (depthBits > 0 || stencilBits > 0) {
-    depthStr =
-        "D" + std::to_string(depthBits) + "S" + std::to_string(stencilBits);
-  }
-  uint32_t samplesVal = (samples > 1) ? static_cast<uint32_t>(samples) : 0;
-
-  std::cout << "Info: Pixel Format RGBA8888 " << depthStr << " nAux 0 nSamples "
-            << samplesVal << " " << samplesVal << "\r\n";
-  std::cout << "Info: Drawable Size: " << width << "x" << height << "\r\n"
+            << (glVersion ? glVersion : "Unknown") << ")\r\n"
             << std::flush;
 
   // Setup full-screen quad presentation shaders
@@ -1993,6 +2127,18 @@ void OpenGLESBackend::DestroyGLContext() {
       glDeleteFramebuffers(2, m_headlessFBOs);
       m_headlessFBOs[0] = m_headlessFBOs[1] = 0;
     }
+    if (m_msaaDepthRBO) {
+      glDeleteRenderbuffers(1, &m_msaaDepthRBO);
+      m_msaaDepthRBO = 0;
+    }
+    if (m_msaaColorRBOs[0]) {
+      glDeleteRenderbuffers(2, m_msaaColorRBOs);
+      m_msaaColorRBOs[0] = m_msaaColorRBOs[1] = 0;
+    }
+    if (m_msaaFBOs[0]) {
+      glDeleteFramebuffers(2, m_msaaFBOs);
+      m_msaaFBOs[0] = m_msaaFBOs[1] = 0;
+    }
     if (m_geomVBO) {
       glDeleteBuffers(1, &m_geomVBO);
       m_geomVBO = 0;
@@ -2021,10 +2167,16 @@ void OpenGLESBackend::DestroyGLContext() {
     m_glProgram = 0;
     m_sharedDepthRenderbuffer = 0;
     m_headlessFBOs[0] = m_headlessFBOs[1] = 0;
+    m_msaaDepthRBO = 0;
+    m_msaaColorRBOs[0] = m_msaaColorRBOs[1] = 0;
+    m_msaaFBOs[0] = m_msaaFBOs[1] = 0;
     m_geomVBO = 0;
     m_geomVAO = 0;
     m_geomProgram = 0;
   }
+  m_msaaColorDirty[0] = m_msaaColorDirty[1] = false;
+  m_singleSampleColorDirty[0] = m_singleSampleColorDirty[1] = false;
+  m_supportsSampleMask = false;
 
   // 2. Strict WGL / EGL / SDL teardown order BEFORE NativeSurfaceHost::Detach()
   if (m_useWgl) {
@@ -2143,11 +2295,105 @@ void OpenGLESBackend::SetStippleState(uint32_t mode, uint32_t pattern) {
   m_glesDirtyMask |= kGlesDirtyDitherStipple;
 }
 
-uint32_t OpenGLESBackend::GetActiveGpuFbo() const {
-  if (m_activeRenderBuffer == 0) {  // GR_BUFFER_FRONTBUFFER
-    return m_headlessFBOs[1];
+uint32_t OpenGLESBackend::ResolveDesiredMsaaSamples_Locked() const {
+  const bool userOverride = (m_config.settingSources.count("msaaSamples") > 0);
+  uint32_t desired = m_config.msaaSamples;
+  if (!userOverride && m_requestedMsaaSamples > 0u) {
+    desired = m_requestedMsaaSamples;
   }
-  return m_headlessFBOs[0];  // GR_BUFFER_BACKBUFFER (default)
+  return (desired > 1u) ? desired : 1u;
+}
+
+uint32_t OpenGLESBackend::GetEffectiveSampleMask_Locked() const {
+  if (m_msaaSamples <= 1) return 1u;
+  const uint32_t fullMask =
+      (m_msaaSamples >= 32) ? 0xFFFFFFFFu : ((1u << m_msaaSamples) - 1u);
+  return m_tbufferWriteMask & fullMask;
+}
+
+bool OpenGLESBackend::ShouldUseSingleSampleFbo_Locked() const {
+  if (m_msaaSamples <= 1 || m_msaaFBOs[0] == 0) return true;
+  const uint32_t fullMask =
+      (m_msaaSamples >= 32) ? 0xFFFFFFFFu : ((1u << m_msaaSamples) - 1u);
+  return !m_aaMultiSample && ((m_tbufferWriteMask & fullMask) == fullMask);
+}
+
+uint32_t OpenGLESBackend::GetActiveGpuFbo() const {
+  const uint32_t slot = GetActiveGpuSlot();
+  if (m_msaaSamples > 1 && m_msaaFBOs[slot] != 0 &&
+      !ShouldUseSingleSampleFbo_Locked()) {
+    return m_msaaFBOs[slot];
+  }
+  return m_headlessFBOs[slot];
+}
+
+void OpenGLESBackend::ResolveMsaaToSingle_Locked(uint32_t slot) {
+  if (m_msaaSamples <= 1 || slot >= 2 || !m_msaaColorDirty[slot] ||
+      m_msaaFBOs[slot] == 0 || m_headlessFBOs[slot] == 0) {
+    return;
+  }
+  glDisable(GL_SCISSOR_TEST);
+  glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+  if (m_supportsSampleMask) {
+    glDisable(GL_SAMPLE_MASK);
+  }
+  glBindFramebuffer(GL_READ_FRAMEBUFFER, m_msaaFBOs[slot]);
+  glBindFramebuffer(GL_DRAW_FRAMEBUFFER, m_headlessFBOs[slot]);
+  glBlitFramebuffer(0, 0, static_cast<GLint>(m_headlessWidth),
+                    static_cast<GLint>(m_headlessHeight), 0, 0,
+                    static_cast<GLint>(m_headlessWidth),
+                    static_cast<GLint>(m_headlessHeight),
+                    GL_COLOR_BUFFER_BIT, GL_NEAREST);
+  glBindFramebuffer(GL_FRAMEBUFFER, 0);
+  m_msaaColorDirty[slot] = false;
+  m_singleSampleColorDirty[slot] = false;
+  m_glesDirtyMask |=
+      (kGlesDirtyScissor | kGlesDirtyColorMask | kGlesDirtySampleMask);
+  InvalidateGlBindingCache();
+}
+
+void OpenGLESBackend::CopySingleToMsaa_Locked(uint32_t slot) {
+  if (m_msaaSamples <= 1 || slot >= 2 || !m_singleSampleColorDirty[slot] ||
+      m_msaaFBOs[slot] == 0 || m_fboTextures[slot] == 0 || m_glProgram == 0) {
+    return;
+  }
+  glBindFramebuffer(GL_FRAMEBUFFER, m_msaaFBOs[slot]);
+  glViewport(0, 0, static_cast<GLsizei>(m_headlessWidth),
+             static_cast<GLsizei>(m_headlessHeight));
+  glDisable(GL_SCISSOR_TEST);
+  glDisable(GL_DEPTH_TEST);
+  glDepthMask(GL_FALSE);
+  glDisable(GL_BLEND);
+  glDisable(GL_CULL_FACE);
+  glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+  if (m_supportsSampleMask) {
+    glDisable(GL_SAMPLE_MASK);
+  }
+
+  glActiveTexture(GL_TEXTURE0);
+  glBindSampler(0, 0);
+  glBindTexture(GL_TEXTURE_2D, m_fboTextures[slot]);
+
+  glUseProgram(m_glProgram);
+  if (m_uUseGammaLutLoc != -1) {
+    glUniform1i(m_uUseGammaLutLoc, 0);
+  }
+  if (m_uPreserveAlphaLoc != -1) {
+    glUniform1i(m_uPreserveAlphaLoc, 1);
+  }
+  glBindVertexArray(m_glVAO);
+  glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+
+  glBindVertexArray(0);
+  glUseProgram(0);
+  glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+  m_singleSampleColorDirty[slot] = false;
+  m_msaaColorDirty[slot] = false;
+  m_glesDirtyMask |= (kGlesDirtyScissor | kGlesDirtyDepth | kGlesDirtyBlend |
+                      kGlesDirtyCull | kGlesDirtyColorMask |
+                      kGlesDirtySampleMask);
+  InvalidateGlBindingCache();
 }
 
 void OpenGLESBackend::SetColorMask(bool rgb, bool alpha) {
@@ -2156,6 +2402,22 @@ void OpenGLESBackend::SetColorMask(bool rgb, bool alpha) {
   FlushBatch(true);
   GlideStateTracker::SetColorMask_Locked(rgb, alpha);
   m_glesDirtyMask |= kGlesDirtyColorMask;
+}
+
+void OpenGLESBackend::SetAAMultiSample(bool enabled) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (m_aaMultiSample == enabled) return;
+  FlushBatch(true);
+  GlideStateTracker::SetAAMultiSample_Locked(enabled);
+  m_glesDirtyMask |= kGlesDirtySampleMask;
+}
+
+void OpenGLESBackend::SetTBufferWriteMask(uint32_t mask) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (m_tbufferWriteMask == mask) return;
+  FlushBatch(true);
+  GlideStateTracker::SetTBufferWriteMask_Locked(mask);
+  m_glesDirtyMask |= kGlesDirtySampleMask;
 }
 
 void OpenGLESBackend::SetGamma(float gamma) {

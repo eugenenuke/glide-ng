@@ -10,6 +10,7 @@ EXPORTS
   _grAlphaTestFunction@4 = grAlphaTestFunction@4
   _grAlphaTestReferenceValue@4 = grAlphaTestReferenceValue@4
   _grBufferClear@12 = grBufferClear@12
+  _grBufferClearExt@16 = grBufferClearExt@16
   _grBufferSwap@4 = grBufferSwap@4
   _grChromaRangeExt@12 = grChromaRangeExt@12
   _grChromaRangeModeExt@4 = grChromaRangeModeExt@4
@@ -18,6 +19,7 @@ EXPORTS
   _grClipWindow@16 = grClipWindow@16
   _grColorCombine@20 = grColorCombine@20
   _grColorMask@8 = grColorMask@8
+  _grColorMaskExt@16 = grColorMaskExt@16
   _grConstantColorValue@4 = grConstantColorValue@4
   _grCoordinateSpace@4 = grCoordinateSpace@4
   _grCullMode@4 = grCullMode@4
@@ -50,6 +52,7 @@ EXPORTS
   _grGlideSetVertexLayout@4 = grGlideSetVertexLayout@4
   _grGlideShutdown@0 = grGlideShutdown@0
   _grLfbConstantAlpha@4 = grLfbConstantAlpha@4
+  _grLfbConstantStencilExt@4 = grLfbConstantStencilExt@4
   _grLfbLock@24 = grLfbLock@24
   _grLfbReadRegion@28 = grLfbReadRegion@28
   _grLfbUnlock@8 = grLfbUnlock@8
@@ -70,8 +73,13 @@ EXPORTS
   _grSstVidMode@8 = grSstVidMode@8
   _grSstWinClose@4 = grSstWinClose@4
   _grSstWinOpen@28 = grSstWinOpen@28
+  _grSstWinOpenExt@32 = grSstWinOpenExt@32
+  _grStencilFuncExt@12 = grStencilFuncExt@12
+  _grStencilMaskExt@4 = grStencilMaskExt@4
+  _grStencilOpExt@12 = grStencilOpExt@12
   _grStippleMode@4 = grStippleMode@4
   _grStipplePattern@4 = grStipplePattern@4
+  _grTBufferWriteMaskExt@4 = grTBufferWriteMaskExt@4
   _grTexCalcMemRequired@16 = grTexCalcMemRequired@16
   _grTexChromaMode@8 = grTexChromaMode@8
   _grTexChromaModeExt@8 = grTexChromaModeExt@8
@@ -114,6 +122,7 @@ EXPORTS
   grAlphaTestFunction = grAlphaTestFunction@4
   grAlphaTestReferenceValue = grAlphaTestReferenceValue@4
   grBufferClear = grBufferClear@12
+  grBufferClearExt = grBufferClearExt@16
   grBufferSwap = grBufferSwap@4
   grChromaRangeExt = grChromaRangeExt@12
   grChromaRangeModeExt = grChromaRangeModeExt@4
@@ -122,6 +131,7 @@ EXPORTS
   grClipWindow = grClipWindow@16
   grColorCombine = grColorCombine@20
   grColorMask = grColorMask@8
+  grColorMaskExt = grColorMaskExt@16
   grConstantColorValue = grConstantColorValue@4
   grCoordinateSpace = grCoordinateSpace@4
   grCullMode = grCullMode@4
@@ -154,6 +164,7 @@ EXPORTS
   grGlideSetVertexLayout = grGlideSetVertexLayout@4
   grGlideShutdown = grGlideShutdown@0
   grLfbConstantAlpha = grLfbConstantAlpha@4
+  grLfbConstantStencilExt = grLfbConstantStencilExt@4
   grLfbLock = grLfbLock@24
   grLfbReadRegion = grLfbReadRegion@28
   grLfbUnlock = grLfbUnlock@8
@@ -174,8 +185,13 @@ EXPORTS
   grSstVidMode = grSstVidMode@8
   grSstWinClose = grSstWinClose@4
   grSstWinOpen = grSstWinOpen@28
+  grSstWinOpenExt = grSstWinOpenExt@32
+  grStencilFuncExt = grStencilFuncExt@12
+  grStencilMaskExt = grStencilMaskExt@4
+  grStencilOpExt = grStencilOpExt@12
   grStippleMode = grStippleMode@4
   grStipplePattern = grStipplePattern@4
+  grTBufferWriteMaskExt = grTBufferWriteMaskExt@4
   grTexCalcMemRequired = grTexCalcMemRequired@16
   grTexChromaMode = grTexChromaMode@8
   grTexChromaModeExt = grTexChromaModeExt@8

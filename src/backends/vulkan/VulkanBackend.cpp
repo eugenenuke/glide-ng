@@ -132,6 +132,39 @@ void Logger::LogHostVulkanCapabilities() {
   }
 }
 
+uint32_t VulkanBackend::ResolveEffectiveMsaaSamples_Locked() const {
+  const bool userOverride = (m_config.settingSources.count("msaaSamples") > 0);
+  uint32_t desired = userOverride
+                         ? m_config.msaaSamples
+                         : ((m_requestedMsaaSamples > 0)
+                                ? m_requestedMsaaSamples
+                                : m_config.msaaSamples);
+  if (desired < 1) desired = 1;
+  if (!m_physicalDevice) return desired;
+
+  const vk::PhysicalDeviceProperties props = m_physicalDevice.getProperties();
+  const vk::SampleCountFlags counts = props.limits.framebufferColorSampleCounts &
+                                      props.limits.framebufferDepthSampleCounts;
+
+  uint32_t resolved = 1;
+  if (desired >= 16 && (counts & vk::SampleCountFlagBits::e16))
+    resolved = 16;
+  else if (desired >= 8 && (counts & vk::SampleCountFlagBits::e8))
+    resolved = 8;
+  else if (desired >= 4 && (counts & vk::SampleCountFlagBits::e4))
+    resolved = 4;
+  else if (desired >= 2 && (counts & vk::SampleCountFlagBits::e2))
+    resolved = 2;
+
+  if (resolved != desired) {
+    GLIDE_LOG(WARN, "Vulkan",
+              "Requested MSAA count " << desired
+                                      << " clamped to hardware-supported "
+                                      << resolved);
+  }
+  return resolved;
+}
+
 bool VulkanBackend::Initialize(const WrapperConfig& config) {
   std::lock_guard<std::mutex> lock(m_mutex);
   if (m_initialized) return true;
@@ -162,32 +195,7 @@ bool VulkanBackend::Initialize(const WrapperConfig& config) {
   if (!SelectPhysicalDevice()) return false;
 
   // Resolve and clamp MSAA sample count based on physical device limits
-  {
-    vk::PhysicalDeviceProperties props = m_physicalDevice.getProperties();
-    vk::SampleCountFlags counts = props.limits.framebufferColorSampleCounts &
-                                  props.limits.framebufferDepthSampleCounts;
-
-    uint32_t maxSupported = 1;
-    if (counts & vk::SampleCountFlagBits::e16)
-      maxSupported = 16;
-    else if (counts & vk::SampleCountFlagBits::e8)
-      maxSupported = 8;
-    else if (counts & vk::SampleCountFlagBits::e4)
-      maxSupported = 4;
-    else if (counts & vk::SampleCountFlagBits::e2)
-      maxSupported = 2;
-
-    if (m_msaaSamples > maxSupported) {
-      GLIDE_LOG(WARN, "Vulkan",
-                "Requested MSAA count "
-                    << m_msaaSamples << " exceeds hardware limits. Clamping to "
-                    << maxSupported);
-      m_msaaSamples = maxSupported;
-    }
-    if (m_msaaSamples < 1) {
-      m_msaaSamples = 1;
-    }
-  }
+  m_msaaSamples = ResolveEffectiveMsaaSamples_Locked();
 
   if (!CreateLogicalDevice()) return false;
 
@@ -348,6 +356,7 @@ void VulkanBackend::Shutdown() {
   DestroyHudResources_Locked();
   DestroyGammaPresentResources_Locked();
   DestroyLfbOverlayResources_Locked();
+  DestroyMsaaCopyResources_Locked();
   ReclaimRetiredResources_Locked(0);
   ReclaimRetiredResources_Locked(1);
 
@@ -384,6 +393,7 @@ void VulkanBackend::Shutdown() {
 
   // 4. Explicitly destroy all device-owned image resources (Double-Buffered)
   for (int i = 0; i < 2; ++i) {
+    m_singleSampleFramebuffers[i].reset();
     m_headlessFramebuffers[i].reset();
     m_headlessImageViews[i].reset();
     m_headlessImageMemories[i].reset();
@@ -454,6 +464,7 @@ void VulkanBackend::Shutdown() {
     m_commandPools[i].reset();
     m_fences[i].reset();
   }
+  m_singleSampleRenderPass.reset();
   m_renderPass.reset();
   m_vkPipelineCache.reset();
 
@@ -503,7 +514,30 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
   m_guestWidth = width;
   m_guestHeight = height;
 
+  // Re-evaluate effective MSAA sample count (honors grSstWinOpenExt unless
+  // overridden by explicit GLIDE_NG_MSAA / INI config) and rebuild render
+  // passes + cached pipelines if the sample count changed.
+  const uint32_t effectiveMsaa = ResolveEffectiveMsaaSamples_Locked();
+  if (!m_renderPass || effectiveMsaa != m_msaaSamples) {
+    m_msaaSamples = effectiveMsaa;
+    m_pipelineCache.clear();
+    DestroyMsaaCopyResources_Locked();
+    m_lfbOverlayPipeline.reset();
+    if (!CreateRenderPass()) {
+      GLIDE_LOG(CRITICAL, "Vulkan",
+                "Failed to rebuild Vulkan render passes for MSAA="
+                    << m_msaaSamples);
+      return false;
+    }
+  }
+
   ResetState_Locked();
+  m_msaaColorDirty[0] = m_msaaColorDirty[1] = false;
+  m_singleSampleColorDirty[0] = m_singleSampleColorDirty[1] = false;
+  m_clearColorPending[0] = m_clearColorPending[1] = false;
+  m_clearDepthPending[0] = m_clearDepthPending[1] = false;
+  m_clearDepthPendingSingle[0] = m_clearDepthPendingSingle[1] = false;
+  m_activePassIsSingleSample = false;
   m_headlessMode = true;  // Headless-driven for visual regression
 
   if (!CreateHeadlessRenderTarget(width, height)) return false;
@@ -521,6 +555,10 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
       "Pre-warming Vulkan pipeline cache with common rendering states...");
   {
     std::vector<PipelineStateKey> warmStates;
+    const uint32_t warmSampleMask =
+        (m_msaaSamples > 1)
+            ? ((m_msaaSamples >= 32) ? 0xFFFFFFFFu : ((1u << m_msaaSamples) - 1u))
+            : 1u;
 
     // State 1: Default opaque 3D rendering (both lower-left and upper-left
     // origins, cull negative and disabled) Warm 4 pipelines for common 3D
@@ -539,6 +577,8 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
         k.alphaDstBlend = 0;   // GR_BLEND_ZERO
         k.colorMaskRgb = true;
         k.colorMaskAlpha = true;
+        k.singleSample = false;
+        k.sampleMask = warmSampleMask;
         warmStates.push_back(k);
       }
     }
@@ -559,6 +599,8 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
       k.alphaDstBlend = 0;  // GR_BLEND_ZERO
       k.colorMaskRgb = true;
       k.colorMaskAlpha = true;
+      k.singleSample = false;
+      k.sampleMask = warmSampleMask;
       warmStates.push_back(k);
     }
 
@@ -576,6 +618,8 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
       k.alphaDstBlend = 0;  // GR_BLEND_ZERO
       k.colorMaskRgb = true;
       k.colorMaskAlpha = true;
+      k.singleSample = false;
+      k.sampleMask = warmSampleMask;
       warmStates.push_back(k);
     }
 
@@ -727,6 +771,24 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
       *m_commandBuffer, m_depthImage.get(), vk::ImageLayout::eUndefined,
       vk::ImageLayout::eDepthStencilAttachmentOptimal, depthRange);
 
+  if (m_msaaSamples > 1) {
+    for (int i = 0; i < 2; ++i) {
+      TransitionImageLayout(*m_commandBuffer, m_msaaColorImages[i].get(),
+                            vk::ImageLayout::eUndefined,
+                            vk::ImageLayout::eTransferDstOptimal, colorRange);
+      m_commandBuffer->clearColorImage(m_msaaColorImages[i].get(),
+                                       vk::ImageLayout::eTransferDstOptimal,
+                                       &clearZero, 1, &colorRange);
+      TransitionImageLayout(*m_commandBuffer, m_msaaColorImages[i].get(),
+                            vk::ImageLayout::eTransferDstOptimal,
+                            vk::ImageLayout::eColorAttachmentOptimal,
+                            colorRange);
+    }
+    TransitionImageLayout(
+        *m_commandBuffer, m_msaaDepthImage.get(), vk::ImageLayout::eUndefined,
+        vk::ImageLayout::eDepthStencilAttachmentOptimal, depthRange);
+  }
+
   m_commandBuffer->end();
   vk::SubmitInfo submitInfo(0, nullptr, nullptr, 1, m_commandBuffer);
   m_graphicsQueue.submit(submitInfo, {});
@@ -766,6 +828,10 @@ void VulkanBackend::DetachWindow_Locked() {
   m_vertexBufferOffset = 0;
   m_clearColorPending[0] = m_clearColorPending[1] = false;
   m_clearDepthPending[0] = m_clearDepthPending[1] = false;
+  m_clearDepthPendingSingle[0] = m_clearDepthPendingSingle[1] = false;
+  m_msaaColorDirty[0] = m_msaaColorDirty[1] = false;
+  m_singleSampleColorDirty[0] = m_singleSampleColorDirty[1] = false;
+  m_activePassIsSingleSample = false;
   if (m_commandBuffer) {
     m_commandBuffer->reset({});
   }
@@ -774,6 +840,7 @@ void VulkanBackend::DetachWindow_Locked() {
   DestroyHudResources_Locked();
   DestroyGammaPresentResources_Locked();
   DestroyLfbOverlayResources_Locked();
+  DestroyMsaaCopyResources_Locked();
   ReclaimRetiredResources_Locked(0);
   ReclaimRetiredResources_Locked(1);
   m_pipelineStateDirty = true;
@@ -802,6 +869,7 @@ void VulkanBackend::DetachWindow_Locked() {
   }
   m_lfbStaging.Release();
   for (int i = 0; i < 2; ++i) {
+    m_singleSampleFramebuffers[i].reset();
     m_headlessFramebuffers[i].reset();
     m_headlessImageViews[i].reset();
     m_headlessImageMemories[i].reset();
@@ -1292,6 +1360,34 @@ void VulkanBackend::SetColorMask(bool rgb, bool alpha) {
   GlideStateTracker::SetColorMask_Locked(rgb, alpha);
 }
 
+void VulkanBackend::SetAAMultiSample(bool enabled) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (enabled == m_aaMultiSample) return;
+  const bool oldSingle = ShouldUseSingleSamplePass_Locked();
+  FlushBatch(true);
+  GlideStateTracker::SetAAMultiSample_Locked(enabled);
+  const bool newSingle = ShouldUseSingleSamplePass_Locked();
+  if (m_inRenderPass && oldSingle != newSingle) {
+    m_commandBuffer->endRenderPass();
+    m_inRenderPass = false;
+  }
+  m_pipelineStateDirty = true;
+}
+
+void VulkanBackend::SetTBufferWriteMask(uint32_t mask) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (mask == m_tbufferWriteMask) return;
+  const bool oldSingle = ShouldUseSingleSamplePass_Locked();
+  FlushBatch(true);
+  GlideStateTracker::SetTBufferWriteMask_Locked(mask);
+  const bool newSingle = ShouldUseSingleSamplePass_Locked();
+  if (m_inRenderPass && oldSingle != newSingle) {
+    m_commandBuffer->endRenderPass();
+    m_inRenderPass = false;
+  }
+  m_pipelineStateDirty = true;
+}
+
 void VulkanBackend::SetDepthRange(float nearVal, float farVal) {
   std::lock_guard<std::mutex> lock(m_mutex);
   if (nearVal != m_depthNear || farVal != m_depthFar) {
@@ -1486,7 +1582,8 @@ bool VulkanBackend::SwapBuffers() {
   // Check if we have any pending LoadOp clears. If yes, execute them now.
   uint32_t activeIdx = GetActiveGpuBufferIdx();
   if (!m_inRenderPass &&
-      (m_clearColorPending[activeIdx] || m_clearDepthPending[activeIdx])) {
+      (m_clearColorPending[activeIdx] || m_clearDepthPending[activeIdx] ||
+       m_clearDepthPendingSingle[activeIdx])) {
     EnsureRenderPassActive();
   }
 
@@ -1494,6 +1591,10 @@ bool VulkanBackend::SwapBuffers() {
     m_commandBuffer->endRenderPass();
     m_inRenderPass = false;
   }
+
+  // Resolve any pending MSAA draws into m_headlessImages[activeIdx] prior to
+  // swapchain presentation or headless readback.
+  ResolveMsaaToSingle_Locked(activeIdx);
 
   const auto presentStart = std::chrono::steady_clock::now();
   bool useSwapchain = (m_swapchain.get() != nullptr);
@@ -1751,6 +1852,19 @@ bool VulkanBackend::SwapBuffers() {
   std::swap(m_headlessImageMemories[0], m_headlessImageMemories[1]);
   std::swap(m_headlessImageViews[0], m_headlessImageViews[1]);
   std::swap(m_headlessFramebuffers[0], m_headlessFramebuffers[1]);
+  std::swap(m_singleSampleFramebuffers[0], m_singleSampleFramebuffers[1]);
+  std::swap(m_msaaColorImages[0], m_msaaColorImages[1]);
+  std::swap(m_msaaColorImageMemories[0], m_msaaColorImageMemories[1]);
+  std::swap(m_msaaColorImageViews[0], m_msaaColorImageViews[1]);
+  std::swap(m_msaaColorDirty[0], m_msaaColorDirty[1]);
+  std::swap(m_singleSampleColorDirty[0], m_singleSampleColorDirty[1]);
+  std::swap(m_msaaCopyDescSets[0], m_msaaCopyDescSets[1]);
+  std::swap(m_msaaCopyBoundView[0], m_msaaCopyBoundView[1]);
+  std::swap(m_clearColorPending[0], m_clearColorPending[1]);
+  std::swap(m_clearColorValue[0], m_clearColorValue[1]);
+  std::swap(m_clearDepthPending[0], m_clearDepthPending[1]);
+  std::swap(m_clearDepthPendingSingle[0], m_clearDepthPendingSingle[1]);
+  std::swap(m_clearDepthValue[0], m_clearDepthValue[1]);
 
   const auto presentUs = std::chrono::duration_cast<std::chrono::microseconds>(
                              std::chrono::steady_clock::now() - presentStart)
@@ -2078,14 +2192,13 @@ bool VulkanBackend::CreateHeadlessRenderTarget(uint32_t width,
       {vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1});
   m_depthImageView = m_device->createImageViewUnique(depthViewInfo);
 
-  // 1.1 Allocate Multi-sampled Depth image if MSAA is enabled (Transient
-  // VRAM-only tile-local)
+  // 1.1 Allocate Multi-sampled Depth image if MSAA is enabled
   if (m_msaaSamples > 1) {
     vk::ImageCreateInfo msaaDepthInfo(
         {}, vk::ImageType::e2D, m_depthFormat, vk::Extent3D(width, height, 1),
         1, 1, samples, vk::ImageTiling::eOptimal,
         vk::ImageUsageFlagBits::eDepthStencilAttachment |
-            vk::ImageUsageFlagBits::eTransientAttachment);
+            vk::ImageUsageFlagBits::eTransferDst);
     m_msaaDepthImage = m_device->createImageUnique(msaaDepthInfo);
 
     auto msaaDepthMemReqs =
@@ -2134,14 +2247,15 @@ bool VulkanBackend::CreateHeadlessRenderTarget(uint32_t width,
         {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1});
     m_headlessImageViews[i] = m_device->createImageViewUnique(viewInfo);
 
-    // 2.2 Allocate Multi-sampled Color target if MSAA is enabled (Transient
-    // VRAM-only tile-local)
+    // 2.2 Allocate persistent Multi-sampled Color target if MSAA is enabled
+    // (explicit vkCmdResolveImage resolves into m_headlessImages[i] on demand)
     if (m_msaaSamples > 1) {
       vk::ImageCreateInfo msaaColorInfo(
           {}, vk::ImageType::e2D, m_colorFormat, vk::Extent3D(width, height, 1),
           1, 1, samples, vk::ImageTiling::eOptimal,
           vk::ImageUsageFlagBits::eColorAttachment |
-              vk::ImageUsageFlagBits::eTransientAttachment);
+              vk::ImageUsageFlagBits::eTransferSrc |
+              vk::ImageUsageFlagBits::eTransferDst);
       m_msaaColorImages[i] = m_device->createImageUnique(msaaColorInfo);
 
       auto msaaMemReqs =
@@ -2161,21 +2275,32 @@ bool VulkanBackend::CreateHeadlessRenderTarget(uint32_t width,
       m_msaaColorImageViews[i] = m_device->createImageViewUnique(msaaViewInfo);
     }
 
-    // 2.3 Create Framebuffer binding color, depth, and resolve attachments
-    std::vector<vk::ImageView> fboAttachments;
+    // 2.3 Create Framebuffers (2 attachments each: color + depth)
     if (m_msaaSamples > 1) {
-      fboAttachments = {
-          m_msaaColorImageViews[i].get(), m_msaaDepthImageView.get(),
-          m_headlessImageViews[i].get()  // Resolve target
-      };
-    } else {
-      fboAttachments = {m_headlessImageViews[i].get(), m_depthImageView.get()};
-    }
+      std::array<vk::ImageView, 2> msaaAttachments = {
+          m_msaaColorImageViews[i].get(), m_msaaDepthImageView.get()};
+      vk::FramebufferCreateInfo msaaFbInfo(
+          {}, m_renderPass.get(), static_cast<uint32_t>(msaaAttachments.size()),
+          msaaAttachments.data(), width, height, 1);
+      m_headlessFramebuffers[i] = m_device->createFramebufferUnique(msaaFbInfo);
 
-    vk::FramebufferCreateInfo fbInfo(
-        {}, m_renderPass.get(), static_cast<uint32_t>(fboAttachments.size()),
-        fboAttachments.data(), width, height, 1);
-    m_headlessFramebuffers[i] = m_device->createFramebufferUnique(fbInfo);
+      std::array<vk::ImageView, 2> singleAttachments = {
+          m_headlessImageViews[i].get(), m_depthImageView.get()};
+      vk::FramebufferCreateInfo singleFbInfo(
+          {}, m_singleSampleRenderPass.get(),
+          static_cast<uint32_t>(singleAttachments.size()),
+          singleAttachments.data(), width, height, 1);
+      m_singleSampleFramebuffers[i] =
+          m_device->createFramebufferUnique(singleFbInfo);
+    } else {
+      std::array<vk::ImageView, 2> fboAttachments = {
+          m_headlessImageViews[i].get(), m_depthImageView.get()};
+      vk::FramebufferCreateInfo fbInfo(
+          {}, m_renderPass.get(), static_cast<uint32_t>(fboAttachments.size()),
+          fboAttachments.data(), width, height, 1);
+      m_headlessFramebuffers[i] = m_device->createFramebufferUnique(fbInfo);
+      m_singleSampleFramebuffers[i].reset();
+    }
   }
 
   // Create the CPU staging buffers (Double-Buffered)
@@ -2284,6 +2409,19 @@ void VulkanBackend::TransitionImageLayout(vk::CommandBuffer cmd,
   } else if (oldLayout == vk::ImageLayout::eTransferSrcOptimal &&
              newLayout == vk::ImageLayout::eColorAttachmentOptimal) {
     barrier.srcAccessMask = vk::AccessFlagBits::eTransferRead;
+    barrier.dstAccessMask = vk::AccessFlagBits::eColorAttachmentWrite |
+                            vk::AccessFlagBits::eColorAttachmentRead;
+    sourceStage = vk::PipelineStageFlagBits::eTransfer;
+    destinationStage = vk::PipelineStageFlagBits::eColorAttachmentOutput;
+  } else if (oldLayout == vk::ImageLayout::eColorAttachmentOptimal &&
+             newLayout == vk::ImageLayout::eTransferDstOptimal) {
+    barrier.srcAccessMask = vk::AccessFlagBits::eColorAttachmentWrite;
+    barrier.dstAccessMask = vk::AccessFlagBits::eTransferWrite;
+    sourceStage = vk::PipelineStageFlagBits::eColorAttachmentOutput;
+    destinationStage = vk::PipelineStageFlagBits::eTransfer;
+  } else if (oldLayout == vk::ImageLayout::eTransferDstOptimal &&
+             newLayout == vk::ImageLayout::eColorAttachmentOptimal) {
+    barrier.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
     barrier.dstAccessMask = vk::AccessFlagBits::eColorAttachmentWrite |
                             vk::AccessFlagBits::eColorAttachmentRead;
     sourceStage = vk::PipelineStageFlagBits::eTransfer;

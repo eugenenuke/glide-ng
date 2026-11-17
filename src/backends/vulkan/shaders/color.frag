@@ -286,53 +286,28 @@ vec4 applyDithering(vec4 color, uint ditherMode) {
     matrixSize = 16u;
   }
 
+  // Authentic 3dfx framebuffer dithering quantizes RGB to 16-bit RGB565 only;
+  // full 8-bit alpha is always preserved for hardware alpha blending.
   float r = color.r * 255.0;
   float g = color.g * 255.0;
   float b = color.b * 255.0;
-  float a = color.a * 255.0;
 
-  bool useAlpha = (pcs.alphaTestOp != 7u) || (color.a < 0.99);
+  uint ditherR = (threshold * 8u) / matrixSize;
+  uint r5 = uint(clamp(r + float(ditherR), 0.0, 255.0)) / 8u;
+  r5 = min(r5, 31u);
+  r = float((r5 << 3u) | (r5 >> 2u));
 
-  if (useAlpha) {
-    // ARGB1555
-    uint ditherR = (threshold * 8u) / matrixSize;
-    uint r5 = uint(clamp(r + float(ditherR), 0.0, 255.0)) / 8u;
-    r5 = min(r5, 31u);
-    r = float((r5 << 3u) | (r5 >> 2u));
+  uint ditherG = (threshold * 4u) / matrixSize;
+  uint g6 = uint(clamp(g + float(ditherG), 0.0, 255.0)) / 4u;
+  g6 = min(g6, 63u);
+  g = float((g6 << 2u) | (g6 >> 4u));
 
-    uint ditherG = (threshold * 8u) / matrixSize;
-    uint g5 = uint(clamp(g + float(ditherG), 0.0, 255.0)) / 8u;
-    g5 = min(g5, 31u);
-    g = float((g5 << 3u) | (g5 >> 2u));
+  uint ditherB = (threshold * 8u) / matrixSize;
+  uint b5 = uint(clamp(b + float(ditherB), 0.0, 255.0)) / 8u;
+  b5 = min(b5, 31u);
+  b = float((b5 << 3u) | (b5 >> 2u));
 
-    uint ditherB = (threshold * 8u) / matrixSize;
-    uint b5 = uint(clamp(b + float(ditherB), 0.0, 255.0)) / 8u;
-    b5 = min(b5, 31u);
-    b = float((b5 << 3u) | (b5 >> 2u));
-
-    uint ditherA = (threshold * 128u) / matrixSize;
-    uint a1 = uint(clamp(a + float(ditherA), 0.0, 255.0)) / 128u;
-    a1 = min(a1, 1u);
-    a = float(a1 * 255u);
-  } else {
-    // RGB565
-    uint ditherR = (threshold * 8u) / matrixSize;
-    uint r5 = uint(clamp(r + float(ditherR), 0.0, 255.0)) / 8u;
-    r5 = min(r5, 31u);
-    r = float((r5 << 3u) | (r5 >> 2u));
-
-    uint ditherG = (threshold * 4u) / matrixSize;
-    uint g6 = uint(clamp(g + float(ditherG), 0.0, 255.0)) / 4u;
-    g6 = min(g6, 63u);
-    g = float((g6 << 2u) | (g6 >> 4u));
-
-    uint ditherB = (threshold * 8u) / matrixSize;
-    uint b5 = uint(clamp(b + float(ditherB), 0.0, 255.0)) / 8u;
-    b5 = min(b5, 31u);
-    b = float((b5 << 3u) | (b5 >> 2u));
-  }
-
-  return vec4(r / 255.0, g / 255.0, b / 255.0, a / 255.0);
+  return vec4(r / 255.0, g / 255.0, b / 255.0, color.a);
 }
 
 void applyStippling(uint stippleMode, uint stipplePattern) {

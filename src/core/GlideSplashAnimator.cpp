@@ -405,8 +405,8 @@ void GlideSplashAnimator::Render(float x, float y, float w, float h, FxU32 _fram
     uint32_t winWidth = 640;
     uint32_t winHeight = 480;
     if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
-        winWidth = b->GetWidth();
-        winHeight = b->GetHeight();
+        winWidth = b->GetGuestWidth();
+        winHeight = b->GetGuestHeight();
     }
 
     if ((x > (float)winWidth) || ((x + w) > (float)winWidth) ||

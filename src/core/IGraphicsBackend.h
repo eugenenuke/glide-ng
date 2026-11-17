@@ -36,7 +36,10 @@ class IGraphicsBackend {
   virtual void DetachWindow() = 0;
   virtual uint32_t GetWidth() const = 0;
   virtual uint32_t GetHeight() const = 0;
+  virtual uint32_t GetGuestWidth() const { return GetWidth(); }
+  virtual uint32_t GetGuestHeight() const { return GetHeight(); }
   virtual uint32_t GetMsaaSamples() const = 0;
+  virtual void SetRequestedMsaaSamples(uint32_t /*samples*/) {}
 
   // Phase 2: Execution Buffer Clearing & Swapchain Presentation
   virtual void ClearBuffer(uint32_t color, uint32_t alpha, float z,
@@ -71,6 +74,8 @@ class IGraphicsBackend {
   virtual void SetSstOrigin(uint32_t origin) = 0;
   virtual void SetColorMask(bool rgb, bool alpha) = 0;
   virtual void SetAAState(bool enabled) {}
+  virtual void SetAAMultiSample(bool /*enabled*/) {}
+  virtual void SetTBufferWriteMask(uint32_t /*mask*/) {}
 
   // Milestone 8: Fogging State
   virtual void SetFogMode(uint32_t mode) = 0;

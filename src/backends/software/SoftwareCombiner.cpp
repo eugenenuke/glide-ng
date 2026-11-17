@@ -17,6 +17,14 @@ void SoftwareBackend::WritePixelPipeline(int x, int y, const ModernVertex& v,
     return;
   }
 
+  if (m_ssaaScale == 2) {
+    const uint32_t sampleBit = ((static_cast<uint32_t>(y) & 1u) << 1) |
+                               (static_cast<uint32_t>(x) & 1u);
+    if (((state.tbufferWriteMask >> sampleBit) & 1u) == 0u) {
+      return;
+    }
+  }
+
   // Stipple Transparency
   if (state.stippleMode != 0) {
     int stippleX = (state.stippleMode == 2) ? ((x + y) & 7) : (x & 7);
@@ -93,28 +101,9 @@ void SoftwareBackend::WritePixelPipeline(int x, int y, const ModernVertex& v,
     blue = blue * (1.0f - mult) * (1.0f - f) + fogB * (1.0f - add) * f;
   }
 
+  // Preserve full 8-bit alpha into blending; RGB565 dithering runs
+  // post-blend on color channels only (authentic 3dfx pipeline order).
   float blendAlphaVal = alpha;
-  if (state.ditherMode != 0) {
-    static const uint8_t dither_matrix_4x4[16] = {0, 8,  2, 10, 12, 4, 14, 6,
-                                                  3, 11, 1, 9,  15, 7, 13, 5};
-    static const uint8_t dither_matrix_2x2[16] = {0, 2, 0, 2, 3, 1, 3, 1,
-                                                  0, 2, 0, 2, 3, 1, 3, 1};
-    int ditherX = x & 3;
-    int ditherY = y & 3;
-    uint8_t dith =
-        (state.ditherMode == 2)   ? dither_matrix_4x4[ditherY * 4 + ditherX]
-        : (state.ditherMode == 1) ? dither_matrix_2x2[ditherY * 4 + ditherX]
-                                  : 0;
-
-    bool useAlpha = (state.alphaTestOp != 7) || (alpha < 0.99f);
-    if (useAlpha) {
-      uint32_t matrixSize = (state.ditherMode == 2) ? 16 : 4;
-      float alpha255 = std::round(alpha * 255.0f);
-      float ditherVal =
-          (static_cast<float>(dith) * 128.0f) / static_cast<float>(matrixSize);
-      blendAlphaVal = (alpha255 + ditherVal >= 128.0f) ? 1.0f : 0.0f;
-    }
-  }
 
   uint32_t aVal =
       static_cast<uint32_t>(std::min(255.0f, blendAlphaVal * 255.0f + 0.5f));
@@ -303,6 +292,53 @@ void SoftwareBackend::RasterizeSoftwareLineTile(const ModernVertex& v1,
       plot(x, ipart + 1, fpart, t);
       intery += gradient;
     }
+  } else if (m_ssaaScale == 2 && !state.aaMultiSample) {
+    int x0 = static_cast<int>(v1.pos[0] * 0.5f);
+    int y0 = static_cast<int>(v1.pos[1] * 0.5f);
+    int x1 = static_cast<int>(v2.pos[0] * 0.5f);
+    int y1 = static_cast<int>(v2.pos[1] * 0.5f);
+
+    int dx = std::abs(x1 - x0);
+    int sx = x0 < x1 ? 1 : -1;
+    int dy = -std::abs(y1 - y0);
+    int sy = y0 < y1 ? 1 : -1;
+    int err = dx + dy;
+
+    int totalSteps = std::max(dx, -dy);
+    int step = 0;
+
+    while (true) {
+      float t = totalSteps > 0 ? static_cast<float>(step) / totalSteps : 0.0f;
+      ModernVertex vInterpolated;
+      for (int i = 0; i < 4; ++i) {
+        vInterpolated.color[i] = v1.color[i] * (1.0f - t) + v2.color[i] * t;
+      }
+      vInterpolated.fog = v1.fog * (1.0f - t) + v2.fog * t;
+      vInterpolated.pos[3] = v1.pos[3] * (1.0f - t) + v2.pos[3] * t;
+
+      const int bx = x0 * 2;
+      const int by = y0 * 2;
+      WritePixelPipeline(bx, by, vInterpolated, 1.0f, minX, maxX, minY, maxY,
+                         state);
+      WritePixelPipeline(bx + 1, by, vInterpolated, 1.0f, minX, maxX, minY,
+                         maxY, state);
+      WritePixelPipeline(bx, by + 1, vInterpolated, 1.0f, minX, maxX, minY,
+                         maxY, state);
+      WritePixelPipeline(bx + 1, by + 1, vInterpolated, 1.0f, minX, maxX, minY,
+                         maxY, state);
+
+      if (x0 == x1 && y0 == y1) break;
+      int e2 = 2 * err;
+      if (e2 >= dy) {
+        err += dy;
+        x0 += sx;
+      }
+      if (e2 <= dx) {
+        err += dx;
+        y0 += sy;
+      }
+      step++;
+    }
   } else {
     int x0 = static_cast<int>(v1.pos[0]);
     int y0 = static_cast<int>(v1.pos[1]);
@@ -371,6 +407,13 @@ void SoftwareBackend::RasterizeSoftwarePointTile(const ModernVertex& pt,
         }
       }
     }
+  } else if (m_ssaaScale == 2 && !state.aaMultiSample) {
+    int bx = static_cast<int>(pt.pos[0] * 0.5f) * 2;
+    int by = static_cast<int>(pt.pos[1] * 0.5f) * 2;
+    WritePixelPipeline(bx, by, pt, 1.0f, minX, maxX, minY, maxY, state);
+    WritePixelPipeline(bx + 1, by, pt, 1.0f, minX, maxX, minY, maxY, state);
+    WritePixelPipeline(bx, by + 1, pt, 1.0f, minX, maxX, minY, maxY, state);
+    WritePixelPipeline(bx + 1, by + 1, pt, 1.0f, minX, maxX, minY, maxY, state);
   } else {
     int x = static_cast<int>(pt.pos[0]);
     int y = static_cast<int>(pt.pos[1]);

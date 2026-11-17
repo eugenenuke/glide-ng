@@ -1042,7 +1042,20 @@ bool SoftwareBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
   }
 #endif
 
-  ResolveAAMode(m_config.swAaMode);
+  const bool explicitSwAa = (m_config.settingSources.count("swAa") > 0);
+  const bool explicitMsaa = (m_config.settingSources.count("msaaSamples") > 0);
+
+  std::string effectiveAaMode = m_config.swAaMode;
+  if (explicitSwAa) {
+    effectiveAaMode = m_config.swAaMode;
+  } else if (explicitMsaa) {
+    effectiveAaMode = (m_config.msaaSamples > 1u) ? "ssaa" : "analytical";
+  } else if (m_requestedMsaaSamples > 1u) {
+    effectiveAaMode = "ssaa";
+  } else if (m_config.msaaSamples > 1u) {
+    effectiveAaMode = "ssaa";
+  }
+  ResolveAAMode(effectiveAaMode);
 
   uint32_t samplesVal = m_ssaaScale * m_ssaaScale;
   if (samplesVal == 1) samplesVal = 0;
@@ -1069,7 +1082,7 @@ bool SoftwareBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
   size_t paddedDepthSize = (rawDepthSize + 63) & ~63;
   size_t allocatedDepthSize = paddedDepthSize + 64;
   m_headlessDepthBuffer.resize(allocatedDepthSize / sizeof(float), 0.0f);
-  SetClipWindow_Locked(0, 0, m_headlessWidth, m_headlessHeight);
+  SetClipWindow_Locked(0, 0, width, height);
   InitTileGrid();
 
   m_headlessPixelMap = m_cpuBuffers[m_backBufferIdx].data();
@@ -1579,14 +1592,17 @@ void SoftwareBackend::RasterizeTile(int tileIdx) {
     const auto& cmd = m_binnedCommands[cmdIdx];
     const auto& state = m_stateCatalog[cmd.stateId];
 
-    int clipMinX = state.clipMinX;
-    int clipMaxX = state.clipMaxX;
-    int clipMinY = state.clipMinY;
-    int clipMaxY = state.clipMaxY;
+    const uint32_t scale = m_ssaaScale;
+    int clipMinX = static_cast<int>(state.clipMinX * scale);
+    int clipMaxX = static_cast<int>(state.clipMaxX * scale);
+    int clipMinY = static_cast<int>(state.clipMinY * scale);
+    int clipMaxY = static_cast<int>(state.clipMaxY * scale);
 
     if (state.sstOrigin == 1) {  // LOWER_LEFT
-      clipMinY = m_headlessHeight - state.clipMaxY;
-      clipMaxY = m_headlessHeight - state.clipMinY;
+      const int scaledMinY = clipMinY;
+      const int scaledMaxY = clipMaxY;
+      clipMinY = static_cast<int>(m_headlessHeight) - scaledMaxY;
+      clipMaxY = static_cast<int>(m_headlessHeight) - scaledMinY;
     }
 
     int minX = std::max(tileMinX, clipMinX);
@@ -1697,6 +1713,8 @@ void SoftwareBackend::ResolveActiveState() {
   state.colorMaskRgb = m_colorMaskRgb;
   state.colorMaskAlpha = m_colorMaskAlpha;
   state.aaEnabled = m_aaEnabled;
+  state.aaMultiSample = m_aaMultiSample;
+  state.tbufferWriteMask = static_cast<uint8_t>(m_tbufferWriteMask & 0x0Fu);
 
   state.boundTexAddress[0] = m_boundTexAddress[0];
   state.boundTexAddress[1] = m_boundTexAddress[1];

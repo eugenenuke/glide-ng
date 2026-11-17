@@ -36,6 +36,8 @@ struct RasterizerState {
   bool colorMaskRgb{true};
   bool colorMaskAlpha{true};
   bool aaEnabled{false};
+  bool aaMultiSample{true};
+  uint8_t tbufferWriteMask{0x0Fu};
 
   // TMU 0 and 1
   uint32_t boundTexAddress[2]{0xFFFFFFFF, 0xFFFFFFFF};
@@ -100,6 +102,8 @@ struct RasterizerState {
            std::memcmp(fogTable, o.fogTable, 64) == 0 &&
            colorMaskRgb == o.colorMaskRgb &&
            colorMaskAlpha == o.colorMaskAlpha && aaEnabled == o.aaEnabled &&
+           aaMultiSample == o.aaMultiSample &&
+           tbufferWriteMask == o.tbufferWriteMask &&
            boundTexAddress[0] == o.boundTexAddress[0] &&
            boundTexAddress[1] == o.boundTexAddress[1] &&
            boundTex[0] == o.boundTex[0] && boundTex[1] == o.boundTex[1] &&

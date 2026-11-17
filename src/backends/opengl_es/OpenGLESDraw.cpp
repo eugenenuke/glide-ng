@@ -25,6 +25,52 @@ void OpenGLESBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z,
   // Flush any pending geometry before clearing the buffers!
   FlushBatch();
 
+  GLbitfield mask = 0;
+  GLboolean oldDepthMask = m_depthMask ? GL_TRUE : GL_FALSE;
+  float r = 0.0f, g = 0.0f, b = 0.0f, a = 1.0f;
+  bool doColorClear = false;
+  bool doDepthClear = false;
+
+  if ((clearMask & 0x1) && (m_colorMaskRgb || m_colorMaskAlpha)) {  // Color Clear
+    a = ((alpha > 0) ? alpha : 255) / 255.0f;
+    r = ((color >> 16) & 0xFF) / 255.0f;
+    g = ((color >> 8) & 0xFF) / 255.0f;
+    b = (color & 0xFF) / 255.0f;
+
+    if (m_pixelFormatOverride == 1) {  // ABGR format override
+      std::swap(r, b);
+    }
+
+    mask |= GL_COLOR_BUFFER_BIT;
+    doColorClear = true;
+  }
+
+  if ((clearMask & 0x2) && m_depthMask) {  // Depth Clear (obeys grDepthMask)
+    mask |= GL_DEPTH_BUFFER_BIT;
+    doDepthClear = true;
+  }
+
+  if (mask == 0) return;
+
+  // Check if VSA-100 grTBufferWriteMaskExt restricts this clear to a subset of
+  // MSAA samples. glClear ignores GL_SAMPLE_MASK, so partial sample-mask clears
+  // must execute as a sample-masked fullscreen quad (matching VSA-100 H5).
+  const uint32_t fullSampleMask =
+      (m_msaaSamples >= 32) ? 0xFFFFFFFFu : ((1u << m_msaaSamples) - 1u);
+  const uint32_t effSampleMask = GetEffectiveSampleMask_Locked();
+  const bool isMaskedClear =
+      (m_msaaSamples > 1 && m_msaaFBOs[0] != 0 && effSampleMask != fullSampleMask);
+
+  if (isMaskedClear) {
+    if (effSampleMask == 0u) return;
+    if ((clearMask & 0x1) && m_lfbStaging.IsOverlayDirty(m_activeRenderBuffer)) {
+      FlushLFBToGPU_Locked();
+    }
+    DrawMaskedClearQuadGLES_Locked(r, g, b, a, z, doColorClear, doDepthClear,
+                                   effSampleMask);
+    return;
+  }
+
   // 1. Handle any pending sparse LFB overlay before clearing, and defer
   // CPU-side full framebuffer clear lazily so pure 3D frames allocate 0 bytes.
   if (clearMask & 0x1) {
@@ -44,46 +90,61 @@ void OpenGLESBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z,
     }
   }
 
+  const uint32_t slot = GetActiveGpuSlot();
+  const bool useSingle = ShouldUseSingleSampleFbo_Locked();
+
+  // If this clear does NOT overwrite every color pixel + channel, synchronize
+  // MSAA <-> 1x color first so untouched regions/channels remain intact.
+  if (m_msaaSamples > 1 &&
+      (!fullClip || !doColorClear || !m_colorMaskRgb || !m_colorMaskAlpha)) {
+    if (useSingle && m_msaaColorDirty[slot]) {
+      ResolveMsaaToSingle_Locked(slot);
+    } else if (!useSingle && m_singleSampleColorDirty[slot]) {
+      CopySingleToMsaa_Locked(slot);
+    }
+  }
+
+  if (m_supportsSampleMask) {
+    glDisable(GL_SAMPLE_MASK);
+  }
+
   // Bind active offscreen FBO
   glBindFramebuffer(GL_FRAMEBUFFER, GetActiveGpuFbo());
 
-  GLbitfield mask = 0;
-  GLboolean oldDepthMask = m_depthMask ? GL_TRUE : GL_FALSE;
-
-  if ((clearMask & 0x1) && (m_colorMaskRgb || m_colorMaskAlpha)) {  // Color Clear
-    float a = ((alpha > 0) ? alpha : 255) / 255.0f;
-    float r = ((color >> 16) & 0xFF) / 255.0f;
-    float g = ((color >> 8) & 0xFF) / 255.0f;
-    float b = (color & 0xFF) / 255.0f;
-
-    if (m_pixelFormatOverride == 1) {  // ABGR format override
-      std::swap(r, b);
-    }
-
+  if (doColorClear) {
     // Clear with native RGB color (driver BGRA format handles layout mapping)
     glClearColor(r, g, b, a);
-    mask |= GL_COLOR_BUFFER_BIT;
+    ApplyColorMaskGLES();
   }
 
-  if ((clearMask & 0x2) && m_depthMask) {  // Depth Clear (obeys grDepthMask)
+  if (doDepthClear) {
     glDepthMask(GL_TRUE);
     glClearDepthf(z);
-    mask |= GL_DEPTH_BUFFER_BIT;
   }
 
-  if (mask != 0) {
-    // Apply active color write mask so glClear color clear respects the active
-    // color mask!
-    if (mask & GL_COLOR_BUFFER_BIT) {
-      ApplyColorMaskGLES();
+  // Authentic 3dfx Glide grBufferClear clears ONLY within the active
+  // grClipWindow rectangle (e.g., split-screen panes and divider stripes).
+  ApplyScissorGLES_Locked();
+  m_glesDirtyMask &= ~kGlesDirtyScissor;
+
+  glClear(mask);
+
+  // Keep both 1x and MSAA depth buffers synchronized on unmasked depth clears
+  // so mid-frame GR_AA_MULTI_SAMPLE transitions see authentic cleared depth.
+  if (m_msaaSamples > 1 && doDepthClear && m_msaaFBOs[slot] != 0) {
+    const GLuint otherFbo = useSingle ? m_msaaFBOs[slot] : m_headlessFBOs[slot];
+    glBindFramebuffer(GL_FRAMEBUFFER, otherFbo);
+    glClear(GL_DEPTH_BUFFER_BIT);
+  }
+
+  if (m_msaaSamples > 1 && doColorClear) {
+    if (useSingle) {
+      m_singleSampleColorDirty[slot] = true;
+      m_msaaColorDirty[slot] = false;
+    } else {
+      m_msaaColorDirty[slot] = true;
+      m_singleSampleColorDirty[slot] = false;
     }
-
-    // Authentic 3dfx Glide grBufferClear clears ONLY within the active
-    // grClipWindow rectangle (e.g., split-screen panes and divider stripes).
-    ApplyScissorGLES_Locked();
-    m_glesDirtyMask &= ~kGlesDirtyScissor;
-
-    glClear(mask);
   }
 
   if (clearMask & 0x2) {
@@ -92,6 +153,119 @@ void OpenGLESBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z,
 
   // Restore default framebuffer binding
   glBindFramebuffer(GL_FRAMEBUFFER, 0);
+  m_glesDirtyMask |= kGlesDirtySampleMask;
+  InvalidateGlBindingCache();
+}
+
+void OpenGLESBackend::DrawMaskedClearQuadGLES_Locked(float r, float g, float b,
+                                                     float a, float z,
+                                                     bool doColorClear,
+                                                     bool doDepthClear,
+                                                     uint32_t sampleMask) {
+  const uint32_t slot = GetActiveGpuSlot();
+  if (m_msaaFBOs[slot] == 0 || m_geomProgram == 0) return;
+
+  if (m_singleSampleColorDirty[slot]) {
+    CopySingleToMsaa_Locked(slot);
+  }
+
+  const float w = static_cast<float>(m_headlessWidth);
+  const float h = static_cast<float>(m_headlessHeight);
+  const float clampedZ = std::clamp(z, 0.0f, 1.0f);
+
+  auto makeVert = [&](float x, float y) -> ModernVertex {
+    ModernVertex v{};
+    v.pos[0] = x;
+    v.pos[1] = y;
+    v.pos[2] = clampedZ;
+    v.pos[3] = 1.0f;
+    v.color[0] = r;
+    v.color[1] = g;
+    v.color[2] = b;
+    v.color[3] = a;
+    return v;
+  };
+
+  const ModernVertex quad[6] = {
+      makeVert(0.0f, 0.0f), makeVert(w, 0.0f), makeVert(w, h),
+      makeVert(0.0f, 0.0f), makeVert(w, h),    makeVert(0.0f, h),
+  };
+
+  const uint32_t uploadSize = static_cast<uint32_t>(sizeof(quad));
+  glBindBuffer(GL_ARRAY_BUFFER, m_geomVBO);
+  if (m_geomVBOOffset + uploadSize > m_geomVBOSizeConfigured) {
+    m_geomVBOOffset = 0;
+    glBufferData(GL_ARRAY_BUFFER, m_geomVBOSizeConfigured, nullptr,
+                 GL_DYNAMIC_DRAW);
+  }
+  glBufferSubData(GL_ARRAY_BUFFER, m_geomVBOOffset, uploadSize, quad);
+  const uint32_t firstVertex = m_geomVBOOffset / sizeof(ModernVertex);
+  m_geomVBOOffset += uploadSize;
+
+  glBindFramebuffer(GL_FRAMEBUFFER, m_msaaFBOs[slot]);
+  glViewport(0, 0, static_cast<GLsizei>(m_headlessWidth),
+             static_cast<GLsizei>(m_headlessHeight));
+  ApplyScissorGLES_Locked();
+  glDisable(GL_CULL_FACE);
+  glDisable(GL_BLEND);
+
+  const GLboolean maskRgb = (doColorClear && m_colorMaskRgb) ? GL_TRUE : GL_FALSE;
+  const GLboolean maskAlpha =
+      (doColorClear && m_colorMaskAlpha) ? GL_TRUE : GL_FALSE;
+  glColorMask(maskRgb, maskRgb, maskRgb, maskAlpha);
+
+  if (doDepthClear) {
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_ALWAYS);
+    glDepthMask(GL_TRUE);
+  } else {
+    glDisable(GL_DEPTH_TEST);
+    glDepthMask(GL_FALSE);
+  }
+
+  if (m_supportsSampleMask) {
+    glEnable(GL_SAMPLE_MASK);
+    glSampleMaski(0, static_cast<GLbitfield>(sampleMask));
+  }
+
+  glUseProgram(m_geomProgram);
+  glUniform1i(m_uSstOriginLoc, 0);
+  glUniform2f(m_uViewportSizeLoc, w, h);
+  glUniform1i(m_uDepthClipOverrideLoc, doDepthClear ? 0 : 1);
+  glUniform1i(m_uDepthBufferModeLoc, doDepthClear ? 1 : 0);
+  glUniform1f(m_uDepthBiasLoc, 0.0f);
+  glUniform1i(m_uColorFuncLoc, 1);
+  glUniform1i(m_uColorLocalLoc, 0);
+  glUniform1i(m_uColorInvertLoc, 0);
+  glUniform1i(m_uAlphaFuncLoc, 1);
+  glUniform1i(m_uAlphaLocalLoc, 0);
+  glUniform1i(m_uAlphaInvertLoc, 0);
+  const int zeroTex[2] = {0, 0};
+  glUniform1iv(m_uTextureEnabledLoc, 2, zeroTex);
+  glUniform1i(m_uChromakeyEnabledLoc, 0);
+  glUniform1i(m_uAlphaTestOpLoc, 7);
+  glUniform1i(m_uFogModeLoc, 0);
+  glUniform1f(m_uDepthNearLoc, 0.0f);
+  glUniform1f(m_uDepthFarLoc, 1.0f);
+  glUniform1ui(m_uDitherModeLoc, 0u);
+  glUniform1ui(m_uStippleModeLoc, 0u);
+
+  glBindVertexArray(m_geomVAO);
+  glDrawArrays(GL_TRIANGLES, static_cast<GLint>(firstVertex), 6);
+
+  if (m_supportsSampleMask) {
+    glDisable(GL_SAMPLE_MASK);
+  }
+  glBindVertexArray(0);
+  glUseProgram(0);
+  glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+  if (doColorClear) {
+    m_msaaColorDirty[slot] = true;
+    m_singleSampleColorDirty[slot] = false;
+  }
+
+  m_glesDirtyMask = kGlesDirtyAll;
   InvalidateGlBindingCache();
 }
 
@@ -407,6 +581,20 @@ void OpenGLESBackend::SyncCullStateGLES_Locked() {
   }
 }
 
+void OpenGLESBackend::ApplySampleMaskGLES_Locked() {
+  if (!m_supportsSampleMask) return;
+  const uint32_t fullMask =
+      (m_msaaSamples >= 32) ? 0xFFFFFFFFu : ((1u << m_msaaSamples) - 1u);
+  const uint32_t effMask = GetEffectiveSampleMask_Locked();
+  if (m_msaaSamples > 1 && !ShouldUseSingleSampleFbo_Locked() &&
+      effMask != fullMask) {
+    glEnable(GL_SAMPLE_MASK);
+    glSampleMaski(0, static_cast<GLbitfield>(effMask));
+  } else {
+    glDisable(GL_SAMPLE_MASK);
+  }
+}
+
 void OpenGLESBackend::FlushBatch(bool fromStateFlush) {
   if (m_batchVertices.empty()) return;
   GLIDE_CPU_SCOPE(CpuBucket::Draw);
@@ -417,6 +605,18 @@ void OpenGLESBackend::FlushBatch(bool fromStateFlush) {
   }
 
   TelemetryManager::GetInstance().RecordDrawCall(fromStateFlush);
+
+  // Synchronize MSAA <-> 1x color targets BEFORE binding the active draw FBO
+  // (e.g., mid-frame GR_AA_MULTI_SAMPLE split-screen transition or LFB overlay).
+  const uint32_t slot = GetActiveGpuSlot();
+  const bool useSingle = ShouldUseSingleSampleFbo_Locked();
+  if (m_msaaSamples > 1) {
+    if (useSingle && m_msaaColorDirty[slot]) {
+      ResolveMsaaToSingle_Locked(slot);
+    } else if (!useSingle && m_singleSampleColorDirty[slot]) {
+      CopySingleToMsaa_Locked(slot);
+    }
+  }
 
   uint32_t uploadSize = m_batchVertices.size() * sizeof(ModernVertex);
 
@@ -493,6 +693,7 @@ void OpenGLESBackend::FlushBatch(bool fromStateFlush) {
     if (dirty & kGlesDirtyScissor) ApplyScissorGLES_Locked();
     if (dirty & kGlesDirtyCull) SyncCullStateGLES_Locked();
     if (dirty & kGlesDirtyColorMask) ApplyColorMaskGLES();
+    if (dirty & kGlesDirtySampleMask) ApplySampleMaskGLES_Locked();
 
     PopulateUniforms(dirty);
 
@@ -563,6 +764,16 @@ void OpenGLESBackend::FlushBatch(bool fromStateFlush) {
 
   uint32_t vertexCount = m_batchVertices.size();
   glDrawArrays(mode, firstVertex, vertexCount);
+
+  if (m_msaaSamples > 1 && (m_colorMaskRgb || m_colorMaskAlpha)) {
+    if (useSingle) {
+      m_singleSampleColorDirty[slot] = true;
+      m_msaaColorDirty[slot] = false;
+    } else {
+      m_msaaColorDirty[slot] = true;
+      m_singleSampleColorDirty[slot] = false;
+    }
+  }
 
   // Statistics tracking
   if (m_batchPrimitiveMode == BatchPrimitiveMode::Triangles) {

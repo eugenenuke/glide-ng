@@ -29,6 +29,7 @@
   X(PFNGLBINDVERTEXARRAYPROC, glBindVertexArray)                       \
   X(PFNGLBLENDEQUATIONPROC, glBlendEquation)                           \
   X(PFNGLBLENDFUNCSEPARATEPROC, glBlendFuncSeparate)                   \
+  X(PFNGLBLITFRAMEBUFFERPROC, glBlitFramebuffer)                       \
   X(PFNGLBUFFERDATAPROC, glBufferData)                                 \
   X(PFNGLBUFFERSUBDATAPROC, glBufferSubData)                           \
   X(PFNGLCHECKFRAMEBUFFERSTATUSPROC, glCheckFramebufferStatus)         \
@@ -57,6 +58,8 @@
   X(PFNGLGETUNIFORMLOCATIONPROC, glGetUniformLocation)                 \
   X(PFNGLLINKPROGRAMPROC, glLinkProgram)                               \
   X(PFNGLRENDERBUFFERSTORAGEPROC, glRenderbufferStorage)               \
+  X(PFNGLRENDERBUFFERSTORAGEMULTISAMPLEPROC, glRenderbufferStorageMultisample) \
+  X(PFNGLSAMPLEMASKIPROC, glSampleMaski)                               \
   X(PFNGLSAMPLERPARAMETERIPROC, glSamplerParameteri)                   \
   X(PFNGLSHADERSOURCEPROC, glShaderSource)                             \
   X(PFNGLUNIFORM1FPROC, glUniform1f)                                   \
@@ -95,6 +98,7 @@ bool LoadCoreFunctions();
 #define glBindVertexArray         ::GlideWrapper::Win32Gl::pfn_glBindVertexArray
 #define glBlendEquation           ::GlideWrapper::Win32Gl::pfn_glBlendEquation
 #define glBlendFuncSeparate       ::GlideWrapper::Win32Gl::pfn_glBlendFuncSeparate
+#define glBlitFramebuffer         ::GlideWrapper::Win32Gl::pfn_glBlitFramebuffer
 #define glBufferData              ::GlideWrapper::Win32Gl::pfn_glBufferData
 #define glBufferSubData           ::GlideWrapper::Win32Gl::pfn_glBufferSubData
 #define glCheckFramebufferStatus  ::GlideWrapper::Win32Gl::pfn_glCheckFramebufferStatus
@@ -123,6 +127,8 @@ bool LoadCoreFunctions();
 #define glGetUniformLocation      ::GlideWrapper::Win32Gl::pfn_glGetUniformLocation
 #define glLinkProgram             ::GlideWrapper::Win32Gl::pfn_glLinkProgram
 #define glRenderbufferStorage     ::GlideWrapper::Win32Gl::pfn_glRenderbufferStorage
+#define glRenderbufferStorageMultisample ::GlideWrapper::Win32Gl::pfn_glRenderbufferStorageMultisample
+#define glSampleMaski             ::GlideWrapper::Win32Gl::pfn_glSampleMaski
 #define glSamplerParameteri       ::GlideWrapper::Win32Gl::pfn_glSamplerParameteri
 #define glShaderSource            ::GlideWrapper::Win32Gl::pfn_glShaderSource
 #define glUniform1f               ::GlideWrapper::Win32Gl::pfn_glUniform1f

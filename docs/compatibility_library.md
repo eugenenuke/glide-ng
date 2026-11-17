@@ -18,9 +18,9 @@ A living reference of real-world 3dfx Glide games, official tech demos, and diag
 | **3dfx Demo Room** (`demoroom.exe`) | 1997 | Win32 (Wine / Proton, ATB) | Glide 2.x | Pass | Pass | Pass | **`SST_GAMMA=1.7`** (`gamma = 1.7`); press `Space` for lights | Verified |
 | **3dfx Wizard's Tower** (`wiz.exe`) | 1997 | Win32 (Wine / Proton, ATB) | Glide 2.x | Pass | Pass | Pass | **`SST_GAMMA=1.7`** (`gamma = 1.7`) for Room 1 lightmaps | Verified |
 | **3dfx Surf** (`surf_glide2x.exe` / `surf_glide3x.exe`) | 1998 | Win32 (Wine / Proton) | **Glide 2.x & 3.x** | Pass | Pass | Pass | Works out-of-the-box (`1024×768`, 2-TMU env map) | Verified |
-| **3dfx Kitty Hawk** (`aademo.exe`) | 2000 | Win32 (Wine / Proton) | Glide 3.x | Pass | Pass | Pass | Pass `-model 'data\kittyhawk\kittyhawk.gxf'`; no T-Buffer FSAA yet | Verified |
-| **3dfx Museum** (`museum.exe`) | 1999 | Win32 (Wine / Proton) | Glide 3.x | Pass | Pass | Pass | `go.bat` uses 8.3 `distre~1`; pass `-model 'data\DistressedMuseum\museum.gxf'` | Verified |
-| **3dfx Rocket Burger** (`RocketBurger.exe`) | 1999 | Win32 (Wine / Proton) | Glide 3.x | Pass | Pass | Pass | `go.bat` uses 8.3 `smallt~1`; pass `-model 'data\small tgas\scene.gxf'` | Verified |
+| **3dfx Kitty Hawk** (`aademo.exe`) | 2000 | Win32 (Wine / Proton) | Glide 3.x | Pass | Pass | Pass | `-model 'data\kittyhawk\kittyhawk.gxf'`; **4× Spatial AA + F9 split-screen** (`GLIDE_NG_CARD_MODEL=voodoo5` optional) | Verified |
+| **3dfx Museum** (`museum.exe`) | 1999 | Win32 (Wine / Proton) | Glide 3.x | Pass | Pass | Pass | `GLIDE_NG_CARD_MODEL=voodoo5` for **4× AA + Soft Reflectance**; pass `-model 'data\DistressedMuseum\museum.gxf'` | Verified |
+| **3dfx Rocket Burger** (`RocketBurger.exe`) | 1999 | Win32 (Wine / Proton) | Glide 3.x | Pass | Pass | Pass | `GLIDE_NG_CARD_MODEL=voodoo5` for **4× AA + Motion Blur / DoF**; pass `-model 'data\small tgas\scene.gxf'` | Verified |
 | **`glide2_info` / `glide3_info`** | — | Linux / DOS / Win32 | Glide 2.x & 3.x | Pass | Pass | Pass | Use `--probe` for full resolution & adapter report | Verified |
 | **`glide2_bench` / `glide3_bench`** | — | Linux / DOS / Win32 | Glide 2.x & 3.x | Pass | Pass | Pass | `GLIDE_NG_MAX_FPS=0 FX_GLIDE_SWAPINTERVAL=0` for uncapped scores | Verified |
 | **`glide2_envtest` / `glide3_envtest`** | — | Linux / DOS / Win32 | Glide 2.x & 3.x | Pass | Pass | Pass | `--verify --test-reopen --test-bounds` for automated checks | Verified |
@@ -153,14 +153,15 @@ A living reference of real-world 3dfx Glide games, official tech demos, and diag
   * Part of 3dfx's Voodoo5 / VSA-100 (`Napalm`) Glide 3.x demo engine family alongside *Museum* and *Rocket Burger*. Uses packed 32-bit vertex colors (`GR_PARAM_PARGB`, `0xAARRGGBB`) overlapping Glide 3.x's canonical float RGB/A offsets.
   * Launching `aademo.exe` with no arguments opens a Win32 Open File dialog (`comdlg32`) prompting for a `.gxf` scene file. Pass `-model 'data\kittyhawk\kittyhawk.gxf'` (or run `go.bat`, whose path is 8.3-compatible) to jump straight into the 1903 Wright Flyer showcase.
   * **Loading screen & HiDPI window sizing**: While parsing `.gxf` geometry and uploading textures, the demo displays a golden hover-car loading screen (`Loading` in dim red at top-left), briefly shows `"Press any key to continue"` (note: the demo's own `PeekMessageA` loop falls straight through into the flythrough whenever the Win32 message queue is empty), and starts the Wright Flyer animation. On HiDPI displays (e.g. 200% `xwayland-native-scaling`), pick a matching pair such as `/desktop=V5,1600x1200` with `-res 1600x1200` and avoid maximizing the desktop window. Under Wine 10 + GNOME Wayland/Mutter, the first cold `explorer /desktop=...` launch after `wineserver` exits can race into fullscreen with black margins around the top-left virtual desktop; priming the desktop first (`wine explorer /desktop=V5,1600x1200 cmd /c exit && ...`) avoids the race and opens a clean decorated window every time. Pass `GLIDE_NG_MAX_FPS=0 FX_GLIDE_SWAPINTERVAL=0` (and optionally `GLIDE_NG_BACKEND=software` on CPU `llvmpipe`) for ~1.5–4s load times.
-  * **Voodoo5 T-Buffer extensions & hotkeys**: `grSstWinOpenExt` and `grTBufferWriteMaskExt` are not yet emulated under the Voodoo2 profile, so the demo gracefully runs in full 3D color while its HUD reports `"No Spatial Anti-Aliasing"`. `F1` (help), `F2` (AA toggle banner), `F7` (Free Flight), and `F9` (split-screen with yellow vertical divider via clipped `grBufferClear`) all work cleanly across Vulkan, OpenGL ES/WGL, and Software.
+  * **Voodoo5 Spatial AA, T-Buffer & hotkeys**: Full Voodoo5 (`VSA-100`) Spatial Anti-Aliasing (`grSstWinOpenExt`, live mid-frame `grEnable`/`grDisable(GR_AA_MULTI_SAMPLE)`) and T-Buffer masking (`grTBufferWriteMaskExt`) work identically across **Vulkan** (4× MSAA), **OpenGL ES / WGL** (offscreen 4× MSAA FBOs), and **Software** (2×2 SSAA). Pass `GLIDE_NG_CARD_MODEL=voodoo5` (or `[hardware] card_model = voodoo5` in `glide-ng.ini`) for the authentic `"Voodoo5, 4 sample, Spatial Anti-Aliasing"` HUD label. `F1` (help), `F2` (live Spatial AA toggle), `F7` (Free Flight), and `F9` (live single-frame aliased vs. 4× AA split-screen with yellow vertical divider) all work cleanly. On CPU-only `llvmpipe` hosts, `GLIDE_NG_BACKEND=software` (AVX2+FMA 2×2 SSAA) is often faster than `llvmpipe` Vulkan/OpenGL ES even at `1600×1200` (`3200×2400` internal).
   * Looks crisp and well-balanced at default `gamma = 1.0`.
-* **Useful Controls**: `F1` help menu · `F2` Spatial AA toggle · `F5`/`F6` camera modes · `F7` Free Flight (NumPad `4/8/6/2` + mouse, `Home`/`End` speed) · `F9` split-screen toggle · `F12` TGA screenshot · `Pause` / `Left` / `Right` frame step · `Esc` quit.
+* **Useful Controls**: `F1` help menu · `F2` Spatial AA toggle · `F5`/`F6` camera modes · `F7` Free Flight (NumPad `4/8/6/2` + mouse, `Home`/`End` speed) · `F9` split-screen AA comparison · `F12` TGA screenshot · `Pause` / `Left` / `Right` frame step · `Esc` quit.
 * **Recommended Command**:
   ```bash
   # Optional primer avoids Wine 10 + GNOME Wayland cold-start fullscreen race:
   wine explorer /desktop=V5,1600x1200 cmd /c exit && \
-  WINEDLLOVERRIDES="glide3x=n" GLIDE_NG_BACKEND=vulkan GLIDE_NG_MAX_FPS=0 FX_GLIDE_SWAPINTERVAL=0 \
+  WINEDLLOVERRIDES="glide3x=n" GLIDE_NG_CARD_MODEL=voodoo5 GLIDE_NG_BACKEND=vulkan \
+      GLIDE_NG_MAX_FPS=0 FX_GLIDE_SWAPINTERVAL=0 \
       wine explorer /desktop=V5,1600x1200 ./aademo.exe \
       -res 1600x1200 -pixfmt aa4rgb565 -model 'data\kittyhawk\kittyhawk.gxf'
   ```
@@ -169,17 +170,18 @@ A living reference of real-world 3dfx Glide games, official tech demos, and diag
 
 ### 3dfx Museum (`museum.exe`)
 * **Year / Runtime**: 1999 · Win32 (Wine / Proton) · Glide 3.x (`glide3x.dll`)
-* **Backends Verified**: Vulkan, OpenGL 3.3 Core (WGL), Software (SIMD & scalar) — pixel-identical across all backends.
+* **Backends Verified**: Vulkan (4× MSAA), OpenGL 3.3 Core / WGL (4× MSAA), Software (2×2 SSAA) — consistent across all backends.
 * **Quirks & Fixes**:
   * **`go.bat` fails under Wine (`couldn't open file data\distre~1\museum.gxf`)**: The original `go.bat` hardcodes the Windows 95/98 8.3 short directory name `distre~1`, which Linux filesystems do not synthesize. Launch `museum.exe` directly with the full long path `-model 'data\DistressedMuseum\museum.gxf'` (or `-model 'data\museum\museum.gxf'` for the alternate clean museum scene).
   * Running `museum.exe` with no arguments opens a Win32 Open File dialog.
-  * Same Voodoo5 / Napalm engine as *Kitty Hawk*: use `wine explorer /desktop=V5,1024x768` (or `GLIDE_NG_BACKEND=software`) with `GLIDE_NG_MAX_FPS=0 FX_GLIDE_SWAPINTERVAL=0` for fast ~6–13s loading on CPU `llvmpipe`.
-  * **Voodoo5 T-Buffer extensions**: Without T-Buffer emulation, the HUD notes `"No Soft Reflectance"` / `"No Spatial Anti-Aliasing"`, while the marble floor, columns, crates, *Flaming June* painting, and inverted-text whiteboard Easter egg (authored upside-down in `whiteboard.tga` to be read in the floor reflection) render cleanly.
+  * Same Voodoo5 / Napalm engine as *Kitty Hawk*: use `wine explorer /desktop=V5,1024x768` with `GLIDE_NG_MAX_FPS=0 FX_GLIDE_SWAPINTERVAL=0` for fast loading on CPU `llvmpipe`.
+  * **Voodoo5 T-Buffer & Soft Reflectance**: Pass **`GLIDE_NG_CARD_MODEL=voodoo5`** (or `[hardware] card_model = voodoo5` in `glide-ng.ini`) so `GR_EXTENSION` advertises `PIXEXT`. `museum.exe` then opens 4-sample `grSstWinOpenExt` and renders **4× Spatial Anti-Aliasing (`F2`)** plus **4-sample T-Buffer Soft Reflectance (`F3`)** on the translucent marble floor across Vulkan, OpenGL ES/WGL, and Software (including the inverted-text whiteboard Easter egg reflecting right-side-up and softly blurred in the marble tiles, and live `F9` split-screen comparison).
   * Looks well-balanced at default `gamma = 1.0`.
-* **Useful Controls**: `Space` / any key starts the flythrough after loading · `F1` options menu (enable **Free Flight** to explore with mouse + NumPad arrow keys) · `F2`/`F3` FSAA/Soft Reflectance toggles (T-Buffer) · `Esc` quit.
+* **Useful Controls**: `Space` / any key starts the flythrough after loading · `F1` options menu · `F2` Spatial AA toggle · `F3` Soft Reflectance toggle · `F5`/`F6` camera views · `F7` Free Flight (mouse + NumPad arrows) · `F9` split-screen toggle · `Up`/`Down` reflectance grade · `Esc` quit.
 * **Recommended Command**:
   ```bash
-  WINEDLLOVERRIDES="glide3x=n" GLIDE_NG_BACKEND=vulkan GLIDE_NG_MAX_FPS=0 FX_GLIDE_SWAPINTERVAL=0 \
+  WINEDLLOVERRIDES="glide3x=n" GLIDE_NG_CARD_MODEL=voodoo5 GLIDE_NG_BACKEND=vulkan \
+      GLIDE_NG_MAX_FPS=0 FX_GLIDE_SWAPINTERVAL=0 \
       wine explorer /desktop=V5,1024x768 ./museum.exe \
       -res 1024x768 -pixfmt aa4rgb565 -model 'data\DistressedMuseum\museum.gxf'
   ```
@@ -188,17 +190,18 @@ A living reference of real-world 3dfx Glide games, official tech demos, and diag
 
 ### 3dfx Rocket Burger (`RocketBurger.exe`)
 * **Year / Runtime**: 1999 · Win32 (Wine / Proton) · Glide 3.x (`glide3x.dll`)
-* **Backends Verified**: Vulkan, OpenGL 3.3 Core (WGL), Software (SIMD & scalar) — pixel-identical across all backends.
+* **Backends Verified**: Vulkan (4× MSAA), OpenGL 3.3 Core / WGL (4× MSAA), Software (2×2 SSAA) — consistent across all backends.
 * **Quirks & Fixes**:
   * **`go.bat` fails under Wine (`couldn't open file data\smallt~1\scene.gxf`)**: The original `go.bat` uses the Windows 95/98 8.3 short name `smallt~1` for `small tgas` and lowercase `Rocketburger.exe`. Launch `./RocketBurger.exe` (exact casing on Linux) with `-model 'data\small tgas\scene.gxf'`.
   * Running `RocketBurger.exe` with no arguments opens a Win32 Open File dialog.
-  * Same Voodoo5 / Napalm engine as *Kitty Hawk* and *Museum*: use `wine explorer /desktop=V5,640x480` (or `GLIDE_NG_BACKEND=software`) with `GLIDE_NG_MAX_FPS=0 FX_GLIDE_SWAPINTERVAL=0` for fast ~8–17s loading on CPU `llvmpipe`.
-  * **Voodoo5 T-Buffer extensions**: Without T-Buffer emulation, Motion Blur / Depth of Field / FSAA stay gracefully disabled while the full animated chase scene (floating Rocket Burger diner, clouds, 3dfx billboard, space cop jet-bike, and hover hot-rod) renders cleanly.
+  * Same Voodoo5 / Napalm engine as *Kitty Hawk* and *Museum*: use `wine explorer /desktop=V5,640x480` (or `GLIDE_NG_BACKEND=software`, which runs at ~80–94 FPS with 2×2 SSAA) with `GLIDE_NG_MAX_FPS=0 FX_GLIDE_SWAPINTERVAL=0`.
+  * **Voodoo5 T-Buffer Motion Blur, Depth of Field & FSAA**: Pass **`GLIDE_NG_CARD_MODEL=voodoo5`** (or `[hardware] card_model = voodoo5` in `glide-ng.ini`) so `GR_EXTENSION` advertises `PIXEXT`. All three VSA-100 T-Buffer effects work live across Vulkan, OpenGL ES/WGL, and Software: **`F2` Spatial Anti-Aliasing**, **`F3` Motion Blur**, and **`F4` Depth of Field** (per-sample depth isolation blurs foreground/background while keeping the focal plane crisp).
   * Looks vibrant at default `gamma = 1.0`.
-* **Useful Controls**: `Space` / any key dismisses `"Press any key to continue"` · `F1` options menu · `Esc` quit.
+* **Useful Controls**: `Space` / any key dismisses `"Press any key to continue"` · `F1` options menu · `F2` Spatial AA · `F3` Motion Blur · `F4` Depth of Field · `Esc` quit.
 * **Recommended Command**:
   ```bash
-  WINEDLLOVERRIDES="glide3x=n" GLIDE_NG_BACKEND=vulkan GLIDE_NG_MAX_FPS=0 FX_GLIDE_SWAPINTERVAL=0 \
+  WINEDLLOVERRIDES="glide3x=n" GLIDE_NG_CARD_MODEL=voodoo5 GLIDE_NG_BACKEND=vulkan \
+      GLIDE_NG_MAX_FPS=0 FX_GLIDE_SWAPINTERVAL=0 \
       wine explorer /desktop=V5,640x480 ./RocketBurger.exe \
       -res 640x480 -pixfmt aa4rgb565 -model 'data\small tgas\scene.gxf'
   ```
@@ -251,6 +254,8 @@ A living reference of real-world 3dfx Glide games, official tech demos, and diag
 | **1996–1997 Voodoo1 title looks too dark** (*Demo Room*, *Wizard's Tower*, *GLQuake*, *Tomb Raider*) | `[glide]` → `gamma = 1.7` (or `SST_GAMMA=1.7`) | Authentic Voodoo Graphics (SST-1) `grSstWinOpen` defaulted the RAMDAC LUT to `1.7` (Voodoo2 CVG used `1.3`). `glide-ng` defaults to linear `1.0` so modern/bright games are not washed out. |
 | **1998 Voodoo2 title looks slightly dark** | `[glide]` → `gamma = 1.3` (or `SSTV2_GAMMA=1.3`) | Matches authentic Voodoo2 (`CVG`) hardware default RAMDAC curve. |
 | **Game misbehaves or misdetects 2 TMUs** (early 1996–1997 SST-1 titles) | `[hardware]` → `card_model = VoodooGraphics`, `tmu_count = 1`, `tmu_memory_mb = 2` (or `SSTV2_NUM_TMUS=1`) | Restricts reported hardware to single-TMU Voodoo Graphics layout. |
+| **Voodoo5 (`VSA-100`) demo checks `PIXEXT` for FSAA / T-Buffer effects** (*Museum*, *Rocket Burger*, *Kitty Hawk*) | `[hardware]` → `card_model = voodoo5` (or `GLIDE_NG_CARD_MODEL=voodoo5`) | Advertises `PIXEXT` in `GR_EXTENSION`, enabling `grSstWinOpenExt`, `grTBufferWriteMaskExt`, Spatial AA, Soft Reflectance, Motion Blur, and Depth of Field across Vulkan, OpenGL ES/WGL, and Software (2×2 SSAA). |
+| **Force 4× anti-aliasing on any Glide 2.x or 3.x title** | `[graphics]` → `msaa_samples = 4` (or `GLIDE_NG_MSAA=4`) | Activates 4× MSAA on Vulkan and OpenGL ES/WGL (offscreen MSAA FBOs) and 2×2 SSAA on the Software backend. |
 | **Game calls `grSstWinOpen` twice without closing / flickers on reopen** | `[glide]` → `ignore_reopen = true` (or `FX_GLIDE_IGNORE_REOPEN=1`) | Suppresses redundant window teardown/recreation while active. |
 | **16-bit dither banding visible on smooth gradients** | `[glide]` → `no_dither_sub = true` (or `FX_GLIDE_NO_DITHER_SUB=1`) | Keeps full 24-bit color precision without 16-bit dither subtraction. |
 | **Blurry textures / point-sampled retro look desired to be smoother** | `[glide]` → `force_bilinear = true` or `force_trilinear = true` | Overrides app's `GR_TEXTUREFILTER_POINT_SAMPLED` to bilinear/trilinear filtering. |

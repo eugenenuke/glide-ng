@@ -582,26 +582,60 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
   const Simd8f minY_f(static_cast<float>(minY));
   const Simd8f maxY_f(static_cast<float>(maxY) + 1.0f);
   const Simd8f edgeEps_vec(Clockwise ? -1e-5f : 1e-5f);
-  // Both kDitherMatrix4x4 and kDitherMatrix2x2 are scaled to [0..15]
-  const float ditherAlphaScale = 128.0f / 16.0f;
-  const Simd8f ditherAlphaScale_vec(ditherAlphaScale);
   const uint32_t colorMaskVal =
       (colorMaskRgb ? 0x00FFFFFFu : 0u) | (colorMaskAlpha ? 0xFF000000u : 0u);
   const bool fullColorMask = (colorMaskRgb && colorMaskAlpha);
   const Simd8i colorMask_vec(static_cast<int32_t>(colorMaskVal));
   const Simd8i invColorMask_vec(static_cast<int32_t>(~colorMaskVal));
 
-  // Incremental 2x4 edge equation setup
-  const Simd8f X_init(
-      static_cast<float>(startX) + 0.5f, static_cast<float>(startX) + 1.5f,
-      static_cast<float>(startX) + 2.5f, static_cast<float>(startX) + 3.5f,
-      static_cast<float>(startX) + 0.5f, static_cast<float>(startX) + 1.5f,
-      static_cast<float>(startX) + 2.5f, static_cast<float>(startX) + 3.5f);
-  const Simd8f Y_init(
-      static_cast<float>(startY) + 0.5f, static_cast<float>(startY) + 0.5f,
-      static_cast<float>(startY) + 0.5f, static_cast<float>(startY) + 0.5f,
-      static_cast<float>(startY) + 1.5f, static_cast<float>(startY) + 1.5f,
-      static_cast<float>(startY) + 1.5f, static_cast<float>(startY) + 1.5f);
+  const uint8_t tbufMask =
+      (m_ssaaScale == 2) ? static_cast<uint8_t>(state.tbufferWriteMask & 0x0Fu)
+                         : static_cast<uint8_t>(0x0Fu);
+  const bool applyTbufMask = (m_ssaaScale == 2 && tbufMask != 0x0Fu);
+  const bool collapseAa = (m_ssaaScale == 2 && !state.aaMultiSample);
+  if (applyTbufMask && tbufMask == 0u) return;
+
+  const int32_t tm0 = (tbufMask & 1u) ? 1 : 0;
+  const int32_t tm1 = (tbufMask & 2u) ? 1 : 0;
+  const int32_t tm2 = (tbufMask & 4u) ? 1 : 0;
+  const int32_t tm3 = (tbufMask & 8u) ? 1 : 0;
+  const SimdMask tbufSimdMask =
+      (Simd8i(tm0, tm1, tm0, tm1, tm2, tm3, tm2, tm3) != Simd8i(0));
+
+  // Incremental 2x4 edge equation setup.
+  // When 2x2 SSAA has live GR_AA_MULTI_SAMPLE disabled, collapse all 4
+  // subpixels of each 2x2 guest pixel onto the guest-pixel center
+  // (startX+1.0, startX+3.0, startY+1.0) so edges render cleanly 1x aliased
+  // with zero extra instructions inside the pixel loop.
+  const Simd8f X_init =
+      collapseAa
+          ? Simd8f(static_cast<float>(startX) + 1.0f,
+                   static_cast<float>(startX) + 1.0f,
+                   static_cast<float>(startX) + 3.0f,
+                   static_cast<float>(startX) + 3.0f,
+                   static_cast<float>(startX) + 1.0f,
+                   static_cast<float>(startX) + 1.0f,
+                   static_cast<float>(startX) + 3.0f,
+                   static_cast<float>(startX) + 3.0f)
+          : Simd8f(static_cast<float>(startX) + 0.5f,
+                   static_cast<float>(startX) + 1.5f,
+                   static_cast<float>(startX) + 2.5f,
+                   static_cast<float>(startX) + 3.5f,
+                   static_cast<float>(startX) + 0.5f,
+                   static_cast<float>(startX) + 1.5f,
+                   static_cast<float>(startX) + 2.5f,
+                   static_cast<float>(startX) + 3.5f);
+  const Simd8f Y_init =
+      collapseAa
+          ? Simd8f(static_cast<float>(startY) + 1.0f)
+          : Simd8f(static_cast<float>(startY) + 0.5f,
+                   static_cast<float>(startY) + 0.5f,
+                   static_cast<float>(startY) + 0.5f,
+                   static_cast<float>(startY) + 0.5f,
+                   static_cast<float>(startY) + 1.5f,
+                   static_cast<float>(startY) + 1.5f,
+                   static_cast<float>(startY) + 1.5f,
+                   static_cast<float>(startY) + 1.5f);
 
   Simd8f E0_row = Fma(Simd8f(a0), X_init, Fma(Simd8f(b0), Y_init, Simd8f(c0)));
   Simd8f E1_row = Fma(Simd8f(a1), X_init, Fma(Simd8f(b1), Y_init, Simd8f(c1)));
@@ -613,11 +647,9 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
        y += 2, E0_row += E0_stepY, E1_row += E1_stepY, E2_row += E2_stepY) {
     const bool rowInsideY = (y >= minY) && (y + 1 <= maxY);
     Simd8i rowDith;
-    Simd8f rowDithAlpha;
     if constexpr (DitherEnabled) {
       rowDith = (state.ditherMode == 2) ? GetDitherVector4x4(y)
                                         : GetDitherVector2x2(y);
-      rowDithAlpha = Simd8f::Convert(rowDith) * ditherAlphaScale_vec;
     }
 
     Simd8f E0 = E0_row;
@@ -653,6 +685,9 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
         SimdMask boundaryMask = (X_vec >= minX_f) & (X_vec <= maxX_f) &
                                 (Y_vec >= minY_f) & (Y_vec <= maxY_f);
         coverageMask = insideMask & boundaryMask;
+      }
+      if (applyTbufMask) {
+        coverageMask = coverageMask & tbufSimdMask;
       }
       if (coverageMask.AllZero()) continue;
 
@@ -1151,21 +1186,9 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
       blue = Max(zero_vec, Min(one_vec, blue));
       alpha = Max(zero_vec, Min(one_vec, alpha));
 
+      // Preserve full 8-bit alpha into blending; RGB565 dithering runs
+      // post-blend on color channels only (authentic 3dfx pipeline order).
       Simd8f blendAlphaVal = alpha;
-
-      // 7. Pre-blend Alpha Dithering / Quantization (matches Vulkan/GLES 1-bit
-      // alpha quantization without discarding fragments, so opaque / additive /
-      // multiplicative blends and GR_CMP_LESS alpha tests match GPU backends).
-      if constexpr (DitherEnabled) {
-        SimdMask applies = (alphaTestOp != 7) ? SimdMask::True()
-                                              : (alpha < Simd8f(0.99f));
-        if (applies.AnyTrue()) {
-          Simd8f alpha255 = Floor(Fma(alpha, c255_vec, half_vec));
-          SimdMask ditherPass = (alpha255 + rowDithAlpha) >= Simd8f(128.0f);
-          Simd8f quantAlpha = Select(ditherPass, one_vec, zero_vec);
-          blendAlphaVal = Select(applies, quantAlpha, blendAlphaVal);
-        }
-      }
 
       // 8. Chromakey Emulation
       if (chromakeyMode == 1) {
