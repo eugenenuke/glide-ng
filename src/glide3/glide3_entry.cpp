@@ -1486,6 +1486,16 @@ FX_ENTRY void FX_CALL grEnable(GrEnableMode_t mode) {
     case GR_SHAMELESS_PLUG:
       s_shamelessPlug = true;
       break;
+    case GR_ALLOW_MIPMAP_DITHER:
+    case GR_PASSTHRU:
+    case GR_VIDEO_SMOOTHING:
+    case 0x06:        // GR_TEXTURE_UMA_EXT
+    case 0x07:        // GR_STENCIL_MODE_EXT
+    case 0x08:        // GR_OPENGL_MODE_EXT
+    case 0x09:        // GR_MULTIRENDERING_EXT
+    case 0x80000001u: // GR_COMBINEEXT_MODE (VSA-100 / Napalm)
+    case 0x80000002u: // GR_AA_MULTI_SAMPLE (VSA-100 / Napalm)
+      break;
     default:
       GLIDE_LOG(WARN, "Frontend",
                 "grEnable (Glide 3.x) unsupported mode=" << mode);
@@ -1506,6 +1516,16 @@ FX_ENTRY void FX_CALL grDisable(GrEnableMode_t mode) {
       break;
     case GR_SHAMELESS_PLUG:
       s_shamelessPlug = false;
+      break;
+    case GR_ALLOW_MIPMAP_DITHER:
+    case GR_PASSTHRU:
+    case GR_VIDEO_SMOOTHING:
+    case 0x06:        // GR_TEXTURE_UMA_EXT
+    case 0x07:        // GR_STENCIL_MODE_EXT
+    case 0x08:        // GR_OPENGL_MODE_EXT
+    case 0x09:        // GR_MULTIRENDERING_EXT
+    case 0x80000001u: // GR_COMBINEEXT_MODE (VSA-100 / Napalm)
+    case 0x80000002u: // GR_AA_MULTI_SAMPLE (VSA-100 / Napalm)
       break;
     default:
       GLIDE_LOG(WARN, "Frontend",

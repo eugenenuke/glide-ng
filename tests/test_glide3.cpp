@@ -10,6 +10,7 @@
 #include "core/HudOverlay.h"
 #include "core/BackendManager.h"
 #include "core/NativeSurfaceHost.h"
+#include "core/VertexLayout.h"
 #include "backends/GlideStateTracker.h"
 #include "opengl_es/OpenGLESBackend.h"
 #include "software/SoftwareBackend.h"
@@ -5493,6 +5494,278 @@ TEST_CASE("M8.2 Phase-2 Authentic 3dfx Env Vars: INI Parsing, Precedence & Runti
 
     std::remove(logPath.c_str());
     std::remove(snapPath.c_str());
+  }
+#endif
+}
+
+TEST_CASE("Glide 3.x GR_PARAM_PARGB Packed Color & VSA-100 Enable/Disable Modes",
+          "[Glide3][VertexLayout][M9]") {
+  // Exact layout used by official 3dfx Voodoo5/Napalm Glide 3.x demos
+  // (Kitty Hawk, Museum, Rocket Burger): XY@0, Q@12, ST0@16, PARGB@32.
+  // Bytes 16..31 overlap Glide 3.x canonical float RGB@16 and A@28.
+  struct PargbDemoVert {
+    float x, y;      // 0..7   (GR_PARAM_XY)
+    float padZ;      // 8..11
+    float q;         // 12..15 (GR_PARAM_Q)
+    float s0, t0;    // 16..23 (GR_PARAM_ST0 — overlaps canonical RGB!)
+    float pad1, pad2;// 24..31 (overlaps canonical RGB.b and A!)
+    uint32_t pargb;  // 32..35 (GR_PARAM_PARGB: 0xAARRGGBB)
+    float q0;        // 36..39 (optional GR_PARAM_Q0)
+    float q1;        // 40..43 (optional GR_PARAM_Q1)
+  };
+  static_assert(sizeof(PargbDemoVert) == 44, "PargbDemoVert layout mismatch");
+
+  SECTION("VertexLayout decodes GR_PARAM_PARGB (0xAARRGGBB), GR_PARAM_Q0/Q1, and round-trips state") {
+    auto& vl = GlideWrapper::VertexLayout::GetInstance();
+    vl.ResetToGlide3Canonical();
+
+    // Enable PARGB without explicitly disabling canonical RGB/A
+    vl.SetParamOffsetGlide3(0x01, 0, 1);   // GR_PARAM_XY
+    vl.SetParamOffsetGlide3(0x04, 12, 1);  // GR_PARAM_Q
+    vl.SetParamOffsetGlide3(0x40, 16, 1);  // GR_PARAM_ST0
+    vl.SetParamOffsetGlide3(0x41, 16, 1);  // GR_PARAM_ST1
+    vl.SetParamOffsetGlide3(0x30, 32, 1);  // GR_PARAM_PARGB
+    vl.SetParamOffsetGlide3(0x50, 36, 1);  // GR_PARAM_Q0
+    vl.SetParamOffsetGlide3(0x51, 40, 1);  // GR_PARAM_Q1
+
+    PargbDemoVert v{};
+    v.x = 123.5f;
+    v.y = 45.25f;
+    v.q = 0.5f;
+    v.s0 = 0.25f;
+    v.t0 = 0.75f;
+    v.pargb = 0x80F04010u;  // A=128, R=240, G=64, B=16
+    v.q0 = 0.25f;
+    v.q1 = 0.125f;
+
+    GlideWrapper::ModernVertex mv = vl.DecodeVertex(&v);
+    CHECK(mv.pos[0] == 123.5f);
+    CHECK(mv.pos[1] == 45.25f);
+    CHECK(mv.pos[3] == 0.5f);
+    CHECK(std::fabs(mv.color[0] - (240.0f / 255.0f)) < 1e-4f);
+    CHECK(std::fabs(mv.color[1] - (64.0f / 255.0f)) < 1e-4f);
+    CHECK(std::fabs(mv.color[2] - (16.0f / 255.0f)) < 1e-4f);
+    CHECK(std::fabs(mv.color[3] - (128.0f / 255.0f)) < 1e-4f);
+    CHECK(mv.tex[0] == 0.25f);
+    CHECK(mv.tex[1] == 0.75f);
+    CHECK(mv.tmu_oow[0] == 0.25f);
+    CHECK(mv.tmu_oow[1] == 0.125f);
+    CHECK(vl.GetMaxActiveOffset() >= 44);
+
+    // Save layout, reset to float canonical, restore layout, verify identical decode
+    uint8_t savedLayout[256] = {};
+    vl.GetLayoutState(savedLayout);
+    vl.ResetToGlide3Canonical();
+    vl.SetLayoutState(savedLayout);
+
+    GlideWrapper::ModernVertex mvRestored = vl.DecodeVertex(&v);
+    CHECK(std::fabs(mvRestored.color[0] - (240.0f / 255.0f)) < 1e-4f);
+    CHECK(std::fabs(mvRestored.color[1] - (64.0f / 255.0f)) < 1e-4f);
+    CHECK(std::fabs(mvRestored.color[2] - (16.0f / 255.0f)) < 1e-4f);
+    CHECK(std::fabs(mvRestored.color[3] - (128.0f / 255.0f)) < 1e-4f);
+    CHECK(mvRestored.pos[3] == 0.5f);
+    CHECK(mvRestored.tmu_oow[0] == 0.25f);
+
+    // Re-enabling float GR_PARAM_RGB / GR_PARAM_A switches colorType back to GR_FLOAT
+    vl.SetParamOffsetGlide3(0x20, 12, 1);  // GR_PARAM_RGB
+    vl.SetParamOffsetGlide3(0x10, 28, 1);  // GR_PARAM_A
+    StandardVert fv = {10.0f, 20.0f, 0.0f, 32.0f, 224.0f, 64.0f, 0.0f, 192.0f, 1.0f, 0.0f, 0.0f, 1.0f};
+    GlideWrapper::ModernVertex mvf = vl.DecodeVertex(&fv);
+    CHECK(std::fabs(mvf.color[0] - (32.0f / 255.0f)) < 1e-4f);
+    CHECK(std::fabs(mvf.color[1] - (224.0f / 255.0f)) < 1e-4f);
+    CHECK(std::fabs(mvf.color[2] - (64.0f / 255.0f)) < 1e-4f);
+    CHECK(std::fabs(mvf.color[3] - (192.0f / 255.0f)) < 1e-4f);
+  }
+
+#ifdef __linux__
+  SECTION("End-to-end Glide 3.x PARGB rendering, alpha blending, layout save/restore & VSA-100 grEnable/grDisable") {
+    struct ScopedPargbEnv {
+      std::vector<std::string> keys = {
+          "GLIDE_NG_HEADLESS", "GLIDE_NG_MAX_FPS", "GLIDE_NG_VSYNC",
+          "GLIDE_NG_LOG_LEVEL", "GLIDE_NG_LOG_FILE"};
+      std::vector<std::pair<std::string, std::string>> saved;
+      ScopedPargbEnv() {
+        for (const auto& k : keys) {
+          const char* v = std::getenv(k.c_str());
+          saved.emplace_back(k, v ? std::string(v) : std::string("\x01UNSET"));
+        }
+      }
+      ~ScopedPargbEnv() {
+        for (const auto& kv : saved) {
+          if (kv.second == "\x01UNSET") {
+            ::unsetenv(kv.first.c_str());
+          } else {
+            ::setenv(kv.first.c_str(), kv.second.c_str(), 1);
+          }
+        }
+      }
+    } envGuard;
+
+    const std::string logPath = "/tmp/glide_ng_g3_pargb_test.log";
+    std::remove(logPath.c_str());
+    ::setenv("GLIDE_NG_HEADLESS", "1", 1);
+    ::setenv("GLIDE_NG_MAX_FPS", "0", 1);
+    ::setenv("GLIDE_NG_VSYNC", "0", 1);
+    ::setenv("GLIDE_NG_LOG_LEVEL", "warn", 1);
+    ::setenv("GLIDE_NG_LOG_FILE", logPath.c_str(), 1);
+
+    void* handle = OpenGlide3Handle();
+    REQUIRE(handle != nullptr);
+
+    auto glideInit = reinterpret_cast<void (*)()>(::dlsym(handle, "grGlideInit"));
+    auto glideShutdown = reinterpret_cast<void (*)()>(::dlsym(handle, "grGlideShutdown"));
+    auto winOpen = reinterpret_cast<FxU32 (*)(FxU32, FxU32, FxU32, FxU32, FxU32, int, int)>(
+        ::dlsym(handle, "grSstWinOpen"));
+    auto winClose = reinterpret_cast<FxBool (*)(FxU32)>(::dlsym(handle, "grSstWinClose"));
+    auto vertexLayout = reinterpret_cast<void (*)(FxU32, FxI32, FxU32)>(::dlsym(handle, "grVertexLayout"));
+    auto getVertexLayout = reinterpret_cast<void (*)(void*)>(::dlsym(handle, "grGlideGetVertexLayout"));
+    auto setVertexLayout = reinterpret_cast<void (*)(const void*)>(::dlsym(handle, "grGlideSetVertexLayout"));
+    auto bufferClear = reinterpret_cast<void (*)(GrColor_t, GrAlpha_t, FxU32)>(::dlsym(handle, "grBufferClear"));
+    auto colorCombine = reinterpret_cast<void (*)(GrCombineFunction_t, GrCombineFactor_t,
+                                                  GrCombineLocal_t, GrCombineOther_t, FxBool)>(
+        ::dlsym(handle, "grColorCombine"));
+    auto alphaCombine = reinterpret_cast<void (*)(GrCombineFunction_t, GrCombineFactor_t,
+                                                  GrCombineLocal_t, GrCombineOther_t, FxBool)>(
+        ::dlsym(handle, "grAlphaCombine"));
+    auto alphaBlend = reinterpret_cast<void (*)(GrAlphaBlendFnc_t, GrAlphaBlendFnc_t,
+                                                GrAlphaBlendFnc_t, GrAlphaBlendFnc_t)>(
+        ::dlsym(handle, "grAlphaBlendFunction"));
+    auto depthMode = reinterpret_cast<void (*)(GrDepthBufferMode_t)>(::dlsym(handle, "grDepthBufferMode"));
+    auto ditherMode = reinterpret_cast<void (*)(GrDitherMode_t)>(::dlsym(handle, "grDitherMode"));
+    auto grEnableFn = reinterpret_cast<void (*)(GrEnableMode_t)>(::dlsym(handle, "grEnable"));
+    auto grDisableFn = reinterpret_cast<void (*)(GrEnableMode_t)>(::dlsym(handle, "grDisable"));
+    auto drawTri = reinterpret_cast<void (*)(const void*, const void*, const void*)>(
+        ::dlsym(handle, "grDrawTriangle"));
+    auto lfbRead = reinterpret_cast<FxBool (*)(GrBuffer_t, FxU32, FxU32, FxU32, FxU32, FxU32, void*)>(
+        ::dlsym(handle, "grLfbReadRegion"));
+
+    REQUIRE(glideInit != nullptr);
+    REQUIRE(winOpen != nullptr);
+    REQUIRE(vertexLayout != nullptr);
+    REQUIRE(getVertexLayout != nullptr);
+    REQUIRE(setVertexLayout != nullptr);
+    REQUIRE(grEnableFn != nullptr);
+    REQUIRE(grDisableFn != nullptr);
+
+    glideInit();
+    FxU32 ctx = winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                        GR_COLORFORMAT_ABGR, GR_ORIGIN_UPPER_LEFT, 2, 1);
+    REQUIRE(ctx != 0);
+
+    // Standard Glide 3.x & VSA-100 enable/disable modes must not emit WARN spam
+    const GrEnableMode_t v5Modes[] = {
+        0x02u,        // GR_ALLOW_MIPMAP_DITHER
+        0x03u,        // GR_PASSTHRU
+        0x05u,        // GR_VIDEO_SMOOTHING
+        0x80000001u,  // GR_COMBINEEXT_MODE
+        0x80000002u,  // GR_AA_MULTI_SAMPLE
+    };
+    for (GrEnableMode_t m : v5Modes) {
+      grEnableFn(m);
+      grDisableFn(m);
+    }
+
+    depthMode(GR_DEPTHBUFFER_DISABLE);
+    ditherMode(GR_DITHER_DISABLE);
+    bufferClear(0xFF000000u, 0xFF, 0xFFFF);
+
+    // Configure Voodoo5 demo layout (XY@0, Q@12, ST0@16, PARGB@32)
+    vertexLayout(0x01, 0, 1);   // GR_PARAM_XY
+    vertexLayout(0x04, 12, 1);  // GR_PARAM_Q
+    vertexLayout(0x40, 16, 1);  // GR_PARAM_ST0
+    vertexLayout(0x30, 32, 1);  // GR_PARAM_PARGB
+
+    colorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+                 GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_NONE, FXFALSE);
+    alphaCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+                 GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_NONE, FXFALSE);
+    alphaBlend(GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_ONE, GR_BLEND_ZERO);
+
+    auto drawPargbQuad = [&](float x0, float y0, float x1, float y1, uint32_t pargb) {
+      PargbDemoVert tl{x0, y0, 0.0f, 1.0f, 0.1f, 0.2f, 0.0f, 0.0f, pargb, 1.0f, 1.0f};
+      PargbDemoVert tr{x1, y0, 0.0f, 1.0f, 0.9f, 0.2f, 0.0f, 0.0f, pargb, 1.0f, 1.0f};
+      PargbDemoVert br{x1, y1, 0.0f, 1.0f, 0.9f, 0.8f, 0.0f, 0.0f, pargb, 1.0f, 1.0f};
+      PargbDemoVert bl{x0, y1, 0.0f, 1.0f, 0.1f, 0.8f, 0.0f, 0.0f, pargb, 1.0f, 1.0f};
+      drawTri(&tl, &tr, &br);
+      drawTri(&tl, &br, &bl);
+    };
+
+    // 1. Opaque orange-red PARGB (0xFFF05010: A=255, R=240, G=80, B=16)
+    drawPargbQuad(20.0f, 20.0f, 120.0f, 120.0f, 0xFFF05010u);
+
+    // 2. Alpha-blended 50% green (0x8010F010) over opaque blue (0xFF1020F0)
+    drawPargbQuad(150.0f, 20.0f, 250.0f, 120.0f, 0xFF1020F0u);
+    alphaBlend(GR_BLEND_SRC_ALPHA, GR_BLEND_ONE_MINUS_SRC_ALPHA, GR_BLEND_ONE, GR_BLEND_ZERO);
+    drawPargbQuad(150.0f, 20.0f, 250.0f, 120.0f, 0x8010F010u);
+    alphaBlend(GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_ONE, GR_BLEND_ZERO);
+
+    // 3. Save PARGB layout -> switch to float RGB -> draw green -> restore PARGB -> draw red
+    uint8_t pargbLayoutBuf[256] = {};
+    getVertexLayout(pargbLayoutBuf);
+
+    vertexLayout(0x20, 12, 1);  // GR_PARAM_RGB (GR_FLOAT)
+    vertexLayout(0x10, 28, 1);  // GR_PARAM_A (GR_FLOAT)
+    vertexLayout(0x03, 32, 1);  // GR_PARAM_W
+    {
+      StandardVert tl = {280.0f, 20.0f, 0.0f, 16.0f, 240.0f, 16.0f, 0.0f, 255.0f, 1.0f, 0.0f, 0.0f, 1.0f};
+      StandardVert tr = {360.0f, 20.0f, 0.0f, 16.0f, 240.0f, 16.0f, 0.0f, 255.0f, 1.0f, 0.0f, 0.0f, 1.0f};
+      StandardVert br = {360.0f, 120.0f, 0.0f, 16.0f, 240.0f, 16.0f, 0.0f, 255.0f, 1.0f, 0.0f, 0.0f, 1.0f};
+      StandardVert bl = {280.0f, 120.0f, 0.0f, 16.0f, 240.0f, 16.0f, 0.0f, 255.0f, 1.0f, 0.0f, 0.0f, 1.0f};
+      drawTri(&tl, &tr, &br);
+      drawTri(&tl, &br, &bl);
+    }
+
+    setVertexLayout(pargbLayoutBuf);
+    drawPargbQuad(380.0f, 20.0f, 460.0f, 120.0f, 0xFFF01010u);
+
+    auto readRGB = [&](FxU32 x, FxU32 y, int& r, int& g, int& b) {
+      uint16_t px = 0;
+      REQUIRE(lfbRead(GR_BUFFER_BACKBUFFER, x, y, 1, 1, 2, &px) == FXTRUE);
+      r = ((px >> 11) & 31) << 3;
+      g = ((px >> 5) & 63) << 2;
+      b = (px & 31) << 3;
+    };
+
+    int r = 0, g = 0, b = 0;
+    // Quad 1: orange-red PARGB
+    readRGB(70, 70, r, g, b);
+    CHECK(r > 210);
+    CHECK(g > 50);
+    CHECK(g < 110);
+    CHECK(b < 40);
+
+    // Quad 2: 50% green blended over blue -> both G and B ~115..140
+    readRGB(200, 70, r, g, b);
+    CHECK(r < 40);
+    CHECK(g > 90);
+    CHECK(g < 165);
+    CHECK(b > 90);
+    CHECK(b < 165);
+
+    // Quad 3: float green after switching from PARGB -> RGB
+    readRGB(320, 70, r, g, b);
+    CHECK(r < 40);
+    CHECK(g > 210);
+    CHECK(b < 40);
+
+    // Quad 4: red PARGB after grGlideSetVertexLayout restore
+    readRGB(420, 70, r, g, b);
+    CHECK(r > 210);
+    CHECK(g < 40);
+    CHECK(b < 40);
+
+    winClose(ctx);
+    glideShutdown();
+    ::dlclose(handle);
+
+    // Confirm zero unsupported mode warnings were emitted
+    std::ifstream logIn(logPath);
+    if (logIn.is_open()) {
+      const std::string logContent((std::istreambuf_iterator<char>(logIn)),
+                                   std::istreambuf_iterator<char>());
+      CHECK(logContent.find("unsupported mode=") == std::string::npos);
+    }
+    std::remove(logPath.c_str());
   }
 #endif
 }
