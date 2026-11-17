@@ -30,7 +30,7 @@ bool BackendManager::EstablishBackend(const WrapperConfig& config) {
     std::lock_guard<std::mutex> lock(m_mutex);
     GLIDE_LOG(INFO, "Backend", "EstablishBackend entered. config.backend='" << config.backend << "', m_backend=" << (m_backend ? "NON-NULL" : "NULL"));
 
-    // Resolve requested backend name from config (already resolved/validated by JsonConfigLoader)
+    // Resolve requested backend name from config (already resolved/validated by IniConfigLoader)
     std::string requested = config.backend;
 
     // Normalize to lowercase for case-insensitive matching

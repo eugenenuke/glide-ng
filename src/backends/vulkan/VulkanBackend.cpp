@@ -348,7 +348,7 @@ void VulkanBackend::Shutdown() {
   // 2.5. Save persistent Vulkan pipeline cache back to disk!
   if (m_device && m_vkPipelineCache) {
     const std::string& cachePath =
-        m_config.vkCachePath.empty() ? std::string(".glide-vulkan-cache.bin")
+        m_config.vkCachePath.empty() ? std::string(DEFAULT_VK_CACHE_FILE)
                                      : m_config.vkCachePath;
 
     try {
@@ -686,6 +686,14 @@ void VulkanBackend::DetachWindow_Locked() {
   }
   m_uploadCmdHasWork[0] = false;
   m_uploadCmdHasWork[1] = false;
+  m_inRenderPass = false;
+  m_batchedVertexCount = 0;
+  m_vertexBufferOffset = 0;
+  m_clearColorPending[0] = m_clearColorPending[1] = false;
+  m_clearDepthPending[0] = m_clearDepthPending[1] = false;
+  if (m_commandBuffer) {
+    m_commandBuffer->reset({});
+  }
 
   DestroySwapchain_Locked();
   DestroyHudResources_Locked();
@@ -1836,7 +1844,7 @@ bool VulkanBackend::CreateLogicalDevice() {
 
   // 2.5. Initialize persistent Vulkan pipeline cache from disk!
   const std::string& cachePath =
-      m_config.vkCachePath.empty() ? std::string(".glide-vulkan-cache.bin")
+      m_config.vkCachePath.empty() ? std::string(DEFAULT_VK_CACHE_FILE)
                                    : m_config.vkCachePath;
 
   std::vector<char> cacheData;

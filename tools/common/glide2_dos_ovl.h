@@ -125,11 +125,14 @@
 
 /* Optional Glide 2.x entry points (may be absent on older 2.1/2.4 OVL builds) */
 #define GLIDE2_OVL_OPTIONAL_FUNCS_X(X)                                                                 \
-  X(FxBool,      grSstQueryBoards,     "_GRSSTQUERYBOARDS@4",          "_grSstQueryBoards@4",          (GrHwConfiguration* hwconfig)) \
-  X(FxU32,       guTexMemQueryAvail,   "_GUTEXMEMQUERYAVAIL@4",        "_guTexMemQueryAvail@4",        (GrChipID_t tmu)) \
-  X(void,        guTexMemReset,        "_GUTEXMEMRESET@0",             "_guTexMemReset@0",             (void)) \
-  X(void,        guFogGenerateExp,     "_GUFOGGENERATEEXP@8",          "_guFogGenerateExp@8",          (GrFog_t fogtable[GR_FOG_TABLE_SIZE], float density)) \
-  X(const char*, grGetString,          "_GRGETSTRING@4",               "_grGetString@4",               (FxU32 pname))
+  X(FxBool,      grSstQueryBoards,       "_GRSSTQUERYBOARDS@4",          "_grSstQueryBoards@4",          (GrHwConfiguration* hwconfig)) \
+  X(FxU32,       guTexMemQueryAvail,     "_GUTEXMEMQUERYAVAIL@4",        "_guTexMemQueryAvail@4",        (GrChipID_t tmu)) \
+  X(void,        guTexMemReset,          "_GUTEXMEMRESET@0",             "_guTexMemReset@0",             (void)) \
+  X(void,        guFogGenerateExp,       "_GUFOGGENERATEEXP@8",          "_guFogGenerateExp@8",          (GrFog_t fogtable[GR_FOG_TABLE_SIZE], float density)) \
+  X(void,        grGammaCorrectionValue, "_GRGAMMACORRECTIONVALUE@4",    "_grGammaCorrectionValue@4",    (float value)) \
+  X(void,        grGlideShamelessPlug,   "_GRGLIDESHAMELESSPLUG@4",      "_grGlideShamelessPlug@4",      (const FxBool on)) \
+  X(void,        grSplash,               "_GRSPLASH@20",                 "_grSplash@20",                 (float x, float y, float width, float height, FxU32 frame)) \
+  X(const char*, grGetString,            "_GRGETSTRING@4",               "_grGetString@4",               (FxU32 pname))
 
 #define GLIDE2_DECLARE_PFN_(ret, name, u, m, params) \
   typedef ret (FX_CALL *pfn_##name) params;          \
@@ -194,6 +197,9 @@ GLIDE2_OVL_OPTIONAL_FUNCS_X(GLIDE2_DECLARE_PFN_)
 #define guTexMemQueryAvail        g_g2ovl_guTexMemQueryAvail
 #define guTexMemReset             g_g2ovl_guTexMemReset
 #define guFogGenerateExp          g_g2ovl_guFogGenerateExp
+#define grGammaCorrectionValue    g_g2ovl_grGammaCorrectionValue
+#define grGlideShamelessPlug      g_g2ovl_grGlideShamelessPlug
+#define grSplash                  g_g2ovl_grSplash
 
 extern int gtool_glide_load(char* source_out, size_t source_sz,
                             char* err_out, size_t err_sz);

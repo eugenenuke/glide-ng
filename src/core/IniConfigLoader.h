@@ -4,7 +4,7 @@
 
 namespace GlideWrapper {
 
-class JsonConfigLoader : public IConfigLoader {
+class IniConfigLoader : public IConfigLoader {
 public:
     bool Load(const std::string& configFilePath, WrapperConfig& outConfig) override;
 };

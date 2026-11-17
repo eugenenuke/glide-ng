@@ -121,6 +121,45 @@ add_dos_glide_executable(glide_bench
         "${CMAKE_CURRENT_SOURCE_DIR}/glide_bench/glide_bench.h"
 )
 
+# --- Glide 2.x Environment Variable Verifier (Unified Pure C99) ---
+add_executable(glide2_envtest glide_envtest/glide_envtest.c)
+set_target_properties(glide2_envtest PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON)
+target_link_libraries(glide2_envtest PRIVATE glide2x ${CMAKE_DL_LIBS})
+target_compile_definitions(glide2_envtest PRIVATE GLIDE_VERSION=2)
+target_include_directories(glide2_envtest PRIVATE
+    "${CMAKE_SOURCE_DIR}/include"
+    "${CMAKE_SOURCE_DIR}/include/glide2"
+    "${CMAKE_SOURCE_DIR}/include/3dfx"
+    "${CMAKE_CURRENT_SOURCE_DIR}/common"
+)
+
+# --- Glide 3.x Environment Variable Verifier (Unified Pure C99) ---
+add_executable(glide3_envtest glide_envtest/glide_envtest.c)
+set_target_properties(glide3_envtest PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON)
+target_link_libraries(glide3_envtest PRIVATE glide3x ${CMAKE_DL_LIBS})
+target_compile_definitions(glide3_envtest PRIVATE GLIDE_VERSION=3)
+target_include_directories(glide3_envtest PRIVATE
+    "${CMAKE_SOURCE_DIR}/include"
+    "${CMAKE_SOURCE_DIR}/include/glide3"
+    "${CMAKE_SOURCE_DIR}/include/3dfx"
+    "${CMAKE_CURRENT_SOURCE_DIR}/common"
+)
+
+# --- Optional DOS/32 CauseWay glide_envtest.exe (Open Watcom v2) ---
+add_dos_glide_executable(glide_envtest
+    SOURCES
+        "${CMAKE_CURRENT_SOURCE_DIR}/glide_envtest/glide_envtest.c"
+    INCLUDES
+        "${CMAKE_SOURCE_DIR}/include"
+        "${CMAKE_SOURCE_DIR}/include/glide2"
+        "${CMAKE_SOURCE_DIR}/include/3dfx"
+        "${CMAKE_CURRENT_SOURCE_DIR}/common"
+    DEPENDS
+        "${CMAKE_SOURCE_DIR}/include/glide_ng/env_vars.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/common/glide_tool_platform.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/common/glide2_dos_ovl.h"
+)
+
 
 
 # add_subdirectory(snake)

@@ -53,7 +53,9 @@ tests/software_dumps/
 /refs/openglide-ng/
 /refs/wrappers/
 
-# Runtime shader/pipeline cache files
+# Runtime configuration and shader/pipeline cache files
+/glide-ng.ini
+.glide-ng-vkcache.bin
 .glide-vulkan-cache.bin
 
 # Local release build directories

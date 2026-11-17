@@ -26,7 +26,7 @@ This document provides a highly forensic, function-by-function and parameter-lev
 | :--- | :--- | :--- | :--- |
 | **Graphics API Backends** | **Vulkan 1.1+**, **OpenGL ES 2.0+**, **Pure Software (OpenMP)** | Desktop OpenGL 1.1 / 1.2 only | **Better**. Our wrapper runs on modern mobile, embedded, web, and desktop architectures. OpenGLide is stuck on legacy desktop OpenGL. |
 | **Window & Headless CI** | Full headless window surface attachments; zero GPU dependencies for Software CI | Requires active X11 display server; crashes in headless testing | **Better**. Our wrapper is designed for modern automated testing and continuous integration (CI). |
-| **Device Customization** | JSON configuration (`glide_config.json`); environment card model overrides (Voodoo 1-5) | Hardcoded or limited INI settings | **Better**. Supports case-insensitive card model selection and dynamic memory scaling. |
+| **Device Customization** | INI configuration (`glide-ng.ini`); environment card model overrides (Voodoo 1-5) | Hardcoded or limited INI settings | **Better**. Supports case-insensitive card model selection and dynamic memory scaling. |
 | **Console raw-mode Safety** | **SafePrint** utility prints safe `\r\n` sequences to prevent staircase line wrapping | Plain `printf` / `std::cout` causes terminal corruption under raw keyboard polling | **Better**. Our console output is robust under raw console conditions. |
 
 ### 2. Geometry & Vertex Processing

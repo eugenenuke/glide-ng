@@ -41,15 +41,14 @@ Out-of-the-box, **`glide-ng`** strictly returns authentic 1990s 3dfx hardware st
 
 You can easily override these reported strings using either your local configuration profile or system environment variables.
 
-### Method A: Configuration Profile (`glide_config.json`)
-Place a file named `glide_config.json` inside your active game execution directory and append your custom strings under the `"ReportedVendor"` and `"ReportedRenderer"` fields:
+### Method A: Configuration Profile (`glide-ng.ini`)
+Place a file named `glide-ng.ini` inside your active game execution directory and set `vendor` and `renderer` under `[hardware]`:
 
-```json
-{
-  "CardModel": "Voodoo2",
-  "ReportedVendor": "MyCustomBrand / Antigravity AI",
-  "ReportedRenderer": "Custom Vulkan Multi-Threaded Renderer"
-}
+```ini
+[hardware]
+card_model = Voodoo2
+vendor = MyCustomBrand
+renderer = Custom Vulkan Renderer
 ```
 
 ### Method B: Environment Variables
@@ -57,15 +56,15 @@ For automated multi-game launchers or global overrides, set the following enviro
 
 * **Linux (Bash)**:
   ```bash
-  export GLIDE_WRAPPER_VENDOR="MyCustomBrand"
-  export GLIDE_WRAPPER_RENDERER="Custom Vulkan Provider"
+  export GLIDE_NG_VENDOR="MyCustomBrand"
+  export GLIDE_NG_RENDERER="Custom Vulkan Provider"
   ./my_retro_game.bin
   ```
 
 * **Windows (PowerShell)**:
   ```powershell
-  $env:GLIDE_WRAPPER_VENDOR="MyCustomBrand"
-  $env:GLIDE_WRAPPER_RENDERER="Custom Vulkan Provider"
+  $env:GLIDE_NG_VENDOR="MyCustomBrand"
+  $env:GLIDE_NG_RENDERER="Custom Vulkan Provider"
   .\my_retro_game.exe
   ```
 

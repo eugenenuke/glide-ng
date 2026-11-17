@@ -10,7 +10,7 @@ This wrapper breathes new life into classic 1990s and early 2000s speed-sensitiv
 
 * **Flawless C ABI Compatibility**: Compiles into un-mangled dynamic replacement libraries (`glide2x.dll`/`libglide2x.so` and `glide3x.dll`/`libglide3x.so`) matching the original 3dfx SDK specifications exactly.
 * **Polymorphic Multi-Backend System**: The Glide state machine is entirely uncoupled from the rendering execution. You can hot-swap rendering backends instantly (Vulkan for ultra-low latency, EGL for lightweight embedded contexts).
-* **Configurable Hardware Emulation**: Old retro games often glitch or run at hyper-speed on modern processors. The wrapper enforces exact Voodoo video RAM limits, active TMU (Texture Mapping Unit) limits, and classic AGP/PCI bus delays via `glide_config.json` or `GLIDE_NG_*` environment overrides.
+* **Configurable Hardware Emulation**: Old retro games often glitch or run at hyper-speed on modern processors. The wrapper enforces exact Voodoo video RAM limits, active TMU (Texture Mapping Unit) limits, and classic overrides via `glide-ng.ini` (see [glide-ng.ini.example](./glide-ng.ini.example)), authentic `FX_GLIDE_*`/`SST_*` variables, or `GLIDE_NG_*` environment overrides.
 * **Automated Runtime Logging**: Automatically writes `glide-ng.log` (configurable via `GLIDE_NG_LOG_FILE`) to track game texture requirements, host capabilities, and active emulation parameters.
 * **Off-Screen Golden Testing**: Features Catch2 integration test suites that execute headless Glide rendering passes and perform bit-exact golden image comparisons.
 
@@ -36,14 +36,33 @@ GLIDE_NG_HEADLESS=1 ./bin/Glide3xWrapperTests
 ```
 
 ### Optional: DOS Cross-Compiler (Open Watcom v2)
-DOS diagnostic and benchmark `.exe` tools (`build/dos/glide_info.exe`, `build/dos/glide_bench.exe`) are **completely optional** — CMake skips them automatically if Open Watcom v2 is not installed, so standard Linux builds never fail without it.
+DOS diagnostic, benchmark, and verification `.exe` tools (`build/dos/glide_info.exe`, `build/dos/glide_bench.exe`, `build/dos/glide_envtest.exe`) are **completely optional** — CMake skips them automatically if Open Watcom v2 is not installed, so standard Linux builds never fail without it.
 
 To enable DOS `.exe` builds (identical across Debian, Fedora, and Arch, no root required):
 1. Download the official Linux x64 release tarball from [Open Watcom v2 Releases](https://github.com/open-watcom/open-watcom-v2/releases) (e.g. `open-watcom-2_0-c-linux-x64.tar.xz`).
 2. Extract it into `./vendor/watcom/` (git-ignored) so `./vendor/watcom/binl64/wcc386` exists (or point `WATCOM` to an existing installation).
-3. Re-run CMake configure — when detected, the `dos_tools` target automatically produces self-contained CauseWay DOS/32 executables (`build/dos/glide_info.exe` and `build/dos/glide_bench.exe`) that dynamically load `GLIDE2X.OVL`.
+3. Re-run CMake configure — when detected, the `dos_tools` target automatically produces self-contained CauseWay DOS/32 executables (`build/dos/glide_info.exe`, `build/dos/glide_bench.exe`, `build/dos/glide_envtest.exe`) that dynamically load `GLIDE2X.OVL`.
 
-### Windows (MinGW-w64 / MSVC)
+### Optional: Win32 Cross-Compiler (MinGW-w64) & Wine (for `glide2x.dll` / `glide3x.dll`)
+32-bit Win32 PE builds (`glide2x.dll`, `glide3x.dll`, and Win32 tools for running Windows Glide games under Wine/Proton) require a 32-bit (`i686`) MinGW-w64 POSIX-threads toolchain and Wine:
+
+* **Debian / Ubuntu** (enable `i386` multiarch first if not already enabled):
+  ```bash
+  sudo dpkg --add-architecture i386
+  sudo apt-get update
+  sudo apt-get install -y g++-mingw-w64-i686-posix gcc-mingw-w64-i686-posix mingw-w64-tools wine wine32:i386
+  ```
+  *(Use the `-posix` MinGW variant so C++17 `std::thread`/`std::mutex` are supported; `libvulkan-dev` already provides `vulkan_win32.h`.)*
+* **Arch Linux**:
+  ```bash
+  sudo pacman -S mingw-w64-gcc wine
+  ```
+* **Fedora**:
+  ```bash
+  sudo dnf install mingw32-gcc-c++ mingw32-winpthreads-static wine
+  ```
+
+### Windows (Native MinGW-w64 / MSVC)
 * **CMake**: Version 3.20 or newer.
 * **Vulkan SDK**: Download and install the official LunarG Vulkan SDK.
 * **Catch2**: Can be pulled dynamically via CMake `FetchContent` or installed via Vcpkg/Conan.

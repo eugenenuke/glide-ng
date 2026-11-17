@@ -6,7 +6,7 @@ endif()
 set(CORE_SOURCES
     core/WrapperConfig.cpp
     core/Logger.cpp
-    core/JsonConfigLoader.cpp
+    core/IniConfigLoader.cpp
     core/VertexLayout.cpp
     core/BackendManager.cpp
     core/TextureManager.cpp

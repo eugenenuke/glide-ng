@@ -1,0 +1,104 @@
+# ==============================================================================
+# glide-ng Configuration Template (copy to `glide-ng.ini` to activate)
+#
+# Precedence (lowest to highest):
+#   1. Built-in defaults
+#   2. glide-ng.ini (or custom path via GLIDE_NG_CONFIG=/path/to/file.ini)
+#   3. Authentic 3dfx environment variables (FX_GLIDE_* / SST_* / SSTV2_*)
+#   4. glide-ng environment variables (GLIDE_NG_*)
+#
+# Comments start with `#` or `;`. Inline comments require preceding whitespace.
+# ==============================================================================
+
+[core]
+# Rendering backend: vulkan (vk) | opengl_es (gles) | software (sw)
+backend = vulkan
+# Run off-screen without creating a visible window (useful for CI/benchmarks)
+headless = false
+
+[hardware]
+# Emulated 3dfx board: VoodooGraphics (SST1) | VoodooRush (SST96) |
+#                      Voodoo2 (CVG) | Voodoo3 (H3) | Voodoo5 (H5)
+card_model = Voodoo2
+# Glide 2.x/3.x reported API base version: 2.1 | 2.40 | 2.42 | 2.43 | 2.61
+api_version = 2.43
+# Framebuffer RAM (FBI) in MB
+fbi_memory_mb = 16
+# Active Texture Mapping Units (1..3)
+tmu_count = 2
+# Texture RAM per TMU in MB
+tmu_memory_mb = 16
+# Report Voodoo2 SLI capability
+sli = false
+# Optional reported vendor / renderer strings (grGetString)
+# vendor = 3Dfx Interactive
+# renderer = 3dfx glide-ng Vulkan Wrapper
+
+[display]
+# Vertical sync: true | false | fifo (strict FIFO on Wayland)
+vsync = true
+# Frame rate cap in FPS (0 = uncapped)
+max_fps = 60
+# Integer window scale factor (1..8)
+window_scale = 1
+# Presentation scaling filter: nearest | linear
+presentation_filter = nearest
+# Multisample anti-aliasing samples: 1 | 2 | 4 | 8 | 16
+msaa = 1
+
+[logging]
+# Log verbosity: off (0) | crit (1) | warn (2) | info (3) | debug (4) | trace (5)
+level = info
+# Log output file path
+file = glide-ng.log
+# Also mirror log lines to stdout
+console = false
+# Comma-separated categories: all | general | api | lfb | tex | state | draw | wsi | perf
+categories = all
+# Optional frame window filter for verbose logging (e.g. 120-125, 10, 50-, -20)
+# trace_frames = 120-125
+# Periodic [Perf] summaries (true/false) or path to per-frame CSV output
+# perf_log = /tmp/glide-ng-perf.csv
+
+[hud]
+# DXVK-style on-screen HUD elements: off | fps | frametimes | backend | api |
+#                                    drawcalls | lfb | full
+# elements = fps,frametimes,backend
+# position = top-left        # top-left (tl) | top-right (tr) | bottom-left (bl) | bottom-right (br)
+# scale = 1.0                # 0.5 .. 4.0
+# opacity = 0.78             # 0.0 .. 1.0
+
+[glide]
+# Authentic 3dfx overrides (equivalent to FX_GLIDE_* / SST_* / SSTV2_* env vars)
+no_splash = false            # Suppress 3dfx startup splash animation
+# shameless_plug = -1        # -1 = app-controlled | 0 = force off | 1 = force on
+# swap_interval = 1          # 0 = vsync off | >=1 = swap interval
+# gamma = 1.0                # Gamma correction override (SST_GAMMA / SSTV2_GAMMA)
+# screen_refresh = 60        # Refresh pacing hint in Hz (SST_SCREENREFRESH / SSTV2_SCREENREFRESH)
+# ignore_reopen = false      # Ignore redundant grSstWinOpen while window is active
+# no_dither_sub = false      # Disable 16-bit dither quantization (FX_GLIDE_NO_DITHER_SUB)
+# force_bilinear = false     # Force bilinear texture filtering (SSTV2_FORCE_BILINEAR)
+# force_trilinear = false    # Force trilinear mipmap filtering (SSTV2_FORCE_TRILINEAR)
+# texmap_disable = false     # Bypass texture sampling for diagnostics (SST_TEXMAP_DISABLE)
+# bounds_check = false       # Warn on out-of-bounds / non-finite vertices (FX_GLIDE_BOUNDS_CHECK)
+# alloc_color = 2            # Override color buffer count: 2 | 3 (FX_GLIDE_ALLOC_COLOR)
+# alloc_aux = 1              # Override aux/depth buffer count: 0 | 1 (FX_GLIDE_ALLOC_AUX)
+# snapshot = /tmp/snap.ppm   # Capture PPM framebuffer snapshot: 1 | @N | path | path@N
+
+[software]
+# Worker threads for Software backend (0 = auto-detect hardware concurrency)
+threads = 0
+# Enable AVX2+FMA SIMD software rasterizer (auto-guarded by CPUID at runtime)
+simd = true
+# Tile bin dimension in pixels (>= 16, power of two)
+tile_size = 32
+# Anti-aliasing mode: analytical | ssaa
+aa = analytical
+
+[vulkan]
+# Persistent Vulkan pipeline cache path
+cache_path = .glide-ng-vkcache.bin
+
+[opengl_es]
+# Dynamic vertex ring buffer size in MB
+vbo_size_mb = 8
