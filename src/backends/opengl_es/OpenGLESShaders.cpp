@@ -583,9 +583,8 @@ void main() {
         bool useAlpha = (uAlphaTestOp != 7) || (col.a < 0.99);
         
         if (useAlpha) {
-            // ARGB1555
-            int matrixSize = (uDitherMode == 2u) ? 16 : 4;
-            int ditherA = (d * 128) / matrixSize;
+            // ARGB1555 (both 4x4 and 2x2 matrices above are scaled to 0..15)
+            int ditherA = (d * 128) / 16;
             
             int r_dither = d >> 1;
             int g_dither = d >> 1;

@@ -8543,6 +8543,33 @@ TEST_CASE("Glide 2.x Partial MipMap Rows, Coplanar W-Buffer & Negative Combiner 
     REQUIRE(grLfbReadRegion(GR_BUFFER_BACKBUFFER, 400, 80, 1, 1, 2, &negPx) ==
             FXTRUE);
     CHECK(negPx == 0x0000u);
+
+    // GR_DITHER_2x2 with alpha=0 transparent quad must NEVER turn pixels opaque
+    grBufferClear(0xFF00FF00u, 0xFF, GR_WDEPTHVALUE_FARTHEST);  // bright green bg
+    grDitherMode(GR_DITHER_2x2);
+    grAlphaTestFunction(GR_CMP_ALWAYS);
+    grAlphaBlendFunction(GR_BLEND_SRC_ALPHA, GR_BLEND_ONE_MINUS_SRC_ALPHA,
+                         GR_BLEND_ZERO, GR_BLEND_ZERO);
+    grColorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+                   GR_COMBINE_LOCAL_CONSTANT, GR_COMBINE_OTHER_NONE, FXFALSE);
+    grAlphaCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+                   GR_COMBINE_LOCAL_CONSTANT, GR_COMBINE_OTHER_NONE, FXFALSE);
+    grConstantColorValue(0x00000000u);  // black RGB, alpha = 0 (fully transparent)
+    GrVertex t0 = makeV(20.0f, 20.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
+    GrVertex t1 = makeV(100.0f, 20.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
+    GrVertex t2 = makeV(100.0f, 100.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
+    GrVertex t3 = makeV(20.0f, 100.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f);
+    grDrawTriangle(&t0, &t1, &t2);
+    grDrawTriangle(&t0, &t2, &t3);
+    // Check an entire 2x2 dither tile: all 4 pixels must remain green
+    for (uint32_t dx = 0; dx < 2; ++dx) {
+      for (uint32_t dy = 0; dy < 2; ++dy) {
+        uint16_t px = 0;
+        REQUIRE(grLfbReadRegion(GR_BUFFER_BACKBUFFER, 40 + dx, 40 + dy, 1, 1, 2,
+                                &px) == FXTRUE);
+        CHECK(((px >> 5) & 63) >= 56);
+      }
+    }
   }
 
   grSstWinClose();

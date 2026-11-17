@@ -582,8 +582,8 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
   const Simd8f minY_f(static_cast<float>(minY));
   const Simd8f maxY_f(static_cast<float>(maxY) + 1.0f);
   const Simd8f edgeEps_vec(Clockwise ? -1e-5f : 1e-5f);
-  const float ditherAlphaScale =
-      128.0f / ((state.ditherMode == 2) ? 16.0f : 4.0f);
+  // Both kDitherMatrix4x4 and kDitherMatrix2x2 are scaled to [0..15]
+  const float ditherAlphaScale = 128.0f / 16.0f;
   const Simd8f ditherAlphaScale_vec(ditherAlphaScale);
   const uint32_t colorMaskVal =
       (colorMaskRgb ? 0x00FFFFFFu : 0u) | (colorMaskAlpha ? 0xFF000000u : 0u);
