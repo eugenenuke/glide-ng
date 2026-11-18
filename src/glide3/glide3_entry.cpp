@@ -9,6 +9,7 @@
 #include "core/LfbManager.h"
 #include "core/Logger.h"
 #include "core/MathUtils.h"
+#include "core/SimdKernels.h"
 #include "core/Telemetry.h"
 #include "core/TextureManager.h"
 #include "core/VertexLayout.h"
@@ -105,10 +106,9 @@ struct TextureBufferState {
 TextureBufferState s_texBuf;
 
 void NormalizeLfbPixelsToCanonicalArgb(std::vector<uint32_t>& pixels) {
-  if (s_state.colorFormat != GR_COLORFORMAT_ABGR) return;
-  for (uint32_t& p : pixels) {
-    p = (p & 0xFF00FF00u) | ((p & 0xFFu) << 16) | ((p >> 16) & 0xFFu);
-  }
+  if (s_state.colorFormat != GR_COLORFORMAT_ABGR || pixels.empty()) return;
+  GlideWrapper::GetSimdKernels().SwapRB32(pixels.data(), pixels.data(),
+                                          pixels.size());
 }
 
 void ApplyTexBufClipWindow() {

@@ -6,6 +6,9 @@ endif()
 set(CORE_SOURCES
     core/WrapperConfig.cpp
     core/SimdDispatch.cpp
+    core/SimdKernels.cpp
+    core/SimdKernelsAvx2.cpp
+    core/SimdKernelsAvx512.cpp
     core/Logger.cpp
     core/IniConfigLoader.cpp
     core/VertexLayout.cpp
@@ -44,8 +47,13 @@ add_library(GlideWrapperCore STATIC ${CORE_SOURCES})
 # Strict per-TU ISA isolation: baseline core/scalar TUs never emit AVX2/AVX-512
 # instructions, keeping runtime CPUID dispatch 100% safe across all x86 CPUs.
 set_source_files_properties(
+    core/SimdKernelsAvx2.cpp
     backends/software/SoftwareRasterizerSimd.cpp
     PROPERTIES COMPILE_FLAGS "-mavx2 -mfma"
+)
+set_source_files_properties(
+    core/SimdKernelsAvx512.cpp
+    PROPERTIES COMPILE_FLAGS "-mavx512f -mavx512dq -mavx512bw -mavx512vl"
 )
 set_target_properties(GlideWrapperCore PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_include_directories(GlideWrapperCore PUBLIC

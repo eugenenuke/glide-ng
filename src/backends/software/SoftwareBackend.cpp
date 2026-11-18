@@ -30,6 +30,7 @@
 
 #include "core/Logger.h"
 #include "core/SimdDispatch.h"
+#include "core/SimdKernels.h"
 #include "core/Telemetry.h"
 #include "core/TextureManager.h"
 
@@ -1182,26 +1183,17 @@ void SoftwareBackend::ResolveFrontBuffer(const uint32_t*& outPixels,
   uint32_t* resolvedData =
       reinterpret_cast<uint32_t*>(m_resolvedBuffer.data());
 
+  const auto& kernels = GetSimdKernels();
+  const uint32_t srcStride = m_headlessWidth;
 #ifdef _OPENMP
-#pragma omp parallel for collapse(2) if (dstH * dstW > 64000)
+#pragma omp parallel for if (dstH * dstW > 64000)
 #endif
   for (uint32_t y = 0; y < dstH; ++y) {
-    for (uint32_t x = 0; x < dstW; ++x) {
-      uint32_t r = 0, g = 0, b = 0, a = 0;
-      for (uint32_t dy = 0; dy < 2; ++dy) {
-        for (uint32_t dx = 0; dx < 2; ++dx) {
-          const uint32_t srcIdx =
-              (2 * y + dy) * m_headlessWidth + (2 * x + dx);
-          const uint32_t p = fullSrc[srcIdx];
-          a += (p >> 24) & 0xFFu;
-          r += (p >> 16) & 0xFFu;
-          g += (p >> 8) & 0xFFu;
-          b += p & 0xFFu;
-        }
-      }
-      resolvedData[static_cast<size_t>(y) * dstW + x] =
-          ((a / 4) << 24) | ((r / 4) << 16) | ((g / 4) << 8) | (b / 4);
-    }
+    const uint32_t* sRow0 = fullSrc + static_cast<size_t>(2u * y) * srcStride;
+    const uint32_t* sRow1 =
+        fullSrc + static_cast<size_t>(2u * y + 1u) * srcStride;
+    uint32_t* dRow = resolvedData + static_cast<size_t>(y) * dstW;
+    kernels.ResolveSsaa2x2Row(sRow0, sRow1, dRow, dstW);
   }
 
   outPixels = resolvedData;
@@ -1331,17 +1323,19 @@ bool SoftwareBackend::SwapBuffers() {
   if (m_useGammaLut && !m_cpuBuffers[m_frontBufferIdx].empty()) {
     auto* pixels =
         reinterpret_cast<uint32_t*>(m_cpuBuffers[m_frontBufferIdx].data());
-    int totalPixels = m_headlessWidth * m_headlessHeight;
+    const size_t totalPixels =
+        static_cast<size_t>(m_headlessWidth) * m_headlessHeight;
+    const auto& kernels = GetSimdKernels();
+    constexpr uint32_t kNumChunks = 16u;
+    const size_t chunkSize = (totalPixels + kNumChunks - 1u) / kNumChunks;
 #ifdef _OPENMP
 #pragma omp parallel for if (totalPixels > 64000)
 #endif
-    for (int i = 0; i < totalPixels; ++i) {
-      uint32_t pixel = pixels[i];
-      uint8_t a = (pixel >> 24) & 0xFF;
-      uint8_t r = (pixel >> 16) & 0xFF;
-      uint8_t g = (pixel >> 8) & 0xFF;
-      uint8_t b = pixel & 0xFF;
-      pixels[i] = (a << 24) | (m_lutR[r] << 16) | (m_lutG[g] << 8) | m_lutB[b];
+    for (uint32_t c = 0; c < kNumChunks; ++c) {
+      const size_t start = static_cast<size_t>(c) * chunkSize;
+      if (start >= totalPixels) continue;
+      const size_t len = std::min(chunkSize, totalPixels - start);
+      kernels.ApplyGammaLut(pixels + start, len, m_lutR, m_lutG, m_lutB);
     }
   }
 

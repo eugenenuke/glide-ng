@@ -2,6 +2,8 @@
 #include <iostream>
 #include <cmath>
 #include "core/WrapperConfig.h"
+#include "core/SimdDispatch.h"
+#include "core/SimdKernels.h"
 #include "core/IniConfigLoader.h"
 #include "core/GlideEntryCommon.h"
 #include "core/TextureManager.h"
@@ -9246,4 +9248,200 @@ TEST_CASE(
 
   ::dlclose(handle);
 #endif
+}
+
+TEST_CASE("M11.3: Shared CPU & Post-Process SIMD Kernels Bit-Exactness",
+          "[M11][SimdKernels]") {
+  using namespace GlideWrapper;
+  const SwSimdLevel hostMax = DetectHostMaxSimdLevel();
+  const auto& scalar = GetSimdKernelsForLevel(SwSimdLevel::Scalar);
+
+  std::vector<SwSimdLevel> targets;
+  if (hostMax >= SwSimdLevel::Avx2) {
+    targets.push_back(SwSimdLevel::Avx2);
+  }
+  if (hostMax >= SwSimdLevel::Avx512) {
+    targets.push_back(SwSimdLevel::Avx512);
+  }
+  REQUIRE(!targets.empty());
+
+  // 1. Exhaustive 65536-value 16-bit -> BGRA32 conversions + odd tail counts
+  std::vector<uint16_t> all16(65536 + 19);
+  for (size_t i = 0; i < all16.size(); ++i) {
+    all16[i] = static_cast<uint16_t>(i & 0xFFFFu);
+  }
+  const size_t oddCounts[] = {0, 1, 3, 7, 8, 15, 16, 17, 31, 32, 33, 65,
+                              all16.size()};
+
+  // 2. BGRA32 -> RGB565 inputs covering all 256 byte values on R, G, B, A
+  std::vector<uint32_t> bgraIn(4096 + 23);
+  for (size_t i = 0; i < bgraIn.size(); ++i) {
+    const uint32_t a = static_cast<uint32_t>((i * 37u + 11u) & 0xFFu);
+    const uint32_t r = static_cast<uint32_t>((i * 13u + 3u) & 0xFFu);
+    const uint32_t g = static_cast<uint32_t>((i * 29u + 7u) & 0xFFu);
+    const uint32_t b = static_cast<uint32_t>((i * 53u + 19u) & 0xFFu);
+    bgraIn[i] = (a << 24) | (r << 16) | (g << 8) | b;
+  }
+  // Guarantee every 0..255 value appears in R, G, and B explicitly
+  for (uint32_t v = 0; v < 256u; ++v) {
+    bgraIn[v] = (v << 24) | (v << 16) | (v << 8) | v;
+  }
+
+  // 3. Palette & Gamma LUTs
+  uint32_t palette[256];
+  uint8_t lutR[256], lutG[256], lutB[256];
+  for (uint32_t i = 0; i < 256u; ++i) {
+    palette[i] = ((255u - i) << 24) | (((i * 73u) & 0xFFu) << 16) |
+                 (((i * 151u) & 0xFFu) << 8) | ((i * 29u + 5u) & 0xFFu);
+    lutR[i] = static_cast<uint8_t>((i * 197u + 13u) & 0xFFu);
+    lutG[i] = static_cast<uint8_t>((255u - i) ^ 0x5Au);
+    lutB[i] = static_cast<uint8_t>(((i * i) >> 8) & 0xFFu);
+  }
+  std::vector<uint8_t> p8In(512 + 29);
+  for (size_t i = 0; i < p8In.size(); ++i) {
+    p8In[i] = static_cast<uint8_t>((i * 41u + 7u) & 0xFFu);
+  }
+
+  for (SwSimdLevel lvl : targets) {
+    const auto& simd = GetSimdKernelsForLevel(lvl);
+
+    // 16-bit unpack kernels
+    for (size_t cnt : oddCounts) {
+      std::vector<uint32_t> ref(cnt, 0xDEADBEEFu);
+      std::vector<uint32_t> got(cnt, 0xCAFEBABEu);
+
+      scalar.ConvertRgb565ToBgra32(all16.data(), ref.data(), cnt);
+      simd.ConvertRgb565ToBgra32(all16.data(), got.data(), cnt);
+      REQUIRE(got == ref);
+
+      scalar.ConvertArgb1555ToBgra32(all16.data(), ref.data(), cnt, false);
+      simd.ConvertArgb1555ToBgra32(all16.data(), got.data(), cnt, false);
+      REQUIRE(got == ref);
+
+      scalar.ConvertArgb1555ToBgra32(all16.data(), ref.data(), cnt, true);
+      simd.ConvertArgb1555ToBgra32(all16.data(), got.data(), cnt, true);
+      REQUIRE(got == ref);
+
+      scalar.ConvertArgb4444ToBgra32(all16.data(), ref.data(), cnt);
+      simd.ConvertArgb4444ToBgra32(all16.data(), got.data(), cnt);
+      REQUIRE(got == ref);
+    }
+
+    // BGRA32 -> RGB565
+    for (size_t cnt :
+         {size_t(0), size_t(1), size_t(7), size_t(8), size_t(15), size_t(16),
+          size_t(17), size_t(33), bgraIn.size()}) {
+      std::vector<uint16_t> ref(cnt, 0xBEEFu);
+      std::vector<uint16_t> got(cnt, 0xCAFEu);
+      scalar.ConvertBgra32ToRgb565(bgraIn.data(), ref.data(), cnt);
+      simd.ConvertBgra32ToRgb565(bgraIn.data(), got.data(), cnt);
+      REQUIRE(got == ref);
+    }
+
+    // ResolveSsaa2x2Row
+    for (uint32_t w : {0u, 1u, 3u, 4u, 7u, 8u, 9u, 15u, 16u, 19u, 64u, 131u}) {
+      std::vector<uint32_t> row0(2u * w + 4u);
+      std::vector<uint32_t> row1(2u * w + 4u);
+      for (size_t i = 0; i < row0.size(); ++i) {
+        row0[i] = bgraIn[i % bgraIn.size()];
+        row1[i] = bgraIn[(i * 3u + 17u) % bgraIn.size()];
+      }
+      std::vector<uint32_t> ref(w, 0u);
+      std::vector<uint32_t> got(w, 0u);
+      scalar.ResolveSsaa2x2Row(row0.data(), row1.data(), ref.data(), w);
+      simd.ResolveSsaa2x2Row(row0.data(), row1.data(), got.data(), w);
+      REQUIRE(got == ref);
+    }
+
+    // ApplyGammaLut
+    for (size_t cnt :
+         {size_t(0), size_t(1), size_t(7), size_t(8), size_t(15), size_t(16),
+          size_t(33), size_t(513)}) {
+      std::vector<uint32_t> ref(bgraIn.begin(), bgraIn.begin() + cnt);
+      std::vector<uint32_t> got(bgraIn.begin(), bgraIn.begin() + cnt);
+      scalar.ApplyGammaLut(ref.data(), cnt, lutR, lutG, lutB);
+      simd.ApplyGammaLut(got.data(), cnt, lutR, lutG, lutB);
+      REQUIRE(got == ref);
+    }
+
+    // DecodeP8ToBgra32 & SwapRB32 (out-of-place & in-place)
+    for (size_t cnt :
+         {size_t(0), size_t(1), size_t(7), size_t(8), size_t(15), size_t(16),
+          size_t(37), p8In.size()}) {
+      std::vector<uint32_t> ref(cnt, 0u);
+      std::vector<uint32_t> got(cnt, 0u);
+      scalar.DecodeP8ToBgra32(p8In.data(), palette, ref.data(), cnt);
+      simd.DecodeP8ToBgra32(p8In.data(), palette, got.data(), cnt);
+      REQUIRE(got == ref);
+
+      std::vector<uint32_t> swRef(cnt, 0u);
+      std::vector<uint32_t> swGot(cnt, 0u);
+      scalar.SwapRB32(ref.data(), swRef.data(), cnt);
+      simd.SwapRB32(ref.data(), swGot.data(), cnt);
+      REQUIRE(swGot == swRef);
+
+      std::vector<uint32_t> inPlace = ref;
+      simd.SwapRB32(inPlace.data(), inPlace.data(), cnt);
+      REQUIRE(inPlace == swRef);
+    }
+
+    // ClearColorMasked & ClearColorTBufferRow
+    for (uint32_t x0 : {0u, 1u, 3u, 8u}) {
+      for (uint32_t len : {0u, 1u, 7u, 8u, 15u, 16u, 35u}) {
+        const uint32_t x1 = x0 + len;
+        for (uint32_t parity = 0u; parity <= 3u; ++parity) {
+          for (uint32_t keepMask : {0u, 0xFF00FF00u}) {
+            const uint32_t clearWord = 0xAB123456u;
+            const uint32_t maskedClear = clearWord & ~keepMask;
+            std::vector<uint32_t> ref(bgraIn.begin(),
+                                      bgraIn.begin() + x1 + 8u);
+            std::vector<uint32_t> got = ref;
+            scalar.ClearColorTBufferRow(ref.data(), x0, x1, clearWord, keepMask,
+                                        maskedClear, parity);
+            simd.ClearColorTBufferRow(got.data(), x0, x1, clearWord, keepMask,
+                                      maskedClear, parity);
+            REQUIRE(got == ref);
+          }
+        }
+      }
+    }
+
+    // ClearDepthTBufferRow
+    for (uint32_t x0 : {0u, 1u, 5u}) {
+      for (uint32_t len : {0u, 1u, 7u, 8u, 15u, 16u, 37u}) {
+        const uint32_t x1 = x0 + len;
+        for (uint32_t parity = 0u; parity <= 3u; ++parity) {
+          std::vector<float> ref(x1 + 8u);
+          for (size_t i = 0; i < ref.size(); ++i) {
+            ref[i] = static_cast<float>(i) * 0.01f;
+          }
+          std::vector<float> got = ref;
+          scalar.ClearDepthTBufferRow(ref.data(), x0, x1, 0.75f, parity);
+          simd.ClearDepthTBufferRow(got.data(), x0, x1, 0.75f, parity);
+          REQUIRE(got == ref);
+        }
+      }
+    }
+
+    // ClearStencilMasked & ClearStencilTBufferRow
+    for (uint32_t x0 : {0u, 1u, 3u, 17u}) {
+      for (uint32_t len : {0u, 1u, 15u, 31u, 32u, 63u, 64u, 99u}) {
+        const uint32_t x1 = x0 + len;
+        for (uint32_t parity = 0u; parity <= 3u; ++parity) {
+          for (uint8_t keepMask : {uint8_t(0u), uint8_t(0xA5u)}) {
+            const uint8_t clearVal = 0x3Cu;
+            const uint8_t maskedClear =
+                static_cast<uint8_t>(clearVal & ~keepMask);
+            std::vector<uint8_t> ref(p8In.begin(), p8In.begin() + x1 + 8u);
+            std::vector<uint8_t> got = ref;
+            scalar.ClearStencilTBufferRow(ref.data(), x0, x1, clearVal,
+                                          maskedClear, keepMask, parity);
+            simd.ClearStencilTBufferRow(got.data(), x0, x1, clearVal,
+                                        maskedClear, keepMask, parity);
+            REQUIRE(got == ref);
+          }
+        }
+      }
+    }
+  }
 }

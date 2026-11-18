@@ -42,6 +42,7 @@
 #include <vector>
 
 #include "core/Logger.h"
+#include "core/SimdKernels.h"
 #include "core/Telemetry.h"
 #include "core/TextureManager.h"
 
@@ -731,11 +732,8 @@ bool OpenGLESBackend::WriteLFB(uint32_t buffer, uint32_t dstX, uint32_t dstY,
       glReadPixels(0, 0, m_headlessWidth, m_headlessHeight, GL_RGBA,
                    GL_UNSIGNED_BYTE, readDst);
       auto* dest = reinterpret_cast<uint32_t*>(readDst);
-      for (uint32_t i = 0; i < m_headlessWidth * m_headlessHeight; ++i) {
-        uint32_t rgba = dest[i];
-        dest[i] = (rgba & 0xFF00FF00u) | ((rgba & 0xFFu) << 16) |
-                  ((rgba >> 16) & 0xFFu);
-      }
+      GetSimdKernels().SwapRB32(
+          dest, dest, static_cast<size_t>(m_headlessWidth) * m_headlessHeight);
       std::vector<uint32_t> rowBuf(m_headlessWidth);
       for (uint32_t y = 0; y < m_headlessHeight / 2; ++y) {
         uint32_t* topRow = dest + static_cast<size_t>(y) * m_headlessWidth;
@@ -779,16 +777,13 @@ void OpenGLESBackend::FlushLFBToGPU_Locked() {
                                   uint32_t gpuTexture) {
       const auto* src = reinterpret_cast<const uint32_t*>(cpuBufferData);
       if (!src || m_swizzleBuffer.empty()) return;
+      const auto& kernels = GetSimdKernels();
       for (uint32_t y = 0; y < m_headlessHeight; ++y) {
         const uint32_t dstY = m_headlessHeight - 1 - y;
         const uint32_t* srcRow = src + static_cast<size_t>(y) * m_headlessWidth;
         uint32_t* dstRow =
             m_swizzleBuffer.data() + static_cast<size_t>(dstY) * m_headlessWidth;
-        for (uint32_t x = 0; x < m_headlessWidth; ++x) {
-          uint32_t bgra = srcRow[x];
-          dstRow[x] = (bgra & 0xFF00FF00u) | ((bgra & 0xFFu) << 16) |
-                      ((bgra >> 16) & 0xFFu);
-        }
+        kernels.SwapRB32(srcRow, dstRow, m_headlessWidth);
       }
       glBindTexture(GL_TEXTURE_2D, gpuTexture);
       glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
@@ -866,16 +861,13 @@ void OpenGLESBackend::FlushLFBToGPU_Locked() {
         }
 
         // Flip dirty band [minY..maxY] top-down -> bottom-up and swizzle ARGB -> RGBA.
+        const auto& kernels = GetSimdKernels();
         for (uint32_t rIdx = 0; rIdx < numRows; ++rIdx) {
           const uint32_t srcY = maxY - rIdx;
           const uint32_t* srcRow = overlay + static_cast<size_t>(srcY) * m_headlessWidth;
           uint32_t* dstRow =
               m_swizzleBuffer.data() + static_cast<size_t>(rIdx) * m_headlessWidth;
-          for (uint32_t x = 0; x < m_headlessWidth; ++x) {
-            uint32_t argb = srcRow[x];
-            dstRow[x] = (argb & 0xFF00FF00u) | ((argb & 0xFFu) << 16) |
-                        ((argb >> 16) & 0xFFu);
-          }
+          kernels.SwapRB32(srcRow, dstRow, m_headlessWidth);
         }
 
         const uint32_t glMinY = m_headlessHeight - 1 - maxY;

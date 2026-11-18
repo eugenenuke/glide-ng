@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "core/Logger.h"
+#include "core/SimdKernels.h"
 #include "core/Telemetry.h"
 #include "core/TextureManager.h"
 
@@ -86,11 +87,7 @@ void OpenGLESBackend::UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
       m_texUploadScratch.resize(expectedPixels);
     }
     uint32_t* dst = m_texUploadScratch.data();
-    for (size_t j = 0; j < copyCount; ++j) {
-      const uint32_t bgra = pixels[j];
-      dst[j] = (bgra & 0xFF00FF00u) | ((bgra & 0xFFu) << 16) |
-               ((bgra >> 16) & 0xFFu);
-    }
+    GetSimdKernels().SwapRB32(pixels, dst, copyCount);
     if (copyCount < expectedPixels) {
       std::memset(dst + copyCount, 0,
                   (expectedPixels - copyCount) * sizeof(uint32_t));
@@ -207,11 +204,7 @@ void OpenGLESBackend::UploadTexturePartial(uint32_t tmu, uint32_t startAddress,
     m_texUploadScratch.resize(subPixels);
   }
   uint32_t* dst = m_texUploadScratch.data();
-  for (size_t j = 0; j < subPixels; ++j) {
-    const uint32_t bgra = pixels[startPixelIndex + j];
-    dst[j] = (bgra & 0xFF00FF00u) | ((bgra & 0xFFu) << 16) |
-             ((bgra >> 16) & 0xFFu);
-  }
+  GetSimdKernels().SwapRB32(pixels + startPixelIndex, dst, subPixels);
 
   // Upload using glTexSubImage2D
   glTexSubImage2D(GL_TEXTURE_2D, static_cast<GLint>(lodLevel), 0,

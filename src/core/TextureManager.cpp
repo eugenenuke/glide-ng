@@ -7,6 +7,7 @@
 #include "core/BackendManager.h"
 #include "core/GlideEntryCommon.h"
 #include "core/IGraphicsBackend.h"
+#include "core/SimdKernels.h"
 #include "core/Telemetry.h"
 #include "core/WrapperConfig.h"
 
@@ -555,38 +556,19 @@ void DecodeTexelsToBgra(uint32_t format, const uint8_t* rawSrc, uint32_t width,
       return;
     }
     case 0xa: {  // RGB_565
-      const auto* src16 = reinterpret_cast<const uint16_t*>(rawSrc);
-      for (size_t i = 0; i < count; ++i) {
-        const uint16_t val = src16[i];
-        const uint32_t r = kExpand5[(val >> 11) & 0x1Fu];
-        const uint32_t g = kExpand6[(val >> 5) & 0x3Fu];
-        const uint32_t b = kExpand5[val & 0x1Fu];
-        dstBgra[i] = 0xFF000000u | (r << 16) | (g << 8) | b;
-      }
+      GetSimdKernels().ConvertRgb565ToBgra32(
+          reinterpret_cast<const uint16_t*>(rawSrc), dstBgra, count);
       return;
     }
     case 0xc: {  // ARGB_4444
-      const auto* src16 = reinterpret_cast<const uint16_t*>(rawSrc);
-      for (size_t i = 0; i < count; ++i) {
-        const uint16_t val = src16[i];
-        const uint32_t a = ((val >> 12) & 0xFu) * 17u;
-        const uint32_t r = ((val >> 8) & 0xFu) * 17u;
-        const uint32_t g = ((val >> 4) & 0xFu) * 17u;
-        const uint32_t b = (val & 0xFu) * 17u;
-        dstBgra[i] = (a << 24) | (r << 16) | (g << 8) | b;
-      }
+      GetSimdKernels().ConvertArgb4444ToBgra32(
+          reinterpret_cast<const uint16_t*>(rawSrc), dstBgra, count);
       return;
     }
     case 0xb: {  // ARGB_1555
-      const auto* src16 = reinterpret_cast<const uint16_t*>(rawSrc);
-      for (size_t i = 0; i < count; ++i) {
-        const uint16_t val = src16[i];
-        const uint32_t a = (val & 0x8000u) ? 0xFF000000u : 0u;
-        const uint32_t r = kExpand5[(val >> 10) & 0x1Fu];
-        const uint32_t g = kExpand5[(val >> 5) & 0x1Fu];
-        const uint32_t b = kExpand5[val & 0x1Fu];
-        dstBgra[i] = a | (r << 16) | (g << 8) | b;
-      }
+      GetSimdKernels().ConvertArgb1555ToBgra32(
+          reinterpret_cast<const uint16_t*>(rawSrc), dstBgra, count,
+          /*preserveAlpha=*/true);
       return;
     }
     case 0xd: {  // ALPHA_INTENSITY_88
@@ -646,9 +628,7 @@ void DecodeTexelsToBgra(uint32_t format, const uint8_t* rawSrc, uint32_t width,
         std::memcpy(dstRaw8, rawSrc, count);
       }
       if (paletteLoaded) {
-        for (size_t i = 0; i < count; ++i) {
-          dstBgra[i] = paletteTable[rawSrc[i]];
-        }
+        GetSimdKernels().DecodeP8ToBgra32(rawSrc, paletteTable, dstBgra, count);
       } else {
         for (size_t i = 0; i < count; ++i) {
           const uint32_t val = rawSrc[i];
@@ -772,9 +752,8 @@ void TextureManager::ReswizzleTexture_Locked(const TmuState& state,
         auto& dst = tex.swizzledMipLevels[lvl];
         dst.resize(raw8.size());
         if (state.paletteTableLoaded) {
-          for (size_t pIdx = 0; pIdx < raw8.size(); ++pIdx) {
-            dst[pIdx] = state.paletteTable[raw8[pIdx]];
-          }
+          GetSimdKernels().DecodeP8ToBgra32(raw8.data(), state.paletteTable,
+                                            dst.data(), raw8.size());
         } else {
           for (size_t pIdx = 0; pIdx < raw8.size(); ++pIdx) {
             uint8_t val = raw8[pIdx];
