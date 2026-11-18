@@ -21,7 +21,8 @@ enum class CardModel {
     VoodooGraphics, // SST-1
     VoodooRush,     // SST-96
     Voodoo2,        // CVG
-    Voodoo3,        // Avenger (H3)
+    VoodooBanshee,  // Banshee (H3 single-TMU, 16 MB UMA)
+    Voodoo3,        // Avenger (H3 dual-TMU)
     Voodoo4,        // VSA-100 single-chip (Napalm)
     Voodoo5         // VSA-100 dual-chip (Napalm)
 };

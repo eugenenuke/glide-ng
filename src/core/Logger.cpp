@@ -407,6 +407,7 @@ void Logger::LogExecutionSummary(const WrapperConfig& config) {
         case CardModel::VoodooGraphics: ss << "Voodoo Graphics (SST-1)"; break;
         case CardModel::VoodooRush:     ss << "Voodoo Rush (SST-96)"; break;
         case CardModel::Voodoo2:        ss << "Voodoo2 (CVG)"; break;
+        case CardModel::VoodooBanshee:  ss << "Voodoo Banshee (H3)"; break;
         case CardModel::Voodoo3:        ss << "Voodoo3 (H3)"; break;
         case CardModel::Voodoo4:        ss << "Voodoo4 (VSA-100)"; break;
         case CardModel::Voodoo5:        ss << "Voodoo5 (H5)"; break;

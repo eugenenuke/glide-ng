@@ -793,6 +793,8 @@ FX_ENTRY const char* FX_CALL grGetString(FxU32 pname) {
           return "Voodoo Rush";
         case GlideWrapper::CardModel::Voodoo2:
           return "Voodoo2";
+        case GlideWrapper::CardModel::VoodooBanshee:
+          return "Voodoo Banshee";
         case GlideWrapper::CardModel::Voodoo3:
           return "Voodoo3";
         case GlideWrapper::CardModel::Voodoo4:

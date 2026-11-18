@@ -5955,6 +5955,8 @@ TEST_CASE(
       {"voodoo1", "Voodoo Graphics"},
       {"rush", "Voodoo Rush"},
       {"voodoo2", "Voodoo2"},
+      {"banshee", "Voodoo Banshee"},
+      {"voodoo_banshee", "Voodoo Banshee"},
       {"voodoo3", "Voodoo3"},
       {"voodoo4", "Voodoo4"},
       {"vsa100", "Voodoo4"},
@@ -6427,6 +6429,19 @@ TEST_CASE(
     CHECK(cfg.invalidConfigValues.empty());
   }
   {
+    ::unsetenv("GLIDE_NG_API_VERSION");
+    ::setenv("GLIDE_NG_CARD_MODEL", "banshee", 1);
+    GlideWrapper::IniConfigLoader loader;
+    GlideWrapper::WrapperConfig cfg;
+    loader.Load("/nonexistent_v4_check.ini", cfg);
+    CHECK(cfg.model == GlideWrapper::CardModel::VoodooBanshee);
+    CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_61);
+    CHECK(cfg.fbiMemoryMb == 16u);
+    CHECK(cfg.tmuMemoryMb == 16u);
+    CHECK(cfg.tmuCount == 1u);
+    CHECK(cfg.invalidConfigValues.empty());
+  }
+  {
     ::setenv("GLIDE_NG_CARD_MODEL", "voodoo99_unknown", 1);
     GlideWrapper::IniConfigLoader loader;
     GlideWrapper::WrapperConfig cfg;
@@ -6494,14 +6509,21 @@ TEST_CASE(
     }
     glideShutdown();
 
-    // Voodoo2 & Voodoo3: TEXCHROMA OK, all 8 PIXEXT procs gated out
-    for (const char* card : {"voodoo2", "voodoo3"}) {
+    // Voodoo2, Banshee & Voodoo3: TEXCHROMA OK, all 8 PIXEXT procs gated out
+    for (const char* card : {"voodoo2", "banshee", "voodoo3"}) {
       ::setenv("GLIDE_NG_CARD_MODEL", card, 1);
       glideInit();
       CHECK(probeProc("grChromaRangeModeExt") != nullptr);
       CHECK(probeProc("grTexChromaModeExt") != nullptr);
       for (const char* p : pixextProcs) {
         CHECK(probeProc(p) == nullptr);
+      }
+      if (std::string(card) == "banshee") {
+        const char* extB = getString(0xa0);
+        REQUIRE(extB != nullptr);
+        CHECK(std::string(extB).find("TEXMIRROR") != std::string::npos);
+        CHECK(std::string(extB).find("PALETTE6666") != std::string::npos);
+        CHECK(std::string(extB).find("PIXEXT") == std::string::npos);
       }
       glideShutdown();
     }

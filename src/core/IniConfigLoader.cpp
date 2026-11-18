@@ -186,6 +186,7 @@ const char* CardModelCanonicalName(CardModel model) {
         case CardModel::VoodooGraphics: return "voodoo1";
         case CardModel::VoodooRush:     return "rush";
         case CardModel::Voodoo2:        return "voodoo2";
+        case CardModel::VoodooBanshee:  return "banshee";
         case CardModel::Voodoo3:        return "voodoo3";
         case CardModel::Voodoo4:        return "voodoo4";
         case CardModel::Voodoo5:        return "voodoo5";
@@ -205,6 +206,10 @@ bool ParseCardModelString(const std::string& rawStr, CardModel& outModel) {
     }
     if (m == "CVG" || m == "VOODOO2") {
         outModel = CardModel::Voodoo2;
+        return true;
+    }
+    if (m == "BANSHEE" || m == "VOODOOBANSHEE" || m == "VOODOO_BANSHEE" || m == "VOODOO BANSHEE") {
+        outModel = CardModel::VoodooBanshee;
         return true;
     }
     if (m == "H3" || m == "VOODOO3") {
@@ -661,7 +666,7 @@ bool IniConfigLoader::Load(const std::string& configFilePath, WrapperConfig& out
                     outConfig.invalidConfigValues.push_back(
                         "Unrecognized hardware.card_model='" + val +
                         "'; keeping '" + CardModelCanonicalName(outConfig.model) +
-                        "' (supported: voodoo1, rush, voodoo2, voodoo3, voodoo4, voodoo5)");
+                        "' (supported: voodoo1, rush, voodoo2, banshee, voodoo3, voodoo4, voodoo5)");
                 }
             } else if (SectionMatches(sec, "hardware") && key == "api_version") {
                 handled = true;
@@ -995,7 +1000,7 @@ bool IniConfigLoader::Load(const std::string& configFilePath, WrapperConfig& out
             outConfig.invalidConfigValues.push_back(
                 std::string("Unrecognized ") + GLIDE_NG_ENV_CARD_MODEL + "='" + envCard +
                 "'; keeping '" + CardModelCanonicalName(outConfig.model) +
-                "' (supported: voodoo1, rush, voodoo2, voodoo3, voodoo4, voodoo5)");
+                "' (supported: voodoo1, rush, voodoo2, banshee, voodoo3, voodoo4, voodoo5)");
         }
     }
     if (const char* envApi = GetNonEmptyEnv(GLIDE_NG_ENV_API_VERSION)) {
@@ -1026,6 +1031,12 @@ bool IniConfigLoader::Load(const std::string& configFilePath, WrapperConfig& out
         case CardModel::Voodoo2:
             if (!hasApiVersion) outConfig.apiVersion = ApiVersion::GLIDE_2_43;
             if (!hasTmuCount) outConfig.tmuCount = 2;
+            if (!hasFbiMem) outConfig.fbiMemoryMb = 16;
+            if (!hasTmuMem) outConfig.tmuMemoryMb = 16;
+            break;
+        case CardModel::VoodooBanshee:
+            if (!hasApiVersion) outConfig.apiVersion = ApiVersion::GLIDE_2_61;
+            if (!hasTmuCount) outConfig.tmuCount = 1;
             if (!hasFbiMem) outConfig.fbiMemoryMb = 16;
             if (!hasTmuMem) outConfig.tmuMemoryMb = 16;
             break;

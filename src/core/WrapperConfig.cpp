@@ -28,8 +28,8 @@ static const std::unordered_map<std::string, GatingRule> s_gatingRegistry = {
     {"grAlphaControlsITRGBLighting",    {ApiVersion::GLIDE_2_43, CardModel::Voodoo2}},
     {"grCoordinateSpace",               {ApiVersion::GLIDE_2_43, CardModel::Voodoo2}},
 
-    // 2.61 Features (Voodoo3 Legacy Interop)
-    {"grSplashCb",                      {ApiVersion::GLIDE_2_61, CardModel::Voodoo3}},
+    // 2.61 Features (Banshee / Voodoo3 H3 Legacy Interop)
+    {"grSplashCb",                      {ApiVersion::GLIDE_2_61, CardModel::VoodooBanshee}},
 
     // VSA-100 / Napalm Features (Voodoo4 / Voodoo5 — PIXEXT, Spatial AA & T-Buffer)
     {"grSstWinOpenExt",                 {ApiVersion::GLIDE_2_61, CardModel::Voodoo4}},

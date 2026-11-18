@@ -346,6 +346,7 @@ ToolRunConfig InitializeAndParse(
     }
 
     bool is_voodoo2_plus = (sysConfig.boardName.find("Voodoo2") != std::string::npos ||
+                            sysConfig.boardName.find("Banshee") != std::string::npos ||
                             sysConfig.boardName.find("Voodoo3") != std::string::npos ||
                             sysConfig.boardName.find("Voodoo4") != std::string::npos ||
                             sysConfig.boardName.find("Voodoo5") != std::string::npos);
