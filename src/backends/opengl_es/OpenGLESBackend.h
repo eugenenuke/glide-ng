@@ -269,9 +269,9 @@ class OpenGLESBackend : public GlideStateTracker {
   bool m_is2DGeometry{true};
   float m_gammaCorrectionValue{1.0f};
 
-  // GLES Gamma LUT Texture Resources
+  // GLES Gamma LUT Texture Resources (m_useGammaLut and m_lutR/G/B inherited
+  // from GlideStateTracker).
   uint32_t m_glGammaLutTex{0};
-  bool m_useGammaLut{false};
   int m_uUseGammaLutLoc{-1};
   int m_uPreserveAlphaLoc{-1};
 

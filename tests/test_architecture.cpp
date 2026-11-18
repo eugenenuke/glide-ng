@@ -8697,3 +8697,121 @@ TEST_CASE("Glide 2.x Partial MipMap Rows, Coplanar W-Buffer & Negative Combiner 
   grGlideShutdown();
 #endif
 }
+
+TEST_CASE("M10.2 Glide 2.x legacy exports: guFb*, guMP*, grSstVidMode, guMovie*",
+          "[Glide2][M10][Exports]") {
+#ifdef __linux__
+  grGlideInit();
+  REQUIRE(grSstWinOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                       GR_COLORFORMAT_ARGB, GR_ORIGIN_UPPER_LEFT, 2, 1) ==
+          FXTRUE);
+
+  SECTION("guFbWriteRegion & guFbReadRegion 565 round-trip") {
+    grBufferClear(0xFF000000u, 0xFF, GR_WDEPTHVALUE_FARTHEST);
+    uint16_t srcBlock[16];
+    for (int i = 0; i < 16; ++i) {
+      srcBlock[i] = (i & 1) ? 0xF800u : 0x07E0u;
+    }
+    guFbWriteRegion(20, 24, 4, 4, srcBlock, 4 * sizeof(uint16_t));
+    uint16_t dstBlock[16] = {};
+    guFbReadRegion(20, 24, 4, 4, dstBlock, 4 * sizeof(uint16_t));
+    for (int i = 0; i < 16; ++i) {
+      CHECK(dstBlock[i] == srcBlock[i]);
+    }
+  }
+
+  SECTION("guMPDrawTriangle 2-pass ADD and MULTIPLY") {
+    grDepthBufferMode(GR_DEPTHBUFFER_DISABLE);
+    grAlphaBlendFunction(GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_ONE,
+                         GR_BLEND_ZERO);
+    grColorCombine(GR_COMBINE_FUNCTION_SCALE_OTHER, GR_COMBINE_FACTOR_ONE,
+                   GR_COMBINE_LOCAL_NONE, GR_COMBINE_OTHER_TEXTURE, FXFALSE);
+    grAlphaCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+                   GR_COMBINE_LOCAL_CONSTANT, GR_COMBINE_OTHER_NONE, FXFALSE);
+    grConstantColorValue(0xFFFFFFFFu);
+
+    guTexMemReset();
+    std::vector<uint16_t> redTex(16 * 16, 0xF800u);    // RGB565 Red (255,0,0)
+    std::vector<uint16_t> greenTex(16 * 16, 0x07E0u);  // RGB565 Green (0,255,0)
+    std::vector<uint16_t> halfTex(16 * 16, 0x8410u);   // ~50% grey
+
+    GrMipMapId_t mmRed = guTexAllocateMemory(
+        GR_TMU0, GR_MIPMAPLEVELMASK_BOTH, 16, 16, GR_TEXFMT_RGB_565,
+        GR_MIPMAP_DISABLE, GR_LOD_16, GR_LOD_16, GR_ASPECT_1x1,
+        GR_TEXTURECLAMP_CLAMP, GR_TEXTURECLAMP_CLAMP,
+        GR_TEXTUREFILTER_POINT_SAMPLED, GR_TEXTUREFILTER_POINT_SAMPLED, 0.0f,
+        FXFALSE);
+    GrMipMapId_t mmGreen = guTexAllocateMemory(
+        GR_TMU0, GR_MIPMAPLEVELMASK_BOTH, 16, 16, GR_TEXFMT_RGB_565,
+        GR_MIPMAP_DISABLE, GR_LOD_16, GR_LOD_16, GR_ASPECT_1x1,
+        GR_TEXTURECLAMP_CLAMP, GR_TEXTURECLAMP_CLAMP,
+        GR_TEXTUREFILTER_POINT_SAMPLED, GR_TEXTUREFILTER_POINT_SAMPLED, 0.0f,
+        FXFALSE);
+    GrMipMapId_t mmHalf = guTexAllocateMemory(
+        GR_TMU0, GR_MIPMAPLEVELMASK_BOTH, 16, 16, GR_TEXFMT_RGB_565,
+        GR_MIPMAP_DISABLE, GR_LOD_16, GR_LOD_16, GR_ASPECT_1x1,
+        GR_TEXTURECLAMP_CLAMP, GR_TEXTURECLAMP_CLAMP,
+        GR_TEXTUREFILTER_POINT_SAMPLED, GR_TEXTUREFILTER_POINT_SAMPLED, 0.0f,
+        FXFALSE);
+    REQUIRE(mmRed != GR_NULL_MIPMAP_HANDLE);
+    REQUIRE(mmGreen != GR_NULL_MIPMAP_HANDLE);
+    REQUIRE(mmHalf != GR_NULL_MIPMAP_HANDLE);
+
+    guTexDownloadMipMap(mmRed, redTex.data(), nullptr);
+    guTexDownloadMipMap(mmGreen, greenTex.data(), nullptr);
+    guTexDownloadMipMap(mmHalf, halfTex.data(), nullptr);
+
+    auto makeV = [](float x, float y, float s, float t) {
+      GrVertex v = {};
+      v.x = x;
+      v.y = y;
+      v.oow = 1.0f;
+      v.tmuvtx[0].sow = s;
+      v.tmuvtx[0].tow = t;
+      return v;
+    };
+    GrVertex v0 = makeV(40.0f, 40.0f, 0.0f, 0.0f);
+    GrVertex v1 = makeV(120.0f, 40.0f, 256.0f, 0.0f);
+    GrVertex v2 = makeV(120.0f, 120.0f, 256.0f, 256.0f);
+
+    // 1) ADD: Red + Green => Yellow (R>=28, G>=58, B<=2)
+    grBufferClear(0xFF000000u, 0xFF, GR_WDEPTHVALUE_FARTHEST);
+    guMPInit();
+    guMPTexCombineFunction(GR_MPTEXTURECOMBINE_ADD);
+    guMPTexSource(0, mmRed);
+    guMPTexSource(1, mmGreen);
+    guMPDrawTriangle(&v0, &v1, &v2);
+    uint16_t pxAdd = 0;
+    REQUIRE(grLfbReadRegion(GR_BUFFER_BACKBUFFER, 95, 65, 1, 1, 2, &pxAdd) ==
+            FXTRUE);
+    CHECK(((pxAdd >> 11) & 31u) >= 28u);
+    CHECK(((pxAdd >> 5) & 63u) >= 58u);
+    CHECK((pxAdd & 31u) <= 2u);
+
+    // 2) MULTIPLY: Red * ~50% Grey => Dark Red (R around 12..19, G<=2, B<=2)
+    grBufferClear(0xFF000000u, 0xFF, GR_WDEPTHVALUE_FARTHEST);
+    guMPTexCombineFunction(GR_MPTEXTURECOMBINE_MULTIPLY);
+    guMPTexSource(0, mmRed);
+    guMPTexSource(1, mmHalf);
+    guMPDrawTriangle(&v0, &v1, &v2);
+    uint16_t pxMul = 0;
+    REQUIRE(grLfbReadRegion(GR_BUFFER_BACKBUFFER, 95, 65, 1, 1, 2, &pxMul) ==
+            FXTRUE);
+    const uint32_t mulR = (pxMul >> 11) & 31u;
+    CHECK(mulR >= 12u);
+    CHECK(mulR <= 19u);
+    CHECK(((pxMul >> 5) & 63u) <= 2u);
+    CHECK((pxMul & 31u) <= 2u);
+  }
+
+  SECTION("grSstVidMode and guMovie* smoke test") {
+    REQUIRE_NOTHROW(grSstVidMode(0, nullptr));
+    REQUIRE_NOTHROW(guMovieSetName("capture.mov"));
+    REQUIRE_NOTHROW(guMovieStart());
+    REQUIRE_NOTHROW(guMovieStop());
+  }
+
+  grSstWinClose();
+  grGlideShutdown();
+#endif
+}

@@ -2451,19 +2451,26 @@ void OpenGLESBackend::LoadGammaTable_Locked(uint32_t nentries,
   GLIDE_LOG(
       INFO, "GLES",
       "LoadGammaTable: nentries=" << nentries << ", tex=" << m_glGammaLutTex);
-  if (nentries != 256 || !rTable || !gTable || !bTable) return;
+  if (nentries == 0 || (!rTable && !gTable && !bTable)) return;
+
+  const uint32_t count = std::min(nentries, 256u);
+  for (uint32_t i = 0; i < count; ++i) {
+    if (rTable) m_lutR[i] = static_cast<uint8_t>(rTable[i] & 0xFFu);
+    if (gTable) m_lutG[i] = static_cast<uint8_t>(gTable[i] & 0xFFu);
+    if (bTable) m_lutB[i] = static_cast<uint8_t>(bTable[i] & 0xFFu);
+  }
 
   if (m_glGammaLutTex && EnsureContextCurrent()) {
-    std::vector<uint8_t> lutData(256 * 3);
+    uint8_t lutData[256 * 3];
     for (int i = 0; i < 256; ++i) {
-      lutData[i * 3 + 0] = static_cast<uint8_t>(rTable[i]);
-      lutData[i * 3 + 1] = static_cast<uint8_t>(gTable[i]);
-      lutData[i * 3 + 2] = static_cast<uint8_t>(bTable[i]);
+      lutData[i * 3 + 0] = m_lutR[i];
+      lutData[i * 3 + 1] = m_lutG[i];
+      lutData[i * 3 + 2] = m_lutB[i];
     }
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, m_glGammaLutTex);
     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 256, 1, GL_RGB, GL_UNSIGNED_BYTE,
-                    lutData.data());
+                    lutData);
     glBindTexture(GL_TEXTURE_2D, 0);
     m_cachedActiveTexUnit = 0;
     m_cachedBoundTex[0] = 0;

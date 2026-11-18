@@ -108,6 +108,8 @@ class GlideStateTracker : public IGraphicsBackend {
   void SetGamma(float gamma) override;
   void LoadGammaTable(uint32_t nentries, const uint32_t* rTable,
                       const uint32_t* gTable, const uint32_t* bTable) override;
+  void GetGammaTable(uint32_t nentries, uint32_t* rTable, uint32_t* gTable,
+                     uint32_t* bTable) const override;
 
   void SetFogMode(uint32_t mode) override;
   void SetFogColor(uint32_t color) override;

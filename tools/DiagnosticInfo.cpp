@@ -405,6 +405,7 @@ ToolRunConfig InitializeAndParse(
     };
     ExtensionInfo g3ExclusiveExts[] = {
         {"FOGCOORD", "FOGCOORD"},
+        {"GETGAMMA", "GETGAMMA"},
         {"RESOLUTION", "RESOLUTION"},
         {"SURFACE", "SURFACE (DirectDraw)"},
         {"COMMAND_TRANSPORT", "COMMAND_TRANSPORT"}

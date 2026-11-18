@@ -6618,3 +6618,143 @@ TEST_CASE(
   restoreEnv();
 #endif
 }
+
+TEST_CASE("M10.2 GETGAMMA round-trip & Glide 3.x missing public exports",
+          "[Glide3][M10][GETGAMMA]") {
+#ifdef __linux__
+  const char* origCard = std::getenv("GLIDE_NG_CARD_MODEL");
+  std::string savedCard = origCard ? origCard : "";
+  auto restoreCard = [&]() {
+    if (!savedCard.empty()) {
+      ::setenv("GLIDE_NG_CARD_MODEL", savedCard.c_str(), 1);
+    } else {
+      ::unsetenv("GLIDE_NG_CARD_MODEL");
+    }
+  };
+
+  void* handle = OpenGlide3Handle();
+  REQUIRE(handle != nullptr);
+
+  using InitFunc = void (*)(void);
+  using ShutdownFunc = void (*)(void);
+  using WinOpenFunc = FxU32 (*)(FxU32, FxI32, FxI32, FxI32, FxI32, int, int);
+  using WinCloseFunc = FxBool (*)(FxU32);
+  using GetStringFunc = const char* (*)(FxU32);
+  using GetProcAddrFunc = GrProc (*)(char*);
+  using LoadGammaFunc = void (*)(FxU32, FxU32*, FxU32*, FxU32*);
+  using GetGammaFunc = void (*)(FxU32, FxU32*, FxU32*, FxU32*);
+  using AlphaCtrlFunc = void (*)(FxBool);
+  using CheckRoomFunc = void (*)(FxI32);
+  using ErrCbFunc = void (*)(void (*)(const char*, FxBool));
+  using LfbConstDepthFunc = void (*)(FxU32);
+  using LfbSwizzleFunc = void (*)(FxBool, FxBool);
+  using SstConfigPipeFunc = void (*)(FxI32, FxU32, FxU32);
+  using TexNccFunc = void (*)(FxI32);
+  using EncodeRleFunc = int (*)(void*, void*, FxU32, FxU32);
+
+  auto glideInit = reinterpret_cast<InitFunc>(::dlsym(handle, "grGlideInit"));
+  auto glideShutdown =
+      reinterpret_cast<ShutdownFunc>(::dlsym(handle, "grGlideShutdown"));
+  auto winOpen = reinterpret_cast<WinOpenFunc>(::dlsym(handle, "grSstWinOpen"));
+  auto winClose =
+      reinterpret_cast<WinCloseFunc>(::dlsym(handle, "grSstWinClose"));
+  auto getString =
+      reinterpret_cast<GetStringFunc>(::dlsym(handle, "grGetString"));
+  auto getProc =
+      reinterpret_cast<GetProcAddrFunc>(::dlsym(handle, "grGetProcAddress"));
+  auto loadGamma =
+      reinterpret_cast<LoadGammaFunc>(::dlsym(handle, "grLoadGammaTable"));
+  auto alphaCtrl = reinterpret_cast<AlphaCtrlFunc>(
+      ::dlsym(handle, "grAlphaControlsITRGBLighting"));
+  auto checkRoom =
+      reinterpret_cast<CheckRoomFunc>(::dlsym(handle, "grCheckForRoom"));
+  auto errCb =
+      reinterpret_cast<ErrCbFunc>(::dlsym(handle, "grErrorSetCallback"));
+  auto lfbDepth =
+      reinterpret_cast<LfbConstDepthFunc>(::dlsym(handle, "grLfbConstantDepth"));
+  auto lfbSwizzle = reinterpret_cast<LfbSwizzleFunc>(
+      ::dlsym(handle, "grLfbWriteColorSwizzle"));
+  auto sstPipe = reinterpret_cast<SstConfigPipeFunc>(
+      ::dlsym(handle, "grSstConfigPipeline"));
+  auto texNcc =
+      reinterpret_cast<TexNccFunc>(::dlsym(handle, "grTexNCCTable"));
+  auto encodeRle =
+      reinterpret_cast<EncodeRleFunc>(::dlsym(handle, "guEncodeRLE16"));
+
+  REQUIRE(glideInit != nullptr);
+  REQUIRE(glideShutdown != nullptr);
+  REQUIRE(winOpen != nullptr);
+  REQUIRE(winClose != nullptr);
+  REQUIRE(getString != nullptr);
+  REQUIRE(getProc != nullptr);
+  REQUIRE(loadGamma != nullptr);
+  REQUIRE(alphaCtrl != nullptr);
+  REQUIRE(checkRoom != nullptr);
+  REQUIRE(errCb != nullptr);
+  REQUIRE(lfbDepth != nullptr);
+  REQUIRE(lfbSwizzle != nullptr);
+  REQUIRE(sstPipe != nullptr);
+  REQUIRE(texNcc != nullptr);
+  REQUIRE(encodeRle != nullptr);
+
+  char procName[] = "grGetGammaTableExt";
+
+  // 1. Voodoo2: GETGAMMA not advertised & grGetGammaTableExt gated out.
+  ::setenv("GLIDE_NG_CARD_MODEL", "voodoo2", 1);
+  glideInit();
+  CHECK(std::string(getString(0xa0)).find("GETGAMMA") == std::string::npos);
+  CHECK(getProc(procName) == nullptr);
+  glideShutdown();
+
+  // 2. Voodoo Banshee+: GETGAMMA advertised & LUT round-trips accurately.
+  ::setenv("GLIDE_NG_CARD_MODEL", "banshee", 1);
+  glideInit();
+  CHECK(std::string(getString(0xa0)).find("GETGAMMA") != std::string::npos);
+  auto getGamma = reinterpret_cast<GetGammaFunc>(getProc(procName));
+  REQUIRE(getGamma != nullptr);
+
+  FxU32 ctx = winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                      GR_COLORFORMAT_ARGB, GR_ORIGIN_UPPER_LEFT, 2, 1);
+  REQUIRE(ctx != 0);
+
+  FxU32 rIn[256], gIn[256], bIn[256];
+  for (uint32_t i = 0; i < 256; ++i) {
+    rIn[i] = (i * 3u + 7u) & 0xFFu;
+    gIn[i] = (255u - i) & 0xFFu;
+    bIn[i] = (i ^ 0x5Au) & 0xFFu;
+  }
+  loadGamma(256, rIn, gIn, bIn);
+
+  FxU32 rOut[256] = {}, gOut[256] = {}, bOut[256] = {};
+  getGamma(256, rOut, gOut, bOut);
+  for (uint32_t i = 0; i < 256; ++i) {
+    REQUIRE(rOut[i] == rIn[i]);
+    REQUIRE(gOut[i] == gIn[i]);
+    REQUIRE(bOut[i] == bIn[i]);
+  }
+
+  // 3. Exercise the 8 newly exported Glide 3.x APIs.
+  REQUIRE_NOTHROW(alphaCtrl(FXTRUE));
+  REQUIRE_NOTHROW(checkRoom(64));
+  REQUIRE_NOTHROW(errCb(nullptr));
+  REQUIRE_NOTHROW(lfbDepth(0x1234u));
+  REQUIRE_NOTHROW(lfbSwizzle(FXTRUE, FXFALSE));
+  REQUIRE_NOTHROW(sstPipe(GR_TMU0, 0, 0));
+  REQUIRE_NOTHROW(texNcc(0));
+
+  uint16_t srcImg[6] = {0xF800, 0xF800, 0xF800, 0x07E0, 0x07E0, 0x001F};
+  uint32_t rleOut[6] = {};
+  const int sizeOnly = encodeRle(nullptr, srcImg, 3, 2);
+  REQUIRE(sizeOnly == 12);  // 3 runs * 4 bytes
+  const int encoded = encodeRle(rleOut, srcImg, 3, 2);
+  REQUIRE(encoded == 12);
+  CHECK(rleOut[0] == ((3u << 16) | 0xF800u));
+  CHECK(rleOut[1] == ((2u << 16) | 0x07E0u));
+  CHECK(rleOut[2] == ((1u << 16) | 0x001Fu));
+
+  winClose(ctx);
+  glideShutdown();
+  ::dlclose(handle);
+  restoreCard();
+#endif
+}

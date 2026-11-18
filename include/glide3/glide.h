@@ -775,6 +775,15 @@ FX_ENTRY void FX_CALL
 grLoadGammaTable( FxU32 nentries, FxU32 *red, FxU32 *green, FxU32 *blue);
 
 FX_ENTRY void FX_CALL
+grGetGammaTableExt( FxU32 nentries, FxU32 *red, FxU32 *green, FxU32 *blue);
+
+FX_ENTRY void FX_CALL
+grCheckForRoom( FxI32 n );
+
+FX_ENTRY void FX_CALL
+grSstConfigPipeline( GrChipID_t chip, FxU32 reg, FxU32 value );
+
+FX_ENTRY void FX_CALL
 grSplash(float x, float y, float width, float height, FxU32 frame);
 
 FX_ENTRY FxU32 FX_CALL 

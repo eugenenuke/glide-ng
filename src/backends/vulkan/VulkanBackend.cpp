@@ -493,6 +493,7 @@ void VulkanBackend::ResetState() {
 
 void VulkanBackend::ResetState_Locked() {
   GlideStateTracker::ResetState_Locked();
+  m_gammaLutDirty = true;
   m_lfbStaging.ResetPendingAndDirty();
   m_pipelineStateDirty = true;
   m_descriptorStateDirty = true;
@@ -2539,11 +2540,12 @@ void VulkanBackend::LoadGammaTable(uint32_t nentries, const uint32_t* rTable,
                                    const uint32_t* bTable) {
   std::lock_guard<std::mutex> lock(m_mutex);
   GLIDE_LOG(INFO, "Vulkan", "LoadGammaTable: nentries=" << nentries);
-  if (nentries != 256 || !rTable || !gTable || !bTable) return;
-  for (int i = 0; i < 256; i++) {
-    m_lutR[i] = static_cast<uint8_t>(rTable[i]);
-    m_lutG[i] = static_cast<uint8_t>(gTable[i]);
-    m_lutB[i] = static_cast<uint8_t>(bTable[i]);
+  if (nentries == 0 || (!rTable && !gTable && !bTable)) return;
+  const uint32_t count = std::min(nentries, 256u);
+  for (uint32_t i = 0; i < count; i++) {
+    if (rTable) m_lutR[i] = static_cast<uint8_t>(rTable[i] & 0xFFu);
+    if (gTable) m_lutG[i] = static_cast<uint8_t>(gTable[i] & 0xFFu);
+    if (bTable) m_lutB[i] = static_cast<uint8_t>(bTable[i] & 0xFFu);
   }
   m_useGammaLut = true;
   m_gammaLutDirty = true;

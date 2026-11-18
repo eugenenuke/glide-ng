@@ -65,6 +65,13 @@ uint32_t s_stippleMode = 0;
 uint32_t s_stipplePattern = 0xFFFFFFFF;
 bool s_windowOpen = false;
 
+// Legacy / extended Glide 3.x state
+GrErrorCallbackFnc_t s_errorCallback = nullptr;
+FxU32 s_lfbConstantDepth = 0;
+bool s_lfbWriteColorSwizzle = false;
+bool s_lfbWriteColorSwizzleSwap = false;
+bool s_alphaControlsITRGBLighting = false;
+
 inline void TransformVertexIfNecessary(GlideWrapper::ModernVertex& mv) {
   if (s_coordSpace == 1) {  // GR_CLIP_COORDS
     const bool depthActive = (s_state.depthMode != 0);
@@ -97,6 +104,11 @@ void ResetFrontendState() {
   g_inSplash = false;
   s_stippleMode = 0;
   s_stipplePattern = 0xFFFFFFFF;
+  s_errorCallback = nullptr;
+  s_lfbConstantDepth = 0;
+  s_lfbWriteColorSwizzle = false;
+  s_lfbWriteColorSwizzleSwap = false;
+  s_alphaControlsITRGBLighting = false;
 }
 }  // namespace
 
@@ -790,13 +802,13 @@ FX_ENTRY const char* FX_CALL grGetString(FxU32 pname) {
                  "COMMAND_TRANSPORT";
         case GlideWrapper::CardModel::VoodooBanshee:
         case GlideWrapper::CardModel::Voodoo3:
-          return "CHROMARANGE FOGCOORD TEXCHROMA TEXMIRROR PALETTE6666 "
-                 "RESOLUTION SURFACE COMMAND_TRANSPORT";
+          return "CHROMARANGE FOGCOORD GETGAMMA TEXCHROMA TEXMIRROR "
+                 "PALETTE6666 RESOLUTION SURFACE COMMAND_TRANSPORT";
         case GlideWrapper::CardModel::Voodoo4:
         case GlideWrapper::CardModel::Voodoo5:
-          return "CHROMARANGE FOGCOORD TEXCHROMA TEXMIRROR PALETTE6666 "
-                 "RESOLUTION SURFACE COMMAND_TRANSPORT PIXEXT COMBINE TEXFMT "
-                 "TEXTUREBUFFER TEXUMA";
+          return "CHROMARANGE FOGCOORD GETGAMMA TEXCHROMA TEXMIRROR "
+                 "PALETTE6666 RESOLUTION SURFACE COMMAND_TRANSPORT PIXEXT "
+                 "COMBINE TEXFMT TEXTUREBUFFER TEXUMA";
         default:
           return "CHROMARANGE FOGCOORD";
       }
@@ -1384,6 +1396,9 @@ FX_ENTRY GrProc FX_CALL grGetProcAddress(char* procName) {
   if (std::strcmp(procName, "grLfbConstantStencilExt") == 0) {
     return toGrProc(grLfbConstantStencilExt);
   }
+  if (std::strcmp(procName, "grGetGammaTableExt") == 0) {
+    return toGrProc(grGetGammaTableExt);
+  }
 
   GLIDE_LOG(WARN, "Frontend",
             "grGetProcAddress (Glide 3.x): Unknown extension " << procName);
@@ -1790,6 +1805,100 @@ FX_ENTRY void FX_CALL grLoadGammaTable(FxU32 nentries, FxU32* red, FxU32* green,
       static_cast<uint32_t>(nentries), rBuf.empty() ? nullptr : rBuf.data(),
       gBuf.empty() ? nullptr : gBuf.data(),
       bBuf.empty() ? nullptr : bBuf.data());
+}
+
+FX_ENTRY void FX_CALL grGetGammaTableExt(FxU32 nentries, FxU32* red,
+                                         FxU32* green, FxU32* blue) {
+  EnsureEngineInitialized();
+  if (!GlideWrapper::EmulationRegistry::GetInstance().IsCardFeatureAvailable(
+          "grGetGammaTableExt")) {
+    GLIDE_LOG(WARN, "Frontend",
+              "GATED CALL: grGetGammaTableExt is not available under active "
+              "card profile.");
+    return;
+  }
+  GLIDE_LOG(DEBUG, "Frontend",
+            "grGetGammaTableExt (Glide 3.x): nentries=" << nentries);
+  if (nentries == 0 || (!red && !green && !blue)) return;
+  const uint32_t count = std::min<uint32_t>(static_cast<uint32_t>(nentries), 256u);
+  std::vector<uint32_t> rBuf(red ? count : 0u);
+  std::vector<uint32_t> gBuf(green ? count : 0u);
+  std::vector<uint32_t> bBuf(blue ? count : 0u);
+  EntryCommon::GetGammaTable(count, red ? rBuf.data() : nullptr,
+                             green ? gBuf.data() : nullptr,
+                             blue ? bBuf.data() : nullptr);
+  for (uint32_t i = 0; i < count; ++i) {
+    if (red) red[i] = static_cast<FxU32>(rBuf[i]);
+    if (green) green[i] = static_cast<FxU32>(gBuf[i]);
+    if (blue) blue[i] = static_cast<FxU32>(bBuf[i]);
+  }
+}
+
+FX_ENTRY void FX_CALL grAlphaControlsITRGBLighting(FxBool enable) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
+  EnsureEngineInitialized();
+  if (!GlideWrapper::EmulationRegistry::GetInstance().IsFunctionAvailable(
+          "grAlphaControlsITRGBLighting")) {
+    GLIDE_LOG(WARN, "Frontend",
+              "GATED CALL: grAlphaControlsITRGBLighting (Glide 3.x) gated out "
+              "under active version/device profile.");
+    return;
+  }
+  GLIDE_LOG(DEBUG, "Frontend",
+            "grAlphaControlsITRGBLighting (Glide 3.x): " << enable);
+  s_alphaControlsITRGBLighting = (enable != 0);
+}
+
+FX_ENTRY void FX_CALL grCheckForRoom(FxI32 n) {
+  EnsureEngineInitialized();
+  GLIDE_LOG(DEBUG, "Frontend", "grCheckForRoom (Glide 3.x): n=" << n);
+}
+
+FX_ENTRY void FX_CALL grErrorSetCallback(GrErrorCallbackFnc_t fnc) {
+  EnsureEngineInitialized();
+  GLIDE_LOG(DEBUG, "Frontend", "grErrorSetCallback (Glide 3.x) invoked");
+  s_errorCallback = fnc;
+}
+
+FX_ENTRY void FX_CALL grLfbConstantDepth(FxU32 depth) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::Lfb);
+  EnsureEngineInitialized();
+  GLIDE_LOG(DEBUG, "Frontend", "grLfbConstantDepth (Glide 3.x): " << depth);
+  s_lfbConstantDepth = depth;
+}
+
+FX_ENTRY void FX_CALL grLfbWriteColorSwizzle(FxBool swizzleBytes,
+                                             FxBool swapWords) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::Lfb);
+  EnsureEngineInitialized();
+  GLIDE_LOG(DEBUG, "Frontend",
+            "grLfbWriteColorSwizzle (Glide 3.x): swizzleBytes="
+                << swizzleBytes << ", swapWords=" << swapWords);
+  s_lfbWriteColorSwizzle = (swizzleBytes != 0);
+  s_lfbWriteColorSwizzleSwap = (swapWords != 0);
+}
+
+FX_ENTRY void FX_CALL grSstConfigPipeline(GrChipID_t chip, FxU32 reg,
+                                          FxU32 value) {
+  EnsureEngineInitialized();
+  GLIDE_LOG(INFO, "Frontend",
+            "grSstConfigPipeline (Glide 3.x): chip=" << chip << ", reg=" << reg
+                                                     << ", value=" << value);
+}
+
+FX_ENTRY void FX_CALL grTexNCCTable(GrNCCTable_t table) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::Tex);
+  EnsureEngineInitialized();
+  GLIDE_LOG(DEBUG, "Frontend", "grTexNCCTable (Glide 3.x): Table=" << table);
+  auto& tm = GlideWrapper::TextureManager::GetInstance();
+  tm.SetActiveNccTable(GR_TMU0, table);
+  tm.SetActiveNccTable(GR_TMU1, table);
+}
+
+FX_ENTRY int FX_CALL guEncodeRLE16(void* dst, void* src, FxU32 width,
+                                   FxU32 height) {
+  return EntryCommon::EncodeRLE16(dst, src, static_cast<uint32_t>(width),
+                                  static_cast<uint32_t>(height));
 }
 
 FX_ENTRY void FX_CALL guGammaCorrectionRGB(FxFloat red, FxFloat green,

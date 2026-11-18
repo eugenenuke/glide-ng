@@ -63,6 +63,11 @@ std::vector<GrMipMapInfo> s_guTextures;
 uint32_t s_guTexNextAddress = 0;
 GrMipMapId_t s_currentMipMap[2] = {GR_NULL_MIPMAP_HANDLE,
                                    GR_NULL_MIPMAP_HANDLE};
+GrMipMapId_t s_mpMipMap[GLIDE_NUM_VIRTUAL_TMU] = {GR_NULL_MIPMAP_HANDLE,
+                                                  GR_NULL_MIPMAP_HANDLE};
+GrMPTextureCombineFnc_t s_mpTexCombineFnc = GR_MPTEXTURECOMBINE_ADD;
+std::string s_movieName;
+bool s_movieRecording = false;
 
 uint16_t s_lfbConstantDepth = 0;
 bool s_lfbWriteColorSwizzle = false;
@@ -110,6 +115,10 @@ void ResetFrontendState() {
   s_guTextures.clear();
   s_guTexNextAddress = 0;
   s_currentMipMap[0] = s_currentMipMap[1] = GR_NULL_MIPMAP_HANDLE;
+  s_mpMipMap[0] = s_mpMipMap[1] = GR_NULL_MIPMAP_HANDLE;
+  s_mpTexCombineFnc = GR_MPTEXTURECOMBINE_ADD;
+  s_movieName.clear();
+  s_movieRecording = false;
   s_lfbConstantDepth = 0;
   s_lfbWriteColorSwizzle = false;
   s_lfbWriteColorSwizzleSwap = false;
@@ -254,6 +263,10 @@ FX_ENTRY FxBool FX_CALL grSstWinOpen(AnyPtr hWnd,
   s_guTextures.clear();
   s_guTexNextAddress = 0;
   s_currentMipMap[0] = s_currentMipMap[1] = GR_NULL_MIPMAP_HANDLE;
+  s_mpMipMap[0] = s_mpMipMap[1] = GR_NULL_MIPMAP_HANDLE;
+  s_mpTexCombineFnc = GR_MPTEXTURECOMBINE_ADD;
+  s_movieName.clear();
+  s_movieRecording = false;
   s_lfbConstantDepth = 0;
   s_lfbWriteColorSwizzle = false;
   s_lfbWriteColorSwizzleSwap = false;
@@ -1968,47 +1981,8 @@ FX_ENTRY void FX_CALL guColorCombineFunction(GrColorCombineFnc_t fnc) {
 
 FX_ENTRY int FX_CALL guEncodeRLE16(void* dst, void* src, FxU32 width,
                                    FxU32 height) {
-  int byteCount = 0;
-  int sourceImageSizeInWords = width * height;
-  FxU16* srcPixels = reinterpret_cast<FxU16*>(src);
-  FxU32* dstPixels = reinterpret_cast<FxU32*>(dst);
-
-  if (dstPixels) {
-    while (sourceImageSizeInWords > 0) {
-      FxU16 length = 1;
-      FxU16 color = *srcPixels;
-      int lookAhead = 1;
-
-      while ((sourceImageSizeInWords - length > 0) &&
-             (color == srcPixels[lookAhead])) {
-        length++;
-        lookAhead++;
-      }
-
-      *dstPixels = ((((FxU32)length) << 16) | ((FxU32)color));
-      dstPixels++;
-      byteCount += 4;
-      srcPixels += length;
-      sourceImageSizeInWords -= length;
-    }
-  } else {
-    while (sourceImageSizeInWords > 0) {
-      FxU16 length = 1;
-      FxU16 color = *srcPixels;
-      int lookAhead = 1;
-
-      while ((sourceImageSizeInWords - length > 0) &&
-             (color == srcPixels[lookAhead])) {
-        length++;
-        lookAhead++;
-      }
-
-      byteCount += 4;
-      srcPixels += length;
-      sourceImageSizeInWords -= length;
-    }
-  }
-  return byteCount;
+  return EntryCommon::EncodeRLE16(dst, src, static_cast<uint32_t>(width),
+                                  static_cast<uint32_t>(height));
 }
 
 static void setlevel(FxU16* data, FxU16 color, int width, int height) {
@@ -2487,6 +2461,239 @@ FX_ENTRY void FX_CALL grSstConfigPipeline(GrChipID_t chip, FxU32 reg,
   GLIDE_LOG(INFO, "Frontend",
             "grSstConfigPipeline called. chip=" << chip << ", reg=" << reg
                                                 << ", value=" << value);
+}
+
+FX_ENTRY void FX_CALL grSstVidMode(FxU32 whichSst, void* vidTimings) {
+  GLIDE_LOG(DEBUG, "Frontend",
+            "grSstVidMode (Glide 2.x) stub: whichSst=" << whichSst);
+}
+
+FX_ENTRY void FX_CALL guFbReadRegion(const int src_x, const int src_y,
+                                     const int w, const int h, const void* dst,
+                                     const int strideInBytes) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::Lfb);
+  EnsureEngineInitialized();
+  if (w <= 0 || h <= 0 || !dst || src_x < 0 || src_y < 0 || strideInBytes <= 0) {
+    return;
+  }
+  grLfbReadRegion(GR_BUFFER_BACKBUFFER, static_cast<FxU32>(src_x),
+                  static_cast<FxU32>(src_y), static_cast<FxU32>(w),
+                  static_cast<FxU32>(h), static_cast<FxU32>(strideInBytes),
+                  const_cast<void*>(dst));
+}
+
+FX_ENTRY void FX_CALL guFbWriteRegion(const int dst_x, const int dst_y,
+                                      const int w, const int h, const void* src,
+                                      const int strideInBytes) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::Lfb);
+  EnsureEngineInitialized();
+  if (w <= 0 || h <= 0 || !src || dst_x < 0 || dst_y < 0) {
+    return;
+  }
+  grLfbWriteRegion(GR_BUFFER_BACKBUFFER, static_cast<FxU32>(dst_x),
+                   static_cast<FxU32>(dst_y), GR_LFB_SRC_FMT_565,
+                   static_cast<FxU32>(w), static_cast<FxU32>(h),
+                   static_cast<FxI32>(strideInBytes), const_cast<void*>(src));
+}
+
+FX_ENTRY void FX_CALL guMPInit(void) {
+  EnsureEngineInitialized();
+  s_mpMipMap[0] = GR_NULL_MIPMAP_HANDLE;
+  s_mpMipMap[1] = GR_NULL_MIPMAP_HANDLE;
+  s_mpTexCombineFnc = GR_MPTEXTURECOMBINE_ADD;
+}
+
+FX_ENTRY void FX_CALL guMPTexCombineFunction(GrMPTextureCombineFnc_t tc_fnc) {
+  EnsureEngineInitialized();
+  s_mpTexCombineFnc = tc_fnc;
+}
+
+FX_ENTRY void FX_CALL guMPTexSource(GrChipID_t virtual_tmu,
+                                    GrMipMapId_t mmid) {
+  EnsureEngineInitialized();
+  if (virtual_tmu >= 0 && virtual_tmu < GLIDE_NUM_VIRTUAL_TMU) {
+    s_mpMipMap[virtual_tmu] = mmid;
+  }
+}
+
+FX_ENTRY void FX_CALL guMPDrawTriangle(const GrVertex* a, const GrVertex* b,
+                                       const GrVertex* c) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::Draw);
+  EnsureEngineInitialized();
+  if (!a || !b || !c) return;
+  if (s_mpTexCombineFnc == GR_MPTEXTURECOMBINE_SUBTRACT) {
+    if (s_errorCallback) {
+      s_errorCallback(
+          "guMPDrawTriangle: GR_MPTEXTURECOMBINE_SUBTRACT not supported",
+          FXFALSE);
+    }
+    return;
+  }
+
+  // Save state modified across the 2-pass SST-1 multipass emulation.
+  const uint32_t savedRgbSrc = s_state.rgbSrcBlend;
+  const uint32_t savedRgbDst = s_state.rgbDstBlend;
+  const uint32_t savedAlphaSrc = s_state.alphaSrcBlend;
+  const uint32_t savedAlphaDst = s_state.alphaDstBlend;
+  const uint32_t savedDepthCompare = s_state.depthCompare;
+  const bool savedDepthMask = s_state.depthMask;
+  const uint32_t savedFogMode = s_state.fogMode;
+  const uint32_t savedColorFunc = s_state.colorFunc;
+  const uint32_t savedColorFactor = s_state.colorFactor;
+  const uint32_t savedColorLocal = s_state.colorLocal;
+  const uint32_t savedColorOther = s_state.colorOther;
+  const bool savedColorInvert = s_state.colorInvert;
+  const uint32_t savedTexRgbFunc0 = s_state.texRgbFunc[0];
+  const uint32_t savedTexRgbFactor0 = s_state.texRgbFactor[0];
+  const uint32_t savedTexAlphaFunc0 = s_state.texAlphaFunc[0];
+  const uint32_t savedTexAlphaFactor0 = s_state.texAlphaFactor[0];
+  const bool savedTexRgbInv0 = s_state.texRgbInvert[0];
+  const bool savedTexAlphaInv0 = s_state.texAlphaInvert[0];
+  const uint32_t savedBoundTex0 = s_state.boundTex[0];
+  const GrMipMapId_t savedMm0 = s_currentMipMap[0];
+
+  auto configurePassTexCombine = [&](int pass) {
+    switch (s_mpTexCombineFnc) {
+      case GR_MPTEXTURECOMBINE_DETAIL0:
+        grTexCombine(GR_TMU0, GR_COMBINE_FUNCTION_SCALE_MINUS_LOCAL_ADD_LOCAL,
+                     (pass == 0) ? GR_COMBINE_FACTOR_DETAIL_FACTOR
+                                 : GR_COMBINE_FACTOR_ONE_MINUS_DETAIL_FACTOR,
+                     GR_COMBINE_FUNCTION_SCALE_MINUS_LOCAL_ADD_LOCAL,
+                     (pass == 0) ? GR_COMBINE_FACTOR_DETAIL_FACTOR
+                                 : GR_COMBINE_FACTOR_ONE_MINUS_DETAIL_FACTOR,
+                     FXFALSE, FXFALSE);
+        break;
+      case GR_MPTEXTURECOMBINE_DETAIL1:
+        grTexCombine(GR_TMU0, GR_COMBINE_FUNCTION_SCALE_MINUS_LOCAL_ADD_LOCAL,
+                     (pass == 0) ? GR_COMBINE_FACTOR_ONE_MINUS_DETAIL_FACTOR
+                                 : GR_COMBINE_FACTOR_DETAIL_FACTOR,
+                     GR_COMBINE_FUNCTION_SCALE_MINUS_LOCAL_ADD_LOCAL,
+                     (pass == 0) ? GR_COMBINE_FACTOR_ONE_MINUS_DETAIL_FACTOR
+                                 : GR_COMBINE_FACTOR_DETAIL_FACTOR,
+                     FXFALSE, FXFALSE);
+        break;
+      case GR_MPTEXTURECOMBINE_TRILINEAR0:
+        grTexCombine(GR_TMU0, GR_COMBINE_FUNCTION_SCALE_MINUS_LOCAL_ADD_LOCAL,
+                     (pass == 0) ? GR_COMBINE_FACTOR_LOD_FRACTION
+                                 : GR_COMBINE_FACTOR_ONE_MINUS_LOD_FRACTION,
+                     GR_COMBINE_FUNCTION_SCALE_MINUS_LOCAL_ADD_LOCAL,
+                     (pass == 0) ? GR_COMBINE_FACTOR_LOD_FRACTION
+                                 : GR_COMBINE_FACTOR_ONE_MINUS_LOD_FRACTION,
+                     FXFALSE, FXFALSE);
+        break;
+      case GR_MPTEXTURECOMBINE_TRILINEAR1:
+        grTexCombine(GR_TMU0, GR_COMBINE_FUNCTION_SCALE_MINUS_LOCAL_ADD_LOCAL,
+                     (pass == 0) ? GR_COMBINE_FACTOR_ONE_MINUS_LOD_FRACTION
+                                 : GR_COMBINE_FACTOR_LOD_FRACTION,
+                     GR_COMBINE_FUNCTION_SCALE_MINUS_LOCAL_ADD_LOCAL,
+                     (pass == 0) ? GR_COMBINE_FACTOR_ONE_MINUS_LOD_FRACTION
+                                 : GR_COMBINE_FACTOR_LOD_FRACTION,
+                     FXFALSE, FXFALSE);
+        break;
+      case GR_MPTEXTURECOMBINE_ADD:
+      case GR_MPTEXTURECOMBINE_MULTIPLY:
+      default:
+        grTexCombine(GR_TMU0, GR_COMBINE_FUNCTION_LOCAL,
+                     GR_COMBINE_FACTOR_NONE, GR_COMBINE_FUNCTION_LOCAL,
+                     GR_COMBINE_FACTOR_NONE, FXFALSE, FXFALSE);
+        break;
+    }
+  };
+
+  auto bindVirtualTexOnTmu0 = [&](GrMipMapId_t mmid) {
+    if (mmid == GR_NULL_MIPMAP_HANDLE ||
+        mmid >= static_cast<GrMipMapId_t>(s_guTextures.size()) ||
+        !s_guTextures[mmid].valid) {
+      EntryCommon::BindTexSource(s_state, GR_TMU0, 0xFFFFFFFFu);
+      return;
+    }
+    const auto& tex = s_guTextures[mmid];
+    EntryCommon::BindTexSource(s_state, GR_TMU0, tex.tmu_base_address);
+    grTexClampMode(GR_TMU0, tex.s_clamp_mode, tex.t_clamp_mode);
+    grTexFilterMode(GR_TMU0, tex.minfilter_mode, tex.magfilter_mode);
+    grTexMipMapMode(GR_TMU0, tex.mipmap_mode, tex.trilinear);
+    int32_t raw_bias = static_cast<int32_t>(tex.lod_bias & 0x3F);
+    if (raw_bias & 0x20) raw_bias |= ~0x3F;
+    grTexLodBiasValue(GR_TMU0, static_cast<float>(raw_bias) / 4.0f);
+  };
+
+  // Pass 1: virtual TMU 0
+  bindVirtualTexOnTmu0(s_mpMipMap[0]);
+  configurePassTexCombine(0);
+  grDrawTriangle(a, b, c);
+
+  // Pass 2: virtual TMU 1 blended onto Pass 1 output
+  if (s_mpMipMap[1] != GR_NULL_MIPMAP_HANDLE) {
+    bindVirtualTexOnTmu0(s_mpMipMap[1]);
+    configurePassTexCombine(1);
+
+    if (s_state.depthMode != 0) {
+      grDepthBufferFunction(GR_CMP_EQUAL);
+      grDepthMask(FXFALSE);
+    }
+
+    if (s_mpTexCombineFnc == GR_MPTEXTURECOMBINE_MULTIPLY) {
+      grAlphaBlendFunction(GR_BLEND_DST_COLOR, GR_BLEND_ZERO, GR_BLEND_ONE,
+                           GR_BLEND_ZERO);
+      grFogMode(GR_FOG_DISABLE);
+      grColorCombine(GR_COMBINE_FUNCTION_SCALE_OTHER, GR_COMBINE_FACTOR_ONE,
+                     GR_COMBINE_LOCAL_NONE, GR_COMBINE_OTHER_TEXTURE, FXFALSE);
+    } else {
+      grAlphaBlendFunction(GR_BLEND_ONE, GR_BLEND_ONE, GR_BLEND_ONE,
+                           GR_BLEND_ONE);
+    }
+
+    if ((s_stwHintMask & GR_STWHINT_ST_DIFF_TMU1) != 0) {
+      GrVertex a2 = *a;
+      GrVertex b2 = *b;
+      GrVertex c2 = *c;
+      a2.tmuvtx[0] = a->tmuvtx[1];
+      b2.tmuvtx[0] = b->tmuvtx[1];
+      c2.tmuvtx[0] = c->tmuvtx[1];
+      grDrawTriangle(&a2, &b2, &c2);
+    } else {
+      grDrawTriangle(a, b, c);
+    }
+  }
+
+  // Restore all touched pipeline state.
+  grAlphaBlendFunction(savedRgbSrc, savedRgbDst, savedAlphaSrc, savedAlphaDst);
+  if (s_state.depthMode != 0) {
+    grDepthBufferFunction(savedDepthCompare);
+    grDepthMask(savedDepthMask ? FXTRUE : FXFALSE);
+  }
+  if (s_state.fogMode != savedFogMode) {
+    grFogMode(savedFogMode);
+  }
+  grColorCombine(savedColorFunc, savedColorFactor, savedColorLocal,
+                 savedColorOther, savedColorInvert ? FXTRUE : FXFALSE);
+  grTexCombine(GR_TMU0, savedTexRgbFunc0, savedTexRgbFactor0,
+               savedTexAlphaFunc0, savedTexAlphaFactor0,
+               savedTexRgbInv0 ? FXTRUE : FXFALSE,
+               savedTexAlphaInv0 ? FXTRUE : FXFALSE);
+  if (savedMm0 != GR_NULL_MIPMAP_HANDLE) {
+    guTexSource(savedMm0);
+  } else {
+    EntryCommon::BindTexSource(s_state, GR_TMU0, savedBoundTex0);
+  }
+}
+
+FX_ENTRY void FX_CALL guMovieSetName(const char* name) {
+  EnsureEngineInitialized();
+  s_movieName = name ? name : "";
+  GLIDE_LOG(DEBUG, "Frontend", "guMovieSetName: '" << s_movieName << "'");
+}
+
+FX_ENTRY void FX_CALL guMovieStart(void) {
+  EnsureEngineInitialized();
+  s_movieRecording = true;
+  GLIDE_LOG(DEBUG, "Frontend", "guMovieStart: '" << s_movieName << "'");
+}
+
+FX_ENTRY void FX_CALL guMovieStop(void) {
+  EnsureEngineInitialized();
+  s_movieRecording = false;
+  GLIDE_LOG(DEBUG, "Frontend", "guMovieStop");
 }
 
 /**

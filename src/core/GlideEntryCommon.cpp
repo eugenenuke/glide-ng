@@ -832,6 +832,45 @@ void LoadGammaTable(uint32_t nentries, uint32_t* red, uint32_t* green,
   }
 }
 
+void GetGammaTable(uint32_t nentries, uint32_t* red, uint32_t* green,
+                   uint32_t* blue) {
+  if (nentries == 0 || (!red && !green && !blue)) return;
+  if (auto* b = BackendManager::GetInstance().GetBackend()) {
+    b->GetGammaTable(nentries, red, green, blue);
+    return;
+  }
+  const uint32_t count = std::min(nentries, 256u);
+  for (uint32_t i = 0; i < count; ++i) {
+    if (red) red[i] = i;
+    if (green) green[i] = i;
+    if (blue) blue[i] = i;
+  }
+}
+
+int EncodeRLE16(void* dst, const void* src, uint32_t width, uint32_t height) {
+  if (!src || width == 0 || height == 0) return 0;
+  int byteCount = 0;
+  uint64_t remaining = static_cast<uint64_t>(width) * height;
+  const uint16_t* srcPixels = reinterpret_cast<const uint16_t*>(src);
+  uint32_t* dstPixels = reinterpret_cast<uint32_t*>(dst);
+
+  while (remaining > 0) {
+    uint16_t length = 1;
+    const uint16_t color = *srcPixels;
+    while (length < remaining && length < 0xFFFFu &&
+           color == srcPixels[length]) {
+      ++length;
+    }
+    if (dstPixels) {
+      *dstPixels++ = (static_cast<uint32_t>(length) << 16) | color;
+    }
+    byteCount += 4;
+    srcPixels += length;
+    remaining -= length;
+  }
+  return byteCount;
+}
+
 void SyncTexturesBeforeDrawSlow() {
   auto& tm = TextureManager::GetInstance();
   if (tm.HasPendingTableSync()) {

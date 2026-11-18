@@ -987,6 +987,9 @@ grSstWinClose( void );
 FX_ENTRY FxBool FX_CALL
 grSstControl( FxU32 code );
 
+FX_ENTRY void FX_CALL
+grSstVidMode( FxU32 whichSst, void *vidTimings );
+
 #ifndef GLIDE3_ALPHA
 FX_ENTRY FxBool FX_CALL 
 grSstQueryHardware( GrHwConfiguration *hwconfig );

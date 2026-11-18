@@ -175,6 +175,9 @@ void SetFogTable(SharedFrontendState& st, const uint8_t* ft);
 void DisableAllEffects(SharedFrontendState& st, bool clearCachedFogMode);
 void LoadGammaTable(uint32_t nentries, uint32_t* red, uint32_t* green,
                     uint32_t* blue);
+void GetGammaTable(uint32_t nentries, uint32_t* red, uint32_t* green,
+                   uint32_t* blue);
+int EncodeRLE16(void* dst, const void* src, uint32_t width, uint32_t height);
 
 // Vertex sanitization, primitive batch dispatch, and telemetry helpers.
 inline std::atomic<bool> g_anyTmuTableDirty{false};

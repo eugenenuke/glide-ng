@@ -621,11 +621,8 @@ class VulkanBackend : public GlideStateTracker {
                                       const PresentRect& dst);
 
   float m_gammaCorrectionValue{1.0f};
-  bool m_useGammaLut{false};
   bool m_gammaLutDirty{true};
-  uint8_t m_lutR[256]{};
-  uint8_t m_lutG[256]{};
-  uint8_t m_lutB[256]{};
+  // m_useGammaLut and m_lutR/G/B are inherited from GlideStateTracker.
   vk::Format m_gammaPresentPipelineFormat{vk::Format::eUndefined};
   vk::UniqueRenderPass m_gammaPresentRenderPass;
   std::vector<vk::UniqueFramebuffer> m_gammaPresentFramebuffers;
