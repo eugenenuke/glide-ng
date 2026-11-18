@@ -415,19 +415,19 @@
 ### M12 Task Breakdown
 - **`M12.1`** (`920f2ff`) — Catalog Index, Starter Template & Compatibility Redirect (`docs/catalog/README.md`, `docs/catalog/_template/{README.md,glide-ng.ini}`, `docs/compatibility_library.md`, `README.md`, `glide-ng.ini.example`):
   - Created flat kind-based catalog (`games/`, `demos/`, `tools/`) with platform badges (`DOS/32`, `Win32 / Wine`, `Linux`), drop-in `glide-ng.ini` precedence guide, migrated cross-title quirk cheat-sheet (fixing `[display] msaa = 4` section name), converted `docs/compatibility_library.md` into a concise redirect, linked catalog prominently from root `README.md`, and updated `glide-ng.ini.example` to authentic `Voodoo2` + `2.56`.
-  - **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION`
+  - **Status**: `[x] DONE (USER CONFIRMED — 2026-11-18)`
 - **`M12.2`** (`2aaabc6`) — Tools & Benchmarking Catalog (`docs/catalog/tools/{glide-bench,glide-info,glide-envtest}/`):
   - Authored `glide-bench` playbook covering all 9 Glide 2.x + 14 Glide 3.x VSA-100 scenes across Linux, Win32/Wine, and DOS/32, Software SIMD tier benchmarking (`scalar`/`avx2`/`avx512`/`auto`), and exact **Mesa `llvmpipe` (Vulkan `VK_DRIVER_FILES=.../lvp_icd*.json` and OpenGL ES on NVIDIA GLVND `__EGL_VENDOR_LIBRARY_FILENAMES=.../50_mesa.json LIBGL_ALWAYS_SOFTWARE=1`) vs. `glide-ng` Software** recipes with uncapped Voodoo2 & Voodoo5 presets, plus `glide-info` and `glide-envtest` entries.
-  - **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION`
+  - **Status**: `[x] DONE (USER CONFIRMED — 2026-11-18)`
 - **`M12.3`** (`04b3531`) — Commercial Games Catalog (`docs/catalog/games/carmageddon/`):
   - Documented all 4 *Carmageddon* DOS executables (`CARMA.EXE` software-only, `CARMAV.EXE` Oct 1997 Voodoo1/Rush patch, `Voodo2C.exe` June 1998 Stainless Voodoo2 patch for Base/Max Pack, `voodo2S.exe` Splat Pack Voodoo2 patch), patch extraction order, DOSBox `GLIDE2X.OVL` launch commands, engine quirks, and dual presets (`glide-ng.ini` Voodoo2 + `glide-ng.voodoo1.ini` SST-1).
-  - **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION`
+  - **Status**: `[x] DONE (USER CONFIRMED — 2026-11-18)`
 - **`M12.4`** (`7ad32bd`) — Official 3dfx Tech Demos & Hardware Test Catalog (`docs/catalog/demos/`):
   - Created 9 verified per-demo guides and drop-in `glide-ng.ini` presets: `3dfx-donut`, `3dfx-valley-of-ra`, `3dfx-demo-room` (SST-1 `gamma = 1.7`), `3dfx-wizards-tower` (SST-1 `gamma = 1.7`), `3dfx-surf` (Glide 2.x & 3.x), `3dfx-kitty-hawk` (Voodoo5 4× AA + Voodoo4 2× AA presets), `3dfx-museum` (Voodoo5 Soft Reflectance), `3dfx-rocket-burger` (Voodoo5 Motion Blur + DoF), and `monster3d-test` (`MNSTRTST.EXE` verified across Vulkan/GLES/Software + `MOJO.EXE` `sst1init.dll` probe distinction).
-  - **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION`
-- **`M12.5`** — Automated Catalog INI Validator, Markdown Link/Anchor Audit & Regression Run (`tests/test_glide3.cpp`, `tests/CMakeLists.txt`):
+  - **Status**: `[x] DONE (USER CONFIRMED — 2026-11-18)`
+- **`M12.5`** (`319090a`) — Automated Catalog INI Validator, Markdown Link/Anchor Audit & Regression Run (`tests/test_glide3.cpp`, `tests/CMakeLists.txt`):
   - Added Catch2 `[M12][Catalog]` test validating every `docs/catalog/**/glide-ng*.ini` and root `glide-ng.ini.example` through `IniConfigLoader::Load()` (zero parse errors, zero unknown keys, zero invalid values, zero card/version compatibility warnings, plus directory integrity and semantic spot checks), audited 97/97 relative Markdown links & anchors (`0` broken) and 35/35 files for PII (`0` hits).
-  - **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION`
+  - **Status**: `[x] DONE (USER CONFIRMED — 2026-11-18)`
 
 ---
 
