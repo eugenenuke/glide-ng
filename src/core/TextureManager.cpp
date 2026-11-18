@@ -140,24 +140,420 @@ constexpr auto kExpand5 = MakeExpandLut<32, 31>();
 constexpr auto kExpand6 = MakeExpandLut<64, 63>();
 constexpr auto kExpand3 = MakeExpandLut<8, 7>();
 
+constexpr uint32_t kTexFmtFxt1 = 0x11u;
+constexpr uint32_t kTexFmtArgb8888 = 0x12u;
+constexpr uint32_t kTexFmtYuyv422 = 0x13u;
+constexpr uint32_t kTexFmtUyvy422 = 0x14u;
+constexpr uint32_t kTexFmtAyuv444 = 0x15u;
+constexpr uint32_t kTexFmtDxt1 = 0x16u;
+constexpr uint32_t kTexFmtDxt2 = 0x17u;
+constexpr uint32_t kTexFmtDxt3 = 0x18u;
+constexpr uint32_t kTexFmtDxt4 = 0x19u;
+constexpr uint32_t kTexFmtDxt5 = 0x1Au;
+constexpr uint32_t kTexFmtRgb888 = 0xFFu;
+
+inline uint32_t CalculateLevelByteSize(uint32_t w, uint32_t h,
+                                       uint32_t format) {
+  switch (format) {
+    case kTexFmtFxt1:
+      return ((w + 7u) / 8u) * ((h + 3u) / 4u) * 16u;
+    case kTexFmtDxt1:
+      return ((w + 3u) / 4u) * ((h + 3u) / 4u) * 8u;
+    case kTexFmtDxt2:
+    case kTexFmtDxt3:
+    case kTexFmtDxt4:
+    case kTexFmtDxt5:
+      return ((w + 3u) / 4u) * ((h + 3u) / 4u) * 16u;
+    case kTexFmtArgb8888:
+    case kTexFmtAyuv444:
+      return w * h * 4u;
+    case kTexFmtRgb888:
+      return w * h * 3u;
+    case kTexFmtYuyv422:
+    case kTexFmtUyvy422:
+      return w * h * 2u;
+    default: {
+      const uint32_t bpp = (format >= 0x10u) ? 4u : ((format >= 0x8u) ? 2u : 1u);
+      return w * h * bpp;
+    }
+  }
+}
+
+// BT.601 studio-swing YUV -> RGB matching 3dfx Texus2 (_txCalcRGBFromYUV).
+inline uint32_t CalcRgbFromYuv(uint32_t y, uint32_t u, uint32_t v,
+                               uint32_t alpha) {
+  const int y16 = static_cast<int>(y) - 16;
+  const int u128 = static_cast<int>(u) - 128;
+  const int v128 = static_cast<int>(v) - 128;
+  const int r = std::clamp(
+      static_cast<int>(1.164f * y16 + 1.596f * v128 + 0.5f), 0, 255);
+  const int g = std::clamp(
+      static_cast<int>(1.164f * y16 - 0.391f * u128 - 0.813f * v128 + 0.5f), 0,
+      255);
+  const int b = std::clamp(
+      static_cast<int>(1.164f * y16 + 2.018f * u128 + 0.5f), 0, 255);
+  return (alpha << 24) | (static_cast<uint32_t>(r) << 16) |
+         (static_cast<uint32_t>(g) << 8) | static_cast<uint32_t>(b);
+}
+
+inline void DecodeDxtColorBlock(const uint8_t blk[8], bool allowTransparent,
+                                uint32_t out16[16]) {
+  uint16_t c0 = 0, c1 = 0;
+  uint32_t indices = 0;
+  std::memcpy(&c0, blk + 0, 2);
+  std::memcpy(&c1, blk + 2, 2);
+  std::memcpy(&indices, blk + 4, 4);
+
+  uint32_t pal[4];
+  const uint32_t r0 = kExpand5[(c0 >> 11) & 0x1Fu];
+  const uint32_t g0 = kExpand6[(c0 >> 5) & 0x3Fu];
+  const uint32_t b0 = kExpand5[c0 & 0x1Fu];
+  const uint32_t r1 = kExpand5[(c1 >> 11) & 0x1Fu];
+  const uint32_t g1 = kExpand6[(c1 >> 5) & 0x3Fu];
+  const uint32_t b1 = kExpand5[c1 & 0x1Fu];
+
+  pal[0] = 0xFF000000u | (r0 << 16) | (g0 << 8) | b0;
+  pal[1] = 0xFF000000u | (r1 << 16) | (g1 << 8) | b1;
+  if (!allowTransparent || c0 > c1) {
+    const uint32_t r2 = (2u * r0 + r1 + 1u) / 3u;
+    const uint32_t g2 = (2u * g0 + g1 + 1u) / 3u;
+    const uint32_t b2 = (2u * b0 + b1 + 1u) / 3u;
+    const uint32_t r3 = (r0 + 2u * r1 + 1u) / 3u;
+    const uint32_t g3 = (g0 + 2u * g1 + 1u) / 3u;
+    const uint32_t b3 = (b0 + 2u * b1 + 1u) / 3u;
+    pal[2] = 0xFF000000u | (r2 << 16) | (g2 << 8) | b2;
+    pal[3] = 0xFF000000u | (r3 << 16) | (g3 << 8) | b3;
+  } else {
+    const uint32_t r2 = (r0 + r1) / 2u;
+    const uint32_t g2 = (g0 + g1) / 2u;
+    const uint32_t b2 = (b0 + b1) / 2u;
+    pal[2] = 0xFF000000u | (r2 << 16) | (g2 << 8) | b2;
+    pal[3] = 0x00000000u;
+  }
+
+  for (int i = 0; i < 16; ++i) {
+    out16[i] = pal[(indices >> (i * 2)) & 3u];
+  }
+}
+
+inline void DecodeDxt3AlphaBlock(const uint8_t blk[8], uint8_t outAlpha[16]) {
+  uint64_t bits = 0;
+  std::memcpy(&bits, blk, 8);
+  for (int i = 0; i < 16; ++i) {
+    outAlpha[i] = static_cast<uint8_t>(((bits >> (i * 4)) & 0xFu) * 17u);
+  }
+}
+
+inline void DecodeDxt5AlphaBlock(const uint8_t blk[8], uint8_t outAlpha[16]) {
+  const uint32_t a0 = blk[0];
+  const uint32_t a1 = blk[1];
+  uint8_t pal[8];
+  pal[0] = static_cast<uint8_t>(a0);
+  pal[1] = static_cast<uint8_t>(a1);
+  if (a0 > a1) {
+    for (uint32_t k = 1; k <= 6; ++k) {
+      pal[1 + k] = static_cast<uint8_t>(((7u - k) * a0 + k * a1 + 3u) / 7u);
+    }
+  } else {
+    for (uint32_t k = 1; k <= 4; ++k) {
+      pal[1 + k] = static_cast<uint8_t>(((5u - k) * a0 + k * a1 + 2u) / 5u);
+    }
+    pal[6] = 0u;
+    pal[7] = 255u;
+  }
+  uint64_t idxBits = 0;
+  for (int b = 0; b < 6; ++b) {
+    idxBits |= static_cast<uint64_t>(blk[2 + b]) << (b * 8);
+  }
+  for (int i = 0; i < 16; ++i) {
+    outAlpha[i] = pal[(idxBits >> (i * 3)) & 7u];
+  }
+}
+
+inline uint32_t ReadFxt1Bits(const uint32_t cc[4], int bitPos, int count) {
+  const int word = bitPos >> 5;
+  const int shift = bitPos & 31;
+  uint64_t val = cc[word];
+  if (word < 3) {
+    val |= (static_cast<uint64_t>(cc[word + 1]) << 32);
+  }
+  return static_cast<uint32_t>((val >> shift) & ((1u << count) - 1u));
+}
+
+inline uint32_t Fxt1Lerp(uint32_t n, uint32_t t, uint32_t c0, uint32_t c1) {
+  return ((n - t) * c0 + t * c1 + n / 2u) / n;
+}
+
+inline void DecodeFxt1Block(const uint8_t blk[16], uint32_t out8x4[32]) {
+  uint32_t cc[4];
+  std::memcpy(cc, blk, 16);
+  const uint32_t mode = ReadFxt1Bits(cc, 125, 3);
+
+  uint32_t linear[32];
+
+  if ((mode & 6u) == 0u) {
+    // CC_HI (mode "00?"): 2 RGB555 endpoints + 3-bit indices (idx 7 = transparent)
+    const uint32_t b0 = kExpand5[ReadFxt1Bits(cc, 96, 5)];
+    const uint32_t g0 = kExpand5[ReadFxt1Bits(cc, 101, 5)];
+    const uint32_t r0 = kExpand5[ReadFxt1Bits(cc, 106, 5)];
+    const uint32_t b1 = kExpand5[ReadFxt1Bits(cc, 111, 5)];
+    const uint32_t g1 = kExpand5[ReadFxt1Bits(cc, 116, 5)];
+    const uint32_t r1 = kExpand5[ReadFxt1Bits(cc, 121, 5)];
+    for (int t = 0; t < 32; ++t) {
+      const uint32_t idx = ReadFxt1Bits(cc, t * 3, 3);
+      if (idx == 7u) {
+        linear[t] = 0x00000000u;
+      } else {
+        const uint32_t r = Fxt1Lerp(6u, idx, r0, r1);
+        const uint32_t g = Fxt1Lerp(6u, idx, g0, g1);
+        const uint32_t b = Fxt1Lerp(6u, idx, b0, b1);
+        linear[t] = 0xFF000000u | (r << 16) | (g << 8) | b;
+      }
+    }
+  } else if (mode == 2u) {
+    // CC_CHROMA (mode "010"): 4 opaque RGB555 colors + 2-bit direct indices
+    uint32_t pal[4];
+    for (int k = 0; k < 4; ++k) {
+      const int base = 64 + k * 15;
+      const uint32_t b = kExpand5[ReadFxt1Bits(cc, base, 5)];
+      const uint32_t g = kExpand5[ReadFxt1Bits(cc, base + 5, 5)];
+      const uint32_t r = kExpand5[ReadFxt1Bits(cc, base + 10, 5)];
+      pal[k] = 0xFF000000u | (r << 16) | (g << 8) | b;
+    }
+    for (int t = 0; t < 32; ++t) {
+      linear[t] = pal[ReadFxt1Bits(cc, t * 2, 2)];
+    }
+  } else if (mode == 3u) {
+    // CC_ALPHA (mode "011"): 3 ARGB5555 colors + lerp bit 124
+    uint32_t cr[3], cg[3], cb[3], ca[3];
+    for (int k = 0; k < 3; ++k) {
+      const int base = 64 + k * 15;
+      cb[k] = kExpand5[ReadFxt1Bits(cc, base, 5)];
+      cg[k] = kExpand5[ReadFxt1Bits(cc, base + 5, 5)];
+      cr[k] = kExpand5[ReadFxt1Bits(cc, base + 10, 5)];
+      ca[k] = kExpand5[ReadFxt1Bits(cc, 109 + k * 5, 5)];
+    }
+    const bool lerp = (ReadFxt1Bits(cc, 124, 1) != 0u);
+    if (lerp) {
+      for (int t = 0; t < 32; ++t) {
+        const int cLo = (t < 16) ? 0 : 2;
+        const uint32_t idx = ReadFxt1Bits(cc, t * 2, 2);
+        const uint32_t r = Fxt1Lerp(3u, idx, cr[cLo], cr[1]);
+        const uint32_t g = Fxt1Lerp(3u, idx, cg[cLo], cg[1]);
+        const uint32_t b = Fxt1Lerp(3u, idx, cb[cLo], cb[1]);
+        const uint32_t a = Fxt1Lerp(3u, idx, ca[cLo], ca[1]);
+        linear[t] = (a << 24) | (r << 16) | (g << 8) | b;
+      }
+    } else {
+      for (int t = 0; t < 32; ++t) {
+        const uint32_t idx = ReadFxt1Bits(cc, t * 2, 2);
+        if (idx == 3u) {
+          linear[t] = 0x00000000u;
+        } else {
+          linear[t] =
+              (ca[idx] << 24) | (cr[idx] << 16) | (cg[idx] << 8) | cb[idx];
+        }
+      }
+    }
+  } else {
+    // CC_MIXED (mode "1??"): two 4x4 sub-blocks, each with its own endpoint pair
+    const bool hasAlpha = (ReadFxt1Bits(cc, 124, 1) != 0u);
+    for (int half = 0; half < 2; ++half) {
+      const int base0 = 64 + half * 30;
+      const int base1 = base0 + 15;
+      const uint32_t b0 = kExpand5[ReadFxt1Bits(cc, base0, 5)];
+      const uint32_t g0Raw = ReadFxt1Bits(cc, base0 + 5, 5);
+      const uint32_t r0 = kExpand5[ReadFxt1Bits(cc, base0 + 10, 5)];
+      const uint32_t b1 = kExpand5[ReadFxt1Bits(cc, base1, 5)];
+      const uint32_t g1Raw = ReadFxt1Bits(cc, base1 + 5, 5);
+      const uint32_t r1 = kExpand5[ReadFxt1Bits(cc, base1 + 10, 5)];
+      const uint32_t glsb = ReadFxt1Bits(cc, 125 + half, 1);
+      const uint32_t selb = ReadFxt1Bits(cc, half == 0 ? 1 : 33, 1);
+
+      const uint32_t g1 = kExpand6[(g1Raw << 1) | glsb];
+      if (hasAlpha) {
+        const uint32_t g0 = kExpand5[g0Raw];
+        for (int k = 0; k < 16; ++k) {
+          const int t = half * 16 + k;
+          const uint32_t idx = ReadFxt1Bits(cc, t * 2, 2);
+          if (idx == 3u) {
+            linear[t] = 0x00000000u;
+          } else if (idx == 0u) {
+            linear[t] = 0xFF000000u | (r0 << 16) | (g0 << 8) | b0;
+          } else if (idx == 2u) {
+            linear[t] = 0xFF000000u | (r1 << 16) | (g1 << 8) | b1;
+          } else {
+            const uint32_t rm = (r0 + r1) / 2u;
+            const uint32_t gm = (g0 + g1) / 2u;
+            const uint32_t bm = (b0 + b1) / 2u;
+            linear[t] = 0xFF000000u | (rm << 16) | (gm << 8) | bm;
+          }
+        }
+      } else {
+        const uint32_t g0 = kExpand6[(g0Raw << 1) | (glsb ^ selb)];
+        for (int k = 0; k < 16; ++k) {
+          const int t = half * 16 + k;
+          const uint32_t idx = ReadFxt1Bits(cc, t * 2, 2);
+          const uint32_t r = Fxt1Lerp(3u, idx, r0, r1);
+          const uint32_t g = Fxt1Lerp(3u, idx, g0, g1);
+          const uint32_t b = Fxt1Lerp(3u, idx, b0, b1);
+          linear[t] = 0xFF000000u | (r << 16) | (g << 8) | b;
+        }
+      }
+    }
+  }
+
+  // Remap two 4x4 sub-blocks (0..15 left, 16..31 right) into row-major 8x4.
+  for (int t = 0; t < 32; ++t) {
+    const int lx = ((t & 16) ? 4 : 0) + (t & 3);
+    const int ly = (t >> 2) & 3;
+    out8x4[ly * 8 + lx] = linear[t];
+  }
+}
+
 // Hoisted per-format texel decoder producing canonical 32-bit BGRA (0xAARRGGBB).
 // Optional raw output pointers are populated when non-null for paletted/NCC
 // formats so later palette/NCC table reloads can re-swizzle without guest data.
-void DecodeTexelsToBgra(uint32_t format, const uint8_t* rawSrc, size_t count,
-                        uint32_t* dstBgra, bool paletteLoaded,
+void DecodeTexelsToBgra(uint32_t format, const uint8_t* rawSrc, uint32_t width,
+                        uint32_t height, uint32_t* dstBgra, bool paletteLoaded,
                         const uint32_t* paletteTable,
                         const GuNccTable* activeNcc, uint8_t* dstRaw8,
                         uint8_t* dstRawYiq, uint16_t* dstRawAyiq,
                         uint16_t* dstRawAp88) {
+  const size_t count = static_cast<size_t>(width) * static_cast<size_t>(height);
   if (count == 0) return;
 
-  if (format >= 0x10) {
-    // 32-bit ARGB_8888 is already canonical 0xAARRGGBB in little-endian memory.
-    std::memcpy(dstBgra, rawSrc, count * sizeof(uint32_t));
-    return;
-  }
-
   switch (format) {
+    case kTexFmtArgb8888: {
+      // 32-bit ARGB_8888 is already canonical 0xAARRGGBB in little-endian.
+      std::memcpy(dstBgra, rawSrc, count * sizeof(uint32_t));
+      return;
+    }
+    case kTexFmtRgb888: {
+      for (size_t i = 0; i < count; ++i) {
+        const uint32_t r = rawSrc[i * 3u + 0u];
+        const uint32_t g = rawSrc[i * 3u + 1u];
+        const uint32_t b = rawSrc[i * 3u + 2u];
+        dstBgra[i] = 0xFF000000u | (r << 16) | (g << 8) | b;
+      }
+      return;
+    }
+    case kTexFmtYuyv422:
+    case kTexFmtUyvy422: {
+      const bool isYuyv = (format == kTexFmtYuyv422);
+      const auto* src16 = reinterpret_cast<const uint16_t*>(rawSrc);
+      size_t i = 0;
+      for (; i + 1 < count; i += 2) {
+        const uint16_t w0 = src16[i];
+        const uint16_t w1 = src16[i + 1];
+        const uint32_t y0 = isYuyv ? (w0 & 0xFFu) : (w0 >> 8);
+        const uint32_t u = isYuyv ? (w0 >> 8) : (w0 & 0xFFu);
+        const uint32_t y1 = isYuyv ? (w1 & 0xFFu) : (w1 >> 8);
+        const uint32_t v = isYuyv ? (w1 >> 8) : (w1 & 0xFFu);
+        dstBgra[i] = CalcRgbFromYuv(y0, u, v, 0xFFu);
+        dstBgra[i + 1] = CalcRgbFromYuv(y1, u, v, 0xFFu);
+      }
+      if (i < count) {
+        const uint16_t w0 = src16[i];
+        const uint32_t y0 = isYuyv ? (w0 & 0xFFu) : (w0 >> 8);
+        const uint32_t u = isYuyv ? (w0 >> 8) : (w0 & 0xFFu);
+        dstBgra[i] = CalcRgbFromYuv(y0, u, 128u, 0xFFu);
+      }
+      return;
+    }
+    case kTexFmtAyuv444: {
+      const auto* src32 = reinterpret_cast<const uint32_t*>(rawSrc);
+      for (size_t i = 0; i < count; ++i) {
+        const uint32_t val = src32[i];
+        const uint32_t a = (val >> 24) & 0xFFu;
+        const uint32_t y = (val >> 16) & 0xFFu;
+        const uint32_t u = (val >> 8) & 0xFFu;
+        const uint32_t v = val & 0xFFu;
+        dstBgra[i] = CalcRgbFromYuv(y, u, v, a);
+      }
+      return;
+    }
+    case kTexFmtFxt1: {
+      const uint32_t blocksX = (width + 7u) / 8u;
+      const uint32_t blocksY = (height + 3u) / 4u;
+      const uint8_t* blk = rawSrc;
+      uint32_t decoded[32];
+      for (uint32_t by = 0; by < blocksY; ++by) {
+        for (uint32_t bx = 0; bx < blocksX; ++bx) {
+          DecodeFxt1Block(blk, decoded);
+          blk += 16;
+          for (uint32_t ly = 0; ly < 4u; ++ly) {
+            const uint32_t py = by * 4u + ly;
+            if (py >= height) break;
+            for (uint32_t lx = 0; lx < 8u; ++lx) {
+              const uint32_t px = bx * 8u + lx;
+              if (px >= width) break;
+              dstBgra[static_cast<size_t>(py) * width + px] =
+                  decoded[ly * 8u + lx];
+            }
+          }
+        }
+      }
+      return;
+    }
+    case kTexFmtDxt1: {
+      const uint32_t blocksX = (width + 3u) / 4u;
+      const uint32_t blocksY = (height + 3u) / 4u;
+      const uint8_t* blk = rawSrc;
+      uint32_t decoded[16];
+      for (uint32_t by = 0; by < blocksY; ++by) {
+        for (uint32_t bx = 0; bx < blocksX; ++bx) {
+          DecodeDxtColorBlock(blk, /*allowTransparent=*/true, decoded);
+          blk += 8;
+          for (uint32_t ly = 0; ly < 4u; ++ly) {
+            const uint32_t py = by * 4u + ly;
+            if (py >= height) break;
+            for (uint32_t lx = 0; lx < 4u; ++lx) {
+              const uint32_t px = bx * 4u + lx;
+              if (px >= width) break;
+              dstBgra[static_cast<size_t>(py) * width + px] =
+                  decoded[ly * 4u + lx];
+            }
+          }
+        }
+      }
+      return;
+    }
+    case kTexFmtDxt2:
+    case kTexFmtDxt3:
+    case kTexFmtDxt4:
+    case kTexFmtDxt5: {
+      const bool isDxt5 = (format == kTexFmtDxt4 || format == kTexFmtDxt5);
+      const uint32_t blocksX = (width + 3u) / 4u;
+      const uint32_t blocksY = (height + 3u) / 4u;
+      const uint8_t* blk = rawSrc;
+      uint8_t alphas[16];
+      uint32_t colors[16];
+      for (uint32_t by = 0; by < blocksY; ++by) {
+        for (uint32_t bx = 0; bx < blocksX; ++bx) {
+          if (isDxt5) {
+            DecodeDxt5AlphaBlock(blk, alphas);
+          } else {
+            DecodeDxt3AlphaBlock(blk, alphas);
+          }
+          DecodeDxtColorBlock(blk + 8, /*allowTransparent=*/false, colors);
+          blk += 16;
+          for (uint32_t ly = 0; ly < 4u; ++ly) {
+            const uint32_t py = by * 4u + ly;
+            if (py >= height) break;
+            for (uint32_t lx = 0; lx < 4u; ++lx) {
+              const uint32_t px = bx * 4u + lx;
+              if (px >= width) break;
+              const uint32_t idx = ly * 4u + lx;
+              dstBgra[static_cast<size_t>(py) * width + px] =
+                  (static_cast<uint32_t>(alphas[idx]) << 24) |
+                  (colors[idx] & 0x00FFFFFFu);
+            }
+          }
+        }
+      }
+      return;
+    }
     case 0xa: {  // RGB_565
       const auto* src16 = reinterpret_cast<const uint16_t*>(rawSrc);
       for (size_t i = 0; i < count; ++i) {
@@ -493,42 +889,17 @@ uint32_t TextureManager::CalculateMemoryRequired(int32_t lodMin,
   int32_t end = std::max(lodMin, lodMax);
 
   uint32_t totalBytes = 0;
-  uint32_t bytesPerTexel = (format >= 0x10) ? 4 : ((format >= 0x8) ? 2 : 1);
 
   for (int32_t i = start; i <= end; ++i) {
-    uint32_t maxDim = LodToDimension(i);
-    uint32_t w = maxDim;
-    uint32_t h = maxDim;
+    uint32_t w = 1, h = 1;
+    ComputeLodDimensions(i, aspect, w, h);
 
-    switch (aspect) {
-      case 0:
-        h = std::max(1u, maxDim / 8);
-        break;  // 8x1
-      case 1:
-        h = std::max(1u, maxDim / 4);
-        break;  // 4x1
-      case 2:
-        h = std::max(1u, maxDim / 2);
-        break;  // 2x1
-      case 3:
-        break;  // 1x1
-      case 4:
-        w = std::max(1u, maxDim / 2);
-        break;  // 1x2
-      case 5:
-        w = std::max(1u, maxDim / 4);
-        break;  // 1x4
-      case 6:
-        w = std::max(1u, maxDim / 8);
-        break;  // 1x8
-    }
-
-    uint32_t levelBytes = w * h * bytesPerTexel;
+    const uint32_t levelBytes = CalculateLevelByteSize(w, h, format);
     if (packed) {
       totalBytes += levelBytes;
     } else {
       // Align MIP level footprint to 8-byte silicon TMU memory bounds
-      totalBytes += (levelBytes + 7) & ~7;
+      totalBytes += (levelBytes + 7u) & ~7u;
     }
   }
 
@@ -733,7 +1104,6 @@ bool TextureManager::DownloadMipMap(uint32_t tmu, uint32_t startAddress,
 
   const auto* rawData = reinterpret_cast<const uint8_t*>(data);
   size_t byteOffset = 0;
-  uint32_t bytesPerTexel = (format >= 0x10) ? 4 : ((format >= 0x8) ? 2 : 1);
 
   const bool needsNcc = (format == 0x1 || format == 0x9);
   GuNccTable activeNcc{};
@@ -798,7 +1168,7 @@ bool TextureManager::DownloadMipMap(uint32_t tmu, uint32_t startAddress,
     }
 
     DecodeTexelsToBgra(
-        format, rawData + byteOffset, texelCount, levelPixels.data(),
+        format, rawData + byteOffset, w, h, levelPixels.data(),
         paletteLoaded, paletteTable, needsNcc ? &activeNcc : nullptr,
         levelRaw.empty() ? nullptr : levelRaw.data(),
         levelYiq.empty() ? nullptr : levelYiq.data(),
@@ -816,7 +1186,7 @@ bool TextureManager::DownloadMipMap(uint32_t tmu, uint32_t startAddress,
     } else if (format == 0xe) {
       newRawAp88[destIdx] = std::move(levelAp88);
     }
-    uint32_t levelBytes = w * h * bytesPerTexel;
+    const uint32_t levelBytes = CalculateLevelByteSize(w, h, format);
     byteOffset += levelBytes;  // Advancing packed unaligned input bytes offset!
   }
 
@@ -1049,7 +1419,7 @@ bool TextureManager::DownloadMipMapPartial(uint32_t tmu, uint32_t startAddress,
           ? (tex->rawAp88MipLevels[lodIdx].data() + baseOffset)
           : nullptr;
 
-  DecodeTexelsToBgra(format, rawData, partialTexels,
+  DecodeTexelsToBgra(format, rawData, w, static_cast<uint32_t>(numRows),
                      levelPixels.data() + baseOffset,
                      m_tmus[tmu].paletteTableLoaded, m_tmus[tmu].paletteTable,
                      needsNcc ? &activeNcc : nullptr, dstRaw8, dstRawYiq,

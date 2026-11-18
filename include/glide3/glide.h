@@ -370,6 +370,20 @@ typedef FxI32 GrTextureFormat_t;
 #define GR_TEXFMT_RSVD2                 0xf
 #define GR_TEXFMT_RSVD4                 GR_TEXFMT_RSVD2
 
+/* VSA-100 / Napalm TEXFMT extension texture formats */
+#define GR_TEXFMT_ARGB_CMP_FXT1         0x11
+#define GR_TEXFMT_ARGB_8888             0x12
+#define GR_TEXFMT_YUYV_422              0x13
+#define GR_TEXFMT_UYVY_422              0x14
+#define GR_TEXFMT_AYUV_444              0x15
+#define GR_TEXFMT_ARGB_CMP_DXT1         0x16
+#define GR_TEXFMT_ARGB_CMP_DXT2         0x17
+#define GR_TEXFMT_ARGB_CMP_DXT3         0x18
+#define GR_TEXFMT_ARGB_CMP_DXT4         0x19
+#define GR_TEXFMT_ARGB_CMP_DXT5         0x1A
+#define GR_TEXTFMT_RGB_888              0xFF
+#define GR_TEXFMT_RGB_888               GR_TEXTFMT_RGB_888
+
 typedef FxU32 GrTexTable_t;
 #define GR_TEXTABLE_NCC0                 0x0
 #define GR_TEXTABLE_NCC1                 0x1

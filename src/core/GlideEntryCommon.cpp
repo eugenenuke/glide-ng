@@ -1139,15 +1139,18 @@ int32_t Map3dfAspectToGlide3(int aspectW, int aspectH) {
 }
 
 int32_t Map3dfLodToGlide3(int dim) {
-  if (dim <= 1) return 0x0;    // GR_LOD_LOG2_1
-  if (dim <= 2) return 0x1;    // GR_LOD_LOG2_2
-  if (dim <= 4) return 0x2;    // GR_LOD_LOG2_4
-  if (dim <= 8) return 0x3;    // GR_LOD_LOG2_8
-  if (dim <= 16) return 0x4;   // GR_LOD_LOG2_16
-  if (dim <= 32) return 0x5;   // GR_LOD_LOG2_32
-  if (dim <= 64) return 0x6;   // GR_LOD_LOG2_64
-  if (dim <= 128) return 0x7;  // GR_LOD_LOG2_128
-  return 0x8;                  // GR_LOD_LOG2_256
+  if (dim <= 1) return 0x0;     // GR_LOD_LOG2_1
+  if (dim <= 2) return 0x1;     // GR_LOD_LOG2_2
+  if (dim <= 4) return 0x2;     // GR_LOD_LOG2_4
+  if (dim <= 8) return 0x3;     // GR_LOD_LOG2_8
+  if (dim <= 16) return 0x4;    // GR_LOD_LOG2_16
+  if (dim <= 32) return 0x5;    // GR_LOD_LOG2_32
+  if (dim <= 64) return 0x6;    // GR_LOD_LOG2_64
+  if (dim <= 128) return 0x7;   // GR_LOD_LOG2_128
+  if (dim <= 256) return 0x8;   // GR_LOD_LOG2_256
+  if (dim <= 512) return 0x9;   // GR_LOD_LOG2_512
+  if (dim <= 1024) return 0xa;  // GR_LOD_LOG2_1024
+  return 0xb;                   // GR_LOD_LOG2_2048
 }
 
 bool Load3dfPixelsAndPalette(const char* filename, uint32_t format,

@@ -7639,3 +7639,710 @@ TEST_CASE("M10.4 VSA-100 PIXEXT Hardware Stencil", "[Glide3][M10][Stencil]") {
   restoreCard();
 #endif
 }
+
+TEST_CASE("M10.5 VSA-100 TEXFMT (ARGB_8888, RGB_888, YUV, FXT1, DXT1-5)",
+          "[Glide3][M10][TexFmt]") {
+#ifdef __linux__
+  std::string savedCard;
+  if (const char* cur = std::getenv("GLIDE_NG_CARD_MODEL")) {
+    savedCard = cur;
+  }
+  auto restoreCard = [&]() {
+    if (!savedCard.empty()) {
+      ::setenv("GLIDE_NG_CARD_MODEL", savedCard.c_str(), 1);
+    } else {
+      ::unsetenv("GLIDE_NG_CARD_MODEL");
+    }
+  };
+
+  void* handle = OpenGlide3Handle();
+  REQUIRE(handle != nullptr);
+
+  using InitFunc = void (*)(void);
+  using ShutdownFunc = void (*)(void);
+  using WinOpenFunc = FxU32 (*)(FxU32, FxI32, FxI32, FxI32, FxI32, int, int);
+  using WinCloseFunc = FxBool (*)(FxU32);
+  using GetStringFunc = const char* (*)(FxU32);
+  using ClipFunc = void (*)(FxU32, FxU32, FxU32, FxU32);
+  using ClearFunc = void (*)(GrColor_t, GrAlpha_t, FxU32);
+  using ColorCombFunc = void (*)(GrCombineFunction_t, GrCombineFactor_t,
+                                 GrCombineLocal_t, GrCombineOther_t, FxBool);
+  using AlphaCombFunc = void (*)(GrCombineFunction_t, GrCombineFactor_t,
+                                 GrCombineLocal_t, GrCombineOther_t, FxBool);
+  using BlendFunc = void (*)(GrAlphaBlendFnc_t, GrAlphaBlendFnc_t,
+                             GrAlphaBlendFnc_t, GrAlphaBlendFnc_t);
+  using VertexLayoutFunc = void (*)(FxU32, FxI32, FxU32);
+  using DrawTriFunc = void (*)(const void*, const void*, const void*);
+  using ReadLfbFunc = FxBool (*)(GrBuffer_t, FxU32, FxU32, FxU32, FxU32, FxU32,
+                                 void*);
+  using TexCalcMemFunc = FxU32 (*)(GrLOD_t, GrLOD_t, GrAspectRatio_t,
+                                   GrTextureFormat_t);
+  using TexDownloadFunc = void (*)(GrChipID_t, FxU32, FxU32, GrTexInfo*);
+  using TexSourceFunc = void (*)(GrChipID_t, FxU32, FxU32, GrTexInfo*);
+  using TexCombineFunc = void (*)(GrChipID_t, GrCombineFunction_t,
+                                  GrCombineFactor_t, GrCombineFunction_t,
+                                  GrCombineFactor_t, FxBool, FxBool);
+  using TexMipMapFunc = void (*)(GrChipID_t, GrMipMapMode_t, FxBool);
+  using TexFilterFunc = void (*)(GrChipID_t, GrTextureFilterMode_t,
+                                 GrTextureFilterMode_t);
+  using TexClampFunc = void (*)(GrChipID_t, GrTextureClampMode_t,
+                                GrTextureClampMode_t);
+  using Gu3dfGetInfoFunc = FxBool (*)(const char*, Gu3dfInfo*);
+  using Gu3dfLoadFunc = FxBool (*)(const char*, Gu3dfInfo*);
+
+  auto glideInit = reinterpret_cast<InitFunc>(::dlsym(handle, "grGlideInit"));
+  auto glideShutdown =
+      reinterpret_cast<ShutdownFunc>(::dlsym(handle, "grGlideShutdown"));
+  auto winOpen = reinterpret_cast<WinOpenFunc>(::dlsym(handle, "grSstWinOpen"));
+  auto winClose =
+      reinterpret_cast<WinCloseFunc>(::dlsym(handle, "grSstWinClose"));
+  auto getString =
+      reinterpret_cast<GetStringFunc>(::dlsym(handle, "grGetString"));
+  auto clipWindow = reinterpret_cast<ClipFunc>(::dlsym(handle, "grClipWindow"));
+  auto bufferClear =
+      reinterpret_cast<ClearFunc>(::dlsym(handle, "grBufferClear"));
+  auto colorCombine =
+      reinterpret_cast<ColorCombFunc>(::dlsym(handle, "grColorCombine"));
+  auto alphaCombine =
+      reinterpret_cast<AlphaCombFunc>(::dlsym(handle, "grAlphaCombine"));
+  auto alphaBlend =
+      reinterpret_cast<BlendFunc>(::dlsym(handle, "grAlphaBlendFunction"));
+  auto vertexLayout =
+      reinterpret_cast<VertexLayoutFunc>(::dlsym(handle, "grVertexLayout"));
+  auto drawTri =
+      reinterpret_cast<DrawTriFunc>(::dlsym(handle, "grDrawTriangle"));
+  auto readLfb =
+      reinterpret_cast<ReadLfbFunc>(::dlsym(handle, "grLfbReadRegion"));
+  auto texCalcMem = reinterpret_cast<TexCalcMemFunc>(
+      ::dlsym(handle, "grTexCalcMemRequired"));
+  auto texDownload = reinterpret_cast<TexDownloadFunc>(
+      ::dlsym(handle, "grTexDownloadMipMap"));
+  auto texSource =
+      reinterpret_cast<TexSourceFunc>(::dlsym(handle, "grTexSource"));
+  auto texCombine =
+      reinterpret_cast<TexCombineFunc>(::dlsym(handle, "grTexCombine"));
+  auto texMipMap =
+      reinterpret_cast<TexMipMapFunc>(::dlsym(handle, "grTexMipMapMode"));
+  auto texFilter =
+      reinterpret_cast<TexFilterFunc>(::dlsym(handle, "grTexFilterMode"));
+  auto texClamp =
+      reinterpret_cast<TexClampFunc>(::dlsym(handle, "grTexClampMode"));
+  auto gu3dfGetInfoFn =
+      reinterpret_cast<Gu3dfGetInfoFunc>(::dlsym(handle, "gu3dfGetInfo"));
+  auto gu3dfLoadFn =
+      reinterpret_cast<Gu3dfLoadFunc>(::dlsym(handle, "gu3dfLoad"));
+
+  REQUIRE(glideInit != nullptr);
+  REQUIRE(winOpen != nullptr);
+  REQUIRE(texCalcMem != nullptr);
+  REQUIRE(gu3dfGetInfoFn != nullptr);
+  REQUIRE(gu3dfLoadFn != nullptr);
+
+  ::setenv("GLIDE_NG_CARD_MODEL", "voodoo5", 1);
+  glideInit();
+  CHECK(std::string(getString(0xa0)).find("TEXFMT") != std::string::npos);
+
+  // Verify grTexCalcMemRequired exact footprints for 64x64 single-level mips
+  CHECK(texCalcMem(GR_LOD_LOG2_64, GR_LOD_LOG2_64, GR_ASPECT_LOG2_1x1,
+                   GR_TEXFMT_ARGB_8888) == 64u * 64u * 4u);
+  CHECK(texCalcMem(GR_LOD_LOG2_64, GR_LOD_LOG2_64, GR_ASPECT_LOG2_1x1,
+                   GR_TEXTFMT_RGB_888) == 64u * 64u * 3u);
+  CHECK(texCalcMem(GR_LOD_LOG2_64, GR_LOD_LOG2_64, GR_ASPECT_LOG2_1x1,
+                   GR_TEXFMT_YUYV_422) == 64u * 64u * 2u);
+  CHECK(texCalcMem(GR_LOD_LOG2_64, GR_LOD_LOG2_64, GR_ASPECT_LOG2_1x1,
+                   GR_TEXFMT_AYUV_444) == 64u * 64u * 4u);
+  CHECK(texCalcMem(GR_LOD_LOG2_64, GR_LOD_LOG2_64, GR_ASPECT_LOG2_1x1,
+                   GR_TEXFMT_ARGB_CMP_FXT1) == (64u / 8u) * (64u / 4u) * 16u);
+  CHECK(texCalcMem(GR_LOD_LOG2_64, GR_LOD_LOG2_64, GR_ASPECT_LOG2_1x1,
+                   GR_TEXFMT_ARGB_CMP_DXT1) == (64u / 4u) * (64u / 4u) * 8u);
+  CHECK(texCalcMem(GR_LOD_LOG2_64, GR_LOD_LOG2_64, GR_ASPECT_LOG2_1x1,
+                   GR_TEXFMT_ARGB_CMP_DXT5) == (64u / 4u) * (64u / 4u) * 16u);
+  // Smallest 1x1 compressed mips still reserve 1 full block
+  CHECK(texCalcMem(GR_LOD_LOG2_1, GR_LOD_LOG2_1, GR_ASPECT_LOG2_1x1,
+                   GR_TEXFMT_ARGB_CMP_FXT1) == 16u);
+  CHECK(texCalcMem(GR_LOD_LOG2_1, GR_LOD_LOG2_1, GR_ASPECT_LOG2_1x1,
+                   GR_TEXFMT_ARGB_CMP_DXT1) == 8u);
+
+  FxU32 ctx = winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                      GR_COLORFORMAT_ARGB, GR_ORIGIN_UPPER_LEFT, 2, 1);
+  REQUIRE(ctx != 0);
+
+  struct TexVert {
+    float x, y;
+    float r, g, b, a;
+    float oow;
+    float s0, t0;
+  };
+  vertexLayout(GR_PARAM_XY, offsetof(TexVert, x), GR_PARAM_ENABLE);
+  vertexLayout(GR_PARAM_RGB, offsetof(TexVert, r), GR_PARAM_ENABLE);
+  vertexLayout(GR_PARAM_A, offsetof(TexVert, a), GR_PARAM_ENABLE);
+  vertexLayout(GR_PARAM_Q, offsetof(TexVert, oow), GR_PARAM_ENABLE);
+  vertexLayout(GR_PARAM_ST0, offsetof(TexVert, s0), GR_PARAM_ENABLE);
+
+  auto drawFlatQuad = [&](float x0, float y0, float x1, float y1, float r,
+                          float g, float b) {
+    TexVert v0{x0, y0, r, g, b, 255.0f, 1.0f, 0.0f, 0.0f};
+    TexVert v1{x1, y0, r, g, b, 255.0f, 1.0f, 255.0f, 0.0f};
+    TexVert v2{x1, y1, r, g, b, 255.0f, 1.0f, 255.0f, 255.0f};
+    TexVert v3{x0, y1, r, g, b, 255.0f, 1.0f, 0.0f, 255.0f};
+    drawTri(&v0, &v1, &v2);
+    drawTri(&v0, &v2, &v3);
+  };
+
+  auto tileRect = [](int col, int row, float& x0, float& y0, float& x1,
+                     float& y1) {
+    x0 = 12.0f + col * 156.0f;
+    y0 = 12.0f + row * 154.0f;
+    x1 = x0 + 148.0f;
+    y1 = y0 + 144.0f;
+  };
+
+  clipWindow(0, 0, 640, 480);
+  bufferClear(0xFF14141Cu, 0xFF, 0xFFFFu);
+
+  // Draw a subtle checkerboard inside every tile so alpha transparency shows!
+  colorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+               GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_NONE, FXFALSE);
+  alphaCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+               GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_NONE, FXFALSE);
+  alphaBlend(GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_ONE, GR_BLEND_ZERO);
+  for (int row = 0; row < 3; ++row) {
+    for (int col = 0; col < 4; ++col) {
+      float x0, y0, x1, y1;
+      tileRect(col, row, x0, y0, x1, y1);
+      for (int cy = 0; cy < 6; ++cy) {
+        for (int cx = 0; cx < 6; ++cx) {
+          const bool light = ((cx + cy) & 1) == 0;
+          const float c = light ? 72.0f : 36.0f;
+          const float bx0 = x0 + (x1 - x0) * (cx / 6.0f);
+          const float bx1 = x0 + (x1 - x0) * ((cx + 1) / 6.0f);
+          const float by0 = y0 + (y1 - y0) * (cy / 6.0f);
+          const float by1 = y0 + (y1 - y0) * ((cy + 1) / 6.0f);
+          drawFlatQuad(bx0, by0, bx1, by1, c, c, c);
+        }
+      }
+    }
+  }
+
+  // Switch to textured alpha-blended rendering
+  colorCombine(GR_COMBINE_FUNCTION_SCALE_OTHER, GR_COMBINE_FACTOR_ONE,
+               GR_COMBINE_LOCAL_NONE, GR_COMBINE_OTHER_TEXTURE, FXFALSE);
+  alphaCombine(GR_COMBINE_FUNCTION_SCALE_OTHER, GR_COMBINE_FACTOR_ONE,
+               GR_COMBINE_LOCAL_NONE, GR_COMBINE_OTHER_TEXTURE, FXFALSE);
+  alphaBlend(GR_BLEND_SRC_ALPHA, GR_BLEND_ONE_MINUS_SRC_ALPHA, GR_BLEND_ONE,
+             GR_BLEND_ZERO);
+  texCombine(GR_TMU0, GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+             GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE, FXFALSE,
+             FXFALSE);
+  texMipMap(GR_TMU0, GR_MIPMAP_DISABLE, FXFALSE);
+  texFilter(GR_TMU0, GR_TEXTUREFILTER_POINT_SAMPLED,
+            GR_TEXTUREFILTER_POINT_SAMPLED);
+  texClamp(GR_TMU0, GR_TEXTURECLAMP_CLAMP, GR_TEXTURECLAMP_CLAMP);
+
+  FxU32 nextAddr = 0u;
+  auto uploadAndDrawTile = [&](int col, int row, GrLOD_t lod,
+                               GrTextureFormat_t fmt, void* data) {
+    GrTexInfo info{lod, lod, GR_ASPECT_LOG2_1x1, fmt, data};
+    const FxU32 bytes = texCalcMem(lod, lod, GR_ASPECT_LOG2_1x1, fmt);
+    const FxU32 addr = nextAddr;
+    nextAddr += (bytes + 15u) & ~15u;
+    texDownload(GR_TMU0, addr, GR_MIPMAPLEVELMASK_BOTH, &info);
+    texSource(GR_TMU0, addr, GR_MIPMAPLEVELMASK_BOTH, &info);
+    float x0, y0, x1, y1;
+    tileRect(col, row, x0, y0, x1, y1);
+    drawFlatQuad(x0, y0, x1, y1, 255.0f, 255.0f, 255.0f);
+  };
+
+  // --- Helper: pack bits into 128-bit FXT1 block ---
+  auto setFxt1Bits = [](uint32_t cc[4], int bitPos, int count, uint32_t val) {
+    for (int b = 0; b < count; ++b) {
+      if ((val >> b) & 1u) {
+        const int p = bitPos + b;
+        cc[p >> 5] |= (1u << (p & 31));
+      }
+    }
+  };
+  auto packRgb555 = [](uint32_t r5, uint32_t g5, uint32_t b5) -> uint32_t {
+    return ((r5 & 31u) << 10) | ((g5 & 31u) << 5) | (b5 & 31u);
+  };
+
+  // Tile (0,0): GR_TEXFMT_ARGB_8888 (16x16: top=opaque Red/Green, bottom=50% alpha Blue/Yellow)
+  {
+    std::vector<uint32_t> img(16 * 16);
+    for (int y = 0; y < 16; ++y) {
+      for (int x = 0; x < 16; ++x) {
+        if (y < 8) {
+          img[y * 16 + x] = (x < 8) ? 0xFFFF2020u : 0xFF20FF20u;
+        } else {
+          img[y * 16 + x] = (x < 8) ? 0x802080FFu : 0x80FFFF20u;
+        }
+      }
+    }
+    uploadAndDrawTile(0, 0, GR_LOD_LOG2_16, GR_TEXFMT_ARGB_8888, img.data());
+  }
+
+  // Tile (1,0): GR_TEXTFMT_RGB_888 (16x16 packed 24-bit R,G,B)
+  {
+    std::vector<uint8_t> img(16 * 16 * 3);
+    for (int y = 0; y < 16; ++y) {
+      for (int x = 0; x < 16; ++x) {
+        uint8_t r = 0, g = 0, b = 0;
+        if (y < 8 && x < 8) { r = 240; g = 40; b = 40; }
+        else if (y < 8)     { r = 40; g = 230; b = 60; }
+        else if (x < 8)     { r = 40; g = 90; b = 245; }
+        else                { r = 245; g = 225; b = 30; }
+        const size_t o = (static_cast<size_t>(y) * 16u + x) * 3u;
+        img[o + 0] = r;
+        img[o + 1] = g;
+        img[o + 2] = b;
+      }
+    }
+    uploadAndDrawTile(1, 0, GR_LOD_LOG2_16, GR_TEXTFMT_RGB_888, img.data());
+  }
+
+  // Tile (2,0): GR_TEXFMT_YUYV_422 (16x16 studio-swing BT.601 color bars)
+  {
+    // BT.601 studio-swing: White(235,128,128), Red(81,90,240), Green(145,54,34), Blue(41,240,110)
+    const uint8_t bars[4][3] = {
+        {235, 128, 128}, {81, 90, 240}, {145, 54, 34}, {41, 240, 110}};
+    std::vector<uint16_t> img(16 * 16);
+    for (int y = 0; y < 16; ++y) {
+      for (int x = 0; x < 16; x += 2) {
+        const int b = x / 4;
+        const uint8_t Y = bars[b][0], U = bars[b][1], V = bars[b][2];
+        img[y * 16 + x + 0] = static_cast<uint16_t>(Y | (U << 8));
+        img[y * 16 + x + 1] = static_cast<uint16_t>(Y | (V << 8));
+      }
+    }
+    uploadAndDrawTile(2, 0, GR_LOD_LOG2_16, GR_TEXFMT_YUYV_422, img.data());
+  }
+
+  // Tile (3,0): top half UYVY_422 (16x16), bottom half drawn over with AYUV_444 (16x16)
+  {
+    const uint8_t bars[4][3] = {
+        {235, 128, 128}, {81, 90, 240}, {145, 54, 34}, {41, 240, 110}};
+    std::vector<uint16_t> uyvy(16 * 16);
+    for (int y = 0; y < 16; ++y) {
+      for (int x = 0; x < 16; x += 2) {
+        const int b = x / 4;
+        const uint8_t Y = bars[b][0], U = bars[b][1], V = bars[b][2];
+        uyvy[y * 16 + x + 0] = static_cast<uint16_t>(U | (Y << 8));
+        uyvy[y * 16 + x + 1] = static_cast<uint16_t>(V | (Y << 8));
+      }
+    }
+    // Top half of Tile (3,0) = UYVY_422
+    GrTexInfo uInfo{GR_LOD_LOG2_16, GR_LOD_LOG2_16, GR_ASPECT_LOG2_1x1,
+                    GR_TEXFMT_UYVY_422, uyvy.data()};
+    const FxU32 uAddr = nextAddr;
+    nextAddr += 16u * 16u * 2u;
+    texDownload(GR_TMU0, uAddr, GR_MIPMAPLEVELMASK_BOTH, &uInfo);
+    texSource(GR_TMU0, uAddr, GR_MIPMAPLEVELMASK_BOTH, &uInfo);
+    float x0, y0, x1, y1;
+    tileRect(3, 0, x0, y0, x1, y1);
+    drawFlatQuad(x0, y0, x1, (y0 + y1) * 0.5f, 255.0f, 255.0f, 255.0f);
+
+    // Bottom half of Tile (3,0) = AYUV_444 (alpha=0xFF left -> 0x00 right, pure Green Y=145,U=54,V=34)
+    std::vector<uint32_t> ayuv(16 * 16);
+    for (int y = 0; y < 16; ++y) {
+      for (int x = 0; x < 16; ++x) {
+        const uint32_t a = static_cast<uint32_t>(255 - (x * 255) / 15);
+        ayuv[y * 16 + x] = (a << 24) | (145u << 16) | (54u << 8) | 34u;
+      }
+    }
+    GrTexInfo aInfo{GR_LOD_LOG2_16, GR_LOD_LOG2_16, GR_ASPECT_LOG2_1x1,
+                    GR_TEXFMT_AYUV_444, ayuv.data()};
+    const FxU32 aAddr = nextAddr;
+    nextAddr += 16u * 16u * 4u;
+    texDownload(GR_TMU0, aAddr, GR_MIPMAPLEVELMASK_BOTH, &aInfo);
+    texSource(GR_TMU0, aAddr, GR_MIPMAPLEVELMASK_BOTH, &aInfo);
+    drawFlatQuad(x0, (y0 + y1) * 0.5f, x1, y1, 255.0f, 255.0f, 255.0f);
+  }
+
+  // Tile (0,1): FXT1 CC_HI (8x4 block -> 8x8 texture, 2 identical block rows):
+  //   c0 = pure Blue (0,0,31), c1 = pure Yellow (31,31,0); columns 0..6 = idx 0..6, col 7 = idx 7 (transparent!)
+  {
+    uint32_t cc[4] = {};
+    // Mode "00?" (bits 126..127 = 0)
+    setFxt1Bits(cc, 96, 15, packRgb555(0, 0, 31));    // c0 = Blue
+    setFxt1Bits(cc, 111, 15, packRgb555(31, 31, 0));  // c1 = Yellow
+    for (int ly = 0; ly < 4; ++ly) {
+      for (int lx = 0; lx < 8; ++lx) {
+        const int t = ((lx & 4) ? 16 : 0) + ly * 4 + (lx & 3);
+        setFxt1Bits(cc, t * 3, 3, static_cast<uint32_t>(lx));  // 0..6 ramp, 7=transparent
+      }
+    }
+    uint8_t img[32];  // 8x8 = 1x2 blocks = 32 bytes
+    std::memcpy(img + 0, cc, 16);
+    std::memcpy(img + 16, cc, 16);
+    uploadAndDrawTile(0, 1, GR_LOD_LOG2_8, GR_TEXFMT_ARGB_CMP_FXT1, img);
+  }
+
+  // Tile (1,1): FXT1 CC_CHROMA (mode "010"): 4 direct RGB555 colors (Red, Green, Blue, Cyan)
+  {
+    auto makeChromaBlock = [&](uint32_t leftIdx, uint32_t rightIdx,
+                               uint8_t out[16]) {
+      uint32_t cc[4] = {};
+      setFxt1Bits(cc, 64, 15, packRgb555(31, 0, 0));    // 0: Red
+      setFxt1Bits(cc, 79, 15, packRgb555(0, 31, 0));    // 1: Green
+      setFxt1Bits(cc, 94, 15, packRgb555(0, 0, 31));    // 2: Blue
+      setFxt1Bits(cc, 109, 15, packRgb555(0, 31, 31));  // 3: Cyan
+      setFxt1Bits(cc, 125, 3, 2u);                      // mode 010 = CC_CHROMA
+      for (int ly = 0; ly < 4; ++ly) {
+        for (int lx = 0; lx < 8; ++lx) {
+          const int t = ((lx & 4) ? 16 : 0) + ly * 4 + (lx & 3);
+          setFxt1Bits(cc, t * 2, 2, (lx < 4) ? leftIdx : rightIdx);
+        }
+      }
+      std::memcpy(out, cc, 16);
+    };
+    uint8_t img[32];
+    makeChromaBlock(0u, 1u, img + 0);   // Top 8x4: Red | Green
+    makeChromaBlock(2u, 3u, img + 16);  // Bottom 8x4: Blue | Cyan
+    uploadAndDrawTile(1, 1, GR_LOD_LOG2_8, GR_TEXFMT_ARGB_CMP_FXT1, img);
+  }
+
+  // Tile (2,1): FXT1 CC_MIXED (mode "1??"):
+  //   Top block row: alpha=0 (left 4x4 Red->White 4-level, right 4x4 Blue->Green 4-level)
+  //   Bottom block row: alpha=1 (left 4x4 Orange->White + idx=3 transparent, right 4x4 Purple->Cyan + idx=3 transparent)
+  {
+    uint32_t topCc[4] = {};
+    setFxt1Bits(topCc, 64, 15, packRgb555(31, 0, 0));    // c0: Red
+    setFxt1Bits(topCc, 79, 15, packRgb555(31, 31, 31));  // c1: White
+    setFxt1Bits(topCc, 94, 15, packRgb555(0, 0, 31));    // c2: Blue
+    setFxt1Bits(topCc, 109, 15, packRgb555(0, 31, 0));   // c3: Green
+    setFxt1Bits(topCc, 124, 1, 0u);                      // alpha = 0
+    setFxt1Bits(topCc, 125, 2, 3u);                      // glsb0=1, glsb1=1
+    setFxt1Bits(topCc, 127, 1, 1u);                      // mode 1?? = CC_MIXED
+    for (int ly = 0; ly < 4; ++ly) {
+      for (int lx = 0; lx < 8; ++lx) {
+        const int t = ((lx & 4) ? 16 : 0) + ly * 4 + (lx & 3);
+        setFxt1Bits(topCc, t * 2, 2, static_cast<uint32_t>(lx & 3));
+      }
+    }
+
+    uint32_t botCc[4] = {};
+    setFxt1Bits(botCc, 64, 15, packRgb555(31, 16, 0));   // c0: Orange
+    setFxt1Bits(botCc, 79, 15, packRgb555(31, 31, 31));  // c1: White
+    setFxt1Bits(botCc, 94, 15, packRgb555(24, 0, 31));   // c2: Purple
+    setFxt1Bits(botCc, 109, 15, packRgb555(0, 31, 31));  // c3: Cyan
+    setFxt1Bits(botCc, 124, 1, 1u);                      // alpha = 1 (idx 3 = transparent!)
+    setFxt1Bits(botCc, 127, 1, 1u);                      // mode 1?? = CC_MIXED
+    for (int ly = 0; ly < 4; ++ly) {
+      for (int lx = 0; lx < 8; ++lx) {
+        const int t = ((lx & 4) ? 16 : 0) + ly * 4 + (lx & 3);
+        setFxt1Bits(botCc, t * 2, 2, static_cast<uint32_t>(lx & 3));
+      }
+    }
+
+    uint8_t img[32];
+    std::memcpy(img + 0, topCc, 16);
+    std::memcpy(img + 16, botCc, 16);
+    uploadAndDrawTile(2, 1, GR_LOD_LOG2_8, GR_TEXFMT_ARGB_CMP_FXT1, img);
+  }
+
+  // Tile (3,1): FXT1 CC_ALPHA (mode "011"):
+  //   Top block row: lerp=1 (left: opaque Red -> transparent Blue; right: opaque Green -> transparent Blue)
+  //   Bottom block row: lerp=0 (0=opaque Red, 1=50% Yellow, 2=opaque Cyan, 3=transparent)
+  {
+    uint32_t topCc[4] = {};
+    setFxt1Bits(topCc, 64, 15, packRgb555(31, 0, 0));   // c0: Red
+    setFxt1Bits(topCc, 79, 15, packRgb555(0, 0, 31));   // c1: Blue (shared)
+    setFxt1Bits(topCc, 94, 15, packRgb555(0, 31, 0));   // c2: Green
+    setFxt1Bits(topCc, 109, 5, 31u);                    // a0 = 100%
+    setFxt1Bits(topCc, 114, 5, 0u);                     // a1 = 0%
+    setFxt1Bits(topCc, 119, 5, 31u);                    // a2 = 100%
+    setFxt1Bits(topCc, 124, 1, 1u);                     // lerp = 1
+    setFxt1Bits(topCc, 125, 3, 3u);                     // mode 011 = CC_ALPHA
+    for (int ly = 0; ly < 4; ++ly) {
+      for (int lx = 0; lx < 8; ++lx) {
+        const int t = ((lx & 4) ? 16 : 0) + ly * 4 + (lx & 3);
+        setFxt1Bits(topCc, t * 2, 2, static_cast<uint32_t>(lx & 3));
+      }
+    }
+
+    uint32_t botCc[4] = {};
+    setFxt1Bits(botCc, 64, 15, packRgb555(31, 0, 0));    // c0: Red
+    setFxt1Bits(botCc, 79, 15, packRgb555(31, 31, 0));   // c1: Yellow
+    setFxt1Bits(botCc, 94, 15, packRgb555(0, 31, 31));   // c2: Cyan
+    setFxt1Bits(botCc, 109, 5, 31u);                     // a0 = 100%
+    setFxt1Bits(botCc, 114, 5, 16u);                     // a1 = ~52%
+    setFxt1Bits(botCc, 119, 5, 31u);                     // a2 = 100%
+    setFxt1Bits(botCc, 124, 1, 0u);                      // lerp = 0 (idx 3 = transparent!)
+    setFxt1Bits(botCc, 125, 3, 3u);                      // mode 011 = CC_ALPHA
+    for (int ly = 0; ly < 4; ++ly) {
+      for (int lx = 0; lx < 8; ++lx) {
+        const int t = ((lx & 4) ? 16 : 0) + ly * 4 + (lx & 3);
+        setFxt1Bits(botCc, t * 2, 2, static_cast<uint32_t>(lx & 3));
+      }
+    }
+
+    uint8_t img[32];
+    std::memcpy(img + 0, topCc, 16);
+    std::memcpy(img + 16, botCc, 16);
+    uploadAndDrawTile(3, 1, GR_LOD_LOG2_8, GR_TEXFMT_ARGB_CMP_FXT1, img);
+  }
+
+  // Tile (0,2): GR_TEXFMT_ARGB_CMP_DXT1 (8x8 = 2x2 blocks = 32 bytes):
+  //   Top row (c0 > c1): Red (0xF800) -> Blue (0x001F), 4-color ramp [0, 2, 3, 1]
+  //   Bottom row (c0 <= c1): Green (0x07E0) -> Yellow (0xFFE0), [0, 2, 1, 3=transparent]
+  {
+    auto packDxt1 = [](uint8_t out[8], uint16_t c0, uint16_t c1,
+                       const uint8_t colIdx[4]) {
+      std::memcpy(out + 0, &c0, 2);
+      std::memcpy(out + 2, &c1, 2);
+      uint32_t bits = 0;
+      for (int ly = 0; ly < 4; ++ly) {
+        for (int lx = 0; lx < 4; ++lx) {
+          bits |= static_cast<uint32_t>(colIdx[lx]) << ((ly * 4 + lx) * 2);
+        }
+      }
+      std::memcpy(out + 4, &bits, 4);
+    };
+    const uint8_t ramp4[4] = {0, 2, 3, 1};
+    const uint8_t ramp3t[4] = {0, 2, 1, 3};
+    uint8_t img[32];
+    packDxt1(img + 0, 0xF800u, 0x001Fu, ramp4);
+    packDxt1(img + 8, 0xF800u, 0x001Fu, ramp4);
+    packDxt1(img + 16, 0x07E0u, 0xFFE0u, ramp3t);
+    packDxt1(img + 24, 0x07E0u, 0xFFE0u, ramp3t);
+    uploadAndDrawTile(0, 2, GR_LOD_LOG2_8, GR_TEXFMT_ARGB_CMP_DXT1, img);
+  }
+
+  // Tile (1,2): GR_TEXFMT_ARGB_CMP_DXT3 (8x8 = 2x2 blocks = 64 bytes):
+  //   Explicit 4-bit alpha ramp 0xF -> 0x0 left-to-right over solid Magenta (0xF81F)
+  {
+    uint8_t img[64] = {};
+    for (int by = 0; by < 2; ++by) {
+      for (int bx = 0; bx < 2; ++bx) {
+        uint8_t* blk = img + (by * 2 + bx) * 16;
+        uint64_t aBits = 0;
+        for (int ly = 0; ly < 4; ++ly) {
+          for (int lx = 0; lx < 4; ++lx) {
+            const int gx = bx * 4 + lx;
+            const uint64_t a4 = static_cast<uint64_t>(15 - gx * 2);
+            aBits |= (a4 & 0xFu) << ((ly * 4 + lx) * 4);
+          }
+        }
+        std::memcpy(blk, &aBits, 8);
+        uint16_t c0 = 0xF81Fu, c1 = 0xF81Fu;
+        uint32_t cIdx = 0u;
+        std::memcpy(blk + 8, &c0, 2);
+        std::memcpy(blk + 10, &c1, 2);
+        std::memcpy(blk + 12, &cIdx, 4);
+      }
+    }
+    uploadAndDrawTile(1, 2, GR_LOD_LOG2_8, GR_TEXFMT_ARGB_CMP_DXT3, img);
+  }
+
+  // Tile (2,2): GR_TEXFMT_ARGB_CMP_DXT5 (8x8 = 2x2 blocks = 64 bytes):
+  //   Top blocks: a0=255 > a1=0 (8-level interpolated alpha across 8 cols) over Cyan (0x07FF)
+  //   Bottom blocks: a0=64 <= a1=192 (6-level + explicit 0 and 255) over Gold (0xFE00)
+  {
+    uint8_t img[64] = {};
+    // Top row: 8-level alpha (indices 0,2,3,4 on left block; 5,6,7,1 on right block)
+    const uint8_t topIdx[2][4] = {{0, 2, 3, 4}, {5, 6, 7, 1}};
+    for (int bx = 0; bx < 2; ++bx) {
+      uint8_t* blk = img + bx * 16;
+      blk[0] = 255u;
+      blk[1] = 0u;
+      uint64_t idxBits = 0;
+      for (int ly = 0; ly < 4; ++ly) {
+        for (int lx = 0; lx < 4; ++lx) {
+          idxBits |= static_cast<uint64_t>(topIdx[bx][lx]) << ((ly * 4 + lx) * 3);
+        }
+      }
+      for (int b = 0; b < 6; ++b) blk[2 + b] = static_cast<uint8_t>(idxBits >> (b * 8));
+      uint16_t c0 = 0x07FFu, c1 = 0x07FFu;
+      std::memcpy(blk + 8, &c0, 2);
+      std::memcpy(blk + 10, &c1, 2);
+    }
+    // Bottom row: a0=64 <= a1=192 -> idx 6=0 (transparent), idx 7=255 (opaque), 0=64, 1=192
+    const uint8_t botIdx[2][4] = {{7, 1, 2, 0}, {7, 1, 0, 6}};
+    for (int bx = 0; bx < 2; ++bx) {
+      uint8_t* blk = img + (2 + bx) * 16;
+      blk[0] = 64u;
+      blk[1] = 192u;
+      uint64_t idxBits = 0;
+      for (int ly = 0; ly < 4; ++ly) {
+        for (int lx = 0; lx < 4; ++lx) {
+          idxBits |= static_cast<uint64_t>(botIdx[bx][lx]) << ((ly * 4 + lx) * 3);
+        }
+      }
+      for (int b = 0; b < 6; ++b) blk[2 + b] = static_cast<uint8_t>(idxBits >> (b * 8));
+      uint16_t c0 = 0xFE00u, c1 = 0xFE00u;
+      std::memcpy(blk + 8, &c0, 2);
+      std::memcpy(blk + 10, &c1, 2);
+    }
+    uploadAndDrawTile(2, 2, GR_LOD_LOG2_8, GR_TEXFMT_ARGB_CMP_DXT5, img);
+  }
+
+  // Tile (3,2): Real 3dfx H5 SDK ARGB8888 .3df asset (t256x32.3df via gu3dfGetInfo/Load)
+  {
+    const char* candidates[] = {
+        "../../refs/glide/glide3x/h5/glide3/tests/t256x32.3df",
+        "refs/glide/glide3x/h5/glide3/tests/t256x32.3df",
+        "../refs/glide/glide3x/h5/glide3/tests/t256x32.3df",
+    };
+    const char* found3df = nullptr;
+    for (const char* p : candidates) {
+      if (FILE* f = std::fopen(p, "rb")) {
+        std::fclose(f);
+        found3df = p;
+        break;
+      }
+    }
+    REQUIRE(found3df != nullptr);
+    Gu3dfInfo tInfo{};
+    REQUIRE(gu3dfGetInfoFn(found3df, &tInfo) == FXTRUE);
+    CHECK(tInfo.header.format == GR_TEXFMT_ARGB_8888);
+    CHECK(tInfo.header.width == 256);
+    CHECK(tInfo.header.height == 256);
+    CHECK(tInfo.mem_required == 256u * 256u * 4u);
+    std::vector<uint8_t> buf3df(tInfo.mem_required);
+    tInfo.data = buf3df.data();
+    REQUIRE(gu3dfLoadFn(found3df, &tInfo) == FXTRUE);
+    uploadAndDrawTile(3, 2, tInfo.header.large_lod, tInfo.header.format,
+                      buf3df.data());
+  }
+
+  std::vector<uint32_t> fb(640 * 480, 0u);
+  REQUIRE(readLfb(GR_BUFFER_BACKBUFFER, 0, 0, 640, 480, 640 * 4, fb.data()) ==
+          FXTRUE);
+
+  if (const char* snapPath = std::getenv("GLIDE_NG_M10_SNAPSHOT_PATH")) {
+    std::ofstream ppm(snapPath, std::ios::binary | std::ios::trunc);
+    if (ppm.is_open()) {
+      ppm << "P6\n640 480\n255\n";
+      for (uint32_t p : fb) {
+        uint8_t rgb[3] = {static_cast<uint8_t>((p >> 16) & 0xFFu),
+                          static_cast<uint8_t>((p >> 8) & 0xFFu),
+                          static_cast<uint8_t>(p & 0xFFu)};
+        ppm.write(reinterpret_cast<const char*>(rgb), 3);
+      }
+    }
+  }
+
+  auto sampleTile = [&](int col, int row, float u, float v, int& r, int& g,
+                        int& b) {
+    float x0, y0, x1, y1;
+    tileRect(col, row, x0, y0, x1, y1);
+    const int px = static_cast<int>(x0 + (x1 - x0) * u);
+    const int py = static_cast<int>(y0 + (y1 - y0) * v);
+    const uint32_t p = fb[static_cast<size_t>(py) * 640u + static_cast<size_t>(px)];
+    r = static_cast<int>((p >> 16) & 0xFFu);
+    g = static_cast<int>((p >> 8) & 0xFFu);
+    b = static_cast<int>(p & 0xFFu);
+  };
+  auto checkTileRgb = [&](int col, int row, float u, float v, int expR,
+                          int expG, int expB, int tol) {
+    int r = 0, g = 0, b = 0;
+    sampleTile(col, row, u, v, r, g, b);
+    INFO("tile(" << col << "," << row << ") @(" << u << "," << v << ") RGB=("
+                 << r << "," << g << "," << b << ") expected=(" << expR << ","
+                 << expG << "," << expB << ")");
+    CHECK(std::abs(r - expR) <= tol);
+    CHECK(std::abs(g - expG) <= tol);
+    CHECK(std::abs(b - expB) <= tol);
+  };
+
+  // Row 0: ARGB_8888, RGB_888, YUYV_422, UYVY_422 + AYUV_444
+  checkTileRgb(0, 0, 0.25f, 0.25f, 255, 32, 32, 4);   // ARGB_8888 opaque Red
+  checkTileRgb(0, 0, 0.75f, 0.25f, 32, 255, 32, 4);   // ARGB_8888 opaque Green
+  checkTileRgb(1, 0, 0.25f, 0.25f, 240, 40, 40, 4);   // RGB_888 Red
+  checkTileRgb(1, 0, 0.75f, 0.75f, 245, 225, 30, 4);  // RGB_888 Yellow
+  checkTileRgb(2, 0, 0.12f, 0.50f, 255, 255, 255, 6); // YUYV_422 White
+  checkTileRgb(2, 0, 0.37f, 0.50f, 255, 0, 0, 12);    // YUYV_422 Red
+  checkTileRgb(2, 0, 0.62f, 0.50f, 0, 255, 0, 12);    // YUYV_422 Green
+  checkTileRgb(2, 0, 0.87f, 0.50f, 0, 0, 255, 12);    // YUYV_422 Blue
+  checkTileRgb(3, 0, 0.37f, 0.25f, 255, 0, 0, 12);    // UYVY_422 Red
+  checkTileRgb(3, 0, 0.05f, 0.75f, 0, 255, 0, 14);    // AYUV_444 opaque Green (left)
+  {
+    // AYUV_444 transparent right edge shows gray checkerboard (R==G==B in 36..72)
+    int r, g, b;
+    sampleTile(3, 0, 0.96f, 0.75f, r, g, b);
+    CHECK(r <= 80);
+    CHECK(g <= 80);
+    CHECK(b <= 80);
+  }
+
+  // Row 1: FXT1 (CC_HI, CC_CHROMA, CC_MIXED, CC_ALPHA)
+  checkTileRgb(0, 1, 0.06f, 0.50f, 0, 0, 255, 6);     // CC_HI idx=0 Blue
+  checkTileRgb(0, 1, 0.81f, 0.50f, 255, 255, 0, 6);   // CC_HI idx=6 Yellow
+  {
+    // CC_HI idx=7 transparent column shows gray checkerboard
+    int r, g, b;
+    sampleTile(0, 1, 0.94f, 0.50f, r, g, b);
+    CHECK(std::abs(r - g) <= 2);
+    CHECK(std::abs(g - b) <= 2);
+    CHECK(r >= 30);
+    CHECK(r <= 78);
+  }
+  checkTileRgb(1, 1, 0.25f, 0.25f, 255, 0, 0, 4);     // CC_CHROMA Red
+  checkTileRgb(1, 1, 0.75f, 0.25f, 0, 255, 0, 4);     // CC_CHROMA Green
+  checkTileRgb(1, 1, 0.25f, 0.75f, 0, 0, 255, 4);     // CC_CHROMA Blue
+  checkTileRgb(1, 1, 0.75f, 0.75f, 0, 255, 255, 4);   // CC_CHROMA Cyan
+  checkTileRgb(2, 1, 0.06f, 0.25f, 255, 0, 0, 6);     // CC_MIXED alpha=0 left Red
+  checkTileRgb(2, 1, 0.56f, 0.25f, 0, 0, 255, 6);     // CC_MIXED alpha=0 right Blue
+  checkTileRgb(2, 1, 0.94f, 0.25f, 0, 255, 0, 6);     // CC_MIXED alpha=0 right Green
+  {
+    // CC_MIXED alpha=1 idx=3 transparent column shows gray checkerboard
+    int r, g, b;
+    sampleTile(2, 1, 0.94f, 0.75f, r, g, b);
+    CHECK(std::abs(r - g) <= 2);
+    CHECK(r >= 30);
+    CHECK(r <= 78);
+  }
+  checkTileRgb(3, 1, 0.06f, 0.25f, 255, 0, 0, 6);     // CC_ALPHA lerp=1 opaque Red
+  checkTileRgb(3, 1, 0.56f, 0.25f, 0, 255, 0, 6);     // CC_ALPHA lerp=1 opaque Green
+  checkTileRgb(3, 1, 0.06f, 0.75f, 255, 0, 0, 6);     // CC_ALPHA lerp=0 opaque Red
+  checkTileRgb(3, 1, 0.31f, 0.75f, 0, 255, 255, 6);   // CC_ALPHA lerp=0 opaque Cyan (idx 2)
+
+  // Row 2: DXT1, DXT3, DXT5, real t256x32.3df
+  checkTileRgb(0, 2, 0.06f, 0.25f, 255, 0, 0, 6);     // DXT1 4-col Red
+  checkTileRgb(0, 2, 0.44f, 0.25f, 0, 0, 255, 6);     // DXT1 4-col Blue
+  checkTileRgb(0, 2, 0.06f, 0.75f, 0, 255, 0, 6);     // DXT1 3-col+alpha Green
+  {
+    // DXT1 idx=3 transparent column shows gray checkerboard
+    int r, g, b;
+    sampleTile(0, 2, 0.44f, 0.75f, r, g, b);
+    CHECK(std::abs(r - g) <= 2);
+    CHECK(r >= 30);
+    CHECK(r <= 78);
+  }
+  checkTileRgb(1, 2, 0.06f, 0.50f, 255, 0, 255, 8);   // DXT3 opaque Magenta (left)
+  {
+    // DXT3 low-alpha right edge blends strongly toward gray checkerboard
+    int r, g, b;
+    sampleTile(1, 2, 0.94f, 0.50f, r, g, b);
+    CHECK(r < 110);
+  }
+  checkTileRgb(2, 2, 0.06f, 0.25f, 0, 255, 255, 8);   // DXT5 8-lvl opaque Cyan (left)
+  checkTileRgb(2, 2, 0.06f, 0.75f, 255, 195, 0, 10);  // DXT5 6-lvl explicit 255 Gold
+  {
+    // DXT5 explicit 0 alpha (idx=6) on bottom-right shows gray checkerboard
+    int r, g, b;
+    sampleTile(2, 2, 0.94f, 0.75f, r, g, b);
+    CHECK(std::abs(r - g) <= 2);
+    CHECK(r >= 30);
+    CHECK(r <= 78);
+  }
+
+  // Real t256x32.3df loaded cleanly (non-blank colorful content)
+  {
+    int nonBg = 0;
+    for (int sy = 1; sy <= 5; ++sy) {
+      for (int sx = 1; sx <= 5; ++sx) {
+        int r, g, b;
+        sampleTile(3, 2, sx / 6.0f, sy / 6.0f, r, g, b);
+        if (std::abs(r - g) > 10 || std::abs(g - b) > 10 || r > 100) ++nonBg;
+      }
+    }
+    CHECK(nonBg >= 10);
+  }
+
+  winClose(ctx);
+  glideShutdown();
+  ::dlclose(handle);
+  restoreCard();
+#endif
+}
