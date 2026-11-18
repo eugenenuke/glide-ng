@@ -91,6 +91,55 @@ High resolutions are strictly pixel-fill / bandwidth bound and represent the pri
 | **Core 6 Geomean** | **74.6 FPS** | **255.8 FPS** | **3.43×** | — |
 | **All-14 Composite GM** | **37.2 FPS** | **147.5 FPS** | **3.97×** | — |
 
+### 2.4 Verified Target Hardware Results: AMD Ryzen 9 7945HX (Zen 4, AVX-512) + NVIDIA GeForce RTX 4070 Laptop
+
+> **Test Environment**: Release build (`build_release/`), headless (`GLIDE_NG_HEADLESS=1 GLIDE_NG_MAX_FPS=0 GLIDE_NG_VSYNC=0 FX_GLIDE_SWAPINTERVAL=0`), `--no-hud --seconds 3`, AMD Ryzen 9 7945HX (16C/32T Zen 4 with `avx512f/dq/bw/vl`), NVIDIA GeForce RTX 4070 Laptop GPU (Vulkan 1.4.357, driver 620.70.06).
+
+#### Glide 3.x (`Voodoo5`, 640×480 — Scalar vs. AVX2 vs. AVX-512 vs. Real GPU)
+
+| Scene | SW Scalar | SW AVX2 | SW AVX-512 | AVX-512 / AVX2 | AVX-512 / Scalar | RTX 4070 Vulkan | RTX 4070 OpenGL ES |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `fillrate` | 67.9 | 514.1 | **668.6** | **+30.1%** | 9.85× | 2,592.3 | 2,701.6 |
+| `tris` | 797.4 | 1,232.6 | **1,264.1** | +2.6% | 1.59× | 1,805.8 | 2,591.5 |
+| `state` | 1,262.3 | 2,617.8 | **2,776.3** | +6.1% | 2.20× | **3,799.7** | 560.5 |
+| `tex` | 700.6 | 1,418.7 | **1,566.4** | +10.4% | 2.24× | 1,007.3 | 541.6 |
+| `lfb` | 1,016.0 | 3,559.0 | **4,163.4** | +17.0% | 4.10× | **5,878.8** | 4,329.3 |
+| `multipass` | 369.8 | 1,243.8 | **1,371.0** | +10.2% | 3.71× | 3,771.1 | 4,065.8 |
+| `fog` | 74.8 | 512.4 | **629.3** | **+22.8%** | 8.41× | **2,809.7** | 1,534.7 |
+| `multitex` | 74.6 | 526.1 | **692.2** | **+31.6%** | 9.28× | 2,992.4 | 3,265.9 |
+| `lfb_read` | 635.4 | 2,751.2 | **3,258.3** | **+18.4%** | 5.13× | 400.4 | 1,435.2 |
+| `stencil` | 94.6 | 625.6 | **837.3** | **+33.9%** | 8.85× | **3,873.6** | 2,753.4 |
+| `ext_combine` | 46.3 | 315.1 | **460.7** | **+46.2%** | **9.94×** | 1,864.0 | 1,581.5 |
+| `texfmt` | 540.0 | 2,173.1 | **2,552.2** | +17.4% | 4.73× | **6,244.9** | 4,433.2 |
+| `rtt` | 472.7 | 1,848.3 | **2,063.4** | +11.6% | 4.36× | **6,193.2** | **6,328.2** |
+| `tbuffer` (4× AA) | 219.0 | 352.3 | **459.2** | **+30.4%** | 2.10× | **5,098.6** | 3,955.1 |
+| **Core 6 Geomean** | **511.9** | **1,477.8** | **1,660.7** | **+12.4%** | **3.24×** | **2,711.2** | **1,828.8** |
+| **Ext 8 Geomean** | **174.7** | **821.2** | **1,035.7** | **+26.1%** | **5.93×** | **2,884.5** | **2,771.0** |
+| **All-14 Composite GM** | **277.0** | **1,056.3** | **1,268.0** | **+20.0%** | **4.58×** | **2,808.9** | **2,318.9** |
+
+#### Zen 4 High-Resolution Software Scaling (`Voodoo5`, 1280×1024 & 1600×1200)
+
+| Scene | 1280 AVX2 | 1280 AVX-512 | 1280 Delta | 1600 AVX2 | 1600 AVX-512 | 1600 Delta |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `fillrate` | 141.0 | **180.0** | +27.6% | 94.1 | **125.2** | +33.0% |
+| `fog` | 137.4 | **169.4** | +23.2% | 95.2 | **119.4** | +25.4% |
+| `multitex` | 142.1 | **185.5** | +30.6% | 98.5 | **130.1** | +32.0% |
+| `stencil` | 158.0 | **212.0** | +34.2% | 108.8 | **147.8** | +35.9% |
+| `ext_combine` | 83.6 | **124.3** | **+48.7%** | 57.9 | **87.2** | **+50.4%** |
+| `tbuffer` (4× AA) | 90.6 | **121.5** | +34.1% | 60.8 | **81.4** | +33.9% |
+| `texfmt` | 815.0 | **1,005.6** | +23.4% | 585.3 | **743.0** | +27.0% |
+| `rtt` | 545.5 | **632.1** | +15.9% | 390.0 | **447.5** | +14.7% |
+| `lfb_read` | 756.7 | **904.2** | +19.5% | 521.1 | **625.9** | +20.1% |
+| **Core 6 Geomean** | **625.6** | **734.9** | **+17.5%** | **460.7** | **551.4** | **+19.7%** |
+| **Ext 8 Geomean** | **230.1** | **295.3** | **+28.3%** | **159.9** | **207.1** | **+29.5%** |
+| **All-14 Composite GM** | **353.3** | **436.5** | **+23.6%** | **251.7** | **315.1** | **+25.2%** |
+
+#### Software vs. Vulkan `llvmpipe` (Lavapipe) on Zen 4
+- On the same Ryzen 9 7945HX, `glide-ng`'s Software AVX-512 backend scored **34,963 GlideMark pts** vs. **9,886 pts** for Vulkan Mesa `llvmpipe` (**3.54× faster** than LLVM-JIT software Vulkan).
+- **Note on forcing Mesa `llvmpipe` on Linux systems with NVIDIA GLVND**:
+  - Vulkan `llvmpipe` (`lavapipe`): `VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.json` (or `lvp_icd.x86_64.json` depending on distro).
+  - OpenGL ES `llvmpipe` on NVIDIA GLVND: `LIBGL_ALWAYS_SOFTWARE=1` alone is ignored by NVIDIA's EGL ICD; pair it with `__EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json LIBGL_ALWAYS_SOFTWARE=1`.
+
 ---
 
 ## 3. Real-GPU vs. Software Backend Architectural Trade-Off Notes

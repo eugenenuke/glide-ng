@@ -7,9 +7,64 @@
 #include <thread>
 #include <vector>
 
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
+#if defined(__x86_64__) || defined(__i386__)
+#include <immintrin.h>
+#endif
+
 #include "Logger.h"
 
 namespace GlideWrapper {
+
+namespace {
+// Precision hybrid sleep+spin frame pacer.
+// On Win32/MinGW-w64, bypasses winpthreads' nanosleep() (which has a known
+// double-sleep bug in newer MinGW-w64 releases where sleep_for(15ms) sleeps
+// ~30ms under Wine, halving 60 FPS caps to ~30 FPS) by calling native Win32
+// Sleep() directly for the coarse interval and spinning for the final ~1.5 ms.
+void WaitUntilDeadline(std::chrono::steady_clock::time_point deadline) {
+  using Clock = std::chrono::steady_clock;
+  while (true) {
+    const auto now = Clock::now();
+    if (now >= deadline) return;
+    const int64_t remUs =
+        std::chrono::duration_cast<std::chrono::microseconds>(deadline - now)
+            .count();
+#if defined(_WIN32)
+    if (remUs > 2500) {
+      const DWORD sleepMs =
+          static_cast<DWORD>(std::max<int64_t>(1, (remUs - 1800) / 1000));
+      ::Sleep(sleepMs);
+    } else if (remUs > 200) {
+      ::SwitchToThread();
+    } else {
+#if defined(__x86_64__) || defined(__i386__)
+      _mm_pause();
+#endif
+    }
+#else
+    if (remUs > 2000) {
+      std::this_thread::sleep_for(std::chrono::microseconds(remUs - 1200));
+    } else if (remUs > 200) {
+      std::this_thread::yield();
+    } else {
+#if defined(__x86_64__) || defined(__i386__)
+      _mm_pause();
+#endif
+    }
+#endif
+  }
+}
+}  // namespace
 
 // ==========================================
 // FrameTracker Implementation
@@ -36,11 +91,10 @@ void FrameTracker::MarkFrameEnd(float maxFps) {
   int64_t sleepUs = 0;
   auto postSleepNow = now;
   if (maxFps > 0.0f) {
-    auto targetInterval =
+    const auto targetInterval =
         std::chrono::microseconds(static_cast<int64_t>(1000000.0 / maxFps));
     if (activeUs < targetInterval.count()) {
-      auto sleepTime = targetInterval - std::chrono::microseconds(activeUs);
-      std::this_thread::sleep_for(sleepTime);
+      WaitUntilDeadline(m_frameStart + targetInterval);
       postSleepNow = Clock::now();
       sleepUs = std::chrono::duration_cast<std::chrono::microseconds>(
                     postSleepNow - now)

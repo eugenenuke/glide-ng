@@ -2147,7 +2147,43 @@ bool VulkanBackend::SelectPhysicalDevice() {
         "Zero Vulkan compatible hardware/software devices found on host.");
     return false;
   }
-  m_physicalDevice = devices[0];
+
+  // Prefer Discrete GPU > Integrated GPU > Virtual GPU > CPU while preserving
+  // loader order within the same tier (so VK_DRIVER_FILES / lvp_icd overrides
+  // still work seamlessly).
+  auto deviceScore = [](const vk::PhysicalDevice& dev) -> int {
+    bool hasGraphics = false;
+    for (const auto& q : dev.getQueueFamilyProperties()) {
+      if (q.queueFlags & vk::QueueFlagBits::eGraphics) {
+        hasGraphics = true;
+        break;
+      }
+    }
+    if (!hasGraphics) return -1;
+    switch (dev.getProperties().deviceType) {
+      case vk::PhysicalDeviceType::eDiscreteGpu:
+        return 1000;
+      case vk::PhysicalDeviceType::eIntegratedGpu:
+        return 500;
+      case vk::PhysicalDeviceType::eVirtualGpu:
+        return 200;
+      case vk::PhysicalDeviceType::eCpu:
+        return 10;
+      default:
+        return 100;
+    }
+  };
+
+  vk::PhysicalDevice bestDevice = devices[0];
+  int bestScore = deviceScore(devices[0]);
+  for (size_t i = 1; i < devices.size(); ++i) {
+    const int score = deviceScore(devices[i]);
+    if (score > bestScore) {
+      bestScore = score;
+      bestDevice = devices[i];
+    }
+  }
+  m_physicalDevice = bestDevice;
   vk::PhysicalDeviceProperties props = m_physicalDevice.getProperties();
 
   std::ostringstream logStream;
