@@ -122,9 +122,10 @@ add_custom_target(GenerateBuildVersion ALL
     COMMENT "Checking git revision for build_version.h"
 )
 
-# Optional Open Watcom v2 DOS/32 CauseWay cross-build integration (Linux host)
+# Optional Open Watcom v2 DOS/32 CauseWay & MinGW-w64 Win32 cross-build integration (Linux host)
 if(NOT WIN32)
     include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/OpenWatcomDos.cmake")
+    include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/MinGwWin32.cmake")
 endif()
 
 # Add Primary Source Directories

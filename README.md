@@ -62,12 +62,14 @@ To enable DOS `.exe` builds (identical across Debian, Fedora, and Arch, no root 
   sudo dnf install mingw32-gcc-c++ mingw32-winpthreads-static wine
   ```
 
-#### Cross-Building Win32 DLLs & Tools (`build_win32/`)
+#### Cross-Building Win32 DLLs & Tools (Automatic or Standalone `build_win32/`)
+* **Automatic (when `i686-w64-mingw32-g++` is installed)**: Any normal Linux build (`cmake -B build_release -DCMAKE_BUILD_TYPE=Release && cmake --build build_release -j$(nproc)`) automatically detects MinGW-w64 and builds all 32-bit Win32 DLLs and tools into `build_release/win32/bin/` (alongside `build_release/bin/` and `build_release/dos/`). Use `--target win32_dlls` for just the DLLs, `--target win32_tools` for all Win32 binaries, or `-DGLIDE_BUILD_WIN32=OFF` to disable auto-building.
+* **Standalone Win32-only build (`build_win32/`)**:
 ```bash
 cmake -B build_win32 -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/mingw-w64-i686.cmake -DCMAKE_BUILD_TYPE=Release
 cmake --build build_win32 -j$(nproc)
 ```
-This produces self-contained 32-bit PE binaries in `build_win32/bin/` with **zero external runtime DLL dependencies** (only standard Windows/Wine system DLLs: `KERNEL32.dll`, `msvcrt.dll`, `USER32.dll`, `GDI32.dll`, `OPENGL32.dll`, plus `vulkan-1.dll` loaded dynamically at runtime):
+Both produce self-contained 32-bit PE binaries (`build_release/win32/bin/` or `build_win32/bin/`) with **zero external runtime DLL dependencies** (only standard Windows/Wine system DLLs: `KERNEL32.dll`, `msvcrt.dll`, `USER32.dll`, `GDI32.dll`, `OPENGL32.dll`, plus `vulkan-1.dll` loaded dynamically at runtime):
 * `glide2x.dll` & `glide3x.dll` — authentic 3dfx `__stdcall` ABI (`_grFoo@N` canonical exports + undecorated `grFoo` aliases) with Vulkan (`VK_KHR_win32_surface`), OpenGL 3.3 Core (WGL), and Software (GDI `StretchDIBits`) backends, supporting both standalone and parent-embedded `HWND` hosting.
 * `glide2_info.exe`, `glide3_info.exe`, `glide2_bench.exe`, `glide3_bench.exe`, `glide2_envtest.exe`, `glide3_envtest.exe` — Win32 diagnostic, benchmark, and environment-variable verification tools.
 
