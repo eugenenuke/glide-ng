@@ -37,6 +37,8 @@ class OpenGLESBackend : public GlideStateTracker {
   void SstIdle() override;
   void ClearBuffer(uint32_t color, uint32_t alpha, float z,
                    uint32_t clearMask) override;
+  void ClearBufferExt(uint32_t color, uint32_t alpha, float z, uint8_t stencil,
+                      uint32_t clearMask) override;
   void* GetLfbWritePtr() override;
   bool ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY, uint32_t srcWidth,
                uint32_t srcHeight, uint32_t dstStride, void* dstData) override;
@@ -61,6 +63,12 @@ class OpenGLESBackend : public GlideStateTracker {
   void SetColorMaskExt(bool r, bool g, bool b, bool a) override;
   void SetAAMultiSample(bool enabled) override;
   void SetTBufferWriteMask(uint32_t mask) override;
+  void SetStencilMode(bool enabled) override;
+  void SetStencilFunc(uint32_t compareOp, uint8_t refVal,
+                      uint8_t readMask) override;
+  void SetStencilMask(uint8_t writeMask) override;
+  void SetStencilOp(uint32_t failOp, uint32_t zFailOp,
+                    uint32_t zPassOp) override;
   void SetGamma(float gamma) override;
   void SetRenderBuffer(uint32_t target) override;
   void SetDepthRange(float nearVal, float farVal) override;
@@ -124,6 +132,7 @@ class OpenGLESBackend : public GlideStateTracker {
   void RestoreHostContextIfSaved();
   void PresentToWindowSurface(uint32_t hostW, uint32_t hostH);
   void SyncDepthState();
+  void SyncStencilStateGLES_Locked();
   void ApplyBlendingGLES();
   void ApplyColorMaskGLES();
   void ApplyScissorGLES_Locked();
@@ -141,8 +150,10 @@ class OpenGLESBackend : public GlideStateTracker {
   void ResolveMsaaToSingle_Locked(uint32_t slot);
   void CopySingleToMsaa_Locked(uint32_t slot);
   void DrawMaskedClearQuadGLES_Locked(float r, float g, float b, float a,
-                                      float z, bool doColorClear,
-                                      bool doDepthClear, uint32_t sampleMask);
+                                      float z, uint8_t stencil,
+                                      bool doColorClear, bool doDepthClear,
+                                      bool doStencilClear,
+                                      uint32_t sampleMask);
 
   enum GlesDirtyBits : uint32_t {
     kGlesDirtyViewportAndOrigin = 1u << 0,
@@ -168,6 +179,7 @@ class OpenGLESBackend : public GlideStateTracker {
     kGlesDirtySamplerUnits      = 1u << 20,
     kGlesDirtySampleMask        = 1u << 21,
     kGlesDirtyTexDetail         = 1u << 22,
+    kGlesDirtyStencil           = 1u << 23,
     kGlesDirtyAll               = 0xFFFFFFFFu,
   };
   uint32_t m_glesDirtyMask{kGlesDirtyAll};

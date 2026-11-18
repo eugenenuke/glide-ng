@@ -42,6 +42,16 @@ struct RasterizerState {
   bool aaMultiSample{true};
   uint8_t tbufferWriteMask{0x0Fu};
 
+  // VSA-100 PIXEXT Hardware Stencil
+  bool stencilEnabled{false};
+  uint32_t stencilCompareOp{7u};
+  uint8_t stencilRef{0u};
+  uint8_t stencilReadMask{0xFFu};
+  uint8_t stencilWriteMask{0xFFu};
+  uint32_t stencilFailOp{0u};
+  uint32_t stencilZFailOp{0u};
+  uint32_t stencilZPassOp{0u};
+
   // TMU 0 and 1
   uint32_t boundTexAddress[2]{0xFFFFFFFF, 0xFFFFFFFF};
   // Immutable copy-on-write texture snapshots captured at bin time so
@@ -111,6 +121,14 @@ struct RasterizerState {
            colorMaskAlpha == o.colorMaskAlpha && aaEnabled == o.aaEnabled &&
            aaMultiSample == o.aaMultiSample &&
            tbufferWriteMask == o.tbufferWriteMask &&
+           stencilEnabled == o.stencilEnabled &&
+           stencilCompareOp == o.stencilCompareOp &&
+           stencilRef == o.stencilRef &&
+           stencilReadMask == o.stencilReadMask &&
+           stencilWriteMask == o.stencilWriteMask &&
+           stencilFailOp == o.stencilFailOp &&
+           stencilZFailOp == o.stencilZFailOp &&
+           stencilZPassOp == o.stencilZPassOp &&
            boundTexAddress[0] == o.boundTexAddress[0] &&
            boundTexAddress[1] == o.boundTexAddress[1] &&
            boundTex[0] == o.boundTex[0] && boundTex[1] == o.boundTex[1] &&

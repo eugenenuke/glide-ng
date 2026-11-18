@@ -194,6 +194,16 @@ struct GlideWrapperState {
   int32_t texDetailBias[2];
   uint8_t texDetailScale[2];
   float texDetailMax[2];
+  uint32_t hasStencilState;
+  uint8_t stencilEnabled;
+  uint8_t stencilRef;
+  uint8_t stencilReadMask;
+  uint8_t stencilWriteMask;
+  uint8_t lfbConstantStencil;
+  uint32_t stencilCompareOp;
+  uint32_t stencilFailOp;
+  uint32_t stencilZFailOp;
+  uint32_t stencilZPassOp;
 };
 
 static_assert(sizeof(GlideWrapperState) <= 1024,
@@ -372,6 +382,9 @@ FX_ENTRY void FX_CALL grStencilFuncExt(GrCmpFnc_t fnc, GrStencil_t ref,
             "grStencilFuncExt (Glide 3.x): fnc=" << fnc
                                                  << ", ref=" << static_cast<int>(ref)
                                                  << ", mask=" << static_cast<int>(mask));
+  EntryCommon::SetStencilFunc(s_state, static_cast<uint32_t>(fnc),
+                              static_cast<uint8_t>(ref),
+                              static_cast<uint8_t>(mask));
 }
 
 FX_ENTRY void FX_CALL grStencilMaskExt(GrStencil_t mask) {
@@ -379,6 +392,7 @@ FX_ENTRY void FX_CALL grStencilMaskExt(GrStencil_t mask) {
   EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend",
             "grStencilMaskExt (Glide 3.x): mask=" << static_cast<int>(mask));
+  EntryCommon::SetStencilMask(s_state, static_cast<uint8_t>(mask));
 }
 
 FX_ENTRY void FX_CALL grStencilOpExt(GrStencilOp_t fail, GrStencilOp_t zfail,
@@ -388,6 +402,9 @@ FX_ENTRY void FX_CALL grStencilOpExt(GrStencilOp_t fail, GrStencilOp_t zfail,
   GLIDE_LOG(DEBUG, "Frontend",
             "grStencilOpExt (Glide 3.x): fail=" << fail << ", zfail=" << zfail
                                                 << ", zpass=" << zpass);
+  EntryCommon::SetStencilOp(s_state, static_cast<uint32_t>(fail),
+                            static_cast<uint32_t>(zfail),
+                            static_cast<uint32_t>(zpass));
 }
 
 FX_ENTRY void FX_CALL grBufferClearExt(GrColor_t color, GrAlpha_t alpha,
@@ -399,7 +416,8 @@ FX_ENTRY void FX_CALL grBufferClearExt(GrColor_t color, GrAlpha_t alpha,
                 << std::hex << color << std::dec
                 << ", alpha=" << static_cast<int>(alpha) << ", depth=" << depth
                 << ", stencil=" << static_cast<int>(stencil));
-  grBufferClear(color, alpha, depth);
+  EntryCommon::ClearBufferExt(color, static_cast<uint8_t>(alpha), depth,
+                              static_cast<uint8_t>(stencil));
 }
 
 FX_ENTRY void FX_CALL grLfbConstantStencilExt(GrStencil_t stencil) {
@@ -408,6 +426,7 @@ FX_ENTRY void FX_CALL grLfbConstantStencilExt(GrStencil_t stencil) {
   GLIDE_LOG(DEBUG, "Frontend",
             "grLfbConstantStencilExt (Glide 3.x): stencil="
                 << static_cast<int>(stencil));
+  s_state.lfbConstantStencil = static_cast<uint8_t>(stencil);
 }
 
 FX_ENTRY FxBool FX_CALL grSstWinClose(GrContext_t context) {
@@ -1021,6 +1040,16 @@ FX_ENTRY void FX_CALL grGlideGetState(void* state) {
     ws->texDetailScale[i] = s_state.texDetailScale[i];
     ws->texDetailMax[i] = s_state.texDetailMax[i];
   }
+  ws->hasStencilState = 1u;
+  ws->stencilEnabled = s_state.stencilEnabled ? 1u : 0u;
+  ws->stencilRef = s_state.stencilRef;
+  ws->stencilReadMask = s_state.stencilReadMask;
+  ws->stencilWriteMask = s_state.stencilWriteMask;
+  ws->lfbConstantStencil = s_state.lfbConstantStencil;
+  ws->stencilCompareOp = s_state.stencilCompareOp;
+  ws->stencilFailOp = s_state.stencilFailOp;
+  ws->stencilZFailOp = s_state.stencilZFailOp;
+  ws->stencilZPassOp = s_state.stencilZPassOp;
 }
 
 FX_ENTRY void FX_CALL grGlideSetState(const void* state) {
@@ -1149,6 +1178,20 @@ FX_ENTRY void FX_CALL grGlideSetState(const void* state) {
   if (ws->hasTbufferState != 0) {
     s_aaMultiSample = ws->aaMultiSample != 0;
     s_tbufferWriteMask = ws->tbufferWriteMask;
+  }
+  if (ws->hasStencilState != 0) {
+    s_state.stencilEnabled = ws->stencilEnabled != 0;
+    s_state.stencilRef = ws->stencilRef;
+    s_state.stencilReadMask = ws->stencilReadMask;
+    s_state.stencilWriteMask = ws->stencilWriteMask;
+    s_state.lfbConstantStencil = ws->lfbConstantStencil;
+    s_state.stencilCompareOp =
+        (ws->stencilCompareOp > 7u) ? 7u : ws->stencilCompareOp;
+    s_state.stencilFailOp = (ws->stencilFailOp > 7u) ? 0u : ws->stencilFailOp;
+    s_state.stencilZFailOp =
+        (ws->stencilZFailOp > 7u) ? 0u : ws->stencilZFailOp;
+    s_state.stencilZPassOp =
+        (ws->stencilZPassOp > 7u) ? 0u : ws->stencilZPassOp;
   }
 
   // Apply states to backend
@@ -1751,10 +1794,12 @@ FX_ENTRY void FX_CALL grEnable(GrEnableMode_t mode) {
     case GR_SHAMELESS_PLUG:
       s_shamelessPlug = true;
       break;
+    case GR_STENCIL_MODE_EXT:
+      EntryCommon::SetStencilMode(s_state, true);
+      break;
     case GR_ALLOW_MIPMAP_DITHER:
     case GR_PASSTHRU:
     case GR_VIDEO_SMOOTHING:
-    case GR_STENCIL_MODE_EXT:
     case GR_OPENGL_MODE_EXT:
     case 0x09:        // GR_MULTIRENDERING_EXT
     case 0x80000001u: // GR_COMBINEEXT_MODE (VSA-100 / Napalm)
@@ -1798,10 +1843,12 @@ FX_ENTRY void FX_CALL grDisable(GrEnableMode_t mode) {
     case GR_SHAMELESS_PLUG:
       s_shamelessPlug = false;
       break;
+    case GR_STENCIL_MODE_EXT:
+      EntryCommon::SetStencilMode(s_state, false);
+      break;
     case GR_ALLOW_MIPMAP_DITHER:
     case GR_PASSTHRU:
     case GR_VIDEO_SMOOTHING:
-    case GR_STENCIL_MODE_EXT:
     case GR_OPENGL_MODE_EXT:
     case 0x09:        // GR_MULTIRENDERING_EXT
     case 0x80000001u: // GR_COMBINEEXT_MODE (VSA-100 / Napalm)

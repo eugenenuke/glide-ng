@@ -1064,7 +1064,7 @@ bool SoftwareBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
             << ", res=" << width << "x" << height << ")\r\n";
   std::cout << "Info: Host Software Adapter: pure-software reference "
                "rasterizer (glide-ng Software Reference Core)\r\n";
-  std::cout << "Info: Pixel Format RGBA8888 D32S0 nAux 0 nSamples "
+  std::cout << "Info: Pixel Format RGBA8888 D32S8 nAux 0 nSamples "
             << samplesVal << " " << samplesVal << "\r\n";
   std::cout << "Info: Drawable Size: " << width << "x" << height << "\r\n"
             << std::flush;
@@ -1082,6 +1082,10 @@ bool SoftwareBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
   size_t paddedDepthSize = (rawDepthSize + 63) & ~63;
   size_t allocatedDepthSize = paddedDepthSize + 64;
   m_headlessDepthBuffer.resize(allocatedDepthSize / sizeof(float), 0.0f);
+  const size_t rawStencilSize =
+      static_cast<size_t>(m_headlessWidth) * m_headlessHeight;
+  m_headlessStencilBuffer.assign(((rawStencilSize + 63u) & ~size_t(63)) + 64u,
+                                 0u);
   SetClipWindow_Locked(0, 0, width, height);
   InitTileGrid();
 
@@ -1718,6 +1722,14 @@ void SoftwareBackend::ResolveActiveState() {
   state.aaEnabled = m_aaEnabled;
   state.aaMultiSample = m_aaMultiSample;
   state.tbufferWriteMask = static_cast<uint8_t>(m_tbufferWriteMask & 0x0Fu);
+  state.stencilEnabled = m_stencilEnabled;
+  state.stencilCompareOp = m_stencilCompareOp;
+  state.stencilRef = m_stencilRef;
+  state.stencilReadMask = m_stencilReadMask;
+  state.stencilWriteMask = m_stencilWriteMask;
+  state.stencilFailOp = m_stencilFailOp;
+  state.stencilZFailOp = m_stencilZFailOp;
+  state.stencilZPassOp = m_stencilZPassOp;
 
   state.boundTexAddress[0] = m_boundTexAddress[0];
   state.boundTexAddress[1] = m_boundTexAddress[1];

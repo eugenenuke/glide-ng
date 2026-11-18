@@ -446,4 +446,40 @@ inline TmuColorSIMD EvaluateTmuStageSIMD(uint32_t rgbFunc, uint32_t rgbFactor,
   return {finalCR, finalCG, finalCB, finalA};
 }
 
+// VSA-100 / OpenGL / Vulkan stencil compare: (ref & readMask) <op> (buf & readMask)
+static inline bool EvaluateStencilCompare(uint32_t op, uint8_t refVal,
+                                          uint8_t readMask, uint8_t bufVal) {
+  const uint8_t lhs = static_cast<uint8_t>(refVal & readMask);
+  const uint8_t rhs = static_cast<uint8_t>(bufVal & readMask);
+  switch (op) {
+    case 0: return false;         // GR_CMP_NEVER
+    case 1: return lhs < rhs;     // GR_CMP_LESS
+    case 2: return lhs == rhs;    // GR_CMP_EQUAL
+    case 3: return lhs <= rhs;    // GR_CMP_LEQUAL
+    case 4: return lhs > rhs;     // GR_CMP_GREATER
+    case 5: return lhs != rhs;    // GR_CMP_NOTEQUAL
+    case 6: return lhs >= rhs;    // GR_CMP_GEQUAL
+    case 7: return true;          // GR_CMP_ALWAYS
+    default: return true;
+  }
+}
+
+// VSA-100 GR_STENCILOP_* update respecting 8-bit write mask
+static inline uint8_t ApplyStencilOp(uint32_t op, uint8_t bufVal,
+                                     uint8_t refVal, uint8_t writeMask) {
+  uint8_t res = bufVal;
+  switch (op) {
+    case 0: res = bufVal; break;                                   // KEEP
+    case 1: res = 0u; break;                                       // ZERO
+    case 2: res = refVal; break;                                   // REPLACE
+    case 3: res = (bufVal < 255u) ? static_cast<uint8_t>(bufVal + 1u) : 255u; break;  // INCR_CLAMP
+    case 4: res = (bufVal > 0u) ? static_cast<uint8_t>(bufVal - 1u) : 0u; break;      // DECR_CLAMP
+    case 5: res = static_cast<uint8_t>(~bufVal); break;            // INVERT
+    case 6: res = static_cast<uint8_t>(bufVal + 1u); break;        // INCR_WRAP
+    case 7: res = static_cast<uint8_t>(bufVal - 1u); break;        // DECR_WRAP
+    default: break;
+  }
+  return static_cast<uint8_t>((bufVal & ~writeMask) | (res & writeMask));
+}
+
 }  // namespace GlideWrapper

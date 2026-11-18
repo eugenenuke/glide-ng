@@ -44,6 +44,11 @@ class IGraphicsBackend {
   // Phase 2: Execution Buffer Clearing & Swapchain Presentation
   virtual void ClearBuffer(uint32_t color, uint32_t alpha, float z,
                            uint32_t clearMask) = 0;
+  virtual void ClearBufferExt(uint32_t color, uint32_t alpha, float z,
+                              uint8_t stencil, uint32_t clearMask) {
+    (void)stencil;
+    ClearBuffer(color, alpha, z, clearMask & ~0x4u);
+  }
   virtual bool SwapBuffers() = 0;
   virtual void FlushBins() = 0;
   virtual void SetConstantColor(uint32_t color) = 0;
@@ -79,6 +84,14 @@ class IGraphicsBackend {
   virtual void SetAAState(bool enabled) {}
   virtual void SetAAMultiSample(bool /*enabled*/) {}
   virtual void SetTBufferWriteMask(uint32_t /*mask*/) {}
+
+  // VSA-100 PIXEXT Hardware Stencil State
+  virtual void SetStencilMode(bool /*enabled*/) {}
+  virtual void SetStencilFunc(uint32_t /*compareOp*/, uint8_t /*refVal*/,
+                              uint8_t /*readMask*/) {}
+  virtual void SetStencilMask(uint8_t /*writeMask*/) {}
+  virtual void SetStencilOp(uint32_t /*failOp*/, uint32_t /*zFailOp*/,
+                            uint32_t /*zPassOp*/) {}
 
   // Milestone 8: Fogging State
   virtual void SetFogMode(uint32_t mode) = 0;

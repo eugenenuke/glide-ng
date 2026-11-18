@@ -221,7 +221,17 @@ void SharedFrontendState::Reset(uint8_t defaultLfbConstantAlpha,
   ditherMode = 0;
 
   lfbConstantAlpha = defaultLfbConstantAlpha;
+  lfbConstantStencil = 0;
   lfbWriteColorFormat = 0;
+
+  stencilEnabled = false;
+  stencilCompareOp = 7u;
+  stencilRef = 0u;
+  stencilReadMask = 0xFFu;
+  stencilWriteMask = 0xFFu;
+  stencilFailOp = 0u;
+  stencilZFailOp = 0u;
+  stencilZPassOp = 0u;
 
   chromakeyMode = 0;
   chromakeyValue = 0;
@@ -341,6 +351,16 @@ void ClearBuffer(uint32_t color, uint8_t alpha, uint32_t depth) {
   }
 }
 
+void ClearBufferExt(uint32_t color, uint8_t alpha, uint32_t depth,
+                    uint8_t stencil) {
+  if (auto* backend = BackendManager::GetInstance().GetBackend()) {
+    const float normDepth =
+        (depth > 65535u) ? (static_cast<float>(depth & 0xFFFFFFu) / 16777215.0f)
+                         : (static_cast<float>(depth) / 65535.0f);
+    backend->ClearBufferExt(color, alpha, normDepth, stencil, 0x7u);
+  }
+}
+
 void SwapBuffers() {
   if (auto* backend = BackendManager::GetInstance().GetBackend()) {
     MaybeCaptureSnapshot(backend);
@@ -381,6 +401,10 @@ void ApplySharedStateToBackend(const SharedFrontendState& st,
   b->SetClipWindow(st.clipMinX, st.clipMinY, st.clipMaxX, st.clipMaxY);
   b->SetColorMaskExt(st.colorMaskR, st.colorMaskG, st.colorMaskB,
                      st.colorMaskAlpha);
+  b->SetStencilMode(st.stencilEnabled);
+  b->SetStencilFunc(st.stencilCompareOp, st.stencilRef, st.stencilReadMask);
+  b->SetStencilMask(st.stencilWriteMask);
+  b->SetStencilOp(st.stencilFailOp, st.stencilZFailOp, st.stencilZPassOp);
   b->SetDitherMode(ResolveEffectiveDither(st.ditherMode, cfg));
   b->SetConstantColor(st.constantColor);
   b->SetFogMode(st.fogMode);
@@ -745,6 +769,41 @@ void SetColorMaskExt(SharedFrontendState& st, bool r, bool g, bool b, bool a) {
   st.colorMaskAlpha = a;
   if (auto* backend = BackendManager::GetInstance().GetBackend()) {
     backend->SetColorMaskExt(r, g, b, a);
+  }
+}
+
+void SetStencilMode(SharedFrontendState& st, bool enabled) {
+  st.stencilEnabled = enabled;
+  if (auto* backend = BackendManager::GetInstance().GetBackend()) {
+    backend->SetStencilMode(enabled);
+  }
+}
+
+void SetStencilFunc(SharedFrontendState& st, uint32_t compareOp, uint8_t refVal,
+                    uint8_t readMask) {
+  st.stencilCompareOp = compareOp & 0x7u;
+  st.stencilRef = refVal;
+  st.stencilReadMask = readMask;
+  if (auto* backend = BackendManager::GetInstance().GetBackend()) {
+    backend->SetStencilFunc(st.stencilCompareOp, refVal, readMask);
+  }
+}
+
+void SetStencilMask(SharedFrontendState& st, uint8_t writeMask) {
+  st.stencilWriteMask = writeMask;
+  if (auto* backend = BackendManager::GetInstance().GetBackend()) {
+    backend->SetStencilMask(writeMask);
+  }
+}
+
+void SetStencilOp(SharedFrontendState& st, uint32_t failOp, uint32_t zFailOp,
+                  uint32_t zPassOp) {
+  st.stencilFailOp = failOp & 0x7u;
+  st.stencilZFailOp = zFailOp & 0x7u;
+  st.stencilZPassOp = zPassOp & 0x7u;
+  if (auto* backend = BackendManager::GetInstance().GetBackend()) {
+    backend->SetStencilOp(st.stencilFailOp, st.stencilZFailOp,
+                          st.stencilZPassOp);
   }
 }
 

@@ -572,6 +572,14 @@ typedef FxU32 GrLfbSrcFmt_t;
 /* Voodoo5 / Napalm PIXEXT stencil types */
 typedef FxU8  GrStencil_t;
 typedef FxU32 GrStencilOp_t;
+#define GR_STENCILOP_KEEP        0x00
+#define GR_STENCILOP_ZERO        0x01
+#define GR_STENCILOP_REPLACE     0x02
+#define GR_STENCILOP_INCR_CLAMP  0x03
+#define GR_STENCILOP_DECR_CLAMP  0x04
+#define GR_STENCILOP_INVERT      0x05
+#define GR_STENCILOP_INCR_WRAP   0x06
+#define GR_STENCILOP_DECR_WRAP   0x07
 
 #ifdef H3D
 #define GR_HINT_H3DENABLE               4

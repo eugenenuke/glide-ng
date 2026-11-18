@@ -161,6 +161,12 @@ class GlideStateTracker : public IGraphicsBackend {
   void SetAAState(bool enabled) override;
   void SetAAMultiSample(bool enabled) override;
   void SetTBufferWriteMask(uint32_t mask) override;
+  void SetStencilMode(bool enabled) override;
+  void SetStencilFunc(uint32_t compareOp, uint8_t refVal,
+                      uint8_t readMask) override;
+  void SetStencilMask(uint8_t writeMask) override;
+  void SetStencilOp(uint32_t failOp, uint32_t zFailOp,
+                    uint32_t zPassOp) override;
 
  protected:
   mutable std::mutex m_mutex;
@@ -249,6 +255,12 @@ class GlideStateTracker : public IGraphicsBackend {
   void SetAAState_Locked(bool enabled);
   void SetAAMultiSample_Locked(bool enabled);
   void SetTBufferWriteMask_Locked(uint32_t mask);
+  void SetStencilMode_Locked(bool enabled);
+  void SetStencilFunc_Locked(uint32_t compareOp, uint8_t refVal,
+                             uint8_t readMask);
+  void SetStencilMask_Locked(uint8_t writeMask);
+  void SetStencilOp_Locked(uint32_t failOp, uint32_t zFailOp,
+                           uint32_t zPassOp);
   bool m_initialized{false};
   bool m_windowAttached{false};
   bool m_headlessMode{false};
@@ -361,6 +373,16 @@ class GlideStateTracker : public IGraphicsBackend {
   uint32_t m_requestedMsaaSamples{0};
   bool m_aaMultiSample{true};
   uint32_t m_tbufferWriteMask{0xFFFFFFFFu};
+
+  // VSA-100 PIXEXT hardware stencil state
+  bool m_stencilEnabled{false};
+  uint32_t m_stencilCompareOp{7u};  // GR_CMP_ALWAYS
+  uint8_t m_stencilRef{0u};
+  uint8_t m_stencilReadMask{0xFFu};
+  uint8_t m_stencilWriteMask{0xFFu};
+  uint32_t m_stencilFailOp{0u};     // GR_STENCILOP_KEEP
+  uint32_t m_stencilZFailOp{0u};    // GR_STENCILOP_KEEP
+  uint32_t m_stencilZPassOp{0u};    // GR_STENCILOP_KEEP
 };
 
 }  // namespace GlideWrapper

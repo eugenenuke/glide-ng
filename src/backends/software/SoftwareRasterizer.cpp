@@ -261,6 +261,9 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
       m_cpuBuffers[state.activeRenderBufferIdx].data());
   float* depthBuffer =
       m_headlessDepthBuffer.empty() ? nullptr : m_headlessDepthBuffer.data();
+  uint8_t* stencilBuffer = m_headlessStencilBuffer.empty()
+                               ? nullptr
+                               : m_headlessStencilBuffer.data();
   const int width = m_headlessWidth;
 
   // Cache read-only state variables outside the loops to maximize register
@@ -271,6 +274,14 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
   const uint32_t depthCompareOp = state.depthCompareOp;
   const bool depthMask = state.depthMask;
   const int depthBiasLevel = state.depthBiasLevel;
+  const bool stencilEnabled = state.stencilEnabled;
+  const uint32_t stencilCompareOp = state.stencilCompareOp;
+  const uint8_t stencilRef = state.stencilRef;
+  const uint8_t stencilReadMask = state.stencilReadMask;
+  const uint8_t stencilWriteMask = state.stencilWriteMask;
+  const uint32_t stencilFailOp = state.stencilFailOp;
+  const uint32_t stencilZFailOp = state.stencilZFailOp;
+  const uint32_t stencilZPassOp = state.stencilZPassOp;
   const uint32_t fogMode = state.fogMode;
   const uint32_t fogColor = state.fogColor;
   const uint32_t chromakeyMode = state.chromakeyMode;
@@ -1082,53 +1093,80 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
           if (!alphaPass) keepPixel = false;
         }
 
-        // Depth Testing
-        if (keepPixel && depthMode != 0 && depthBuffer &&
-            (depthCompareOp != 7 || depthMask)) {
-          float targetDepth = 0.0f;
-          if (depthMode == 2) {
-            float w = 1.0f / wVal;
-            targetDepth =
-                std::clamp((w - depthNear) * depthRangeInv, 0.0f, 1.0f);
-          } else {
-            targetDepth = std::clamp(
-                a.pos[2] + w1 * (b.pos[2] - a.pos[2]) +
-                    w2 * (c.pos[2] - a.pos[2]),
-                0.0f, 1.0f);
-          }
-          if (depthBiasLevel != 0)
-            targetDepth = std::max(
-                0.0f, std::min(1.0f, targetDepth +
-                                         static_cast<float>(depthBiasLevel) /
-                                             65535.0f));
-          if (depthCompareOp != 7) {
-            float currentDepth = depthBuffer[pIdx];
-            bool depthPass = false;
-            switch (depthCompareOp) {
-              case 1:
-                depthPass = (targetDepth < currentDepth);
-                break;
-              case 2:
-                depthPass = (targetDepth == currentDepth);
-                break;
-              case 3:
-                depthPass = (targetDepth <= currentDepth);
-                break;
-              case 4:
-                depthPass = (targetDepth > currentDepth);
-                break;
-              case 5:
-                depthPass = (targetDepth != currentDepth);
-                break;
-              case 6:
-                depthPass = (targetDepth >= currentDepth);
-                break;
+        // Hardware Stencil Testing (before Depth Test)
+        if (keepPixel && stencilEnabled && stencilBuffer) {
+          const uint8_t sVal = stencilBuffer[pIdx];
+          if (!EvaluateStencilCompare(stencilCompareOp, stencilRef,
+                                      stencilReadMask, sVal)) {
+            if (stencilFailOp != 0u && stencilWriteMask != 0u) {
+              stencilBuffer[pIdx] = ApplyStencilOp(stencilFailOp, sVal,
+                                                   stencilRef, stencilWriteMask);
             }
-            if (!depthPass) keepPixel = false;
+            keepPixel = false;
+          }
+        }
+
+        // Depth Testing + Stencil ZFail/ZPass Update
+        if (keepPixel) {
+          bool depthPassed = true;
+          if (depthMode != 0 && depthBuffer &&
+              (depthCompareOp != 7 || depthMask)) {
+            float targetDepth = 0.0f;
+            if (depthMode == 2) {
+              float w = 1.0f / wVal;
+              targetDepth =
+                  std::clamp((w - depthNear) * depthRangeInv, 0.0f, 1.0f);
+            } else {
+              targetDepth = std::clamp(
+                  a.pos[2] + w1 * (b.pos[2] - a.pos[2]) +
+                      w2 * (c.pos[2] - a.pos[2]),
+                  0.0f, 1.0f);
+            }
+            if (depthBiasLevel != 0)
+              targetDepth = std::max(
+                  0.0f, std::min(1.0f, targetDepth +
+                                           static_cast<float>(depthBiasLevel) /
+                                               65535.0f));
+            if (depthCompareOp != 7) {
+              float currentDepth = depthBuffer[pIdx];
+              bool depthPass = false;
+              switch (depthCompareOp) {
+                case 1:
+                  depthPass = (targetDepth < currentDepth);
+                  break;
+                case 2:
+                  depthPass = (targetDepth == currentDepth);
+                  break;
+                case 3:
+                  depthPass = (targetDepth <= currentDepth);
+                  break;
+                case 4:
+                  depthPass = (targetDepth > currentDepth);
+                  break;
+                case 5:
+                  depthPass = (targetDepth != currentDepth);
+                  break;
+                case 6:
+                  depthPass = (targetDepth >= currentDepth);
+                  break;
+              }
+              if (!depthPass) {
+                depthPassed = false;
+                keepPixel = false;
+              }
+            }
+
+            if (depthPassed && depthMask) {
+              depthBuffer[pIdx] = targetDepth;
+            }
           }
 
-          if (keepPixel && depthMask) {
-            depthBuffer[pIdx] = targetDepth;
+          if (stencilEnabled && stencilBuffer) {
+            const uint32_t op = depthPassed ? stencilZPassOp : stencilZFailOp;
+            if (op != 0u && stencilWriteMask != 0u) {
+              stencilBuffer[pIdx] = ApplyStencilOp(
+                  op, stencilBuffer[pIdx], stencilRef, stencilWriteMask);
+            }
           }
         }
 

@@ -69,6 +69,16 @@ public:
         return _mm256_movemask_ps(v) == 0xFF;
     }
 
+    inline int MoveMask() const {
+        return _mm256_movemask_ps(v);
+    }
+
+    static inline SimdMask FromBitmask(int bits) {
+        alignas(32) int32_t arr[8];
+        for (int i = 0; i < 8; ++i) arr[i] = ((bits >> i) & 1) ? -1 : 0;
+        return SimdMask(_mm256_load_si256(reinterpret_cast<const __m256i*>(arr)));
+    }
+
     inline __m256i AsInteger() const {
         return _mm256_castps_si256(v);
     }
@@ -441,6 +451,17 @@ public:
 
     inline bool AllTrue() const {
         return _mm_movemask_ps(v0) == 0xF && _mm_movemask_ps(v1) == 0xF;
+    }
+
+    inline int MoveMask() const {
+        return _mm_movemask_ps(v0) | (_mm_movemask_ps(v1) << 4);
+    }
+
+    static inline SimdMask FromBitmask(int bits) {
+        alignas(16) int32_t arr[8];
+        for (int i = 0; i < 8; ++i) arr[i] = ((bits >> i) & 1) ? -1 : 0;
+        return SimdMask(_mm_load_si128(reinterpret_cast<const __m128i*>(arr)),
+                        _mm_load_si128(reinterpret_cast<const __m128i*>(arr + 4)));
     }
 
     inline float operator[](size_t idx) const {

@@ -55,8 +55,38 @@ static vk::BlendFactor MapBlendFactorVulkan(uint32_t factor, bool isDest,
   }
 }
 
+static vk::CompareOp MapCompareOpVulkan(uint32_t op) {
+  switch (op) {
+    case 0: return vk::CompareOp::eNever;
+    case 1: return vk::CompareOp::eLess;
+    case 2: return vk::CompareOp::eEqual;
+    case 3: return vk::CompareOp::eLessOrEqual;
+    case 4: return vk::CompareOp::eGreater;
+    case 5: return vk::CompareOp::eNotEqual;
+    case 6: return vk::CompareOp::eGreaterOrEqual;
+    case 7: return vk::CompareOp::eAlways;
+    default: return vk::CompareOp::eAlways;
+  }
+}
+
+static vk::StencilOp MapStencilOpVulkan(uint32_t op) {
+  switch (op) {
+    case 0: return vk::StencilOp::eKeep;
+    case 1: return vk::StencilOp::eZero;
+    case 2: return vk::StencilOp::eReplace;
+    case 3: return vk::StencilOp::eIncrementAndClamp;
+    case 4: return vk::StencilOp::eDecrementAndClamp;
+    case 5: return vk::StencilOp::eInvert;
+    case 6: return vk::StencilOp::eIncrementAndWrap;
+    case 7: return vk::StencilOp::eDecrementAndWrap;
+    default: return vk::StencilOp::eKeep;
+  }
+}
+
 bool VulkanBackend::CreateRenderPass() {
-  auto buildPass = [this](vk::SampleCountFlagBits samples) -> vk::UniqueRenderPass {
+  const bool hasStencil = HasStencilAspect();
+  auto buildPass = [this, hasStencil](vk::SampleCountFlagBits samples)
+      -> vk::UniqueRenderPass {
     // Attachment 0: Color Target
     vk::AttachmentDescription colorAttachment(
         {}, m_colorFormat, samples, vk::AttachmentLoadOp::eLoad,
@@ -67,11 +97,14 @@ bool VulkanBackend::CreateRenderPass() {
     vk::AttachmentReference colorRef(0,
                                      vk::ImageLayout::eColorAttachmentOptimal);
 
-    // Attachment 1: Depth Target
+    // Attachment 1: Depth (+ Stencil) Target
     vk::AttachmentDescription depthAttachment(
         {}, m_depthFormat, samples, vk::AttachmentLoadOp::eLoad,
-        vk::AttachmentStoreOp::eStore, vk::AttachmentLoadOp::eDontCare,
-        vk::AttachmentStoreOp::eDontCare,
+        vk::AttachmentStoreOp::eStore,
+        hasStencil ? vk::AttachmentLoadOp::eLoad
+                   : vk::AttachmentLoadOp::eDontCare,
+        hasStencil ? vk::AttachmentStoreOp::eStore
+                   : vk::AttachmentStoreOp::eDontCare,
         vk::ImageLayout::eDepthStencilAttachmentOptimal,
         vk::ImageLayout::eDepthStencilAttachmentOptimal);
     vk::AttachmentReference depthRef(
@@ -194,6 +227,18 @@ PipelineStateKey VulkanBackend::GetCurrentStateKey() const {
     key.singleSample = false;
     key.sampleMask = 1u;
   }
+  key.stencilEnabled = m_stencilEnabled && HasStencilAspect();
+  if (key.stencilEnabled) {
+    key.stencilCompareOp = m_stencilCompareOp;
+    key.stencilFailOp = m_stencilFailOp;
+    key.stencilZFailOp = m_stencilZFailOp;
+    key.stencilZPassOp = m_stencilZPassOp;
+  } else {
+    key.stencilCompareOp = 7u;
+    key.stencilFailOp = 0u;
+    key.stencilZFailOp = 0u;
+    key.stencilZPassOp = 0u;
+  }
   return key;
 }
 
@@ -238,10 +283,13 @@ vk::UniquePipeline VulkanBackend::CompileSinglePipeline(
     // Input Assembly Topology
     vk::PipelineInputAssemblyStateCreateInfo inputAssembly({}, topology, false);
 
-    // Dynamic Viewport and Scissor States (prevents pipeline rebuilds on
-    // resolution change)
-    std::vector<vk::DynamicState> dynamicStates = {vk::DynamicState::eViewport,
-                                                   vk::DynamicState::eScissor};
+    // Dynamic Viewport, Scissor, and Stencil Masks/Reference (prevents
+    // pipeline rebuilds on resolution change or stencil ref/mask changes)
+    std::vector<vk::DynamicState> dynamicStates = {
+        vk::DynamicState::eViewport, vk::DynamicState::eScissor,
+        vk::DynamicState::eStencilCompareMask,
+        vk::DynamicState::eStencilWriteMask,
+        vk::DynamicState::eStencilReference};
     vk::PipelineDynamicStateCreateInfo dynamicState(
         {}, static_cast<uint32_t>(dynamicStates.size()), dynamicStates.data());
     vk::PipelineViewportStateCreateInfo viewportState({}, 1, nullptr, 1,
@@ -326,7 +374,16 @@ vk::UniquePipeline VulkanBackend::CompileSinglePipeline(
       depthStencil.depthWriteEnable = false;
     }
     depthStencil.depthBoundsTestEnable = false;
-    depthStencil.stencilTestEnable = false;
+    depthStencil.stencilTestEnable = key.stencilEnabled && HasStencilAspect();
+    if (depthStencil.stencilTestEnable) {
+      vk::StencilOpState stOp(MapStencilOpVulkan(key.stencilFailOp),
+                              MapStencilOpVulkan(key.stencilZPassOp),
+                              MapStencilOpVulkan(key.stencilZFailOp),
+                              MapCompareOpVulkan(key.stencilCompareOp),
+                              0xFFu, 0xFFu, 0u);
+      depthStencil.front = stOp;
+      depthStencil.back = stOp;
+    }
 
     // Color Blending
     vk::PipelineColorBlendAttachmentState colorBlendAttachment;
@@ -389,28 +446,9 @@ vk::UniquePipeline VulkanBackend::CompileSinglePipeline(
   return vk::UniquePipeline();
 }
 
-static inline PipelineCacheKey PackPipelineCacheKey(
-    const PipelineStateKey& state, vk::PrimitiveTopology topology) {
-  uint64_t key = 0;
-  key |= static_cast<uint64_t>(state.cullMode & 0x3u) << 0;
-  key |= static_cast<uint64_t>(state.sstOrigin & 0x1u) << 2;
-  key |= static_cast<uint64_t>(state.depthMode & 0x3u) << 3;
-  key |= static_cast<uint64_t>(state.depthMask ? 1u : 0u) << 5;
-  key |= static_cast<uint64_t>(state.depthCompareOp & 0x7u) << 6;
-  key |= static_cast<uint64_t>(state.rgbSrcBlend & 0xFu) << 9;
-  key |= static_cast<uint64_t>(state.rgbDstBlend & 0xFu) << 13;
-  key |= static_cast<uint64_t>(state.alphaSrcBlend & 0xFu) << 17;
-  key |= static_cast<uint64_t>(state.alphaDstBlend & 0xFu) << 21;
-  key |= static_cast<uint64_t>(state.colorWriteMask & 0xFu) << 25;
-  key |= static_cast<uint64_t>(static_cast<uint32_t>(topology) & 0x7u) << 29;
-  key |= static_cast<uint64_t>(state.singleSample ? 1u : 0u) << 32;
-  key |= static_cast<uint64_t>(state.sampleMask & 0xFFFFu) << 33;
-  return key;
-}
-
 vk::Pipeline VulkanBackend::GetOrCreatePipeline(
     const PipelineStateKey& key, vk::PrimitiveTopology topology) {
-  PipelineCacheKey cacheKey = PackPipelineCacheKey(key, topology);
+  PipelineCacheKey cacheKey{key, topology};
   auto it = m_pipelineCache.find(cacheKey);
   if (it == m_pipelineCache.end()) {
     GLIDE_LOG(

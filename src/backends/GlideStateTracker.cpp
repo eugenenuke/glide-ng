@@ -59,6 +59,15 @@ void GlideStateTracker::ResetState_Locked() {
   m_colorMaskB = true;
   m_colorMaskAlpha = true;
 
+  m_stencilEnabled = false;
+  m_stencilCompareOp = 7u;
+  m_stencilRef = 0u;
+  m_stencilReadMask = 0xFFu;
+  m_stencilWriteMask = 0xFFu;
+  m_stencilFailOp = 0u;
+  m_stencilZFailOp = 0u;
+  m_stencilZPassOp = 0u;
+
   m_texLodBias[0] = m_texLodBias[1] = 0.0f;
   m_texDetailBias[0] = m_texDetailBias[1] = 0;
   m_texDetailScale[0] = m_texDetailScale[1] = 0;
@@ -708,6 +717,81 @@ void GlideStateTracker::SetTBufferWriteMask_Locked(uint32_t mask) {
   m_tbufferWriteMask = mask;
   GLIDE_LOG(DEBUG, "StateTracker",
             "SetTBufferWriteMask: mask=0x" << std::hex << mask << std::dec);
+}
+
+void GlideStateTracker::SetStencilMode(bool enabled) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  SetStencilMode_Locked(enabled);
+}
+
+void GlideStateTracker::SetStencilMode_Locked(bool enabled) {
+  if (m_stencilEnabled == enabled) return;
+  MarkStateDirty();
+  m_stencilEnabled = enabled;
+  GLIDE_LOG(DEBUG, "StateTracker",
+            "SetStencilMode: enabled=" << (enabled ? "Yes" : "No"));
+}
+
+void GlideStateTracker::SetStencilFunc(uint32_t compareOp, uint8_t refVal,
+                                       uint8_t readMask) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  SetStencilFunc_Locked(compareOp, refVal, readMask);
+}
+
+void GlideStateTracker::SetStencilFunc_Locked(uint32_t compareOp,
+                                              uint8_t refVal,
+                                              uint8_t readMask) {
+  const uint32_t op = compareOp & 0x7u;
+  if (m_stencilCompareOp == op && m_stencilRef == refVal &&
+      m_stencilReadMask == readMask) {
+    return;
+  }
+  MarkStateDirty();
+  m_stencilCompareOp = op;
+  m_stencilRef = refVal;
+  m_stencilReadMask = readMask;
+  GLIDE_LOG(DEBUG, "StateTracker",
+            "SetStencilFunc: op=" << op << ", ref=" << static_cast<int>(refVal)
+                                  << ", readMask=0x" << std::hex
+                                  << static_cast<int>(readMask) << std::dec);
+}
+
+void GlideStateTracker::SetStencilMask(uint8_t writeMask) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  SetStencilMask_Locked(writeMask);
+}
+
+void GlideStateTracker::SetStencilMask_Locked(uint8_t writeMask) {
+  if (m_stencilWriteMask == writeMask) return;
+  MarkStateDirty();
+  m_stencilWriteMask = writeMask;
+  GLIDE_LOG(DEBUG, "StateTracker",
+            "SetStencilMask: writeMask=0x" << std::hex
+                                           << static_cast<int>(writeMask)
+                                           << std::dec);
+}
+
+void GlideStateTracker::SetStencilOp(uint32_t failOp, uint32_t zFailOp,
+                                     uint32_t zPassOp) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  SetStencilOp_Locked(failOp, zFailOp, zPassOp);
+}
+
+void GlideStateTracker::SetStencilOp_Locked(uint32_t failOp, uint32_t zFailOp,
+                                            uint32_t zPassOp) {
+  const uint32_t f = failOp & 0x7u;
+  const uint32_t zf = zFailOp & 0x7u;
+  const uint32_t zp = zPassOp & 0x7u;
+  if (m_stencilFailOp == f && m_stencilZFailOp == zf &&
+      m_stencilZPassOp == zp) {
+    return;
+  }
+  MarkStateDirty();
+  m_stencilFailOp = f;
+  m_stencilZFailOp = zf;
+  m_stencilZPassOp = zp;
+  GLIDE_LOG(DEBUG, "StateTracker",
+            "SetStencilOp: fail=" << f << ", zfail=" << zf << ", zpass=" << zp);
 }
 
 }  // namespace GlideWrapper

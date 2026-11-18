@@ -84,7 +84,18 @@ struct SharedFrontendState {
   uint32_t ditherMode{0};
 
   uint8_t lfbConstantAlpha{255};
+  uint8_t lfbConstantStencil{0};
   uint32_t lfbWriteColorFormat{0};  // GR_COLORFORMAT_ARGB
+
+  // VSA-100 PIXEXT hardware stencil state
+  bool stencilEnabled{false};
+  uint32_t stencilCompareOp{7u};
+  uint8_t stencilRef{0u};
+  uint8_t stencilReadMask{0xFFu};
+  uint8_t stencilWriteMask{0xFFu};
+  uint32_t stencilFailOp{0u};
+  uint32_t stencilZFailOp{0u};
+  uint32_t stencilZPassOp{0u};
 
   uint32_t chromakeyMode{0};
   uint32_t chromakeyValue{0};
@@ -126,6 +137,8 @@ void CloseWindow(const char* logMessage);
 
 // Window clear/swap/buffer helpers.
 void ClearBuffer(uint32_t color, uint8_t alpha, uint32_t depth);
+void ClearBufferExt(uint32_t color, uint8_t alpha, uint32_t depth,
+                    uint8_t stencil);
 void SwapBuffers();
 void SetRenderBuffer(uint32_t buffer);
 void SstIdle();
@@ -170,6 +183,12 @@ void SetCullMode(SharedFrontendState& st, uint32_t mode);
 void SetConstantColor(SharedFrontendState& st, uint32_t value);
 void SetColorMask(SharedFrontendState& st, bool rgb, bool alpha);
 void SetColorMaskExt(SharedFrontendState& st, bool r, bool g, bool b, bool a);
+void SetStencilMode(SharedFrontendState& st, bool enabled);
+void SetStencilFunc(SharedFrontendState& st, uint32_t compareOp, uint8_t refVal,
+                    uint8_t readMask);
+void SetStencilMask(SharedFrontendState& st, uint8_t writeMask);
+void SetStencilOp(SharedFrontendState& st, uint32_t failOp, uint32_t zFailOp,
+                  uint32_t zPassOp);
 void SetDitherMode(SharedFrontendState& st, uint32_t mode);
 void SetChromakeyMode(SharedFrontendState& st, uint32_t mode);
 void SetChromakeyValue(SharedFrontendState& st, uint32_t value);

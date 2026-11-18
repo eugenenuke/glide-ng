@@ -280,6 +280,9 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
       m_cpuBuffers[state.activeRenderBufferIdx].data());
   float* depthBuffer =
       m_headlessDepthBuffer.empty() ? nullptr : m_headlessDepthBuffer.data();
+  uint8_t* stencilBuffer = m_headlessStencilBuffer.empty()
+                               ? nullptr
+                               : m_headlessStencilBuffer.data();
   const int width = m_headlessWidth;
 
   // Cache state variables
@@ -289,6 +292,14 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
   const uint32_t depthCompareOp = state.depthCompareOp;
   const bool depthMask = state.depthMask;
   const int depthBiasLevel = state.depthBiasLevel;
+  const bool stencilEnabled = state.stencilEnabled;
+  const uint32_t stencilCompareOp = state.stencilCompareOp;
+  const uint8_t stencilRef = state.stencilRef;
+  const uint8_t stencilReadMask = state.stencilReadMask;
+  const uint8_t stencilWriteMask = state.stencilWriteMask;
+  const uint32_t stencilFailOp = state.stencilFailOp;
+  const uint32_t stencilZFailOp = state.stencilZFailOp;
+  const uint32_t stencilZPassOp = state.stencilZPassOp;
   const uint32_t fogMode = state.fogMode;
   const uint32_t fogColor = state.fogColor;
   const uint32_t chromakeyMode = state.chromakeyMode;
@@ -1320,6 +1331,29 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
         if (coverageMask.AllZero()) continue;
       }
 
+      // 9.5. Hardware Stencil Testing (before Depth Test)
+      int stencilPassedBits = 0;
+      if (__builtin_expect(stencilEnabled && stencilBuffer != nullptr, 0)) {
+        const int activeBits = coverageMask.MoveMask();
+        int passBits = 0;
+        for (int i = 0; i < 8; ++i) {
+          if (!((activeBits >> i) & 1)) continue;
+          const size_t sIdx =
+              static_cast<size_t>(y + (i >> 2)) * width + (x + (i & 3));
+          const uint8_t sVal = stencilBuffer[sIdx];
+          if (EvaluateStencilCompare(stencilCompareOp, stencilRef,
+                                     stencilReadMask, sVal)) {
+            passBits |= (1 << i);
+          } else if (stencilFailOp != 0u && stencilWriteMask != 0u) {
+            stencilBuffer[sIdx] = ApplyStencilOp(stencilFailOp, sVal,
+                                                 stencilRef, stencilWriteMask);
+          }
+        }
+        stencilPassedBits = passBits;
+        if (passBits == 0) continue;
+        coverageMask = coverageMask & SimdMask::FromBitmask(passBits);
+      }
+
       // 10. Depth Testing (skipped completely when depthMode == 0)
       if (needDepthOp) {
         Simd8f targetDepth;
@@ -1345,6 +1379,9 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
         if (depthCompareOp != 7) {
           SimdMask depthPass = SimdMask::True();
           switch (depthCompareOp) {
+            case 0:
+              depthPass = SimdMask::False();
+              break;
             case 1:
               depthPass = targetDepth < currentDepth;
               break;
@@ -1365,13 +1402,42 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
               break;
           }
           coverageMask = coverageMask & depthPass;
-          if (coverageMask.AllZero()) continue;
+          if (!stencilEnabled && coverageMask.AllZero()) continue;
         }
 
-        if (depthMask) {
+        if (depthMask && !coverageMask.AllZero()) {
           Simd8f newDepth = Select(coverageMask, targetDepth, currentDepth);
           Simd8f::Store2x4(depthPtr, width, newDepth);
         }
+      }
+
+      // 10.5. Hardware Stencil ZFail / ZPass updates
+      if (__builtin_expect(stencilEnabled && stencilBuffer != nullptr, 0)) {
+        const int zPassBits = coverageMask.MoveMask();
+        const int zFailBits = stencilPassedBits & ~zPassBits;
+        if (stencilWriteMask != 0u) {
+          if (zFailBits != 0 && stencilZFailOp != 0u) {
+            for (int i = 0; i < 8; ++i) {
+              if (!((zFailBits >> i) & 1)) continue;
+              const size_t sIdx =
+                  static_cast<size_t>(y + (i >> 2)) * width + (x + (i & 3));
+              stencilBuffer[sIdx] = ApplyStencilOp(
+                  stencilZFailOp, stencilBuffer[sIdx], stencilRef,
+                  stencilWriteMask);
+            }
+          }
+          if (zPassBits != 0 && stencilZPassOp != 0u) {
+            for (int i = 0; i < 8; ++i) {
+              if (!((zPassBits >> i) & 1)) continue;
+              const size_t sIdx =
+                  static_cast<size_t>(y + (i >> 2)) * width + (x + (i & 3));
+              stencilBuffer[sIdx] = ApplyStencilOp(
+                  stencilZPassOp, stencilBuffer[sIdx], stencilRef,
+                  stencilWriteMask);
+            }
+          }
+        }
+        if (zPassBits == 0) continue;
       }
 
       // Capture pre-fog color for GR_BLEND_PREFOG_COLOR (multi-pass fog)

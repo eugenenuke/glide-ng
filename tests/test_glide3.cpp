@@ -7173,3 +7173,469 @@ TEST_CASE(
   restoreCard();
 #endif
 }
+
+TEST_CASE("M10.4 VSA-100 PIXEXT Hardware Stencil", "[Glide3][M10][Stencil]") {
+#ifdef __linux__
+  std::string savedCard;
+  if (const char* cur = std::getenv("GLIDE_NG_CARD_MODEL")) {
+    savedCard = cur;
+  }
+  auto restoreCard = [&]() {
+    if (!savedCard.empty()) {
+      ::setenv("GLIDE_NG_CARD_MODEL", savedCard.c_str(), 1);
+    } else {
+      ::unsetenv("GLIDE_NG_CARD_MODEL");
+    }
+  };
+
+  void* handle = OpenGlide3Handle();
+  REQUIRE(handle != nullptr);
+
+  using InitFunc = void (*)(void);
+  using ShutdownFunc = void (*)(void);
+  using WinOpenFunc = FxU32 (*)(FxU32, FxI32, FxI32, FxI32, FxI32, int, int);
+  using WinCloseFunc = FxBool (*)(FxU32);
+  using GetStringFunc = const char* (*)(FxU32);
+  using GetProcAddrFunc = GrProc (*)(char*);
+  using EnableFunc = void (*)(GrEnableMode_t);
+  using DisableFunc = void (*)(GrEnableMode_t);
+  using ClipFunc = void (*)(FxU32, FxU32, FxU32, FxU32);
+  using ColorMaskFunc = void (*)(FxBool, FxBool);
+  using DepthModeFunc = void (*)(GrDepthBufferMode_t);
+  using DepthFuncFn = void (*)(GrCmpFnc_t);
+  using DepthMaskFunc = void (*)(FxBool);
+  using ColorCombFunc = void (*)(GrCombineFunction_t, GrCombineFactor_t,
+                                 GrCombineLocal_t, GrCombineOther_t, FxBool);
+  using AlphaCombFunc = void (*)(GrCombineFunction_t, GrCombineFactor_t,
+                                 GrCombineLocal_t, GrCombineOther_t, FxBool);
+  using BlendFunc = void (*)(GrAlphaBlendFnc_t, GrAlphaBlendFnc_t,
+                             GrAlphaBlendFnc_t, GrAlphaBlendFnc_t);
+  using VertexLayoutFunc = void (*)(FxU32, FxI32, FxU32);
+  using DrawTriFunc = void (*)(const void*, const void*, const void*);
+  using ReadLfbFunc = FxBool (*)(GrBuffer_t, FxU32, FxU32, FxU32, FxU32, FxU32,
+                                 void*);
+  using GetStateFunc = void (*)(void*);
+  using SetStateFunc = void (*)(const void*);
+  using StencilFuncExtFn = void (*)(GrCmpFnc_t, GrStencil_t, GrStencil_t);
+  using StencilMaskExtFn = void (*)(GrStencil_t);
+  using StencilOpExtFn = void (*)(GrStencilOp_t, GrStencilOp_t, GrStencilOp_t);
+  using BufferClearExtFn = void (*)(GrColor_t, GrAlpha_t, FxU32, GrStencil_t);
+  using LfbConstStencilExtFn = void (*)(GrStencil_t);
+
+  auto glideInit = reinterpret_cast<InitFunc>(::dlsym(handle, "grGlideInit"));
+  auto glideShutdown =
+      reinterpret_cast<ShutdownFunc>(::dlsym(handle, "grGlideShutdown"));
+  auto winOpen = reinterpret_cast<WinOpenFunc>(::dlsym(handle, "grSstWinOpen"));
+  auto winClose =
+      reinterpret_cast<WinCloseFunc>(::dlsym(handle, "grSstWinClose"));
+  auto getString =
+      reinterpret_cast<GetStringFunc>(::dlsym(handle, "grGetString"));
+  auto getProc =
+      reinterpret_cast<GetProcAddrFunc>(::dlsym(handle, "grGetProcAddress"));
+  auto enableMode = reinterpret_cast<EnableFunc>(::dlsym(handle, "grEnable"));
+  auto disableMode =
+      reinterpret_cast<DisableFunc>(::dlsym(handle, "grDisable"));
+  auto clipWindow = reinterpret_cast<ClipFunc>(::dlsym(handle, "grClipWindow"));
+  auto colorMask =
+      reinterpret_cast<ColorMaskFunc>(::dlsym(handle, "grColorMask"));
+  auto depthMode =
+      reinterpret_cast<DepthModeFunc>(::dlsym(handle, "grDepthBufferMode"));
+  auto depthFunc =
+      reinterpret_cast<DepthFuncFn>(::dlsym(handle, "grDepthBufferFunction"));
+  auto depthMask =
+      reinterpret_cast<DepthMaskFunc>(::dlsym(handle, "grDepthMask"));
+  auto colorCombine =
+      reinterpret_cast<ColorCombFunc>(::dlsym(handle, "grColorCombine"));
+  auto alphaCombine =
+      reinterpret_cast<AlphaCombFunc>(::dlsym(handle, "grAlphaCombine"));
+  auto alphaBlend =
+      reinterpret_cast<BlendFunc>(::dlsym(handle, "grAlphaBlendFunction"));
+  auto vertexLayout =
+      reinterpret_cast<VertexLayoutFunc>(::dlsym(handle, "grVertexLayout"));
+  auto drawTri =
+      reinterpret_cast<DrawTriFunc>(::dlsym(handle, "grDrawTriangle"));
+  auto readLfb =
+      reinterpret_cast<ReadLfbFunc>(::dlsym(handle, "grLfbReadRegion"));
+  auto getState =
+      reinterpret_cast<GetStateFunc>(::dlsym(handle, "grGlideGetState"));
+  auto setState =
+      reinterpret_cast<SetStateFunc>(::dlsym(handle, "grGlideSetState"));
+
+  REQUIRE(glideInit != nullptr);
+  REQUIRE(winOpen != nullptr);
+  REQUIRE(getString != nullptr);
+  REQUIRE(getProc != nullptr);
+
+  // Verify PIXEXT card gating: absent on Voodoo3, present on Voodoo5.
+  ::setenv("GLIDE_NG_CARD_MODEL", "voodoo3", 1);
+  glideInit();
+  CHECK(std::string(getString(0xa0)).find("PIXEXT") == std::string::npos);
+  glideShutdown();
+
+  ::setenv("GLIDE_NG_CARD_MODEL", "voodoo5", 1);
+  glideInit();
+  CHECK(std::string(getString(0xa0)).find("PIXEXT") != std::string::npos);
+
+  char sfName[] = "grStencilFuncExt";
+  char smName[] = "grStencilMaskExt";
+  char soName[] = "grStencilOpExt";
+  char bcName[] = "grBufferClearExt";
+  char lsName[] = "grLfbConstantStencilExt";
+  auto loadExtProc = [&](char* name) -> void* {
+    return reinterpret_cast<void*>(getProc(name));
+  };
+  auto stencilFunc = reinterpret_cast<StencilFuncExtFn>(loadExtProc(sfName));
+  auto stencilMask = reinterpret_cast<StencilMaskExtFn>(loadExtProc(smName));
+  auto stencilOp = reinterpret_cast<StencilOpExtFn>(loadExtProc(soName));
+  auto bufferClearExt =
+      reinterpret_cast<BufferClearExtFn>(loadExtProc(bcName));
+  auto lfbConstStencil =
+      reinterpret_cast<LfbConstStencilExtFn>(loadExtProc(lsName));
+  REQUIRE(stencilFunc != nullptr);
+  REQUIRE(stencilMask != nullptr);
+  REQUIRE(stencilOp != nullptr);
+  REQUIRE(bufferClearExt != nullptr);
+  REQUIRE(lfbConstStencil != nullptr);
+
+  FxU32 ctx = winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                      GR_COLORFORMAT_ARGB, GR_ORIGIN_UPPER_LEFT, 2, 1);
+  REQUIRE(ctx != 0);
+
+  struct StencilVert {
+    float x, y, ooz;
+    float r, g, b, a;
+    float oow;
+  };
+  vertexLayout(GR_PARAM_XY, offsetof(StencilVert, x), GR_PARAM_ENABLE);
+  vertexLayout(GR_PARAM_Z, offsetof(StencilVert, ooz), GR_PARAM_ENABLE);
+  vertexLayout(GR_PARAM_RGB, offsetof(StencilVert, r), GR_PARAM_ENABLE);
+  vertexLayout(GR_PARAM_A, offsetof(StencilVert, a), GR_PARAM_ENABLE);
+  vertexLayout(GR_PARAM_Q, offsetof(StencilVert, oow), GR_PARAM_ENABLE);
+
+  auto drawQuadZ = [&](float x0, float y0, float x1, float y1, float z,
+                       float r, float g, float b) {
+    StencilVert v0{x0, y0, z, r, g, b, 255.0f, 1.0f};
+    StencilVert v1{x1, y0, z, r, g, b, 255.0f, 1.0f};
+    StencilVert v2{x1, y1, z, r, g, b, 255.0f, 1.0f};
+    StencilVert v3{x0, y1, z, r, g, b, 255.0f, 1.0f};
+    drawTri(&v0, &v1, &v2);
+    drawTri(&v0, &v2, &v3);
+  };
+
+  colorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+               GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_NONE, FXFALSE);
+  alphaCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+               GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_NONE, FXFALSE);
+  alphaBlend(GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_ONE, GR_BLEND_ZERO);
+  depthMode(GR_DEPTHBUFFER_DISABLE);
+  depthMask(FXFALSE);
+  colorMask(FXTRUE, FXTRUE);
+  clipWindow(0, 0, 640, 480);
+
+  // Enable hardware stencil and clear entire buffer (dark slate, stencil = 0)
+  enableMode(GR_STENCIL_MODE_EXT);
+  stencilMask(0xFFu);
+  bufferClearExt(0xFF181824u, 0xFF, 0xFFFFu, 0u);
+  lfbConstStencil(0x55u);
+
+  // =========================================================================
+  // Section 1 (Top half, Y=16..220): 3dfx test49-style 3x8 Stencil Func grid
+  //   Row 0 (Y=16..76):  stencil buffer = 0 (ref 1 > buf 0)
+  //   Row 1 (Y=88..148): stencil buffer = 1 (ref 1 == buf 1)
+  //   Row 2 (Y=160..220):stencil buffer = 2 (ref 1 < buf 2)
+  // =========================================================================
+  const int rowY0[3] = {16, 88, 160};
+  const int rowY1[3] = {76, 148, 220};
+  for (int r = 0; r < 3; ++r) {
+    clipWindow(16, static_cast<FxU32>(rowY0[r]), 624,
+               static_cast<FxU32>(rowY1[r]));
+    bufferClearExt(0xFF282834u, 0xFF, 0xFFFFu, static_cast<GrStencil_t>(r));
+  }
+  clipWindow(0, 0, 640, 480);
+
+  const float colRgb[8][3] = {
+      {255.0f, 64.0f, 64.0f},   // 0: NEVER (should never draw)
+      {255.0f, 140.0f, 32.0f},  // 1: LESS
+      {255.0f, 230.0f, 40.0f},  // 2: EQUAL
+      {80.0f, 235.0f, 80.0f},   // 3: LEQUAL
+      {40.0f, 225.0f, 225.0f},  // 4: GREATER
+      {70.0f, 150.0f, 255.0f},  // 5: NOTEQUAL
+      {190.0f, 100.0f, 255.0f}, // 6: GEQUAL
+      {245.0f, 245.0f, 245.0f}, // 7: ALWAYS
+  };
+  stencilOp(GR_STENCILOP_KEEP, GR_STENCILOP_KEEP, GR_STENCILOP_KEEP);
+  for (int c = 0; c < 8; ++c) {
+    const float x0 = 20.0f + c * 76.0f;
+    const float x1 = x0 + 68.0f;
+    stencilFunc(static_cast<GrCmpFnc_t>(c), 1u, 0xFFu);
+    drawQuadZ(x0, 16.0f, x1, 220.0f, 0.0f, colRgb[c][0], colRgb[c][1],
+              colRgb[c][2]);
+  }
+
+  // =========================================================================
+  // Section 2 (Bottom-left, X=16..312, Y=248..468):
+  //   Row A (Y=252..308): All 8 GR_STENCILOP_* operations (Green = PASS)
+  // =========================================================================
+  struct OpCase {
+    GrStencil_t initVal;
+    GrStencil_t refVal;
+    GrStencilOp_t op;
+    int repeatCount;
+    GrStencil_t expected;
+  };
+  const OpCase opCases[8] = {
+      {5u, 99u, GR_STENCILOP_KEEP, 1, 5u},
+      {7u, 99u, GR_STENCILOP_ZERO, 1, 0u},
+      {3u, 42u, GR_STENCILOP_REPLACE, 1, 42u},
+      {254u, 0u, GR_STENCILOP_INCR_CLAMP, 2, 255u},
+      {1u, 0u, GR_STENCILOP_DECR_CLAMP, 2, 0u},
+      {0x5Au, 0u, GR_STENCILOP_INVERT, 1, 0xA5u},
+      {255u, 0u, GR_STENCILOP_INCR_WRAP, 1, 0u},
+      {0u, 0u, GR_STENCILOP_DECR_WRAP, 1, 255u},
+  };
+  for (int i = 0; i < 8; ++i) {
+    const FxU32 x0 = 20u + static_cast<FxU32>(i) * 36u;
+    const FxU32 x1 = x0 + 30u;
+    clipWindow(x0, 252u, x1, 308u);
+    stencilMask(0xFFu);
+    bufferClearExt(0xFFB02020u, 0xFF, 0xFFFFu, opCases[i].initVal);
+    colorMask(FXFALSE, FXFALSE);
+    stencilFunc(GR_CMP_ALWAYS, opCases[i].refVal, 0xFFu);
+    stencilOp(GR_STENCILOP_KEEP, GR_STENCILOP_KEEP, opCases[i].op);
+    for (int p = 0; p < opCases[i].repeatCount; ++p) {
+      drawQuadZ(static_cast<float>(x0), 252.0f, static_cast<float>(x1), 308.0f,
+                0.0f, 0.0f, 0.0f, 0.0f);
+    }
+    colorMask(FXTRUE, FXTRUE);
+    stencilFunc(GR_CMP_EQUAL, opCases[i].expected, 0xFFu);
+    stencilOp(GR_STENCILOP_KEEP, GR_STENCILOP_KEEP, GR_STENCILOP_KEEP);
+    drawQuadZ(static_cast<float>(x0), 252.0f, static_cast<float>(x1), 308.0f,
+              0.0f, 40.0f, 230.0f, 70.0f);
+  }
+
+  // Row B (Y=324..384): 4 tiles (Cyan = PASS, Red = FAIL)
+  //   B0: sfail / zfail / zpass with Z-buffer
+  {
+    clipWindow(20u, 324u, 86u, 384u);
+    depthMode(GR_DEPTHBUFFER_ZBUFFER);
+    depthFunc(GR_CMP_LESS);
+    depthMask(FXTRUE);
+    stencilMask(0xFFu);
+    bufferClearExt(0xFFB02020u, 0xFF, 0xFFFFu, 10u);
+    // Seed depth = 0.5 * 65535 (no stencil change)
+    colorMask(FXFALSE, FXFALSE);
+    stencilFunc(GR_CMP_ALWAYS, 0u, 0xFFu);
+    stencilOp(GR_STENCILOP_KEEP, GR_STENCILOP_KEEP, GR_STENCILOP_KEEP);
+    drawQuadZ(20.0f, 324.0f, 86.0f, 384.0f, 0.5f * 65535.0f, 0.0f, 0.0f, 0.0f);
+
+    // Pass 1: zpass (z=0.25 < 0.5) & stencil EQUAL 10 -> INCR_CLAMP => 11
+    depthMask(FXFALSE);
+    stencilFunc(GR_CMP_EQUAL, 10u, 0xFFu);
+    stencilOp(GR_STENCILOP_ZERO, GR_STENCILOP_ZERO, GR_STENCILOP_INCR_CLAMP);
+    drawQuadZ(20.0f, 324.0f, 86.0f, 384.0f, 0.25f * 65535.0f, 0.0f, 0.0f, 0.0f);
+
+    // Pass 2: zfail (z=0.75 !< 0.5) & stencil EQUAL 11 -> INCR_CLAMP => 12
+    stencilFunc(GR_CMP_EQUAL, 11u, 0xFFu);
+    stencilOp(GR_STENCILOP_ZERO, GR_STENCILOP_INCR_CLAMP, GR_STENCILOP_ZERO);
+    drawQuadZ(20.0f, 324.0f, 86.0f, 384.0f, 0.75f * 65535.0f, 0.0f, 0.0f, 0.0f);
+
+    // Pass 3: sfail (stencil EQUAL 99 fails) -> INCR_CLAMP => 13
+    stencilFunc(GR_CMP_EQUAL, 99u, 0xFFu);
+    stencilOp(GR_STENCILOP_INCR_CLAMP, GR_STENCILOP_ZERO, GR_STENCILOP_ZERO);
+    drawQuadZ(20.0f, 324.0f, 86.0f, 384.0f, 0.25f * 65535.0f, 0.0f, 0.0f, 0.0f);
+
+    // Verify stencil == 13
+    depthMode(GR_DEPTHBUFFER_DISABLE);
+    colorMask(FXTRUE, FXTRUE);
+    stencilFunc(GR_CMP_EQUAL, 13u, 0xFFu);
+    stencilOp(GR_STENCILOP_KEEP, GR_STENCILOP_KEEP, GR_STENCILOP_KEEP);
+    drawQuadZ(20.0f, 324.0f, 86.0f, 384.0f, 0.0f, 40.0f, 220.0f, 240.0f);
+  }
+
+  //   B1: readMask + writeMask bit-plane isolation
+  {
+    clipWindow(92u, 324u, 158u, 384u);
+    stencilMask(0xFFu);
+    bufferClearExt(0xFFB02020u, 0xFF, 0xFFFFu, 0xF0u);
+    // Write only low nibble (0x0F) with ref=0x5A -> buffer becomes 0xFA
+    colorMask(FXFALSE, FXFALSE);
+    stencilMask(0x0Fu);
+    stencilFunc(GR_CMP_ALWAYS, 0x5Au, 0xFFu);
+    stencilOp(GR_STENCILOP_KEEP, GR_STENCILOP_KEEP, GR_STENCILOP_REPLACE);
+    drawQuadZ(92.0f, 324.0f, 158.0f, 384.0f, 0.0f, 0.0f, 0.0f, 0.0f);
+    // Test readMask=0x0F: (0x0A & 0x0F) == (0xFA & 0x0F) -> increment high bit via mask 0xFF
+    stencilMask(0xFFu);
+    stencilFunc(GR_CMP_EQUAL, 0x0Au, 0x0Fu);
+    stencilOp(GR_STENCILOP_KEEP, GR_STENCILOP_KEEP, GR_STENCILOP_INCR_CLAMP);
+    drawQuadZ(92.0f, 324.0f, 158.0f, 384.0f, 0.0f, 0.0f, 0.0f, 0.0f);
+    // Now exact value must be 0xFB!
+    colorMask(FXTRUE, FXTRUE);
+    stencilFunc(GR_CMP_EQUAL, 0xFBu, 0xFFu);
+    stencilOp(GR_STENCILOP_KEEP, GR_STENCILOP_KEEP, GR_STENCILOP_KEEP);
+    drawQuadZ(92.0f, 324.0f, 158.0f, 384.0f, 0.0f, 40.0f, 220.0f, 240.0f);
+  }
+
+  //   B2: Partial writeMask grBufferClearExt (must preserve unmasked bits!)
+  {
+    clipWindow(164u, 324u, 230u, 384u);
+    stencilMask(0xFFu);
+    bufferClearExt(0xFFB02020u, 0xFF, 0xFFFFu, 0xA5u);
+    stencilMask(0x0Fu);
+    bufferClearExt(0xFFB02020u, 0xFF, 0xFFFFu, 0xFFu);  // -> (0xA5 & 0xF0) | 0x0F = 0xAF
+    stencilMask(0xFFu);
+    stencilFunc(GR_CMP_EQUAL, 0xAFu, 0xFFu);
+    stencilOp(GR_STENCILOP_KEEP, GR_STENCILOP_KEEP, GR_STENCILOP_KEEP);
+    drawQuadZ(164.0f, 324.0f, 230.0f, 384.0f, 0.0f, 40.0f, 220.0f, 240.0f);
+  }
+
+  //   B3: grGlideGetState / grGlideSetState preserves stencil state
+  {
+    clipWindow(236u, 324u, 302u, 384u);
+    stencilMask(0xFFu);
+    bufferClearExt(0xFFB02020u, 0xFF, 0xFFFFu, 0x33u);
+    stencilFunc(GR_CMP_EQUAL, 0x33u, 0xFFu);
+    stencilOp(GR_STENCILOP_KEEP, GR_STENCILOP_KEEP, GR_STENCILOP_KEEP);
+    alignas(8) uint8_t savedBuf[1024] = {};
+    getState(savedBuf);
+    // Clobber stencil state
+    stencilFunc(GR_CMP_NEVER, 0x00u, 0x00u);
+    disableMode(GR_STENCIL_MODE_EXT);
+    // Restore and draw
+    setState(savedBuf);
+    drawQuadZ(236.0f, 324.0f, 302.0f, 384.0f, 0.0f, 40.0f, 220.0f, 240.0f);
+  }
+
+  // Row C (Y=400..460): grBufferClearExt with GR_STENCIL_MODE_EXT disabled
+  //   must preserve existing stencil buffer contents!
+  {
+    clipWindow(20u, 400u, 302u, 460u);
+    stencilMask(0xFFu);
+    bufferClearExt(0xFFB02020u, 0xFF, 0xFFFFu, 0x77u);
+    disableMode(GR_STENCIL_MODE_EXT);
+    bufferClearExt(0xFFB02020u, 0xFF, 0xFFFFu, 0x00u);  // Must NOT touch stencil!
+    enableMode(GR_STENCIL_MODE_EXT);
+    stencilFunc(GR_CMP_EQUAL, 0x77u, 0xFFu);
+    stencilOp(GR_STENCILOP_KEEP, GR_STENCILOP_KEEP, GR_STENCILOP_KEEP);
+    drawQuadZ(20.0f, 400.0f, 302.0f, 460.0f, 0.0f, 245.0f, 220.0f, 45.0f);
+  }
+
+  // =========================================================================
+  // Section 3 (Bottom-right, X=328..624, Y=248..464): Stencil Diamond Portal
+  // =========================================================================
+  {
+    clipWindow(328u, 248u, 624u, 464u);
+    stencilMask(0xFFu);
+    bufferClearExt(0xFF141828u, 0xFF, 0xFFFFu, 0u);
+
+    // Stamp diamond into stencil = 1 (color writes disabled)
+    colorMask(FXFALSE, FXFALSE);
+    stencilFunc(GR_CMP_ALWAYS, 1u, 0xFFu);
+    stencilOp(GR_STENCILOP_KEEP, GR_STENCILOP_KEEP, GR_STENCILOP_REPLACE);
+    StencilVert top{476.0f, 260.0f, 0.0f, 255.0f, 255.0f, 255.0f, 255.0f, 1.0f};
+    StencilVert right{576.0f, 356.0f, 0.0f, 255.0f, 255.0f, 255.0f, 255.0f, 1.0f};
+    StencilVert bottom{476.0f, 452.0f, 0.0f, 255.0f, 255.0f, 255.0f, 255.0f, 1.0f};
+    StencilVert left{376.0f, 356.0f, 0.0f, 255.0f, 255.0f, 255.0f, 255.0f, 1.0f};
+    drawTri(&top, &right, &bottom);
+    drawTri(&top, &bottom, &left);
+
+    colorMask(FXTRUE, FXTRUE);
+    stencilOp(GR_STENCILOP_KEEP, GR_STENCILOP_KEEP, GR_STENCILOP_KEEP);
+
+    // Inside diamond (stencil == 1): warm gold / orange horizontal stripes
+    stencilFunc(GR_CMP_EQUAL, 1u, 0xFFu);
+    for (int y = 248; y < 464; y += 24) {
+      const bool alt = ((y - 248) / 24) % 2 == 0;
+      drawQuadZ(328.0f, static_cast<float>(y), 624.0f,
+                static_cast<float>(y + 24), 0.0f, alt ? 250.0f : 220.0f,
+                alt ? 195.0f : 110.0f, alt ? 40.0f : 25.0f);
+    }
+
+    // Outside diamond (stencil == 0): deep teal / blue vertical stripes
+    stencilFunc(GR_CMP_EQUAL, 0u, 0xFFu);
+    for (int x = 328; x < 624; x += 24) {
+      const bool alt = ((x - 328) / 24) % 2 == 0;
+      drawQuadZ(static_cast<float>(x), 248.0f, static_cast<float>(x + 24),
+                464.0f, 0.0f, alt ? 30.0f : 20.0f, alt ? 110.0f : 65.0f,
+                alt ? 175.0f : 120.0f);
+    }
+  }
+
+  disableMode(GR_STENCIL_MODE_EXT);
+  clipWindow(0, 0, 640, 480);
+
+  std::vector<uint32_t> fb(640 * 480, 0u);
+  REQUIRE(readLfb(GR_BUFFER_BACKBUFFER, 0, 0, 640, 480, 640 * 4, fb.data()) ==
+          FXTRUE);
+
+  if (const char* snapPath = std::getenv("GLIDE_NG_M10_SNAPSHOT_PATH")) {
+    std::ofstream ppm(snapPath, std::ios::binary | std::ios::trunc);
+    if (ppm.is_open()) {
+      ppm << "P6\n640 480\n255\n";
+      for (uint32_t p : fb) {
+        uint8_t rgb[3] = {static_cast<uint8_t>((p >> 16) & 0xFFu),
+                          static_cast<uint8_t>((p >> 8) & 0xFFu),
+                          static_cast<uint8_t>(p & 0xFFu)};
+        ppm.write(reinterpret_cast<const char*>(rgb), 3);
+      }
+    }
+  }
+
+  auto checkRgb = [&](int x, int y, int expR, int expG, int expB, int tol) {
+    const uint32_t p = fb[static_cast<size_t>(y) * 640u + static_cast<size_t>(x)];
+    const int r = static_cast<int>((p >> 16) & 0xFFu);
+    const int g = static_cast<int>((p >> 8) & 0xFFu);
+    const int b = static_cast<int>(p & 0xFFu);
+    INFO("pixel(" << x << "," << y << ") = 0x" << std::hex << p << std::dec
+                  << " RGB=(" << r << "," << g << "," << b << ") expected=("
+                  << expR << "," << expG << "," << expB << ")");
+    CHECK(std::abs(r - expR) <= tol);
+    CHECK(std::abs(g - expG) <= tol);
+    CHECK(std::abs(b - expB) <= tol);
+  };
+
+  // Verify 3x8 truth table (test49 semantics: ref=1 <op> buf)
+  const bool expectPass[3][8] = {
+      // NEVER, LESS, EQUAL, LEQUAL, GREATER, NOTEQUAL, GEQUAL, ALWAYS
+      {false, false, false, false, true,  true,  true,  true},  // row 0: buf=0 (1 > 0)
+      {false, false, true,  true,  false, false, true,  true},  // row 1: buf=1 (1 == 1)
+      {false, true,  false, true,  false, true,  false, true},  // row 2: buf=2 (1 < 2)
+  };
+  for (int r = 0; r < 3; ++r) {
+    const int cy = (rowY0[r] + rowY1[r]) / 2;
+    for (int c = 0; c < 8; ++c) {
+      const int cx = 20 + c * 76 + 34;
+      if (expectPass[r][c]) {
+        checkRgb(cx, cy, static_cast<int>(colRgb[c][0]),
+                 static_cast<int>(colRgb[c][1]),
+                 static_cast<int>(colRgb[c][2]), 4);
+      } else {
+        checkRgb(cx, cy, 0x28, 0x28, 0x34, 4);
+      }
+    }
+  }
+
+  // Verify all 8 GR_STENCILOP_* tiles (bright green)
+  for (int i = 0; i < 8; ++i) {
+    checkRgb(20 + i * 36 + 15, 280, 40, 230, 70, 4);
+  }
+
+  // Verify Row B tiles (B0: sfail/zfail/zpass, B1: masks, B2: partial clear, B3: state save)
+  checkRgb(53, 354, 40, 220, 240, 4);
+  checkRgb(125, 354, 40, 220, 240, 4);
+  checkRgb(197, 354, 40, 220, 240, 4);
+  checkRgb(269, 354, 40, 220, 240, 4);
+
+  // Verify Row C (clear while disabled preserves stencil -> bright yellow)
+  checkRgb(160, 430, 245, 220, 45, 4);
+
+  // Verify Section 3 diamond portal (inside = gold/orange, corners outside = teal/blue)
+  checkRgb(476, 356, 250, 195, 40, 4);   // center inside diamond (stripe 4 -> alt=true)
+  checkRgb(340, 260, 30, 110, 175, 4);   // top-left outside diamond (col 0 -> alt=true)
+  checkRgb(610, 450, 20, 65, 120, 4);    // bottom-right outside diamond (col 11 -> alt=false)
+
+  winClose(ctx);
+  glideShutdown();
+  ::dlclose(handle);
+  restoreCard();
+#endif
+}

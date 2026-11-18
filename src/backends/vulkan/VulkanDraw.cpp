@@ -19,6 +19,11 @@ static uint32_t PackRGBA(float r, float g, float b, float a) {
 
 void VulkanBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z,
                                 uint32_t clearMask) {
+  ClearBufferExt(color, alpha, z, 0u, clearMask & ~0x4u);
+}
+
+void VulkanBackend::ClearBufferExt(uint32_t color, uint32_t alpha, float z,
+                                   uint8_t stencil, uint32_t clearMask) {
   std::lock_guard<std::mutex> lock(m_mutex);
   if (!m_initialized || !m_windowAttached) return;
 
@@ -31,20 +36,22 @@ void VulkanBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z,
                          clipRect.extent.height == m_headlessHeight);
 
   GLIDE_LOG(DEBUG, "Vulkan",
-            "ClearBuffer: color=" << std::hex << color
-                                  << ", clearMask=" << clearMask << std::dec
-                                  << ", rect=(" << clipRect.offset.x << ","
-                                  << clipRect.offset.y << " "
-                                  << clipRect.extent.width << "x"
-                                  << clipRect.extent.height << ")");
+            "ClearBufferExt: color=" << std::hex << color
+                                     << ", clearMask=" << clearMask
+                                     << ", stencil=" << static_cast<int>(stencil)
+                                     << std::dec << ", rect=(" << clipRect.offset.x
+                                     << "," << clipRect.offset.y << " "
+                                     << clipRect.extent.width << "x"
+                                     << clipRect.extent.height << ")");
 
-  // 1. Prepare color and depth clear values respecting active write masks.
+  // 1. Prepare color, depth, and stencil clear values respecting active masks.
   std::array<vk::ClearAttachment, 2> clears;
   uint32_t clearCount = 0;
   vk::ClearColorValue colorClearVal;
   float r = 0.0f, g = 0.0f, b = 0.0f, a = 1.0f;
   bool doColorClear = false;
   bool doDepthClear = false;
+  bool doStencilClear = false;
 
   if ((clearMask & 1) && (GetColorWriteMask4() != 0)) {
     a = ((alpha > 0) ? alpha : 255) / 255.0f;
@@ -64,26 +71,39 @@ void VulkanBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z,
   }
 
   if ((clearMask & 2) && m_depthMask) {  // Depth clear (obeys grDepthMask)
-    clears[clearCount++] = vk::ClearAttachment(
-        vk::ImageAspectFlagBits::eDepth, 0,
-        vk::ClearValue(vk::ClearDepthStencilValue(z, 0)));
     doDepthClear = true;
+  }
+
+  if ((clearMask & 4) && m_stencilEnabled && m_stencilWriteMask != 0u &&
+      HasStencilAspect()) {
+    doStencilClear = true;
+  }
+
+  if (doDepthClear || doStencilClear) {
+    vk::ImageAspectFlags dsAspect{};
+    if (doDepthClear) dsAspect |= vk::ImageAspectFlagBits::eDepth;
+    if (doStencilClear) dsAspect |= vk::ImageAspectFlagBits::eStencil;
+    clears[clearCount++] = vk::ClearAttachment(
+        dsAspect, 0,
+        vk::ClearValue(vk::ClearDepthStencilValue(z, stencil)));
   }
 
   if (clearCount == 0) return;
 
   // Check if VSA-100 grTBufferWriteMaskExt restricts this clear to a subset of
-  // MSAA samples, OR if grColorMask/grColorMaskExt masks any color channel.
-  // vkCmdClearAttachments ignores both pSampleMask and colorWriteMask, so
-  // either case must execute as a masked fullscreen quad.
+  // MSAA samples, OR if grColorMaskExt masks any color channel, OR if
+  // grStencilMaskExt masks stencil bits. vkCmdClearAttachments ignores all three,
+  // so masked clears must execute as a masked fullscreen quad.
   const uint32_t fullSampleMask =
       (m_msaaSamples >= 32) ? 0xFFFFFFFFu : ((1u << m_msaaSamples) - 1u);
   const uint32_t effSampleMask = GetEffectiveSampleMask_Locked();
   const bool isSampleMaskedClear =
       (m_msaaSamples > 1 && effSampleMask != fullSampleMask);
   const bool isChannelMaskedClear = (doColorClear && !IsFullColorMask());
+  const bool isStencilMaskedClear =
+      (doStencilClear && m_stencilWriteMask != 0xFFu);
 
-  if (isSampleMaskedClear || isChannelMaskedClear) {
+  if (isSampleMaskedClear || isChannelMaskedClear || isStencilMaskedClear) {
     if (isSampleMaskedClear && effSampleMask == 0u) return;
     if ((clearMask & 1) && m_lfbStaging.IsOverlayDirty(m_activeRenderBuffer)) {
       FlushLFBToGPU_Locked();
@@ -100,15 +120,26 @@ void VulkanBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z,
         isSampleMaskedClear ? false : ShouldUseSingleSamplePass_Locked();
     const uint32_t passSampleMask =
         (m_msaaSamples > 1 && !useSingle) ? effSampleMask : 1u;
-    DrawMaskedClearQuad_Locked(r, g, b, a, z, doColorClear, doDepthClear,
-                               passSampleMask, clipRect, useSingle);
-    if (m_msaaSamples > 1 && fullClip && doDepthClear && !isSampleMaskedClear) {
+    DrawMaskedClearQuad_Locked(r, g, b, a, z, stencil, doColorClear,
+                               doDepthClear, doStencilClear, passSampleMask,
+                               clipRect, useSingle);
+    if (m_msaaSamples > 1 && fullClip && !isSampleMaskedClear) {
       const uint32_t activeIdx = GetActiveGpuBufferIdx();
-      m_clearDepthValue[activeIdx] = z;
-      if (m_activePassIsSingleSample) {
-        m_clearDepthPending[activeIdx] = true;
-      } else {
-        m_clearDepthPendingSingle[activeIdx] = true;
+      if (doDepthClear) {
+        m_clearDepthValue[activeIdx] = z;
+        if (m_activePassIsSingleSample) {
+          m_clearDepthPending[activeIdx] = true;
+        } else {
+          m_clearDepthPendingSingle[activeIdx] = true;
+        }
+      }
+      if (doStencilClear && !isStencilMaskedClear) {
+        m_clearStencilValue[activeIdx] = stencil;
+        if (m_activePassIsSingleSample) {
+          m_clearStencilPending[activeIdx] = true;
+        } else {
+          m_clearStencilPendingSingle[activeIdx] = true;
+        }
       }
     }
     return;
@@ -152,6 +183,13 @@ void VulkanBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z,
         m_clearDepthPendingSingle[activeIdx] = true;
       }
     }
+    if (doStencilClear) {
+      m_clearStencilValue[activeIdx] = stencil;
+      m_clearStencilPending[activeIdx] = true;
+      if (m_msaaSamples > 1) {
+        m_clearStencilPendingSingle[activeIdx] = true;
+      }
+    }
     return;
   }
 
@@ -181,13 +219,23 @@ void VulkanBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z,
         m_clearDepthPendingSingle[activeIdx] = true;
       }
     }
+    if (fullClip && doStencilClear) {
+      m_clearStencilValue[activeIdx] = stencil;
+      if (m_activePassIsSingleSample) {
+        m_clearStencilPending[activeIdx] = true;
+      } else {
+        m_clearStencilPendingSingle[activeIdx] = true;
+      }
+    }
   }
 }
 
 void VulkanBackend::DrawMaskedClearQuad_Locked(float r, float g, float b,
                                                float a, float z,
+                                               uint8_t stencil,
                                                bool doColorClear,
                                                bool doDepthClear,
+                                               bool doStencilClear,
                                                uint32_t sampleMask,
                                                const vk::Rect2D& clipRect,
                                                bool useSingleSample) {
@@ -243,6 +291,13 @@ void VulkanBackend::DrawMaskedClearQuad_Locked(float r, float g, float b,
   clearKey.colorWriteMask = doColorClear ? GetColorWriteMask4() : 0u;
   clearKey.singleSample = (m_msaaSamples > 1) && useSingleSample;
   clearKey.sampleMask = sampleMask;
+  clearKey.stencilEnabled = doStencilClear && HasStencilAspect();
+  if (clearKey.stencilEnabled) {
+    clearKey.stencilCompareOp = 7u;  // GR_CMP_ALWAYS
+    clearKey.stencilFailOp = 2u;     // GR_STENCILOP_REPLACE
+    clearKey.stencilZFailOp = 2u;
+    clearKey.stencilZPassOp = 2u;
+  }
 
   vk::Pipeline clearPipeline =
       GetOrCreatePipeline(clearKey, vk::PrimitiveTopology::eTriangleList);
@@ -250,6 +305,14 @@ void VulkanBackend::DrawMaskedClearQuad_Locked(float r, float g, float b,
     m_commandBuffer->bindPipeline(vk::PipelineBindPoint::eGraphics,
                                   clearPipeline);
     m_boundPipelineInPass = clearPipeline;
+  }
+  if (clearKey.stencilEnabled) {
+    m_commandBuffer->setStencilCompareMask(
+        vk::StencilFaceFlagBits::eFrontAndBack, 0xFFu);
+    m_commandBuffer->setStencilWriteMask(
+        vk::StencilFaceFlagBits::eFrontAndBack, m_stencilWriteMask);
+    m_commandBuffer->setStencilReference(
+        vk::StencilFaceFlagBits::eFrontAndBack, stencil);
   }
   if (m_dummyDescriptorSet != m_boundDescSetInPass) {
     m_commandBuffer->bindDescriptorSets(vk::PipelineBindPoint::eGraphics,
@@ -605,6 +668,15 @@ void VulkanBackend::FlushBatch(bool fromStateFlush) {
       vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0,
       pcs);
 
+  if (m_stencilEnabled && HasStencilAspect()) {
+    m_commandBuffer->setStencilCompareMask(
+        vk::StencilFaceFlagBits::eFrontAndBack, m_stencilReadMask);
+    m_commandBuffer->setStencilWriteMask(
+        vk::StencilFaceFlagBits::eFrontAndBack, m_stencilWriteMask);
+    m_commandBuffer->setStencilReference(
+        vk::StencilFaceFlagBits::eFrontAndBack, m_stencilRef);
+  }
+
   m_commandBuffer->draw(m_batchedVertexCount, 1, m_batchedFirstVertex, 0);
 
   if (m_msaaSamples > 1 && GetColorWriteMask4() != 0) {
@@ -678,6 +750,12 @@ void VulkanBackend::EnsureRenderPassActive(bool useSingleSample) {
 
   vk::Rect2D scissor = GetScissorRectVulkan_Locked();
   m_commandBuffer->setScissor(0, 1, &scissor);
+  m_commandBuffer->setStencilCompareMask(vk::StencilFaceFlagBits::eFrontAndBack,
+                                         m_stencilReadMask);
+  m_commandBuffer->setStencilWriteMask(vk::StencilFaceFlagBits::eFrontAndBack,
+                                       m_stencilWriteMask);
+  m_commandBuffer->setStencilReference(vk::StencilFaceFlagBits::eFrontAndBack,
+                                       m_stencilRef);
 
   // Bind vertex buffer
   vk::DeviceSize zeroOffset = 0;
@@ -709,12 +787,20 @@ void VulkanBackend::EnsureRenderPassActive(bool useSingleSample) {
   }
   bool& depthPending = actualSingle ? m_clearDepthPendingSingle[activeIdx]
                                     : m_clearDepthPending[activeIdx];
-  if (depthPending) {
+  bool& stencilPending = actualSingle ? m_clearStencilPendingSingle[activeIdx]
+                                      : m_clearStencilPending[activeIdx];
+  if (depthPending || (stencilPending && HasStencilAspect())) {
+    vk::ImageAspectFlags dsAspect{};
+    if (depthPending) dsAspect |= vk::ImageAspectFlagBits::eDepth;
+    if (stencilPending && HasStencilAspect()) {
+      dsAspect |= vk::ImageAspectFlagBits::eStencil;
+    }
     clears[clearCount++] = vk::ClearAttachment(
-        vk::ImageAspectFlagBits::eDepth, 0,
-        vk::ClearValue(
-            vk::ClearDepthStencilValue(m_clearDepthValue[activeIdx], 0)));
+        dsAspect, 0,
+        vk::ClearValue(vk::ClearDepthStencilValue(
+            m_clearDepthValue[activeIdx], m_clearStencilValue[activeIdx])));
     depthPending = false;
+    stencilPending = false;
   }
 
   if (clearCount > 0) {

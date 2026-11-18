@@ -2300,38 +2300,48 @@ FX_ENTRY void FX_CALL grColorMaskExt(FxBool r, FxBool g, FxBool b, FxBool a) {
 }
 
 FX_ENTRY void FX_CALL grStencilFuncExt(FxU32 func, FxU32 ref, FxU32 mask) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   EnsureEngineInitialized();
-  GLIDE_LOG(WARN, "Stub",
-            "grStencilFuncExt stub invoked: func=" << func << ", ref=" << ref
-                                                   << ", mask=" << mask);
+  GLIDE_LOG(DEBUG, "Frontend",
+            "grStencilFuncExt: func=" << func << ", ref=" << ref
+                                      << ", mask=" << mask);
+  EntryCommon::SetStencilFunc(s_state, func, static_cast<uint8_t>(ref),
+                              static_cast<uint8_t>(mask));
 }
 
 FX_ENTRY void FX_CALL grStencilMaskExt(FxU32 mask) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   EnsureEngineInitialized();
-  GLIDE_LOG(WARN, "Stub", "grStencilMaskExt stub invoked: mask=" << mask);
+  GLIDE_LOG(DEBUG, "Frontend", "grStencilMaskExt: mask=" << mask);
+  EntryCommon::SetStencilMask(s_state, static_cast<uint8_t>(mask));
 }
 
 FX_ENTRY void FX_CALL grStencilOpExt(FxU32 fail, FxU32 zfail, FxU32 zpass) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   EnsureEngineInitialized();
-  GLIDE_LOG(WARN, "Stub",
-            "grStencilOpExt stub invoked: fail=" << fail << ", zfail=" << zfail
-                                                 << ", zpass=" << zpass);
+  GLIDE_LOG(DEBUG, "Frontend",
+            "grStencilOpExt: fail=" << fail << ", zfail=" << zfail
+                                    << ", zpass=" << zpass);
+  EntryCommon::SetStencilOp(s_state, fail, zfail, zpass);
 }
 
 FX_ENTRY void FX_CALL grBufferClearExt(GrColor_t color, GrAlpha_t alpha,
                                        FxU32 depth, FxU32 stencil) {
   GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::Draw);
   EnsureEngineInitialized();
-  GLIDE_LOG(WARN, "Stub",
-            "grBufferClearExt stub invoked: color="
-                << color << ", alpha=" << (int)alpha << ", depth=" << depth
-                << ", stencil=" << stencil);
+  GLIDE_LOG(DEBUG, "Frontend",
+            "grBufferClearExt: color=0x"
+                << std::hex << color << std::dec << ", alpha=" << (int)alpha
+                << ", depth=" << depth << ", stencil=" << stencil);
+  EntryCommon::ClearBufferExt(color, static_cast<uint8_t>(alpha), depth,
+                              static_cast<uint8_t>(stencil));
 }
 
 FX_ENTRY void FX_CALL grLfbConstantStencilExt(FxU32 stencil) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::Lfb);
   EnsureEngineInitialized();
-  GLIDE_LOG(WARN, "Stub",
-            "grLfbConstantStencilExt stub invoked: stencil=" << stencil);
+  GLIDE_LOG(DEBUG, "Frontend", "grLfbConstantStencilExt: stencil=" << stencil);
+  s_state.lfbConstantStencil = static_cast<uint8_t>(stencil);
 }
 
 FX_ENTRY void FX_CALL grTBufferWriteMaskExt(FxU32 mask) {

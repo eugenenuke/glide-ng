@@ -194,6 +194,11 @@ struct PipelineStateKey {
   uint8_t colorWriteMask{0xFu};  // bit0=R, bit1=G, bit2=B, bit3=A
   bool singleSample{false};
   uint32_t sampleMask{0xFFFFFFFFu};
+  bool stencilEnabled{false};
+  uint32_t stencilCompareOp{7u};
+  uint32_t stencilFailOp{0u};
+  uint32_t stencilZFailOp{0u};
+  uint32_t stencilZPassOp{0u};
 
   bool operator==(const PipelineStateKey& other) const {
     return cullMode == other.cullMode && sstOrigin == other.sstOrigin &&
@@ -205,7 +210,12 @@ struct PipelineStateKey {
            alphaDstBlend == other.alphaDstBlend &&
            colorWriteMask == other.colorWriteMask &&
            singleSample == other.singleSample &&
-           sampleMask == other.sampleMask;
+           sampleMask == other.sampleMask &&
+           stencilEnabled == other.stencilEnabled &&
+           stencilCompareOp == other.stencilCompareOp &&
+           stencilFailOp == other.stencilFailOp &&
+           stencilZFailOp == other.stencilZFailOp &&
+           stencilZPassOp == other.stencilZPassOp;
   }
 };
 
@@ -227,13 +237,31 @@ struct PipelineStateKeyHash {
     combine(k.colorWriteMask);
     combine(k.singleSample ? 1 : 0);
     combine(k.sampleMask);
+    combine(k.stencilEnabled ? 1 : 0);
+    combine(k.stencilCompareOp);
+    combine(k.stencilFailOp);
+    combine(k.stencilZFailOp);
+    combine(k.stencilZPassOp);
     return h;
   }
 };
 
-// Pack state key (12 fields) and topology (3 bits) into a single uint64_t
-// bitmask (49 bits total)
-using PipelineCacheKey = uint64_t;
+struct PipelineCacheKey {
+  PipelineStateKey state;
+  vk::PrimitiveTopology topology{vk::PrimitiveTopology::eTriangleList};
+  bool operator==(const PipelineCacheKey& other) const {
+    return state == other.state && topology == other.topology;
+  }
+};
+
+struct PipelineCacheKeyHash {
+  std::size_t operator()(const PipelineCacheKey& k) const {
+    std::size_t h = PipelineStateKeyHash{}(k.state);
+    h ^= static_cast<std::size_t>(k.topology) + 0x9e3779b9 + (h << 6) +
+         (h >> 2);
+    return h;
+  }
+};
 
 /**
  * @brief Concrete production Vulkan translation engine.
@@ -269,6 +297,8 @@ class VulkanBackend : public GlideStateTracker {
   // GPU-Driven Clearing & Swapchain Presentation
   void ClearBuffer(uint32_t color, uint32_t alpha, float z,
                    uint32_t clearMask) override;
+  void ClearBufferExt(uint32_t color, uint32_t alpha, float z, uint8_t stencil,
+                      uint32_t clearMask) override;
   bool SwapBuffers() override;
   void FlushBins() override {}
   void SetDepthState(uint32_t depthMode, uint32_t compareOp, bool depthMask,
@@ -284,6 +314,12 @@ class VulkanBackend : public GlideStateTracker {
   void SetColorMaskExt(bool r, bool g, bool b, bool a) override;
   void SetAAMultiSample(bool enabled) override;
   void SetTBufferWriteMask(uint32_t mask) override;
+  void SetStencilMode(bool enabled) override;
+  void SetStencilFunc(uint32_t compareOp, uint8_t refVal,
+                      uint8_t readMask) override;
+  void SetStencilMask(uint8_t writeMask) override;
+  void SetStencilOp(uint32_t failOp, uint32_t zFailOp,
+                    uint32_t zPassOp) override;
   void SetDepthRange(float nearVal, float farVal) override;
   void SetDitherMode(uint32_t mode) override;
   void SetStippleState(uint32_t mode, uint32_t pattern) override;
@@ -370,10 +406,20 @@ class VulkanBackend : public GlideStateTracker {
   void DestroyMsaaCopyResources_Locked();
   void CopySingleToMsaa_Locked(uint32_t gpuIdx);
   void DrawMaskedClearQuad_Locked(float r, float g, float b, float a, float z,
-                                  bool doColorClear, bool doDepthClear,
+                                  uint8_t stencil, bool doColorClear,
+                                  bool doDepthClear, bool doStencilClear,
                                   uint32_t sampleMask,
                                   const vk::Rect2D& clipRect,
                                   bool useSingleSample);
+  bool HasStencilAspect() const {
+    return m_depthFormat == vk::Format::eD24UnormS8Uint ||
+           m_depthFormat == vk::Format::eD32SfloatS8Uint;
+  }
+  vk::ImageAspectFlags DepthStencilAspectMask() const {
+    return HasStencilAspect() ? (vk::ImageAspectFlagBits::eDepth |
+                                 vk::ImageAspectFlagBits::eStencil)
+                              : vk::ImageAspectFlagBits::eDepth;
+  }
   uint32_t GetActiveGpuBufferIdx() const {
     return (m_activeRenderBuffer == 0) ? 1u : 0u;
   }
@@ -468,7 +514,8 @@ class VulkanBackend : public GlideStateTracker {
   vk::UniquePipelineLayout m_pipelineLayout;
 
   // Pipeline cache storing owned UniquePipeline individually by cache key
-  std::unordered_map<PipelineCacheKey, vk::UniquePipeline> m_pipelineCache;
+  std::unordered_map<PipelineCacheKey, vk::UniquePipeline, PipelineCacheKeyHash>
+      m_pipelineCache;
   vk::UniquePipelineCache
       m_vkPipelineCache;  // Persistent Vulkan driver-level pipeline cache
 
@@ -524,9 +571,12 @@ class VulkanBackend : public GlideStateTracker {
       vk::ClearColorValue(std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f}),
       vk::ClearColorValue(std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f})};
   float m_clearDepthValue[2]{1.0f, 1.0f};
+  uint32_t m_clearStencilValue[2]{0u, 0u};
   bool m_clearColorPending[2]{false, false};
   bool m_clearDepthPending[2]{false, false};
   bool m_clearDepthPendingSingle[2]{false, false};
+  bool m_clearStencilPending[2]{false, false};
+  bool m_clearStencilPendingSingle[2]{false, false};
   // Dynamic Scissor Helper (caller must hold m_mutex)
   vk::Rect2D GetScissorRectVulkan_Locked();
   void EnsureRenderPassActive(bool useSingleSample);
