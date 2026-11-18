@@ -394,25 +394,33 @@
 
 ### M11 Task Breakdown (Small, Independently Verified Iterations)
 - **`M11.1`** (`f811c37`) — Expand `glide2_bench` & `glide3_bench` with new classic & VSA-100 scenes (`fog`, `multitex`, `lfb_read`, `stencil`, `ext_combine`, `texfmt`, `rtt`, `tbuffer`), `--aa`, `--res 1280|1600`, and `--scene core|extended|vsa100|all`; capture pre-optimization baseline report.
-  - **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION`
+  - **Status**: `[x] DONE (USER CONFIRMED — 2026-11-18)`
 - **`M11.2`** (`7762ede`) — Runtime SIMD dispatch architecture (`SwSimdLevel`: `avx2` default, `avx512`, `scalar`, `auto`) and strict CMake per-TU ISA isolation (moving `-mavx2 -mfma` off baseline files; adding `-mavx512f -mavx512dq -mavx512bw -mavx512vl` TUs).
-  - **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION`
+  - **Status**: `[x] DONE (USER CONFIRMED — 2026-11-18)`
 - **`M11.3`** (`20a7e45`) — SIMD-accelerate shared CPU & post-process routines (`SimdKernels`: 2×2 SSAA resolve, RAMDAC Gamma LUT, masked/T-Buffer clears, `CpuLfbStaging` RGB565/1555 conversions, `TextureManager` P8/565/1555/4444 swizzlers, `SwapRB32`) across AVX2 + AVX-512 + scalar with 670/670 bit-exact Catch2 assertions.
-  - **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION`
+  - **Status**: `[x] DONE (USER CONFIRMED — 2026-11-18)`
 - **`M11.4`** (`2039abf`) — Eliminate scalar islands in the Software AVX2 rasterizer: vectorize Stipple, Hardware Stencil (`PIXEXT`), and Table Fog (exact boundary-verified reciprocal index + 3-row guard buffers), verified 0-LSB / 0-pixel diff on Table Fog across all 64 intervals + `ADD2`/`MULT2` and 0-byte diff on Stencil (`+95%` Glide 3 `fog`, `+64%` isolated `stencil`, `+34%` `multipass`).
-  - **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION`
-- **`M11.5`** (`eb49b6b`) — Implement native 4×4 (16-pixel) **AVX-512** Software rasterizer (`SimdVec512.h`, templated `SoftwareRasterizerSimdImpl.inl`, `SoftwareRasterizerAvx512.cpp`) tuned for Zen 4 (native `__mmask16`, 4×4 Bayer dither, 4×4 stencil ops), verified `50,583 zmm` (Linux `x86_64`) / `59,657 zmm` (Win32 `i686`) with `0 ymm/zmm` in baseline objects and cross-ISA `[M11][Parity]` Catch2 harness.
-  - **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION`
-- **`M11.6`** (`0448753`, `afffa33`) — Real-GPU Vulkan & OpenGL ES M10 optimizations: native hardware BC1/BC2/BC3 (`DXT1`–`DXT5`) compressed texture upload (`+37%` VK / `+47%` GLES isolated `texfmt`), zero-readback GPU-side `TEXTUREBUFFER` RTT (`+276%–300%` / `~4.0×` `rtt` on both Vulkan & OpenGL ES, verified zero `CpuLfbStaging` allocation on Vulkan), and Vulkan `-DUSE_WBUFFER_DEPTH` SPIR-V split (`DepthReplacing = 0` on Z-buffer / depth-off pipelines to preserve hardware Early-Z / Hi-Z).
-  - **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION`
-- **`M11.7`** — Full 4-target zero-warning build verification (`build/` Debug + Open Watcom DOS/32, `build_release/` Linux Release, `build_win32/` MinGW-w64 `i686`), 9/9 Catch2 regression matrix (36,484/36,484 assertions), targeted visual pixel-diff parity (`M10.6` 0-diff Vulkan vs. GLES; `sw_validate` 0-diff AVX2 vs. scalar), post-M11 benchmark analysis, GPU vs. SW trade-off notes & Zen 4 AVX-512 test guide ([docs/perf_m11_analysis.md](../perf_m11_analysis.md)).
-  - **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION`
+  - **Status**: `[x] DONE (USER CONFIRMED — 2026-11-18)`
+- **`M11.5`** (`eb49b6b`) — Implement native 4×4 (16-pixel) **AVX-512** Software rasterizer (`SimdVec512.h`, templated `SoftwareRasterizerSimdImpl.inl`, `SoftwareRasterizerAvx512.cpp`) tuned for Zen 4 (native `__mmask16`, 4×4 Bayer dither, 4×4 stencil ops), verified `50,583 zmm` (Linux `x86_64`) / `59,657 zmm` (Win32 `i686`) with `0 ymm/zmm` in baseline objects and live Zen 4 scaling (`+20.0%` All-14 GM @ 640×480, `+23.6%` @ 1280×1024, `+25.2%` @ 1600×1200, up to `+50.4%` on `ext_combine`; **34,963 vs. 9,886 pts** over Vulkan `llvmpipe`).
+  - **Status**: `[x] DONE (USER CONFIRMED — 2026-11-18)`
+- **`M11.6`** (`0448753`, `afffa33`) — Real-GPU Vulkan & OpenGL ES M10 optimizations: native hardware BC1/BC2/BC3 (`DXT1`–`DXT5`) compressed texture upload (`6,245 FPS` on RTX 4070 Vulkan), zero-readback GPU-side `TEXTUREBUFFER` RTT (`6,193–6,328 RTT/s` on RTX 4070 Vulkan/GLES, verified zero `CpuLfbStaging` allocation on Vulkan), and Vulkan `-DUSE_WBUFFER_DEPTH` SPIR-V split (`DepthReplacing = 0` on Z-buffer / depth-off pipelines to preserve hardware Early-Z / Hi-Z).
+  - **Status**: `[x] DONE (USER CONFIRMED — 2026-11-18)`
+- **`M11.7`** (`1adb43f`, `ee18831`, `ebbb8d7`) — Full 4-target zero-warning build verification, 9/9 Catch2 regression matrix (36,484/36,484 assertions), targeted visual pixel-diff parity (`M10.6` 0-diff Vulkan vs. GLES; `sw_validate` 0-diff AVX2 vs. scalar), live AMD Ryzen 9 7945HX (Zen 4) + RTX 4070 verification & report ([docs/perf_m11_analysis.md](../perf_m11_analysis.md)), Win32 hybrid deadline frame pacer (`WaitUntilDeadline` fixing MinGW `winpthreads` 2× sleep bug — verified 60.0 FPS on Kitty Hawk Vulkan), discrete Vulkan GPU selection, and auto-detected MinGW-w64 Win32 CMake integration (`cmake/MinGwWin32.cmake`).
+  - **Status**: `[x] DONE (USER CONFIRMED — 2026-11-18)`
 
 ---
 
 ## 13. Upcoming Milestones (High-Level Scope — Detailed Just-In-Time)
 
-### Milestone M12 — Flagship Standalone 3dfx Demos (`feat/m12-shrine-torus-demos`) *(Pending)*
+### Milestone M12 — Game, Demo & Benchmark Compatibility Catalog (`docs/m12-compatibility-catalog`) *(Planned)*
+- Create a structured per-title catalog under `docs/catalog/` (flat `games/`, `demos/`, and `tools/` buckets with platform badges rather than splitting DOS vs. Windows trees) plus a master index (`docs/catalog/README.md`) replacing/evolving `docs/compatibility_library.md`.
+- Give each title its own directory (`docs/catalog/<category>/<slug>/`) containing:
+  - `README.md` (standardized title card: platform/runtime, Glide API & authentic version, card profile, patches/EXEs & quirks, launch commands, verified backends, controls).
+  - Drop-in `glide-ng.ini` preset tuned specifically for that title (e.g., `gamma = 1.7` for SST-1 ATB demos, `card_model = voodoo5` for VSA-100 AA/T-Buffer demos, optimal defaults for Carmageddon DOSBox).
+- Include a dedicated benchmarking & software-rasterizer comparison guide under `docs/catalog/tools/` (`glide_bench` + `glide_info` + `glide_envtest`), covering native Linux/Win32/DOS runs, AVX2 vs. AVX-512 comparisons, and forcing Mesa `llvmpipe` for both Vulkan (`VK_DRIVER_FILES=.../lvp_icd*.json`) and OpenGL ES on NVIDIA GLVND (`__EGL_VENDOR_LIBRARY_FILENAMES=.../50_mesa.json LIBGL_ALWAYS_SOFTWARE=1`) vs. `glide-ng` Software.
+- Seed with all already-verified games, demos, and tools (`carmageddon`, `donut`, `valley-of-ra`, `demo-room`, `wizards-tower`, `surf`, `kitty-hawk`, `museum`, `rocket-burger`, `monster3d-test`, `glide-bench`, `glide-info`, `glide-envtest`) plus a reusable template & optional Catch2/CI validator ensuring every catalog `glide-ng.ini` parses cleanly with `IniConfigLoader`.
+
+### Milestone M13 — Flagship Standalone 3dfx Demos (`feat/m13-shrine-torus-demos`) *(Pending)*
 - Build two standalone, authentic Glide 2.x/3.x showcase tools targeting Linux, DOS/32, and Win32:
   - **`glide_shrine` (*Voodoo Temple*)**: Two-pass `GR_FOG_ADD2`/`MULT2` + `PREFOG_COLOR` lightmapped temple hall with mipmapped pillars, exponential fog, and additive torch sprites.
   - **`glide_torus` (*3dfx Reflective Hall*)**: Multi-texturing (`TMU0 + TMU1` environment-mapped specular chrome) rotating torus knot with translucent floor reflections, dynamic colored lights, and smooth camera orbit.
