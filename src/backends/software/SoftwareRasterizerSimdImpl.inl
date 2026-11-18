@@ -766,19 +766,20 @@ void RasterizeTriangleLoopsTraits(
                         SimdF(a.tmu_oow[1])))
               : wVal;
 
+      // Guard non-positive W (respect per-TMU oow when GR_STWHINT_W_DIFF_TMU*
+      // is active). Authentic 3dfx silicon saturates oow > 1.0 (W < 1.0) to
+      // nearest W-depth (0.0) rather than discarding the pixel.
       if (depthMode == 2) {
-        coverageMask =
-            coverageMask & (wVal > zero_vec) & (wVal <= SimdF(1.0001f));
+        coverageMask = coverageMask & (wVal > zero_vec);
         if (coverageMask.AllZero()) continue;
-      } else {
-        if constexpr (HasTexture) {
-          coverageMask = coverageMask & (divW0 > zero_vec);
-          if (coverageMask.AllZero()) continue;
-        }
-        if (hasTexture1) {
-          coverageMask = coverageMask & (divW1 > zero_vec);
-          if (coverageMask.AllZero()) continue;
-        }
+      }
+      if constexpr (HasTexture) {
+        coverageMask = coverageMask & (divW0 > zero_vec);
+        if (coverageMask.AllZero()) continue;
+      }
+      if (hasTexture1) {
+        coverageMask = coverageMask & (divW1 > zero_vec);
+        if (coverageMask.AllZero()) continue;
       }
 
       // 3. Stipple Transparency (fully vectorized via variable shift)
@@ -1302,12 +1303,30 @@ void RasterizeTriangleLoopsTraits(
       // post-blend on color channels only (authentic 3dfx pipeline order).
       SimdF blendAlphaVal = alpha;
 
-      // 8. Chromakey Emulation
+      // 8. Chromakey Emulation (matches SST-1 / Scalar / Vulkan / GLES:
+      // tests cOther when texturing is active, or final combined RGB when
+      // untextured, so bound-but-unused TMU textures never punch holes in
+      // untextured Gouraud polygons).
       if (chromakeyMode == 1) {
         const bool hasTex = HasTexture || hasTexture1;
-        SimdF testR = hasTex ? texR : red;
-        SimdF testG = hasTex ? texG : green;
-        SimdF testB = hasTex ? texB : blue;
+        SimdF testR = red;
+        SimdF testG = green;
+        SimdF testB = blue;
+        if (hasTex) {
+          if ((extColorCombine & 0x80000000u) != 0u || colorCombinerOther == 1) {
+            testR = texR;
+            testG = texG;
+            testB = texB;
+          } else if (colorCombinerOther == 0) {
+            testR = iterR;
+            testG = iterG;
+            testB = iterB;
+          } else {
+            testR = constR_vec;
+            testG = constG_vec;
+            testB = constB_vec;
+          }
+        }
 
         SimdM chromaFail;
         const bool rangeEnabled = ((chromakeyRangeMode >> 28) & 1u) == 1u;

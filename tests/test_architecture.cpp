@@ -8967,3 +8967,278 @@ TEST_CASE("M11.2: Runtime Software SIMD tier parsing, default & CPUID fallback",
     SetActiveSimdLevel(ResolveEffectiveSimdLevel(SwSimdLevel::Avx2));
   }
 }
+
+TEST_CASE(
+    "Tomb Raider 1 Regression: guTexMemReset palette persistence, W-buffer "
+    "oow>1 & depthBias, chromakey cOther",
+    "[Glide2][TombRaider1]") {
+#ifdef __linux__
+  ::setenv("GLIDE_NG_FORCE_NO_WINDOW", "1", 1);
+  ::setenv("GLIDE_NG_SPLASH", "0", 1);
+  ::setenv("GLIDE_NG_SHAMELESS_PLUG", "0", 1);
+
+  grGlideInit();
+  grSstSelect(0);
+  REQUIRE(grSstWinOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                       GR_COLORFORMAT_ARGB, GR_ORIGIN_UPPER_LEFT, 2, 1) ==
+          FXTRUE);
+
+  auto makeQuadVert = [](float x, float y, float oow, float s, float t,
+                         float r, float g, float b) {
+    GrVertex v{};
+    v.x = x;
+    v.y = y;
+    v.ooz = 0.0f;
+    v.oow = oow;
+    v.r = r;
+    v.g = g;
+    v.b = b;
+    v.a = 255.0f;
+    v.tmuvtx[0].sow = s * oow;
+    v.tmuvtx[0].tow = t * oow;
+    v.tmuvtx[0].oow = oow;
+    return v;
+  };
+
+  auto drawPolyQuad = [&](float x0, float y0, float x1, float y1, float oow,
+                          float r = 255.0f, float g = 255.0f,
+                          float b = 255.0f) {
+    GrVertex q[4] = {
+        makeQuadVert(x0, y0, oow, 0.0f, 0.0f, r, g, b),
+        makeQuadVert(x1, y0, oow, 255.0f, 0.0f, r, g, b),
+        makeQuadVert(x1, y1, oow, 255.0f, 255.0f, r, g, b),
+        makeQuadVert(x0, y1, oow, 0.0f, 255.0f, r, g, b),
+    };
+    grDrawPolygonVertexList(4, q);
+  };
+
+  SECTION("guTexMemReset preserves TMU palette for subsequent P_8 textures") {
+    // Replicate Tomb Raider 1 startup / level load:
+    // grTexDownloadTable(GR_TMU0, GR_TEXTABLE_PALETTE) -> guTexMemReset() ->
+    // guTexAllocateMemory / guTexDownloadMipMap(P_8).
+    GuTexPalette pal{};
+    pal.data[1] = 0x00FF8020u;  // Bright orange (R=255, G=128, B=32)
+    pal.data[2] = 0x002080FFu;  // Bright blue   (R=32,  G=128, B=255)
+    grTexDownloadTable(GR_TMU0, GR_TEXTABLE_PALETTE, &pal);
+
+    guTexMemReset();
+    CHECK(guTexGetCurrentMipMap(GR_TMU0) == GR_NULL_MIPMAP_HANDLE);
+
+    // 16x16 P_8 texture: left half index 1 (orange), right half index 2 (blue)
+    std::vector<uint8_t> texBuf(16 * 16, 1);
+    for (int y = 0; y < 16; ++y) {
+      for (int x = 8; x < 16; ++x) {
+        texBuf[static_cast<size_t>(y) * 16 + x] = 2;
+      }
+    }
+
+    GrMipMapId_t mmid = guTexAllocateMemory(
+        GR_TMU0, GR_MIPMAPLEVELMASK_BOTH, 16, 16, GR_TEXFMT_P_8,
+        GR_MIPMAP_DISABLE, GR_LOD_16, GR_LOD_16, GR_ASPECT_1x1,
+        GR_TEXTURECLAMP_CLAMP, GR_TEXTURECLAMP_CLAMP,
+        GR_TEXTUREFILTER_POINT_SAMPLED, GR_TEXTUREFILTER_POINT_SAMPLED, 0.0f,
+        FXFALSE);
+    REQUIRE(mmid != GR_NULL_MIPMAP_HANDLE);
+    guTexDownloadMipMap(mmid, texBuf.data(), nullptr);
+    guTexSource(mmid);
+
+    grDepthBufferMode(GR_DEPTHBUFFER_DISABLE);
+    grChromakeyMode(GR_CHROMAKEY_DISABLE);
+    grAlphaBlendFunction(GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_ONE,
+                         GR_BLEND_ZERO);
+    grTexCombineFunction(GR_TMU0, GR_TEXTURECOMBINE_DECAL);
+    guColorCombineFunction(GR_COLORCOMBINE_TEXTURE_TIMES_ITRGB);
+    grBufferClear(0x00000000u, 0, GR_WDEPTHVALUE_FARTHEST);
+
+    drawPolyQuad(100.0f, 100.0f, 300.0f, 200.0f, 1.0f);
+    grBufferSwap(0);
+
+    uint32_t pxLeft = 0, pxRight = 0;
+    REQUIRE(grLfbReadRegion(GR_BUFFER_FRONTBUFFER, 150, 150, 1, 1, 4,
+                            &pxLeft) == FXTRUE);
+    REQUIRE(grLfbReadRegion(GR_BUFFER_FRONTBUFFER, 250, 150, 1, 1, 4,
+                            &pxRight) == FXTRUE);
+
+    // Left must be bright orange (NOT grayscale 1,1,1)
+    CHECK(((pxLeft >> 16) & 0xFFu) >= 240);
+    CHECK(((pxLeft >> 8) & 0xFFu) >= 118);
+    CHECK(((pxLeft >> 8) & 0xFFu) <= 138);
+    CHECK((pxLeft & 0xFFu) >= 20);
+    CHECK((pxLeft & 0xFFu) <= 45);
+
+    // Right must be bright blue (NOT grayscale 2,2,2)
+    CHECK(((pxRight >> 16) & 0xFFu) >= 20);
+    CHECK(((pxRight >> 16) & 0xFFu) <= 45);
+    CHECK(((pxRight >> 8) & 0xFFu) >= 118);
+    CHECK(((pxRight >> 8) & 0xFFu) <= 138);
+    CHECK((pxRight & 0xFFu) >= 240);
+  }
+
+  SECTION(
+      "W-buffer oow > 1.0 renders background, 3D ring item, and text overlay "
+      "with accurate perspective UV division") {
+    guTexMemReset();
+    // 16x16 RGB565 texture: left half green (0x07E0), right half red (0xF800)
+    std::vector<uint16_t> bgTex(16 * 16, 0x07E0u);
+    for (int y = 0; y < 16; ++y) {
+      for (int x = 8; x < 16; ++x) {
+        bgTex[static_cast<size_t>(y) * 16 + x] = 0xF800u;
+      }
+    }
+    GrMipMapId_t mmBg = guTexAllocateMemory(
+        GR_TMU0, GR_MIPMAPLEVELMASK_BOTH, 16, 16, GR_TEXFMT_RGB_565,
+        GR_MIPMAP_DISABLE, GR_LOD_16, GR_LOD_16, GR_ASPECT_1x1,
+        GR_TEXTURECLAMP_CLAMP, GR_TEXTURECLAMP_CLAMP,
+        GR_TEXTUREFILTER_POINT_SAMPLED, GR_TEXTUREFILTER_POINT_SAMPLED, 0.0f,
+        FXFALSE);
+    REQUIRE(mmBg != GR_NULL_MIPMAP_HANDLE);
+    guTexDownloadMipMap(mmBg, bgTex.data(), nullptr);
+
+    grDepthBufferMode(GR_DEPTHBUFFER_WBUFFER);
+    grDepthBufferFunction(GR_CMP_LESS);
+    grDepthBiasLevel(0);
+    grChromakeyMode(GR_CHROMAKEY_DISABLE);
+    grAlphaBlendFunction(GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_ONE,
+                         GR_BLEND_ZERO);
+    grTexCombineFunction(GR_TMU0, GR_TEXTURECOMBINE_DECAL);
+    grBufferClear(0x00000000u, 0, GR_WDEPTHVALUE_FARTHEST);
+
+    // Pass 1: 2D background tile with grDepthMask(FXFALSE) and oow = 16.0 > 1.0
+    grDepthMask(FXFALSE);
+    guColorCombineFunction(GR_COLORCOMBINE_TEXTURE_TIMES_ITRGB);
+    guTexSource(mmBg);
+    drawPolyQuad(40.0f, 40.0f, 600.0f, 440.0f, 16.0f);
+
+    // Pass 2: 3D ring object at W = 20.0 (oow = 0.05) with grDepthMask(FXTRUE)
+    grDepthMask(FXTRUE);
+    guColorCombineFunction(GR_COLORCOMBINE_ITRGB);
+    drawPolyQuad(180.0f, 140.0f, 460.0f, 340.0f, 0.05f, 0.0f, 0.0f, 255.0f);
+
+    // Pass 3: 2D menu text label overlay at oow = 65535.0 (> 1.0 -> depth 0.0)
+    // overlapping the 3D object; must pass GR_CMP_LESS against W=20.0!
+    drawPolyQuad(260.0f, 200.0f, 380.0f, 280.0f, 65535.0f, 255.0f, 255.0f,
+                 0.0f);
+
+    grBufferSwap(0);
+
+    uint32_t pxBgLeft = 0, pxBgRight = 0, pxObj = 0, pxText = 0;
+    REQUIRE(grLfbReadRegion(GR_BUFFER_FRONTBUFFER, 100, 240, 1, 1, 4,
+                            &pxBgLeft) == FXTRUE);
+    REQUIRE(grLfbReadRegion(GR_BUFFER_FRONTBUFFER, 540, 240, 1, 1, 4,
+                            &pxBgRight) == FXTRUE);
+    REQUIRE(grLfbReadRegion(GR_BUFFER_FRONTBUFFER, 210, 240, 1, 1, 4, &pxObj) ==
+            FXTRUE);
+    REQUIRE(grLfbReadRegion(GR_BUFFER_FRONTBUFFER, 320, 240, 1, 1, 4,
+                            &pxText) == FXTRUE);
+
+    // Background left half = Green, right half = Red (proves sow/oow exact!)
+    CHECK(((pxBgLeft >> 16) & 0xFFu) <= 10);
+    CHECK(((pxBgLeft >> 8) & 0xFFu) >= 240);
+    CHECK((pxBgLeft & 0xFFu) <= 10);
+
+    CHECK(((pxBgRight >> 16) & 0xFFu) >= 240);
+    CHECK(((pxBgRight >> 8) & 0xFFu) <= 10);
+    CHECK((pxBgRight & 0xFFu) <= 10);
+
+    // 3D ring object = Blue (proves Pass 1 grDepthMask(0) didn't block 3D!)
+    CHECK(((pxObj >> 16) & 0xFFu) <= 10);
+    CHECK(((pxObj >> 8) & 0xFFu) <= 10);
+    CHECK((pxObj & 0xFFu) >= 240);
+
+    // 2D text overlay = Yellow (proves oow = 65535 renders in front of W = 20!)
+    CHECK(((pxText >> 16) & 0xFFu) >= 240);
+    CHECK(((pxText >> 8) & 0xFFu) >= 240);
+    CHECK((pxText & 0xFFu) <= 10);
+  }
+
+  SECTION("W-buffer grDepthBiasLevel pulls coplanar decals/shadows closer") {
+    grDepthBufferMode(GR_DEPTHBUFFER_WBUFFER);
+    grDepthBufferFunction(GR_CMP_LESS);
+    grDepthMask(FXTRUE);
+    grDepthBiasLevel(0);
+    grChromakeyMode(GR_CHROMAKEY_DISABLE);
+    grAlphaBlendFunction(GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_ONE,
+                         GR_BLEND_ZERO);
+    guColorCombineFunction(GR_COLORCOMBINE_ITRGB);
+    grBufferClear(0x00000000u, 0, GR_WDEPTHVALUE_FARTHEST);
+
+    // Base floor at W = 100.0 (oow = 0.01) in Green
+    drawPolyQuad(100.0f, 100.0f, 500.0f, 380.0f, 0.01f, 0.0f, 255.0f, 0.0f);
+
+    // Coplanar shadow/decal at W = 100.0 with negative depthBias (-32) in Red
+    grDepthBiasLevel(-32);
+    drawPolyQuad(150.0f, 150.0f, 300.0f, 300.0f, 0.01f, 255.0f, 0.0f, 0.0f);
+
+    // Coplanar quad at W = 100.0 with positive depthBias (+32) in Blue -> must
+    // fail GR_CMP_LESS against the floor
+    grDepthBiasLevel(32);
+    drawPolyQuad(320.0f, 150.0f, 450.0f, 300.0f, 0.01f, 0.0f, 0.0f, 255.0f);
+    grDepthBiasLevel(0);
+
+    grBufferSwap(0);
+
+    uint32_t pxNegBias = 0, pxPosBias = 0;
+    REQUIRE(grLfbReadRegion(GR_BUFFER_FRONTBUFFER, 225, 225, 1, 1, 4,
+                            &pxNegBias) == FXTRUE);
+    REQUIRE(grLfbReadRegion(GR_BUFFER_FRONTBUFFER, 385, 225, 1, 1, 4,
+                            &pxPosBias) == FXTRUE);
+
+    // Negative bias wins -> Red
+    CHECK(((pxNegBias >> 16) & 0xFFu) >= 240);
+    CHECK(((pxNegBias >> 8) & 0xFFu) <= 10);
+    CHECK((pxNegBias & 0xFFu) <= 10);
+
+    // Positive bias loses -> remains Green floor
+    CHECK(((pxPosBias >> 16) & 0xFFu) <= 10);
+    CHECK(((pxPosBias >> 8) & 0xFFu) >= 240);
+    CHECK((pxPosBias & 0xFFu) <= 10);
+  }
+
+  SECTION(
+      "Chromakey with bound TMU texture does not punch holes in untextured "
+      "GR_COLORCOMBINE_ITRGB polygons") {
+    guTexMemReset();
+    GuTexPalette pal{};
+    pal.data[0] = 0x00604020u;  // Tomb Raider 1 transparent key color
+    grTexDownloadTable(GR_TMU0, GR_TEXTABLE_PALETTE, &pal);
+
+    std::vector<uint8_t> keyTex(16 * 16, 0);  // 100% chromakey color!
+    GrMipMapId_t mmKey = guTexAllocateMemory(
+        GR_TMU0, GR_MIPMAPLEVELMASK_BOTH, 16, 16, GR_TEXFMT_P_8,
+        GR_MIPMAP_DISABLE, GR_LOD_16, GR_LOD_16, GR_ASPECT_1x1,
+        GR_TEXTURECLAMP_CLAMP, GR_TEXTURECLAMP_CLAMP,
+        GR_TEXTUREFILTER_POINT_SAMPLED, GR_TEXTUREFILTER_POINT_SAMPLED, 0.0f,
+        FXFALSE);
+    REQUIRE(mmKey != GR_NULL_MIPMAP_HANDLE);
+    guTexDownloadMipMap(mmKey, keyTex.data(), nullptr);
+    guTexSource(mmKey);  // Keep TMU0 bound!
+
+    grDepthBufferMode(GR_DEPTHBUFFER_DISABLE);
+    grConstantColorValue(0x7F000000u);  // Black RGB, half alpha (TR1 default)
+    grChromakeyValue(0x00604020u);
+    grChromakeyMode(GR_CHROMAKEY_ENABLE);
+    grAlphaBlendFunction(GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_ONE,
+                         GR_BLEND_ZERO);
+    // Switch to untextured Gouraud (Function=LOCAL, Local=ITERATED,
+    // Other=CONSTANT) while TMU0 still holds the 0x604020 texture.
+    guColorCombineFunction(GR_COLORCOMBINE_ITRGB);
+    grBufferClear(0x00000000u, 0, GR_WDEPTHVALUE_FARTHEST);
+
+    drawPolyQuad(150.0f, 150.0f, 350.0f, 300.0f, 1.0f, 240.0f, 160.0f, 80.0f);
+    grChromakeyMode(GR_CHROMAKEY_DISABLE);
+    grBufferSwap(0);
+
+    uint32_t px = 0;
+    REQUIRE(grLfbReadRegion(GR_BUFFER_FRONTBUFFER, 250, 225, 1, 1, 4, &px) ==
+            FXTRUE);
+    CHECK(((px >> 16) & 0xFFu) >= 225);
+    CHECK(((px >> 8) & 0xFFu) >= 145);
+    CHECK(((px >> 8) & 0xFFu) <= 175);
+    CHECK((px & 0xFFu) >= 65);
+    CHECK((px & 0xFFu) <= 95);
+  }
+
+  grSstWinClose();
+  grGlideShutdown();
+#endif
+}

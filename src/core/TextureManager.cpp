@@ -1862,6 +1862,24 @@ void TextureManager::SyncBoundTextures() {
   }
 }
 
+void TextureManager::ClearTextures() {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  s_anyTableDirty.store(false, std::memory_order_release);
+  EntryCommon::g_anyTmuTableDirty.store(false, std::memory_order_release);
+  for (int i = 0; i < 2; ++i) {
+    m_tmus[i].allocatedBytes = 0;
+    m_tmus[i].textures.clear();
+    m_tmus[i].boundAddress = 0xFFFFFFFFu;
+    for (int r = 0; r < 8; ++r) {
+      m_tmus[i].multibaseAddr[r] = 0xFFFFFFFFu;
+    }
+    m_tmuTableDirty[i].store(false, std::memory_order_release);
+  }
+  GLIDE_LOG(INFO, "TextureManager",
+            "Cleared Virtual TMU texture pools (palette & NCC tables "
+            "preserved).");
+}
+
 void TextureManager::Reset() {
   std::lock_guard<std::mutex> lock(m_mutex);
   m_umaEnabled.store(false, std::memory_order_release);

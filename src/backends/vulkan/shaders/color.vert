@@ -92,10 +92,14 @@ void main() {
 
   float rawDepth = inPos.z;
   if (pcs.depthBufferMode == 2u) {
-    rawDepth = 1.0 - inPos.w;
+    // True W-buffer depth is written per-fragment via gl_FragDepth in
+    // color.frag (USE_WBUFFER_DEPTH). Keep clip-space Z strictly inside [0, 1]
+    // so oow > 1.0 (W < 1.0) or negative depthBias never triggers near/far
+    // frustum clipping even if VkPhysicalDeviceFeatures::depthClamp is absent.
+    rawDepth = 0.5;
+  } else if (pcs.depthBufferMode == 1u) {
+    rawDepth += pcs.depthBias;
   }
-
-  rawDepth += pcs.depthBias;
 
   gl_Position = vec4(ndcX, ndcY, rawDepth, 1.0);
   gl_PointSize = 1.0;  // Canonical Glide point size (1px)

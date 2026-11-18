@@ -71,17 +71,14 @@ void main() {
         ndcY = (inPos.y / (uViewportSize.y / 2.0)) - 1.0;
     }
     
-    float rawDepth = inPos.z;
-    if (uDepthBufferMode == 2) {
-        rawDepth = 1.0 - inPos.w; // W-buffer mapping: 1.0 - oow
-    }
-
-    rawDepth += uDepthBias;
-
     float ndcZ;
-    if (uDepthClipOverride == 1) {
-        ndcZ = 0.0; // Force to middle of NDC clip volume if depth testing is disabled (prevents stack garbage clipping)
+    if (uDepthClipOverride == 1 || uDepthBufferMode == 2) {
+        // Depth-off/2D overlay or W-buffer (gl_FragDepth written per-fragment):
+        // keep clip-space Z strictly inside [-1, 1] so GLES (no GL_DEPTH_CLAMP)
+        // never clips oow > 1.0 (W < 1.0), negative depthBias, or stack garbage.
+        ndcZ = 0.0;
     } else {
+        float rawDepth = clamp(inPos.z + uDepthBias, 0.0, 1.0);
         ndcZ = rawDepth * 2.0 - 1.0;
     }
 
@@ -171,6 +168,7 @@ uniform float uFogTable[64];
 
 // Depth Buffer Mode Uniform for Clipping
 uniform highp int uDepthBufferMode;
+uniform float uDepthBias;
 
 uniform float uDepthNear;
 uniform float uDepthFar;
@@ -528,14 +526,14 @@ void main() {
     float divW0 = (uUseTmuOow[0] == 1) ? fragTmuOow.x : fragOOW;
     float divW1 = (uUseTmuOow[1] == 1) ? fragTmuOow.y : fragOOW;
 
-    // W-based coordinate near-plane and camera-space clipping
-    // (respect per-TMU oow when GR_STWHINT_W_DIFF_TMU* is active)
-    if (uDepthBufferMode == 2) {
-        if (fragOOW > 1.0) discard;
-    } else {
-        if ((tmu0Active && divW0 <= 0.0) || (tmu1Active && divW1 <= 0.0)) {
-            discard;
-        }
+    // Guard non-positive W (respect per-TMU oow when GR_STWHINT_W_DIFF_TMU* is
+    // active). Authentic 3dfx silicon never discards fragOOW > 1.0 in W-buffer
+    // mode; W <= 1.0 saturates to nearest depth (0.0) in gl_FragDepth below.
+    if (uDepthBufferMode == 2 && fragOOW <= 0.0) {
+        discard;
+    }
+    if ((tmu0Active && divW0 <= 0.0) || (tmu1Active && divW1 <= 0.0)) {
+        discard;
     }
 
     // 1. Sample TMU 1 (upstream)
@@ -838,8 +836,8 @@ void main() {
     // True W-Buffering Depth Write
     if (uDepthBufferMode == 2) { // 2 = W-buffer
         float eyeW = 1.0 / fragOOW;
-        float normalizedW = (eyeW - uDepthNear) / (uDepthFar - uDepthNear);
-        gl_FragDepth = clamp(normalizedW, 0.0, 1.0);
+        float normalizedW = clamp((eyeW - uDepthNear) / (uDepthFar - uDepthNear), 0.0, 1.0);
+        gl_FragDepth = clamp(normalizedW + uDepthBias, 0.0, 1.0);
     } else {
         gl_FragDepth = gl_FragCoord.z;
     }

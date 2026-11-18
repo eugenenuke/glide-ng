@@ -615,13 +615,14 @@ void main() {
   float divW0 = (useTmuOow & 1u) != 0u ? fragTmuOow.x : fragOOW;
   float divW1 = ((useTmuOow >> 1u) & 1u) != 0u ? fragTmuOow.y : fragOOW;
 
-  // Near-plane clipping (respect per-TMU oow when GR_STWHINT_W_DIFF_TMU* is set)
-  if (pcs.depthBufferMode == 2u) {
-    if (fragOOW > 1.0) discard;
-  } else {
-    if ((tmu0Active && divW0 <= 0.0) || (tmu1Active && divW1 <= 0.0)) {
-      discard;
-    }
+  // Guard non-positive W (respect per-TMU oow when GR_STWHINT_W_DIFF_TMU* is
+  // set). Authentic 3dfx silicon never discards fragOOW > 1.0 in W-buffer mode;
+  // W <= 1.0 saturates to nearest depth (0.0) in gl_FragDepth below.
+  if (pcs.depthBufferMode == 2u && fragOOW <= 0.0) {
+    discard;
+  }
+  if ((tmu0Active && divW0 <= 0.0) || (tmu1Active && divW1 <= 0.0)) {
+    discard;
   }
 
   // 1. Sample TMU 1 (upstream)
@@ -950,8 +951,9 @@ void main() {
   // Z-buffer & depth-off pipelines omit DepthReplacing and preserve Early-Z).
   if (pcs.depthBufferMode == 2u) {
     float eyeW = 1.0 / fragOOW;
-    float normalizedW = (eyeW - pcs.depthNear) / (pcs.depthFar - pcs.depthNear);
-    gl_FragDepth = clamp(normalizedW, 0.0, 1.0);
+    float normalizedW =
+        clamp((eyeW - pcs.depthNear) / (pcs.depthFar - pcs.depthNear), 0.0, 1.0);
+    gl_FragDepth = clamp(normalizedW + pcs.depthBias, 0.0, 1.0);
   } else {
     gl_FragDepth = gl_FragCoord.z;
   }

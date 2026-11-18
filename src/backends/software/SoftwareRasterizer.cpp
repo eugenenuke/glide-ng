@@ -612,16 +612,18 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
                    w2 * (c.tmu_oow[1] - a.tmu_oow[1]))
                 : wVal;
 
-        // Near-plane clipping (respect per-TMU oow when GR_STWHINT_W_DIFF_TMU*
-        // is active)
+        // Guard non-positive W (respect per-TMU oow when
+        // GR_STWHINT_W_DIFF_TMU* is active). Authentic 3dfx SST-1 silicon
+        // never discards oow > 1.0 (W < 1.0) in W-buffer mode: ITERW >= 1.0
+        // saturates to nearest depth (0.0) while preserving perspective
+        // texture division (sow/oow, tow/oow).
         if (depthMode == 2) {  // GR_DEPTHBUFFER_WBUFFER
-          if (wVal <= 0.0f || wVal > 1.0001f) keepPixel = false;
-        } else {
-          if constexpr (HasTexture) {
-            if (divW0 <= 0.0f) keepPixel = false;
-          }
-          if (hasTexture1 && divW1 <= 0.0f) keepPixel = false;
+          if (wVal <= 0.0f) keepPixel = false;
         }
+        if constexpr (HasTexture) {
+          if (divW0 <= 0.0f) keepPixel = false;
+        }
+        if (hasTexture1 && divW1 <= 0.0f) keepPixel = false;
 
         float iterR = 0.0f;
         float iterG = 0.0f;
