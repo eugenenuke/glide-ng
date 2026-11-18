@@ -2196,6 +2196,27 @@ bool VulkanBackend::CreateLogicalDevice() {
               "blending will be degraded.");
   }
 
+  m_textureCompressionBcEnabled = false;
+  if (supportedFeatures.textureCompressionBC) {
+    const auto reqFlags = vk::FormatFeatureFlagBits::eSampledImage |
+                          vk::FormatFeatureFlagBits::eTransferDst;
+    const auto p1 = m_physicalDevice.getFormatProperties(
+        vk::Format::eBc1RgbaUnormBlock);
+    const auto p2 =
+        m_physicalDevice.getFormatProperties(vk::Format::eBc2UnormBlock);
+    const auto p3 =
+        m_physicalDevice.getFormatProperties(vk::Format::eBc3UnormBlock);
+    if ((p1.optimalTilingFeatures & reqFlags) == reqFlags &&
+        (p2.optimalTilingFeatures & reqFlags) == reqFlags &&
+        (p3.optimalTilingFeatures & reqFlags) == reqFlags) {
+      deviceFeatures.textureCompressionBC = true;
+      m_textureCompressionBcEnabled = true;
+      GLIDE_LOG(INFO, "Vulkan",
+                "Vulkan BC1/BC2/BC3 (DXT1/DXT3/DXT5) hardware texture "
+                "compression enabled.");
+    }
+  }
+
   std::vector<const char*> deviceExtensions;
   auto availableExtensions =
       m_physicalDevice.enumerateDeviceExtensionProperties();

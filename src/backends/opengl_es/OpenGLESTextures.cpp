@@ -12,6 +12,37 @@
 
 namespace GlideWrapper {
 
+namespace {
+constexpr GLenum kGlCompressedRgbaS3tcDxt1Ext = 0x83F1u;
+constexpr GLenum kGlCompressedRgbaS3tcDxt3Ext = 0x83F2u;
+constexpr GLenum kGlCompressedRgbaS3tcDxt5Ext = 0x83F3u;
+
+bool ResolveGlesCompressedFormat(const VirtualTexture& tex, bool s3tcEnabled,
+                                 GLenum& outFormat, uint32_t& outBlockBytes) {
+  if (!s3tcEnabled || tex.rawCompressedMipLevels.empty()) {
+    return false;
+  }
+  switch (tex.format) {
+    case 0x16u:  // GR_TEXFMT_ARGB_CMP_DXT1
+      outFormat = kGlCompressedRgbaS3tcDxt1Ext;
+      outBlockBytes = 8u;
+      return true;
+    case 0x17u:  // GR_TEXFMT_ARGB_CMP_DXT2
+    case 0x18u:  // GR_TEXFMT_ARGB_CMP_DXT3
+      outFormat = kGlCompressedRgbaS3tcDxt3Ext;
+      outBlockBytes = 16u;
+      return true;
+    case 0x19u:  // GR_TEXFMT_ARGB_CMP_DXT4
+    case 0x1Au:  // GR_TEXFMT_ARGB_CMP_DXT5
+      outFormat = kGlCompressedRgbaS3tcDxt5Ext;
+      outBlockBytes = 16u;
+      return true;
+    default:
+      return false;
+  }
+}
+}  // namespace
+
 void OpenGLESBackend::UploadTexture(uint32_t tmu, uint32_t startAddress,
                                     const struct VirtualTexture& tex) {
   std::lock_guard<std::mutex> lock(m_mutex);
@@ -22,8 +53,14 @@ void OpenGLESBackend::UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
                                            const struct VirtualTexture& tex) {
   FlushBatch();
   if (tmu >= 2) return;
-  if (tex.baseWidth == 0 || tex.baseHeight == 0 ||
-      tex.swizzledMipLevels.empty()) {
+  GLenum compressedFmt = 0;
+  uint32_t bcBlockBytes = 0;
+  const bool useCompressed = ResolveGlesCompressedFormat(
+      tex, m_supportsS3tc, compressedFmt, bcBlockBytes);
+  const uint32_t mipCount = static_cast<uint32_t>(
+      useCompressed ? tex.rawCompressedMipLevels.size()
+                    : tex.swizzledMipLevels.size());
+  if (tex.baseWidth == 0 || tex.baseHeight == 0 || mipCount == 0) {
     return;
   }
   if (!m_windowAttached && !m_headlessMode) {
@@ -36,15 +73,16 @@ void OpenGLESBackend::UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
 
   GLIDE_PROFILE_SCOPE("GLES::UploadTexture");
 
+  const uint32_t targetInternalFmt =
+      useCompressed ? static_cast<uint32_t>(compressedFmt)
+                    : static_cast<uint32_t>(GL_RGBA);
   auto& tmuMap = m_glesTextures[tmu];
-  const uint32_t mipCount =
-      static_cast<uint32_t>(tex.swizzledMipLevels.size());
   GLuint texId = 0;
   bool canSubImage = false;
   auto it = tmuMap.find(startAddress);
   if (it == tmuMap.end()) {
     glGenTextures(1, &texId);
-    it = tmuMap.emplace(startAddress, GlesTexEntry{texId, 0, 0, 0}).first;
+    it = tmuMap.emplace(startAddress, GlesTexEntry{texId, 0, 0, 0, 0}).first;
     GLIDE_LOG(DEBUG, "GLES",
               "Generated new GLES Texture ID " << texId << " for TMU" << tmu
                                                << " Address 0x" << std::hex
@@ -53,12 +91,13 @@ void OpenGLESBackend::UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
     texId = it->second.id;
     canSubImage = (it->second.width == tex.baseWidth &&
                    it->second.height == tex.baseHeight &&
-                   it->second.mipLevels == mipCount);
+                   it->second.mipLevels == mipCount &&
+                   it->second.internalFormat == targetInternalFmt);
     GLIDE_LOG(DEBUG, "GLES",
               "Re-uploading to existing GLES Texture ID "
                   << texId << " for TMU" << tmu << " Address 0x" << std::hex
                   << startAddress << std::dec
-                  << (canSubImage ? " (glTexSubImage2D)" : " (glTexImage2D)"));
+                  << (canSubImage ? " (SubImage)" : " (TexImage)"));
   }
 
   if (m_cachedActiveTexUnit != 0) {
@@ -73,45 +112,76 @@ void OpenGLESBackend::UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
   uint32_t baseW = tex.baseWidth;
   uint32_t baseH = tex.baseHeight;
 
-  for (size_t i = 0; i < tex.swizzledMipLevels.size(); ++i) {
-    uint32_t w = std::max(1u, baseW >> i);
-    uint32_t h = std::max(1u, baseH >> i);
-    const auto& levelVec = tex.swizzledMipLevels[i];
-    const size_t expectedPixels = static_cast<size_t>(w) * h;
-    const size_t copyCount = std::min(expectedPixels, levelVec.size());
-    const uint32_t* pixels = levelVec.data();
-
-    // Swizzle BGRA from TextureManager to RGBA into persistent scratch buffer;
-    // defensively zero-fill any missing texels to prevent OOB reads.
-    if (m_texUploadScratch.size() < expectedPixels) {
-      m_texUploadScratch.resize(expectedPixels);
+  if (useCompressed) {
+    for (uint32_t i = 0; i < mipCount; ++i) {
+      const uint32_t w = std::max(1u, baseW >> i);
+      const uint32_t h = std::max(1u, baseH >> i);
+      const size_t expectedBytes = static_cast<size_t>((w + 3u) / 4u) *
+                                   ((h + 3u) / 4u) * bcBlockBytes;
+      const auto& levelBytes = tex.rawCompressedMipLevels[i];
+      const uint8_t* srcPtr = levelBytes.data();
+      std::vector<uint8_t> padded;
+      if (levelBytes.size() < expectedBytes) {
+        padded.assign(expectedBytes, 0u);
+        if (!levelBytes.empty()) {
+          std::memcpy(padded.data(), levelBytes.data(), levelBytes.size());
+        }
+        srcPtr = padded.data();
+      }
+      if (canSubImage) {
+        glCompressedTexSubImage2D(GL_TEXTURE_2D, static_cast<GLint>(i), 0, 0,
+                                  static_cast<GLsizei>(w),
+                                  static_cast<GLsizei>(h), compressedFmt,
+                                  static_cast<GLsizei>(expectedBytes), srcPtr);
+      } else {
+        glCompressedTexImage2D(GL_TEXTURE_2D, static_cast<GLint>(i),
+                               compressedFmt, static_cast<GLsizei>(w),
+                               static_cast<GLsizei>(h), 0,
+                               static_cast<GLsizei>(expectedBytes), srcPtr);
+      }
     }
-    uint32_t* dst = m_texUploadScratch.data();
-    GetSimdKernels().SwapRB32(pixels, dst, copyCount);
-    if (copyCount < expectedPixels) {
-      std::memset(dst + copyCount, 0,
-                  (expectedPixels - copyCount) * sizeof(uint32_t));
-    }
+  } else {
+    for (size_t i = 0; i < tex.swizzledMipLevels.size(); ++i) {
+      uint32_t w = std::max(1u, baseW >> i);
+      uint32_t h = std::max(1u, baseH >> i);
+      const auto& levelVec = tex.swizzledMipLevels[i];
+      const size_t expectedPixels = static_cast<size_t>(w) * h;
+      const size_t copyCount = std::min(expectedPixels, levelVec.size());
+      const uint32_t* pixels = levelVec.data();
 
-    if (canSubImage) {
-      glTexSubImage2D(GL_TEXTURE_2D, static_cast<GLint>(i), 0, 0,
-                      static_cast<GLsizei>(w), static_cast<GLsizei>(h), GL_RGBA,
-                      GL_UNSIGNED_BYTE, dst);
-    } else {
-      glTexImage2D(GL_TEXTURE_2D, static_cast<GLint>(i), GL_RGBA,
-                   static_cast<GLsizei>(w), static_cast<GLsizei>(h), 0, GL_RGBA,
-                   GL_UNSIGNED_BYTE, dst);
-    }
+      // Swizzle BGRA from TextureManager to RGBA into persistent scratch buffer;
+      // defensively zero-fill any missing texels to prevent OOB reads.
+      if (m_texUploadScratch.size() < expectedPixels) {
+        m_texUploadScratch.resize(expectedPixels);
+      }
+      uint32_t* dst = m_texUploadScratch.data();
+      GetSimdKernels().SwapRB32(pixels, dst, copyCount);
+      if (copyCount < expectedPixels) {
+        std::memset(dst + copyCount, 0,
+                    (expectedPixels - copyCount) * sizeof(uint32_t));
+      }
 
-    GLIDE_LOG(DEBUG, "GLES",
-              "Uploaded Mip Level " << i << " (" << w << "x" << h
-                                    << ") to GLES Texture ID " << texId);
+      if (canSubImage) {
+        glTexSubImage2D(GL_TEXTURE_2D, static_cast<GLint>(i), 0, 0,
+                        static_cast<GLsizei>(w), static_cast<GLsizei>(h),
+                        GL_RGBA, GL_UNSIGNED_BYTE, dst);
+      } else {
+        glTexImage2D(GL_TEXTURE_2D, static_cast<GLint>(i), GL_RGBA,
+                     static_cast<GLsizei>(w), static_cast<GLsizei>(h), 0,
+                     GL_RGBA, GL_UNSIGNED_BYTE, dst);
+      }
+
+      GLIDE_LOG(DEBUG, "GLES",
+                "Uploaded Mip Level " << i << " (" << w << "x" << h
+                                      << ") to GLES Texture ID " << texId);
+    }
   }
 
   if (!canSubImage) {
     it->second.width = baseW;
     it->second.height = baseH;
     it->second.mipLevels = mipCount;
+    it->second.internalFormat = targetInternalFmt;
     // Set default wrap/filter parameters so texture is complete
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
                     mipCount > 1 ? GL_NEAREST_MIPMAP_NEAREST : GL_NEAREST);
@@ -154,6 +224,10 @@ void OpenGLESBackend::UploadTexturePartial(uint32_t tmu, uint32_t startAddress,
     return;
   }
   GLuint texId = it->second.id;
+  if (it->second.internalFormat != static_cast<uint32_t>(GL_RGBA)) {
+    UploadTexture_Locked(tmu, startAddress, tex);
+    return;
+  }
 
   // 2. Validate existence of LOD level in the virtual texture
   if (lodLevel >= tex.swizzledMipLevels.size()) {

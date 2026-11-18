@@ -9782,3 +9782,146 @@ TEST_CASE("M11.5: Software Rasterizer Multi-ISA Parity (VSA-100, Dither, 4x AA T
     }
   }
 }
+
+TEST_CASE("M11.6a Native Hardware BC1/BC2/BC3 Compressed Texture Upload",
+          "[M11][BCn]") {
+  using namespace GlideWrapper;
+  // Build a 16x16..1x1 (5-level) mipmap chain for DXT1 (0x16), DXT3 (0x18),
+  // and DXT5 (0x1A) to verify hardware upload of both >=4x4 and sub-block
+  // (2x2, 1x1) mip tails, pool reuse across format changes, and lazy CPU
+  // decode via TextureManager::GetTexture().
+  auto makeDxt1Block = [](uint16_t c0, uint16_t c1, uint32_t idx) {
+    std::array<uint8_t, 8> blk{};
+    std::memcpy(blk.data() + 0, &c0, 2);
+    std::memcpy(blk.data() + 2, &c1, 2);
+    std::memcpy(blk.data() + 4, &idx, 4);
+    return blk;
+  };
+  auto buildChain = [&](uint32_t fmt, uint16_t c0, uint16_t c1, uint8_t alpha) {
+    std::vector<uint8_t> data;
+    for (uint32_t dim : {16u, 8u, 4u, 2u, 1u}) {
+      const uint32_t bx = (dim + 3u) / 4u;
+      const uint32_t by = (dim + 3u) / 4u;
+      const auto colBlk = makeDxt1Block(c0, c1, 0x00000000u);  // solid c0
+      for (uint32_t i = 0; i < bx * by; ++i) {
+        if (fmt == 0x18u) {  // DXT3: 4-bit explicit alpha nibbles
+          const uint8_t nib = static_cast<uint8_t>(alpha >> 4);
+          const uint8_t byteVal = static_cast<uint8_t>((nib << 4) | nib);
+          for (int k = 0; k < 8; ++k) data.push_back(byteVal);
+        } else if (fmt == 0x1Au) {  // DXT5: interpolated alpha, idx=0 -> a0
+          data.push_back(alpha);
+          data.push_back(0u);
+          for (int k = 0; k < 6; ++k) data.push_back(0u);
+        }
+        data.insert(data.end(), colBlk.begin(), colBlk.end());
+      }
+    }
+    return data;
+  };
+
+  auto renderQuadWithFmt = [&](const char* backendName, uint32_t fmt,
+                               uint16_t c0, uint8_t alpha,
+                               bool& outSupportsBcn,
+                               uint32_t& outCenterPixel,
+                               uint32_t& outLazyDecodedTexel) {
+    auto& reg = EmulationRegistry::GetInstance();
+    auto savedCfg = reg.GetConfig();
+    auto& bm = BackendManager::GetInstance();
+    auto& tm = TextureManager::GetInstance();
+    WrapperConfig cfg = savedCfg;
+    cfg.backend = backendName;
+    cfg.forceNoWindow = true;
+    cfg.model = CardModel::Voodoo5;
+    cfg.tmuMemoryMb = 16;
+    cfg.fbiMemoryMb = 16;
+    reg.GetConfig() = cfg;
+    REQUIRE(bm.EstablishBackend(cfg));
+    auto* be = bm.GetBackend();
+    REQUIRE(be != nullptr);
+    REQUIRE(be->AttachWindow(nullptr, 64, 64, false));
+    outSupportsBcn = be->SupportsCompressedBcnTextures();
+
+    tm.Reset();
+    tm.SetTmuMemoryLimitMb(0, 16);
+    tm.SetTmuMemoryLimitMb(1, 16);
+
+    auto chain = buildChain(fmt, c0, 0x001Fu, alpha);
+    // LOD 4 = 16x16 .. LOD 8 = 1x1, aspect 3 = 1x1
+    REQUIRE(tm.DownloadMipMap(0, 0x1000u, 4, 8, 3, fmt, chain.data()));
+    be->BindTexture(0, 0x1000u, 0, 0, 0, 0);
+    be->SetTexCombinerMode(0, 1, 0, 1, 0, false, false);
+    be->SetCombinerMode(3, 8, 2, 1, false, 3, 8, 2, 1, false);  // SCALE_OTHER * ONE (TEXTURE)
+    be->SetColorCombineExt(0u);
+    be->SetBlendState(1, 0, 4, 0);  // SRC_ALPHA, ZERO -> tests RGB * decoded Alpha!
+    be->SetDepthState(0, 7, false, 0);
+    be->ClearBuffer(0xFF000000u, 0u, 1.0f, 3u);
+
+    auto v = [](float x, float y, float s, float t) {
+      ModernVertex mv{};
+      mv.pos = {x, y, 0.5f, 1.0f};
+      mv.color = {1.0f, 1.0f, 1.0f, 1.0f};
+      mv.tex = {s, t, 0.0f, 0.0f};
+      mv.tmu_oow = {1.0f, 1.0f};
+      return mv;
+    };
+    be->DrawTriangle(v(0.0f, 0.0f, 0.0f, 0.0f), v(64.0f, 0.0f, 256.0f, 0.0f),
+                     v(64.0f, 64.0f, 256.0f, 256.0f));
+    be->DrawTriangle(v(0.0f, 0.0f, 0.0f, 0.0f), v(64.0f, 64.0f, 256.0f, 256.0f),
+                     v(0.0f, 64.0f, 0.0f, 256.0f));
+    be->FlushBins();
+
+    std::vector<uint32_t> fb(64u * 64u, 0u);
+    REQUIRE(be->ReadLFB(1u, 0u, 0u, 64u, 64u, 64u * 4u, fb.data()));
+    outCenterPixel = fb[32u * 64u + 32u];
+
+    // Verify lazy CPU decode via GetTexture() populates all 5 mip levels.
+    VirtualTexture* vt = tm.GetTexture(0, 0x1000u);
+    REQUIRE(vt != nullptr);
+    REQUIRE(vt->swizzledMipLevels.size() == 5u);
+    REQUIRE(vt->swizzledMipLevels[0].size() == 16u * 16u);
+    REQUIRE(vt->swizzledMipLevels[4].size() == 1u);
+    outLazyDecodedTexel = vt->swizzledMipLevels[0][0];
+
+    be->DetachWindow();
+    bm.ShutdownBackend();
+    reg.GetConfig() = savedCfg;
+  };
+
+  struct CaseSpec {
+    uint32_t fmt;
+    uint16_t c0;  // RGB565
+    uint8_t alpha;
+    uint8_t expR;
+    uint8_t expG;
+    uint8_t expB;
+  };
+  const std::array<CaseSpec, 3> cases{{
+      {0x16u, 0xF800u, 0xFFu, 255u, 0u, 0u},    // DXT1 red * alpha=255
+      {0x18u, 0x07E0u, 0x88u, 0u, 136u, 0u},    // DXT3 green * alpha=0x88 (136)
+      {0x1Au, 0x001Fu, 0xC0u, 0u, 0u, 192u},    // DXT5 blue * alpha=0xC0 (192)
+  }};
+
+  for (const auto& c : cases) {
+    bool swSup = true, vkSup = false, glSup = false;
+    uint32_t swPx = 0, vkPx = 0, glPx = 0;
+    uint32_t swLazy = 0, vkLazy = 0, glLazy = 0;
+    renderQuadWithFmt("software", c.fmt, c.c0, c.alpha, swSup, swPx, swLazy);
+    renderQuadWithFmt("vulkan", c.fmt, c.c0, c.alpha, vkSup, vkPx, vkLazy);
+    renderQuadWithFmt("opengl_es", c.fmt, c.c0, c.alpha, glSup, glPx, glLazy);
+
+    CHECK_FALSE(swSup);
+    CHECK(vkSup);
+    CHECK(glSup);
+    CHECK(vkLazy == swLazy);
+    CHECK(glLazy == swLazy);
+    // ReadLFB returns RGBA8888 (R in byte 0, G in byte 1, B in byte 2).
+    for (uint32_t px : {swPx, vkPx, glPx}) {
+      const uint8_t r = static_cast<uint8_t>(px & 0xFFu);
+      const uint8_t g = static_cast<uint8_t>((px >> 8) & 0xFFu);
+      const uint8_t b = static_cast<uint8_t>((px >> 16) & 0xFFu);
+      CHECK(std::abs(static_cast<int>(r) - static_cast<int>(c.expR)) <= 2);
+      CHECK(std::abs(static_cast<int>(g) - static_cast<int>(c.expG)) <= 2);
+      CHECK(std::abs(static_cast<int>(b) - static_cast<int>(c.expB)) <= 2);
+    }
+  }
+}

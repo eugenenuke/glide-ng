@@ -112,6 +112,7 @@ struct VulkanTexture {
   vk::UniqueImage image;
   vk::UniqueDeviceMemory memory;
   vk::UniqueImageView imageView;
+  vk::Format format{vk::Format::eB8G8R8A8Unorm};
   uint32_t width{0};
   uint32_t height{0};
   uint32_t mipLevels{0};
@@ -378,6 +379,9 @@ class VulkanBackend : public GlideStateTracker {
                    uint32_t magFilter) override;
   void UploadTexture(uint32_t tmu, uint32_t startAddress,
                      const struct VirtualTexture& tex) override;
+  bool SupportsCompressedBcnTextures() const override {
+    return m_textureCompressionBcEnabled;
+  }
   void SetTexLodBias(uint32_t tmu, float bias) override;
   void SetTexDetailControl(uint32_t tmu, int32_t lodBias, uint8_t detailScale,
                            float detailMax) override;
@@ -459,6 +463,7 @@ class VulkanBackend : public GlideStateTracker {
   vk::Queue m_graphicsQueue;
   uint32_t m_graphicsQueueFamilyIndex{0};
   bool m_depthClampEnabled{false};
+  bool m_textureCompressionBcEnabled{false};
 
   // Command submission infrastructure (Double-Buffered)
   vk::UniqueCommandPool m_commandPools[2];

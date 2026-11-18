@@ -35,6 +35,8 @@
   X(PFNGLBUFFERSUBDATAPROC, glBufferSubData)                           \
   X(PFNGLCHECKFRAMEBUFFERSTATUSPROC, glCheckFramebufferStatus)         \
   X(PFNGLCOMPILESHADERPROC, glCompileShader)                           \
+  X(PFNGLCOMPRESSEDTEXIMAGE2DPROC, glCompressedTexImage2D)             \
+  X(PFNGLCOMPRESSEDTEXSUBIMAGE2DPROC, glCompressedTexSubImage2D)       \
   X(PFNGLCREATEPROGRAMPROC, glCreateProgram)                           \
   X(PFNGLCREATESHADERPROC, glCreateShader)                             \
   X(PFNGLDELETEBUFFERSPROC, glDeleteBuffers)                           \
@@ -56,6 +58,7 @@
   X(PFNGLGETPROGRAMIVPROC, glGetProgramiv)                             \
   X(PFNGLGETSHADERINFOLOGPROC, glGetShaderInfoLog)                     \
   X(PFNGLGETSHADERIVPROC, glGetShaderiv)                               \
+  X(PFNGLGETSTRINGIPROC, glGetStringi)                                 \
   X(PFNGLGETUNIFORMLOCATIONPROC, glGetUniformLocation)                 \
   X(PFNGLLINKPROGRAMPROC, glLinkProgram)                               \
   X(PFNGLRENDERBUFFERSTORAGEPROC, glRenderbufferStorage)               \
@@ -105,6 +108,8 @@ bool LoadCoreFunctions();
 #define glBufferSubData           ::GlideWrapper::Win32Gl::pfn_glBufferSubData
 #define glCheckFramebufferStatus  ::GlideWrapper::Win32Gl::pfn_glCheckFramebufferStatus
 #define glCompileShader           ::GlideWrapper::Win32Gl::pfn_glCompileShader
+#define glCompressedTexImage2D    ::GlideWrapper::Win32Gl::pfn_glCompressedTexImage2D
+#define glCompressedTexSubImage2D ::GlideWrapper::Win32Gl::pfn_glCompressedTexSubImage2D
 #define glCreateProgram           ::GlideWrapper::Win32Gl::pfn_glCreateProgram
 #define glCreateShader            ::GlideWrapper::Win32Gl::pfn_glCreateShader
 #define glDeleteBuffers           ::GlideWrapper::Win32Gl::pfn_glDeleteBuffers
@@ -126,6 +131,7 @@ bool LoadCoreFunctions();
 #define glGetProgramiv            ::GlideWrapper::Win32Gl::pfn_glGetProgramiv
 #define glGetShaderInfoLog        ::GlideWrapper::Win32Gl::pfn_glGetShaderInfoLog
 #define glGetShaderiv             ::GlideWrapper::Win32Gl::pfn_glGetShaderiv
+#define glGetStringi              ::GlideWrapper::Win32Gl::pfn_glGetStringi
 #define glGetUniformLocation      ::GlideWrapper::Win32Gl::pfn_glGetUniformLocation
 #define glLinkProgram             ::GlideWrapper::Win32Gl::pfn_glLinkProgram
 #define glRenderbufferStorage     ::GlideWrapper::Win32Gl::pfn_glRenderbufferStorage

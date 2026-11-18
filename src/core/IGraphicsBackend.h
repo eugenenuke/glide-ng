@@ -139,6 +139,9 @@ class IGraphicsBackend {
                            uint32_t magFilter) = 0;
   virtual void UploadTexture(uint32_t tmu, uint32_t startAddress,
                              const struct VirtualTexture& tex) = 0;
+  // Returns true when the backend can upload raw BC1/BC2/BC3 (DXT1..DXT5)
+  // compressed texture blocks natively without CPU decompression.
+  virtual bool SupportsCompressedBcnTextures() const { return false; }
   virtual void SetTexLodBias(uint32_t tmu, float bias) = 0;
   virtual void SetTexDetailControl(uint32_t tmu, int32_t lodBias,
                                    uint8_t detailScale, float detailMax) = 0;

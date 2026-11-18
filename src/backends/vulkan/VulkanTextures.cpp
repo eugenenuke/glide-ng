@@ -11,6 +11,33 @@
 
 namespace GlideWrapper {
 
+static bool ResolveVulkanCompressedFormat(const struct VirtualTexture& tex,
+                                          bool bcEnabled,
+                                          vk::Format& outFormat,
+                                          uint32_t& outBlockBytes) {
+  if (!bcEnabled || tex.rawCompressedMipLevels.empty()) {
+    return false;
+  }
+  switch (tex.format) {
+    case 0x16u:  // GR_TEXFMT_ARGB_CMP_DXT1
+      outFormat = vk::Format::eBc1RgbaUnormBlock;
+      outBlockBytes = 8u;
+      return true;
+    case 0x17u:  // GR_TEXFMT_ARGB_CMP_DXT2
+    case 0x18u:  // GR_TEXFMT_ARGB_CMP_DXT3
+      outFormat = vk::Format::eBc2UnormBlock;
+      outBlockBytes = 16u;
+      return true;
+    case 0x19u:  // GR_TEXFMT_ARGB_CMP_DXT4
+    case 0x1Au:  // GR_TEXFMT_ARGB_CMP_DXT5
+      outFormat = vk::Format::eBc3UnormBlock;
+      outBlockBytes = 16u;
+      return true;
+    default:
+      return false;
+  }
+}
+
 static uint64_t CalculateTextureHash(const struct VirtualTexture& tex) {
   uint64_t hash = 14695981039346656037ULL;
   const uint64_t prime = 1099511628211ULL;
@@ -31,9 +58,12 @@ static uint64_t CalculateTextureHash(const struct VirtualTexture& tex) {
     }
   };
 
+  const uint32_t mipCount = static_cast<uint32_t>(
+      !tex.swizzledMipLevels.empty() ? tex.swizzledMipLevels.size()
+                                     : tex.rawCompressedMipLevels.size());
   hash_u32(tex.baseWidth);
   hash_u32(tex.baseHeight);
-  hash_u32(static_cast<uint32_t>(tex.swizzledMipLevels.size()));
+  hash_u32(mipCount);
 
   // Fast O(1) path when TextureManager already hashed the full raw mipmap chain
   // (rawDataHash == 0 after partial sub-updates or direct unit-test setup).
@@ -45,13 +75,23 @@ static uint64_t CalculateTextureHash(const struct VirtualTexture& tex) {
     return hash;
   }
 
-  // Fallback: hash raw swizzled mipmap pixel data
-  for (const auto& level : tex.swizzledMipLevels) {
-    const uint8_t* byteData = reinterpret_cast<const uint8_t*>(level.data());
-    size_t byteLength = level.size() * sizeof(uint32_t);
-    for (size_t i = 0; i < byteLength; ++i) {
-      hash ^= byteData[i];
-      hash *= prime;
+  if (!tex.swizzledMipLevels.empty()) {
+    // Fallback: hash raw swizzled mipmap pixel data
+    for (const auto& level : tex.swizzledMipLevels) {
+      const uint8_t* byteData = reinterpret_cast<const uint8_t*>(level.data());
+      size_t byteLength = level.size() * sizeof(uint32_t);
+      for (size_t i = 0; i < byteLength; ++i) {
+        hash ^= byteData[i];
+        hash *= prime;
+      }
+    }
+  } else {
+    hash_u32(tex.format);
+    for (const auto& level : tex.rawCompressedMipLevels) {
+      for (uint8_t byte : level) {
+        hash ^= byte;
+        hash *= prime;
+      }
     }
   }
   return hash;
@@ -152,8 +192,15 @@ void VulkanBackend::UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
     }
   }
 
-  if (tex.baseWidth == 0 || tex.baseHeight == 0 ||
-      tex.swizzledMipLevels.empty()) {
+  vk::Format targetFormat = vk::Format::eB8G8R8A8Unorm;
+  uint32_t bcBlockBytes = 0u;
+  const bool useCompressed = ResolveVulkanCompressedFormat(
+      tex, m_textureCompressionBcEnabled, targetFormat, bcBlockBytes);
+  const uint32_t mipCount = static_cast<uint32_t>(
+      useCompressed ? tex.rawCompressedMipLevels.size()
+                    : tex.swizzledMipLevels.size());
+
+  if (tex.baseWidth == 0 || tex.baseHeight == 0 || mipCount == 0) {
     return;
   }
 
@@ -163,7 +210,8 @@ void VulkanBackend::UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
             "UploadTexture TMU"
                 << tmu << ": Address=0x" << std::hex << startAddress << std::dec
                 << " Size: " << tex.baseWidth << "x" << tex.baseHeight
-                << " Mipmap levels: " << tex.swizzledMipLevels.size()
+                << " Mipmap levels: " << mipCount
+                << (useCompressed ? " (BCn hardware compressed)" : "")
                 << " (Hash: 0x" << std::hex << incomingHash << std::dec << ")");
 
   // Flush any queued geometry referencing the previous texture before retiring
@@ -175,14 +223,19 @@ void VulkanBackend::UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
   // GPU draws never read a freed image/view.
   RetireTextureAtAddress_Locked(tmu, startAddress);
 
-  // Calculate exact expected staging size across all mip levels (matches
-  // copyBufferToImage extents even if a mip level is defensively short).
+  // Align staging offsets to 16 bytes (required for BC1/BC2/BC3 texel blocks
+  // and optimal for BGRA8 DMA transfers).
   size_t totalBytes = 0;
   {
     uint32_t lw = tex.baseWidth;
     uint32_t lh = tex.baseHeight;
-    for (size_t i = 0; i < tex.swizzledMipLevels.size(); ++i) {
-      totalBytes += static_cast<size_t>(lw) * lh * sizeof(uint32_t);
+    for (uint32_t i = 0; i < mipCount; ++i) {
+      const size_t levelBytes =
+          useCompressed
+              ? (static_cast<size_t>((lw + 3u) / 4u) * ((lh + 3u) / 4u) *
+                 bcBlockBytes)
+              : (static_cast<size_t>(lw) * lh * sizeof(uint32_t));
+      totalBytes += (levelBytes + 15u) & ~size_t(15u);
       lw = std::max(1u, lw / 2);
       lh = std::max(1u, lh / 2);
     }
@@ -191,28 +244,29 @@ void VulkanBackend::UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
   // Check if we have enough space in the active slot's staging buffer segment
   uint32_t slotBase = m_currentFrameSlot * m_texStagingSlotSize;
   uint32_t slotEnd = (m_currentFrameSlot + 1) * m_texStagingSlotSize;
+  uint32_t alignedStart = (m_texStagingOffsets[m_currentFrameSlot] + 15u) & ~15u;
 
-  if (m_texStagingOffsets[m_currentFrameSlot] + totalBytes > slotEnd) {
+  if (alignedStart + totalBytes > slotEnd) {
     GLIDE_LOG(WARN, "Vulkan",
               "Texture staging slot size exceeded! Flushing mid-frame and "
               "wrapping around...");
     SubmitMidFrameAndWaitIdle_Locked(true);
     m_texStagingOffsets[m_currentFrameSlot] = slotBase;
+    alignedStart = (slotBase + 15u) & ~15u;
   }
 
-  uint32_t currentOffset = m_texStagingOffsets[m_currentFrameSlot];
+  uint32_t currentOffset = alignedStart;
 
   try {
-    const uint32_t mipCount =
-        static_cast<uint32_t>(tex.swizzledMipLevels.size());
     VulkanTexture vulkanTex;
     bool reusedFromPool = false;
 
     // 1. Try to reuse a fence-reclaimed VkImage/DeviceMemory/ImageView of the
-    //    exact same dimensions & mip count before allocating new GPU memory.
+    //    exact same dimensions, mip count, and format before allocating new GPU
+    //    memory.
     for (auto pit = m_texturePool.begin(); pit != m_texturePool.end(); ++pit) {
       if (pit->width == tex.baseWidth && pit->height == tex.baseHeight &&
-          pit->mipLevels == mipCount) {
+          pit->mipLevels == mipCount && pit->format == targetFormat) {
         vulkanTex = std::move(*pit);
         m_texturePool.erase(pit);
         reusedFromPool = true;
@@ -224,7 +278,7 @@ void VulkanBackend::UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
     if (!reusedFromPool) {
       // Create vk::Image
       vk::ImageCreateInfo imageInfo(
-          {}, vk::ImageType::e2D, vk::Format::eB8G8R8A8Unorm,
+          {}, vk::ImageType::e2D, targetFormat,
           vk::Extent3D(tex.baseWidth, tex.baseHeight, 1), mipCount, 1,
           vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal,
           vk::ImageUsageFlagBits::eSampled |
@@ -242,10 +296,10 @@ void VulkanBackend::UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
 
       // Create Image View
       vk::ImageViewCreateInfo viewInfo(
-          {}, vulkanTex.image.get(), vk::ImageViewType::e2D,
-          vk::Format::eB8G8R8A8Unorm, {},
+          {}, vulkanTex.image.get(), vk::ImageViewType::e2D, targetFormat, {},
           {vk::ImageAspectFlagBits::eColor, 0, mipCount, 0, 1});
       vulkanTex.imageView = m_device->createImageViewUnique(viewInfo);
+      vulkanTex.format = targetFormat;
       vulkanTex.width = tex.baseWidth;
       vulkanTex.height = tex.baseHeight;
       vulkanTex.mipLevels = mipCount;
@@ -266,30 +320,42 @@ void VulkanBackend::UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
     uint32_t lw = tex.baseWidth;
     uint32_t lh = tex.baseHeight;
     for (uint32_t i = 0; i < mipCount; ++i) {
-      const auto& level = tex.swizzledMipLevels[i];
       if (useStack) {
         stackLevelOffsets[i] = currentOffset + offset;
       } else {
         heapLevelOffsets.push_back(currentOffset + offset);
       }
-      const size_t expectedBytes =
-          static_cast<size_t>(lw) * lh * sizeof(uint32_t);
-      const size_t availBytes = level.size() * sizeof(uint32_t);
+      size_t expectedBytes = 0;
+      const void* srcPtr = nullptr;
+      size_t availBytes = 0;
+      if (useCompressed) {
+        const auto& level = tex.rawCompressedMipLevels[i];
+        expectedBytes = static_cast<size_t>((lw + 3u) / 4u) *
+                        ((lh + 3u) / 4u) * bcBlockBytes;
+        srcPtr = level.data();
+        availBytes = level.size();
+      } else {
+        const auto& level = tex.swizzledMipLevels[i];
+        expectedBytes = static_cast<size_t>(lw) * lh * sizeof(uint32_t);
+        srcPtr = level.data();
+        availBytes = level.size() * sizeof(uint32_t);
+      }
       const size_t copyBytes = std::min(expectedBytes, availBytes);
       if (copyBytes > 0) {
-        std::memcpy(mappedData + offset, level.data(), copyBytes);
+        std::memcpy(mappedData + offset, srcPtr, copyBytes);
       }
       if (copyBytes < expectedBytes) {
         std::memset(mappedData + offset + copyBytes, 0,
                     expectedBytes - copyBytes);
       }
-      offset += expectedBytes;
+      offset += (expectedBytes + 15u) & ~size_t(15u);
       lw = std::max(1u, lw / 2);
       lh = std::max(1u, lh / 2);
     }
 
     // 4. Update the offset in the staging buffer
-    m_texStagingOffsets[m_currentFrameSlot] += totalBytes;
+    m_texStagingOffsets[m_currentFrameSlot] =
+        static_cast<uint32_t>(currentOffset + totalBytes);
 
     // 5. Record copy commands into the per-frame pre-render upload command
     //    buffer! Because UploadTexture_Locked is Copy-on-Write (every upload
@@ -469,6 +535,10 @@ void VulkanBackend::UploadTexturePartial(uint32_t tmu, uint32_t startAddress,
   }
 
   auto& vTex = it->second;
+  if (vTex.format != vk::Format::eB8G8R8A8Unorm) {
+    UploadTexture_Locked(tmu, startAddress, tex);
+    return;
+  }
 
   if (lodLevel >= tex.swizzledMipLevels.size()) {
     GLIDE_LOG(WARN, "Vulkan",

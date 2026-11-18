@@ -205,6 +205,27 @@ bool OpenGLESBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
   m_supportsSampleMask = (glMajor > 3) || (glMajor == 3 && glMinor >= 1);
 #endif
 
+  // Probe GL_EXT_texture_compression_s3tc for native BC1/BC2/BC3 (DXT1/3/5)
+  // hardware texture upload without CPU block decoding.
+  m_supportsS3tc = false;
+  {
+    GLint numExts = 0;
+    glGetIntegerv(GL_NUM_EXTENSIONS, &numExts);
+    for (GLint i = 0; i < numExts; ++i) {
+      const char* ext =
+          reinterpret_cast<const char*>(glGetStringi(GL_EXTENSIONS, i));
+      if (ext && std::strcmp(ext, "GL_EXT_texture_compression_s3tc") == 0) {
+        m_supportsS3tc = true;
+        break;
+      }
+    }
+    if (m_supportsS3tc) {
+      GLIDE_LOG(INFO, "GLES",
+                "GL_EXT_texture_compression_s3tc detected; enabling native "
+                "BC1/BC2/BC3 (DXT1/DXT3/DXT5) hardware texture upload.");
+    }
+  }
+
   // Presentation is now handled GPU-natively via presentation quad and
   // SwapBuffers. No SDL_Renderer or SDL_Texture is required on the window.
 
@@ -2179,6 +2200,7 @@ void OpenGLESBackend::DestroyGLContext() {
   m_msaaColorDirty[0] = m_msaaColorDirty[1] = false;
   m_singleSampleColorDirty[0] = m_singleSampleColorDirty[1] = false;
   m_supportsSampleMask = false;
+  m_supportsS3tc = false;
 
   // 2. Strict WGL / EGL / SDL teardown order BEFORE NativeSurfaceHost::Detach()
   if (m_useWgl) {

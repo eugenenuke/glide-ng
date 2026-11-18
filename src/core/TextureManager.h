@@ -32,6 +32,9 @@ struct VirtualTexture {
       swizzledMipLevels;  // Completely swizzled into 32-bit ARGB (0xAARRGGBB)
                           // per level
   std::vector<std::vector<uint8_t>>
+      rawCompressedMipLevels;  // Raw BC1/BC2/BC3 (DXT1..DXT5) blocks per level
+                               // for zero-CPU-decode hardware GPU upload
+  std::vector<std::vector<uint8_t>>
       raw8BitMipLevels;  // Stored for deferred P8 palettization
 
   // Staging vectors for YIQ/AYIQ and AP_88 formats (deferred swizzling)
@@ -196,6 +199,7 @@ class TextureManager {
                                             const VirtualTexture& tex);
   static void ReswizzleTexture_Locked(const TmuState& state,
                                       VirtualTexture& tex);
+  static void EnsureCompressedSwizzled_Locked(VirtualTexture& tex);
   void EnsureTextureReady_Locked(uint32_t tmu,
                                  std::shared_ptr<VirtualTexture>& texPtr,
                                  bool uploadToBackend);
