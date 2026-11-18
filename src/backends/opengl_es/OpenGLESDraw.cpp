@@ -12,6 +12,11 @@ namespace GlideWrapper {
 
 void OpenGLESBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z,
                                   uint32_t clearMask) {
+  ClearBufferExt(color, alpha, z, 0u, clearMask & ~0x4u);
+}
+
+void OpenGLESBackend::ClearBufferExt(uint32_t color, uint32_t alpha, float z,
+                                     uint8_t stencil, uint32_t clearMask) {
   std::lock_guard<std::mutex> lock(m_mutex);
   if (!m_initialized || !m_windowAttached || !EnsureContextCurrent()) return;
 
@@ -30,8 +35,9 @@ void OpenGLESBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z,
   float r = 0.0f, g = 0.0f, b = 0.0f, a = 1.0f;
   bool doColorClear = false;
   bool doDepthClear = false;
+  bool doStencilClear = false;
 
-  if ((clearMask & 0x1) && (m_colorMaskRgb || m_colorMaskAlpha)) {  // Color Clear
+  if ((clearMask & 0x1) && (GetColorWriteMask4() != 0)) {  // Color Clear
     a = ((alpha > 0) ? alpha : 255) / 255.0f;
     r = ((color >> 16) & 0xFF) / 255.0f;
     g = ((color >> 8) & 0xFF) / 255.0f;
@@ -50,6 +56,11 @@ void OpenGLESBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z,
     doDepthClear = true;
   }
 
+  if ((clearMask & 0x4) && m_stencilEnabled && m_stencilWriteMask != 0u) {
+    mask |= GL_STENCIL_BUFFER_BIT;
+    doStencilClear = true;
+  }
+
   if (mask == 0) return;
 
   // Check if VSA-100 grTBufferWriteMaskExt restricts this clear to a subset of
@@ -66,15 +77,15 @@ void OpenGLESBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z,
     if ((clearMask & 0x1) && m_lfbStaging.IsOverlayDirty(m_activeRenderBuffer)) {
       FlushLFBToGPU_Locked();
     }
-    DrawMaskedClearQuadGLES_Locked(r, g, b, a, z, doColorClear, doDepthClear,
-                                   effSampleMask);
+    DrawMaskedClearQuadGLES_Locked(r, g, b, a, z, stencil, doColorClear,
+                                   doDepthClear, doStencilClear, effSampleMask);
     return;
   }
 
   // 1. Handle any pending sparse LFB overlay before clearing, and defer
   // CPU-side full framebuffer clear lazily so pure 3D frames allocate 0 bytes.
   if (clearMask & 0x1) {
-    if (fullClip && m_colorMaskRgb && m_colorMaskAlpha) {
+    if (fullClip && IsFullColorMask()) {
       // Full unmasked color clear overwrites every pixel, so any pending
       // overlay is superseded.
       m_lfbStaging.ClearOverlay(m_activeRenderBuffer);
@@ -84,9 +95,9 @@ void OpenGLESBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z,
       FlushLFBToGPU_Locked();
     }
     if (fullClip) {
-      m_lfbStaging.ScheduleLazyClear(m_activeRenderBuffer, color, alpha,
-                                     m_pixelFormatOverride, m_colorMaskRgb,
-                                     m_colorMaskAlpha);
+      m_lfbStaging.ScheduleLazyClearMask(m_activeRenderBuffer, color, alpha,
+                                         m_pixelFormatOverride,
+                                         GetColorWriteMask4());
     }
   }
 
@@ -95,8 +106,7 @@ void OpenGLESBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z,
 
   // If this clear does NOT overwrite every color pixel + channel, synchronize
   // MSAA <-> 1x color first so untouched regions/channels remain intact.
-  if (m_msaaSamples > 1 &&
-      (!fullClip || !doColorClear || !m_colorMaskRgb || !m_colorMaskAlpha)) {
+  if (m_msaaSamples > 1 && (!fullClip || !doColorClear || !IsFullColorMask())) {
     if (useSingle && m_msaaColorDirty[slot]) {
       ResolveMsaaToSingle_Locked(slot);
     } else if (!useSingle && m_singleSampleColorDirty[slot]) {
@@ -122,6 +132,11 @@ void OpenGLESBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z,
     glClearDepthf(z);
   }
 
+  if (doStencilClear) {
+    glStencilMask(static_cast<GLuint>(m_stencilWriteMask));
+    glClearStencil(static_cast<GLint>(stencil));
+  }
+
   // Authentic 3dfx Glide grBufferClear clears ONLY within the active
   // grClipWindow rectangle (e.g., split-screen panes and divider stripes).
   ApplyScissorGLES_Locked();
@@ -129,12 +144,16 @@ void OpenGLESBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z,
 
   glClear(mask);
 
-  // Keep both 1x and MSAA depth buffers synchronized on unmasked depth clears
-  // so mid-frame GR_AA_MULTI_SAMPLE transitions see authentic cleared depth.
-  if (m_msaaSamples > 1 && doDepthClear && m_msaaFBOs[slot] != 0) {
+  // Keep both 1x and MSAA depth/stencil buffers synchronized on unmasked clears
+  // so mid-frame GR_AA_MULTI_SAMPLE transitions see authentic cleared state.
+  if (m_msaaSamples > 1 && (doDepthClear || doStencilClear) &&
+      m_msaaFBOs[slot] != 0) {
     const GLuint otherFbo = useSingle ? m_msaaFBOs[slot] : m_headlessFBOs[slot];
     glBindFramebuffer(GL_FRAMEBUFFER, otherFbo);
-    glClear(GL_DEPTH_BUFFER_BIT);
+    GLbitfield dsMask = 0;
+    if (doDepthClear) dsMask |= GL_DEPTH_BUFFER_BIT;
+    if (doStencilClear) dsMask |= GL_STENCIL_BUFFER_BIT;
+    glClear(dsMask);
   }
 
   if (m_msaaSamples > 1 && doColorClear) {
@@ -157,11 +176,10 @@ void OpenGLESBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z,
   InvalidateGlBindingCache();
 }
 
-void OpenGLESBackend::DrawMaskedClearQuadGLES_Locked(float r, float g, float b,
-                                                     float a, float z,
-                                                     bool doColorClear,
-                                                     bool doDepthClear,
-                                                     uint32_t sampleMask) {
+void OpenGLESBackend::DrawMaskedClearQuadGLES_Locked(
+    float r, float g, float b, float a, float z, uint8_t stencil,
+    bool doColorClear, bool doDepthClear, bool doStencilClear,
+    uint32_t sampleMask) {
   const uint32_t slot = GetActiveGpuSlot();
   if (m_msaaFBOs[slot] == 0 || m_geomProgram == 0) return;
 
@@ -209,10 +227,10 @@ void OpenGLESBackend::DrawMaskedClearQuadGLES_Locked(float r, float g, float b,
   glDisable(GL_CULL_FACE);
   glDisable(GL_BLEND);
 
-  const GLboolean maskRgb = (doColorClear && m_colorMaskRgb) ? GL_TRUE : GL_FALSE;
-  const GLboolean maskAlpha =
-      (doColorClear && m_colorMaskAlpha) ? GL_TRUE : GL_FALSE;
-  glColorMask(maskRgb, maskRgb, maskRgb, maskAlpha);
+  glColorMask((doColorClear && m_colorMaskR) ? GL_TRUE : GL_FALSE,
+              (doColorClear && m_colorMaskG) ? GL_TRUE : GL_FALSE,
+              (doColorClear && m_colorMaskB) ? GL_TRUE : GL_FALSE,
+              (doColorClear && m_colorMaskAlpha) ? GL_TRUE : GL_FALSE);
 
   if (doDepthClear) {
     glEnable(GL_DEPTH_TEST);
@@ -221,6 +239,15 @@ void OpenGLESBackend::DrawMaskedClearQuadGLES_Locked(float r, float g, float b,
   } else {
     glDisable(GL_DEPTH_TEST);
     glDepthMask(GL_FALSE);
+  }
+
+  if (doStencilClear) {
+    glEnable(GL_STENCIL_TEST);
+    glStencilFunc(GL_ALWAYS, static_cast<GLint>(stencil), 0xFFu);
+    glStencilOp(GL_REPLACE, GL_REPLACE, GL_REPLACE);
+    glStencilMask(static_cast<GLuint>(m_stencilWriteMask));
+  } else {
+    glDisable(GL_STENCIL_TEST);
   }
 
   if (m_supportsSampleMask) {
@@ -240,6 +267,10 @@ void OpenGLESBackend::DrawMaskedClearQuadGLES_Locked(float r, float g, float b,
   glUniform1i(m_uAlphaFuncLoc, 1);
   glUniform1i(m_uAlphaLocalLoc, 0);
   glUniform1i(m_uAlphaInvertLoc, 0);
+  if (m_uExtCombineLoc != -1) {
+    const GLuint zeroExt[6] = {0u, 0u, 0u, 0u, 0u, 0u};
+    glUniform1uiv(m_uExtCombineLoc, 6, zeroExt);
+  }
   const int zeroTex[2] = {0, 0};
   glUniform1iv(m_uTextureEnabledLoc, 2, zeroTex);
   glUniform1i(m_uChromakeyEnabledLoc, 0);
@@ -467,11 +498,63 @@ void OpenGLESBackend::SyncDepthState() {
   }
 }
 
+static GLenum MapCompareOpGLES(uint32_t op) {
+  switch (op) {
+    case 0: return GL_NEVER;
+    case 1: return GL_LESS;
+    case 2: return GL_EQUAL;
+    case 3: return GL_LEQUAL;
+    case 4: return GL_GREATER;
+    case 5: return GL_NOTEQUAL;
+    case 6: return GL_GEQUAL;
+    case 7: return GL_ALWAYS;
+    default: return GL_ALWAYS;
+  }
+}
+
+static GLenum MapStencilOpGLES(uint32_t op) {
+  switch (op) {
+    case 0: return GL_KEEP;
+    case 1: return GL_ZERO;
+    case 2: return GL_REPLACE;
+    case 3: return GL_INCR;
+    case 4: return GL_DECR;
+    case 5: return GL_INVERT;
+    case 6: return GL_INCR_WRAP;
+    case 7: return GL_DECR_WRAP;
+    default: return GL_KEEP;
+  }
+}
+
+void OpenGLESBackend::SyncStencilStateGLES_Locked() {
+  if (m_stencilEnabled) {
+    glEnable(GL_STENCIL_TEST);
+    glStencilFunc(MapCompareOpGLES(m_stencilCompareOp),
+                  static_cast<GLint>(m_stencilRef),
+                  static_cast<GLuint>(m_stencilReadMask));
+    glStencilMask(static_cast<GLuint>(m_stencilWriteMask));
+    glStencilOp(MapStencilOpGLES(m_stencilFailOp),
+                MapStencilOpGLES(m_stencilZFailOp),
+                MapStencilOpGLES(m_stencilZPassOp));
+  } else {
+    glDisable(GL_STENCIL_TEST);
+  }
+}
+
 #ifndef GL_SRC1_COLOR_EXT
 #define GL_SRC1_COLOR_EXT 0x88F9
 #endif
 #ifndef GL_SRC1_ALPHA_EXT
 #define GL_SRC1_ALPHA_EXT 0x8589
+#endif
+#ifndef GL_FUNC_ADD
+#define GL_FUNC_ADD 0x8006
+#endif
+#ifndef GL_FUNC_SUBTRACT
+#define GL_FUNC_SUBTRACT 0x800A
+#endif
+#ifndef GL_FUNC_REVERSE_SUBTRACT
+#define GL_FUNC_REVERSE_SUBTRACT 0x800B
 #endif
 
 static GLenum MapBlendFactorGLES(uint32_t factor, bool isDest, bool isAlpha) {
@@ -496,6 +579,12 @@ static GLenum MapBlendFactorGLES(uint32_t factor, bool isDest, bool isAlpha) {
                                                // / ONE_MINUS_DST_COLOR (src)
     case 7:
       return GL_ONE_MINUS_DST_ALPHA;  // GR_BLEND_ONE_MINUS_DST_ALPHA
+    case 8:
+      return isDest ? GL_DST_COLOR : GL_SRC_COLOR;  // GR_BLEND_SAME_COLOR_EXT
+    case 9:
+      return isDest
+                 ? GL_ONE_MINUS_DST_COLOR
+                 : GL_ONE_MINUS_SRC_COLOR;  // GR_BLEND_ONE_MINUS_SAME_COLOR_EXT
     case 15:
       return isDest
                  ? (isAlpha ? GL_SRC1_ALPHA_EXT : GL_SRC1_COLOR_EXT)
@@ -506,13 +595,27 @@ static GLenum MapBlendFactorGLES(uint32_t factor, bool isDest, bool isAlpha) {
   }
 }
 
+static GLenum MapBlendOpGLES(uint32_t op) {
+  switch (op) {
+    case 1:
+      return GL_FUNC_SUBTRACT;  // GR_BLEND_OP_SUB
+    case 2:
+      return GL_FUNC_REVERSE_SUBTRACT;  // GR_BLEND_OP_REVSUB
+    case 0:
+    default:
+      return GL_FUNC_ADD;  // GR_BLEND_OP_ADD
+  }
+}
+
 void OpenGLESBackend::ApplyBlendingGLES() {
-  if (m_rgbSrcBlend == 4 && m_rgbDstBlend == 0 && m_alphaSrcBlend == 4 &&
-      m_alphaDstBlend == 0) {  // GR_BLEND_ONE & GR_BLEND_ZERO (disabled)
+  if (m_rgbSrcBlend == 4 && m_rgbDstBlend == 0 && m_rgbBlendOp == 0 &&
+      m_alphaSrcBlend == 4 && m_alphaDstBlend == 0 &&
+      m_alphaBlendOp == 0) {  // GR_BLEND_ONE & GR_BLEND_ZERO & ADD (disabled)
     glDisable(GL_BLEND);
   } else {
     glEnable(GL_BLEND);
-    glBlendEquation(GL_FUNC_ADD);
+    glBlendEquationSeparate(MapBlendOpGLES(m_rgbBlendOp),
+                            MapBlendOpGLES(m_alphaBlendOp));
     glBlendFuncSeparate(MapBlendFactorGLES(m_rgbSrcBlend, false, false),
                         MapBlendFactorGLES(m_rgbDstBlend, true, false),
                         MapBlendFactorGLES(m_alphaSrcBlend, false, true),
@@ -521,9 +624,9 @@ void OpenGLESBackend::ApplyBlendingGLES() {
 }
 
 void OpenGLESBackend::ApplyColorMaskGLES() {
-  glColorMask(m_colorMaskRgb ? GL_TRUE : GL_FALSE,
-              m_colorMaskRgb ? GL_TRUE : GL_FALSE,
-              m_colorMaskRgb ? GL_TRUE : GL_FALSE,
+  glColorMask(m_colorMaskR ? GL_TRUE : GL_FALSE,
+              m_colorMaskG ? GL_TRUE : GL_FALSE,
+              m_colorMaskB ? GL_TRUE : GL_FALSE,
               m_colorMaskAlpha ? GL_TRUE : GL_FALSE);
 }
 
@@ -689,6 +792,7 @@ void OpenGLESBackend::FlushBatch(bool fromStateFlush) {
   if (m_glesDirtyMask != 0) {
     const uint32_t dirty = m_glesDirtyMask;
     if (dirty & kGlesDirtyDepth) SyncDepthState();
+    if (dirty & kGlesDirtyStencil) SyncStencilStateGLES_Locked();
     if (dirty & kGlesDirtyBlend) ApplyBlendingGLES();
     if (dirty & kGlesDirtyScissor) ApplyScissorGLES_Locked();
     if (dirty & kGlesDirtyCull) SyncCullStateGLES_Locked();
@@ -765,7 +869,7 @@ void OpenGLESBackend::FlushBatch(bool fromStateFlush) {
   uint32_t vertexCount = m_batchVertices.size();
   glDrawArrays(mode, firstVertex, vertexCount);
 
-  if (m_msaaSamples > 1 && (m_colorMaskRgb || m_colorMaskAlpha)) {
+  if (m_msaaSamples > 1 && GetColorWriteMask4() != 0) {
     if (useSingle) {
       m_singleSampleColorDirty[slot] = true;
       m_msaaColorDirty[slot] = false;

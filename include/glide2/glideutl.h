@@ -174,6 +174,49 @@ gu3dfGetInfo( const char *filename, Gu3dfInfo *info );
 FX_ENTRY FxBool FX_CALL
 gu3dfLoad( const char *filename, Gu3dfInfo *data );
 
+/*
+** Legacy Glide 2.x multipass, framebuffer region, and movie utility routines
+*/
+#define GLIDE_NUM_VIRTUAL_TMU 2
+
+typedef FxU32 GrMPTextureCombineFnc_t;
+#define GR_MPTEXTURECOMBINE_ADD        0x0
+#define GR_MPTEXTURECOMBINE_MULTIPLY   0x1
+#define GR_MPTEXTURECOMBINE_DETAIL0    0x2
+#define GR_MPTEXTURECOMBINE_DETAIL1    0x3
+#define GR_MPTEXTURECOMBINE_TRILINEAR0 0x4
+#define GR_MPTEXTURECOMBINE_TRILINEAR1 0x5
+#define GR_MPTEXTURECOMBINE_SUBTRACT   0x6
+
+FX_ENTRY void FX_CALL
+guMPInit( void );
+
+FX_ENTRY void FX_CALL
+guMPTexCombineFunction( GrMPTextureCombineFnc_t tc_fnc );
+
+FX_ENTRY void FX_CALL
+guMPTexSource( GrChipID_t virtual_tmu, GrMipMapId_t mmid );
+
+FX_ENTRY void FX_CALL
+guMPDrawTriangle( const GrVertex *a, const GrVertex *b, const GrVertex *c );
+
+FX_ENTRY void FX_CALL
+guFbReadRegion( const int src_x, const int src_y, const int w, const int h,
+                const void *dst, const int strideInBytes );
+
+FX_ENTRY void FX_CALL
+guFbWriteRegion( const int dst_x, const int dst_y, const int w, const int h,
+                 const void *src, const int strideInBytes );
+
+FX_ENTRY void FX_CALL
+guMovieSetName( const char *name );
+
+FX_ENTRY void FX_CALL
+guMovieStart( void );
+
+FX_ENTRY void FX_CALL
+guMovieStop( void );
+
 #endif /* FX_GLIDE_NO_FUNC_PROTO */
 
 #ifdef __cplusplus

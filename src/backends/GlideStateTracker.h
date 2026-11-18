@@ -54,7 +54,19 @@ class GlideStateTracker : public IGraphicsBackend {
   uint32_t GetClipMaxX() const { return m_clipMaxX; }
   uint32_t GetClipMaxY() const { return m_clipMaxY; }
   bool GetColorMaskRgb() const { return m_colorMaskRgb; }
+  bool GetColorMaskR() const { return m_colorMaskR; }
+  bool GetColorMaskG() const { return m_colorMaskG; }
+  bool GetColorMaskB() const { return m_colorMaskB; }
   bool GetColorMaskAlpha() const { return m_colorMaskAlpha; }
+  uint8_t GetColorWriteMask4() const {
+    return static_cast<uint8_t>((m_colorMaskR ? 1u : 0u) |
+                                (m_colorMaskG ? 2u : 0u) |
+                                (m_colorMaskB ? 4u : 0u) |
+                                (m_colorMaskAlpha ? 8u : 0u));
+  }
+  bool IsFullColorMask() const {
+    return m_colorMaskR && m_colorMaskG && m_colorMaskB && m_colorMaskAlpha;
+  }
   bool GetTexCombinerRgbInvert(uint32_t tmu) const {
     return tmu < 2 ? m_texCombinerRgbInvert[tmu] : false;
   }
@@ -105,9 +117,12 @@ class GlideStateTracker : public IGraphicsBackend {
                      uint32_t maxY) override;
   void SetSstOrigin(uint32_t origin) override;
   void SetColorMask(bool rgb, bool alpha) override;
+  void SetColorMaskExt(bool r, bool g, bool b, bool a) override;
   void SetGamma(float gamma) override;
   void LoadGammaTable(uint32_t nentries, const uint32_t* rTable,
                       const uint32_t* gTable, const uint32_t* bTable) override;
+  void GetGammaTable(uint32_t nentries, uint32_t* rTable, uint32_t* gTable,
+                     uint32_t* bTable) const override;
 
   void SetFogMode(uint32_t mode) override;
   void SetFogColor(uint32_t color) override;
@@ -119,6 +134,8 @@ class GlideStateTracker : public IGraphicsBackend {
   void UploadTexture(uint32_t tmu, uint32_t startAddress,
                      const struct VirtualTexture& tex) override;
   void SetTexLodBias(uint32_t tmu, float bias) override;
+  void SetTexDetailControl(uint32_t tmu, int32_t lodBias, uint8_t detailScale,
+                           float detailMax) override;
   void SetTexMipMapMode(uint32_t tmu, uint32_t mode, bool lodBlend) override;
   void UploadTexturePartial(uint32_t tmu, uint32_t startAddress,
                             const struct VirtualTexture& tex, uint32_t lodLevel,
@@ -144,6 +161,20 @@ class GlideStateTracker : public IGraphicsBackend {
   void SetAAState(bool enabled) override;
   void SetAAMultiSample(bool enabled) override;
   void SetTBufferWriteMask(uint32_t mask) override;
+  void SetStencilMode(bool enabled) override;
+  void SetStencilFunc(uint32_t compareOp, uint8_t refVal,
+                      uint8_t readMask) override;
+  void SetStencilMask(uint8_t writeMask) override;
+  void SetStencilOp(uint32_t failOp, uint32_t zFailOp,
+                    uint32_t zPassOp) override;
+  void SetBlendStateExt(uint32_t rgbSrcFactor, uint32_t rgbDstFactor,
+                        uint32_t rgbOp, uint32_t alphaSrcFactor,
+                        uint32_t alphaDstFactor, uint32_t alphaOp) override;
+  void SetColorCombineExt(uint32_t packed) override;
+  void SetAlphaCombineExt(uint32_t packed) override;
+  void SetTexColorCombineExt(uint32_t tmu, uint32_t packed) override;
+  void SetTexAlphaCombineExt(uint32_t tmu, uint32_t packed) override;
+  void SetTmuConstantColor(uint32_t tmu, uint32_t color) override;
 
  protected:
   mutable std::mutex m_mutex;
@@ -198,6 +229,7 @@ class GlideStateTracker : public IGraphicsBackend {
   }
   void SetSstOrigin_Locked(uint32_t origin);
   void SetColorMask_Locked(bool rgb, bool alpha);
+  void SetColorMaskExt_Locked(bool r, bool g, bool b, bool a);
   void SetGamma_Locked(float gamma);
   void LoadGammaTable_Locked(uint32_t nentries, const uint32_t* rTable,
                              const uint32_t* gTable, const uint32_t* bTable);
@@ -208,6 +240,8 @@ class GlideStateTracker : public IGraphicsBackend {
                           uint32_t clampT, uint32_t minFilter,
                           uint32_t magFilter);
   void SetTexLodBias_Locked(uint32_t tmu, float bias);
+  void SetTexDetailControl_Locked(uint32_t tmu, int32_t lodBias,
+                                  uint8_t detailScale, float detailMax);
   void SetTexMipMapMode_Locked(uint32_t tmu, uint32_t mode, bool lodBlend);
   void SetCombinerMode_Locked(uint32_t colorFunc, uint32_t colorFactor,
                               uint32_t colorLocal, uint32_t colorOther,
@@ -229,6 +263,12 @@ class GlideStateTracker : public IGraphicsBackend {
   void SetAAState_Locked(bool enabled);
   void SetAAMultiSample_Locked(bool enabled);
   void SetTBufferWriteMask_Locked(uint32_t mask);
+  void SetStencilMode_Locked(bool enabled);
+  void SetStencilFunc_Locked(uint32_t compareOp, uint8_t refVal,
+                             uint8_t readMask);
+  void SetStencilMask_Locked(uint8_t writeMask);
+  void SetStencilOp_Locked(uint32_t failOp, uint32_t zFailOp,
+                           uint32_t zPassOp);
   bool m_initialized{false};
   bool m_windowAttached{false};
   bool m_headlessMode{false};
@@ -253,8 +293,10 @@ class GlideStateTracker : public IGraphicsBackend {
 
   uint32_t m_rgbSrcBlend{4};  // 4 = ONE (GR_BLEND_ONE)
   uint32_t m_rgbDstBlend{0};  // 0 = ZERO (GR_BLEND_ZERO)
+  uint32_t m_rgbBlendOp{0};   // 0 = ADD, 1 = SUB, 2 = REVSUB
   uint32_t m_alphaSrcBlend{4};
   uint32_t m_alphaDstBlend{0};
+  uint32_t m_alphaBlendOp{0};
 
   uint32_t m_alphaTestOp{7};  // 7 = ALWAYS (GR_CMP_ALWAYS)
   uint32_t m_alphaTestRefVal{0};
@@ -272,10 +314,25 @@ class GlideStateTracker : public IGraphicsBackend {
   uint8_t m_fogTable[64] = {0};
 
   bool m_colorMaskRgb{true};
+  bool m_colorMaskR{true};
+  bool m_colorMaskG{true};
+  bool m_colorMaskB{true};
   bool m_colorMaskAlpha{true};
 
   // Virtual TMU & Sampler States
   float m_texLodBias[2] = {0.0f, 0.0f};
+  int32_t m_texDetailBias[2] = {0, 0};
+  uint8_t m_texDetailScale[2] = {0, 0};
+  float m_texDetailMax[2] = {0.0f, 0.0f};
+  uint32_t PackTexDetail_Locked(uint32_t tmu) const {
+    if (tmu >= 2) return 0u;
+    const int32_t b = std::clamp(m_texDetailBias[tmu], -32, 31);
+    const uint32_t s = static_cast<uint32_t>(std::min<uint8_t>(m_texDetailScale[tmu], 7u));
+    const uint32_t m = static_cast<uint32_t>(
+        std::clamp(m_texDetailMax[tmu], 0.0f, 1.0f) * 255.0f + 0.5f);
+    return (static_cast<uint32_t>(b + 32) & 0x3Fu) | ((s & 0x7u) << 8) |
+           ((m & 0xFFu) << 16);
+  }
   uint32_t m_texMipMapMode[2] = {0, 0};
   bool m_texLodBlend[2] = {false, false};
   uint32_t m_boundTexAddress[2] = {0xFFFFFFFF, 0xFFFFFFFF};
@@ -326,6 +383,32 @@ class GlideStateTracker : public IGraphicsBackend {
   uint32_t m_requestedMsaaSamples{0};
   bool m_aaMultiSample{true};
   uint32_t m_tbufferWriteMask{0xFFFFFFFFu};
+
+  // VSA-100 PIXEXT hardware stencil state
+  bool m_stencilEnabled{false};
+  uint32_t m_stencilCompareOp{7u};  // GR_CMP_ALWAYS
+  uint8_t m_stencilRef{0u};
+  uint8_t m_stencilReadMask{0xFFu};
+  uint8_t m_stencilWriteMask{0xFFu};
+  uint32_t m_stencilFailOp{0u};     // GR_STENCILOP_KEEP
+  uint32_t m_stencilZFailOp{0u};    // GR_STENCILOP_KEEP
+  uint32_t m_stencilZPassOp{0u};    // GR_STENCILOP_KEEP
+
+  // VSA-100 COMBINE extension state (bit 31 = active; 0 = legacy mode)
+  uint32_t m_extColorCombine{0u};
+  uint32_t m_extAlphaCombine{0u};
+  uint32_t m_extTexColorCombine[2]{0u, 0u};
+  uint32_t m_extTexAlphaCombine[2]{0u, 0u};
+  uint32_t m_tmuConstantColor[2]{0xFFFFFFFFu, 0xFFFFFFFFu};
+
+  void SetBlendStateExt_Locked(uint32_t rgbSrcFactor, uint32_t rgbDstFactor,
+                               uint32_t rgbOp, uint32_t alphaSrcFactor,
+                               uint32_t alphaDstFactor, uint32_t alphaOp);
+  void SetColorCombineExt_Locked(uint32_t packed);
+  void SetAlphaCombineExt_Locked(uint32_t packed);
+  void SetTexColorCombineExt_Locked(uint32_t tmu, uint32_t packed);
+  void SetTexAlphaCombineExt_Locked(uint32_t tmu, uint32_t packed);
+  void SetTmuConstantColor_Locked(uint32_t tmu, uint32_t color);
 };
 
 }  // namespace GlideWrapper

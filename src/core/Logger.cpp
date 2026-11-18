@@ -407,6 +407,7 @@ void Logger::LogExecutionSummary(const WrapperConfig& config) {
         case CardModel::VoodooGraphics: ss << "Voodoo Graphics (SST-1)"; break;
         case CardModel::VoodooRush:     ss << "Voodoo Rush (SST-96)"; break;
         case CardModel::Voodoo2:        ss << "Voodoo2 (CVG)"; break;
+        case CardModel::VoodooBanshee:  ss << "Voodoo Banshee (H3)"; break;
         case CardModel::Voodoo3:        ss << "Voodoo3 (H3)"; break;
         case CardModel::Voodoo4:        ss << "Voodoo4 (VSA-100)"; break;
         case CardModel::Voodoo5:        ss << "Voodoo5 (H5)"; break;
@@ -480,17 +481,14 @@ void Logger::LogExecutionSummary(const WrapperConfig& config) {
     if (config.backend == "opengl_es") backendPretty = "OpenGL ES 3.2 GPU Port";
     else if (config.backend == "software") backendPretty = "Host CPU Software Reference";
 
-    const char* apiBaseStr = "2.43";
-    switch (config.apiVersion) {
-        case ApiVersion::GLIDE_2_1:  apiBaseStr = "2.1"; break;
-        case ApiVersion::GLIDE_2_40: apiBaseStr = "2.40"; break;
-        case ApiVersion::GLIDE_2_42: apiBaseStr = "2.42"; break;
-        case ApiVersion::GLIDE_2_43: apiBaseStr = "2.43"; break;
-        case ApiVersion::GLIDE_2_61: apiBaseStr = "2.61"; break;
-    }
+    const char* apiBaseStr = (config.activeFrontendApi == "Glide 3.x")
+                                 ? FormatApiVersionString(config.glide3ApiVersion)
+                                 : FormatApiVersionString(config.apiVersion);
 
     ss << "\n  Voodoo2 SLI Mode     : " << (config.enableSli ? "ENABLED" : "DISABLED")
        << "\n  Reported API Base    : " << apiBaseStr
+       << " (2.x=" << FormatApiVersionString(config.apiVersion)
+       << ", 3.x=" << FormatApiVersionString(config.glide3ApiVersion) << ")"
        << "\n  Active Emulation     : " << backendPretty;
 
     if (!config.settingSources.empty()) {
@@ -516,6 +514,13 @@ void Logger::LogExecutionSummary(const WrapperConfig& config) {
 
     if (!config.invalidConfigValues.empty()) {
         for (const auto& msg : config.invalidConfigValues) {
+            Log(LogLevel::WARN, "Config", msg);
+            std::fprintf(stderr, "[glide-ng] WARN: %s\n", msg.c_str());
+        }
+    }
+
+    if (!config.compatibilityWarnings.empty()) {
+        for (const auto& msg : config.compatibilityWarnings) {
             Log(LogLevel::WARN, "Config", msg);
             std::fprintf(stderr, "[glide-ng] WARN: %s\n", msg.c_str());
         }

@@ -28,6 +28,7 @@
   X(PFNGLBINDSAMPLERPROC, glBindSampler)                               \
   X(PFNGLBINDVERTEXARRAYPROC, glBindVertexArray)                       \
   X(PFNGLBLENDEQUATIONPROC, glBlendEquation)                           \
+  X(PFNGLBLENDEQUATIONSEPARATEPROC, glBlendEquationSeparate)           \
   X(PFNGLBLENDFUNCSEPARATEPROC, glBlendFuncSeparate)                   \
   X(PFNGLBLITFRAMEBUFFERPROC, glBlitFramebuffer)                       \
   X(PFNGLBUFFERDATAPROC, glBufferData)                                 \
@@ -97,6 +98,7 @@ bool LoadCoreFunctions();
 #define glBindSampler             ::GlideWrapper::Win32Gl::pfn_glBindSampler
 #define glBindVertexArray         ::GlideWrapper::Win32Gl::pfn_glBindVertexArray
 #define glBlendEquation           ::GlideWrapper::Win32Gl::pfn_glBlendEquation
+#define glBlendEquationSeparate   ::GlideWrapper::Win32Gl::pfn_glBlendEquationSeparate
 #define glBlendFuncSeparate       ::GlideWrapper::Win32Gl::pfn_glBlendFuncSeparate
 #define glBlitFramebuffer         ::GlideWrapper::Win32Gl::pfn_glBlitFramebuffer
 #define glBufferData              ::GlideWrapper::Win32Gl::pfn_glBufferData

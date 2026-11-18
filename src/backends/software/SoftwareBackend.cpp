@@ -1064,7 +1064,7 @@ bool SoftwareBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
             << ", res=" << width << "x" << height << ")\r\n";
   std::cout << "Info: Host Software Adapter: pure-software reference "
                "rasterizer (glide-ng Software Reference Core)\r\n";
-  std::cout << "Info: Pixel Format RGBA8888 D32S0 nAux 0 nSamples "
+  std::cout << "Info: Pixel Format RGBA8888 D32S8 nAux 0 nSamples "
             << samplesVal << " " << samplesVal << "\r\n";
   std::cout << "Info: Drawable Size: " << width << "x" << height << "\r\n"
             << std::flush;
@@ -1082,6 +1082,10 @@ bool SoftwareBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
   size_t paddedDepthSize = (rawDepthSize + 63) & ~63;
   size_t allocatedDepthSize = paddedDepthSize + 64;
   m_headlessDepthBuffer.resize(allocatedDepthSize / sizeof(float), 0.0f);
+  const size_t rawStencilSize =
+      static_cast<size_t>(m_headlessWidth) * m_headlessHeight;
+  m_headlessStencilBuffer.assign(((rawStencilSize + 63u) & ~size_t(63)) + 64u,
+                                 0u);
   SetClipWindow_Locked(0, 0, width, height);
   InitTileGrid();
 
@@ -1698,8 +1702,10 @@ void SoftwareBackend::ResolveActiveState() {
   state.stipplePattern = m_stipplePattern;
   state.rgbSrcBlend = m_rgbSrcBlend;
   state.rgbDstBlend = m_rgbDstBlend;
+  state.rgbBlendOp = m_rgbBlendOp;
   state.alphaSrcBlend = m_alphaSrcBlend;
   state.alphaDstBlend = m_alphaDstBlend;
+  state.alphaBlendOp = m_alphaBlendOp;
   state.alphaTestOp = m_alphaTestOp;
   state.alphaTestRefVal = m_alphaTestRefVal;
   state.clipMinX = m_clipMinX;
@@ -1711,10 +1717,21 @@ void SoftwareBackend::ResolveActiveState() {
   state.fogColor = m_fogColor;
   std::memcpy(state.fogTable, m_fogTable, 64);
   state.colorMaskRgb = m_colorMaskRgb;
+  state.colorMaskR = m_colorMaskR;
+  state.colorMaskG = m_colorMaskG;
+  state.colorMaskB = m_colorMaskB;
   state.colorMaskAlpha = m_colorMaskAlpha;
   state.aaEnabled = m_aaEnabled;
   state.aaMultiSample = m_aaMultiSample;
   state.tbufferWriteMask = static_cast<uint8_t>(m_tbufferWriteMask & 0x0Fu);
+  state.stencilEnabled = m_stencilEnabled;
+  state.stencilCompareOp = m_stencilCompareOp;
+  state.stencilRef = m_stencilRef;
+  state.stencilReadMask = m_stencilReadMask;
+  state.stencilWriteMask = m_stencilWriteMask;
+  state.stencilFailOp = m_stencilFailOp;
+  state.stencilZFailOp = m_stencilZFailOp;
+  state.stencilZPassOp = m_stencilZPassOp;
 
   state.boundTexAddress[0] = m_boundTexAddress[0];
   state.boundTexAddress[1] = m_boundTexAddress[1];
@@ -1742,6 +1759,12 @@ void SoftwareBackend::ResolveActiveState() {
   state.texLodBlend[1] = m_texLodBlend[1];
   state.texLodBias[0] = m_texLodBias[0];
   state.texLodBias[1] = m_texLodBias[1];
+  state.texDetailBias[0] = m_texDetailBias[0];
+  state.texDetailBias[1] = m_texDetailBias[1];
+  state.texDetailScale[0] = m_texDetailScale[0];
+  state.texDetailScale[1] = m_texDetailScale[1];
+  state.texDetailMax[0] = m_texDetailMax[0];
+  state.texDetailMax[1] = m_texDetailMax[1];
 
   state.colorCombinerFunc = m_colorCombinerFunc;
   state.colorCombinerFactor = m_colorCombinerFactor;
@@ -1766,6 +1789,14 @@ void SoftwareBackend::ResolveActiveState() {
   state.texCombinerRgbInvert[1] = m_texCombinerRgbInvert[1];
   state.texCombinerAlphaInvert[0] = m_texCombinerAlphaInvert[0];
   state.texCombinerAlphaInvert[1] = m_texCombinerAlphaInvert[1];
+  state.extColorCombine = m_extColorCombine;
+  state.extAlphaCombine = m_extAlphaCombine;
+  state.extTexColorCombine[0] = m_extTexColorCombine[0];
+  state.extTexColorCombine[1] = m_extTexColorCombine[1];
+  state.extTexAlphaCombine[0] = m_extTexAlphaCombine[0];
+  state.extTexAlphaCombine[1] = m_extTexAlphaCombine[1];
+  state.tmuConstantColor[0] = m_tmuConstantColor[0];
+  state.tmuConstantColor[1] = m_tmuConstantColor[1];
 
   state.constantColor = m_constantColor;
   state.stwHintMask = m_stwHintMask;

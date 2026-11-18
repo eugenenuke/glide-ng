@@ -254,7 +254,7 @@ int main(int argc, char* argv[]) {
   FxI32 numTmus = 0;
   FxI32 maxTexSize = 0;
   FxI32 depthBits = 0;
-  FxI32 colorBits = 0;
+  FxI32 colorBits[4] = {0, 0, 0, 0};
   FxI32 wDepthRange[2] = {-1, -1};
   FxI32 zDepthRange[2] = {-1, -1};
 
@@ -263,7 +263,7 @@ int main(int argc, char* argv[]) {
   grGet(GR_NUM_TMU, 4, &numTmus);
   grGet(GR_MAX_TEXTURE_SIZE, 4, &maxTexSize);
   grGet(GR_BITS_DEPTH, 4, &depthBits);
-  grGet(GR_BITS_RGBA, 4, &colorBits);
+  grGet(GR_BITS_RGBA, sizeof(colorBits), colorBits);
   grGet(GR_WDEPTH_MIN_MAX, 8, wDepthRange);
   grGet(GR_ZDEPTH_MIN_MAX, 8, zDepthRange);
 
@@ -274,7 +274,9 @@ int main(int argc, char* argv[]) {
   Tools::SafePrintf("  grGet(GR_NUM_TMU)             : %d\n", numTmus);
   Tools::SafePrintf("  grGet(GR_MAX_TEXTURE_SIZE)    : %d\n", maxTexSize);
   Tools::SafePrintf("  grGet(GR_BITS_DEPTH)          : %d-bit\n", depthBits);
-  Tools::SafePrintf("  grGet(GR_BITS_RGBA)           : %d-bit\n", colorBits);
+  Tools::SafePrintf("  grGet(GR_BITS_RGBA)           : %d-%d-%d-%d (%d-bit)\n",
+              colorBits[0], colorBits[1], colorBits[2], colorBits[3],
+              colorBits[0] + colorBits[1] + colorBits[2] + colorBits[3]);
   Tools::SafePrintf("  grGet(GR_WDEPTH_MIN_MAX)      : [%d, %d]\n", wDepthRange[0],
               wDepthRange[1]);
   Tools::SafePrintf("  grGet(GR_ZDEPTH_MIN_MAX)      : [%d, %d]\n", zDepthRange[0],

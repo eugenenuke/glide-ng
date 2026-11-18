@@ -65,6 +65,166 @@ uint32_t s_stippleMode = 0;
 uint32_t s_stipplePattern = 0xFFFFFFFF;
 bool s_windowOpen = false;
 
+// Legacy / extended Glide 3.x state
+GrErrorCallbackFnc_t s_errorCallback = nullptr;
+FxU32 s_lfbConstantDepth = 0;
+bool s_lfbWriteColorSwizzle = false;
+bool s_lfbWriteColorSwizzleSwap = false;
+bool s_alphaControlsITRGBLighting = false;
+GrPixelFormat_t s_activePixelFormat = GR_PIXFMT_RGB_565;
+FxI32 s_numPendingBuffers = 2;
+uint32_t s_pointsDrawn = 0;
+uint32_t s_linesDrawn = 0;
+
+// VSA-100 / H3 TEXTUREBUFFER dynamic render-to-texture state.
+struct TextureBufferState {
+  bool active{false};
+  bool configured{false};
+  uint32_t tmu{0};
+  uint32_t startAddress{0};
+  int32_t thisLodG2{0};
+  int32_t largeLodG2{0};
+  uint32_t aspectG2{3};
+  uint32_t format{0};
+  uint32_t width{0};
+  uint32_t height{0};
+  uint32_t auxTmu{0};
+  uint32_t auxAddress{0};
+  uint32_t activeAuxBuffer{GR_BUFFER_AUXBUFFER};
+  std::vector<uint32_t> savedBackbuffer;
+  uint32_t savedW{0};
+  uint32_t savedH{0};
+  uint32_t savedClipMinX{0};
+  uint32_t savedClipMinY{0};
+  uint32_t savedClipMaxX{640};
+  uint32_t savedClipMaxY{480};
+  bool savedAaMultiSample{true};
+
+  void Reset() { *this = TextureBufferState{}; }
+};
+TextureBufferState s_texBuf;
+
+void NormalizeLfbPixelsToCanonicalArgb(std::vector<uint32_t>& pixels) {
+  if (s_state.colorFormat != GR_COLORFORMAT_ABGR) return;
+  for (uint32_t& p : pixels) {
+    p = (p & 0xFF00FF00u) | ((p & 0xFFu) << 16) | ((p >> 16) & 0xFFu);
+  }
+}
+
+void ApplyTexBufClipWindow() {
+  if (!s_texBuf.active || !s_texBuf.configured) return;
+  auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
+  if (!backend) return;
+  const uint32_t clipW = std::min(s_texBuf.width, backend->GetGuestWidth());
+  const uint32_t clipH = std::min(s_texBuf.height, backend->GetGuestHeight());
+  EntryCommon::SetClipWindow(s_state, 0u, 0u, clipW, clipH);
+}
+
+void CommitActiveTextureBuffer() {
+  if (!s_texBuf.active || !s_texBuf.configured || s_texBuf.width == 0 ||
+      s_texBuf.height == 0) {
+    return;
+  }
+  auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
+  if (!backend) return;
+
+  EntryCommon::FlushActiveLfbWriteLock(s_state);
+  const uint32_t screenW = backend->GetGuestWidth();
+  const uint32_t screenH = backend->GetGuestHeight();
+  const uint32_t readW = std::min(s_texBuf.width, screenW);
+  const uint32_t readH = std::min(s_texBuf.height, screenH);
+  if (readW == 0 || readH == 0) return;
+
+  const uint32_t srcY =
+      (s_sstOrigin == GR_ORIGIN_LOWER_LEFT) ? (screenH - readH) : 0u;
+  std::vector<uint32_t> readPixels(static_cast<size_t>(readW) * readH, 0u);
+  if (!backend->ReadLFB(GR_BUFFER_BACKBUFFER, 0u, srcY, readW, readH,
+                        readW * 4u, readPixels.data())) {
+    return;
+  }
+  NormalizeLfbPixelsToCanonicalArgb(readPixels);
+
+  std::vector<uint32_t> canonical;
+  const std::vector<uint32_t>* commitPixels = &readPixels;
+  if (readW != s_texBuf.width || readH != s_texBuf.height) {
+    canonical.assign(static_cast<size_t>(s_texBuf.width) * s_texBuf.height, 0u);
+    for (uint32_t y = 0; y < readH; ++y) {
+      std::memcpy(canonical.data() + static_cast<size_t>(y) * s_texBuf.width,
+                  readPixels.data() + static_cast<size_t>(y) * readW,
+                  static_cast<size_t>(readW) * sizeof(uint32_t));
+    }
+    commitPixels = &canonical;
+  }
+
+  GlideWrapper::TextureManager::GetInstance().CommitRenderedTexture(
+      s_texBuf.tmu, s_texBuf.startAddress, s_texBuf.thisLodG2,
+      s_texBuf.largeLodG2, s_texBuf.aspectG2, s_texBuf.format, *commitPixels);
+}
+
+void EnterTextureBufferMode() {
+  if (s_texBuf.active) return;
+  EntryCommon::FlushActiveLfbWriteLock(s_state);
+  s_texBuf.savedClipMinX = s_state.clipMinX;
+  s_texBuf.savedClipMinY = s_state.clipMinY;
+  s_texBuf.savedClipMaxX = s_state.clipMaxX;
+  s_texBuf.savedClipMaxY = s_state.clipMaxY;
+  s_texBuf.savedAaMultiSample = s_aaMultiSample;
+
+  if (auto* backend =
+          GlideWrapper::BackendManager::GetInstance().GetBackend()) {
+    const uint32_t w = backend->GetGuestWidth();
+    const uint32_t h = backend->GetGuestHeight();
+    if (w > 0 && h > 0) {
+      s_texBuf.savedBackbuffer.assign(static_cast<size_t>(w) * h, 0u);
+      s_texBuf.savedW = w;
+      s_texBuf.savedH = h;
+      if (backend->ReadLFB(GR_BUFFER_BACKBUFFER, 0u, 0u, w, h, w * 4u,
+                           s_texBuf.savedBackbuffer.data())) {
+        NormalizeLfbPixelsToCanonicalArgb(s_texBuf.savedBackbuffer);
+      } else {
+        s_texBuf.savedBackbuffer.clear();
+        s_texBuf.savedW = 0;
+        s_texBuf.savedH = 0;
+      }
+    }
+    backend->SetAAMultiSample(false);
+    backend->SetRenderBuffer(GR_BUFFER_BACKBUFFER);
+  }
+  s_texBuf.active = true;
+  ApplyTexBufClipWindow();
+}
+
+void ExitTextureBufferMode(GrBuffer_t targetBuffer) {
+  if (!s_texBuf.active) return;
+  CommitActiveTextureBuffer();
+  s_texBuf.active = false;
+
+  if (auto* backend =
+          GlideWrapper::BackendManager::GetInstance().GetBackend()) {
+    if (!s_texBuf.savedBackbuffer.empty() && s_texBuf.savedW > 0 &&
+        s_texBuf.savedH > 0) {
+      backend->WriteLFB(GR_BUFFER_BACKBUFFER, 0u, 0u, s_texBuf.savedW,
+                        s_texBuf.savedH,
+                        static_cast<int32_t>(s_texBuf.savedW * 4u), 0x100u,
+                        s_texBuf.savedBackbuffer.data());
+    }
+    backend->SetAAMultiSample(s_texBuf.savedAaMultiSample);
+  }
+  s_texBuf.savedBackbuffer.clear();
+  s_texBuf.savedW = 0;
+  s_texBuf.savedH = 0;
+  EntryCommon::SetClipWindow(s_state, s_texBuf.savedClipMinX,
+                             s_texBuf.savedClipMinY, s_texBuf.savedClipMaxX,
+                             s_texBuf.savedClipMaxY);
+  EntryCommon::SetRenderBuffer(targetBuffer);
+}
+
+inline GrBuffer_t ResolveLfbTargetBuffer(GrBuffer_t buf) {
+  return (buf == GR_BUFFER_TEXTUREBUFFER_EXT)
+             ? static_cast<GrBuffer_t>(GR_BUFFER_BACKBUFFER)
+             : buf;
+}
+
 inline void TransformVertexIfNecessary(GlideWrapper::ModernVertex& mv) {
   if (s_coordSpace == 1) {  // GR_CLIP_COORDS
     const bool depthActive = (s_state.depthMode != 0);
@@ -97,6 +257,16 @@ void ResetFrontendState() {
   g_inSplash = false;
   s_stippleMode = 0;
   s_stipplePattern = 0xFFFFFFFF;
+  s_errorCallback = nullptr;
+  s_lfbConstantDepth = 0;
+  s_lfbWriteColorSwizzle = false;
+  s_lfbWriteColorSwizzleSwap = false;
+  s_alphaControlsITRGBLighting = false;
+  s_activePixelFormat = GR_PIXFMT_RGB_565;
+  s_numPendingBuffers = 2;
+  s_pointsDrawn = 0;
+  s_linesDrawn = 0;
+  s_texBuf.Reset();
 }
 }  // namespace
 
@@ -175,6 +345,31 @@ struct GlideWrapperState {
   uint32_t hasTbufferState;
   int aaMultiSample;
   uint32_t tbufferWriteMask;
+  uint32_t hasColorMaskExt;
+  uint8_t colorMaskR;
+  uint8_t colorMaskG;
+  uint8_t colorMaskB;
+  int32_t texDetailBias[2];
+  uint8_t texDetailScale[2];
+  float texDetailMax[2];
+  uint32_t hasStencilState;
+  uint8_t stencilEnabled;
+  uint8_t stencilRef;
+  uint8_t stencilReadMask;
+  uint8_t stencilWriteMask;
+  uint8_t lfbConstantStencil;
+  uint32_t stencilCompareOp;
+  uint32_t stencilFailOp;
+  uint32_t stencilZFailOp;
+  uint32_t stencilZPassOp;
+  uint32_t hasCombineExtState;
+  uint32_t rgbBlendOp;
+  uint32_t alphaBlendOp;
+  uint32_t extColorCombine;
+  uint32_t extAlphaCombine;
+  uint32_t extTexColorCombine[2];
+  uint32_t extTexAlphaCombine[2];
+  uint32_t tmuConstantColor[2];
 };
 
 static_assert(sizeof(GlideWrapperState) <= 1024,
@@ -218,6 +413,7 @@ static GrContext_t OpenWindowGlide3(AnyPtr hWnd,
                                     GrScreenRefresh_t refresh,
                                     GrColorFormat_t format,
                                     GrOriginLocation_t origin,
+                                    GrPixelFormat_t pixelFormat,
                                     uint32_t requestedSamples,
                                     int nColBuffers, int nAuxBuffers) {
   EnsureEngineInitialized();
@@ -257,6 +453,8 @@ static GrContext_t OpenWindowGlide3(AnyPtr hWnd,
   s_shamelessPlug = false;
   s_aaMultiSample = true;
   s_tbufferWriteMask = 0xFFFFFFFFu;
+  s_activePixelFormat = pixelFormat;
+  s_texBuf.Reset();
 
   GlideWrapper::VertexLayout::GetInstance().ResetToGlide3Canonical();
   auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
@@ -289,7 +487,8 @@ FX_ENTRY GrContext_t FX_CALL grSstWinOpen(AnyPtr hWnd,
                                           GrOriginLocation_t origin,
                                           int nColBuffers, int nAuxBuffers) {
   return OpenWindowGlide3(hWnd, resolution, refresh, format, origin,
-                          /*requestedSamples=*/0u, nColBuffers, nAuxBuffers);
+                          GR_PIXFMT_RGB_565, /*requestedSamples=*/0u,
+                          nColBuffers, nAuxBuffers);
 }
 
 FX_ENTRY GrContext_t FX_CALL grSstWinOpenExt(AnyPtr hWnd,
@@ -319,8 +518,8 @@ FX_ENTRY GrContext_t FX_CALL grSstWinOpenExt(AnyPtr hWnd,
             "grSstWinOpenExt (Glide 3.x): pixelFormat=0x"
                 << std::hex << pixelFormat << std::dec
                 << " -> requestedSamples=" << reqSamples);
-  return OpenWindowGlide3(hWnd, resolution, refresh, format, origin, reqSamples,
-                          nColBuffers, nAuxBuffers);
+  return OpenWindowGlide3(hWnd, resolution, refresh, format, origin,
+                          pixelFormat, reqSamples, nColBuffers, nAuxBuffers);
 }
 
 FX_ENTRY void FX_CALL grTBufferWriteMaskExt(FxU32 tmask) {
@@ -342,7 +541,7 @@ FX_ENTRY void FX_CALL grColorMaskExt(FxBool r, FxBool g, FxBool b, FxBool a) {
   GLIDE_LOG(DEBUG, "Frontend",
             "grColorMaskExt (Glide 3.x): R=" << r << ", G=" << g
                                              << ", B=" << b << ", A=" << a);
-  EntryCommon::SetColorMask(s_state, (r || g || b), a != 0);
+  EntryCommon::SetColorMaskExt(s_state, r != 0, g != 0, b != 0, a != 0);
 }
 
 FX_ENTRY void FX_CALL grStencilFuncExt(GrCmpFnc_t fnc, GrStencil_t ref,
@@ -353,6 +552,9 @@ FX_ENTRY void FX_CALL grStencilFuncExt(GrCmpFnc_t fnc, GrStencil_t ref,
             "grStencilFuncExt (Glide 3.x): fnc=" << fnc
                                                  << ", ref=" << static_cast<int>(ref)
                                                  << ", mask=" << static_cast<int>(mask));
+  EntryCommon::SetStencilFunc(s_state, static_cast<uint32_t>(fnc),
+                              static_cast<uint8_t>(ref),
+                              static_cast<uint8_t>(mask));
 }
 
 FX_ENTRY void FX_CALL grStencilMaskExt(GrStencil_t mask) {
@@ -360,6 +562,7 @@ FX_ENTRY void FX_CALL grStencilMaskExt(GrStencil_t mask) {
   EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend",
             "grStencilMaskExt (Glide 3.x): mask=" << static_cast<int>(mask));
+  EntryCommon::SetStencilMask(s_state, static_cast<uint8_t>(mask));
 }
 
 FX_ENTRY void FX_CALL grStencilOpExt(GrStencilOp_t fail, GrStencilOp_t zfail,
@@ -369,6 +572,9 @@ FX_ENTRY void FX_CALL grStencilOpExt(GrStencilOp_t fail, GrStencilOp_t zfail,
   GLIDE_LOG(DEBUG, "Frontend",
             "grStencilOpExt (Glide 3.x): fail=" << fail << ", zfail=" << zfail
                                                 << ", zpass=" << zpass);
+  EntryCommon::SetStencilOp(s_state, static_cast<uint32_t>(fail),
+                            static_cast<uint32_t>(zfail),
+                            static_cast<uint32_t>(zpass));
 }
 
 FX_ENTRY void FX_CALL grBufferClearExt(GrColor_t color, GrAlpha_t alpha,
@@ -380,7 +586,8 @@ FX_ENTRY void FX_CALL grBufferClearExt(GrColor_t color, GrAlpha_t alpha,
                 << std::hex << color << std::dec
                 << ", alpha=" << static_cast<int>(alpha) << ", depth=" << depth
                 << ", stencil=" << static_cast<int>(stencil));
-  grBufferClear(color, alpha, depth);
+  EntryCommon::ClearBufferExt(color, static_cast<uint8_t>(alpha), depth,
+                              static_cast<uint8_t>(stencil));
 }
 
 FX_ENTRY void FX_CALL grLfbConstantStencilExt(GrStencil_t stencil) {
@@ -389,11 +596,13 @@ FX_ENTRY void FX_CALL grLfbConstantStencilExt(GrStencil_t stencil) {
   GLIDE_LOG(DEBUG, "Frontend",
             "grLfbConstantStencilExt (Glide 3.x): stencil="
                 << static_cast<int>(stencil));
+  s_state.lfbConstantStencil = static_cast<uint8_t>(stencil);
 }
 
 FX_ENTRY FxBool FX_CALL grSstWinClose(GrContext_t context) {
   EnsureEngineInitialized();
   (void)context;
+  s_texBuf.Reset();
   s_windowOpen = false;
   EntryCommon::CloseWindow("grSstWinClose (Glide 3.x) invoked.");
   return FXTRUE;
@@ -409,11 +618,23 @@ FX_ENTRY void FX_CALL grBufferClear(GrColor_t color, GrAlpha_t alpha,
 FX_ENTRY void FX_CALL grBufferSwap(FxU32 swapInterval) {
   EnsureEngineInitialized();
   (void)swapInterval;
+  if (s_texBuf.active) {
+    CommitActiveTextureBuffer();
+  }
   EntryCommon::FlushActiveLfbWriteLock(s_state);
   if (EntryCommon::ShouldRenderShamelessPlug(s_shamelessPlug)) {
     grShamelessPlug();
   }
   EntryCommon::SwapBuffers();
+}
+
+FX_ENTRY void FX_CALL grSetNumPendingBuffers(FxI32 NumPendingBuffers) {
+  EnsureEngineInitialized();
+  if (NumPendingBuffers < 1) NumPendingBuffers = 1;
+  if (NumPendingBuffers > 8) NumPendingBuffers = 8;
+  s_numPendingBuffers = NumPendingBuffers;
+  GLIDE_LOG(DEBUG, "Frontend",
+            "grSetNumPendingBuffers (Glide 3.x): " << s_numPendingBuffers);
 }
 
 FX_ENTRY FxBool FX_CALL grSelectContext(GrContext_t context) {
@@ -428,7 +649,13 @@ FX_ENTRY void FX_CALL grRenderBuffer(GrBuffer_t buffer) {
   EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend",
             "grRenderBuffer (Glide 3.x) invoked for Buffer=" << buffer);
-  EntryCommon::SetRenderBuffer(buffer);
+  if (buffer == GR_BUFFER_TEXTUREBUFFER_EXT) {
+    EnterTextureBufferMode();
+  } else if (s_texBuf.active) {
+    ExitTextureBufferMode(buffer);
+  } else {
+    EntryCommon::SetRenderBuffer(buffer);
+  }
 }
 
 FX_ENTRY void FX_CALL grSstSelect(int which_sst) {
@@ -600,6 +827,7 @@ FX_ENTRY void FX_CALL grDrawLine(const void* a, const void* b) {
   TransformVertexIfNecessary(vb);
 
   EntryCommon::SyncTexturesBeforeDraw();
+  ++s_linesDrawn;
   backend->DrawLine(va, vb);
 }
 
@@ -615,7 +843,18 @@ FX_ENTRY void FX_CALL grDrawPoint(const void* pt) {
   TransformVertexIfNecessary(mv);
 
   EntryCommon::SyncTexturesBeforeDraw();
+  ++s_pointsDrawn;
   backend->DrawPoint(mv);
+}
+
+static bool Is32BitPixelFormat(GrPixelFormat_t fmt) {
+  return fmt == GR_PIXFMT_ARGB_8888 || fmt == GR_PIXFMT_AA_2_ARGB_8888 ||
+         fmt == GR_PIXFMT_AA_4_ARGB_8888 || fmt == GR_PIXFMT_AA_8_ARGB_8888;
+}
+
+static bool Is1555PixelFormat(GrPixelFormat_t fmt) {
+  return fmt == GR_PIXFMT_ARGB_1555 || fmt == GR_PIXFMT_AA_2_ARGB_1555 ||
+         fmt == GR_PIXFMT_AA_4_ARGB_1555 || fmt == GR_PIXFMT_AA_8_ARGB_1555;
 }
 
 FX_ENTRY FxU32 FX_CALL grGet(FxU32 pname, FxU32 plength, FxI32* params) {
@@ -636,29 +875,124 @@ FX_ENTRY FxU32 FX_CALL grGet(FxU32 pname, FxU32 plength, FxI32* params) {
       *params = static_cast<FxI32>(std::max(1u, config.tmuMemoryMb) * 1024u *
                                    1024u);
       return 4;
+    case GR_MEMORY_UMA:
+      *params = (config.model >= GlideWrapper::CardModel::VoodooBanshee)
+                    ? static_cast<FxI32>(std::max(1u, config.fbiMemoryMb) *
+                                         1024u * 1024u)
+                    : 0;
+      return 4;
     case GR_NUM_BOARDS:
       *params = 1;
+      return 4;
+    case GR_NUM_FB:
+      *params = (config.model == GlideWrapper::CardModel::Voodoo5 ||
+                 (config.model == GlideWrapper::CardModel::Voodoo2 &&
+                  config.enableSli))
+                    ? 2
+                    : 1;
       return 4;
     case GR_NUM_TMU:
       *params = static_cast<FxI32>(config.tmuCount);
       return 4;
     case GR_MAX_TEXTURE_SIZE:
-      *params = (config.model >= GlideWrapper::CardModel::Voodoo3) ? 2048 : 256;
+      // Authentic 3dfx hardware limit (h3/h5 diget.c): 2048x2048 is VSA-100
+      // (Voodoo4/Voodoo5) only; SST-1, Rush, Voodoo2, Banshee, and Voodoo3
+      // all cap at 256x256.
+      *params = (config.model >= GlideWrapper::CardModel::Voodoo4) ? 2048 : 256;
       return 4;
     case GR_MAX_TEXTURE_ASPECT_RATIO:
       *params = 3;  // 8:1
       return 4;
+    case GR_NON_POWER_OF_TWO_TEXTURES:
+      *params = FXFALSE;
+      return 4;
     case GR_BITS_DEPTH:
-      *params = 16;
+      *params = Is32BitPixelFormat(s_activePixelFormat) ? 32 : 16;
       return 4;
     case GR_BITS_RGBA:
-      *params = 32;
+      if (plength < 16) return 0;
+      if (Is32BitPixelFormat(s_activePixelFormat)) {
+        params[0] = 8;
+        params[1] = 8;
+        params[2] = 8;
+        params[3] = 8;
+      } else if (Is1555PixelFormat(s_activePixelFormat)) {
+        params[0] = 5;
+        params[1] = 5;
+        params[2] = 5;
+        params[3] = 1;
+      } else {
+        params[0] = 5;
+        params[1] = 6;
+        params[2] = 5;
+        params[3] = 0;
+      }
+      return 16;
+    case GR_BITS_GAMMA:
+      *params = 8;
       return 4;
     case GR_FOG_TABLE_ENTRIES:
       *params = 64;
       return 4;
     case GR_GAMMA_TABLE_ENTRIES:
       *params = 256;
+      return 4;
+    case GR_GLIDE_STATE_SIZE:
+      *params = 1024;
+      return 4;
+    case GR_GLIDE_VERTEXLAYOUT_SIZE:
+      *params = 256;
+      return 4;
+    case GR_FIFO_FULLNESS:
+      *params = 0;
+      return 4;
+    case GR_IS_BUSY:
+      *params = 0;
+      return 4;
+    case GR_LFB_PIXEL_PIPE:
+      *params = FXTRUE;
+      return 4;
+    case GR_NUM_SWAP_HISTORY_BUFFER:
+      *params = 8;
+      return 4;
+    case GR_PENDING_BUFFERSWAPS:
+      *params = 0;
+      return 4;
+    case GR_REVISION_FB:
+    case GR_REVISION_TMU:
+      switch (config.model) {
+        case GlideWrapper::CardModel::VoodooGraphics:
+          *params = (pname == GR_REVISION_FB) ? 2 : 1;
+          break;
+        case GlideWrapper::CardModel::VoodooRush:
+          *params = 1;
+          break;
+        case GlideWrapper::CardModel::Voodoo2:
+          *params = (pname == GR_REVISION_FB) ? 2 : 1;
+          break;
+        case GlideWrapper::CardModel::VoodooBanshee:
+          *params = 0x1000;
+          break;
+        case GlideWrapper::CardModel::Voodoo3:
+          *params = 0x11100;
+          break;
+        case GlideWrapper::CardModel::Voodoo4:
+          *params = 0x11104;
+          break;
+        case GlideWrapper::CardModel::Voodoo5:
+          *params = 0x11105;
+          break;
+      }
+      return 4;
+    case GR_SUPPORTS_PASSTHRU:
+      *params = (config.model == GlideWrapper::CardModel::VoodooGraphics ||
+                 config.model == GlideWrapper::CardModel::Voodoo2)
+                    ? FXTRUE
+                    : FXFALSE;
+      return 4;
+    case GR_TEXTURE_ALIGN:
+      *params = (config.model >= GlideWrapper::CardModel::VoodooBanshee) ? 16
+                                                                         : 8;
       return 4;
     case GR_VIEWPORT:
       if (plength < 16) return 0;
@@ -667,9 +1001,6 @@ FX_ENTRY FxU32 FX_CALL grGet(FxU32 pname, FxU32 plength, FxI32* params) {
       params[2] = static_cast<FxI32>(s_viewportWidth);
       params[3] = static_cast<FxI32>(s_viewportHeight);
       return 16;
-    case GR_IS_BUSY:
-      *params = 0;
-      return 4;
     case GR_WDEPTH_MIN_MAX:
       if (plength < 8) return 0;
       params[0] = 0;
@@ -680,12 +1011,42 @@ FX_ENTRY FxU32 FX_CALL grGet(FxU32 pname, FxU32 plength, FxI32* params) {
       params[0] = 65535;
       params[1] = 0;
       return 8;
-    case 0x06:  // GR_GLIDE_STATE_SIZE
-      *params = 1024;
+    case GR_STATS_POINTS:
+      *params = static_cast<FxI32>(s_pointsDrawn);
       return 4;
-    case 0x07:  // GR_GLIDE_VERTEXLAYOUT_SIZE
-      *params = 256;
+    case GR_STATS_LINES:
+      *params = static_cast<FxI32>(s_linesDrawn);
       return 4;
+    case GR_STATS_TRIANGLES_IN:
+    case GR_STATS_TRIANGLES_OUT: {
+      uint32_t proc = 0;
+      uint32_t drawn = 0;
+      EntryCommon::GetTriStats(&proc, &drawn);
+      *params = static_cast<FxI32>(
+          (pname == GR_STATS_TRIANGLES_IN) ? proc : drawn);
+      return 4;
+    }
+    case GR_STATS_PIXELS_IN:
+    case GR_STATS_PIXELS_CHROMA_FAIL:
+    case GR_STATS_PIXELS_OUT:
+    case GR_STATS_PIXELS_AFUNC_FAIL:
+    case GR_STATS_PIXELS_DEPTHFUNC_FAIL: {
+      uint32_t pixelsIn = 0;
+      uint32_t chromaFail = 0;
+      EntryCommon::GetPerfStats(pixelsIn, chromaFail);
+      if (pname == GR_STATS_PIXELS_IN) {
+        *params = static_cast<FxI32>(pixelsIn);
+      } else if (pname == GR_STATS_PIXELS_CHROMA_FAIL) {
+        *params = static_cast<FxI32>(chromaFail);
+      } else if (pname == GR_STATS_PIXELS_OUT) {
+        *params = static_cast<FxI32>(pixelsIn >= chromaFail
+                                         ? (pixelsIn - chromaFail)
+                                         : 0u);
+      } else {
+        *params = 0;
+      }
+      return 4;
+    }
     default:
       GLIDE_LOG(WARN, "Frontend",
                 "grGet (Glide 3.x) unknown or unsupported pname=" << pname);
@@ -693,59 +1054,157 @@ FX_ENTRY FxU32 FX_CALL grGet(FxU32 pname, FxU32 plength, FxI32* params) {
   }
 }
 
-static const GrResolution s_supportedResolutions[] = {
-    {GR_RESOLUTION_512x384, GR_REFRESH_60Hz, 2, 1},
-    {GR_RESOLUTION_640x480, GR_REFRESH_60Hz, 2, 1},
-    {GR_RESOLUTION_800x600, GR_REFRESH_60Hz, 2, 1},
-    {GR_RESOLUTION_1024x768, GR_REFRESH_60Hz, 2, 1}};
+namespace {
+struct ResolutionCatalogEntry {
+  GrScreenResolution_t resEnum;
+  uint32_t width;
+  uint32_t height;
+  GlideWrapper::CardModel minCard;
+};
+
+// Authentic 3dfx resolution tiers across SST-1/Rush, CVG, H3, and VSA-100.
+static constexpr ResolutionCatalogEntry kResolutionCatalog[] = {
+    {GR_RESOLUTION_320x200,   320,  200,  GlideWrapper::CardModel::VoodooGraphics},
+    {GR_RESOLUTION_320x240,   320,  240,  GlideWrapper::CardModel::VoodooGraphics},
+    {GR_RESOLUTION_400x256,   400,  256,  GlideWrapper::CardModel::VoodooGraphics},
+    {GR_RESOLUTION_400x300,   400,  300,  GlideWrapper::CardModel::Voodoo2},
+    {GR_RESOLUTION_512x256,   512,  256,  GlideWrapper::CardModel::VoodooGraphics},
+    {GR_RESOLUTION_512x384,   512,  384,  GlideWrapper::CardModel::VoodooGraphics},
+    {GR_RESOLUTION_640x200,   640,  200,  GlideWrapper::CardModel::VoodooGraphics},
+    {GR_RESOLUTION_640x350,   640,  350,  GlideWrapper::CardModel::VoodooGraphics},
+    {GR_RESOLUTION_640x400,   640,  400,  GlideWrapper::CardModel::VoodooGraphics},
+    {GR_RESOLUTION_640x480,   640,  480,  GlideWrapper::CardModel::VoodooGraphics},
+    {GR_RESOLUTION_800x600,   800,  600,  GlideWrapper::CardModel::VoodooGraphics},
+    {GR_RESOLUTION_856x480,   856,  480,  GlideWrapper::CardModel::Voodoo2},
+    {GR_RESOLUTION_960x720,   960,  720,  GlideWrapper::CardModel::Voodoo2},
+    {GR_RESOLUTION_1024x768,  1024, 768,  GlideWrapper::CardModel::Voodoo2},
+    {GR_RESOLUTION_1152x864,  1152, 864,  GlideWrapper::CardModel::VoodooBanshee},
+    {GR_RESOLUTION_1280x960,  1280, 960,  GlideWrapper::CardModel::VoodooBanshee},
+    {GR_RESOLUTION_1280x1024, 1280, 1024, GlideWrapper::CardModel::VoodooBanshee},
+    {GR_RESOLUTION_1600x1200, 1600, 1200, GlideWrapper::CardModel::VoodooBanshee},
+    {GR_RESOLUTION_1600x1024, 1600, 1024, GlideWrapper::CardModel::Voodoo4},
+    {GR_RESOLUTION_1792x1344, 1792, 1344, GlideWrapper::CardModel::Voodoo4},
+    {GR_RESOLUTION_1856x1392, 1856, 1392, GlideWrapper::CardModel::Voodoo4},
+    {GR_RESOLUTION_1920x1440, 1920, 1440, GlideWrapper::CardModel::Voodoo4},
+    {GR_RESOLUTION_2048x1536, 2048, 1536, GlideWrapper::CardModel::Voodoo4},
+};
+}  // namespace
 
 FX_ENTRY FxI32 FX_CALL grQueryResolutions(const GrResolution* resTemplate,
                                           GrResolution* output) {
+  EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend", "grQueryResolutions (Glide 3.x) invoked.");
 
-  FxI32 matchCount = 0;
-  constexpr int numResolutions =
-      sizeof(s_supportedResolutions) / sizeof(s_supportedResolutions[0]);
+  const auto& config =
+      GlideWrapper::EmulationRegistry::GetInstance().GetConfig();
 
-  for (int i = 0; i < numResolutions; ++i) {
-    const auto& res = s_supportedResolutions[i];
-    bool match = true;
+  // Authentic constrained-template validation (matches 3dfx h5/diget.c)
+  GrScreenRefresh_t targetRefresh = GR_REFRESH_60Hz;
+  int targetColBufs = 2;
+  int targetAuxBufs = 1;
+  bool filterRes = false;
+  GrScreenResolution_t targetRes = GR_RESOLUTION_640x480;
 
-    if (resTemplate) {
-      if (resTemplate->resolution !=
-              static_cast<GrScreenResolution_t>(GR_QUERY_ANY) &&
-          resTemplate->resolution != res.resolution) {
-        match = false;
+  if (resTemplate) {
+    if (resTemplate->resolution !=
+        static_cast<GrScreenResolution_t>(GR_QUERY_ANY)) {
+      if (resTemplate->resolution < GR_RESOLUTION_MIN ||
+          resTemplate->resolution > GR_RESOLUTION_MAX) {
+        return 0;
       }
-      if (resTemplate->refresh !=
-              static_cast<GrScreenRefresh_t>(GR_QUERY_ANY) &&
-          resTemplate->refresh != res.refresh) {
-        match = false;
-      }
-      if (resTemplate->numColorBuffers != GR_QUERY_ANY &&
-          resTemplate->numColorBuffers != res.numColorBuffers) {
-        match = false;
-      }
-      if (resTemplate->numAuxBuffers != GR_QUERY_ANY &&
-          resTemplate->numAuxBuffers != res.numAuxBuffers) {
-        match = false;
-      }
+      filterRes = true;
+      targetRes = resTemplate->resolution;
     }
-
-    if (match) {
-      if (output) {
-        output[matchCount] = res;
+    if (resTemplate->refresh != static_cast<GrScreenRefresh_t>(GR_QUERY_ANY)) {
+      if (resTemplate->refresh != GR_REFRESH_NONE &&
+          (resTemplate->refresh < GR_REFRESH_60Hz ||
+           resTemplate->refresh > GR_REFRESH_120Hz)) {
+        return 0;
       }
-      matchCount++;
+      targetRefresh = (resTemplate->refresh == GR_REFRESH_NONE)
+                          ? GR_REFRESH_60Hz
+                          : resTemplate->refresh;
+    }
+    if (resTemplate->numColorBuffers != GR_QUERY_ANY) {
+      if (resTemplate->numColorBuffers < 2 ||
+          resTemplate->numColorBuffers > 3) {
+        return 0;
+      }
+      targetColBufs = resTemplate->numColorBuffers;
+    }
+    if (resTemplate->numAuxBuffers != GR_QUERY_ANY) {
+      if (resTemplate->numAuxBuffers < 0 || resTemplate->numAuxBuffers > 1) {
+        return 0;
+      }
+      targetAuxBufs = resTemplate->numAuxBuffers;
     }
   }
 
-  return matchCount;
+  // Authentic VRAM capacity check (16-bit buffers = 2 bytes/pixel per buffer;
+  // Voodoo2 SLI doubles effective framebuffer; UMA H3/H5 reserves 2 MB for TMU)
+  uint64_t availFbBytes =
+      static_cast<uint64_t>(std::max(1u, config.fbiMemoryMb)) * 1024ull *
+      1024ull;
+  if (config.model == GlideWrapper::CardModel::Voodoo2 && config.enableSli) {
+    availFbBytes *= 2ull;
+  } else if (config.model >= GlideWrapper::CardModel::VoodooBanshee &&
+             availFbBytes > (2ull * 1024ull * 1024ull)) {
+    availFbBytes -= (2ull * 1024ull * 1024ull);
+  }
+
+  FxI32 matchCount = 0;
+  for (const auto& entry : kResolutionCatalog) {
+    if (static_cast<int>(config.model) < static_cast<int>(entry.minCard)) {
+      continue;
+    }
+    if (filterRes && entry.resEnum != targetRes) {
+      continue;
+    }
+    const uint64_t reqBytes =
+        static_cast<uint64_t>(entry.width) *
+        static_cast<uint64_t>(entry.height) * 2ull *
+        static_cast<uint64_t>(targetColBufs + targetAuxBufs);
+    if (reqBytes > availFbBytes) {
+      continue;
+    }
+    if (output) {
+      output[matchCount].resolution = entry.resEnum;
+      output[matchCount].refresh = targetRefresh;
+      output[matchCount].numColorBuffers = targetColBufs;
+      output[matchCount].numAuxBuffers = targetAuxBufs;
+    }
+    ++matchCount;
+  }
+
+  // Per 3dfx Glide 3.x specification (sst1/cvg/h3/h5 diget.c),
+  // grQueryResolutions returns byte size = matchCount * sizeof(GrResolution).
+  return matchCount * static_cast<FxI32>(sizeof(GrResolution));
 }
 
 FX_ENTRY FxBool FX_CALL grReset(FxU32 what) {
+  EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend", "grReset (Glide 3.x) invoked: what=" << what);
-  return FXTRUE;
+  switch (what) {
+    case GR_STATS_POINTS:
+      s_pointsDrawn = 0;
+      return FXTRUE;
+    case GR_STATS_LINES:
+      s_linesDrawn = 0;
+      return FXTRUE;
+    case GR_STATS_PIXELS:
+      EntryCommon::ResetPerfStats();
+      return FXTRUE;
+    case GR_STATS_TRIANGLES:
+      EntryCommon::ResetTriStats();
+      return FXTRUE;
+    case GR_VERTEX_PARAMETER:
+      GlideWrapper::VertexLayout::GetInstance().ResetAllParamsDisabled();
+      return FXTRUE;
+    default:
+      GLIDE_LOG(WARN, "Frontend",
+                "grReset (Glide 3.x): unknown what=" << what);
+      return FXFALSE;
+  }
 }
 
 FX_ENTRY const char* FX_CALL grGetString(FxU32 pname) {
@@ -755,7 +1214,8 @@ FX_ENTRY const char* FX_CALL grGetString(FxU32 pname) {
   auto& reg = GlideWrapper::EmulationRegistry::GetInstance();
   switch (pname) {
     case GR_VERSION:
-      return "3.10 (glide-ng)";
+      return GlideWrapper::FormatApiVersionString(
+          reg.GetConfig().glide3ApiVersion);
     case GR_HARDWARE: {
       switch (reg.GetConfig().model) {
         case GlideWrapper::CardModel::VoodooGraphics:
@@ -764,6 +1224,8 @@ FX_ENTRY const char* FX_CALL grGetString(FxU32 pname) {
           return "Voodoo Rush";
         case GlideWrapper::CardModel::Voodoo2:
           return "Voodoo2";
+        case GlideWrapper::CardModel::VoodooBanshee:
+          return "Voodoo Banshee";
         case GlideWrapper::CardModel::Voodoo3:
           return "Voodoo3";
         case GlideWrapper::CardModel::Voodoo4:
@@ -786,14 +1248,16 @@ FX_ENTRY const char* FX_CALL grGetString(FxU32 pname) {
         case GlideWrapper::CardModel::Voodoo2:
           return "CHROMARANGE FOGCOORD TEXCHROMA RESOLUTION SURFACE "
                  "COMMAND_TRANSPORT";
+        case GlideWrapper::CardModel::VoodooBanshee:
         case GlideWrapper::CardModel::Voodoo3:
-          return "CHROMARANGE FOGCOORD TEXCHROMA TEXMIRROR PALETTE6666 "
-                 "RESOLUTION SURFACE COMMAND_TRANSPORT";
+          return "CHROMARANGE FOGCOORD GETGAMMA TEXCHROMA TEXMIRROR "
+                 "PALETTE6666 RESOLUTION SURFACE COMMAND_TRANSPORT "
+                 "TEXTUREBUFFER TEXUMA";
         case GlideWrapper::CardModel::Voodoo4:
         case GlideWrapper::CardModel::Voodoo5:
-          return "CHROMARANGE FOGCOORD TEXCHROMA TEXMIRROR PALETTE6666 "
-                 "RESOLUTION SURFACE COMMAND_TRANSPORT PIXEXT COMBINE TEXFMT "
-                 "TEXTUREBUFFER TEXUMA";
+          return "CHROMARANGE FOGCOORD GETGAMMA TEXCHROMA TEXMIRROR "
+                 "PALETTE6666 RESOLUTION SURFACE COMMAND_TRANSPORT PIXEXT "
+                 "COMBINE TEXFMT TEXTUREBUFFER TEXUMA";
         default:
           return "CHROMARANGE FOGCOORD";
       }
@@ -827,7 +1291,11 @@ FX_ENTRY FxU32 FX_CALL grTexMaxAddress(GrChipID_t tmu) {
                   << tmu << " -> 0");
     return 0;
   }
-  const uint32_t tmuBytes = std::max(1u, config.tmuMemoryMb) * 1024u * 1024u;
+  uint32_t tmuBytes = std::max(1u, config.tmuMemoryMb) * 1024u * 1024u;
+  if (GlideWrapper::TextureManager::GetInstance().IsUmaMode() &&
+      config.tmuCount >= 2) {
+    tmuBytes *= config.tmuCount;
+  }
   GLIDE_LOG(DEBUG, "Frontend",
             "grTexMaxAddress (Glide 3.x) invoked for TMU="
                 << tmu << " -> 0x" << std::hex << tmuBytes << std::dec);
@@ -882,9 +1350,14 @@ FX_ENTRY void FX_CALL grTexDownloadTablePartial(GrTexTable_t type, void* data,
 FX_ENTRY void FX_CALL grTexDetailControl(GrChipID_t tmu, int lod_bias,
                                          FxU8 detail_scale, float detail_max) {
   GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
-  GLIDE_LOG(
-      DEBUG, "Frontend",
-      "grTexDetailControl (Glide 3.x) invoked for TMU=" << tmu << " (Stubbed)");
+  EnsureEngineInitialized();
+  GLIDE_LOG(DEBUG, "Frontend",
+            "grTexDetailControl (Glide 3.x): tmu="
+                << tmu << ", lod_bias=" << lod_bias
+                << ", detail_scale=" << static_cast<int>(detail_scale)
+                << ", detail_max=" << detail_max);
+  EntryCommon::SetTexDetailControl(s_state, tmu, lod_bias, detail_scale,
+                                   detail_max);
 }
 
 FX_ENTRY void FX_CALL grTexLodBiasValue(GrChipID_t tmu, float bias) {
@@ -981,6 +1454,36 @@ FX_ENTRY void FX_CALL grGlideGetState(void* state) {
   ws->hasTbufferState = 1u;
   ws->aaMultiSample = s_aaMultiSample ? 1 : 0;
   ws->tbufferWriteMask = s_tbufferWriteMask;
+  ws->hasColorMaskExt = 1u;
+  ws->colorMaskR = s_state.colorMaskR ? 1u : 0u;
+  ws->colorMaskG = s_state.colorMaskG ? 1u : 0u;
+  ws->colorMaskB = s_state.colorMaskB ? 1u : 0u;
+  for (int i = 0; i < 2; ++i) {
+    ws->texDetailBias[i] = s_state.texDetailBias[i];
+    ws->texDetailScale[i] = s_state.texDetailScale[i];
+    ws->texDetailMax[i] = s_state.texDetailMax[i];
+  }
+  ws->hasStencilState = 1u;
+  ws->stencilEnabled = s_state.stencilEnabled ? 1u : 0u;
+  ws->stencilRef = s_state.stencilRef;
+  ws->stencilReadMask = s_state.stencilReadMask;
+  ws->stencilWriteMask = s_state.stencilWriteMask;
+  ws->lfbConstantStencil = s_state.lfbConstantStencil;
+  ws->stencilCompareOp = s_state.stencilCompareOp;
+  ws->stencilFailOp = s_state.stencilFailOp;
+  ws->stencilZFailOp = s_state.stencilZFailOp;
+  ws->stencilZPassOp = s_state.stencilZPassOp;
+  ws->hasCombineExtState = 1u;
+  ws->rgbBlendOp = s_state.rgbBlendOp;
+  ws->alphaBlendOp = s_state.alphaBlendOp;
+  ws->extColorCombine = s_state.extColorCombine;
+  ws->extAlphaCombine = s_state.extAlphaCombine;
+  std::memcpy(ws->extTexColorCombine, s_state.extTexColorCombine,
+              sizeof(s_state.extTexColorCombine));
+  std::memcpy(ws->extTexAlphaCombine, s_state.extTexAlphaCombine,
+              sizeof(s_state.extTexAlphaCombine));
+  std::memcpy(ws->tmuConstantColor, s_state.tmuConstantColor,
+              sizeof(s_state.tmuConstantColor));
 }
 
 FX_ENTRY void FX_CALL grGlideSetState(const void* state) {
@@ -1052,11 +1555,11 @@ FX_ENTRY void FX_CALL grGlideSetState(const void* state) {
   }
 
   s_state.rgbSrcBlend =
-      (ws->rgbSrcBlend > 10) ? 1 : ws->rgbSrcBlend;  // GR_BLEND_ONE
+      (ws->rgbSrcBlend > 15) ? 4 : ws->rgbSrcBlend;  // GR_BLEND_ONE
   s_state.rgbDstBlend =
-      (ws->rgbDstBlend > 10) ? 0 : ws->rgbDstBlend;  // GR_BLEND_ZERO
-  s_state.alphaSrcBlend = (ws->alphaSrcBlend > 10) ? 1 : ws->alphaSrcBlend;
-  s_state.alphaDstBlend = (ws->alphaDstBlend > 10) ? 0 : ws->alphaDstBlend;
+      (ws->rgbDstBlend > 15) ? 0 : ws->rgbDstBlend;  // GR_BLEND_ZERO
+  s_state.alphaSrcBlend = (ws->alphaSrcBlend > 15) ? 4 : ws->alphaSrcBlend;
+  s_state.alphaDstBlend = (ws->alphaDstBlend > 15) ? 0 : ws->alphaDstBlend;
 
   s_state.fogMode = ws->fogMode;
   s_state.fogColor = ws->fogColor;
@@ -1085,6 +1588,22 @@ FX_ENTRY void FX_CALL grGlideSetState(const void* state) {
       std::max(s_state.clipMinY, std::min(ws->clipMaxY, winHeight));
 
   s_state.colorMaskRgb = ws->colorMaskRgb != 0;
+  if (ws->hasColorMaskExt != 0) {
+    s_state.colorMaskR = ws->colorMaskR != 0;
+    s_state.colorMaskG = ws->colorMaskG != 0;
+    s_state.colorMaskB = ws->colorMaskB != 0;
+    s_state.colorMaskRgb =
+        (s_state.colorMaskR || s_state.colorMaskG || s_state.colorMaskB);
+    for (int i = 0; i < 2; ++i) {
+      s_state.texDetailBias[i] = std::clamp(ws->texDetailBias[i], -32, 31);
+      s_state.texDetailScale[i] = std::min<uint8_t>(ws->texDetailScale[i], 7u);
+      s_state.texDetailMax[i] = std::clamp(ws->texDetailMax[i], 0.0f, 1.0f);
+    }
+  } else {
+    s_state.colorMaskR = s_state.colorMaskRgb;
+    s_state.colorMaskG = s_state.colorMaskRgb;
+    s_state.colorMaskB = s_state.colorMaskRgb;
+  }
   s_state.colorMaskAlpha = ws->colorMaskAlpha != 0;
   for (int i = 0; i < 2; ++i) {
     s_state.texRgbInvert[i] = ws->texRgbInvert[i] != 0;
@@ -1093,6 +1612,39 @@ FX_ENTRY void FX_CALL grGlideSetState(const void* state) {
   if (ws->hasTbufferState != 0) {
     s_aaMultiSample = ws->aaMultiSample != 0;
     s_tbufferWriteMask = ws->tbufferWriteMask;
+  }
+  if (ws->hasStencilState != 0) {
+    s_state.stencilEnabled = ws->stencilEnabled != 0;
+    s_state.stencilRef = ws->stencilRef;
+    s_state.stencilReadMask = ws->stencilReadMask;
+    s_state.stencilWriteMask = ws->stencilWriteMask;
+    s_state.lfbConstantStencil = ws->lfbConstantStencil;
+    s_state.stencilCompareOp =
+        (ws->stencilCompareOp > 7u) ? 7u : ws->stencilCompareOp;
+    s_state.stencilFailOp = (ws->stencilFailOp > 7u) ? 0u : ws->stencilFailOp;
+    s_state.stencilZFailOp =
+        (ws->stencilZFailOp > 7u) ? 0u : ws->stencilZFailOp;
+    s_state.stencilZPassOp =
+        (ws->stencilZPassOp > 7u) ? 0u : ws->stencilZPassOp;
+  }
+  if (ws->hasCombineExtState != 0) {
+    s_state.rgbBlendOp = (ws->rgbBlendOp > 2u) ? 0u : ws->rgbBlendOp;
+    s_state.alphaBlendOp = (ws->alphaBlendOp > 2u) ? 0u : ws->alphaBlendOp;
+    s_state.extColorCombine = ws->extColorCombine;
+    s_state.extAlphaCombine = ws->extAlphaCombine;
+    std::memcpy(s_state.extTexColorCombine, ws->extTexColorCombine,
+                sizeof(s_state.extTexColorCombine));
+    std::memcpy(s_state.extTexAlphaCombine, ws->extTexAlphaCombine,
+                sizeof(s_state.extTexAlphaCombine));
+    std::memcpy(s_state.tmuConstantColor, ws->tmuConstantColor,
+                sizeof(s_state.tmuConstantColor));
+  } else {
+    s_state.rgbBlendOp = 0u;
+    s_state.alphaBlendOp = 0u;
+    s_state.extColorCombine = 0u;
+    s_state.extAlphaCombine = 0u;
+    s_state.extTexColorCombine[0] = s_state.extTexColorCombine[1] = 0u;
+    s_state.extTexAlphaCombine[0] = s_state.extTexAlphaCombine[1] = 0u;
   }
 
   // Apply states to backend
@@ -1153,6 +1705,169 @@ FX_ENTRY void FX_CALL grAlphaBlendFunction(GrAlphaBlendFnc_t rgbSf,
   GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   GLIDE_LOG(DEBUG, "Frontend", "grAlphaBlendFunction (Glide 3.x) invoked.");
   EntryCommon::SetAlphaBlendFunction(s_state, rgbSf, rgbDf, alphaSf, alphaDf);
+}
+
+FX_ENTRY void FX_CALL grColorCombineExt(GrCCUColor_t a, GrCombineMode_t a_mode,
+                                        GrCCUColor_t b, GrCombineMode_t b_mode,
+                                        GrCCUColor_t c, FxBool c_invert,
+                                        GrCCUColor_t d, FxBool d_invert,
+                                        FxU32 shift, FxBool invert) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
+  EnsureEngineInitialized();
+  GLIDE_LOG(DEBUG, "Frontend",
+            "grColorCombineExt (Glide 3.x): a=" << a << " b=" << b << " c=" << c
+                                                << " d=" << d
+                                                << " shift=" << shift);
+  EntryCommon::SetColorCombineExt(s_state, a, a_mode, b, b_mode, c,
+                                  c_invert != 0, d, d_invert != 0, shift,
+                                  invert != 0);
+}
+
+FX_ENTRY void FX_CALL grAlphaCombineExt(GrACUColor_t a, GrCombineMode_t a_mode,
+                                        GrACUColor_t b, GrCombineMode_t b_mode,
+                                        GrACUColor_t c, FxBool c_invert,
+                                        GrACUColor_t d, FxBool d_invert,
+                                        FxU32 shift, FxBool invert) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
+  EnsureEngineInitialized();
+  GLIDE_LOG(DEBUG, "Frontend",
+            "grAlphaCombineExt (Glide 3.x): a=" << a << " b=" << b << " c=" << c
+                                                << " d=" << d
+                                                << " shift=" << shift);
+  EntryCommon::SetAlphaCombineExt(s_state, a, a_mode, b, b_mode, c,
+                                  c_invert != 0, d, d_invert != 0, shift,
+                                  invert != 0);
+}
+
+FX_ENTRY void FX_CALL grTexColorCombineExt(
+    GrChipID_t tmu, GrTCCUColor_t a, GrCombineMode_t a_mode, GrTCCUColor_t b,
+    GrCombineMode_t b_mode, GrTCCUColor_t c, FxBool c_invert, GrTCCUColor_t d,
+    FxBool d_invert, FxU32 shift, FxBool invert) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
+  EnsureEngineInitialized();
+  GLIDE_LOG(DEBUG, "Frontend",
+            "grTexColorCombineExt (Glide 3.x): tmu="
+                << tmu << " a=" << a << " b=" << b << " c=" << c << " d=" << d);
+  EntryCommon::SetTexColorCombineExt(s_state, tmu, a, a_mode, b, b_mode, c,
+                                     c_invert != 0, d, d_invert != 0, shift,
+                                     invert != 0);
+}
+
+FX_ENTRY void FX_CALL grTexAlphaCombineExt(
+    GrChipID_t tmu, GrTACUColor_t a, GrCombineMode_t a_mode, GrTACUColor_t b,
+    GrCombineMode_t b_mode, GrTACUColor_t c, FxBool c_invert, GrTACUColor_t d,
+    FxBool d_invert, FxU32 shift, FxBool invert) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
+  EnsureEngineInitialized();
+  GLIDE_LOG(DEBUG, "Frontend",
+            "grTexAlphaCombineExt (Glide 3.x): tmu="
+                << tmu << " a=" << a << " b=" << b << " c=" << c << " d=" << d);
+  EntryCommon::SetTexAlphaCombineExt(s_state, tmu, a, a_mode, b, b_mode, c,
+                                     c_invert != 0, d, d_invert != 0, shift,
+                                     invert != 0);
+}
+
+FX_ENTRY void FX_CALL grConstantColorValueExt(GrChipID_t tmu, GrColor_t value) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
+  EnsureEngineInitialized();
+  GLIDE_LOG(DEBUG, "Frontend",
+            "grConstantColorValueExt (Glide 3.x): tmu="
+                << tmu << " value=0x" << std::hex << value << std::dec);
+  EntryCommon::SetTmuConstantColor(s_state, tmu, value);
+}
+
+FX_ENTRY void FX_CALL grAlphaBlendFunctionExt(
+    GrAlphaBlendFnc_t rgb_sf, GrAlphaBlendFnc_t rgb_df, GrAlphaBlendOp_t rgb_op,
+    GrAlphaBlendFnc_t alpha_sf, GrAlphaBlendFnc_t alpha_df,
+    GrAlphaBlendOp_t alpha_op) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
+  EnsureEngineInitialized();
+  GLIDE_LOG(DEBUG, "Frontend",
+            "grAlphaBlendFunctionExt (Glide 3.x): rgb=("
+                << rgb_sf << "," << rgb_df << ",op=" << rgb_op << ") alpha=("
+                << alpha_sf << "," << alpha_df << ",op=" << alpha_op << ")");
+  EntryCommon::SetAlphaBlendFunctionExt(s_state, rgb_sf, rgb_df, rgb_op,
+                                        alpha_sf, alpha_df, alpha_op);
+}
+
+FX_ENTRY void FX_CALL grTextureBufferExt(
+    GrChipID_t tmu, FxU32 startAddress, GrLOD_t thisLOD, GrLOD_t largeLOD,
+    GrAspectRatio_t aspectRatio, GrTextureFormat_t format,
+    FxU32 odd_even_mask) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::Tex);
+  EnsureEngineInitialized();
+  (void)odd_even_mask;
+
+  // Switching texture-buffer targets mid-mode (e.g. SDK test41.c) must commit
+  // the previous target before retargeting.
+  if (s_texBuf.active && s_texBuf.configured) {
+    CommitActiveTextureBuffer();
+  }
+
+  const int32_t g2ThisLod = 8 - static_cast<int32_t>(thisLOD);
+  const int32_t g2LargeLod = 8 - static_cast<int32_t>(largeLOD);
+  const uint32_t g2Aspect =
+      static_cast<uint32_t>(3 - static_cast<int32_t>(aspectRatio));
+  const uint32_t maxDim = (g2ThisLod >= 0)
+                              ? (256u >> std::min(g2ThisLod, 8))
+                              : (256u << std::min(-g2ThisLod, 3));
+  uint32_t texW = maxDim;
+  uint32_t texH = maxDim;
+  switch (g2Aspect) {
+    case 0: texH = std::max(1u, texH >> 3); break;
+    case 1: texH = std::max(1u, texH >> 2); break;
+    case 2: texH = std::max(1u, texH >> 1); break;
+    case 3: break;
+    case 4: texW = std::max(1u, texW >> 1); break;
+    case 5: texW = std::max(1u, texW >> 2); break;
+    case 6: texW = std::max(1u, texW >> 3); break;
+    default: break;
+  }
+
+  s_texBuf.configured = true;
+  s_texBuf.tmu = static_cast<uint32_t>(tmu);
+  s_texBuf.startAddress = static_cast<uint32_t>(startAddress);
+  s_texBuf.thisLodG2 = g2ThisLod;
+  s_texBuf.largeLodG2 = g2LargeLod;
+  s_texBuf.aspectG2 = g2Aspect;
+  s_texBuf.format = static_cast<uint32_t>(format);
+  s_texBuf.width = texW;
+  s_texBuf.height = texH;
+
+  GLIDE_LOG(DEBUG, "Frontend",
+            "grTextureBufferExt (Glide 3.x): tmu="
+                << tmu << ", addr=0x" << std::hex << startAddress << std::dec
+                << ", size=" << texW << "x" << texH << ", fmt=" << format);
+
+  if (s_texBuf.active) {
+    ApplyTexBufClipWindow();
+  }
+}
+
+FX_ENTRY void FX_CALL grTextureAuxBufferExt(
+    GrChipID_t tmu, FxU32 startAddress, GrLOD_t thisLOD, GrLOD_t largeLOD,
+    GrAspectRatio_t aspectRatio, GrTextureFormat_t format,
+    FxU32 odd_even_mask) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::Tex);
+  EnsureEngineInitialized();
+  (void)thisLOD;
+  (void)largeLOD;
+  (void)aspectRatio;
+  (void)format;
+  (void)odd_even_mask;
+  s_texBuf.auxTmu = static_cast<uint32_t>(tmu);
+  s_texBuf.auxAddress = static_cast<uint32_t>(startAddress);
+  GLIDE_LOG(DEBUG, "Frontend",
+            "grTextureAuxBufferExt (Glide 3.x): tmu="
+                << tmu << ", addr=0x" << std::hex << startAddress << std::dec);
+}
+
+FX_ENTRY void FX_CALL grAuxBufferExt(GrBuffer_t buffer) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
+  EnsureEngineInitialized();
+  s_texBuf.activeAuxBuffer = static_cast<uint32_t>(buffer);
+  GLIDE_LOG(DEBUG, "Frontend",
+            "grAuxBufferExt (Glide 3.x): buffer=" << buffer);
 }
 
 FX_ENTRY void FX_CALL grAlphaTestFunction(GrCmpFnc_t fnc) {
@@ -1381,6 +2096,39 @@ FX_ENTRY GrProc FX_CALL grGetProcAddress(char* procName) {
   if (std::strcmp(procName, "grLfbConstantStencilExt") == 0) {
     return toGrProc(grLfbConstantStencilExt);
   }
+  if (std::strcmp(procName, "grGetGammaTableExt") == 0) {
+    return toGrProc(grGetGammaTableExt);
+  }
+  if (std::strcmp(procName, "grColorCombineExt") == 0) {
+    return toGrProc(grColorCombineExt);
+  }
+  if (std::strcmp(procName, "grAlphaCombineExt") == 0) {
+    return toGrProc(grAlphaCombineExt);
+  }
+  if (std::strcmp(procName, "grTexColorCombineExt") == 0) {
+    return toGrProc(grTexColorCombineExt);
+  }
+  if (std::strcmp(procName, "grTexAlphaCombineExt") == 0) {
+    return toGrProc(grTexAlphaCombineExt);
+  }
+  if (std::strcmp(procName, "grConstantColorValueExt") == 0) {
+    return toGrProc(grConstantColorValueExt);
+  }
+  if (std::strcmp(procName, "grAlphaBlendFunctionExt") == 0) {
+    return toGrProc(grAlphaBlendFunctionExt);
+  }
+  if (std::strcmp(procName, "grTextureBufferExt") == 0) {
+    return toGrProc(grTextureBufferExt);
+  }
+  if (std::strcmp(procName, "grTextureAuxBufferExt") == 0) {
+    return toGrProc(grTextureAuxBufferExt);
+  }
+  if (std::strcmp(procName, "grAuxBufferExt") == 0) {
+    return toGrProc(grAuxBufferExt);
+  }
+  if (std::strcmp(procName, "grSetNumPendingBuffers") == 0) {
+    return toGrProc(grSetNumPendingBuffers);
+  }
 
   GLIDE_LOG(WARN, "Frontend",
             "grGetProcAddress (Glide 3.x): Unknown extension " << procName);
@@ -1477,9 +2225,29 @@ FX_ENTRY FxBool FX_CALL grTexDownloadMipMapLevelPartial(
 FX_ENTRY void FX_CALL grTexSource(GrChipID_t tmu, FxU32 startAddress,
                                   FxU32 evenOdd, GrTexInfo* info) {
   GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::Tex);
+  (void)evenOdd;
   GLIDE_LOG(DEBUG, "Frontend",
             "grTexSource (Glide 3.x) invoked for TMU=" << tmu);
-  EntryCommon::BindTexSource(s_state, tmu, startAddress);
+  if (s_texBuf.active && s_texBuf.configured &&
+      static_cast<uint32_t>(tmu) == s_texBuf.tmu &&
+      static_cast<uint32_t>(startAddress) == s_texBuf.startAddress) {
+    CommitActiveTextureBuffer();
+  }
+  uint32_t bindAddr = startAddress;
+  auto& tm = GlideWrapper::TextureManager::GetInstance();
+  if (info && tm.IsMultibaseEnabled(static_cast<uint32_t>(tmu))) {
+    const int32_t g2Large =
+        g_inSplash ? info->largeLodLog2 : (8 - info->largeLodLog2);
+    const int32_t g2Small =
+        g_inSplash ? info->smallLodLog2 : (8 - info->smallLodLog2);
+    const uint32_t g2Aspect =
+        g_inSplash ? static_cast<uint32_t>(info->aspectRatioLog2)
+                   : static_cast<uint32_t>(3 - info->aspectRatioLog2);
+    bindAddr = tm.ResolveMultibaseSource(static_cast<uint32_t>(tmu),
+                                         startAddress, g2Large, g2Small,
+                                         g2Aspect, info->format);
+  }
+  EntryCommon::BindTexSource(s_state, tmu, bindAddr);
 }
 
 FX_ENTRY void FX_CALL grConstantColorValue(GrColor_t value) {
@@ -1498,8 +2266,8 @@ FX_ENTRY FxBool FX_CALL grLfbReadRegion(GrBuffer_t srcBuf, FxU32 srcX,
   GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::Lfb);
   EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend", "grLfbReadRegion (Glide 3.x) invoked.");
-  return EntryCommon::LfbReadRegion(srcBuf, srcX, srcY, srcWidth, srcHeight,
-                                    dstStride, dstData)
+  return EntryCommon::LfbReadRegion(ResolveLfbTargetBuffer(srcBuf), srcX, srcY,
+                                    srcWidth, srcHeight, dstStride, dstData)
              ? FXTRUE
              : FXFALSE;
 }
@@ -1515,8 +2283,9 @@ FX_ENTRY FxBool FX_CALL grLfbWriteRegion(GrBuffer_t dstBuf, FxU32 dstX,
   GLIDE_LOG(
       DEBUG, "Frontend",
       "grLfbWriteRegion (Glide 3.x) invoked: " << srcWidth << "x" << srcHeight);
-  return EntryCommon::LfbWriteRegion(dstBuf, dstX, dstY, srcFmt, srcWidth,
-                                     srcHeight, srcStride, srcData)
+  return EntryCommon::LfbWriteRegion(ResolveLfbTargetBuffer(dstBuf), dstX, dstY,
+                                     srcFmt, srcWidth, srcHeight, srcStride,
+                                     srcData)
              ? FXTRUE
              : FXFALSE;
 }
@@ -1534,7 +2303,8 @@ FX_ENTRY FxBool FX_CALL grLfbLock(GrLock_t type, GrBuffer_t buffer,
             "grLfbLock (Glide 3.x) invoked: buffer="
                 << buffer << ", mode=" << writeMode << ", origin=" << origin);
   return GlideWrapper::LfbManager::GetInstance().Lock(
-             type, buffer, writeMode, origin, pixelPipeline != 0, info)
+             type, ResolveLfbTargetBuffer(buffer), writeMode, origin,
+             pixelPipeline != 0, info)
              ? FXTRUE
              : FXFALSE;
 }
@@ -1543,8 +2313,10 @@ FX_ENTRY FxBool FX_CALL grLfbUnlock(GrLock_t type, GrBuffer_t buffer) {
   GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::Lfb);
   EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend", "grLfbUnlock (Glide 3.x) invoked.");
-  return EntryCommon::LfbUnlockWithState(s_state, type, buffer) ? FXTRUE
-                                                                : FXFALSE;
+  return EntryCommon::LfbUnlockWithState(s_state, type,
+                                         ResolveLfbTargetBuffer(buffer))
+             ? FXTRUE
+             : FXFALSE;
 }
 
 FX_ENTRY FxBool FX_CALL gu3dfGetInfo(const char* filename, Gu3dfInfo* info) {
@@ -1677,15 +2449,27 @@ FX_ENTRY void FX_CALL grEnable(GrEnableMode_t mode) {
     case GR_SHAMELESS_PLUG:
       s_shamelessPlug = true;
       break;
+    case GR_STENCIL_MODE_EXT:
+      EntryCommon::SetStencilMode(s_state, true);
+      break;
     case GR_ALLOW_MIPMAP_DITHER:
     case GR_PASSTHRU:
     case GR_VIDEO_SMOOTHING:
-    case 0x06:        // GR_TEXTURE_UMA_EXT
-    case 0x07:        // GR_STENCIL_MODE_EXT
-    case 0x08:        // GR_OPENGL_MODE_EXT
+    case GR_OPENGL_MODE_EXT:
     case 0x09:        // GR_MULTIRENDERING_EXT
     case 0x80000001u: // GR_COMBINEEXT_MODE (VSA-100 / Napalm)
       break;
+    case GR_TEXTURE_UMA_EXT: {
+      const auto model =
+          GlideWrapper::EmulationRegistry::GetInstance().GetConfig().model;
+      if (model == GlideWrapper::CardModel::VoodooBanshee ||
+          model == GlideWrapper::CardModel::Voodoo3 ||
+          model == GlideWrapper::CardModel::Voodoo4 ||
+          model == GlideWrapper::CardModel::Voodoo5) {
+        GlideWrapper::TextureManager::GetInstance().SetUmaMode(true);
+      }
+      break;
+    }
     case GR_AA_MULTI_SAMPLE:
       s_aaMultiSample = true;
       if (auto* backend =
@@ -1714,14 +2498,18 @@ FX_ENTRY void FX_CALL grDisable(GrEnableMode_t mode) {
     case GR_SHAMELESS_PLUG:
       s_shamelessPlug = false;
       break;
+    case GR_STENCIL_MODE_EXT:
+      EntryCommon::SetStencilMode(s_state, false);
+      break;
     case GR_ALLOW_MIPMAP_DITHER:
     case GR_PASSTHRU:
     case GR_VIDEO_SMOOTHING:
-    case 0x06:        // GR_TEXTURE_UMA_EXT
-    case 0x07:        // GR_STENCIL_MODE_EXT
-    case 0x08:        // GR_OPENGL_MODE_EXT
+    case GR_OPENGL_MODE_EXT:
     case 0x09:        // GR_MULTIRENDERING_EXT
     case 0x80000001u: // GR_COMBINEEXT_MODE (VSA-100 / Napalm)
+      break;
+    case GR_TEXTURE_UMA_EXT:
+      GlideWrapper::TextureManager::GetInstance().SetUmaMode(false);
       break;
     case GR_AA_MULTI_SAMPLE:
       s_aaMultiSample = false;
@@ -1739,9 +2527,12 @@ FX_ENTRY void FX_CALL grDisable(GrEnableMode_t mode) {
 
 FX_ENTRY void FX_CALL grTexMultibase(GrChipID_t tmu, FxBool enable) {
   GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
+  EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend",
-            "grTexMultibase (Glide 3.x) stub invoked for TMU="
-                << tmu << ", enable=" << enable);
+            "grTexMultibase (Glide 3.x): tmu=" << tmu
+                                               << ", enable=" << enable);
+  GlideWrapper::TextureManager::GetInstance().SetMultibase(
+      static_cast<uint32_t>(tmu), enable != 0);
 }
 
 FX_ENTRY void FX_CALL grTexMultibaseAddress(GrChipID_t tmu,
@@ -1749,9 +2540,15 @@ FX_ENTRY void FX_CALL grTexMultibaseAddress(GrChipID_t tmu,
                                             FxU32 startAddress, FxU32 evenOdd,
                                             GrTexInfo* info) {
   GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
+  EnsureEngineInitialized();
+  (void)evenOdd;
+  (void)info;
   GLIDE_LOG(DEBUG, "Frontend",
-            "grTexMultibaseAddress (Glide 3.x) stub: tmu=" << tmu << ", level="
-                                                           << level);
+            "grTexMultibaseAddress (Glide 3.x): tmu="
+                << tmu << ", level=" << level << ", addr=0x" << std::hex
+                << startAddress << std::dec);
+  GlideWrapper::TextureManager::GetInstance().SetMultibaseAddress(
+      static_cast<uint32_t>(tmu), static_cast<uint32_t>(level), startAddress);
 }
 
 FX_ENTRY void FX_CALL grGlideGetVertexLayout(void* layout) {
@@ -1787,6 +2584,100 @@ FX_ENTRY void FX_CALL grLoadGammaTable(FxU32 nentries, FxU32* red, FxU32* green,
       static_cast<uint32_t>(nentries), rBuf.empty() ? nullptr : rBuf.data(),
       gBuf.empty() ? nullptr : gBuf.data(),
       bBuf.empty() ? nullptr : bBuf.data());
+}
+
+FX_ENTRY void FX_CALL grGetGammaTableExt(FxU32 nentries, FxU32* red,
+                                         FxU32* green, FxU32* blue) {
+  EnsureEngineInitialized();
+  if (!GlideWrapper::EmulationRegistry::GetInstance().IsCardFeatureAvailable(
+          "grGetGammaTableExt")) {
+    GLIDE_LOG(WARN, "Frontend",
+              "GATED CALL: grGetGammaTableExt is not available under active "
+              "card profile.");
+    return;
+  }
+  GLIDE_LOG(DEBUG, "Frontend",
+            "grGetGammaTableExt (Glide 3.x): nentries=" << nentries);
+  if (nentries == 0 || (!red && !green && !blue)) return;
+  const uint32_t count = std::min<uint32_t>(static_cast<uint32_t>(nentries), 256u);
+  std::vector<uint32_t> rBuf(red ? count : 0u);
+  std::vector<uint32_t> gBuf(green ? count : 0u);
+  std::vector<uint32_t> bBuf(blue ? count : 0u);
+  EntryCommon::GetGammaTable(count, red ? rBuf.data() : nullptr,
+                             green ? gBuf.data() : nullptr,
+                             blue ? bBuf.data() : nullptr);
+  for (uint32_t i = 0; i < count; ++i) {
+    if (red) red[i] = static_cast<FxU32>(rBuf[i]);
+    if (green) green[i] = static_cast<FxU32>(gBuf[i]);
+    if (blue) blue[i] = static_cast<FxU32>(bBuf[i]);
+  }
+}
+
+FX_ENTRY void FX_CALL grAlphaControlsITRGBLighting(FxBool enable) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
+  EnsureEngineInitialized();
+  if (!GlideWrapper::EmulationRegistry::GetInstance().IsFunctionAvailable(
+          "grAlphaControlsITRGBLighting")) {
+    GLIDE_LOG(WARN, "Frontend",
+              "GATED CALL: grAlphaControlsITRGBLighting (Glide 3.x) gated out "
+              "under active version/device profile.");
+    return;
+  }
+  GLIDE_LOG(DEBUG, "Frontend",
+            "grAlphaControlsITRGBLighting (Glide 3.x): " << enable);
+  s_alphaControlsITRGBLighting = (enable != 0);
+}
+
+FX_ENTRY void FX_CALL grCheckForRoom(FxI32 n) {
+  EnsureEngineInitialized();
+  GLIDE_LOG(DEBUG, "Frontend", "grCheckForRoom (Glide 3.x): n=" << n);
+}
+
+FX_ENTRY void FX_CALL grErrorSetCallback(GrErrorCallbackFnc_t fnc) {
+  EnsureEngineInitialized();
+  GLIDE_LOG(DEBUG, "Frontend", "grErrorSetCallback (Glide 3.x) invoked");
+  s_errorCallback = fnc;
+}
+
+FX_ENTRY void FX_CALL grLfbConstantDepth(FxU32 depth) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::Lfb);
+  EnsureEngineInitialized();
+  GLIDE_LOG(DEBUG, "Frontend", "grLfbConstantDepth (Glide 3.x): " << depth);
+  s_lfbConstantDepth = depth;
+}
+
+FX_ENTRY void FX_CALL grLfbWriteColorSwizzle(FxBool swizzleBytes,
+                                             FxBool swapWords) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::Lfb);
+  EnsureEngineInitialized();
+  GLIDE_LOG(DEBUG, "Frontend",
+            "grLfbWriteColorSwizzle (Glide 3.x): swizzleBytes="
+                << swizzleBytes << ", swapWords=" << swapWords);
+  s_lfbWriteColorSwizzle = (swizzleBytes != 0);
+  s_lfbWriteColorSwizzleSwap = (swapWords != 0);
+}
+
+FX_ENTRY void FX_CALL grSstConfigPipeline(GrChipID_t chip, FxU32 reg,
+                                          FxU32 value) {
+  EnsureEngineInitialized();
+  GLIDE_LOG(INFO, "Frontend",
+            "grSstConfigPipeline (Glide 3.x): chip=" << chip << ", reg=" << reg
+                                                     << ", value=" << value);
+}
+
+FX_ENTRY void FX_CALL grTexNCCTable(GrNCCTable_t table) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::Tex);
+  EnsureEngineInitialized();
+  GLIDE_LOG(DEBUG, "Frontend", "grTexNCCTable (Glide 3.x): Table=" << table);
+  auto& tm = GlideWrapper::TextureManager::GetInstance();
+  tm.SetActiveNccTable(GR_TMU0, table);
+  tm.SetActiveNccTable(GR_TMU1, table);
+}
+
+FX_ENTRY int FX_CALL guEncodeRLE16(void* dst, void* src, FxU32 width,
+                                   FxU32 height) {
+  return EntryCommon::EncodeRLE16(dst, src, static_cast<uint32_t>(width),
+                                  static_cast<uint32_t>(height));
 }
 
 FX_ENTRY void FX_CALL guGammaCorrectionRGB(FxFloat red, FxFloat green,

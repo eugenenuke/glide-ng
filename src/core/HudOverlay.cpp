@@ -123,6 +123,7 @@ const char* CardModelShortName(CardModel model) {
     case CardModel::VoodooGraphics: return "Voodoo1";
     case CardModel::VoodooRush:     return "Rush";
     case CardModel::Voodoo2:        return "Voodoo2";
+    case CardModel::VoodooBanshee:  return "Banshee";
     case CardModel::Voodoo3:        return "Voodoo3";
     case CardModel::Voodoo4:        return "Voodoo4";
     case CardModel::Voodoo5:        return "Voodoo5";

@@ -115,6 +115,25 @@ void VertexLayout::ResetToGlide3Canonical() {
   m_glide3LayoutState.colorType = 0;  // float
 }
 
+void VertexLayout::ResetAllParamsDisabled() {
+  m_stwHintMask = 0;
+  m_isGlide2Canonical = false;
+  m_offsetXY = -1;
+  m_offsetZ = -1;
+  m_offsetOOZ = -1;
+  m_offsetOOW = -1;
+  m_offsetRGB = -1;
+  m_offsetA = -1;
+  m_offsetST0 = -1;
+  m_offsetFog = -1;
+  m_offsetST1 = -1;
+  m_offsetPARGB = -1;
+  m_offsetQ0 = -1;
+  m_offsetQ1 = -1;
+  m_colorType = 0;
+  std::memset(&m_glide3LayoutState, 0, sizeof(m_glide3LayoutState));
+}
+
 void VertexLayout::SetParamOffset(uint32_t param, int32_t offset,
                                   uint32_t mode) {
   SetParamOffsetGlide2(param, offset, mode);

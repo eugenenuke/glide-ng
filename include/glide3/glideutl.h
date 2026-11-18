@@ -143,6 +143,12 @@ gu3dfGetInfo( const char *filename, Gu3dfInfo *info );
 FX_ENTRY FxBool FX_CALL
 gu3dfLoad( const char *filename, Gu3dfInfo *data );
 
+FX_ENTRY int FX_CALL
+guEncodeRLE16( void *dst,
+               void *src,
+               FxU32 width,
+               FxU32 height );
+
 #endif /* FX_GLIDE_NO_FUNC_PROTO */
 
 #ifdef __cplusplus

@@ -181,9 +181,16 @@ ToolRunConfig InitializeAndParse(
     GrHwConfiguration hwconfig;
     if (grSstQueryHardware(&hwconfig)) {
         if (hwconfig.SSTs[0].type == GR_SSTTYPE_VOODOO) {
-            sysConfig.boardName = "Voodoo Graphics (SST-1)";
+            const int rev = hwconfig.SSTs[0].sstBoard.VoodooConfig.fbiRev;
+            if ((rev & 0x11000) == 0x11000) {
+                sysConfig.boardName = "Voodoo3 / VSA-100 (H3+)";
+            } else if ((rev & 0x01000) == 0x01000) {
+                sysConfig.boardName = "Voodoo Banshee (H3)";
+            } else {
+                sysConfig.boardName = "Voodoo Graphics (SST-1)";
+            }
             sysConfig.fbiMemMb = hwconfig.SSTs[0].sstBoard.VoodooConfig.fbRam;
-            sysConfig.tmuCount = 1;
+            sysConfig.tmuCount = hwconfig.SSTs[0].sstBoard.VoodooConfig.nTexelfx;
             sysConfig.sli = false;
         } else if (hwconfig.SSTs[0].type == GR_SSTTYPE_SST96) {
             sysConfig.boardName = "Voodoo Rush (SST-96)";
@@ -346,6 +353,7 @@ ToolRunConfig InitializeAndParse(
     }
 
     bool is_voodoo2_plus = (sysConfig.boardName.find("Voodoo2") != std::string::npos ||
+                            sysConfig.boardName.find("Banshee") != std::string::npos ||
                             sysConfig.boardName.find("Voodoo3") != std::string::npos ||
                             sysConfig.boardName.find("Voodoo4") != std::string::npos ||
                             sysConfig.boardName.find("Voodoo5") != std::string::npos);
@@ -355,7 +363,7 @@ ToolRunConfig InitializeAndParse(
         if (f == "grTexMultibase" || f == "grTexMultibaseAddress") {
             return (reported_version >= 2.42 && is_voodoo2_plus && sysConfig.tmuCount >= 2);
         }
-        if (f == "grGetProcAddress" || f == "grChromakeyRangeExt" || f == "grAlphaControlsITRGBLighting") {
+        if (f == "grChromakeyRangeExt" || f == "grAlphaControlsITRGBLighting") {
             return (reported_version >= 2.43);
         }
         if (f == "grSplashCb") {
@@ -373,10 +381,9 @@ ToolRunConfig InitializeAndParse(
         PrintTwoColumns(lines);
     }
     
-    SafePrint(std::cout, "  [Glide v2.43 Features]");
+    SafePrint(std::cout, "  [Glide v2.43+ Features]");
     {
         std::vector<std::string> lines = {
-            "    [" + std::string(is_func_avail("grGetProcAddress") ? "X" : " ") + "]  grGetProcAddress",
             "    [" + std::string(is_func_avail("grChromakeyRangeExt") ? "X" : " ") + "]  grChromakeyRangeExt",
             "    [" + std::string(is_func_avail("grAlphaControlsITRGBLighting") ? "X" : " ") + "]  grAlphaControlsITRGBLighting"
         };
@@ -404,6 +411,7 @@ ToolRunConfig InitializeAndParse(
     };
     ExtensionInfo g3ExclusiveExts[] = {
         {"FOGCOORD", "FOGCOORD"},
+        {"GETGAMMA", "GETGAMMA"},
         {"RESOLUTION", "RESOLUTION"},
         {"SURFACE", "SURFACE (DirectDraw)"},
         {"COMMAND_TRANSPORT", "COMMAND_TRANSPORT"}

@@ -63,6 +63,11 @@ std::vector<GrMipMapInfo> s_guTextures;
 uint32_t s_guTexNextAddress = 0;
 GrMipMapId_t s_currentMipMap[2] = {GR_NULL_MIPMAP_HANDLE,
                                    GR_NULL_MIPMAP_HANDLE};
+GrMipMapId_t s_mpMipMap[GLIDE_NUM_VIRTUAL_TMU] = {GR_NULL_MIPMAP_HANDLE,
+                                                  GR_NULL_MIPMAP_HANDLE};
+GrMPTextureCombineFnc_t s_mpTexCombineFnc = GR_MPTEXTURECOMBINE_ADD;
+std::string s_movieName;
+bool s_movieRecording = false;
 
 uint16_t s_lfbConstantDepth = 0;
 bool s_lfbWriteColorSwizzle = false;
@@ -110,6 +115,10 @@ void ResetFrontendState() {
   s_guTextures.clear();
   s_guTexNextAddress = 0;
   s_currentMipMap[0] = s_currentMipMap[1] = GR_NULL_MIPMAP_HANDLE;
+  s_mpMipMap[0] = s_mpMipMap[1] = GR_NULL_MIPMAP_HANDLE;
+  s_mpTexCombineFnc = GR_MPTEXTURECOMBINE_ADD;
+  s_movieName.clear();
+  s_movieRecording = false;
   s_lfbConstantDepth = 0;
   s_lfbWriteColorSwizzle = false;
   s_lfbWriteColorSwizzleSwap = false;
@@ -194,10 +203,15 @@ struct __attribute__((packed)) GlideWrapperState {
   uint8_t ditherMode;
   uint8_t lfbConstantAlpha;
   uint32_t lfbWriteColorFormat;
+  uint8_t colorMaskExtMask;
+  int8_t texDetailBias[2];
+  uint8_t texDetailScale[2];
+  float texDetailMax[2];
+  uint8_t hasM10ExtState;
 
   // Explicit padding to align exactly to the Glide 2.x standard 312-byte layout
   // size
-  uint8_t pad[112];
+  uint8_t pad[98];
 };
 
 static_assert(sizeof(GlideWrapperState) == 312,
@@ -254,6 +268,10 @@ FX_ENTRY FxBool FX_CALL grSstWinOpen(AnyPtr hWnd,
   s_guTextures.clear();
   s_guTexNextAddress = 0;
   s_currentMipMap[0] = s_currentMipMap[1] = GR_NULL_MIPMAP_HANDLE;
+  s_mpMipMap[0] = s_mpMipMap[1] = GR_NULL_MIPMAP_HANDLE;
+  s_mpTexCombineFnc = GR_MPTEXTURECOMBINE_ADD;
+  s_movieName.clear();
+  s_movieRecording = false;
   s_lfbConstantDepth = 0;
   s_lfbWriteColorSwizzle = false;
   s_lfbWriteColorSwizzleSwap = false;
@@ -634,20 +652,33 @@ FX_ENTRY FxBool FX_CALL grSstQueryHardware(GrHwConfiguration* hwconfig) {
     r.nTexelfx = tmuCount;
     r.tmuConfig.tmuRev = 1;
     r.tmuConfig.tmuRam = static_cast<int>(config.tmuMemoryMb);
-  } else {
-    // Voodoo2, Voodoo3, Voodoo4, Voodoo5 (CVG/Avenger/Napalm)
+  } else if (config.model == GlideWrapper::CardModel::Voodoo2) {
     hwconfig->SSTs[0].type = GR_SSTTYPE_Voodoo2;
     auto& v2 = hwconfig->SSTs[0].sstBoard.Voodoo2Config;
     v2.fbRam = static_cast<int>(config.fbiMemoryMb);
     v2.fbiRev = 2;
     v2.nTexelfx = tmuCount;
-    v2.sliDetect =
-        (config.model == GlideWrapper::CardModel::Voodoo2 && config.enableSli)
-            ? FXTRUE
-            : FXFALSE;
+    v2.sliDetect = config.enableSli ? FXTRUE : FXFALSE;
     for (int i = 0; i < clampedTmus; ++i) {
       v2.tmuConfig[i].tmuRev = 1;
       v2.tmuConfig[i].tmuRam = static_cast<int>(config.tmuMemoryMb);
+    }
+  } else {
+    // Authentic 3dfx H3/H5 Glide 2.60/2.61 encoding (gpci.c):
+    // Banshee/Voodoo3/Voodoo4/Voodoo5 report GR_SSTTYPE_VOODOO with
+    // fbiRev = 0x1002 (Banshee) or 0x11002 (Voodoo3/VSA-100).
+    hwconfig->SSTs[0].type = GR_SSTTYPE_VOODOO;
+    auto& v = hwconfig->SSTs[0].sstBoard.VoodooConfig;
+    v.fbRam = static_cast<int>(config.fbiMemoryMb);
+    const int revBase =
+        (config.model == GlideWrapper::CardModel::VoodooBanshee) ? 0x1002
+                                                                 : 0x11002;
+    v.fbiRev = revBase;
+    v.nTexelfx = tmuCount;
+    v.sliDetect = FXFALSE;
+    for (int i = 0; i < clampedTmus; ++i) {
+      v.tmuConfig[i].tmuRev = revBase;
+      v.tmuConfig[i].tmuRam = static_cast<int>(config.tmuMemoryMb);
     }
   }
 
@@ -658,31 +689,14 @@ FX_ENTRY FxBool FX_CALL grSstQueryBoards(GrHwConfiguration* hwconfig) {
   return grSstQueryHardware(hwconfig);
 }
 
-namespace {
-const char* GetGlide2VersionString(GlideWrapper::ApiVersion apiVersion) {
-  switch (apiVersion) {
-    case GlideWrapper::ApiVersion::GLIDE_2_1:
-      return "2.10 (glide-ng)";
-    case GlideWrapper::ApiVersion::GLIDE_2_40:
-      return "2.40 (glide-ng)";
-    case GlideWrapper::ApiVersion::GLIDE_2_42:
-      return "2.42 (glide-ng)";
-    case GlideWrapper::ApiVersion::GLIDE_2_43:
-      return "2.43 (glide-ng)";
-    case GlideWrapper::ApiVersion::GLIDE_2_61:
-      return "2.61 (glide-ng)";
-  }
-  return "2.43 (glide-ng)";
-}
-}  // namespace
-
 FX_ENTRY void FX_CALL grGlideGetVersion(char version[80]) {
   EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend", "grGlideGetVersion invoked.");
   if (version) {
     const auto& config =
         GlideWrapper::EmulationRegistry::GetInstance().GetConfig();
-    std::strncpy(version, GetGlide2VersionString(config.apiVersion), 80);
+    std::strncpy(version, GlideWrapper::FormatApiVersionString(config.apiVersion),
+                 80);
     version[79] = '\0';
   }
 }
@@ -726,7 +740,7 @@ FX_ENTRY void FX_CALL grGet(FxU32 pname, FxU32 plength, FxI32* params) {
       break;
     case GR_MAX_TEXTURE_SIZE:
       if (plength >= 4) {
-        params[0] = (card >= GlideWrapper::CardModel::Voodoo3) ? 2048 : 256;
+        params[0] = (card >= GlideWrapper::CardModel::Voodoo4) ? 2048 : 256;
       }
       break;
     case GR_MAX_TEXTURE_ASPECT_RATIO:
@@ -740,8 +754,13 @@ FX_ENTRY void FX_CALL grGet(FxU32 pname, FxU32 plength, FxI32* params) {
       }
       break;
     case GR_BITS_RGBA:
-      if (plength >= 4) {
-        params[0] = 32;
+      if (plength >= 16) {
+        params[0] = 5;
+        params[1] = 6;
+        params[2] = 5;
+        params[3] = 0;
+      } else if (plength >= 4) {
+        params[0] = 16;
       }
       break;
     case GR_FOG_TABLE_ENTRIES:
@@ -775,53 +794,6 @@ FX_ENTRY void FX_CALL grGet(FxU32 pname, FxU32 plength, FxI32* params) {
       GLIDE_LOG(WARN, "Frontend",
                 "grGet (Glide 2.x) unknown or unsupported pname=" << pname);
       break;
-  }
-}
-
-FX_ENTRY const char* FX_CALL grGetString(FxU32 pname) {
-  EnsureEngineInitialized();
-  GLIDE_LOG(DEBUG, "Frontend", "grGetString invoked for pname: " << pname);
-  auto& reg = GlideWrapper::EmulationRegistry::GetInstance();
-  switch (pname) {
-    case GR_VERSION:
-      return GetGlide2VersionString(reg.GetConfig().apiVersion);
-    case GR_HARDWARE: {
-      switch (reg.GetConfig().model) {
-        case GlideWrapper::CardModel::VoodooGraphics:
-          return "Voodoo Graphics";
-        case GlideWrapper::CardModel::VoodooRush:
-          return "Voodoo Rush";
-        case GlideWrapper::CardModel::Voodoo2:
-          return "Voodoo2";
-        case GlideWrapper::CardModel::Voodoo3:
-          return "Voodoo3";
-        case GlideWrapper::CardModel::Voodoo4:
-          return "Voodoo4";
-        case GlideWrapper::CardModel::Voodoo5:
-          return "Voodoo5";
-      }
-      return "Voodoo2";
-    }
-    case GR_VENDOR:
-      return reg.GetConfig().reportedVendorOverride.c_str();
-    case GR_RENDERER:
-      return EntryCommon::GetRendererString();
-    case GR_EXTENSION: {
-      static std::string s_extensions;
-      s_extensions = "";
-      if (reg.IsFunctionAvailable("grChromakeyRangeExt")) {
-        s_extensions += "CHROMARANGE ";
-      }
-      if (reg.IsFunctionAvailable("grTexChromaModeExt")) {
-        s_extensions += "TEXCHROMA ";
-      }
-      if (!s_extensions.empty() && s_extensions.back() == ' ') {
-        s_extensions.pop_back();
-      }
-      return s_extensions.c_str();
-    }
-    default:
-      return "Unknown";
   }
 }
 
@@ -933,6 +905,15 @@ FX_ENTRY void FX_CALL grGlideGetState(GrState* state) {
   ws->ditherMode = s_state.ditherMode;
   ws->lfbConstantAlpha = s_state.lfbConstantAlpha;
   ws->lfbWriteColorFormat = s_state.lfbWriteColorFormat;
+  ws->colorMaskExtMask = static_cast<uint8_t>(
+      (s_state.colorMaskR ? 1u : 0u) | (s_state.colorMaskG ? 2u : 0u) |
+      (s_state.colorMaskB ? 4u : 0u));
+  for (int i = 0; i < 2; ++i) {
+    ws->texDetailBias[i] = static_cast<int8_t>(s_state.texDetailBias[i]);
+    ws->texDetailScale[i] = s_state.texDetailScale[i];
+    ws->texDetailMax[i] = s_state.texDetailMax[i];
+  }
+  ws->hasM10ExtState = 1u;
 }
 
 FX_ENTRY void FX_CALL grGlideSetState(const GrState* state) {
@@ -1008,6 +989,23 @@ FX_ENTRY void FX_CALL grGlideSetState(const GrState* state) {
   s_state.ditherMode = (ws->ditherMode > 2) ? 0 : ws->ditherMode;
   s_state.lfbConstantAlpha = ws->lfbConstantAlpha;
   s_state.lfbWriteColorFormat = ws->lfbWriteColorFormat;
+  if (ws->hasM10ExtState != 0) {
+    s_state.colorMaskR = (ws->colorMaskExtMask & 1u) != 0;
+    s_state.colorMaskG = (ws->colorMaskExtMask & 2u) != 0;
+    s_state.colorMaskB = (ws->colorMaskExtMask & 4u) != 0;
+    s_state.colorMaskRgb =
+        (s_state.colorMaskR || s_state.colorMaskG || s_state.colorMaskB);
+    for (int i = 0; i < 2; ++i) {
+      s_state.texDetailBias[i] =
+          std::clamp<int32_t>(ws->texDetailBias[i], -32, 31);
+      s_state.texDetailScale[i] = std::min<uint8_t>(ws->texDetailScale[i], 7u);
+      s_state.texDetailMax[i] = std::clamp(ws->texDetailMax[i], 0.0f, 1.0f);
+    }
+  } else {
+    s_state.colorMaskR = s_state.colorMaskRgb;
+    s_state.colorMaskG = s_state.colorMaskRgb;
+    s_state.colorMaskB = s_state.colorMaskRgb;
+  }
 
   EntryCommon::ApplySharedStateToBackend(s_state, s_sstOrigin,
                                          /*includeTexInvert=*/false);
@@ -1219,10 +1217,18 @@ FX_ENTRY void FX_CALL grTexNCCTable(GrChipID_t tmu, GrNCCTable_t table) {
 FX_ENTRY void FX_CALL grTexSource(GrChipID_t tmu, FxU32 startAddress,
                                   FxU32 evenOdd, GrTexInfo* info) {
   GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::Tex);
+  (void)evenOdd;
   GLIDE_LOG(DEBUG, "Frontend",
             "grTexSource invoked for TMU=" << tmu << ", addr=0x" << std::hex
                                            << startAddress << std::dec);
-  EntryCommon::BindTexSource(s_state, tmu, startAddress);
+  uint32_t bindAddr = startAddress;
+  auto& tm = GlideWrapper::TextureManager::GetInstance();
+  if (info && tm.IsMultibaseEnabled(static_cast<uint32_t>(tmu))) {
+    bindAddr = tm.ResolveMultibaseSource(
+        static_cast<uint32_t>(tmu), startAddress, info->largeLod,
+        info->smallLod, static_cast<uint32_t>(info->aspectRatio), info->format);
+  }
+  EntryCommon::BindTexSource(s_state, tmu, bindAddr);
 }
 
 FX_ENTRY FxU32 FX_CALL grTexTextureMemRequired(FxU32 evenOdd, GrTexInfo* info) {
@@ -1235,11 +1241,14 @@ FX_ENTRY FxU32 FX_CALL grTexTextureMemRequired(FxU32 evenOdd, GrTexInfo* info) {
 FX_ENTRY void FX_CALL grTexDetailControl(GrChipID_t tmu, int lod_bias,
                                          FxU8 detail_scale, float detail_max) {
   GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
+  EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend",
             "grTexDetailControl invoked for TMU="
                 << tmu << ", lod_bias=" << lod_bias
                 << ", detail_scale=" << (int)detail_scale
-                << ", detail_max=" << detail_max << " (Stubbed)");
+                << ", detail_max=" << detail_max);
+  EntryCommon::SetTexDetailControl(s_state, tmu, lod_bias, detail_scale,
+                                   detail_max);
 }
 
 FX_ENTRY void FX_CALL grTexLodBiasValue(GrChipID_t tmu, float bias) {
@@ -1311,9 +1320,10 @@ FX_ENTRY void FX_CALL grTexMultibase(GrChipID_t tmu, FxBool enable) {
               "version/device profile.");
     return;
   }
-  GLIDE_LOG(
-      DEBUG, "Frontend",
-      "grTexMultibase: tmu=" << tmu << ", enable=" << enable << " (Stubbed)");
+  GLIDE_LOG(DEBUG, "Frontend",
+            "grTexMultibase: tmu=" << tmu << ", enable=" << enable);
+  GlideWrapper::TextureManager::GetInstance().SetMultibase(
+      static_cast<uint32_t>(tmu), enable != 0);
 }
 
 FX_ENTRY void FX_CALL grTexMultibaseAddress(GrChipID_t tmu,
@@ -1322,6 +1332,8 @@ FX_ENTRY void FX_CALL grTexMultibaseAddress(GrChipID_t tmu,
                                             GrTexInfo* info) {
   GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   EnsureEngineInitialized();
+  (void)evenOdd;
+  (void)info;
   if (!GlideWrapper::EmulationRegistry::GetInstance().IsFunctionAvailable(
           "grTexMultibaseAddress")) {
     GLIDE_LOG(WARN, "API",
@@ -1329,10 +1341,17 @@ FX_ENTRY void FX_CALL grTexMultibaseAddress(GrChipID_t tmu,
               "active version/device profile.");
     return;
   }
+  // Glide 2.x uses 0=256, 1=128, 2=64, 3=32_TO_1 (inverse of Glide 3.x).
+  const uint32_t canonicalRange =
+      (range <= 3) ? static_cast<uint32_t>(3 - range)
+                   : static_cast<uint32_t>(range);
   GLIDE_LOG(DEBUG, "Frontend",
             "grTexMultibaseAddress: tmu=" << tmu << ", range=" << range
-                                          << ", startAddress=" << startAddress
-                                          << " (Stubbed)");
+                                          << " (canonical=" << canonicalRange
+                                          << "), startAddress=0x" << std::hex
+                                          << startAddress << std::dec);
+  GlideWrapper::TextureManager::GetInstance().SetMultibaseAddress(
+      static_cast<uint32_t>(tmu), canonicalRange, startAddress);
 }
 
 FX_ENTRY GrMipMapId_t FX_CALL guTexAllocateMemory(
@@ -1966,47 +1985,8 @@ FX_ENTRY void FX_CALL guColorCombineFunction(GrColorCombineFnc_t fnc) {
 
 FX_ENTRY int FX_CALL guEncodeRLE16(void* dst, void* src, FxU32 width,
                                    FxU32 height) {
-  int byteCount = 0;
-  int sourceImageSizeInWords = width * height;
-  FxU16* srcPixels = reinterpret_cast<FxU16*>(src);
-  FxU32* dstPixels = reinterpret_cast<FxU32*>(dst);
-
-  if (dstPixels) {
-    while (sourceImageSizeInWords > 0) {
-      FxU16 length = 1;
-      FxU16 color = *srcPixels;
-      int lookAhead = 1;
-
-      while ((sourceImageSizeInWords - length > 0) &&
-             (color == srcPixels[lookAhead])) {
-        length++;
-        lookAhead++;
-      }
-
-      *dstPixels = ((((FxU32)length) << 16) | ((FxU32)color));
-      dstPixels++;
-      byteCount += 4;
-      srcPixels += length;
-      sourceImageSizeInWords -= length;
-    }
-  } else {
-    while (sourceImageSizeInWords > 0) {
-      FxU16 length = 1;
-      FxU16 color = *srcPixels;
-      int lookAhead = 1;
-
-      while ((sourceImageSizeInWords - length > 0) &&
-             (color == srcPixels[lookAhead])) {
-        length++;
-        lookAhead++;
-      }
-
-      byteCount += 4;
-      srcPixels += length;
-      sourceImageSizeInWords -= length;
-    }
-  }
-  return byteCount;
+  return EntryCommon::EncodeRLE16(dst, src, static_cast<uint32_t>(width),
+                                  static_cast<uint32_t>(height));
 }
 
 static void setlevel(FxU16* data, FxU16 color, int width, int height) {
@@ -2152,62 +2132,9 @@ FX_ENTRY void FX_CALL grAlphaBlendFunctionExt(FxU32 rgb_sf, FxU32 rgb_df,
 FX_ENTRY void FX_CALL grSplashCb(float x, float y, float w, float h,
                                  FxU32 frame, void (*callback)(int frame));
 
-FX_ENTRY GrProc FX_CALL grGetProcAddress(char* procName) {
-  EnsureEngineInitialized();
-  GLIDE_LOG(DEBUG, "Frontend",
-            "grGetProcAddress: " << (procName ? procName : "NULL"));
-  if (!procName) return nullptr;
-
-  // Dynamic Gating Checklist Validation
-  if (!GlideWrapper::EmulationRegistry::GetInstance().IsFunctionAvailable(
-          procName)) {
-    GLIDE_LOG(WARN, "Frontend",
-              "grGetProcAddress: Gating out '"
-                  << procName << "' under active version/device profile");
-    return nullptr;
-  }
-
-  if (std::strcmp(procName, "grChromakeyRangeExt") == 0) {
-    return (GrProc)grChromakeyRangeExt;
-  }
-  if (std::strcmp(procName, "grTexChromaModeExt") == 0) {
-    return (GrProc)grTexChromaModeExt;
-  }
-  if (std::strcmp(procName, "grTexChromaRangeExt") == 0) {
-    return (GrProc)grTexChromaRangeExt;
-  }
-  if (std::strcmp(procName, "grSplashCb") == 0) {
-    return (GrProc)grSplashCb;
-  }
-  if (std::strcmp(procName, "grColorMaskExt") == 0) {
-    return (GrProc)grColorMaskExt;
-  }
-  if (std::strcmp(procName, "grStencilFuncExt") == 0) {
-    return (GrProc)grStencilFuncExt;
-  }
-  if (std::strcmp(procName, "grStencilMaskExt") == 0) {
-    return (GrProc)grStencilMaskExt;
-  }
-  if (std::strcmp(procName, "grStencilOpExt") == 0) {
-    return (GrProc)grStencilOpExt;
-  }
-  if (std::strcmp(procName, "grBufferClearExt") == 0) {
-    return (GrProc)grBufferClearExt;
-  }
-  if (std::strcmp(procName, "grLfbConstantStencilExt") == 0) {
-    return (GrProc)grLfbConstantStencilExt;
-  }
-  if (std::strcmp(procName, "grTBufferWriteMaskExt") == 0) {
-    return (GrProc)grTBufferWriteMaskExt;
-  }
-  if (std::strcmp(procName, "grAlphaBlendFunctionExt") == 0) {
-    return (GrProc)grAlphaBlendFunctionExt;
-  }
-
-  GLIDE_LOG(WARN, "Frontend",
-            "grGetProcAddress: Unknown extension " << procName);
-  return nullptr;
-}
+// Authentic Glide 2.x DLLs/OVLs do not export grGetString or grGetProcAddress
+// (both were introduced in Glide 3.x). Extension functions below remain
+// directly exported for static/dlsym callers and gated internally by profile.
 
 FX_ENTRY void FX_CALL grChromakeyRangeExt(GrColor_t minColor,
                                           GrColor_t maxColor,
@@ -2261,54 +2188,70 @@ FX_ENTRY void FX_CALL grTexChromaRangeExt(GrChipID_t tmu, GrColor_t minColor,
   EntryCommon::SetTexChromakeyRange(s_state, tmu, minColor, maxColor, mode);
 }
 
-// Extension Stub Implementations (Glide 2.x)
+// Extension Implementations (Glide 2.x)
 FX_ENTRY void FX_CALL grColorMaskExt(FxBool r, FxBool g, FxBool b, FxBool a) {
   GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   EnsureEngineInitialized();
-  GLIDE_LOG(WARN, "Stub",
-            "grColorMaskExt stub invoked: R=" << (int)r << ", G=" << (int)g
-                                              << ", B=" << (int)b
-                                              << ", A=" << (int)a);
+  GLIDE_LOG(DEBUG, "Frontend",
+            "grColorMaskExt: R=" << (int)r << ", G=" << (int)g
+                                 << ", B=" << (int)b << ", A=" << (int)a);
+  EntryCommon::SetColorMaskExt(s_state, r != 0, g != 0, b != 0, a != 0);
 }
 
 FX_ENTRY void FX_CALL grStencilFuncExt(FxU32 func, FxU32 ref, FxU32 mask) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   EnsureEngineInitialized();
-  GLIDE_LOG(WARN, "Stub",
-            "grStencilFuncExt stub invoked: func=" << func << ", ref=" << ref
-                                                   << ", mask=" << mask);
+  GLIDE_LOG(DEBUG, "Frontend",
+            "grStencilFuncExt: func=" << func << ", ref=" << ref
+                                      << ", mask=" << mask);
+  EntryCommon::SetStencilFunc(s_state, func, static_cast<uint8_t>(ref),
+                              static_cast<uint8_t>(mask));
 }
 
 FX_ENTRY void FX_CALL grStencilMaskExt(FxU32 mask) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   EnsureEngineInitialized();
-  GLIDE_LOG(WARN, "Stub", "grStencilMaskExt stub invoked: mask=" << mask);
+  GLIDE_LOG(DEBUG, "Frontend", "grStencilMaskExt: mask=" << mask);
+  EntryCommon::SetStencilMask(s_state, static_cast<uint8_t>(mask));
 }
 
 FX_ENTRY void FX_CALL grStencilOpExt(FxU32 fail, FxU32 zfail, FxU32 zpass) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   EnsureEngineInitialized();
-  GLIDE_LOG(WARN, "Stub",
-            "grStencilOpExt stub invoked: fail=" << fail << ", zfail=" << zfail
-                                                 << ", zpass=" << zpass);
+  GLIDE_LOG(DEBUG, "Frontend",
+            "grStencilOpExt: fail=" << fail << ", zfail=" << zfail
+                                    << ", zpass=" << zpass);
+  EntryCommon::SetStencilOp(s_state, fail, zfail, zpass);
 }
 
 FX_ENTRY void FX_CALL grBufferClearExt(GrColor_t color, GrAlpha_t alpha,
                                        FxU32 depth, FxU32 stencil) {
   GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::Draw);
   EnsureEngineInitialized();
-  GLIDE_LOG(WARN, "Stub",
-            "grBufferClearExt stub invoked: color="
-                << color << ", alpha=" << (int)alpha << ", depth=" << depth
-                << ", stencil=" << stencil);
+  GLIDE_LOG(DEBUG, "Frontend",
+            "grBufferClearExt: color=0x"
+                << std::hex << color << std::dec << ", alpha=" << (int)alpha
+                << ", depth=" << depth << ", stencil=" << stencil);
+  EntryCommon::ClearBufferExt(color, static_cast<uint8_t>(alpha), depth,
+                              static_cast<uint8_t>(stencil));
 }
 
 FX_ENTRY void FX_CALL grLfbConstantStencilExt(FxU32 stencil) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::Lfb);
   EnsureEngineInitialized();
-  GLIDE_LOG(WARN, "Stub",
-            "grLfbConstantStencilExt stub invoked: stencil=" << stencil);
+  GLIDE_LOG(DEBUG, "Frontend", "grLfbConstantStencilExt: stencil=" << stencil);
+  s_state.lfbConstantStencil = static_cast<uint8_t>(stencil);
 }
 
 FX_ENTRY void FX_CALL grTBufferWriteMaskExt(FxU32 mask) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   EnsureEngineInitialized();
-  GLIDE_LOG(WARN, "Stub", "grTBufferWriteMaskExt stub invoked: mask=" << mask);
+  GLIDE_LOG(DEBUG, "Frontend",
+            "grTBufferWriteMaskExt: mask=0x" << std::hex << mask << std::dec);
+  if (auto* backend =
+          GlideWrapper::BackendManager::GetInstance().GetBackend()) {
+    backend->SetTBufferWriteMask(static_cast<uint32_t>(mask));
+  }
 }
 
 FX_ENTRY void FX_CALL grAlphaBlendFunctionExt(FxU32 rgb_sf, FxU32 rgb_df,
@@ -2316,7 +2259,12 @@ FX_ENTRY void FX_CALL grAlphaBlendFunctionExt(FxU32 rgb_sf, FxU32 rgb_df,
                                               FxU32 alpha_df, FxU32 alpha_op) {
   GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   EnsureEngineInitialized();
-  GLIDE_LOG(WARN, "Stub", "grAlphaBlendFunctionExt stub invoked");
+  GLIDE_LOG(DEBUG, "Frontend",
+            "grAlphaBlendFunctionExt: rgb=("
+                << rgb_sf << "," << rgb_df << ",op=" << rgb_op << ") alpha=("
+                << alpha_sf << "," << alpha_df << ",op=" << alpha_op << ")");
+  EntryCommon::SetAlphaBlendFunctionExt(s_state, rgb_sf, rgb_df, rgb_op,
+                                        alpha_sf, alpha_df, alpha_op);
 }
 
 FX_ENTRY void FX_CALL grErrorSetCallback(GrErrorCallbackFnc_t fnc) {
@@ -2485,6 +2433,239 @@ FX_ENTRY void FX_CALL grSstConfigPipeline(GrChipID_t chip, FxU32 reg,
   GLIDE_LOG(INFO, "Frontend",
             "grSstConfigPipeline called. chip=" << chip << ", reg=" << reg
                                                 << ", value=" << value);
+}
+
+FX_ENTRY void FX_CALL grSstVidMode(FxU32 whichSst, void* vidTimings) {
+  GLIDE_LOG(DEBUG, "Frontend",
+            "grSstVidMode (Glide 2.x) stub: whichSst=" << whichSst);
+}
+
+FX_ENTRY void FX_CALL guFbReadRegion(const int src_x, const int src_y,
+                                     const int w, const int h, const void* dst,
+                                     const int strideInBytes) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::Lfb);
+  EnsureEngineInitialized();
+  if (w <= 0 || h <= 0 || !dst || src_x < 0 || src_y < 0 || strideInBytes <= 0) {
+    return;
+  }
+  grLfbReadRegion(GR_BUFFER_BACKBUFFER, static_cast<FxU32>(src_x),
+                  static_cast<FxU32>(src_y), static_cast<FxU32>(w),
+                  static_cast<FxU32>(h), static_cast<FxU32>(strideInBytes),
+                  const_cast<void*>(dst));
+}
+
+FX_ENTRY void FX_CALL guFbWriteRegion(const int dst_x, const int dst_y,
+                                      const int w, const int h, const void* src,
+                                      const int strideInBytes) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::Lfb);
+  EnsureEngineInitialized();
+  if (w <= 0 || h <= 0 || !src || dst_x < 0 || dst_y < 0) {
+    return;
+  }
+  grLfbWriteRegion(GR_BUFFER_BACKBUFFER, static_cast<FxU32>(dst_x),
+                   static_cast<FxU32>(dst_y), GR_LFB_SRC_FMT_565,
+                   static_cast<FxU32>(w), static_cast<FxU32>(h),
+                   static_cast<FxI32>(strideInBytes), const_cast<void*>(src));
+}
+
+FX_ENTRY void FX_CALL guMPInit(void) {
+  EnsureEngineInitialized();
+  s_mpMipMap[0] = GR_NULL_MIPMAP_HANDLE;
+  s_mpMipMap[1] = GR_NULL_MIPMAP_HANDLE;
+  s_mpTexCombineFnc = GR_MPTEXTURECOMBINE_ADD;
+}
+
+FX_ENTRY void FX_CALL guMPTexCombineFunction(GrMPTextureCombineFnc_t tc_fnc) {
+  EnsureEngineInitialized();
+  s_mpTexCombineFnc = tc_fnc;
+}
+
+FX_ENTRY void FX_CALL guMPTexSource(GrChipID_t virtual_tmu,
+                                    GrMipMapId_t mmid) {
+  EnsureEngineInitialized();
+  if (virtual_tmu >= 0 && virtual_tmu < GLIDE_NUM_VIRTUAL_TMU) {
+    s_mpMipMap[virtual_tmu] = mmid;
+  }
+}
+
+FX_ENTRY void FX_CALL guMPDrawTriangle(const GrVertex* a, const GrVertex* b,
+                                       const GrVertex* c) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::Draw);
+  EnsureEngineInitialized();
+  if (!a || !b || !c) return;
+  if (s_mpTexCombineFnc == GR_MPTEXTURECOMBINE_SUBTRACT) {
+    if (s_errorCallback) {
+      s_errorCallback(
+          "guMPDrawTriangle: GR_MPTEXTURECOMBINE_SUBTRACT not supported",
+          FXFALSE);
+    }
+    return;
+  }
+
+  // Save state modified across the 2-pass SST-1 multipass emulation.
+  const uint32_t savedRgbSrc = s_state.rgbSrcBlend;
+  const uint32_t savedRgbDst = s_state.rgbDstBlend;
+  const uint32_t savedAlphaSrc = s_state.alphaSrcBlend;
+  const uint32_t savedAlphaDst = s_state.alphaDstBlend;
+  const uint32_t savedDepthCompare = s_state.depthCompare;
+  const bool savedDepthMask = s_state.depthMask;
+  const uint32_t savedFogMode = s_state.fogMode;
+  const uint32_t savedColorFunc = s_state.colorFunc;
+  const uint32_t savedColorFactor = s_state.colorFactor;
+  const uint32_t savedColorLocal = s_state.colorLocal;
+  const uint32_t savedColorOther = s_state.colorOther;
+  const bool savedColorInvert = s_state.colorInvert;
+  const uint32_t savedTexRgbFunc0 = s_state.texRgbFunc[0];
+  const uint32_t savedTexRgbFactor0 = s_state.texRgbFactor[0];
+  const uint32_t savedTexAlphaFunc0 = s_state.texAlphaFunc[0];
+  const uint32_t savedTexAlphaFactor0 = s_state.texAlphaFactor[0];
+  const bool savedTexRgbInv0 = s_state.texRgbInvert[0];
+  const bool savedTexAlphaInv0 = s_state.texAlphaInvert[0];
+  const uint32_t savedBoundTex0 = s_state.boundTex[0];
+  const GrMipMapId_t savedMm0 = s_currentMipMap[0];
+
+  auto configurePassTexCombine = [&](int pass) {
+    switch (s_mpTexCombineFnc) {
+      case GR_MPTEXTURECOMBINE_DETAIL0:
+        grTexCombine(GR_TMU0, GR_COMBINE_FUNCTION_SCALE_MINUS_LOCAL_ADD_LOCAL,
+                     (pass == 0) ? GR_COMBINE_FACTOR_DETAIL_FACTOR
+                                 : GR_COMBINE_FACTOR_ONE_MINUS_DETAIL_FACTOR,
+                     GR_COMBINE_FUNCTION_SCALE_MINUS_LOCAL_ADD_LOCAL,
+                     (pass == 0) ? GR_COMBINE_FACTOR_DETAIL_FACTOR
+                                 : GR_COMBINE_FACTOR_ONE_MINUS_DETAIL_FACTOR,
+                     FXFALSE, FXFALSE);
+        break;
+      case GR_MPTEXTURECOMBINE_DETAIL1:
+        grTexCombine(GR_TMU0, GR_COMBINE_FUNCTION_SCALE_MINUS_LOCAL_ADD_LOCAL,
+                     (pass == 0) ? GR_COMBINE_FACTOR_ONE_MINUS_DETAIL_FACTOR
+                                 : GR_COMBINE_FACTOR_DETAIL_FACTOR,
+                     GR_COMBINE_FUNCTION_SCALE_MINUS_LOCAL_ADD_LOCAL,
+                     (pass == 0) ? GR_COMBINE_FACTOR_ONE_MINUS_DETAIL_FACTOR
+                                 : GR_COMBINE_FACTOR_DETAIL_FACTOR,
+                     FXFALSE, FXFALSE);
+        break;
+      case GR_MPTEXTURECOMBINE_TRILINEAR0:
+        grTexCombine(GR_TMU0, GR_COMBINE_FUNCTION_SCALE_MINUS_LOCAL_ADD_LOCAL,
+                     (pass == 0) ? GR_COMBINE_FACTOR_LOD_FRACTION
+                                 : GR_COMBINE_FACTOR_ONE_MINUS_LOD_FRACTION,
+                     GR_COMBINE_FUNCTION_SCALE_MINUS_LOCAL_ADD_LOCAL,
+                     (pass == 0) ? GR_COMBINE_FACTOR_LOD_FRACTION
+                                 : GR_COMBINE_FACTOR_ONE_MINUS_LOD_FRACTION,
+                     FXFALSE, FXFALSE);
+        break;
+      case GR_MPTEXTURECOMBINE_TRILINEAR1:
+        grTexCombine(GR_TMU0, GR_COMBINE_FUNCTION_SCALE_MINUS_LOCAL_ADD_LOCAL,
+                     (pass == 0) ? GR_COMBINE_FACTOR_ONE_MINUS_LOD_FRACTION
+                                 : GR_COMBINE_FACTOR_LOD_FRACTION,
+                     GR_COMBINE_FUNCTION_SCALE_MINUS_LOCAL_ADD_LOCAL,
+                     (pass == 0) ? GR_COMBINE_FACTOR_ONE_MINUS_LOD_FRACTION
+                                 : GR_COMBINE_FACTOR_LOD_FRACTION,
+                     FXFALSE, FXFALSE);
+        break;
+      case GR_MPTEXTURECOMBINE_ADD:
+      case GR_MPTEXTURECOMBINE_MULTIPLY:
+      default:
+        grTexCombine(GR_TMU0, GR_COMBINE_FUNCTION_LOCAL,
+                     GR_COMBINE_FACTOR_NONE, GR_COMBINE_FUNCTION_LOCAL,
+                     GR_COMBINE_FACTOR_NONE, FXFALSE, FXFALSE);
+        break;
+    }
+  };
+
+  auto bindVirtualTexOnTmu0 = [&](GrMipMapId_t mmid) {
+    if (mmid == GR_NULL_MIPMAP_HANDLE ||
+        mmid >= static_cast<GrMipMapId_t>(s_guTextures.size()) ||
+        !s_guTextures[mmid].valid) {
+      EntryCommon::BindTexSource(s_state, GR_TMU0, 0xFFFFFFFFu);
+      return;
+    }
+    const auto& tex = s_guTextures[mmid];
+    EntryCommon::BindTexSource(s_state, GR_TMU0, tex.tmu_base_address);
+    grTexClampMode(GR_TMU0, tex.s_clamp_mode, tex.t_clamp_mode);
+    grTexFilterMode(GR_TMU0, tex.minfilter_mode, tex.magfilter_mode);
+    grTexMipMapMode(GR_TMU0, tex.mipmap_mode, tex.trilinear);
+    int32_t raw_bias = static_cast<int32_t>(tex.lod_bias & 0x3F);
+    if (raw_bias & 0x20) raw_bias |= ~0x3F;
+    grTexLodBiasValue(GR_TMU0, static_cast<float>(raw_bias) / 4.0f);
+  };
+
+  // Pass 1: virtual TMU 0
+  bindVirtualTexOnTmu0(s_mpMipMap[0]);
+  configurePassTexCombine(0);
+  grDrawTriangle(a, b, c);
+
+  // Pass 2: virtual TMU 1 blended onto Pass 1 output
+  if (s_mpMipMap[1] != GR_NULL_MIPMAP_HANDLE) {
+    bindVirtualTexOnTmu0(s_mpMipMap[1]);
+    configurePassTexCombine(1);
+
+    if (s_state.depthMode != 0) {
+      grDepthBufferFunction(GR_CMP_EQUAL);
+      grDepthMask(FXFALSE);
+    }
+
+    if (s_mpTexCombineFnc == GR_MPTEXTURECOMBINE_MULTIPLY) {
+      grAlphaBlendFunction(GR_BLEND_DST_COLOR, GR_BLEND_ZERO, GR_BLEND_ONE,
+                           GR_BLEND_ZERO);
+      grFogMode(GR_FOG_DISABLE);
+      grColorCombine(GR_COMBINE_FUNCTION_SCALE_OTHER, GR_COMBINE_FACTOR_ONE,
+                     GR_COMBINE_LOCAL_NONE, GR_COMBINE_OTHER_TEXTURE, FXFALSE);
+    } else {
+      grAlphaBlendFunction(GR_BLEND_ONE, GR_BLEND_ONE, GR_BLEND_ONE,
+                           GR_BLEND_ONE);
+    }
+
+    if ((s_stwHintMask & GR_STWHINT_ST_DIFF_TMU1) != 0) {
+      GrVertex a2 = *a;
+      GrVertex b2 = *b;
+      GrVertex c2 = *c;
+      a2.tmuvtx[0] = a->tmuvtx[1];
+      b2.tmuvtx[0] = b->tmuvtx[1];
+      c2.tmuvtx[0] = c->tmuvtx[1];
+      grDrawTriangle(&a2, &b2, &c2);
+    } else {
+      grDrawTriangle(a, b, c);
+    }
+  }
+
+  // Restore all touched pipeline state.
+  grAlphaBlendFunction(savedRgbSrc, savedRgbDst, savedAlphaSrc, savedAlphaDst);
+  if (s_state.depthMode != 0) {
+    grDepthBufferFunction(savedDepthCompare);
+    grDepthMask(savedDepthMask ? FXTRUE : FXFALSE);
+  }
+  if (s_state.fogMode != savedFogMode) {
+    grFogMode(savedFogMode);
+  }
+  grColorCombine(savedColorFunc, savedColorFactor, savedColorLocal,
+                 savedColorOther, savedColorInvert ? FXTRUE : FXFALSE);
+  grTexCombine(GR_TMU0, savedTexRgbFunc0, savedTexRgbFactor0,
+               savedTexAlphaFunc0, savedTexAlphaFactor0,
+               savedTexRgbInv0 ? FXTRUE : FXFALSE,
+               savedTexAlphaInv0 ? FXTRUE : FXFALSE);
+  if (savedMm0 != GR_NULL_MIPMAP_HANDLE) {
+    guTexSource(savedMm0);
+  } else {
+    EntryCommon::BindTexSource(s_state, GR_TMU0, savedBoundTex0);
+  }
+}
+
+FX_ENTRY void FX_CALL guMovieSetName(const char* name) {
+  EnsureEngineInitialized();
+  s_movieName = name ? name : "";
+  GLIDE_LOG(DEBUG, "Frontend", "guMovieSetName: '" << s_movieName << "'");
+}
+
+FX_ENTRY void FX_CALL guMovieStart(void) {
+  EnsureEngineInitialized();
+  s_movieRecording = true;
+  GLIDE_LOG(DEBUG, "Frontend", "guMovieStart: '" << s_movieName << "'");
+}
+
+FX_ENTRY void FX_CALL guMovieStop(void) {
+  EnsureEngineInitialized();
+  s_movieRecording = false;
+  GLIDE_LOG(DEBUG, "Frontend", "guMovieStop");
 }
 
 /**

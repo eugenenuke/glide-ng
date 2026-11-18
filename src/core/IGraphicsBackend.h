@@ -44,6 +44,11 @@ class IGraphicsBackend {
   // Phase 2: Execution Buffer Clearing & Swapchain Presentation
   virtual void ClearBuffer(uint32_t color, uint32_t alpha, float z,
                            uint32_t clearMask) = 0;
+  virtual void ClearBufferExt(uint32_t color, uint32_t alpha, float z,
+                              uint8_t stencil, uint32_t clearMask) {
+    (void)stencil;
+    ClearBuffer(color, alpha, z, clearMask & ~0x4u);
+  }
   virtual bool SwapBuffers() = 0;
   virtual void FlushBins() = 0;
   virtual void SetConstantColor(uint32_t color) = 0;
@@ -73,9 +78,44 @@ class IGraphicsBackend {
                              uint32_t maxY) = 0;
   virtual void SetSstOrigin(uint32_t origin) = 0;
   virtual void SetColorMask(bool rgb, bool alpha) = 0;
+  virtual void SetColorMaskExt(bool r, bool g, bool b, bool a) {
+    SetColorMask(r || g || b, a);
+  }
   virtual void SetAAState(bool enabled) {}
   virtual void SetAAMultiSample(bool /*enabled*/) {}
   virtual void SetTBufferWriteMask(uint32_t /*mask*/) {}
+
+  // VSA-100 PIXEXT Hardware Stencil State
+  virtual void SetStencilMode(bool /*enabled*/) {}
+  virtual void SetStencilFunc(uint32_t /*compareOp*/, uint8_t /*refVal*/,
+                              uint8_t /*readMask*/) {}
+  virtual void SetStencilMask(uint8_t /*writeMask*/) {}
+  virtual void SetStencilOp(uint32_t /*failOp*/, uint32_t /*zFailOp*/,
+                            uint32_t /*zPassOp*/) {}
+
+  // VSA-100 COMBINE & Extended Alpha Blending
+  static constexpr uint32_t PackCombineExt(uint32_t a, uint32_t aMode,
+                                           uint32_t b, uint32_t bMode,
+                                           uint32_t c, bool cInv, uint32_t d,
+                                           bool dInv, uint32_t shift,
+                                           bool invert) {
+    return (a & 0x1Fu) | ((aMode & 0x7u) << 5) | ((b & 0x1Fu) << 8) |
+           ((bMode & 0x7u) << 13) | ((c & 0x1Fu) << 16) |
+           ((cInv ? 1u : 0u) << 21) | ((d & 0x1Fu) << 22) |
+           ((dInv ? 1u : 0u) << 27) | ((shift & 0x3u) << 28) |
+           ((invert ? 1u : 0u) << 30) | (1u << 31);
+  }
+  virtual void SetBlendStateExt(uint32_t rgbSrcFactor, uint32_t rgbDstFactor,
+                                uint32_t /*rgbOp*/, uint32_t alphaSrcFactor,
+                                uint32_t alphaDstFactor,
+                                uint32_t /*alphaOp*/) {
+    SetBlendState(rgbSrcFactor, rgbDstFactor, alphaSrcFactor, alphaDstFactor);
+  }
+  virtual void SetColorCombineExt(uint32_t /*packed*/) {}
+  virtual void SetAlphaCombineExt(uint32_t /*packed*/) {}
+  virtual void SetTexColorCombineExt(uint32_t /*tmu*/, uint32_t /*packed*/) {}
+  virtual void SetTexAlphaCombineExt(uint32_t /*tmu*/, uint32_t /*packed*/) {}
+  virtual void SetTmuConstantColor(uint32_t /*tmu*/, uint32_t /*color*/) {}
 
   // Milestone 8: Fogging State
   virtual void SetFogMode(uint32_t mode) = 0;
@@ -100,6 +140,8 @@ class IGraphicsBackend {
   virtual void UploadTexture(uint32_t tmu, uint32_t startAddress,
                              const struct VirtualTexture& tex) = 0;
   virtual void SetTexLodBias(uint32_t tmu, float bias) = 0;
+  virtual void SetTexDetailControl(uint32_t tmu, int32_t lodBias,
+                                   uint8_t detailScale, float detailMax) = 0;
   virtual void SetTexMipMapMode(uint32_t tmu, uint32_t mode, bool lodBlend) = 0;
   virtual void UploadTexturePartial(uint32_t tmu, uint32_t startAddress,
                                     const struct VirtualTexture& tex,
@@ -131,6 +173,8 @@ class IGraphicsBackend {
   virtual void LoadGammaTable(uint32_t nentries, const uint32_t* rTable,
                               const uint32_t* gTable,
                               const uint32_t* bTable) = 0;
+  virtual void GetGammaTable(uint32_t nentries, uint32_t* rTable,
+                             uint32_t* gTable, uint32_t* bTable) const = 0;
 };
 
 }  // namespace GlideWrapper

@@ -37,6 +37,8 @@ class OpenGLESBackend : public GlideStateTracker {
   void SstIdle() override;
   void ClearBuffer(uint32_t color, uint32_t alpha, float z,
                    uint32_t clearMask) override;
+  void ClearBufferExt(uint32_t color, uint32_t alpha, float z, uint8_t stencil,
+                      uint32_t clearMask) override;
   void* GetLfbWritePtr() override;
   bool ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY, uint32_t srcWidth,
                uint32_t srcHeight, uint32_t dstStride, void* dstData) override;
@@ -57,9 +59,24 @@ class OpenGLESBackend : public GlideStateTracker {
   void PurgeTextures() override;
   void SetBlendState(uint32_t rgbSrcFactor, uint32_t rgbDstFactor,
                      uint32_t alphaSrcFactor, uint32_t alphaDstFactor) override;
+  void SetBlendStateExt(uint32_t rgbSrcFactor, uint32_t rgbDstFactor,
+                        uint32_t rgbOp, uint32_t alphaSrcFactor,
+                        uint32_t alphaDstFactor, uint32_t alphaOp) override;
+  void SetColorCombineExt(uint32_t packed) override;
+  void SetAlphaCombineExt(uint32_t packed) override;
+  void SetTexColorCombineExt(uint32_t tmu, uint32_t packed) override;
+  void SetTexAlphaCombineExt(uint32_t tmu, uint32_t packed) override;
+  void SetTmuConstantColor(uint32_t tmu, uint32_t color) override;
   void SetColorMask(bool rgb, bool alpha) override;
+  void SetColorMaskExt(bool r, bool g, bool b, bool a) override;
   void SetAAMultiSample(bool enabled) override;
   void SetTBufferWriteMask(uint32_t mask) override;
+  void SetStencilMode(bool enabled) override;
+  void SetStencilFunc(uint32_t compareOp, uint8_t refVal,
+                      uint8_t readMask) override;
+  void SetStencilMask(uint8_t writeMask) override;
+  void SetStencilOp(uint32_t failOp, uint32_t zFailOp,
+                    uint32_t zPassOp) override;
   void SetGamma(float gamma) override;
   void SetRenderBuffer(uint32_t target) override;
   void SetDepthRange(float nearVal, float farVal) override;
@@ -80,6 +97,8 @@ class OpenGLESBackend : public GlideStateTracker {
                    uint32_t clampT, uint32_t minFilter,
                    uint32_t magFilter) override;
   void SetTexLodBias(uint32_t tmu, float bias) override;
+  void SetTexDetailControl(uint32_t tmu, int32_t lodBias, uint8_t detailScale,
+                           float detailMax) override;
   void SetTexMipMapMode(uint32_t tmu, uint32_t mode, bool lodBlend) override;
   void SetCombinerMode(uint32_t colorFunc, uint32_t colorFactor,
                        uint32_t colorLocal, uint32_t colorOther,
@@ -121,6 +140,7 @@ class OpenGLESBackend : public GlideStateTracker {
   void RestoreHostContextIfSaved();
   void PresentToWindowSurface(uint32_t hostW, uint32_t hostH);
   void SyncDepthState();
+  void SyncStencilStateGLES_Locked();
   void ApplyBlendingGLES();
   void ApplyColorMaskGLES();
   void ApplyScissorGLES_Locked();
@@ -138,8 +158,10 @@ class OpenGLESBackend : public GlideStateTracker {
   void ResolveMsaaToSingle_Locked(uint32_t slot);
   void CopySingleToMsaa_Locked(uint32_t slot);
   void DrawMaskedClearQuadGLES_Locked(float r, float g, float b, float a,
-                                      float z, bool doColorClear,
-                                      bool doDepthClear, uint32_t sampleMask);
+                                      float z, uint8_t stencil,
+                                      bool doColorClear, bool doDepthClear,
+                                      bool doStencilClear,
+                                      uint32_t sampleMask);
 
   enum GlesDirtyBits : uint32_t {
     kGlesDirtyViewportAndOrigin = 1u << 0,
@@ -164,6 +186,9 @@ class OpenGLESBackend : public GlideStateTracker {
     kGlesDirtyDitherStipple     = 1u << 19,
     kGlesDirtySamplerUnits      = 1u << 20,
     kGlesDirtySampleMask        = 1u << 21,
+    kGlesDirtyTexDetail         = 1u << 22,
+    kGlesDirtyStencil           = 1u << 23,
+    kGlesDirtyExtCombine        = 1u << 24,
     kGlesDirtyAll               = 0xFFFFFFFFu,
   };
   uint32_t m_glesDirtyMask{kGlesDirtyAll};
@@ -269,9 +294,9 @@ class OpenGLESBackend : public GlideStateTracker {
   bool m_is2DGeometry{true};
   float m_gammaCorrectionValue{1.0f};
 
-  // GLES Gamma LUT Texture Resources
+  // GLES Gamma LUT Texture Resources (m_useGammaLut and m_lutR/G/B inherited
+  // from GlideStateTracker).
   uint32_t m_glGammaLutTex{0};
-  bool m_useGammaLut{false};
   int m_uUseGammaLutLoc{-1};
   int m_uPreserveAlphaLoc{-1};
 
@@ -328,12 +353,17 @@ class OpenGLESBackend : public GlideStateTracker {
   int m_uTexChromaMinLoc{-1};
   int m_uTexChromaMaxLoc{-1};
   int m_uTexLodBiasLoc{-1};
+  int m_uTexDetailBiasLoc{-1};
+  int m_uTexDetailScaleLoc{-1};
+  int m_uTexDetailMaxLoc{-1};
   int m_uTexRgbFuncLoc{-1};
   int m_uTexRgbFactorLoc{-1};
   int m_uTexAlphaFuncLoc{-1};
   int m_uTexAlphaFactorLoc{-1};
   int m_uTexRgbInvertLoc{-1};
   int m_uTexAlphaInvertLoc{-1};
+  int m_uExtCombineLoc{-1};
+  int m_uTmuConstantColorLoc{-1};
   uint32_t m_glesSamplers[2]{0, 0};  // GLuint sampler objects for TMU0/1
 };
 

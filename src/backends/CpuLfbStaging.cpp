@@ -215,6 +215,10 @@ struct LfbRowProcessor {
         uint32_t a =
             (SrcFmt == 2 || SrcFmt == 14) ? (((c16 >> 15) & 1) ? 255 : 0) : 255;
         pWord = (a << 24) | (r << 16) | (g << 8) | b;
+      } else if constexpr (SrcFmt == 0x100u) {
+        // Internal lossless canonical 0xAARRGGBB restore (used by TEXTUREBUFFER).
+        (void)pixelFormatOverride;
+        pWord = c32;
       } else {
         // Glide LFB 888/8888 pixel words are always 0x00RRGGBB / 0xAARRGGBB
         // regardless of grSstWinOpen's GrColorFormat_t (which only governs
@@ -375,6 +379,12 @@ struct LfbOverlayRowProcessor {
         g = kExpand5[(c16 >> 5) & 0x1F];
         b = kExpand5[c16 & 0x1F];
         a = (SrcFmt == 2 || SrcFmt == 14) ? (((c16 >> 15) & 1) ? 255 : 0) : 255;
+      } else if constexpr (SrcFmt == 0x100u) {
+        (void)pixelFormatOverride;
+        r = (c32 >> 16) & 0xFFu;
+        g = (c32 >> 8) & 0xFFu;
+        b = c32 & 0xFFu;
+        a = (c32 >> 24) & 0xFFu;
       } else {
         (void)pixelFormatOverride;
         r = kExpand5[((c32 >> 16) & 0xFF) >> 3];
@@ -771,6 +781,7 @@ bool CpuLfbStaging::WriteOverlayLFB(uint32_t logicalBuffer, uint32_t dstX,
     DISPATCH_OVERLAY_CASE(13)
     DISPATCH_OVERLAY_CASE(14)
     DISPATCH_OVERLAY_CASE(15)
+    DISPATCH_OVERLAY_CASE(0x100u)
     default:
       break;
   }
@@ -834,12 +845,13 @@ bool CpuLfbStaging::EnsureAllocated() {
   return true;
 }
 
-void CpuLfbStaging::ScheduleLazyClear(uint32_t logicalBuffer, uint32_t color,
-                                      uint32_t alpha,
-                                      uint32_t pixelFormatOverride,
-                                      bool maskRgb, bool maskAlpha) {
+void CpuLfbStaging::ScheduleLazyClearMask(uint32_t logicalBuffer,
+                                          uint32_t color, uint32_t alpha,
+                                          uint32_t pixelFormatOverride,
+                                          uint8_t colorWriteMask4) {
   if (m_width == 0 || m_height == 0) return;
-  if (!maskRgb && !maskAlpha) return;
+  const uint8_t mask4 = colorWriteMask4 & 0xFu;
+  if (mask4 == 0u) return;
 
   const uint32_t slot = SlotFor(logicalBuffer);
   auto& slotState = m_pendingClear[slot];
@@ -847,8 +859,8 @@ void CpuLfbStaging::ScheduleLazyClear(uint32_t logicalBuffer, uint32_t color,
   // If a prior partial-mask clear is pending and this clear also uses a
   // different partial mask, materialize the earlier clear first so masked-out
   // channels retain their prior cleared bits.
-  if (slotState.pending && !(maskRgb && maskAlpha) &&
-      (slotState.maskRgb != maskRgb || slotState.maskAlpha != maskAlpha)) {
+  if (slotState.pending && mask4 != 0xFu &&
+      slotState.colorWriteMask4 != mask4) {
     MaterializeSlot(slot);
   }
 
@@ -856,8 +868,7 @@ void CpuLfbStaging::ScheduleLazyClear(uint32_t logicalBuffer, uint32_t color,
   slotState.color = color;
   slotState.alpha = alpha;
   slotState.pixelFormat = pixelFormatOverride;
-  slotState.maskRgb = maskRgb;
-  slotState.maskAlpha = maskAlpha;
+  slotState.colorWriteMask4 = mask4;
 }
 
 void CpuLfbStaging::MaterializeLazyClear(uint32_t logicalBuffer) {
@@ -873,8 +884,10 @@ void CpuLfbStaging::MaterializeSlot(uint32_t slot) {
   if (!EnsureAllocated()) return;
 
   uint32_t writeMask = 0;
-  if (pending.maskRgb) writeMask |= 0x00FFFFFF;
-  if (pending.maskAlpha) writeMask |= 0xFF000000;
+  if (pending.colorWriteMask4 & 0x1u) writeMask |= 0x00FF0000u;  // R
+  if (pending.colorWriteMask4 & 0x2u) writeMask |= 0x0000FF00u;  // G
+  if (pending.colorWriteMask4 & 0x4u) writeMask |= 0x000000FFu;  // B
+  if (pending.colorWriteMask4 & 0x8u) writeMask |= 0xFF000000u;  // A
   if (writeMask == 0) return;
 
   uint32_t a = (pending.alpha > 0) ? pending.alpha : 255;
@@ -949,6 +962,7 @@ bool CpuLfbStaging::IsValidSrcFormat(uint32_t srcFmt) {
     case 13:  // GR_LFB_SRC_FMT_555_DEPTH
     case 14:  // GR_LFB_SRC_FMT_1555_DEPTH
     case 15:  // GR_LFB_SRC_FMT_ZA16
+    case 0x100u:  // Internal lossless canonical ARGB8888 restore
       return true;
     default:
       return false;
@@ -1094,6 +1108,7 @@ uint32_t CpuLfbStaging::WritePixelsRegion(
     DISPATCH_CASE(13)
     DISPATCH_CASE(14)
     DISPATCH_CASE(15)
+    DISPATCH_CASE(0x100u)
     default:
       break;
   }

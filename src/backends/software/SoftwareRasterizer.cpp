@@ -261,6 +261,9 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
       m_cpuBuffers[state.activeRenderBufferIdx].data());
   float* depthBuffer =
       m_headlessDepthBuffer.empty() ? nullptr : m_headlessDepthBuffer.data();
+  uint8_t* stencilBuffer = m_headlessStencilBuffer.empty()
+                               ? nullptr
+                               : m_headlessStencilBuffer.data();
   const int width = m_headlessWidth;
 
   // Cache read-only state variables outside the loops to maximize register
@@ -271,6 +274,14 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
   const uint32_t depthCompareOp = state.depthCompareOp;
   const bool depthMask = state.depthMask;
   const int depthBiasLevel = state.depthBiasLevel;
+  const bool stencilEnabled = state.stencilEnabled;
+  const uint32_t stencilCompareOp = state.stencilCompareOp;
+  const uint8_t stencilRef = state.stencilRef;
+  const uint8_t stencilReadMask = state.stencilReadMask;
+  const uint8_t stencilWriteMask = state.stencilWriteMask;
+  const uint32_t stencilFailOp = state.stencilFailOp;
+  const uint32_t stencilZFailOp = state.stencilZFailOp;
+  const uint32_t stencilZPassOp = state.stencilZPassOp;
   const uint32_t fogMode = state.fogMode;
   const uint32_t fogColor = state.fogColor;
   const uint32_t chromakeyMode = state.chromakeyMode;
@@ -281,12 +292,19 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
   const uint32_t pixelFormatOverride = state.pixelFormatOverride;
   const uint32_t alphaTestOp = state.alphaTestOp;
   const uint32_t alphaTestRefVal = state.alphaTestRefVal;
-  const bool colorMaskRgb = state.colorMaskRgb;
+  const bool colorMaskR = state.colorMaskR;
+  const bool colorMaskG = state.colorMaskG;
+  const bool colorMaskB = state.colorMaskB;
   const bool colorMaskAlpha = state.colorMaskAlpha;
+  const uint32_t colorMaskWord =
+      (colorMaskR ? 0x00FF0000u : 0u) | (colorMaskG ? 0x0000FF00u : 0u) |
+      (colorMaskB ? 0x000000FFu : 0u) | (colorMaskAlpha ? 0xFF000000u : 0u);
   const uint32_t rgbSrcBlend = state.rgbSrcBlend;
   const uint32_t rgbDstBlend = state.rgbDstBlend;
+  const uint32_t rgbBlendOp = state.rgbBlendOp;
   const uint32_t alphaSrcBlend = state.alphaSrcBlend;
   const uint32_t alphaDstBlend = state.alphaDstBlend;
+  const uint32_t alphaBlendOp = state.alphaBlendOp;
   const uint32_t constantColor = state.constantColor;
   const uint32_t stwHintMask = state.stwHintMask;
   const uint32_t alphaCombinerLocal = state.alphaCombinerLocal;
@@ -299,6 +317,12 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
   const uint32_t alphaCombinerFunc = state.alphaCombinerFunc;
   const bool alphaCombinerInvert = state.alphaCombinerInvert;
   const bool colorCombinerInvert = state.colorCombinerInvert;
+  const uint32_t extColorCombine = state.extColorCombine;
+  const uint32_t extAlphaCombine = state.extAlphaCombine;
+  const uint32_t extTexColorCombine0 = state.extTexColorCombine[0];
+  const uint32_t extTexAlphaCombine0 = state.extTexAlphaCombine[0];
+  const uint32_t extTexColorCombine1 = state.extTexColorCombine[1];
+  const uint32_t extTexAlphaCombine1 = state.extTexAlphaCombine[1];
 
   // Pre-calculate expensive division and format operations outside the loop
   const float depthFar = state.depthFar;
@@ -312,6 +336,18 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
   float constantG = ((constantColor >> 8) & 0xFF) / 255.0f;
   float constantB = (constantColor & 0xFF) / 255.0f;
   if (pixelFormatOverride == 1) std::swap(constantR, constantB);
+  const TmuColor constantCol = {constantR, constantG, constantB, constantAlpha};
+
+  auto unpackTmuConst = [&](uint32_t c) -> TmuColor {
+    float r = ((c >> 16) & 0xFF) / 255.0f;
+    float g = ((c >> 8) & 0xFF) / 255.0f;
+    float b = (c & 0xFF) / 255.0f;
+    float aVal = ((c >> 24) & 0xFF) / 255.0f;
+    if (pixelFormatOverride == 1) std::swap(r, b);
+    return {r, g, b, aVal};
+  };
+  const TmuColor tmuConst0 = unpackTmuConst(state.tmuConstantColor[0]);
+  const TmuColor tmuConst1 = unpackTmuConst(state.tmuConstantColor[1]);
 
   const float alphaTestRef = static_cast<float>(alphaTestRefVal) / 255.0f;
 
@@ -423,7 +459,30 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
     }
   }
 
-  bool needBarycentricDerivatives = mipmappingEnabled || mipmappingEnabled1;
+  auto usesLodFactor = [](uint32_t f) {
+    return f == 4u || f == 5u || f == 12u || f == 13u;
+  };
+  const bool needLod0 =
+      HasTexture && tex != nullptr &&
+      (mipmappingEnabled || usesLodFactor(state.texCombinerRgbFactor[0]) ||
+       usesLodFactor(state.texCombinerAlphaFactor[0]) ||
+       ExtCombineUsesLod(extTexColorCombine0) ||
+       ExtCombineUsesLod(extTexAlphaCombine0));
+  const bool needLod1 =
+      hasTexture1 && tex1 != nullptr &&
+      (mipmappingEnabled1 || usesLodFactor(state.texCombinerRgbFactor[1]) ||
+       usesLodFactor(state.texCombinerAlphaFactor[1]) ||
+       ExtCombineUsesLod(extTexColorCombine1) ||
+       ExtCombineUsesLod(extTexAlphaCombine1));
+
+  const float detailScaleMul0 =
+      static_cast<float>(1u << std::min<uint8_t>(state.texDetailScale[0], 7u)) /
+      255.0f;
+  const float detailScaleMul1 =
+      static_cast<float>(1u << std::min<uint8_t>(state.texDetailScale[1], 7u)) /
+      255.0f;
+
+  bool needBarycentricDerivatives = needLod0 || needLod1;
   if (needBarycentricDerivatives) {
     dw0_dx = a0 * invArea;
     dw0_dy = b0 * invArea;
@@ -433,7 +492,7 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
     dw2_dy = b2 * invArea;
   }
 
-  if (mipmappingEnabled) {
+  if (needLod0) {
     dSp_dx = dw0_dx * a.tex[0] + dw1_dx * b.tex[0] + dw2_dx * c.tex[0];
     dSp_dy = dw0_dy * a.tex[0] + dw1_dy * b.tex[0] + dw2_dy * c.tex[0];
     dTp_dx = dw0_dx * a.tex[1] + dw1_dx * b.tex[1] + dw2_dx * c.tex[1];
@@ -451,7 +510,7 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
     dQ_dy = dw0_dy * qa + dw1_dy * qb + dw2_dy * qc;
   }
 
-  if (mipmappingEnabled1) {
+  if (needLod1) {
     dSp1_dx = dw0_dx * a.tex[2] + dw1_dx * b.tex[2] + dw2_dx * c.tex[2];
     dSp1_dy = dw0_dy * a.tex[2] + dw1_dy * b.tex[2] + dw2_dy * c.tex[2];
     dTp1_dx = dw0_dx * a.tex[3] + dw1_dx * b.tex[3] + dw2_dx * c.tex[3];
@@ -562,6 +621,8 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
 
         // 2. Sample TMU 1 (Upstream)
         TmuColor tmu1Color = {1.0f, 1.0f, 1.0f, 1.0f};
+        float detailFactor1 = 0.0f;
+        float lodFrac1 = 0.0f;
         if (keepPixel && hasTexture1) {
           float texS1 = w0 * a.tex[2] + w1 * b.tex[2] + w2 * c.tex[2];
           float texT1 = w0 * a.tex[3] + w1 * b.tex[3] + w2 * c.tex[3];
@@ -571,7 +632,7 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
           float trueT1 = texT1 * invW1;
 
           uint32_t tWord1;
-          if (mipmappingEnabled1) {
+          if (needLod1) {
             float ds_dx1 = (dSp1_dx - trueS1 * dQ1_dx) * invW1;
             float ds_dy1 = (dSp1_dy - trueS1 * dQ1_dy) * invW1;
             float dt_dx1 = (dTp1_dx - trueT1 * dQ1_dx) * invW1;
@@ -584,20 +645,28 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
 
             float d1 = std::max(du_dx1 * du_dx1 + dv_dx1 * dv_dx1,
                                 du_dy1 * du_dy1 + dv_dy1 * dv_dy1);
-            float lod1 = (d1 > 1e-8f) ? 0.5f * fast_log2(d1) : -10.0f;
-            lod1 += state.texLodBias[1];
+            float rawLod1 = (d1 > 1e-8f) ? 0.5f * fast_log2(d1) : -10.0f;
+            detailFactor1 = std::clamp(
+                (static_cast<float>(state.texDetailBias[1]) - rawLod1) *
+                    detailScaleMul1,
+                0.0f, state.texDetailMax[1]);
+            float lod1 = rawLod1 + state.texLodBias[1];
 
             const int maxMipIdx1 =
                 static_cast<int>(tex1->swizzledMipLevels.size()) - 1;
             float clampedLod1 =
                 std::clamp(lod1, 0.0f, static_cast<float>(maxMipIdx1));
+            lodFrac1 = clampedLod1 - std::floor(clampedLod1);
 
-            if (lodBlend1) {  // Trilinear
+            if (!mipmappingEnabled1) {
+              tWord1 = SampleTextureLevel(tex1, 0, trueS1, trueT1, clampS1,
+                                          clampT1, minFilter1, 1u, state);
+            } else if (lodBlend1) {  // Trilinear
               int level0 = static_cast<int>(std::floor(clampedLod1));
               int level1 = level0 + 1;
               int lodIdx0 = std::clamp(level0, 0, maxMipIdx1);
               int lodIdx1 = std::clamp(level1, 0, maxMipIdx1);
-              float lodFraction = clampedLod1 - std::floor(clampedLod1);
+              float lodFraction = lodFrac1;
 
               uint32_t c0 =
                   SampleTextureLevel(tex1, lodIdx0, trueS1, trueT1, clampS1,
@@ -641,23 +710,39 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
         TmuColor iteratedColor = {iterR, iterG, iterB, iterA};
         bool tmu1Active = hasTexture1;
         TmuColor tmu1Out = iteratedColor;
-        if (keepPixel && tmu1Active) {
-          if (state.texCombinerRgbFunc[1] == 1 &&
-              state.texCombinerAlphaFunc[1] == 1 &&
-              !state.texCombinerRgbInvert[1] &&
-              !state.texCombinerAlphaInvert[1]) {
-            tmu1Out = tmu1Color;
-          } else {
-            tmu1Out = EvaluateTmuStage(
-                state.texCombinerRgbFunc[1], state.texCombinerRgbFactor[1],
-                state.texCombinerAlphaFunc[1], state.texCombinerAlphaFactor[1],
-                state.texCombinerRgbInvert[1], state.texCombinerAlphaInvert[1],
-                tmu1Color, iteratedColor, iteratedColor);
+        if (keepPixel) {
+          if (tmu1Active) {
+            if (state.texCombinerRgbFunc[1] == 1 &&
+                state.texCombinerAlphaFunc[1] == 1 &&
+                !state.texCombinerRgbInvert[1] &&
+                !state.texCombinerAlphaInvert[1]) {
+              tmu1Out = tmu1Color;
+            } else {
+              tmu1Out = EvaluateTmuStage(
+                  state.texCombinerRgbFunc[1], state.texCombinerRgbFactor[1],
+                  state.texCombinerAlphaFunc[1], state.texCombinerAlphaFactor[1],
+                  state.texCombinerRgbInvert[1], state.texCombinerAlphaInvert[1],
+                  tmu1Color, iteratedColor, iteratedColor, detailFactor1,
+                  lodFrac1);
+            }
+          }
+          if ((extTexColorCombine1 & 0x80000000u) != 0u) {
+            EvaluateExtTmuRgbScalar(extTexColorCombine1, tmu1Color,
+                                    iteratedColor, tmuConst1, iteratedColor,
+                                    detailFactor1, lodFrac1, tmu1Out.r,
+                                    tmu1Out.g, tmu1Out.b);
+          }
+          if ((extTexAlphaCombine1 & 0x80000000u) != 0u) {
+            tmu1Out.a = EvaluateExtTmuAlphaScalar(
+                extTexAlphaCombine1, tmu1Color, iteratedColor, tmuConst1,
+                iteratedColor, detailFactor1, lodFrac1);
           }
         }
 
         // 3. Sample TMU 0 (Downstream)
         TmuColor tmu0Color = {1.0f, 1.0f, 1.0f, 1.0f};
+        float detailFactor0 = 0.0f;
+        float lodFrac0 = 0.0f;
         if constexpr (HasTexture) {
           if (keepPixel && tex) {
             float texS = w0 * a.tex[0] + w1 * b.tex[0] + w2 * c.tex[0];
@@ -668,7 +753,7 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
             float trueT = texT * invW;
 
             uint32_t tWord;
-            if (mipmappingEnabled) {
+            if (needLod0) {
               float ds_dx = (dSp_dx - trueS * dQ_dx) * invW;
               float ds_dy = (dSp_dy - trueS * dQ_dy) * invW;
               float dt_dx = (dTp_dx - trueT * dQ_dx) * invW;
@@ -681,20 +766,28 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
 
               float d = std::max(du_dx * du_dx + dv_dx * dv_dx,
                                  du_dy * du_dy + dv_dy * dv_dy);
-              float lod = (d > 1e-8f) ? 0.5f * fast_log2(d) : -10.0f;
-              lod += state.texLodBias[0];
+              float rawLod = (d > 1e-8f) ? 0.5f * fast_log2(d) : -10.0f;
+              detailFactor0 = std::clamp(
+                  (static_cast<float>(state.texDetailBias[0]) - rawLod) *
+                      detailScaleMul0,
+                  0.0f, state.texDetailMax[0]);
+              float lod = rawLod + state.texLodBias[0];
 
               const int maxMipIdx =
                   static_cast<int>(tex->swizzledMipLevels.size()) - 1;
               float clampedLod =
                   std::clamp(lod, 0.0f, static_cast<float>(maxMipIdx));
+              lodFrac0 = clampedLod - std::floor(clampedLod);
 
-              if (lodBlend) {  // Trilinear
+              if (!mipmappingEnabled) {
+                tWord = SampleTextureLevel(tex, 0, trueS, trueT, clampS, clampT,
+                                           minFilter, 0u, state);
+              } else if (lodBlend) {  // Trilinear
                 int level0 = static_cast<int>(std::floor(clampedLod));
                 int level1 = level0 + 1;
                 int lodIdx0 = std::clamp(level0, 0, maxMipIdx);
                 int lodIdx1 = std::clamp(level1, 0, maxMipIdx);
-                float lodFraction = clampedLod - std::floor(clampedLod);
+                float lodFraction = lodFrac0;
 
                 uint32_t c0 =
                     SampleTextureLevel(tex, lodIdx0, trueS, trueT, clampS,
@@ -737,8 +830,8 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
 
         // Evaluate TMU 0 Stage
         TmuColor tmu0Out = tmu1Out;
-        if constexpr (HasTexture) {
-          if (keepPixel) {
+        if (keepPixel) {
+          if constexpr (HasTexture) {
             if (state.texCombinerRgbFunc[0] == 1 &&
                 state.texCombinerAlphaFunc[0] == 1 &&
                 !state.texCombinerRgbInvert[0] &&
@@ -749,8 +842,18 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
                   state.texCombinerRgbFunc[0], state.texCombinerRgbFactor[0],
                   state.texCombinerAlphaFunc[0], state.texCombinerAlphaFactor[0],
                   state.texCombinerRgbInvert[0], state.texCombinerAlphaInvert[0],
-                  tmu0Color, tmu1Out, iteratedColor);
+                  tmu0Color, tmu1Out, iteratedColor, detailFactor0, lodFrac0);
             }
+          }
+          if ((extTexColorCombine0 & 0x80000000u) != 0u) {
+            EvaluateExtTmuRgbScalar(extTexColorCombine0, tmu0Color, tmu1Out,
+                                    tmuConst0, iteratedColor, detailFactor0,
+                                    lodFrac0, tmu0Out.r, tmu0Out.g, tmu0Out.b);
+          }
+          if ((extTexAlphaCombine0 & 0x80000000u) != 0u) {
+            tmu0Out.a = EvaluateExtTmuAlphaScalar(
+                extTexAlphaCombine0, tmu0Color, tmu1Out, tmuConst0,
+                iteratedColor, detailFactor0, lodFrac0);
           }
         }
 
@@ -774,190 +877,220 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
         float alpha = 0.0f;
 
         if (keepPixel) {
-          float aLocal = (alphaCombinerLocal == 0) ? iterA : constantAlpha;
-          float aOther =
-              (alphaCombinerOther == 0)
-                  ? iterA
-                  : ((alphaCombinerOther == 1) ? texA : constantAlpha);
+          float aLocal = 1.0f;
+          float aOther = 1.0f;
+          float finalA = 0.0f;
+          if ((extAlphaCombine & 0x80000000u) != 0u) {
+            finalA = EvaluateExtFbiAlphaScalar(extAlphaCombine, iterA,
+                                               constantAlpha, texA, aLocal,
+                                               aOther);
+          } else {
+            aLocal = (alphaCombinerLocal == 0) ? iterA : constantAlpha;
+            aOther = (alphaCombinerOther == 0)
+                         ? iterA
+                         : ((alphaCombinerOther == 1) ? texA : constantAlpha);
 
-          float cLocalR = 0.0f;
-          float cLocalG = 0.0f;
-          float cLocalB = 0.0f;
-          if (colorCombinerLocal == 0) {  // GR_COMBINE_LOCAL_ITERATED
-            cLocalR = iterR;
-            cLocalG = iterG;
-            cLocalB = iterB;
-          } else if (colorCombinerLocal ==
-                     1) {  // GR_COMBINE_LOCAL_CONSTANT / NONE
-            cLocalR = constantR;
-            cLocalG = constantG;
-            cLocalB = constantB;
+            // Evaluate Alpha Combiner Factor
+            float factA = 0.0f;
+            switch (alphaCombinerFactor) {
+              case 1:
+              case 3:
+                factA = aLocal;
+                break;
+              case 2:
+                factA = aOther;
+                break;
+              case 4:
+                factA = texA;
+                break;
+              case 8:
+                factA = 1.0f;
+                break;
+              case 9:
+              case 11:
+                factA = 1.0f - aLocal;
+                break;
+              case 10:
+                factA = 1.0f - aOther;
+                break;
+              case 12:
+                factA = 1.0f - texA;
+                break;
+            }
+
+            // Evaluate Alpha Combiner Function
+            switch (alphaCombinerFunc) {
+              case 1:
+                finalA = aLocal;
+                break;
+              case 3:
+                finalA = aOther * factA;
+                break;
+              case 4:
+              case 5:
+                finalA = aOther * factA + aLocal;
+                break;
+              case 6:
+                finalA = (aOther - aLocal) * factA;
+                break;
+              case 7:
+              case 8:
+                finalA = (aOther - aLocal) * factA + aLocal;
+                break;
+              case 9:
+              case 16:
+                finalA = (-aLocal) * factA + aLocal;
+                break;
+            }
+            if (alphaCombinerInvert) finalA = 1.0f - finalA;
           }
 
-          cOtherR = (colorCombinerOther == 0)
-                        ? iterR
-                        : ((colorCombinerOther == 1) ? texR : constantR);
-          cOtherG = (colorCombinerOther == 0)
-                        ? iterG
-                        : ((colorCombinerOther == 1) ? texG : constantG);
-          cOtherB = (colorCombinerOther == 0)
-                        ? iterB
-                        : ((colorCombinerOther == 1) ? texB : constantB);
-
-          // Evaluate Color Combiner Factor
-          float factR = 0.0f;
-          float factG = 0.0f;
-          float factB = 0.0f;
-          switch (colorCombinerFactor) {
-            case 1:
-              factR = cLocalR;
-              factG = cLocalG;
-              factB = cLocalB;
-              break;
-            case 2:
-              factR = aOther;
-              factG = aOther;
-              factB = aOther;
-              break;
-            case 3:
-              factR = aLocal;
-              factG = aLocal;
-              factB = aLocal;
-              break;
-            case 4:
-              factR = texA;
-              factG = texA;
-              factB = texA;
-              break;
-            case 5:
-              factR = texR;
-              factG = texG;
-              factB = texB;
-              break;
-            case 8:
-              factR = 1.0f;
-              factG = 1.0f;
-              factB = 1.0f;
-              break;
-            case 9:
-              factR = 1.0f - cLocalR;
-              factG = 1.0f - cLocalG;
-              factB = 1.0f - cLocalB;
-              break;
-            case 10:
-              factR = 1.0f - aOther;
-              factG = 1.0f - aOther;
-              factB = 1.0f - aOther;
-              break;
-            case 11:
-              factR = 1.0f - aLocal;
-              factG = 1.0f - aLocal;
-              factB = 1.0f - aLocal;
-              break;
-            case 12:
-              factR = 1.0f - texA;
-              factG = 1.0f - texA;
-              factB = 1.0f - texA;
-              break;
-          }
-
-          // Evaluate Color Combiner Function
           float finalR = 0.0f;
           float finalG = 0.0f;
           float finalB = 0.0f;
-          switch (colorCombinerFunc) {
-            case 1:
-              finalR = cLocalR;
-              finalG = cLocalG;
-              finalB = cLocalB;
-              break;
-            case 3:
-              finalR = cOtherR * factR;
-              finalG = cOtherG * factG;
-              finalB = cOtherB * factB;
-              break;
-            case 4:
-              finalR = cOtherR * factR + cLocalR;
-              finalG = cOtherG * factG + cLocalG;
-              finalB = cOtherB * factB + cLocalB;
-              break;
-            case 5:
-              finalR = cOtherR * factR + aLocal;
-              finalG = cOtherG * factG + aLocal;
-              finalB = cOtherB * factB + aLocal;
-              break;
-            case 6:
-              finalR = (cOtherR - cLocalR) * factR;
-              finalG = (cOtherG - cLocalG) * factG;
-              finalB = (cOtherB - cLocalB) * factB;
-              break;
-            case 7:
-              finalR = (cOtherR - cLocalR) * factR + cLocalR;
-              finalG = (cOtherG - cLocalG) * factG + cLocalG;
-              finalB = (cOtherB - cLocalB) * factB + cLocalB;
-              break;
-            case 8:
-              finalR = (cOtherR - cLocalR) * factR + aLocal;
-              finalG = (cOtherG - cLocalG) * factG + aLocal;
-              finalB = (cOtherB - cLocalB) * factB + aLocal;
-              break;
-          }
-          if (colorCombinerInvert) {
-            finalR = 1.0f - finalR;
-            finalG = 1.0f - finalG;
-            finalB = 1.0f - finalB;
-          }
+          if ((extColorCombine & 0x80000000u) != 0u) {
+            cOtherR = texR;
+            cOtherG = texG;
+            cOtherB = texB;
+            EvaluateExtFbiColorScalar(extColorCombine, iteratedColor,
+                                      constantCol, texColor, aLocal, aOther,
+                                      finalR, finalG, finalB);
+          } else {
+            float cLocalR = 0.0f;
+            float cLocalG = 0.0f;
+            float cLocalB = 0.0f;
+            if (colorCombinerLocal == 0) {  // GR_COMBINE_LOCAL_ITERATED
+              cLocalR = iterR;
+              cLocalG = iterG;
+              cLocalB = iterB;
+            } else if (colorCombinerLocal ==
+                       1) {  // GR_COMBINE_LOCAL_CONSTANT / NONE
+              cLocalR = constantR;
+              cLocalG = constantG;
+              cLocalB = constantB;
+            }
 
-          // Evaluate Alpha Combiner Factor
-          float factA = 0.0f;
-          switch (alphaCombinerFactor) {
-            case 1:
-            case 3:
-              factA = aLocal;
-              break;
-            case 2:
-              factA = aOther;
-              break;
-            case 4:
-              factA = texA;
-              break;
-            case 8:
-              factA = 1.0f;
-              break;
-            case 9:
-            case 11:
-              factA = 1.0f - aLocal;
-              break;
-            case 10:
-              factA = 1.0f - aOther;
-              break;
-            case 12:
-              factA = 1.0f - texA;
-              break;
-          }
+            cOtherR = (colorCombinerOther == 0)
+                          ? iterR
+                          : ((colorCombinerOther == 1) ? texR : constantR);
+            cOtherG = (colorCombinerOther == 0)
+                          ? iterG
+                          : ((colorCombinerOther == 1) ? texG : constantG);
+            cOtherB = (colorCombinerOther == 0)
+                          ? iterB
+                          : ((colorCombinerOther == 1) ? texB : constantB);
 
-          // Evaluate Alpha Combiner Function
-          float finalA = 0.0f;
-          switch (alphaCombinerFunc) {
-            case 1:
-              finalA = aLocal;
-              break;
-            case 3:
-              finalA = aOther * factA;
-              break;
-            case 4:
-            case 5:
-              finalA = aOther * factA + aLocal;
-              break;
-            case 6:
-              finalA = (aOther - aLocal) * factA;
-              break;
-            case 7:
-            case 8:
-              finalA = (aOther - aLocal) * factA + aLocal;
-              break;
+            // Evaluate Color Combiner Factor
+            float factR = 0.0f;
+            float factG = 0.0f;
+            float factB = 0.0f;
+            switch (colorCombinerFactor) {
+              case 1:
+                factR = cLocalR;
+                factG = cLocalG;
+                factB = cLocalB;
+                break;
+              case 2:
+                factR = aOther;
+                factG = aOther;
+                factB = aOther;
+                break;
+              case 3:
+                factR = aLocal;
+                factG = aLocal;
+                factB = aLocal;
+                break;
+              case 4:
+                factR = texA;
+                factG = texA;
+                factB = texA;
+                break;
+              case 5:
+                factR = texR;
+                factG = texG;
+                factB = texB;
+                break;
+              case 8:
+                factR = 1.0f;
+                factG = 1.0f;
+                factB = 1.0f;
+                break;
+              case 9:
+                factR = 1.0f - cLocalR;
+                factG = 1.0f - cLocalG;
+                factB = 1.0f - cLocalB;
+                break;
+              case 10:
+                factR = 1.0f - aOther;
+                factG = 1.0f - aOther;
+                factB = 1.0f - aOther;
+                break;
+              case 11:
+                factR = 1.0f - aLocal;
+                factG = 1.0f - aLocal;
+                factB = 1.0f - aLocal;
+                break;
+              case 12:
+                factR = 1.0f - texA;
+                factG = 1.0f - texA;
+                factB = 1.0f - texA;
+                break;
+            }
+
+            // Evaluate Color Combiner Function
+            switch (colorCombinerFunc) {
+              case 1:
+                finalR = cLocalR;
+                finalG = cLocalG;
+                finalB = cLocalB;
+                break;
+              case 3:
+                finalR = cOtherR * factR;
+                finalG = cOtherG * factG;
+                finalB = cOtherB * factB;
+                break;
+              case 4:
+                finalR = cOtherR * factR + cLocalR;
+                finalG = cOtherG * factG + cLocalG;
+                finalB = cOtherB * factB + cLocalB;
+                break;
+              case 5:
+                finalR = cOtherR * factR + aLocal;
+                finalG = cOtherG * factG + aLocal;
+                finalB = cOtherB * factB + aLocal;
+                break;
+              case 6:
+                finalR = (cOtherR - cLocalR) * factR;
+                finalG = (cOtherG - cLocalG) * factG;
+                finalB = (cOtherB - cLocalB) * factB;
+                break;
+              case 7:
+                finalR = (cOtherR - cLocalR) * factR + cLocalR;
+                finalG = (cOtherG - cLocalG) * factG + cLocalG;
+                finalB = (cOtherB - cLocalB) * factB + cLocalB;
+                break;
+              case 8:
+                finalR = (cOtherR - cLocalR) * factR + aLocal;
+                finalG = (cOtherG - cLocalG) * factG + aLocal;
+                finalB = (cOtherB - cLocalB) * factB + aLocal;
+                break;
+              case 9:
+                finalR = (-cLocalR) * factR + cLocalR;
+                finalG = (-cLocalG) * factG + cLocalG;
+                finalB = (-cLocalB) * factB + cLocalB;
+                break;
+              case 16:
+                finalR = (-cLocalR) * factR + aLocal;
+                finalG = (-cLocalG) * factG + aLocal;
+                finalB = (-cLocalB) * factB + aLocal;
+                break;
+            }
+            if (colorCombinerInvert) {
+              finalR = 1.0f - finalR;
+              finalG = 1.0f - finalG;
+              finalB = 1.0f - finalB;
+            }
           }
-          if (alphaCombinerInvert) finalA = 1.0f - finalA;
 
           red = std::clamp(finalR, 0.0f, 1.0f);
           green = std::clamp(finalG, 0.0f, 1.0f);
@@ -1023,53 +1156,80 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
           if (!alphaPass) keepPixel = false;
         }
 
-        // Depth Testing
-        if (keepPixel && depthMode != 0 && depthBuffer &&
-            (depthCompareOp != 7 || depthMask)) {
-          float targetDepth = 0.0f;
-          if (depthMode == 2) {
-            float w = 1.0f / wVal;
-            targetDepth =
-                std::clamp((w - depthNear) * depthRangeInv, 0.0f, 1.0f);
-          } else {
-            targetDepth = std::clamp(
-                a.pos[2] + w1 * (b.pos[2] - a.pos[2]) +
-                    w2 * (c.pos[2] - a.pos[2]),
-                0.0f, 1.0f);
-          }
-          if (depthBiasLevel != 0)
-            targetDepth = std::max(
-                0.0f, std::min(1.0f, targetDepth +
-                                         static_cast<float>(depthBiasLevel) /
-                                             65535.0f));
-          if (depthCompareOp != 7) {
-            float currentDepth = depthBuffer[pIdx];
-            bool depthPass = false;
-            switch (depthCompareOp) {
-              case 1:
-                depthPass = (targetDepth < currentDepth);
-                break;
-              case 2:
-                depthPass = (targetDepth == currentDepth);
-                break;
-              case 3:
-                depthPass = (targetDepth <= currentDepth);
-                break;
-              case 4:
-                depthPass = (targetDepth > currentDepth);
-                break;
-              case 5:
-                depthPass = (targetDepth != currentDepth);
-                break;
-              case 6:
-                depthPass = (targetDepth >= currentDepth);
-                break;
+        // Hardware Stencil Testing (before Depth Test)
+        if (keepPixel && stencilEnabled && stencilBuffer) {
+          const uint8_t sVal = stencilBuffer[pIdx];
+          if (!EvaluateStencilCompare(stencilCompareOp, stencilRef,
+                                      stencilReadMask, sVal)) {
+            if (stencilFailOp != 0u && stencilWriteMask != 0u) {
+              stencilBuffer[pIdx] = ApplyStencilOp(stencilFailOp, sVal,
+                                                   stencilRef, stencilWriteMask);
             }
-            if (!depthPass) keepPixel = false;
+            keepPixel = false;
+          }
+        }
+
+        // Depth Testing + Stencil ZFail/ZPass Update
+        if (keepPixel) {
+          bool depthPassed = true;
+          if (depthMode != 0 && depthBuffer &&
+              (depthCompareOp != 7 || depthMask)) {
+            float targetDepth = 0.0f;
+            if (depthMode == 2) {
+              float w = 1.0f / wVal;
+              targetDepth =
+                  std::clamp((w - depthNear) * depthRangeInv, 0.0f, 1.0f);
+            } else {
+              targetDepth = std::clamp(
+                  a.pos[2] + w1 * (b.pos[2] - a.pos[2]) +
+                      w2 * (c.pos[2] - a.pos[2]),
+                  0.0f, 1.0f);
+            }
+            if (depthBiasLevel != 0)
+              targetDepth = std::max(
+                  0.0f, std::min(1.0f, targetDepth +
+                                           static_cast<float>(depthBiasLevel) /
+                                               65535.0f));
+            if (depthCompareOp != 7) {
+              float currentDepth = depthBuffer[pIdx];
+              bool depthPass = false;
+              switch (depthCompareOp) {
+                case 1:
+                  depthPass = (targetDepth < currentDepth);
+                  break;
+                case 2:
+                  depthPass = (targetDepth == currentDepth);
+                  break;
+                case 3:
+                  depthPass = (targetDepth <= currentDepth);
+                  break;
+                case 4:
+                  depthPass = (targetDepth > currentDepth);
+                  break;
+                case 5:
+                  depthPass = (targetDepth != currentDepth);
+                  break;
+                case 6:
+                  depthPass = (targetDepth >= currentDepth);
+                  break;
+              }
+              if (!depthPass) {
+                depthPassed = false;
+                keepPixel = false;
+              }
+            }
+
+            if (depthPassed && depthMask) {
+              depthBuffer[pIdx] = targetDepth;
+            }
           }
 
-          if (keepPixel && depthMask) {
-            depthBuffer[pIdx] = targetDepth;
+          if (stencilEnabled && stencilBuffer) {
+            const uint32_t op = depthPassed ? stencilZPassOp : stencilZFailOp;
+            if (op != 0u && stencilWriteMask != 0u) {
+              stencilBuffer[pIdx] = ApplyStencilOp(
+                  op, stencilBuffer[pIdx], stencilRef, stencilWriteMask);
+            }
           }
         }
 
@@ -1147,39 +1307,42 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
                   return isDest ? (1.0f - srcC) : (1.0f - dstC);
                 case 7:
                   return 1.0f - dstA;
+                case 8:
+                  return isDest ? dstC : srcC;
+                case 9:
+                  return isDest ? (1.0f - dstC) : (1.0f - srcC);
                 case 15:
                   return isDest ? preFogC : std::min(srcA, 1.0f - dstA);
                 default:
                   return 1.0f;
               }
             };
-            red = std::clamp(
+            red = ApplyBlendOpScalar(
+                rgbBlendOp,
                 red * getF(rgbSrcBlend, red, preFogR, dstR, blendAlphaVal, dstA,
-                           false) +
-                    dstR * getF(rgbDstBlend, red, preFogR, dstR, blendAlphaVal,
-                                dstA, true),
-                0.0f, 1.0f);
-            green = std::clamp(
+                           false),
+                dstR * getF(rgbDstBlend, red, preFogR, dstR, blendAlphaVal,
+                            dstA, true));
+            green = ApplyBlendOpScalar(
+                rgbBlendOp,
                 green * getF(rgbSrcBlend, green, preFogG, dstG, blendAlphaVal,
-                             dstA, false) +
-                    dstG * getF(rgbDstBlend, green, preFogG, dstG,
-                                blendAlphaVal, dstA, true),
-                0.0f, 1.0f);
-            blue = std::clamp(
+                             dstA, false),
+                dstG * getF(rgbDstBlend, green, preFogG, dstG, blendAlphaVal,
+                            dstA, true));
+            blue = ApplyBlendOpScalar(
+                rgbBlendOp,
                 blue * getF(rgbSrcBlend, blue, preFogB, dstB, blendAlphaVal,
-                            dstA, false) +
-                    dstB * getF(rgbDstBlend, blue, preFogB, dstB, blendAlphaVal,
-                                dstA, true),
-                0.0f, 1.0f);
-            aVal = static_cast<uint32_t>(
-                std::clamp(
-                    blendAlphaVal * getF(alphaSrcBlend, 0, 0, 0, blendAlphaVal,
-                                         dstA, false) +
-                        dstA * getF(alphaDstBlend, 0, 0, 0, blendAlphaVal, dstA,
-                                    true),
-                    0.0f, 1.0f) *
-                    255.0f +
-                0.5f);
+                            dstA, false),
+                dstB * getF(rgbDstBlend, blue, preFogB, dstB, blendAlphaVal,
+                            dstA, true));
+            const float outA = ApplyBlendOpScalar(
+                alphaBlendOp,
+                blendAlphaVal * getF(alphaSrcBlend, blendAlphaVal,
+                                     blendAlphaVal, dstA, blendAlphaVal, dstA,
+                                     false),
+                dstA * getF(alphaDstBlend, blendAlphaVal, blendAlphaVal, dstA,
+                            blendAlphaVal, dstA, true));
+            aVal = static_cast<uint32_t>(outA * 255.0f + 0.5f);
             rVal = static_cast<uint32_t>(red * 255.0f + 0.5f);
             gVal = static_cast<uint32_t>(green * 255.0f + 0.5f);
             bVal = static_cast<uint32_t>(blue * 255.0f + 0.5f);
@@ -1213,10 +1376,9 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
           }
           uint32_t finalColor =
               (aVal << 24) | (rVal << 16) | (gVal << 8) | bVal;
-          if (!colorMaskRgb || !colorMaskAlpha) {
-            uint32_t mask = (colorMaskRgb ? 0x00FFFFFF : 0) |
-                            (colorMaskAlpha ? 0xFF000000 : 0);
-            finalColor = (finalColor & mask) | (pixels[pIdx] & ~mask);
+          if (colorMaskWord != 0xFFFFFFFFu) {
+            finalColor =
+                (finalColor & colorMaskWord) | (pixels[pIdx] & ~colorMaskWord);
           }
           pixels[pIdx] = finalColor;
         }
@@ -1238,7 +1400,10 @@ void SoftwareBackend::RasterizeSoftwareTriangleTile(
     const ModernVertex& a, const ModernVertex& b, const ModernVertex& c,
     int minX, int maxX, int minY, int maxY, const RasterizerState& state) {
   bool hasTexture = (state.boundTexAddress[0] != 0xFFFFFFFF);
-  bool blendEnabled = (state.rgbSrcBlend != 4 || state.rgbDstBlend != 0);
+  bool blendEnabled =
+      (state.rgbSrcBlend != 4 || state.rgbDstBlend != 0 ||
+       state.rgbBlendOp != 0 || state.alphaSrcBlend != 4 ||
+       state.alphaDstBlend != 0 || state.alphaBlendOp != 0);
   bool ditherEnabled = (state.ditherMode != 0);
   uint32_t key =
       (hasTexture ? 4 : 0) | (blendEnabled ? 2 : 0) | (ditherEnabled ? 1 : 0);

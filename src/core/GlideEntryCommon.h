@@ -54,14 +54,26 @@ struct SharedFrontendState {
   TexChromaState texChromaState[2]{};
 
   float texLodBias[2]{0.0f, 0.0f};
+  int32_t texDetailBias[2]{0, 0};
+  uint8_t texDetailScale[2]{0, 0};
+  float texDetailMax[2]{0.0f, 0.0f};
   uint32_t mipmapMode[2]{0, 0};
   bool lodBlend[2]{false, false};
 
   uint32_t constantColor{0xFFFFFFFFu};
   uint32_t rgbSrcBlend{4};       // GR_BLEND_ONE
   uint32_t rgbDstBlend{0};       // GR_BLEND_ZERO
+  uint32_t rgbBlendOp{0};        // GR_BLEND_OP_ADD
   uint32_t alphaSrcBlend{4};     // GR_BLEND_ONE
   uint32_t alphaDstBlend{0};     // GR_BLEND_ZERO
+  uint32_t alphaBlendOp{0};      // GR_BLEND_OP_ADD
+
+  // VSA-100 COMBINE extension state (0 = legacy gr*Combine active)
+  uint32_t extColorCombine{0};
+  uint32_t extAlphaCombine{0};
+  uint32_t extTexColorCombine[2]{0, 0};
+  uint32_t extTexAlphaCombine[2]{0, 0};
+  uint32_t tmuConstantColor[2]{0xFFFFFFFFu, 0xFFFFFFFFu};
 
   uint32_t cullMode{0};          // GR_CULL_DISABLE
   uint32_t clipMinX{0};
@@ -74,11 +86,25 @@ struct SharedFrontendState {
   uint8_t fogTable[64]{};
 
   bool colorMaskRgb{true};
+  bool colorMaskR{true};
+  bool colorMaskG{true};
+  bool colorMaskB{true};
   bool colorMaskAlpha{true};
   uint32_t ditherMode{0};
 
   uint8_t lfbConstantAlpha{255};
+  uint8_t lfbConstantStencil{0};
   uint32_t lfbWriteColorFormat{0};  // GR_COLORFORMAT_ARGB
+
+  // VSA-100 PIXEXT hardware stencil state
+  bool stencilEnabled{false};
+  uint32_t stencilCompareOp{7u};
+  uint8_t stencilRef{0u};
+  uint8_t stencilReadMask{0xFFu};
+  uint8_t stencilWriteMask{0xFFu};
+  uint32_t stencilFailOp{0u};
+  uint32_t stencilZFailOp{0u};
+  uint32_t stencilZPassOp{0u};
 
   uint32_t chromakeyMode{0};
   uint32_t chromakeyValue{0};
@@ -120,6 +146,8 @@ void CloseWindow(const char* logMessage);
 
 // Window clear/swap/buffer helpers.
 void ClearBuffer(uint32_t color, uint8_t alpha, uint32_t depth);
+void ClearBufferExt(uint32_t color, uint8_t alpha, uint32_t depth,
+                    uint8_t stencil);
 void SwapBuffers();
 void SetRenderBuffer(uint32_t buffer);
 void SstIdle();
@@ -142,6 +170,24 @@ void SetTexCombine(SharedFrontendState& st, uint32_t tmu, uint32_t rgbFnc,
                    bool rgbInvert, bool alphaInvert, bool forwardInverts);
 void SetAlphaBlendFunction(SharedFrontendState& st, uint32_t rgbSf,
                            uint32_t rgbDf, uint32_t alphaSf, uint32_t alphaDf);
+void SetAlphaBlendFunctionExt(SharedFrontendState& st, uint32_t rgbSf,
+                              uint32_t rgbDf, uint32_t rgbOp, uint32_t alphaSf,
+                              uint32_t alphaDf, uint32_t alphaOp);
+void SetColorCombineExt(SharedFrontendState& st, uint32_t a, uint32_t aMode,
+                        uint32_t b, uint32_t bMode, uint32_t c, bool cInvert,
+                        uint32_t d, bool dInvert, uint32_t shift, bool invert);
+void SetAlphaCombineExt(SharedFrontendState& st, uint32_t a, uint32_t aMode,
+                        uint32_t b, uint32_t bMode, uint32_t c, bool cInvert,
+                        uint32_t d, bool dInvert, uint32_t shift, bool invert);
+void SetTexColorCombineExt(SharedFrontendState& st, uint32_t tmu, uint32_t a,
+                           uint32_t aMode, uint32_t b, uint32_t bMode,
+                           uint32_t c, bool cInvert, uint32_t d, bool dInvert,
+                           uint32_t shift, bool invert);
+void SetTexAlphaCombineExt(SharedFrontendState& st, uint32_t tmu, uint32_t a,
+                           uint32_t aMode, uint32_t b, uint32_t bMode,
+                           uint32_t c, bool cInvert, uint32_t d, bool dInvert,
+                           uint32_t shift, bool invert);
+void SetTmuConstantColor(SharedFrontendState& st, uint32_t tmu, uint32_t value);
 void SetAlphaTestFunction(SharedFrontendState& st, uint32_t fnc);
 void SetAlphaTestReferenceValue(SharedFrontendState& st, uint32_t refVal);
 void SetTexFilterMode(SharedFrontendState& st, uint32_t tmu, uint32_t minFilter,
@@ -151,6 +197,8 @@ void SetTexClampMode(SharedFrontendState& st, uint32_t tmu, uint32_t sClamp,
 void SetTexMipMapMode(SharedFrontendState& st, uint32_t tmu, uint32_t mode,
                       bool lodBlend);
 void SetTexLodBias(SharedFrontendState& st, uint32_t tmu, float bias);
+void SetTexDetailControl(SharedFrontendState& st, uint32_t tmu, int32_t lodBias,
+                         uint8_t detailScale, float detailMax);
 void BindTexSource(SharedFrontendState& st, uint32_t tmu,
                    uint32_t startAddress);
 void SetDepthMode(SharedFrontendState& st, uint32_t mode);
@@ -161,6 +209,13 @@ void SetSstOrigin(uint32_t& sstOrigin, uint32_t origin);
 void SetCullMode(SharedFrontendState& st, uint32_t mode);
 void SetConstantColor(SharedFrontendState& st, uint32_t value);
 void SetColorMask(SharedFrontendState& st, bool rgb, bool alpha);
+void SetColorMaskExt(SharedFrontendState& st, bool r, bool g, bool b, bool a);
+void SetStencilMode(SharedFrontendState& st, bool enabled);
+void SetStencilFunc(SharedFrontendState& st, uint32_t compareOp, uint8_t refVal,
+                    uint8_t readMask);
+void SetStencilMask(SharedFrontendState& st, uint8_t writeMask);
+void SetStencilOp(SharedFrontendState& st, uint32_t failOp, uint32_t zFailOp,
+                  uint32_t zPassOp);
 void SetDitherMode(SharedFrontendState& st, uint32_t mode);
 void SetChromakeyMode(SharedFrontendState& st, uint32_t mode);
 void SetChromakeyValue(SharedFrontendState& st, uint32_t value);
@@ -175,6 +230,9 @@ void SetFogTable(SharedFrontendState& st, const uint8_t* ft);
 void DisableAllEffects(SharedFrontendState& st, bool clearCachedFogMode);
 void LoadGammaTable(uint32_t nentries, uint32_t* red, uint32_t* green,
                     uint32_t* blue);
+void GetGammaTable(uint32_t nentries, uint32_t* red, uint32_t* green,
+                   uint32_t* blue);
+int EncodeRLE16(void* dst, const void* src, uint32_t width, uint32_t height);
 
 // Vertex sanitization, primitive batch dispatch, and telemetry helpers.
 inline std::atomic<bool> g_anyTmuTableDirty{false};

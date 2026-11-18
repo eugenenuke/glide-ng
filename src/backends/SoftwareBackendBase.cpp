@@ -28,11 +28,24 @@ void SoftwareBackendBase::ResetState_Locked() {
 void SoftwareBackendBase::ClearBuffer(uint32_t color, uint32_t alpha, float z,
                                       uint32_t clearMask) {
   std::lock_guard<std::mutex> lock(m_mutex);
-  ClearBuffer_Locked(color, alpha, z, clearMask);
+  ClearBufferExt_Locked(color, alpha, z, 0u, clearMask & ~0x4u);
+}
+
+void SoftwareBackendBase::ClearBufferExt(uint32_t color, uint32_t alpha,
+                                         float z, uint8_t stencil,
+                                         uint32_t clearMask) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  ClearBufferExt_Locked(color, alpha, z, stencil, clearMask);
 }
 
 void SoftwareBackendBase::ClearBuffer_Locked(uint32_t color, uint32_t alpha,
                                              float z, uint32_t clearMask) {
+  ClearBufferExt_Locked(color, alpha, z, 0u, clearMask & ~0x4u);
+}
+
+void SoftwareBackendBase::ClearBufferExt_Locked(uint32_t color, uint32_t alpha,
+                                                float z, uint8_t stencil,
+                                                uint32_t clearMask) {
   FlushBins_Locked();
   GLIDE_LOG(DEBUG, "Rasterizer",
             "ClearBuffer CPU side invoked: color=0x"
@@ -76,8 +89,10 @@ void SoftwareBackendBase::ClearBuffer_Locked(uint32_t color, uint32_t alpha,
     }
 
     uint32_t writeMask = 0;
-    if (m_colorMaskRgb) writeMask |= 0x00FFFFFF;
-    if (m_colorMaskAlpha) writeMask |= 0xFF000000;
+    if (m_colorMaskR) writeMask |= 0x00FF0000u;
+    if (m_colorMaskG) writeMask |= 0x0000FF00u;
+    if (m_colorMaskB) writeMask |= 0x000000FFu;
+    if (m_colorMaskAlpha) writeMask |= 0xFF000000u;
 
     if (writeMask == 0) {
       GLIDE_LOG(DEBUG, "Rasterizer",
@@ -184,6 +199,61 @@ void SoftwareBackendBase::ClearBuffer_Locked(uint32_t color, uint32_t alpha,
       }
     }
   }
+
+  // Stencil Clear (obeys GR_STENCIL_MODE_EXT, grStencilMaskExt, grClipWindow,
+  // and T-Buffer write mask).
+  if ((clearMask & 0x4) && m_stencilEnabled && m_stencilWriteMask != 0u &&
+      !m_headlessStencilBuffer.empty()) {
+    const uint8_t wmask = m_stencilWriteMask;
+    const uint8_t keepMask = static_cast<uint8_t>(~wmask);
+    const uint8_t maskedStencil = static_cast<uint8_t>(stencil & wmask);
+    uint8_t* stencilBuf = m_headlessStencilBuffer.data();
+    const uint32_t spanW = x1 - x0;
+
+    if (isTbufMasked) {
+      for (uint32_t y = y0; y < y1; ++y) {
+        const uint32_t rowMask = (tbufMask >> ((y & 1u) << 1)) & 3u;
+        if (rowMask == 0u) continue;
+        uint8_t* sRow = stencilBuf + static_cast<size_t>(y) * m_headlessWidth;
+        if (wmask == 0xFFu) {
+          for (uint32_t x = x0; x < x1; ++x) {
+            if ((rowMask >> (x & 1u)) & 1u) {
+              sRow[x] = stencil;
+            }
+          }
+        } else {
+          for (uint32_t x = x0; x < x1; ++x) {
+            if ((rowMask >> (x & 1u)) & 1u) {
+              sRow[x] = static_cast<uint8_t>((sRow[x] & keepMask) | maskedStencil);
+            }
+          }
+        }
+      }
+    } else if (fullClip) {
+      const uint32_t totalPixels = m_headlessWidth * m_headlessHeight;
+      if (wmask == 0xFFu) {
+        std::fill_n(stencilBuf, totalPixels, stencil);
+      } else {
+        for (uint32_t i = 0; i < totalPixels; ++i) {
+          stencilBuf[i] =
+              static_cast<uint8_t>((stencilBuf[i] & keepMask) | maskedStencil);
+        }
+      }
+    } else if (wmask == 0xFFu) {
+      for (uint32_t y = y0; y < y1; ++y) {
+        std::fill_n(stencilBuf + static_cast<size_t>(y) * m_headlessWidth + x0,
+                    spanW, stencil);
+      }
+    } else {
+      for (uint32_t y = y0; y < y1; ++y) {
+        uint8_t* sRow =
+            stencilBuf + static_cast<size_t>(y) * m_headlessWidth + x0;
+        for (uint32_t i = 0; i < spanW; ++i) {
+          sRow[i] = static_cast<uint8_t>((sRow[i] & keepMask) | maskedStencil);
+        }
+      }
+    }
+  }
 }
 
 void SoftwareBackendBase::ScheduleLazyCpuClear(uint32_t color, uint32_t alpha,
@@ -201,19 +271,18 @@ void SoftwareBackendBase::ScheduleLazyCpuClear(uint32_t color, uint32_t alpha,
       (m_activeRenderBuffer == 0) ? m_frontBufferIdx : m_backBufferIdx;
 
   if (clearMask & 0x1) {
-    if (m_colorMaskRgb || m_colorMaskAlpha) {
+    const uint8_t mask4 = GetColorWriteMask4();
+    if (mask4 != 0u) {
       auto& slotState = m_pendingCpuColorClear[activeSlot];
-      if (slotState.pending && !(m_colorMaskRgb && m_colorMaskAlpha) &&
-          (slotState.maskRgb != m_colorMaskRgb ||
-           slotState.maskAlpha != m_colorMaskAlpha)) {
+      if (slotState.pending && mask4 != 0xFu &&
+          slotState.colorWriteMask4 != mask4) {
         MaterializeLazyCpuClear_Locked(activeSlot);
       }
       slotState.pending = true;
       slotState.color = color;
       slotState.alpha = alpha;
       slotState.pixelFormat = m_pixelFormatOverride;
-      slotState.maskRgb = m_colorMaskRgb;
-      slotState.maskAlpha = m_colorMaskAlpha;
+      slotState.colorWriteMask4 = mask4;
     }
   }
 
@@ -232,8 +301,10 @@ void SoftwareBackendBase::MaterializeLazyCpuClear_Locked(uint32_t bufferSlot) {
   if (m_cpuBuffers[bufferSlot].empty()) return;
 
   uint32_t writeMask = 0;
-  if (pending.maskRgb) writeMask |= 0x00FFFFFF;
-  if (pending.maskAlpha) writeMask |= 0xFF000000;
+  if (pending.colorWriteMask4 & 0x1u) writeMask |= 0x00FF0000u;
+  if (pending.colorWriteMask4 & 0x2u) writeMask |= 0x0000FF00u;
+  if (pending.colorWriteMask4 & 0x4u) writeMask |= 0x000000FFu;
+  if (pending.colorWriteMask4 & 0x8u) writeMask |= 0xFF000000u;
   if (writeMask == 0) return;
 
   uint32_t a = (pending.alpha > 0) ? pending.alpha : 255;
@@ -504,6 +575,8 @@ void SoftwareBackendBase::FreeCpuBuffers_Locked() {
   m_resolvedBuffer.shrink_to_fit();
   m_headlessDepthBuffer.clear();
   m_headlessDepthBuffer.shrink_to_fit();
+  m_headlessStencilBuffer.clear();
+  m_headlessStencilBuffer.shrink_to_fit();
   m_pendingCpuColorClear[0] = {};
   m_pendingCpuColorClear[1] = {};
   m_pendingCpuDepthClear = false;

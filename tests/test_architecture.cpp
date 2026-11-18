@@ -124,28 +124,31 @@ TEST_CASE("Architectural Core Validation", "[Architecture]") {
     void* handle = OpenGlide2Handle();
     REQUIRE(handle != nullptr);
 
-    // Resolve legacy function pointers
+    // Resolve legacy function pointers (authentic Glide 2.x does NOT export grGetString)
     using InitFunc = void (*)(void);
-    using GetStringFunc = const char* (*)(FxU32);
+    using GetVersionFunc = void (*)(char[80]);
     using QueryHwFunc = FxBool (*)(GrHwConfiguration*);
 
     auto glideInit = reinterpret_cast<InitFunc>(::dlsym(handle, "grGlideInit"));
-    auto getString =
-        reinterpret_cast<GetStringFunc>(::dlsym(handle, "grGetString"));
+    auto getVersion =
+        reinterpret_cast<GetVersionFunc>(::dlsym(handle, "grGlideGetVersion"));
     auto queryHw =
         reinterpret_cast<QueryHwFunc>(::dlsym(handle, "grSstQueryHardware"));
 
     REQUIRE(glideInit != nullptr);
-    REQUIRE(getString != nullptr);
+    REQUIRE(getVersion != nullptr);
     REQUIRE(queryHw != nullptr);
+    REQUIRE(::dlsym(handle, "grGetString") == nullptr);
+    REQUIRE(::dlsym(handle, "grGetProcAddress") == nullptr);
 
     // Execute tests across legacy C boundaries
     glideInit();
-    std::string version = getString(0xa4);  // GR_VERSION
-    REQUIRE((version == "2.43 (glide-ng)" || version == "2.61 (glide-ng)" ||
-             version == "2.40 (glide-ng)" || version == "2.42 (glide-ng)" ||
-             version == "2.10 (glide-ng)"));
-    REQUIRE(std::string(getString(0xa3)) == "3Dfx Interactive");  // GR_VENDOR
+    char verBuf[80] = {};
+    getVersion(verBuf);
+    std::string version(verBuf);
+    REQUIRE((version == "2.56" || version == "2.48" || version == "2.61" ||
+             version == "2.43" || version == "2.40" || version == "2.42" ||
+             version == "2.11"));
 
     GrHwConfiguration hw;
     std::memset(&hw, 0xA5, sizeof(hw));  // Ensure grSstQueryHardware initializes all fields
@@ -167,15 +170,16 @@ TEST_CASE("Architectural Core Validation", "[Architecture]") {
     void* handle = OpenGlide2Handle();
     REQUIRE(handle != nullptr);
 
-    // 2. Resolve function pointers
-    using GetProcAddressFunc = GrProc (*)(char*);
+    // 2. Resolve function pointers (authentic Glide 2.x does NOT export grGetProcAddress)
+    using ChromakeyRangeExtFunc = void (*)(GrColor_t, GrColor_t, uint32_t);
     using ErrorSetCallbackFunc = void (*)(GrErrorCallbackFnc_t);
     using LfbConstantDepthFunc = void (*)(FxU16);
     using LfbWriteColorSwizzleFunc = void (*)(FxBool, FxBool);
     using AlphaControlsITRGBLightingFunc = void (*)(FxBool);
 
-    auto getProcAddress = reinterpret_cast<GetProcAddressFunc>(
-        ::dlsym(handle, "grGetProcAddress"));
+    REQUIRE(::dlsym(handle, "grGetProcAddress") == nullptr);
+    auto chromakeyRangeExt = reinterpret_cast<ChromakeyRangeExtFunc>(
+        ::dlsym(handle, "grChromakeyRangeExt"));
     auto errorSetCallback = reinterpret_cast<ErrorSetCallbackFunc>(
         ::dlsym(handle, "grErrorSetCallback"));
     auto lfbConstantDepth = reinterpret_cast<LfbConstantDepthFunc>(
@@ -186,24 +190,11 @@ TEST_CASE("Architectural Core Validation", "[Architecture]") {
         reinterpret_cast<AlphaControlsITRGBLightingFunc>(
             ::dlsym(handle, "grAlphaControlsITRGBLighting"));
 
-    REQUIRE(getProcAddress != nullptr);
+    REQUIRE(chromakeyRangeExt != nullptr);
     REQUIRE(errorSetCallback != nullptr);
     REQUIRE(lfbConstantDepth != nullptr);
     REQUIRE(lfbWriteColorSwizzle != nullptr);
     REQUIRE(alphaControlsITRGBLighting != nullptr);
-
-    // 3. Test grGetProcAddress resolves the chroma-range extension
-    // We use mutable local arrays to prevent "ISO C++ forbids converting a
-    // string constant to char*" warnings
-    char extName[] = "grChromakeyRangeExt";
-    char badExtName[] = "non_existent_extension";
-
-    GrProc chromakeyRangePtr = getProcAddress(extName);
-    REQUIRE(chromakeyRangePtr != nullptr);
-
-    // Test grGetProcAddress returns nullptr for invalid/null extensions
-    REQUIRE(getProcAddress(badExtName) == nullptr);
-    REQUIRE(getProcAddress(nullptr) == nullptr);
 
     // 4. Test grErrorSetCallback
     auto mockCallback = [](const char* string, FxBool fatal) {
@@ -2421,8 +2412,9 @@ TEST_CASE("Glide Chroma-Key Range Rendering Verification") {
       reinterpret_cast<BufferSwapFunc>(::dlsym(handle, "grBufferSwap"));
   auto lfbReadRegion =
       reinterpret_cast<LfbReadRegionFunc>(::dlsym(handle, "grLfbReadRegion"));
-  auto getProcAddress =
-      reinterpret_cast<GetProcAddressFunc>(::dlsym(handle, "grGetProcAddress"));
+  using ChromakeyRangeExtFunc = void (*)(GrColor_t, GrColor_t, uint32_t);
+  auto chromakeyRangeExt = reinterpret_cast<ChromakeyRangeExtFunc>(
+      ::dlsym(handle, "grChromakeyRangeExt"));
   auto chromakeyMode =
       reinterpret_cast<ChromakeyModeFunc>(::dlsym(handle, "grChromakeyMode"));
   auto drawTriangle =
@@ -2434,20 +2426,13 @@ TEST_CASE("Glide Chroma-Key Range Rendering Verification") {
   REQUIRE(bufferClear != nullptr);
   REQUIRE(bufferSwap != nullptr);
   REQUIRE(lfbReadRegion != nullptr);
-  REQUIRE(getProcAddress != nullptr);
+  REQUIRE(chromakeyRangeExt != nullptr);
   REQUIRE(chromakeyMode != nullptr);
   REQUIRE(drawTriangle != nullptr);
 
   // Initialize Glide first to load environment overrides and lock the correct
   // backend
   REQUIRE_NOTHROW(init());
-
-  // Resolve our extension function grChromakeyRangeExt dynamically!
-  using ChromakeyRangeExtFunc = void (*)(GrColor_t, GrColor_t, uint32_t);
-  char extName[] = "grChromakeyRangeExt";
-  auto chromakeyRangeExt =
-      reinterpret_cast<ChromakeyRangeExtFunc>(getProcAddress(extName));
-  REQUIRE(chromakeyRangeExt != nullptr);  // Dynamic loader check!
 
   // Open the window
   FxBool ok = winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
@@ -3011,8 +2996,14 @@ TEST_CASE("Glide Per-TMU Texture Chromakey & State Serialization",
         reinterpret_cast<SstSelectFunc>(::dlsym(handle, "grSstSelect"));
     auto sstWinOpen =
         reinterpret_cast<SstWinOpenFunc>(::dlsym(handle, "grSstWinOpen"));
-    auto getProc = reinterpret_cast<GetProcAddressFunc>(
-        ::dlsym(handle, "grGetProcAddress"));
+    using TexChromaModeGlide2Func = void (*)(int, uint32_t);
+    using TexChromaRangeGlide2Func =
+        void (*)(int, uint32_t, uint32_t, uint32_t);
+
+    auto texChromaMode = reinterpret_cast<TexChromaModeGlide2Func>(
+        ::dlsym(handle, "grTexChromaModeExt"));
+    auto texChromaRange = reinterpret_cast<TexChromaRangeGlide2Func>(
+        ::dlsym(handle, "grTexChromaRangeExt"));
     auto glideGetState =
         reinterpret_cast<GlideGetStateFunc>(::dlsym(handle, "grGlideGetState"));
     auto glideSetState =
@@ -3024,26 +3015,11 @@ TEST_CASE("Glide Per-TMU Texture Chromakey & State Serialization",
     REQUIRE(shutdown != nullptr);
     REQUIRE(sstSelect != nullptr);
     REQUIRE(sstWinOpen != nullptr);
-    REQUIRE(getProc != nullptr);
+    REQUIRE(texChromaMode != nullptr);
+    REQUIRE(texChromaRange != nullptr);
     REQUIRE(glideGetState != nullptr);
     REQUIRE(glideSetState != nullptr);
     REQUIRE(winClose != nullptr);
-
-    // Resolve extension methods dynamically via grGetProcAddress!
-    char modeExtName[] = "grTexChromaModeExt";
-    char rangeExtName[] = "grTexChromaRangeExt";
-
-    using TexChromaModeGlide2Func = void (*)(int, uint32_t);
-    using TexChromaRangeGlide2Func =
-        void (*)(int, uint32_t, uint32_t, uint32_t);
-
-    auto texChromaMode =
-        reinterpret_cast<TexChromaModeGlide2Func>(getProc(modeExtName));
-    auto texChromaRange =
-        reinterpret_cast<TexChromaRangeGlide2Func>(getProc(rangeExtName));
-
-    REQUIRE(texChromaMode != nullptr);
-    REQUIRE(texChromaRange != nullptr);
 
     ::setenv("GLIDE_NG_BACKEND", "software", 1);
 
@@ -5483,7 +5459,7 @@ TEST_CASE(
       REQUIRE(std::abs(r_act - r_exp) <= 15);
     };
 
-    auto renderCompositingFrame = [&](int modeIndex) {
+    auto renderCompositingFrame = [&](int modeIndex, int detailBias = 2) {
       bufferClear(0x00404040, 0, GR_ZDEPTHVALUE_FARTHEST);
 
       texCombine(GR_TMU0, GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
@@ -5499,11 +5475,9 @@ TEST_CASE(
       vtxA.oow = 1.0f;
       vtxB = vtxC = vtxD = vtxA;
 
-      float distance = 1.01f;  // Frame 0 distance
-
       tlSetMatrix(tlIdentity());
       tlMultMatrix(tlXRotation(-20.0f));
-      tlMultMatrix(tlTranslation(0.0f, -0.3f, distance));
+      tlMultMatrix(tlTranslation(0.0f, -0.3f, 1.01f));
 
       tlTransformVertices(xfVerts, srcVerts, 4);
       tlProjectVertices(prjVerts, xfVerts, 4);
@@ -5542,7 +5516,7 @@ TEST_CASE(
         texCombine(GR_TMU0, GR_COMBINE_FUNCTION_BLEND_LOCAL,
                    GR_COMBINE_FACTOR_DETAIL_FACTOR, GR_COMBINE_FUNCTION_LOCAL,
                    GR_COMBINE_FACTOR_NONE, FXFALSE, FXFALSE);
-        texDetailControl(GR_TMU0, 2, 7, 1.0f);
+        texDetailControl(GR_TMU0, detailBias, 7, 1.0f);
       }
       alphaBlendFunction(GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_ONE,
                          GR_BLEND_ZERO);
@@ -5592,11 +5566,19 @@ TEST_CASE(
     assertColorClose(fb[50 * 640 + 50], 0xFF414041);
 
     // Mode 2: DETAIL
-    // At distance=1.01f with detail_bias=2, detail_scale=7, detail_max=1.0,
-    // detail_factor clamps to 1.0 (100% baseTexture, 0% detailTexture) and
-    // GR_TEXFMT_P_8 (lava.3df) has opaque 0xFF alpha on authentic hardware.
-    renderCompositingFrame(2);
-    assertColorClose(fb[300 * 640 + 320], 0xFFFF0000);
+    // Authentic 3dfx detail texturing (grTexDetailControl(TMU0, 2, 7, 1.0f)):
+    //   Pass 1 = base * (1 - b), Pass 2 = detail * b (additive blend)
+    //   b = clamp((detailBias - rawLod) * (1 << detailScale) / 255.0, 0, max)
+    // At distance=1.01f with detailBias=2, rawLod (~0.96) < 2 so lava.3df
+    // blends ~52% onto decal1.3df (ABGR ~0x00871873).
+    renderCompositingFrame(2, 2);
+    assertColorClose(fb[300 * 640 + 320], 0x00871873);
+    assertColorClose(fb[50 * 640 + 50], 0xFF414041);
+
+    // With detailBias=0, rawLod (~0.96) >= 0 so b = 0.0 -> 100% baseTexture
+    // (decal1.3df blue = ABGR 0x00FF0000).
+    renderCompositingFrame(2, 0);
+    assertColorClose(fb[300 * 640 + 320], 0x00FF0000);
     assertColorClose(fb[50 * 640 + 50], 0xFF414041);
   }
 
@@ -5849,12 +5831,12 @@ TEST_CASE("Glide 2.x Dynamic Version and Hardware Gating", "[Glide2][Gating]") {
   void* handle = ::dlopen("build/lib/libglide2x.so", RTLD_LAZY);
   REQUIRE(handle != nullptr);
 
-  // Resolve base initialization entry points
+  // Resolve base initialization entry points (pure Glide 2.x does NOT export grGetProcAddress/grGetString)
   auto init = (void(FX_CALL*)(void))::dlsym(handle, "grGlideInit");
   auto shutdown = (void(FX_CALL*)(void))::dlsym(handle, "grGlideShutdown");
   auto sstSelect = (void(FX_CALL*)(int))::dlsym(handle, "grSstSelect");
-  auto getProcAddress =
-      (GrProc(FX_CALL*)(char*))::dlsym(handle, "grGetProcAddress");
+  auto getVersion =
+      (void(FX_CALL*)(char[80]))::dlsym(handle, "grGlideGetVersion");
   auto sstQueryHardware = (FxBool(FX_CALL*)(GrHwConfiguration*))::dlsym(
       handle, "grSstQueryHardware");
   auto sstWinOpen = (FxBool(FX_CALL*)(
@@ -5864,7 +5846,9 @@ TEST_CASE("Glide 2.x Dynamic Version and Hardware Gating", "[Glide2][Gating]") {
   REQUIRE(init != nullptr);
   REQUIRE(shutdown != nullptr);
   REQUIRE(sstSelect != nullptr);
-  REQUIRE(getProcAddress != nullptr);
+  REQUIRE(getVersion != nullptr);
+  REQUIRE(::dlsym(handle, "grGetProcAddress") == nullptr);
+  REQUIRE(::dlsym(handle, "grGetString") == nullptr);
   REQUIRE(sstQueryHardware != nullptr);
   REQUIRE(sstWinOpen != nullptr);
 
@@ -5889,14 +5873,12 @@ TEST_CASE("Glide 2.x Dynamic Version and Hardware Gating", "[Glide2][Gating]") {
                GR_ORIGIN_UPPER_LEFT, 2, 1);
   };
 
-  SECTION("Case A: Default Profile (Voodoo2, 2.43)") {
-    init_with_profile("voodoo2", "2.43");
+  SECTION("Case A: Default Profile (Voodoo2, 2.56)") {
+    init_with_profile("voodoo2", nullptr);
 
-    // Query standard 2.43 functions (dynamic loading)
-    REQUIRE(getProcAddress((char*)"grChromakeyRangeExt") != nullptr);
-
-    // 2.61 functions should be blocked under 2.43
-    REQUIRE(getProcAddress((char*)"grSplashCb") == nullptr);
+    char verBuf[80] = {};
+    getVersion(verBuf);
+    REQUIRE(std::string(verBuf) == "2.56");
 
     // Hardware query check: Voodoo 2 config
     GrHwConfiguration hwconfig;
@@ -5907,27 +5889,41 @@ TEST_CASE("Glide 2.x Dynamic Version and Hardware Gating", "[Glide2][Gating]") {
     shutdown();
   }
 
-  SECTION("Case B: Voodoo1 Legacy Profile (Voodoo Graphics, 2.40)") {
-    init_with_profile("voodoo1", "2.40");
-
-    // 2.40 profile: 2.42/2.43 features must be blocked
-    REQUIRE(getProcAddress((char*)"grChromakeyRangeExt") == nullptr);
+  SECTION("Case B: Voodoo1 Legacy Profile (Voodoo Graphics, default 2.48)") {
+    init_with_profile("voodoo1", nullptr);
+    char verBuf[80] = {};
+    getVersion(verBuf);
+    REQUIRE(std::string(verBuf) == "2.48");
 
     // Hardware query check: Voodoo Graphics config
     GrHwConfiguration hwconfig;
     REQUIRE(sstQueryHardware(&hwconfig) == FXTRUE);
     REQUIRE(hwconfig.SSTs[0].type == GR_SSTTYPE_VOODOO);
+    REQUIRE(hwconfig.SSTs[0].sstBoard.VoodooConfig.fbiRev == 2);
 
     shutdown();
   }
 
-  SECTION("Case C: Voodoo3 Interop Profile (Voodoo3, 2.61)") {
+  SECTION("Case C: Banshee & Voodoo3 Interop Profile (authentic H3 fbiRev + 2.61)") {
+    init_with_profile("banshee", nullptr);
+    char verBuf[80] = {};
+    getVersion(verBuf);
+    REQUIRE(std::string(verBuf) == "2.61");
+    GrHwConfiguration hwBanshee;
+    REQUIRE(sstQueryHardware(&hwBanshee) == FXTRUE);
+    REQUIRE(hwBanshee.SSTs[0].type == GR_SSTTYPE_VOODOO);
+    REQUIRE(hwBanshee.SSTs[0].sstBoard.VoodooConfig.fbiRev == 0x1002);
+    REQUIRE(hwBanshee.SSTs[0].sstBoard.VoodooConfig.nTexelfx == 1);
+    shutdown();
+
     init_with_profile("voodoo3", "2.61");
-
-    // Everything should be fully available under 2.61 on Voodoo3
-    REQUIRE(getProcAddress((char*)"grChromakeyRangeExt") != nullptr);
-    REQUIRE(getProcAddress((char*)"grSplashCb") != nullptr);
-
+    getVersion(verBuf);
+    REQUIRE(std::string(verBuf) == "2.61");
+    GrHwConfiguration hwV3;
+    REQUIRE(sstQueryHardware(&hwV3) == FXTRUE);
+    REQUIRE(hwV3.SSTs[0].type == GR_SSTTYPE_VOODOO);
+    REQUIRE(hwV3.SSTs[0].sstBoard.VoodooConfig.fbiRev == 0x11002);
+    REQUIRE(hwV3.SSTs[0].sstBoard.VoodooConfig.nTexelfx == 2);
     shutdown();
   }
 
@@ -8125,9 +8121,7 @@ TEST_CASE("Glide 2.x Hardware & Version Override Consistency (M6.2)",
 
     char verBuf[80] = {};
     grGlideGetVersion(verBuf);
-    CHECK(std::string(verBuf) == "2.61 (glide-ng)");
-    CHECK(std::string(grGetString(GR_VERSION)) == "2.61 (glide-ng)");
-    CHECK(std::string(grGetString(GR_HARDWARE)) == "Voodoo Graphics");
+    CHECK(std::string(verBuf) == "2.61");
 
     FxI32 fbBytes = 0;
     FxI32 tmuBytes = 0;
@@ -8170,8 +8164,7 @@ TEST_CASE("Glide 2.x Hardware & Version Override Consistency (M6.2)",
 
     char verBuf[80] = {};
     grGlideGetVersion(verBuf);
-    CHECK(std::string(verBuf) == "2.42 (glide-ng)");
-    CHECK(std::string(grGetString(GR_VERSION)) == "2.42 (glide-ng)");
+    CHECK(std::string(verBuf) == "2.42");
 
     FxI32 fbBytes = 0;
     FxI32 tmuBytes = 0;
@@ -8695,5 +8688,215 @@ TEST_CASE("Glide 2.x Partial MipMap Rows, Coplanar W-Buffer & Negative Combiner 
 
   grSstWinClose();
   grGlideShutdown();
+#endif
+}
+
+TEST_CASE("M10.2 Glide 2.x legacy exports: guFb*, guMP*, grSstVidMode, guMovie*",
+          "[Glide2][M10][Exports]") {
+#ifdef __linux__
+  grGlideInit();
+  REQUIRE(grSstWinOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                       GR_COLORFORMAT_ARGB, GR_ORIGIN_UPPER_LEFT, 2, 1) ==
+          FXTRUE);
+
+  SECTION("guFbWriteRegion & guFbReadRegion 565 round-trip") {
+    grBufferClear(0xFF000000u, 0xFF, GR_WDEPTHVALUE_FARTHEST);
+    uint16_t srcBlock[16];
+    for (int i = 0; i < 16; ++i) {
+      srcBlock[i] = (i & 1) ? 0xF800u : 0x07E0u;
+    }
+    guFbWriteRegion(20, 24, 4, 4, srcBlock, 4 * sizeof(uint16_t));
+    uint16_t dstBlock[16] = {};
+    guFbReadRegion(20, 24, 4, 4, dstBlock, 4 * sizeof(uint16_t));
+    for (int i = 0; i < 16; ++i) {
+      CHECK(dstBlock[i] == srcBlock[i]);
+    }
+  }
+
+  SECTION("guMPDrawTriangle 2-pass ADD and MULTIPLY") {
+    grDepthBufferMode(GR_DEPTHBUFFER_DISABLE);
+    grAlphaBlendFunction(GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_ONE,
+                         GR_BLEND_ZERO);
+    grColorCombine(GR_COMBINE_FUNCTION_SCALE_OTHER, GR_COMBINE_FACTOR_ONE,
+                   GR_COMBINE_LOCAL_NONE, GR_COMBINE_OTHER_TEXTURE, FXFALSE);
+    grAlphaCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+                   GR_COMBINE_LOCAL_CONSTANT, GR_COMBINE_OTHER_NONE, FXFALSE);
+    grConstantColorValue(0xFFFFFFFFu);
+
+    guTexMemReset();
+    std::vector<uint16_t> redTex(16 * 16, 0xF800u);    // RGB565 Red (255,0,0)
+    std::vector<uint16_t> greenTex(16 * 16, 0x07E0u);  // RGB565 Green (0,255,0)
+    std::vector<uint16_t> halfTex(16 * 16, 0x8410u);   // ~50% grey
+
+    GrMipMapId_t mmRed = guTexAllocateMemory(
+        GR_TMU0, GR_MIPMAPLEVELMASK_BOTH, 16, 16, GR_TEXFMT_RGB_565,
+        GR_MIPMAP_DISABLE, GR_LOD_16, GR_LOD_16, GR_ASPECT_1x1,
+        GR_TEXTURECLAMP_CLAMP, GR_TEXTURECLAMP_CLAMP,
+        GR_TEXTUREFILTER_POINT_SAMPLED, GR_TEXTUREFILTER_POINT_SAMPLED, 0.0f,
+        FXFALSE);
+    GrMipMapId_t mmGreen = guTexAllocateMemory(
+        GR_TMU0, GR_MIPMAPLEVELMASK_BOTH, 16, 16, GR_TEXFMT_RGB_565,
+        GR_MIPMAP_DISABLE, GR_LOD_16, GR_LOD_16, GR_ASPECT_1x1,
+        GR_TEXTURECLAMP_CLAMP, GR_TEXTURECLAMP_CLAMP,
+        GR_TEXTUREFILTER_POINT_SAMPLED, GR_TEXTUREFILTER_POINT_SAMPLED, 0.0f,
+        FXFALSE);
+    GrMipMapId_t mmHalf = guTexAllocateMemory(
+        GR_TMU0, GR_MIPMAPLEVELMASK_BOTH, 16, 16, GR_TEXFMT_RGB_565,
+        GR_MIPMAP_DISABLE, GR_LOD_16, GR_LOD_16, GR_ASPECT_1x1,
+        GR_TEXTURECLAMP_CLAMP, GR_TEXTURECLAMP_CLAMP,
+        GR_TEXTUREFILTER_POINT_SAMPLED, GR_TEXTUREFILTER_POINT_SAMPLED, 0.0f,
+        FXFALSE);
+    REQUIRE(mmRed != GR_NULL_MIPMAP_HANDLE);
+    REQUIRE(mmGreen != GR_NULL_MIPMAP_HANDLE);
+    REQUIRE(mmHalf != GR_NULL_MIPMAP_HANDLE);
+
+    guTexDownloadMipMap(mmRed, redTex.data(), nullptr);
+    guTexDownloadMipMap(mmGreen, greenTex.data(), nullptr);
+    guTexDownloadMipMap(mmHalf, halfTex.data(), nullptr);
+
+    auto makeV = [](float x, float y, float s, float t) {
+      GrVertex v = {};
+      v.x = x;
+      v.y = y;
+      v.oow = 1.0f;
+      v.tmuvtx[0].sow = s;
+      v.tmuvtx[0].tow = t;
+      return v;
+    };
+    GrVertex v0 = makeV(40.0f, 40.0f, 0.0f, 0.0f);
+    GrVertex v1 = makeV(120.0f, 40.0f, 256.0f, 0.0f);
+    GrVertex v2 = makeV(120.0f, 120.0f, 256.0f, 256.0f);
+
+    // 1) ADD: Red + Green => Yellow (R>=28, G>=58, B<=2)
+    grBufferClear(0xFF000000u, 0xFF, GR_WDEPTHVALUE_FARTHEST);
+    guMPInit();
+    guMPTexCombineFunction(GR_MPTEXTURECOMBINE_ADD);
+    guMPTexSource(0, mmRed);
+    guMPTexSource(1, mmGreen);
+    guMPDrawTriangle(&v0, &v1, &v2);
+    uint16_t pxAdd = 0;
+    REQUIRE(grLfbReadRegion(GR_BUFFER_BACKBUFFER, 95, 65, 1, 1, 2, &pxAdd) ==
+            FXTRUE);
+    CHECK(((pxAdd >> 11) & 31u) >= 28u);
+    CHECK(((pxAdd >> 5) & 63u) >= 58u);
+    CHECK((pxAdd & 31u) <= 2u);
+
+    // 2) MULTIPLY: Red * ~50% Grey => Dark Red (R around 12..19, G<=2, B<=2)
+    grBufferClear(0xFF000000u, 0xFF, GR_WDEPTHVALUE_FARTHEST);
+    guMPTexCombineFunction(GR_MPTEXTURECOMBINE_MULTIPLY);
+    guMPTexSource(0, mmRed);
+    guMPTexSource(1, mmHalf);
+    guMPDrawTriangle(&v0, &v1, &v2);
+    uint16_t pxMul = 0;
+    REQUIRE(grLfbReadRegion(GR_BUFFER_BACKBUFFER, 95, 65, 1, 1, 2, &pxMul) ==
+            FXTRUE);
+    const uint32_t mulR = (pxMul >> 11) & 31u;
+    CHECK(mulR >= 12u);
+    CHECK(mulR <= 19u);
+    CHECK(((pxMul >> 5) & 63u) <= 2u);
+    CHECK((pxMul & 31u) <= 2u);
+  }
+
+  SECTION("grSstVidMode and guMovie* smoke test") {
+    REQUIRE_NOTHROW(grSstVidMode(0, nullptr));
+    REQUIRE_NOTHROW(guMovieSetName("capture.mov"));
+    REQUIRE_NOTHROW(guMovieStart());
+    REQUIRE_NOTHROW(guMovieStop());
+  }
+
+  grSstWinClose();
+  grGlideShutdown();
+#endif
+}
+
+TEST_CASE("M10.7 Pure Glide 2.x ABI, Bare Versions, and grTBufferWriteMaskExt",
+          "[Glide2][M10]") {
+#ifdef __linux__
+  struct EnvGuard {
+    std::vector<std::string> keys = {"GLIDE_NG_CARD_MODEL",
+                                     "GLIDE_NG_API_VERSION",
+                                     "GLIDE_NG_HEADLESS"};
+    std::vector<std::pair<std::string, std::string>> saved;
+    EnvGuard() {
+      for (const auto& k : keys) {
+        const char* v = std::getenv(k.c_str());
+        saved.emplace_back(k, v ? std::string(v) : std::string("\x01UNSET"));
+        ::unsetenv(k.c_str());
+      }
+      ::setenv("GLIDE_NG_HEADLESS", "1", 1);
+    }
+    ~EnvGuard() {
+      for (const auto& kv : saved) {
+        if (kv.second == "\x01UNSET") {
+          ::unsetenv(kv.first.c_str());
+        } else {
+          ::setenv(kv.first.c_str(), kv.second.c_str(), 1);
+        }
+      }
+    }
+  } guard;
+
+  void* handle = OpenGlide2Handle();
+  REQUIRE(handle != nullptr);
+
+  // Authentic Glide 2.x DLLs/OVLs never exported grGetString or grGetProcAddress
+  CHECK(::dlsym(handle, "grGetString") == nullptr);
+  CHECK(::dlsym(handle, "grGetProcAddress") == nullptr);
+
+  // Verify default bare 3-digit version per card model
+  struct CardExpect {
+    const char* card;
+    const char* expectedVer;
+    GrSstType expectedType;
+    int expectedFbiRev;
+  };
+  const CardExpect cases[] = {
+      {"voodoo1", "2.48", GR_SSTTYPE_VOODOO, 2},
+      {"rush",    "2.48", GR_SSTTYPE_SST96,  0},
+      {"voodoo2", "2.56", GR_SSTTYPE_Voodoo2, 2},
+      {"banshee", "2.61", GR_SSTTYPE_VOODOO, 0x1002},
+      {"voodoo3", "2.61", GR_SSTTYPE_VOODOO, 0x11002},
+      {"voodoo4", "2.61", GR_SSTTYPE_VOODOO, 0x11002},
+      {"voodoo5", "2.61", GR_SSTTYPE_VOODOO, 0x11002},
+  };
+  for (const auto& c : cases) {
+    ::setenv("GLIDE_NG_CARD_MODEL", c.card, 1);
+    ::unsetenv("GLIDE_NG_API_VERSION");
+    grGlideInit();
+    char verBuf[80] = {};
+    grGlideGetVersion(verBuf);
+    INFO("Card=" << c.card << " ver=" << verBuf);
+    CHECK(std::string(verBuf) == c.expectedVer);
+    CHECK(std::string(verBuf).find("glide-ng") == std::string::npos);
+
+    GrHwConfiguration hw;
+    std::memset(&hw, 0, sizeof(hw));
+    REQUIRE(grSstQueryHardware(&hw) == FXTRUE);
+    CHECK(hw.SSTs[0].type == c.expectedType);
+    if (c.expectedType == GR_SSTTYPE_VOODOO) {
+      CHECK(hw.SSTs[0].sstBoard.VoodooConfig.fbiRev == c.expectedFbiRev);
+    } else if (c.expectedType == GR_SSTTYPE_Voodoo2) {
+      CHECK(hw.SSTs[0].sstBoard.Voodoo2Config.fbiRev == c.expectedFbiRev);
+    }
+    grGlideShutdown();
+  }
+
+  // Verify grTBufferWriteMaskExt is wired and safe across backends
+  ::setenv("GLIDE_NG_CARD_MODEL", "voodoo5", 1);
+  grGlideInit();
+  grSstSelect(0);
+  REQUIRE(grSstWinOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                       GR_COLORFORMAT_ARGB, GR_ORIGIN_UPPER_LEFT, 2, 1) ==
+          FXTRUE);
+  using TBufferMaskFn = void(FX_CALL*)(FxU32);
+  auto tbufMask =
+      reinterpret_cast<TBufferMaskFn>(::dlsym(handle, "grTBufferWriteMaskExt"));
+  REQUIRE(tbufMask != nullptr);
+  REQUIRE_NOTHROW(tbufMask(0x5u));
+  REQUIRE_NOTHROW(tbufMask(0xFFFFFFFFu));
+  grSstWinClose();
+  grGlideShutdown();
+
+  ::dlclose(handle);
 #endif
 }

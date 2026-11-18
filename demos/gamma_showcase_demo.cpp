@@ -12,7 +12,6 @@
 
 // Linkage helpers to declare functions that might be gated in Glide 2.x headers
 extern "C" {
-    FX_ENTRY const char* FX_CALL grGetString(FxU32 name);
     FX_ENTRY void FX_CALL grLoadGammaTable(FxU32 nentries, FxU32 *red, FxU32 *green, FxU32 *blue);
     FX_ENTRY void FX_CALL guGammaCorrectionRGB(FxFloat red, FxFloat green, FxFloat blue);
 }
@@ -140,16 +139,16 @@ int main(int argc, char** argv) {
         return -1;
     }
 
-    // Query driver descriptors
-    const char* versionStr = grGetString(GR_VERSION);
-    const char* vendorStr  = grGetString(GR_VENDOR);
-    const char* rendererStr = grGetString(GR_RENDERER);
+    // Query driver descriptors via authentic Glide 2.x API
+    char versionBuf[80] = {};
+    grGlideGetVersion(versionBuf);
+    const char* backendEnv = std::getenv("GLIDE_NG_BACKEND");
 
-    std::cout << "Glide Version:   " << (versionStr ? versionStr : "Unknown") << "\r\n";
+    std::cout << "Glide Version:   " << (versionBuf[0] ? versionBuf : "Unknown") << "\r\n";
     std::cout << "Resolution:      800x600\r\n";
     std::cout << "----------------------------------------------------------------------\r\n";
-    std::cout << "Device Vendor:   " << (vendorStr ? vendorStr : "Unknown") << "\r\n";
-    std::cout << "Active Adapter:  " << (rendererStr ? rendererStr : "Unknown") << "\r\n";
+    std::cout << "Device Vendor:   3Dfx Interactive\r\n";
+    std::cout << "Active Adapter:  " << (backendEnv ? backendEnv : "default") << "\r\n";
     std::cout << "----------------------------------------------------------------------\r\n";
     std::cout << "Interactive Keybindings:\r\n";
     std::cout << "  [ R ] / [ E ]  Increase / Decrease RED Gamma\r\n";

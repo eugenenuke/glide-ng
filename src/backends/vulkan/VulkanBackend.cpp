@@ -198,6 +198,18 @@ bool VulkanBackend::Initialize(const WrapperConfig& config) {
   if (!CreateInstance()) return false;
   if (!SelectPhysicalDevice()) return false;
 
+  // Select combined depth+stencil format for VSA-100 PIXEXT hardware stencil.
+  m_depthFormat = vk::Format::eD32Sfloat;
+  for (vk::Format cand :
+       {vk::Format::eD24UnormS8Uint, vk::Format::eD32SfloatS8Uint}) {
+    auto fp = m_physicalDevice.getFormatProperties(cand);
+    if (fp.optimalTilingFeatures &
+        vk::FormatFeatureFlagBits::eDepthStencilAttachment) {
+      m_depthFormat = cand;
+      break;
+    }
+  }
+
   // Resolve and clamp MSAA sample count based on physical device limits
   m_msaaSamples = ResolveEffectiveMsaaSamples_Locked();
 
@@ -493,6 +505,7 @@ void VulkanBackend::ResetState() {
 
 void VulkanBackend::ResetState_Locked() {
   GlideStateTracker::ResetState_Locked();
+  m_gammaLutDirty = true;
   m_lfbStaging.ResetPendingAndDirty();
   m_pipelineStateDirty = true;
   m_descriptorStateDirty = true;
@@ -541,6 +554,8 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
   m_clearColorPending[0] = m_clearColorPending[1] = false;
   m_clearDepthPending[0] = m_clearDepthPending[1] = false;
   m_clearDepthPendingSingle[0] = m_clearDepthPendingSingle[1] = false;
+  m_clearStencilPending[0] = m_clearStencilPending[1] = false;
+  m_clearStencilPendingSingle[0] = m_clearStencilPendingSingle[1] = false;
   m_activePassIsSingleSample = false;
   m_headlessMode = true;  // Headless-driven for visual regression
 
@@ -579,8 +594,7 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
         k.rgbDstBlend = 0;     // GR_BLEND_ZERO
         k.alphaSrcBlend = 4;   // GR_BLEND_ONE
         k.alphaDstBlend = 0;   // GR_BLEND_ZERO
-        k.colorMaskRgb = true;
-        k.colorMaskAlpha = true;
+        k.colorWriteMask = 0xFu;
         k.singleSample = false;
         k.sampleMask = warmSampleMask;
         warmStates.push_back(k);
@@ -601,8 +615,7 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
       k.rgbDstBlend = 5;    // GR_BLEND_ONE_MINUS_SRC_ALPHA
       k.alphaSrcBlend = 4;  // GR_BLEND_ONE (separate Alpha factor!)
       k.alphaDstBlend = 0;  // GR_BLEND_ZERO
-      k.colorMaskRgb = true;
-      k.colorMaskAlpha = true;
+      k.colorWriteMask = 0xFu;
       k.singleSample = false;
       k.sampleMask = warmSampleMask;
       warmStates.push_back(k);
@@ -620,8 +633,7 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
       k.rgbDstBlend = 0;    // GR_BLEND_ZERO
       k.alphaSrcBlend = 4;  // GR_BLEND_ONE
       k.alphaDstBlend = 0;  // GR_BLEND_ZERO
-      k.colorMaskRgb = true;
-      k.colorMaskAlpha = true;
+      k.colorWriteMask = 0xFu;
       k.singleSample = false;
       k.sampleMask = warmSampleMask;
       warmStates.push_back(k);
@@ -684,6 +696,8 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
     depthStr = "D32S0";
   } else if (m_depthFormat == vk::Format::eD24UnormS8Uint) {
     depthStr = "D24S8";
+  } else if (m_depthFormat == vk::Format::eD32SfloatS8Uint) {
+    depthStr = "D32S8";
   }
   uint32_t samplesVal = (m_msaaSamples > 1) ? m_msaaSamples : 0;
 
@@ -769,11 +783,18 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
                           vk::ImageLayout::eColorAttachmentOptimal, colorRange);
   }
 
-  vk::ImageSubresourceRange depthRange(vk::ImageAspectFlagBits::eDepth, 0, 1, 0,
-                                       1);
-  TransitionImageLayout(
-      *m_commandBuffer, m_depthImage.get(), vk::ImageLayout::eUndefined,
-      vk::ImageLayout::eDepthStencilAttachmentOptimal, depthRange);
+  vk::ImageSubresourceRange depthRange(DepthStencilAspectMask(), 0, 1, 0, 1);
+  vk::ClearDepthStencilValue clearDepthZero(1.0f, 0u);
+  TransitionImageLayout(*m_commandBuffer, m_depthImage.get(),
+                        vk::ImageLayout::eUndefined,
+                        vk::ImageLayout::eTransferDstOptimal, depthRange);
+  m_commandBuffer->clearDepthStencilImage(m_depthImage.get(),
+                                          vk::ImageLayout::eTransferDstOptimal,
+                                          &clearDepthZero, 1, &depthRange);
+  TransitionImageLayout(*m_commandBuffer, m_depthImage.get(),
+                        vk::ImageLayout::eTransferDstOptimal,
+                        vk::ImageLayout::eDepthStencilAttachmentOptimal,
+                        depthRange);
 
   if (m_msaaSamples > 1) {
     for (int i = 0; i < 2; ++i) {
@@ -788,9 +809,16 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
                             vk::ImageLayout::eColorAttachmentOptimal,
                             colorRange);
     }
-    TransitionImageLayout(
-        *m_commandBuffer, m_msaaDepthImage.get(), vk::ImageLayout::eUndefined,
-        vk::ImageLayout::eDepthStencilAttachmentOptimal, depthRange);
+    TransitionImageLayout(*m_commandBuffer, m_msaaDepthImage.get(),
+                          vk::ImageLayout::eUndefined,
+                          vk::ImageLayout::eTransferDstOptimal, depthRange);
+    m_commandBuffer->clearDepthStencilImage(
+        m_msaaDepthImage.get(), vk::ImageLayout::eTransferDstOptimal,
+        &clearDepthZero, 1, &depthRange);
+    TransitionImageLayout(*m_commandBuffer, m_msaaDepthImage.get(),
+                          vk::ImageLayout::eTransferDstOptimal,
+                          vk::ImageLayout::eDepthStencilAttachmentOptimal,
+                          depthRange);
   }
 
   m_commandBuffer->end();
@@ -833,6 +861,8 @@ void VulkanBackend::DetachWindow_Locked() {
   m_clearColorPending[0] = m_clearColorPending[1] = false;
   m_clearDepthPending[0] = m_clearDepthPending[1] = false;
   m_clearDepthPendingSingle[0] = m_clearDepthPendingSingle[1] = false;
+  m_clearStencilPending[0] = m_clearStencilPending[1] = false;
+  m_clearStencilPendingSingle[0] = m_clearStencilPendingSingle[1] = false;
   m_msaaColorDirty[0] = m_msaaColorDirty[1] = false;
   m_singleSampleColorDirty[0] = m_singleSampleColorDirty[1] = false;
   m_activePassIsSingleSample = false;
@@ -1304,12 +1334,72 @@ void VulkanBackend::SetBlendState(uint32_t rgbSrcFactor, uint32_t rgbDstFactor,
                                   uint32_t alphaDstFactor) {
   std::lock_guard<std::mutex> lock(m_mutex);
   if (rgbSrcFactor != m_rgbSrcBlend || rgbDstFactor != m_rgbDstBlend ||
-      alphaSrcFactor != m_alphaSrcBlend || alphaDstFactor != m_alphaDstBlend) {
+      m_rgbBlendOp != 0u || alphaSrcFactor != m_alphaSrcBlend ||
+      alphaDstFactor != m_alphaDstBlend || m_alphaBlendOp != 0u) {
     FlushBatch(true);
     m_pipelineStateDirty = true;
   }
-  GlideStateTracker::SetBlendState_Locked(rgbSrcFactor, rgbDstFactor, alphaSrcFactor,
-                                   alphaDstFactor);
+  GlideStateTracker::SetBlendState_Locked(rgbSrcFactor, rgbDstFactor,
+                                          alphaSrcFactor, alphaDstFactor);
+}
+
+void VulkanBackend::SetBlendStateExt(uint32_t rgbSrcFactor,
+                                     uint32_t rgbDstFactor, uint32_t rgbOp,
+                                     uint32_t alphaSrcFactor,
+                                     uint32_t alphaDstFactor,
+                                     uint32_t alphaOp) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  const uint32_t rOp = (rgbOp <= 2u) ? rgbOp : 0u;
+  const uint32_t aOp = (alphaOp <= 2u) ? alphaOp : 0u;
+  if (rgbSrcFactor != m_rgbSrcBlend || rgbDstFactor != m_rgbDstBlend ||
+      rOp != m_rgbBlendOp || alphaSrcFactor != m_alphaSrcBlend ||
+      alphaDstFactor != m_alphaDstBlend || aOp != m_alphaBlendOp) {
+    FlushBatch(true);
+    m_pipelineStateDirty = true;
+  }
+  GlideStateTracker::SetBlendStateExt_Locked(rgbSrcFactor, rgbDstFactor, rOp,
+                                             alphaSrcFactor, alphaDstFactor,
+                                             aOp);
+}
+
+void VulkanBackend::SetColorCombineExt(uint32_t packed) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (packed != m_extColorCombine) {
+    FlushBatch(true);
+  }
+  GlideStateTracker::SetColorCombineExt_Locked(packed);
+}
+
+void VulkanBackend::SetAlphaCombineExt(uint32_t packed) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (packed != m_extAlphaCombine) {
+    FlushBatch(true);
+  }
+  GlideStateTracker::SetAlphaCombineExt_Locked(packed);
+}
+
+void VulkanBackend::SetTexColorCombineExt(uint32_t tmu, uint32_t packed) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (tmu < 2 && packed != m_extTexColorCombine[tmu]) {
+    FlushBatch(true);
+  }
+  GlideStateTracker::SetTexColorCombineExt_Locked(tmu, packed);
+}
+
+void VulkanBackend::SetTexAlphaCombineExt(uint32_t tmu, uint32_t packed) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (tmu < 2 && packed != m_extTexAlphaCombine[tmu]) {
+    FlushBatch(true);
+  }
+  GlideStateTracker::SetTexAlphaCombineExt_Locked(tmu, packed);
+}
+
+void VulkanBackend::SetTmuConstantColor(uint32_t tmu, uint32_t color) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (tmu < 2 && color != m_tmuConstantColor[tmu]) {
+    FlushBatch(true);
+  }
+  GlideStateTracker::SetTmuConstantColor_Locked(tmu, color);
 }
 
 void VulkanBackend::SetCullState(uint32_t cullMode) {
@@ -1356,12 +1446,17 @@ void VulkanBackend::SetClipWindow(uint32_t minX, uint32_t minY, uint32_t maxX,
 }
 
 void VulkanBackend::SetColorMask(bool rgb, bool alpha) {
+  SetColorMaskExt(rgb, rgb, rgb, alpha);
+}
+
+void VulkanBackend::SetColorMaskExt(bool r, bool g, bool b, bool a) {
   std::lock_guard<std::mutex> lock(m_mutex);
-  if (rgb != m_colorMaskRgb || alpha != m_colorMaskAlpha) {
+  if (r != m_colorMaskR || g != m_colorMaskG || b != m_colorMaskB ||
+      a != m_colorMaskAlpha) {
     FlushBatch(true);
     m_pipelineStateDirty = true;
   }
-  GlideStateTracker::SetColorMask_Locked(rgb, alpha);
+  GlideStateTracker::SetColorMaskExt_Locked(r, g, b, a);
 }
 
 void VulkanBackend::SetAAMultiSample(bool enabled) {
@@ -1389,6 +1484,52 @@ void VulkanBackend::SetTBufferWriteMask(uint32_t mask) {
     m_commandBuffer->endRenderPass();
     m_inRenderPass = false;
   }
+  m_pipelineStateDirty = true;
+}
+
+void VulkanBackend::SetStencilMode(bool enabled) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (enabled == m_stencilEnabled) return;
+  FlushBatch(true);
+  GlideStateTracker::SetStencilMode_Locked(enabled);
+  m_pipelineStateDirty = true;
+}
+
+void VulkanBackend::SetStencilFunc(uint32_t compareOp, uint8_t refVal,
+                                   uint8_t readMask) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  const uint32_t op = compareOp & 0x7u;
+  if (op == m_stencilCompareOp && refVal == m_stencilRef &&
+      readMask == m_stencilReadMask) {
+    return;
+  }
+  FlushBatch(true);
+  const bool opChanged = (op != m_stencilCompareOp);
+  GlideStateTracker::SetStencilFunc_Locked(op, refVal, readMask);
+  if (opChanged) {
+    m_pipelineStateDirty = true;
+  }
+}
+
+void VulkanBackend::SetStencilMask(uint8_t writeMask) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (writeMask == m_stencilWriteMask) return;
+  FlushBatch(true);
+  GlideStateTracker::SetStencilMask_Locked(writeMask);
+}
+
+void VulkanBackend::SetStencilOp(uint32_t failOp, uint32_t zFailOp,
+                                 uint32_t zPassOp) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  const uint32_t f = failOp & 0x7u;
+  const uint32_t zf = zFailOp & 0x7u;
+  const uint32_t zp = zPassOp & 0x7u;
+  if (f == m_stencilFailOp && zf == m_stencilZFailOp &&
+      zp == m_stencilZPassOp) {
+    return;
+  }
+  FlushBatch(true);
+  GlideStateTracker::SetStencilOp_Locked(f, zf, zp);
   m_pipelineStateDirty = true;
 }
 
@@ -1587,7 +1728,9 @@ bool VulkanBackend::SwapBuffers() {
   uint32_t activeIdx = GetActiveGpuBufferIdx();
   if (!m_inRenderPass &&
       (m_clearColorPending[activeIdx] || m_clearDepthPending[activeIdx] ||
-       m_clearDepthPendingSingle[activeIdx])) {
+       m_clearDepthPendingSingle[activeIdx] ||
+       m_clearStencilPending[activeIdx] ||
+       m_clearStencilPendingSingle[activeIdx])) {
     EnsureRenderPassActive();
   }
 
@@ -1869,6 +2012,9 @@ bool VulkanBackend::SwapBuffers() {
   std::swap(m_clearDepthPending[0], m_clearDepthPending[1]);
   std::swap(m_clearDepthPendingSingle[0], m_clearDepthPendingSingle[1]);
   std::swap(m_clearDepthValue[0], m_clearDepthValue[1]);
+  std::swap(m_clearStencilPending[0], m_clearStencilPending[1]);
+  std::swap(m_clearStencilPendingSingle[0], m_clearStencilPendingSingle[1]);
+  std::swap(m_clearStencilValue[0], m_clearStencilValue[1]);
 
   const auto presentUs = std::chrono::duration_cast<std::chrono::microseconds>(
                              std::chrono::steady_clock::now() - presentStart)
@@ -2193,7 +2339,7 @@ bool VulkanBackend::CreateHeadlessRenderTarget(uint32_t width,
 
   vk::ImageViewCreateInfo depthViewInfo(
       {}, m_depthImage.get(), vk::ImageViewType::e2D, m_depthFormat, {},
-      {vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1});
+      {DepthStencilAspectMask(), 0, 1, 0, 1});
   m_depthImageView = m_device->createImageViewUnique(depthViewInfo);
 
   // 1.1 Allocate Multi-sampled Depth image if MSAA is enabled
@@ -2218,7 +2364,7 @@ bool VulkanBackend::CreateHeadlessRenderTarget(uint32_t width,
 
     vk::ImageViewCreateInfo msaaDepthViewInfo(
         {}, m_msaaDepthImage.get(), vk::ImageViewType::e2D, m_depthFormat, {},
-        {vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1});
+        {DepthStencilAspectMask(), 0, 1, 0, 1});
     m_msaaDepthImageView = m_device->createImageViewUnique(msaaDepthViewInfo);
   }
 
@@ -2539,11 +2685,12 @@ void VulkanBackend::LoadGammaTable(uint32_t nentries, const uint32_t* rTable,
                                    const uint32_t* bTable) {
   std::lock_guard<std::mutex> lock(m_mutex);
   GLIDE_LOG(INFO, "Vulkan", "LoadGammaTable: nentries=" << nentries);
-  if (nentries != 256 || !rTable || !gTable || !bTable) return;
-  for (int i = 0; i < 256; i++) {
-    m_lutR[i] = static_cast<uint8_t>(rTable[i]);
-    m_lutG[i] = static_cast<uint8_t>(gTable[i]);
-    m_lutB[i] = static_cast<uint8_t>(bTable[i]);
+  if (nentries == 0 || (!rTable && !gTable && !bTable)) return;
+  const uint32_t count = std::min(nentries, 256u);
+  for (uint32_t i = 0; i < count; i++) {
+    if (rTable) m_lutR[i] = static_cast<uint8_t>(rTable[i] & 0xFFu);
+    if (gTable) m_lutG[i] = static_cast<uint8_t>(gTable[i] & 0xFFu);
+    if (bTable) m_lutB[i] = static_cast<uint8_t>(bTable[i] & 0xFFu);
   }
   m_useGammaLut = true;
   m_gammaLutDirty = true;

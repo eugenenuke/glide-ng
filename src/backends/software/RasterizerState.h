@@ -21,8 +21,10 @@ struct RasterizerState {
   uint32_t stipplePattern{0xFFFFFFFF};
   uint32_t rgbSrcBlend{4};
   uint32_t rgbDstBlend{0};
+  uint32_t rgbBlendOp{0};
   uint32_t alphaSrcBlend{4};
   uint32_t alphaDstBlend{0};
+  uint32_t alphaBlendOp{0};
   uint32_t alphaTestOp{7};
   uint32_t alphaTestRefVal{0};
   uint32_t clipMinX{0};
@@ -34,10 +36,23 @@ struct RasterizerState {
   uint32_t fogColor{0xff000000};
   uint8_t fogTable[64]{0};
   bool colorMaskRgb{true};
+  bool colorMaskR{true};
+  bool colorMaskG{true};
+  bool colorMaskB{true};
   bool colorMaskAlpha{true};
   bool aaEnabled{false};
   bool aaMultiSample{true};
   uint8_t tbufferWriteMask{0x0Fu};
+
+  // VSA-100 PIXEXT Hardware Stencil
+  bool stencilEnabled{false};
+  uint32_t stencilCompareOp{7u};
+  uint8_t stencilRef{0u};
+  uint8_t stencilReadMask{0xFFu};
+  uint8_t stencilWriteMask{0xFFu};
+  uint32_t stencilFailOp{0u};
+  uint32_t stencilZFailOp{0u};
+  uint32_t stencilZPassOp{0u};
 
   // TMU 0 and 1
   uint32_t boundTexAddress[2]{0xFFFFFFFF, 0xFFFFFFFF};
@@ -51,6 +66,9 @@ struct RasterizerState {
   uint32_t texMipMapMode[2]{0, 0};
   bool texLodBlend[2]{false, false};
   float texLodBias[2]{0.0f, 0.0f};
+  int32_t texDetailBias[2]{0, 0};
+  uint8_t texDetailScale[2]{0, 0};
+  float texDetailMax[2]{0.0f, 0.0f};
 
   uint32_t colorCombinerFunc{0};
   uint32_t colorCombinerFactor{0};
@@ -70,6 +88,13 @@ struct RasterizerState {
   uint32_t texCombinerAlphaFactor[2]{0, 0};
   bool texCombinerRgbInvert[2]{false, false};
   bool texCombinerAlphaInvert[2]{false, false};
+
+  // VSA-100 COMBINE extension state
+  uint32_t extColorCombine{0};
+  uint32_t extAlphaCombine{0};
+  uint32_t extTexColorCombine[2]{0, 0};
+  uint32_t extTexAlphaCombine[2]{0, 0};
+  uint32_t tmuConstantColor[2]{0xFFFFFFFFu, 0xFFFFFFFFu};
 
   uint32_t constantColor{0xFFFFFFFF};
   uint32_t stwHintMask{0};
@@ -93,17 +118,28 @@ struct RasterizerState {
            depthNear == o.depthNear && depthFar == o.depthFar &&
            ditherMode == o.ditherMode && stippleMode == o.stippleMode &&
            stipplePattern == o.stipplePattern && rgbSrcBlend == o.rgbSrcBlend &&
-           rgbDstBlend == o.rgbDstBlend && alphaSrcBlend == o.alphaSrcBlend &&
-           alphaDstBlend == o.alphaDstBlend && alphaTestOp == o.alphaTestOp &&
+           rgbDstBlend == o.rgbDstBlend && rgbBlendOp == o.rgbBlendOp &&
+           alphaSrcBlend == o.alphaSrcBlend &&
+           alphaDstBlend == o.alphaDstBlend && alphaBlendOp == o.alphaBlendOp &&
+           alphaTestOp == o.alphaTestOp &&
            alphaTestRefVal == o.alphaTestRefVal && clipMinX == o.clipMinX &&
            clipMinY == o.clipMinY && clipMaxX == o.clipMaxX &&
            clipMaxY == o.clipMaxY && sstOrigin == o.sstOrigin &&
            fogMode == o.fogMode && fogColor == o.fogColor &&
            std::memcmp(fogTable, o.fogTable, 64) == 0 &&
-           colorMaskRgb == o.colorMaskRgb &&
+           colorMaskRgb == o.colorMaskRgb && colorMaskR == o.colorMaskR &&
+           colorMaskG == o.colorMaskG && colorMaskB == o.colorMaskB &&
            colorMaskAlpha == o.colorMaskAlpha && aaEnabled == o.aaEnabled &&
            aaMultiSample == o.aaMultiSample &&
            tbufferWriteMask == o.tbufferWriteMask &&
+           stencilEnabled == o.stencilEnabled &&
+           stencilCompareOp == o.stencilCompareOp &&
+           stencilRef == o.stencilRef &&
+           stencilReadMask == o.stencilReadMask &&
+           stencilWriteMask == o.stencilWriteMask &&
+           stencilFailOp == o.stencilFailOp &&
+           stencilZFailOp == o.stencilZFailOp &&
+           stencilZPassOp == o.stencilZPassOp &&
            boundTexAddress[0] == o.boundTexAddress[0] &&
            boundTexAddress[1] == o.boundTexAddress[1] &&
            boundTex[0] == o.boundTex[0] && boundTex[1] == o.boundTex[1] &&
@@ -119,6 +155,12 @@ struct RasterizerState {
            texLodBlend[1] == o.texLodBlend[1] &&
            texLodBias[0] == o.texLodBias[0] &&
            texLodBias[1] == o.texLodBias[1] &&
+           texDetailBias[0] == o.texDetailBias[0] &&
+           texDetailBias[1] == o.texDetailBias[1] &&
+           texDetailScale[0] == o.texDetailScale[0] &&
+           texDetailScale[1] == o.texDetailScale[1] &&
+           texDetailMax[0] == o.texDetailMax[0] &&
+           texDetailMax[1] == o.texDetailMax[1] &&
            colorCombinerFunc == o.colorCombinerFunc &&
            colorCombinerFactor == o.colorCombinerFactor &&
            colorCombinerLocal == o.colorCombinerLocal &&
@@ -141,6 +183,14 @@ struct RasterizerState {
            texCombinerRgbInvert[1] == o.texCombinerRgbInvert[1] &&
            texCombinerAlphaInvert[0] == o.texCombinerAlphaInvert[0] &&
            texCombinerAlphaInvert[1] == o.texCombinerAlphaInvert[1] &&
+           extColorCombine == o.extColorCombine &&
+           extAlphaCombine == o.extAlphaCombine &&
+           extTexColorCombine[0] == o.extTexColorCombine[0] &&
+           extTexColorCombine[1] == o.extTexColorCombine[1] &&
+           extTexAlphaCombine[0] == o.extTexAlphaCombine[0] &&
+           extTexAlphaCombine[1] == o.extTexAlphaCombine[1] &&
+           tmuConstantColor[0] == o.tmuConstantColor[0] &&
+           tmuConstantColor[1] == o.tmuConstantColor[1] &&
            constantColor == o.constantColor && stwHintMask == o.stwHintMask &&
            pixelFormatOverride == o.pixelFormatOverride &&
            chromakeyMode == o.chromakeyMode &&

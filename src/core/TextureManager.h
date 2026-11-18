@@ -49,12 +49,15 @@ struct VirtualTexture {
   uint64_t uploadedTableHash{0};
   bool swizzledWithTable{false};
   bool uploadedToBackend{false};
+  bool uploadedToBackendPerTmu[2]{false, false};
+  uint64_t uploadedTableHashPerTmu[2]{0, 0};
 };
 
 class TextureManager {
  public:
   static constexpr int32_t kNoBaseLargeLod =
       VirtualTexture::kNoDeclaredLargeLod;
+  static constexpr uint32_t kMultibaseCompositeBase = 0xF0000000u;
 
   static TextureManager& GetInstance() {
     static TextureManager* instance = new TextureManager();
@@ -84,6 +87,13 @@ class TextureManager {
                              uint32_t aspect, uint32_t format, const void* data,
                              int startRow, int endRow);
 
+  // Commit rendered 32-bit canonical ARGB (0xAARRGGBB) pixels from a
+  // TEXTUREBUFFER render target into TMU storage and upload to the backend.
+  bool CommitRenderedTexture(uint32_t tmu, uint32_t startAddress,
+                             int32_t thisLod, int32_t largeLod,
+                             uint32_t aspect, uint32_t format,
+                             const std::vector<uint32_t>& canonicalArgb);
+
   // Download a palette or NCC table to the specified TMU and trigger deferred
   // swizzling
   bool DownloadTable(uint32_t tmu, uint32_t type, const void* data);
@@ -94,6 +104,23 @@ class TextureManager {
 
   // 3. Enforce silicon memory limits (e.g. 2MB or 4MB per TMU)
   void SetTmuMemoryLimitMb(uint32_t tmu, uint32_t limitMb);
+
+  // TEXUMA (GR_TEXTURE_UMA_EXT): unified texture memory across TMU0 & TMU1
+  void SetUmaMode(bool enabled);
+  bool IsUmaMode() const {
+    return m_umaEnabled.load(std::memory_order_acquire);
+  }
+
+  // grTexMultibase / grTexMultibaseAddress (canonical Glide 3 range:
+  // 0=32_TO_1, 1=64, 2=128, 3=256, 4=256_TO_1, 5=512, 6=1024, 7=2048)
+  void SetMultibase(uint32_t tmu, bool enabled);
+  void SetMultibaseAddress(uint32_t tmu, uint32_t canonicalRange,
+                           uint32_t startAddress);
+  bool IsMultibaseEnabled(uint32_t tmu) const;
+  uint32_t ResolveMultibaseSource(uint32_t tmu, uint32_t startAddress,
+                                  int32_t glide2LargeLod,
+                                  int32_t glide2SmallLod, uint32_t aspect,
+                                  uint32_t format);
 
   // 4. Retrieve bound virtual textures for rendering or software sampler
   // verification (lazily re-swizzles on CPU if the active palette/NCC table
@@ -147,7 +174,23 @@ class TextureManager {
     uint64_t nccHashes[2] = {0, 0};
     uint32_t activeNccTable = 0;  // Default: NCC0 (0)
     uint32_t boundAddress = 0xFFFFFFFFu;
+    bool multibaseEnabled = false;
+    uint32_t multibaseAddr[8]{0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu,
+                              0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu,
+                              0xFFFFFFFFu, 0xFFFFFFFFu};
   };
+
+  uint32_t StorageTmu_Locked(uint32_t tmu) const {
+    return m_umaEnabled.load(std::memory_order_relaxed) ? 0u : tmu;
+  }
+  const TmuState& TableState_Locked(uint32_t tmu) const {
+    if (m_umaEnabled.load(std::memory_order_relaxed) && tmu == 1 &&
+        !m_tmus[1].paletteTableLoaded &&
+        !m_tmus[1].nccTablesLoaded[m_tmus[1].activeNccTable]) {
+      return m_tmus[0];
+    }
+    return m_tmus[tmu];
+  }
 
   static uint64_t GetActiveTableHash_Locked(const TmuState& state,
                                             const VirtualTexture& tex);
@@ -160,6 +203,7 @@ class TextureManager {
   std::mutex m_mutex;
   TmuState m_tmus[2];
   uint32_t m_tmuMemoryLimits[2];
+  std::atomic<bool> m_umaEnabled{false};
   std::atomic<bool> m_tmuTableDirty[2]{false, false};
   inline static std::atomic<bool> s_anyTableDirty{false};
 };

@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <cassert>
+#include <dlfcn.h>
 #include <DiagnosticInfo.h>
 
 // Dynamically resolve grSplashCb if available
@@ -48,8 +49,10 @@ int main(int argc, char** argv) {
     assert(grSstWinOpen(0, runConfig.resEnum, GR_REFRESH_60Hz,
                        GR_COLORFORMAT_ABGR, GR_ORIGIN_UPPER_LEFT, 2, 1));
 
-    // Resolve the splash extension dynamically
-    s_grSplashCb = (grSplashCbFunc)grGetProcAddress(const_cast<char*>("grSplashCb"));
+    // Resolve the Glide 2.61 splash callback extension directly via dlsym
+    // (pure Glide 2.x does not export grGetProcAddress).
+    void* sym = ::dlsym(RTLD_DEFAULT, "grSplashCb");
+    std::memcpy(&s_grSplashCb, &sym, sizeof(s_grSplashCb));
     
     if (!s_grSplashCb) {
         std::printf("[CRITICAL] grSplashCb is NOT supported under the active profile/device!\r\n");

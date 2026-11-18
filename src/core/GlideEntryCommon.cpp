@@ -1,5 +1,6 @@
 #include "core/GlideEntryCommon.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -190,14 +191,25 @@ void SharedFrontendState::Reset(uint8_t defaultLfbConstantAlpha,
   texChromaState[0] = {0, 0, 0};
   texChromaState[1] = {0, 0, 0};
   texLodBias[0] = texLodBias[1] = 0.0f;
+  texDetailBias[0] = texDetailBias[1] = 0;
+  texDetailScale[0] = texDetailScale[1] = 0;
+  texDetailMax[0] = texDetailMax[1] = 0.0f;
   mipmapMode[0] = mipmapMode[1] = 0;
   lodBlend[0] = lodBlend[1] = false;
 
   constantColor = 0xFFFFFFFFu;
   rgbSrcBlend = 4;
   rgbDstBlend = 0;
+  rgbBlendOp = 0;
   alphaSrcBlend = 4;
   alphaDstBlend = 0;
+  alphaBlendOp = 0;
+
+  extColorCombine = 0;
+  extAlphaCombine = 0;
+  extTexColorCombine[0] = extTexColorCombine[1] = 0;
+  extTexAlphaCombine[0] = extTexAlphaCombine[1] = 0;
+  tmuConstantColor[0] = tmuConstantColor[1] = 0xFFFFFFFFu;
 
   cullMode = 0;
   clipMinX = 0;
@@ -210,11 +222,24 @@ void SharedFrontendState::Reset(uint8_t defaultLfbConstantAlpha,
   std::memset(fogTable, 0, sizeof(fogTable));
 
   colorMaskRgb = true;
+  colorMaskR = true;
+  colorMaskG = true;
+  colorMaskB = true;
   colorMaskAlpha = true;
   ditherMode = 0;
 
   lfbConstantAlpha = defaultLfbConstantAlpha;
+  lfbConstantStencil = 0;
   lfbWriteColorFormat = 0;
+
+  stencilEnabled = false;
+  stencilCompareOp = 7u;
+  stencilRef = 0u;
+  stencilReadMask = 0xFFu;
+  stencilWriteMask = 0xFFu;
+  stencilFailOp = 0u;
+  stencilZFailOp = 0u;
+  stencilZPassOp = 0u;
 
   chromakeyMode = 0;
   chromakeyValue = 0;
@@ -334,6 +359,16 @@ void ClearBuffer(uint32_t color, uint8_t alpha, uint32_t depth) {
   }
 }
 
+void ClearBufferExt(uint32_t color, uint8_t alpha, uint32_t depth,
+                    uint8_t stencil) {
+  if (auto* backend = BackendManager::GetInstance().GetBackend()) {
+    const float normDepth =
+        (depth > 65535u) ? (static_cast<float>(depth & 0xFFFFFFu) / 16777215.0f)
+                         : (static_cast<float>(depth) / 65535.0f);
+    backend->ClearBufferExt(color, alpha, normDepth, stencil, 0x7u);
+  }
+}
+
 void SwapBuffers() {
   if (auto* backend = BackendManager::GetInstance().GetBackend()) {
     MaybeCaptureSnapshot(backend);
@@ -367,12 +402,19 @@ void ApplySharedStateToBackend(const SharedFrontendState& st,
   b->SetCombinerMode(st.colorFunc, st.colorFactor, st.colorLocal, st.colorOther,
                      st.colorInvert, st.alphaFunc, st.alphaFactor,
                      st.alphaLocal, st.alphaOther, st.alphaInvert);
-  b->SetBlendState(st.rgbSrcBlend, st.rgbDstBlend, st.alphaSrcBlend,
-                   st.alphaDstBlend);
+  b->SetColorCombineExt(st.extColorCombine);
+  b->SetAlphaCombineExt(st.extAlphaCombine);
+  b->SetBlendStateExt(st.rgbSrcBlend, st.rgbDstBlend, st.rgbBlendOp,
+                      st.alphaSrcBlend, st.alphaDstBlend, st.alphaBlendOp);
   b->SetCullState(st.cullMode);
   b->SetSstOrigin(sstOrigin);
   b->SetClipWindow(st.clipMinX, st.clipMinY, st.clipMaxX, st.clipMaxY);
-  b->SetColorMask(st.colorMaskRgb, st.colorMaskAlpha);
+  b->SetColorMaskExt(st.colorMaskR, st.colorMaskG, st.colorMaskB,
+                     st.colorMaskAlpha);
+  b->SetStencilMode(st.stencilEnabled);
+  b->SetStencilFunc(st.stencilCompareOp, st.stencilRef, st.stencilReadMask);
+  b->SetStencilMask(st.stencilWriteMask);
+  b->SetStencilOp(st.stencilFailOp, st.stencilZFailOp, st.stencilZPassOp);
   b->SetDitherMode(ResolveEffectiveDither(st.ditherMode, cfg));
   b->SetConstantColor(st.constantColor);
   b->SetFogMode(st.fogMode);
@@ -388,6 +430,9 @@ void ApplySharedStateToBackend(const SharedFrontendState& st,
                           st.texAlphaFunc[tmu], st.texAlphaFactor[tmu],
                           includeTexInvert ? st.texRgbInvert[tmu] : false,
                           includeTexInvert ? st.texAlphaInvert[tmu] : false);
+    b->SetTexColorCombineExt(tmu, st.extTexColorCombine[tmu]);
+    b->SetTexAlphaCombineExt(tmu, st.extTexAlphaCombine[tmu]);
+    b->SetTmuConstantColor(tmu, st.tmuConstantColor[tmu]);
     b->BindTexture(tmu, ResolveEffectiveBoundTex(st.boundTex[tmu], cfg),
                    st.clampS[tmu], st.clampT[tmu],
                    ResolveEffectiveFilter(st.minFilter[tmu], cfg),
@@ -401,6 +446,8 @@ void ApplySharedStateToBackend(const SharedFrontendState& st,
     ResolveEffectiveMipMap(effMipMode, effLodBlend, cfg);
     b->SetTexMipMapMode(tmu, effMipMode, effLodBlend);
     b->SetTexLodBias(tmu, st.texLodBias[tmu]);
+    b->SetTexDetailControl(tmu, st.texDetailBias[tmu], st.texDetailScale[tmu],
+                           st.texDetailMax[tmu]);
   }
 }
 
@@ -521,7 +568,9 @@ void SetColorCombine(SharedFrontendState& st, uint32_t fnc, uint32_t factor,
   st.colorLocal = local;
   st.colorOther = other;
   st.colorInvert = invert;
+  st.extColorCombine = 0u;
   if (auto* b = BackendManager::GetInstance().GetBackend()) {
+    b->SetColorCombineExt(0u);
     b->SetCombinerMode(st.colorFunc, st.colorFactor, st.colorLocal,
                        st.colorOther, st.colorInvert, st.alphaFunc,
                        st.alphaFactor, st.alphaLocal, st.alphaOther,
@@ -536,7 +585,9 @@ void SetAlphaCombine(SharedFrontendState& st, uint32_t fnc, uint32_t factor,
   st.alphaLocal = local;
   st.alphaOther = other;
   st.alphaInvert = invert;
+  st.extAlphaCombine = 0u;
   if (auto* b = BackendManager::GetInstance().GetBackend()) {
+    b->SetAlphaCombineExt(0u);
     b->SetCombinerMode(st.colorFunc, st.colorFactor, st.colorLocal,
                        st.colorOther, st.colorInvert, st.alphaFunc,
                        st.alphaFactor, st.alphaLocal, st.alphaOther,
@@ -556,7 +607,11 @@ void SetTexCombine(SharedFrontendState& st, uint32_t tmu, uint32_t rgbFnc,
     st.texRgbInvert[tmu] = rgbInvert;
     st.texAlphaInvert[tmu] = alphaInvert;
   }
+  st.extTexColorCombine[tmu] = 0u;
+  st.extTexAlphaCombine[tmu] = 0u;
   if (auto* b = BackendManager::GetInstance().GetBackend()) {
+    b->SetTexColorCombineExt(tmu, 0u);
+    b->SetTexAlphaCombineExt(tmu, 0u);
     b->SetTexCombinerMode(tmu, rgbFnc, rgbFactor, alphaFnc, alphaFactor,
                           forwardInverts ? rgbInvert : false,
                           forwardInverts ? alphaInvert : false);
@@ -567,10 +622,79 @@ void SetAlphaBlendFunction(SharedFrontendState& st, uint32_t rgbSf,
                            uint32_t rgbDf, uint32_t alphaSf, uint32_t alphaDf) {
   st.rgbSrcBlend = rgbSf;
   st.rgbDstBlend = rgbDf;
+  st.rgbBlendOp = 0u;
   st.alphaSrcBlend = alphaSf;
   st.alphaDstBlend = alphaDf;
+  st.alphaBlendOp = 0u;
   if (auto* b = BackendManager::GetInstance().GetBackend()) {
     b->SetBlendState(rgbSf, rgbDf, alphaSf, alphaDf);
+  }
+}
+
+void SetAlphaBlendFunctionExt(SharedFrontendState& st, uint32_t rgbSf,
+                              uint32_t rgbDf, uint32_t rgbOp, uint32_t alphaSf,
+                              uint32_t alphaDf, uint32_t alphaOp) {
+  st.rgbSrcBlend = rgbSf;
+  st.rgbDstBlend = rgbDf;
+  st.rgbBlendOp = rgbOp;
+  st.alphaSrcBlend = alphaSf;
+  st.alphaDstBlend = alphaDf;
+  st.alphaBlendOp = alphaOp;
+  if (auto* b = BackendManager::GetInstance().GetBackend()) {
+    b->SetBlendStateExt(rgbSf, rgbDf, rgbOp, alphaSf, alphaDf, alphaOp);
+  }
+}
+
+void SetColorCombineExt(SharedFrontendState& st, uint32_t a, uint32_t aMode,
+                        uint32_t b, uint32_t bMode, uint32_t c, bool cInvert,
+                        uint32_t d, bool dInvert, uint32_t shift, bool invert) {
+  st.extColorCombine = IGraphicsBackend::PackCombineExt(
+      a, aMode, b, bMode, c, cInvert, d, dInvert, shift, invert);
+  if (auto* backend = BackendManager::GetInstance().GetBackend()) {
+    backend->SetColorCombineExt(st.extColorCombine);
+  }
+}
+
+void SetAlphaCombineExt(SharedFrontendState& st, uint32_t a, uint32_t aMode,
+                        uint32_t b, uint32_t bMode, uint32_t c, bool cInvert,
+                        uint32_t d, bool dInvert, uint32_t shift, bool invert) {
+  st.extAlphaCombine = IGraphicsBackend::PackCombineExt(
+      a, aMode, b, bMode, c, cInvert, d, dInvert, shift, invert);
+  if (auto* backend = BackendManager::GetInstance().GetBackend()) {
+    backend->SetAlphaCombineExt(st.extAlphaCombine);
+  }
+}
+
+void SetTexColorCombineExt(SharedFrontendState& st, uint32_t tmu, uint32_t a,
+                           uint32_t aMode, uint32_t b, uint32_t bMode,
+                           uint32_t c, bool cInvert, uint32_t d, bool dInvert,
+                           uint32_t shift, bool invert) {
+  if (tmu >= 2) return;
+  st.extTexColorCombine[tmu] = IGraphicsBackend::PackCombineExt(
+      a, aMode, b, bMode, c, cInvert, d, dInvert, shift, invert);
+  if (auto* backend = BackendManager::GetInstance().GetBackend()) {
+    backend->SetTexColorCombineExt(tmu, st.extTexColorCombine[tmu]);
+  }
+}
+
+void SetTexAlphaCombineExt(SharedFrontendState& st, uint32_t tmu, uint32_t a,
+                           uint32_t aMode, uint32_t b, uint32_t bMode,
+                           uint32_t c, bool cInvert, uint32_t d, bool dInvert,
+                           uint32_t shift, bool invert) {
+  if (tmu >= 2) return;
+  st.extTexAlphaCombine[tmu] = IGraphicsBackend::PackCombineExt(
+      a, aMode, b, bMode, c, cInvert, d, dInvert, shift, invert);
+  if (auto* backend = BackendManager::GetInstance().GetBackend()) {
+    backend->SetTexAlphaCombineExt(tmu, st.extTexAlphaCombine[tmu]);
+  }
+}
+
+void SetTmuConstantColor(SharedFrontendState& st, uint32_t tmu,
+                         uint32_t value) {
+  if (tmu >= 2) return;
+  st.tmuConstantColor[tmu] = value;
+  if (auto* backend = BackendManager::GetInstance().GetBackend()) {
+    backend->SetTmuConstantColor(tmu, value);
   }
 }
 
@@ -635,6 +759,18 @@ void SetTexLodBias(SharedFrontendState& st, uint32_t tmu, float bias) {
   st.texLodBias[tmu] = bias;
   if (auto* b = BackendManager::GetInstance().GetBackend()) {
     b->SetTexLodBias(tmu, bias);
+  }
+}
+
+void SetTexDetailControl(SharedFrontendState& st, uint32_t tmu, int32_t lodBias,
+                         uint8_t detailScale, float detailMax) {
+  if (tmu >= 2) return;
+  st.texDetailBias[tmu] = std::clamp(lodBias, -32, 31);
+  st.texDetailScale[tmu] = std::min<uint8_t>(detailScale, 7u);
+  st.texDetailMax[tmu] = std::clamp(detailMax, 0.0f, 1.0f);
+  if (auto* b = BackendManager::GetInstance().GetBackend()) {
+    b->SetTexDetailControl(tmu, st.texDetailBias[tmu], st.texDetailScale[tmu],
+                           st.texDetailMax[tmu]);
   }
 }
 
@@ -712,10 +848,52 @@ void SetConstantColor(SharedFrontendState& st, uint32_t value) {
 }
 
 void SetColorMask(SharedFrontendState& st, bool rgb, bool alpha) {
-  st.colorMaskRgb = rgb;
-  st.colorMaskAlpha = alpha;
-  if (auto* b = BackendManager::GetInstance().GetBackend()) {
-    b->SetColorMask(rgb, alpha);
+  SetColorMaskExt(st, rgb, rgb, rgb, alpha);
+}
+
+void SetColorMaskExt(SharedFrontendState& st, bool r, bool g, bool b, bool a) {
+  st.colorMaskR = r;
+  st.colorMaskG = g;
+  st.colorMaskB = b;
+  st.colorMaskRgb = (r || g || b);
+  st.colorMaskAlpha = a;
+  if (auto* backend = BackendManager::GetInstance().GetBackend()) {
+    backend->SetColorMaskExt(r, g, b, a);
+  }
+}
+
+void SetStencilMode(SharedFrontendState& st, bool enabled) {
+  st.stencilEnabled = enabled;
+  if (auto* backend = BackendManager::GetInstance().GetBackend()) {
+    backend->SetStencilMode(enabled);
+  }
+}
+
+void SetStencilFunc(SharedFrontendState& st, uint32_t compareOp, uint8_t refVal,
+                    uint8_t readMask) {
+  st.stencilCompareOp = compareOp & 0x7u;
+  st.stencilRef = refVal;
+  st.stencilReadMask = readMask;
+  if (auto* backend = BackendManager::GetInstance().GetBackend()) {
+    backend->SetStencilFunc(st.stencilCompareOp, refVal, readMask);
+  }
+}
+
+void SetStencilMask(SharedFrontendState& st, uint8_t writeMask) {
+  st.stencilWriteMask = writeMask;
+  if (auto* backend = BackendManager::GetInstance().GetBackend()) {
+    backend->SetStencilMask(writeMask);
+  }
+}
+
+void SetStencilOp(SharedFrontendState& st, uint32_t failOp, uint32_t zFailOp,
+                  uint32_t zPassOp) {
+  st.stencilFailOp = failOp & 0x7u;
+  st.stencilZFailOp = zFailOp & 0x7u;
+  st.stencilZPassOp = zPassOp & 0x7u;
+  if (auto* backend = BackendManager::GetInstance().GetBackend()) {
+    backend->SetStencilOp(st.stencilFailOp, st.stencilZFailOp,
+                          st.stencilZPassOp);
   }
 }
 
@@ -795,8 +973,10 @@ void SetFogTable(SharedFrontendState& st, const uint8_t* ft) {
 void DisableAllEffects(SharedFrontendState& st, bool clearCachedFogMode) {
   st.rgbSrcBlend = 4;    // GR_BLEND_ONE
   st.rgbDstBlend = 0;    // GR_BLEND_ZERO
+  st.rgbBlendOp = 0;     // GR_BLEND_OP_ADD
   st.alphaSrcBlend = 4;  // GR_BLEND_ONE
   st.alphaDstBlend = 0;  // GR_BLEND_ZERO
+  st.alphaBlendOp = 0;   // GR_BLEND_OP_ADD
   st.depthCompare = 1;   // GR_CMP_LESS / existing default
   st.depthMask = false;
   st.alphaTestOp = 7;    // GR_CMP_ALWAYS
@@ -830,6 +1010,45 @@ void LoadGammaTable(uint32_t nentries, uint32_t* red, uint32_t* green,
   if (auto* b = BackendManager::GetInstance().GetBackend()) {
     b->LoadGammaTable(nentries, red, green, blue);
   }
+}
+
+void GetGammaTable(uint32_t nentries, uint32_t* red, uint32_t* green,
+                   uint32_t* blue) {
+  if (nentries == 0 || (!red && !green && !blue)) return;
+  if (auto* b = BackendManager::GetInstance().GetBackend()) {
+    b->GetGammaTable(nentries, red, green, blue);
+    return;
+  }
+  const uint32_t count = std::min(nentries, 256u);
+  for (uint32_t i = 0; i < count; ++i) {
+    if (red) red[i] = i;
+    if (green) green[i] = i;
+    if (blue) blue[i] = i;
+  }
+}
+
+int EncodeRLE16(void* dst, const void* src, uint32_t width, uint32_t height) {
+  if (!src || width == 0 || height == 0) return 0;
+  int byteCount = 0;
+  uint64_t remaining = static_cast<uint64_t>(width) * height;
+  const uint16_t* srcPixels = reinterpret_cast<const uint16_t*>(src);
+  uint32_t* dstPixels = reinterpret_cast<uint32_t*>(dst);
+
+  while (remaining > 0) {
+    uint16_t length = 1;
+    const uint16_t color = *srcPixels;
+    while (length < remaining && length < 0xFFFFu &&
+           color == srcPixels[length]) {
+      ++length;
+    }
+    if (dstPixels) {
+      *dstPixels++ = (static_cast<uint32_t>(length) << 16) | color;
+    }
+    byteCount += 4;
+    srcPixels += length;
+    remaining -= length;
+  }
+  return byteCount;
 }
 
 void SyncTexturesBeforeDrawSlow() {
@@ -929,6 +1148,7 @@ bool LfbReadRegion(uint32_t srcBuf, uint32_t srcX, uint32_t srcY,
 bool LfbWriteRegion(uint32_t dstBuf, uint32_t dstX, uint32_t dstY,
                     uint32_t srcFmt, uint32_t srcWidth, uint32_t srcHeight,
                     int32_t srcStride, const void* srcData) {
+  if (srcFmt == 0x100u) return false;  // Reserve internal lossless format.
   const uint64_t absStride =
       static_cast<uint64_t>(srcStride < 0 ? -static_cast<int64_t>(srcStride)
                                           : static_cast<int64_t>(srcStride));
@@ -1012,15 +1232,18 @@ int32_t Map3dfAspectToGlide3(int aspectW, int aspectH) {
 }
 
 int32_t Map3dfLodToGlide3(int dim) {
-  if (dim <= 1) return 0x0;    // GR_LOD_LOG2_1
-  if (dim <= 2) return 0x1;    // GR_LOD_LOG2_2
-  if (dim <= 4) return 0x2;    // GR_LOD_LOG2_4
-  if (dim <= 8) return 0x3;    // GR_LOD_LOG2_8
-  if (dim <= 16) return 0x4;   // GR_LOD_LOG2_16
-  if (dim <= 32) return 0x5;   // GR_LOD_LOG2_32
-  if (dim <= 64) return 0x6;   // GR_LOD_LOG2_64
-  if (dim <= 128) return 0x7;  // GR_LOD_LOG2_128
-  return 0x8;                  // GR_LOD_LOG2_256
+  if (dim <= 1) return 0x0;     // GR_LOD_LOG2_1
+  if (dim <= 2) return 0x1;     // GR_LOD_LOG2_2
+  if (dim <= 4) return 0x2;     // GR_LOD_LOG2_4
+  if (dim <= 8) return 0x3;     // GR_LOD_LOG2_8
+  if (dim <= 16) return 0x4;    // GR_LOD_LOG2_16
+  if (dim <= 32) return 0x5;    // GR_LOD_LOG2_32
+  if (dim <= 64) return 0x6;    // GR_LOD_LOG2_64
+  if (dim <= 128) return 0x7;   // GR_LOD_LOG2_128
+  if (dim <= 256) return 0x8;   // GR_LOD_LOG2_256
+  if (dim <= 512) return 0x9;   // GR_LOD_LOG2_512
+  if (dim <= 1024) return 0xa;  // GR_LOD_LOG2_1024
+  return 0xb;                   // GR_LOD_LOG2_2048
 }
 
 bool Load3dfPixelsAndPalette(const char* filename, uint32_t format,

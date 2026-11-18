@@ -33,21 +33,56 @@ static uint32_t ReadBE32(std::FILE* fp) {
            bytes[3];
 }
 
-static int GetBytesPerTexel(int format) {
+static uint32_t Calc3dfLevelBytes(int format, int w, int h) {
+    const uint32_t uw = static_cast<uint32_t>(std::max(1, w));
+    const uint32_t uh = static_cast<uint32_t>(std::max(1, h));
     switch (format) {
-        case FORMAT_INTENSITY_8:
-        case FORMAT_ALPHA_8:
-        case FORMAT_P_8:
-        case FORMAT_P_8_6666:
-            return 1;
+        case FORMAT_ARGB_CMP_FXT1:
+            return ((uw + 7u) / 8u) * ((uh + 3u) / 4u) * 16u;
+        case FORMAT_ARGB_CMP_DXT1:
+            return ((uw + 3u) / 4u) * ((uh + 3u) / 4u) * 8u;
+        case FORMAT_ARGB_CMP_DXT2:
+        case FORMAT_ARGB_CMP_DXT3:
+        case FORMAT_ARGB_CMP_DXT4:
+        case FORMAT_ARGB_CMP_DXT5:
+            return ((uw + 3u) / 4u) * ((uh + 3u) / 4u) * 16u;
+        case FORMAT_ARGB_8888:
+        case FORMAT_AYUV_444:
+            return uw * uh * 4u;
+        case FORMAT_RGB_888:
+            return uw * uh * 3u;
         case FORMAT_RGB_565:
+        case FORMAT_ARGB_8332:
+        case FORMAT_AYIQ_8422:
         case FORMAT_ARGB_1555:
         case FORMAT_ARGB_4444:
         case FORMAT_ALPHA_INTENSITY_88:
         case FORMAT_AP_88:
+        case FORMAT_YUYV_422:
+        case FORMAT_UYVY_422:
+            return uw * uh * 2u;
+        default:
+            return uw * uh;
+    }
+}
+
+static int Get3dfWordWidth(int format) {
+    switch (format) {
+        case FORMAT_ARGB_8888:
+        case FORMAT_AYUV_444:
+            return 4;
+        case FORMAT_RGB_565:
+        case FORMAT_ARGB_8332:
+        case FORMAT_AYIQ_8422:
+        case FORMAT_ARGB_1555:
+        case FORMAT_ARGB_4444:
+        case FORMAT_ALPHA_INTENSITY_88:
+        case FORMAT_AP_88:
+        case FORMAT_YUYV_422:
+        case FORMAT_UYVY_422:
             return 2;
         default:
-            return 1;
+            return 1;  // Raw byte stream (8-bit, RGB888, FXT1, DXT1-5)
     }
 }
 
@@ -78,15 +113,36 @@ bool Parse3dfHeader(const std::string& filename, Shared3dfHeader& header, uint32
     bool formatFound = false;
     struct FormatMap { const char* name; int fmt; };
     FormatMap maps[] = {
-        { "I8",       FORMAT_INTENSITY_8 },
-        { "A8",       FORMAT_ALPHA_8 },
-        { "RGB565",   FORMAT_RGB_565 },
-        { "ARGB1555", FORMAT_ARGB_1555 },
-        { "ARGB4444", FORMAT_ARGB_4444 },
-        { "AI88",     FORMAT_ALPHA_INTENSITY_88 },
-        { "P8",       FORMAT_P_8 },
-        { "P6666",    FORMAT_P_8_6666 },
-        { "AP88",     FORMAT_AP_88 }
+        { "RGB332",      FORMAT_RGB_332 },
+        { "YIQ",         FORMAT_YIQ_422 },
+        { "A8",          FORMAT_ALPHA_8 },
+        { "I8",          FORMAT_INTENSITY_8 },
+        { "AI44",        FORMAT_ALPHA_INTENSITY_44 },
+        { "P8",          FORMAT_P_8 },
+        { "P6666",       FORMAT_P_8_6666 },
+        { "ARGB8332",    FORMAT_ARGB_8332 },
+        { "AYIQ8422",    FORMAT_AYIQ_8422 },
+        { "RGB565",      FORMAT_RGB_565 },
+        { "ARGB1555",    FORMAT_ARGB_1555 },
+        { "ARGB4444",    FORMAT_ARGB_4444 },
+        { "AI88",        FORMAT_ALPHA_INTENSITY_88 },
+        { "AP88",        FORMAT_AP_88 },
+        { "ARGB8888",    FORMAT_ARGB_8888 },
+        { "FXT1",        FORMAT_ARGB_CMP_FXT1 },
+        { "FXT1_HI",     FORMAT_ARGB_CMP_FXT1 },
+        { "FXT1_MIXED",  FORMAT_ARGB_CMP_FXT1 },
+        { "FXT1_CHROMA", FORMAT_ARGB_CMP_FXT1 },
+        { "FXT1_ALPHA",  FORMAT_ARGB_CMP_FXT1 },
+        { "YUYV422",     FORMAT_YUYV_422 },
+        { "UYVY22",      FORMAT_UYVY_422 },
+        { "UYVY422",     FORMAT_UYVY_422 },
+        { "AYUV444",     FORMAT_AYUV_444 },
+        { "DXT1",        FORMAT_ARGB_CMP_DXT1 },
+        { "DXT2",        FORMAT_ARGB_CMP_DXT2 },
+        { "DXT3",        FORMAT_ARGB_CMP_DXT3 },
+        { "DXT4",        FORMAT_ARGB_CMP_DXT4 },
+        { "DXT5",        FORMAT_ARGB_CMP_DXT5 },
+        { "RGB888",      FORMAT_RGB_888 }
     };
     for (const auto& m : maps) {
         if (std::strcmp(formatStr, m.name) == 0) {
@@ -116,8 +172,7 @@ bool Parse3dfHeader(const std::string& filename, Shared3dfHeader& header, uint32
 
     // Calculate memory required for all mipmap levels
     uint32_t totalBytes = 0;
-    int bytesPerTexel = GetBytesPerTexel(format);
-    
+
     // Mipmap levels count downwards in size (e.g. from largeLod dimension down to smallLod dimension)
     for (int lod = largeLod; lod >= smallLod; lod >>= 1) {
         int w = lod, h = lod;
@@ -126,7 +181,7 @@ bool Parse3dfHeader(const std::string& filename, Shared3dfHeader& header, uint32
         } else {
             w = std::max(1, lod / aspectH);
         }
-        totalBytes += w * h * bytesPerTexel;
+        totalBytes += Calc3dfLevelBytes(format, w, h);
     }
     memRequired = totalBytes;
 
@@ -150,7 +205,9 @@ bool Load3dfFile(const std::string& filename, Shared3dfInfo& info) {
     Read3dfHeader(fp, buffer, sizeof(buffer), version, formatStr, &smallLod, &largeLod, &aspectW, &aspectH);
 
     // Load palette if applicable
-    if (info.header.format == FORMAT_P_8 || info.header.format == FORMAT_P_8_6666) {
+    if (info.header.format == FORMAT_P_8 ||
+        info.header.format == FORMAT_P_8_6666 ||
+        info.header.format == FORMAT_AP_88) {
         info.palette.resize(256);
         for (int i = 0; i < 256; ++i) {
             info.palette[i] = ReadBE32(fp);
@@ -161,7 +218,7 @@ bool Load3dfFile(const std::string& filename, Shared3dfInfo& info) {
     // Load raw pixel bytes
     info.pixelData.resize(info.memRequired);
     uint8_t* dstBytes = info.pixelData.data();
-    int bytesPerTexel = GetBytesPerTexel(info.header.format);
+    const int wordWidth = Get3dfWordWidth(info.header.format);
 
     for (int lod = largeLod; lod >= smallLod; lod >>= 1) {
         int w = lod, h = lod;
@@ -170,24 +227,35 @@ bool Load3dfFile(const std::string& filename, Shared3dfInfo& info) {
         } else {
             w = std::max(1, lod / aspectH);
         }
-        size_t pixelCount = w * h;
+        const uint32_t levelBytes = Calc3dfLevelBytes(info.header.format, w, h);
+        const size_t pixelCount = static_cast<size_t>(w) * static_cast<size_t>(h);
 
-        if (bytesPerTexel == 1) {
-            size_t readCount = std::fread(dstBytes, 1, pixelCount, fp);
-            if (readCount != pixelCount) {
-                GLIDE_LOG(WARN, "3dfParser", "Load3dfFile: Premature EOF reading 8-bit LOD level " << lod 
-                                            << " (read " << readCount << "/" << pixelCount << ").");
-                std::memset(dstBytes + readCount, 0, pixelCount - readCount);
+        if (wordWidth == 1) {
+            size_t readCount = std::fread(dstBytes, 1, levelBytes, fp);
+            if (readCount != levelBytes) {
+                GLIDE_LOG(WARN, "3dfParser", "Load3dfFile: Premature EOF reading LOD level " << lod 
+                                            << " (read " << readCount << "/" << levelBytes << ").");
+                std::memset(dstBytes + readCount, 0, levelBytes - readCount);
             }
-            dstBytes += pixelCount;
-        } else {
+            dstBytes += levelBytes;
+        } else if (wordWidth == 2) {
             uint16_t* dstShorts = reinterpret_cast<uint16_t*>(dstBytes);
             for (size_t p = 0; p < pixelCount; ++p) {
                 int b1 = std::getc(fp);
                 int b2 = std::getc(fp);
-                dstShorts[p] = (static_cast<uint16_t>(b1) << 8) | static_cast<uint8_t>(b2);
+                if (b1 == EOF || b2 == EOF) {
+                    dstShorts[p] = 0;
+                } else {
+                    dstShorts[p] = (static_cast<uint16_t>(b1) << 8) | static_cast<uint8_t>(b2);
+                }
             }
             dstBytes += pixelCount * 2;
+        } else {
+            uint32_t* dstWords = reinterpret_cast<uint32_t*>(dstBytes);
+            for (size_t p = 0; p < pixelCount; ++p) {
+                dstWords[p] = ReadBE32(fp);
+            }
+            dstBytes += pixelCount * 4;
         }
     }
 

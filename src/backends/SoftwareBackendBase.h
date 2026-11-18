@@ -40,8 +40,19 @@ class SoftwareBackendBase : public GlideStateTracker {
     return 0.0f;
   }
 
+  uint8_t GetStencilBufferPixel(uint32_t x, uint32_t y) const {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    auto* self = const_cast<SoftwareBackendBase*>(this);
+    self->FlushBins_Locked();
+    uint32_t pIdx = y * m_headlessWidth + x;
+    if (pIdx < m_headlessStencilBuffer.size()) return m_headlessStencilBuffer[pIdx];
+    return 0u;
+  }
+
   void ClearBuffer(uint32_t color, uint32_t alpha, float z,
                    uint32_t clearMask) override;
+  void ClearBufferExt(uint32_t color, uint32_t alpha, float z, uint8_t stencil,
+                      uint32_t clearMask) override;
   void SetRenderBuffer(uint32_t target) override;
 
   // Linear Framebuffer (LFB) read/write utilities backed by m_cpuBuffers
@@ -72,8 +83,7 @@ class SoftwareBackendBase : public GlideStateTracker {
     uint32_t color{0};
     uint32_t alpha{255};
     uint32_t pixelFormat{1};
-    bool maskRgb{true};
-    bool maskAlpha{true};
+    uint8_t colorWriteMask4{0xFu};
   };
   PendingCpuColorClear m_pendingCpuColorClear[2];
   bool m_pendingCpuDepthClear{false};
@@ -83,6 +93,8 @@ class SoftwareBackendBase : public GlideStateTracker {
                             uint32_t clearMask);
   void ClearBuffer_Locked(uint32_t color, uint32_t alpha, float z,
                           uint32_t clearMask);
+  void ClearBufferExt_Locked(uint32_t color, uint32_t alpha, float z,
+                             uint8_t stencil, uint32_t clearMask);
   void MaterializeLazyCpuClear_Locked(uint32_t bufferSlot);
   void MaterializeLazyCpuDepthClear_Locked();
   void DiscardLazyCpuClear_Locked(uint32_t bufferSlot);
@@ -90,6 +102,7 @@ class SoftwareBackendBase : public GlideStateTracker {
   std::vector<uint8_t, AlignedAllocator<uint8_t, 64>> m_cpuBuffers[2];
   std::vector<uint8_t, AlignedAllocator<uint8_t, 64>> m_resolvedBuffer;
   std::vector<float, AlignedAllocator<float, 64>> m_headlessDepthBuffer;
+  std::vector<uint8_t, AlignedAllocator<uint8_t, 64>> m_headlessStencilBuffer;
   uint32_t m_frontBufferIdx{0};
   uint32_t m_backBufferIdx{1};
 
