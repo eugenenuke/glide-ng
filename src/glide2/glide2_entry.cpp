@@ -17,7 +17,7 @@
 #include "core/VertexLayout.h"
 #include "core/WrapperConfig.h"
 
-#ifndef __linux__
+#if !defined(_WIN32) && !defined(__linux__)
 #define __linux__
 #endif
 
@@ -122,7 +122,7 @@ void ResetFrontendState() {
 
 extern "C" {
 uint32_t s_sstOrigin = 0;  // GR_ORIGIN_UPPER_LEFT (Global for grSplash)
-void grShamelessPlug(
+FX_ENTRY void FX_CALL grShamelessPlug(
     void);  // Forward declaration of internal watermark renderer
 
 // Opaque state container matching GrState's char padding
@@ -260,6 +260,7 @@ FX_ENTRY FxBool FX_CALL grSstWinOpen(AnyPtr hWnd,
   s_alphaControlsITRGBLighting = false;
   s_gammaCorrectionValue = 1.0f;
 
+  backend->SetRequestedMsaaSamples(0u);
   bool attached = backend->AttachWindow(
       reinterpret_cast<void*>(static_cast<uintptr_t>(hWnd)), width, height,
       hWnd != 0);
@@ -356,7 +357,11 @@ FX_ENTRY void FX_CALL grDrawTriangle(const GrVertex* a, const GrVertex* b,
 }
 
 FX_ENTRY void FX_CALL grTriStats(FxU32* processed, FxU32* drawn) {
-  EntryCommon::GetTriStats(processed, drawn);
+  uint32_t p = 0;
+  uint32_t d = 0;
+  EntryCommon::GetTriStats(processed ? &p : nullptr, drawn ? &d : nullptr);
+  if (processed) *processed = static_cast<FxU32>(p);
+  if (drawn) *drawn = static_cast<FxU32>(d);
 }
 
 FX_ENTRY void FX_CALL grResetTriStats(void) { EntryCommon::ResetTriStats(); }
@@ -364,7 +369,11 @@ FX_ENTRY void FX_CALL grResetTriStats(void) { EntryCommon::ResetTriStats(); }
 FX_ENTRY void FX_CALL grSstPerfStats(GrSstPerfStats_t* stats) {
   if (stats) {
     std::memset(stats, 0, sizeof(GrSstPerfStats_t));
-    EntryCommon::GetPerfStats(stats->pixelsIn, stats->chromaFail);
+    uint32_t pixelsIn = 0;
+    uint32_t chromaFail = 0;
+    EntryCommon::GetPerfStats(pixelsIn, chromaFail);
+    stats->pixelsIn = static_cast<FxU32>(pixelsIn);
+    stats->chromaFail = static_cast<FxU32>(chromaFail);
   }
 }
 
@@ -626,7 +635,7 @@ FX_ENTRY FxBool FX_CALL grSstQueryHardware(GrHwConfiguration* hwconfig) {
     r.tmuConfig.tmuRev = 1;
     r.tmuConfig.tmuRam = static_cast<int>(config.tmuMemoryMb);
   } else {
-    // Voodoo2, Voodoo3, Voodoo5 (Banshee/Avenger/Napalm)
+    // Voodoo2, Voodoo3, Voodoo4, Voodoo5 (CVG/Avenger/Napalm)
     hwconfig->SSTs[0].type = GR_SSTTYPE_Voodoo2;
     auto& v2 = hwconfig->SSTs[0].sstBoard.Voodoo2Config;
     v2.fbRam = static_cast<int>(config.fbiMemoryMb);
@@ -786,6 +795,8 @@ FX_ENTRY const char* FX_CALL grGetString(FxU32 pname) {
           return "Voodoo2";
         case GlideWrapper::CardModel::Voodoo3:
           return "Voodoo3";
+        case GlideWrapper::CardModel::Voodoo4:
+          return "Voodoo4";
         case GlideWrapper::CardModel::Voodoo5:
           return "Voodoo5";
       }
@@ -1730,11 +1741,18 @@ FX_ENTRY FxBool FX_CALL gu3dfLoad(const char* filename, Gu3dfInfo* info) {
     return FXFALSE;
   }
 
-  return EntryCommon::Load3dfPixelsAndPalette(filename, info->header.format,
-                                              info->table.palette.data,
-                                              info->data)
-             ? FXTRUE
-             : FXFALSE;
+  const bool isPalettized = (info->header.format == GR_TEXFMT_P_8 ||
+                             info->header.format == GR_TEXFMT_AP_88);
+  uint32_t paletteTmp[256] = {};
+  const bool ok = EntryCommon::Load3dfPixelsAndPalette(
+      filename, info->header.format, isPalettized ? paletteTmp : nullptr,
+      info->data);
+  if (ok && isPalettized) {
+    for (int i = 0; i < 256; ++i) {
+      info->table.palette.data[i] = static_cast<FxU32>(paletteTmp[i]);
+    }
+  }
+  return ok ? FXTRUE : FXFALSE;
 }
 
 // ==========================================
@@ -2051,7 +2069,7 @@ FX_ENTRY void FX_CALL grDitherMode(GrDitherMode_t mode) {
 FX_ENTRY FxU32 FX_CALL grSstScreenWidth(void) {
   EnsureEngineInitialized();
   if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
-    return b->GetWidth();
+    return b->GetGuestWidth();
   }
   return 0;
 }
@@ -2059,7 +2077,7 @@ FX_ENTRY FxU32 FX_CALL grSstScreenWidth(void) {
 FX_ENTRY FxU32 FX_CALL grSstScreenHeight(void) {
   EnsureEngineInitialized();
   if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
-    return b->GetHeight();
+    return b->GetGuestHeight();
   }
   return 0;
 }
@@ -2080,7 +2098,7 @@ FX_ENTRY FxU32 FX_CALL grSstStatus(void) {
 FX_ENTRY FxU32 FX_CALL grSstVideoLine(void) {
   EnsureEngineInitialized();
   auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
-  uint32_t height = backend ? backend->GetHeight() : 480;
+  uint32_t height = backend ? backend->GetGuestHeight() : 480;
   if (height == 0) height = 480;
 
   uint32_t totalLines = height + 30;  // height + 30 VBLANK lines
@@ -2098,7 +2116,7 @@ FX_ENTRY FxU32 FX_CALL grSstVideoLine(void) {
 FX_ENTRY FxBool FX_CALL grSstVRetraceOn(void) {
   EnsureEngineInitialized();
   auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
-  uint32_t height = backend ? backend->GetHeight() : 480;
+  uint32_t height = backend ? backend->GetGuestHeight() : 480;
   if (height == 0) height = 480;
 
   return (grSstVideoLine() >= height) ? FXTRUE : FXFALSE;
@@ -2350,7 +2368,22 @@ FX_ENTRY void FX_CALL grLoadGammaTable(FxU32 nentries, FxU32* red, FxU32* green,
                                        FxU32* blue) {
   EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend", "grLoadGammaTable: nentries=" << nentries);
-  EntryCommon::LoadGammaTable(nentries, red, green, blue);
+  std::vector<uint32_t> rBuf;
+  std::vector<uint32_t> gBuf;
+  std::vector<uint32_t> bBuf;
+  if (red && nentries > 0) {
+    rBuf.assign(red, red + nentries);
+  }
+  if (green && nentries > 0) {
+    gBuf.assign(green, green + nentries);
+  }
+  if (blue && nentries > 0) {
+    bBuf.assign(blue, blue + nentries);
+  }
+  EntryCommon::LoadGammaTable(
+      static_cast<uint32_t>(nentries), rBuf.empty() ? nullptr : rBuf.data(),
+      gBuf.empty() ? nullptr : gBuf.data(),
+      bBuf.empty() ? nullptr : bBuf.data());
 }
 
 FX_ENTRY void FX_CALL guGammaCorrectionRGB(FxFloat red, FxFloat green,
@@ -2376,11 +2409,19 @@ FX_ENTRY void FX_CALL grTexDownloadMipMapLevelPartial(
   EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend",
             "grTexDownloadMipMapLevelPartial invoked for TMU="
-                << tmu << ", LOD=" << thisLod << ", rows=" << start << ".."
-                << end << " (Promoting to full download)");
-  // Promote to full level download for simplicity and visual correctness!
-  grTexDownloadMipMapLevel(tmu, startAddress, thisLod, largeLod, aspectRatio,
-                           format, evenOdd, data);
+                << tmu << ", addr=0x" << std::hex << startAddress << std::dec
+                << ", LOD=" << thisLod << ", rows=" << start << ".." << end);
+  if (!data || tmu >= 2) return;
+  if (evenOdd != 0) {
+    const FxU32 levelMask =
+        (thisLod & 1) ? GR_MIPMAPLEVELMASK_ODD : GR_MIPMAPLEVELMASK_EVEN;
+    if ((evenOdd & levelMask) == 0) return;
+  }
+  // Authentic Glide 2.x row bounds [start..end] are inclusive;
+  // TextureManager::DownloadMipMapPartial uses half-open [startRow, endRow).
+  GlideWrapper::TextureManager::GetInstance().DownloadMipMapPartial(
+      tmu, startAddress, thisLod, largeLod, aspectRatio, format, data, start,
+      end + 1);
 }
 
 FX_ENTRY void FX_CALL guDrawPolygonVertexListWithClip(int nverts,

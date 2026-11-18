@@ -12,14 +12,14 @@ void* LfbManager::GetActiveBackend() {
 
 uint32_t LfbManager::GetBackendWidth() {
     if (auto* b = BackendManager::GetInstance().GetBackend()) {
-        return b->GetWidth();
+        return b->GetGuestWidth();
     }
     return 640;
 }
 
 uint32_t LfbManager::GetBackendHeight() {
     if (auto* b = BackendManager::GetInstance().GetBackend()) {
-        return b->GetHeight();
+        return b->GetGuestHeight();
     }
     return 480;
 }

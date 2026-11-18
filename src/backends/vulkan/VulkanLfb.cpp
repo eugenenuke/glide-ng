@@ -118,8 +118,8 @@ bool VulkanBackend::InitLfbOverlayPipeline_Locked() {
     raster.lineWidth = 1.0f;
 
     vk::PipelineMultisampleStateCreateInfo multisample{};
-    multisample.rasterizationSamples =
-        static_cast<vk::SampleCountFlagBits>(m_msaaSamples);
+    // LFB overlays always composite onto the 1x single-sample color target.
+    multisample.rasterizationSamples = vk::SampleCountFlagBits::e1;
 
     vk::PipelineDepthStencilStateCreateInfo depthStencil{};
     depthStencil.depthTestEnable = VK_FALSE;
@@ -154,7 +154,9 @@ bool VulkanBackend::InitLfbOverlayPipeline_Locked() {
     pipeInfo.pColorBlendState = &colorBlend;
     pipeInfo.pDynamicState = &dynamicState;
     pipeInfo.layout = m_lfbOverlayPipelineLayout.get();
-    pipeInfo.renderPass = m_renderPass.get();
+    pipeInfo.renderPass = (m_msaaSamples > 1 && m_singleSampleRenderPass)
+                              ? m_singleSampleRenderPass.get()
+                              : m_renderPass.get();
     pipeInfo.subpass = 0;
 
     auto res = m_device->createGraphicsPipelineUnique(
@@ -324,7 +326,8 @@ void VulkanBackend::ReadbackGpuToStaging_Locked(uint32_t buffer) {
 
   // Execute any pending clears on the target FBO first.
   if (!m_inRenderPass &&
-      (m_clearColorPending[readIdx] || m_clearDepthPending[readIdx])) {
+      (m_clearColorPending[readIdx] || m_clearDepthPending[readIdx] ||
+       m_clearDepthPendingSingle[readIdx])) {
     uint32_t origActive = m_activeRenderBuffer;
     m_activeRenderBuffer = buffer;
     EnsureRenderPassActive();
@@ -337,6 +340,9 @@ void VulkanBackend::ReadbackGpuToStaging_Locked(uint32_t buffer) {
     m_commandBuffer->endRenderPass();
     m_inRenderPass = false;
   }
+
+  // Resolve any pending MSAA draws into m_headlessImages[readIdx] before readback.
+  ResolveMsaaToSingle_Locked(readIdx);
 
   vk::ImageSubresourceRange range(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1);
   TransitionImageLayout(*m_commandBuffer, m_headlessImages[readIdx].get(),
@@ -527,28 +533,46 @@ void VulkanBackend::CompositeLfbOverlay_Locked(
       &toSample);
   m_lfbOverlayImageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
 
-  // Composite all dirty row bands inside a single RenderPass (zero waitIdle(),
-  // works for both 1x and MSAA!).
+  // If MSAA has newer 3D content and no full color clear supersedes it, resolve
+  // MSAA -> 1x before compositing the LFB overlay onto the 1x target.
+  if (m_msaaSamples > 1 && m_msaaColorDirty[targetGpuIdx] &&
+      !m_clearColorPending[targetGpuIdx]) {
+    ResolveMsaaToSingle_Locked(targetGpuIdx);
+  }
+
+  // Composite all dirty row bands onto the 1x color target inside a single
+  // RenderPass (zero waitIdle(), preserves both 1x and MSAA 3D scenes!).
+  const vk::RenderPass overlayRp =
+      (m_msaaSamples > 1 && m_singleSampleRenderPass)
+          ? m_singleSampleRenderPass.get()
+          : m_renderPass.get();
+  const vk::Framebuffer overlayFb =
+      (m_msaaSamples > 1 && m_singleSampleFramebuffers[targetGpuIdx])
+          ? m_singleSampleFramebuffers[targetGpuIdx].get()
+          : m_headlessFramebuffers[targetGpuIdx].get();
   vk::RenderPassBeginInfo rpBegin(
-      m_renderPass.get(), m_headlessFramebuffers[targetGpuIdx].get(),
+      overlayRp, overlayFb,
       vk::Rect2D({0, 0}, {m_headlessWidth, m_headlessHeight}), 0, nullptr);
   m_commandBuffer->beginRenderPass(rpBegin, vk::SubpassContents::eInline);
 
   // If the target framebuffer still has pending clears, apply them BEFORE
   // compositing the overlay so the overlay lands on top of the cleared color.
-  if (m_clearColorPending[targetGpuIdx] || m_clearDepthPending[targetGpuIdx]) {
+  bool& singleDepthPending = (m_msaaSamples > 1)
+                                 ? m_clearDepthPendingSingle[targetGpuIdx]
+                                 : m_clearDepthPending[targetGpuIdx];
+  if (m_clearColorPending[targetGpuIdx] || singleDepthPending) {
     std::vector<vk::ClearAttachment> clears;
     if (m_clearColorPending[targetGpuIdx]) {
       clears.push_back(vk::ClearAttachment(vk::ImageAspectFlagBits::eColor, 0,
                                            m_clearColorValue[targetGpuIdx]));
       m_clearColorPending[targetGpuIdx] = false;
     }
-    if (m_clearDepthPending[targetGpuIdx]) {
+    if (singleDepthPending) {
       clears.push_back(vk::ClearAttachment(
           vk::ImageAspectFlagBits::eDepth, 0,
           vk::ClearValue(
               vk::ClearDepthStencilValue(m_clearDepthValue[targetGpuIdx], 0))));
-      m_clearDepthPending[targetGpuIdx] = false;
+      singleDepthPending = false;
     }
     if (!clears.empty()) {
       vk::ClearRect clearRect(
@@ -584,6 +608,11 @@ void VulkanBackend::CompositeLfbOverlay_Locked(
     m_commandBuffer->draw(4, 1, 0, 0);
   }
   m_commandBuffer->endRenderPass();
+
+  if (m_msaaSamples > 1) {
+    m_singleSampleColorDirty[targetGpuIdx] = true;
+    m_msaaColorDirty[targetGpuIdx] = false;
+  }
 }
 
 void VulkanBackend::FlushLFBToGPU_Locked() {
@@ -654,6 +683,12 @@ void VulkanBackend::FlushLFBToGPU_Locked() {
                               m_headlessImages[targetGpuIdx].get(),
                               vk::ImageLayout::eTransferDstOptimal,
                               vk::ImageLayout::eColorAttachmentOptimal, range);
+
+        if (m_msaaSamples > 1) {
+          m_singleSampleColorDirty[targetGpuIdx] = true;
+          m_msaaColorDirty[targetGpuIdx] = false;
+        }
+        m_clearColorPending[targetGpuIdx] = false;
 
         // Full-buffer path shares m_headlessPixelBuffers[slot], so synchronize
         // before returning to avoid clobbering on subsequent reads/uploads.

@@ -143,12 +143,14 @@ class SoftwareBackend : public SoftwareBackendBase {
 
   struct X11Presenter;
   struct WaylandShmPresenter;
+  struct Win32GdiPresenter;
 
   NativeSurfaceHost m_surfaceHost;
   void* m_sdlRenderer{nullptr};  // StandaloneSDL2 owned SDL_Renderer*
   void* m_sdlTexture{nullptr};   // StandaloneSDL2 owned SDL_Texture*
   std::unique_ptr<X11Presenter> m_x11Presenter;
   std::unique_ptr<WaylandShmPresenter> m_wlShmPresenter;
+  std::unique_ptr<Win32GdiPresenter> m_win32Presenter;
   HudOverlay m_hudOverlay;
   std::vector<uint32_t> m_hudPresentBuffer;
 };

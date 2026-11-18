@@ -45,8 +45,8 @@ void GlideStateTracker::ResetState_Locked() {
 
   m_clipMinX = 0;
   m_clipMinY = 0;
-  m_clipMaxX = m_headlessWidth;
-  m_clipMaxY = m_headlessHeight;
+  m_clipMaxX = m_guestWidth;
+  m_clipMaxY = m_guestHeight;
   m_sstOrigin = 0;
 
   m_fogMode = 0;
@@ -108,6 +108,8 @@ void GlideStateTracker::ResetState_Locked() {
     m_lutB[i] = static_cast<uint8_t>(i);
   }
   m_aaEnabled = false;
+  m_aaMultiSample = true;
+  m_tbufferWriteMask = 0xFFFFFFFFu;
 }
 
 void GlideStateTracker::PollEvents() {
@@ -267,8 +269,8 @@ void GlideStateTracker::SetClipWindow_Locked(uint32_t minX, uint32_t minY,
 
   m_clipMinX = minX;
   m_clipMinY = minY;
-  m_clipMaxX = std::min(m_headlessWidth, maxX);
-  m_clipMaxY = std::min(m_headlessHeight, maxY);
+  m_clipMaxX = std::min(m_guestWidth, maxX);
+  m_clipMaxY = std::min(m_guestHeight, maxY);
 
   GLIDE_LOG(DEBUG, "Rasterizer",
             "SetClipWindow: (" << m_clipMinX << "," << m_clipMinY << ") to ("
@@ -611,10 +613,44 @@ void GlideStateTracker::SetAAState(bool enabled) {
 }
 
 void GlideStateTracker::SetAAState_Locked(bool enabled) {
+  if (m_aaEnabled == enabled) return;
   MarkStateDirty();
   m_aaEnabled = enabled;
-  GLIDE_LOG(INFO, "StateTracker",
+  GLIDE_LOG(DEBUG, "StateTracker",
             "SetAAState: AA active=" << (enabled ? "Yes" : "No"));
+}
+
+void GlideStateTracker::SetRequestedMsaaSamples(uint32_t samples) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  m_requestedMsaaSamples = samples;
+  GLIDE_LOG(DEBUG, "StateTracker",
+            "SetRequestedMsaaSamples: samples=" << samples);
+}
+
+void GlideStateTracker::SetAAMultiSample(bool enabled) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  SetAAMultiSample_Locked(enabled);
+}
+
+void GlideStateTracker::SetAAMultiSample_Locked(bool enabled) {
+  if (m_aaMultiSample == enabled) return;
+  MarkStateDirty();
+  m_aaMultiSample = enabled;
+  GLIDE_LOG(DEBUG, "StateTracker",
+            "SetAAMultiSample: enabled=" << (enabled ? "Yes" : "No"));
+}
+
+void GlideStateTracker::SetTBufferWriteMask(uint32_t mask) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  SetTBufferWriteMask_Locked(mask);
+}
+
+void GlideStateTracker::SetTBufferWriteMask_Locked(uint32_t mask) {
+  if (m_tbufferWriteMask == mask) return;
+  MarkStateDirty();
+  m_tbufferWriteMask = mask;
+  GLIDE_LOG(DEBUG, "StateTracker",
+            "SetTBufferWriteMask: mask=0x" << std::hex << mask << std::dec);
 }
 
 }  // namespace GlideWrapper

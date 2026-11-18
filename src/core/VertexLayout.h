@@ -172,6 +172,10 @@ private:
     int32_t m_offsetST0{36};
     int32_t m_offsetFog{-1};
     int32_t m_offsetST1{-1};
+    int32_t m_offsetPARGB{-1};
+    int32_t m_offsetQ0{-1};
+    int32_t m_offsetQ1{-1};
+    uint32_t m_colorType{0};  // 0 = GR_FLOAT (RGB/A), 1 = GR_U8 (PARGB)
 };
 
 } // namespace GlideWrapper

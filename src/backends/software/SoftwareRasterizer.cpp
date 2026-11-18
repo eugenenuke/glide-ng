@@ -173,6 +173,10 @@ inline void SoftwareBackend::RasterizeTriangleTemplate(
     const ModernVertex& a, const ModernVertex& b, const ModernVertex& c,
     int tileMinX, int tileMaxX, int tileMinY, int tileMaxY,
     const RasterizerState& state) {
+  if (m_ssaaScale == 2 && (state.tbufferWriteMask & 0x0Fu) == 0u) {
+    return;
+  }
+
   int minX = std::max(
       tileMinX,
       static_cast<int>(std::floor(std::min({a.pos[0], b.pos[0], c.pos[0]}))));
@@ -185,6 +189,16 @@ inline void SoftwareBackend::RasterizeTriangleTemplate(
   int maxY = std::min(
       tileMaxY - 1,
       static_cast<int>(std::ceil(std::max({a.pos[1], b.pos[1], c.pos[1]}))));
+
+  // When 2x2 SSAA has live GR_AA_MULTI_SAMPLE disabled, all 4 subpixels of
+  // each guest pixel sample the guest-pixel center. Snap AABB bounds to even
+  // 2x2 guest-pixel boundaries so no guest pixel is half-clipped by the AABB.
+  if (m_ssaaScale == 2 && !state.aaMultiSample) {
+    minX = std::max(tileMinX, minX & ~1);
+    minY = std::max(tileMinY, minY & ~1);
+    maxX = std::min(tileMaxX - 1, maxX | 1);
+    maxY = std::min(tileMaxY - 1, maxY | 1);
+  }
 
   if (minX > maxX || minY > maxY) {
     return;
@@ -455,18 +469,37 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
     dQ1_dy = dw0_dy * qa + dw1_dy * qb + dw2_dy * qc;
   }
 
-  float startX = minX + 0.5f;
+  const uint8_t tbufMask =
+      (m_ssaaScale == 2) ? static_cast<uint8_t>(state.tbufferWriteMask & 0x0Fu)
+                         : static_cast<uint8_t>(0x0Fu);
+  const bool applyTbufMask = (m_ssaaScale == 2 && tbufMask != 0x0Fu);
+  const bool collapseAa = (m_ssaaScale == 2 && !state.aaMultiSample);
+  if (applyTbufMask && tbufMask == 0u) return;
+
+  const float startX = collapseAa ? (static_cast<float>(minX & ~1) + 1.0f)
+                                  : (static_cast<float>(minX) + 0.5f);
+  const float stepX2_0 = a0 * 2.0f;
+  const float stepX2_1 = a1 * 2.0f;
+  const float stepX2_2 = a2 * 2.0f;
 
   for (int y = minY; y <= maxY; ++y) {
-    float E0 = a0 * startX + b0 * (static_cast<float>(y) + 0.5f) + c0;
-    float E1 = a1 * startX + b1 * (static_cast<float>(y) + 0.5f) + c1;
-    float E2 = a2 * startX + b2 * (static_cast<float>(y) + 0.5f) + c2;
+    const uint32_t rowTbufMask =
+        applyTbufMask ? ((tbufMask >> ((y & 1) << 1)) & 3u) : 3u;
+    if (applyTbufMask && rowTbufMask == 0u) continue;
+
+    const float sampleY = collapseAa ? (static_cast<float>(y & ~1) + 1.0f)
+                                     : (static_cast<float>(y) + 0.5f);
+    float E0 = a0 * startX + b0 * sampleY + c0;
+    float E1 = a1 * startX + b1 * sampleY + c1;
+    float E2 = a2 * startX + b2 * sampleY + c2;
     for (int x = minX; x <= maxX; ++x) {
       bool inside = false;
-      if constexpr (Clockwise) {
-        inside = (E0 >= -1e-5f && E1 >= -1e-5f && E2 >= -1e-5f);
-      } else {
-        inside = (E0 <= 1e-5f && E1 <= 1e-5f && E2 <= 1e-5f);
+      if (!applyTbufMask || ((rowTbufMask >> (x & 1)) & 1u) != 0u) {
+        if constexpr (Clockwise) {
+          inside = (E0 >= -1e-5f && E1 >= -1e-5f && E2 >= -1e-5f);
+        } else {
+          inside = (E0 <= 1e-5f && E1 <= 1e-5f && E2 <= 1e-5f);
+        }
       }
       if (inside) {
         float w0 = E0 * invArea;
@@ -490,20 +523,25 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
           }
         }
 
-        float wVal = w0 * a.pos[3] + w1 * b.pos[3] + w2 * c.pos[3];
+        // Anchor interpolation at vertex a so constant-oow quads are bit-exact
+        // across triangles (prevents coplanar W-buffer Z-fighting).
+        float wVal =
+            a.pos[3] + w1 * (b.pos[3] - a.pos[3]) + w2 * (c.pos[3] - a.pos[3]);
         float divW0 =
             (stwHintMask & 0x2)
-                ? (w0 * a.tmu_oow[0] + w1 * b.tmu_oow[0] + w2 * c.tmu_oow[0])
+                ? (a.tmu_oow[0] + w1 * (b.tmu_oow[0] - a.tmu_oow[0]) +
+                   w2 * (c.tmu_oow[0] - a.tmu_oow[0]))
                 : wVal;
         float divW1 =
             (stwHintMask & 0x8)
-                ? (w0 * a.tmu_oow[1] + w1 * b.tmu_oow[1] + w2 * c.tmu_oow[1])
+                ? (a.tmu_oow[1] + w1 * (b.tmu_oow[1] - a.tmu_oow[1]) +
+                   w2 * (c.tmu_oow[1] - a.tmu_oow[1]))
                 : wVal;
 
         // Near-plane clipping (respect per-TMU oow when GR_STWHINT_W_DIFF_TMU*
         // is active)
         if (depthMode == 2) {  // GR_DEPTHBUFFER_WBUFFER
-          if (wVal > 1.0001f) keepPixel = false;
+          if (wVal <= 0.0f || wVal > 1.0001f) keepPixel = false;
         } else {
           if constexpr (HasTexture) {
             if (divW0 <= 0.0f) keepPixel = false;
@@ -855,13 +893,13 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
               break;
             case 7:
               finalR = (cOtherR - cLocalR) * factR + cLocalR;
-              finalG = (cOtherG - cLocalG) * factR + cLocalG;
-              finalB = (cOtherB - cLocalB) * factR + cLocalB;
+              finalG = (cOtherG - cLocalG) * factG + cLocalG;
+              finalB = (cOtherB - cLocalB) * factB + cLocalB;
               break;
             case 8:
               finalR = (cOtherR - cLocalR) * factR + aLocal;
-              finalG = (cOtherG - cLocalG) * factR + aLocal;
-              finalB = (cOtherB - cLocalB) * factR + aLocal;
+              finalG = (cOtherG - cLocalG) * factG + aLocal;
+              finalB = (cOtherB - cLocalB) * factB + aLocal;
               break;
           }
           if (colorCombinerInvert) {
@@ -921,33 +959,13 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
           }
           if (alphaCombinerInvert) finalA = 1.0f - finalA;
 
-          red = finalR;
-          green = finalG;
-          blue = finalB;
-          alpha = finalA;
+          red = std::clamp(finalR, 0.0f, 1.0f);
+          green = std::clamp(finalG, 0.0f, 1.0f);
+          blue = std::clamp(finalB, 0.0f, 1.0f);
+          alpha = std::clamp(finalA, 0.0f, 1.0f);
+          // Preserve full 8-bit alpha into blending; RGB565 dithering runs
+          // post-blend on color channels only (authentic 3dfx pipeline order).
           blendAlphaVal = alpha;
-
-          // Pre-blend Alpha Dithering / Quantization
-          if constexpr (DitherEnabled) {
-            static const uint8_t dither_matrix_4x4[16] = {
-                0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5};
-            static const uint8_t dither_matrix_2x2[16] = {
-                0, 2, 0, 2, 3, 1, 3, 1, 0, 2, 0, 2, 3, 1, 3, 1};
-            int ditherX = x & 3;
-            int ditherY = y & 3;
-            uint8_t dith = (state.ditherMode == 2)
-                               ? dither_matrix_4x4[ditherY * 4 + ditherX]
-                               : dither_matrix_2x2[ditherY * 4 + ditherX];
-            if ((alphaTestOp != 7) || (alpha < 0.99f)) {
-              float alpha255 = std::floor(alpha * 255.0f + 0.5f);
-              if (alpha255 + (static_cast<float>(dith) * 128.0f /
-                              (state.ditherMode == 2 ? 16.0f : 4.0f)) <
-                  128.0f)
-                keepPixel = false;
-              else
-                blendAlphaVal = 1.0f;
-            }
-          }
         }
 
         // Chromakey Emulation
@@ -1011,9 +1029,13 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
           float targetDepth = 0.0f;
           if (depthMode == 2) {
             float w = 1.0f / wVal;
-            targetDepth = (w - depthNear) * depthRangeInv;
+            targetDepth =
+                std::clamp((w - depthNear) * depthRangeInv, 0.0f, 1.0f);
           } else {
-            targetDepth = w0 * a.pos[2] + w1 * b.pos[2] + w2 * c.pos[2];
+            targetDepth = std::clamp(
+                a.pos[2] + w1 * (b.pos[2] - a.pos[2]) +
+                    w2 * (c.pos[2] - a.pos[2]),
+                0.0f, 1.0f);
           }
           if (depthBiasLevel != 0)
             targetDepth = std::max(
@@ -1131,40 +1153,42 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
                   return 1.0f;
               }
             };
-            red = std::min(
-                1.0f,
+            red = std::clamp(
                 red * getF(rgbSrcBlend, red, preFogR, dstR, blendAlphaVal, dstA,
                            false) +
                     dstR * getF(rgbDstBlend, red, preFogR, dstR, blendAlphaVal,
-                                dstA, true));
-            green = std::min(
-                1.0f,
+                                dstA, true),
+                0.0f, 1.0f);
+            green = std::clamp(
                 green * getF(rgbSrcBlend, green, preFogG, dstG, blendAlphaVal,
                              dstA, false) +
                     dstG * getF(rgbDstBlend, green, preFogG, dstG,
-                                blendAlphaVal, dstA, true));
-            blue = std::min(
-                1.0f,
+                                blendAlphaVal, dstA, true),
+                0.0f, 1.0f);
+            blue = std::clamp(
                 blue * getF(rgbSrcBlend, blue, preFogB, dstB, blendAlphaVal,
                             dstA, false) +
                     dstB * getF(rgbDstBlend, blue, preFogB, dstB, blendAlphaVal,
-                                dstA, true));
+                                dstA, true),
+                0.0f, 1.0f);
             aVal = static_cast<uint32_t>(
-                std::min(1.0f,
-                         blendAlphaVal * getF(alphaSrcBlend, 0, 0, 0,
-                                              blendAlphaVal, dstA, false) +
-                             dstA * getF(alphaDstBlend, 0, 0, 0, blendAlphaVal,
-                                         dstA, true)) *
+                std::clamp(
+                    blendAlphaVal * getF(alphaSrcBlend, 0, 0, 0, blendAlphaVal,
+                                         dstA, false) +
+                        dstA * getF(alphaDstBlend, 0, 0, 0, blendAlphaVal, dstA,
+                                    true),
+                    0.0f, 1.0f) *
                     255.0f +
                 0.5f);
             rVal = static_cast<uint32_t>(red * 255.0f + 0.5f);
             gVal = static_cast<uint32_t>(green * 255.0f + 0.5f);
             bVal = static_cast<uint32_t>(blue * 255.0f + 0.5f);
           } else {
-            aVal = static_cast<uint32_t>(alpha * 255.0f + 0.5f);
-            rVal = static_cast<uint32_t>(red * 255.0f + 0.5f);
-            gVal = static_cast<uint32_t>(green * 255.0f + 0.5f);
-            bVal = static_cast<uint32_t>(blue * 255.0f + 0.5f);
+            aVal = static_cast<uint32_t>(
+                std::clamp(blendAlphaVal, 0.0f, 1.0f) * 255.0f + 0.5f);
+            rVal = static_cast<uint32_t>(std::clamp(red, 0.0f, 1.0f) * 255.0f + 0.5f);
+            gVal = static_cast<uint32_t>(std::clamp(green, 0.0f, 1.0f) * 255.0f + 0.5f);
+            bVal = static_cast<uint32_t>(std::clamp(blue, 0.0f, 1.0f) * 255.0f + 0.5f);
           }
           if constexpr (DitherEnabled) {
             static const uint8_t dither_matrix_4x4[16] = {
@@ -1197,9 +1221,15 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
           pixels[pIdx] = finalColor;
         }
       }
-      E0 += a0;
-      E1 += a1;
-      E2 += a2;
+      if (!collapseAa) {
+        E0 += a0;
+        E1 += a1;
+        E2 += a2;
+      } else if ((x & 1) != 0) {
+        E0 += stepX2_0;
+        E1 += stepX2_1;
+        E2 += stepX2_2;
+      }
     }
   }
 }

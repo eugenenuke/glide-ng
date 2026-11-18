@@ -58,6 +58,8 @@ class OpenGLESBackend : public GlideStateTracker {
   void SetBlendState(uint32_t rgbSrcFactor, uint32_t rgbDstFactor,
                      uint32_t alphaSrcFactor, uint32_t alphaDstFactor) override;
   void SetColorMask(bool rgb, bool alpha) override;
+  void SetAAMultiSample(bool enabled) override;
+  void SetTBufferWriteMask(uint32_t mask) override;
   void SetGamma(float gamma) override;
   void SetRenderBuffer(uint32_t target) override;
   void SetDepthRange(float nearVal, float farVal) override;
@@ -113,6 +115,7 @@ class OpenGLESBackend : public GlideStateTracker {
   void DestroyGLContext();
   bool CreateDirectEglContext();
   bool CreateStandaloneSdlGlContext();
+  bool CreateWin32WglContext();
   bool EnsureContextCurrent();
   void SaveCurrentHostEglContext();
   void RestoreHostContextIfSaved();
@@ -122,9 +125,21 @@ class OpenGLESBackend : public GlideStateTracker {
   void ApplyColorMaskGLES();
   void ApplyScissorGLES_Locked();
   void SyncCullStateGLES_Locked();
+  void ApplySampleMaskGLES_Locked();
   void PopulateUniforms(uint32_t dirtyMask);
   void InvalidateGlBindingCache();
+  uint32_t GetActiveGpuSlot() const {
+    return (m_activeRenderBuffer == 0) ? 1u : 0u;
+  }
   uint32_t GetActiveGpuFbo() const;
+  uint32_t ResolveDesiredMsaaSamples_Locked() const;
+  uint32_t GetEffectiveSampleMask_Locked() const;
+  bool ShouldUseSingleSampleFbo_Locked() const;
+  void ResolveMsaaToSingle_Locked(uint32_t slot);
+  void CopySingleToMsaa_Locked(uint32_t slot);
+  void DrawMaskedClearQuadGLES_Locked(float r, float g, float b, float a,
+                                      float z, bool doColorClear,
+                                      bool doDepthClear, uint32_t sampleMask);
 
   enum GlesDirtyBits : uint32_t {
     kGlesDirtyViewportAndOrigin = 1u << 0,
@@ -148,6 +163,7 @@ class OpenGLESBackend : public GlideStateTracker {
     kGlesDirtyDepthRange        = 1u << 18,
     kGlesDirtyDitherStipple     = 1u << 19,
     kGlesDirtySamplerUnits      = 1u << 20,
+    kGlesDirtySampleMask        = 1u << 21,
     kGlesDirtyAll               = 0xFFFFFFFFu,
   };
   uint32_t m_glesDirtyMask{kGlesDirtyAll};
@@ -173,6 +189,13 @@ class OpenGLESBackend : public GlideStateTracker {
   void* m_eglSurface{nullptr};   // EGLSurface
   void* m_wlEglWindow{nullptr};  // wl_egl_window* (WaylandSubsurface only)
   bool m_useDirectEgl{false};
+
+  // Win32 WGL OpenGL 3.3 Core handles (opaque to keep <windows.h> out of .h)
+  void* m_wglHdc{nullptr};        // HDC
+  void* m_wglContext{nullptr};    // HGLRC
+  void* m_wglDummyHwnd{nullptr};  // Hidden HWND for headless WGL
+  void* m_wglTargetHwnd{nullptr}; // HWND associated with m_wglHdc
+  bool m_useWgl{false};
   bool m_eglDisplayOwned{false};  // Never eglTerminate borrowed wl_display*
 
   // StandaloneSDL2 fallback context (hWnd == 0 demos only)
@@ -198,10 +221,19 @@ class OpenGLESBackend : public GlideStateTracker {
   uint32_t m_glVBO{0};      // GLuint
   uint32_t m_glProgram{0};  // GLuint
 
-  // Double-buffered offscreen GPU rendering targets
+  // Double-buffered offscreen GPU rendering targets (1x resolved/aliased)
   uint32_t m_headlessFBOs[2]{0, 0};       // GLuint
   uint32_t m_fboTextures[2]{0, 0};        // GLuint
   uint32_t m_sharedDepthRenderbuffer{0};  // GLuint
+
+  // Double-buffered offscreen MSAA rendering targets (allocated when
+  // m_msaaSamples > 1; supports live GR_AA_MULTI_SAMPLE + T-Buffer masks)
+  uint32_t m_msaaFBOs[2]{0, 0};       // GLuint
+  uint32_t m_msaaColorRBOs[2]{0, 0};  // GLuint
+  uint32_t m_msaaDepthRBO{0};         // GLuint
+  bool m_msaaColorDirty[2]{false, false};
+  bool m_singleSampleColorDirty[2]{false, false};
+  bool m_supportsSampleMask{false};
 
   // Milestone 3: GPU-Native Geometry Resources
   bool CreateGeomShaders();

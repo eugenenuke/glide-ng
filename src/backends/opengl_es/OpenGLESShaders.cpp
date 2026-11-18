@@ -578,54 +578,24 @@ void main() {
             else if (idx == 3) d = 4;
         }
         
+        // Authentic 3dfx framebuffer dithering quantizes RGB to 16-bit RGB565 only;
+        // full 8-bit col.a is always preserved for hardware alpha blending.
         vec3 c255 = col.rgb * 255.0;
-        float a255 = col.a * 255.0;
-        bool useAlpha = (uAlphaTestOp != 7) || (col.a < 0.99);
+        int r_dither = d >> 1;
+        int g_dither = d >> 2;
+        int b_dither = d >> 1;
         
-        if (useAlpha) {
-            // ARGB1555
-            int matrixSize = (uDitherMode == 2u) ? 16 : 4;
-            int ditherA = (d * 128) / matrixSize;
-            
-            int r_dither = d >> 1;
-            int g_dither = d >> 1;
-            int b_dither = d >> 1;
-            
-            int r = int(c255.r) + r_dither;
-            int g = int(c255.g) + g_dither;
-            int b = int(c255.b) + b_dither;
-            int a = int(a255) + ditherA;
-            
-            r = clamp(r, 0, 255) & 0xF8;
-            g = clamp(g, 0, 255) & 0xF8;
-            b = clamp(b, 0, 255) & 0xF8;
-            
-            int a1 = clamp(a, 0, 255) / 128;
-            a1 = min(a1, 1);
-            
-            col.r = float(r | (r >> 5)) / 255.0;
-            col.g = float(g | (g >> 5)) / 255.0;
-            col.b = float(b | (b >> 5)) / 255.0;
-            col.a = float(a1 * 255) / 255.0;
-        } else {
-            // RGB565
-            int r_dither = d >> 1;
-            int g_dither = d >> 2;
-            int b_dither = d >> 1;
-            
-            int r = int(c255.r) + r_dither;
-            int g = int(c255.g) + g_dither;
-            int b = int(c255.b) + b_dither;
-            
-            r = clamp(r, 0, 255) & 0xF8;
-            g = clamp(g, 0, 255) & 0xFC;
-            b = clamp(b, 0, 255) & 0xF8;
-            
-            col.r = float(r | (r >> 5)) / 255.0;
-            col.g = float(g | (g >> 6)) / 255.0;
-            col.b = float(b | (b >> 5)) / 255.0;
-            col.a = 1.0;
-        }
+        int r = int(c255.r) + r_dither;
+        int g = int(c255.g) + g_dither;
+        int b = int(c255.b) + b_dither;
+        
+        r = clamp(r, 0, 255) & 0xF8;
+        g = clamp(g, 0, 255) & 0xFC;
+        b = clamp(b, 0, 255) & 0xF8;
+        
+        col.r = float(r | (r >> 5)) / 255.0;
+        col.g = float(g | (g >> 6)) / 255.0;
+        col.b = float(b | (b >> 5)) / 255.0;
     }
 
     // True W-Buffering Depth Write
@@ -646,8 +616,10 @@ void main() {
 
 bool OpenGLESBackend::CreateGeomShaders() {
   auto compileShader = [](GLenum type, const char* src) -> GLuint {
+    const std::string adapted = AdaptGlslSourceForPlatform(src);
+    const char* adaptedPtr = adapted.c_str();
     GLuint s = glCreateShader(type);
-    glShaderSource(s, 1, &src, nullptr);
+    glShaderSource(s, 1, &adaptedPtr, nullptr);
     glCompileShader(s);
     GLint status;
     glGetShaderiv(s, GL_COMPILE_STATUS, &status);

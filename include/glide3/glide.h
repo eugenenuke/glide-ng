@@ -396,6 +396,24 @@ typedef FxU32 GrEnableMode_t;
 #define GR_PASSTHRU              0x03
 #define GR_SHAMELESS_PLUG        0x04
 #define GR_VIDEO_SMOOTHING       0x05
+#define GR_AA_MULTI_SAMPLE       0x80000002u
+
+/* VSA-100 / Napalm PIXEXT pixel format definitions for grSstWinOpenExt */
+typedef FxU32 GrPixelFormat_t;
+#define GR_PIXFMT_I_8             0x0001
+#define GR_PIXFMT_AI_88           0x0002
+#define GR_PIXFMT_RGB_565         0x0003
+#define GR_PIXFMT_ARGB_1555       0x0004
+#define GR_PIXFMT_ARGB_8888       0x0005
+#define GR_PIXFMT_AA_2_RGB_565    0x0006
+#define GR_PIXFMT_AA_2_ARGB_1555  0x0007
+#define GR_PIXFMT_AA_2_ARGB_8888  0x0008
+#define GR_PIXFMT_AA_4_RGB_565    0x0009
+#define GR_PIXFMT_AA_4_ARGB_1555  0x000a
+#define GR_PIXFMT_AA_4_ARGB_8888  0x000b
+#define GR_PIXFMT_AA_8_RGB_565    0x000c
+#define GR_PIXFMT_AA_8_ARGB_1555  0x000d
+#define GR_PIXFMT_AA_8_ARGB_8888  0x000e
 
 typedef FxU32 GrCoordinateSpaceMode_t;
 #define GR_WINDOW_COORDS    0x00
@@ -543,6 +561,10 @@ typedef FxU32 GrLfbSrcFmt_t;
 #define GR_LFB_SRC_FMT_ZA16         0x0f
 #define GR_LFB_SRC_FMT_RLE16        0x80
 
+/* Voodoo5 / Napalm PIXEXT stencil types */
+typedef FxU8  GrStencil_t;
+typedef FxU32 GrStencilOp_t;
+
 #ifdef H3D
 #define GR_HINT_H3DENABLE               4
 #undef  GR_HINTTYPE_MAX
@@ -624,6 +646,39 @@ grSstWinOpen(
           GrOriginLocation_t   origin_location,
           int                  nColBuffers,
           int                  nAuxBuffers);
+
+FX_ENTRY GrContext_t FX_CALL
+grSstWinOpenExt(
+          AnyPtr               hWnd,
+          GrScreenResolution_t screen_resolution,
+          GrScreenRefresh_t    refresh_rate,
+          GrColorFormat_t      color_format,
+          GrOriginLocation_t   origin_location,
+          GrPixelFormat_t      pixel_format,
+          int                  nColBuffers,
+          int                  nAuxBuffers);
+
+FX_ENTRY void FX_CALL
+grTBufferWriteMaskExt( FxU32 tmask );
+
+FX_ENTRY void FX_CALL
+grColorMaskExt( FxBool r, FxBool g, FxBool b, FxBool a );
+
+FX_ENTRY void FX_CALL
+grStencilFuncExt( GrCmpFnc_t fnc, GrStencil_t ref, GrStencil_t mask );
+
+FX_ENTRY void FX_CALL
+grStencilMaskExt( GrStencil_t mask );
+
+FX_ENTRY void FX_CALL
+grStencilOpExt( GrStencilOp_t fail, GrStencilOp_t zfail, GrStencilOp_t zpass );
+
+FX_ENTRY void FX_CALL
+grBufferClearExt( GrColor_t color, GrAlpha_t alpha, FxU32 depth,
+                  GrStencil_t stencil );
+
+FX_ENTRY void FX_CALL
+grLfbConstantStencilExt( GrStencil_t stencil );
 
 FX_ENTRY FxBool FX_CALL
 grSstWinClose( GrContext_t context );

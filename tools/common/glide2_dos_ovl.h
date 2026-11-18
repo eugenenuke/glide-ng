@@ -25,7 +25,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#if defined(__DOS__) || defined(__MSDOS__) || defined(_WIN32)
+#if defined(__DOS__) || defined(__MSDOS__) || (defined(_WIN32) && GLIDE_VERSION == 2)
 #  define FX_GLIDE_NO_FUNC_PROTO 1
 #  include <glide.h>
 #  if defined(__DOS__) || defined(__MSDOS__)
@@ -64,7 +64,7 @@
 #  define GR_VERSION   0xa4
 #endif
 
-#if defined(__DOS__) || defined(__MSDOS__) || defined(_WIN32)
+#if defined(__DOS__) || defined(__MSDOS__) || (defined(_WIN32) && GLIDE_VERSION == 2)
 
 /* Every Glide 2.x entry point used across glide_info and glide_bench.
  * Format: X(ret, name, upper_sym, mixed_sym, params)
@@ -123,16 +123,20 @@
   X(void,   grDisableAllEffects,       "_GRDISABLEALLEFFECTS@0",       "_grDisableAllEffects@0",       (void)) \
   X(void,   grSstIdle,                 "_GRSSTIDLE@0",                 "_grSstIdle@0",                 (void))
 
+/* Generic function-pointer return type for optional grGetProcAddress probing */
+typedef void (FX_CALL *gtool_any_proc_fn)(void);
+
 /* Optional Glide 2.x entry points (may be absent on older 2.1/2.4 OVL builds) */
 #define GLIDE2_OVL_OPTIONAL_FUNCS_X(X)                                                                 \
-  X(FxBool,      grSstQueryBoards,       "_GRSSTQUERYBOARDS@4",          "_grSstQueryBoards@4",          (GrHwConfiguration* hwconfig)) \
-  X(FxU32,       guTexMemQueryAvail,     "_GUTEXMEMQUERYAVAIL@4",        "_guTexMemQueryAvail@4",        (GrChipID_t tmu)) \
-  X(void,        guTexMemReset,          "_GUTEXMEMRESET@0",             "_guTexMemReset@0",             (void)) \
-  X(void,        guFogGenerateExp,       "_GUFOGGENERATEEXP@8",          "_guFogGenerateExp@8",          (GrFog_t fogtable[GR_FOG_TABLE_SIZE], float density)) \
-  X(void,        grGammaCorrectionValue, "_GRGAMMACORRECTIONVALUE@4",    "_grGammaCorrectionValue@4",    (float value)) \
-  X(void,        grGlideShamelessPlug,   "_GRGLIDESHAMELESSPLUG@4",      "_grGlideShamelessPlug@4",      (const FxBool on)) \
-  X(void,        grSplash,               "_GRSPLASH@20",                 "_grSplash@20",                 (float x, float y, float width, float height, FxU32 frame)) \
-  X(const char*, grGetString,            "_GRGETSTRING@4",               "_grGetString@4",               (FxU32 pname))
+  X(FxBool,            grSstQueryBoards,       "_GRSSTQUERYBOARDS@4",          "_grSstQueryBoards@4",          (GrHwConfiguration* hwconfig)) \
+  X(FxU32,             guTexMemQueryAvail,     "_GUTEXMEMQUERYAVAIL@4",        "_guTexMemQueryAvail@4",        (GrChipID_t tmu)) \
+  X(void,              guTexMemReset,          "_GUTEXMEMRESET@0",             "_guTexMemReset@0",             (void)) \
+  X(void,              guFogGenerateExp,       "_GUFOGGENERATEEXP@8",          "_guFogGenerateExp@8",          (GrFog_t fogtable[GR_FOG_TABLE_SIZE], float density)) \
+  X(void,              grGammaCorrectionValue, "_GRGAMMACORRECTIONVALUE@4",    "_grGammaCorrectionValue@4",    (float value)) \
+  X(void,              grGlideShamelessPlug,   "_GRGLIDESHAMELESSPLUG@4",      "_grGlideShamelessPlug@4",      (const FxBool on)) \
+  X(void,              grSplash,               "_GRSPLASH@20",                 "_grSplash@20",                 (float x, float y, float width, float height, FxU32 frame)) \
+  X(const char*,       grGetString,            "_GRGETSTRING@4",               "_grGetString@4",               (FxU32 pname)) \
+  X(gtool_any_proc_fn, grGetProcAddress,       "_GRGETPROCADDRESS@4",          "_grGetProcAddress@4",          (char* procName))
 
 #define GLIDE2_DECLARE_PFN_(ret, name, u, m, params) \
   typedef ret (FX_CALL *pfn_##name) params;          \
@@ -205,6 +209,7 @@ extern int gtool_glide_load(char* source_out, size_t source_sz,
                             char* err_out, size_t err_sz);
 extern void gtool_glide_unload(void);
 extern const char* gtool_glide2_try_get_string(FxU32 pname);
+extern int gtool_try_get_proc_address(const char* proc_name);
 
 #ifdef GLIDE_TOOL_LOADER_IMPLEMENTATION
 
@@ -293,10 +298,13 @@ static void cw_safe_free_ovl(unsigned short mod_sel) {
 }
 
 static void* gtool_ovl_resolve(void* mod, const char* upper_name,
-                               const char* mixed_name) {
+                               const char* mixed_name, const char* plain_name) {
   void* p = GetProcAddress(mod, upper_name);
   if (!p && mixed_name) {
     p = GetProcAddress(mod, mixed_name);
+  }
+  if (!p && plain_name) {
+    p = GetProcAddress(mod, plain_name);
   }
   return p;
 }
@@ -304,15 +312,20 @@ static void* gtool_ovl_resolve(void* mod, const char* upper_name,
 static HMODULE g_g2ovl_handle = NULL;
 
 static void* gtool_ovl_resolve(HMODULE mod, const char* upper_name,
-                               const char* mixed_name) {
+                               const char* mixed_name, const char* plain_name) {
   FARPROC p = NULL;
+  void* out = NULL;
   if (mixed_name) {
     p = GetProcAddress(mod, mixed_name);
+  }
+  if (!p && plain_name) {
+    p = GetProcAddress(mod, plain_name);
   }
   if (!p && upper_name) {
     p = GetProcAddress(mod, upper_name);
   }
-  return (void*)p;
+  memcpy(&out, &p, sizeof(out));
+  return out;
 }
 #endif
 
@@ -359,7 +372,7 @@ int gtool_glide_load(char* source_out, size_t source_sz,
 
 #define GLIDE2_RESOLVE_REQ_(ret, name, u, m, params)                                    \
   do {                                                                                  \
-    void* _sym = gtool_ovl_resolve(g_g2ovl_handle, u, m);                               \
+    void* _sym = gtool_ovl_resolve(g_g2ovl_handle, u, m, #name);                        \
     if (!_sym) {                                                                        \
       if (err_out && err_sz > 0) {                                                      \
         snprintf(err_out, err_sz, "Missing required symbol %s in %s", #name,            \
@@ -373,7 +386,7 @@ int gtool_glide_load(char* source_out, size_t source_sz,
 
 #define GLIDE2_RESOLVE_OPT_(ret, name, u, m, params)                                    \
   do {                                                                                  \
-    void* _sym = gtool_ovl_resolve(g_g2ovl_handle, u, m);                               \
+    void* _sym = gtool_ovl_resolve(g_g2ovl_handle, u, m, #name);                        \
     if (_sym) {                                                                         \
       memcpy(&g_g2ovl_##name, &_sym, sizeof(g_g2ovl_##name));                           \
     } else {                                                                            \
@@ -413,16 +426,34 @@ const char* gtool_glide2_try_get_string(FxU32 pname) {
   return NULL;
 }
 
+int gtool_try_get_proc_address(const char* proc_name) {
+  char buf[64];
+  if (!g_g2ovl_grGetProcAddress) {
+    return -1;
+  }
+  if (!proc_name || proc_name[0] == '\0') {
+    return 0;
+  }
+  snprintf(buf, sizeof(buf), "%s", proc_name);
+  return (g_g2ovl_grGetProcAddress(buf) != NULL) ? 1 : 0;
+}
+
 #endif /* GLIDE_TOOL_LOADER_IMPLEMENTATION */
 
-#else /* Linux / POSIX direct linking */
+#else /* Linux / POSIX / Win32-Glide3 direct linking */
 
 static inline int gtool_glide_load(char* source_out, size_t source_sz,
                                    char* err_out, size_t err_sz) {
   (void)err_out;
   (void)err_sz;
   if (source_out && source_sz > 0) {
-#if GLIDE_VERSION == 3
+#if defined(_WIN32)
+#  if GLIDE_VERSION == 3
+    snprintf(source_out, source_sz, "glide3x.dll");
+#  else
+    snprintf(source_out, source_sz, "glide2x.dll");
+#  endif
+#elif GLIDE_VERSION == 3
     snprintf(source_out, source_sz, "libglide3x.so");
 #else
     snprintf(source_out, source_sz, "libglide2x.so");
@@ -441,6 +472,27 @@ static inline const char* gtool_glide2_try_get_string(FxU32 pname) {
   if (!sym) return NULL;
   memcpy(&fn, &sym, sizeof(fn));
   return fn ? fn(pname) : NULL;
+}
+
+static inline int gtool_try_get_proc_address(const char* proc_name) {
+  typedef void (FX_CALL *gtool_any_proc_fn)(void);
+  typedef gtool_any_proc_fn (FX_CALL *pfn_get_proc)(char*);
+  pfn_get_proc fn = NULL;
+  void* sym = dlsym(RTLD_DEFAULT, "grGetProcAddress");
+  char buf[64];
+  if (!sym) return -1;
+  if (!proc_name || proc_name[0] == '\0') return 0;
+  memcpy(&fn, &sym, sizeof(fn));
+  if (!fn) return -1;
+  snprintf(buf, sizeof(buf), "%s", proc_name);
+  return (fn(buf) != NULL) ? 1 : 0;
+}
+#else
+static inline int gtool_try_get_proc_address(const char* proc_name) {
+  char buf[64];
+  if (!proc_name || proc_name[0] == '\0') return 0;
+  snprintf(buf, sizeof(buf), "%s", proc_name);
+  return (grGetProcAddress(buf) != NULL) ? 1 : 0;
 }
 #endif
 

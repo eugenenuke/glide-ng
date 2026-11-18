@@ -196,18 +196,18 @@ inline TmuColor EvaluateTmuStage(uint32_t rgbFunc, uint32_t rgbFactor,
       break;
     case 6:
       finalCR = (cOtherR - cLocalR) * factCR;
-      finalCG = (cOtherG - cLocalG) * factCR;
-      finalCB = (cOtherB - cLocalB) * factCR;
+      finalCG = (cOtherG - cLocalG) * factCG;
+      finalCB = (cOtherB - cLocalB) * factCB;
       break;
     case 7:
       finalCR = (cOtherR - cLocalR) * factCR + cLocalR;
-      finalCG = (cOtherG - cLocalG) * factCR + cLocalG;
-      finalCB = (cOtherB - cLocalB) * factCR + cLocalB;
+      finalCG = (cOtherG - cLocalG) * factCG + cLocalG;
+      finalCB = (cOtherB - cLocalB) * factCB + cLocalB;
       break;
     case 8:
       finalCR = (cOtherR - cLocalR) * factCR + aLocal;
-      finalCG = (cOtherG - cLocalG) * factCR + aLocal;
-      finalCB = (cOtherB - cLocalB) * factCR + aLocal;
+      finalCG = (cOtherG - cLocalG) * factCG + aLocal;
+      finalCB = (cOtherB - cLocalB) * factCB + aLocal;
       break;
     case 9:
       finalCR = (cLocalR - cOtherR) * factCR + cOtherR;
@@ -387,18 +387,18 @@ inline TmuColorSIMD EvaluateTmuStageSIMD(uint32_t rgbFunc, uint32_t rgbFactor,
       break;
     case 6:
       finalCR = (cOtherR - cLocalR) * factCR;
-      finalCG = (cOtherG - cLocalG) * factCR;
-      finalCB = (cOtherB - cLocalB) * factCR;
+      finalCG = (cOtherG - cLocalG) * factCG;
+      finalCB = (cOtherB - cLocalB) * factCB;
       break;
     case 7:
       finalCR = Fma(cOtherR - cLocalR, factCR, cLocalR);
-      finalCG = Fma(cOtherG - cLocalG, factCR, cLocalG);
-      finalCB = Fma(cOtherB - cLocalB, factCR, cLocalB);
+      finalCG = Fma(cOtherG - cLocalG, factCG, cLocalG);
+      finalCB = Fma(cOtherB - cLocalB, factCB, cLocalB);
       break;
     case 8:
       finalCR = Fma(cOtherR - cLocalR, factCR, aLocal);
-      finalCG = Fma(cOtherG - cLocalG, factCR, aLocal);
-      finalCB = Fma(cOtherB - cLocalB, factCR, aLocal);
+      finalCG = Fma(cOtherG - cLocalG, factCG, aLocal);
+      finalCB = Fma(cOtherB - cLocalB, factCB, aLocal);
       break;
     case 9:
       finalCR = Fma(cLocalR - cOtherR, factCR, cOtherR);

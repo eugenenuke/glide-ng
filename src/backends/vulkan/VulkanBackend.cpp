@@ -1,7 +1,9 @@
 #include "VulkanBackend.h"
 
+#if !defined(_WIN32)
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_vulkan.h>
+#endif
 
 #if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_X11)
 #include <X11/Xlib.h>
@@ -28,6 +30,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
@@ -40,7 +43,37 @@
 #include "core/Telemetry.h"
 #include "core/TextureManager.h"
 
+#if defined(_WIN32)
+VULKAN_HPP_DEFAULT_DISPATCH_LOADER_DYNAMIC_STORAGE
+#endif
+
 namespace GlideWrapper {
+
+#if defined(_WIN32)
+namespace {
+PFN_vkGetInstanceProcAddr LoadWin32VulkanProcAddr() {
+  static std::mutex s_vkLoadMutex;
+  static HMODULE s_vkModule = nullptr;
+  static PFN_vkGetInstanceProcAddr s_gipa = nullptr;
+  static bool s_attempted = false;
+
+  std::lock_guard<std::mutex> lock(s_vkLoadMutex);
+  if (!s_attempted) {
+    s_attempted = true;
+    s_vkModule = LoadLibraryA("vulkan-1.dll");
+    if (s_vkModule) {
+      s_gipa = reinterpret_cast<PFN_vkGetInstanceProcAddr>(
+          reinterpret_cast<void*>(
+              GetProcAddress(s_vkModule, "vkGetInstanceProcAddr")));
+      if (s_gipa) {
+        VULKAN_HPP_DEFAULT_DISPATCHER.init(s_gipa);
+      }
+    }
+  }
+  return s_gipa;
+}
+}  // namespace
+#endif
 
 // Authoritative Vulkan validation layer declarations
 const std::vector<const char*> validationLayers = {
@@ -52,18 +85,39 @@ void Logger::LogHostVulkanCapabilities() {
   if (GetLevel() < LogLevel::INFO) return;
 
   try {
-    vk::ApplicationInfo appInfo("3dfxGlideWrapper", 1, "AntigravityEngine", 1,
+#if defined(_WIN32)
+    PFN_vkGetInstanceProcAddr gipa = LoadWin32VulkanProcAddr();
+    if (!gipa) {
+      Log(LogLevel::WARN, "Startup",
+          "Vulkan Host Polling unavailable: vulkan-1.dll not found.");
+      return;
+    }
+    vk::detail::DispatchLoaderDynamic localDisp(gipa);
+    vk::ApplicationInfo appInfo("glide-ng", 1, "glide-ng", 1,
+                                VK_API_VERSION_1_2);
+    vk::InstanceCreateInfo createInfo({}, &appInfo);
+    auto instance = vk::createInstanceUnique(createInfo, nullptr, localDisp);
+    localDisp.init(*instance);
+    std::vector<vk::PhysicalDevice> devices =
+        instance->enumeratePhysicalDevices(localDisp);
+#else
+    vk::ApplicationInfo appInfo("glide-ng", 1, "glide-ng", 1,
                                 VK_API_VERSION_1_2);
     vk::InstanceCreateInfo createInfo({}, &appInfo);
 
     vk::UniqueInstance instance = vk::createInstanceUnique(createInfo);
     std::vector<vk::PhysicalDevice> devices =
         instance->enumeratePhysicalDevices();
+#endif
 
     std::ostringstream ss;
     ss << "\n--- Host Vulkan Execution Adapters Discovered ---\n";
     for (size_t i = 0; i < devices.size(); ++i) {
+#if defined(_WIN32)
+      vk::PhysicalDeviceProperties props = devices[i].getProperties(localDisp);
+#else
       vk::PhysicalDeviceProperties props = devices[i].getProperties();
+#endif
       ss << "  Adapter [" << i << "] : " << props.deviceName.data() << "\n"
          << "    API Version : " << VK_VERSION_MAJOR(props.apiVersion) << "."
          << VK_VERSION_MINOR(props.apiVersion) << "."
@@ -78,6 +132,43 @@ void Logger::LogHostVulkanCapabilities() {
   }
 }
 
+uint32_t VulkanBackend::ResolveEffectiveMsaaSamples_Locked() const {
+  const bool userOverride = (m_config.settingSources.count("msaaSamples") > 0);
+  uint32_t desired = userOverride
+                         ? m_config.msaaSamples
+                         : ((m_requestedMsaaSamples > 0)
+                                ? m_requestedMsaaSamples
+                                : m_config.msaaSamples);
+  if (desired < 1) desired = 1;
+  if (!m_physicalDevice) return desired;
+
+  const vk::PhysicalDeviceProperties props = m_physicalDevice.getProperties();
+  const vk::SampleCountFlags counts = props.limits.framebufferColorSampleCounts &
+                                      props.limits.framebufferDepthSampleCounts;
+
+  uint32_t resolved = 1;
+  if (desired >= 16 && (counts & vk::SampleCountFlagBits::e16))
+    resolved = 16;
+  else if (desired >= 8 && (counts & vk::SampleCountFlagBits::e8))
+    resolved = 8;
+  else if (desired >= 4 && (counts & vk::SampleCountFlagBits::e4))
+    resolved = 4;
+  else if (desired >= 2 && (counts & vk::SampleCountFlagBits::e2))
+    resolved = 2;
+  else if (desired >= 2 && (counts & vk::SampleCountFlagBits::e4))
+    // Drivers like Mesa llvmpipe expose 4x MSAA without 2x MSAA; promote 2x
+    // up to 4x rather than silently disabling Spatial AA to 1x.
+    resolved = 4;
+
+  if (resolved != desired) {
+    GLIDE_LOG(WARN, "Vulkan",
+              "Requested MSAA count " << desired
+                                      << " clamped to hardware-supported "
+                                      << resolved);
+  }
+  return resolved;
+}
+
 bool VulkanBackend::Initialize(const WrapperConfig& config) {
   std::lock_guard<std::mutex> lock(m_mutex);
   if (m_initialized) return true;
@@ -86,6 +177,21 @@ bool VulkanBackend::Initialize(const WrapperConfig& config) {
             "Initializing Hybrid hardware Vulkan GPU context...");
   m_config = config;
   m_msaaSamples = config.msaaSamples;
+  for (int i = 0; i < 256; ++i) {
+    m_lutR[i] = static_cast<uint8_t>(i);
+    m_lutG[i] = static_cast<uint8_t>(i);
+    m_lutB[i] = static_cast<uint8_t>(i);
+  }
+  m_useGammaLut = false;
+  m_gammaLutDirty = true;
+
+#if defined(_WIN32)
+  if (!LoadWin32VulkanProcAddr()) {
+    GLIDE_LOG(CRITICAL, "Vulkan",
+              "Failed to load vulkan-1.dll or vkGetInstanceProcAddr.");
+    return false;
+  }
+#endif
 
   Logger::GetInstance().LogHostVulkanCapabilities();
 
@@ -93,32 +199,7 @@ bool VulkanBackend::Initialize(const WrapperConfig& config) {
   if (!SelectPhysicalDevice()) return false;
 
   // Resolve and clamp MSAA sample count based on physical device limits
-  {
-    vk::PhysicalDeviceProperties props = m_physicalDevice.getProperties();
-    vk::SampleCountFlags counts = props.limits.framebufferColorSampleCounts &
-                                  props.limits.framebufferDepthSampleCounts;
-
-    uint32_t maxSupported = 1;
-    if (counts & vk::SampleCountFlagBits::e16)
-      maxSupported = 16;
-    else if (counts & vk::SampleCountFlagBits::e8)
-      maxSupported = 8;
-    else if (counts & vk::SampleCountFlagBits::e4)
-      maxSupported = 4;
-    else if (counts & vk::SampleCountFlagBits::e2)
-      maxSupported = 2;
-
-    if (m_msaaSamples > maxSupported) {
-      GLIDE_LOG(WARN, "Vulkan",
-                "Requested MSAA count "
-                    << m_msaaSamples << " exceeds hardware limits. Clamping to "
-                    << maxSupported);
-      m_msaaSamples = maxSupported;
-    }
-    if (m_msaaSamples < 1) {
-      m_msaaSamples = 1;
-    }
-  }
+  m_msaaSamples = ResolveEffectiveMsaaSamples_Locked();
 
   if (!CreateLogicalDevice()) return false;
 
@@ -277,7 +358,9 @@ void VulkanBackend::Shutdown() {
   }
   DetachWindow_Locked();
   DestroyHudResources_Locked();
+  DestroyGammaPresentResources_Locked();
   DestroyLfbOverlayResources_Locked();
+  DestroyMsaaCopyResources_Locked();
   ReclaimRetiredResources_Locked(0);
   ReclaimRetiredResources_Locked(1);
 
@@ -314,6 +397,7 @@ void VulkanBackend::Shutdown() {
 
   // 4. Explicitly destroy all device-owned image resources (Double-Buffered)
   for (int i = 0; i < 2; ++i) {
+    m_singleSampleFramebuffers[i].reset();
     m_headlessFramebuffers[i].reset();
     m_headlessImageViews[i].reset();
     m_headlessImageMemories[i].reset();
@@ -384,6 +468,7 @@ void VulkanBackend::Shutdown() {
     m_commandPools[i].reset();
     m_fences[i].reset();
   }
+  m_singleSampleRenderPass.reset();
   m_renderPass.reset();
   m_vkPipelineCache.reset();
 
@@ -433,7 +518,30 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
   m_guestWidth = width;
   m_guestHeight = height;
 
+  // Re-evaluate effective MSAA sample count (honors grSstWinOpenExt unless
+  // overridden by explicit GLIDE_NG_MSAA / INI config) and rebuild render
+  // passes + cached pipelines if the sample count changed.
+  const uint32_t effectiveMsaa = ResolveEffectiveMsaaSamples_Locked();
+  if (!m_renderPass || effectiveMsaa != m_msaaSamples) {
+    m_msaaSamples = effectiveMsaa;
+    m_pipelineCache.clear();
+    DestroyMsaaCopyResources_Locked();
+    m_lfbOverlayPipeline.reset();
+    if (!CreateRenderPass()) {
+      GLIDE_LOG(CRITICAL, "Vulkan",
+                "Failed to rebuild Vulkan render passes for MSAA="
+                    << m_msaaSamples);
+      return false;
+    }
+  }
+
   ResetState_Locked();
+  m_msaaColorDirty[0] = m_msaaColorDirty[1] = false;
+  m_singleSampleColorDirty[0] = m_singleSampleColorDirty[1] = false;
+  m_clearColorPending[0] = m_clearColorPending[1] = false;
+  m_clearDepthPending[0] = m_clearDepthPending[1] = false;
+  m_clearDepthPendingSingle[0] = m_clearDepthPendingSingle[1] = false;
+  m_activePassIsSingleSample = false;
   m_headlessMode = true;  // Headless-driven for visual regression
 
   if (!CreateHeadlessRenderTarget(width, height)) return false;
@@ -451,6 +559,10 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
       "Pre-warming Vulkan pipeline cache with common rendering states...");
   {
     std::vector<PipelineStateKey> warmStates;
+    const uint32_t warmSampleMask =
+        (m_msaaSamples > 1)
+            ? ((m_msaaSamples >= 32) ? 0xFFFFFFFFu : ((1u << m_msaaSamples) - 1u))
+            : 1u;
 
     // State 1: Default opaque 3D rendering (both lower-left and upper-left
     // origins, cull negative and disabled) Warm 4 pipelines for common 3D
@@ -469,6 +581,8 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
         k.alphaDstBlend = 0;   // GR_BLEND_ZERO
         k.colorMaskRgb = true;
         k.colorMaskAlpha = true;
+        k.singleSample = false;
+        k.sampleMask = warmSampleMask;
         warmStates.push_back(k);
       }
     }
@@ -489,6 +603,8 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
       k.alphaDstBlend = 0;  // GR_BLEND_ZERO
       k.colorMaskRgb = true;
       k.colorMaskAlpha = true;
+      k.singleSample = false;
+      k.sampleMask = warmSampleMask;
       warmStates.push_back(k);
     }
 
@@ -506,6 +622,8 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
       k.alphaDstBlend = 0;  // GR_BLEND_ZERO
       k.colorMaskRgb = true;
       k.colorMaskAlpha = true;
+      k.singleSample = false;
+      k.sampleMask = warmSampleMask;
       warmStates.push_back(k);
     }
 
@@ -589,10 +707,15 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
   // Unconditionally render to offscreen guest targets and present via blit.
   m_headlessMode = true;
 
+#if defined(_WIN32)
+  const uint32_t extraHostFlags = 0u;
+#else
+  const uint32_t extraHostFlags = SDL_WINDOW_VULKAN;
+#endif
   if (!m_surfaceHost.Attach(nativeWindowHandle, width, height, windowed,
                             m_config.forceNoWindow,
                             "3dfx glide-ng Presentation Console (Vulkan)",
-                            SDL_WINDOW_VULKAN, m_config.windowScale)) {
+                            extraHostFlags, m_config.windowScale)) {
     GLIDE_LOG(CRITICAL, "Vulkan",
               "Failed to attach NativeSurfaceHost for Vulkan presentation.");
     return false;
@@ -652,6 +775,24 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
       *m_commandBuffer, m_depthImage.get(), vk::ImageLayout::eUndefined,
       vk::ImageLayout::eDepthStencilAttachmentOptimal, depthRange);
 
+  if (m_msaaSamples > 1) {
+    for (int i = 0; i < 2; ++i) {
+      TransitionImageLayout(*m_commandBuffer, m_msaaColorImages[i].get(),
+                            vk::ImageLayout::eUndefined,
+                            vk::ImageLayout::eTransferDstOptimal, colorRange);
+      m_commandBuffer->clearColorImage(m_msaaColorImages[i].get(),
+                                       vk::ImageLayout::eTransferDstOptimal,
+                                       &clearZero, 1, &colorRange);
+      TransitionImageLayout(*m_commandBuffer, m_msaaColorImages[i].get(),
+                            vk::ImageLayout::eTransferDstOptimal,
+                            vk::ImageLayout::eColorAttachmentOptimal,
+                            colorRange);
+    }
+    TransitionImageLayout(
+        *m_commandBuffer, m_msaaDepthImage.get(), vk::ImageLayout::eUndefined,
+        vk::ImageLayout::eDepthStencilAttachmentOptimal, depthRange);
+  }
+
   m_commandBuffer->end();
   vk::SubmitInfo submitInfo(0, nullptr, nullptr, 1, m_commandBuffer);
   m_graphicsQueue.submit(submitInfo, {});
@@ -691,13 +832,19 @@ void VulkanBackend::DetachWindow_Locked() {
   m_vertexBufferOffset = 0;
   m_clearColorPending[0] = m_clearColorPending[1] = false;
   m_clearDepthPending[0] = m_clearDepthPending[1] = false;
+  m_clearDepthPendingSingle[0] = m_clearDepthPendingSingle[1] = false;
+  m_msaaColorDirty[0] = m_msaaColorDirty[1] = false;
+  m_singleSampleColorDirty[0] = m_singleSampleColorDirty[1] = false;
+  m_activePassIsSingleSample = false;
   if (m_commandBuffer) {
     m_commandBuffer->reset({});
   }
 
   DestroySwapchain_Locked();
   DestroyHudResources_Locked();
+  DestroyGammaPresentResources_Locked();
   DestroyLfbOverlayResources_Locked();
+  DestroyMsaaCopyResources_Locked();
   ReclaimRetiredResources_Locked(0);
   ReclaimRetiredResources_Locked(1);
   m_pipelineStateDirty = true;
@@ -726,6 +873,7 @@ void VulkanBackend::DetachWindow_Locked() {
   }
   m_lfbStaging.Release();
   for (int i = 0; i < 2; ++i) {
+    m_singleSampleFramebuffers[i].reset();
     m_headlessFramebuffers[i].reset();
     m_headlessImageViews[i].reset();
     m_headlessImageMemories[i].reset();
@@ -835,6 +983,7 @@ bool VulkanBackend::CreatePresentationSurface() {
     }
 
     case NativeSurfaceHost::Mode::StandaloneSDL2: {
+#if !defined(_WIN32)
       VkSurfaceKHR rawSurface = VK_NULL_HANDLE;
       if (SDL_Vulkan_CreateSurface(m_surfaceHost.GetSDLWindow(),
                                    static_cast<VkInstance>(m_instance.get()),
@@ -849,6 +998,38 @@ bool VulkanBackend::CreatePresentationSurface() {
                 "Created Vulkan surface for StandaloneSDL2 window "
                     << m_surfaceHost.GetSDLWindow());
       return true;
+#else
+      return false;
+#endif
+    }
+
+    case NativeSurfaceHost::Mode::Win32Window:
+    case NativeSurfaceHost::Mode::Win32Embedded: {
+#if defined(_WIN32)
+      if (!VULKAN_HPP_DEFAULT_DISPATCHER.vkCreateWin32SurfaceKHR) {
+        GLIDE_LOG(CRITICAL, "Vulkan",
+                  "vkCreateWin32SurfaceKHR is unavailable on Vulkan instance.");
+        return false;
+      }
+
+      try {
+        vk::Win32SurfaceCreateInfoKHR info(
+            {},
+            static_cast<HINSTANCE>(m_surfaceHost.GetWin32Hinstance()),
+            static_cast<HWND>(m_surfaceHost.GetWin32Hwnd()));
+        m_surface = m_instance->createWin32SurfaceKHRUnique(info);
+        GLIDE_LOG(INFO, "Vulkan",
+                  "Created VK_KHR_win32_surface on HWND "
+                      << m_surfaceHost.GetWin32Hwnd());
+        return true;
+      } catch (const std::exception& e) {
+        GLIDE_LOG(CRITICAL, "Vulkan",
+                  "createWin32SurfaceKHRUnique failed: " << e.what());
+        return false;
+      }
+#else
+      return false;
+#endif
     }
   }
   return false;
@@ -1083,6 +1264,7 @@ void VulkanBackend::DestroySwapchain_Locked() {
     m_device->waitIdle();
   }
   DestroyHudSwapchainFramebuffers_Locked();
+  DestroyGammaPresentSwapchainFramebuffers_Locked();
   for (int i = 0; i < 2; ++i) {
     if (m_imageAvailableSemaphores[i]) m_imageAvailableSemaphores[i].reset();
   }
@@ -1182,6 +1364,34 @@ void VulkanBackend::SetColorMask(bool rgb, bool alpha) {
   GlideStateTracker::SetColorMask_Locked(rgb, alpha);
 }
 
+void VulkanBackend::SetAAMultiSample(bool enabled) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (enabled == m_aaMultiSample) return;
+  const bool oldSingle = ShouldUseSingleSamplePass_Locked();
+  FlushBatch(true);
+  GlideStateTracker::SetAAMultiSample_Locked(enabled);
+  const bool newSingle = ShouldUseSingleSamplePass_Locked();
+  if (m_inRenderPass && oldSingle != newSingle) {
+    m_commandBuffer->endRenderPass();
+    m_inRenderPass = false;
+  }
+  m_pipelineStateDirty = true;
+}
+
+void VulkanBackend::SetTBufferWriteMask(uint32_t mask) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (mask == m_tbufferWriteMask) return;
+  const bool oldSingle = ShouldUseSingleSamplePass_Locked();
+  FlushBatch(true);
+  GlideStateTracker::SetTBufferWriteMask_Locked(mask);
+  const bool newSingle = ShouldUseSingleSamplePass_Locked();
+  if (m_inRenderPass && oldSingle != newSingle) {
+    m_commandBuffer->endRenderPass();
+    m_inRenderPass = false;
+  }
+  m_pipelineStateDirty = true;
+}
+
 void VulkanBackend::SetDepthRange(float nearVal, float farVal) {
   std::lock_guard<std::mutex> lock(m_mutex);
   if (nearVal != m_depthNear || farVal != m_depthFar) {
@@ -1218,6 +1428,10 @@ void VulkanBackend::SetRenderBuffer(uint32_t target) {
   std::lock_guard<std::mutex> lock(m_mutex);
   if (target != m_activeRenderBuffer) {
     FlushBatch(true);
+    if (m_inRenderPass) {
+      m_commandBuffer->endRenderPass();
+      m_inRenderPass = false;
+    }
   }
   GlideStateTracker::SetRenderBuffer_Locked(target);
 }
@@ -1333,11 +1547,10 @@ bool VulkanBackend::SwapBuffers() {
   std::unique_lock<std::mutex> lock(m_mutex);
   if (!m_initialized || !m_windowAttached) return false;
 
-  // Pump SDL events ONLY in StandaloneSDL2 mode (guaranteed no-op for DOSBox
-  // X11Child / WaylandSubsurface / Headless).
+  // Pump events ONLY in standalone mode (guaranteed no-op for embedded hosts /
+  // Headless).
   m_surfaceHost.PollEvents(/*force=*/false);
-  if (m_surfaceHost.GetMode() == NativeSurfaceHost::Mode::StandaloneSDL2 &&
-      m_surfaceHost.WasQuitRequested()) {
+  if (m_surfaceHost.IsStandaloneMode() && m_surfaceHost.WasQuitRequested()) {
     GLIDE_LOG(INFO, "Vulkan",
               "Standalone window close requested; exiting cleanly.");
     DetachWindow_Locked();
@@ -1373,7 +1586,8 @@ bool VulkanBackend::SwapBuffers() {
   // Check if we have any pending LoadOp clears. If yes, execute them now.
   uint32_t activeIdx = GetActiveGpuBufferIdx();
   if (!m_inRenderPass &&
-      (m_clearColorPending[activeIdx] || m_clearDepthPending[activeIdx])) {
+      (m_clearColorPending[activeIdx] || m_clearDepthPending[activeIdx] ||
+       m_clearDepthPendingSingle[activeIdx])) {
     EnsureRenderPassActive();
   }
 
@@ -1381,6 +1595,10 @@ bool VulkanBackend::SwapBuffers() {
     m_commandBuffer->endRenderPass();
     m_inRenderPass = false;
   }
+
+  // Resolve any pending MSAA draws into m_headlessImages[activeIdx] prior to
+  // swapchain presentation or headless readback.
+  ResolveMsaaToSingle_Locked(activeIdx);
 
   const auto presentStart = std::chrono::steady_clock::now();
   bool useSwapchain = (m_swapchain.get() != nullptr);
@@ -1422,68 +1640,79 @@ bool VulkanBackend::SwapBuffers() {
     vk::ImageSubresourceRange colorRange(vk::ImageAspectFlagBits::eColor, 0, 1,
                                          0, 1);
 
-    // Transition swapchain image to TransferDstOptimal
-    TransitionImageLayout(*m_commandBuffer, m_swapchainImages[imageIdx],
-                          vk::ImageLayout::eUndefined,
-                          vk::ImageLayout::eTransferDstOptimal, colorRange);
-
-    // Transition offscreen image to TransferSrcOptimal
-    TransitionImageLayout(*m_commandBuffer, m_headlessImages[activeIdx].get(),
-                          vk::ImageLayout::eColorAttachmentOptimal,
-                          vk::ImageLayout::eTransferSrcOptimal, colorRange);
-
     // Compute aspect-ratio-preserving presentation rectangle (black
     // letterbox/pillarbox bars when host aspect != guest aspect).
     const PresentRect dst = NativeSurfaceHost::ComputePresentRect(
         m_headlessWidth, m_headlessHeight, m_swapchainExtent.width,
         m_swapchainExtent.height, /*preserveAspect=*/true);
 
-    const bool needsBars =
-        (dst.x > 0 || dst.y > 0 || dst.width < m_swapchainExtent.width ||
-         dst.height < m_swapchainExtent.height);
-    if (needsBars) {
-      vk::ClearColorValue blackClear(
-          std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f});
-      m_commandBuffer->clearColorImage(m_swapchainImages[imageIdx],
-                                       vk::ImageLayout::eTransferDstOptimal,
-                                       &blackClear, 1, &colorRange);
+    const bool presentedViaGamma =
+        m_useGammaLut && PresentGammaToSwapchain_Locked(activeIdx, imageIdx, dst);
 
-      vk::ImageMemoryBarrier clearToBlitBarrier;
-      clearToBlitBarrier.oldLayout = vk::ImageLayout::eTransferDstOptimal;
-      clearToBlitBarrier.newLayout = vk::ImageLayout::eTransferDstOptimal;
-      clearToBlitBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-      clearToBlitBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-      clearToBlitBarrier.image = m_swapchainImages[imageIdx];
-      clearToBlitBarrier.subresourceRange = colorRange;
-      clearToBlitBarrier.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
-      clearToBlitBarrier.dstAccessMask = vk::AccessFlagBits::eTransferWrite;
-      m_commandBuffer->pipelineBarrier(
-          vk::PipelineStageFlagBits::eTransfer,
-          vk::PipelineStageFlagBits::eTransfer, {}, 0, nullptr, 0, nullptr, 1,
-          &clearToBlitBarrier);
-    }
+    if (!presentedViaGamma) {
+      // Transition swapchain image to TransferDstOptimal
+      TransitionImageLayout(*m_commandBuffer, m_swapchainImages[imageIdx],
+                            vk::ImageLayout::eUndefined,
+                            vk::ImageLayout::eTransferDstOptimal, colorRange);
 
-    // Blit offscreen guest framebuffer into the centered destination rect
-    if (dst.width > 0 && dst.height > 0) {
-      vk::ImageBlit blitRegion;
-      blitRegion.srcSubresource =
-          vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
-      blitRegion.srcOffsets[0] = vk::Offset3D(0, 0, 0);
-      blitRegion.srcOffsets[1] =
-          vk::Offset3D(static_cast<int32_t>(m_headlessWidth),
-                       static_cast<int32_t>(m_headlessHeight), 1);
-      blitRegion.dstSubresource =
-          vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
-      blitRegion.dstOffsets[0] = vk::Offset3D(dst.x, dst.y, 0);
-      blitRegion.dstOffsets[1] =
-          vk::Offset3D(dst.x + static_cast<int32_t>(dst.width),
-                       dst.y + static_cast<int32_t>(dst.height), 1);
+      // Transition offscreen image to TransferSrcOptimal
+      TransitionImageLayout(*m_commandBuffer, m_headlessImages[activeIdx].get(),
+                            vk::ImageLayout::eColorAttachmentOptimal,
+                            vk::ImageLayout::eTransferSrcOptimal, colorRange);
 
-      m_commandBuffer->blitImage(
-          m_headlessImages[activeIdx].get(),
-          vk::ImageLayout::eTransferSrcOptimal, m_swapchainImages[imageIdx],
-          vk::ImageLayout::eTransferDstOptimal, 1, &blitRegion,
-          vk::Filter::eLinear);
+      const bool needsBars =
+          (dst.x > 0 || dst.y > 0 || dst.width < m_swapchainExtent.width ||
+           dst.height < m_swapchainExtent.height);
+      if (needsBars) {
+        vk::ClearColorValue blackClear(
+            std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f});
+        m_commandBuffer->clearColorImage(m_swapchainImages[imageIdx],
+                                         vk::ImageLayout::eTransferDstOptimal,
+                                         &blackClear, 1, &colorRange);
+
+        vk::ImageMemoryBarrier clearToBlitBarrier;
+        clearToBlitBarrier.oldLayout = vk::ImageLayout::eTransferDstOptimal;
+        clearToBlitBarrier.newLayout = vk::ImageLayout::eTransferDstOptimal;
+        clearToBlitBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        clearToBlitBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        clearToBlitBarrier.image = m_swapchainImages[imageIdx];
+        clearToBlitBarrier.subresourceRange = colorRange;
+        clearToBlitBarrier.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
+        clearToBlitBarrier.dstAccessMask = vk::AccessFlagBits::eTransferWrite;
+        m_commandBuffer->pipelineBarrier(
+            vk::PipelineStageFlagBits::eTransfer,
+            vk::PipelineStageFlagBits::eTransfer, {}, 0, nullptr, 0, nullptr, 1,
+            &clearToBlitBarrier);
+      }
+
+      // Blit offscreen guest framebuffer into the centered destination rect
+      if (dst.width > 0 && dst.height > 0) {
+        vk::ImageBlit blitRegion;
+        blitRegion.srcSubresource =
+            vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
+        blitRegion.srcOffsets[0] = vk::Offset3D(0, 0, 0);
+        blitRegion.srcOffsets[1] =
+            vk::Offset3D(static_cast<int32_t>(m_headlessWidth),
+                         static_cast<int32_t>(m_headlessHeight), 1);
+        blitRegion.dstSubresource =
+            vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
+        blitRegion.dstOffsets[0] = vk::Offset3D(dst.x, dst.y, 0);
+        blitRegion.dstOffsets[1] =
+            vk::Offset3D(dst.x + static_cast<int32_t>(dst.width),
+                         dst.y + static_cast<int32_t>(dst.height), 1);
+
+        m_commandBuffer->blitImage(
+            m_headlessImages[activeIdx].get(),
+            vk::ImageLayout::eTransferSrcOptimal, m_swapchainImages[imageIdx],
+            vk::ImageLayout::eTransferDstOptimal, 1, &blitRegion,
+            vk::Filter::eLinear);
+      }
+
+      // Transition offscreen image back to ColorAttachmentOptimal
+      TransitionImageLayout(*m_commandBuffer, m_headlessImages[activeIdx].get(),
+                            vk::ImageLayout::eTransferSrcOptimal,
+                            vk::ImageLayout::eColorAttachmentOptimal,
+                            colorRange);
     }
 
     // Render M3 post-scene HUD directly onto the swapchain image (when
@@ -1494,11 +1723,6 @@ bool VulkanBackend::SwapBuffers() {
                             vk::ImageLayout::eTransferDstOptimal,
                             vk::ImageLayout::ePresentSrcKHR, colorRange);
     }
-
-    // Transition offscreen image back to ColorAttachmentOptimal
-    TransitionImageLayout(*m_commandBuffer, m_headlessImages[activeIdx].get(),
-                          vk::ImageLayout::eTransferSrcOptimal,
-                          vk::ImageLayout::eColorAttachmentOptimal, colorRange);
 
     m_commandBuffer->end();
 
@@ -1632,13 +1856,26 @@ bool VulkanBackend::SwapBuffers() {
   std::swap(m_headlessImageMemories[0], m_headlessImageMemories[1]);
   std::swap(m_headlessImageViews[0], m_headlessImageViews[1]);
   std::swap(m_headlessFramebuffers[0], m_headlessFramebuffers[1]);
+  std::swap(m_singleSampleFramebuffers[0], m_singleSampleFramebuffers[1]);
+  std::swap(m_msaaColorImages[0], m_msaaColorImages[1]);
+  std::swap(m_msaaColorImageMemories[0], m_msaaColorImageMemories[1]);
+  std::swap(m_msaaColorImageViews[0], m_msaaColorImageViews[1]);
+  std::swap(m_msaaColorDirty[0], m_msaaColorDirty[1]);
+  std::swap(m_singleSampleColorDirty[0], m_singleSampleColorDirty[1]);
+  std::swap(m_msaaCopyDescSets[0], m_msaaCopyDescSets[1]);
+  std::swap(m_msaaCopyBoundView[0], m_msaaCopyBoundView[1]);
+  std::swap(m_clearColorPending[0], m_clearColorPending[1]);
+  std::swap(m_clearColorValue[0], m_clearColorValue[1]);
+  std::swap(m_clearDepthPending[0], m_clearDepthPending[1]);
+  std::swap(m_clearDepthPendingSingle[0], m_clearDepthPendingSingle[1]);
+  std::swap(m_clearDepthValue[0], m_clearDepthValue[1]);
 
   const auto presentUs = std::chrono::duration_cast<std::chrono::microseconds>(
                              std::chrono::steady_clock::now() - presentStart)
                              .count();
   const float maxFps = m_config.maxFps;
-  if (m_surfaceHost.GetMode() == NativeSurfaceHost::Mode::StandaloneSDL2) {
-    // Dispatch any post-commit Wayland/X11 events (forced on initial frames,
+  if (m_surfaceHost.IsStandaloneMode()) {
+    // Dispatch any post-commit window events (forced on initial frames,
     // throttled at 4ms during steady-state high-FPS rendering).
     m_surfaceHost.PollEvents(/*force=*/false);
   }
@@ -1736,6 +1973,9 @@ bool VulkanBackend::CreateInstance() {
   }
 
   m_instance = vk::createInstanceUnique(createInfo);
+#if defined(_WIN32)
+  VULKAN_HPP_DEFAULT_DISPATCHER.init(*m_instance);
+#endif
   return true;
 }
 
@@ -1840,6 +2080,9 @@ bool VulkanBackend::CreateLogicalDevice() {
   deviceInfo.setPpEnabledExtensionNames(deviceExtensions.data());
 
   m_device = m_physicalDevice.createDeviceUnique(deviceInfo);
+#if defined(_WIN32)
+  VULKAN_HPP_DEFAULT_DISPATCHER.init(*m_device);
+#endif
   m_graphicsQueue = m_device->getQueue(m_graphicsQueueFamilyIndex, 0);
 
   // 2.5. Initialize persistent Vulkan pipeline cache from disk!
@@ -1953,14 +2196,13 @@ bool VulkanBackend::CreateHeadlessRenderTarget(uint32_t width,
       {vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1});
   m_depthImageView = m_device->createImageViewUnique(depthViewInfo);
 
-  // 1.1 Allocate Multi-sampled Depth image if MSAA is enabled (Transient
-  // VRAM-only tile-local)
+  // 1.1 Allocate Multi-sampled Depth image if MSAA is enabled
   if (m_msaaSamples > 1) {
     vk::ImageCreateInfo msaaDepthInfo(
         {}, vk::ImageType::e2D, m_depthFormat, vk::Extent3D(width, height, 1),
         1, 1, samples, vk::ImageTiling::eOptimal,
         vk::ImageUsageFlagBits::eDepthStencilAttachment |
-            vk::ImageUsageFlagBits::eTransientAttachment);
+            vk::ImageUsageFlagBits::eTransferDst);
     m_msaaDepthImage = m_device->createImageUnique(msaaDepthInfo);
 
     auto msaaDepthMemReqs =
@@ -1988,6 +2230,7 @@ bool VulkanBackend::CreateHeadlessRenderTarget(uint32_t width,
         {}, vk::ImageType::e2D, m_colorFormat, vk::Extent3D(width, height, 1),
         1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal,
         vk::ImageUsageFlagBits::eColorAttachment |
+            vk::ImageUsageFlagBits::eSampled |
             vk::ImageUsageFlagBits::eTransferSrc |
             vk::ImageUsageFlagBits::eTransferDst);
 
@@ -2008,14 +2251,15 @@ bool VulkanBackend::CreateHeadlessRenderTarget(uint32_t width,
         {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1});
     m_headlessImageViews[i] = m_device->createImageViewUnique(viewInfo);
 
-    // 2.2 Allocate Multi-sampled Color target if MSAA is enabled (Transient
-    // VRAM-only tile-local)
+    // 2.2 Allocate persistent Multi-sampled Color target if MSAA is enabled
+    // (explicit vkCmdResolveImage resolves into m_headlessImages[i] on demand)
     if (m_msaaSamples > 1) {
       vk::ImageCreateInfo msaaColorInfo(
           {}, vk::ImageType::e2D, m_colorFormat, vk::Extent3D(width, height, 1),
           1, 1, samples, vk::ImageTiling::eOptimal,
           vk::ImageUsageFlagBits::eColorAttachment |
-              vk::ImageUsageFlagBits::eTransientAttachment);
+              vk::ImageUsageFlagBits::eTransferSrc |
+              vk::ImageUsageFlagBits::eTransferDst);
       m_msaaColorImages[i] = m_device->createImageUnique(msaaColorInfo);
 
       auto msaaMemReqs =
@@ -2035,21 +2279,32 @@ bool VulkanBackend::CreateHeadlessRenderTarget(uint32_t width,
       m_msaaColorImageViews[i] = m_device->createImageViewUnique(msaaViewInfo);
     }
 
-    // 2.3 Create Framebuffer binding color, depth, and resolve attachments
-    std::vector<vk::ImageView> fboAttachments;
+    // 2.3 Create Framebuffers (2 attachments each: color + depth)
     if (m_msaaSamples > 1) {
-      fboAttachments = {
-          m_msaaColorImageViews[i].get(), m_msaaDepthImageView.get(),
-          m_headlessImageViews[i].get()  // Resolve target
-      };
-    } else {
-      fboAttachments = {m_headlessImageViews[i].get(), m_depthImageView.get()};
-    }
+      std::array<vk::ImageView, 2> msaaAttachments = {
+          m_msaaColorImageViews[i].get(), m_msaaDepthImageView.get()};
+      vk::FramebufferCreateInfo msaaFbInfo(
+          {}, m_renderPass.get(), static_cast<uint32_t>(msaaAttachments.size()),
+          msaaAttachments.data(), width, height, 1);
+      m_headlessFramebuffers[i] = m_device->createFramebufferUnique(msaaFbInfo);
 
-    vk::FramebufferCreateInfo fbInfo(
-        {}, m_renderPass.get(), static_cast<uint32_t>(fboAttachments.size()),
-        fboAttachments.data(), width, height, 1);
-    m_headlessFramebuffers[i] = m_device->createFramebufferUnique(fbInfo);
+      std::array<vk::ImageView, 2> singleAttachments = {
+          m_headlessImageViews[i].get(), m_depthImageView.get()};
+      vk::FramebufferCreateInfo singleFbInfo(
+          {}, m_singleSampleRenderPass.get(),
+          static_cast<uint32_t>(singleAttachments.size()),
+          singleAttachments.data(), width, height, 1);
+      m_singleSampleFramebuffers[i] =
+          m_device->createFramebufferUnique(singleFbInfo);
+    } else {
+      std::array<vk::ImageView, 2> fboAttachments = {
+          m_headlessImageViews[i].get(), m_depthImageView.get()};
+      vk::FramebufferCreateInfo fbInfo(
+          {}, m_renderPass.get(), static_cast<uint32_t>(fboAttachments.size()),
+          fboAttachments.data(), width, height, 1);
+      m_headlessFramebuffers[i] = m_device->createFramebufferUnique(fbInfo);
+      m_singleSampleFramebuffers[i].reset();
+    }
   }
 
   // Create the CPU staging buffers (Double-Buffered)
@@ -2162,6 +2417,32 @@ void VulkanBackend::TransitionImageLayout(vk::CommandBuffer cmd,
                             vk::AccessFlagBits::eColorAttachmentRead;
     sourceStage = vk::PipelineStageFlagBits::eTransfer;
     destinationStage = vk::PipelineStageFlagBits::eColorAttachmentOutput;
+  } else if (oldLayout == vk::ImageLayout::eColorAttachmentOptimal &&
+             newLayout == vk::ImageLayout::eTransferDstOptimal) {
+    barrier.srcAccessMask = vk::AccessFlagBits::eColorAttachmentWrite;
+    barrier.dstAccessMask = vk::AccessFlagBits::eTransferWrite;
+    sourceStage = vk::PipelineStageFlagBits::eColorAttachmentOutput;
+    destinationStage = vk::PipelineStageFlagBits::eTransfer;
+  } else if (oldLayout == vk::ImageLayout::eTransferDstOptimal &&
+             newLayout == vk::ImageLayout::eColorAttachmentOptimal) {
+    barrier.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
+    barrier.dstAccessMask = vk::AccessFlagBits::eColorAttachmentWrite |
+                            vk::AccessFlagBits::eColorAttachmentRead;
+    sourceStage = vk::PipelineStageFlagBits::eTransfer;
+    destinationStage = vk::PipelineStageFlagBits::eColorAttachmentOutput;
+  } else if (oldLayout == vk::ImageLayout::eColorAttachmentOptimal &&
+             newLayout == vk::ImageLayout::eShaderReadOnlyOptimal) {
+    barrier.srcAccessMask = vk::AccessFlagBits::eColorAttachmentWrite;
+    barrier.dstAccessMask = vk::AccessFlagBits::eShaderRead;
+    sourceStage = vk::PipelineStageFlagBits::eColorAttachmentOutput;
+    destinationStage = vk::PipelineStageFlagBits::eFragmentShader;
+  } else if (oldLayout == vk::ImageLayout::eShaderReadOnlyOptimal &&
+             newLayout == vk::ImageLayout::eColorAttachmentOptimal) {
+    barrier.srcAccessMask = vk::AccessFlagBits::eShaderRead;
+    barrier.dstAccessMask = vk::AccessFlagBits::eColorAttachmentWrite |
+                            vk::AccessFlagBits::eColorAttachmentRead;
+    sourceStage = vk::PipelineStageFlagBits::eFragmentShader;
+    destinationStage = vk::PipelineStageFlagBits::eColorAttachmentOutput;
   } else if (oldLayout == vk::ImageLayout::eTransferDstOptimal &&
              newLayout == vk::ImageLayout::ePresentSrcKHR) {
     barrier.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
@@ -2250,6 +2531,7 @@ void VulkanBackend::SetGamma(float gamma) {
     m_lutB[i] = m_lutR[i];
   }
   m_useGammaLut = (gamma != 1.0f);
+  m_gammaLutDirty = true;
 }
 
 void VulkanBackend::LoadGammaTable(uint32_t nentries, const uint32_t* rTable,
@@ -2264,6 +2546,7 @@ void VulkanBackend::LoadGammaTable(uint32_t nentries, const uint32_t* rTable,
     m_lutB[i] = static_cast<uint8_t>(bTable[i]);
   }
   m_useGammaLut = true;
+  m_gammaLutDirty = true;
 }
 
 }  // namespace GlideWrapper

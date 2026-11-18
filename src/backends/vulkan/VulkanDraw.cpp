@@ -22,57 +22,247 @@ void VulkanBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z,
   std::lock_guard<std::mutex> lock(m_mutex);
   if (!m_initialized || !m_windowAttached) return;
 
-  // Terminate active render pass if any (so next draw starts a new render pass
-  // that triggers LoadOp Clear!)
-  if (m_inRenderPass) {
-    FlushBatch();
-    m_commandBuffer->endRenderPass();
-    m_inRenderPass = false;
+  const vk::Rect2D clipRect = GetScissorRectVulkan_Locked();
+  if (clipRect.extent.width == 0 || clipRect.extent.height == 0) {
+    return;
   }
+  const bool fullClip = (clipRect.offset.x == 0 && clipRect.offset.y == 0 &&
+                         clipRect.extent.width == m_headlessWidth &&
+                         clipRect.extent.height == m_headlessHeight);
 
   GLIDE_LOG(DEBUG, "Vulkan",
             "ClearBuffer: color=" << std::hex << color
-                                  << ", clearMask=" << clearMask);
+                                  << ", clearMask=" << clearMask << std::dec
+                                  << ", rect=(" << clipRect.offset.x << ","
+                                  << clipRect.offset.y << " "
+                                  << clipRect.extent.width << "x"
+                                  << clipRect.extent.height << ")");
 
-  // 1. Handle any pending sparse LFB overlay before clearing, and defer
+  // 1. Prepare color and depth clear values respecting active write masks.
+  std::array<vk::ClearAttachment, 2> clears;
+  uint32_t clearCount = 0;
+  vk::ClearColorValue colorClearVal;
+  float r = 0.0f, g = 0.0f, b = 0.0f, a = 1.0f;
+  bool doColorClear = false;
+  bool doDepthClear = false;
+
+  if ((clearMask & 1) && (m_colorMaskRgb || m_colorMaskAlpha)) {
+    a = ((alpha > 0) ? alpha : 255) / 255.0f;
+    r = ((color >> 16) & 0xFF) / 255.0f;
+    g = ((color >> 8) & 0xFF) / 255.0f;
+    b = (color & 0xFF) / 255.0f;
+
+    // Respect the active pixel format from GlideStateTracker!
+    if (m_pixelFormatOverride == 1) {  // ABGR format override
+      std::swap(r, b);
+    }
+
+    colorClearVal = vk::ClearColorValue(std::array<float, 4>{r, g, b, a});
+    clears[clearCount++] =
+        vk::ClearAttachment(vk::ImageAspectFlagBits::eColor, 0, colorClearVal);
+    doColorClear = true;
+  }
+
+  if ((clearMask & 2) && m_depthMask) {  // Depth clear (obeys grDepthMask)
+    clears[clearCount++] = vk::ClearAttachment(
+        vk::ImageAspectFlagBits::eDepth, 0,
+        vk::ClearValue(vk::ClearDepthStencilValue(z, 0)));
+    doDepthClear = true;
+  }
+
+  if (clearCount == 0) return;
+
+  // Check if VSA-100 grTBufferWriteMaskExt restricts this clear to a subset of
+  // MSAA samples (e.g., Rocket Burger 4-pass T-Buffer Motion Blur / DoF).
+  // vkCmdClearAttachments ignores pSampleMask, so partial sample-mask clears
+  // must execute as a sample-masked fullscreen quad (matching VSA-100 H5
+  // _grTriFill fallback).
+  const uint32_t fullSampleMask =
+      (m_msaaSamples >= 32) ? 0xFFFFFFFFu : ((1u << m_msaaSamples) - 1u);
+  const uint32_t effSampleMask = GetEffectiveSampleMask_Locked();
+  const bool isMaskedClear =
+      (m_msaaSamples > 1 && effSampleMask != fullSampleMask);
+
+  if (isMaskedClear) {
+    if (effSampleMask == 0u) return;
+    if ((clearMask & 1) && m_lfbStaging.IsOverlayDirty(m_activeRenderBuffer)) {
+      FlushLFBToGPU_Locked();
+    }
+    if (m_batchedVertexCount > 0) {
+      FlushBatch();
+    }
+    DrawMaskedClearQuad_Locked(r, g, b, a, z, doColorClear, doDepthClear,
+                               effSampleMask, clipRect);
+    return;
+  }
+
+  // 2. Handle any pending sparse LFB overlay before clearing, and defer
   // CPU-side full framebuffer clear lazily so pure 3D frames allocate 0 bytes.
   if (clearMask & 1) {
-    if (m_colorMaskRgb && m_colorMaskAlpha) {
+    if (fullClip && m_colorMaskRgb && m_colorMaskAlpha) {
       m_lfbStaging.ClearOverlay(m_activeRenderBuffer);
     } else if (m_lfbStaging.IsOverlayDirty(m_activeRenderBuffer)) {
       FlushLFBToGPU_Locked();
     }
-    m_lfbStaging.ScheduleLazyClear(m_activeRenderBuffer, color, alpha,
-                                   m_pixelFormatOverride, m_colorMaskRgb,
-                                   m_colorMaskAlpha);
-  }
-
-  // 2. Save clear state and mark pending for GPU clears when Render Pass
-  // starts!
-  uint32_t activeIdx = GetActiveGpuBufferIdx();
-  if (clearMask & 1) {  // Color clear
-    // Only schedule a GPU color clear if color or alpha writes are actually
-    // enabled!
-    if (m_colorMaskRgb || m_colorMaskAlpha) {
-      float a = ((alpha > 0) ? alpha : 255) / 255.0f;
-      float r = ((color >> 16) & 0xFF) / 255.0f;
-      float g = ((color >> 8) & 0xFF) / 255.0f;
-      float b = (color & 0xFF) / 255.0f;
-
-      // Respect the active pixel format from GlideStateTracker!
-      if (m_pixelFormatOverride == 1) {  // ABGR format override
-        std::swap(r, b);
-      }
-
-      m_clearColorValue[activeIdx] =
-          vk::ClearColorValue(std::array<float, 4>{r, g, b, a});
-      m_clearColorPending[activeIdx] = true;
+    if (fullClip) {
+      m_lfbStaging.ScheduleLazyClear(m_activeRenderBuffer, color, alpha,
+                                     m_pixelFormatOverride, m_colorMaskRgb,
+                                     m_colorMaskAlpha);
     }
   }
 
-  if ((clearMask & 2) && m_depthMask) {  // Depth clear (obeys grDepthMask)
-    m_clearDepthValue[activeIdx] = z;
-    m_clearDepthPending[activeIdx] = true;
+  const uint32_t activeIdx = GetActiveGpuBufferIdx();
+
+  // 3. Full-screen unmasked clears outside an active render pass stay deferred
+  // so frame-start clears coalesce cleanly before LFB overlays or geometry.
+  // Clipped sub-rect clears (e.g., split-screen panes / divider stripes) or
+  // clears inside an active render pass execute immediately via
+  // vkCmdClearAttachments so exact clip bounds and call ordering are preserved.
+  if (fullClip && !m_inRenderPass) {
+    if (doColorClear) {
+      m_clearColorValue[activeIdx] = colorClearVal;
+      m_clearColorPending[activeIdx] = true;
+      if (m_colorMaskRgb && m_colorMaskAlpha) {
+        m_msaaColorDirty[activeIdx] = false;
+        m_singleSampleColorDirty[activeIdx] = false;
+      }
+    }
+    if (doDepthClear) {
+      m_clearDepthValue[activeIdx] = z;
+      m_clearDepthPending[activeIdx] = true;
+      if (m_msaaSamples > 1) {
+        m_clearDepthPendingSingle[activeIdx] = true;
+      }
+    }
+    return;
+  }
+
+  if (m_batchedVertexCount > 0) {
+    FlushBatch();
+  }
+  EnsureRenderPassActive(ShouldUseSingleSamplePass_Locked());
+
+  vk::ClearRect clearRect(clipRect, 0, 1);
+  m_commandBuffer->clearAttachments(clearCount, clears.data(), 1, &clearRect);
+
+  if (m_msaaSamples > 1) {
+    if (doColorClear) {
+      if (m_activePassIsSingleSample) {
+        m_singleSampleColorDirty[activeIdx] = true;
+        m_msaaColorDirty[activeIdx] = false;
+      } else {
+        m_msaaColorDirty[activeIdx] = true;
+        m_singleSampleColorDirty[activeIdx] = false;
+      }
+    }
+    if (fullClip && doDepthClear) {
+      m_clearDepthValue[activeIdx] = z;
+      if (m_activePassIsSingleSample) {
+        m_clearDepthPending[activeIdx] = true;
+      } else {
+        m_clearDepthPendingSingle[activeIdx] = true;
+      }
+    }
+  }
+}
+
+void VulkanBackend::DrawMaskedClearQuad_Locked(float r, float g, float b,
+                                               float a, float z,
+                                               bool doColorClear,
+                                               bool doDepthClear,
+                                               uint32_t sampleMask,
+                                               const vk::Rect2D& clipRect) {
+  if (!m_vertexBufferMap) return;
+
+  const uint32_t slotBase = m_currentFrameSlot * kVertexSlotBytes;
+  const uint32_t slotEnd = slotBase + kVertexSlotBytes;
+  if (m_vertexBufferOffset + 6 * sizeof(ModernVertex) > slotEnd) {
+    SubmitMidFrameAndWaitIdle_Locked(true);
+    m_vertexBufferOffset = slotBase;
+  }
+
+  EnsureRenderPassActive(/*useSingleSample=*/false);
+
+  const float w = static_cast<float>(m_guestWidth);
+  const float h = static_cast<float>(m_guestHeight);
+  const float clampedZ = std::clamp(z, 0.0f, 1.0f);
+
+  auto makeVert = [&](float x, float y) -> ModernVertex {
+    ModernVertex v{};
+    v.pos[0] = x;
+    v.pos[1] = y;
+    v.pos[2] = clampedZ;
+    v.pos[3] = 1.0f;
+    v.color[0] = r;
+    v.color[1] = g;
+    v.color[2] = b;
+    v.color[3] = a;
+    return v;
+  };
+
+  const uint32_t firstVertex = m_vertexBufferOffset / sizeof(ModernVertex);
+  auto* dest = reinterpret_cast<ModernVertex*>(
+      reinterpret_cast<uint8_t*>(m_vertexBufferMap) + m_vertexBufferOffset);
+  dest[0] = makeVert(0.0f, 0.0f);
+  dest[1] = makeVert(w, 0.0f);
+  dest[2] = makeVert(w, h);
+  dest[3] = makeVert(0.0f, 0.0f);
+  dest[4] = makeVert(w, h);
+  dest[5] = makeVert(0.0f, h);
+  m_vertexBufferOffset += 6 * sizeof(ModernVertex);
+
+  PipelineStateKey clearKey{};
+  clearKey.cullMode = 0;  // GR_CULL_DISABLE
+  clearKey.sstOrigin = 0;
+  clearKey.depthMode = doDepthClear ? 1u : 0u;
+  clearKey.depthMask = doDepthClear;
+  clearKey.depthCompareOp = doDepthClear ? 7u : 0u;  // GR_CMP_ALWAYS
+  clearKey.rgbSrcBlend = 4u;                         // GR_BLEND_ONE
+  clearKey.rgbDstBlend = 0u;                         // GR_BLEND_ZERO
+  clearKey.alphaSrcBlend = 4u;                       // GR_BLEND_ONE
+  clearKey.alphaDstBlend = 0u;                       // GR_BLEND_ZERO
+  clearKey.colorMaskRgb = doColorClear && m_colorMaskRgb;
+  clearKey.colorMaskAlpha = doColorClear && m_colorMaskAlpha;
+  clearKey.singleSample = false;
+  clearKey.sampleMask = sampleMask;
+
+  vk::Pipeline clearPipeline =
+      GetOrCreatePipeline(clearKey, vk::PrimitiveTopology::eTriangleList);
+  if (clearPipeline != m_boundPipelineInPass) {
+    m_commandBuffer->bindPipeline(vk::PipelineBindPoint::eGraphics,
+                                  clearPipeline);
+    m_boundPipelineInPass = clearPipeline;
+  }
+  if (m_dummyDescriptorSet != m_boundDescSetInPass) {
+    m_commandBuffer->bindDescriptorSets(vk::PipelineBindPoint::eGraphics,
+                                        m_pipelineLayout.get(), 0, 1,
+                                        &m_dummyDescriptorSet, 0, nullptr);
+    m_boundDescSetInPass = m_dummyDescriptorSet;
+  }
+
+  PushConstants pcs{};
+  pcs.viewportWidth = w;
+  pcs.viewportHeight = h;
+  pcs.depthBufferMode = doDepthClear ? 1u : 0u;
+  pcs.alphaTestOp = 7u;  // GR_CMP_ALWAYS
+  pcs.colorFunc = 1u;    // LOCAL
+  pcs.colorLocal = 0u;   // ITERATED (fragColor)
+  pcs.alphaFunc = 1u;    // LOCAL
+  pcs.alphaLocal = 0u;   // ITERATED (fragColor.a)
+  pcs.depthNear = 0.0f;
+  pcs.depthFar = 1.0f;
+  m_commandBuffer->pushConstants<PushConstants>(
+      m_pipelineLayout.get(),
+      vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0,
+      pcs);
+
+  m_commandBuffer->setScissor(0, 1, &clipRect);
+  m_commandBuffer->draw(6, 1, firstVertex, 0);
+
+  if (doColorClear) {
+    const uint32_t activeIdx = GetActiveGpuBufferIdx();
+    m_msaaColorDirty[activeIdx] = true;
+    m_singleSampleColorDirty[activeIdx] = false;
   }
 }
 
@@ -371,7 +561,7 @@ void VulkanBackend::FlushBatch(bool fromStateFlush) {
                 << " vertices. FirstVertex=" << m_batchedFirstVertex
                 << (fromStateFlush ? " [state-flush]" : ""));
 
-  EnsureRenderPassActive();
+  EnsureRenderPassActive(ShouldUseSingleSamplePass_Locked());
 
   if (m_batchedPipeline != m_boundPipelineInPass) {
     m_commandBuffer->bindPipeline(vk::PipelineBindPoint::eGraphics,
@@ -394,32 +584,65 @@ void VulkanBackend::FlushBatch(bool fromStateFlush) {
 
   m_commandBuffer->draw(m_batchedVertexCount, 1, m_batchedFirstVertex, 0);
 
+  if (m_msaaSamples > 1 && (m_colorMaskRgb || m_colorMaskAlpha)) {
+    const uint32_t activeIdx = GetActiveGpuBufferIdx();
+    if (m_activePassIsSingleSample) {
+      m_singleSampleColorDirty[activeIdx] = true;
+      m_msaaColorDirty[activeIdx] = false;
+    } else {
+      m_msaaColorDirty[activeIdx] = true;
+      m_singleSampleColorDirty[activeIdx] = false;
+    }
+  }
+
   m_batchedVertexCount = 0;
 }
 
 vk::Rect2D VulkanBackend::GetScissorRectVulkan_Locked() {
-  uint32_t vkScissorY = m_clipMinY;
-  if (m_sstOrigin == 1) {  // GR_ORIGIN_LOWER_LEFT is 1 (bottom-left)
-    // Flip Y to top-left coordinate system of Vulkan
-    vkScissorY = m_headlessHeight - m_clipMaxY;
+  uint32_t x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+  if (!ComputeClipRectTopDown_Locked(x0, y0, x1, y1)) {
+    return vk::Rect2D({0, 0}, {0, 0});
   }
-  uint32_t vkScissorW =
-      (m_clipMaxX > m_clipMinX) ? (m_clipMaxX - m_clipMinX) : 0;
-  uint32_t vkScissorH =
-      (m_clipMaxY > m_clipMinY) ? (m_clipMaxY - m_clipMinY) : 0;
-
-  vk::Offset2D offset(static_cast<int32_t>(m_clipMinX),
-                      static_cast<int32_t>(vkScissorY));
-  vk::Extent2D extent(vkScissorW, vkScissorH);
-  return vk::Rect2D(offset, extent);
+  return vk::Rect2D(
+      vk::Offset2D(static_cast<int32_t>(x0), static_cast<int32_t>(y0)),
+      vk::Extent2D(x1 - x0, y1 - y0));
 }
 
-void VulkanBackend::EnsureRenderPassActive() {
-  if (m_inRenderPass) return;
+void VulkanBackend::EnsureRenderPassActive(bool useSingleSample) {
+  const uint32_t activeIdx = GetActiveGpuBufferIdx();
+  const bool actualSingle =
+      (m_msaaSamples > 1 && useSingleSample && m_singleSampleRenderPass &&
+       m_singleSampleFramebuffers[activeIdx]);
+
+  if (m_inRenderPass) {
+    if (m_activePassIsSingleSample == actualSingle &&
+        m_activePassGpuIdx == activeIdx) {
+      return;
+    }
+    m_commandBuffer->endRenderPass();
+    m_inRenderPass = false;
+  }
+
+  // Synchronize MSAA <-> 1x color targets when switching render pass types
+  // mid-frame, unless a deferred full-screen clear is about to overwrite all
+  // pixels on the target.
+  if (m_msaaSamples > 1 && !m_clearColorPending[activeIdx]) {
+    if (actualSingle && m_msaaColorDirty[activeIdx]) {
+      ResolveMsaaToSingle_Locked(activeIdx);
+    } else if (!actualSingle && m_singleSampleColorDirty[activeIdx]) {
+      CopySingleToMsaa_Locked(activeIdx);
+    }
+  }
+
+  vk::RenderPass targetRp =
+      actualSingle ? m_singleSampleRenderPass.get() : m_renderPass.get();
+  vk::Framebuffer targetFb =
+      actualSingle ? m_singleSampleFramebuffers[activeIdx].get()
+                   : m_headlessFramebuffers[activeIdx].get();
 
   // Begin render pass with eLoad (no automatic clear)
   vk::RenderPassBeginInfo renderPassInfo(
-      m_renderPass.get(), m_headlessFramebuffers[GetActiveGpuBufferIdx()].get(),
+      targetRp, targetFb,
       vk::Rect2D({0, 0}, {m_headlessWidth, m_headlessHeight}), 0,
       nullptr);  // 0 clear values since we use eLoad!
   m_commandBuffer->beginRenderPass(renderPassInfo,
@@ -440,23 +663,35 @@ void VulkanBackend::EnsureRenderPassActive() {
   m_boundPipelineInPass = vk::Pipeline{};
   m_boundDescSetInPass = vk::DescriptorSet{};
   m_inRenderPass = true;
+  m_activePassIsSingleSample = actualSingle;
+  m_activePassGpuIdx = activeIdx;
 
   // Perform explicit clears using vkCmdClearAttachments if pending on the
   // active FBO!
   std::array<vk::ClearAttachment, 2> clears;
   uint32_t clearCount = 0;
-  uint32_t activeIdx = GetActiveGpuBufferIdx();
   if (m_clearColorPending[activeIdx]) {
     clears[clearCount++] = vk::ClearAttachment(vk::ImageAspectFlagBits::eColor,
                                                0, m_clearColorValue[activeIdx]);
     m_clearColorPending[activeIdx] = false;
+    if (m_msaaSamples > 1) {
+      if (actualSingle) {
+        m_singleSampleColorDirty[activeIdx] = true;
+        m_msaaColorDirty[activeIdx] = false;
+      } else {
+        m_msaaColorDirty[activeIdx] = true;
+        m_singleSampleColorDirty[activeIdx] = false;
+      }
+    }
   }
-  if (m_clearDepthPending[activeIdx]) {
+  bool& depthPending = actualSingle ? m_clearDepthPendingSingle[activeIdx]
+                                    : m_clearDepthPending[activeIdx];
+  if (depthPending) {
     clears[clearCount++] = vk::ClearAttachment(
         vk::ImageAspectFlagBits::eDepth, 0,
         vk::ClearValue(
             vk::ClearDepthStencilValue(m_clearDepthValue[activeIdx], 0)));
-    m_clearDepthPending[activeIdx] = false;
+    depthPending = false;
   }
 
   if (clearCount > 0) {

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 #include <mutex>
 
@@ -31,7 +32,12 @@ class GlideStateTracker : public IGraphicsBackend {
 
   uint32_t GetWidth() const override { return m_headlessWidth; }
   uint32_t GetHeight() const override { return m_headlessHeight; }
+  uint32_t GetGuestWidth() const override { return m_guestWidth; }
+  uint32_t GetGuestHeight() const override { return m_guestHeight; }
   uint32_t GetMsaaSamples() const override { return 1; }
+  void SetRequestedMsaaSamples(uint32_t samples) override;
+  bool GetAAMultiSample() const { return m_aaMultiSample; }
+  uint32_t GetTBufferWriteMask() const { return m_tbufferWriteMask; }
   bool IsHeadlessMode() const { return m_headlessMode; }
 
   // State Getters for Testing & Diagnostics
@@ -136,6 +142,8 @@ class GlideStateTracker : public IGraphicsBackend {
   void SetTexChromakeyRange(uint32_t tmu, uint32_t minColor, uint32_t maxColor,
                             uint32_t mode) override;
   void SetAAState(bool enabled) override;
+  void SetAAMultiSample(bool enabled) override;
+  void SetTBufferWriteMask(uint32_t mask) override;
 
  protected:
   mutable std::mutex m_mutex;
@@ -160,6 +168,34 @@ class GlideStateTracker : public IGraphicsBackend {
   void SetCullState_Locked(uint32_t cullMode);
   void SetClipWindow_Locked(uint32_t minX, uint32_t minY, uint32_t maxX,
                             uint32_t maxY);
+  bool ComputeClipRectTopDown_Locked(uint32_t& x0, uint32_t& y0, uint32_t& x1,
+                                     uint32_t& y1) const {
+    const uint32_t scaleX =
+        (m_guestWidth > 0 && m_headlessWidth >= m_guestWidth)
+            ? (m_headlessWidth / m_guestWidth)
+            : 1u;
+    const uint32_t scaleY =
+        (m_guestHeight > 0 && m_headlessHeight >= m_guestHeight)
+            ? (m_headlessHeight / m_guestHeight)
+            : 1u;
+    x0 = std::min(m_clipMinX * scaleX, m_headlessWidth);
+    x1 = std::min(m_clipMaxX * scaleX, m_headlessWidth);
+    uint32_t rawMinY = std::min(m_clipMinY * scaleY, m_headlessHeight);
+    uint32_t rawMaxY = std::min(m_clipMaxY * scaleY, m_headlessHeight);
+    if (m_sstOrigin == 1) {  // GR_ORIGIN_LOWER_LEFT -> top-down framebuffer Y
+      y0 = m_headlessHeight - rawMaxY;
+      y1 = m_headlessHeight - rawMinY;
+    } else {
+      y0 = rawMinY;
+      y1 = rawMaxY;
+    }
+    return (x0 < x1) && (y0 < y1);
+  }
+  bool IsFullScreenClip_Locked() const {
+    uint32_t x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+    return ComputeClipRectTopDown_Locked(x0, y0, x1, y1) && x0 == 0 &&
+           y0 == 0 && x1 == m_headlessWidth && y1 == m_headlessHeight;
+  }
   void SetSstOrigin_Locked(uint32_t origin);
   void SetColorMask_Locked(bool rgb, bool alpha);
   void SetGamma_Locked(float gamma);
@@ -191,6 +227,8 @@ class GlideStateTracker : public IGraphicsBackend {
   void SetTexChromakeyRange_Locked(uint32_t tmu, uint32_t minColor,
                                    uint32_t maxColor, uint32_t mode);
   void SetAAState_Locked(bool enabled);
+  void SetAAMultiSample_Locked(bool enabled);
+  void SetTBufferWriteMask_Locked(uint32_t mask);
   bool m_initialized{false};
   bool m_windowAttached{false};
   bool m_headlessMode{false};
@@ -285,6 +323,9 @@ class GlideStateTracker : public IGraphicsBackend {
   uint8_t m_lutB[256];
 
   bool m_aaEnabled{false};
+  uint32_t m_requestedMsaaSamples{0};
+  bool m_aaMultiSample{true};
+  uint32_t m_tbufferWriteMask{0xFFFFFFFFu};
 };
 
 }  // namespace GlideWrapper

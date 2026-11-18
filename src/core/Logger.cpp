@@ -8,6 +8,14 @@
 #include <iostream>
 #if defined(__unix__) || defined(__APPLE__)
 #include <dlfcn.h>
+#elif defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
 #endif
 
 namespace GlideWrapper {
@@ -24,6 +32,20 @@ std::string GetLoadedModulePath() {
     if (dladdr(&s_moduleAnchor, &info) != 0 &&
         info.dli_fname != nullptr && info.dli_fname[0] != '\0') {
         return std::string(info.dli_fname);
+    }
+#elif defined(_WIN32)
+    static int s_moduleAnchor = 0;
+    HMODULE hMod = nullptr;
+    if (GetModuleHandleExA(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            reinterpret_cast<LPCSTR>(&s_moduleAnchor), &hMod) &&
+        hMod != nullptr) {
+        char pathBuf[MAX_PATH] = {};
+        DWORD len = GetModuleFileNameA(hMod, pathBuf, MAX_PATH);
+        if (len > 0 && len < MAX_PATH) {
+            return std::string(pathBuf, len);
+        }
     }
 #endif
     return "unknown";
@@ -386,6 +408,7 @@ void Logger::LogExecutionSummary(const WrapperConfig& config) {
         case CardModel::VoodooRush:     ss << "Voodoo Rush (SST-96)"; break;
         case CardModel::Voodoo2:        ss << "Voodoo2 (CVG)"; break;
         case CardModel::Voodoo3:        ss << "Voodoo3 (H3)"; break;
+        case CardModel::Voodoo4:        ss << "Voodoo4 (VSA-100)"; break;
         case CardModel::Voodoo5:        ss << "Voodoo5 (H5)"; break;
     }
 
@@ -489,6 +512,13 @@ void Logger::LogExecutionSummary(const WrapperConfig& config) {
             warnSs << config.unknownConfigKeys[i];
         }
         Log(LogLevel::WARN, "Config", warnSs.str());
+    }
+
+    if (!config.invalidConfigValues.empty()) {
+        for (const auto& msg : config.invalidConfigValues) {
+            Log(LogLevel::WARN, "Config", msg);
+            std::fprintf(stderr, "[glide-ng] WARN: %s\n", msg.c_str());
+        }
     }
 }
 

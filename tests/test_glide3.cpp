@@ -10,6 +10,7 @@
 #include "core/HudOverlay.h"
 #include "core/BackendManager.h"
 #include "core/NativeSurfaceHost.h"
+#include "core/VertexLayout.h"
 #include "backends/GlideStateTracker.h"
 #include "opengl_es/OpenGLESBackend.h"
 #include "software/SoftwareBackend.h"
@@ -2748,6 +2749,9 @@ struct MockGlideWrapperState {
   uint32_t ditherMode;
   uint32_t stippleMode;
   uint32_t stipplePattern;
+  int hasTbufferState;
+  int aaMultiSample;
+  uint32_t tbufferWriteMask;
 };
 
 TEST_CASE("Glide 3.x State Restoration Sanitization [VULN-01]", "[Glide3][State]") {
@@ -2773,8 +2777,9 @@ TEST_CASE("Glide 3.x State Restoration Sanitization [VULN-01]", "[Glide3][State]
     FxU32 ctx = winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz, GR_COLORFORMAT_ABGR, GR_ORIGIN_UPPER_LEFT, 2, 1);
     REQUIRE(ctx != 0);
 
-    // Get current state
-    std::vector<uint8_t> stateBuffer(sizeof(MockGlideWrapperState), 0);
+    // Get current state (allocate full GR_GLIDE_STATE_SIZE = 1024 bytes)
+    std::vector<uint8_t> stateBuffer(
+        std::max<size_t>(1024u, sizeof(MockGlideWrapperState)), 0);
     getState(stateBuffer.data());
 
     auto* statePtr = reinterpret_cast<MockGlideWrapperState*>(stateBuffer.data());
@@ -2796,7 +2801,8 @@ TEST_CASE("Glide 3.x State Restoration Sanitization [VULN-01]", "[Glide3][State]
     setState(stateBuffer.data());
 
     // Read back state again to verify that sanitization took place!
-    std::vector<uint8_t> checkBuffer(sizeof(MockGlideWrapperState), 0);
+    std::vector<uint8_t> checkBuffer(
+        std::max<size_t>(1024u, sizeof(MockGlideWrapperState)), 0);
     getState(checkBuffer.data());
 
     auto* checkPtr = reinterpret_cast<MockGlideWrapperState*>(checkBuffer.data());
@@ -5494,5 +5500,1099 @@ TEST_CASE("M8.2 Phase-2 Authentic 3dfx Env Vars: INI Parsing, Precedence & Runti
     std::remove(logPath.c_str());
     std::remove(snapPath.c_str());
   }
+#endif
+}
+
+TEST_CASE("Glide 3.x GR_PARAM_PARGB Packed Color & VSA-100 Enable/Disable Modes",
+          "[Glide3][VertexLayout][M9]") {
+  // Exact layout used by official 3dfx Voodoo5/Napalm Glide 3.x demos
+  // (Kitty Hawk, Museum, Rocket Burger): XY@0, Q@12, ST0@16, PARGB@32.
+  // Bytes 16..31 overlap Glide 3.x canonical float RGB@16 and A@28.
+  struct PargbDemoVert {
+    float x, y;      // 0..7   (GR_PARAM_XY)
+    float padZ;      // 8..11
+    float q;         // 12..15 (GR_PARAM_Q)
+    float s0, t0;    // 16..23 (GR_PARAM_ST0 — overlaps canonical RGB!)
+    float pad1, pad2;// 24..31 (overlaps canonical RGB.b and A!)
+    uint32_t pargb;  // 32..35 (GR_PARAM_PARGB: 0xAARRGGBB)
+    float q0;        // 36..39 (optional GR_PARAM_Q0)
+    float q1;        // 40..43 (optional GR_PARAM_Q1)
+  };
+  static_assert(sizeof(PargbDemoVert) == 44, "PargbDemoVert layout mismatch");
+
+  SECTION("VertexLayout decodes GR_PARAM_PARGB (0xAARRGGBB), GR_PARAM_Q0/Q1, and round-trips state") {
+    auto& vl = GlideWrapper::VertexLayout::GetInstance();
+    vl.ResetToGlide3Canonical();
+
+    // Enable PARGB without explicitly disabling canonical RGB/A
+    vl.SetParamOffsetGlide3(0x01, 0, 1);   // GR_PARAM_XY
+    vl.SetParamOffsetGlide3(0x04, 12, 1);  // GR_PARAM_Q
+    vl.SetParamOffsetGlide3(0x40, 16, 1);  // GR_PARAM_ST0
+    vl.SetParamOffsetGlide3(0x41, 16, 1);  // GR_PARAM_ST1
+    vl.SetParamOffsetGlide3(0x30, 32, 1);  // GR_PARAM_PARGB
+    vl.SetParamOffsetGlide3(0x50, 36, 1);  // GR_PARAM_Q0
+    vl.SetParamOffsetGlide3(0x51, 40, 1);  // GR_PARAM_Q1
+
+    PargbDemoVert v{};
+    v.x = 123.5f;
+    v.y = 45.25f;
+    v.q = 0.5f;
+    v.s0 = 0.25f;
+    v.t0 = 0.75f;
+    v.pargb = 0x80F04010u;  // A=128, R=240, G=64, B=16
+    v.q0 = 0.25f;
+    v.q1 = 0.125f;
+
+    GlideWrapper::ModernVertex mv = vl.DecodeVertex(&v);
+    CHECK(mv.pos[0] == 123.5f);
+    CHECK(mv.pos[1] == 45.25f);
+    CHECK(mv.pos[3] == 0.5f);
+    CHECK(std::fabs(mv.color[0] - (240.0f / 255.0f)) < 1e-4f);
+    CHECK(std::fabs(mv.color[1] - (64.0f / 255.0f)) < 1e-4f);
+    CHECK(std::fabs(mv.color[2] - (16.0f / 255.0f)) < 1e-4f);
+    CHECK(std::fabs(mv.color[3] - (128.0f / 255.0f)) < 1e-4f);
+    CHECK(mv.tex[0] == 0.25f);
+    CHECK(mv.tex[1] == 0.75f);
+    CHECK(mv.tmu_oow[0] == 0.25f);
+    CHECK(mv.tmu_oow[1] == 0.125f);
+    CHECK(vl.GetMaxActiveOffset() >= 44);
+
+    // Save layout, reset to float canonical, restore layout, verify identical decode
+    uint8_t savedLayout[256] = {};
+    vl.GetLayoutState(savedLayout);
+    vl.ResetToGlide3Canonical();
+    vl.SetLayoutState(savedLayout);
+
+    GlideWrapper::ModernVertex mvRestored = vl.DecodeVertex(&v);
+    CHECK(std::fabs(mvRestored.color[0] - (240.0f / 255.0f)) < 1e-4f);
+    CHECK(std::fabs(mvRestored.color[1] - (64.0f / 255.0f)) < 1e-4f);
+    CHECK(std::fabs(mvRestored.color[2] - (16.0f / 255.0f)) < 1e-4f);
+    CHECK(std::fabs(mvRestored.color[3] - (128.0f / 255.0f)) < 1e-4f);
+    CHECK(mvRestored.pos[3] == 0.5f);
+    CHECK(mvRestored.tmu_oow[0] == 0.25f);
+
+    // Re-enabling float GR_PARAM_RGB / GR_PARAM_A switches colorType back to GR_FLOAT
+    vl.SetParamOffsetGlide3(0x20, 12, 1);  // GR_PARAM_RGB
+    vl.SetParamOffsetGlide3(0x10, 28, 1);  // GR_PARAM_A
+    StandardVert fv = {10.0f, 20.0f, 0.0f, 32.0f, 224.0f, 64.0f, 0.0f, 192.0f, 1.0f, 0.0f, 0.0f, 1.0f};
+    GlideWrapper::ModernVertex mvf = vl.DecodeVertex(&fv);
+    CHECK(std::fabs(mvf.color[0] - (32.0f / 255.0f)) < 1e-4f);
+    CHECK(std::fabs(mvf.color[1] - (224.0f / 255.0f)) < 1e-4f);
+    CHECK(std::fabs(mvf.color[2] - (64.0f / 255.0f)) < 1e-4f);
+    CHECK(std::fabs(mvf.color[3] - (192.0f / 255.0f)) < 1e-4f);
+  }
+
+#ifdef __linux__
+  SECTION("End-to-end Glide 3.x PARGB rendering, alpha blending, layout save/restore & VSA-100 grEnable/grDisable") {
+    struct ScopedPargbEnv {
+      std::vector<std::string> keys = {
+          "GLIDE_NG_HEADLESS", "GLIDE_NG_MAX_FPS", "GLIDE_NG_VSYNC",
+          "GLIDE_NG_LOG_LEVEL", "GLIDE_NG_LOG_FILE"};
+      std::vector<std::pair<std::string, std::string>> saved;
+      ScopedPargbEnv() {
+        for (const auto& k : keys) {
+          const char* v = std::getenv(k.c_str());
+          saved.emplace_back(k, v ? std::string(v) : std::string("\x01UNSET"));
+        }
+      }
+      ~ScopedPargbEnv() {
+        for (const auto& kv : saved) {
+          if (kv.second == "\x01UNSET") {
+            ::unsetenv(kv.first.c_str());
+          } else {
+            ::setenv(kv.first.c_str(), kv.second.c_str(), 1);
+          }
+        }
+      }
+    } envGuard;
+
+    const std::string logPath = "/tmp/glide_ng_g3_pargb_test.log";
+    std::remove(logPath.c_str());
+    ::setenv("GLIDE_NG_HEADLESS", "1", 1);
+    ::setenv("GLIDE_NG_MAX_FPS", "0", 1);
+    ::setenv("GLIDE_NG_VSYNC", "0", 1);
+    ::setenv("GLIDE_NG_LOG_LEVEL", "warn", 1);
+    ::setenv("GLIDE_NG_LOG_FILE", logPath.c_str(), 1);
+
+    void* handle = OpenGlide3Handle();
+    REQUIRE(handle != nullptr);
+
+    auto glideInit = reinterpret_cast<void (*)()>(::dlsym(handle, "grGlideInit"));
+    auto glideShutdown = reinterpret_cast<void (*)()>(::dlsym(handle, "grGlideShutdown"));
+    auto winOpen = reinterpret_cast<FxU32 (*)(FxU32, FxU32, FxU32, FxU32, FxU32, int, int)>(
+        ::dlsym(handle, "grSstWinOpen"));
+    auto winClose = reinterpret_cast<FxBool (*)(FxU32)>(::dlsym(handle, "grSstWinClose"));
+    auto vertexLayout = reinterpret_cast<void (*)(FxU32, FxI32, FxU32)>(::dlsym(handle, "grVertexLayout"));
+    auto getVertexLayout = reinterpret_cast<void (*)(void*)>(::dlsym(handle, "grGlideGetVertexLayout"));
+    auto setVertexLayout = reinterpret_cast<void (*)(const void*)>(::dlsym(handle, "grGlideSetVertexLayout"));
+    auto bufferClear = reinterpret_cast<void (*)(GrColor_t, GrAlpha_t, FxU32)>(::dlsym(handle, "grBufferClear"));
+    auto colorCombine = reinterpret_cast<void (*)(GrCombineFunction_t, GrCombineFactor_t,
+                                                  GrCombineLocal_t, GrCombineOther_t, FxBool)>(
+        ::dlsym(handle, "grColorCombine"));
+    auto alphaCombine = reinterpret_cast<void (*)(GrCombineFunction_t, GrCombineFactor_t,
+                                                  GrCombineLocal_t, GrCombineOther_t, FxBool)>(
+        ::dlsym(handle, "grAlphaCombine"));
+    auto alphaBlend = reinterpret_cast<void (*)(GrAlphaBlendFnc_t, GrAlphaBlendFnc_t,
+                                                GrAlphaBlendFnc_t, GrAlphaBlendFnc_t)>(
+        ::dlsym(handle, "grAlphaBlendFunction"));
+    auto depthMode = reinterpret_cast<void (*)(GrDepthBufferMode_t)>(::dlsym(handle, "grDepthBufferMode"));
+    auto ditherMode = reinterpret_cast<void (*)(GrDitherMode_t)>(::dlsym(handle, "grDitherMode"));
+    auto grEnableFn = reinterpret_cast<void (*)(GrEnableMode_t)>(::dlsym(handle, "grEnable"));
+    auto grDisableFn = reinterpret_cast<void (*)(GrEnableMode_t)>(::dlsym(handle, "grDisable"));
+    auto drawTri = reinterpret_cast<void (*)(const void*, const void*, const void*)>(
+        ::dlsym(handle, "grDrawTriangle"));
+    auto lfbRead = reinterpret_cast<FxBool (*)(GrBuffer_t, FxU32, FxU32, FxU32, FxU32, FxU32, void*)>(
+        ::dlsym(handle, "grLfbReadRegion"));
+
+    REQUIRE(glideInit != nullptr);
+    REQUIRE(winOpen != nullptr);
+    REQUIRE(vertexLayout != nullptr);
+    REQUIRE(getVertexLayout != nullptr);
+    REQUIRE(setVertexLayout != nullptr);
+    REQUIRE(grEnableFn != nullptr);
+    REQUIRE(grDisableFn != nullptr);
+
+    glideInit();
+    FxU32 ctx = winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                        GR_COLORFORMAT_ABGR, GR_ORIGIN_UPPER_LEFT, 2, 1);
+    REQUIRE(ctx != 0);
+
+    // Standard Glide 3.x & VSA-100 enable/disable modes must not emit WARN spam
+    const GrEnableMode_t v5Modes[] = {
+        0x02u,        // GR_ALLOW_MIPMAP_DITHER
+        0x03u,        // GR_PASSTHRU
+        0x05u,        // GR_VIDEO_SMOOTHING
+        0x80000001u,  // GR_COMBINEEXT_MODE
+        0x80000002u,  // GR_AA_MULTI_SAMPLE
+    };
+    for (GrEnableMode_t m : v5Modes) {
+      grEnableFn(m);
+      grDisableFn(m);
+    }
+
+    depthMode(GR_DEPTHBUFFER_DISABLE);
+    ditherMode(GR_DITHER_DISABLE);
+    bufferClear(0xFF000000u, 0xFF, 0xFFFF);
+
+    // Configure Voodoo5 demo layout (XY@0, Q@12, ST0@16, PARGB@32)
+    vertexLayout(0x01, 0, 1);   // GR_PARAM_XY
+    vertexLayout(0x04, 12, 1);  // GR_PARAM_Q
+    vertexLayout(0x40, 16, 1);  // GR_PARAM_ST0
+    vertexLayout(0x30, 32, 1);  // GR_PARAM_PARGB
+
+    colorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+                 GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_NONE, FXFALSE);
+    alphaCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+                 GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_NONE, FXFALSE);
+    alphaBlend(GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_ONE, GR_BLEND_ZERO);
+
+    auto drawPargbQuad = [&](float x0, float y0, float x1, float y1, uint32_t pargb) {
+      PargbDemoVert tl{x0, y0, 0.0f, 1.0f, 0.1f, 0.2f, 0.0f, 0.0f, pargb, 1.0f, 1.0f};
+      PargbDemoVert tr{x1, y0, 0.0f, 1.0f, 0.9f, 0.2f, 0.0f, 0.0f, pargb, 1.0f, 1.0f};
+      PargbDemoVert br{x1, y1, 0.0f, 1.0f, 0.9f, 0.8f, 0.0f, 0.0f, pargb, 1.0f, 1.0f};
+      PargbDemoVert bl{x0, y1, 0.0f, 1.0f, 0.1f, 0.8f, 0.0f, 0.0f, pargb, 1.0f, 1.0f};
+      drawTri(&tl, &tr, &br);
+      drawTri(&tl, &br, &bl);
+    };
+
+    // 1. Opaque orange-red PARGB (0xFFF05010: A=255, R=240, G=80, B=16)
+    drawPargbQuad(20.0f, 20.0f, 120.0f, 120.0f, 0xFFF05010u);
+
+    // 2. Alpha-blended 50% green (0x8010F010) over opaque blue (0xFF1020F0)
+    drawPargbQuad(150.0f, 20.0f, 250.0f, 120.0f, 0xFF1020F0u);
+    alphaBlend(GR_BLEND_SRC_ALPHA, GR_BLEND_ONE_MINUS_SRC_ALPHA, GR_BLEND_ONE, GR_BLEND_ZERO);
+    drawPargbQuad(150.0f, 20.0f, 250.0f, 120.0f, 0x8010F010u);
+    alphaBlend(GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_ONE, GR_BLEND_ZERO);
+
+    // 3. Save PARGB layout -> switch to float RGB -> draw green -> restore PARGB -> draw red
+    uint8_t pargbLayoutBuf[256] = {};
+    getVertexLayout(pargbLayoutBuf);
+
+    vertexLayout(0x20, 12, 1);  // GR_PARAM_RGB (GR_FLOAT)
+    vertexLayout(0x10, 28, 1);  // GR_PARAM_A (GR_FLOAT)
+    vertexLayout(0x03, 32, 1);  // GR_PARAM_W
+    {
+      StandardVert tl = {280.0f, 20.0f, 0.0f, 16.0f, 240.0f, 16.0f, 0.0f, 255.0f, 1.0f, 0.0f, 0.0f, 1.0f};
+      StandardVert tr = {360.0f, 20.0f, 0.0f, 16.0f, 240.0f, 16.0f, 0.0f, 255.0f, 1.0f, 0.0f, 0.0f, 1.0f};
+      StandardVert br = {360.0f, 120.0f, 0.0f, 16.0f, 240.0f, 16.0f, 0.0f, 255.0f, 1.0f, 0.0f, 0.0f, 1.0f};
+      StandardVert bl = {280.0f, 120.0f, 0.0f, 16.0f, 240.0f, 16.0f, 0.0f, 255.0f, 1.0f, 0.0f, 0.0f, 1.0f};
+      drawTri(&tl, &tr, &br);
+      drawTri(&tl, &br, &bl);
+    }
+
+    setVertexLayout(pargbLayoutBuf);
+    drawPargbQuad(380.0f, 20.0f, 460.0f, 120.0f, 0xFFF01010u);
+
+    auto readRGB = [&](FxU32 x, FxU32 y, int& r, int& g, int& b) {
+      uint16_t px = 0;
+      REQUIRE(lfbRead(GR_BUFFER_BACKBUFFER, x, y, 1, 1, 2, &px) == FXTRUE);
+      r = ((px >> 11) & 31) << 3;
+      g = ((px >> 5) & 63) << 2;
+      b = (px & 31) << 3;
+    };
+
+    int r = 0, g = 0, b = 0;
+    // Quad 1: orange-red PARGB
+    readRGB(70, 70, r, g, b);
+    CHECK(r > 210);
+    CHECK(g > 50);
+    CHECK(g < 110);
+    CHECK(b < 40);
+
+    // Quad 2: 50% green blended over blue -> both G and B ~115..140
+    readRGB(200, 70, r, g, b);
+    CHECK(r < 40);
+    CHECK(g > 90);
+    CHECK(g < 165);
+    CHECK(b > 90);
+    CHECK(b < 165);
+
+    // Quad 3: float green after switching from PARGB -> RGB
+    readRGB(320, 70, r, g, b);
+    CHECK(r < 40);
+    CHECK(g > 210);
+    CHECK(b < 40);
+
+    // Quad 4: red PARGB after grGlideSetVertexLayout restore
+    readRGB(420, 70, r, g, b);
+    CHECK(r > 210);
+    CHECK(g < 40);
+    CHECK(b < 40);
+
+    winClose(ctx);
+    glideShutdown();
+    ::dlclose(handle);
+
+    // Confirm zero unsupported mode warnings were emitted
+    std::ifstream logIn(logPath);
+    if (logIn.is_open()) {
+      const std::string logContent((std::istreambuf_iterator<char>(logIn)),
+                                   std::istreambuf_iterator<char>());
+      CHECK(logContent.find("unsupported mode=") == std::string::npos);
+    }
+    std::remove(logPath.c_str());
+  }
+#endif
+}
+
+TEST_CASE("Glide 3.x grBufferClear Respects grClipWindow & Origin",
+          "[Glide3][ClipWindow][ClearBuffer]") {
+#ifdef __linux__
+  void* handle = OpenGlide3Handle();
+  REQUIRE(handle != nullptr);
+
+  using InitFunc = void (*)(void);
+  using SelectSstFunc = void (*)(int);
+  using OpenWinFunc = FxU32 (*)(AnyPtr, GrScreenResolution_t,
+                                GrScreenRefresh_t, GrColorFormat_t,
+                                GrOriginLocation_t, int, int);
+  using CloseWinFunc = FxBool (*)(FxU32);
+  using ShutdownFunc = void (*)(void);
+  using ClearFunc = void (*)(GrColor_t, GrAlpha_t, FxU32);
+  using ClipWinFunc = void (*)(FxU32, FxU32, FxU32, FxU32);
+  using OriginFunc = void (*)(GrOriginLocation_t);
+  using VertexLayoutFunc = void (*)(FxU32, FxI32, FxU32);
+  using ColorCombineFunc = void (*)(GrCombineFunction_t, GrCombineFactor_t,
+                                    GrCombineLocal_t, GrCombineOther_t, FxBool);
+  using ConstColorFunc = void (*)(GrColor_t);
+  using DrawTriFunc = void (*)(const void*, const void*, const void*);
+  using LfbReadFunc = FxBool (*)(GrBuffer_t, FxU32, FxU32, FxU32, FxU32, FxU32,
+                                 void*);
+
+  auto glideInit = reinterpret_cast<InitFunc>(::dlsym(handle, "grGlideInit"));
+  auto sstSelect =
+      reinterpret_cast<SelectSstFunc>(::dlsym(handle, "grSstSelect"));
+  auto winOpen =
+      reinterpret_cast<OpenWinFunc>(::dlsym(handle, "grSstWinOpen"));
+  auto winClose =
+      reinterpret_cast<CloseWinFunc>(::dlsym(handle, "grSstWinClose"));
+  auto glideShutdown =
+      reinterpret_cast<ShutdownFunc>(::dlsym(handle, "grGlideShutdown"));
+  auto bufferClear =
+      reinterpret_cast<ClearFunc>(::dlsym(handle, "grBufferClear"));
+  auto clipWin =
+      reinterpret_cast<ClipWinFunc>(::dlsym(handle, "grClipWindow"));
+  auto sstOrigin =
+      reinterpret_cast<OriginFunc>(::dlsym(handle, "grSstOrigin"));
+  auto vertexLayout =
+      reinterpret_cast<VertexLayoutFunc>(::dlsym(handle, "grVertexLayout"));
+  auto colorCombine =
+      reinterpret_cast<ColorCombineFunc>(::dlsym(handle, "grColorCombine"));
+  auto constColor =
+      reinterpret_cast<ConstColorFunc>(::dlsym(handle, "grConstantColorValue"));
+  auto drawTri =
+      reinterpret_cast<DrawTriFunc>(::dlsym(handle, "grDrawTriangle"));
+  auto lfbRead =
+      reinterpret_cast<LfbReadFunc>(::dlsym(handle, "grLfbReadRegion"));
+
+  REQUIRE(glideInit != nullptr);
+  REQUIRE(sstSelect != nullptr);
+  REQUIRE(winOpen != nullptr);
+  REQUIRE(winClose != nullptr);
+  REQUIRE(glideShutdown != nullptr);
+  REQUIRE(bufferClear != nullptr);
+  REQUIRE(clipWin != nullptr);
+  REQUIRE(sstOrigin != nullptr);
+  REQUIRE(vertexLayout != nullptr);
+  REQUIRE(colorCombine != nullptr);
+  REQUIRE(constColor != nullptr);
+  REQUIRE(drawTri != nullptr);
+  REQUIRE(lfbRead != nullptr);
+
+  glideInit();
+  sstSelect(0);
+  FxU32 ctx = winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                      GR_COLORFORMAT_ARGB, GR_ORIGIN_UPPER_LEFT, 2, 1);
+  REQUIRE(ctx != 0);
+
+  auto readRGB = [&](FxU32 x, FxU32 y, int& r, int& g, int& b) {
+    uint16_t px = 0;
+    REQUIRE(lfbRead(GR_BUFFER_BACKBUFFER, x, y, 1, 1, 2, &px) == FXTRUE);
+    r = ((px >> 11) & 31) << 3;
+    g = ((px >> 5) & 63) << 2;
+    b = (px & 31) << 3;
+  };
+
+  // 1. Split-screen panes + narrow 4px center divider stripe (reproduces
+  //    3dfx aademo.exe F9 split-screen sequence: clipped clear immediately
+  //    followed by widening grClipWindow before drawing an overlay quad).
+  clipWin(0, 0, 640, 480);
+  bufferClear(0xFF0010F0u, 0xFF, 0xFFFFu);  // Full blue base
+
+  clipWin(0, 0, 318, 480);
+  bufferClear(0xFFF01010u, 0xFF, 0xFFFFu);  // Left pane: Red
+
+  clipWin(322, 0, 640, 480);
+  bufferClear(0xFF10F010u, 0xFF, 0xFFFFu);  // Right pane: Green
+
+  clipWin(318, 0, 322, 480);
+  bufferClear(0xFFF7F700u, 0xFF, 0xFFFFu);  // Center 4px divider: Yellow
+
+  // Widen clip window immediately (no draw between yellow clear and clip
+  // restore), then draw a white overlay quad in the bottom-right corner.
+  clipWin(0, 0, 640, 480);
+  vertexLayout(0x01, 0, 1);  // GR_PARAM_XY
+  colorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+               GR_COMBINE_LOCAL_CONSTANT, GR_COMBINE_OTHER_NONE, FXFALSE);
+  constColor(0xFFFFFFFFu);
+  struct XYVert {
+    float x, y;
+  };
+  XYVert tl{560.0f, 400.0f}, tr{620.0f, 400.0f}, br{620.0f, 460.0f},
+      bl{560.0f, 460.0f};
+  drawTri(&tl, &tr, &br);
+  drawTri(&tl, &br, &bl);
+
+  int r = 0, g = 0, b = 0;
+  // Left pane remains red
+  readRGB(160, 240, r, g, b);
+  CHECK(r > 210);
+  CHECK(g < 40);
+  CHECK(b < 40);
+
+  // Center 4px divider is bright yellow
+  readRGB(320, 240, r, g, b);
+  CHECK(r > 210);
+  CHECK(g > 210);
+  CHECK(b < 40);
+
+  // Right pane remains green
+  readRGB(480, 240, r, g, b);
+  CHECK(r < 40);
+  CHECK(g > 210);
+  CHECK(b < 40);
+
+  // Bottom-right overlay quad is white
+  readRGB(590, 430, r, g, b);
+  CHECK(r > 220);
+  CHECK(g > 220);
+  CHECK(b > 220);
+
+  // 2. Empty clip rect clear must be a no-op (must not clobber pixels or crash)
+  clipWin(200, 200, 200, 200);
+  bufferClear(0xFFFF00FFu, 0xFF, 0xFFFFu);
+  readRGB(160, 240, r, g, b);
+  CHECK(r > 210);
+  CHECK(g < 40);
+  CHECK(b < 40);
+
+  // 3. GR_ORIGIN_LOWER_LEFT clipped clear must flip Y into bottom-up space
+  sstOrigin(GR_ORIGIN_LOWER_LEFT);
+  clipWin(0, 0, 640, 480);
+  bufferClear(0xFF000000u, 0xFF, 0xFFFFu);  // Full black
+
+  // Bottom-left Y in [50, 150) maps to top-down Y in [330, 430)
+  clipWin(100, 50, 200, 150);
+  bufferClear(0xFF00F0F0u, 0xFF, 0xFFFFu);  // Cyan sub-rect near bottom
+
+  // Top-down y=380 (inside bottom-origin [50..150)) -> Cyan
+  readRGB(150, 380, r, g, b);
+  CHECK(r < 40);
+  CHECK(g > 210);
+  CHECK(b > 210);
+
+  // Top-down y=100 (outside bottom-origin [50..150)) -> Untouched Black
+  readRGB(150, 100, r, g, b);
+  CHECK(r < 20);
+  CHECK(g < 20);
+  CHECK(b < 20);
+
+  winClose(ctx);
+  glideShutdown();
+  ::dlclose(handle);
+#endif
+}
+
+TEST_CASE(
+    "Glide 3.x grGetString(GR_HARDWARE) Returns Authentic Short Card Names",
+    "[Glide3][GetString][Hardware]") {
+#ifdef __linux__
+  struct CardExpectation {
+    const char* envVal;
+    const char* expectedName;
+  };
+  const CardExpectation cases[] = {
+      {"voodoo1", "Voodoo Graphics"},
+      {"rush", "Voodoo Rush"},
+      {"voodoo2", "Voodoo2"},
+      {"voodoo3", "Voodoo3"},
+      {"voodoo4", "Voodoo4"},
+      {"vsa100", "Voodoo4"},
+      {"h4", "Voodoo4"},
+      {"voodoo5", "Voodoo5"},
+  };
+
+  const char* origCard = std::getenv("GLIDE_NG_CARD_MODEL");
+  std::string savedCard = origCard ? origCard : "";
+
+  for (const auto& tc : cases) {
+    ::setenv("GLIDE_NG_CARD_MODEL", tc.envVal, 1);
+
+    void* handle = OpenGlide3Handle();
+    REQUIRE(handle != nullptr);
+
+    using InitFunc = void (*)(void);
+    using GetStringFunc = const char* (*)(FxU32);
+    using ShutdownFunc = void (*)(void);
+
+    auto glideInit = reinterpret_cast<InitFunc>(::dlsym(handle, "grGlideInit"));
+    auto getString =
+        reinterpret_cast<GetStringFunc>(::dlsym(handle, "grGetString"));
+    auto glideShutdown =
+        reinterpret_cast<ShutdownFunc>(::dlsym(handle, "grGlideShutdown"));
+
+    REQUIRE(glideInit != nullptr);
+    REQUIRE(getString != nullptr);
+    REQUIRE(glideShutdown != nullptr);
+
+    glideInit();
+    const char* hw = getString(0xa1);  // GR_HARDWARE
+    REQUIRE(hw != nullptr);
+    CHECK(std::string(hw) == tc.expectedName);
+    // Authentic 3dfx hardware strings fit inside legacy fixed-size HUD buffers
+    // (e.g., 3dfx aademo.exe formats "%s, 4 sample, Spatial Anti-Aliasing"
+    // into a 60-byte stack buffer).
+    CHECK(std::strlen(hw) <= 20u);
+
+    glideShutdown();
+    ::dlclose(handle);
+  }
+
+  if (origCard) {
+    ::setenv("GLIDE_NG_CARD_MODEL", savedCard.c_str(), 1);
+  } else {
+    ::unsetenv("GLIDE_NG_CARD_MODEL");
+  }
+#endif
+}
+
+TEST_CASE(
+    "Glide 3.x Voodoo5 Spatial AA & T-Buffer Extensions "
+    "(grSstWinOpenExt / GR_AA_MULTI_SAMPLE / grTBufferWriteMaskExt)",
+    "[Glide3][SpatialAA][TBuffer]") {
+#ifdef __linux__
+  void* handle = OpenGlide3Handle();
+  REQUIRE(handle != nullptr);
+
+  using InitFunc = void (*)(void);
+  using SelectSstFunc = void (*)(int);
+  using GetProcAddrFunc = GrProc (*)(char*);
+  using WinOpenFunc = FxU32 (*)(FxU32, FxI32, FxI32, FxI32, FxI32, int, int);
+  using WinOpenExtFunc =
+      FxU32 (*)(FxU32, FxI32, FxI32, FxI32, FxI32, GrPixelFormat_t, int, int);
+  using WinCloseFunc = FxBool (*)(FxU32);
+  using ShutdownFunc = void (*)(void);
+  using EnableFunc = void (*)(GrEnableMode_t);
+  using DisableFunc = void (*)(GrEnableMode_t);
+  using TBufferMaskFunc = void (*)(FxU32);
+  using BufferClearFunc = void (*)(GrColor_t, GrAlpha_t, FxU32);
+  using ClipWinFunc = void (*)(FxU32, FxU32, FxU32, FxU32);
+  using VertexLayoutFunc = void (*)(FxU32, FxI32, FxU32);
+  using ColorCombineFunc = void (*)(GrCombineFunction_t, GrCombineFactor_t,
+                                    GrCombineLocal_t, GrCombineOther_t, FxBool);
+  using ConstColorFunc = void (*)(GrColor_t);
+  using DepthModeFunc = void (*)(GrDepthBufferMode_t);
+  using DepthFuncFunc = void (*)(GrCmpFnc_t);
+  using DepthMaskFunc = void (*)(FxBool);
+  using DrawTriFunc = void (*)(const void*, const void*, const void*);
+  using LfbReadFunc =
+      FxBool (*)(GrBuffer_t, FxU32, FxU32, FxU32, FxU32, FxU32, void*);
+  using LfbWriteFunc = FxBool (*)(GrBuffer_t, FxU32, FxU32, GrLfbSrcFmt_t,
+                                  FxU32, FxU32, FxBool, FxI32, void*);
+  using GetStateFunc = void (*)(void*);
+  using SetStateFunc = void (*)(const void*);
+  using GetFunc = FxU32 (*)(FxU32, FxU32, FxI32*);
+
+  auto glideInit = reinterpret_cast<InitFunc>(::dlsym(handle, "grGlideInit"));
+  auto sstSelect =
+      reinterpret_cast<SelectSstFunc>(::dlsym(handle, "grSstSelect"));
+  auto getProc =
+      reinterpret_cast<GetProcAddrFunc>(::dlsym(handle, "grGetProcAddress"));
+  auto winOpen =
+      reinterpret_cast<WinOpenFunc>(::dlsym(handle, "grSstWinOpen"));
+  auto winClose =
+      reinterpret_cast<WinCloseFunc>(::dlsym(handle, "grSstWinClose"));
+  auto glideShutdown =
+      reinterpret_cast<ShutdownFunc>(::dlsym(handle, "grGlideShutdown"));
+  auto grEnableFn = reinterpret_cast<EnableFunc>(::dlsym(handle, "grEnable"));
+  auto grDisableFn =
+      reinterpret_cast<DisableFunc>(::dlsym(handle, "grDisable"));
+  auto bufferClear =
+      reinterpret_cast<BufferClearFunc>(::dlsym(handle, "grBufferClear"));
+  auto clipWin =
+      reinterpret_cast<ClipWinFunc>(::dlsym(handle, "grClipWindow"));
+  auto vertexLayout =
+      reinterpret_cast<VertexLayoutFunc>(::dlsym(handle, "grVertexLayout"));
+  auto colorCombine =
+      reinterpret_cast<ColorCombineFunc>(::dlsym(handle, "grColorCombine"));
+  auto constColor =
+      reinterpret_cast<ConstColorFunc>(::dlsym(handle, "grConstantColorValue"));
+  auto depthMode =
+      reinterpret_cast<DepthModeFunc>(::dlsym(handle, "grDepthBufferMode"));
+  auto depthFunc =
+      reinterpret_cast<DepthFuncFunc>(::dlsym(handle, "grDepthBufferFunction"));
+  auto depthMask =
+      reinterpret_cast<DepthMaskFunc>(::dlsym(handle, "grDepthMask"));
+  auto drawTri =
+      reinterpret_cast<DrawTriFunc>(::dlsym(handle, "grDrawTriangle"));
+  auto lfbRead =
+      reinterpret_cast<LfbReadFunc>(::dlsym(handle, "grLfbReadRegion"));
+  auto lfbWrite =
+      reinterpret_cast<LfbWriteFunc>(::dlsym(handle, "grLfbWriteRegion"));
+  auto getState =
+      reinterpret_cast<GetStateFunc>(::dlsym(handle, "grGlideGetState"));
+  auto setState =
+      reinterpret_cast<SetStateFunc>(::dlsym(handle, "grGlideSetState"));
+  auto grGetFn = reinterpret_cast<GetFunc>(::dlsym(handle, "grGet"));
+
+  REQUIRE(glideInit != nullptr);
+  REQUIRE(sstSelect != nullptr);
+  REQUIRE(getProc != nullptr);
+  REQUIRE(winOpen != nullptr);
+  REQUIRE(winClose != nullptr);
+  REQUIRE(glideShutdown != nullptr);
+  REQUIRE(grEnableFn != nullptr);
+  REQUIRE(grDisableFn != nullptr);
+  REQUIRE(bufferClear != nullptr);
+  REQUIRE(clipWin != nullptr);
+  REQUIRE(vertexLayout != nullptr);
+  REQUIRE(colorCombine != nullptr);
+  REQUIRE(constColor != nullptr);
+  REQUIRE(depthMode != nullptr);
+  REQUIRE(depthFunc != nullptr);
+  REQUIRE(depthMask != nullptr);
+  REQUIRE(drawTri != nullptr);
+  REQUIRE(lfbRead != nullptr);
+  REQUIRE(lfbWrite != nullptr);
+  REQUIRE(getState != nullptr);
+  REQUIRE(setState != nullptr);
+  REQUIRE(grGetFn != nullptr);
+
+  struct AaVertex {
+    float x, y, ooz, oow;
+  };
+
+  auto makeQuad = [&](float x0, float y0, float x1, float y1, float z,
+                      GrColor_t col) {
+    constColor(col);
+    AaVertex v0{x0, y0, z, 1.0f};
+    AaVertex v1{x1, y0, z, 1.0f};
+    AaVertex v2{x1, y1, z, 1.0f};
+    AaVertex v3{x0, y1, z, 1.0f};
+    drawTri(&v0, &v1, &v2);
+    drawTri(&v0, &v2, &v3);
+  };
+
+  // 1. Dynamic extension lookup (all 8 PIXEXT entry points required by 3dfx
+  //    tlib / Napalm demos such as Museum) & 4-sample context via
+  //    grSstWinOpenExt under Voodoo5 profile.
+  const char* origCard = std::getenv("GLIDE_NG_CARD_MODEL");
+  std::string savedCard = origCard ? origCard : "";
+  ::setenv("GLIDE_NG_CARD_MODEL", "voodoo5", 1);
+
+  glideInit();
+  char winOpenExtName[] = "grSstWinOpenExt";
+  char tbufMaskName[] = "grTBufferWriteMaskExt";
+  char colorMaskExtName[] = "grColorMaskExt";
+  char stencilFuncExtName[] = "grStencilFuncExt";
+  char stencilMaskExtName[] = "grStencilMaskExt";
+  char stencilOpExtName[] = "grStencilOpExt";
+  char bufClearExtName[] = "grBufferClearExt";
+  char lfbStencilExtName[] = "grLfbConstantStencilExt";
+  auto winOpenExt = reinterpret_cast<WinOpenExtFunc>(
+      reinterpret_cast<void*>(getProc(winOpenExtName)));
+  auto tbufMaskExt = reinterpret_cast<TBufferMaskFunc>(
+      reinterpret_cast<void*>(getProc(tbufMaskName)));
+  REQUIRE(winOpenExt != nullptr);
+  REQUIRE(tbufMaskExt != nullptr);
+  CHECK(getProc(colorMaskExtName) != nullptr);
+  CHECK(getProc(stencilFuncExtName) != nullptr);
+  CHECK(getProc(stencilMaskExtName) != nullptr);
+  CHECK(getProc(stencilOpExtName) != nullptr);
+  CHECK(getProc(bufClearExtName) != nullptr);
+  CHECK(getProc(lfbStencilExtName) != nullptr);
+
+  sstSelect(0);
+  FxU32 ctx =
+      winOpenExt(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz, GR_COLORFORMAT_ARGB,
+                 GR_ORIGIN_UPPER_LEFT, GR_PIXFMT_AA_4_RGB_565, 2, 1);
+  REQUIRE(ctx != 0);
+
+  auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
+  REQUIRE(backend != nullptr);
+  CHECK(backend->GetMsaaSamples() >= 4u);
+  CHECK(backend->GetGuestWidth() == 640u);
+  CHECK(backend->GetGuestHeight() == 480u);
+
+  vertexLayout(GR_PARAM_XY, static_cast<FxI32>(offsetof(AaVertex, x)),
+               GR_PARAM_ENABLE);
+  vertexLayout(GR_PARAM_Z, static_cast<FxI32>(offsetof(AaVertex, ooz)),
+               GR_PARAM_ENABLE);
+  vertexLayout(GR_PARAM_Q, static_cast<FxI32>(offsetof(AaVertex, oow)),
+               GR_PARAM_ENABLE);
+  colorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+               GR_COMBINE_LOCAL_CONSTANT, GR_COMBINE_OTHER_NONE, FXFALSE);
+
+  // 2. Single-frame split-screen live GR_AA_MULTI_SAMPLE toggle (Kitty Hawk F9):
+  //    Left half (AA OFF) must produce strictly binary aliased edges;
+  //    Right half (AA ON) must produce genuine intermediate blended edge pixels.
+  clipWin(0, 0, 640, 480);
+  tbufMaskExt(0xFu);
+  depthMode(GR_DEPTHBUFFER_DISABLE);
+  bufferClear(0xFF000000u, 0xFF, 0xFFFFu);
+
+  constColor(0xFFFF0000u);  // Pure Red (ARGB)
+
+  // Left half: AA OFF
+  grDisableFn(GR_AA_MULTI_SAMPLE);
+  clipWin(0, 0, 320, 480);
+  {
+    AaVertex a{40.0f, 100.0f, 0.5f, 1.0f};
+    AaVertex b{260.0f, 190.0f, 0.5f, 1.0f};
+    AaVertex c{40.0f, 340.0f, 0.5f, 1.0f};
+    drawTri(&a, &b, &c);
+  }
+
+  // Right half: AA ON
+  grEnableFn(GR_AA_MULTI_SAMPLE);
+  clipWin(320, 0, 640, 480);
+  {
+    AaVertex a{360.0f, 100.0f, 0.5f, 1.0f};
+    AaVertex b{580.0f, 190.0f, 0.5f, 1.0f};
+    AaVertex c{360.0f, 340.0f, 0.5f, 1.0f};
+    drawTri(&a, &b, &c);
+  }
+
+  std::vector<uint32_t> frame(640u * 480u, 0u);
+  REQUIRE(lfbRead(GR_BUFFER_BACKBUFFER, 0, 0, 640, 480, 640 * 4,
+                  frame.data()) == FXTRUE);
+
+  auto pxAt = [&](uint32_t x, uint32_t y) -> uint32_t {
+    return frame[y * 640u + x];
+  };
+
+  // Both interiors must be solid Red
+  CHECK(((pxAt(100, 200) >> 16) & 0xFFu) > 240u);
+  CHECK(((pxAt(100, 200) >> 8) & 0xFFu) < 10u);
+  CHECK(((pxAt(420, 200) >> 16) & 0xFFu) > 240u);
+  CHECK(((pxAt(420, 200) >> 8) & 0xFFu) < 10u);
+
+  uint32_t leftIntermediate = 0;
+  uint32_t rightIntermediate = 0;
+  for (uint32_t y = 90; y < 350; ++y) {
+    for (uint32_t x = 30; x < 280; ++x) {
+      uint32_t r = (pxAt(x, y) >> 16) & 0xFFu;
+      if (r > 20u && r < 235u) ++leftIntermediate;
+    }
+    for (uint32_t x = 350; x < 600; ++x) {
+      uint32_t r = (pxAt(x, y) >> 16) & 0xFFu;
+      if (r > 20u && r < 235u) ++rightIntermediate;
+    }
+  }
+  CHECK(leftIntermediate == 0u);
+  CHECK(rightIntermediate >= 40u);
+
+  // 3. Authentic VSA-100 T-Buffer sample masking + sample-masked grBufferClear
+  //    + per-sample depth isolation (Rocket Burger Motion Blur / DoF pattern).
+  clipWin(0, 0, 640, 480);
+  grEnableFn(GR_AA_MULTI_SAMPLE);
+  depthMode(GR_DEPTHBUFFER_ZBUFFER);
+  depthFunc(GR_CMP_LESS);
+  depthMask(FXTRUE);
+  tbufMaskExt(0xFu);
+  bufferClear(0xFF000000u, 0xFF, 0xFFFFu);
+
+  // Samples 0 & 1: masked clear to Red (depth 1.0), draw closer Green at z=0.25
+  tbufMaskExt(0x3u);
+  bufferClear(0xFFFF0000u, 0xFF, 0xFFFFu);
+  makeQuad(100.0f, 100.0f, 200.0f, 200.0f, 0.25f * 65535.0f, 0xFF00FF00u);
+
+  // Samples 2 & 3: masked clear to Blue (depth 1.0), draw deeper Red at z=0.75
+  // (must NOT be occluded by z=0.25 written only to samples 0 & 1!).
+  tbufMaskExt(0xCu);
+  bufferClear(0xFF0000FFu, 0xFF, 0xFFFFu);
+  makeQuad(100.0f, 100.0f, 200.0f, 200.0f, 0.75f * 65535.0f, 0xFFFF0000u);
+
+  tbufMaskExt(0xFu);
+  REQUIRE(lfbRead(GR_BUFFER_BACKBUFFER, 0, 0, 640, 480, 640 * 4,
+                  frame.data()) == FXTRUE);
+
+  // Background (samples 0,1 = Red, samples 2,3 = Blue) -> Purple (~127, 0, ~127)
+  {
+    const uint32_t bg = pxAt(30, 30);
+    const uint32_t r = (bg >> 16) & 0xFFu;
+    const uint32_t g = (bg >> 8) & 0xFFu;
+    const uint32_t b = bg & 0xFFu;
+    CHECK(r >= 110u);
+    CHECK(r <= 145u);
+    CHECK(g < 15u);
+    CHECK(b >= 110u);
+    CHECK(b <= 145u);
+  }
+  // Center quad (samples 0,1 = Green z=0.25, samples 2,3 = Red z=0.75) ->
+  // Yellow-Olive (~127, ~127, 0)
+  {
+    const uint32_t mid = pxAt(150, 150);
+    const uint32_t r = (mid >> 16) & 0xFFu;
+    const uint32_t g = (mid >> 8) & 0xFFu;
+    const uint32_t b = mid & 0xFFu;
+    CHECK(r >= 110u);
+    CHECK(r <= 145u);
+    CHECK(g >= 110u);
+    CHECK(g <= 145u);
+    CHECK(b < 15u);
+  }
+
+  // 4. Guest-coordinate clipped grBufferClear + grLfbWriteRegion under 4-sample
+  //    AA (verifies Software 2x2 SSAA + GPU 4x MSAA exact coordinate parity).
+  depthMode(GR_DEPTHBUFFER_DISABLE);
+  clipWin(0, 0, 640, 480);
+  bufferClear(0xFF000000u, 0xFF, 0xFFFFu);
+
+  clipWin(319, 0, 321, 480);
+  bufferClear(0xFFFFFF00u, 0xFF, 0xFFFFu);  // 2px Yellow divider
+
+  std::vector<uint16_t> cyanTile(16u * 16u, 0x07FFu);  // RGB565 Cyan
+  REQUIRE(lfbWrite(GR_BUFFER_BACKBUFFER, 500, 400, GR_LFB_SRC_FMT_565, 16, 16,
+                   FXFALSE, 16 * 2, cyanTile.data()) == FXTRUE);
+
+  REQUIRE(lfbRead(GR_BUFFER_BACKBUFFER, 0, 0, 640, 480, 640 * 4,
+                  frame.data()) == FXTRUE);
+  {
+    const uint32_t divPx = pxAt(320, 240);
+    CHECK(((divPx >> 16) & 0xFFu) > 230u);
+    CHECK(((divPx >> 8) & 0xFFu) > 230u);
+    CHECK((divPx & 0xFFu) < 20u);
+
+    const uint32_t outsideDiv = pxAt(310, 240);
+    CHECK(((outsideDiv >> 16) & 0xFFu) < 20u);
+    CHECK(((outsideDiv >> 8) & 0xFFu) < 20u);
+
+    const uint32_t lfbPx = pxAt(508, 408);
+    CHECK(((lfbPx >> 16) & 0xFFu) < 20u);
+    CHECK(((lfbPx >> 8) & 0xFFu) > 230u);
+    CHECK((lfbPx & 0xFFu) > 230u);
+  }
+
+  // 5. grGlideGetState / grGlideSetState preserves T-Buffer write mask
+  FxI32 stateSize = 0;
+  REQUIRE(grGetFn(GR_GLIDE_STATE_SIZE, 4, &stateSize) == 4u);
+  REQUIRE(stateSize > 0);
+  std::vector<uint8_t> savedState(static_cast<size_t>(stateSize), 0u);
+  clipWin(0, 0, 640, 480);
+  tbufMaskExt(0x5u);  // 2 of 4 samples (bits 0 and 2)
+  getState(savedState.data());
+
+  tbufMaskExt(0xFu);
+  bufferClear(0xFF000000u, 0xFF, 0xFFFFu);
+  setState(savedState.data());  // Restores tbufMask = 0x5
+  bufferClear(0xFF00FF00u, 0xFF, 0xFFFFu);  // Masked clear -> 2/4 Green = ~127
+  tbufMaskExt(0xFu);
+
+  uint32_t statePx = 0u;
+  REQUIRE(lfbRead(GR_BUFFER_BACKBUFFER, 50, 50, 1, 1, 4, &statePx) == FXTRUE);
+  {
+    const uint32_t g = (statePx >> 8) & 0xFFu;
+    CHECK(g >= 110u);
+    CHECK(g <= 145u);
+  }
+
+  winClose(ctx);
+  glideShutdown();
+
+  // 6. Forced GLIDE_NG_MSAA=4 parity on standard grSstWinOpen across all 3
+  //    backends (Vulkan, OpenGL ES, Software 2x2 SSAA).
+  const char* origMsaa = std::getenv("GLIDE_NG_MSAA");
+  std::string savedMsaa = origMsaa ? origMsaa : "";
+  const char* origSwAa = std::getenv("GLIDE_NG_SW_AA");
+  std::string savedSwAa = origSwAa ? origSwAa : "";
+  ::unsetenv("GLIDE_NG_SW_AA");
+  ::setenv("GLIDE_NG_MSAA", "4", 1);
+
+  glideInit();
+  sstSelect(0);
+  FxU32 ctxForced =
+      winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz, GR_COLORFORMAT_ARGB,
+              GR_ORIGIN_UPPER_LEFT, 2, 1);
+  REQUIRE(ctxForced != 0);
+  auto* backendForced =
+      GlideWrapper::BackendManager::GetInstance().GetBackend();
+  REQUIRE(backendForced != nullptr);
+  CHECK(backendForced->GetMsaaSamples() >= 4u);
+  winClose(ctxForced);
+  glideShutdown();
+
+  if (origMsaa) {
+    ::setenv("GLIDE_NG_MSAA", savedMsaa.c_str(), 1);
+  } else {
+    ::unsetenv("GLIDE_NG_MSAA");
+  }
+  if (origSwAa) {
+    ::setenv("GLIDE_NG_SW_AA", savedSwAa.c_str(), 1);
+  } else {
+    ::unsetenv("GLIDE_NG_SW_AA");
+  }
+  if (origCard) {
+    ::setenv("GLIDE_NG_CARD_MODEL", savedCard.c_str(), 1);
+  } else {
+    ::unsetenv("GLIDE_NG_CARD_MODEL");
+  }
+
+  ::dlclose(handle);
+#endif
+}
+
+TEST_CASE(
+    "Voodoo4 Profile, Unknown Card Warning & Strict Card-Model Extension "
+    "Gating",
+    "[Glide3][CardGating][Voodoo4]") {
+#ifdef __linux__
+  const char* origCard = std::getenv("GLIDE_NG_CARD_MODEL");
+  std::string savedCard = origCard ? origCard : "";
+  const char* origApi = std::getenv("GLIDE_NG_API_VERSION");
+  std::string savedApi = origApi ? origApi : "";
+  const char* origMsaa = std::getenv("GLIDE_NG_MSAA");
+  std::string savedMsaa = origMsaa ? origMsaa : "";
+
+  auto restoreEnv = [&]() {
+    if (origCard) {
+      ::setenv("GLIDE_NG_CARD_MODEL", savedCard.c_str(), 1);
+    } else {
+      ::unsetenv("GLIDE_NG_CARD_MODEL");
+    }
+    if (origApi) {
+      ::setenv("GLIDE_NG_API_VERSION", savedApi.c_str(), 1);
+    } else {
+      ::unsetenv("GLIDE_NG_API_VERSION");
+    }
+    if (origMsaa) {
+      ::setenv("GLIDE_NG_MSAA", savedMsaa.c_str(), 1);
+    } else {
+      ::unsetenv("GLIDE_NG_MSAA");
+    }
+  };
+
+  // 1. IniConfigLoader: Voodoo4 hardware defaults & unknown card warning
+  {
+    ::unsetenv("GLIDE_NG_API_VERSION");
+    ::setenv("GLIDE_NG_CARD_MODEL", "voodoo4", 1);
+    GlideWrapper::IniConfigLoader loader;
+    GlideWrapper::WrapperConfig cfg;
+    loader.Load("/nonexistent_v4_check.ini", cfg);
+    CHECK(cfg.model == GlideWrapper::CardModel::Voodoo4);
+    CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_61);
+    CHECK(cfg.fbiMemoryMb == 32u);
+    CHECK(cfg.tmuMemoryMb == 16u);
+    CHECK(cfg.tmuCount == 2u);
+    CHECK(cfg.invalidConfigValues.empty());
+  }
+  {
+    ::setenv("GLIDE_NG_CARD_MODEL", "voodoo99_unknown", 1);
+    GlideWrapper::IniConfigLoader loader;
+    GlideWrapper::WrapperConfig cfg;
+    loader.Load("/nonexistent_v4_check.ini", cfg);
+    CHECK(cfg.model == GlideWrapper::CardModel::Voodoo2);
+    REQUIRE(!cfg.invalidConfigValues.empty());
+    CHECK(cfg.invalidConfigValues[0].find("voodoo99_unknown") !=
+          std::string::npos);
+  }
+
+  // 2. Glide 3.x grGetProcAddress gating across card profiles
+  {
+    void* handle = OpenGlide3Handle();
+    REQUIRE(handle != nullptr);
+
+    using InitFunc = void (*)(void);
+    using SelectSstFunc = void (*)(int);
+    using GetProcAddrFunc = GrProc (*)(char*);
+    using GetStringFunc = const char* (*)(FxU32);
+    using WinOpenExtFunc = FxU32 (*)(FxU32, FxI32, FxI32, FxI32, FxI32,
+                                     GrPixelFormat_t, int, int);
+    using WinCloseFunc = FxBool (*)(FxU32);
+    using ShutdownFunc = void (*)(void);
+
+    auto glideInit =
+        reinterpret_cast<InitFunc>(::dlsym(handle, "grGlideInit"));
+    auto sstSelect =
+        reinterpret_cast<SelectSstFunc>(::dlsym(handle, "grSstSelect"));
+    auto getProc =
+        reinterpret_cast<GetProcAddrFunc>(::dlsym(handle, "grGetProcAddress"));
+    auto getString =
+        reinterpret_cast<GetStringFunc>(::dlsym(handle, "grGetString"));
+    auto winClose =
+        reinterpret_cast<WinCloseFunc>(::dlsym(handle, "grSstWinClose"));
+    auto glideShutdown =
+        reinterpret_cast<ShutdownFunc>(::dlsym(handle, "grGlideShutdown"));
+    REQUIRE(glideInit != nullptr);
+    REQUIRE(sstSelect != nullptr);
+    REQUIRE(getProc != nullptr);
+    REQUIRE(getString != nullptr);
+    REQUIRE(winClose != nullptr);
+    REQUIRE(glideShutdown != nullptr);
+
+    const char* pixextProcs[] = {
+        "grSstWinOpenExt",      "grTBufferWriteMaskExt",
+        "grColorMaskExt",       "grBufferClearExt",
+        "grStencilFuncExt",     "grStencilMaskExt",
+        "grStencilOpExt",       "grLfbConstantStencilExt",
+    };
+
+    auto probeProc = [&](const char* name) -> GrProc {
+      char buf[64];
+      std::snprintf(buf, sizeof(buf), "%s", name);
+      return getProc(buf);
+    };
+
+    // Voodoo1: CHROMARANGE OK, TEXCHROMA & PIXEXT gated out
+    ::unsetenv("GLIDE_NG_API_VERSION");
+    ::setenv("GLIDE_NG_CARD_MODEL", "voodoo1", 1);
+    glideInit();
+    CHECK(probeProc("grChromaRangeModeExt") != nullptr);
+    CHECK(probeProc("grTexChromaModeExt") == nullptr);
+    for (const char* p : pixextProcs) {
+      CHECK(probeProc(p) == nullptr);
+    }
+    glideShutdown();
+
+    // Voodoo2 & Voodoo3: TEXCHROMA OK, all 8 PIXEXT procs gated out
+    for (const char* card : {"voodoo2", "voodoo3"}) {
+      ::setenv("GLIDE_NG_CARD_MODEL", card, 1);
+      glideInit();
+      CHECK(probeProc("grChromaRangeModeExt") != nullptr);
+      CHECK(probeProc("grTexChromaModeExt") != nullptr);
+      for (const char* p : pixextProcs) {
+        CHECK(probeProc(p) == nullptr);
+      }
+      glideShutdown();
+    }
+
+    // Voodoo4: all 8 PIXEXT procs available, GR_EXTENSION lists PIXEXT,
+    // and requesting 4x AA via grSstWinOpenExt clamps to 2x (single VSA-100).
+    ::unsetenv("GLIDE_NG_MSAA");
+    ::setenv("GLIDE_NG_CARD_MODEL", "voodoo4", 1);
+    glideInit();
+    const char* extV4 = getString(0xa0);
+    REQUIRE(extV4 != nullptr);
+    CHECK(std::string(extV4).find("PIXEXT") != std::string::npos);
+    for (const char* p : pixextProcs) {
+      CHECK(probeProc(p) != nullptr);
+    }
+    auto winOpenExt = reinterpret_cast<WinOpenExtFunc>(
+        reinterpret_cast<void*>(probeProc("grSstWinOpenExt")));
+    REQUIRE(winOpenExt != nullptr);
+    sstSelect(0);
+    FxU32 ctxV4 = winOpenExt(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                             GR_COLORFORMAT_ARGB, GR_ORIGIN_UPPER_LEFT,
+                             GR_PIXFMT_AA_4_RGB_565, 2, 1);
+    REQUIRE(ctxV4 != 0);
+    auto* backendV4 =
+        GlideWrapper::BackendManager::GetInstance().GetBackend();
+    REQUIRE(backendV4 != nullptr);
+    // Single VSA-100 caps requested AA to 2x (host backends allocate >= 2
+    // samples: e.g., 2x MSAA on Vulkan/GLES where supported, or 4x where the
+    // backend uses a 2x2 SSAA grid / 4x-minimum MSAA hardware).
+    CHECK(backendV4->GetMsaaSamples() >= 2u);
+    CHECK(backendV4->GetMsaaSamples() <= 4u);
+    winClose(ctxV4);
+    glideShutdown();
+
+    ::dlclose(handle);
+  }
+
+  // 3. Glide 2.x: Voodoo1 does NOT advertise TEXCHROMA; VSA-100 procs gated to
+  //    Voodoo4+
+  {
+    void* handle = OpenGlide2Handle();
+    REQUIRE(handle != nullptr);
+
+    using InitFunc = void (*)(void);
+    using GetStringFunc = const char* (*)(FxU32);
+    using GetProcAddrFunc = GrProc (*)(char*);
+    using ShutdownFunc = void (*)(void);
+
+    auto glideInit =
+        reinterpret_cast<InitFunc>(::dlsym(handle, "grGlideInit"));
+    auto getString =
+        reinterpret_cast<GetStringFunc>(::dlsym(handle, "grGetString"));
+    auto getProc =
+        reinterpret_cast<GetProcAddrFunc>(::dlsym(handle, "grGetProcAddress"));
+    auto glideShutdown =
+        reinterpret_cast<ShutdownFunc>(::dlsym(handle, "grGlideShutdown"));
+    REQUIRE(glideInit != nullptr);
+    REQUIRE(getString != nullptr);
+    REQUIRE(getProc != nullptr);
+    REQUIRE(glideShutdown != nullptr);
+
+    auto probeProc = [&](const char* name) -> GrProc {
+      char buf[64];
+      std::snprintf(buf, sizeof(buf), "%s", name);
+      return getProc(buf);
+    };
+
+    ::unsetenv("GLIDE_NG_API_VERSION");
+    ::setenv("GLIDE_NG_CARD_MODEL", "voodoo1", 1);
+    glideInit();
+    const char* extV1 = getString(0xa0);
+    REQUIRE(extV1 != nullptr);
+    CHECK(std::string(extV1).find("TEXCHROMA") == std::string::npos);
+    CHECK(probeProc("grTexChromaModeExt") == nullptr);
+    CHECK(probeProc("grTBufferWriteMaskExt") == nullptr);
+    glideShutdown();
+
+    ::setenv("GLIDE_NG_CARD_MODEL", "voodoo3", 1);
+    glideInit();
+    CHECK(probeProc("grTexChromaModeExt") != nullptr);
+    CHECK(probeProc("grTBufferWriteMaskExt") == nullptr);
+    glideShutdown();
+
+    ::setenv("GLIDE_NG_CARD_MODEL", "voodoo4", 1);
+    glideInit();
+    CHECK(probeProc("grTBufferWriteMaskExt") != nullptr);
+    glideShutdown();
+
+    ::dlclose(handle);
+  }
+
+  restoreEnv();
 #endif
 }

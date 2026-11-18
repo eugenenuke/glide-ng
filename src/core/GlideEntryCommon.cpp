@@ -80,8 +80,8 @@ void MaybeCaptureSnapshot(IGraphicsBackend* backend) {
     return;
   }
 
-  const uint32_t w = backend->GetWidth();
-  const uint32_t h = backend->GetHeight();
+  const uint32_t w = backend->GetGuestWidth();
+  const uint32_t h = backend->GetGuestHeight();
   if (w == 0 || h == 0) return;
 
   std::vector<uint32_t> pixels(static_cast<size_t>(w) * h, 0u);
@@ -1054,8 +1054,8 @@ void RenderShamelessPlug() {
   uint32_t scrWidth = 640;
   uint32_t scrHeight = 480;
   if (auto* backend = BackendManager::GetInstance().GetBackend()) {
-    scrWidth = backend->GetWidth();
-    scrHeight = backend->GetHeight();
+    scrWidth = backend->GetGuestWidth();
+    scrHeight = backend->GetGuestHeight();
   }
   if (auto* animator = BackendManager::GetInstance().GetSplashAnimator()) {
     animator->RenderBanner(scrWidth, scrHeight);

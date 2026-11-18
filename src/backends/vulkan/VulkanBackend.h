@@ -1,12 +1,23 @@
 #pragma once
 
+#include <cstdint>
 #include <functional>
 #include <mutex>
+#include <type_traits>
 #include <unordered_map>
 #include <vector>
 #if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #ifndef VK_USE_PLATFORM_WIN32_KHR
 #define VK_USE_PLATFORM_WIN32_KHR
+#endif
+#ifndef VULKAN_HPP_DISPATCH_LOADER_DYNAMIC
+#define VULKAN_HPP_DISPATCH_LOADER_DYNAMIC 1
 #endif
 #endif
 #include <vulkan/vulkan.hpp>
@@ -140,20 +151,26 @@ struct DescriptorKey {
   }
 };
 
+template <typename VkHandle>
+inline uint64_t VkHandleToU64(VkHandle h) {
+  if constexpr (std::is_pointer_v<VkHandle>) {
+    return static_cast<uint64_t>(reinterpret_cast<std::uintptr_t>(h));
+  } else {
+    return static_cast<uint64_t>(h);
+  }
+}
+
 struct DescriptorKeyHash {
   std::size_t operator()(const DescriptorKey& k) const {
     std::size_t h = 0;
-    auto combine = [&h](std::size_t val) {
-      h ^= val + 0x9e3779b9 + (h << 6) + (h >> 2);
+    auto combine = [&h](uint64_t val) {
+      std::size_t hv = std::hash<uint64_t>{}(val);
+      h ^= hv + 0x9e3779b9 + (h << 6) + (h >> 2);
     };
-    combine(reinterpret_cast<std::uintptr_t>(
-        static_cast<VkImageView>(k.imageView0)));
-    combine(
-        reinterpret_cast<std::uintptr_t>(static_cast<VkSampler>(k.sampler0)));
-    combine(reinterpret_cast<std::uintptr_t>(
-        static_cast<VkImageView>(k.imageView1)));
-    combine(
-        reinterpret_cast<std::uintptr_t>(static_cast<VkSampler>(k.sampler1)));
+    combine(VkHandleToU64(static_cast<VkImageView>(k.imageView0)));
+    combine(VkHandleToU64(static_cast<VkSampler>(k.sampler0)));
+    combine(VkHandleToU64(static_cast<VkImageView>(k.imageView1)));
+    combine(VkHandleToU64(static_cast<VkSampler>(k.sampler1)));
     return h;
   }
 };
@@ -170,6 +187,8 @@ struct PipelineStateKey {
   uint32_t alphaDstBlend{0};
   bool colorMaskRgb{false};
   bool colorMaskAlpha{false};
+  bool singleSample{false};
+  uint32_t sampleMask{0xFFFFFFFFu};
 
   bool operator==(const PipelineStateKey& other) const {
     return cullMode == other.cullMode && sstOrigin == other.sstOrigin &&
@@ -180,7 +199,9 @@ struct PipelineStateKey {
            alphaSrcBlend == other.alphaSrcBlend &&
            alphaDstBlend == other.alphaDstBlend &&
            colorMaskRgb == other.colorMaskRgb &&
-           colorMaskAlpha == other.colorMaskAlpha;
+           colorMaskAlpha == other.colorMaskAlpha &&
+           singleSample == other.singleSample &&
+           sampleMask == other.sampleMask;
   }
 };
 
@@ -201,13 +222,15 @@ struct PipelineStateKeyHash {
     combine(k.alphaDstBlend);
     combine(k.colorMaskRgb ? 1 : 0);
     combine(k.colorMaskAlpha ? 1 : 0);
+    combine(k.singleSample ? 1 : 0);
+    combine(k.sampleMask);
     return h;
   }
 };
 
-// Pack state key (11 fields) and topology (3 bits) into a single uint32_t
-// bitmask (30 bits total)
-using PipelineCacheKey = uint32_t;
+// Pack state key (13 fields) and topology (3 bits) into a single uint64_t
+// bitmask (47 bits total)
+using PipelineCacheKey = uint64_t;
 
 /**
  * @brief Concrete production Vulkan translation engine.
@@ -255,6 +278,8 @@ class VulkanBackend : public GlideStateTracker {
   void SetClipWindow(uint32_t minX, uint32_t minY, uint32_t maxX,
                      uint32_t maxY) override;
   void SetColorMask(bool rgb, bool alpha) override;
+  void SetAAMultiSample(bool enabled) override;
+  void SetTBufferWriteMask(uint32_t mask) override;
   void SetDepthRange(float nearVal, float farVal) override;
   void SetDitherMode(uint32_t mode) override;
   void SetStippleState(uint32_t mode, uint32_t pattern) override;
@@ -331,6 +356,17 @@ class VulkanBackend : public GlideStateTracker {
                              vk::ImageSubresourceRange range);
   void FlushLFBToGPU_Locked();
   void FlushBatch(bool fromStateFlush = false);
+  uint32_t ResolveEffectiveMsaaSamples_Locked() const;
+  uint32_t GetEffectiveSampleMask_Locked() const;
+  bool ShouldUseSingleSamplePass_Locked() const;
+  void ResolveMsaaToSingle_Locked(uint32_t gpuIdx);
+  bool InitMsaaCopyResources_Locked();
+  void DestroyMsaaCopyResources_Locked();
+  void CopySingleToMsaa_Locked(uint32_t gpuIdx);
+  void DrawMaskedClearQuad_Locked(float r, float g, float b, float a, float z,
+                                  bool doColorClear, bool doDepthClear,
+                                  uint32_t sampleMask,
+                                  const vk::Rect2D& clipRect);
   uint32_t GetActiveGpuBufferIdx() const {
     return (m_activeRenderBuffer == 0) ? 1u : 0u;
   }
@@ -360,6 +396,7 @@ class VulkanBackend : public GlideStateTracker {
 
   // Render Pass abstraction
   vk::UniqueRenderPass m_renderPass;
+  vk::UniqueRenderPass m_singleSampleRenderPass;
   vk::Format m_colorFormat{vk::Format::eB8G8R8A8Unorm};
 
   // Headless automated CI testing execution handles (Double-Buffered)
@@ -367,6 +404,7 @@ class VulkanBackend : public GlideStateTracker {
   vk::UniqueDeviceMemory m_headlessImageMemories[2];
   vk::UniqueImageView m_headlessImageViews[2];
   vk::UniqueFramebuffer m_headlessFramebuffers[2];
+  vk::UniqueFramebuffer m_singleSampleFramebuffers[2];
 
   // Headless depth attachment resources
   vk::UniqueImage m_depthImage;
@@ -442,6 +480,20 @@ class VulkanBackend : public GlideStateTracker {
 
   // Unified Frame Render Pass State
   bool m_inRenderPass{false};
+  bool m_activePassIsSingleSample{false};
+  uint32_t m_activePassGpuIdx{0};
+  bool m_msaaColorDirty[2]{false, false};
+  bool m_singleSampleColorDirty[2]{false, false};
+
+  // 1x -> MSAA color seed pipeline (used when transitioning from aliased 1x
+  // draws to MSAA draws within the same frame, e.g. split-screen AA toggle)
+  vk::UniqueSampler m_msaaCopySampler;
+  vk::UniqueDescriptorSetLayout m_msaaCopyDescSetLayout;
+  vk::UniqueDescriptorPool m_msaaCopyDescPool;
+  vk::DescriptorSet m_msaaCopyDescSets[2];
+  vk::ImageView m_msaaCopyBoundView[2];
+  vk::UniquePipelineLayout m_msaaCopyPipelineLayout;
+  vk::UniquePipeline m_msaaCopyPipeline;
 
   // Draw Batching State & Cached Draw Pipeline/Descriptor Handles
   uint32_t m_batchedVertexCount{0};
@@ -467,9 +519,13 @@ class VulkanBackend : public GlideStateTracker {
   float m_clearDepthValue[2]{1.0f, 1.0f};
   bool m_clearColorPending[2]{false, false};
   bool m_clearDepthPending[2]{false, false};
+  bool m_clearDepthPendingSingle[2]{false, false};
   // Dynamic Scissor Helper (caller must hold m_mutex)
   vk::Rect2D GetScissorRectVulkan_Locked();
-  void EnsureRenderPassActive();
+  void EnsureRenderPassActive(bool useSingleSample);
+  void EnsureRenderPassActive() {
+    EnsureRenderPassActive(ShouldUseSingleSamplePass_Locked());
+  }
   void PopulatePushConstants(PushConstants& pcs);
 
   vk::UniqueDescriptorSetLayout m_descriptorSetLayout;
@@ -555,12 +611,39 @@ class VulkanBackend : public GlideStateTracker {
   vk::DeviceSize m_lfbOverlayStagingSizes[2]{0, 0};
   vk::DeviceSize m_lfbOverlayStagingOffsets[2]{0, 0};
 
-  // Vulkan Gamma LUT State variables
+  // Vulkan Gamma LUT State variables & swapchain RAMDAC presentation pass
+  bool InitGammaPresentPipeline_Locked();
+  bool CreateGammaPresentSwapchainFramebuffers_Locked();
+  void DestroyGammaPresentSwapchainFramebuffers_Locked();
+  void DestroyGammaPresentResources_Locked();
+  bool EnsureGammaLutTexture_Locked();
+  bool PresentGammaToSwapchain_Locked(uint32_t activeIdx, uint32_t imageIdx,
+                                      const PresentRect& dst);
+
   float m_gammaCorrectionValue{1.0f};
   bool m_useGammaLut{false};
-  uint8_t m_lutR[256];
-  uint8_t m_lutG[256];
-  uint8_t m_lutB[256];
+  bool m_gammaLutDirty{true};
+  uint8_t m_lutR[256]{};
+  uint8_t m_lutG[256]{};
+  uint8_t m_lutB[256]{};
+  vk::Format m_gammaPresentPipelineFormat{vk::Format::eUndefined};
+  vk::UniqueRenderPass m_gammaPresentRenderPass;
+  std::vector<vk::UniqueFramebuffer> m_gammaPresentFramebuffers;
+  vk::UniqueDescriptorSetLayout m_gammaPresentDescSetLayout;
+  vk::UniqueDescriptorPool m_gammaPresentDescPool;
+  vk::DescriptorSet m_gammaPresentDescSets[2];
+  vk::ImageView m_gammaPresentBoundSrcView[2];
+  vk::UniquePipelineLayout m_gammaPresentPipelineLayout;
+  vk::UniquePipeline m_gammaPresentPipeline;
+  vk::UniqueSampler m_gammaSrcSampler;
+  vk::UniqueSampler m_gammaLutSampler;
+  vk::UniqueImage m_gammaLutImage;
+  vk::UniqueDeviceMemory m_gammaLutImageMemory;
+  vk::UniqueImageView m_gammaLutImageView;
+  vk::ImageLayout m_gammaLutImageLayout{vk::ImageLayout::eUndefined};
+  vk::UniqueBuffer m_gammaLutStagingBuffers[2];
+  vk::UniqueDeviceMemory m_gammaLutStagingMemories[2];
+  void* m_gammaLutStagingMaps[2]{nullptr, nullptr};
 
   // --- M3: Post-Scene On-Screen HUD Overlay (zero Glide state mutation) ---
   bool InitHudPipeline_Locked();

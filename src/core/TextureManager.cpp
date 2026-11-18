@@ -984,11 +984,13 @@ bool TextureManager::DownloadMipMapPartial(uint32_t tmu, uint32_t startAddress,
       break;
   }
 
-  if (startRow < 0 || startRow >= static_cast<int>(h) || endRow <= startRow ||
-      endRow > static_cast<int>(h)) {
+  if (endRow > static_cast<int>(h)) {
+    endRow = static_cast<int>(h);
+  }
+  if (startRow < 0 || startRow >= static_cast<int>(h) || endRow <= startRow) {
     GLIDE_LOG(WARN, "TextureManager",
-              "DownloadMipMapPartial: invalid row range "
-                  << startRow << ".." << endRow << " for height " << h);
+              "DownloadMipMapPartial: invalid row range ["
+                  << startRow << ".." << endRow << ") for height " << h);
     return false;
   }
 

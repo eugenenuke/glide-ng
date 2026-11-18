@@ -488,7 +488,9 @@ void RunWriteLFBParallel(uint32_t srcHeight, uint32_t dstX, uint32_t dstY,
                          const uint8_t* inBytes, const uint8_t* refBytes,
                          int32_t srcStride, const LfbPipelineConfig& config,
                          uint32_t& modifiedCount) {
+#ifdef _OPENMP
 #pragma omp parallel for reduction(+ : modifiedCount)
+#endif
   for (uint32_t y = 0; y < srcHeight; ++y) {
     uint32_t rowModifiedCount = 0;
     LfbRowProcessor<SrcFmt, ChromakeyEnabled, BlendEnabled,
