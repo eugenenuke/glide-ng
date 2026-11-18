@@ -12,7 +12,10 @@ cmake_install.cmake
 *.dll
 *.dylib
 
-# Logs
+# Compiled objects, binaries, logs, and caches
+*.o
+*.exe
+*.bin
 *.log
 **/*.log
 
@@ -35,33 +38,13 @@ tests/software_dumps/
 .idea/
 .DS_Store
 
-# Scratch and local configuration files
+# Local scratch, third-party toolchains, games, demos, and reference clones
 /scratch/
-/OpenGLid.*
-
-# Global compiled objects, binaries, logs, and caches
-*.o
-*.exe
-*.bin
-*.log
-
-# External test suites, demos, and third-party emulators
 /ext_tests/
-
-# Untracked local reference clones under refs/
-/refs/dosbox-x/
-/refs/mesa/
-/refs/openglide/
-/refs/openglide-ng/
-/refs/wrappers/
+/vendor/
+/OpenGLid.*
 
 # Runtime configuration and shader/pipeline cache files
 /glide-ng.ini
 .glide-ng-vkcache.bin
 .glide-vulkan-cache.bin
-
-# Local release build directories
-build_release/
-
-# Optional local DOS cross-compiler toolchain (Open Watcom v2)
-/vendor/watcom/

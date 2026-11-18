@@ -161,7 +161,6 @@ endif()
 target_include_directories(glide2x PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/../include/glide2"
     "${CMAKE_CURRENT_SOURCE_DIR}/../include/3dfx"
-    "${CMAKE_CURRENT_SOURCE_DIR}/../vendor/3dfx"
 )
 target_link_libraries(glide2x PRIVATE GlideWrapperCore)
 
