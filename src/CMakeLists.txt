@@ -16,7 +16,6 @@ set(CORE_SOURCES
     core/TextureManager.cpp
     core/Telemetry.cpp
     core/HudOverlay.cpp
-    core/EmbeddedAssets.cpp
     core/GlideSplashAnimator.cpp
     core/3dfParser.cpp
     core/MathUtils.cpp

@@ -5747,22 +5747,68 @@ TEST_CASE(
     assertColorClose(fb[50 * 640 + 50], 0x00FF0000);    // Red background
     assertColorClose(fb[240 * 640 + 320], 0x000000FF);  // Blue background
     assertColorClose(fb[430 * 640 + 50], 0x000000FF);   // Blue background
-    // Authentic 3dfx gbanner.c translucency: GR_BLEND_SRC_ALPHA (90/255) +
-    // GR_BLEND_ONE_MINUS_SRC_ALPHA (165/255) over the red/blue checkerboard.
-    assertColorClose(fb[450 * 640 + 550], 0xFFF65151);  // Logo over red
-    assertColorClose(fb[440 * 640 + 580], 0xFF1718BC);  // Logo over blue
-    assertColorClose(fb[450 * 640 + 600], 0xFF4E4DF3);  // Logo highlight over blue
-    assertColorClose(fb[460 * 640 + 620],
-                     0x00FF0000);  // Red background near edge
+    // Clean-room 180x90 Chrome & Amber Shield badge (dstX=460, dstY=389) with
+    // black (0x0000) chromakey and GR_BLEND_SRC_ALPHA (90/255) translucency:
+    // 1. Chromakey-transparent margin inside 180x90 box stays unblended.
+    {
+      uint32_t marginPx = fb[392 * 640 + 462];  // local (2, 3): pure chromakey
+      int mr = (marginPx >> 16) & 0xFF;
+      int mg = (marginPx >> 8) & 0xFF;
+      int mb = marginPx & 0xFF;
+      REQUIRE(mg <= 5);
+      REQUIRE((mr >= 245 || mb >= 245));
+    }
+    // 2. Amber pill region introduces green channel (~50) over pure red/blue
+    //    checkerboard (whose green channel is 0), proving alpha=90 blending.
+    {
+      uint32_t amberPx = fb[414 * 640 + 598];  // local (138, 25) in upper amber pill
+      int ag = (amberPx >> 8) & 0xFF;
+      REQUIRE(ag >= 25);
+    }
+    // 3. Verify substantial badge coverage (>4000 blended pixels in 180x90 box).
+    {
+      int blendedCount = 0;
+      for (int by = 389; by < 479; ++by) {
+        for (int bx = 460; bx < 640; ++bx) {
+          uint32_t px = fb[by * 640 + bx];
+          int pr = (px >> 16) & 0xFF;
+          int pg = (px >> 8) & 0xFF;
+          int pb = px & 0xFF;
+          bool pureRed = (pr > 240 && pg < 10 && pb < 10);
+          bool pureBlue = (pb > 240 && pg < 10 && pr < 10);
+          if (!pureRed && !pureBlue) {
+            ++blendedCount;
+          }
+        }
+      }
+      REQUIRE(blendedCount > 4000);
+    }
 
-    // Mode 1: Splash Screen
+    // Mode 1: Clean-Room 3D Chrome & Amber Shield Splash Screen
     renderMode1Frame(35);
     REQUIRE(readLfb(GR_BUFFER_FRONTBUFFER, 0, 0, 640, 480, 640 * 4,
                     fb.data()) == FXTRUE);
 
-    assertColorClose(fb[50 * 640 + 50], 0xFF000000);    // Black background
-    assertColorClose(fb[240 * 640 + 320], 0xFFC4C4C4);  // Center of logo
-    assertColorClose(fb[430 * 640 + 50], 0xFF000000);   // Black background
+    assertColorClose(fb[50 * 640 + 50], 0xFF000000);   // Black top-left sky
+    assertColorClose(fb[50 * 640 + 590], 0xFF000000);  // Black top-right sky
+    // Center of the spinning 3D shield around (320, 211) must be visibly lit
+    {
+      uint32_t centerPx = fb[211 * 640 + 320];
+      int cr = (centerPx >> 16) & 0xFF;
+      int cg = (centerPx >> 8) & 0xFF;
+      int cb = centerPx & 0xFF;
+      REQUIRE((cr + cg + cb) > 120);
+    }
+    // Whole splash (3D shield + perspective floor grid + "GLIDE NG" wordmark)
+    {
+      int litPixels = 0;
+      for (uint32_t px : fb) {
+        if ((px & 0x00FFFFFFu) != 0u) {
+          ++litPixels;
+        }
+      }
+      REQUIRE(litPixels > 10000);
+    }
 
     // Cleanup state
     glideShamelessPlug(FXFALSE);

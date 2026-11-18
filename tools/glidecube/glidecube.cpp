@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <cstdint>
 #include <chrono>
 #include <iostream>
 #include <vector>
@@ -11,9 +12,6 @@
 #include <glide.h>
 #include <sst1vid.h>
 #include <tlib.h>
-
-// Include our modernized embedded assets header
-#include "core/EmbeddedAssets.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -87,7 +85,7 @@ int main(int argc, char* argv[]) {
     // Initialize Glide, parse CLI, print header, and resolve resolution
     auto runConfig = Tools::InitializeAndParse(argc, argv, "Glide 3D Cube", {
         "[ESC]          Exit Tool",
-        "[ T ]          Toggle Cube Texture (Neon Grid / 3dfx Banner / 3dfx Splash Logo)",
+        "[ T ]          Toggle Cube Texture (Neon Grid / glide-ng Chrome & Amber Emblem)",
         "[ F ]          Toggle Bilinear Filtering Mode",
         "[ R ]          Toggle Continuous Rotation"
     });
@@ -139,23 +137,75 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    // 2. Official 3dfx Powershield Banner Texture (256x128 pixels, 16-bit RGB_565)
-    constexpr int banner_width = 180;
-    constexpr int banner_height = 90;
-    const unsigned short* banner_data = reinterpret_cast<const unsigned short*>(GlideWrapper::Assets::banner_raw);
-
-    // Pad the 180x90 banner data into a power-of-two 256x128 texture
-    std::vector<unsigned short> banner_tex_buf(256 * 128, 0x0000); // clear to black
-    int start_x = (256 - banner_width) / 2;
-    int start_y = (128 - banner_height) / 2;
-
-    for (int y = 0; y < banner_height; y++) {
-        for (int x = 0; x < banner_width; x++) {
-            int src_idx = y * banner_width + x;
-            int dst_idx = (y + start_y) * 256 + (x + start_x);
-            banner_tex_buf[dst_idx] = banner_data[src_idx];
+    // 2. Procedural glide-ng Chrome & Amber Shield Banner Texture (256x128 RGB_565)
+    auto pack565 = [](uint8_t r, uint8_t g, uint8_t b) -> unsigned short {
+        return static_cast<unsigned short>(((r & 0xF8u) << 8) | ((g & 0xFCu) << 3) | (b >> 3));
+    };
+    std::vector<unsigned short> banner_tex_buf(256 * 128, pack565(12, 16, 24));
+    for (int y = 0; y < 128; ++y) {
+        for (int x = 0; x < 256; ++x) {
+            if (((x % 16) == 0) || ((y % 16) == 0)) {
+                banner_tex_buf[y * 256 + x] = pack565(36, 26, 16);
+            }
         }
     }
+    // Slanted brushed-steel badge + amber NG pill centered inside 256x128
+    for (int y = 26; y <= 102; ++y) {
+        float ty = static_cast<float>(y - 26) / 76.0f;
+        int xl = static_cast<int>(lroundf(34.0f - 14.0f * ty));
+        int xr = static_cast<int>(lroundf(236.0f - 14.0f * ty));
+        bool tb = (y <= 29 || y >= 99);
+        for (int x = xl; x <= xr; ++x) {
+            bool lr = (x <= xl + 3 || x >= xr - 3);
+            banner_tex_buf[y * 256 + x] = (tb || lr)
+                ? pack565(212, 224, 236)
+                : pack565(static_cast<uint8_t>(42 - 18 * ty),
+                          static_cast<uint8_t>(52 - 22 * ty),
+                          static_cast<uint8_t>(68 - 28 * ty));
+        }
+    }
+    for (int y = 34; y <= 94; ++y) {
+        float ty = static_cast<float>(y - 34) / 60.0f;
+        int xl = static_cast<int>(lroundf(172.0f - 11.0f * ty));
+        int xr = static_cast<int>(lroundf(226.0f - 11.0f * ty));
+        for (int x = xl; x <= xr; ++x) {
+            banner_tex_buf[y * 256 + x] = pack565(255, static_cast<uint8_t>(160 - 44 * ty), 28);
+        }
+    }
+    for (int y = 84; y <= 87; ++y) {
+        for (int x = 40; x < 152; ++x) {
+            banner_tex_buf[y * 256 + x] = pack565(255, 209, 102);
+        }
+    }
+    static const struct { char ch; uint8_t rows[7]; } kCubeGlyphs[] = {
+        {'G', {0x0E,0x11,0x10,0x17,0x11,0x11,0x0E}},
+        {'L', {0x10,0x10,0x10,0x10,0x10,0x10,0x1F}},
+        {'I', {0x0E,0x04,0x04,0x04,0x04,0x04,0x0E}},
+        {'D', {0x1C,0x12,0x11,0x11,0x11,0x12,0x1C}},
+        {'E', {0x1F,0x10,0x10,0x1E,0x10,0x10,0x1F}},
+        {'N', {0x11,0x19,0x15,0x13,0x11,0x11,0x11}},
+    };
+    auto drawCubeText = [&](const char* txt, int sx, int sy, int sc, unsigned short col) {
+        int cx = sx;
+        for (const char* p = txt; *p; ++p) {
+            for (const auto& g : kCubeGlyphs) {
+                if (g.ch != *p) continue;
+                for (int r = 0; r < 7; ++r) {
+                    int slant = static_cast<int>(lroundf((6 - r) * 0.35f * sc));
+                    for (int c = 0; c < 5; ++c) {
+                        if (g.rows[r] & (1u << (4 - c))) {
+                            for (int dy = 0; dy < sc; ++dy)
+                                for (int dx = 0; dx < sc; ++dx)
+                                    banner_tex_buf[(sy + r * sc + dy) * 256 + (cx + c * sc + slant + dx)] = col;
+                        }
+                    }
+                }
+            }
+            cx += 6 * sc;
+        }
+    };
+    drawCubeText("GLIDE", 42, 46, 4, pack565(248, 250, 252));
+    drawCubeText("NG", 172, 46, 4, pack565(17, 24, 39));
 
     // Define Glide texture info structures
     GrTexInfo neon_tex_info;
@@ -301,7 +351,7 @@ int main(int argc, char* argv[]) {
                         cube_vertices[i].s = (cube_vertices[i].s > 0.0f) ? 256.0f : 0.0f;
                         cube_vertices[i].t = (cube_vertices[i].t > 0.0f) ? 128.0f : 0.0f;
                     }
-                    std::cout << "Swapped active texture to: Nostalgic 3dfx Banner Logo\r\n";
+                    std::cout << "Swapped active texture to: glide-ng Chrome & Amber Emblem\r\n";
                 }
             }
         }

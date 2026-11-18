@@ -19,7 +19,8 @@ Forward-looking engineering roadmap for `glide-ng`. Completed pre-beta work is a
   - `[~]` Remove third-party binaries/PDFs (`refs/`), ad-hoc `scratch/` scripts, and local-only `.gitmodules` from git (preserving local references under git-ignored `vendor/refs/`).
   - `[~]` Establish single-source SemVer 2.0 versioning (`VERSION` = `0.8.0-beta.1`), tag-aware `build_version.h`, Win32 PE `VS_VERSION_INFO`, `scripts/bump_version.sh`, and `[M13][Version]` Catch2 test.
   - `[~]` Add `.agents/skills/tech-writer/SKILL.md` and refactor `docs/` into `user-guide/`, `developer-guide/`, `catalog/`, `HISTORY.md`, `ROADMAP.md`, and root `CHANGELOG.md`.
-  - `[ ]` Post-merge: scrub historical third-party/dump blobs from git pack history (`git filter-repo`) and publish annotated tag `v0.8.0-beta.1`.
+  - `[~]` Establish pure `GPL-3.0-or-later` licensing (`LICENSE`, `THIRD_PARTY_NOTICES.md`): replace all 3dfx-licensed `include/` headers with clean-room ABI headers and replace 3dfx splash/banner binary assets (`assets/`, `EmbeddedAssets.*`) with a procedural "Chrome & Amber Shield" 3D splash and `180×90` badge.
+  - `[ ]` Post-merge: scrub historical third-party/dump blobs and remap author emails in git pack history (`git filter-repo`), then publish annotated tag `v0.8.0-beta.1`.
 
 ---
 

@@ -30,6 +30,7 @@ First structured beta release of `glide-ng`, establishing a self-contained repos
 - **Compatibility Catalog & Self-Contained Tests**: Curated `docs/catalog/` with per-title guides and validated drop-in `glide-ng.ini` presets (commercial games, official 3dfx demos, hardware tests, tools), plus 106 self-contained Catch2 tests requiring zero external SDK or demo assets.
 
 ### Changed & Cleaned Up
+- Adopted **GNU GPLv3 (`GPL-3.0-or-later`)** (`LICENSE`, `THIRD_PARTY_NOTICES.md`), replacing all legacy 3dfx-licensed ABI headers under `include/` with clean-room GPL-3.0 ABI headers and replacing embedded 3dfx splash/banner binary assets with a clean-room procedural **Chrome & Amber Shield** 3D `grSplash` animation and `180×90` `GR_SHAMELESS_PLUG` corner watermark.
 - Unified single-source versioning via root `VERSION`, `tools/gen_version_header.cmake`, `scripts/bump_version.sh`, and Win32 PE `VS_VERSION_INFO`.
 - Decoupled Catch2 test suites and standalone demos from external `refs/` and `ext_tests/` assets; removed deprecated test dumps, ad-hoc `scratch/` scripts, third-party `refs/` binaries/PDFs, and local-only `.gitmodules`.
 - Refactored `docs/` into structured User Guide (`docs/user-guide/`), Developer Guide (`docs/developer-guide/`), Compatibility Catalog (`docs/catalog/`), historical retrospective (`docs/HISTORY.md`), and forward-looking roadmap (`docs/ROADMAP.md`).
