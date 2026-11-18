@@ -80,3 +80,9 @@ Browse the full [Documentation Hub](docs/README.md), or jump directly to a guide
   - [Architecture](docs/developer-guide/architecture.md) · [API Coverage & ABI](docs/developer-guide/api-coverage.md) · [Backends](docs/developer-guide/backends.md) · [Testing](docs/developer-guide/testing.md) · [Versioning & Releasing](docs/developer-guide/releasing.md)
 - **Releases & Planning**
   - [Changelog](CHANGELOG.md) · [Project History](docs/HISTORY.md) · [Roadmap](docs/ROADMAP.md)
+
+---
+
+## License
+
+`glide-ng` is free software licensed under the **GNU General Public License v3.0 or later** (`GPL-3.0-or-later`). See [LICENSE](LICENSE) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for details.
