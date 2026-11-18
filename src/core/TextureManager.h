@@ -97,6 +97,16 @@ class TextureManager {
                              uint32_t aspect, uint32_t format,
                              const std::vector<uint32_t>& canonicalArgb);
 
+  // Zero-readback GPU-side TEXTUREBUFFER commit: keeps rendered pixels resident
+  // on the GPU via IGraphicsBackend::CommitGpuTextureBuffer() and updates TMU
+  // metadata. Returns false if the backend does not support GPU RTT or if the
+  // target mip chain requires CPU fallback.
+  bool CommitGpuRenderedTexture(uint32_t tmu, uint32_t startAddress,
+                                int32_t thisLod, int32_t largeLod,
+                                uint32_t aspect, uint32_t format,
+                                uint32_t copyWidth, uint32_t copyHeight,
+                                uint32_t origin);
+
   // Download a palette or NCC table to the specified TMU and trigger deferred
   // swizzling
   bool DownloadTable(uint32_t tmu, uint32_t type, const void* data);

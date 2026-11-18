@@ -873,10 +873,12 @@ void TextureManager::EnsureTextureReady_Locked(
   }
 
   if (uploadToBackend) {
+    const bool hasCpuData = !texPtr->swizzledMipLevels.empty() ||
+                            !texPtr->rawCompressedMipLevels.empty();
     const bool tableChanged =
         (texPtr->isPaletted || texPtr->isNcc) &&
         (texPtr->uploadedTableHashPerTmu[tmu] != texPtr->swizzledTableHash);
-    if (!texPtr->uploadedToBackendPerTmu[tmu] || tableChanged) {
+    if (hasCpuData && (!texPtr->uploadedToBackendPerTmu[tmu] || tableChanged)) {
       if (auto* b = BackendManager::GetInstance().GetBackend()) {
         TelemetryManager::GetInstance().RecordTexUpload(
             CalcSwizzledUploadBytes(*texPtr));
@@ -2010,6 +2012,135 @@ bool TextureManager::CommitRenderedTexture(
     tex->uploadedToBackend = true;
     tex->uploadedToBackendPerTmu[tmu] = true;
   }
+  return true;
+}
+
+bool TextureManager::CommitGpuRenderedTexture(
+    uint32_t tmu, uint32_t startAddress, int32_t thisLod, int32_t largeLod,
+    uint32_t aspect, uint32_t format, uint32_t copyWidth, uint32_t copyHeight,
+    uint32_t origin) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (tmu >= 2 || aspect > 6 || copyWidth == 0 || copyHeight == 0) return false;
+  auto* backend = BackendManager::GetInstance().GetBackend();
+  if (!backend) return false;
+
+  auto model = EmulationRegistry::GetInstance().GetConfig().model;
+  const int32_t minValidLod = (model >= CardModel::Voodoo3) ? -3 : 0;
+  if (thisLod < minValidLod || thisLod > 8 || largeLod < minValidLod ||
+      largeLod > 8 || thisLod < largeLod) {
+    return false;
+  }
+
+  const uint32_t storeTmu = StorageTmu_Locked(tmu);
+  const bool umaActive = m_umaEnabled.load(std::memory_order_acquire);
+  std::shared_ptr<VirtualTexture> existingToMerge;
+  int32_t newLarge = thisLod;
+  int32_t newSmall = thisLod;
+
+  auto it = m_tmus[storeTmu].textures.find(startAddress);
+  if (it != m_tmus[storeTmu].textures.end()) {
+    const auto& existing = it->second;
+    if (existing->format == format && existing->aspectRatio == aspect &&
+        (existing->declaredLargeLod == largeLod ||
+         existing->largeLod == largeLod)) {
+      if (thisLod < existing->largeLod) {
+        // Growing the base mip level requires preserving smaller mips; fall
+        // back to CPU merge path for this rare transition.
+        return false;
+      }
+      existingToMerge = existing;
+      newLarge = std::min(existing->largeLod, thisLod);
+      newSmall = std::max(existing->smallLod, thisLod);
+    }
+  }
+
+  uint32_t baseW = 1, baseH = 1;
+  ComputeLodDimensions(newLarge, aspect, baseW, baseH);
+  const uint32_t totalMipLevels = static_cast<uint32_t>(newSmall - newLarge + 1);
+  const uint32_t mipLevel = static_cast<uint32_t>(thisLod - newLarge);
+
+  if (!backend->CommitGpuTextureBuffer(tmu, startAddress, baseW, baseH,
+                                       mipLevel, totalMipLevels, copyWidth,
+                                       copyHeight, origin)) {
+    return false;
+  }
+  bool otherTmuCommitted = false;
+  if (umaActive) {
+    otherTmuCommitted = backend->CommitGpuTextureBuffer(
+        1u - tmu, startAddress, baseW, baseH, mipLevel, totalMipLevels,
+        copyWidth, copyHeight, origin);
+  }
+
+  // O(1) steady-state fast path when re-rendering to the exact same RTT target
+  // (zero heap allocation, zero overlap scan).
+  if (existingToMerge && existingToMerge->largeLod == newLarge &&
+      existingToMerge->smallLod == newSmall &&
+      existingToMerge->declaredLargeLod == largeLod &&
+      existingToMerge->baseWidth == baseW &&
+      existingToMerge->baseHeight == baseH &&
+      existingToMerge->swizzledMipLevels.empty() &&
+      existingToMerge->rawCompressedMipLevels.empty()) {
+    existingToMerge->rawDataHash = 0;
+    existingToMerge->uploadedToBackend = true;
+    existingToMerge->uploadedToBackendPerTmu[tmu] = true;
+    if (otherTmuCommitted) {
+      existingToMerge->uploadedToBackendPerTmu[1u - tmu] = true;
+    }
+    return true;
+  }
+
+  const uint32_t newBytes =
+      CalculateMemoryRequired(newLarge, newSmall, aspect, format);
+  const uint64_t newRangeStart = static_cast<uint64_t>(startAddress);
+  const uint64_t newRangeEnd = newRangeStart + static_cast<uint64_t>(newBytes);
+
+  std::vector<uint32_t> overlaps;
+  uint64_t evictedBytes = 0;
+  for (const auto& entry : m_tmus[storeTmu].textures) {
+    if (entry.first >= kMultibaseCompositeBase) continue;
+    const uint64_t eStart = static_cast<uint64_t>(entry.first);
+    const uint64_t eSize =
+        (entry.second->allocatedByteSize > 0)
+            ? static_cast<uint64_t>(entry.second->allocatedByteSize)
+            : static_cast<uint64_t>(CalculateMemoryRequired(
+                  entry.second->largeLod, entry.second->smallLod,
+                  entry.second->aspectRatio, entry.second->format));
+    const uint64_t eEnd = eStart + eSize;
+    if (entry.first == startAddress ||
+        (eStart < newRangeEnd && newRangeStart < eEnd)) {
+      overlaps.push_back(entry.first);
+      evictedBytes += eSize;
+    }
+  }
+
+  const uint64_t currentUsed = m_tmus[storeTmu].allocatedBytes;
+  const uint64_t usedAfterEvict =
+      (currentUsed >= evictedBytes) ? (currentUsed - evictedBytes) : 0ULL;
+
+  auto tex = std::make_shared<VirtualTexture>();
+  tex->startAddress = startAddress;
+  tex->format = format;
+  tex->aspectRatio = aspect;
+  tex->largeLod = newLarge;
+  tex->smallLod = newSmall;
+  tex->declaredLargeLod = largeLod;
+  tex->allocatedByteSize = newBytes;
+  tex->baseWidth = baseW;
+  tex->baseHeight = baseH;
+  tex->isPaletted = false;
+  tex->isNcc = false;
+  tex->rawDataHash = 0;
+  tex->swizzledWithTable = true;
+  tex->uploadedToBackend = true;
+  tex->uploadedToBackendPerTmu[0] = (tmu == 0) || otherTmuCommitted;
+  tex->uploadedToBackendPerTmu[1] = (tmu == 1) || otherTmuCommitted;
+
+  for (uint32_t addr : overlaps) {
+    m_tmus[storeTmu].textures.erase(addr);
+  }
+  m_tmus[storeTmu].allocatedBytes =
+      static_cast<uint32_t>(usedAfterEvict + newBytes);
+  m_tmus[storeTmu].textures[startAddress] = std::move(tex);
   return true;
 }
 

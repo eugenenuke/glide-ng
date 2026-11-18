@@ -2162,6 +2162,20 @@ void OpenGLESBackend::DestroyGLContext() {
       glDeleteFramebuffers(2, m_msaaFBOs);
       m_msaaFBOs[0] = m_msaaFBOs[1] = 0;
     }
+    if (m_rttSaveFbo) {
+      glDeleteFramebuffers(1, &m_rttSaveFbo);
+      m_rttSaveFbo = 0;
+    }
+    if (m_rttSaveTexture) {
+      glDeleteTextures(1, &m_rttSaveTexture);
+      m_rttSaveTexture = 0;
+    }
+    if (m_rttCommitFbo) {
+      glDeleteFramebuffers(1, &m_rttCommitFbo);
+      m_rttCommitFbo = 0;
+    }
+    m_rttSaveWidth = 0;
+    m_rttSaveHeight = 0;
     if (m_geomVBO) {
       glDeleteBuffers(1, &m_geomVBO);
       m_geomVBO = 0;
@@ -2193,6 +2207,11 @@ void OpenGLESBackend::DestroyGLContext() {
     m_msaaDepthRBO = 0;
     m_msaaColorRBOs[0] = m_msaaColorRBOs[1] = 0;
     m_msaaFBOs[0] = m_msaaFBOs[1] = 0;
+    m_rttSaveFbo = 0;
+    m_rttSaveTexture = 0;
+    m_rttCommitFbo = 0;
+    m_rttSaveWidth = 0;
+    m_rttSaveHeight = 0;
     m_geomVBO = 0;
     m_geomVAO = 0;
     m_geomProgram = 0;

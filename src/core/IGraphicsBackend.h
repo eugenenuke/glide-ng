@@ -142,6 +142,23 @@ class IGraphicsBackend {
   // Returns true when the backend can upload raw BC1/BC2/BC3 (DXT1..DXT5)
   // compressed texture blocks natively without CPU decompression.
   virtual bool SupportsCompressedBcnTextures() const { return false; }
+
+  // VSA-100 TEXTUREBUFFER zero-readback GPU-side render-to-texture hooks.
+  // Backends returning true keep backbuffer save/restore and RTT-to-TMU
+  // commits 100% on the GPU with zero ReadLFB/WriteLFB CPU stalls.
+  virtual bool BeginGpuTextureBufferMode() { return false; }
+  virtual bool CommitGpuTextureBuffer(uint32_t /*tmu*/,
+                                      uint32_t /*startAddress*/,
+                                      uint32_t /*baseWidth*/,
+                                      uint32_t /*baseHeight*/,
+                                      uint32_t /*mipLevel*/,
+                                      uint32_t /*totalMipLevels*/,
+                                      uint32_t /*copyWidth*/,
+                                      uint32_t /*copyHeight*/,
+                                      uint32_t /*origin*/) {
+    return false;
+  }
+  virtual void EndGpuTextureBufferMode() {}
   virtual void SetTexLodBias(uint32_t tmu, float bias) = 0;
   virtual void SetTexDetailControl(uint32_t tmu, int32_t lodBias,
                                    uint8_t detailScale, float detailMax) = 0;

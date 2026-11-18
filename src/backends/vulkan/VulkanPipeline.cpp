@@ -9,8 +9,10 @@
 
 // Include build-time generated shader SPIR-V bytecode headers!
 #include "color_dualsrc_frag.spv.h"
+#include "color_dualsrc_wbuf_frag.spv.h"
 #include "color_frag.spv.h"
 #include "color_vert.spv.h"
+#include "color_wbuf_frag.spv.h"
 #include "hud_frag.spv.h"
 #include "hud_vert.spv.h"
 
@@ -195,7 +197,8 @@ bool VulkanBackend::CreateRenderPass() {
 
 // --- Phase 2: Dynamic Shader Modules & Pipeline State Creation ---
 bool VulkanBackend::CreateShaderModules() {
-  if (m_vertShaderModule && m_fragShaderModule && m_fragShaderModuleDualSrc) {
+  if (m_vertShaderModule && m_fragShaderModule && m_fragShaderModuleDualSrc &&
+      m_fragShaderModuleWBuf && m_fragShaderModuleDualSrcWBuf) {
     return true;  // Already persistent across window resets
   }
   try {
@@ -212,9 +215,18 @@ bool VulkanBackend::CreateShaderModules() {
     m_fragShaderModuleDualSrc =
         m_device->createShaderModuleUnique(fragDualSrcInfo);
 
+    vk::ShaderModuleCreateInfo fragWBufInfo({}, color_wbuf_frag_spv_size,
+                                            color_wbuf_frag_spv);
+    m_fragShaderModuleWBuf = m_device->createShaderModuleUnique(fragWBufInfo);
+
+    vk::ShaderModuleCreateInfo fragDualSrcWBufInfo(
+        {}, color_dualsrc_wbuf_frag_spv_size, color_dualsrc_wbuf_frag_spv);
+    m_fragShaderModuleDualSrcWBuf =
+        m_device->createShaderModuleUnique(fragDualSrcWBufInfo);
+
     GLIDE_LOG(INFO, "Vulkan",
               "Loaded build-time compiled SPIR-V vertex and fragment shader "
-              "modules (including dual-source variant).");
+              "modules (Early-Z + W-buffer + dual-source variants).");
     return true;
   } catch (const std::exception& e) {
     GLIDE_LOG(CRITICAL, "Vulkan",
@@ -268,12 +280,17 @@ vk::UniquePipeline VulkanBackend::CompileSinglePipeline(
     const PipelineStateKey& key, vk::PrimitiveTopology topology) {
   try {
     // Determine if the pipeline key requires dual-source blending (factor 15 =
-    // GR_BLEND_PREFOG_COLOR)
-    bool useDualSrcBlend = (key.rgbSrcBlend == 15 || key.rgbDstBlend == 15 ||
-                            key.alphaSrcBlend == 15 || key.alphaDstBlend == 15);
-    vk::ShaderModule fragShader = useDualSrcBlend
-                                      ? m_fragShaderModuleDualSrc.get()
-                                      : m_fragShaderModule.get();
+    // GR_BLEND_PREFOG_COLOR) or W-buffer gl_FragDepth writes (depthMode == 2).
+    const bool useDualSrcBlend =
+        (key.rgbSrcBlend == 15 || key.rgbDstBlend == 15 ||
+         key.alphaSrcBlend == 15 || key.alphaDstBlend == 15);
+    const bool useWBufferDepth = (key.depthMode == 2u);
+    vk::ShaderModule fragShader =
+        useWBufferDepth
+            ? (useDualSrcBlend ? m_fragShaderModuleDualSrcWBuf.get()
+                               : m_fragShaderModuleWBuf.get())
+            : (useDualSrcBlend ? m_fragShaderModuleDualSrc.get()
+                               : m_fragShaderModule.get());
 
     // Shader Stages
     vk::PipelineShaderStageCreateInfo shaderStages[] = {

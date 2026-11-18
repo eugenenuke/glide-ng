@@ -387,6 +387,8 @@ void VulkanBackend::Shutdown() {
   m_vertShaderModule.reset();
   m_fragShaderModule.reset();
   m_fragShaderModuleDualSrc.reset();
+  m_fragShaderModuleWBuf.reset();
+  m_fragShaderModuleDualSrcWBuf.reset();
 
   // Reset descriptor layout, pool, and textures
   m_vulkanTextures[0].clear();
@@ -429,6 +431,12 @@ void VulkanBackend::Shutdown() {
   m_msaaDepthImageView.reset();
   m_msaaDepthImageMemory.reset();
   m_msaaDepthImage.reset();
+
+  m_rttSaveImage.reset();
+  m_rttSaveImageMemory.reset();
+  m_rttSaveWidth = 0;
+  m_rttSaveHeight = 0;
+  m_rttSaveImageInitialized = false;
 
   // Explicitly destroy Swapchain and Presentation Surface resources
   m_swapchainImageViews.clear();
@@ -925,6 +933,12 @@ void VulkanBackend::DetachWindow_Locked() {
   m_msaaDepthImageView.reset();
   m_msaaDepthImageMemory.reset();
   m_msaaDepthImage.reset();
+
+  m_rttSaveImage.reset();
+  m_rttSaveImageMemory.reset();
+  m_rttSaveWidth = 0;
+  m_rttSaveHeight = 0;
+  m_rttSaveImageInitialized = false;
 
   m_windowAttached = false;
   m_headlessMode = false;

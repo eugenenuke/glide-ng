@@ -660,4 +660,325 @@ void VulkanBackend::PurgeTextures() {
   GLIDE_LOG(DEBUG, "Vulkan", "PurgeTextures completed successfully.");
 }
 
+bool VulkanBackend::BeginGpuTextureBufferMode() {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (!m_initialized || !m_device || !m_windowAttached || !m_commandBuffer ||
+      !(*m_commandBuffer) || !m_headlessImages[0] || m_headlessWidth == 0 ||
+      m_headlessHeight == 0) {
+    return false;
+  }
+
+  GLIDE_PROFILE_SCOPE("Vulkan::BeginGpuTextureBufferMode");
+  FlushBatch();
+  if (m_inRenderPass) {
+    m_commandBuffer->endRenderPass();
+    m_inRenderPass = false;
+  }
+  if (m_lfbStaging.IsDirty()) {
+    FlushLFBToGPU_Locked();
+  }
+  // Realize any deferred clear on BACKBUFFER (physical slot 0) before saving.
+  if (m_clearColorPending[0]) {
+    const uint32_t origActive = m_activeRenderBuffer;
+    m_activeRenderBuffer = 1;  // GR_BUFFER_BACKBUFFER -> physical slot 0
+    EnsureRenderPassActive(true);
+    m_commandBuffer->endRenderPass();
+    m_inRenderPass = false;
+    m_activeRenderBuffer = origActive;
+  }
+  ResolveMsaaToSingle_Locked(0);
+  m_lfbStaging.ClearOverlay(1);
+  m_lfbStaging.ClearBufferDirty(1);
+
+  if (!m_rttSaveImage || m_rttSaveWidth != m_headlessWidth ||
+      m_rttSaveHeight != m_headlessHeight) {
+    if (m_rttSaveImage) {
+      m_device->waitIdle();
+      m_rttSaveImage.reset();
+      m_rttSaveImageMemory.reset();
+    }
+    try {
+      vk::ImageCreateInfo saveInfo(
+          {}, vk::ImageType::e2D, m_colorFormat,
+          vk::Extent3D(m_headlessWidth, m_headlessHeight, 1), 1, 1,
+          vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal,
+          vk::ImageUsageFlagBits::eTransferSrc |
+              vk::ImageUsageFlagBits::eTransferDst);
+      m_rttSaveImage = m_device->createImageUnique(saveInfo);
+      auto memReqs =
+          m_device->getImageMemoryRequirements(m_rttSaveImage.get());
+      const uint32_t typeIdx = FindMemoryType(
+          memReqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal);
+      m_rttSaveImageMemory = m_device->allocateMemoryUnique(
+          vk::MemoryAllocateInfo(memReqs.size, typeIdx));
+      m_device->bindImageMemory(m_rttSaveImage.get(),
+                                m_rttSaveImageMemory.get(), 0);
+      m_rttSaveWidth = m_headlessWidth;
+      m_rttSaveHeight = m_headlessHeight;
+      m_rttSaveImageInitialized = false;
+    } catch (const std::exception& e) {
+      GLIDE_LOG(WARN, "Vulkan",
+                "BeginGpuTextureBufferMode allocation failed: " << e.what());
+      m_rttSaveImage.reset();
+      m_rttSaveImageMemory.reset();
+      m_rttSaveWidth = 0;
+      m_rttSaveHeight = 0;
+      m_rttSaveImageInitialized = false;
+      return false;
+    }
+  }
+
+  const vk::ImageSubresourceRange colorRange(vk::ImageAspectFlagBits::eColor, 0,
+                                             1, 0, 1);
+  TransitionImageLayout(*m_commandBuffer, m_headlessImages[0].get(),
+                        vk::ImageLayout::eColorAttachmentOptimal,
+                        vk::ImageLayout::eTransferSrcOptimal, colorRange);
+
+  if (!m_rttSaveImageInitialized) {
+    TransitionImageLayout(*m_commandBuffer, m_rttSaveImage.get(),
+                          vk::ImageLayout::eUndefined,
+                          vk::ImageLayout::eTransferDstOptimal, colorRange);
+  } else {
+    vk::ImageMemoryBarrier warBarrier;
+    warBarrier.oldLayout = vk::ImageLayout::eTransferSrcOptimal;
+    warBarrier.newLayout = vk::ImageLayout::eTransferDstOptimal;
+    warBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    warBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    warBarrier.image = m_rttSaveImage.get();
+    warBarrier.subresourceRange = colorRange;
+    warBarrier.srcAccessMask = vk::AccessFlagBits::eTransferRead;
+    warBarrier.dstAccessMask = vk::AccessFlagBits::eTransferWrite;
+    m_commandBuffer->pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+                                     vk::PipelineStageFlagBits::eTransfer, {},
+                                     0, nullptr, 0, nullptr, 1, &warBarrier);
+  }
+
+  vk::ImageCopy copyRegion;
+  copyRegion.srcSubresource =
+      vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
+  copyRegion.dstSubresource =
+      vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
+  copyRegion.extent = vk::Extent3D(m_headlessWidth, m_headlessHeight, 1);
+  m_commandBuffer->copyImage(
+      m_headlessImages[0].get(), vk::ImageLayout::eTransferSrcOptimal,
+      m_rttSaveImage.get(), vk::ImageLayout::eTransferDstOptimal, 1,
+      &copyRegion);
+
+  TransitionImageLayout(*m_commandBuffer, m_rttSaveImage.get(),
+                        vk::ImageLayout::eTransferDstOptimal,
+                        vk::ImageLayout::eTransferSrcOptimal, colorRange);
+  TransitionImageLayout(*m_commandBuffer, m_headlessImages[0].get(),
+                        vk::ImageLayout::eTransferSrcOptimal,
+                        vk::ImageLayout::eColorAttachmentOptimal, colorRange);
+  m_rttSaveImageInitialized = true;
+  return true;
+}
+
+bool VulkanBackend::CommitGpuTextureBuffer(
+    uint32_t tmu, uint32_t startAddress, uint32_t baseWidth,
+    uint32_t baseHeight, uint32_t mipLevel, uint32_t totalMipLevels,
+    uint32_t copyWidth, uint32_t copyHeight, uint32_t origin) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (tmu >= 2 || !m_initialized || !m_device || !m_windowAttached ||
+      !m_commandBuffer || !(*m_commandBuffer) || !m_headlessImages[0] ||
+      baseWidth == 0 || baseHeight == 0 || totalMipLevels == 0 ||
+      mipLevel >= totalMipLevels) {
+    return false;
+  }
+
+  GLIDE_PROFILE_SCOPE("Vulkan::CommitGpuTextureBuffer");
+  FlushBatch();
+  if (m_inRenderPass) {
+    m_commandBuffer->endRenderPass();
+    m_inRenderPass = false;
+  }
+  if (m_lfbStaging.IsDirty()) {
+    FlushLFBToGPU_Locked();
+  }
+  if (m_clearColorPending[0]) {
+    const uint32_t origActive = m_activeRenderBuffer;
+    m_activeRenderBuffer = 1;  // GR_BUFFER_BACKBUFFER -> physical slot 0
+    EnsureRenderPassActive(true);
+    m_commandBuffer->endRenderPass();
+    m_inRenderPass = false;
+    m_activeRenderBuffer = origActive;
+  }
+  ResolveMsaaToSingle_Locked(0);
+
+  const uint32_t mipW = std::max(1u, baseWidth >> mipLevel);
+  const uint32_t mipH = std::max(1u, baseHeight >> mipLevel);
+  const uint32_t cw = std::min(copyWidth, std::min(mipW, m_headlessWidth));
+  const uint32_t ch = std::min(copyHeight, std::min(mipH, m_headlessHeight));
+  if (cw == 0 || ch == 0) return false;
+  const uint32_t srcY = (origin == 1u) ? (m_headlessHeight - ch) : 0u;
+
+  auto& tmuMap = m_vulkanTextures[tmu];
+  auto it = tmuMap.find(startAddress);
+  const bool reuseInPlace =
+      (it != tmuMap.end() && it->second.image &&
+       it->second.width == baseWidth && it->second.height == baseHeight &&
+       it->second.mipLevels == totalMipLevels &&
+       it->second.format == m_colorFormat);
+
+  vk::Image dstImage;
+  if (reuseInPlace) {
+    dstImage = it->second.image.get();
+    it->second.dataHash = 0;
+  } else {
+    RetireTextureAtAddress_Locked(tmu, startAddress);
+    try {
+      VulkanTexture vulkanTex;
+      bool reusedFromPool = false;
+      for (auto pit = m_texturePool.begin(); pit != m_texturePool.end();
+           ++pit) {
+        if (pit->width == baseWidth && pit->height == baseHeight &&
+            pit->mipLevels == totalMipLevels && pit->format == m_colorFormat) {
+          vulkanTex = std::move(*pit);
+          m_texturePool.erase(pit);
+          reusedFromPool = true;
+          ++m_texturePoolReuses;
+          break;
+        }
+      }
+      if (!reusedFromPool) {
+        vk::ImageCreateInfo imageInfo(
+            {}, vk::ImageType::e2D, m_colorFormat,
+            vk::Extent3D(baseWidth, baseHeight, 1), totalMipLevels, 1,
+            vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal,
+            vk::ImageUsageFlagBits::eSampled |
+                vk::ImageUsageFlagBits::eTransferDst);
+        vulkanTex.image = m_device->createImageUnique(imageInfo);
+        auto memReqs =
+            m_device->getImageMemoryRequirements(vulkanTex.image.get());
+        const uint32_t typeIndex = FindMemoryType(
+            memReqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal);
+        vulkanTex.memory = m_device->allocateMemoryUnique(
+            vk::MemoryAllocateInfo(memReqs.size, typeIndex));
+        m_device->bindImageMemory(vulkanTex.image.get(), vulkanTex.memory.get(),
+                                  0);
+        vk::ImageViewCreateInfo viewInfo(
+            {}, vulkanTex.image.get(), vk::ImageViewType::e2D, m_colorFormat,
+            {}, {vk::ImageAspectFlagBits::eColor, 0, totalMipLevels, 0, 1});
+        vulkanTex.imageView = m_device->createImageViewUnique(viewInfo);
+        vulkanTex.format = m_colorFormat;
+        vulkanTex.width = baseWidth;
+        vulkanTex.height = baseHeight;
+        vulkanTex.mipLevels = totalMipLevels;
+      }
+      vulkanTex.clampS = m_texClampS[tmu];
+      vulkanTex.clampT = m_texClampT[tmu];
+      vulkanTex.minFilter = m_texMinFilter[tmu];
+      vulkanTex.magFilter = m_texMagFilter[tmu];
+      vulkanTex.dataHash = 0;
+      dstImage = vulkanTex.image.get();
+      tmuMap[startAddress] = std::move(vulkanTex);
+      m_descriptorStateDirty = true;
+    } catch (const std::exception& e) {
+      GLIDE_LOG(WARN, "Vulkan",
+                "CommitGpuTextureBuffer allocation failed: " << e.what());
+      return false;
+    }
+  }
+
+  const vk::ImageSubresourceRange fbRange(vk::ImageAspectFlagBits::eColor, 0, 1,
+                                          0, 1);
+  const vk::ImageSubresourceRange dstRange(
+      vk::ImageAspectFlagBits::eColor, reuseInPlace ? mipLevel : 0u,
+      reuseInPlace ? 1u : totalMipLevels, 0, 1);
+
+  TransitionImageLayout(*m_commandBuffer, m_headlessImages[0].get(),
+                        vk::ImageLayout::eColorAttachmentOptimal,
+                        vk::ImageLayout::eTransferSrcOptimal, fbRange);
+  TransitionImageLayout(*m_commandBuffer, dstImage,
+                        reuseInPlace ? vk::ImageLayout::eShaderReadOnlyOptimal
+                                     : vk::ImageLayout::eUndefined,
+                        vk::ImageLayout::eTransferDstOptimal, dstRange);
+
+  const bool needsClear =
+      (cw < mipW || ch < mipH || (!reuseInPlace && totalMipLevels > 1));
+  if (needsClear) {
+    const vk::ClearColorValue black(
+        std::array<float, 4>{0.0f, 0.0f, 0.0f, 0.0f});
+    m_commandBuffer->clearColorImage(
+        dstImage, vk::ImageLayout::eTransferDstOptimal, &black, 1, &dstRange);
+    vk::ImageMemoryBarrier clearToCopy;
+    clearToCopy.oldLayout = vk::ImageLayout::eTransferDstOptimal;
+    clearToCopy.newLayout = vk::ImageLayout::eTransferDstOptimal;
+    clearToCopy.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    clearToCopy.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    clearToCopy.image = dstImage;
+    clearToCopy.subresourceRange = dstRange;
+    clearToCopy.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
+    clearToCopy.dstAccessMask = vk::AccessFlagBits::eTransferWrite;
+    m_commandBuffer->pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+                                     vk::PipelineStageFlagBits::eTransfer, {},
+                                     0, nullptr, 0, nullptr, 1, &clearToCopy);
+  }
+
+  vk::ImageCopy copyRegion;
+  copyRegion.srcSubresource =
+      vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
+  copyRegion.srcOffset = vk::Offset3D(0, static_cast<int32_t>(srcY), 0);
+  copyRegion.dstSubresource = vk::ImageSubresourceLayers(
+      vk::ImageAspectFlagBits::eColor, mipLevel, 0, 1);
+  copyRegion.dstOffset = vk::Offset3D(0, 0, 0);
+  copyRegion.extent = vk::Extent3D(cw, ch, 1);
+
+  m_commandBuffer->copyImage(
+      m_headlessImages[0].get(), vk::ImageLayout::eTransferSrcOptimal, dstImage,
+      vk::ImageLayout::eTransferDstOptimal, 1, &copyRegion);
+
+  TransitionImageLayout(*m_commandBuffer, dstImage,
+                        vk::ImageLayout::eTransferDstOptimal,
+                        vk::ImageLayout::eShaderReadOnlyOptimal, dstRange);
+  TransitionImageLayout(*m_commandBuffer, m_headlessImages[0].get(),
+                        vk::ImageLayout::eTransferSrcOptimal,
+                        vk::ImageLayout::eColorAttachmentOptimal, fbRange);
+  return true;
+}
+
+void VulkanBackend::EndGpuTextureBufferMode() {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (!m_initialized || !m_device || !m_windowAttached || !m_commandBuffer ||
+      !(*m_commandBuffer) || !m_rttSaveImage || !m_rttSaveImageInitialized ||
+      !m_headlessImages[0]) {
+    return;
+  }
+
+  GLIDE_PROFILE_SCOPE("Vulkan::EndGpuTextureBufferMode");
+  FlushBatch();
+  if (m_inRenderPass) {
+    m_commandBuffer->endRenderPass();
+    m_inRenderPass = false;
+  }
+  m_lfbStaging.ClearOverlay(1);
+  m_lfbStaging.ClearBufferDirty(1);
+
+  const vk::ImageSubresourceRange colorRange(vk::ImageAspectFlagBits::eColor, 0,
+                                             1, 0, 1);
+  TransitionImageLayout(*m_commandBuffer, m_headlessImages[0].get(),
+                        vk::ImageLayout::eColorAttachmentOptimal,
+                        vk::ImageLayout::eTransferDstOptimal, colorRange);
+
+  vk::ImageCopy copyRegion;
+  copyRegion.srcSubresource =
+      vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
+  copyRegion.dstSubresource =
+      vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
+  copyRegion.extent = vk::Extent3D(m_headlessWidth, m_headlessHeight, 1);
+  m_commandBuffer->copyImage(
+      m_rttSaveImage.get(), vk::ImageLayout::eTransferSrcOptimal,
+      m_headlessImages[0].get(), vk::ImageLayout::eTransferDstOptimal, 1,
+      &copyRegion);
+
+  TransitionImageLayout(*m_commandBuffer, m_headlessImages[0].get(),
+                        vk::ImageLayout::eTransferDstOptimal,
+                        vk::ImageLayout::eColorAttachmentOptimal, colorRange);
+  m_clearColorPending[0] = false;
+  if (m_msaaSamples > 1) {
+    m_singleSampleColorDirty[0] = true;
+    m_msaaColorDirty[0] = false;
+  }
+}
+
 }  // namespace GlideWrapper

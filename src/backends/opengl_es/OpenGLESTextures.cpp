@@ -89,10 +89,13 @@ void OpenGLESBackend::UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
                                                << startAddress << std::dec);
   } else {
     texId = it->second.id;
+    const bool fmtMatches =
+        (it->second.internalFormat == targetInternalFmt) ||
+        (!useCompressed &&
+         it->second.internalFormat == static_cast<uint32_t>(GL_RGBA8));
     canSubImage = (it->second.width == tex.baseWidth &&
                    it->second.height == tex.baseHeight &&
-                   it->second.mipLevels == mipCount &&
-                   it->second.internalFormat == targetInternalFmt);
+                   it->second.mipLevels == mipCount && fmtMatches);
     GLIDE_LOG(DEBUG, "GLES",
               "Re-uploading to existing GLES Texture ID "
                   << texId << " for TMU" << tmu << " Address 0x" << std::hex
@@ -224,7 +227,8 @@ void OpenGLESBackend::UploadTexturePartial(uint32_t tmu, uint32_t startAddress,
     return;
   }
   GLuint texId = it->second.id;
-  if (it->second.internalFormat != static_cast<uint32_t>(GL_RGBA)) {
+  if (it->second.internalFormat != static_cast<uint32_t>(GL_RGBA) &&
+      it->second.internalFormat != static_cast<uint32_t>(GL_RGBA8)) {
     UploadTexture_Locked(tmu, startAddress, tex);
     return;
   }
@@ -383,6 +387,229 @@ void OpenGLESBackend::SetTexMipMapMode(uint32_t tmu, uint32_t mode,
   GlideStateTracker::SetTexMipMapMode_Locked(tmu, mode, lodBlend);
   m_glesDirtyMask |=
       (tmu == 0 ? kGlesDirtyTexSampler0 : kGlesDirtyTexSampler1);
+}
+
+bool OpenGLESBackend::BeginGpuTextureBufferMode() {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if ((!m_windowAttached && !m_headlessMode) || m_headlessFBOs[0] == 0 ||
+      m_headlessWidth == 0 || m_headlessHeight == 0) {
+    return false;
+  }
+  if (!EnsureContextCurrent()) return false;
+
+  GLIDE_PROFILE_SCOPE("GLES::BeginGpuTextureBufferMode");
+  FlushBatch();
+  FlushLFBToGPU_Locked();
+  ResolveMsaaToSingle_Locked(0);
+
+  if (m_rttSaveFbo == 0 || m_rttSaveTexture == 0 ||
+      m_rttSaveWidth != m_headlessWidth ||
+      m_rttSaveHeight != m_headlessHeight) {
+    if (m_rttSaveTexture == 0) {
+      glGenTextures(1, &m_rttSaveTexture);
+    }
+    if (m_rttSaveFbo == 0) {
+      glGenFramebuffers(1, &m_rttSaveFbo);
+    }
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, m_rttSaveTexture);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8,
+                 static_cast<GLsizei>(m_headlessWidth),
+                 static_cast<GLsizei>(m_headlessHeight), 0, GL_RGBA,
+                 GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glBindFramebuffer(GL_FRAMEBUFFER, m_rttSaveFbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                           m_rttSaveTexture, 0);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+      glBindFramebuffer(GL_FRAMEBUFFER, 0);
+      InvalidateGlBindingCache();
+      return false;
+    }
+    m_rttSaveWidth = m_headlessWidth;
+    m_rttSaveHeight = m_headlessHeight;
+  }
+
+  glDisable(GL_SCISSOR_TEST);
+  glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+  if (m_supportsSampleMask) {
+    glDisable(GL_SAMPLE_MASK);
+  }
+  glBindFramebuffer(GL_READ_FRAMEBUFFER, m_headlessFBOs[0]);
+  glBindFramebuffer(GL_DRAW_FRAMEBUFFER, m_rttSaveFbo);
+  glBlitFramebuffer(0, 0, static_cast<GLint>(m_headlessWidth),
+                    static_cast<GLint>(m_headlessHeight), 0, 0,
+                    static_cast<GLint>(m_headlessWidth),
+                    static_cast<GLint>(m_headlessHeight), GL_COLOR_BUFFER_BIT,
+                    GL_NEAREST);
+  glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+  // Backbuffer state has been saved on the GPU; clear any stale CPU staging.
+  m_lfbStaging.ClearOverlay(1);
+  m_lfbStaging.ClearBufferDirty(1);
+  m_glesDirtyMask |=
+      (kGlesDirtyScissor | kGlesDirtyColorMask | kGlesDirtySampleMask);
+  InvalidateGlBindingCache();
+  checkGLError("BeginGpuTextureBufferMode");
+  return true;
+}
+
+bool OpenGLESBackend::CommitGpuTextureBuffer(
+    uint32_t tmu, uint32_t startAddress, uint32_t baseWidth,
+    uint32_t baseHeight, uint32_t mipLevel, uint32_t totalMipLevels,
+    uint32_t copyWidth, uint32_t copyHeight, uint32_t origin) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (tmu >= 2 || baseWidth == 0 || baseHeight == 0 || totalMipLevels == 0 ||
+      mipLevel >= totalMipLevels || (!m_windowAttached && !m_headlessMode) ||
+      m_headlessFBOs[0] == 0) {
+    return false;
+  }
+  if (!EnsureContextCurrent()) return false;
+
+  GLIDE_PROFILE_SCOPE("GLES::CommitGpuTextureBuffer");
+  FlushBatch();
+  FlushLFBToGPU_Locked();
+  ResolveMsaaToSingle_Locked(0);
+
+  auto& tmuMap = m_glesTextures[tmu];
+  GLuint texId = 0;
+  auto it = tmuMap.find(startAddress);
+  bool needsAlloc = false;
+  if (it == tmuMap.end()) {
+    glGenTextures(1, &texId);
+    it = tmuMap.emplace(startAddress, GlesTexEntry{texId, 0, 0, 0, 0}).first;
+    needsAlloc = true;
+  } else {
+    texId = it->second.id;
+    const bool isRgba =
+        (it->second.internalFormat == static_cast<uint32_t>(GL_RGBA8) ||
+         it->second.internalFormat == static_cast<uint32_t>(GL_RGBA));
+    needsAlloc = (it->second.width != baseWidth ||
+                  it->second.height != baseHeight ||
+                  it->second.mipLevels != totalMipLevels || !isRgba);
+  }
+
+  if (needsAlloc) {
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, texId);
+    for (uint32_t i = 0; i < totalMipLevels; ++i) {
+      const uint32_t w = std::max(1u, baseWidth >> i);
+      const uint32_t h = std::max(1u, baseHeight >> i);
+      glTexImage2D(GL_TEXTURE_2D, static_cast<GLint>(i), GL_RGBA8,
+                   static_cast<GLsizei>(w), static_cast<GLsizei>(h), 0, GL_RGBA,
+                   GL_UNSIGNED_BYTE, nullptr);
+    }
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
+                    totalMipLevels > 1 ? GL_NEAREST_MIPMAP_NEAREST : GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL,
+                    static_cast<GLint>(totalMipLevels - 1));
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    it->second.width = baseWidth;
+    it->second.height = baseHeight;
+    it->second.mipLevels = totalMipLevels;
+    it->second.internalFormat = static_cast<uint32_t>(GL_RGBA8);
+  }
+
+  if (m_rttCommitFbo == 0) {
+    glGenFramebuffers(1, &m_rttCommitFbo);
+  }
+
+  glDisable(GL_SCISSOR_TEST);
+  glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+  if (m_supportsSampleMask) {
+    glDisable(GL_SAMPLE_MASK);
+  }
+  glBindFramebuffer(GL_DRAW_FRAMEBUFFER, m_rttCommitFbo);
+  glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                         GL_TEXTURE_2D, texId, static_cast<GLint>(mipLevel));
+  if (glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER) !=
+      GL_FRAMEBUFFER_COMPLETE) {
+    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                           GL_TEXTURE_2D, 0, 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    InvalidateGlBindingCache();
+    return false;
+  }
+
+  const uint32_t mipW = std::max(1u, baseWidth >> mipLevel);
+  const uint32_t mipH = std::max(1u, baseHeight >> mipLevel);
+  const uint32_t cw = std::min(copyWidth, std::min(mipW, m_headlessWidth));
+  const uint32_t ch = std::min(copyHeight, std::min(mipH, m_headlessHeight));
+
+  if (cw < mipW || ch < mipH) {
+    glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+  }
+
+  glBindFramebuffer(GL_READ_FRAMEBUFFER, m_headlessFBOs[0]);
+  // Flip Y from OpenGL bottom-up FBO into Glide top-down TMU texture rows
+  // (t=0 at GL row 0) so sampled texels match ReadLFB+UploadTexture exactly.
+  if (origin == 0u) {  // GR_ORIGIN_UPPER_LEFT
+    glBlitFramebuffer(0, static_cast<GLint>(m_headlessHeight),
+                      static_cast<GLint>(cw),
+                      static_cast<GLint>(m_headlessHeight - ch), 0, 0,
+                      static_cast<GLint>(cw), static_cast<GLint>(ch),
+                      GL_COLOR_BUFFER_BIT, GL_NEAREST);
+  } else {  // GR_ORIGIN_LOWER_LEFT
+    glBlitFramebuffer(0, static_cast<GLint>(ch), static_cast<GLint>(cw), 0, 0,
+                      0, static_cast<GLint>(cw), static_cast<GLint>(ch),
+                      GL_COLOR_BUFFER_BIT, GL_NEAREST);
+  }
+
+  glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                         GL_TEXTURE_2D, 0, 0);
+  glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+  m_glesDirtyMask |=
+      kGlesDirtyTexBinding | kGlesDirtyScissor | kGlesDirtyColorMask |
+      kGlesDirtySampleMask |
+      (tmu == 0 ? kGlesDirtyTexSampler0 : kGlesDirtyTexSampler1);
+  InvalidateGlBindingCache();
+  checkGLError("CommitGpuTextureBuffer");
+  return true;
+}
+
+void OpenGLESBackend::EndGpuTextureBufferMode() {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (m_rttSaveFbo == 0 || m_headlessFBOs[0] == 0 ||
+      (!m_windowAttached && !m_headlessMode)) {
+    return;
+  }
+  if (!EnsureContextCurrent()) return;
+
+  GLIDE_PROFILE_SCOPE("GLES::EndGpuTextureBufferMode");
+  FlushBatch();
+  FlushLFBToGPU_Locked();
+  m_lfbStaging.ClearOverlay(1);
+  m_lfbStaging.ClearBufferDirty(1);
+
+  glDisable(GL_SCISSOR_TEST);
+  glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+  if (m_supportsSampleMask) {
+    glDisable(GL_SAMPLE_MASK);
+  }
+  glBindFramebuffer(GL_READ_FRAMEBUFFER, m_rttSaveFbo);
+  glBindFramebuffer(GL_DRAW_FRAMEBUFFER, m_headlessFBOs[0]);
+  glBlitFramebuffer(0, 0, static_cast<GLint>(m_headlessWidth),
+                    static_cast<GLint>(m_headlessHeight), 0, 0,
+                    static_cast<GLint>(m_headlessWidth),
+                    static_cast<GLint>(m_headlessHeight), GL_COLOR_BUFFER_BIT,
+                    GL_NEAREST);
+  glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+  if (m_msaaSamples > 1) {
+    m_singleSampleColorDirty[0] = true;
+    m_msaaColorDirty[0] = false;
+  }
+  m_glesDirtyMask |=
+      (kGlesDirtyScissor | kGlesDirtyColorMask | kGlesDirtySampleMask);
+  InvalidateGlBindingCache();
+  checkGLError("EndGpuTextureBufferMode");
 }
 
 }  // namespace GlideWrapper

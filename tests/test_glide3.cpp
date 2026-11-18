@@ -9925,3 +9925,138 @@ TEST_CASE("M11.6a Native Hardware BC1/BC2/BC3 Compressed Texture Upload",
     }
   }
 }
+
+TEST_CASE("M11.6b Zero-Readback GPU TEXTUREBUFFER RTT (Origins + MSAA + Zero Staging)",
+          "[M11][RTT]") {
+  using namespace GlideWrapper;
+
+  auto runRttCase = [](const char* backendName, uint32_t origin,
+                       uint32_t msaaSamples, uint32_t& outSavedPx,
+                       uint32_t& outTopPx, uint32_t& outBotPx,
+                       bool& outZeroStagingVk) {
+    auto& reg = EmulationRegistry::GetInstance();
+    auto savedCfg = reg.GetConfig();
+    auto& bm = BackendManager::GetInstance();
+    auto& tm = TextureManager::GetInstance();
+    WrapperConfig cfg = savedCfg;
+    cfg.backend = backendName;
+    cfg.forceNoWindow = true;
+    cfg.model = CardModel::Voodoo5;
+    cfg.tmuMemoryMb = 16;
+    cfg.fbiMemoryMb = 16;
+    cfg.msaaSamples = msaaSamples;
+    reg.GetConfig() = cfg;
+    REQUIRE(bm.EstablishBackend(cfg));
+    auto* be = bm.GetBackend();
+    REQUIRE(be != nullptr);
+    REQUIRE(be->AttachWindow(nullptr, 128, 128, false));
+
+    tm.Reset();
+    tm.SetTmuMemoryLimitMb(0, 16);
+    tm.SetTmuMemoryLimitMb(1, 16);
+
+    be->SetSstOrigin(origin);
+    be->SetDepthState(0, 7, false, 0);
+    be->SetBlendState(4, 0, 4, 0);  // ONE, ZERO
+    be->SetColorCombineExt(0u);
+    be->SetCombinerMode(1, 0, 0, 0, false, 1, 0, 0, 0, false);  // LOCAL ITERATED
+
+    auto makeV = [](float x, float y, float r, float g, float b, float s,
+                    float t) {
+      ModernVertex mv{};
+      mv.pos = {x, y, 0.5f, 1.0f};
+      mv.color = {r, g, b, 1.0f};
+      mv.tex = {s, t, 0.0f, 0.0f};
+      mv.tmu_oow = {1.0f, 1.0f};
+      return mv;
+    };
+    auto drawRect = [&](float x0, float y0, float x1, float y1, float r,
+                        float g, float b) {
+      be->DrawTriangle(makeV(x0, y0, r, g, b, 0.0f, 0.0f),
+                       makeV(x1, y0, r, g, b, 256.0f, 0.0f),
+                       makeV(x1, y1, r, g, b, 256.0f, 256.0f));
+      be->DrawTriangle(makeV(x0, y0, r, g, b, 0.0f, 0.0f),
+                       makeV(x1, y1, r, g, b, 256.0f, 256.0f),
+                       makeV(x0, y1, r, g, b, 0.0f, 256.0f));
+    };
+
+    // 1. Paint main backbuffer bright green (R=0, G=200, B=40 -> 0xFF28C800 in ABGR)
+    be->ClearBuffer(0xFF28C800u, 255u, 1.0f, 3u);
+    drawRect(0.0f, 0.0f, 40.0f, 40.0f, 0.0f, 0.784f, 0.157f);
+
+    // 2. Enter GPU TEXTUREBUFFER mode and render asymmetric 64x64 RTT:
+    //    y in [0..32) = RED, y in [32..64) = BLUE (in active Glide origin).
+    REQUIRE(be->BeginGpuTextureBufferMode());
+    be->SetAAMultiSample(false);
+    be->SetClipWindow(0u, 0u, 64u, 64u);
+    be->ClearBuffer(0xFF000000u, 255u, 1.0f, 3u);
+    drawRect(0.0f, 0.0f, 64.0f, 32.0f, 1.0f, 0.0f, 0.0f);   // RED
+    drawRect(0.0f, 32.0f, 64.0f, 64.0f, 0.0f, 0.0f, 1.0f);  // BLUE
+
+    // 3. Zero-readback GPU commit to TMU0 @ 0x20000 (LOD 2 = 64x64, 1x1)
+    REQUIRE(tm.CommitGpuRenderedTexture(0u, 0x20000u, 2, 2, 3u, 0xAu, 64u, 64u,
+                                        origin));
+
+    // 4. Exit GPU TEXTUREBUFFER mode (restores green backbuffer on GPU)
+    be->EndGpuTextureBufferMode();
+    be->SetAAMultiSample(true);
+    be->SetClipWindow(0u, 0u, 128u, 128u);
+
+    // 5. Sample the RTT texture onto right half [64..128, 0..128]
+    be->BindTexture(0u, 0x20000u, 1u, 1u, 0u, 0u);  // CLAMP, POINT
+    be->SetTexCombinerMode(0u, 1u, 0u, 1u, 0u, false, false);
+    be->SetCombinerMode(3u, 8u, 2u, 1u, false, 3u, 8u, 2u, 1u, false);
+    drawRect(64.0f, 0.0f, 128.0f, 128.0f, 1.0f, 1.0f, 1.0f);
+    be->FlushBins();
+
+    // Check zero CpuLfbStaging allocation on Vulkan BEFORE calling ReadLFB!
+    outZeroStagingVk = true;
+    if (auto* vkBe = dynamic_cast<VulkanBackend*>(be)) {
+      outZeroStagingVk = !vkBe->HasAllocatedCpuLfbStaging();
+    }
+
+    std::vector<uint32_t> fb(128u * 128u, 0u);
+    REQUIRE(be->ReadLFB(1u, 0u, 0u, 128u, 128u, 128u * 4u, fb.data()));
+    // ReadLFB rows are top-to-bottom regardless of origin.
+    outSavedPx = fb[20u * 128u + 20u];   // untouched green backbuffer
+    outTopPx = fb[20u * 128u + 96u];     // top quarter of sampled RTT quad
+    outBotPx = fb[108u * 128u + 96u];    // bottom quarter of sampled RTT quad
+
+    be->DetachWindow();
+    bm.ShutdownBackend();
+    reg.GetConfig() = savedCfg;
+  };
+
+  auto checkRgb = [](uint32_t px, int expR, int expG, int expB,
+                     const char* lbl) {
+    const int r = static_cast<int>(px & 0xFFu);
+    const int g = static_cast<int>((px >> 8) & 0xFFu);
+    const int b = static_cast<int>((px >> 16) & 0xFFu);
+    INFO(lbl << " got=(" << r << "," << g << "," << b << ") exp=(" << expR
+             << "," << expG << "," << expB << ")");
+    CHECK(std::abs(r - expR) <= 4);
+    CHECK(std::abs(g - expG) <= 4);
+    CHECK(std::abs(b - expB) <= 4);
+  };
+
+  for (uint32_t origin : {0u, 1u}) {
+    for (uint32_t msaa : {1u, 4u}) {
+      for (const char* beName : {"vulkan", "opengl_es"}) {
+        uint32_t savedPx = 0, topPx = 0, botPx = 0;
+        bool zeroStaging = false;
+        runRttCase(beName, origin, msaa, savedPx, topPx, botPx, zeroStaging);
+        INFO("backend=" << beName << " origin=" << origin << " msaa=" << msaa);
+        CHECK(zeroStaging);
+        checkRgb(savedPx, 0, 200, 40, "preserved main backbuffer");
+        // In UPPER_LEFT (origin=0): y=[0..32) is screen TOP (RED), y=[32..64) is
+        // screen BOT (BLUE). Sampling t=0 at screen y=0 (TOP) puts RED at TOP.
+        // In LOWER_LEFT (origin=1): y=[0..32) is screen BOT (RED), y=[32..64) is
+        // screen TOP (BLUE). ReadLFB stores row 0 = top of RTT (BLUE), row 63 =
+        // bot of RTT (RED); sampling t=0 at Glide y=0 (screen BOT) puts BLUE at
+        // screen BOT and RED at screen TOP!
+        checkRgb(topPx, 255, 0, 0, "RTT sampled top");
+        checkRgb(botPx, 0, 0, 255, "RTT sampled bottom");
+      }
+    }
+  }
+}

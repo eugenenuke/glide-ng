@@ -945,7 +945,9 @@ void main() {
     }
   }
 
-  // Depth Write (must write in all paths if gl_FragDepth is statically assigned)
+#ifdef USE_WBUFFER_DEPTH
+  // True W-buffer depth write (only compiled into depthMode == 2 pipelines so
+  // Z-buffer & depth-off pipelines omit DepthReplacing and preserve Early-Z).
   if (pcs.depthBufferMode == 2u) {
     float eyeW = 1.0 / fragOOW;
     float normalizedW = (eyeW - pcs.depthNear) / (pcs.depthFar - pcs.depthNear);
@@ -953,6 +955,7 @@ void main() {
   } else {
     gl_FragDepth = gl_FragCoord.z;
   }
+#endif
 
   // Apply Dithering to outColor and outPreFogColor
   outColor = applyDithering(col, ditherMode);
