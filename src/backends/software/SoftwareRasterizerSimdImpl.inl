@@ -651,7 +651,9 @@ void RasterizeTriangleLoopsTraits(
   const SimdF maxX_f(static_cast<float>(maxX) + 1.0f);
   const SimdF minY_f(static_cast<float>(minY));
   const SimdF maxY_f(static_cast<float>(maxY) + 1.0f);
-  const SimdF edgeEps_vec(Clockwise ? -1e-5f : 1e-5f);
+  const SimdF edgeThresh0_vec(EdgeTieBreakThreshold<Clockwise>(a0, b0));
+  const SimdF edgeThresh1_vec(EdgeTieBreakThreshold<Clockwise>(a1, b1));
+  const SimdF edgeThresh2_vec(EdgeTieBreakThreshold<Clockwise>(a2, b2));
   const uint32_t colorMaskVal =
       (colorMaskR ? 0x00FF0000u : 0u) | (colorMaskG ? 0x0000FF00u : 0u) |
       (colorMaskB ? 0x000000FFu : 0u) | (colorMaskAlpha ? 0xFF000000u : 0u);
@@ -718,14 +720,14 @@ void RasterizeTriangleLoopsTraits(
 
     for (int x = startX; x <= maxX;
          x += 4, E0 += E0_stepX, E1 += E1_stepX, E2 += E2_stepX) {
-      // 1. Edge Coverage Test
+      // 1. Edge Coverage Test (top-left tie-breaking fill rule)
       SimdM insideMask;
       if constexpr (Clockwise) {
-        insideMask =
-            (E0 >= edgeEps_vec) & (E1 >= edgeEps_vec) & (E2 >= edgeEps_vec);
+        insideMask = (E0 >= edgeThresh0_vec) & (E1 >= edgeThresh1_vec) &
+                     (E2 >= edgeThresh2_vec);
       } else {
-        insideMask =
-            (E0 <= edgeEps_vec) & (E1 <= edgeEps_vec) & (E2 <= edgeEps_vec);
+        insideMask = (E0 <= edgeThresh0_vec) & (E1 <= edgeThresh1_vec) &
+                     (E2 <= edgeThresh2_vec);
       }
 
       SimdM coverageMask;
