@@ -42,7 +42,11 @@ if(GLIDE_HAS_REF_SDK AND Catch2_FOUND)
         "${GLIDE_REF_SDK_DIR}/swlibs/fxmisc"
     )
 
-    target_compile_definitions(Glide3xWrapperTests PRIVATE -D__linux__ -DGLIDE_VERSION=3)
+    target_compile_definitions(Glide3xWrapperTests PRIVATE
+        -D__linux__
+        -DGLIDE_VERSION=3
+        "-DGLIDE_REPO_ROOT=\"${CMAKE_SOURCE_DIR}\""
+    )
 
     target_link_libraries(Glide3xWrapperTests PRIVATE
         GlideWrapperCore

@@ -126,7 +126,7 @@ done
 
 ---
 
-## 5. Comparing Mesa `llvmpipe` (Vulkan & OpenGL ES) vs. `glide-ng` Software
+## 5. Comparing Mesa `llvmpipe` (Vulkan and OpenGL ES) vs. `glide-ng` Software
 
 Because `glide-ng` automatically selects discrete/integrated GPUs over CPU devices in Vulkan, and NVIDIA's proprietary GLVND EGL driver ignores `LIBGL_ALWAYS_SOFTWARE=1` on its own, you must explicitly point the loader at Mesa's software ICDs to benchmark Mesa **`llvmpipe`** (CPU LLVM JIT rasterizer) apples-to-apples against `glide-ng`'s native **Software** backend.
 

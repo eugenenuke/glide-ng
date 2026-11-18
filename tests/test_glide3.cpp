@@ -21,6 +21,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <dlfcn.h>
+#include <filesystem>
 #include <fstream>
 #include <regex>
 #include <type_traits>
@@ -10058,5 +10059,156 @@ TEST_CASE("M11.6b Zero-Readback GPU TEXTUREBUFFER RTT (Origins + MSAA + Zero Sta
         checkRgb(botPx, 0, 0, 255, "RTT sampled bottom");
       }
     }
+  }
+}
+
+TEST_CASE("M12.5 Compatibility Catalog INI Presets & Directory Integrity",
+          "[M12][Catalog][Config]") {
+  namespace fs = std::filesystem;
+
+  // Locate repository root (prefers CMake-injected GLIDE_REPO_ROOT, with CWD fallbacks)
+  fs::path repoRoot;
+  std::vector<fs::path> candidates;
+#ifdef GLIDE_REPO_ROOT
+  candidates.emplace_back(GLIDE_REPO_ROOT);
+#endif
+  candidates.emplace_back(fs::current_path());
+  candidates.emplace_back(fs::current_path().parent_path());
+  candidates.emplace_back(fs::current_path().parent_path().parent_path());
+  for (const auto& c : candidates) {
+    if (fs::exists(c / "docs" / "catalog" / "README.md")) {
+      repoRoot = c;
+      break;
+    }
+  }
+  REQUIRE(!repoRoot.empty());
+
+  const fs::path catalogDir = repoRoot / "docs" / "catalog";
+  REQUIRE(fs::is_directory(catalogDir));
+
+  // Temporarily isolate environment variables so ambient test runner settings
+  // (e.g. GLIDE_NG_CONFIG, GLIDE_NG_CARD_MODEL, GLIDE_NG_SW_SIMD) cannot mask
+  // or distort INI preset validation, then restore unconditionally on exit.
+  struct ScopedEnvUnset {
+    std::vector<std::pair<std::string, std::pair<bool, std::string>>> saved;
+    GlideWrapper::SwSimdLevel savedSimd;
+    explicit ScopedEnvUnset(const std::vector<const char*>& names)
+        : savedSimd(GlideWrapper::GetActiveSimdLevel()) {
+      for (const char* name : names) {
+        const char* val = std::getenv(name);
+        if (val) {
+          saved.push_back({name, {true, std::string(val)}});
+          ::unsetenv(name);
+        } else {
+          saved.push_back({name, {false, ""}});
+        }
+      }
+    }
+    ~ScopedEnvUnset() {
+      for (const auto& kv : saved) {
+        if (kv.second.first) {
+          ::setenv(kv.first.c_str(), kv.second.second.c_str(), 1);
+        } else {
+          ::unsetenv(kv.first.c_str());
+        }
+      }
+      GlideWrapper::SetActiveSimdLevel(savedSimd);
+    }
+  };
+
+  ScopedEnvUnset envGuard({
+      "GLIDE_NG_CONFIG",
+      "GLIDE_NG_BACKEND",
+      "GLIDE_NG_CARD_MODEL",
+      "GLIDE_NG_API_VERSION",
+      "GLIDE_NG_MAX_FPS",
+      "GLIDE_NG_VSYNC",
+      "GLIDE_NG_SW_SIMD",
+      "GLIDE_NG_NO_SPLASH",
+      "FX_GLIDE_SWAPINTERVAL",
+      "FX_GLIDE_NO_SPLASH",
+      "SST_GAMMA",
+      "SSTV2_GAMMA",
+  });
+
+  // 1. Verify every title directory under games/, demos/, and tools/ has both
+  //    README.md and glide-ng.ini.
+  size_t titleDirCount = 0;
+  for (const char* bucket : {"games", "demos", "tools"}) {
+    const fs::path bucketDir = catalogDir / bucket;
+    REQUIRE(fs::is_directory(bucketDir));
+    for (const auto& entry : fs::directory_iterator(bucketDir)) {
+      if (!entry.is_directory()) continue;
+      ++titleDirCount;
+      INFO("Catalog title dir: " << entry.path().string());
+      CHECK(fs::is_regular_file(entry.path() / "README.md"));
+      CHECK(fs::is_regular_file(entry.path() / "glide-ng.ini"));
+    }
+  }
+  CHECK(titleDirCount >= 13u);
+
+  // 2. Discover every glide-ng*.ini under docs/catalog/ plus root glide-ng.ini.example
+  std::vector<fs::path> iniFiles;
+  for (const auto& entry : fs::recursive_directory_iterator(catalogDir)) {
+    if (!entry.is_regular_file()) continue;
+    const std::string fname = entry.path().filename().string();
+    if (fname.rfind("glide-ng", 0) == 0 && entry.path().extension() == ".ini") {
+      iniFiles.push_back(entry.path());
+    }
+  }
+  const fs::path exampleIni = repoRoot / "glide-ng.ini.example";
+  REQUIRE(fs::is_regular_file(exampleIni));
+  iniFiles.push_back(exampleIni);
+  std::sort(iniFiles.begin(), iniFiles.end());
+
+  REQUIRE(iniFiles.size() >= 17u);
+
+  GlideWrapper::IniConfigLoader loader;
+  for (const auto& iniPath : iniFiles) {
+    GlideWrapper::WrapperConfig cfg;
+    INFO("Validating preset: " << iniPath.string());
+    REQUIRE(loader.Load(iniPath.string(), cfg));
+    CHECK(cfg.configFileLoaded);
+    if (!cfg.unknownConfigKeys.empty()) {
+      UNSCOPED_INFO("Unknown keys: " << cfg.unknownConfigKeys[0]);
+    }
+    if (!cfg.invalidConfigValues.empty()) {
+      UNSCOPED_INFO("Invalid values: " << cfg.invalidConfigValues[0]);
+    }
+    if (!cfg.compatibilityWarnings.empty()) {
+      UNSCOPED_INFO("Compat warning: " << cfg.compatibilityWarnings[0]);
+    }
+    CHECK(cfg.unknownConfigKeys.empty());
+    CHECK(cfg.invalidConfigValues.empty());
+    CHECK(cfg.compatibilityWarnings.empty());
+  }
+
+  // 3. Spot-check semantic intent of non-default title presets
+  {
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load(
+        (catalogDir / "demos" / "3dfx-demo-room" / "glide-ng.ini").string(),
+        cfg));
+    CHECK(cfg.model == GlideWrapper::CardModel::VoodooGraphics);
+    CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_48);
+    CHECK(std::fabs(cfg.gammaOverride - 1.7f) < 0.001f);
+  }
+  {
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load(
+        (catalogDir / "demos" / "3dfx-kitty-hawk" / "glide-ng.ini").string(),
+        cfg));
+    CHECK(cfg.model == GlideWrapper::CardModel::Voodoo5);
+    CHECK(cfg.glide3ApiVersion == GlideWrapper::ApiVersion::GLIDE_3_10);
+  }
+  {
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load(
+        (catalogDir / "tools" / "glide-bench" / "glide-ng.voodoo5.ini").string(),
+        cfg));
+    CHECK(cfg.model == GlideWrapper::CardModel::Voodoo5);
+    CHECK(cfg.vsync == false);
+    CHECK(cfg.maxFps == 0.0f);
+    CHECK(cfg.noSplash == true);
   }
 }
