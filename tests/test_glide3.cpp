@@ -10166,3 +10166,41 @@ TEST_CASE("M12.5 Compatibility Catalog INI Presets & Directory Integrity",
     CHECK(cfg.noSplash == true);
   }
 }
+
+TEST_CASE("M13: Single-Source SemVer Version & Build Metadata",
+          "[M13][Version]") {
+  namespace fs = std::filesystem;
+  const fs::path versionFile = fs::path(GLIDE_REPO_ROOT) / "VERSION";
+  REQUIRE(fs::is_regular_file(versionFile));
+
+  std::ifstream in(versionFile);
+  REQUIRE(in.is_open());
+  std::string fileVersion;
+  std::getline(in, fileVersion);
+  while (!fileVersion.empty() &&
+         (fileVersion.back() == '\r' || fileVersion.back() == '\n' ||
+          fileVersion.back() == ' ' || fileVersion.back() == '\t')) {
+    fileVersion.pop_back();
+  }
+  REQUIRE(!fileVersion.empty());
+
+  const std::string base(GLIDE_VERSION_BASE);
+  const std::string full(GlideWrapper::WRAPPER_VERSION);
+  const std::string numeric =
+      std::to_string(GLIDE_VERSION_MAJOR) + "." +
+      std::to_string(GLIDE_VERSION_MINOR) + "." +
+      std::to_string(GLIDE_VERSION_PATCH);
+
+  CHECK(base == fileVersion);
+  CHECK(std::string(GlideWrapper::WRAPPER_VERSION_BASE) == fileVersion);
+  CHECK(base.rfind(numeric, 0) == 0);
+
+  // WRAPPER_VERSION is either exact "<base>" (on clean tag) or "<base>+g<hash>"
+  REQUIRE(full.rfind(base, 0) == 0);
+  if (full.size() > base.size()) {
+    CHECK(full.substr(base.size(), 2) == "+g");
+  }
+
+  CHECK(std::string(GLIDE_GIT_HASH).size() > 0u);
+  CHECK(std::string(GLIDE_BUILD_TYPE).size() > 0u);
+}

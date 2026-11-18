@@ -1,5 +1,25 @@
 cmake_minimum_required(VERSION 3.20)
-project(3dfxGlideWrapper CXX C)
+
+# Single source of truth for glide-ng SemVer version (reconfigures automatically on edit)
+set(_GLIDE_VERSION_FILE "${CMAKE_CURRENT_SOURCE_DIR}/VERSION")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_GLIDE_VERSION_FILE}")
+file(READ "${_GLIDE_VERSION_FILE}" _GLIDE_RAW_VERSION)
+string(STRIP "${_GLIDE_RAW_VERSION}" GLIDE_VERSION_BASE)
+if(GLIDE_VERSION_BASE MATCHES "^([0-9]+)\\.([0-9]+)\\.([0-9]+)(-([0-9A-Za-z.-]+))?$")
+    set(GLIDE_VERSION_MAJOR "${CMAKE_MATCH_1}")
+    set(GLIDE_VERSION_MINOR "${CMAKE_MATCH_2}")
+    set(GLIDE_VERSION_PATCH "${CMAKE_MATCH_3}")
+    set(GLIDE_VERSION_PRERELEASE "${CMAKE_MATCH_5}")
+    set(GLIDE_VERSION_NUMERIC "${GLIDE_VERSION_MAJOR}.${GLIDE_VERSION_MINOR}.${GLIDE_VERSION_PATCH}")
+else()
+    message(FATAL_ERROR "Invalid SemVer in ${_GLIDE_VERSION_FILE}: '${GLIDE_VERSION_BASE}'")
+endif()
+
+project(glide-ng VERSION ${GLIDE_VERSION_NUMERIC} LANGUAGES CXX C)
+if(WIN32 AND CMAKE_RC_COMPILER)
+    enable_language(RC)
+endif()
+message(STATUS "Configuring glide-ng v${GLIDE_VERSION_BASE}")
 
 # Enforce Modern C++20 Standard
 set(CMAKE_CXX_STANDARD 20)

@@ -1129,7 +1129,8 @@ bool SoftwareBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
             << ")\n"
             << "    Cores     : " << cores << " Hardware Threads\n"
             << "    Arch      : " << arch << "\n"
-            << "    Engine    : glide-ng Software Reference Core (v0.1.0)\n"
+            << "    Engine    : glide-ng Software Reference Core (v"
+            << WRAPPER_VERSION << ")\n"
             << "    AA Mode   : " << m_softwareAaMode << " (" << m_ssaaScale
             << "x scale)\n"
             << "------------------------------------------";

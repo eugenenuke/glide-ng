@@ -5,11 +5,14 @@
 #include <string>
 #include <vector>
 
+#include "build_version.h"
+
 namespace GlideWrapper {
 
 // Authoritative Wrapper Project Identity
 constexpr const char* WRAPPER_PROJECT_NAME = "glide-ng";
-constexpr const char* WRAPPER_VERSION      = "v0.1.0-dev";
+constexpr const char* WRAPPER_VERSION      = GLIDE_VERSION_STRING;
+constexpr const char* WRAPPER_VERSION_BASE = GLIDE_VERSION_BASE;
 constexpr const char* WRAPPER_FULL_NAME    = "3dfx glide-ng (Glide Next Generation) Modernization Wrapper";
 
 // Unified Default Runtime Filenames

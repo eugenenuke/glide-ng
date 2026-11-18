@@ -1,0 +1,33 @@
+#include <winver.h>
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION @GLIDE_VERSION_MAJOR@,@GLIDE_VERSION_MINOR@,@GLIDE_VERSION_PATCH@,0
+ PRODUCTVERSION @GLIDE_VERSION_MAJOR@,@GLIDE_VERSION_MINOR@,@GLIDE_VERSION_PATCH@,0
+ FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
+#ifdef _DEBUG
+ FILEFLAGS VS_FF_DEBUG
+#else
+ FILEFLAGS 0x0L
+#endif
+ FILEOS VOS__WINDOWS32
+ FILETYPE VFT_DLL
+ FILESUBTYPE VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "CompanyName", "glide-ng Contributors"
+            VALUE "FileDescription", "glide-ng 3dfx Glide 3.x Modernization Wrapper"
+            VALUE "FileVersion", "@GLIDE_VERSION_BASE@"
+            VALUE "InternalName", "glide3x"
+            VALUE "OriginalFilename", "glide3x.dll"
+            VALUE "ProductName", "glide-ng"
+            VALUE "ProductVersion", "@GLIDE_VERSION_BASE@"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 1200
+    END
+END
