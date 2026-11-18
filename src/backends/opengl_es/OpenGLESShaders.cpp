@@ -222,11 +222,11 @@ bool IsColorInRange(vec3 color, vec3 minColor, vec3 maxColor, uint rangeMode) {
     }
 }
 
-vec4 sampleTextureGLES(sampler2D tex, vec2 uv, int tmuIdx, float tw, float th) {
+vec4 sampleTextureGLES(sampler2D tex, vec2 uv, vec2 dUvDx, vec2 dUvDy,
+                       int tmuIdx, float tw, float th) {
     float maxDim = max(tw, th);
-    vec2 finalUv = uv;
-    finalUv.x *= (maxDim / tw);
-    finalUv.y *= (maxDim / th);
+    vec2 aspectScale = vec2(maxDim / tw, maxDim / th);
+    vec2 finalUv = uv * aspectScale;
     if (uTexChromaEnabled[tmuIdx] == 1u) {
         ivec2 size = ivec2(int(tw), int(th));
         vec2 texelCoord = finalUv * vec2(tw, th) - vec2(0.5);
@@ -248,7 +248,9 @@ vec4 sampleTextureGLES(sampler2D tex, vec2 uv, int tmuIdx, float tw, float th) {
         vec4 c1 = mix(c01, c11, f.x);
         return mix(c0, c1, f.y);
     } else {
-        return texture(tex, finalUv, uTexLodBias[tmuIdx]);
+        float biasScale = exp2(uTexLodBias[tmuIdx]);
+        return textureGrad(tex, finalUv, dUvDx * aspectScale * biasScale,
+                           dUvDy * aspectScale * biasScale);
     }
 }
 
@@ -501,6 +503,18 @@ vec3 evaluateFbiExtColorGLES(highp uint cfgWord, vec4 iterColor, vec4 constColor
 }
 
 void main() {
+    // Precompute affine screen-space derivatives in uniform control flow BEFORE
+    // any discard so 2x2 GPU helper lanes never hit out-of-triangle 1/divW
+    // singularities or spike perspective mipmap LOD to the 1x1 mip along edges.
+    vec2 dS0dx = dFdx(fragTexCoord.xy);
+    vec2 dS0dy = dFdy(fragTexCoord.xy);
+    vec2 dS1dx = dFdx(fragTexCoord.zw);
+    vec2 dS1dy = dFdy(fragTexCoord.zw);
+    float dOowDx = dFdx(fragOOW);
+    float dOowDy = dFdy(fragOOW);
+    vec2 dTmuOowDx = dFdx(fragTmuOow);
+    vec2 dTmuOowDy = dFdy(fragTmuOow);
+
     // Stipple Transparency Emulation
     if (uStippleMode == 1u) { // GR_STIPPLE_PATTERN
         int stippleX = int(gl_FragCoord.x) & 7;
@@ -525,6 +539,10 @@ void main() {
     bool tmu1Active = uTextureEnabled[1] == 1;
     float divW0 = (uUseTmuOow[0] == 1) ? fragTmuOow.x : fragOOW;
     float divW1 = (uUseTmuOow[1] == 1) ? fragTmuOow.y : fragOOW;
+    float dQ0dx = (uUseTmuOow[0] == 1) ? dTmuOowDx.x : dOowDx;
+    float dQ0dy = (uUseTmuOow[0] == 1) ? dTmuOowDy.x : dOowDy;
+    float dQ1dx = (uUseTmuOow[1] == 1) ? dTmuOowDx.y : dOowDx;
+    float dQ1dy = (uUseTmuOow[1] == 1) ? dTmuOowDy.y : dOowDy;
 
     // Guard non-positive W (respect per-TMU oow when GR_STWHINT_W_DIFF_TMU* is
     // active). Authentic 3dfx silicon never discards fragOOW > 1.0 in W-buffer
@@ -546,14 +564,15 @@ void main() {
         float th = float(texSize.y);
         float maxDim = max(tw, th);
         vec2 uv1 = (fragTexCoord.zw / divW1) / 256.0;
-        vec2 texelPos1 = uv1 * vec2(maxDim, maxDim);
-        vec2 dx1 = dFdx(texelPos1);
-        vec2 dy1 = dFdy(texelPos1);
+        vec2 dUv1dx = (dS1dx * (1.0 / 256.0) - uv1 * dQ1dx) / divW1;
+        vec2 dUv1dy = (dS1dy * (1.0 / 256.0) - uv1 * dQ1dy) / divW1;
+        vec2 dx1 = dUv1dx * vec2(maxDim, maxDim);
+        vec2 dy1 = dUv1dy * vec2(maxDim, maxDim);
         float rho2_1 = max(dot(dx1, dx1), dot(dy1, dy1));
         float rawLod1 = (rho2_1 > 1e-8) ? 0.5 * log2(rho2_1) : -10.0;
         detailFactor1 = clamp((float(uTexDetailBias[1]) - rawLod1) * exp2(float(uTexDetailScale[1])) / 255.0, 0.0, uTexDetailMax[1]);
         lodFrac1 = fract(max(0.0, rawLod1 + uTexLodBias[1]));
-        tmu1Color = sampleTextureGLES(uTexture1, uv1, 1, tw, th);
+        tmu1Color = sampleTextureGLES(uTexture1, uv1, dUv1dx, dUv1dy, 1, tw, th);
     }
 
     // Evaluate TMU 1 combiner stage (upstream, passes iterated)
@@ -579,14 +598,15 @@ void main() {
         float th = float(texSize.y);
         float maxDim = max(tw, th);
         vec2 uv0 = (fragTexCoord.xy / divW0) / 256.0;
-        vec2 texelPos0 = uv0 * vec2(maxDim, maxDim);
-        vec2 dx0 = dFdx(texelPos0);
-        vec2 dy0 = dFdy(texelPos0);
+        vec2 dUv0dx = (dS0dx * (1.0 / 256.0) - uv0 * dQ0dx) / divW0;
+        vec2 dUv0dy = (dS0dy * (1.0 / 256.0) - uv0 * dQ0dy) / divW0;
+        vec2 dx0 = dUv0dx * vec2(maxDim, maxDim);
+        vec2 dy0 = dUv0dy * vec2(maxDim, maxDim);
         float rho2_0 = max(dot(dx0, dx0), dot(dy0, dy0));
         float rawLod0 = (rho2_0 > 1e-8) ? 0.5 * log2(rho2_0) : -10.0;
         detailFactor0 = clamp((float(uTexDetailBias[0]) - rawLod0) * exp2(float(uTexDetailScale[0])) / 255.0, 0.0, uTexDetailMax[0]);
         lodFrac0 = fract(max(0.0, rawLod0 + uTexLodBias[0]));
-        tmu0Color = sampleTextureGLES(uTexture0, uv0, 0, tw, th);
+        tmu0Color = sampleTextureGLES(uTexture0, uv0, dUv0dx, dUv0dy, 0, tw, th);
     }
 
     // Evaluate TMU 0 combiner stage (downstream, other is tmu1Out)

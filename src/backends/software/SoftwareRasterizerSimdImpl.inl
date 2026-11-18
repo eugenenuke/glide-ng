@@ -842,34 +842,57 @@ void RasterizeTriangleLoopsTraits(
                 trueT1 * SimdF(scaleV1), clampS1, clampT1, minFilter1,
                 tex1ChromaEnabled, 1u, state);
           } else {
-            float centerX = static_cast<float>(x) + SimdTraits::kCenterOffsetX;
-            float centerY = static_cast<float>(y) + SimdTraits::kCenterOffsetY;
-            float centerW0 = (a0 * centerX + b0 * centerY + c0) * invArea;
-            float centerW1 = (a1 * centerX + b1 * centerY + c1) * invArea;
-            float centerW2 = (a2 * centerX + b2 * centerY + c2) * invArea;
-            float centerDivW1 =
-                (stwHintMask & 0x8)
-                    ? (centerW0 * a.tmu_oow[1] + centerW1 * b.tmu_oow[1] +
-                       centerW2 * c.tmu_oow[1])
-                    : (centerW0 * a.pos[3] + centerW1 * b.pos[3] +
-                       centerW2 * c.pos[3]);
-            float centerInvW1 = 1.0f / centerDivW1;
-            float centerTrueS1 =
-                (centerW0 * a.tex[2] + centerW1 * b.tex[2] +
-                 centerW2 * c.tex[2]) *
-                centerInvW1;
-            float centerTrueT1 =
-                (centerW0 * a.tex[3] + centerW1 * b.tex[3] +
-                 centerW2 * c.tex[3]) *
-                centerInvW1;
+            float refInvW1 = 0.0f;
+            float refTrueS1 = 0.0f;
+            float refTrueT1 = 0.0f;
+            bool usedCenter1 = false;
+            if (__builtin_expect(coverageMask.AllTrue(), 1)) {
+              float centerX = static_cast<float>(x) + SimdTraits::kCenterOffsetX;
+              float centerY = static_cast<float>(y) + SimdTraits::kCenterOffsetY;
+              float centerW0 = (a0 * centerX + b0 * centerY + c0) * invArea;
+              float centerW1 = (a1 * centerX + b1 * centerY + c1) * invArea;
+              float centerW2 = (a2 * centerX + b2 * centerY + c2) * invArea;
+              float centerDivW1 =
+                  (stwHintMask & 0x8)
+                      ? (centerW0 * a.tmu_oow[1] + centerW1 * b.tmu_oow[1] +
+                         centerW2 * c.tmu_oow[1])
+                      : (centerW0 * a.pos[3] + centerW1 * b.pos[3] +
+                         centerW2 * c.pos[3]);
+              if (centerDivW1 > 0.0f) {
+                refInvW1 = 1.0f / centerDivW1;
+                refTrueS1 = (centerW0 * a.tex[2] + centerW1 * b.tex[2] +
+                             centerW2 * c.tex[2]) *
+                            refInvW1;
+                refTrueT1 = (centerW0 * a.tex[3] + centerW1 * b.tex[3] +
+                             centerW2 * c.tex[3]) *
+                            refInvW1;
+                usedCenter1 = true;
+              }
+            }
+            if (!usedCenter1) {
+              // Partial edge block: evaluate LOD derivatives at an active
+              // covered pixel strictly inside the triangle so perspective W
+              // never extrapolates toward <= 0 and spikes LOD to the 1x1 mip.
+              const int lane =
+                  __builtin_ctz(static_cast<unsigned>(coverageMask.MoveMask()));
+              alignas(64) float invWLanes[16];
+              alignas(64) float sLanes[16];
+              alignas(64) float tLanes[16];
+              SimdF::StoreAligned(invWLanes, invW1);
+              SimdF::StoreAligned(sLanes, trueS1);
+              SimdF::StoreAligned(tLanes, trueT1);
+              refInvW1 = invWLanes[lane];
+              refTrueS1 = sLanes[lane];
+              refTrueT1 = tLanes[lane];
+            }
 
-            float du_dx1 = (dSp1_dx - centerTrueS1 * dQ1_dx) * centerInvW1 *
+            float du_dx1 = (dSp1_dx - refTrueS1 * dQ1_dx) * refInvW1 *
                            scaleU1;
-            float du_dy1 = (dSp1_dy - centerTrueS1 * dQ1_dy) * centerInvW1 *
+            float du_dy1 = (dSp1_dy - refTrueS1 * dQ1_dy) * refInvW1 *
                            scaleU1;
-            float dv_dx1 = (dTp1_dx - centerTrueT1 * dQ1_dx) * centerInvW1 *
+            float dv_dx1 = (dTp1_dx - refTrueT1 * dQ1_dx) * refInvW1 *
                            scaleV1;
-            float dv_dy1 = (dTp1_dy - centerTrueT1 * dQ1_dy) * centerInvW1 *
+            float dv_dy1 = (dTp1_dy - refTrueT1 * dQ1_dy) * refInvW1 *
                            scaleV1;
 
             float d1 = std::max(du_dx1 * du_dx1 + dv_dx1 * dv_dx1,
@@ -963,35 +986,58 @@ void RasterizeTriangleLoopsTraits(
                 tex0WShift, trueS * scaleU0_vec, trueT * scaleV0_vec, clampS,
                 clampT, minFilter, tex0ChromaEnabled, 0u, state);
           } else {
-            float centerX = static_cast<float>(x) + SimdTraits::kCenterOffsetX;
-            float centerY = static_cast<float>(y) + SimdTraits::kCenterOffsetY;
-            float centerW0 = (a0 * centerX + b0 * centerY + c0) * invArea;
-            float centerW1 = (a1 * centerX + b1 * centerY + c1) * invArea;
-            float centerW2 = (a2 * centerX + b2 * centerY + c2) * invArea;
-            float centerDivW0 =
-                (stwHintMask & 0x2)
-                    ? (centerW0 * a.tmu_oow[0] + centerW1 * b.tmu_oow[0] +
-                       centerW2 * c.tmu_oow[0])
-                    : (centerW0 * a.pos[3] + centerW1 * b.pos[3] +
-                       centerW2 * c.pos[3]);
-            float centerInvW = 1.0f / centerDivW0;
-            float centerTrueS =
-                (centerW0 * a.tex[0] + centerW1 * b.tex[0] +
-                 centerW2 * c.tex[0]) *
-                centerInvW;
-            float centerTrueT =
-                (centerW0 * a.tex[1] + centerW1 * b.tex[1] +
-                 centerW2 * c.tex[1]) *
-                centerInvW;
+            float refInvW = 0.0f;
+            float refTrueS = 0.0f;
+            float refTrueT = 0.0f;
+            bool usedCenter = false;
+            if (__builtin_expect(coverageMask.AllTrue(), 1)) {
+              float centerX = static_cast<float>(x) + SimdTraits::kCenterOffsetX;
+              float centerY = static_cast<float>(y) + SimdTraits::kCenterOffsetY;
+              float centerW0 = (a0 * centerX + b0 * centerY + c0) * invArea;
+              float centerW1 = (a1 * centerX + b1 * centerY + c1) * invArea;
+              float centerW2 = (a2 * centerX + b2 * centerY + c2) * invArea;
+              float centerDivW0 =
+                  (stwHintMask & 0x2)
+                      ? (centerW0 * a.tmu_oow[0] + centerW1 * b.tmu_oow[0] +
+                         centerW2 * c.tmu_oow[0])
+                      : (centerW0 * a.pos[3] + centerW1 * b.pos[3] +
+                         centerW2 * c.pos[3]);
+              if (centerDivW0 > 0.0f) {
+                refInvW = 1.0f / centerDivW0;
+                refTrueS = (centerW0 * a.tex[0] + centerW1 * b.tex[0] +
+                            centerW2 * c.tex[0]) *
+                           refInvW;
+                refTrueT = (centerW0 * a.tex[1] + centerW1 * b.tex[1] +
+                            centerW2 * c.tex[1]) *
+                           refInvW;
+                usedCenter = true;
+              }
+            }
+            if (!usedCenter) {
+              // Partial edge block: evaluate LOD derivatives at an active
+              // covered pixel strictly inside the triangle so perspective W
+              // never extrapolates toward <= 0 and spikes LOD to the 1x1 mip.
+              const int lane =
+                  __builtin_ctz(static_cast<unsigned>(coverageMask.MoveMask()));
+              alignas(64) float invWLanes[16];
+              alignas(64) float sLanes[16];
+              alignas(64) float tLanes[16];
+              SimdF::StoreAligned(invWLanes, invW);
+              SimdF::StoreAligned(sLanes, trueS);
+              SimdF::StoreAligned(tLanes, trueT);
+              refInvW = invWLanes[lane];
+              refTrueS = sLanes[lane];
+              refTrueT = tLanes[lane];
+            }
 
             float du_dx =
-                (dSp_dx - centerTrueS * dQ_dx) * centerInvW * scaleU;
+                (dSp_dx - refTrueS * dQ_dx) * refInvW * scaleU;
             float du_dy =
-                (dSp_dy - centerTrueS * dQ_dy) * centerInvW * scaleU;
+                (dSp_dy - refTrueS * dQ_dy) * refInvW * scaleU;
             float dv_dx =
-                (dTp_dx - centerTrueT * dQ_dx) * centerInvW * scaleV;
+                (dTp_dx - refTrueT * dQ_dx) * refInvW * scaleV;
             float dv_dy =
-                (dTp_dy - centerTrueT * dQ_dy) * centerInvW * scaleV;
+                (dTp_dy - refTrueT * dQ_dy) * refInvW * scaleV;
 
             float d = std::max(du_dx * du_dx + dv_dx * dv_dx,
                                du_dy * du_dy + dv_dy * dv_dy);

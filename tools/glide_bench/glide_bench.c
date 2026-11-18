@@ -252,6 +252,9 @@ static void print_summary(FILE* out,
 
   for (i = 0; i < num_results; ++i) {
     char tp_buf[32];
+    if (!results[i].scene) {
+      continue;
+    }
     if (!results[i].ran) {
       fprintf(out, " %-11s   [SKIP - unsupported on active card/config]\n",
               results[i].scene->name);
@@ -317,7 +320,7 @@ static int write_csv(const char* path, int width, int height,
   if (!fp) return 0;
   fprintf(fp, "scene,res_w,res_h,frames,elapsed_s,avg_fps,min_fps,p1_low_fps,avg_ms,p99_ms,throughput,unit,score\n");
   for (i = 0; i < num_results; ++i) {
-    if (!results[i].ran) continue;
+    if (!results[i].scene || !results[i].ran) continue;
     fprintf(fp, "%s,%d,%d,%d,%.4f,%.2f,%.2f,%.2f,%.3f,%.3f,%.3f,%s,%.1f\n",
             results[i].scene->name, width, height, results[i].frames,
             results[i].elapsed_s, results[i].avg_fps, results[i].min_fps,
@@ -403,6 +406,7 @@ int main(int argc, char** argv) {
   const BenchScene* selected[MAX_SELECTED_SCENES];
   int num_selected = 0;
   SceneResult results[MAX_SELECTED_SCENES];
+  int num_executed = 0;
 
   char runtime_src[64];
   char err_buf[256];
@@ -532,6 +536,7 @@ int main(int argc, char** argv) {
   hw_str[0] = '\0';
   renderer_str[0] = '\0';
   memset(&ctx, 0, sizeof(ctx));
+  memset(results, 0, sizeof(results));
 
   if (!gtool_glide_load(runtime_src, sizeof(runtime_src), err_buf, sizeof(err_buf))) {
     fprintf(stderr, "ERROR: %s\n", err_buf[0] ? err_buf : "Glide load failed");
@@ -673,6 +678,7 @@ int main(int argc, char** argv) {
     run_single_scene(&ctx, selected[i], i, num_selected, target_seconds,
                      target_frames, loop_mode, frame_ms_buf, &results[i],
                      &aborted);
+    num_executed = i + 1;
   }
   gtool_console_end();
 
@@ -686,13 +692,13 @@ int main(int argc, char** argv) {
   free(frame_ms_buf);
 
   print_summary(stdout, runtime_src, glide_ver, hw_str, renderer_str,
-                width, height, results, num_selected);
+                width, height, results, num_executed);
 
   if (out_path) {
     FILE* fp = fopen(out_path, "w");
     if (fp) {
       print_summary(fp, runtime_src, glide_ver, hw_str, renderer_str,
-                    width, height, results, num_selected);
+                    width, height, results, num_executed);
       fclose(fp);
       printf("Summary saved to: %s\n", out_path);
     } else {
@@ -701,7 +707,7 @@ int main(int argc, char** argv) {
   }
 
   if (csv_path) {
-    if (write_csv(csv_path, width, height, results, num_selected)) {
+    if (write_csv(csv_path, width, height, results, num_executed)) {
       printf("CSV saved to: %s\n", csv_path);
     } else {
       fprintf(stderr, "ERROR: Failed to write CSV to '%s'\n", csv_path);

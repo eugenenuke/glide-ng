@@ -9238,6 +9238,141 @@ TEST_CASE(
     CHECK((px & 0xFFu) <= 95);
   }
 
+  SECTION(
+      "grDrawLine W-buffer depth test and write preserves TR1 health bar "
+      "against later black background lines") {
+    grDepthBufferMode(GR_DEPTHBUFFER_WBUFFER);
+    grDepthBufferFunction(GR_CMP_LESS);
+    grDepthMask(FXTRUE);
+    grDepthBiasLevel(0);
+    grChromakeyMode(GR_CHROMAKEY_ENABLE);
+    grChromakeyValue(0x00604020u);
+    grAlphaBlendFunction(GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_ONE,
+                         GR_BLEND_ZERO);
+    grColorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_ZERO,
+                   GR_COMBINE_LOCAL_CONSTANT, GR_COMBINE_OTHER_CONSTANT,
+                   FXFALSE);
+    grAlphaCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_ZERO,
+                   GR_COMBINE_LOCAL_CONSTANT, GR_COMBINE_OTHER_CONSTANT,
+                   FXFALSE);
+    grBufferClear(0xFF202080u, 0, GR_WDEPTHVALUE_FARTHEST);
+
+    auto drawHLine = [](float x0, float x1, float y, FxU32 color) {
+      grConstantColorValue(color);
+      GrVertex a{}, b{};
+      a.x = x0;
+      a.y = y;
+      a.z = 0.0f;
+      a.oow = 81.92f;
+      b.x = x1;
+      b.y = y;
+      b.z = 0.0f;
+      b.oow = 81.92f;
+      grDrawLine(&a, &b);
+    };
+
+    // Exact Tomb Raider 1 sequence: yellow-gold filled health lines first,
+    // then full-width black background lines at identical oow = 81.92.
+    for (int y = 8; y <= 12; ++y) {
+      drawHLine(8.0f, 68.0f, static_cast<float>(y), 0x00A47848u);
+    }
+    for (int y = 7; y <= 13; ++y) {
+      drawHLine(7.0f, 109.0f, static_cast<float>(y), 0x00000000u);
+    }
+    grChromakeyMode(GR_CHROMAKEY_DISABLE);
+    grBufferSwap(0);
+
+    // Interior of filled health bar must remain yellowish-gold (NOT overwritten
+    // by the later black lines since 0.0 < 0.0 fails GR_CMP_LESS).
+    uint32_t pxFill = 0;
+    uint32_t pxEmpty = 0;
+    REQUIRE(grLfbReadRegion(GR_BUFFER_FRONTBUFFER, 30, 10, 1, 1, 4, &pxFill) ==
+            FXTRUE);
+    REQUIRE(grLfbReadRegion(GR_BUFFER_FRONTBUFFER, 90, 10, 1, 1, 4, &pxEmpty) ==
+            FXTRUE);
+
+    // GR_COLORFORMAT_ARGB -> R=0xA4(164), G=0x78(120), B=0x48(72)
+    CHECK(((pxFill >> 16) & 0xFFu) >= 145);
+    CHECK(((pxFill >> 8) & 0xFFu) >= 100);
+    CHECK(((pxFill >> 8) & 0xFFu) <= 140);
+    CHECK((pxFill & 0xFFu) >= 55);
+    CHECK((pxFill & 0xFFu) <= 90);
+
+    // Unfilled right portion of health bar must be black.
+    CHECK(((pxEmpty >> 16) & 0xFFu) <= 10);
+    CHECK(((pxEmpty >> 8) & 0xFFu) <= 10);
+    CHECK((pxEmpty & 0xFFu) <= 10);
+  }
+
+  SECTION(
+      "Perspective mipmap edge block never spikes to 1x1 mip via "
+      "out-of-triangle block-center W extrapolation") {
+    guTexMemReset();
+    // Build a 256x256 RGB565 mip chain (9 levels: 256..1):
+    //   mip 0..2: bright GREEN (0x07E0)
+    //   mip 3..8: pure RED (0xF800) — must NOT be sampled at 1:1 edge pixel!
+    std::vector<uint16_t> mipChain;
+    for (int lvl = 0; lvl <= 8; ++lvl) {
+      const size_t dim = static_cast<size_t>(256u >> lvl);
+      const uint16_t color = (lvl <= 2) ? 0x07E0u : 0xF800u;
+      mipChain.insert(mipChain.end(), dim * dim, color);
+    }
+    GrTexInfo info{};
+    info.smallLod = GR_LOD_1;
+    info.largeLod = GR_LOD_256;
+    info.aspectRatio = GR_ASPECT_1x1;
+    info.format = GR_TEXFMT_RGB_565;
+    info.data = mipChain.data();
+
+    const FxU32 texAddr = grTexMinAddress(GR_TMU0);
+    grTexDownloadMipMap(GR_TMU0, texAddr, GR_MIPMAPLEVELMASK_BOTH, &info);
+    grTexSource(GR_TMU0, texAddr, GR_MIPMAPLEVELMASK_BOTH, &info);
+    grTexClampMode(GR_TMU0, GR_TEXTURECLAMP_CLAMP, GR_TEXTURECLAMP_CLAMP);
+    grTexFilterMode(GR_TMU0, GR_TEXTUREFILTER_BILINEAR,
+                    GR_TEXTUREFILTER_BILINEAR);
+    grTexMipMapMode(GR_TMU0, GR_MIPMAP_NEAREST, FXFALSE);
+    grTexLodBiasValue(GR_TMU0, 0.0f);
+
+    grDepthBufferMode(GR_DEPTHBUFFER_DISABLE);
+    grChromakeyMode(GR_CHROMAKEY_DISABLE);
+    grAlphaBlendFunction(GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_ONE,
+                         GR_BLEND_ZERO);
+    grColorCombine(GR_COMBINE_FUNCTION_SCALE_OTHER, GR_COMBINE_FACTOR_ONE,
+                   GR_COMBINE_LOCAL_NONE, GR_COMBINE_OTHER_TEXTURE, FXFALSE);
+    grBufferClear(0xFF000000u, 0, GR_WDEPTHVALUE_FARTHEST);
+
+    // Pixel (104, 100) lies strictly inside this steep perspective triangle
+    // (1 texel/pixel -> LOD ~0, GREEN), while the 2x4 SIMD block center
+    // (105.5, 100.5) extrapolates outside the triangle to divW ~ 3.5e-6.
+    GrVertex a{}, b{}, c{};
+    a.x = 100.0f;
+    a.y = 100.0f;
+    a.oow = 0.002f;
+    a.tmuvtx[0].sow = 0.0f;
+    a.tmuvtx[0].tow = 0.0f;
+
+    b.x = 105.0f;
+    b.y = 100.0f;
+    b.oow = 0.000185f;
+    b.tmuvtx[0].sow = 5.0f * b.oow;
+    b.tmuvtx[0].tow = 0.0f;
+
+    c.x = 100.0f;
+    c.y = 120.0f;
+    c.oow = 0.002f;
+    c.tmuvtx[0].sow = 0.0f;
+    c.tmuvtx[0].tow = 20.0f * c.oow;
+
+    grDrawTriangle(&a, &b, &c);
+    grBufferSwap(0);
+
+    uint32_t px = 0;
+    REQUIRE(grLfbReadRegion(GR_BUFFER_FRONTBUFFER, 104, 100, 1, 1, 4, &px) ==
+            FXTRUE);
+    CHECK(((px >> 8) & 0xFFu) >= 240);   // GREEN (low mip)
+    CHECK(((px >> 16) & 0xFFu) <= 15);   // NOT RED (no 1x1 mip spike!)
+  }
+
   grSstWinClose();
   grGlideShutdown();
 #endif

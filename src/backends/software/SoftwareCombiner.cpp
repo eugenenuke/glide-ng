@@ -35,12 +35,76 @@ void SoftwareBackend::WritePixelPipeline(int x, int y, const ModernVertex& v,
     }
   }
 
+  // 1. Guard non-positive W in W-buffer mode before any reciprocal
+  if (state.depthMode == 2 && v.pos[3] <= 0.0f) {
+    return;
+  }
+
   // 2. Color Combiner
   uint32_t combinerColor = EvaluateCombinerColor(v, state);
   float red = ((combinerColor >> 16) & 0xFF) / 255.0f;
   float green = ((combinerColor >> 8) & 0xFF) / 255.0f;
   float blue = (combinerColor & 0xFF) / 255.0f;
   float alpha = ((combinerColor >> 24) & 0xFF) / 255.0f;
+
+  // 2.5. Chromakey Emulation (untextured lines/points test combined RGB)
+  if (state.chromakeyMode == 1) {
+    bool chromaFail = false;
+    const bool rangeEnabled = ((state.chromakeyRangeMode >> 28) & 1u) == 1u;
+    if (rangeEnabled) {
+      float minR = ((state.chromakeyRangeMin >> 16) & 0xFF) / 255.0f;
+      float minG = ((state.chromakeyRangeMin >> 8) & 0xFF) / 255.0f;
+      float minB = (state.chromakeyRangeMin & 0xFF) / 255.0f;
+      float maxR = ((state.chromakeyRangeMax >> 16) & 0xFF) / 255.0f;
+      float maxG = ((state.chromakeyRangeMax >> 8) & 0xFF) / 255.0f;
+      float maxB = (state.chromakeyRangeMax & 0xFF) / 255.0f;
+      if (state.pixelFormatOverride == 1) {
+        std::swap(minR, minB);
+        std::swap(maxR, maxB);
+      }
+      bool rMatch = (red >= minR && red <= maxR);
+      bool gMatch = (green >= minG && green <= maxG);
+      bool bMatch = (blue >= minB && blue <= maxB);
+      bool rRes = ((state.chromakeyRangeMode >> 26) & 1u) ? !rMatch : rMatch;
+      bool gRes = ((state.chromakeyRangeMode >> 25) & 1u) ? !gMatch : gMatch;
+      bool bRes = ((state.chromakeyRangeMode >> 24) & 1u) ? !bMatch : bMatch;
+      chromaFail = ((state.chromakeyRangeMode >> 27) & 1u)
+                       ? (rRes || gRes || bRes)
+                       : (rRes && gRes && bRes);
+    } else {
+      float chR = ((state.chromakeyValue >> 16) & 0xFF) / 255.0f;
+      float chG = ((state.chromakeyValue >> 8) & 0xFF) / 255.0f;
+      float chB = (state.chromakeyValue & 0xFF) / 255.0f;
+      if (state.pixelFormatOverride == 1) {
+        std::swap(chR, chB);
+      }
+      chromaFail = (std::abs(red - chR) < 0.001f &&
+                    std::abs(green - chG) < 0.001f &&
+                    std::abs(blue - chB) < 0.001f);
+    }
+    if (chromaFail) {
+      return;
+    }
+  }
+
+  // 2.6. Alpha Testing (evaluated prior to AA coverage modulation)
+  if (state.alphaTestOp != 7) {
+    const float alphaTestRef = static_cast<float>(state.alphaTestRefVal) / 255.0f;
+    bool alphaPass = false;
+    switch (state.alphaTestOp) {
+      case 0: alphaPass = false; break;
+      case 1: alphaPass = (alpha < alphaTestRef); break;
+      case 2: alphaPass = (alpha == alphaTestRef); break;
+      case 3: alphaPass = (alpha <= alphaTestRef); break;
+      case 4: alphaPass = (alpha > alphaTestRef); break;
+      case 5: alphaPass = (alpha != alphaTestRef); break;
+      case 6: alphaPass = (alpha >= alphaTestRef); break;
+      default: alphaPass = true; break;
+    }
+    if (!alphaPass) {
+      return;
+    }
+  }
 
   alpha *= coverage;
 
@@ -99,6 +163,84 @@ void SoftwareBackend::WritePixelPipeline(int x, int y, const ModernVertex& v,
     red = red * (1.0f - mult) * (1.0f - f) + fogR * (1.0f - add) * f;
     green = green * (1.0f - mult) * (1.0f - f) + fogG * (1.0f - add) * f;
     blue = blue * (1.0f - mult) * (1.0f - f) + fogB * (1.0f - add) * f;
+  }
+
+  const size_t pIdx = static_cast<size_t>(y) * m_headlessWidth +
+                      static_cast<size_t>(x);
+
+  // 3.5. Hardware Stencil Testing (before Depth Test)
+  uint8_t* stencilBuffer = m_headlessStencilBuffer.empty()
+                               ? nullptr
+                               : m_headlessStencilBuffer.data();
+  if (state.stencilEnabled && stencilBuffer) {
+    const uint8_t sVal = stencilBuffer[pIdx];
+    if (!EvaluateStencilCompare(state.stencilCompareOp, state.stencilRef,
+                                state.stencilReadMask, sVal)) {
+      if (state.stencilFailOp != 0u && state.stencilWriteMask != 0u) {
+        stencilBuffer[pIdx] = ApplyStencilOp(
+            state.stencilFailOp, sVal, state.stencilRef,
+            state.stencilWriteMask);
+      }
+      return;
+    }
+  }
+
+  // 3.6. Depth Testing & Depth Write + Stencil ZFail/ZPass Update
+  float* depthBuffer =
+      m_headlessDepthBuffer.empty() ? nullptr : m_headlessDepthBuffer.data();
+  if (state.depthMode != 0 && depthBuffer &&
+      (state.depthCompareOp != 7 || state.depthMask)) {
+    float targetDepth = 0.0f;
+    if (state.depthMode == 2) {  // GR_DEPTHBUFFER_WBUFFER
+      const float depthRange = state.depthFar - state.depthNear;
+      const float depthRangeInv =
+          (std::abs(depthRange) > 1e-6f) ? (1.0f / depthRange) : 0.0f;
+      const float w = 1.0f / v.pos[3];
+      targetDepth = std::clamp((w - state.depthNear) * depthRangeInv, 0.0f, 1.0f);
+    } else {
+      targetDepth = std::clamp(v.pos[2], 0.0f, 1.0f);
+    }
+    if (state.depthBiasLevel != 0) {
+      targetDepth = std::clamp(
+          targetDepth + static_cast<float>(state.depthBiasLevel) / 65535.0f,
+          0.0f, 1.0f);
+    }
+
+    bool depthPass = true;
+    if (state.depthCompareOp != 7) {
+      const float currentDepth = depthBuffer[pIdx];
+      switch (state.depthCompareOp) {
+        case 0: depthPass = false; break;
+        case 1: depthPass = (targetDepth < currentDepth); break;
+        case 2: depthPass = (targetDepth == currentDepth); break;
+        case 3: depthPass = (targetDepth <= currentDepth); break;
+        case 4: depthPass = (targetDepth > currentDepth); break;
+        case 5: depthPass = (targetDepth != currentDepth); break;
+        case 6: depthPass = (targetDepth >= currentDepth); break;
+        default: depthPass = true; break;
+      }
+    }
+
+    if (state.stencilEnabled && stencilBuffer && state.stencilWriteMask != 0u) {
+      const uint32_t op =
+          depthPass ? state.stencilZPassOp : state.stencilZFailOp;
+      if (op != 0u) {
+        stencilBuffer[pIdx] = ApplyStencilOp(
+            op, stencilBuffer[pIdx], state.stencilRef, state.stencilWriteMask);
+      }
+    }
+
+    if (!depthPass) {
+      return;
+    }
+    if (state.depthMask) {
+      depthBuffer[pIdx] = targetDepth;
+    }
+  } else if (state.stencilEnabled && stencilBuffer &&
+             state.stencilZPassOp != 0u && state.stencilWriteMask != 0u) {
+    stencilBuffer[pIdx] = ApplyStencilOp(
+        state.stencilZPassOp, stencilBuffer[pIdx], state.stencilRef,
+        state.stencilWriteMask);
   }
 
   // Preserve full 8-bit alpha into blending; RGB565 dithering runs
@@ -285,12 +427,13 @@ void SoftwareBackend::RasterizeSoftwareLineTile(const ModernVertex& v1,
 
     auto plot = [&](int px, int py, float c, float t) {
       if (steep) std::swap(px, py);
-      ModernVertex vInterpolated;
+      ModernVertex vInterpolated{};
       for (int i = 0; i < 4; ++i) {
         vInterpolated.color[i] =
             v1_temp.color[i] * (1.0f - t) + v2_temp.color[i] * t;
       }
       vInterpolated.fog = v1_temp.fog * (1.0f - t) + v2_temp.fog * t;
+      vInterpolated.pos[2] = v1_temp.pos[2] * (1.0f - t) + v2_temp.pos[2] * t;
       vInterpolated.pos[3] = v1_temp.pos[3] * (1.0f - t) + v2_temp.pos[3] * t;
 
       WritePixelPipeline(px, py, vInterpolated, c, minX, maxX, minY, maxY,
@@ -325,11 +468,12 @@ void SoftwareBackend::RasterizeSoftwareLineTile(const ModernVertex& v1,
 
     while (true) {
       float t = totalSteps > 0 ? static_cast<float>(step) / totalSteps : 0.0f;
-      ModernVertex vInterpolated;
+      ModernVertex vInterpolated{};
       for (int i = 0; i < 4; ++i) {
         vInterpolated.color[i] = v1.color[i] * (1.0f - t) + v2.color[i] * t;
       }
       vInterpolated.fog = v1.fog * (1.0f - t) + v2.fog * t;
+      vInterpolated.pos[2] = v1.pos[2] * (1.0f - t) + v2.pos[2] * t;
       vInterpolated.pos[3] = v1.pos[3] * (1.0f - t) + v2.pos[3] * t;
 
       const int bx = x0 * 2;
@@ -372,11 +516,12 @@ void SoftwareBackend::RasterizeSoftwareLineTile(const ModernVertex& v1,
 
     while (true) {
       float t = totalSteps > 0 ? static_cast<float>(step) / totalSteps : 0.0f;
-      ModernVertex vInterpolated;
+      ModernVertex vInterpolated{};
       for (int i = 0; i < 4; ++i) {
         vInterpolated.color[i] = v1.color[i] * (1.0f - t) + v2.color[i] * t;
       }
       vInterpolated.fog = v1.fog * (1.0f - t) + v2.fog * t;
+      vInterpolated.pos[2] = v1.pos[2] * (1.0f - t) + v2.pos[2] * t;
       vInterpolated.pos[3] = v1.pos[3] * (1.0f - t) + v2.pos[3] * t;
 
       WritePixelPipeline(x0, y0, vInterpolated, 1.0f, minX, maxX, minY, maxY,
