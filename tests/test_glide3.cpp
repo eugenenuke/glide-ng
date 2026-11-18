@@ -273,8 +273,8 @@ TEST_CASE("Glide 3.x State Control & Dynamic Capabilities", "[Glide3][State]") {
     REQUIRE(setVertexLayout != nullptr);
     REQUIRE(colorCombine != nullptr);
 
-    SECTION("Dynamic Card Capabilities (Voodoo 1 vs 2 vs 3)") {
-        // Test Voodoo 3 configuration
+    SECTION("Dynamic Card Capabilities (Voodoo 1 vs 2 vs 3 vs 4/5)") {
+        // Test Voodoo 3 configuration (authentic 3dfx hardware caps at 256x256)
         ::setenv("GLIDE_NG_CARD_MODEL", "voodoo3", 1);
         glideInit();
         
@@ -283,10 +283,20 @@ TEST_CASE("Glide 3.x State Control & Dynamic Capabilities", "[Glide3][State]") {
         REQUIRE(params[0] == 2);
 
         grGetVal(GR_MAX_TEXTURE_SIZE, 4, params);
-        REQUIRE(params[0] == 2048);
+        REQUIRE(params[0] == 256);
 
         grGetVal(GR_MEMORY_FB, 4, params);
         REQUIRE(params[0] == 16 * 1024 * 1024); // Voodoo3 default is 16MB
+
+        shutdown();
+        ::unsetenv("GLIDE_NG_CARD_MODEL");
+
+        // Test Voodoo 4 / VSA-100 configuration (2048x2048 textures)
+        ::setenv("GLIDE_NG_CARD_MODEL", "voodoo4", 1);
+        glideInit();
+
+        grGetVal(GR_MAX_TEXTURE_SIZE, 4, params);
+        REQUIRE(params[0] == 2048);
 
         shutdown();
         ::unsetenv("GLIDE_NG_CARD_MODEL");
@@ -1674,26 +1684,25 @@ TEST_CASE("Glide FOGCOORD Extension and Fog Mode Mapping Verification", "[Glide]
     }
 
     // 2. Glide 2.x Verification
-    SECTION("Glide 2.x No FOGCOORD Support") {
+    SECTION("Glide 2.x Pure ABI (No grGetString / No FOGCOORD)") {
 #ifdef __linux__
         void* handle = OpenGlide2Handle();
         REQUIRE(handle != nullptr);
 
         using InitFunc = void(*)(void);
         using WinOpenFunc = FxBool(*)(FxU32, GrScreenResolution_t, GrScreenRefresh_t, GrColorFormat_t, GrOriginLocation_t, int, int);
-        using GetStringFunc = const char*(*)(FxU32);
         using WinCloseFunc = FxBool(*)(void);
         using ShutdownFunc = void(*)(void);
 
         auto glideInit = reinterpret_cast<InitFunc>(::dlsym(handle, "grGlideInit"));
         auto winOpen = reinterpret_cast<WinOpenFunc>(::dlsym(handle, "grSstWinOpen"));
-        auto getString = reinterpret_cast<GetStringFunc>(::dlsym(handle, "grGetString"));
         auto winClose = reinterpret_cast<WinCloseFunc>(::dlsym(handle, "grSstWinClose"));
         auto shutdown = reinterpret_cast<ShutdownFunc>(::dlsym(handle, "grGlideShutdown"));
 
         REQUIRE(glideInit != nullptr);
         REQUIRE(winOpen != nullptr);
-        REQUIRE(getString != nullptr);
+        REQUIRE(::dlsym(handle, "grGetString") == nullptr);
+        REQUIRE(::dlsym(handle, "grGetProcAddress") == nullptr);
         REQUIRE(winClose != nullptr);
         REQUIRE(shutdown != nullptr);
 
@@ -1702,13 +1711,6 @@ TEST_CASE("Glide FOGCOORD Extension and Fog Mode Mapping Verification", "[Glide]
         // Resolution GR_RESOLUTION_640x480 = 0x4
         FxBool ok = winOpen(0, 0x4, 0, 0, 0, 2, 1);
         REQUIRE(ok == FXTRUE);
-
-        // A. Verify that FOGCOORD is NOT advertised under Glide 2
-        const char* extensions = getString(0xa0); // GR_EXTENSION
-        if (extensions) {
-            std::string extStr(extensions);
-            CHECK(extStr.find("FOGCOORD") == std::string::npos);
-        }
 
         winClose();
         shutdown();
@@ -3725,7 +3727,8 @@ TEST_CASE("IniConfigLoader parses sections/comments and respects env overrides",
     CHECK(cfg.backend == "vulkan");
     CHECK(cfg.vsync == true);
     CHECK(cfg.model == GlideWrapper::CardModel::Voodoo2);
-    CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_43);
+    CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_56);
+    CHECK(cfg.glide3ApiVersion == GlideWrapper::ApiVersion::GLIDE_3_03);
     CHECK(cfg.forceNoWindow == false);
   }
 
@@ -6561,55 +6564,46 @@ TEST_CASE(
     ::dlclose(handle);
   }
 
-  // 3. Glide 2.x: Voodoo1 does NOT advertise TEXCHROMA; VSA-100 procs gated to
-  //    Voodoo4+
+  // 3. Glide 2.x: Pure authentic ABI (no grGetString / grGetProcAddress);
+  //    per-card default bare version & EmulationRegistry feature gating.
   {
     void* handle = OpenGlide2Handle();
     REQUIRE(handle != nullptr);
 
     using InitFunc = void (*)(void);
-    using GetStringFunc = const char* (*)(FxU32);
-    using GetProcAddrFunc = GrProc (*)(char*);
+    using GetVerFunc = void (*)(char[80]);
     using ShutdownFunc = void (*)(void);
 
     auto glideInit =
         reinterpret_cast<InitFunc>(::dlsym(handle, "grGlideInit"));
-    auto getString =
-        reinterpret_cast<GetStringFunc>(::dlsym(handle, "grGetString"));
-    auto getProc =
-        reinterpret_cast<GetProcAddrFunc>(::dlsym(handle, "grGetProcAddress"));
+    auto getVersion =
+        reinterpret_cast<GetVerFunc>(::dlsym(handle, "grGlideGetVersion"));
     auto glideShutdown =
         reinterpret_cast<ShutdownFunc>(::dlsym(handle, "grGlideShutdown"));
     REQUIRE(glideInit != nullptr);
-    REQUIRE(getString != nullptr);
-    REQUIRE(getProc != nullptr);
+    REQUIRE(getVersion != nullptr);
+    REQUIRE(::dlsym(handle, "grGetString") == nullptr);
+    REQUIRE(::dlsym(handle, "grGetProcAddress") == nullptr);
     REQUIRE(glideShutdown != nullptr);
 
-    auto probeProc = [&](const char* name) -> GrProc {
-      char buf[64];
-      std::snprintf(buf, sizeof(buf), "%s", name);
-      return getProc(buf);
-    };
-
+    char verBuf[80] = {};
     ::unsetenv("GLIDE_NG_API_VERSION");
     ::setenv("GLIDE_NG_CARD_MODEL", "voodoo1", 1);
     glideInit();
-    const char* extV1 = getString(0xa0);
-    REQUIRE(extV1 != nullptr);
-    CHECK(std::string(extV1).find("TEXCHROMA") == std::string::npos);
-    CHECK(probeProc("grTexChromaModeExt") == nullptr);
-    CHECK(probeProc("grTBufferWriteMaskExt") == nullptr);
+    getVersion(verBuf);
+    CHECK(std::string(verBuf) == "2.48");
     glideShutdown();
 
     ::setenv("GLIDE_NG_CARD_MODEL", "voodoo3", 1);
     glideInit();
-    CHECK(probeProc("grTexChromaModeExt") != nullptr);
-    CHECK(probeProc("grTBufferWriteMaskExt") == nullptr);
+    getVersion(verBuf);
+    CHECK(std::string(verBuf) == "2.61");
     glideShutdown();
 
     ::setenv("GLIDE_NG_CARD_MODEL", "voodoo4", 1);
     glideInit();
-    CHECK(probeProc("grTBufferWriteMaskExt") != nullptr);
+    getVersion(verBuf);
+    CHECK(std::string(verBuf) == "2.61");
     glideShutdown();
 
     ::dlclose(handle);
@@ -8973,5 +8967,283 @@ TEST_CASE("M10.6 VSA-100 COMBINE, grAlphaBlendFunctionExt, and TEXTUREBUFFER",
   glideShutdown();
   ::dlclose(handle);
   restoreCard();
+#endif
+}
+
+TEST_CASE(
+    "M10.7 Glide 3.x Capabilities, Resolutions, grReset, grSetNumPendingBuffers, "
+    "and Warn-Only Card-Version Matrix",
+    "[Glide3][M10]") {
+#ifdef __linux__
+  struct EnvGuard {
+    std::vector<std::string> keys = {"GLIDE_NG_CARD_MODEL",
+                                     "GLIDE_NG_API_VERSION",
+                                     "GLIDE_NG_FBI_MEM_MB",
+                                     "GLIDE_NG_SLI",
+                                     "GLIDE_NG_HEADLESS",
+                                     "FX_GLIDE_FBRAM"};
+    std::vector<std::pair<std::string, std::string>> saved;
+    EnvGuard() {
+      for (const auto& k : keys) {
+        const char* v = std::getenv(k.c_str());
+        saved.emplace_back(k, v ? std::string(v) : std::string("\x01UNSET"));
+        ::unsetenv(k.c_str());
+      }
+      ::setenv("GLIDE_NG_HEADLESS", "1", 1);
+    }
+    ~EnvGuard() {
+      for (const auto& kv : saved) {
+        if (kv.second == "\x01UNSET") {
+          ::unsetenv(kv.first.c_str());
+        } else {
+          ::setenv(kv.first.c_str(), kv.second.c_str(), 1);
+        }
+      }
+    }
+  } guard;
+
+  // 1. Warn-only Card-to-Version matrix in IniConfigLoader
+  {
+    GlideWrapper::IniConfigLoader loader;
+    GlideWrapper::WrapperConfig cfg;
+
+    // Authentic combinations -> zero compatibility warnings
+    ::setenv("GLIDE_NG_CARD_MODEL", "voodoo1", 1);
+    ::setenv("GLIDE_NG_API_VERSION", "2.48", 1);
+    REQUIRE(loader.Load("/nonexistent_m107.ini", cfg));
+    CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_48);
+    CHECK(cfg.glide3ApiVersion == GlideWrapper::ApiVersion::GLIDE_3_04);
+    CHECK(cfg.invalidConfigValues.empty());
+    CHECK(cfg.compatibilityWarnings.empty());
+
+    ::setenv("GLIDE_NG_CARD_MODEL", "voodoo2", 1);
+    ::setenv("GLIDE_NG_API_VERSION", "3.03", 1);
+    REQUIRE(loader.Load("/nonexistent_m107.ini", cfg));
+    CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_56);
+    CHECK(cfg.glide3ApiVersion == GlideWrapper::ApiVersion::GLIDE_3_03);
+    CHECK(cfg.invalidConfigValues.empty());
+    CHECK(cfg.compatibilityWarnings.empty());
+
+    // Ahistorical combination (Voodoo1 + 2.61) -> warn-only, override honored!
+    ::setenv("GLIDE_NG_CARD_MODEL", "voodoo1", 1);
+    ::setenv("GLIDE_NG_API_VERSION", "2.61", 1);
+    REQUIRE(loader.Load("/nonexistent_m107.ini", cfg));
+    CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_61);
+    CHECK(cfg.invalidConfigValues.empty());
+    REQUIRE(cfg.compatibilityWarnings.size() == 1u);
+    CHECK(cfg.compatibilityWarnings[0].find("warn-only") != std::string::npos);
+
+    // Ahistorical Glide 3.x combination (Voodoo2 + 3.10) -> warn-only, honored!
+    ::setenv("GLIDE_NG_CARD_MODEL", "voodoo2", 1);
+    ::setenv("GLIDE_NG_API_VERSION", "3.10", 1);
+    REQUIRE(loader.Load("/nonexistent_m107.ini", cfg));
+    CHECK(cfg.glide3ApiVersion == GlideWrapper::ApiVersion::GLIDE_3_10);
+    CHECK(cfg.invalidConfigValues.empty());
+    REQUIRE(cfg.compatibilityWarnings.size() == 1u);
+    CHECK(cfg.compatibilityWarnings[0].find("3.10") != std::string::npos);
+
+    ::unsetenv("GLIDE_NG_API_VERSION");
+  }
+
+  void* handle = OpenGlide3Handle();
+  REQUIRE(handle != nullptr);
+
+  using InitFn = void (*)(void);
+  using ShutdownFn = void (*)(void);
+  using SelectFn = void (*)(int);
+  using GetStrFn = const char* (*)(FxU32);
+  using GetFn = FxU32 (*)(FxU32, FxU32, FxI32*);
+  using QueryResFn = FxI32 (*)(const GrResolution*, GrResolution*);
+  using ResetFn = FxBool (*)(FxU32);
+  using SetPendingFn = void (*)(FxI32);
+  using GetProcFn = GrProc (*)(char*);
+  using WinOpenFn = GrContext_t (*)(AnyPtr, GrScreenResolution_t,
+                                    GrScreenRefresh_t, GrColorFormat_t,
+                                    GrOriginLocation_t, int, int);
+  using WinOpenExtFn = GrContext_t (*)(AnyPtr, GrScreenResolution_t,
+                                       GrScreenRefresh_t, GrColorFormat_t,
+                                       GrOriginLocation_t, GrPixelFormat_t, int,
+                                       int);
+  using WinCloseFn = FxBool (*)(GrContext_t);
+  using VertexLayoutFn = void (*)(FxU32, FxI32, FxU32);
+  using DrawPointFn = void (*)(const void*);
+
+  auto init = reinterpret_cast<InitFn>(::dlsym(handle, "grGlideInit"));
+  auto shutdown =
+      reinterpret_cast<ShutdownFn>(::dlsym(handle, "grGlideShutdown"));
+  auto sstSelect = reinterpret_cast<SelectFn>(::dlsym(handle, "grSstSelect"));
+  auto getStr = reinterpret_cast<GetStrFn>(::dlsym(handle, "grGetString"));
+  auto grGetFn = reinterpret_cast<GetFn>(::dlsym(handle, "grGet"));
+  auto queryRes =
+      reinterpret_cast<QueryResFn>(::dlsym(handle, "grQueryResolutions"));
+  auto resetFn = reinterpret_cast<ResetFn>(::dlsym(handle, "grReset"));
+  auto setPending = reinterpret_cast<SetPendingFn>(
+      ::dlsym(handle, "grSetNumPendingBuffers"));
+  auto getProc =
+      reinterpret_cast<GetProcFn>(::dlsym(handle, "grGetProcAddress"));
+  auto winOpen = reinterpret_cast<WinOpenFn>(::dlsym(handle, "grSstWinOpen"));
+  auto winOpenExt =
+      reinterpret_cast<WinOpenExtFn>(::dlsym(handle, "grSstWinOpenExt"));
+  auto winClose =
+      reinterpret_cast<WinCloseFn>(::dlsym(handle, "grSstWinClose"));
+  auto vtxLayout =
+      reinterpret_cast<VertexLayoutFn>(::dlsym(handle, "grVertexLayout"));
+  auto drawPoint =
+      reinterpret_cast<DrawPointFn>(::dlsym(handle, "grDrawPoint"));
+
+  REQUIRE(init != nullptr);
+  REQUIRE(shutdown != nullptr);
+  REQUIRE(getStr != nullptr);
+  REQUIRE(grGetFn != nullptr);
+  REQUIRE(queryRes != nullptr);
+  REQUIRE(resetFn != nullptr);
+  REQUIRE(setPending != nullptr);
+  REQUIRE(getProc != nullptr);
+
+  // 2. Bare 3-digit GR_VERSION + authentic GR_MAX_TEXTURE_SIZE across all cards
+  struct CardCapExpect {
+    const char* card;
+    const char* ver;
+    FxI32 maxTex;
+    FxI32 passthru;
+    FxI32 texAlign;
+    GrScreenResolution_t expectPresent;
+    GrScreenResolution_t expectAbsent;
+  };
+  const CardCapExpect capCases[] = {
+      {"voodoo1", "3.04", 256,  FXTRUE,  8,  GR_RESOLUTION_800x600,   GR_RESOLUTION_1024x768},
+      {"rush",    "3.04", 256,  FXFALSE, 8,  GR_RESOLUTION_800x600,   GR_RESOLUTION_1024x768},
+      {"voodoo2", "3.03", 256,  FXTRUE,  8,  GR_RESOLUTION_1024x768,  GR_RESOLUTION_1600x1200},
+      {"banshee", "3.10", 256,  FXFALSE, 16, GR_RESOLUTION_1600x1200, GR_RESOLUTION_2048x1536},
+      {"voodoo3", "3.10", 256,  FXFALSE, 16, GR_RESOLUTION_1600x1200, GR_RESOLUTION_2048x1536},
+      {"voodoo4", "3.10", 2048, FXFALSE, 16, GR_RESOLUTION_2048x1536, GR_RESOLUTION_NONE},
+      {"voodoo5", "3.10", 2048, FXFALSE, 16, GR_RESOLUTION_2048x1536, GR_RESOLUTION_NONE},
+  };
+
+  for (const auto& c : capCases) {
+    ::setenv("GLIDE_NG_CARD_MODEL", c.card, 1);
+    ::unsetenv("GLIDE_NG_API_VERSION");
+    ::unsetenv("GLIDE_NG_FBI_MEM_MB");
+    ::unsetenv("GLIDE_NG_SLI");
+    init();
+
+    const std::string verStr = getStr(GR_VERSION);
+    INFO("Card=" << c.card << " GR_VERSION=" << verStr);
+    CHECK(verStr == c.ver);
+    CHECK(verStr.find("glide-ng") == std::string::npos);
+
+    FxI32 v = 0;
+    CHECK(grGetFn(GR_MAX_TEXTURE_SIZE, 4, &v) == 4u);
+    CHECK(v == c.maxTex);
+    CHECK(grGetFn(GR_SUPPORTS_PASSTHRU, 4, &v) == 4u);
+    CHECK(v == c.passthru);
+    CHECK(grGetFn(GR_TEXTURE_ALIGN, 4, &v) == 4u);
+    CHECK(v == c.texAlign);
+
+    // grQueryResolutions returns byte size = count * sizeof(GrResolution)
+    GrResolution tmpl{GR_QUERY_ANY, GR_QUERY_ANY, GR_QUERY_ANY, GR_QUERY_ANY};
+    const FxI32 bytes = queryRes(&tmpl, nullptr);
+    REQUIRE(bytes > 0);
+    REQUIRE((bytes % static_cast<FxI32>(sizeof(GrResolution))) == 0);
+    const size_t count = static_cast<size_t>(bytes) / sizeof(GrResolution);
+    std::vector<GrResolution> list(count);
+    CHECK(queryRes(&tmpl, list.data()) == bytes);
+
+    auto hasRes = [&](GrScreenResolution_t r) {
+      for (const auto& e : list) {
+        if (e.resolution == r) return true;
+      }
+      return false;
+    };
+    CHECK(hasRes(c.expectPresent));
+    if (c.expectAbsent != GR_RESOLUTION_NONE) {
+      CHECK(!hasRes(c.expectAbsent));
+    }
+    shutdown();
+  }
+
+  // 3. Authentic Voodoo2 4 MB FB vs SLI 1024x768 resolution filtering
+  {
+    ::setenv("GLIDE_NG_CARD_MODEL", "voodoo2", 1);
+    ::setenv("GLIDE_NG_FBI_MEM_MB", "4", 1);
+    ::setenv("GLIDE_NG_SLI", "0", 1);
+    init();
+    GrResolution qAux{GR_RESOLUTION_1024x768, GR_REFRESH_60Hz, 2, 1};
+    GrResolution qNoAux{GR_RESOLUTION_1024x768, GR_REFRESH_60Hz, 2, 0};
+    // 1024x768 * 2B * 3 = 4.5 MB > 4 MB -> rejected; * 2 = 3.0 MB <= 4 MB -> ok
+    CHECK(queryRes(&qAux, nullptr) == 0);
+    CHECK(queryRes(&qNoAux, nullptr) == static_cast<FxI32>(sizeof(GrResolution)));
+    shutdown();
+
+    // With SLI enabled, effective FB doubles to 8 MB -> 1024x768 w/ aux fits!
+    ::setenv("GLIDE_NG_SLI", "1", 1);
+    init();
+    CHECK(queryRes(&qAux, nullptr) == static_cast<FxI32>(sizeof(GrResolution)));
+    shutdown();
+    ::unsetenv("GLIDE_NG_FBI_MEM_MB");
+    ::unsetenv("GLIDE_NG_SLI");
+  }
+
+  // 4. GR_BITS_RGBA (16 bytes), GR_BITS_DEPTH, grReset, grSetNumPendingBuffers
+  {
+    ::setenv("GLIDE_NG_CARD_MODEL", "voodoo5", 1);
+    init();
+    sstSelect(0);
+
+    // grSetNumPendingBuffers available both statically & via grGetProcAddress
+    char pendingName[] = "grSetNumPendingBuffers";
+    CHECK(getProc(pendingName) != nullptr);
+    REQUIRE_NOTHROW(setPending(3));
+
+    // Standard grSstWinOpen -> RGB565 (5-6-5-0, 16-bit depth)
+    GrContext_t ctx = winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                              GR_COLORFORMAT_ARGB, GR_ORIGIN_UPPER_LEFT, 2, 1);
+    REQUIRE(ctx != 0);
+    FxI32 rgba[4] = {0, 0, 0, 0};
+    FxI32 depth = 0;
+    CHECK(grGetFn(GR_BITS_RGBA, 4, rgba) == 0u);  // Rejects under-sized buffer
+    CHECK(grGetFn(GR_BITS_RGBA, 16, rgba) == 16u);
+    CHECK(rgba[0] == 5);
+    CHECK(rgba[1] == 6);
+    CHECK(rgba[2] == 5);
+    CHECK(rgba[3] == 0);
+    CHECK(grGetFn(GR_BITS_DEPTH, 4, &depth) == 4u);
+    CHECK(depth == 16);
+
+    // Draw a point & verify GR_STATS_POINTS + grReset(GR_STATS_POINTS)
+    vtxLayout(GR_PARAM_XY, 0, GR_PARAM_ENABLE);
+    float pt[2] = {100.0f, 100.0f};
+    drawPoint(pt);
+    FxI32 pts = 0;
+    CHECK(grGetFn(GR_STATS_POINTS, 4, &pts) == 4u);
+    CHECK(pts >= 1);
+    CHECK(resetFn(GR_STATS_POINTS) == FXTRUE);
+    CHECK(grGetFn(GR_STATS_POINTS, 4, &pts) == 4u);
+    CHECK(pts == 0);
+    CHECK(resetFn(GR_STATS_LINES) == FXTRUE);
+    CHECK(resetFn(GR_STATS_PIXELS) == FXTRUE);
+    CHECK(resetFn(GR_STATS_TRIANGLES) == FXTRUE);
+    CHECK(resetFn(GR_VERTEX_PARAMETER) == FXTRUE);
+    CHECK(resetFn(0x9999u) == FXFALSE);
+    winClose(ctx);
+
+    // grSstWinOpenExt with ARGB_8888 -> 8-8-8-8 & 32-bit aux/depth
+    ctx = winOpenExt(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                     GR_COLORFORMAT_ARGB, GR_ORIGIN_UPPER_LEFT,
+                     GR_PIXFMT_AA_4_ARGB_8888, 2, 1);
+    REQUIRE(ctx != 0);
+    CHECK(grGetFn(GR_BITS_RGBA, 16, rgba) == 16u);
+    CHECK(rgba[0] == 8);
+    CHECK(rgba[1] == 8);
+    CHECK(rgba[2] == 8);
+    CHECK(rgba[3] == 8);
+    CHECK(grGetFn(GR_BITS_DEPTH, 4, &depth) == 4u);
+    CHECK(depth == 32);
+    winClose(ctx);
+
+    shutdown();
+  }
+
+  ::dlclose(handle);
 #endif
 }

@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <cassert>
+#include <dlfcn.h>
 #include <DiagnosticInfo.h>
 
 // Dynamically resolve grChromakeyRangeExt if available
@@ -34,12 +35,11 @@ int main(int argc, char** argv) {
     assert(grSstWinOpen(0, runConfig.resEnum, GR_REFRESH_60Hz,
                        GR_COLORFORMAT_ABGR, GR_ORIGIN_UPPER_LEFT, 2, 1));
 
-    // Resolve the extension dynamically
-    s_grChromakeyRangeExt = (grChromakeyRangeExtFunc)grGetProcAddress(const_cast<char*>("grChromakeyRangeExt"));
-    
-    // Check if the range extension is officially supported by the active backend
-    const char* extString = grGetString(GR_EXTENSION);
-    bool extensionSupported = (extString && std::strstr(extString, "CHROMARANGE") != nullptr) && (s_grChromakeyRangeExt != nullptr);
+    // Resolve the Glide 2.x extension directly via dlsym (pure Glide 2.x does
+    // not export grGetProcAddress or grGetString).
+    void* sym = ::dlsym(RTLD_DEFAULT, "grChromakeyRangeExt");
+    std::memcpy(&s_grChromakeyRangeExt, &sym, sizeof(s_grChromakeyRangeExt));
+    bool extensionSupported = (s_grChromakeyRangeExt != nullptr);
 
     if (!extensionSupported) {
         std::printf("[WARNING] CHROMARANGE extension is NOT supported by the active driver backend!\r\n");

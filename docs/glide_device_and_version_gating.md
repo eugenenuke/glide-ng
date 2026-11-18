@@ -20,12 +20,15 @@ This ensures that:
 By default, if no configuration file or environment variables are present, the wrapper initializes with the following profile:
 
 *   **Emulated Card Model**: `Voodoo2 (CVG)`
-*   **Reported API Version**: `Glide 2.43` (The gold standard for Glide 2.x gaming)
+*   **Reported Glide 2.x Version**: `2.56` (final authentic Voodoo2 Glide 2.x release)
+*   **Reported Glide 3.x Version**: `3.03` (final authentic Voodoo2 Glide 3.x release)
 *   **FBI Framebuffer RAM**: `16 MB` (Enables resolutions up to 1024x768 without VRAM stockouts)
 *   **Active TMU Chips**: `2 TMUs`
 *   **Dedicated RAM per TMU**: `16 MB`
 *   **Target Presentation Frame Rate**: `60 FPS` (Capped with VSync enabled)
 *   **Voodoo2 SLI Mode**: `DISABLED` (For maximum classic application interop)
+
+See [docs/glide_versions_and_cards.md](glide_versions_and_cards.md) for the complete binary-verified table of all historical Glide 2.x (`2.11`–`2.61`) and Glide 3.x (`3.00`–`3.10`) releases.
 
 ---
 
@@ -52,18 +55,18 @@ card_model = Voodoo3
 
 The wrapper maps several common aliases to their respective hardware profiles:
 
-| Target Card Model | Allowed Case-Insensitive Identifiers / Environment Values | Default API Version | Default Memory / TMUs |
-| :--- | :--- | :--- | :--- |
-| **Voodoo Graphics** | `SST1`, `voodoo1`, `VOODOO1`, `VoodooGraphics` | **Glide 2.40** | 4 MB FB, 1 TMU (2 MB) |
-| **Voodoo Rush** | `SST96`, `voodoo_rush`, `rush`, `RUSH`, `VoodooRush` | **Glide 2.40** | 6 MB FB, 1 TMU (2 MB) |
-| **Voodoo2** | `CVG`, `voodoo2`, `VOODOO2`, `Voodoo2` | **Glide 2.43** | 16 MB FB, 2 TMUs (16 MB ea) |
-| **Voodoo Banshee** | `banshee`, `voodoo_banshee`, `VoodooBanshee` | **Glide 2.61** | 16 MB FB, 1 TMU (16 MB UMA) |
-| **Voodoo3** | `H3`, `voodoo3`, `VOODOO3`, `Voodoo3` | **Glide 2.61** | 16 MB FB, 2 TMUs (16 MB ea) |
-| **Voodoo4** | `H4`, `voodoo4`, `v4`, `vsa100`, `vsa-100`, `Voodoo4` | **Glide 2.61** | 32 MB FB, 2 TMUs (16 MB ea), max 2× Spatial AA |
-| **Voodoo5** | `H5`, `voodoo5`, `v5`, `VOODOO5`, `Voodoo5` | **Glide 2.61** | 64 MB FB, 2 TMUs (32 MB ea), up to 4×/8× Spatial AA |
+| Target Card Model | Allowed Case-Insensitive Identifiers / Environment Values | Default Glide 2.x / 3.x | Default Memory / TMUs |
+| :--- | :--- | :---: | :--- |
+| **Voodoo Graphics** | `SST1`, `voodoo1`, `VOODOO1`, `VoodooGraphics` | **`2.48` / `3.04`** | 4 MB FB, 1 TMU (2 MB) |
+| **Voodoo Rush** | `SST96`, `voodoo_rush`, `rush`, `RUSH`, `VoodooRush` | **`2.48` / `3.04`** | 6 MB FB, 1 TMU (2 MB) |
+| **Voodoo2** *(default)* | `CVG`, `voodoo2`, `VOODOO2`, `Voodoo2` | **`2.56` / `3.03`** | 16 MB FB, 2 TMUs (16 MB ea) |
+| **Voodoo Banshee** | `banshee`, `voodoo_banshee`, `VoodooBanshee` | **`2.61` / `3.10`** | 16 MB FB, 1 TMU (16 MB UMA) |
+| **Voodoo3** | `H3`, `voodoo3`, `VOODOO3`, `Voodoo3` | **`2.61` / `3.10`** | 16 MB FB, 2 TMUs (16 MB ea), 256×256 max tex |
+| **Voodoo4** | `H4`, `voodoo4`, `v4`, `vsa100`, `vsa-100`, `Voodoo4` | **`2.61` / `3.10`** | 32 MB FB, 2 TMUs (16 MB ea), 2048×2048 tex, max 2× Spatial AA |
+| **Voodoo5** | `H5`, `voodoo5`, `v5`, `VOODOO5`, `Voodoo5` | **`2.61` / `3.10`** | 64 MB FB, 2 TMUs (32 MB ea), 2048×2048 tex, up to 4×/8× Spatial AA |
 
 > [!NOTE]
-> Unrecognized `card_model` / `GLIDE_NG_CARD_MODEL` or `api_version` / `GLIDE_NG_API_VERSION` values emit a `[WARN]` message to `stderr` and `glide-ng.log` rather than silently falling back. VSA-100 `PIXEXT` entry points (`grSstWinOpenExt`, `grTBufferWriteMaskExt`, `grColorMaskExt`, `grBufferClearExt`, `grStencil*Ext`, `grLfbConstantStencilExt`) are strictly gated in `grGetProcAddress` to `Voodoo4` and `Voodoo5`; older cards return `NULL` so Voodoo4/5 demos fall back cleanly.
+> Unrecognized `card_model` / `GLIDE_NG_CARD_MODEL` or `api_version` / `GLIDE_NG_API_VERSION` values emit a `[WARN]` message to `stderr` and `glide-ng.log`. Explicitly choosing an ahistorical `(card_model, api_version)` combination (for example, `voodoo1` with `2.61`, or `voodoo2` with `3.10`) emits a **warn-only** compatibility diagnostic while still honoring your requested override. VSA-100 `PIXEXT`/`COMBINE` entry points are strictly gated in Glide 3.x `grGetProcAddress` to `Voodoo4` and `Voodoo5` (`TEXTUREBUFFER`/`GETGAMMA` to `Banshee`+); pure Glide 2.x (`libglide2x.so` / `glide2x.dll`) does not export `grGetString` or `grGetProcAddress`, matching authentic 3dfx binaries.
 
 ---
 
@@ -88,18 +91,21 @@ api_version = 2.40
 
 ### Supported API Versions
 
-The wrapper supports the following Glide major/minor specifications:
+The wrapper accepts all authentic 3dfx Glide 2.x and Glide 3.x version identifiers (reported as bare 3-digit strings with no suffix):
 
-| Version Identifier | Specification Milestone | Key Features Governed by Gating |
+| Version Identifier | Hardware Family | Key Milestones |
 | :--- | :--- | :--- |
-| `2.1` | **Glide 2.1 Baseline** | Core rasterization, vertex buffers, basic texture maps. |
-| `2.40` or `2.4` | **SST-1 Specification** | Standard Glide 2.1 + `grChromakeyValue` + `grFogMode` + base rendering. |
-| `2.42` | **Voodoo2 Multitexturing** | Adds core multitexturing: `grTexMultibase`, `grTexMultibaseAddress`. |
-| `2.43` | **Voodoo2 Gold Standard** | Adds dynamic entry points: `grGetProcAddress`, `grChromakeyRangeExt`. |
-| `2.61` | **Voodoo3 Interop Profile** | Adds callback-driven splash execution: `grSplashCb`. |
+| `2.11` *(aliases: `2.1`, `2.10`)* | SST-1 | Original `glide.dll` launch specification (pre-windowed LFB). |
+| `2.30`, `2.40` *(aliases: `2.3`, `2.4`)* | SST-1 / Rush | First `glide2x` ABI (`grSstWinOpen`, `grLfbLock`/`ReadRegion`/`WriteRegion`). |
+| `2.42`, `2.43`, `2.45`, `2.46`, `2.48` | SST-1 / Rush | SST-1 & Rush `glide2x` evolution through final `2.48` (partial downloads, multibase, MTRR/USWC). |
+| `2.50`, `2.51`, `2.53`, `2.54`, `2.56` | Voodoo2 (CVG) | Voodoo2 dual-TMU + SLI `glide2x` series through final `2.56`. |
+| `2.60`, `2.61` | Banshee / V3 / V4 / V5 | Unified H3/VSA-100 `glide2x` series (132 Win32 exports, H3 `fbiRev` `0x1002`/`0x11002`, `grSplashCb`). |
+| `3.00`, `3.02`, `3.04` | SST-1 / Rush | SST-1 & Rush Glide 3.x series (`grGet`, `grGetString`, `grGetProcAddress`, `grVertexLayout`, `grQueryResolutions`). |
+| `3.01`, `3.03` | Voodoo2 (CVG) | Voodoo2 Glide 3.x series (`CHROMARANGE`, `TEXCHROMA`, `TEXMIRROR`, `PALETTE6666`, `FOGCOORD`, `COMMAND_TRANSPORT`). |
+| `3.10` | Banshee / V3 / V4 / V5 | Final unified Glide 3.x (`GETGAMMA`, `TEXUMA`, `TEXTUREBUFFER`, `grSetNumPendingBuffers`, plus VSA-100 `PIXEXT`/`COMBINE`/`TEXFMT`). |
 
 > [!NOTE]
-> **Automatic Version Gating Fallback**: If you do not specify an `apiVersion` or `GLIDE_NG_API_VERSION`, the wrapper automatically selects the authentic API version that was paired with the selected hardware model (e.g., selecting `VOODOO1` automatically restricts the API footprint to `2.40`!).
+> **Automatic Per-Card Defaults**: When `api_version` / `GLIDE_NG_API_VERSION` is omitted, each card automatically selects its maximum authentic Glide 2.x and Glide 3.x versions (e.g., `voodoo1` → `2.48`/`3.04`, `voodoo2` → `2.56`/`3.03`, `voodoo3`–`voodoo5` → `2.61`/`3.10`). See [docs/glide_versions_and_cards.md](glide_versions_and_cards.md) for full binary diffs.
 
 ---
 

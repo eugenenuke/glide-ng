@@ -75,6 +75,7 @@ EXPORTS
   _grReset@4 = grReset@4
   _grResetTriStats@0 = grResetTriStats@0
   _grSelectContext@4 = grSelectContext@4
+  _grSetNumPendingBuffers@4 = grSetNumPendingBuffers@4
   _grShamelessPlug@0 = grShamelessPlug@0
   _grSplash@20 = grSplash@20
   _grSstConfigPipeline@12 = grSstConfigPipeline@12
@@ -205,6 +206,7 @@ EXPORTS
   grReset = grReset@4
   grResetTriStats = grResetTriStats@0
   grSelectContext = grSelectContext@4
+  grSetNumPendingBuffers = grSetNumPendingBuffers@4
   grShamelessPlug = grShamelessPlug@0
   grSplash = grSplash@20
   grSstConfigPipeline = grSstConfigPipeline@12

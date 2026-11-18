@@ -28,12 +28,42 @@ enum class CardModel {
 };
 
 enum class ApiVersion {
-    GLIDE_2_1 = 210,
-    GLIDE_2_40 = 240,
-    GLIDE_2_42 = 242,
-    GLIDE_2_43 = 243,
-    GLIDE_2_61 = 261
+    // Authentic Glide 2.x versions (verified against 3dfx Win32 DLLs & DOS OVLs)
+    GLIDE_2_1  = 211,  // Glide 2.11 (GLIDE.DLL, SST-1; accepts "2.1" / "2.11")
+    GLIDE_2_11 = 211,
+    GLIDE_2_30 = 230,  // Glide 2.30 (first GLIDE2X.OVL, SST-1)
+    GLIDE_2_40 = 240,  // Glide 2.40 (SST-1 / Rush)
+    GLIDE_2_42 = 242,  // Glide 2.42 (Voodoo Rush / SST-96)
+    GLIDE_2_43 = 243,  // Glide 2.43 (SST-1 / Rush)
+    GLIDE_2_45 = 245,  // Glide 2.45 (Voodoo Rush)
+    GLIDE_2_46 = 246,  // Glide 2.46 (SST-1 / Rush)
+    GLIDE_2_48 = 248,  // Glide 2.48 (SST-1 / Rush final)
+    GLIDE_2_50 = 250,  // Glide 2.50 (Voodoo2 launch)
+    GLIDE_2_51 = 251,  // Glide 2.51 (Voodoo2 dual-head)
+    GLIDE_2_53 = 253,  // Glide 2.53 (Voodoo2)
+    GLIDE_2_54 = 254,  // Glide 2.54 (Voodoo2)
+    GLIDE_2_56 = 256,  // Glide 2.56 (Voodoo2 final)
+    GLIDE_2_60 = 260,  // Glide 2.60 (Banshee / Voodoo3)
+    GLIDE_2_61 = 261,  // Glide 2.61 (Banshee / Voodoo3 / Voodoo4 / Voodoo5 final)
+
+    // Authentic Glide 3.x versions (verified against 3dfx Win32 DLLs)
+    GLIDE_3_00 = 300,  // Glide 3.00 (SST-1 / Rush)
+    GLIDE_3_01 = 301,  // Glide 3.01 (Voodoo2)
+    GLIDE_3_02 = 302,  // Glide 3.02 (SST-1 / Rush)
+    GLIDE_3_03 = 303,  // Glide 3.03 (Voodoo2 final)
+    GLIDE_3_04 = 304,  // Glide 3.04 (SST-1 / Rush final)
+    GLIDE_3_10 = 310   // Glide 3.10 (Banshee / Voodoo3 / Voodoo4 / Voodoo5 final)
 };
+
+inline bool IsGlide3ApiVersion(ApiVersion ver) {
+    return static_cast<int>(ver) >= 300;
+}
+
+ApiVersion GetDefaultGlide2Version(CardModel model);
+ApiVersion GetDefaultGlide3Version(CardModel model);
+const char* FormatApiVersionString(ApiVersion ver);
+bool IsVersionHistoricallyValidForCard(CardModel model, ApiVersion ver);
+const char* DescribeAuthenticVersionsForCard(CardModel model, bool glide3);
 
 enum HudElementFlags : uint32_t {
     HUD_NONE       = 0u,
@@ -56,12 +86,13 @@ enum class HudPosition : uint32_t {
 struct WrapperConfig {
     // Emulated hardware profile
     CardModel model{CardModel::Voodoo2};
-    ApiVersion apiVersion{ApiVersion::GLIDE_2_43};
+    ApiVersion apiVersion{ApiVersion::GLIDE_2_56};
+    ApiVersion glide3ApiVersion{ApiVersion::GLIDE_3_03};
     uint32_t fbiMemoryMb{16};
     uint32_t tmuCount{2};
     uint32_t tmuMemoryMb{16};
     bool enableSli{false}; // Disabled by default for maximum classic interop
-    std::string apiVersionOverride{"2.43 (Latest)"};
+    std::string apiVersionOverride{"2.56"};
     std::string reportedVendorOverride{"3Dfx Interactive"}; // Authentic retro default
     std::string reportedRendererOverride{"3dfx glide-ng Vulkan Wrapper"};
 
@@ -129,6 +160,7 @@ struct WrapperConfig {
     std::map<std::string, std::string> settingSources;
     std::vector<std::string> unknownConfigKeys;
     std::vector<std::string> invalidConfigValues;
+    std::vector<std::string> compatibilityWarnings;
 };
 
 class EmulationRegistry {

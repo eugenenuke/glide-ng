@@ -101,16 +101,20 @@ typedef struct ReportData {
 #if GLIDE_VERSION == 3
   FxI32 g3_mem_fb;
   FxI32 g3_mem_tmu;
+  FxI32 g3_mem_uma;
+  FxI32 g3_num_fb;
   FxI32 g3_max_tex_size;
   FxI32 g3_max_aspect;
   FxI32 g3_bits_depth;
-  FxI32 g3_bits_rgba;
+  FxI32 g3_bits_rgba[4];
   FxI32 g3_fog_entries;
   FxI32 g3_gamma_entries;
+  FxI32 g3_tex_align;
+  FxI32 g3_supports_passthru;
   FxI32 g3_wdepth[2];
   FxI32 g3_zdepth[2];
   int g3_num_resolutions;
-  GrResolution g3_resolutions[32];
+  GrResolution g3_resolutions[64];
 #endif
 
   ActiveEnvEntry envs[MAX_ACTIVE_ENVS];
@@ -302,9 +306,12 @@ static void count_group_procs(const ReportData* r, const char* group,
 #endif
 
 #if GLIDE_VERSION == 2
-static const char* sst_type_name(int type) {
+static const char* sst_type_name(int type, int fbi_rev) {
   switch (type) {
-    case GR_SSTTYPE_VOODOO:  return "Voodoo Graphics (SST-1)";
+    case GR_SSTTYPE_VOODOO:
+      if ((fbi_rev & 0x11000) == 0x11000) return "Voodoo3 / VSA-100 (H3+)";
+      if ((fbi_rev & 0x01000) == 0x01000) return "Voodoo Banshee (H3)";
+      return "Voodoo Graphics (SST-1)";
     case GR_SSTTYPE_SST96:   return "Voodoo Rush (SST-96)";
     case GR_SSTTYPE_AT3D:    return "Alliance AT3D";
     case GR_SSTTYPE_Voodoo2: return "Voodoo2 (CVG)";
@@ -313,24 +320,41 @@ static const char* sst_type_name(int type) {
 }
 #endif
 
+static void format_rev(char* out, size_t out_sz, int rev) {
+  if (rev >= 0x1000) {
+    snprintf(out, out_sz, "0x%X", (unsigned)rev);
+  } else {
+    snprintf(out, out_sz, "%d", rev);
+  }
+}
+
 #if GLIDE_VERSION == 3
 static const char* g3_res_name(GrScreenResolution_t r) {
   switch (r) {
     case GR_RESOLUTION_320x200:   return "320x200";
     case GR_RESOLUTION_320x240:   return "320x240";
     case GR_RESOLUTION_400x256:   return "400x256";
+    case GR_RESOLUTION_400x300:   return "400x300";
+    case GR_RESOLUTION_512x256:   return "512x256";
     case GR_RESOLUTION_512x384:   return "512x384";
     case GR_RESOLUTION_640x200:   return "640x200";
     case GR_RESOLUTION_640x350:   return "640x350";
     case GR_RESOLUTION_640x400:   return "640x400";
     case GR_RESOLUTION_640x480:   return "640x480";
     case GR_RESOLUTION_800x600:   return "800x600";
-    case GR_RESOLUTION_960x720:   return "960x720";
     case GR_RESOLUTION_856x480:   return "856x480";
-    case GR_RESOLUTION_512x256:   return "512x256";
+    case GR_RESOLUTION_960x720:   return "960x720";
     case GR_RESOLUTION_1024x768:  return "1024x768";
+    case GR_RESOLUTION_1152x864:  return "1152x864";
+    case GR_RESOLUTION_1280x960:  return "1280x960";
     case GR_RESOLUTION_1280x1024: return "1280x1024";
+    case GR_RESOLUTION_1600x1024: return "1600x1024";
     case GR_RESOLUTION_1600x1200: return "1600x1200";
+    case GR_RESOLUTION_1792x1344: return "1792x1344";
+    case GR_RESOLUTION_1856x1392: return "1856x1392";
+    case GR_RESOLUTION_1920x1440: return "1920x1440";
+    case GR_RESOLUTION_2048x1536: return "2048x1536";
+    case GR_RESOLUTION_2048x2048: return "2048x2048";
     default:                      return "Other";
   }
 }
@@ -520,8 +544,10 @@ static void collect_glide_info(ReportData* r) {
   {
     FxI32 boards = 0;
     FxI32 ntmu = 0;
+    FxI32 rev_fb = 0;
+    FxI32 rev_tmu = 0;
     GrResolution tmpl;
-    FxI32 count;
+    FxI32 bytes;
 
     r->has_get_string = 1;
     copy_str(r->str_version, sizeof(r->str_version), grGetString(GR_VERSION));
@@ -538,22 +564,31 @@ static void collect_glide_info(ReportData* r) {
     grGet(GR_NUM_TMU, 4, &ntmu);
     grGet(GR_MEMORY_FB, 4, &r->g3_mem_fb);
     grGet(GR_MEMORY_TMU, 4, &r->g3_mem_tmu);
+    grGet(GR_MEMORY_UMA, 4, &r->g3_mem_uma);
+    grGet(GR_NUM_FB, 4, &r->g3_num_fb);
     grGet(GR_MAX_TEXTURE_SIZE, 4, &r->g3_max_tex_size);
     grGet(GR_MAX_TEXTURE_ASPECT_RATIO, 4, &r->g3_max_aspect);
     grGet(GR_BITS_DEPTH, 4, &r->g3_bits_depth);
-    grGet(GR_BITS_RGBA, 4, &r->g3_bits_rgba);
+    grGet(GR_BITS_RGBA, 16, r->g3_bits_rgba);
     grGet(GR_FOG_TABLE_ENTRIES, 4, &r->g3_fog_entries);
     grGet(GR_GAMMA_TABLE_ENTRIES, 4, &r->g3_gamma_entries);
+    grGet(GR_TEXTURE_ALIGN, 4, &r->g3_tex_align);
+    grGet(GR_SUPPORTS_PASSTHRU, 4, &r->g3_supports_passthru);
     grGet(GR_WDEPTH_MIN_MAX, 8, r->g3_wdepth);
     grGet(GR_ZDEPTH_MIN_MAX, 8, r->g3_zdepth);
+    grGet(GR_REVISION_FB, 4, &rev_fb);
+    grGet(GR_REVISION_TMU, 4, &rev_tmu);
 
     r->num_boards = (boards > 0) ? (int)boards : 1;
     if (r->num_boards > MAX_NUM_SST) r->num_boards = MAX_NUM_SST;
     r->fb_ram_mb[0] = (int)(r->g3_mem_fb / (1024 * 1024));
+    r->fbi_rev[0] = (int)rev_fb;
+    r->sli_detect[0] = (r->g3_num_fb > 1) ? 1 : 0;
     r->num_tmus[0] = (ntmu > 0) ? (int)ntmu : 1;
     if (r->num_tmus[0] > 3) r->num_tmus[0] = 3;
     for (tmu = 0; tmu < r->num_tmus[0]; ++tmu) {
       r->tmu_ram_mb[0][tmu] = (int)(r->g3_mem_tmu / (1024 * 1024));
+      r->tmu_rev[0][tmu] = (int)rev_tmu;
     }
 
     grSstSelect(0);
@@ -567,11 +602,19 @@ static void collect_glide_info(ReportData* r) {
     tmpl.refresh = (GrScreenRefresh_t)GR_QUERY_ANY;
     tmpl.numColorBuffers = GR_QUERY_ANY;
     tmpl.numAuxBuffers = GR_QUERY_ANY;
-    count = grQueryResolutions(&tmpl, NULL);
-    if (count > 0) {
-      if (count > 32) count = 32;
-      r->g3_num_resolutions = (int)grQueryResolutions(&tmpl, r->g3_resolutions);
-      if (r->g3_num_resolutions > 32) r->g3_num_resolutions = 32;
+    bytes = grQueryResolutions(&tmpl, NULL);
+    if (bytes > 0) {
+      GrResolution* tmp = (GrResolution*)malloc((size_t)bytes);
+      if (tmp) {
+        FxI32 filled = grQueryResolutions(&tmpl, tmp);
+        int n = (int)(filled / (FxI32)sizeof(GrResolution));
+        if (n > 64) n = 64;
+        if (n > 0) {
+          memcpy(r->g3_resolutions, tmp, (size_t)n * sizeof(GrResolution));
+          r->g3_num_resolutions = n;
+        }
+        free(tmp);
+      }
     }
   }
 #endif
@@ -837,9 +880,13 @@ static void print_compact_report(FILE* out, const ReportData* r) {
     print_trunc(out, " Boards     : ", buf, 78);
 
 #if GLIDE_VERSION == 2
-    snprintf(buf, sizeof(buf), "%s [FBI rev %d, SLI: %s]",
-             sst_type_name(r->board_type[0]), r->fbi_rev[0],
-             r->sli_detect[0] ? "Yes" : "No");
+    {
+      char rev_buf[24];
+      format_rev(rev_buf, sizeof(rev_buf), r->fbi_rev[0]);
+      snprintf(buf, sizeof(buf), "%s [FBI rev %s, SLI: %s]",
+               sst_type_name(r->board_type[0], r->fbi_rev[0]), rev_buf,
+               r->sli_detect[0] ? "Yes" : "No");
+    }
 #else
     snprintf(buf, sizeof(buf), "%s", r->str_hardware);
 #endif
@@ -1029,19 +1076,23 @@ static void print_verbose_report(FILE* out, const ReportData* r) {
   fprintf(out, "\n[Detected Hardware (%d board%s)]\n", r->num_boards,
           (r->num_boards == 1) ? "" : "s");
   for (b = 0; b < r->num_boards; ++b) {
+    char rev_fb_buf[24];
+    format_rev(rev_fb_buf, sizeof(rev_fb_buf), r->fbi_rev[b]);
     fprintf(out, "  Board #%d       : %s\n", b,
 #if GLIDE_VERSION == 2
-            sst_type_name(r->board_type[b])
+            sst_type_name(r->board_type[b], r->fbi_rev[b])
 #else
             r->str_hardware
 #endif
     );
-    fprintf(out, "    FrameBuffer  : %d MB (FBI rev %d, SLI: %s)\n",
-            r->fb_ram_mb[b], r->fbi_rev[b], r->sli_detect[b] ? "Yes" : "No");
+    fprintf(out, "    FrameBuffer  : %d MB (FBI rev %s, SLI: %s)\n",
+            r->fb_ram_mb[b], rev_fb_buf, r->sli_detect[b] ? "Yes" : "No");
     fprintf(out, "    TMU Count    : %d\n", r->num_tmus[b]);
     for (tmu = 0; tmu < r->num_tmus[b] && tmu < 3; ++tmu) {
-      fprintf(out, "    TMU%d         : %d MB (rev %d)", tmu,
-              r->tmu_ram_mb[b][tmu], r->tmu_rev[b][tmu]);
+      char rev_tmu_buf[24];
+      format_rev(rev_tmu_buf, sizeof(rev_tmu_buf), r->tmu_rev[b][tmu]);
+      fprintf(out, "    TMU%d         : %d MB (rev %s)", tmu,
+              r->tmu_ram_mb[b][tmu], rev_tmu_buf);
       if (b == 0) {
         FxU32 span = (r->tmu_max_addr[tmu] > r->tmu_min_addr[tmu])
                          ? (r->tmu_max_addr[tmu] - r->tmu_min_addr[tmu])
@@ -1065,14 +1116,22 @@ static void print_verbose_report(FILE* out, const ReportData* r) {
           (long)r->g3_mem_fb, (long)(r->g3_mem_fb / (1024 * 1024)));
   fprintf(out, "  GR_MEMORY_TMU              : %ld bytes (%ld MB)\n",
           (long)r->g3_mem_tmu, (long)(r->g3_mem_tmu / (1024 * 1024)));
+  fprintf(out, "  GR_MEMORY_UMA / NUM_FB     : %ld MB / %ld\n",
+          (long)(r->g3_mem_uma / (1024 * 1024)), (long)r->g3_num_fb);
   fprintf(out, "  GR_MAX_TEXTURE_SIZE        : %ldx%ld\n",
           (long)r->g3_max_tex_size, (long)r->g3_max_tex_size);
   fprintf(out, "  GR_MAX_TEXTURE_ASPECT_RATIO: %ld (max %ld:1)\n",
           (long)r->g3_max_aspect, (long)(1L << r->g3_max_aspect));
-  fprintf(out, "  GR_BITS_DEPTH / RGBA       : %ld / %ld\n",
-          (long)r->g3_bits_depth, (long)r->g3_bits_rgba);
+  fprintf(out, "  GR_BITS_DEPTH / RGBA       : %ld-bit / %ld-%ld-%ld-%ld (%ld-bit)\n",
+          (long)r->g3_bits_depth,
+          (long)r->g3_bits_rgba[0], (long)r->g3_bits_rgba[1],
+          (long)r->g3_bits_rgba[2], (long)r->g3_bits_rgba[3],
+          (long)(r->g3_bits_rgba[0] + r->g3_bits_rgba[1] +
+                 r->g3_bits_rgba[2] + r->g3_bits_rgba[3]));
   fprintf(out, "  GR_FOG / GAMMA ENTRIES     : %ld / %ld\n",
           (long)r->g3_fog_entries, (long)r->g3_gamma_entries);
+  fprintf(out, "  GR_TEXTURE_ALIGN / PASSTHRU: %ld bytes / %s\n",
+          (long)r->g3_tex_align, r->g3_supports_passthru ? "Yes" : "No");
   fprintf(out, "  GR_WDEPTH_MIN_MAX          : %ld .. %ld\n",
           (long)r->g3_wdepth[0], (long)r->g3_wdepth[1]);
   fprintf(out, "  GR_ZDEPTH_MIN_MAX          : %ld .. %ld\n",
@@ -1080,12 +1139,22 @@ static void print_verbose_report(FILE* out, const ReportData* r) {
 
   fprintf(out, "\n[Supported Resolutions (grQueryResolutions: %d)]\n",
           r->g3_num_resolutions);
-  for (i = 0; i < r->g3_num_resolutions; ++i) {
-    fprintf(out, "  %-10s @ %-6s (%d color, %d aux)\n",
-            g3_res_name(r->g3_resolutions[i].resolution),
-            g3_refresh_name(r->g3_resolutions[i].refresh),
-            r->g3_resolutions[i].numColorBuffers,
-            r->g3_resolutions[i].numAuxBuffers);
+  for (i = 0; i < r->g3_num_resolutions; i += 2) {
+    char col0[48];
+    snprintf(col0, sizeof(col0), "%-10s @ %-5s (%dc/%da)",
+             g3_res_name(r->g3_resolutions[i].resolution),
+             g3_refresh_name(r->g3_resolutions[i].refresh),
+             r->g3_resolutions[i].numColorBuffers,
+             r->g3_resolutions[i].numAuxBuffers);
+    if (i + 1 < r->g3_num_resolutions) {
+      fprintf(out, "  %-34s  %-10s @ %-5s (%dc/%da)\n", col0,
+              g3_res_name(r->g3_resolutions[i + 1].resolution),
+              g3_refresh_name(r->g3_resolutions[i + 1].refresh),
+              r->g3_resolutions[i + 1].numColorBuffers,
+              r->g3_resolutions[i + 1].numAuxBuffers);
+    } else {
+      fprintf(out, "  %s\n", col0);
+    }
   }
 #endif
 

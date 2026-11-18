@@ -228,11 +228,27 @@ bool ParseCardModelString(const std::string& rawStr, CardModel& outModel) {
 }
 
 bool ParseApiVersionString(const std::string& rawStr, ApiVersion& outVer) {
-    if (rawStr == "2.1") { outVer = ApiVersion::GLIDE_2_1; return true; }
-    if (rawStr == "2.40" || rawStr == "2.4") { outVer = ApiVersion::GLIDE_2_40; return true; }
+    if (rawStr == "2.1" || rawStr == "2.10" || rawStr == "2.11") { outVer = ApiVersion::GLIDE_2_11; return true; }
+    if (rawStr == "2.3" || rawStr == "2.30") { outVer = ApiVersion::GLIDE_2_30; return true; }
+    if (rawStr == "2.4" || rawStr == "2.40") { outVer = ApiVersion::GLIDE_2_40; return true; }
     if (rawStr == "2.42") { outVer = ApiVersion::GLIDE_2_42; return true; }
     if (rawStr == "2.43") { outVer = ApiVersion::GLIDE_2_43; return true; }
+    if (rawStr == "2.45") { outVer = ApiVersion::GLIDE_2_45; return true; }
+    if (rawStr == "2.46") { outVer = ApiVersion::GLIDE_2_46; return true; }
+    if (rawStr == "2.48") { outVer = ApiVersion::GLIDE_2_48; return true; }
+    if (rawStr == "2.5" || rawStr == "2.50") { outVer = ApiVersion::GLIDE_2_50; return true; }
+    if (rawStr == "2.51") { outVer = ApiVersion::GLIDE_2_51; return true; }
+    if (rawStr == "2.53") { outVer = ApiVersion::GLIDE_2_53; return true; }
+    if (rawStr == "2.54") { outVer = ApiVersion::GLIDE_2_54; return true; }
+    if (rawStr == "2.56") { outVer = ApiVersion::GLIDE_2_56; return true; }
+    if (rawStr == "2.6" || rawStr == "2.60") { outVer = ApiVersion::GLIDE_2_60; return true; }
     if (rawStr == "2.61") { outVer = ApiVersion::GLIDE_2_61; return true; }
+    if (rawStr == "3.0" || rawStr == "3.00") { outVer = ApiVersion::GLIDE_3_00; return true; }
+    if (rawStr == "3.01") { outVer = ApiVersion::GLIDE_3_01; return true; }
+    if (rawStr == "3.02") { outVer = ApiVersion::GLIDE_3_02; return true; }
+    if (rawStr == "3.03") { outVer = ApiVersion::GLIDE_3_03; return true; }
+    if (rawStr == "3.04") { outVer = ApiVersion::GLIDE_3_04; return true; }
+    if (rawStr == "3.1" || rawStr == "3.10") { outVer = ApiVersion::GLIDE_3_10; return true; }
     return false;
 }
 
@@ -606,7 +622,8 @@ bool IniConfigLoader::Load(const std::string& configFilePath, WrapperConfig& out
     // 1. Reset to baseline defaults to prevent state leakage across reloads
     outConfig = WrapperConfig{};
 
-    bool hasApiVersion = false;
+    bool hasGlide2ApiVersion = false;
+    bool hasGlide3ApiVersion = false;
     bool hasFbiMem = false;
     bool hasTmuCount = false;
     bool hasTmuMem = false;
@@ -670,13 +687,20 @@ bool IniConfigLoader::Load(const std::string& configFilePath, WrapperConfig& out
                 }
             } else if (SectionMatches(sec, "hardware") && key == "api_version") {
                 handled = true;
-                if (ParseApiVersionString(val, outConfig.apiVersion)) {
-                    hasApiVersion = true;
+                ApiVersion parsedVer = ApiVersion::GLIDE_2_56;
+                if (ParseApiVersionString(val, parsedVer)) {
+                    if (IsGlide3ApiVersion(parsedVer)) {
+                        outConfig.glide3ApiVersion = parsedVer;
+                        hasGlide3ApiVersion = true;
+                    } else {
+                        outConfig.apiVersion = parsedVer;
+                        hasGlide2ApiVersion = true;
+                    }
                     outConfig.settingSources["apiVersion"] = "ini";
                 } else if (!val.empty()) {
                     outConfig.invalidConfigValues.push_back(
                         "Unrecognized hardware.api_version='" + val +
-                        "' (supported: 2.1, 2.40, 2.42, 2.43, 2.61)");
+                        "' (supported 2.x: 2.11..2.61; 3.x: 3.00..3.04, 3.10)");
                 }
             } else if (SectionMatches(sec, "hardware") && key == "fbi_memory_mb") {
                 handled = true;
@@ -1004,60 +1028,92 @@ bool IniConfigLoader::Load(const std::string& configFilePath, WrapperConfig& out
         }
     }
     if (const char* envApi = GetNonEmptyEnv(GLIDE_NG_ENV_API_VERSION)) {
-        if (ParseApiVersionString(envApi, outConfig.apiVersion)) {
-            hasApiVersion = true;
+        ApiVersion parsedVer = ApiVersion::GLIDE_2_56;
+        if (ParseApiVersionString(envApi, parsedVer)) {
+            if (IsGlide3ApiVersion(parsedVer)) {
+                outConfig.glide3ApiVersion = parsedVer;
+                hasGlide3ApiVersion = true;
+            } else {
+                outConfig.apiVersion = parsedVer;
+                hasGlide2ApiVersion = true;
+            }
             outConfig.settingSources["apiVersion"] = GLIDE_NG_ENV_API_VERSION;
         } else {
             outConfig.invalidConfigValues.push_back(
                 std::string("Unrecognized ") + GLIDE_NG_ENV_API_VERSION + "='" + envApi +
-                "' (supported: 2.1, 2.40, 2.42, 2.43, 2.61)");
+                "' (supported 2.x: 2.11..2.61; 3.x: 3.00..3.04, 3.10)");
         }
     }
 
     // Derive hardware defaults from selected CardModel ONLY for fields not explicitly overridden
+    if (!hasGlide2ApiVersion) {
+        outConfig.apiVersion = GetDefaultGlide2Version(outConfig.model);
+    }
+    if (!hasGlide3ApiVersion) {
+        outConfig.glide3ApiVersion = GetDefaultGlide3Version(outConfig.model);
+    }
+    outConfig.apiVersionOverride = FormatApiVersionString(outConfig.apiVersion);
+
     switch (outConfig.model) {
         case CardModel::VoodooGraphics:
-            if (!hasApiVersion) outConfig.apiVersion = ApiVersion::GLIDE_2_40;
             if (!hasTmuCount) outConfig.tmuCount = 1;
             if (!hasFbiMem) outConfig.fbiMemoryMb = 4;
             if (!hasTmuMem) outConfig.tmuMemoryMb = 2;
             break;
         case CardModel::VoodooRush:
-            if (!hasApiVersion) outConfig.apiVersion = ApiVersion::GLIDE_2_40;
             if (!hasTmuCount) outConfig.tmuCount = 1;
             if (!hasFbiMem) outConfig.fbiMemoryMb = 6;
             if (!hasTmuMem) outConfig.tmuMemoryMb = 2;
             break;
         case CardModel::Voodoo2:
-            if (!hasApiVersion) outConfig.apiVersion = ApiVersion::GLIDE_2_43;
             if (!hasTmuCount) outConfig.tmuCount = 2;
             if (!hasFbiMem) outConfig.fbiMemoryMb = 16;
             if (!hasTmuMem) outConfig.tmuMemoryMb = 16;
             break;
         case CardModel::VoodooBanshee:
-            if (!hasApiVersion) outConfig.apiVersion = ApiVersion::GLIDE_2_61;
             if (!hasTmuCount) outConfig.tmuCount = 1;
             if (!hasFbiMem) outConfig.fbiMemoryMb = 16;
             if (!hasTmuMem) outConfig.tmuMemoryMb = 16;
             break;
         case CardModel::Voodoo3:
-            if (!hasApiVersion) outConfig.apiVersion = ApiVersion::GLIDE_2_61;
             if (!hasTmuCount) outConfig.tmuCount = 2;
             if (!hasFbiMem) outConfig.fbiMemoryMb = 16;
             if (!hasTmuMem) outConfig.tmuMemoryMb = 16;
             break;
         case CardModel::Voodoo4:
-            if (!hasApiVersion) outConfig.apiVersion = ApiVersion::GLIDE_2_61;
             if (!hasTmuCount) outConfig.tmuCount = 2;
             if (!hasFbiMem) outConfig.fbiMemoryMb = 32;
             if (!hasTmuMem) outConfig.tmuMemoryMb = 16;
             break;
         case CardModel::Voodoo5:
-            if (!hasApiVersion) outConfig.apiVersion = ApiVersion::GLIDE_2_61;
             if (!hasTmuCount) outConfig.tmuCount = 2;
             if (!hasFbiMem) outConfig.fbiMemoryMb = 64;
             if (!hasTmuMem) outConfig.tmuMemoryMb = 32;
             break;
+    }
+
+    // Warn-only card-to-version matrix check (honors explicit overrides without clamping)
+    if (hasGlide2ApiVersion &&
+        !IsVersionHistoricallyValidForCard(outConfig.model, outConfig.apiVersion)) {
+        outConfig.compatibilityWarnings.push_back(
+            std::string("Ahistorical card/version combination: card_model='") +
+            CardModelCanonicalName(outConfig.model) + "' with Glide 2.x api_version='" +
+            FormatApiVersionString(outConfig.apiVersion) + "' (authentic versions for " +
+            CardModelCanonicalName(outConfig.model) + ": " +
+            DescribeAuthenticVersionsForCard(outConfig.model, false) +
+            "; default: " + FormatApiVersionString(GetDefaultGlide2Version(outConfig.model)) +
+            "). Honoring requested override (warn-only).");
+    }
+    if (hasGlide3ApiVersion &&
+        !IsVersionHistoricallyValidForCard(outConfig.model, outConfig.glide3ApiVersion)) {
+        outConfig.compatibilityWarnings.push_back(
+            std::string("Ahistorical card/version combination: card_model='") +
+            CardModelCanonicalName(outConfig.model) + "' with Glide 3.x api_version='" +
+            FormatApiVersionString(outConfig.glide3ApiVersion) + "' (authentic versions for " +
+            CardModelCanonicalName(outConfig.model) + ": " +
+            DescribeAuthenticVersionsForCard(outConfig.model, true) +
+            "; default: " + FormatApiVersionString(GetDefaultGlide3Version(outConfig.model)) +
+            "). Honoring requested override (warn-only).");
     }
 
     // 4. Layer 3: Authentic 3dfx Glide environment variables

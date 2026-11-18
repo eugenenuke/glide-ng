@@ -85,11 +85,13 @@ int main(int argc, char* argv[]) {
         return -1;
     }
 
-    const char* hardware = grGetString(GR_HARDWARE);
-    const char* renderer = grGetString(GR_RENDERER);
+    char versionBuf[80] = {};
+    grGlideGetVersion(versionBuf);
+    const char* backendEnv = std::getenv("GLIDE_NG_BACKEND");
 
-    std::printf("Hardware Device : %s\r\n", hardware ? hardware : "Unknown");
-    std::printf("Active Renderer : %s\r\n", renderer ? renderer : "Unknown");
+    std::printf("Hardware Device : %s\r\n", runConfig.sysConfig.boardName.c_str());
+    std::printf("Glide Version   : %s\r\n", versionBuf[0] ? versionBuf : "Unknown");
+    std::printf("Active Backend  : %s\r\n", backendEnv ? backendEnv : "default");
     std::printf("----------------------------------------------------------------------\r\n");
 
     // Glide 2.x Color Combiner setup

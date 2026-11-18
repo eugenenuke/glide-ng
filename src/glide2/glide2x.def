@@ -52,8 +52,6 @@ EXPORTS
   _grFogTable@4 = grFogTable@4
   _grGammaCorrectionValue@4 = grGammaCorrectionValue@4
   _grGet@12 = grGet@12
-  _grGetProcAddress@4 = grGetProcAddress@4
-  _grGetString@4 = grGetString@4
   _grGlideGetState@4 = grGlideGetState@4
   _grGlideGetVersion@4 = grGlideGetVersion@4
   _grGlideInit@0 = grGlideInit@0
@@ -208,8 +206,6 @@ EXPORTS
   grFogTable = grFogTable@4
   grGammaCorrectionValue = grGammaCorrectionValue@4
   grGet = grGet@12
-  grGetProcAddress = grGetProcAddress@4
-  grGetString = grGetString@4
   grGlideGetState = grGlideGetState@4
   grGlideGetVersion = grGlideGetVersion@4
   grGlideInit = grGlideInit@0

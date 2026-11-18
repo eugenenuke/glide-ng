@@ -442,7 +442,14 @@ int main(int argc, char** argv) {
     if (s) {
       snprintf(hw_str, sizeof(hw_str), "%s", s);
     } else if (hw.SSTs[0].type == GR_SSTTYPE_VOODOO) {
-      snprintf(hw_str, sizeof(hw_str), "Voodoo Graphics (SST-1)");
+      int rev = hw.SSTs[0].sstBoard.VoodooConfig.fbiRev;
+      if ((rev & 0x11000) == 0x11000) {
+        snprintf(hw_str, sizeof(hw_str), "Voodoo3 / VSA-100 (H3+)");
+      } else if ((rev & 0x01000) == 0x01000) {
+        snprintf(hw_str, sizeof(hw_str), "Voodoo Banshee (H3)");
+      } else {
+        snprintf(hw_str, sizeof(hw_str), "Voodoo Graphics (SST-1)");
+      }
     } else if (hw.SSTs[0].type == GR_SSTTYPE_SST96) {
       snprintf(hw_str, sizeof(hw_str), "Voodoo Rush (SST-96)");
     } else {

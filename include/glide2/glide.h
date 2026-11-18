@@ -1130,16 +1130,16 @@ FX_ENTRY void FX_CALL
 grGet( FxU32 pname, FxU32 plength, FxI32 *params );
 #endif
 
+#ifdef GLIDE3
 FX_ENTRY const char * FX_CALL 
 grGetString( FxU32 pname );
 
-#ifdef GLIDE3
 FX_ENTRY FxBool FX_CALL 
 grReset( FxU32 what );
-#endif
 
 FX_ENTRY GrProc FX_CALL
 grGetProcAddress( char *procName );
+#endif
 
 #ifdef GLIDE3
 FX_ENTRY void FX_CALL 

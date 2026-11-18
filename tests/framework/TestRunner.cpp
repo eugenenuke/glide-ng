@@ -128,11 +128,11 @@ int main(int argc, char** argv) {
         if (mode == "capture") {
             destDir = "tests/reference_dumps";
         } else {
-            const char* rendererStr = grGetString(GR_RENDERER);
-            std::string renderer = rendererStr ? rendererStr : "";
-            if (renderer.find("OpenGL ES") != std::string::npos) {
+            const char* backendEnv = std::getenv("GLIDE_NG_BACKEND");
+            std::string backend = backendEnv ? backendEnv : "";
+            if (backend == "opengl_es" || backend == "gles") {
                 destDir = "tests/opengl_es_dumps";
-            } else if (renderer.find("Software") != std::string::npos) {
+            } else if (backend == "software" || backend == "sw") {
                 destDir = "tests/software_dumps";
             } else {
                 destDir = "tests/vulkan_dumps";
