@@ -14,7 +14,7 @@ A curated per-title catalog of real-world 3dfx Glide games, official 3dfx tech d
    `Built-in defaults` < `glide-ng.ini` < `Authentic 3dfx env vars (FX_GLIDE_* / SST_* / SSTV2_*)` < `GLIDE_NG_* env vars`.
    For example, `GLIDE_NG_BACKEND=software GLIDE_NG_SW_SIMD=avx512` overrides `[core] backend` and `[software] simd` from any preset without editing the file.
 
-See [Environment Variables & Overrides Guide](../glide_environment_variables.md), [Glide Versions & Card Matrix](../glide_versions_and_cards.md), and [`glide-ng.ini.example`](../../glide-ng.ini.example) for the complete reference of supported keys.
+See [Configuration & Environment Variables](../user-guide/configuration.md), [Hardware Profiles & Glide Versions](../user-guide/hardware-and-versions.md), and [`glide-ng.ini.example`](../../glide-ng.ini.example) for the complete reference of supported keys.
 
 ---
 
@@ -27,6 +27,8 @@ See [Environment Variables & Overrides Guide](../glide_environment_variables.md)
 ---
 
 ## 2. Official 3dfx Tech Demos & Hardware Tests (`demos/`)
+
+> **Obtaining 3dfx Demos & ATB Libraries**: Third-party 3dfx executables are not bundled in this repository. Official 3dfx tech demos and ATB runtime libraries can be found at [3dfx.retropc.se — 3dfx Artwork & Tech Demos](https://3dfx.retropc.se/artwork.html).
 
 | Title | Year | Platform(s) | Glide API | Card Profile | Backends (VK / GL / SW) | Preset | Key Quirk / Highlights | Status |
 | :--- | :---: | :--- | :---: | :--- | :---: | :--- | :--- | :---: |

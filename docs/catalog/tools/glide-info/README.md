@@ -60,4 +60,4 @@ glide_info.exe -v --probe -o report.txt
 ## Quirks & Tips
 
 * **Pure Glide 2.x ABI**: `glide2_info` uses strictly authentic Glide 2.x calls (`grGlideGetVersion`, `grSstQueryHardware`) and never calls `grGetString` or `grGetProcAddress` (which only exist in Glide 3.x).
-* **Warn-only card/version check**: If you pass an ahistorical combination (such as `GLIDE_NG_CARD_MODEL=voodoo1 GLIDE_NG_API_VERSION=2.61`), `glide-ng` prints a `[WARN]` diagnostic while still honoring your override — useful for reproducing legacy app detection checks. See [Glide Versions & Card Matrix](../../../glide_versions_and_cards.md).
+* **Warn-only card/version check**: If you pass an ahistorical combination (such as `GLIDE_NG_CARD_MODEL=voodoo1 GLIDE_NG_API_VERSION=2.61`), `glide-ng` prints a `[WARN]` diagnostic while still honoring your override — useful for reproducing legacy app detection checks. See [Hardware Profiles & Glide Versions](../../../user-guide/hardware-and-versions.md).

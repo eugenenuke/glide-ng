@@ -52,7 +52,7 @@ Never copy numbers, defaults, CLI flags, INI keys, or symbol counts from older d
 ## 4. Formatting, Links & Public-Repo Hygiene
 
 1. **Relative Markdown links only**: Always link repository files with relative paths (`../user-guide/configuration.md`), never `file:///...` URIs or hardcoded absolute filesystem paths.
-2. **Zero PII or local machine artifacts**: Before committing any documentation change, scan tracked docs for local home paths (`/home/`, `/usr/local/google/`, `C:\Users\`), usernames, corporate hostnames, or internal tracker links.
+2. **Zero PII or local machine artifacts**: Before committing any documentation change, scan tracked docs for local home paths (`/home/`, `/Users/`, `C:\Users\`), usernames, corporate hostnames, or internal tracker links.
 3. **Zero bundled third-party binaries**: Reference external demo/driver archives via clean links (e.g., `https://3dfx.retropc.se/artwork.html`) rather than committing third-party executables or PDFs.
 4. **Scannable structure**:
    - Lead every guide with a 1–2 sentence summary of scope.
