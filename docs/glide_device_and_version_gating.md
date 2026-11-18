@@ -52,13 +52,17 @@ card_model = Voodoo3
 
 The wrapper maps several common aliases to their respective hardware profiles:
 
-| Target Card Model | Allowed Case-Insensitive Identifiers / Environment Values | Default API Version |
-| :--- | :--- | :--- |
-| **Voodoo Graphics** | `SST1`, `voodoo1`, `VOODOO1`, `VoodooGraphics` | **Glide 2.40** |
-| **Voodoo Rush** | `SST96`, `voodoo_rush`, `rush`, `RUSH`, `VoodooRush` | **Glide 2.40** |
-| **Voodoo2** | `CVG`, `voodoo2`, `VOODOO2`, `Voodoo2` | **Glide 2.43** |
-| **Voodoo3** | `H3`, `voodoo3`, `VOODOO3`, `Voodoo3` | **Glide 2.61** |
-| **Voodoo5** | `H5`, `voodoo5`, `VOODOO5`, `Voodoo5` | **Glide 2.61** |
+| Target Card Model | Allowed Case-Insensitive Identifiers / Environment Values | Default API Version | Default Memory / TMUs |
+| :--- | :--- | :--- | :--- |
+| **Voodoo Graphics** | `SST1`, `voodoo1`, `VOODOO1`, `VoodooGraphics` | **Glide 2.40** | 4 MB FB, 1 TMU (2 MB) |
+| **Voodoo Rush** | `SST96`, `voodoo_rush`, `rush`, `RUSH`, `VoodooRush` | **Glide 2.40** | 6 MB FB, 1 TMU (2 MB) |
+| **Voodoo2** | `CVG`, `voodoo2`, `VOODOO2`, `Voodoo2` | **Glide 2.43** | 16 MB FB, 2 TMUs (16 MB ea) |
+| **Voodoo3** | `H3`, `voodoo3`, `VOODOO3`, `Voodoo3` | **Glide 2.61** | 16 MB FB, 2 TMUs (16 MB ea) |
+| **Voodoo4** | `H4`, `voodoo4`, `v4`, `vsa100`, `vsa-100`, `Voodoo4` | **Glide 2.61** | 32 MB FB, 2 TMUs (16 MB ea), max 2× Spatial AA |
+| **Voodoo5** | `H5`, `voodoo5`, `v5`, `VOODOO5`, `Voodoo5` | **Glide 2.61** | 64 MB FB, 2 TMUs (32 MB ea), up to 4×/8× Spatial AA |
+
+> [!NOTE]
+> Unrecognized `card_model` / `GLIDE_NG_CARD_MODEL` or `api_version` / `GLIDE_NG_API_VERSION` values emit a `[WARN]` message to `stderr` and `glide-ng.log` rather than silently falling back. VSA-100 `PIXEXT` entry points (`grSstWinOpenExt`, `grTBufferWriteMaskExt`, `grColorMaskExt`, `grBufferClearExt`, `grStencil*Ext`, `grLfbConstantStencilExt`) are strictly gated in `grGetProcAddress` to `Voodoo4` and `Voodoo5`; older cards return `NULL` so Voodoo4/5 demos fall back cleanly.
 
 ---
 

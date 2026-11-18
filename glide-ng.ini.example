@@ -18,7 +18,7 @@ headless = false
 
 [hardware]
 # Emulated 3dfx board: VoodooGraphics (SST1) | VoodooRush (SST96) |
-#                      Voodoo2 (CVG) | Voodoo3 (H3) | Voodoo5 (H5)
+#                      Voodoo2 (CVG) | Voodoo3 (H3) | Voodoo4 (VSA100) | Voodoo5 (H5)
 card_model = Voodoo2
 # Glide 2.x/3.x reported API base version: 2.1 | 2.40 | 2.42 | 2.43 | 2.61
 api_version = 2.43

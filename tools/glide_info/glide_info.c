@@ -26,6 +26,7 @@
 
 #define MAX_ACTIVE_ENVS 128
 #define MAX_PROBE_RES   4
+#define MAX_EXT_PROCS   24
 
 #ifndef MAX_NUM_SST
 #  define MAX_NUM_SST 4
@@ -33,6 +34,14 @@
 #ifndef GR_WDEPTHVALUE_FARTHEST
 #  define GR_WDEPTHVALUE_FARTHEST 0xFFFF
 #endif
+
+typedef struct ExtProcResult {
+  const char* group;
+  const char* token; /* Expected token in GR_EXTENSION, or NULL */
+  const char* proc;
+  int advertised;    /* 1 if token appears in GR_EXTENSION */
+  int resolved;      /* 1 = resolved, 0 = NULL, -1 = API unavailable */
+} ExtProcResult;
 
 typedef struct ActiveEnvEntry {
   char name[64];
@@ -107,6 +116,10 @@ typedef struct ReportData {
   ActiveEnvEntry envs[MAX_ACTIVE_ENVS];
   int num_envs;
 
+  int has_get_proc_addr;
+  int num_ext_procs;
+  ExtProcResult ext_procs[MAX_EXT_PROCS];
+
   ProbeResults probe;
 } ReportData;
 
@@ -117,6 +130,21 @@ static void copy_str(char* dst, size_t dst_sz, const char* src) {
     return;
   }
   snprintf(dst, dst_sz, "%s", src);
+}
+
+static int ext_has_token(const char* ext_str, const char* token) {
+  size_t tlen;
+  const char* p;
+  if (!ext_str || !token || token[0] == '\0') return 0;
+  tlen = strlen(token);
+  p = ext_str;
+  while ((p = strstr(p, token)) != NULL) {
+    int left_ok = (p == ext_str || p[-1] == ' ' || p[-1] == '\t');
+    int right_ok = (p[tlen] == '\0' || p[tlen] == ' ' || p[tlen] == '\t');
+    if (left_ok && right_ok) return 1;
+    p += tlen;
+  }
+  return 0;
 }
 
 static void print_trunc(FILE* out, const char* prefix, const char* val,
@@ -136,6 +164,141 @@ static void print_trunc(FILE* out, const char* prefix, const char* val,
     fprintf(out, "%s%.*s...\n", prefix, avail - 3, val);
   }
 }
+
+static void print_wrapped(FILE* out, const char* first_prefix,
+                          const char* cont_prefix, const char* val,
+                          int max_col, int max_lines) {
+  const char* p = (val && val[0] != '\0') ? val : "(none)";
+  int line_idx = 0;
+
+  while (*p == ' ') ++p;
+  if (*p == '\0') {
+    fprintf(out, "%s(none)\n", first_prefix);
+    return;
+  }
+
+  while (*p != '\0' && line_idx < max_lines) {
+    const char* pfx = (line_idx == 0) ? first_prefix : cont_prefix;
+    int avail = max_col - (int)strlen(pfx);
+    int rem = (int)strlen(p);
+    int take;
+
+    if (avail <= 4) {
+      fprintf(out, "%s\n", pfx);
+      return;
+    }
+
+    if (rem <= avail) {
+      fprintf(out, "%s%s\n", pfx, p);
+      return;
+    }
+
+    if (line_idx + 1 >= max_lines) {
+      fprintf(out, "%s%.*s...\n", pfx, avail - 3, p);
+      return;
+    }
+
+    /* Break on the last space within avail columns so tokens stay intact */
+    take = avail;
+    while (take > 0 && p[take] != ' ') {
+      --take;
+    }
+    if (take <= 0) {
+      take = avail;
+    }
+    fprintf(out, "%s%.*s\n", pfx, take, p);
+    p += take;
+    while (*p == ' ') ++p;
+    ++line_idx;
+  }
+}
+
+static void probe_extension_procs(ReportData* r) {
+  typedef struct ExtSpec {
+    const char* group;
+    const char* token;
+    const char* proc;
+  } ExtSpec;
+
+#if GLIDE_VERSION == 3
+  static const ExtSpec kSpecs[] = {
+    { "CHROMARANGE",   "CHROMARANGE",   "grChromaRangeModeExt" },
+    { "CHROMARANGE",   "CHROMARANGE",   "grChromaRangeExt" },
+    { "TEXCHROMA",     "TEXCHROMA",     "grTexChromaModeExt" },
+    { "TEXCHROMA",     "TEXCHROMA",     "grTexChromaRangeExt" },
+    { "PIXEXT",        "PIXEXT",        "grSstWinOpenExt" },
+    { "PIXEXT",        "PIXEXT",        "grTBufferWriteMaskExt" },
+    { "PIXEXT",        "PIXEXT",        "grColorMaskExt" },
+    { "PIXEXT",        "PIXEXT",        "grBufferClearExt" },
+    { "PIXEXT",        "PIXEXT",        "grStencilFuncExt" },
+    { "PIXEXT",        "PIXEXT",        "grStencilMaskExt" },
+    { "PIXEXT",        "PIXEXT",        "grStencilOpExt" },
+    { "PIXEXT",        "PIXEXT",        "grLfbConstantStencilExt" },
+    { "COMBINE",       "COMBINE",       "grColorCombineExt" },
+    { "COMBINE",       "COMBINE",       "grAlphaCombineExt" },
+    { "COMBINE",       "COMBINE",       "grTexColorCombineExt" },
+    { "COMBINE",       "COMBINE",       "grTexAlphaCombineExt" },
+    { "COMBINE",       "COMBINE",       "grConstantColorValueExt" },
+    { "TEXTUREBUFFER", "TEXTUREBUFFER", "grTextureBufferExt" },
+    { "TEXTUREBUFFER", "TEXTUREBUFFER", "grTextureAuxBufferExt" },
+    { "TEXTUREBUFFER", "TEXTUREBUFFER", "grAuxBufferExt" },
+    { "GETGAMMA",      "GETGAMMA",      "grGetGammaTableExt" }
+  };
+#else
+  static const ExtSpec kSpecs[] = {
+    { "CHROMARANGE", "CHROMARANGE", "grChromakeyRangeExt" },
+    { "TEXCHROMA",   "TEXCHROMA",   "grTexChromaModeExt" },
+    { "TEXCHROMA",   "TEXCHROMA",   "grTexChromaRangeExt" },
+    { "Glide 2.61",  NULL,          "grSplashCb" },
+    { "PIXEXT",      NULL,          "grTBufferWriteMaskExt" },
+    { "PIXEXT",      NULL,          "grColorMaskExt" },
+    { "PIXEXT",      NULL,          "grBufferClearExt" },
+    { "PIXEXT",      NULL,          "grStencilFuncExt" },
+    { "PIXEXT",      NULL,          "grStencilMaskExt" },
+    { "PIXEXT",      NULL,          "grStencilOpExt" },
+    { "PIXEXT",      NULL,          "grLfbConstantStencilExt" },
+    { "PIXEXT",      NULL,          "grAlphaBlendFunctionExt" }
+  };
+#endif
+  size_t count = sizeof(kSpecs) / sizeof(kSpecs[0]);
+  size_t i;
+
+  r->num_ext_procs = 0;
+  r->has_get_proc_addr = 0;
+
+  for (i = 0; i < count && r->num_ext_procs < MAX_EXT_PROCS; ++i) {
+    int res = gtool_try_get_proc_address(kSpecs[i].proc);
+    ExtProcResult* e = &r->ext_procs[r->num_ext_procs++];
+    e->group = kSpecs[i].group;
+    e->token = kSpecs[i].token;
+    e->proc = kSpecs[i].proc;
+    e->advertised =
+        (kSpecs[i].token && r->has_get_string)
+            ? ext_has_token(r->str_extensions, kSpecs[i].token)
+            : 0;
+    e->resolved = res;
+    if (res >= 0) {
+      r->has_get_proc_addr = 1;
+    }
+  }
+}
+
+#if GLIDE_VERSION == 3
+static void count_group_procs(const ReportData* r, const char* group,
+                              int* out_ok, int* out_total) {
+  int i;
+  int ok = 0;
+  int total = 0;
+  for (i = 0; i < r->num_ext_procs; ++i) {
+    if (strcmp(r->ext_procs[i].group, group) == 0) {
+      ++total;
+      if (r->ext_procs[i].resolved > 0) ++ok;
+    }
+  }
+  if (out_ok) *out_ok = ok;
+  if (out_total) *out_total = total;
+}
+#endif
 
 #if GLIDE_VERSION == 2
 static const char* sst_type_name(int type) {
@@ -411,6 +574,8 @@ static void collect_glide_info(ReportData* r) {
     }
   }
 #endif
+
+  probe_extension_procs(r);
 }
 
 /* Active hardware/wrapper probe (-p / --probe):
@@ -722,11 +887,31 @@ static void print_compact_report(FILE* out, const ReportData* r) {
   if (r->has_get_string) {
     print_trunc(out, " Vendor     : ", r->str_vendor, 78);
     print_trunc(out, " Renderer   : ", r->str_renderer, 78);
-    print_trunc(out, " Extensions : ",
-                r->str_extensions[0] ? r->str_extensions : "(none)", 78);
+    print_wrapped(out, " Extensions : ", "              ",
+                  r->str_extensions[0] ? r->str_extensions : "(none)", 78, 3);
   } else {
     fprintf(out, " Extended   : N/A (pure Glide 2.x; grGetString not exported)\n");
   }
+
+#if GLIDE_VERSION == 3
+  {
+    int pix_ok = 0, pix_tot = 0;
+    int cmb_ok = 0, cmb_tot = 0;
+    int tbf_ok = 0, tbf_tot = 0;
+    count_group_procs(r, "PIXEXT", &pix_ok, &pix_tot);
+    count_group_procs(r, "COMBINE", &cmb_ok, &cmb_tot);
+    count_group_procs(r, "TEXTUREBUFFER", &tbf_ok, &tbf_tot);
+    if (pix_ok > 0 || cmb_ok > 0 || tbf_ok > 0) {
+      snprintf(buf, sizeof(buf),
+               "PIXEXT %d/%d | COMBINE %d/%d | TEXBUF %d/%d",
+               pix_ok, pix_tot, cmb_ok, cmb_tot, tbf_ok, tbf_tot);
+    } else {
+      snprintf(buf, sizeof(buf),
+               "Inactive on this card profile (0/%d PIXEXT procs)", pix_tot);
+    }
+    print_trunc(out, " VSA-100    : ", buf, 78);
+  }
+#endif
 
   fprintf(out, "------------------------------------------------------------------------------\n");
   if (r->num_envs == 0) {
@@ -789,10 +974,55 @@ static void print_verbose_report(FILE* out, const ReportData* r) {
     fprintf(out, "  GR_HARDWARE    : %s\n", r->str_hardware);
     fprintf(out, "  GR_VENDOR      : %s\n", r->str_vendor);
     fprintf(out, "  GR_RENDERER    : %s\n", r->str_renderer);
-    fprintf(out, "  GR_EXTENSION   : %s\n",
-            r->str_extensions[0] ? r->str_extensions : "(none)");
+    print_wrapped(out, "  GR_EXTENSION   : ", "                   ",
+                  r->str_extensions[0] ? r->str_extensions : "(none)", 78, 8);
   } else {
     fprintf(out, "  grGetString    : N/A (pure Glide 2.x; not exported)\n");
+  }
+
+  fprintf(out, "\n[Extensions & Dynamic Entry Points (grGetProcAddress)]\n");
+  if (!r->has_get_proc_addr) {
+    fprintf(out, "  grGetProcAddress : N/A (pure Glide 2.x; not exported)\n");
+  } else {
+    int gstart = 0;
+    while (gstart < r->num_ext_procs) {
+      const char* gname = r->ext_procs[gstart].group;
+      const char* gtok = r->ext_procs[gstart].token;
+      int gend = gstart;
+      int ok_cnt = 0;
+      int tot_cnt = 0;
+      int adv = r->ext_procs[gstart].advertised;
+      int k;
+
+      while (gend < r->num_ext_procs &&
+             strcmp(r->ext_procs[gend].group, gname) == 0) {
+        if (r->ext_procs[gend].resolved > 0) ++ok_cnt;
+        ++tot_cnt;
+        ++gend;
+      }
+
+      if (gtok) {
+        fprintf(out, "  %-14s [%s] (%d/%d procs resolved)\n", gname,
+                adv ? "ADVERTISED" : "not listed", ok_cnt, tot_cnt);
+      } else {
+        fprintf(out, "  %-14s (%d/%d procs resolved)\n", gname, ok_cnt,
+                tot_cnt);
+      }
+
+      for (k = gstart; k < gend; k += 2) {
+        const ExtProcResult* p0 = &r->ext_procs[k];
+        if (k + 1 < gend) {
+          const ExtProcResult* p1 = &r->ext_procs[k + 1];
+          fprintf(out, "    [%s] %-30s [%s] %s\n",
+                  p0->resolved > 0 ? "OK" : "--", p0->proc,
+                  p1->resolved > 0 ? "OK" : "--", p1->proc);
+        } else {
+          fprintf(out, "    [%s] %s\n",
+                  p0->resolved > 0 ? "OK" : "--", p0->proc);
+        }
+      }
+      gstart = gend;
+    }
   }
 
   fprintf(out, "\n[Detected Hardware (%d board%s)]\n", r->num_boards,

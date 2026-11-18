@@ -155,6 +155,10 @@ uint32_t VulkanBackend::ResolveEffectiveMsaaSamples_Locked() const {
     resolved = 4;
   else if (desired >= 2 && (counts & vk::SampleCountFlagBits::e2))
     resolved = 2;
+  else if (desired >= 2 && (counts & vk::SampleCountFlagBits::e4))
+    // Drivers like Mesa llvmpipe expose 4x MSAA without 2x MSAA; promote 2x
+    // up to 4x rather than silently disabling Spatial AA to 1x.
+    resolved = 4;
 
   if (resolved != desired) {
     GLIDE_LOG(WARN, "Vulkan",

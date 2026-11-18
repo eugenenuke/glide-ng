@@ -408,6 +408,7 @@ void Logger::LogExecutionSummary(const WrapperConfig& config) {
         case CardModel::VoodooRush:     ss << "Voodoo Rush (SST-96)"; break;
         case CardModel::Voodoo2:        ss << "Voodoo2 (CVG)"; break;
         case CardModel::Voodoo3:        ss << "Voodoo3 (H3)"; break;
+        case CardModel::Voodoo4:        ss << "Voodoo4 (VSA-100)"; break;
         case CardModel::Voodoo5:        ss << "Voodoo5 (H5)"; break;
     }
 
@@ -511,6 +512,13 @@ void Logger::LogExecutionSummary(const WrapperConfig& config) {
             warnSs << config.unknownConfigKeys[i];
         }
         Log(LogLevel::WARN, "Config", warnSs.str());
+    }
+
+    if (!config.invalidConfigValues.empty()) {
+        for (const auto& msg : config.invalidConfigValues) {
+            Log(LogLevel::WARN, "Config", msg);
+            std::fprintf(stderr, "[glide-ng] WARN: %s\n", msg.c_str());
+        }
     }
 }
 

@@ -21,8 +21,9 @@ enum class CardModel {
     VoodooGraphics, // SST-1
     VoodooRush,     // SST-96
     Voodoo2,        // CVG
-    Voodoo3,        // Avenger
-    Voodoo5         // Napalm
+    Voodoo3,        // Avenger (H3)
+    Voodoo4,        // VSA-100 single-chip (Napalm)
+    Voodoo5         // VSA-100 dual-chip (Napalm)
 };
 
 enum class ApiVersion {
@@ -126,6 +127,7 @@ struct WrapperConfig {
     bool configFileLoaded{false};
     std::map<std::string, std::string> settingSources;
     std::vector<std::string> unknownConfigKeys;
+    std::vector<std::string> invalidConfigValues;
 };
 
 class EmulationRegistry {
@@ -135,8 +137,11 @@ public:
     WrapperConfig& GetConfig() { return m_config; }
     const WrapperConfig& GetConfig() const { return m_config; }
 
-    // Check if a function is supported under the active card model and API version
+    // Check if a function is supported under the active card model and API version (Glide 2.x)
     bool IsFunctionAvailable(const std::string& funcName) const;
+
+    // Check if a feature/extension proc is supported by the active card model (Glide 3.x)
+    bool IsCardFeatureAvailable(const std::string& funcName) const;
 
 private:
     EmulationRegistry();

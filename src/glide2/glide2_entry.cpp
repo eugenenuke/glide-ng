@@ -635,7 +635,7 @@ FX_ENTRY FxBool FX_CALL grSstQueryHardware(GrHwConfiguration* hwconfig) {
     r.tmuConfig.tmuRev = 1;
     r.tmuConfig.tmuRam = static_cast<int>(config.tmuMemoryMb);
   } else {
-    // Voodoo2, Voodoo3, Voodoo5 (Banshee/Avenger/Napalm)
+    // Voodoo2, Voodoo3, Voodoo4, Voodoo5 (CVG/Avenger/Napalm)
     hwconfig->SSTs[0].type = GR_SSTTYPE_Voodoo2;
     auto& v2 = hwconfig->SSTs[0].sstBoard.Voodoo2Config;
     v2.fbRam = static_cast<int>(config.fbiMemoryMb);
@@ -795,6 +795,8 @@ FX_ENTRY const char* FX_CALL grGetString(FxU32 pname) {
           return "Voodoo2";
         case GlideWrapper::CardModel::Voodoo3:
           return "Voodoo3";
+        case GlideWrapper::CardModel::Voodoo4:
+          return "Voodoo4";
         case GlideWrapper::CardModel::Voodoo5:
           return "Voodoo5";
       }

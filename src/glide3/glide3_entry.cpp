@@ -299,7 +299,22 @@ FX_ENTRY GrContext_t FX_CALL grSstWinOpenExt(AnyPtr hWnd,
                                              GrOriginLocation_t origin,
                                              GrPixelFormat_t pixelFormat,
                                              int nColBuffers, int nAuxBuffers) {
-  const uint32_t reqSamples = DecodePixelFormatSamples(pixelFormat);
+  EnsureEngineInitialized();
+  uint32_t reqSamples = DecodePixelFormatSamples(pixelFormat);
+  const auto& cfg = GlideWrapper::EmulationRegistry::GetInstance().GetConfig();
+  if (cfg.model == GlideWrapper::CardModel::Voodoo4 && reqSamples > 2u) {
+    GLIDE_LOG(WARN, "Frontend",
+              "grSstWinOpenExt (Glide 3.x): Voodoo4 (single VSA-100) supports "
+              "up to 2-sample Spatial AA; clamping requested "
+                  << reqSamples << "x to 2x.");
+    reqSamples = 2u;
+  } else if (cfg.model < GlideWrapper::CardModel::Voodoo4 && reqSamples > 1u) {
+    GLIDE_LOG(WARN, "Frontend",
+              "grSstWinOpenExt (Glide 3.x): Active card profile does not "
+              "support VSA-100 Spatial AA; clamping requested "
+                  << reqSamples << "x to 1x.");
+    reqSamples = 1u;
+  }
   GLIDE_LOG(INFO, "Frontend",
             "grSstWinOpenExt (Glide 3.x): pixelFormat=0x"
                 << std::hex << pixelFormat << std::dec
@@ -751,6 +766,8 @@ FX_ENTRY const char* FX_CALL grGetString(FxU32 pname) {
           return "Voodoo2";
         case GlideWrapper::CardModel::Voodoo3:
           return "Voodoo3";
+        case GlideWrapper::CardModel::Voodoo4:
+          return "Voodoo4";
         case GlideWrapper::CardModel::Voodoo5:
           return "Voodoo5";
         default:
@@ -772,6 +789,7 @@ FX_ENTRY const char* FX_CALL grGetString(FxU32 pname) {
         case GlideWrapper::CardModel::Voodoo3:
           return "CHROMARANGE FOGCOORD TEXCHROMA TEXMIRROR PALETTE6666 "
                  "RESOLUTION SURFACE COMMAND_TRANSPORT";
+        case GlideWrapper::CardModel::Voodoo4:
         case GlideWrapper::CardModel::Voodoo5:
           return "CHROMARANGE FOGCOORD TEXCHROMA TEXMIRROR PALETTE6666 "
                  "RESOLUTION SURFACE COMMAND_TRANSPORT PIXEXT COMBINE TEXFMT "
@@ -1309,9 +1327,18 @@ FX_ENTRY void FX_CALL grTexChromaRangeExt(GrChipID_t tmu, GrColor_t minColor,
 }
 
 FX_ENTRY GrProc FX_CALL grGetProcAddress(char* procName) {
+  EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend",
             "grGetProcAddress (Glide 3.x): " << (procName ? procName : "NULL"));
   if (!procName) return nullptr;
+
+  if (!GlideWrapper::EmulationRegistry::GetInstance().IsCardFeatureAvailable(
+          procName)) {
+    GLIDE_LOG(WARN, "Frontend",
+              "grGetProcAddress (Glide 3.x): Gating out '"
+                  << procName << "' under active card profile");
+    return nullptr;
+  }
 
   auto toGrProc = [](auto fn) -> GrProc {
     // Cast through void(*)() to satisfy -Wcast-function-type under -Wpedantic.

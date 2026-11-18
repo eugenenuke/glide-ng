@@ -41,7 +41,7 @@ When a card model is chosen (via INI or `GLIDE_NG_CARD_MODEL`), its hardware def
 
 | Environment Variable | INI Key (`section.key`) | Accepted Values | Default | Status | Description |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `GLIDE_NG_CARD_MODEL` | `[hardware] card_model` *(or `model`)* | `voodoo1`/`sst1`, `voodoo_rush`/`rush`/`sst96`, `voodoo2`/`cvg`, `voodoo3`/`h3`, `voodoo5`/`h5` | `Voodoo2` | **Implemented** | Selects the emulated 3dfx board profile and default VRAM/TMU/API limits. |
+| `GLIDE_NG_CARD_MODEL` | `[hardware] card_model` *(or `model`)* | `voodoo1`/`sst1`, `voodoo_rush`/`rush`/`sst96`, `voodoo2`/`cvg`, `voodoo3`/`h3`, `voodoo4`/`v4`/`h4`/`vsa100`, `voodoo5`/`v5`/`h5` | `Voodoo2` | **Implemented** | Selects the emulated 3dfx board profile, default VRAM/TMU/API limits, and extension gating (`PIXEXT` requires `voodoo4`/`voodoo5`). Unrecognized values emit a warning. |
 | `GLIDE_NG_API_VERSION` | `[hardware] api_version` | `2.1`, `2.40` (`2.4`), `2.42`, `2.43`, `2.61` | Derived from card (`2.43` for Voodoo2) | **Implemented** | Overrides the reported Glide API version and feature-gating footprint. |
 | `GLIDE_NG_FBI_MEM_MB` | `[hardware] fbi_memory_mb` | Positive integer (MB) | Derived from card (`16` for Voodoo2) | **Implemented** | Overrides reported Frame Buffer Interface (FBI) memory in MB. |
 | `GLIDE_NG_TMU_COUNT` | `[hardware] tmu_count` | `1`, `2`, `3` | Derived from card (`2` for Voodoo2) | **Implemented** | Overrides the number of reported Texture Mapping Units (TMUs). |

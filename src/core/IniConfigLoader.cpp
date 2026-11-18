@@ -181,6 +181,18 @@ bool ParseDoubleString(const std::string& raw, double& outVal) {
     return true;
 }
 
+const char* CardModelCanonicalName(CardModel model) {
+    switch (model) {
+        case CardModel::VoodooGraphics: return "voodoo1";
+        case CardModel::VoodooRush:     return "rush";
+        case CardModel::Voodoo2:        return "voodoo2";
+        case CardModel::Voodoo3:        return "voodoo3";
+        case CardModel::Voodoo4:        return "voodoo4";
+        case CardModel::Voodoo5:        return "voodoo5";
+    }
+    return "voodoo2";
+}
+
 bool ParseCardModelString(const std::string& rawStr, CardModel& outModel) {
     std::string m = ToUpper(rawStr);
     if (m == "SST1" || m == "VOODOO1" || m == "VOODOOGRAPHICS") {
@@ -199,7 +211,11 @@ bool ParseCardModelString(const std::string& rawStr, CardModel& outModel) {
         outModel = CardModel::Voodoo3;
         return true;
     }
-    if (m == "H5" || m == "VOODOO5") {
+    if (m == "H4" || m == "VOODOO4" || m == "V4" || m == "VSA100" || m == "VSA-100") {
+        outModel = CardModel::Voodoo4;
+        return true;
+    }
+    if (m == "H5" || m == "VOODOO5" || m == "V5") {
         outModel = CardModel::Voodoo5;
         return true;
     }
@@ -641,12 +657,21 @@ bool IniConfigLoader::Load(const std::string& configFilePath, WrapperConfig& out
                 handled = true;
                 if (ParseCardModelString(val, outConfig.model)) {
                     outConfig.settingSources["cardModel"] = "ini";
+                } else if (!val.empty()) {
+                    outConfig.invalidConfigValues.push_back(
+                        "Unrecognized hardware.card_model='" + val +
+                        "'; keeping '" + CardModelCanonicalName(outConfig.model) +
+                        "' (supported: voodoo1, rush, voodoo2, voodoo3, voodoo4, voodoo5)");
                 }
             } else if (SectionMatches(sec, "hardware") && key == "api_version") {
                 handled = true;
                 if (ParseApiVersionString(val, outConfig.apiVersion)) {
                     hasApiVersion = true;
                     outConfig.settingSources["apiVersion"] = "ini";
+                } else if (!val.empty()) {
+                    outConfig.invalidConfigValues.push_back(
+                        "Unrecognized hardware.api_version='" + val +
+                        "' (supported: 2.1, 2.40, 2.42, 2.43, 2.61)");
                 }
             } else if (SectionMatches(sec, "hardware") && key == "fbi_memory_mb") {
                 handled = true;
@@ -966,12 +991,21 @@ bool IniConfigLoader::Load(const std::string& configFilePath, WrapperConfig& out
     if (const char* envCard = GetNonEmptyEnv(GLIDE_NG_ENV_CARD_MODEL)) {
         if (ParseCardModelString(envCard, outConfig.model)) {
             outConfig.settingSources["cardModel"] = GLIDE_NG_ENV_CARD_MODEL;
+        } else {
+            outConfig.invalidConfigValues.push_back(
+                std::string("Unrecognized ") + GLIDE_NG_ENV_CARD_MODEL + "='" + envCard +
+                "'; keeping '" + CardModelCanonicalName(outConfig.model) +
+                "' (supported: voodoo1, rush, voodoo2, voodoo3, voodoo4, voodoo5)");
         }
     }
     if (const char* envApi = GetNonEmptyEnv(GLIDE_NG_ENV_API_VERSION)) {
         if (ParseApiVersionString(envApi, outConfig.apiVersion)) {
             hasApiVersion = true;
             outConfig.settingSources["apiVersion"] = GLIDE_NG_ENV_API_VERSION;
+        } else {
+            outConfig.invalidConfigValues.push_back(
+                std::string("Unrecognized ") + GLIDE_NG_ENV_API_VERSION + "='" + envApi +
+                "' (supported: 2.1, 2.40, 2.42, 2.43, 2.61)");
         }
     }
 
@@ -999,6 +1033,12 @@ bool IniConfigLoader::Load(const std::string& configFilePath, WrapperConfig& out
             if (!hasApiVersion) outConfig.apiVersion = ApiVersion::GLIDE_2_61;
             if (!hasTmuCount) outConfig.tmuCount = 2;
             if (!hasFbiMem) outConfig.fbiMemoryMb = 16;
+            if (!hasTmuMem) outConfig.tmuMemoryMb = 16;
+            break;
+        case CardModel::Voodoo4:
+            if (!hasApiVersion) outConfig.apiVersion = ApiVersion::GLIDE_2_61;
+            if (!hasTmuCount) outConfig.tmuCount = 2;
+            if (!hasFbiMem) outConfig.fbiMemoryMb = 32;
             if (!hasTmuMem) outConfig.tmuMemoryMb = 16;
             break;
         case CardModel::Voodoo5:

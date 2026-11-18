@@ -123,16 +123,20 @@
   X(void,   grDisableAllEffects,       "_GRDISABLEALLEFFECTS@0",       "_grDisableAllEffects@0",       (void)) \
   X(void,   grSstIdle,                 "_GRSSTIDLE@0",                 "_grSstIdle@0",                 (void))
 
+/* Generic function-pointer return type for optional grGetProcAddress probing */
+typedef void (FX_CALL *gtool_any_proc_fn)(void);
+
 /* Optional Glide 2.x entry points (may be absent on older 2.1/2.4 OVL builds) */
 #define GLIDE2_OVL_OPTIONAL_FUNCS_X(X)                                                                 \
-  X(FxBool,      grSstQueryBoards,       "_GRSSTQUERYBOARDS@4",          "_grSstQueryBoards@4",          (GrHwConfiguration* hwconfig)) \
-  X(FxU32,       guTexMemQueryAvail,     "_GUTEXMEMQUERYAVAIL@4",        "_guTexMemQueryAvail@4",        (GrChipID_t tmu)) \
-  X(void,        guTexMemReset,          "_GUTEXMEMRESET@0",             "_guTexMemReset@0",             (void)) \
-  X(void,        guFogGenerateExp,       "_GUFOGGENERATEEXP@8",          "_guFogGenerateExp@8",          (GrFog_t fogtable[GR_FOG_TABLE_SIZE], float density)) \
-  X(void,        grGammaCorrectionValue, "_GRGAMMACORRECTIONVALUE@4",    "_grGammaCorrectionValue@4",    (float value)) \
-  X(void,        grGlideShamelessPlug,   "_GRGLIDESHAMELESSPLUG@4",      "_grGlideShamelessPlug@4",      (const FxBool on)) \
-  X(void,        grSplash,               "_GRSPLASH@20",                 "_grSplash@20",                 (float x, float y, float width, float height, FxU32 frame)) \
-  X(const char*, grGetString,            "_GRGETSTRING@4",               "_grGetString@4",               (FxU32 pname))
+  X(FxBool,            grSstQueryBoards,       "_GRSSTQUERYBOARDS@4",          "_grSstQueryBoards@4",          (GrHwConfiguration* hwconfig)) \
+  X(FxU32,             guTexMemQueryAvail,     "_GUTEXMEMQUERYAVAIL@4",        "_guTexMemQueryAvail@4",        (GrChipID_t tmu)) \
+  X(void,              guTexMemReset,          "_GUTEXMEMRESET@0",             "_guTexMemReset@0",             (void)) \
+  X(void,              guFogGenerateExp,       "_GUFOGGENERATEEXP@8",          "_guFogGenerateExp@8",          (GrFog_t fogtable[GR_FOG_TABLE_SIZE], float density)) \
+  X(void,              grGammaCorrectionValue, "_GRGAMMACORRECTIONVALUE@4",    "_grGammaCorrectionValue@4",    (float value)) \
+  X(void,              grGlideShamelessPlug,   "_GRGLIDESHAMELESSPLUG@4",      "_grGlideShamelessPlug@4",      (const FxBool on)) \
+  X(void,              grSplash,               "_GRSPLASH@20",                 "_grSplash@20",                 (float x, float y, float width, float height, FxU32 frame)) \
+  X(const char*,       grGetString,            "_GRGETSTRING@4",               "_grGetString@4",               (FxU32 pname)) \
+  X(gtool_any_proc_fn, grGetProcAddress,       "_GRGETPROCADDRESS@4",          "_grGetProcAddress@4",          (char* procName))
 
 #define GLIDE2_DECLARE_PFN_(ret, name, u, m, params) \
   typedef ret (FX_CALL *pfn_##name) params;          \
@@ -205,6 +209,7 @@ extern int gtool_glide_load(char* source_out, size_t source_sz,
                             char* err_out, size_t err_sz);
 extern void gtool_glide_unload(void);
 extern const char* gtool_glide2_try_get_string(FxU32 pname);
+extern int gtool_try_get_proc_address(const char* proc_name);
 
 #ifdef GLIDE_TOOL_LOADER_IMPLEMENTATION
 
@@ -421,9 +426,21 @@ const char* gtool_glide2_try_get_string(FxU32 pname) {
   return NULL;
 }
 
+int gtool_try_get_proc_address(const char* proc_name) {
+  char buf[64];
+  if (!g_g2ovl_grGetProcAddress) {
+    return -1;
+  }
+  if (!proc_name || proc_name[0] == '\0') {
+    return 0;
+  }
+  snprintf(buf, sizeof(buf), "%s", proc_name);
+  return (g_g2ovl_grGetProcAddress(buf) != NULL) ? 1 : 0;
+}
+
 #endif /* GLIDE_TOOL_LOADER_IMPLEMENTATION */
 
-#else /* Linux / POSIX direct linking */
+#else /* Linux / POSIX / Win32-Glide3 direct linking */
 
 static inline int gtool_glide_load(char* source_out, size_t source_sz,
                                    char* err_out, size_t err_sz) {
@@ -455,6 +472,27 @@ static inline const char* gtool_glide2_try_get_string(FxU32 pname) {
   if (!sym) return NULL;
   memcpy(&fn, &sym, sizeof(fn));
   return fn ? fn(pname) : NULL;
+}
+
+static inline int gtool_try_get_proc_address(const char* proc_name) {
+  typedef void (FX_CALL *gtool_any_proc_fn)(void);
+  typedef gtool_any_proc_fn (FX_CALL *pfn_get_proc)(char*);
+  pfn_get_proc fn = NULL;
+  void* sym = dlsym(RTLD_DEFAULT, "grGetProcAddress");
+  char buf[64];
+  if (!sym) return -1;
+  if (!proc_name || proc_name[0] == '\0') return 0;
+  memcpy(&fn, &sym, sizeof(fn));
+  if (!fn) return -1;
+  snprintf(buf, sizeof(buf), "%s", proc_name);
+  return (fn(buf) != NULL) ? 1 : 0;
+}
+#else
+static inline int gtool_try_get_proc_address(const char* proc_name) {
+  char buf[64];
+  if (!proc_name || proc_name[0] == '\0') return 0;
+  snprintf(buf, sizeof(buf), "%s", proc_name);
+  return (grGetProcAddress(buf) != NULL) ? 1 : 0;
 }
 #endif
 

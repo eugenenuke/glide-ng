@@ -5956,6 +5956,9 @@ TEST_CASE(
       {"rush", "Voodoo Rush"},
       {"voodoo2", "Voodoo2"},
       {"voodoo3", "Voodoo3"},
+      {"voodoo4", "Voodoo4"},
+      {"vsa100", "Voodoo4"},
+      {"h4", "Voodoo4"},
       {"voodoo5", "Voodoo5"},
   };
 
@@ -6122,7 +6125,11 @@ TEST_CASE(
 
   // 1. Dynamic extension lookup (all 8 PIXEXT entry points required by 3dfx
   //    tlib / Napalm demos such as Museum) & 4-sample context via
-  //    grSstWinOpenExt.
+  //    grSstWinOpenExt under Voodoo5 profile.
+  const char* origCard = std::getenv("GLIDE_NG_CARD_MODEL");
+  std::string savedCard = origCard ? origCard : "";
+  ::setenv("GLIDE_NG_CARD_MODEL", "voodoo5", 1);
+
   glideInit();
   char winOpenExtName[] = "grSstWinOpenExt";
   char tbufMaskName[] = "grTBufferWriteMaskExt";
@@ -6365,7 +6372,227 @@ TEST_CASE(
   } else {
     ::unsetenv("GLIDE_NG_SW_AA");
   }
+  if (origCard) {
+    ::setenv("GLIDE_NG_CARD_MODEL", savedCard.c_str(), 1);
+  } else {
+    ::unsetenv("GLIDE_NG_CARD_MODEL");
+  }
 
   ::dlclose(handle);
+#endif
+}
+
+TEST_CASE(
+    "Voodoo4 Profile, Unknown Card Warning & Strict Card-Model Extension "
+    "Gating",
+    "[Glide3][CardGating][Voodoo4]") {
+#ifdef __linux__
+  const char* origCard = std::getenv("GLIDE_NG_CARD_MODEL");
+  std::string savedCard = origCard ? origCard : "";
+  const char* origApi = std::getenv("GLIDE_NG_API_VERSION");
+  std::string savedApi = origApi ? origApi : "";
+  const char* origMsaa = std::getenv("GLIDE_NG_MSAA");
+  std::string savedMsaa = origMsaa ? origMsaa : "";
+
+  auto restoreEnv = [&]() {
+    if (origCard) {
+      ::setenv("GLIDE_NG_CARD_MODEL", savedCard.c_str(), 1);
+    } else {
+      ::unsetenv("GLIDE_NG_CARD_MODEL");
+    }
+    if (origApi) {
+      ::setenv("GLIDE_NG_API_VERSION", savedApi.c_str(), 1);
+    } else {
+      ::unsetenv("GLIDE_NG_API_VERSION");
+    }
+    if (origMsaa) {
+      ::setenv("GLIDE_NG_MSAA", savedMsaa.c_str(), 1);
+    } else {
+      ::unsetenv("GLIDE_NG_MSAA");
+    }
+  };
+
+  // 1. IniConfigLoader: Voodoo4 hardware defaults & unknown card warning
+  {
+    ::unsetenv("GLIDE_NG_API_VERSION");
+    ::setenv("GLIDE_NG_CARD_MODEL", "voodoo4", 1);
+    GlideWrapper::IniConfigLoader loader;
+    GlideWrapper::WrapperConfig cfg;
+    loader.Load("/nonexistent_v4_check.ini", cfg);
+    CHECK(cfg.model == GlideWrapper::CardModel::Voodoo4);
+    CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_61);
+    CHECK(cfg.fbiMemoryMb == 32u);
+    CHECK(cfg.tmuMemoryMb == 16u);
+    CHECK(cfg.tmuCount == 2u);
+    CHECK(cfg.invalidConfigValues.empty());
+  }
+  {
+    ::setenv("GLIDE_NG_CARD_MODEL", "voodoo99_unknown", 1);
+    GlideWrapper::IniConfigLoader loader;
+    GlideWrapper::WrapperConfig cfg;
+    loader.Load("/nonexistent_v4_check.ini", cfg);
+    CHECK(cfg.model == GlideWrapper::CardModel::Voodoo2);
+    REQUIRE(!cfg.invalidConfigValues.empty());
+    CHECK(cfg.invalidConfigValues[0].find("voodoo99_unknown") !=
+          std::string::npos);
+  }
+
+  // 2. Glide 3.x grGetProcAddress gating across card profiles
+  {
+    void* handle = OpenGlide3Handle();
+    REQUIRE(handle != nullptr);
+
+    using InitFunc = void (*)(void);
+    using SelectSstFunc = void (*)(int);
+    using GetProcAddrFunc = GrProc (*)(char*);
+    using GetStringFunc = const char* (*)(FxU32);
+    using WinOpenExtFunc = FxU32 (*)(FxU32, FxI32, FxI32, FxI32, FxI32,
+                                     GrPixelFormat_t, int, int);
+    using WinCloseFunc = FxBool (*)(FxU32);
+    using ShutdownFunc = void (*)(void);
+
+    auto glideInit =
+        reinterpret_cast<InitFunc>(::dlsym(handle, "grGlideInit"));
+    auto sstSelect =
+        reinterpret_cast<SelectSstFunc>(::dlsym(handle, "grSstSelect"));
+    auto getProc =
+        reinterpret_cast<GetProcAddrFunc>(::dlsym(handle, "grGetProcAddress"));
+    auto getString =
+        reinterpret_cast<GetStringFunc>(::dlsym(handle, "grGetString"));
+    auto winClose =
+        reinterpret_cast<WinCloseFunc>(::dlsym(handle, "grSstWinClose"));
+    auto glideShutdown =
+        reinterpret_cast<ShutdownFunc>(::dlsym(handle, "grGlideShutdown"));
+    REQUIRE(glideInit != nullptr);
+    REQUIRE(sstSelect != nullptr);
+    REQUIRE(getProc != nullptr);
+    REQUIRE(getString != nullptr);
+    REQUIRE(winClose != nullptr);
+    REQUIRE(glideShutdown != nullptr);
+
+    const char* pixextProcs[] = {
+        "grSstWinOpenExt",      "grTBufferWriteMaskExt",
+        "grColorMaskExt",       "grBufferClearExt",
+        "grStencilFuncExt",     "grStencilMaskExt",
+        "grStencilOpExt",       "grLfbConstantStencilExt",
+    };
+
+    auto probeProc = [&](const char* name) -> GrProc {
+      char buf[64];
+      std::snprintf(buf, sizeof(buf), "%s", name);
+      return getProc(buf);
+    };
+
+    // Voodoo1: CHROMARANGE OK, TEXCHROMA & PIXEXT gated out
+    ::unsetenv("GLIDE_NG_API_VERSION");
+    ::setenv("GLIDE_NG_CARD_MODEL", "voodoo1", 1);
+    glideInit();
+    CHECK(probeProc("grChromaRangeModeExt") != nullptr);
+    CHECK(probeProc("grTexChromaModeExt") == nullptr);
+    for (const char* p : pixextProcs) {
+      CHECK(probeProc(p) == nullptr);
+    }
+    glideShutdown();
+
+    // Voodoo2 & Voodoo3: TEXCHROMA OK, all 8 PIXEXT procs gated out
+    for (const char* card : {"voodoo2", "voodoo3"}) {
+      ::setenv("GLIDE_NG_CARD_MODEL", card, 1);
+      glideInit();
+      CHECK(probeProc("grChromaRangeModeExt") != nullptr);
+      CHECK(probeProc("grTexChromaModeExt") != nullptr);
+      for (const char* p : pixextProcs) {
+        CHECK(probeProc(p) == nullptr);
+      }
+      glideShutdown();
+    }
+
+    // Voodoo4: all 8 PIXEXT procs available, GR_EXTENSION lists PIXEXT,
+    // and requesting 4x AA via grSstWinOpenExt clamps to 2x (single VSA-100).
+    ::unsetenv("GLIDE_NG_MSAA");
+    ::setenv("GLIDE_NG_CARD_MODEL", "voodoo4", 1);
+    glideInit();
+    const char* extV4 = getString(0xa0);
+    REQUIRE(extV4 != nullptr);
+    CHECK(std::string(extV4).find("PIXEXT") != std::string::npos);
+    for (const char* p : pixextProcs) {
+      CHECK(probeProc(p) != nullptr);
+    }
+    auto winOpenExt = reinterpret_cast<WinOpenExtFunc>(
+        reinterpret_cast<void*>(probeProc("grSstWinOpenExt")));
+    REQUIRE(winOpenExt != nullptr);
+    sstSelect(0);
+    FxU32 ctxV4 = winOpenExt(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                             GR_COLORFORMAT_ARGB, GR_ORIGIN_UPPER_LEFT,
+                             GR_PIXFMT_AA_4_RGB_565, 2, 1);
+    REQUIRE(ctxV4 != 0);
+    auto* backendV4 =
+        GlideWrapper::BackendManager::GetInstance().GetBackend();
+    REQUIRE(backendV4 != nullptr);
+    // Single VSA-100 caps requested AA to 2x (host backends allocate >= 2
+    // samples: e.g., 2x MSAA on Vulkan/GLES where supported, or 4x where the
+    // backend uses a 2x2 SSAA grid / 4x-minimum MSAA hardware).
+    CHECK(backendV4->GetMsaaSamples() >= 2u);
+    CHECK(backendV4->GetMsaaSamples() <= 4u);
+    winClose(ctxV4);
+    glideShutdown();
+
+    ::dlclose(handle);
+  }
+
+  // 3. Glide 2.x: Voodoo1 does NOT advertise TEXCHROMA; VSA-100 procs gated to
+  //    Voodoo4+
+  {
+    void* handle = OpenGlide2Handle();
+    REQUIRE(handle != nullptr);
+
+    using InitFunc = void (*)(void);
+    using GetStringFunc = const char* (*)(FxU32);
+    using GetProcAddrFunc = GrProc (*)(char*);
+    using ShutdownFunc = void (*)(void);
+
+    auto glideInit =
+        reinterpret_cast<InitFunc>(::dlsym(handle, "grGlideInit"));
+    auto getString =
+        reinterpret_cast<GetStringFunc>(::dlsym(handle, "grGetString"));
+    auto getProc =
+        reinterpret_cast<GetProcAddrFunc>(::dlsym(handle, "grGetProcAddress"));
+    auto glideShutdown =
+        reinterpret_cast<ShutdownFunc>(::dlsym(handle, "grGlideShutdown"));
+    REQUIRE(glideInit != nullptr);
+    REQUIRE(getString != nullptr);
+    REQUIRE(getProc != nullptr);
+    REQUIRE(glideShutdown != nullptr);
+
+    auto probeProc = [&](const char* name) -> GrProc {
+      char buf[64];
+      std::snprintf(buf, sizeof(buf), "%s", name);
+      return getProc(buf);
+    };
+
+    ::unsetenv("GLIDE_NG_API_VERSION");
+    ::setenv("GLIDE_NG_CARD_MODEL", "voodoo1", 1);
+    glideInit();
+    const char* extV1 = getString(0xa0);
+    REQUIRE(extV1 != nullptr);
+    CHECK(std::string(extV1).find("TEXCHROMA") == std::string::npos);
+    CHECK(probeProc("grTexChromaModeExt") == nullptr);
+    CHECK(probeProc("grTBufferWriteMaskExt") == nullptr);
+    glideShutdown();
+
+    ::setenv("GLIDE_NG_CARD_MODEL", "voodoo3", 1);
+    glideInit();
+    CHECK(probeProc("grTexChromaModeExt") != nullptr);
+    CHECK(probeProc("grTBufferWriteMaskExt") == nullptr);
+    glideShutdown();
+
+    ::setenv("GLIDE_NG_CARD_MODEL", "voodoo4", 1);
+    glideInit();
+    CHECK(probeProc("grTBufferWriteMaskExt") != nullptr);
+    glideShutdown();
+
+    ::dlclose(handle);
+  }
+
+  restoreEnv();
 #endif
 }
