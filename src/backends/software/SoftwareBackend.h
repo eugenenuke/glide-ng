@@ -104,6 +104,14 @@ class SoftwareBackend : public SoftwareBackendBase {
       float invArea, float a0, float b0, float c0, float a1, float b1, float c1,
       float a2, float b2, float c2);
 
+  template <bool HasTexture, bool BlendEnabled, bool DitherEnabled,
+            bool Clockwise>
+  void RasterizeTriangleLoopsAvx512(
+      const ModernVertex& a, const ModernVertex& b, const ModernVertex& c,
+      int minX, int maxX, int minY, int maxY, const RasterizerState& state,
+      float invArea, float a0, float b0, float c0, float a1, float b1, float c1,
+      float a2, float b2, float c2);
+
   __attribute__((always_inline)) inline bool IsTexChromaMatch(
       uint32_t color, uint32_t tmu, const RasterizerState& state) const;
   __attribute__((always_inline)) inline uint32_t SampleTextureLevel(

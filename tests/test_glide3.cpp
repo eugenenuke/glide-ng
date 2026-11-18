@@ -9650,3 +9650,135 @@ TEST_CASE("M11.4: Vectorized Table Fog, Stipple & Stencil Bit-Exact Parity",
     }
   }
 }
+
+TEST_CASE("M11.5: Software Rasterizer Multi-ISA Parity (VSA-100, Dither, 4x AA T-Buffer)",
+          "[M11][Parity]") {
+  using namespace GlideWrapper;
+  const SwSimdLevel hostMax = DetectHostMaxSimdLevel();
+  std::vector<SwSimdLevel> targets;
+  if (hostMax >= SwSimdLevel::Avx2) targets.push_back(SwSimdLevel::Avx2);
+  if (hostMax >= SwSimdLevel::Avx512) targets.push_back(SwSimdLevel::Avx512);
+  REQUIRE(!targets.empty());
+
+  auto makeVert = [](float x, float y, float z, float oow, float r, float g,
+                     float b, float a) {
+    ModernVertex v{};
+    v.pos[0] = x;
+    v.pos[1] = y;
+    v.pos[2] = z;
+    v.pos[3] = oow;
+    v.color[0] = r;
+    v.color[1] = g;
+    v.color[2] = b;
+    v.color[3] = a;
+    return v;
+  };
+
+  auto renderComplex = [&](SwSimdLevel lvl, uint32_t W, uint32_t H,
+                           bool enableSsaa, std::vector<uint32_t>& outColor) {
+    WrapperConfig cfg{};
+    cfg.backend = "software";
+    cfg.forceNoWindow = true;
+    cfg.swSimdLevel = lvl;
+    cfg.swUseSimd = (lvl != SwSimdLevel::Scalar);
+    cfg.swAaMode = enableSsaa ? "ssaa" : "analytical";
+    SoftwareBackend be;
+    REQUIRE(be.Initialize(cfg));
+    REQUIRE(be.AttachWindow(nullptr, W, H, /*windowed=*/true));
+    be.SetColorMaskExt(true, true, true, true);
+    be.SetDepthState(1, 3, true, 0);  // Z-buffer LEQUAL
+    be.ClearBufferExt(0x00182430u, 255u, 1.0f, 0u, 0x3u);
+
+    // 1. VSA-100 COMBINE (iter + const * 0.5) + 4x4 Bayer Dither + Blend
+    be.SetDitherMode(2u);
+    be.SetConstantColor(0x8040A060u);
+    be.SetColorCombineExt(IGraphicsBackend::PackCombineExt(
+        0x08u, 1u, 0x05u, 1u, 0x05u, false, 0x00u, false, 0u, false));
+    be.SetBlendStateExt(1u, 5u, 0u, 4u, 0u, 0u);  // SRC_ALPHA, 1-SRC_ALPHA
+    if (enableSsaa) {
+      be.SetAAMultiSample(true);
+      be.SetTBufferWriteMask(0x5u);  // subpixels 0 & 2 only
+    }
+    be.DrawTriangle(makeVert(2.0f, 2.0f, 0.4f, 1.0f, 0.9f, 0.2f, 0.3f, 0.75f),
+                    makeVert(static_cast<float>(W) - 3.0f, 6.0f, 0.6f, 0.5f,
+                             0.2f, 0.9f, 0.4f, 0.75f),
+                    makeVert(static_cast<float>(W) * 0.5f,
+                             static_cast<float>(H) - 2.0f, 0.2f, 0.8f, 0.3f,
+                             0.4f, 0.9f, 0.75f));
+
+    // 2. Second pass with complementary T-Buffer mask + collapsed AA + 2x2 dither
+    be.SetDitherMode(1u);
+    be.SetColorCombineExt(0u);
+    be.SetCombinerMode(1, 0, 0, 0, false, 1, 0, 0, 0, false);
+    be.SetBlendStateExt(4u, 4u, 1u, 4u, 0u, 0u);  // SUBTRACT blend op
+    if (enableSsaa) {
+      be.SetTBufferWriteMask(0xAu);  // subpixels 1 & 3
+      be.SetAAMultiSample(false);    // exercise collapseAa 2x2 guest alignment
+    }
+    be.DrawTriangle(makeVert(8.0f, 4.0f, 0.3f, 0.9f, 0.8f, 0.7f, 0.2f, 1.0f),
+                    makeVert(static_cast<float>(W) - 4.0f,
+                             static_cast<float>(H) * 0.6f + 0.13f, 0.5f, 0.4f,
+                             0.2f, 0.6f, 0.8f, 1.0f),
+                    makeVert(4.0f, static_cast<float>(H) - 4.0f, 0.35f, 0.7f,
+                             0.7f, 0.2f, 0.5f, 1.0f));
+    if (enableSsaa) {
+      be.SetTBufferWriteMask(0xFu);
+      be.SetAAMultiSample(true);
+    }
+
+    be.FlushBins();
+    outColor.assign(static_cast<size_t>(W) * H, 0u);
+    REQUIRE(be.ReadLFB(1u, 0u, 0u, W, H, W * 4u, outColor.data()));
+    be.DetachWindow();
+    be.Shutdown();
+  };
+
+  for (bool ssaa : {false, true}) {
+    for (uint32_t H : {64u, 50u}) {
+      std::vector<uint32_t> ref;
+      renderComplex(SwSimdLevel::Scalar, 64u, H, ssaa, ref);
+      for (SwSimdLevel lvl : targets) {
+        std::vector<uint32_t> got;
+        renderComplex(lvl, 64u, H, ssaa, got);
+        int maxDiff = 0;
+        size_t diffPixels = 0;
+        uint32_t firstX = 0, firstY = 0, firstRef = 0, firstGot = 0;
+        for (size_t i = 0; i < ref.size(); ++i) {
+          if (ref[i] != got[i]) {
+            int pDiff = 0;
+            for (int shift = 0; shift <= 24; shift += 8) {
+              const int a = static_cast<int>((ref[i] >> shift) & 0xFFu);
+              const int b = static_cast<int>((got[i] >> shift) & 0xFFu);
+              pDiff = std::max(pDiff, std::abs(a - b));
+            }
+            if (pDiff > maxDiff) {
+              maxDiff = pDiff;
+              firstX = static_cast<uint32_t>(i % 64u);
+              firstY = static_cast<uint32_t>(i / 64u);
+              firstRef = ref[i];
+              firstGot = got[i];
+            }
+            if (pDiff > 8) ++diffPixels;
+          }
+        }
+        INFO("ssaa=" << ssaa << " H=" << H << " simd=" << FormatSwSimdLevel(lvl)
+                     << " maxDiff=" << maxDiff << " bigDiffPixels=" << diffPixels
+                     << " worst=(" << firstX << "," << firstY << ") ref=0x"
+                     << std::hex << firstRef << " got=0x" << firstGot
+                     << std::dec);
+        // Dithered RGB565 quantization can flip one 5-bit step (+-8) if an
+        // FMA-vs-non-FMA boundary pixel lands right on a Bayer threshold; verify
+        // zero gross corruption (<= 8 for dithered, exact match when AVX2 vs AVX512!).
+        CHECK(maxDiff <= 8);
+      }
+      // On AVX-512 hosts (Zen 4), AVX2 and AVX-512 BOTH use hardware FMA, so
+      // their outputs must match within <= 1 LSB (or 0!).
+      if (hostMax >= SwSimdLevel::Avx512) {
+        std::vector<uint32_t> got2, got512;
+        renderComplex(SwSimdLevel::Avx2, 64u, H, ssaa, got2);
+        renderComplex(SwSimdLevel::Avx512, 64u, H, ssaa, got512);
+        CHECK(got512 == got2);
+      }
+    }
+  }
+}

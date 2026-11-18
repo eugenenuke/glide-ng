@@ -40,6 +40,7 @@ set(CORE_SOURCES
     backends/software/SoftwareCombiner.cpp
     backends/software/SoftwareRasterizer.cpp
     backends/software/SoftwareRasterizerSimd.cpp
+    backends/software/SoftwareRasterizerAvx512.cpp
 )
 
 # --- TARGET 1: Universal GlideWrapperCore ---
@@ -53,6 +54,7 @@ set_source_files_properties(
 )
 set_source_files_properties(
     core/SimdKernelsAvx512.cpp
+    backends/software/SoftwareRasterizerAvx512.cpp
     PROPERTIES COMPILE_FLAGS "-mavx512f -mavx512dq -mavx512bw -mavx512vl"
 )
 set_target_properties(GlideWrapperCore PROPERTIES POSITION_INDEPENDENT_CODE ON)
