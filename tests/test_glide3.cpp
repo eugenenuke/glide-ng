@@ -47,10 +47,7 @@ namespace {
     };
 
     inline void* OpenGlide3Handle() {
-        void* h = ::dlopen("../lib/libglide3x.so", RTLD_LAZY);
-        if (!h) h = ::dlopen("lib/libglide3x.so", RTLD_LAZY);
-        if (!h) h = ::dlopen("build/lib/libglide3x.so", RTLD_LAZY);
-        return h;
+        return GlideTestHelpers::OpenGlideLibrary("libglide3x.so");
     }
 }
 
@@ -1472,10 +1469,7 @@ TEST_CASE("OpenGL ES Backend Multi-pass Pre-Fog Blending Verification [GLES_PreF
 
 namespace {
     void* OpenGlide2Handle() {
-        void* h = ::dlopen("../lib/libglide2x.so", RTLD_LAZY);
-        if (!h) h = ::dlopen("lib/libglide2x.so", RTLD_LAZY);
-        if (!h) h = ::dlopen("build/lib/libglide2x.so", RTLD_LAZY);
-        return h;
+        return GlideTestHelpers::OpenGlideLibrary("libglide2x.so");
     }
 }
 

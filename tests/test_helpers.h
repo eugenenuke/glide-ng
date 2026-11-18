@@ -10,8 +10,34 @@
 #include <functional>
 #include <string>
 #include <vector>
+#ifdef __linux__
+#include <dlfcn.h>
+#endif
 
 namespace GlideTestHelpers {
+
+#ifdef __linux__
+// Resolve libglide2x.so / libglide3x.so relative to the running test executable
+// (<build>/bin/<test> -> <build>/lib/<libName>) so tests work from any build
+// directory name (build/, build_release/, etc.) and any working directory.
+inline void* OpenGlideLibrary(const char* libName, int flags = RTLD_LAZY) {
+  std::error_code ec;
+  const std::filesystem::path exePath =
+      std::filesystem::read_symlink("/proc/self/exe", ec);
+  if (!ec && !exePath.empty()) {
+    const std::filesystem::path sibling =
+        exePath.parent_path().parent_path() / "lib" / libName;
+    if (void* h = ::dlopen(sibling.c_str(), flags)) {
+      return h;
+    }
+  }
+  const std::string name(libName);
+  if (void* h = ::dlopen(("../lib/" + name).c_str(), flags)) return h;
+  if (void* h = ::dlopen(("lib/" + name).c_str(), flags)) return h;
+  if (void* h = ::dlopen(("build/lib/" + name).c_str(), flags)) return h;
+  return ::dlopen(libName, flags);
+}
+#endif
 
 // Temporary path helper so unit tests never pollute the repository root.
 inline std::string TempTestPath(const std::string& filename) {

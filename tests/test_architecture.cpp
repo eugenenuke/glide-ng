@@ -37,20 +37,12 @@ struct StandardVert {
 };
 }  // namespace
 
-inline void* OpenGlide2Handle() {
-  void* h = ::dlopen("libglide2x.so", RTLD_LAZY);
-  if (!h) h = ::dlopen("../lib/libglide2x.so", RTLD_LAZY);
-  if (!h) h = ::dlopen("lib/libglide2x.so", RTLD_LAZY);
-  if (!h) h = ::dlopen("build/lib/libglide2x.so", RTLD_LAZY);
-  return h;
+inline void* OpenGlide2Handle(int flags = RTLD_LAZY) {
+  return GlideTestHelpers::OpenGlideLibrary("libglide2x.so", flags);
 }
 
-inline void* OpenGlide3Handle() {
-  void* h = ::dlopen("libglide3x.so", RTLD_LAZY);
-  if (!h) h = ::dlopen("../lib/libglide3x.so", RTLD_LAZY);
-  if (!h) h = ::dlopen("lib/libglide3x.so", RTLD_LAZY);
-  if (!h) h = ::dlopen("build/lib/libglide3x.so", RTLD_LAZY);
-  return h;
+inline void* OpenGlide3Handle(int flags = RTLD_LAZY) {
+  return GlideTestHelpers::OpenGlideLibrary("libglide3x.so", flags);
 }
 
 TEST_CASE("Architectural Core Validation", "[Architecture]") {
@@ -2269,7 +2261,7 @@ TEST_CASE("OpenGL ES Gamma Correction Accuracy Validation") {
   }
 
   // Load the shared library dynamically
-  void* handle = ::dlopen("./build/lib/libglide2x.so", RTLD_NOW | RTLD_GLOBAL);
+  void* handle = OpenGlide2Handle(RTLD_NOW | RTLD_GLOBAL);
   REQUIRE(handle != nullptr);
 
   // Resolve needed functions
@@ -2391,7 +2383,7 @@ TEST_CASE("Glide Chroma-Key Range Rendering Verification") {
   INFO("Testing Chroma-Key Range on Backend: " << activeBackend);
 
   // Load the shared library dynamically
-  void* handle = ::dlopen("./build/lib/libglide2x.so", RTLD_NOW | RTLD_GLOBAL);
+  void* handle = OpenGlide2Handle(RTLD_NOW | RTLD_GLOBAL);
   REQUIRE(handle != nullptr);
 
   // Resolve needed functions
@@ -5981,9 +5973,7 @@ TEST_CASE("Glide 2.x Vertex Layout Decoding Integrity",
 
 #ifndef _WIN32
 TEST_CASE("Glide 3.x Texture Loading and LFB Integrity", "[Glide3][Texture]") {
-  void* handle = ::dlopen("build/lib/libglide3x.so", RTLD_LAZY);
-  if (!handle) handle = ::dlopen("lib/libglide3x.so", RTLD_LAZY);
-  if (!handle) handle = ::dlopen("../lib/libglide3x.so", RTLD_LAZY);
+  void* handle = OpenGlide3Handle();
   REQUIRE(handle != nullptr);
 
   auto p_gu3dfGetInfo =
@@ -6095,7 +6085,7 @@ TEST_CASE("LfbManager Unit Tests", "[Core][LfbManager]") {
 TEST_CASE("Glide 3.x grGet Unit Tests", "[Glide3][grGet]") {
 #ifdef __linux__
   // Load the runtime wrapper dynamic library
-  void* handle = ::dlopen("build/lib/libglide3x.so", RTLD_LAZY);
+  void* handle = OpenGlide3Handle();
   REQUIRE(handle != nullptr);
 
   // Resolve entry points
