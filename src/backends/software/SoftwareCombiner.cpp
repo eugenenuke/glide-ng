@@ -136,6 +136,10 @@ void SoftwareBackend::WritePixelPipeline(int x, int y, const ModernVertex& v,
         return isDest ? (1.0f - srcC) : (1.0f - dstC);
       case 7:
         return 1.0f - dstA;
+      case 8:
+        return isDest ? dstC : srcC;
+      case 9:
+        return isDest ? (1.0f - dstC) : (1.0f - srcC);
       case 15:
         return isDest ? preFogC : std::min(srcA, 1.0f - dstA);
       default:
@@ -143,29 +147,39 @@ void SoftwareBackend::WritePixelPipeline(int x, int y, const ModernVertex& v,
     }
   };
 
-  float outR = std::min(
-      1.0f,
+  float outR = ApplyBlendOpScalar(
+      state.rgbBlendOp,
       red * getF(state.rgbSrcBlend, red, preFogR, dstR, blendAlphaVal, dstA,
-                 false) +
-          dstR * getF(state.rgbDstBlend, red, preFogR, dstR, blendAlphaVal,
-                      dstA, true));
-  float outG = std::min(
-      1.0f,
+                 false),
+      dstR * getF(state.rgbDstBlend, red, preFogR, dstR, blendAlphaVal, dstA,
+                  true));
+  float outG = ApplyBlendOpScalar(
+      state.rgbBlendOp,
       green * getF(state.rgbSrcBlend, green, preFogG, dstG, blendAlphaVal, dstA,
-                   false) +
-          dstG * getF(state.rgbDstBlend, green, preFogG, dstG, blendAlphaVal,
-                      dstA, true));
-  float outB = std::min(
-      1.0f,
+                   false),
+      dstG * getF(state.rgbDstBlend, green, preFogG, dstG, blendAlphaVal, dstA,
+                  true));
+  float outB = ApplyBlendOpScalar(
+      state.rgbBlendOp,
       blue * getF(state.rgbSrcBlend, blue, preFogB, dstB, blendAlphaVal, dstA,
-                  false) +
-          dstB * getF(state.rgbDstBlend, blue, preFogB, dstB, blendAlphaVal,
-                      dstA, true));
+                  false),
+      dstB * getF(state.rgbDstBlend, blue, preFogB, dstB, blendAlphaVal, dstA,
+                  true));
+  float outA = ApplyBlendOpScalar(
+      state.alphaBlendOp,
+      blendAlphaVal * getF(state.alphaSrcBlend, blendAlphaVal, blendAlphaVal,
+                           dstA, blendAlphaVal, dstA, false),
+      dstA * getF(state.alphaDstBlend, blendAlphaVal, blendAlphaVal, dstA,
+                  blendAlphaVal, dstA, true));
 
   uint32_t finalR = static_cast<uint32_t>(outR * 255.0f + 0.5f);
   uint32_t finalG = static_cast<uint32_t>(outG * 255.0f + 0.5f);
   uint32_t finalB = static_cast<uint32_t>(outB * 255.0f + 0.5f);
-  uint32_t finalA = aVal;
+  uint32_t finalA =
+      (state.alphaSrcBlend == 4 && state.alphaDstBlend == 0 &&
+       state.alphaBlendOp == 0)
+          ? aVal
+          : std::min(255u, static_cast<uint32_t>(outA * 255.0f + 0.5f));
 
   finalR = std::min(255u, finalR);
   finalG = std::min(255u, finalG);

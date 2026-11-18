@@ -87,6 +87,13 @@ class TextureManager {
                              uint32_t aspect, uint32_t format, const void* data,
                              int startRow, int endRow);
 
+  // Commit rendered 32-bit canonical ARGB (0xAARRGGBB) pixels from a
+  // TEXTUREBUFFER render target into TMU storage and upload to the backend.
+  bool CommitRenderedTexture(uint32_t tmu, uint32_t startAddress,
+                             int32_t thisLod, int32_t largeLod,
+                             uint32_t aspect, uint32_t format,
+                             const std::vector<uint32_t>& canonicalArgb);
+
   // Download a palette or NCC table to the specified TMU and trigger deferred
   // swizzling
   bool DownloadTable(uint32_t tmu, uint32_t type, const void* data);

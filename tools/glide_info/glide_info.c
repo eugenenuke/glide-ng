@@ -234,6 +234,7 @@ static void probe_extension_procs(ReportData* r) {
     { "PIXEXT",        "PIXEXT",        "grStencilMaskExt" },
     { "PIXEXT",        "PIXEXT",        "grStencilOpExt" },
     { "PIXEXT",        "PIXEXT",        "grLfbConstantStencilExt" },
+    { "PIXEXT",        "PIXEXT",        "grAlphaBlendFunctionExt" },
     { "COMBINE",       "COMBINE",       "grColorCombineExt" },
     { "COMBINE",       "COMBINE",       "grAlphaCombineExt" },
     { "COMBINE",       "COMBINE",       "grTexColorCombineExt" },

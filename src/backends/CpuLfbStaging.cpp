@@ -215,6 +215,10 @@ struct LfbRowProcessor {
         uint32_t a =
             (SrcFmt == 2 || SrcFmt == 14) ? (((c16 >> 15) & 1) ? 255 : 0) : 255;
         pWord = (a << 24) | (r << 16) | (g << 8) | b;
+      } else if constexpr (SrcFmt == 0x100u) {
+        // Internal lossless canonical 0xAARRGGBB restore (used by TEXTUREBUFFER).
+        (void)pixelFormatOverride;
+        pWord = c32;
       } else {
         // Glide LFB 888/8888 pixel words are always 0x00RRGGBB / 0xAARRGGBB
         // regardless of grSstWinOpen's GrColorFormat_t (which only governs
@@ -375,6 +379,12 @@ struct LfbOverlayRowProcessor {
         g = kExpand5[(c16 >> 5) & 0x1F];
         b = kExpand5[c16 & 0x1F];
         a = (SrcFmt == 2 || SrcFmt == 14) ? (((c16 >> 15) & 1) ? 255 : 0) : 255;
+      } else if constexpr (SrcFmt == 0x100u) {
+        (void)pixelFormatOverride;
+        r = (c32 >> 16) & 0xFFu;
+        g = (c32 >> 8) & 0xFFu;
+        b = c32 & 0xFFu;
+        a = (c32 >> 24) & 0xFFu;
       } else {
         (void)pixelFormatOverride;
         r = kExpand5[((c32 >> 16) & 0xFF) >> 3];
@@ -771,6 +781,7 @@ bool CpuLfbStaging::WriteOverlayLFB(uint32_t logicalBuffer, uint32_t dstX,
     DISPATCH_OVERLAY_CASE(13)
     DISPATCH_OVERLAY_CASE(14)
     DISPATCH_OVERLAY_CASE(15)
+    DISPATCH_OVERLAY_CASE(0x100u)
     default:
       break;
   }
@@ -951,6 +962,7 @@ bool CpuLfbStaging::IsValidSrcFormat(uint32_t srcFmt) {
     case 13:  // GR_LFB_SRC_FMT_555_DEPTH
     case 14:  // GR_LFB_SRC_FMT_1555_DEPTH
     case 15:  // GR_LFB_SRC_FMT_ZA16
+    case 0x100u:  // Internal lossless canonical ARGB8888 restore
       return true;
     default:
       return false;
@@ -1096,6 +1108,7 @@ uint32_t CpuLfbStaging::WritePixelsRegion(
     DISPATCH_CASE(13)
     DISPATCH_CASE(14)
     DISPATCH_CASE(15)
+    DISPATCH_CASE(0x100u)
     default:
       break;
   }

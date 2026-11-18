@@ -708,7 +708,9 @@ bool OpenGLESBackend::WriteLFB(uint32_t buffer, uint32_t dstX, uint32_t dstY,
   // Fast path: opaque LFB writes and standard (SRC_ALPHA, ONE_MINUS_SRC_ALPHA)
   // overlays composite directly onto the GPU FBO via a single alpha-blended
   // quad with ZERO GPU readback stalls, preserving any 3D geometry underneath!
-  if (CpuLfbStaging::CanUseOverlayQuad(config)) {
+  // Internal lossless RGBA8888 restore (srcFmt == 0x100u) uses full-buffer upload
+  // to preserve all 4 channels (including alpha) verbatim.
+  if (srcFmt != 0x100u && CpuLfbStaging::CanUseOverlayQuad(config)) {
     return m_lfbStaging.WriteOverlayLFB(buffer, dstX, dstY, srcWidth, srcHeight,
                                         srcStride, srcFmt, srcData, refData,
                                         config, m_pixelFormatOverride);
@@ -2256,13 +2258,74 @@ void OpenGLESBackend::SetBlendState(uint32_t rgbSrcFactor,
                                     uint32_t alphaDstFactor) {
   std::lock_guard<std::mutex> lock(m_mutex);
   if (m_rgbSrcBlend == rgbSrcFactor && m_rgbDstBlend == rgbDstFactor &&
-      m_alphaSrcBlend == alphaSrcFactor && m_alphaDstBlend == alphaDstFactor) {
+      m_rgbBlendOp == 0u && m_alphaSrcBlend == alphaSrcFactor &&
+      m_alphaDstBlend == alphaDstFactor && m_alphaBlendOp == 0u) {
     return;
   }
   FlushBatch(true);
-  GlideStateTracker::SetBlendState_Locked(rgbSrcFactor, rgbDstFactor, alphaSrcFactor,
-                                   alphaDstFactor);
+  GlideStateTracker::SetBlendState_Locked(rgbSrcFactor, rgbDstFactor,
+                                          alphaSrcFactor, alphaDstFactor);
   m_glesDirtyMask |= kGlesDirtyBlend;
+}
+
+void OpenGLESBackend::SetBlendStateExt(uint32_t rgbSrcFactor,
+                                       uint32_t rgbDstFactor, uint32_t rgbOp,
+                                       uint32_t alphaSrcFactor,
+                                       uint32_t alphaDstFactor,
+                                       uint32_t alphaOp) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  const uint32_t rOp = (rgbOp <= 2u) ? rgbOp : 0u;
+  const uint32_t aOp = (alphaOp <= 2u) ? alphaOp : 0u;
+  if (m_rgbSrcBlend == rgbSrcFactor && m_rgbDstBlend == rgbDstFactor &&
+      m_rgbBlendOp == rOp && m_alphaSrcBlend == alphaSrcFactor &&
+      m_alphaDstBlend == alphaDstFactor && m_alphaBlendOp == aOp) {
+    return;
+  }
+  FlushBatch(true);
+  GlideStateTracker::SetBlendStateExt_Locked(rgbSrcFactor, rgbDstFactor, rOp,
+                                             alphaSrcFactor, alphaDstFactor,
+                                             aOp);
+  m_glesDirtyMask |= kGlesDirtyBlend;
+}
+
+void OpenGLESBackend::SetColorCombineExt(uint32_t packed) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (m_extColorCombine == packed) return;
+  FlushBatch(true);
+  GlideStateTracker::SetColorCombineExt_Locked(packed);
+  m_glesDirtyMask |= kGlesDirtyExtCombine;
+}
+
+void OpenGLESBackend::SetAlphaCombineExt(uint32_t packed) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (m_extAlphaCombine == packed) return;
+  FlushBatch(true);
+  GlideStateTracker::SetAlphaCombineExt_Locked(packed);
+  m_glesDirtyMask |= kGlesDirtyExtCombine;
+}
+
+void OpenGLESBackend::SetTexColorCombineExt(uint32_t tmu, uint32_t packed) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (tmu >= 2 || m_extTexColorCombine[tmu] == packed) return;
+  FlushBatch(true);
+  GlideStateTracker::SetTexColorCombineExt_Locked(tmu, packed);
+  m_glesDirtyMask |= kGlesDirtyExtCombine;
+}
+
+void OpenGLESBackend::SetTexAlphaCombineExt(uint32_t tmu, uint32_t packed) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (tmu >= 2 || m_extTexAlphaCombine[tmu] == packed) return;
+  FlushBatch(true);
+  GlideStateTracker::SetTexAlphaCombineExt_Locked(tmu, packed);
+  m_glesDirtyMask |= kGlesDirtyExtCombine;
+}
+
+void OpenGLESBackend::SetTmuConstantColor(uint32_t tmu, uint32_t color) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (tmu >= 2 || m_tmuConstantColor[tmu] == color) return;
+  FlushBatch(true);
+  GlideStateTracker::SetTmuConstantColor_Locked(tmu, color);
+  m_glesDirtyMask |= kGlesDirtyExtCombine;
 }
 
 void OpenGLESBackend::SetRenderBuffer(uint32_t target) {
@@ -2602,7 +2665,8 @@ void OpenGLESBackend::SetPixelFormat(uint32_t format) {
   FlushBatch(true);
   GlideStateTracker::SetPixelFormat_Locked(format);
   m_glesDirtyMask |= (kGlesDirtyConstantColor | kGlesDirtyChromakey |
-                      kGlesDirtyFogModeAndColor | kGlesDirtyTexChromakey);
+                      kGlesDirtyFogModeAndColor | kGlesDirtyTexChromakey |
+                      kGlesDirtyExtCombine);
 }
 
 void OpenGLESBackend::SetCombinerMode(uint32_t colorFunc, uint32_t colorFactor,

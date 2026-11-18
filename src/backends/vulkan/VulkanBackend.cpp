@@ -1334,12 +1334,72 @@ void VulkanBackend::SetBlendState(uint32_t rgbSrcFactor, uint32_t rgbDstFactor,
                                   uint32_t alphaDstFactor) {
   std::lock_guard<std::mutex> lock(m_mutex);
   if (rgbSrcFactor != m_rgbSrcBlend || rgbDstFactor != m_rgbDstBlend ||
-      alphaSrcFactor != m_alphaSrcBlend || alphaDstFactor != m_alphaDstBlend) {
+      m_rgbBlendOp != 0u || alphaSrcFactor != m_alphaSrcBlend ||
+      alphaDstFactor != m_alphaDstBlend || m_alphaBlendOp != 0u) {
     FlushBatch(true);
     m_pipelineStateDirty = true;
   }
-  GlideStateTracker::SetBlendState_Locked(rgbSrcFactor, rgbDstFactor, alphaSrcFactor,
-                                   alphaDstFactor);
+  GlideStateTracker::SetBlendState_Locked(rgbSrcFactor, rgbDstFactor,
+                                          alphaSrcFactor, alphaDstFactor);
+}
+
+void VulkanBackend::SetBlendStateExt(uint32_t rgbSrcFactor,
+                                     uint32_t rgbDstFactor, uint32_t rgbOp,
+                                     uint32_t alphaSrcFactor,
+                                     uint32_t alphaDstFactor,
+                                     uint32_t alphaOp) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  const uint32_t rOp = (rgbOp <= 2u) ? rgbOp : 0u;
+  const uint32_t aOp = (alphaOp <= 2u) ? alphaOp : 0u;
+  if (rgbSrcFactor != m_rgbSrcBlend || rgbDstFactor != m_rgbDstBlend ||
+      rOp != m_rgbBlendOp || alphaSrcFactor != m_alphaSrcBlend ||
+      alphaDstFactor != m_alphaDstBlend || aOp != m_alphaBlendOp) {
+    FlushBatch(true);
+    m_pipelineStateDirty = true;
+  }
+  GlideStateTracker::SetBlendStateExt_Locked(rgbSrcFactor, rgbDstFactor, rOp,
+                                             alphaSrcFactor, alphaDstFactor,
+                                             aOp);
+}
+
+void VulkanBackend::SetColorCombineExt(uint32_t packed) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (packed != m_extColorCombine) {
+    FlushBatch(true);
+  }
+  GlideStateTracker::SetColorCombineExt_Locked(packed);
+}
+
+void VulkanBackend::SetAlphaCombineExt(uint32_t packed) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (packed != m_extAlphaCombine) {
+    FlushBatch(true);
+  }
+  GlideStateTracker::SetAlphaCombineExt_Locked(packed);
+}
+
+void VulkanBackend::SetTexColorCombineExt(uint32_t tmu, uint32_t packed) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (tmu < 2 && packed != m_extTexColorCombine[tmu]) {
+    FlushBatch(true);
+  }
+  GlideStateTracker::SetTexColorCombineExt_Locked(tmu, packed);
+}
+
+void VulkanBackend::SetTexAlphaCombineExt(uint32_t tmu, uint32_t packed) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (tmu < 2 && packed != m_extTexAlphaCombine[tmu]) {
+    FlushBatch(true);
+  }
+  GlideStateTracker::SetTexAlphaCombineExt_Locked(tmu, packed);
+}
+
+void VulkanBackend::SetTmuConstantColor(uint32_t tmu, uint32_t color) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (tmu < 2 && color != m_tmuConstantColor[tmu]) {
+    FlushBatch(true);
+  }
+  GlideStateTracker::SetTmuConstantColor_Locked(tmu, color);
 }
 
 void VulkanBackend::SetCullState(uint32_t cullMode) {

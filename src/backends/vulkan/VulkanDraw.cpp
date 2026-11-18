@@ -926,7 +926,11 @@ void VulkanBackend::PopulatePushConstants(PushConstants& pcs) {
   pcs.chromakeyRangeMin = PackRGBA(cMinR, cMinG, cMinB, cMinA);
   pcs.chromakeyRangeMax = PackRGBA(cMaxR, cMaxG, cMaxB, cMaxA);
 
-  // Populate texture-specific chromakeying states for TMU0 and TMU1
+  // Populate texture-specific chromakeying states for TMU0 and TMU1 (compact
+  // RGBA uint32 layout so PushConstants stays <= 256 bytes with VSA-100 COMBINE)
+  uint32_t packedTexChromaMin[2]{0, 0};
+  uint32_t packedTexChromaMax[2]{0, 0};
+  uint32_t packedTmuConst[2]{0, 0};
   for (int i = 0; i < 2; ++i) {
     float minR = ((m_texChromaMin[i] >> 16) & 0xFF) / 255.0f;
     float minG = ((m_texChromaMin[i] >> 8) & 0xFF) / 255.0f;
@@ -938,21 +942,25 @@ void VulkanBackend::PopulatePushConstants(PushConstants& pcs) {
     float maxB = (m_texChromaMax[i] & 0xFF) / 255.0f;
     float maxA = ((m_texChromaMax[i] >> 24) & 0xFF) / 255.0f;
 
+    float tcR = ((m_tmuConstantColor[i] >> 16) & 0xFF) / 255.0f;
+    float tcG = ((m_tmuConstantColor[i] >> 8) & 0xFF) / 255.0f;
+    float tcB = (m_tmuConstantColor[i] & 0xFF) / 255.0f;
+    float tcA = ((m_tmuConstantColor[i] >> 24) & 0xFF) / 255.0f;
+
     if (m_pixelFormatOverride == 1) {
       std::swap(minR, minB);
       std::swap(maxR, maxB);
+      std::swap(tcR, tcB);
     }
 
-    pcs.texChromaMin[i][0] = minR;
-    pcs.texChromaMin[i][1] = minG;
-    pcs.texChromaMin[i][2] = minB;
-    pcs.texChromaMin[i][3] = minA;
-
-    pcs.texChromaMax[i][0] = maxR;
-    pcs.texChromaMax[i][1] = maxG;
-    pcs.texChromaMax[i][2] = maxB;
-    pcs.texChromaMax[i][3] = maxA;
+    packedTexChromaMin[i] = PackRGBA(minR, minG, minB, minA);
+    packedTexChromaMax[i] = PackRGBA(maxR, maxG, maxB, maxA);
+    packedTmuConst[i] = PackRGBA(tcR, tcG, tcB, tcA);
   }
+  pcs.texChromaMin0 = packedTexChromaMin[0];
+  pcs.texChromaMin1 = packedTexChromaMin[1];
+  pcs.texChromaMax0 = packedTexChromaMax[0];
+  pcs.texChromaMax1 = packedTexChromaMax[1];
 
   // Phase 4 additions: depth range, stipple pattern, and packed flags
   pcs.depthNear = m_depthNear;
@@ -987,6 +995,14 @@ void VulkanBackend::PopulatePushConstants(PushConstants& pcs) {
   pcs.texDetail1 = PackTexDetail_Locked(1);
   pcs.texLodBias0 = m_texLodBias[0];
   pcs.texLodBias1 = m_texLodBias[1];
+  pcs.extColorCombine = m_extColorCombine;
+  pcs.extAlphaCombine = m_extAlphaCombine;
+  pcs.extTexColorCombine0 = m_extTexColorCombine[0];
+  pcs.extTexAlphaCombine0 = m_extTexAlphaCombine[0];
+  pcs.extTexColorCombine1 = m_extTexColorCombine[1];
+  pcs.extTexAlphaCombine1 = m_extTexAlphaCombine[1];
+  pcs.tmuConstantColor0 = packedTmuConst[0];
+  pcs.tmuConstantColor1 = packedTmuConst[1];
 }
 
 }  // namespace GlideWrapper

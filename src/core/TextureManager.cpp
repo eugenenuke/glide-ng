@@ -1827,4 +1827,129 @@ void TextureManager::Reset() {
             "Purged and reset all Virtual TMU state pools.");
 }
 
+bool TextureManager::CommitRenderedTexture(
+    uint32_t tmu, uint32_t startAddress, int32_t thisLod, int32_t largeLod,
+    uint32_t aspect, uint32_t format,
+    const std::vector<uint32_t>& canonicalArgb) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (tmu >= 2 || aspect > 6) return false;
+  auto model = EmulationRegistry::GetInstance().GetConfig().model;
+  const int32_t minValidLod = (model >= CardModel::Voodoo3) ? -3 : 0;
+  if (thisLod < minValidLod || thisLod > 8 || largeLod < minValidLod ||
+      largeLod > 8 || thisLod < largeLod) {
+    return false;
+  }
+
+  uint32_t w = 1, h = 1;
+  ComputeLodDimensions(thisLod, aspect, w, h);
+  if (canonicalArgb.size() != static_cast<size_t>(w) * h) {
+    return false;
+  }
+
+  const uint32_t storeTmu = StorageTmu_Locked(tmu);
+  std::shared_ptr<VirtualTexture> existingToMerge;
+  int32_t newLarge = thisLod;
+  int32_t newSmall = thisLod;
+
+  auto it = m_tmus[storeTmu].textures.find(startAddress);
+  if (it != m_tmus[storeTmu].textures.end()) {
+    const auto& existing = it->second;
+    if (existing->format == format && existing->aspectRatio == aspect &&
+        (existing->declaredLargeLod == largeLod ||
+         existing->largeLod == largeLod)) {
+      existingToMerge = existing;
+      newLarge = std::min(existing->largeLod, thisLod);
+      newSmall = std::max(existing->smallLod, thisLod);
+    }
+  }
+
+  const uint32_t newBytes =
+      CalculateMemoryRequired(newLarge, newSmall, aspect, format);
+  const uint64_t newRangeStart = static_cast<uint64_t>(startAddress);
+  const uint64_t newRangeEnd = newRangeStart + static_cast<uint64_t>(newBytes);
+
+  std::vector<uint32_t> overlaps;
+  uint64_t evictedBytes = 0;
+  for (const auto& entry : m_tmus[storeTmu].textures) {
+    if (entry.first >= kMultibaseCompositeBase) continue;
+    const uint64_t eStart = static_cast<uint64_t>(entry.first);
+    const uint64_t eSize =
+        (entry.second->allocatedByteSize > 0)
+            ? static_cast<uint64_t>(entry.second->allocatedByteSize)
+            : static_cast<uint64_t>(CalculateMemoryRequired(
+                  entry.second->largeLod, entry.second->smallLod,
+                  entry.second->aspectRatio, entry.second->format));
+    const uint64_t eEnd = eStart + eSize;
+    if (entry.first == startAddress ||
+        (eStart < newRangeEnd && newRangeStart < eEnd)) {
+      overlaps.push_back(entry.first);
+      evictedBytes += eSize;
+    }
+  }
+
+  const uint64_t currentUsed = m_tmus[storeTmu].allocatedBytes;
+  const uint64_t usedAfterEvict =
+      (currentUsed >= evictedBytes) ? (currentUsed - evictedBytes) : 0ULL;
+
+  auto tex = std::make_shared<VirtualTexture>();
+  tex->startAddress = startAddress;
+  tex->format = format;
+  tex->aspectRatio = aspect;
+  tex->largeLod = newLarge;
+  tex->smallLod = newSmall;
+  tex->declaredLargeLod = largeLod;
+  tex->allocatedByteSize = newBytes;
+  tex->isPaletted = false;
+  tex->isNcc = false;
+  tex->rawDataHash = 0;
+  tex->swizzledWithTable = true;
+  ComputeLodDimensions(newLarge, aspect, tex->baseWidth, tex->baseHeight);
+
+  const uint32_t numLevels = static_cast<uint32_t>(newSmall - newLarge + 1);
+  tex->swizzledMipLevels.resize(numLevels);
+  if (existingToMerge) {
+    for (int32_t L = existingToMerge->largeLod; L <= existingToMerge->smallLod;
+         ++L) {
+      const uint32_t oldIdx =
+          static_cast<uint32_t>(L - existingToMerge->largeLod);
+      const uint32_t newIdx = static_cast<uint32_t>(L - newLarge);
+      if (oldIdx < existingToMerge->swizzledMipLevels.size()) {
+        tex->swizzledMipLevels[newIdx] =
+            existingToMerge->swizzledMipLevels[oldIdx];
+      }
+    }
+  }
+  tex->swizzledMipLevels[static_cast<uint32_t>(thisLod - newLarge)] =
+      canonicalArgb;
+
+  for (int32_t L = newLarge; L <= newSmall; ++L) {
+    const uint32_t idx = static_cast<uint32_t>(L - newLarge);
+    uint32_t lw = 1, lh = 1;
+    ComputeLodDimensions(L, aspect, lw, lh);
+    const size_t expected = static_cast<size_t>(lw) * lh;
+    if (tex->swizzledMipLevels[idx].size() != expected) {
+      tex->swizzledMipLevels[idx].resize(expected, 0xFF000000u);
+    }
+  }
+
+  for (uint32_t addr : overlaps) {
+    m_tmus[storeTmu].textures.erase(addr);
+  }
+  m_tmus[storeTmu].allocatedBytes =
+      static_cast<uint32_t>(usedAfterEvict + newBytes);
+  m_tmus[storeTmu].textures[startAddress] = tex;
+
+  tex->uploadedToBackend = false;
+  tex->uploadedToBackendPerTmu[0] = false;
+  tex->uploadedToBackendPerTmu[1] = false;
+  if (auto* b = BackendManager::GetInstance().GetBackend()) {
+    TelemetryManager::GetInstance().RecordTexUpload(
+        CalcSwizzledUploadBytes(*tex));
+    b->UploadTexture(tmu, startAddress, *tex);
+    tex->uploadedToBackend = true;
+    tex->uploadedToBackendPerTmu[tmu] = true;
+  }
+  return true;
+}
+
 }  // namespace GlideWrapper

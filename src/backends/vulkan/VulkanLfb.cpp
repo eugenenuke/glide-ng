@@ -384,7 +384,9 @@ bool VulkanBackend::WriteLFB(uint32_t buffer, uint32_t dstX, uint32_t dstY,
 
   // Fast zero-readback path: composite sparse alpha-masked overlay quad on GPU
   // inside the active command buffer (zero waitIdle(), preserves 3D scene!).
-  if (CpuLfbStaging::CanUseOverlayQuad(config)) {
+  // Internal lossless RGBA8888 restore (srcFmt == 0x100u) uses full-buffer copy
+  // to preserve all 4 channels (including alpha) verbatim.
+  if (srcFmt != 0x100u && CpuLfbStaging::CanUseOverlayQuad(config)) {
     return m_lfbStaging.WriteOverlayLFB(buffer, dstX, dstY, srcWidth, srcHeight,
                                         srcStride, srcFmt, srcData, refData,
                                         config, m_pixelFormatOverride);

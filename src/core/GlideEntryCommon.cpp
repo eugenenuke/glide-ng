@@ -200,8 +200,16 @@ void SharedFrontendState::Reset(uint8_t defaultLfbConstantAlpha,
   constantColor = 0xFFFFFFFFu;
   rgbSrcBlend = 4;
   rgbDstBlend = 0;
+  rgbBlendOp = 0;
   alphaSrcBlend = 4;
   alphaDstBlend = 0;
+  alphaBlendOp = 0;
+
+  extColorCombine = 0;
+  extAlphaCombine = 0;
+  extTexColorCombine[0] = extTexColorCombine[1] = 0;
+  extTexAlphaCombine[0] = extTexAlphaCombine[1] = 0;
+  tmuConstantColor[0] = tmuConstantColor[1] = 0xFFFFFFFFu;
 
   cullMode = 0;
   clipMinX = 0;
@@ -394,8 +402,10 @@ void ApplySharedStateToBackend(const SharedFrontendState& st,
   b->SetCombinerMode(st.colorFunc, st.colorFactor, st.colorLocal, st.colorOther,
                      st.colorInvert, st.alphaFunc, st.alphaFactor,
                      st.alphaLocal, st.alphaOther, st.alphaInvert);
-  b->SetBlendState(st.rgbSrcBlend, st.rgbDstBlend, st.alphaSrcBlend,
-                   st.alphaDstBlend);
+  b->SetColorCombineExt(st.extColorCombine);
+  b->SetAlphaCombineExt(st.extAlphaCombine);
+  b->SetBlendStateExt(st.rgbSrcBlend, st.rgbDstBlend, st.rgbBlendOp,
+                      st.alphaSrcBlend, st.alphaDstBlend, st.alphaBlendOp);
   b->SetCullState(st.cullMode);
   b->SetSstOrigin(sstOrigin);
   b->SetClipWindow(st.clipMinX, st.clipMinY, st.clipMaxX, st.clipMaxY);
@@ -420,6 +430,9 @@ void ApplySharedStateToBackend(const SharedFrontendState& st,
                           st.texAlphaFunc[tmu], st.texAlphaFactor[tmu],
                           includeTexInvert ? st.texRgbInvert[tmu] : false,
                           includeTexInvert ? st.texAlphaInvert[tmu] : false);
+    b->SetTexColorCombineExt(tmu, st.extTexColorCombine[tmu]);
+    b->SetTexAlphaCombineExt(tmu, st.extTexAlphaCombine[tmu]);
+    b->SetTmuConstantColor(tmu, st.tmuConstantColor[tmu]);
     b->BindTexture(tmu, ResolveEffectiveBoundTex(st.boundTex[tmu], cfg),
                    st.clampS[tmu], st.clampT[tmu],
                    ResolveEffectiveFilter(st.minFilter[tmu], cfg),
@@ -555,7 +568,9 @@ void SetColorCombine(SharedFrontendState& st, uint32_t fnc, uint32_t factor,
   st.colorLocal = local;
   st.colorOther = other;
   st.colorInvert = invert;
+  st.extColorCombine = 0u;
   if (auto* b = BackendManager::GetInstance().GetBackend()) {
+    b->SetColorCombineExt(0u);
     b->SetCombinerMode(st.colorFunc, st.colorFactor, st.colorLocal,
                        st.colorOther, st.colorInvert, st.alphaFunc,
                        st.alphaFactor, st.alphaLocal, st.alphaOther,
@@ -570,7 +585,9 @@ void SetAlphaCombine(SharedFrontendState& st, uint32_t fnc, uint32_t factor,
   st.alphaLocal = local;
   st.alphaOther = other;
   st.alphaInvert = invert;
+  st.extAlphaCombine = 0u;
   if (auto* b = BackendManager::GetInstance().GetBackend()) {
+    b->SetAlphaCombineExt(0u);
     b->SetCombinerMode(st.colorFunc, st.colorFactor, st.colorLocal,
                        st.colorOther, st.colorInvert, st.alphaFunc,
                        st.alphaFactor, st.alphaLocal, st.alphaOther,
@@ -590,7 +607,11 @@ void SetTexCombine(SharedFrontendState& st, uint32_t tmu, uint32_t rgbFnc,
     st.texRgbInvert[tmu] = rgbInvert;
     st.texAlphaInvert[tmu] = alphaInvert;
   }
+  st.extTexColorCombine[tmu] = 0u;
+  st.extTexAlphaCombine[tmu] = 0u;
   if (auto* b = BackendManager::GetInstance().GetBackend()) {
+    b->SetTexColorCombineExt(tmu, 0u);
+    b->SetTexAlphaCombineExt(tmu, 0u);
     b->SetTexCombinerMode(tmu, rgbFnc, rgbFactor, alphaFnc, alphaFactor,
                           forwardInverts ? rgbInvert : false,
                           forwardInverts ? alphaInvert : false);
@@ -601,10 +622,79 @@ void SetAlphaBlendFunction(SharedFrontendState& st, uint32_t rgbSf,
                            uint32_t rgbDf, uint32_t alphaSf, uint32_t alphaDf) {
   st.rgbSrcBlend = rgbSf;
   st.rgbDstBlend = rgbDf;
+  st.rgbBlendOp = 0u;
   st.alphaSrcBlend = alphaSf;
   st.alphaDstBlend = alphaDf;
+  st.alphaBlendOp = 0u;
   if (auto* b = BackendManager::GetInstance().GetBackend()) {
     b->SetBlendState(rgbSf, rgbDf, alphaSf, alphaDf);
+  }
+}
+
+void SetAlphaBlendFunctionExt(SharedFrontendState& st, uint32_t rgbSf,
+                              uint32_t rgbDf, uint32_t rgbOp, uint32_t alphaSf,
+                              uint32_t alphaDf, uint32_t alphaOp) {
+  st.rgbSrcBlend = rgbSf;
+  st.rgbDstBlend = rgbDf;
+  st.rgbBlendOp = rgbOp;
+  st.alphaSrcBlend = alphaSf;
+  st.alphaDstBlend = alphaDf;
+  st.alphaBlendOp = alphaOp;
+  if (auto* b = BackendManager::GetInstance().GetBackend()) {
+    b->SetBlendStateExt(rgbSf, rgbDf, rgbOp, alphaSf, alphaDf, alphaOp);
+  }
+}
+
+void SetColorCombineExt(SharedFrontendState& st, uint32_t a, uint32_t aMode,
+                        uint32_t b, uint32_t bMode, uint32_t c, bool cInvert,
+                        uint32_t d, bool dInvert, uint32_t shift, bool invert) {
+  st.extColorCombine = IGraphicsBackend::PackCombineExt(
+      a, aMode, b, bMode, c, cInvert, d, dInvert, shift, invert);
+  if (auto* backend = BackendManager::GetInstance().GetBackend()) {
+    backend->SetColorCombineExt(st.extColorCombine);
+  }
+}
+
+void SetAlphaCombineExt(SharedFrontendState& st, uint32_t a, uint32_t aMode,
+                        uint32_t b, uint32_t bMode, uint32_t c, bool cInvert,
+                        uint32_t d, bool dInvert, uint32_t shift, bool invert) {
+  st.extAlphaCombine = IGraphicsBackend::PackCombineExt(
+      a, aMode, b, bMode, c, cInvert, d, dInvert, shift, invert);
+  if (auto* backend = BackendManager::GetInstance().GetBackend()) {
+    backend->SetAlphaCombineExt(st.extAlphaCombine);
+  }
+}
+
+void SetTexColorCombineExt(SharedFrontendState& st, uint32_t tmu, uint32_t a,
+                           uint32_t aMode, uint32_t b, uint32_t bMode,
+                           uint32_t c, bool cInvert, uint32_t d, bool dInvert,
+                           uint32_t shift, bool invert) {
+  if (tmu >= 2) return;
+  st.extTexColorCombine[tmu] = IGraphicsBackend::PackCombineExt(
+      a, aMode, b, bMode, c, cInvert, d, dInvert, shift, invert);
+  if (auto* backend = BackendManager::GetInstance().GetBackend()) {
+    backend->SetTexColorCombineExt(tmu, st.extTexColorCombine[tmu]);
+  }
+}
+
+void SetTexAlphaCombineExt(SharedFrontendState& st, uint32_t tmu, uint32_t a,
+                           uint32_t aMode, uint32_t b, uint32_t bMode,
+                           uint32_t c, bool cInvert, uint32_t d, bool dInvert,
+                           uint32_t shift, bool invert) {
+  if (tmu >= 2) return;
+  st.extTexAlphaCombine[tmu] = IGraphicsBackend::PackCombineExt(
+      a, aMode, b, bMode, c, cInvert, d, dInvert, shift, invert);
+  if (auto* backend = BackendManager::GetInstance().GetBackend()) {
+    backend->SetTexAlphaCombineExt(tmu, st.extTexAlphaCombine[tmu]);
+  }
+}
+
+void SetTmuConstantColor(SharedFrontendState& st, uint32_t tmu,
+                         uint32_t value) {
+  if (tmu >= 2) return;
+  st.tmuConstantColor[tmu] = value;
+  if (auto* backend = BackendManager::GetInstance().GetBackend()) {
+    backend->SetTmuConstantColor(tmu, value);
   }
 }
 
@@ -883,8 +973,10 @@ void SetFogTable(SharedFrontendState& st, const uint8_t* ft) {
 void DisableAllEffects(SharedFrontendState& st, bool clearCachedFogMode) {
   st.rgbSrcBlend = 4;    // GR_BLEND_ONE
   st.rgbDstBlend = 0;    // GR_BLEND_ZERO
+  st.rgbBlendOp = 0;     // GR_BLEND_OP_ADD
   st.alphaSrcBlend = 4;  // GR_BLEND_ONE
   st.alphaDstBlend = 0;  // GR_BLEND_ZERO
+  st.alphaBlendOp = 0;   // GR_BLEND_OP_ADD
   st.depthCompare = 1;   // GR_CMP_LESS / existing default
   st.depthMask = false;
   st.alphaTestOp = 7;    // GR_CMP_ALWAYS
@@ -1056,6 +1148,7 @@ bool LfbReadRegion(uint32_t srcBuf, uint32_t srcX, uint32_t srcY,
 bool LfbWriteRegion(uint32_t dstBuf, uint32_t dstX, uint32_t dstY,
                     uint32_t srcFmt, uint32_t srcWidth, uint32_t srcHeight,
                     int32_t srcStride, const void* srcData) {
+  if (srcFmt == 0x100u) return false;  // Reserve internal lossless format.
   const uint64_t absStride =
       static_cast<uint64_t>(srcStride < 0 ? -static_cast<int64_t>(srcStride)
                                           : static_cast<int64_t>(srcStride));

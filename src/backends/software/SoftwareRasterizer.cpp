@@ -301,8 +301,10 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
       (colorMaskB ? 0x000000FFu : 0u) | (colorMaskAlpha ? 0xFF000000u : 0u);
   const uint32_t rgbSrcBlend = state.rgbSrcBlend;
   const uint32_t rgbDstBlend = state.rgbDstBlend;
+  const uint32_t rgbBlendOp = state.rgbBlendOp;
   const uint32_t alphaSrcBlend = state.alphaSrcBlend;
   const uint32_t alphaDstBlend = state.alphaDstBlend;
+  const uint32_t alphaBlendOp = state.alphaBlendOp;
   const uint32_t constantColor = state.constantColor;
   const uint32_t stwHintMask = state.stwHintMask;
   const uint32_t alphaCombinerLocal = state.alphaCombinerLocal;
@@ -315,6 +317,12 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
   const uint32_t alphaCombinerFunc = state.alphaCombinerFunc;
   const bool alphaCombinerInvert = state.alphaCombinerInvert;
   const bool colorCombinerInvert = state.colorCombinerInvert;
+  const uint32_t extColorCombine = state.extColorCombine;
+  const uint32_t extAlphaCombine = state.extAlphaCombine;
+  const uint32_t extTexColorCombine0 = state.extTexColorCombine[0];
+  const uint32_t extTexAlphaCombine0 = state.extTexAlphaCombine[0];
+  const uint32_t extTexColorCombine1 = state.extTexColorCombine[1];
+  const uint32_t extTexAlphaCombine1 = state.extTexAlphaCombine[1];
 
   // Pre-calculate expensive division and format operations outside the loop
   const float depthFar = state.depthFar;
@@ -328,6 +336,18 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
   float constantG = ((constantColor >> 8) & 0xFF) / 255.0f;
   float constantB = (constantColor & 0xFF) / 255.0f;
   if (pixelFormatOverride == 1) std::swap(constantR, constantB);
+  const TmuColor constantCol = {constantR, constantG, constantB, constantAlpha};
+
+  auto unpackTmuConst = [&](uint32_t c) -> TmuColor {
+    float r = ((c >> 16) & 0xFF) / 255.0f;
+    float g = ((c >> 8) & 0xFF) / 255.0f;
+    float b = (c & 0xFF) / 255.0f;
+    float aVal = ((c >> 24) & 0xFF) / 255.0f;
+    if (pixelFormatOverride == 1) std::swap(r, b);
+    return {r, g, b, aVal};
+  };
+  const TmuColor tmuConst0 = unpackTmuConst(state.tmuConstantColor[0]);
+  const TmuColor tmuConst1 = unpackTmuConst(state.tmuConstantColor[1]);
 
   const float alphaTestRef = static_cast<float>(alphaTestRefVal) / 255.0f;
 
@@ -445,11 +465,15 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
   const bool needLod0 =
       HasTexture && tex != nullptr &&
       (mipmappingEnabled || usesLodFactor(state.texCombinerRgbFactor[0]) ||
-       usesLodFactor(state.texCombinerAlphaFactor[0]));
+       usesLodFactor(state.texCombinerAlphaFactor[0]) ||
+       ExtCombineUsesLod(extTexColorCombine0) ||
+       ExtCombineUsesLod(extTexAlphaCombine0));
   const bool needLod1 =
       hasTexture1 && tex1 != nullptr &&
       (mipmappingEnabled1 || usesLodFactor(state.texCombinerRgbFactor[1]) ||
-       usesLodFactor(state.texCombinerAlphaFactor[1]));
+       usesLodFactor(state.texCombinerAlphaFactor[1]) ||
+       ExtCombineUsesLod(extTexColorCombine1) ||
+       ExtCombineUsesLod(extTexAlphaCombine1));
 
   const float detailScaleMul0 =
       static_cast<float>(1u << std::min<uint8_t>(state.texDetailScale[0], 7u)) /
@@ -686,19 +710,32 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
         TmuColor iteratedColor = {iterR, iterG, iterB, iterA};
         bool tmu1Active = hasTexture1;
         TmuColor tmu1Out = iteratedColor;
-        if (keepPixel && tmu1Active) {
-          if (state.texCombinerRgbFunc[1] == 1 &&
-              state.texCombinerAlphaFunc[1] == 1 &&
-              !state.texCombinerRgbInvert[1] &&
-              !state.texCombinerAlphaInvert[1]) {
-            tmu1Out = tmu1Color;
-          } else {
-            tmu1Out = EvaluateTmuStage(
-                state.texCombinerRgbFunc[1], state.texCombinerRgbFactor[1],
-                state.texCombinerAlphaFunc[1], state.texCombinerAlphaFactor[1],
-                state.texCombinerRgbInvert[1], state.texCombinerAlphaInvert[1],
-                tmu1Color, iteratedColor, iteratedColor, detailFactor1,
-                lodFrac1);
+        if (keepPixel) {
+          if (tmu1Active) {
+            if (state.texCombinerRgbFunc[1] == 1 &&
+                state.texCombinerAlphaFunc[1] == 1 &&
+                !state.texCombinerRgbInvert[1] &&
+                !state.texCombinerAlphaInvert[1]) {
+              tmu1Out = tmu1Color;
+            } else {
+              tmu1Out = EvaluateTmuStage(
+                  state.texCombinerRgbFunc[1], state.texCombinerRgbFactor[1],
+                  state.texCombinerAlphaFunc[1], state.texCombinerAlphaFactor[1],
+                  state.texCombinerRgbInvert[1], state.texCombinerAlphaInvert[1],
+                  tmu1Color, iteratedColor, iteratedColor, detailFactor1,
+                  lodFrac1);
+            }
+          }
+          if ((extTexColorCombine1 & 0x80000000u) != 0u) {
+            EvaluateExtTmuRgbScalar(extTexColorCombine1, tmu1Color,
+                                    iteratedColor, tmuConst1, iteratedColor,
+                                    detailFactor1, lodFrac1, tmu1Out.r,
+                                    tmu1Out.g, tmu1Out.b);
+          }
+          if ((extTexAlphaCombine1 & 0x80000000u) != 0u) {
+            tmu1Out.a = EvaluateExtTmuAlphaScalar(
+                extTexAlphaCombine1, tmu1Color, iteratedColor, tmuConst1,
+                iteratedColor, detailFactor1, lodFrac1);
           }
         }
 
@@ -793,8 +830,8 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
 
         // Evaluate TMU 0 Stage
         TmuColor tmu0Out = tmu1Out;
-        if constexpr (HasTexture) {
-          if (keepPixel) {
+        if (keepPixel) {
+          if constexpr (HasTexture) {
             if (state.texCombinerRgbFunc[0] == 1 &&
                 state.texCombinerAlphaFunc[0] == 1 &&
                 !state.texCombinerRgbInvert[0] &&
@@ -807,6 +844,16 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
                   state.texCombinerRgbInvert[0], state.texCombinerAlphaInvert[0],
                   tmu0Color, tmu1Out, iteratedColor, detailFactor0, lodFrac0);
             }
+          }
+          if ((extTexColorCombine0 & 0x80000000u) != 0u) {
+            EvaluateExtTmuRgbScalar(extTexColorCombine0, tmu0Color, tmu1Out,
+                                    tmuConst0, iteratedColor, detailFactor0,
+                                    lodFrac0, tmu0Out.r, tmu0Out.g, tmu0Out.b);
+          }
+          if ((extTexAlphaCombine0 & 0x80000000u) != 0u) {
+            tmu0Out.a = EvaluateExtTmuAlphaScalar(
+                extTexAlphaCombine0, tmu0Color, tmu1Out, tmuConst0,
+                iteratedColor, detailFactor0, lodFrac0);
           }
         }
 
@@ -830,204 +877,220 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
         float alpha = 0.0f;
 
         if (keepPixel) {
-          float aLocal = (alphaCombinerLocal == 0) ? iterA : constantAlpha;
-          float aOther =
-              (alphaCombinerOther == 0)
-                  ? iterA
-                  : ((alphaCombinerOther == 1) ? texA : constantAlpha);
+          float aLocal = 1.0f;
+          float aOther = 1.0f;
+          float finalA = 0.0f;
+          if ((extAlphaCombine & 0x80000000u) != 0u) {
+            finalA = EvaluateExtFbiAlphaScalar(extAlphaCombine, iterA,
+                                               constantAlpha, texA, aLocal,
+                                               aOther);
+          } else {
+            aLocal = (alphaCombinerLocal == 0) ? iterA : constantAlpha;
+            aOther = (alphaCombinerOther == 0)
+                         ? iterA
+                         : ((alphaCombinerOther == 1) ? texA : constantAlpha);
 
-          float cLocalR = 0.0f;
-          float cLocalG = 0.0f;
-          float cLocalB = 0.0f;
-          if (colorCombinerLocal == 0) {  // GR_COMBINE_LOCAL_ITERATED
-            cLocalR = iterR;
-            cLocalG = iterG;
-            cLocalB = iterB;
-          } else if (colorCombinerLocal ==
-                     1) {  // GR_COMBINE_LOCAL_CONSTANT / NONE
-            cLocalR = constantR;
-            cLocalG = constantG;
-            cLocalB = constantB;
+            // Evaluate Alpha Combiner Factor
+            float factA = 0.0f;
+            switch (alphaCombinerFactor) {
+              case 1:
+              case 3:
+                factA = aLocal;
+                break;
+              case 2:
+                factA = aOther;
+                break;
+              case 4:
+                factA = texA;
+                break;
+              case 8:
+                factA = 1.0f;
+                break;
+              case 9:
+              case 11:
+                factA = 1.0f - aLocal;
+                break;
+              case 10:
+                factA = 1.0f - aOther;
+                break;
+              case 12:
+                factA = 1.0f - texA;
+                break;
+            }
+
+            // Evaluate Alpha Combiner Function
+            switch (alphaCombinerFunc) {
+              case 1:
+                finalA = aLocal;
+                break;
+              case 3:
+                finalA = aOther * factA;
+                break;
+              case 4:
+              case 5:
+                finalA = aOther * factA + aLocal;
+                break;
+              case 6:
+                finalA = (aOther - aLocal) * factA;
+                break;
+              case 7:
+              case 8:
+                finalA = (aOther - aLocal) * factA + aLocal;
+                break;
+              case 9:
+              case 16:
+                finalA = (-aLocal) * factA + aLocal;
+                break;
+            }
+            if (alphaCombinerInvert) finalA = 1.0f - finalA;
           }
 
-          cOtherR = (colorCombinerOther == 0)
-                        ? iterR
-                        : ((colorCombinerOther == 1) ? texR : constantR);
-          cOtherG = (colorCombinerOther == 0)
-                        ? iterG
-                        : ((colorCombinerOther == 1) ? texG : constantG);
-          cOtherB = (colorCombinerOther == 0)
-                        ? iterB
-                        : ((colorCombinerOther == 1) ? texB : constantB);
-
-          // Evaluate Color Combiner Factor
-          float factR = 0.0f;
-          float factG = 0.0f;
-          float factB = 0.0f;
-          switch (colorCombinerFactor) {
-            case 1:
-              factR = cLocalR;
-              factG = cLocalG;
-              factB = cLocalB;
-              break;
-            case 2:
-              factR = aOther;
-              factG = aOther;
-              factB = aOther;
-              break;
-            case 3:
-              factR = aLocal;
-              factG = aLocal;
-              factB = aLocal;
-              break;
-            case 4:
-              factR = texA;
-              factG = texA;
-              factB = texA;
-              break;
-            case 5:
-              factR = texR;
-              factG = texG;
-              factB = texB;
-              break;
-            case 8:
-              factR = 1.0f;
-              factG = 1.0f;
-              factB = 1.0f;
-              break;
-            case 9:
-              factR = 1.0f - cLocalR;
-              factG = 1.0f - cLocalG;
-              factB = 1.0f - cLocalB;
-              break;
-            case 10:
-              factR = 1.0f - aOther;
-              factG = 1.0f - aOther;
-              factB = 1.0f - aOther;
-              break;
-            case 11:
-              factR = 1.0f - aLocal;
-              factG = 1.0f - aLocal;
-              factB = 1.0f - aLocal;
-              break;
-            case 12:
-              factR = 1.0f - texA;
-              factG = 1.0f - texA;
-              factB = 1.0f - texA;
-              break;
-          }
-
-          // Evaluate Color Combiner Function
           float finalR = 0.0f;
           float finalG = 0.0f;
           float finalB = 0.0f;
-          switch (colorCombinerFunc) {
-            case 1:
-              finalR = cLocalR;
-              finalG = cLocalG;
-              finalB = cLocalB;
-              break;
-            case 3:
-              finalR = cOtherR * factR;
-              finalG = cOtherG * factG;
-              finalB = cOtherB * factB;
-              break;
-            case 4:
-              finalR = cOtherR * factR + cLocalR;
-              finalG = cOtherG * factG + cLocalG;
-              finalB = cOtherB * factB + cLocalB;
-              break;
-            case 5:
-              finalR = cOtherR * factR + aLocal;
-              finalG = cOtherG * factG + aLocal;
-              finalB = cOtherB * factB + aLocal;
-              break;
-            case 6:
-              finalR = (cOtherR - cLocalR) * factR;
-              finalG = (cOtherG - cLocalG) * factG;
-              finalB = (cOtherB - cLocalB) * factB;
-              break;
-            case 7:
-              finalR = (cOtherR - cLocalR) * factR + cLocalR;
-              finalG = (cOtherG - cLocalG) * factG + cLocalG;
-              finalB = (cOtherB - cLocalB) * factB + cLocalB;
-              break;
-            case 8:
-              finalR = (cOtherR - cLocalR) * factR + aLocal;
-              finalG = (cOtherG - cLocalG) * factG + aLocal;
-              finalB = (cOtherB - cLocalB) * factB + aLocal;
-              break;
-            case 9:
-              finalR = (-cLocalR) * factR + cLocalR;
-              finalG = (-cLocalG) * factG + cLocalG;
-              finalB = (-cLocalB) * factB + cLocalB;
-              break;
-            case 16:
-              finalR = (-cLocalR) * factR + aLocal;
-              finalG = (-cLocalG) * factG + aLocal;
-              finalB = (-cLocalB) * factB + aLocal;
-              break;
-          }
-          if (colorCombinerInvert) {
-            finalR = 1.0f - finalR;
-            finalG = 1.0f - finalG;
-            finalB = 1.0f - finalB;
-          }
+          if ((extColorCombine & 0x80000000u) != 0u) {
+            cOtherR = texR;
+            cOtherG = texG;
+            cOtherB = texB;
+            EvaluateExtFbiColorScalar(extColorCombine, iteratedColor,
+                                      constantCol, texColor, aLocal, aOther,
+                                      finalR, finalG, finalB);
+          } else {
+            float cLocalR = 0.0f;
+            float cLocalG = 0.0f;
+            float cLocalB = 0.0f;
+            if (colorCombinerLocal == 0) {  // GR_COMBINE_LOCAL_ITERATED
+              cLocalR = iterR;
+              cLocalG = iterG;
+              cLocalB = iterB;
+            } else if (colorCombinerLocal ==
+                       1) {  // GR_COMBINE_LOCAL_CONSTANT / NONE
+              cLocalR = constantR;
+              cLocalG = constantG;
+              cLocalB = constantB;
+            }
 
-          // Evaluate Alpha Combiner Factor
-          float factA = 0.0f;
-          switch (alphaCombinerFactor) {
-            case 1:
-            case 3:
-              factA = aLocal;
-              break;
-            case 2:
-              factA = aOther;
-              break;
-            case 4:
-              factA = texA;
-              break;
-            case 8:
-              factA = 1.0f;
-              break;
-            case 9:
-            case 11:
-              factA = 1.0f - aLocal;
-              break;
-            case 10:
-              factA = 1.0f - aOther;
-              break;
-            case 12:
-              factA = 1.0f - texA;
-              break;
-          }
+            cOtherR = (colorCombinerOther == 0)
+                          ? iterR
+                          : ((colorCombinerOther == 1) ? texR : constantR);
+            cOtherG = (colorCombinerOther == 0)
+                          ? iterG
+                          : ((colorCombinerOther == 1) ? texG : constantG);
+            cOtherB = (colorCombinerOther == 0)
+                          ? iterB
+                          : ((colorCombinerOther == 1) ? texB : constantB);
 
-          // Evaluate Alpha Combiner Function
-          float finalA = 0.0f;
-          switch (alphaCombinerFunc) {
-            case 1:
-              finalA = aLocal;
-              break;
-            case 3:
-              finalA = aOther * factA;
-              break;
-            case 4:
-            case 5:
-              finalA = aOther * factA + aLocal;
-              break;
-            case 6:
-              finalA = (aOther - aLocal) * factA;
-              break;
-            case 7:
-            case 8:
-              finalA = (aOther - aLocal) * factA + aLocal;
-              break;
-            case 9:
-            case 16:
-              finalA = (-aLocal) * factA + aLocal;
-              break;
+            // Evaluate Color Combiner Factor
+            float factR = 0.0f;
+            float factG = 0.0f;
+            float factB = 0.0f;
+            switch (colorCombinerFactor) {
+              case 1:
+                factR = cLocalR;
+                factG = cLocalG;
+                factB = cLocalB;
+                break;
+              case 2:
+                factR = aOther;
+                factG = aOther;
+                factB = aOther;
+                break;
+              case 3:
+                factR = aLocal;
+                factG = aLocal;
+                factB = aLocal;
+                break;
+              case 4:
+                factR = texA;
+                factG = texA;
+                factB = texA;
+                break;
+              case 5:
+                factR = texR;
+                factG = texG;
+                factB = texB;
+                break;
+              case 8:
+                factR = 1.0f;
+                factG = 1.0f;
+                factB = 1.0f;
+                break;
+              case 9:
+                factR = 1.0f - cLocalR;
+                factG = 1.0f - cLocalG;
+                factB = 1.0f - cLocalB;
+                break;
+              case 10:
+                factR = 1.0f - aOther;
+                factG = 1.0f - aOther;
+                factB = 1.0f - aOther;
+                break;
+              case 11:
+                factR = 1.0f - aLocal;
+                factG = 1.0f - aLocal;
+                factB = 1.0f - aLocal;
+                break;
+              case 12:
+                factR = 1.0f - texA;
+                factG = 1.0f - texA;
+                factB = 1.0f - texA;
+                break;
+            }
+
+            // Evaluate Color Combiner Function
+            switch (colorCombinerFunc) {
+              case 1:
+                finalR = cLocalR;
+                finalG = cLocalG;
+                finalB = cLocalB;
+                break;
+              case 3:
+                finalR = cOtherR * factR;
+                finalG = cOtherG * factG;
+                finalB = cOtherB * factB;
+                break;
+              case 4:
+                finalR = cOtherR * factR + cLocalR;
+                finalG = cOtherG * factG + cLocalG;
+                finalB = cOtherB * factB + cLocalB;
+                break;
+              case 5:
+                finalR = cOtherR * factR + aLocal;
+                finalG = cOtherG * factG + aLocal;
+                finalB = cOtherB * factB + aLocal;
+                break;
+              case 6:
+                finalR = (cOtherR - cLocalR) * factR;
+                finalG = (cOtherG - cLocalG) * factG;
+                finalB = (cOtherB - cLocalB) * factB;
+                break;
+              case 7:
+                finalR = (cOtherR - cLocalR) * factR + cLocalR;
+                finalG = (cOtherG - cLocalG) * factG + cLocalG;
+                finalB = (cOtherB - cLocalB) * factB + cLocalB;
+                break;
+              case 8:
+                finalR = (cOtherR - cLocalR) * factR + aLocal;
+                finalG = (cOtherG - cLocalG) * factG + aLocal;
+                finalB = (cOtherB - cLocalB) * factB + aLocal;
+                break;
+              case 9:
+                finalR = (-cLocalR) * factR + cLocalR;
+                finalG = (-cLocalG) * factG + cLocalG;
+                finalB = (-cLocalB) * factB + cLocalB;
+                break;
+              case 16:
+                finalR = (-cLocalR) * factR + aLocal;
+                finalG = (-cLocalG) * factG + aLocal;
+                finalB = (-cLocalB) * factB + aLocal;
+                break;
+            }
+            if (colorCombinerInvert) {
+              finalR = 1.0f - finalR;
+              finalG = 1.0f - finalG;
+              finalB = 1.0f - finalB;
+            }
           }
-          if (alphaCombinerInvert) finalA = 1.0f - finalA;
 
           red = std::clamp(finalR, 0.0f, 1.0f);
           green = std::clamp(finalG, 0.0f, 1.0f);
@@ -1244,39 +1307,42 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
                   return isDest ? (1.0f - srcC) : (1.0f - dstC);
                 case 7:
                   return 1.0f - dstA;
+                case 8:
+                  return isDest ? dstC : srcC;
+                case 9:
+                  return isDest ? (1.0f - dstC) : (1.0f - srcC);
                 case 15:
                   return isDest ? preFogC : std::min(srcA, 1.0f - dstA);
                 default:
                   return 1.0f;
               }
             };
-            red = std::clamp(
+            red = ApplyBlendOpScalar(
+                rgbBlendOp,
                 red * getF(rgbSrcBlend, red, preFogR, dstR, blendAlphaVal, dstA,
-                           false) +
-                    dstR * getF(rgbDstBlend, red, preFogR, dstR, blendAlphaVal,
-                                dstA, true),
-                0.0f, 1.0f);
-            green = std::clamp(
+                           false),
+                dstR * getF(rgbDstBlend, red, preFogR, dstR, blendAlphaVal,
+                            dstA, true));
+            green = ApplyBlendOpScalar(
+                rgbBlendOp,
                 green * getF(rgbSrcBlend, green, preFogG, dstG, blendAlphaVal,
-                             dstA, false) +
-                    dstG * getF(rgbDstBlend, green, preFogG, dstG,
-                                blendAlphaVal, dstA, true),
-                0.0f, 1.0f);
-            blue = std::clamp(
+                             dstA, false),
+                dstG * getF(rgbDstBlend, green, preFogG, dstG, blendAlphaVal,
+                            dstA, true));
+            blue = ApplyBlendOpScalar(
+                rgbBlendOp,
                 blue * getF(rgbSrcBlend, blue, preFogB, dstB, blendAlphaVal,
-                            dstA, false) +
-                    dstB * getF(rgbDstBlend, blue, preFogB, dstB, blendAlphaVal,
-                                dstA, true),
-                0.0f, 1.0f);
-            aVal = static_cast<uint32_t>(
-                std::clamp(
-                    blendAlphaVal * getF(alphaSrcBlend, 0, 0, 0, blendAlphaVal,
-                                         dstA, false) +
-                        dstA * getF(alphaDstBlend, 0, 0, 0, blendAlphaVal, dstA,
-                                    true),
-                    0.0f, 1.0f) *
-                    255.0f +
-                0.5f);
+                            dstA, false),
+                dstB * getF(rgbDstBlend, blue, preFogB, dstB, blendAlphaVal,
+                            dstA, true));
+            const float outA = ApplyBlendOpScalar(
+                alphaBlendOp,
+                blendAlphaVal * getF(alphaSrcBlend, blendAlphaVal,
+                                     blendAlphaVal, dstA, blendAlphaVal, dstA,
+                                     false),
+                dstA * getF(alphaDstBlend, blendAlphaVal, blendAlphaVal, dstA,
+                            blendAlphaVal, dstA, true));
+            aVal = static_cast<uint32_t>(outA * 255.0f + 0.5f);
             rVal = static_cast<uint32_t>(red * 255.0f + 0.5f);
             gVal = static_cast<uint32_t>(green * 255.0f + 0.5f);
             bVal = static_cast<uint32_t>(blue * 255.0f + 0.5f);
@@ -1334,7 +1400,10 @@ void SoftwareBackend::RasterizeSoftwareTriangleTile(
     const ModernVertex& a, const ModernVertex& b, const ModernVertex& c,
     int minX, int maxX, int minY, int maxY, const RasterizerState& state) {
   bool hasTexture = (state.boundTexAddress[0] != 0xFFFFFFFF);
-  bool blendEnabled = (state.rgbSrcBlend != 4 || state.rgbDstBlend != 0);
+  bool blendEnabled =
+      (state.rgbSrcBlend != 4 || state.rgbDstBlend != 0 ||
+       state.rgbBlendOp != 0 || state.alphaSrcBlend != 4 ||
+       state.alphaDstBlend != 0 || state.alphaBlendOp != 0);
   bool ditherEnabled = (state.ditherMode != 0);
   uint32_t key =
       (hasTexture ? 4 : 0) | (blendEnabled ? 2 : 0) | (ditherEnabled ? 1 : 0);

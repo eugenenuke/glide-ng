@@ -267,6 +267,10 @@ void OpenGLESBackend::DrawMaskedClearQuadGLES_Locked(
   glUniform1i(m_uAlphaFuncLoc, 1);
   glUniform1i(m_uAlphaLocalLoc, 0);
   glUniform1i(m_uAlphaInvertLoc, 0);
+  if (m_uExtCombineLoc != -1) {
+    const GLuint zeroExt[6] = {0u, 0u, 0u, 0u, 0u, 0u};
+    glUniform1uiv(m_uExtCombineLoc, 6, zeroExt);
+  }
   const int zeroTex[2] = {0, 0};
   glUniform1iv(m_uTextureEnabledLoc, 2, zeroTex);
   glUniform1i(m_uChromakeyEnabledLoc, 0);
@@ -543,6 +547,15 @@ void OpenGLESBackend::SyncStencilStateGLES_Locked() {
 #ifndef GL_SRC1_ALPHA_EXT
 #define GL_SRC1_ALPHA_EXT 0x8589
 #endif
+#ifndef GL_FUNC_ADD
+#define GL_FUNC_ADD 0x8006
+#endif
+#ifndef GL_FUNC_SUBTRACT
+#define GL_FUNC_SUBTRACT 0x800A
+#endif
+#ifndef GL_FUNC_REVERSE_SUBTRACT
+#define GL_FUNC_REVERSE_SUBTRACT 0x800B
+#endif
 
 static GLenum MapBlendFactorGLES(uint32_t factor, bool isDest, bool isAlpha) {
   switch (factor) {
@@ -566,6 +579,12 @@ static GLenum MapBlendFactorGLES(uint32_t factor, bool isDest, bool isAlpha) {
                                                // / ONE_MINUS_DST_COLOR (src)
     case 7:
       return GL_ONE_MINUS_DST_ALPHA;  // GR_BLEND_ONE_MINUS_DST_ALPHA
+    case 8:
+      return isDest ? GL_DST_COLOR : GL_SRC_COLOR;  // GR_BLEND_SAME_COLOR_EXT
+    case 9:
+      return isDest
+                 ? GL_ONE_MINUS_DST_COLOR
+                 : GL_ONE_MINUS_SRC_COLOR;  // GR_BLEND_ONE_MINUS_SAME_COLOR_EXT
     case 15:
       return isDest
                  ? (isAlpha ? GL_SRC1_ALPHA_EXT : GL_SRC1_COLOR_EXT)
@@ -576,13 +595,27 @@ static GLenum MapBlendFactorGLES(uint32_t factor, bool isDest, bool isAlpha) {
   }
 }
 
+static GLenum MapBlendOpGLES(uint32_t op) {
+  switch (op) {
+    case 1:
+      return GL_FUNC_SUBTRACT;  // GR_BLEND_OP_SUB
+    case 2:
+      return GL_FUNC_REVERSE_SUBTRACT;  // GR_BLEND_OP_REVSUB
+    case 0:
+    default:
+      return GL_FUNC_ADD;  // GR_BLEND_OP_ADD
+  }
+}
+
 void OpenGLESBackend::ApplyBlendingGLES() {
-  if (m_rgbSrcBlend == 4 && m_rgbDstBlend == 0 && m_alphaSrcBlend == 4 &&
-      m_alphaDstBlend == 0) {  // GR_BLEND_ONE & GR_BLEND_ZERO (disabled)
+  if (m_rgbSrcBlend == 4 && m_rgbDstBlend == 0 && m_rgbBlendOp == 0 &&
+      m_alphaSrcBlend == 4 && m_alphaDstBlend == 0 &&
+      m_alphaBlendOp == 0) {  // GR_BLEND_ONE & GR_BLEND_ZERO & ADD (disabled)
     glDisable(GL_BLEND);
   } else {
     glEnable(GL_BLEND);
-    glBlendEquation(GL_FUNC_ADD);
+    glBlendEquationSeparate(MapBlendOpGLES(m_rgbBlendOp),
+                            MapBlendOpGLES(m_alphaBlendOp));
     glBlendFuncSeparate(MapBlendFactorGLES(m_rgbSrcBlend, false, false),
                         MapBlendFactorGLES(m_rgbDstBlend, true, false),
                         MapBlendFactorGLES(m_alphaSrcBlend, false, true),

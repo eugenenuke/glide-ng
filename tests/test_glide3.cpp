@@ -2816,9 +2816,9 @@ TEST_CASE("Glide 3.x State Restoration Sanitization [VULN-01]", "[Glide3][State]
     // Alpha test op must be sanitized to default (7 - GR_CMP_ALWAYS)
     REQUIRE(checkPtr->alphaTestOp == 7);
 
-    // Blend modes must be sanitized to default (src=1, dst=0)
-    REQUIRE(checkPtr->rgbSrcBlend == 1);
-    REQUIRE(checkPtr->rgbDstBlend == 0);
+    // Blend modes must be sanitized to default (src=GR_BLEND_ONE=4, dst=GR_BLEND_ZERO=0)
+    REQUIRE(checkPtr->rgbSrcBlend == GR_BLEND_ONE);
+    REQUIRE(checkPtr->rgbDstBlend == GR_BLEND_ZERO);
 
     // Clamp mode must be sanitized to default (0 - GR_TEXTURECLAMP_WRAP)
     REQUIRE(checkPtr->clampS[0] == 0);
@@ -8339,6 +8339,635 @@ TEST_CASE("M10.5 VSA-100 TEXFMT (ARGB_8888, RGB_888, YUV, FXT1, DXT1-5)",
     }
     CHECK(nonBg >= 10);
   }
+
+  winClose(ctx);
+  glideShutdown();
+  ::dlclose(handle);
+  restoreCard();
+#endif
+}
+
+TEST_CASE("M10.6 VSA-100 COMBINE, grAlphaBlendFunctionExt, and TEXTUREBUFFER",
+          "[Glide3][M10][CombineExt]") {
+#ifdef __linux__
+  const char* prevCard = std::getenv("GLIDE_NG_CARD_MODEL");
+  std::string savedCard = prevCard ? prevCard : "";
+  const bool hadCard = (prevCard != nullptr);
+  auto restoreCard = [&]() {
+    if (hadCard) {
+      ::setenv("GLIDE_NG_CARD_MODEL", savedCard.c_str(), 1);
+    } else {
+      ::unsetenv("GLIDE_NG_CARD_MODEL");
+    }
+  };
+  ::setenv("GLIDE_NG_HEADLESS", "1", 1);
+
+  using GetStringFn = const char* (*)(FxU32);
+  using GetProcFn = GrProc (*)(char*);
+  using ColorCombineExtFn = void (*)(GrCCUColor_t, GrCombineMode_t,
+                                     GrCCUColor_t, GrCombineMode_t,
+                                     GrCCUColor_t, FxBool, GrCCUColor_t, FxBool,
+                                     FxU32, FxBool);
+  using AlphaCombineExtFn = void (*)(GrACUColor_t, GrCombineMode_t,
+                                     GrACUColor_t, GrCombineMode_t,
+                                     GrACUColor_t, FxBool, GrACUColor_t, FxBool,
+                                     FxU32, FxBool);
+  using TexColorCombineExtFn = void (*)(GrChipID_t, GrTCCUColor_t,
+                                        GrCombineMode_t, GrTCCUColor_t,
+                                        GrCombineMode_t, GrTCCUColor_t, FxBool,
+                                        GrTCCUColor_t, FxBool, FxU32, FxBool);
+  using TexAlphaCombineExtFn = void (*)(GrChipID_t, GrTACUColor_t,
+                                        GrCombineMode_t, GrTACUColor_t,
+                                        GrCombineMode_t, GrTACUColor_t, FxBool,
+                                        GrTACUColor_t, FxBool, FxU32, FxBool);
+  using ConstColorExtFn = void (*)(GrChipID_t, GrColor_t);
+  using BlendExtFn = void (*)(GrAlphaBlendFnc_t, GrAlphaBlendFnc_t,
+                              GrAlphaBlendOp_t, GrAlphaBlendFnc_t,
+                              GrAlphaBlendFnc_t, GrAlphaBlendOp_t);
+  using TexBufExtFn = void (*)(GrChipID_t, FxU32, GrLOD_t, GrLOD_t,
+                               GrAspectRatio_t, GrTextureFormat_t, FxU32);
+  using AuxBufExtFn = void (*)(GrBuffer_t);
+
+  // 1. Card-model gating checks across voodoo2, banshee, and voodoo5.
+  {
+    auto probeCard = [&](const char* cardModel, bool expectTexBuf,
+                         bool expectCombine) {
+      ::setenv("GLIDE_NG_CARD_MODEL", cardModel, 1);
+      void* h = OpenGlide3Handle();
+      REQUIRE(h != nullptr);
+      auto initFn = reinterpret_cast<void (*)()>(::dlsym(h, "grGlideInit"));
+      auto shutFn = reinterpret_cast<void (*)()>(::dlsym(h, "grGlideShutdown"));
+      auto getStr = reinterpret_cast<GetStringFn>(::dlsym(h, "grGetString"));
+      auto getProc = reinterpret_cast<GetProcFn>(::dlsym(h, "grGetProcAddress"));
+      REQUIRE(initFn != nullptr);
+      REQUIRE(shutFn != nullptr);
+      REQUIRE(getStr != nullptr);
+      REQUIRE(getProc != nullptr);
+      initFn();
+      const char* extStr = getStr(GR_EXTENSION);
+      REQUIRE(extStr != nullptr);
+      const std::string ext(extStr);
+      CHECK((ext.find("TEXTUREBUFFER") != std::string::npos) == expectTexBuf);
+      CHECK((ext.find("COMBINE") != std::string::npos) == expectCombine);
+
+      const char* texBufProcs[] = {"grTextureBufferExt",
+                                   "grTextureAuxBufferExt", "grAuxBufferExt"};
+      for (const char* p : texBufProcs) {
+        CHECK((getProc(const_cast<char*>(p)) != nullptr) == expectTexBuf);
+      }
+      const char* combineProcs[] = {
+          "grColorCombineExt",       "grAlphaCombineExt",
+          "grTexColorCombineExt",    "grTexAlphaCombineExt",
+          "grConstantColorValueExt", "grAlphaBlendFunctionExt"};
+      for (const char* p : combineProcs) {
+        CHECK((getProc(const_cast<char*>(p)) != nullptr) == expectCombine);
+      }
+      shutFn();
+      ::dlclose(h);
+    };
+
+    probeCard("voodoo2", /*expectTexBuf=*/false, /*expectCombine=*/false);
+    probeCard("banshee", /*expectTexBuf=*/true, /*expectCombine=*/false);
+    probeCard("voodoo5", /*expectTexBuf=*/true, /*expectCombine=*/true);
+  }
+
+  // 2. Full 4-quadrant visual showcase on Voodoo5.
+  ::setenv("GLIDE_NG_CARD_MODEL", "voodoo5", 1);
+  void* handle = OpenGlide3Handle();
+  REQUIRE(handle != nullptr);
+
+  auto glideInit = reinterpret_cast<void (*)()>(::dlsym(handle, "grGlideInit"));
+  auto glideShutdown =
+      reinterpret_cast<void (*)()>(::dlsym(handle, "grGlideShutdown"));
+  auto sstSelect =
+      reinterpret_cast<void (*)(int)>(::dlsym(handle, "grSstSelect"));
+  auto winOpen =
+      reinterpret_cast<GrContext_t (*)(AnyPtr, GrScreenResolution_t,
+                                       GrScreenRefresh_t, GrColorFormat_t,
+                                       GrOriginLocation_t, int, int)>(
+          ::dlsym(handle, "grSstWinOpen"));
+  auto winClose =
+      reinterpret_cast<FxBool (*)(GrContext_t)>(::dlsym(handle, "grSstWinClose"));
+  auto getProc =
+      reinterpret_cast<GetProcFn>(::dlsym(handle, "grGetProcAddress"));
+  auto vertexLayout = reinterpret_cast<void (*)(FxU32, FxI32, FxU32)>(
+      ::dlsym(handle, "grVertexLayout"));
+  auto bufferClear = reinterpret_cast<void (*)(GrColor_t, GrAlpha_t, FxU32)>(
+      ::dlsym(handle, "grBufferClear"));
+  auto renderBuffer = reinterpret_cast<void (*)(GrBuffer_t)>(
+      ::dlsym(handle, "grRenderBuffer"));
+  auto colorCombine =
+      reinterpret_cast<void (*)(GrCombineFunction_t, GrCombineFactor_t,
+                                GrCombineLocal_t, GrCombineOther_t, FxBool)>(
+          ::dlsym(handle, "grColorCombine"));
+  auto alphaCombine =
+      reinterpret_cast<void (*)(GrCombineFunction_t, GrCombineFactor_t,
+                                GrCombineLocal_t, GrCombineOther_t, FxBool)>(
+          ::dlsym(handle, "grAlphaCombine"));
+  auto texCombine = reinterpret_cast<void (*)(
+      GrChipID_t, GrCombineFunction_t, GrCombineFactor_t, GrCombineFunction_t,
+      GrCombineFactor_t, FxBool, FxBool)>(::dlsym(handle, "grTexCombine"));
+  auto alphaBlend =
+      reinterpret_cast<void (*)(GrAlphaBlendFnc_t, GrAlphaBlendFnc_t,
+                                GrAlphaBlendFnc_t, GrAlphaBlendFnc_t)>(
+          ::dlsym(handle, "grAlphaBlendFunction"));
+  auto constantColor = reinterpret_cast<void (*)(GrColor_t)>(
+      ::dlsym(handle, "grConstantColorValue"));
+  auto texDownload = reinterpret_cast<void (*)(GrChipID_t, FxU32, FxU32,
+                                               GrTexInfo*)>(
+      ::dlsym(handle, "grTexDownloadMipMap"));
+  auto texSource = reinterpret_cast<void (*)(GrChipID_t, FxU32, FxU32,
+                                             GrTexInfo*)>(
+      ::dlsym(handle, "grTexSource"));
+  auto texFilter =
+      reinterpret_cast<void (*)(GrChipID_t, GrTextureFilterMode_t,
+                                GrTextureFilterMode_t)>(
+          ::dlsym(handle, "grTexFilterMode"));
+  auto texClamp =
+      reinterpret_cast<void (*)(GrChipID_t, GrTextureClampMode_t,
+                                GrTextureClampMode_t)>(
+          ::dlsym(handle, "grTexClampMode"));
+  auto drawTri =
+      reinterpret_cast<void (*)(const void*, const void*, const void*)>(
+          ::dlsym(handle, "grDrawTriangle"));
+  auto readLfb = reinterpret_cast<FxBool (*)(
+      GrBuffer_t, FxU32, FxU32, FxU32, FxU32, FxU32, void*)>(
+      ::dlsym(handle, "grLfbReadRegion"));
+  auto writeLfb = reinterpret_cast<FxBool (*)(
+      GrBuffer_t, FxU32, FxU32, GrLfbSrcFmt_t, FxU32, FxU32, FxBool, FxI32,
+      void*)>(::dlsym(handle, "grLfbWriteRegion"));
+  auto getState =
+      reinterpret_cast<void (*)(void*)>(::dlsym(handle, "grGlideGetState"));
+  auto setState = reinterpret_cast<void (*)(const void*)>(
+      ::dlsym(handle, "grGlideSetState"));
+
+  glideInit();
+  sstSelect(0);
+  GrContext_t ctx = winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                            GR_COLORFORMAT_ARGB, GR_ORIGIN_UPPER_LEFT, 2, 1);
+  REQUIRE(ctx != 0);
+
+  auto colorCombineExt = reinterpret_cast<ColorCombineExtFn>(
+      reinterpret_cast<void*>(getProc(const_cast<char*>("grColorCombineExt"))));
+  auto alphaCombineExt = reinterpret_cast<AlphaCombineExtFn>(
+      reinterpret_cast<void*>(getProc(const_cast<char*>("grAlphaCombineExt"))));
+  auto texColorCombineExt = reinterpret_cast<TexColorCombineExtFn>(
+      reinterpret_cast<void*>(
+          getProc(const_cast<char*>("grTexColorCombineExt"))));
+  auto texAlphaCombineExt = reinterpret_cast<TexAlphaCombineExtFn>(
+      reinterpret_cast<void*>(
+          getProc(const_cast<char*>("grTexAlphaCombineExt"))));
+  auto constColorExt = reinterpret_cast<ConstColorExtFn>(
+      reinterpret_cast<void*>(
+          getProc(const_cast<char*>("grConstantColorValueExt"))));
+  auto alphaBlendExt = reinterpret_cast<BlendExtFn>(reinterpret_cast<void*>(
+      getProc(const_cast<char*>("grAlphaBlendFunctionExt"))));
+  auto textureBufferExt = reinterpret_cast<TexBufExtFn>(reinterpret_cast<void*>(
+      getProc(const_cast<char*>("grTextureBufferExt"))));
+  auto textureAuxBufferExt = reinterpret_cast<TexBufExtFn>(
+      reinterpret_cast<void*>(
+          getProc(const_cast<char*>("grTextureAuxBufferExt"))));
+  auto auxBufferExt = reinterpret_cast<AuxBufExtFn>(
+      reinterpret_cast<void*>(getProc(const_cast<char*>("grAuxBufferExt"))));
+  REQUIRE(colorCombineExt != nullptr);
+  REQUIRE(alphaCombineExt != nullptr);
+  REQUIRE(texColorCombineExt != nullptr);
+  REQUIRE(texAlphaCombineExt != nullptr);
+  REQUIRE(constColorExt != nullptr);
+  REQUIRE(alphaBlendExt != nullptr);
+  REQUIRE(textureBufferExt != nullptr);
+  REQUIRE(textureAuxBufferExt != nullptr);
+  REQUIRE(auxBufferExt != nullptr);
+
+  struct M106Vert {
+    float x, y;
+    float r, g, b, a;
+    float oow;
+    float s0, t0;
+    float s1, t1;
+  };
+  vertexLayout(GR_PARAM_XY, offsetof(M106Vert, x), GR_PARAM_ENABLE);
+  vertexLayout(GR_PARAM_RGB, offsetof(M106Vert, r), GR_PARAM_ENABLE);
+  vertexLayout(GR_PARAM_A, offsetof(M106Vert, a), GR_PARAM_ENABLE);
+  vertexLayout(GR_PARAM_Q, offsetof(M106Vert, oow), GR_PARAM_ENABLE);
+  vertexLayout(GR_PARAM_ST0, offsetof(M106Vert, s0), GR_PARAM_ENABLE);
+  vertexLayout(GR_PARAM_ST1, offsetof(M106Vert, s1), GR_PARAM_ENABLE);
+
+  auto drawQuad = [&](float x0, float y0, float x1, float y1, float r, float g,
+                      float b, float a) {
+    M106Vert v0{x0, y0, r, g, b, a, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+    M106Vert v1{x1, y0, r, g, b, a, 1.0f, 255.0f, 0.0f, 255.0f, 0.0f};
+    M106Vert v2{x1, y1, r, g, b, a, 1.0f, 255.0f, 255.0f, 255.0f, 255.0f};
+    M106Vert v3{x0, y1, r, g, b, a, 1.0f, 0.0f, 255.0f, 0.0f, 255.0f};
+    drawTri(&v0, &v1, &v2);
+    drawTri(&v0, &v2, &v3);
+  };
+
+  bufferClear(0xFF181C24u, 255, 0xFFFFu);
+  alphaBlend(GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_ONE, GR_BLEND_ZERO);
+
+  // Subtle quadrant border frames
+  colorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+               GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_NONE, FXFALSE);
+  alphaCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+               GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_NONE, FXFALSE);
+  drawQuad(8, 8, 312, 232, 48, 56, 72, 255);
+  drawQuad(328, 8, 632, 232, 48, 56, 72, 255);
+  drawQuad(8, 248, 312, 472, 48, 56, 72, 255);
+  drawQuad(328, 248, 632, 472, 48, 56, 72, 255);
+
+  // =========================================================================
+  // Q1 (Top-Left): grColorCombineExt + grAlphaCombineExt (6 swatches, 3x2)
+  // =========================================================================
+  auto q1Rect = [](int col, int row, float& x0, float& y0, float& x1,
+                   float& y1) {
+    x0 = 16.0f + col * 98.0f;
+    y0 = 16.0f + row * 106.0f;
+    x1 = x0 + 90.0f;
+    y1 = y0 + 98.0f;
+  };
+
+  // Q1(0,0): Raw-B bypass (b_mode=ZERO, c=B, d=B) + shift=1 (2x)
+  // K=(0.60,0.10,0.20), I=(0.20,0.40,0.30) -> ((K+0)*I + I)*2 = (163, 224, 184)
+  {
+    float x0, y0, x1, y1;
+    q1Rect(0, 0, x0, y0, x1, y1);
+    constantColor(0xFF991A33u);  // (153, 26, 51)
+    colorCombineExt(GR_CMBX_CONSTANT_COLOR, GR_FUNC_MODE_X, GR_CMBX_ITRGB,
+                    GR_FUNC_MODE_ZERO, GR_CMBX_B, FXFALSE, GR_CMBX_B, FXFALSE,
+                    1u, FXFALSE);
+    drawQuad(x0, y0, x1, y1, 51.0f, 102.0f, 77.0f, 255.0f);
+  }
+
+  // Q1(1,0): X_MINUS_HALF + ONE_MINUS_X + invert=TRUE
+  // K=(204,153,128)->(0.3,0.1,0), I=(179,51,230)->(0.3,0.8,0.1), 1-(a+b)=(102,26,230)
+  {
+    float x0, y0, x1, y1;
+    q1Rect(1, 0, x0, y0, x1, y1);
+    constantColor(0xFFCC9980u);
+    colorCombineExt(GR_CMBX_CONSTANT_COLOR, GR_FUNC_MODE_X_MINUS_HALF,
+                    GR_CMBX_ITRGB, GR_FUNC_MODE_ONE_MINUS_X, GR_CMBX_ZERO,
+                    FXTRUE, GR_CMBX_ZERO, FXFALSE, 0u, FXTRUE);
+    drawQuad(x0, y0, x1, y1, 179.0f, 51.0f, 230.0f, 255.0f);
+  }
+
+  // Q1(2,0): NEGATIVE_X subtraction (K - I) clamped to [0,1]
+  // K=(230,204,102), I=(51,128,179) -> (179, 76, 0)
+  {
+    float x0, y0, x1, y1;
+    q1Rect(2, 0, x0, y0, x1, y1);
+    constantColor(0xFFE6CC66u);
+    colorCombineExt(GR_CMBX_CONSTANT_COLOR, GR_FUNC_MODE_X, GR_CMBX_ITRGB,
+                    GR_FUNC_MODE_NEGATIVE_X, GR_CMBX_ZERO, FXTRUE, GR_CMBX_ZERO,
+                    FXFALSE, 0u, FXFALSE);
+    drawQuad(x0, y0, x1, y1, 51.0f, 128.0f, 179.0f, 255.0f);
+  }
+
+  // Q1(0,1): grAlphaCombineExt feeding ALOCAL + alpha blend over (0, 0, 100)
+  {
+    float x0, y0, x1, y1;
+    q1Rect(0, 1, x0, y0, x1, y1);
+    colorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+                 GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_NONE, FXFALSE);
+    drawQuad(x0, y0, x1, y1, 0.0f, 0.0f, 100.0f, 255.0f);
+
+    constantColor(0x80FF0000u);  // A=128 (~0.502), RGB=(255,0,0)
+    alphaCombineExt(GR_CMBX_ITALPHA, GR_FUNC_MODE_X,
+                    GR_CMBX_CONSTANT_ALPHA, GR_FUNC_MODE_ZERO,
+                    GR_CMBX_ZERO, FXTRUE, GR_CMBX_ZERO, FXFALSE, 0u, FXFALSE);
+    colorCombineExt(GR_CMBX_CONSTANT_COLOR, GR_FUNC_MODE_X, GR_CMBX_ZERO,
+                    GR_FUNC_MODE_ZERO, GR_CMBX_ALOCAL, FXFALSE, GR_CMBX_ZERO,
+                    FXFALSE, 0u, FXFALSE);
+    alphaBlend(GR_BLEND_SRC_ALPHA, GR_BLEND_ONE_MINUS_SRC_ALPHA, GR_BLEND_ONE,
+               GR_BLEND_ZERO);
+    // srcRGB=(128,0,0), srcA=204/255=0.80 -> (102, 0, 20)
+    drawQuad(x0, y0, x1, y1, 0.0f, 255.0f, 0.0f, 204.0f);
+    alphaBlend(GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_ONE, GR_BLEND_ZERO);
+  }
+
+  // Q1(1,1): grColorCombineExt reading GR_CMBX_AOTHER (= ITALPHA = 204)
+  {
+    float x0, y0, x1, y1;
+    q1Rect(1, 1, x0, y0, x1, y1);
+    colorCombineExt(GR_CMBX_AOTHER, GR_FUNC_MODE_X, GR_CMBX_ZERO,
+                    GR_FUNC_MODE_ZERO, GR_CMBX_ZERO, FXTRUE, GR_CMBX_ZERO,
+                    FXFALSE, 0u, FXFALSE);
+    drawQuad(x0, y0, x1, y1, 10.0f, 20.0f, 30.0f, 204.0f);
+  }
+
+  // Q1(2,1): Legacy grColorCombine resets extColorCombine while keeping extAlphaCombine
+  {
+    float x0, y0, x1, y1;
+    q1Rect(2, 1, x0, y0, x1, y1);
+    colorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+                 GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_NONE, FXFALSE);
+    drawQuad(x0, y0, x1, y1, 200.0f, 0.0f, 0.0f, 255.0f);
+
+    constantColor(0xFF00FF00u);  // Constant Green; extAlphaCombine still reads ITALPHA=128
+    colorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+                 GR_COMBINE_LOCAL_CONSTANT, GR_COMBINE_OTHER_NONE, FXFALSE);
+    alphaBlend(GR_BLEND_SRC_ALPHA, GR_BLEND_ONE_MINUS_SRC_ALPHA, GR_BLEND_ONE,
+               GR_BLEND_ZERO);
+    // (0,255,0)*0.502 + (200,0,0)*0.498 = (100, 128, 0)
+    drawQuad(x0, y0, x1, y1, 0.0f, 0.0f, 0.0f, 128.0f);
+    alphaBlend(GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_ONE, GR_BLEND_ZERO);
+  }
+
+  // Reset legacy alpha combine before Q2
+  alphaCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+               GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_NONE, FXFALSE);
+
+  // =========================================================================
+  // Q2 (Top-Right): grTexColorCombineExt + grTexAlphaCombineExt +
+  //                 grConstantColorValueExt (Single-TMU & Dual-TMU cascade)
+  // =========================================================================
+  {
+    std::vector<uint32_t> tex0Pixels(16 * 16, 0xFFC82814u);  // (200, 40, 20, 255)
+    std::vector<uint32_t> tex1Pixels(16 * 16, 0xC82850DCu);  // (40, 80, 220, 200)
+    GrTexInfo ti0{GR_LOD_LOG2_16, GR_LOD_LOG2_16, GR_ASPECT_LOG2_1x1,
+                  GR_TEXFMT_ARGB_8888, tex0Pixels.data()};
+    GrTexInfo ti1{GR_LOD_LOG2_16, GR_LOD_LOG2_16, GR_ASPECT_LOG2_1x1,
+                  GR_TEXFMT_ARGB_8888, tex1Pixels.data()};
+    texDownload(GR_TMU0, 0x0u, GR_MIPMAPLEVELMASK_BOTH, &ti0);
+    texDownload(GR_TMU1, 0x0u, GR_MIPMAPLEVELMASK_BOTH, &ti1);
+    texFilter(GR_TMU0, GR_TEXTUREFILTER_POINT_SAMPLED,
+              GR_TEXTUREFILTER_POINT_SAMPLED);
+    texFilter(GR_TMU1, GR_TEXTUREFILTER_POINT_SAMPLED,
+              GR_TEXTUREFILTER_POINT_SAMPLED);
+    texClamp(GR_TMU0, GR_TEXTURECLAMP_CLAMP, GR_TEXTURECLAMP_CLAMP);
+    texClamp(GR_TMU1, GR_TEXTURECLAMP_CLAMP, GR_TEXTURECLAMP_CLAMP);
+    texSource(GR_TMU0, 0x0u, GR_MIPMAPLEVELMASK_BOTH, &ti0);
+    texSource(GR_TMU1, 0x0u, GR_MIPMAPLEVELMASK_BOTH, &ti1);
+
+    colorCombine(GR_COMBINE_FUNCTION_SCALE_OTHER, GR_COMBINE_FACTOR_ONE,
+                 GR_COMBINE_LOCAL_NONE, GR_COMBINE_OTHER_TEXTURE, FXFALSE);
+
+    // Q2 Left: Single-TMU0: LOCAL_TEXTURE_RGB + TMU_CCOLOR -> (220, 220, 80)
+    constColorExt(GR_TMU0, 0xFF14B43Cu);  // (20, 180, 60, 255)
+    texColorCombineExt(GR_TMU0, GR_CMBX_LOCAL_TEXTURE_RGB, GR_FUNC_MODE_X,
+                       GR_CMBX_TMU_CCOLOR, GR_FUNC_MODE_X, GR_CMBX_ZERO, FXTRUE,
+                       GR_CMBX_ZERO, FXFALSE, 0u, FXFALSE);
+    texAlphaCombineExt(GR_TMU0, GR_CMBX_LOCAL_TEXTURE_ALPHA, GR_FUNC_MODE_X,
+                       GR_CMBX_ZERO, GR_FUNC_MODE_ZERO, GR_CMBX_ZERO, FXTRUE,
+                       GR_CMBX_ZERO, FXFALSE, 0u, FXFALSE);
+    drawQuad(338, 18, 476, 222, 255, 255, 255, 255);
+
+    // Q2 Right: Dual-TMU cascade:
+    //   TMU1 RGB = tex1 (40,80,220) + tmuConst1 (0,120,0) = (40,200,220)
+    //   TMU1 A   = tex1.a (200/255 = 0.7843)
+    //   TMU0 RGB = (OTHER - LOCAL) * OTHER_ALPHA + LOCAL = (75, 165, 177)
+    constColorExt(GR_TMU1, 0xFF007800u);  // (0, 120, 0, 255)
+    texColorCombineExt(GR_TMU1, GR_CMBX_LOCAL_TEXTURE_RGB, GR_FUNC_MODE_X,
+                       GR_CMBX_TMU_CCOLOR, GR_FUNC_MODE_X, GR_CMBX_ZERO, FXTRUE,
+                       GR_CMBX_ZERO, FXFALSE, 0u, FXFALSE);
+    texAlphaCombineExt(GR_TMU1, GR_CMBX_LOCAL_TEXTURE_ALPHA, GR_FUNC_MODE_X,
+                       GR_CMBX_ZERO, GR_FUNC_MODE_ZERO, GR_CMBX_ZERO, FXTRUE,
+                       GR_CMBX_ZERO, FXFALSE, 0u, FXFALSE);
+    texColorCombineExt(GR_TMU0, GR_CMBX_OTHER_TEXTURE_RGB, GR_FUNC_MODE_X,
+                       GR_CMBX_LOCAL_TEXTURE_RGB, GR_FUNC_MODE_NEGATIVE_X,
+                       GR_CMBX_OTHER_TEXTURE_ALPHA, FXFALSE,
+                       GR_CMBX_LOCAL_TEXTURE_RGB, FXFALSE, 0u, FXFALSE);
+    drawQuad(484, 18, 622, 222, 255, 255, 255, 255);
+
+    // Restore legacy TMU combiners
+    texCombine(GR_TMU0, GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+               GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE, FXFALSE,
+               FXFALSE);
+    texCombine(GR_TMU1, GR_COMBINE_FUNCTION_ZERO, GR_COMBINE_FACTOR_NONE,
+               GR_COMBINE_FUNCTION_ZERO, GR_COMBINE_FACTOR_NONE, FXFALSE,
+               FXFALSE);
+  }
+
+  // =========================================================================
+  // Q3 (Bottom-Left): grAlphaBlendFunctionExt (2x2 swatches)
+  // =========================================================================
+  {
+    colorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+                 GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_NONE, FXFALSE);
+    alphaCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+                 GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_NONE, FXFALSE);
+
+    auto q3Rect = [](int col, int row, float& x0, float& y0, float& x1,
+                     float& y1) {
+      x0 = 16.0f + col * 148.0f;
+      y0 = 256.0f + row * 106.0f;
+      x1 = x0 + 140.0f;
+      y1 = y0 + 98.0f;
+    };
+
+    // Q3(0,0): GR_BLEND_OP_SUB -> Src(220,190,50) - Dst(60,100,230) = (160, 90, 0)
+    {
+      float x0, y0, x1, y1;
+      q3Rect(0, 0, x0, y0, x1, y1);
+      alphaBlend(GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_ONE, GR_BLEND_ZERO);
+      drawQuad(x0, y0, x1, y1, 60, 100, 230, 255);
+      alphaBlendExt(GR_BLEND_ONE, GR_BLEND_ONE, GR_BLEND_OP_SUB, GR_BLEND_ONE,
+                    GR_BLEND_ZERO, GR_BLEND_OP_ADD);
+      drawQuad(x0, y0, x1, y1, 220, 190, 50, 255);
+    }
+
+    // Q3(1,0): GR_BLEND_OP_REVSUB -> Dst(60,100,230) - Src(220,190,50) = (0, 0, 180)
+    {
+      float x0, y0, x1, y1;
+      q3Rect(1, 0, x0, y0, x1, y1);
+      alphaBlend(GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_ONE, GR_BLEND_ZERO);
+      drawQuad(x0, y0, x1, y1, 60, 100, 230, 255);
+      alphaBlendExt(GR_BLEND_ONE, GR_BLEND_ONE, GR_BLEND_OP_REVSUB,
+                    GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_OP_ADD);
+      drawQuad(x0, y0, x1, y1, 220, 190, 50, 255);
+    }
+
+    // Q3(0,1): GR_BLEND_SAME_COLOR_EXT -> Src(204,128,255)^2 = (163, 64, 255)
+    {
+      float x0, y0, x1, y1;
+      q3Rect(0, 1, x0, y0, x1, y1);
+      alphaBlend(GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_ONE, GR_BLEND_ZERO);
+      drawQuad(x0, y0, x1, y1, 32, 32, 32, 255);
+      alphaBlendExt(GR_BLEND_SAME_COLOR_EXT, GR_BLEND_ZERO, GR_BLEND_OP_ADD,
+                    GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_OP_ADD);
+      drawQuad(x0, y0, x1, y1, 204, 128, 255, 255);
+    }
+
+    // Q3(1,1): GR_BLEND_ONE_MINUS_SAME_COLOR_EXT on both src & dst
+    // Dst=(128,255,0)->(0.25,0,0), Src=(128,128,51)->(0.25,0.25,0.16) => (128, 64, 41)
+    {
+      float x0, y0, x1, y1;
+      q3Rect(1, 1, x0, y0, x1, y1);
+      alphaBlend(GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_ONE, GR_BLEND_ZERO);
+      drawQuad(x0, y0, x1, y1, 128, 255, 0, 255);
+      alphaBlendExt(GR_BLEND_ONE_MINUS_SAME_COLOR_EXT,
+                    GR_BLEND_ONE_MINUS_SAME_COLOR_EXT, GR_BLEND_OP_ADD,
+                    GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_OP_ADD);
+      drawQuad(x0, y0, x1, y1, 128, 128, 51, 255);
+    }
+
+    alphaBlend(GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_ONE, GR_BLEND_ZERO);
+  }
+
+  // =========================================================================
+  // Q4 (Bottom-Right): TEXTUREBUFFER dynamic render-to-texture
+  //   (Executed AFTER Q1..Q3 to prove main backbuffer is saved & restored!)
+  // =========================================================================
+  {
+    constexpr FxU32 kTexAAddr = 0x40000u;
+    constexpr FxU32 kTexBAddr = 0x50000u;
+
+    colorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+                 GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_NONE, FXFALSE);
+    alphaCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+                 GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_NONE, FXFALSE);
+    alphaBlend(GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_ONE, GR_BLEND_ZERO);
+
+    // Enter TEXTUREBUFFER mode BEFORE grTextureBufferExt (matches SDK test41.c)
+    renderBuffer(GR_BUFFER_TEXTUREBUFFER_EXT);
+    auxBufferExt(GR_BUFFER_TEXTUREAUXBUFFER_EXT);
+    textureAuxBufferExt(GR_TMU0, 0x60000u, GR_LOD_LOG2_128, GR_LOD_LOG2_128,
+                        GR_ASPECT_LOG2_1x1, GR_TEXFMT_RGB_565,
+                        GR_MIPMAPLEVELMASK_BOTH);
+
+    // Target A: 128x128 navy bg + bright yellow diamond + 16x16 magenta LFB patch
+    textureBufferExt(GR_TMU0, kTexAAddr, GR_LOD_LOG2_128, GR_LOD_LOG2_128,
+                     GR_ASPECT_LOG2_1x1, GR_TEXFMT_RGB_565,
+                     GR_MIPMAPLEVELMASK_BOTH);
+    bufferClear(0xFF102080u, 255, 0xFFFFu);
+    {
+      M106Vert top{64, 16, 255, 224, 0, 255, 1, 0, 0, 0, 0};
+      M106Vert right{112, 64, 255, 224, 0, 255, 1, 0, 0, 0, 0};
+      M106Vert bot{64, 112, 255, 224, 0, 255, 1, 0, 0, 0, 0};
+      M106Vert left{16, 64, 255, 224, 0, 255, 1, 0, 0, 0, 0};
+      drawTri(&top, &right, &bot);
+      drawTri(&top, &bot, &left);
+    }
+    std::vector<uint16_t> magentaPatch(16 * 16, 0xF81Fu);
+    REQUIRE(writeLfb(GR_BUFFER_TEXTUREBUFFER_EXT, 8, 8, GR_LFB_SRC_FMT_565, 16,
+                     16, FXFALSE, 16 * 2, magentaPatch.data()) == FXTRUE);
+
+    // Switch directly to Target B (64x64) MID-MODE (must auto-commit Target A!)
+    textureBufferExt(GR_TMU0, kTexBAddr, GR_LOD_LOG2_64, GR_LOD_LOG2_64,
+                     GR_ASPECT_LOG2_1x1, GR_TEXFMT_RGB_565,
+                     GR_MIPMAPLEVELMASK_BOTH);
+    bufferClear(0xFF00B440u, 255, 0xFFFFu);
+    {
+      M106Vert t0{32, 8, 255, 32, 32, 255, 1, 0, 0, 0, 0};
+      M106Vert t1{56, 56, 255, 32, 32, 255, 1, 0, 0, 0, 0};
+      M106Vert t2{8, 56, 255, 32, 32, 255, 1, 0, 0, 0, 0};
+      drawTri(&t0, &t1, &t2);
+    }
+
+    // Exit TEXTUREBUFFER mode (auto-commits Target B and restores Q1..Q3 backbuffer)
+    renderBuffer(GR_BUFFER_BACKBUFFER);
+    auxBufferExt(GR_BUFFER_AUXBUFFER);
+
+    // Sample Target A and Target B onto two quads inside Q4
+    colorCombine(GR_COMBINE_FUNCTION_SCALE_OTHER, GR_COMBINE_FACTOR_ONE,
+                 GR_COMBINE_LOCAL_NONE, GR_COMBINE_OTHER_TEXTURE, FXFALSE);
+    texCombine(GR_TMU0, GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+               GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE, FXFALSE,
+               FXFALSE);
+    texFilter(GR_TMU0, GR_TEXTUREFILTER_POINT_SAMPLED,
+              GR_TEXTUREFILTER_POINT_SAMPLED);
+
+    GrTexInfo infoA{GR_LOD_LOG2_128, GR_LOD_LOG2_128, GR_ASPECT_LOG2_1x1,
+                    GR_TEXFMT_RGB_565, nullptr};
+    texSource(GR_TMU0, kTexAAddr, GR_MIPMAPLEVELMASK_BOTH, &infoA);
+    drawQuad(338, 258, 474, 394, 255, 255, 255, 255);
+
+    GrTexInfo infoB{GR_LOD_LOG2_64, GR_LOD_LOG2_64, GR_ASPECT_LOG2_1x1,
+                    GR_TEXFMT_RGB_565, nullptr};
+    texSource(GR_TMU0, kTexBAddr, GR_MIPMAPLEVELMASK_BOTH, &infoB);
+    drawQuad(486, 258, 622, 394, 255, 255, 255, 255);
+  }
+
+  // =========================================================================
+  // Q4 Bottom Strip ([338..622, 404..462]): grGlideGetState / grGlideSetState
+  //   round-trip preserving COMBINE + BlendExt state
+  // =========================================================================
+  {
+    // Draw dark base strip (40, 20, 100)
+    colorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+                 GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_NONE, FXFALSE);
+    alphaBlend(GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_ONE, GR_BLEND_ZERO);
+    drawQuad(338, 404, 622, 462, 40, 20, 100, 255);
+
+    // Configure ext combine + ext blend and snapshot state
+    constantColor(0xFF00C864u);  // (0, 200, 100)
+    colorCombineExt(GR_CMBX_CONSTANT_COLOR, GR_FUNC_MODE_X, GR_CMBX_ITRGB,
+                    GR_FUNC_MODE_X, GR_CMBX_ZERO, FXTRUE, GR_CMBX_ZERO, FXFALSE,
+                    0u, FXFALSE);
+    alphaBlendExt(GR_BLEND_ONE, GR_BLEND_ONE, GR_BLEND_OP_SUB, GR_BLEND_ONE,
+                  GR_BLEND_ZERO, GR_BLEND_OP_ADD);
+    uint8_t savedState[1024] = {};
+    getState(savedState);
+
+    // Clobber with legacy state
+    constantColor(0xFF000000u);
+    colorCombine(GR_COMBINE_FUNCTION_ZERO, GR_COMBINE_FACTOR_NONE,
+                 GR_COMBINE_LOCAL_NONE, GR_COMBINE_OTHER_NONE, FXFALSE);
+    alphaBlend(GR_BLEND_ZERO, GR_BLEND_ONE, GR_BLEND_ONE, GR_BLEND_ZERO);
+
+    // Restore and draw: Src = K(0,200,100) + I(100,20,40) = (100,220,140)
+    // SUB Dst(40,20,100) => (60, 200, 40) (bright leaf green!)
+    setState(savedState);
+    drawQuad(338, 404, 622, 462, 100, 20, 40, 255);
+  }
+
+  std::vector<uint32_t> fb(640 * 480, 0u);
+  REQUIRE(readLfb(GR_BUFFER_BACKBUFFER, 0, 0, 640, 480, 640 * 4, fb.data()) ==
+          FXTRUE);
+
+  if (const char* snapPath = std::getenv("GLIDE_NG_M10_SNAPSHOT_PATH")) {
+    std::ofstream ppm(snapPath, std::ios::binary | std::ios::trunc);
+    if (ppm.is_open()) {
+      ppm << "P6\n640 480\n255\n";
+      for (uint32_t p : fb) {
+        uint8_t rgb[3] = {static_cast<uint8_t>((p >> 16) & 0xFFu),
+                          static_cast<uint8_t>((p >> 8) & 0xFFu),
+                          static_cast<uint8_t>(p & 0xFFu)};
+        ppm.write(reinterpret_cast<const char*>(rgb), 3);
+      }
+    }
+  }
+
+  auto checkPx = [&](int px, int py, int expR, int expG, int expB, int tol,
+                     const char* label) {
+    const uint32_t p =
+        fb[static_cast<size_t>(py) * 640u + static_cast<size_t>(px)];
+    const int r = static_cast<int>((p >> 16) & 0xFFu);
+    const int g = static_cast<int>((p >> 8) & 0xFFu);
+    const int b = static_cast<int>(p & 0xFFu);
+    INFO(label << " @(" << px << "," << py << ") RGB=(" << r << "," << g << ","
+               << b << ") expected=(" << expR << "," << expG << "," << expB
+               << ")");
+    CHECK(std::abs(r - expR) <= tol);
+    CHECK(std::abs(g - expG) <= tol);
+    CHECK(std::abs(b - expB) <= tol);
+  };
+
+  // Q1 assertions (also proves TEXTUREBUFFER did NOT clobber top-left Q1!)
+  checkPx(60, 65, 163, 224, 184, 5, "Q1(0,0) raw-B + 2x shift");
+  checkPx(158, 65, 102, 26, 230, 5, "Q1(1,0) X_MINUS_HALF + ONE_MINUS_X + inv");
+  checkPx(256, 65, 179, 76, 0, 5, "Q1(2,0) NEGATIVE_X sub");
+  checkPx(60, 171, 102, 0, 20, 5, "Q1(0,1) grAlphaCombineExt + ALOCAL blend");
+  checkPx(158, 171, 204, 204, 204, 5, "Q1(1,1) AOTHER grayscale");
+  checkPx(256, 171, 100, 128, 0, 5, "Q1(2,1) legacy color + ext alpha");
+
+  // Q2 assertions (TMU COMBINE + grConstantColorValueExt)
+  checkPx(407, 120, 220, 220, 80, 5, "Q2-Left single-TMU + TMU_CCOLOR");
+  checkPx(553, 120, 75, 165, 177, 5, "Q2-Right dual-TMU lerp cascade");
+
+  // Q3 assertions (grAlphaBlendFunctionExt)
+  checkPx(86, 305, 160, 90, 0, 5, "Q3(0,0) GR_BLEND_OP_SUB");
+  checkPx(234, 305, 0, 0, 180, 5, "Q3(1,0) GR_BLEND_OP_REVSUB");
+  checkPx(86, 411, 163, 64, 255, 5, "Q3(0,1) GR_BLEND_SAME_COLOR_EXT");
+  checkPx(234, 411, 128, 64, 41, 5, "Q3(1,1) GR_BLEND_ONE_MINUS_SAME_COLOR_EXT");
+
+  // Q4 assertions (TEXTUREBUFFER Target A & Target B + state round-trip)
+  checkPx(406, 326, 255, 224, 0, 8, "Q4-TexA center yellow diamond");
+  checkPx(460, 270, 16, 32, 128, 8, "Q4-TexA corner navy clear");
+  checkPx(352, 272, 255, 0, 255, 8, "Q4-TexA LFB magenta patch");
+  checkPx(554, 340, 255, 32, 32, 8, "Q4-TexB center red triangle");
+  checkPx(500, 272, 0, 180, 64, 8, "Q4-TexB corner emerald clear");
+  checkPx(480, 433, 60, 200, 40, 5, "Q4-Strip grGlideGetState/SetState round-trip");
 
   winClose(ctx);
   glideShutdown();

@@ -1702,8 +1702,10 @@ void SoftwareBackend::ResolveActiveState() {
   state.stipplePattern = m_stipplePattern;
   state.rgbSrcBlend = m_rgbSrcBlend;
   state.rgbDstBlend = m_rgbDstBlend;
+  state.rgbBlendOp = m_rgbBlendOp;
   state.alphaSrcBlend = m_alphaSrcBlend;
   state.alphaDstBlend = m_alphaDstBlend;
+  state.alphaBlendOp = m_alphaBlendOp;
   state.alphaTestOp = m_alphaTestOp;
   state.alphaTestRefVal = m_alphaTestRefVal;
   state.clipMinX = m_clipMinX;
@@ -1787,6 +1789,14 @@ void SoftwareBackend::ResolveActiveState() {
   state.texCombinerRgbInvert[1] = m_texCombinerRgbInvert[1];
   state.texCombinerAlphaInvert[0] = m_texCombinerAlphaInvert[0];
   state.texCombinerAlphaInvert[1] = m_texCombinerAlphaInvert[1];
+  state.extColorCombine = m_extColorCombine;
+  state.extAlphaCombine = m_extAlphaCombine;
+  state.extTexColorCombine[0] = m_extTexColorCombine[0];
+  state.extTexColorCombine[1] = m_extTexColorCombine[1];
+  state.extTexAlphaCombine[0] = m_extTexAlphaCombine[0];
+  state.extTexAlphaCombine[1] = m_extTexAlphaCombine[1];
+  state.tmuConstantColor[0] = m_tmuConstantColor[0];
+  state.tmuConstantColor[1] = m_tmuConstantColor[1];
 
   state.constantColor = m_constantColor;
   state.stwHintMask = m_stwHintMask;

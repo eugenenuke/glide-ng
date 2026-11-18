@@ -144,6 +144,10 @@ uniform int uTexAlphaFactor[2];
 uniform int uTexRgbInvert[2];
 uniform int uTexAlphaInvert[2];
 
+// VSA-100 COMBINE extension uniforms (highp uint for bit 31 active flag)
+uniform highp uint uExtCombine[6];
+uniform vec4 uTmuConstantColor[2];
+
 uniform int uChromakeyEnabled;
 uniform vec4 uChromakeyValue;
 uniform int uChromakeyRangeEnabled;
@@ -314,6 +318,190 @@ vec4 evaluateTmuStageGLES(
     return vec4(finalC, finalA);
 }
 
+vec3 applyCombineMode3GLES(vec3 x, uint mode) {
+    if (mode == 0u) return vec3(0.0);
+    if (mode == 1u) return x;
+    if (mode == 2u) return vec3(1.0) - x;
+    if (mode == 3u) return -x;
+    if (mode == 4u) return x - vec3(0.5);
+    if (mode == 5u) return vec3(1.0);
+    if (mode == 6u) return vec3(-0.5);
+    return x;
+}
+
+float applyCombineMode1GLES(float x, uint mode) {
+    if (mode == 0u) return 0.0;
+    if (mode == 1u) return x;
+    if (mode == 2u) return 1.0 - x;
+    if (mode == 3u) return -x;
+    if (mode == 4u) return x - 0.5;
+    if (mode == 5u) return 1.0;
+    if (mode == 6u) return -0.5;
+    return x;
+}
+
+vec3 fetchTmuRgbSrcGLES(uint src, vec4 localVal, vec4 otherVal, vec4 tmuConst,
+                        vec4 iterColor, float detailFactor, float lodFrac) {
+    if (src == 0x00u) return vec3(0.0);
+    if (src == 0x01u) return vec3(localVal.a);
+    if (src == 0x07u) return vec3(detailFactor);
+    if (src == 0x08u) return vec3(iterColor.a);
+    if (src == 0x09u) return iterColor.rgb;
+    if (src == 0x0Au) return vec3(localVal.a);
+    if (src == 0x0Bu) return localVal.rgb;
+    if (src == 0x0Cu) return vec3(lodFrac);
+    if (src == 0x0Du) return vec3(otherVal.a);
+    if (src == 0x0Eu) return otherVal.rgb;
+    if (src == 0x0Fu) return localVal.rgb;
+    if (src == 0x10u) return vec3(tmuConst.a);
+    if (src == 0x11u) return tmuConst.rgb;
+    return vec3(0.0);
+}
+
+float fetchTmuAlphaSrcGLES(uint src, vec4 localVal, vec4 otherVal, vec4 tmuConst,
+                           vec4 iterColor, float detailFactor, float lodFrac) {
+    if (src == 0x00u) return 0.0;
+    if (src == 0x01u) return localVal.a;
+    if (src == 0x07u) return detailFactor;
+    if (src == 0x08u) return iterColor.a;
+    if (src == 0x0Au) return localVal.a;
+    if (src == 0x0Cu) return lodFrac;
+    if (src == 0x0Du) return otherVal.a;
+    if (src == 0x10u) return tmuConst.a;
+    return 0.0;
+}
+
+vec3 evaluateTmuExtRgbGLES(highp uint cfgWord, vec4 localVal, vec4 otherVal,
+                           vec4 tmuConst, vec4 iterColor, float detailFactor,
+                           float lodFrac) {
+    uint aSrc = cfgWord & 0x1Fu;
+    uint aMode = (cfgWord >> 5u) & 0x7u;
+    uint bSrc = (cfgWord >> 8u) & 0x1Fu;
+    uint bMode = (cfgWord >> 13u) & 0x7u;
+    uint cSrc = (cfgWord >> 16u) & 0x1Fu;
+    bool cInv = ((cfgWord >> 21u) & 1u) != 0u;
+    uint dSrc = (cfgWord >> 22u) & 0x1Fu;
+    bool dInv = ((cfgWord >> 27u) & 1u) != 0u;
+    uint shift = min((cfgWord >> 28u) & 0x3u, 2u);
+    bool inv = ((cfgWord >> 30u) & 1u) != 0u;
+
+    vec3 aRaw = fetchTmuRgbSrcGLES(aSrc, localVal, otherVal, tmuConst, iterColor, detailFactor, lodFrac);
+    vec3 bRaw = fetchTmuRgbSrcGLES(bSrc, localVal, otherVal, tmuConst, iterColor, detailFactor, lodFrac);
+    vec3 aVal = applyCombineMode3GLES(aRaw, aMode);
+    vec3 bVal = applyCombineMode3GLES(bRaw, bMode);
+    vec3 cRaw = (cSrc == 0x04u) ? bRaw : fetchTmuRgbSrcGLES(cSrc, localVal, otherVal, tmuConst, iterColor, detailFactor, lodFrac);
+    vec3 dRaw = (dSrc == 0x04u) ? bRaw : fetchTmuRgbSrcGLES(dSrc, localVal, otherVal, tmuConst, iterColor, detailFactor, lodFrac);
+    vec3 cVal = cInv ? (vec3(1.0) - cRaw) : cRaw;
+    vec3 dVal = dInv ? (vec3(1.0) - dRaw) : dRaw;
+    vec3 res = ((aVal + bVal) * cVal + dVal) * float(1u << shift);
+    if (inv) res = vec3(1.0) - res;
+    return clamp(res, 0.0, 1.0);
+}
+
+float evaluateTmuExtAlphaGLES(highp uint cfgWord, vec4 localVal, vec4 otherVal,
+                              vec4 tmuConst, vec4 iterColor, float detailFactor,
+                              float lodFrac) {
+    uint aSrc = cfgWord & 0x1Fu;
+    uint aMode = (cfgWord >> 5u) & 0x7u;
+    uint bSrc = (cfgWord >> 8u) & 0x1Fu;
+    uint bMode = (cfgWord >> 13u) & 0x7u;
+    uint cSrc = (cfgWord >> 16u) & 0x1Fu;
+    bool cInv = ((cfgWord >> 21u) & 1u) != 0u;
+    uint dSrc = (cfgWord >> 22u) & 0x1Fu;
+    bool dInv = ((cfgWord >> 27u) & 1u) != 0u;
+    uint shift = min((cfgWord >> 28u) & 0x3u, 2u);
+    bool inv = ((cfgWord >> 30u) & 1u) != 0u;
+
+    float aRaw = fetchTmuAlphaSrcGLES(aSrc, localVal, otherVal, tmuConst, iterColor, detailFactor, lodFrac);
+    float bRaw = fetchTmuAlphaSrcGLES(bSrc, localVal, otherVal, tmuConst, iterColor, detailFactor, lodFrac);
+    float aVal = applyCombineMode1GLES(aRaw, aMode);
+    float bVal = applyCombineMode1GLES(bRaw, bMode);
+    float cRaw = (cSrc == 0x04u) ? bRaw : fetchTmuAlphaSrcGLES(cSrc, localVal, otherVal, tmuConst, iterColor, detailFactor, lodFrac);
+    float dRaw = (dSrc == 0x04u) ? bRaw : fetchTmuAlphaSrcGLES(dSrc, localVal, otherVal, tmuConst, iterColor, detailFactor, lodFrac);
+    float cVal = cInv ? (1.0 - cRaw) : cRaw;
+    float dVal = dInv ? (1.0 - dRaw) : dRaw;
+    float res = ((aVal + bVal) * cVal + dVal) * float(1u << shift);
+    if (inv) res = 1.0 - res;
+    return clamp(res, 0.0, 1.0);
+}
+
+float fetchFbiAlphaBaseGLES(uint src, vec4 iterColor, vec4 constColor, vec4 texColor) {
+    if (src == 0x00u) return 0.0;
+    if (src == 0x01u) return texColor.a;
+    if (src == 0x05u || src == 0x06u) return constColor.a;
+    if (src == 0x08u || src == 0x09u) return iterColor.a;
+    if (src == 0x0Fu) return texColor.a;
+    return 0.0;
+}
+
+vec3 fetchFbiColorSrcGLES(uint src, vec4 iterColor, vec4 constColor, vec4 texColor,
+                          float aLocal, float aOther) {
+    if (src == 0x00u) return vec3(0.0);
+    if (src == 0x01u) return vec3(texColor.a);
+    if (src == 0x02u) return vec3(aLocal);
+    if (src == 0x03u) return vec3(aOther);
+    if (src == 0x05u) return vec3(constColor.a);
+    if (src == 0x06u) return constColor.rgb;
+    if (src == 0x08u) return vec3(iterColor.a);
+    if (src == 0x09u) return iterColor.rgb;
+    if (src == 0x0Fu) return texColor.rgb;
+    return vec3(0.0);
+}
+
+float evaluateFbiExtAlphaGLES(highp uint cfgWord, vec4 iterColor, vec4 constColor,
+                              vec4 texColor, out float outALocal, out float outAOther) {
+    uint aSrc = cfgWord & 0x1Fu;
+    uint aMode = (cfgWord >> 5u) & 0x7u;
+    uint bSrc = (cfgWord >> 8u) & 0x1Fu;
+    uint bMode = (cfgWord >> 13u) & 0x7u;
+    uint cSrc = (cfgWord >> 16u) & 0x1Fu;
+    bool cInv = ((cfgWord >> 21u) & 1u) != 0u;
+    uint dSrc = (cfgWord >> 22u) & 0x1Fu;
+    bool dInv = ((cfgWord >> 27u) & 1u) != 0u;
+    uint shift = min((cfgWord >> 28u) & 0x3u, 2u);
+    bool inv = ((cfgWord >> 30u) & 1u) != 0u;
+
+    float aRaw = fetchFbiAlphaBaseGLES(aSrc, iterColor, constColor, texColor);
+    float bRaw = fetchFbiAlphaBaseGLES(bSrc, iterColor, constColor, texColor);
+    outAOther = aRaw;
+    outALocal = bRaw;
+    float aVal = applyCombineMode1GLES(aRaw, aMode);
+    float bVal = applyCombineMode1GLES(bRaw, bMode);
+    float cRaw = (cSrc == 0x04u || cSrc == 0x02u) ? bRaw : ((cSrc == 0x03u) ? aRaw : fetchFbiAlphaBaseGLES(cSrc, iterColor, constColor, texColor));
+    float dRaw = (dSrc == 0x04u || dSrc == 0x02u) ? bRaw : ((dSrc == 0x03u) ? aRaw : fetchFbiAlphaBaseGLES(dSrc, iterColor, constColor, texColor));
+    float cVal = cInv ? (1.0 - cRaw) : cRaw;
+    float dVal = dInv ? (1.0 - dRaw) : dRaw;
+    float res = ((aVal + bVal) * cVal + dVal) * float(1u << shift);
+    if (inv) res = 1.0 - res;
+    return clamp(res, 0.0, 1.0);
+}
+
+vec3 evaluateFbiExtColorGLES(highp uint cfgWord, vec4 iterColor, vec4 constColor,
+                             vec4 texColor, float aLocal, float aOther) {
+    uint aSrc = cfgWord & 0x1Fu;
+    uint aMode = (cfgWord >> 5u) & 0x7u;
+    uint bSrc = (cfgWord >> 8u) & 0x1Fu;
+    uint bMode = (cfgWord >> 13u) & 0x7u;
+    uint cSrc = (cfgWord >> 16u) & 0x1Fu;
+    bool cInv = ((cfgWord >> 21u) & 1u) != 0u;
+    uint dSrc = (cfgWord >> 22u) & 0x1Fu;
+    bool dInv = ((cfgWord >> 27u) & 1u) != 0u;
+    uint shift = min((cfgWord >> 28u) & 0x3u, 2u);
+    bool inv = ((cfgWord >> 30u) & 1u) != 0u;
+
+    vec3 aRaw = fetchFbiColorSrcGLES(aSrc, iterColor, constColor, texColor, aLocal, aOther);
+    vec3 bRaw = fetchFbiColorSrcGLES(bSrc, iterColor, constColor, texColor, aLocal, aOther);
+    vec3 aVal = applyCombineMode3GLES(aRaw, aMode);
+    vec3 bVal = applyCombineMode3GLES(bRaw, bMode);
+    vec3 cRaw = (cSrc == 0x04u) ? bRaw : fetchFbiColorSrcGLES(cSrc, iterColor, constColor, texColor, aLocal, aOther);
+    vec3 dRaw = (dSrc == 0x04u) ? bRaw : fetchFbiColorSrcGLES(dSrc, iterColor, constColor, texColor, aLocal, aOther);
+    vec3 cVal = cInv ? (vec3(1.0) - cRaw) : cRaw;
+    vec3 dVal = dInv ? (vec3(1.0) - dRaw) : dRaw;
+    vec3 res = ((aVal + bVal) * cVal + dVal) * float(1u << shift);
+    if (inv) res = vec3(1.0) - res;
+    return clamp(res, 0.0, 1.0);
+}
+
 void main() {
     // Stipple Transparency Emulation
     if (uStippleMode == 1u) { // GR_STIPPLE_PATTERN
@@ -376,6 +564,12 @@ void main() {
         uTexRgbInvert[1] == 1, uTexAlphaInvert[1] == 1,
         tmu1Color, fragColor, detailFactor1, lodFrac1
     ) : fragColor;
+    if ((uExtCombine[4] & 0x80000000u) != 0u) {
+        tmu1Out.rgb = evaluateTmuExtRgbGLES(uExtCombine[4], tmu1Color, fragColor, uTmuConstantColor[1], fragColor, detailFactor1, lodFrac1);
+    }
+    if ((uExtCombine[5] & 0x80000000u) != 0u) {
+        tmu1Out.a = evaluateTmuExtAlphaGLES(uExtCombine[5], tmu1Color, fragColor, uTmuConstantColor[1], fragColor, detailFactor1, lodFrac1);
+    }
 
     // 2. Sample TMU 0 (downstream)
     vec4 tmu0Color = vec4(1.0);
@@ -403,77 +597,92 @@ void main() {
         uTexRgbInvert[0] == 1, uTexAlphaInvert[0] == 1,
         tmu0Color, tmu1Out, detailFactor0, lodFrac0
     ) : tmu1Out;
+    if ((uExtCombine[2] & 0x80000000u) != 0u) {
+        tmu0Out.rgb = evaluateTmuExtRgbGLES(uExtCombine[2], tmu0Color, tmu1Out, uTmuConstantColor[0], fragColor, detailFactor0, lodFrac0);
+    }
+    if ((uExtCombine[3] & 0x80000000u) != 0u) {
+        tmu0Out.a = evaluateTmuExtAlphaGLES(uExtCombine[3], tmu0Color, tmu1Out, uTmuConstantColor[0], fragColor, detailFactor0, lodFrac0);
+    }
 
     vec4 texColor = tmu0Out;
 
     // 2. Route Alpha Combiner inputs
     float aLocal = 1.0;
-    if (uAlphaLocal == 0) aLocal = fragColor.a;
-    else if (uAlphaLocal == 1) aLocal = uConstantColor.a;
-
     float aOther = 1.0;
-    if (uAlphaOther == 0) aOther = fragColor.a;
-    else if (uAlphaOther == 1) aOther = texColor.a;
-    else if (uAlphaOther == 2) aOther = uConstantColor.a;
-
-    // 3. Evaluate Alpha Combiner Factor
-    float factA = 0.0;
-    if (uAlphaFactor == 1 || uAlphaFactor == 3) factA = aLocal;
-    else if (uAlphaFactor == 2) factA = aOther;
-    else if (uAlphaFactor == 4) factA = texColor.a;
-    else if (uAlphaFactor == 8) factA = 1.0;
-    else if (uAlphaFactor == 9 || uAlphaFactor == 11) factA = 1.0 - aLocal;
-    else if (uAlphaFactor == 10) factA = 1.0 - aOther;
-    else if (uAlphaFactor == 12) factA = 1.0 - texColor.a;
-
-    // 4. Evaluate Alpha Combiner Function
     float finalA = 0.0;
-    if (uAlphaFunc == 1 || uAlphaFunc == 2) finalA = aLocal;
-    else if (uAlphaFunc == 3) finalA = aOther * factA;
-    else if (uAlphaFunc == 4 || uAlphaFunc == 5) finalA = aOther * factA + aLocal;
-    else if (uAlphaFunc == 6) finalA = (aOther - aLocal) * factA;
-    else if (uAlphaFunc == 7 || uAlphaFunc == 8) finalA = (aOther - aLocal) * factA + aLocal;
-    else if (uAlphaFunc == 9 || uAlphaFunc == 16) finalA = aLocal * (1.0 - factA);
-    
-    if (uAlphaInvert == 1) finalA = 1.0 - finalA;
+    if ((uExtCombine[1] & 0x80000000u) != 0u) {
+        finalA = evaluateFbiExtAlphaGLES(uExtCombine[1], fragColor, uConstantColor, texColor, aLocal, aOther);
+    } else {
+        if (uAlphaLocal == 0) aLocal = fragColor.a;
+        else if (uAlphaLocal == 1) aLocal = uConstantColor.a;
+
+        if (uAlphaOther == 0) aOther = fragColor.a;
+        else if (uAlphaOther == 1) aOther = texColor.a;
+        else if (uAlphaOther == 2) aOther = uConstantColor.a;
+
+        // 3. Evaluate Alpha Combiner Factor
+        float factA = 0.0;
+        if (uAlphaFactor == 1 || uAlphaFactor == 3) factA = aLocal;
+        else if (uAlphaFactor == 2) factA = aOther;
+        else if (uAlphaFactor == 4) factA = texColor.a;
+        else if (uAlphaFactor == 8) factA = 1.0;
+        else if (uAlphaFactor == 9 || uAlphaFactor == 11) factA = 1.0 - aLocal;
+        else if (uAlphaFactor == 10) factA = 1.0 - aOther;
+        else if (uAlphaFactor == 12) factA = 1.0 - texColor.a;
+
+        // 4. Evaluate Alpha Combiner Function
+        if (uAlphaFunc == 1 || uAlphaFunc == 2) finalA = aLocal;
+        else if (uAlphaFunc == 3) finalA = aOther * factA;
+        else if (uAlphaFunc == 4 || uAlphaFunc == 5) finalA = aOther * factA + aLocal;
+        else if (uAlphaFunc == 6) finalA = (aOther - aLocal) * factA;
+        else if (uAlphaFunc == 7 || uAlphaFunc == 8) finalA = (aOther - aLocal) * factA + aLocal;
+        else if (uAlphaFunc == 9 || uAlphaFunc == 16) finalA = aLocal * (1.0 - factA);
+
+        if (uAlphaInvert == 1) finalA = 1.0 - finalA;
+    }
 
     // 5. Route Color Combiner inputs
-    vec3 cLocal = vec3(0.0);
-    if (uColorLocal == 0) cLocal = fragColor.rgb;
-    else if (uColorLocal == 1) cLocal = uConstantColor.rgb;
-
-    vec3 cOther = vec3(0.0);
-    if (uColorOther == 0) cOther = fragColor.rgb;
-    else if (uColorOther == 1) cOther = texColor.rgb;
-    else if (uColorOther == 2) cOther = uConstantColor.rgb;
-
-    // 6. Evaluate Color Combiner Factor
-    vec3 factC = vec3(0.0);
-    if (uColorFactor == 1) factC = cLocal;
-    else if (uColorFactor == 2) factC = vec3(aOther);
-    else if (uColorFactor == 3) factC = vec3(aLocal);
-    else if (uColorFactor == 4) factC = vec3(texColor.a);
-    else if (uColorFactor == 5) factC = texColor.rgb;
-    else if (uColorFactor == 8) factC = vec3(1.0);
-    else if (uColorFactor == 9) factC = vec3(1.0) - cLocal;
-    else if (uColorFactor == 10) factC = vec3(1.0 - aOther);
-    else if (uColorFactor == 11) factC = vec3(1.0 - aLocal);
-    else if (uColorFactor == 12) factC = vec3(1.0 - texColor.a);
-
-    // 7. Evaluate Color Combiner Function
+    vec3 cOther = texColor.rgb;
     vec3 finalC = vec3(0.0);
-    if (uColorFunc == 1) finalC = cLocal;
-    else if (uColorFunc == 2) finalC = vec3(aLocal);
-    else if (uColorFunc == 3) finalC = cOther * factC;
-    else if (uColorFunc == 4) finalC = cOther * factC + cLocal;
-    else if (uColorFunc == 5) finalC = cOther * factC + vec3(aLocal);
-    else if (uColorFunc == 6) finalC = (cOther - cLocal) * factC;
-    else if (uColorFunc == 7) finalC = (cOther - cLocal) * factC + cLocal;
-    else if (uColorFunc == 8) finalC = (cOther - cLocal) * factC + vec3(aLocal);
-    else if (uColorFunc == 9) finalC = cLocal * (vec3(1.0) - factC);
-    else if (uColorFunc == 16) finalC = vec3(aLocal) - cLocal * factC;
+    if ((uExtCombine[0] & 0x80000000u) != 0u) {
+        finalC = evaluateFbiExtColorGLES(uExtCombine[0], fragColor, uConstantColor, texColor, aLocal, aOther);
+    } else {
+        vec3 cLocal = vec3(0.0);
+        if (uColorLocal == 0) cLocal = fragColor.rgb;
+        else if (uColorLocal == 1) cLocal = uConstantColor.rgb;
 
-    if (uColorInvert == 1) finalC = vec3(1.0) - finalC;
+        cOther = vec3(0.0);
+        if (uColorOther == 0) cOther = fragColor.rgb;
+        else if (uColorOther == 1) cOther = texColor.rgb;
+        else if (uColorOther == 2) cOther = uConstantColor.rgb;
+
+        // 6. Evaluate Color Combiner Factor
+        vec3 factC = vec3(0.0);
+        if (uColorFactor == 1) factC = cLocal;
+        else if (uColorFactor == 2) factC = vec3(aOther);
+        else if (uColorFactor == 3) factC = vec3(aLocal);
+        else if (uColorFactor == 4) factC = vec3(texColor.a);
+        else if (uColorFactor == 5) factC = texColor.rgb;
+        else if (uColorFactor == 8) factC = vec3(1.0);
+        else if (uColorFactor == 9) factC = vec3(1.0) - cLocal;
+        else if (uColorFactor == 10) factC = vec3(1.0 - aOther);
+        else if (uColorFactor == 11) factC = vec3(1.0 - aLocal);
+        else if (uColorFactor == 12) factC = vec3(1.0 - texColor.a);
+
+        // 7. Evaluate Color Combiner Function
+        if (uColorFunc == 1) finalC = cLocal;
+        else if (uColorFunc == 2) finalC = vec3(aLocal);
+        else if (uColorFunc == 3) finalC = cOther * factC;
+        else if (uColorFunc == 4) finalC = cOther * factC + cLocal;
+        else if (uColorFunc == 5) finalC = cOther * factC + vec3(aLocal);
+        else if (uColorFunc == 6) finalC = (cOther - cLocal) * factC;
+        else if (uColorFunc == 7) finalC = (cOther - cLocal) * factC + cLocal;
+        else if (uColorFunc == 8) finalC = (cOther - cLocal) * factC + vec3(aLocal);
+        else if (uColorFunc == 9) finalC = cLocal * (vec3(1.0) - factC);
+        else if (uColorFunc == 16) finalC = vec3(aLocal) - cLocal * factC;
+
+        if (uColorInvert == 1) finalC = vec3(1.0) - finalC;
+    }
 
     vec4 col = vec4(finalC, finalA);
 
@@ -721,6 +930,9 @@ bool OpenGLESBackend::CreateGeomShaders() {
   m_uTexAlphaFactorLoc = glGetUniformLocation(m_geomProgram, "uTexAlphaFactor");
   m_uTexRgbInvertLoc = glGetUniformLocation(m_geomProgram, "uTexRgbInvert");
   m_uTexAlphaInvertLoc = glGetUniformLocation(m_geomProgram, "uTexAlphaInvert");
+  m_uExtCombineLoc = glGetUniformLocation(m_geomProgram, "uExtCombine");
+  m_uTmuConstantColorLoc =
+      glGetUniformLocation(m_geomProgram, "uTmuConstantColor");
   m_uAlphaTestOpLoc = glGetUniformLocation(m_geomProgram, "uAlphaTestOp");
   m_uAlphaTestRefLoc = glGetUniformLocation(m_geomProgram, "uAlphaTestRef");
   m_uDepthBiasLoc = glGetUniformLocation(m_geomProgram, "uDepthBias");
@@ -998,6 +1210,32 @@ void OpenGLESBackend::PopulateUniforms(uint32_t dirtyMask) {
     glUniform1ui(m_uDitherModeLoc, m_ditherMode);
     glUniform1ui(m_uStippleModeLoc, m_stippleMode);
     glUniform1ui(m_uStipplePatternLoc, m_stipplePattern);
+  }
+
+  if (dirtyMask & kGlesDirtyExtCombine) {
+    if (m_uExtCombineLoc != -1) {
+      const GLuint ext[6] = {m_extColorCombine,       m_extAlphaCombine,
+                             m_extTexColorCombine[0], m_extTexAlphaCombine[0],
+                             m_extTexColorCombine[1], m_extTexAlphaCombine[1]};
+      glUniform1uiv(m_uExtCombineLoc, 6, ext);
+    }
+    if (m_uTmuConstantColorLoc != -1) {
+      float tc[8];
+      for (int i = 0; i < 2; ++i) {
+        float r = ((m_tmuConstantColor[i] >> 16) & 0xFF) / 255.0f;
+        float g = ((m_tmuConstantColor[i] >> 8) & 0xFF) / 255.0f;
+        float b = (m_tmuConstantColor[i] & 0xFF) / 255.0f;
+        float a = ((m_tmuConstantColor[i] >> 24) & 0xFF) / 255.0f;
+        if (m_pixelFormatOverride == 1) {
+          std::swap(r, b);
+        }
+        tc[i * 4 + 0] = r;
+        tc[i * 4 + 1] = g;
+        tc[i * 4 + 2] = b;
+        tc[i * 4 + 3] = a;
+      }
+      glUniform4fv(m_uTmuConstantColorLoc, 2, tc);
+    }
   }
 }
 

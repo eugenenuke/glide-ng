@@ -35,8 +35,10 @@ void GlideStateTracker::ResetState_Locked() {
 
   m_rgbSrcBlend = 4;
   m_rgbDstBlend = 0;
+  m_rgbBlendOp = 0;
   m_alphaSrcBlend = 4;
   m_alphaDstBlend = 0;
+  m_alphaBlendOp = 0;
 
   m_alphaTestOp = 7;
   m_alphaTestRefVal = 0;
@@ -67,6 +69,12 @@ void GlideStateTracker::ResetState_Locked() {
   m_stencilFailOp = 0u;
   m_stencilZFailOp = 0u;
   m_stencilZPassOp = 0u;
+
+  m_extColorCombine = 0u;
+  m_extAlphaCombine = 0u;
+  m_extTexColorCombine[0] = m_extTexColorCombine[1] = 0u;
+  m_extTexAlphaCombine[0] = m_extTexAlphaCombine[1] = 0u;
+  m_tmuConstantColor[0] = m_tmuConstantColor[1] = 0xFFFFFFFFu;
 
   m_texLodBias[0] = m_texLodBias[1] = 0.0f;
   m_texDetailBias[0] = m_texDetailBias[1] = 0;
@@ -242,10 +250,49 @@ void GlideStateTracker::SetBlendState_Locked(uint32_t rgbSrcFactor,
   MarkStateDirty();
   m_rgbSrcBlend = rgbSrcFactor;
   m_rgbDstBlend = rgbDstFactor;
+  m_rgbBlendOp = 0u;
   m_alphaSrcBlend = alphaSrcFactor;
   m_alphaDstBlend = alphaDstFactor;
+  m_alphaBlendOp = 0u;
   GLIDE_LOG(DEBUG, "Rasterizer",
             "SetBlendState: Src=" << rgbSrcFactor << ", Dst=" << rgbDstFactor);
+}
+
+void GlideStateTracker::SetBlendStateExt(uint32_t rgbSrcFactor,
+                                         uint32_t rgbDstFactor, uint32_t rgbOp,
+                                         uint32_t alphaSrcFactor,
+                                         uint32_t alphaDstFactor,
+                                         uint32_t alphaOp) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  SetBlendStateExt_Locked(rgbSrcFactor, rgbDstFactor, rgbOp, alphaSrcFactor,
+                          alphaDstFactor, alphaOp);
+}
+
+void GlideStateTracker::SetBlendStateExt_Locked(uint32_t rgbSrcFactor,
+                                                uint32_t rgbDstFactor,
+                                                uint32_t rgbOp,
+                                                uint32_t alphaSrcFactor,
+                                                uint32_t alphaDstFactor,
+                                                uint32_t alphaOp) {
+  const uint32_t rOp = (rgbOp <= 2u) ? rgbOp : 0u;
+  const uint32_t aOp = (alphaOp <= 2u) ? alphaOp : 0u;
+  if (m_rgbSrcBlend == rgbSrcFactor && m_rgbDstBlend == rgbDstFactor &&
+      m_rgbBlendOp == rOp && m_alphaSrcBlend == alphaSrcFactor &&
+      m_alphaDstBlend == alphaDstFactor && m_alphaBlendOp == aOp) {
+    return;
+  }
+  MarkStateDirty();
+  m_rgbSrcBlend = rgbSrcFactor;
+  m_rgbDstBlend = rgbDstFactor;
+  m_rgbBlendOp = rOp;
+  m_alphaSrcBlend = alphaSrcFactor;
+  m_alphaDstBlend = alphaDstFactor;
+  m_alphaBlendOp = aOp;
+  GLIDE_LOG(DEBUG, "Rasterizer",
+            "SetBlendStateExt: RGB(" << rgbSrcFactor << "," << rgbDstFactor
+                                     << ",op=" << rOp << "), Alpha("
+                                     << alphaSrcFactor << "," << alphaDstFactor
+                                     << ",op=" << aOp << ")");
 }
 
 void GlideStateTracker::SetAlphaTestState(uint32_t compareOp, uint32_t refVal) {
@@ -792,6 +839,64 @@ void GlideStateTracker::SetStencilOp_Locked(uint32_t failOp, uint32_t zFailOp,
   m_stencilZPassOp = zp;
   GLIDE_LOG(DEBUG, "StateTracker",
             "SetStencilOp: fail=" << f << ", zfail=" << zf << ", zpass=" << zp);
+}
+
+void GlideStateTracker::SetColorCombineExt(uint32_t packed) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  SetColorCombineExt_Locked(packed);
+}
+
+void GlideStateTracker::SetColorCombineExt_Locked(uint32_t packed) {
+  if (m_extColorCombine == packed) return;
+  MarkStateDirty();
+  m_extColorCombine = packed;
+}
+
+void GlideStateTracker::SetAlphaCombineExt(uint32_t packed) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  SetAlphaCombineExt_Locked(packed);
+}
+
+void GlideStateTracker::SetAlphaCombineExt_Locked(uint32_t packed) {
+  if (m_extAlphaCombine == packed) return;
+  MarkStateDirty();
+  m_extAlphaCombine = packed;
+}
+
+void GlideStateTracker::SetTexColorCombineExt(uint32_t tmu, uint32_t packed) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  SetTexColorCombineExt_Locked(tmu, packed);
+}
+
+void GlideStateTracker::SetTexColorCombineExt_Locked(uint32_t tmu,
+                                                     uint32_t packed) {
+  if (tmu >= 2 || m_extTexColorCombine[tmu] == packed) return;
+  MarkStateDirty();
+  m_extTexColorCombine[tmu] = packed;
+}
+
+void GlideStateTracker::SetTexAlphaCombineExt(uint32_t tmu, uint32_t packed) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  SetTexAlphaCombineExt_Locked(tmu, packed);
+}
+
+void GlideStateTracker::SetTexAlphaCombineExt_Locked(uint32_t tmu,
+                                                     uint32_t packed) {
+  if (tmu >= 2 || m_extTexAlphaCombine[tmu] == packed) return;
+  MarkStateDirty();
+  m_extTexAlphaCombine[tmu] = packed;
+}
+
+void GlideStateTracker::SetTmuConstantColor(uint32_t tmu, uint32_t color) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  SetTmuConstantColor_Locked(tmu, color);
+}
+
+void GlideStateTracker::SetTmuConstantColor_Locked(uint32_t tmu,
+                                                   uint32_t color) {
+  if (tmu >= 2 || m_tmuConstantColor[tmu] == color) return;
+  MarkStateDirty();
+  m_tmuConstantColor[tmu] = color;
 }
 
 }  // namespace GlideWrapper

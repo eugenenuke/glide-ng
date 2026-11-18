@@ -167,6 +167,14 @@ class GlideStateTracker : public IGraphicsBackend {
   void SetStencilMask(uint8_t writeMask) override;
   void SetStencilOp(uint32_t failOp, uint32_t zFailOp,
                     uint32_t zPassOp) override;
+  void SetBlendStateExt(uint32_t rgbSrcFactor, uint32_t rgbDstFactor,
+                        uint32_t rgbOp, uint32_t alphaSrcFactor,
+                        uint32_t alphaDstFactor, uint32_t alphaOp) override;
+  void SetColorCombineExt(uint32_t packed) override;
+  void SetAlphaCombineExt(uint32_t packed) override;
+  void SetTexColorCombineExt(uint32_t tmu, uint32_t packed) override;
+  void SetTexAlphaCombineExt(uint32_t tmu, uint32_t packed) override;
+  void SetTmuConstantColor(uint32_t tmu, uint32_t color) override;
 
  protected:
   mutable std::mutex m_mutex;
@@ -285,8 +293,10 @@ class GlideStateTracker : public IGraphicsBackend {
 
   uint32_t m_rgbSrcBlend{4};  // 4 = ONE (GR_BLEND_ONE)
   uint32_t m_rgbDstBlend{0};  // 0 = ZERO (GR_BLEND_ZERO)
+  uint32_t m_rgbBlendOp{0};   // 0 = ADD, 1 = SUB, 2 = REVSUB
   uint32_t m_alphaSrcBlend{4};
   uint32_t m_alphaDstBlend{0};
+  uint32_t m_alphaBlendOp{0};
 
   uint32_t m_alphaTestOp{7};  // 7 = ALWAYS (GR_CMP_ALWAYS)
   uint32_t m_alphaTestRefVal{0};
@@ -383,6 +393,22 @@ class GlideStateTracker : public IGraphicsBackend {
   uint32_t m_stencilFailOp{0u};     // GR_STENCILOP_KEEP
   uint32_t m_stencilZFailOp{0u};    // GR_STENCILOP_KEEP
   uint32_t m_stencilZPassOp{0u};    // GR_STENCILOP_KEEP
+
+  // VSA-100 COMBINE extension state (bit 31 = active; 0 = legacy mode)
+  uint32_t m_extColorCombine{0u};
+  uint32_t m_extAlphaCombine{0u};
+  uint32_t m_extTexColorCombine[2]{0u, 0u};
+  uint32_t m_extTexAlphaCombine[2]{0u, 0u};
+  uint32_t m_tmuConstantColor[2]{0xFFFFFFFFu, 0xFFFFFFFFu};
+
+  void SetBlendStateExt_Locked(uint32_t rgbSrcFactor, uint32_t rgbDstFactor,
+                               uint32_t rgbOp, uint32_t alphaSrcFactor,
+                               uint32_t alphaDstFactor, uint32_t alphaOp);
+  void SetColorCombineExt_Locked(uint32_t packed);
+  void SetAlphaCombineExt_Locked(uint32_t packed);
+  void SetTexColorCombineExt_Locked(uint32_t tmu, uint32_t packed);
+  void SetTexAlphaCombineExt_Locked(uint32_t tmu, uint32_t packed);
+  void SetTmuConstantColor_Locked(uint32_t tmu, uint32_t color);
 };
 
 }  // namespace GlideWrapper

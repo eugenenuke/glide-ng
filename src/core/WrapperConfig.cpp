@@ -31,8 +31,11 @@ static const std::unordered_map<std::string, GatingRule> s_gatingRegistry = {
     // 2.61 Features (Banshee / Voodoo3 H3 Legacy Interop)
     {"grSplashCb",                      {ApiVersion::GLIDE_2_61, CardModel::VoodooBanshee}},
     {"grGetGammaTableExt",              {ApiVersion::GLIDE_2_61, CardModel::VoodooBanshee}},
+    {"grTextureBufferExt",              {ApiVersion::GLIDE_2_61, CardModel::VoodooBanshee}},
+    {"grTextureAuxBufferExt",           {ApiVersion::GLIDE_2_61, CardModel::VoodooBanshee}},
+    {"grAuxBufferExt",                  {ApiVersion::GLIDE_2_61, CardModel::VoodooBanshee}},
 
-    // VSA-100 / Napalm Features (Voodoo4 / Voodoo5 — PIXEXT, Spatial AA & T-Buffer)
+    // VSA-100 / Napalm Features (Voodoo4 / Voodoo5 — PIXEXT, COMBINE, Spatial AA & T-Buffer)
     {"grSstWinOpenExt",                 {ApiVersion::GLIDE_2_61, CardModel::Voodoo4}},
     {"grTBufferWriteMaskExt",           {ApiVersion::GLIDE_2_61, CardModel::Voodoo4}},
     {"grColorMaskExt",                  {ApiVersion::GLIDE_2_61, CardModel::Voodoo4}},
@@ -41,7 +44,12 @@ static const std::unordered_map<std::string, GatingRule> s_gatingRegistry = {
     {"grStencilOpExt",                  {ApiVersion::GLIDE_2_61, CardModel::Voodoo4}},
     {"grBufferClearExt",                {ApiVersion::GLIDE_2_61, CardModel::Voodoo4}},
     {"grLfbConstantStencilExt",         {ApiVersion::GLIDE_2_61, CardModel::Voodoo4}},
-    {"grAlphaBlendFunctionExt",         {ApiVersion::GLIDE_2_61, CardModel::Voodoo4}}
+    {"grAlphaBlendFunctionExt",         {ApiVersion::GLIDE_2_61, CardModel::Voodoo4}},
+    {"grColorCombineExt",               {ApiVersion::GLIDE_2_61, CardModel::Voodoo4}},
+    {"grAlphaCombineExt",               {ApiVersion::GLIDE_2_61, CardModel::Voodoo4}},
+    {"grTexColorCombineExt",            {ApiVersion::GLIDE_2_61, CardModel::Voodoo4}},
+    {"grTexAlphaCombineExt",            {ApiVersion::GLIDE_2_61, CardModel::Voodoo4}},
+    {"grConstantColorValueExt",         {ApiVersion::GLIDE_2_61, CardModel::Voodoo4}}
 };
 
 EmulationRegistry& EmulationRegistry::GetInstance() {

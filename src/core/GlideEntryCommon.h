@@ -63,8 +63,17 @@ struct SharedFrontendState {
   uint32_t constantColor{0xFFFFFFFFu};
   uint32_t rgbSrcBlend{4};       // GR_BLEND_ONE
   uint32_t rgbDstBlend{0};       // GR_BLEND_ZERO
+  uint32_t rgbBlendOp{0};        // GR_BLEND_OP_ADD
   uint32_t alphaSrcBlend{4};     // GR_BLEND_ONE
   uint32_t alphaDstBlend{0};     // GR_BLEND_ZERO
+  uint32_t alphaBlendOp{0};      // GR_BLEND_OP_ADD
+
+  // VSA-100 COMBINE extension state (0 = legacy gr*Combine active)
+  uint32_t extColorCombine{0};
+  uint32_t extAlphaCombine{0};
+  uint32_t extTexColorCombine[2]{0, 0};
+  uint32_t extTexAlphaCombine[2]{0, 0};
+  uint32_t tmuConstantColor[2]{0xFFFFFFFFu, 0xFFFFFFFFu};
 
   uint32_t cullMode{0};          // GR_CULL_DISABLE
   uint32_t clipMinX{0};
@@ -161,6 +170,24 @@ void SetTexCombine(SharedFrontendState& st, uint32_t tmu, uint32_t rgbFnc,
                    bool rgbInvert, bool alphaInvert, bool forwardInverts);
 void SetAlphaBlendFunction(SharedFrontendState& st, uint32_t rgbSf,
                            uint32_t rgbDf, uint32_t alphaSf, uint32_t alphaDf);
+void SetAlphaBlendFunctionExt(SharedFrontendState& st, uint32_t rgbSf,
+                              uint32_t rgbDf, uint32_t rgbOp, uint32_t alphaSf,
+                              uint32_t alphaDf, uint32_t alphaOp);
+void SetColorCombineExt(SharedFrontendState& st, uint32_t a, uint32_t aMode,
+                        uint32_t b, uint32_t bMode, uint32_t c, bool cInvert,
+                        uint32_t d, bool dInvert, uint32_t shift, bool invert);
+void SetAlphaCombineExt(SharedFrontendState& st, uint32_t a, uint32_t aMode,
+                        uint32_t b, uint32_t bMode, uint32_t c, bool cInvert,
+                        uint32_t d, bool dInvert, uint32_t shift, bool invert);
+void SetTexColorCombineExt(SharedFrontendState& st, uint32_t tmu, uint32_t a,
+                           uint32_t aMode, uint32_t b, uint32_t bMode,
+                           uint32_t c, bool cInvert, uint32_t d, bool dInvert,
+                           uint32_t shift, bool invert);
+void SetTexAlphaCombineExt(SharedFrontendState& st, uint32_t tmu, uint32_t a,
+                           uint32_t aMode, uint32_t b, uint32_t bMode,
+                           uint32_t c, bool cInvert, uint32_t d, bool dInvert,
+                           uint32_t shift, bool invert);
+void SetTmuConstantColor(SharedFrontendState& st, uint32_t tmu, uint32_t value);
 void SetAlphaTestFunction(SharedFrontendState& st, uint32_t fnc);
 void SetAlphaTestReferenceValue(SharedFrontendState& st, uint32_t refVal);
 void SetTexFilterMode(SharedFrontendState& st, uint32_t tmu, uint32_t minFilter,

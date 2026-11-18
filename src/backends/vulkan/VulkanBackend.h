@@ -78,19 +78,33 @@ struct PushConstants {
   uint32_t stipplePattern;  // Phase 4 32-bit stipple pattern
   uint32_t flags;           // Phase 4 packed flags
 
-  // Block 8: Offset 176 (32 bytes)
-  float texChromaMin[2][4];  // TMU0/TMU1 packed RGBA min
+  // Block 8: Offset 176 (16 bytes)
+  uint32_t texChromaMin0;  // TMU0 packed RGBA min (0xAABBGGRR)
+  uint32_t texChromaMin1;  // TMU1 packed RGBA min (0xAABBGGRR)
+  uint32_t texChromaMax0;  // TMU0 packed RGBA max (0xAABBGGRR)
+  uint32_t texChromaMax1;  // TMU1 packed RGBA max (0xAABBGGRR)
 
-  // Block 9: Offset 208 (32 bytes)
-  float texChromaMax[2][4];  // TMU0/TMU1 packed RGBA max
-
-  // Block 10: Offset 240 (16 bytes)
+  // Block 9: Offset 192 (16 bytes)
   uint32_t texDetail0;   // Packed TMU0 detail control (bias/scale/max)
   uint32_t texDetail1;   // Packed TMU1 detail control (bias/scale/max)
   float texLodBias0;     // TMU0 LOD bias for LOD_FRACTION combiner factor
   float texLodBias1;     // TMU1 LOD bias for LOD_FRACTION combiner factor
+
+  // Block 10: Offset 208 (16 bytes) - VSA-100 COMBINE extension state
+  uint32_t extColorCombine;
+  uint32_t extAlphaCombine;
+  uint32_t extTexColorCombine0;
+  uint32_t extTexAlphaCombine0;
+
+  // Block 11: Offset 224 (16 bytes) - VSA-100 TMU1 COMBINE + TMU constant color
+  uint32_t extTexColorCombine1;
+  uint32_t extTexAlphaCombine1;
+  uint32_t tmuConstantColor0;  // Packed RGBA (0xAABBGGRR)
+  uint32_t tmuConstantColor1;  // Packed RGBA (0xAABBGGRR)
 };
 
+static_assert(sizeof(PushConstants) == 240,
+              "Vulkan PushConstants layout size mismatch!");
 static_assert(sizeof(PushConstants) <= 256,
               "Vulkan PushConstants exceed 256-byte hardware limit!");
 
@@ -189,8 +203,10 @@ struct PipelineStateKey {
   uint32_t depthCompareOp{0};
   uint32_t rgbSrcBlend{0};
   uint32_t rgbDstBlend{0};
+  uint32_t rgbBlendOp{0};
   uint32_t alphaSrcBlend{0};
   uint32_t alphaDstBlend{0};
+  uint32_t alphaBlendOp{0};
   uint8_t colorWriteMask{0xFu};  // bit0=R, bit1=G, bit2=B, bit3=A
   bool singleSample{false};
   uint32_t sampleMask{0xFFFFFFFFu};
@@ -206,8 +222,10 @@ struct PipelineStateKey {
            depthCompareOp == other.depthCompareOp &&
            rgbSrcBlend == other.rgbSrcBlend &&
            rgbDstBlend == other.rgbDstBlend &&
+           rgbBlendOp == other.rgbBlendOp &&
            alphaSrcBlend == other.alphaSrcBlend &&
            alphaDstBlend == other.alphaDstBlend &&
+           alphaBlendOp == other.alphaBlendOp &&
            colorWriteMask == other.colorWriteMask &&
            singleSample == other.singleSample &&
            sampleMask == other.sampleMask &&
@@ -232,8 +250,10 @@ struct PipelineStateKeyHash {
     combine(k.depthCompareOp);
     combine(k.rgbSrcBlend);
     combine(k.rgbDstBlend);
+    combine(k.rgbBlendOp);
     combine(k.alphaSrcBlend);
     combine(k.alphaDstBlend);
+    combine(k.alphaBlendOp);
     combine(k.colorWriteMask);
     combine(k.singleSample ? 1 : 0);
     combine(k.sampleMask);
@@ -305,6 +325,14 @@ class VulkanBackend : public GlideStateTracker {
                      int32_t biasLevel) override;
   void SetBlendState(uint32_t rgbSrcFactor, uint32_t rgbDstFactor,
                      uint32_t alphaSrcFactor, uint32_t alphaDstFactor) override;
+  void SetBlendStateExt(uint32_t rgbSrcFactor, uint32_t rgbDstFactor,
+                        uint32_t rgbOp, uint32_t alphaSrcFactor,
+                        uint32_t alphaDstFactor, uint32_t alphaOp) override;
+  void SetColorCombineExt(uint32_t packed) override;
+  void SetAlphaCombineExt(uint32_t packed) override;
+  void SetTexColorCombineExt(uint32_t tmu, uint32_t packed) override;
+  void SetTexAlphaCombineExt(uint32_t tmu, uint32_t packed) override;
+  void SetTmuConstantColor(uint32_t tmu, uint32_t color) override;
   void SetCullState(uint32_t cullMode) override;
   void SetAlphaTestState(uint32_t compareOp, uint32_t refVal) override;
   void SetSstOrigin(uint32_t origin) override;

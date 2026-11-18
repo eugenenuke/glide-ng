@@ -59,6 +59,14 @@ class OpenGLESBackend : public GlideStateTracker {
   void PurgeTextures() override;
   void SetBlendState(uint32_t rgbSrcFactor, uint32_t rgbDstFactor,
                      uint32_t alphaSrcFactor, uint32_t alphaDstFactor) override;
+  void SetBlendStateExt(uint32_t rgbSrcFactor, uint32_t rgbDstFactor,
+                        uint32_t rgbOp, uint32_t alphaSrcFactor,
+                        uint32_t alphaDstFactor, uint32_t alphaOp) override;
+  void SetColorCombineExt(uint32_t packed) override;
+  void SetAlphaCombineExt(uint32_t packed) override;
+  void SetTexColorCombineExt(uint32_t tmu, uint32_t packed) override;
+  void SetTexAlphaCombineExt(uint32_t tmu, uint32_t packed) override;
+  void SetTmuConstantColor(uint32_t tmu, uint32_t color) override;
   void SetColorMask(bool rgb, bool alpha) override;
   void SetColorMaskExt(bool r, bool g, bool b, bool a) override;
   void SetAAMultiSample(bool enabled) override;
@@ -180,6 +188,7 @@ class OpenGLESBackend : public GlideStateTracker {
     kGlesDirtySampleMask        = 1u << 21,
     kGlesDirtyTexDetail         = 1u << 22,
     kGlesDirtyStencil           = 1u << 23,
+    kGlesDirtyExtCombine        = 1u << 24,
     kGlesDirtyAll               = 0xFFFFFFFFu,
   };
   uint32_t m_glesDirtyMask{kGlesDirtyAll};
@@ -353,6 +362,8 @@ class OpenGLESBackend : public GlideStateTracker {
   int m_uTexAlphaFactorLoc{-1};
   int m_uTexRgbInvertLoc{-1};
   int m_uTexAlphaInvertLoc{-1};
+  int m_uExtCombineLoc{-1};
+  int m_uTmuConstantColorLoc{-1};
   uint32_t m_glesSamplers[2]{0, 0};  // GLuint sampler objects for TMU0/1
 };
 

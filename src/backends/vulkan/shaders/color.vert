@@ -59,17 +59,29 @@ layout(push_constant) uniform PushConstants {
   uint stipplePattern;
   uint flags;
 
-  // Block 8: Offset 176 (32 bytes)
-  vec4 texChromaMin[2];
+  // Block 8: Offset 176 (16 bytes)
+  uint texChromaMin0;
+  uint texChromaMin1;
+  uint texChromaMax0;
+  uint texChromaMax1;
 
-  // Block 9: Offset 208 (32 bytes)
-  vec4 texChromaMax[2];
-
-  // Block 10: Offset 240 (16 bytes)
+  // Block 9: Offset 192 (16 bytes)
   uint texDetail0;
   uint texDetail1;
   float texLodBias0;
   float texLodBias1;
+
+  // Block 10: Offset 208 (16 bytes)
+  uint extColorCombine;
+  uint extAlphaCombine;
+  uint extTexColorCombine0;
+  uint extTexAlphaCombine0;
+
+  // Block 11: Offset 224 (16 bytes)
+  uint extTexColorCombine1;
+  uint extTexAlphaCombine1;
+  uint tmuConstantColor0;
+  uint tmuConstantColor1;
 }
 pcs;
 

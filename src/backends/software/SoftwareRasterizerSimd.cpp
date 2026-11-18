@@ -44,6 +44,10 @@ inline Simd8f GetBlendFactorSIMD(uint32_t mode, const Simd8f& srcC,
       return isDest ? (Simd8f(1.0f) - srcC) : (Simd8f(1.0f) - dstC);
     case 7:
       return Simd8f(1.0f) - dstA;
+    case 8:
+      return isDest ? dstC : srcC;
+    case 9:
+      return isDest ? (Simd8f(1.0f) - dstC) : (Simd8f(1.0f) - srcC);
     case 15:
       return isDest ? preFogC : Min(srcA, Simd8f(1.0f) - dstA);
     default:
@@ -316,8 +320,10 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
   const bool colorMaskAlpha = state.colorMaskAlpha;
   const uint32_t rgbSrcBlend = state.rgbSrcBlend;
   const uint32_t rgbDstBlend = state.rgbDstBlend;
+  const uint32_t rgbBlendOp = state.rgbBlendOp;
   const uint32_t alphaSrcBlend = state.alphaSrcBlend;
   const uint32_t alphaDstBlend = state.alphaDstBlend;
+  const uint32_t alphaBlendOp = state.alphaBlendOp;
   const uint32_t constantColor = state.constantColor;
   const uint32_t stwHintMask = state.stwHintMask;
   const uint32_t alphaCombinerLocal = state.alphaCombinerLocal;
@@ -330,6 +336,16 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
   const uint32_t alphaCombinerFunc = state.alphaCombinerFunc;
   const bool alphaCombinerInvert = state.alphaCombinerInvert;
   const bool colorCombinerInvert = state.colorCombinerInvert;
+  const uint32_t extColorCombine = state.extColorCombine;
+  const uint32_t extAlphaCombine = state.extAlphaCombine;
+  const uint32_t extTexColorCombine0 = state.extTexColorCombine[0];
+  const uint32_t extTexAlphaCombine0 = state.extTexAlphaCombine[0];
+  const uint32_t extTexColorCombine1 = state.extTexColorCombine[1];
+  const uint32_t extTexAlphaCombine1 = state.extTexAlphaCombine[1];
+  const bool anyExtCombine =
+      ((extColorCombine | extAlphaCombine | extTexColorCombine0 |
+        extTexAlphaCombine0 | extTexColorCombine1 | extTexAlphaCombine1) &
+       0x80000000u) != 0u;
 
   const float depthFar = state.depthFar;
   const float depthNear = state.depthNear;
@@ -342,6 +358,19 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
   float constantG = ((constantColor >> 8) & 0xFF) / 255.0f;
   float constantB = (constantColor & 0xFF) / 255.0f;
   if (pixelFormatOverride == 1) std::swap(constantR, constantB);
+
+  auto unpackTmuConstSimd = [&](uint32_t c) -> TmuColorSIMD {
+    float r = ((c >> 16) & 0xFF) / 255.0f;
+    float g = ((c >> 8) & 0xFF) / 255.0f;
+    float b = (c & 0xFF) / 255.0f;
+    float aVal = ((c >> 24) & 0xFF) / 255.0f;
+    if (pixelFormatOverride == 1) std::swap(r, b);
+    return {Simd8f(r), Simd8f(g), Simd8f(b), Simd8f(aVal)};
+  };
+  const TmuColorSIMD tmuConst0_vec =
+      unpackTmuConstSimd(state.tmuConstantColor[0]);
+  const TmuColorSIMD tmuConst1_vec =
+      unpackTmuConstSimd(state.tmuConstantColor[1]);
 
   const float alphaTestRef = static_cast<float>(alphaTestRefVal) / 255.0f;
 
@@ -392,7 +421,8 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
   const bool tex0ChromaEnabled = (state.texChromaMode[0] == 1);
   const bool tmu0Passthrough =
       (state.texCombinerRgbFunc[0] == 1 && state.texCombinerAlphaFunc[0] == 1 &&
-       !state.texCombinerRgbInvert[0] && !state.texCombinerAlphaInvert[0]);
+       !state.texCombinerRgbInvert[0] && !state.texCombinerAlphaInvert[0] &&
+       extTexColorCombine0 == 0u && extTexAlphaCombine0 == 0u);
 
   if constexpr (HasTexture) {
     tex = state.boundTex[0].get();
@@ -431,7 +461,8 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
   const bool tex1ChromaEnabled = (state.texChromaMode[1] == 1);
   const bool tmu1Passthrough =
       (state.texCombinerRgbFunc[1] == 1 && state.texCombinerAlphaFunc[1] == 1 &&
-       !state.texCombinerRgbInvert[1] && !state.texCombinerAlphaInvert[1]);
+       !state.texCombinerRgbInvert[1] && !state.texCombinerAlphaInvert[1] &&
+       extTexColorCombine1 == 0u && extTexAlphaCombine1 == 0u);
 
   if (hasTexture1) {
     tex1 = state.boundTex[1].get();
@@ -470,11 +501,15 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
   const bool needLod0 =
       HasTexture && tex != nullptr &&
       (mipmappingEnabled || usesLodFactor(state.texCombinerRgbFactor[0]) ||
-       usesLodFactor(state.texCombinerAlphaFactor[0]));
+       usesLodFactor(state.texCombinerAlphaFactor[0]) ||
+       ExtCombineUsesLod(extTexColorCombine0) ||
+       ExtCombineUsesLod(extTexAlphaCombine0));
   const bool needLod1 =
       hasTexture1 && tex1 != nullptr &&
       (mipmappingEnabled1 || usesLodFactor(state.texCombinerRgbFactor[1]) ||
-       usesLodFactor(state.texCombinerAlphaFactor[1]));
+       usesLodFactor(state.texCombinerAlphaFactor[1]) ||
+       ExtCombineUsesLod(extTexColorCombine1) ||
+       ExtCombineUsesLod(extTexAlphaCombine1));
 
   const float detailScaleMul0 =
       static_cast<float>(1u << std::min<uint8_t>(state.texDetailScale[0], 7u)) /
@@ -531,15 +566,16 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
 
   // Hoist combiner & attribute flags out of the pixel loops
   const bool needIterRgb =
-      (colorCombinerLocal == 0) || (colorCombinerOther == 0) || hasTexture1 ||
-      (HasTexture && !tmu0Passthrough) || (!HasTexture && !hasTexture1);
+      anyExtCombine || (colorCombinerLocal == 0) || (colorCombinerOther == 0) ||
+      hasTexture1 || (HasTexture && !tmu0Passthrough) ||
+      (!HasTexture && !hasTexture1);
   const bool needIterAlpha =
-      (alphaCombinerLocal == 0) || (alphaCombinerOther == 0) ||
+      anyExtCombine || (alphaCombinerLocal == 0) || (alphaCombinerOther == 0) ||
       ((fogMode & 0x0Fu) == 4) || hasTexture1 ||
       (HasTexture && !tmu0Passthrough) || (!HasTexture && !hasTexture1);
 
   uint8_t ccFastPath = 0;
-  if (!colorCombinerInvert) {
+  if (!colorCombinerInvert && (extColorCombine & 0x80000000u) == 0u) {
     if (colorCombinerFunc == 3 && colorCombinerOther == 1 &&
         colorCombinerFactor == 8) {
       ccFastPath = 1;  // Decal texture: texRGB
@@ -552,7 +588,7 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
   }
 
   uint8_t acFastPath = 0;
-  if (!alphaCombinerInvert) {
+  if (!alphaCombinerInvert && (extAlphaCombine & 0x80000000u) == 0u) {
     if (alphaCombinerFunc == 1) {
       acFastPath = 1;  // Local alpha
     } else if (alphaCombinerFunc == 3 && alphaCombinerOther == 1 &&
@@ -572,14 +608,17 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
   uint8_t blendFastPath = 0;
   bool blendNeedsDstA = true;
   if constexpr (BlendEnabled) {
-    const bool alphaSimple = (alphaSrcBlend == 4 && alphaDstBlend == 0);
-    if (rgbSrcBlend == 1 && rgbDstBlend == 5 && alphaSimple) {
+    const bool alphaSimple =
+        (alphaSrcBlend == 4 && alphaDstBlend == 0 && alphaBlendOp == 0);
+    if (rgbBlendOp == 0 && rgbSrcBlend == 1 && rgbDstBlend == 5 && alphaSimple) {
       blendFastPath = 1;  // SRC_ALPHA, ONE_MINUS_SRC_ALPHA
       blendNeedsDstA = false;
-    } else if (rgbSrcBlend == 2 && rgbDstBlend == 0 && alphaSimple) {
+    } else if (rgbBlendOp == 0 && rgbSrcBlend == 2 && rgbDstBlend == 0 &&
+               alphaSimple) {
       blendFastPath = 2;  // DST_COLOR, ZERO (lightmap multiply)
       blendNeedsDstA = false;
-    } else if (rgbSrcBlend == 4 && rgbDstBlend == 4 && alphaSimple) {
+    } else if (rgbBlendOp == 0 && rgbSrcBlend == 4 && rgbDstBlend == 4 &&
+               alphaSimple) {
       blendFastPath = 3;  // ONE, ONE (additive)
       blendNeedsDstA = false;
     }
@@ -796,10 +835,16 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
       }
 
       // 5. Texture Sampling Stage
-      TmuColorSIMD tmu0Out = {iterR, iterG, iterB, iterA};
-      TmuColorSIMD tmu1Out = {iterR, iterG, iterB, iterA};
+      const TmuColorSIMD iterColorVec = {iterR, iterG, iterB, iterA};
+      const TmuColorSIMD constColorVec = {constR_vec, constG_vec, constB_vec,
+                                          constA_vec};
+      TmuColorSIMD tmu0Out = iterColorVec;
+      TmuColorSIMD tmu1Out = iterColorVec;
 
       // --- TMU 1 (Upstream) ---
+      TmuColorSIMD tmu1Color = {one_vec, one_vec, one_vec, one_vec};
+      float detailFactor1 = 0.0f;
+      float lodFrac1 = 0.0f;
       if (hasTexture1) {
         Simd8f texS1 =
             Fma(w0_vec, Simd8f(a.tex[2]),
@@ -812,9 +857,6 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
         Simd8f trueS1 = texS1 * invW1;
         Simd8f trueT1 = texT1 * invW1;
 
-        TmuColorSIMD tmu1Color = {one_vec, one_vec, one_vec, one_vec};
-        float detailFactor1 = 0.0f;
-        float lodFrac1 = 0.0f;
         if (tex1) {
           if (!needLod1) {
             tmu1Color = SampleTextureLevelSIMD(
@@ -909,16 +951,27 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
               state.texCombinerRgbFunc[1], state.texCombinerRgbFactor[1],
               state.texCombinerAlphaFunc[1], state.texCombinerAlphaFactor[1],
               state.texCombinerRgbInvert[1], state.texCombinerAlphaInvert[1],
-              tmu1Color, tmu0Out, tmu0Out, Simd8f(detailFactor1),
+              tmu1Color, iterColorVec, iterColorVec, Simd8f(detailFactor1),
               Simd8f(lodFrac1));
         }
       }
+      if ((extTexColorCombine1 & 0x80000000u) != 0u) {
+        EvaluateExtTmuRgbSIMD(extTexColorCombine1, tmu1Color, iterColorVec,
+                              tmuConst1_vec, iterColorVec,
+                              Simd8f(detailFactor1), Simd8f(lodFrac1),
+                              tmu1Out.r, tmu1Out.g, tmu1Out.b);
+      }
+      if ((extTexAlphaCombine1 & 0x80000000u) != 0u) {
+        tmu1Out.a = EvaluateExtTmuAlphaSIMD(
+            extTexAlphaCombine1, tmu1Color, iterColorVec, tmuConst1_vec,
+            iterColorVec, Simd8f(detailFactor1), Simd8f(lodFrac1));
+      }
 
       // --- TMU 0 (Downstream) ---
+      TmuColorSIMD tmu0Color = {one_vec, one_vec, one_vec, one_vec};
+      float detailFactor0 = 0.0f;
+      float lodFrac0 = 0.0f;
       if constexpr (HasTexture) {
-        TmuColorSIMD tmu0Color = {one_vec, one_vec, one_vec, one_vec};
-        float detailFactor0 = 0.0f;
-        float lodFrac0 = 0.0f;
         if (tex) {
           Simd8f texS = Fma(w0_vec, a_s0, Fma(w1_vec, b_s0, w2_vec * c_s0));
           Simd8f texT = Fma(w0_vec, a_t0, Fma(w1_vec, b_t0, w2_vec * c_t0));
@@ -1018,23 +1071,108 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
               state.texCombinerRgbFunc[0], state.texCombinerRgbFactor[0],
               state.texCombinerAlphaFunc[0], state.texCombinerAlphaFactor[0],
               state.texCombinerRgbInvert[0], state.texCombinerAlphaInvert[0],
-              tmu0Color, tmu1Out, tmu0Out, Simd8f(detailFactor0),
+              tmu0Color, tmu1Out, iterColorVec, Simd8f(detailFactor0),
               Simd8f(lodFrac0));
         }
-      } else if (hasTexture1) {
+      } else {
         tmu0Out = tmu1Out;
       }
+      if ((extTexColorCombine0 & 0x80000000u) != 0u) {
+        EvaluateExtTmuRgbSIMD(extTexColorCombine0, tmu0Color, tmu1Out,
+                              tmuConst0_vec, iterColorVec,
+                              Simd8f(detailFactor0), Simd8f(lodFrac0),
+                              tmu0Out.r, tmu0Out.g, tmu0Out.b);
+      }
+      if ((extTexAlphaCombine0 & 0x80000000u) != 0u) {
+        tmu0Out.a = EvaluateExtTmuAlphaSIMD(
+            extTexAlphaCombine0, tmu0Color, tmu1Out, tmuConst0_vec,
+            iterColorVec, Simd8f(detailFactor0), Simd8f(lodFrac0));
+      }
 
-      // 6. Color & Alpha Combiner Stage
+      // 6. Alpha & Color Combiner Stage
       const Simd8f texR = tmu0Out.r;
       const Simd8f texG = tmu0Out.g;
       const Simd8f texB = tmu0Out.b;
       const Simd8f texA = tmu0Out.a;
 
       Simd8f red, green, blue, alpha;
+      Simd8f aLocal_fbi = (alphaCombinerLocal == 0) ? iterA : constA_vec;
+      Simd8f aOther_fbi =
+          (alphaCombinerOther == 0)
+              ? iterA
+              : ((alphaCombinerOther == 1) ? texA : constA_vec);
+
+      // Fast paths for dominant Alpha Combiner configurations
+      if ((extAlphaCombine & 0x80000000u) != 0u) {
+        alpha = EvaluateExtFbiAlphaSIMD(extAlphaCombine, iterA, constA_vec,
+                                        texA, aLocal_fbi, aOther_fbi);
+      } else if (acFastPath == 1) {
+        alpha = aLocal_fbi;
+      } else if (acFastPath == 2) {
+        alpha = texA;
+      } else if (acFastPath == 3) {
+        alpha = texA * aLocal_fbi;
+      } else {
+        Simd8f factA_comb = zero_vec;
+        switch (alphaCombinerFactor) {
+          case 1:
+          case 3:
+            factA_comb = aLocal_fbi;
+            break;
+          case 2:
+            factA_comb = aOther_fbi;
+            break;
+          case 4:
+            factA_comb = texA;
+            break;
+          case 8:
+            factA_comb = one_vec;
+            break;
+          case 9:
+          case 11:
+            factA_comb = one_vec - aLocal_fbi;
+            break;
+          case 10:
+            factA_comb = one_vec - aOther_fbi;
+            break;
+          case 12:
+            factA_comb = one_vec - texA;
+            break;
+        }
+
+        alpha = zero_vec;
+        switch (alphaCombinerFunc) {
+          case 1:
+            alpha = aLocal_fbi;
+            break;
+          case 3:
+            alpha = aOther_fbi * factA_comb;
+            break;
+          case 4:
+          case 5:
+            alpha = Fma(aOther_fbi, factA_comb, aLocal_fbi);
+            break;
+          case 6:
+            alpha = (aOther_fbi - aLocal_fbi) * factA_comb;
+            break;
+          case 7:
+          case 8:
+            alpha = Fma(aOther_fbi - aLocal_fbi, factA_comb, aLocal_fbi);
+            break;
+          case 9:
+          case 16:
+            alpha = aLocal_fbi * (one_vec - factA_comb);
+            break;
+        }
+        if (alphaCombinerInvert) alpha = one_vec - alpha;
+      }
 
       // Fast paths for dominant Color Combiner configurations
-      if (ccFastPath == 1) {
+      if ((extColorCombine & 0x80000000u) != 0u) {
+        EvaluateExtFbiColorSIMD(extColorCombine, iterColorVec, constColorVec,
+                                tmu0Out, aLocal_fbi, aOther_fbi, red, green,
+                                blue);
+      } else if (ccFastPath == 1) {
         red = texR;
         green = texG;
         blue = texB;
@@ -1050,12 +1188,6 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
         green = (colorCombinerLocal == 0) ? iterG : constG_vec;
         blue = (colorCombinerLocal == 0) ? iterB : constB_vec;
       } else {
-        Simd8f aLocal_comb = (alphaCombinerLocal == 0) ? iterA : constA_vec;
-        Simd8f aOther_comb =
-            (alphaCombinerOther == 0)
-                ? iterA
-                : ((alphaCombinerOther == 1) ? texA : constA_vec);
-
         Simd8f cLocalR_comb = (colorCombinerLocal == 0) ? iterR : constR_vec;
         Simd8f cLocalG_comb = (colorCombinerLocal == 0) ? iterG : constG_vec;
         Simd8f cLocalB_comb = (colorCombinerLocal == 0) ? iterB : constB_vec;
@@ -1082,14 +1214,14 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
             factB_comb = cLocalB_comb;
             break;
           case 2:
-            factR_comb = aOther_comb;
-            factG_comb = aOther_comb;
-            factB_comb = aOther_comb;
+            factR_comb = aOther_fbi;
+            factG_comb = aOther_fbi;
+            factB_comb = aOther_fbi;
             break;
           case 3:
-            factR_comb = aLocal_comb;
-            factG_comb = aLocal_comb;
-            factB_comb = aLocal_comb;
+            factR_comb = aLocal_fbi;
+            factG_comb = aLocal_fbi;
+            factB_comb = aLocal_fbi;
             break;
           case 4:
             factR_comb = texA;
@@ -1112,14 +1244,14 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
             factB_comb = one_vec - cLocalB_comb;
             break;
           case 10:
-            factR_comb = one_vec - aOther_comb;
-            factG_comb = one_vec - aOther_comb;
-            factB_comb = one_vec - aOther_comb;
+            factR_comb = one_vec - aOther_fbi;
+            factG_comb = one_vec - aOther_fbi;
+            factB_comb = one_vec - aOther_fbi;
             break;
           case 11:
-            factR_comb = one_vec - aLocal_comb;
-            factG_comb = one_vec - aLocal_comb;
-            factB_comb = one_vec - aLocal_comb;
+            factR_comb = one_vec - aLocal_fbi;
+            factG_comb = one_vec - aLocal_fbi;
+            factB_comb = one_vec - aLocal_fbi;
             break;
           case 12:
             factR_comb = one_vec - texA;
@@ -1148,9 +1280,9 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
             blue = Fma(cOtherB_comb, factB_comb, cLocalB_comb);
             break;
           case 5:
-            red = Fma(cOtherR_comb, factR_comb, aLocal_comb);
-            green = Fma(cOtherG_comb, factG_comb, aLocal_comb);
-            blue = Fma(cOtherB_comb, factB_comb, aLocal_comb);
+            red = Fma(cOtherR_comb, factR_comb, aLocal_fbi);
+            green = Fma(cOtherG_comb, factG_comb, aLocal_fbi);
+            blue = Fma(cOtherB_comb, factB_comb, aLocal_fbi);
             break;
           case 6:
             red = (cOtherR_comb - cLocalR_comb) * factR_comb;
@@ -1163,9 +1295,9 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
             blue = Fma(cOtherB_comb - cLocalB_comb, factB_comb, cLocalB_comb);
             break;
           case 8:
-            red = Fma(cOtherR_comb - cLocalR_comb, factR_comb, aLocal_comb);
-            green = Fma(cOtherG_comb - cLocalG_comb, factG_comb, aLocal_comb);
-            blue = Fma(cOtherB_comb - cLocalB_comb, factB_comb, aLocal_comb);
+            red = Fma(cOtherR_comb - cLocalR_comb, factR_comb, aLocal_fbi);
+            green = Fma(cOtherG_comb - cLocalG_comb, factG_comb, aLocal_fbi);
+            blue = Fma(cOtherB_comb - cLocalB_comb, factB_comb, aLocal_fbi);
             break;
           case 9:
             red = cLocalR_comb * (one_vec - factR_comb);
@@ -1173,9 +1305,9 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
             blue = cLocalB_comb * (one_vec - factB_comb);
             break;
           case 16:
-            red = aLocal_comb - cLocalR_comb * factR_comb;
-            green = aLocal_comb - cLocalG_comb * factG_comb;
-            blue = aLocal_comb - cLocalB_comb * factB_comb;
+            red = aLocal_fbi - cLocalR_comb * factR_comb;
+            green = aLocal_fbi - cLocalG_comb * factG_comb;
+            blue = aLocal_fbi - cLocalB_comb * factB_comb;
             break;
         }
         if (colorCombinerInvert) {
@@ -1183,74 +1315,6 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
           green = one_vec - green;
           blue = one_vec - blue;
         }
-      }
-
-      // Fast paths for dominant Alpha Combiner configurations
-      if (acFastPath == 1) {
-        alpha = (alphaCombinerLocal == 0) ? iterA : constA_vec;
-      } else if (acFastPath == 2) {
-        alpha = texA;
-      } else if (acFastPath == 3) {
-        alpha = texA * ((alphaCombinerLocal == 0) ? iterA : constA_vec);
-      } else {
-        Simd8f aLocal_comb = (alphaCombinerLocal == 0) ? iterA : constA_vec;
-        Simd8f aOther_comb =
-            (alphaCombinerOther == 0)
-                ? iterA
-                : ((alphaCombinerOther == 1) ? texA : constA_vec);
-
-        Simd8f factA_comb = zero_vec;
-        switch (alphaCombinerFactor) {
-          case 1:
-          case 3:
-            factA_comb = aLocal_comb;
-            break;
-          case 2:
-            factA_comb = aOther_comb;
-            break;
-          case 4:
-            factA_comb = texA;
-            break;
-          case 8:
-            factA_comb = one_vec;
-            break;
-          case 9:
-          case 11:
-            factA_comb = one_vec - aLocal_comb;
-            break;
-          case 10:
-            factA_comb = one_vec - aOther_comb;
-            break;
-          case 12:
-            factA_comb = one_vec - texA;
-            break;
-        }
-
-        alpha = zero_vec;
-        switch (alphaCombinerFunc) {
-          case 1:
-            alpha = aLocal_comb;
-            break;
-          case 3:
-            alpha = aOther_comb * factA_comb;
-            break;
-          case 4:
-          case 5:
-            alpha = Fma(aOther_comb, factA_comb, aLocal_comb);
-            break;
-          case 6:
-            alpha = (aOther_comb - aLocal_comb) * factA_comb;
-            break;
-          case 7:
-          case 8:
-            alpha = Fma(aOther_comb - aLocal_comb, factA_comb, aLocal_comb);
-            break;
-          case 9:
-          case 16:
-            alpha = aLocal_comb * (one_vec - factA_comb);
-            break;
-        }
-        if (alphaCombinerInvert) alpha = one_vec - alpha;
       }
 
       red = Max(zero_vec, Min(one_vec, red));
@@ -1529,35 +1593,33 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
                             ? (Simd8f::Convert((dstWord >> 24) & maskFF_i) *
                                inv255_vec)
                             : zero_vec;
-          blendedR = Min(
-              one_vec,
-              Fma(red,
-                  GetBlendFactorSIMD(rgbSrcBlend, red, preFogR, dstR,
-                                     blendAlphaVal, dstA, false),
-                  dstR * GetBlendFactorSIMD(rgbDstBlend, red, preFogR, dstR,
-                                            blendAlphaVal, dstA, true)));
-          blendedG = Min(
-              one_vec,
-              Fma(green,
-                  GetBlendFactorSIMD(rgbSrcBlend, green, preFogG, dstG,
-                                     blendAlphaVal, dstA, false),
-                  dstG * GetBlendFactorSIMD(rgbDstBlend, green, preFogG, dstG,
-                                            blendAlphaVal, dstA, true)));
-          blendedB = Min(
-              one_vec,
-              Fma(blue,
-                  GetBlendFactorSIMD(rgbSrcBlend, blue, preFogB, dstB,
-                                     blendAlphaVal, dstA, false),
-                  dstB * GetBlendFactorSIMD(rgbDstBlend, blue, preFogB, dstB,
-                                            blendAlphaVal, dstA, true)));
-          blendedA = Min(
-              one_vec,
-              Fma(blendAlphaVal,
-                  GetBlendFactorSIMD(alphaSrcBlend, zero_vec, zero_vec,
-                                     zero_vec, blendAlphaVal, dstA, false),
-                  dstA * GetBlendFactorSIMD(alphaDstBlend, zero_vec, zero_vec,
-                                            zero_vec, blendAlphaVal, dstA,
-                                            true)));
+          blendedR = ApplyBlendOpSIMD(
+              rgbBlendOp,
+              red * GetBlendFactorSIMD(rgbSrcBlend, red, preFogR, dstR,
+                                       blendAlphaVal, dstA, false),
+              dstR * GetBlendFactorSIMD(rgbDstBlend, red, preFogR, dstR,
+                                        blendAlphaVal, dstA, true));
+          blendedG = ApplyBlendOpSIMD(
+              rgbBlendOp,
+              green * GetBlendFactorSIMD(rgbSrcBlend, green, preFogG, dstG,
+                                         blendAlphaVal, dstA, false),
+              dstG * GetBlendFactorSIMD(rgbDstBlend, green, preFogG, dstG,
+                                        blendAlphaVal, dstA, true));
+          blendedB = ApplyBlendOpSIMD(
+              rgbBlendOp,
+              blue * GetBlendFactorSIMD(rgbSrcBlend, blue, preFogB, dstB,
+                                        blendAlphaVal, dstA, false),
+              dstB * GetBlendFactorSIMD(rgbDstBlend, blue, preFogB, dstB,
+                                        blendAlphaVal, dstA, true));
+          blendedA = ApplyBlendOpSIMD(
+              alphaBlendOp,
+              blendAlphaVal *
+                  GetBlendFactorSIMD(alphaSrcBlend, blendAlphaVal,
+                                     blendAlphaVal, dstA, blendAlphaVal, dstA,
+                                     false),
+              dstA * GetBlendFactorSIMD(alphaDstBlend, blendAlphaVal,
+                                        blendAlphaVal, dstA, blendAlphaVal,
+                                        dstA, true));
         }
       }
 

@@ -2354,7 +2354,12 @@ FX_ENTRY void FX_CALL grAlphaBlendFunctionExt(FxU32 rgb_sf, FxU32 rgb_df,
                                               FxU32 alpha_df, FxU32 alpha_op) {
   GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   EnsureEngineInitialized();
-  GLIDE_LOG(WARN, "Stub", "grAlphaBlendFunctionExt stub invoked");
+  GLIDE_LOG(DEBUG, "Frontend",
+            "grAlphaBlendFunctionExt: rgb=("
+                << rgb_sf << "," << rgb_df << ",op=" << rgb_op << ") alpha=("
+                << alpha_sf << "," << alpha_df << ",op=" << alpha_op << ")");
+  EntryCommon::SetAlphaBlendFunctionExt(s_state, rgb_sf, rgb_df, rgb_op,
+                                        alpha_sf, alpha_df, alpha_op);
 }
 
 FX_ENTRY void FX_CALL grErrorSetCallback(GrErrorCallbackFnc_t fnc) {

@@ -93,6 +93,30 @@ class IGraphicsBackend {
   virtual void SetStencilOp(uint32_t /*failOp*/, uint32_t /*zFailOp*/,
                             uint32_t /*zPassOp*/) {}
 
+  // VSA-100 COMBINE & Extended Alpha Blending
+  static constexpr uint32_t PackCombineExt(uint32_t a, uint32_t aMode,
+                                           uint32_t b, uint32_t bMode,
+                                           uint32_t c, bool cInv, uint32_t d,
+                                           bool dInv, uint32_t shift,
+                                           bool invert) {
+    return (a & 0x1Fu) | ((aMode & 0x7u) << 5) | ((b & 0x1Fu) << 8) |
+           ((bMode & 0x7u) << 13) | ((c & 0x1Fu) << 16) |
+           ((cInv ? 1u : 0u) << 21) | ((d & 0x1Fu) << 22) |
+           ((dInv ? 1u : 0u) << 27) | ((shift & 0x3u) << 28) |
+           ((invert ? 1u : 0u) << 30) | (1u << 31);
+  }
+  virtual void SetBlendStateExt(uint32_t rgbSrcFactor, uint32_t rgbDstFactor,
+                                uint32_t /*rgbOp*/, uint32_t alphaSrcFactor,
+                                uint32_t alphaDstFactor,
+                                uint32_t /*alphaOp*/) {
+    SetBlendState(rgbSrcFactor, rgbDstFactor, alphaSrcFactor, alphaDstFactor);
+  }
+  virtual void SetColorCombineExt(uint32_t /*packed*/) {}
+  virtual void SetAlphaCombineExt(uint32_t /*packed*/) {}
+  virtual void SetTexColorCombineExt(uint32_t /*tmu*/, uint32_t /*packed*/) {}
+  virtual void SetTexAlphaCombineExt(uint32_t /*tmu*/, uint32_t /*packed*/) {}
+  virtual void SetTmuConstantColor(uint32_t /*tmu*/, uint32_t /*color*/) {}
+
   // Milestone 8: Fogging State
   virtual void SetFogMode(uint32_t mode) = 0;
   virtual void SetFogColor(uint32_t color) = 0;

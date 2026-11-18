@@ -43,6 +43,14 @@ static vk::BlendFactor MapBlendFactorVulkan(uint32_t factor, bool isDest,
     case 7:
       return vk::BlendFactor::
           eOneMinusDstAlpha;  // GR_BLEND_ONE_MINUS_DST_ALPHA
+    case 8:
+      return isDest ? vk::BlendFactor::eDstColor
+                    : vk::BlendFactor::eSrcColor;  // GR_BLEND_SAME_COLOR_EXT
+    case 9:
+      return isDest
+                 ? vk::BlendFactor::eOneMinusDstColor
+                 : vk::BlendFactor::
+                       eOneMinusSrcColor;  // GR_BLEND_ONE_MINUS_SAME_COLOR_EXT
     case 15:
       return isDest
                  ? (isAlpha ? vk::BlendFactor::eSrc1Alpha
@@ -52,6 +60,18 @@ static vk::BlendFactor MapBlendFactorVulkan(uint32_t factor, bool isDest,
                                            // / GR_BLEND_ALPHA_SATURATE (src)
     default:
       return vk::BlendFactor::eOne;
+  }
+}
+
+static vk::BlendOp MapBlendOpVulkan(uint32_t op) {
+  switch (op) {
+    case 1:
+      return vk::BlendOp::eSubtract;  // GR_BLEND_OP_SUB
+    case 2:
+      return vk::BlendOp::eReverseSubtract;  // GR_BLEND_OP_REVSUB
+    case 0:
+    default:
+      return vk::BlendOp::eAdd;  // GR_BLEND_OP_ADD
   }
 }
 
@@ -217,8 +237,10 @@ PipelineStateKey VulkanBackend::GetCurrentStateKey() const {
   }
   key.rgbSrcBlend = m_rgbSrcBlend;
   key.rgbDstBlend = m_rgbDstBlend;
+  key.rgbBlendOp = m_rgbBlendOp;
   key.alphaSrcBlend = m_alphaSrcBlend;
   key.alphaDstBlend = m_alphaDstBlend;
+  key.alphaBlendOp = m_alphaBlendOp;
   key.colorWriteMask = GetColorWriteMask4();
   if (m_msaaSamples > 1) {
     key.singleSample = ShouldUseSingleSamplePass_Locked();
@@ -395,12 +417,12 @@ vk::UniquePipeline VulkanBackend::CompileSinglePipeline(
     colorBlendAttachment.colorWriteMask = mask;
 
     colorBlendAttachment.blendEnable = true;
-    colorBlendAttachment.colorBlendOp = vk::BlendOp::eAdd;
+    colorBlendAttachment.colorBlendOp = MapBlendOpVulkan(key.rgbBlendOp);
     colorBlendAttachment.srcColorBlendFactor =
         MapBlendFactorVulkan(key.rgbSrcBlend, false, false);
     colorBlendAttachment.dstColorBlendFactor =
         MapBlendFactorVulkan(key.rgbDstBlend, true, false);
-    colorBlendAttachment.alphaBlendOp = vk::BlendOp::eAdd;
+    colorBlendAttachment.alphaBlendOp = MapBlendOpVulkan(key.alphaBlendOp);
     colorBlendAttachment.srcAlphaBlendFactor =
         MapBlendFactorVulkan(key.alphaSrcBlend, false, true);
     colorBlendAttachment.dstAlphaBlendFactor =

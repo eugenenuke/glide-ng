@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 
 #include "backends/software/SimdVec.h"
@@ -480,6 +481,517 @@ static inline uint8_t ApplyStencilOp(uint32_t op, uint8_t bufVal,
     default: break;
   }
   return static_cast<uint8_t>((bufVal & ~writeMask) | (res & writeMask));
+}
+
+// Check if a packed VSA-100 COMBINE register references DETAIL_FACTOR (0x07) or
+// LOD_FRAC (0x0C) so software rasterizers compute mip/detail derivatives.
+static inline bool ExtCombineUsesLod(uint32_t packed) {
+  if ((packed & 0x80000000u) == 0u) return false;
+  const uint32_t a = packed & 0x1Fu;
+  const uint32_t b = (packed >> 8u) & 0x1Fu;
+  const uint32_t c = (packed >> 16u) & 0x1Fu;
+  const uint32_t d = (packed >> 22u) & 0x1Fu;
+  auto isLod = [](uint32_t s) { return s == 0x07u || s == 0x0Cu; };
+  return isLod(a) || isLod(b) || isLod(c) || isLod(d);
+}
+
+static inline float ApplyBlendOpScalar(uint32_t op, float srcTerm,
+                                       float dstTerm) {
+  float v;
+  if (op == 1u) {
+    v = srcTerm - dstTerm;
+  } else if (op == 2u) {
+    v = dstTerm - srcTerm;
+  } else {
+    v = srcTerm + dstTerm;
+  }
+  return std::clamp(v, 0.0f, 1.0f);
+}
+
+static inline Simd8f ApplyBlendOpSIMD(uint32_t op, const Simd8f& srcTerm,
+                                      const Simd8f& dstTerm) {
+  const Simd8f zero(0.0f);
+  const Simd8f one(1.0f);
+  Simd8f v;
+  if (op == 1u) {
+    v = srcTerm - dstTerm;
+  } else if (op == 2u) {
+    v = dstTerm - srcTerm;
+  } else {
+    v = srcTerm + dstTerm;
+  }
+  return Max(zero, Min(one, v));
+}
+
+static inline float ApplyCombineModeScalar(float x, uint32_t mode) {
+  switch (mode) {
+    case 0u: return 0.0f;
+    case 1u: return x;
+    case 2u: return 1.0f - x;
+    case 3u: return -x;
+    case 4u: return x - 0.5f;
+    case 5u: return 1.0f;
+    case 6u: return -0.5f;
+    default: return x;
+  }
+}
+
+static inline Simd8f ApplyCombineModeSIMD(const Simd8f& x, uint32_t mode) {
+  switch (mode) {
+    case 0u: return Simd8f(0.0f);
+    case 1u: return x;
+    case 2u: return Simd8f(1.0f) - x;
+    case 3u: return Simd8f(0.0f) - x;
+    case 4u: return x - Simd8f(0.5f);
+    case 5u: return Simd8f(1.0f);
+    case 6u: return Simd8f(-0.5f);
+    default: return x;
+  }
+}
+
+static inline void FetchTmuRgbScalar(uint32_t src, const TmuColor& localVal,
+                                     const TmuColor& otherVal,
+                                     const TmuColor& tmuConst,
+                                     const TmuColor& iterCol,
+                                     float detailFactor, float lodFrac,
+                                     float& outR, float& outG, float& outB) {
+  switch (src) {
+    case 0x00u: outR = outG = outB = 0.0f; break;
+    case 0x01u:
+    case 0x0Au: outR = outG = outB = localVal.a; break;
+    case 0x07u: outR = outG = outB = detailFactor; break;
+    case 0x08u: outR = outG = outB = iterCol.a; break;
+    case 0x09u: outR = iterCol.r; outG = iterCol.g; outB = iterCol.b; break;
+    case 0x0Bu:
+    case 0x0Fu: outR = localVal.r; outG = localVal.g; outB = localVal.b; break;
+    case 0x0Cu: outR = outG = outB = lodFrac; break;
+    case 0x0Du: outR = outG = outB = otherVal.a; break;
+    case 0x0Eu: outR = otherVal.r; outG = otherVal.g; outB = otherVal.b; break;
+    case 0x10u: outR = outG = outB = tmuConst.a; break;
+    case 0x11u: outR = tmuConst.r; outG = tmuConst.g; outB = tmuConst.b; break;
+    default: outR = outG = outB = 0.0f; break;
+  }
+}
+
+static inline float FetchTmuAlphaScalar(uint32_t src, const TmuColor& localVal,
+                                        const TmuColor& otherVal,
+                                        const TmuColor& tmuConst,
+                                        const TmuColor& iterCol,
+                                        float detailFactor, float lodFrac) {
+  switch (src) {
+    case 0x00u: return 0.0f;
+    case 0x01u:
+    case 0x0Au: return localVal.a;
+    case 0x07u: return detailFactor;
+    case 0x08u: return iterCol.a;
+    case 0x0Cu: return lodFrac;
+    case 0x0Du: return otherVal.a;
+    case 0x10u: return tmuConst.a;
+    default: return 0.0f;
+  }
+}
+
+#if defined(__GNUC__) || defined(__clang__)
+#define GLIDE_NOINLINE __attribute__((noinline))
+#else
+#define GLIDE_NOINLINE
+#endif
+
+GLIDE_NOINLINE static inline void EvaluateExtTmuRgbScalar(
+    uint32_t packed, const TmuColor& localVal, const TmuColor& otherVal,
+    const TmuColor& tmuConst, const TmuColor& iterCol, float detailFactor,
+    float lodFrac, float& outR, float& outG, float& outB) {
+  const uint32_t aSrc = packed & 0x1Fu;
+  const uint32_t aMode = (packed >> 5u) & 0x7u;
+  const uint32_t bSrc = (packed >> 8u) & 0x1Fu;
+  const uint32_t bMode = (packed >> 13u) & 0x7u;
+  const uint32_t cSrc = (packed >> 16u) & 0x1Fu;
+  const bool cInv = ((packed >> 21u) & 1u) != 0u;
+  const uint32_t dSrc = (packed >> 22u) & 0x1Fu;
+  const bool dInv = ((packed >> 27u) & 1u) != 0u;
+  const float scale = static_cast<float>(1u << std::min((packed >> 28u) & 0x3u, 2u));
+  const bool inv = ((packed >> 30u) & 1u) != 0u;
+
+  float aR, aG, aB, bR, bG, bB, cR, cG, cB, dR, dG, dB;
+  FetchTmuRgbScalar(aSrc, localVal, otherVal, tmuConst, iterCol, detailFactor, lodFrac, aR, aG, aB);
+  FetchTmuRgbScalar(bSrc, localVal, otherVal, tmuConst, iterCol, detailFactor, lodFrac, bR, bG, bB);
+  if (cSrc == 0x04u) { cR = bR; cG = bG; cB = bB; }
+  else FetchTmuRgbScalar(cSrc, localVal, otherVal, tmuConst, iterCol, detailFactor, lodFrac, cR, cG, cB);
+  if (dSrc == 0x04u) { dR = bR; dG = bG; dB = bB; }
+  else FetchTmuRgbScalar(dSrc, localVal, otherVal, tmuConst, iterCol, detailFactor, lodFrac, dR, dG, dB);
+
+  auto evalCh = [&](float a, float b, float c, float d) {
+    const float av = ApplyCombineModeScalar(a, aMode);
+    const float bv = ApplyCombineModeScalar(b, bMode);
+    const float cv = cInv ? (1.0f - c) : c;
+    const float dv = dInv ? (1.0f - d) : d;
+    float res = ((av + bv) * cv + dv) * scale;
+    if (inv) res = 1.0f - res;
+    return std::clamp(res, 0.0f, 1.0f);
+  };
+  outR = evalCh(aR, bR, cR, dR);
+  outG = evalCh(aG, bG, cG, dG);
+  outB = evalCh(aB, bB, cB, dB);
+}
+
+GLIDE_NOINLINE static inline float EvaluateExtTmuAlphaScalar(
+    uint32_t packed, const TmuColor& localVal, const TmuColor& otherVal,
+    const TmuColor& tmuConst, const TmuColor& iterCol, float detailFactor,
+    float lodFrac) {
+  const uint32_t aSrc = packed & 0x1Fu;
+  const uint32_t aMode = (packed >> 5u) & 0x7u;
+  const uint32_t bSrc = (packed >> 8u) & 0x1Fu;
+  const uint32_t bMode = (packed >> 13u) & 0x7u;
+  const uint32_t cSrc = (packed >> 16u) & 0x1Fu;
+  const bool cInv = ((packed >> 21u) & 1u) != 0u;
+  const uint32_t dSrc = (packed >> 22u) & 0x1Fu;
+  const bool dInv = ((packed >> 27u) & 1u) != 0u;
+  const float scale = static_cast<float>(1u << std::min((packed >> 28u) & 0x3u, 2u));
+  const bool inv = ((packed >> 30u) & 1u) != 0u;
+
+  const float aRaw = FetchTmuAlphaScalar(aSrc, localVal, otherVal, tmuConst, iterCol, detailFactor, lodFrac);
+  const float bRaw = FetchTmuAlphaScalar(bSrc, localVal, otherVal, tmuConst, iterCol, detailFactor, lodFrac);
+  const float cRaw = (cSrc == 0x04u) ? bRaw : FetchTmuAlphaScalar(cSrc, localVal, otherVal, tmuConst, iterCol, detailFactor, lodFrac);
+  const float dRaw = (dSrc == 0x04u) ? bRaw : FetchTmuAlphaScalar(dSrc, localVal, otherVal, tmuConst, iterCol, detailFactor, lodFrac);
+  const float av = ApplyCombineModeScalar(aRaw, aMode);
+  const float bv = ApplyCombineModeScalar(bRaw, bMode);
+  const float cv = cInv ? (1.0f - cRaw) : cRaw;
+  const float dv = dInv ? (1.0f - dRaw) : dRaw;
+  float res = ((av + bv) * cv + dv) * scale;
+  if (inv) res = 1.0f - res;
+  return std::clamp(res, 0.0f, 1.0f);
+}
+
+static inline float FetchFbiAlphaBaseScalar(uint32_t src, float iterA,
+                                            float constA, float texA) {
+  switch (src) {
+    case 0x00u: return 0.0f;
+    case 0x01u:
+    case 0x0Fu: return texA;
+    case 0x05u:
+    case 0x06u: return constA;
+    case 0x08u:
+    case 0x09u: return iterA;
+    default: return 0.0f;
+  }
+}
+
+GLIDE_NOINLINE static inline float EvaluateExtFbiAlphaScalar(uint32_t packed, float iterA,
+                                              float constA, float texA,
+                                              float& outALocal,
+                                              float& outAOther) {
+  const uint32_t aSrc = packed & 0x1Fu;
+  const uint32_t aMode = (packed >> 5u) & 0x7u;
+  const uint32_t bSrc = (packed >> 8u) & 0x1Fu;
+  const uint32_t bMode = (packed >> 13u) & 0x7u;
+  const uint32_t cSrc = (packed >> 16u) & 0x1Fu;
+  const bool cInv = ((packed >> 21u) & 1u) != 0u;
+  const uint32_t dSrc = (packed >> 22u) & 0x1Fu;
+  const bool dInv = ((packed >> 27u) & 1u) != 0u;
+  const float scale = static_cast<float>(1u << std::min((packed >> 28u) & 0x3u, 2u));
+  const bool inv = ((packed >> 30u) & 1u) != 0u;
+
+  const float aRaw = FetchFbiAlphaBaseScalar(aSrc, iterA, constA, texA);
+  const float bRaw = FetchFbiAlphaBaseScalar(bSrc, iterA, constA, texA);
+  outAOther = aRaw;
+  outALocal = bRaw;
+  const float cRaw = (cSrc == 0x04u || cSrc == 0x02u)
+                         ? bRaw
+                         : ((cSrc == 0x03u) ? aRaw : FetchFbiAlphaBaseScalar(cSrc, iterA, constA, texA));
+  const float dRaw = (dSrc == 0x04u || dSrc == 0x02u)
+                         ? bRaw
+                         : ((dSrc == 0x03u) ? aRaw : FetchFbiAlphaBaseScalar(dSrc, iterA, constA, texA));
+  const float av = ApplyCombineModeScalar(aRaw, aMode);
+  const float bv = ApplyCombineModeScalar(bRaw, bMode);
+  const float cv = cInv ? (1.0f - cRaw) : cRaw;
+  const float dv = dInv ? (1.0f - dRaw) : dRaw;
+  float res = ((av + bv) * cv + dv) * scale;
+  if (inv) res = 1.0f - res;
+  return std::clamp(res, 0.0f, 1.0f);
+}
+
+static inline void FetchFbiColorScalar(uint32_t src, const TmuColor& iterCol,
+                                       const TmuColor& constCol,
+                                       const TmuColor& texCol, float aLocal,
+                                       float aOther, float& outR, float& outG,
+                                       float& outB) {
+  switch (src) {
+    case 0x00u: outR = outG = outB = 0.0f; break;
+    case 0x01u: outR = outG = outB = texCol.a; break;
+    case 0x02u: outR = outG = outB = aLocal; break;
+    case 0x03u: outR = outG = outB = aOther; break;
+    case 0x05u: outR = outG = outB = constCol.a; break;
+    case 0x06u: outR = constCol.r; outG = constCol.g; outB = constCol.b; break;
+    case 0x08u: outR = outG = outB = iterCol.a; break;
+    case 0x09u: outR = iterCol.r; outG = iterCol.g; outB = iterCol.b; break;
+    case 0x0Fu: outR = texCol.r; outG = texCol.g; outB = texCol.b; break;
+    default: outR = outG = outB = 0.0f; break;
+  }
+}
+
+GLIDE_NOINLINE static inline void EvaluateExtFbiColorScalar(
+    uint32_t packed, const TmuColor& iterCol, const TmuColor& constCol,
+    const TmuColor& texCol, float aLocal, float aOther, float& outR,
+    float& outG, float& outB) {
+  const uint32_t aSrc = packed & 0x1Fu;
+  const uint32_t aMode = (packed >> 5u) & 0x7u;
+  const uint32_t bSrc = (packed >> 8u) & 0x1Fu;
+  const uint32_t bMode = (packed >> 13u) & 0x7u;
+  const uint32_t cSrc = (packed >> 16u) & 0x1Fu;
+  const bool cInv = ((packed >> 21u) & 1u) != 0u;
+  const uint32_t dSrc = (packed >> 22u) & 0x1Fu;
+  const bool dInv = ((packed >> 27u) & 1u) != 0u;
+  const float scale = static_cast<float>(1u << std::min((packed >> 28u) & 0x3u, 2u));
+  const bool inv = ((packed >> 30u) & 1u) != 0u;
+
+  float aR, aG, aB, bR, bG, bB, cR, cG, cB, dR, dG, dB;
+  FetchFbiColorScalar(aSrc, iterCol, constCol, texCol, aLocal, aOther, aR, aG, aB);
+  FetchFbiColorScalar(bSrc, iterCol, constCol, texCol, aLocal, aOther, bR, bG, bB);
+  if (cSrc == 0x04u) { cR = bR; cG = bG; cB = bB; }
+  else FetchFbiColorScalar(cSrc, iterCol, constCol, texCol, aLocal, aOther, cR, cG, cB);
+  if (dSrc == 0x04u) { dR = bR; dG = bG; dB = bB; }
+  else FetchFbiColorScalar(dSrc, iterCol, constCol, texCol, aLocal, aOther, dR, dG, dB);
+
+  auto evalCh = [&](float a, float b, float c, float d) {
+    const float av = ApplyCombineModeScalar(a, aMode);
+    const float bv = ApplyCombineModeScalar(b, bMode);
+    const float cv = cInv ? (1.0f - c) : c;
+    const float dv = dInv ? (1.0f - d) : d;
+    float res = ((av + bv) * cv + dv) * scale;
+    if (inv) res = 1.0f - res;
+    return std::clamp(res, 0.0f, 1.0f);
+  };
+  outR = evalCh(aR, bR, cR, dR);
+  outG = evalCh(aG, bG, cG, dG);
+  outB = evalCh(aB, bB, cB, dB);
+}
+
+// SIMD VSA-100 COMBINE evaluators (8-wide)
+static inline void FetchTmuRgbSIMD(uint32_t src, const TmuColorSIMD& localVal,
+                                   const TmuColorSIMD& otherVal,
+                                   const TmuColorSIMD& tmuConst,
+                                   const TmuColorSIMD& iterCol,
+                                   const Simd8f& detailFactor,
+                                   const Simd8f& lodFrac, Simd8f& outR,
+                                   Simd8f& outG, Simd8f& outB) {
+  switch (src) {
+    case 0x00u: outR = outG = outB = Simd8f(0.0f); break;
+    case 0x01u:
+    case 0x0Au: outR = outG = outB = localVal.a; break;
+    case 0x07u: outR = outG = outB = detailFactor; break;
+    case 0x08u: outR = outG = outB = iterCol.a; break;
+    case 0x09u: outR = iterCol.r; outG = iterCol.g; outB = iterCol.b; break;
+    case 0x0Bu:
+    case 0x0Fu: outR = localVal.r; outG = localVal.g; outB = localVal.b; break;
+    case 0x0Cu: outR = outG = outB = lodFrac; break;
+    case 0x0Du: outR = outG = outB = otherVal.a; break;
+    case 0x0Eu: outR = otherVal.r; outG = otherVal.g; outB = otherVal.b; break;
+    case 0x10u: outR = outG = outB = tmuConst.a; break;
+    case 0x11u: outR = tmuConst.r; outG = tmuConst.g; outB = tmuConst.b; break;
+    default: outR = outG = outB = Simd8f(0.0f); break;
+  }
+}
+
+static inline Simd8f FetchTmuAlphaSIMD(uint32_t src,
+                                       const TmuColorSIMD& localVal,
+                                       const TmuColorSIMD& otherVal,
+                                       const TmuColorSIMD& tmuConst,
+                                       const TmuColorSIMD& iterCol,
+                                       const Simd8f& detailFactor,
+                                       const Simd8f& lodFrac) {
+  switch (src) {
+    case 0x00u: return Simd8f(0.0f);
+    case 0x01u:
+    case 0x0Au: return localVal.a;
+    case 0x07u: return detailFactor;
+    case 0x08u: return iterCol.a;
+    case 0x0Cu: return lodFrac;
+    case 0x0Du: return otherVal.a;
+    case 0x10u: return tmuConst.a;
+    default: return Simd8f(0.0f);
+  }
+}
+
+GLIDE_NOINLINE static inline void EvaluateExtTmuRgbSIMD(
+    uint32_t packed, const TmuColorSIMD& localVal, const TmuColorSIMD& otherVal,
+    const TmuColorSIMD& tmuConst, const TmuColorSIMD& iterCol,
+    const Simd8f& detailFactor, const Simd8f& lodFrac, Simd8f& outR,
+    Simd8f& outG, Simd8f& outB) {
+  const uint32_t aSrc = packed & 0x1Fu;
+  const uint32_t aMode = (packed >> 5u) & 0x7u;
+  const uint32_t bSrc = (packed >> 8u) & 0x1Fu;
+  const uint32_t bMode = (packed >> 13u) & 0x7u;
+  const uint32_t cSrc = (packed >> 16u) & 0x1Fu;
+  const bool cInv = ((packed >> 21u) & 1u) != 0u;
+  const uint32_t dSrc = (packed >> 22u) & 0x1Fu;
+  const bool dInv = ((packed >> 27u) & 1u) != 0u;
+  const Simd8f scale(static_cast<float>(1u << std::min((packed >> 28u) & 0x3u, 2u)));
+  const bool inv = ((packed >> 30u) & 1u) != 0u;
+  const Simd8f zero(0.0f);
+  const Simd8f one(1.0f);
+
+  Simd8f aR, aG, aB, bR, bG, bB, cR, cG, cB, dR, dG, dB;
+  FetchTmuRgbSIMD(aSrc, localVal, otherVal, tmuConst, iterCol, detailFactor, lodFrac, aR, aG, aB);
+  FetchTmuRgbSIMD(bSrc, localVal, otherVal, tmuConst, iterCol, detailFactor, lodFrac, bR, bG, bB);
+  if (cSrc == 0x04u) { cR = bR; cG = bG; cB = bB; }
+  else FetchTmuRgbSIMD(cSrc, localVal, otherVal, tmuConst, iterCol, detailFactor, lodFrac, cR, cG, cB);
+  if (dSrc == 0x04u) { dR = bR; dG = bG; dB = bB; }
+  else FetchTmuRgbSIMD(dSrc, localVal, otherVal, tmuConst, iterCol, detailFactor, lodFrac, dR, dG, dB);
+
+  auto evalCh = [&](const Simd8f& a, const Simd8f& b, const Simd8f& c, const Simd8f& d) {
+    const Simd8f av = ApplyCombineModeSIMD(a, aMode);
+    const Simd8f bv = ApplyCombineModeSIMD(b, bMode);
+    const Simd8f cv = cInv ? (one - c) : c;
+    const Simd8f dv = dInv ? (one - d) : d;
+    Simd8f res = Fma(av + bv, cv, dv) * scale;
+    if (inv) res = one - res;
+    return Max(zero, Min(one, res));
+  };
+  outR = evalCh(aR, bR, cR, dR);
+  outG = evalCh(aG, bG, cG, dG);
+  outB = evalCh(aB, bB, cB, dB);
+}
+
+GLIDE_NOINLINE static inline Simd8f EvaluateExtTmuAlphaSIMD(
+    uint32_t packed, const TmuColorSIMD& localVal, const TmuColorSIMD& otherVal,
+    const TmuColorSIMD& tmuConst, const TmuColorSIMD& iterCol,
+    const Simd8f& detailFactor, const Simd8f& lodFrac) {
+  const uint32_t aSrc = packed & 0x1Fu;
+  const uint32_t aMode = (packed >> 5u) & 0x7u;
+  const uint32_t bSrc = (packed >> 8u) & 0x1Fu;
+  const uint32_t bMode = (packed >> 13u) & 0x7u;
+  const uint32_t cSrc = (packed >> 16u) & 0x1Fu;
+  const bool cInv = ((packed >> 21u) & 1u) != 0u;
+  const uint32_t dSrc = (packed >> 22u) & 0x1Fu;
+  const bool dInv = ((packed >> 27u) & 1u) != 0u;
+  const Simd8f scale(static_cast<float>(1u << std::min((packed >> 28u) & 0x3u, 2u)));
+  const bool inv = ((packed >> 30u) & 1u) != 0u;
+  const Simd8f zero(0.0f);
+  const Simd8f one(1.0f);
+
+  const Simd8f aRaw = FetchTmuAlphaSIMD(aSrc, localVal, otherVal, tmuConst, iterCol, detailFactor, lodFrac);
+  const Simd8f bRaw = FetchTmuAlphaSIMD(bSrc, localVal, otherVal, tmuConst, iterCol, detailFactor, lodFrac);
+  const Simd8f cRaw = (cSrc == 0x04u) ? bRaw : FetchTmuAlphaSIMD(cSrc, localVal, otherVal, tmuConst, iterCol, detailFactor, lodFrac);
+  const Simd8f dRaw = (dSrc == 0x04u) ? bRaw : FetchTmuAlphaSIMD(dSrc, localVal, otherVal, tmuConst, iterCol, detailFactor, lodFrac);
+  const Simd8f av = ApplyCombineModeSIMD(aRaw, aMode);
+  const Simd8f bv = ApplyCombineModeSIMD(bRaw, bMode);
+  const Simd8f cv = cInv ? (one - cRaw) : cRaw;
+  const Simd8f dv = dInv ? (one - dRaw) : dRaw;
+  Simd8f res = Fma(av + bv, cv, dv) * scale;
+  if (inv) res = one - res;
+  return Max(zero, Min(one, res));
+}
+
+static inline Simd8f FetchFbiAlphaBaseSIMD(uint32_t src, const Simd8f& iterA,
+                                           const Simd8f& constA,
+                                           const Simd8f& texA) {
+  switch (src) {
+    case 0x00u: return Simd8f(0.0f);
+    case 0x01u:
+    case 0x0Fu: return texA;
+    case 0x05u:
+    case 0x06u: return constA;
+    case 0x08u:
+    case 0x09u: return iterA;
+    default: return Simd8f(0.0f);
+  }
+}
+
+GLIDE_NOINLINE static inline Simd8f EvaluateExtFbiAlphaSIMD(uint32_t packed,
+                                             const Simd8f& iterA,
+                                             const Simd8f& constA,
+                                             const Simd8f& texA,
+                                             Simd8f& outALocal,
+                                             Simd8f& outAOther) {
+  const uint32_t aSrc = packed & 0x1Fu;
+  const uint32_t aMode = (packed >> 5u) & 0x7u;
+  const uint32_t bSrc = (packed >> 8u) & 0x1Fu;
+  const uint32_t bMode = (packed >> 13u) & 0x7u;
+  const uint32_t cSrc = (packed >> 16u) & 0x1Fu;
+  const bool cInv = ((packed >> 21u) & 1u) != 0u;
+  const uint32_t dSrc = (packed >> 22u) & 0x1Fu;
+  const bool dInv = ((packed >> 27u) & 1u) != 0u;
+  const Simd8f scale(static_cast<float>(1u << std::min((packed >> 28u) & 0x3u, 2u)));
+  const bool inv = ((packed >> 30u) & 1u) != 0u;
+  const Simd8f zero(0.0f);
+  const Simd8f one(1.0f);
+
+  const Simd8f aRaw = FetchFbiAlphaBaseSIMD(aSrc, iterA, constA, texA);
+  const Simd8f bRaw = FetchFbiAlphaBaseSIMD(bSrc, iterA, constA, texA);
+  outAOther = aRaw;
+  outALocal = bRaw;
+  const Simd8f cRaw = (cSrc == 0x04u || cSrc == 0x02u)
+                          ? bRaw
+                          : ((cSrc == 0x03u) ? aRaw : FetchFbiAlphaBaseSIMD(cSrc, iterA, constA, texA));
+  const Simd8f dRaw = (dSrc == 0x04u || dSrc == 0x02u)
+                          ? bRaw
+                          : ((dSrc == 0x03u) ? aRaw : FetchFbiAlphaBaseSIMD(dSrc, iterA, constA, texA));
+  const Simd8f av = ApplyCombineModeSIMD(aRaw, aMode);
+  const Simd8f bv = ApplyCombineModeSIMD(bRaw, bMode);
+  const Simd8f cv = cInv ? (one - cRaw) : cRaw;
+  const Simd8f dv = dInv ? (one - dRaw) : dRaw;
+  Simd8f res = Fma(av + bv, cv, dv) * scale;
+  if (inv) res = one - res;
+  return Max(zero, Min(one, res));
+}
+
+static inline void FetchFbiColorSIMD(uint32_t src, const TmuColorSIMD& iterCol,
+                                     const TmuColorSIMD& constCol,
+                                     const TmuColorSIMD& texCol,
+                                     const Simd8f& aLocal,
+                                     const Simd8f& aOther, Simd8f& outR,
+                                     Simd8f& outG, Simd8f& outB) {
+  switch (src) {
+    case 0x00u: outR = outG = outB = Simd8f(0.0f); break;
+    case 0x01u: outR = outG = outB = texCol.a; break;
+    case 0x02u: outR = outG = outB = aLocal; break;
+    case 0x03u: outR = outG = outB = aOther; break;
+    case 0x05u: outR = outG = outB = constCol.a; break;
+    case 0x06u: outR = constCol.r; outG = constCol.g; outB = constCol.b; break;
+    case 0x08u: outR = outG = outB = iterCol.a; break;
+    case 0x09u: outR = iterCol.r; outG = iterCol.g; outB = iterCol.b; break;
+    case 0x0Fu: outR = texCol.r; outG = texCol.g; outB = texCol.b; break;
+    default: outR = outG = outB = Simd8f(0.0f); break;
+  }
+}
+
+GLIDE_NOINLINE static inline void EvaluateExtFbiColorSIMD(
+    uint32_t packed, const TmuColorSIMD& iterCol, const TmuColorSIMD& constCol,
+    const TmuColorSIMD& texCol, const Simd8f& aLocal, const Simd8f& aOther,
+    Simd8f& outR, Simd8f& outG, Simd8f& outB) {
+  const uint32_t aSrc = packed & 0x1Fu;
+  const uint32_t aMode = (packed >> 5u) & 0x7u;
+  const uint32_t bSrc = (packed >> 8u) & 0x1Fu;
+  const uint32_t bMode = (packed >> 13u) & 0x7u;
+  const uint32_t cSrc = (packed >> 16u) & 0x1Fu;
+  const bool cInv = ((packed >> 21u) & 1u) != 0u;
+  const uint32_t dSrc = (packed >> 22u) & 0x1Fu;
+  const bool dInv = ((packed >> 27u) & 1u) != 0u;
+  const Simd8f scale(static_cast<float>(1u << std::min((packed >> 28u) & 0x3u, 2u)));
+  const bool inv = ((packed >> 30u) & 1u) != 0u;
+  const Simd8f zero(0.0f);
+  const Simd8f one(1.0f);
+
+  Simd8f aR, aG, aB, bR, bG, bB, cR, cG, cB, dR, dG, dB;
+  FetchFbiColorSIMD(aSrc, iterCol, constCol, texCol, aLocal, aOther, aR, aG, aB);
+  FetchFbiColorSIMD(bSrc, iterCol, constCol, texCol, aLocal, aOther, bR, bG, bB);
+  if (cSrc == 0x04u) { cR = bR; cG = bG; cB = bB; }
+  else FetchFbiColorSIMD(cSrc, iterCol, constCol, texCol, aLocal, aOther, cR, cG, cB);
+  if (dSrc == 0x04u) { dR = bR; dG = bG; dB = bB; }
+  else FetchFbiColorSIMD(dSrc, iterCol, constCol, texCol, aLocal, aOther, dR, dG, dB);
+
+  auto evalCh = [&](const Simd8f& a, const Simd8f& b, const Simd8f& c, const Simd8f& d) {
+    const Simd8f av = ApplyCombineModeSIMD(a, aMode);
+    const Simd8f bv = ApplyCombineModeSIMD(b, bMode);
+    const Simd8f cv = cInv ? (one - c) : c;
+    const Simd8f dv = dInv ? (one - d) : d;
+    Simd8f res = Fma(av + bv, cv, dv) * scale;
+    if (inv) res = one - res;
+    return Max(zero, Min(one, res));
+  };
+  outR = evalCh(aR, bR, cR, dR);
+  outG = evalCh(aG, bG, cG, dG);
+  outB = evalCh(aB, bB, cB, dB);
 }
 
 }  // namespace GlideWrapper

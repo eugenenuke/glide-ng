@@ -21,8 +21,10 @@ struct RasterizerState {
   uint32_t stipplePattern{0xFFFFFFFF};
   uint32_t rgbSrcBlend{4};
   uint32_t rgbDstBlend{0};
+  uint32_t rgbBlendOp{0};
   uint32_t alphaSrcBlend{4};
   uint32_t alphaDstBlend{0};
+  uint32_t alphaBlendOp{0};
   uint32_t alphaTestOp{7};
   uint32_t alphaTestRefVal{0};
   uint32_t clipMinX{0};
@@ -87,6 +89,13 @@ struct RasterizerState {
   bool texCombinerRgbInvert[2]{false, false};
   bool texCombinerAlphaInvert[2]{false, false};
 
+  // VSA-100 COMBINE extension state
+  uint32_t extColorCombine{0};
+  uint32_t extAlphaCombine{0};
+  uint32_t extTexColorCombine[2]{0, 0};
+  uint32_t extTexAlphaCombine[2]{0, 0};
+  uint32_t tmuConstantColor[2]{0xFFFFFFFFu, 0xFFFFFFFFu};
+
   uint32_t constantColor{0xFFFFFFFF};
   uint32_t stwHintMask{0};
   uint32_t pixelFormatOverride{1};
@@ -109,8 +118,10 @@ struct RasterizerState {
            depthNear == o.depthNear && depthFar == o.depthFar &&
            ditherMode == o.ditherMode && stippleMode == o.stippleMode &&
            stipplePattern == o.stipplePattern && rgbSrcBlend == o.rgbSrcBlend &&
-           rgbDstBlend == o.rgbDstBlend && alphaSrcBlend == o.alphaSrcBlend &&
-           alphaDstBlend == o.alphaDstBlend && alphaTestOp == o.alphaTestOp &&
+           rgbDstBlend == o.rgbDstBlend && rgbBlendOp == o.rgbBlendOp &&
+           alphaSrcBlend == o.alphaSrcBlend &&
+           alphaDstBlend == o.alphaDstBlend && alphaBlendOp == o.alphaBlendOp &&
+           alphaTestOp == o.alphaTestOp &&
            alphaTestRefVal == o.alphaTestRefVal && clipMinX == o.clipMinX &&
            clipMinY == o.clipMinY && clipMaxX == o.clipMaxX &&
            clipMaxY == o.clipMaxY && sstOrigin == o.sstOrigin &&
@@ -172,6 +183,14 @@ struct RasterizerState {
            texCombinerRgbInvert[1] == o.texCombinerRgbInvert[1] &&
            texCombinerAlphaInvert[0] == o.texCombinerAlphaInvert[0] &&
            texCombinerAlphaInvert[1] == o.texCombinerAlphaInvert[1] &&
+           extColorCombine == o.extColorCombine &&
+           extAlphaCombine == o.extAlphaCombine &&
+           extTexColorCombine[0] == o.extTexColorCombine[0] &&
+           extTexColorCombine[1] == o.extTexColorCombine[1] &&
+           extTexAlphaCombine[0] == o.extTexAlphaCombine[0] &&
+           extTexAlphaCombine[1] == o.extTexAlphaCombine[1] &&
+           tmuConstantColor[0] == o.tmuConstantColor[0] &&
+           tmuConstantColor[1] == o.tmuConstantColor[1] &&
            constantColor == o.constantColor && stwHintMask == o.stwHintMask &&
            pixelFormatOverride == o.pixelFormatOverride &&
            chromakeyMode == o.chromakeyMode &&
