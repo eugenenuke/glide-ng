@@ -1077,12 +1077,14 @@ bool SoftwareBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
   AllocateCpuBuffers_Locked(m_headlessWidth, m_headlessHeight);
   m_allocatedBuffer = true;
 
-  size_t rawDepthSize = (size_t)m_headlessWidth * m_headlessHeight * 4;
-  size_t paddedDepthSize = (rawDepthSize + 63) & ~63;
+  // Include 3 guard rows for 2x4 (AVX2) and 4x4 (AVX-512) SIMD boundary safety.
+  size_t rawDepthSize =
+      static_cast<size_t>(m_headlessWidth) * (m_headlessHeight + 3u) * 4u;
+  size_t paddedDepthSize = (rawDepthSize + 63) & ~size_t(63);
   size_t allocatedDepthSize = paddedDepthSize + 64;
   m_headlessDepthBuffer.resize(allocatedDepthSize / sizeof(float), 0.0f);
   const size_t rawStencilSize =
-      static_cast<size_t>(m_headlessWidth) * m_headlessHeight;
+      static_cast<size_t>(m_headlessWidth) * (m_headlessHeight + 3u);
   m_headlessStencilBuffer.assign(((rawStencilSize + 63u) & ~size_t(63)) + 64u,
                                  0u);
   SetClipWindow_Locked(0, 0, width, height);

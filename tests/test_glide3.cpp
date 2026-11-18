@@ -9445,3 +9445,208 @@ TEST_CASE("M11.3: Shared CPU & Post-Process SIMD Kernels Bit-Exactness",
     }
   }
 }
+
+TEST_CASE("M11.4: Vectorized Table Fog, Stipple & Stencil Bit-Exact Parity",
+          "[M11][Fog][Stencil]") {
+  using namespace GlideWrapper;
+  const SwSimdLevel hostMax = DetectHostMaxSimdLevel();
+  std::vector<SwSimdLevel> targets;
+  if (hostMax >= SwSimdLevel::Avx2) targets.push_back(SwSimdLevel::Avx2);
+  if (hostMax >= SwSimdLevel::Avx512) targets.push_back(SwSimdLevel::Avx512);
+  REQUIRE(!targets.empty());
+
+  auto makeVert = [](float x, float y, float z, float oow, float r, float g,
+                     float b, float a) {
+    ModernVertex v{};
+    v.pos[0] = x;
+    v.pos[1] = y;
+    v.pos[2] = z;
+    v.pos[3] = oow;
+    v.color[0] = r;
+    v.color[1] = g;
+    v.color[2] = b;
+    v.color[3] = a;
+    return v;
+  };
+
+  auto renderScenario = [&](SwSimdLevel lvl, uint32_t W, uint32_t H,
+                            std::vector<uint32_t>& outColor,
+                            std::vector<uint8_t>& outStencil, int mode) {
+    WrapperConfig cfg{};
+    cfg.backend = "software";
+    cfg.forceNoWindow = true;
+    cfg.swSimdLevel = lvl;
+    cfg.swUseSimd = (lvl != SwSimdLevel::Scalar);
+    SoftwareBackend be;
+    REQUIRE(be.Initialize(cfg));
+    REQUIRE(be.AttachWindow(nullptr, W, H, /*windowed=*/true));
+    be.SetDitherMode(0);
+    be.SetColorMaskExt(true, true, true, true);
+    be.SetCombinerMode(1, 0, 0, 0, false, 1, 0, 0, 0, false);  // ITERATED
+    be.SetBlendState(4, 0, 4, 0);
+
+    if (mode == 0) {
+      // Table Fog sweeping across ALL 64 W-table intervals (including steep
+      // jumps, near-clamp w < 1, far-clamp w > 52428, and ADD2/MULT2).
+      uint8_t fogTbl[64];
+      for (int i = 0; i < 64; ++i) {
+        // Non-monotonic + steep steps to catch ANY off-by-1 index error!
+        fogTbl[i] = static_cast<uint8_t>(((i * 37 + (i & 1 ? 120 : 10)) & 0xFF));
+      }
+      be.SetFogTable(fogTbl);
+      be.SetFogColor(0x004090E0u);
+      be.SetDepthState(0, 7, false, 0);
+      be.ClearBufferExt(0x00102030u, 255u, 1.0f, 0u, 0x3u);
+
+      // Strip 1: Standard Table Fog (mode=1) sweeping oow across 1.2 -> 1e-6
+      be.SetFogMode(1u);
+      for (int band = 0; band < 16; ++band) {
+        const float y0 = static_cast<float>(band * 3);
+        const float y1 = static_cast<float>((band + 1) * 3);
+        const float oowL = 1.2f / static_cast<float>(1u << band);
+        const float oowR =
+            std::max(1e-6f, 0.45f / static_cast<float>(1u << band));
+        ModernVertex v0 = makeVert(0.0f, y0, 0.5f, oowL, 0.9f, 0.2f, 0.1f, 1.0f);
+        ModernVertex v1 =
+            makeVert(static_cast<float>(W), y0, 0.5f, oowR, 0.1f, 0.9f, 0.3f, 1.0f);
+        ModernVertex v2 =
+            makeVert(static_cast<float>(W), y1, 0.5f, oowR, 0.2f, 0.3f, 0.9f, 1.0f);
+        ModernVertex v3 = makeVert(0.0f, y1, 0.5f, oowL, 0.8f, 0.7f, 0.2f, 1.0f);
+        be.DrawTriangle(v0, v1, v2);
+        be.DrawTriangle(v0, v2, v3);
+      }
+
+      // Strip 2: Multi-pass GR_FOG_MULT2 (0x201) + GR_FOG_ADD2 (0x101)
+      be.SetFogMode(0x201u);
+      be.SetBlendState(4, 0, 4, 0);
+      {
+        ModernVertex v0 = makeVert(0.0f, 48.0f, 0.5f, 0.8f, 0.8f, 0.5f, 0.3f, 1.0f);
+        ModernVertex v1 =
+            makeVert(static_cast<float>(W), 48.0f, 0.5f, 0.002f, 0.3f, 0.8f, 0.6f, 1.0f);
+        ModernVertex v2 = makeVert(static_cast<float>(W), static_cast<float>(H),
+                                   0.5f, 0.0005f, 0.6f, 0.2f, 0.9f, 1.0f);
+        ModernVertex v3 =
+            makeVert(0.0f, static_cast<float>(H), 0.5f, 0.5f, 0.9f, 0.8f, 0.1f, 1.0f);
+        be.DrawTriangle(v0, v1, v2);
+        be.DrawTriangle(v0, v2, v3);
+        be.SetFogMode(0x101u);
+        be.SetBlendState(4, 4, 4, 0);  // ONE, ONE additive pass
+        be.DrawTriangle(v0, v1, v2);
+        be.DrawTriangle(v0, v2, v3);
+      }
+    } else if (mode == 1) {
+      // Stipple transparency (mode 1 = PATTERN, mode 2 = ROTATE)
+      be.SetDepthState(0, 7, false, 0);
+      be.ClearBufferExt(0x00081828u, 255u, 1.0f, 0u, 0x3u);
+      be.SetStippleState(1u, 0xA5C39617u);
+      ModernVertex v0 = makeVert(2.0f, 2.0f, 0.5f, 1.0f, 1.0f, 0.2f, 0.2f, 1.0f);
+      ModernVertex v1 =
+          makeVert(static_cast<float>(W) - 2.0f, 2.0f, 0.5f, 1.0f, 0.2f, 1.0f, 0.2f, 1.0f);
+      ModernVertex v2 =
+          makeVert(static_cast<float>(W) - 2.0f, static_cast<float>(H) * 0.5f,
+                   0.5f, 1.0f, 0.2f, 0.2f, 1.0f, 1.0f);
+      be.DrawTriangle(v0, v1, v2);
+
+      be.SetStippleState(2u, 0x3C5AA5C3u);
+      ModernVertex u0 =
+          makeVert(1.0f, static_cast<float>(H) * 0.4f, 0.5f, 1.0f, 0.9f, 0.9f, 0.1f, 1.0f);
+      ModernVertex u1 =
+          makeVert(static_cast<float>(W) - 1.0f, static_cast<float>(H) * 0.5f,
+                   0.5f, 1.0f, 0.1f, 0.9f, 0.9f, 1.0f);
+      ModernVertex u2 =
+          makeVert(static_cast<float>(W) * 0.5f, static_cast<float>(H) - 1.0f,
+                   0.5f, 1.0f, 0.9f, 0.1f, 0.9f, 1.0f);
+      be.DrawTriangle(u0, u1, u2);
+    } else {
+      // Hardware Stencil: exercise ALL 8 compare ops, ALL 8 stencil ops,
+      // partial readMask/writeMask, and simultaneous sfail/zfail/zpass in quads.
+      be.SetStencilMode(true);
+      be.SetStencilMask(0xFFu);
+      be.SetDepthState(1, 1, true, 0);  // Z-buffer LESS, write enabled
+      be.ClearBufferExt(0x00112233u, 255u, 0.5f, 0x15u, 0x7u);
+
+      // Pass 1: seed half screen with depth=0.25 and stencil=0xAA
+      be.SetStencilFunc(7u, 0xAAu, 0xFFu);  // ALWAYS
+      be.SetStencilOp(0u, 0u, 2u);          // KEEP, KEEP, REPLACE
+      {
+        ModernVertex v0 = makeVert(0.0f, 0.0f, 0.25f, 1.0f, 0.2f, 0.4f, 0.6f, 1.0f);
+        ModernVertex v1 = makeVert(static_cast<float>(W) * 0.6f, 0.0f, 0.25f,
+                                   1.0f, 0.2f, 0.4f, 0.6f, 1.0f);
+        ModernVertex v2 = makeVert(static_cast<float>(W) * 0.3f,
+                                   static_cast<float>(H), 0.25f, 1.0f, 0.2f,
+                                   0.4f, 0.6f, 1.0f);
+        be.DrawTriangle(v0, v1, v2);
+      }
+
+      // Pass 2..9: sweep every compare op (0..7) & stencil op (0..7) with masks
+      for (uint32_t op = 0; op < 8u; ++op) {
+        be.SetStencilFunc(op, static_cast<uint8_t>(0x30u + op * 17u), 0x5Fu);
+        be.SetStencilMask(static_cast<uint8_t>(0x3Cu | (op & 3u)));
+        be.SetStencilOp(op, (op + 3u) & 7u, (op + 5u) & 7u);
+        const float xOff = static_cast<float>(op * 6);
+        // Sloped Z from 0.1 (passes depth) to 0.9 (fails depth)
+        ModernVertex v0 = makeVert(xOff, 0.0f, 0.1f, 1.0f, 0.1f * op, 0.8f,
+                                   0.2f, 1.0f);
+        ModernVertex v1 = makeVert(static_cast<float>(W), 4.0f + op * 3.0f,
+                                   0.9f, 1.0f, 0.9f, 0.1f * op, 0.4f, 1.0f);
+        ModernVertex v2 = makeVert(xOff + 10.0f, static_cast<float>(H), 0.4f,
+                                   1.0f, 0.3f, 0.5f, 0.1f * op, 1.0f);
+        be.DrawTriangle(v0, v1, v2);
+      }
+    }
+
+    be.FlushBins();
+    outColor.assign(static_cast<size_t>(W) * H, 0u);
+    REQUIRE(be.ReadLFB(1u, 0u, 0u, W, H, W * 4u, outColor.data()));
+    outStencil.resize(static_cast<size_t>(W) * H);
+    for (uint32_t y = 0; y < H; ++y) {
+      for (uint32_t x = 0; x < W; ++x) {
+        outStencil[static_cast<size_t>(y) * W + x] =
+            be.GetStencilBufferPixel(x, y);
+      }
+    }
+    be.DetachWindow();
+    be.Shutdown();
+  };
+
+  // Test both standard (64x64) and non-divisible-by-4 height (64x50)
+  for (uint32_t H : {64u, 50u}) {
+    const uint32_t W = 64u;
+    for (int mode = 0; mode < 3; ++mode) {
+      std::vector<uint32_t> refColor;
+      std::vector<uint8_t> refStencil;
+      renderScenario(SwSimdLevel::Scalar, W, H, refColor, refStencil, mode);
+
+      for (SwSimdLevel lvl : targets) {
+        std::vector<uint32_t> gotColor;
+        std::vector<uint8_t> gotStencil;
+        renderScenario(lvl, W, H, gotColor, gotStencil, mode);
+
+        int maxDiff = 0;
+        size_t diffPixels = 0;
+        for (size_t i = 0; i < refColor.size(); ++i) {
+          if (refColor[i] != gotColor[i]) {
+            ++diffPixels;
+            for (int shift = 0; shift <= 24; shift += 8) {
+              const int a = static_cast<int>((refColor[i] >> shift) & 0xFFu);
+              const int b = static_cast<int>((gotColor[i] >> shift) & 0xFFu);
+              maxDiff = std::max(maxDiff, std::abs(a - b));
+            }
+          }
+        }
+        INFO("mode=" << mode << " H=" << H << " diffPixels=" << diffPixels
+                     << " maxDiff=" << maxDiff);
+        if (mode == 0) {
+          // Table Fog must stay strictly bit-exact (0-LSB diff across all 64 intervals)
+          CHECK(maxDiff == 0);
+          CHECK(diffPixels == 0);
+        } else {
+          // FMA vs non-FMA barycentric color ramps can round +-1 LSB at X.5;
+          // any stipple or stencil mask bug would jump by >40 vs background.
+          CHECK(maxDiff <= 1);
+        }
+        CHECK(gotStencil == refStencil);
+      }
+    }
+  }
+}

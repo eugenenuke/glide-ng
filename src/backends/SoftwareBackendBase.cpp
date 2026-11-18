@@ -490,7 +490,10 @@ bool SoftwareBackendBase::WriteLFB(uint32_t buffer, uint32_t dstX,
 
 void SoftwareBackendBase::AllocateCpuBuffers_Locked(uint32_t width,
                                                     uint32_t height) {
-  size_t rawSize = static_cast<size_t>(width) * height * 4;
+  // Include 3 guard rows so 2x4 (AVX2) and 4x4 (AVX-512) SIMD quad/tile
+  // loads/stores stay strictly in-bounds even on heights not divisible by 4
+  // (e.g., 640x350).
+  size_t rawSize = static_cast<size_t>(width) * (height + 3u) * 4u;
   size_t paddedSize = (rawSize + 63) & ~size_t(63);
   size_t allocatedSize = paddedSize + 64;
 

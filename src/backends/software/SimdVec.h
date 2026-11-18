@@ -4,6 +4,7 @@
 #include <immintrin.h>
 #include <cstdint>
 #include <cstddef>
+#include <cstring>
 #include <algorithm>
 #include <cmath>
 
@@ -130,6 +131,7 @@ public:
     }
 
     static inline Simd8f Convert(const Simd8i& val);
+    static inline Simd8f Gather(const float* basePtr, const Simd8i& offsets);
 
     inline Simd8f operator+(const Simd8f& other) const {
         return Simd8f(_mm256_add_ps(v, other.v));
@@ -257,8 +259,31 @@ public:
         _mm_storeu_si128(reinterpret_cast<__m128i*>(ptr + stride), _mm256_extractf128_si256(val.v, 1));
     }
 
+    static inline Simd8i LoadStencil2x4(const uint8_t* ptr, size_t stride) {
+        uint32_t r0 = 0, r1 = 0;
+        std::memcpy(&r0, ptr, 4);
+        std::memcpy(&r1, ptr + stride, 4);
+        __m128i bytes = _mm_set_epi32(0, 0, static_cast<int>(r1), static_cast<int>(r0));
+        return Simd8i(_mm256_cvtepu8_epi32(bytes));
+    }
+
+    static inline void StoreStencil2x4(uint8_t* ptr, size_t stride, const Simd8i& val) {
+        const __m256i shuf = _mm256_setr_epi8(
+            0, 4, 8, 12, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+            0, 4, 8, 12, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1);
+        const __m256i packed = _mm256_shuffle_epi8(val.v, shuf);
+        const uint32_t r0 = static_cast<uint32_t>(_mm_cvtsi128_si32(_mm256_castsi256_si128(packed)));
+        const uint32_t r1 = static_cast<uint32_t>(_mm_cvtsi128_si32(_mm256_extracti128_si256(packed, 1)));
+        std::memcpy(ptr, &r0, 4);
+        std::memcpy(ptr + stride, &r1, 4);
+    }
+
     static inline Simd8i Convert(const Simd8f& val) {
         return Simd8i(_mm256_cvttps_epi32(val.v));
+    }
+
+    static inline Simd8i CastFromFloat(const Simd8f& val) {
+        return Simd8i(_mm256_castps_si256(val.v));
     }
 
     inline Simd8i operator+(const Simd8i& other) const {
@@ -331,6 +356,10 @@ public:
         return Simd8i(_mm256_srli_epi32(v, count));
     }
 
+    inline Simd8i Srlv(const Simd8i& counts) const {
+        return Simd8i(_mm256_srlv_epi32(v, counts.v));
+    }
+
     inline Simd8i& operator<<=(int count) {
         v = _mm256_slli_epi32(v, count);
         return *this;
@@ -362,6 +391,10 @@ public:
 
 inline Simd8f Simd8f::Convert(const Simd8i& val) {
     return Simd8f(_mm256_cvtepi32_ps(val.v));
+}
+
+inline Simd8f Simd8f::Gather(const float* basePtr, const Simd8i& offsets) {
+    return Simd8f(_mm256_i32gather_ps(basePtr, offsets.v, 4));
 }
 
 inline SimdMask operator==(const Simd8i& a, const Simd8i& b) {
@@ -511,6 +544,7 @@ public:
     }
 
     static inline Simd8f Convert(const Simd8i& val);
+    static inline Simd8f Gather(const float* basePtr, const Simd8i& offsets);
 
     inline Simd8f operator+(const Simd8f& other) const {
         return Simd8f(_mm_add_ps(v0, other.v0), _mm_add_ps(v1, other.v1));
@@ -648,8 +682,28 @@ public:
         _mm_storeu_si128(reinterpret_cast<__m128i*>(ptr + stride), val.v1);
     }
 
+    static inline Simd8i LoadStencil2x4(const uint8_t* ptr, size_t stride) {
+        return Simd8i(
+            _mm_setr_epi32(ptr[0], ptr[1], ptr[2], ptr[3]),
+            _mm_setr_epi32(ptr[stride], ptr[stride + 1], ptr[stride + 2], ptr[stride + 3]));
+    }
+
+    static inline void StoreStencil2x4(uint8_t* ptr, size_t stride, const Simd8i& val) {
+        alignas(16) int32_t arr[8];
+        _mm_store_si128(reinterpret_cast<__m128i*>(arr), val.v0);
+        _mm_store_si128(reinterpret_cast<__m128i*>(arr + 4), val.v1);
+        for (int i = 0; i < 4; ++i) {
+            ptr[i] = static_cast<uint8_t>(arr[i]);
+            ptr[stride + i] = static_cast<uint8_t>(arr[4 + i]);
+        }
+    }
+
     static inline Simd8i Convert(const Simd8f& val) {
         return Simd8i(_mm_cvttps_epi32(val.v0), _mm_cvttps_epi32(val.v1));
+    }
+
+    static inline Simd8i CastFromFloat(const Simd8f& val) {
+        return Simd8i(_mm_castps_si128(val.v0), _mm_castps_si128(val.v1));
     }
 
     inline Simd8i operator+(const Simd8i& other) const {
@@ -728,6 +782,17 @@ public:
         return Simd8i(_mm_srli_epi32(v0, count), _mm_srli_epi32(v1, count));
     }
 
+    inline Simd8i Srlv(const Simd8i& counts) const {
+        alignas(16) uint32_t a[8], s[8], out[8];
+        _mm_store_si128(reinterpret_cast<__m128i*>(a), v0);
+        _mm_store_si128(reinterpret_cast<__m128i*>(a + 4), v1);
+        _mm_store_si128(reinterpret_cast<__m128i*>(s), counts.v0);
+        _mm_store_si128(reinterpret_cast<__m128i*>(s + 4), counts.v1);
+        for (int i = 0; i < 8; ++i) out[i] = (s[i] < 32u) ? (a[i] >> s[i]) : 0u;
+        return Simd8i(_mm_load_si128(reinterpret_cast<const __m128i*>(out)),
+                      _mm_load_si128(reinterpret_cast<const __m128i*>(out + 4)));
+    }
+
     inline Simd8i& operator<<=(int count) {
         v0 = _mm_slli_epi32(v0, count);
         v1 = _mm_slli_epi32(v1, count);
@@ -768,6 +833,16 @@ public:
 
 inline Simd8f Simd8f::Convert(const Simd8i& val) {
     return Simd8f(_mm_cvtepi32_ps(val.v0), _mm_cvtepi32_ps(val.v1));
+}
+
+inline Simd8f Simd8f::Gather(const float* basePtr, const Simd8i& offsets) {
+    alignas(16) int32_t idx[8];
+    _mm_store_si128(reinterpret_cast<__m128i*>(idx), offsets.v0);
+    _mm_store_si128(reinterpret_cast<__m128i*>(idx + 4), offsets.v1);
+    return Simd8f(
+        _mm_setr_ps(basePtr[idx[0]], basePtr[idx[1]], basePtr[idx[2]], basePtr[idx[3]]),
+        _mm_setr_ps(basePtr[idx[4]], basePtr[idx[5]], basePtr[idx[6]], basePtr[idx[7]])
+    );
 }
 
 inline SimdMask operator==(const Simd8i& a, const Simd8i& b) {

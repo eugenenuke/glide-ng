@@ -525,4 +525,85 @@ GLIDE_SIMD_NOINLINE static inline void EvaluateExtFbiColorVec(uint32_t packed,
   outB = evalCh(aB, bB, cB, dB);
 }
 
+// ISA-generic SIMD Hardware Stencil compare (ref & readMask) <op> (buf & readMask)
+template <typename SimdI, typename SimdM>
+static inline SimdM EvaluateStencilCompareVec(uint32_t op,
+                                              const SimdI& maskedRef,
+                                              const SimdI& maskedBuf) {
+  switch (op) {
+    case 0: return SimdM::False();         // GR_CMP_NEVER
+    case 1: return maskedRef < maskedBuf;  // GR_CMP_LESS
+    case 2: return maskedRef == maskedBuf; // GR_CMP_EQUAL
+    case 3: return maskedRef <= maskedBuf; // GR_CMP_LEQUAL
+    case 4: return maskedRef > maskedBuf;  // GR_CMP_GREATER
+    case 5: return maskedRef != maskedBuf; // GR_CMP_NOTEQUAL
+    case 6: return maskedRef >= maskedBuf; // GR_CMP_GEQUAL
+    case 7: return SimdM::True();          // GR_CMP_ALWAYS
+    default: return SimdM::True();
+  }
+}
+
+// ISA-generic SIMD Hardware Stencil op respecting 8-bit write mask
+template <typename SimdI>
+static inline SimdI ApplyStencilOpVec(uint32_t op, const SimdI& bufVal,
+                                      const SimdI& refVec,
+                                      const SimdI& wmaskVec,
+                                      const SimdI& invWmaskVec) {
+  SimdI res = bufVal;
+  switch (op) {
+    case 0: return bufVal;  // KEEP
+    case 1: res = SimdI(0); break;  // ZERO
+    case 2: res = refVec; break;  // REPLACE
+    case 3: res = Min(SimdI(255), bufVal + SimdI(1)); break;  // INCR_CLAMP
+    case 4: res = Max(SimdI(0), bufVal - SimdI(1)); break;    // DECR_CLAMP
+    case 5: res = (~bufVal) & SimdI(0xFF); break;             // INVERT
+    case 6: res = (bufVal + SimdI(1)) & SimdI(0xFF); break;   // INCR_WRAP
+    case 7: res = (bufVal - SimdI(1)) & SimdI(0xFF); break;   // DECR_WRAP
+    default: return bufVal;
+  }
+  return (bufVal & invWmaskVec) | (res & wmaskVec);
+}
+
+// ISA-generic SIMD Table Fog evaluation (bit-exact index vs binary search
+// across all IEEE-754 float32 wVal inputs via reciprocal-exponent estimate +
+// exact 1-step boundary refinement against s_tableIndexToW[64]).
+template <typename SimdF, typename SimdI, typename SimdM>
+static inline SimdF EvaluateTableFogVec(const SimdF& wVal,
+                                        const float fogTableF[64]) {
+  const SimdF zero_vec(0.0f);
+  const SimdF one_vec(1.0f);
+  const SimdF minOow(1e-6f);
+
+  const SimdF clampedOow = Max(wVal, minOow);
+  const SimdF eyeW = Max(one_vec / clampedOow, one_vec);
+  const SimdF oowForIdx = Min(clampedOow, one_vec);
+
+  const SimdI bits = SimdI::CastFromFloat(oowForIdx);
+  const SimdI exp = bits.Srl(23) & SimdI(0xFF);
+  const SimdI sub2 = bits.Srl(21) & SimdI(3);
+  const SimdI zeroI(0);
+  const SimdI maxIdxI(62);
+  const SimdI oneI(1);
+
+  SimdI idx = ((SimdI(127) - exp) << 2) - oneI - sub2;
+  idx = Max(zeroI, Min(maxIdxI, idx));
+
+  SimdF w0 = SimdF::Gather(s_tableIndexToW, idx);
+  SimdF w1 = SimdF::Gather(s_tableIndexToW + 1, idx);
+
+  const SimdM fixLo = (eyeW < w0) & (idx > zeroI);
+  const SimdM fixHi = (eyeW >= w1) & (idx < maxIdxI);
+  if (__builtin_expect((fixLo | fixHi).AnyTrue(), 0)) {
+    idx = Select(fixLo, idx - oneI, idx);
+    idx = Select(fixHi, idx + oneI, idx);
+    w0 = SimdF::Gather(s_tableIndexToW, idx);
+    w1 = SimdF::Gather(s_tableIndexToW + 1, idx);
+  }
+
+  const SimdF t = Max(Min((eyeW - w0) / (w1 - w0), one_vec), zero_vec);
+  const SimdF f0 = SimdF::Gather(fogTableF, idx);
+  const SimdF f1 = SimdF::Gather(fogTableF + 1, idx);
+  return Fma(f1 - f0, t, f0);
+}
+
 }  // namespace GlideWrapper

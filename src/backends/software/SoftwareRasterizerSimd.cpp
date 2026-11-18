@@ -683,6 +683,21 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
   const SimdMask tbufSimdMask =
       (Simd8i(tm0, tm1, tm0, tm1, tm2, tm3, tm2, tm3) != Simd8i(0));
 
+  // Pre-broadcast hardware stencil & table-fog constants outside the pixel loop
+  const Simd8i stencilRef_vec(static_cast<int32_t>(stencilRef));
+  const Simd8i stencilReadMask_vec(static_cast<int32_t>(stencilReadMask));
+  const Simd8i stencilMaskedRef_vec(
+      static_cast<int32_t>(stencilRef & stencilReadMask));
+  const Simd8i stencilWriteMask_vec(static_cast<int32_t>(stencilWriteMask));
+  const Simd8i stencilInvWriteMask_vec(
+      static_cast<int32_t>(~stencilWriteMask) & 0xFF);
+  alignas(64) float fogTableF[64];
+  if (fogMode != 0 && (fogMode & 0x0F) != 4) {
+    for (int i = 0; i < 64; ++i) {
+      fogTableF[i] = static_cast<float>(state.fogTable[i]) / 255.0f;
+    }
+  }
+
   // Incremental 2x4 edge equation setup.
   // When 2x2 SSAA has live GR_AA_MULTI_SAMPLE disabled, collapse all 4
   // subpixels of each 2x2 guest pixel onto the guest-pixel center
@@ -808,7 +823,7 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
         }
       }
 
-      // 3. Stipple Transparency
+      // 3. Stipple Transparency (fully vectorized via variable shift)
       if (stippleMode != 0) {
         Simd8i x_i(x, x + 1, x + 2, x + 3, x, x + 1, x + 2, x + 3);
         Simd8i y_i(y, y, y, y, y + 1, y + 1, y + 1, y + 1);
@@ -816,15 +831,9 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
                                              : (x_i & Simd8i(7));
         Simd8i stippleY = y_i & Simd8i(3);
         Simd8i stippleIndex = (stippleY << 3) | (Simd8i(7) - stippleX);
-
-        alignas(32) int32_t index_arr[8];
-        Simd8i::Store(index_arr, stippleIndex);
-        alignas(32) int32_t result_arr[8];
-        for (int i = 0; i < 8; ++i) {
-          result_arr[i] =
-              static_cast<int32_t>((stipplePattern >> index_arr[i]) & 1u);
-        }
-        Simd8i bit = Simd8i::Load(result_arr);
+        Simd8i bit = Simd8i(static_cast<int32_t>(stipplePattern))
+                         .Srlv(stippleIndex) &
+                     Simd8i(1);
         coverageMask = coverageMask & (bit != Simd8i(0));
         if (coverageMask.AllZero()) continue;
       }
@@ -1404,27 +1413,34 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
         if (coverageMask.AllZero()) continue;
       }
 
-      // 9.5. Hardware Stencil Testing (before Depth Test)
-      int stencilPassedBits = 0;
+      // 9.5. Hardware Stencil Testing (before Depth Test — fully vectorized)
+      SimdMask stencilPassMask = coverageMask;
+      Simd8i curStencil;
+      uint8_t* stencilPtr = nullptr;
+      bool stencilDirty = false;
       if (__builtin_expect(stencilEnabled && stencilBuffer != nullptr, 0)) {
-        const int activeBits = coverageMask.MoveMask();
-        int passBits = 0;
-        for (int i = 0; i < 8; ++i) {
-          if (!((activeBits >> i) & 1)) continue;
-          const size_t sIdx =
-              static_cast<size_t>(y + (i >> 2)) * width + (x + (i & 3));
-          const uint8_t sVal = stencilBuffer[sIdx];
-          if (EvaluateStencilCompare(stencilCompareOp, stencilRef,
-                                     stencilReadMask, sVal)) {
-            passBits |= (1 << i);
-          } else if (stencilFailOp != 0u && stencilWriteMask != 0u) {
-            stencilBuffer[sIdx] = ApplyStencilOp(stencilFailOp, sVal,
-                                                 stencilRef, stencilWriteMask);
-          }
+        stencilPtr = &stencilBuffer[static_cast<size_t>(y) * width + x];
+        curStencil = Simd8i::LoadStencil2x4(stencilPtr, width);
+        const SimdMask sCmp = EvaluateStencilCompareVec<Simd8i, SimdMask>(
+            stencilCompareOp, stencilMaskedRef_vec,
+            curStencil & stencilReadMask_vec);
+        stencilPassMask = coverageMask & sCmp;
+        const SimdMask stencilFailMask = coverageMask & !sCmp;
+        if (stencilWriteMask != 0u && stencilFailOp != 0u &&
+            stencilFailMask.AnyTrue()) {
+          const Simd8i failedVal = ApplyStencilOpVec(
+              stencilFailOp, curStencil, stencilRef_vec, stencilWriteMask_vec,
+              stencilInvWriteMask_vec);
+          curStencil = Select(stencilFailMask, failedVal, curStencil);
+          stencilDirty = true;
         }
-        stencilPassedBits = passBits;
-        if (passBits == 0) continue;
-        coverageMask = coverageMask & SimdMask::FromBitmask(passBits);
+        if (stencilPassMask.AllZero()) {
+          if (stencilDirty) {
+            Simd8i::StoreStencil2x4(stencilPtr, width, curStencil);
+          }
+          continue;
+        }
+        coverageMask = stencilPassMask;
       }
 
       // 10. Depth Testing (skipped completely when depthMode == 0)
@@ -1484,33 +1500,30 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
         }
       }
 
-      // 10.5. Hardware Stencil ZFail / ZPass updates
+      // 10.5. Hardware Stencil ZFail / ZPass updates (fully vectorized)
       if (__builtin_expect(stencilEnabled && stencilBuffer != nullptr, 0)) {
-        const int zPassBits = coverageMask.MoveMask();
-        const int zFailBits = stencilPassedBits & ~zPassBits;
+        const SimdMask zPassMask = coverageMask;
+        const SimdMask zFailMask = stencilPassMask & !zPassMask;
         if (stencilWriteMask != 0u) {
-          if (zFailBits != 0 && stencilZFailOp != 0u) {
-            for (int i = 0; i < 8; ++i) {
-              if (!((zFailBits >> i) & 1)) continue;
-              const size_t sIdx =
-                  static_cast<size_t>(y + (i >> 2)) * width + (x + (i & 3));
-              stencilBuffer[sIdx] = ApplyStencilOp(
-                  stencilZFailOp, stencilBuffer[sIdx], stencilRef,
-                  stencilWriteMask);
-            }
+          if (stencilZFailOp != 0u && zFailMask.AnyTrue()) {
+            const Simd8i zfVal = ApplyStencilOpVec(
+                stencilZFailOp, curStencil, stencilRef_vec,
+                stencilWriteMask_vec, stencilInvWriteMask_vec);
+            curStencil = Select(zFailMask, zfVal, curStencil);
+            stencilDirty = true;
           }
-          if (zPassBits != 0 && stencilZPassOp != 0u) {
-            for (int i = 0; i < 8; ++i) {
-              if (!((zPassBits >> i) & 1)) continue;
-              const size_t sIdx =
-                  static_cast<size_t>(y + (i >> 2)) * width + (x + (i & 3));
-              stencilBuffer[sIdx] = ApplyStencilOp(
-                  stencilZPassOp, stencilBuffer[sIdx], stencilRef,
-                  stencilWriteMask);
-            }
+          if (stencilZPassOp != 0u && zPassMask.AnyTrue()) {
+            const Simd8i zpVal = ApplyStencilOpVec(
+                stencilZPassOp, curStencil, stencilRef_vec,
+                stencilWriteMask_vec, stencilInvWriteMask_vec);
+            curStencil = Select(zPassMask, zpVal, curStencil);
+            stencilDirty = true;
           }
         }
-        if (zPassBits == 0) continue;
+        if (stencilDirty) {
+          Simd8i::StoreStencil2x4(stencilPtr, width, curStencil);
+        }
+        if (zPassMask.AllZero()) continue;
       }
 
       // Capture pre-fog color for GR_BLEND_PREFOG_COLOR (multi-pass fog)
@@ -1518,44 +1531,14 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
       const Simd8f preFogG = green;
       const Simd8f preFogB = blue;
 
-      // 11. Fog Stage
+      // 11. Fog Stage (fully vectorized table fog — 0-mismatch index vs scalar)
       if (fogMode != 0) {
         Simd8f f_vec = zero_vec;
         uint32_t fogSource = fogMode & 0x0F;
         if (fogSource == 4) {
           f_vec = iterA;
         } else {
-          alignas(32) float eyeW_arr[8];
-          Simd8f eyeW = one_vec / Max(wVal, Simd8f(1e-6f));
-          Simd8f::Store(eyeW_arr, eyeW);
-
-          alignas(32) float f_arr[8];
-          for (int i = 0; i < 8; ++i) {
-            float ew = eyeW_arr[i];
-            if (ew < 1.0f) ew = 1.0f;
-
-            int idx = 0;
-            if (ew >= s_tableIndexToW[32]) idx += 32;
-            if (ew >= s_tableIndexToW[idx + 16]) idx += 16;
-            if (ew >= s_tableIndexToW[idx + 8]) idx += 8;
-            if (ew >= s_tableIndexToW[idx + 4]) idx += 4;
-            if (ew >= s_tableIndexToW[idx + 2]) idx += 2;
-            if (ew >= s_tableIndexToW[idx + 1]) idx += 1;
-            idx = std::min(idx, 62);
-
-            float w0_fog = s_tableIndexToW[idx];
-            float w1_fog = s_tableIndexToW[idx + 1];
-            float f0 = state.fogTable[idx] / 255.0f;
-            float f1 = state.fogTable[idx + 1] / 255.0f;
-
-            float t = 0.0f;
-            if (w1_fog > w0_fog) {
-              t = (ew - w0_fog) / (w1_fog - w0_fog);
-            }
-            t = std::max(0.0f, std::min(1.0f, t));
-            f_arr[i] = f0 * (1.0f - t) + f1 * t;
-          }
-          f_vec = Simd8f::LoadAligned(f_arr);
+          f_vec = EvaluateTableFogVec<Simd8f, Simd8i, SimdMask>(wVal, fogTableF);
         }
 
         Simd8f srcScale =
