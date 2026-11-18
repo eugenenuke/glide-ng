@@ -1,9 +1,51 @@
 #include "WrapperConfig.h"
 #include "IniConfigLoader.h"
+#include <algorithm>
+#include <cctype>
 #include <string>
 #include <unordered_map>
 
 namespace GlideWrapper {
+
+const char* FormatSwSimdLevel(SwSimdLevel level) {
+    switch (level) {
+        case SwSimdLevel::Auto:   return "auto";
+        case SwSimdLevel::Scalar: return "scalar";
+        case SwSimdLevel::Avx2:   return "avx2";
+        case SwSimdLevel::Avx512: return "avx512";
+    }
+    return "avx2";
+}
+
+bool ParseSwSimdLevel(const std::string& raw, SwSimdLevel& out) {
+    std::string s;
+    s.reserve(raw.size());
+    for (unsigned char ch : raw) {
+        if (!std::isspace(ch)) {
+            s.push_back(static_cast<char>(std::tolower(ch)));
+        }
+    }
+    if (s.empty()) return false;
+    if (s == "0" || s == "false" || s == "off" || s == "no" || s == "none" ||
+        s == "scalar") {
+        out = SwSimdLevel::Scalar;
+        return true;
+    }
+    if (s == "1" || s == "true" || s == "on" || s == "yes" || s == "avx2" ||
+        s == "avx2+fma" || s == "avx2_fma") {
+        out = SwSimdLevel::Avx2;
+        return true;
+    }
+    if (s == "avx512" || s == "avx-512" || s == "avx_512" || s == "avx512f") {
+        out = SwSimdLevel::Avx512;
+        return true;
+    }
+    if (s == "auto" || s == "best" || s == "max") {
+        out = SwSimdLevel::Auto;
+        return true;
+    }
+    return false;
+}
 
 struct GatingRule {
     ApiVersion minVersion;

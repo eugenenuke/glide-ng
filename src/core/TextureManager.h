@@ -32,6 +32,9 @@ struct VirtualTexture {
       swizzledMipLevels;  // Completely swizzled into 32-bit ARGB (0xAARRGGBB)
                           // per level
   std::vector<std::vector<uint8_t>>
+      rawCompressedMipLevels;  // Raw BC1/BC2/BC3 (DXT1..DXT5) blocks per level
+                               // for zero-CPU-decode hardware GPU upload
+  std::vector<std::vector<uint8_t>>
       raw8BitMipLevels;  // Stored for deferred P8 palettization
 
   // Staging vectors for YIQ/AYIQ and AP_88 formats (deferred swizzling)
@@ -93,6 +96,16 @@ class TextureManager {
                              int32_t thisLod, int32_t largeLod,
                              uint32_t aspect, uint32_t format,
                              const std::vector<uint32_t>& canonicalArgb);
+
+  // Zero-readback GPU-side TEXTUREBUFFER commit: keeps rendered pixels resident
+  // on the GPU via IGraphicsBackend::CommitGpuTextureBuffer() and updates TMU
+  // metadata. Returns false if the backend does not support GPU RTT or if the
+  // target mip chain requires CPU fallback.
+  bool CommitGpuRenderedTexture(uint32_t tmu, uint32_t startAddress,
+                                int32_t thisLod, int32_t largeLod,
+                                uint32_t aspect, uint32_t format,
+                                uint32_t copyWidth, uint32_t copyHeight,
+                                uint32_t origin);
 
   // Download a palette or NCC table to the specified TMU and trigger deferred
   // swizzling
@@ -196,6 +209,7 @@ class TextureManager {
                                             const VirtualTexture& tex);
   static void ReswizzleTexture_Locked(const TmuState& state,
                                       VirtualTexture& tex);
+  static void EnsureCompressedSwizzled_Locked(VirtualTexture& tex);
   void EnsureTextureReady_Locked(uint32_t tmu,
                                  std::shared_ptr<VirtualTexture>& texPtr,
                                  bool uploadToBackend);

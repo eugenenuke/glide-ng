@@ -1,5 +1,6 @@
 #include "IniConfigLoader.h"
 #include "Logger.h"
+#include "SimdDispatch.h"
 #include "glide_ng/env_vars.h"
 #include <algorithm>
 #include <cctype>
@@ -965,9 +966,17 @@ bool IniConfigLoader::Load(const std::string& configFilePath, WrapperConfig& out
             } else if ((sec == "software" && (key == "simd" || key == "sw_simd")) ||
                        (sec.empty() && key == "sw_simd")) {
                 handled = true;
-                if (ParseBoolString(val, boolVal)) {
-                    outConfig.swUseSimd = boolVal;
+                SwSimdLevel lvl = SwSimdLevel::Avx2;
+                if (ParseSwSimdLevel(val, lvl)) {
+                    outConfig.swSimdLevel = lvl;
+                    outConfig.swUseSimd = (lvl != SwSimdLevel::Scalar);
                     outConfig.settingSources["swSimd"] = "ini";
+                } else {
+                    outConfig.invalidConfigValues.push_back(
+                        "Unrecognized [software] simd value '" + val +
+                        "' (valid: scalar, avx2, avx512, auto, 0, 1); keeping '" +
+                        std::string(FormatSwSimdLevel(outConfig.swSimdLevel)) +
+                        "'.");
                 }
             } else if ((sec == "software" && (key == "tile_size" || key == "sw_tile_size")) ||
                        (sec.empty() && key == "sw_tile_size")) {
@@ -1417,10 +1426,16 @@ bool IniConfigLoader::Load(const std::string& configFilePath, WrapperConfig& out
     }
 
     if (const char* envVal = GetNonEmptyEnv(GLIDE_NG_ENV_SW_SIMD)) {
-        bool b = false;
-        if (ParseBoolString(envVal, b)) {
-            outConfig.swUseSimd = b;
+        SwSimdLevel lvl = SwSimdLevel::Avx2;
+        if (ParseSwSimdLevel(envVal, lvl)) {
+            outConfig.swSimdLevel = lvl;
+            outConfig.swUseSimd = (lvl != SwSimdLevel::Scalar);
             outConfig.settingSources["swSimd"] = GLIDE_NG_ENV_SW_SIMD;
+        } else {
+            outConfig.invalidConfigValues.push_back(
+                "Unrecognized GLIDE_NG_SW_SIMD value '" + std::string(envVal) +
+                "' (valid: scalar, avx2, avx512, auto, 0, 1); keeping '" +
+                std::string(FormatSwSimdLevel(outConfig.swSimdLevel)) + "'.");
         }
     }
 
@@ -1458,6 +1473,16 @@ bool IniConfigLoader::Load(const std::string& configFilePath, WrapperConfig& out
     }
     if (outConfig.swTileSize < 16) {
         outConfig.swTileSize = 16;
+    }
+    outConfig.swUseSimd = (outConfig.swSimdLevel != SwSimdLevel::Scalar);
+    {
+        std::string simdWarn;
+        const SwSimdLevel resolvedSimd =
+            ResolveEffectiveSimdLevel(outConfig.swSimdLevel, &simdWarn);
+        SetActiveSimdLevel(resolvedSimd);
+        if (!simdWarn.empty()) {
+            outConfig.simdFallbackWarning = simdWarn;
+        }
     }
     if (outConfig.glesVboSizeMb < 1) {
         outConfig.glesVboSizeMb = 8;

@@ -5,6 +5,7 @@
 #include <cstring>
 
 #include "core/Logger.h"
+#include "core/SimdKernels.h"
 
 #ifdef _OPENMP
 #include <omp.h>
@@ -99,57 +100,33 @@ void SoftwareBackendBase::ClearBufferExt_Locked(uint32_t color, uint32_t alpha,
                 "ClearBuffer color clear skipped due to zero color mask (write "
                 "masking active).");
     } else {
-      uint32_t clearWord = (a << 24) | (r << 16) | (g << 8) | b;
+      const uint32_t clearWord = (a << 24) | (r << 16) | (g << 8) | b;
+      const uint32_t keepMask = ~writeMask;
+      const uint32_t maskedClearWord =
+          (writeMask == 0xFFFFFFFFu) ? clearWord : (clearWord & writeMask);
       uint32_t* pixels = reinterpret_cast<uint32_t*>(m_headlessPixelMap);
       const uint32_t spanW = x1 - x0;
+      const auto& kernels = GetSimdKernels();
+      const uint32_t stride = m_headlessWidth;
 
       if (isTbufMasked) {
-        const uint32_t keepMask = ~writeMask;
-        const uint32_t maskedClearWord = clearWord & writeMask;
+#ifdef _OPENMP
+#pragma omp parallel for if (static_cast<size_t>(y1 - y0) * spanW > 64000)
+#endif
         for (uint32_t y = y0; y < y1; ++y) {
           const uint32_t rowMask = (tbufMask >> ((y & 1u) << 1)) & 3u;
           if (rowMask == 0u) continue;
-          uint32_t* row =
-              pixels + static_cast<size_t>(y) * m_headlessWidth;
-          if (writeMask == 0xFFFFFFFFu) {
-            for (uint32_t x = x0; x < x1; ++x) {
-              if ((rowMask >> (x & 1u)) & 1u) {
-                row[x] = clearWord;
-              }
-            }
-          } else {
-            for (uint32_t x = x0; x < x1; ++x) {
-              if ((rowMask >> (x & 1u)) & 1u) {
-                row[x] = (row[x] & keepMask) | maskedClearWord;
-              }
-            }
-          }
-        }
-      } else if (fullClip) {
-        uint32_t totalPixels = m_headlessWidth * m_headlessHeight;
-        if (writeMask == 0xFFFFFFFF) {
-          std::fill_n(pixels, totalPixels, clearWord);
-        } else {
-          uint32_t keepMask = ~writeMask;
-          uint32_t maskedClearWord = clearWord & writeMask;
-          for (uint32_t i = 0; i < totalPixels; ++i) {
-            pixels[i] = (pixels[i] & keepMask) | maskedClearWord;
-          }
-        }
-      } else if (writeMask == 0xFFFFFFFF) {
-        for (uint32_t y = y0; y < y1; ++y) {
-          std::fill_n(pixels + static_cast<size_t>(y) * m_headlessWidth + x0,
-                      spanW, clearWord);
+          uint32_t* row = pixels + static_cast<size_t>(y) * stride;
+          kernels.ClearColorTBufferRow(row, x0, x1, clearWord, keepMask,
+                                       maskedClearWord, rowMask);
         }
       } else {
-        uint32_t keepMask = ~writeMask;
-        uint32_t maskedClearWord = clearWord & writeMask;
+#ifdef _OPENMP
+#pragma omp parallel for if (static_cast<size_t>(y1 - y0) * spanW > 64000)
+#endif
         for (uint32_t y = y0; y < y1; ++y) {
-          uint32_t* row =
-              pixels + static_cast<size_t>(y) * m_headlessWidth + x0;
-          for (uint32_t i = 0; i < spanW; ++i) {
-            row[i] = (row[i] & keepMask) | maskedClearWord;
-          }
+          uint32_t* row = pixels + static_cast<size_t>(y) * stride + x0;
+          kernels.ClearColorMasked(row, spanW, maskedClearWord, keepMask);
         }
       }
       GLIDE_LOG(DEBUG, "Rasterizer",
@@ -162,34 +139,45 @@ void SoftwareBackendBase::ClearBufferExt_Locked(uint32_t color, uint32_t alpha,
   }
 
   if ((clearMask & 0x2) && m_depthMask) {  // Depth Clear (obeys grDepthMask)
+    const auto& kernels = GetSimdKernels();
+    const uint32_t stride = m_headlessWidth;
+    [[maybe_unused]] const uint32_t spanW = x1 - x0;
     if (fullClip && !isTbufMasked) {
       m_pendingCpuDepthClear = false;
       if (!m_headlessDepthBuffer.empty()) {
-        std::fill(m_headlessDepthBuffer.begin(), m_headlessDepthBuffer.end(),
-                  z);
+        float* depthData = m_headlessDepthBuffer.data();
+#ifdef _OPENMP
+#pragma omp parallel for if (static_cast<size_t>(m_headlessHeight) * stride > \
+                             64000)
+#endif
+        for (uint32_t y = 0; y < m_headlessHeight; ++y) {
+          kernels.ClearDepthTBufferRow(
+              depthData + static_cast<size_t>(y) * stride, 0u, stride, z, 3u);
+        }
         GLIDE_LOG(DEBUG, "Rasterizer", "Cleared depth buffer with value " << z);
       }
     } else {
       MaterializeLazyCpuDepthClear_Locked();
       if (!m_headlessDepthBuffer.empty()) {
+        float* depthData = m_headlessDepthBuffer.data();
         if (isTbufMasked) {
+#ifdef _OPENMP
+#pragma omp parallel for if (static_cast<size_t>(y1 - y0) * spanW > 64000)
+#endif
           for (uint32_t y = y0; y < y1; ++y) {
             const uint32_t rowMask = (tbufMask >> ((y & 1u) << 1)) & 3u;
             if (rowMask == 0u) continue;
-            float* depthRow = m_headlessDepthBuffer.data() +
-                              static_cast<size_t>(y) * m_headlessWidth;
-            for (uint32_t x = x0; x < x1; ++x) {
-              if ((rowMask >> (x & 1u)) & 1u) {
-                depthRow[x] = z;
-              }
-            }
+            kernels.ClearDepthTBufferRow(
+                depthData + static_cast<size_t>(y) * stride, x0, x1, z,
+                rowMask);
           }
         } else {
-          const uint32_t spanW = x1 - x0;
+#ifdef _OPENMP
+#pragma omp parallel for if (static_cast<size_t>(y1 - y0) * spanW > 64000)
+#endif
           for (uint32_t y = y0; y < y1; ++y) {
-            std::fill_n(m_headlessDepthBuffer.data() +
-                            static_cast<size_t>(y) * m_headlessWidth + x0,
-                        spanW, z);
+            kernels.ClearDepthTBufferRow(
+                depthData + static_cast<size_t>(y) * stride, x0, x1, z, 3u);
           }
         }
         GLIDE_LOG(DEBUG, "Rasterizer",
@@ -206,51 +194,31 @@ void SoftwareBackendBase::ClearBufferExt_Locked(uint32_t color, uint32_t alpha,
       !m_headlessStencilBuffer.empty()) {
     const uint8_t wmask = m_stencilWriteMask;
     const uint8_t keepMask = static_cast<uint8_t>(~wmask);
-    const uint8_t maskedStencil = static_cast<uint8_t>(stencil & wmask);
+    const uint8_t maskedStencil =
+        (wmask == 0xFFu) ? stencil : static_cast<uint8_t>(stencil & wmask);
     uint8_t* stencilBuf = m_headlessStencilBuffer.data();
     const uint32_t spanW = x1 - x0;
+    const uint32_t stride = m_headlessWidth;
+    const auto& kernels = GetSimdKernels();
 
     if (isTbufMasked) {
+#ifdef _OPENMP
+#pragma omp parallel for if (static_cast<size_t>(y1 - y0) * spanW > 64000)
+#endif
       for (uint32_t y = y0; y < y1; ++y) {
         const uint32_t rowMask = (tbufMask >> ((y & 1u) << 1)) & 3u;
         if (rowMask == 0u) continue;
-        uint8_t* sRow = stencilBuf + static_cast<size_t>(y) * m_headlessWidth;
-        if (wmask == 0xFFu) {
-          for (uint32_t x = x0; x < x1; ++x) {
-            if ((rowMask >> (x & 1u)) & 1u) {
-              sRow[x] = stencil;
-            }
-          }
-        } else {
-          for (uint32_t x = x0; x < x1; ++x) {
-            if ((rowMask >> (x & 1u)) & 1u) {
-              sRow[x] = static_cast<uint8_t>((sRow[x] & keepMask) | maskedStencil);
-            }
-          }
-        }
-      }
-    } else if (fullClip) {
-      const uint32_t totalPixels = m_headlessWidth * m_headlessHeight;
-      if (wmask == 0xFFu) {
-        std::fill_n(stencilBuf, totalPixels, stencil);
-      } else {
-        for (uint32_t i = 0; i < totalPixels; ++i) {
-          stencilBuf[i] =
-              static_cast<uint8_t>((stencilBuf[i] & keepMask) | maskedStencil);
-        }
-      }
-    } else if (wmask == 0xFFu) {
-      for (uint32_t y = y0; y < y1; ++y) {
-        std::fill_n(stencilBuf + static_cast<size_t>(y) * m_headlessWidth + x0,
-                    spanW, stencil);
+        uint8_t* sRow = stencilBuf + static_cast<size_t>(y) * stride;
+        kernels.ClearStencilTBufferRow(sRow, x0, x1, stencil, maskedStencil,
+                                       keepMask, rowMask);
       }
     } else {
+#ifdef _OPENMP
+#pragma omp parallel for if (static_cast<size_t>(y1 - y0) * spanW > 64000)
+#endif
       for (uint32_t y = y0; y < y1; ++y) {
-        uint8_t* sRow =
-            stencilBuf + static_cast<size_t>(y) * m_headlessWidth + x0;
-        for (uint32_t i = 0; i < spanW; ++i) {
-          sRow[i] = static_cast<uint8_t>((sRow[i] & keepMask) | maskedStencil);
-        }
+        uint8_t* sRow = stencilBuf + static_cast<size_t>(y) * stride + x0;
+        kernels.ClearStencilMasked(sRow, spanW, maskedStencil, keepMask);
       }
     }
   }
@@ -315,19 +283,21 @@ void SoftwareBackendBase::MaterializeLazyCpuClear_Locked(uint32_t bufferSlot) {
     std::swap(r, b);
   }
 
-  uint32_t clearWord = (a << 24) | (r << 16) | (g << 8) | b;
+  const uint32_t clearWord = (a << 24) | (r << 16) | (g << 8) | b;
+  const uint32_t keepMask = ~writeMask;
+  const uint32_t maskedClearWord =
+      (writeMask == 0xFFFFFFFFu) ? clearWord : (clearWord & writeMask);
   uint32_t* pixels =
       reinterpret_cast<uint32_t*>(m_cpuBuffers[bufferSlot].data());
-  uint32_t totalPixels = m_headlessWidth * m_headlessHeight;
-
-  if (writeMask == 0xFFFFFFFF) {
-    std::fill_n(pixels, totalPixels, clearWord);
-  } else {
-    uint32_t keepMask = ~writeMask;
-    uint32_t maskedClearWord = clearWord & writeMask;
-    for (uint32_t i = 0; i < totalPixels; ++i) {
-      pixels[i] = (pixels[i] & keepMask) | maskedClearWord;
-    }
+  const auto& kernels = GetSimdKernels();
+  const uint32_t stride = m_headlessWidth;
+#ifdef _OPENMP
+#pragma omp parallel for if (static_cast<size_t>(m_headlessHeight) * stride > \
+                             64000)
+#endif
+  for (uint32_t y = 0; y < m_headlessHeight; ++y) {
+    kernels.ClearColorMasked(pixels + static_cast<size_t>(y) * stride, stride,
+                             maskedClearWord, keepMask);
   }
 }
 
@@ -335,8 +305,18 @@ void SoftwareBackendBase::MaterializeLazyCpuDepthClear_Locked() {
   if (!m_pendingCpuDepthClear) return;
   m_pendingCpuDepthClear = false;
   if (!m_headlessDepthBuffer.empty()) {
-    std::fill(m_headlessDepthBuffer.begin(), m_headlessDepthBuffer.end(),
-              m_pendingCpuDepthValue);
+    const auto& kernels = GetSimdKernels();
+    float* depthData = m_headlessDepthBuffer.data();
+    const uint32_t stride = m_headlessWidth;
+    const float z = m_pendingCpuDepthValue;
+#ifdef _OPENMP
+#pragma omp parallel for if (static_cast<size_t>(m_headlessHeight) * stride > \
+                             64000)
+#endif
+    for (uint32_t y = 0; y < m_headlessHeight; ++y) {
+      kernels.ClearDepthTBufferRow(depthData + static_cast<size_t>(y) * stride,
+                                   0u, stride, z, 3u);
+    }
   }
 }
 
@@ -376,28 +356,18 @@ bool SoftwareBackendBase::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
     uint32_t nativeWidth = m_headlessWidth / m_ssaaScale;
     uint32_t nativeHeight = m_headlessHeight / m_ssaaScale;
 
+    const auto& kernels = GetSimdKernels();
+    const uint32_t srcStride = m_headlessWidth;
 #ifdef _OPENMP
-#pragma omp parallel for collapse(2) if (nativeHeight * nativeWidth > 64000)
+#pragma omp parallel for if (nativeHeight * nativeWidth > 64000)
 #endif
     for (uint32_t y = 0; y < nativeHeight; ++y) {
-      for (uint32_t x = 0; x < nativeWidth; ++x) {
-        uint32_t r = 0, g = 0, b = 0, a = 0;
-        for (uint32_t dy = 0; dy < 2; ++dy) {
-          for (uint32_t dx = 0; dx < 2; ++dx) {
-            uint32_t srcIdx = (2 * y + dy) * m_headlessWidth + (2 * x + dx);
-            uint32_t p = srcPixels[srcIdx];
-            a += (p >> 24) & 0xFF;
-            r += (p >> 16) & 0xFF;
-            g += (p >> 8) & 0xFF;
-            b += p & 0xFF;
-          }
-        }
-        a /= 4;
-        r /= 4;
-        g /= 4;
-        b /= 4;
-        dstPixels[y * nativeWidth + x] = (a << 24) | (r << 16) | (g << 8) | b;
-      }
+      const uint32_t* sRow0 =
+          srcPixels + static_cast<size_t>(2u * y) * srcStride;
+      const uint32_t* sRow1 =
+          srcPixels + static_cast<size_t>(2u * y + 1u) * srcStride;
+      uint32_t* dRow = dstPixels + static_cast<size_t>(y) * nativeWidth;
+      kernels.ResolveSsaa2x2Row(sRow0, sRow1, dRow, nativeWidth);
     }
     pixels = dstPixels;
     width = nativeWidth;
@@ -453,31 +423,14 @@ bool SoftwareBackendBase::WriteLFB(uint32_t buffer, uint32_t dstX,
 
     // Resolve ONLY the destination rect into guest-resolution scratch so
     // blending / sparse overlays see authentic pre-existing pixels.
+    const auto& kernels = GetSimdKernels();
     for (uint32_t y = ry0; y < ry1; ++y) {
       const uint32_t* sRow0 =
-          pixels + static_cast<size_t>(2u * y) * m_headlessWidth;
+          pixels + static_cast<size_t>(2u * y) * m_headlessWidth + 2u * rx0;
       const uint32_t* sRow1 =
-          pixels + static_cast<size_t>(2u * y + 1u) * m_headlessWidth;
-      uint32_t* dRow = resolved + static_cast<size_t>(y) * guestW;
-      for (uint32_t x = rx0; x < rx1; ++x) {
-        const uint32_t p00 = sRow0[2u * x];
-        const uint32_t p10 = sRow0[2u * x + 1u];
-        const uint32_t p01 = sRow1[2u * x];
-        const uint32_t p11 = sRow1[2u * x + 1u];
-        const uint32_t a = (((p00 >> 24) & 0xFFu) + ((p10 >> 24) & 0xFFu) +
-                            ((p01 >> 24) & 0xFFu) + ((p11 >> 24) & 0xFFu)) >>
-                           2;
-        const uint32_t r = (((p00 >> 16) & 0xFFu) + ((p10 >> 16) & 0xFFu) +
-                            ((p01 >> 16) & 0xFFu) + ((p11 >> 16) & 0xFFu)) >>
-                           2;
-        const uint32_t g = (((p00 >> 8) & 0xFFu) + ((p10 >> 8) & 0xFFu) +
-                            ((p01 >> 8) & 0xFFu) + ((p11 >> 8) & 0xFFu)) >>
-                           2;
-        const uint32_t b = ((p00 & 0xFFu) + (p10 & 0xFFu) + (p01 & 0xFFu) +
-                            (p11 & 0xFFu)) >>
-                           2;
-        dRow[x] = (a << 24) | (r << 16) | (g << 8) | b;
-      }
+          pixels + static_cast<size_t>(2u * y + 1u) * m_headlessWidth + 2u * rx0;
+      uint32_t* dRow = resolved + static_cast<size_t>(y) * guestW + rx0;
+      kernels.ResolveSsaa2x2Row(sRow0, sRow1, dRow, rw);
     }
 
     std::vector<uint32_t> preRect;
@@ -537,7 +490,10 @@ bool SoftwareBackendBase::WriteLFB(uint32_t buffer, uint32_t dstX,
 
 void SoftwareBackendBase::AllocateCpuBuffers_Locked(uint32_t width,
                                                     uint32_t height) {
-  size_t rawSize = static_cast<size_t>(width) * height * 4;
+  // Include 3 guard rows so 2x4 (AVX2) and 4x4 (AVX-512) SIMD quad/tile
+  // loads/stores stay strictly in-bounds even on heights not divisible by 4
+  // (e.g., 640x350).
+  size_t rawSize = static_cast<size_t>(width) * (height + 3u) * 4u;
   size_t paddedSize = (rawSize + 63) & ~size_t(63);
   size_t allocatedSize = paddedSize + 64;
 

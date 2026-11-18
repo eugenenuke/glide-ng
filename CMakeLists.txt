@@ -87,10 +87,13 @@ function(compile_shader SHADER_PATH VAR_NAME HEADER_OUT)
     set(GENERATED_SHADER_HEADERS ${GENERATED_SHADER_HEADERS} ${HEADER_FILE} PARENT_SCOPE)
 endfunction()
 
-# Register our shaders (single-source color.frag compiled for standard & dual-source blend)
+# Register our shaders (single-source color.frag compiled for standard, dual-source blend,
+# and W-buffer depth variants so Z-buffer/depth-off pipelines preserve hardware Early-Z)
 compile_shader("${CMAKE_CURRENT_SOURCE_DIR}/src/backends/vulkan/shaders/color.vert" "color_vert_spv" "color_vert.spv.h")
 compile_shader("${CMAKE_CURRENT_SOURCE_DIR}/src/backends/vulkan/shaders/color.frag" "color_frag_spv" "color_frag.spv.h")
 compile_shader("${CMAKE_CURRENT_SOURCE_DIR}/src/backends/vulkan/shaders/color.frag" "color_dualsrc_frag_spv" "color_dualsrc_frag.spv.h" -DUSE_DUAL_SRC_BLEND)
+compile_shader("${CMAKE_CURRENT_SOURCE_DIR}/src/backends/vulkan/shaders/color.frag" "color_wbuf_frag_spv" "color_wbuf_frag.spv.h" -DUSE_WBUFFER_DEPTH)
+compile_shader("${CMAKE_CURRENT_SOURCE_DIR}/src/backends/vulkan/shaders/color.frag" "color_dualsrc_wbuf_frag_spv" "color_dualsrc_wbuf_frag.spv.h" -DUSE_DUAL_SRC_BLEND -DUSE_WBUFFER_DEPTH)
 compile_shader("${CMAKE_CURRENT_SOURCE_DIR}/src/backends/vulkan/shaders/hud.vert" "hud_vert_spv" "hud_vert.spv.h")
 compile_shader("${CMAKE_CURRENT_SOURCE_DIR}/src/backends/vulkan/shaders/hud.frag" "hud_frag_spv" "hud_frag.spv.h")
 compile_shader("${CMAKE_CURRENT_SOURCE_DIR}/src/backends/vulkan/shaders/present_gamma.frag" "present_gamma_frag_spv" "present_gamma_frag.spv.h")
@@ -119,9 +122,10 @@ add_custom_target(GenerateBuildVersion ALL
     COMMENT "Checking git revision for build_version.h"
 )
 
-# Optional Open Watcom v2 DOS/32 CauseWay cross-build integration (Linux host)
+# Optional Open Watcom v2 DOS/32 CauseWay & MinGW-w64 Win32 cross-build integration (Linux host)
 if(NOT WIN32)
     include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/OpenWatcomDos.cmake")
+    include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/MinGwWin32.cmake")
 endif()
 
 # Add Primary Source Directories

@@ -9,6 +9,7 @@
 #include "core/LfbManager.h"
 #include "core/Logger.h"
 #include "core/MathUtils.h"
+#include "core/SimdKernels.h"
 #include "core/Telemetry.h"
 #include "core/TextureManager.h"
 #include "core/VertexLayout.h"
@@ -99,16 +100,16 @@ struct TextureBufferState {
   uint32_t savedClipMaxX{640};
   uint32_t savedClipMaxY{480};
   bool savedAaMultiSample{true};
+  bool gpuModeActive{false};
 
   void Reset() { *this = TextureBufferState{}; }
 };
 TextureBufferState s_texBuf;
 
 void NormalizeLfbPixelsToCanonicalArgb(std::vector<uint32_t>& pixels) {
-  if (s_state.colorFormat != GR_COLORFORMAT_ABGR) return;
-  for (uint32_t& p : pixels) {
-    p = (p & 0xFF00FF00u) | ((p & 0xFFu) << 16) | ((p >> 16) & 0xFFu);
-  }
+  if (s_state.colorFormat != GR_COLORFORMAT_ABGR || pixels.empty()) return;
+  GlideWrapper::GetSimdKernels().SwapRB32(pixels.data(), pixels.data(),
+                                          pixels.size());
 }
 
 void ApplyTexBufClipWindow() {
@@ -134,6 +135,15 @@ void CommitActiveTextureBuffer() {
   const uint32_t readW = std::min(s_texBuf.width, screenW);
   const uint32_t readH = std::min(s_texBuf.height, screenH);
   if (readW == 0 || readH == 0) return;
+
+  // Fast path: zero-readback GPU-to-TMU commit on Vulkan & OpenGL ES.
+  if (s_texBuf.gpuModeActive &&
+      GlideWrapper::TextureManager::GetInstance().CommitGpuRenderedTexture(
+          s_texBuf.tmu, s_texBuf.startAddress, s_texBuf.thisLodG2,
+          s_texBuf.largeLodG2, s_texBuf.aspectG2, s_texBuf.format, readW, readH,
+          s_sstOrigin)) {
+    return;
+  }
 
   const uint32_t srcY =
       (s_sstOrigin == GR_ORIGIN_LOWER_LEFT) ? (screenH - readH) : 0u;
@@ -169,22 +179,28 @@ void EnterTextureBufferMode() {
   s_texBuf.savedClipMaxX = s_state.clipMaxX;
   s_texBuf.savedClipMaxY = s_state.clipMaxY;
   s_texBuf.savedAaMultiSample = s_aaMultiSample;
+  s_texBuf.gpuModeActive = false;
 
   if (auto* backend =
           GlideWrapper::BackendManager::GetInstance().GetBackend()) {
-    const uint32_t w = backend->GetGuestWidth();
-    const uint32_t h = backend->GetGuestHeight();
-    if (w > 0 && h > 0) {
-      s_texBuf.savedBackbuffer.assign(static_cast<size_t>(w) * h, 0u);
-      s_texBuf.savedW = w;
-      s_texBuf.savedH = h;
-      if (backend->ReadLFB(GR_BUFFER_BACKBUFFER, 0u, 0u, w, h, w * 4u,
-                           s_texBuf.savedBackbuffer.data())) {
-        NormalizeLfbPixelsToCanonicalArgb(s_texBuf.savedBackbuffer);
-      } else {
-        s_texBuf.savedBackbuffer.clear();
-        s_texBuf.savedW = 0;
-        s_texBuf.savedH = 0;
+    // Try zero-readback GPU backbuffer save first (Vulkan / OpenGL ES).
+    if (backend->BeginGpuTextureBufferMode()) {
+      s_texBuf.gpuModeActive = true;
+    } else {
+      const uint32_t w = backend->GetGuestWidth();
+      const uint32_t h = backend->GetGuestHeight();
+      if (w > 0 && h > 0) {
+        s_texBuf.savedBackbuffer.assign(static_cast<size_t>(w) * h, 0u);
+        s_texBuf.savedW = w;
+        s_texBuf.savedH = h;
+        if (backend->ReadLFB(GR_BUFFER_BACKBUFFER, 0u, 0u, w, h, w * 4u,
+                             s_texBuf.savedBackbuffer.data())) {
+          NormalizeLfbPixelsToCanonicalArgb(s_texBuf.savedBackbuffer);
+        } else {
+          s_texBuf.savedBackbuffer.clear();
+          s_texBuf.savedW = 0;
+          s_texBuf.savedH = 0;
+        }
       }
     }
     backend->SetAAMultiSample(false);
@@ -198,11 +214,15 @@ void ExitTextureBufferMode(GrBuffer_t targetBuffer) {
   if (!s_texBuf.active) return;
   CommitActiveTextureBuffer();
   s_texBuf.active = false;
+  const bool wasGpuMode = s_texBuf.gpuModeActive;
+  s_texBuf.gpuModeActive = false;
 
   if (auto* backend =
           GlideWrapper::BackendManager::GetInstance().GetBackend()) {
-    if (!s_texBuf.savedBackbuffer.empty() && s_texBuf.savedW > 0 &&
-        s_texBuf.savedH > 0) {
+    if (wasGpuMode) {
+      backend->EndGpuTextureBufferMode();
+    } else if (!s_texBuf.savedBackbuffer.empty() && s_texBuf.savedW > 0 &&
+               s_texBuf.savedH > 0) {
       backend->WriteLFB(GR_BUFFER_BACKBUFFER, 0u, 0u, s_texBuf.savedW,
                         s_texBuf.savedH,
                         static_cast<int32_t>(s_texBuf.savedW * 4u), 0x100u,

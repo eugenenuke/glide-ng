@@ -6,6 +6,7 @@
 
 #include "core/IniConfigLoader.h"
 #include "core/Logger.h"
+#include "core/SimdDispatch.h"
 #include "core/TextureManager.h"
 #include "core/WrapperConfig.h"
 #include "software/SoftwareBackend.h"
@@ -8899,4 +8900,69 @@ TEST_CASE("M10.7 Pure Glide 2.x ABI, Bare Versions, and grTBufferWriteMaskExt",
 
   ::dlclose(handle);
 #endif
+}
+
+TEST_CASE("M11.2: Runtime Software SIMD tier parsing, default & CPUID fallback",
+          "[M11][SIMD][Config]") {
+  using namespace GlideWrapper;
+
+  SwSimdLevel lvl = SwSimdLevel::Scalar;
+  REQUIRE(ParseSwSimdLevel("scalar", lvl));
+  CHECK(lvl == SwSimdLevel::Scalar);
+  REQUIRE(ParseSwSimdLevel("0", lvl));
+  CHECK(lvl == SwSimdLevel::Scalar);
+  REQUIRE(ParseSwSimdLevel("avx2", lvl));
+  CHECK(lvl == SwSimdLevel::Avx2);
+  REQUIRE(ParseSwSimdLevel("1", lvl));
+  CHECK(lvl == SwSimdLevel::Avx2);
+  REQUIRE(ParseSwSimdLevel("avx512", lvl));
+  CHECK(lvl == SwSimdLevel::Avx512);
+  REQUIRE(ParseSwSimdLevel("AVX-512", lvl));
+  CHECK(lvl == SwSimdLevel::Avx512);
+  REQUIRE(ParseSwSimdLevel("auto", lvl));
+  CHECK(lvl == SwSimdLevel::Auto);
+  CHECK_FALSE(ParseSwSimdLevel("neon", lvl));
+
+  // Default is AVX2
+  {
+    const char* prev = std::getenv("GLIDE_NG_SW_SIMD");
+    std::string savedPrev = prev ? prev : "";
+    bool hadPrev = (prev != nullptr);
+    ::unsetenv("GLIDE_NG_SW_SIMD");
+
+    WrapperConfig cfg;
+    IniConfigLoader loader;
+    loader.Load("/nonexistent_glide_ng_simd_test.ini", cfg);
+    CHECK(cfg.swSimdLevel == SwSimdLevel::Avx2);
+    CHECK(cfg.swUseSimd == true);
+
+    ::setenv("GLIDE_NG_SW_SIMD", "avx512", 1);
+    WrapperConfig cfg512;
+    loader.Load("/nonexistent_glide_ng_simd_test.ini", cfg512);
+    CHECK(cfg512.swSimdLevel == SwSimdLevel::Avx512);
+    CHECK(cfg512.swUseSimd == true);
+
+    std::string warn;
+    SwSimdLevel eff = ResolveEffectiveSimdLevel(SwSimdLevel::Avx512, &warn);
+    SwSimdLevel hostMax = DetectHostMaxSimdLevel();
+    if (hostMax >= SwSimdLevel::Avx512) {
+      CHECK(eff == SwSimdLevel::Avx512);
+      CHECK(warn.empty());
+    } else {
+      CHECK(eff == hostMax);
+      CHECK_FALSE(warn.empty());
+    }
+
+    ::setenv("GLIDE_NG_SW_SIMD", "bogus_isa", 1);
+    WrapperConfig cfgBad;
+    loader.Load("/nonexistent_glide_ng_simd_test.ini", cfgBad);
+    CHECK_FALSE(cfgBad.invalidConfigValues.empty());
+
+    if (hadPrev) {
+      ::setenv("GLIDE_NG_SW_SIMD", savedPrev.c_str(), 1);
+    } else {
+      ::unsetenv("GLIDE_NG_SW_SIMD");
+    }
+    SetActiveSimdLevel(ResolveEffectiveSimdLevel(SwSimdLevel::Avx2));
+  }
 }

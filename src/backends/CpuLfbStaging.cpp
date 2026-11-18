@@ -5,6 +5,7 @@
 #include <cstring>
 
 #include "core/Logger.h"
+#include "core/SimdKernels.h"
 
 #ifdef _OPENMP
 #include <omp.h>
@@ -137,6 +138,28 @@ struct LfbRowProcessor {
     if constexpr (HasRefData) {
       if (std::memcmp(rowIn, rowRef,
                       static_cast<size_t>(activeWidth) * srcElemBytes) == 0) {
+        return;
+      }
+    }
+
+    if constexpr (!ChromakeyEnabled && !BlendEnabled && !HasRefData) {
+      uint32_t* dstRow =
+          pixels + static_cast<size_t>(writeY) * fbWidth + dstX;
+      if constexpr (SrcFmt == 0) {
+        GetSimdKernels().ConvertRgb565ToBgra32(
+            reinterpret_cast<const uint16_t*>(rowIn), dstRow, activeWidth);
+        rowModifiedCount += activeWidth;
+        return;
+      } else if constexpr (SrcFmt == 1 || SrcFmt == 2) {
+        GetSimdKernels().ConvertArgb1555ToBgra32(
+            reinterpret_cast<const uint16_t*>(rowIn), dstRow, activeWidth,
+            /*preserveAlpha=*/(SrcFmt == 2));
+        rowModifiedCount += activeWidth;
+        return;
+      } else if constexpr (SrcFmt == 0x100u) {
+        std::memcpy(dstRow, rowIn,
+                    static_cast<size_t>(activeWidth) * sizeof(uint32_t));
+        rowModifiedCount += activeWidth;
         return;
       }
     }
@@ -325,6 +348,21 @@ struct LfbOverlayRowProcessor {
     }
 
     uint32_t* dstRow = overlay + static_cast<size_t>(writeY) * fbWidth;
+    if constexpr (!ChromakeyEnabled && !AlphaBlendOverlay && !HasRefData) {
+      if constexpr (SrcFmt == 0) {
+        GetSimdKernels().ConvertRgb565ToBgra32(
+            reinterpret_cast<const uint16_t*>(rowIn), dstRow + dstX,
+            activeWidth);
+        rowModifiedCount += activeWidth;
+        return;
+      } else if constexpr (SrcFmt == 1 || SrcFmt == 2) {
+        GetSimdKernels().ConvertArgb1555ToBgra32(
+            reinterpret_cast<const uint16_t*>(rowIn), dstRow + dstX,
+            activeWidth, /*preserveAlpha=*/false);
+        rowModifiedCount += activeWidth;
+        return;
+      }
+    }
     for (uint32_t x = 0; x < activeWidth; ++x) {
       uint32_t writeX = dstX + x;
 
@@ -899,18 +937,13 @@ void CpuLfbStaging::MaterializeSlot(uint32_t slot) {
   }
 
   const uint32_t clearWord = (a << 24) | (r << 16) | (g << 8) | b;
+  const uint32_t keepMask = ~writeMask;
+  const uint32_t maskedClearWord =
+      (writeMask == 0xFFFFFFFFu) ? clearWord : (clearWord & writeMask);
   auto* pixels = reinterpret_cast<uint32_t*>(m_buffers[slot].data());
-  const uint32_t totalPixels = m_width * m_height;
-
-  if (writeMask == 0xFFFFFFFF) {
-    std::fill_n(pixels, totalPixels, clearWord);
-  } else {
-    const uint32_t keepMask = ~writeMask;
-    const uint32_t maskedClearWord = clearWord & writeMask;
-    for (uint32_t i = 0; i < totalPixels; ++i) {
-      pixels[i] = (pixels[i] & keepMask) | maskedClearWord;
-    }
-  }
+  const size_t totalPixels = static_cast<size_t>(m_width) * m_height;
+  GetSimdKernels().ClearColorMasked(pixels, totalPixels, maskedClearWord,
+                                    keepMask);
 }
 
 void CpuLfbStaging::DiscardLazyClear(uint32_t logicalBuffer) {
@@ -1009,19 +1042,12 @@ bool CpuLfbStaging::ReadPixelsRegion(const uint32_t* pixels, uint32_t width,
       }
     } else {
       auto* destRow16 = reinterpret_cast<uint16_t*>(outBytes + y * dstStride);
-      for (uint32_t x = 0; x < srcWidth; ++x) {
-        uint32_t readX = srcX + x;
-        if (readX >= width) break;
-
-        uint32_t pWord = pixels[readY * width + readX];
-        uint32_t rVal = (pWord >> 16) & 0xFF;
-        uint32_t gVal = (pWord >> 8) & 0xFF;
-        uint32_t bVal = pWord & 0xFF;
-        uint16_t r = static_cast<uint16_t>((rVal * 31 + 127) / 255);
-        uint16_t g = static_cast<uint16_t>((gVal * 63 + 127) / 255);
-        uint16_t b = static_cast<uint16_t>((bVal * 31 + 127) / 255);
-        uint16_t c16 = static_cast<uint16_t>((r << 11) | (g << 5) | b);
-        destRow16[x] = c16;
+      const uint32_t safeWidth =
+          (srcX >= width) ? 0u : std::min(srcWidth, width - srcX);
+      if (safeWidth > 0u) {
+        GetSimdKernels().ConvertBgra32ToRgb565(
+            &pixels[static_cast<size_t>(readY) * width + srcX], destRow16,
+            safeWidth);
       }
     }
   }

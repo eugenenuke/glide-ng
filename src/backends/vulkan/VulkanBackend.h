@@ -112,6 +112,7 @@ struct VulkanTexture {
   vk::UniqueImage image;
   vk::UniqueDeviceMemory memory;
   vk::UniqueImageView imageView;
+  vk::Format format{vk::Format::eB8G8R8A8Unorm};
   uint32_t width{0};
   uint32_t height{0};
   uint32_t mipLevels{0};
@@ -378,6 +379,16 @@ class VulkanBackend : public GlideStateTracker {
                    uint32_t magFilter) override;
   void UploadTexture(uint32_t tmu, uint32_t startAddress,
                      const struct VirtualTexture& tex) override;
+  bool SupportsCompressedBcnTextures() const override {
+    return m_textureCompressionBcEnabled;
+  }
+  bool BeginGpuTextureBufferMode() override;
+  bool CommitGpuTextureBuffer(uint32_t tmu, uint32_t startAddress,
+                              uint32_t baseWidth, uint32_t baseHeight,
+                              uint32_t mipLevel, uint32_t totalMipLevels,
+                              uint32_t copyWidth, uint32_t copyHeight,
+                              uint32_t origin) override;
+  void EndGpuTextureBufferMode() override;
   void SetTexLodBias(uint32_t tmu, float bias) override;
   void SetTexDetailControl(uint32_t tmu, int32_t lodBias, uint8_t detailScale,
                            float detailMax) override;
@@ -459,6 +470,7 @@ class VulkanBackend : public GlideStateTracker {
   vk::Queue m_graphicsQueue;
   uint32_t m_graphicsQueueFamilyIndex{0};
   bool m_depthClampEnabled{false};
+  bool m_textureCompressionBcEnabled{false};
 
   // Command submission infrastructure (Double-Buffered)
   vk::UniqueCommandPool m_commandPools[2];
@@ -501,6 +513,13 @@ class VulkanBackend : public GlideStateTracker {
   vk::UniqueDeviceMemory m_msaaDepthImageMemory;
   vk::UniqueImageView m_msaaDepthImageView;
 
+  // VSA-100 TEXTUREBUFFER zero-readback GPU RTT backbuffer scratch image
+  vk::UniqueImage m_rttSaveImage;
+  vk::UniqueDeviceMemory m_rttSaveImageMemory;
+  uint32_t m_rttSaveWidth{0};
+  uint32_t m_rttSaveHeight{0};
+  bool m_rttSaveImageInitialized{false};
+
   // Staging buffers to copy GPU image to CPU (Double-Buffered)
   vk::UniqueBuffer m_headlessPixelBuffers[2];
   vk::UniqueDeviceMemory m_headlessPixelMemories[2];
@@ -539,6 +558,8 @@ class VulkanBackend : public GlideStateTracker {
   vk::UniqueShaderModule m_vertShaderModule;
   vk::UniqueShaderModule m_fragShaderModule;
   vk::UniqueShaderModule m_fragShaderModuleDualSrc;
+  vk::UniqueShaderModule m_fragShaderModuleWBuf;
+  vk::UniqueShaderModule m_fragShaderModuleDualSrcWBuf;
   vk::UniquePipelineLayout m_pipelineLayout;
 
   // Pipeline cache storing owned UniquePipeline individually by cache key

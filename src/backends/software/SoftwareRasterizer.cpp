@@ -226,7 +226,19 @@ inline void SoftwareBackend::RasterizeTriangleTemplate(
   float b2 = a.pos[0] - b.pos[0];
   float c2 = a.pos[1] * b.pos[0] - a.pos[0] * b.pos[1];
 
-  if (m_useSimd) {
+  if (m_activeSimdLevel == SwSimdLevel::Avx512) {
+    if (invArea >= 0.0f) {
+      RasterizeTriangleLoopsAvx512<HasTexture, BlendEnabled, DitherEnabled,
+                                   true>(a, b, c, minX, maxX, minY, maxY, state,
+                                         invArea, a0, b0, c0, a1, b1, c1, a2,
+                                         b2, c2);
+    } else {
+      RasterizeTriangleLoopsAvx512<HasTexture, BlendEnabled, DitherEnabled,
+                                   false>(a, b, c, minX, maxX, minY, maxY,
+                                          state, invArea, a0, b0, c0, a1, b1,
+                                          c1, a2, b2, c2);
+    }
+  } else if (m_useSimd) {
     if (invArea >= 0.0f) {
       RasterizeTriangleLoopsSIMD<HasTexture, BlendEnabled, DitherEnabled, true>(
           a, b, c, minX, maxX, minY, maxY, state, invArea, a0, b0, c0, a1, b1,

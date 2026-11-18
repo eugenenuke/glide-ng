@@ -42,6 +42,7 @@
 #include <vector>
 
 #include "core/Logger.h"
+#include "core/SimdKernels.h"
 #include "core/Telemetry.h"
 #include "core/TextureManager.h"
 
@@ -203,6 +204,27 @@ bool OpenGLESBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
   glGetIntegerv(GL_MINOR_VERSION, &glMinor);
   m_supportsSampleMask = (glMajor > 3) || (glMajor == 3 && glMinor >= 1);
 #endif
+
+  // Probe GL_EXT_texture_compression_s3tc for native BC1/BC2/BC3 (DXT1/3/5)
+  // hardware texture upload without CPU block decoding.
+  m_supportsS3tc = false;
+  {
+    GLint numExts = 0;
+    glGetIntegerv(GL_NUM_EXTENSIONS, &numExts);
+    for (GLint i = 0; i < numExts; ++i) {
+      const char* ext =
+          reinterpret_cast<const char*>(glGetStringi(GL_EXTENSIONS, i));
+      if (ext && std::strcmp(ext, "GL_EXT_texture_compression_s3tc") == 0) {
+        m_supportsS3tc = true;
+        break;
+      }
+    }
+    if (m_supportsS3tc) {
+      GLIDE_LOG(INFO, "GLES",
+                "GL_EXT_texture_compression_s3tc detected; enabling native "
+                "BC1/BC2/BC3 (DXT1/DXT3/DXT5) hardware texture upload.");
+    }
+  }
 
   // Presentation is now handled GPU-natively via presentation quad and
   // SwapBuffers. No SDL_Renderer or SDL_Texture is required on the window.
@@ -731,11 +753,8 @@ bool OpenGLESBackend::WriteLFB(uint32_t buffer, uint32_t dstX, uint32_t dstY,
       glReadPixels(0, 0, m_headlessWidth, m_headlessHeight, GL_RGBA,
                    GL_UNSIGNED_BYTE, readDst);
       auto* dest = reinterpret_cast<uint32_t*>(readDst);
-      for (uint32_t i = 0; i < m_headlessWidth * m_headlessHeight; ++i) {
-        uint32_t rgba = dest[i];
-        dest[i] = (rgba & 0xFF00FF00u) | ((rgba & 0xFFu) << 16) |
-                  ((rgba >> 16) & 0xFFu);
-      }
+      GetSimdKernels().SwapRB32(
+          dest, dest, static_cast<size_t>(m_headlessWidth) * m_headlessHeight);
       std::vector<uint32_t> rowBuf(m_headlessWidth);
       for (uint32_t y = 0; y < m_headlessHeight / 2; ++y) {
         uint32_t* topRow = dest + static_cast<size_t>(y) * m_headlessWidth;
@@ -779,16 +798,13 @@ void OpenGLESBackend::FlushLFBToGPU_Locked() {
                                   uint32_t gpuTexture) {
       const auto* src = reinterpret_cast<const uint32_t*>(cpuBufferData);
       if (!src || m_swizzleBuffer.empty()) return;
+      const auto& kernels = GetSimdKernels();
       for (uint32_t y = 0; y < m_headlessHeight; ++y) {
         const uint32_t dstY = m_headlessHeight - 1 - y;
         const uint32_t* srcRow = src + static_cast<size_t>(y) * m_headlessWidth;
         uint32_t* dstRow =
             m_swizzleBuffer.data() + static_cast<size_t>(dstY) * m_headlessWidth;
-        for (uint32_t x = 0; x < m_headlessWidth; ++x) {
-          uint32_t bgra = srcRow[x];
-          dstRow[x] = (bgra & 0xFF00FF00u) | ((bgra & 0xFFu) << 16) |
-                      ((bgra >> 16) & 0xFFu);
-        }
+        kernels.SwapRB32(srcRow, dstRow, m_headlessWidth);
       }
       glBindTexture(GL_TEXTURE_2D, gpuTexture);
       glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
@@ -866,16 +882,13 @@ void OpenGLESBackend::FlushLFBToGPU_Locked() {
         }
 
         // Flip dirty band [minY..maxY] top-down -> bottom-up and swizzle ARGB -> RGBA.
+        const auto& kernels = GetSimdKernels();
         for (uint32_t rIdx = 0; rIdx < numRows; ++rIdx) {
           const uint32_t srcY = maxY - rIdx;
           const uint32_t* srcRow = overlay + static_cast<size_t>(srcY) * m_headlessWidth;
           uint32_t* dstRow =
               m_swizzleBuffer.data() + static_cast<size_t>(rIdx) * m_headlessWidth;
-          for (uint32_t x = 0; x < m_headlessWidth; ++x) {
-            uint32_t argb = srcRow[x];
-            dstRow[x] = (argb & 0xFF00FF00u) | ((argb & 0xFFu) << 16) |
-                        ((argb >> 16) & 0xFFu);
-          }
+          kernels.SwapRB32(srcRow, dstRow, m_headlessWidth);
         }
 
         const uint32_t glMinY = m_headlessHeight - 1 - maxY;
@@ -2149,6 +2162,20 @@ void OpenGLESBackend::DestroyGLContext() {
       glDeleteFramebuffers(2, m_msaaFBOs);
       m_msaaFBOs[0] = m_msaaFBOs[1] = 0;
     }
+    if (m_rttSaveFbo) {
+      glDeleteFramebuffers(1, &m_rttSaveFbo);
+      m_rttSaveFbo = 0;
+    }
+    if (m_rttSaveTexture) {
+      glDeleteTextures(1, &m_rttSaveTexture);
+      m_rttSaveTexture = 0;
+    }
+    if (m_rttCommitFbo) {
+      glDeleteFramebuffers(1, &m_rttCommitFbo);
+      m_rttCommitFbo = 0;
+    }
+    m_rttSaveWidth = 0;
+    m_rttSaveHeight = 0;
     if (m_geomVBO) {
       glDeleteBuffers(1, &m_geomVBO);
       m_geomVBO = 0;
@@ -2180,6 +2207,11 @@ void OpenGLESBackend::DestroyGLContext() {
     m_msaaDepthRBO = 0;
     m_msaaColorRBOs[0] = m_msaaColorRBOs[1] = 0;
     m_msaaFBOs[0] = m_msaaFBOs[1] = 0;
+    m_rttSaveFbo = 0;
+    m_rttSaveTexture = 0;
+    m_rttCommitFbo = 0;
+    m_rttSaveWidth = 0;
+    m_rttSaveHeight = 0;
     m_geomVBO = 0;
     m_geomVAO = 0;
     m_geomProgram = 0;
@@ -2187,6 +2219,7 @@ void OpenGLESBackend::DestroyGLContext() {
   m_msaaColorDirty[0] = m_msaaColorDirty[1] = false;
   m_singleSampleColorDirty[0] = m_singleSampleColorDirty[1] = false;
   m_supportsSampleMask = false;
+  m_supportsS3tc = false;
 
   // 2. Strict WGL / EGL / SDL teardown order BEFORE NativeSurfaceHost::Detach()
   if (m_useWgl) {

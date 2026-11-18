@@ -53,6 +53,14 @@ class OpenGLESBackend : public GlideStateTracker {
                     const ModernVertex& c) override;
   void UploadTexture(uint32_t tmu, uint32_t startAddress,
                      const struct VirtualTexture& tex) override;
+  bool SupportsCompressedBcnTextures() const override { return m_supportsS3tc; }
+  bool BeginGpuTextureBufferMode() override;
+  bool CommitGpuTextureBuffer(uint32_t tmu, uint32_t startAddress,
+                              uint32_t baseWidth, uint32_t baseHeight,
+                              uint32_t mipLevel, uint32_t totalMipLevels,
+                              uint32_t copyWidth, uint32_t copyHeight,
+                              uint32_t origin) override;
+  void EndGpuTextureBufferMode() override;
   void UploadTexturePartial(uint32_t tmu, uint32_t startAddress,
                             const struct VirtualTexture& tex, uint32_t lodLevel,
                             uint32_t startRow, uint32_t endRow) override;
@@ -259,6 +267,14 @@ class OpenGLESBackend : public GlideStateTracker {
   bool m_msaaColorDirty[2]{false, false};
   bool m_singleSampleColorDirty[2]{false, false};
   bool m_supportsSampleMask{false};
+  bool m_supportsS3tc{false};
+
+  // VSA-100 TEXTUREBUFFER zero-readback GPU RTT resources (lazily allocated)
+  uint32_t m_rttSaveFbo{0};
+  uint32_t m_rttSaveTexture{0};
+  uint32_t m_rttCommitFbo{0};
+  uint32_t m_rttSaveWidth{0};
+  uint32_t m_rttSaveHeight{0};
 
   // Milestone 3: GPU-Native Geometry Resources
   bool CreateGeomShaders();
@@ -275,6 +291,7 @@ class OpenGLESBackend : public GlideStateTracker {
     uint32_t width{0};
     uint32_t height{0};
     uint32_t mipLevels{0};
+    uint32_t internalFormat{0};
   };
   std::unordered_map<uint32_t, GlesTexEntry> m_glesTextures[2];
   std::vector<uint32_t> m_texUploadScratch;

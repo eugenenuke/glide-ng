@@ -1,4 +1,4 @@
-# glide-ng Roadmap & Milestone Tracker (M1–M11)
+# glide-ng Roadmap & Milestone Tracker (M1–M12+)
 
 > **Status Legend (Strict 3-State Verification Rule)**
 > - `[ ] PENDING` — Not started yet.
@@ -26,8 +26,10 @@
 | **M7** | `perf/m7-profiling-optimization` | Systematic performance profiling & optimization across frontend, Vulkan, OpenGL ES, LFB overlay, texture streaming, and AVX2+FMA Software rasterizer | Med–High | `[x] DONE (USER CONFIRMED — 2026-11-17)` | Merged to `main` (`beed43a`) |
 | **M8** | `feat/m8-ini-config-envvars-p2` | Clean break to unified `glide-ng.ini` (`IniConfigLoader`) + Phase-2 authentic 3dfx env vars (`FX_GLIDE_FBRAM`, `FX_GLIDE_TMU_MEMSIZE`, `SSTV2_NUM_TMUS`, `SST_GAMMA`, `SST_SCREENREFRESH`, `FX_GLIDE_IGNORE_REOPEN`, `FX_GLIDE_NO_DITHER_SUB`, `SSTV2_FORCE_BILINEAR/TRILINEAR`, `SST_TEXMAP_DISABLE`, `FX_GLIDE_BOUNDS_CHECK`, `FX_GLIDE_ALLOC_COLOR/AUX`, `FX_GLIDE_SNAPSHOT`) + permanent `glide_envtest` tool | Low–Med | `[x] DONE (USER CONFIRMED — 2026-11-17)` | Merged to `main` (`04034f8`) |
 | **M9** | `feat/m9-win32-dll-wine` | 32-bit Win32 (`i686` MinGW-w64) `glide2x.dll` & `glide3x.dll` for Wine/Proton (zero external runtime DLLs: dynamic `vulkan-1.dll` + WGL OpenGL 3.3 Core + GDI Software, authentic `__stdcall` + `.def` `_Func@N` exports) + VSA-100 Spatial AA/T-Buffer (`Voodoo4`/`Voodoo5` gating) + Win32 `glide_info.exe`, `glide_bench.exe`, `glide_envtest.exe` | High | `[x] DONE (USER CONFIRMED — 2026-11-18)` | Merged to `main` (`b3649d5`) |
-| **M10** | `feat/m10-vsa100-extensions-card-matrix` | Remaining VSA-100/Glide 3.x extensions (`COMBINE`, `grAlphaBlendFunctionExt`, FXT1/DXT/YUV/RGB888/ARGB8888 `TEXFMT`, `TEXTUREBUFFER`, `TEXUMA`, `GETGAMMA`, full Stencil, per-channel `grColorMaskExt`, `grTexMultibase`, `grTexDetailControl`), `VoodooBanshee` profile, pure Glide 2.x ABI, bare 3-digit versions, warn-only card-to-version matrix & authentic capabilities/resolutions | High | `[x] DONE (USER CONFIRMED — 2026-11-18)` | Merged to `main` |
-| **M11** | `feat/m11-shrine-torus-demos` | Standalone flagship 3dfx demos: `glide_shrine` (*Voodoo Temple*) and `glide_torus` (*3dfx Reflective Hall*) targeting Linux, DOS/32, and Win32 | Med | `[ ] PENDING` | — |
+| **M10** | `feat/m10-vsa100-extensions-card-matrix` | Remaining VSA-100/Glide 3.x extensions (`COMBINE`, `grAlphaBlendFunctionExt`, FXT1/DXT/YUV/RGB888/ARGB8888 `TEXFMT`, `TEXTUREBUFFER`, `TEXUMA`, `GETGAMMA`, full Stencil, per-channel `grColorMaskExt`, `grTexMultibase`, `grTexDetailControl`), `VoodooBanshee` profile, pure Glide 2.x ABI, bare 3-digit versions, warn-only card-to-version matrix & authentic capabilities/resolutions | High | `[x] DONE (USER CONFIRMED — 2026-11-18)` | Merged to `main` (`e2ba647`) |
+| **M11** | `perf/m11-vsa100-bench-simd-avx512` | Post-M10 / VSA-100 benchmarking (`glide2_bench` & `glide3_bench` expanded scenes), real-GPU Vulkan/GLES optimizations (zero-readback GPU RTT, native BC1–BC3 DXT upload), shared SW & rasterizer SIMD overhaul (Stencil, Fog, SSAA resolve, Gamma LUT, masked Clear, LFB/Texture decode), and user-selectable Software **AVX-512** (Zen 4, default AVX2) | High | `[ ] PENDING` | — |
+| **M12** | `feat/m12-shrine-torus-demos` | Standalone flagship 3dfx demos: `glide_shrine` (*Voodoo Temple*) and `glide_torus` (*3dfx Reflective Hall*) targeting Linux, DOS/32, and Win32 | Med | `[ ] PENDING` | — |
+| **Backlog** | — | Clean-room open-source Watcom-built `glide2x.ovl` (1:1 DOSBox `0..129` drop-in, plus optional high-throughput shared-memory DOSBox bridge) | Low–Med | `[ ] PENDING` | — |
 
 ---
 
@@ -382,9 +384,46 @@
 
 ---
 
-## 12. Upcoming Milestones (High-Level Scope — Detailed Just-In-Time)
+## 12. Milestone M11: Post-M10 / VSA-100 Benchmarking, Cross-Backend Optimization & Software AVX-512 (`perf/m11-vsa100-bench-simd-avx512`)
 
-### Milestone M11 — Flagship Standalone 3dfx Demos (`feat/m11-shrine-torus-demos`) *(Pending)*
+### Goals
+1. Expand `glide2_bench` and `glide3_bench` to cover M10 / VSA-100 features (`fog`, `multitex`, `lfb_read`, `aa_tbuffer`, `stencil`, `ext_combine`, `texfmt`, `rtt`) plus high-res (`1280`, `1600`) and `--aa` options while preserving apples-to-apples Core 6-scene GlideMark comparability.
+2. Eliminate remaining scalar islands in the Software backend and shared CPU routines (`CpuLfbStaging`, `TextureManager`, 2×2 SSAA resolve, RAMDAC Gamma LUT, masked/T-Buffer clears, Hardware Stencil, Table Fog) with bit-exact / zero-regression verification (explicitly guarding fog rounding accuracy).
+3. Introduce clean ISA-isolated runtime SIMD dispatch (`GLIDE_NG_SW_SIMD=avx2|avx512|scalar|auto`, default `avx2`) and a 4×4 (16-pixel) **AVX-512** (`avx512f/dq/bw/vl`) Software backend tuned for Zen 4, plus a repeatable Zen 4 verification & benchmark guide.
+4. Implement real-GPU optimizations for Vulkan and OpenGL ES (never over-optimizing for `llvmpipe`): zero-readback GPU-side `TEXTUREBUFFER` RTT and hardware BC1/BC2/BC3 (`DXT1`/`DXT3`/`DXT5`) compressed texture upload, plus collect performance notes comparing GPU vs. SW paths for future reference.
+
+### M11 Task Breakdown (Small, Independently Verified Iterations)
+- **`M11.1`** (`f811c37`) — Expand `glide2_bench` & `glide3_bench` with new classic & VSA-100 scenes (`fog`, `multitex`, `lfb_read`, `stencil`, `ext_combine`, `texfmt`, `rtt`, `tbuffer`), `--aa`, `--res 1280|1600`, and `--scene core|extended|vsa100|all`; capture pre-optimization baseline report.
+  - **Status**: `[x] DONE (USER CONFIRMED — 2026-11-18)`
+- **`M11.2`** (`7762ede`) — Runtime SIMD dispatch architecture (`SwSimdLevel`: `avx2` default, `avx512`, `scalar`, `auto`) and strict CMake per-TU ISA isolation (moving `-mavx2 -mfma` off baseline files; adding `-mavx512f -mavx512dq -mavx512bw -mavx512vl` TUs).
+  - **Status**: `[x] DONE (USER CONFIRMED — 2026-11-18)`
+- **`M11.3`** (`20a7e45`) — SIMD-accelerate shared CPU & post-process routines (`SimdKernels`: 2×2 SSAA resolve, RAMDAC Gamma LUT, masked/T-Buffer clears, `CpuLfbStaging` RGB565/1555 conversions, `TextureManager` P8/565/1555/4444 swizzlers, `SwapRB32`) across AVX2 + AVX-512 + scalar with 670/670 bit-exact Catch2 assertions.
+  - **Status**: `[x] DONE (USER CONFIRMED — 2026-11-18)`
+- **`M11.4`** (`2039abf`) — Eliminate scalar islands in the Software AVX2 rasterizer: vectorize Stipple, Hardware Stencil (`PIXEXT`), and Table Fog (exact boundary-verified reciprocal index + 3-row guard buffers), verified 0-LSB / 0-pixel diff on Table Fog across all 64 intervals + `ADD2`/`MULT2` and 0-byte diff on Stencil (`+95%` Glide 3 `fog`, `+64%` isolated `stencil`, `+34%` `multipass`).
+  - **Status**: `[x] DONE (USER CONFIRMED — 2026-11-18)`
+- **`M11.5`** (`eb49b6b`) — Implement native 4×4 (16-pixel) **AVX-512** Software rasterizer (`SimdVec512.h`, templated `SoftwareRasterizerSimdImpl.inl`, `SoftwareRasterizerAvx512.cpp`) tuned for Zen 4 (native `__mmask16`, 4×4 Bayer dither, 4×4 stencil ops), verified `50,583 zmm` (Linux `x86_64`) / `59,657 zmm` (Win32 `i686`) with `0 ymm/zmm` in baseline objects and live Zen 4 scaling (`+20.0%` All-14 GM @ 640×480, `+23.6%` @ 1280×1024, `+25.2%` @ 1600×1200, up to `+50.4%` on `ext_combine`; **34,963 vs. 9,886 pts** over Vulkan `llvmpipe`).
+  - **Status**: `[x] DONE (USER CONFIRMED — 2026-11-18)`
+- **`M11.6`** (`0448753`, `afffa33`) — Real-GPU Vulkan & OpenGL ES M10 optimizations: native hardware BC1/BC2/BC3 (`DXT1`–`DXT5`) compressed texture upload (`6,245 FPS` on RTX 4070 Vulkan), zero-readback GPU-side `TEXTUREBUFFER` RTT (`6,193–6,328 RTT/s` on RTX 4070 Vulkan/GLES, verified zero `CpuLfbStaging` allocation on Vulkan), and Vulkan `-DUSE_WBUFFER_DEPTH` SPIR-V split (`DepthReplacing = 0` on Z-buffer / depth-off pipelines to preserve hardware Early-Z / Hi-Z).
+  - **Status**: `[x] DONE (USER CONFIRMED — 2026-11-18)`
+- **`M11.7`** (`1adb43f`, `ee18831`, `ebbb8d7`) — Full 4-target zero-warning build verification, 9/9 Catch2 regression matrix (36,484/36,484 assertions), targeted visual pixel-diff parity (`M10.6` 0-diff Vulkan vs. GLES; `sw_validate` 0-diff AVX2 vs. scalar), live AMD Ryzen 9 7945HX (Zen 4) + RTX 4070 verification & report ([docs/perf_m11_analysis.md](../perf_m11_analysis.md)), Win32 hybrid deadline frame pacer (`WaitUntilDeadline` fixing MinGW `winpthreads` 2× sleep bug — verified 60.0 FPS on Kitty Hawk Vulkan), discrete Vulkan GPU selection, and auto-detected MinGW-w64 Win32 CMake integration (`cmake/MinGwWin32.cmake`).
+  - **Status**: `[x] DONE (USER CONFIRMED — 2026-11-18)`
+
+---
+
+## 13. Upcoming Milestones (High-Level Scope — Detailed Just-In-Time)
+
+### Milestone M12 — Game, Demo & Benchmark Compatibility Catalog (`docs/m12-compatibility-catalog`) *(Planned)*
+- Create a structured per-title catalog under `docs/catalog/` (flat `games/`, `demos/`, and `tools/` buckets with platform badges rather than splitting DOS vs. Windows trees) plus a master index (`docs/catalog/README.md`) replacing/evolving `docs/compatibility_library.md`.
+- Give each title its own directory (`docs/catalog/<category>/<slug>/`) containing:
+  - `README.md` (standardized title card: platform/runtime, Glide API & authentic version, card profile, patches/EXEs & quirks, launch commands, verified backends, controls).
+  - Drop-in `glide-ng.ini` preset tuned specifically for that title (e.g., `gamma = 1.7` for SST-1 ATB demos, `card_model = voodoo5` for VSA-100 AA/T-Buffer demos, optimal defaults for Carmageddon DOSBox).
+- Include a dedicated benchmarking & software-rasterizer comparison guide under `docs/catalog/tools/` (`glide_bench` + `glide_info` + `glide_envtest`), covering native Linux/Win32/DOS runs, AVX2 vs. AVX-512 comparisons, and forcing Mesa `llvmpipe` for both Vulkan (`VK_DRIVER_FILES=.../lvp_icd*.json`) and OpenGL ES on NVIDIA GLVND (`__EGL_VENDOR_LIBRARY_FILENAMES=.../50_mesa.json LIBGL_ALWAYS_SOFTWARE=1`) vs. `glide-ng` Software.
+- Seed with all already-verified games, demos, and tools (`carmageddon`, `donut`, `valley-of-ra`, `demo-room`, `wizards-tower`, `surf`, `kitty-hawk`, `museum`, `rocket-burger`, `monster3d-test`, `glide-bench`, `glide-info`, `glide-envtest`) plus a reusable template & optional Catch2/CI validator ensuring every catalog `glide-ng.ini` parses cleanly with `IniConfigLoader`.
+
+### Milestone M13 — Flagship Standalone 3dfx Demos (`feat/m13-shrine-torus-demos`) *(Pending)*
 - Build two standalone, authentic Glide 2.x/3.x showcase tools targeting Linux, DOS/32, and Win32:
   - **`glide_shrine` (*Voodoo Temple*)**: Two-pass `GR_FOG_ADD2`/`MULT2` + `PREFOG_COLOR` lightmapped temple hall with mipmapped pillars, exponential fog, and additive torch sprites.
   - **`glide_torus` (*3dfx Reflective Hall*)**: Multi-texturing (`TMU0 + TMU1` environment-mapped specular chrome) rotating torus knot with translucent floor reflections, dynamic colored lights, and smooth camera orbit.
+
+### Backlog (Future / Low Priority) — Clean-Room Open-Source `glide2x.ovl`
+- Build an open-source Open Watcom v2 DOS/32 `glide2x.ovl` implementing the 130-entry (`0..129`) DOSBox I/O-port bridge ABI (removing dependency on prebuilt binary OVLs), with optional future paired DOSBox shared-memory ring-buffer protocol for higher DOS frame rates.

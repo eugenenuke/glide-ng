@@ -387,6 +387,8 @@ void VulkanBackend::Shutdown() {
   m_vertShaderModule.reset();
   m_fragShaderModule.reset();
   m_fragShaderModuleDualSrc.reset();
+  m_fragShaderModuleWBuf.reset();
+  m_fragShaderModuleDualSrcWBuf.reset();
 
   // Reset descriptor layout, pool, and textures
   m_vulkanTextures[0].clear();
@@ -429,6 +431,12 @@ void VulkanBackend::Shutdown() {
   m_msaaDepthImageView.reset();
   m_msaaDepthImageMemory.reset();
   m_msaaDepthImage.reset();
+
+  m_rttSaveImage.reset();
+  m_rttSaveImageMemory.reset();
+  m_rttSaveWidth = 0;
+  m_rttSaveHeight = 0;
+  m_rttSaveImageInitialized = false;
 
   // Explicitly destroy Swapchain and Presentation Surface resources
   m_swapchainImageViews.clear();
@@ -925,6 +933,12 @@ void VulkanBackend::DetachWindow_Locked() {
   m_msaaDepthImageView.reset();
   m_msaaDepthImageMemory.reset();
   m_msaaDepthImage.reset();
+
+  m_rttSaveImage.reset();
+  m_rttSaveImageMemory.reset();
+  m_rttSaveWidth = 0;
+  m_rttSaveHeight = 0;
+  m_rttSaveImageInitialized = false;
 
   m_windowAttached = false;
   m_headlessMode = false;
@@ -2133,7 +2147,43 @@ bool VulkanBackend::SelectPhysicalDevice() {
         "Zero Vulkan compatible hardware/software devices found on host.");
     return false;
   }
-  m_physicalDevice = devices[0];
+
+  // Prefer Discrete GPU > Integrated GPU > Virtual GPU > CPU while preserving
+  // loader order within the same tier (so VK_DRIVER_FILES / lvp_icd overrides
+  // still work seamlessly).
+  auto deviceScore = [](const vk::PhysicalDevice& dev) -> int {
+    bool hasGraphics = false;
+    for (const auto& q : dev.getQueueFamilyProperties()) {
+      if (q.queueFlags & vk::QueueFlagBits::eGraphics) {
+        hasGraphics = true;
+        break;
+      }
+    }
+    if (!hasGraphics) return -1;
+    switch (dev.getProperties().deviceType) {
+      case vk::PhysicalDeviceType::eDiscreteGpu:
+        return 1000;
+      case vk::PhysicalDeviceType::eIntegratedGpu:
+        return 500;
+      case vk::PhysicalDeviceType::eVirtualGpu:
+        return 200;
+      case vk::PhysicalDeviceType::eCpu:
+        return 10;
+      default:
+        return 100;
+    }
+  };
+
+  vk::PhysicalDevice bestDevice = devices[0];
+  int bestScore = deviceScore(devices[0]);
+  for (size_t i = 1; i < devices.size(); ++i) {
+    const int score = deviceScore(devices[i]);
+    if (score > bestScore) {
+      bestScore = score;
+      bestDevice = devices[i];
+    }
+  }
+  m_physicalDevice = bestDevice;
   vk::PhysicalDeviceProperties props = m_physicalDevice.getProperties();
 
   std::ostringstream logStream;
@@ -2194,6 +2244,27 @@ bool VulkanBackend::CreateLogicalDevice() {
     GLIDE_LOG(WARN, "Vulkan",
               "Vulkan Dual-Source Blending NOT supported by host GPU! Pre-fog "
               "blending will be degraded.");
+  }
+
+  m_textureCompressionBcEnabled = false;
+  if (supportedFeatures.textureCompressionBC) {
+    const auto reqFlags = vk::FormatFeatureFlagBits::eSampledImage |
+                          vk::FormatFeatureFlagBits::eTransferDst;
+    const auto p1 = m_physicalDevice.getFormatProperties(
+        vk::Format::eBc1RgbaUnormBlock);
+    const auto p2 =
+        m_physicalDevice.getFormatProperties(vk::Format::eBc2UnormBlock);
+    const auto p3 =
+        m_physicalDevice.getFormatProperties(vk::Format::eBc3UnormBlock);
+    if ((p1.optimalTilingFeatures & reqFlags) == reqFlags &&
+        (p2.optimalTilingFeatures & reqFlags) == reqFlags &&
+        (p3.optimalTilingFeatures & reqFlags) == reqFlags) {
+      deviceFeatures.textureCompressionBC = true;
+      m_textureCompressionBcEnabled = true;
+      GLIDE_LOG(INFO, "Vulkan",
+                "Vulkan BC1/BC2/BC3 (DXT1/DXT3/DXT5) hardware texture "
+                "compression enabled.");
+    }
   }
 
   std::vector<const char*> deviceExtensions;

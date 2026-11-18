@@ -135,6 +135,7 @@ typedef void (FX_CALL *gtool_any_proc_fn)(void);
   X(void,              grGammaCorrectionValue, "_GRGAMMACORRECTIONVALUE@4",    "_grGammaCorrectionValue@4",    (float value)) \
   X(void,              grGlideShamelessPlug,   "_GRGLIDESHAMELESSPLUG@4",      "_grGlideShamelessPlug@4",      (const FxBool on)) \
   X(void,              grSplash,               "_GRSPLASH@20",                 "_grSplash@20",                 (float x, float y, float width, float height, FxU32 frame)) \
+  X(void,              grTexDetailControl,     "_GRTEXDETAILCONTROL@16",       "_grTexDetailControl@16",       (GrChipID_t tmu, int lod_bias, FxU8 detail_scale, float detail_max)) \
   X(const char*,       grGetString,            "_GRGETSTRING@4",               "_grGetString@4",               (FxU32 pname)) \
   X(gtool_any_proc_fn, grGetProcAddress,       "_GRGETPROCADDRESS@4",          "_grGetProcAddress@4",          (char* procName))
 
@@ -204,6 +205,7 @@ GLIDE2_OVL_OPTIONAL_FUNCS_X(GLIDE2_DECLARE_PFN_)
 #define grGammaCorrectionValue    g_g2ovl_grGammaCorrectionValue
 #define grGlideShamelessPlug      g_g2ovl_grGlideShamelessPlug
 #define grSplash                  g_g2ovl_grSplash
+#define grTexDetailControl        g_g2ovl_grTexDetailControl
 
 extern int gtool_glide_load(char* source_out, size_t source_sz,
                             char* err_out, size_t err_sz);

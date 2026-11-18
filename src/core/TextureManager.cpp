@@ -7,6 +7,7 @@
 #include "core/BackendManager.h"
 #include "core/GlideEntryCommon.h"
 #include "core/IGraphicsBackend.h"
+#include "core/SimdKernels.h"
 #include "core/Telemetry.h"
 #include "core/WrapperConfig.h"
 
@@ -15,6 +16,12 @@ namespace GlideWrapper {
 namespace {
 uint64_t CalcSwizzledUploadBytes(const VirtualTexture& tex) {
   uint64_t total = 0;
+  if (tex.swizzledMipLevels.empty() && !tex.rawCompressedMipLevels.empty()) {
+    for (const auto& lvl : tex.rawCompressedMipLevels) {
+      total += static_cast<uint64_t>(lvl.size());
+    }
+    return total;
+  }
   for (const auto& lvl : tex.swizzledMipLevels) {
     total += static_cast<uint64_t>(lvl.size()) * sizeof(uint32_t);
   }
@@ -151,6 +158,10 @@ constexpr uint32_t kTexFmtDxt3 = 0x18u;
 constexpr uint32_t kTexFmtDxt4 = 0x19u;
 constexpr uint32_t kTexFmtDxt5 = 0x1Au;
 constexpr uint32_t kTexFmtRgb888 = 0xFFu;
+
+inline bool IsHardwareBcnFormat(uint32_t format) {
+  return format >= kTexFmtDxt1 && format <= kTexFmtDxt5;
+}
 
 inline uint32_t CalculateLevelByteSize(uint32_t w, uint32_t h,
                                        uint32_t format) {
@@ -555,38 +566,19 @@ void DecodeTexelsToBgra(uint32_t format, const uint8_t* rawSrc, uint32_t width,
       return;
     }
     case 0xa: {  // RGB_565
-      const auto* src16 = reinterpret_cast<const uint16_t*>(rawSrc);
-      for (size_t i = 0; i < count; ++i) {
-        const uint16_t val = src16[i];
-        const uint32_t r = kExpand5[(val >> 11) & 0x1Fu];
-        const uint32_t g = kExpand6[(val >> 5) & 0x3Fu];
-        const uint32_t b = kExpand5[val & 0x1Fu];
-        dstBgra[i] = 0xFF000000u | (r << 16) | (g << 8) | b;
-      }
+      GetSimdKernels().ConvertRgb565ToBgra32(
+          reinterpret_cast<const uint16_t*>(rawSrc), dstBgra, count);
       return;
     }
     case 0xc: {  // ARGB_4444
-      const auto* src16 = reinterpret_cast<const uint16_t*>(rawSrc);
-      for (size_t i = 0; i < count; ++i) {
-        const uint16_t val = src16[i];
-        const uint32_t a = ((val >> 12) & 0xFu) * 17u;
-        const uint32_t r = ((val >> 8) & 0xFu) * 17u;
-        const uint32_t g = ((val >> 4) & 0xFu) * 17u;
-        const uint32_t b = (val & 0xFu) * 17u;
-        dstBgra[i] = (a << 24) | (r << 16) | (g << 8) | b;
-      }
+      GetSimdKernels().ConvertArgb4444ToBgra32(
+          reinterpret_cast<const uint16_t*>(rawSrc), dstBgra, count);
       return;
     }
     case 0xb: {  // ARGB_1555
-      const auto* src16 = reinterpret_cast<const uint16_t*>(rawSrc);
-      for (size_t i = 0; i < count; ++i) {
-        const uint16_t val = src16[i];
-        const uint32_t a = (val & 0x8000u) ? 0xFF000000u : 0u;
-        const uint32_t r = kExpand5[(val >> 10) & 0x1Fu];
-        const uint32_t g = kExpand5[(val >> 5) & 0x1Fu];
-        const uint32_t b = kExpand5[val & 0x1Fu];
-        dstBgra[i] = a | (r << 16) | (g << 8) | b;
-      }
+      GetSimdKernels().ConvertArgb1555ToBgra32(
+          reinterpret_cast<const uint16_t*>(rawSrc), dstBgra, count,
+          /*preserveAlpha=*/true);
       return;
     }
     case 0xd: {  // ALPHA_INTENSITY_88
@@ -646,9 +638,7 @@ void DecodeTexelsToBgra(uint32_t format, const uint8_t* rawSrc, uint32_t width,
         std::memcpy(dstRaw8, rawSrc, count);
       }
       if (paletteLoaded) {
-        for (size_t i = 0; i < count; ++i) {
-          dstBgra[i] = paletteTable[rawSrc[i]];
-        }
+        GetSimdKernels().DecodeP8ToBgra32(rawSrc, paletteTable, dstBgra, count);
       } else {
         for (size_t i = 0; i < count; ++i) {
           const uint32_t val = rawSrc[i];
@@ -772,9 +762,8 @@ void TextureManager::ReswizzleTexture_Locked(const TmuState& state,
         auto& dst = tex.swizzledMipLevels[lvl];
         dst.resize(raw8.size());
         if (state.paletteTableLoaded) {
-          for (size_t pIdx = 0; pIdx < raw8.size(); ++pIdx) {
-            dst[pIdx] = state.paletteTable[raw8[pIdx]];
-          }
+          GetSimdKernels().DecodeP8ToBgra32(raw8.data(), state.paletteTable,
+                                            dst.data(), raw8.size());
         } else {
           for (size_t pIdx = 0; pIdx < raw8.size(); ++pIdx) {
             uint8_t val = raw8[pIdx];
@@ -838,6 +827,26 @@ void TextureManager::ReswizzleTexture_Locked(const TmuState& state,
   }
 }
 
+void TextureManager::EnsureCompressedSwizzled_Locked(VirtualTexture& tex) {
+  if (!tex.swizzledMipLevels.empty() || tex.rawCompressedMipLevels.empty()) {
+    return;
+  }
+  const size_t nLevels = tex.rawCompressedMipLevels.size();
+  tex.swizzledMipLevels.resize(nLevels);
+  for (size_t i = 0; i < nLevels; ++i) {
+    uint32_t lw = std::max(1u, tex.baseWidth >> i);
+    uint32_t lh = std::max(1u, tex.baseHeight >> i);
+    const size_t texelCount = static_cast<size_t>(lw) * lh;
+    tex.swizzledMipLevels[i].resize(texelCount, 0u);
+    const auto& rawLvl = tex.rawCompressedMipLevels[i];
+    if (rawLvl.size() >= CalculateLevelByteSize(lw, lh, tex.format)) {
+      DecodeTexelsToBgra(tex.format, rawLvl.data(), lw, lh,
+                         tex.swizzledMipLevels[i].data(), false, nullptr,
+                         nullptr, nullptr, nullptr, nullptr, nullptr);
+    }
+  }
+}
+
 void TextureManager::EnsureTextureReady_Locked(
     uint32_t tmu, std::shared_ptr<VirtualTexture>& texPtr,
     bool uploadToBackend) {
@@ -864,10 +873,12 @@ void TextureManager::EnsureTextureReady_Locked(
   }
 
   if (uploadToBackend) {
+    const bool hasCpuData = !texPtr->swizzledMipLevels.empty() ||
+                            !texPtr->rawCompressedMipLevels.empty();
     const bool tableChanged =
         (texPtr->isPaletted || texPtr->isNcc) &&
         (texPtr->uploadedTableHashPerTmu[tmu] != texPtr->swizzledTableHash);
-    if (!texPtr->uploadedToBackendPerTmu[tmu] || tableChanged) {
+    if (hasCpuData && (!texPtr->uploadedToBackendPerTmu[tmu] || tableChanged)) {
       if (auto* b = BackendManager::GetInstance().GetBackend()) {
         TelemetryManager::GetInstance().RecordTexUpload(
             CalcSwizzledUploadBytes(*texPtr));
@@ -1061,7 +1072,16 @@ bool TextureManager::DownloadMipMap(uint32_t tmu, uint32_t startAddress,
   tex->allocatedByteSize = newBytes;
 
   uint32_t numLevels = static_cast<uint32_t>(newSmall - newLarge + 1);
-  std::vector<std::vector<uint32_t>> newSwizzled(numLevels);
+  auto* activeBackend = BackendManager::GetInstance().GetBackend();
+  const bool isHwBcn = IsHardwareBcnFormat(format);
+  const bool useNativeBcn =
+      isHwBcn && activeBackend != nullptr &&
+      activeBackend->SupportsCompressedBcnTextures();
+
+  std::vector<std::vector<uint32_t>> newSwizzled;
+  if (!useNativeBcn) newSwizzled.resize(numLevels);
+  std::vector<std::vector<uint8_t>> newRawCompressed;
+  if (isHwBcn) newRawCompressed.resize(numLevels);
   std::vector<std::vector<uint8_t>> newRaw8Bit;
   std::vector<std::vector<uint8_t>> newRawYiq;
   std::vector<std::vector<uint16_t>> newRawAyiq;
@@ -1075,12 +1095,20 @@ bool TextureManager::DownloadMipMap(uint32_t tmu, uint32_t startAddress,
   if (existingToMerge) {
     tex->isPaletted = existingToMerge->isPaletted;
     tex->isNcc = existingToMerge->isNcc;
+    if (!useNativeBcn && existingToMerge->swizzledMipLevels.empty() &&
+        !existingToMerge->rawCompressedMipLevels.empty()) {
+      EnsureCompressedSwizzled_Locked(*existingToMerge);
+    }
     for (int32_t L = existingToMerge->largeLod; L <= existingToMerge->smallLod;
          ++L) {
       uint32_t oldIdx = static_cast<uint32_t>(L - existingToMerge->largeLod);
       uint32_t newIdx = static_cast<uint32_t>(L - newLarge);
-      if (oldIdx < existingToMerge->swizzledMipLevels.size()) {
+      if (!useNativeBcn && oldIdx < existingToMerge->swizzledMipLevels.size()) {
         newSwizzled[newIdx] = existingToMerge->swizzledMipLevels[oldIdx];
+      }
+      if (isHwBcn && oldIdx < existingToMerge->rawCompressedMipLevels.size()) {
+        newRawCompressed[newIdx] =
+            existingToMerge->rawCompressedMipLevels[oldIdx];
       }
       if (existingToMerge->format == 0x5 || existingToMerge->format == 0x6) {
         if (oldIdx < existingToMerge->raw8BitMipLevels.size()) {
@@ -1143,76 +1171,93 @@ bool TextureManager::DownloadMipMap(uint32_t tmu, uint32_t startAddress,
         break;  // 1x8
     }
 
-    const size_t texelCount = static_cast<size_t>(w) * h;
-    std::vector<uint32_t> levelPixels(texelCount);
-    std::vector<uint8_t> levelRaw;
-    if (format == 0x5 ||
-        format == 0x6) {  // GR_TEXFMT_P_8 or GR_TEXFMT_P_8_6666
-      tex->isPaletted = true;
-      levelRaw.resize(texelCount);
-    }
-    std::vector<uint8_t> levelYiq;
-    if (format == 0x1) {  // GR_TEXFMT_YIQ_422
-      tex->isNcc = true;
-      levelYiq.resize(texelCount);
-    }
-    std::vector<uint16_t> levelAyiq;
-    if (format == 0x9) {  // GR_TEXFMT_AYIQ_8422
-      tex->isNcc = true;
-      levelAyiq.resize(texelCount);
-    }
-    std::vector<uint16_t> levelAp88;
-    if (format == 0xe) {  // GR_TEXFMT_AP_88
-      tex->isPaletted = true;
-      levelAp88.resize(texelCount);
-    }
-
-    DecodeTexelsToBgra(
-        format, rawData + byteOffset, w, h, levelPixels.data(),
-        paletteLoaded, paletteTable, needsNcc ? &activeNcc : nullptr,
-        levelRaw.empty() ? nullptr : levelRaw.data(),
-        levelYiq.empty() ? nullptr : levelYiq.data(),
-        levelAyiq.empty() ? nullptr : levelAyiq.data(),
-        levelAp88.empty() ? nullptr : levelAp88.data());
-
-    uint32_t destIdx = static_cast<uint32_t>(i - newLarge);
-    newSwizzled[destIdx] = std::move(levelPixels);
-    if (format == 0x5 || format == 0x6) {
-      newRaw8Bit[destIdx] = std::move(levelRaw);
-    } else if (format == 0x1) {
-      newRawYiq[destIdx] = std::move(levelYiq);
-    } else if (format == 0x9) {
-      newRawAyiq[destIdx] = std::move(levelAyiq);
-    } else if (format == 0xe) {
-      newRawAp88[destIdx] = std::move(levelAp88);
-    }
     const uint32_t levelBytes = CalculateLevelByteSize(w, h, format);
+    uint32_t destIdx = static_cast<uint32_t>(i - newLarge);
+    if (isHwBcn) {
+      std::vector<uint8_t> compBytes(levelBytes);
+      std::memcpy(compBytes.data(), rawData + byteOffset, levelBytes);
+      newRawCompressed[destIdx] = std::move(compBytes);
+    }
+
+    if (!useNativeBcn) {
+      const size_t texelCount = static_cast<size_t>(w) * h;
+      std::vector<uint32_t> levelPixels(texelCount);
+      std::vector<uint8_t> levelRaw;
+      if (format == 0x5 ||
+          format == 0x6) {  // GR_TEXFMT_P_8 or GR_TEXFMT_P_8_6666
+        tex->isPaletted = true;
+        levelRaw.resize(texelCount);
+      }
+      std::vector<uint8_t> levelYiq;
+      if (format == 0x1) {  // GR_TEXFMT_YIQ_422
+        tex->isNcc = true;
+        levelYiq.resize(texelCount);
+      }
+      std::vector<uint16_t> levelAyiq;
+      if (format == 0x9) {  // GR_TEXFMT_AYIQ_8422
+        tex->isNcc = true;
+        levelAyiq.resize(texelCount);
+      }
+      std::vector<uint16_t> levelAp88;
+      if (format == 0xe) {  // GR_TEXFMT_AP_88
+        tex->isPaletted = true;
+        levelAp88.resize(texelCount);
+      }
+
+      DecodeTexelsToBgra(
+          format, rawData + byteOffset, w, h, levelPixels.data(),
+          paletteLoaded, paletteTable, needsNcc ? &activeNcc : nullptr,
+          levelRaw.empty() ? nullptr : levelRaw.data(),
+          levelYiq.empty() ? nullptr : levelYiq.data(),
+          levelAyiq.empty() ? nullptr : levelAyiq.data(),
+          levelAp88.empty() ? nullptr : levelAp88.data());
+
+      newSwizzled[destIdx] = std::move(levelPixels);
+      if (format == 0x5 || format == 0x6) {
+        newRaw8Bit[destIdx] = std::move(levelRaw);
+      } else if (format == 0x1) {
+        newRawYiq[destIdx] = std::move(levelYiq);
+      } else if (format == 0x9) {
+        newRawAyiq[destIdx] = std::move(levelAyiq);
+      } else if (format == 0xe) {
+        newRawAp88[destIdx] = std::move(levelAp88);
+      }
+    }
     byteOffset += levelBytes;  // Advancing packed unaligned input bytes offset!
   }
 
   // Guarantee every mip level slot in [newLarge..newSmall] is populated to its
-  // exact w*h size so no backend can ever dereference an empty gap mip level.
+  // exact size so no backend can ever dereference an empty gap mip level.
   for (int32_t L = newLarge; L <= newSmall; ++L) {
     const uint32_t idx = static_cast<uint32_t>(L - newLarge);
     uint32_t lw = 1, lh = 1;
     ComputeLodDimensions(L, aspect, lw, lh);
-    const size_t expectedTexels = static_cast<size_t>(lw) * lh;
-    if (newSwizzled[idx].size() != expectedTexels) {
-      newSwizzled[idx].resize(expectedTexels, 0);
+    if (isHwBcn) {
+      const size_t expectedBytes = CalculateLevelByteSize(lw, lh, format);
+      if (newRawCompressed[idx].size() != expectedBytes) {
+        newRawCompressed[idx].resize(expectedBytes, 0);
+      }
     }
-    if ((format == 0x5 || format == 0x6) &&
-        newRaw8Bit[idx].size() != expectedTexels) {
-      newRaw8Bit[idx].resize(expectedTexels, 0);
-    } else if (format == 0x1 && newRawYiq[idx].size() != expectedTexels) {
-      newRawYiq[idx].resize(expectedTexels, 0);
-    } else if (format == 0x9 && newRawAyiq[idx].size() != expectedTexels) {
-      newRawAyiq[idx].resize(expectedTexels, 0);
-    } else if (format == 0xe && newRawAp88[idx].size() != expectedTexels) {
-      newRawAp88[idx].resize(expectedTexels, 0);
+    if (!useNativeBcn) {
+      const size_t expectedTexels = static_cast<size_t>(lw) * lh;
+      if (newSwizzled[idx].size() != expectedTexels) {
+        newSwizzled[idx].resize(expectedTexels, 0);
+      }
+      if ((format == 0x5 || format == 0x6) &&
+          newRaw8Bit[idx].size() != expectedTexels) {
+        newRaw8Bit[idx].resize(expectedTexels, 0);
+      } else if (format == 0x1 && newRawYiq[idx].size() != expectedTexels) {
+        newRawYiq[idx].resize(expectedTexels, 0);
+      } else if (format == 0x9 && newRawAyiq[idx].size() != expectedTexels) {
+        newRawAyiq[idx].resize(expectedTexels, 0);
+      } else if (format == 0xe && newRawAp88[idx].size() != expectedTexels) {
+        newRawAp88[idx].resize(expectedTexels, 0);
+      }
     }
   }
 
   tex->swizzledMipLevels = std::move(newSwizzled);
+  if (isHwBcn) tex->rawCompressedMipLevels = std::move(newRawCompressed);
   if (format == 0x5 || format == 0x6)
     tex->raw8BitMipLevels = std::move(newRaw8Bit);
   else if (format == 0x1)
@@ -1259,9 +1304,11 @@ bool TextureManager::DownloadMipMap(uint32_t tmu, uint32_t startAddress,
   GLIDE_LOG(DEBUG, "TextureManager",
             "Successfully downloaded Virtual Texture MIP Chain at Address=0x"
                 << std::hex << startAddress << std::dec << " Base("
-                << tex->baseWidth << "x" << tex->baseHeight
-                << "), Levels=" << tex->swizzledMipLevels.size() << " into TMU"
-                << tmu << ". Allocated pool: " << m_tmus[storeTmu].allocatedBytes
+                << tex->baseWidth << "x" << tex->baseHeight << "), Levels="
+                << std::max(tex->swizzledMipLevels.size(),
+                            tex->rawCompressedMipLevels.size())
+                << " into TMU" << tmu
+                << ". Allocated pool: " << m_tmus[storeTmu].allocatedBytes
                 << " bytes.");
 
   // If this texture is fully swizzled (either not paletted, or paletted with a
@@ -1395,6 +1442,10 @@ bool TextureManager::DownloadMipMapPartial(uint32_t tmu, uint32_t startAddress,
   // re-swizzle its existing levels first so partial rows don't mix palettes.
   if (tex->isPaletted || tex->isNcc) {
     EnsureTextureReady_Locked(tmu, it->second, false);
+  }
+  if (tex->swizzledMipLevels.empty() && !tex->rawCompressedMipLevels.empty()) {
+    EnsureCompressedSwizzled_Locked(*tex);
+    tex->rawCompressedMipLevels.clear();
   }
   tex->rawDataHash = 0;  // Partial edit invalidates full-mipmap raw hash
 
@@ -1700,6 +1751,10 @@ uint32_t TextureManager::ResolveMultibaseSource(uint32_t tmu,
     const uint32_t dstIdx = static_cast<uint32_t>(L - start);
     auto src = pickCandidate(maxDim, L);
     if (src) {
+      if (src->swizzledMipLevels.empty() &&
+          !src->rawCompressedMipLevels.empty()) {
+        EnsureCompressedSwizzled_Locked(*src);
+      }
       const uint32_t srcIdx = static_cast<uint32_t>(L - src->largeLod);
       if (srcIdx < src->swizzledMipLevels.size() &&
           src->swizzledMipLevels[srcIdx].size() == static_cast<size_t>(lw) * lh) {
@@ -1750,6 +1805,10 @@ VirtualTexture* TextureManager::GetTexture(uint32_t tmu,
   if (it->second->isPaletted || it->second->isNcc) {
     EnsureTextureReady_Locked(tmu, it->second, false);
   }
+  if (it->second->swizzledMipLevels.empty() &&
+      !it->second->rawCompressedMipLevels.empty()) {
+    EnsureCompressedSwizzled_Locked(*it->second);
+  }
   return it->second.get();
 }
 
@@ -1762,6 +1821,10 @@ std::shared_ptr<const VirtualTexture> TextureManager::GetTextureSnapshot(
   if (it == m_tmus[storeTmu].textures.end()) return nullptr;
   if (it->second->isPaletted || it->second->isNcc) {
     EnsureTextureReady_Locked(tmu, it->second, false);
+  }
+  if (it->second->swizzledMipLevels.empty() &&
+      !it->second->rawCompressedMipLevels.empty()) {
+    EnsureCompressedSwizzled_Locked(*it->second);
   }
   return it->second;
 }
@@ -1949,6 +2012,135 @@ bool TextureManager::CommitRenderedTexture(
     tex->uploadedToBackend = true;
     tex->uploadedToBackendPerTmu[tmu] = true;
   }
+  return true;
+}
+
+bool TextureManager::CommitGpuRenderedTexture(
+    uint32_t tmu, uint32_t startAddress, int32_t thisLod, int32_t largeLod,
+    uint32_t aspect, uint32_t format, uint32_t copyWidth, uint32_t copyHeight,
+    uint32_t origin) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (tmu >= 2 || aspect > 6 || copyWidth == 0 || copyHeight == 0) return false;
+  auto* backend = BackendManager::GetInstance().GetBackend();
+  if (!backend) return false;
+
+  auto model = EmulationRegistry::GetInstance().GetConfig().model;
+  const int32_t minValidLod = (model >= CardModel::Voodoo3) ? -3 : 0;
+  if (thisLod < minValidLod || thisLod > 8 || largeLod < minValidLod ||
+      largeLod > 8 || thisLod < largeLod) {
+    return false;
+  }
+
+  const uint32_t storeTmu = StorageTmu_Locked(tmu);
+  const bool umaActive = m_umaEnabled.load(std::memory_order_acquire);
+  std::shared_ptr<VirtualTexture> existingToMerge;
+  int32_t newLarge = thisLod;
+  int32_t newSmall = thisLod;
+
+  auto it = m_tmus[storeTmu].textures.find(startAddress);
+  if (it != m_tmus[storeTmu].textures.end()) {
+    const auto& existing = it->second;
+    if (existing->format == format && existing->aspectRatio == aspect &&
+        (existing->declaredLargeLod == largeLod ||
+         existing->largeLod == largeLod)) {
+      if (thisLod < existing->largeLod) {
+        // Growing the base mip level requires preserving smaller mips; fall
+        // back to CPU merge path for this rare transition.
+        return false;
+      }
+      existingToMerge = existing;
+      newLarge = std::min(existing->largeLod, thisLod);
+      newSmall = std::max(existing->smallLod, thisLod);
+    }
+  }
+
+  uint32_t baseW = 1, baseH = 1;
+  ComputeLodDimensions(newLarge, aspect, baseW, baseH);
+  const uint32_t totalMipLevels = static_cast<uint32_t>(newSmall - newLarge + 1);
+  const uint32_t mipLevel = static_cast<uint32_t>(thisLod - newLarge);
+
+  if (!backend->CommitGpuTextureBuffer(tmu, startAddress, baseW, baseH,
+                                       mipLevel, totalMipLevels, copyWidth,
+                                       copyHeight, origin)) {
+    return false;
+  }
+  bool otherTmuCommitted = false;
+  if (umaActive) {
+    otherTmuCommitted = backend->CommitGpuTextureBuffer(
+        1u - tmu, startAddress, baseW, baseH, mipLevel, totalMipLevels,
+        copyWidth, copyHeight, origin);
+  }
+
+  // O(1) steady-state fast path when re-rendering to the exact same RTT target
+  // (zero heap allocation, zero overlap scan).
+  if (existingToMerge && existingToMerge->largeLod == newLarge &&
+      existingToMerge->smallLod == newSmall &&
+      existingToMerge->declaredLargeLod == largeLod &&
+      existingToMerge->baseWidth == baseW &&
+      existingToMerge->baseHeight == baseH &&
+      existingToMerge->swizzledMipLevels.empty() &&
+      existingToMerge->rawCompressedMipLevels.empty()) {
+    existingToMerge->rawDataHash = 0;
+    existingToMerge->uploadedToBackend = true;
+    existingToMerge->uploadedToBackendPerTmu[tmu] = true;
+    if (otherTmuCommitted) {
+      existingToMerge->uploadedToBackendPerTmu[1u - tmu] = true;
+    }
+    return true;
+  }
+
+  const uint32_t newBytes =
+      CalculateMemoryRequired(newLarge, newSmall, aspect, format);
+  const uint64_t newRangeStart = static_cast<uint64_t>(startAddress);
+  const uint64_t newRangeEnd = newRangeStart + static_cast<uint64_t>(newBytes);
+
+  std::vector<uint32_t> overlaps;
+  uint64_t evictedBytes = 0;
+  for (const auto& entry : m_tmus[storeTmu].textures) {
+    if (entry.first >= kMultibaseCompositeBase) continue;
+    const uint64_t eStart = static_cast<uint64_t>(entry.first);
+    const uint64_t eSize =
+        (entry.second->allocatedByteSize > 0)
+            ? static_cast<uint64_t>(entry.second->allocatedByteSize)
+            : static_cast<uint64_t>(CalculateMemoryRequired(
+                  entry.second->largeLod, entry.second->smallLod,
+                  entry.second->aspectRatio, entry.second->format));
+    const uint64_t eEnd = eStart + eSize;
+    if (entry.first == startAddress ||
+        (eStart < newRangeEnd && newRangeStart < eEnd)) {
+      overlaps.push_back(entry.first);
+      evictedBytes += eSize;
+    }
+  }
+
+  const uint64_t currentUsed = m_tmus[storeTmu].allocatedBytes;
+  const uint64_t usedAfterEvict =
+      (currentUsed >= evictedBytes) ? (currentUsed - evictedBytes) : 0ULL;
+
+  auto tex = std::make_shared<VirtualTexture>();
+  tex->startAddress = startAddress;
+  tex->format = format;
+  tex->aspectRatio = aspect;
+  tex->largeLod = newLarge;
+  tex->smallLod = newSmall;
+  tex->declaredLargeLod = largeLod;
+  tex->allocatedByteSize = newBytes;
+  tex->baseWidth = baseW;
+  tex->baseHeight = baseH;
+  tex->isPaletted = false;
+  tex->isNcc = false;
+  tex->rawDataHash = 0;
+  tex->swizzledWithTable = true;
+  tex->uploadedToBackend = true;
+  tex->uploadedToBackendPerTmu[0] = (tmu == 0) || otherTmuCommitted;
+  tex->uploadedToBackendPerTmu[1] = (tmu == 1) || otherTmuCommitted;
+
+  for (uint32_t addr : overlaps) {
+    m_tmus[storeTmu].textures.erase(addr);
+  }
+  m_tmus[storeTmu].allocatedBytes =
+      static_cast<uint32_t>(usedAfterEvict + newBytes);
+  m_tmus[storeTmu].textures[startAddress] = std::move(tex);
   return true;
 }
 
