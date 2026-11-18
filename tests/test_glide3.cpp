@@ -13,6 +13,7 @@
 #include "core/BackendManager.h"
 #include "core/NativeSurfaceHost.h"
 #include "core/VertexLayout.h"
+#include "test_helpers.h"
 #include "backends/GlideStateTracker.h"
 #include "opengl_es/OpenGLESBackend.h"
 #include "software/SoftwareBackend.h"
@@ -1578,50 +1579,6 @@ TEST_CASE("Glide 2.x Coordinate Unsnapping Verification", "[Glide2][Unsnap][Glid
     ::dlclose(handle);
     ::unsetenv("GLIDE_NG_BACKEND");
 #endif
-}
-
-extern "C" int tlGetOpt(int argc, char *argv[], const char *tags, char *match, char **remArgs[]);
-
-TEST_CASE("tlib tlGetOpt Conjoined Arguments Verification", "[tlib][GetOpt][tlib_GetOpt]") {
-    // Test space-separated argument (standard)
-    {
-        tlGetOpt(0, nullptr, nullptr, nullptr, nullptr); // Reset static parser state
-        char arg0[] = "./test";
-        char arg1[] = "-r";
-        char arg2[] = "1024x768";
-        char* argv[] = { arg0, arg1, arg2, nullptr };
-        int argc = 3;
-
-        char match = 0;
-        char** remArgs = nullptr;
-        
-        int rv = tlGetOpt(argc, argv, "r", &match, &remArgs);
-        CHECK(rv == 1);
-        CHECK(match == 'r');
-        REQUIRE(remArgs != nullptr);
-        CHECK(std::strcmp(remArgs[0], "1024x768") == 0);
-    }
-
-    // Test conjoined argument (the bug case: -r1024x768)
-    {
-        tlGetOpt(0, nullptr, nullptr, nullptr, nullptr); // Reset static parser state
-        char arg0[] = "./test";
-        char arg1[] = "-r1024x768";
-        char* argv[] = { arg0, arg1, nullptr };
-        int argc = 2;
-
-        char match = 0;
-        char** remArgs = nullptr;
-        
-        // This would have segfaulted before our fix!
-        int rv = tlGetOpt(argc, argv, "r", &match, &remArgs);
-        
-        CHECK(rv == 1);
-        CHECK(match == 'r');
-        REQUIRE(remArgs != nullptr);
-        // The prefix "-r" should be stripped in-place, making the argument value "1024x768"
-        CHECK(std::strcmp(remArgs[0], "1024x768") == 0);
-    }
 }
 
 TEST_CASE("Glide FOGCOORD Extension and Fog Mode Mapping Verification", "[Glide][Fog][FOGCOORD]") {
@@ -8173,31 +8130,28 @@ TEST_CASE("M10.5 VSA-100 TEXFMT (ARGB_8888, RGB_888, YUV, FXT1, DXT1-5)",
     uploadAndDrawTile(2, 2, GR_LOD_LOG2_8, GR_TEXFMT_ARGB_CMP_DXT5, img);
   }
 
-  // Tile (3,2): Real 3dfx H5 SDK ARGB8888 .3df asset (t256x32.3df via gu3dfGetInfo/Load)
+  // Tile (3,2): Self-contained synthetic ARGB8888 256x256 .3df asset via gu3dfGetInfo/Load
   {
-    const char* candidates[] = {
-        "../../refs/glide/glide3x/h5/glide3/tests/t256x32.3df",
-        "refs/glide/glide3x/h5/glide3/tests/t256x32.3df",
-        "../refs/glide/glide3x/h5/glide3/tests/t256x32.3df",
-    };
-    const char* found3df = nullptr;
-    for (const char* p : candidates) {
-      if (FILE* f = std::fopen(p, "rb")) {
-        std::fclose(f);
-        found3df = p;
-        break;
-      }
-    }
-    REQUIRE(found3df != nullptr);
+    const std::string synthPath =
+        GlideTestHelpers::TempTestPath("glide_ng_m10_argb8888_256.3df");
+    GlideTestHelpers::ScopedTempFile temp3df(synthPath);
+    REQUIRE(GlideTestHelpers::WriteSynthetic3dfArgb8888(
+        synthPath, 256, 256, [](int x, int y, int /*dim*/) -> uint32_t {
+          const uint8_t r = static_cast<uint8_t>(x);
+          const uint8_t g = static_cast<uint8_t>(y);
+          const uint8_t b = static_cast<uint8_t>(255 - ((x + y) / 2));
+          return 0xFF000000u | (static_cast<uint32_t>(r) << 16) |
+                 (static_cast<uint32_t>(g) << 8) | b;
+        }));
     Gu3dfInfo tInfo{};
-    REQUIRE(gu3dfGetInfoFn(found3df, &tInfo) == FXTRUE);
+    REQUIRE(gu3dfGetInfoFn(synthPath.c_str(), &tInfo) == FXTRUE);
     CHECK(tInfo.header.format == GR_TEXFMT_ARGB_8888);
     CHECK(tInfo.header.width == 256);
     CHECK(tInfo.header.height == 256);
     CHECK(tInfo.mem_required == 256u * 256u * 4u);
     std::vector<uint8_t> buf3df(tInfo.mem_required);
     tInfo.data = buf3df.data();
-    REQUIRE(gu3dfLoadFn(found3df, &tInfo) == FXTRUE);
+    REQUIRE(gu3dfLoadFn(synthPath.c_str(), &tInfo) == FXTRUE);
     uploadAndDrawTile(3, 2, tInfo.header.large_lod, tInfo.header.format,
                       buf3df.data());
   }

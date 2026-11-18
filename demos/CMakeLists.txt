@@ -132,56 +132,41 @@ target_link_libraries(test10_replica_demo PRIVATE
     -lm
 )
 
-if(GLIDE_HAS_REF_SDK AND EXISTS "${GLIDE_REF_SDK_DIR}/glide3x/cvg/glide3/tests/tlib.c")
-    # Untracked legacy 3dfx reference C sources predate modern -Werror rules.
-    set_source_files_properties(
-        "${GLIDE_REF_SDK_DIR}/glide3x/cvg/glide3/tests/tlib.c"
-        "${GLIDE_REF_SDK_DIR}/swlibs/fxmisc/linutil.c"
-        PROPERTIES COMPILE_OPTIONS "-Wno-error"
-    )
+# --- Glide 3.x test12 LFB Write Modes Replica Demo ---
+add_executable(test12_replica_demo
+    test12_replica_demo.cpp
+)
+target_include_directories(test12_replica_demo PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../include/3dfx"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../include/glide3"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../tools"
+)
+target_compile_definitions(test12_replica_demo PRIVATE -D__linux__ -DGLIDE_VERSION=3)
+target_link_libraries(test12_replica_demo PRIVATE
+    glide3x
+    tool_info3
+    tlib_compat
+    ${CMAKE_DL_LIBS}
+    -lm
+)
 
-    # --- Glide 3.x test12 LFB Write Modes Replica Demo (RETAINS REFERENCE TLIB FOR CONSOLE OVERLAY) ---
-    add_executable(test12_replica_demo
-        test12_replica_demo.cpp
-        "${GLIDE_REF_SDK_DIR}/glide3x/cvg/glide3/tests/tlib.c"
-        "${GLIDE_REF_SDK_DIR}/swlibs/fxmisc/linutil.c"
-    )
-    target_include_directories(test12_replica_demo PRIVATE
-        "${GLIDE_REF_SDK_DIR}/glide3x/cvg/glide3/tests"
-        "${GLIDE_REF_SDK_DIR}/swlibs/fxmisc"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../include/3dfx"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../include/glide3"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../tools"
-    )
-    target_compile_definitions(test12_replica_demo PRIVATE -D__linux__ -DGLIDE_VERSION=3)
-    target_link_libraries(test12_replica_demo PRIVATE
-        glide3x
-        tool_info3
-        ${CMAKE_DL_LIBS}
-        -lm
-    )
-
-    # --- Glide 3.x Extensions Showcase Demo (RETAINS REFERENCE TLIB FOR CONSOLE OVERLAY) ---
-    add_executable(glide3_extensions_demo
-        glide3_extensions_demo.cpp
-        "${GLIDE_REF_SDK_DIR}/glide3x/cvg/glide3/tests/tlib.c"
-        "${GLIDE_REF_SDK_DIR}/swlibs/fxmisc/linutil.c"
-    )
-    target_include_directories(glide3_extensions_demo PRIVATE
-        "${GLIDE_REF_SDK_DIR}/glide3x/cvg/glide3/tests"
-        "${GLIDE_REF_SDK_DIR}/swlibs/fxmisc"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../include/3dfx"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../include/glide3"
-        "${CMAKE_CURRENT_SOURCE_DIR}/../tools"
-    )
-    target_compile_definitions(glide3_extensions_demo PRIVATE -D__linux__ -DGLIDE_VERSION=3)
-    target_link_libraries(glide3_extensions_demo PRIVATE
-        glide3x
-        tool_info3
-        ${CMAKE_DL_LIBS}
-        -lm
-    )
-endif()
+# --- Glide 3.x Extensions Showcase Demo ---
+add_executable(glide3_extensions_demo
+    glide3_extensions_demo.cpp
+)
+target_include_directories(glide3_extensions_demo PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../include/3dfx"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../include/glide3"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../tools"
+)
+target_compile_definitions(glide3_extensions_demo PRIVATE -D__linux__ -DGLIDE_VERSION=3)
+target_link_libraries(glide3_extensions_demo PRIVATE
+    glide3x
+    tool_info3
+    tlib_compat
+    ${CMAKE_DL_LIBS}
+    -lm
+)
 
 # --- Phase 1 Visual/Logical Validation Demo (Glide 2.x) ---
 add_executable(phase1_validation_demo_g2
