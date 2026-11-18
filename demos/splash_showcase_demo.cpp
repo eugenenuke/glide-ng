@@ -20,7 +20,7 @@ static void splashCallback(int frame) {
         s_animationFinished = true;
         std::printf("\r[SPLASH] Animation Complete! (Frame %d/74)\033[K\n", frame);
     } else {
-        std::printf("\r[SPLASH] Rendering 3dfx 3D Spinning Logo: Frame %d / 74\033[K", frame);
+        std::printf("\r[SPLASH] Rendering glide-ng 3D Splash: Frame %d / 74\033[K", frame);
     }
     std::fflush(stdout);
 }
@@ -35,7 +35,7 @@ int main(int argc, char** argv) {
     }
 
     // Initialize Glide, parse CLI, print header, and resolve resolution
-    auto runConfig = Tools::InitializeAndParse(argc, argv, "3dfx 3D Splash Showcase Demo", {
+    auto runConfig = Tools::InitializeAndParse(argc, argv, "glide-ng 3D Splash Showcase Demo", {
         "[ S ]          Replay full 3D splash animation",
         "[SPACE]        Render single frame sequence",
         "[ESC]          Exit Demo"

@@ -1,119 +1,88 @@
-# 3dfx Glide API Modernization Wrapper
+# glide-ng — 3dfx Glide 2.x & 3.x Modernization Wrapper
 
-An open-source, highly modular drop-in replacement wrapper that translates authentic **3dfx Glide (Glide 2.x and Glide 3.x)** graphics calls into high-performance modern graphics APIs (**Vulkan**, **EGL**, and **OpenGL**).
+`glide-ng` is an open-source, drop-in replacement wrapper that translates authentic **3dfx Glide 2.x and Glide 3.x** graphics calls to **Vulkan**, **OpenGL ES 3.2 / OpenGL 3.3 Core**, or a multi-threaded **SIMD Software** rasterizer (AVX2 & AVX-512).
 
-This wrapper breathes new life into classic 1990s and early 2000s speed-sensitive PC games and interactive applications, enabling them to run flawlessly on modern x86/x64 systems without requiring original hardware accelerators like the Voodoo Graphics (SST-1), Voodoo2 (CVG), Voodoo3 (H3), or Voodoo5 (H5).
-
----
-
-## Key Features & Architecture
-
-* **Flawless C ABI Compatibility**: Compiles into un-mangled dynamic replacement libraries (`glide2x.dll`/`libglide2x.so` and `glide3x.dll`/`libglide3x.so`) matching the original 3dfx SDK specifications exactly.
-* **Polymorphic Multi-Backend System**: The Glide state machine is entirely uncoupled from the rendering execution. You can hot-swap rendering backends instantly (Vulkan for ultra-low latency, EGL for lightweight embedded contexts).
-* **Configurable Hardware Emulation**: Old retro games often glitch or run at hyper-speed on modern processors. The wrapper enforces exact Voodoo video RAM limits, active TMU (Texture Mapping Unit) limits, and classic overrides via `glide-ng.ini` (see [glide-ng.ini.example](./glide-ng.ini.example)), authentic `FX_GLIDE_*`/`SST_*` variables, or `GLIDE_NG_*` environment overrides.
-* **Automated Runtime Logging**: Automatically writes `glide-ng.log` (configurable via `GLIDE_NG_LOG_FILE`) to track game texture requirements, host capabilities, and active emulation parameters.
-* **Off-Screen Golden Testing**: Features Catch2 integration test suites that execute headless Glide rendering passes and perform bit-exact golden image comparisons.
+It runs classic 1990s and early-2000s DOS (via DOSBox pass-through), Win32 (via Wine/Proton or Windows), and native Linux Glide applications across seven emulated 3dfx hardware profiles — from **Voodoo Graphics (SST-1)** to **Voodoo5 (VSA-100)**.
 
 ---
 
-## Software Prerequisites & Installation
+## Highlights
 
-To compile the wrapper and execute the automated unit tests, you must have a C++20 capable toolchain and modern graphics headers installed.
+- **Authentic C ABI Compatibility**: Builds `libglide2x.so` / `glide2x.dll` (152 exports) and `libglide3x.so` / `glide3x.dll` (129 exports) with canonical Win32 `__stdcall` `_Func@N` exports, pure Glide 2.x ABI parity, and zero external runtime DLL dependencies on Win32.
+- **Three Interchangeable Backends**:
+  - **Vulkan** *(default)*: SPIR-V pipelines with Early-Z preservation, hardware BC1–BC3 (`DXT1`–`DXT5`) textures, zero-readback GPU render-to-texture (`TEXTUREBUFFER`), and persistent pipeline cache.
+  - **OpenGL ES 3.2 / Win32 WGL 3.3 Core**: Direct EGL 1.5 on Linux (X11/Wayland/headless) and WGL on Windows/Wine.
+  - **Software**: Bit-exact CPU reference rasterizer with runtime CPUID/XSAVE SIMD dispatch (`scalar`, `avx2` default, `avx512` 4×4 16-pixel rasterizer, `auto`).
+- **Complete 3dfx Hardware & VSA-100 Support**: Emulates `VoodooGraphics` (SST-1), `VoodooRush` (SST-96), `Voodoo2` (CVG, default), `VoodooBanshee`, `Voodoo3`, `Voodoo4`, and `Voodoo5`, including VSA-100 2×/4× Spatial AA, T-Buffer, 8-bit hardware Stencil, `COMBINE`, `TEXFMT` (FXT1/DXT/YUV/ARGB8888), and 2048×2048 textures.
+- **Unified Configuration & Telemetry**: Configured via [`glide-ng.ini`](glide-ng.ini.example), authentic `FX_GLIDE_*` / `SST_*` / `SSTV2_*` environment variables, or `GLIDE_NG_*` overrides, with a DXVK-style on-screen HUD (`GLIDE_NG_HUD`) and per-frame CSV performance tracing.
+- **Portable Diagnostics & Benchmarks**: Includes pure C99 `glide_info`, `glide_bench` (GlideMark), and `glide_envtest` for Linux, Win32/Wine, and optional Open Watcom v2 DOS/32.
 
-### Debian / Ubuntu Environments
-Run the following terminal command to install all mandatory development packages:
+---
+
+## Quick Start
+
+### 1. Build on Linux (plus Automatic Win32 DLLs if MinGW-w64 Is Installed)
 
 ```bash
+# Debian / Ubuntu core dependencies
 sudo apt-get update
-sudo apt-get install -y build-essential cmake catch2 libvulkan-dev libegl-dev libgl-dev libsdl2-dev
+sudo apt-get install -y build-essential cmake catch2 glslang-tools \
+  libvulkan-dev libegl-dev libgl-dev libgles2-mesa-dev libsdl2-dev libx11-dev libxext-dev
+
+# Configure and build (Release)
+cmake -S . -B build_release -DCMAKE_BUILD_TYPE=Release
+cmake --build build_release -j$(nproc)
+
+# Run self-contained headless Catch2 test suite (106 tests)
+GLIDE_NG_HEADLESS=1 GLIDE_NG_BACKEND=software ctest --test-dir build_release --output-on-failure
 ```
 
-### Visual Testing vs Headless Execution
-By default, when applications pass `0` for `hWnd` (such as legacy reference tests), the wrapper automatically spawns an interactive centered **SDL2 Presentation Window** to enable direct visual inspection.
-For automated CI testing without desktop popups, enforce headless mode via:
+When 32-bit `i686-w64-mingw32-g++` is installed, the standard Linux build also cross-compiles `glide2x.dll`, `glide3x.dll`, and Win32 tools automatically into `build_release/win32/bin/`. See [Building & Installing](docs/user-guide/building-and-installing.md) for Arch/Fedora packages, standalone `build_win32/` builds, and optional Open Watcom v2 DOS/32 builds.
+
+### 2. Run a Windows Glide Title Under Wine / Steam Proton
+
+Copy `glide2x.dll` and/or `glide3x.dll` (and an optional title preset from [`docs/catalog/`](docs/catalog/README.md)) next to the game executable:
+
 ```bash
-GLIDE_NG_HEADLESS=1 ./bin/Glide3xWrapperTests
+# Wine (standalone)
+WINEDLLOVERRIDES="glide2x,glide3x=n" GLIDE_NG_BACKEND=vulkan wine ./game.exe
+
+# Steam Proton Launch Options
+WINEDLLOVERRIDES="glide2x,glide3x=n" GLIDE_NG_BACKEND=vulkan %command%
+
+# Switch to Software AVX-512 with live FPS HUD
+WINEDLLOVERRIDES="glide2x,glide3x=n" GLIDE_NG_BACKEND=software GLIDE_NG_SW_SIMD=avx512 \
+  GLIDE_NG_HUD=fps,backend wine ./game.exe
 ```
 
-### Optional: DOS Cross-Compiler (Open Watcom v2)
-DOS diagnostic, benchmark, and verification `.exe` tools (`build/dos/glide_info.exe`, `build/dos/glide_bench.exe`, `build/dos/glide_envtest.exe`) are **completely optional** — CMake skips them automatically if Open Watcom v2 is not installed, so standard Linux builds never fail without it.
-
-To enable DOS `.exe` builds (identical across Debian, Fedora, and Arch, no root required):
-1. Download the official Linux x64 release tarball from [Open Watcom v2 Releases](https://github.com/open-watcom/open-watcom-v2/releases) (e.g. `open-watcom-2_0-c-linux-x64.tar.xz`).
-2. Extract it into `./vendor/watcom/` (git-ignored) so `./vendor/watcom/binl64/wcc386` exists (or point `WATCOM` to an existing installation).
-3. Re-run CMake configure — when detected, the `dos_tools` target automatically produces self-contained CauseWay DOS/32 executables (`build/dos/glide_info.exe`, `build/dos/glide_bench.exe`, `build/dos/glide_envtest.exe`) that dynamically load `GLIDE2X.OVL`.
-
-### Optional: Win32 Cross-Compiler (MinGW-w64) & Wine (for `glide2x.dll` / `glide3x.dll`)
-32-bit Win32 PE builds (`glide2x.dll`, `glide3x.dll`, and Win32 tools for running Windows Glide games under Wine/Proton) require a 32-bit (`i686`) MinGW-w64 POSIX-threads toolchain and Wine:
-
-* **Debian / Ubuntu** (enable `i386` multiarch first if not already enabled):
-  ```bash
-  sudo dpkg --add-architecture i386
-  sudo apt-get update
-  sudo apt-get install -y g++-mingw-w64-i686-posix gcc-mingw-w64-i686-posix mingw-w64-tools wine wine32:i386 wine64
-  ```
-  *(Use the `-posix` MinGW variant so C++17 `std::thread`/`std::mutex` are supported; `libvulkan-dev` already provides `vulkan_win32.h`. If you install only `wine32:i386` without `wine64`, initialize your Wine prefix once with `WINEARCH=win32 wineboot -u`.)*
-* **Arch Linux**:
-  ```bash
-  sudo pacman -S mingw-w64-gcc wine
-  ```
-* **Fedora**:
-  ```bash
-  sudo dnf install mingw32-gcc-c++ mingw32-winpthreads-static wine
-  ```
-
-#### Cross-Building Win32 DLLs & Tools (Automatic or Standalone `build_win32/`)
-* **Automatic (when `i686-w64-mingw32-g++` is installed)**: Any normal Linux build (`cmake -B build_release -DCMAKE_BUILD_TYPE=Release && cmake --build build_release -j$(nproc)`) automatically detects MinGW-w64 and builds all 32-bit Win32 DLLs and tools into `build_release/win32/bin/` (alongside `build_release/bin/` and `build_release/dos/`). Use `--target win32_dlls` for just the DLLs, `--target win32_tools` for all Win32 binaries, or `-DGLIDE_BUILD_WIN32=OFF` to disable auto-building.
-* **Standalone Win32-only build (`build_win32/`)**:
-```bash
-cmake -B build_win32 -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/mingw-w64-i686.cmake -DCMAKE_BUILD_TYPE=Release
-cmake --build build_win32 -j$(nproc)
-```
-Both produce self-contained 32-bit PE binaries (`build_release/win32/bin/` or `build_win32/bin/`) with **zero external runtime DLL dependencies** (only standard Windows/Wine system DLLs: `KERNEL32.dll`, `msvcrt.dll`, `USER32.dll`, `GDI32.dll`, `OPENGL32.dll`, plus `vulkan-1.dll` loaded dynamically at runtime):
-* `glide2x.dll` & `glide3x.dll` — authentic 3dfx `__stdcall` ABI (`_grFoo@N` canonical exports + undecorated `grFoo` aliases) with Vulkan (`VK_KHR_win32_surface`), OpenGL 3.3 Core (WGL), and Software (GDI `StretchDIBits`) backends, supporting both standalone and parent-embedded `HWND` hosting.
-* `glide2_info.exe`, `glide3_info.exe`, `glide2_bench.exe`, `glide3_bench.exe`, `glide2_envtest.exe`, `glide3_envtest.exe` — Win32 diagnostic, benchmark, and environment-variable verification tools.
-
-#### Using `glide2x.dll` / `glide3x.dll` Under Wine & Steam Proton
-1. Copy `glide2x.dll` and/or `glide3x.dll` (and an optional `glide-ng.ini`) into the same directory as the Windows game `.exe`.
-2. Tell Wine/Proton to load the native DLL next to the game instead of any built-in stub:
-   ```bash
-   # Wine (standalone)
-   WINEDLLOVERRIDES="glide2x,glide3x=n" GLIDE_NG_BACKEND=vulkan wine ./game.exe
-
-   # Steam Proton Launch Options
-   WINEDLLOVERRIDES="glide2x,glide3x=n" GLIDE_NG_BACKEND=vulkan %command%
-   ```
-3. You can switch backends at launch with `GLIDE_NG_BACKEND=vulkan` (default, requires 32-bit Vulkan ICD such as `mesa-vulkan-drivers:i386` / NVIDIA 32-bit Vulkan), `GLIDE_NG_BACKEND=opengl_es` (WGL OpenGL 3.3 Core), or `GLIDE_NG_BACKEND=software` (pure CPU AVX2+FMA rasterizer presented via GDI).
-
-### Windows (Native MinGW-w64 / MSVC)
-* **CMake**: Version 3.20 or newer.
-* **Vulkan SDK**: Download and install the official LunarG Vulkan SDK.
-* **Catch2**: Can be pulled dynamically via CMake `FetchContent` or installed via Vcpkg/Conan.
-
----
-
-## How to Build & Run Tests
+### 3. Run a DOS Glide Title Under DOSBox-X / SVN DOSBox
 
 ```bash
-# 1. Clone the repository and configure the build tree
-mkdir build
-cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release
-
-# 2. Compile the core wrapper libraries and Catch2 test suites
-cmake --build . --parallel
-
-# 3. Execute off-screen multi-backend Catch2 validation tests
-ctest --output-on-failure
+LD_LIBRARY_PATH="$PWD/build_release/lib:${LD_LIBRARY_PATH:-}" \
+  GLIDE_NG_BACKEND=vulkan dosbox-x -conf dosbox.conf
 ```
 
 ---
 
-## Documentation & Project Roadmap
+## Documentation
 
-For per-title presets and quirks, benchmarking recipes, hardware/version matrices, and environment variable specifications, explore the `./docs` directory:
-* **[Game, Demo & Benchmark Compatibility Catalog](./docs/catalog/README.md)** — per-title guides, drop-in `glide-ng.ini` presets, and Software SIMD / Mesa `llvmpipe` benchmarking recipes
-* **[3dfx Glide Versions & Hardware Card Matrix](./docs/glide_versions_and_cards.md)** — authentic Glide 2.x/3.x versions (`2.11`–`2.61`, `3.00`–`3.10`) and 7 emulated Voodoo board profiles
-* **[Environment Variables & Overrides Guide](./docs/glide_environment_variables.md)** — full `glide-ng.ini`, `FX_GLIDE_*`/`SST_*`, and `GLIDE_NG_*` reference
-* **[M11 Performance Analysis & Zen 4 AVX-512 Report](./docs/perf_m11_analysis.md)** — cross-backend benchmarks and architectural trade-offs
-* **[Implementation Blueprint & Roadmap](./docs/glide_wrapper_project_plan.md)**
+Browse the full [Documentation Hub](docs/README.md), or jump directly to a guide:
+
+- **User Guide**
+  - [Building & Installing](docs/user-guide/building-and-installing.md)
+  - [Configuration & Environment Variables](docs/user-guide/configuration.md) ([`glide-ng.ini.example`](glide-ng.ini.example))
+  - [Hardware Profiles & Glide Versions](docs/user-guide/hardware-and-versions.md)
+  - [Benchmarking & Performance](docs/user-guide/benchmarking.md)
+  - [Troubleshooting](docs/user-guide/troubleshooting.md)
+- **Compatibility Catalog**
+  - [Game, Demo & Benchmark Compatibility Catalog](docs/catalog/README.md)
+- **Developer Guide**
+  - [Architecture](docs/developer-guide/architecture.md) · [API Coverage & ABI](docs/developer-guide/api-coverage.md) · [Backends](docs/developer-guide/backends.md) · [Testing](docs/developer-guide/testing.md) · [Versioning & Releasing](docs/developer-guide/releasing.md)
+- **Releases & Planning**
+  - [Changelog](CHANGELOG.md) · [Project History](docs/HISTORY.md) · [Roadmap](docs/ROADMAP.md)
+
+---
+
+## License
+
+`glide-ng` is free software licensed under the **GNU General Public License v3.0 or later** (`GPL-3.0-or-later`). See [LICENSE](LICENSE) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for details.

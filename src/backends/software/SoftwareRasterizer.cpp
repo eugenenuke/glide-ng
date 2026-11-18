@@ -552,6 +552,9 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
   const float stepX2_0 = a0 * 2.0f;
   const float stepX2_1 = a1 * 2.0f;
   const float stepX2_2 = a2 * 2.0f;
+  const float edgeThresh0 = EdgeTieBreakThreshold<Clockwise>(a0, b0);
+  const float edgeThresh1 = EdgeTieBreakThreshold<Clockwise>(a1, b1);
+  const float edgeThresh2 = EdgeTieBreakThreshold<Clockwise>(a2, b2);
 
   for (int y = minY; y <= maxY; ++y) {
     const uint32_t rowTbufMask =
@@ -567,9 +570,9 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
       bool inside = false;
       if (!applyTbufMask || ((rowTbufMask >> (x & 1)) & 1u) != 0u) {
         if constexpr (Clockwise) {
-          inside = (E0 >= -1e-5f && E1 >= -1e-5f && E2 >= -1e-5f);
+          inside = (E0 >= edgeThresh0 && E1 >= edgeThresh1 && E2 >= edgeThresh2);
         } else {
-          inside = (E0 <= 1e-5f && E1 <= 1e-5f && E2 <= 1e-5f);
+          inside = (E0 <= edgeThresh0 && E1 <= edgeThresh1 && E2 <= edgeThresh2);
         }
       }
       if (inside) {

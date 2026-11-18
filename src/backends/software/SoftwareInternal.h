@@ -2,8 +2,26 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <limits>
 
 namespace GlideWrapper {
+
+// Top-left edge fill rule threshold for Pineda's edge equations:
+//   E(x,y) = a*x + b*y + c, with inward normal (+a, +b) for Clockwise=true (E>=0)
+//   and (-a, -b) for Clockwise=false (E<=0).
+// Top edges have inward normal (0, +Y); left edges have inward normal (+X, *).
+// Top-left edges include exact zero (0.0f); non-top-left edges exclude exact zero
+// (+/-FLT_MIN), preventing double-blended seams on shared triangle diagonals.
+template <bool Clockwise>
+inline float EdgeTieBreakThreshold(float a, float b) {
+  if constexpr (Clockwise) {
+    const bool isTopLeft = (a > 0.0f) || (a == 0.0f && b > 0.0f);
+    return isTopLeft ? 0.0f : std::numeric_limits<float>::min();
+  } else {
+    const bool isTopLeft = (a < 0.0f) || (a == 0.0f && b < 0.0f);
+    return isTopLeft ? 0.0f : -std::numeric_limits<float>::min();
+  }
+}
 
 // Fast log2 approximation using IEEE-754 float exponent extraction
 inline float fast_log2(float val) {

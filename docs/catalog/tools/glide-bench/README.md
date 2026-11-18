@@ -191,7 +191,7 @@ __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json \
 
 ## 6. Reference Numbers (AMD Ryzen 9 7945HX Zen 4 + RTX 4070 Laptop)
 
-From [M11 Performance Analysis (`docs/perf_m11_analysis.md`)](../../../perf_m11_analysis.md) (`glide3_bench`, Voodoo5, 640×480, headless, `--no-hud --seconds 3`):
+From the [Benchmarking & Performance Guide](../../../user-guide/benchmarking.md) (`glide3_bench`, Voodoo5, 640×480, headless, `--no-hud --seconds 3`):
 
 | Configuration | Core 6 Geomean | Extended 8 Geomean | All-14 Composite GM | Notes |
 | :--- | ---: | ---: | ---: | :--- |
@@ -202,4 +202,4 @@ From [M11 Performance Analysis (`docs/perf_m11_analysis.md`)](../../../perf_m11_
 | **`glide-ng` Software Scalar** | 511.9 FPS | 174.7 FPS | **277.0 FPS** | Bit-exact scalar reference |
 | **Vulkan Mesa `llvmpipe`** | — | — | **9,886 GlideMark pts** | `glide-ng` Software AVX-512 is **3.54× faster** than CPU `llvmpipe` Vulkan |
 
-See also the legacy `test14`/`test21` benchmarking methodology in [`docs/benchmarking.md`](../../../benchmarking.md).
+See the [Benchmarking & Performance Guide](../../../user-guide/benchmarking.md) for high-resolution Zen 4 scaling tables and GPU vs. Software architectural trade-offs.

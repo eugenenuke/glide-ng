@@ -31,8 +31,8 @@ Many legacy 3dfx SDK tests cycle modes via keyboard (`F`, `SPACE`, etc.). Automa
 
 ## 3. Capture Methods & Wayland vs. XWayland Caveats
 
-1. **Preferred Headless / Wayland-Safe Method (RLE Frame Dumps)**:
-   - Official 3dfx tests support `-d <file>` to dump `IMAGE_SRLE` buffers directly from the wrapper, independent of X11/Wayland compositors. Convert using `./build/bin/rle_to_ppm` (built with `-DBUILD_VISUAL_TESTS=ON`).
+1. **Preferred Headless / Wayland-Safe Method (`FX_GLIDE_SNAPSHOT`)**:
+   - Capture exact backbuffer frames directly from any backend (Vulkan, OpenGL ES, Software) independent of X11/Wayland compositors using `FX_GLIDE_SNAPSHOT=/tmp/snap.ppm@<frame>` (writes uncompressed binary `P6` `.ppm` before `grBufferSwap`), or run `glide2_envtest`/`glide3_envtest --verify` and `sw_validate`.
 2. **X11 / XWayland Window Capture (`import`)**:
    - Dynamically resolve runtime directory and Mutter XWayland auth (**never** hardcode a numeric UID):
      ```bash

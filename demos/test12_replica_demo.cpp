@@ -1,6 +1,5 @@
 #include <glide.h>
 #include <tlib.h>
-#include <linutil.h>
 #include <iostream>
 #include <algorithm>
 #include <cmath>
@@ -126,27 +125,17 @@ int main(int argc, char* argv[]) {
     // Set up console
     tlConSet(0.0f, 0.0f, 1.0f, 0.5f, 60, 15, 0xffffff);
 
-    // Load texture from disk (try multiple relative paths)
-    TlTexture texture;
-    bool textureLoaded = false;
-    const char* texturePaths[] = {
-        "ext_tests/build_tests/decal1.3df",
-        "decal1.3df",
-        "../ext_tests/build_tests/decal1.3df",
-        "../../ext_tests/build_tests/decal1.3df"
-    };
-    for (const auto* path : texturePaths) {
-        if (tlLoadTexture(path, &texture.info, &texture.tableType, &texture.tableData)) {
-            std::printf("Successfully loaded texture: %s\r\n", path);
-            textureLoaded = true;
-            break;
+    // Generate self-contained 256x256 RGB565 test pattern
+    std::vector<FxU16> proceduralTex(256u * 256u);
+    for (int y = 0; y < 256; ++y) {
+        for (int x = 0; x < 256; ++x) {
+            const bool chk = ((x >> 4) ^ (y >> 4)) & 1;
+            const uint8_t r = static_cast<uint8_t>(chk ? x : (255 - x));
+            const uint8_t g = static_cast<uint8_t>(chk ? y : (255 - y));
+            const uint8_t b = static_cast<uint8_t>(chk ? 220 : 40);
+            proceduralTex[static_cast<size_t>(y) * 256u + static_cast<size_t>(x)] =
+                static_cast<FxU16>(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
         }
-    }
-    if (!textureLoaded) {
-        std::printf("[CRITICAL] Failed to load decal1.3df texture from any path!\r\n");
-        grSstWinClose(ctx);
-        grGlideShutdown();
-        return -1;
     }
 
     bool running = true;
@@ -206,7 +195,7 @@ int main(int argc, char* argv[]) {
             int x, y;
             FxU32 *longData   = (FxU32*)info.lfbPtr;
             FxU16 *shortData  = (FxU16*)info.lfbPtr;
-            FxU16 *srcData    = (FxU16*)texture.info.data;
+            FxU16 *srcData    = proceduralTex.data();
             FxU32 longStride  = info.strideInBytes >> 2;
             FxU32 shortStride = info.strideInBytes >> 1;
             FxU32 longColor;

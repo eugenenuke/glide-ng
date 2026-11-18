@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * Single source of truth for all environment variables recognized by glide-ng
  * and authentic 3dfx Glide. Pure C89/C99/C++ compatible so both the C++ core

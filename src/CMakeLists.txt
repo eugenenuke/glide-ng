@@ -16,7 +16,6 @@ set(CORE_SOURCES
     core/TextureManager.cpp
     core/Telemetry.cpp
     core/HudOverlay.cpp
-    core/EmbeddedAssets.cpp
     core/GlideSplashAnimator.cpp
     core/3dfParser.cpp
     core/MathUtils.cpp
@@ -149,6 +148,10 @@ set(GLIDE2_SOURCES glide2/glide2_entry.cpp)
 if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/glide2/glide2x.def")
     list(APPEND GLIDE2_SOURCES glide2/glide2x.def)
 endif()
+if(WIN32 AND CMAKE_RC_COMPILER)
+    configure_file(glide2/glide2x.rc.in "${CMAKE_CURRENT_BINARY_DIR}/glide2x.rc" @ONLY)
+    list(APPEND GLIDE2_SOURCES "${CMAKE_CURRENT_BINARY_DIR}/glide2x.rc")
+endif()
 add_library(glide2x SHARED ${GLIDE2_SOURCES})
 if(WIN32)
     set_target_properties(glide2x PROPERTIES PREFIX "" OUTPUT_NAME "glide2x")
@@ -161,7 +164,6 @@ endif()
 target_include_directories(glide2x PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/../include/glide2"
     "${CMAKE_CURRENT_SOURCE_DIR}/../include/3dfx"
-    "${CMAKE_CURRENT_SOURCE_DIR}/../vendor/3dfx"
 )
 target_link_libraries(glide2x PRIVATE GlideWrapperCore)
 
@@ -170,6 +172,10 @@ target_link_libraries(glide2x PRIVATE GlideWrapperCore)
 set(GLIDE3_SOURCES glide3/glide3_entry.cpp)
 if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/glide3/glide3x.def")
     list(APPEND GLIDE3_SOURCES glide3/glide3x.def)
+endif()
+if(WIN32 AND CMAKE_RC_COMPILER)
+    configure_file(glide3/glide3x.rc.in "${CMAKE_CURRENT_BINARY_DIR}/glide3x.rc" @ONLY)
+    list(APPEND GLIDE3_SOURCES "${CMAKE_CURRENT_BINARY_DIR}/glide3x.rc")
 endif()
 add_library(glide3x SHARED ${GLIDE3_SOURCES})
 if(WIN32)

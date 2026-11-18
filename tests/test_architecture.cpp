@@ -14,7 +14,7 @@
 #include <GLES3/gl32.h>
 #endif
 #include <glide.h>
-#include <tlib.h>
+#include "test_helpers.h"
 
 #include <catch2/generators/catch_generators.hpp>
 #include <chrono>
@@ -37,20 +37,12 @@ struct StandardVert {
 };
 }  // namespace
 
-inline void* OpenGlide2Handle() {
-  void* h = ::dlopen("libglide2x.so", RTLD_LAZY);
-  if (!h) h = ::dlopen("../lib/libglide2x.so", RTLD_LAZY);
-  if (!h) h = ::dlopen("lib/libglide2x.so", RTLD_LAZY);
-  if (!h) h = ::dlopen("build/lib/libglide2x.so", RTLD_LAZY);
-  return h;
+inline void* OpenGlide2Handle(int flags = RTLD_LAZY) {
+  return GlideTestHelpers::OpenGlideLibrary("libglide2x.so", flags);
 }
 
-inline void* OpenGlide3Handle() {
-  void* h = ::dlopen("libglide3x.so", RTLD_LAZY);
-  if (!h) h = ::dlopen("../lib/libglide3x.so", RTLD_LAZY);
-  if (!h) h = ::dlopen("lib/libglide3x.so", RTLD_LAZY);
-  if (!h) h = ::dlopen("build/lib/libglide3x.so", RTLD_LAZY);
-  return h;
+inline void* OpenGlide3Handle(int flags = RTLD_LAZY) {
+  return GlideTestHelpers::OpenGlideLibrary("libglide3x.so", flags);
 }
 
 TEST_CASE("Architectural Core Validation", "[Architecture]") {
@@ -66,7 +58,8 @@ TEST_CASE("Architectural Core Validation", "[Architecture]") {
 
   SECTION("Logger Lifecycle") {
     auto& logger = GlideWrapper::Logger::GetInstance();
-    logger.Initialize("test_output.log", GlideWrapper::LogLevel::INFO);
+    logger.Initialize(GlideTestHelpers::TempTestPath("glide_ng_test_output.log"),
+                      GlideWrapper::LogLevel::INFO);
     REQUIRE(logger.GetLevel() == GlideWrapper::LogLevel::INFO);
   }
 
@@ -114,7 +107,9 @@ TEST_CASE("Architectural Core Validation", "[Architecture]") {
     auto& logger = GlideWrapper::Logger::GetInstance();
     auto& reg = GlideWrapper::EmulationRegistry::GetInstance();
 
-    logger.Initialize("test_summary.log", GlideWrapper::LogLevel::INFO);
+    logger.Initialize(
+        GlideTestHelpers::TempTestPath("glide_ng_test_summary.log"),
+        GlideWrapper::LogLevel::INFO);
     REQUIRE_NOTHROW(logger.LogHostVulkanCapabilities());
     REQUIRE_NOTHROW(logger.LogExecutionSummary(reg.GetConfig()));
   }
@@ -439,7 +434,9 @@ TEST_CASE("Architectural Core Validation", "[Architecture]") {
     reg.GetConfig().maxFps = 60.0f;  // 60 FPS capping -> ~16.67ms per frame
     reg.GetConfig().forceNoWindow =
         true;  // Run in pure headless mode for fast timing!
-    logger.Initialize("test_pacing.log", GlideWrapper::LogLevel::INFO);
+    logger.Initialize(
+        GlideTestHelpers::TempTestPath("glide_ng_test_pacing.log"),
+        GlideWrapper::LogLevel::INFO);
     manager.EstablishBackend(reg.GetConfig());
 
     // Execute 10 simulated frame presentation swaps
@@ -1296,8 +1293,6 @@ TEST_CASE("Architectural Core Validation", "[Architecture]") {
       void* handle = OpenGlide2Handle();
       REQUIRE(handle != nullptr);
 
-      using InitFunc = void (*)(FxU32, FxU32, FxU32, FxU32, FxU32, int,
-                                int);  // match signature or use void(*)()
       using WinOpenFunc =
           FxBool (*)(FxU32, FxU32, FxU32, FxU32, FxU32, int, int);
       using BufferClearFunc = void (*)(FxU32, FxU32, FxU32);
@@ -2063,7 +2058,8 @@ TEST_CASE("Texture Decoders & LFB Pipeline Simulation Correctness",
           "[Texture_LFB]") {
   // Initialize logger to print to console for debug visibility!
   auto& logger = GlideWrapper::Logger::GetInstance();
-  logger.Initialize("test_debug.log", GlideWrapper::LogLevel::DEBUG, true);
+  logger.Initialize(GlideTestHelpers::TempTestPath("glide_ng_test_debug.log"),
+                    GlideWrapper::LogLevel::DEBUG, true);
 
   SECTION("RGB_332 Texture Format Decoder") {
     auto& tm = GlideWrapper::TextureManager::GetInstance();
@@ -2265,7 +2261,7 @@ TEST_CASE("OpenGL ES Gamma Correction Accuracy Validation") {
   }
 
   // Load the shared library dynamically
-  void* handle = ::dlopen("./build/lib/libglide2x.so", RTLD_NOW | RTLD_GLOBAL);
+  void* handle = OpenGlide2Handle(RTLD_NOW | RTLD_GLOBAL);
   REQUIRE(handle != nullptr);
 
   // Resolve needed functions
@@ -2387,7 +2383,7 @@ TEST_CASE("Glide Chroma-Key Range Rendering Verification") {
   INFO("Testing Chroma-Key Range on Backend: " << activeBackend);
 
   // Load the shared library dynamically
-  void* handle = ::dlopen("./build/lib/libglide2x.so", RTLD_NOW | RTLD_GLOBAL);
+  void* handle = OpenGlide2Handle(RTLD_NOW | RTLD_GLOBAL);
   REQUIRE(handle != nullptr);
 
   // Resolve needed functions
@@ -2399,7 +2395,6 @@ TEST_CASE("Glide Chroma-Key Range Rendering Verification") {
   using BufferSwapFunc = void (*)(FxU32);
   using LfbReadRegionFunc =
       FxBool (*)(GrBuffer_t, FxU32, FxU32, FxU32, FxU32, FxU32, void*);
-  using GetProcAddressFunc = GrProc (*)(char*);
   using ChromakeyModeFunc = void (*)(GrChromakeyMode_t);
   using DrawTriangleFunc = void (*)(const void*, const void*, const void*);
 
@@ -2985,7 +2980,6 @@ TEST_CASE("Glide Per-TMU Texture Chromakey & State Serialization",
     using SstWinOpenFunc =
         FxBool (*)(FxU32, GrScreenResolution_t, GrScreenRefresh_t,
                    GrColorFormat_t, GrOriginLocation_t, int, int);
-    using GetProcAddressFunc = GrProc (*)(char*);
     using GlideGetStateFunc = void (*)(GrState*);
     using GlideSetStateFunc = void (*)(const GrState*);
     using WinCloseFunc = void (*)(void);
@@ -3169,9 +3163,6 @@ TEST_CASE("Glide 2.x ABGR Framebuffer Clear & LFB Readback Parity",
   FxBool ok =
       readLfb(GR_BUFFER_BACKBUFFER, 300, 240, 10, 1, 20, buffer16.data());
   REQUIRE(ok == FXTRUE);
-  auto& reg = GlideWrapper::EmulationRegistry::GetInstance();
-  std::string backend = reg.GetConfig().backend;
-  bool isSoftware = (backend == "sw" || backend == "software");
 
   for (int i = 0; i < 10; ++i) {
     REQUIRE(buffer16[i] == 31);
@@ -4973,19 +4964,19 @@ TEST_CASE(
   REQUIRE(openOk == FXTRUE);
 
   SECTION("test17: Multi-mode Register Combiners") {
-    TlTexture texture;
-    bool loadOk = tlLoadTexture("ext_tests/build_tests/miro.3df", &texture.info,
-                                &texture.tableType, &texture.tableData);
-    REQUIRE(loadOk == true);
+    std::vector<uint16_t> texPixels(256u * 256u, 0xFFFFu);
+    GrTexInfo texInfo{};
+    texInfo.smallLod = GR_LOD_256;
+    texInfo.largeLod = GR_LOD_256;
+    texInfo.aspectRatio = GR_ASPECT_1x1;
+    texInfo.format = GR_TEXFMT_RGB_565;
+    texInfo.data = texPixels.data();
 
     // Download to TMU0
-    texDownload(GR_TMU0, 0, GR_MIPMAPLEVELMASK_BOTH, &texture.info);
-    if (texture.tableType != NO_TABLE) {
-      texDownloadTable(GR_TMU0, texture.tableType, &texture.tableData);
-    }
+    texDownload(GR_TMU0, 0, GR_MIPMAPLEVELMASK_BOTH, &texInfo);
 
     // Bind TMU0
-    texSource(GR_TMU0, 0, GR_MIPMAPLEVELMASK_BOTH, &texture.info);
+    texSource(GR_TMU0, 0, GR_MIPMAPLEVELMASK_BOTH, &texInfo);
     texClamp(GR_TMU0, GR_TEXTURECLAMP_WRAP, GR_TEXTURECLAMP_WRAP);
     texFilter(GR_TMU0, GR_TEXTUREFILTER_POINT_SAMPLED,
               GR_TEXTUREFILTER_POINT_SAMPLED);
@@ -5093,7 +5084,11 @@ TEST_CASE(
       uint32_t p_cornerD = fb[380 * 640 + 508];
 
       REQUIRE((p_cornerA & 0xFFFFFF) != 0);
-      REQUIRE((p_cornerD & 0xFFFFFF) == 0);
+      // (508, 380) is 4px inside corner D=(512,384) where RGB=(0,0,0), so
+      // interpolated Gouraud RGB modulated against white is near-black (<= 8).
+      REQUIRE((p_cornerD & 0xFF) <= 8);
+      REQUIRE(((p_cornerD >> 8) & 0xFF) <= 8);
+      REQUIRE(((p_cornerD >> 16) & 0xFF) <= 8);
     }
   }
 
@@ -5108,20 +5103,25 @@ TEST_CASE(
     REQUIRE(alphaBlendFunction != nullptr);
     REQUIRE(texMipMapMode != nullptr);
 
-    TlTexture texture;
-    bool loadOk =
-        tlLoadTexture("ext_tests/build_tests/alpha.3df", &texture.info,
-                      &texture.tableType, &texture.tableData);
-    REQUIRE(loadOk == true);
-
-    // Download to TMU0
-    texDownload(GR_TMU0, 0, GR_MIPMAPLEVELMASK_BOTH, &texture.info);
-    if (texture.tableType != NO_TABLE) {
-      texDownloadTable(GR_TMU0, texture.tableType, &texture.tableData);
+    // Self-contained ARGB4444 texture: solid green with alpha ramping 0 -> 255
+    // left-to-right across the quad to verify transparent, 50% blend, and opaque.
+    std::vector<uint16_t> alphaPixels(256u * 256u);
+    for (int y = 0; y < 256; ++y) {
+      for (int x = 0; x < 256; ++x) {
+        alphaPixels[static_cast<size_t>(y) * 256u + static_cast<size_t>(x)] =
+            GlideTestHelpers::PackArgb4444(static_cast<uint8_t>(x), 0, 255, 0);
+      }
     }
+    GrTexInfo texInfo{};
+    texInfo.smallLod = GR_LOD_256;
+    texInfo.largeLod = GR_LOD_256;
+    texInfo.aspectRatio = GR_ASPECT_1x1;
+    texInfo.format = GR_TEXFMT_ARGB_4444;
+    texInfo.data = alphaPixels.data();
 
-    // Bind TMU0
-    texSource(GR_TMU0, 0, GR_MIPMAPLEVELMASK_BOTH, &texture.info);
+    // Download and bind TMU0
+    texDownload(GR_TMU0, 0, GR_MIPMAPLEVELMASK_BOTH, &texInfo);
+    texSource(GR_TMU0, 0, GR_MIPMAPLEVELMASK_BOTH, &texInfo);
     texFilter(GR_TMU0, GR_TEXTUREFILTER_BILINEAR, GR_TEXTUREFILTER_BILINEAR);
     texMipMapMode(GR_TMU0, GR_MIPMAP_NEAREST, FXFALSE);
     texCombine(GR_TMU0, GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
@@ -5187,27 +5187,39 @@ TEST_CASE(
     REQUIRE(readLfb(GR_BUFFER_BACKBUFFER, 0, 0, 640, 480, 640 * 4, fb.data()) ==
             FXTRUE);
 
+    // Outside quad: unchanged pure Blue background tile
     REQUIRE((fb[50 * 640 + 50] & 0xFFFFFF) == 0x00FF0000);
     REQUIRE((fb[400 * 640 + 50] & 0xFFFFFF) == 0x00FF0000);
 
-    auto assertColorClose = [](uint32_t actual, uint32_t expected) {
-      int b_act = (actual >> 16) & 0xFF;
-      int g_act = (actual >> 8) & 0xFF;
-      int r_act = actual & 0xFF;
-
-      int b_exp = (expected >> 16) & 0xFF;
-      int g_exp = (expected >> 8) & 0xFF;
-      int r_exp = expected & 0xFF;
-
-      REQUIRE(std::abs(b_act - b_exp) <= 15);
-      REQUIRE(std::abs(g_act - g_exp) <= 15);
-      REQUIRE(std::abs(r_act - r_exp) <= 15);
-    };
-
-    assertColorClose(fb[240 * 640 + 320], 0xFF5A55BD);
-    assertColorClose(fb[200 * 640 + 200], 0xFF0808D5);
-    assertColorClose(fb[300 * 640 + 440], 0xFFDE0408);
-    assertColorClose(fb[120 * 640 + 320], 0xFF7B79C5);
+    // Left edge inside quad (u ~ 0.03, alpha ~ 0): background shows through, G ~ 0
+    {
+      const uint32_t px = fb[240 * 640 + 140];
+      const int g = static_cast<int>((px >> 8) & 0xFFu);
+      const int r = static_cast<int>(px & 0xFFu);
+      const int b = static_cast<int>((px >> 16) & 0xFFu);
+      REQUIRE(g <= 25);
+      REQUIRE((r >= 220 || b >= 220));
+    }
+    // Center of quad (u = 0.5, alpha ~ 128): ~50% green blended over red/blue bg
+    {
+      const uint32_t px = fb[240 * 640 + 320];
+      const int g = static_cast<int>((px >> 8) & 0xFFu);
+      const int r = static_cast<int>(px & 0xFFu);
+      const int b = static_cast<int>((px >> 16) & 0xFFu);
+      REQUIRE(g >= 100);
+      REQUIRE(g <= 165);
+      REQUIRE((r >= 90 || b >= 90));
+    }
+    // Right edge inside quad (u ~ 0.97, alpha ~ 255): nearly opaque green
+    {
+      const uint32_t px = fb[240 * 640 + 500];
+      const int g = static_cast<int>((px >> 8) & 0xFFu);
+      const int r = static_cast<int>(px & 0xFFu);
+      const int b = static_cast<int>((px >> 16) & 0xFFu);
+      REQUIRE(g >= 230);
+      REQUIRE(r <= 25);
+      REQUIRE(b <= 25);
+    }
   }
 
   SECTION("test19: Texture Filtering") {
@@ -5220,19 +5232,25 @@ TEST_CASE(
     REQUIRE(texMipMapMode != nullptr);
     REQUIRE(texCombine != nullptr);
 
-    TlTexture texture;
-    bool loadOk = tlLoadTexture("ext_tests/build_tests/miro.3df", &texture.info,
-                                &texture.tableType, &texture.tableData);
-    REQUIRE(loadOk == true);
-
-    // Download to TMU0
-    texDownload(GR_TMU0, 0, GR_MIPMAPLEVELMASK_BOTH, &texture.info);
-    if (texture.tableType != NO_TABLE) {
-      texDownloadTable(GR_TMU0, texture.tableType, &texture.tableData);
+    // 256x256 RGB565 alternating 1-texel Red/Blue vertical stripes:
+    // POINT_SAMPLED always yields pure Red or pure Blue (0 purple pixels),
+    // while BILINEAR blends adjacent texels into purple across the quad.
+    std::vector<uint16_t> stripePixels(256u * 256u);
+    for (int y = 0; y < 256; ++y) {
+      for (int x = 0; x < 256; ++x) {
+        stripePixels[static_cast<size_t>(y) * 256u + static_cast<size_t>(x)] =
+            (x & 1) ? 0xF800u : 0x001Fu;
+      }
     }
+    GrTexInfo texInfo{};
+    texInfo.smallLod = GR_LOD_256;
+    texInfo.largeLod = GR_LOD_256;
+    texInfo.aspectRatio = GR_ASPECT_1x1;
+    texInfo.format = GR_TEXFMT_RGB_565;
+    texInfo.data = stripePixels.data();
 
-    // Bind TMU0
-    texSource(GR_TMU0, 0, GR_MIPMAPLEVELMASK_BOTH, &texture.info);
+    texDownload(GR_TMU0, 0, GR_MIPMAPLEVELMASK_BOTH, &texInfo);
+    texSource(GR_TMU0, 0, GR_MIPMAPLEVELMASK_BOTH, &texInfo);
 
     colorCombine(GR_COMBINE_FUNCTION_SCALE_OTHER, GR_COMBINE_FACTOR_ONE,
                  GR_COMBINE_LOCAL_NONE, GR_COMBINE_OTHER_TEXTURE, FXFALSE);
@@ -5242,139 +5260,57 @@ TEST_CASE(
     texMipMapMode(GR_TMU0, GR_MIPMAP_DISABLE, FXFALSE);
 
     std::vector<uint32_t> fb(640 * 480);
-    auto assertColorClose = [](uint32_t actual, uint32_t expected) {
-      int b_act = (actual >> 16) & 0xFF;
-      int g_act = (actual >> 8) & 0xFF;
-      int r_act = actual & 0xFF;
-      int b_exp = (expected >> 16) & 0xFF;
-      int g_exp = (expected >> 8) & 0xFF;
-      int r_exp = expected & 0xFF;
-      INFO("actual=0x" << std::hex << actual << " expected=0x" << expected
-                       << std::dec);
-      REQUIRE(std::abs(b_act - b_exp) <= 15);
-      REQUIRE(std::abs(g_act - g_exp) <= 15);
-      REQUIRE(std::abs(r_act - r_exp) <= 15);
+    auto renderFilterQuad = [&](float minN, float maxN,
+                                GrTextureFilterMode_t mode) {
+      texFilter(GR_TMU0, mode, mode);
+      bufferClear(0, 0, GR_ZDEPTHVALUE_FARTHEST);
+
+      GrVertex vtxA{}, vtxB{}, vtxC{}, vtxD{};
+      vtxA.oow = 1.0f;
+      vtxB = vtxC = vtxD = vtxA;
+      vtxA.x = vtxC.x = tlScaleX(minN);
+      vtxB.x = vtxD.x = tlScaleX(maxN);
+      vtxA.y = vtxB.y = tlScaleY(minN);
+      vtxC.y = vtxD.y = tlScaleY(maxN);
+      vtxA.tmuvtx[0].sow = vtxC.tmuvtx[0].sow = 0.0f;
+      vtxB.tmuvtx[0].sow = vtxD.tmuvtx[0].sow = 255.0f;
+      vtxA.tmuvtx[0].tow = vtxB.tmuvtx[0].tow = 0.0f;
+      vtxC.tmuvtx[0].tow = vtxD.tmuvtx[0].tow = 255.0f;
+
+      drawTriangle(&vtxA, &vtxD, &vtxC);
+      drawTriangle(&vtxA, &vtxB, &vtxD);
+      REQUIRE(readLfb(GR_BUFFER_BACKBUFFER, 0, 0, 640, 480, 640 * 4,
+                      fb.data()) == FXTRUE);
     };
 
-    // Frame 0: Magnify, Point Sampled
-    {
-      texFilter(GR_TMU0, GR_TEXTUREFILTER_POINT_SAMPLED,
-                GR_TEXTUREFILTER_POINT_SAMPLED);
-      bufferClear(0, 0, GR_ZDEPTHVALUE_FARTHEST);
+    auto countBlendedPixels = [&](int x0, int y0, int x1, int y1) {
+      int blended = 0;
+      for (int y = y0; y < y1; ++y) {
+        for (int x = x0; x < x1; ++x) {
+          const uint32_t px = fb[static_cast<size_t>(y) * 640u + static_cast<size_t>(x)];
+          const int r = static_cast<int>(px & 0xFFu);
+          const int b = static_cast<int>((px >> 16) & 0xFFu);
+          if (r > 35 && b > 35) ++blended;
+        }
+      }
+      return blended;
+    };
 
-      GrVertex vtxA{}, vtxB{}, vtxC{}, vtxD{};
-      vtxA.oow = 1.0f;
-      vtxB = vtxC = vtxD = vtxA;
+    // Minify (64x48 quad): Point vs Bilinear
+    renderFilterQuad(0.45f, 0.55f, GR_TEXTUREFILTER_POINT_SAMPLED);
+    REQUIRE(countBlendedPixels(295, 222, 345, 258) == 0);
+    REQUIRE((fb[100 * 640 + 100] & 0xFFFFFF) == 0);
 
-      vtxA.x = vtxC.x = tlScaleX(0.45f);
-      vtxB.x = vtxD.x = tlScaleX(0.55f);
-      vtxA.y = vtxB.y = tlScaleY(0.45f);
-      vtxC.y = vtxD.y = tlScaleY(0.55f);
+    renderFilterQuad(0.45f, 0.55f, GR_TEXTUREFILTER_BILINEAR);
+    REQUIRE(countBlendedPixels(295, 222, 345, 258) > 100);
+    REQUIRE((fb[100 * 640 + 100] & 0xFFFFFF) == 0);
 
-      vtxA.tmuvtx[0].sow = vtxC.tmuvtx[0].sow = 0.0f;
-      vtxB.tmuvtx[0].sow = vtxD.tmuvtx[0].sow = 255.0f;
-      vtxA.tmuvtx[0].tow = vtxB.tmuvtx[0].tow = 0.0f;
-      vtxC.tmuvtx[0].tow = vtxD.tmuvtx[0].tow = 255.0f;
+    // Magnify (640x480 quad): Point vs Bilinear
+    renderFilterQuad(0.0f, 1.0f, GR_TEXTUREFILTER_POINT_SAMPLED);
+    REQUIRE(countBlendedPixels(100, 100, 540, 380) == 0);
 
-      drawTriangle(&vtxA, &vtxD, &vtxC);
-      drawTriangle(&vtxA, &vtxB, &vtxD);
-
-      REQUIRE(readLfb(GR_BUFFER_BACKBUFFER, 0, 0, 640, 480, 640 * 4,
-                      fb.data()) == FXTRUE);
-      assertColorClose(fb[240 * 640 + 320], 0xFF525008);
-      assertColorClose(fb[230 * 640 + 310], 0xFF415010);
-      REQUIRE((fb[100 * 640 + 100] & 0xFFFFFF) == 0);
-    }
-
-    // Frame 1: Magnify, Bilinear
-    {
-      texFilter(GR_TMU0, GR_TEXTUREFILTER_BILINEAR, GR_TEXTUREFILTER_BILINEAR);
-      bufferClear(0, 0, GR_ZDEPTHVALUE_FARTHEST);
-
-      GrVertex vtxA{}, vtxB{}, vtxC{}, vtxD{};
-      vtxA.oow = 1.0f;
-      vtxB = vtxC = vtxD = vtxA;
-
-      vtxA.x = vtxC.x = tlScaleX(0.45f);
-      vtxB.x = vtxD.x = tlScaleX(0.55f);
-      vtxA.y = vtxB.y = tlScaleY(0.45f);
-      vtxC.y = vtxD.y = tlScaleY(0.55f);
-
-      vtxA.tmuvtx[0].sow = vtxC.tmuvtx[0].sow = 0.0f;
-      vtxB.tmuvtx[0].sow = vtxD.tmuvtx[0].sow = 255.0f;
-      vtxA.tmuvtx[0].tow = vtxB.tmuvtx[0].tow = 0.0f;
-      vtxC.tmuvtx[0].tow = vtxD.tmuvtx[0].tow = 255.0f;
-
-      drawTriangle(&vtxA, &vtxD, &vtxC);
-      drawTriangle(&vtxA, &vtxB, &vtxD);
-
-      REQUIRE(readLfb(GR_BUFFER_BACKBUFFER, 0, 0, 640, 480, 640 * 4,
-                      fb.data()) == FXTRUE);
-      assertColorClose(fb[240 * 640 + 320], 0xFF4A5008);
-      assertColorClose(fb[230 * 640 + 310], 0xFF414C10);
-      REQUIRE((fb[100 * 640 + 100] & 0xFFFFFF) == 0);
-    }
-
-    // Frame 2: Minify, Point Sampled
-    {
-      texFilter(GR_TMU0, GR_TEXTUREFILTER_POINT_SAMPLED,
-                GR_TEXTUREFILTER_POINT_SAMPLED);
-      bufferClear(0, 0, GR_ZDEPTHVALUE_FARTHEST);
-
-      GrVertex vtxA{}, vtxB{}, vtxC{}, vtxD{};
-      vtxA.oow = 1.0f;
-      vtxB = vtxC = vtxD = vtxA;
-
-      vtxA.x = vtxC.x = tlScaleX(0.0f);
-      vtxB.x = vtxD.x = tlScaleX(1.0f);
-      vtxA.y = vtxB.y = tlScaleY(0.0f);
-      vtxC.y = vtxD.y = tlScaleY(1.0f);
-
-      vtxA.tmuvtx[0].sow = vtxC.tmuvtx[0].sow = 0.0f;
-      vtxB.tmuvtx[0].sow = vtxD.tmuvtx[0].sow = 255.0f;
-      vtxA.tmuvtx[0].tow = vtxB.tmuvtx[0].tow = 0.0f;
-      vtxC.tmuvtx[0].tow = vtxD.tmuvtx[0].tow = 255.0f;
-
-      drawTriangle(&vtxA, &vtxD, &vtxC);
-      drawTriangle(&vtxA, &vtxB, &vtxD);
-
-      REQUIRE(readLfb(GR_BUFFER_BACKBUFFER, 0, 0, 640, 480, 640 * 4,
-                      fb.data()) == FXTRUE);
-      assertColorClose(fb[240 * 640 + 320], 0xFF414810);
-      assertColorClose(fb[200 * 640 + 200], 0xFF394010);
-      assertColorClose(fb[50 * 640 + 50], 0xFF293408);
-      REQUIRE((fb[350 * 640 + 450] & 0xFFFFFF) == 0);
-    }
-
-    // Frame 3: Minify, Bilinear
-    {
-      texFilter(GR_TMU0, GR_TEXTUREFILTER_BILINEAR, GR_TEXTUREFILTER_BILINEAR);
-      bufferClear(0, 0, GR_ZDEPTHVALUE_FARTHEST);
-
-      GrVertex vtxA{}, vtxB{}, vtxC{}, vtxD{};
-      vtxA.oow = 1.0f;
-      vtxB = vtxC = vtxD = vtxA;
-
-      vtxA.x = vtxC.x = tlScaleX(0.0f);
-      vtxB.x = vtxD.x = tlScaleX(1.0f);
-      vtxA.y = vtxB.y = tlScaleY(0.0f);
-      vtxC.y = vtxD.y = tlScaleY(1.0f);
-
-      vtxA.tmuvtx[0].sow = vtxC.tmuvtx[0].sow = 0.0f;
-      vtxB.tmuvtx[0].sow = vtxD.tmuvtx[0].sow = 255.0f;
-      vtxA.tmuvtx[0].tow = vtxB.tmuvtx[0].tow = 0.0f;
-      vtxC.tmuvtx[0].tow = vtxD.tmuvtx[0].tow = 255.0f;
-
-      drawTriangle(&vtxA, &vtxD, &vtxC);
-      drawTriangle(&vtxA, &vtxB, &vtxD);
-
-      REQUIRE(readLfb(GR_BUFFER_BACKBUFFER, 0, 0, 640, 480, 640 * 4,
-                      fb.data()) == FXTRUE);
-      assertColorClose(fb[240 * 640 + 320], 0xFF4A4C08);
-      assertColorClose(fb[200 * 640 + 200], 0xFF393C08);
-      assertColorClose(fb[50 * 640 + 50], 0xFF203008);
-      REQUIRE((fb[350 * 640 + 450] & 0xFFFFFF) == 0);
-    }
+    renderFilterQuad(0.0f, 1.0f, GR_TEXTUREFILTER_BILINEAR);
+    REQUIRE(countBlendedPixels(100, 100, 540, 380) > 10000);
   }
 
   SECTION("test21: Texture Compositing / Multi-pass") {
@@ -5396,47 +5332,43 @@ TEST_CASE(
     REQUIRE(texDetailControl != nullptr);
     REQUIRE(alphaBlendFunction != nullptr);
 
-    TlTexture baseTexture;
-    TlTexture lightTexture;
-    TlTexture detailTexture;
+    // Self-contained RGB565 textures for lightmap, specular & detail compositing:
+    //   base   = solid Blue  (R=0,   G=0,   B=255)
+    //   light  = warm light  (R=200, G=160, B=224)
+    //   detail = Orange-Red  (R=240, G=64,  B=0)
+    std::vector<uint16_t> basePixels(256u * 256u, 0x001Fu);
+    std::vector<uint16_t> lightPixels(
+        256u * 256u, GlideTestHelpers::PackRgb565(200, 160, 224));
+    std::vector<uint16_t> detailPixels(
+        256u * 256u, GlideTestHelpers::PackRgb565(240, 64, 0));
 
-    REQUIRE(tlLoadTexture("ext_tests/build_tests/decal1.3df", &baseTexture.info,
-                          &baseTexture.tableType,
-                          &baseTexture.tableData) == true);
-    REQUIRE(tlLoadTexture("ext_tests/build_tests/light.3df", &lightTexture.info,
-                          &lightTexture.tableType,
-                          &lightTexture.tableData) == true);
-    REQUIRE(tlLoadTexture("ext_tests/build_tests/lava.3df", &detailTexture.info,
-                          &detailTexture.tableType,
-                          &detailTexture.tableData) == true);
+    auto makeTexInfo = [](std::vector<uint16_t>& buf) {
+      GrTexInfo ti{};
+      ti.smallLod = GR_LOD_256;
+      ti.largeLod = GR_LOD_256;
+      ti.aspectRatio = GR_ASPECT_1x1;
+      ti.format = GR_TEXFMT_RGB_565;
+      ti.data = buf.data();
+      return ti;
+    };
+    GrTexInfo baseInfo = makeTexInfo(basePixels);
+    GrTexInfo lightInfo = makeTexInfo(lightPixels);
+    GrTexInfo detailInfo = makeTexInfo(detailPixels);
 
     // Download to TMU0
     unsigned long baseTextureAddr = grTexMinAddress(GR_TMU0);
-    texDownload(GR_TMU0, baseTextureAddr, GR_MIPMAPLEVELMASK_BOTH,
-                &baseTexture.info);
-    if (baseTexture.tableType != NO_TABLE) {
-      texDownloadTable(GR_TMU0, baseTexture.tableType, &baseTexture.tableData);
-    }
+    texDownload(GR_TMU0, baseTextureAddr, GR_MIPMAPLEVELMASK_BOTH, &baseInfo);
 
     unsigned long lightTextureAddr =
         baseTextureAddr +
-        grTexTextureMemRequired(GR_MIPMAPLEVELMASK_BOTH, &baseTexture.info);
-    texDownload(GR_TMU0, lightTextureAddr, GR_MIPMAPLEVELMASK_BOTH,
-                &lightTexture.info);
-    if (lightTexture.tableType != NO_TABLE) {
-      texDownloadTable(GR_TMU0, lightTexture.tableType,
-                       &lightTexture.tableData);
-    }
+        grTexTextureMemRequired(GR_MIPMAPLEVELMASK_BOTH, &baseInfo);
+    texDownload(GR_TMU0, lightTextureAddr, GR_MIPMAPLEVELMASK_BOTH, &lightInfo);
 
     unsigned long detailTextureAddr =
         lightTextureAddr +
-        grTexTextureMemRequired(GR_MIPMAPLEVELMASK_BOTH, &lightTexture.info);
+        grTexTextureMemRequired(GR_MIPMAPLEVELMASK_BOTH, &lightInfo);
     texDownload(GR_TMU0, detailTextureAddr, GR_MIPMAPLEVELMASK_BOTH,
-                &detailTexture.info);
-    if (detailTexture.tableType != NO_TABLE) {
-      texDownloadTable(GR_TMU0, detailTexture.tableType,
-                       &detailTexture.tableData);
-    }
+                &detailInfo);
 
     // Vertices setup (Centered about Y axis)
     TlVertex3D srcVerts[4] = {
@@ -5521,8 +5453,7 @@ TEST_CASE(
       }
       alphaBlendFunction(GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_ONE,
                          GR_BLEND_ZERO);
-      texSource(GR_TMU0, baseTextureAddr, GR_MIPMAPLEVELMASK_BOTH,
-                &baseTexture.info);
+      texSource(GR_TMU0, baseTextureAddr, GR_MIPMAPLEVELMASK_BOTH, &baseInfo);
 
       drawTriangle(&vtxA, &vtxB, &vtxD);
       drawTriangle(&vtxA, &vtxD, &vtxC);
@@ -5532,12 +5463,12 @@ TEST_CASE(
         alphaBlendFunction(GR_BLEND_DST_COLOR, GR_BLEND_ZERO, GR_BLEND_ZERO,
                            GR_BLEND_ZERO);
         texSource(GR_TMU0, lightTextureAddr, GR_MIPMAPLEVELMASK_BOTH,
-                  &lightTexture.info);
+                  &lightInfo);
       } else if (modeIndex == 1) {  // SPECULAR
         alphaBlendFunction(GR_BLEND_ONE, GR_BLEND_ONE, GR_BLEND_ZERO,
                            GR_BLEND_ZERO);
         texSource(GR_TMU0, lightTextureAddr, GR_MIPMAPLEVELMASK_BOTH,
-                  &lightTexture.info);
+                  &lightInfo);
       } else if (modeIndex == 2) {  // DETAIL
         texCombine(GR_TMU0, GR_COMBINE_FUNCTION_BLEND_LOCAL,
                    GR_COMBINE_FACTOR_ONE_MINUS_DETAIL_FACTOR,
@@ -5546,7 +5477,7 @@ TEST_CASE(
         alphaBlendFunction(GR_BLEND_ONE, GR_BLEND_ONE, GR_BLEND_ZERO,
                            GR_BLEND_ZERO);
         texSource(GR_TMU0, detailTextureAddr, GR_MIPMAPLEVELMASK_BOTH,
-                  &detailTexture.info);
+                  &detailInfo);
       }
 
       drawTriangle(&vtxA, &vtxB, &vtxD);
@@ -5556,28 +5487,34 @@ TEST_CASE(
                       fb.data()) == FXTRUE);
     };
 
-    // Mode 0: LIGHTMAP
+    // Mode 0: LIGHTMAP (Blue * light B=222 -> 0xFFDE0000)
     renderCompositingFrame(0);
     assertColorClose(fb[300 * 640 + 320], 0xFFDE0000);
     assertColorClose(fb[50 * 640 + 50], 0xFF414041);
 
-    // Mode 1: SPECULAR
+    // Mode 1: SPECULAR (Blue + warm light (200,160,224) clamped -> (200,160,255))
     renderCompositingFrame(1);
-    assertColorClose(fb[300 * 640 + 320], 0xFFFFDADE);
+    assertColorClose(fb[300 * 640 + 320], 0xFFFFA0C8);
     assertColorClose(fb[50 * 640 + 50], 0xFF414041);
 
     // Mode 2: DETAIL
     // Authentic 3dfx detail texturing (grTexDetailControl(TMU0, 2, 7, 1.0f)):
     //   Pass 1 = base * (1 - b), Pass 2 = detail * b (additive blend)
     //   b = clamp((detailBias - rawLod) * (1 << detailScale) / 255.0, 0, max)
-    // At distance=1.01f with detailBias=2, rawLod (~0.96) < 2 so lava.3df
-    // blends ~52% onto decal1.3df (ABGR ~0x00871873).
+    // At distance=1.01f with detailBias=2, rawLod (~0.96) < 2 so detail blends ~52%.
     renderCompositingFrame(2, 2);
-    assertColorClose(fb[300 * 640 + 320], 0x00871873);
+    {
+      const uint32_t px = fb[300 * 640 + 320];
+      const int r = static_cast<int>(px & 0xFFu);
+      const int b = static_cast<int>((px >> 16) & 0xFFu);
+      REQUIRE(r >= 80);
+      REQUIRE(b >= 80);
+      REQUIRE(b <= 175);
+    }
     assertColorClose(fb[50 * 640 + 50], 0xFF414041);
 
     // With detailBias=0, rawLod (~0.96) >= 0 so b = 0.0 -> 100% baseTexture
-    // (decal1.3df blue = ABGR 0x00FF0000).
+    // (solid Blue = ABGR 0x00FF0000).
     renderCompositingFrame(2, 0);
     assertColorClose(fb[300 * 640 + 320], 0x00FF0000);
     assertColorClose(fb[50 * 640 + 50], 0xFF414041);
@@ -5620,16 +5557,26 @@ TEST_CASE(
       REQUIRE(std::abs(r_act - r_exp) <= 15);
     };
 
-    TlTexture texture;
-    REQUIRE(tlLoadTexture("ext_tests/build_tests/decal1.3df", &texture.info,
-                          &texture.tableType, &texture.tableData) == true);
-
-    texDownload(GR_TMU0, 0, GR_MIPMAPLEVELMASK_BOTH, &texture.info);
-    if (texture.tableType != NO_TABLE) {
-      texDownloadTable(GR_TMU0, texture.tableType, &texture.tableData);
+    // Self-contained 256x256 RGB565 horizontal band texture:
+    //   y < 32   : Green (0x07E0) -> sampled at (320,270) in Affine mode (t_y ~ 21)
+    //   32..139  : White (0xFFFF) -> sampled at (320,270) in Persp (t_y ~ 44) & (280,320) in Affine (t_y ~ 115)
+    //   140..255 : Red   (0xF800) -> sampled at (280,320) in Persp (t_y ~ 166)
+    std::vector<uint16_t> bandPixels(256u * 256u);
+    for (int y = 0; y < 256; ++y) {
+      const uint16_t c = (y < 32) ? 0x07E0u : ((y < 140) ? 0xFFFFu : 0xF800u);
+      for (int x = 0; x < 256; ++x) {
+        bandPixels[static_cast<size_t>(y) * 256u + static_cast<size_t>(x)] = c;
+      }
     }
+    GrTexInfo texInfo{};
+    texInfo.smallLod = GR_LOD_256;
+    texInfo.largeLod = GR_LOD_256;
+    texInfo.aspectRatio = GR_ASPECT_1x1;
+    texInfo.format = GR_TEXFMT_RGB_565;
+    texInfo.data = bandPixels.data();
 
-    texSource(GR_TMU0, 0, GR_MIPMAPLEVELMASK_BOTH, &texture.info);
+    texDownload(GR_TMU0, 0, GR_MIPMAPLEVELMASK_BOTH, &texInfo);
+    texSource(GR_TMU0, 0, GR_MIPMAPLEVELMASK_BOTH, &texInfo);
     texFilter(GR_TMU0, GR_TEXTUREFILTER_POINT_SAMPLED,
               GR_TEXTUREFILTER_POINT_SAMPLED);
     texCombine(GR_TMU0, GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
@@ -5705,14 +5652,14 @@ TEST_CASE(
 
     // Mode 0: Separate W (Affine)
     renderFrame29(true);
-    assertColorClose(fb[270 * 640 + 320], 0xFF00FF00);
-    assertColorClose(fb[320 * 640 + 280], 0xFF000000);
+    assertColorClose(fb[270 * 640 + 320], 0xFF00FF00);  // Green (t_y ~ 21)
+    assertColorClose(fb[320 * 640 + 280], 0xFFFFFFFF);  // White (t_y ~ 115)
     assertColorClose(fb[50 * 640 + 50], 0xFF414041);
 
     // Mode 1: Default W (Perspective)
     renderFrame29(false);
-    assertColorClose(fb[270 * 640 + 320], 0xFFFFFFFF);
-    assertColorClose(fb[320 * 640 + 280], 0xFF00FF00);
+    assertColorClose(fb[270 * 640 + 320], 0xFFFFFFFF);  // White (t_y ~ 44)
+    assertColorClose(fb[320 * 640 + 280], 0xFF0000FF);  // Red   (t_y ~ 166)
     assertColorClose(fb[50 * 640 + 50], 0xFF414041);
   }
 
@@ -5800,22 +5747,68 @@ TEST_CASE(
     assertColorClose(fb[50 * 640 + 50], 0x00FF0000);    // Red background
     assertColorClose(fb[240 * 640 + 320], 0x000000FF);  // Blue background
     assertColorClose(fb[430 * 640 + 50], 0x000000FF);   // Blue background
-    // Authentic 3dfx gbanner.c translucency: GR_BLEND_SRC_ALPHA (90/255) +
-    // GR_BLEND_ONE_MINUS_SRC_ALPHA (165/255) over the red/blue checkerboard.
-    assertColorClose(fb[450 * 640 + 550], 0xFFF65151);  // Logo over red
-    assertColorClose(fb[440 * 640 + 580], 0xFF1718BC);  // Logo over blue
-    assertColorClose(fb[450 * 640 + 600], 0xFF4E4DF3);  // Logo highlight over blue
-    assertColorClose(fb[460 * 640 + 620],
-                     0x00FF0000);  // Red background near edge
+    // Clean-room 180x90 Chrome & Amber Shield badge (dstX=460, dstY=389) with
+    // black (0x0000) chromakey and GR_BLEND_SRC_ALPHA (90/255) translucency:
+    // 1. Chromakey-transparent margin inside 180x90 box stays unblended.
+    {
+      uint32_t marginPx = fb[392 * 640 + 462];  // local (2, 3): pure chromakey
+      int mr = (marginPx >> 16) & 0xFF;
+      int mg = (marginPx >> 8) & 0xFF;
+      int mb = marginPx & 0xFF;
+      REQUIRE(mg <= 5);
+      REQUIRE((mr >= 245 || mb >= 245));
+    }
+    // 2. Amber pill region introduces green channel (~50) over pure red/blue
+    //    checkerboard (whose green channel is 0), proving alpha=90 blending.
+    {
+      uint32_t amberPx = fb[414 * 640 + 598];  // local (138, 25) in upper amber pill
+      int ag = (amberPx >> 8) & 0xFF;
+      REQUIRE(ag >= 25);
+    }
+    // 3. Verify substantial badge coverage (>4000 blended pixels in 180x90 box).
+    {
+      int blendedCount = 0;
+      for (int by = 389; by < 479; ++by) {
+        for (int bx = 460; bx < 640; ++bx) {
+          uint32_t px = fb[by * 640 + bx];
+          int pr = (px >> 16) & 0xFF;
+          int pg = (px >> 8) & 0xFF;
+          int pb = px & 0xFF;
+          bool pureRed = (pr > 240 && pg < 10 && pb < 10);
+          bool pureBlue = (pb > 240 && pg < 10 && pr < 10);
+          if (!pureRed && !pureBlue) {
+            ++blendedCount;
+          }
+        }
+      }
+      REQUIRE(blendedCount > 4000);
+    }
 
-    // Mode 1: Splash Screen
+    // Mode 1: Clean-Room 3D Chrome & Amber Shield Splash Screen
     renderMode1Frame(35);
     REQUIRE(readLfb(GR_BUFFER_FRONTBUFFER, 0, 0, 640, 480, 640 * 4,
                     fb.data()) == FXTRUE);
 
-    assertColorClose(fb[50 * 640 + 50], 0xFF000000);    // Black background
-    assertColorClose(fb[240 * 640 + 320], 0xFFC4C4C4);  // Center of logo
-    assertColorClose(fb[430 * 640 + 50], 0xFF000000);   // Black background
+    assertColorClose(fb[50 * 640 + 50], 0xFF000000);   // Black top-left sky
+    assertColorClose(fb[50 * 640 + 590], 0xFF000000);  // Black top-right sky
+    // Center of the spinning 3D shield around (320, 211) must be visibly lit
+    {
+      uint32_t centerPx = fb[211 * 640 + 320];
+      int cr = (centerPx >> 16) & 0xFF;
+      int cg = (centerPx >> 8) & 0xFF;
+      int cb = centerPx & 0xFF;
+      REQUIRE((cr + cg + cb) > 120);
+    }
+    // Whole splash (3D shield + perspective floor grid + "GLIDE NG" wordmark)
+    {
+      int litPixels = 0;
+      for (uint32_t px : fb) {
+        if ((px & 0x00FFFFFFu) != 0u) {
+          ++litPixels;
+        }
+      }
+      REQUIRE(litPixels > 10000);
+    }
 
     // Cleanup state
     glideShamelessPlug(FXFALSE);
@@ -5829,7 +5822,7 @@ TEST_CASE(
 TEST_CASE("Glide 2.x Dynamic Version and Hardware Gating", "[Glide2][Gating]") {
 #ifdef __linux__
   // Load the runtime wrapper dynamic library
-  void* handle = ::dlopen("build/lib/libglide2x.so", RTLD_LAZY);
+  void* handle = OpenGlide2Handle();
   REQUIRE(handle != nullptr);
 
   // Resolve base initialization entry points (pure Glide 2.x does NOT export grGetProcAddress/grGetString)
@@ -6026,9 +6019,7 @@ TEST_CASE("Glide 2.x Vertex Layout Decoding Integrity",
 
 #ifndef _WIN32
 TEST_CASE("Glide 3.x Texture Loading and LFB Integrity", "[Glide3][Texture]") {
-  void* handle = ::dlopen("build/lib/libglide3x.so", RTLD_LAZY);
-  if (!handle) handle = ::dlopen("lib/libglide3x.so", RTLD_LAZY);
-  if (!handle) handle = ::dlopen("../lib/libglide3x.so", RTLD_LAZY);
+  void* handle = OpenGlide3Handle();
   REQUIRE(handle != nullptr);
 
   auto p_gu3dfGetInfo =
@@ -6039,12 +6030,22 @@ TEST_CASE("Glide 3.x Texture Loading and LFB Integrity", "[Glide3][Texture]") {
   REQUIRE(p_gu3dfGetInfo != nullptr);
   REQUIRE(p_gu3dfLoad != nullptr);
 
-  SECTION("Load decal1.3df and verify properties") {
+  SECTION("Load synthetic mipmapped RGB565 .3df and verify properties") {
+    const std::string synthPath =
+        GlideTestHelpers::TempTestPath("glide_ng_test_decal1.3df");
+    GlideTestHelpers::ScopedTempFile temp3df(synthPath);
+    REQUIRE(GlideTestHelpers::WriteSynthetic3dfRgb565(
+        synthPath, 256, 1, [](int x, int y, int /*dim*/) -> uint16_t {
+          return GlideTestHelpers::PackRgb565(
+              static_cast<uint8_t>((x * 4) & 0xFF),
+              static_cast<uint8_t>((y * 4) & 0xFF), 200);
+        }));
+
     Gu3dfInfo info;
     std::memset(&info, 0, sizeof(info));
 
-    // 1. Get texture info
-    FxBool infoOk = p_gu3dfGetInfo("ext_tests/build_tests/decal1.3df", &info);
+    // 1. Get texture info (9 mip levels 256..1 RGB565 = 174,762 bytes)
+    FxBool infoOk = p_gu3dfGetInfo(synthPath.c_str(), &info);
     REQUIRE(infoOk == FXTRUE);
     REQUIRE(info.header.width == 256);
     REQUIRE(info.header.height == 256);
@@ -6055,7 +6056,7 @@ TEST_CASE("Glide 3.x Texture Loading and LFB Integrity", "[Glide3][Texture]") {
     info.data = std::malloc(info.mem_required);
     REQUIRE(info.data != nullptr);
 
-    FxBool loadOk = p_gu3dfLoad("ext_tests/build_tests/decal1.3df", &info);
+    FxBool loadOk = p_gu3dfLoad(synthPath.c_str(), &info);
     REQUIRE(loadOk == FXTRUE);
 
     // 3. Verify that pixel data is loaded (not all zeroes/black!)
@@ -6130,7 +6131,7 @@ TEST_CASE("LfbManager Unit Tests", "[Core][LfbManager]") {
 TEST_CASE("Glide 3.x grGet Unit Tests", "[Glide3][grGet]") {
 #ifdef __linux__
   // Load the runtime wrapper dynamic library
-  void* handle = ::dlopen("build/lib/libglide3x.so", RTLD_LAZY);
+  void* handle = OpenGlide3Handle();
   REQUIRE(handle != nullptr);
 
   // Resolve entry points

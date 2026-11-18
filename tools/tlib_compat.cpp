@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdarg.h>
 #include <unistd.h>
 #include <termios.h>
 #include <sys/select.h>
@@ -93,3 +94,8 @@ extern "C" float tlScaleX(float coord) {
 extern "C" float tlScaleY(float coord) {
     return coord * s_screenHeight;
 }
+
+extern "C" void tlConSet(float, float, float, float, int, int, unsigned int) {}
+extern "C" void tlConClear(void) {}
+extern "C" void tlConOutput(const char*, ...) {}
+extern "C" void tlConRender(void) {}

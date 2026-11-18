@@ -5,7 +5,7 @@ description: Native child surface injection (X11 child Window & Wayland wl_subsu
 
 # Workspace Skill: WSI Window Injection & Native Child Surfaces
 
-Activate this skill whenever touching [src/core/NativeSurfaceHost.h](../../../src/core/NativeSurfaceHost.h), `NativeSurfaceHost.cpp`, `PlatformWindowUtils.*`, backend `AttachWindow`/`DetachWindow`/`SwapBuffers` presentation, or DOSBox-X / SVN DOSBox integration.
+Activate this skill whenever touching [src/core/NativeSurfaceHost.h](../../../src/core/NativeSurfaceHost.h), `NativeSurfaceHost.cpp`, backend `AttachWindow`/`DetachWindow`/`SwapBuffers` presentation, or DOSBox-X / SVN DOSBox integration.
 
 ## 1. Architecture: Unpatched Native Child Surface (Option A)
 
@@ -38,7 +38,7 @@ All three backends (`VulkanBackend`, `OpenGLESBackend`, `SoftwareBackend`) share
 
 ## 3. DOSBox Client Quirks (Verified Against Reference Trees)
 
-- **DOSBox-X** ([refs/dosbox-x/src/hardware/glide.cpp](../../../refs/dosbox-x/src/hardware/glide.cpp)):
+- **DOSBox-X** (`src/hardware/glide.cpp`):
   - Links `libSDL2` (`sdl2-compat` on this host). `GLIDE_ResetScreen(true)` creates `SCREEN_OPENGL` or `SCREEN_SURFACE` (never `SDL_WINDOW_VULKAN`).
   - `statWMInfo()` unconditionally returns `wmi.info.x11.window` even on Wayland — which aliases `wmi.info.wl.surface` in `SDL_SysWMinfo`. When `SDL_GetCurrentVideoDriver()` is `"wayland"`, probe live SDL windows (`SDL_GetWindowFromID(1..64)`) to match either `SDL_Window*` directly or `wmi.info.wl.surface == hostHandle` to recover `(wl_display*, wl_surface*, SDL_Window*)`.
   - Known unpatched limitation: pressing `Alt+Enter` mid-game calls `GLIDE_ResetScreen(false)`. Track whether this triggers Phase 4 (Option B).

@@ -11,6 +11,11 @@ char tlGetCH(void);
 void tlSetScreen(float width, float height);
 float tlScaleX(float coord);
 float tlScaleY(float coord);
+void tlConSet(float minX, float minY, float maxX, float maxY,
+              int columns, int rows, unsigned int color);
+void tlConClear(void);
+void tlConOutput(const char* fmt, ...);
+void tlConRender(void);
 
 #ifdef __cplusplus
 }
