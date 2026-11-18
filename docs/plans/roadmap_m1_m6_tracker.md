@@ -393,20 +393,20 @@
 4. Implement real-GPU optimizations for Vulkan and OpenGL ES (never over-optimizing for `llvmpipe`): zero-readback GPU-side `TEXTUREBUFFER` RTT and hardware BC1/BC2/BC3 (`DXT1`/`DXT3`/`DXT5`) compressed texture upload, plus collect performance notes comparing GPU vs. SW paths for future reference.
 
 ### M11 Task Breakdown (Small, Independently Verified Iterations)
-- **`M11.1`** — Expand `glide2_bench` & `glide3_bench` with new classic & VSA-100 scenes (`fog`, `multitex`, `lfb_read`, `stencil`, `ext_combine`, `texfmt`, `rtt`, `tbuffer`), `--aa`, `--res 1280|1600`, and `--scene core|extended|vsa100|all`; capture pre-optimization baseline report.
+- **`M11.1`** (`f811c37`) — Expand `glide2_bench` & `glide3_bench` with new classic & VSA-100 scenes (`fog`, `multitex`, `lfb_read`, `stencil`, `ext_combine`, `texfmt`, `rtt`, `tbuffer`), `--aa`, `--res 1280|1600`, and `--scene core|extended|vsa100|all`; capture pre-optimization baseline report.
   - **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION`
-- **`M11.2`** — Runtime SIMD dispatch architecture (`SwSimdLevel`: `avx2` default, `avx512`, `scalar`, `auto`) and strict CMake per-TU ISA isolation (moving `-mavx2 -mfma` off baseline files; adding `-mavx512f -mavx512dq -mavx512bw -mavx512vl` TUs).
+- **`M11.2`** (`7762ede`) — Runtime SIMD dispatch architecture (`SwSimdLevel`: `avx2` default, `avx512`, `scalar`, `auto`) and strict CMake per-TU ISA isolation (moving `-mavx2 -mfma` off baseline files; adding `-mavx512f -mavx512dq -mavx512bw -mavx512vl` TUs).
   - **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION`
-- **`M11.3`** — SIMD-accelerate shared CPU & post-process routines (`SimdKernels`: 2×2 SSAA resolve, RAMDAC Gamma LUT, masked/T-Buffer clears, `CpuLfbStaging` RGB565/1555 conversions, `TextureManager` P8/565/1555/4444 swizzlers) across AVX2 + AVX-512 + scalar with bit-exact Catch2 unit tests.
-  - **Status**: `[ ] PENDING`
-- **`M11.4`** — Eliminate scalar islands in the Software AVX2 rasterizer: vectorize Hardware Stencil (`PIXEXT`) and Table Fog (exact boundary-verified reciprocal index + precomputed float LUT) + inline ext-combiner fast paths, with exhaustive fog & stencil 0-diff parity tests.
-  - **Status**: `[ ] PENDING`
-- **`M11.5`** — Implement 4×4 (16-pixel) **AVX-512** Software rasterizer (`SimdVec512.h`, templated `SoftwareRasterizerSimdImpl.inl`, `SoftwareRasterizerAvx512.cpp`) tuned for Zen 4 (32 ZMM, native `__mmask16`, in-register 64-entry fog LUT), plus Win32 `i686` & Linux compile verification and cross-ISA parity test harness.
-  - **Status**: `[ ] PENDING`
-- **`M11.6`** — Real-GPU Vulkan & OpenGL ES M10 optimizations: zero-readback GPU-side `TEXTUREBUFFER` RTT and hardware BC1/BC2/BC3 (`DXT1`/`DXT3`/`DXT5`) texture upload with automatic CPU fallback, plus GPU shader audit & perf notes.
-  - **Status**: `[ ] PENDING`
-- **`M11.7`** — Full regression verification (Linux Debug/Release, DOS/32 Open Watcom, Win32 MinGW `i686`, all Catch2 suites, targeted visual checks on demos/tests) + post-M11 benchmark comparison & Zen 4 AVX-512 test guide (`docs/perf_m11_analysis.md`).
-  - **Status**: `[ ] PENDING`
+- **`M11.3`** (`20a7e45`) — SIMD-accelerate shared CPU & post-process routines (`SimdKernels`: 2×2 SSAA resolve, RAMDAC Gamma LUT, masked/T-Buffer clears, `CpuLfbStaging` RGB565/1555 conversions, `TextureManager` P8/565/1555/4444 swizzlers, `SwapRB32`) across AVX2 + AVX-512 + scalar with 670/670 bit-exact Catch2 assertions.
+  - **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION`
+- **`M11.4`** (`2039abf`) — Eliminate scalar islands in the Software AVX2 rasterizer: vectorize Stipple, Hardware Stencil (`PIXEXT`), and Table Fog (exact boundary-verified reciprocal index + 3-row guard buffers), verified 0-LSB / 0-pixel diff on Table Fog across all 64 intervals + `ADD2`/`MULT2` and 0-byte diff on Stencil (`+95%` Glide 3 `fog`, `+64%` isolated `stencil`, `+34%` `multipass`).
+  - **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION`
+- **`M11.5`** (`eb49b6b`) — Implement native 4×4 (16-pixel) **AVX-512** Software rasterizer (`SimdVec512.h`, templated `SoftwareRasterizerSimdImpl.inl`, `SoftwareRasterizerAvx512.cpp`) tuned for Zen 4 (native `__mmask16`, 4×4 Bayer dither, 4×4 stencil ops), verified `50,583 zmm` (Linux `x86_64`) / `59,657 zmm` (Win32 `i686`) with `0 ymm/zmm` in baseline objects and cross-ISA `[M11][Parity]` Catch2 harness.
+  - **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION`
+- **`M11.6`** (`0448753`, `afffa33`) — Real-GPU Vulkan & OpenGL ES M10 optimizations: native hardware BC1/BC2/BC3 (`DXT1`–`DXT5`) compressed texture upload (`+37%` VK / `+47%` GLES isolated `texfmt`), zero-readback GPU-side `TEXTUREBUFFER` RTT (`+276%–300%` / `~4.0×` `rtt` on both Vulkan & OpenGL ES, verified zero `CpuLfbStaging` allocation on Vulkan), and Vulkan `-DUSE_WBUFFER_DEPTH` SPIR-V split (`DepthReplacing = 0` on Z-buffer / depth-off pipelines to preserve hardware Early-Z / Hi-Z).
+  - **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION`
+- **`M11.7`** — Full 4-target zero-warning build verification (`build/` Debug + Open Watcom DOS/32, `build_release/` Linux Release, `build_win32/` MinGW-w64 `i686`), 9/9 Catch2 regression matrix (36,484/36,484 assertions), targeted visual pixel-diff parity (`M10.6` 0-diff Vulkan vs. GLES; `sw_validate` 0-diff AVX2 vs. scalar), post-M11 benchmark analysis, GPU vs. SW trade-off notes & Zen 4 AVX-512 test guide ([docs/perf_m11_analysis.md](../perf_m11_analysis.md)).
+  - **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION`
 
 ---
 

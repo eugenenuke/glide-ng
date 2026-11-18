@@ -141,7 +141,7 @@ void SoftwareBackendBase::ClearBufferExt_Locked(uint32_t color, uint32_t alpha,
   if ((clearMask & 0x2) && m_depthMask) {  // Depth Clear (obeys grDepthMask)
     const auto& kernels = GetSimdKernels();
     const uint32_t stride = m_headlessWidth;
-    const uint32_t spanW = x1 - x0;
+    [[maybe_unused]] const uint32_t spanW = x1 - x0;
     if (fullClip && !isTbufMasked) {
       m_pendingCpuDepthClear = false;
       if (!m_headlessDepthBuffer.empty()) {
