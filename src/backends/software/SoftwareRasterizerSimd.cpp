@@ -6,9 +6,18 @@
 #include <cstring>
 
 #include "backends/software/SimdVec.h"
+#include "backends/software/SoftwareSimdInternal.h"
 #include "core/TextureManager.h"
 
 namespace GlideWrapper {
+
+using TmuColorSIMD = TmuColorVec<Simd8f>;
+#define EvaluateTmuStageSIMD EvaluateTmuStageVec
+#define ApplyBlendOpSIMD ApplyBlendOpVec
+#define EvaluateExtTmuRgbSIMD EvaluateExtTmuRgbVec
+#define EvaluateExtTmuAlphaSIMD EvaluateExtTmuAlphaVec
+#define EvaluateExtFbiAlphaSIMD EvaluateExtFbiAlphaVec
+#define EvaluateExtFbiColorSIMD EvaluateExtFbiColorVec
 
 namespace {
 

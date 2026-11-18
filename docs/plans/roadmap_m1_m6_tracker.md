@@ -396,7 +396,7 @@
 - **`M11.1`** — Expand `glide2_bench` & `glide3_bench` with new classic & VSA-100 scenes (`fog`, `multitex`, `lfb_read`, `stencil`, `ext_combine`, `texfmt`, `rtt`, `tbuffer`), `--aa`, `--res 1280|1600`, and `--scene core|extended|vsa100|all`; capture pre-optimization baseline report.
   - **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION`
 - **`M11.2`** — Runtime SIMD dispatch architecture (`SwSimdLevel`: `avx2` default, `avx512`, `scalar`, `auto`) and strict CMake per-TU ISA isolation (moving `-mavx2 -mfma` off baseline files; adding `-mavx512f -mavx512dq -mavx512bw -mavx512vl` TUs).
-  - **Status**: `[ ] PENDING`
+  - **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION`
 - **`M11.3`** — SIMD-accelerate shared CPU & post-process routines (`SimdKernels`: 2×2 SSAA resolve, RAMDAC Gamma LUT, masked/T-Buffer clears, `CpuLfbStaging` RGB565/1555 conversions, `TextureManager` P8/565/1555/4444 swizzlers) across AVX2 + AVX-512 + scalar with bit-exact Catch2 unit tests.
   - **Status**: `[ ] PENDING`
 - **`M11.4`** — Eliminate scalar islands in the Software AVX2 rasterizer: vectorize Hardware Stencil (`PIXEXT`) and Table Fog (exact boundary-verified reciprocal index + precomputed float LUT) + inline ext-combiner fast paths, with exhaustive fog & stencil 0-diff parity tests.

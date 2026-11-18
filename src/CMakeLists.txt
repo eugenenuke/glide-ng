@@ -5,6 +5,7 @@ endif()
 # 1. Define Core Sources
 set(CORE_SOURCES
     core/WrapperConfig.cpp
+    core/SimdDispatch.cpp
     core/Logger.cpp
     core/IniConfigLoader.cpp
     core/VertexLayout.cpp
@@ -40,11 +41,9 @@ set(CORE_SOURCES
 
 # --- TARGET 1: Universal GlideWrapperCore ---
 add_library(GlideWrapperCore STATIC ${CORE_SOURCES})
+# Strict per-TU ISA isolation: baseline core/scalar TUs never emit AVX2/AVX-512
+# instructions, keeping runtime CPUID dispatch 100% safe across all x86 CPUs.
 set_source_files_properties(
-    backends/SoftwareBackendBase.cpp
-    backends/software/SoftwareBackend.cpp
-    backends/software/SoftwareCombiner.cpp
-    backends/software/SoftwareRasterizer.cpp
     backends/software/SoftwareRasterizerSimd.cpp
     PROPERTIES COMPILE_FLAGS "-mavx2 -mfma"
 )

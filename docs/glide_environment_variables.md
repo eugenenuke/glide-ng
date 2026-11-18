@@ -124,7 +124,7 @@ GLIDE_NG_HUD=full,position=br,scale=1.5 ./build/bin/glide3_cube
 | Environment Variable | INI Key (`section.key`) | Accepted Values | Default | Status | Description |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | `GLIDE_NG_SW_THREADS` | `[software] threads` | Integer `>= 0` (`0` = auto) | `0` *(auto hardware concurrency)* | **Implemented** | Software backend worker thread count (`0` uses hardware thread count or `OMP_NUM_THREADS`). |
-| `GLIDE_NG_SW_SIMD` | `[software] simd` | `0`/`1`, `true`/`false` | `true` *(AVX2+FMA CPUID-guarded)* | **Implemented** | Enables/disables AVX2+FMA SIMD rasterization fast paths in the software backend. |
+| `GLIDE_NG_SW_SIMD` | `[software] simd` | `avx2`, `avx512`, `scalar`, `auto` (`0`/`1`, `true`/`false` legacy aliases) | `avx2` *(CPUID + OS XSAVE guarded)* | **Implemented** | Selects the Software backend and shared CPU kernel SIMD tier. `avx2` is the default; `avx512` selects the 16-wide AVX-512 (F/DQ/BW/VL) backend on capable CPUs (e.g. AMD Zen 4/5) with automatic fallback + `[WARN]` on older CPUs. |
 | `GLIDE_NG_SW_TILE_SIZE` | `[software] tile_size` | Integer `>= 16` | `32` | **Implemented** | Tile dimension (pixels) used by the tiled software rasterizer. |
 | `GLIDE_NG_SW_AA` | `[software] aa` | `analytical`, `ssaa` | `analytical` | **Implemented** | Software backend anti-aliasing mode. |
 | `GLIDE_NG_VK_CACHE_PATH` | `[vulkan] cache_path` | File path | `.glide-ng-vkcache.bin` | **Implemented** | File path for persisting Vulkan `VkPipelineCache` data across runs. |

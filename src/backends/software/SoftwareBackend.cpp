@@ -29,6 +29,7 @@
 #include <vector>
 
 #include "core/Logger.h"
+#include "core/SimdDispatch.h"
 #include "core/Telemetry.h"
 #include "core/TextureManager.h"
 
@@ -803,24 +804,21 @@ bool SoftwareBackend::Initialize(const WrapperConfig& config) {
   m_config = config;
   ResetState_Locked();
 
-  m_useSimd = m_config.swUseSimd;
-#if defined(__AVX2__) && (defined(__GNUC__) || defined(__clang__)) && \
-    (defined(__x86_64__) || defined(__i386__))
-  if (m_useSimd && !__builtin_cpu_supports("avx2")) {
-    GLIDE_LOG(WARN, "Software",
-              "Host CPU lacks AVX2 support; falling back to scalar software "
-              "rasterizer.");
-    m_useSimd = false;
+  std::string simdWarn;
+  const SwSimdLevel reqSimd =
+      m_config.swUseSimd ? m_config.swSimdLevel : SwSimdLevel::Scalar;
+  m_activeSimdLevel = ResolveEffectiveSimdLevel(reqSimd, &simdWarn);
+  SetActiveSimdLevel(m_activeSimdLevel);
+  m_useSimd = (m_activeSimdLevel != SwSimdLevel::Scalar);
+  if (!simdWarn.empty()) {
+    GLIDE_LOG(WARN, "Software", simdWarn);
   }
-#endif
-  if (m_useSimd) {
-    GLIDE_LOG(INFO, "Software",
-              "SIMD optimization hook is ACTIVE (GLIDE_NG_SW_SIMD=1).");
-  } else {
-    GLIDE_LOG(INFO, "Software",
-              "SIMD optimization hook is inactive. Using scalar reference "
-              "rasterizer.");
-  }
+  GLIDE_LOG(INFO, "Software",
+            "Software SIMD tier: requested="
+                << FormatSwSimdLevel(reqSimd)
+                << ", active=" << FormatResolvedSimdIsa(m_activeSimdLevel)
+                << ", host_max="
+                << FormatResolvedSimdIsa(DetectHostMaxSimdLevel()) << ".");
 
   int logicalCores =
       std::max(1, static_cast<int>(std::thread::hardware_concurrency()));

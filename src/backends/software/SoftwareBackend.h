@@ -119,6 +119,7 @@ class SoftwareBackend : public SoftwareBackendBase {
                           const RasterizerState& state);
 
   bool m_allocatedBuffer{false};
+  SwSimdLevel m_activeSimdLevel{SwSimdLevel::Scalar};
   bool m_useSimd{false};
   bool m_simdLogged{false};
 

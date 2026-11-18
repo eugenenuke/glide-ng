@@ -1,4 +1,5 @@
 #include "Logger.h"
+#include "SimdDispatch.h"
 #include "build_version.h"
 #include <algorithm>
 #include <cctype>
@@ -485,11 +486,18 @@ void Logger::LogExecutionSummary(const WrapperConfig& config) {
                                  ? FormatApiVersionString(config.glide3ApiVersion)
                                  : FormatApiVersionString(config.apiVersion);
 
+    const SwSimdLevel resolvedSimd =
+        ResolveEffectiveSimdLevel(config.swSimdLevel, nullptr);
+    const SwSimdLevel hostMaxSimd = DetectHostMaxSimdLevel();
+
     ss << "\n  Voodoo2 SLI Mode     : " << (config.enableSli ? "ENABLED" : "DISABLED")
        << "\n  Reported API Base    : " << apiBaseStr
        << " (2.x=" << FormatApiVersionString(config.apiVersion)
        << ", 3.x=" << FormatApiVersionString(config.glide3ApiVersion) << ")"
-       << "\n  Active Emulation     : " << backendPretty;
+       << "\n  Active Emulation     : " << backendPretty
+       << "\n  Software SIMD        : " << FormatSwSimdLevel(config.swSimdLevel)
+       << " (active: " << FormatResolvedSimdIsa(resolvedSimd)
+       << ", host max: " << FormatResolvedSimdIsa(hostMaxSimd) << ")";
 
     if (!config.settingSources.empty()) {
         ss << "\n  Active Overrides     :";
@@ -524,6 +532,12 @@ void Logger::LogExecutionSummary(const WrapperConfig& config) {
             Log(LogLevel::WARN, "Config", msg);
             std::fprintf(stderr, "[glide-ng] WARN: %s\n", msg.c_str());
         }
+    }
+
+    if (!config.simdFallbackWarning.empty()) {
+        Log(LogLevel::WARN, "Software", config.simdFallbackWarning);
+        std::fprintf(stderr, "[glide-ng] WARN: %s\n",
+                     config.simdFallbackWarning.c_str());
     }
 }
 

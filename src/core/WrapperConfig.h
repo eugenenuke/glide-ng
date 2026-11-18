@@ -83,6 +83,18 @@ enum class HudPosition : uint32_t {
     BOTTOM_RIGHT = 3
 };
 
+// Runtime-selectable Software & shared-CPU SIMD tier (GLIDE_NG_SW_SIMD / [software] simd).
+// Default is Avx2; users on AVX-512 CPUs (e.g. AMD Zen 4/5) may select Avx512 or Auto.
+enum class SwSimdLevel : uint32_t {
+    Auto = 0,
+    Scalar = 1,
+    Avx2 = 2,
+    Avx512 = 3
+};
+
+const char* FormatSwSimdLevel(SwSimdLevel level);
+bool ParseSwSimdLevel(const std::string& raw, SwSimdLevel& out);
+
 struct WrapperConfig {
     // Emulated hardware profile
     CardModel model{CardModel::Voodoo2};
@@ -148,7 +160,8 @@ struct WrapperConfig {
 
     // Backend-specific tuning (unified; zero direct std::getenv() in backends)
     uint32_t swThreads{0};         // 0 = auto (hardware_concurrency)
-    bool swUseSimd{true};          // AVX2 rasterizer hook (GLIDE_NG_SW_SIMD)
+    SwSimdLevel swSimdLevel{SwSimdLevel::Avx2}; // Default AVX2; supports scalar|avx2|avx512|auto
+    bool swUseSimd{true};          // Mirrors swSimdLevel != SwSimdLevel::Scalar
     uint32_t swTileSize{32};       // >= 16, rounded to power-of-two
     std::string swAaMode{"analytical"}; // "analytical" or "ssaa"
     std::string vkCachePath{DEFAULT_VK_CACHE_FILE};
@@ -161,6 +174,7 @@ struct WrapperConfig {
     std::vector<std::string> unknownConfigKeys;
     std::vector<std::string> invalidConfigValues;
     std::vector<std::string> compatibilityWarnings;
+    std::string simdFallbackWarning;
 };
 
 class EmulationRegistry {

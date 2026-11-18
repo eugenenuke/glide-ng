@@ -89,8 +89,8 @@ no_splash = false            # Suppress 3dfx startup splash animation
 [software]
 # Worker threads for Software backend (0 = auto-detect hardware concurrency)
 threads = 0
-# Enable AVX2+FMA SIMD software rasterizer (auto-guarded by CPUID at runtime)
-simd = true
+# Software & shared-CPU SIMD tier: avx2 (default) | avx512 | scalar | auto (0/1 accepted)
+simd = avx2
 # Tile bin dimension in pixels (>= 16, power of two)
 tile_size = 32
 # Anti-aliasing mode: analytical | ssaa
