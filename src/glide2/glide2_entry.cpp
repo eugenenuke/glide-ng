@@ -203,10 +203,15 @@ struct __attribute__((packed)) GlideWrapperState {
   uint8_t ditherMode;
   uint8_t lfbConstantAlpha;
   uint32_t lfbWriteColorFormat;
+  uint8_t colorMaskExtMask;
+  int8_t texDetailBias[2];
+  uint8_t texDetailScale[2];
+  float texDetailMax[2];
+  uint8_t hasM10ExtState;
 
   // Explicit padding to align exactly to the Glide 2.x standard 312-byte layout
   // size
-  uint8_t pad[112];
+  uint8_t pad[98];
 };
 
 static_assert(sizeof(GlideWrapperState) == 312,
@@ -948,6 +953,15 @@ FX_ENTRY void FX_CALL grGlideGetState(GrState* state) {
   ws->ditherMode = s_state.ditherMode;
   ws->lfbConstantAlpha = s_state.lfbConstantAlpha;
   ws->lfbWriteColorFormat = s_state.lfbWriteColorFormat;
+  ws->colorMaskExtMask = static_cast<uint8_t>(
+      (s_state.colorMaskR ? 1u : 0u) | (s_state.colorMaskG ? 2u : 0u) |
+      (s_state.colorMaskB ? 4u : 0u));
+  for (int i = 0; i < 2; ++i) {
+    ws->texDetailBias[i] = static_cast<int8_t>(s_state.texDetailBias[i]);
+    ws->texDetailScale[i] = s_state.texDetailScale[i];
+    ws->texDetailMax[i] = s_state.texDetailMax[i];
+  }
+  ws->hasM10ExtState = 1u;
 }
 
 FX_ENTRY void FX_CALL grGlideSetState(const GrState* state) {
@@ -1023,6 +1037,23 @@ FX_ENTRY void FX_CALL grGlideSetState(const GrState* state) {
   s_state.ditherMode = (ws->ditherMode > 2) ? 0 : ws->ditherMode;
   s_state.lfbConstantAlpha = ws->lfbConstantAlpha;
   s_state.lfbWriteColorFormat = ws->lfbWriteColorFormat;
+  if (ws->hasM10ExtState != 0) {
+    s_state.colorMaskR = (ws->colorMaskExtMask & 1u) != 0;
+    s_state.colorMaskG = (ws->colorMaskExtMask & 2u) != 0;
+    s_state.colorMaskB = (ws->colorMaskExtMask & 4u) != 0;
+    s_state.colorMaskRgb =
+        (s_state.colorMaskR || s_state.colorMaskG || s_state.colorMaskB);
+    for (int i = 0; i < 2; ++i) {
+      s_state.texDetailBias[i] =
+          std::clamp<int32_t>(ws->texDetailBias[i], -32, 31);
+      s_state.texDetailScale[i] = std::min<uint8_t>(ws->texDetailScale[i], 7u);
+      s_state.texDetailMax[i] = std::clamp(ws->texDetailMax[i], 0.0f, 1.0f);
+    }
+  } else {
+    s_state.colorMaskR = s_state.colorMaskRgb;
+    s_state.colorMaskG = s_state.colorMaskRgb;
+    s_state.colorMaskB = s_state.colorMaskRgb;
+  }
 
   EntryCommon::ApplySharedStateToBackend(s_state, s_sstOrigin,
                                          /*includeTexInvert=*/false);
@@ -1234,10 +1265,18 @@ FX_ENTRY void FX_CALL grTexNCCTable(GrChipID_t tmu, GrNCCTable_t table) {
 FX_ENTRY void FX_CALL grTexSource(GrChipID_t tmu, FxU32 startAddress,
                                   FxU32 evenOdd, GrTexInfo* info) {
   GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::Tex);
+  (void)evenOdd;
   GLIDE_LOG(DEBUG, "Frontend",
             "grTexSource invoked for TMU=" << tmu << ", addr=0x" << std::hex
                                            << startAddress << std::dec);
-  EntryCommon::BindTexSource(s_state, tmu, startAddress);
+  uint32_t bindAddr = startAddress;
+  auto& tm = GlideWrapper::TextureManager::GetInstance();
+  if (info && tm.IsMultibaseEnabled(static_cast<uint32_t>(tmu))) {
+    bindAddr = tm.ResolveMultibaseSource(
+        static_cast<uint32_t>(tmu), startAddress, info->largeLod,
+        info->smallLod, static_cast<uint32_t>(info->aspectRatio), info->format);
+  }
+  EntryCommon::BindTexSource(s_state, tmu, bindAddr);
 }
 
 FX_ENTRY FxU32 FX_CALL grTexTextureMemRequired(FxU32 evenOdd, GrTexInfo* info) {
@@ -1250,11 +1289,14 @@ FX_ENTRY FxU32 FX_CALL grTexTextureMemRequired(FxU32 evenOdd, GrTexInfo* info) {
 FX_ENTRY void FX_CALL grTexDetailControl(GrChipID_t tmu, int lod_bias,
                                          FxU8 detail_scale, float detail_max) {
   GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
+  EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend",
             "grTexDetailControl invoked for TMU="
                 << tmu << ", lod_bias=" << lod_bias
                 << ", detail_scale=" << (int)detail_scale
-                << ", detail_max=" << detail_max << " (Stubbed)");
+                << ", detail_max=" << detail_max);
+  EntryCommon::SetTexDetailControl(s_state, tmu, lod_bias, detail_scale,
+                                   detail_max);
 }
 
 FX_ENTRY void FX_CALL grTexLodBiasValue(GrChipID_t tmu, float bias) {
@@ -1326,9 +1368,10 @@ FX_ENTRY void FX_CALL grTexMultibase(GrChipID_t tmu, FxBool enable) {
               "version/device profile.");
     return;
   }
-  GLIDE_LOG(
-      DEBUG, "Frontend",
-      "grTexMultibase: tmu=" << tmu << ", enable=" << enable << " (Stubbed)");
+  GLIDE_LOG(DEBUG, "Frontend",
+            "grTexMultibase: tmu=" << tmu << ", enable=" << enable);
+  GlideWrapper::TextureManager::GetInstance().SetMultibase(
+      static_cast<uint32_t>(tmu), enable != 0);
 }
 
 FX_ENTRY void FX_CALL grTexMultibaseAddress(GrChipID_t tmu,
@@ -1337,6 +1380,8 @@ FX_ENTRY void FX_CALL grTexMultibaseAddress(GrChipID_t tmu,
                                             GrTexInfo* info) {
   GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   EnsureEngineInitialized();
+  (void)evenOdd;
+  (void)info;
   if (!GlideWrapper::EmulationRegistry::GetInstance().IsFunctionAvailable(
           "grTexMultibaseAddress")) {
     GLIDE_LOG(WARN, "API",
@@ -1344,10 +1389,17 @@ FX_ENTRY void FX_CALL grTexMultibaseAddress(GrChipID_t tmu,
               "active version/device profile.");
     return;
   }
+  // Glide 2.x uses 0=256, 1=128, 2=64, 3=32_TO_1 (inverse of Glide 3.x).
+  const uint32_t canonicalRange =
+      (range <= 3) ? static_cast<uint32_t>(3 - range)
+                   : static_cast<uint32_t>(range);
   GLIDE_LOG(DEBUG, "Frontend",
             "grTexMultibaseAddress: tmu=" << tmu << ", range=" << range
-                                          << ", startAddress=" << startAddress
-                                          << " (Stubbed)");
+                                          << " (canonical=" << canonicalRange
+                                          << "), startAddress=0x" << std::hex
+                                          << startAddress << std::dec);
+  GlideWrapper::TextureManager::GetInstance().SetMultibaseAddress(
+      static_cast<uint32_t>(tmu), canonicalRange, startAddress);
 }
 
 FX_ENTRY GrMipMapId_t FX_CALL guTexAllocateMemory(
@@ -2237,14 +2289,14 @@ FX_ENTRY void FX_CALL grTexChromaRangeExt(GrChipID_t tmu, GrColor_t minColor,
   EntryCommon::SetTexChromakeyRange(s_state, tmu, minColor, maxColor, mode);
 }
 
-// Extension Stub Implementations (Glide 2.x)
+// Extension Implementations (Glide 2.x)
 FX_ENTRY void FX_CALL grColorMaskExt(FxBool r, FxBool g, FxBool b, FxBool a) {
   GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   EnsureEngineInitialized();
-  GLIDE_LOG(WARN, "Stub",
-            "grColorMaskExt stub invoked: R=" << (int)r << ", G=" << (int)g
-                                              << ", B=" << (int)b
-                                              << ", A=" << (int)a);
+  GLIDE_LOG(DEBUG, "Frontend",
+            "grColorMaskExt: R=" << (int)r << ", G=" << (int)g
+                                 << ", B=" << (int)b << ", A=" << (int)a);
+  EntryCommon::SetColorMaskExt(s_state, r != 0, g != 0, b != 0, a != 0);
 }
 
 FX_ENTRY void FX_CALL grStencilFuncExt(FxU32 func, FxU32 ref, FxU32 mask) {

@@ -186,8 +186,7 @@ PipelineStateKey VulkanBackend::GetCurrentStateKey() const {
   key.rgbDstBlend = m_rgbDstBlend;
   key.alphaSrcBlend = m_alphaSrcBlend;
   key.alphaDstBlend = m_alphaDstBlend;
-  key.colorMaskRgb = m_colorMaskRgb;
-  key.colorMaskAlpha = m_colorMaskAlpha;
+  key.colorWriteMask = GetColorWriteMask4();
   if (m_msaaSamples > 1) {
     key.singleSample = ShouldUseSingleSamplePass_Locked();
     key.sampleMask = key.singleSample ? 1u : GetEffectiveSampleMask_Locked();
@@ -332,13 +331,10 @@ vk::UniquePipeline VulkanBackend::CompileSinglePipeline(
     // Color Blending
     vk::PipelineColorBlendAttachmentState colorBlendAttachment;
     vk::ColorComponentFlags mask{};
-    if (key.colorMaskRgb) {
-      mask |= vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
-              vk::ColorComponentFlagBits::eB;
-    }
-    if (key.colorMaskAlpha) {
-      mask |= vk::ColorComponentFlagBits::eA;
-    }
+    if (key.colorWriteMask & 0x1u) mask |= vk::ColorComponentFlagBits::eR;
+    if (key.colorWriteMask & 0x2u) mask |= vk::ColorComponentFlagBits::eG;
+    if (key.colorWriteMask & 0x4u) mask |= vk::ColorComponentFlagBits::eB;
+    if (key.colorWriteMask & 0x8u) mask |= vk::ColorComponentFlagBits::eA;
     colorBlendAttachment.colorWriteMask = mask;
 
     colorBlendAttachment.blendEnable = true;
@@ -405,11 +401,10 @@ static inline PipelineCacheKey PackPipelineCacheKey(
   key |= static_cast<uint64_t>(state.rgbDstBlend & 0xFu) << 13;
   key |= static_cast<uint64_t>(state.alphaSrcBlend & 0xFu) << 17;
   key |= static_cast<uint64_t>(state.alphaDstBlend & 0xFu) << 21;
-  key |= static_cast<uint64_t>(state.colorMaskRgb ? 1u : 0u) << 25;
-  key |= static_cast<uint64_t>(state.colorMaskAlpha ? 1u : 0u) << 26;
-  key |= static_cast<uint64_t>(static_cast<uint32_t>(topology) & 0x7u) << 27;
-  key |= static_cast<uint64_t>(state.singleSample ? 1u : 0u) << 30;
-  key |= static_cast<uint64_t>(state.sampleMask & 0xFFFFu) << 31;
+  key |= static_cast<uint64_t>(state.colorWriteMask & 0xFu) << 25;
+  key |= static_cast<uint64_t>(static_cast<uint32_t>(topology) & 0x7u) << 29;
+  key |= static_cast<uint64_t>(state.singleSample ? 1u : 0u) << 32;
+  key |= static_cast<uint64_t>(state.sampleMask & 0xFFFFu) << 33;
   return key;
 }
 

@@ -87,7 +87,15 @@ class CpuLfbStaging {
 
   void ScheduleLazyClear(uint32_t logicalBuffer, uint32_t color, uint32_t alpha,
                          uint32_t pixelFormatOverride, bool maskRgb,
-                         bool maskAlpha);
+                         bool maskAlpha) {
+    const uint8_t mask4 =
+        static_cast<uint8_t>((maskRgb ? 0x7u : 0u) | (maskAlpha ? 0x8u : 0u));
+    ScheduleLazyClearMask(logicalBuffer, color, alpha, pixelFormatOverride,
+                          mask4);
+  }
+  void ScheduleLazyClearMask(uint32_t logicalBuffer, uint32_t color,
+                             uint32_t alpha, uint32_t pixelFormatOverride,
+                             uint8_t colorWriteMask4);
   void MaterializeLazyClear(uint32_t logicalBuffer);
   void DiscardLazyClear(uint32_t logicalBuffer);
   bool HasPendingLazyClear(uint32_t logicalBuffer = 1) const;
@@ -186,8 +194,7 @@ class CpuLfbStaging {
     uint32_t color{0};
     uint32_t alpha{255};
     uint32_t pixelFormat{1};
-    bool maskRgb{true};
-    bool maskAlpha{true};
+    uint8_t colorWriteMask4{0xFu};
   };
 
   uint32_t SlotFor(uint32_t logicalBuffer) const {

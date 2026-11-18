@@ -62,6 +62,12 @@ layout(push_constant) uniform PushConstants {
 
   // Block 9: Offset 208 (32 bytes)
   vec4 texChromaMax[2];
+
+  // Block 10: Offset 240 (16 bytes)
+  uint texDetail0;
+  uint texDetail1;
+  float texLodBias0;
+  float texLodBias1;
 }
 pcs;
 
@@ -123,7 +129,8 @@ vec4 sampleTexture(sampler2D tex, vec2 uv, uint tmuIdx, float tw, float th) {
 
 vec4 evaluateTmuStage(uint rgbFunc, uint rgbFactor, uint alphaFunc,
                       uint alphaFactor, bool rgbInvert, bool alphaInvert,
-                      vec4 localVal, vec4 otherVal, vec4 iteratedCol) {
+                      vec4 localVal, vec4 otherVal, float detailFactor,
+                      float lodFrac) {
   // 1. Evaluate Alpha
   float aLocal = localVal.a;
   float aOther = otherVal.a;
@@ -134,7 +141,9 @@ vec4 evaluateTmuStage(uint rgbFunc, uint rgbFactor, uint alphaFunc,
   else if (alphaFactor == 2u)
     factA = aOther;
   else if (alphaFactor == 4u)
-    factA = localVal.a;
+    factA = detailFactor;
+  else if (alphaFactor == 5u)
+    factA = lodFrac;
   else if (alphaFactor == 8u)
     factA = 1.0;
   else if (alphaFactor == 9u || alphaFactor == 11u)
@@ -142,10 +151,12 @@ vec4 evaluateTmuStage(uint rgbFunc, uint rgbFactor, uint alphaFunc,
   else if (alphaFactor == 10u)
     factA = 1.0 - aOther;
   else if (alphaFactor == 12u)
-    factA = 1.0 - localVal.a;
+    factA = 1.0 - detailFactor;
+  else if (alphaFactor == 13u)
+    factA = 1.0 - lodFrac;
 
   float finalA = 0.0;
-  if (alphaFunc == 1u)
+  if (alphaFunc == 1u || alphaFunc == 2u)
     finalA = aLocal;
   else if (alphaFunc == 3u)
     finalA = aOther * factA;
@@ -156,7 +167,7 @@ vec4 evaluateTmuStage(uint rgbFunc, uint rgbFactor, uint alphaFunc,
   else if (alphaFunc == 7u || alphaFunc == 8u)
     finalA = (aOther - aLocal) * factA + aLocal;
   else if (alphaFunc == 9u || alphaFunc == 16u)
-    finalA = (aLocal - aOther) * factA + aOther;
+    finalA = aLocal * (1.0 - factA);
 
   if (alphaInvert) finalA = 1.0 - finalA;
 
@@ -172,9 +183,9 @@ vec4 evaluateTmuStage(uint rgbFunc, uint rgbFactor, uint alphaFunc,
   else if (rgbFactor == 3u)
     factC = vec3(aLocal);
   else if (rgbFactor == 4u)
-    factC = vec3(localVal.a);
+    factC = vec3(detailFactor);
   else if (rgbFactor == 5u)
-    factC = localVal.rgb;
+    factC = vec3(lodFrac);
   else if (rgbFactor == 8u)
     factC = vec3(1.0);
   else if (rgbFactor == 9u)
@@ -184,11 +195,15 @@ vec4 evaluateTmuStage(uint rgbFunc, uint rgbFactor, uint alphaFunc,
   else if (rgbFactor == 11u)
     factC = vec3(1.0 - aLocal);
   else if (rgbFactor == 12u)
-    factC = vec3(1.0 - localVal.a);
+    factC = vec3(1.0 - detailFactor);
+  else if (rgbFactor == 13u)
+    factC = vec3(1.0 - lodFrac);
 
   vec3 finalC = vec3(0.0);
   if (rgbFunc == 1u)
     finalC = cLocal;
+  else if (rgbFunc == 2u)
+    finalC = vec3(aLocal);
   else if (rgbFunc == 3u)
     finalC = cOther * factC;
   else if (rgbFunc == 4u)
@@ -202,9 +217,9 @@ vec4 evaluateTmuStage(uint rgbFunc, uint rgbFactor, uint alphaFunc,
   else if (rgbFunc == 8u)
     finalC = (cOther - cLocal) * factC + vec3(aLocal);
   else if (rgbFunc == 9u)
-    finalC = (cLocal - cOther) * factC + cOther;
+    finalC = cLocal * (vec3(1.0) - factC);
   else if (rgbFunc == 16u)
-    finalC = (vec3(aLocal) - cOther) * factC + cOther;
+    finalC = vec3(aLocal) - cLocal * factC;
 
   if (rgbInvert) finalC = vec3(1.0) - finalC;
 
@@ -386,11 +401,24 @@ void main() {
 
   // 1. Sample TMU 1 (upstream)
   vec4 tmu1Color = vec4(1.0);
+  float detailFactor1 = 0.0;
+  float lodFrac1 = 0.0;
   if (tmu1Active) {
     ivec2 texSize = textureSize(texSampler1, 0);
     float tw = float(texSize.x);
     float th = float(texSize.y);
+    float maxDim = max(tw, th);
     vec2 uv1 = (fragTex.zw / divW1) / 256.0;
+    vec2 texelPos1 = uv1 * vec2(maxDim, maxDim);
+    vec2 dx1 = dFdx(texelPos1);
+    vec2 dy1 = dFdy(texelPos1);
+    float rho2_1 = max(dot(dx1, dx1), dot(dy1, dy1));
+    float rawLod1 = (rho2_1 > 1e-8) ? 0.5 * log2(rho2_1) : -10.0;
+    float bias1 = float(int(pcs.texDetail1 & 0x3Fu) - 32);
+    float scale1 = float((pcs.texDetail1 >> 8u) & 7u);
+    float dmax1 = float((pcs.texDetail1 >> 16u) & 0xFFu) / 255.0;
+    detailFactor1 = clamp((bias1 - rawLod1) * exp2(scale1) / 255.0, 0.0, dmax1);
+    lodFrac1 = fract(max(0.0, rawLod1 + pcs.texLodBias1));
     tmu1Color = sampleTexture(texSampler1, uv1, 1u, tw, th);
   }
 
@@ -398,16 +426,30 @@ void main() {
   vec4 tmu1Out = tmu1Active ? evaluateTmuStage(rgbFunc1, rgbFactor1, alphaFunc1,
                                                alphaFactor1, tmu1RgbInvert,
                                                tmu1AlphaInvert, tmu1Color,
-                                               fragColor, fragColor)
+                                               fragColor, detailFactor1,
+                                               lodFrac1)
                              : fragColor;
 
   // 2. Sample TMU 0 (downstream)
   vec4 tmu0Color = vec4(1.0);
+  float detailFactor0 = 0.0;
+  float lodFrac0 = 0.0;
   if (tmu0Active) {
     ivec2 texSize = textureSize(texSampler0, 0);
     float tw = float(texSize.x);
     float th = float(texSize.y);
+    float maxDim = max(tw, th);
     vec2 uv0 = (fragTex.xy / divW0) / 256.0;
+    vec2 texelPos0 = uv0 * vec2(maxDim, maxDim);
+    vec2 dx0 = dFdx(texelPos0);
+    vec2 dy0 = dFdy(texelPos0);
+    float rho2_0 = max(dot(dx0, dx0), dot(dy0, dy0));
+    float rawLod0 = (rho2_0 > 1e-8) ? 0.5 * log2(rho2_0) : -10.0;
+    float bias0 = float(int(pcs.texDetail0 & 0x3Fu) - 32);
+    float scale0 = float((pcs.texDetail0 >> 8u) & 7u);
+    float dmax0 = float((pcs.texDetail0 >> 16u) & 0xFFu) / 255.0;
+    detailFactor0 = clamp((bias0 - rawLod0) * exp2(scale0) / 255.0, 0.0, dmax0);
+    lodFrac0 = fract(max(0.0, rawLod0 + pcs.texLodBias0));
     tmu0Color = sampleTexture(texSampler0, uv0, 0u, tw, th);
   }
 
@@ -415,7 +457,7 @@ void main() {
   vec4 tmu0Out = tmu0Active ? evaluateTmuStage(rgbFunc0, rgbFactor0, alphaFunc0,
                                                alphaFactor0, tmu0RgbInvert,
                                                tmu0AlphaInvert, tmu0Color,
-                                               tmu1Out, fragColor)
+                                               tmu1Out, detailFactor0, lodFrac0)
                              : tmu1Out;
 
   vec4 texColor = tmu0Out;
@@ -454,7 +496,7 @@ void main() {
 
   // Evaluate Alpha Combiner Function
   float finalA = 0.0;
-  if (pcs.alphaFunc == 1u)
+  if (pcs.alphaFunc == 1u || pcs.alphaFunc == 2u)
     finalA = aLocal;
   else if (pcs.alphaFunc == 3u)
     finalA = aOther * factA;
@@ -465,7 +507,7 @@ void main() {
   else if (pcs.alphaFunc == 7u || pcs.alphaFunc == 8u)
     finalA = (aOther - aLocal) * factA + aLocal;
   else if (pcs.alphaFunc == 9u || pcs.alphaFunc == 16u)
-    finalA = (aLocal - aOther) * factA + aOther;
+    finalA = aLocal * (1.0 - factA);
 
   if (alphaInvert) finalA = 1.0 - finalA;
 
@@ -511,6 +553,8 @@ void main() {
   vec3 finalC = vec3(0.0);
   if (pcs.colorFunc == 1u)
     finalC = cLocal;
+  else if (pcs.colorFunc == 2u)
+    finalC = vec3(aLocal);
   else if (pcs.colorFunc == 3u)
     finalC = cOther * factC;
   else if (pcs.colorFunc == 4u)
@@ -524,9 +568,9 @@ void main() {
   else if (pcs.colorFunc == 8u)
     finalC = (cOther - cLocal) * factC + vec3(aLocal);
   else if (pcs.colorFunc == 9u)
-    finalC = (cLocal - cOther) * factC + cOther;
+    finalC = cLocal * (vec3(1.0) - factC);
   else if (pcs.colorFunc == 16u)
-    finalC = (vec3(aLocal) - cOther) * factC + cOther;
+    finalC = vec3(aLocal) - cLocal * factC;
 
   if (colorInvert) finalC = vec3(1.0) - finalC;
 

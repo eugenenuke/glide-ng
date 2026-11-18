@@ -45,7 +45,9 @@ inline TmuColor EvaluateTmuStage(uint32_t rgbFunc, uint32_t rgbFactor,
                                  bool rgbInvert, bool alphaInvert,
                                  const TmuColor& localVal,
                                  const TmuColor& otherVal,
-                                 const TmuColor& /*iteratedCol*/) {
+                                 const TmuColor& /*iteratedCol*/,
+                                 float detailFactor = 0.0f,
+                                 float lodFraction = 0.0f) {
   // 1. Evaluate Alpha
   float aLocal = localVal.a;
   float aOther = otherVal.a;
@@ -58,8 +60,11 @@ inline TmuColor EvaluateTmuStage(uint32_t rgbFunc, uint32_t rgbFactor,
     case 2:
       factA = aOther;
       break;
-    case 4:
-      factA = localVal.a;
+    case 4:  // GR_COMBINE_FACTOR_DETAIL_FACTOR
+      factA = detailFactor;
+      break;
+    case 5:  // GR_COMBINE_FACTOR_LOD_FRACTION
+      factA = lodFraction;
       break;
     case 8:
       factA = 1.0f;
@@ -71,8 +76,11 @@ inline TmuColor EvaluateTmuStage(uint32_t rgbFunc, uint32_t rgbFactor,
     case 10:
       factA = 1.0f - aOther;
       break;
-    case 12:
-      factA = 1.0f - localVal.a;
+    case 12:  // GR_COMBINE_FACTOR_ONE_MINUS_DETAIL_FACTOR
+      factA = 1.0f - detailFactor;
+      break;
+    case 13:  // GR_COMBINE_FACTOR_ONE_MINUS_LOD_FRACTION
+      factA = 1.0f - lodFraction;
       break;
   }
 
@@ -99,7 +107,7 @@ inline TmuColor EvaluateTmuStage(uint32_t rgbFunc, uint32_t rgbFactor,
       break;
     case 9:
     case 16:
-      finalA = (aLocal - aOther) * factA + aOther;
+      finalA = (-aLocal) * factA + aLocal;
       break;
   }
   if (alphaInvert) finalA = 1.0f - finalA;
@@ -131,15 +139,15 @@ inline TmuColor EvaluateTmuStage(uint32_t rgbFunc, uint32_t rgbFactor,
       factCG = aLocal;
       factCB = aLocal;
       break;
-    case 4:
-      factCR = localVal.a;
-      factCG = localVal.a;
-      factCB = localVal.a;
+    case 4:  // GR_COMBINE_FACTOR_DETAIL_FACTOR
+      factCR = detailFactor;
+      factCG = detailFactor;
+      factCB = detailFactor;
       break;
-    case 5:
-      factCR = localVal.r;
-      factCG = localVal.g;
-      factCB = localVal.b;
+    case 5:  // GR_COMBINE_FACTOR_LOD_FRACTION
+      factCR = lodFraction;
+      factCG = lodFraction;
+      factCB = lodFraction;
       break;
     case 8:
       factCR = 1.0f;
@@ -161,10 +169,15 @@ inline TmuColor EvaluateTmuStage(uint32_t rgbFunc, uint32_t rgbFactor,
       factCG = 1.0f - aLocal;
       factCB = 1.0f - aLocal;
       break;
-    case 12:
-      factCR = 1.0f - localVal.a;
-      factCG = 1.0f - localVal.a;
-      factCB = 1.0f - localVal.a;
+    case 12:  // GR_COMBINE_FACTOR_ONE_MINUS_DETAIL_FACTOR
+      factCR = 1.0f - detailFactor;
+      factCG = 1.0f - detailFactor;
+      factCB = 1.0f - detailFactor;
+      break;
+    case 13:  // GR_COMBINE_FACTOR_ONE_MINUS_LOD_FRACTION
+      factCR = 1.0f - lodFraction;
+      factCG = 1.0f - lodFraction;
+      factCB = 1.0f - lodFraction;
       break;
   }
 
@@ -210,14 +223,14 @@ inline TmuColor EvaluateTmuStage(uint32_t rgbFunc, uint32_t rgbFactor,
       finalCB = (cOtherB - cLocalB) * factCB + aLocal;
       break;
     case 9:
-      finalCR = (cLocalR - cOtherR) * factCR + cOtherR;
-      finalCG = (cLocalG - cOtherG) * factCG + cOtherG;
-      finalCB = (cLocalB - cOtherB) * factCB + cOtherB;
+      finalCR = (-cLocalR) * factCR + cLocalR;
+      finalCG = (-cLocalG) * factCG + cLocalG;
+      finalCB = (-cLocalB) * factCB + cLocalB;
       break;
     case 16:
-      finalCR = (aLocal - cOtherR) * factCR + cOtherR;
-      finalCG = (aLocal - cOtherG) * factCG + cOtherG;
-      finalCB = (aLocal - cOtherB) * factCB + cOtherB;
+      finalCR = (-cLocalR) * factCR + aLocal;
+      finalCG = (-cLocalG) * factCG + aLocal;
+      finalCB = (-cLocalB) * factCB + aLocal;
       break;
   }
   if (rgbInvert) {
@@ -235,7 +248,9 @@ inline TmuColorSIMD EvaluateTmuStageSIMD(uint32_t rgbFunc, uint32_t rgbFactor,
                                          bool alphaInvert,
                                          const TmuColorSIMD& localVal,
                                          const TmuColorSIMD& otherVal,
-                                         const TmuColorSIMD& /*iteratedCol*/) {
+                                         const TmuColorSIMD& /*iteratedCol*/,
+                                         const Simd8f& detailFactor = Simd8f(0.0f),
+                                         const Simd8f& lodFraction = Simd8f(0.0f)) {
   const Simd8f one(1.0f);
   // 1. Evaluate Alpha
   Simd8f aLocal = localVal.a;
@@ -249,8 +264,11 @@ inline TmuColorSIMD EvaluateTmuStageSIMD(uint32_t rgbFunc, uint32_t rgbFactor,
     case 2:
       factA = aOther;
       break;
-    case 4:
-      factA = localVal.a;
+    case 4:  // GR_COMBINE_FACTOR_DETAIL_FACTOR
+      factA = detailFactor;
+      break;
+    case 5:  // GR_COMBINE_FACTOR_LOD_FRACTION
+      factA = lodFraction;
       break;
     case 8:
       factA = one;
@@ -262,8 +280,11 @@ inline TmuColorSIMD EvaluateTmuStageSIMD(uint32_t rgbFunc, uint32_t rgbFactor,
     case 10:
       factA = one - aOther;
       break;
-    case 12:
-      factA = one - localVal.a;
+    case 12:  // GR_COMBINE_FACTOR_ONE_MINUS_DETAIL_FACTOR
+      factA = one - detailFactor;
+      break;
+    case 13:  // GR_COMBINE_FACTOR_ONE_MINUS_LOD_FRACTION
+      factA = one - lodFraction;
       break;
   }
 
@@ -290,7 +311,7 @@ inline TmuColorSIMD EvaluateTmuStageSIMD(uint32_t rgbFunc, uint32_t rgbFactor,
       break;
     case 9:
     case 16:
-      finalA = Fma(aLocal - aOther, factA, aOther);
+      finalA = aLocal * (one - factA);
       break;
   }
   if (alphaInvert) finalA = one - finalA;
@@ -322,15 +343,15 @@ inline TmuColorSIMD EvaluateTmuStageSIMD(uint32_t rgbFunc, uint32_t rgbFactor,
       factCG = aLocal;
       factCB = aLocal;
       break;
-    case 4:
-      factCR = localVal.a;
-      factCG = localVal.a;
-      factCB = localVal.a;
+    case 4:  // GR_COMBINE_FACTOR_DETAIL_FACTOR
+      factCR = detailFactor;
+      factCG = detailFactor;
+      factCB = detailFactor;
       break;
-    case 5:
-      factCR = localVal.r;
-      factCG = localVal.g;
-      factCB = localVal.b;
+    case 5:  // GR_COMBINE_FACTOR_LOD_FRACTION
+      factCR = lodFraction;
+      factCG = lodFraction;
+      factCB = lodFraction;
       break;
     case 8:
       factCR = one;
@@ -352,10 +373,15 @@ inline TmuColorSIMD EvaluateTmuStageSIMD(uint32_t rgbFunc, uint32_t rgbFactor,
       factCG = one - aLocal;
       factCB = one - aLocal;
       break;
-    case 12:
-      factCR = one - localVal.a;
-      factCG = one - localVal.a;
-      factCB = one - localVal.a;
+    case 12:  // GR_COMBINE_FACTOR_ONE_MINUS_DETAIL_FACTOR
+      factCR = one - detailFactor;
+      factCG = one - detailFactor;
+      factCB = one - detailFactor;
+      break;
+    case 13:  // GR_COMBINE_FACTOR_ONE_MINUS_LOD_FRACTION
+      factCR = one - lodFraction;
+      factCG = one - lodFraction;
+      factCB = one - lodFraction;
       break;
   }
 
@@ -401,14 +427,14 @@ inline TmuColorSIMD EvaluateTmuStageSIMD(uint32_t rgbFunc, uint32_t rgbFactor,
       finalCB = Fma(cOtherB - cLocalB, factCB, aLocal);
       break;
     case 9:
-      finalCR = Fma(cLocalR - cOtherR, factCR, cOtherR);
-      finalCG = Fma(cLocalG - cOtherG, factCG, cOtherG);
-      finalCB = Fma(cLocalB - cOtherB, factCB, cOtherB);
+      finalCR = cLocalR * (one - factCR);
+      finalCG = cLocalG * (one - factCG);
+      finalCB = cLocalB * (one - factCB);
       break;
     case 16:
-      finalCR = Fma(aLocal - cOtherR, factCR, cOtherR);
-      finalCG = Fma(aLocal - cOtherG, factCG, cOtherG);
-      finalCB = Fma(aLocal - cOtherB, factCB, cOtherB);
+      finalCR = aLocal - cLocalR * factCR;
+      finalCG = aLocal - cLocalG * factCG;
+      finalCB = aLocal - cLocalB * factCB;
       break;
   }
   if (rgbInvert) {

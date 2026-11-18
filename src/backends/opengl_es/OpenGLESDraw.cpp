@@ -31,7 +31,7 @@ void OpenGLESBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z,
   bool doColorClear = false;
   bool doDepthClear = false;
 
-  if ((clearMask & 0x1) && (m_colorMaskRgb || m_colorMaskAlpha)) {  // Color Clear
+  if ((clearMask & 0x1) && (GetColorWriteMask4() != 0)) {  // Color Clear
     a = ((alpha > 0) ? alpha : 255) / 255.0f;
     r = ((color >> 16) & 0xFF) / 255.0f;
     g = ((color >> 8) & 0xFF) / 255.0f;
@@ -74,7 +74,7 @@ void OpenGLESBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z,
   // 1. Handle any pending sparse LFB overlay before clearing, and defer
   // CPU-side full framebuffer clear lazily so pure 3D frames allocate 0 bytes.
   if (clearMask & 0x1) {
-    if (fullClip && m_colorMaskRgb && m_colorMaskAlpha) {
+    if (fullClip && IsFullColorMask()) {
       // Full unmasked color clear overwrites every pixel, so any pending
       // overlay is superseded.
       m_lfbStaging.ClearOverlay(m_activeRenderBuffer);
@@ -84,9 +84,9 @@ void OpenGLESBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z,
       FlushLFBToGPU_Locked();
     }
     if (fullClip) {
-      m_lfbStaging.ScheduleLazyClear(m_activeRenderBuffer, color, alpha,
-                                     m_pixelFormatOverride, m_colorMaskRgb,
-                                     m_colorMaskAlpha);
+      m_lfbStaging.ScheduleLazyClearMask(m_activeRenderBuffer, color, alpha,
+                                         m_pixelFormatOverride,
+                                         GetColorWriteMask4());
     }
   }
 
@@ -95,8 +95,7 @@ void OpenGLESBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z,
 
   // If this clear does NOT overwrite every color pixel + channel, synchronize
   // MSAA <-> 1x color first so untouched regions/channels remain intact.
-  if (m_msaaSamples > 1 &&
-      (!fullClip || !doColorClear || !m_colorMaskRgb || !m_colorMaskAlpha)) {
+  if (m_msaaSamples > 1 && (!fullClip || !doColorClear || !IsFullColorMask())) {
     if (useSingle && m_msaaColorDirty[slot]) {
       ResolveMsaaToSingle_Locked(slot);
     } else if (!useSingle && m_singleSampleColorDirty[slot]) {
@@ -209,10 +208,10 @@ void OpenGLESBackend::DrawMaskedClearQuadGLES_Locked(float r, float g, float b,
   glDisable(GL_CULL_FACE);
   glDisable(GL_BLEND);
 
-  const GLboolean maskRgb = (doColorClear && m_colorMaskRgb) ? GL_TRUE : GL_FALSE;
-  const GLboolean maskAlpha =
-      (doColorClear && m_colorMaskAlpha) ? GL_TRUE : GL_FALSE;
-  glColorMask(maskRgb, maskRgb, maskRgb, maskAlpha);
+  glColorMask((doColorClear && m_colorMaskR) ? GL_TRUE : GL_FALSE,
+              (doColorClear && m_colorMaskG) ? GL_TRUE : GL_FALSE,
+              (doColorClear && m_colorMaskB) ? GL_TRUE : GL_FALSE,
+              (doColorClear && m_colorMaskAlpha) ? GL_TRUE : GL_FALSE);
 
   if (doDepthClear) {
     glEnable(GL_DEPTH_TEST);
@@ -521,9 +520,9 @@ void OpenGLESBackend::ApplyBlendingGLES() {
 }
 
 void OpenGLESBackend::ApplyColorMaskGLES() {
-  glColorMask(m_colorMaskRgb ? GL_TRUE : GL_FALSE,
-              m_colorMaskRgb ? GL_TRUE : GL_FALSE,
-              m_colorMaskRgb ? GL_TRUE : GL_FALSE,
+  glColorMask(m_colorMaskR ? GL_TRUE : GL_FALSE,
+              m_colorMaskG ? GL_TRUE : GL_FALSE,
+              m_colorMaskB ? GL_TRUE : GL_FALSE,
               m_colorMaskAlpha ? GL_TRUE : GL_FALSE);
 }
 
@@ -765,7 +764,7 @@ void OpenGLESBackend::FlushBatch(bool fromStateFlush) {
   uint32_t vertexCount = m_batchVertices.size();
   glDrawArrays(mode, firstVertex, vertexCount);
 
-  if (m_msaaSamples > 1 && (m_colorMaskRgb || m_colorMaskAlpha)) {
+  if (m_msaaSamples > 1 && GetColorWriteMask4() != 0) {
     if (useSingle) {
       m_singleSampleColorDirty[slot] = true;
       m_msaaColorDirty[slot] = false;

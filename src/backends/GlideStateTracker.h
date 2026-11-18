@@ -54,7 +54,19 @@ class GlideStateTracker : public IGraphicsBackend {
   uint32_t GetClipMaxX() const { return m_clipMaxX; }
   uint32_t GetClipMaxY() const { return m_clipMaxY; }
   bool GetColorMaskRgb() const { return m_colorMaskRgb; }
+  bool GetColorMaskR() const { return m_colorMaskR; }
+  bool GetColorMaskG() const { return m_colorMaskG; }
+  bool GetColorMaskB() const { return m_colorMaskB; }
   bool GetColorMaskAlpha() const { return m_colorMaskAlpha; }
+  uint8_t GetColorWriteMask4() const {
+    return static_cast<uint8_t>((m_colorMaskR ? 1u : 0u) |
+                                (m_colorMaskG ? 2u : 0u) |
+                                (m_colorMaskB ? 4u : 0u) |
+                                (m_colorMaskAlpha ? 8u : 0u));
+  }
+  bool IsFullColorMask() const {
+    return m_colorMaskR && m_colorMaskG && m_colorMaskB && m_colorMaskAlpha;
+  }
   bool GetTexCombinerRgbInvert(uint32_t tmu) const {
     return tmu < 2 ? m_texCombinerRgbInvert[tmu] : false;
   }
@@ -105,6 +117,7 @@ class GlideStateTracker : public IGraphicsBackend {
                      uint32_t maxY) override;
   void SetSstOrigin(uint32_t origin) override;
   void SetColorMask(bool rgb, bool alpha) override;
+  void SetColorMaskExt(bool r, bool g, bool b, bool a) override;
   void SetGamma(float gamma) override;
   void LoadGammaTable(uint32_t nentries, const uint32_t* rTable,
                       const uint32_t* gTable, const uint32_t* bTable) override;
@@ -121,6 +134,8 @@ class GlideStateTracker : public IGraphicsBackend {
   void UploadTexture(uint32_t tmu, uint32_t startAddress,
                      const struct VirtualTexture& tex) override;
   void SetTexLodBias(uint32_t tmu, float bias) override;
+  void SetTexDetailControl(uint32_t tmu, int32_t lodBias, uint8_t detailScale,
+                           float detailMax) override;
   void SetTexMipMapMode(uint32_t tmu, uint32_t mode, bool lodBlend) override;
   void UploadTexturePartial(uint32_t tmu, uint32_t startAddress,
                             const struct VirtualTexture& tex, uint32_t lodLevel,
@@ -200,6 +215,7 @@ class GlideStateTracker : public IGraphicsBackend {
   }
   void SetSstOrigin_Locked(uint32_t origin);
   void SetColorMask_Locked(bool rgb, bool alpha);
+  void SetColorMaskExt_Locked(bool r, bool g, bool b, bool a);
   void SetGamma_Locked(float gamma);
   void LoadGammaTable_Locked(uint32_t nentries, const uint32_t* rTable,
                              const uint32_t* gTable, const uint32_t* bTable);
@@ -210,6 +226,8 @@ class GlideStateTracker : public IGraphicsBackend {
                           uint32_t clampT, uint32_t minFilter,
                           uint32_t magFilter);
   void SetTexLodBias_Locked(uint32_t tmu, float bias);
+  void SetTexDetailControl_Locked(uint32_t tmu, int32_t lodBias,
+                                  uint8_t detailScale, float detailMax);
   void SetTexMipMapMode_Locked(uint32_t tmu, uint32_t mode, bool lodBlend);
   void SetCombinerMode_Locked(uint32_t colorFunc, uint32_t colorFactor,
                               uint32_t colorLocal, uint32_t colorOther,
@@ -274,10 +292,25 @@ class GlideStateTracker : public IGraphicsBackend {
   uint8_t m_fogTable[64] = {0};
 
   bool m_colorMaskRgb{true};
+  bool m_colorMaskR{true};
+  bool m_colorMaskG{true};
+  bool m_colorMaskB{true};
   bool m_colorMaskAlpha{true};
 
   // Virtual TMU & Sampler States
   float m_texLodBias[2] = {0.0f, 0.0f};
+  int32_t m_texDetailBias[2] = {0, 0};
+  uint8_t m_texDetailScale[2] = {0, 0};
+  float m_texDetailMax[2] = {0.0f, 0.0f};
+  uint32_t PackTexDetail_Locked(uint32_t tmu) const {
+    if (tmu >= 2) return 0u;
+    const int32_t b = std::clamp(m_texDetailBias[tmu], -32, 31);
+    const uint32_t s = static_cast<uint32_t>(std::min<uint8_t>(m_texDetailScale[tmu], 7u));
+    const uint32_t m = static_cast<uint32_t>(
+        std::clamp(m_texDetailMax[tmu], 0.0f, 1.0f) * 255.0f + 0.5f);
+    return (static_cast<uint32_t>(b + 32) & 0x3Fu) | ((s & 0x7u) << 8) |
+           ((m & 0xFFu) << 16);
+  }
   uint32_t m_texMipMapMode[2] = {0, 0};
   bool m_texLodBlend[2] = {false, false};
   uint32_t m_boundTexAddress[2] = {0xFFFFFFFF, 0xFFFFFFFF};

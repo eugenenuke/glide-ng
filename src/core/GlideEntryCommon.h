@@ -54,6 +54,9 @@ struct SharedFrontendState {
   TexChromaState texChromaState[2]{};
 
   float texLodBias[2]{0.0f, 0.0f};
+  int32_t texDetailBias[2]{0, 0};
+  uint8_t texDetailScale[2]{0, 0};
+  float texDetailMax[2]{0.0f, 0.0f};
   uint32_t mipmapMode[2]{0, 0};
   bool lodBlend[2]{false, false};
 
@@ -74,6 +77,9 @@ struct SharedFrontendState {
   uint8_t fogTable[64]{};
 
   bool colorMaskRgb{true};
+  bool colorMaskR{true};
+  bool colorMaskG{true};
+  bool colorMaskB{true};
   bool colorMaskAlpha{true};
   uint32_t ditherMode{0};
 
@@ -151,6 +157,8 @@ void SetTexClampMode(SharedFrontendState& st, uint32_t tmu, uint32_t sClamp,
 void SetTexMipMapMode(SharedFrontendState& st, uint32_t tmu, uint32_t mode,
                       bool lodBlend);
 void SetTexLodBias(SharedFrontendState& st, uint32_t tmu, float bias);
+void SetTexDetailControl(SharedFrontendState& st, uint32_t tmu, int32_t lodBias,
+                         uint8_t detailScale, float detailMax);
 void BindTexSource(SharedFrontendState& st, uint32_t tmu,
                    uint32_t startAddress);
 void SetDepthMode(SharedFrontendState& st, uint32_t mode);
@@ -161,6 +169,7 @@ void SetSstOrigin(uint32_t& sstOrigin, uint32_t origin);
 void SetCullMode(SharedFrontendState& st, uint32_t mode);
 void SetConstantColor(SharedFrontendState& st, uint32_t value);
 void SetColorMask(SharedFrontendState& st, bool rgb, bool alpha);
+void SetColorMaskExt(SharedFrontendState& st, bool r, bool g, bool b, bool a);
 void SetDitherMode(SharedFrontendState& st, uint32_t mode);
 void SetChromakeyMode(SharedFrontendState& st, uint32_t mode);
 void SetChromakeyValue(SharedFrontendState& st, uint32_t value);

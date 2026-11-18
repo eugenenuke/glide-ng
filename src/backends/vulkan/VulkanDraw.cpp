@@ -46,7 +46,7 @@ void VulkanBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z,
   bool doColorClear = false;
   bool doDepthClear = false;
 
-  if ((clearMask & 1) && (m_colorMaskRgb || m_colorMaskAlpha)) {
+  if ((clearMask & 1) && (GetColorWriteMask4() != 0)) {
     a = ((alpha > 0) ? alpha : 255) / 255.0f;
     r = ((color >> 16) & 0xFF) / 255.0f;
     g = ((color >> 8) & 0xFF) / 255.0f;
@@ -73,41 +73,59 @@ void VulkanBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z,
   if (clearCount == 0) return;
 
   // Check if VSA-100 grTBufferWriteMaskExt restricts this clear to a subset of
-  // MSAA samples (e.g., Rocket Burger 4-pass T-Buffer Motion Blur / DoF).
-  // vkCmdClearAttachments ignores pSampleMask, so partial sample-mask clears
-  // must execute as a sample-masked fullscreen quad (matching VSA-100 H5
-  // _grTriFill fallback).
+  // MSAA samples, OR if grColorMask/grColorMaskExt masks any color channel.
+  // vkCmdClearAttachments ignores both pSampleMask and colorWriteMask, so
+  // either case must execute as a masked fullscreen quad.
   const uint32_t fullSampleMask =
       (m_msaaSamples >= 32) ? 0xFFFFFFFFu : ((1u << m_msaaSamples) - 1u);
   const uint32_t effSampleMask = GetEffectiveSampleMask_Locked();
-  const bool isMaskedClear =
+  const bool isSampleMaskedClear =
       (m_msaaSamples > 1 && effSampleMask != fullSampleMask);
+  const bool isChannelMaskedClear = (doColorClear && !IsFullColorMask());
 
-  if (isMaskedClear) {
-    if (effSampleMask == 0u) return;
+  if (isSampleMaskedClear || isChannelMaskedClear) {
+    if (isSampleMaskedClear && effSampleMask == 0u) return;
     if ((clearMask & 1) && m_lfbStaging.IsOverlayDirty(m_activeRenderBuffer)) {
       FlushLFBToGPU_Locked();
+    }
+    if ((clearMask & 1) && fullClip && !isSampleMaskedClear) {
+      m_lfbStaging.ScheduleLazyClearMask(m_activeRenderBuffer, color, alpha,
+                                         m_pixelFormatOverride,
+                                         GetColorWriteMask4());
     }
     if (m_batchedVertexCount > 0) {
       FlushBatch();
     }
+    const bool useSingle =
+        isSampleMaskedClear ? false : ShouldUseSingleSamplePass_Locked();
+    const uint32_t passSampleMask =
+        (m_msaaSamples > 1 && !useSingle) ? effSampleMask : 1u;
     DrawMaskedClearQuad_Locked(r, g, b, a, z, doColorClear, doDepthClear,
-                               effSampleMask, clipRect);
+                               passSampleMask, clipRect, useSingle);
+    if (m_msaaSamples > 1 && fullClip && doDepthClear && !isSampleMaskedClear) {
+      const uint32_t activeIdx = GetActiveGpuBufferIdx();
+      m_clearDepthValue[activeIdx] = z;
+      if (m_activePassIsSingleSample) {
+        m_clearDepthPending[activeIdx] = true;
+      } else {
+        m_clearDepthPendingSingle[activeIdx] = true;
+      }
+    }
     return;
   }
 
   // 2. Handle any pending sparse LFB overlay before clearing, and defer
   // CPU-side full framebuffer clear lazily so pure 3D frames allocate 0 bytes.
   if (clearMask & 1) {
-    if (fullClip && m_colorMaskRgb && m_colorMaskAlpha) {
+    if (fullClip && IsFullColorMask()) {
       m_lfbStaging.ClearOverlay(m_activeRenderBuffer);
     } else if (m_lfbStaging.IsOverlayDirty(m_activeRenderBuffer)) {
       FlushLFBToGPU_Locked();
     }
     if (fullClip) {
-      m_lfbStaging.ScheduleLazyClear(m_activeRenderBuffer, color, alpha,
-                                     m_pixelFormatOverride, m_colorMaskRgb,
-                                     m_colorMaskAlpha);
+      m_lfbStaging.ScheduleLazyClearMask(m_activeRenderBuffer, color, alpha,
+                                         m_pixelFormatOverride,
+                                         GetColorWriteMask4());
     }
   }
 
@@ -122,7 +140,7 @@ void VulkanBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z,
     if (doColorClear) {
       m_clearColorValue[activeIdx] = colorClearVal;
       m_clearColorPending[activeIdx] = true;
-      if (m_colorMaskRgb && m_colorMaskAlpha) {
+      if (IsFullColorMask()) {
         m_msaaColorDirty[activeIdx] = false;
         m_singleSampleColorDirty[activeIdx] = false;
       }
@@ -171,7 +189,8 @@ void VulkanBackend::DrawMaskedClearQuad_Locked(float r, float g, float b,
                                                bool doColorClear,
                                                bool doDepthClear,
                                                uint32_t sampleMask,
-                                               const vk::Rect2D& clipRect) {
+                                               const vk::Rect2D& clipRect,
+                                               bool useSingleSample) {
   if (!m_vertexBufferMap) return;
 
   const uint32_t slotBase = m_currentFrameSlot * kVertexSlotBytes;
@@ -181,7 +200,7 @@ void VulkanBackend::DrawMaskedClearQuad_Locked(float r, float g, float b,
     m_vertexBufferOffset = slotBase;
   }
 
-  EnsureRenderPassActive(/*useSingleSample=*/false);
+  EnsureRenderPassActive(useSingleSample);
 
   const float w = static_cast<float>(m_guestWidth);
   const float h = static_cast<float>(m_guestHeight);
@@ -221,9 +240,8 @@ void VulkanBackend::DrawMaskedClearQuad_Locked(float r, float g, float b,
   clearKey.rgbDstBlend = 0u;                         // GR_BLEND_ZERO
   clearKey.alphaSrcBlend = 4u;                       // GR_BLEND_ONE
   clearKey.alphaDstBlend = 0u;                       // GR_BLEND_ZERO
-  clearKey.colorMaskRgb = doColorClear && m_colorMaskRgb;
-  clearKey.colorMaskAlpha = doColorClear && m_colorMaskAlpha;
-  clearKey.singleSample = false;
+  clearKey.colorWriteMask = doColorClear ? GetColorWriteMask4() : 0u;
+  clearKey.singleSample = (m_msaaSamples > 1) && useSingleSample;
   clearKey.sampleMask = sampleMask;
 
   vk::Pipeline clearPipeline =
@@ -259,10 +277,15 @@ void VulkanBackend::DrawMaskedClearQuad_Locked(float r, float g, float b,
   m_commandBuffer->setScissor(0, 1, &clipRect);
   m_commandBuffer->draw(6, 1, firstVertex, 0);
 
-  if (doColorClear) {
+  if (doColorClear && m_msaaSamples > 1) {
     const uint32_t activeIdx = GetActiveGpuBufferIdx();
-    m_msaaColorDirty[activeIdx] = true;
-    m_singleSampleColorDirty[activeIdx] = false;
+    if (m_activePassIsSingleSample) {
+      m_singleSampleColorDirty[activeIdx] = true;
+      m_msaaColorDirty[activeIdx] = false;
+    } else {
+      m_msaaColorDirty[activeIdx] = true;
+      m_singleSampleColorDirty[activeIdx] = false;
+    }
   }
 }
 
@@ -584,7 +607,7 @@ void VulkanBackend::FlushBatch(bool fromStateFlush) {
 
   m_commandBuffer->draw(m_batchedVertexCount, 1, m_batchedFirstVertex, 0);
 
-  if (m_msaaSamples > 1 && (m_colorMaskRgb || m_colorMaskAlpha)) {
+  if (m_msaaSamples > 1 && GetColorWriteMask4() != 0) {
     const uint32_t activeIdx = GetActiveGpuBufferIdx();
     if (m_activePassIsSingleSample) {
       m_singleSampleColorDirty[activeIdx] = true;
@@ -874,6 +897,10 @@ void VulkanBackend::PopulatePushConstants(PushConstants& pcs) {
   flags |= (m_stippleMode & 3u) << 11;
 
   pcs.flags = flags;
+  pcs.texDetail0 = PackTexDetail_Locked(0);
+  pcs.texDetail1 = PackTexDetail_Locked(1);
+  pcs.texLodBias0 = m_texLodBias[0];
+  pcs.texLodBias1 = m_texLodBias[1];
 }
 
 }  // namespace GlideWrapper

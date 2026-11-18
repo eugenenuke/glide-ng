@@ -580,8 +580,7 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
         k.rgbDstBlend = 0;     // GR_BLEND_ZERO
         k.alphaSrcBlend = 4;   // GR_BLEND_ONE
         k.alphaDstBlend = 0;   // GR_BLEND_ZERO
-        k.colorMaskRgb = true;
-        k.colorMaskAlpha = true;
+        k.colorWriteMask = 0xFu;
         k.singleSample = false;
         k.sampleMask = warmSampleMask;
         warmStates.push_back(k);
@@ -602,8 +601,7 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
       k.rgbDstBlend = 5;    // GR_BLEND_ONE_MINUS_SRC_ALPHA
       k.alphaSrcBlend = 4;  // GR_BLEND_ONE (separate Alpha factor!)
       k.alphaDstBlend = 0;  // GR_BLEND_ZERO
-      k.colorMaskRgb = true;
-      k.colorMaskAlpha = true;
+      k.colorWriteMask = 0xFu;
       k.singleSample = false;
       k.sampleMask = warmSampleMask;
       warmStates.push_back(k);
@@ -621,8 +619,7 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
       k.rgbDstBlend = 0;    // GR_BLEND_ZERO
       k.alphaSrcBlend = 4;  // GR_BLEND_ONE
       k.alphaDstBlend = 0;  // GR_BLEND_ZERO
-      k.colorMaskRgb = true;
-      k.colorMaskAlpha = true;
+      k.colorWriteMask = 0xFu;
       k.singleSample = false;
       k.sampleMask = warmSampleMask;
       warmStates.push_back(k);
@@ -1357,12 +1354,17 @@ void VulkanBackend::SetClipWindow(uint32_t minX, uint32_t minY, uint32_t maxX,
 }
 
 void VulkanBackend::SetColorMask(bool rgb, bool alpha) {
+  SetColorMaskExt(rgb, rgb, rgb, alpha);
+}
+
+void VulkanBackend::SetColorMaskExt(bool r, bool g, bool b, bool a) {
   std::lock_guard<std::mutex> lock(m_mutex);
-  if (rgb != m_colorMaskRgb || alpha != m_colorMaskAlpha) {
+  if (r != m_colorMaskR || g != m_colorMaskG || b != m_colorMaskB ||
+      a != m_colorMaskAlpha) {
     FlushBatch(true);
     m_pipelineStateDirty = true;
   }
-  GlideStateTracker::SetColorMask_Locked(rgb, alpha);
+  GlideStateTracker::SetColorMaskExt_Locked(r, g, b, a);
 }
 
 void VulkanBackend::SetAAMultiSample(bool enabled) {

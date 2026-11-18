@@ -76,8 +76,10 @@ void SoftwareBackendBase::ClearBuffer_Locked(uint32_t color, uint32_t alpha,
     }
 
     uint32_t writeMask = 0;
-    if (m_colorMaskRgb) writeMask |= 0x00FFFFFF;
-    if (m_colorMaskAlpha) writeMask |= 0xFF000000;
+    if (m_colorMaskR) writeMask |= 0x00FF0000u;
+    if (m_colorMaskG) writeMask |= 0x0000FF00u;
+    if (m_colorMaskB) writeMask |= 0x000000FFu;
+    if (m_colorMaskAlpha) writeMask |= 0xFF000000u;
 
     if (writeMask == 0) {
       GLIDE_LOG(DEBUG, "Rasterizer",
@@ -201,19 +203,18 @@ void SoftwareBackendBase::ScheduleLazyCpuClear(uint32_t color, uint32_t alpha,
       (m_activeRenderBuffer == 0) ? m_frontBufferIdx : m_backBufferIdx;
 
   if (clearMask & 0x1) {
-    if (m_colorMaskRgb || m_colorMaskAlpha) {
+    const uint8_t mask4 = GetColorWriteMask4();
+    if (mask4 != 0u) {
       auto& slotState = m_pendingCpuColorClear[activeSlot];
-      if (slotState.pending && !(m_colorMaskRgb && m_colorMaskAlpha) &&
-          (slotState.maskRgb != m_colorMaskRgb ||
-           slotState.maskAlpha != m_colorMaskAlpha)) {
+      if (slotState.pending && mask4 != 0xFu &&
+          slotState.colorWriteMask4 != mask4) {
         MaterializeLazyCpuClear_Locked(activeSlot);
       }
       slotState.pending = true;
       slotState.color = color;
       slotState.alpha = alpha;
       slotState.pixelFormat = m_pixelFormatOverride;
-      slotState.maskRgb = m_colorMaskRgb;
-      slotState.maskAlpha = m_colorMaskAlpha;
+      slotState.colorWriteMask4 = mask4;
     }
   }
 
@@ -232,8 +233,10 @@ void SoftwareBackendBase::MaterializeLazyCpuClear_Locked(uint32_t bufferSlot) {
   if (m_cpuBuffers[bufferSlot].empty()) return;
 
   uint32_t writeMask = 0;
-  if (pending.maskRgb) writeMask |= 0x00FFFFFF;
-  if (pending.maskAlpha) writeMask |= 0xFF000000;
+  if (pending.colorWriteMask4 & 0x1u) writeMask |= 0x00FF0000u;
+  if (pending.colorWriteMask4 & 0x2u) writeMask |= 0x0000FF00u;
+  if (pending.colorWriteMask4 & 0x4u) writeMask |= 0x000000FFu;
+  if (pending.colorWriteMask4 & 0x8u) writeMask |= 0xFF000000u;
   if (writeMask == 0) return;
 
   uint32_t a = (pending.alpha > 0) ? pending.alpha : 255;

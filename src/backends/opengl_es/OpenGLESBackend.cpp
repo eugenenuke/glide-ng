@@ -2397,10 +2397,17 @@ void OpenGLESBackend::CopySingleToMsaa_Locked(uint32_t slot) {
 }
 
 void OpenGLESBackend::SetColorMask(bool rgb, bool alpha) {
+  SetColorMaskExt(rgb, rgb, rgb, alpha);
+}
+
+void OpenGLESBackend::SetColorMaskExt(bool r, bool g, bool b, bool a) {
   std::lock_guard<std::mutex> lock(m_mutex);
-  if (m_colorMaskRgb == rgb && m_colorMaskAlpha == alpha) return;
+  if (m_colorMaskR == r && m_colorMaskG == g && m_colorMaskB == b &&
+      m_colorMaskAlpha == a) {
+    return;
+  }
   FlushBatch(true);
-  GlideStateTracker::SetColorMask_Locked(rgb, alpha);
+  GlideStateTracker::SetColorMaskExt_Locked(r, g, b, a);
   m_glesDirtyMask |= kGlesDirtyColorMask;
 }
 

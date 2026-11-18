@@ -34,6 +34,9 @@ struct RasterizerState {
   uint32_t fogColor{0xff000000};
   uint8_t fogTable[64]{0};
   bool colorMaskRgb{true};
+  bool colorMaskR{true};
+  bool colorMaskG{true};
+  bool colorMaskB{true};
   bool colorMaskAlpha{true};
   bool aaEnabled{false};
   bool aaMultiSample{true};
@@ -51,6 +54,9 @@ struct RasterizerState {
   uint32_t texMipMapMode[2]{0, 0};
   bool texLodBlend[2]{false, false};
   float texLodBias[2]{0.0f, 0.0f};
+  int32_t texDetailBias[2]{0, 0};
+  uint8_t texDetailScale[2]{0, 0};
+  float texDetailMax[2]{0.0f, 0.0f};
 
   uint32_t colorCombinerFunc{0};
   uint32_t colorCombinerFactor{0};
@@ -100,7 +106,8 @@ struct RasterizerState {
            clipMaxY == o.clipMaxY && sstOrigin == o.sstOrigin &&
            fogMode == o.fogMode && fogColor == o.fogColor &&
            std::memcmp(fogTable, o.fogTable, 64) == 0 &&
-           colorMaskRgb == o.colorMaskRgb &&
+           colorMaskRgb == o.colorMaskRgb && colorMaskR == o.colorMaskR &&
+           colorMaskG == o.colorMaskG && colorMaskB == o.colorMaskB &&
            colorMaskAlpha == o.colorMaskAlpha && aaEnabled == o.aaEnabled &&
            aaMultiSample == o.aaMultiSample &&
            tbufferWriteMask == o.tbufferWriteMask &&
@@ -119,6 +126,12 @@ struct RasterizerState {
            texLodBlend[1] == o.texLodBlend[1] &&
            texLodBias[0] == o.texLodBias[0] &&
            texLodBias[1] == o.texLodBias[1] &&
+           texDetailBias[0] == o.texDetailBias[0] &&
+           texDetailBias[1] == o.texDetailBias[1] &&
+           texDetailScale[0] == o.texDetailScale[0] &&
+           texDetailScale[1] == o.texDetailScale[1] &&
+           texDetailMax[0] == o.texDetailMax[0] &&
+           texDetailMax[1] == o.texDetailMax[1] &&
            colorCombinerFunc == o.colorCombinerFunc &&
            colorCombinerFactor == o.colorCombinerFactor &&
            colorCombinerLocal == o.colorCombinerLocal &&

@@ -385,6 +385,11 @@ typedef FxU32 GrTexBaseRange_t;
 #define GR_TEXBASE_128      0x2
 #define GR_TEXBASE_64       0x1
 #define GR_TEXBASE_32_TO_1  0x0
+/* VSA-100 / Napalm extended multibase ranges */
+#define GR_TEXBASE_256_TO_1 0x4
+#define GR_TEXBASE_512      0x5
+#define GR_TEXBASE_1024     0x6
+#define GR_TEXBASE_2048     0x7
 
 
 typedef FxU32 GrEnableMode_t;
@@ -396,6 +401,9 @@ typedef FxU32 GrEnableMode_t;
 #define GR_PASSTHRU              0x03
 #define GR_SHAMELESS_PLUG        0x04
 #define GR_VIDEO_SMOOTHING       0x05
+#define GR_TEXTURE_UMA_EXT       0x06
+#define GR_STENCIL_MODE_EXT      0x07
+#define GR_OPENGL_MODE_EXT       0x08
 #define GR_AA_MULTI_SAMPLE       0x80000002u
 
 /* VSA-100 / Napalm PIXEXT pixel format definitions for grSstWinOpenExt */

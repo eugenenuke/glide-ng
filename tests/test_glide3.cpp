@@ -6758,3 +6758,418 @@ TEST_CASE("M10.2 GETGAMMA round-trip & Glide 3.x missing public exports",
   restoreCard();
 #endif
 }
+
+TEST_CASE(
+    "M10.3 Per-channel grColorMaskExt, TEXUMA, grTexMultibase, and "
+    "grTexDetailControl",
+    "[Glide3][M10][M10.3]") {
+#ifdef __linux__
+  const char* origCard = std::getenv("GLIDE_NG_CARD_MODEL");
+  std::string savedCard = origCard ? origCard : "";
+  auto restoreCard = [&]() {
+    if (!savedCard.empty()) {
+      ::setenv("GLIDE_NG_CARD_MODEL", savedCard.c_str(), 1);
+    } else {
+      ::unsetenv("GLIDE_NG_CARD_MODEL");
+    }
+  };
+
+  void* handle = OpenGlide3Handle();
+  REQUIRE(handle != nullptr);
+
+  using InitFunc = void (*)(void);
+  using ShutdownFunc = void (*)(void);
+  using WinOpenFunc = FxU32 (*)(FxU32, FxI32, FxI32, FxI32, FxI32, int, int);
+  using WinCloseFunc = FxBool (*)(FxU32);
+  using GetStringFunc = const char* (*)(FxU32);
+  using GetProcAddrFunc = GrProc (*)(char*);
+  using EnableFunc = void (*)(GrEnableMode_t);
+  using DisableFunc = void (*)(GrEnableMode_t);
+  using ClipFunc = void (*)(FxU32, FxU32, FxU32, FxU32);
+  using ClearFunc = void (*)(GrColor_t, GrAlpha_t, FxU32);
+  using ColorMaskFunc = void (*)(FxBool, FxBool);
+  using ColorMaskExtFunc = void (*)(FxBool, FxBool, FxBool, FxBool);
+  using ColorCombFunc = void (*)(GrCombineFunction_t, GrCombineFactor_t,
+                                 GrCombineLocal_t, GrCombineOther_t, FxBool);
+  using AlphaCombFunc = void (*)(GrCombineFunction_t, GrCombineFactor_t,
+                                 GrCombineLocal_t, GrCombineOther_t, FxBool);
+  using BlendFunc = void (*)(GrAlphaBlendFnc_t, GrAlphaBlendFnc_t,
+                             GrAlphaBlendFnc_t, GrAlphaBlendFnc_t);
+  using VertexLayoutFunc = void (*)(FxU32, FxI32, FxU32);
+  using DrawTriFunc = void (*)(const void*, const void*, const void*);
+  using ReadLfbFunc = FxBool (*)(GrBuffer_t, FxU32, FxU32, FxU32, FxU32, FxU32,
+                                 void*);
+  using TexMaxAddrFunc = FxU32 (*)(GrChipID_t);
+  using TexDownloadFunc = void (*)(GrChipID_t, FxU32, FxU32, GrTexInfo*);
+  using TexSourceFunc = void (*)(GrChipID_t, FxU32, FxU32, GrTexInfo*);
+  using TexCombineFunc = void (*)(GrChipID_t, GrCombineFunction_t,
+                                  GrCombineFactor_t, GrCombineFunction_t,
+                                  GrCombineFactor_t, FxBool, FxBool);
+  using TexMipMapFunc = void (*)(GrChipID_t, GrMipMapMode_t, FxBool);
+  using TexFilterFunc = void (*)(GrChipID_t, GrTextureFilterMode_t,
+                                 GrTextureFilterMode_t);
+  using TexMultibaseFunc = void (*)(GrChipID_t, FxBool);
+  using TexMultibaseAddrFunc = void (*)(GrChipID_t, GrTexBaseRange_t, FxU32,
+                                        FxU32, GrTexInfo*);
+  using TexDetailFunc = void (*)(GrChipID_t, int, FxU8, float);
+  using GetStateFunc = void (*)(void*);
+  using SetStateFunc = void (*)(const void*);
+
+  auto glideInit = reinterpret_cast<InitFunc>(::dlsym(handle, "grGlideInit"));
+  auto glideShutdown =
+      reinterpret_cast<ShutdownFunc>(::dlsym(handle, "grGlideShutdown"));
+  auto winOpen = reinterpret_cast<WinOpenFunc>(::dlsym(handle, "grSstWinOpen"));
+  auto winClose =
+      reinterpret_cast<WinCloseFunc>(::dlsym(handle, "grSstWinClose"));
+  auto getString =
+      reinterpret_cast<GetStringFunc>(::dlsym(handle, "grGetString"));
+  auto getProc =
+      reinterpret_cast<GetProcAddrFunc>(::dlsym(handle, "grGetProcAddress"));
+  auto enableMode = reinterpret_cast<EnableFunc>(::dlsym(handle, "grEnable"));
+  auto disableMode =
+      reinterpret_cast<DisableFunc>(::dlsym(handle, "grDisable"));
+  auto clipWindow = reinterpret_cast<ClipFunc>(::dlsym(handle, "grClipWindow"));
+  auto bufferClear =
+      reinterpret_cast<ClearFunc>(::dlsym(handle, "grBufferClear"));
+  auto colorMask =
+      reinterpret_cast<ColorMaskFunc>(::dlsym(handle, "grColorMask"));
+  auto colorCombine =
+      reinterpret_cast<ColorCombFunc>(::dlsym(handle, "grColorCombine"));
+  auto alphaCombine =
+      reinterpret_cast<AlphaCombFunc>(::dlsym(handle, "grAlphaCombine"));
+  auto alphaBlend =
+      reinterpret_cast<BlendFunc>(::dlsym(handle, "grAlphaBlendFunction"));
+  auto vertexLayout =
+      reinterpret_cast<VertexLayoutFunc>(::dlsym(handle, "grVertexLayout"));
+  auto drawTri =
+      reinterpret_cast<DrawTriFunc>(::dlsym(handle, "grDrawTriangle"));
+  auto readLfb =
+      reinterpret_cast<ReadLfbFunc>(::dlsym(handle, "grLfbReadRegion"));
+  auto texMaxAddr =
+      reinterpret_cast<TexMaxAddrFunc>(::dlsym(handle, "grTexMaxAddress"));
+  auto texDownload = reinterpret_cast<TexDownloadFunc>(
+      ::dlsym(handle, "grTexDownloadMipMap"));
+  auto texSource =
+      reinterpret_cast<TexSourceFunc>(::dlsym(handle, "grTexSource"));
+  auto texCombine =
+      reinterpret_cast<TexCombineFunc>(::dlsym(handle, "grTexCombine"));
+  auto texMipMap =
+      reinterpret_cast<TexMipMapFunc>(::dlsym(handle, "grTexMipMapMode"));
+  auto texFilter =
+      reinterpret_cast<TexFilterFunc>(::dlsym(handle, "grTexFilterMode"));
+  auto texMultibase =
+      reinterpret_cast<TexMultibaseFunc>(::dlsym(handle, "grTexMultibase"));
+  auto texMultibaseAddr = reinterpret_cast<TexMultibaseAddrFunc>(
+      ::dlsym(handle, "grTexMultibaseAddress"));
+  auto texDetail =
+      reinterpret_cast<TexDetailFunc>(::dlsym(handle, "grTexDetailControl"));
+  auto getState =
+      reinterpret_cast<GetStateFunc>(::dlsym(handle, "grGlideGetState"));
+  auto setState =
+      reinterpret_cast<SetStateFunc>(::dlsym(handle, "grGlideSetState"));
+
+  REQUIRE(glideInit != nullptr);
+  REQUIRE(winOpen != nullptr);
+  REQUIRE(getString != nullptr);
+  REQUIRE(getProc != nullptr);
+  REQUIRE(texMultibase != nullptr);
+  REQUIRE(texMultibaseAddr != nullptr);
+  REQUIRE(texDetail != nullptr);
+
+  // Verify TEXUMA advertisement: absent on Voodoo2, present on Banshee/V3/V5.
+  ::setenv("GLIDE_NG_CARD_MODEL", "voodoo2", 1);
+  glideInit();
+  CHECK(std::string(getString(0xa0)).find("TEXUMA") == std::string::npos);
+  glideShutdown();
+
+  ::setenv("GLIDE_NG_CARD_MODEL", "voodoo3", 1);
+  glideInit();
+  CHECK(std::string(getString(0xa0)).find("TEXUMA") != std::string::npos);
+  glideShutdown();
+
+  ::setenv("GLIDE_NG_CARD_MODEL", "voodoo5", 1);
+  glideInit();
+  CHECK(std::string(getString(0xa0)).find("TEXUMA") != std::string::npos);
+
+  char cmExtName[] = "grColorMaskExt";
+  auto colorMaskExt = reinterpret_cast<ColorMaskExtFunc>(getProc(cmExtName));
+  REQUIRE(colorMaskExt != nullptr);
+
+  FxU32 ctx = winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                      GR_COLORFORMAT_ARGB, GR_ORIGIN_UPPER_LEFT, 2, 1);
+  REQUIRE(ctx != 0);
+
+  struct M10Vert {
+    float x, y;
+    float r, g, b, a;
+    float oow;
+    float s0, t0;
+    float s1, t1;
+  };
+  vertexLayout(GR_PARAM_XY, offsetof(M10Vert, x), GR_PARAM_ENABLE);
+  vertexLayout(GR_PARAM_RGB, offsetof(M10Vert, r), GR_PARAM_ENABLE);
+  vertexLayout(GR_PARAM_A, offsetof(M10Vert, a), GR_PARAM_ENABLE);
+  vertexLayout(GR_PARAM_Q, offsetof(M10Vert, oow), GR_PARAM_ENABLE);
+  vertexLayout(GR_PARAM_ST0, offsetof(M10Vert, s0), GR_PARAM_ENABLE);
+  vertexLayout(GR_PARAM_ST1, offsetof(M10Vert, s1), GR_PARAM_ENABLE);
+
+  auto drawQuad = [&](float x0, float y0, float x1, float y1, float r, float g,
+                      float b, float a, float sMax0 = 255.0f,
+                      float tMax0 = 255.0f, float sMax1 = 255.0f,
+                      float tMax1 = 255.0f) {
+    M10Vert v0{x0, y0, r, g, b, a, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+    M10Vert v1{x1, y0, r, g, b, a, 1.0f, sMax0, 0.0f, sMax1, 0.0f};
+    M10Vert v2{x1, y1, r, g, b, a, 1.0f, sMax0, tMax0, sMax1, tMax1};
+    M10Vert v3{x0, y1, r, g, b, a, 1.0f, 0.0f, tMax0, 0.0f, tMax1};
+    drawTri(&v0, &v1, &v2);
+    drawTri(&v0, &v2, &v3);
+  };
+
+  colorMask(FXTRUE, FXTRUE);
+  clipWindow(0, 0, 640, 480);
+  alphaBlend(GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_ONE, GR_BLEND_ZERO);
+  bufferClear(0xFF101010, 0xFF, 0xFFFF);
+
+  // =========================================================================
+  // Quadrant 1 (top-left 0..320, 0..240): Per-channel grColorMaskExt
+  // =========================================================================
+  colorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+               GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_NONE, FXFALSE);
+  alphaCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+               GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_NONE, FXFALSE);
+
+  // Start with mid-gray (0x40, 0x40, 0x40) in Q1
+  clipWindow(0, 0, 320, 240);
+  bufferClear(0xFF404040, 0xFF, 0xFFFF);
+
+  // Sub-box A (20..100, 30..210): masked CLEAR with R-only -> (0xFF, 0x40, 0x40)
+  clipWindow(20, 30, 100, 210);
+  colorMaskExt(FXTRUE, FXFALSE, FXFALSE, FXFALSE);
+  bufferClear(0xFFFFFFFF, 0xFF, 0xFFFF);
+
+  // Sub-box B (120..200, 30..210): masked DRAW with G-only -> (0x40, 0xFF, 0x40)
+  clipWindow(0, 0, 320, 240);
+  colorMaskExt(FXFALSE, FXTRUE, FXFALSE, FXFALSE);
+  drawQuad(120, 30, 200, 210, 255.0f, 255.0f, 255.0f, 255.0f);
+
+  // Sub-box C (220..300, 30..210): masked DRAW with B-only -> (0x40, 0x40, 0xFF)
+  // Also test grGlideGetState / grGlideSetState preserves per-channel B-only!
+  colorMaskExt(FXFALSE, FXFALSE, FXTRUE, FXFALSE);
+  alignas(8) uint8_t savedBuf[1024] = {};
+  getState(savedBuf);
+  colorMask(FXTRUE, FXTRUE);  // clobber mask
+  setState(savedBuf);         // restore B-only mask
+  drawQuad(220, 30, 300, 210, 255.0f, 255.0f, 255.0f, 255.0f);
+
+  colorMask(FXTRUE, FXTRUE);
+  clipWindow(0, 0, 640, 480);
+
+  // =========================================================================
+  // Quadrant 2 (top-right 320..640, 0..240): TEXUMA cross-TMU sampling
+  // =========================================================================
+  const FxU32 nonUmaMax = texMaxAddr(GR_TMU0);
+  enableMode(GR_TEXTURE_UMA_EXT);
+  const FxU32 umaMax = texMaxAddr(GR_TMU0);
+  CHECK(umaMax == nonUmaMax * 2u);
+
+  // Download a solid CYAN (0x07FF) texture ONLY to GR_TMU0 at addr 0x10000,
+  // and a solid MAGENTA (0xF81F) texture ONLY to GR_TMU1 at addr 0x20000.
+  std::vector<uint16_t> cyanTex(64 * 64, 0x07FFu);
+  std::vector<uint16_t> magTex(64 * 64, 0xF81Fu);
+  GrTexInfo umaCyanInfo{GR_LOD_LOG2_64, GR_LOD_LOG2_64, GR_ASPECT_LOG2_1x1,
+                        GR_TEXFMT_RGB_565, cyanTex.data()};
+  GrTexInfo umaMagInfo{GR_LOD_LOG2_64, GR_LOD_LOG2_64, GR_ASPECT_LOG2_1x1,
+                       GR_TEXFMT_RGB_565, magTex.data()};
+  texDownload(GR_TMU0, 0x10000u, GR_MIPMAPLEVELMASK_BOTH, &umaCyanInfo);
+  texDownload(GR_TMU1, 0x20000u, GR_MIPMAPLEVELMASK_BOTH, &umaMagInfo);
+
+  texMipMap(GR_TMU0, GR_MIPMAP_DISABLE, FXFALSE);
+  texMipMap(GR_TMU1, GR_MIPMAP_DISABLE, FXFALSE);
+  texFilter(GR_TMU0, GR_TEXTUREFILTER_POINT_SAMPLED,
+            GR_TEXTUREFILTER_POINT_SAMPLED);
+  texFilter(GR_TMU1, GR_TEXTUREFILTER_POINT_SAMPLED,
+            GR_TEXTUREFILTER_POINT_SAMPLED);
+  colorCombine(GR_COMBINE_FUNCTION_SCALE_OTHER, GR_COMBINE_FACTOR_ONE,
+               GR_COMBINE_LOCAL_NONE, GR_COMBINE_OTHER_TEXTURE, FXFALSE);
+
+  // Left half of Q2 (340..470, 30..210): Sample 0x10000 (downloaded to TMU0)
+  // via TMU1! (TMU0 passes through OTHER = TMU1 output)
+  texSource(GR_TMU1, 0x10000u, GR_MIPMAPLEVELMASK_BOTH, &umaCyanInfo);
+  texSource(GR_TMU0, 0x20000u, GR_MIPMAPLEVELMASK_BOTH, &umaMagInfo);
+  texCombine(GR_TMU1, GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+             GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE, FXFALSE,
+             FXFALSE);
+  texCombine(GR_TMU0, GR_COMBINE_FUNCTION_SCALE_OTHER, GR_COMBINE_FACTOR_ONE,
+             GR_COMBINE_FUNCTION_SCALE_OTHER, GR_COMBINE_FACTOR_ONE, FXFALSE,
+             FXFALSE);
+  drawQuad(340, 30, 470, 210, 255.0f, 255.0f, 255.0f, 255.0f);
+
+  // Right half of Q2 (490..620, 30..210): Sample 0x20000 (downloaded to TMU1)
+  // via TMU0! (TMU0 outputs LOCAL)
+  texCombine(GR_TMU0, GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+             GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE, FXFALSE,
+             FXFALSE);
+  drawQuad(490, 30, 620, 210, 255.0f, 255.0f, 255.0f, 255.0f);
+
+  disableMode(GR_TEXTURE_UMA_EXT);
+  CHECK(texMaxAddr(GR_TMU0) == nonUmaMax);
+
+  // =========================================================================
+  // Quadrant 3 (bottom-left 0..320, 240..480): grTexMultibase scattered mips
+  // =========================================================================
+  // Scatter 4 non-contiguous mip allocations:
+  //   256x256 -> RED   (0xF800) at 0x100000
+  //   128x128 -> GREEN (0x07E0) at 0x200000
+  //   64x64   -> BLUE  (0x001F) at 0x300000
+  //   32..1   -> YELLOW(0xFFE0) at 0x400000
+  std::vector<uint16_t> mb256(256 * 256, 0xF800u);
+  std::vector<uint16_t> mb128(128 * 128, 0x07E0u);
+  std::vector<uint16_t> mb64(64 * 64, 0x001Fu);
+  std::vector<uint16_t> mb32to1(32 * 32 + 16 * 16 + 8 * 8 + 4 * 4 + 2 * 2 + 1,
+                                0xFFE0u);
+
+  GrTexInfo info256{GR_LOD_LOG2_256, GR_LOD_LOG2_256, GR_ASPECT_LOG2_1x1,
+                    GR_TEXFMT_RGB_565, mb256.data()};
+  GrTexInfo info128{GR_LOD_LOG2_128, GR_LOD_LOG2_128, GR_ASPECT_LOG2_1x1,
+                    GR_TEXFMT_RGB_565, mb128.data()};
+  GrTexInfo info64{GR_LOD_LOG2_64, GR_LOD_LOG2_64, GR_ASPECT_LOG2_1x1,
+                   GR_TEXFMT_RGB_565, mb64.data()};
+  GrTexInfo info32{GR_LOD_LOG2_1, GR_LOD_LOG2_32, GR_ASPECT_LOG2_1x1,
+                   GR_TEXFMT_RGB_565, mb32to1.data()};
+  GrTexInfo infoFull{GR_LOD_LOG2_1, GR_LOD_LOG2_256, GR_ASPECT_LOG2_1x1,
+                     GR_TEXFMT_RGB_565, nullptr};
+
+  texDownload(GR_TMU0, 0x100000u, GR_MIPMAPLEVELMASK_BOTH, &info256);
+  texDownload(GR_TMU0, 0x200000u, GR_MIPMAPLEVELMASK_BOTH, &info128);
+  texDownload(GR_TMU0, 0x300000u, GR_MIPMAPLEVELMASK_BOTH, &info64);
+  texDownload(GR_TMU0, 0x400000u, GR_MIPMAPLEVELMASK_BOTH, &info32);
+
+  texMultibase(GR_TMU0, FXTRUE);
+  texMultibaseAddr(GR_TMU0, GR_TEXBASE_256, 0x100000u, GR_MIPMAPLEVELMASK_BOTH,
+                   &info256);
+  texMultibaseAddr(GR_TMU0, GR_TEXBASE_128, 0x200000u, GR_MIPMAPLEVELMASK_BOTH,
+                   &info128);
+  texMultibaseAddr(GR_TMU0, GR_TEXBASE_64, 0x300000u, GR_MIPMAPLEVELMASK_BOTH,
+                   &info64);
+  texMultibaseAddr(GR_TMU0, GR_TEXBASE_32_TO_1, 0x400000u,
+                   GR_MIPMAPLEVELMASK_BOTH, &info32);
+
+  texMipMap(GR_TMU0, GR_MIPMAP_NEAREST, FXFALSE);
+  texFilter(GR_TMU0, GR_TEXTUREFILTER_POINT_SAMPLED,
+            GR_TEXTUREFILTER_POINT_SAMPLED);
+  texCombine(GR_TMU0, GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+             GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE, FXFALSE,
+             FXFALSE);
+  texSource(GR_TMU0, 0x100000u, GR_MIPMAPLEVELMASK_BOTH, &infoFull);
+
+  // Draw 4 strips in Q3 with different UV scale -> LOD 0 (Red), 1 (Green),
+  // 2 (Blue), 3 (Yellow). Each strip is 64px wide; s spans 64/128/256/512!
+  drawQuad(16, 260, 80, 460, 255.0f, 255.0f, 255.0f, 255.0f, 64.0f, 200.0f);
+  drawQuad(92, 260, 156, 460, 255.0f, 255.0f, 255.0f, 255.0f, 128.0f, 400.0f);
+  drawQuad(168, 260, 232, 460, 255.0f, 255.0f, 255.0f, 255.0f, 256.0f, 800.0f);
+  drawQuad(244, 260, 308, 460, 255.0f, 255.0f, 255.0f, 255.0f, 512.0f, 1600.0f);
+
+  texMultibase(GR_TMU0, FXFALSE);
+
+  // =========================================================================
+  // Quadrant 4 (bottom-right 320..640, 240..480): grTexDetailControl near/far
+  // =========================================================================
+  // Base texture = solid BLUE (0x001F), Detail texture = solid RED (0xF800)
+  // Using 2-pass test21 detail blend with detailBias=2, detailScale=7, max=1.0:
+  //   - Left box (LOD=0, 1 texel/px): b = clamp((2-0)*128/255, 0, 1) = 1.0 -> RED
+  //   - Mid  box (LOD=1, 2 texels/px): b = (2-1)*128/255 = 0.502 -> PURPLE (~128,0,127)
+  //   - Right box(LOD=2.5, ~6 tex/px): b = 0.0 -> BLUE
+  std::vector<uint16_t> blueBase(256 * 256, 0x001Fu);
+  std::vector<uint16_t> redDetail(256 * 256, 0xF800u);
+  GrTexInfo blueInfo{GR_LOD_LOG2_256, GR_LOD_LOG2_256, GR_ASPECT_LOG2_1x1,
+                     GR_TEXFMT_RGB_565, blueBase.data()};
+  GrTexInfo redInfo{GR_LOD_LOG2_256, GR_LOD_LOG2_256, GR_ASPECT_LOG2_1x1,
+                    GR_TEXFMT_RGB_565, redDetail.data()};
+  texDownload(GR_TMU0, 0x500000u, GR_MIPMAPLEVELMASK_BOTH, &blueInfo);
+  texDownload(GR_TMU0, 0x600000u, GR_MIPMAPLEVELMASK_BOTH, &redInfo);
+  texMipMap(GR_TMU0, GR_MIPMAP_DISABLE, FXFALSE);
+  texDetail(GR_TMU0, 2, 7, 1.0f);
+
+  auto drawDetailBox = [&](float x0, float y0, float x1, float y1,
+                           float texelsPerPx) {
+    const float spanX = (x1 - x0) * texelsPerPx;
+    const float spanY = (y1 - y0) * texelsPerPx;
+    // Pass 1: base * (1 - b)
+    texCombine(GR_TMU0, GR_COMBINE_FUNCTION_BLEND_LOCAL,
+               GR_COMBINE_FACTOR_DETAIL_FACTOR, GR_COMBINE_FUNCTION_LOCAL,
+               GR_COMBINE_FACTOR_NONE, FXFALSE, FXFALSE);
+    alphaBlend(GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_ONE, GR_BLEND_ZERO);
+    texSource(GR_TMU0, 0x500000u, GR_MIPMAPLEVELMASK_BOTH, &blueInfo);
+    drawQuad(x0, y0, x1, y1, 255.0f, 255.0f, 255.0f, 255.0f, spanX, spanY);
+
+    // Pass 2: + detail * b
+    texCombine(GR_TMU0, GR_COMBINE_FUNCTION_BLEND_LOCAL,
+               GR_COMBINE_FACTOR_ONE_MINUS_DETAIL_FACTOR,
+               GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE, FXFALSE,
+               FXFALSE);
+    alphaBlend(GR_BLEND_ONE, GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_ZERO);
+    texSource(GR_TMU0, 0x600000u, GR_MIPMAPLEVELMASK_BOTH, &redInfo);
+    drawQuad(x0, y0, x1, y1, 255.0f, 255.0f, 255.0f, 255.0f, spanX, spanY);
+  };
+
+  drawDetailBox(336, 260, 420, 460, 1.0f);  // LOD 0 -> b=1.0 -> RED
+  drawDetailBox(436, 260, 520, 460, 2.0f);  // LOD 1 -> b=0.5 -> PURPLE
+  drawDetailBox(536, 260, 620, 460, 6.0f);  // LOD 2.58 -> b=0.0 -> BLUE
+
+  // Read full 640x480 backbuffer (ARGB8888: 0xAARRGGBB)
+  std::vector<uint32_t> fb(640 * 480, 0u);
+  REQUIRE(readLfb(GR_BUFFER_BACKBUFFER, 0, 0, 640, 480, 640 * 4, fb.data()) ==
+          FXTRUE);
+
+  if (const char* snapPath = std::getenv("GLIDE_NG_M10_SNAPSHOT_PATH")) {
+    std::ofstream ppm(snapPath, std::ios::binary | std::ios::trunc);
+    if (ppm.is_open()) {
+      ppm << "P6\n640 480\n255\n";
+      for (uint32_t p : fb) {
+        uint8_t rgb[3] = {static_cast<uint8_t>((p >> 16) & 0xFFu),
+                          static_cast<uint8_t>((p >> 8) & 0xFFu),
+                          static_cast<uint8_t>(p & 0xFFu)};
+        ppm.write(reinterpret_cast<const char*>(rgb), 3);
+      }
+    }
+  }
+
+  auto checkRgb = [&](int x, int y, int expR, int expG, int expB, int tol) {
+    const uint32_t p = fb[static_cast<size_t>(y) * 640u + static_cast<size_t>(x)];
+    const int r = static_cast<int>((p >> 16) & 0xFFu);
+    const int g = static_cast<int>((p >> 8) & 0xFFu);
+    const int b = static_cast<int>(p & 0xFFu);
+    INFO("pixel(" << x << "," << y << ") = 0x" << std::hex << p << std::dec
+                  << " RGB=(" << r << "," << g << "," << b << ") expected=("
+                  << expR << "," << expG << "," << expB << ")");
+    CHECK(std::abs(r - expR) <= tol);
+    CHECK(std::abs(g - expG) <= tol);
+    CHECK(std::abs(b - expB) <= tol);
+  };
+
+  // Q1: Per-channel colorMaskExt (clear + draw + state save/restore)
+  checkRgb(60, 120, 255, 64, 64, 2);   // R-only masked clear on 0x404040
+  checkRgb(160, 120, 64, 255, 64, 2);  // G-only masked draw on 0x404040
+  checkRgb(260, 120, 64, 64, 255, 2);  // B-only masked draw (restored via Get/SetState)
+
+  // Q2: TEXUMA cross-TMU sampling
+  checkRgb(405, 120, 0, 255, 255, 4);  // TMU1 sampled Cyan downloaded to TMU0
+  checkRgb(555, 120, 255, 0, 255, 4);  // TMU0 sampled Magenta downloaded to TMU1
+
+  // Q3: grTexMultibase scattered mip addresses
+  checkRgb(48, 360, 255, 0, 0, 4);     // LOD 0 (256) -> Red
+  checkRgb(124, 360, 0, 255, 0, 4);    // LOD 1 (128) -> Green
+  checkRgb(200, 360, 0, 0, 255, 4);    // LOD 2 (64)  -> Blue
+  checkRgb(276, 360, 255, 255, 0, 4);  // LOD 3 (32)  -> Yellow
+
+  // Q4: grTexDetailControl near/mid/far LOD blend
+  checkRgb(378, 360, 255, 0, 0, 8);    // LOD 0 -> b=1.0 -> Red
+  checkRgb(478, 360, 128, 0, 127, 12); // LOD 1 -> b=0.5 -> Purple
+  checkRgb(578, 360, 0, 0, 255, 8);    // LOD 2.58 -> b=0.0 -> Blue
+
+  winClose(ctx);
+  glideShutdown();
+  ::dlclose(handle);
+  restoreCard();
+#endif
+}

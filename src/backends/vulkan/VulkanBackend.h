@@ -83,6 +83,12 @@ struct PushConstants {
 
   // Block 9: Offset 208 (32 bytes)
   float texChromaMax[2][4];  // TMU0/TMU1 packed RGBA max
+
+  // Block 10: Offset 240 (16 bytes)
+  uint32_t texDetail0;   // Packed TMU0 detail control (bias/scale/max)
+  uint32_t texDetail1;   // Packed TMU1 detail control (bias/scale/max)
+  float texLodBias0;     // TMU0 LOD bias for LOD_FRACTION combiner factor
+  float texLodBias1;     // TMU1 LOD bias for LOD_FRACTION combiner factor
 };
 
 static_assert(sizeof(PushConstants) <= 256,
@@ -185,8 +191,7 @@ struct PipelineStateKey {
   uint32_t rgbDstBlend{0};
   uint32_t alphaSrcBlend{0};
   uint32_t alphaDstBlend{0};
-  bool colorMaskRgb{false};
-  bool colorMaskAlpha{false};
+  uint8_t colorWriteMask{0xFu};  // bit0=R, bit1=G, bit2=B, bit3=A
   bool singleSample{false};
   uint32_t sampleMask{0xFFFFFFFFu};
 
@@ -198,8 +203,7 @@ struct PipelineStateKey {
            rgbDstBlend == other.rgbDstBlend &&
            alphaSrcBlend == other.alphaSrcBlend &&
            alphaDstBlend == other.alphaDstBlend &&
-           colorMaskRgb == other.colorMaskRgb &&
-           colorMaskAlpha == other.colorMaskAlpha &&
+           colorWriteMask == other.colorWriteMask &&
            singleSample == other.singleSample &&
            sampleMask == other.sampleMask;
   }
@@ -220,16 +224,15 @@ struct PipelineStateKeyHash {
     combine(k.rgbDstBlend);
     combine(k.alphaSrcBlend);
     combine(k.alphaDstBlend);
-    combine(k.colorMaskRgb ? 1 : 0);
-    combine(k.colorMaskAlpha ? 1 : 0);
+    combine(k.colorWriteMask);
     combine(k.singleSample ? 1 : 0);
     combine(k.sampleMask);
     return h;
   }
 };
 
-// Pack state key (13 fields) and topology (3 bits) into a single uint64_t
-// bitmask (47 bits total)
+// Pack state key (12 fields) and topology (3 bits) into a single uint64_t
+// bitmask (49 bits total)
 using PipelineCacheKey = uint64_t;
 
 /**
@@ -278,6 +281,7 @@ class VulkanBackend : public GlideStateTracker {
   void SetClipWindow(uint32_t minX, uint32_t minY, uint32_t maxX,
                      uint32_t maxY) override;
   void SetColorMask(bool rgb, bool alpha) override;
+  void SetColorMaskExt(bool r, bool g, bool b, bool a) override;
   void SetAAMultiSample(bool enabled) override;
   void SetTBufferWriteMask(uint32_t mask) override;
   void SetDepthRange(float nearVal, float farVal) override;
@@ -311,6 +315,8 @@ class VulkanBackend : public GlideStateTracker {
   void UploadTexture(uint32_t tmu, uint32_t startAddress,
                      const struct VirtualTexture& tex) override;
   void SetTexLodBias(uint32_t tmu, float bias) override;
+  void SetTexDetailControl(uint32_t tmu, int32_t lodBias, uint8_t detailScale,
+                           float detailMax) override;
   void SetTexMipMapMode(uint32_t tmu, uint32_t mode, bool lodBlend) override;
   void UploadTexturePartial(uint32_t tmu, uint32_t startAddress,
                             const struct VirtualTexture& tex, uint32_t lodLevel,
@@ -366,7 +372,8 @@ class VulkanBackend : public GlideStateTracker {
   void DrawMaskedClearQuad_Locked(float r, float g, float b, float a, float z,
                                   bool doColorClear, bool doDepthClear,
                                   uint32_t sampleMask,
-                                  const vk::Rect2D& clipRect);
+                                  const vk::Rect2D& clipRect,
+                                  bool useSingleSample);
   uint32_t GetActiveGpuBufferIdx() const {
     return (m_activeRenderBuffer == 0) ? 1u : 0u;
   }

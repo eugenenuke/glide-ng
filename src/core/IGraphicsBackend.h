@@ -73,6 +73,9 @@ class IGraphicsBackend {
                              uint32_t maxY) = 0;
   virtual void SetSstOrigin(uint32_t origin) = 0;
   virtual void SetColorMask(bool rgb, bool alpha) = 0;
+  virtual void SetColorMaskExt(bool r, bool g, bool b, bool a) {
+    SetColorMask(r || g || b, a);
+  }
   virtual void SetAAState(bool enabled) {}
   virtual void SetAAMultiSample(bool /*enabled*/) {}
   virtual void SetTBufferWriteMask(uint32_t /*mask*/) {}
@@ -100,6 +103,8 @@ class IGraphicsBackend {
   virtual void UploadTexture(uint32_t tmu, uint32_t startAddress,
                              const struct VirtualTexture& tex) = 0;
   virtual void SetTexLodBias(uint32_t tmu, float bias) = 0;
+  virtual void SetTexDetailControl(uint32_t tmu, int32_t lodBias,
+                                   uint8_t detailScale, float detailMax) = 0;
   virtual void SetTexMipMapMode(uint32_t tmu, uint32_t mode, bool lodBlend) = 0;
   virtual void UploadTexturePartial(uint32_t tmu, uint32_t startAddress,
                                     const struct VirtualTexture& tex,

@@ -64,6 +64,12 @@ layout(push_constant) uniform PushConstants {
 
   // Block 9: Offset 208 (32 bytes)
   vec4 texChromaMax[2];
+
+  // Block 10: Offset 240 (16 bytes)
+  uint texDetail0;
+  uint texDetail1;
+  float texLodBias0;
+  float texLodBias1;
 }
 pcs;
 

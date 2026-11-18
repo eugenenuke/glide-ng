@@ -1,5 +1,6 @@
 #include "core/GlideEntryCommon.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -190,6 +191,9 @@ void SharedFrontendState::Reset(uint8_t defaultLfbConstantAlpha,
   texChromaState[0] = {0, 0, 0};
   texChromaState[1] = {0, 0, 0};
   texLodBias[0] = texLodBias[1] = 0.0f;
+  texDetailBias[0] = texDetailBias[1] = 0;
+  texDetailScale[0] = texDetailScale[1] = 0;
+  texDetailMax[0] = texDetailMax[1] = 0.0f;
   mipmapMode[0] = mipmapMode[1] = 0;
   lodBlend[0] = lodBlend[1] = false;
 
@@ -210,6 +214,9 @@ void SharedFrontendState::Reset(uint8_t defaultLfbConstantAlpha,
   std::memset(fogTable, 0, sizeof(fogTable));
 
   colorMaskRgb = true;
+  colorMaskR = true;
+  colorMaskG = true;
+  colorMaskB = true;
   colorMaskAlpha = true;
   ditherMode = 0;
 
@@ -372,7 +379,8 @@ void ApplySharedStateToBackend(const SharedFrontendState& st,
   b->SetCullState(st.cullMode);
   b->SetSstOrigin(sstOrigin);
   b->SetClipWindow(st.clipMinX, st.clipMinY, st.clipMaxX, st.clipMaxY);
-  b->SetColorMask(st.colorMaskRgb, st.colorMaskAlpha);
+  b->SetColorMaskExt(st.colorMaskR, st.colorMaskG, st.colorMaskB,
+                     st.colorMaskAlpha);
   b->SetDitherMode(ResolveEffectiveDither(st.ditherMode, cfg));
   b->SetConstantColor(st.constantColor);
   b->SetFogMode(st.fogMode);
@@ -401,6 +409,8 @@ void ApplySharedStateToBackend(const SharedFrontendState& st,
     ResolveEffectiveMipMap(effMipMode, effLodBlend, cfg);
     b->SetTexMipMapMode(tmu, effMipMode, effLodBlend);
     b->SetTexLodBias(tmu, st.texLodBias[tmu]);
+    b->SetTexDetailControl(tmu, st.texDetailBias[tmu], st.texDetailScale[tmu],
+                           st.texDetailMax[tmu]);
   }
 }
 
@@ -638,6 +648,18 @@ void SetTexLodBias(SharedFrontendState& st, uint32_t tmu, float bias) {
   }
 }
 
+void SetTexDetailControl(SharedFrontendState& st, uint32_t tmu, int32_t lodBias,
+                         uint8_t detailScale, float detailMax) {
+  if (tmu >= 2) return;
+  st.texDetailBias[tmu] = std::clamp(lodBias, -32, 31);
+  st.texDetailScale[tmu] = std::min<uint8_t>(detailScale, 7u);
+  st.texDetailMax[tmu] = std::clamp(detailMax, 0.0f, 1.0f);
+  if (auto* b = BackendManager::GetInstance().GetBackend()) {
+    b->SetTexDetailControl(tmu, st.texDetailBias[tmu], st.texDetailScale[tmu],
+                           st.texDetailMax[tmu]);
+  }
+}
+
 void BindTexSource(SharedFrontendState& st, uint32_t tmu,
                    uint32_t startAddress) {
   if (tmu >= 2) return;
@@ -712,10 +734,17 @@ void SetConstantColor(SharedFrontendState& st, uint32_t value) {
 }
 
 void SetColorMask(SharedFrontendState& st, bool rgb, bool alpha) {
-  st.colorMaskRgb = rgb;
-  st.colorMaskAlpha = alpha;
-  if (auto* b = BackendManager::GetInstance().GetBackend()) {
-    b->SetColorMask(rgb, alpha);
+  SetColorMaskExt(st, rgb, rgb, rgb, alpha);
+}
+
+void SetColorMaskExt(SharedFrontendState& st, bool r, bool g, bool b, bool a) {
+  st.colorMaskR = r;
+  st.colorMaskG = g;
+  st.colorMaskB = b;
+  st.colorMaskRgb = (r || g || b);
+  st.colorMaskAlpha = a;
+  if (auto* backend = BackendManager::GetInstance().GetBackend()) {
+    backend->SetColorMaskExt(r, g, b, a);
   }
 }
 

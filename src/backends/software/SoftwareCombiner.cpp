@@ -203,10 +203,12 @@ void SoftwareBackend::WritePixelPipeline(int x, int y, const ModernVertex& v,
   uint32_t finalColor =
       (finalA << 24) | (finalR << 16) | (finalG << 8) | finalB;
 
-  if (!state.colorMaskRgb || !state.colorMaskAlpha) {
-    uint32_t mask = 0;
-    if (state.colorMaskRgb) mask |= 0x00FFFFFF;
-    if (state.colorMaskAlpha) mask |= 0xFF000000;
+  if (!state.colorMaskR || !state.colorMaskG || !state.colorMaskB ||
+      !state.colorMaskAlpha) {
+    uint32_t mask = (state.colorMaskR ? 0x00FF0000u : 0u) |
+                    (state.colorMaskG ? 0x0000FF00u : 0u) |
+                    (state.colorMaskB ? 0x000000FFu : 0u) |
+                    (state.colorMaskAlpha ? 0xFF000000u : 0u);
     finalColor = (finalColor & mask) | (dstWord & ~mask);
   }
 

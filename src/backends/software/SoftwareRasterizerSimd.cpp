@@ -299,7 +299,9 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
   const uint32_t pixelFormatOverride = state.pixelFormatOverride;
   const uint32_t alphaTestOp = state.alphaTestOp;
   const uint32_t alphaTestRefVal = state.alphaTestRefVal;
-  const bool colorMaskRgb = state.colorMaskRgb;
+  const bool colorMaskR = state.colorMaskR;
+  const bool colorMaskG = state.colorMaskG;
+  const bool colorMaskB = state.colorMaskB;
   const bool colorMaskAlpha = state.colorMaskAlpha;
   const uint32_t rgbSrcBlend = state.rgbSrcBlend;
   const uint32_t rgbDstBlend = state.rgbDstBlend;
@@ -451,7 +453,26 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
   float dTp1_dx = 0.0f, dTp1_dy = 0.0f;
   float dQ1_dx = 0.0f, dQ1_dy = 0.0f;
 
-  bool needBarycentricDerivatives = mipmappingEnabled || mipmappingEnabled1;
+  auto usesLodFactor = [](uint32_t f) {
+    return f == 4u || f == 5u || f == 12u || f == 13u;
+  };
+  const bool needLod0 =
+      HasTexture && tex != nullptr &&
+      (mipmappingEnabled || usesLodFactor(state.texCombinerRgbFactor[0]) ||
+       usesLodFactor(state.texCombinerAlphaFactor[0]));
+  const bool needLod1 =
+      hasTexture1 && tex1 != nullptr &&
+      (mipmappingEnabled1 || usesLodFactor(state.texCombinerRgbFactor[1]) ||
+       usesLodFactor(state.texCombinerAlphaFactor[1]));
+
+  const float detailScaleMul0 =
+      static_cast<float>(1u << std::min<uint8_t>(state.texDetailScale[0], 7u)) /
+      255.0f;
+  const float detailScaleMul1 =
+      static_cast<float>(1u << std::min<uint8_t>(state.texDetailScale[1], 7u)) /
+      255.0f;
+
+  bool needBarycentricDerivatives = needLod0 || needLod1;
   if (needBarycentricDerivatives) {
     dw0_dx = a0 * invArea;
     dw0_dy = b0 * invArea;
@@ -461,7 +482,7 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
     dw2_dy = b2 * invArea;
   }
 
-  if (mipmappingEnabled) {
+  if (needLod0) {
     dSp_dx = dw0_dx * a.tex[0] + dw1_dx * b.tex[0] + dw2_dx * c.tex[0];
     dSp_dy = dw0_dy * a.tex[0] + dw1_dy * b.tex[0] + dw2_dy * c.tex[0];
     dTp_dx = dw0_dx * a.tex[1] + dw1_dx * b.tex[1] + dw2_dx * c.tex[1];
@@ -479,7 +500,7 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
     dQ_dy = dw0_dy * qa + dw1_dy * qb + dw2_dy * qc;
   }
 
-  if (mipmappingEnabled1) {
+  if (needLod1) {
     dSp1_dx = dw0_dx * a.tex[2] + dw1_dx * b.tex[2] + dw2_dx * c.tex[2];
     dSp1_dy = dw0_dy * a.tex[2] + dw1_dy * b.tex[2] + dw2_dy * c.tex[2];
     dTp1_dx = dw0_dx * a.tex[3] + dw1_dx * b.tex[3] + dw2_dx * c.tex[3];
@@ -583,8 +604,9 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
   const Simd8f maxY_f(static_cast<float>(maxY) + 1.0f);
   const Simd8f edgeEps_vec(Clockwise ? -1e-5f : 1e-5f);
   const uint32_t colorMaskVal =
-      (colorMaskRgb ? 0x00FFFFFFu : 0u) | (colorMaskAlpha ? 0xFF000000u : 0u);
-  const bool fullColorMask = (colorMaskRgb && colorMaskAlpha);
+      (colorMaskR ? 0x00FF0000u : 0u) | (colorMaskG ? 0x0000FF00u : 0u) |
+      (colorMaskB ? 0x000000FFu : 0u) | (colorMaskAlpha ? 0xFF000000u : 0u);
+  const bool fullColorMask = (colorMaskVal == 0xFFFFFFFFu);
   const Simd8i colorMask_vec(static_cast<int32_t>(colorMaskVal));
   const Simd8i invColorMask_vec(static_cast<int32_t>(~colorMaskVal));
 
@@ -780,8 +802,10 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
         Simd8f trueT1 = texT1 * invW1;
 
         TmuColorSIMD tmu1Color = {one_vec, one_vec, one_vec, one_vec};
+        float detailFactor1 = 0.0f;
+        float lodFrac1 = 0.0f;
         if (tex1) {
-          if (!mipmappingEnabled1) {
+          if (!needLod1) {
             tmu1Color = SampleTextureLevelSIMD(
                 tex1Mip0Pixels, texW1, texH1, texW1 - 1u, texH1 - 1u,
                 tex1IsPow2W, tex1WShift, trueS1 * Simd8f(scaleU1),
@@ -820,20 +844,30 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
 
             float d1 = std::max(du_dx1 * du_dx1 + dv_dx1 * dv_dx1,
                                 du_dy1 * du_dy1 + dv_dy1 * dv_dy1);
-            float lod1 =
-                ((d1 > 1e-8f) ? 0.5f * fast_log2(d1) : -10.0f) +
-                state.texLodBias[1];
+            float rawLod1 = (d1 > 1e-8f) ? 0.5f * fast_log2(d1) : -10.0f;
+            detailFactor1 = std::clamp(
+                (static_cast<float>(state.texDetailBias[1]) - rawLod1) *
+                    detailScaleMul1,
+                0.0f, state.texDetailMax[1]);
+            float lod1 = rawLod1 + state.texLodBias[1];
 
             const int maxMipIdx1 =
                 static_cast<int>(tex1->swizzledMipLevels.size()) - 1;
             float clampedLod1 =
                 std::clamp(lod1, 0.0f, static_cast<float>(maxMipIdx1));
+            lodFrac1 = clampedLod1 - std::floor(clampedLod1);
 
-            if (lodBlend1) {
+            if (!mipmappingEnabled1) {
+              tmu1Color = SampleTextureLevelSIMD(
+                  tex1Mip0Pixels, texW1, texH1, texW1 - 1u, texH1 - 1u,
+                  tex1IsPow2W, tex1WShift, trueS1 * Simd8f(scaleU1),
+                  trueT1 * Simd8f(scaleV1), clampS1, clampT1, minFilter1,
+                  tex1ChromaEnabled, 1u, state);
+            } else if (lodBlend1) {
               int level0 = static_cast<int>(std::floor(clampedLod1));
               int lodIdx0 = std::clamp(level0, 0, maxMipIdx1);
               int lodIdx1 = std::clamp(level0 + 1, 0, maxMipIdx1);
-              float lodFraction = clampedLod1 - static_cast<float>(level0);
+              float lodFraction = lodFrac1;
 
               TmuColorSIMD c0_m = SampleMipLevelSIMD(
                   tex1, lodIdx0, trueS1, trueT1, scaleU1, scaleV1, clampS1,
@@ -864,13 +898,16 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
               state.texCombinerRgbFunc[1], state.texCombinerRgbFactor[1],
               state.texCombinerAlphaFunc[1], state.texCombinerAlphaFactor[1],
               state.texCombinerRgbInvert[1], state.texCombinerAlphaInvert[1],
-              tmu1Color, tmu0Out, tmu0Out);
+              tmu1Color, tmu0Out, tmu0Out, Simd8f(detailFactor1),
+              Simd8f(lodFrac1));
         }
       }
 
       // --- TMU 0 (Downstream) ---
       if constexpr (HasTexture) {
         TmuColorSIMD tmu0Color = {one_vec, one_vec, one_vec, one_vec};
+        float detailFactor0 = 0.0f;
+        float lodFrac0 = 0.0f;
         if (tex) {
           Simd8f texS = Fma(w0_vec, a_s0, Fma(w1_vec, b_s0, w2_vec * c_s0));
           Simd8f texT = Fma(w0_vec, a_t0, Fma(w1_vec, b_t0, w2_vec * c_t0));
@@ -879,7 +916,7 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
           Simd8f trueS = texS * invW;
           Simd8f trueT = texT * invW;
 
-          if (!mipmappingEnabled) {
+          if (!needLod0) {
             tmu0Color = SampleTextureLevelSIMD(
                 tex0Mip0Pixels, texW, texH, texW - 1u, texH - 1u, tex0IsPow2W,
                 tex0WShift, trueS * scaleU0_vec, trueT * scaleV0_vec, clampS,
@@ -917,20 +954,29 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
 
             float d = std::max(du_dx * du_dx + dv_dx * dv_dx,
                                du_dy * du_dy + dv_dy * dv_dy);
-            float lod =
-                ((d > 1e-8f) ? 0.5f * fast_log2(d) : -10.0f) +
-                state.texLodBias[0];
+            float rawLod = (d > 1e-8f) ? 0.5f * fast_log2(d) : -10.0f;
+            detailFactor0 = std::clamp(
+                (static_cast<float>(state.texDetailBias[0]) - rawLod) *
+                    detailScaleMul0,
+                0.0f, state.texDetailMax[0]);
+            float lod = rawLod + state.texLodBias[0];
 
             const int maxMipIdx =
                 static_cast<int>(tex->swizzledMipLevels.size()) - 1;
             float clampedLod =
                 std::clamp(lod, 0.0f, static_cast<float>(maxMipIdx));
+            lodFrac0 = clampedLod - std::floor(clampedLod);
 
-            if (lodBlend) {
+            if (!mipmappingEnabled) {
+              tmu0Color = SampleTextureLevelSIMD(
+                  tex0Mip0Pixels, texW, texH, texW - 1u, texH - 1u, tex0IsPow2W,
+                  tex0WShift, trueS * scaleU0_vec, trueT * scaleV0_vec, clampS,
+                  clampT, minFilter, tex0ChromaEnabled, 0u, state);
+            } else if (lodBlend) {
               int level0 = static_cast<int>(std::floor(clampedLod));
               int lodIdx0 = std::clamp(level0, 0, maxMipIdx);
               int lodIdx1 = std::clamp(level0 + 1, 0, maxMipIdx);
-              float lodFraction = clampedLod - static_cast<float>(level0);
+              float lodFraction = lodFrac0;
 
               TmuColorSIMD c0_m = SampleMipLevelSIMD(
                   tex, lodIdx0, trueS, trueT, scaleU, scaleV, clampS, clampT,
@@ -961,7 +1007,8 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
               state.texCombinerRgbFunc[0], state.texCombinerRgbFactor[0],
               state.texCombinerAlphaFunc[0], state.texCombinerAlphaFactor[0],
               state.texCombinerRgbInvert[0], state.texCombinerAlphaInvert[0],
-              tmu0Color, tmu1Out, tmu0Out);
+              tmu0Color, tmu1Out, tmu0Out, Simd8f(detailFactor0),
+              Simd8f(lodFrac0));
         }
       } else if (hasTexture1) {
         tmu0Out = tmu1Out;
@@ -1109,6 +1156,16 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
             green = Fma(cOtherG_comb - cLocalG_comb, factG_comb, aLocal_comb);
             blue = Fma(cOtherB_comb - cLocalB_comb, factB_comb, aLocal_comb);
             break;
+          case 9:
+            red = cLocalR_comb * (one_vec - factR_comb);
+            green = cLocalG_comb * (one_vec - factG_comb);
+            blue = cLocalB_comb * (one_vec - factB_comb);
+            break;
+          case 16:
+            red = aLocal_comb - cLocalR_comb * factR_comb;
+            green = aLocal_comb - cLocalG_comb * factG_comb;
+            blue = aLocal_comb - cLocalB_comb * factB_comb;
+            break;
         }
         if (colorCombinerInvert) {
           red = one_vec - red;
@@ -1176,6 +1233,10 @@ void SoftwareBackend::RasterizeTriangleLoopsSIMD(
           case 7:
           case 8:
             alpha = Fma(aOther_comb - aLocal_comb, factA_comb, aLocal_comb);
+            break;
+          case 9:
+          case 16:
+            alpha = aLocal_comb * (one_vec - factA_comb);
             break;
         }
         if (alphaCombinerInvert) alpha = one_vec - alpha;

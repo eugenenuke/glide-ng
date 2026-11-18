@@ -5483,7 +5483,7 @@ TEST_CASE(
       REQUIRE(std::abs(r_act - r_exp) <= 15);
     };
 
-    auto renderCompositingFrame = [&](int modeIndex) {
+    auto renderCompositingFrame = [&](int modeIndex, int detailBias = 2) {
       bufferClear(0x00404040, 0, GR_ZDEPTHVALUE_FARTHEST);
 
       texCombine(GR_TMU0, GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
@@ -5499,11 +5499,9 @@ TEST_CASE(
       vtxA.oow = 1.0f;
       vtxB = vtxC = vtxD = vtxA;
 
-      float distance = 1.01f;  // Frame 0 distance
-
       tlSetMatrix(tlIdentity());
       tlMultMatrix(tlXRotation(-20.0f));
-      tlMultMatrix(tlTranslation(0.0f, -0.3f, distance));
+      tlMultMatrix(tlTranslation(0.0f, -0.3f, 1.01f));
 
       tlTransformVertices(xfVerts, srcVerts, 4);
       tlProjectVertices(prjVerts, xfVerts, 4);
@@ -5542,7 +5540,7 @@ TEST_CASE(
         texCombine(GR_TMU0, GR_COMBINE_FUNCTION_BLEND_LOCAL,
                    GR_COMBINE_FACTOR_DETAIL_FACTOR, GR_COMBINE_FUNCTION_LOCAL,
                    GR_COMBINE_FACTOR_NONE, FXFALSE, FXFALSE);
-        texDetailControl(GR_TMU0, 2, 7, 1.0f);
+        texDetailControl(GR_TMU0, detailBias, 7, 1.0f);
       }
       alphaBlendFunction(GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_ONE,
                          GR_BLEND_ZERO);
@@ -5592,11 +5590,19 @@ TEST_CASE(
     assertColorClose(fb[50 * 640 + 50], 0xFF414041);
 
     // Mode 2: DETAIL
-    // At distance=1.01f with detail_bias=2, detail_scale=7, detail_max=1.0,
-    // detail_factor clamps to 1.0 (100% baseTexture, 0% detailTexture) and
-    // GR_TEXFMT_P_8 (lava.3df) has opaque 0xFF alpha on authentic hardware.
-    renderCompositingFrame(2);
-    assertColorClose(fb[300 * 640 + 320], 0xFFFF0000);
+    // Authentic 3dfx detail texturing (grTexDetailControl(TMU0, 2, 7, 1.0f)):
+    //   Pass 1 = base * (1 - b), Pass 2 = detail * b (additive blend)
+    //   b = clamp((detailBias - rawLod) * (1 << detailScale) / 255.0, 0, max)
+    // At distance=1.01f with detailBias=2, rawLod (~0.96) < 2 so lava.3df
+    // blends ~52% onto decal1.3df (ABGR ~0x00871873).
+    renderCompositingFrame(2, 2);
+    assertColorClose(fb[300 * 640 + 320], 0x00871873);
+    assertColorClose(fb[50 * 640 + 50], 0xFF414041);
+
+    // With detailBias=0, rawLod (~0.96) >= 0 so b = 0.0 -> 100% baseTexture
+    // (decal1.3df blue = ABGR 0x00FF0000).
+    renderCompositingFrame(2, 0);
+    assertColorClose(fb[300 * 640 + 320], 0x00FF0000);
     assertColorClose(fb[50 * 640 + 50], 0xFF414041);
   }
 

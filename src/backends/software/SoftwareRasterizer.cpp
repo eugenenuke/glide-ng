@@ -281,8 +281,13 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
   const uint32_t pixelFormatOverride = state.pixelFormatOverride;
   const uint32_t alphaTestOp = state.alphaTestOp;
   const uint32_t alphaTestRefVal = state.alphaTestRefVal;
-  const bool colorMaskRgb = state.colorMaskRgb;
+  const bool colorMaskR = state.colorMaskR;
+  const bool colorMaskG = state.colorMaskG;
+  const bool colorMaskB = state.colorMaskB;
   const bool colorMaskAlpha = state.colorMaskAlpha;
+  const uint32_t colorMaskWord =
+      (colorMaskR ? 0x00FF0000u : 0u) | (colorMaskG ? 0x0000FF00u : 0u) |
+      (colorMaskB ? 0x000000FFu : 0u) | (colorMaskAlpha ? 0xFF000000u : 0u);
   const uint32_t rgbSrcBlend = state.rgbSrcBlend;
   const uint32_t rgbDstBlend = state.rgbDstBlend;
   const uint32_t alphaSrcBlend = state.alphaSrcBlend;
@@ -423,7 +428,26 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
     }
   }
 
-  bool needBarycentricDerivatives = mipmappingEnabled || mipmappingEnabled1;
+  auto usesLodFactor = [](uint32_t f) {
+    return f == 4u || f == 5u || f == 12u || f == 13u;
+  };
+  const bool needLod0 =
+      HasTexture && tex != nullptr &&
+      (mipmappingEnabled || usesLodFactor(state.texCombinerRgbFactor[0]) ||
+       usesLodFactor(state.texCombinerAlphaFactor[0]));
+  const bool needLod1 =
+      hasTexture1 && tex1 != nullptr &&
+      (mipmappingEnabled1 || usesLodFactor(state.texCombinerRgbFactor[1]) ||
+       usesLodFactor(state.texCombinerAlphaFactor[1]));
+
+  const float detailScaleMul0 =
+      static_cast<float>(1u << std::min<uint8_t>(state.texDetailScale[0], 7u)) /
+      255.0f;
+  const float detailScaleMul1 =
+      static_cast<float>(1u << std::min<uint8_t>(state.texDetailScale[1], 7u)) /
+      255.0f;
+
+  bool needBarycentricDerivatives = needLod0 || needLod1;
   if (needBarycentricDerivatives) {
     dw0_dx = a0 * invArea;
     dw0_dy = b0 * invArea;
@@ -433,7 +457,7 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
     dw2_dy = b2 * invArea;
   }
 
-  if (mipmappingEnabled) {
+  if (needLod0) {
     dSp_dx = dw0_dx * a.tex[0] + dw1_dx * b.tex[0] + dw2_dx * c.tex[0];
     dSp_dy = dw0_dy * a.tex[0] + dw1_dy * b.tex[0] + dw2_dy * c.tex[0];
     dTp_dx = dw0_dx * a.tex[1] + dw1_dx * b.tex[1] + dw2_dx * c.tex[1];
@@ -451,7 +475,7 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
     dQ_dy = dw0_dy * qa + dw1_dy * qb + dw2_dy * qc;
   }
 
-  if (mipmappingEnabled1) {
+  if (needLod1) {
     dSp1_dx = dw0_dx * a.tex[2] + dw1_dx * b.tex[2] + dw2_dx * c.tex[2];
     dSp1_dy = dw0_dy * a.tex[2] + dw1_dy * b.tex[2] + dw2_dy * c.tex[2];
     dTp1_dx = dw0_dx * a.tex[3] + dw1_dx * b.tex[3] + dw2_dx * c.tex[3];
@@ -562,6 +586,8 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
 
         // 2. Sample TMU 1 (Upstream)
         TmuColor tmu1Color = {1.0f, 1.0f, 1.0f, 1.0f};
+        float detailFactor1 = 0.0f;
+        float lodFrac1 = 0.0f;
         if (keepPixel && hasTexture1) {
           float texS1 = w0 * a.tex[2] + w1 * b.tex[2] + w2 * c.tex[2];
           float texT1 = w0 * a.tex[3] + w1 * b.tex[3] + w2 * c.tex[3];
@@ -571,7 +597,7 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
           float trueT1 = texT1 * invW1;
 
           uint32_t tWord1;
-          if (mipmappingEnabled1) {
+          if (needLod1) {
             float ds_dx1 = (dSp1_dx - trueS1 * dQ1_dx) * invW1;
             float ds_dy1 = (dSp1_dy - trueS1 * dQ1_dy) * invW1;
             float dt_dx1 = (dTp1_dx - trueT1 * dQ1_dx) * invW1;
@@ -584,20 +610,28 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
 
             float d1 = std::max(du_dx1 * du_dx1 + dv_dx1 * dv_dx1,
                                 du_dy1 * du_dy1 + dv_dy1 * dv_dy1);
-            float lod1 = (d1 > 1e-8f) ? 0.5f * fast_log2(d1) : -10.0f;
-            lod1 += state.texLodBias[1];
+            float rawLod1 = (d1 > 1e-8f) ? 0.5f * fast_log2(d1) : -10.0f;
+            detailFactor1 = std::clamp(
+                (static_cast<float>(state.texDetailBias[1]) - rawLod1) *
+                    detailScaleMul1,
+                0.0f, state.texDetailMax[1]);
+            float lod1 = rawLod1 + state.texLodBias[1];
 
             const int maxMipIdx1 =
                 static_cast<int>(tex1->swizzledMipLevels.size()) - 1;
             float clampedLod1 =
                 std::clamp(lod1, 0.0f, static_cast<float>(maxMipIdx1));
+            lodFrac1 = clampedLod1 - std::floor(clampedLod1);
 
-            if (lodBlend1) {  // Trilinear
+            if (!mipmappingEnabled1) {
+              tWord1 = SampleTextureLevel(tex1, 0, trueS1, trueT1, clampS1,
+                                          clampT1, minFilter1, 1u, state);
+            } else if (lodBlend1) {  // Trilinear
               int level0 = static_cast<int>(std::floor(clampedLod1));
               int level1 = level0 + 1;
               int lodIdx0 = std::clamp(level0, 0, maxMipIdx1);
               int lodIdx1 = std::clamp(level1, 0, maxMipIdx1);
-              float lodFraction = clampedLod1 - std::floor(clampedLod1);
+              float lodFraction = lodFrac1;
 
               uint32_t c0 =
                   SampleTextureLevel(tex1, lodIdx0, trueS1, trueT1, clampS1,
@@ -652,12 +686,15 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
                 state.texCombinerRgbFunc[1], state.texCombinerRgbFactor[1],
                 state.texCombinerAlphaFunc[1], state.texCombinerAlphaFactor[1],
                 state.texCombinerRgbInvert[1], state.texCombinerAlphaInvert[1],
-                tmu1Color, iteratedColor, iteratedColor);
+                tmu1Color, iteratedColor, iteratedColor, detailFactor1,
+                lodFrac1);
           }
         }
 
         // 3. Sample TMU 0 (Downstream)
         TmuColor tmu0Color = {1.0f, 1.0f, 1.0f, 1.0f};
+        float detailFactor0 = 0.0f;
+        float lodFrac0 = 0.0f;
         if constexpr (HasTexture) {
           if (keepPixel && tex) {
             float texS = w0 * a.tex[0] + w1 * b.tex[0] + w2 * c.tex[0];
@@ -668,7 +705,7 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
             float trueT = texT * invW;
 
             uint32_t tWord;
-            if (mipmappingEnabled) {
+            if (needLod0) {
               float ds_dx = (dSp_dx - trueS * dQ_dx) * invW;
               float ds_dy = (dSp_dy - trueS * dQ_dy) * invW;
               float dt_dx = (dTp_dx - trueT * dQ_dx) * invW;
@@ -681,20 +718,28 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
 
               float d = std::max(du_dx * du_dx + dv_dx * dv_dx,
                                  du_dy * du_dy + dv_dy * dv_dy);
-              float lod = (d > 1e-8f) ? 0.5f * fast_log2(d) : -10.0f;
-              lod += state.texLodBias[0];
+              float rawLod = (d > 1e-8f) ? 0.5f * fast_log2(d) : -10.0f;
+              detailFactor0 = std::clamp(
+                  (static_cast<float>(state.texDetailBias[0]) - rawLod) *
+                      detailScaleMul0,
+                  0.0f, state.texDetailMax[0]);
+              float lod = rawLod + state.texLodBias[0];
 
               const int maxMipIdx =
                   static_cast<int>(tex->swizzledMipLevels.size()) - 1;
               float clampedLod =
                   std::clamp(lod, 0.0f, static_cast<float>(maxMipIdx));
+              lodFrac0 = clampedLod - std::floor(clampedLod);
 
-              if (lodBlend) {  // Trilinear
+              if (!mipmappingEnabled) {
+                tWord = SampleTextureLevel(tex, 0, trueS, trueT, clampS, clampT,
+                                           minFilter, 0u, state);
+              } else if (lodBlend) {  // Trilinear
                 int level0 = static_cast<int>(std::floor(clampedLod));
                 int level1 = level0 + 1;
                 int lodIdx0 = std::clamp(level0, 0, maxMipIdx);
                 int lodIdx1 = std::clamp(level1, 0, maxMipIdx);
-                float lodFraction = clampedLod - std::floor(clampedLod);
+                float lodFraction = lodFrac0;
 
                 uint32_t c0 =
                     SampleTextureLevel(tex, lodIdx0, trueS, trueT, clampS,
@@ -749,7 +794,7 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
                   state.texCombinerRgbFunc[0], state.texCombinerRgbFactor[0],
                   state.texCombinerAlphaFunc[0], state.texCombinerAlphaFactor[0],
                   state.texCombinerRgbInvert[0], state.texCombinerAlphaInvert[0],
-                  tmu0Color, tmu1Out, iteratedColor);
+                  tmu0Color, tmu1Out, iteratedColor, detailFactor0, lodFrac0);
             }
           }
         }
@@ -901,6 +946,16 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
               finalG = (cOtherG - cLocalG) * factG + aLocal;
               finalB = (cOtherB - cLocalB) * factB + aLocal;
               break;
+            case 9:
+              finalR = (-cLocalR) * factR + cLocalR;
+              finalG = (-cLocalG) * factG + cLocalG;
+              finalB = (-cLocalB) * factB + cLocalB;
+              break;
+            case 16:
+              finalR = (-cLocalR) * factR + aLocal;
+              finalG = (-cLocalG) * factG + aLocal;
+              finalB = (-cLocalB) * factB + aLocal;
+              break;
           }
           if (colorCombinerInvert) {
             finalR = 1.0f - finalR;
@@ -955,6 +1010,10 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
             case 7:
             case 8:
               finalA = (aOther - aLocal) * factA + aLocal;
+              break;
+            case 9:
+            case 16:
+              finalA = (-aLocal) * factA + aLocal;
               break;
           }
           if (alphaCombinerInvert) finalA = 1.0f - finalA;
@@ -1213,10 +1272,9 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
           }
           uint32_t finalColor =
               (aVal << 24) | (rVal << 16) | (gVal << 8) | bVal;
-          if (!colorMaskRgb || !colorMaskAlpha) {
-            uint32_t mask = (colorMaskRgb ? 0x00FFFFFF : 0) |
-                            (colorMaskAlpha ? 0xFF000000 : 0);
-            finalColor = (finalColor & mask) | (pixels[pIdx] & ~mask);
+          if (colorMaskWord != 0xFFFFFFFFu) {
+            finalColor =
+                (finalColor & colorMaskWord) | (pixels[pIdx] & ~colorMaskWord);
           }
           pixels[pIdx] = finalColor;
         }

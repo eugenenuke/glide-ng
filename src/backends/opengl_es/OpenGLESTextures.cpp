@@ -286,6 +286,25 @@ void OpenGLESBackend::SetTexLodBias(uint32_t tmu, float bias) {
   m_glesDirtyMask |= kGlesDirtyTexBinding;
 }
 
+void OpenGLESBackend::SetTexDetailControl(uint32_t tmu, int32_t lodBias,
+                                          uint8_t detailScale,
+                                          float detailMax) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (tmu >= 2) return;
+  const int32_t clampedBias = std::clamp(lodBias, -32, 31);
+  const uint8_t clampedScale = std::min<uint8_t>(detailScale, 7u);
+  const float clampedMax = std::clamp(detailMax, 0.0f, 1.0f);
+  if (m_texDetailBias[tmu] == clampedBias &&
+      m_texDetailScale[tmu] == clampedScale &&
+      m_texDetailMax[tmu] == clampedMax) {
+    return;
+  }
+  FlushBatch(true);
+  GlideStateTracker::SetTexDetailControl_Locked(tmu, clampedBias, clampedScale,
+                                                clampedMax);
+  m_glesDirtyMask |= kGlesDirtyTexDetail;
+}
+
 void OpenGLESBackend::SetTexMipMapMode(uint32_t tmu, uint32_t mode,
                                        bool lodBlend) {
   std::lock_guard<std::mutex> lock(m_mutex);

@@ -834,12 +834,13 @@ bool CpuLfbStaging::EnsureAllocated() {
   return true;
 }
 
-void CpuLfbStaging::ScheduleLazyClear(uint32_t logicalBuffer, uint32_t color,
-                                      uint32_t alpha,
-                                      uint32_t pixelFormatOverride,
-                                      bool maskRgb, bool maskAlpha) {
+void CpuLfbStaging::ScheduleLazyClearMask(uint32_t logicalBuffer,
+                                          uint32_t color, uint32_t alpha,
+                                          uint32_t pixelFormatOverride,
+                                          uint8_t colorWriteMask4) {
   if (m_width == 0 || m_height == 0) return;
-  if (!maskRgb && !maskAlpha) return;
+  const uint8_t mask4 = colorWriteMask4 & 0xFu;
+  if (mask4 == 0u) return;
 
   const uint32_t slot = SlotFor(logicalBuffer);
   auto& slotState = m_pendingClear[slot];
@@ -847,8 +848,8 @@ void CpuLfbStaging::ScheduleLazyClear(uint32_t logicalBuffer, uint32_t color,
   // If a prior partial-mask clear is pending and this clear also uses a
   // different partial mask, materialize the earlier clear first so masked-out
   // channels retain their prior cleared bits.
-  if (slotState.pending && !(maskRgb && maskAlpha) &&
-      (slotState.maskRgb != maskRgb || slotState.maskAlpha != maskAlpha)) {
+  if (slotState.pending && mask4 != 0xFu &&
+      slotState.colorWriteMask4 != mask4) {
     MaterializeSlot(slot);
   }
 
@@ -856,8 +857,7 @@ void CpuLfbStaging::ScheduleLazyClear(uint32_t logicalBuffer, uint32_t color,
   slotState.color = color;
   slotState.alpha = alpha;
   slotState.pixelFormat = pixelFormatOverride;
-  slotState.maskRgb = maskRgb;
-  slotState.maskAlpha = maskAlpha;
+  slotState.colorWriteMask4 = mask4;
 }
 
 void CpuLfbStaging::MaterializeLazyClear(uint32_t logicalBuffer) {
@@ -873,8 +873,10 @@ void CpuLfbStaging::MaterializeSlot(uint32_t slot) {
   if (!EnsureAllocated()) return;
 
   uint32_t writeMask = 0;
-  if (pending.maskRgb) writeMask |= 0x00FFFFFF;
-  if (pending.maskAlpha) writeMask |= 0xFF000000;
+  if (pending.colorWriteMask4 & 0x1u) writeMask |= 0x00FF0000u;  // R
+  if (pending.colorWriteMask4 & 0x2u) writeMask |= 0x0000FF00u;  // G
+  if (pending.colorWriteMask4 & 0x4u) writeMask |= 0x000000FFu;  // B
+  if (pending.colorWriteMask4 & 0x8u) writeMask |= 0xFF000000u;  // A
   if (writeMask == 0) return;
 
   uint32_t a = (pending.alpha > 0) ? pending.alpha : 255;

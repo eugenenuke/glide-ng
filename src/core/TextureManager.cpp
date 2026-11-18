@@ -445,35 +445,41 @@ void TextureManager::ReswizzleTexture_Locked(const TmuState& state,
 void TextureManager::EnsureTextureReady_Locked(
     uint32_t tmu, std::shared_ptr<VirtualTexture>& texPtr,
     bool uploadToBackend) {
-  if (!texPtr) return;
-  if (!texPtr->isPaletted && !texPtr->isNcc) return;
+  if (!texPtr || tmu >= 2) return;
 
-  const auto& state = m_tmus[tmu];
-  const uint64_t activeHash = GetActiveTableHash_Locked(state, *texPtr);
+  if (texPtr->isPaletted || texPtr->isNcc) {
+    const auto& state = TableState_Locked(tmu);
+    const uint64_t activeHash = GetActiveTableHash_Locked(state, *texPtr);
 
-  const bool needsSwizzle =
-      (texPtr->isPaletted && state.paletteTableLoaded &&
-       (!texPtr->swizzledWithTable || texPtr->swizzledTableHash != activeHash)) ||
-      (texPtr->isNcc && (texPtr->swizzledTableHash != activeHash));
+    const bool needsSwizzle =
+        (texPtr->isPaletted && state.paletteTableLoaded &&
+         (!texPtr->swizzledWithTable ||
+          texPtr->swizzledTableHash != activeHash)) ||
+        (texPtr->isNcc && (texPtr->swizzledTableHash != activeHash));
 
-  if (needsSwizzle) {
-    // Copy-on-write: never mutate a VirtualTexture snapshot still held by
-    // SoftwareBackend's deferred tile bins.
-    if (texPtr.use_count() > 1) {
-      texPtr = std::make_shared<VirtualTexture>(*texPtr);
+    if (needsSwizzle) {
+      // Copy-on-write: never mutate a VirtualTexture snapshot still held by
+      // SoftwareBackend's deferred tile bins.
+      if (texPtr.use_count() > 1) {
+        texPtr = std::make_shared<VirtualTexture>(*texPtr);
+      }
+      ReswizzleTexture_Locked(state, *texPtr);
     }
-    ReswizzleTexture_Locked(state, *texPtr);
   }
 
   if (uploadToBackend) {
-    if (!texPtr->uploadedToBackend ||
-        texPtr->uploadedTableHash != texPtr->swizzledTableHash) {
+    const bool tableChanged =
+        (texPtr->isPaletted || texPtr->isNcc) &&
+        (texPtr->uploadedTableHashPerTmu[tmu] != texPtr->swizzledTableHash);
+    if (!texPtr->uploadedToBackendPerTmu[tmu] || tableChanged) {
       if (auto* b = BackendManager::GetInstance().GetBackend()) {
         TelemetryManager::GetInstance().RecordTexUpload(
             CalcSwizzledUploadBytes(*texPtr));
         b->UploadTexture(tmu, texPtr->startAddress, *texPtr);
         texPtr->uploadedToBackend = true;
         texPtr->uploadedTableHash = texPtr->swizzledTableHash;
+        texPtr->uploadedToBackendPerTmu[tmu] = true;
+        texPtr->uploadedTableHashPerTmu[tmu] = texPtr->swizzledTableHash;
       }
     }
   }
@@ -581,25 +587,19 @@ bool TextureManager::DownloadMipMap(uint32_t tmu, uint32_t startAddress,
   const uint8_t* byteData = reinterpret_cast<const uint8_t*>(data);
   const uint64_t incomingHash = FastHashBytes64(metaSeed, byteData, rawBytes);
 
+  const uint32_t storeTmu = StorageTmu_Locked(tmu);
+  const auto& tableState = TableState_Locked(tmu);
+
   // 2. Intercept and bypass if an identical complete texture is already loaded
-  auto it = m_tmus[tmu].textures.find(startAddress);
-  if (it != m_tmus[tmu].textures.end()) {
+  auto it = m_tmus[storeTmu].textures.find(startAddress);
+  if (it != m_tmus[storeTmu].textures.end()) {
     auto& cachedTex = it->second;
     if (cachedTex->rawDataHash == incomingHash && cachedTex->format == format &&
         cachedTex->aspectRatio == aspect && cachedTex->largeLod == start &&
         cachedTex->smallLod == end &&
         (replaceExisting ||
          cachedTex->declaredLargeLod == effectiveDeclaredLarge)) {
-      if (cachedTex->isPaletted || cachedTex->isNcc) {
-        EnsureTextureReady_Locked(tmu, it->second, true);
-      } else if (!cachedTex->uploadedToBackend) {
-        if (auto* b = BackendManager::GetInstance().GetBackend()) {
-          TelemetryManager::GetInstance().RecordTexUpload(
-              CalcSwizzledUploadBytes(*cachedTex));
-          b->UploadTexture(tmu, startAddress, *cachedTex);
-          cachedTex->uploadedToBackend = true;
-        }
-      }
+      EnsureTextureReady_Locked(tmu, it->second, true);
       GLIDE_LOG(DEBUG, "TextureManager",
                 "DownloadMipMap Address=0x"
                     << std::hex << startAddress << std::dec
@@ -617,7 +617,7 @@ bool TextureManager::DownloadMipMap(uint32_t tmu, uint32_t startAddress,
   int32_t newLarge = start;
   int32_t newSmall = end;
 
-  if (!replaceExisting && it != m_tmus[tmu].textures.end()) {
+  if (!replaceExisting && it != m_tmus[storeTmu].textures.end()) {
     const auto& existing = it->second;
     const bool sameBaseChain =
         (existing->format == format && existing->aspectRatio == aspect &&
@@ -643,7 +643,8 @@ bool TextureManager::DownloadMipMap(uint32_t tmu, uint32_t startAddress,
   std::vector<uint32_t> overlapOverflow;
   uint64_t evictedBytes = 0;
 
-  for (const auto& entry : m_tmus[tmu].textures) {
+  for (const auto& entry : m_tmus[storeTmu].textures) {
+    if (entry.first >= kMultibaseCompositeBase) continue;
     const uint64_t eStart = static_cast<uint64_t>(entry.first);
     const uint64_t eSize =
         (entry.second->allocatedByteSize > 0)
@@ -665,10 +666,15 @@ bool TextureManager::DownloadMipMap(uint32_t tmu, uint32_t startAddress,
 
   // Enforce user-configured TmuMemoryMb silicon ceiling atomically before
   // evicting any existing textures.
-  const uint64_t currentUsed = m_tmus[tmu].allocatedBytes;
+  const uint64_t budgetLimit =
+      m_umaEnabled.load(std::memory_order_relaxed)
+          ? (static_cast<uint64_t>(m_tmuMemoryLimits[0]) +
+             static_cast<uint64_t>(m_tmuMemoryLimits[1]))
+          : static_cast<uint64_t>(m_tmuMemoryLimits[tmu]);
+  const uint64_t currentUsed = m_tmus[storeTmu].allocatedBytes;
   const uint64_t usedAfterEvict =
       (currentUsed >= evictedBytes) ? (currentUsed - evictedBytes) : 0ULL;
-  if (usedAfterEvict + newBytes > m_tmuMemoryLimits[tmu]) {
+  if (usedAfterEvict + newBytes > budgetLimit) {
     GLIDE_LOG(CRITICAL, "TextureManager",
               "TMU" << tmu << " silicon budget exceeded!");
     return false;
@@ -732,12 +738,12 @@ bool TextureManager::DownloadMipMap(uint32_t tmu, uint32_t startAddress,
   const bool needsNcc = (format == 0x1 || format == 0x9);
   GuNccTable activeNcc{};
   if (needsNcc) {
-    activeNcc = GetActiveNccTableOrDefault(m_tmus[tmu].nccTables,
-                                           m_tmus[tmu].nccTablesLoaded,
-                                           m_tmus[tmu].activeNccTable);
+    activeNcc = GetActiveNccTableOrDefault(tableState.nccTables,
+                                           tableState.nccTablesLoaded,
+                                           tableState.activeNccTable);
   }
-  const bool paletteLoaded = m_tmus[tmu].paletteTableLoaded;
-  const uint32_t* paletteTable = m_tmus[tmu].paletteTable;
+  const bool paletteLoaded = tableState.paletteTableLoaded;
+  const uint32_t* paletteTable = tableState.paletteTable;
 
   for (int32_t i = start; i <= end; ++i) {
     uint32_t maxDim = LodToDimension(i);
@@ -856,42 +862,49 @@ bool TextureManager::DownloadMipMap(uint32_t tmu, uint32_t startAddress,
   // download range; merged chains should not falsely bypass subsequent calls.
   tex->rawDataHash =
       (newLarge == start && newSmall == end) ? incomingHash : 0ULL;
-  tex->swizzledTableHash = GetActiveTableHash_Locked(m_tmus[tmu], *tex);
+  tex->swizzledTableHash = GetActiveTableHash_Locked(tableState, *tex);
   tex->swizzledWithTable =
       tex->isPaletted
-          ? m_tmus[tmu].paletteTableLoaded
+          ? tableState.paletteTableLoaded
           : (tex->isNcc
-                 ? m_tmus[tmu].nccTablesLoaded[m_tmus[tmu].activeNccTable]
+                 ? tableState.nccTablesLoaded[tableState.activeNccTable]
                  : true);
   tex->uploadedToBackend = false;
+  tex->uploadedToBackendPerTmu[0] = false;
+  tex->uploadedToBackendPerTmu[1] = false;
+  tex->uploadedTableHashPerTmu[0] = 0;
+  tex->uploadedTableHashPerTmu[1] = 0;
 
   // Commit overlapping evictions and insert the new VirtualTexture
   for (size_t oi = 0; oi < overlapStackCount; ++oi) {
-    m_tmus[tmu].textures.erase(overlapStack[oi]);
+    m_tmus[storeTmu].textures.erase(overlapStack[oi]);
   }
   for (uint32_t addr : overlapOverflow) {
-    m_tmus[tmu].textures.erase(addr);
+    m_tmus[storeTmu].textures.erase(addr);
   }
-  m_tmus[tmu].allocatedBytes = static_cast<uint32_t>(usedAfterEvict + newBytes);
-  m_tmus[tmu].textures[startAddress] = tex;
+  m_tmus[storeTmu].allocatedBytes =
+      static_cast<uint32_t>(usedAfterEvict + newBytes);
+  m_tmus[storeTmu].textures[startAddress] = tex;
 
   GLIDE_LOG(DEBUG, "TextureManager",
             "Successfully downloaded Virtual Texture MIP Chain at Address=0x"
                 << std::hex << startAddress << std::dec << " Base("
                 << tex->baseWidth << "x" << tex->baseHeight
                 << "), Levels=" << tex->swizzledMipLevels.size() << " into TMU"
-                << tmu << ". Allocated pool: " << m_tmus[tmu].allocatedBytes
+                << tmu << ". Allocated pool: " << m_tmus[storeTmu].allocatedBytes
                 << " bytes.");
 
   // If this texture is fully swizzled (either not paletted, or paletted with a
   // pre-loaded table), upload it immediately!
-  if (!tex->isPaletted || m_tmus[tmu].paletteTableLoaded) {
+  if (!tex->isPaletted || tableState.paletteTableLoaded) {
     if (auto* b = BackendManager::GetInstance().GetBackend()) {
       TelemetryManager::GetInstance().RecordTexUpload(
           CalcSwizzledUploadBytes(*tex));
       b->UploadTexture(tmu, startAddress, *tex);
       tex->uploadedToBackend = true;
       tex->uploadedTableHash = tex->swizzledTableHash;
+      tex->uploadedToBackendPerTmu[tmu] = true;
+      tex->uploadedTableHashPerTmu[tmu] = tex->swizzledTableHash;
     }
   }
 
@@ -925,8 +938,9 @@ bool TextureManager::DownloadMipMapPartial(uint32_t tmu, uint32_t startAddress,
   }
 
   // Find the existing texture
-  auto it = m_tmus[tmu].textures.find(startAddress);
-  if (it == m_tmus[tmu].textures.end()) {
+  const uint32_t storeTmu = StorageTmu_Locked(tmu);
+  auto it = m_tmus[storeTmu].textures.find(startAddress);
+  if (it == m_tmus[storeTmu].textures.end()) {
     GLIDE_LOG(WARN, "TextureManager",
               "DownloadMipMapPartial: texture at address 0x"
                   << std::hex << startAddress << std::dec
@@ -1043,19 +1057,25 @@ bool TextureManager::DownloadMipMapPartial(uint32_t tmu, uint32_t startAddress,
 
   // Call the backend to perform the partial (or full, if palette changed) GPU upload
   if (auto* b = BackendManager::GetInstance().GetBackend()) {
-    if (!tex->uploadedToBackend ||
+    if (!tex->uploadedToBackendPerTmu[tmu] ||
         ((tex->isPaletted || tex->isNcc) &&
-         tex->uploadedTableHash != tex->swizzledTableHash)) {
+         tex->uploadedTableHashPerTmu[tmu] != tex->swizzledTableHash)) {
       TelemetryManager::GetInstance().RecordTexUpload(
           CalcSwizzledUploadBytes(*tex));
       b->UploadTexture(tmu, startAddress, *tex);
       tex->uploadedToBackend = true;
       tex->uploadedTableHash = tex->swizzledTableHash;
+      tex->uploadedToBackendPerTmu[tmu] = true;
+      tex->uploadedTableHashPerTmu[tmu] = tex->swizzledTableHash;
     } else {
       TelemetryManager::GetInstance().RecordTexUpload(
           static_cast<uint64_t>(partialTexels) * sizeof(uint32_t));
       b->UploadTexturePartial(tmu, startAddress, *tex, lodIdx, startRow,
                               endRow);
+    }
+    // In UMA mode, invalidate the other TMU's upload flag so next bind syncs.
+    if (m_umaEnabled.load(std::memory_order_relaxed)) {
+      tex->uploadedToBackendPerTmu[1u - tmu] = false;
     }
   }
 
@@ -1203,12 +1223,160 @@ void TextureManager::SetTmuMemoryLimitMb(uint32_t tmu, uint32_t limitMb) {
   }
 }
 
+void TextureManager::SetUmaMode(bool enabled) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  const bool wasEnabled = m_umaEnabled.exchange(enabled, std::memory_order_acq_rel);
+  if (wasEnabled != enabled) {
+    GLIDE_LOG(INFO, "TextureManager",
+              "TEXUMA (GR_TEXTURE_UMA_EXT) " << (enabled ? "ENABLED" : "DISABLED"));
+  }
+}
+
+void TextureManager::SetMultibase(uint32_t tmu, bool enabled) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (tmu >= 2) return;
+  m_tmus[tmu].multibaseEnabled = enabled;
+  GLIDE_LOG(DEBUG, "TextureManager",
+            "SetMultibase TMU" << tmu << ": " << (enabled ? "ON" : "OFF"));
+}
+
+void TextureManager::SetMultibaseAddress(uint32_t tmu, uint32_t canonicalRange,
+                                         uint32_t startAddress) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (tmu >= 2 || canonicalRange >= 8) return;
+  m_tmus[tmu].multibaseAddr[canonicalRange] = startAddress;
+  GLIDE_LOG(DEBUG, "TextureManager",
+            "SetMultibaseAddress TMU" << tmu << " range=" << canonicalRange
+                                      << " addr=0x" << std::hex << startAddress
+                                      << std::dec);
+}
+
+bool TextureManager::IsMultibaseEnabled(uint32_t tmu) const {
+  std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(m_mutex));
+  return (tmu < 2) ? m_tmus[tmu].multibaseEnabled : false;
+}
+
+uint32_t TextureManager::ResolveMultibaseSource(uint32_t tmu,
+                                                uint32_t startAddress,
+                                                int32_t glide2LargeLod,
+                                                int32_t glide2SmallLod,
+                                                uint32_t aspect,
+                                                uint32_t format) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (tmu >= 2 || !m_tmus[tmu].multibaseEnabled) return startAddress;
+
+  const int32_t start = std::min(glide2LargeLod, glide2SmallLod);
+  const int32_t end = std::max(glide2LargeLod, glide2SmallLod);
+  const uint32_t storeTmu = StorageTmu_Locked(tmu);
+  auto& texMap = m_tmus[storeTmu].textures;
+
+  auto pickCandidate = [&](uint32_t maxDim, int32_t lod)
+      -> std::shared_ptr<VirtualTexture> {
+    uint32_t cands[3] = {0xFFFFFFFFu, 0xFFFFFFFFu, startAddress};
+    if (maxDim >= 2048u) {
+      cands[0] = m_tmus[tmu].multibaseAddr[7];  // GR_TEXBASE_2048
+      cands[1] = m_tmus[tmu].multibaseAddr[3];  // GR_TEXBASE_256 (test39 style)
+    } else if (maxDim == 1024u) {
+      cands[0] = m_tmus[tmu].multibaseAddr[6];  // GR_TEXBASE_1024
+      cands[1] = m_tmus[tmu].multibaseAddr[3];
+    } else if (maxDim == 512u) {
+      cands[0] = m_tmus[tmu].multibaseAddr[5];  // GR_TEXBASE_512
+      cands[1] = m_tmus[tmu].multibaseAddr[3];
+    } else if (maxDim == 256u) {
+      cands[0] = m_tmus[tmu].multibaseAddr[3];  // GR_TEXBASE_256
+      cands[1] = m_tmus[tmu].multibaseAddr[4];  // GR_TEXBASE_256_TO_1
+    } else if (maxDim == 128u) {
+      cands[0] = m_tmus[tmu].multibaseAddr[2];  // GR_TEXBASE_128
+      cands[1] = m_tmus[tmu].multibaseAddr[4];
+    } else if (maxDim == 64u) {
+      cands[0] = m_tmus[tmu].multibaseAddr[1];  // GR_TEXBASE_64
+      cands[1] = m_tmus[tmu].multibaseAddr[4];
+    } else {
+      cands[0] = m_tmus[tmu].multibaseAddr[0];  // GR_TEXBASE_32_TO_1
+      cands[1] = m_tmus[tmu].multibaseAddr[4];
+    }
+    for (uint32_t addr : cands) {
+      if (addr == 0xFFFFFFFFu) continue;
+      auto it = texMap.find(addr);
+      if (it == texMap.end()) continue;
+      auto& src = it->second;
+      if (lod >= src->largeLod && lod <= src->smallLod) {
+        EnsureTextureReady_Locked(tmu, src, false);
+        return src;
+      }
+    }
+    return nullptr;
+  };
+
+  const uint32_t compositeAddr = kMultibaseCompositeBase + tmu;
+  auto comp = std::make_shared<VirtualTexture>();
+  comp->startAddress = compositeAddr;
+  comp->format = format;
+  comp->aspectRatio = aspect;
+  comp->largeLod = start;
+  comp->smallLod = end;
+  comp->declaredLargeLod = start;
+  ComputeLodDimensions(start, aspect, comp->baseWidth, comp->baseHeight);
+
+  const uint32_t numLevels = static_cast<uint32_t>(end - start + 1);
+  comp->swizzledMipLevels.resize(numLevels);
+
+  uint64_t compHash = 14695981039346656037ULL;
+  bool anyMatched = false;
+  for (int32_t L = start; L <= end; ++L) {
+    uint32_t lw = 1, lh = 1;
+    ComputeLodDimensions(L, aspect, lw, lh);
+    const uint32_t maxDim = std::max(lw, lh);
+    const uint32_t dstIdx = static_cast<uint32_t>(L - start);
+    auto src = pickCandidate(maxDim, L);
+    if (src) {
+      const uint32_t srcIdx = static_cast<uint32_t>(L - src->largeLod);
+      if (srcIdx < src->swizzledMipLevels.size() &&
+          src->swizzledMipLevels[srcIdx].size() == static_cast<size_t>(lw) * lh) {
+        comp->swizzledMipLevels[dstIdx] = src->swizzledMipLevels[srcIdx];
+        anyMatched = true;
+      }
+    }
+    if (comp->swizzledMipLevels[dstIdx].size() != static_cast<size_t>(lw) * lh) {
+      comp->swizzledMipLevels[dstIdx].resize(static_cast<size_t>(lw) * lh, 0);
+    }
+    compHash = FastHashBytes64(
+        compHash,
+        reinterpret_cast<const uint8_t*>(comp->swizzledMipLevels[dstIdx].data()),
+        comp->swizzledMipLevels[dstIdx].size() * sizeof(uint32_t));
+  }
+
+  if (!anyMatched) return startAddress;
+
+  comp->rawDataHash = compHash;
+  auto existingIt = texMap.find(compositeAddr);
+  if (existingIt != texMap.end() &&
+      existingIt->second->rawDataHash == compHash &&
+      existingIt->second->baseWidth == comp->baseWidth &&
+      existingIt->second->baseHeight == comp->baseHeight &&
+      existingIt->second->swizzledMipLevels.size() == numLevels &&
+      existingIt->second->uploadedToBackendPerTmu[tmu]) {
+    return compositeAddr;
+  }
+
+  texMap[compositeAddr] = comp;
+  if (auto* b = BackendManager::GetInstance().GetBackend()) {
+    TelemetryManager::GetInstance().RecordTexUpload(
+        CalcSwizzledUploadBytes(*comp));
+    b->UploadTexture(tmu, compositeAddr, *comp);
+    comp->uploadedToBackend = true;
+    comp->uploadedToBackendPerTmu[tmu] = true;
+  }
+  return compositeAddr;
+}
+
 VirtualTexture* TextureManager::GetTexture(uint32_t tmu,
                                            uint32_t startAddress) {
   std::lock_guard<std::mutex> lock(m_mutex);
   if (tmu >= 2) return nullptr;
-  auto it = m_tmus[tmu].textures.find(startAddress);
-  if (it == m_tmus[tmu].textures.end()) return nullptr;
+  const uint32_t storeTmu = StorageTmu_Locked(tmu);
+  auto it = m_tmus[storeTmu].textures.find(startAddress);
+  if (it == m_tmus[storeTmu].textures.end()) return nullptr;
   if (it->second->isPaletted || it->second->isNcc) {
     EnsureTextureReady_Locked(tmu, it->second, false);
   }
@@ -1219,8 +1387,9 @@ std::shared_ptr<const VirtualTexture> TextureManager::GetTextureSnapshot(
     uint32_t tmu, uint32_t startAddress) {
   std::lock_guard<std::mutex> lock(m_mutex);
   if (tmu >= 2 || startAddress == 0xFFFFFFFFu) return nullptr;
-  auto it = m_tmus[tmu].textures.find(startAddress);
-  if (it == m_tmus[tmu].textures.end()) return nullptr;
+  const uint32_t storeTmu = StorageTmu_Locked(tmu);
+  auto it = m_tmus[storeTmu].textures.find(startAddress);
+  if (it == m_tmus[storeTmu].textures.end()) return nullptr;
   if (it->second->isPaletted || it->second->isNcc) {
     EnsureTextureReady_Locked(tmu, it->second, false);
   }
@@ -1234,8 +1403,9 @@ void TextureManager::PrepareTextureForBind(uint32_t tmu,
   if (tmu >= 2) return;
   m_tmus[tmu].boundAddress = startAddress;
   if (startAddress == 0xFFFFFFFFu) return;
-  auto it = m_tmus[tmu].textures.find(startAddress);
-  if (it != m_tmus[tmu].textures.end()) {
+  const uint32_t storeTmu = StorageTmu_Locked(tmu);
+  auto it = m_tmus[storeTmu].textures.find(startAddress);
+  if (it != m_tmus[storeTmu].textures.end()) {
     EnsureTextureReady_Locked(tmu, it->second, true);
   }
 }
@@ -1251,8 +1421,9 @@ void TextureManager::SyncBoundTextures() {
     }
     const uint32_t addr = m_tmus[tmu].boundAddress;
     if (addr == 0xFFFFFFFFu) continue;
-    auto it = m_tmus[tmu].textures.find(addr);
-    if (it != m_tmus[tmu].textures.end()) {
+    const uint32_t storeTmu = StorageTmu_Locked(tmu);
+    auto it = m_tmus[storeTmu].textures.find(addr);
+    if (it != m_tmus[storeTmu].textures.end()) {
       EnsureTextureReady_Locked(tmu, it->second, true);
     }
   }
@@ -1260,6 +1431,7 @@ void TextureManager::SyncBoundTextures() {
 
 void TextureManager::Reset() {
   std::lock_guard<std::mutex> lock(m_mutex);
+  m_umaEnabled.store(false, std::memory_order_release);
   s_anyTableDirty.store(false, std::memory_order_release);
   EntryCommon::g_anyTmuTableDirty.store(false, std::memory_order_release);
   for (int i = 0; i < 2; ++i) {
@@ -1275,6 +1447,10 @@ void TextureManager::Reset() {
     m_tmus[i].nccHashes[1] = 0;
     m_tmus[i].activeNccTable = 0;
     m_tmus[i].boundAddress = 0xFFFFFFFFu;
+    m_tmus[i].multibaseEnabled = false;
+    for (int r = 0; r < 8; ++r) {
+      m_tmus[i].multibaseAddr[r] = 0xFFFFFFFFu;
+    }
     m_tmuTableDirty[i].store(false, std::memory_order_release);
   }
   GLIDE_LOG(INFO, "TextureManager",

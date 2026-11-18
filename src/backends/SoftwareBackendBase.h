@@ -72,8 +72,7 @@ class SoftwareBackendBase : public GlideStateTracker {
     uint32_t color{0};
     uint32_t alpha{255};
     uint32_t pixelFormat{1};
-    bool maskRgb{true};
-    bool maskAlpha{true};
+    uint8_t colorWriteMask4{0xFu};
   };
   PendingCpuColorClear m_pendingCpuColorClear[2];
   bool m_pendingCpuDepthClear{false};

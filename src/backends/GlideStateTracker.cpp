@@ -54,9 +54,15 @@ void GlideStateTracker::ResetState_Locked() {
   std::memset(m_fogTable, 0, sizeof(m_fogTable));
 
   m_colorMaskRgb = true;
+  m_colorMaskR = true;
+  m_colorMaskG = true;
+  m_colorMaskB = true;
   m_colorMaskAlpha = true;
 
   m_texLodBias[0] = m_texLodBias[1] = 0.0f;
+  m_texDetailBias[0] = m_texDetailBias[1] = 0;
+  m_texDetailScale[0] = m_texDetailScale[1] = 0;
+  m_texDetailMax[0] = m_texDetailMax[1] = 0.0f;
   m_boundTexAddress[0] = 0xFFFFFFFF;
   m_boundTexAddress[1] = 0xFFFFFFFF;
   m_texClampS[0] = 0;
@@ -294,11 +300,24 @@ void GlideStateTracker::SetColorMask(bool rgb, bool alpha) {
 }
 
 void GlideStateTracker::SetColorMask_Locked(bool rgb, bool alpha) {
+  SetColorMaskExt_Locked(rgb, rgb, rgb, alpha);
+}
+
+void GlideStateTracker::SetColorMaskExt(bool r, bool g, bool b, bool a) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  SetColorMaskExt_Locked(r, g, b, a);
+}
+
+void GlideStateTracker::SetColorMaskExt_Locked(bool r, bool g, bool b, bool a) {
   MarkStateDirty();
-  m_colorMaskRgb = rgb;
-  m_colorMaskAlpha = alpha;
+  m_colorMaskR = r;
+  m_colorMaskG = g;
+  m_colorMaskB = b;
+  m_colorMaskRgb = (r || g || b);
+  m_colorMaskAlpha = a;
   GLIDE_LOG(DEBUG, "Rasterizer",
-            "SetColorMask: RGB=" << rgb << ", Alpha=" << alpha);
+            "SetColorMaskExt: R=" << r << ", G=" << g << ", B=" << b
+                                  << ", A=" << a);
 }
 
 void GlideStateTracker::SetGamma(float gamma) {
@@ -434,6 +453,31 @@ void GlideStateTracker::SetTexLodBias_Locked(uint32_t tmu, float bias) {
   if (tmu < 2) {
     m_texLodBias[tmu] = bias;
     GLIDE_LOG(DEBUG, "Rasterizer", "SetTexLodBias TMU" << tmu << ": " << bias);
+  }
+}
+
+void GlideStateTracker::SetTexDetailControl(uint32_t tmu, int32_t lodBias,
+                                            uint8_t detailScale,
+                                            float detailMax) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  SetTexDetailControl_Locked(tmu, lodBias, detailScale, detailMax);
+}
+
+void GlideStateTracker::SetTexDetailControl_Locked(uint32_t tmu,
+                                                   int32_t lodBias,
+                                                   uint8_t detailScale,
+                                                   float detailMax) {
+  MarkStateDirty();
+  if (tmu < 2) {
+    m_texDetailBias[tmu] = std::clamp(lodBias, -32, 31);
+    m_texDetailScale[tmu] = std::min<uint8_t>(detailScale, 7u);
+    m_texDetailMax[tmu] = std::clamp(detailMax, 0.0f, 1.0f);
+    GLIDE_LOG(DEBUG, "Rasterizer",
+              "SetTexDetailControl TMU" << tmu << ": bias="
+                                        << m_texDetailBias[tmu]
+                                        << ", scale="
+                                        << static_cast<int>(m_texDetailScale[tmu])
+                                        << ", max=" << m_texDetailMax[tmu]);
   }
 }
 

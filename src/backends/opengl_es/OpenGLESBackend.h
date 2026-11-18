@@ -58,6 +58,7 @@ class OpenGLESBackend : public GlideStateTracker {
   void SetBlendState(uint32_t rgbSrcFactor, uint32_t rgbDstFactor,
                      uint32_t alphaSrcFactor, uint32_t alphaDstFactor) override;
   void SetColorMask(bool rgb, bool alpha) override;
+  void SetColorMaskExt(bool r, bool g, bool b, bool a) override;
   void SetAAMultiSample(bool enabled) override;
   void SetTBufferWriteMask(uint32_t mask) override;
   void SetGamma(float gamma) override;
@@ -80,6 +81,8 @@ class OpenGLESBackend : public GlideStateTracker {
                    uint32_t clampT, uint32_t minFilter,
                    uint32_t magFilter) override;
   void SetTexLodBias(uint32_t tmu, float bias) override;
+  void SetTexDetailControl(uint32_t tmu, int32_t lodBias, uint8_t detailScale,
+                           float detailMax) override;
   void SetTexMipMapMode(uint32_t tmu, uint32_t mode, bool lodBlend) override;
   void SetCombinerMode(uint32_t colorFunc, uint32_t colorFactor,
                        uint32_t colorLocal, uint32_t colorOther,
@@ -164,6 +167,7 @@ class OpenGLESBackend : public GlideStateTracker {
     kGlesDirtyDitherStipple     = 1u << 19,
     kGlesDirtySamplerUnits      = 1u << 20,
     kGlesDirtySampleMask        = 1u << 21,
+    kGlesDirtyTexDetail         = 1u << 22,
     kGlesDirtyAll               = 0xFFFFFFFFu,
   };
   uint32_t m_glesDirtyMask{kGlesDirtyAll};
@@ -328,6 +332,9 @@ class OpenGLESBackend : public GlideStateTracker {
   int m_uTexChromaMinLoc{-1};
   int m_uTexChromaMaxLoc{-1};
   int m_uTexLodBiasLoc{-1};
+  int m_uTexDetailBiasLoc{-1};
+  int m_uTexDetailScaleLoc{-1};
+  int m_uTexDetailMaxLoc{-1};
   int m_uTexRgbFuncLoc{-1};
   int m_uTexRgbFactorLoc{-1};
   int m_uTexAlphaFuncLoc{-1};

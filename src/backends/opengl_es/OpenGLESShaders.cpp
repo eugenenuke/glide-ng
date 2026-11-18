@@ -131,6 +131,9 @@ uniform int uTextureEnabled[2]; // Array of size 2
 uniform sampler2D uTexture0;
 uniform sampler2D uTexture1;
 uniform float uTexLodBias[2];
+uniform int uTexDetailBias[2];
+uniform int uTexDetailScale[2];
+uniform float uTexDetailMax[2];
 uniform int uUseTmuOow[2]; // Array of size 2
 
 // New TMU combiner uniforms
@@ -250,7 +253,7 @@ vec4 sampleTextureGLES(sampler2D tex, vec2 uv, int tmuIdx, float tw, float th) {
 vec4 evaluateTmuStageGLES(
     int rgbFunc, int rgbFactor, int alphaFunc, int alphaFactor,
     bool rgbInvert, bool alphaInvert,
-    vec4 localVal, vec4 otherVal) {
+    vec4 localVal, vec4 otherVal, float detailFactor, float lodFrac) {
     
     // 1. Evaluate Alpha
     float aLocal = localVal.a;
@@ -259,19 +262,21 @@ vec4 evaluateTmuStageGLES(
     float factA = 0.0;
     if (alphaFactor == 1 || alphaFactor == 3) factA = aLocal;
     else if (alphaFactor == 2) factA = aOther;
-    else if (alphaFactor == 4) factA = localVal.a;
+    else if (alphaFactor == 4) factA = detailFactor;
+    else if (alphaFactor == 5) factA = lodFrac;
     else if (alphaFactor == 8) factA = 1.0;
     else if (alphaFactor == 9 || alphaFactor == 11) factA = 1.0 - aLocal;
     else if (alphaFactor == 10) factA = 1.0 - aOther;
-    else if (alphaFactor == 12) factA = 1.0 - localVal.a;
+    else if (alphaFactor == 12) factA = 1.0 - detailFactor;
+    else if (alphaFactor == 13) factA = 1.0 - lodFrac;
     
     float finalA = 0.0;
-    if (alphaFunc == 1) finalA = aLocal;
+    if (alphaFunc == 1 || alphaFunc == 2) finalA = aLocal;
     else if (alphaFunc == 3) finalA = aOther * factA;
     else if (alphaFunc == 4 || alphaFunc == 5) finalA = aOther * factA + aLocal;
     else if (alphaFunc == 6) finalA = (aOther - aLocal) * factA;
     else if (alphaFunc == 7 || alphaFunc == 8) finalA = (aOther - aLocal) * factA + aLocal;
-    else if (alphaFunc == 9 || alphaFunc == 16) finalA = (aLocal - aOther) * factA + aOther;
+    else if (alphaFunc == 9 || alphaFunc == 16) finalA = aLocal * (1.0 - factA);
     
     if (alphaInvert) finalA = 1.0 - finalA;
     
@@ -283,24 +288,26 @@ vec4 evaluateTmuStageGLES(
     if (rgbFactor == 1) factC = cLocal;
     else if (rgbFactor == 2) factC = vec3(aOther);
     else if (rgbFactor == 3) factC = vec3(aLocal);
-    else if (rgbFactor == 4) factC = vec3(localVal.a);
-    else if (rgbFactor == 5) factC = localVal.rgb;
+    else if (rgbFactor == 4) factC = vec3(detailFactor);
+    else if (rgbFactor == 5) factC = vec3(lodFrac);
     else if (rgbFactor == 8) factC = vec3(1.0);
     else if (rgbFactor == 9) factC = vec3(1.0) - cLocal;
     else if (rgbFactor == 10) factC = vec3(1.0 - aOther);
     else if (rgbFactor == 11) factC = vec3(1.0 - aLocal);
-    else if (rgbFactor == 12) factC = vec3(1.0 - localVal.a);
+    else if (rgbFactor == 12) factC = vec3(1.0 - detailFactor);
+    else if (rgbFactor == 13) factC = vec3(1.0 - lodFrac);
     
     vec3 finalC = vec3(0.0);
     if (rgbFunc == 1) finalC = cLocal;
+    else if (rgbFunc == 2) finalC = vec3(aLocal);
     else if (rgbFunc == 3) finalC = cOther * factC;
     else if (rgbFunc == 4) finalC = cOther * factC + cLocal;
     else if (rgbFunc == 5) finalC = cOther * factC + vec3(aLocal);
     else if (rgbFunc == 6) finalC = (cOther - cLocal) * factC;
     else if (rgbFunc == 7) finalC = (cOther - cLocal) * factC + cLocal;
     else if (rgbFunc == 8) finalC = (cOther - cLocal) * factC + vec3(aLocal);
-    else if (rgbFunc == 9) finalC = (cLocal - cOther) * factC + cOther;
-    else if (rgbFunc == 16) finalC = (vec3(aLocal) - cOther) * factC + cOther;
+    else if (rgbFunc == 9) finalC = cLocal * (vec3(1.0) - factC);
+    else if (rgbFunc == 16) finalC = vec3(aLocal) - cLocal * factC;
     
     if (rgbInvert) finalC = vec3(1.0) - finalC;
     
@@ -345,11 +352,21 @@ void main() {
 
     // 1. Sample TMU 1 (upstream)
     vec4 tmu1Color = vec4(1.0);
+    float detailFactor1 = 0.0;
+    float lodFrac1 = 0.0;
     if (tmu1Active) {
         ivec2 texSize = textureSize(uTexture1, 0);
         float tw = float(texSize.x);
         float th = float(texSize.y);
+        float maxDim = max(tw, th);
         vec2 uv1 = (fragTexCoord.zw / divW1) / 256.0;
+        vec2 texelPos1 = uv1 * vec2(maxDim, maxDim);
+        vec2 dx1 = dFdx(texelPos1);
+        vec2 dy1 = dFdy(texelPos1);
+        float rho2_1 = max(dot(dx1, dx1), dot(dy1, dy1));
+        float rawLod1 = (rho2_1 > 1e-8) ? 0.5 * log2(rho2_1) : -10.0;
+        detailFactor1 = clamp((float(uTexDetailBias[1]) - rawLod1) * exp2(float(uTexDetailScale[1])) / 255.0, 0.0, uTexDetailMax[1]);
+        lodFrac1 = fract(max(0.0, rawLod1 + uTexLodBias[1]));
         tmu1Color = sampleTextureGLES(uTexture1, uv1, 1, tw, th);
     }
 
@@ -357,16 +374,26 @@ void main() {
     vec4 tmu1Out = tmu1Active ? evaluateTmuStageGLES(
         uTexRgbFunc[1], uTexRgbFactor[1], uTexAlphaFunc[1], uTexAlphaFactor[1],
         uTexRgbInvert[1] == 1, uTexAlphaInvert[1] == 1,
-        tmu1Color, fragColor
+        tmu1Color, fragColor, detailFactor1, lodFrac1
     ) : fragColor;
 
     // 2. Sample TMU 0 (downstream)
     vec4 tmu0Color = vec4(1.0);
+    float detailFactor0 = 0.0;
+    float lodFrac0 = 0.0;
     if (tmu0Active) {
         ivec2 texSize = textureSize(uTexture0, 0);
         float tw = float(texSize.x);
         float th = float(texSize.y);
+        float maxDim = max(tw, th);
         vec2 uv0 = (fragTexCoord.xy / divW0) / 256.0;
+        vec2 texelPos0 = uv0 * vec2(maxDim, maxDim);
+        vec2 dx0 = dFdx(texelPos0);
+        vec2 dy0 = dFdy(texelPos0);
+        float rho2_0 = max(dot(dx0, dx0), dot(dy0, dy0));
+        float rawLod0 = (rho2_0 > 1e-8) ? 0.5 * log2(rho2_0) : -10.0;
+        detailFactor0 = clamp((float(uTexDetailBias[0]) - rawLod0) * exp2(float(uTexDetailScale[0])) / 255.0, 0.0, uTexDetailMax[0]);
+        lodFrac0 = fract(max(0.0, rawLod0 + uTexLodBias[0]));
         tmu0Color = sampleTextureGLES(uTexture0, uv0, 0, tw, th);
     }
 
@@ -374,7 +401,7 @@ void main() {
     vec4 tmu0Out = tmu0Active ? evaluateTmuStageGLES(
         uTexRgbFunc[0], uTexRgbFactor[0], uTexAlphaFunc[0], uTexAlphaFactor[0],
         uTexRgbInvert[0] == 1, uTexAlphaInvert[0] == 1,
-        tmu0Color, tmu1Out
+        tmu0Color, tmu1Out, detailFactor0, lodFrac0
     ) : tmu1Out;
 
     vec4 texColor = tmu0Out;
@@ -401,12 +428,12 @@ void main() {
 
     // 4. Evaluate Alpha Combiner Function
     float finalA = 0.0;
-    if (uAlphaFunc == 1) finalA = aLocal;
+    if (uAlphaFunc == 1 || uAlphaFunc == 2) finalA = aLocal;
     else if (uAlphaFunc == 3) finalA = aOther * factA;
     else if (uAlphaFunc == 4 || uAlphaFunc == 5) finalA = aOther * factA + aLocal;
     else if (uAlphaFunc == 6) finalA = (aOther - aLocal) * factA;
     else if (uAlphaFunc == 7 || uAlphaFunc == 8) finalA = (aOther - aLocal) * factA + aLocal;
-    else if (uAlphaFunc == 9 || uAlphaFunc == 16) finalA = (aLocal - aOther) * factA + aOther;
+    else if (uAlphaFunc == 9 || uAlphaFunc == 16) finalA = aLocal * (1.0 - factA);
     
     if (uAlphaInvert == 1) finalA = 1.0 - finalA;
 
@@ -436,14 +463,15 @@ void main() {
     // 7. Evaluate Color Combiner Function
     vec3 finalC = vec3(0.0);
     if (uColorFunc == 1) finalC = cLocal;
+    else if (uColorFunc == 2) finalC = vec3(aLocal);
     else if (uColorFunc == 3) finalC = cOther * factC;
     else if (uColorFunc == 4) finalC = cOther * factC + cLocal;
     else if (uColorFunc == 5) finalC = cOther * factC + vec3(aLocal);
     else if (uColorFunc == 6) finalC = (cOther - cLocal) * factC;
     else if (uColorFunc == 7) finalC = (cOther - cLocal) * factC + cLocal;
     else if (uColorFunc == 8) finalC = (cOther - cLocal) * factC + vec3(aLocal);
-    else if (uColorFunc == 9) finalC = (cLocal - cOther) * factC + cOther;
-    else if (uColorFunc == 16) finalC = (vec3(aLocal) - cOther) * factC + cOther;
+    else if (uColorFunc == 9) finalC = cLocal * (vec3(1.0) - factC);
+    else if (uColorFunc == 16) finalC = vec3(aLocal) - cLocal * factC;
 
     if (uColorInvert == 1) finalC = vec3(1.0) - finalC;
 
@@ -706,6 +734,10 @@ bool OpenGLESBackend::CreateGeomShaders() {
   m_uTexChromaMinLoc = glGetUniformLocation(m_geomProgram, "uTexChromaMin");
   m_uTexChromaMaxLoc = glGetUniformLocation(m_geomProgram, "uTexChromaMax");
   m_uTexLodBiasLoc = glGetUniformLocation(m_geomProgram, "uTexLodBias");
+  m_uTexDetailBiasLoc = glGetUniformLocation(m_geomProgram, "uTexDetailBias");
+  m_uTexDetailScaleLoc =
+      glGetUniformLocation(m_geomProgram, "uTexDetailScale");
+  m_uTexDetailMaxLoc = glGetUniformLocation(m_geomProgram, "uTexDetailMax");
   m_uDepthNearLoc = glGetUniformLocation(m_geomProgram, "uDepthNear");
   m_uDepthFarLoc = glGetUniformLocation(m_geomProgram, "uDepthFar");
   m_uDitherModeLoc = glGetUniformLocation(m_geomProgram, "uDitherMode");
@@ -835,6 +867,23 @@ void OpenGLESBackend::PopulateUniforms(uint32_t dirtyMask) {
     glUniform1iv(m_uTextureEnabledLoc, 2, texEnabled);
     float lodBias[2] = {m_texLodBias[0], m_texLodBias[1]};
     glUniform1fv(m_uTexLodBiasLoc, 2, lodBias);
+  }
+
+  if (dirtyMask & kGlesDirtyTexDetail) {
+    int detailBias[2] = {static_cast<int>(m_texDetailBias[0]),
+                         static_cast<int>(m_texDetailBias[1])};
+    int detailScale[2] = {static_cast<int>(m_texDetailScale[0]),
+                          static_cast<int>(m_texDetailScale[1])};
+    float detailMax[2] = {m_texDetailMax[0], m_texDetailMax[1]};
+    if (m_uTexDetailBiasLoc != -1) {
+      glUniform1iv(m_uTexDetailBiasLoc, 2, detailBias);
+    }
+    if (m_uTexDetailScaleLoc != -1) {
+      glUniform1iv(m_uTexDetailScaleLoc, 2, detailScale);
+    }
+    if (m_uTexDetailMaxLoc != -1) {
+      glUniform1fv(m_uTexDetailMaxLoc, 2, detailMax);
+    }
   }
 
   if (dirtyMask & kGlesDirtySamplerUnits) {

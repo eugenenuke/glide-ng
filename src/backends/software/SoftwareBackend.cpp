@@ -1711,6 +1711,9 @@ void SoftwareBackend::ResolveActiveState() {
   state.fogColor = m_fogColor;
   std::memcpy(state.fogTable, m_fogTable, 64);
   state.colorMaskRgb = m_colorMaskRgb;
+  state.colorMaskR = m_colorMaskR;
+  state.colorMaskG = m_colorMaskG;
+  state.colorMaskB = m_colorMaskB;
   state.colorMaskAlpha = m_colorMaskAlpha;
   state.aaEnabled = m_aaEnabled;
   state.aaMultiSample = m_aaMultiSample;
@@ -1742,6 +1745,12 @@ void SoftwareBackend::ResolveActiveState() {
   state.texLodBlend[1] = m_texLodBlend[1];
   state.texLodBias[0] = m_texLodBias[0];
   state.texLodBias[1] = m_texLodBias[1];
+  state.texDetailBias[0] = m_texDetailBias[0];
+  state.texDetailBias[1] = m_texDetailBias[1];
+  state.texDetailScale[0] = m_texDetailScale[0];
+  state.texDetailScale[1] = m_texDetailScale[1];
+  state.texDetailMax[0] = m_texDetailMax[0];
+  state.texDetailMax[1] = m_texDetailMax[1];
 
   state.colorCombinerFunc = m_colorCombinerFunc;
   state.colorCombinerFactor = m_colorCombinerFactor;
