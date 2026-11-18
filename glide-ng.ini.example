@@ -21,8 +21,10 @@ headless = false
 #                      Voodoo2 (CVG) | VoodooBanshee (Banshee) | Voodoo3 (H3) |
 #                      Voodoo4 (VSA100) | Voodoo5 (H5)
 card_model = Voodoo2
-# Glide 2.x/3.x reported API base version: 2.1 | 2.40 | 2.42 | 2.43 | 2.61
-api_version = 2.43
+# Glide 2.x/3.x reported API version (omit to use the card's authentic default):
+#   VoodooGraphics/Rush: 2.11..2.48 / 3.00..3.04 | Voodoo2: 2.50..2.56 / 3.01..3.03
+#   Banshee/Voodoo3: 2.60..2.61 / 3.10           | Voodoo4/Voodoo5: 2.61 / 3.10
+api_version = 2.56
 # Framebuffer RAM (FBI) in MB
 fbi_memory_mb = 16
 # Active Texture Mapping Units (1..3)

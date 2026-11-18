@@ -111,7 +111,9 @@ ctest --output-on-failure
 
 ## Documentation & Project Roadmap
 
-For detailed architectural breakdown, API milestone schedules, per-title quirks, and environment variable specifications, please explore the `./docs` directory:
-* **[Game, Demo & Tool Compatibility Library](./docs/compatibility_library.md)**
-* **[Environment Variables & Overrides Guide](./docs/glide_environment_variables.md)**
+For per-title presets and quirks, benchmarking recipes, hardware/version matrices, and environment variable specifications, explore the `./docs` directory:
+* **[Game, Demo & Benchmark Compatibility Catalog](./docs/catalog/README.md)** — per-title guides, drop-in `glide-ng.ini` presets, and Software SIMD / Mesa `llvmpipe` benchmarking recipes
+* **[3dfx Glide Versions & Hardware Card Matrix](./docs/glide_versions_and_cards.md)** — authentic Glide 2.x/3.x versions (`2.11`–`2.61`, `3.00`–`3.10`) and 7 emulated Voodoo board profiles
+* **[Environment Variables & Overrides Guide](./docs/glide_environment_variables.md)** — full `glide-ng.ini`, `FX_GLIDE_*`/`SST_*`, and `GLIDE_NG_*` reference
+* **[M11 Performance Analysis & Zen 4 AVX-512 Report](./docs/perf_m11_analysis.md)** — cross-backend benchmarks and architectural trade-offs
 * **[Implementation Blueprint & Roadmap](./docs/glide_wrapper_project_plan.md)**
