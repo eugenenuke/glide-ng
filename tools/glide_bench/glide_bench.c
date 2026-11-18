@@ -49,7 +49,19 @@ static int parse_res_arg(const char* s, GrScreenResolution_t* out_enum,
   if (strcmp(s, "1024") == 0 || gtool_strcasecmp(s, "1024x768") == 0) {
     *out_enum = GR_RESOLUTION_1024x768; *out_w = 1024; *out_h = 768; return 1;
   }
+  if (strcmp(s, "1280") == 0 || gtool_strcasecmp(s, "1280x1024") == 0) {
+    *out_enum = GR_RESOLUTION_1280x1024; *out_w = 1280; *out_h = 1024; return 1;
+  }
+  if (strcmp(s, "1600") == 0 || gtool_strcasecmp(s, "1600x1200") == 0) {
+    *out_enum = GR_RESOLUTION_1600x1200; *out_w = 1600; *out_h = 1200; return 1;
+  }
   return 0;
+}
+
+static const char* cat_tag(int cat) {
+  if (cat == BENCH_CAT_CORE) return "core";
+  if (cat == BENCH_CAT_EXT) return "ext";
+  return "vsa100";
 }
 
 static void print_usage(const char* argv0) {
@@ -61,8 +73,11 @@ static void print_usage(const char* argv0) {
   printf("3dfx Glide %d.x Benchmark Suite (%s)\n\n",
          GLIDE_VERSION, gtool_platform_name());
   printf("Options:\n");
-  printf("  --scene <name|all>   Scene(s) to run (comma-separated, default: all)\n");
-  printf("  --res <512|640|800|1024> Resolution (default: 640)\n");
+  printf("  --scene <set|list>   core, extended, vsa100, all, or comma-separated (default: all)\n");
+  printf("  --res <512|640|800|1024|1280|1600> Resolution (default: 640)\n");
+#if GLIDE_VERSION == 3
+  printf("  --aa <0|2|4>         VSA-100 Spatial AA samples for all scenes (default: 0)\n");
+#endif
   printf("  --seconds <N>        Duration per scene in seconds (default: 5)\n");
   printf("  --frames <N>         Fixed frame count per scene (overrides --seconds)\n");
   printf("  --loop               Loop continuously until ESC or Q is pressed\n");
@@ -74,7 +89,8 @@ static void print_usage(const char* argv0) {
   printf("  -h, --help           Show this help message\n\n");
   printf("Registered scenes (%d):\n", count);
   for (i = 0; i < count; ++i) {
-    printf("  %-10s  %s [%s]\n", scenes[i].name, scenes[i].title,
+    printf("  %-12s [%-6s]  %s [%s]\n", scenes[i].name,
+           cat_tag(scenes[i].category), scenes[i].title,
            scenes[i].metric_unit);
   }
 }
@@ -101,8 +117,6 @@ static int run_single_scene(BenchContext* ctx,
   out_res->scene = scene;
 
   if (!scene->setup(ctx)) {
-    fprintf(stderr, "WARN: scene '%s' setup failed (insufficient TMU/RAM?)\n",
-            scene->name);
     return 0;
   }
 
@@ -209,10 +223,14 @@ static void print_summary(FILE* out,
                           int num_results) {
   int i;
   int ran_count = 0;
+  int core_count = 0;
   int near_60_count = 0;
   double log_fps_sum = 0.0;
   double log_score_sum = 0.0;
   double weight_sum = 0.0;
+  double core_log_fps_sum = 0.0;
+  double core_log_score_sum = 0.0;
+  double core_weight_sum = 0.0;
   double geomean_fps = 0.0;
   double glidemark_score = 0.0;
 
@@ -228,16 +246,20 @@ static void print_summary(FILE* out,
     fprintf(out, " Renderer : %.64s\n", renderer_str);
   }
   fprintf(out, "------------------------------------------------------------------------------\n");
-  fprintf(out, " %-10s %8s %8s %8s %8s %16s %8s\n",
+  fprintf(out, " %-11s %8s %8s %8s %8s %16s %8s\n",
           "Scene", "Avg FPS", "1% Low", "Avg ms", "P99 ms", "Throughput", "Score");
   fprintf(out, "------------------------------------------------------------------------------\n");
 
   for (i = 0; i < num_results; ++i) {
     char tp_buf[32];
-    if (!results[i].ran) continue;
+    if (!results[i].ran) {
+      fprintf(out, " %-11s   [SKIP - unsupported on active card/config]\n",
+              results[i].scene->name);
+      continue;
+    }
     snprintf(tp_buf, sizeof(tp_buf), "%7.1f %-7s",
              results[i].throughput, results[i].scene->metric_unit);
-    fprintf(out, " %-10s %8.1f %8.1f %8.2f %8.2f %16s %8.0f\n",
+    fprintf(out, " %-11s %8.1f %8.1f %8.2f %8.2f %16s %8.0f\n",
             results[i].scene->name,
             results[i].avg_fps,
             results[i].p1_low_fps,
@@ -251,6 +273,12 @@ static void print_summary(FILE* out,
       log_fps_sum += w * log(results[i].avg_fps);
       log_score_sum += w * log(results[i].score > 0.0 ? results[i].score : 1.0);
       weight_sum += w;
+      if (results[i].scene->category == BENCH_CAT_CORE) {
+        core_log_fps_sum += w * log(results[i].avg_fps);
+        core_log_score_sum += w * log(results[i].score > 0.0 ? results[i].score : 1.0);
+        core_weight_sum += w;
+        core_count++;
+      }
     }
     if (results[i].avg_fps >= 58.0 && results[i].avg_fps <= 62.5) {
       near_60_count++;
@@ -264,6 +292,12 @@ static void print_summary(FILE* out,
   }
 
   fprintf(out, "------------------------------------------------------------------------------\n");
+  if (core_count == 6 && ran_count > 6 && core_weight_sum > 0.0) {
+    double core_fps = exp(core_log_fps_sum / core_weight_sum);
+    double core_score = exp(core_log_score_sum / core_weight_sum);
+    fprintf(out, " Core GlideMark (6 scenes) : %7.0f pts  (geomean %.1f FPS)\n",
+            core_score, core_fps);
+  }
   fprintf(out, " Composite Geomean FPS     : %7.1f FPS (%d scene%s)\n",
           geomean_fps, ran_count, (ran_count == 1) ? "" : "s");
   fprintf(out, " GlideMark Score (%dx%d) : %7.0f pts  (ref: 30 FPS = 1000 pts)\n",
@@ -295,11 +329,67 @@ static int write_csv(const char* path, int width, int height,
   return 1;
 }
 
+#if GLIDE_VERSION == 3
+static void resolve_g3_ext_procs(BenchContext* ctx) {
+  GrProc p;
+#define LOAD_G3_PROC(field, sym)                     \
+  do {                                               \
+    p = grGetProcAddress((char*)(sym));              \
+    if (p) {                                         \
+      memcpy(&ctx->field, &p, sizeof(ctx->field));   \
+    }                                                \
+  } while (0)
+  LOAD_G3_PROC(fn_winOpenExt,       "grSstWinOpenExt");
+  LOAD_G3_PROC(fn_tbufWriteMask,    "grTBufferWriteMaskExt");
+  LOAD_G3_PROC(fn_colorMaskExt,     "grColorMaskExt");
+  LOAD_G3_PROC(fn_stencilFunc,      "grStencilFuncExt");
+  LOAD_G3_PROC(fn_stencilMask,      "grStencilMaskExt");
+  LOAD_G3_PROC(fn_stencilOp,        "grStencilOpExt");
+  LOAD_G3_PROC(fn_bufferClearExt,   "grBufferClearExt");
+  LOAD_G3_PROC(fn_colorCombineExt,  "grColorCombineExt");
+  LOAD_G3_PROC(fn_alphaCombineExt,  "grAlphaCombineExt");
+  LOAD_G3_PROC(fn_texColorCombineExt, "grTexColorCombineExt");
+  LOAD_G3_PROC(fn_texAlphaCombineExt, "grTexAlphaCombineExt");
+  LOAD_G3_PROC(fn_constColorExt,    "grConstantColorValueExt");
+  LOAD_G3_PROC(fn_alphaBlendExt,    "grAlphaBlendFunctionExt");
+  LOAD_G3_PROC(fn_textureBufferExt, "grTextureBufferExt");
+#undef LOAD_G3_PROC
+}
+
+static GrContext_t open_g3_context(BenchContext* ctx,
+                                   GrScreenResolution_t res_enum,
+                                   int requested_aa) {
+  GrContext_t h = 0;
+  ctx->aa_samples = 0;
+  if (requested_aa >= 2 && bench_has_ext(ctx, "PIXEXT") && ctx->fn_winOpenExt) {
+    GrPixelFormat_t pf = (requested_aa >= 4) ? GR_PIXFMT_AA_4_RGB_565
+                                             : GR_PIXFMT_AA_2_RGB_565;
+    h = ctx->fn_winOpenExt(0, res_enum, GR_REFRESH_60Hz, GR_COLORFORMAT_ABGR,
+                           GR_ORIGIN_UPPER_LEFT, pf, 2, 1);
+    if (h != 0) {
+      ctx->aa_samples = (requested_aa >= 4) ? 4 : 2;
+      return h;
+    }
+    if (requested_aa >= 4) {
+      h = ctx->fn_winOpenExt(0, res_enum, GR_REFRESH_60Hz, GR_COLORFORMAT_ABGR,
+                             GR_ORIGIN_UPPER_LEFT, GR_PIXFMT_AA_2_RGB_565, 2, 1);
+      if (h != 0) {
+        ctx->aa_samples = 2;
+        return h;
+      }
+    }
+  }
+  return grSstWinOpen(0, res_enum, GR_REFRESH_60Hz, GR_COLORFORMAT_ABGR,
+                      GR_ORIGIN_UPPER_LEFT, 2, 1);
+}
+#endif
+
 int main(int argc, char** argv) {
   const char* scene_arg = "all";
   GrScreenResolution_t res_enum = GR_RESOLUTION_640x480;
   int width = 640;
   int height = 480;
+  int requested_aa = 0;
   double target_seconds = 5.0;
   int target_frames = 0;
   int loop_mode = 0;
@@ -323,8 +413,10 @@ int main(int argc, char** argv) {
   BenchContext ctx;
   int i;
   int aborted = 0;
+  int detected_tmus = 1;
 #if GLIDE_VERSION == 3
   GrContext_t g3_ctx = 0;
+  int active_aa = 0;
 #endif
 
   for (i = 1; i < argc; ++i) {
@@ -332,10 +424,18 @@ int main(int argc, char** argv) {
       scene_arg = argv[++i];
     } else if (strcmp(argv[i], "--res") == 0 && i + 1 < argc) {
       if (!parse_res_arg(argv[++i], &res_enum, &width, &height)) {
-        fprintf(stderr, "ERROR: Invalid --res '%s' (use 512, 640, 800, or 1024)\n",
+        fprintf(stderr, "ERROR: Invalid --res '%s' (use 512, 640, 800, 1024, 1280, or 1600)\n",
                 argv[i]);
         return 1;
       }
+#if GLIDE_VERSION == 3
+    } else if (strcmp(argv[i], "--aa") == 0 && i + 1 < argc) {
+      requested_aa = atoi(argv[++i]);
+      if (requested_aa != 0 && requested_aa != 2 && requested_aa != 4) {
+        fprintf(stderr, "ERROR: Invalid --aa '%s' (use 0, 2, or 4)\n", argv[i]);
+        return 1;
+      }
+#endif
     } else if (strcmp(argv[i], "--seconds") == 0 && i + 1 < argc) {
       target_seconds = atof(argv[++i]);
       if (target_seconds <= 0.0) target_seconds = 1.0;
@@ -354,7 +454,8 @@ int main(int argc, char** argv) {
       csv_path = argv[++i];
     } else if (strcmp(argv[i], "--list") == 0) {
       for (i = 0; i < all_count; ++i) {
-        printf("%-10s  %s [%s]\n", all_scenes[i].name, all_scenes[i].title,
+        printf("%-12s [%-6s]  %s [%s]\n", all_scenes[i].name,
+               cat_tag(all_scenes[i].category), all_scenes[i].title,
                all_scenes[i].metric_unit);
       }
       return 0;
@@ -368,10 +469,29 @@ int main(int argc, char** argv) {
     }
   }
 
-  /* Resolve requested scenes (supports "all" or comma-separated slugs) */
+  /* Resolve requested scenes (supports core/extended/vsa100/all or comma list) */
   if (gtool_strcasecmp(scene_arg, "all") == 0) {
     for (i = 0; i < all_count && num_selected < MAX_SELECTED_SCENES; ++i) {
       selected[num_selected++] = &all_scenes[i];
+    }
+  } else if (gtool_strcasecmp(scene_arg, "core") == 0) {
+    for (i = 0; i < all_count && num_selected < MAX_SELECTED_SCENES; ++i) {
+      if (all_scenes[i].category == BENCH_CAT_CORE) {
+        selected[num_selected++] = &all_scenes[i];
+      }
+    }
+  } else if (gtool_strcasecmp(scene_arg, "extended") == 0 ||
+             gtool_strcasecmp(scene_arg, "ext") == 0) {
+    for (i = 0; i < all_count && num_selected < MAX_SELECTED_SCENES; ++i) {
+      if (all_scenes[i].category != BENCH_CAT_CORE) {
+        selected[num_selected++] = &all_scenes[i];
+      }
+    }
+  } else if (gtool_strcasecmp(scene_arg, "vsa100") == 0) {
+    for (i = 0; i < all_count && num_selected < MAX_SELECTED_SCENES; ++i) {
+      if (all_scenes[i].category == BENCH_CAT_VSA100) {
+        selected[num_selected++] = &all_scenes[i];
+      }
     }
   } else {
     char copy[256];
@@ -411,6 +531,7 @@ int main(int argc, char** argv) {
   glide_ver[0] = '\0';
   hw_str[0] = '\0';
   renderer_str[0] = '\0';
+  memset(&ctx, 0, sizeof(ctx));
 
   if (!gtool_glide_load(runtime_src, sizeof(runtime_src), err_buf, sizeof(err_buf))) {
     fprintf(stderr, "ERROR: %s\n", err_buf[0] ? err_buf : "Glide load failed");
@@ -426,6 +547,7 @@ int main(int argc, char** argv) {
   {
     GrHwConfiguration hw;
     const char* s;
+    (void)requested_aa;
     memset(&hw, 0, sizeof(hw));
     grGlideGetVersion(glide_ver);
     if (!glide_ver[0]) snprintf(glide_ver, sizeof(glide_ver), "2.x");
@@ -438,6 +560,14 @@ int main(int argc, char** argv) {
       return 1;
     }
     grSstSelect(0);
+    if (hw.SSTs[0].type == GR_SSTTYPE_VOODOO) {
+      detected_tmus = hw.SSTs[0].sstBoard.VoodooConfig.nTexelfx;
+    } else if (hw.SSTs[0].type == GR_SSTTYPE_SST96) {
+      detected_tmus = hw.SSTs[0].sstBoard.SST96Config.nTexelfx;
+    } else if (hw.SSTs[0].type == GR_SSTTYPE_Voodoo2) {
+      detected_tmus = hw.SSTs[0].sstBoard.Voodoo2Config.nTexelfx;
+    }
+    if (detected_tmus < 1) detected_tmus = 1;
     s = gtool_glide2_try_get_string(GR_HARDWARE);
     if (s) {
       snprintf(hw_str, sizeof(hw_str), "%s", s);
@@ -461,27 +591,37 @@ int main(int argc, char** argv) {
 #else
   {
     const char* s;
+    FxI32 tmu_val = 1;
     s = grGetString(GR_VERSION);
     snprintf(glide_ver, sizeof(glide_ver), "%s", s ? s : "3.x");
     s = grGetString(GR_HARDWARE);
     if (s) snprintf(hw_str, sizeof(hw_str), "%s", s);
     s = grGetString(GR_RENDERER);
     if (s) snprintf(renderer_str, sizeof(renderer_str), "%s", s);
+    s = grGetString(GR_EXTENSION);
+    if (s) snprintf(ctx.extensions, sizeof(ctx.extensions), "%s", s);
+    if (grGet(GR_NUM_TMU, 4, &tmu_val) > 0 && tmu_val >= 1) {
+      detected_tmus = (int)tmu_val;
+    }
+    resolve_g3_ext_procs(&ctx);
     grSstSelect(0);
   }
 #endif
 
-  memset(&ctx, 0, sizeof(ctx));
   ctx.width = width;
   ctx.height = height;
+  ctx.num_tmus = detected_tmus;
   ctx.tmu0_min = grTexMinAddress(GR_TMU0);
   ctx.tmu0_max = grTexMaxAddress(GR_TMU0);
+  if (ctx.num_tmus >= 2) {
+    ctx.tmu1_min = grTexMinAddress(GR_TMU1);
+    ctx.tmu1_max = grTexMaxAddress(GR_TMU1);
+  }
   ctx.scene_tmu_limit = ctx.tmu0_max;
   ctx.hud_enabled = hud_enabled;
 
 #if GLIDE_VERSION == 3
-  g3_ctx = grSstWinOpen(0, res_enum, GR_REFRESH_60Hz, GR_COLORFORMAT_ABGR,
-                        GR_ORIGIN_UPPER_LEFT, 2, 1);
+  g3_ctx = open_g3_context(&ctx, res_enum, requested_aa);
   if (g3_ctx == 0) {
     fprintf(stderr, "ERROR: grSstWinOpen failed for %dx%d.\n", width, height);
     grGlideShutdown();
@@ -490,6 +630,7 @@ int main(int argc, char** argv) {
     if (do_pause) gtool_wait_keypress();
     return 1;
   }
+  active_aa = ctx.aa_samples;
 #else
   if (!grSstWinOpen(0, res_enum, GR_REFRESH_60Hz, GR_COLORFORMAT_ABGR,
                     GR_ORIGIN_UPPER_LEFT, 2, 1)) {
@@ -509,6 +650,26 @@ int main(int argc, char** argv) {
 
   gtool_console_begin();
   for (i = 0; i < num_selected && !aborted; ++i) {
+#if GLIDE_VERSION == 3
+    int want_aa = (selected[i]->requires_aa > 0)
+                      ? ((requested_aa >= 2) ? requested_aa : selected[i]->requires_aa)
+                      : requested_aa;
+    if (want_aa != active_aa &&
+        (want_aa == 0 || (bench_has_ext(&ctx, "PIXEXT") && ctx.fn_winOpenExt))) {
+      grSstWinClose(g3_ctx);
+      g3_ctx = open_g3_context(&ctx, res_enum, want_aa);
+      if (g3_ctx == 0) {
+        aborted = 1;
+        break;
+      }
+      active_aa = ctx.aa_samples;
+      bench_init_vertex_layout();
+      ctx.scene_tmu_limit = ctx.tmu0_max;
+      if (ctx.hud_enabled) {
+        bench_hud_init(&ctx);
+      }
+    }
+#endif
     run_single_scene(&ctx, selected[i], i, num_selected, target_seconds,
                      target_frames, loop_mode, frame_ms_buf, &results[i],
                      &aborted);
