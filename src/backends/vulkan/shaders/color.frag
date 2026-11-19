@@ -1,10 +1,10 @@
 #version 450
 
-layout(location = 0) in vec4 fragColor;
-layout(location = 1) in vec4 fragTex;
-layout(location = 2) in float fragOOW;
-layout(location = 3) in vec2 fragTmuOow;
-layout(location = 4) in float fragFogCoord;
+layout(location = 0) centroid in vec4 fragColor;
+layout(location = 1) centroid in vec4 fragTex;
+layout(location = 2) centroid in float fragOOW;
+layout(location = 3) centroid in vec2 fragTmuOow;
+layout(location = 4) centroid in float fragFogCoord;
 
 layout(location = 0) out vec4 outColor;
 #ifdef USE_DUAL_SRC_BLEND

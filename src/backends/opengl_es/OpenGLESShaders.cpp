@@ -49,11 +49,11 @@ layout(location = 2) in vec4 inTex;
 layout(location = 3) in vec2 inTmuOow;
 layout(location = 4) in float inFogCoord;
 
-out vec4 fragColor;
-out float fragOOW;
-out vec4 fragTexCoord; // Passes s0, t0, s1, t1
-out vec2 fragTmuOow;
-out float fragFogCoord;
+centroid out vec4 fragColor;
+centroid out float fragOOW;
+centroid out vec4 fragTexCoord; // Passes s0, t0, s1, t1
+centroid out vec2 fragTmuOow;
+centroid out float fragFogCoord;
 
 uniform int uSstOrigin; // 0 = UPPER_LEFT, 1 = LOWER_LEFT
 uniform vec2 uViewportSize;
@@ -96,11 +96,11 @@ static const char* geomFsSource = R"(#version 300 es
 #extension GL_EXT_blend_func_extended : enable
 precision highp float;
 
-in vec4 fragColor;
-in float fragOOW;
-in vec4 fragTexCoord; // Passes s0, t0, s1, t1
-in vec2 fragTmuOow;
-in float fragFogCoord;
+centroid in vec4 fragColor;
+centroid in float fragOOW;
+centroid in vec4 fragTexCoord; // Passes s0, t0, s1, t1
+centroid in vec2 fragTmuOow;
+centroid in float fragFogCoord;
 
 #ifdef GL_EXT_blend_func_extended
 layout(location = 0, index = 0) out vec4 outColor;
