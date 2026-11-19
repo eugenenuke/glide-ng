@@ -105,10 +105,10 @@ void VulkanBackend::ClearBufferExt(uint32_t color, uint32_t alpha, float z,
 
   if (isSampleMaskedClear || isChannelMaskedClear || isStencilMaskedClear) {
     if (isSampleMaskedClear && effSampleMask == 0u) return;
-    if ((clearMask & 1) && m_lfbStaging.IsOverlayDirty(m_activeRenderBuffer)) {
+    if (doColorClear && m_lfbStaging.IsOverlayDirty(m_activeRenderBuffer)) {
       FlushLFBToGPU_Locked();
     }
-    if ((clearMask & 1) && fullClip && !isSampleMaskedClear) {
+    if (doColorClear && fullClip && !isSampleMaskedClear) {
       m_lfbStaging.ScheduleLazyClearMask(m_activeRenderBuffer, color, alpha,
                                          m_pixelFormatOverride,
                                          GetColorWriteMask4());
@@ -147,7 +147,7 @@ void VulkanBackend::ClearBufferExt(uint32_t color, uint32_t alpha, float z,
 
   // 2. Handle any pending sparse LFB overlay before clearing, and defer
   // CPU-side full framebuffer clear lazily so pure 3D frames allocate 0 bytes.
-  if (clearMask & 1) {
+  if (doColorClear) {
     if (fullClip && IsFullColorMask()) {
       m_lfbStaging.ClearOverlay(m_activeRenderBuffer);
     } else if (m_lfbStaging.IsOverlayDirty(m_activeRenderBuffer)) {

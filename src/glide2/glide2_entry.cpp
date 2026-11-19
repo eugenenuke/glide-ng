@@ -332,6 +332,10 @@ FX_ENTRY void FX_CALL grBufferClear(GrColor_t color, GrAlpha_t alpha,
                 << std::hex << color << std::dec
                 << ", alpha=" << static_cast<uint32_t>(alpha)
                 << ", depth=" << depth);
+  // Flush any persistent LFB write lock before clearing so pre-3D LFB writes
+  // (e.g. Carmageddon Voodoo Graphics mode writing the 2D map before clearing
+  // depth and drawing the 3D miniscreen) commit chronologically before clear/3D.
+  EntryCommon::FlushActiveLfbWriteLock(s_state);
   EntryCommon::ClearBuffer(color, alpha, depth);
 }
 
@@ -1687,6 +1691,7 @@ FX_ENTRY FxBool FX_CALL grLfbReadRegion(GrBuffer_t srcBuf, FxU32 srcX,
   GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::Lfb);
   EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend", "grLfbReadRegion invoked.");
+  EntryCommon::FlushActiveLfbWriteLock(s_state);
   return EntryCommon::LfbReadRegion(srcBuf, srcX, srcY, srcWidth, srcHeight,
                                     dstStride, dstData)
              ? FXTRUE
@@ -1735,6 +1740,9 @@ FX_ENTRY FxBool FX_CALL grLfbLock(GrLock_t type, GrBuffer_t buffer,
                 << type << ", buffer=" << buffer << ", mode=" << writeMode
                 << ", origin=" << origin
                 << ", pixelPipeline=" << pixelPipeline);
+  if (!GlideWrapper::LfbManager::IsWriteLockType(type)) {
+    EntryCommon::FlushActiveLfbWriteLock(s_state);
+  }
   return GlideWrapper::LfbManager::GetInstance().Lock(
              type, buffer, writeMode, origin, pixelPipeline != 0, info)
              ? FXTRUE
