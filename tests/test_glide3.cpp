@@ -10093,7 +10093,7 @@ TEST_CASE("M12.5 Compatibility Catalog INI Presets & Directory Integrity",
       CHECK(fs::is_regular_file(entry.path() / "glide-ng.ini"));
     }
   }
-  CHECK(titleDirCount >= 13u);
+  CHECK(titleDirCount >= 14u);
 
   // 2. Discover every glide-ng*.ini under docs/catalog/ plus root glide-ng.ini.example
   std::vector<fs::path> iniFiles;
@@ -10109,7 +10109,7 @@ TEST_CASE("M12.5 Compatibility Catalog INI Presets & Directory Integrity",
   iniFiles.push_back(exampleIni);
   std::sort(iniFiles.begin(), iniFiles.end());
 
-  REQUIRE(iniFiles.size() >= 17u);
+  REQUIRE(iniFiles.size() >= 21u);
 
   GlideWrapper::IniConfigLoader loader;
   for (const auto& iniPath : iniFiles) {
@@ -10197,6 +10197,36 @@ TEST_CASE("M12.5 Compatibility Catalog INI Presets & Directory Integrity",
     CHECK(cfg.msaaSamples == 4u);
     CHECK(cfg.presentationFilter == 1u);
     CHECK(cfg.noDitherSub == true);
+    CHECK(cfg.noSplash == false);
+  }
+  {
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load(
+        (catalogDir / "games" / "gta" / "glide-ng.ini").string(),
+        cfg));
+    CHECK(cfg.model == GlideWrapper::CardModel::Voodoo2);
+    CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_56);
+    CHECK(cfg.noSplash == false);
+  }
+  {
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load(
+        (catalogDir / "games" / "gta" / "glide-ng.hq.ini").string(),
+        cfg));
+    CHECK(cfg.model == GlideWrapper::CardModel::Voodoo2);
+    CHECK(cfg.msaaSamples == 4u);
+    CHECK(cfg.presentationFilter == 1u);
+    CHECK(cfg.forceTrilinear == false);
+    CHECK(cfg.noDitherSub == true);
+    CHECK(cfg.noSplash == false);
+  }
+  {
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load(
+        (catalogDir / "games" / "gta" / "glide-ng.voodoo1.ini").string(),
+        cfg));
+    CHECK(cfg.model == GlideWrapper::CardModel::VoodooGraphics);
+    CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_48);
     CHECK(cfg.noSplash == false);
   }
 }
@@ -10306,4 +10336,124 @@ TEST_CASE("M13: Single-Source SemVer Version & Build Metadata",
 
   CHECK(std::string(GLIDE_GIT_HASH).size() > 0u);
   CHECK(std::string(GLIDE_BUILD_TYPE).size() > 0u);
+}
+
+TEST_CASE("MSAA Centroid Interpolation Prevents Rotated Sprite UV-Wrap Fringes",
+          "[MSAA][Centroid][AlphaTest]") {
+  using namespace GlideWrapper;
+
+  // Build a 64x64 ARGB_1555 texture mirroring rotated sprite sheets / wrapped
+  // alpha-tested sprites (e.g. GTA mission arrow):
+  //  - Outer ring [0..7] and [56..63]: opaque black (0x8000)
+  //  - Inner margin [8..55]: fully transparent (0x0000)
+  //  - Center [26..37]: opaque bright yellow (0xFFE0)
+  std::vector<uint16_t> tex(64u * 64u, 0x8000u);
+  for (uint32_t y = 8u; y < 56u; ++y) {
+    for (uint32_t x = 8u; x < 56u; ++x) {
+      tex[y * 64u + x] = 0x0000u;
+    }
+  }
+  for (uint32_t y = 26u; y < 38u; ++y) {
+    for (uint32_t x = 26u; x < 38u; ++x) {
+      tex[y * 64u + x] = 0xFFE0u;
+    }
+  }
+
+  for (const char* beName : {"vulkan", "opengl_es", "software"}) {
+    auto& reg = EmulationRegistry::GetInstance();
+    auto savedCfg = reg.GetConfig();
+    auto& bm = BackendManager::GetInstance();
+    auto& tm = TextureManager::GetInstance();
+
+    WrapperConfig cfg = savedCfg;
+    cfg.backend = beName;
+    cfg.forceNoWindow = true;
+    cfg.model = CardModel::Voodoo2;
+    cfg.tmuMemoryMb = 16;
+    cfg.fbiMemoryMb = 16;
+    cfg.msaaSamples = 4;
+    if (std::string(beName) == "software") {
+      cfg.swAaMode = "ssaa";
+    }
+    reg.GetConfig() = cfg;
+    REQUIRE(bm.EstablishBackend(cfg));
+    auto* be = bm.GetBackend();
+    REQUIRE(be != nullptr);
+    REQUIRE(be->AttachWindow(nullptr, 128, 128, false));
+
+    tm.Reset();
+    tm.SetTmuMemoryLimitMb(0, 16);
+    REQUIRE(tm.DownloadMipMap(0u, 0x10000u, 2, 2, 3u, 11u, tex.data(), true));
+
+    be->SetSstOrigin(0u);
+    be->SetClipWindow(0u, 0u, 128u, 128u);
+    be->SetDepthState(0u, 7u, false, 0);
+    be->SetBlendState(4u, 0u, 4u, 0u);  // ONE, ZERO
+    be->SetAlphaTestState(4u, 128u);    // GR_CMP_GREATER, ref=128
+    be->SetColorCombineExt(0u);
+    be->SetTexCombinerMode(0u, 1u, 0u, 1u, 0u, false, false);
+    // Color = OTHER (TMU0), Alpha = OTHER (TMU0)
+    be->SetCombinerMode(3u, 8u, 2u, 1u, false, 3u, 8u, 2u, 1u, false);
+    // Clamp(0,0) = WRAP, Filter(1,1) = BILINEAR
+    be->BindTexture(0u, 0x10000u, 0u, 0u, 1u, 1u);
+
+    // Clear to bright white so any leaked dark border fringe stands out starkly
+    be->ClearBuffer(0xFFFFFFFFu, 255u, 1.0f, 3u);
+
+    auto makeV = [](float x, float y, float s, float t) {
+      ModernVertex mv{};
+      mv.pos = {x, y, 0.5f, 1.0f};
+      mv.color = {1.0f, 1.0f, 1.0f, 1.0f};
+      mv.tex = {s, t, 0.0f, 0.0f};
+      mv.tmu_oow = {1.0f, 1.0f};
+      return mv;
+    };
+
+    // 45-degree rotated quad mapped strictly onto transparent region [8.5..55.5]
+    // in 0..256 Glide texture units ([34.0..222.0]). Without centroid
+    // interpolation, partial-coverage pixels on the 45-degree outer edges
+    // extrapolate UVs outside [34..222] into the opaque black ring [0..7]/[56..63].
+    const float u0 = 34.0f;
+    const float u1 = 222.0f;
+    ModernVertex vTop = makeV(64.0f, 32.0f, u0, u0);
+    ModernVertex vRight = makeV(96.0f, 64.0f, u1, u0);
+    ModernVertex vBot = makeV(64.0f, 96.0f, u1, u1);
+    ModernVertex vLeft = makeV(32.0f, 64.0f, u0, u1);
+    be->DrawTriangle(vTop, vRight, vBot);
+    be->DrawTriangle(vTop, vBot, vLeft);
+    be->FlushBins();
+
+    std::vector<uint32_t> fb(128u * 128u, 0u);
+    REQUIRE(be->ReadLFB(1u, 0u, 0u, 128u, 128u, 128u * 4u, fb.data()));
+
+    INFO("backend=" << beName);
+    // 1. Center pixel must be opaque yellow (sprite actually rendered)
+    const uint32_t centerPx = fb[64u * 128u + 64u];
+    CHECK((centerPx & 0xFFu) > 220u);
+    CHECK(((centerPx >> 8) & 0xFFu) > 220u);
+    CHECK(((centerPx >> 16) & 0xFFu) < 30u);
+
+    // 2. Outer perimeter around the rotated quad (r >= 18 px from center) must
+    //    remain pure white — zero extrapolated dark fringe pixels!
+    uint32_t fringePixels = 0u;
+    for (uint32_t y = 0u; y < 128u; ++y) {
+      for (uint32_t x = 0u; x < 128u; ++x) {
+        const int dx = static_cast<int>(x) - 64;
+        const int dy = static_cast<int>(y) - 64;
+        if (dx * dx + dy * dy < 18 * 18) continue;
+        const uint32_t px = fb[y * 128u + x];
+        const uint32_t r = px & 0xFFu;
+        const uint32_t g = (px >> 8) & 0xFFu;
+        const uint32_t b = (px >> 16) & 0xFFu;
+        if (r < 245u || g < 245u || b < 245u) {
+          ++fringePixels;
+        }
+      }
+    }
+    CHECK(fringePixels == 0u);
+
+    be->DetachWindow();
+    bm.ShutdownBackend();
+    reg.GetConfig() = savedCfg;
+  }
 }
