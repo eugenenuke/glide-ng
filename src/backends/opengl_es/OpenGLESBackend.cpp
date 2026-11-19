@@ -1933,7 +1933,7 @@ bool OpenGLESBackend::CreateGLContext(void* nativeWindowHandle, uint32_t width,
   if (!m_surfaceHost.Attach(
           nativeWindowHandle, width, height, windowed, m_config.forceNoWindow,
           "3dfx glide-ng Presentation Console (OpenGL)", extraFlags,
-          m_config.windowScale)) {
+          m_config.windowScale, m_config.fullscreen)) {
     GLIDE_LOG(CRITICAL, "GLES",
               "NativeSurfaceHost::Attach failed for OpenGLESBackend.");
     RestoreHostContextIfSaved();

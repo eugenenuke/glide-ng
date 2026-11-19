@@ -220,16 +220,34 @@ static_assert(sizeof(GlideWrapperState) == 312,
               "compatibility!");
 
 FX_ENTRY void FX_CALL grGlideInit(void) {
+#ifdef GLIDE_NG_FRONTEND_211
+  EntryCommon::InitGlide("Glide 2.11", ResetFrontendState,
+                         GlideWrapper::CardModel::VoodooGraphics,
+                         GlideWrapper::ApiVersion::GLIDE_2_11,
+                         /*hasCustomDefaultGlide2Api=*/true);
+#else
   EntryCommon::InitGlide("Glide 2.x", ResetFrontendState);
+#endif
 }
 
 inline void EnsureEngineInitialized() {
+#ifdef GLIDE_NG_FRONTEND_211
+  EntryCommon::EnsureEngineInitialized(ResetFrontendState,
+                                       GlideWrapper::CardModel::VoodooGraphics,
+                                       GlideWrapper::ApiVersion::GLIDE_2_11,
+                                       /*hasCustomDefaultGlide2Api=*/true);
+#else
   EntryCommon::EnsureEngineInitialized(ResetFrontendState);
+#endif
 }
 
 FX_ENTRY void FX_CALL grGlideShutdown(void) {
   s_windowOpen = false;
+#ifdef GLIDE_NG_FRONTEND_211
+  EntryCommon::ShutdownGlide("Glide 2.11");
+#else
   EntryCommon::ShutdownGlide("Glide 2.x");
+#endif
 }
 
 FX_ENTRY FxBool FX_CALL grSstWinOpen(AnyPtr hWnd,
@@ -1418,11 +1436,25 @@ FX_ENTRY GrMipMapId_t FX_CALL guTexAllocateMemory(
   tex.odd_even_mask = odd_even_mask;
   tex.trilinear = trilinear;
 
-  // Calculate VRAM size required and allocate
+  // Calculate VRAM size required and allocate within emulated TMU budget
+  const auto& cfg = GlideWrapper::EmulationRegistry::GetInstance().GetConfig();
+  const uint32_t tmuMemBytes =
+      static_cast<uint32_t>(std::max(1u, cfg.tmuMemoryMb)) * 1024u * 1024u;
   uint32_t bytesRequired =
       grTexCalcMemRequired(smallest_lod, largest_lod, aspect, fmt);
-  tex.tmu_base_address = s_guTexNextAddress;
-  s_guTexNextAddress += bytesRequired;
+  const uint32_t alignedAddr = (s_guTexNextAddress + 7u) & ~7u;
+  if (s_guTextures.size() >= MAX_MIPMAPS_PER_SST ||
+      alignedAddr > tmuMemBytes ||
+      bytesRequired > (tmuMemBytes - alignedAddr)) {
+    GLIDE_LOG(DEBUG, "Frontend",
+              "guTexAllocateMemory: TMU" << tmu << " budget exhausted (used="
+                                         << alignedAddr << ", need="
+                                         << bytesRequired << ", limit="
+                                         << tmuMemBytes << ")");
+    return GR_NULL_MIPMAP_HANDLE;
+  }
+  tex.tmu_base_address = alignedAddr;
+  s_guTexNextAddress = alignedAddr + bytesRequired;
 
   s_guTextures.push_back(tex);
   GrMipMapId_t id = static_cast<GrMipMapId_t>(s_guTextures.size() - 1);
@@ -2479,6 +2511,7 @@ FX_ENTRY void FX_CALL grSstVidMode(FxU32 whichSst, void* vidTimings) {
             "grSstVidMode (Glide 2.x) stub: whichSst=" << whichSst);
 }
 
+#ifndef GLIDE_NG_FRONTEND_211
 FX_ENTRY void FX_CALL guFbReadRegion(const int src_x, const int src_y,
                                      const int w, const int h, const void* dst,
                                      const int strideInBytes) {
@@ -2506,6 +2539,7 @@ FX_ENTRY void FX_CALL guFbWriteRegion(const int dst_x, const int dst_y,
                    static_cast<FxU32>(w), static_cast<FxU32>(h),
                    static_cast<FxI32>(strideInBytes), const_cast<void*>(src));
 }
+#endif
 
 FX_ENTRY void FX_CALL guMPInit(void) {
   EnsureEngineInitialized();

@@ -121,6 +121,7 @@ struct WrapperConfig {
     bool vsyncStrictFifo{false};   // Opt-in strict FIFO on Wayland (GLIDE_NG_VSYNC=fifo)
     int swapInterval{-1};          // -1 = app-controlled, 0 = off, >=1 = interval (FX_GLIDE_SWAPINTERVAL)
     uint32_t windowScale{1};       // 1..8
+    bool fullscreen{false};        // Borderless fullscreen override ([display] fullscreen / GLIDE_NG_FULLSCREEN)
     uint32_t presentationFilter{0}; // 0 = Nearest-Neighbor, 1 = Linear/Bilinear
 
     // Logging & diagnostics

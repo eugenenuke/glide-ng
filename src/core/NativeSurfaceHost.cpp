@@ -111,8 +111,11 @@ void EnsureWin32WindowClassesRegistered(HINSTANCE hInst) {
   s_registered = true;
 }
 
-bool IsUsableWin32HostWindow(HWND hwnd) {
-  if (!hwnd || !IsWindow(hwnd) || !IsWindowVisible(hwnd) || IsIconic(hwnd)) {
+bool IsUsableWin32HostWindow(HWND hwnd, bool requireVisible = true) {
+  if (!hwnd || !IsWindow(hwnd) || IsIconic(hwnd)) {
+    return false;
+  }
+  if (requireVisible && !IsWindowVisible(hwnd)) {
     return false;
   }
   DWORD pid = 0;
@@ -132,47 +135,95 @@ bool IsUsableWin32HostWindow(HWND hwnd) {
         std::strcmp(cls, "IME") == 0 ||
         std::strcmp(cls, "Default IME") == 0 ||
         std::strcmp(cls, "MSCTFIME UI") == 0 ||
-        std::strcmp(cls, "tooltips_class32") == 0) {
+        std::strcmp(cls, "tooltips_class32") == 0 ||
+        std::strcmp(cls, "OleMainThreadWndClass") == 0 ||
+        std::strcmp(cls, "DDRAW_WIN") == 0) {
       return false;
     }
   }
   RECT rc{};
-  if (!GetClientRect(hwnd, &rc) || (rc.right - rc.left) < 64 ||
-      (rc.bottom - rc.top) < 64) {
-    return false;
+  if (GetClientRect(hwnd, &rc) && (rc.right - rc.left) >= 64 &&
+      (rc.bottom - rc.top) >= 64) {
+    return true;
   }
-  return true;
+  // Pre-ShowWindow top-level windows (e.g. Glide 2.11 titles calling grSstOpen
+  // before ShowWindow) may have a non-empty window rect before client layout.
+  if (!requireVisible && GetWindowRect(hwnd, &rc) &&
+      (rc.right - rc.left) >= 64 && (rc.bottom - rc.top) >= 64) {
+    return true;
+  }
+  return false;
 }
 
+struct Win32HostSearchCtx {
+  HWND found = nullptr;
+  bool requireVisible = true;
+};
+
 BOOL CALLBACK EnumProcessGlideHostProc(HWND hwnd, LPARAM lParam) {
-  if (IsUsableWin32HostWindow(hwnd)) {
-    *reinterpret_cast<HWND*>(lParam) = hwnd;
+  auto* ctx = reinterpret_cast<Win32HostSearchCtx*>(lParam);
+  if (IsUsableWin32HostWindow(hwnd, ctx->requireVisible)) {
+    ctx->found = hwnd;
     return FALSE;
   }
   return TRUE;
 }
 
 // Authentic 3dfx Win32 behavior: fullscreen Glide games (e.g. Donut, Unreal,
-// Tomb Raider, NFS) create a top-level WS_POPUP window and pass hWnd=0 to
-// grSstWinOpen(), expecting Glide to attach to GetActiveWindow() / the app's
-// main window instead of spawning a second overlapping window.
+// Tomb Raider, NFS, CyberGladiators) create a top-level window and pass hWnd=0
+// (or call grSstOpen() with no hWnd parameter), expecting Glide to attach to
+// the app's main window instead of spawning a second overlapping window.
 HWND FindWin32ProcessHostHwnd() {
   HWND active = GetActiveWindow();
-  if (IsUsableWin32HostWindow(active)) {
+  if (IsUsableWin32HostWindow(active, true)) {
     return active;
   }
   HWND fg = GetForegroundWindow();
-  if (IsUsableWin32HostWindow(fg)) {
+  if (IsUsableWin32HostWindow(fg, true)) {
     return fg;
   }
-  HWND found = nullptr;
+  // Pass 1: prefer already-visible top-level windows of this process.
+  Win32HostSearchCtx visCtx{nullptr, true};
   EnumThreadWindows(GetCurrentThreadId(), EnumProcessGlideHostProc,
-                    reinterpret_cast<LPARAM>(&found));
-  if (found) {
-    return found;
+                    reinterpret_cast<LPARAM>(&visCtx));
+  if (visCtx.found) {
+    return visCtx.found;
   }
-  EnumWindows(EnumProcessGlideHostProc, reinterpret_cast<LPARAM>(&found));
-  return found;
+  EnumWindows(EnumProcessGlideHostProc, reinterpret_cast<LPARAM>(&visCtx));
+  if (visCtx.found) {
+    return visCtx.found;
+  }
+  // Pass 2: accept pre-ShowWindow top-level windows (e.g. Glide 2.11 titles
+  // that call grSstOpen() immediately before ShowWindow(hWndMain, nCmdShow)).
+  Win32HostSearchCtx hiddenCtx{nullptr, false};
+  EnumThreadWindows(GetCurrentThreadId(), EnumProcessGlideHostProc,
+                    reinterpret_cast<LPARAM>(&hiddenCtx));
+  if (hiddenCtx.found) {
+    return hiddenCtx.found;
+  }
+  EnumWindows(EnumProcessGlideHostProc, reinterpret_cast<LPARAM>(&hiddenCtx));
+  return hiddenCtx.found;
+}
+
+bool GetWin32MonitorRect(HWND hwnd, RECT& outRc) {
+  HMONITOR mon =
+      hwnd ? MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)
+           : MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY);
+  MONITORINFO mi{};
+  mi.cbSize = sizeof(mi);
+  if (mon && GetMonitorInfoA(mon, &mi) &&
+      mi.rcMonitor.right > mi.rcMonitor.left &&
+      mi.rcMonitor.bottom > mi.rcMonitor.top) {
+    outRc = mi.rcMonitor;
+    return true;
+  }
+  const int sw = GetSystemMetrics(SM_CXSCREEN);
+  const int sh = GetSystemMetrics(SM_CYSCREEN);
+  if (sw > 0 && sh > 0) {
+    outRc = RECT{0, 0, sw, sh};
+    return true;
+  }
+  return false;
 }
 #endif
 
@@ -681,7 +732,7 @@ bool NativeSurfaceHost::Attach(void* hostHandle, uint32_t guestW,
                                uint32_t guestH, bool /*windowed*/,
                                bool forceNoWindow, const std::string& title,
                                uint32_t extraSdlWindowFlags,
-                               uint32_t windowScale) {
+                               uint32_t windowScale, bool fullscreen) {
   if (IsAttached()) {
     Detach();
   }
@@ -689,6 +740,7 @@ bool NativeSurfaceHost::Attach(void* hostHandle, uint32_t guestW,
   m_guestWidth = (guestW > 0) ? guestW : 640;
   m_guestHeight = (guestH > 0) ? guestH : 480;
   m_quitRequested = false;
+  m_fullscreen = fullscreen;
 
   if (forceNoWindow) {
     m_mode = Mode::Headless;
@@ -823,8 +875,11 @@ bool NativeSurfaceHost::AttachStandaloneSDL2(uint32_t guestW, uint32_t guestH,
   const uint32_t clampedScale = std::clamp<uint32_t>(windowScale, 1, 8);
   const int winW = static_cast<int>(guestW * clampedScale);
   const int winH = static_cast<int>(guestH * clampedScale);
-  const uint32_t flags = SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE |
-                         SDL_WINDOW_ALLOW_HIGHDPI | extraSdlWindowFlags;
+  uint32_t flags = SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE |
+                   SDL_WINDOW_ALLOW_HIGHDPI | extraSdlWindowFlags;
+  if (m_fullscreen) {
+    flags |= SDL_WINDOW_FULLSCREEN_DESKTOP;
+  }
 
   const char* windowTitle =
       title.empty() ? "3dfx Glide Wrapper (Standalone)" : title.c_str();
@@ -877,16 +932,30 @@ bool NativeSurfaceHost::AttachWin32Standalone(uint32_t guestW, uint32_t guestH,
   const int clientW = static_cast<int>(guestW * clampedScale);
   const int clientH = static_cast<int>(guestH * clampedScale);
 
-  const DWORD style = WS_OVERLAPPEDWINDOW | WS_VISIBLE;
-  RECT rc{0, 0, clientW, clientH};
-  AdjustWindowRect(&rc, style, FALSE);
-  const int winW = rc.right - rc.left;
-  const int winH = rc.bottom - rc.top;
+  DWORD style = WS_OVERLAPPEDWINDOW | WS_VISIBLE;
+  int winW = clientW;
+  int winH = clientH;
+  int posX = CW_USEDEFAULT;
+  int posY = CW_USEDEFAULT;
 
-  const int screenW = GetSystemMetrics(SM_CXSCREEN);
-  const int screenH = GetSystemMetrics(SM_CYSCREEN);
-  const int posX = (screenW > winW) ? (screenW - winW) / 2 : CW_USEDEFAULT;
-  const int posY = (screenH > winH) ? (screenH - winH) / 2 : CW_USEDEFAULT;
+  RECT monRc{};
+  if (m_fullscreen && GetWin32MonitorRect(nullptr, monRc)) {
+    style = WS_POPUP | WS_VISIBLE;
+    posX = monRc.left;
+    posY = monRc.top;
+    winW = monRc.right - monRc.left;
+    winH = monRc.bottom - monRc.top;
+  } else {
+    RECT rc{0, 0, clientW, clientH};
+    AdjustWindowRect(&rc, style, FALSE);
+    winW = rc.right - rc.left;
+    winH = rc.bottom - rc.top;
+
+    const int screenW = GetSystemMetrics(SM_CXSCREEN);
+    const int screenH = GetSystemMetrics(SM_CYSCREEN);
+    posX = (screenW > winW) ? (screenW - winW) / 2 : CW_USEDEFAULT;
+    posY = (screenH > winH) ? (screenH - winH) / 2 : CW_USEDEFAULT;
+  }
 
   const char* windowTitle =
       title.empty() ? "3dfx glide-ng Presentation Console" : title.c_str();
@@ -948,13 +1017,6 @@ bool NativeSurfaceHost::AttachWin32Embedded(void* parentHwndPtr) {
   HINSTANCE hInst = GetWin32ModuleInstance();
   EnsureWin32WindowClassesRegistered(hInst);
 
-  RECT rc{};
-  GetClientRect(parent, &rc);
-  const int w = (rc.right > rc.left) ? (rc.right - rc.left)
-                                     : static_cast<int>(m_guestWidth);
-  const int h = (rc.bottom > rc.top) ? (rc.bottom - rc.top)
-                                     : static_cast<int>(m_guestHeight);
-
   // Attach directly to the host HWND (matching authentic Win32 3dfx Glide).
   // Creating a WS_CHILD overlay inside a top-level HWND forces Wine's
   // winex11.drv Vulkan/WGL onto a child-window blit fallback that gets wiped
@@ -964,8 +1026,23 @@ bool NativeSurfaceHost::AttachWin32Embedded(void* parentHwndPtr) {
   m_win32ParentHwnd = parentHwndPtr;
   m_win32Hwnd = parentHwndPtr;
   m_win32OwnsHwnd = false;
-
   m_mode = Mode::Win32Embedded;
+
+  if (m_fullscreen) {
+    ApplyWin32EmbeddedFullscreenIfNeeded();
+  }
+  m_win32LastStyle = static_cast<intptr_t>(GetWindowLongA(parent, GWL_STYLE));
+  m_win32SurfaceInvalidated = false;
+  m_win32PendingForeground.store(false, std::memory_order_relaxed);
+  m_win32ResetFullscreenTracking.store(false, std::memory_order_relaxed);
+
+  RECT rc{};
+  GetClientRect(parent, &rc);
+  const int w = (rc.right > rc.left) ? (rc.right - rc.left)
+                                     : static_cast<int>(m_guestWidth);
+  const int h = (rc.bottom > rc.top) ? (rc.bottom - rc.top)
+                                     : static_cast<int>(m_guestHeight);
+
   m_pixelWidth = static_cast<uint32_t>(std::max(1, w));
   m_pixelHeight = static_cast<uint32_t>(std::max(1, h));
 
@@ -973,12 +1050,162 @@ bool NativeSurfaceHost::AttachWin32Embedded(void* parentHwndPtr) {
             "NativeSurfaceHost attached in Win32Embedded mode (parent="
                 << m_win32ParentHwnd << ", surface=" << m_win32Hwnd
                 << ", ownedChild=" << (m_win32OwnsHwnd ? "yes" : "no")
+                << ", fullscreen=" << (m_fullscreen ? "yes" : "no")
                 << ", drawable=" << m_pixelWidth << "x" << m_pixelHeight
                 << ").");
   return true;
 #else
   (void)parentHwndPtr;
   return false;
+#endif
+}
+
+bool NativeSurfaceHost::ApplyWin32EmbeddedFullscreenIfNeeded() {
+#if defined(_WIN32)
+  if (!m_fullscreen || m_mode != Mode::Win32Embedded || !m_win32ParentHwnd ||
+      m_inWin32FullscreenAdjust) {
+    return false;
+  }
+  HWND hwnd = static_cast<HWND>(m_win32ParentHwnd);
+  if (!IsWindow(hwnd) || !IsWindowVisible(hwnd)) {
+    // Defer fullscreen resizing until the host application actually shows its
+    // window (avoids flashing a premature black fullscreen canvas when titles
+    // call grSstOpen() before ShowWindow() or before an intro AVI).
+    return false;
+  }
+
+  RECT monRc{};
+  if (!GetWin32MonitorRect(hwnd, monRc)) {
+    return false;
+  }
+
+  const LONG curStyle = GetWindowLongA(hwnd, GWL_STYLE);
+  const LONG curExStyle = GetWindowLongA(hwnd, GWL_EXSTYLE);
+  RECT curRc{};
+  GetWindowRect(hwnd, &curRc);
+
+  if (!m_win32FullscreenSaved) {
+    m_win32SavedStyle = static_cast<intptr_t>(curStyle);
+    m_win32SavedExStyle = static_cast<intptr_t>(curExStyle);
+    m_win32SavedRect[0] = static_cast<int32_t>(curRc.left);
+    m_win32SavedRect[1] = static_cast<int32_t>(curRc.top);
+    m_win32SavedRect[2] = static_cast<int32_t>(curRc.right);
+    m_win32SavedRect[3] = static_cast<int32_t>(curRc.bottom);
+    m_win32FullscreenSaved = true;
+  }
+
+  constexpr DWORD kChromeStyleMask =
+      WS_CAPTION | WS_THICKFRAME | WS_BORDER | WS_DLGFRAME |
+      WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU;
+  constexpr DWORD kChromeExStyleMask =
+      WS_EX_DLGMODALFRAME | WS_EX_CLIENTEDGE | WS_EX_STATICEDGE |
+      WS_EX_WINDOWEDGE;
+
+  const DWORD uStyle = static_cast<DWORD>(curStyle);
+  const DWORD uExStyle = static_cast<DWORD>(curExStyle);
+  const bool needStyleFix =
+      ((uStyle & kChromeStyleMask) != 0u) || ((uStyle & WS_POPUP) == 0u) ||
+      ((uExStyle & kChromeExStyleMask) != 0u);
+  const bool needRectFix =
+      (curRc.left != monRc.left || curRc.top != monRc.top ||
+       curRc.right != monRc.right || curRc.bottom != monRc.bottom);
+
+  if (!needStyleFix && !needRectFix) {
+    return false;
+  }
+
+  // If the host window manager clamped our previous fullscreen SetWindowPos
+  // (e.g. a top panel or tiling WM) and neither the monitor rect nor the
+  // window's settled rect/style has changed since then, accept the clamped
+  // geometry instead of spamming SetWindowPos on every SwapBuffers() frame.
+  if (!needStyleFix && m_win32FullscreenApplied) {
+    const bool sameMon =
+        (monRc.left == m_win32AppliedMonRect[0] &&
+         monRc.top == m_win32AppliedMonRect[1] &&
+         monRc.right == m_win32AppliedMonRect[2] &&
+         monRc.bottom == m_win32AppliedMonRect[3]);
+    const bool sameSettled =
+        (curRc.left == m_win32SettledRect[0] &&
+         curRc.top == m_win32SettledRect[1] &&
+         curRc.right == m_win32SettledRect[2] &&
+         curRc.bottom == m_win32SettledRect[3]);
+    if (sameMon && sameSettled) {
+      return false;
+    }
+  }
+
+  struct ReentrancyGuard {
+    bool& flag;
+    explicit ReentrancyGuard(bool& f) : flag(f) { flag = true; }
+    ~ReentrancyGuard() { flag = false; }
+  } guard(m_inWin32FullscreenAdjust);
+
+  if (needStyleFix) {
+    // Preserve existing WS_VISIBLE state so we do not prematurely show or
+    // activate a window before the host application calls ShowWindow().
+    const DWORD newStyle = (uStyle & ~kChromeStyleMask) | WS_POPUP;
+    const DWORD newExStyle = (uExStyle & ~kChromeExStyleMask);
+    SetWindowLongA(hwnd, GWL_STYLE, static_cast<LONG>(newStyle));
+    SetWindowLongA(hwnd, GWL_EXSTYLE, static_cast<LONG>(newExStyle));
+  }
+
+  const int monW = monRc.right - monRc.left;
+  const int monH = monRc.bottom - monRc.top;
+  // Pass SWP_NOACTIVATE (and omit SWP_SHOWWINDOW) so SetWindowPos does not
+  // synchronously trigger WM_ACTIVATE -> grSstPassthruMode() inside the
+  // foreign host WndProc while Glide is attaching or swapping.
+  SetWindowPos(hwnd, HWND_TOP, monRc.left, monRc.top, monW, monH,
+               SWP_FRAMECHANGED | SWP_NOOWNERZORDER | SWP_NOACTIVATE);
+
+  RECT settledRc{};
+  GetWindowRect(hwnd, &settledRc);
+  m_win32AppliedMonRect[0] = static_cast<int32_t>(monRc.left);
+  m_win32AppliedMonRect[1] = static_cast<int32_t>(monRc.top);
+  m_win32AppliedMonRect[2] = static_cast<int32_t>(monRc.right);
+  m_win32AppliedMonRect[3] = static_cast<int32_t>(monRc.bottom);
+  m_win32SettledRect[0] = static_cast<int32_t>(settledRc.left);
+  m_win32SettledRect[1] = static_cast<int32_t>(settledRc.top);
+  m_win32SettledRect[2] = static_cast<int32_t>(settledRc.right);
+  m_win32SettledRect[3] = static_cast<int32_t>(settledRc.bottom);
+  m_win32FullscreenApplied = true;
+
+  GLIDE_LOG(INFO, "WSI",
+            "NativeSurfaceHost: enforced borderless fullscreen on Win32 "
+            "HWND "
+                << m_win32ParentHwnd << " (" << monW << "x" << monH << " at "
+                << monRc.left << "," << monRc.top << ").");
+  return true;
+#else
+  return false;
+#endif
+}
+
+void NativeSurfaceHost::RestoreWin32EmbeddedFullscreenIfSaved() {
+#if defined(_WIN32)
+  if (!m_win32FullscreenSaved || m_win32OwnsHwnd || !m_win32ParentHwnd ||
+      m_inWin32FullscreenAdjust) {
+    m_win32FullscreenSaved = false;
+    return;
+  }
+  struct ReentrancyGuard {
+    bool& flag;
+    explicit ReentrancyGuard(bool& f) : flag(f) { flag = true; }
+    ~ReentrancyGuard() { flag = false; }
+  } guard(m_inWin32FullscreenAdjust);
+
+  HWND hwnd = static_cast<HWND>(m_win32ParentHwnd);
+  if (IsWindow(hwnd)) {
+    SetWindowLongA(hwnd, GWL_STYLE, static_cast<LONG>(m_win32SavedStyle));
+    SetWindowLongA(hwnd, GWL_EXSTYLE, static_cast<LONG>(m_win32SavedExStyle));
+    const int w = m_win32SavedRect[2] - m_win32SavedRect[0];
+    const int h = m_win32SavedRect[3] - m_win32SavedRect[1];
+    if (w > 0 && h > 0) {
+      SetWindowPos(hwnd, HWND_NOTOPMOST, m_win32SavedRect[0],
+                   m_win32SavedRect[1], w, h,
+                   SWP_FRAMECHANGED | SWP_NOOWNERZORDER | SWP_NOACTIVATE);
+    }
+  }
+  m_win32FullscreenSaved = false;
 #endif
 }
 
@@ -1453,6 +1680,9 @@ void NativeSurfaceHost::Detach() {
 #else
   if ((m_mode == Mode::Win32Window || m_mode == Mode::Win32Embedded) &&
       m_win32Hwnd) {
+    if (m_mode == Mode::Win32Embedded) {
+      RestoreWin32EmbeddedFullscreenIfSaved();
+    }
     HWND hwnd = static_cast<HWND>(m_win32Hwnd);
     if (m_win32OwnsHwnd && IsWindow(hwnd)) {
       SetWindowLongPtrA(hwnd, GWLP_USERDATA, 0);
@@ -1498,6 +1728,22 @@ void NativeSurfaceHost::Detach() {
   m_win32ParentHwnd = nullptr;
   m_win32Hwnd = nullptr;
   m_win32OwnsHwnd = false;
+  m_win32FullscreenSaved = false;
+  m_win32FullscreenApplied = false;
+  m_inWin32FullscreenAdjust = false;
+  m_inWin32ForegroundRaise = false;
+  m_win32SurfaceInvalidated = false;
+  m_win32PendingForeground.store(false, std::memory_order_relaxed);
+  m_win32ResetFullscreenTracking.store(false, std::memory_order_relaxed);
+  m_win32LastStyle = 0;
+  m_win32SavedStyle = 0;
+  m_win32SavedExStyle = 0;
+  m_win32SavedRect[0] = m_win32SavedRect[1] = m_win32SavedRect[2] =
+      m_win32SavedRect[3] = 0;
+  m_win32AppliedMonRect[0] = m_win32AppliedMonRect[1] =
+      m_win32AppliedMonRect[2] = m_win32AppliedMonRect[3] = 0;
+  m_win32SettledRect[0] = m_win32SettledRect[1] = m_win32SettledRect[2] =
+      m_win32SettledRect[3] = 0;
 
   m_mode = Mode::Detached;
   m_guestWidth = 0;
@@ -1505,6 +1751,7 @@ void NativeSurfaceHost::Detach() {
   m_pixelWidth = 0;
   m_pixelHeight = 0;
   m_quitRequested = false;
+  m_fullscreen = false;
   m_postAttachForcePolls = 0;
 }
 
@@ -1646,43 +1893,128 @@ bool NativeSurfaceHost::SyncBounds(uint32_t& outPixelW, uint32_t& outPixelH) {
 #if defined(_WIN32)
   if (m_mode == Mode::Win32Window && m_win32Hwnd) {
     HWND hwnd = static_cast<HWND>(m_win32Hwnd);
-    if (IsWindow(hwnd)) {
-      RECT rc{};
-      if (GetClientRect(hwnd, &rc) && rc.right > rc.left &&
-          rc.bottom > rc.top) {
-        const uint32_t newW = static_cast<uint32_t>(rc.right - rc.left);
-        const uint32_t newH = static_cast<uint32_t>(rc.bottom - rc.top);
-        const bool changed = (newW != m_pixelWidth || newH != m_pixelHeight);
-        m_pixelWidth = newW;
-        m_pixelHeight = newH;
-        outPixelW = m_pixelWidth;
-        outPixelH = m_pixelHeight;
-        return changed;
-      }
+    if (!IsWindow(hwnd)) {
+      outPixelW = 0;
+      outPixelH = 0;
+      return false;
+    }
+    RECT rc{};
+    if (GetClientRect(hwnd, &rc) && rc.right > rc.left && rc.bottom > rc.top) {
+      const uint32_t newW = static_cast<uint32_t>(rc.right - rc.left);
+      const uint32_t newH = static_cast<uint32_t>(rc.bottom - rc.top);
+      const bool changed = (newW != m_pixelWidth || newH != m_pixelHeight);
+      m_pixelWidth = newW;
+      m_pixelHeight = newH;
+      outPixelW = m_pixelWidth;
+      outPixelH = m_pixelHeight;
+      return changed;
     }
   } else if (m_mode == Mode::Win32Embedded && m_win32ParentHwnd) {
     HWND parent = static_cast<HWND>(m_win32ParentHwnd);
-    if (IsWindow(parent)) {
-      RECT rc{};
-      if (GetClientRect(parent, &rc) && rc.right > rc.left &&
-          rc.bottom > rc.top) {
-        const uint32_t newW = static_cast<uint32_t>(rc.right - rc.left);
-        const uint32_t newH = static_cast<uint32_t>(rc.bottom - rc.top);
-        const bool changed = (newW != m_pixelWidth || newH != m_pixelHeight);
-        if (changed) {
-          if (m_win32OwnsHwnd && m_win32Hwnd &&
-              IsWindow(static_cast<HWND>(m_win32Hwnd))) {
-            SetWindowPos(static_cast<HWND>(m_win32Hwnd), nullptr, 0, 0,
-                         static_cast<int>(newW), static_cast<int>(newH),
-                         SWP_NOZORDER | SWP_NOACTIVATE);
-          }
-          m_pixelWidth = newW;
-          m_pixelHeight = newH;
-        }
-        outPixelW = m_pixelWidth;
-        outPixelH = m_pixelHeight;
-        return changed;
+    if (!IsWindow(parent)) {
+      outPixelW = 0;
+      outPixelH = 0;
+      return false;
+    }
+
+    // Track structural Win32 style mutations (e.g. DirectDraw fullscreen
+    // WS_POPUP|WS_MAXIMIZE returning to WS_CAPTION|WS_THICKFRAME, or WS_VISIBLE
+    // toggling). On Wine's winex11.drv under managed X11/XWayland WMs, these
+    // transitions can unmap/remap or recreate the host X11 window and require
+    // WSI surface recreation.
+    constexpr DWORD kStructuralStyleMask =
+        WS_POPUP | WS_CAPTION | WS_THICKFRAME | WS_VISIBLE | WS_MINIMIZE |
+        WS_MAXIMIZE;
+    const LONG preStyle = GetWindowLongA(parent, GWL_STYLE);
+    bool styleChanged =
+        ((static_cast<DWORD>(preStyle) & kStructuralStyleMask) !=
+         (static_cast<DWORD>(m_win32LastStyle) & kStructuralStyleMask));
+
+    if (m_win32ResetFullscreenTracking.exchange(false,
+                                                std::memory_order_relaxed)) {
+      m_win32FullscreenApplied = false;
+    }
+    const bool hadAppliedFullscreen = m_win32FullscreenApplied;
+    bool appliedFullscreen = false;
+    if (m_fullscreen) {
+      appliedFullscreen = ApplyWin32EmbeddedFullscreenIfNeeded();
+    }
+
+    // One-shot restore & foreground raise after returning from VGA pass-through
+    // (e.g. DirectDraw fullscreen intro exiting back to Glide) or upon first
+    // applying borderless fullscreen, so the host WM does not leave the game
+    // iconic or hidden behind the launching terminal. Never runs on steady
+    // frames so Alt+Tab works normally during gameplay.
+    const bool wantInitialFullscreenRaise =
+        (appliedFullscreen && !hadAppliedFullscreen);
+    const bool wantPassthruRaise =
+        m_win32PendingForeground.exchange(false, std::memory_order_relaxed);
+    if ((wantPassthruRaise || wantInitialFullscreenRaise) &&
+        !m_inWin32ForegroundRaise && !m_inWin32FullscreenAdjust) {
+      struct RaiseGuard {
+        bool& flag;
+        explicit RaiseGuard(bool& f) : flag(f) { flag = true; }
+        ~RaiseGuard() { flag = false; }
+      } guard(m_inWin32ForegroundRaise);
+
+      if (IsIconic(parent)) {
+        ShowWindow(parent, SW_RESTORE);
+      } else if (!IsWindowVisible(parent)) {
+        ShowWindow(parent, SW_SHOW);
       }
+      SetWindowPos(parent, HWND_TOP, 0, 0, 0, 0,
+                   SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+      BringWindowToTop(parent);
+      SetForegroundWindow(parent);
+      GLIDE_LOG(INFO, "WSI",
+                "NativeSurfaceHost: restored & raised Win32 HWND "
+                    << m_win32ParentHwnd
+                    << (wantInitialFullscreenRaise
+                            ? " after entering borderless fullscreen."
+                            : " after reclaiming 3dfx output from VGA."));
+    }
+
+    const LONG postStyle = GetWindowLongA(parent, GWL_STYLE);
+    if (appliedFullscreen ||
+        ((static_cast<DWORD>(postStyle) & kStructuralStyleMask) !=
+         (static_cast<DWORD>(m_win32LastStyle) & kStructuralStyleMask))) {
+      styleChanged = true;
+    }
+    m_win32LastStyle = static_cast<intptr_t>(postStyle);
+    if (!IsWindowVisible(parent) || IsIconic(parent)) {
+      // Skip WSI surface/swapchain recreation while the host HWND is hidden,
+      // minimized, or closing (e.g. a title hiding its window before
+      // grGlideShutdown); Wine's winex11 surface-support queries can fail on
+      // unmapped windows. When WS_VISIBLE is later restored, the style diff
+      // above will trigger a clean surface rebuild.
+      m_win32SurfaceInvalidated = false;
+      outPixelW = 0;
+      outPixelH = 0;
+      return false;
+    }
+    if (styleChanged) {
+      m_win32SurfaceInvalidated = true;
+    }
+
+    RECT rc{};
+    if (GetClientRect(parent, &rc) && rc.right > rc.left &&
+        rc.bottom > rc.top) {
+      const uint32_t newW = static_cast<uint32_t>(rc.right - rc.left);
+      const uint32_t newH = static_cast<uint32_t>(rc.bottom - rc.top);
+      const bool changed = (newW != m_pixelWidth || newH != m_pixelHeight);
+      if (changed) {
+        if (m_win32OwnsHwnd && m_win32Hwnd &&
+            IsWindow(static_cast<HWND>(m_win32Hwnd))) {
+          SetWindowPos(static_cast<HWND>(m_win32Hwnd), nullptr, 0, 0,
+                       static_cast<int>(newW), static_cast<int>(newH),
+                       SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+        m_pixelWidth = newW;
+        m_pixelHeight = newH;
+      }
+      outPixelW = m_pixelWidth;
+      outPixelH = m_pixelHeight;
+      return changed;
     }
   }
 #endif
@@ -1690,6 +2022,21 @@ bool NativeSurfaceHost::SyncBounds(uint32_t& outPixelW, uint32_t& outPixelH) {
   outPixelW = m_pixelWidth;
   outPixelH = m_pixelHeight;
   return false;
+}
+
+void NativeSurfaceHost::NotifyWin32PassthruReclaimed() {
+#if defined(_WIN32)
+  if (m_mode == Mode::Win32Embedded && m_win32ParentHwnd) {
+    m_win32PendingForeground.store(true, std::memory_order_relaxed);
+    m_win32ResetFullscreenTracking.store(true, std::memory_order_relaxed);
+  }
+#endif
+}
+
+bool NativeSurfaceHost::ConsumeSurfaceInvalidated() {
+  const bool was = m_win32SurfaceInvalidated;
+  m_win32SurfaceInvalidated = false;
+  return was;
 }
 
 void NativeSurfaceHost::PollEvents(bool force) {

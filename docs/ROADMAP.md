@@ -11,6 +11,15 @@ Forward-looking engineering roadmap for `glide-ng`. Completed pre-beta work is a
 
 ## Recently Completed
 
+### M14 — Glide 2.11 (`glide.dll`) Frontend & Early SST-1 Title Support
+- **Branch**: `feat/m14-glide211-dll` (merged into `main`)
+- **Status**: `[x] DONE (USER CONFIRMED — 2026-11-19)`
+- **Scope**:
+  - `[x]` Implemented dedicated `src/glide211/` frontend library (`glide.dll` / `libglide.so`) with clean-room `include/glide211/glide.h` translating the pre-2.3 SST-1 ABI (`grSstOpen`, `grSstPassthruMode`, fixed-1024-pixel-stride `grLfbBegin`/`End`/`GetReadPtr`/`GetWritePtr`/`Origin`/`WriteMode`/`BypassMode` with cached BAR pointer reuse, `guFbReadRegion`/`guFbWriteRegion`, and authentic TMU0 VRAM budget enforcement in `guTexAllocateMemory`) onto `GlideWrapperCore`.
+  - `[x]` Defaulted `glide.dll` / `libglide.so` to `VoodooGraphics` (SST-1, 4 MB FB, 1× 2 MB TMU) with API version `2.11`, added pre-`ShowWindow` Win32 host HWND discovery in `NativeSurfaceHost`, and implemented Vulkan `Win32Embedded` `grSstPassthruMode` (`SHOW_VGA` yield / `SHOW_SST1` reclaim) + `VK_ERROR_SURFACE_LOST_KHR` recovery.
+  - `[x]` Validated end-to-end against *CyberGladiators* (27 dynamic `__stdcall` `GLIDE.DLL` imports) under Wine32 across Vulkan (`1×` & `4× MSAA`), OpenGL 3.3 Core (`1×` & `4× MSAA`), and Software (`1×` & `2×2 SSAA`), added headless multi-backend `Glide211WrapperTests`, and published `docs/catalog/games/cybergladiators/` with presets and Visual Progression Gallery.
+  - `[x]` Added `[display] fullscreen = true` (`GLIDE_NG_FULLSCREEN=1`) borderless fullscreen override, dropped speculative Vulkan pipeline pre-warming, refactored Vulkan RAMDAC Gamma LUT to guest resolution + shared blit, added 32-bit CPU Vulkan VA guards, and added Win32 `SHOW_VGA → SHOW_SST1` style-change surface rebuild + one-shot foreground restore. *(Deferred follow-up for Wine32 `GLIDE_NG_FULLSCREEN=1` audio/input focus tracked in Backlog below.)*
+
 ### M13 — Repository Cleanup, Structured Documentation, GPL-3.0 Licensing & `0.8.0-beta.1` Versioning
 - **Branch**: `chore/m13-repo-cleanup-docs-versioning` (merged into `main`, tagged `v0.8.0-beta.1`)
 - **Status**: `[x] DONE (USER CONFIRMED — 2026-11-18)`
@@ -26,14 +35,6 @@ Forward-looking engineering roadmap for `glide-ng`. Completed pre-beta work is a
 
 ## Upcoming Milestones
 
-### M14 — Glide 2.11 (`glide.dll`) Frontend & Early SST-1 Title Support (`feat/m14-glide211-dll`)
-- **Status**: `[ ] PENDING`
-- **Goal**: Support late-1996 / early-1997 Win32 and DOS titles linked against **`glide.dll` (Glide 2.11)** rather than `glide2x.dll`.
-- **Key Technical Work**:
-  - Implement a dedicated `src/glide211/` frontend library (`glide.dll` / `libglide.so`) translating the pre-2.3 SST-1 ABI (`grSstOpen`, `grSstPassthruMode`, `grLfbBegin`/`End`/`GetReadPtr`/`GetWritePtr`/`Origin`/`WriteMode`/`BypassMode` with fixed 1024-pixel stride, `guFbReadRegion`/`guFbWriteRegion`, `guTex*`) onto `GlideWrapperCore`.
-  - Default `glide.dll` to the `VoodooGraphics` (SST-1) profile with API version `2.11` and authentic SST-1 defaults.
-  - Validate end-to-end against *CyberGladiators* (27 dynamic `__stdcall` `GLIDE.DLL` imports) under Wine32 across Vulkan, OpenGL 3.3 Core, and Software backends, add Catch2 unit tests, and publish a `docs/catalog/games/cybergladiators/` entry.
-
 ### M15 — Flagship Standalone 3dfx Showcase Demos (`feat/m15-shrine-torus-demos`)
 - **Status**: `[ ] PENDING`
 - **Goal**: Ship two self-contained, authentic Glide 2.x/3.x showcase applications targeting Linux, Win32/Wine, and DOS/32 (`GLIDE2X.OVL`):
@@ -44,6 +45,7 @@ Forward-looking engineering roadmap for `glide-ng`. Completed pre-beta work is a
 
 ## Backlog (Unscheduled)
 
+- **Win32/Wine Borderless Fullscreen Audio & Input Focus (`GLIDE_NG_FULLSCREEN=1`)**: Fix audio loss and stolen/dropped keyboard events observed in *CyberGladiators* under Wine32 when `NativeSurfaceHost` forces `WS_POPUP` borderless fullscreen on a foreign game HWND (direct windowed Wine and `explorer /desktop=CG,800x600` work cleanly with sound and input).
 - **Clean-Room Open-Source `glide2x.ovl`**: Build an open-source Open Watcom v2 DOS/32 `glide2x.ovl` implementing the 130-entry (`0..129`) DOSBox I/O-port bridge ABI, removing reliance on third-party binary overlays (with optional future shared-memory ring-buffer transport for higher DOS throughput).
 - **OpenGL ES Early-Z W-Buffer Shader Split**: Mirror the Vulkan `-DUSE_WBUFFER_DEPTH` specialization in `OpenGLESShaders.cpp` so Z-buffer and depth-off GLES/WGL pipelines omit `gl_FragDepth` writes.
 - **SIMD FXT1 / YUYV Texture Decoders**: Vectorize `DecodeYuyv422` and `DecodeFxt1` in `SimdKernels` if dynamic streaming VSA-100 titles become CPU-bound during texture upload.

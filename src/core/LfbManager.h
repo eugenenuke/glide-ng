@@ -25,7 +25,7 @@ public:
     }
 
     template <typename LfbInfoType>
-    bool Lock(uint32_t type, uint32_t buffer, uint32_t writeMode, uint32_t origin, bool pixelPipeline, LfbInfoType* info) {
+    bool Lock(uint32_t type, uint32_t buffer, uint32_t writeMode, uint32_t origin, bool pixelPipeline, LfbInfoType* info, uint32_t forcedStridePixels = 0) {
         std::lock_guard<std::mutex> lock(m_mutex);
         if (!info) return false;
 
@@ -65,7 +65,9 @@ public:
                 return false;
         }
 
-        const uint32_t stride = width * pixelSize;
+        const uint32_t stridePixels =
+            (forcedStridePixels > width) ? forcedStridePixels : width;
+        const uint32_t stride = stridePixels * pixelSize;
         const size_t byteSize = static_cast<size_t>(stride) * height;
 
         if (IsWriteLockType(type)) {
@@ -82,7 +84,7 @@ public:
             if (m_writeLock.originalBuffer.size() != byteSize ||
                 m_writeLock.originalSentinelPixelSize != pixelSize) {
                 m_writeLock.originalBuffer.resize(byteSize);
-                FillSentinel(m_writeLock.originalBuffer.data(), width * height, pixelSize);
+                FillSentinel(m_writeLock.originalBuffer.data(), stridePixels * height, pixelSize);
                 m_writeLock.originalSentinelPixelSize = pixelSize;
                 m_writeLock.stagingClean = false;
             }
@@ -118,9 +120,23 @@ public:
         m_readLock.height = height;
         m_readLock.pixelSize = pixelSize;
         m_readLock.stride = stride;
-        m_readLock.stagingBuffer.resize(byteSize);
+        m_readLock.stagingBuffer.assign(byteSize, 0u);
 
-        ReadLFBData(buffer, width, height, stride, m_readLock.stagingBuffer.data());
+        if (stridePixels > width) {
+            // Read packed rows first so CpuLfbStaging's stride-based 16/32-bit
+            // selection never misclassifies a padded 1024-pixel 16-bit stride
+            // (e.g. 2048 bytes at 512x384 or 320x200) as 32-bit BGRA.
+            const uint32_t packedStride = width * pixelSize;
+            std::vector<uint8_t> packed(static_cast<size_t>(packedStride) * height, 0u);
+            ReadLFBData(buffer, width, height, packedStride, packed.data());
+            for (uint32_t y = 0; y < height; ++y) {
+                std::memcpy(m_readLock.stagingBuffer.data() + static_cast<size_t>(y) * stride,
+                            packed.data() + static_cast<size_t>(y) * packedStride,
+                            packedStride);
+            }
+        } else {
+            ReadLFBData(buffer, width, height, stride, m_readLock.stagingBuffer.data());
+        }
 
         if (origin == 1) { // GR_ORIGIN_LOWER_LEFT
             FlipRows(m_readLock.stagingBuffer.data(), height, stride);

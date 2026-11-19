@@ -39,6 +39,13 @@ class SoftwareBackend : public SoftwareBackendBase {
   bool AttachWindow(void* nativeWindowHandle, uint32_t width, uint32_t height,
                     bool windowed) override;
   void DetachWindow() override;
+  void SetPassthruMode(bool show3dfx) override {
+    if (!show3dfx) {
+      m_passthruSuspended.store(true, std::memory_order_relaxed);
+    } else if (m_passthruSuspended.exchange(false, std::memory_order_relaxed)) {
+      m_surfaceHost.NotifyWin32PassthruReclaimed();
+    }
+  }
 
   bool SwapBuffers() override;
   void PollEvents() override;
@@ -162,6 +169,7 @@ class SoftwareBackend : public SoftwareBackendBase {
   std::unique_ptr<Win32GdiPresenter> m_win32Presenter;
   HudOverlay m_hudOverlay;
   std::vector<uint32_t> m_hudPresentBuffer;
+  std::atomic<bool> m_passthruSuspended{false};
 };
 
 }  // namespace GlideWrapper

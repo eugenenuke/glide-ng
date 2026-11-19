@@ -1,15 +1,16 @@
 # API Coverage & Binary ABI
 
-This document summarizes the Glide 2.x and Glide 3.x API surfaces implemented by `glide-ng`, Win32/Linux ABI conventions, and how API-level wrapping compares to hardware register emulation.
+This document summarizes the Glide 2.11, Glide 2.x, and Glide 3.x API surfaces implemented by `glide-ng`, Win32/Linux ABI conventions, and how API-level wrapping compares to hardware register emulation.
 
 ---
 
 ## 1. Exported Library Surfaces
 
-Linux shared libraries (`libglide2x.so`, `libglide3x.so`) and Win32 DLLs (`glide2x.dll`, `glide3x.dll`) export identical symbol sets:
+Linux shared libraries (`libglide.so`, `libglide2x.so`, `libglide3x.so`) and Win32 DLLs (`glide.dll`, `glide2x.dll`, `glide3x.dll`) cover all three major 3dfx Glide generations:
 
 | Library | Target API | Exported Symbols | Canonical Win32 ABI | Notes |
 | :--- | :--- | :---: | :--- | :--- |
+| `libglide.so` / `glide.dll` | Glide 2.11 (SST-1) | **137** logical (**274** Win32 PE) | `__stdcall` `_grFoo@N` + undecorated `grFoo` aliases | Pre-2.3 SST-1 ABI (`grSstOpen`, `grSstPassthruMode`, fixed-1024-pixel-stride `grLfbBegin`/`End`/`GetReadPtr`/`GetWritePtr`, `guFbReadRegion`/`guFbWriteRegion`, and 2 MB TMU0 `guTexAllocateMemory` budget enforcement). Defaults to `VoodooGraphics` (`2.11`). |
 | `libglide2x.so` / `glide2x.dll` | Glide 2.30 – 2.61 | **152** | `__stdcall` `_grFoo@N` + undecorated `grFoo` aliases | Pure Glide 2.x ABI (`grGetString` and `grGetProcAddress` intentionally omitted, matching authentic 3dfx DLLs). Includes all `gr*`, `gu*`, `ConvertAndDownloadRle`, and DOSBox `setConfig` entry points. |
 | `libglide3x.so` / `glide3x.dll` | Glide 3.00 – 3.10 | **129** | `__stdcall` `_grFoo@N` + undecorated `grFoo` aliases | Complete core Glide 3.x plus VSA-100 extensions (`PIXEXT`, `COMBINE`, `TEXFMT`, `TEXTUREBUFFER`, `TEXUMA`, `GETGAMMA`, `CHROMARANGE`, `TEXCHROMA`, `PALETTE6666`, `FOGCOORD`, `SURFACE`). |
 
@@ -17,10 +18,12 @@ Linux shared libraries (`libglide2x.so`, `libglide3x.so`) and Win32 DLLs (`glide
 
 ```bash
 # Linux shared library symbols
+nm -D --defined-only build/lib/libglide.so | awk '{print $3}' | grep -E '^(gr|gu|ConvertAndDownloadRle|setConfig)' | sort
 nm -D --defined-only build/lib/libglide2x.so | awk '{print $3}' | grep -E '^(gr|gu|ConvertAndDownloadRle|setConfig)' | sort
 nm -D --defined-only build/lib/libglide3x.so | awk '{print $3}' | grep -E '^(gr|gu|setConfig)' | sort
 
 # Win32 PE DLL exports
+i686-w64-mingw32-objdump -p build/win32/bin/glide.dll | sed -n '/Export Table/,/^$/p'
 i686-w64-mingw32-objdump -p build/win32/bin/glide2x.dll | sed -n '/Export Table/,/^$/p'
 i686-w64-mingw32-objdump -p build/win32/bin/glide3x.dll | sed -n '/Export Table/,/^$/p'
 ```

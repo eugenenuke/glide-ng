@@ -132,14 +132,26 @@ ResolutionDims ResolveResolution(uint32_t resolutionEnum);
 
 // Lifecycle & initialization helpers.
 void ConfigureTmuMemoryLimits();
-void InitGlide(const char* apiTag, void (*resetFrontendState)());
-void EnsureEngineInitializedSlow(void (*resetFrontendState)());
-inline void EnsureEngineInitialized(void (*resetFrontendState)()) {
+void InitGlide(const char* apiTag, void (*resetFrontendState)(),
+               CardModel defaultModel = CardModel::Voodoo2,
+               ApiVersion defaultGlide2Api = ApiVersion::GLIDE_2_56,
+               bool hasCustomDefaultGlide2Api = false);
+void EnsureEngineInitializedSlow(
+    void (*resetFrontendState)(),
+    CardModel defaultModel = CardModel::Voodoo2,
+    ApiVersion defaultGlide2Api = ApiVersion::GLIDE_2_56,
+    bool hasCustomDefaultGlide2Api = false);
+inline void EnsureEngineInitialized(
+    void (*resetFrontendState)(),
+    CardModel defaultModel = CardModel::Voodoo2,
+    ApiVersion defaultGlide2Api = ApiVersion::GLIDE_2_56,
+    bool hasCustomDefaultGlide2Api = false) {
   if (__builtin_expect(
           BackendManager::GetInstance().GetBackend() != nullptr, 1)) {
     return;
   }
-  EnsureEngineInitializedSlow(resetFrontendState);
+  EnsureEngineInitializedSlow(resetFrontendState, defaultModel,
+                              defaultGlide2Api, hasCustomDefaultGlide2Api);
 }
 void ShutdownGlide(const char* apiTag);
 void CloseWindow(const char* logMessage);

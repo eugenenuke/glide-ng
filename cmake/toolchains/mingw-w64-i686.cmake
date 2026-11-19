@@ -5,7 +5,7 @@
 #   cmake --build build_win32 -j$(nproc)
 #
 # Produces zero-external-runtime-DLL 32-bit PE binaries under build_win32/bin/:
-#   glide2x.dll, glide3x.dll, glide2_info.exe, glide3_info.exe,
+#   glide.dll, glide2x.dll, glide3x.dll, glide2_info.exe, glide3_info.exe,
 #   glide2_bench.exe, glide3_bench.exe, glide2_envtest.exe, glide3_envtest.exe
 
 set(CMAKE_SYSTEM_NAME Windows)

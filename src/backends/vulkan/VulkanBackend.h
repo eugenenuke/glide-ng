@@ -303,6 +303,7 @@ class VulkanBackend : public GlideStateTracker {
   bool AttachWindow(void* nativeWindowHandle, uint32_t width, uint32_t height,
                     bool windowed) override;
   void DetachWindow() override;
+  void SetPassthruMode(bool show3dfx) override;
   uint32_t GetMsaaSamples() const override { return m_msaaSamples; }
   bool HasAllocatedCpuLfbStaging() const { return m_lfbStaging.IsAllocated(); }
   uint64_t GetTexturePoolReuseCount() const { return m_texturePoolReuses; }
@@ -418,7 +419,7 @@ class VulkanBackend : public GlideStateTracker {
   void ResetState_Locked() override;
 
  private:
-  void DetachWindow_Locked();
+  void DetachWindow_Locked(std::unique_lock<std::mutex>& lock);
   void UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
                             const struct VirtualTexture& tex);
   bool CreateInstance();
@@ -471,6 +472,7 @@ class VulkanBackend : public GlideStateTracker {
   uint32_t m_graphicsQueueFamilyIndex{0};
   bool m_depthClampEnabled{false};
   bool m_textureCompressionBcEnabled{false};
+  bool m_isCpuVulkanDevice{false};
 
   // Command submission infrastructure (Double-Buffered)
   vk::UniqueCommandPool m_commandPools[2];
@@ -528,6 +530,8 @@ class VulkanBackend : public GlideStateTracker {
   // WaylandSubsurface)
   NativeSurfaceHost m_surfaceHost;
   bool CreatePresentationSurface();
+  void RecreateSurfaceAndSwapchain_Locked(uint32_t width, uint32_t height);
+  bool m_passthruSuspended{false};
 
   vk::UniqueSurfaceKHR
       m_surface;  // Vulkan presentation surface backed by m_surfaceHost
@@ -570,9 +574,12 @@ class VulkanBackend : public GlideStateTracker {
 
   // Dynamic Ring Vertex Buffer (partitioned into two per-frame slots aligned to
   // sizeof(ModernVertex) so active GPU draws never collide with CPU writes and
-  // normal frames never stall on waitIdle()).
+  // normal frames never stall on waitIdle()). Keep 32-bit processes lean to
+  // preserve Win32/Wine virtual address space (especially under CPU adapters).
+  static constexpr uint32_t kVertexSlotBudgetBytes =
+      (sizeof(void*) <= 4) ? (2u * 1024u * 1024u) : (8u * 1024u * 1024u);
   static constexpr uint32_t kVertexSlotCapacityVerts =
-      (8 * 1024 * 1024) / sizeof(ModernVertex);
+      kVertexSlotBudgetBytes / sizeof(ModernVertex);
   static constexpr uint32_t kVertexSlotBytes =
       kVertexSlotCapacityVerts * sizeof(ModernVertex);
   vk::UniqueBuffer m_vertexBuffer;
@@ -682,7 +689,10 @@ class VulkanBackend : public GlideStateTracker {
   vk::UniqueDeviceMemory m_texStagingMemory;
   void* m_texStagingMap{nullptr};
   uint32_t m_texStagingOffsets[2]{0, 0};
-  const uint32_t m_texStagingSlotSize{32 * 1024 * 1024};  // 32MB per frame slot
+  // 4 MB/slot (8 MB total) on 32-bit builds to conserve virtual address space
+  // (e.g. Win32/Wine32 2-4 GB VA limit); 32 MB/slot (64 MB total) on 64-bit.
+  const uint32_t m_texStagingSlotSize{
+      (sizeof(void*) <= 4) ? (4u * 1024u * 1024u) : (32u * 1024u * 1024u)};
   uint32_t m_msaaSamples{1};
 
   // Lazily-allocated CPU LFB staging (0 bytes until first LFB operation)
@@ -717,21 +727,25 @@ class VulkanBackend : public GlideStateTracker {
   vk::DeviceSize m_lfbOverlayStagingSizes[2]{0, 0};
   vk::DeviceSize m_lfbOverlayStagingOffsets[2]{0, 0};
 
-  // Vulkan Gamma LUT State variables & swapchain RAMDAC presentation pass
+  // Vulkan Gamma LUT State variables & guest-resolution RAMDAC LUT pass
   bool InitGammaPresentPipeline_Locked();
-  bool CreateGammaPresentSwapchainFramebuffers_Locked();
-  void DestroyGammaPresentSwapchainFramebuffers_Locked();
+  bool EnsureGammaResolvedTargets_Locked();
   void DestroyGammaPresentResources_Locked();
   bool EnsureGammaLutTexture_Locked();
-  bool PresentGammaToSwapchain_Locked(uint32_t activeIdx, uint32_t imageIdx,
-                                      const PresentRect& dst);
+  bool ApplyGammaToGuestImage_Locked(uint32_t activeIdx,
+                                     vk::Image& outResolvedImage);
 
   float m_gammaCorrectionValue{1.0f};
   bool m_gammaLutDirty{true};
   // m_useGammaLut and m_lutR/G/B are inherited from GlideStateTracker.
   vk::Format m_gammaPresentPipelineFormat{vk::Format::eUndefined};
   vk::UniqueRenderPass m_gammaPresentRenderPass;
-  std::vector<vk::UniqueFramebuffer> m_gammaPresentFramebuffers;
+  vk::UniqueImage m_gammaResolvedImages[2];
+  vk::UniqueDeviceMemory m_gammaResolvedImageMemories[2];
+  vk::UniqueImageView m_gammaResolvedImageViews[2];
+  vk::UniqueFramebuffer m_gammaResolvedFramebuffers[2];
+  uint32_t m_gammaResolvedWidth{0};
+  uint32_t m_gammaResolvedHeight{0};
   vk::UniqueDescriptorSetLayout m_gammaPresentDescSetLayout;
   vk::UniqueDescriptorPool m_gammaPresentDescPool;
   vk::DescriptorSet m_gammaPresentDescSets[2];

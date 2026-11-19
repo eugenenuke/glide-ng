@@ -420,7 +420,8 @@ void Logger::LogExecutionSummary(const WrapperConfig& config) {
        << "\n  Dedicated RAM / TMU  : " << config.tmuMemoryMb << " MB"
        << "\n  Target Presentation  : "
        << (config.maxFps > 0.0f ? (std::to_string(static_cast<int>(config.maxFps)) + " FPS") : "Uncapped")
-       << " (VSync=" << (config.vsync ? (config.vsyncStrictFifo ? "FIFO" : "ON") : "OFF") << ")"
+       << " (VSync=" << (config.vsync ? (config.vsyncStrictFifo ? "FIFO" : "ON") : "OFF")
+       << (config.fullscreen ? ", Fullscreen=ON" : "") << ")"
        << "\n  MSAA / Scale / Filter: " << config.msaaSamples << "x / "
        << config.windowScale << "x / "
        << (config.presentationFilter == 1 ? "Linear" : "Nearest")

@@ -8,7 +8,7 @@ It runs classic 1990s and early-2000s DOS (via DOSBox pass-through), Win32 (via 
 
 ## Highlights
 
-- **Authentic C ABI Compatibility**: Builds `libglide2x.so` / `glide2x.dll` (152 exports) and `libglide3x.so` / `glide3x.dll` (129 exports) with canonical Win32 `__stdcall` `_Func@N` exports, pure Glide 2.x ABI parity, and zero external runtime DLL dependencies on Win32.
+- **Authentic C ABI Compatibility**: Builds `libglide.so` / `glide.dll` (Glide 2.11, 274 exports), `libglide2x.so` / `glide2x.dll` (Glide 2.x, 152 exports), and `libglide3x.so` / `glide3x.dll` (Glide 3.x, 129 exports) with canonical Win32 `__stdcall` `_Func@N` exports, pure Glide ABI parity, and zero external runtime DLL dependencies on Win32.
 - **Three Interchangeable Backends**:
   - **Vulkan** *(default)*: SPIR-V pipelines with Early-Z preservation, hardware BC1–BC3 (`DXT1`–`DXT5`) textures, zero-readback GPU render-to-texture (`TEXTUREBUFFER`), and persistent pipeline cache.
   - **OpenGL ES 3.2 / Win32 WGL 3.3 Core**: Direct EGL 1.5 on Linux (X11/Wayland/headless) and WGL on Windows/Wine.
@@ -33,25 +33,25 @@ sudo apt-get install -y build-essential cmake catch2 glslang-tools \
 cmake -S . -B build_release -DCMAKE_BUILD_TYPE=Release
 cmake --build build_release -j$(nproc)
 
-# Run self-contained headless Catch2 test suite (106 tests)
+# Run self-contained headless Catch2 test suite
 GLIDE_NG_HEADLESS=1 GLIDE_NG_BACKEND=software ctest --test-dir build_release --output-on-failure
 ```
 
-When 32-bit `i686-w64-mingw32-g++` is installed, the standard Linux build also cross-compiles `glide2x.dll`, `glide3x.dll`, and Win32 tools automatically into `build_release/win32/bin/`. See [Building & Installing](docs/user-guide/building-and-installing.md) for Arch/Fedora packages, standalone `build_win32/` builds, and optional Open Watcom v2 DOS/32 builds.
+When 32-bit `i686-w64-mingw32-g++` is installed, the standard Linux build also cross-compiles `glide.dll`, `glide2x.dll`, `glide3x.dll`, and Win32 tools automatically into `build_release/win32/bin/`. See [Building & Installing](docs/user-guide/building-and-installing.md) for Arch/Fedora packages, standalone `build_win32/` builds, and optional Open Watcom v2 DOS/32 builds.
 
 ### 2. Run a Windows Glide Title Under Wine / Steam Proton
 
-Copy `glide2x.dll` and/or `glide3x.dll` (and an optional title preset from [`docs/catalog/`](docs/catalog/README.md)) next to the game executable:
+Copy `glide.dll` (Glide 2.11), `glide2x.dll`, and/or `glide3x.dll` (and an optional title preset from [`docs/catalog/`](docs/catalog/README.md)) next to the game executable:
 
 ```bash
 # Wine (standalone)
-WINEDLLOVERRIDES="glide2x,glide3x=n" GLIDE_NG_BACKEND=vulkan wine ./game.exe
+WINEDLLOVERRIDES="glide,glide2x,glide3x=n" GLIDE_NG_BACKEND=vulkan wine ./game.exe
 
 # Steam Proton Launch Options
-WINEDLLOVERRIDES="glide2x,glide3x=n" GLIDE_NG_BACKEND=vulkan %command%
+WINEDLLOVERRIDES="glide,glide2x,glide3x=n" GLIDE_NG_BACKEND=vulkan %command%
 
 # Switch to Software AVX-512 with live FPS HUD
-WINEDLLOVERRIDES="glide2x,glide3x=n" GLIDE_NG_BACKEND=software GLIDE_NG_SW_SIMD=avx512 \
+WINEDLLOVERRIDES="glide,glide2x,glide3x=n" GLIDE_NG_BACKEND=software GLIDE_NG_SW_SIMD=avx512 \
   GLIDE_NG_HUD=fps,backend wine ./game.exe
 ```
 

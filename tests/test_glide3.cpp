@@ -1506,8 +1506,9 @@ TEST_CASE("Glide 2.x Coordinate Unsnapping Verification", "[Glide2][Unsnap][Glid
     REQUIRE(winClose != nullptr);
     REQUIRE(shutdown != nullptr);
 
-    // 3. Initialize Glide 2 and open a window (defaulting to Software backend for speed & sanity)
+    // 3. Initialize Glide 2 and open a headless window (Software backend for speed & sanity)
     ::setenv("GLIDE_NG_BACKEND", "SOFTWARE", 1);
+    ::setenv("GLIDE_NG_HEADLESS", "1", 1);
     glideInit();
     FxBool ok = winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz, GR_COLORFORMAT_ABGR, GR_ORIGIN_UPPER_LEFT, 2, 1);
     REQUIRE(ok == FXTRUE);
@@ -1572,6 +1573,7 @@ TEST_CASE("Glide 2.x Coordinate Unsnapping Verification", "[Glide2][Unsnap][Glid
     shutdown();
     ::dlclose(handle);
     ::unsetenv("GLIDE_NG_BACKEND");
+    ::unsetenv("GLIDE_NG_HEADLESS");
 #endif
 }
 
@@ -3452,6 +3454,7 @@ TEST_CASE("IniConfigLoader parses sections/comments and respects env overrides",
   EnvGuard guardMaxFps("GLIDE_NG_MAX_FPS");
   EnvGuard guardMsaa("GLIDE_NG_MSAA");
   EnvGuard guardScale("GLIDE_NG_WINDOW_SCALE");
+  EnvGuard guardFullscreen("GLIDE_NG_FULLSCREEN");
   EnvGuard guardFilter("GLIDE_NG_PRESENTATION_FILTER");
   EnvGuard guardLogLevel("GLIDE_NG_LOG_LEVEL");
   EnvGuard guardConsole("GLIDE_NG_LOG_CONSOLE");
@@ -3497,6 +3500,7 @@ TEST_CASE("IniConfigLoader parses sections/comments and respects env overrides",
           << "max_fps = 120.5\r\n"
           << "msaa = 4\r\n"
           << "window_scale = 2\r\n"
+          << "fullscreen = true\r\n"
           << "\r\n"
           << "[logging]\r\n"
           << "level = 4\r\n"
@@ -3519,6 +3523,7 @@ TEST_CASE("IniConfigLoader parses sections/comments and respects env overrides",
     CHECK(cfg.maxFps == 120.5f);
     CHECK(cfg.msaaSamples == 4u);
     CHECK(cfg.windowScale == 2u);
+    CHECK(cfg.fullscreen == true);
     CHECK(cfg.logLevel == 4u);
     REQUIRE(cfg.unknownConfigKeys.size() == 1u);
     CHECK(cfg.unknownConfigKeys[0] == "unknown_section.bogus_key");
@@ -3549,17 +3554,21 @@ TEST_CASE("IniConfigLoader parses sections/comments and respects env overrides",
     ::setenv("GLIDE_NG_BACKEND", "sw", 1);
     ::setenv("GLIDE_NG_LOG_CONSOLE", "1", 1);
     ::setenv("GLIDE_NG_VSYNC", "0", 1);
+    ::setenv("GLIDE_NG_FULLSCREEN", "0", 1);
 
     GlideWrapper::WrapperConfig envCfg;
     REQUIRE(loader.Load(tmpPath, envCfg));
     CHECK(envCfg.backend == "software");
     CHECK(envCfg.logToConsole == true);
     CHECK(envCfg.vsync == false);
+    CHECK(envCfg.fullscreen == false);
+    CHECK(envCfg.settingSources["fullscreen"] == "GLIDE_NG_FULLSCREEN");
 
     // Clean break: a raw JSON file must NOT be parsed as config.
     ::unsetenv("GLIDE_NG_BACKEND");
     ::unsetenv("GLIDE_NG_LOG_CONSOLE");
     ::unsetenv("GLIDE_NG_VSYNC");
+    ::unsetenv("GLIDE_NG_FULLSCREEN");
     {
       std::ofstream out(tmpPath);
       out << "{ \"backend\": \"software\", \"model\": \"Voodoo3\", \"vsync\": false }\n";
@@ -3823,6 +3832,8 @@ TEST_CASE("NativeSurfaceHost headless lifecycle and idempotent detach",
   CHECK(!host.SyncBounds(pw, ph));
   CHECK(pw == 640);
   CHECK(ph == 480);
+  host.NotifyWin32PassthruReclaimed();  // Safe no-op in Headless mode
+  CHECK(!host.ConsumeSurfaceInvalidated());
   host.PollEvents();
   CHECK(!host.WasQuitRequested());
 
@@ -10093,7 +10104,7 @@ TEST_CASE("M12.5 Compatibility Catalog INI Presets & Directory Integrity",
       CHECK(fs::is_regular_file(entry.path() / "glide-ng.ini"));
     }
   }
-  CHECK(titleDirCount >= 14u);
+  CHECK(titleDirCount >= 15u);
 
   // 2. Discover every glide-ng*.ini under docs/catalog/ plus root glide-ng.ini.example
   std::vector<fs::path> iniFiles;
@@ -10109,7 +10120,7 @@ TEST_CASE("M12.5 Compatibility Catalog INI Presets & Directory Integrity",
   iniFiles.push_back(exampleIni);
   std::sort(iniFiles.begin(), iniFiles.end());
 
-  REQUIRE(iniFiles.size() >= 21u);
+  REQUIRE(iniFiles.size() >= 24u);
 
   GlideWrapper::IniConfigLoader loader;
   for (const auto& iniPath : iniFiles) {
@@ -10227,6 +10238,38 @@ TEST_CASE("M12.5 Compatibility Catalog INI Presets & Directory Integrity",
         cfg));
     CHECK(cfg.model == GlideWrapper::CardModel::VoodooGraphics);
     CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_48);
+    CHECK(cfg.noSplash == false);
+  }
+  {
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load(
+        (catalogDir / "games" / "cybergladiators" / "glide-ng.ini").string(),
+        cfg));
+    CHECK(cfg.model == GlideWrapper::CardModel::VoodooGraphics);
+    CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_11);
+    CHECK(cfg.noSplash == false);
+  }
+  {
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load(
+        (catalogDir / "games" / "cybergladiators" / "glide-ng.hq.ini").string(),
+        cfg));
+    CHECK(cfg.model == GlideWrapper::CardModel::VoodooGraphics);
+    CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_11);
+    CHECK(cfg.msaaSamples == 4u);
+    CHECK(cfg.presentationFilter == 1u);
+    CHECK(cfg.noDitherSub == true);
+    CHECK(cfg.noSplash == false);
+  }
+  {
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load(
+        (catalogDir / "games" / "cybergladiators" / "glide-ng.software.ini")
+            .string(),
+        cfg));
+    CHECK(cfg.backend == "software");
+    CHECK(cfg.model == GlideWrapper::CardModel::VoodooGraphics);
+    CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_11);
     CHECK(cfg.noSplash == false);
   }
 }

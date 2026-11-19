@@ -1095,7 +1095,7 @@ bool SoftwareBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
   if (!m_surfaceHost.Attach(nativeWindowHandle, width, height, windowed,
                             m_config.forceNoWindow,
                             "3dfx glide-ng Presentation Console (Software)", 0,
-                            m_config.windowScale)) {
+                            m_config.windowScale, m_config.fullscreen)) {
     GLIDE_LOG(CRITICAL, "Software",
               "NativeSurfaceHost::Attach failed for SoftwareBackend.");
     FreeCpuBuffers_Locked();

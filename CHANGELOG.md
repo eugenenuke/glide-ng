@@ -10,6 +10,24 @@ For the pre-beta engineering narrative covering early architecture decisions and
 
 ## [Unreleased]
 
+### Added
+- **Glide 2.11 (`glide.dll` / `libglide.so`) Frontend (M14)**: Dedicated pre-2.3 SST-1 frontend (`src/glide211/`, clean-room `include/glide211/glide.h`, 137 logical C API functions / 274 Win32 PE `__stdcall` + undecorated exports) implementing `grSstOpen`, `grSstPassthruMode`, fixed-1024-pixel-stride `grLfbBegin`/`End`/`GetReadPtr`/`GetWritePtr`/`Origin`/`WriteMode`/`BypassMode` with cached BAR pointer reuse, `guFbReadRegion`/`guFbWriteRegion`, authentic 2 MB TMU0 VRAM budget enforcement in `guTexAllocateMemory`, and headless `Glide211WrapperTests`.
+- **Borderless Fullscreen Override**: Added `[display] fullscreen = true` / `GLIDE_NG_FULLSCREEN=1` supporting SDL2 standalone, Win32 standalone, and Win32 embedded host windows with aspect-preserving letterboxing/pillarboxing.
+- **Automatic Startup Splash**: Trigger the procedural 3dfx startup splash automatically on `grSstWinOpen` / `grSstOpen` unless suppressed via `FX_GLIDE_NO_SPLASH=1`, `GLIDE_NG_NO_SPLASH=1`, or `[glide] no_splash = true`.
+- **Commercial Game Catalog Entries & Visual Progression Galleries**: Added validated guides, drop-in presets, and WebP comparison galleries for *CyberGladiators* (1996, Win32 Glide 2.11), *Grand Theft Auto* (1997, DOS Glide 2.x), *Tomb Raider* (1996, DOS Glide 2.x), and expanded *Carmageddon* (1997) with Best Visuals presets and gallery captures.
+
+### Changed
+- **Vulkan Guest-Resolution RAMDAC Gamma LUT**: Refactored the Vulkan Gamma LUT pass to resolve at guest resolution (e.g. `640×480`) into double-buffered offscreen targets before the shared aspect-preserving `vkCmdBlitImage` presentation upscale, reducing fragment invocations by 7.5×–27× at 1440p/4K and removing swapchain framebuffer churn on resize.
+- **Leaner Vulkan Pipeline & 32-Bit CPU Memory Footprint**: Removed speculative 8-pipeline pre-warming at startup, shrank 32-bit staging/vertex buffers and swapchain image counts on CPU Vulkan adapters (`llvmpipe`), and added a flushed warning when >1080p swapchains run on >16-core hosts with uncapped `LP_NUM_THREADS`.
+
+### Fixed
+- **Win32/Wine Pass-Through & WSI Hardening**: Added pre-`ShowWindow` host HWND resolution, `grSstPassthruMode` (`SHOW_VGA` yield / `SHOW_SST1` reclaim) surface management, structural `GWL_STYLE` (`WS_POPUP` ↔ `WS_CAPTION` / `WS_VISIBLE`) surface rebuild detection, hidden/iconic HWND skip guards, `CreateSwapchain()` exception/fallback recovery, and one-shot post-VGA foreground restore across Vulkan, OpenGL ES/WGL, and Software backends.
+- **Commercial Game Rendering Fixes**:
+  - *Tomb Raider* (1996): Fixed `guTexMemReset` palette persistence, W-buffer `oow > 1` clipping, depth bias, line depth health bar rendering, and edge mipmap LOD spikes.
+  - *Carmageddon* (1997): Flushed persistent LFB write-locks before `grBufferClear` and framebuffer readbacks.
+  - *Grand Theft Auto* (1997): Enabled MSAA centroid interpolation to eliminate texture-bleed seams on rotated sprites.
+- **DOS Tools & Test Isolation**: Supported authentic 3dfx Watcom `GLIDE2X.OVL` lookup via DOS `PATH`, fixed `glide_bench` `ESC` exit handling, and isolated `GLIDE_NG_HEADLESS=1` in the Glide 2.x coordinate unsnapping unit test.
+
 ---
 
 ## [0.8.0-beta.1] - 2026-11-18

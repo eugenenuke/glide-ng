@@ -479,19 +479,21 @@ bool VulkanBackend::RenderHudToSwapchain_Locked(uint32_t imageIdx,
 }
 
 // =============================================================================
-// Silicon-Faithful RAMDAC Gamma LUT Swapchain Presentation Pass
+// Silicon-Faithful Guest-Resolution RAMDAC Gamma LUT Pass
 // =============================================================================
 
 bool VulkanBackend::InitGammaPresentPipeline_Locked() {
-  if (!m_device || m_swapchainImageFormat == vk::Format::eUndefined) {
+  if (!m_device || m_colorFormat == vk::Format::eUndefined) {
     return false;
   }
 
   try {
     if (!m_gammaSrcSampler) {
+      // Guest-resolution 1:1 RAMDAC lookup: sample exact guest texels before
+      // the display presentation blit scales to the host swapchain.
       vk::SamplerCreateInfo samplerInfo{};
-      samplerInfo.magFilter = vk::Filter::eLinear;
-      samplerInfo.minFilter = vk::Filter::eLinear;
+      samplerInfo.magFilter = vk::Filter::eNearest;
+      samplerInfo.minFilter = vk::Filter::eNearest;
       samplerInfo.mipmapMode = vk::SamplerMipmapMode::eNearest;
       samplerInfo.addressModeU = vk::SamplerAddressMode::eClampToEdge;
       samplerInfo.addressModeV = vk::SamplerAddressMode::eClampToEdge;
@@ -568,22 +570,21 @@ bool VulkanBackend::InitGammaPresentPipeline_Locked() {
     }
 
     if (m_gammaPresentPipeline && m_gammaPresentRenderPass &&
-        m_gammaPresentPipelineFormat == m_swapchainImageFormat) {
+        m_gammaPresentPipelineFormat == m_colorFormat) {
       return true;
     }
 
     m_gammaPresentPipeline.reset();
     m_gammaPresentRenderPass.reset();
 
-    // Clears swapchain to opaque black (letterbox/pillarbox bars), draws the
-    // gamma-corrected guest image, and ends in eTransferDstOptimal so the
-    // downstream HUD pass or ePresentSrcKHR transition works identically to
-    // the direct blit path.
+    // Applies the 256-entry RGB RAMDAC LUT across the guest-resolution target
+    // (1:1 fullscreen quad, no clear needed) and finishes in eTransferSrcOptimal
+    // so the subsequent vkCmdBlitImage scales directly into the swapchain.
     vk::AttachmentDescription colorAtt(
-        {}, m_swapchainImageFormat, vk::SampleCountFlagBits::e1,
-        vk::AttachmentLoadOp::eClear, vk::AttachmentStoreOp::eStore,
+        {}, m_colorFormat, vk::SampleCountFlagBits::e1,
+        vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eStore,
         vk::AttachmentLoadOp::eDontCare, vk::AttachmentStoreOp::eDontCare,
-        vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal);
+        vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferSrcOptimal);
     vk::AttachmentReference colorRef(0,
                                      vk::ImageLayout::eColorAttachmentOptimal);
     vk::SubpassDescription subpass({}, vk::PipelineBindPoint::eGraphics, 0,
@@ -595,18 +596,16 @@ bool VulkanBackend::InitGammaPresentPipeline_Locked() {
     deps[0].srcStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput |
                            vk::PipelineStageFlagBits::eTransfer;
     deps[0].dstStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput;
-    deps[0].srcAccessMask = {};
+    deps[0].srcAccessMask = vk::AccessFlagBits::eTransferRead |
+                            vk::AccessFlagBits::eColorAttachmentWrite;
     deps[0].dstAccessMask = vk::AccessFlagBits::eColorAttachmentWrite;
 
     deps[1].srcSubpass = 0;
     deps[1].dstSubpass = VK_SUBPASS_EXTERNAL;
     deps[1].srcStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput;
-    deps[1].dstStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput |
-                           vk::PipelineStageFlagBits::eTransfer;
+    deps[1].dstStageMask = vk::PipelineStageFlagBits::eTransfer;
     deps[1].srcAccessMask = vk::AccessFlagBits::eColorAttachmentWrite;
-    deps[1].dstAccessMask = vk::AccessFlagBits::eColorAttachmentRead |
-                            vk::AccessFlagBits::eColorAttachmentWrite |
-                            vk::AccessFlagBits::eTransferWrite;
+    deps[1].dstAccessMask = vk::AccessFlagBits::eTransferRead;
 
     vk::RenderPassCreateInfo rpInfo({}, 1, &colorAtt, 1, &subpass,
                                     static_cast<uint32_t>(deps.size()),
@@ -680,7 +679,7 @@ bool VulkanBackend::InitGammaPresentPipeline_Locked() {
       return false;
     }
     m_gammaPresentPipeline = std::move(res.value);
-    m_gammaPresentPipelineFormat = m_swapchainImageFormat;
+    m_gammaPresentPipelineFormat = m_colorFormat;
     return true;
   } catch (const std::exception& e) {
     GLIDE_LOG(WARN, "Vulkan",
@@ -690,41 +689,91 @@ bool VulkanBackend::InitGammaPresentPipeline_Locked() {
   }
 }
 
-bool VulkanBackend::CreateGammaPresentSwapchainFramebuffers_Locked() {
-  m_gammaPresentFramebuffers.clear();
-  if (m_swapchainImageViews.empty() || m_swapchainExtent.width == 0 ||
-      m_swapchainExtent.height == 0) {
+bool VulkanBackend::EnsureGammaResolvedTargets_Locked() {
+  if (!m_device || m_headlessWidth == 0 || m_headlessHeight == 0) {
     return false;
   }
   if (!InitGammaPresentPipeline_Locked()) {
     return false;
   }
+  if (m_gammaResolvedWidth == m_headlessWidth &&
+      m_gammaResolvedHeight == m_headlessHeight &&
+      m_gammaResolvedFramebuffers[0] && m_gammaResolvedFramebuffers[1]) {
+    return true;
+  }
+
+  for (int i = 0; i < 2; ++i) {
+    m_gammaResolvedFramebuffers[i].reset();
+    m_gammaResolvedImageViews[i].reset();
+    m_gammaResolvedImages[i].reset();
+    m_gammaResolvedImageMemories[i].reset();
+  }
+  m_gammaResolvedWidth = 0;
+  m_gammaResolvedHeight = 0;
+
   try {
-    m_gammaPresentFramebuffers.reserve(m_swapchainImageViews.size());
-    for (const auto& view : m_swapchainImageViews) {
-      vk::ImageView att = view.get();
-      vk::FramebufferCreateInfo fbInfo(
-          {}, m_gammaPresentRenderPass.get(), 1, &att, m_swapchainExtent.width,
-          m_swapchainExtent.height, 1);
-      m_gammaPresentFramebuffers.push_back(
-          m_device->createFramebufferUnique(fbInfo));
+    for (int i = 0; i < 2; ++i) {
+      vk::ImageCreateInfo imgInfo{};
+      imgInfo.imageType = vk::ImageType::e2D;
+      imgInfo.format = m_colorFormat;
+      imgInfo.extent = vk::Extent3D(m_headlessWidth, m_headlessHeight, 1);
+      imgInfo.mipLevels = 1;
+      imgInfo.arrayLayers = 1;
+      imgInfo.samples = vk::SampleCountFlagBits::e1;
+      imgInfo.tiling = vk::ImageTiling::eOptimal;
+      imgInfo.usage = vk::ImageUsageFlagBits::eColorAttachment |
+                      vk::ImageUsageFlagBits::eTransferSrc;
+      imgInfo.initialLayout = vk::ImageLayout::eUndefined;
+      m_gammaResolvedImages[i] = m_device->createImageUnique(imgInfo);
+
+      auto memReqs =
+          m_device->getImageMemoryRequirements(m_gammaResolvedImages[i].get());
+      uint32_t memType = FindMemoryType(
+          memReqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal);
+      m_gammaResolvedImageMemories[i] = m_device->allocateMemoryUnique(
+          vk::MemoryAllocateInfo(memReqs.size, memType));
+      m_device->bindImageMemory(m_gammaResolvedImages[i].get(),
+                                m_gammaResolvedImageMemories[i].get(), 0);
+
+      vk::ImageViewCreateInfo viewInfo(
+          {}, m_gammaResolvedImages[i].get(), vk::ImageViewType::e2D,
+          m_colorFormat, {}, {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1});
+      m_gammaResolvedImageViews[i] = m_device->createImageViewUnique(viewInfo);
+
+      vk::ImageView att = m_gammaResolvedImageViews[i].get();
+      vk::FramebufferCreateInfo fbInfo({}, m_gammaPresentRenderPass.get(), 1,
+                                       &att, m_headlessWidth, m_headlessHeight,
+                                       1);
+      m_gammaResolvedFramebuffers[i] = m_device->createFramebufferUnique(fbInfo);
     }
+    m_gammaResolvedWidth = m_headlessWidth;
+    m_gammaResolvedHeight = m_headlessHeight;
     return true;
   } catch (const std::exception& e) {
     GLIDE_LOG(WARN, "Vulkan",
-              "Failed to create Vulkan Gamma presentation framebuffers: "
+              "Failed to allocate guest-resolution Vulkan Gamma targets: "
                   << e.what());
-    m_gammaPresentFramebuffers.clear();
+    for (int i = 0; i < 2; ++i) {
+      m_gammaResolvedFramebuffers[i].reset();
+      m_gammaResolvedImageViews[i].reset();
+      m_gammaResolvedImages[i].reset();
+      m_gammaResolvedImageMemories[i].reset();
+    }
+    m_gammaResolvedWidth = 0;
+    m_gammaResolvedHeight = 0;
     return false;
   }
 }
 
-void VulkanBackend::DestroyGammaPresentSwapchainFramebuffers_Locked() {
-  m_gammaPresentFramebuffers.clear();
-}
-
 void VulkanBackend::DestroyGammaPresentResources_Locked() {
-  m_gammaPresentFramebuffers.clear();
+  for (int i = 0; i < 2; ++i) {
+    m_gammaResolvedFramebuffers[i].reset();
+    m_gammaResolvedImageViews[i].reset();
+    m_gammaResolvedImages[i].reset();
+    m_gammaResolvedImageMemories[i].reset();
+  }
+  m_gammaResolvedWidth = 0;
+  m_gammaResolvedHeight = 0;
   m_gammaPresentPipeline.reset();
   m_gammaPresentRenderPass.reset();
   m_gammaPresentPipelineFormat = vk::Format::eUndefined;
@@ -823,29 +872,24 @@ bool VulkanBackend::EnsureGammaLutTexture_Locked() {
   }
 }
 
-bool VulkanBackend::PresentGammaToSwapchain_Locked(uint32_t activeIdx,
-                                                   uint32_t imageIdx,
-                                                   const PresentRect& dst) {
+bool VulkanBackend::ApplyGammaToGuestImage_Locked(uint32_t activeIdx,
+                                                  vk::Image& outResolvedImage) {
   if (!m_useGammaLut || !m_device || !m_commandBuffer ||
-      m_swapchainExtent.width == 0 || m_swapchainExtent.height == 0 ||
+      m_headlessWidth == 0 || m_headlessHeight == 0 ||
       !m_headlessImages[activeIdx] || !m_headlessImageViews[activeIdx]) {
     return false;
   }
 
-  if (m_gammaPresentFramebuffers.size() != m_swapchainImageViews.size()) {
-    if (!CreateGammaPresentSwapchainFramebuffers_Locked()) {
-      return false;
-    }
-  }
-  if (!m_gammaPresentPipeline || !m_gammaPresentRenderPass ||
-      imageIdx >= m_gammaPresentFramebuffers.size()) {
-    return false;
-  }
-  if (!EnsureGammaLutTexture_Locked()) {
+  if (!EnsureGammaResolvedTargets_Locked() || !EnsureGammaLutTexture_Locked()) {
     return false;
   }
 
   const uint32_t slot = m_currentFrameSlot;
+  if (!m_gammaPresentPipeline || !m_gammaPresentRenderPass ||
+      !m_gammaResolvedFramebuffers[slot] || !m_gammaResolvedImages[slot]) {
+    return false;
+  }
+
   vk::ImageSubresourceRange colorRange(vk::ImageAspectFlagBits::eColor, 0, 1, 0,
                                        1);
 
@@ -932,52 +976,39 @@ bool VulkanBackend::PresentGammaToSwapchain_Locked(uint32_t activeIdx,
                         vk::ImageLayout::eColorAttachmentOptimal,
                         vk::ImageLayout::eShaderReadOnlyOptimal, colorRange);
 
-  const float swW = static_cast<float>(m_swapchainExtent.width);
-  const float swH = static_cast<float>(m_swapchainExtent.height);
-  const float rectNdc[4] = {
-      (static_cast<float>(dst.x) / swW) * 2.0f - 1.0f,
-      (static_cast<float>(dst.y) / swH) * 2.0f - 1.0f,
-      (static_cast<float>(dst.x + static_cast<int32_t>(dst.width)) / swW) *
-              2.0f -
-          1.0f,
-      (static_cast<float>(dst.y + static_cast<int32_t>(dst.height)) / swH) *
-              2.0f -
-          1.0f,
-  };
+  const vk::Extent2D guestExtent(m_headlessWidth, m_headlessHeight);
+  constexpr float kFullQuadNdc[4] = {-1.0f, -1.0f, 1.0f, 1.0f};
 
-  vk::ClearValue clearBlack(
-      vk::ClearColorValue(std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f}));
   vk::RenderPassBeginInfo rpBegin{};
   rpBegin.renderPass = m_gammaPresentRenderPass.get();
-  rpBegin.framebuffer = m_gammaPresentFramebuffers[imageIdx].get();
-  rpBegin.renderArea = vk::Rect2D({0, 0}, m_swapchainExtent);
-  rpBegin.clearValueCount = 1;
-  rpBegin.pClearValues = &clearBlack;
+  rpBegin.framebuffer = m_gammaResolvedFramebuffers[slot].get();
+  rpBegin.renderArea = vk::Rect2D({0, 0}, guestExtent);
 
   m_commandBuffer->beginRenderPass(rpBegin, vk::SubpassContents::eInline);
-  if (dst.width > 0 && dst.height > 0) {
-    m_commandBuffer->bindPipeline(vk::PipelineBindPoint::eGraphics,
-                                  m_gammaPresentPipeline.get());
-    m_commandBuffer->bindDescriptorSets(vk::PipelineBindPoint::eGraphics,
-                                        m_gammaPresentPipelineLayout.get(), 0,
-                                        1, &m_gammaPresentDescSets[slot], 0,
-                                        nullptr);
+  m_commandBuffer->bindPipeline(vk::PipelineBindPoint::eGraphics,
+                                m_gammaPresentPipeline.get());
+  m_commandBuffer->bindDescriptorSets(vk::PipelineBindPoint::eGraphics,
+                                      m_gammaPresentPipelineLayout.get(), 0, 1,
+                                      &m_gammaPresentDescSets[slot], 0,
+                                      nullptr);
 
-    vk::Viewport vp(0.0f, 0.0f, swW, swH, 0.0f, 1.0f);
-    vk::Rect2D sc({0, 0}, m_swapchainExtent);
-    m_commandBuffer->setViewport(0, 1, &vp);
-    m_commandBuffer->setScissor(0, 1, &sc);
-    m_commandBuffer->pushConstants(m_gammaPresentPipelineLayout.get(),
-                                   vk::ShaderStageFlagBits::eVertex, 0,
-                                   sizeof(rectNdc), rectNdc);
-    m_commandBuffer->draw(4, 1, 0, 0);
-  }
+  vk::Viewport vp(0.0f, 0.0f, static_cast<float>(m_headlessWidth),
+                  static_cast<float>(m_headlessHeight), 0.0f, 1.0f);
+  vk::Rect2D sc({0, 0}, guestExtent);
+  m_commandBuffer->setViewport(0, 1, &vp);
+  m_commandBuffer->setScissor(0, 1, &sc);
+  m_commandBuffer->pushConstants(m_gammaPresentPipelineLayout.get(),
+                                 vk::ShaderStageFlagBits::eVertex, 0,
+                                 sizeof(kFullQuadNdc), kFullQuadNdc);
+  m_commandBuffer->draw(4, 1, 0, 0);
   m_commandBuffer->endRenderPass();
 
   // Transition offscreen guest framebuffer back for next frame's rendering
   TransitionImageLayout(*m_commandBuffer, m_headlessImages[activeIdx].get(),
                         vk::ImageLayout::eShaderReadOnlyOptimal,
                         vk::ImageLayout::eColorAttachmentOptimal, colorRange);
+
+  outResolvedImage = m_gammaResolvedImages[slot].get();
   return true;
 }
 

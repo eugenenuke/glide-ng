@@ -49,6 +49,20 @@ VULKAN_HPP_DEFAULT_DISPATCH_LOADER_DYNAMIC_STORAGE
 
 namespace GlideWrapper {
 
+namespace {
+// Temporarily releases m_mutex across NativeSurfaceHost calls that may
+// synchronously invoke a foreign Win32 WndProc (e.g. SetWindowPos triggering
+// WM_ACTIVATE / WM_SIZE -> grSstPassthruMode()) so re-entrant Glide calls
+// cannot self-deadlock on m_mutex.
+struct ScopedMutexUnlock {
+  std::unique_lock<std::mutex>& lock;
+  explicit ScopedMutexUnlock(std::unique_lock<std::mutex>& l) : lock(l) {
+    lock.unlock();
+  }
+  ~ScopedMutexUnlock() { lock.lock(); }
+};
+}  // namespace
+
 #if defined(_WIN32)
 namespace {
 PFN_vkGetInstanceProcAddr LoadWin32VulkanProcAddr() {
@@ -358,7 +372,7 @@ bool VulkanBackend::Initialize(const WrapperConfig& config) {
 }
 
 void VulkanBackend::Shutdown() {
-  std::lock_guard<std::mutex> lock(m_mutex);
+  std::unique_lock<std::mutex> lock(m_mutex);
   if (!m_initialized) return;
 
   GLIDE_LOG(INFO, "Vulkan", "Shutting down Hybrid Vulkan context.");
@@ -368,7 +382,7 @@ void VulkanBackend::Shutdown() {
   if (m_device) {
     m_device->waitIdle();
   }
-  DetachWindow_Locked();
+  DetachWindow_Locked(lock);
   DestroyHudResources_Locked();
   DestroyGammaPresentResources_Locked();
   DestroyLfbOverlayResources_Locked();
@@ -525,9 +539,9 @@ void VulkanBackend::ResetState_Locked() {
 
 bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
                                  uint32_t height, bool windowed) {
-  std::lock_guard<std::mutex> lock(m_mutex);
+  std::unique_lock<std::mutex> lock(m_mutex);
   if (!m_initialized) return false;
-  if (m_windowAttached) DetachWindow_Locked();
+  if (m_windowAttached) DetachWindow_Locked(lock);
 
   GLIDE_LOG(INFO, "Vulkan",
             "Attaching Hybrid Vulkan window ("
@@ -575,88 +589,7 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
     return false;
   }
 
-  // Pipeline Pre-warming (Warming the cache to prevent mid-frame shader
-  // compilation stutters!)
-  GLIDE_LOG(
-      INFO, "Vulkan",
-      "Pre-warming Vulkan pipeline cache with common rendering states...");
-  {
-    std::vector<PipelineStateKey> warmStates;
-    const uint32_t warmSampleMask =
-        (m_msaaSamples > 1)
-            ? ((m_msaaSamples >= 32) ? 0xFFFFFFFFu : ((1u << m_msaaSamples) - 1u))
-            : 1u;
-
-    // State 1: Default opaque 3D rendering (both lower-left and upper-left
-    // origins, cull negative and disabled) Warm 4 pipelines for common 3D
-    // rendering
-    for (uint32_t origin : {0u, 1u}) {
-      for (uint32_t cull : {0u, 1u}) {
-        PipelineStateKey k{};
-        k.cullMode = cull;
-        k.sstOrigin = origin;
-        k.depthMode = 1;  // Enabled
-        k.depthMask = true;
-        k.depthCompareOp = 3;  // LessEqual
-        k.rgbSrcBlend = 4;     // GR_BLEND_ONE
-        k.rgbDstBlend = 0;     // GR_BLEND_ZERO
-        k.alphaSrcBlend = 4;   // GR_BLEND_ONE
-        k.alphaDstBlend = 0;   // GR_BLEND_ZERO
-        k.colorWriteMask = 0xFu;
-        k.singleSample = false;
-        k.sampleMask = warmSampleMask;
-        warmStates.push_back(k);
-      }
-    }
-
-    // State 2: Standard Translucent Text/UI (e.g. tlConRender - 2 pipelines)
-    // Note: Separate Alpha factors (RGB: SrcAlpha/OneMinusSrcAlpha, Alpha:
-    // One/Zero)
-    for (uint32_t origin : {0u, 1u}) {
-      PipelineStateKey k{};
-      k.cullMode = 0;  // None
-      k.sstOrigin = origin;
-      k.depthMode = 0;  // Disabled (canonicalized)
-      k.depthMask = false;
-      k.depthCompareOp = 0;
-      k.rgbSrcBlend = 1;    // GR_BLEND_SRC_ALPHA
-      k.rgbDstBlend = 5;    // GR_BLEND_ONE_MINUS_SRC_ALPHA
-      k.alphaSrcBlend = 4;  // GR_BLEND_ONE (separate Alpha factor!)
-      k.alphaDstBlend = 0;  // GR_BLEND_ZERO
-      k.colorWriteMask = 0xFu;
-      k.singleSample = false;
-      k.sampleMask = warmSampleMask;
-      warmStates.push_back(k);
-    }
-
-    // State 3: Opaque 2D Overlays/Backgrounds (2 pipelines)
-    for (uint32_t origin : {0u, 1u}) {
-      PipelineStateKey k{};
-      k.cullMode = 0;  // None
-      k.sstOrigin = origin;
-      k.depthMode = 0;  // Disabled (canonicalized)
-      k.depthMask = false;
-      k.depthCompareOp = 0;
-      k.rgbSrcBlend = 4;    // GR_BLEND_ONE
-      k.rgbDstBlend = 0;    // GR_BLEND_ZERO
-      k.alphaSrcBlend = 4;  // GR_BLEND_ONE
-      k.alphaDstBlend = 0;  // GR_BLEND_ZERO
-      k.colorWriteMask = 0xFu;
-      k.singleSample = false;
-      k.sampleMask = warmSampleMask;
-      warmStates.push_back(k);
-    }
-
-    // Warm all 8 of them for Triangle List topology (which is 99% of drawing)
-    for (const auto& state : warmStates) {
-      GetOrCreatePipeline(state, vk::PrimitiveTopology::eTriangleList);
-    }
-    GLIDE_LOG(
-        INFO, "Vulkan",
-        "Pipeline cache pre-warming completed successfully. Total warmed: "
-            << warmStates.size());
-  }
-
+  // Pipelines compile on demand and persist across runs via .glide-ng-vkcache.bin.
   // Phase 2: Allocate dynamic ring Vertex Buffer (1MB)
   try {
     vk::BufferCreateInfo bufferInfo({}, m_vertexBufferSize,
@@ -734,10 +667,15 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
 #else
   const uint32_t extraHostFlags = SDL_WINDOW_VULKAN;
 #endif
-  if (!m_surfaceHost.Attach(nativeWindowHandle, width, height, windowed,
-                            m_config.forceNoWindow,
-                            "3dfx glide-ng Presentation Console (Vulkan)",
-                            extraHostFlags, m_config.windowScale)) {
+  bool hostAttached = false;
+  {
+    ScopedMutexUnlock unlock(lock);
+    hostAttached = m_surfaceHost.Attach(
+        nativeWindowHandle, width, height, windowed, m_config.forceNoWindow,
+        "3dfx glide-ng Presentation Console (Vulkan)", extraHostFlags,
+        m_config.windowScale, m_config.fullscreen);
+  }
+  if (!hostAttached) {
     GLIDE_LOG(CRITICAL, "Vulkan",
               "Failed to attach NativeSurfaceHost for Vulkan presentation.");
     return false;
@@ -746,6 +684,7 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
   // Create Vulkan WSI surface and swapchain when not in Headless mode.
   if (m_surfaceHost.GetMode() != NativeSurfaceHost::Mode::Headless) {
     if (!CreatePresentationSurface()) {
+      ScopedMutexUnlock unlock(lock);
       m_surfaceHost.Detach();
       return false;
     }
@@ -761,7 +700,10 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
     if (!CreateSwapchain(surfW, surfH)) {
       GLIDE_LOG(CRITICAL, "Vulkan", "Failed to create Vulkan swapchain!");
       m_surface.reset();
-      m_surfaceHost.Detach();
+      {
+        ScopedMutexUnlock unlock(lock);
+        m_surfaceHost.Detach();
+      }
       return false;
     }
   }
@@ -844,12 +786,16 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
 }
 
 void VulkanBackend::DetachWindow() {
-  std::lock_guard<std::mutex> lock(m_mutex);
-  DetachWindow_Locked();
+  std::unique_lock<std::mutex> lock(m_mutex);
+  DetachWindow_Locked(lock);
 }
 
-void VulkanBackend::DetachWindow_Locked() {
+void VulkanBackend::DetachWindow_Locked(std::unique_lock<std::mutex>& lock) {
   if (!m_windowAttached) return;
+  // Clear m_windowAttached up front so any synchronous Win32 WndProc callback
+  // (e.g. SetWindowPos inside m_surfaceHost.Detach() triggering
+  // grSstPassthruMode) treats the window as detached and never rebuilds WSI.
+  m_windowAttached = false;
   GLIDE_LOG(INFO, "Vulkan", "Detaching Hybrid Vulkan window resources.");
 
   // Strict WSI teardown order:
@@ -891,7 +837,11 @@ void VulkanBackend::DetachWindow_Locked() {
   m_cachedDescSet = vk::DescriptorSet{};
   m_hudOverlay.Reset();
   m_surface.reset();
-  m_surfaceHost.Detach();
+  {
+    ScopedMutexUnlock unlock(lock);
+    m_surfaceHost.Detach();
+  }
+  m_passthruSuspended = false;
 
   // Phase 2: Unmap and reset vertex buffer
   if (m_vertexBufferMap) {
@@ -1112,195 +1062,231 @@ bool VulkanBackend::CreateSwapchain(uint32_t width, uint32_t height) {
     return false;
   }
 
-  // Verify that our graphics queue family supports presentation to the surface!
-  vk::Bool32 presentSupport = false;
-  vk::Result supportRes = m_physicalDevice.getSurfaceSupportKHR(
-      m_graphicsQueueFamilyIndex, m_surface.get(), &presentSupport);
-  if (supportRes != vk::Result::eSuccess || !presentSupport) {
-    GLIDE_LOG(CRITICAL, "Vulkan",
-              "Graphics queue family index "
-                  << m_graphicsQueueFamilyIndex
-                  << " does NOT support surface presentation! Res="
-                  << vk::to_string(supportRes));
-    return false;
-  }
-
-  // 1. Query surface capabilities, formats, and present modes
-  vk::SurfaceCapabilitiesKHR capabilities =
-      m_physicalDevice.getSurfaceCapabilitiesKHR(m_surface.get());
-  std::vector<vk::SurfaceFormatKHR> formats =
-      m_physicalDevice.getSurfaceFormatsKHR(m_surface.get());
-  std::vector<vk::PresentModeKHR> presentModes =
-      m_physicalDevice.getSurfacePresentModesKHR(m_surface.get());
-
-  if (formats.empty()) {
-    GLIDE_LOG(CRITICAL, "Vulkan",
-              "No supported surface formats found for Vulkan presentation.");
-    return false;
-  }
-
-  // 2. Select the best surface format (UNORM preferred for authentic retro
-  // linear presentation without double gamma correction!)
-  vk::SurfaceFormatKHR selectedFormat = formats[0];
-  bool found_unorm = false;
-  for (const auto& f : formats) {
-    if ((f.format == vk::Format::eB8G8R8A8Unorm ||
-         f.format == vk::Format::eR8G8B8A8Unorm) &&
-        f.colorSpace == vk::ColorSpaceKHR::eSrgbNonlinear) {
-      selectedFormat = f;
-      found_unorm = true;
-      break;
+  try {
+    // Verify that our graphics queue family supports presentation to the surface!
+    vk::Bool32 presentSupport = false;
+    vk::Result supportRes = m_physicalDevice.getSurfaceSupportKHR(
+        m_graphicsQueueFamilyIndex, m_surface.get(), &presentSupport);
+    if (supportRes != vk::Result::eSuccess || !presentSupport) {
+      GLIDE_LOG(CRITICAL, "Vulkan",
+                "Graphics queue family index "
+                    << m_graphicsQueueFamilyIndex
+                    << " does NOT support surface presentation! Res="
+                    << vk::to_string(supportRes));
+      return false;
     }
-  }
-  if (!found_unorm) {
+
+    // 1. Query surface capabilities, formats, and present modes
+    vk::SurfaceCapabilitiesKHR capabilities =
+        m_physicalDevice.getSurfaceCapabilitiesKHR(m_surface.get());
+    std::vector<vk::SurfaceFormatKHR> formats =
+        m_physicalDevice.getSurfaceFormatsKHR(m_surface.get());
+    std::vector<vk::PresentModeKHR> presentModes =
+        m_physicalDevice.getSurfacePresentModesKHR(m_surface.get());
+
+    if (formats.empty()) {
+      GLIDE_LOG(CRITICAL, "Vulkan",
+                "No supported surface formats found for Vulkan presentation.");
+      return false;
+    }
+
+    // 2. Select the best surface format (UNORM preferred for authentic retro
+    // linear presentation without double gamma correction!)
+    vk::SurfaceFormatKHR selectedFormat = formats[0];
+    bool found_unorm = false;
     for (const auto& f : formats) {
-      if ((f.format == vk::Format::eB8G8R8A8Srgb ||
-           f.format == vk::Format::eR8G8B8A8Srgb) &&
+      if ((f.format == vk::Format::eB8G8R8A8Unorm ||
+           f.format == vk::Format::eR8G8B8A8Unorm) &&
           f.colorSpace == vk::ColorSpaceKHR::eSrgbNonlinear) {
         selectedFormat = f;
+        found_unorm = true;
         break;
       }
     }
-  }
-  m_swapchainImageFormat = selectedFormat.format;
-  GLIDE_LOG(
-      INFO, "Vulkan",
-      "Selected swapchain format: " << vk::to_string(m_swapchainImageFormat));
-
-  // 3. Select the best present mode.
-  // On Wayland, prefer Mailbox even with VSync enabled: Wayland compositors
-  // always composite atomically (tear-free), while Mailbox avoids Mesa WSI's
-  // wp_fifo_v1 / wp_commit_timer_v1 cadence stalls under Mutter/RDP. Users can
-  // still opt into strict FIFO via GLIDE_NG_VSYNC=fifo.
-  bool isWaylandSurface = m_surfaceHost.IsWaylandSurface();
-  bool forceStrictFifo = m_config.vsyncStrictFifo;
-
-  vk::PresentModeKHR presentMode = SelectPresentMode(
-      presentModes, m_config.vsync, isWaylandSurface, forceStrictFifo);
-
-  if (presentMode == vk::PresentModeKHR::eMailbox) {
-    if (m_config.vsync && isWaylandSurface) {
-      GLIDE_LOG(INFO, "Vulkan",
-                "Wayland surface detected with VSync enabled: using Mailbox "
-                "present mode (tear-free via Wayland compositor, avoids "
-                "wp_fifo_v1 stalls; set GLIDE_NG_VSYNC=fifo to force FIFO).");
-    } else {
-      GLIDE_LOG(
-          INFO, "Vulkan",
-          "VSync Disabled: Using Mailbox present mode (Uncapped, no tearing).");
+    if (!found_unorm) {
+      for (const auto& f : formats) {
+        if ((f.format == vk::Format::eB8G8R8A8Srgb ||
+             f.format == vk::Format::eR8G8B8A8Srgb) &&
+            f.colorSpace == vk::ColorSpaceKHR::eSrgbNonlinear) {
+          selectedFormat = f;
+          break;
+        }
+      }
     }
-  } else if (presentMode == vk::PresentModeKHR::eImmediate) {
-    GLIDE_LOG(INFO, "Vulkan",
-              "VSync Disabled: Using Immediate present mode (Uncapped, "
-              "screen tearing may occur).");
-  } else if (!m_config.vsync) {
-    GLIDE_LOG(WARN, "Vulkan",
-              "VSync Disabled: Uncapped present modes not supported by GPU, "
-              "falling back to FIFO.");
-  } else {
-    GLIDE_LOG(INFO, "Vulkan",
-              "VSync Enabled: Using FIFO present mode (Sync to vertical "
-              "blanking, locked to refresh rate).");
-  }
+    m_swapchainImageFormat = selectedFormat.format;
+    GLIDE_LOG(
+        INFO, "Vulkan",
+        "Selected swapchain format: " << vk::to_string(m_swapchainImageFormat));
 
-  // 4. Determine swapchain extent (size)
-  vk::Extent2D extent;
-  if (capabilities.currentExtent.width != UINT32_MAX) {
-    extent = capabilities.currentExtent;
-  } else {
-    extent.width = std::clamp(width, capabilities.minImageExtent.width,
-                              capabilities.maxImageExtent.width);
-    extent.height = std::clamp(height, capabilities.minImageExtent.height,
-                               capabilities.maxImageExtent.height);
-  }
-  if (extent.width == 0 || extent.height == 0) {
+    // 3. Select the best present mode.
+    // On Wayland, prefer Mailbox even with VSync enabled: Wayland compositors
+    // always composite atomically (tear-free), while Mailbox avoids Mesa WSI's
+    // wp_fifo_v1 / wp_commit_timer_v1 cadence stalls under Mutter/RDP. Users can
+    // still opt into strict FIFO via GLIDE_NG_VSYNC=fifo.
+    bool isWaylandSurface = m_surfaceHost.IsWaylandSurface();
+    bool forceStrictFifo = m_config.vsyncStrictFifo;
+
+    vk::PresentModeKHR presentMode = SelectPresentMode(
+        presentModes, m_config.vsync, isWaylandSurface, forceStrictFifo);
+
+    if (presentMode == vk::PresentModeKHR::eMailbox) {
+      if (m_config.vsync && isWaylandSurface) {
+        GLIDE_LOG(INFO, "Vulkan",
+                  "Wayland surface detected with VSync enabled: using Mailbox "
+                  "present mode (tear-free via Wayland compositor, avoids "
+                  "wp_fifo_v1 stalls; set GLIDE_NG_VSYNC=fifo to force FIFO).");
+      } else {
+        GLIDE_LOG(
+            INFO, "Vulkan",
+            "VSync Disabled: Using Mailbox present mode (Uncapped, no tearing).");
+      }
+    } else if (presentMode == vk::PresentModeKHR::eImmediate) {
+      GLIDE_LOG(INFO, "Vulkan",
+                "VSync Disabled: Using Immediate present mode (Uncapped, "
+                "screen tearing may occur).");
+    } else if (!m_config.vsync) {
+      GLIDE_LOG(WARN, "Vulkan",
+                "VSync Disabled: Uncapped present modes not supported by GPU, "
+                "falling back to FIFO.");
+    } else {
+      GLIDE_LOG(INFO, "Vulkan",
+                "VSync Enabled: Using FIFO present mode (Sync to vertical "
+                "blanking, locked to refresh rate).");
+    }
+
+    // 4. Determine swapchain extent (size)
+    vk::Extent2D extent;
+    if (capabilities.currentExtent.width != UINT32_MAX) {
+      extent = capabilities.currentExtent;
+    } else {
+      extent.width = std::clamp(width, capabilities.minImageExtent.width,
+                                capabilities.maxImageExtent.width);
+      extent.height = std::clamp(height, capabilities.minImageExtent.height,
+                                 capabilities.maxImageExtent.height);
+    }
+    if (extent.width == 0 || extent.height == 0) {
+      GLIDE_LOG(WARN, "Vulkan",
+                "Deferring swapchain creation for zero-sized surface extent.");
+      return false;
+    }
+    m_swapchainExtent = extent;
+    GLIDE_LOG(
+        INFO, "Vulkan",
+        "Selected swapchain extent: " << extent.width << "x" << extent.height);
+
+    if (m_isCpuVulkanDevice && sizeof(void*) <= 4 &&
+        static_cast<uint64_t>(extent.width) * extent.height >
+            1920ull * 1080ull) {
+      const unsigned int cores = std::thread::hardware_concurrency();
+      const char* lpEnv = std::getenv("LP_NUM_THREADS");
+      const int lpThreads = (lpEnv && lpEnv[0] != '\0') ? std::atoi(lpEnv) : 0;
+      if (cores > 16u && (lpThreads <= 0 || lpThreads > 16)) {
+        GLIDE_LOG(
+            WARN, "Vulkan",
+            "High-resolution (" << extent.width << "x" << extent.height
+                                << ") swapchain on 32-bit CPU Vulkan adapter "
+                                   "with "
+                                << cores
+                                << " CPU cores and uncapped LP_NUM_THREADS: "
+                                   "Mesa llvmpipe may exhaust 32-bit virtual "
+                                   "address space. Set LP_NUM_THREADS=4 (or "
+                                   "GLIDE_NG_BACKEND=opengl_es / software) if "
+                                   "presentation crashes.");
+        Logger::GetInstance().Flush();
+      }
+    }
+
+    // 5. Determine number of images (double or triple buffering).
+    // On 32-bit CPU Vulkan adapters, stick to minImageCount to minimize VA use.
+    uint32_t imageCount =
+        (m_isCpuVulkanDevice && sizeof(void*) <= 4)
+            ? std::max(2u, capabilities.minImageCount)
+            : (capabilities.minImageCount + 1);
+    if (capabilities.maxImageCount > 0 &&
+        imageCount > capabilities.maxImageCount) {
+      imageCount = capabilities.maxImageCount;
+    }
+    GLIDE_LOG(INFO, "Vulkan",
+              "Creating swapchain with " << imageCount << " images.");
+
+    // Pick a supported composite alpha mode (prefer opaque so letterbox bars
+    // are solid black and Wayland compositors don't blend behind the subsurface).
+    vk::CompositeAlphaFlagBitsKHR compositeAlpha =
+        vk::CompositeAlphaFlagBitsKHR::eOpaque;
+    if (!(capabilities.supportedCompositeAlpha &
+          vk::CompositeAlphaFlagBitsKHR::eOpaque)) {
+      if (capabilities.supportedCompositeAlpha &
+          vk::CompositeAlphaFlagBitsKHR::ePreMultiplied) {
+        compositeAlpha = vk::CompositeAlphaFlagBitsKHR::ePreMultiplied;
+      } else if (capabilities.supportedCompositeAlpha &
+                 vk::CompositeAlphaFlagBitsKHR::eInherit) {
+        compositeAlpha = vk::CompositeAlphaFlagBitsKHR::eInherit;
+      }
+    }
+
+    // 6. Create the Swapchain!
+    vk::SwapchainCreateInfoKHR createInfo(
+        {}, m_surface.get(), imageCount, m_swapchainImageFormat,
+        selectedFormat.colorSpace, m_swapchainExtent,
+        1,  // imageArrayLayers
+        vk::ImageUsageFlagBits::eColorAttachment |
+            vk::ImageUsageFlagBits::eTransferDst,  // We will clear/blit to it!
+        vk::SharingMode::eExclusive, 0,
+        nullptr,  // Queue family indices (exclusive mode doesn't need them)
+        capabilities.currentTransform, compositeAlpha,
+        presentMode,
+        VK_TRUE,  // clipped
+        {}        // oldSwapchain
+    );
+
+    m_swapchain = m_device->createSwapchainKHRUnique(createInfo);
+
+    // 7. Retrieve swapchain images
+    m_swapchainImages = m_device->getSwapchainImagesKHR(m_swapchain.get());
+
+    // 8. Create Image Views for each swapchain image
+    m_swapchainImageViews.clear();
+    m_swapchainImageViews.reserve(m_swapchainImages.size());
+    for (const auto& img : m_swapchainImages) {
+      vk::ImageViewCreateInfo viewInfo(
+          {}, img, vk::ImageViewType::e2D, m_swapchainImageFormat,
+          {vk::ComponentSwizzle::eIdentity, vk::ComponentSwizzle::eIdentity,
+           vk::ComponentSwizzle::eIdentity, vk::ComponentSwizzle::eIdentity},
+          {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1});
+      m_swapchainImageViews.push_back(m_device->createImageViewUnique(viewInfo));
+    }
+
+    // 9. Create synchronization semaphores for swapchain image acquisition &
+    // presentation pacing (renderFinished is sized per swapchain image!)
+    vk::SemaphoreCreateInfo semaphoreInfo;
+    for (int i = 0; i < 2; ++i) {
+      m_imageAvailableSemaphores[i] =
+          m_device->createSemaphoreUnique(semaphoreInfo);
+    }
+    m_renderFinishedSemaphores.clear();
+    m_renderFinishedSemaphores.reserve(m_swapchainImages.size());
+    for (size_t i = 0; i < m_swapchainImages.size(); ++i) {
+      m_renderFinishedSemaphores.push_back(
+          m_device->createSemaphoreUnique(semaphoreInfo));
+    }
+
+    if (m_hudOverlay.IsEnabled()) {
+      CreateHudSwapchainFramebuffers_Locked();
+    }
+
+    GLIDE_LOG(INFO, "Vulkan",
+              "Vulkan Swapchain and " << m_swapchainImageViews.size()
+                                      << " image views successfully allocated.");
+    return true;
+  } catch (const std::exception& e) {
     GLIDE_LOG(WARN, "Vulkan",
-              "Deferring swapchain creation for zero-sized surface extent.");
+              "CreateSwapchain(" << width << "x" << height
+                                 << ") failed with Vulkan exception: "
+                                 << e.what());
+    Logger::GetInstance().Flush();
+    DestroySwapchain_Locked();
     return false;
   }
-  m_swapchainExtent = extent;
-  GLIDE_LOG(
-      INFO, "Vulkan",
-      "Selected swapchain extent: " << extent.width << "x" << extent.height);
-
-  // 5. Determine number of images (double or triple buffering)
-  uint32_t imageCount = capabilities.minImageCount + 1;
-  if (capabilities.maxImageCount > 0 &&
-      imageCount > capabilities.maxImageCount) {
-    imageCount = capabilities.maxImageCount;
-  }
-  GLIDE_LOG(INFO, "Vulkan",
-            "Creating swapchain with " << imageCount << " images.");
-
-  // Pick a supported composite alpha mode (prefer opaque so letterbox bars
-  // are solid black and Wayland compositors don't blend behind the subsurface).
-  vk::CompositeAlphaFlagBitsKHR compositeAlpha =
-      vk::CompositeAlphaFlagBitsKHR::eOpaque;
-  if (!(capabilities.supportedCompositeAlpha &
-        vk::CompositeAlphaFlagBitsKHR::eOpaque)) {
-    if (capabilities.supportedCompositeAlpha &
-        vk::CompositeAlphaFlagBitsKHR::ePreMultiplied) {
-      compositeAlpha = vk::CompositeAlphaFlagBitsKHR::ePreMultiplied;
-    } else if (capabilities.supportedCompositeAlpha &
-               vk::CompositeAlphaFlagBitsKHR::eInherit) {
-      compositeAlpha = vk::CompositeAlphaFlagBitsKHR::eInherit;
-    }
-  }
-
-  // 6. Create the Swapchain!
-  vk::SwapchainCreateInfoKHR createInfo(
-      {}, m_surface.get(), imageCount, m_swapchainImageFormat,
-      selectedFormat.colorSpace, m_swapchainExtent,
-      1,  // imageArrayLayers
-      vk::ImageUsageFlagBits::eColorAttachment |
-          vk::ImageUsageFlagBits::eTransferDst,  // We will clear/blit to it!
-      vk::SharingMode::eExclusive, 0,
-      nullptr,  // Queue family indices (exclusive mode doesn't need them)
-      capabilities.currentTransform, compositeAlpha,
-      presentMode,
-      VK_TRUE,  // clipped
-      {}        // oldSwapchain
-  );
-
-  m_swapchain = m_device->createSwapchainKHRUnique(createInfo);
-
-  // 7. Retrieve swapchain images
-  m_swapchainImages = m_device->getSwapchainImagesKHR(m_swapchain.get());
-
-  // 8. Create Image Views for each swapchain image
-  m_swapchainImageViews.clear();
-  m_swapchainImageViews.reserve(m_swapchainImages.size());
-  for (const auto& img : m_swapchainImages) {
-    vk::ImageViewCreateInfo viewInfo(
-        {}, img, vk::ImageViewType::e2D, m_swapchainImageFormat,
-        {vk::ComponentSwizzle::eIdentity, vk::ComponentSwizzle::eIdentity,
-         vk::ComponentSwizzle::eIdentity, vk::ComponentSwizzle::eIdentity},
-        {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1});
-    m_swapchainImageViews.push_back(m_device->createImageViewUnique(viewInfo));
-  }
-
-  // 9. Create synchronization semaphores for swapchain image acquisition &
-  // presentation pacing (renderFinished is sized per swapchain image!)
-  vk::SemaphoreCreateInfo semaphoreInfo;
-  for (int i = 0; i < 2; ++i) {
-    m_imageAvailableSemaphores[i] =
-        m_device->createSemaphoreUnique(semaphoreInfo);
-  }
-  m_renderFinishedSemaphores.clear();
-  m_renderFinishedSemaphores.reserve(m_swapchainImages.size());
-  for (size_t i = 0; i < m_swapchainImages.size(); ++i) {
-    m_renderFinishedSemaphores.push_back(
-        m_device->createSemaphoreUnique(semaphoreInfo));
-  }
-
-  if (m_hudOverlay.IsEnabled()) {
-    CreateHudSwapchainFramebuffers_Locked();
-  }
-
-  GLIDE_LOG(INFO, "Vulkan",
-            "Vulkan Swapchain and " << m_swapchainImageViews.size()
-                                    << " image views successfully allocated.");
-  return true;
 }
 
 void VulkanBackend::DestroySwapchain_Locked() {
@@ -1308,7 +1294,6 @@ void VulkanBackend::DestroySwapchain_Locked() {
     m_device->waitIdle();
   }
   DestroyHudSwapchainFramebuffers_Locked();
-  DestroyGammaPresentSwapchainFramebuffers_Locked();
   for (int i = 0; i < 2; ++i) {
     if (m_imageAvailableSemaphores[i]) m_imageAvailableSemaphores[i].reset();
   }
@@ -1326,7 +1311,70 @@ void VulkanBackend::RecreateSwapchain(uint32_t width, uint32_t height) {
   GLIDE_LOG(INFO, "Vulkan",
             "Recreating swapchain with size: " << width << "x" << height);
   DestroySwapchain_Locked();
-  CreateSwapchain(width, height);
+  if (!CreateSwapchain(width, height)) {
+    GLIDE_LOG(WARN, "Vulkan",
+              "Swapchain recreation failed on existing surface; recreating "
+              "presentation surface and swapchain.");
+    RecreateSurfaceAndSwapchain_Locked(width, height);
+  }
+}
+
+void VulkanBackend::RecreateSurfaceAndSwapchain_Locked(uint32_t width,
+                                                       uint32_t height) {
+  if (!m_device || !m_surfaceHost.IsAttached() || width == 0 || height == 0) {
+    return;
+  }
+  m_device->waitIdle();
+  GLIDE_LOG(INFO, "Vulkan",
+            "Recreating Vulkan presentation surface and swapchain ("
+                << width << "x" << height << ")");
+  DestroySwapchain_Locked();
+  m_surface.reset();
+  if (CreatePresentationSurface()) {
+    if (!CreateSwapchain(width, height)) {
+      m_surface.reset();
+    }
+  }
+}
+
+void VulkanBackend::SetPassthruMode(bool show3dfx) {
+  std::unique_lock<std::mutex> lock(m_mutex);
+  if (!m_windowAttached || !m_device ||
+      m_surfaceHost.GetMode() != NativeSurfaceHost::Mode::Win32Embedded) {
+    return;
+  }
+  if (!show3dfx) {
+    if (!m_passthruSuspended) {
+      SubmitPendingUploadsAndWaitIdle_Locked();
+      DestroySwapchain_Locked();
+      m_surface.reset();
+      m_passthruSuspended = true;
+      GLIDE_LOG(INFO, "Vulkan",
+                "Yielded Win32Embedded presentation surface for VGA "
+                "pass-through (SHOW_VGA).");
+    }
+  } else {
+    if (m_passthruSuspended || !m_surface) {
+      m_passthruSuspended = false;
+      uint32_t hostW = 0;
+      uint32_t hostH = 0;
+      {
+        ScopedMutexUnlock unlock(lock);
+        m_surfaceHost.SyncBounds(hostW, hostH);
+      }
+      if (!m_windowAttached || !m_device || m_passthruSuspended || m_surface) {
+        return;
+      }
+      if (hostW > 0 && hostH > 0) {
+        RecreateSurfaceAndSwapchain_Locked(hostW, hostH);
+      }
+      (void)m_surfaceHost.ConsumeSurfaceInvalidated();
+      m_surfaceHost.NotifyWin32PassthruReclaimed();
+      GLIDE_LOG(INFO, "Vulkan",
+                "Reclaimed Win32Embedded presentation surface for 3dfx "
+                "output (SHOW_SST1).");
+    }
+  }
 }
 
 void VulkanBackend::SetDepthState(uint32_t depthMode, uint32_t compareOp,
@@ -1708,7 +1756,7 @@ bool VulkanBackend::SwapBuffers() {
   if (m_surfaceHost.IsStandaloneMode() && m_surfaceHost.WasQuitRequested()) {
     GLIDE_LOG(INFO, "Vulkan",
               "Standalone window close requested; exiting cleanly.");
-    DetachWindow_Locked();
+    DetachWindow_Locked(lock);
     lock.unlock();
     std::exit(0);
   }
@@ -1716,15 +1764,38 @@ bool VulkanBackend::SwapBuffers() {
   GLIDE_PROFILE_SCOPE("Vulkan::SwapBuffers");
 
   // Sync child/standalone surface bounds with host window and recreate
-  // swapchain cleanly on resize or recovery from minimized state.
+  // swapchain cleanly on resize or recovery from minimized/pass-through state.
   if (m_surface) {
     uint32_t hostW = 0;
     uint32_t hostH = 0;
-    bool sizeChanged = m_surfaceHost.SyncBounds(hostW, hostH);
-    if (sizeChanged && hostW > 0 && hostH > 0) {
-      RecreateSwapchain(hostW, hostH);
-    } else if (!m_swapchain && hostW > 0 && hostH > 0) {
-      CreateSwapchain(hostW, hostH);
+    bool sizeChanged = false;
+    {
+      ScopedMutexUnlock unlock(lock);
+      sizeChanged = m_surfaceHost.SyncBounds(hostW, hostH);
+    }
+    if (!m_initialized || !m_windowAttached) return false;
+    const bool surfaceInvalidated = m_surfaceHost.ConsumeSurfaceInvalidated();
+    if (m_surface) {
+      if (surfaceInvalidated && hostW > 0 && hostH > 0) {
+        RecreateSurfaceAndSwapchain_Locked(hostW, hostH);
+      } else if (sizeChanged && hostW > 0 && hostH > 0) {
+        RecreateSwapchain(hostW, hostH);
+      } else if (!m_swapchain && hostW > 0 && hostH > 0) {
+        CreateSwapchain(hostW, hostH);
+      }
+    }
+  } else if (!m_passthruSuspended && m_surfaceHost.IsAttached() &&
+             m_surfaceHost.GetMode() != NativeSurfaceHost::Mode::Headless) {
+    uint32_t hostW = 0;
+    uint32_t hostH = 0;
+    {
+      ScopedMutexUnlock unlock(lock);
+      m_surfaceHost.SyncBounds(hostW, hostH);
+    }
+    if (!m_initialized || !m_windowAttached) return false;
+    (void)m_surfaceHost.ConsumeSurfaceInvalidated();
+    if (!m_passthruSuspended && !m_surface && hostW > 0 && hostH > 0) {
+      RecreateSurfaceAndSwapchain_Locked(hostW, hostH);
     }
   }
 
@@ -1771,15 +1842,34 @@ bool VulkanBackend::SwapBuffers() {
           m_imageAvailableSemaphores[m_currentFrameSlot].get(), {}, &imageIdx);
     } catch (const vk::OutOfDateKHRError&) {
       acquireRes = vk::Result::eErrorOutOfDateKHR;
+    } catch (const vk::SurfaceLostKHRError&) {
+      acquireRes = vk::Result::eErrorSurfaceLostKHR;
+    } catch (const vk::SystemError& e) {
+      GLIDE_LOG(CRITICAL, "Vulkan",
+                "acquireNextImageKHR failed with Vulkan error: " << e.what());
+      Logger::GetInstance().Flush();
+      return false;
     }
 
-    if (acquireRes == vk::Result::eErrorOutOfDateKHR) {
+    if (acquireRes == vk::Result::eErrorOutOfDateKHR ||
+        acquireRes == vk::Result::eErrorSurfaceLostKHR) {
       SubmitPendingUploadsAndWaitIdle_Locked();
       uint32_t hostW = 0;
       uint32_t hostH = 0;
-      m_surfaceHost.SyncBounds(hostW, hostH);
-      if (hostW > 0 && hostH > 0) {
-        RecreateSwapchain(hostW, hostH);
+      {
+        ScopedMutexUnlock unlock(lock);
+        m_surfaceHost.SyncBounds(hostW, hostH);
+      }
+      if (!m_initialized || !m_windowAttached) return false;
+      if (!m_passthruSuspended && hostW > 0 && hostH > 0) {
+        if (acquireRes == vk::Result::eErrorSurfaceLostKHR) {
+          RecreateSurfaceAndSwapchain_Locked(hostW, hostH);
+        } else if (m_surface) {
+          RecreateSwapchain(hostW, hostH);
+        }
+      } else if (acquireRes == vk::Result::eErrorSurfaceLostKHR) {
+        DestroySwapchain_Locked();
+        m_surface.reset();
       }
       m_commandBuffer = &m_commandBuffers[m_currentFrameSlot].get();
       m_commandBuffer->reset({});
@@ -1803,70 +1893,79 @@ bool VulkanBackend::SwapBuffers() {
         m_headlessWidth, m_headlessHeight, m_swapchainExtent.width,
         m_swapchainExtent.height, /*preserveAspect=*/true);
 
-    const bool presentedViaGamma =
-        m_useGammaLut && PresentGammaToSwapchain_Locked(activeIdx, imageIdx, dst);
+    // Apply silicon-faithful 256-entry RAMDAC Gamma LUT at guest resolution
+    // first (e.g. 640x480), then upscale to the swapchain via vkCmdBlitImage.
+    vk::Image presentSrcImage = m_headlessImages[activeIdx].get();
+    bool gammaApplied = false;
+    if (m_useGammaLut &&
+        ApplyGammaToGuestImage_Locked(activeIdx, presentSrcImage)) {
+      gammaApplied = true;
+    }
 
-    if (!presentedViaGamma) {
-      // Transition swapchain image to TransferDstOptimal
-      TransitionImageLayout(*m_commandBuffer, m_swapchainImages[imageIdx],
-                            vk::ImageLayout::eUndefined,
-                            vk::ImageLayout::eTransferDstOptimal, colorRange);
+    // Transition swapchain image to TransferDstOptimal
+    TransitionImageLayout(*m_commandBuffer, m_swapchainImages[imageIdx],
+                          vk::ImageLayout::eUndefined,
+                          vk::ImageLayout::eTransferDstOptimal, colorRange);
 
-      // Transition offscreen image to TransferSrcOptimal
-      TransitionImageLayout(*m_commandBuffer, m_headlessImages[activeIdx].get(),
+    // Transition offscreen source image to TransferSrcOptimal (when gamma was
+    // applied, m_gammaResolvedImages[slot] already ended its render pass in
+    // eTransferSrcOptimal).
+    if (!gammaApplied) {
+      TransitionImageLayout(*m_commandBuffer, presentSrcImage,
                             vk::ImageLayout::eColorAttachmentOptimal,
                             vk::ImageLayout::eTransferSrcOptimal, colorRange);
+    }
 
-      const bool needsBars =
-          (dst.x > 0 || dst.y > 0 || dst.width < m_swapchainExtent.width ||
-           dst.height < m_swapchainExtent.height);
-      if (needsBars) {
-        vk::ClearColorValue blackClear(
-            std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f});
-        m_commandBuffer->clearColorImage(m_swapchainImages[imageIdx],
-                                         vk::ImageLayout::eTransferDstOptimal,
-                                         &blackClear, 1, &colorRange);
+    const bool needsBars =
+        (dst.x > 0 || dst.y > 0 || dst.width < m_swapchainExtent.width ||
+         dst.height < m_swapchainExtent.height);
+    if (needsBars) {
+      vk::ClearColorValue blackClear(
+          std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f});
+      m_commandBuffer->clearColorImage(m_swapchainImages[imageIdx],
+                                       vk::ImageLayout::eTransferDstOptimal,
+                                       &blackClear, 1, &colorRange);
 
-        vk::ImageMemoryBarrier clearToBlitBarrier;
-        clearToBlitBarrier.oldLayout = vk::ImageLayout::eTransferDstOptimal;
-        clearToBlitBarrier.newLayout = vk::ImageLayout::eTransferDstOptimal;
-        clearToBlitBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        clearToBlitBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        clearToBlitBarrier.image = m_swapchainImages[imageIdx];
-        clearToBlitBarrier.subresourceRange = colorRange;
-        clearToBlitBarrier.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
-        clearToBlitBarrier.dstAccessMask = vk::AccessFlagBits::eTransferWrite;
-        m_commandBuffer->pipelineBarrier(
-            vk::PipelineStageFlagBits::eTransfer,
-            vk::PipelineStageFlagBits::eTransfer, {}, 0, nullptr, 0, nullptr, 1,
-            &clearToBlitBarrier);
-      }
+      vk::ImageMemoryBarrier clearToBlitBarrier;
+      clearToBlitBarrier.oldLayout = vk::ImageLayout::eTransferDstOptimal;
+      clearToBlitBarrier.newLayout = vk::ImageLayout::eTransferDstOptimal;
+      clearToBlitBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+      clearToBlitBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+      clearToBlitBarrier.image = m_swapchainImages[imageIdx];
+      clearToBlitBarrier.subresourceRange = colorRange;
+      clearToBlitBarrier.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
+      clearToBlitBarrier.dstAccessMask = vk::AccessFlagBits::eTransferWrite;
+      m_commandBuffer->pipelineBarrier(
+          vk::PipelineStageFlagBits::eTransfer,
+          vk::PipelineStageFlagBits::eTransfer, {}, 0, nullptr, 0, nullptr, 1,
+          &clearToBlitBarrier);
+    }
 
-      // Blit offscreen guest framebuffer into the centered destination rect
-      if (dst.width > 0 && dst.height > 0) {
-        vk::ImageBlit blitRegion;
-        blitRegion.srcSubresource =
-            vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
-        blitRegion.srcOffsets[0] = vk::Offset3D(0, 0, 0);
-        blitRegion.srcOffsets[1] =
-            vk::Offset3D(static_cast<int32_t>(m_headlessWidth),
-                         static_cast<int32_t>(m_headlessHeight), 1);
-        blitRegion.dstSubresource =
-            vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
-        blitRegion.dstOffsets[0] = vk::Offset3D(dst.x, dst.y, 0);
-        blitRegion.dstOffsets[1] =
-            vk::Offset3D(dst.x + static_cast<int32_t>(dst.width),
-                         dst.y + static_cast<int32_t>(dst.height), 1);
+    // Blit offscreen guest framebuffer into the centered destination rect
+    if (dst.width > 0 && dst.height > 0) {
+      vk::ImageBlit blitRegion;
+      blitRegion.srcSubresource =
+          vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
+      blitRegion.srcOffsets[0] = vk::Offset3D(0, 0, 0);
+      blitRegion.srcOffsets[1] =
+          vk::Offset3D(static_cast<int32_t>(m_headlessWidth),
+                       static_cast<int32_t>(m_headlessHeight), 1);
+      blitRegion.dstSubresource =
+          vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
+      blitRegion.dstOffsets[0] = vk::Offset3D(dst.x, dst.y, 0);
+      blitRegion.dstOffsets[1] =
+          vk::Offset3D(dst.x + static_cast<int32_t>(dst.width),
+                       dst.y + static_cast<int32_t>(dst.height), 1);
 
-        m_commandBuffer->blitImage(
-            m_headlessImages[activeIdx].get(),
-            vk::ImageLayout::eTransferSrcOptimal, m_swapchainImages[imageIdx],
-            vk::ImageLayout::eTransferDstOptimal, 1, &blitRegion,
-            vk::Filter::eLinear);
-      }
+      m_commandBuffer->blitImage(
+          presentSrcImage, vk::ImageLayout::eTransferSrcOptimal,
+          m_swapchainImages[imageIdx], vk::ImageLayout::eTransferDstOptimal, 1,
+          &blitRegion, vk::Filter::eLinear);
+    }
 
-      // Transition offscreen image back to ColorAttachmentOptimal
-      TransitionImageLayout(*m_commandBuffer, m_headlessImages[activeIdx].get(),
+    // Transition offscreen guest framebuffer back to ColorAttachmentOptimal
+    if (!gammaApplied) {
+      TransitionImageLayout(*m_commandBuffer, presentSrcImage,
                             vk::ImageLayout::eTransferSrcOptimal,
                             vk::ImageLayout::eColorAttachmentOptimal,
                             colorRange);
@@ -1906,7 +2005,14 @@ bool VulkanBackend::SwapBuffers() {
     vk::SubmitInfo submitInfo(1, waitSemaphores, waitStages, submitCmdCount,
                               submitCmds, 1, signalSemaphores);
 
-    m_graphicsQueue.submit(submitInfo, m_fences[m_currentFrameSlot].get());
+    try {
+      m_graphicsQueue.submit(submitInfo, m_fences[m_currentFrameSlot].get());
+    } catch (const vk::SystemError& e) {
+      GLIDE_LOG(CRITICAL, "Vulkan",
+                "vkQueueSubmit failed with Vulkan error: " << e.what());
+      Logger::GetInstance().Flush();
+      return false;
+    }
 
     vk::SwapchainKHR swapchains[] = {m_swapchain.get()};
     uint32_t indices[] = {imageIdx};
@@ -1918,15 +2024,34 @@ bool VulkanBackend::SwapBuffers() {
       presentRes = m_graphicsQueue.presentKHR(presentInfo);
     } catch (const vk::OutOfDateKHRError&) {
       presentRes = vk::Result::eErrorOutOfDateKHR;
+    } catch (const vk::SurfaceLostKHRError&) {
+      presentRes = vk::Result::eErrorSurfaceLostKHR;
+    } catch (const vk::SystemError& e) {
+      GLIDE_LOG(CRITICAL, "Vulkan",
+                "vkQueuePresentKHR failed with Vulkan error: " << e.what());
+      Logger::GetInstance().Flush();
+      return false;
     }
 
     if (presentRes == vk::Result::eErrorOutOfDateKHR ||
-        presentRes == vk::Result::eSuboptimalKHR) {
+        presentRes == vk::Result::eSuboptimalKHR ||
+        presentRes == vk::Result::eErrorSurfaceLostKHR) {
       uint32_t hostW = 0;
       uint32_t hostH = 0;
-      m_surfaceHost.SyncBounds(hostW, hostH);
-      if (hostW > 0 && hostH > 0) {
-        RecreateSwapchain(hostW, hostH);
+      {
+        ScopedMutexUnlock unlock(lock);
+        m_surfaceHost.SyncBounds(hostW, hostH);
+      }
+      if (!m_initialized || !m_windowAttached) return false;
+      if (!m_passthruSuspended && hostW > 0 && hostH > 0) {
+        if (presentRes == vk::Result::eErrorSurfaceLostKHR) {
+          RecreateSurfaceAndSwapchain_Locked(hostW, hostH);
+        } else if (m_surface) {
+          RecreateSwapchain(hostW, hostH);
+        }
+      } else if (presentRes == vk::Result::eErrorSurfaceLostKHR) {
+        DestroySwapchain_Locked();
+        m_surface.reset();
       }
     } else if (presentRes != vk::Result::eSuccess) {
       GLIDE_LOG(
@@ -2185,6 +2310,7 @@ bool VulkanBackend::SelectPhysicalDevice() {
   }
   m_physicalDevice = bestDevice;
   vk::PhysicalDeviceProperties props = m_physicalDevice.getProperties();
+  m_isCpuVulkanDevice = (props.deviceType == vk::PhysicalDeviceType::eCpu);
 
   std::ostringstream logStream;
   logStream << "\n--- Active Vulkan Execution Adapter ---\n"
@@ -2195,6 +2321,16 @@ bool VulkanBackend::SelectPhysicalDevice() {
             << "    Dev Type  : " << vk::to_string(props.deviceType) << "\n"
             << "----------------------------------------";
   GLIDE_LOG(DEBUG, "Vulkan", logStream.str());
+
+  if (m_isCpuVulkanDevice && sizeof(void*) <= 4) {
+    GLIDE_LOG(INFO, "Vulkan",
+              "32-bit CPU Vulkan adapter detected ("
+                  << props.deviceName.data()
+                  << "): using lean staging/vertex buffers to preserve 32-bit "
+                     "VA space (hint: set LP_NUM_THREADS=4 or "
+                     "backend=software if a high-core-count host runs low on "
+                     "32-bit memory).");
+  }
 
   return true;
 }

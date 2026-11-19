@@ -18,7 +18,7 @@ The root [`VERSION`](../../VERSION) file contains the canonical bare SemVer stri
 | :--- | :--- |
 | **CMake** (`CMakeLists.txt`) | Reads `VERSION` (registered in `CMAKE_CONFIGURE_DEPENDS`), parses `MAJOR.MINOR.PATCH` and optional `-PRERELEASE`, and sets `project(glide-ng VERSION ...)`. |
 | **C++ Core & Logs** (`tools/gen_version_header.cmake` → `build_version.h`) | Emits `GLIDE_VERSION_MAJOR`, `GLIDE_VERSION_MINOR`, `GLIDE_VERSION_PATCH`, `GLIDE_VERSION_PRERELEASE`, `GLIDE_VERSION_BASE`, and tag-aware `GLIDE_VERSION_STRING` (`WRAPPER_VERSION` in `WrapperConfig.h`). |
-| **Win32 PE DLL Metadata** (`src/glide2/glide2x.rc.in`, `src/glide3/glide3x.rc.in`) | Configures Win32 `VS_VERSION_INFO` resources (`FILEVERSION`, `PRODUCTVERSION`, `FileVersion`, `ProductVersion`) compiled into `glide2x.dll` and `glide3x.dll` by `windres`. |
+| **Win32 PE DLL Metadata** (`src/glide211/glide.rc.in`, `src/glide2/glide2x.rc.in`, `src/glide3/glide3x.rc.in`) | Configures Win32 `VS_VERSION_INFO` resources (`FILEVERSION`, `PRODUCTVERSION`, `FileVersion`, `ProductVersion`) compiled into `glide.dll`, `glide2x.dll`, and `glide3x.dll` by `windres`. |
 | **Automated Verification** (`tests/test_glide3.cpp`) | `[M13][Version]` asserts that `VERSION`, `GLIDE_VERSION_BASE`, `WRAPPER_VERSION`, and numeric macros match. |
 
 ### Tag-Aware Build Strings (`GLIDE_VERSION_STRING`)
