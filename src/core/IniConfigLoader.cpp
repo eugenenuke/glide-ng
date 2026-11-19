@@ -784,6 +784,12 @@ bool IniConfigLoader::LoadWithDefaults(const std::string& configFilePath,
                     outConfig.windowScale = static_cast<uint32_t>(intVal);
                     outConfig.settingSources["windowScale"] = "ini";
                 }
+            } else if (SectionMatches(sec, "display") && key == "fullscreen") {
+                handled = true;
+                if (ParseBoolString(val, boolVal)) {
+                    outConfig.fullscreen = boolVal;
+                    outConfig.settingSources["fullscreen"] = "ini";
+                }
             } else if (SectionMatches(sec, "display") && key == "presentation_filter") {
                 handled = true;
                 if (ParsePresentationFilterString(val, outConfig.presentationFilter)) {
@@ -1355,6 +1361,14 @@ bool IniConfigLoader::LoadWithDefaults(const std::string& configFilePath,
         if (ParseIntString(envVal, v) && v >= 1 && v <= 8) {
             outConfig.windowScale = static_cast<uint32_t>(v);
             outConfig.settingSources["windowScale"] = GLIDE_NG_ENV_WINDOW_SCALE;
+        }
+    }
+
+    if (const char* envVal = GetNonEmptyEnv(GLIDE_NG_ENV_FULLSCREEN)) {
+        bool b = false;
+        if (ParseBoolString(envVal, b)) {
+            outConfig.fullscreen = b;
+            outConfig.settingSources["fullscreen"] = GLIDE_NG_ENV_FULLSCREEN;
         }
     }
 

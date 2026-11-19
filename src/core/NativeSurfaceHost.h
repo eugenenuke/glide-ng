@@ -88,10 +88,15 @@ class NativeSurfaceHost {
    *     `StandaloneSDL2` mode.
    * @param windowScale Integer scale factor (1..8) for initial `StandaloneSDL2`
    *     window dimensions.
+   * @param fullscreen If true, requests borderless desktop fullscreen in
+   *     `StandaloneSDL2` / `Win32Window` modes, or strips window chrome and
+   *     expands the attached host `HWND` to cover its monitor in
+   *     `Win32Embedded` mode (aspect-preserving 4:3 pillarbox/letterbox).
    */
   bool Attach(void* hostHandle, uint32_t guestW, uint32_t guestH, bool windowed,
               bool forceNoWindow, const std::string& title,
-              uint32_t extraSdlWindowFlags = 0, uint32_t windowScale = 1);
+              uint32_t extraSdlWindowFlags = 0, uint32_t windowScale = 1,
+              bool fullscreen = false);
 
   /**
    * @brief Destroys our owned surface/child window and resets state.
@@ -177,6 +182,8 @@ class NativeSurfaceHost {
   bool AttachWin32Standalone(uint32_t guestW, uint32_t guestH,
                              const std::string& title, uint32_t windowScale);
   bool AttachWin32Embedded(void* parentHwnd);
+  bool ApplyWin32EmbeddedFullscreenIfNeeded();
+  void RestoreWin32EmbeddedFullscreenIfSaved();
   void QueryStandaloneDrawableSize(uint32_t& outW, uint32_t& outH) const;
 
   Mode m_mode = Mode::Detached;
@@ -185,6 +192,7 @@ class NativeSurfaceHost {
   uint32_t m_pixelWidth = 0;
   uint32_t m_pixelHeight = 0;
   bool m_quitRequested = false;
+  bool m_fullscreen = false;
 
   // StandaloneSDL2 state
   SDL_Window* m_sdlWindow = nullptr;
@@ -212,6 +220,11 @@ class NativeSurfaceHost {
   void* m_win32ParentHwnd = nullptr;
   void* m_win32Hwnd = nullptr;
   bool m_win32OwnsHwnd = false;
+  bool m_win32FullscreenSaved = false;
+  bool m_inWin32FullscreenAdjust = false;
+  intptr_t m_win32SavedStyle = 0;
+  intptr_t m_win32SavedExStyle = 0;
+  int32_t m_win32SavedRect[4] = {0, 0, 0, 0};
 };
 
 }  // namespace GlideWrapper

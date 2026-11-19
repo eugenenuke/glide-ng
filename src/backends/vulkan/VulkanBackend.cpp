@@ -49,6 +49,20 @@ VULKAN_HPP_DEFAULT_DISPATCH_LOADER_DYNAMIC_STORAGE
 
 namespace GlideWrapper {
 
+namespace {
+// Temporarily releases m_mutex across NativeSurfaceHost calls that may
+// synchronously invoke a foreign Win32 WndProc (e.g. SetWindowPos triggering
+// WM_ACTIVATE / WM_SIZE -> grSstPassthruMode()) so re-entrant Glide calls
+// cannot self-deadlock on m_mutex.
+struct ScopedMutexUnlock {
+  std::unique_lock<std::mutex>& lock;
+  explicit ScopedMutexUnlock(std::unique_lock<std::mutex>& l) : lock(l) {
+    lock.unlock();
+  }
+  ~ScopedMutexUnlock() { lock.lock(); }
+};
+}  // namespace
+
 #if defined(_WIN32)
 namespace {
 PFN_vkGetInstanceProcAddr LoadWin32VulkanProcAddr() {
@@ -358,7 +372,7 @@ bool VulkanBackend::Initialize(const WrapperConfig& config) {
 }
 
 void VulkanBackend::Shutdown() {
-  std::lock_guard<std::mutex> lock(m_mutex);
+  std::unique_lock<std::mutex> lock(m_mutex);
   if (!m_initialized) return;
 
   GLIDE_LOG(INFO, "Vulkan", "Shutting down Hybrid Vulkan context.");
@@ -368,7 +382,7 @@ void VulkanBackend::Shutdown() {
   if (m_device) {
     m_device->waitIdle();
   }
-  DetachWindow_Locked();
+  DetachWindow_Locked(lock);
   DestroyHudResources_Locked();
   DestroyGammaPresentResources_Locked();
   DestroyLfbOverlayResources_Locked();
@@ -525,9 +539,9 @@ void VulkanBackend::ResetState_Locked() {
 
 bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
                                  uint32_t height, bool windowed) {
-  std::lock_guard<std::mutex> lock(m_mutex);
+  std::unique_lock<std::mutex> lock(m_mutex);
   if (!m_initialized) return false;
-  if (m_windowAttached) DetachWindow_Locked();
+  if (m_windowAttached) DetachWindow_Locked(lock);
 
   GLIDE_LOG(INFO, "Vulkan",
             "Attaching Hybrid Vulkan window ("
@@ -740,10 +754,15 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
 #else
   const uint32_t extraHostFlags = SDL_WINDOW_VULKAN;
 #endif
-  if (!m_surfaceHost.Attach(nativeWindowHandle, width, height, windowed,
-                            m_config.forceNoWindow,
-                            "3dfx glide-ng Presentation Console (Vulkan)",
-                            extraHostFlags, m_config.windowScale)) {
+  bool hostAttached = false;
+  {
+    ScopedMutexUnlock unlock(lock);
+    hostAttached = m_surfaceHost.Attach(
+        nativeWindowHandle, width, height, windowed, m_config.forceNoWindow,
+        "3dfx glide-ng Presentation Console (Vulkan)", extraHostFlags,
+        m_config.windowScale, m_config.fullscreen);
+  }
+  if (!hostAttached) {
     GLIDE_LOG(CRITICAL, "Vulkan",
               "Failed to attach NativeSurfaceHost for Vulkan presentation.");
     return false;
@@ -752,6 +771,7 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
   // Create Vulkan WSI surface and swapchain when not in Headless mode.
   if (m_surfaceHost.GetMode() != NativeSurfaceHost::Mode::Headless) {
     if (!CreatePresentationSurface()) {
+      ScopedMutexUnlock unlock(lock);
       m_surfaceHost.Detach();
       return false;
     }
@@ -767,7 +787,10 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
     if (!CreateSwapchain(surfW, surfH)) {
       GLIDE_LOG(CRITICAL, "Vulkan", "Failed to create Vulkan swapchain!");
       m_surface.reset();
-      m_surfaceHost.Detach();
+      {
+        ScopedMutexUnlock unlock(lock);
+        m_surfaceHost.Detach();
+      }
       return false;
     }
   }
@@ -850,12 +873,16 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
 }
 
 void VulkanBackend::DetachWindow() {
-  std::lock_guard<std::mutex> lock(m_mutex);
-  DetachWindow_Locked();
+  std::unique_lock<std::mutex> lock(m_mutex);
+  DetachWindow_Locked(lock);
 }
 
-void VulkanBackend::DetachWindow_Locked() {
+void VulkanBackend::DetachWindow_Locked(std::unique_lock<std::mutex>& lock) {
   if (!m_windowAttached) return;
+  // Clear m_windowAttached up front so any synchronous Win32 WndProc callback
+  // (e.g. SetWindowPos inside m_surfaceHost.Detach() triggering
+  // grSstPassthruMode) treats the window as detached and never rebuilds WSI.
+  m_windowAttached = false;
   GLIDE_LOG(INFO, "Vulkan", "Detaching Hybrid Vulkan window resources.");
 
   // Strict WSI teardown order:
@@ -897,7 +924,10 @@ void VulkanBackend::DetachWindow_Locked() {
   m_cachedDescSet = vk::DescriptorSet{};
   m_hudOverlay.Reset();
   m_surface.reset();
-  m_surfaceHost.Detach();
+  {
+    ScopedMutexUnlock unlock(lock);
+    m_surfaceHost.Detach();
+  }
   m_passthruSuspended = false;
 
   // Phase 2: Unmap and reset vertex buffer
@@ -1359,7 +1389,7 @@ void VulkanBackend::RecreateSurfaceAndSwapchain_Locked(uint32_t width,
 }
 
 void VulkanBackend::SetPassthruMode(bool show3dfx) {
-  std::lock_guard<std::mutex> lock(m_mutex);
+  std::unique_lock<std::mutex> lock(m_mutex);
   if (!m_windowAttached || !m_device ||
       m_surfaceHost.GetMode() != NativeSurfaceHost::Mode::Win32Embedded) {
     return;
@@ -1379,7 +1409,13 @@ void VulkanBackend::SetPassthruMode(bool show3dfx) {
       m_passthruSuspended = false;
       uint32_t hostW = 0;
       uint32_t hostH = 0;
-      m_surfaceHost.SyncBounds(hostW, hostH);
+      {
+        ScopedMutexUnlock unlock(lock);
+        m_surfaceHost.SyncBounds(hostW, hostH);
+      }
+      if (!m_windowAttached || !m_device || m_passthruSuspended || m_surface) {
+        return;
+      }
       if (hostW > 0 && hostH > 0) {
         RecreateSurfaceAndSwapchain_Locked(hostW, hostH);
       }
@@ -1769,7 +1805,7 @@ bool VulkanBackend::SwapBuffers() {
   if (m_surfaceHost.IsStandaloneMode() && m_surfaceHost.WasQuitRequested()) {
     GLIDE_LOG(INFO, "Vulkan",
               "Standalone window close requested; exiting cleanly.");
-    DetachWindow_Locked();
+    DetachWindow_Locked(lock);
     lock.unlock();
     std::exit(0);
   }
@@ -1781,18 +1817,29 @@ bool VulkanBackend::SwapBuffers() {
   if (m_surface) {
     uint32_t hostW = 0;
     uint32_t hostH = 0;
-    bool sizeChanged = m_surfaceHost.SyncBounds(hostW, hostH);
-    if (sizeChanged && hostW > 0 && hostH > 0) {
-      RecreateSwapchain(hostW, hostH);
-    } else if (!m_swapchain && hostW > 0 && hostH > 0) {
-      CreateSwapchain(hostW, hostH);
+    bool sizeChanged = false;
+    {
+      ScopedMutexUnlock unlock(lock);
+      sizeChanged = m_surfaceHost.SyncBounds(hostW, hostH);
+    }
+    if (!m_initialized || !m_windowAttached) return false;
+    if (m_surface) {
+      if (sizeChanged && hostW > 0 && hostH > 0) {
+        RecreateSwapchain(hostW, hostH);
+      } else if (!m_swapchain && hostW > 0 && hostH > 0) {
+        CreateSwapchain(hostW, hostH);
+      }
     }
   } else if (!m_passthruSuspended && m_surfaceHost.IsAttached() &&
              m_surfaceHost.GetMode() != NativeSurfaceHost::Mode::Headless) {
     uint32_t hostW = 0;
     uint32_t hostH = 0;
-    m_surfaceHost.SyncBounds(hostW, hostH);
-    if (hostW > 0 && hostH > 0) {
+    {
+      ScopedMutexUnlock unlock(lock);
+      m_surfaceHost.SyncBounds(hostW, hostH);
+    }
+    if (!m_initialized || !m_windowAttached) return false;
+    if (!m_passthruSuspended && !m_surface && hostW > 0 && hostH > 0) {
       RecreateSurfaceAndSwapchain_Locked(hostW, hostH);
     }
   }
@@ -1854,11 +1901,15 @@ bool VulkanBackend::SwapBuffers() {
       SubmitPendingUploadsAndWaitIdle_Locked();
       uint32_t hostW = 0;
       uint32_t hostH = 0;
-      m_surfaceHost.SyncBounds(hostW, hostH);
-      if (hostW > 0 && hostH > 0) {
+      {
+        ScopedMutexUnlock unlock(lock);
+        m_surfaceHost.SyncBounds(hostW, hostH);
+      }
+      if (!m_initialized || !m_windowAttached) return false;
+      if (!m_passthruSuspended && hostW > 0 && hostH > 0) {
         if (acquireRes == vk::Result::eErrorSurfaceLostKHR) {
           RecreateSurfaceAndSwapchain_Locked(hostW, hostH);
-        } else {
+        } else if (m_surface) {
           RecreateSwapchain(hostW, hostH);
         }
       } else if (acquireRes == vk::Result::eErrorSurfaceLostKHR) {
@@ -2023,11 +2074,15 @@ bool VulkanBackend::SwapBuffers() {
         presentRes == vk::Result::eErrorSurfaceLostKHR) {
       uint32_t hostW = 0;
       uint32_t hostH = 0;
-      m_surfaceHost.SyncBounds(hostW, hostH);
-      if (hostW > 0 && hostH > 0) {
+      {
+        ScopedMutexUnlock unlock(lock);
+        m_surfaceHost.SyncBounds(hostW, hostH);
+      }
+      if (!m_initialized || !m_windowAttached) return false;
+      if (!m_passthruSuspended && hostW > 0 && hostH > 0) {
         if (presentRes == vk::Result::eErrorSurfaceLostKHR) {
           RecreateSurfaceAndSwapchain_Locked(hostW, hostH);
-        } else {
+        } else if (m_surface) {
           RecreateSwapchain(hostW, hostH);
         }
       } else if (presentRes == vk::Result::eErrorSurfaceLostKHR) {

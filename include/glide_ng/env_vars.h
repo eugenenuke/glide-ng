@@ -25,6 +25,7 @@
 #define GLIDE_NG_ENV_VSYNC               "GLIDE_NG_VSYNC"
 #define GLIDE_NG_ENV_MAX_FPS             "GLIDE_NG_MAX_FPS"
 #define GLIDE_NG_ENV_WINDOW_SCALE        "GLIDE_NG_WINDOW_SCALE"
+#define GLIDE_NG_ENV_FULLSCREEN          "GLIDE_NG_FULLSCREEN"
 #define GLIDE_NG_ENV_MSAA                "GLIDE_NG_MSAA"
 #define GLIDE_NG_ENV_PRESENTATION_FILTER "GLIDE_NG_PRESENTATION_FILTER"
 #define GLIDE_NG_ENV_NO_SPLASH           "GLIDE_NG_NO_SPLASH"
@@ -83,6 +84,7 @@
   X(VSYNC,               GLIDE_NG_ENV_VSYNC,               "display.vsync",            "display")   \
   X(MAX_FPS,             GLIDE_NG_ENV_MAX_FPS,             "display.max_fps",          "display")   \
   X(WINDOW_SCALE,        GLIDE_NG_ENV_WINDOW_SCALE,        "display.window_scale",     "display")   \
+  X(FULLSCREEN,          GLIDE_NG_ENV_FULLSCREEN,          "display.fullscreen",       "display")   \
   X(MSAA,                GLIDE_NG_ENV_MSAA,                "display.msaa",             "display")   \
   X(PRESENTATION_FILTER, GLIDE_NG_ENV_PRESENTATION_FILTER, "display.presentation_filter", "display") \
   X(NO_SPLASH,           GLIDE_NG_ENV_NO_SPLASH,           "glide.no_splash",          "glide")     \

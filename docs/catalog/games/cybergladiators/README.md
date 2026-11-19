@@ -81,18 +81,25 @@ WINEDLLOVERRIDES="glide=n" GLIDE_NG_BACKEND=software GLIDE_NG_SW_AA=ssaa \
 
 Renders the full 3D arena with `2×2 SSAA` at a locked **60.0 FPS** on modern AVX2/AVX-512 CPUs with zero GPU or Vulkan ICD required.
 
-### Playing Fullscreen (Wine vs. `gamescope`)
+### Playing Fullscreen (`GLIDE_NG_FULLSCREEN` vs. `gamescope` vs. Direct Wine)
 
-`CYBER.EXE` has **no** command-line fullscreen flag and explicitly disables `Alt + Enter` when Glide (`GLIDE.DLL`) is active (on real 1996 Voodoo1 hardware, the pass-through card always took over the monitor at `640×480` while Windows kept a fixed `640×480` window). Running inside `wine explorer /desktop=...` therefore stays windowed (and enlarging the virtual desktop only enlarges the background around the fixed `640×480` game window).
+`CYBER.EXE` has **no** command-line fullscreen flag and explicitly disables `Alt + Enter` when Glide (`GLIDE.DLL`) is active (on real 1996 Voodoo1 hardware, the pass-through card always took over the monitor at `640×480` while Windows kept a fixed `640×480` window). Running inside `wine explorer /desktop=...` therefore stays windowed by default.
 
-To play fullscreen on Linux:
-- **Without `gamescope` (X11 with a `640×480` RandR mode):** Drop `explorer /desktop=...` and launch `wine ./CYBER.EXE` directly. `CYBER.EXE` calls `ChangeDisplaySettings` (`640×480`) during startup to switch into fullscreen automatically. *(Note: on Wayland, HiDPI laptop panels, or remote/Cloudtop sessions whose display does not advertise a `640×480` mode, `ChangeDisplaySettings` fails and `CYBER.EXE` crashes on startup—use `gamescope` or a Wine virtual desktop instead.)*
-- **With `gamescope` (Recommended on Wayland / HiDPI / multi-monitor Linux):** Advertises a native `640×480` mode to Wine/DirectDraw and upscales cleanly to your monitor with 4:3 pillarboxing:
+Three ways to play fullscreen on Linux:
+- **Built-in `glide-ng` borderless fullscreen (`[display] fullscreen = true` or `GLIDE_NG_FULLSCREEN=1`) — no `gamescope` required:** Strips `CYBER.EXE`'s Win32 titlebar, expands its `HWND` to fill the monitor or Wine virtual desktop, and scales `640×480` with aspect-preserving 4:3 black pillarboxes (even inside `/desktop=CG,640x480` this removes the 22 px titlebar so the bottom `Ctrl+O / Esc` bar is unclipped):
   ```bash
   WINEARCH=win32 WINEPREFIX=/path/to/wineprefix \
-  WINEDLLOVERRIDES="glide=n" \
-    gamescope -w 640 -h 480 -W 1920 -H 1080 -f -- wine ./CYBER.EXE
+  WINEDLLOVERRIDES="glide=n" GLIDE_NG_FULLSCREEN=1 GLIDE_NG_PRESENTATION_FILTER=linear \
+    wine explorer /desktop=CG,1920x1080 ./CYBER.EXE
   ```
+- **With `gamescope` (recommended on Wayland / HiDPI / multi-monitor Linux):** Exposes a native `640×480` nested display to Wine/DirectDraw and upscales with `linear`, `fsr` (AMD FSR 1.0), `nis`, `pixel`, or `integer` scaling:
+  ```bash
+  WINEARCH=win32 WINEPREFIX=/path/to/wineprefix \
+  WINEDLLOVERRIDES="glide=n" GLIDE_NG_FULLSCREEN=1 \
+    gamescope -w 640 -h 480 -W 1920 -H 1080 -r 60 -S fit -F linear --force-windows-fullscreen -f -- \
+      wine ./CYBER.EXE
+  ```
+- **Direct Wine (`wine ./CYBER.EXE`, no `explorer` or `gamescope`):** On X11 hosts whose monitor advertises a `640×480` RandR mode, `CYBER.EXE` switches into `640×480` fullscreen via `ChangeDisplaySettings` automatically. *(On Wayland, HiDPI panels, or remote/Cloudtop sessions without a `640×480` mode, `ChangeDisplaySettings` fails and `CYBER.EXE` crashes on startup—use `GLIDE_NG_FULLSCREEN=1` + `explorer /desktop=...` or `gamescope` instead.)*
 
 ---
 

@@ -44,6 +44,8 @@ vsync = true
 max_fps = 60
 # Integer window scale factor (1..8)
 window_scale = 1
+# Borderless desktop fullscreen override (expands standalone & Win32 host windows with 4:3 pillarbox/letterbox)
+fullscreen = false
 # Presentation scaling filter: nearest | linear
 presentation_filter = nearest
 # Multisample anti-aliasing samples: 1 | 2 | 4 | 8 | 16

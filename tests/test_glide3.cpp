@@ -3452,6 +3452,7 @@ TEST_CASE("IniConfigLoader parses sections/comments and respects env overrides",
   EnvGuard guardMaxFps("GLIDE_NG_MAX_FPS");
   EnvGuard guardMsaa("GLIDE_NG_MSAA");
   EnvGuard guardScale("GLIDE_NG_WINDOW_SCALE");
+  EnvGuard guardFullscreen("GLIDE_NG_FULLSCREEN");
   EnvGuard guardFilter("GLIDE_NG_PRESENTATION_FILTER");
   EnvGuard guardLogLevel("GLIDE_NG_LOG_LEVEL");
   EnvGuard guardConsole("GLIDE_NG_LOG_CONSOLE");
@@ -3497,6 +3498,7 @@ TEST_CASE("IniConfigLoader parses sections/comments and respects env overrides",
           << "max_fps = 120.5\r\n"
           << "msaa = 4\r\n"
           << "window_scale = 2\r\n"
+          << "fullscreen = true\r\n"
           << "\r\n"
           << "[logging]\r\n"
           << "level = 4\r\n"
@@ -3519,6 +3521,7 @@ TEST_CASE("IniConfigLoader parses sections/comments and respects env overrides",
     CHECK(cfg.maxFps == 120.5f);
     CHECK(cfg.msaaSamples == 4u);
     CHECK(cfg.windowScale == 2u);
+    CHECK(cfg.fullscreen == true);
     CHECK(cfg.logLevel == 4u);
     REQUIRE(cfg.unknownConfigKeys.size() == 1u);
     CHECK(cfg.unknownConfigKeys[0] == "unknown_section.bogus_key");
@@ -3549,17 +3552,21 @@ TEST_CASE("IniConfigLoader parses sections/comments and respects env overrides",
     ::setenv("GLIDE_NG_BACKEND", "sw", 1);
     ::setenv("GLIDE_NG_LOG_CONSOLE", "1", 1);
     ::setenv("GLIDE_NG_VSYNC", "0", 1);
+    ::setenv("GLIDE_NG_FULLSCREEN", "0", 1);
 
     GlideWrapper::WrapperConfig envCfg;
     REQUIRE(loader.Load(tmpPath, envCfg));
     CHECK(envCfg.backend == "software");
     CHECK(envCfg.logToConsole == true);
     CHECK(envCfg.vsync == false);
+    CHECK(envCfg.fullscreen == false);
+    CHECK(envCfg.settingSources["fullscreen"] == "GLIDE_NG_FULLSCREEN");
 
     // Clean break: a raw JSON file must NOT be parsed as config.
     ::unsetenv("GLIDE_NG_BACKEND");
     ::unsetenv("GLIDE_NG_LOG_CONSOLE");
     ::unsetenv("GLIDE_NG_VSYNC");
+    ::unsetenv("GLIDE_NG_FULLSCREEN");
     {
       std::ofstream out(tmpPath);
       out << "{ \"backend\": \"software\", \"model\": \"Voodoo3\", \"vsync\": false }\n";

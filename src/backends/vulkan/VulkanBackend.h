@@ -419,7 +419,7 @@ class VulkanBackend : public GlideStateTracker {
   void ResetState_Locked() override;
 
  private:
-  void DetachWindow_Locked();
+  void DetachWindow_Locked(std::unique_lock<std::mutex>& lock);
   void UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
                             const struct VirtualTexture& tex);
   bool CreateInstance();
