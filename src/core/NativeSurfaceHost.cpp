@@ -1063,7 +1063,10 @@ bool NativeSurfaceHost::ApplyWin32EmbeddedFullscreenIfNeeded() {
     return false;
   }
   HWND hwnd = static_cast<HWND>(m_win32ParentHwnd);
-  if (!IsWindow(hwnd)) {
+  if (!IsWindow(hwnd) || !IsWindowVisible(hwnd)) {
+    // Defer fullscreen resizing until the host application actually shows its
+    // window (avoids flashing a premature black fullscreen canvas when titles
+    // call grSstOpen() before ShowWindow() or before an intro AVI).
     return false;
   }
 
@@ -1107,6 +1110,26 @@ bool NativeSurfaceHost::ApplyWin32EmbeddedFullscreenIfNeeded() {
     return false;
   }
 
+  // If the host window manager clamped our previous fullscreen SetWindowPos
+  // (e.g. a top panel or tiling WM) and neither the monitor rect nor the
+  // window's settled rect/style has changed since then, accept the clamped
+  // geometry instead of spamming SetWindowPos on every SwapBuffers() frame.
+  if (!needStyleFix && m_win32FullscreenApplied) {
+    const bool sameMon =
+        (monRc.left == m_win32AppliedMonRect[0] &&
+         monRc.top == m_win32AppliedMonRect[1] &&
+         monRc.right == m_win32AppliedMonRect[2] &&
+         monRc.bottom == m_win32AppliedMonRect[3]);
+    const bool sameSettled =
+        (curRc.left == m_win32SettledRect[0] &&
+         curRc.top == m_win32SettledRect[1] &&
+         curRc.right == m_win32SettledRect[2] &&
+         curRc.bottom == m_win32SettledRect[3]);
+    if (sameMon && sameSettled) {
+      return false;
+    }
+  }
+
   struct ReentrancyGuard {
     bool& flag;
     explicit ReentrancyGuard(bool& f) : flag(f) { flag = true; }
@@ -1129,6 +1152,19 @@ bool NativeSurfaceHost::ApplyWin32EmbeddedFullscreenIfNeeded() {
   // foreign host WndProc while Glide is attaching or swapping.
   SetWindowPos(hwnd, HWND_TOP, monRc.left, monRc.top, monW, monH,
                SWP_FRAMECHANGED | SWP_NOOWNERZORDER | SWP_NOACTIVATE);
+
+  RECT settledRc{};
+  GetWindowRect(hwnd, &settledRc);
+  m_win32AppliedMonRect[0] = static_cast<int32_t>(monRc.left);
+  m_win32AppliedMonRect[1] = static_cast<int32_t>(monRc.top);
+  m_win32AppliedMonRect[2] = static_cast<int32_t>(monRc.right);
+  m_win32AppliedMonRect[3] = static_cast<int32_t>(monRc.bottom);
+  m_win32SettledRect[0] = static_cast<int32_t>(settledRc.left);
+  m_win32SettledRect[1] = static_cast<int32_t>(settledRc.top);
+  m_win32SettledRect[2] = static_cast<int32_t>(settledRc.right);
+  m_win32SettledRect[3] = static_cast<int32_t>(settledRc.bottom);
+  m_win32FullscreenApplied = true;
+
   GLIDE_LOG(INFO, "WSI",
             "NativeSurfaceHost: enforced borderless fullscreen on Win32 "
             "HWND "
@@ -1689,11 +1725,16 @@ void NativeSurfaceHost::Detach() {
   m_win32Hwnd = nullptr;
   m_win32OwnsHwnd = false;
   m_win32FullscreenSaved = false;
+  m_win32FullscreenApplied = false;
   m_inWin32FullscreenAdjust = false;
   m_win32SavedStyle = 0;
   m_win32SavedExStyle = 0;
   m_win32SavedRect[0] = m_win32SavedRect[1] = m_win32SavedRect[2] =
       m_win32SavedRect[3] = 0;
+  m_win32AppliedMonRect[0] = m_win32AppliedMonRect[1] =
+      m_win32AppliedMonRect[2] = m_win32AppliedMonRect[3] = 0;
+  m_win32SettledRect[0] = m_win32SettledRect[1] = m_win32SettledRect[2] =
+      m_win32SettledRect[3] = 0;
 
   m_mode = Mode::Detached;
   m_guestWidth = 0;

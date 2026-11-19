@@ -221,10 +221,13 @@ class NativeSurfaceHost {
   void* m_win32Hwnd = nullptr;
   bool m_win32OwnsHwnd = false;
   bool m_win32FullscreenSaved = false;
+  bool m_win32FullscreenApplied = false;
   bool m_inWin32FullscreenAdjust = false;
   intptr_t m_win32SavedStyle = 0;
   intptr_t m_win32SavedExStyle = 0;
   int32_t m_win32SavedRect[4] = {0, 0, 0, 0};
+  int32_t m_win32AppliedMonRect[4] = {0, 0, 0, 0};
+  int32_t m_win32SettledRect[4] = {0, 0, 0, 0};
 };
 
 }  // namespace GlideWrapper

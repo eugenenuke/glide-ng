@@ -589,94 +589,7 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
     return false;
   }
 
-  // Pipeline Pre-warming (Warming the cache to prevent mid-frame shader
-  // compilation stutters on hardware GPUs. Skip on CPU software Vulkan
-  // adapters such as Mesa llvmpipe, where speculative LLVM JIT compilation
-  // wastes startup time and 32-bit virtual address space on unused pipelines.)
-  if (m_isCpuVulkanDevice) {
-    GLIDE_LOG(INFO, "Vulkan",
-              "Skipping speculative pipeline pre-warming on CPU Vulkan "
-              "adapter; pipelines will compile on demand.");
-  } else {
-    GLIDE_LOG(
-        INFO, "Vulkan",
-        "Pre-warming Vulkan pipeline cache with common rendering states...");
-    std::vector<PipelineStateKey> warmStates;
-    const uint32_t warmSampleMask =
-        (m_msaaSamples > 1)
-            ? ((m_msaaSamples >= 32) ? 0xFFFFFFFFu : ((1u << m_msaaSamples) - 1u))
-            : 1u;
-
-    // State 1: Default opaque 3D rendering (both lower-left and upper-left
-    // origins, cull negative and disabled) Warm 4 pipelines for common 3D
-    // rendering
-    for (uint32_t origin : {0u, 1u}) {
-      for (uint32_t cull : {0u, 1u}) {
-        PipelineStateKey k{};
-        k.cullMode = cull;
-        k.sstOrigin = origin;
-        k.depthMode = 1;  // Enabled
-        k.depthMask = true;
-        k.depthCompareOp = 3;  // LessEqual
-        k.rgbSrcBlend = 4;     // GR_BLEND_ONE
-        k.rgbDstBlend = 0;     // GR_BLEND_ZERO
-        k.alphaSrcBlend = 4;   // GR_BLEND_ONE
-        k.alphaDstBlend = 0;   // GR_BLEND_ZERO
-        k.colorWriteMask = 0xFu;
-        k.singleSample = false;
-        k.sampleMask = warmSampleMask;
-        warmStates.push_back(k);
-      }
-    }
-
-    // State 2: Standard Translucent Text/UI (e.g. tlConRender - 2 pipelines)
-    // Note: Separate Alpha factors (RGB: SrcAlpha/OneMinusSrcAlpha, Alpha:
-    // One/Zero)
-    for (uint32_t origin : {0u, 1u}) {
-      PipelineStateKey k{};
-      k.cullMode = 0;  // None
-      k.sstOrigin = origin;
-      k.depthMode = 0;  // Disabled (canonicalized)
-      k.depthMask = false;
-      k.depthCompareOp = 0;
-      k.rgbSrcBlend = 1;    // GR_BLEND_SRC_ALPHA
-      k.rgbDstBlend = 5;    // GR_BLEND_ONE_MINUS_SRC_ALPHA
-      k.alphaSrcBlend = 4;  // GR_BLEND_ONE (separate Alpha factor!)
-      k.alphaDstBlend = 0;  // GR_BLEND_ZERO
-      k.colorWriteMask = 0xFu;
-      k.singleSample = false;
-      k.sampleMask = warmSampleMask;
-      warmStates.push_back(k);
-    }
-
-    // State 3: Opaque 2D Overlays/Backgrounds (2 pipelines)
-    for (uint32_t origin : {0u, 1u}) {
-      PipelineStateKey k{};
-      k.cullMode = 0;  // None
-      k.sstOrigin = origin;
-      k.depthMode = 0;  // Disabled (canonicalized)
-      k.depthMask = false;
-      k.depthCompareOp = 0;
-      k.rgbSrcBlend = 4;    // GR_BLEND_ONE
-      k.rgbDstBlend = 0;    // GR_BLEND_ZERO
-      k.alphaSrcBlend = 4;  // GR_BLEND_ONE
-      k.alphaDstBlend = 0;  // GR_BLEND_ZERO
-      k.colorWriteMask = 0xFu;
-      k.singleSample = false;
-      k.sampleMask = warmSampleMask;
-      warmStates.push_back(k);
-    }
-
-    // Warm all 8 of them for Triangle List topology (which is 99% of drawing)
-    for (const auto& state : warmStates) {
-      GetOrCreatePipeline(state, vk::PrimitiveTopology::eTriangleList);
-    }
-    GLIDE_LOG(
-        INFO, "Vulkan",
-        "Pipeline cache pre-warming completed successfully. Total warmed: "
-            << warmStates.size());
-  }
-
+  // Pipelines compile on demand and persist across runs via .glide-ng-vkcache.bin.
   // Phase 2: Allocate dynamic ring Vertex Buffer (1MB)
   try {
     vk::BufferCreateInfo bufferInfo({}, m_vertexBufferSize,
@@ -2362,10 +2275,10 @@ bool VulkanBackend::SelectPhysicalDevice() {
     GLIDE_LOG(INFO, "Vulkan",
               "32-bit CPU Vulkan adapter detected ("
                   << props.deviceName.data()
-                  << "): using lean staging/vertex buffers and on-demand "
-                     "pipeline compilation to preserve 32-bit VA space "
-                     "(hint: set LP_NUM_THREADS=4 or backend=software if a "
-                     "high-core-count host runs low on 32-bit memory).");
+                  << "): using lean staging/vertex buffers to preserve 32-bit "
+                     "VA space (hint: set LP_NUM_THREADS=4 or "
+                     "backend=software if a high-core-count host runs low on "
+                     "32-bit memory).");
   }
 
   return true;

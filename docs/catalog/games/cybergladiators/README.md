@@ -67,7 +67,7 @@ Copy [`glide-ng.hq.ini`](./glide-ng.hq.ini) as `glide-ng.ini` (or pass `GLIDE_NG
 - **Gamma**: `CYBER.EXE` natively calls `grGammaCorrectionValue(1.6)` at startup, so no INI gamma override is required. If you want a brighter arena, pause during a match (**`Space`**) and press **`\`** to step hardware gamma live (`1.6` → `1.7` → ...).
 
 > **32-Bit Wine + Mesa `llvmpipe` Note:**
-> On hosts without a 32-bit hardware Vulkan ICD, `glide-ng` automatically shrinks its 32-bit Vulkan staging/vertex buffers and skips speculative pipeline pre-warming on CPU adapters (`llvmpipe`) to stay within Wine32's virtual address limit. On very high core-count CPUs (24–64+ cores), if you still encounter 32-bit memory pressure under `llvmpipe`, install your GPU's 32-bit Vulkan ICD, set `LP_NUM_THREADS=4`, or use **Option C (CPU Software `2×2 SSAA`)**.
+> On hosts without a 32-bit hardware Vulkan ICD, `glide-ng` automatically shrinks its 32-bit Vulkan staging/vertex buffers and caps swapchain images on CPU adapters (`llvmpipe`) to stay within Wine32's virtual address limit. On very high core-count CPUs (24–64+ cores), if you still encounter 32-bit memory pressure under `llvmpipe`, install your GPU's 32-bit Vulkan ICD, set `LP_NUM_THREADS=4`, or use **Option C (CPU Software `2×2 SSAA`)**.
 
 ### Option C: CPU Software Rasterizer (`glide-ng.software.ini` — Zero-GPU / `2×2 SSAA`)
 
@@ -86,20 +86,21 @@ Renders the full 3D arena with `2×2 SSAA` at a locked **60.0 FPS** on modern AV
 `CYBER.EXE` has **no** command-line fullscreen flag and explicitly disables `Alt + Enter` when Glide (`GLIDE.DLL`) is active (on real 1996 Voodoo1 hardware, the pass-through card always took over the monitor at `640×480` while Windows kept a fixed `640×480` window). Running inside `wine explorer /desktop=...` therefore stays windowed by default.
 
 Three ways to play fullscreen on Linux:
-- **Built-in `glide-ng` borderless fullscreen (`[display] fullscreen = true` or `GLIDE_NG_FULLSCREEN=1`) — no `gamescope` required:** Strips `CYBER.EXE`'s Win32 titlebar, expands its `HWND` to fill the monitor or Wine virtual desktop, and scales `640×480` with aspect-preserving 4:3 black pillarboxes (even inside `/desktop=CG,640x480` this removes the 22 px titlebar so the bottom `Ctrl+O / Esc` bar is unclipped):
+- **Built-in `glide-ng` borderless fullscreen (`[display] fullscreen = true` or `GLIDE_NG_FULLSCREEN=1`) — no `gamescope` or `explorer` required *(Recommended)*:** Runs `CYBER.EXE` directly so `SPLASH4.AVI` plays fullscreen via DirectDraw with native audio and keyboard focus, then `glide-ng` strips the Win32 titlebar, expands the window to fill the monitor, and scales `640×480` with aspect-preserving 4:3 black pillarboxes:
   ```bash
   WINEARCH=win32 WINEPREFIX=/path/to/wineprefix \
   WINEDLLOVERRIDES="glide=n" GLIDE_NG_FULLSCREEN=1 GLIDE_NG_PRESENTATION_FILTER=linear \
-    wine explorer /desktop=CG,1920x1080 ./CYBER.EXE
+    wine ./CYBER.EXE
   ```
-- **With `gamescope` (recommended on Wayland / HiDPI / multi-monitor Linux):** Exposes a native `640×480` nested display to Wine/DirectDraw and upscales with `linear`, `fsr` (AMD FSR 1.0), `nis`, `pixel`, or `integer` scaling:
+  *(Avoid wrapping fullscreen mode in `wine explorer /desktop=...` on regular X11/Wayland desktops — Wine's virtual desktop shrinks to a `640×480` floating window during `SPLASH4.AVI` and can steal focus/audio. Only use `explorer /desktop=...` on headless displays like `Xvfb` that lack a `640×480` RandR mode.)*
+- **With `gamescope` (hardware DRM GPU required):** Exposes a native `640×480` nested display to Wine/DirectDraw and upscales with `linear`, `fsr` (AMD FSR 1.0), `nis`, `pixel`, or `integer` scaling *(requires a DRM GPU in `/dev/dri` supporting `VK_EXT_physical_device_drm`; will not start on CPU-only `llvmpipe` hosts)*:
   ```bash
   WINEARCH=win32 WINEPREFIX=/path/to/wineprefix \
   WINEDLLOVERRIDES="glide=n" GLIDE_NG_FULLSCREEN=1 \
     gamescope -w 640 -h 480 -W 1920 -H 1080 -r 60 -S fit -F linear --force-windows-fullscreen -f -- \
       wine ./CYBER.EXE
   ```
-- **Direct Wine (`wine ./CYBER.EXE`, no `explorer` or `gamescope`):** On X11 hosts whose monitor advertises a `640×480` RandR mode, `CYBER.EXE` switches into `640×480` fullscreen via `ChangeDisplaySettings` automatically. *(On Wayland, HiDPI panels, or remote/Cloudtop sessions without a `640×480` mode, `ChangeDisplaySettings` fails and `CYBER.EXE` crashes on startup—use `GLIDE_NG_FULLSCREEN=1` + `explorer /desktop=...` or `gamescope` instead.)*
+- **Direct Wine without `GLIDE_NG_FULLSCREEN` (`wine ./CYBER.EXE`):** Plays the DirectDraw intro fullscreen with sound, then drops to `CYBER.EXE`'s native `640×480` window once Glide 3D rendering starts.
 
 ---
 
