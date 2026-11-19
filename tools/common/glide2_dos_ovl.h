@@ -6,9 +6,12 @@
  *   optional grGetString() on Glide 2.x so pure Glide 2.x libraries work too.
  * - On DOS (Open Watcom v2 + CauseWay): includes <glide.h> with
  *   FX_GLIDE_NO_FUNC_PROTO and dynamically loads GLIDE2X.OVL (current dir,
- *   then Z:\GLIDE2X.OVL) via CauseWay cwdll.h. Resolves __stdcall exports
- *   using uppercase _GR...@N first, falling back to mixed-case _gr...@N for
- *   authentic 3dfx hardware GLIDE2X.OVL compatibility.
+ *   then DOS PATH directories, then Z:\GLIDE2X.OVL / Z:\SYSTEM\GLIDE2X.OVL)
+ *   via CauseWay INT 31h AX=FF2Ah + cwdll.h. Supports HLE passthrough OVLs
+ *   (no entry point), authentic 3dfx hardware OVLs (Watcom/DOS4GW cstrtdll
+ *   startup with flat DS + INT 21h AX=25E9h PSP handshake), and native
+ *   CauseWay DLLs. Resolves __stdcall exports using uppercase _GR...@N first,
+ *   falling back to mixed-case _gr...@N for broad OVL compatibility.
  * - On Windows (_WIN32): dynamically loads glide2x.dll (or glide3x.dll) via
  *   LoadLibraryA / GetProcAddress.
  *
@@ -30,6 +33,8 @@
 #  include <glide.h>
 #  if defined(__DOS__) || defined(__MSDOS__)
 #    include <cwdll.h>
+#    include <dos.h>
+#    include <stdlib.h>
 #  else
 #    ifndef WIN32_LEAN_AND_MEAN
 #      define WIN32_LEAN_AND_MEAN
@@ -224,14 +229,144 @@ GLIDE2_OVL_OPTIONAL_FUNCS_X(GLIDE2_DEFINE_PFN_)
 static void* g_g2ovl_handle = NULL;
 static unsigned short g_g2ovl_sel = 0;
 static int g_g2ovl_used_cwdll = 0;
+static char g_g2ovl_loaded_path[260] = "";
+
+/* Invoke a Watcom/DOS4GW cstrtdll entry point (used by authentic 3dfx hardware
+ * GLIDE2X.OVL builds) as a 32-bit near call with flat DS == ES == SS and a
+ * 4-byte-aligned stack. All general-purpose and segment registers are saved
+ * across the call because Watcom DLL startup clobbers EBX/ES/GS.
+ */
+extern void cw_call_watcom_dll_entry(unsigned long entry_eip);
+#pragma aux cw_call_watcom_dll_entry = \
+  "pushad"                             \
+  "push ds"                            \
+  "push es"                            \
+  "push fs"                            \
+  "push gs"                            \
+  "push ebp"                           \
+  "mov ebp, esp"                       \
+  "and esp, -4"                        \
+  "mov dx, ds"                         \
+  "mov es, dx"                         \
+  "call eax"                           \
+  "mov esp, ebp"                       \
+  "pop ebp"                            \
+  "pop gs"                             \
+  "pop fs"                             \
+  "pop es"                             \
+  "pop ds"                             \
+  "popad"                              \
+  parm [eax]                           \
+  modify exact [];
+
+static int cw_selector_base_is_zero(unsigned short sel) {
+  union REGS regs;
+  memset(&regs, 0, sizeof(regs));
+  regs.w.ax = 0x0006U; /* DPMI Get Segment Base Address */
+  regs.w.bx = sel;
+  int386(0x31, &regs, &regs);
+  return (!regs.x.cflag && regs.w.cx == 0 && regs.w.dx == 0);
+}
+
+/* Detect Watcom/DOS4GW cstrtdll startup code at a flat linear entry point:
+ *   - `EB <rel8>` jumping over `"WATCOM..."` to `FB 83 E4 FC` (`sti; and esp, -4`)
+ *   - or direct `FB 83 E4 FC` without the copyright banner.
+ * Native CauseWay cwlib DLLs instead expect DS=ES=module descriptor and RETF.
+ */
+static int cw_is_watcom_cstrtdll(unsigned short entry_cs,
+                                 unsigned long entry_eip) {
+  const unsigned char* ep;
+  if (!entry_cs || !entry_eip || !cw_selector_base_is_zero(entry_cs)) {
+    return 0;
+  }
+  ep = (const unsigned char*)entry_eip;
+  if (ep[0] == 0xEBU) {
+    unsigned int skip = (unsigned int)ep[1];
+    const unsigned char* target = ep + 2 + skip;
+    if ((skip >= 6 && memcmp(ep + 2, "WATCOM", 6) == 0) ||
+        (skip >= 11 && memcmp(ep + 2, "Open Watcom", 11) == 0)) {
+      return 1;
+    }
+    if (target[0] == 0xFBU && target[1] == 0x83U && target[2] == 0xE4U &&
+        target[3] == 0xFCU) {
+      return 1;
+    }
+  }
+  if (ep[0] == 0xFBU && ep[1] == 0x83U && ep[2] == 0xE4U && ep[3] == 0xFCU) {
+    return 1;
+  }
+  return 0;
+}
+
+static void cw_init_watcom_dll(unsigned long entry_eip) {
+  union REGS regs;
+  struct SREGS sregs;
+  unsigned short flat_ds;
+  unsigned short psp_sel;
+  unsigned short old_e9_es = 0;
+  unsigned long old_e9_ebx = 0;
+
+  segread(&sregs);
+  flat_ds = sregs.ds;
+
+  /* Obtain protected-mode DOS PSP selector (CauseWay translates INT 21h/62h) */
+  memset(&regs, 0, sizeof(regs));
+  regs.h.ah = 0x62U;
+  int386(0x21, &regs, &regs);
+  psp_sel = regs.w.bx;
+  if (!psp_sel) {
+    psp_sel = (unsigned short)_psp;
+  }
+
+  /* Save previous protected-mode INT 0xE9 vector */
+  memset(&regs, 0, sizeof(regs));
+  memset(&sregs, 0, sizeof(sregs));
+  segread(&sregs);
+  regs.w.ax = 0x35E9U;
+  int386x(0x21, &regs, &regs, &sregs);
+  old_e9_es = sregs.es;
+  old_e9_ebx = regs.x.ebx;
+
+  /* Publish DOS/4GW Watcom DLL handshake on INT 0xE9:
+   *   ES (via DS)  = DOS PSP selector (first word == 0x20CD)
+   *   EBX (via EDX) = flat 4GB writable data selector
+   */
+  memset(&regs, 0, sizeof(regs));
+  memset(&sregs, 0, sizeof(sregs));
+  segread(&sregs);
+  regs.w.ax = 0x25E9U;
+  regs.x.edx = (unsigned long)flat_ds;
+  sregs.ds = psp_sel;
+  int386x(0x21, &regs, &regs, &sregs);
+
+  /* Run the Watcom DLL C runtime startup (near call, flat DS=ES=SS) */
+  cw_call_watcom_dll_entry(entry_eip);
+
+  /* Restore previous INT 0xE9 vector if one was installed */
+  if (old_e9_es != 0) {
+    memset(&regs, 0, sizeof(regs));
+    memset(&sregs, 0, sizeof(sregs));
+    segread(&sregs);
+    regs.w.ax = 0x25E9U;
+    regs.x.edx = old_e9_ebx;
+    sregs.ds = old_e9_es;
+    int386x(0x21, &regs, &regs, &sregs);
+  }
+}
 
 /* Safe CauseWay LE DLL loader:
- * CauseWay's stock cwdll.lib LoadLibrary() unconditionally executes a far call
- * to the DLL's initial CS:EIP even when the LE header specifies initial EIP=0
- * (no entry point), which is the case for DOSBox/OpenGlide GLIDE2X.OVL.
- * Using CauseWay INT 31h AX=FF2Ah (LoadModule) + AX=FF08h (GetSelDet32) lets
- * us skip the entry-point call when CS:EIP==0, while delegating to standard
- * LoadLibrary() if an authentic 3dfx hardware OVL specifies a real entry point.
+ * 1. Loads and relocates the LE module via CauseWay INT 31h AX=FF2Ah
+ *    (LoadModule) without invoking its entry point.
+ * 2. If entry_cs == 0 (DOSBox/OpenGlide HLE passthrough GLIDE2X.OVL), skips
+ *    entry-point invocation entirely.
+ * 3. If entry_cs:entry_eip points to Watcom/DOS4GW cstrtdll startup (all
+ *    authentic 3dfx hardware GLIDE2X.OVL builds), sets up the INT 21h/25E9h
+ *    PSP + flat-DS handshake and invokes it via a near call with flat DS=ES=SS.
+ *    (CauseWay's stock cwdll.lib LoadLibrary() passes DS=module descriptor and
+ *    expects a RETF CauseWay cwlib entry point, which immediately page-faults
+ *    authentic 3dfx hardware OVLs.)
+ * 4. Otherwise (native CauseWay cwlib DLL), releases the FF2Ah probe and
+ *    delegates to standard CauseWay LoadLibrary().
  */
 static void* cw_safe_load_ovl(const char* path, unsigned short* out_sel,
                               int* out_used_cwdll) {
@@ -240,6 +375,7 @@ static void* cw_safe_load_ovl(const char* path, unsigned short* out_sel,
   unsigned short mod_sel;
   unsigned short entry_cs;
   unsigned long entry_eip;
+  void* mod_handle;
 
   if (out_used_cwdll) *out_used_cwdll = 0;
   if (out_sel) *out_sel = 0;
@@ -258,11 +394,8 @@ static void* cw_safe_load_ovl(const char* path, unsigned short* out_sel,
   entry_cs = regs.w.cx;
   entry_eip = regs.x.edx;
 
-  if (entry_cs != 0) {
-    /* Module has a real DLL entry point (e.g. authentic 3dfx HW OVL):
-     * release probe load and let CauseWay LoadLibrary() run its initializer.
-     */
-    (void)entry_eip;
+  if (entry_cs != 0 && !cw_is_watcom_cstrtdll(entry_cs, entry_eip)) {
+    /* Native CauseWay DLL entry point: release probe load and use LoadLibrary */
     memset(&regs, 0, sizeof(regs));
     regs.w.ax = 0xFF0FU;
     regs.w.bx = mod_sel;
@@ -283,11 +416,17 @@ static void* cw_safe_load_ovl(const char* path, unsigned short* out_sel,
     int386(0x31, &regs, &regs);
     return NULL;
   }
+  mod_handle = (void*)regs.x.edx;
+
+  if (entry_cs != 0) {
+    /* Authentic 3dfx Watcom/DOS4GW OVL: initialize its C runtime safely */
+    cw_init_watcom_dll(entry_eip);
+  }
 
   if (out_sel) {
     *out_sel = mod_sel;
   }
-  return (void*)regs.x.edx;
+  return mod_handle;
 }
 
 static void cw_safe_free_ovl(unsigned short mod_sel) {
@@ -297,6 +436,30 @@ static void cw_safe_free_ovl(unsigned short mod_sel) {
   regs.w.ax = 0xFF0FU;
   regs.w.bx = mod_sel;
   int386(0x31, &regs, &regs);
+}
+
+static int cw_ascii_ieq(const char* a, const char* b) {
+  unsigned char ca, cb;
+  while (*a && *b) {
+    ca = (unsigned char)*a++;
+    cb = (unsigned char)*b++;
+    if (ca >= 'A' && ca <= 'Z') ca = (unsigned char)(ca - 'A' + 'a');
+    if (cb >= 'A' && cb <= 'Z') cb = (unsigned char)(cb - 'A' + 'a');
+    if (ca != cb) return 0;
+  }
+  return (*a == '\0' && *b == '\0');
+}
+
+static int cw_try_add_ovl_candidate(char candidates[][260], int* count,
+                                    int max_count, const char* path) {
+  int i;
+  if (!path || path[0] == '\0' || *count >= max_count) return 0;
+  for (i = 0; i < *count; ++i) {
+    if (cw_ascii_ieq(candidates[i], path)) return 0;
+  }
+  snprintf(candidates[*count], 260, "%s", path);
+  (*count)++;
+  return 1;
 }
 
 static void* gtool_ovl_resolve(void* mod, const char* upper_name,
@@ -335,25 +498,83 @@ int gtool_glide_load(char* source_out, size_t source_sz,
                      char* err_out, size_t err_sz) {
   const char* loaded_from = NULL;
 #if defined(__DOS__) || defined(__MSDOS__)
-  static const char* const kCandidates[] = {
-    "GLIDE2X.OVL",
+  static const char* const kFallbacks[] = {
     "Z:\\GLIDE2X.OVL",
     "Z:\\SYSTEM\\GLIDE2X.OVL",
+    "C:\\WINDOWS\\SYSTEM\\GLIDE2X.OVL",
     NULL
   };
+  char candidates[36][260];
+  int num_candidates = 0;
+  const char* path_env;
   int i;
-  for (i = 0; kCandidates[i] != NULL; ++i) {
+
+  /* 1. Current working directory first (standard 3dfx DOS OVL precedence) */
+  cw_try_add_ovl_candidate(candidates, &num_candidates, 36, "GLIDE2X.OVL");
+
+  /* 2. Directories in DOS PATH environment variable */
+  path_env = getenv("PATH");
+  if (path_env && path_env[0] != '\0') {
+    const char* p = path_env;
+    while (*p != '\0' && num_candidates < 32) {
+      const char* sep = strchr(p, ';');
+      size_t len = sep ? (size_t)(sep - p) : strlen(p);
+      while (len > 0 && (p[0] == ' ' || p[0] == '\t')) {
+        ++p;
+        --len;
+      }
+      while (len > 0 && (p[len - 1] == ' ' || p[len - 1] == '\t')) {
+        --len;
+      }
+      if (len > 0 && len < 240) {
+        char buf[260];
+        size_t dir_len = len;
+        if (len == 1 && (p[0] == '\\' || p[0] == '/')) {
+          cw_try_add_ovl_candidate(candidates, &num_candidates, 36,
+                                   "\\GLIDE2X.OVL");
+        } else {
+          while (dir_len > 0 &&
+                 (p[dir_len - 1] == '\\' || p[dir_len - 1] == '/')) {
+            /* Preserve bare drive root like "Z:\" as "Z:" before adding "\" */
+            if (dir_len == 3 && p[1] == ':') {
+              --dir_len;
+              break;
+            }
+            --dir_len;
+          }
+          if (dir_len > 0 && !(dir_len == 1 && p[0] == '.')) {
+            memcpy(buf, p, dir_len);
+            buf[dir_len] = '\0';
+            snprintf(buf + dir_len, sizeof(buf) - dir_len, "\\GLIDE2X.OVL");
+            cw_try_add_ovl_candidate(candidates, &num_candidates, 36, buf);
+          }
+        }
+      }
+      if (!sep) break;
+      p = sep + 1;
+    }
+  }
+
+  /* 3. Standard DOSBox / Win9x fallbacks if not already covered by PATH */
+  for (i = 0; kFallbacks[i] != NULL; ++i) {
+    cw_try_add_ovl_candidate(candidates, &num_candidates, 36, kFallbacks[i]);
+  }
+
+  g_g2ovl_loaded_path[0] = '\0';
+  for (i = 0; i < num_candidates; ++i) {
     g_g2ovl_handle =
-        cw_safe_load_ovl(kCandidates[i], &g_g2ovl_sel, &g_g2ovl_used_cwdll);
+        cw_safe_load_ovl(candidates[i], &g_g2ovl_sel, &g_g2ovl_used_cwdll);
     if (g_g2ovl_handle != NULL) {
-      loaded_from = kCandidates[i];
+      snprintf(g_g2ovl_loaded_path, sizeof(g_g2ovl_loaded_path), "%s",
+               candidates[i]);
+      loaded_from = g_g2ovl_loaded_path;
       break;
     }
   }
   if (!g_g2ovl_handle) {
     if (err_out && err_sz > 0) {
       snprintf(err_out, err_sz,
-               "Failed to load GLIDE2X.OVL (tried current dir and Z:\\GLIDE2X.OVL)");
+               "Failed to load GLIDE2X.OVL (tried current dir, PATH, and Z:\\GLIDE2X.OVL)");
     }
     return 0;
   }
