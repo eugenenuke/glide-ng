@@ -21,7 +21,7 @@
 
 ## Setup & Launch
 
-1. Copy `glide3x.dll` from `build_release/win32/bin/` (or `build_win32/bin/`) and [`glide-ng.ini`](./glide-ng.ini) next to `RocketBurger.exe`.
+1. Copy `glide-ng`'s `glide3x.dll` and [`glide-ng.ini`](./glide-ng.ini) next to `RocketBurger.exe`.
 2. Launch `./RocketBurger.exe` directly with exact filename casing and the full long path (do **not** use `go.bat` under Linux/Wine):
 
 ```bash

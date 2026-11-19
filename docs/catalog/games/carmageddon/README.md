@@ -41,7 +41,7 @@ Full releases (especially *Carmageddon Max Pack* and GOG/CD archives with commun
 
 ## Setup & Launch (DOSBox + `GLIDE2X.OVL`)
 
-1. Ensure your DOSBox build has Glide passthrough enabled (`[glide] glide=true`, `grport=600`, `lfb=full_noaux` or `full`) and links against `glide-ng`'s `libglide2x.so` (or preload via `LD_PRELOAD=/path/to/build_release/lib/libglide2x.so`).
+1. Ensure your DOSBox build has Glide passthrough enabled (`[glide] glide=true`, `grport=600`, `lfb=full_noaux` or `full`) and resolves `glide-ng`'s `libglide2x.so` (installed system-wide, or via `LD_LIBRARY_PATH=/path/to/glide-ng/lib` when running from a local build; see [Building & Installing](../../../user-guide/building-and-installing.md)).
 2. Place a compatible DOSBox `GLIDE2X.OVL` in the mounted DOS directory (or on the DOS `PATH`).
 3. Copy [`glide-ng.ini`](./glide-ng.ini) into the host directory from which you launch DOSBox (or pass `GLIDE_NG_CONFIG=/path/to/glide-ng.ini`).
 4. Launch DOSBox and run the Glide executable:

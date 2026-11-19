@@ -32,7 +32,7 @@ List known versions, official/unofficial 3dfx patches, and which `.exe` to run (
 ## Setup & Launch
 
 1. Copy [`glide-ng.ini`](./glide-ng.ini) into the same folder as `<executable>` (or pass `GLIDE_NG_CONFIG=/path/to/glide-ng.ini`).
-2. *(Win32 / Wine)* Copy `glide2x.dll` and/or `glide3x.dll` from `build_release/win32/bin/` (or `build_win32/bin/`) into the same folder.
+2. *(Linux / DOSBox)* Install `glide-ng` system-wide (or set `LD_LIBRARY_PATH=/path/to/glide-ng/lib` when running from a local build). *(Win32 / Wine)* Copy `glide-ng`'s `glide2x.dll` and/or `glide3x.dll` into the same folder.
 3. Launch:
 
 ```bash

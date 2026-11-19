@@ -22,7 +22,7 @@ One of 3dfx's original Voodoo Graphics (SST-1) Arcade Tool Box tech demos, *Demo
 ## Setup & Launch
 
 1. Keep the required **3dfx ATB runtime DLLs** (`apilib.dll`, `fltdata.dll`, `lm.dll`, `mgdd.dll`, `runtime.dll`, `textureeditor.dll`, `MSVCRT40.DLL`) and `.3DF`/`.bof` assets in the same directory as `demoroom.exe`.
-2. Copy `glide2x.dll` from `build_release/win32/bin/` (or `build_win32/bin/`) and [`glide-ng.ini`](./glide-ng.ini) into that directory.
+2. Copy `glide-ng`'s `glide2x.dll` and [`glide-ng.ini`](./glide-ng.ini) into that directory.
 3. Launch under Wine / Proton:
 
 ```bash

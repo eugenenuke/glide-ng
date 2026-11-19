@@ -31,7 +31,7 @@ Bundled with Diamond Multimedia's official **Monster 3D (Voodoo Graphics SST-1)*
 ## Setup & Launch
 
 1. Keep the `.3DF` texture assets (`CYL*.3DF`, `SPH*.3DF`, `TORUS*.3DF`, `DMMLOGO.3DF`, `MONSTR3D.3DF`) in the same folder as `MNSTRTST.EXE`.
-2. Copy `glide2x.dll` from `build_release/win32/bin/` (or `build_win32/bin/`) and [`glide-ng.ini`](./glide-ng.ini) into that folder.
+2. Copy `glide-ng`'s `glide2x.dll` and [`glide-ng.ini`](./glide-ng.ini) into that folder.
 3. Launch under Wine / Proton:
 
 ```bash

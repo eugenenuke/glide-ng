@@ -21,19 +21,21 @@ Core Design's 1996 action-adventure landmark *Tomb Raider* received official DOS
 
 ## Editions, Patches & Executables
 
-Classic DOS installs and community collections commonly ship up to **three** executables in `TOMBRAID/`:
+All three official DOS releases ship with the default filename **`TOMB.EXE`** (differentiated by patch date, binary size, and Glide linkage; some distributions or users rename them to keep multiple builds side by side):
 
-| Executable | Renderer / Patch | Works with `glide-ng`? | Notes |
+| Patch / Build (`TOMB.EXE`) | Renderer | Works with `glide-ng`? | Notes |
 | :--- | :--- | :---: | :--- |
-| **`TOMBRUSH.EXE`** *(Jun 1997, ~874 KB)* | Official 3dfx Voodoo Rush / Glide 2.x patch | **Yes (Recommended)** | Dynamically loads `GLIDE2X.OVL` at runtime, making it the required binary for DOSBox Glide pass-through + `glide-ng`. Despite the filename, it runs cleanly on `VoodooGraphics` (SST-1) and `Voodoo2` profiles. |
-| **`TOMB211.EXE`** *(Feb 1997, ~1.14 MB, from `TR_3DFX.211`)* | Early 3dfx Glide 2.11 SST-1 patch | No *(SW Voodoo only)* | Statically links Glide 2.11 inside the `.exe` and probes SST-1 PCI registers directly — never loads `GLIDE2X.OVL`. Useful only in DOSBox-X / DOSBox-Staging software Voodoo mode. |
-| **`TOMB.EXE`** *(~769 KB)* | Pure DOS Software VGA (`320×200`) | No | Software renderer; does not use Glide. |
+| **3dfx Voodoo Rush patch** *(Jun 1997, ~874 KB)* | Glide 2.x (`GLIDE2X.OVL`) | **Yes (Recommended)** | Dynamically loads `GLIDE2X.OVL` at runtime, making it the required build for DOSBox Glide pass-through + `glide-ng`. Despite the "Rush" patch name, it runs cleanly on `VoodooGraphics` (SST-1) and `Voodoo2` profiles. |
+| **Early 3dfx Glide 2.11 patch** *(Feb 1997, `TR_3DFX.211`, ~1.14 MB)* | Statically linked Glide 2.11 | No *(SW Voodoo only)* | Links Glide 2.11 statically inside `TOMB.EXE` and probes SST-1 PCI registers directly — never loads `GLIDE2X.OVL`. Usable only with low-level SST-1 software Voodoo emulation. |
+| **Original DOS release** *(1996, ~769 KB)* | Pure DOS Software VGA (`320×200`) | No | Software VGA renderer; does not use Glide. |
 
 ---
 
 ## Recommended DOSBox Configurations
 
 Keep the DOSBox configuration minimal — only non-default overrides are shown below.
+
+The commands below assume `glide-ng`'s `libglide2x.so` is installed system-wide (if running directly from a local build directory instead of a system package, prepend `LD_LIBRARY_PATH=/path/to/glide-ng/lib`; see [Building & Installing](../../../user-guide/building-and-installing.md)). Place the DOSBox HLE pass-through `GLIDE2X.OVL` either in `TOMBRAID\` or in a directory listed on DOS `PATH`.
 
 ### Option A: Patched DOSBox-SVN (Glide Pass-Through → `glide-ng`) *(Recommended)*
 
@@ -50,21 +52,19 @@ cycles = max
 glide = true
 ```
 
-Launch with the HLE pass-through `GLIDE2X.OVL` on DOS `PATH` (or in `TOMBRAID\`) and the CD image mounted on `D:`:
+Launch with the game CD image mounted on `D:` and the Jun 1997 3dfx Rush-patched `TOMB.EXE`:
 
 ```bash
-LD_LIBRARY_PATH="$PWD/build_release/lib:${LD_LIBRARY_PATH:-}" \
-  GLIDE_NG_CONFIG="$PWD/docs/catalog/games/tomb-raider/glide-ng.ini" \
-  ./dosbox-svn -conf dosbox-svn.conf \
-  -c "imgmount D TOMBENG.cue -t iso" \
+GLIDE_NG_CONFIG=/path/to/glide-ng.ini \
+  dosbox -conf dosbox-svn.conf \
+  -c "imgmount D /path/to/tomb_raider.cue -t iso" \
   -c "mount C /path/to/TombRaider" \
   -c "C:" \
-  -c "SET PATH=C:\\OVLs\\PASS;%PATH%" \
   -c "cd TOMBRAID" \
-  -c "TOMBRUSH.EXE"
+  -c "TOMB.EXE"
 ```
 
-> **Tip (`TOMB.BAT` vs. `[autoexec]`):** Passing a `.BAT` file as a positional argument to DOSBox can bypass `[autoexec]` `SET PATH=...` lines. Either put `SET PATH=...` inside `TOMB.BAT` or pass it via `-c` as above.
+*(If your pass-through `GLIDE2X.OVL` lives in a separate DOS directory rather than `TOMBRAID\`, add it to `PATH`, e.g. `-c "SET PATH=C:\GLIDE;%PATH%"`.)*
 
 ### Option B: DOSBox-X (Glide Pass-Through → `glide-ng`)
 
@@ -78,18 +78,16 @@ glide = true
 lfb = full
 ```
 
-Launch with `LD_LIBRARY_PATH` pointing at `build_release/lib` and the HLE pass-through `GLIDE2X.OVL` in `TOMBRAID\` or on DOS `PATH`:
+Launch with the HLE pass-through `GLIDE2X.OVL` in `TOMBRAID\` or on DOS `PATH`:
 
 ```bash
-LD_LIBRARY_PATH="$PWD/build_release/lib:${LD_LIBRARY_PATH:-}" \
-  GLIDE_NG_CONFIG="$PWD/docs/catalog/games/tomb-raider/glide-ng.ini" \
+GLIDE_NG_CONFIG=/path/to/glide-ng.ini \
   dosbox-x -conf dosbox-x-pass.conf -nopromptfolder \
-  -c "imgmount D TOMBENG.cue -t iso" \
+  -c "imgmount D /path/to/tomb_raider.cue -t iso" \
   -c "mount C /path/to/TombRaider" \
   -c "C:" \
-  -c "SET PATH=C:\\OVLs\\PASS;%PATH%" \
   -c "cd TOMBRAID" \
-  -c "TOMBRUSH.EXE"
+  -c "TOMB.EXE"
 ```
 
 ### Reference Comparison: DOSBox-X Software Voodoo (No `glide-ng`)
@@ -137,7 +135,7 @@ Software Voodoo emulates **Voodoo Graphics (SST-1)** and requires a real **SST-1
 ### Engine Notes & Quirks
 * **Occasional dynamic 1 px vertical black cracks between wall sections:** Core Design's 1996 engine projects all room vertices to integer screen coordinates and clips room portals on integer pixel boundaries, leaving genuine 1-pixel vertical gaps in the submitted Glide vertex stream. These exact same vertical cracks occur on authentic 3dfx SST-1 hardware and DOSBox-X software Voodoo. Enabling `presentation_filter = linear` (included in [`glide-ng.hq.ini`](./glide-ng.hq.ini)) softens them visually.
 * **Startup splash:** `glide-ng` plays its procedural startup splash once automatically on `grSstWinOpen()` (matching authentic 3dfx Glide). Set `no_splash = true` in `glide-ng.ini` (or `FX_GLIDE_NO_SPLASH=1`) to skip straight to the intro.
-* **DOSBox-SVN `SIGSEGV` on Linux:** Always set `[sdl] output = opengl` (not under `[glide]`) when running `dosbox-svn` on systems using `sdl12-compat` → `sdl2-compat` → `SDL3`, otherwise VGA mode switches during the Eidos/Core FMV intro crash in `SDL_UpdateRects()`.
+* **DOSBox-SVN `output = opengl` on Linux:** On distributions routing SDL 1.2 through `sdl12-compat` → `sdl2-compat` → `SDL3`, DOSBox-SVN's default `surface` output can crash with a `SIGSEGV` in `SDL_UpdateRects()` during the VGA mode switches of the intro FMVs. Setting `[sdl] output = opengl` avoids this code path.
 
 ### Useful Controls
 * `Arrow keys` — Move / Turn · `Shift` — Walk (no ledge drop) · `Alt` — Jump · `Ctrl` — Action / Fire · `Space` — Draw / Holster weapons · `Esc` — Ring Menu / Inventory · `F1`–`F6` — Quick menu shortcuts

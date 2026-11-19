@@ -154,7 +154,7 @@ Switch backends without modifying any files using `GLIDE_NG_BACKEND=vulkan` (def
 
 ### DOSBox-X & Patched DOSBox-SVN (DOS/32 Glide Pass-Through)
 
-DOSBox's Glide pass-through forwards guest `GLIDE2X.OVL` calls over I/O port `0x600` to the host `libglide2x.so`. Point `LD_LIBRARY_PATH` at `build_release/lib` and place the small (~31 KB) DOSBox HLE pass-through `GLIDE2X.OVL` in the game directory or on DOS `PATH`:
+DOSBox's Glide pass-through forwards guest `GLIDE2X.OVL` calls over I/O port `0x600` to the host `libglide2x.so`. Place the small (~31 KB) DOSBox HLE pass-through `GLIDE2X.OVL` in the game directory or on DOS `PATH`:
 
 **Patched DOSBox-SVN (`dosbox-svn.conf`, minimal overrides):**
 ```ini
@@ -180,7 +180,10 @@ lfb = full
 ```
 
 ```bash
-# Launch DOSBox-X or patched DOSBox-SVN (works on X11, XWayland, and native Wayland)
+# If glide-ng is installed system-wide (no LD_LIBRARY_PATH needed):
+GLIDE_NG_BACKEND=vulkan dosbox-x -conf dosbox-x.conf
+
+# Or when running directly from a local build directory:
 LD_LIBRARY_PATH="$PWD/build_release/lib:${LD_LIBRARY_PATH:-}" \
   GLIDE_NG_BACKEND=vulkan dosbox-x -conf dosbox-x.conf
 ```

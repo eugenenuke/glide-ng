@@ -9,7 +9,9 @@ A curated per-title catalog of real-world 3dfx Glide games, official 3dfx tech d
 ## How Drop-In `glide-ng.ini` Presets Work
 
 1. **Copy the title's `glide-ng.ini`** (from its catalog directory below) into the same folder as the game or demo executable — or point to it directly without copying via `GLIDE_NG_CONFIG=/path/to/glide-ng.ini`.
-2. **Copy the wrapper library** (if running on Win32 / Wine / Proton): copy `glide2x.dll` and/or `glide3x.dll` from `build_release/win32/bin/` (auto-built when MinGW-w64 is installed) or `build_win32/bin/` next to the `.exe`, and pass `WINEDLLOVERRIDES="glide2x,glide3x=n"`.
+2. **Ensure `glide-ng` is available**:
+   - **Linux / DOSBox pass-through**: Install `glide-ng` system-wide (no loader overrides needed), or set `LD_LIBRARY_PATH=/path/to/glide-ng/lib` when running directly from a local build directory (see [Building & Installing](../user-guide/building-and-installing.md)).
+   - **Win32 / Wine / Proton**: Copy `glide-ng`'s `glide2x.dll` and/or `glide3x.dll` next to the `.exe` and pass `WINEDLLOVERRIDES="glide2x,glide3x=n"`.
 3. **Override on the fly**: Configuration precedence is always (lowest → highest):
    `Built-in defaults` < `glide-ng.ini` < `Authentic 3dfx env vars (FX_GLIDE_* / SST_* / SSTV2_*)` < `GLIDE_NG_* env vars`.
    For example, `GLIDE_NG_BACKEND=software GLIDE_NG_SW_SIMD=avx512` overrides `[core] backend` and `[software] simd` from any preset without editing the file.
@@ -23,7 +25,7 @@ See [Configuration & Environment Variables](../user-guide/configuration.md), [Ha
 | Title | Year | Platform(s) | Glide API | Card Profile | Backends (VK / GL / SW) | Preset | Key Quirk / Recommended Build | Status |
 | :--- | :---: | :--- | :---: | :--- | :---: | :--- | :--- | :---: |
 | **[Carmageddon](./games/carmageddon/README.md)** | 1997 | DOS/32 (`GLIDE2X.OVL`) | Glide 2.x | Voodoo2 (`2.56`) / Voodoo1 (`2.48`) | Pass / Pass / Pass | [`glide-ng.ini`](./games/carmageddon/glide-ng.ini) · [`voodoo1`](./games/carmageddon/glide-ng.voodoo1.ini) | Use `Voodo2C.exe` (Voodoo2 patch) for base/Max Pack, `voodo2S.exe` for Splat Pack, or `CARMAV.EXE` for SST-1 | Verified |
-| **[Tomb Raider](./games/tomb-raider/README.md)** | 1996 | DOS/32 (`GLIDE2X.OVL`) | Glide 2.x | Voodoo1 (`2.48`) / Voodoo2 (`2.56`) | Pass / Pass / Pass | [`glide-ng.ini`](./games/tomb-raider/glide-ng.ini) · [`hq`](./games/tomb-raider/glide-ng.hq.ini) · [`software`](./games/tomb-raider/glide-ng.software.ini) | Use `TOMBRUSH.EXE` (Rush patch), enable in-game `Mipmapping`, `gamma = 1.7`; set `[sdl] output = opengl` in DOSBox-SVN | Verified |
+| **[Tomb Raider](./games/tomb-raider/README.md)** | 1996 | DOS/32 (`GLIDE2X.OVL`) | Glide 2.x | Voodoo1 (`2.48`) / Voodoo2 (`2.56`) | Pass / Pass / Pass | [`glide-ng.ini`](./games/tomb-raider/glide-ng.ini) · [`hq`](./games/tomb-raider/glide-ng.hq.ini) · [`software`](./games/tomb-raider/glide-ng.software.ini) | Use the Jun 1997 3dfx Rush patch (`TOMB.EXE`, loads `GLIDE2X.OVL`), enable in-game `Mipmapping`, `gamma = 1.7`; set `[sdl] output = opengl` in DOSBox-SVN | Verified |
 
 ---
 

@@ -21,7 +21,7 @@ Part of 3dfx's Voodoo4/Voodoo5 (**VSA-100 / Napalm**) Glide 3.x showcase family 
 
 ## Setup & Launch
 
-1. Copy `glide3x.dll` from `build_release/win32/bin/` (or `build_win32/bin/`) and [`glide-ng.ini`](./glide-ng.ini) next to `aademo.exe`.
+1. Copy `glide-ng`'s `glide3x.dll` and [`glide-ng.ini`](./glide-ng.ini) next to `aademo.exe`.
 2. Launch under Wine / Proton (pass `-model 'data\kittyhawk\kittyhawk.gxf'` to skip the Win32 Open File dialog):
 
 ```bash

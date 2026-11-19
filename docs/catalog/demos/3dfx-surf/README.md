@@ -21,7 +21,7 @@
 
 ## Setup & Launch
 
-1. Copy `glide2x.dll` and `glide3x.dll` from `build_release/win32/bin/` (or `build_win32/bin/`) and [`glide-ng.ini`](./glide-ng.ini) next to the executables.
+1. Copy `glide-ng`'s `glide2x.dll` and `glide3x.dll` along with [`glide-ng.ini`](./glide-ng.ini) next to the executables.
 2. Launch either build under Wine / Proton:
 
 ```bash
