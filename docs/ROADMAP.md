@@ -33,6 +33,8 @@ Forward-looking engineering roadmap for `glide-ng`. Completed pre-beta work is a
   - `[x]` Implement a dedicated `src/glide211/` frontend library (`glide.dll` / `libglide.so`) with clean-room `include/glide211/glide.h` translating the pre-2.3 SST-1 ABI (`grSstOpen`, `grSstPassthruMode`, fixed-1024-pixel-stride `grLfbBegin`/`End`/`GetReadPtr`/`GetWritePtr`/`Origin`/`WriteMode`/`BypassMode` with cached BAR pointer reuse, `guFbReadRegion`/`guFbWriteRegion`, and authentic TMU0 VRAM budget enforcement in `guTexAllocateMemory`) onto `GlideWrapperCore`.
   - `[x]` Default `glide.dll` / `libglide.so` to `VoodooGraphics` (SST-1, 4 MB FB, 1× 2 MB TMU) with API version `2.11`, add pre-`ShowWindow` Win32 host HWND discovery in `NativeSurfaceHost`, and implement Vulkan `Win32Embedded` `grSstPassthruMode` (`SHOW_VGA` yield / `SHOW_SST1` reclaim) + `VK_ERROR_SURFACE_LOST_KHR` recovery.
   - `[x]` Validate end-to-end against *CyberGladiators* (27 dynamic `__stdcall` `GLIDE.DLL` imports) under Wine32 across Vulkan (`1×` & `4× MSAA`), OpenGL 3.3 Core (`1×` & `4× MSAA`), and Software (`1×` & `2×2 SSAA`), add headless multi-backend `Glide211WrapperTests`, and publish `docs/catalog/games/cybergladiators/` with presets and Visual Progression Gallery.
+  - `[x]` Add `[display] fullscreen = true` (`GLIDE_NG_FULLSCREEN=1`) borderless fullscreen override, refactor Vulkan RAMDAC Gamma LUT to guest resolution + shared blit, and add Win32 `SHOW_VGA → SHOW_SST1` style-change surface rebuild + one-shot foreground restore.
+  - `[ ]` **Known Follow-Up (Deferred)**: Under Wine32 on *CyberGladiators*, `GLIDE_NG_FULLSCREEN=1` (`Win32Embedded` borderless fullscreen) currently causes audio loss and stolen/dropped keyboard input (direct windowed `wine ./CYBER.EXE` and `wine explorer /desktop=CG,800x600` both work cleanly with sound and input). Kept as-is for now; revisit `WS_POPUP` style mutation vs. Wine `winex11` focus and DirectSound `DSSCL_EXCLUSIVE` handling later.
 
 ### M15 — Flagship Standalone 3dfx Showcase Demos (`feat/m15-shrine-torus-demos`)
 - **Status**: `[ ] PENDING`
@@ -44,6 +46,7 @@ Forward-looking engineering roadmap for `glide-ng`. Completed pre-beta work is a
 
 ## Backlog (Unscheduled)
 
+- **Win32/Wine Borderless Fullscreen Audio & Input Focus (`GLIDE_NG_FULLSCREEN=1`)**: Fix audio loss and stolen/dropped keyboard events observed in *CyberGladiators* under Wine32 when `NativeSurfaceHost` forces `WS_POPUP` borderless fullscreen on a foreign game HWND (direct windowed Wine and `explorer /desktop=CG,800x600` work cleanly with sound and input).
 - **Clean-Room Open-Source `glide2x.ovl`**: Build an open-source Open Watcom v2 DOS/32 `glide2x.ovl` implementing the 130-entry (`0..129`) DOSBox I/O-port bridge ABI, removing reliance on third-party binary overlays (with optional future shared-memory ring-buffer transport for higher DOS throughput).
 - **OpenGL ES Early-Z W-Buffer Shader Split**: Mirror the Vulkan `-DUSE_WBUFFER_DEPTH` specialization in `OpenGLESShaders.cpp` so Z-buffer and depth-off GLES/WGL pipelines omit `gl_FragDepth` writes.
 - **SIMD FXT1 / YUYV Texture Decoders**: Vectorize `DecodeYuyv422` and `DecodeFxt1` in `SimdKernels` if dynamic streaming VSA-100 titles become CPU-bound during texture upload.
