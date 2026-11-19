@@ -9377,3 +9377,150 @@ TEST_CASE(
   grGlideShutdown();
 #endif
 }
+
+TEST_CASE(
+    "Carmageddon Voodoo Graphics Regression: persistent LFB write-lock "
+    "flushes chronologically before grBufferClear and 3D draws",
+    "[Glide2][LFB][Carmageddon]") {
+#ifdef __linux__
+  ::setenv("GLIDE_NG_FORCE_NO_WINDOW", "1", 1);
+  ::setenv("GLIDE_NG_NO_SPLASH", "1", 1);
+  ::setenv("GLIDE_NG_SHAMELESS_PLUG", "0", 1);
+
+  const char* prevBackendEnv = std::getenv("GLIDE_NG_BACKEND");
+  const std::string savedBackend = prevBackendEnv ? prevBackendEnv : "";
+  const bool hadPrevBackend = (prevBackendEnv != nullptr);
+
+  for (const char* backendName : {"software", "vulkan", "opengl_es"}) {
+    DYNAMIC_SECTION("Backend: " << backendName) {
+      ::setenv("GLIDE_NG_BACKEND", backendName, 1);
+
+      grGlideInit();
+      grSstSelect(0);
+      if (grSstWinOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                       GR_COLORFORMAT_ARGB, GR_ORIGIN_UPPER_LEFT, 2, 1) !=
+          FXTRUE) {
+        grGlideShutdown();
+        WARN("Skipping backend " << backendName
+                                 << " (unavailable in this test environment)");
+        continue;
+      }
+
+      // Carmageddon Voodoo Graphics mode locks BACK once at startup with
+      // pixelPipeline=FXFALSE and never unlocks.
+      GrLfbInfo_t lfbInfo{};
+      lfbInfo.size = sizeof(lfbInfo);
+      REQUIRE(grLfbLock(GR_LFB_WRITE_ONLY, GR_BUFFER_BACKBUFFER,
+                        GR_LFBWRITEMODE_565, GR_ORIGIN_UPPER_LEFT, FXFALSE,
+                        &lfbInfo) == FXTRUE);
+      REQUIRE(lfbInfo.lfbPtr != nullptr);
+
+      auto writeRect565 = [&](uint32_t x0, uint32_t y0, uint32_t x1,
+                              uint32_t y1, uint16_t color565) {
+        auto* base = static_cast<uint8_t*>(lfbInfo.lfbPtr);
+        for (uint32_t y = y0; y < y1; ++y) {
+          auto* row = reinterpret_cast<uint16_t*>(
+              base + static_cast<size_t>(y) * lfbInfo.strideInBytes);
+          for (uint32_t x = x0; x < x1; ++x) {
+            row[x] = color565;
+          }
+        }
+      };
+
+      // Step 1: Write 2D map background (GREEN 0x07E0) with a solid WHITE
+      // (0xFFFF) inset box at [10..150, 10..110] via the persistent LFB lock.
+      writeRect565(0, 0, 640, 480, 0x07E0u);
+      writeRect565(10, 10, 150, 110, 0xFFFFu);
+
+      // Step 2: Depth-only clear (grColorMask(0, 0) + grBufferClear) — exact
+      // Carmageddon map-screen sequence before rendering the 3D miniscreen.
+      grColorMask(FXFALSE, FXFALSE);
+      grDepthMask(FXTRUE);
+      grBufferClear(0x00000000u, 0, GR_WDEPTHVALUE_FARTHEST);
+      grColorMask(FXTRUE, FXFALSE);
+
+      // Step 3: Draw a RED 3D quad covering the white inset [10..150, 10..110].
+      grDepthBufferMode(GR_DEPTHBUFFER_WBUFFER);
+      grDepthBufferFunction(GR_CMP_LESS);
+      grChromakeyMode(GR_CHROMAKEY_DISABLE);
+      grAlphaBlendFunction(GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_ONE,
+                           GR_BLEND_ZERO);
+      guColorCombineFunction(GR_COLORCOMBINE_ITRGB);
+
+      auto makeV = [](float x, float y) {
+        GrVertex v{};
+        v.x = x;
+        v.y = y;
+        v.oow = 0.5f;
+        v.r = 255.0f;
+        v.g = 0.0f;
+        v.b = 0.0f;
+        v.a = 255.0f;
+        return v;
+      };
+      GrVertex q[4] = {
+          makeV(10.0f, 10.0f),
+          makeV(150.0f, 10.0f),
+          makeV(150.0f, 110.0f),
+          makeV(10.0f, 110.0f),
+      };
+      grDrawPolygonVertexList(4, q);
+
+      // Step 4: Write a BLUE (0x001F) player-arrow marker inside the inset via
+      // the SAME persistent LFB lock AFTER 3D rendering, then swap.
+      writeRect565(70, 50, 90, 70, 0x001Fu);
+      grBufferSwap(0);
+
+      // Verify all three chronological layers survived in exact hardware order:
+      //  - (300, 300): GREEN 2D map background (preserved across depth clear)
+      //  - (30, 30):   RED 3D miniscreen (NOT clobbered by Step 1 WHITE box!)
+      //  - (80, 60):   BLUE post-3D LFB player arrow (on top of RED 3D scene!)
+      uint32_t pxMap = 0, pxInset3d = 0, pxArrow = 0;
+      REQUIRE(grLfbReadRegion(GR_BUFFER_FRONTBUFFER, 300, 300, 1, 1, 4,
+                              &pxMap) == FXTRUE);
+      REQUIRE(grLfbReadRegion(GR_BUFFER_FRONTBUFFER, 30, 30, 1, 1, 4,
+                              &pxInset3d) == FXTRUE);
+      REQUIRE(grLfbReadRegion(GR_BUFFER_FRONTBUFFER, 80, 60, 1, 1, 4,
+                              &pxArrow) == FXTRUE);
+
+      INFO("Backend=" << backendName << " pxMap=0x" << std::hex << pxMap
+                      << " pxInset3d=0x" << pxInset3d << " pxArrow=0x"
+                      << pxArrow << std::dec);
+
+      // Map surround = GREEN
+      CHECK(((pxMap >> 16) & 0xFFu) <= 15);
+      CHECK(((pxMap >> 8) & 0xFFu) >= 240);
+      CHECK((pxMap & 0xFFu) <= 15);
+
+      // Inset 3D scene = RED (not WHITE!)
+      CHECK(((pxInset3d >> 16) & 0xFFu) >= 240);
+      CHECK(((pxInset3d >> 8) & 0xFFu) <= 15);
+      CHECK((pxInset3d & 0xFFu) <= 15);
+
+      // Post-3D LFB marker = BLUE
+      CHECK(((pxArrow >> 16) & 0xFFu) <= 15);
+      CHECK(((pxArrow >> 8) & 0xFFu) <= 15);
+      CHECK((pxArrow & 0xFFu) >= 240);
+
+      // Also verify grLfbReadRegion reads pending writes from an active
+      // persistent write lock on the backbuffer before swap!
+      writeRect565(200, 200, 220, 220, 0xFFE0u);  // YELLOW
+      uint32_t pxLiveRead = 0;
+      REQUIRE(grLfbReadRegion(GR_BUFFER_BACKBUFFER, 210, 210, 1, 1, 4,
+                              &pxLiveRead) == FXTRUE);
+      CHECK(((pxLiveRead >> 16) & 0xFFu) >= 240);
+      CHECK(((pxLiveRead >> 8) & 0xFFu) >= 240);
+      CHECK((pxLiveRead & 0xFFu) <= 15);
+
+      grSstWinClose();
+      grGlideShutdown();
+    }
+  }
+
+  if (hadPrevBackend) {
+    ::setenv("GLIDE_NG_BACKEND", savedBackend.c_str(), 1);
+  } else {
+    ::unsetenv("GLIDE_NG_BACKEND");
+  }
+#endif
+}

@@ -638,6 +638,7 @@ FX_ENTRY void FX_CALL grBufferClear(GrColor_t color, GrAlpha_t alpha,
                                     FxU32 depth) {
   GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::Draw);
   EnsureEngineInitialized();
+  EntryCommon::FlushActiveLfbWriteLock(s_state);
   EntryCommon::ClearBuffer(color, alpha, depth);
 }
 
@@ -2292,6 +2293,7 @@ FX_ENTRY FxBool FX_CALL grLfbReadRegion(GrBuffer_t srcBuf, FxU32 srcX,
   GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::Lfb);
   EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend", "grLfbReadRegion (Glide 3.x) invoked.");
+  EntryCommon::FlushActiveLfbWriteLock(s_state);
   return EntryCommon::LfbReadRegion(ResolveLfbTargetBuffer(srcBuf), srcX, srcY,
                                     srcWidth, srcHeight, dstStride, dstData)
              ? FXTRUE
@@ -2328,6 +2330,9 @@ FX_ENTRY FxBool FX_CALL grLfbLock(GrLock_t type, GrBuffer_t buffer,
   GLIDE_LOG(DEBUG, "Frontend",
             "grLfbLock (Glide 3.x) invoked: buffer="
                 << buffer << ", mode=" << writeMode << ", origin=" << origin);
+  if (!GlideWrapper::LfbManager::IsWriteLockType(type)) {
+    EntryCommon::FlushActiveLfbWriteLock(s_state);
+  }
   return GlideWrapper::LfbManager::GetInstance().Lock(
              type, ResolveLfbTargetBuffer(buffer), writeMode, origin,
              pixelPipeline != 0, info)

@@ -74,7 +74,7 @@ void OpenGLESBackend::ClearBufferExt(uint32_t color, uint32_t alpha, float z,
 
   if (isMaskedClear) {
     if (effSampleMask == 0u) return;
-    if ((clearMask & 0x1) && m_lfbStaging.IsOverlayDirty(m_activeRenderBuffer)) {
+    if (doColorClear && m_lfbStaging.IsOverlayDirty(m_activeRenderBuffer)) {
       FlushLFBToGPU_Locked();
     }
     DrawMaskedClearQuadGLES_Locked(r, g, b, a, z, stencil, doColorClear,
@@ -84,7 +84,7 @@ void OpenGLESBackend::ClearBufferExt(uint32_t color, uint32_t alpha, float z,
 
   // 1. Handle any pending sparse LFB overlay before clearing, and defer
   // CPU-side full framebuffer clear lazily so pure 3D frames allocate 0 bytes.
-  if (clearMask & 0x1) {
+  if (doColorClear) {
     if (fullClip && IsFullColorMask()) {
       // Full unmasked color clear overwrites every pixel, so any pending
       // overlay is superseded.

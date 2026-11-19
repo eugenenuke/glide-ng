@@ -10179,6 +10179,26 @@ TEST_CASE("M12.5 Compatibility Catalog INI Presets & Directory Integrity",
     CHECK(cfg.forceTrilinear == true);
     CHECK(cfg.noDitherSub == true);
   }
+  {
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load(
+        (catalogDir / "games" / "carmageddon" / "glide-ng.ini").string(),
+        cfg));
+    CHECK(cfg.model == GlideWrapper::CardModel::Voodoo2);
+    CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_56);
+    CHECK(cfg.noSplash == false);
+  }
+  {
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load(
+        (catalogDir / "games" / "carmageddon" / "glide-ng.hq.ini").string(),
+        cfg));
+    CHECK(cfg.model == GlideWrapper::CardModel::Voodoo2);
+    CHECK(cfg.msaaSamples == 4u);
+    CHECK(cfg.presentationFilter == 1u);
+    CHECK(cfg.noDitherSub == true);
+    CHECK(cfg.noSplash == false);
+  }
 }
 
 TEST_CASE("Automatic One-Shot Startup Splash Policy on grSstWinOpen",
