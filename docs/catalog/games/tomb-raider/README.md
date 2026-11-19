@@ -90,6 +90,22 @@ GLIDE_NG_CONFIG=/path/to/glide-ng.ini \
   -c "TOMB.EXE"
 ```
 
+### Option C: Best Visuals (`glide-ng.hq.ini` + In-Game `Mipmapping`)
+
+Use [`glide-ng.hq.ini`](./glide-ng.hq.ini) (`msaa = 4`, `force_trilinear = true`, `presentation_filter = linear`, `no_dither_sub = true`, `gamma = 1.7`) on either DOSBox-SVN (Option A) or DOSBox-X (Option B), then enable **`Mipmapping`** in the in-game Ring Menu → **Detail Levels**:
+
+```bash
+GLIDE_NG_CONFIG=/path/to/glide-ng.hq.ini \
+  dosbox -conf dosbox-svn.conf \
+  -c "imgmount D /path/to/tomb_raider.cue -t iso" \
+  -c "mount C /path/to/TombRaider" \
+  -c "C:" \
+  -c "cd TOMBRAID" \
+  -c "TOMB.EXE"
+```
+
+*(On CPU-only hosts, substitute [`glide-ng.software.ini`](./glide-ng.software.ini) with `GLIDE_NG_SW_AA=ssaa GLIDE_NG_PRESENTATION_FILTER=linear`.)*
+
 ### Reference Comparison: DOSBox-X Software Voodoo (No `glide-ng`)
 
 If comparing against DOSBox-X's built-in low-level SST-1 software emulator:
@@ -105,6 +121,18 @@ glide = false
 ```
 
 Software Voodoo emulates **Voodoo Graphics (SST-1)** and requires a real **SST-1** `GLIDE2X.OVL` — specifically **Glide 2.42 (SST-1)** (or `2.30`), *not* the Voodoo Rush OVL, *not* Voodoo2 (`2.5x`), *not* `2.43+`/`2.48`, and *not* the HLE pass-through OVL.
+
+---
+
+## Visual Progression Gallery
+
+All captures below are `640×480` via patched DOSBox-SVN (Software `320×200` scaled nearest-neighbor to 4:3), progressing left-to-right, top-to-bottom from DOS software up to Best Visuals:
+
+| | |
+| :---: | :---: |
+| ![DOS Software 320x200 Caves](./screenshots/01_caves_sw_320x200.webp)<br>**1. Caves — DOS Software (`320×200`, original `TOMB.EXE`)**<br>Unfiltered pixel-art cave walls, coarse banded snowbanks, and chunky polygon edges. | ![3dfx Uncalibrated Gamma 1.0 Caves](./screenshots/02_caves_3dfx_gamma10.webp)<br>**2. Caves — 3dfx Uncalibrated (`gamma = 1.0`)**<br>`640×480` bilinear filtering smooths textures, *but* without SST-1 RAMDAC gamma, cave interiors appear overly dark. |
+| ![3dfx Authentic SST-1 Caves](./screenshots/03_caves_3dfx_sst1.webp)<br>**3. Caves — 3dfx Authentic SST-1 ([`glide-ng.ini`](./glide-ng.ini), `gamma = 1.7`, `1×`)**<br>SST-1 `gamma = 1.7` restores authentic cave visibility and snow brightness; diagonal edges remain `1×` aliased (`Normal` detail). | ![3dfx Best Visuals Caves](./screenshots/04_caves_3dfx_hq.webp)<br>**4. Caves — 3dfx Best Visuals ([`glide-ng.hq.ini`](./glide-ng.hq.ini) + `Mipmapping`)**<br>`4×` Vulkan MSAA smooths Lara's silhouette and rock ridges while trilinear mipmapping and `no_dither_sub = true` clean up distant cave walls and gradients. |
+| ![Croft Manor Standard SST-1](./screenshots/05_manor_3dfx_sst1.webp)<br>**5. Croft Manor — Standard ([`glide-ng.ini`](./glide-ng.ini), `1×`, `Normal` detail)**<br>Crisp close-up textures, but noticeable moiré/aliasing across the distant checkered ceiling and floral carpet plus jagged diagonal edges. | ![Croft Manor Best Visuals](./screenshots/06_manor_3dfx_hq.webp)<br>**6. Croft Manor — Best Visuals ([`glide-ng.hq.ini`](./glide-ng.hq.ini) + `Mipmapping`)**<br>Trilinear mipmapping eliminates distant ceiling and carpet shimmering with zero dark triangle seams, while `4×` MSAA smooths the marble step, beams, and Lara. |
 
 ---
 
