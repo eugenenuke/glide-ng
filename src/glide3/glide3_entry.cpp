@@ -275,6 +275,7 @@ void ResetFrontendState() {
   s_tbufferWriteMask = 0xFFFFFFFFu;
   s_sstOrigin = 0;
   g_inSplash = false;
+  EntryCommon::ResetAutoSplashState();
   s_stippleMode = 0;
   s_stipplePattern = 0xFFFFFFFF;
   s_errorCallback = nullptr;
@@ -495,6 +496,11 @@ static GrContext_t OpenWindowGlide3(AnyPtr hWnd,
     EntryCommon::ConfigureTmuMemoryLimits();
     EntryCommon::ApplyPostWinOpenOverrides(s_state, format, nColBuffers,
                                            nAuxBuffers);
+    EntryCommon::MaybeRunAutoStartupSplash(
+        width, height, [](uint32_t w, uint32_t h) {
+          grSplash(0.0f, 0.0f, static_cast<float>(w), static_cast<float>(h),
+                   0u);
+        });
   }
 
   return attached ? 1 : 0;

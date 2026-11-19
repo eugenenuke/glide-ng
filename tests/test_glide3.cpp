@@ -10159,6 +10159,95 @@ TEST_CASE("M12.5 Compatibility Catalog INI Presets & Directory Integrity",
     CHECK(cfg.maxFps == 0.0f);
     CHECK(cfg.noSplash == true);
   }
+  {
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load(
+        (catalogDir / "games" / "tomb-raider" / "glide-ng.ini").string(),
+        cfg));
+    CHECK(cfg.model == GlideWrapper::CardModel::VoodooGraphics);
+    CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_48);
+    CHECK(std::fabs(cfg.gammaOverride - 1.7f) < 0.001f);
+  }
+  {
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load(
+        (catalogDir / "games" / "tomb-raider" / "glide-ng.hq.ini").string(),
+        cfg));
+    CHECK(cfg.model == GlideWrapper::CardModel::Voodoo2);
+    CHECK(cfg.msaaSamples == 4u);
+    CHECK(cfg.presentationFilter == 1u);
+    CHECK(cfg.forceTrilinear == true);
+    CHECK(cfg.noDitherSub == true);
+  }
+}
+
+TEST_CASE("Automatic One-Shot Startup Splash Policy on grSstWinOpen",
+          "[Splash][Config]") {
+  auto& cfg = GlideWrapper::EmulationRegistry::GetInstance().GetConfig();
+  const bool savedNoSplash = cfg.noSplash;
+  const bool savedHeadless = cfg.forceNoWindow;
+  const int savedPlugMode = cfg.shamelessPlugMode;
+
+  static int s_calls = 0;
+  static uint32_t s_lastW = 0, s_lastH = 0;
+  static bool s_plugAllowedDuringSplash = true;
+  auto spy = [](uint32_t w, uint32_t h) {
+    ++s_calls;
+    s_lastW = w;
+    s_lastH = h;
+    s_plugAllowedDuringSplash =
+        GlideWrapper::EntryCommon::ShouldRenderShamelessPlug(true);
+  };
+
+  // 1. Plays once when !noSplash && !headless, suppresses shameless plug inside
+  GlideWrapper::EntryCommon::ResetAutoSplashState();
+  s_calls = 0;
+  s_lastW = s_lastH = 0;
+  s_plugAllowedDuringSplash = true;
+  cfg.noSplash = false;
+  cfg.forceNoWindow = false;
+  cfg.shamelessPlugMode = 1;
+  CHECK(GlideWrapper::EntryCommon::MaybeRunAutoStartupSplash(640, 480, spy));
+  CHECK(s_calls == 1);
+  CHECK(s_lastW == 640u);
+  CHECK(s_lastH == 480u);
+  CHECK(s_plugAllowedDuringSplash == false);
+  // Shameless plug resumes after auto-splash exits
+  CHECK(GlideWrapper::EntryCommon::ShouldRenderShamelessPlug(true) == true);
+
+  // 2. Second grSstWinOpen in the same session does not replay the splash
+  CHECK_FALSE(
+      GlideWrapper::EntryCommon::MaybeRunAutoStartupSplash(800, 600, spy));
+  CHECK(s_calls == 1);
+
+  // 3. Suppressed when noSplash=true
+  GlideWrapper::EntryCommon::ResetAutoSplashState();
+  cfg.noSplash = true;
+  cfg.forceNoWindow = false;
+  CHECK_FALSE(
+      GlideWrapper::EntryCommon::MaybeRunAutoStartupSplash(640, 480, spy));
+  CHECK(s_calls == 1);
+
+  // 4. Suppressed when headless=true (keeps headless tests instant)
+  GlideWrapper::EntryCommon::ResetAutoSplashState();
+  cfg.noSplash = false;
+  cfg.forceNoWindow = true;
+  CHECK_FALSE(
+      GlideWrapper::EntryCommon::MaybeRunAutoStartupSplash(640, 480, spy));
+  CHECK(s_calls == 1);
+
+  // 5. ResetAutoSplashState allows a fresh session to play once again
+  GlideWrapper::EntryCommon::ResetAutoSplashState();
+  cfg.noSplash = false;
+  cfg.forceNoWindow = false;
+  CHECK(GlideWrapper::EntryCommon::MaybeRunAutoStartupSplash(640, 480, spy));
+  CHECK(s_calls == 2);
+
+  // Restore original config & clean splash state
+  cfg.noSplash = savedNoSplash;
+  cfg.forceNoWindow = savedHeadless;
+  cfg.shamelessPlugMode = savedPlugMode;
+  GlideWrapper::EntryCommon::ResetAutoSplashState();
 }
 
 TEST_CASE("M13: Single-Source SemVer Version & Build Metadata",

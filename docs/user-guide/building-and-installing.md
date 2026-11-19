@@ -152,22 +152,45 @@ WINEDLLOVERRIDES="glide2x,glide3x=n" GLIDE_NG_BACKEND=vulkan %command%
 
 Switch backends without modifying any files using `GLIDE_NG_BACKEND=vulkan` (default), `GLIDE_NG_BACKEND=opengl_es` (Win32 WGL OpenGL 3.3 Core), or `GLIDE_NG_BACKEND=software` (CPU SIMD rasterizer presented via GDI `StretchDIBits`).
 
-### DOSBox-X & SVN DOSBox (DOS/32 Glide Pass-Through)
+### DOSBox-X & Patched DOSBox-SVN (DOS/32 Glide Pass-Through)
 
-DOSBox's Glide pass-through forwards guest `GLIDE2X.OVL` calls to the host `libglide2x.so`. Point `LD_LIBRARY_PATH` at the `glide-ng` build directory:
+DOSBox's Glide pass-through forwards guest `GLIDE2X.OVL` calls over I/O port `0x600` to the host `libglide2x.so`. Point `LD_LIBRARY_PATH` at `build_release/lib` and place the small (~31 KB) DOSBox HLE pass-through `GLIDE2X.OVL` in the game directory or on DOS `PATH`:
 
-```bash
-# Enable Glide pass-through in dosbox.conf:
-#   [voodoo]
-#   glide = true
-#   lfb   = full
+**Patched DOSBox-SVN (`dosbox-svn.conf`, minimal overrides):**
+```ini
+[sdl]
+# Prevents SDL_UpdateRects SIGSEGV under sdl12-compat -> sdl2-compat -> SDL3 on Linux
+output = opengl
 
-# Launch DOSBox-X (works on X11, XWayland, and native Wayland)
-LD_LIBRARY_PATH="$PWD/build_release/lib:${LD_LIBRARY_PATH:-}" \
-  GLIDE_NG_BACKEND=vulkan dosbox-x -conf dosbox.conf
+[cpu]
+cycles = max
+
+[glide]
+glide = true
 ```
 
-For per-game DOSBox and `GLIDE2X.OVL` tips (such as *Carmageddon* Voodoo1 vs. Voodoo2 patch executables), see the [Compatibility Catalog](../catalog/README.md).
+**DOSBox-X (`dosbox-x.conf`, minimal overrides):**
+```ini
+[cpu]
+cycles = max
+
+[voodoo]
+glide = true
+lfb = full
+```
+
+```bash
+# Launch DOSBox-X or patched DOSBox-SVN (works on X11, XWayland, and native Wayland)
+LD_LIBRARY_PATH="$PWD/build_release/lib:${LD_LIBRARY_PATH:-}" \
+  GLIDE_NG_BACKEND=vulkan dosbox-x -conf dosbox-x.conf
+```
+
+> **Choosing the right `GLIDE2X.OVL` (Pass-Through vs. Software Voodoo):**
+> - **Glide pass-through (`glide = true` → `glide-ng`):** Use the DOSBox HLE pass-through `GLIDE2X.OVL` (~31 KB). Authentic hardware OVLs will not talk to the `0x600` pass-through port.
+> - **Built-in Software Voodoo (`voodoo_card = software` in DOSBox-X, or `voodoo = on` in DOSBox-Staging):** These emulators implement **Voodoo Graphics (SST-1)** hardware (PCI `121A:0001`), *not* pass-through to `glide-ng`. Running DOS games or `glide_info.exe` / `glide_bench.exe` against Software Voodoo requires an authentic **SST-1** hardware `GLIDE2X.OVL` — specifically **Glide 2.42 (SST-1)** (recommended) or **2.30**. Voodoo Rush (`SST-96`), Voodoo2 (`2.5x`), Banshee/Voodoo3 (`2.6x`), and HLE pass-through OVLs will report 0 boards or mismatch errors; Glide `2.43`/`2.46` fail DOSBox's SST-1 PCI init and `2.48` faults on Ring-0 `RDMSR`.
+> - **`PATH` lookup:** `glide_info.exe`, `glide_bench.exe`, and `glide_envtest.exe` search the current directory, then every directory in DOS `PATH`, then `Z:\` fallbacks, and support both HLE pass-through and authentic 3dfx Watcom `GLIDE2X.OVL` binaries (`2.3`–`2.61`).
+
+For per-game DOSBox and `GLIDE2X.OVL` recipes (such as *Carmageddon* and *Tomb Raider*), see the [Compatibility Catalog](../catalog/README.md).
 
 ### Native Linux Applications & Demos
 

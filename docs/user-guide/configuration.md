@@ -60,7 +60,7 @@ See [Hardware Profiles & Glide Versions](hardware-and-versions.md) for the compl
 
 | Environment Variable | INI Key (`section.key`) | Accepted Values | Default | Description |
 | :--- | :--- | :--- | :--- | :--- |
-| `GLIDE_NG_NO_SPLASH` | `[glide] no_splash` | `0`/`1`, `true`/`false` | `false` | Suppresses the 3dfx startup splash animation (`grSplash`). Overrides `FX_GLIDE_NO_SPLASH`. |
+| `GLIDE_NG_NO_SPLASH` | `[glide] no_splash` | `0`/`1`, `true`/`false` | `false` | Suppresses both automatic one-shot startup splash on `grSstWinOpen()` (non-headless) and explicit `grSplash()` calls. Overrides `FX_GLIDE_NO_SPLASH`. |
 | `GLIDE_NG_SHAMELESS_PLUG` | `[glide] shameless_plug` | `0`/`false` (force off), `1`/`true` (force on); INI also accepts `-1` (app-controlled) | `-1` *(app-controlled)* | Forces the 3dfx corner watermark logo on or off during `grBufferSwap`. Overrides `FX_GLIDE_SHAMELESS_PLUG`. |
 
 ### 1.5 Logging, Tracing & Performance Telemetry
@@ -132,7 +132,7 @@ GLIDE_NG_HUD=full,position=br,scale=1.5 ./build_release/bin/glide3_cube
 
 | Variable | INI Equivalent | Accepted Values | Default | Behavior & Precedence |
 | :--- | :--- | :--- | :--- | :--- |
-| `FX_GLIDE_NO_SPLASH` | `[glide] no_splash` | `0`/`false`, non-zero/`true` | Unset | Suppresses `grSplash`. Overridden by `GLIDE_NG_NO_SPLASH`. |
+| `FX_GLIDE_NO_SPLASH` | `[glide] no_splash` | `0`/`false`, non-zero/`true` | Unset | Suppresses automatic `grSstWinOpen()` startup splash and explicit `grSplash()` calls. Overridden by `GLIDE_NG_NO_SPLASH`. |
 | `FX_GLIDE_SHAMELESS_PLUG` | `[glide] shameless_plug` | `0`/`false` (off), non-zero/`true` (on) | Unset | Forces 3dfx watermark badge on or off. Overridden by `GLIDE_NG_SHAMELESS_PLUG`. |
 | `FX_GLIDE_SWAPINTERVAL` | `[glide] swap_interval` | Integer `>= 0` (`0` = VSync off, `>= 1` = VSync on) | Unset | Controls swap synchronization. Overridden by `GLIDE_NG_VSYNC`. |
 | `FX_GLIDE_FBRAM` | `[hardware] fbi_memory_mb` | Positive integer (MB) | Card default | Overrides reported FBI memory. Overridden by `GLIDE_NG_FBI_MEM_MB`. |

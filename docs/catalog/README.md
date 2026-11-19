@@ -23,6 +23,7 @@ See [Configuration & Environment Variables](../user-guide/configuration.md), [Ha
 | Title | Year | Platform(s) | Glide API | Card Profile | Backends (VK / GL / SW) | Preset | Key Quirk / Recommended Build | Status |
 | :--- | :---: | :--- | :---: | :--- | :---: | :--- | :--- | :---: |
 | **[Carmageddon](./games/carmageddon/README.md)** | 1997 | DOS/32 (`GLIDE2X.OVL`) | Glide 2.x | Voodoo2 (`2.56`) / Voodoo1 (`2.48`) | Pass / Pass / Pass | [`glide-ng.ini`](./games/carmageddon/glide-ng.ini) · [`voodoo1`](./games/carmageddon/glide-ng.voodoo1.ini) | Use `Voodo2C.exe` (Voodoo2 patch) for base/Max Pack, `voodo2S.exe` for Splat Pack, or `CARMAV.EXE` for SST-1 | Verified |
+| **[Tomb Raider](./games/tomb-raider/README.md)** | 1996 | DOS/32 (`GLIDE2X.OVL`) | Glide 2.x | Voodoo1 (`2.48`) / Voodoo2 (`2.56`) | Pass / Pass / Pass | [`glide-ng.ini`](./games/tomb-raider/glide-ng.ini) · [`hq`](./games/tomb-raider/glide-ng.hq.ini) · [`software`](./games/tomb-raider/glide-ng.software.ini) | Use `TOMBRUSH.EXE` (Rush patch), enable in-game `Mipmapping`, `gamma = 1.7`; set `[sdl] output = opengl` in DOSBox-SVN | Verified |
 
 ---
 

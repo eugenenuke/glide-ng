@@ -126,6 +126,7 @@ void ResetFrontendState() {
   s_errorCallback = nullptr;
   s_gammaCorrectionValue = 1.0f;
   s_sstOrigin = 0;
+  EntryCommon::ResetAutoSplashState();
 }
 }  // namespace
 
@@ -292,6 +293,11 @@ FX_ENTRY FxBool FX_CALL grSstWinOpen(AnyPtr hWnd,
     EntryCommon::ApplyPostWinOpenOverrides(s_state, format, nColBuffers,
                                            nAuxBuffers);
     backend->SetSTWHintState(s_stwHintMask);
+    EntryCommon::MaybeRunAutoStartupSplash(
+        width, height, [](uint32_t w, uint32_t h) {
+          grSplash(0.0f, 0.0f, static_cast<float>(w), static_cast<float>(h),
+                   0u);
+        });
   }
   return attached ? FXTRUE : FXFALSE;
 }
