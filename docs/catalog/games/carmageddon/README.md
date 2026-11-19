@@ -103,6 +103,22 @@ GLIDE_NG_CONFIG=/path/to/glide-ng.ini \
   -c "Voodo2C.exe"
 ```
 
+### Option C: Best Visuals (`glide-ng.hq.ini` + `-yon 1.0 -simple 0`)
+
+Combine the [`glide-ng.hq.ini`](./glide-ng.hq.ini) preset (`msaa = 4`, `presentation_filter = linear`, `no_dither_sub = true`, `max_fps = 60`) with `-yon 1.0 -simple 0` on either DOSBox-SVN (Option A) or DOSBox-X (Option B):
+
+```bash
+GLIDE_NG_CONFIG=/path/to/glide-ng.hq.ini \
+  dosbox -conf dosbox-svn.conf \
+  -c "imgmount D /path/to/carmageddon.cue -t iso" \
+  -c "mount C /path/to/Carma" \
+  -c "C:" \
+  -c "cd CARMA" \
+  -c "Voodo2C.exe -yon 1.0 -simple 0"
+```
+
+*(For full world draw distance and opponent shadows as well, raise **View Distance** (`Yon`) and **Car Shadows** to max under in-game **Options → Graphics** — or edit `Yon` in `DATA/OPTIONS.TXT`, e.g. `35.0`–`60.0`; avoid extreme values `>150` which can break AI pathing. On CPU-only hosts, substitute [`glide-ng.software.ini`](./glide-ng.software.ini) with `GLIDE_NG_SW_AA=ssaa GLIDE_NG_PRESENTATION_FILTER=linear`.)*
+
 ### Reference Comparison: DOSBox-X Software Voodoo (No `glide-ng`)
 
 If comparing against DOSBox-X's built-in low-level SST-1 software emulator:
@@ -126,15 +142,14 @@ Software Voodoo emulates **Voodoo Graphics (SST-1)** and requires a real **SST-1
 
 ## Visual Progression Gallery
 
-All captures below are taken on the Maim Street starting grid (`640×480`, `glide-ng` via patched DOSBox-SVN, `0` kills):
+All captures below are taken on the Maim Street starting grid (`640×480`, `glide-ng` via patched DOSBox-SVN, `0` kills), progressing left-to-right, top-to-bottom from DOS software up to Best Visuals:
 
-| Step | Before | After |
-| :--- | :---: | :---: |
-| **1. Software `320×200` → Software `-hires` (`640×480`)**<br>Higher pixel count & crisp `64X48X8` HUD/Pratcam, but textures remain unfiltered nearest-neighbor and viewport stays letterboxed (`ScreenSize 2`). | ![DOS Software 320x200](./screenshots/01_sw_320x200.webp) | ![DOS Software -hires 640x480](./screenshots/02_sw_hires_640x480.webp) |
-| **2. Software `-hires` → 3dfx Low-Mem (`memsize = 16`)**<br>3dfx unlocks full-screen `640×480` bilinear filtering, **but** DOSBox's default 16 MB RAM triggers Austere Mode (no Pratcam, `264` cloned pedestrians, thick white fog hiding the skyline). | ![DOS Software -hires 640x480](./screenshots/02_sw_hires_640x480.webp) | ![3dfx Low-Mem 16 MB Austere Mode](./screenshots/03_3dfx_lowmem_16mb.webp) |
-| **3. 3dfx Low-Mem (`16 MB`) → 3dfx Full Detail (`memsize = 32`, `1×`)**<br>Raising `memsize = 32` disables Austere Mode: restores the orange dusk city skyline, Max Damage Pratcam, starting flag marshal, and all `527` varied pedestrians. | ![3dfx Low-Mem 16 MB Austere Mode](./screenshots/03_3dfx_lowmem_16mb.webp) | ![3dfx Full Detail 32 MB 1x](./screenshots/04_3dfx_full_32mb_1x.webp) |
-| **4. 3dfx Full Detail (`1×`) → 3dfx Full Detail + AA**<br>Enforcing anti-aliasing (`msaa = 4` on Vulkan/GLES via [`glide-ng.hq.ini`](./glide-ng.hq.ini), or `GLIDE_NG_SW_AA=ssaa` on Software) smooths 3D fenders, rooflines, and distant cars while keeping the 2D HUD razor-sharp. | ![3dfx Full Detail 32 MB 1x](./screenshots/04_3dfx_full_32mb_1x.webp) | ![3dfx Full Detail 32 MB + AA](./screenshots/05_3dfx_full_32mb_aa.webp) |
-| **5. Cockpit View (`C` key): `1×` → `+ AA`**<br>Notice how anti-aliasing cleans up the angled white center roof blade across the windshield, red hood creases, buildings, and live 3D rear-view mirror without blurring the 2D dashboard or Pratcam. | ![Cockpit 1x](./screenshots/06_cockpit_1x.webp) | ![Cockpit + AA](./screenshots/07_cockpit_aa.webp) |
+| | |
+| :---: | :---: |
+| ![DOS Software 320x200](./screenshots/01_sw_320x200.webp)<br>**1. DOS Software (`320×200`)**<br>Unfiltered low-res software renderer with letterboxed viewport (`ScreenSize 2`). | ![DOS Software -hires 640x480](./screenshots/02_sw_hires_640x480.webp)<br>**2. DOS Software `-hires` (`640×480`)**<br>Crisp `64X48X8` HUD/Pratcam and higher pixel count; textures remain unfiltered and letterboxed. |
+| ![3dfx Low-Mem 16 MB Austere Mode](./screenshots/03_3dfx_lowmem_16mb.webp)<br>**3. 3dfx Low-Mem (`memsize = 16`, Austere Mode)**<br>Full-screen bilinear filtering, *but* DOSBox's default 16 MB RAM disables Pratcam, halves/clones peds (`264`), and adds thick close-in white fog. | ![3dfx Standard 32 MB 1x](./screenshots/04_3dfx_full_32mb_1x.webp)<br>**4. 3dfx Standard (`memsize = 32`, `1×`, [`glide-ng.ini`](./glide-ng.ini))**<br>Raising `memsize = 32` disables Austere Mode: restores the dusk city skyline, Pratcam, flag marshal, and all `527` varied pedestrians. |
+| ![3dfx + AA Default Detail](./screenshots/05_3dfx_full_32mb_aa.webp)<br>**5. 3dfx + AA ([`glide-ng.hq.ini`](./glide-ng.hq.ini), default in-game detail)**<br>Anti-aliasing smooths 3D silhouettes while keeping the 2D HUD razor-sharp; default `Yon 25`, `YonFactor 0.25`, and player-only shadow. | ![3dfx Best Visuals](./screenshots/06_3dfx_best_visuals.webp)<br>**6. 3dfx Best Visuals ([`glide-ng.hq.ini`](./glide-ng.hq.ini) + `-yon 1.0 -simple 0` + max detail)**<br>4× Vulkan MSAA + full unsimplified car meshes, extended distant city block & streetlamps, distant pedestrians, and shadows under opponent cars. |
+| ![Cockpit 1x Standard](./screenshots/07_cockpit_1x.webp)<br>**7. Cockpit View (`C` key) — Standard (`1×`)**<br>Jagged diagonal white roof blade & distant silhouettes at default draw distance and player-only shadow. | ![Cockpit Best Visuals](./screenshots/08_cockpit_best_visuals.webp)<br>**8. Cockpit View (`C` key) — Best Visuals**<br>4× MSAA cleans up the angled roof blade, red hood creases, cars, and live 3D rear-view mirror with extended skyline & opponent shadows; 2D dashboard stays crisp. |
 
 ---
 
@@ -147,12 +162,14 @@ All captures below are taken on the Maim Street starting grid (`640×480`, `glid
 
 ### The `-hires` Flag & In-Game Detail Switches
 * **`-hires` does NOT enable higher-resolution textures in 3dfx mode.** It only switches pure DOS Software mode (`CARMA.EXE` / `-novoodoo`) from `320×200` (`DATA/32X20X8`) to `640×480` SVGA (`DATA/64X48X8`). 3dfx Glide mode already runs at `640×480` with `DATA/64X48X8`, so `-hires` is a no-op under `CARMAV.EXE` / `Voodo2C.exe`.
-* To maximize 3dfx visual quality from the command line, combine `[dosbox] memsize = 32` with **`-yon 1.0 -simple 0`** (maximum draw distance and unsimplified car meshes). World texture scaling (`double` / `quadruple`) and per-texture filtering (`nobilinear`) are applied automatically via `DATA/RACES/VOODOO.TXT` from the Final Beta 3dfx patch.
+* To maximize 3dfx visual quality (Option C above):
+  * Pass **`-yon 1.0 -simple 0`** to override `OPTIONS.TXT`'s defaults (`YonFactor 0.25` → `1.0` so accessories, streetlamps, and pedestrians stay visible out to 100% of the far clip plane; `CarSimplificationLevel 2` → `0` for full unsimplified car meshes).
+  * Set **`[dosbox] memsize = 32`** (or `64`) to disable Austere Mode, and maximize **View Distance** (`Yon`, default `25.0`) and **Car Shadows** (`ShadowLevel`) under in-game **Options → Graphics** (or raise `Yon` further in `DATA/OPTIONS.TXT`, e.g. `35.0`–`60.0`).
+  * World texture scaling (`double` / `quadruple`) and per-texture filtering (`nobilinear`) are applied automatically via `DATA/RACES/VOODOO.TXT` from the Final Beta 3dfx patch.
 
 ### Speed & Backend Selection
-Measured on full-detail Maim Street (`memsize = 32`, `YonFactor = 1.0`, `CarSimplificationLevel = 0`, ~1,310 triangles + ~633 KB LFB HUD/Pratcam writes per frame, uncapped):
-* **GPU hosts (`vulkan` / `opengl_es`):** Easily CPU-bound by DOSBox's x86 emulation of BRender (~40–52 FPS on fast desktop/laptop CPUs, even with `msaa = 4`).
-* **CPU-only hosts (`software`, AVX2/AVX-512):** Runs **2.35× faster** than DOSBox-X's built-in Software Voodoo at `1×` (**32.9 FPS avg** vs. **~14.0 FPS** on DOSBox-X SW Voodoo; `glide-ng` itself uses only ~5.25 ms/frame while DOSBox guest CPU takes ~24.5 ms/frame), and still **1.86× faster** with `2×2` SSAA enabled (**26.1 FPS avg**).
+* **GPU hosts (`vulkan` / `opengl_es`):** A steady **50–60 FPS** is the recommended target. Because DOSBox's x86 CPU emulation of the BRender software front-end (geometry transform, clipping, physics, and ~633 KB/frame of 2D LFB HUD/Pratcam writes) is the limiting factor rather than `glide-ng`'s GPU renderer, uncapped frame rates (with logging and perf telemetry disabled) can swing widely between **~50 and 150 FPS** depending on scene complexity and feel uneven. Keeping **`max_fps = 60`** (enabled by default in all presets, along with `vsync = true`) delivers smooth, stable frame pacing even with `msaa = 4`.
+* **CPU-only hosts (`software`, AVX2/AVX-512):** Measured on full-detail Maim Street (`memsize = 32`, `YonFactor = 1.0`, `CarSimplificationLevel = 0`, uncapped), `glide-ng` runs **2.35× faster** than DOSBox-X's built-in Software Voodoo at `1×` (**32.9 FPS avg** vs. **~14.0 FPS** on DOSBox-X SW Voodoo; `glide-ng` itself spends only ~5.25 ms/frame while DOSBox guest CPU emulation takes ~24.5 ms/frame), and still **1.86× faster** with `2×2` SSAA enabled (**26.1 FPS avg**).
 
 ---
 
@@ -162,7 +179,7 @@ Measured on full-detail Maim Street (`memsize = 32`, `YonFactor = 1.0`, `CarSimp
 * **Chronological persistent LFB writes (`CARMAV.EXE`):** In Voodoo Graphics mode, `CARMAV.EXE` (or `Voodo2C.exe -vgraphics`) locks `GR_BUFFER_BACKBUFFER` once at startup and writes the 2D `Tab` map before issuing a depth-only `grBufferClear` and drawing the 3D miniscreen inset. `glide-ng` flushes active persistent write locks before `grBufferClear()`, `grLfbReadRegion()`, and `grBufferSwap()`, so both `Voodo2C.exe` and `CARMAV.EXE` render the map inset, cockpit rear-view mirror, and Pratcam cleanly across Vulkan, OpenGL ES, and Software.
 * **Startup splash:** `glide-ng` plays its procedural startup splash once automatically on `grSstWinOpen()`. Uncomment `no_splash = true` in `glide-ng.ini` (or pass `FX_GLIDE_NO_SPLASH=1`) to jump straight to the intro.
 * **Useful CLI Switches** (supported by `CARMAV.EXE`, `Voodo2C.exe`, and `voodo2S.exe`):
-  * `-yon <0..1>` — Draw distance multiplier (`-yon 1.0` for maximum visibility).
+  * `-yon <0..1>` — Object/accessory draw-distance factor (`YonFactor`, default `0.25`; `-yon 1.0` keeps streetlamps, accessories, and pedestrians visible out to 100% of the far clip plane `Yon`).
   * `-simple <0..3>` — Car mesh simplification level (`-simple 0` for full detail).
   * `-nocutscenes` — Skip intro FMV cutscenes for faster startup.
   * `-vgraphics` — Force Voodoo Graphics mode (persistent LFB lock).
