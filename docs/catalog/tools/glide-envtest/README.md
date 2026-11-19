@@ -37,19 +37,21 @@
 
 ## Usage Examples
 
+*(Assumes `glide2_envtest` / `glide3_envtest` are installed on `PATH`; if running from a local source build, prefix with `<build>/bin/`.)*
+
 ```bash
 # Linux — automated override verification pass
 GLIDE_NG_HEADLESS=1 GLIDE_NG_BACKEND=vulkan \
-  ./build_release/bin/glide2_envtest --verify --test-reopen --test-bounds
+  glide2_envtest --verify --test-reopen --test-bounds
 
 # Test specific authentic 3dfx overrides (gamma, bilinear, ignore-reopen, bounds check)
 GLIDE_NG_HEADLESS=1 SST_GAMMA=1.7 SSTV2_FORCE_BILINEAR=1 \
   FX_GLIDE_IGNORE_REOPEN=1 FX_GLIDE_BOUNDS_CHECK=1 \
-  ./build_release/bin/glide3_envtest --verify --test-reopen --test-bounds
+  glide3_envtest --verify --test-reopen --test-bounds
 
-# Win32 under Wine
+# Win32 under Wine (with glide2x.dll next to glide2_envtest.exe)
 WINEDLLOVERRIDES="glide2x=n" GLIDE_NG_BACKEND=vulkan \
-  wine ./build_release/win32/bin/glide2_envtest.exe --verify --test-reopen --test-bounds
+  wine ./glide2_envtest.exe --verify --test-reopen --test-bounds
 ```
 
 ---

@@ -126,6 +126,7 @@ void ResetFrontendState() {
   s_errorCallback = nullptr;
   s_gammaCorrectionValue = 1.0f;
   s_sstOrigin = 0;
+  EntryCommon::ResetAutoSplashState();
 }
 }  // namespace
 
@@ -249,8 +250,9 @@ FX_ENTRY FxBool FX_CALL grSstWinOpen(AnyPtr hWnd,
       std::make_unique<GlideWrapper::GlideSplashAnimator>());
   GLIDE_LOG(INFO, "Frontend",
             "grSstWinOpen (Glide 2.x) invoked. Res="
-                << resolution << ", Buffers=" << nColBuffers
-                << ", Aux=" << nAuxBuffers << ", Origin=" << origin);
+                << resolution << ", ColorFmt=" << format
+                << ", Buffers=" << nColBuffers << ", Aux=" << nAuxBuffers
+                << ", Origin=" << origin);
   s_sstOrigin = origin;
   GlideWrapper::VertexLayout::GetInstance().ResetToGlide2Canonical();
   auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
@@ -291,6 +293,11 @@ FX_ENTRY FxBool FX_CALL grSstWinOpen(AnyPtr hWnd,
     EntryCommon::ApplyPostWinOpenOverrides(s_state, format, nColBuffers,
                                            nAuxBuffers);
     backend->SetSTWHintState(s_stwHintMask);
+    EntryCommon::MaybeRunAutoStartupSplash(
+        width, height, [](uint32_t w, uint32_t h) {
+          grSplash(0.0f, 0.0f, static_cast<float>(w), static_cast<float>(h),
+                   0u);
+        });
   }
   return attached ? FXTRUE : FXFALSE;
 }
@@ -402,7 +409,6 @@ FX_ENTRY void FX_CALL grSstResetPerfStats(void) {
 FX_ENTRY void FX_CALL grDrawLine(const GrVertex* a, const GrVertex* b) {
   GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::Draw);
   EnsureEngineInitialized();
-  GLIDE_LOG(TRACE, "Frontend", "grDrawLine (Glide 2.x) invoked.");
   auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
   if (!backend || !a || !b) return;
   auto& layout = GlideWrapper::VertexLayout::GetInstance();
@@ -410,6 +416,13 @@ FX_ENTRY void FX_CALL grDrawLine(const GrVertex* a, const GrVertex* b) {
   GlideWrapper::ModernVertex vb = layout.DecodeVertex(b);
   SanitizeVertex(va);
   SanitizeVertex(vb);
+  GLIDE_LOG(TRACE, "Frontend",
+            "grDrawLine (Glide 2.x): a=(" << va.pos[0] << "," << va.pos[1]
+                                          << ",z=" << va.pos[2]
+                                          << ",oow=" << va.pos[3] << ") b=("
+                                          << vb.pos[0] << "," << vb.pos[1]
+                                          << ",z=" << vb.pos[2]
+                                          << ",oow=" << vb.pos[3] << ")");
   EntryCommon::SyncTexturesBeforeDraw();
   backend->DrawLine(va, vb);
 }
@@ -451,6 +464,12 @@ static void DrawPolygonHelper(const int nverts, const GrVertex vlist[]) {
     layout.DecodeVertexInto(&vlist[i], verts[i]);
     SanitizeVertex(verts[i]);
   }
+  GLIDE_LOG(TRACE, "Frontend",
+            "DrawPolygonHelper (Glide 2.x): nverts="
+                << nverts << " v0=(" << verts[0].pos[0] << ","
+                << verts[0].pos[1] << ",z=" << verts[0].pos[2]
+                << ",oow=" << verts[0].pos[3] << ",st0=" << verts[0].tex[0]
+                << "," << verts[0].tex[1] << ")");
   for (int i = 1; i < nverts - 1; ++i) {
     backend->DrawTriangle(verts[0], verts[i], verts[i + 1]);
   }
@@ -478,6 +497,12 @@ static void DrawPolygonIndexedHelper(const int nverts, const int ilist[],
     layout.DecodeVertexInto(&vlist[ilist[i]], verts[i]);
     SanitizeVertex(verts[i]);
   }
+  GLIDE_LOG(TRACE, "Frontend",
+            "DrawPolygonIndexedHelper (Glide 2.x): nverts="
+                << nverts << " v0=(" << verts[0].pos[0] << ","
+                << verts[0].pos[1] << ",z=" << verts[0].pos[2]
+                << ",oow=" << verts[0].pos[3] << ",st0=" << verts[0].tex[0]
+                << "," << verts[0].tex[1] << ")");
   for (int i = 1; i < nverts - 1; ++i) {
     backend->DrawTriangle(verts[0], verts[i], verts[i + 1]);
   }
@@ -1547,14 +1572,20 @@ FX_ENTRY void FX_CALL guTexMemReset(void) {
   GLIDE_LOG(DEBUG, "Frontend", "guTexMemReset invoked.");
   s_guTextures.clear();
   s_guTexNextAddress = 0;
-  s_state.boundTex[0] = s_state.boundTex[1] = 0xFFFFFFFF;
+  s_currentMipMap[0] = s_currentMipMap[1] = GR_NULL_MIPMAP_HANDLE;
+  s_mpMipMap[0] = s_mpMipMap[1] = GR_NULL_MIPMAP_HANDLE;
+  s_state.boundTex[0] = s_state.boundTex[1] = 0xFFFFFFFFu;
   s_state.clampS[0] = s_state.clampS[1] = 0;
   s_state.clampT[0] = s_state.clampT[1] = 0;
   s_state.minFilter[0] = s_state.minFilter[1] = 0;
   s_state.magFilter[0] = s_state.magFilter[1] = 0;
 
-  GlideWrapper::TextureManager::GetInstance().Reset();
+  // Authentic Glide 2.x guTexMemReset clears texture allocations and current
+  // mipmap bindings without wiping hardware TMU palette or NCC tables.
+  GlideWrapper::TextureManager::GetInstance().ClearTextures();
   if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
+    EntryCommon::BindTexSource(s_state, 0, 0xFFFFFFFFu);
+    EntryCommon::BindTexSource(s_state, 1, 0xFFFFFFFFu);
     b->PurgeTextures();
   }
 }

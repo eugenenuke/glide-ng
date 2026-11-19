@@ -23,7 +23,7 @@ Built on 3dfx's **Arcade Tool Box (ATB)** framework, *Valley of Ra* (`fight.exe`
 
 1. Keep the demo's required **3dfx ATB runtime DLLs** alongside `fight.exe` and its data files (`fight.bof`, `.DAT`, textures):
    * `apilib.dll`, `fltdata.dll`, `lm.dll`, `mgdd.dll`, `runtime.dll`, `textureeditor.dll`, `MSVCRT40.DLL`
-2. Copy `glide2x.dll` from `build_release/win32/bin/` (or `build_win32/bin/`) and [`glide-ng.ini`](./glide-ng.ini) into the same folder.
+2. Copy `glide-ng`'s `glide2x.dll` and [`glide-ng.ini`](./glide-ng.ini) into the same folder.
 3. Launch under Wine / Proton:
 
 ```bash

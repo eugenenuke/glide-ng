@@ -311,6 +311,9 @@ bool ShouldRenderShamelessPlug(bool appEnabled);
 void RenderShamelessPlug();
 void RenderSplash(float x, float y, float w, float h, uint32_t frame,
                   void (*callback)(int frame));
+void ResetAutoSplashState();
+bool MaybeRunAutoStartupSplash(uint32_t width, uint32_t height,
+                               void (*invokeSplash)(uint32_t, uint32_t));
 void HandleDosboxSetConfig(const char* apiTag, uint32_t flags, void* magic);
 void HandleDosboxSetConfigRes(const char* apiTag, int res, void (*swap12)());
 

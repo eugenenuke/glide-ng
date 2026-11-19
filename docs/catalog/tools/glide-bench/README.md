@@ -54,10 +54,8 @@
 
 ## 2. Reproducibility Rules & Binary Locations
 
-* **Always build Release (`-O3`)** before benchmarking (`cmake -B build_release -DCMAKE_BUILD_TYPE=Release && cmake --build build_release -j$(nproc)`).
-  * **Linux**: `build_release/bin/glide2_bench`, `build_release/bin/glide3_bench`
-  * **Win32 (auto-built when MinGW-w64 is installed)**: `build_release/win32/bin/glide2_bench.exe`, `build_release/win32/bin/glide3_bench.exe` (or `build_win32/bin/`)
-  * **DOS/32 (auto-built when Open Watcom v2 is installed)**: `build_release/dos/glide_bench.exe` (Glide 2.x via `GLIDE2X.OVL`)
+* **Always use a Release (`-O3`) build or distribution package** before benchmarking (if building from source, see [Building & Installing](../../../user-guide/building-and-installing.md)).
+* **Commands below assume `glide2_bench` / `glide3_bench` are installed on `PATH`** (if running from a local source build, prefix with `<build>/bin/`, `<build>/win32/bin/`, or `<build>/dos/`).
 * **Uncap frame pacing and disable splash**: Both presets set `vsync = false`, `max_fps = 0`, `swap_interval = 0`, and `no_splash = true`. Otherwise results will clamp at 60 FPS!
 * **Headless vs. Windowed**:
   * Pass `GLIDE_NG_HEADLESS=1` (with `--no-hud`) for pure rendering throughput unaffected by compositor/VSync/window-manager jitter.
@@ -70,27 +68,27 @@
 ### Linux Native
 ```bash
 # Glide 3.x VSA-100 full 14-scene benchmark on Vulkan (using the Voodoo5 preset)
-GLIDE_NG_CONFIG=docs/catalog/tools/glide-bench/glide-ng.voodoo5.ini \
+GLIDE_NG_CONFIG=/path/to/glide-ng.voodoo5.ini \
   GLIDE_NG_HEADLESS=1 GLIDE_NG_BACKEND=vulkan \
-  ./build_release/bin/glide3_bench --no-hud --seconds 3 --scene all --csv /tmp/g3_vulkan.csv
+  glide3_bench --no-hud --seconds 3 --scene all --csv /tmp/g3_vulkan.csv
 
 # Glide 2.x 9-scene benchmark on OpenGL ES
-GLIDE_NG_CONFIG=docs/catalog/tools/glide-bench/glide-ng.ini \
+GLIDE_NG_CONFIG=/path/to/glide-ng.ini \
   GLIDE_NG_HEADLESS=1 GLIDE_NG_BACKEND=opengl_es \
-  ./build_release/bin/glide2_bench --no-hud --seconds 3 --scene all --csv /tmp/g2_gles.csv
+  glide2_bench --no-hud --seconds 3 --scene all --csv /tmp/g2_gles.csv
 ```
 
 ### Win32 Under Wine
 ```bash
-# Uncapped windowed Glide 3.x benchmark under Wine
+# Uncapped windowed Glide 3.x benchmark under Wine (with glide3x.dll next to glide3_bench.exe)
 WINEDLLOVERRIDES="glide3x=n" \
-  GLIDE_NG_CONFIG="$(pwd)/docs/catalog/tools/glide-bench/glide-ng.voodoo5.ini" \
+  GLIDE_NG_CONFIG=/path/to/glide-ng.voodoo5.ini \
   GLIDE_NG_BACKEND=vulkan \
-  wine ./build_release/win32/bin/glide3_bench.exe --no-hud --seconds 3 --scene all
+  wine ./glide3_bench.exe --no-hud --seconds 3 --scene all
 ```
 
 ### DOS/32 Under DOSBox (`GLIDE2X.OVL`)
-Copy `build_release/dos/glide_bench.exe` (alongside your `GLIDE2X.OVL`) into a mounted DOSBox directory and copy [`glide-ng.ini`](./glide-ng.ini) into the DOSBox working directory (or pass `GLIDE_NG_MAX_FPS=0 FX_GLIDE_SWAPINTERVAL=0 GLIDE_NG_NO_SPLASH=1` to DOSBox on the host):
+Copy `glide_bench.exe` (alongside your `GLIDE2X.OVL`, or with `GLIDE2X.OVL` on DOS `PATH`) into a mounted DOSBox directory and copy [`glide-ng.ini`](./glide-ng.ini) into the DOSBox working directory (or pass `GLIDE_NG_MAX_FPS=0 FX_GLIDE_SWAPINTERVAL=0 GLIDE_NG_NO_SPLASH=1` to DOSBox on the host):
 ```bat
 glide_bench.exe --no-hud --seconds 3 --scene all
 ```
@@ -103,13 +101,13 @@ glide_bench.exe --no-hud --seconds 3 --scene all
 
 ```bash
 mkdir -p /tmp/glide_simd_bench
-CFG="docs/catalog/tools/glide-bench/glide-ng.voodoo5.ini"
+CFG="/path/to/glide-ng.voodoo5.ini"
 
 # 640x480 full comparison: scalar vs avx2 vs avx512
 for simd in scalar avx2 avx512; do
   echo "=== Software/$simd (640x480) ==="
   GLIDE_NG_CONFIG="$CFG" GLIDE_NG_HEADLESS=1 GLIDE_NG_BACKEND=software GLIDE_NG_SW_SIMD=$simd \
-    ./build_release/bin/glide3_bench --no-hud --seconds 3 --scene all \
+    glide3_bench --no-hud --seconds 3 --scene all \
     --csv "/tmp/glide_simd_bench/g3_640_sw_${simd}.csv"
 done
 
@@ -118,7 +116,7 @@ for res in 1280 1600; do
   for simd in avx2 avx512; do
     echo "=== Software/$simd (${res}) ==="
     GLIDE_NG_CONFIG="$CFG" GLIDE_NG_HEADLESS=1 GLIDE_NG_BACKEND=software GLIDE_NG_SW_SIMD=$simd \
-      ./build_release/bin/glide3_bench --no-hud --seconds 3 --res "$res" --scene all \
+      glide3_bench --no-hud --seconds 3 --res "$res" --scene all \
       --csv "/tmp/glide_simd_bench/g3_${res}_sw_${simd}.csv"
   done
 done
@@ -160,7 +158,7 @@ ls /usr/share/glvnd/egl_vendor.d/*mesa*.json
 
 ```bash
 mkdir -p /tmp/glide_llvmpipe_vs_sw
-CFG="docs/catalog/tools/glide-bench/glide-ng.voodoo5.ini"
+CFG="/path/to/glide-ng.voodoo5.ini"
 
 # Resolve distro-specific Lavapipe ICD path automatically
 LVP_ICD=$(ls /usr/share/vulkan/icd.d/lvp_icd.x86_64.json /usr/share/vulkan/icd.d/lvp_icd.json 2>/dev/null | head -n 1)
@@ -168,20 +166,20 @@ echo "Using Vulkan Lavapipe ICD: $LVP_ICD"
 
 # 1. glide-ng Native Software Backend (auto picks AVX-512 on Zen 4, AVX2 otherwise)
 GLIDE_NG_CONFIG="$CFG" GLIDE_NG_HEADLESS=1 GLIDE_NG_BACKEND=software GLIDE_NG_SW_SIMD=auto \
-  ./build_release/bin/glide3_bench --no-hud --seconds 3 --scene all \
+  glide3_bench --no-hud --seconds 3 --scene all \
   --csv /tmp/glide_llvmpipe_vs_sw/sw_auto.csv
 
 # 2. Vulkan via Mesa llvmpipe (lavapipe)
 VK_DRIVER_FILES="$LVP_ICD" \
   GLIDE_NG_CONFIG="$CFG" GLIDE_NG_HEADLESS=1 GLIDE_NG_BACKEND=vulkan \
-  ./build_release/bin/glide3_bench --no-hud --seconds 3 --scene all \
+  glide3_bench --no-hud --seconds 3 --scene all \
   --csv /tmp/glide_llvmpipe_vs_sw/vk_llvmpipe.csv
 
 # 3. OpenGL ES via Mesa llvmpipe (REQUIRED on NVIDIA GLVND: force 50_mesa.json + LIBGL_ALWAYS_SOFTWARE=1!)
 __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json \
   LIBGL_ALWAYS_SOFTWARE=1 \
   GLIDE_NG_CONFIG="$CFG" GLIDE_NG_HEADLESS=1 GLIDE_NG_BACKEND=opengl_es \
-  ./build_release/bin/glide3_bench --no-hud --seconds 3 --scene all \
+  glide3_bench --no-hud --seconds 3 --scene all \
   --csv /tmp/glide_llvmpipe_vs_sw/gles_llvmpipe.csv
 ```
 

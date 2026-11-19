@@ -21,7 +21,7 @@
 
 ## Setup & Launch
 
-1. Copy `glide3x.dll` from `build_release/win32/bin/` (or `build_win32/bin/`) and [`glide-ng.ini`](./glide-ng.ini) next to `museum.exe`.
+1. Copy `glide-ng`'s `glide3x.dll` and [`glide-ng.ini`](./glide-ng.ini) next to `museum.exe`.
 2. Launch `museum.exe` directly with the full long model path (do **not** use `go.bat` under Linux/Wine — see quirks below):
 
 ```bash

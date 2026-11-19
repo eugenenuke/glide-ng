@@ -162,7 +162,11 @@ class TextureManager {
   }
   void SyncBoundTextures();
 
-  // 5. Purge and reset TMU memory state
+  // 5. Purge TMU texture allocations while preserving hardware palette & NCC
+  // tables (authentic guTexMemReset semantics).
+  void ClearTextures();
+
+  // 6. Full engine reset: purge TMU textures, palette/NCC tables, and UMA state.
   void Reset();
 
  private:

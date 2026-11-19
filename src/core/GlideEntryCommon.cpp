@@ -44,6 +44,8 @@ constexpr uint64_t kMaxBoundsWarnings = 16;
 uint64_t s_snapshotFrameCounter = 0;
 bool s_snapshotCaptured = false;
 uint32_t s_activeColorFormat = 0;
+bool s_autoSplashPlayed = false;
+bool s_inAutoSplash = false;
 
 inline uint32_t ResolveEffectiveFilter(uint32_t filter,
                                        const WrapperConfig& cfg) {
@@ -74,6 +76,9 @@ inline uint32_t ResolveEffectiveDither(uint32_t mode,
 }
 
 void MaybeCaptureSnapshot(IGraphicsBackend* backend) {
+  if (s_inAutoSplash) {
+    return;
+  }
   const auto& cfg = EmulationRegistry::GetInstance().GetConfig();
   const uint64_t frameIdx = s_snapshotFrameCounter++;
   if (!cfg.snapshotEnabled || s_snapshotCaptured ||
@@ -1267,6 +1272,7 @@ bool Load3dfPixelsAndPalette(const char* filename, uint32_t format,
 }
 
 bool ShouldRenderShamelessPlug(bool appEnabled) {
+  if (s_inAutoSplash) return false;
   const int mode = EmulationRegistry::GetInstance().GetConfig().shamelessPlugMode;
   if (mode > 0) return true;
   if (mode == 0) return false;
@@ -1295,6 +1301,29 @@ void RenderSplash(float x, float y, float w, float h, uint32_t frame,
   if (auto* animator = BackendManager::GetInstance().GetSplashAnimator()) {
     animator->Render(x, y, w, h, frame, callback);
   }
+}
+
+void ResetAutoSplashState() {
+  s_autoSplashPlayed = false;
+  s_inAutoSplash = false;
+}
+
+bool MaybeRunAutoStartupSplash(uint32_t width, uint32_t height,
+                               void (*invokeSplash)(uint32_t, uint32_t)) {
+  const auto& cfg = EmulationRegistry::GetInstance().GetConfig();
+  if (s_autoSplashPlayed || cfg.noSplash || cfg.forceNoWindow || !invokeSplash ||
+      width == 0u || height == 0u) {
+    return false;
+  }
+  s_autoSplashPlayed = true;
+  s_inAutoSplash = true;
+  GLIDE_LOG(INFO, "Frontend",
+            "Playing automatic startup splash on grSstWinOpen ("
+                << width << "x" << height
+                << "; suppress with FX_GLIDE_NO_SPLASH=1 or GLIDE_NG_NO_SPLASH=1).");
+  invokeSplash(width, height);
+  s_inAutoSplash = false;
+  return true;
 }
 
 void HandleDosboxSetConfig(const char* apiTag, uint32_t flags, void* magic) {

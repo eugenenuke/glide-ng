@@ -34,20 +34,22 @@ With `--probe` (`-p`), the tool opens an active Glide context and validates supp
 
 ## Usage Examples
 
+*(Assumes `glide2_info` / `glide3_info` are installed on `PATH`; if running from a local source build, prefix with `<build>/bin/`.)*
+
 ```bash
 # Linux — inspect Voodoo5 VSA-100 capabilities and verify every extension entry point
 GLIDE_NG_CARD_MODEL=voodoo5 GLIDE_NG_HEADLESS=1 \
-  ./build_release/bin/glide3_info -v --probe
+  glide3_info -v --probe
 
 # Linux — inspect all 7 emulated card profiles in a loop
 for card in voodoo1 rush voodoo2 banshee voodoo3 voodoo4 voodoo5; do
   echo "=== $card ==="
-  GLIDE_NG_CARD_MODEL=$card GLIDE_NG_HEADLESS=1 ./build_release/bin/glide3_info
+  GLIDE_NG_CARD_MODEL=$card GLIDE_NG_HEADLESS=1 glide3_info
 done
 
-# Win32 under Wine — verify 32-bit DLL loading and Vulkan ICD discovery
+# Win32 under Wine — verify 32-bit DLL loading and Vulkan ICD discovery (with glide3x.dll next to glide3_info.exe)
 WINEDLLOVERRIDES="glide3x=n" GLIDE_NG_BACKEND=vulkan \
-  wine ./build_release/win32/bin/glide3_info.exe -v --probe
+  wine ./glide3_info.exe -v --probe
 ```
 
 ### DOS/32 (`GLIDE2X.OVL`)

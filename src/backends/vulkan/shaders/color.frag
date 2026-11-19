@@ -96,11 +96,11 @@ vec4 unpackRGBA(uint packedColor) {
               float((packedColor >> 24u) & 0xFFu) / 255.0);
 }
 
-vec4 sampleTexture(sampler2D tex, vec2 uv, uint tmuIdx, float tw, float th) {
+vec4 sampleTexture(sampler2D tex, vec2 uv, vec2 dUvDx, vec2 dUvDy, uint tmuIdx,
+                   float tw, float th) {
   float maxDim = max(tw, th);
-  vec2 finalUv = uv;
-  finalUv.x *= (maxDim / tw);
-  finalUv.y *= (maxDim / th);
+  vec2 aspectScale = vec2(maxDim / tw, maxDim / th);
+  vec2 finalUv = uv * aspectScale;
 
   bool texChromaEnabled = ((pcs.flags >> (5u + tmuIdx)) & 1u) != 0u;
   if (texChromaEnabled) {
@@ -136,7 +136,7 @@ vec4 sampleTexture(sampler2D tex, vec2 uv, uint tmuIdx, float tw, float th) {
     vec4 c1 = mix(c01, c11, f.x);
     return mix(c0, c1, f.y);
   } else {
-    return texture(tex, finalUv);
+    return textureGrad(tex, finalUv, dUvDx * aspectScale, dUvDy * aspectScale);
   }
 }
 
@@ -575,6 +575,18 @@ void applyStippling(uint stippleMode, uint stipplePattern) {
 }
 
 void main() {
+  // Precompute affine screen-space derivatives in uniform control flow BEFORE
+  // any discard so 2x2 GPU helper lanes never hit out-of-triangle 1/divW
+  // singularities or spike perspective mipmap LOD to the 1x1 mip along edges.
+  vec2 dS0dx = dFdx(fragTex.xy);
+  vec2 dS0dy = dFdy(fragTex.xy);
+  vec2 dS1dx = dFdx(fragTex.zw);
+  vec2 dS1dy = dFdy(fragTex.zw);
+  float dOowDx = dFdx(fragOOW);
+  float dOowDy = dFdy(fragOOW);
+  vec2 dTmuOowDx = dFdx(fragTmuOow);
+  vec2 dTmuOowDy = dFdy(fragTmuOow);
+
   // Unpack colors at the start of main()
   vec4 constantColor = unpackRGBA(pcs.constantColor);
   vec4 chromakeyValue = unpackRGBA(pcs.chromakeyValue);
@@ -614,14 +626,19 @@ void main() {
 
   float divW0 = (useTmuOow & 1u) != 0u ? fragTmuOow.x : fragOOW;
   float divW1 = ((useTmuOow >> 1u) & 1u) != 0u ? fragTmuOow.y : fragOOW;
+  float dQ0dx = (useTmuOow & 1u) != 0u ? dTmuOowDx.x : dOowDx;
+  float dQ0dy = (useTmuOow & 1u) != 0u ? dTmuOowDy.x : dOowDy;
+  float dQ1dx = ((useTmuOow >> 1u) & 1u) != 0u ? dTmuOowDx.y : dOowDx;
+  float dQ1dy = ((useTmuOow >> 1u) & 1u) != 0u ? dTmuOowDy.y : dOowDy;
 
-  // Near-plane clipping (respect per-TMU oow when GR_STWHINT_W_DIFF_TMU* is set)
-  if (pcs.depthBufferMode == 2u) {
-    if (fragOOW > 1.0) discard;
-  } else {
-    if ((tmu0Active && divW0 <= 0.0) || (tmu1Active && divW1 <= 0.0)) {
-      discard;
-    }
+  // Guard non-positive W (respect per-TMU oow when GR_STWHINT_W_DIFF_TMU* is
+  // set). Authentic 3dfx silicon never discards fragOOW > 1.0 in W-buffer mode;
+  // W <= 1.0 saturates to nearest depth (0.0) in gl_FragDepth below.
+  if (pcs.depthBufferMode == 2u && fragOOW <= 0.0) {
+    discard;
+  }
+  if ((tmu0Active && divW0 <= 0.0) || (tmu1Active && divW1 <= 0.0)) {
+    discard;
   }
 
   // 1. Sample TMU 1 (upstream)
@@ -634,9 +651,10 @@ void main() {
     float th = float(texSize.y);
     float maxDim = max(tw, th);
     vec2 uv1 = (fragTex.zw / divW1) / 256.0;
-    vec2 texelPos1 = uv1 * vec2(maxDim, maxDim);
-    vec2 dx1 = dFdx(texelPos1);
-    vec2 dy1 = dFdy(texelPos1);
+    vec2 dUv1dx = (dS1dx * (1.0 / 256.0) - uv1 * dQ1dx) / divW1;
+    vec2 dUv1dy = (dS1dy * (1.0 / 256.0) - uv1 * dQ1dy) / divW1;
+    vec2 dx1 = dUv1dx * vec2(maxDim, maxDim);
+    vec2 dy1 = dUv1dy * vec2(maxDim, maxDim);
     float rho2_1 = max(dot(dx1, dx1), dot(dy1, dy1));
     float rawLod1 = (rho2_1 > 1e-8) ? 0.5 * log2(rho2_1) : -10.0;
     float bias1 = float(int(pcs.texDetail1 & 0x3Fu) - 32);
@@ -644,7 +662,7 @@ void main() {
     float dmax1 = float((pcs.texDetail1 >> 16u) & 0xFFu) / 255.0;
     detailFactor1 = clamp((bias1 - rawLod1) * exp2(scale1) / 255.0, 0.0, dmax1);
     lodFrac1 = fract(max(0.0, rawLod1 + pcs.texLodBias1));
-    tmu1Color = sampleTexture(texSampler1, uv1, 1u, tw, th);
+    tmu1Color = sampleTexture(texSampler1, uv1, dUv1dx, dUv1dy, 1u, tw, th);
   }
 
   // Evaluate TMU 1 combiner stage
@@ -677,9 +695,10 @@ void main() {
     float th = float(texSize.y);
     float maxDim = max(tw, th);
     vec2 uv0 = (fragTex.xy / divW0) / 256.0;
-    vec2 texelPos0 = uv0 * vec2(maxDim, maxDim);
-    vec2 dx0 = dFdx(texelPos0);
-    vec2 dy0 = dFdy(texelPos0);
+    vec2 dUv0dx = (dS0dx * (1.0 / 256.0) - uv0 * dQ0dx) / divW0;
+    vec2 dUv0dy = (dS0dy * (1.0 / 256.0) - uv0 * dQ0dy) / divW0;
+    vec2 dx0 = dUv0dx * vec2(maxDim, maxDim);
+    vec2 dy0 = dUv0dy * vec2(maxDim, maxDim);
     float rho2_0 = max(dot(dx0, dx0), dot(dy0, dy0));
     float rawLod0 = (rho2_0 > 1e-8) ? 0.5 * log2(rho2_0) : -10.0;
     float bias0 = float(int(pcs.texDetail0 & 0x3Fu) - 32);
@@ -687,7 +706,7 @@ void main() {
     float dmax0 = float((pcs.texDetail0 >> 16u) & 0xFFu) / 255.0;
     detailFactor0 = clamp((bias0 - rawLod0) * exp2(scale0) / 255.0, 0.0, dmax0);
     lodFrac0 = fract(max(0.0, rawLod0 + pcs.texLodBias0));
-    tmu0Color = sampleTexture(texSampler0, uv0, 0u, tw, th);
+    tmu0Color = sampleTexture(texSampler0, uv0, dUv0dx, dUv0dy, 0u, tw, th);
   }
 
   // Evaluate TMU 0 combiner stage
@@ -950,8 +969,9 @@ void main() {
   // Z-buffer & depth-off pipelines omit DepthReplacing and preserve Early-Z).
   if (pcs.depthBufferMode == 2u) {
     float eyeW = 1.0 / fragOOW;
-    float normalizedW = (eyeW - pcs.depthNear) / (pcs.depthFar - pcs.depthNear);
-    gl_FragDepth = clamp(normalizedW, 0.0, 1.0);
+    float normalizedW =
+        clamp((eyeW - pcs.depthNear) / (pcs.depthFar - pcs.depthNear), 0.0, 1.0);
+    gl_FragDepth = clamp(normalizedW + pcs.depthBias, 0.0, 1.0);
   } else {
     gl_FragDepth = gl_FragCoord.z;
   }

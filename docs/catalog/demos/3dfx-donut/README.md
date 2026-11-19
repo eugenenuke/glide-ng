@@ -21,7 +21,7 @@
 
 ## Setup & Launch
 
-1. Copy `glide2x.dll` from `build_release/win32/bin/` (or `build_win32/bin/`) and [`glide-ng.ini`](./glide-ng.ini) next to `donut.exe`.
+1. Copy `glide-ng`'s `glide2x.dll` and [`glide-ng.ini`](./glide-ng.ini) next to `donut.exe`.
 2. Launch under Wine / Proton:
 
 ```bash
