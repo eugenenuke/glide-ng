@@ -576,11 +576,17 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
   }
 
   // Pipeline Pre-warming (Warming the cache to prevent mid-frame shader
-  // compilation stutters!)
-  GLIDE_LOG(
-      INFO, "Vulkan",
-      "Pre-warming Vulkan pipeline cache with common rendering states...");
-  {
+  // compilation stutters on hardware GPUs. Skip on CPU software Vulkan
+  // adapters such as Mesa llvmpipe, where speculative LLVM JIT compilation
+  // wastes startup time and 32-bit virtual address space on unused pipelines.)
+  if (m_isCpuVulkanDevice) {
+    GLIDE_LOG(INFO, "Vulkan",
+              "Skipping speculative pipeline pre-warming on CPU Vulkan "
+              "adapter; pipelines will compile on demand.");
+  } else {
+    GLIDE_LOG(
+        INFO, "Vulkan",
+        "Pre-warming Vulkan pipeline cache with common rendering states...");
     std::vector<PipelineStateKey> warmStates;
     const uint32_t warmSampleMask =
         (m_msaaSamples > 1)
@@ -1224,8 +1230,12 @@ bool VulkanBackend::CreateSwapchain(uint32_t width, uint32_t height) {
       INFO, "Vulkan",
       "Selected swapchain extent: " << extent.width << "x" << extent.height);
 
-  // 5. Determine number of images (double or triple buffering)
-  uint32_t imageCount = capabilities.minImageCount + 1;
+  // 5. Determine number of images (double or triple buffering).
+  // On 32-bit CPU Vulkan adapters, stick to minImageCount to minimize VA use.
+  uint32_t imageCount =
+      (m_isCpuVulkanDevice && sizeof(void*) <= 4)
+          ? std::max(2u, capabilities.minImageCount)
+          : (capabilities.minImageCount + 1);
   if (capabilities.maxImageCount > 0 &&
       imageCount > capabilities.maxImageCount) {
     imageCount = capabilities.maxImageCount;
@@ -1832,6 +1842,11 @@ bool VulkanBackend::SwapBuffers() {
       acquireRes = vk::Result::eErrorOutOfDateKHR;
     } catch (const vk::SurfaceLostKHRError&) {
       acquireRes = vk::Result::eErrorSurfaceLostKHR;
+    } catch (const vk::SystemError& e) {
+      GLIDE_LOG(CRITICAL, "Vulkan",
+                "acquireNextImageKHR failed with Vulkan error: " << e.what());
+      Logger::GetInstance().Flush();
+      return false;
     }
 
     if (acquireRes == vk::Result::eErrorOutOfDateKHR ||
@@ -1975,7 +1990,14 @@ bool VulkanBackend::SwapBuffers() {
     vk::SubmitInfo submitInfo(1, waitSemaphores, waitStages, submitCmdCount,
                               submitCmds, 1, signalSemaphores);
 
-    m_graphicsQueue.submit(submitInfo, m_fences[m_currentFrameSlot].get());
+    try {
+      m_graphicsQueue.submit(submitInfo, m_fences[m_currentFrameSlot].get());
+    } catch (const vk::SystemError& e) {
+      GLIDE_LOG(CRITICAL, "Vulkan",
+                "vkQueueSubmit failed with Vulkan error: " << e.what());
+      Logger::GetInstance().Flush();
+      return false;
+    }
 
     vk::SwapchainKHR swapchains[] = {m_swapchain.get()};
     uint32_t indices[] = {imageIdx};
@@ -1989,6 +2011,11 @@ bool VulkanBackend::SwapBuffers() {
       presentRes = vk::Result::eErrorOutOfDateKHR;
     } catch (const vk::SurfaceLostKHRError&) {
       presentRes = vk::Result::eErrorSurfaceLostKHR;
+    } catch (const vk::SystemError& e) {
+      GLIDE_LOG(CRITICAL, "Vulkan",
+                "vkQueuePresentKHR failed with Vulkan error: " << e.what());
+      Logger::GetInstance().Flush();
+      return false;
     }
 
     if (presentRes == vk::Result::eErrorOutOfDateKHR ||
@@ -2264,6 +2291,7 @@ bool VulkanBackend::SelectPhysicalDevice() {
   }
   m_physicalDevice = bestDevice;
   vk::PhysicalDeviceProperties props = m_physicalDevice.getProperties();
+  m_isCpuVulkanDevice = (props.deviceType == vk::PhysicalDeviceType::eCpu);
 
   std::ostringstream logStream;
   logStream << "\n--- Active Vulkan Execution Adapter ---\n"
@@ -2274,6 +2302,16 @@ bool VulkanBackend::SelectPhysicalDevice() {
             << "    Dev Type  : " << vk::to_string(props.deviceType) << "\n"
             << "----------------------------------------";
   GLIDE_LOG(DEBUG, "Vulkan", logStream.str());
+
+  if (m_isCpuVulkanDevice && sizeof(void*) <= 4) {
+    GLIDE_LOG(INFO, "Vulkan",
+              "32-bit CPU Vulkan adapter detected ("
+                  << props.deviceName.data()
+                  << "): using lean staging/vertex buffers and on-demand "
+                     "pipeline compilation to preserve 32-bit VA space "
+                     "(hint: set LP_NUM_THREADS=4 or backend=software if a "
+                     "high-core-count host runs low on 32-bit memory).");
+  }
 
   return true;
 }

@@ -67,7 +67,7 @@ Copy [`glide-ng.hq.ini`](./glide-ng.hq.ini) as `glide-ng.ini` (or pass `GLIDE_NG
 - **Gamma**: `CYBER.EXE` natively calls `grGammaCorrectionValue(1.6)` at startup, so no INI gamma override is required. If you want a brighter arena, pause during a match (**`Space`**) and press **`\`** to step hardware gamma live (`1.6` → `1.7` → ...).
 
 > **32-Bit Wine + Mesa `llvmpipe` Note:**
-> On hosts without a 32-bit hardware Vulkan ICD, Mesa's CPU `llvmpipe` Vulkan driver spawns one JIT thread per host CPU core inside the 32-bit Wine address space; with `msaa = 4` on high-core-count machines (16–24+ cores), this can exhaust Wine32's 2 GB virtual address limit. Either install your GPU's 32-bit Vulkan ICD, set `LP_NUM_THREADS=4`, or use **Option C (CPU Software `2×2 SSAA`)** which is both faster and uses far less memory.
+> On hosts without a 32-bit hardware Vulkan ICD, `glide-ng` automatically shrinks its 32-bit Vulkan staging/vertex buffers and skips speculative pipeline pre-warming on CPU adapters (`llvmpipe`) to stay within Wine32's virtual address limit. On very high core-count CPUs (24–64+ cores), if you still encounter 32-bit memory pressure under `llvmpipe`, install your GPU's 32-bit Vulkan ICD, set `LP_NUM_THREADS=4`, or use **Option C (CPU Software `2×2 SSAA`)**.
 
 ### Option C: CPU Software Rasterizer (`glide-ng.software.ini` — Zero-GPU / `2×2 SSAA`)
 
@@ -79,7 +79,20 @@ WINEDLLOVERRIDES="glide=n" GLIDE_NG_BACKEND=software GLIDE_NG_SW_AA=ssaa \
   wine explorer /desktop=CG,800x600 ./CYBER.EXE
 ```
 
-Renders the full 3D arena with `2×2 SSAA` in ~**4.5 ms/frame** (locked **60.0 FPS**) on modern AVX2/AVX-512 CPUs with zero GPU or Vulkan ICD required.
+Renders the full 3D arena with `2×2 SSAA` at a locked **60.0 FPS** on modern AVX2/AVX-512 CPUs with zero GPU or Vulkan ICD required.
+
+### Playing Fullscreen (Wine vs. `gamescope`)
+
+`CYBER.EXE` has **no** command-line fullscreen flag and explicitly disables `Alt + Enter` when Glide (`GLIDE.DLL`) is active (on real 1996 Voodoo1 hardware, the pass-through card always took over the monitor at `640×480` while Windows kept a fixed `640×480` window). Running inside `wine explorer /desktop=...` therefore stays windowed (and enlarging the virtual desktop only enlarges the background around the fixed `640×480` game window).
+
+To play fullscreen on Linux:
+- **Without `gamescope` (X11 with a `640×480` RandR mode):** Drop `explorer /desktop=...` and launch `wine ./CYBER.EXE` directly. `CYBER.EXE` calls `ChangeDisplaySettings` (`640×480`) during startup to switch into fullscreen automatically. *(Note: on Wayland, HiDPI laptop panels, or remote/Cloudtop sessions whose display does not advertise a `640×480` mode, `ChangeDisplaySettings` fails and `CYBER.EXE` crashes on startup—use `gamescope` or a Wine virtual desktop instead.)*
+- **With `gamescope` (Recommended on Wayland / HiDPI / multi-monitor Linux):** Advertises a native `640×480` mode to Wine/DirectDraw and upscales cleanly to your monitor with 4:3 pillarboxing:
+  ```bash
+  WINEARCH=win32 WINEPREFIX=/path/to/wineprefix \
+  WINEDLLOVERRIDES="glide=n" \
+    gamescope -w 640 -h 480 -W 1920 -H 1080 -f -- wine ./CYBER.EXE
+  ```
 
 ---
 
@@ -110,16 +123,3 @@ All four captures below are unscaled, borderless `640×479` client-area frames f
 | **Options Menu (`Motion: smooth`, Arena, Time)** | `Ctrl + O` *(on Character Select)* | — |
 | **Adjust 3dfx Hardware Gamma Live** | `Space` *(pause)* then `\` | — |
 | **Quit Game** | `Esc` or `Alt + F4` | — |
-
----
-
-## Verified Backend Telemetry (`640×480`, 3D Arena ~950–1,200 tris/frame)
-
-| Backend & Mode | Active Adapter (Test Host) | Arena Render Time | Sustained FPS | Visual Status |
-| :--- | :--- | :---: | :---: | :---: |
-| **Vulkan (`1×`)** | `llvmpipe` (Wine32) | ~1.5 ms/frame | **60.0 FPS** (locked) | Clean |
-| **Vulkan (`4× MSAA`)** | `llvmpipe` (`LP_NUM_THREADS=4`, Wine32) | ~2.0–2.5 ms/frame | **52–60 FPS** (CPU `llvmpipe`) | Clean |
-| **OpenGL 3.3 Core / WGL (`1×`)** | Mesa WGL (Wine32) | ~2.5 ms/frame | **60.0 FPS** (locked) | Clean |
-| **OpenGL 3.3 Core / WGL (`4× MSAA`)** | Mesa WGL (Wine32) | ~6.4–7.1 ms/frame | **60.0 FPS** (locked) | Clean |
-| **Software (`1×`, AVX2)** | Host CPU Reference (24 threads) | ~3.3 ms/frame | **60.0 FPS** (locked) | Clean |
-| **Software (`2×2 SSAA`, AVX2)** | Host CPU Reference (24 threads) | ~4.4–4.6 ms/frame | **60.0 FPS** (locked) | Clean |
