@@ -6,19 +6,20 @@
 
 ## 1. Automated Catch2 Test Suites
 
-Whenever `Catch2` is installed, CMake builds two Catch2 v3 test executables and registers all test cases with `ctest`:
+Whenever `Catch2` is installed, CMake builds three Catch2 v3 test executables and registers all test cases with `ctest`:
 
 | Target | Source | Coverage |
 | :--- | :--- | :--- |
-| `Glide2xWrapperTests` | `tests/test_architecture.cpp` | 40 test cases covering Glide 2.x ABI exports, hardware/version gating, combiners, multi-texturing, mipmapping, fog, LFB 16/32-bit read/write, `.3df` parsing, `grGlideGetState`/`SetState`, thread scaling, and cross-backend visual parity. |
-| `Glide3xWrapperTests` | `tests/test_glide3.cpp` | 66 test cases covering Glide 3.x ABI, `grVertexLayout`, `NativeSurfaceHost`, `IniConfigLoader`, authentic 3dfx env vars, HUD/telemetry CSV, VSA-100 (`PIXEXT`, `COMBINE`, `TEXFMT`, `TEXTUREBUFFER`, `TEXUMA`, `GETGAMMA`, Spatial AA, Stencil), 13 SIMD kernel scalar/AVX2/AVX-512 bit-exactness, catalog INI validation (`[M12][Catalog]`), and SemVer parity (`[M13][Version]`). |
+| `Glide211WrapperTests` | `tests/test_glide211.cpp` | 3 test cases covering the Glide 2.11 (`libglide.so` / `glide.dll`) pre-2.3 SST-1 ABI: `grSstOpen`, `grSstPassthruMode`, fixed-1024-pixel-stride `grLfbBegin`/`End`/`GetReadPtr`/`GetWritePtr`, `guFbReadRegion`/`guFbWriteRegion`, and 2 MB TMU0 VRAM budget enforcement. |
+| `Glide2xWrapperTests` | `tests/test_architecture.cpp` | 42 test cases covering Glide 2.x ABI exports, hardware/version gating, combiners, multi-texturing, mipmapping, fog, LFB 16/32-bit read/write, `.3df` parsing, `grGlideGetState`/`SetState`, thread scaling, commercial game regressions, and cross-backend visual parity. |
+| `Glide3xWrapperTests` | `tests/test_glide3.cpp` | 68 test cases covering Glide 3.x ABI, `grVertexLayout`, `NativeSurfaceHost`, `IniConfigLoader`, authentic 3dfx env vars, HUD/telemetry CSV, VSA-100 (`PIXEXT`, `COMBINE`, `TEXFMT`, `TEXTUREBUFFER`, `TEXUMA`, `GETGAMMA`, Spatial AA, Stencil), 13 SIMD kernel scalar/AVX2/AVX-512 bit-exactness, catalog INI validation (`[M12][Catalog]`), and SemVer parity (`[M13][Version]`). |
 
 Synthetic `.3df` texture fixtures and temporary log paths are provided by `tests/test_helpers.h` so test runs leave the repository tree clean.
 
 ### Running Tests
 
 ```bash
-# Discover all registered tests (106 total)
+# Discover all registered tests (113 total)
 ctest --test-dir build -N
 
 # Run full suite via CTest (headless Software backend)
