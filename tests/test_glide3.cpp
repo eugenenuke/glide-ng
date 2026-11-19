@@ -1506,8 +1506,9 @@ TEST_CASE("Glide 2.x Coordinate Unsnapping Verification", "[Glide2][Unsnap][Glid
     REQUIRE(winClose != nullptr);
     REQUIRE(shutdown != nullptr);
 
-    // 3. Initialize Glide 2 and open a window (defaulting to Software backend for speed & sanity)
+    // 3. Initialize Glide 2 and open a headless window (Software backend for speed & sanity)
     ::setenv("GLIDE_NG_BACKEND", "SOFTWARE", 1);
+    ::setenv("GLIDE_NG_HEADLESS", "1", 1);
     glideInit();
     FxBool ok = winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz, GR_COLORFORMAT_ABGR, GR_ORIGIN_UPPER_LEFT, 2, 1);
     REQUIRE(ok == FXTRUE);
@@ -1572,6 +1573,7 @@ TEST_CASE("Glide 2.x Coordinate Unsnapping Verification", "[Glide2][Unsnap][Glid
     shutdown();
     ::dlclose(handle);
     ::unsetenv("GLIDE_NG_BACKEND");
+    ::unsetenv("GLIDE_NG_HEADLESS");
 #endif
 }
 
@@ -3830,6 +3832,8 @@ TEST_CASE("NativeSurfaceHost headless lifecycle and idempotent detach",
   CHECK(!host.SyncBounds(pw, ph));
   CHECK(pw == 640);
   CHECK(ph == 480);
+  host.NotifyWin32PassthruReclaimed();  // Safe no-op in Headless mode
+  CHECK(!host.ConsumeSurfaceInvalidated());
   host.PollEvents();
   CHECK(!host.WasQuitRequested());
 

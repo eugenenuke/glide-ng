@@ -1031,6 +1031,10 @@ bool NativeSurfaceHost::AttachWin32Embedded(void* parentHwndPtr) {
   if (m_fullscreen) {
     ApplyWin32EmbeddedFullscreenIfNeeded();
   }
+  m_win32LastStyle = static_cast<intptr_t>(GetWindowLongA(parent, GWL_STYLE));
+  m_win32SurfaceInvalidated = false;
+  m_win32PendingForeground.store(false, std::memory_order_relaxed);
+  m_win32ResetFullscreenTracking.store(false, std::memory_order_relaxed);
 
   RECT rc{};
   GetClientRect(parent, &rc);
@@ -1727,6 +1731,11 @@ void NativeSurfaceHost::Detach() {
   m_win32FullscreenSaved = false;
   m_win32FullscreenApplied = false;
   m_inWin32FullscreenAdjust = false;
+  m_inWin32ForegroundRaise = false;
+  m_win32SurfaceInvalidated = false;
+  m_win32PendingForeground.store(false, std::memory_order_relaxed);
+  m_win32ResetFullscreenTracking.store(false, std::memory_order_relaxed);
+  m_win32LastStyle = 0;
   m_win32SavedStyle = 0;
   m_win32SavedExStyle = 0;
   m_win32SavedRect[0] = m_win32SavedRect[1] = m_win32SavedRect[2] =
@@ -1907,9 +1916,86 @@ bool NativeSurfaceHost::SyncBounds(uint32_t& outPixelW, uint32_t& outPixelH) {
       outPixelH = 0;
       return false;
     }
-    if (m_fullscreen) {
-      ApplyWin32EmbeddedFullscreenIfNeeded();
+
+    // Track structural Win32 style mutations (e.g. DirectDraw fullscreen
+    // WS_POPUP|WS_MAXIMIZE returning to WS_CAPTION|WS_THICKFRAME, or WS_VISIBLE
+    // toggling). On Wine's winex11.drv under managed X11/XWayland WMs, these
+    // transitions can unmap/remap or recreate the host X11 window and require
+    // WSI surface recreation.
+    constexpr DWORD kStructuralStyleMask =
+        WS_POPUP | WS_CAPTION | WS_THICKFRAME | WS_VISIBLE | WS_MINIMIZE |
+        WS_MAXIMIZE;
+    const LONG preStyle = GetWindowLongA(parent, GWL_STYLE);
+    bool styleChanged =
+        ((static_cast<DWORD>(preStyle) & kStructuralStyleMask) !=
+         (static_cast<DWORD>(m_win32LastStyle) & kStructuralStyleMask));
+
+    if (m_win32ResetFullscreenTracking.exchange(false,
+                                                std::memory_order_relaxed)) {
+      m_win32FullscreenApplied = false;
     }
+    const bool hadAppliedFullscreen = m_win32FullscreenApplied;
+    bool appliedFullscreen = false;
+    if (m_fullscreen) {
+      appliedFullscreen = ApplyWin32EmbeddedFullscreenIfNeeded();
+    }
+
+    // One-shot restore & foreground raise after returning from VGA pass-through
+    // (e.g. DirectDraw fullscreen intro exiting back to Glide) or upon first
+    // applying borderless fullscreen, so the host WM does not leave the game
+    // iconic or hidden behind the launching terminal. Never runs on steady
+    // frames so Alt+Tab works normally during gameplay.
+    const bool wantInitialFullscreenRaise =
+        (appliedFullscreen && !hadAppliedFullscreen);
+    const bool wantPassthruRaise =
+        m_win32PendingForeground.exchange(false, std::memory_order_relaxed);
+    if ((wantPassthruRaise || wantInitialFullscreenRaise) &&
+        !m_inWin32ForegroundRaise && !m_inWin32FullscreenAdjust) {
+      struct RaiseGuard {
+        bool& flag;
+        explicit RaiseGuard(bool& f) : flag(f) { flag = true; }
+        ~RaiseGuard() { flag = false; }
+      } guard(m_inWin32ForegroundRaise);
+
+      if (IsIconic(parent)) {
+        ShowWindow(parent, SW_RESTORE);
+      } else if (!IsWindowVisible(parent)) {
+        ShowWindow(parent, SW_SHOW);
+      }
+      SetWindowPos(parent, HWND_TOP, 0, 0, 0, 0,
+                   SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+      BringWindowToTop(parent);
+      SetForegroundWindow(parent);
+      GLIDE_LOG(INFO, "WSI",
+                "NativeSurfaceHost: restored & raised Win32 HWND "
+                    << m_win32ParentHwnd
+                    << (wantInitialFullscreenRaise
+                            ? " after entering borderless fullscreen."
+                            : " after reclaiming 3dfx output from VGA."));
+    }
+
+    const LONG postStyle = GetWindowLongA(parent, GWL_STYLE);
+    if (appliedFullscreen ||
+        ((static_cast<DWORD>(postStyle) & kStructuralStyleMask) !=
+         (static_cast<DWORD>(m_win32LastStyle) & kStructuralStyleMask))) {
+      styleChanged = true;
+    }
+    m_win32LastStyle = static_cast<intptr_t>(postStyle);
+    if (!IsWindowVisible(parent) || IsIconic(parent)) {
+      // Skip WSI surface/swapchain recreation while the host HWND is hidden,
+      // minimized, or closing (e.g. a title hiding its window before
+      // grGlideShutdown); Wine's winex11 surface-support queries can fail on
+      // unmapped windows. When WS_VISIBLE is later restored, the style diff
+      // above will trigger a clean surface rebuild.
+      m_win32SurfaceInvalidated = false;
+      outPixelW = 0;
+      outPixelH = 0;
+      return false;
+    }
+    if (styleChanged) {
+      m_win32SurfaceInvalidated = true;
+    }
+
     RECT rc{};
     if (GetClientRect(parent, &rc) && rc.right > rc.left &&
         rc.bottom > rc.top) {
@@ -1936,6 +2022,21 @@ bool NativeSurfaceHost::SyncBounds(uint32_t& outPixelW, uint32_t& outPixelH) {
   outPixelW = m_pixelWidth;
   outPixelH = m_pixelHeight;
   return false;
+}
+
+void NativeSurfaceHost::NotifyWin32PassthruReclaimed() {
+#if defined(_WIN32)
+  if (m_mode == Mode::Win32Embedded && m_win32ParentHwnd) {
+    m_win32PendingForeground.store(true, std::memory_order_relaxed);
+    m_win32ResetFullscreenTracking.store(true, std::memory_order_relaxed);
+  }
+#endif
+}
+
+bool NativeSurfaceHost::ConsumeSurfaceInvalidated() {
+  const bool was = m_win32SurfaceInvalidated;
+  m_win32SurfaceInvalidated = false;
+  return was;
 }
 
 void NativeSurfaceHost::PollEvents(bool force) {

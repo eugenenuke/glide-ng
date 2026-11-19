@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <string>
@@ -116,6 +117,26 @@ class NativeSurfaceHost {
   bool SyncBounds(uint32_t& outPixelW, uint32_t& outPixelH);
 
   /**
+   * @brief Notifies NativeSurfaceHost that a Win32Embedded host window is
+   *        reclaiming 3dfx presentation after VGA pass-through
+   *        (grSstPassthruMode SHOW_VGA -> SHOW_SST1).
+   *
+   * Schedules a one-shot post-transition restore/foreground check in
+   * SyncBounds() so window managers do not leave the game minimized or behind
+   * the launching terminal after a DirectDraw fullscreen intro exits.
+   * Thread-safe / lock-free so backends may call it without risking WndProc
+   * re-entrancy deadlocks.
+   */
+  void NotifyWin32PassthruReclaimed();
+
+  /**
+   * @brief Returns and clears whether the embedded Win32 host window underwent
+   *        a structural style change (e.g. WS_POPUP <-> WS_CAPTION or
+   *        WS_VISIBLE toggle) that requires WSI surface recreation.
+   */
+  bool ConsumeSurfaceInvalidated();
+
+  /**
    * @brief Pumps window events ONLY in `StandaloneSDL2` mode.
    *
    * Guaranteed no-op in `Headless`, `X11Child`, and `WaylandSubsurface` modes
@@ -223,6 +244,11 @@ class NativeSurfaceHost {
   bool m_win32FullscreenSaved = false;
   bool m_win32FullscreenApplied = false;
   bool m_inWin32FullscreenAdjust = false;
+  bool m_inWin32ForegroundRaise = false;
+  bool m_win32SurfaceInvalidated = false;
+  std::atomic<bool> m_win32PendingForeground{false};
+  std::atomic<bool> m_win32ResetFullscreenTracking{false};
+  intptr_t m_win32LastStyle = 0;
   intptr_t m_win32SavedStyle = 0;
   intptr_t m_win32SavedExStyle = 0;
   int32_t m_win32SavedRect[4] = {0, 0, 0, 0};

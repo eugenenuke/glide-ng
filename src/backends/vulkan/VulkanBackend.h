@@ -727,21 +727,25 @@ class VulkanBackend : public GlideStateTracker {
   vk::DeviceSize m_lfbOverlayStagingSizes[2]{0, 0};
   vk::DeviceSize m_lfbOverlayStagingOffsets[2]{0, 0};
 
-  // Vulkan Gamma LUT State variables & swapchain RAMDAC presentation pass
+  // Vulkan Gamma LUT State variables & guest-resolution RAMDAC LUT pass
   bool InitGammaPresentPipeline_Locked();
-  bool CreateGammaPresentSwapchainFramebuffers_Locked();
-  void DestroyGammaPresentSwapchainFramebuffers_Locked();
+  bool EnsureGammaResolvedTargets_Locked();
   void DestroyGammaPresentResources_Locked();
   bool EnsureGammaLutTexture_Locked();
-  bool PresentGammaToSwapchain_Locked(uint32_t activeIdx, uint32_t imageIdx,
-                                      const PresentRect& dst);
+  bool ApplyGammaToGuestImage_Locked(uint32_t activeIdx,
+                                     vk::Image& outResolvedImage);
 
   float m_gammaCorrectionValue{1.0f};
   bool m_gammaLutDirty{true};
   // m_useGammaLut and m_lutR/G/B are inherited from GlideStateTracker.
   vk::Format m_gammaPresentPipelineFormat{vk::Format::eUndefined};
   vk::UniqueRenderPass m_gammaPresentRenderPass;
-  std::vector<vk::UniqueFramebuffer> m_gammaPresentFramebuffers;
+  vk::UniqueImage m_gammaResolvedImages[2];
+  vk::UniqueDeviceMemory m_gammaResolvedImageMemories[2];
+  vk::UniqueImageView m_gammaResolvedImageViews[2];
+  vk::UniqueFramebuffer m_gammaResolvedFramebuffers[2];
+  uint32_t m_gammaResolvedWidth{0};
+  uint32_t m_gammaResolvedHeight{0};
   vk::UniqueDescriptorSetLayout m_gammaPresentDescSetLayout;
   vk::UniqueDescriptorPool m_gammaPresentDescPool;
   vk::DescriptorSet m_gammaPresentDescSets[2];

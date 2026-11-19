@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <unordered_map>
 #include <vector>
 
@@ -28,6 +29,13 @@ class OpenGLESBackend : public GlideStateTracker {
   bool AttachWindow(void* nativeWindowHandle, uint32_t width, uint32_t height,
                     bool windowed) override;
   void DetachWindow() override;
+  void SetPassthruMode(bool show3dfx) override {
+    if (!show3dfx) {
+      m_passthruSuspended.store(true, std::memory_order_relaxed);
+    } else if (m_passthruSuspended.exchange(false, std::memory_order_relaxed)) {
+      m_surfaceHost.NotifyWin32PassthruReclaimed();
+    }
+  }
   uint32_t GetMsaaSamples() const override { return m_msaaSamples; }
   bool HasAllocatedCpuLfbStaging() const { return m_lfbStaging.IsAllocated(); }
 
@@ -382,6 +390,7 @@ class OpenGLESBackend : public GlideStateTracker {
   int m_uExtCombineLoc{-1};
   int m_uTmuConstantColorLoc{-1};
   uint32_t m_glesSamplers[2]{0, 0};  // GLuint sampler objects for TMU0/1
+  std::atomic<bool> m_passthruSuspended{false};
 };
 
 }  // namespace GlideWrapper

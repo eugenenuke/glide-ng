@@ -92,7 +92,7 @@ Three ways to play fullscreen on Linux:
   WINEDLLOVERRIDES="glide=n" GLIDE_NG_FULLSCREEN=1 GLIDE_NG_PRESENTATION_FILTER=linear \
     wine ./CYBER.EXE
   ```
-  *(Avoid wrapping fullscreen mode in `wine explorer /desktop=...` on regular X11/Wayland desktops — Wine's virtual desktop shrinks to a `640×480` floating window during `SPLASH4.AVI` and can steal focus/audio. Only use `explorer /desktop=...` on headless displays like `Xvfb` that lack a `640×480` RandR mode.)*
+  *(Avoid wrapping fullscreen mode in `wine explorer /desktop=...` on regular X11/Wayland desktops — Wine's virtual desktop shrinks to a `640×480` floating window during `SPLASH4.AVI` and can steal focus/audio. Only use `explorer /desktop=...` on headless displays like `Xvfb` that lack a `640×480` RandR mode. On CPU-only `llvmpipe` hosts with >16 CPU cores at >1080p desktop resolutions, also set `LP_NUM_THREADS=4` to prevent 32-bit Wine virtual address exhaustion.)*
 - **With `gamescope` (hardware DRM GPU required):** Exposes a native `640×480` nested display to Wine/DirectDraw and upscales with `linear`, `fsr` (AMD FSR 1.0), `nis`, `pixel`, or `integer` scaling *(requires a DRM GPU in `/dev/dri` supporting `VK_EXT_physical_device_drm`; will not start on CPU-only `llvmpipe` hosts)*:
   ```bash
   WINEARCH=win32 WINEPREFIX=/path/to/wineprefix \
