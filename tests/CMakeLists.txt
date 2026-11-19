@@ -1,4 +1,29 @@
 if(Catch2_FOUND)
+    # --- Glide 2.11 (glide.dll / libglide.so) Catch2 Test Suite ---
+    add_executable(Glide211WrapperTests
+        test_glide211.cpp
+    )
+
+    target_include_directories(Glide211WrapperTests PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../src"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../include/3dfx"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../include/glide211"
+    )
+
+    target_compile_definitions(Glide211WrapperTests PRIVATE
+        -D__linux__
+        -DGLIDE_VERSION=2
+    )
+
+    target_link_libraries(Glide211WrapperTests PRIVATE
+        GlideWrapperCore
+        Catch2::Catch2WithMain
+        glide
+        ${CMAKE_DL_LIBS}
+        -lm
+    )
+
     # --- Glide 2.x Catch2 Test Suite ---
     add_executable(Glide2xWrapperTests
         test_architecture.cpp
@@ -55,6 +80,7 @@ if(Catch2_FOUND)
 
     include(CTest)
     include(Catch)
+    catch_discover_tests(Glide211WrapperTests)
     catch_discover_tests(Glide2xWrapperTests)
     catch_discover_tests(Glide3xWrapperTests)
 else()

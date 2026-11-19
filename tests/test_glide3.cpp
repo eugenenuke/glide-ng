@@ -10093,7 +10093,7 @@ TEST_CASE("M12.5 Compatibility Catalog INI Presets & Directory Integrity",
       CHECK(fs::is_regular_file(entry.path() / "glide-ng.ini"));
     }
   }
-  CHECK(titleDirCount >= 14u);
+  CHECK(titleDirCount >= 15u);
 
   // 2. Discover every glide-ng*.ini under docs/catalog/ plus root glide-ng.ini.example
   std::vector<fs::path> iniFiles;
@@ -10109,7 +10109,7 @@ TEST_CASE("M12.5 Compatibility Catalog INI Presets & Directory Integrity",
   iniFiles.push_back(exampleIni);
   std::sort(iniFiles.begin(), iniFiles.end());
 
-  REQUIRE(iniFiles.size() >= 21u);
+  REQUIRE(iniFiles.size() >= 24u);
 
   GlideWrapper::IniConfigLoader loader;
   for (const auto& iniPath : iniFiles) {
@@ -10227,6 +10227,38 @@ TEST_CASE("M12.5 Compatibility Catalog INI Presets & Directory Integrity",
         cfg));
     CHECK(cfg.model == GlideWrapper::CardModel::VoodooGraphics);
     CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_48);
+    CHECK(cfg.noSplash == false);
+  }
+  {
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load(
+        (catalogDir / "games" / "cybergladiators" / "glide-ng.ini").string(),
+        cfg));
+    CHECK(cfg.model == GlideWrapper::CardModel::VoodooGraphics);
+    CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_11);
+    CHECK(cfg.noSplash == false);
+  }
+  {
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load(
+        (catalogDir / "games" / "cybergladiators" / "glide-ng.hq.ini").string(),
+        cfg));
+    CHECK(cfg.model == GlideWrapper::CardModel::VoodooGraphics);
+    CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_11);
+    CHECK(cfg.msaaSamples == 4u);
+    CHECK(cfg.presentationFilter == 1u);
+    CHECK(cfg.noDitherSub == true);
+    CHECK(cfg.noSplash == false);
+  }
+  {
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load(
+        (catalogDir / "games" / "cybergladiators" / "glide-ng.software.ini")
+            .string(),
+        cfg));
+    CHECK(cfg.backend == "software");
+    CHECK(cfg.model == GlideWrapper::CardModel::VoodooGraphics);
+    CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_11);
     CHECK(cfg.noSplash == false);
   }
 }

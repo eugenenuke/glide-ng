@@ -34,6 +34,11 @@ class IGraphicsBackend {
   virtual bool AttachWindow(void* nativeWindowHandle, uint32_t width,
                             uint32_t height, bool windowed) = 0;
   virtual void DetachWindow() = 0;
+  // Glide 2.11 VGA pass-through toggle (SHOW_VGA = false, SHOW_SST1 = true).
+  // Allows WSI backends sharing a host HWND with 2D/DirectDraw intro videos
+  // to yield the presentation surface cleanly during SHOW_VGA and reclaim it
+  // when 3dfx rendering resumes.
+  virtual void SetPassthruMode(bool /*show3dfx*/) {}
   virtual uint32_t GetWidth() const = 0;
   virtual uint32_t GetHeight() const = 0;
   virtual uint32_t GetGuestWidth() const { return GetWidth(); }

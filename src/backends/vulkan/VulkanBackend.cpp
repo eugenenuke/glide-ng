@@ -892,6 +892,7 @@ void VulkanBackend::DetachWindow_Locked() {
   m_hudOverlay.Reset();
   m_surface.reset();
   m_surfaceHost.Detach();
+  m_passthruSuspended = false;
 
   // Phase 2: Unmap and reset vertex buffer
   if (m_vertexBufferMap) {
@@ -1329,6 +1330,56 @@ void VulkanBackend::RecreateSwapchain(uint32_t width, uint32_t height) {
   CreateSwapchain(width, height);
 }
 
+void VulkanBackend::RecreateSurfaceAndSwapchain_Locked(uint32_t width,
+                                                       uint32_t height) {
+  if (!m_device || !m_surfaceHost.IsAttached() || width == 0 || height == 0) {
+    return;
+  }
+  m_device->waitIdle();
+  GLIDE_LOG(INFO, "Vulkan",
+            "Recreating Vulkan presentation surface and swapchain ("
+                << width << "x" << height << ")");
+  DestroySwapchain_Locked();
+  m_surface.reset();
+  if (CreatePresentationSurface()) {
+    if (!CreateSwapchain(width, height)) {
+      m_surface.reset();
+    }
+  }
+}
+
+void VulkanBackend::SetPassthruMode(bool show3dfx) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (!m_windowAttached || !m_device ||
+      m_surfaceHost.GetMode() != NativeSurfaceHost::Mode::Win32Embedded) {
+    return;
+  }
+  if (!show3dfx) {
+    if (!m_passthruSuspended) {
+      SubmitPendingUploadsAndWaitIdle_Locked();
+      DestroySwapchain_Locked();
+      m_surface.reset();
+      m_passthruSuspended = true;
+      GLIDE_LOG(INFO, "Vulkan",
+                "Yielded Win32Embedded presentation surface for VGA "
+                "pass-through (SHOW_VGA).");
+    }
+  } else {
+    if (m_passthruSuspended || !m_surface) {
+      m_passthruSuspended = false;
+      uint32_t hostW = 0;
+      uint32_t hostH = 0;
+      m_surfaceHost.SyncBounds(hostW, hostH);
+      if (hostW > 0 && hostH > 0) {
+        RecreateSurfaceAndSwapchain_Locked(hostW, hostH);
+      }
+      GLIDE_LOG(INFO, "Vulkan",
+                "Reclaimed Win32Embedded presentation surface for 3dfx "
+                "output (SHOW_SST1).");
+    }
+  }
+}
+
 void VulkanBackend::SetDepthState(uint32_t depthMode, uint32_t compareOp,
                                   bool depthMask, int32_t biasLevel) {
   std::lock_guard<std::mutex> lock(m_mutex);
@@ -1716,7 +1767,7 @@ bool VulkanBackend::SwapBuffers() {
   GLIDE_PROFILE_SCOPE("Vulkan::SwapBuffers");
 
   // Sync child/standalone surface bounds with host window and recreate
-  // swapchain cleanly on resize or recovery from minimized state.
+  // swapchain cleanly on resize or recovery from minimized/pass-through state.
   if (m_surface) {
     uint32_t hostW = 0;
     uint32_t hostH = 0;
@@ -1725,6 +1776,14 @@ bool VulkanBackend::SwapBuffers() {
       RecreateSwapchain(hostW, hostH);
     } else if (!m_swapchain && hostW > 0 && hostH > 0) {
       CreateSwapchain(hostW, hostH);
+    }
+  } else if (!m_passthruSuspended && m_surfaceHost.IsAttached() &&
+             m_surfaceHost.GetMode() != NativeSurfaceHost::Mode::Headless) {
+    uint32_t hostW = 0;
+    uint32_t hostH = 0;
+    m_surfaceHost.SyncBounds(hostW, hostH);
+    if (hostW > 0 && hostH > 0) {
+      RecreateSurfaceAndSwapchain_Locked(hostW, hostH);
     }
   }
 
@@ -1771,15 +1830,25 @@ bool VulkanBackend::SwapBuffers() {
           m_imageAvailableSemaphores[m_currentFrameSlot].get(), {}, &imageIdx);
     } catch (const vk::OutOfDateKHRError&) {
       acquireRes = vk::Result::eErrorOutOfDateKHR;
+    } catch (const vk::SurfaceLostKHRError&) {
+      acquireRes = vk::Result::eErrorSurfaceLostKHR;
     }
 
-    if (acquireRes == vk::Result::eErrorOutOfDateKHR) {
+    if (acquireRes == vk::Result::eErrorOutOfDateKHR ||
+        acquireRes == vk::Result::eErrorSurfaceLostKHR) {
       SubmitPendingUploadsAndWaitIdle_Locked();
       uint32_t hostW = 0;
       uint32_t hostH = 0;
       m_surfaceHost.SyncBounds(hostW, hostH);
       if (hostW > 0 && hostH > 0) {
-        RecreateSwapchain(hostW, hostH);
+        if (acquireRes == vk::Result::eErrorSurfaceLostKHR) {
+          RecreateSurfaceAndSwapchain_Locked(hostW, hostH);
+        } else {
+          RecreateSwapchain(hostW, hostH);
+        }
+      } else if (acquireRes == vk::Result::eErrorSurfaceLostKHR) {
+        DestroySwapchain_Locked();
+        m_surface.reset();
       }
       m_commandBuffer = &m_commandBuffers[m_currentFrameSlot].get();
       m_commandBuffer->reset({});
@@ -1918,15 +1987,25 @@ bool VulkanBackend::SwapBuffers() {
       presentRes = m_graphicsQueue.presentKHR(presentInfo);
     } catch (const vk::OutOfDateKHRError&) {
       presentRes = vk::Result::eErrorOutOfDateKHR;
+    } catch (const vk::SurfaceLostKHRError&) {
+      presentRes = vk::Result::eErrorSurfaceLostKHR;
     }
 
     if (presentRes == vk::Result::eErrorOutOfDateKHR ||
-        presentRes == vk::Result::eSuboptimalKHR) {
+        presentRes == vk::Result::eSuboptimalKHR ||
+        presentRes == vk::Result::eErrorSurfaceLostKHR) {
       uint32_t hostW = 0;
       uint32_t hostH = 0;
       m_surfaceHost.SyncBounds(hostW, hostH);
       if (hostW > 0 && hostH > 0) {
-        RecreateSwapchain(hostW, hostH);
+        if (presentRes == vk::Result::eErrorSurfaceLostKHR) {
+          RecreateSurfaceAndSwapchain_Locked(hostW, hostH);
+        } else {
+          RecreateSwapchain(hostW, hostH);
+        }
+      } else if (presentRes == vk::Result::eErrorSurfaceLostKHR) {
+        DestroySwapchain_Locked();
+        m_surface.reset();
       }
     } else if (presentRes != vk::Result::eSuccess) {
       GLIDE_LOG(

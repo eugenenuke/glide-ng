@@ -1,6 +1,6 @@
 # Optional MinGW-w64 32-bit (i686) Win32 cross-build integration.
 # Automatically detects i686-w64-mingw32-gcc/g++ (POSIX threads) on Linux hosts
-# and builds glide2x.dll, glide3x.dll, and Win32 tools under ${CMAKE_BINARY_DIR}/win32/bin
+# and builds glide.dll, glide2x.dll, glide3x.dll, and Win32 tools under ${CMAKE_BINARY_DIR}/win32/bin
 # alongside Linux and DOS/32 outputs; never fails Linux builds when MinGW is absent.
 
 option(GLIDE_BUILD_WIN32
@@ -61,8 +61,8 @@ if(_GLIDE_MINGW32_CC AND _GLIDE_MINGW32_CXX AND _GLIDE_WIN32_HAS_VK_HEADERS)
         )
         add_custom_target(win32_dlls
             COMMAND "${CMAKE_COMMAND}" -E env --unset=MAKEFLAGS --unset=MFLAGS
-                "${CMAKE_COMMAND}" --build "${GLIDE_WIN32_BUILD_DIR}" --parallel --target glide2x glide3x
-            COMMENT "Building 32-bit Win32 glide2x.dll & glide3x.dll -> ${GLIDE_WIN32_BUILD_DIR}/bin"
+                "${CMAKE_COMMAND}" --build "${GLIDE_WIN32_BUILD_DIR}" --parallel --target glide glide2x glide3x
+            COMMENT "Building 32-bit Win32 glide.dll, glide2x.dll & glide3x.dll -> ${GLIDE_WIN32_BUILD_DIR}/bin"
             USES_TERMINAL
         )
     else()

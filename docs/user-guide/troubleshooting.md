@@ -29,9 +29,9 @@ WINEDLLOVERRIDES="glide2x=n" GLIDE_NG_LOG_CONSOLE=1 wine ./glide2_info.exe -v --
 
 - **Symptom**: Game falls back to software rendering or reports no 3dfx card found, and no `glide-ng.log` is created.
 - **Fix**:
-  1. Confirm `glide2x.dll` and/or `glide3x.dll` sits in the **same directory** as the game `.exe`.
-  2. Pass `WINEDLLOVERRIDES="glide2x,glide3x=n"` (or `"glide2x=n"` / `"glide3x=n"`).
-  3. Confirm the game actually links `glide2x.dll` or `glide3x.dll` rather than `glide.dll` (Glide 2.11) or `sst1init.dll` (PCI probe):
+  1. Confirm `glide.dll`, `glide2x.dll`, and/or `glide3x.dll` sits in the **same directory** as the game `.exe`.
+  2. Pass `WINEDLLOVERRIDES="glide,glide2x,glide3x=n"` (or `"glide=n"` / `"glide2x=n"` / `"glide3x=n"`).
+  3. Confirm which DLL the game imports (`glide.dll` for Glide 2.11, `glide2x.dll` for Glide 2.3–2.6, `glide3x.dll` for Glide 3.x, or note if it is a raw PCI probe like `sst1init.dll`):
      ```bash
      i686-w64-mingw32-objdump -p game.exe | grep "DLL Name:"
      ```

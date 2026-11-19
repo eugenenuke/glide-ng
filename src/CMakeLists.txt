@@ -143,7 +143,33 @@ if(UNIX AND NOT APPLE)
 endif()
 
 
-# 2. Universal Glide 2 Frontend Export Library (libglide2x.so / glide2x.dll)
+# 2. Glide 2.11 Frontend Export Library (libglide.so / glide.dll)
+set(GLIDE211_SOURCES glide211/glide211_entry.cpp)
+if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/glide211/glide.def")
+    list(APPEND GLIDE211_SOURCES glide211/glide.def)
+endif()
+if(WIN32 AND CMAKE_RC_COMPILER)
+    configure_file(glide211/glide.rc.in "${CMAKE_CURRENT_BINARY_DIR}/glide.rc" @ONLY)
+    list(APPEND GLIDE211_SOURCES "${CMAKE_CURRENT_BINARY_DIR}/glide.rc")
+endif()
+add_library(glide SHARED ${GLIDE211_SOURCES})
+if(WIN32)
+    set_target_properties(glide PROPERTIES PREFIX "" OUTPUT_NAME "glide")
+    if(MINGW)
+        target_link_options(glide PRIVATE -static -mstackrealign)
+    endif()
+else()
+    set_target_properties(glide PROPERTIES VERSION 2.11.0 SOVERSION 0)
+endif()
+target_include_directories(glide PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../include/glide211"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../include/glide2"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../include/3dfx"
+)
+target_link_libraries(glide PRIVATE GlideWrapperCore)
+
+
+# 3. Universal Glide 2 Frontend Export Library (libglide2x.so / glide2x.dll)
 set(GLIDE2_SOURCES glide2/glide2_entry.cpp)
 if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/glide2/glide2x.def")
     list(APPEND GLIDE2_SOURCES glide2/glide2x.def)
@@ -222,6 +248,7 @@ if(WIN32 AND MINGW AND CMAKE_DLLTOOL)
         target_link_libraries(${DLL_TARGET}_3dfx_implib INTERFACE "${_imp_lib}")
     endfunction()
 
+    add_win32_3dfx_implib(glide "${CMAKE_CURRENT_SOURCE_DIR}/glide211/glide.def")
     add_win32_3dfx_implib(glide2x "${CMAKE_CURRENT_SOURCE_DIR}/glide2/glide2x.def")
     add_win32_3dfx_implib(glide3x "${CMAKE_CURRENT_SOURCE_DIR}/glide3/glide3x.def")
 endif()

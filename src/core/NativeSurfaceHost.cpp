@@ -111,8 +111,11 @@ void EnsureWin32WindowClassesRegistered(HINSTANCE hInst) {
   s_registered = true;
 }
 
-bool IsUsableWin32HostWindow(HWND hwnd) {
-  if (!hwnd || !IsWindow(hwnd) || !IsWindowVisible(hwnd) || IsIconic(hwnd)) {
+bool IsUsableWin32HostWindow(HWND hwnd, bool requireVisible = true) {
+  if (!hwnd || !IsWindow(hwnd) || IsIconic(hwnd)) {
+    return false;
+  }
+  if (requireVisible && !IsWindowVisible(hwnd)) {
     return false;
   }
   DWORD pid = 0;
@@ -132,47 +135,74 @@ bool IsUsableWin32HostWindow(HWND hwnd) {
         std::strcmp(cls, "IME") == 0 ||
         std::strcmp(cls, "Default IME") == 0 ||
         std::strcmp(cls, "MSCTFIME UI") == 0 ||
-        std::strcmp(cls, "tooltips_class32") == 0) {
+        std::strcmp(cls, "tooltips_class32") == 0 ||
+        std::strcmp(cls, "OleMainThreadWndClass") == 0 ||
+        std::strcmp(cls, "DDRAW_WIN") == 0) {
       return false;
     }
   }
   RECT rc{};
-  if (!GetClientRect(hwnd, &rc) || (rc.right - rc.left) < 64 ||
-      (rc.bottom - rc.top) < 64) {
-    return false;
+  if (GetClientRect(hwnd, &rc) && (rc.right - rc.left) >= 64 &&
+      (rc.bottom - rc.top) >= 64) {
+    return true;
   }
-  return true;
+  // Pre-ShowWindow top-level windows (e.g. Glide 2.11 titles calling grSstOpen
+  // before ShowWindow) may have a non-empty window rect before client layout.
+  if (!requireVisible && GetWindowRect(hwnd, &rc) &&
+      (rc.right - rc.left) >= 64 && (rc.bottom - rc.top) >= 64) {
+    return true;
+  }
+  return false;
 }
 
+struct Win32HostSearchCtx {
+  HWND found = nullptr;
+  bool requireVisible = true;
+};
+
 BOOL CALLBACK EnumProcessGlideHostProc(HWND hwnd, LPARAM lParam) {
-  if (IsUsableWin32HostWindow(hwnd)) {
-    *reinterpret_cast<HWND*>(lParam) = hwnd;
+  auto* ctx = reinterpret_cast<Win32HostSearchCtx*>(lParam);
+  if (IsUsableWin32HostWindow(hwnd, ctx->requireVisible)) {
+    ctx->found = hwnd;
     return FALSE;
   }
   return TRUE;
 }
 
 // Authentic 3dfx Win32 behavior: fullscreen Glide games (e.g. Donut, Unreal,
-// Tomb Raider, NFS) create a top-level WS_POPUP window and pass hWnd=0 to
-// grSstWinOpen(), expecting Glide to attach to GetActiveWindow() / the app's
-// main window instead of spawning a second overlapping window.
+// Tomb Raider, NFS, CyberGladiators) create a top-level window and pass hWnd=0
+// (or call grSstOpen() with no hWnd parameter), expecting Glide to attach to
+// the app's main window instead of spawning a second overlapping window.
 HWND FindWin32ProcessHostHwnd() {
   HWND active = GetActiveWindow();
-  if (IsUsableWin32HostWindow(active)) {
+  if (IsUsableWin32HostWindow(active, true)) {
     return active;
   }
   HWND fg = GetForegroundWindow();
-  if (IsUsableWin32HostWindow(fg)) {
+  if (IsUsableWin32HostWindow(fg, true)) {
     return fg;
   }
-  HWND found = nullptr;
+  // Pass 1: prefer already-visible top-level windows of this process.
+  Win32HostSearchCtx visCtx{nullptr, true};
   EnumThreadWindows(GetCurrentThreadId(), EnumProcessGlideHostProc,
-                    reinterpret_cast<LPARAM>(&found));
-  if (found) {
-    return found;
+                    reinterpret_cast<LPARAM>(&visCtx));
+  if (visCtx.found) {
+    return visCtx.found;
   }
-  EnumWindows(EnumProcessGlideHostProc, reinterpret_cast<LPARAM>(&found));
-  return found;
+  EnumWindows(EnumProcessGlideHostProc, reinterpret_cast<LPARAM>(&visCtx));
+  if (visCtx.found) {
+    return visCtx.found;
+  }
+  // Pass 2: accept pre-ShowWindow top-level windows (e.g. Glide 2.11 titles
+  // that call grSstOpen() immediately before ShowWindow(hWndMain, nCmdShow)).
+  Win32HostSearchCtx hiddenCtx{nullptr, false};
+  EnumThreadWindows(GetCurrentThreadId(), EnumProcessGlideHostProc,
+                    reinterpret_cast<LPARAM>(&hiddenCtx));
+  if (hiddenCtx.found) {
+    return hiddenCtx.found;
+  }
+  EnumWindows(EnumProcessGlideHostProc, reinterpret_cast<LPARAM>(&hiddenCtx));
+  return hiddenCtx.found;
 }
 #endif
 
@@ -1646,43 +1676,48 @@ bool NativeSurfaceHost::SyncBounds(uint32_t& outPixelW, uint32_t& outPixelH) {
 #if defined(_WIN32)
   if (m_mode == Mode::Win32Window && m_win32Hwnd) {
     HWND hwnd = static_cast<HWND>(m_win32Hwnd);
-    if (IsWindow(hwnd)) {
-      RECT rc{};
-      if (GetClientRect(hwnd, &rc) && rc.right > rc.left &&
-          rc.bottom > rc.top) {
-        const uint32_t newW = static_cast<uint32_t>(rc.right - rc.left);
-        const uint32_t newH = static_cast<uint32_t>(rc.bottom - rc.top);
-        const bool changed = (newW != m_pixelWidth || newH != m_pixelHeight);
-        m_pixelWidth = newW;
-        m_pixelHeight = newH;
-        outPixelW = m_pixelWidth;
-        outPixelH = m_pixelHeight;
-        return changed;
-      }
+    if (!IsWindow(hwnd)) {
+      outPixelW = 0;
+      outPixelH = 0;
+      return false;
+    }
+    RECT rc{};
+    if (GetClientRect(hwnd, &rc) && rc.right > rc.left && rc.bottom > rc.top) {
+      const uint32_t newW = static_cast<uint32_t>(rc.right - rc.left);
+      const uint32_t newH = static_cast<uint32_t>(rc.bottom - rc.top);
+      const bool changed = (newW != m_pixelWidth || newH != m_pixelHeight);
+      m_pixelWidth = newW;
+      m_pixelHeight = newH;
+      outPixelW = m_pixelWidth;
+      outPixelH = m_pixelHeight;
+      return changed;
     }
   } else if (m_mode == Mode::Win32Embedded && m_win32ParentHwnd) {
     HWND parent = static_cast<HWND>(m_win32ParentHwnd);
-    if (IsWindow(parent)) {
-      RECT rc{};
-      if (GetClientRect(parent, &rc) && rc.right > rc.left &&
-          rc.bottom > rc.top) {
-        const uint32_t newW = static_cast<uint32_t>(rc.right - rc.left);
-        const uint32_t newH = static_cast<uint32_t>(rc.bottom - rc.top);
-        const bool changed = (newW != m_pixelWidth || newH != m_pixelHeight);
-        if (changed) {
-          if (m_win32OwnsHwnd && m_win32Hwnd &&
-              IsWindow(static_cast<HWND>(m_win32Hwnd))) {
-            SetWindowPos(static_cast<HWND>(m_win32Hwnd), nullptr, 0, 0,
-                         static_cast<int>(newW), static_cast<int>(newH),
-                         SWP_NOZORDER | SWP_NOACTIVATE);
-          }
-          m_pixelWidth = newW;
-          m_pixelHeight = newH;
+    if (!IsWindow(parent)) {
+      outPixelW = 0;
+      outPixelH = 0;
+      return false;
+    }
+    RECT rc{};
+    if (GetClientRect(parent, &rc) && rc.right > rc.left &&
+        rc.bottom > rc.top) {
+      const uint32_t newW = static_cast<uint32_t>(rc.right - rc.left);
+      const uint32_t newH = static_cast<uint32_t>(rc.bottom - rc.top);
+      const bool changed = (newW != m_pixelWidth || newH != m_pixelHeight);
+      if (changed) {
+        if (m_win32OwnsHwnd && m_win32Hwnd &&
+            IsWindow(static_cast<HWND>(m_win32Hwnd))) {
+          SetWindowPos(static_cast<HWND>(m_win32Hwnd), nullptr, 0, 0,
+                       static_cast<int>(newW), static_cast<int>(newH),
+                       SWP_NOZORDER | SWP_NOACTIVATE);
         }
-        outPixelW = m_pixelWidth;
-        outPixelH = m_pixelHeight;
-        return changed;
+        m_pixelWidth = newW;
+        m_pixelHeight = newH;
       }
+      outPixelW = m_pixelWidth;
+      outPixelH = m_pixelHeight;
+      return changed;
     }
   }
 #endif

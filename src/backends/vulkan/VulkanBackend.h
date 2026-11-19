@@ -303,6 +303,7 @@ class VulkanBackend : public GlideStateTracker {
   bool AttachWindow(void* nativeWindowHandle, uint32_t width, uint32_t height,
                     bool windowed) override;
   void DetachWindow() override;
+  void SetPassthruMode(bool show3dfx) override;
   uint32_t GetMsaaSamples() const override { return m_msaaSamples; }
   bool HasAllocatedCpuLfbStaging() const { return m_lfbStaging.IsAllocated(); }
   uint64_t GetTexturePoolReuseCount() const { return m_texturePoolReuses; }
@@ -528,6 +529,8 @@ class VulkanBackend : public GlideStateTracker {
   // WaylandSubsurface)
   NativeSurfaceHost m_surfaceHost;
   bool CreatePresentationSurface();
+  void RecreateSurfaceAndSwapchain_Locked(uint32_t width, uint32_t height);
+  bool m_passthruSuspended{false};
 
   vk::UniqueSurfaceKHR
       m_surface;  // Vulkan presentation surface backed by m_surfaceHost

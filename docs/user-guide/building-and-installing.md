@@ -1,6 +1,6 @@
 # Building & Installing glide-ng
 
-This guide covers prerequisites, compiling `glide-ng` for Linux, cross-compiling 32-bit Win32 DLLs (`glide2x.dll` and `glide3x.dll`) for Wine/Proton or Windows, optional DOS/32 tool builds, and installing the wrapper for games and emulators.
+This guide covers prerequisites, compiling `glide-ng` for Linux, cross-compiling 32-bit Win32 DLLs (`glide.dll`, `glide2x.dll`, and `glide3x.dll`) for Wine/Proton or Windows, optional DOS/32 tool builds, and installing the wrapper for games and emulators.
 
 ---
 
@@ -28,11 +28,11 @@ This guide covers prerequisites, compiling `glide-ng` for Linux, cross-compiling
     mesa-libEGL-devel mesa-libGLES-devel SDL2-devel libX11-devel libXext-devel wayland-devel pkgconf-pkg-config
   ```
 
-`Catch2` is optional; when installed, the self-contained `Glide2xWrapperTests` and `Glide3xWrapperTests` suites (106 tests total) build automatically with zero external SDK or demo dependencies.
+`Catch2` is optional; when installed, the self-contained `Glide211WrapperTests`, `Glide2xWrapperTests`, and `Glide3xWrapperTests` suites build automatically with zero external SDK or demo dependencies.
 
 ### Optional: 32-Bit Win32 Cross-Compiler (MinGW-w64) & Wine
 
-Required only to build 32-bit Windows `glide2x.dll`, `glide3x.dll`, and Win32 `.exe` utilities on Linux:
+Required only to build 32-bit Windows `glide.dll`, `glide2x.dll`, `glide3x.dll`, and Win32 `.exe` utilities on Linux:
 
 - **Debian / Ubuntu** (enable `i386` multiarch first if needed):
   ```bash

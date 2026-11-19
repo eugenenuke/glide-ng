@@ -27,12 +27,12 @@ Forward-looking engineering roadmap for `glide-ng`. Completed pre-beta work is a
 ## Upcoming Milestones
 
 ### M14 — Glide 2.11 (`glide.dll`) Frontend & Early SST-1 Title Support (`feat/m14-glide211-dll`)
-- **Status**: `[ ] PENDING`
+- **Status**: `[~] IMPLEMENTED — AWAITING USER VERIFICATION`
 - **Goal**: Support late-1996 / early-1997 Win32 and DOS titles linked against **`glide.dll` (Glide 2.11)** rather than `glide2x.dll`.
 - **Key Technical Work**:
-  - Implement a dedicated `src/glide211/` frontend library (`glide.dll` / `libglide.so`) translating the pre-2.3 SST-1 ABI (`grSstOpen`, `grSstPassthruMode`, `grLfbBegin`/`End`/`GetReadPtr`/`GetWritePtr`/`Origin`/`WriteMode`/`BypassMode` with fixed 1024-pixel stride, `guFbReadRegion`/`guFbWriteRegion`, `guTex*`) onto `GlideWrapperCore`.
-  - Default `glide.dll` to the `VoodooGraphics` (SST-1) profile with API version `2.11` and authentic SST-1 defaults.
-  - Validate end-to-end against *CyberGladiators* (27 dynamic `__stdcall` `GLIDE.DLL` imports) under Wine32 across Vulkan, OpenGL 3.3 Core, and Software backends, add Catch2 unit tests, and publish a `docs/catalog/games/cybergladiators/` entry.
+  - `[x]` Implement a dedicated `src/glide211/` frontend library (`glide.dll` / `libglide.so`) with clean-room `include/glide211/glide.h` translating the pre-2.3 SST-1 ABI (`grSstOpen`, `grSstPassthruMode`, fixed-1024-pixel-stride `grLfbBegin`/`End`/`GetReadPtr`/`GetWritePtr`/`Origin`/`WriteMode`/`BypassMode` with cached BAR pointer reuse, `guFbReadRegion`/`guFbWriteRegion`, and authentic TMU0 VRAM budget enforcement in `guTexAllocateMemory`) onto `GlideWrapperCore`.
+  - `[x]` Default `glide.dll` / `libglide.so` to `VoodooGraphics` (SST-1, 4 MB FB, 1× 2 MB TMU) with API version `2.11`, add pre-`ShowWindow` Win32 host HWND discovery in `NativeSurfaceHost`, and implement Vulkan `Win32Embedded` `grSstPassthruMode` (`SHOW_VGA` yield / `SHOW_SST1` reclaim) + `VK_ERROR_SURFACE_LOST_KHR` recovery.
+  - `[x]` Validate end-to-end against *CyberGladiators* (27 dynamic `__stdcall` `GLIDE.DLL` imports) under Wine32 across Vulkan (`1×` & `4× MSAA`), OpenGL 3.3 Core (`1×` & `4× MSAA`), and Software (`1×` & `2×2 SSAA`), add headless multi-backend `Glide211WrapperTests`, and publish `docs/catalog/games/cybergladiators/` with presets and Visual Progression Gallery.
 
 ### M15 — Flagship Standalone 3dfx Showcase Demos (`feat/m15-shrine-torus-demos`)
 - **Status**: `[ ] PENDING`

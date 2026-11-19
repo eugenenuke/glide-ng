@@ -92,6 +92,8 @@ GLIDE_NG_CARD_MODEL=voodoo2 GLIDE_NG_FBI_MEM_MB=32 GLIDE_NG_TMU_COUNT=2 GLIDE_NG
 
 ---
 
-## 5. Note on `glide.dll` (Glide 2.11)
+## 5. `glide.dll` / `libglide.so` (Glide 2.11)
 
-Early 1996–1997 SST-1 titles link against **`glide.dll`** (`2.11`), which predates the `glide2x` windowed/LFB ABI (`grSstOpen` instead of `grSstWinOpen`, `grLfbBegin`/`End` with fixed 1024-pixel stride instead of `grLfbLock`). Because the binary ABI differs, renaming `glide2x.dll` to `glide.dll` does not work; dedicated `glide.dll` frontend support is tracked on the [Roadmap](../ROADMAP.md).
+Early 1996–1997 SST-1 titles (such as *CyberGladiators*) link against **`glide.dll`** (`2.11`), which predates the `glide2x` windowed/LFB ABI (`grSstOpen` instead of `grSstWinOpen`, `grSstPassthruMode` for VGA/SST-1 switching, and `grLfbBegin`/`End`/`GetReadPtr`/`GetWritePtr` with a fixed 1024-pixel stride instead of `grLfbLock`).
+
+Because the binary ABI differs, renaming `glide2x.dll` to `glide.dll` does not work. Instead, `glide-ng` builds a dedicated **`glide.dll`** (Win32) and **`libglide.so`** (Linux) frontend target that implements the full Glide 2.11 pre-2.3 SST-1 ABI and automatically defaults to **`VoodooGraphics`** (4 MB FB, 1× 2 MB TMU) with API version **`2.11`** unless overridden via `glide-ng.ini` or `GLIDE_NG_*` environment variables.

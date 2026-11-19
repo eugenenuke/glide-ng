@@ -620,9 +620,20 @@ bool SectionMatches(const std::string& sec, const char* expected) {
 }  // namespace
 
 bool IniConfigLoader::Load(const std::string& configFilePath, WrapperConfig& outConfig) {
+    return LoadWithDefaults(configFilePath, outConfig, CardModel::Voodoo2,
+                            ApiVersion::GLIDE_2_56, false);
+}
+
+bool IniConfigLoader::LoadWithDefaults(const std::string& configFilePath,
+                                       WrapperConfig& outConfig,
+                                       CardModel defaultModel,
+                                       ApiVersion defaultGlide2Api,
+                                       bool hasCustomDefaultGlide2Api) {
     // 1. Reset to baseline defaults to prevent state leakage across reloads
     outConfig = WrapperConfig{};
+    outConfig.model = defaultModel;
 
+    bool hasCardModelOverride = false;
     bool hasGlide2ApiVersion = false;
     bool hasGlide3ApiVersion = false;
     bool hasFbiMem = false;
@@ -1026,9 +1037,13 @@ bool IniConfigLoader::Load(const std::string& configFilePath, WrapperConfig& out
     }
 
     // 3. Card model & API version env overrides (evaluated before deriving card-model defaults)
+    if (outConfig.settingSources.count("cardModel") > 0) {
+        hasCardModelOverride = true;
+    }
     if (const char* envCard = GetNonEmptyEnv(GLIDE_NG_ENV_CARD_MODEL)) {
         if (ParseCardModelString(envCard, outConfig.model)) {
             outConfig.settingSources["cardModel"] = GLIDE_NG_ENV_CARD_MODEL;
+            hasCardModelOverride = true;
         } else {
             outConfig.invalidConfigValues.push_back(
                 std::string("Unrecognized ") + GLIDE_NG_ENV_CARD_MODEL + "='" + envCard +
@@ -1056,7 +1071,10 @@ bool IniConfigLoader::Load(const std::string& configFilePath, WrapperConfig& out
 
     // Derive hardware defaults from selected CardModel ONLY for fields not explicitly overridden
     if (!hasGlide2ApiVersion) {
-        outConfig.apiVersion = GetDefaultGlide2Version(outConfig.model);
+        outConfig.apiVersion =
+            (hasCustomDefaultGlide2Api && !hasCardModelOverride)
+                ? defaultGlide2Api
+                : GetDefaultGlide2Version(outConfig.model);
     }
     if (!hasGlide3ApiVersion) {
         outConfig.glide3ApiVersion = GetDefaultGlide3Version(outConfig.model);

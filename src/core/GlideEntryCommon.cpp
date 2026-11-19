@@ -297,11 +297,14 @@ void ConfigureTmuMemoryLimits() {
   }
 }
 
-void InitGlide(const char* apiTag, void (*resetFrontendState)()) {
+void InitGlide(const char* apiTag, void (*resetFrontendState)(),
+               CardModel defaultModel, ApiVersion defaultGlide2Api,
+               bool hasCustomDefaultGlide2Api) {
   if (resetFrontendState) resetFrontendState();
   auto& reg = EmulationRegistry::GetInstance();
   IniConfigLoader loader;
-  loader.Load(DEFAULT_CONFIG_FILE, reg.GetConfig());
+  loader.LoadWithDefaults(DEFAULT_CONFIG_FILE, reg.GetConfig(), defaultModel,
+                          defaultGlide2Api, hasCustomDefaultGlide2Api);
   reg.GetConfig().activeFrontendApi = apiTag ? apiTag : "";
 
   const auto& cfg = reg.GetConfig();
@@ -316,13 +319,17 @@ void InitGlide(const char* apiTag, void (*resetFrontendState)()) {
   ConfigureTmuMemoryLimits();
 }
 
-void EnsureEngineInitializedSlow(void (*resetFrontendState)()) {
+void EnsureEngineInitializedSlow(void (*resetFrontendState)(),
+                                 CardModel defaultModel,
+                                 ApiVersion defaultGlide2Api,
+                                 bool hasCustomDefaultGlide2Api) {
   auto& reg = EmulationRegistry::GetInstance();
   auto& bm = BackendManager::GetInstance();
   if (!bm.GetBackend()) {
     if (resetFrontendState) resetFrontendState();
     IniConfigLoader loader;
-    loader.Load(DEFAULT_CONFIG_FILE, reg.GetConfig());
+    loader.LoadWithDefaults(DEFAULT_CONFIG_FILE, reg.GetConfig(), defaultModel,
+                            defaultGlide2Api, hasCustomDefaultGlide2Api);
 
     const auto& cfg = reg.GetConfig();
     auto& logger = Logger::GetInstance();
