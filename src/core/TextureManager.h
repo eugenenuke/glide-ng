@@ -111,6 +111,11 @@ class TextureManager {
   // swizzling
   bool DownloadTable(uint32_t tmu, uint32_t type, const void* data);
 
+  // Download an inclusive subrange [start..end] of a palette (or NCC table) to
+  // the specified TMU, preserving palette entries outside [start..end].
+  bool DownloadTablePartial(uint32_t tmu, uint32_t type, const void* data,
+                            int start, int end);
+
   // Select the active NCC table (NCC0 or NCC1) for a TMU and trigger deferred
   // YIQ re-swizzling
   void SetActiveNccTable(uint32_t tmu, uint32_t table);

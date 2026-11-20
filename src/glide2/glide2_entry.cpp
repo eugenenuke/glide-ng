@@ -1249,7 +1249,8 @@ FX_ENTRY void FX_CALL grTexDownloadTablePartial(GrChipID_t tmu,
                 << tmu << ", Type=" << type << ", range " << start << ".."
                 << end);
   if (data) {
-    GlideWrapper::TextureManager::GetInstance().DownloadTable(tmu, type, data);
+    GlideWrapper::TextureManager::GetInstance().DownloadTablePartial(
+        tmu, type, data, start, end);
   }
 }
 

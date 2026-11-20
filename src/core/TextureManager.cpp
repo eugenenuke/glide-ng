@@ -1504,6 +1504,13 @@ bool TextureManager::DownloadMipMapPartial(uint32_t tmu, uint32_t startAddress,
 }
 bool TextureManager::DownloadTable(uint32_t tmu, uint32_t type,
                                    const void* data) {
+  const int end = (type == 0 || type == 1) ? 11 : 255;
+  return DownloadTablePartial(tmu, type, data, 0, end);
+}
+
+bool TextureManager::DownloadTablePartial(uint32_t tmu, uint32_t type,
+                                          const void* data, int start,
+                                          int end) {
   std::lock_guard<std::mutex> lock(m_mutex);
   if (tmu >= 2 || !data) return false;
 
@@ -1516,6 +1523,7 @@ bool TextureManager::DownloadTable(uint32_t tmu, uint32_t type,
   }
 
   if (type == 0 || type == 1) {
+    if (start > end) return true;
     const auto* incomingNcc = reinterpret_cast<const GuNccTable*>(data);
     if (m_tmus[tmu].nccTablesLoaded[type] &&
         std::memcmp(&m_tmus[tmu].nccTables[type], incomingNcc,
@@ -1557,16 +1565,28 @@ bool TextureManager::DownloadTable(uint32_t tmu, uint32_t type,
       }
     }
   } else if (type == 2 || type == 3) {
+    const int s = std::max(start, 0);
+    const int e = std::min(end, 255);
+    if (s > e) return true;
+
     uint32_t newPalette[256];
+    if (m_tmus[tmu].paletteTableLoaded) {
+      std::memcpy(newPalette, m_tmus[tmu].paletteTable, sizeof(newPalette));
+    } else {
+      for (int i = 0; i < 256; ++i) {
+        const uint32_t g = static_cast<uint32_t>(i);
+        newPalette[i] = 0xFF000000u | (g << 16) | (g << 8) | g;
+      }
+    }
     const auto* paletteData = reinterpret_cast<const uint32_t*>(data);
     if (type == 2) {
       // GR_TEXTABLE_PALETTE entries are 24-bit 0x00RRGGBB; top byte is unused
       // by hardware and P_8 texels have implicit opaque alpha (0xFF).
-      for (int i = 0; i < 256; ++i) {
+      for (int i = s; i <= e; ++i) {
         newPalette[i] = paletteData[i] | 0xFF000000u;
       }
     } else {
-      for (int i = 0; i < 256; ++i) {
+      for (int i = s; i <= e; ++i) {
         uint32_t val = paletteData[i];
         newPalette[i] =
             (((val & 0x3F) << 2) | ((val >> 4) & 0x3)) |
@@ -1605,13 +1625,15 @@ bool TextureManager::DownloadTable(uint32_t tmu, uint32_t type,
         }
       }
       GLIDE_LOG(DEBUG, "TextureManager",
-                "Initial palette download (type=" << type << ") on TMU" << tmu
-                                                  << " decoded "
+                "Initial palette download (type=" << type << ", range " << s
+                                                  << ".." << e << ") on TMU"
+                                                  << tmu << " decoded "
                                                   << swizzledCount
                                                   << " queued textures (GPU upload deferred).");
     } else {
       GLIDE_LOG(DEBUG, "TextureManager",
-                "Updated palette (type=" << type << ") on TMU" << tmu
+                "Updated palette (type=" << type << ", range " << s << ".." << e
+                                         << ") on TMU" << tmu
                                          << " (lazy per-bind swizzle enabled).");
     }
   }

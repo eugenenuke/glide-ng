@@ -1728,8 +1728,12 @@ FX_ENTRY void FX_CALL grTexDownloadTable(GrTexTable_t type, void* data) {
   GLIDE_LOG(DEBUG, "Frontend",
             "grTexDownloadTable (Glide 3.x) invoked for Type=" << type);
   if (data) {
-    GlideWrapper::TextureManager::GetInstance().DownloadTable(GR_TMU0, type,
-                                                              data);
+    // Per the 3dfx Glide 3.x specification (hardware chipmask broadcast),
+    // grTexDownloadTable omits the TMU argument and broadcasts the palette or
+    // NCC table to all TMUs simultaneously.
+    auto& tm = GlideWrapper::TextureManager::GetInstance();
+    tm.DownloadTable(GR_TMU0, type, data);
+    tm.DownloadTable(GR_TMU1, type, data);
   }
 }
 
@@ -1741,8 +1745,9 @@ FX_ENTRY void FX_CALL grTexDownloadTablePartial(GrTexTable_t type, void* data,
             "grTexDownloadTablePartial (Glide 3.x) invoked for Type="
                 << type << ", range " << start << ".." << end);
   if (data) {
-    GlideWrapper::TextureManager::GetInstance().DownloadTable(GR_TMU0, type,
-                                                              data);
+    auto& tm = GlideWrapper::TextureManager::GetInstance();
+    tm.DownloadTablePartial(GR_TMU0, type, data, start, end);
+    tm.DownloadTablePartial(GR_TMU1, type, data, start, end);
   }
 }
 
