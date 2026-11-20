@@ -10380,6 +10380,58 @@ TEST_CASE("M12.5 Compatibility Catalog INI Presets & Directory Integrity",
     CHECK(cfg.noDitherSub == true);
     CHECK(cfg.noSplash == false);
   }
+  {
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load(
+        (catalogDir / "games" / "hitman-codename-47" / "glide-ng.ini")
+            .string(),
+        cfg));
+    CHECK(cfg.model == GlideWrapper::CardModel::Voodoo5);
+    CHECK(cfg.glide3ApiVersion == GlideWrapper::ApiVersion::GLIDE_3_10);
+    CHECK(cfg.msaaSamples == 1u);
+    CHECK(cfg.presentationFilter == 0u);
+    CHECK(cfg.noDitherSub == true);
+    CHECK(cfg.noSplash == false);
+  }
+  {
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load(
+        (catalogDir / "games" / "hitman-codename-47" / "glide-ng.hq.ini")
+            .string(),
+        cfg));
+    CHECK(cfg.model == GlideWrapper::CardModel::Voodoo5);
+    CHECK(cfg.glide3ApiVersion == GlideWrapper::ApiVersion::GLIDE_3_10);
+    CHECK(cfg.msaaSamples == 4u);
+    CHECK(cfg.presentationFilter == 1u);
+    CHECK(cfg.noDitherSub == true);
+    CHECK(cfg.noSplash == false);
+  }
+  {
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load(
+        (catalogDir / "games" / "hitman-codename-47" / "glide-ng.voodoo3.ini")
+            .string(),
+        cfg));
+    CHECK(cfg.model == GlideWrapper::CardModel::Voodoo3);
+    CHECK(cfg.glide3ApiVersion == GlideWrapper::ApiVersion::GLIDE_3_10);
+    CHECK(cfg.msaaSamples == 1u);
+    CHECK(cfg.presentationFilter == 0u);
+    CHECK(cfg.noDitherSub == true);
+    CHECK(cfg.noSplash == false);
+  }
+  {
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load((catalogDir / "games" / "hitman-codename-47" /
+                         "glide-ng.software.ini")
+                            .string(),
+                        cfg));
+    CHECK(cfg.backend == "software");
+    CHECK(cfg.model == GlideWrapper::CardModel::Voodoo5);
+    CHECK(cfg.glide3ApiVersion == GlideWrapper::ApiVersion::GLIDE_3_10);
+    CHECK(cfg.msaaSamples == 1u);
+    CHECK(cfg.noDitherSub == true);
+    CHECK(cfg.noSplash == false);
+  }
 }
 
 TEST_CASE("Automatic One-Shot Startup Splash Policy on grSstWinOpen",
@@ -10786,4 +10838,433 @@ TEST_CASE("1-Pixel Top-Edge Right-Triangle Scanline Rasterization Parity",
     bm.ShutdownBackend();
     reg.GetConfig() = savedCfg;
   }
+}
+
+TEST_CASE("Glide 3.x GR_CLIP_COORDS Homogeneous Clipping, Projection & W/Q/Q0",
+          "[Glide3][ClipCoords]") {
+  using namespace GlideWrapper;
+
+  SECTION("VertexLayout::DecodeClipVertex separates W, Q, Q0, Q1 and normalizes [0..1] colors") {
+    auto& vl = VertexLayout::GetInstance();
+    vl.ResetAllParamsDisabled();
+
+    struct CustomClipVert {
+      float x, y;
+      float garbageAtOffset8;  // Unbound GR_PARAM_Z must ignore this!
+      float w;
+      float q;
+      float r, g, b, a;
+      float s0, t0, q0;
+      float s1, t1, q1;
+    };
+
+    vl.SetParamOffsetGlide3(GR_PARAM_XY, offsetof(CustomClipVert, x), GR_PARAM_ENABLE);
+    vl.SetParamOffsetGlide3(GR_PARAM_W, offsetof(CustomClipVert, w), GR_PARAM_ENABLE);
+    vl.SetParamOffsetGlide3(GR_PARAM_Q, offsetof(CustomClipVert, q), GR_PARAM_ENABLE);
+    vl.SetParamOffsetGlide3(GR_PARAM_RGB, offsetof(CustomClipVert, r), GR_PARAM_ENABLE);
+    vl.SetParamOffsetGlide3(GR_PARAM_A, offsetof(CustomClipVert, a), GR_PARAM_ENABLE);
+    vl.SetParamOffsetGlide3(GR_PARAM_ST0, offsetof(CustomClipVert, s0), GR_PARAM_ENABLE);
+    vl.SetParamOffsetGlide3(GR_PARAM_Q0, offsetof(CustomClipVert, q0), GR_PARAM_ENABLE);
+    vl.SetParamOffsetGlide3(GR_PARAM_ST1, offsetof(CustomClipVert, s1), GR_PARAM_ENABLE);
+    vl.SetParamOffsetGlide3(GR_PARAM_Q1, offsetof(CustomClipVert, q1), GR_PARAM_ENABLE);
+
+    CHECK_FALSE(vl.HasExplicitZ());
+    CHECK(vl.HasParamQ());
+    CHECK(vl.HasParamQ0());
+    CHECK(vl.HasParamQ1());
+    CHECK((vl.GetEffectiveStwHintMask() & 0xAu) == 0xAu);
+
+    CustomClipVert src{};
+    src.x = -1.5f;
+    src.y = 0.75f;
+    src.garbageAtOffset8 = 9999.0f;
+    src.w = 4.0f;
+    src.q = 0.25f;
+    src.r = 0.2f;
+    src.g = 0.6f;
+    src.b = 1.5f;   // Clamped to 1.0f
+    src.a = -0.2f;  // Clamped to 0.0f
+    src.s0 = 0.5f;
+    src.t0 = 0.75f;
+    src.q0 = 2.0f;
+    src.s1 = 0.25f;
+    src.t1 = 0.125f;
+    src.q1 = 3.0f;
+
+    auto near = [](float x, float y) { return std::fabs(x - y) < 1e-5f; };
+    const ClipVertex cv = vl.DecodeClipVertex(&src);
+    CHECK(near(cv.x, -1.5f));
+    CHECK(near(cv.y, 0.75f));
+    CHECK(near(cv.z, 0.0f));
+    CHECK(near(cv.w, 4.0f));
+    CHECK(near(cv.q, 0.25f));
+    CHECK(near(cv.r, 0.2f));
+    CHECK(near(cv.g, 0.6f));
+    CHECK(near(cv.b, 1.0f));
+    CHECK(near(cv.a, 0.0f));
+    CHECK(near(cv.s0, 0.5f));
+    CHECK(near(cv.t0, 0.75f));
+    CHECK(near(cv.q0, 2.0f));
+    CHECK(near(cv.s1, 0.25f));
+    CHECK(near(cv.t1, 0.125f));
+    CHECK(near(cv.q1, 3.0f));
+
+    // Verify GetLayoutState / SetLayoutState preserves independent W and Q
+    uint8_t savedLayout[256] = {};
+    vl.GetLayoutState(savedLayout);
+    vl.ResetAllParamsDisabled();
+    CHECK_FALSE(vl.HasParamQ());
+    vl.SetLayoutState(savedLayout);
+    CHECK(vl.HasParamQ());
+    CHECK(vl.HasParamQ0());
+    const ClipVertex cv2 = vl.DecodeClipVertex(&src);
+    CHECK(near(cv2.w, 4.0f));
+    CHECK(near(cv2.q, 0.25f));
+    CHECK(near(cv2.q0, 2.0f));
+
+    vl.ResetToGlide2Canonical();
+  }
+
+#ifdef __linux__
+  SECTION("End-to-End GR_CLIP_COORDS Frustum Clipping, Aspect UV & Orientation Parity") {
+    void* handle = OpenGlide3Handle();
+    REQUIRE(handle != nullptr);
+
+    using InitFunc = void (*)();
+    using ShutdownFunc = void (*)();
+    using WinOpenFunc = FxU32 (*)(FxU32, FxU32, FxU32, FxU32, FxU32, int, int);
+    using WinCloseFunc = FxBool (*)(FxU32);
+    using ClearFunc = void (*)(FxU32, FxU32, FxU32);
+    using CoordSpaceFunc = void (*)(FxU32);
+    using ViewportFunc = void (*)(FxI32, FxI32, FxI32, FxI32);
+    using DepthRangeFunc = void (*)(FxFloat, FxFloat);
+    using ResetFunc = void (*)(FxU32);
+    using LayoutFunc = void (*)(FxU32, FxI32, FxU32);
+    using ColorCombineFunc = void (*)(GrCombineFunction_t, GrCombineFactor_t,
+                                      GrCombineLocal_t, GrCombineOther_t, FxBool);
+    using TexCombineFunc = void (*)(GrChipID_t, GrCombineFunction_t, GrCombineFactor_t,
+                                    GrCombineFunction_t, GrCombineFactor_t, FxBool, FxBool);
+    using TexDownloadFunc = void (*)(GrChipID_t, FxU32, FxU32, GrTexInfo*);
+    using TexSourceFunc = void (*)(GrChipID_t, FxU32, FxU32, GrTexInfo*);
+    using TexFilterFunc = void (*)(GrChipID_t, GrTextureFilterMode_t, GrTextureFilterMode_t);
+    using TexClampFunc = void (*)(GrChipID_t, GrTextureClampMode_t, GrTextureClampMode_t);
+    using DrawContigFunc = void (*)(FxU32, FxU32, void*, FxU32);
+    using ReadLfbFunc = FxBool (*)(FxU32, FxU32, FxU32, FxU32, FxU32, FxU32, void*);
+
+    auto glideInit = reinterpret_cast<InitFunc>(::dlsym(handle, "grGlideInit"));
+    auto glideShutdown = reinterpret_cast<ShutdownFunc>(::dlsym(handle, "grGlideShutdown"));
+    auto winOpen = reinterpret_cast<WinOpenFunc>(::dlsym(handle, "grSstWinOpen"));
+    auto winClose = reinterpret_cast<WinCloseFunc>(::dlsym(handle, "grSstWinClose"));
+    auto bufferClear = reinterpret_cast<ClearFunc>(::dlsym(handle, "grBufferClear"));
+    auto coordSpace = reinterpret_cast<CoordSpaceFunc>(::dlsym(handle, "grCoordinateSpace"));
+    auto viewport = reinterpret_cast<ViewportFunc>(::dlsym(handle, "grViewport"));
+    auto depthRange = reinterpret_cast<DepthRangeFunc>(::dlsym(handle, "grDepthRange"));
+    auto resetFn = reinterpret_cast<ResetFunc>(::dlsym(handle, "grReset"));
+    auto vertexLayout = reinterpret_cast<LayoutFunc>(::dlsym(handle, "grVertexLayout"));
+    auto colorCombine = reinterpret_cast<ColorCombineFunc>(::dlsym(handle, "grColorCombine"));
+    auto texCombine = reinterpret_cast<TexCombineFunc>(::dlsym(handle, "grTexCombine"));
+    auto texDownload = reinterpret_cast<TexDownloadFunc>(::dlsym(handle, "grTexDownloadMipMap"));
+    auto texSource = reinterpret_cast<TexSourceFunc>(::dlsym(handle, "grTexSource"));
+    auto texFilter = reinterpret_cast<TexFilterFunc>(::dlsym(handle, "grTexFilterMode"));
+    auto texClamp = reinterpret_cast<TexClampFunc>(::dlsym(handle, "grTexClampMode"));
+    auto drawContig = reinterpret_cast<DrawContigFunc>(::dlsym(handle, "grDrawVertexArrayContiguous"));
+    auto readLfb = reinterpret_cast<ReadLfbFunc>(::dlsym(handle, "grLfbReadRegion"));
+
+    REQUIRE(glideInit != nullptr);
+    REQUIRE(drawContig != nullptr);
+    REQUIRE(resetFn != nullptr);
+    REQUIRE(vertexLayout != nullptr);
+
+    struct HitmanVert {
+      float x, y, w, q;
+      float r, g, b, a;
+      float s0, t0, q0;
+    };
+
+    // Non-square 64x32 RGB565 texture (GR_ASPECT_LOG2_2x1):
+    // left half (x < 32) = pure red (0xF800), right half (x >= 32) = pure blue (0x001F).
+    std::vector<uint16_t> tex64x32(64u * 32u, 0u);
+    for (uint32_t y = 0u; y < 32u; ++y) {
+      for (uint32_t x = 0u; x < 64u; ++x) {
+        tex64x32[y * 64u + x] = (x < 32u) ? 0xF800u : 0x001Fu;
+      }
+    }
+
+    for (const char* beName : {"software", "vulkan", "opengl_es"}) {
+      ::setenv("GLIDE_NG_HEADLESS", "1", 1);
+      ::setenv("GLIDE_NG_BACKEND", beName, 1);
+      ::setenv("GLIDE_NG_CARD_MODEL", "voodoo5", 1);
+
+      glideInit();
+      FxU32 ctx = winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                          GR_COLORFORMAT_ARGB, GR_ORIGIN_UPPER_LEFT, 2, 1);
+      REQUIRE(ctx != 0u);
+
+      coordSpace(GR_CLIP_COORDS);
+      viewport(0, 0, 640, 480);
+      depthRange(0.0f, 1.0f);
+
+      resetFn(GR_VERTEX_PARAMETER);
+      vertexLayout(GR_PARAM_XY, offsetof(HitmanVert, x), GR_PARAM_ENABLE);
+      vertexLayout(GR_PARAM_W, offsetof(HitmanVert, w), GR_PARAM_ENABLE);
+      vertexLayout(GR_PARAM_Q, offsetof(HitmanVert, q), GR_PARAM_ENABLE);
+      vertexLayout(GR_PARAM_RGB, offsetof(HitmanVert, r), GR_PARAM_ENABLE);
+      vertexLayout(GR_PARAM_A, offsetof(HitmanVert, a), GR_PARAM_ENABLE);
+      vertexLayout(GR_PARAM_ST0, offsetof(HitmanVert, s0), GR_PARAM_ENABLE);
+      vertexLayout(GR_PARAM_Q0, offsetof(HitmanVert, q0), GR_PARAM_ENABLE);
+
+      // 1) Behind-camera near-plane Sutherland-Hodgman clipping + normalized [0..1] RGB:
+      //    Triangle spans from w = -1.0 behind camera to w = 2.0 on upper half of screen
+      //    (y_ndc in [0.0..1.0], which under GR_ORIGIN_UPPER_LEFT maps to rows [240..480]).
+      colorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+                   GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_NONE, FXFALSE);
+      bufferClear(0xFF000000u, 255u, 0xFFFFu);
+
+      HitmanVert clipTri[3] = {
+          // Behind camera (w = -1.0f) — crosses left frustum plane x+w=0 at t=0.5 (w=+0.5, x_ndc=-1)
+          {-2.0f, 0.0f, -1.0f, 0.5f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f},
+          // Visible right-lower vertex (x_ndc = +0.5 -> x=480, y_ndc = -0.25 -> y=180)
+          { 1.0f, -0.5f, 2.0f, 0.5f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f},
+          // Visible right-upper vertex (x_ndc = +0.5 -> x=480, y_ndc = +0.75 -> y=420)
+          { 1.0f,  1.5f, 2.0f, 0.5f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f},
+      };
+      drawContig(GR_TRIANGLES, 3u, clipTri, sizeof(HitmanVert));
+
+      std::vector<uint16_t> fb16(640u * 480u, 0u);
+      REQUIRE(readLfb(1u, 0u, 0u, 640u, 480u, 640u * 2u, fb16.data()) == FXTRUE);
+
+      auto rgb565R = [](uint16_t p) { return ((p >> 11) & 0x1Fu) * 255u / 31u; };
+      auto rgb565G = [](uint16_t p) { return ((p >> 5) & 0x3Fu) * 255u / 63u; };
+      auto rgb565B = [](uint16_t p) { return (p & 0x1Fu) * 255u / 31u; };
+
+      INFO("backend=" << beName);
+      // Sample inside the visible clipped portion at center (x=320, y=260) -> bright green
+      const uint16_t clippedPx = fb16[260u * 640u + 320u];
+      CHECK(rgb565G(clippedPx) > 220u);
+      CHECK(rgb565R(clippedPx) < 20u);
+      CHECK(rgb565B(clippedPx) < 20u);
+      // Right margin (x=580, y=40) must remain cleared black (no inverted wrap from w < 0)
+      const uint16_t bgPx = fb16[40u * 640u + 580u];
+      CHECK(rgb565G(bgPx) < 20u);
+
+      // 2) Aspect-adjusted [0..1] UV scaling on 64x32 (GR_ASPECT_LOG2_2x1) texture
+      //    with homogeneous w=2.0 and independent q=0.25, q0=1.0.
+      GrTexInfo ti{};
+      ti.smallLodLog2 = GR_LOD_LOG2_64;
+      ti.largeLodLog2 = GR_LOD_LOG2_64;
+      ti.aspectRatioLog2 = GR_ASPECT_LOG2_2x1;
+      ti.format = GR_TEXFMT_RGB_565;
+      ti.data = tex64x32.data();
+      texDownload(GR_TMU0, 0x10000u, GR_MIPMAPLEVELMASK_BOTH, &ti);
+      texFilter(GR_TMU0, GR_TEXTUREFILTER_POINT_SAMPLED, GR_TEXTUREFILTER_POINT_SAMPLED);
+      texClamp(GR_TMU0, GR_TEXTURECLAMP_CLAMP, GR_TEXTURECLAMP_CLAMP);
+      texSource(GR_TMU0, 0x10000u, GR_MIPMAPLEVELMASK_BOTH, &ti);
+      texCombine(GR_TMU0, GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+                 GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE, FXFALSE, FXFALSE);
+      colorCombine(GR_COMBINE_FUNCTION_SCALE_OTHER, GR_COMBINE_FACTOR_ONE,
+                   GR_COMBINE_LOCAL_NONE, GR_COMBINE_OTHER_TEXTURE, FXFALSE);
+      bufferClear(0xFF000000u, 255u, 0xFFFFu);
+
+      // Full-screen clip-space quad at w=2.0 (x,y in [-2..+2]), s0,t0 in [0..1], q=0.25, q0=1.0
+      HitmanVert quad[6] = {
+          {-2.0f, -2.0f, 2.0f, 0.25f, 1.0f, 1.0f, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f},
+          { 2.0f, -2.0f, 2.0f, 0.25f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.0f, 1.0f},
+          { 2.0f,  2.0f, 2.0f, 0.25f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f},
+          {-2.0f, -2.0f, 2.0f, 0.25f, 1.0f, 1.0f, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f},
+          { 2.0f,  2.0f, 2.0f, 0.25f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f},
+          {-2.0f,  2.0f, 2.0f, 0.25f, 1.0f, 1.0f, 1.0f, 1.0f, 0.0f, 1.0f, 1.0f},
+      };
+      drawContig(GR_TRIANGLES, 6u, quad, sizeof(HitmanVert));
+
+      REQUIRE(readLfb(1u, 0u, 0u, 640u, 480u, 640u * 2u, fb16.data()) == FXTRUE);
+      // Left quarter (u = 0.25) must be pure red; right quarter (u = 0.75) must be pure blue
+      const uint16_t leftPx = fb16[240u * 640u + 160u];
+      const uint16_t rightPx = fb16[240u * 640u + 480u];
+      CHECK(rgb565R(leftPx) > 220u);
+      CHECK(rgb565B(leftPx) < 20u);
+      CHECK(rgb565B(rightPx) > 220u);
+      CHECK(rgb565R(rightPx) < 20u);
+
+      winClose(ctx);
+      glideShutdown();
+      ::unsetenv("GLIDE_NG_BACKEND");
+      ::unsetenv("GLIDE_NG_CARD_MODEL");
+    }
+
+    ::dlclose(handle);
+  }
+#endif
+}
+
+TEST_CASE("Packed GrColorFormat RGBA and BGRA Parity Across Backends",
+          "[Glide3][ColorFormat]") {
+  using namespace GlideWrapper;
+
+  SECTION("GrColorToCanonicalArgb / CanonicalArgbToGrColor / UnpackGrColorNorm") {
+    // Canonical ARGB with distinct bytes: A=0x78, R=0x12, G=0x34, B=0x56
+    constexpr uint32_t kArgb = 0x78123456u;
+    constexpr uint32_t kAbgr = 0x78563412u;
+    constexpr uint32_t kRgba = 0x12345678u;
+    constexpr uint32_t kBgra = 0x56341278u;
+
+    CHECK(GrColorToCanonicalArgb(kArgb, 0u) == kArgb);
+    CHECK(GrColorToCanonicalArgb(kAbgr, 1u) == kArgb);
+    CHECK(GrColorToCanonicalArgb(kRgba, 2u) == kArgb);
+    CHECK(GrColorToCanonicalArgb(kBgra, 3u) == kArgb);
+
+    CHECK(CanonicalArgbToGrColor(kArgb, 0u) == kArgb);
+    CHECK(CanonicalArgbToGrColor(kArgb, 1u) == kAbgr);
+    CHECK(CanonicalArgbToGrColor(kArgb, 2u) == kRgba);
+    CHECK(CanonicalArgbToGrColor(kArgb, 3u) == kBgra);
+
+    // Hitman: Codename 47 Main Menu white fog (GR_COLORFORMAT_RGBA: 0xFFFFFF00)
+    float r = 0.0f, g = 0.0f, b = 0.0f, a = 1.0f;
+    UnpackGrColorNorm(0xFFFFFF00u, 2u, r, g, b, a);
+    CHECK(std::fabs(r - 1.0f) < 1e-5f);
+    CHECK(std::fabs(g - 1.0f) < 1e-5f);
+    CHECK(std::fabs(b - 1.0f) < 1e-5f);
+    CHECK(std::fabs(a - 0.0f) < 1e-5f);
+  }
+
+#ifdef __linux__
+  SECTION("End-to-End GR_COLORFORMAT_RGBA and GR_COLORFORMAT_BGRA Rendering Parity") {
+    void* handle = OpenGlide3Handle();
+    REQUIRE(handle != nullptr);
+
+    using InitFunc = void (*)();
+    using ShutdownFunc = void (*)();
+    using WinOpenFunc = FxU32 (*)(FxU32, FxU32, FxU32, FxU32, FxU32, int, int);
+    using WinCloseFunc = FxBool (*)(FxU32);
+    using ClearFunc = void (*)(FxU32, FxU32, FxU32);
+    using ConstColorFunc = void (*)(GrColor_t);
+    using FogColorFunc = void (*)(GrColor_t);
+    using FogModeFunc = void (*)(GrFogMode_t);
+    using FogTableFunc = void (*)(const GrFog_t*);
+    using ColorCombineFunc = void (*)(GrCombineFunction_t, GrCombineFactor_t,
+                                      GrCombineLocal_t, GrCombineOther_t, FxBool);
+    using DrawTriFunc = void (*)(const void*, const void*, const void*);
+    using ReadLfbFunc = FxBool (*)(FxU32, FxU32, FxU32, FxU32, FxU32, FxU32, void*);
+
+    auto glideInit = reinterpret_cast<InitFunc>(::dlsym(handle, "grGlideInit"));
+    auto glideShutdown = reinterpret_cast<ShutdownFunc>(::dlsym(handle, "grGlideShutdown"));
+    auto winOpen = reinterpret_cast<WinOpenFunc>(::dlsym(handle, "grSstWinOpen"));
+    auto winClose = reinterpret_cast<WinCloseFunc>(::dlsym(handle, "grSstWinClose"));
+    auto bufferClear = reinterpret_cast<ClearFunc>(::dlsym(handle, "grBufferClear"));
+    auto constColor = reinterpret_cast<ConstColorFunc>(::dlsym(handle, "grConstantColorValue"));
+    auto fogColor = reinterpret_cast<FogColorFunc>(::dlsym(handle, "grFogColorValue"));
+    auto fogMode = reinterpret_cast<FogModeFunc>(::dlsym(handle, "grFogMode"));
+    auto fogTable = reinterpret_cast<FogTableFunc>(::dlsym(handle, "grFogTable"));
+    auto colorCombine = reinterpret_cast<ColorCombineFunc>(::dlsym(handle, "grColorCombine"));
+    auto drawTri = reinterpret_cast<DrawTriFunc>(::dlsym(handle, "grDrawTriangle"));
+    auto readLfb = reinterpret_cast<ReadLfbFunc>(::dlsym(handle, "grLfbReadRegion"));
+
+    REQUIRE(glideInit != nullptr);
+    REQUIRE(fogColor != nullptr);
+    REQUIRE(fogTable != nullptr);
+
+    auto rgb565R = [](uint16_t p) { return ((p >> 11) & 0x1Fu) * 255u / 31u; };
+    auto rgb565G = [](uint16_t p) { return ((p >> 5) & 0x3Fu) * 255u / 63u; };
+    auto rgb565B = [](uint16_t p) { return (p & 0x1Fu) * 255u / 31u; };
+
+    GrFog_t fullFog[64];
+    std::fill(std::begin(fullFog), std::end(fullFog), static_cast<GrFog_t>(255u));
+
+    for (const char* beName : {"software", "vulkan", "opengl_es"}) {
+      ::setenv("GLIDE_NG_HEADLESS", "1", 1);
+      ::setenv("GLIDE_NG_BACKEND", beName, 1);
+
+      // 1) GR_COLORFORMAT_RGBA (2): Clear=Red (0xFF0000FF), Const=Blue (0x0000FFFF),
+      //    Fog=White (0xFFFFFF00 — Hitman Main Menu regression!)
+      glideInit();
+      FxU32 ctx = winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                          GR_COLORFORMAT_RGBA, GR_ORIGIN_UPPER_LEFT, 2, 1);
+      REQUIRE(ctx != 0u);
+
+      bufferClear(0xFF0000FFu, 255u, 0xFFFFu);
+      colorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+                   GR_COMBINE_LOCAL_CONSTANT, GR_COMBINE_OTHER_NONE, FXFALSE);
+
+      // Draw constant-color blue quad in middle third [x=200..400, y=100..300]
+      fogMode(GR_FOG_DISABLE);
+      constColor(0x0000FFFFu);  // RGBA pure blue
+      StandardVert b0 = {200.0f, 100.0f, 0.5f, 0.0f, 0.0f, 0.0f, 0.5f, 255.0f, 1.0f, 0.0f, 0.0f, 1.0f};
+      StandardVert b1 = {400.0f, 100.0f, 0.5f, 0.0f, 0.0f, 0.0f, 0.5f, 255.0f, 1.0f, 0.0f, 0.0f, 1.0f};
+      StandardVert b2 = {400.0f, 300.0f, 0.5f, 0.0f, 0.0f, 0.0f, 0.5f, 255.0f, 1.0f, 0.0f, 0.0f, 1.0f};
+      StandardVert b3 = {200.0f, 300.0f, 0.5f, 0.0f, 0.0f, 0.0f, 0.5f, 255.0f, 1.0f, 0.0f, 0.0f, 1.0f};
+      drawTri(&b0, &b1, &b2);
+      drawTri(&b0, &b2, &b3);
+
+      // Draw 100%-fogged quad in right third [x=440..600, y=100..300] with RGBA white 0xFFFFFF00
+      fogColor(0xFFFFFF00u);
+      fogTable(fullFog);
+      fogMode(GR_FOG_WITH_TABLE_ON_Q);
+      constColor(0x000000FFu);  // Black base -> 100% fog color output
+      StandardVert f0 = {440.0f, 100.0f, 0.5f, 0.0f, 0.0f, 0.0f, 0.5f, 255.0f, 0.1f, 0.0f, 0.0f, 1.0f};
+      StandardVert f1 = {600.0f, 100.0f, 0.5f, 0.0f, 0.0f, 0.0f, 0.5f, 255.0f, 0.1f, 0.0f, 0.0f, 1.0f};
+      StandardVert f2 = {600.0f, 300.0f, 0.5f, 0.0f, 0.0f, 0.0f, 0.5f, 255.0f, 0.1f, 0.0f, 0.0f, 1.0f};
+      StandardVert f3 = {440.0f, 300.0f, 0.5f, 0.0f, 0.0f, 0.0f, 0.5f, 255.0f, 0.1f, 0.0f, 0.0f, 1.0f};
+      drawTri(&f0, &f1, &f2);
+      drawTri(&f0, &f2, &f3);
+
+      std::vector<uint16_t> fb16(640u * 480u, 0u);
+      std::vector<uint32_t> fb32(640u * 480u, 0u);
+      REQUIRE(readLfb(1u, 0u, 0u, 640u, 480u, 640u * 2u, fb16.data()) == FXTRUE);
+      REQUIRE(readLfb(1u, 0u, 0u, 640u, 480u, 640u * 4u, fb32.data()) == FXTRUE);
+
+      INFO("backend=" << beName << " format=RGBA");
+      // Clear pixel (x=80, y=200): pure red
+      const uint16_t clear16 = fb16[200u * 640u + 80u];
+      CHECK(rgb565R(clear16) > 220u);
+      CHECK(rgb565G(clear16) < 20u);
+      CHECK(rgb565B(clear16) < 20u);
+      // 32-bit RGBA swizzle check: R in bits 24..31, B in bits 8..15
+      const uint32_t clear32 = fb32[200u * 640u + 80u];
+      CHECK(((clear32 >> 24) & 0xFFu) > 220u);
+      CHECK(((clear32 >> 8) & 0xFFu) < 20u);
+
+      // Constant-color pixel (x=300, y=200): pure blue
+      const uint16_t blue16 = fb16[200u * 640u + 300u];
+      CHECK(rgb565B(blue16) > 220u);
+      CHECK(rgb565R(blue16) < 20u);
+      CHECK(rgb565G(blue16) < 20u);
+
+      // Fogged pixel (x=520, y=200): pure WHITE (not yellow!)
+      const uint16_t fog16 = fb16[200u * 640u + 520u];
+      CHECK(rgb565R(fog16) > 220u);
+      CHECK(rgb565G(fog16) > 220u);
+      CHECK(rgb565B(fog16) > 220u);
+
+      winClose(ctx);
+      glideShutdown();
+
+      // 2) GR_COLORFORMAT_BGRA (3): Clear=Red (0x0000FFFF), Const=Blue (0xFF0000FF)
+      glideInit();
+      ctx = winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                    GR_COLORFORMAT_BGRA, GR_ORIGIN_UPPER_LEFT, 2, 1);
+      REQUIRE(ctx != 0u);
+
+      bufferClear(0x0000FFFFu, 255u, 0xFFFFu);  // BGRA pure red
+      colorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+                   GR_COMBINE_LOCAL_CONSTANT, GR_COMBINE_OTHER_NONE, FXFALSE);
+      constColor(0xFF0000FFu);  // BGRA pure blue
+      drawTri(&b0, &b1, &b2);
+      drawTri(&b0, &b2, &b3);
+
+      REQUIRE(readLfb(1u, 0u, 0u, 640u, 480u, 640u * 2u, fb16.data()) == FXTRUE);
+      INFO("backend=" << beName << " format=BGRA");
+      const uint16_t bgraClear16 = fb16[200u * 640u + 80u];
+      CHECK(rgb565R(bgraClear16) > 220u);
+      CHECK(rgb565B(bgraClear16) < 20u);
+      const uint16_t bgraBlue16 = fb16[200u * 640u + 300u];
+      CHECK(rgb565B(bgraBlue16) > 220u);
+      CHECK(rgb565R(bgraBlue16) < 20u);
+
+      winClose(ctx);
+      glideShutdown();
+      ::unsetenv("GLIDE_NG_BACKEND");
+    }
+
+    ::dlclose(handle);
+  }
+#endif
 }

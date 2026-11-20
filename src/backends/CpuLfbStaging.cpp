@@ -4,6 +4,7 @@
 #include <array>
 #include <cstring>
 
+#include "backends/GlideStateTracker.h"
 #include "core/Logger.h"
 #include "core/SimdKernels.h"
 
@@ -28,33 +29,23 @@ constexpr auto kExpand5 = MakeExpandLut<32, 31>();
 constexpr auto kExpand6 = MakeExpandLut<64, 63>();
 
 inline uint16_t Color24ToRgb565(uint32_t color, uint32_t pixelFormatOverride) {
-  uint32_t r = (color >> 16) & 0xFF;
-  uint32_t g = (color >> 8) & 0xFF;
-  uint32_t b = color & 0xFF;
-  if (pixelFormatOverride == 1) {  // GR_COLORFORMAT_ABGR
-    std::swap(r, b);
-  }
+  const uint32_t argb = GrColorToCanonicalArgb(color, pixelFormatOverride);
+  const uint32_t r = (argb >> 16) & 0xFFu;
+  const uint32_t g = (argb >> 8) & 0xFFu;
+  const uint32_t b = argb & 0xFFu;
   return static_cast<uint16_t>(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
 }
 
 inline uint16_t Color24ToRgb555(uint32_t color, uint32_t pixelFormatOverride) {
-  uint32_t r = (color >> 16) & 0xFF;
-  uint32_t g = (color >> 8) & 0xFF;
-  uint32_t b = color & 0xFF;
-  if (pixelFormatOverride == 1) {  // GR_COLORFORMAT_ABGR
-    std::swap(r, b);
-  }
+  const uint32_t argb = GrColorToCanonicalArgb(color, pixelFormatOverride);
+  const uint32_t r = (argb >> 16) & 0xFFu;
+  const uint32_t g = (argb >> 8) & 0xFFu;
+  const uint32_t b = argb & 0xFFu;
   return static_cast<uint16_t>(((r >> 3) << 10) | ((g >> 3) << 5) | (b >> 3));
 }
 
 inline uint32_t Color24ToRgb888(uint32_t color, uint32_t pixelFormatOverride) {
-  uint32_t r = (color >> 16) & 0xFF;
-  uint32_t g = (color >> 8) & 0xFF;
-  uint32_t b = color & 0xFF;
-  if (pixelFormatOverride == 1) {  // GR_COLORFORMAT_ABGR
-    std::swap(r, b);
-  }
-  return (r << 16) | (g << 8) | b;
+  return GrColorToCanonicalArgb(color, pixelFormatOverride) & 0x00FFFFFFu;
 }
 
 inline void EvalRgbBlendFactor(uint32_t factorEnum, bool isSrc, uint32_t srcA,
@@ -928,15 +919,10 @@ void CpuLfbStaging::MaterializeSlot(uint32_t slot) {
   if (pending.colorWriteMask4 & 0x8u) writeMask |= 0xFF000000u;  // A
   if (writeMask == 0) return;
 
-  uint32_t a = (pending.alpha > 0) ? pending.alpha : 255;
-  uint32_t r = (pending.color >> 16) & 0xFF;
-  uint32_t g = (pending.color >> 8) & 0xFF;
-  uint32_t b = pending.color & 0xFF;
-  if (pending.pixelFormat == 1) {
-    std::swap(r, b);
-  }
-
-  const uint32_t clearWord = (a << 24) | (r << 16) | (g << 8) | b;
+  const uint32_t a = (pending.alpha > 0) ? pending.alpha : 255u;
+  const uint32_t clearRgb =
+      GrColorToCanonicalArgb(pending.color, pending.pixelFormat) & 0x00FFFFFFu;
+  const uint32_t clearWord = (a << 24) | clearRgb;
   const uint32_t keepMask = ~writeMask;
   const uint32_t maskedClearWord =
       (writeMask == 0xFFFFFFFFu) ? clearWord : (clearWord & writeMask);

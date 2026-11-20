@@ -38,14 +38,9 @@ void OpenGLESBackend::ClearBufferExt(uint32_t color, uint32_t alpha, float z,
   bool doStencilClear = false;
 
   if ((clearMask & 0x1) && (GetColorWriteMask4() != 0)) {  // Color Clear
+    float dummyA = 1.0f;
+    UnpackGrColorNorm(color, m_pixelFormatOverride, r, g, b, dummyA);
     a = ((alpha > 0) ? alpha : 255) / 255.0f;
-    r = ((color >> 16) & 0xFF) / 255.0f;
-    g = ((color >> 8) & 0xFF) / 255.0f;
-    b = (color & 0xFF) / 255.0f;
-
-    if (m_pixelFormatOverride == 1) {  // ABGR format override
-      std::swap(r, b);
-    }
 
     mask |= GL_COLOR_BUFFER_BIT;
     doColorClear = true;

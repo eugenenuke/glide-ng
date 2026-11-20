@@ -31,19 +31,23 @@ VertexLayout::VertexLayout() { ResetToGlide2Canonical(); }
 void VertexLayout::RefreshCanonicalFlags() {
   m_isGlide2Canonical =
       (m_offsetXY == 0 && m_offsetRGB == 12 && m_offsetOOZ == 24 &&
-       m_offsetA == 28 && m_offsetOOW == 32 && m_offsetST0 == 36 &&
-       m_offsetST1 == 48 && m_offsetFog == -1 && m_colorType == 0 &&
-       m_offsetPARGB == -1 && m_offsetQ0 == -1 && m_offsetQ1 == -1);
+       m_offsetA == 28 && m_offsetOOW == 32 && m_offsetQ == -1 &&
+       m_offsetST0 == 36 && m_offsetST1 == 48 && m_offsetFog == -1 &&
+       m_colorType == 0 && m_offsetPARGB == -1 && m_offsetQ0 == -1 &&
+       m_offsetQ1 == -1);
 }
 
 void VertexLayout::ResetToGlide2Canonical() {
   m_stwHintMask = 0;
+  m_glide3ExplicitW = false;
+  m_glide3ExplicitZ = false;
   m_offsetXY = 0;
   m_offsetZ = 8;
   m_offsetRGB = 12;
   m_offsetOOZ = 24;
   m_offsetA = 28;
   m_offsetOOW = 32;
+  m_offsetQ = -1;
   m_offsetST0 = 36;
   m_offsetFog = -1;
   m_offsetST1 = 48;
@@ -57,10 +61,13 @@ void VertexLayout::ResetToGlide2Canonical() {
 void VertexLayout::ResetToGlide3Canonical() {
   m_stwHintMask = 0;
   m_isGlide2Canonical = false;
+  m_glide3ExplicitW = false;
+  m_glide3ExplicitZ = false;
   m_offsetXY = 0;
   m_offsetZ = -1;
   m_offsetOOZ = 8;
   m_offsetOOW = 12;
+  m_offsetQ = -1;
   m_offsetRGB = 16;
   m_offsetA = 28;
   m_offsetST0 = 36;
@@ -118,10 +125,13 @@ void VertexLayout::ResetToGlide3Canonical() {
 void VertexLayout::ResetAllParamsDisabled() {
   m_stwHintMask = 0;
   m_isGlide2Canonical = false;
+  m_glide3ExplicitW = false;
+  m_glide3ExplicitZ = false;
   m_offsetXY = -1;
   m_offsetZ = -1;
   m_offsetOOZ = -1;
   m_offsetOOW = -1;
+  m_offsetQ = -1;
   m_offsetRGB = -1;
   m_offsetA = -1;
   m_offsetST0 = -1;
@@ -186,23 +196,24 @@ void VertexLayout::SetParamOffsetGlide3(uint32_t param, int32_t offset,
     case 0x02:  // GR_PARAM_Z
       m_offsetZ = offset;
       m_offsetOOZ = -1;
+      m_glide3ExplicitZ = (mode != 0);
       m_glide3LayoutState.zInfo.offset = offset;
       m_glide3LayoutState.zInfo.mode = mode;
       break;
-    case 0x03:  // GR_PARAM_W
+    case 0x03:  // GR_PARAM_W (homogeneous clip W in GR_CLIP_COORDS, or OOW)
       m_offsetOOW = offset;
+      m_glide3ExplicitW = (mode != 0);
       m_glide3LayoutState.wInfo.offset = offset;
       m_glide3LayoutState.wInfo.mode = mode;
-      if (mode != 0) {
-        m_glide3LayoutState.qInfo.offset = -1;
-        m_glide3LayoutState.qInfo.mode = 0;
-      }
       break;
-    case 0x04:  // GR_PARAM_Q
-      m_offsetOOW = offset;
+    case 0x04:  // GR_PARAM_Q (independent from GR_PARAM_W in GR_CLIP_COORDS)
+      m_offsetQ = offset;
       m_glide3LayoutState.qInfo.offset = offset;
       m_glide3LayoutState.qInfo.mode = mode;
-      if (mode != 0) {
+      if (!m_glide3ExplicitW) {
+        // Clear canonical default W when caller only manages GR_PARAM_Q
+        // (e.g. disabling Q in GR_WINDOW_COORDS to avoid reading canonical W).
+        m_offsetOOW = -1;
         m_glide3LayoutState.wInfo.offset = -1;
         m_glide3LayoutState.wInfo.mode = 0;
       }
@@ -316,10 +327,11 @@ ModernVertex VertexLayout::DecodeVertexSlow(const void* gameVertex) const {
     v.pos[2] = SanitizeFiniteZero(z) / 65535.0f;
   }
 
-  // Parse 1/W
-  if (m_offsetOOW >= 0) {
+  // Parse 1/W (GR_PARAM_Q takes precedence over GR_PARAM_W in window space)
+  const int32_t oowOffset = (m_offsetQ >= 0) ? m_offsetQ : m_offsetOOW;
+  if (oowOffset >= 0) {
     float oow = 1.0f;
-    std::memcpy(&oow, rawBytes + m_offsetOOW, sizeof(float));
+    std::memcpy(&oow, rawBytes + oowOffset, sizeof(float));
     v.pos[3] = SanitizePositiveOow(oow);
   }
 
@@ -412,6 +424,118 @@ ModernVertex VertexLayout::DecodeVertexSlow(const void* gameVertex) const {
   return v;
 }
 
+ClipVertex VertexLayout::DecodeClipVertex(const void* gameVertex) const {
+  ClipVertex cv;
+  if (!gameVertex) return cv;
+
+  const auto* rawBytes = reinterpret_cast<const uint8_t*>(gameVertex);
+
+  if (m_offsetXY >= 0) {
+    float x = 0.0f;
+    float y = 0.0f;
+    std::memcpy(&x, rawBytes + m_offsetXY, sizeof(float));
+    std::memcpy(&y, rawBytes + m_offsetXY + sizeof(float), sizeof(float));
+    cv.x = SanitizeFiniteZero(x);
+    cv.y = SanitizeFiniteZero(y);
+  }
+
+  if (m_glide3ExplicitZ && m_offsetZ >= 0) {
+    float z = 0.0f;
+    std::memcpy(&z, rawBytes + m_offsetZ, sizeof(float));
+    cv.z = SanitizeFiniteZero(z);
+  }
+
+  if (m_glide3ExplicitW && m_offsetOOW >= 0) {
+    float w = 1.0f;
+    std::memcpy(&w, rawBytes + m_offsetOOW, sizeof(float));
+    cv.w = SanitizeFiniteZero(w);
+  }
+
+  if (m_offsetQ >= 0) {
+    float q = 1.0f;
+    std::memcpy(&q, rawBytes + m_offsetQ, sizeof(float));
+    cv.q = SanitizeFiniteZero(q);
+  }
+
+  // Under Glide 3.x GR_CLIP_COORDS, float GR_PARAM_RGB / GR_PARAM_A are
+  // normalized [0.0 .. 1.0] (unlike GR_WINDOW_COORDS' [0.0 .. 255.0]).
+  // Packed GR_PARAM_PARGB remains 0xAARRGGBB unsigned bytes.
+  if (m_colorType == 1) {
+    if (m_offsetPARGB >= 0) {
+      uint32_t pargb = 0xFFFFFFFFu;
+      std::memcpy(&pargb, rawBytes + m_offsetPARGB, sizeof(uint32_t));
+      cv.r = static_cast<float>((pargb >> 16) & 0xFFu) / 255.0f;
+      cv.g = static_cast<float>((pargb >> 8) & 0xFFu) / 255.0f;
+      cv.b = static_cast<float>(pargb & 0xFFu) / 255.0f;
+      cv.a = static_cast<float>((pargb >> 24) & 0xFFu) / 255.0f;
+    }
+  } else {
+    if (m_offsetRGB >= 0) {
+      float r = 1.0f;
+      float g = 1.0f;
+      float b = 1.0f;
+      std::memcpy(&r, rawBytes + m_offsetRGB, sizeof(float));
+      std::memcpy(&g, rawBytes + m_offsetRGB + sizeof(float), sizeof(float));
+      std::memcpy(&b, rawBytes + m_offsetRGB + 2 * sizeof(float),
+                  sizeof(float));
+      cv.r = SanitizeClipColorNorm(r);
+      cv.g = SanitizeClipColorNorm(g);
+      cv.b = SanitizeClipColorNorm(b);
+    }
+    if (m_offsetA >= 0) {
+      float a = 1.0f;
+      std::memcpy(&a, rawBytes + m_offsetA, sizeof(float));
+      cv.a = SanitizeClipColorNorm(a);
+    }
+  }
+
+  if (m_offsetST0 >= 0) {
+    float s = 0.0f;
+    float t = 0.0f;
+    std::memcpy(&s, rawBytes + m_offsetST0, sizeof(float));
+    std::memcpy(&t, rawBytes + m_offsetST0 + sizeof(float), sizeof(float));
+    cv.s0 = SanitizeFiniteZero(s);
+    cv.t0 = SanitizeFiniteZero(t);
+    if (m_offsetQ0 >= 0) {
+      float q0 = 1.0f;
+      std::memcpy(&q0, rawBytes + m_offsetQ0, sizeof(float));
+      cv.q0 = SanitizeFiniteZero(q0);
+    } else if (m_stwHintMask & 0x2) {
+      float q0 = 1.0f;
+      std::memcpy(&q0, rawBytes + m_offsetST0 + 2 * sizeof(float),
+                  sizeof(float));
+      cv.q0 = SanitizeFiniteZero(q0);
+    }
+  }
+
+  if (m_offsetST1 >= 0) {
+    float s = 0.0f;
+    float t = 0.0f;
+    std::memcpy(&s, rawBytes + m_offsetST1, sizeof(float));
+    std::memcpy(&t, rawBytes + m_offsetST1 + sizeof(float), sizeof(float));
+    cv.s1 = SanitizeFiniteZero(s);
+    cv.t1 = SanitizeFiniteZero(t);
+    if (m_offsetQ1 >= 0) {
+      float q1 = 1.0f;
+      std::memcpy(&q1, rawBytes + m_offsetQ1, sizeof(float));
+      cv.q1 = SanitizeFiniteZero(q1);
+    } else if (m_stwHintMask & 0x8) {
+      float q1 = 1.0f;
+      std::memcpy(&q1, rawBytes + m_offsetST1 + 2 * sizeof(float),
+                  sizeof(float));
+      cv.q1 = SanitizeFiniteZero(q1);
+    }
+  }
+
+  if (m_offsetFog >= 0) {
+    float fog = 0.0f;
+    std::memcpy(&fog, rawBytes + m_offsetFog, sizeof(float));
+    cv.fog = SanitizeFiniteZero(fog);
+  }
+
+  return cv;
+}
+
 void VertexLayout::GetLayoutState(void* layoutState) const {
   if (!layoutState) return;
   std::memcpy(layoutState, &m_glide3LayoutState, sizeof(Glide3VertexLayout));
@@ -428,11 +552,11 @@ void VertexLayout::SetLayoutState(const void* layoutState) {
   m_offsetXY = resolveOff(m_glide3LayoutState.vertexInfo);
   m_offsetZ = resolveOff(m_glide3LayoutState.zInfo);
   m_offsetOOZ = -1;  // Reset OOZ and map depth to offsetZ for Glide 3.x consistency
+  m_glide3ExplicitZ = (m_offsetZ >= 0);
 
   m_offsetOOW = resolveOff(m_glide3LayoutState.wInfo);
-  if (m_offsetOOW == -1) {
-    m_offsetOOW = resolveOff(m_glide3LayoutState.qInfo);
-  }
+  m_glide3ExplicitW = (m_offsetOOW >= 0);
+  m_offsetQ = resolveOff(m_glide3LayoutState.qInfo);
   m_offsetA = resolveOff(m_glide3LayoutState.aInfo);
   m_offsetRGB = resolveOff(m_glide3LayoutState.rgbInfo);
   m_offsetPARGB = resolveOff(m_glide3LayoutState.pargbInfo);
@@ -471,6 +595,7 @@ int32_t VertexLayout::GetMaxActiveOffset() const {
     if (m_offsetA >= 0) maxOffset = std::max(maxOffset, m_offsetA + 4);
   }
   if (m_offsetOOW >= 0) maxOffset = std::max(maxOffset, m_offsetOOW + 4);
+  if (m_offsetQ >= 0) maxOffset = std::max(maxOffset, m_offsetQ + 4);
   if (m_offsetST0 >= 0) {
     int32_t size = (m_stwHintMask & 0x2) ? 12 : 8;
     maxOffset = std::max(maxOffset, m_offsetST0 + size);

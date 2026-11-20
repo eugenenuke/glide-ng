@@ -80,14 +80,9 @@ void SoftwareBackendBase::ClearBufferExt_Locked(uint32_t color, uint32_t alpha,
       MaterializeLazyCpuClear_Locked(activeSlot);
     }
 
-    uint32_t a = (alpha > 0) ? alpha : 255;
-    uint32_t r = (color >> 16) & 0xFF;
-    uint32_t g = (color >> 8) & 0xFF;
-    uint32_t b = color & 0xFF;
-
-    if (m_pixelFormatOverride == 1) {  // Convert input ABGR to internal ARGB
-      std::swap(r, b);
-    }
+    const uint32_t a = (alpha > 0) ? alpha : 255u;
+    const uint32_t clearRgb =
+        GrColorToCanonicalArgb(color, m_pixelFormatOverride) & 0x00FFFFFFu;
 
     uint32_t writeMask = 0;
     if (m_colorMaskR) writeMask |= 0x00FF0000u;
@@ -100,7 +95,7 @@ void SoftwareBackendBase::ClearBufferExt_Locked(uint32_t color, uint32_t alpha,
                 "ClearBuffer color clear skipped due to zero color mask (write "
                 "masking active).");
     } else {
-      const uint32_t clearWord = (a << 24) | (r << 16) | (g << 8) | b;
+      const uint32_t clearWord = (a << 24) | clearRgb;
       const uint32_t keepMask = ~writeMask;
       const uint32_t maskedClearWord =
           (writeMask == 0xFFFFFFFFu) ? clearWord : (clearWord & writeMask);
@@ -275,15 +270,11 @@ void SoftwareBackendBase::MaterializeLazyCpuClear_Locked(uint32_t bufferSlot) {
   if (pending.colorWriteMask4 & 0x8u) writeMask |= 0xFF000000u;
   if (writeMask == 0) return;
 
-  uint32_t a = (pending.alpha > 0) ? pending.alpha : 255;
-  uint32_t r = (pending.color >> 16) & 0xFF;
-  uint32_t g = (pending.color >> 8) & 0xFF;
-  uint32_t b = pending.color & 0xFF;
-  if (pending.pixelFormat == 1) {
-    std::swap(r, b);
-  }
+  const uint32_t a = (pending.alpha > 0) ? pending.alpha : 255u;
+  const uint32_t clearRgb =
+      GrColorToCanonicalArgb(pending.color, pending.pixelFormat) & 0x00FFFFFFu;
 
-  const uint32_t clearWord = (a << 24) | (r << 16) | (g << 8) | b;
+  const uint32_t clearWord = (a << 24) | clearRgb;
   const uint32_t keepMask = ~writeMask;
   const uint32_t maskedClearWord =
       (writeMask == 0xFFFFFFFFu) ? clearWord : (clearWord & writeMask);

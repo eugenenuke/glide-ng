@@ -9,6 +9,51 @@
 
 namespace GlideWrapper {
 
+// Convert a packed 32-bit GrColor_t encoded in Glide's active GrColorFormat_t
+// (0=ARGB, 1=ABGR, 2=RGBA, 3=BGRA) into canonical 0xAARRGGBB.
+inline uint32_t GrColorToCanonicalArgb(uint32_t color,
+                                       uint32_t colorFormat) noexcept {
+  switch (colorFormat) {
+    case 1u:  // GR_COLORFORMAT_ABGR (0xAABBGGRR) -> 0xAARRGGBB
+      return (color & 0xFF00FF00u) | ((color & 0x000000FFu) << 16) |
+             ((color & 0x00FF0000u) >> 16);
+    case 2u:  // GR_COLORFORMAT_RGBA (0xRRGGBBAA) -> 0xAARRGGBB
+      return ((color & 0x000000FFu) << 24) | ((color & 0xFFFFFF00u) >> 8);
+    case 3u:  // GR_COLORFORMAT_BGRA (0xBBGGRRAA) -> 0xAARRGGBB
+      return ((color & 0x000000FFu) << 24) | ((color & 0x0000FF00u) << 8) |
+             ((color & 0x00FF0000u) >> 8) | ((color & 0xFF000000u) >> 24);
+    default:  // 0 = GR_COLORFORMAT_ARGB (0xAARRGGBB)
+      return color;
+  }
+}
+
+// Convert canonical 0xAARRGGBB into Glide's active GrColorFormat_t
+// (0=ARGB, 1=ABGR, 2=RGBA, 3=BGRA).
+inline uint32_t CanonicalArgbToGrColor(uint32_t argb,
+                                       uint32_t colorFormat) noexcept {
+  switch (colorFormat) {
+    case 1u:  // GR_COLORFORMAT_ABGR
+      return (argb & 0xFF00FF00u) | ((argb & 0x000000FFu) << 16) |
+             ((argb & 0x00FF0000u) >> 16);
+    case 2u:  // GR_COLORFORMAT_RGBA
+      return ((argb & 0x00FFFFFFu) << 8) | ((argb & 0xFF000000u) >> 24);
+    case 3u:  // GR_COLORFORMAT_BGRA
+      return ((argb & 0x000000FFu) << 24) | ((argb & 0x0000FF00u) << 8) |
+             ((argb & 0x00FF0000u) >> 8) | ((argb & 0xFF000000u) >> 24);
+    default:  // 0 = GR_COLORFORMAT_ARGB
+      return argb;
+  }
+}
+
+inline void UnpackGrColorNorm(uint32_t color, uint32_t colorFormat, float& r,
+                              float& g, float& b, float& a) noexcept {
+  const uint32_t argb = GrColorToCanonicalArgb(color, colorFormat);
+  a = static_cast<float>((argb >> 24) & 0xFFu) / 255.0f;
+  r = static_cast<float>((argb >> 16) & 0xFFu) / 255.0f;
+  g = static_cast<float>((argb >> 8) & 0xFFu) / 255.0f;
+  b = static_cast<float>(argb & 0xFFu) / 255.0f;
+}
+
 /**
  * @brief Pure Glide 2.x/3.x pipeline state tracker implementing shared
  * IGraphicsBackend state setters, state getters, and lifecycle metadata.

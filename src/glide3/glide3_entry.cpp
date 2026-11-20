@@ -54,6 +54,9 @@ float s_viewportWidth = 640.0f;
 float s_viewportHeight = 480.0f;
 float s_depthRangeNear = 1.0f;
 float s_depthRangeFar = 65535.0f;
+// Aspect-adjusted Glide UV scales for GR_CLIP_COORDS normalized [0..1] ST.
+float s_texScaleS[2] = {256.0f, 256.0f};
+float s_texScaleT[2] = {256.0f, 256.0f};
 
 // Enable states
 bool s_aaOrdered = false;
@@ -107,9 +110,20 @@ struct TextureBufferState {
 TextureBufferState s_texBuf;
 
 void NormalizeLfbPixelsToCanonicalArgb(std::vector<uint32_t>& pixels) {
-  if (s_state.colorFormat != GR_COLORFORMAT_ABGR || pixels.empty()) return;
-  GlideWrapper::GetSimdKernels().SwapRB32(pixels.data(), pixels.data(),
-                                          pixels.size());
+  if (s_state.colorFormat == GR_COLORFORMAT_ARGB || pixels.empty()) return;
+  if (s_state.colorFormat == GR_COLORFORMAT_ABGR) {
+    GlideWrapper::GetSimdKernels().SwapRB32(pixels.data(), pixels.data(),
+                                            pixels.size());
+    return;
+  }
+  for (uint32_t& p : pixels) {
+    if (s_state.colorFormat == GR_COLORFORMAT_RGBA) {
+      p = ((p & 0x000000FFu) << 24) | ((p & 0xFFFFFF00u) >> 8);
+    } else if (s_state.colorFormat == GR_COLORFORMAT_BGRA) {
+      p = ((p & 0x000000FFu) << 24) | ((p & 0x0000FF00u) << 8) |
+          ((p & 0x00FF0000u) >> 8) | ((p & 0xFF000000u) >> 24);
+    }
+  }
 }
 
 void ApplyTexBufClipWindow() {
@@ -245,17 +259,318 @@ inline GrBuffer_t ResolveLfbTargetBuffer(GrBuffer_t buf) {
              : buf;
 }
 
-inline void TransformVertexIfNecessary(GlideWrapper::ModernVertex& mv) {
-  if (s_coordSpace == 1) {  // GR_CLIP_COORDS
-    const bool depthActive = (s_state.depthMode != 0);
-    mv.pos[0] = (mv.pos[0] + 1.0f) * 0.5f * s_viewportWidth + s_viewportX;
-    mv.pos[1] = (mv.pos[1] + 1.0f) * 0.5f * s_viewportHeight + s_viewportY;
-    if (depthActive) {
-      mv.pos[2] =
-          (mv.pos[2] + 1.0f) * 0.5f * (s_depthRangeFar - s_depthRangeNear) +
-          s_depthRangeNear;
+inline void UpdateTexCoordScale(uint32_t tmu, uint32_t g2Aspect) {
+  if (tmu >= 2u) return;
+  if (g2Aspect < 3u) {
+    s_texScaleS[tmu] = 256.0f;
+    s_texScaleT[tmu] = static_cast<float>(256u >> std::min(3u - g2Aspect, 3u));
+  } else {
+    s_texScaleS[tmu] = static_cast<float>(256u >> std::min(g2Aspect - 3u, 3u));
+    s_texScaleT[tmu] = 256.0f;
+  }
+}
+
+inline void SyncBackendStwHintMask() {
+  if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
+    b->SetSTWHintState(
+        GlideWrapper::VertexLayout::GetInstance().GetEffectiveStwHintMask());
+  }
+}
+
+inline GlideWrapper::ClipVertex LerpClipVertex(
+    const GlideWrapper::ClipVertex& a, const GlideWrapper::ClipVertex& b,
+    float t) noexcept {
+  GlideWrapper::ClipVertex out;
+  out.x = a.x + t * (b.x - a.x);
+  out.y = a.y + t * (b.y - a.y);
+  out.z = a.z + t * (b.z - a.z);
+  out.w = a.w + t * (b.w - a.w);
+  out.q = a.q + t * (b.q - a.q);
+  out.r = a.r + t * (b.r - a.r);
+  out.g = a.g + t * (b.g - a.g);
+  out.b = a.b + t * (b.b - a.b);
+  out.a = a.a + t * (b.a - a.a);
+  out.s0 = a.s0 + t * (b.s0 - a.s0);
+  out.t0 = a.t0 + t * (b.t0 - a.t0);
+  out.q0 = a.q0 + t * (b.q0 - a.q0);
+  out.s1 = a.s1 + t * (b.s1 - a.s1);
+  out.t1 = a.t1 + t * (b.t1 - a.t1);
+  out.q1 = a.q1 + t * (b.q1 - a.q1);
+  out.fog = a.fog + t * (b.fog - a.fog);
+  return out;
+}
+
+// Compute 7-bit homogeneous clip-volume outcode for fast trivial accept/reject.
+inline uint32_t ComputeClipOutcode(const GlideWrapper::ClipVertex& v,
+                                   bool clipZ) noexcept {
+  constexpr float kMinClipW = 1e-4f;
+  uint32_t code = 0u;
+  if (v.w < kMinClipW) code |= 1u << 0;
+  if (v.x < -v.w) code |= 1u << 1;
+  if (v.x > v.w) code |= 1u << 2;
+  if (v.y < -v.w) code |= 1u << 3;
+  if (v.y > v.w) code |= 1u << 4;
+  if (clipZ) {
+    if (v.z < -v.w) code |= 1u << 5;
+    if (v.z > v.w) code |= 1u << 6;
+  }
+  return code;
+}
+
+inline float EvalClipPlaneDist(const GlideWrapper::ClipVertex& v,
+                               int plane) noexcept {
+  constexpr float kMinClipW = 1e-4f;
+  switch (plane) {
+    case 0: return v.w - kMinClipW;  // w >= eps (behind-camera guard)
+    case 1: return v.w + v.x;        // x >= -w (left)
+    case 2: return v.w - v.x;        // x <= +w (right)
+    case 3: return v.w + v.y;        // y >= -w (bottom)
+    case 4: return v.w - v.y;        // y <= +w (top)
+    case 5: return v.w + v.z;        // z >= -w (near Z)
+    case 6: return v.w - v.z;        // z <= +w (far Z)
+    default: return 1.0f;
+  }
+}
+
+inline int ClipPolygonAgainstPlane(const GlideWrapper::ClipVertex* inVerts,
+                                   int inCount,
+                                   GlideWrapper::ClipVertex* outVerts,
+                                   int maxOut, int plane) noexcept {
+  if (inCount <= 0) return 0;
+  int outCount = 0;
+  const GlideWrapper::ClipVertex* prev = &inVerts[inCount - 1];
+  float prevDist = EvalClipPlaneDist(*prev, plane);
+  bool prevInside = (prevDist >= 0.0f);
+
+  for (int i = 0; i < inCount; ++i) {
+    const GlideWrapper::ClipVertex* curr = &inVerts[i];
+    const float currDist = EvalClipPlaneDist(*curr, plane);
+    const bool currInside = (currDist >= 0.0f);
+
+    if (currInside != prevInside && outCount < maxOut) {
+      const float denom = prevDist - currDist;
+      const float t = (std::fabs(denom) > 1e-12f)
+                          ? std::clamp(prevDist / denom, 0.0f, 1.0f)
+                          : 0.0f;
+      outVerts[outCount++] = LerpClipVertex(*prev, *curr, t);
+    }
+    if (currInside && outCount < maxOut) {
+      outVerts[outCount++] = *curr;
+    }
+    prev = curr;
+    prevDist = currDist;
+    prevInside = currInside;
+  }
+  return outCount;
+}
+
+inline GlideWrapper::ModernVertex ProjectClipVertex(
+    const GlideWrapper::ClipVertex& cv,
+    const GlideWrapper::VertexLayout& layout) {
+  GlideWrapper::ModernVertex mv;
+  const float safeW = (cv.w > 1e-6f) ? cv.w : 1e-6f;
+  const float invW = 1.0f / safeW;
+
+  const float xNdc = cv.x * invW;
+  const float yNdc = cv.y * invW;
+  // Authentic Glide 3.x clip->window viewport mapping:
+  // x_w = vpX + (x_ndc + 1) * 0.5 * vpW
+  // y_w = vpY + (y_ndc + 1) * 0.5 * vpH
+  // Screen origin orientation (GR_ORIGIN_UPPER_LEFT vs GR_ORIGIN_LOWER_LEFT)
+  // is applied uniformly by the backend when converting window Y to framebuffer Y.
+  mv.pos[0] = s_viewportX + (xNdc + 1.0f) * 0.5f * s_viewportWidth;
+  mv.pos[1] = s_viewportY + (yNdc + 1.0f) * 0.5f * s_viewportHeight;
+
+  if (s_state.depthMode != 0 && layout.HasExplicitZ()) {
+    const float zNdc = cv.z * invW;
+    if (s_depthRangeNear >= 0.0f && s_depthRangeNear <= 1.0f &&
+        s_depthRangeFar >= 0.0f && s_depthRangeFar <= 1.0f) {
+      mv.pos[2] = s_depthRangeNear +
+                  (zNdc + 1.0f) * 0.5f * (s_depthRangeFar - s_depthRangeNear);
+    } else {
+      mv.pos[2] = std::clamp((zNdc + 1.0f) * 0.5f, 0.0f, 1.0f);
+    }
+  } else {
+    mv.pos[2] = 0.0f;
+  }
+
+  // FBI 1/W (drives W-buffering and GR_FOG_WITH_TABLE_ON_Q):
+  // In Glide 3.x GR_CLIP_COORDS, GR_PARAM_Q is projected by 1/w (q * invW).
+  // Clamp to >= 1/65535 so far-plane vertices with q == 0 saturate at W=65535
+  // rather than triggering the fragment shader's fragOOW <= 0 discard guard.
+  constexpr float kMinFbiOow = 1.0f / 65535.0f;
+  const float fbiQ = layout.HasParamQ() ? cv.q : 1.0f;
+  mv.pos[3] = std::max(fbiQ * invW, kMinFbiOow);
+
+  mv.color[0] = cv.r;
+  mv.color[1] = cv.g;
+  mv.color[2] = cv.b;
+  mv.color[3] = cv.a;
+
+  // Normalized [0..1] clip-space ST -> Glide aspect-scaled (0..256) * (1/w)
+  mv.tex[0] = cv.s0 * s_texScaleS[0] * invW;
+  mv.tex[1] = cv.t0 * s_texScaleT[0] * invW;
+  mv.tex[2] = cv.s1 * s_texScaleS[1] * invW;
+  mv.tex[3] = cv.t1 * s_texScaleT[1] * invW;
+  mv.tmu_oow[0] =
+      std::max((layout.HasParamQ0() ? cv.q0 : 1.0f) * invW, kMinFbiOow);
+  mv.tmu_oow[1] =
+      std::max((layout.HasParamQ1() ? cv.q1 : 1.0f) * invW, kMinFbiOow);
+  mv.fog = cv.fog;
+
+  EntryCommon::SanitizeVertex(s_state, mv);
+  return mv;
+}
+
+void DrawClipTriangle(GlideWrapper::IGraphicsBackend* backend,
+                      const GlideWrapper::ClipVertex& a,
+                      const GlideWrapper::ClipVertex& b,
+                      const GlideWrapper::ClipVertex& c,
+                      const GlideWrapper::VertexLayout& layout) {
+  const bool clipZ = layout.HasExplicitZ();
+  const uint32_t ca = ComputeClipOutcode(a, clipZ);
+  const uint32_t cb = ComputeClipOutcode(b, clipZ);
+  const uint32_t cc = ComputeClipOutcode(c, clipZ);
+
+  if ((ca & cb & cc) != 0u) {
+    return;  // Trivially outside clip volume
+  }
+  if ((ca | cb | cc) == 0u) {
+    // Fast path: all 3 vertices strictly inside clip frustum
+    const auto va = ProjectClipVertex(a, layout);
+    const auto vb = ProjectClipVertex(b, layout);
+    const auto vc = ProjectClipVertex(c, layout);
+    backend->DrawTriangle(va, vb, vc);
+    return;
+  }
+
+  constexpr int kMaxClipVerts = 16;
+  GlideWrapper::ClipVertex bufA[kMaxClipVerts];
+  GlideWrapper::ClipVertex bufB[kMaxClipVerts];
+  bufA[0] = a;
+  bufA[1] = b;
+  bufA[2] = c;
+  int count = 3;
+  GlideWrapper::ClipVertex* src = bufA;
+  GlideWrapper::ClipVertex* dst = bufB;
+
+  const uint32_t anyOut = ca | cb | cc;
+  const int numPlanes = clipZ ? 7 : 5;
+  for (int plane = 0; plane < numPlanes && count >= 3; ++plane) {
+    if ((anyOut & (1u << plane)) == 0u) continue;
+    count = ClipPolygonAgainstPlane(src, count, dst, kMaxClipVerts, plane);
+    std::swap(src, dst);
+  }
+  if (count < 3) return;
+
+  const auto v0 = ProjectClipVertex(src[0], layout);
+  auto vPrev = ProjectClipVertex(src[1], layout);
+  for (int i = 2; i < count; ++i) {
+    const auto vCurr = ProjectClipVertex(src[i], layout);
+    backend->DrawTriangle(v0, vPrev, vCurr);
+    vPrev = vCurr;
+  }
+}
+
+void DrawClipLine(GlideWrapper::IGraphicsBackend* backend,
+                  const GlideWrapper::ClipVertex& a,
+                  const GlideWrapper::ClipVertex& b,
+                  const GlideWrapper::VertexLayout& layout) {
+  const bool clipZ = layout.HasExplicitZ();
+  const uint32_t ca = ComputeClipOutcode(a, clipZ);
+  const uint32_t cb = ComputeClipOutcode(b, clipZ);
+  if ((ca & cb) != 0u) return;
+
+  float t0 = 0.0f;
+  float t1 = 1.0f;
+  const uint32_t anyOut = ca | cb;
+  const int numPlanes = clipZ ? 7 : 5;
+  for (int plane = 0; plane < numPlanes; ++plane) {
+    if ((anyOut & (1u << plane)) == 0u) continue;
+    const float da = EvalClipPlaneDist(a, plane);
+    const float db = EvalClipPlaneDist(b, plane);
+    if (da < 0.0f && db < 0.0f) return;
+    if (da >= 0.0f && db >= 0.0f) continue;
+    const float denom = da - db;
+    if (std::fabs(denom) <= 1e-12f) continue;
+    const float t = da / denom;
+    if (da < 0.0f) {
+      t0 = std::max(t0, t);
+    } else {
+      t1 = std::min(t1, t);
+    }
+    if (t0 > t1) return;
+  }
+
+  const auto clippedA = (t0 > 0.0f) ? LerpClipVertex(a, b, t0) : a;
+  const auto clippedB = (t1 < 1.0f) ? LerpClipVertex(a, b, t1) : b;
+  const auto va = ProjectClipVertex(clippedA, layout);
+  const auto vb = ProjectClipVertex(clippedB, layout);
+  ++s_linesDrawn;
+  backend->DrawLine(va, vb);
+}
+
+void DrawClipPoint(GlideWrapper::IGraphicsBackend* backend,
+                   const GlideWrapper::ClipVertex& p,
+                   const GlideWrapper::VertexLayout& layout) {
+  if (ComputeClipOutcode(p, layout.HasExplicitZ()) != 0u) return;
+  const auto mv = ProjectClipVertex(p, layout);
+  ++s_pointsDrawn;
+  backend->DrawPoint(mv);
+}
+
+void DrawClipVertexList(uint32_t mode, uint32_t count,
+                        const GlideWrapper::ClipVertex* verts,
+                        const GlideWrapper::VertexLayout& layout) {
+  auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
+  if (!backend || !verts || count == 0) return;
+
+  EntryCommon::SyncTexturesBeforeDraw();
+
+  if (mode == GR_POINTS) {
+    for (uint32_t i = 0; i < count; ++i) {
+      DrawClipPoint(backend, verts[i], layout);
+    }
+    return;
+  }
+  if (mode == GR_LINES) {
+    for (uint32_t i = 0; i + 1 < count; i += 2) {
+      DrawClipLine(backend, verts[i], verts[i + 1], layout);
+    }
+    return;
+  }
+  if (mode == GR_LINE_STRIP) {
+    for (uint32_t i = 0; i + 1 < count; ++i) {
+      DrawClipLine(backend, verts[i], verts[i + 1], layout);
+    }
+    return;
+  }
+  if (count < 3) return;
+
+  if (mode == GR_TRIANGLES) {
+    GLIDE_INCREMENT_TRIANGLES_PROCESSED(count / 3);
+    for (uint32_t i = 0; i + 2 < count; i += 3) {
+      DrawClipTriangle(backend, verts[i], verts[i + 1], verts[i + 2], layout);
+    }
+  } else if (mode == GR_TRIANGLE_STRIP || mode == GR_TRIANGLE_STRIP_CONTINUE) {
+    GLIDE_INCREMENT_TRIANGLES_PROCESSED(count - 2);
+    for (uint32_t i = 0; i + 2 < count; ++i) {
+      if ((i & 1u) == 0u) {
+        DrawClipTriangle(backend, verts[i], verts[i + 1], verts[i + 2], layout);
+      } else {
+        DrawClipTriangle(backend, verts[i], verts[i + 2], verts[i + 1], layout);
+      }
+    }
+  } else if (mode == GR_TRIANGLE_FAN || mode == GR_TRIANGLE_FAN_CONTINUE ||
+             mode == GR_POLYGON) {
+    GLIDE_INCREMENT_TRIANGLES_PROCESSED(count - 2);
+    for (uint32_t i = 1; i + 1 < count; ++i) {
+      DrawClipTriangle(backend, verts[0], verts[i], verts[i + 1], layout);
     }
   }
+}
+
+inline void TransformVertexIfNecessary(GlideWrapper::ModernVertex& mv) {
   EntryCommon::SanitizeVertex(s_state, mv);
 }
 
@@ -269,6 +584,8 @@ void ResetFrontendState() {
   s_viewportHeight = 480.0f;
   s_depthRangeNear = 1.0f;
   s_depthRangeFar = 65535.0f;
+  s_texScaleS[0] = s_texScaleS[1] = 256.0f;
+  s_texScaleT[0] = s_texScaleT[1] = 256.0f;
   s_aaOrdered = false;
   s_shamelessPlug = false;
   s_aaMultiSample = true;
@@ -470,6 +787,8 @@ static GrContext_t OpenWindowGlide3(AnyPtr hWnd,
   s_viewportHeight = static_cast<float>(height);
   s_depthRangeNear = 1.0f;
   s_depthRangeFar = 65535.0f;
+  s_texScaleS[0] = s_texScaleS[1] = 256.0f;
+  s_texScaleT[0] = s_texScaleT[1] = 256.0f;
   s_aaOrdered = false;
   s_shamelessPlug = false;
   s_aaMultiSample = true;
@@ -480,6 +799,8 @@ static GrContext_t OpenWindowGlide3(AnyPtr hWnd,
   GlideWrapper::VertexLayout::GetInstance().ResetToGlide3Canonical();
   auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
   if (!backend) return 0;
+
+  backend->SetSTWHintState(0u);
 
   backend->SetRequestedMsaaSamples(requestedSamples);
   bool attached = backend->AttachWindow(
@@ -699,6 +1020,7 @@ FX_ENTRY void FX_CALL grVertexLayout(FxU32 param, FxI32 offset, FxU32 mode) {
                 << param << ", Offset=" << offset << ", Mode=" << mode);
   GlideWrapper::VertexLayout::GetInstance().SetParamOffsetGlide3(param, offset,
                                                                  mode);
+  SyncBackendStwHintMask();
 }
 
 FX_ENTRY void FX_CALL grDrawTriangle(const void* a, const void* b,
@@ -720,6 +1042,15 @@ FX_ENTRY void FX_CALL grDrawTriangle(const void* a, const void* b,
   GLIDE_INCREMENT_TRIANGLES_PROCESSED(1);
 
   auto& layout = GlideWrapper::VertexLayout::GetInstance();
+  EntryCommon::SyncTexturesBeforeDraw();
+  if (s_coordSpace == 1) {
+    const auto ca = layout.DecodeClipVertex(a);
+    const auto cb = layout.DecodeClipVertex(b);
+    const auto cc = layout.DecodeClipVertex(c);
+    DrawClipTriangle(backend, ca, cb, cc, layout);
+    return;
+  }
+
   GlideWrapper::ModernVertex va;
   GlideWrapper::ModernVertex vb;
   GlideWrapper::ModernVertex vc;
@@ -731,7 +1062,6 @@ FX_ENTRY void FX_CALL grDrawTriangle(const void* a, const void* b,
   TransformVertexIfNecessary(vb);
   TransformVertexIfNecessary(vc);
 
-  EntryCommon::SyncTexturesBeforeDraw();
   backend->DrawTriangle(va, vb, vc);
 }
 
@@ -750,13 +1080,29 @@ FX_ENTRY void FX_CALL grDrawVertexArray(FxU32 mode, FxU32 count,
   GLIDE_LOG(TRACE, "Frontend",
             "grDrawVertexArray (Glide 3.x) invoked: mode=" << mode << ", count="
                                                            << count);
-  if (!pointers || count < 3) return;
+  if (!pointers || count == 0) return;
 
   GLIDE_PROFILE_SCOPE("API::grDrawVertexArray");
   auto& layout = GlideWrapper::VertexLayout::GetInstance();
   const void* const* ptrs = static_cast<const void* const*>(pointers);
 
   constexpr FxU32 kStackCap = 64;
+  if (s_coordSpace == 1) {
+    GlideWrapper::ClipVertex stackClip[kStackCap];
+    std::vector<GlideWrapper::ClipVertex> heapClip;
+    GlideWrapper::ClipVertex* clipVerts = stackClip;
+    if (count > kStackCap) {
+      heapClip.resize(count);
+      clipVerts = heapClip.data();
+    }
+    for (FxU32 i = 0; i < count; ++i) {
+      clipVerts[i] = layout.DecodeClipVertex(ptrs[i]);
+    }
+    DrawClipVertexList(mode, count, clipVerts, layout);
+    return;
+  }
+
+  if (count < 3) return;
   GlideWrapper::ModernVertex stackVerts[kStackCap];
   std::vector<GlideWrapper::ModernVertex> heapVerts;
   GlideWrapper::ModernVertex* verts = stackVerts;
@@ -781,7 +1127,7 @@ FX_ENTRY void FX_CALL grDrawVertexArrayContiguous(FxU32 mode, FxU32 count,
   GLIDE_LOG(TRACE, "Frontend",
             "grDrawVertexArrayContiguous (Glide 3.x) invoked: mode="
                 << mode << ", count=" << count << ", stride=" << stride);
-  if (!pointers || count < 3 || stride == 0) return;
+  if (!pointers || count == 0 || stride == 0) return;
 
   auto& layout = GlideWrapper::VertexLayout::GetInstance();
   int32_t maxOffset = layout.GetMaxActiveOffset();
@@ -799,6 +1145,22 @@ FX_ENTRY void FX_CALL grDrawVertexArrayContiguous(FxU32 mode, FxU32 count,
   const char* rawBytes = static_cast<const char*>(pointers);
 
   constexpr FxU32 kStackCap = 64;
+  if (s_coordSpace == 1) {
+    GlideWrapper::ClipVertex stackClip[kStackCap];
+    std::vector<GlideWrapper::ClipVertex> heapClip;
+    GlideWrapper::ClipVertex* clipVerts = stackClip;
+    if (count > kStackCap) {
+      heapClip.resize(count);
+      clipVerts = heapClip.data();
+    }
+    for (FxU32 i = 0; i < count; ++i) {
+      clipVerts[i] = layout.DecodeClipVertex(rawBytes + i * stride);
+    }
+    DrawClipVertexList(mode, count, clipVerts, layout);
+    return;
+  }
+
+  if (count < 3) return;
   GlideWrapper::ModernVertex stackVerts[kStackCap];
   std::vector<GlideWrapper::ModernVertex> heapVerts;
   GlideWrapper::ModernVertex* verts = stackVerts;
@@ -847,13 +1209,18 @@ FX_ENTRY void FX_CALL grDrawLine(const void* a, const void* b) {
   auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
   if (!backend || !a || !b) return;
   auto& layout = GlideWrapper::VertexLayout::GetInstance();
+  EntryCommon::SyncTexturesBeforeDraw();
+  if (s_coordSpace == 1) {
+    DrawClipLine(backend, layout.DecodeClipVertex(a),
+                 layout.DecodeClipVertex(b), layout);
+    return;
+  }
   GlideWrapper::ModernVertex va = layout.DecodeVertex(a);
   GlideWrapper::ModernVertex vb = layout.DecodeVertex(b);
 
   TransformVertexIfNecessary(va);
   TransformVertexIfNecessary(vb);
 
-  EntryCommon::SyncTexturesBeforeDraw();
   ++s_linesDrawn;
   backend->DrawLine(va, vb);
 }
@@ -865,11 +1232,15 @@ FX_ENTRY void FX_CALL grDrawPoint(const void* pt) {
   auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
   if (!backend || !pt) return;
   auto& layout = GlideWrapper::VertexLayout::GetInstance();
+  EntryCommon::SyncTexturesBeforeDraw();
+  if (s_coordSpace == 1) {
+    DrawClipPoint(backend, layout.DecodeClipVertex(pt), layout);
+    return;
+  }
   GlideWrapper::ModernVertex mv = layout.DecodeVertex(pt);
 
   TransformVertexIfNecessary(mv);
 
-  EntryCommon::SyncTexturesBeforeDraw();
   ++s_pointsDrawn;
   backend->DrawPoint(mv);
 }
@@ -1226,6 +1597,7 @@ FX_ENTRY FxBool FX_CALL grReset(FxU32 what) {
       return FXTRUE;
     case GR_VERTEX_PARAMETER:
       GlideWrapper::VertexLayout::GetInstance().ResetAllParamsDisabled();
+      SyncBackendStwHintMask();
       return FXTRUE;
     default:
       GLIDE_LOG(WARN, "Frontend",
@@ -1677,6 +2049,19 @@ FX_ENTRY void FX_CALL grGlideSetState(const void* state) {
   // Apply states to backend
   EntryCommon::ApplySharedStateToBackend(s_state, s_sstOrigin,
                                          /*includeTexInvert=*/true);
+  auto& tm = GlideWrapper::TextureManager::GetInstance();
+  for (uint32_t tmu = 0; tmu < 2u; ++tmu) {
+    if (s_state.boundTex[tmu] != 0xFFFFFFFFu) {
+      if (const auto* vt = tm.GetTexture(tmu, s_state.boundTex[tmu])) {
+        UpdateTexCoordScale(tmu, vt->aspectRatio);
+      } else {
+        UpdateTexCoordScale(tmu, 3u);
+      }
+    } else {
+      UpdateTexCoordScale(tmu, 3u);
+    }
+  }
+  SyncBackendStwHintMask();
   if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
     b->SetAAState(s_aaOrdered);
     b->SetDepthRange(s_depthRangeNear, s_depthRangeFar);
@@ -2262,18 +2647,24 @@ FX_ENTRY void FX_CALL grTexSource(GrChipID_t tmu, FxU32 startAddress,
   }
   uint32_t bindAddr = startAddress;
   auto& tm = GlideWrapper::TextureManager::GetInstance();
-  if (info && tm.IsMultibaseEnabled(static_cast<uint32_t>(tmu))) {
-    const int32_t g2Large =
-        g_inSplash ? info->largeLodLog2 : (8 - info->largeLodLog2);
-    const int32_t g2Small =
-        g_inSplash ? info->smallLodLog2 : (8 - info->smallLodLog2);
-    const uint32_t g2Aspect =
-        g_inSplash ? static_cast<uint32_t>(info->aspectRatioLog2)
-                   : static_cast<uint32_t>(3 - info->aspectRatioLog2);
-    bindAddr = tm.ResolveMultibaseSource(static_cast<uint32_t>(tmu),
-                                         startAddress, g2Large, g2Small,
-                                         g2Aspect, info->format);
+  uint32_t g2Aspect = 3u;
+  if (info) {
+    g2Aspect = g_inSplash ? static_cast<uint32_t>(info->aspectRatioLog2)
+                          : static_cast<uint32_t>(3 - info->aspectRatioLog2);
+    if (tm.IsMultibaseEnabled(static_cast<uint32_t>(tmu))) {
+      const int32_t g2Large =
+          g_inSplash ? info->largeLodLog2 : (8 - info->largeLodLog2);
+      const int32_t g2Small =
+          g_inSplash ? info->smallLodLog2 : (8 - info->smallLodLog2);
+      bindAddr = tm.ResolveMultibaseSource(static_cast<uint32_t>(tmu),
+                                           startAddress, g2Large, g2Small,
+                                           g2Aspect, info->format);
+    }
+  } else if (const auto* vt = tm.GetTexture(static_cast<uint32_t>(tmu),
+                                            bindAddr)) {
+    g2Aspect = vt->aspectRatio;
   }
+  UpdateTexCoordScale(static_cast<uint32_t>(tmu), g2Aspect);
   EntryCommon::BindTexSource(s_state, tmu, bindAddr);
 }
 
@@ -2592,6 +2983,7 @@ FX_ENTRY void FX_CALL grGlideSetVertexLayout(const void* layout) {
   EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend", "grGlideSetVertexLayout (Glide 3.x) invoked.");
   GlideWrapper::VertexLayout::GetInstance().SetLayoutState(layout);
+  SyncBackendStwHintMask();
 }
 
 FX_ENTRY void FX_CALL grLoadGammaTable(FxU32 nentries, FxU32* red, FxU32* green,

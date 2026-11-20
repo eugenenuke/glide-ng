@@ -13,6 +13,28 @@ struct ModernVertex {
     float fog{0.0f};                  // custom per-vertex fog coordinate (GR_PARAM_FOG_EXT)
 };
 
+// Homogeneous pre-projection vertex decoded under Glide 3.x GR_CLIP_COORDS.
+// All attributes remain linear in homogeneous clip space so 3D frustum clipping
+// can interpolate them before perspective division by w.
+struct ClipVertex {
+    float x{0.0f};
+    float y{0.0f};
+    float z{0.0f};
+    float w{1.0f};
+    float q{1.0f};
+    float r{1.0f};
+    float g{1.0f};
+    float b{1.0f};
+    float a{1.0f};
+    float s0{0.0f};
+    float t0{0.0f};
+    float q0{1.0f};
+    float s1{0.0f};
+    float t1{0.0f};
+    float q1{1.0f};
+    float fog{0.0f};
+};
+
 struct __attribute__((packed)) GrVParamInfo {
     uint32_t mode;                      // enable / disable
     int32_t offset;                     // offset to the parameter data
@@ -59,6 +81,17 @@ public:
 
     void SetSTWHintMask(uint32_t mask) { m_stwHintMask = mask; }
     uint32_t GetSTWHintMask() const { return m_stwHintMask; }
+    uint32_t GetEffectiveStwHintMask() const {
+        uint32_t mask = m_stwHintMask;
+        if (m_offsetQ0 >= 0) mask |= 0x2u;
+        if (m_offsetQ1 >= 0) mask |= 0x8u;
+        return mask;
+    }
+
+    bool HasExplicitZ() const { return m_glide3ExplicitZ && m_offsetZ >= 0; }
+    bool HasParamQ() const { return m_offsetQ >= 0; }
+    bool HasParamQ0() const { return m_offsetQ0 >= 0; }
+    bool HasParamQ1() const { return m_offsetQ1 >= 0; }
 
     ModernVertex DecodeVertex(const void* gameVertex) const {
         ModernVertex v;
@@ -73,6 +106,8 @@ public:
         }
         v = DecodeVertexSlow(gameVertex);
     }
+
+    ClipVertex DecodeClipVertex(const void* gameVertex) const;
 
     int32_t GetMaxActiveOffset() const;
 
@@ -99,6 +134,11 @@ public:
         if (__builtin_expect(!IsFiniteFloat(raw), 0)) return 1.0f;
         const float c = raw / 255.0f;
         return c <= 0.0f ? 0.0f : (c >= 1.0f ? 1.0f : c);
+    }
+
+    static inline float SanitizeClipColorNorm(float raw) noexcept {
+        if (__builtin_expect(!IsFiniteFloat(raw), 0)) return 1.0f;
+        return raw <= 0.0f ? 0.0f : (raw >= 1.0f ? 1.0f : raw);
     }
 
     static inline float SanitizeFiniteZero(float f) noexcept {
@@ -161,6 +201,8 @@ private:
 
     uint32_t m_stwHintMask{0};
     bool m_isGlide2Canonical{true};
+    bool m_glide3ExplicitW{false};
+    bool m_glide3ExplicitZ{false};
     Glide3VertexLayout m_glide3LayoutState;
 
     // Byte offsets for each parameter component (-1 if disabled)
@@ -169,7 +211,8 @@ private:
     int32_t m_offsetRGB{12};
     int32_t m_offsetOOZ{24};
     int32_t m_offsetA{28};
-    int32_t m_offsetOOW{32};
+    int32_t m_offsetOOW{32};  // GR_PARAM_W (window oow / clip homogeneous W)
+    int32_t m_offsetQ{-1};    // GR_PARAM_Q (independent from GR_PARAM_W)
     int32_t m_offsetST0{36};
     int32_t m_offsetFog{-1};
     int32_t m_offsetST1{-1};

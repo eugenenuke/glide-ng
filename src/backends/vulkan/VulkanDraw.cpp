@@ -54,15 +54,9 @@ void VulkanBackend::ClearBufferExt(uint32_t color, uint32_t alpha, float z,
   bool doStencilClear = false;
 
   if ((clearMask & 1) && (GetColorWriteMask4() != 0)) {
+    float dummyA = 1.0f;
+    UnpackGrColorNorm(color, m_pixelFormatOverride, r, g, b, dummyA);
     a = ((alpha > 0) ? alpha : 255) / 255.0f;
-    r = ((color >> 16) & 0xFF) / 255.0f;
-    g = ((color >> 8) & 0xFF) / 255.0f;
-    b = (color & 0xFF) / 255.0f;
-
-    // Respect the active pixel format from GlideStateTracker!
-    if (m_pixelFormatOverride == 1) {  // ABGR format override
-      std::swap(r, b);
-    }
 
     colorClearVal = vk::ClearColorValue(std::array<float, 4>{r, g, b, a});
     clears[clearCount++] =
@@ -819,13 +813,9 @@ void VulkanBackend::PopulatePushConstants(PushConstants& pcs) {
   pcs.depthBufferMode = m_depthMode;
 
   // Extract and normalize constant color components, then pack
-  float constR = ((m_constantColor >> 16) & 0xFF) / 255.0f;
-  float constG = ((m_constantColor >> 8) & 0xFF) / 255.0f;
-  float constB = (m_constantColor & 0xFF) / 255.0f;
-  float constA = ((m_constantColor >> 24) & 0xFF) / 255.0f;
-  if (m_pixelFormatOverride == 1) {
-    std::swap(constR, constB);
-  }
+  float constR = 0.0f, constG = 0.0f, constB = 0.0f, constA = 1.0f;
+  UnpackGrColorNorm(m_constantColor, m_pixelFormatOverride, constR, constG,
+                    constB, constA);
   pcs.constantColor = PackRGBA(constR, constG, constB, constA);
 
   pcs.alphaTestOp = m_alphaTestOp;
@@ -835,16 +825,8 @@ void VulkanBackend::PopulatePushConstants(PushConstants& pcs) {
   // Milestone 8: Fogging State (packed 128-byte layout)
   pcs.fogMode = m_fogMode;
 
-  // Swizzle fog color if format override is active
-  uint32_t packedFogColor = m_fogColor;
-  if (m_pixelFormatOverride == 1) {
-    uint32_t r = (m_fogColor >> 16) & 0xFF;
-    uint32_t g = (m_fogColor >> 8) & 0xFF;
-    uint32_t b = m_fogColor & 0xFF;
-    uint32_t a = (m_fogColor >> 24) & 0xFF;
-    packedFogColor = (a << 24) | (b << 16) | (g << 8) | r;
-  }
-  pcs.fogColor = packedFogColor;
+  // color.frag unpacks fogColor as canonical 0xAARRGGBB (R=16..23, G=8..15, B=0..7)
+  pcs.fogColor = GrColorToCanonicalArgb(m_fogColor, m_pixelFormatOverride);
 
   // Pack 64-entry 8-bit fog table into 16 uint32_t values
 #if defined(__BYTE_ORDER__) && (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)
@@ -901,26 +883,15 @@ void VulkanBackend::PopulatePushConstants(PushConstants& pcs) {
   // Milestone 10: Chromakey State
   pcs.chromakeyRangeMode = m_chromakeyRangeMode;
 
-  float cValR = ((m_chromakeyValue >> 16) & 0xFF) / 255.0f;
-  float cValG = ((m_chromakeyValue >> 8) & 0xFF) / 255.0f;
-  float cValB = (m_chromakeyValue & 0xFF) / 255.0f;
-  float cValA = ((m_chromakeyValue >> 24) & 0xFF) / 255.0f;
-
-  float cMinR = ((m_chromakeyRangeMin >> 16) & 0xFF) / 255.0f;
-  float cMinG = ((m_chromakeyRangeMin >> 8) & 0xFF) / 255.0f;
-  float cMinB = (m_chromakeyRangeMin & 0xFF) / 255.0f;
-  float cMinA = ((m_chromakeyRangeMin >> 24) & 0xFF) / 255.0f;
-
-  float cMaxR = ((m_chromakeyRangeMax >> 16) & 0xFF) / 255.0f;
-  float cMaxG = ((m_chromakeyRangeMax >> 8) & 0xFF) / 255.0f;
-  float cMaxB = (m_chromakeyRangeMax & 0xFF) / 255.0f;
-  float cMaxA = ((m_chromakeyRangeMax >> 24) & 0xFF) / 255.0f;
-
-  if (m_pixelFormatOverride == 1) {
-    std::swap(cValR, cValB);
-    std::swap(cMinR, cMinB);
-    std::swap(cMaxR, cMaxB);
-  }
+  float cValR = 0.0f, cValG = 0.0f, cValB = 0.0f, cValA = 0.0f;
+  float cMinR = 0.0f, cMinG = 0.0f, cMinB = 0.0f, cMinA = 0.0f;
+  float cMaxR = 0.0f, cMaxG = 0.0f, cMaxB = 0.0f, cMaxA = 0.0f;
+  UnpackGrColorNorm(m_chromakeyValue, m_pixelFormatOverride, cValR, cValG,
+                    cValB, cValA);
+  UnpackGrColorNorm(m_chromakeyRangeMin, m_pixelFormatOverride, cMinR, cMinG,
+                    cMinB, cMinA);
+  UnpackGrColorNorm(m_chromakeyRangeMax, m_pixelFormatOverride, cMaxR, cMaxG,
+                    cMaxB, cMaxA);
 
   pcs.chromakeyValue = PackRGBA(cValR, cValG, cValB, cValA);
   pcs.chromakeyRangeMin = PackRGBA(cMinR, cMinG, cMinB, cMinA);
@@ -932,26 +903,15 @@ void VulkanBackend::PopulatePushConstants(PushConstants& pcs) {
   uint32_t packedTexChromaMax[2]{0, 0};
   uint32_t packedTmuConst[2]{0, 0};
   for (int i = 0; i < 2; ++i) {
-    float minR = ((m_texChromaMin[i] >> 16) & 0xFF) / 255.0f;
-    float minG = ((m_texChromaMin[i] >> 8) & 0xFF) / 255.0f;
-    float minB = (m_texChromaMin[i] & 0xFF) / 255.0f;
-    float minA = ((m_texChromaMin[i] >> 24) & 0xFF) / 255.0f;
-
-    float maxR = ((m_texChromaMax[i] >> 16) & 0xFF) / 255.0f;
-    float maxG = ((m_texChromaMax[i] >> 8) & 0xFF) / 255.0f;
-    float maxB = (m_texChromaMax[i] & 0xFF) / 255.0f;
-    float maxA = ((m_texChromaMax[i] >> 24) & 0xFF) / 255.0f;
-
-    float tcR = ((m_tmuConstantColor[i] >> 16) & 0xFF) / 255.0f;
-    float tcG = ((m_tmuConstantColor[i] >> 8) & 0xFF) / 255.0f;
-    float tcB = (m_tmuConstantColor[i] & 0xFF) / 255.0f;
-    float tcA = ((m_tmuConstantColor[i] >> 24) & 0xFF) / 255.0f;
-
-    if (m_pixelFormatOverride == 1) {
-      std::swap(minR, minB);
-      std::swap(maxR, maxB);
-      std::swap(tcR, tcB);
-    }
+    float minR = 0.0f, minG = 0.0f, minB = 0.0f, minA = 0.0f;
+    float maxR = 0.0f, maxG = 0.0f, maxB = 0.0f, maxA = 0.0f;
+    float tcR = 0.0f, tcG = 0.0f, tcB = 0.0f, tcA = 0.0f;
+    UnpackGrColorNorm(m_texChromaMin[i], m_pixelFormatOverride, minR, minG,
+                      minB, minA);
+    UnpackGrColorNorm(m_texChromaMax[i], m_pixelFormatOverride, maxR, maxG,
+                      maxB, maxA);
+    UnpackGrColorNorm(m_tmuConstantColor[i], m_pixelFormatOverride, tcR, tcG,
+                      tcB, tcA);
 
     packedTexChromaMin[i] = PackRGBA(minR, minG, minB, minA);
     packedTexChromaMax[i] = PackRGBA(maxR, maxG, maxB, maxA);

@@ -120,21 +120,24 @@ void MaybeCaptureSnapshot(IGraphicsBackend* backend) {
       "P6\n" + std::to_string(w) + " " + std::to_string(h) + "\n255\n";
   out.write(header.data(), static_cast<std::streamsize>(header.size()));
 
-  const bool isAbgr = (s_activeColorFormat == 1u);  // GR_COLORFORMAT_ABGR
   std::vector<uint8_t> rgbRow(static_cast<size_t>(w) * 3u);
   for (uint32_t y = 0; y < h; ++y) {
     const uint32_t* srcRow = pixels.data() + static_cast<size_t>(y) * w;
     for (uint32_t x = 0; x < w; ++x) {
       const uint32_t p = srcRow[x];
-      if (isAbgr) {
-        rgbRow[x * 3u + 0u] = static_cast<uint8_t>(p & 0xFFu);
-        rgbRow[x * 3u + 1u] = static_cast<uint8_t>((p >> 8) & 0xFFu);
-        rgbRow[x * 3u + 2u] = static_cast<uint8_t>((p >> 16) & 0xFFu);
-      } else {
-        rgbRow[x * 3u + 0u] = static_cast<uint8_t>((p >> 16) & 0xFFu);
-        rgbRow[x * 3u + 1u] = static_cast<uint8_t>((p >> 8) & 0xFFu);
-        rgbRow[x * 3u + 2u] = static_cast<uint8_t>(p & 0xFFu);
+      uint32_t argb = p;
+      if (s_activeColorFormat == 1u) {
+        argb = (p & 0xFF00FF00u) | ((p & 0x000000FFu) << 16) |
+               ((p & 0x00FF0000u) >> 16);
+      } else if (s_activeColorFormat == 2u) {
+        argb = ((p & 0x000000FFu) << 24) | ((p & 0xFFFFFF00u) >> 8);
+      } else if (s_activeColorFormat == 3u) {
+        argb = ((p & 0x000000FFu) << 24) | ((p & 0x0000FF00u) << 8) |
+               ((p & 0x00FF0000u) >> 8) | ((p & 0xFF000000u) >> 24);
       }
+      rgbRow[x * 3u + 0u] = static_cast<uint8_t>((argb >> 16) & 0xFFu);
+      rgbRow[x * 3u + 1u] = static_cast<uint8_t>((argb >> 8) & 0xFFu);
+      rgbRow[x * 3u + 2u] = static_cast<uint8_t>(argb & 0xFFu);
     }
     out.write(reinterpret_cast<const char*>(rgbRow.data()),
               static_cast<std::streamsize>(rgbRow.size()));
