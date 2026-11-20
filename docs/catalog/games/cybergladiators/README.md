@@ -106,21 +106,32 @@ Three ways to play fullscreen on Linux:
 
 ## Visual Progression Gallery
 
-All four captures below are unscaled, borderless `640×479` client-area frames from *CyberGladiators* running under Wine32 + `glide.dll` (Glide 2.11).
+All four captures below are unscaled, borderless `640×479` client-area frames from *CyberGladiators* running under Wine32 + `glide.dll` (Glide 2.11):
 
-| Character Select (`640×480` · Glide 2.11 / SST-1) | 3D Arena — Authentic Voodoo1 (`1×`, Vulkan) |
+| | |
 | :---: | :---: |
-| ![Character Select via Glide 2.11](./screenshots/01_character_select.webp) | ![3D Arena Vulkan 1x](./screenshots/02_arena_voodoo1_1x.webp) |
-| *Even the 2D roster UI renders via `glide.dll` (~40 tris/frame, bilinear `ARGB_1555`). Full unclipped `Ctrl+O` / `Esc` footer under `/desktop=CG,800x600`.* | *Authentic `1×` SST-1 baseline (`~1,000` tris/frame, `1.5 ms` render time, 60.0 FPS). Notice staircase aliasing along fighter spikes, blade arm, and shins.* |
-
-| 3D Arena — Enhanced (`4× MSAA` + `no_dither_sub`, OpenGL 3.3 Core) | 3D Arena — CPU Software (`2×2 SSAA`, AVX2/AVX-512) |
-| :---: | :---: |
-| ![3D Arena 4x MSAA](./screenshots/03_arena_hq_msaa4.webp) | ![3D Arena Software 2x2 SSAA](./screenshots/04_arena_sw_ssaa.webp) |
-| *Exact same combat frame (`58` on clock) with `msaa = 4`: smooth metallic silhouettes, spikes, and limbs with crisp HUD bars and zero texture bleed.* | *Pure CPU Software backend with `2×2 SSAA` (`4.5 ms/frame`, locked 60.0 FPS): pixel-consistent lighting, hit sparks, and smooth anti-aliased edges.* |
+| ![Character Select via Glide 2.11](./screenshots/01_character_select.webp)<br>**1. Character Select (`640×480` · Glide 2.11 / SST-1)**<br>Even the 2D roster UI renders via `glide.dll` (~40 tris/frame, bilinear `ARGB_1555`). Full unclipped `Ctrl+O` / `Esc` footer under `/desktop=CG,800x600`. | ![3D Arena Vulkan 1x](./screenshots/02_arena_voodoo1_1x.webp)<br>**2. 3D Arena — Authentic Voodoo1 (`1×`, Vulkan)**<br>Authentic `1×` SST-1 baseline (`~1,000` tris/frame, `1.5 ms` render time, 60.0 FPS). Shows native polygon aliasing along fighter spikes, blade arm, and shins. |
+| ![3D Arena 4x MSAA](./screenshots/03_arena_hq_msaa4.webp)<br>**3. 3D Arena — Enhanced (`4× MSAA` + `no_dither_sub`, OpenGL 3.3 Core)**<br>Exact same combat frame (`58` on clock) with `msaa = 4`: smooth metallic silhouettes, spikes, and limbs with crisp HUD bars and clean sprite boundaries. | ![3D Arena Software 2x2 SSAA](./screenshots/04_arena_sw_ssaa.webp)<br>**4. 3D Arena — CPU Software (`2×2 SSAA`, AVX2/AVX-512)**<br>Pure CPU Software backend with `2×2 SSAA` (`4.5 ms/frame`, locked 60.0 FPS): consistent lighting, hit sparks, and smooth anti-aliased edges. |
 
 ---
 
-## Controls & In-Game Hotkeys
+## Visual Quality & Performance Tuning
+
+### Anti-Aliasing, Filtering & Gamma
+* **Best visuals ([`glide-ng.hq.ini`](./glide-ng.hq.ini)):** Pairs `msaa = 4`, `presentation_filter = linear`, and `no_dither_sub = true` to smooth jagged blades, spikes, and arena silhouettes while eliminating 16-bit dither banding.
+* **In-game `Motion: smooth`:** At the Character Select screen, press **`Ctrl + O`** and toggle **`Motion: smooth`** for interpolated fighter animation frames.
+* **Gamma:** `CYBER.EXE` calls `grGammaCorrectionValue(1.6)` automatically at startup. Pause during a match (`Space`) and press **`\`** to adjust gamma live without modifying `glide-ng.ini`.
+
+---
+
+## Quirks, Known Issues & Controls
+
+### Installation & Engine Notes
+* **Use an `800×600` virtual desktop (not `640×480`):** Inside `wine explorer /desktop=CG,640x480`, the ~22 px title bar clips the bottom status bar. Run `800x600` or launch directly with `wine ./CYBER.EXE`.
+* **No built-in DirectDraw 3dfx fullscreen toggle:** `CYBER.EXE` disables `Alt + Enter` when `GLIDE.DLL` is active; see the fullscreen options above.
+* **Startup timing on fast CPUs:** Use the `GetTickCount`-patched `CYBER.EXE` (or keep `vsync = true` + `max_fps = 60`) so animation speed stays locked to 60 FPS.
+
+### Useful Controls
 
 | Action | Player 1 | Player 2 |
 | :--- | :--- | :--- |

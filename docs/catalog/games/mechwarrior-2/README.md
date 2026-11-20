@@ -17,9 +17,7 @@
 
 Activision's **1998 Titanium Edition** remastered the 1995 Battletech simulation *MechWarrior 2: 31st Century Combat* with a 16-bit Win32 hardware-accelerated combat engine (`mercsw.dll`) built around pluggable rasterizer DLLs inside the `plugin/` directory (`zglide.dll` for 3dfx Glide 2.x, `dx5draw.dll` for Direct3D 5, and `zredline.dll` for Rendition Verite).
 
-When paired with `glide-ng`'s `glide2x.dll`, the `zglide.dll` driver renders full `640×480×16` bilinear terrain, smooth sky-dome clouds, atmospheric distance fog, dynamic weapon ground-lighting flashes (`erMLAS`), ground-projected BattleMech drop shadows, clipped 3D target silhouette MFDs (`F4`), and live **picture-in-picture secondary 3D views** such as the **`REAR` camera mirror (`F7`)**. By contrast, Wine 10's Direct3D 5 emulation (`dx5draw.dll`) clips out an entire vertical strip along the left edge of the viewport behind the target MFD and exhibits jagged horizon seams.
-
-At shell startup, `MW2SHELL.DLL` dynamically enumerates every `plugin\*.dll` via `LoadLibrary` → `grSstQueryHardware` → `FreeLibrary` before closing the probe handle. `glide-ng`'s CPU `Software` backend defers spawning its lock-free worker thread pool until `AttachWindow` (`grSstWinOpen`) and joins all worker threads inside `DetachWindow` (`grSstWinClose`), preventing the classic Windows `LdrpLoaderLock` (`DLL_PROCESS_DETACH`) deadlock during probe-and-unload cycles.
+When paired with `glide-ng`'s `glide2x.dll`, the `zglide.dll` driver renders full `640×480×16` bilinear terrain, smooth sky-dome clouds, atmospheric distance fog, dynamic weapon ground-lighting flashes (`erMLAS`), ground-projected BattleMech drop shadows, clipped 3D target silhouette MFDs (`F4`), and live **picture-in-picture secondary 3D views** such as the **`REAR` camera mirror (`F7`)**. By contrast, Wine 10's Direct3D 5 emulation (`dx5draw.dll`) clips out a vertical strip along the left edge of the viewport behind the target MFD and exhibits jagged horizon seams.
 
 ---
 
@@ -37,7 +35,7 @@ Only the **16-bit Titanium Edition (`Install/16bit`)** contains the **`plugin/zg
 
 ---
 
-## Recommended Launch Configurations
+## Recommended Launch Configurations (Wine32 / Windows)
 
 The Titanium Edition uses a standalone Win32 launcher (`Mw2win.exe` / MechVM `realMW2Win.exe`) wrapped around `MW2SHELL.DLL` and the 3D simulation DLL (`mercsw.dll`). On modern hosts and Wine (`WINEARCH=win32`), use a 32-bit prefix with `glide-ng`'s `glide2x.dll` copied alongside the executable and loaded natively:
 
@@ -133,19 +131,13 @@ All simulation captures depict *Trials of Grievance* (`Instant Action` Nova / Bl
 
 ## Quirks, Known Issues & Controls
 
-### Never Put `glide2x.dll` Inside `plugin/`
-`MW2SHELL.DLL` scans `plugin\*.dll` expecting Activision driver exports. Keep `glide2x.dll` in the **game root folder** beside `Mw2win.exe` / `realMW2Win.exe` so Windows resolves it strictly as an import of `plugin\zglide.dll`.
+### Installation & Engine Notes
+* **Never put `glide2x.dll` inside `plugin/`:** `MW2SHELL.DLL` scans `plugin\*.dll` expecting Activision driver exports. Keep `glide2x.dll` in the **game root folder** beside `Mw2win.exe` / `realMW2Win.exe` so Windows resolves it strictly as an import of `plugin\zglide.dll`.
+* **CD volume check & `MW2SHELL.DLL` patch:** Mount or point drive `D:` (`type = cdrom`) to the disc root labeled **`TITAN_MW2`**, and apply the community MechVM 45-byte **`mw2shell.dll.diff`** heap/PRJ patch (along with its `MW2Win` / `Kernel42.dll` / `gdi42.dll` / `AdvApi42.dll` launcher shims).
+* **`WAIL32.DLL` audio note on headless hosts:** Without an active audio device, the legacy Miles Sound System `waveOutOpen` driver can stall shell entry. On headless systems without PulseAudio/PipeWire/ALSA, disable the Wine audio driver (`HKCU\Software\Wine\Drivers\Audio = ""`). On interactive desktops with real audio, keep default audio enabled.
+* **Wine 10 `WINMM.dll` multimedia timer issue (`mercsw.dll` → `WAIL32.DLL`):** The 1998 `mercsw.dll` registers `__cdecl` (`ret`) timer callbacks (`_AIL_register_timer@4`) with the older 1995 `WAIL32.DLL` timer dispatcher, which expects `__stdcall` (`ret 4`). Restoring `ESP` after the `WAIL32.DLL` callback dispatch avoids a read fault inside Wine's `TIME_MMSysTimeThread`.
 
-### Windows Compatibility & Wine Shell Requirements
-Running the 1998 Titanium shell reliably under Wine / modern Windows typically requires three compatibility adjustments outside `glide-ng`:
-1. **CD Volume Check & `MW2SHELL.DLL` Patch:** Mount or point drive `D:` (`type = cdrom`) to the disc root labeled **`TITAN_MW2`**, and apply the community MechVM 45-byte **`mw2shell.dll.diff`** heap/PRJ patch (along with its `MW2Win` / `Kernel42.dll` / `gdi42.dll` / `AdvApi42.dll` launcher shims).
-2. **`WAIL32.DLL` Audio Deadlock on Headless Systems:** Without a functioning audio device, the legacy Miles Sound System `waveOutOpen` driver can stall shell entry. On headless rigs without PulseAudio/PipeWire/ALSA, disable the Wine audio driver (`HKCU\Software\Wine\Drivers\Audio = ""`). On interactive desktops with real audio, keep default audio enabled.
-3. **Wine 10 `WINMM.dll` Multimedia Timer Crash on `LAUNCH` (`mercsw.dll` → `WAIL32.DLL`):** The 1998 `mercsw.dll` registers two `__cdecl` (`ret` `0xC3`) timer callbacks (`_AIL_register_timer@4` at `0x1006a144` and `0x10061c1b`) with the older 1995 `WAIL32.DLL` timer dispatcher, which expects `__stdcall` (`ret 4`). Leaving 4 bytes unpopped shifts `WAIL32.DLL`'s epilogue `pop edi; pop esi; pop ebx`, returning `wTimerID` (`0x10`) in `EBX` back to Wine's `TIME_MMSysTimeThread` (`winmm.dll`), triggering a read page fault at `0x00000022` (`EBX + 0x12`). Restoring `ESP` via `lea esp, [ebp - 12]` after the `WAIL32.DLL` callback dispatch eliminates the crash while remaining compatible with both `__cdecl` and `__stdcall` timers.
-
-### Fixed `Software` Backend Deadlock on Driver Probe
-Prior to this release, launching a Win32 host with `backend = software` during a `LoadLibrary("plugin\\zglide.dll") → grSstQueryHardware() → FreeLibrary()` probe could deadlock in `DllMain(DLL_PROCESS_DETACH)` while joining `SoftwareBackend` worker threads under the Windows loader lock. `SoftwareBackend` now creates its thread pool lazily in `AttachWindow()` and destroys it inside `DetachWindow()`, and `ThreadPool` detaches cleanly during `RtlDllShutdownInProgress()`.
-
-### Essential Controls (`GAMEKEY.MAP`)
+### Useful Controls (`GAMEKEY.MAP`)
 
 | Key | Action |
 | :--- | :--- |
