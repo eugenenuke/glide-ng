@@ -1,5 +1,6 @@
 #include "SoftwareBackend.h"
 #include "SoftwareInternal.h"
+#include "core/TextureManager.h"
 
 #include <algorithm>
 #include <cmath>
@@ -40,15 +41,278 @@ void SoftwareBackend::WritePixelPipeline(int x, int y, const ModernVertex& v,
     return;
   }
 
-  // 2. Color Combiner
-  uint32_t combinerColor = EvaluateCombinerColor(v, state);
-  float red = ((combinerColor >> 16) & 0xFF) / 255.0f;
-  float green = ((combinerColor >> 8) & 0xFF) / 255.0f;
-  float blue = (combinerColor & 0xFF) / 255.0f;
-  float alpha = ((combinerColor >> 24) & 0xFF) / 255.0f;
+  // 2. Texture (TMU1 -> TMU0) & Color/Alpha Combiner (matching Vulkan/GLES & triangle rasterizer)
+  const float iterR = v.color[0];
+  const float iterG = v.color[1];
+  const float iterB = v.color[2];
+  const float iterA = v.color[3];
+  const TmuColor iteratedColor = {iterR, iterG, iterB, iterA};
 
-  // 2.5. Chromakey Emulation (untextured lines/points test combined RGB)
+  float constantR = 0.0f, constantG = 0.0f, constantB = 0.0f,
+        constantAlpha = 1.0f;
+  UnpackGrColorNorm(state.constantColor, state.pixelFormatOverride, constantR,
+                    constantG, constantB, constantAlpha);
+  const TmuColor constantCol = {constantR, constantG, constantB, constantAlpha};
+
+  auto unpackTmuConst = [&](uint32_t c) -> TmuColor {
+    float r = 0.0f, g = 0.0f, b = 0.0f, a = 1.0f;
+    UnpackGrColorNorm(c, state.pixelFormatOverride, r, g, b, a);
+    return {r, g, b, a};
+  };
+  const TmuColor tmuConst0 = unpackTmuConst(state.tmuConstantColor[0]);
+  const TmuColor tmuConst1 = unpackTmuConst(state.tmuConstantColor[1]);
+
+  const VirtualTexture* tex0 =
+      (state.boundTexAddress[0] != 0xFFFFFFFFu) ? state.boundTex[0].get()
+                                                : nullptr;
+  const bool hasTex0 = (tex0 != nullptr && !tex0->swizzledMipLevels.empty());
+  const VirtualTexture* tex1 =
+      (state.boundTexAddress[1] != 0xFFFFFFFFu) ? state.boundTex[1].get()
+                                                : nullptr;
+  const bool hasTex1 = (tex1 != nullptr && !tex1->swizzledMipLevels.empty());
+
+  const float divW0 =
+      (state.stwHintMask & 0x2u) ? v.tmu_oow[0] : v.pos[3];
+  const float divW1 =
+      (state.stwHintMask & 0x8u) ? v.tmu_oow[1] : v.pos[3];
+
+  // Upstream TMU 1 stage
+  TmuColor tmu1Color = {1.0f, 1.0f, 1.0f, 1.0f};
+  TmuColor tmu1Out = {1.0f, 1.0f, 1.0f, 1.0f};
+  if (hasTex1) {
+    const float invW1 = (divW1 > 0.0f) ? (1.0f / divW1) : 1.0f;
+    const uint32_t tWord1 = SampleTextureLevelSlow(
+        tex1, 0, v.tex[2] * invW1, v.tex[3] * invW1, state.texClampS[1],
+        state.texClampT[1], state.texMinFilter[1], 1u, state);
+    tmu1Color.r = ((tWord1 >> 16) & 0xFFu) / 255.0f;
+    tmu1Color.g = ((tWord1 >> 8) & 0xFFu) / 255.0f;
+    tmu1Color.b = (tWord1 & 0xFFu) / 255.0f;
+    tmu1Color.a = ((tWord1 >> 24) & 0xFFu) / 255.0f;
+    if (state.texCombinerRgbFunc[1] == 1 &&
+        state.texCombinerAlphaFunc[1] == 1 &&
+        !state.texCombinerRgbInvert[1] &&
+        !state.texCombinerAlphaInvert[1]) {
+      tmu1Out = tmu1Color;
+    } else {
+      tmu1Out = EvaluateTmuStage(
+          state.texCombinerRgbFunc[1], state.texCombinerRgbFactor[1],
+          state.texCombinerAlphaFunc[1], state.texCombinerAlphaFactor[1],
+          state.texCombinerRgbInvert[1], state.texCombinerAlphaInvert[1],
+          tmu1Color, iteratedColor, iteratedColor, 0.0f, 0.0f);
+    }
+    if ((state.extTexColorCombine[1] & 0x80000000u) != 0u) {
+      EvaluateExtTmuRgbScalar(state.extTexColorCombine[1], tmu1Color,
+                              iteratedColor, tmuConst1, iteratedColor, 0.0f,
+                              0.0f, tmu1Out.r, tmu1Out.g, tmu1Out.b);
+    }
+    if ((state.extTexAlphaCombine[1] & 0x80000000u) != 0u) {
+      tmu1Out.a = EvaluateExtTmuAlphaScalar(
+          state.extTexAlphaCombine[1], tmu1Color, iteratedColor, tmuConst1,
+          iteratedColor, 0.0f, 0.0f);
+    }
+  }
+
+  // Downstream TMU 0 stage
+  TmuColor tmu0Out = tmu1Out;
+  if (hasTex0) {
+    const float invW0 = (divW0 > 0.0f) ? (1.0f / divW0) : 1.0f;
+    const uint32_t tWord0 = SampleTextureLevelSlow(
+        tex0, 0, v.tex[0] * invW0, v.tex[1] * invW0, state.texClampS[0],
+        state.texClampT[0], state.texMinFilter[0], 0u, state);
+    TmuColor tmu0Color = {
+        ((tWord0 >> 16) & 0xFFu) / 255.0f,
+        ((tWord0 >> 8) & 0xFFu) / 255.0f,
+        (tWord0 & 0xFFu) / 255.0f,
+        ((tWord0 >> 24) & 0xFFu) / 255.0f,
+    };
+    if (state.texCombinerRgbFunc[0] == 1 &&
+        state.texCombinerAlphaFunc[0] == 1 &&
+        !state.texCombinerRgbInvert[0] &&
+        !state.texCombinerAlphaInvert[0]) {
+      tmu0Out = tmu0Color;
+    } else {
+      tmu0Out = EvaluateTmuStage(
+          state.texCombinerRgbFunc[0], state.texCombinerRgbFactor[0],
+          state.texCombinerAlphaFunc[0], state.texCombinerAlphaFactor[0],
+          state.texCombinerRgbInvert[0], state.texCombinerAlphaInvert[0],
+          tmu0Color, tmu1Out, iteratedColor, 0.0f, 0.0f);
+    }
+    if ((state.extTexColorCombine[0] & 0x80000000u) != 0u) {
+      EvaluateExtTmuRgbScalar(state.extTexColorCombine[0], tmu0Color, tmu1Out,
+                              tmuConst0, iteratedColor, 0.0f, 0.0f, tmu0Out.r,
+                              tmu0Out.g, tmu0Out.b);
+    }
+    if ((state.extTexAlphaCombine[0] & 0x80000000u) != 0u) {
+      tmu0Out.a = EvaluateExtTmuAlphaScalar(
+          state.extTexAlphaCombine[0], tmu0Color, tmu1Out, tmuConst0,
+          iteratedColor, 0.0f, 0.0f);
+    }
+  }
+
+  const float texR = tmu0Out.r;
+  const float texG = tmu0Out.g;
+  const float texB = tmu0Out.b;
+  const float texA = tmu0Out.a;
+
+  // Alpha Combiner Stage (ACU)
+  float aLocal = 1.0f;
+  float aOther = 1.0f;
+  float finalAlphaF = 0.0f;
+  if ((state.extAlphaCombine & 0x80000000u) != 0u) {
+    finalAlphaF = EvaluateExtFbiAlphaScalar(
+        state.extAlphaCombine, iterA, constantAlpha, texA, aLocal, aOther);
+  } else {
+    aLocal = (state.alphaCombinerLocal == 0u) ? iterA : constantAlpha;
+    aOther = (state.alphaCombinerOther == 0u)
+                 ? iterA
+                 : ((state.alphaCombinerOther == 1u) ? texA : constantAlpha);
+    float factA = 0.0f;
+    switch (state.alphaCombinerFactor) {
+      case 1:
+      case 3: factA = aLocal; break;
+      case 2: factA = aOther; break;
+      case 4: factA = texA; break;
+      case 8: factA = 1.0f; break;
+      case 9:
+      case 11: factA = 1.0f - aLocal; break;
+      case 10: factA = 1.0f - aOther; break;
+      case 12: factA = 1.0f - texA; break;
+    }
+    switch (state.alphaCombinerFunc) {
+      case 1: finalAlphaF = aLocal; break;
+      case 3: finalAlphaF = aOther * factA; break;
+      case 4:
+      case 5: finalAlphaF = aOther * factA + aLocal; break;
+      case 6: finalAlphaF = (aOther - aLocal) * factA; break;
+      case 7:
+      case 8: finalAlphaF = (aOther - aLocal) * factA + aLocal; break;
+      case 9:
+      case 16: finalAlphaF = (-aLocal) * factA + aLocal; break;
+    }
+    if (state.alphaCombinerInvert) finalAlphaF = 1.0f - finalAlphaF;
+  }
+
+  // Color Combiner Stage (CCU)
+  float finalRF = 0.0f, finalGF = 0.0f, finalBF = 0.0f;
+  if ((state.extColorCombine & 0x80000000u) != 0u) {
+    EvaluateExtFbiColorScalar(state.extColorCombine, iteratedColor, constantCol,
+                              tmu0Out, aLocal, aOther, finalRF, finalGF,
+                              finalBF);
+  } else {
+    float cLocalR = 0.0f, cLocalG = 0.0f, cLocalB = 0.0f;
+    if (state.colorCombinerLocal == 0u) {
+      cLocalR = iterR;
+      cLocalG = iterG;
+      cLocalB = iterB;
+    } else if (state.colorCombinerLocal == 1u) {
+      cLocalR = constantR;
+      cLocalG = constantG;
+      cLocalB = constantB;
+    }
+    const float cOtherR =
+        (state.colorCombinerOther == 0u)
+            ? iterR
+            : ((state.colorCombinerOther == 1u) ? texR : constantR);
+    const float cOtherG =
+        (state.colorCombinerOther == 0u)
+            ? iterG
+            : ((state.colorCombinerOther == 1u) ? texG : constantG);
+    const float cOtherB =
+        (state.colorCombinerOther == 0u)
+            ? iterB
+            : ((state.colorCombinerOther == 1u) ? texB : constantB);
+    float factR = 0.0f, factG = 0.0f, factB = 0.0f;
+    switch (state.colorCombinerFactor) {
+      case 1: factR = cLocalR; factG = cLocalG; factB = cLocalB; break;
+      case 2: factR = aOther; factG = aOther; factB = aOther; break;
+      case 3: factR = aLocal; factG = aLocal; factB = aLocal; break;
+      case 4: factR = texA; factG = texA; factB = texA; break;
+      case 5: factR = texR; factG = texG; factB = texB; break;
+      case 8: factR = 1.0f; factG = 1.0f; factB = 1.0f; break;
+      case 9:
+        factR = 1.0f - cLocalR;
+        factG = 1.0f - cLocalG;
+        factB = 1.0f - cLocalB;
+        break;
+      case 10:
+        factR = 1.0f - aOther;
+        factG = 1.0f - aOther;
+        factB = 1.0f - aOther;
+        break;
+      case 11:
+        factR = 1.0f - aLocal;
+        factG = 1.0f - aLocal;
+        factB = 1.0f - aLocal;
+        break;
+      case 12:
+        factR = 1.0f - texA;
+        factG = 1.0f - texA;
+        factB = 1.0f - texA;
+        break;
+    }
+    switch (state.colorCombinerFunc) {
+      case 1:
+        finalRF = cLocalR; finalGF = cLocalG; finalBF = cLocalB;
+        break;
+      case 3:
+        finalRF = cOtherR * factR;
+        finalGF = cOtherG * factG;
+        finalBF = cOtherB * factB;
+        break;
+      case 4:
+        finalRF = cOtherR * factR + cLocalR;
+        finalGF = cOtherG * factG + cLocalG;
+        finalBF = cOtherB * factB + cLocalB;
+        break;
+      case 5:
+        finalRF = cOtherR * factR + aLocal;
+        finalGF = cOtherG * factG + aLocal;
+        finalBF = cOtherB * factB + aLocal;
+        break;
+      case 6:
+        finalRF = (cOtherR - cLocalR) * factR;
+        finalGF = (cOtherG - cLocalG) * factG;
+        finalBF = (cOtherB - cLocalB) * factB;
+        break;
+      case 7:
+        finalRF = (cOtherR - cLocalR) * factR + cLocalR;
+        finalGF = (cOtherG - cLocalG) * factG + cLocalG;
+        finalBF = (cOtherB - cLocalB) * factB + cLocalB;
+        break;
+      case 8:
+        finalRF = (cOtherR - cLocalR) * factR + aLocal;
+        finalGF = (cOtherG - cLocalG) * factG + aLocal;
+        finalBF = (cOtherB - cLocalB) * factB + aLocal;
+        break;
+      case 9:
+        finalRF = (-cLocalR) * factR + cLocalR;
+        finalGF = (-cLocalG) * factG + cLocalG;
+        finalBF = (-cLocalB) * factB + cLocalB;
+        break;
+      case 16:
+        finalRF = (-cLocalR) * factR + aLocal;
+        finalGF = (-cLocalG) * factG + aLocal;
+        finalBF = (-cLocalB) * factB + aLocal;
+        break;
+    }
+    if (state.colorCombinerInvert) {
+      finalRF = 1.0f - finalRF;
+      finalGF = 1.0f - finalGF;
+      finalBF = 1.0f - finalBF;
+    }
+  }
+
+  float red = std::clamp(finalRF, 0.0f, 1.0f);
+  float green = std::clamp(finalGF, 0.0f, 1.0f);
+  float blue = std::clamp(finalBF, 0.0f, 1.0f);
+  float alpha = std::clamp(finalAlphaF, 0.0f, 1.0f);
+
+  // 2.5. Chromakey Emulation (compare TMU output when textured, else combined RGB)
   if (state.chromakeyMode == 1) {
+    const bool hasAnyTex = hasTex0 || hasTex1;
+    const float testR = hasAnyTex ? texR : red;
+    const float testG = hasAnyTex ? texG : green;
+    const float testB = hasAnyTex ? texB : blue;
     bool chromaFail = false;
     const bool rangeEnabled = ((state.chromakeyRangeMode >> 28) & 1u) == 1u;
     if (rangeEnabled) {
@@ -58,9 +322,9 @@ void SoftwareBackend::WritePixelPipeline(int x, int y, const ModernVertex& v,
                         minR, minG, minB, minAUnused);
       UnpackGrColorNorm(state.chromakeyRangeMax, state.pixelFormatOverride,
                         maxR, maxG, maxB, maxAUnused);
-      bool rMatch = (red >= minR && red <= maxR);
-      bool gMatch = (green >= minG && green <= maxG);
-      bool bMatch = (blue >= minB && blue <= maxB);
+      bool rMatch = (testR >= minR && testR <= maxR);
+      bool gMatch = (testG >= minG && testG <= maxG);
+      bool bMatch = (testB >= minB && testB <= maxB);
       bool rRes = ((state.chromakeyRangeMode >> 26) & 1u) ? !rMatch : rMatch;
       bool gRes = ((state.chromakeyRangeMode >> 25) & 1u) ? !gMatch : gMatch;
       bool bRes = ((state.chromakeyRangeMode >> 24) & 1u) ? !bMatch : bMatch;
@@ -71,9 +335,9 @@ void SoftwareBackend::WritePixelPipeline(int x, int y, const ModernVertex& v,
       float chR = 0.0f, chG = 0.0f, chB = 0.0f, chAUnused = 0.0f;
       UnpackGrColorNorm(state.chromakeyValue, state.pixelFormatOverride, chR,
                         chG, chB, chAUnused);
-      chromaFail = (std::abs(red - chR) < 0.001f &&
-                    std::abs(green - chG) < 0.001f &&
-                    std::abs(blue - chB) < 0.001f);
+      chromaFail = (std::abs(testR - chR) < 0.01f &&
+                    std::abs(testG - chG) < 0.01f &&
+                    std::abs(testB - chB) < 0.01f);
     }
     if (chromaFail) {
       return;
@@ -422,17 +686,25 @@ void SoftwareBackend::RasterizeSoftwareLineTile(const ModernVertex& v1,
     float dy = y1_f - y0_f;
     float gradient = (dx == 0.0f) ? 1.0f : dy / dx;
 
+    auto lerpLineVertex = [](const ModernVertex& a, const ModernVertex& b,
+                             float t) -> ModernVertex {
+      ModernVertex out{};
+      const float omt = 1.0f - t;
+      for (int i = 0; i < 4; ++i) {
+        out.color[i] = a.color[i] * omt + b.color[i] * t;
+        out.tex[i] = a.tex[i] * omt + b.tex[i] * t;
+      }
+      out.tmu_oow[0] = a.tmu_oow[0] * omt + b.tmu_oow[0] * t;
+      out.tmu_oow[1] = a.tmu_oow[1] * omt + b.tmu_oow[1] * t;
+      out.fog = a.fog * omt + b.fog * t;
+      out.pos[2] = a.pos[2] * omt + b.pos[2] * t;
+      out.pos[3] = a.pos[3] * omt + b.pos[3] * t;
+      return out;
+    };
+
     auto plot = [&](int px, int py, float c, float t) {
       if (steep) std::swap(px, py);
-      ModernVertex vInterpolated{};
-      for (int i = 0; i < 4; ++i) {
-        vInterpolated.color[i] =
-            v1_temp.color[i] * (1.0f - t) + v2_temp.color[i] * t;
-      }
-      vInterpolated.fog = v1_temp.fog * (1.0f - t) + v2_temp.fog * t;
-      vInterpolated.pos[2] = v1_temp.pos[2] * (1.0f - t) + v2_temp.pos[2] * t;
-      vInterpolated.pos[3] = v1_temp.pos[3] * (1.0f - t) + v2_temp.pos[3] * t;
-
+      ModernVertex vInterpolated = lerpLineVertex(v1_temp, v2_temp, t);
       WritePixelPipeline(px, py, vInterpolated, c, minX, maxX, minY, maxY,
                          state);
     };
@@ -465,13 +737,17 @@ void SoftwareBackend::RasterizeSoftwareLineTile(const ModernVertex& v1,
 
     while (true) {
       float t = totalSteps > 0 ? static_cast<float>(step) / totalSteps : 0.0f;
+      const float omt = 1.0f - t;
       ModernVertex vInterpolated{};
       for (int i = 0; i < 4; ++i) {
-        vInterpolated.color[i] = v1.color[i] * (1.0f - t) + v2.color[i] * t;
+        vInterpolated.color[i] = v1.color[i] * omt + v2.color[i] * t;
+        vInterpolated.tex[i] = v1.tex[i] * omt + v2.tex[i] * t;
       }
-      vInterpolated.fog = v1.fog * (1.0f - t) + v2.fog * t;
-      vInterpolated.pos[2] = v1.pos[2] * (1.0f - t) + v2.pos[2] * t;
-      vInterpolated.pos[3] = v1.pos[3] * (1.0f - t) + v2.pos[3] * t;
+      vInterpolated.tmu_oow[0] = v1.tmu_oow[0] * omt + v2.tmu_oow[0] * t;
+      vInterpolated.tmu_oow[1] = v1.tmu_oow[1] * omt + v2.tmu_oow[1] * t;
+      vInterpolated.fog = v1.fog * omt + v2.fog * t;
+      vInterpolated.pos[2] = v1.pos[2] * omt + v2.pos[2] * t;
+      vInterpolated.pos[3] = v1.pos[3] * omt + v2.pos[3] * t;
 
       const int bx = x0 * 2;
       const int by = y0 * 2;
@@ -513,13 +789,17 @@ void SoftwareBackend::RasterizeSoftwareLineTile(const ModernVertex& v1,
 
     while (true) {
       float t = totalSteps > 0 ? static_cast<float>(step) / totalSteps : 0.0f;
+      const float omt = 1.0f - t;
       ModernVertex vInterpolated{};
       for (int i = 0; i < 4; ++i) {
-        vInterpolated.color[i] = v1.color[i] * (1.0f - t) + v2.color[i] * t;
+        vInterpolated.color[i] = v1.color[i] * omt + v2.color[i] * t;
+        vInterpolated.tex[i] = v1.tex[i] * omt + v2.tex[i] * t;
       }
-      vInterpolated.fog = v1.fog * (1.0f - t) + v2.fog * t;
-      vInterpolated.pos[2] = v1.pos[2] * (1.0f - t) + v2.pos[2] * t;
-      vInterpolated.pos[3] = v1.pos[3] * (1.0f - t) + v2.pos[3] * t;
+      vInterpolated.tmu_oow[0] = v1.tmu_oow[0] * omt + v2.tmu_oow[0] * t;
+      vInterpolated.tmu_oow[1] = v1.tmu_oow[1] * omt + v2.tmu_oow[1] * t;
+      vInterpolated.fog = v1.fog * omt + v2.fog * t;
+      vInterpolated.pos[2] = v1.pos[2] * omt + v2.pos[2] * t;
+      vInterpolated.pos[3] = v1.pos[3] * omt + v2.pos[3] * t;
 
       WritePixelPipeline(x0, y0, vInterpolated, 1.0f, minX, maxX, minY, maxY,
                          state);
