@@ -71,21 +71,28 @@ void LfbManager::LogLockSuccess(uint32_t type, uint32_t buffer, uint32_t writeMo
               << ", origin=" << origin << ", bytes=" << byteSize);
 }
 
-bool LfbManager::SubmitWriteLock_Locked(const LfbPipelineConfig& config, bool keepLocked) {
-    if (!m_writeLock.isLocked) return false;
+void LfbManager::RefreshWriteLockedFlag_Locked() {
+    const bool anyLocked = m_writeLocks[0].isLocked ||
+                           m_writeLocks[1].isLocked ||
+                           m_writeLocks[2].isLocked;
+    m_writeLocked.store(anyLocked, std::memory_order_release);
+}
+
+bool LfbManager::SubmitWriteLock_Locked(WriteLockState& slot, const LfbPipelineConfig& config, bool keepLocked) {
+    if (!slot.isLocked) return false;
     auto* b = BackendManager::GetInstance().GetBackend();
     if (!b) return false;
 
-    const uint32_t height = m_writeLock.height;
-    const uint32_t stride = m_writeLock.stride;
+    const uint32_t height = slot.height;
+    const uint32_t stride = slot.stride;
     const size_t byteSize = static_cast<size_t>(height) * stride;
-    if (byteSize == 0 || m_writeLock.stagingBuffer.size() < byteSize ||
-        m_writeLock.originalBuffer.size() < byteSize) {
+    if (byteSize == 0 || slot.stagingBuffer.size() < byteSize ||
+        slot.originalBuffer.size() < byteSize) {
         return false;
     }
 
     uint32_t srcFmt = 0;
-    switch (m_writeLock.writeMode) {
+    switch (slot.writeMode) {
         case 0x0: srcFmt = 0x0; break; // GR_LFBWRITEMODE_565
         case 0x1: srcFmt = 0x1; break; // GR_LFBWRITEMODE_555
         case 0x2: srcFmt = 0x2; break; // GR_LFBWRITEMODE_1555
@@ -96,12 +103,12 @@ bool LfbManager::SubmitWriteLock_Locked(const LfbPipelineConfig& config, bool ke
         case 0xe: srcFmt = 0xe; break; // GR_LFBWRITEMODE_1555_DEPTH
         case 0xf: srcFmt = 0xf; break; // GR_LFBWRITEMODE_ZA16
         default:
-            LogErrorUnsupportedWriteMode(m_writeLock.writeMode);
+            LogErrorUnsupportedWriteMode(slot.writeMode);
             return false;
     }
 
-    uint8_t* stagingData = m_writeLock.stagingBuffer.data();
-    const uint8_t* origData = m_writeLock.originalBuffer.data();
+    uint8_t* stagingData = slot.stagingBuffer.data();
+    const uint8_t* origData = slot.originalBuffer.data();
 
     // Scan rows to find disjoint contiguous dirty bands so sparse HUD writes
     // (e.g. top + bottom status bars) skip all untouched middle rows on CPU and GPU.
@@ -135,18 +142,18 @@ bool LfbManager::SubmitWriteLock_Locked(const LfbPipelineConfig& config, bool ke
 
     if (dirtyBands.empty()) {
         if (!keepLocked) {
-            m_writeLock.stagingClean = true;
+            slot.stagingClean = true;
         }
         return true;
     }
 
-    if (m_writeLock.origin == 0) { // GR_ORIGIN_UPPER_LEFT
+    if (slot.origin == 0) { // GR_ORIGIN_UPPER_LEFT
         for (const auto& band : dirtyBands) {
             const uint32_t bandRows = band.endY - band.startY + 1;
             const size_t bandOffset = static_cast<size_t>(band.startY) * stride;
             const size_t bandBytes = static_cast<size_t>(bandRows) * stride;
             TelemetryManager::GetInstance().RecordLfbWrite(bandBytes);
-            b->WriteLFB(m_writeLock.buffer, 0, band.startY, m_writeLock.width,
+            b->WriteLFB(slot.buffer, 0, band.startY, slot.width,
                         bandRows, stride, srcFmt, stagingData + bandOffset,
                         origData + bandOffset, config);
             // Reset only the modified band back to sentinel (pointer never moves!).
@@ -156,20 +163,20 @@ bool LfbManager::SubmitWriteLock_Locked(const LfbPipelineConfig& config, bool ke
         for (const auto& band : dirtyBands) {
             const uint32_t bandRows = band.endY - band.startY + 1;
             const size_t bandBytes = static_cast<size_t>(bandRows) * stride;
-            if (m_writeLock.flipScratch.size() < bandBytes) {
-                m_writeLock.flipScratch.resize(bandBytes);
+            if (slot.flipScratch.size() < bandBytes) {
+                slot.flipScratch.resize(bandBytes);
             }
             for (uint32_t r = 0; r < bandRows; ++r) {
                 const uint32_t guestRow = band.endY - r;
                 const uint8_t* srcRow = stagingData + static_cast<size_t>(guestRow) * stride;
-                uint8_t* dstRow = m_writeLock.flipScratch.data() + static_cast<size_t>(r) * stride;
+                uint8_t* dstRow = slot.flipScratch.data() + static_cast<size_t>(r) * stride;
                 std::memcpy(dstRow, srcRow, stride);
             }
             const uint32_t dstY = height - 1 - band.endY;
             TelemetryManager::GetInstance().RecordLfbWrite(bandBytes);
             // originalBuffer is uniform sentinel across all rows, so offset 0 matches any band.
-            b->WriteLFB(m_writeLock.buffer, 0, dstY, m_writeLock.width,
-                        bandRows, stride, srcFmt, m_writeLock.flipScratch.data(),
+            b->WriteLFB(slot.buffer, 0, dstY, slot.width,
+                        bandRows, stride, srcFmt, slot.flipScratch.data(),
                         origData, config);
             const size_t bandOffset = static_cast<size_t>(band.startY) * stride;
             std::memcpy(stagingData + bandOffset, origData + bandOffset, bandBytes);
@@ -179,7 +186,7 @@ bool LfbManager::SubmitWriteLock_Locked(const LfbPipelineConfig& config, bool ke
     if (!keepLocked) {
         // Every modified row has been restored to sentinel; next Lock() of the
         // same resolution/mode can skip the full-buffer sentinel memcpy.
-        m_writeLock.stagingClean = true;
+        slot.stagingClean = true;
     }
     return true;
 }
@@ -188,13 +195,43 @@ bool LfbManager::Unlock(uint32_t type, uint32_t buffer, const LfbPipelineConfig&
     GLIDE_CPU_SCOPE(CpuBucket::Lfb);
     std::lock_guard<std::mutex> lock(m_mutex);
     if (IsWriteLockType(type)) {
-        if (!m_writeLock.isLocked) {
+        const uint32_t slotIdx = WriteSlotForBuffer(buffer);
+        WriteLockState& slot = m_writeLocks[slotIdx];
+        if (!slot.isLocked) {
+            // Backward-compatible fallback: if a caller unlocked an alias buffer
+            // when exactly one write slot is active, release that slot cleanly.
+            WriteLockState* singleActive = nullptr;
+            uint32_t activeCount = 0;
+            for (auto& s : m_writeLocks) {
+                if (s.isLocked) {
+                    singleActive = &s;
+                    ++activeCount;
+                }
+            }
+            if (activeCount == 1 && singleActive != nullptr && buffer < 2u &&
+                singleActive->buffer < 2u) {
+                const bool ok = SubmitWriteLock_Locked(*singleActive, config, /*keepLocked=*/false);
+                singleActive->isLocked = false;
+                singleActive->lockCount = 0;
+                RefreshWriteLockedFlag_Locked();
+                return ok;
+            }
             GLIDE_LOG(WARN, "LFB", "LfbManager::Unlock: No active LFB write lock found!");
             return false;
         }
-        const bool ok = SubmitWriteLock_Locked(config, /*keepLocked=*/false);
-        m_writeLock.isLocked = false;
-        m_writeLocked.store(false, std::memory_order_release);
+        if (slot.lockCount > 1u) {
+            --slot.lockCount;
+            // Flush modified bands immediately so interleaved graphics / locks see
+            // inner writes in order, while keeping the outer lock pointer live.
+            const bool ok = SubmitWriteLock_Locked(slot, config, /*keepLocked=*/true);
+            GLIDE_LOG(DEBUG, "LFB", "LfbManager: unlocked nested write buffer=" << buffer
+                      << " (remaining depth=" << slot.lockCount << ") ok=" << ok);
+            return ok;
+        }
+        const bool ok = SubmitWriteLock_Locked(slot, config, /*keepLocked=*/false);
+        slot.isLocked = false;
+        slot.lockCount = 0;
+        RefreshWriteLockedFlag_Locked();
         GLIDE_LOG(DEBUG, "LFB", "LfbManager: unlocked write buffer=" << buffer << " (type=" << type << ") ok=" << ok);
         return ok;
     }
@@ -202,9 +239,11 @@ bool LfbManager::Unlock(uint32_t type, uint32_t buffer, const LfbPipelineConfig&
     if (!m_readLock.isLocked) {
         // Fallback: if caller mismatched unlock type while a write lock is active,
         // avoid leaving a dangling lock.
-        if (m_writeLock.isLocked && m_writeLock.buffer == buffer) {
-            m_writeLock.isLocked = false;
-            m_writeLocked.store(false, std::memory_order_release);
+        const uint32_t slotIdx = WriteSlotForBuffer(buffer);
+        if (m_writeLocks[slotIdx].isLocked && m_writeLocks[slotIdx].buffer == buffer) {
+            m_writeLocks[slotIdx].isLocked = false;
+            m_writeLocks[slotIdx].lockCount = 0;
+            RefreshWriteLockedFlag_Locked();
             return true;
         }
         GLIDE_LOG(WARN, "LFB", "LfbManager::Unlock: No active LFB read lock found!");
@@ -222,17 +261,27 @@ bool LfbManager::FlushActiveWriteLock(const LfbPipelineConfig& config) {
     }
     GLIDE_CPU_SCOPE(CpuBucket::Lfb);
     std::lock_guard<std::mutex> lock(m_mutex);
-    if (!m_writeLock.isLocked) {
-        m_writeLocked.store(false, std::memory_order_release);
-        return false;
+    bool anyFlushed = false;
+    for (auto& slot : m_writeLocks) {
+        if (slot.isLocked) {
+            LfbPipelineConfig slotCfg = config;
+            slotCfg.pixelPipeline = slot.pixelPipeline;
+            anyFlushed |= SubmitWriteLock_Locked(slot, slotCfg, /*keepLocked=*/true);
+        }
     }
-    return SubmitWriteLock_Locked(config, /*keepLocked=*/true);
+    if (!anyFlushed) {
+        RefreshWriteLockedFlag_Locked();
+    }
+    return anyFlushed;
 }
 
 void LfbManager::Reset() {
     std::lock_guard<std::mutex> lock(m_mutex);
-    m_writeLock.isLocked = false;
-    m_writeLock.stagingClean = false;
+    for (auto& slot : m_writeLocks) {
+        slot.isLocked = false;
+        slot.lockCount = 0;
+        slot.stagingClean = false;
+    }
     m_readLock.isLocked = false;
     m_writeLocked.store(false, std::memory_order_release);
 }

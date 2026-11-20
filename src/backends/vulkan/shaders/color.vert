@@ -96,7 +96,7 @@ void main() {
   float ndcY = (inPos.y / (pcs.viewportHeight / 2.0)) - 1.0;
 
   float rawDepth = inPos.z;
-  if (pcs.depthBufferMode == 2u) {
+  if (pcs.depthBufferMode == 2u || pcs.depthBufferMode == 4u) {
     // True W-buffer depth is written per-fragment via gl_FragDepth in
     // color.frag (USE_WBUFFER_DEPTH). Keep clip-space Z strictly inside [0, 1]
     // so oow > 1.0 (W < 1.0) or negative depthBias never triggers near/far
@@ -105,6 +105,8 @@ void main() {
   } else if (pcs.depthBufferMode == 1u) {
     rawDepth += pcs.depthBias;
   }
+  // depthBufferMode == 3u (ZBUFFER_COMPARE_TO_BIAS): keep unbiased inPos.z for
+  // depth write on pass 2; pass 1 compares pcs.depthBias via gl_FragDepth.
 
   gl_Position = vec4(ndcX, ndcY, rawDepth, 1.0);
   gl_PointSize = 1.0;  // Canonical Glide point size (1px)

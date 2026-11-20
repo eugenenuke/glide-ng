@@ -19,6 +19,12 @@ void OpenGLESBackend::ClearBufferExt(uint32_t color, uint32_t alpha, float z,
                                      uint8_t stencil, uint32_t clearMask) {
   std::lock_guard<std::mutex> lock(m_mutex);
   if (!m_initialized || !m_windowAttached || !EnsureContextCurrent()) return;
+  if (clearMask & 1u) {
+    m_lfbReadCacheValid[(m_activeRenderBuffer == 0u) ? 0u : 1u] = false;
+  }
+  if (clearMask & 2u) {
+    m_auxDepthShadowValid = false;
+  }
 
   uint32_t x0 = 0, y0 = 0, x1 = 0, y1 = 0;
   if (!ComputeClipRectTopDown_Locked(x0, y0, x1, y1)) {
@@ -862,8 +868,59 @@ void OpenGLESBackend::FlushBatch(bool fromStateFlush) {
     mode = GL_LINES;
   }
 
+  // Invalidate cached CPU LFB readback for the target buffer on 3D draw.
+  m_lfbReadCacheValid[(m_activeRenderBuffer == 0u) ? 0u : 1u] = false;
+  if (m_depthMode != 0 && m_depthMask) {
+    m_auxDepthShadowValid = false;
+  }
+
   uint32_t vertexCount = m_batchVertices.size();
-  glDrawArrays(mode, firstVertex, vertexCount);
+  if (m_depthMode == 3u || m_depthMode == 4u) {
+    // Two-pass GR_DEPTHBUFFER_{Z,W}BUFFER_COMPARE_TO_BIAS via depth/stencil
+    // bit 0x80 (works identically on 1x and MSAA GL_DEPTH24_STENCIL8!).
+    if (!m_stencilEnabled) {
+      glStencilMask(0x80u);
+      glClearStencil(0);
+      glClear(GL_STENCIL_BUFFER_BIT);
+    }
+    const float biasNorm = DecodeAuxDepth16ToNorm(
+        static_cast<uint16_t>(m_depthBiasLevel), m_depthMode, m_depthNear,
+        m_depthFar);
+    // Pass 1: probe biasNorm against existing depth buffer -> stamp bit 0x80
+    glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+    glDepthMask(GL_FALSE);
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(MapCompareOpGLES(m_depthCompareOp));
+    glEnable(GL_STENCIL_TEST);
+    glStencilMask(0x80u);
+    glStencilFunc(GL_ALWAYS, 0x80, 0x80u);
+    glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+    if (m_uDepthBufferModeLoc != -1) glUniform1i(m_uDepthBufferModeLoc, 5);
+    if (m_uDepthBiasLoc != -1) glUniform1f(m_uDepthBiasLoc, biasNorm);
+    glDrawArrays(mode, firstVertex, vertexCount);
+
+    // Pass 2: draw color + true Z/W depth where bit 0x80 is set, clearing it
+    ApplyColorMaskGLES();
+    glDepthFunc(GL_ALWAYS);
+    glDepthMask(m_depthMask ? GL_TRUE : GL_FALSE);
+    glStencilFunc(GL_EQUAL, 0x80, 0x80u);
+    glStencilOp(GL_KEEP, GL_KEEP, GL_ZERO);
+    if (m_uDepthBufferModeLoc != -1) {
+      glUniform1i(m_uDepthBufferModeLoc, static_cast<GLint>(m_depthMode));
+    }
+    if (m_uDepthBiasLoc != -1) {
+      glUniform1f(m_uDepthBiasLoc,
+                  static_cast<float>(m_depthBiasLevel) / 65535.0f);
+    }
+    glDrawArrays(mode, firstVertex, vertexCount);
+
+    // Restore normal depth/stencil pipeline state lazily via dirty mask
+    SyncDepthState();
+    SyncStencilStateGLES_Locked();
+    m_glesDirtyMask |= kGlesDirtyDepth | kGlesDirtyStencil | kGlesDirtyColorMask;
+  } else {
+    glDrawArrays(mode, firstVertex, vertexCount);
+  }
 
   if (m_msaaSamples > 1 && GetColorWriteMask4() != 0) {
     if (useSingle) {

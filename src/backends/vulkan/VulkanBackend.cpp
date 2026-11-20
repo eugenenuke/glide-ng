@@ -529,6 +529,10 @@ void VulkanBackend::ResetState_Locked() {
   GlideStateTracker::ResetState_Locked();
   m_gammaLutDirty = true;
   m_lfbStaging.ResetPendingAndDirty();
+  m_lfbReadCacheValid[0] = false;
+  m_lfbReadCacheValid[1] = false;
+  m_auxDepthShadowValid = false;
+  m_frontBufferNeedsPresent = false;
   m_pipelineStateDirty = true;
   m_descriptorStateDirty = true;
   m_cachedPipeline = vk::Pipeline{};
@@ -2135,6 +2139,8 @@ bool VulkanBackend::SwapBuffers() {
 
   // Swap CPU LFB staging indices for double-buffering (zero-cost when unused)
   m_lfbStaging.SwapBuffers();
+  std::swap(m_lfbReadCacheValid[0], m_lfbReadCacheValid[1]);
+  m_frontBufferNeedsPresent = false;
 
   // Swap the GPU color targets for physical double-buffering
   std::swap(m_headlessImages[0], m_headlessImages[1]);

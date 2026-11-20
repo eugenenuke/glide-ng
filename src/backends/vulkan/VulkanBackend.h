@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <mutex>
@@ -216,6 +217,7 @@ struct PipelineStateKey {
   uint32_t stencilFailOp{0u};
   uint32_t stencilZFailOp{0u};
   uint32_t stencilZPassOp{0u};
+  uint8_t compareToBiasPass{0u};  // 0=normal, 1=stencil mark, 2=stencil-gated write
 
   bool operator==(const PipelineStateKey& other) const {
     return cullMode == other.cullMode && sstOrigin == other.sstOrigin &&
@@ -234,7 +236,8 @@ struct PipelineStateKey {
            stencilCompareOp == other.stencilCompareOp &&
            stencilFailOp == other.stencilFailOp &&
            stencilZFailOp == other.stencilZFailOp &&
-           stencilZPassOp == other.stencilZPassOp;
+           stencilZPassOp == other.stencilZPassOp &&
+           compareToBiasPass == other.compareToBiasPass;
   }
 };
 
@@ -263,6 +266,7 @@ struct PipelineStateKeyHash {
     combine(k.stencilFailOp);
     combine(k.stencilZFailOp);
     combine(k.stencilZPassOp);
+    combine(k.compareToBiasPass);
     return h;
   }
 };
@@ -610,6 +614,7 @@ class VulkanBackend : public GlideStateTracker {
   uint32_t m_batchedFirstVertex{0};
   vk::Pipeline m_batchedPipeline;
   vk::DescriptorSet m_batchedDescSet;
+  vk::PrimitiveTopology m_batchedTopology{vk::PrimitiveTopology::eTriangleList};
   vk::Pipeline m_boundPipelineInPass;
   vk::DescriptorSet m_boundDescSetInPass;
   bool m_pipelineStateDirty{true};
@@ -715,6 +720,19 @@ class VulkanBackend : public GlideStateTracker {
   vk::DescriptorSet m_lfbOverlayDescSet;
   vk::UniquePipelineLayout m_lfbOverlayPipelineLayout;
   vk::UniquePipeline m_lfbOverlayPipeline;
+  vk::UniquePipeline m_lfbDepthPipeline;
+  vk::UniquePipeline m_lfbDepthPipelineMsaa;
+  bool InitLfbDepthPipeline_Locked(bool msaa);
+  bool WriteAuxDepthLFB_Locked(uint32_t dstX, uint32_t dstY, uint32_t srcWidth,
+                               uint32_t srcHeight, int32_t srcStride,
+                               const void* srcData, const void* refData);
+  void PresentFrontBuffer_Locked();
+  bool m_lfbReadCacheValid[2]{false, false};
+  bool m_frontBufferNeedsPresent{false};
+  std::chrono::steady_clock::time_point m_lastFrontPresentTime{};
+  std::vector<uint32_t> m_auxDepthScratch;
+  std::vector<uint16_t> m_auxDepthShadow16;
+  bool m_auxDepthShadowValid{false};
   vk::UniqueImage m_lfbOverlayImage;
   vk::UniqueDeviceMemory m_lfbOverlayImageMemory;
   vk::UniqueImageView m_lfbOverlayImageView;

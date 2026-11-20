@@ -10432,6 +10432,53 @@ TEST_CASE("M12.5 Compatibility Catalog INI Presets & Directory Integrity",
     CHECK(cfg.noDitherSub == true);
     CHECK(cfg.noSplash == false);
   }
+  {
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load(
+        (catalogDir / "games" / "archimedean-dynasty" / "glide-ng.ini")
+            .string(),
+        cfg));
+    CHECK(cfg.model == GlideWrapper::CardModel::VoodooGraphics);
+    CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_48);
+    CHECK(cfg.msaaSamples == 1u);
+    CHECK(cfg.noSplash == false);
+  }
+  {
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load(
+        (catalogDir / "games" / "archimedean-dynasty" / "glide-ng.hq.ini")
+            .string(),
+        cfg));
+    CHECK(cfg.model == GlideWrapper::CardModel::VoodooGraphics);
+    CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_48);
+    CHECK(cfg.msaaSamples == 4u);
+    CHECK(cfg.presentationFilter == 1u);
+    CHECK(cfg.noDitherSub == true);
+    CHECK(cfg.noSplash == false);
+  }
+  {
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load(
+        (catalogDir / "games" / "archimedean-dynasty" / "glide-ng.voodoo2.ini")
+            .string(),
+        cfg));
+    CHECK(cfg.model == GlideWrapper::CardModel::Voodoo2);
+    CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_56);
+    CHECK(cfg.msaaSamples == 1u);
+    CHECK(cfg.noSplash == false);
+  }
+  {
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load((catalogDir / "games" / "archimedean-dynasty" /
+                         "glide-ng.software.ini")
+                            .string(),
+                        cfg));
+    CHECK(cfg.backend == "software");
+    CHECK(cfg.model == GlideWrapper::CardModel::VoodooGraphics);
+    CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_48);
+    CHECK(cfg.msaaSamples == 1u);
+    CHECK(cfg.noSplash == false);
+  }
 }
 
 TEST_CASE("Automatic One-Shot Startup Splash Policy on grSstWinOpen",
@@ -11266,5 +11313,232 @@ TEST_CASE("Packed GrColorFormat RGBA and BGRA Parity Across Backends",
 
     ::dlclose(handle);
   }
+#endif
+}
+
+TEST_CASE("AUXBUFFER ZA16 mask, COMPARE_TO_BIAS depth test, nested LFB lock, and read cache [Glide3][LFB][Depth]", "[Glide3][Depth][LFB]") {
+#ifdef __linux__
+  auto openLib = []() -> void* { return OpenGlide3Handle(); };
+  void* handle = openLib();
+  REQUIRE(handle != nullptr);
+
+  using InitFn = void (*)(void);
+  using ShutdownFn = void (*)(void);
+  using WinOpenFn = FxU32 (*)(FxU32, FxI32, FxI32, FxI32, FxI32, int, int);
+  using WinCloseFn = FxBool (*)(FxU32);
+  using BufferClearFn = void (*)(GrColor_t, GrAlpha_t, FxU32);
+  using BufferSwapFn = void (*)(FxU32);
+  using VertexLayoutFn = void (*)(FxU32, FxI32, FxU32);
+  using DepthModeFn = void (*)(GrDepthBufferMode_t);
+  using DepthFuncFn = void (*)(GrCmpFnc_t);
+  using DepthMaskFn = void (*)(FxBool);
+  using DepthBiasFn = void (*)(FxI32);
+  using ColorCombineFn = void (*)(GrCombineFunction_t, GrCombineFactor_t,
+                                  GrCombineLocal_t, GrCombineOther_t, FxBool);
+  using ConstColorFn = void (*)(GrColor_t);
+  using DrawTriFn = void (*)(const void*, const void*, const void*);
+  using LfbLockFn = FxBool (*)(GrLock_t, GrBuffer_t, GrLfbWriteMode_t,
+                               GrOriginLocation_t, FxBool, GrLfbInfo_t*);
+  using LfbUnlockFn = FxBool (*)(GrLock_t, GrBuffer_t);
+  using LfbWriteRegionFn = FxBool (*)(GrBuffer_t, FxU32, FxU32, GrLfbSrcFmt_t,
+                                      FxU32, FxU32, FxBool, FxI32, void*);
+  using LfbReadRegionFn = FxBool (*)(GrBuffer_t, FxU32, FxU32, FxU32, FxU32,
+                                     FxU32, void*);
+
+  auto glideInit = reinterpret_cast<InitFn>(::dlsym(handle, "grGlideInit"));
+  auto glideShutdown =
+      reinterpret_cast<ShutdownFn>(::dlsym(handle, "grGlideShutdown"));
+  auto winOpen = reinterpret_cast<WinOpenFn>(::dlsym(handle, "grSstWinOpen"));
+  auto winClose =
+      reinterpret_cast<WinCloseFn>(::dlsym(handle, "grSstWinClose"));
+  auto bufferClear =
+      reinterpret_cast<BufferClearFn>(::dlsym(handle, "grBufferClear"));
+  auto bufferSwap =
+      reinterpret_cast<BufferSwapFn>(::dlsym(handle, "grBufferSwap"));
+  auto vertexLayout =
+      reinterpret_cast<VertexLayoutFn>(::dlsym(handle, "grVertexLayout"));
+  auto depthMode =
+      reinterpret_cast<DepthModeFn>(::dlsym(handle, "grDepthBufferMode"));
+  auto depthFunc =
+      reinterpret_cast<DepthFuncFn>(::dlsym(handle, "grDepthBufferFunction"));
+  auto depthMask = reinterpret_cast<DepthMaskFn>(::dlsym(handle, "grDepthMask"));
+  auto depthBias =
+      reinterpret_cast<DepthBiasFn>(::dlsym(handle, "grDepthBiasLevel"));
+  auto colorCombine =
+      reinterpret_cast<ColorCombineFn>(::dlsym(handle, "grColorCombine"));
+  auto constColor =
+      reinterpret_cast<ConstColorFn>(::dlsym(handle, "grConstantColorValue"));
+  auto drawTri = reinterpret_cast<DrawTriFn>(::dlsym(handle, "grDrawTriangle"));
+  auto lfbLock = reinterpret_cast<LfbLockFn>(::dlsym(handle, "grLfbLock"));
+  auto lfbUnlock =
+      reinterpret_cast<LfbUnlockFn>(::dlsym(handle, "grLfbUnlock"));
+  auto writeRegion =
+      reinterpret_cast<LfbWriteRegionFn>(::dlsym(handle, "grLfbWriteRegion"));
+  auto readRegion =
+      reinterpret_cast<LfbReadRegionFn>(::dlsym(handle, "grLfbReadRegion"));
+
+  const bool allLoaded =
+      (glideInit && glideShutdown && winOpen && winClose && bufferClear &&
+       bufferSwap && vertexLayout && depthMode && depthFunc && depthMask &&
+       depthBias && colorCombine && constColor && drawTri && lfbLock &&
+       lfbUnlock && writeRegion && readRegion);
+  REQUIRE(allLoaded);
+
+  struct Vtx {
+    float x, y, z, oow;
+  };
+  auto rgb565R = [](uint16_t p) { return ((p >> 11) & 0x1Fu) * 255u / 31u; };
+  auto rgb565G = [](uint16_t p) { return ((p >> 5) & 0x3Fu) * 255u / 63u; };
+  auto rgb565B = [](uint16_t p) { return (p & 0x1Fu) * 255u / 31u; };
+
+  const char* backends[] = {"software", "vulkan", "opengl_es"};
+  for (const char* be : backends) {
+    ::setenv("GLIDE_NG_BACKEND", be, 1);
+    ::setenv("GLIDE_NG_HEADLESS", "1", 1);
+    ::setenv("GLIDE_NG_NO_SPLASH", "1", 1);
+
+    glideInit();
+    FxU32 ctx = winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                        GR_COLORFORMAT_ARGB, GR_ORIGIN_UPPER_LEFT, 2, 1);
+    if (ctx == 0) {
+      glideShutdown();
+      continue;
+    }
+
+    vertexLayout(GR_PARAM_XY, 0, GR_PARAM_ENABLE);
+    vertexLayout(GR_PARAM_Z, 8, GR_PARAM_ENABLE);
+    vertexLayout(GR_PARAM_Q, 12, GR_PARAM_ENABLE);
+
+    // 1. Seed full color backdrop (pure bright GREEN 0x00FF00 -> RGB565 0x07E0)
+    //    and depth clear to 0xFFFF.
+    bufferClear(0xFF00FF00u, 255, 0xFFFFu);
+    depthMode(GR_DEPTHBUFFER_WBUFFER);
+    depthFunc(GR_CMP_LESS);
+    depthMask(FXTRUE);
+
+    // 2. Write AUXBUFFER ZA16 cockpit mask via grLfbLock:
+    //    left half [0..319]   = 0x0000 (masked strut - MUST survive clears!)
+    //    right half [320..639] = 0xFFFF (open windshield - MUST be cleared!)
+    GrLfbInfo_t auxInfo{};
+    auxInfo.size = sizeof(auxInfo);
+    REQUIRE(lfbLock(GR_LFB_WRITE_ONLY, GR_BUFFER_AUXBUFFER,
+                    GR_LFBWRITEMODE_ZA16, GR_ORIGIN_UPPER_LEFT, FXFALSE,
+                    &auxInfo) == FXTRUE);
+    REQUIRE(auxInfo.lfbPtr != nullptr);
+    auto* auxBytes = static_cast<uint8_t*>(auxInfo.lfbPtr);
+    for (uint32_t y = 0; y < 480; ++y) {
+      auto* row = reinterpret_cast<uint16_t*>(auxBytes + y * auxInfo.strideInBytes);
+      for (uint32_t x = 0; x < 320; ++x) row[x] = 0x0000u;
+      for (uint32_t x = 320; x < 640; ++x) row[x] = 0xFFFFu;
+    }
+    REQUIRE(lfbUnlock(GR_LFB_WRITE_ONLY, GR_BUFFER_AUXBUFFER) == FXTRUE);
+
+    // Verify AUXBUFFER write did NOT corrupt the green color backbuffer!
+    uint16_t preLeft = 0, preRight = 0;
+    REQUIRE(readRegion(GR_BUFFER_BACKBUFFER, 100, 240, 1, 1, 2, &preLeft) == FXTRUE);
+    REQUIRE(readRegion(GR_BUFFER_BACKBUFFER, 500, 240, 1, 1, 2, &preRight) == FXTRUE);
+    INFO("backend=" << be << " pre-clear color check");
+    CHECK(rgb565G(preLeft) > 220u);
+    CHECK(rgb565R(preLeft) < 20u);
+    CHECK(rgb565G(preRight) > 220u);
+
+    // 3. Draw fullscreen BLUE quad using GR_DEPTHBUFFER_WBUFFER_COMPARE_TO_BIAS
+    //    + GR_CMP_NOTEQUAL + bias=0 (mirrors Archimedean Dynasty combat clear).
+    depthMode(GR_DEPTHBUFFER_WBUFFER_COMPARE_TO_BIAS);
+    depthFunc(GR_CMP_NOTEQUAL);
+    depthBias(0);
+    colorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+                 GR_COMBINE_LOCAL_CONSTANT, GR_COMBINE_OTHER_NONE, FXFALSE);
+    constColor(0xFF0000FFu);  // Pure BLUE
+    Vtx q0{0.0f, 0.0f, 1.0f, 1.0f / 65535.0f};
+    Vtx q1{640.0f, 0.0f, 1.0f, 1.0f / 65535.0f};
+    Vtx q2{640.0f, 480.0f, 1.0f, 1.0f / 65535.0f};
+    Vtx q3{0.0f, 480.0f, 1.0f, 1.0f / 65535.0f};
+    drawTri(&q0, &q1, &q2);
+    drawTri(&q0, &q2, &q3);
+
+    uint16_t strutPx = 0, winPx = 0;
+    REQUIRE(readRegion(GR_BUFFER_BACKBUFFER, 100, 240, 1, 1, 2, &strutPx) == FXTRUE);
+    REQUIRE(readRegion(GR_BUFFER_BACKBUFFER, 500, 240, 1, 1, 2, &winPx) == FXTRUE);
+    INFO("backend=" << be << " WBUFFER_COMPARE_TO_BIAS NOTEQUAL 0");
+    // Left strut (depth==0x0000) MUST remain GREEN (rejected!)
+    CHECK(rgb565G(strutPx) > 220u);
+    CHECK(rgb565B(strutPx) < 20u);
+    // Right windshield (depth==0xFFFF) MUST be cleared to BLUE!
+    CHECK(rgb565B(winPx) > 220u);
+    CHECK(rgb565G(winPx) < 20u);
+
+    // 4. Subsequent 3D W-buffer RED triangle spanning BOTH halves MUST clip
+    //    behind the left 0x0000 strut while passing over the right 0xFFFF!
+    depthMode(GR_DEPTHBUFFER_WBUFFER);
+    depthFunc(GR_CMP_LESS);
+    constColor(0xFFFF0000u);  // Pure RED
+    Vtx r0{200.0f, 200.0f, 0.5f, 1.0f / 100.0f};
+    Vtx r1{440.0f, 200.0f, 0.5f, 1.0f / 100.0f};
+    Vtx r2{440.0f, 300.0f, 0.5f, 1.0f / 100.0f};
+    Vtx r3{200.0f, 300.0f, 0.5f, 1.0f / 100.0f};
+    drawTri(&r0, &r1, &r2);
+    drawTri(&r0, &r2, &r3);
+
+    uint16_t maskedRed = 0, openRed = 0;
+    REQUIRE(readRegion(GR_BUFFER_BACKBUFFER, 250, 250, 1, 1, 2, &maskedRed) == FXTRUE);
+    REQUIRE(readRegion(GR_BUFFER_BACKBUFFER, 390, 250, 1, 1, 2, &openRed) == FXTRUE);
+    CHECK(rgb565G(maskedRed) > 220u);  // Still GREEN behind strut!
+    CHECK(rgb565R(maskedRed) < 20u);
+    CHECK(rgb565R(openRed) > 220u);    // Visible RED in open window!
+    CHECK(rgb565B(openRed) < 20u);
+
+    // 5. Nested re-entrant grLfbLock(WRITE_ONLY, BACK) preserves outer writes!
+    GrLfbInfo_t outerInfo{}, innerInfo{};
+    outerInfo.size = sizeof(outerInfo);
+    innerInfo.size = sizeof(innerInfo);
+    REQUIRE(lfbLock(GR_LFB_WRITE_ONLY, GR_BUFFER_BACKBUFFER,
+                    GR_LFBWRITEMODE_565, GR_ORIGIN_UPPER_LEFT, FXFALSE,
+                    &outerInfo) == FXTRUE);
+    auto* pOuter = static_cast<uint8_t*>(outerInfo.lfbPtr);
+    // Write YELLOW (0xFFE0) under outer lock at (50, 50)
+    reinterpret_cast<uint16_t*>(pOuter + 50 * outerInfo.strideInBytes)[50] = 0xFFE0u;
+    REQUIRE(lfbLock(GR_LFB_WRITE_ONLY, GR_BUFFER_BACKBUFFER,
+                    GR_LFBWRITEMODE_565, GR_ORIGIN_UPPER_LEFT, FXFALSE,
+                    &innerInfo) == FXTRUE);
+    auto* pInner = static_cast<uint8_t*>(innerInfo.lfbPtr);
+    // Write CYAN (0x07FF) under inner lock at (60, 50)
+    reinterpret_cast<uint16_t*>(pInner + 50 * innerInfo.strideInBytes)[60] = 0x07FFu;
+    REQUIRE(lfbUnlock(GR_LFB_WRITE_ONLY, GR_BUFFER_BACKBUFFER) == FXTRUE);
+    // Write WHITE (0xFFFF) back in outer lock at (70, 50) before final unlock
+    reinterpret_cast<uint16_t*>(pOuter + 50 * outerInfo.strideInBytes)[70] = 0xFFFFu;
+    REQUIRE(lfbUnlock(GR_LFB_WRITE_ONLY, GR_BUFFER_BACKBUFFER) == FXTRUE);
+
+    uint16_t outY = 0, outC = 0, outW = 0;
+    REQUIRE(readRegion(GR_BUFFER_BACKBUFFER, 50, 50, 1, 1, 2, &outY) == FXTRUE);
+    REQUIRE(readRegion(GR_BUFFER_BACKBUFFER, 60, 50, 1, 1, 2, &outC) == FXTRUE);
+    REQUIRE(readRegion(GR_BUFFER_BACKBUFFER, 70, 50, 1, 1, 2, &outW) == FXTRUE);
+    CHECK(rgb565R(outY) > 220u);
+    CHECK(rgb565G(outY) > 220u);
+    CHECK(rgb565B(outY) < 20u);
+    CHECK(rgb565G(outC) > 220u);
+    CHECK(rgb565B(outC) > 220u);
+    CHECK(rgb565R(outC) < 20u);
+    CHECK(rgb565R(outW) > 220u);
+    CHECK(rgb565G(outW) > 220u);
+    CHECK(rgb565B(outW) > 220u);
+
+    // 6. Read/write LFB region scanline cache coherence check
+    uint16_t strip[8] = {0xF800u, 0x07E0u, 0x001Fu, 0xFFE0u,
+                         0x07FFu, 0xF81Fu, 0xFFFFu, 0x0000u};
+    REQUIRE(writeRegion(GR_BUFFER_BACKBUFFER, 10, 10, GR_LFB_SRC_FMT_565,
+                        8, 1, FXFALSE, 16, strip) == FXTRUE);
+    uint16_t got[8]{};
+    REQUIRE(readRegion(GR_BUFFER_BACKBUFFER, 10, 10, 8, 1, 16, got) == FXTRUE);
+    CHECK(rgb565R(got[0]) > 220u);
+    CHECK(rgb565G(got[1]) > 220u);
+    CHECK(rgb565B(got[2]) > 220u);
+
+    winClose(ctx);
+    glideShutdown();
+    ::unsetenv("GLIDE_NG_BACKEND");
+    ::unsetenv("GLIDE_NG_HEADLESS");
+  }
+  ::dlclose(handle);
 #endif
 }

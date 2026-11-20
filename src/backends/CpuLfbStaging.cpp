@@ -1171,6 +1171,22 @@ bool CpuLfbStaging::WriteLFB(uint32_t logicalBuffer, uint32_t dstX,
   return true;
 }
 
+void CpuLfbStaging::MirrorWriteToReadCache(
+    uint32_t logicalBuffer, uint32_t dstX, uint32_t dstY, uint32_t srcWidth,
+    uint32_t srcHeight, int32_t srcStride, uint32_t srcFmt, const void* srcData,
+    const void* refData, const LfbPipelineConfig& config,
+    uint32_t pixelFormatOverride) {
+  if (!srcData || m_width == 0 || m_height == 0) return;
+  if (!IsValidSrcFormat(srcFmt)) return;
+  const uint32_t targetSlot = SlotFor(logicalBuffer);
+  if (m_buffers[targetSlot].empty()) return;
+  MaterializeSlot(targetSlot);
+  auto* pixels = reinterpret_cast<uint32_t*>(m_buffers[targetSlot].data());
+  WritePixelsRegion(pixels, m_width, m_height, dstX, dstY, srcWidth, srcHeight,
+                    srcStride, srcFmt, srcData, refData, config,
+                    pixelFormatOverride);
+}
+
 bool CpuLfbStaging::ReadRegion(uint32_t logicalBuffer, uint32_t srcX,
                                uint32_t srcY, uint32_t srcWidth,
                                uint32_t srcHeight, uint32_t dstStride,

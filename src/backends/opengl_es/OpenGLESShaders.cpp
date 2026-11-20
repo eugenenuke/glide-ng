@@ -83,11 +83,16 @@ void main() {
     }
     
     float ndcZ;
-    if (uDepthClipOverride == 1 || uDepthBufferMode == 2) {
-        // Depth-off/2D overlay or W-buffer (gl_FragDepth written per-fragment):
-        // keep clip-space Z strictly inside [-1, 1] so GLES (no GL_DEPTH_CLAMP)
-        // never clips oow > 1.0 (W < 1.0), negative depthBias, or stack garbage.
+    if (uDepthClipOverride == 1 || uDepthBufferMode == 2 || uDepthBufferMode == 4 || uDepthBufferMode == 5) {
+        // Depth-off/2D overlay or W-buffer / COMPARE_TO_BIAS Pass 1 (gl_FragDepth
+        // written per-fragment): keep clip-space Z strictly inside [-1, 1] so GLES
+        // (no GL_DEPTH_CLAMP) never clips oow > 1.0 (W < 1.0), negative depthBias,
+        // or stack garbage.
         ndcZ = 0.0;
+    } else if (uDepthBufferMode == 3) {
+        // GR_DEPTHBUFFER_ZBUFFER_COMPARE_TO_BIAS Pass 2: unbiased fragment Z.
+        float rawDepth = clamp(inPos.z, 0.0, 1.0);
+        ndcZ = rawDepth * 2.0 - 1.0;
     } else {
         float rawDepth = clamp(inPos.z + uDepthBias, 0.0, 1.0);
         ndcZ = rawDepth * 2.0 - 1.0;
@@ -871,10 +876,16 @@ void main() {
     }
 
     // True W-Buffering Depth Write
-    if (uDepthBufferMode == 2) { // 2 = W-buffer
+    if (uDepthBufferMode == 5) { // Internal COMPARE_TO_BIAS Pass 1: constant bias depth
+        gl_FragDepth = clamp(uDepthBias, 0.0, 1.0);
+    } else if (uDepthBufferMode == 2) { // 2 = W-buffer
         float eyeW = 1.0 / fragOOW;
         float normalizedW = clamp((eyeW - uDepthNear) / (uDepthFar - uDepthNear), 0.0, 1.0);
         gl_FragDepth = clamp(normalizedW + uDepthBias, 0.0, 1.0);
+    } else if (uDepthBufferMode == 4) { // 4 = W-buffer COMPARE_TO_BIAS Pass 2 (unbiased W)
+        float eyeW = (fragOOW > 0.0) ? (1.0 / fragOOW) : uDepthFar;
+        float normalizedW = clamp((eyeW - uDepthNear) / (uDepthFar - uDepthNear), 0.0, 1.0);
+        gl_FragDepth = clamp(normalizedW, 0.0, 1.0);
     } else {
         gl_FragDepth = gl_FragCoord.z;
     }

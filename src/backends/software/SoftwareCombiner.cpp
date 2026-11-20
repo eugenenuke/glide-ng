@@ -181,19 +181,27 @@ void SoftwareBackend::WritePixelPipeline(int x, int y, const ModernVertex& v,
   if (state.depthMode != 0 && depthBuffer &&
       (state.depthCompareOp != 7 || state.depthMask)) {
     float targetDepth = 0.0f;
-    if (state.depthMode == 2) {  // GR_DEPTHBUFFER_WBUFFER
+    const bool compareToBias = (state.depthMode == 3 || state.depthMode == 4);
+    const bool isWBuffer = (state.depthMode == 2 || state.depthMode == 4);
+    if (isWBuffer) {  // GR_DEPTHBUFFER_WBUFFER / COMPARE_TO_BIAS
       const float depthRange = state.depthFar - state.depthNear;
       const float depthRangeInv =
           (std::abs(depthRange) > 1e-6f) ? (1.0f / depthRange) : 0.0f;
-      const float w = 1.0f / v.pos[3];
+      const float w = (v.pos[3] > 0.0f) ? (1.0f / v.pos[3]) : state.depthFar;
       targetDepth = std::clamp((w - state.depthNear) * depthRangeInv, 0.0f, 1.0f);
     } else {
       targetDepth = std::clamp(v.pos[2], 0.0f, 1.0f);
     }
-    if (state.depthBiasLevel != 0) {
+    float cmpDepth = targetDepth;
+    if (compareToBias) {
+      cmpDepth = DecodeAuxDepth16ToNorm(
+          static_cast<uint16_t>(state.depthBiasLevel), state.depthMode,
+          state.depthNear, state.depthFar);
+    } else if (state.depthBiasLevel != 0) {
       targetDepth = std::clamp(
           targetDepth + static_cast<float>(state.depthBiasLevel) / 65535.0f,
           0.0f, 1.0f);
+      cmpDepth = targetDepth;
     }
 
     bool depthPass = true;
@@ -201,12 +209,12 @@ void SoftwareBackend::WritePixelPipeline(int x, int y, const ModernVertex& v,
       const float currentDepth = depthBuffer[pIdx];
       switch (state.depthCompareOp) {
         case 0: depthPass = false; break;
-        case 1: depthPass = (targetDepth < currentDepth); break;
-        case 2: depthPass = (targetDepth == currentDepth); break;
-        case 3: depthPass = (targetDepth <= currentDepth); break;
-        case 4: depthPass = (targetDepth > currentDepth); break;
-        case 5: depthPass = (targetDepth != currentDepth); break;
-        case 6: depthPass = (targetDepth >= currentDepth); break;
+        case 1: depthPass = (cmpDepth < currentDepth); break;
+        case 2: depthPass = (cmpDepth == currentDepth); break;
+        case 3: depthPass = (cmpDepth <= currentDepth); break;
+        case 4: depthPass = (cmpDepth > currentDepth); break;
+        case 5: depthPass = (cmpDepth != currentDepth); break;
+        case 6: depthPass = (cmpDepth >= currentDepth); break;
         default: depthPass = true; break;
       }
     }

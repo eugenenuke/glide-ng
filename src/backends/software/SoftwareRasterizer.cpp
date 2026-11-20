@@ -1187,8 +1187,10 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
           if (depthMode != 0 && depthBuffer &&
               (depthCompareOp != 7 || depthMask)) {
             float targetDepth = 0.0f;
-            if (depthMode == 2) {
-              float w = 1.0f / wVal;
+            const bool compareToBias = (depthMode == 3 || depthMode == 4);
+            const bool isWBuffer = (depthMode == 2 || depthMode == 4);
+            if (isWBuffer) {
+              float w = (wVal > 0.0f) ? (1.0f / wVal) : depthFar;
               targetDepth =
                   std::clamp((w - depthNear) * depthRangeInv, 0.0f, 1.0f);
             } else {
@@ -1197,32 +1199,39 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
                       w2 * (c.pos[2] - a.pos[2]),
                   0.0f, 1.0f);
             }
-            if (depthBiasLevel != 0)
+            float cmpDepth = targetDepth;
+            if (compareToBias) {
+              cmpDepth = DecodeAuxDepth16ToNorm(
+                  static_cast<uint16_t>(depthBiasLevel), depthMode, depthNear,
+                  depthFar);
+            } else if (depthBiasLevel != 0) {
               targetDepth = std::max(
                   0.0f, std::min(1.0f, targetDepth +
                                            static_cast<float>(depthBiasLevel) /
                                                65535.0f));
+              cmpDepth = targetDepth;
+            }
             if (depthCompareOp != 7) {
               float currentDepth = depthBuffer[pIdx];
               bool depthPass = false;
               switch (depthCompareOp) {
                 case 1:
-                  depthPass = (targetDepth < currentDepth);
+                  depthPass = (cmpDepth < currentDepth);
                   break;
                 case 2:
-                  depthPass = (targetDepth == currentDepth);
+                  depthPass = (cmpDepth == currentDepth);
                   break;
                 case 3:
-                  depthPass = (targetDepth <= currentDepth);
+                  depthPass = (cmpDepth <= currentDepth);
                   break;
                 case 4:
-                  depthPass = (targetDepth > currentDepth);
+                  depthPass = (cmpDepth > currentDepth);
                   break;
                 case 5:
-                  depthPass = (targetDepth != currentDepth);
+                  depthPass = (cmpDepth != currentDepth);
                   break;
                 case 6:
-                  depthPass = (targetDepth >= currentDepth);
+                  depthPass = (cmpDepth >= currentDepth);
                   break;
               }
               if (!depthPass) {

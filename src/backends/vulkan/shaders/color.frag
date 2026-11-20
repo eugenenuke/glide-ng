@@ -969,13 +969,21 @@ void main() {
   }
 
 #ifdef USE_WBUFFER_DEPTH
-  // True W-buffer depth write (only compiled into depthMode == 2 pipelines so
-  // Z-buffer & depth-off pipelines omit DepthReplacing and preserve Early-Z).
-  if (pcs.depthBufferMode == 2u) {
+  // True W-buffer depth write (also used by COMPARE_TO_BIAS Pass 1 where bit 13
+  // outputs constant depthBias so hardware depth comparison probes bias against
+  // the live depth buffer without overwriting it).
+  if (((pcs.flags >> 13u) & 1u) != 0u) {
+    gl_FragDepth = clamp(pcs.depthBias, 0.0, 1.0);
+  } else if (pcs.depthBufferMode == 2u) {
     float eyeW = 1.0 / fragOOW;
     float normalizedW =
         clamp((eyeW - pcs.depthNear) / (pcs.depthFar - pcs.depthNear), 0.0, 1.0);
     gl_FragDepth = clamp(normalizedW + pcs.depthBias, 0.0, 1.0);
+  } else if (pcs.depthBufferMode == 4u) {
+    float eyeW = (fragOOW > 0.0) ? (1.0 / fragOOW) : pcs.depthFar;
+    float normalizedW =
+        clamp((eyeW - pcs.depthNear) / (pcs.depthFar - pcs.depthNear), 0.0, 1.0);
+    gl_FragDepth = clamp(normalizedW, 0.0, 1.0);
   } else {
     gl_FragDepth = gl_FragCoord.z;
   }

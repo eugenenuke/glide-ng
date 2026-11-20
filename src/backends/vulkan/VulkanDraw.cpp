@@ -44,6 +44,14 @@ void VulkanBackend::ClearBufferExt(uint32_t color, uint32_t alpha, float z,
                                      << clipRect.extent.width << "x"
                                      << clipRect.extent.height << ")");
 
+  if (clearMask & 1) {
+    const uint32_t logicalSlot = (m_activeRenderBuffer == 0) ? 0u : 1u;
+    m_lfbReadCacheValid[logicalSlot] = false;
+  }
+  if (clearMask & 2) {
+    m_auxDepthShadowValid = false;
+  }
+
   // 1. Prepare color, depth, and stencil clear values respecting active masks.
   std::array<vk::ClearAttachment, 2> clears;
   uint32_t clearCount = 0;
@@ -432,6 +440,7 @@ void VulkanBackend::DrawPoint(const ModernVertex& pt) {
 
     m_batchedPipeline = reqPipeline;
     m_batchedDescSet = reqDescSet;
+    m_batchedTopology = vk::PrimitiveTopology::ePointList;
     m_batchedFirstVertex = m_vertexBufferOffset / sizeof(ModernVertex);
   }
 
@@ -496,6 +505,7 @@ void VulkanBackend::DrawLine(const ModernVertex& v1, const ModernVertex& v2) {
 
     m_batchedPipeline = reqPipeline;
     m_batchedDescSet = reqDescSet;
+    m_batchedTopology = vk::PrimitiveTopology::eLineList;
     m_batchedFirstVertex = m_vertexBufferOffset / sizeof(ModernVertex);
   }
 
@@ -597,6 +607,7 @@ void VulkanBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
 
     m_batchedPipeline = reqPipeline;
     m_batchedDescSet = reqDescSet;
+    m_batchedTopology = vk::PrimitiveTopology::eTriangleList;
     m_batchedFirstVertex = m_vertexBufferOffset / sizeof(ModernVertex);
   }
 
@@ -643,11 +654,13 @@ void VulkanBackend::FlushBatch(bool fromStateFlush) {
 
   EnsureRenderPassActive(ShouldUseSingleSamplePass_Locked());
 
-  if (m_batchedPipeline != m_boundPipelineInPass) {
-    m_commandBuffer->bindPipeline(vk::PipelineBindPoint::eGraphics,
-                                  m_batchedPipeline);
-    m_boundPipelineInPass = m_batchedPipeline;
+  // Invalidate cached CPU LFB readback for the target buffer whenever 3D
+  // geometry executes on it (zero overhead inside normal rendering loops).
+  m_lfbReadCacheValid[(m_activeRenderBuffer == 0) ? 0u : 1u] = false;
+  if (m_depthMode != 0 && m_depthMask) {
+    m_auxDepthShadowValid = false;
   }
+
   if (m_batchedDescSet != m_boundDescSetInPass) {
     m_commandBuffer->bindDescriptorSets(vk::PipelineBindPoint::eGraphics,
                                         m_pipelineLayout.get(), 0, 1,
@@ -655,23 +668,100 @@ void VulkanBackend::FlushBatch(bool fromStateFlush) {
     m_boundDescSetInPass = m_batchedDescSet;
   }
 
-  PushConstants pcs{};
-  PopulatePushConstants(pcs);
-  m_commandBuffer->pushConstants<PushConstants>(
-      m_pipelineLayout.get(),
-      vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment, 0,
-      pcs);
+  const bool isCompareToBias =
+      (m_depthMode == 3u || m_depthMode == 4u) && HasStencilAspect();
+  if (isCompareToBias) {
+    // Authentic 3dfx GR_DEPTHBUFFER_{Z,W}BUFFER_COMPARE_TO_BIAS two-pass:
+    //   Pass 1 probes DecodeAuxDepth16ToNorm(bias) against live depth buffer,
+    //   marking stencil bit 0x80 where the comparison passes (zero color/depth
+    //   writes). Pass 2 writes color + real incoming Z/W depth only where bit
+    //   0x80 is set, clearing bit 0x80 as it passes.
+    if (!m_stencilEnabled) {
+      vk::ClearAttachment stClear(vk::ImageAspectFlagBits::eStencil, 0,
+                                  vk::ClearValue(vk::ClearDepthStencilValue(1.0f, 0u)));
+      vk::Rect2D clearSc = GetScissorRectVulkan_Locked();
+      if (clearSc.extent.width > 0 && clearSc.extent.height > 0) {
+        vk::ClearRect cr(clearSc, 0, 1);
+        m_commandBuffer->clearAttachments(1, &stClear, 1, &cr);
+      }
+    }
 
-  if (m_stencilEnabled && HasStencilAspect()) {
+    PipelineStateKey baseKey = GetCurrentStateKey();
+    PipelineStateKey pass1Key = baseKey;
+    pass1Key.compareToBiasPass = 1u;
+    vk::Pipeline pass1Pipe = GetOrCreatePipeline(pass1Key, m_batchedTopology);
+
+    PipelineStateKey pass2Key = baseKey;
+    pass2Key.compareToBiasPass = 2u;
+    vk::Pipeline pass2Pipe = GetOrCreatePipeline(pass2Key, m_batchedTopology);
+
+    PushConstants pcs{};
+    PopulatePushConstants(pcs);
+    const float biasNorm = DecodeAuxDepth16ToNorm(
+        static_cast<uint16_t>(m_depthBiasLevel), m_depthMode, m_depthNear,
+        m_depthFar);
+
+    // Pass 1: depth compare against biasNorm -> stamp stencil bit 0x80
+    PushConstants pcs1 = pcs;
+    pcs1.depthBias = biasNorm;
+    pcs1.flags |= (1u << 13u);
+    m_commandBuffer->bindPipeline(vk::PipelineBindPoint::eGraphics, pass1Pipe);
+    m_commandBuffer->pushConstants<PushConstants>(
+        m_pipelineLayout.get(),
+        vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment,
+        0, pcs1);
     m_commandBuffer->setStencilCompareMask(
-        vk::StencilFaceFlagBits::eFrontAndBack, m_stencilReadMask);
+        vk::StencilFaceFlagBits::eFrontAndBack, 0x80u);
     m_commandBuffer->setStencilWriteMask(
-        vk::StencilFaceFlagBits::eFrontAndBack, m_stencilWriteMask);
+        vk::StencilFaceFlagBits::eFrontAndBack, 0x80u);
     m_commandBuffer->setStencilReference(
-        vk::StencilFaceFlagBits::eFrontAndBack, m_stencilRef);
-  }
+        vk::StencilFaceFlagBits::eFrontAndBack, 0x80u);
+    m_commandBuffer->draw(m_batchedVertexCount, 1, m_batchedFirstVertex, 0);
 
-  m_commandBuffer->draw(m_batchedVertexCount, 1, m_batchedFirstVertex, 0);
+    // Pass 2: stencil-gated color + true Z/W depth write, clearing bit 0x80
+    PushConstants pcs2 = pcs;
+    pcs2.flags &= ~(1u << 13u);
+    m_commandBuffer->bindPipeline(vk::PipelineBindPoint::eGraphics, pass2Pipe);
+    m_commandBuffer->pushConstants<PushConstants>(
+        m_pipelineLayout.get(),
+        vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment,
+        0, pcs2);
+    m_commandBuffer->draw(m_batchedVertexCount, 1, m_batchedFirstVertex, 0);
+
+    m_boundPipelineInPass = pass2Pipe;
+    if (m_stencilEnabled) {
+      m_commandBuffer->setStencilCompareMask(
+          vk::StencilFaceFlagBits::eFrontAndBack, m_stencilReadMask);
+      m_commandBuffer->setStencilWriteMask(
+          vk::StencilFaceFlagBits::eFrontAndBack, m_stencilWriteMask);
+      m_commandBuffer->setStencilReference(
+          vk::StencilFaceFlagBits::eFrontAndBack, m_stencilRef);
+    }
+  } else {
+    if (m_batchedPipeline != m_boundPipelineInPass) {
+      m_commandBuffer->bindPipeline(vk::PipelineBindPoint::eGraphics,
+                                    m_batchedPipeline);
+      m_boundPipelineInPass = m_batchedPipeline;
+    }
+
+    PushConstants pcs{};
+    PopulatePushConstants(pcs);
+    m_commandBuffer->pushConstants<PushConstants>(
+        m_pipelineLayout.get(),
+        vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment,
+        0, pcs);
+
+    if (m_stencilEnabled && HasStencilAspect()) {
+      m_commandBuffer->setStencilCompareMask(
+          vk::StencilFaceFlagBits::eFrontAndBack, m_stencilReadMask);
+      m_commandBuffer->setStencilWriteMask(
+          vk::StencilFaceFlagBits::eFrontAndBack, m_stencilWriteMask);
+      m_commandBuffer->setStencilReference(
+          vk::StencilFaceFlagBits::eFrontAndBack, m_stencilRef);
+    }
+
+    m_commandBuffer->draw(m_batchedVertexCount, 1, m_batchedFirstVertex, 0);
+  }
 
   if (m_msaaSamples > 1 && GetColorWriteMask4() != 0) {
     const uint32_t activeIdx = GetActiveGpuBufferIdx();

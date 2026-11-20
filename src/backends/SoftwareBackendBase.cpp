@@ -333,6 +333,38 @@ bool SoftwareBackendBase::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
   std::lock_guard<std::mutex> lock(m_mutex);
   FlushBins_Locked();
   if (!dstData || m_cpuBuffers[0].empty()) return false;
+
+  // GR_BUFFER_AUXBUFFER (2): read back the 16-bit depth/ZA16 buffer instead of
+  // falling through into the color backbuffer!
+  if (buffer == 2u) {
+    MaterializeLazyCpuDepthClear_Locked();
+    if (m_headlessDepthBuffer.empty()) {
+      for (uint32_t y = 0; y < srcHeight; ++y) {
+        std::memset(reinterpret_cast<uint8_t*>(dstData) +
+                        static_cast<size_t>(y) * dstStride,
+                    0xFF, static_cast<size_t>(srcWidth) * sizeof(uint16_t));
+      }
+      return true;
+    }
+    const uint32_t guestW = (m_guestWidth > 0) ? m_guestWidth : m_headlessWidth;
+    const uint32_t guestH = (m_guestHeight > 0) ? m_guestHeight : m_headlessHeight;
+    if (srcX >= guestW || srcY >= guestH) return true;
+    const uint32_t copyW = std::min(srcWidth, guestW - srcX);
+    const uint32_t copyH = std::min(srcHeight, guestH - srcY);
+    auto* outBase = reinterpret_cast<uint8_t*>(dstData);
+    for (uint32_t y = 0; y < copyH; ++y) {
+      auto* rowOut = reinterpret_cast<uint16_t*>(outBase + static_cast<size_t>(y) * dstStride);
+      const uint32_t depthY = (srcY + y) * m_ssaaScale;
+      const float* depthRow =
+          m_headlessDepthBuffer.data() + static_cast<size_t>(depthY) * m_headlessWidth;
+      for (uint32_t x = 0; x < copyW; ++x) {
+        const float d = depthRow[(srcX + x) * m_ssaaScale];
+        rowOut[x] = EncodeNormDepthToAux16(d, m_depthMode, m_depthNear, m_depthFar);
+      }
+    }
+    return true;
+  }
+
   uint32_t readSlot = (buffer == 0) ? m_frontBufferIdx : m_backBufferIdx;
   MaterializeLazyCpuClear_Locked(readSlot);
 
@@ -386,6 +418,64 @@ bool SoftwareBackendBase::WriteLFB(uint32_t buffer, uint32_t dstX,
     GLIDE_LOG(WARN, "WriteLFB",
               "Invalid or undefined LFB source format: " << srcFmt);
     return false;
+  }
+
+  // GR_BUFFER_AUXBUFFER (2) / GR_LFB_SRC_FMT_ZA16 (0x0f): write 16-bit depth
+  // values into the depth buffer directly instead of corrupting the color buffer!
+  if (buffer == 2u || srcFmt == 0x0fu) {
+    if (m_headlessDepthBuffer.empty()) return true;
+    MaterializeLazyCpuDepthClear_Locked();
+    const uint32_t guestW = (m_guestWidth > 0) ? m_guestWidth : m_headlessWidth;
+    const uint32_t guestH = (m_guestHeight > 0) ? m_guestHeight : m_headlessHeight;
+    if (dstX >= guestW || dstY >= guestH || srcWidth == 0 || srcHeight == 0) {
+      return true;
+    }
+    const uint32_t copyW = std::min(srcWidth, guestW - dstX);
+    const uint32_t copyH = std::min(srcHeight, guestH - dstY);
+    const auto* inBase = reinterpret_cast<const uint8_t*>(srcData);
+    const auto* refBase = reinterpret_cast<const uint8_t*>(refData);
+    const uint32_t activeMode = m_depthMode;
+    uint32_t zeroCount = 0;
+    uint32_t modifiedDepth = 0;
+    for (uint32_t y = 0; y < copyH; ++y) {
+      const auto* rowIn = reinterpret_cast<const uint16_t*>(
+          inBase + static_cast<std::ptrdiff_t>(y) * srcStride);
+      const auto* rowRef =
+          refBase ? reinterpret_cast<const uint16_t*>(
+                        refBase + static_cast<std::ptrdiff_t>(y) * srcStride)
+                  : nullptr;
+      const uint32_t gy = dstY + y;
+      for (uint32_t x = 0; x < copyW; ++x) {
+        const uint16_t d16 = rowIn[x];
+        if (rowRef && d16 == rowRef[x]) continue;
+        const float dNorm =
+            DecodeAuxDepth16ToNorm(d16, activeMode, m_depthNear, m_depthFar);
+        if (d16 == 0u) ++zeroCount;
+        ++modifiedDepth;
+        const uint32_t gx = dstX + x;
+        if (m_ssaaScale == 2) {
+          const uint32_t baseX = gx * 2u;
+          const uint32_t baseY = gy * 2u;
+          float* r0 = m_headlessDepthBuffer.data() +
+                      static_cast<size_t>(baseY) * m_headlessWidth + baseX;
+          float* r1 = m_headlessDepthBuffer.data() +
+                      static_cast<size_t>(baseY + 1u) * m_headlessWidth + baseX;
+          r0[0] = dNorm;
+          r0[1] = dNorm;
+          r1[0] = dNorm;
+          r1[1] = dNorm;
+        } else {
+          m_headlessDepthBuffer[static_cast<size_t>(gy) * m_headlessWidth + gx] =
+              dNorm;
+        }
+      }
+    }
+    GLIDE_LOG(DEBUG, "WriteLFB",
+              "WriteAuxDepth (SW): rect=(" << dstX << "," << dstY << " "
+                                           << copyW << "x" << copyH
+                                           << "), modified=" << modifiedDepth
+                                           << ", zeroMask=" << zeroCount);
+    return true;
   }
 
   uint32_t targetSlot = (buffer == 0) ? m_frontBufferIdx : m_backBufferIdx;

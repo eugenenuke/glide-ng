@@ -1179,7 +1179,7 @@ bool LfbWriteRegion(uint32_t dstBuf, uint32_t dstX, uint32_t dstY,
 bool LfbUnlockWithState(const SharedFrontendState& st, uint32_t type,
                         uint32_t buffer) {
   LfbPipelineConfig config;
-  config.pixelPipeline = LfbManager::GetInstance().IsPixelPipeline();
+  config.pixelPipeline = LfbManager::GetInstance().IsPixelPipeline(buffer);
   config.chromakeyEnabled = (st.chromakeyMode != 0);
   config.chromakeyValue = st.chromakeyValue;
   config.constantAlpha = st.lfbConstantAlpha;

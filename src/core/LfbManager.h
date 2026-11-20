@@ -71,43 +71,75 @@ public:
         const size_t byteSize = static_cast<size_t>(stride) * height;
 
         if (IsWriteLockType(type)) {
-            m_writeLock.width = width;
-            m_writeLock.height = height;
-            m_writeLock.pixelSize = pixelSize;
-            m_writeLock.stride = stride;
+            const uint32_t slotIdx = WriteSlotForBuffer(buffer);
+            WriteLockState& slot = m_writeLocks[slotIdx];
+
+            // Re-entrant nested lock on the SAME buffer & format (e.g.
+            // Archimedean Dynasty locks BACKBUFFER, calls nested sub-locks to
+            // draw HUD lines/text, then unwinds unlocks). Preserve already-
+            // written pixels instead of resetting to the sentinel buffer!
+            if (slot.isLocked && slot.lockCount > 0 &&
+                slot.width == width && slot.height == height &&
+                slot.stride == stride && slot.writeMode == resolvedMode &&
+                slot.origin == origin &&
+                slot.stagingBuffer.size() == byteSize) {
+                ++slot.lockCount;
+                slot.pixelPipeline = slot.pixelPipeline || pixelPipeline;
+                info->size = sizeof(*info);
+                info->writeMode = static_cast<decltype(info->writeMode)>(resolvedMode);
+                info->origin = static_cast<decltype(info->origin)>(origin);
+                info->strideInBytes = slot.stride;
+                info->lfbPtr = slot.stagingBuffer.data();
+                LogLockSuccess(type, buffer, writeMode, origin, byteSize);
+                return true;
+            }
+
+            if (slot.isLocked && slot.lockCount > 0) {
+                // Rare format/origin switch while locked: commit prior bytes
+                // before re-initializing the staging buffer.
+                LfbPipelineConfig flushCfg;
+                flushCfg.pixelPipeline = slot.pixelPipeline;
+                SubmitWriteLock_Locked(slot, flushCfg, /*keepLocked=*/false);
+            }
+
+            slot.width = width;
+            slot.height = height;
+            slot.pixelSize = pixelSize;
+            slot.stride = stride;
 
             // Fill with a non-black, non-cyan sentinel instead of performing a
             // synchronous GPU ReadLFB stall (write-only locks may only be
             // written, never read, per the Glide 2.x/3.x specification).
             // Reuse the existing sentinel reference buffer and already-cleaned
             // staging buffer across frames of the same resolution/format.
-            if (m_writeLock.originalBuffer.size() != byteSize ||
-                m_writeLock.originalSentinelPixelSize != pixelSize) {
-                m_writeLock.originalBuffer.resize(byteSize);
-                FillSentinel(m_writeLock.originalBuffer.data(), stridePixels * height, pixelSize);
-                m_writeLock.originalSentinelPixelSize = pixelSize;
-                m_writeLock.stagingClean = false;
+            if (slot.originalBuffer.size() != byteSize ||
+                slot.originalSentinelPixelSize != pixelSize) {
+                slot.originalBuffer.resize(byteSize);
+                FillSentinel(slot.originalBuffer.data(), stridePixels * height, pixelSize);
+                slot.originalSentinelPixelSize = pixelSize;
+                slot.stagingClean = false;
             }
-            if (!m_writeLock.stagingClean || m_writeLock.stagingBuffer.size() != byteSize) {
-                m_writeLock.stagingBuffer.resize(byteSize);
-                std::memcpy(m_writeLock.stagingBuffer.data(),
-                            m_writeLock.originalBuffer.data(), byteSize);
+            if (!slot.stagingClean || slot.stagingBuffer.size() != byteSize) {
+                slot.stagingBuffer.resize(byteSize);
+                std::memcpy(slot.stagingBuffer.data(),
+                            slot.originalBuffer.data(), byteSize);
             }
             // Staging buffer is now handed to the guest and may be modified.
-            m_writeLock.stagingClean = false;
+            slot.stagingClean = false;
 
             info->size = sizeof(*info);
             info->writeMode = static_cast<decltype(info->writeMode)>(resolvedMode);
             info->origin = static_cast<decltype(info->origin)>(origin);
-            info->strideInBytes = m_writeLock.stride;
-            info->lfbPtr = m_writeLock.stagingBuffer.data();
+            info->strideInBytes = slot.stride;
+            info->lfbPtr = slot.stagingBuffer.data();
 
-            m_writeLock.isLocked = true;
-            m_writeLock.type = type;
-            m_writeLock.buffer = buffer;
-            m_writeLock.writeMode = resolvedMode;
-            m_writeLock.origin = origin;
-            m_writeLock.pixelPipeline = pixelPipeline;
+            slot.isLocked = true;
+            slot.lockCount = (slot.lockCount > 0) ? (slot.lockCount + 1u) : 1u;
+            slot.type = type;
+            slot.buffer = buffer;
+            slot.writeMode = resolvedMode;
+            slot.origin = origin;
+            slot.pixelPipeline = pixelPipeline;
             m_writeLocked.store(true, std::memory_order_release);
 
             LogLockSuccess(type, buffer, writeMode, origin, byteSize);
@@ -166,16 +198,34 @@ public:
     void Reset();
 
     // Expose lock state for verification/telemetry and fast-path swap checks.
-    bool IsLocked() const { return m_writeLock.isLocked || m_readLock.isLocked; }
+    bool IsLocked() const {
+        return m_writeLocks[0].isLocked || m_writeLocks[1].isLocked ||
+               m_writeLocks[2].isLocked || m_readLock.isLocked;
+    }
     bool IsWriteLocked() const { return m_writeLocked.load(std::memory_order_acquire); }
-    bool IsPixelPipeline() const { return m_writeLock.pixelPipeline; }
+    bool IsPixelPipeline(uint32_t buffer = 1u) const {
+        const uint32_t slot = WriteSlotForBuffer(buffer);
+        if (m_writeLocks[slot].isLocked) return m_writeLocks[slot].pixelPipeline;
+        for (const auto& s : m_writeLocks) {
+            if (s.isLocked) return s.pixelPipeline;
+        }
+        return false;
+    }
 
 private:
+    static constexpr uint32_t kNumWriteLockSlots = 3u;  // 0=FRONT, 1=BACK, 2=AUX
+    static constexpr uint32_t WriteSlotForBuffer(uint32_t buffer) {
+        if (buffer == 0u) return 0u;
+        if (buffer == 2u) return 2u;
+        return 1u;
+    }
+
     LfbManager() = default;
     ~LfbManager() = default;
 
     struct WriteLockState {
         bool isLocked{false};
+        uint32_t lockCount{0};
         uint32_t type{0};
         uint32_t buffer{0};
         uint32_t writeMode{0};
@@ -202,7 +252,7 @@ private:
         uint32_t pixelSize{0};
     };
 
-    WriteLockState m_writeLock;
+    WriteLockState m_writeLocks[kNumWriteLockSlots];
     ReadLockState m_readLock;
     std::atomic<bool> m_writeLocked{false};
     mutable std::mutex m_mutex;
@@ -214,7 +264,8 @@ private:
     void ReadLFBData(uint32_t buffer, uint32_t width, uint32_t height, uint32_t stride, uint8_t* dest);
     void FlipRows(uint8_t* data, uint32_t height, uint32_t stride);
     static void FillSentinel(uint8_t* dst, uint32_t pixelCount, uint32_t pixelSize);
-    bool SubmitWriteLock_Locked(const LfbPipelineConfig& config, bool keepLocked);
+    bool SubmitWriteLock_Locked(WriteLockState& slot, const LfbPipelineConfig& config, bool keepLocked);
+    void RefreshWriteLockedFlag_Locked();
     void LogErrorUnsupportedWriteMode(uint32_t writeMode);
     void LogLockSuccess(uint32_t type, uint32_t buffer, uint32_t writeMode, uint32_t origin, size_t byteSize);
 };

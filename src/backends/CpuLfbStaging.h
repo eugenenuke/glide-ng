@@ -169,6 +169,17 @@ class CpuLfbStaging {
                 uint32_t srcFmt, const void* srcData, const void* refData,
                 const LfbPipelineConfig& config, uint32_t pixelFormatOverride);
 
+  // Mirror an LFB write directly into the already-allocated CPU readback shadow
+  // buffer WITHOUT marking full-buffer dirty (used when a GPU backend holds a
+  // coherent readback snapshot across rapid ReadLFB/WriteLFB scanline loops).
+  void MirrorWriteToReadCache(uint32_t logicalBuffer, uint32_t dstX,
+                              uint32_t dstY, uint32_t srcWidth,
+                              uint32_t srcHeight, int32_t srcStride,
+                              uint32_t srcFmt, const void* srcData,
+                              const void* refData,
+                              const LfbPipelineConfig& config,
+                              uint32_t pixelFormatOverride);
+
   bool ReadRegion(uint32_t logicalBuffer, uint32_t srcX, uint32_t srcY,
                   uint32_t srcWidth, uint32_t srcHeight, uint32_t dstStride,
                   void* dstData);
