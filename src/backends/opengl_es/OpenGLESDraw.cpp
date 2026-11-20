@@ -633,16 +633,14 @@ void OpenGLESBackend::ApplyColorMaskGLES() {
 void OpenGLESBackend::ApplyScissorGLES_Locked() {
   glEnable(GL_SCISSOR_TEST);
 
-  // OpenGL scissor box expects bottom-up coordinates (0 = bottom).
-  // ComputeClipRectTopDown_Locked gives top-down [x0, x1) x [y0, y1) already
-  // clamped and origin-adjusted, so flipping Y once gives bottom-up GL coords.
+  // Offscreen FBOs are stored top-down (row 0 = Glide top row), so top-down
+  // clip bounds [x0, x1) x [y0, y1) map directly to GL scissor coordinates.
   uint32_t x0 = 0, y0 = 0, x1 = 0, y1 = 0;
   if (!ComputeClipRectTopDown_Locked(x0, y0, x1, y1)) {
     glScissor(0, 0, 0, 0);
     return;
   }
-  const uint32_t glScissorY = m_headlessHeight - y1;
-  glScissor(static_cast<GLint>(x0), static_cast<GLint>(glScissorY),
+  glScissor(static_cast<GLint>(x0), static_cast<GLint>(y0),
             static_cast<GLsizei>(x1 - x0), static_cast<GLsizei>(y1 - y0));
 }
 
@@ -656,12 +654,15 @@ void OpenGLESBackend::SyncCullStateGLES_Locked() {
   } else {
     glEnable(GL_CULL_FACE);
     GLint frontFace;
-    if (m_sstOrigin == 1) {
-      frontFace = GL_CCW;  // LOWER_LEFT is native Y-up; Glide front-face
-                           // (positive area) is CCW!
+    if (m_sstOrigin == 0) {
+      // Offscreen FBOs are stored top-down (ndcY = y/(H/2) - 1), which is
+      // orientation-preserving with GL's +X right / +Y up NDC frame, so
+      // positive Glide signed area maps directly to GL_CCW.
+      frontFace = GL_CCW;
     } else {
-      frontFace = GL_CW;  // UPPER_LEFT is Y-down, shader Y-flip (reflection)
-                          // maps Glide front-face (positive area) to CW!
+      // GR_ORIGIN_LOWER_LEFT reflects Y (ndcY = 1 - y/(H/2)), flipping
+      // positive Glide signed area to GL_CW.
+      frontFace = GL_CW;
     }
     glFrontFace(frontFace);
 

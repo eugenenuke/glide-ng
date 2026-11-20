@@ -547,19 +547,14 @@ bool OpenGLESBackend::CommitGpuTextureBuffer(
   }
 
   glBindFramebuffer(GL_READ_FRAMEBUFFER, m_headlessFBOs[0]);
-  // Flip Y from OpenGL bottom-up FBO into Glide top-down TMU texture rows
-  // (t=0 at GL row 0) so sampled texels match ReadLFB+UploadTexture exactly.
-  if (origin == 0u) {  // GR_ORIGIN_UPPER_LEFT
-    glBlitFramebuffer(0, static_cast<GLint>(m_headlessHeight),
-                      static_cast<GLint>(cw),
-                      static_cast<GLint>(m_headlessHeight - ch), 0, 0,
-                      static_cast<GLint>(cw), static_cast<GLint>(ch),
-                      GL_COLOR_BUFFER_BIT, GL_NEAREST);
-  } else {  // GR_ORIGIN_LOWER_LEFT
-    glBlitFramebuffer(0, static_cast<GLint>(ch), static_cast<GLint>(cw), 0, 0,
-                      0, static_cast<GLint>(cw), static_cast<GLint>(ch),
-                      GL_COLOR_BUFFER_BIT, GL_NEAREST);
-  }
+  // Offscreen FBOs are stored top-down (row 0 = top), matching Glide TMU
+  // texture rows (t=0 at row 0) and VulkanBackend::CommitGpuTextureBuffer.
+  const GLint srcY =
+      (origin == 1u) ? static_cast<GLint>(m_headlessHeight - ch) : 0;
+  glBlitFramebuffer(0, srcY, static_cast<GLint>(cw),
+                    srcY + static_cast<GLint>(ch), 0, 0,
+                    static_cast<GLint>(cw), static_cast<GLint>(ch),
+                    GL_COLOR_BUFFER_BIT, GL_NEAREST);
 
   glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
                          GL_TEXTURE_2D, 0, 0);

@@ -114,3 +114,77 @@ function(add_dos_glide_executable TARGET_NAME)
     add_custom_target("dos_${TARGET_NAME}" DEPENDS "${_exe_out}")
     add_dependencies(dos_tools "dos_${TARGET_NAME}")
 endfunction()
+
+# Build a freestanding DOS/32 LE DLL overlay (e.g. GLIDE2X.OVL) via Open Watcom.
+# Usage:
+#   add_dos_glide_ovl(glide2x
+#       SOURCES src/dos_ovl/glide2x_ovl.c
+#       LINKER_SCRIPT src/dos_ovl/glide2x_ovl.lnk
+#   )
+function(add_dos_glide_ovl TARGET_NAME)
+    if(NOT GLIDE_HAS_WATCOM_DOS)
+        return()
+    endif()
+
+    cmake_parse_arguments(OVL "" "LINKER_SCRIPT" "SOURCES;INCLUDES;DEFINES;DEPENDS" ${ARGN})
+
+    set(_obj_dir "${CMAKE_CURRENT_BINARY_DIR}/dos_ovl_${TARGET_NAME}")
+    file(MAKE_DIRECTORY "${_obj_dir}")
+
+    set(_inc_flags "-i=${GLIDE_WATCOM_ROOT}/h")
+    foreach(_inc ${OVL_INCLUDES})
+        list(APPEND _inc_flags "-i=${_inc}")
+    endforeach()
+
+    set(_def_flags "")
+    foreach(_def ${OVL_DEFINES})
+        list(APPEND _def_flags "-d${_def}")
+    endforeach()
+
+    set(_obj_files "")
+    set(_link_file_args "")
+    foreach(_src ${OVL_SOURCES})
+        get_filename_component(_abs_src "${_src}" ABSOLUTE)
+        get_filename_component(_src_name "${_abs_src}" NAME_WE)
+        set(_obj "${_obj_dir}/${_src_name}.obj")
+        list(APPEND _obj_files "${_obj}")
+        list(APPEND _link_file_args "file" "${_obj}")
+
+        add_custom_command(
+            OUTPUT "${_obj}"
+            COMMAND "${CMAKE_COMMAND}" -E env
+                "WATCOM=${GLIDE_WATCOM_ROOT}"
+                "INCLUDE=${GLIDE_WATCOM_ROOT}/h"
+                "PATH=${GLIDE_WATCOM_BIN_DIR}:$ENV{PATH}"
+                "${GLIDE_WCC386}"
+                -bt=dos -bd -3s -fpi87 -ox -za99 -wx -zq -zl
+                ${_def_flags}
+                ${_inc_flags}
+                "-fo=${_obj}"
+                "${_abs_src}"
+            DEPENDS "${_abs_src}" ${OVL_DEPENDS}
+            COMMENT "Watcom wcc386 (DOS/32 LE DLL): ${_src_name}.c -> ${_src_name}.obj"
+            VERBATIM
+        )
+    endforeach()
+
+    get_filename_component(_abs_lnk "${OVL_LINKER_SCRIPT}" ABSOLUTE)
+    set(_ovl_out "${GLIDE_DOS_OUTPUT_DIR}/${TARGET_NAME}.ovl")
+
+    add_custom_command(
+        OUTPUT "${_ovl_out}"
+        COMMAND "${CMAKE_COMMAND}" -E env
+            "WATCOM=${GLIDE_WATCOM_ROOT}"
+            "PATH=${GLIDE_WATCOM_BIN_DIR}:$ENV{PATH}"
+            "${GLIDE_WLINK}"
+            "@${_abs_lnk}"
+            name "${_ovl_out}"
+            ${_link_file_args}
+        DEPENDS ${_obj_files} "${_abs_lnk}"
+        COMMENT "Watcom wlink (DOS/32 LE OVL): ${_ovl_out}"
+        VERBATIM
+    )
+
+    add_custom_target("dos_ovl_${TARGET_NAME}" DEPENDS "${_ovl_out}")
+    add_dependencies(dos_tools "dos_ovl_${TARGET_NAME}")
+endfunction()

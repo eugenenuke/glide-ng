@@ -324,6 +324,7 @@ class OpenGLESBackend : public GlideStateTracker {
   uint32_t m_glGammaLutTex{0};
   int m_uUseGammaLutLoc{-1};
   int m_uPreserveAlphaLoc{-1};
+  int m_uFlipYLoc{-1};
 
   // On-screen HUD Overlay Resources
   HudOverlay m_hudOverlay;

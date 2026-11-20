@@ -10274,6 +10274,29 @@ TEST_CASE("M12.5 Compatibility Catalog INI Presets & Directory Integrity",
     CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_11);
     CHECK(cfg.noSplash == false);
   }
+  {
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load(
+        (catalogDir / "games" / "blood" / "glide-ng.ini").string(), cfg));
+    CHECK(cfg.model == GlideWrapper::CardModel::VoodooGraphics);
+    CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_48);
+    CHECK(cfg.msaaSamples == 1u);
+    CHECK(cfg.presentationFilter == 0u);
+    CHECK(cfg.noDitherSub == true);
+    CHECK(cfg.noSplash == false);
+  }
+  {
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load(
+        (catalogDir / "games" / "blood" / "glide-ng.software.ini").string(),
+        cfg));
+    CHECK(cfg.backend == "software");
+    CHECK(cfg.model == GlideWrapper::CardModel::VoodooGraphics);
+    CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_48);
+    CHECK(cfg.msaaSamples == 1u);
+    CHECK(cfg.noDitherSub == true);
+    CHECK(cfg.noSplash == false);
+  }
 }
 
 TEST_CASE("Automatic One-Shot Startup Splash Policy on grSstWinOpen",
@@ -10601,6 +10624,80 @@ TEST_CASE("MSAA Non-Centroid Gradients Prevent Quad-Diagonal Mipmap LOD Spikes",
     }
     CHECK(redSpikePixels == 0u);
     CHECK(nonGreenPixels == 0u);
+
+    be->DetachWindow();
+    bm.ShutdownBackend();
+    reg.GetConfig() = savedCfg;
+  }
+}
+
+TEST_CASE("1-Pixel Top-Edge Right-Triangle Scanline Rasterization Parity",
+          "[Rasterizer][TopLeftFill][Scanline]") {
+  // Regression test for Build Engine 3dfx (Blood 3DFX.EXE) floor/ceiling
+  // rendering: every horizontal scanline is submitted as a single 1-pixel-tall
+  // right triangle a=(x1, y+0.5), b=(x0, y+1.5), c=(x0, y+0.5) relying on
+  // authentic 3dfx Y-down top-left edge inclusion. Verify all 3 backends
+  // (Vulkan, OpenGL ES, Software) cover 100% of every scanline row.
+  using namespace GlideWrapper;
+
+  constexpr uint32_t kW = 128u;
+  constexpr uint32_t kH = 64u;
+  auto& reg = EmulationRegistry::GetInstance();
+  auto& bm = BackendManager::GetInstance();
+  const WrapperConfig savedCfg = reg.GetConfig();
+
+  for (const char* beName : {"software", "vulkan", "opengl_es"}) {
+    WrapperConfig cfg = savedCfg;
+    cfg.backend = beName;
+    cfg.forceNoWindow = true;
+    cfg.model = CardModel::VoodooGraphics;
+    cfg.msaaSamples = 1u;
+    reg.GetConfig() = cfg;
+    REQUIRE(bm.EstablishBackend(cfg));
+    auto* be = bm.GetBackend();
+    REQUIRE(be != nullptr);
+    REQUIRE(be->AttachWindow(nullptr, kW, kH, false));
+
+    be->SetSstOrigin(0u);  // GR_ORIGIN_UPPER_LEFT
+    be->SetClipWindow(0u, 0u, kW, kH);
+    be->SetDepthState(0u, 7u, false, 0);
+    be->SetBlendState(4u, 0u, 4u, 0u);  // ONE, ZERO
+    be->SetAlphaTestState(7u, 0u);
+    be->SetColorCombineExt(0u);
+    be->SetCombinerMode(1u, 0u, 0u, 0u, false, 1u, 0u, 0u, 0u, false);  // LOCAL (iterated)
+    be->ClearBuffer(0xFF000000u, 255u, 1.0f, 3u);
+
+    auto makeV = [](float x, float y) {
+      ModernVertex mv{};
+      mv.pos = {x, y, 0.5f, 1.0f};
+      mv.color = {0.0f, 1.0f, 0.0f, 1.0f};  // Solid green
+      return mv;
+    };
+
+    // Draw 16 contiguous 1-pixel scanlines [y=16..31], x=[16..112]
+    for (uint32_t y = 16u; y < 32u; ++y) {
+      const float fy = static_cast<float>(y) + 0.5f;
+      ModernVertex a = makeV(112.5f, fy);
+      ModernVertex b = makeV(16.5f, fy + 1.0f);
+      ModernVertex c = makeV(16.5f, fy);
+      be->DrawTriangle(a, b, c);
+    }
+    be->FlushBins();
+
+    std::vector<uint32_t> fb(kW * kH, 0u);
+    REQUIRE(be->ReadLFB(1u, 0u, 0u, kW, kH, kW * 4u, fb.data()));
+
+    INFO("backend=" << beName);
+    uint32_t missingPixels = 0u;
+    for (uint32_t y = 16u; y < 32u; ++y) {
+      for (uint32_t x = 18u; x < 110u; ++x) {
+        const uint32_t g = (fb[y * kW + x] >> 8) & 0xFFu;
+        if (g < 220u) {
+          ++missingPixels;
+        }
+      }
+    }
+    CHECK(missingPixels == 0u);
 
     be->DetachWindow();
     bm.ShutdownBackend();

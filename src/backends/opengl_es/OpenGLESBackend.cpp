@@ -493,6 +493,11 @@ void OpenGLESBackend::PresentToWindowSurface(uint32_t hostW, uint32_t hostH) {
   if (m_uPreserveAlphaLoc != -1) {
     glUniform1i(m_uPreserveAlphaLoc, 0);
   }
+  if (m_uFlipYLoc != -1) {
+    // Offscreen FBOs are stored top-down (row 0 = top); flip Y when presenting
+    // onto the bottom-up OpenGL ES default window surface.
+    glUniform1i(m_uFlipYLoc, 1);
+  }
 
   glActiveTexture(GL_TEXTURE0);
   glBindTexture(GL_TEXTURE_2D, m_fboTextures[0]);
@@ -541,6 +546,9 @@ void OpenGLESBackend::PresentToWindowSurface(uint32_t hostW, uint32_t hostH) {
         }
         if (m_uPreserveAlphaLoc != -1) {
           glUniform1i(m_uPreserveAlphaLoc, 1);
+        }
+        if (m_uFlipYLoc != -1) {
+          glUniform1i(m_uFlipYLoc, 0);
         }
         glEnable(GL_BLEND);
         glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ZERO,
@@ -755,15 +763,6 @@ bool OpenGLESBackend::WriteLFB(uint32_t buffer, uint32_t dstX, uint32_t dstY,
       auto* dest = reinterpret_cast<uint32_t*>(readDst);
       GetSimdKernels().SwapRB32(
           dest, dest, static_cast<size_t>(m_headlessWidth) * m_headlessHeight);
-      std::vector<uint32_t> rowBuf(m_headlessWidth);
-      for (uint32_t y = 0; y < m_headlessHeight / 2; ++y) {
-        uint32_t* topRow = dest + static_cast<size_t>(y) * m_headlessWidth;
-        uint32_t* botRow =
-            dest + static_cast<size_t>(m_headlessHeight - 1 - y) * m_headlessWidth;
-        std::memcpy(rowBuf.data(), topRow, m_headlessWidth * sizeof(uint32_t));
-        std::memcpy(topRow, botRow, m_headlessWidth * sizeof(uint32_t));
-        std::memcpy(botRow, rowBuf.data(), m_headlessWidth * sizeof(uint32_t));
-      }
       glBindFramebuffer(GL_FRAMEBUFFER, prevFBO);
       InvalidateGlBindingCache();
     }
@@ -798,14 +797,11 @@ void OpenGLESBackend::FlushLFBToGPU_Locked() {
                                   uint32_t gpuTexture) {
       const auto* src = reinterpret_cast<const uint32_t*>(cpuBufferData);
       if (!src || m_swizzleBuffer.empty()) return;
-      const auto& kernels = GetSimdKernels();
-      for (uint32_t y = 0; y < m_headlessHeight; ++y) {
-        const uint32_t dstY = m_headlessHeight - 1 - y;
-        const uint32_t* srcRow = src + static_cast<size_t>(y) * m_headlessWidth;
-        uint32_t* dstRow =
-            m_swizzleBuffer.data() + static_cast<size_t>(dstY) * m_headlessWidth;
-        kernels.SwapRB32(srcRow, dstRow, m_headlessWidth);
-      }
+      const size_t pixelCount =
+          static_cast<size_t>(m_headlessWidth) * m_headlessHeight;
+      // Offscreen FBOs are stored top-down (row 0 = top), so swizzle directly
+      // without flipping rows.
+      GetSimdKernels().SwapRB32(src, m_swizzleBuffer.data(), pixelCount);
       glBindTexture(GL_TEXTURE_2D, gpuTexture);
       glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
       glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, m_headlessWidth, m_headlessHeight,
@@ -881,18 +877,13 @@ void OpenGLESBackend::FlushLFBToGPU_Locked() {
           m_swizzleBuffer.resize(bandPixels);
         }
 
-        // Flip dirty band [minY..maxY] top-down -> bottom-up and swizzle ARGB -> RGBA.
-        const auto& kernels = GetSimdKernels();
-        for (uint32_t rIdx = 0; rIdx < numRows; ++rIdx) {
-          const uint32_t srcY = maxY - rIdx;
-          const uint32_t* srcRow = overlay + static_cast<size_t>(srcY) * m_headlessWidth;
-          uint32_t* dstRow =
-              m_swizzleBuffer.data() + static_cast<size_t>(rIdx) * m_headlessWidth;
-          kernels.SwapRB32(srcRow, dstRow, m_headlessWidth);
-        }
+        // Offscreen FBOs are stored top-down (row 0 = top), so swizzle dirty
+        // band [minY..maxY] directly without flipping rows.
+        GetSimdKernels().SwapRB32(
+            overlay + static_cast<size_t>(minY) * m_headlessWidth,
+            m_swizzleBuffer.data(), bandPixels);
 
-        const uint32_t glMinY = m_headlessHeight - 1 - maxY;
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, static_cast<GLint>(glMinY),
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, static_cast<GLint>(minY),
                         static_cast<GLsizei>(m_headlessWidth),
                         static_cast<GLsizei>(numRows), GL_RGBA, GL_UNSIGNED_BYTE,
                         m_swizzleBuffer.data());
@@ -921,6 +912,9 @@ void OpenGLESBackend::FlushLFBToGPU_Locked() {
         if (m_uPreserveAlphaLoc != -1) {
           glUniform1i(m_uPreserveAlphaLoc, 1);
         }
+        if (m_uFlipYLoc != -1) {
+          glUniform1i(m_uFlipYLoc, 0);
+        }
         glBindVertexArray(m_glVAO);
         overlayStateBound = true;
       }
@@ -932,8 +926,7 @@ void OpenGLESBackend::FlushLFBToGPU_Locked() {
         const uint32_t maxY = bands[bi].maxY;
         if (minY > maxY || maxY >= m_headlessHeight) continue;
         const uint32_t numRows = maxY - minY + 1;
-        const uint32_t glMinY = m_headlessHeight - 1 - maxY;
-        glScissor(0, static_cast<GLint>(glMinY),
+        glScissor(0, static_cast<GLint>(minY),
                   static_cast<GLsizei>(m_headlessWidth),
                   static_cast<GLsizei>(numRows));
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
@@ -999,32 +992,11 @@ bool OpenGLESBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
                  GL_UNSIGNED_BYTE, readDst);
     checkGLError("ReadLFB glReadPixels");
 
-    // Convert RGBA from GPU glReadPixels to canonical 0xAARRGGBB (BGRA bytes)
-    // and vertically flip the image in-place so CpuLfbStaging always holds
-    // canonical ARGB pixels (required when LfbManager write-locks snapshot and
-    // re-upload the buffer, e.g. grShamelessPlug under GR_COLORFORMAT_ABGR).
+    // Convert RGBA from GPU glReadPixels to canonical 0xAARRGGBB (BGRA bytes).
+    // Offscreen FBOs are stored top-down (row 0 = top), matching CpuLfbStaging.
     auto* dest = reinterpret_cast<uint32_t*>(readDst);
-    // 1. Always swizzle GL_RGBA -> canonical 0xAARRGGBB
-    for (uint32_t i = 0; i < m_headlessWidth * m_headlessHeight; ++i) {
-      uint32_t rgba = dest[i];
-      uint32_t r = rgba & 0xFFu;
-      uint32_t g = (rgba >> 8) & 0xFFu;
-      uint32_t b = (rgba >> 16) & 0xFFu;
-      uint32_t a = (rgba >> 24) & 0xFFu;
-      dest[i] = (a << 24) | (r << 16) | (g << 8) | b;
-    }
-    // 2. Vertically flip rows to convert OpenGL's bottom-up layout to host's
-    // top-down layout
-    std::vector<uint32_t> rowBuffer(m_headlessWidth);
-    for (uint32_t y = 0; y < m_headlessHeight / 2; ++y) {
-      uint32_t topY = y;
-      uint32_t bottomY = m_headlessHeight - 1 - y;
-      uint32_t* topRow = dest + topY * m_headlessWidth;
-      uint32_t* bottomRow = dest + bottomY * m_headlessWidth;
-      std::memcpy(rowBuffer.data(), topRow, m_headlessWidth * 4);
-      std::memcpy(topRow, bottomRow, m_headlessWidth * 4);
-      std::memcpy(bottomRow, rowBuffer.data(), m_headlessWidth * 4);
-    }
+    GetSimdKernels().SwapRB32(
+        dest, dest, static_cast<size_t>(m_headlessWidth) * m_headlessHeight);
   }
 
   // Restore the previously bound framebuffer to prevent state leakage!
@@ -2031,6 +2003,7 @@ bool OpenGLESBackend::CreateGLContext(void* nativeWindowHandle, uint32_t width,
 
   m_uUseGammaLutLoc = glGetUniformLocation(m_glProgram, "uUseGammaLut");
   m_uPreserveAlphaLoc = glGetUniformLocation(m_glProgram, "uPreserveAlpha");
+  m_uFlipYLoc = glGetUniformLocation(m_glProgram, "uFlipY");
 
   // Fullscreen triangle-strip quad sampling the bottom-up offscreen FBO texture
   // (no Y-flip: NDC +1 maps to V=1.0, NDC -1 maps to V=0.0).
@@ -2487,6 +2460,9 @@ void OpenGLESBackend::CopySingleToMsaa_Locked(uint32_t slot) {
   }
   if (m_uPreserveAlphaLoc != -1) {
     glUniform1i(m_uPreserveAlphaLoc, 1);
+  }
+  if (m_uFlipYLoc != -1) {
+    glUniform1i(m_uFlipYLoc, 0);
   }
   glBindVertexArray(m_glVAO);
   glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
