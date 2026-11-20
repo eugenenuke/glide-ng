@@ -54,6 +54,56 @@ inline void UnpackGrColorNorm(uint32_t color, uint32_t colorFormat, float& r,
   b = static_cast<float>(argb & 0xFFu) / 255.0f;
 }
 
+// Convert a 16-bit 3dfx AUXBUFFER (ZA16) value into normalized [0, 1] depth
+// matching the backend's depth attachment representation:
+//   - depthMode 1/3 (Z-buffer): linear uint16 / 65535.
+//   - depthMode 2/4 (W-buffer): SST-1 4:12 exponent:mantissa floating-point W
+//     normalized against [depthNear, depthFar].
+// Preserves exact endpoints (0x0000 -> 0.0, 0xFFFF -> 1.0) and guarantees any
+// non-zero value stays >= 1/65535 so D24_UNORM never quantizes it down to 0.
+inline float DecodeAuxDepth16ToNorm(uint16_t raw16, uint32_t depthMode,
+                                    float depthNear, float depthFar) noexcept {
+  if (raw16 == 0u) return 0.0f;
+  if (raw16 == 0xFFFFu) return 1.0f;
+  const bool isW = (depthMode == 2u || depthMode == 4u);
+  if (!isW) {
+    return static_cast<float>(raw16) / 65535.0f;
+  }
+  const uint32_t exp = (raw16 >> 12u) & 0xFu;
+  const uint32_t mant = raw16 & 0xFFFu;
+  const float w = static_cast<float>(1u << exp) *
+                  (1.0f + static_cast<float>(mant) / 4096.0f);
+  const float denom = depthFar - depthNear;
+  if (denom <= 1e-6f) return static_cast<float>(raw16) / 65535.0f;
+  const float norm = (w - depthNear) / denom;
+  const float clamped = std::max(0.0f, std::min(1.0f, norm));
+  return std::max(clamped, 1.0f / 65535.0f);
+}
+
+// Reverse mapping: pack normalized [0, 1] depth to 16-bit ZA16 AUXBUFFER word.
+inline uint16_t EncodeNormDepthToAux16(float norm, uint32_t depthMode,
+                                       float depthNear,
+                                       float depthFar) noexcept {
+  if (norm <= 0.0f) return 0u;
+  if (norm >= 1.0f) return 0xFFFFu;
+  const bool isW = (depthMode == 2u || depthMode == 4u);
+  if (!isW || (depthFar - depthNear) <= 1e-6f) {
+    return static_cast<uint16_t>(norm * 65535.0f + 0.5f);
+  }
+  const float w = depthNear + norm * (depthFar - depthNear);
+  if (w <= 1.0f) return 0u;
+  if (w >= 65528.0f) return 0xFFFFu;
+  uint32_t exp = 0;
+  float scaled = w;
+  while (scaled >= 2.0f && exp < 15u) {
+    scaled *= 0.5f;
+    ++exp;
+  }
+  uint32_t mant = static_cast<uint32_t>((scaled - 1.0f) * 4096.0f + 0.5f);
+  if (mant > 0xFFFu) mant = 0xFFFu;
+  return static_cast<uint16_t>((exp << 12u) | mant);
+}
+
 /**
  * @brief Pure Glide 2.x/3.x pipeline state tracker implementing shared
  * IGraphicsBackend state setters, state getters, and lifecycle metadata.

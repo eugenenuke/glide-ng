@@ -153,6 +153,9 @@ void OpenGLESBackend::InvalidateGlBindingCache() {
 void OpenGLESBackend::ResetState_Locked() {
   GlideStateTracker::ResetState_Locked();
   m_lfbStaging.ResetPendingAndDirty();
+  m_lfbReadCacheValid[0] = false;
+  m_lfbReadCacheValid[1] = false;
+  m_auxDepthShadowValid = false;
   m_geomVBOOffset = 0;
   m_is2DGeometry = true;
   m_gammaCorrectionValue = 1.0f;
@@ -655,6 +658,7 @@ bool OpenGLESBackend::SwapBuffers() {
 
   // Swap CPU LFB staging indices for double-buffering (zero-cost when unused)
   m_lfbStaging.SwapBuffers();
+  std::swap(m_lfbReadCacheValid[0], m_lfbReadCacheValid[1]);
 
   // Swap the GPU color targets for physical double-buffering!
   std::swap(m_headlessFBOs[0], m_headlessFBOs[1]);
@@ -727,6 +731,231 @@ void* OpenGLESBackend::GetLfbWritePtr() {
   return m_lfbStaging.GetWritePtr(m_activeRenderBuffer);
 }
 
+bool OpenGLESBackend::InitLfbDepthProgram_Locked() {
+  if (m_glLfbDepthProgram != 0) return true;
+  const char* depthFs = R"(#version 300 es
+precision highp float;
+in vec2 fragTex;
+uniform sampler2D uTex;
+void main() {
+    vec4 t = texture(uTex, fragTex);
+    if (t.a < 0.5) discard;
+    float r = floor(t.r * 255.0 + 0.5);
+    float g = floor(t.g * 255.0 + 0.5);
+    float b = floor(t.b * 255.0 + 0.5);
+    gl_FragDepth = clamp((r * 65536.0 + g * 256.0 + b) / 16777215.0, 0.0, 1.0);
+}
+)";
+  auto compile = [](GLenum type, const char* src) -> GLuint {
+    const std::string adapted = AdaptGlslSourceForPlatform(src);
+    const char* ptr = adapted.c_str();
+    GLuint s = glCreateShader(type);
+    glShaderSource(s, 1, &ptr, nullptr);
+    glCompileShader(s);
+    GLint ok = 0;
+    glGetShaderiv(s, GL_COMPILE_STATUS, &ok);
+    if (!ok) {
+      char log[512];
+      glGetShaderInfoLog(s, 512, nullptr, log);
+      GLIDE_LOG(WARN, "GLES", "LFB depth shader compile failed: " << log);
+      glDeleteShader(s);
+      return 0;
+    }
+    return s;
+  };
+  GLuint vs = compile(GL_VERTEX_SHADER, vsSource);
+  GLuint fs = compile(GL_FRAGMENT_SHADER, depthFs);
+  if (!vs || !fs) {
+    if (vs) glDeleteShader(vs);
+    if (fs) glDeleteShader(fs);
+    return false;
+  }
+  m_glLfbDepthProgram = glCreateProgram();
+  glAttachShader(m_glLfbDepthProgram, vs);
+  glAttachShader(m_glLfbDepthProgram, fs);
+  glLinkProgram(m_glLfbDepthProgram);
+  glDeleteShader(vs);
+  glDeleteShader(fs);
+  GLint linked = 0;
+  glGetProgramiv(m_glLfbDepthProgram, GL_LINK_STATUS, &linked);
+  if (!linked) {
+    glDeleteProgram(m_glLfbDepthProgram);
+    m_glLfbDepthProgram = 0;
+    return false;
+  }
+  m_uDepthQuadTexLoc = glGetUniformLocation(m_glLfbDepthProgram, "uTex");
+  m_uDepthQuadFlipYLoc = glGetUniformLocation(m_glLfbDepthProgram, "uFlipY");
+  glUseProgram(m_glLfbDepthProgram);
+  if (m_uDepthQuadTexLoc != -1) glUniform1i(m_uDepthQuadTexLoc, 0);
+  glUseProgram(0);
+  return true;
+}
+
+bool OpenGLESBackend::WriteAuxDepthLFB_Locked(
+    uint32_t dstX, uint32_t dstY, uint32_t srcWidth, uint32_t srcHeight,
+    int32_t srcStride, const void* srcData, const void* refData) {
+  if (!srcData || m_headlessWidth == 0 || m_headlessHeight == 0) return false;
+  if (dstX >= m_headlessWidth || dstY >= m_headlessHeight || srcWidth == 0 ||
+      srcHeight == 0) {
+    return true;
+  }
+  if (!EnsureContextCurrent()) return false;
+  FlushBatch();
+
+  const uint32_t copyW = std::min(srcWidth, m_headlessWidth - dstX);
+  const uint32_t copyH = std::min(srcHeight, m_headlessHeight - dstY);
+  const size_t totalPx =
+      static_cast<size_t>(m_headlessWidth) * m_headlessHeight;
+  if (m_auxDepthShadow16.size() != totalPx) {
+    m_auxDepthShadow16.assign(totalPx, 0xFFFFu);
+  }
+  const size_t bandPixels = static_cast<size_t>(m_headlessWidth) * copyH;
+  if (m_auxDepthScratch.size() < bandPixels) {
+    m_auxDepthScratch.resize(bandPixels);
+  }
+  std::memset(m_auxDepthScratch.data(), 0, bandPixels * sizeof(uint32_t));
+
+  const auto* inBase = reinterpret_cast<const uint8_t*>(srcData);
+  const auto* refBase = reinterpret_cast<const uint8_t*>(refData);
+  uint32_t modified = 0;
+  for (uint32_t y = 0; y < copyH; ++y) {
+    const auto* rowIn = reinterpret_cast<const uint16_t*>(
+        inBase + static_cast<std::ptrdiff_t>(y) * srcStride);
+    const auto* rowRef =
+        refBase ? reinterpret_cast<const uint16_t*>(
+                      refBase + static_cast<std::ptrdiff_t>(y) * srcStride)
+                : nullptr;
+    uint32_t* dstRow =
+        m_auxDepthScratch.data() + static_cast<size_t>(y) * m_headlessWidth;
+    uint16_t* shadowRow =
+        m_auxDepthShadow16.data() + static_cast<size_t>(dstY + y) * m_headlessWidth;
+    for (uint32_t x = 0; x < copyW; ++x) {
+      const uint16_t d16 = rowIn[x];
+      if (rowRef && d16 == rowRef[x]) continue;
+      shadowRow[dstX + x] = d16;
+      const float dNorm =
+          DecodeAuxDepth16ToNorm(d16, m_depthMode, m_depthNear, m_depthFar);
+      const uint32_t u24 = std::min(
+          16777215u, static_cast<uint32_t>(dNorm * 16777215.0f + 0.5f));
+      // GL_RGBA/GL_UNSIGNED_BYTE little-endian bytes: [0]=R, [1]=G, [2]=B, [3]=A
+      const uint32_t r = (u24 >> 16u) & 0xFFu;
+      const uint32_t g = (u24 >> 8u) & 0xFFu;
+      const uint32_t b = u24 & 0xFFu;
+      dstRow[dstX + x] = (0xFFu << 24u) | (b << 16u) | (g << 8u) | r;
+      ++modified;
+    }
+  }
+  if (modified == 0) return true;
+  m_auxDepthShadowValid = true;
+
+  if (!InitLfbDepthProgram_Locked()) return false;
+
+  if (m_glLfbOverlayTex == 0 || m_glLfbOverlayWidth != m_headlessWidth ||
+      m_glLfbOverlayHeight != m_headlessHeight) {
+    if (m_glLfbOverlayTex == 0) glGenTextures(1, &m_glLfbOverlayTex);
+    glActiveTexture(GL_TEXTURE0);
+    glBindSampler(0, 0);
+    glBindTexture(GL_TEXTURE_2D, m_glLfbOverlayTex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8,
+                 static_cast<GLsizei>(m_headlessWidth),
+                 static_cast<GLsizei>(m_headlessHeight), 0, GL_RGBA,
+                 GL_UNSIGNED_BYTE, nullptr);
+    m_glLfbOverlayWidth = m_headlessWidth;
+    m_glLfbOverlayHeight = m_headlessHeight;
+  }
+
+  GLint prevFBO = 0;
+  glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prevFBO);
+  glActiveTexture(GL_TEXTURE0);
+  glBindSampler(0, 0);
+  glBindTexture(GL_TEXTURE_2D, m_glLfbOverlayTex);
+  glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+  glTexSubImage2D(GL_TEXTURE_2D, 0, 0, static_cast<GLint>(dstY),
+                  static_cast<GLsizei>(m_headlessWidth),
+                  static_cast<GLsizei>(copyH), GL_RGBA, GL_UNSIGNED_BYTE,
+                  m_auxDepthScratch.data());
+
+  auto emitPass = [&](GLuint fbo) {
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glViewport(0, 0, static_cast<GLsizei>(m_headlessWidth),
+               static_cast<GLsizei>(m_headlessHeight));
+    glEnable(GL_SCISSOR_TEST);
+    glScissor(static_cast<GLint>(dstX), static_cast<GLint>(dstY),
+              static_cast<GLsizei>(copyW), static_cast<GLsizei>(copyH));
+    glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+    glEnable(GL_DEPTH_TEST);
+    glDepthMask(GL_TRUE);
+    glDepthFunc(GL_ALWAYS);
+    glDisable(GL_STENCIL_TEST);
+    glDisable(GL_CULL_FACE);
+    glDisable(GL_BLEND);
+    if (m_supportsSampleMask) glDisable(GL_SAMPLE_MASK);
+    glUseProgram(m_glLfbDepthProgram);
+    if (m_uDepthQuadFlipYLoc != -1) glUniform1i(m_uDepthQuadFlipYLoc, 0);
+    glBindVertexArray(m_glVAO);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+  };
+
+  emitPass(m_headlessFBOs[0]);
+  if (m_msaaSamples > 1 && m_msaaFBOs[0] != 0) {
+    emitPass(m_msaaFBOs[0]);
+  }
+  glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+  glBindFramebuffer(GL_FRAMEBUFFER, prevFBO);
+  InvalidateGlBindingCache();
+  m_glesDirtyMask |= kGlesDirtyScissor | kGlesDirtyColorMask | kGlesDirtyDepth |
+                     kGlesDirtyStencil | kGlesDirtyCull | kGlesDirtyBlend |
+                     kGlesDirtySampleMask;
+  return true;
+}
+
+void OpenGLESBackend::PresentFrontBufferGLES_Locked() {
+  if (m_surfaceHost.GetMode() == NativeSurfaceHost::Mode::Headless ||
+      m_config.forceNoWindow || m_passthruSuspended) {
+    return;
+  }
+  if (!EnsureContextCurrent()) return;
+  FlushBatch();
+  FlushLFBToGPU_Locked();
+  ResolveMsaaToSingle_Locked(1u);
+  uint32_t hostW = m_headlessWidth;
+  uint32_t hostH = m_headlessHeight;
+  m_surfaceHost.SyncBounds(hostW, hostH);
+  if (hostW == 0 || hostH == 0) return;
+  std::swap(m_fboTextures[0], m_fboTextures[1]);
+  PresentToWindowSurface(hostW, hostH);
+  std::swap(m_fboTextures[0], m_fboTextures[1]);
+  if (m_useWgl) {
+#if defined(_WIN32)
+    if (m_wglHdc) ::SwapBuffers(static_cast<HDC>(m_wglHdc));
+#endif
+  } else if (m_useDirectEgl) {
+#if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_EGL)
+    if (m_eglDisplay && m_eglSurface) {
+      eglSwapBuffers(static_cast<EGLDisplay>(m_eglDisplay),
+                     static_cast<EGLSurface>(m_eglSurface));
+    }
+#endif
+  }
+#if !defined(_WIN32)
+  else if (m_surfaceHost.GetSDLWindow()) {
+    SDL_GL_SwapWindow(m_surfaceHost.GetSDLWindow());
+  }
+#endif
+  glBindFramebuffer(GL_FRAMEBUFFER, GetActiveGpuFbo());
+  glViewport(0, 0, static_cast<GLsizei>(m_headlessWidth),
+             static_cast<GLsizei>(m_headlessHeight));
+  InvalidateGlBindingCache();
+  m_glesDirtyMask |= kGlesDirtyScissor | kGlesDirtyColorMask | kGlesDirtyDepth |
+                     kGlesDirtyStencil | kGlesDirtyCull | kGlesDirtyBlend |
+                     kGlesDirtySampleMask;
+  m_lastFrontPresentTime = std::chrono::steady_clock::now();
+}
+
 bool OpenGLESBackend::WriteLFB(uint32_t buffer, uint32_t dstX, uint32_t dstY,
                                uint32_t srcWidth, uint32_t srcHeight,
                                int32_t srcStride, uint32_t srcFmt,
@@ -735,42 +964,78 @@ bool OpenGLESBackend::WriteLFB(uint32_t buffer, uint32_t dstX, uint32_t dstY,
   std::lock_guard<std::mutex> lock(m_mutex);
   if (!m_initialized || !m_windowAttached) return false;
 
+  if (buffer == 2u || srcFmt == 0x0fu) {
+    return WriteAuxDepthLFB_Locked(dstX, dstY, srcWidth, srcHeight, srcStride,
+                                   srcData, refData);
+  }
+
+  const uint32_t logicalSlot = (buffer == 0u) ? 0u : 1u;
+  bool ok = false;
+
   // Fast path: opaque LFB writes and standard (SRC_ALPHA, ONE_MINUS_SRC_ALPHA)
   // overlays composite directly onto the GPU FBO via a single alpha-blended
   // quad with ZERO GPU readback stalls, preserving any 3D geometry underneath!
   // Internal lossless RGBA8888 restore (srcFmt == 0x100u) uses full-buffer upload
   // to preserve all 4 channels (including alpha) verbatim.
   if (srcFmt != 0x100u && CpuLfbStaging::CanUseOverlayQuad(config)) {
-    return m_lfbStaging.WriteOverlayLFB(buffer, dstX, dstY, srcWidth, srcHeight,
-                                        srcStride, srcFmt, srcData, refData,
-                                        config, m_pixelFormatOverride);
-  }
-
-  // Fallback for exotic LFB blend modes (e.g., additive/multiply): snapshot the
-  // current GPU FBO into CpuLfbStaging once so CPU blending sees the 3D scene.
-  if (!m_lfbStaging.IsFullBufferDirty(buffer) && EnsureContextCurrent()) {
-    FlushBatch();
-    FlushLFBToGPU_Locked();
-    const uint32_t readSlot = (buffer == 0) ? 1u : 0u;
-    ResolveMsaaToSingle_Locked(readSlot);
-    if (void* readDst = m_lfbStaging.PrepareBufferForGpuReadback(buffer)) {
-      GLint prevFBO = 0;
-      glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prevFBO);
-      const GLuint fboToRead = m_headlessFBOs[readSlot];
-      glBindFramebuffer(GL_FRAMEBUFFER, fboToRead);
-      glReadPixels(0, 0, m_headlessWidth, m_headlessHeight, GL_RGBA,
-                   GL_UNSIGNED_BYTE, readDst);
-      auto* dest = reinterpret_cast<uint32_t*>(readDst);
-      GetSimdKernels().SwapRB32(
-          dest, dest, static_cast<size_t>(m_headlessWidth) * m_headlessHeight);
-      glBindFramebuffer(GL_FRAMEBUFFER, prevFBO);
-      InvalidateGlBindingCache();
+    ok = m_lfbStaging.WriteOverlayLFB(buffer, dstX, dstY, srcWidth, srcHeight,
+                                      srcStride, srcFmt, srcData, refData,
+                                      config, m_pixelFormatOverride);
+    if (ok && m_lfbReadCacheValid[logicalSlot]) {
+      m_lfbStaging.MirrorWriteToReadCache(buffer, dstX, dstY, srcWidth,
+                                          srcHeight, srcStride, srcFmt, srcData,
+                                          refData, config, m_pixelFormatOverride);
     }
-  }
-
-  return m_lfbStaging.WriteLFB(buffer, dstX, dstY, srcWidth, srcHeight,
+  } else {
+    // Fallback for exotic LFB blend modes (e.g., additive/multiply): snapshot
+    // the current GPU FBO into CpuLfbStaging once so CPU blending sees the 3D
+    // scene.
+    if (!m_batchVertices.empty() && EnsureContextCurrent()) {
+      FlushBatch();
+    }
+    if (!m_lfbReadCacheValid[logicalSlot] &&
+        !m_lfbStaging.IsFullBufferDirty(buffer) && EnsureContextCurrent()) {
+      FlushBatch();
+      FlushLFBToGPU_Locked();
+      const uint32_t readSlot = (buffer == 0) ? 1u : 0u;
+      ResolveMsaaToSingle_Locked(readSlot);
+      if (void* readDst = m_lfbStaging.PrepareBufferForGpuReadback(buffer)) {
+        GLint prevFBO = 0;
+        glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prevFBO);
+        const GLuint fboToRead = m_headlessFBOs[readSlot];
+        glBindFramebuffer(GL_FRAMEBUFFER, fboToRead);
+        glReadPixels(0, 0, m_headlessWidth, m_headlessHeight, GL_RGBA,
+                     GL_UNSIGNED_BYTE, readDst);
+        auto* dest = reinterpret_cast<uint32_t*>(readDst);
+        GetSimdKernels().SwapRB32(
+            dest, dest, static_cast<size_t>(m_headlessWidth) * m_headlessHeight);
+        glBindFramebuffer(GL_FRAMEBUFFER, prevFBO);
+        InvalidateGlBindingCache();
+        m_lfbReadCacheValid[logicalSlot] = true;
+      }
+    }
+    ok = m_lfbStaging.WriteLFB(buffer, dstX, dstY, srcWidth, srcHeight,
                                srcStride, srcFmt, srcData, refData, config,
                                m_pixelFormatOverride);
+  }
+
+  if (ok && buffer == 0u &&
+      m_surfaceHost.GetMode() != NativeSurfaceHost::Mode::Headless &&
+      !m_config.forceNoWindow && !m_passthruSuspended) {
+    const auto now = std::chrono::steady_clock::now();
+    const bool isFullFrame =
+        (dstX == 0u && dstY == 0u && srcWidth >= m_headlessWidth &&
+         srcHeight >= m_headlessHeight);
+    const bool elapsed =
+        (m_lastFrontPresentTime.time_since_epoch().count() == 0) ||
+        (std::chrono::duration_cast<std::chrono::milliseconds>(
+             now - m_lastFrontPresentTime)
+             .count() >= 33);
+    if (isFullFrame || elapsed) {
+      PresentFrontBufferGLES_Locked();
+    }
+  }
+  return ok;
 }
 
 void OpenGLESBackend::FlushLFBToGPU_Locked() {
@@ -959,49 +1224,82 @@ bool OpenGLESBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
     return false;
   }
 
-  // Flush any pending geometry batches before CPU readback!
-  FlushBatch();
-
-  // Flush any pending CPU LFB writes to the GPU first, ensuring they are
-  // not obliterated by the subsequent glReadPixels readback!
-  FlushLFBToGPU_Locked();
-
-  // Resolve any pending MSAA draws into the 1x FBO before glReadPixels.
-  const uint32_t readSlot = (buffer == 0) ? 1u : 0u;
-  ResolveMsaaToSingle_Locked(readSlot);
-
-  // --- STEP 1: GPU Readback Flush ---
-  // Query the currently bound FBO to restore it at the end, preventing state
-  // leakage!
-  GLint previousFBO = 0;
-  glGetIntegerv(GL_FRAMEBUFFER_BINDING, &previousFBO);
-
-  // Bind the correct offscreen FBO based on the requested buffer (0 = FRONT, 1
-  // = BACK)
-  GLuint fboToRead = m_headlessFBOs[readSlot];
-  glBindFramebuffer(GL_FRAMEBUFFER, fboToRead);
-
-  // Resolve the lazily-allocated destination CPU buffer for the requested slot
-  void* readDst = m_lfbStaging.PrepareBufferForGpuReadback(buffer);
-
-  if (readDst) {
-    // Read pixels as GL_RGBA (which contains our R/B swapped BGRA-ordered
-    // pixels) GLES glReadPixels is synchronous and guarantees the GPU finishes
-    // all rendering before returning!
-    glReadPixels(0, 0, m_headlessWidth, m_headlessHeight, GL_RGBA,
-                 GL_UNSIGNED_BYTE, readDst);
-    checkGLError("ReadLFB glReadPixels");
-
-    // Convert RGBA from GPU glReadPixels to canonical 0xAARRGGBB (BGRA bytes).
-    // Offscreen FBOs are stored top-down (row 0 = top), matching CpuLfbStaging.
-    auto* dest = reinterpret_cast<uint32_t*>(readDst);
-    GetSimdKernels().SwapRB32(
-        dest, dest, static_cast<size_t>(m_headlessWidth) * m_headlessHeight);
+  if (buffer == 2u) {
+    if (!dstData || srcWidth == 0 || srcHeight == 0) return true;
+    auto* outBase = reinterpret_cast<uint8_t*>(dstData);
+    const uint32_t copyW =
+        (srcX < m_headlessWidth) ? std::min(srcWidth, m_headlessWidth - srcX) : 0u;
+    const uint32_t copyH =
+        (srcY < m_headlessHeight) ? std::min(srcHeight, m_headlessHeight - srcY) : 0u;
+    for (uint32_t y = 0; y < copyH; ++y) {
+      auto* rowOut = reinterpret_cast<uint16_t*>(
+          outBase + static_cast<size_t>(y) * dstStride);
+      if (m_auxDepthShadowValid &&
+          m_auxDepthShadow16.size() ==
+              static_cast<size_t>(m_headlessWidth) * m_headlessHeight) {
+        const uint16_t* sRow = m_auxDepthShadow16.data() +
+                               static_cast<size_t>(srcY + y) * m_headlessWidth;
+        std::memcpy(rowOut, sRow + srcX, static_cast<size_t>(copyW) * sizeof(uint16_t));
+      } else {
+        std::fill_n(rowOut, copyW, static_cast<uint16_t>(0xFFFFu));
+      }
+    }
+    return true;
   }
 
-  // Restore the previously bound framebuffer to prevent state leakage!
-  glBindFramebuffer(GL_FRAMEBUFFER, previousFBO);
-  InvalidateGlBindingCache();
+  // Flush any buffered 3D vertices BEFORE consulting the CPU readback cache
+  // so newly drawn triangles always invalidate m_lfbReadCacheValid first!
+  if (!m_batchVertices.empty()) {
+    FlushBatch();
+  }
+
+  const uint32_t logicalSlot = (buffer == 0u) ? 0u : 1u;
+  if (!m_lfbReadCacheValid[logicalSlot]) {
+    // Flush any pending geometry batches before CPU readback!
+    FlushBatch();
+
+    // Flush any pending CPU LFB writes to the GPU first, ensuring they are
+    // not obliterated by the subsequent glReadPixels readback!
+    FlushLFBToGPU_Locked();
+
+    // Resolve any pending MSAA draws into the 1x FBO before glReadPixels.
+    const uint32_t readSlot = (buffer == 0) ? 1u : 0u;
+    ResolveMsaaToSingle_Locked(readSlot);
+
+    // --- STEP 1: GPU Readback Flush ---
+    // Query the currently bound FBO to restore it at the end, preventing state
+    // leakage!
+    GLint previousFBO = 0;
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &previousFBO);
+
+    // Bind the correct offscreen FBO based on the requested buffer (0 = FRONT, 1
+    // = BACK)
+    GLuint fboToRead = m_headlessFBOs[readSlot];
+    glBindFramebuffer(GL_FRAMEBUFFER, fboToRead);
+
+    // Resolve the lazily-allocated destination CPU buffer for the requested slot
+    void* readDst = m_lfbStaging.PrepareBufferForGpuReadback(buffer);
+
+    if (readDst) {
+      // Read pixels as GL_RGBA (which contains our R/B swapped BGRA-ordered
+      // pixels) GLES glReadPixels is synchronous and guarantees the GPU finishes
+      // all rendering before returning!
+      glReadPixels(0, 0, m_headlessWidth, m_headlessHeight, GL_RGBA,
+                   GL_UNSIGNED_BYTE, readDst);
+      checkGLError("ReadLFB glReadPixels");
+
+      // Convert RGBA from GPU glReadPixels to canonical 0xAARRGGBB (BGRA bytes).
+      // Offscreen FBOs are stored top-down (row 0 = top), matching CpuLfbStaging.
+      auto* dest = reinterpret_cast<uint32_t*>(readDst);
+      GetSimdKernels().SwapRB32(
+          dest, dest, static_cast<size_t>(m_headlessWidth) * m_headlessHeight);
+    }
+
+    // Restore the previously bound framebuffer to prevent state leakage!
+    glBindFramebuffer(GL_FRAMEBUFFER, previousFBO);
+    InvalidateGlBindingCache();
+    m_lfbReadCacheValid[logicalSlot] = true;
+  }
 
   // --- STEP 2: Convert and copy to client ---
   if (!m_lfbStaging.ReadRegion(buffer, srcX, srcY, srcWidth, srcHeight,
@@ -2112,6 +2410,15 @@ void OpenGLESBackend::DestroyGLContext() {
       glDeleteProgram(m_glProgram);
       m_glProgram = 0;
     }
+    if (m_glLfbDepthProgram) {
+      glDeleteProgram(m_glLfbDepthProgram);
+      m_glLfbDepthProgram = 0;
+    }
+    m_lfbReadCacheValid[0] = false;
+    m_lfbReadCacheValid[1] = false;
+    m_auxDepthShadowValid = false;
+    m_auxDepthShadow16.clear();
+    m_auxDepthScratch.clear();
     if (m_sharedDepthRenderbuffer) {
       glDeleteRenderbuffers(1, &m_sharedDepthRenderbuffer);
       m_sharedDepthRenderbuffer = 0;

@@ -284,7 +284,9 @@ vk::UniquePipeline VulkanBackend::CompileSinglePipeline(
     const bool useDualSrcBlend =
         (key.rgbSrcBlend == 15 || key.rgbDstBlend == 15 ||
          key.alphaSrcBlend == 15 || key.alphaDstBlend == 15);
-    const bool useWBufferDepth = (key.depthMode == 2u);
+    const bool useWBufferDepth =
+        (key.depthMode == 2u || key.depthMode == 4u ||
+         key.compareToBiasPass == 1u);
     vk::ShaderModule fragShader =
         useWBufferDepth
             ? (useDualSrcBlend ? m_fragShaderModuleDualSrcWBuf.get()
@@ -413,24 +415,52 @@ vk::UniquePipeline VulkanBackend::CompileSinglePipeline(
       depthStencil.depthWriteEnable = false;
     }
     depthStencil.depthBoundsTestEnable = false;
-    depthStencil.stencilTestEnable = key.stencilEnabled && HasStencilAspect();
-    if (depthStencil.stencilTestEnable) {
-      vk::StencilOpState stOp(MapStencilOpVulkan(key.stencilFailOp),
-                              MapStencilOpVulkan(key.stencilZPassOp),
-                              MapStencilOpVulkan(key.stencilZFailOp),
-                              MapCompareOpVulkan(key.stencilCompareOp),
-                              0xFFu, 0xFFu, 0u);
+    if (key.compareToBiasPass == 1u && HasStencilAspect()) {
+      // Pass 1 of GR_DEPTHBUFFER_{Z,W}BUFFER_COMPARE_TO_BIAS:
+      // Probe depthBias against existing depth buffer; write stencil bit 0x80
+      // where the depth comparison passes without touching color or depth.
+      depthStencil.depthTestEnable = true;
+      depthStencil.depthWriteEnable = false;
+      depthStencil.stencilTestEnable = true;
+      vk::StencilOpState stOp(vk::StencilOp::eKeep, vk::StencilOp::eReplace,
+                              vk::StencilOp::eKeep, vk::CompareOp::eAlways,
+                              0x80u, 0x80u, 0x80u);
       depthStencil.front = stOp;
       depthStencil.back = stOp;
+    } else if (key.compareToBiasPass == 2u && HasStencilAspect()) {
+      // Pass 2 of COMPARE_TO_BIAS: draw color + true Z/W depth only where
+      // stencil bit 0x80 was marked by Pass 1, clearing bit 0x80 on pass.
+      depthStencil.depthTestEnable = true;
+      depthStencil.depthCompareOp = vk::CompareOp::eAlways;
+      depthStencil.depthWriteEnable = key.depthMask ? true : false;
+      depthStencil.stencilTestEnable = true;
+      vk::StencilOpState stOp(vk::StencilOp::eKeep, vk::StencilOp::eZero,
+                              vk::StencilOp::eKeep, vk::CompareOp::eEqual,
+                              0x80u, 0x80u, 0x80u);
+      depthStencil.front = stOp;
+      depthStencil.back = stOp;
+    } else {
+      depthStencil.stencilTestEnable = key.stencilEnabled && HasStencilAspect();
+      if (depthStencil.stencilTestEnable) {
+        vk::StencilOpState stOp(MapStencilOpVulkan(key.stencilFailOp),
+                                MapStencilOpVulkan(key.stencilZPassOp),
+                                MapStencilOpVulkan(key.stencilZFailOp),
+                                MapCompareOpVulkan(key.stencilCompareOp),
+                                0xFFu, 0xFFu, 0u);
+        depthStencil.front = stOp;
+        depthStencil.back = stOp;
+      }
     }
 
     // Color Blending
     vk::PipelineColorBlendAttachmentState colorBlendAttachment;
     vk::ColorComponentFlags mask{};
-    if (key.colorWriteMask & 0x1u) mask |= vk::ColorComponentFlagBits::eR;
-    if (key.colorWriteMask & 0x2u) mask |= vk::ColorComponentFlagBits::eG;
-    if (key.colorWriteMask & 0x4u) mask |= vk::ColorComponentFlagBits::eB;
-    if (key.colorWriteMask & 0x8u) mask |= vk::ColorComponentFlagBits::eA;
+    if (key.compareToBiasPass != 1u) {
+      if (key.colorWriteMask & 0x1u) mask |= vk::ColorComponentFlagBits::eR;
+      if (key.colorWriteMask & 0x2u) mask |= vk::ColorComponentFlagBits::eG;
+      if (key.colorWriteMask & 0x4u) mask |= vk::ColorComponentFlagBits::eB;
+      if (key.colorWriteMask & 0x8u) mask |= vk::ColorComponentFlagBits::eA;
+    }
     colorBlendAttachment.colorWriteMask = mask;
 
     colorBlendAttachment.blendEnable = true;

@@ -11,6 +11,7 @@
 
 #include "hud_frag.spv.h"
 #include "hud_vert.spv.h"
+#include "lfb_depth_frag.spv.h"
 
 namespace GlideWrapper {
 
@@ -305,12 +306,434 @@ void VulkanBackend::DestroyLfbOverlayResources_Locked() {
   m_lfbOverlayTexW = 0;
   m_lfbOverlayTexH = 0;
 
+  m_lfbDepthPipeline.reset();
+  m_lfbDepthPipelineMsaa.reset();
   m_lfbOverlayPipeline.reset();
   m_lfbOverlayPipelineLayout.reset();
   m_lfbOverlayDescSet = vk::DescriptorSet{};
   m_lfbOverlayDescPool.reset();
   m_lfbOverlayDescSetLayout.reset();
   m_lfbOverlaySampler.reset();
+  m_auxDepthScratch.clear();
+  m_auxDepthScratch.shrink_to_fit();
+  m_auxDepthShadow16.clear();
+  m_auxDepthShadow16.shrink_to_fit();
+  m_auxDepthShadowValid = false;
+  m_lfbReadCacheValid[0] = false;
+  m_lfbReadCacheValid[1] = false;
+  m_frontBufferNeedsPresent = false;
+}
+
+bool VulkanBackend::InitLfbDepthPipeline_Locked(bool msaa) {
+  if (!m_device || !m_renderPass) return false;
+  if (!InitLfbOverlayPipeline_Locked()) return false;
+  vk::UniquePipeline& target = msaa ? m_lfbDepthPipelineMsaa : m_lfbDepthPipeline;
+  if (target) return true;
+
+  try {
+    vk::UniqueShaderModule vertMod = m_device->createShaderModuleUnique(
+        vk::ShaderModuleCreateInfo({}, hud_vert_spv_size, hud_vert_spv));
+    vk::UniqueShaderModule fragMod = m_device->createShaderModuleUnique(
+        vk::ShaderModuleCreateInfo({}, lfb_depth_frag_spv_size,
+                                   lfb_depth_frag_spv));
+
+    std::array<vk::PipelineShaderStageCreateInfo, 2> stages = {
+        vk::PipelineShaderStageCreateInfo({}, vk::ShaderStageFlagBits::eVertex,
+                                          vertMod.get(), "main"),
+        vk::PipelineShaderStageCreateInfo(
+            {}, vk::ShaderStageFlagBits::eFragment, fragMod.get(), "main"),
+    };
+
+    vk::PipelineVertexInputStateCreateInfo vertexInput{};
+    vk::PipelineInputAssemblyStateCreateInfo inputAsm(
+        {}, vk::PrimitiveTopology::eTriangleStrip, VK_FALSE);
+    vk::PipelineViewportStateCreateInfo viewportState({}, 1, nullptr, 1,
+                                                      nullptr);
+    std::array<vk::DynamicState, 2> dynStates = {vk::DynamicState::eViewport,
+                                                 vk::DynamicState::eScissor};
+    vk::PipelineDynamicStateCreateInfo dynamicState(
+        {}, static_cast<uint32_t>(dynStates.size()), dynStates.data());
+
+    vk::PipelineRasterizationStateCreateInfo raster{};
+    raster.polygonMode = vk::PolygonMode::eFill;
+    raster.cullMode = vk::CullModeFlagBits::eNone;
+    raster.frontFace = vk::FrontFace::eClockwise;
+    raster.lineWidth = 1.0f;
+
+    vk::PipelineMultisampleStateCreateInfo multisample{};
+    multisample.rasterizationSamples =
+        msaa ? static_cast<vk::SampleCountFlagBits>(m_msaaSamples)
+             : vk::SampleCountFlagBits::e1;
+
+    vk::PipelineDepthStencilStateCreateInfo depthStencil{};
+    depthStencil.depthTestEnable = VK_TRUE;
+    depthStencil.depthWriteEnable = VK_TRUE;
+    depthStencil.depthCompareOp = vk::CompareOp::eAlways;
+
+    // Color writes completely disabled — depth-only LFB AUXBUFFER upload!
+    vk::PipelineColorBlendAttachmentState blendAtt{};
+    blendAtt.blendEnable = VK_FALSE;
+    blendAtt.colorWriteMask = vk::ColorComponentFlags{};
+
+    vk::PipelineColorBlendStateCreateInfo colorBlend{};
+    colorBlend.attachmentCount = 1;
+    colorBlend.pAttachments = &blendAtt;
+
+    vk::GraphicsPipelineCreateInfo pipeInfo{};
+    pipeInfo.stageCount = static_cast<uint32_t>(stages.size());
+    pipeInfo.pStages = stages.data();
+    pipeInfo.pVertexInputState = &vertexInput;
+    pipeInfo.pInputAssemblyState = &inputAsm;
+    pipeInfo.pViewportState = &viewportState;
+    pipeInfo.pRasterizationState = &raster;
+    pipeInfo.pMultisampleState = &multisample;
+    pipeInfo.pDepthStencilState = &depthStencil;
+    pipeInfo.pColorBlendState = &colorBlend;
+    pipeInfo.pDynamicState = &dynamicState;
+    pipeInfo.layout = m_lfbOverlayPipelineLayout.get();
+    pipeInfo.renderPass =
+        (msaa || m_msaaSamples <= 1 || !m_singleSampleRenderPass)
+            ? m_renderPass.get()
+            : m_singleSampleRenderPass.get();
+    pipeInfo.subpass = 0;
+
+    auto res = m_device->createGraphicsPipelineUnique(
+        m_vkPipelineCache ? m_vkPipelineCache.get() : vk::PipelineCache{},
+        pipeInfo);
+    if (res.result != vk::Result::eSuccess) {
+      GLIDE_LOG(WARN, "Vulkan",
+                "Failed to create Vulkan LFB depth pipeline: "
+                    << vk::to_string(res.result));
+      return false;
+    }
+    target = std::move(res.value);
+    return true;
+  } catch (const std::exception& e) {
+    GLIDE_LOG(WARN, "Vulkan",
+              "Failed to initialize Vulkan LFB depth pipeline: " << e.what());
+    return false;
+  }
+}
+
+bool VulkanBackend::WriteAuxDepthLFB_Locked(
+    uint32_t dstX, uint32_t dstY, uint32_t srcWidth, uint32_t srcHeight,
+    int32_t srcStride, const void* srcData, const void* refData) {
+  if (!srcData || m_headlessWidth == 0 || m_headlessHeight == 0) return false;
+  if (dstX >= m_headlessWidth || dstY >= m_headlessHeight || srcWidth == 0 ||
+      srcHeight == 0) {
+    return true;
+  }
+  const uint32_t copyW = std::min(srcWidth, m_headlessWidth - dstX);
+  const uint32_t copyH = std::min(srcHeight, m_headlessHeight - dstY);
+
+  // Flush any pending 3D draws so the AUXBUFFER write lands AFTER them in API order.
+  if (m_batchedVertexCount > 0) {
+    FlushBatch();
+  }
+  if (m_inRenderPass) {
+    m_commandBuffer->endRenderPass();
+    m_inRenderPass = false;
+  }
+
+  const size_t totalPx =
+      static_cast<size_t>(m_headlessWidth) * m_headlessHeight;
+  if (m_auxDepthShadow16.size() != totalPx) {
+    m_auxDepthShadow16.assign(totalPx, 0xFFFFu);
+  }
+  const size_t rectRowsBytes =
+      static_cast<size_t>(m_headlessWidth) * copyH * sizeof(uint32_t);
+  if (m_auxDepthScratch.size() < static_cast<size_t>(m_headlessWidth) * copyH) {
+    m_auxDepthScratch.resize(static_cast<size_t>(m_headlessWidth) * copyH);
+  }
+  std::memset(m_auxDepthScratch.data(), 0, rectRowsBytes);
+
+  const auto* inBase = reinterpret_cast<const uint8_t*>(srcData);
+  const auto* refBase = reinterpret_cast<const uint8_t*>(refData);
+  uint32_t modifiedCount = 0;
+  uint32_t zeroCount = 0;
+  for (uint32_t y = 0; y < copyH; ++y) {
+    const auto* rowIn = reinterpret_cast<const uint16_t*>(
+        inBase + static_cast<std::ptrdiff_t>(y) * srcStride);
+    const auto* rowRef =
+        refBase ? reinterpret_cast<const uint16_t*>(
+                      refBase + static_cast<std::ptrdiff_t>(y) * srcStride)
+                : nullptr;
+    uint32_t* dstRow =
+        m_auxDepthScratch.data() + static_cast<size_t>(y) * m_headlessWidth;
+    uint16_t* shadowRow =
+        m_auxDepthShadow16.data() + static_cast<size_t>(dstY + y) * m_headlessWidth;
+    for (uint32_t x = 0; x < copyW; ++x) {
+      const uint16_t d16 = rowIn[x];
+      if (rowRef && d16 == rowRef[x]) continue;
+      shadowRow[dstX + x] = d16;
+      const float dNorm =
+          DecodeAuxDepth16ToNorm(d16, m_depthMode, m_depthNear, m_depthFar);
+      const uint32_t u24 = std::min(
+          16777215u, static_cast<uint32_t>(dNorm * 16777215.0f + 0.5f));
+      // B8G8R8A8_UNORM little-endian 0xAARRGGBB: R=[23:16], G=[15:8], B=[7:0]
+      dstRow[dstX + x] = 0xFF000000u | (u24 & 0x00FFFFFFu);
+      ++modifiedCount;
+      if (d16 == 0u) ++zeroCount;
+    }
+  }
+  if (modifiedCount == 0) {
+    return true;
+  }
+  m_auxDepthShadowValid = true;
+
+  if (!EnsureLfbOverlayResources_Locked(m_headlessWidth, m_headlessHeight,
+                                        rectRowsBytes)) {
+    return false;
+  }
+  if (!InitLfbDepthPipeline_Locked(/*msaa=*/false)) return false;
+  if (m_msaaSamples > 1 && !InitLfbDepthPipeline_Locked(/*msaa=*/true)) {
+    return false;
+  }
+
+  const uint32_t slot = m_currentFrameSlot;
+  if (m_lfbOverlayStagingOffsets[slot] + rectRowsBytes >
+      m_lfbOverlayStagingSizes[slot]) {
+    SubmitMidFrameAndWaitIdle_Locked(true);
+    m_lfbOverlayStagingOffsets[slot] = 0;
+  }
+
+  const vk::DeviceSize stagingOffset = m_lfbOverlayStagingOffsets[slot];
+  std::memcpy(
+      static_cast<uint8_t*>(m_lfbOverlayStagingMaps[slot]) + stagingOffset,
+      m_auxDepthScratch.data(), rectRowsBytes);
+  m_lfbOverlayStagingOffsets[slot] += rectRowsBytes;
+
+  vk::ImageSubresourceRange imgRange(vk::ImageAspectFlagBits::eColor, 0, 1, 0,
+                                     1);
+  vk::ImageMemoryBarrier toTransfer{};
+  toTransfer.oldLayout = m_lfbOverlayImageLayout;
+  toTransfer.newLayout = vk::ImageLayout::eTransferDstOptimal;
+  toTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  toTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  toTransfer.image = m_lfbOverlayImage.get();
+  toTransfer.subresourceRange = imgRange;
+  vk::PipelineStageFlags srcStage = vk::PipelineStageFlagBits::eTopOfPipe;
+  if (m_lfbOverlayImageLayout == vk::ImageLayout::eShaderReadOnlyOptimal) {
+    toTransfer.srcAccessMask = vk::AccessFlagBits::eShaderRead;
+    srcStage = vk::PipelineStageFlagBits::eFragmentShader;
+  }
+  toTransfer.dstAccessMask = vk::AccessFlagBits::eTransferWrite;
+  m_commandBuffer->pipelineBarrier(srcStage,
+                                   vk::PipelineStageFlagBits::eTransfer, {}, 0,
+                                   nullptr, 0, nullptr, 1, &toTransfer);
+
+  vk::BufferImageCopy copyRegion{};
+  copyRegion.bufferOffset = stagingOffset;
+  copyRegion.imageSubresource =
+      vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
+  copyRegion.imageOffset = vk::Offset3D(0, static_cast<int32_t>(dstY), 0);
+  copyRegion.imageExtent = vk::Extent3D(m_headlessWidth, copyH, 1);
+  m_commandBuffer->copyBufferToImage(
+      m_lfbOverlayStagingBuffers[slot].get(), m_lfbOverlayImage.get(),
+      vk::ImageLayout::eTransferDstOptimal, 1, &copyRegion);
+
+  vk::ImageMemoryBarrier toSample{};
+  toSample.oldLayout = vk::ImageLayout::eTransferDstOptimal;
+  toSample.newLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+  toSample.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  toSample.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  toSample.image = m_lfbOverlayImage.get();
+  toSample.subresourceRange = imgRange;
+  toSample.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
+  toSample.dstAccessMask = vk::AccessFlagBits::eShaderRead;
+  m_commandBuffer->pipelineBarrier(
+      vk::PipelineStageFlagBits::eTransfer,
+      vk::PipelineStageFlagBits::eFragmentShader, {}, 0, nullptr, 0, nullptr, 1,
+      &toSample);
+  m_lfbOverlayImageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+
+  auto emitDepthPass = [&](vk::RenderPass rp, vk::Framebuffer fb,
+                           vk::Pipeline pipe, bool isSingle) {
+    vk::RenderPassBeginInfo rpBegin(
+        rp, fb, vk::Rect2D({0, 0}, {m_headlessWidth, m_headlessHeight}), 0,
+        nullptr);
+    m_commandBuffer->beginRenderPass(rpBegin, vk::SubpassContents::eInline);
+
+    // Materialize any pending depth clear BEFORE stamping the ZA16 values so
+    // an older lazy depth clear cannot later erase our cockpit/stencil mask!
+    for (uint32_t i = 0; i < 2; ++i) {
+      bool& dp =
+          isSingle ? m_clearDepthPendingSingle[i] : m_clearDepthPending[i];
+      if (dp) {
+        vk::ClearAttachment ca(
+            vk::ImageAspectFlagBits::eDepth, 0,
+            vk::ClearValue(vk::ClearDepthStencilValue(m_clearDepthValue[i], 0)));
+        vk::ClearRect cr(
+            vk::Rect2D({0, 0}, {m_headlessWidth, m_headlessHeight}), 0, 1);
+        m_commandBuffer->clearAttachments(1, &ca, 1, &cr);
+        dp = false;
+      }
+    }
+
+    m_commandBuffer->bindPipeline(vk::PipelineBindPoint::eGraphics, pipe);
+    m_commandBuffer->bindDescriptorSets(
+        vk::PipelineBindPoint::eGraphics, m_lfbOverlayPipelineLayout.get(), 0,
+        1, &m_lfbOverlayDescSet, 0, nullptr);
+    vk::Viewport vp(0.0f, 0.0f, static_cast<float>(m_headlessWidth),
+                    static_cast<float>(m_headlessHeight), 0.0f, 1.0f);
+    m_commandBuffer->setViewport(0, 1, &vp);
+    const float rectNdc[4] = {-1.0f, -1.0f, 1.0f, 1.0f};
+    m_commandBuffer->pushConstants(m_lfbOverlayPipelineLayout.get(),
+                                   vk::ShaderStageFlagBits::eVertex, 0,
+                                   sizeof(rectNdc), rectNdc);
+    vk::Rect2D sc({static_cast<int32_t>(dstX), static_cast<int32_t>(dstY)},
+                  {copyW, copyH});
+    m_commandBuffer->setScissor(0, 1, &sc);
+    m_commandBuffer->draw(4, 1, 0, 0);
+    m_commandBuffer->endRenderPass();
+  };
+
+  // Write to 1x depth attachment
+  const vk::RenderPass rp1x =
+      (m_msaaSamples > 1 && m_singleSampleRenderPass)
+          ? m_singleSampleRenderPass.get()
+          : m_renderPass.get();
+  const vk::Framebuffer fb1x =
+      (m_msaaSamples > 1 && m_singleSampleFramebuffers[0])
+          ? m_singleSampleFramebuffers[0].get()
+          : m_headlessFramebuffers[0].get();
+  emitDepthPass(rp1x, fb1x, m_lfbDepthPipeline.get(), m_msaaSamples > 1);
+
+  // Under MSAA, also seed the multisampled depth attachment identically across
+  // all coverage samples so 3D hardware depth tests clip against the same mask.
+  if (m_msaaSamples > 1 && m_lfbDepthPipelineMsaa) {
+    emitDepthPass(m_renderPass.get(), m_headlessFramebuffers[0].get(),
+                  m_lfbDepthPipelineMsaa.get(), false);
+  }
+
+  GLIDE_LOG(DEBUG, "Vulkan",
+            "WriteAuxDepthLFB: rect=(" << dstX << "," << dstY << " " << copyW
+                                       << "x" << copyH << "), modified="
+                                       << modifiedCount << ", zeroMask="
+                                       << zeroCount);
+  return true;
+}
+
+void VulkanBackend::PresentFrontBuffer_Locked() {
+  if (!m_swapchain || !m_device || !m_commandBuffer || !(*m_commandBuffer)) {
+    return;
+  }
+  if (m_passthruSuspended) return;
+
+  if (m_batchedVertexCount > 0) {
+    FlushBatch();
+  }
+  if (m_lfbStaging.IsDirty()) {
+    FlushLFBToGPU_Locked();
+  }
+  if (m_inRenderPass) {
+    m_commandBuffer->endRenderPass();
+    m_inRenderPass = false;
+  }
+
+  // Front buffer physically lives in m_headlessImages[1].
+  constexpr uint32_t kFrontIdx = 1u;
+  ResolveMsaaToSingle_Locked(kFrontIdx);
+
+  uint32_t imageIdx = 0;
+  vk::Result acquireRes = vk::Result::eTimeout;
+  try {
+    acquireRes = m_device->acquireNextImageKHR(
+        m_swapchain.get(), UINT64_MAX,
+        m_imageAvailableSemaphores[m_currentFrameSlot].get(), {}, &imageIdx);
+  } catch (...) {
+    return;
+  }
+  if (acquireRes != vk::Result::eSuccess &&
+      acquireRes != vk::Result::eSuboptimalKHR) {
+    return;
+  }
+
+  vk::ImageSubresourceRange colorRange(vk::ImageAspectFlagBits::eColor, 0, 1, 0,
+                                       1);
+  const PresentRect dst = NativeSurfaceHost::ComputePresentRect(
+      m_headlessWidth, m_headlessHeight, m_swapchainExtent.width,
+      m_swapchainExtent.height, /*preserveAspect=*/true);
+
+  vk::Image presentSrc = m_headlessImages[kFrontIdx].get();
+  TransitionImageLayout(*m_commandBuffer, m_swapchainImages[imageIdx],
+                        vk::ImageLayout::eUndefined,
+                        vk::ImageLayout::eTransferDstOptimal, colorRange);
+  TransitionImageLayout(*m_commandBuffer, presentSrc,
+                        vk::ImageLayout::eColorAttachmentOptimal,
+                        vk::ImageLayout::eTransferSrcOptimal, colorRange);
+  if (dst.x > 0 || dst.y > 0 || dst.width < m_swapchainExtent.width ||
+      dst.height < m_swapchainExtent.height) {
+    vk::ClearColorValue blackClear(std::array<float, 4>{0.f, 0.f, 0.f, 1.f});
+    m_commandBuffer->clearColorImage(m_swapchainImages[imageIdx],
+                                     vk::ImageLayout::eTransferDstOptimal,
+                                     &blackClear, 1, &colorRange);
+  }
+  if (dst.width > 0 && dst.height > 0) {
+    vk::ImageBlit blitRegion;
+    blitRegion.srcSubresource =
+        vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
+    blitRegion.srcOffsets[0] = vk::Offset3D(0, 0, 0);
+    blitRegion.srcOffsets[1] = vk::Offset3D(
+        static_cast<int32_t>(m_headlessWidth),
+        static_cast<int32_t>(m_headlessHeight), 1);
+    blitRegion.dstSubresource =
+        vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
+    blitRegion.dstOffsets[0] = vk::Offset3D(dst.x, dst.y, 0);
+    blitRegion.dstOffsets[1] =
+        vk::Offset3D(dst.x + static_cast<int32_t>(dst.width),
+                     dst.y + static_cast<int32_t>(dst.height), 1);
+    const vk::Filter presentFilter =
+        (m_config.presentationFilter == 1) ? vk::Filter::eLinear
+                                           : vk::Filter::eNearest;
+    m_commandBuffer->blitImage(
+        presentSrc, vk::ImageLayout::eTransferSrcOptimal,
+        m_swapchainImages[imageIdx], vk::ImageLayout::eTransferDstOptimal, 1,
+        &blitRegion, presentFilter);
+  }
+  TransitionImageLayout(*m_commandBuffer, presentSrc,
+                        vk::ImageLayout::eTransferSrcOptimal,
+                        vk::ImageLayout::eColorAttachmentOptimal, colorRange);
+  TransitionImageLayout(*m_commandBuffer, m_swapchainImages[imageIdx],
+                        vk::ImageLayout::eTransferDstOptimal,
+                        vk::ImageLayout::ePresentSrcKHR, colorRange);
+
+  m_commandBuffer->end();
+
+  vk::CommandBuffer submitCmds[2];
+  uint32_t submitCmdCount = 0;
+  if (m_uploadCmdHasWork[m_currentFrameSlot]) {
+    auto& uploadCmd = m_uploadCommandBuffers[m_currentFrameSlot].get();
+    uploadCmd.end();
+    submitCmds[submitCmdCount++] = uploadCmd;
+    m_uploadCmdHasWork[m_currentFrameSlot] = false;
+  }
+  submitCmds[submitCmdCount++] = *m_commandBuffer;
+
+  vk::PipelineStageFlags waitStages[] = {
+      vk::PipelineStageFlagBits::eTransfer |
+      vk::PipelineStageFlagBits::eColorAttachmentOutput};
+  vk::Semaphore waitSem = m_imageAvailableSemaphores[m_currentFrameSlot].get();
+  vk::Semaphore sigSem = m_renderFinishedSemaphores[imageIdx].get();
+  (void)m_device->resetFences(1, &m_fences[m_currentFrameSlot].get());
+  vk::SubmitInfo submitInfo(1, &waitSem, waitStages, submitCmdCount, submitCmds,
+                            1, &sigSem);
+  try {
+    m_graphicsQueue.submit(submitInfo, m_fences[m_currentFrameSlot].get());
+    vk::SwapchainKHR sc = m_swapchain.get();
+    vk::PresentInfoKHR pInfo(1, &sigSem, 1, &sc, &imageIdx, nullptr);
+    (void)m_graphicsQueue.presentKHR(pInfo);
+    (void)m_device->waitForFences(1, &m_fences[m_currentFrameSlot].get(),
+                                  VK_TRUE, UINT64_MAX);
+  } catch (...) {
+  }
+
+  m_lfbOverlayStagingOffsets[m_currentFrameSlot] = 0;
+  m_commandBuffer->reset({});
+  m_commandBuffer->begin(vk::CommandBufferBeginInfo(
+      vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
+  m_frontBufferNeedsPresent = false;
+  m_lastFrontPresentTime = std::chrono::steady_clock::now();
 }
 
 void VulkanBackend::ReadbackGpuToStaging_Locked(uint32_t buffer) {
@@ -382,22 +805,67 @@ bool VulkanBackend::WriteLFB(uint32_t buffer, uint32_t dstX, uint32_t dstY,
   std::lock_guard<std::mutex> lock(m_mutex);
   if (!m_initialized || !m_windowAttached) return false;
 
+  // GR_BUFFER_AUXBUFFER (2) / GR_LFB_SRC_FMT_ZA16 (0x0f): upload 16-bit depth
+  // values to the hardware depth attachment(s), never the color framebuffer!
+  if (buffer == 2u || srcFmt == 0x0fu) {
+    return WriteAuxDepthLFB_Locked(dstX, dstY, srcWidth, srcHeight, srcStride,
+                                   srcData, refData);
+  }
+
+  const uint32_t logicalSlot = (buffer == 0u) ? 0u : 1u;
+  bool ok = false;
+
   // Fast zero-readback path: composite sparse alpha-masked overlay quad on GPU
   // inside the active command buffer (zero waitIdle(), preserves 3D scene!).
   // Internal lossless RGBA8888 restore (srcFmt == 0x100u) uses full-buffer copy
   // to preserve all 4 channels (including alpha) verbatim.
   if (srcFmt != 0x100u && CpuLfbStaging::CanUseOverlayQuad(config)) {
-    return m_lfbStaging.WriteOverlayLFB(buffer, dstX, dstY, srcWidth, srcHeight,
-                                        srcStride, srcFmt, srcData, refData,
-                                        config, m_pixelFormatOverride);
-  }
-
-  // Fallback for exotic LFB pixel-pipeline blend modes: read back the current
-  // GPU color target so CPU blending has authentic destination pixels.
-  ReadbackGpuToStaging_Locked(buffer);
-  return m_lfbStaging.WriteLFB(buffer, dstX, dstY, srcWidth, srcHeight,
+    ok = m_lfbStaging.WriteOverlayLFB(buffer, dstX, dstY, srcWidth, srcHeight,
+                                      srcStride, srcFmt, srcData, refData,
+                                      config, m_pixelFormatOverride);
+    if (ok && m_lfbReadCacheValid[logicalSlot]) {
+      // Keep cached CPU readback coherent with this LFB write so subsequent
+      // scanline ReadLFB calls avoid stalling the GPU pipeline!
+      m_lfbStaging.MirrorWriteToReadCache(buffer, dstX, dstY, srcWidth,
+                                          srcHeight, srcStride, srcFmt, srcData,
+                                          refData, config, m_pixelFormatOverride);
+    }
+  } else {
+    // Fallback for exotic LFB pixel-pipeline blend modes: read back the current
+    // GPU color target once so CPU blending has authentic destination pixels.
+    if (m_batchedVertexCount > 0) {
+      FlushBatch();
+    }
+    if (!m_lfbReadCacheValid[logicalSlot] &&
+        !m_lfbStaging.IsFullBufferDirty(buffer)) {
+      ReadbackGpuToStaging_Locked(buffer);
+      m_lfbReadCacheValid[logicalSlot] = true;
+    }
+    ok = m_lfbStaging.WriteLFB(buffer, dstX, dstY, srcWidth, srcHeight,
                                srcStride, srcFmt, srcData, refData, config,
                                m_pixelFormatOverride);
+  }
+
+  // On real 3dfx hardware, direct writes to GR_BUFFER_FRONTBUFFER (buffer == 0)
+  // appear immediately via the RAMDAC without requiring grBufferSwap(). Present
+  // full-frame uploads and throttled (~30 Hz) incremental updates onto the
+  // swapchain (no-op in headless test mode).
+  if (ok && buffer == 0u && m_swapchain && !m_passthruSuspended) {
+    m_frontBufferNeedsPresent = true;
+    const auto now = std::chrono::steady_clock::now();
+    const bool isFullFrame =
+        (dstX == 0u && dstY == 0u && srcWidth >= m_headlessWidth &&
+         srcHeight >= m_headlessHeight);
+    const bool elapsed =
+        (m_lastFrontPresentTime.time_since_epoch().count() == 0) ||
+        (std::chrono::duration_cast<std::chrono::milliseconds>(
+             now - m_lastFrontPresentTime)
+             .count() >= 33);
+    if (isFullFrame || elapsed) {
+      PresentFrontBuffer_Locked();
+    }
+  }
+  return ok;
 }
 
 bool VulkanBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
@@ -406,7 +874,40 @@ bool VulkanBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
   std::lock_guard<std::mutex> lock(m_mutex);
   if (!m_initialized || !m_windowAttached) return false;
 
-  ReadbackGpuToStaging_Locked(buffer);
+  if (buffer == 2u) {
+    if (!dstData || srcWidth == 0 || srcHeight == 0) return true;
+    auto* outBase = reinterpret_cast<uint8_t*>(dstData);
+    const uint32_t copyW =
+        (srcX < m_headlessWidth) ? std::min(srcWidth, m_headlessWidth - srcX) : 0u;
+    const uint32_t copyH =
+        (srcY < m_headlessHeight) ? std::min(srcHeight, m_headlessHeight - srcY) : 0u;
+    for (uint32_t y = 0; y < copyH; ++y) {
+      auto* rowOut = reinterpret_cast<uint16_t*>(
+          outBase + static_cast<size_t>(y) * dstStride);
+      if (m_auxDepthShadowValid &&
+          m_auxDepthShadow16.size() ==
+              static_cast<size_t>(m_headlessWidth) * m_headlessHeight) {
+        const uint16_t* sRow = m_auxDepthShadow16.data() +
+                               static_cast<size_t>(srcY + y) * m_headlessWidth;
+        std::memcpy(rowOut, sRow + srcX, static_cast<size_t>(copyW) * sizeof(uint16_t));
+      } else {
+        std::fill_n(rowOut, copyW, static_cast<uint16_t>(0xFFFFu));
+      }
+    }
+    return true;
+  }
+
+  // Flush any buffered 3D vertices BEFORE consulting the CPU readback cache
+  // so newly drawn triangles always invalidate m_lfbReadCacheValid first!
+  if (m_batchedVertexCount > 0) {
+    FlushBatch();
+  }
+
+  const uint32_t logicalSlot = (buffer == 0u) ? 0u : 1u;
+  if (!m_lfbReadCacheValid[logicalSlot]) {
+    ReadbackGpuToStaging_Locked(buffer);
+    m_lfbReadCacheValid[logicalSlot] = true;
+  }
 
   if (!m_lfbStaging.ReadRegion(buffer, srcX, srcY, srcWidth, srcHeight,
                                dstStride, dstData)) {

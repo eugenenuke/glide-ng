@@ -1462,8 +1462,11 @@ void RasterizeTriangleLoopsTraits(
       // 10. Depth Testing (skipped completely when depthMode == 0)
       if (needDepthOp) {
         SimdF targetDepth;
-        if (depthMode == 2) {
-          SimdF w = one_vec / wVal;
+        const bool compareToBias = (depthMode == 3 || depthMode == 4);
+        const bool isWBuffer = (depthMode == 2 || depthMode == 4);
+        if (isWBuffer) {
+          SimdF safeOow = Max(wVal, SimdF(1e-7f));
+          SimdF w = one_vec / safeOow;
           targetDepth = Max(
               zero_vec,
               Min(one_vec, (w - SimdF(depthNear)) * SimdF(depthRangeInv)));
@@ -1471,12 +1474,18 @@ void RasterizeTriangleLoopsTraits(
           targetDepth =
               Max(zero_vec, Min(one_vec, Fma(w2_vec, dc_z, Fma(w1_vec, db_z, a_z))));
         }
-        if (depthBiasLevel != 0) {
+        SimdF cmpDepth = targetDepth;
+        if (compareToBias) {
+          cmpDepth = SimdF(DecodeAuxDepth16ToNorm(
+              static_cast<uint16_t>(depthBiasLevel), depthMode, depthNear,
+              depthFar));
+        } else if (depthBiasLevel != 0) {
           targetDepth = Max(
               zero_vec,
               Min(one_vec,
                   targetDepth +
                       SimdF(static_cast<float>(depthBiasLevel) / 65535.0f)));
+          cmpDepth = targetDepth;
         }
 
         float* depthPtr = &depthBuffer[y * width + x];
@@ -1488,22 +1497,22 @@ void RasterizeTriangleLoopsTraits(
               depthPass = SimdM::False();
               break;
             case 1:
-              depthPass = targetDepth < currentDepth;
+              depthPass = cmpDepth < currentDepth;
               break;
             case 2:
-              depthPass = targetDepth == currentDepth;
+              depthPass = cmpDepth == currentDepth;
               break;
             case 3:
-              depthPass = targetDepth <= currentDepth;
+              depthPass = cmpDepth <= currentDepth;
               break;
             case 4:
-              depthPass = targetDepth > currentDepth;
+              depthPass = cmpDepth > currentDepth;
               break;
             case 5:
-              depthPass = targetDepth != currentDepth;
+              depthPass = cmpDepth != currentDepth;
               break;
             case 6:
-              depthPass = targetDepth >= currentDepth;
+              depthPass = cmpDepth >= currentDepth;
               break;
           }
           coverageMask = coverageMask & depthPass;

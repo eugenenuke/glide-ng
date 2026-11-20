@@ -1959,6 +1959,39 @@ void SoftwareBackend::PurgeTextures() {
   m_textureUploadRevision.fetch_add(1, std::memory_order_release);
 }
 
+bool SoftwareBackend::WriteLFB(uint32_t buffer, uint32_t dstX, uint32_t dstY,
+                               uint32_t srcWidth, uint32_t srcHeight,
+                               int32_t srcStride, uint32_t srcFmt,
+                               const void* srcData, const void* refData,
+                               const LfbPipelineConfig& config) {
+  const bool ok = SoftwareBackendBase::WriteLFB(buffer, dstX, dstY, srcWidth,
+                                                srcHeight, srcStride, srcFmt,
+                                                srcData, refData, config);
+  if (ok && buffer == 0u && srcFmt != 0x0fu &&
+      m_surfaceHost.GetMode() != NativeSurfaceHost::Mode::Headless &&
+      !m_config.forceNoWindow && !m_passthruSuspended) {
+    const int64_t nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                              std::chrono::steady_clock::now().time_since_epoch())
+                              .count();
+    const uint32_t gw = (m_guestWidth > 0) ? m_guestWidth : m_headlessWidth;
+    const uint32_t gh = (m_guestHeight > 0) ? m_guestHeight : m_headlessHeight;
+    const bool isFullFrame =
+        (dstX == 0u && dstY == 0u && srcWidth >= gw && srcHeight >= gh);
+    if (isFullFrame || m_lastFrontPresentMs == 0 ||
+        (nowMs - m_lastFrontPresentMs) >= 33) {
+      std::lock_guard<std::mutex> lock(m_mutex);
+      const uint32_t* pixels = nullptr;
+      uint32_t pw = 0, ph = 0;
+      ResolveFrontBuffer(pixels, pw, ph);
+      if (pixels && pw > 0 && ph > 0) {
+        PresentFrame(pixels, pw, ph);
+        m_lastFrontPresentMs = nowMs;
+      }
+    }
+  }
+  return ok;
+}
+
 bool SoftwareBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
                               uint32_t srcWidth, uint32_t srcHeight,
                               uint32_t dstStride, void* dstData) {
@@ -1966,7 +1999,7 @@ bool SoftwareBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
                                          srcHeight, dstStride, dstData);
   if (!ok) return false;
 
-  if (m_pixelFormatOverride != 0) {
+  if (buffer != 2u && m_pixelFormatOverride != 0) {
     bool is32Bit = (dstStride >= srcWidth * 4);
     if (is32Bit) {
       auto* outBytes = reinterpret_cast<uint8_t*>(dstData);

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <unordered_map>
 #include <vector>
 
@@ -335,6 +336,19 @@ class OpenGLESBackend : public GlideStateTracker {
   uint32_t m_glLfbOverlayTex{0};
   uint32_t m_glLfbOverlayWidth{0};
   uint32_t m_glLfbOverlayHeight{0};
+  uint32_t m_glLfbDepthProgram{0};
+  int m_uDepthQuadTexLoc{-1};
+  int m_uDepthQuadFlipYLoc{-1};
+  bool m_lfbReadCacheValid[2]{false, false};
+  std::vector<uint16_t> m_auxDepthShadow16;
+  std::vector<uint32_t> m_auxDepthScratch;
+  bool m_auxDepthShadowValid{false};
+  std::chrono::steady_clock::time_point m_lastFrontPresentTime{};
+  bool InitLfbDepthProgram_Locked();
+  bool WriteAuxDepthLFB_Locked(uint32_t dstX, uint32_t dstY, uint32_t srcWidth,
+                               uint32_t srcHeight, int32_t srcStride,
+                               const void* srcData, const void* refData);
+  void PresentFrontBufferGLES_Locked();
 
   // Cached Uniform Locations for geomProgram
   int m_uSstOriginLoc{-1};

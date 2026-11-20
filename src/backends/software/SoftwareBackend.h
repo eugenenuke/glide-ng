@@ -62,6 +62,11 @@ class SoftwareBackend : public SoftwareBackendBase {
                             uint32_t startRow, uint32_t endRow) override;
   void PurgeTextures() override;
 
+  bool WriteLFB(uint32_t buffer, uint32_t dstX, uint32_t dstY,
+                uint32_t srcWidth, uint32_t srcHeight, int32_t srcStride,
+                uint32_t srcFmt, const void* srcData,
+                const void* refData = nullptr,
+                const LfbPipelineConfig& config = {}) override;
   bool ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY, uint32_t srcWidth,
                uint32_t srcHeight, uint32_t dstStride, void* dstData) override;
 
@@ -168,6 +173,7 @@ class SoftwareBackend : public SoftwareBackendBase {
   std::unique_ptr<WaylandShmPresenter> m_wlShmPresenter;
   std::unique_ptr<Win32GdiPresenter> m_win32Presenter;
   HudOverlay m_hudOverlay;
+  int64_t m_lastFrontPresentMs{0};
   std::vector<uint32_t> m_hudPresentBuffer;
   std::atomic<bool> m_passthruSuspended{false};
 };
