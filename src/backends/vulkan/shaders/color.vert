@@ -11,6 +11,11 @@ layout(location = 1) centroid out vec4 fragTex;
 layout(location = 2) centroid out float fragOOW;
 layout(location = 3) centroid out vec2 fragTmuOow;
 layout(location = 4) centroid out float fragFogCoord;
+// Non-centroid (pixel-center) affine interpolants dedicated to screen-space
+// dFdx/dFdy gradient computation so MSAA centroid shifts along triangle edges
+// and internal quad diagonals never spike mipmap LOD.
+layout(location = 5) out vec4 fragTexCenter;
+layout(location = 6) out vec3 fragQCenter;
 
 // Viewport and constant-color configuration passed via push constants
 layout(push_constant) uniform PushConstants {
@@ -108,4 +113,6 @@ void main() {
   fragOOW = inPos.w;
   fragTmuOow = inTmuOow;
   fragFogCoord = inFogCoord;
+  fragTexCenter = inTex;
+  fragQCenter = vec3(inPos.w, inTmuOow.x, inTmuOow.y);
 }

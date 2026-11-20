@@ -8,7 +8,7 @@
 | **Glide API & Version** | Glide 2.x (`2.48` on Voodoo Graphics / `2.56` on Voodoo2) |
 | **Recommended Card Profile** | `VoodooGraphics` (authentic SST-1) · `Voodoo2` (for enhanced preset) |
 | **Verified Backends** | Vulkan · OpenGL ES · Software (AVX2 / AVX-512 / Scalar) |
-| **Preset File(s)** | [`glide-ng.ini`](./glide-ng.ini) (Recommended SST-1) · [`glide-ng.hq.ini`](./glide-ng.hq.ini) (4× MSAA + Trilinear) · [`glide-ng.software.ini`](./glide-ng.software.ini) (CPU Software) |
+| **Preset File(s)** | [`glide-ng.ini`](./glide-ng.ini) (Recommended SST-1) · [`glide-ng.hq.ini`](./glide-ng.hq.ini) (4× MSAA + No-Dither) · [`glide-ng.software.ini`](./glide-ng.software.ini) (CPU Software) |
 | **Status** | Verified |
 
 ---
@@ -90,9 +90,9 @@ GLIDE_NG_CONFIG=/path/to/glide-ng.ini \
   -c "TOMB.EXE"
 ```
 
-### Option C: Best Visuals (`glide-ng.hq.ini` + In-Game `Mipmapping`)
+### Option C: Enhanced Visuals (`glide-ng.hq.ini` + In-Game `Normal` Detail)
 
-Use [`glide-ng.hq.ini`](./glide-ng.hq.ini) (`msaa = 4`, `force_trilinear = true`, `presentation_filter = linear`, `no_dither_sub = true`, `gamma = 1.7`) on either DOSBox-SVN (Option A) or DOSBox-X (Option B), then enable **`Mipmapping`** in the in-game Ring Menu → **Detail Levels**:
+Use [`glide-ng.hq.ini`](./glide-ng.hq.ini) (`msaa = 4`, `presentation_filter = nearest`, `no_dither_sub = true`) on either DOSBox-SVN (Option A) or DOSBox-X (Option B), keeping the in-game Ring Menu → **Detail Levels** on **`Normal`** for sharp textures and seamless floors:
 
 ```bash
 GLIDE_NG_CONFIG=/path/to/glide-ng.hq.ini \
@@ -104,7 +104,7 @@ GLIDE_NG_CONFIG=/path/to/glide-ng.hq.ini \
   -c "TOMB.EXE"
 ```
 
-*(On CPU-only hosts, substitute [`glide-ng.software.ini`](./glide-ng.software.ini) with `GLIDE_NG_SW_AA=ssaa GLIDE_NG_PRESENTATION_FILTER=linear`.)*
+*(On CPU-only hosts, substitute [`glide-ng.software.ini`](./glide-ng.software.ini) with `GLIDE_NG_SW_AA=ssaa`.)*
 
 ### Reference Comparison: DOSBox-X Software Voodoo (No `glide-ng`)
 
@@ -130,27 +130,28 @@ All captures below are `640×480` via patched DOSBox-SVN (Software `320×200` sc
 
 | | |
 | :---: | :---: |
-| ![DOS Software 320x200 Caves](./screenshots/01_caves_sw_320x200.webp)<br>**1. Caves — DOS Software (`320×200`, original `TOMB.EXE`)**<br>Unfiltered pixel-art cave walls, coarse banded snowbanks, and chunky polygon edges. | ![3dfx Uncalibrated Gamma 1.0 Caves](./screenshots/02_caves_3dfx_gamma10.webp)<br>**2. Caves — 3dfx Uncalibrated (`gamma = 1.0`)**<br>`640×480` bilinear filtering smooths textures, *but* without SST-1 RAMDAC gamma, cave interiors appear overly dark. |
-| ![3dfx Authentic SST-1 Caves](./screenshots/03_caves_3dfx_sst1.webp)<br>**3. Caves — 3dfx Authentic SST-1 ([`glide-ng.ini`](./glide-ng.ini), `gamma = 1.7`, `1×`)**<br>SST-1 `gamma = 1.7` restores authentic cave visibility and snow brightness; diagonal edges remain `1×` aliased (`Normal` detail). | ![3dfx Best Visuals Caves](./screenshots/04_caves_3dfx_hq.webp)<br>**4. Caves — 3dfx Best Visuals ([`glide-ng.hq.ini`](./glide-ng.hq.ini) + `Mipmapping`)**<br>`4×` Vulkan MSAA smooths Lara's silhouette and rock ridges while trilinear mipmapping and `no_dither_sub = true` clean up distant cave walls and gradients. |
-| ![Croft Manor Standard SST-1](./screenshots/05_manor_3dfx_sst1.webp)<br>**5. Croft Manor — Standard ([`glide-ng.ini`](./glide-ng.ini), `1×`, `Normal` detail)**<br>Crisp close-up textures, but noticeable moiré/aliasing across the distant checkered ceiling and floral carpet plus jagged diagonal edges. | ![Croft Manor Best Visuals](./screenshots/06_manor_3dfx_hq.webp)<br>**6. Croft Manor — Best Visuals ([`glide-ng.hq.ini`](./glide-ng.hq.ini) + `Mipmapping`)**<br>Trilinear mipmapping eliminates distant ceiling and carpet shimmering with zero dark triangle seams, while `4×` MSAA smooths the marble step, beams, and Lara. |
+| ![DOS Software 320x200 Caves](./screenshots/01_caves_sw_320x200.webp)<br>**1. Caves — DOS Software (`320×200`, original `TOMB.EXE`)**<br>Unfiltered pixel-art cave walls, coarse banded snowbanks, and chunky polygon edges. | ![3dfx Gamma 1.0 Caves](./screenshots/02_caves_3dfx_gamma10.webp)<br>**2. Caves — 3dfx Dark / Modern LCD (`gamma = 1.0`)**<br>`640×480` bilinear filtering with flat `1.0` gamma (matching wrappers/emulators that omit RAMDAC gamma), producing deeper shadows and higher cave contrast. |
+| ![3dfx Authentic SST-1 Caves](./screenshots/03_caves_3dfx_sst1.webp)<br>**3. Caves — 3dfx Authentic SST-1 ([`glide-ng.ini`](./glide-ng.ini), native `1.5` gamma, `1×`, `Normal`)**<br>Uses `TOMB.EXE`'s native `grGammaCorrectionValue(1.5)` for balanced cave visibility with seamless snow floors and crisp rock detail; diagonal silhouettes remain `1×` aliased. | ![3dfx Enhanced Visuals Caves](./screenshots/04_caves_3dfx_hq.webp)<br>**4. Caves — 3dfx Enhanced Visuals ([`glide-ng.hq.ini`](./glide-ng.hq.ini), `4×` MSAA, `Normal`)**<br>`4×` Vulkan MSAA smooths Lara's silhouette and cave ridges while `no_dither_sub = true` cleans up gradients, keeping walls sharp and floors completely free of atlas mipmap seams. |
+| ![Croft Manor Standard SST-1](./screenshots/05_manor_3dfx_sst1.webp)<br>**5. Croft Manor — Standard (`1×`, `Normal` detail)**<br>Crisp close-up textures with zero atlas seams; distant checkered ceilings and carpets show natural non-mipmapped aliasing. | ![Croft Manor Mipmapped](./screenshots/06_manor_3dfx_hq.webp)<br>**6. Croft Manor — Optional In-Game `Mipmapping` (`4×` MSAA)**<br>Enabling in-game `Mipmapping` reduces distant ceiling and carpet shimmering at the trade-off of softer oblique walls and visible atlas seams on packed floor tiles. |
 
 ---
 
 ## Visual Quality & Performance Tuning
 
 ### Mipmapping vs. Normal (In-Game Detail Levels)
-* Open the Ring Menu → **Detail Levels** and select **`Mipmapping`** (instead of `Normal`).
-* **Visual quality:** `Mipmapping` eliminates shimmering and pixel crawling on distant cave walls, floors, and angled surfaces. `glide-ng`'s analytical quotient-rule LOD (Vulkan/GLES) and active-lane edge LOD (Software) keep mipmapped surfaces seamless without dark triangle borders.
-* **Performance:** Negligible cost on `glide-ng` (on original Voodoo1 silicon, mipmapping improved texture-cache locality at a ~33% TMU memory cost).
+* Keep the Ring Menu → **Detail Levels** set to **`Normal`** *(Recommended)* for the sharpest textures and seamless floors.
+* **Why `Mipmapping` introduces visible tile seams in *Tomb Raider*:** Core Design's engine packs `64×64` level textures into shared `256×256` texture atlases and insets polygon UVs by `+0.5` texels at mip level 0 (`256×256`). At mip 0 (`Normal`), bilinear filtering stays strictly inside each `64×64` tile with zero neighbor bleed. When in-game `Mipmapping` is enabled, mip level 1 (`128×128`) and mip level 2 (`64×64`) shrink that `+0.5` texel margin to `0.25` and `0.125` texels, causing bilinear sampling to bleed adjacent dark tiles from the same atlas across snow floors and wall seams. This exact seam behavior occurs on authentic 3dfx SST-1 silicon and DOSBox-X's register-level software Voodoo emulator; some older wrappers (such as OpenGlide) hide it only because they disable mipmapping by default.
+* **Why `force_trilinear` is omitted from `glide-ng.hq.ini`:** Setting `force_trilinear = true` overrides `grTexFilterMode` on *Tomb Raider*'s explicitly point-sampled HUD/menu font atlas (softening menu labels) and forces mipmapping onto packed world atlases even when in-game Detail Levels is set to `Normal`.
 
-### Anti-Aliasing & Smoothing
+### Anti-Aliasing & Presentation Scaling
 * *Tomb Raider* has **no built-in anti-aliasing option** (Detail Levels only toggles `Normal` vs. `Mipmapping`).
-* To smooth polygon edges and soften 1 px geometry seams:
-  * **Vulkan / OpenGL ES:** Use [`glide-ng.hq.ini`](./glide-ng.hq.ini) (`msaa = 4`, `presentation_filter = linear`, `force_trilinear = true`, `no_dither_sub = true`).
-  * **Software backend:** Add `GLIDE_NG_SW_AA=ssaa` (`[software] aa = ssaa`) for 2×2 supersampling, and/or `GLIDE_NG_PRESENTATION_FILTER=linear`.
+* **Vulkan / OpenGL ES:** Use [`glide-ng.hq.ini`](./glide-ng.hq.ini) (`msaa = 4`, `presentation_filter = nearest`, `no_dither_sub = true`) to smooth 3D polygon silhouettes while keeping point-sampled UI/menu text razor-sharp at high host resolutions. Set `presentation_filter = linear` if softer upscaling is preferred on non-integer display ratios.
+* **Software backend:** Add `GLIDE_NG_SW_AA=ssaa` (`[software] aa = ssaa`) for 2×2 supersampling.
 
 ### Gamma / Brightness
-* Authentic SST-1 hardware applied a `1.7` RAMDAC gamma curve. All presets set `gamma = 1.7` so dark cave interiors match original Voodoo1 output. You can also fine-tune brightness inside the game's Ring Menu → **Gamma**.
+* `TOMB.EXE` natively calls `grGammaCorrectionValue(1.5)` at startup, smoothly steps gamma down during fade-out transitions, and provides an in-game **Ring Menu → Gamma** adjustment.
+* All presets leave `[glide] gamma` unset by default so native `1.5` gamma, smooth fades, and the in-game Gamma slider all function normally.
+* **Darker modern-LCD look:** Wrappers and emulators that do not apply RAMDAC gamma (such as OpenGlide under Wayland or DOSBox-X software Voodoo) display effective `gamma = 1.0`. To match that darker look, either lower the in-game Gamma setting or uncomment `gamma = 1.0` in the preset (or launch with `SST_GAMMA=1.0`). Note that an explicit `[glide] gamma` override locks gamma to a fixed value and overrides in-game fades and the Gamma slider.
 
 ### Speed & Backend Selection
 * **GPU hosts:** `backend = vulkan` (or `opengl_es`) easily sustains locked 60 FPS even with `msaa = 4`.
@@ -161,7 +162,7 @@ All captures below are `640×480` via patched DOSBox-SVN (Software `320×200` sc
 ## Quirks, Known Issues & Controls
 
 ### Engine Notes & Quirks
-* **Occasional dynamic 1 px vertical black cracks between wall sections:** Core Design's 1996 engine projects all room vertices to integer screen coordinates and clips room portals on integer pixel boundaries, leaving genuine 1-pixel vertical gaps in the submitted Glide vertex stream. These exact same vertical cracks occur on authentic 3dfx SST-1 hardware and DOSBox-X software Voodoo. Enabling `presentation_filter = linear` (included in [`glide-ng.hq.ini`](./glide-ng.hq.ini)) softens them visually.
+* **Occasional dynamic 1 px vertical black cracks between wall sections:** Core Design's 1996 engine projects all room vertices to integer screen coordinates and clips room portals on integer pixel boundaries, leaving genuine 1-pixel vertical gaps in the submitted Glide vertex stream. These exact same vertical cracks occur on authentic 3dfx SST-1 hardware and DOSBox-X software Voodoo. Enabling `presentation_filter = linear` softens them visually at the cost of softer UI text.
 * **Startup splash:** `glide-ng` plays its procedural startup splash once automatically on `grSstWinOpen()` (matching authentic 3dfx Glide). Set `no_splash = true` in `glide-ng.ini` (or `FX_GLIDE_NO_SPLASH=1`) to skip straight to the intro.
 * **DOSBox-SVN `output = opengl` on Linux:** On distributions routing SDL 1.2 through `sdl12-compat` → `sdl2-compat` → `SDL3`, DOSBox-SVN's default `surface` output can crash with a `SIGSEGV` in `SDL_UpdateRects()` during the VGA mode switches of the intro FMVs. Setting `[sdl] output = opengl` avoids this code path.
 

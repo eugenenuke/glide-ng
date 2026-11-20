@@ -23,9 +23,11 @@ For the pre-beta engineering narrative covering early architecture decisions and
 ### Fixed
 - **Win32/Wine Pass-Through & WSI Hardening**: Added pre-`ShowWindow` host HWND resolution, `grSstPassthruMode` (`SHOW_VGA` yield / `SHOW_SST1` reclaim) surface management, structural `GWL_STYLE` (`WS_POPUP` ↔ `WS_CAPTION` / `WS_VISIBLE`) surface rebuild detection, hidden/iconic HWND skip guards, `CreateSwapchain()` exception/fallback recovery, and one-shot post-VGA foreground restore across Vulkan, OpenGL ES/WGL, and Software backends.
 - **Commercial Game Rendering Fixes**:
-  - *Tomb Raider* (1996): Fixed `guTexMemReset` palette persistence, W-buffer `oow > 1` clipping, depth bias, line depth health bar rendering, and edge mipmap LOD spikes.
+  - *Tomb Raider* (1996): Fixed `guTexMemReset` palette persistence, W-buffer `oow > 1` clipping, depth bias, line depth health bar rendering, edge mipmap LOD spikes, and updated presets/docs to drop `force_trilinear` and hardcoded `gamma = 1.7` so native gamma, fades, in-game Gamma adjustment, sharp UI text, and seamless `Normal` detail work out of the box.
   - *Carmageddon* (1997): Flushed persistent LFB write-locks before `grBufferClear` and framebuffer readbacks.
   - *Grand Theft Auto* (1997): Enabled MSAA centroid interpolation to eliminate texture-bleed seams on rotated sprites.
+- **MSAA Non-Centroid Gradient Computation (Vulkan & OpenGL ES)**: Separated pixel-center (non-centroid) affine varyings for screen-space `dFdx`/`dFdy` mipmap gradient calculation from `centroid` sampling varyings, eliminating MSAA quad-diagonal and edge mipmap LOD spikes (such as the diagonal red line across Lara's face on *Tomb Raider*'s title screen under 4× MSAA) while preserving rotated-sprite MSAA fringe prevention.
+- **Presentation Filter Enforcement Across All Backends**: Wired `[display] presentation_filter` (`nearest` / `linear`) into Vulkan (`vkCmdBlitImage`), OpenGL ES (presentation FBO textures), and Linux Software (`StandaloneSDL2`, X11, and Wayland SHM presenters with fixed-point bilinear resampling) so `presentation_filter = nearest` preserves crisp point-sampled UI/menu text at high host resolutions.
 - **DOS Tools & Test Isolation**: Supported authentic 3dfx Watcom `GLIDE2X.OVL` lookup via DOS `PATH`, fixed `glide_bench` `ESC` exit handling, and isolated `GLIDE_NG_HEADLESS=1` in the Glide 2.x coordinate unsnapping unit test.
 
 ---
