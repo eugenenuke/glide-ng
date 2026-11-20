@@ -20,13 +20,17 @@ inline bool SoftwareBackend::IsTexChromaMatch(
 
   bool rangeEnabled = ((state.texChromaRangeMode[tmu] >> 28) & 1) == 1;
   if (rangeEnabled) {
-    uint32_t minR = (state.texChromaMin[tmu] >> 16) & 0xFF;
-    uint32_t minG = (state.texChromaMin[tmu] >> 8) & 0xFF;
-    uint32_t minB = state.texChromaMin[tmu] & 0xFF;
+    const uint32_t minArgb =
+        GrColorToCanonicalArgb(state.texChromaMin[tmu], state.pixelFormatOverride);
+    const uint32_t maxArgb =
+        GrColorToCanonicalArgb(state.texChromaMax[tmu], state.pixelFormatOverride);
+    uint32_t minR = (minArgb >> 16) & 0xFF;
+    uint32_t minG = (minArgb >> 8) & 0xFF;
+    uint32_t minB = minArgb & 0xFF;
 
-    uint32_t maxR = (state.texChromaMax[tmu] >> 16) & 0xFF;
-    uint32_t maxG = (state.texChromaMax[tmu] >> 8) & 0xFF;
-    uint32_t maxB = state.texChromaMax[tmu] & 0xFF;
+    uint32_t maxR = (maxArgb >> 16) & 0xFF;
+    uint32_t maxG = (maxArgb >> 8) & 0xFF;
+    uint32_t maxB = maxArgb & 0xFF;
 
     bool rMatch = (r >= minR && r <= maxR);
     bool gMatch = (g >= minG && g <= maxG);
@@ -43,9 +47,11 @@ inline bool SoftwareBackend::IsTexChromaMatch(
     bool unionMode = ((state.texChromaRangeMode[tmu] >> 27) & 1) == 1;
     return unionMode ? (rRes || gRes || bRes) : (rRes && gRes && bRes);
   } else {
-    uint32_t chromaR = (state.texChromaMin[tmu] >> 16) & 0xFF;
-    uint32_t chromaG = (state.texChromaMin[tmu] >> 8) & 0xFF;
-    uint32_t chromaB = state.texChromaMin[tmu] & 0xFF;
+    const uint32_t chArgb =
+        GrColorToCanonicalArgb(state.texChromaMin[tmu], state.pixelFormatOverride);
+    uint32_t chromaR = (chArgb >> 16) & 0xFF;
+    uint32_t chromaG = (chArgb >> 8) & 0xFF;
+    uint32_t chromaB = chArgb & 0xFF;
 
     return (r == chromaR && g == chromaG && b == chromaB);
   }
@@ -343,19 +349,15 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
                                   ? (1.0f / (depthFar - depthNear))
                                   : 0.0f;
 
-  const float constantAlpha = ((constantColor >> 24) & 0xFF) / 255.0f;
-  float constantR = ((constantColor >> 16) & 0xFF) / 255.0f;
-  float constantG = ((constantColor >> 8) & 0xFF) / 255.0f;
-  float constantB = (constantColor & 0xFF) / 255.0f;
-  if (pixelFormatOverride == 1) std::swap(constantR, constantB);
+  float constantR = 0.0f, constantG = 0.0f, constantB = 0.0f,
+        constantAlpha = 1.0f;
+  UnpackGrColorNorm(constantColor, pixelFormatOverride, constantR, constantG,
+                    constantB, constantAlpha);
   const TmuColor constantCol = {constantR, constantG, constantB, constantAlpha};
 
   auto unpackTmuConst = [&](uint32_t c) -> TmuColor {
-    float r = ((c >> 16) & 0xFF) / 255.0f;
-    float g = ((c >> 8) & 0xFF) / 255.0f;
-    float b = (c & 0xFF) / 255.0f;
-    float aVal = ((c >> 24) & 0xFF) / 255.0f;
-    if (pixelFormatOverride == 1) std::swap(r, b);
+    float r = 0.0f, g = 0.0f, b = 0.0f, aVal = 1.0f;
+    UnpackGrColorNorm(c, pixelFormatOverride, r, g, b, aVal);
     return {r, g, b, aVal};
   };
   const TmuColor tmuConst0 = unpackTmuConst(state.tmuConstantColor[0]);
@@ -368,29 +370,22 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
   float chromaMaxR = 0.0f, chromaMaxG = 0.0f, chromaMaxB = 0.0f;
   if (chromakeyMode == 1) {
     bool rangeEnabled = ((chromakeyRangeMode >> 28) & 1) == 1;
+    float dummyA = 0.0f;
     if (rangeEnabled) {
-      chromaMinR = ((chromakeyRangeMin >> 16) & 0xFF) / 255.0f;
-      chromaMinG = ((chromakeyRangeMin >> 8) & 0xFF) / 255.0f;
-      chromaMinB = (chromakeyRangeMin & 0xFF) / 255.0f;
-      chromaMaxR = ((chromakeyRangeMax >> 16) & 0xFF) / 255.0f;
-      chromaMaxG = ((chromakeyRangeMax >> 8) & 0xFF) / 255.0f;
-      chromaMaxB = (chromakeyRangeMax & 0xFF) / 255.0f;
+      UnpackGrColorNorm(chromakeyRangeMin, pixelFormatOverride, chromaMinR,
+                        chromaMinG, chromaMinB, dummyA);
+      UnpackGrColorNorm(chromakeyRangeMax, pixelFormatOverride, chromaMaxR,
+                        chromaMaxG, chromaMaxB, dummyA);
     } else {
-      chromaR = ((chromakeyValue >> 16) & 0xFF) / 255.0f;
-      chromaG = ((chromakeyValue >> 8) & 0xFF) / 255.0f;
-      chromaB = (chromakeyValue & 0xFF) / 255.0f;
-      if (pixelFormatOverride == 1) {
-        std::swap(chromaR, chromaB);
-      }
+      UnpackGrColorNorm(chromakeyValue, pixelFormatOverride, chromaR, chromaG,
+                        chromaB, dummyA);
     }
   }
 
   float fogR = 0.0f, fogG = 0.0f, fogB = 0.0f;
   if (fogMode != 0) {
-    fogR = ((fogColor >> 16) & 0xFF) / 255.0f;
-    fogG = ((fogColor >> 8) & 0xFF) / 255.0f;
-    fogB = (fogColor & 0xFF) / 255.0f;
-    if (pixelFormatOverride == 1) std::swap(fogR, fogB);
+    float dummyA = 1.0f;
+    UnpackGrColorNorm(fogColor, pixelFormatOverride, fogR, fogG, fogB, dummyA);
   }
 
   // TMU 0 Setup (Downstream - runtime resolved)

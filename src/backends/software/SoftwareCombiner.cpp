@@ -52,16 +52,12 @@ void SoftwareBackend::WritePixelPipeline(int x, int y, const ModernVertex& v,
     bool chromaFail = false;
     const bool rangeEnabled = ((state.chromakeyRangeMode >> 28) & 1u) == 1u;
     if (rangeEnabled) {
-      float minR = ((state.chromakeyRangeMin >> 16) & 0xFF) / 255.0f;
-      float minG = ((state.chromakeyRangeMin >> 8) & 0xFF) / 255.0f;
-      float minB = (state.chromakeyRangeMin & 0xFF) / 255.0f;
-      float maxR = ((state.chromakeyRangeMax >> 16) & 0xFF) / 255.0f;
-      float maxG = ((state.chromakeyRangeMax >> 8) & 0xFF) / 255.0f;
-      float maxB = (state.chromakeyRangeMax & 0xFF) / 255.0f;
-      if (state.pixelFormatOverride == 1) {
-        std::swap(minR, minB);
-        std::swap(maxR, maxB);
-      }
+      float minR = 0.0f, minG = 0.0f, minB = 0.0f, minAUnused = 0.0f;
+      float maxR = 0.0f, maxG = 0.0f, maxB = 0.0f, maxAUnused = 0.0f;
+      UnpackGrColorNorm(state.chromakeyRangeMin, state.pixelFormatOverride,
+                        minR, minG, minB, minAUnused);
+      UnpackGrColorNorm(state.chromakeyRangeMax, state.pixelFormatOverride,
+                        maxR, maxG, maxB, maxAUnused);
       bool rMatch = (red >= minR && red <= maxR);
       bool gMatch = (green >= minG && green <= maxG);
       bool bMatch = (blue >= minB && blue <= maxB);
@@ -72,12 +68,9 @@ void SoftwareBackend::WritePixelPipeline(int x, int y, const ModernVertex& v,
                        ? (rRes || gRes || bRes)
                        : (rRes && gRes && bRes);
     } else {
-      float chR = ((state.chromakeyValue >> 16) & 0xFF) / 255.0f;
-      float chG = ((state.chromakeyValue >> 8) & 0xFF) / 255.0f;
-      float chB = (state.chromakeyValue & 0xFF) / 255.0f;
-      if (state.pixelFormatOverride == 1) {
-        std::swap(chR, chB);
-      }
+      float chR = 0.0f, chG = 0.0f, chB = 0.0f, chAUnused = 0.0f;
+      UnpackGrColorNorm(state.chromakeyValue, state.pixelFormatOverride, chR,
+                        chG, chB, chAUnused);
       chromaFail = (std::abs(red - chR) < 0.001f &&
                     std::abs(green - chG) < 0.001f &&
                     std::abs(blue - chB) < 0.001f);
@@ -150,12 +143,9 @@ void SoftwareBackend::WritePixelPipeline(int x, int y, const ModernVertex& v,
       f = f0 * (1.0f - t) + f1 * t;
     }
 
-    float fogR = ((state.fogColor >> 16) & 0xFF) / 255.0f;
-    float fogG = ((state.fogColor >> 8) & 0xFF) / 255.0f;
-    float fogB = (state.fogColor & 0xFF) / 255.0f;
-    if (state.pixelFormatOverride == 1) {
-      std::swap(fogR, fogB);
-    }
+    float fogR = 0.0f, fogG = 0.0f, fogB = 0.0f, fogAUnused = 1.0f;
+    UnpackGrColorNorm(state.fogColor, state.pixelFormatOverride, fogR, fogG,
+                      fogB, fogAUnused);
 
     float mult = ((state.fogMode & 0x100) != 0) ? 1.0f : 0.0f;
     float add = ((state.fogMode & 0x200) != 0) ? 1.0f : 0.0f;
@@ -378,18 +368,17 @@ uint32_t SoftwareBackend::EvaluateCombinerColor(const ModernVertex& v,
   uint32_t g = static_cast<uint32_t>(v.color[1] * 255.0f + 0.5f);
   uint32_t b = static_cast<uint32_t>(v.color[2] * 255.0f + 0.5f);
 
+  const uint32_t constArgb =
+      GrColorToCanonicalArgb(state.constantColor, state.pixelFormatOverride);
   uint32_t colorLocal = state.colorCombinerLocal & 0xFFFF;
   if (colorLocal == 1 || state.colorCombinerFactor == 1) {
-    r = (state.constantColor >> 16) & 0xFF;
-    g = (state.constantColor >> 8) & 0xFF;
-    b = state.constantColor & 0xFF;
-    if (state.pixelFormatOverride == 1) {
-      std::swap(r, b);
-    }
+    r = (constArgb >> 16) & 0xFF;
+    g = (constArgb >> 8) & 0xFF;
+    b = constArgb & 0xFF;
   }
   uint32_t alphaLocal = state.alphaCombinerLocal & 0xFFFF;
   if (alphaLocal == 1 || state.alphaCombinerFactor == 1) {
-    a = (state.constantColor >> 24) & 0xFF;
+    a = (constArgb >> 24) & 0xFF;
   }
 
   if (a < 128) a = 255;

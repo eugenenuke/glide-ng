@@ -1966,19 +1966,14 @@ bool SoftwareBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
                                          srcHeight, dstStride, dstData);
   if (!ok) return false;
 
-  if (m_pixelFormatOverride == 1) {
+  if (m_pixelFormatOverride != 0) {
     bool is32Bit = (dstStride >= srcWidth * 4);
     if (is32Bit) {
       auto* outBytes = reinterpret_cast<uint8_t*>(dstData);
       for (uint32_t y = 0; y < srcHeight; ++y) {
         auto* row32 = reinterpret_cast<uint32_t*>(outBytes + y * dstStride);
         for (uint32_t x = 0; x < srcWidth; ++x) {
-          uint32_t val = row32[x];
-          uint32_t a = val & 0xFF000000;
-          uint32_t g = val & 0x0000FF00;
-          uint32_t r = (val >> 16) & 0xFF;
-          uint32_t b = val & 0xFF;
-          row32[x] = a | (b << 16) | g | r;
+          row32[x] = CanonicalArgbToGrColor(row32[x], m_pixelFormatOverride);
         }
       }
     }

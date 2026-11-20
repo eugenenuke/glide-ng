@@ -1034,44 +1034,29 @@ void OpenGLESBackend::PopulateUniforms(uint32_t dirtyMask) {
   }
 
   if (dirtyMask & kGlesDirtyConstantColor) {
-    float cr = ((m_constantColor >> 16) & 0xFF) / 255.0f;
-    float cg = ((m_constantColor >> 8) & 0xFF) / 255.0f;
-    float cb = (m_constantColor & 0xFF) / 255.0f;
-    float ca = ((m_constantColor >> 24) & 0xFF) / 255.0f;
-    if (m_pixelFormatOverride == 1) {
-      std::swap(cr, cb);
-    }
+    float cr = 0.0f, cg = 0.0f, cb = 0.0f, ca = 1.0f;
+    UnpackGrColorNorm(m_constantColor, m_pixelFormatOverride, cr, cg, cb, ca);
     glUniform4f(m_uConstantColorLoc, cr, cg, cb, ca);
   }
 
   if (dirtyMask & kGlesDirtyChromakey) {
     // Upload Chromakey State Uniforms
     glUniform1i(m_uChromakeyEnabledLoc, (int)m_chromakeyMode);
-    float chR = ((m_chromakeyValue >> 16) & 0xFF) / 255.0f;
-    float chG = ((m_chromakeyValue >> 8) & 0xFF) / 255.0f;
-    float chB = (m_chromakeyValue & 0xFF) / 255.0f;
-    float chA = ((m_chromakeyValue >> 24) & 0xFF) / 255.0f;
-    if (m_pixelFormatOverride == 1) {
-      std::swap(chR, chB);
-    }
+    float chR = 0.0f, chG = 0.0f, chB = 0.0f, chA = 0.0f;
+    UnpackGrColorNorm(m_chromakeyValue, m_pixelFormatOverride, chR, chG, chB,
+                      chA);
     glUniform4f(m_uChromakeyValueLoc, chR, chG, chB, chA);
 
     // Upload Chromakey Range Uniforms
     bool rangeEnabled = ((m_chromakeyRangeMode >> 28) & 1) != 0;
     glUniform1i(m_uChromakeyRangeEnabledLoc, rangeEnabled ? 1 : 0);
 
-    float rMin = ((m_chromakeyRangeMin >> 16) & 0xFF) / 255.0f;
-    float gMin = ((m_chromakeyRangeMin >> 8) & 0xFF) / 255.0f;
-    float bMin = (m_chromakeyRangeMin & 0xFF) / 255.0f;
-
-    float rMax = ((m_chromakeyRangeMax >> 16) & 0xFF) / 255.0f;
-    float gMax = ((m_chromakeyRangeMax >> 8) & 0xFF) / 255.0f;
-    float bMax = (m_chromakeyRangeMax & 0xFF) / 255.0f;
-
-    if (m_pixelFormatOverride == 1) {
-      std::swap(rMin, bMin);
-      std::swap(rMax, bMax);
-    }
+    float rMin = 0.0f, gMin = 0.0f, bMin = 0.0f, aMinUnused = 0.0f;
+    float rMax = 0.0f, gMax = 0.0f, bMax = 0.0f, aMaxUnused = 0.0f;
+    UnpackGrColorNorm(m_chromakeyRangeMin, m_pixelFormatOverride, rMin, gMin,
+                      bMin, aMinUnused);
+    UnpackGrColorNorm(m_chromakeyRangeMax, m_pixelFormatOverride, rMax, gMax,
+                      bMax, aMaxUnused);
     GLIDE_LOG(DEBUG, "GLES",
               "ChromaRangeMin: R=" << rMin << ", G=" << gMin << ", B=" << bMin);
     GLIDE_LOG(DEBUG, "GLES",
@@ -1176,12 +1161,9 @@ void OpenGLESBackend::PopulateUniforms(uint32_t dirtyMask) {
     // Milestone 8: Fogging State
     glUniform1i(m_uFogModeLoc, (int)m_fogMode);
 
-    float fogR = ((m_fogColor >> 16) & 0xFF) / 255.0f;
-    float fogG = ((m_fogColor >> 8) & 0xFF) / 255.0f;
-    float fogB = (m_fogColor & 0xFF) / 255.0f;
-    if (m_pixelFormatOverride == 1) {
-      std::swap(fogR, fogB);
-    }
+    float fogR = 0.0f, fogG = 0.0f, fogB = 0.0f, fogAUnused = 1.0f;
+    UnpackGrColorNorm(m_fogColor, m_pixelFormatOverride, fogR, fogG, fogB,
+                      fogAUnused);
     glUniform4f(m_uFogColorLoc, fogR, fogG, fogB, 1.0f);
   }
 
@@ -1204,20 +1186,12 @@ void OpenGLESBackend::PopulateUniforms(uint32_t dirtyMask) {
       enabled[i] = m_texChromaMode[i];
       rangeMode[i] = m_texChromaRangeMode[i];
 
-      float rMin = ((m_texChromaMin[i] >> 16) & 0xFF) / 255.0f;
-      float gMin = ((m_texChromaMin[i] >> 8) & 0xFF) / 255.0f;
-      float bMin = (m_texChromaMin[i] & 0xFF) / 255.0f;
-      float aMin = ((m_texChromaMin[i] >> 24) & 0xFF) / 255.0f;
-
-      float rMax = ((m_texChromaMax[i] >> 16) & 0xFF) / 255.0f;
-      float gMax = ((m_texChromaMax[i] >> 8) & 0xFF) / 255.0f;
-      float bMax = (m_texChromaMax[i] & 0xFF) / 255.0f;
-      float aMax = ((m_texChromaMax[i] >> 24) & 0xFF) / 255.0f;
-
-      if (m_pixelFormatOverride == 1) {
-        std::swap(rMin, bMin);
-        std::swap(rMax, bMax);
-      }
+      float rMin = 0.0f, gMin = 0.0f, bMin = 0.0f, aMin = 0.0f;
+      float rMax = 0.0f, gMax = 0.0f, bMax = 0.0f, aMax = 0.0f;
+      UnpackGrColorNorm(m_texChromaMin[i], m_pixelFormatOverride, rMin, gMin,
+                        bMin, aMin);
+      UnpackGrColorNorm(m_texChromaMax[i], m_pixelFormatOverride, rMax, gMax,
+                        bMax, aMax);
 
       minColor[i * 4 + 0] = rMin;
       minColor[i * 4 + 1] = gMin;
@@ -1257,13 +1231,9 @@ void OpenGLESBackend::PopulateUniforms(uint32_t dirtyMask) {
     if (m_uTmuConstantColorLoc != -1) {
       float tc[8];
       for (int i = 0; i < 2; ++i) {
-        float r = ((m_tmuConstantColor[i] >> 16) & 0xFF) / 255.0f;
-        float g = ((m_tmuConstantColor[i] >> 8) & 0xFF) / 255.0f;
-        float b = (m_tmuConstantColor[i] & 0xFF) / 255.0f;
-        float a = ((m_tmuConstantColor[i] >> 24) & 0xFF) / 255.0f;
-        if (m_pixelFormatOverride == 1) {
-          std::swap(r, b);
-        }
+        float r = 0.0f, g = 0.0f, b = 0.0f, a = 1.0f;
+        UnpackGrColorNorm(m_tmuConstantColor[i], m_pixelFormatOverride, r, g, b,
+                          a);
         tc[i * 4 + 0] = r;
         tc[i * 4 + 1] = g;
         tc[i * 4 + 2] = b;
