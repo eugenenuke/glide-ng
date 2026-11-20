@@ -10479,6 +10479,52 @@ TEST_CASE("M12.5 Compatibility Catalog INI Presets & Directory Integrity",
     CHECK(cfg.msaaSamples == 1u);
     CHECK(cfg.noSplash == false);
   }
+  {
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load(
+        (catalogDir / "games" / "lands-of-lore-2" / "glide-ng.ini").string(),
+        cfg));
+    CHECK(cfg.model == GlideWrapper::CardModel::VoodooGraphics);
+    CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_48);
+    CHECK(cfg.msaaSamples == 1u);
+    CHECK(cfg.noSplash == false);
+  }
+  {
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load(
+        (catalogDir / "games" / "lands-of-lore-2" / "glide-ng.hq.ini")
+            .string(),
+        cfg));
+    CHECK(cfg.model == GlideWrapper::CardModel::Voodoo2);
+    CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_56);
+    CHECK(cfg.msaaSamples == 4u);
+    CHECK(cfg.presentationFilter == 1u);
+    CHECK(cfg.noDitherSub == true);
+    CHECK(cfg.noSplash == false);
+  }
+  {
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load(
+        (catalogDir / "games" / "lands-of-lore-2" / "glide-ng.voodoo2.ini")
+            .string(),
+        cfg));
+    CHECK(cfg.model == GlideWrapper::CardModel::Voodoo2);
+    CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_56);
+    CHECK(cfg.msaaSamples == 1u);
+    CHECK(cfg.noSplash == false);
+  }
+  {
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load(
+        (catalogDir / "games" / "lands-of-lore-2" / "glide-ng.software.ini")
+            .string(),
+        cfg));
+    CHECK(cfg.backend == "software");
+    CHECK(cfg.model == GlideWrapper::CardModel::VoodooGraphics);
+    CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_48);
+    CHECK(cfg.msaaSamples == 1u);
+    CHECK(cfg.noSplash == false);
+  }
 }
 
 TEST_CASE("Automatic One-Shot Startup Splash Policy on grSstWinOpen",
@@ -11533,6 +11579,143 @@ TEST_CASE("AUXBUFFER ZA16 mask, COMPARE_TO_BIAS depth test, nested LFB lock, and
     CHECK(rgb565R(got[0]) > 220u);
     CHECK(rgb565G(got[1]) > 220u);
     CHECK(rgb565B(got[2]) > 220u);
+
+    winClose(ctx);
+    glideShutdown();
+    ::unsetenv("GLIDE_NG_BACKEND");
+    ::unsetenv("GLIDE_NG_HEADLESS");
+  }
+  ::dlclose(handle);
+#endif
+}
+
+TEST_CASE(
+    "Textured grDrawLine and grDrawPoint obey TMU/color combiner across "
+    "backends",
+    "[Glide3][Lines][Combiner]") {
+#ifdef __linux__
+  void* handle = OpenGlide3Handle();
+  REQUIRE(handle != nullptr);
+
+  using GlideInitFn = void (*)();
+  using GlideShutdownFn = void (*)();
+  using SstSelectFn = void (*)(int);
+  using SstWinOpenFn = GrContext_t (*)(FxU32, GrScreenResolution_t,
+                                       GrScreenRefresh_t, GrColorFormat_t,
+                                       GrOriginLocation_t, int, int);
+  using SstWinCloseFn = FxBool (*)(GrContext_t);
+  using VertexLayoutFn = void (*)(FxU32, FxI32, FxU32);
+  using ResetTriFn = void (*)();
+  using BufferClearFn = void (*)(GrColor_t, GrAlpha_t, FxU32);
+  using DepthModeFn = void (*)(GrDepthBufferMode_t);
+  using ColorCombineFn = void (*)(GrCombineFunction_t, GrCombineFactor_t,
+                                  GrCombineLocal_t, GrCombineOther_t, FxBool);
+  using AlphaCombineFn = void (*)(GrCombineFunction_t, GrCombineFactor_t,
+                                  GrCombineLocal_t, GrCombineOther_t, FxBool);
+  using TexCombineFn = void (*)(GrChipID_t, GrCombineFunction_t,
+                                GrCombineFactor_t, GrCombineFunction_t,
+                                GrCombineFactor_t, FxBool, FxBool);
+  using TexMinAddrFn = FxU32 (*)(GrChipID_t);
+  using TexDownloadFn = void (*)(GrChipID_t, FxU32, FxU32, GrTexInfo*);
+  using TexSourceFn = void (*)(GrChipID_t, FxU32, FxU32, GrTexInfo*);
+  using AlphaBlendFn = void (*)(GrAlphaBlendFnc_t, GrAlphaBlendFnc_t,
+                                GrAlphaBlendFnc_t, GrAlphaBlendFnc_t);
+  using DrawLineFn = void (*)(const void*, const void*);
+  using DrawPointFn = void (*)(const void*);
+  using ReadRegionFn = FxBool (*)(GrBuffer_t, FxU32, FxU32, FxU32, FxU32, FxU32,
+                                  void*);
+
+  auto glideInit = reinterpret_cast<GlideInitFn>(::dlsym(handle, "grGlideInit"));
+  auto glideShutdown = reinterpret_cast<GlideShutdownFn>(::dlsym(handle, "grGlideShutdown"));
+  auto sstSelect = reinterpret_cast<SstSelectFn>(::dlsym(handle, "grSstSelect"));
+  auto winOpen = reinterpret_cast<SstWinOpenFn>(::dlsym(handle, "grSstWinOpen"));
+  auto winClose = reinterpret_cast<SstWinCloseFn>(::dlsym(handle, "grSstWinClose"));
+  auto vtxLayout = reinterpret_cast<VertexLayoutFn>(::dlsym(handle, "grVertexLayout"));
+  auto resetLayout = reinterpret_cast<ResetTriFn>(::dlsym(handle, "grReset"));
+  auto bufClear = reinterpret_cast<BufferClearFn>(::dlsym(handle, "grBufferClear"));
+  auto depthMode = reinterpret_cast<DepthModeFn>(::dlsym(handle, "grDepthBufferMode"));
+  auto colorCombine = reinterpret_cast<ColorCombineFn>(::dlsym(handle, "grColorCombine"));
+  auto alphaCombine = reinterpret_cast<AlphaCombineFn>(::dlsym(handle, "grAlphaCombine"));
+  auto texCombine = reinterpret_cast<TexCombineFn>(::dlsym(handle, "grTexCombine"));
+  auto texMinAddr = reinterpret_cast<TexMinAddrFn>(::dlsym(handle, "grTexMinAddress"));
+  auto texDownload = reinterpret_cast<TexDownloadFn>(::dlsym(handle, "grTexDownloadMipMap"));
+  auto texSource = reinterpret_cast<TexSourceFn>(::dlsym(handle, "grTexSource"));
+  auto alphaBlend = reinterpret_cast<AlphaBlendFn>(::dlsym(handle, "grAlphaBlendFunction"));
+  auto drawLine = reinterpret_cast<DrawLineFn>(::dlsym(handle, "grDrawLine"));
+  auto drawPoint = reinterpret_cast<DrawPointFn>(::dlsym(handle, "grDrawPoint"));
+  auto readRegion = reinterpret_cast<ReadRegionFn>(::dlsym(handle, "grLfbReadRegion"));
+
+  struct TexVtx {
+    float x, y, z, oow;
+    float r, g, b, a;
+    float sow, tow;
+  };
+  auto rgb565R = [](uint16_t p) -> uint32_t { return ((p >> 11) & 0x1Fu) * 255u / 31u; };
+  auto rgb565G = [](uint16_t p) -> uint32_t { return ((p >> 5) & 0x3Fu) * 255u / 63u; };
+  auto rgb565B = [](uint16_t p) -> uint32_t { return (p & 0x1Fu) * 255u / 31u; };
+
+  std::vector<uint16_t> solidGreenTex(8 * 8, 0x07E0u);  // RGB565 pure green
+  for (const char* be : {"software", "vulkan", "opengl_es"}) {
+    ::setenv("GLIDE_NG_HEADLESS", "1", 1);
+    ::setenv("GLIDE_NG_BACKEND", be, 1);
+    glideInit();
+    sstSelect(0);
+    GrContext_t ctx = winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                              GR_COLORFORMAT_ARGB, GR_ORIGIN_UPPER_LEFT, 2, 1);
+    if (!ctx) {
+      glideShutdown();
+      continue;
+    }
+
+    (void)resetLayout;
+    vtxLayout(GR_PARAM_XY, 0, GR_PARAM_ENABLE);
+    vtxLayout(GR_PARAM_Z, 8, GR_PARAM_ENABLE);
+    vtxLayout(GR_PARAM_W, 12, GR_PARAM_ENABLE);
+    vtxLayout(GR_PARAM_RGB, 16, GR_PARAM_ENABLE);
+    vtxLayout(GR_PARAM_A, 28, GR_PARAM_ENABLE);
+    vtxLayout(GR_PARAM_ST0, 32, GR_PARAM_ENABLE);
+
+    depthMode(GR_DEPTHBUFFER_DISABLE);
+    alphaBlend(GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_ONE, GR_BLEND_ZERO);
+    bufClear(0xFF000000u, 0, 0xFFFFu);
+
+    GrTexInfo info{};
+    info.smallLodLog2 = GR_LOD_LOG2_8;
+    info.largeLodLog2 = GR_LOD_LOG2_8;
+    info.aspectRatioLog2 = GR_ASPECT_LOG2_1x1;
+    info.format = GR_TEXFMT_RGB_565;
+    info.data = solidGreenTex.data();
+    const FxU32 addr = texMinAddr(GR_TMU0);
+    texDownload(GR_TMU0, addr, GR_MIPMAPLEVELMASK_BOTH, &info);
+    texSource(GR_TMU0, addr, GR_MIPMAPLEVELMASK_BOTH, &info);
+    texCombine(GR_TMU0, GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+               GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE, FXFALSE,
+               FXFALSE);
+
+    // Modulate solid green texture by WHITE vertex color -> line/point MUST be
+    // green (0, ~255, 0), NOT white (255, 255, 255)! (Lands of Lore 2 bug fix)
+    colorCombine(GR_COMBINE_FUNCTION_SCALE_OTHER, GR_COMBINE_FACTOR_LOCAL,
+                 GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_TEXTURE, FXFALSE);
+    alphaCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+                 GR_COMBINE_LOCAL_CONSTANT, GR_COMBINE_OTHER_NONE, FXFALSE);
+
+    TexVtx a{100.5f, 120.5f, 0.5f, 1.0f, 255.0f, 255.0f, 255.0f, 255.0f, 16.0f, 16.0f};
+    TexVtx b{300.5f, 120.5f, 0.5f, 1.0f, 255.0f, 255.0f, 255.0f, 255.0f, 240.0f, 240.0f};
+    drawLine(&a, &b);
+
+    TexVtx pt{200.5f, 200.5f, 0.5f, 1.0f, 255.0f, 255.0f, 255.0f, 255.0f, 128.0f, 128.0f};
+    drawPoint(&pt);
+
+    uint16_t linePx = 0, ptPx = 0;
+    REQUIRE(readRegion(GR_BUFFER_BACKBUFFER, 200, 120, 1, 1, 2, &linePx) == FXTRUE);
+    REQUIRE(readRegion(GR_BUFFER_BACKBUFFER, 200, 200, 1, 1, 2, &ptPx) == FXTRUE);
+    INFO("backend=" << be << " linePx=0x" << std::hex << linePx << " ptPx=0x" << ptPx);
+    CHECK(rgb565G(linePx) > 200u);
+    CHECK(rgb565R(linePx) < 25u);
+    CHECK(rgb565B(linePx) < 25u);
+    CHECK(rgb565G(ptPx) > 200u);
+    CHECK(rgb565R(ptPx) < 25u);
+    CHECK(rgb565B(ptPx) < 25u);
 
     winClose(ctx);
     glideShutdown();

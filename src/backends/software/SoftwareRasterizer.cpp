@@ -174,6 +174,16 @@ inline uint32_t SoftwareBackend::SampleTextureLevel(
   }
 }
 
+uint32_t SoftwareBackend::SampleTextureLevelSlow(
+    const struct VirtualTexture* targetTex, int lodIdx, float levelTrueS,
+    float levelTrueT, uint32_t targetClampS, uint32_t targetClampT,
+    uint32_t targetMinFilter, uint32_t tmuIdx,
+    const RasterizerState& state) const {
+  return SampleTextureLevel(targetTex, lodIdx, levelTrueS, levelTrueT,
+                            targetClampS, targetClampT, targetMinFilter, tmuIdx,
+                            state);
+}
+
 template <bool HasTexture, bool BlendEnabled, bool DitherEnabled>
 inline void SoftwareBackend::RasterizeTriangleTemplate(
     const ModernVertex& a, const ModernVertex& b, const ModernVertex& c,

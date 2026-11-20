@@ -131,6 +131,11 @@ class SoftwareBackend : public SoftwareBackendBase {
       float levelTrueT, uint32_t targetClampS, uint32_t targetClampT,
       uint32_t targetMinFilter, uint32_t tmuIdx,
       const RasterizerState& state) const;
+  uint32_t SampleTextureLevelSlow(
+      const struct VirtualTexture* targetTex, int lodIdx, float levelTrueS,
+      float levelTrueT, uint32_t targetClampS, uint32_t targetClampT,
+      uint32_t targetMinFilter, uint32_t tmuIdx,
+      const RasterizerState& state) const;
 
   uint32_t EvaluateCombinerColor(const ModernVertex& v,
                                  const RasterizerState& state);
