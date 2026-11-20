@@ -252,3 +252,11 @@ if(WIN32 AND MINGW AND CMAKE_DLLTOOL)
     add_win32_3dfx_implib(glide2x "${CMAKE_CURRENT_SOURCE_DIR}/glide2/glide2x.def")
     add_win32_3dfx_implib(glide3x "${CMAKE_CURRENT_SOURCE_DIR}/glide3/glide3x.def")
 endif()
+
+# Optional clean-room DOS/32 Glide 2.x overlay (GLIDE2X.OVL) for DOSBox-SVN / DOSBox-X
+if(COMMAND add_dos_glide_ovl)
+    add_dos_glide_ovl(glide2x
+        SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/dos_ovl/glide2x_ovl.c"
+        LINKER_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/dos_ovl/glide2x_ovl.lnk"
+    )
+endif()

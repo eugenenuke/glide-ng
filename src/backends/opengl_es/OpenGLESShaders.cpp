@@ -12,9 +12,10 @@ namespace GlideWrapper {
 const char* vsSource = R"(#version 300 es
 layout(location = 0) in vec2 inPos;
 layout(location = 1) in vec2 inTex;
+uniform bool uFlipY;
 out vec2 fragTex;
 void main() {
-    fragTex = inTex;
+    fragTex = vec2(inTex.x, uFlipY ? (1.0 - inTex.y) : inTex.y);
     gl_Position = vec4(inPos, 0.0, 1.0);
 }
 )";
@@ -67,13 +68,18 @@ uniform highp int uDepthBufferMode; // 0=None, 1=Z, 2=W
 uniform float uDepthBias;
 
 void main() {
-    // Convert Glide window-space coordinates to GLES NDC (Y-up)
+    // Convert Glide window-space coordinates to top-down FBO NDC (row 0 = top
+    // of screen, matching Vulkan & 3dfx SST-1). OpenGL ES FBO rasterizers apply
+    // bottom-left edge tie-breaking (min-Y included, max-Y excluded), so keeping
+    // Glide Y unflipped makes top horizontal edges INCLUDED and lets 1-pixel
+    // scanline triangles (e.g. Build Engine floors/ceilings in Blood) rasterize
+    // identically to Vulkan, Software, and authentic 3dfx hardware.
     float ndcX = (inPos.x / (uViewportSize.x / 2.0)) - 1.0;
     float ndcY;
     if (uSstOrigin == 0) { // GR_ORIGIN_UPPER_LEFT
-        ndcY = 1.0 - (inPos.y / (uViewportSize.y / 2.0));
-    } else {              // GR_ORIGIN_LOWER_LEFT
         ndcY = (inPos.y / (uViewportSize.y / 2.0)) - 1.0;
+    } else {              // GR_ORIGIN_LOWER_LEFT
+        ndcY = 1.0 - (inPos.y / (uViewportSize.y / 2.0));
     }
     
     float ndcZ;

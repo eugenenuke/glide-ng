@@ -55,12 +55,12 @@ For running the Vulkan backend under 32-bit Wine, ensure a 32-bit Vulkan ICD is 
 
 ### Optional: DOS/32 Cross-Compiler (Open Watcom v2)
 
-DOS/32 diagnostic and benchmark executables (`glide_info.exe`, `glide_bench.exe`, `glide_envtest.exe`) are optional; CMake skips them automatically when Open Watcom v2 is absent.
+DOS/32 diagnostic and benchmark executables (`glide_info.exe`, `glide_bench.exe`, `glide_envtest.exe`) and `glide-ng`'s clean-room GPL-3.0 DOSBox pass-through overlay (`glide2x.ovl`) are optional; CMake skips them automatically when Open Watcom v2 is absent.
 
 To enable DOS/32 cross-builds (no root required):
 1. Download a Linux x64 release archive from [Open Watcom v2 Releases](https://github.com/open-watcom/open-watcom-v2/releases) (for example, `open-watcom-2_0-c-linux-x64.tar.xz`).
 2. Extract it into `./vendor/watcom/` (git-ignored) so `./vendor/watcom/binl64/wcc386` exists, or set the `WATCOM` environment variable to an existing Open Watcom installation.
-3. Re-run CMake configure. When detected, the `dos_tools` target builds self-contained CauseWay DOS/32 executables into `<build>/dos/` that dynamically load `GLIDE2X.OVL`.
+3. Re-run CMake configure. When detected, the `dos_tools` target builds self-contained CauseWay DOS/32 executables and the clean-room `glide2x.ovl` (exporting all 130 DOSBox bridge functions plus Glide 2.11 `guFb*` compatibility wrappers) into `<build>/dos/`.
 
 ### Windows (Native Build)
 
@@ -154,7 +154,7 @@ Switch backends without modifying any files using `GLIDE_NG_BACKEND=vulkan` (def
 
 ### DOSBox-X & Patched DOSBox-SVN (DOS/32 Glide Pass-Through)
 
-DOSBox's Glide pass-through forwards guest `GLIDE2X.OVL` calls over I/O port `0x600` to the host `libglide2x.so`. Place the small (~31 KB) DOSBox HLE pass-through `GLIDE2X.OVL` in the game directory or on DOS `PATH`:
+DOSBox's Glide pass-through forwards guest `GLIDE2X.OVL` calls over I/O port `0x600` to the host `libglide2x.so`. Place `glide-ng`'s clean-room `build/dos/glide2x.ovl` (~13 KB, drop-in compatible with unmodified DOSBox-SVN and DOSBox-X and exporting all 130 DOSBox bridge symbols plus `guFbReadRegion`/`guFbWriteRegion`) in the game directory or on DOS `PATH`:
 
 **Patched DOSBox-SVN (`dosbox-svn.conf`, minimal overrides):**
 ```ini
