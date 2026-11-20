@@ -34,7 +34,7 @@ The retail CD-ROM includes three executables (`MDK.EXE` DOS software, `MDK95.EXE
 
 ---
 
-## Recommended Launch Configurations
+## Recommended Launch Configurations (Wine32 / Windows)
 
 Copy `glide-ng`'s Win32 **`glide2x.dll`** into the *MDK* game directory alongside `MDK3DFX.EXE`. If unpacking manually from the CD-ROM instead of running `SETUP.EXE`, ensure three items exist in the game root before the first launch:
 
@@ -120,12 +120,12 @@ The brief milky haze seen right as Kurt leaps out of the orbital shuttle is the 
 
 ## Quirks, Known Issues & Controls
 
-### Missing Manual-Unpack Directories (`MDKFONT.FTI`, `SCRATCH\`, `SAVES\`)
-* **`Error opening MISC\MDKFONT.FTI - check manual`**: Copy `MISC\FONTE.FTI` (English) to `MISC\MDKFONT.FTI`.
-* **`Error opening/accessing SCRATCH\TLEVEL.MTO`**: Create an empty writable `SCRATCH\` directory in the game root.
-* **Saving failing silently**: Create an empty writable `SAVES\` directory in the game root.
+### Installation & Engine Notes
+* **`Error opening MISC\MDKFONT.FTI - check manual`:** Copy `MISC\FONTE.FTI` (English) to `MISC\MDKFONT.FTI`.
+* **`Error opening/accessing SCRATCH\TLEVEL.MTO`:** Create an empty writable `SCRATCH\` directory in the game root.
+* **Saving failing silently:** Create an empty writable `SAVES\` directory in the game root.
 
-### Essential Controls
+### Useful Controls
 
 | Key | Action |
 | :--- | :--- |
