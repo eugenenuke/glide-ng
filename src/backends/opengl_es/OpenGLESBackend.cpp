@@ -427,9 +427,50 @@ bool OpenGLESBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
   m_windowAttached = true;
 
   // Preserve any foreign host EGL context (e.g. DOSBox-X output=opengl on
-  // Wayland) when returning from grSstWinOpen.
+  // Wayland) when returning from grSstWinOpen, and release any Win32 WGL
+  // context bound during initialization so titles that call grSstWinOpen on a
+  // worker thread and render on a different thread (e.g. EA Thrash games) can
+  // acquire the HGLRC without ERROR_BUSY (170).
   RestoreHostContextIfSaved();
+  ReleaseWglContextOnCurrentThread_Locked();
   return true;
+}
+
+void OpenGLESBackend::ReleaseThreadContext() {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  ReleaseWglContextOnCurrentThread_Locked();
+}
+
+void OpenGLESBackend::ReleaseWglContextOnCurrentThread_Locked() {
+#if defined(_WIN32)
+  if (m_useWgl && m_wglContext) {
+    HGLRC ctx = static_cast<HGLRC>(m_wglContext);
+    if (wglGetCurrentContext() == ctx) {
+      wglMakeCurrent(nullptr, nullptr);
+    }
+  }
+#endif
+}
+
+void OpenGLESBackend::UploadGammaLutIfDirty_Locked() {
+  if (!m_gammaLutDirty || m_glGammaLutTex == 0) return;
+  uint8_t lutData[256 * 3];
+  for (int i = 0; i < 256; ++i) {
+    lutData[i * 3 + 0] = m_lutR[i];
+    lutData[i * 3 + 1] = m_lutG[i];
+    lutData[i * 3 + 2] = m_lutB[i];
+  }
+  glActiveTexture(GL_TEXTURE0);
+  glBindTexture(GL_TEXTURE_2D, m_glGammaLutTex);
+  glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+  glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 256, 1, GL_RGB, GL_UNSIGNED_BYTE,
+                  lutData);
+  glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+  glBindTexture(GL_TEXTURE_2D, 0);
+  m_cachedActiveTexUnit = 0;
+  m_cachedBoundTex[0] = 0;
+  m_gammaLutDirty = false;
+  checkGLError("UploadGammaLutIfDirty glTexSubImage2D");
 }
 
 void OpenGLESBackend::DetachWindow() {
@@ -501,6 +542,8 @@ void OpenGLESBackend::PresentToWindowSurface(uint32_t hostW, uint32_t hostH) {
     // onto the bottom-up OpenGL ES default window surface.
     glUniform1i(m_uFlipYLoc, 1);
   }
+
+  UploadGammaLutIfDirty_Locked();
 
   glActiveTexture(GL_TEXTURE0);
   glBindTexture(GL_TEXTURE_2D, m_fboTextures[0]);
@@ -607,9 +650,40 @@ bool OpenGLESBackend::SwapBuffers() {
     uint32_t hostW = 0;
     uint32_t hostH = 0;
     const bool resized = m_surfaceHost.SyncBounds(hostW, hostH);
+    const bool surfaceInvalidated = m_surfaceHost.ConsumeSurfaceInvalidated();
     if (hostW == 0 || hostH == 0) {
       m_surfaceHost.GetDrawableSize(hostW, hostH);
     }
+
+#if defined(_WIN32)
+    if (surfaceInvalidated && m_useWgl && m_wglTargetHwnd && m_wglContext &&
+        !m_wglDummyHwnd) {
+      HWND hwnd = static_cast<HWND>(m_wglTargetHwnd);
+      if (IsWindow(hwnd)) {
+        wglMakeCurrent(nullptr, nullptr);
+        if (m_wglHdc) {
+          ReleaseDC(hwnd, static_cast<HDC>(m_wglHdc));
+          m_wglHdc = nullptr;
+        }
+        HDC newHdc = GetDC(hwnd);
+        if (newHdc) {
+          m_wglHdc = static_cast<void*>(newHdc);
+          if (!wglMakeCurrent(newHdc, static_cast<HGLRC>(m_wglContext))) {
+            GLIDE_LOG(WARN, "GLES",
+                      "WGL re-bind after host HWND mutation failed: err="
+                          << GetLastError());
+          } else {
+            GLIDE_LOG(INFO, "GLES",
+                      "Re-bound Win32 WGL HDC after host HWND surface "
+                      "mutation.");
+          }
+        }
+        m_surfaceHost.RefreshWin32SurfaceFingerprint();
+      }
+    }
+#else
+    (void)surfaceInvalidated;
+#endif
 
 #if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_WAYLAND_EGL)
     if (resized && m_wlEglWindow && hostW > 0 && hostH > 0) {
@@ -1515,10 +1589,16 @@ bool OpenGLESBackend::EnsureContextCurrent() {
       return true;
     }
     if (!wglMakeCurrent(hdc, ctx)) {
-      GLIDE_LOG(CRITICAL, "GLES",
-                "wglMakeCurrent failed: err=" << GetLastError());
+      ++m_makeCurrentFailCount;
+      if (m_makeCurrentFailCount <= 5 ||
+          (m_makeCurrentFailCount % 10000) == 0) {
+        GLIDE_LOG(CRITICAL, "GLES",
+                  "wglMakeCurrent failed: err=" << GetLastError()
+                      << " (count=" << m_makeCurrentFailCount << ")");
+      }
       return false;
     }
+    m_makeCurrentFailCount = 0;
     return true;
 #else
     return false;
@@ -2159,6 +2239,7 @@ bool OpenGLESBackend::CreateWin32WglContext() {
     swapIntervalExt(m_config.vsync ? 1 : 0);
   }
 
+  m_surfaceHost.RefreshWin32SurfaceFingerprint();
   GLIDE_LOG(INFO, "GLES",
             "Created Win32 WGL OpenGL 3.3 Core context (mode="
                 << NativeSurfaceHost::ModeToString(mode) << ").");
@@ -2341,6 +2422,7 @@ bool OpenGLESBackend::CreateGLContext(void* nativeWindowHandle, uint32_t width,
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
   glBindTexture(GL_TEXTURE_2D, 0);
+  m_gammaLutDirty = m_useGammaLut;
 
   // Create the offscreen FBO GPU rendering textures (Double-Buffered)
   const GLint presentFilter =
@@ -2896,22 +2978,11 @@ void OpenGLESBackend::LoadGammaTable_Locked(uint32_t nentries,
     if (bTable) m_lutB[i] = static_cast<uint8_t>(bTable[i] & 0xFFu);
   }
 
-  if (m_glGammaLutTex && EnsureContextCurrent()) {
-    uint8_t lutData[256 * 3];
-    for (int i = 0; i < 256; ++i) {
-      lutData[i * 3 + 0] = m_lutR[i];
-      lutData[i * 3 + 1] = m_lutG[i];
-      lutData[i * 3 + 2] = m_lutB[i];
-    }
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, m_glGammaLutTex);
-    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 256, 1, GL_RGB, GL_UNSIGNED_BYTE,
-                    lutData);
-    glBindTexture(GL_TEXTURE_2D, 0);
-    m_cachedActiveTexUnit = 0;
-    m_cachedBoundTex[0] = 0;
-    checkGLError("LoadGammaTable glTexSubImage2D");
-  }
+  // Defer the actual GL texture upload to the render thread during
+  // PresentToWindowSurface() so grLoadGammaTable() called on a setup/worker
+  // thread never steals the thread-affine WGL/EGL context from the render
+  // thread.
+  m_gammaLutDirty = true;
   m_useGammaLut = true;
 }
 

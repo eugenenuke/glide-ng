@@ -10666,6 +10666,61 @@ TEST_CASE("M12.5 Compatibility Catalog INI Presets & Directory Integrity",
     CHECK(cfg.noDitherSub == true);
     CHECK(cfg.noSplash == false);
   }
+  // Need for Speed: Porsche Unleashed (2000, Win32 Glide 3.x — voodoo2z.dll)
+  {
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load((catalogDir / "games" / "nfs-porsche-unleashed" /
+                         "glide-ng.ini")
+                            .string(),
+                        cfg));
+    CHECK(cfg.backend == "vulkan");
+    CHECK(cfg.model == GlideWrapper::CardModel::Voodoo2);
+    CHECK(cfg.glide3ApiVersion == GlideWrapper::ApiVersion::GLIDE_3_03);
+    CHECK(cfg.msaaSamples == 1u);
+    CHECK(cfg.presentationFilter == 0u);
+    CHECK(cfg.noDitherSub == true);
+    CHECK(cfg.noSplash == false);
+  }
+  {
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load((catalogDir / "games" / "nfs-porsche-unleashed" /
+                         "glide-ng.hq.ini")
+                            .string(),
+                        cfg));
+    CHECK(cfg.backend == "vulkan");
+    CHECK(cfg.model == GlideWrapper::CardModel::Voodoo2);
+    CHECK(cfg.glide3ApiVersion == GlideWrapper::ApiVersion::GLIDE_3_03);
+    CHECK(cfg.msaaSamples == 4u);
+    CHECK(cfg.presentationFilter == 1u);
+    CHECK(cfg.noDitherSub == true);
+    CHECK(cfg.noSplash == false);
+  }
+  {
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load((catalogDir / "games" / "nfs-porsche-unleashed" /
+                         "glide-ng.voodoo3.ini")
+                            .string(),
+                        cfg));
+    CHECK(cfg.backend == "vulkan");
+    CHECK(cfg.model == GlideWrapper::CardModel::Voodoo3);
+    CHECK(cfg.glide3ApiVersion == GlideWrapper::ApiVersion::GLIDE_3_10);
+    CHECK(cfg.msaaSamples == 1u);
+    CHECK(cfg.noDitherSub == true);
+    CHECK(cfg.noSplash == false);
+  }
+  {
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load((catalogDir / "games" / "nfs-porsche-unleashed" /
+                         "glide-ng.software.ini")
+                            .string(),
+                        cfg));
+    CHECK(cfg.backend == "software");
+    CHECK(cfg.model == GlideWrapper::CardModel::Voodoo2);
+    CHECK(cfg.glide3ApiVersion == GlideWrapper::ApiVersion::GLIDE_3_03);
+    CHECK(cfg.msaaSamples == 1u);
+    CHECK(cfg.noDitherSub == true);
+    CHECK(cfg.noSplash == false);
+  }
 }
 
 TEST_CASE("Automatic One-Shot Startup Splash Policy on grSstWinOpen",
@@ -12096,6 +12151,42 @@ TEST_CASE("Glide 3.x grTexDownloadTable broadcasts palette across both TMUs "
     CHECK(rgb565R(pxKeepBlue) < 25u);
     CHECK(rgb565G(pxGreen) > 200u);
     CHECK(rgb565R(pxGreen) < 25u);
+
+    // GR_TEXTABLE_PALETTE_6666_EXT (32-bit 0xAARRGGBB -> 6:6:6:6 alpha palette):
+    // Verify alpha=0 white background (0x00FFFFFF) blends completely
+    // transparent over a blue cleared buffer when SRC_ALPHA/ONE_MINUS_SRC_ALPHA
+    // blending is active (NFSPU Voodoo3 HUD glyph regression).
+    auto alphaBlend =
+        reinterpret_cast<void (*)(GrAlphaBlendFnc_t, GrAlphaBlendFnc_t,
+                                  GrAlphaBlendFnc_t, GrAlphaBlendFnc_t)>(
+            dlsym(handle, "grAlphaBlendFunction"));
+    REQUIRE(alphaBlend != nullptr);
+    uint32_t pal6666[256]{};
+    pal6666[5] = 0x00FFFFFFu;   // Transparent white (alpha=0, RGB=FFFFFF)
+    pal6666[11] = 0xFFFF0000u;  // Opaque red (alpha=255, RGB=FF0000)
+    texDownloadTable(GR_TEXTABLE_PALETTE_6666_EXT, pal6666);
+
+    alphaCombine(GR_COMBINE_FUNCTION_SCALE_OTHER, GR_COMBINE_FACTOR_ONE,
+                 GR_COMBINE_LOCAL_NONE, GR_COMBINE_OTHER_TEXTURE, FXFALSE);
+    alphaBlend(GR_BLEND_SRC_ALPHA, GR_BLEND_ONE_MINUS_SRC_ALPHA, GR_BLEND_ONE,
+               GR_BLEND_ZERO);
+    bufClear(0xFF00FF00u, 0, 0xFFFF);  // Green clear (invariant across ABGR/ARGB)
+    texSource(GR_TMU1, base1, GR_MIPMAPLEVELMASK_BOTH, &t5);
+    drawQuad(120.0f, 10.0f, 160.0f, 50.0f);  // Transparent white -> keeps green
+    texSource(GR_TMU1, base1 + 1024u, GR_MIPMAPLEVELMASK_BOTH, &t11);
+    drawQuad(170.0f, 10.0f, 210.0f, 50.0f);  // Opaque red -> writes red
+
+    uint16_t pxTransp = 0, pxOpaque = 0;
+    REQUIRE(readRegion(GR_BUFFER_BACKBUFFER, 140, 30, 1, 1, 2, &pxTransp) ==
+            FXTRUE);
+    REQUIRE(readRegion(GR_BUFFER_BACKBUFFER, 190, 30, 1, 1, 2, &pxOpaque) ==
+            FXTRUE);
+    INFO("backend=" << be << " pal6666 transp=0x" << std::hex << pxTransp
+                    << " opaque=0x" << pxOpaque);
+    CHECK(rgb565G(pxTransp) > 200u);
+    CHECK(rgb565R(pxTransp) < 25u);
+    CHECK(rgb565R(pxOpaque) > 200u);
+    CHECK(rgb565G(pxOpaque) < 25u);
 
     winClose(ctx);
     glideShutdown();

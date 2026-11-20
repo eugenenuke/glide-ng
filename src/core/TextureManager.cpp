@@ -1586,13 +1586,23 @@ bool TextureManager::DownloadTablePartial(uint32_t tmu, uint32_t type,
         newPalette[i] = paletteData[i] | 0xFF000000u;
       }
     } else {
+      // GR_TEXTABLE_PALETTE_6666_EXT (type == 3): Per 3dfx Glide 3.x driver
+      // silicon behavior (cvg/h3/h5 gtexdl.c), callers pass standard 32-bit
+      // ARGB8888 entries (0xAARRGGBB). Hardware packs the top 6 bits of each
+      // 8-bit channel (0xFC000000 / 0x00FC0000 / 0x0000FC00 / 0x000000FC) into
+      // the 24-bit nccTable0 register as A6R6G6B6; reconstruct 8-bit channels
+      // with authentic MSB-to-LSB bit replication ((c6 << 2) | (c6 >> 4)).
       for (int i = s; i <= e; ++i) {
-        uint32_t val = paletteData[i];
+        const uint32_t val = paletteData[i];
+        const uint32_t a6 = (val >> 26) & 0x3Fu;
+        const uint32_t r6 = (val >> 18) & 0x3Fu;
+        const uint32_t g6 = (val >> 10) & 0x3Fu;
+        const uint32_t b6 = (val >> 2) & 0x3Fu;
         newPalette[i] =
-            (((val & 0x3F) << 2) | ((val >> 4) & 0x3)) |
-            ((((val >> 6) & 0x3F) << 10) | (((val >> 10) & 0x3) << 8)) |
-            ((((val >> 12) & 0x3F) << 18) | (((val >> 16) & 0x3) << 16)) |
-            ((((val >> 18) & 0x3F) << 26) | (((val >> 22) & 0x3) << 24));
+            (((a6 << 2) | (a6 >> 4)) << 24) |
+            (((r6 << 2) | (r6 >> 4)) << 16) |
+            (((g6 << 2) | (g6 >> 4)) << 8) |
+            ((b6 << 2) | (b6 >> 4));
       }
     }
 

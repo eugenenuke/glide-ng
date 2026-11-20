@@ -1031,7 +1031,7 @@ bool NativeSurfaceHost::AttachWin32Embedded(void* parentHwndPtr) {
   if (m_fullscreen) {
     ApplyWin32EmbeddedFullscreenIfNeeded();
   }
-  m_win32LastStyle = static_cast<intptr_t>(GetWindowLongA(parent, GWL_STYLE));
+  RefreshWin32SurfaceFingerprint();
   m_win32SurfaceInvalidated = false;
   m_win32PendingForeground.store(false, std::memory_order_relaxed);
   m_win32ResetFullscreenTracking.store(false, std::memory_order_relaxed);
@@ -1736,6 +1736,9 @@ void NativeSurfaceHost::Detach() {
   m_win32PendingForeground.store(false, std::memory_order_relaxed);
   m_win32ResetFullscreenTracking.store(false, std::memory_order_relaxed);
   m_win32LastStyle = 0;
+  m_win32LastExStyle = 0;
+  m_win32LastWndProc = 0;
+  m_win32LastPixelFormat = 0;
   m_win32SavedStyle = 0;
   m_win32SavedExStyle = 0;
   m_win32SavedRect[0] = m_win32SavedRect[1] = m_win32SavedRect[2] =
@@ -1925,10 +1928,37 @@ bool NativeSurfaceHost::SyncBounds(uint32_t& outPixelW, uint32_t& outPixelH) {
     constexpr DWORD kStructuralStyleMask =
         WS_POPUP | WS_CAPTION | WS_THICKFRAME | WS_VISIBLE | WS_MINIMIZE |
         WS_MAXIMIZE;
+    constexpr DWORD kStructuralExStyleMask =
+        WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_APPWINDOW |
+        WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
     const LONG preStyle = GetWindowLongA(parent, GWL_STYLE);
+    const LONG preExStyle = GetWindowLongA(parent, GWL_EXSTYLE);
+    const intptr_t curWndProc =
+        static_cast<intptr_t>(GetWindowLongPtrA(parent, GWLP_WNDPROC));
+    int curPixelFormat = m_win32LastPixelFormat;
+    if (HDC hdc = GetDC(parent)) {
+      curPixelFormat = GetPixelFormat(hdc);
+      ReleaseDC(parent, hdc);
+    }
+    const bool wndProcChanged = (curWndProc != m_win32LastWndProc);
+    const bool pixelFormatChanged = (curPixelFormat != m_win32LastPixelFormat);
+    const bool exStyleChanged =
+        ((static_cast<DWORD>(preExStyle) & kStructuralExStyleMask) !=
+         (static_cast<DWORD>(m_win32LastExStyle) & kStructuralExStyleMask));
     bool styleChanged =
         ((static_cast<DWORD>(preStyle) & kStructuralStyleMask) !=
          (static_cast<DWORD>(m_win32LastStyle) & kStructuralStyleMask));
+    bool foreignTakeover = (wndProcChanged || pixelFormatChanged || exStyleChanged);
+    if (foreignTakeover) {
+      GLIDE_LOG(INFO, "WSI",
+                "NativeSurfaceHost: detected host HWND "
+                    << m_win32ParentHwnd << " surface mutation ("
+                    << (pixelFormatChanged ? "pixelFormat " : "")
+                    << (wndProcChanged ? "wndProc " : "")
+                    << (exStyleChanged ? "exStyle " : "")
+                    << "pfmt " << m_win32LastPixelFormat << "->"
+                    << curPixelFormat << "); marking WSI surface invalidated.");
+    }
 
     if (m_win32ResetFullscreenTracking.exchange(false,
                                                 std::memory_order_relaxed)) {
@@ -1975,12 +2005,18 @@ bool NativeSurfaceHost::SyncBounds(uint32_t& outPixelW, uint32_t& outPixelH) {
     }
 
     const LONG postStyle = GetWindowLongA(parent, GWL_STYLE);
+    const LONG postExStyle = GetWindowLongA(parent, GWL_EXSTYLE);
     if (appliedFullscreen ||
         ((static_cast<DWORD>(postStyle) & kStructuralStyleMask) !=
-         (static_cast<DWORD>(m_win32LastStyle) & kStructuralStyleMask))) {
+         (static_cast<DWORD>(m_win32LastStyle) & kStructuralStyleMask)) ||
+        ((static_cast<DWORD>(postExStyle) & kStructuralExStyleMask) !=
+         (static_cast<DWORD>(m_win32LastExStyle) & kStructuralExStyleMask))) {
       styleChanged = true;
     }
     m_win32LastStyle = static_cast<intptr_t>(postStyle);
+    m_win32LastExStyle = static_cast<intptr_t>(postExStyle);
+    m_win32LastWndProc = curWndProc;
+    m_win32LastPixelFormat = curPixelFormat;
     if (!IsWindowVisible(parent) || IsIconic(parent)) {
       // Skip WSI surface/swapchain recreation while the host HWND is hidden,
       // minimized, or closing (e.g. a title hiding its window before
@@ -1992,7 +2028,7 @@ bool NativeSurfaceHost::SyncBounds(uint32_t& outPixelW, uint32_t& outPixelH) {
       outPixelH = 0;
       return false;
     }
-    if (styleChanged) {
+    if (styleChanged || foreignTakeover) {
       m_win32SurfaceInvalidated = true;
     }
 
@@ -2037,6 +2073,25 @@ bool NativeSurfaceHost::ConsumeSurfaceInvalidated() {
   const bool was = m_win32SurfaceInvalidated;
   m_win32SurfaceInvalidated = false;
   return was;
+}
+
+void NativeSurfaceHost::RefreshWin32SurfaceFingerprint() {
+#if defined(_WIN32)
+  if (m_mode == Mode::Win32Embedded && m_win32ParentHwnd) {
+    HWND parent = static_cast<HWND>(m_win32ParentHwnd);
+    if (IsWindow(parent)) {
+      m_win32LastStyle = static_cast<intptr_t>(GetWindowLongA(parent, GWL_STYLE));
+      m_win32LastExStyle =
+          static_cast<intptr_t>(GetWindowLongA(parent, GWL_EXSTYLE));
+      m_win32LastWndProc =
+          static_cast<intptr_t>(GetWindowLongPtrA(parent, GWLP_WNDPROC));
+      if (HDC hdc = GetDC(parent)) {
+        m_win32LastPixelFormat = GetPixelFormat(hdc);
+        ReleaseDC(parent, hdc);
+      }
+    }
+  }
+#endif
 }
 
 void NativeSurfaceHost::PollEvents(bool force) {

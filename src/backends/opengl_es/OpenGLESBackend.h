@@ -37,6 +37,7 @@ class OpenGLESBackend : public GlideStateTracker {
       m_surfaceHost.NotifyWin32PassthruReclaimed();
     }
   }
+  void ReleaseThreadContext() override;
   uint32_t GetMsaaSamples() const override { return m_msaaSamples; }
   bool HasAllocatedCpuLfbStaging() const { return m_lfbStaging.IsAllocated(); }
 
@@ -152,6 +153,8 @@ class OpenGLESBackend : public GlideStateTracker {
   bool CreateDirectEglContext();
   bool CreateStandaloneSdlGlContext();
   bool CreateWin32WglContext();
+  void ReleaseWglContextOnCurrentThread_Locked();
+  void UploadGammaLutIfDirty_Locked();
   bool EnsureContextCurrent();
   void SaveCurrentHostEglContext();
   void RestoreHostContextIfSaved();
@@ -323,6 +326,8 @@ class OpenGLESBackend : public GlideStateTracker {
   // GLES Gamma LUT Texture Resources (m_useGammaLut and m_lutR/G/B inherited
   // from GlideStateTracker).
   uint32_t m_glGammaLutTex{0};
+  bool m_gammaLutDirty{false};
+  uint64_t m_makeCurrentFailCount{0};
   int m_uUseGammaLutLoc{-1};
   int m_uPreserveAlphaLoc{-1};
   int m_uFlipYLoc{-1};
