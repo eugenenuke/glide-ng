@@ -2077,13 +2077,15 @@ bool OpenGLESBackend::CreateGLContext(void* nativeWindowHandle, uint32_t width,
   glBindTexture(GL_TEXTURE_2D, 0);
 
   // Create the offscreen FBO GPU rendering textures (Double-Buffered)
+  const GLint presentFilter =
+      (m_config.presentationFilter == 1) ? GL_LINEAR : GL_NEAREST;
   glGenTextures(2, m_fboTextures);
   for (int i = 0; i < 2; ++i) {
     glBindTexture(GL_TEXTURE_2D, m_fboTextures[i]);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA,
                  GL_UNSIGNED_BYTE, nullptr);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, presentFilter);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, presentFilter);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
   }

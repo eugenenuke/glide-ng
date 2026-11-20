@@ -5,6 +5,8 @@ layout(location = 1) centroid in vec4 fragTex;
 layout(location = 2) centroid in float fragOOW;
 layout(location = 3) centroid in vec2 fragTmuOow;
 layout(location = 4) centroid in float fragFogCoord;
+layout(location = 5) in vec4 fragTexCenter;
+layout(location = 6) in vec3 fragQCenter;
 
 layout(location = 0) out vec4 outColor;
 #ifdef USE_DUAL_SRC_BLEND
@@ -576,16 +578,18 @@ void applyStippling(uint stippleMode, uint stipplePattern) {
 
 void main() {
   // Precompute affine screen-space derivatives in uniform control flow BEFORE
-  // any discard so 2x2 GPU helper lanes never hit out-of-triangle 1/divW
-  // singularities or spike perspective mipmap LOD to the 1x1 mip along edges.
-  vec2 dS0dx = dFdx(fragTex.xy);
-  vec2 dS0dy = dFdy(fragTex.xy);
-  vec2 dS1dx = dFdx(fragTex.zw);
-  vec2 dS1dy = dFdy(fragTex.zw);
-  float dOowDx = dFdx(fragOOW);
-  float dOowDy = dFdy(fragOOW);
-  vec2 dTmuOowDx = dFdx(fragTmuOow);
-  vec2 dTmuOowDy = dFdy(fragTmuOow);
+  // any discard using pixel-center (non-centroid) varyings. Because gl_Position.w
+  // is 1.0, (s/w, t/w, 1/w) are strictly linear across the triangle, so center
+  // derivatives give exact constant plane slopes without MSAA centroid edge/
+  // diagonal spikes or 2x2 helper-lane 1/divW singularities.
+  vec2 dS0dx = dFdx(fragTexCenter.xy);
+  vec2 dS0dy = dFdy(fragTexCenter.xy);
+  vec2 dS1dx = dFdx(fragTexCenter.zw);
+  vec2 dS1dy = dFdy(fragTexCenter.zw);
+  float dOowDx = dFdx(fragQCenter.x);
+  float dOowDy = dFdy(fragQCenter.x);
+  vec2 dTmuOowDx = dFdx(fragQCenter.yz);
+  vec2 dTmuOowDy = dFdy(fragQCenter.yz);
 
   // Unpack colors at the start of main()
   vec4 constantColor = unpackRGBA(pcs.constantColor);

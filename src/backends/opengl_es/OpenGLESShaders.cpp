@@ -54,6 +54,11 @@ centroid out float fragOOW;
 centroid out vec4 fragTexCoord; // Passes s0, t0, s1, t1
 centroid out vec2 fragTmuOow;
 centroid out float fragFogCoord;
+// Non-centroid (pixel-center) affine interpolants dedicated to screen-space
+// dFdx/dFdy gradient computation so MSAA centroid shifts along triangle edges
+// and internal quad diagonals never spike mipmap LOD.
+out vec4 fragTexCenter;
+out vec3 fragQCenter;
 
 uniform int uSstOrigin; // 0 = UPPER_LEFT, 1 = LOWER_LEFT
 uniform vec2 uViewportSize;
@@ -89,6 +94,8 @@ void main() {
     fragTexCoord = inTex; // Pass all 4 coordinates!
     fragTmuOow = inTmuOow;
     fragFogCoord = inFogCoord;
+    fragTexCenter = inTex;
+    fragQCenter = vec3(inPos.w, inTmuOow.x, inTmuOow.y);
 }
 )";
 
@@ -101,6 +108,8 @@ centroid in float fragOOW;
 centroid in vec4 fragTexCoord; // Passes s0, t0, s1, t1
 centroid in vec2 fragTmuOow;
 centroid in float fragFogCoord;
+in vec4 fragTexCenter;
+in vec3 fragQCenter;
 
 #ifdef GL_EXT_blend_func_extended
 layout(location = 0, index = 0) out vec4 outColor;
@@ -504,16 +513,18 @@ vec3 evaluateFbiExtColorGLES(highp uint cfgWord, vec4 iterColor, vec4 constColor
 
 void main() {
     // Precompute affine screen-space derivatives in uniform control flow BEFORE
-    // any discard so 2x2 GPU helper lanes never hit out-of-triangle 1/divW
-    // singularities or spike perspective mipmap LOD to the 1x1 mip along edges.
-    vec2 dS0dx = dFdx(fragTexCoord.xy);
-    vec2 dS0dy = dFdy(fragTexCoord.xy);
-    vec2 dS1dx = dFdx(fragTexCoord.zw);
-    vec2 dS1dy = dFdy(fragTexCoord.zw);
-    float dOowDx = dFdx(fragOOW);
-    float dOowDy = dFdy(fragOOW);
-    vec2 dTmuOowDx = dFdx(fragTmuOow);
-    vec2 dTmuOowDy = dFdy(fragTmuOow);
+    // any discard using pixel-center (non-centroid) varyings. Because
+    // gl_Position.w is 1.0, (s/w, t/w, 1/w) are strictly linear across the
+    // triangle, so center derivatives give exact constant plane slopes without
+    // MSAA centroid edge/diagonal spikes or 2x2 helper-lane 1/divW singularities.
+    vec2 dS0dx = dFdx(fragTexCenter.xy);
+    vec2 dS0dy = dFdy(fragTexCenter.xy);
+    vec2 dS1dx = dFdx(fragTexCenter.zw);
+    vec2 dS1dy = dFdy(fragTexCenter.zw);
+    float dOowDx = dFdx(fragQCenter.x);
+    float dOowDy = dFdy(fragQCenter.x);
+    vec2 dTmuOowDx = dFdx(fragQCenter.yz);
+    vec2 dTmuOowDy = dFdy(fragQCenter.yz);
 
     // Stipple Transparency Emulation
     if (uStippleMode == 1u) { // GR_STIPPLE_PATTERN

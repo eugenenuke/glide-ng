@@ -79,6 +79,7 @@ void BlitScaledLetterbox(const uint32_t* srcPixels, uint32_t srcW,
                          uint32_t srcH, uint32_t* dstPixels,
                          uint32_t dstPitchWords, uint32_t surfaceW,
                          uint32_t surfaceH, bool swapRedBlue,
+                         bool linearFilter,
                          std::vector<uint32_t>& xLutScratch) {
   if (!srcPixels || !dstPixels || srcW == 0 || srcH == 0 || surfaceW == 0 ||
       surfaceH == 0 || dstPitchWords < surfaceW) {
@@ -111,7 +112,103 @@ void BlitScaledLetterbox(const uint32_t* srcPixels, uint32_t srcW,
     return;
   }
 
-  // Precompute horizontal source-pixel LUT once per frame.
+  const bool doBilinear = linearFilter && (dstW != srcW || dstH != srcH);
+  if (doBilinear) {
+    // Pack (sx0, sx1, fx[0..256]) into xLutScratch (3 words per dst pixel).
+    xLutScratch.resize(static_cast<size_t>(dstW) * 3u);
+    const float scaleX = static_cast<float>(srcW) / static_cast<float>(dstW);
+    const float maxSrcX = static_cast<float>(srcW - 1u);
+    for (uint32_t x = 0; x < dstW; ++x) {
+      float fxPos = (static_cast<float>(x) + 0.5f) * scaleX - 0.5f;
+      if (fxPos < 0.0f) fxPos = 0.0f;
+      if (fxPos > maxSrcX) fxPos = maxSrcX;
+      const uint32_t sx0 = static_cast<uint32_t>(fxPos);
+      const uint32_t sx1 = (sx0 + 1u < srcW) ? (sx0 + 1u) : sx0;
+      const uint32_t fx =
+          static_cast<uint32_t>((fxPos - static_cast<float>(sx0)) * 256.0f +
+                                0.5f);
+      xLutScratch[static_cast<size_t>(x) * 3u + 0u] = sx0;
+      xLutScratch[static_cast<size_t>(x) * 3u + 1u] = sx1;
+      xLutScratch[static_cast<size_t>(x) * 3u + 2u] = std::min(fx, 256u);
+    }
+    const uint32_t* xBilinLut = xLutScratch.data();
+    const float scaleY = static_cast<float>(srcH) / static_cast<float>(dstH);
+    const float maxSrcY = static_cast<float>(srcH - 1u);
+
+#ifdef _OPENMP
+#pragma omp parallel for if (dstH > 240)
+#endif
+    for (uint32_t y = 0; y < dstH; ++y) {
+      float fyPos = (static_cast<float>(y) + 0.5f) * scaleY - 0.5f;
+      if (fyPos < 0.0f) fyPos = 0.0f;
+      if (fyPos > maxSrcY) fyPos = maxSrcY;
+      const uint32_t sy0 = static_cast<uint32_t>(fyPos);
+      const uint32_t sy1 = (sy0 + 1u < srcH) ? (sy0 + 1u) : sy0;
+      const uint32_t fy = std::min(
+          static_cast<uint32_t>((fyPos - static_cast<float>(sy0)) * 256.0f +
+                                0.5f),
+          256u);
+      const uint32_t invFy = 256u - fy;
+
+      const uint32_t* srcRow0 = srcPixels + static_cast<size_t>(sy0) * srcW;
+      const uint32_t* srcRow1 = srcPixels + static_cast<size_t>(sy1) * srcW;
+      uint32_t* dstRow =
+          dstPixels + static_cast<size_t>(dstY0 + y) * dstPitchWords;
+
+      if (dstX0 > 0) {
+        std::fill_n(dstRow, dstX0, kOpaqueBlack);
+      }
+      if (dstX1 < surfaceW) {
+        std::fill_n(dstRow + dstX1, surfaceW - dstX1, kOpaqueBlack);
+      }
+
+      uint32_t* out = dstRow + dstX0;
+      for (uint32_t x = 0; x < dstW; ++x) {
+        const uint32_t sx0 = xBilinLut[static_cast<size_t>(x) * 3u + 0u];
+        const uint32_t sx1 = xBilinLut[static_cast<size_t>(x) * 3u + 1u];
+        const uint32_t fx = xBilinLut[static_cast<size_t>(x) * 3u + 2u];
+        const uint32_t invFx = 256u - fx;
+
+        const uint32_t p00 = srcRow0[sx0];
+        const uint32_t p01 = srcRow0[sx1];
+        const uint32_t p10 = srcRow1[sx0];
+        const uint32_t p11 = srcRow1[sx1];
+
+        const uint32_t rb0 =
+            (((p00 & 0x00FF00FFu) * invFx + (p01 & 0x00FF00FFu) * fx +
+              0x00800080u) >>
+             8) &
+            0x00FF00FFu;
+        const uint32_t g0 =
+            (((p00 >> 8) & 0xFFu) * invFx + ((p01 >> 8) & 0xFFu) * fx + 128u) >>
+            8;
+
+        const uint32_t rb1 =
+            (((p10 & 0x00FF00FFu) * invFx + (p11 & 0x00FF00FFu) * fx +
+              0x00800080u) >>
+             8) &
+            0x00FF00FFu;
+        const uint32_t g1 =
+            (((p10 >> 8) & 0xFFu) * invFx + ((p11 >> 8) & 0xFFu) * fx + 128u) >>
+            8;
+
+        const uint32_t rb =
+            ((rb0 * invFy + rb1 * fy + 0x00800080u) >> 8) & 0x00FF00FFu;
+        const uint32_t g = (g0 * invFy + g1 * fy + 128u) >> 8;
+
+        if (!swapRedBlue) {
+          out[x] = kOpaqueBlack | rb | (g << 8);
+        } else {
+          const uint32_t r = (rb >> 16) & 0xFFu;
+          const uint32_t b = rb & 0xFFu;
+          out[x] = kOpaqueBlack | (b << 16) | (g << 8) | r;
+        }
+      }
+    }
+    return;
+  }
+
+  // Precompute horizontal source-pixel LUT once per frame (nearest-neighbor).
   xLutScratch.resize(dstW);
   for (uint32_t x = 0; x < dstW; ++x) {
     uint32_t sx = static_cast<uint32_t>((static_cast<uint64_t>(x) * srcW) /
@@ -230,6 +327,7 @@ struct SoftwareBackend::X11Presenter {
   Visual* visual = nullptr;
   int depth = 24;
   bool swapRedBlue = false;
+  bool linearFilter = false;
   bool shmExtensionAvailable = false;
 
   XImage* image = nullptr;
@@ -239,11 +337,13 @@ struct SoftwareBackend::X11Presenter {
   uint32_t height = 0;
   std::vector<uint32_t> xLutScratch;
 
-  bool Attach(Display* dpy, Window win, uint32_t w, uint32_t h) {
+  bool Attach(Display* dpy, Window win, uint32_t w, uint32_t h,
+              bool useLinear) {
     Detach();
     if (!dpy || win == 0) return false;
     display = dpy;
     window = win;
+    linearFilter = useLinear;
 
     XWindowAttributes wa{};
     {
@@ -411,7 +511,7 @@ struct SoftwareBackend::X11Presenter {
       BlitScaledLetterbox(
           srcPixels, srcW, srcH, reinterpret_cast<uint32_t*>(image->data),
           static_cast<uint32_t>(image->bytes_per_line / 4), width, height,
-          swapRedBlue, xLutScratch);
+          swapRedBlue, linearFilter, xLutScratch);
     } else {
       // Exotic X11 depth/endianness fallback via XPutPixel.
       const PresentRect rect =
@@ -483,7 +583,7 @@ struct SoftwareBackend::X11Presenter {
         BlitScaledLetterbox(
             srcPixels, srcW, srcH, reinterpret_cast<uint32_t*>(image->data),
             static_cast<uint32_t>(image->bytes_per_line / 4), width, height,
-            swapRedBlue, xLutScratch);
+            swapRedBlue, linearFilter, xLutScratch);
         ScopedSwX11Trap fallbackTrap;
         XPutImage(display, window, gc, image, 0, 0, 0, 0, width, height);
         XFlush(display);
@@ -526,6 +626,7 @@ struct SoftwareBackend::WaylandShmPresenter {
   wl_surface* surface = nullptr;      // Borrowed from NativeSurfaceHost
   wl_shm* shm = nullptr;              // Borrowed from NativeSurfaceHost
   wl_event_queue* queue = nullptr;    // Borrowed from NativeSurfaceHost
+  bool linearFilter = false;
   std::array<std::unique_ptr<ShmSlot>, kNumSlots> slots;
   std::vector<std::unique_ptr<ShmSlot>> retired;
   std::vector<uint32_t> xLutScratch;
@@ -617,7 +718,7 @@ struct SoftwareBackend::WaylandShmPresenter {
   }
 
   bool Attach(wl_display* dpy, wl_surface* surf, wl_shm* shmGlobal,
-              wl_event_queue* evQueue) {
+              wl_event_queue* evQueue, bool useLinear) {
     Detach();
     if (!dpy || !surf || !shmGlobal) {
       GLIDE_LOG(CRITICAL, "Software",
@@ -629,6 +730,7 @@ struct SoftwareBackend::WaylandShmPresenter {
     surface = surf;
     shm = shmGlobal;
     queue = evQueue;
+    linearFilter = useLinear;
     GLIDE_LOG(INFO, "Software",
               "WaylandShmPresenter attached (format=XRGB8888, slots="
                   << kNumSlots << ").");
@@ -687,7 +789,7 @@ struct SoftwareBackend::WaylandShmPresenter {
 
     BlitScaledLetterbox(srcPixels, srcW, srcH, target->pixels, target->width,
                         target->width, target->height, /*swapRedBlue=*/false,
-                        xLutScratch);
+                        linearFilter, xLutScratch);
 
     target->busy = true;
     wl_surface_attach(surface, target->buffer, 0, 0);
@@ -900,6 +1002,11 @@ bool SoftwareBackend::InitPresentationSurface() {
       SDL_DestroyRenderer(renderer);
       return false;
     }
+#if SDL_VERSION_ATLEAST(2, 0, 12)
+    SDL_SetTextureScaleMode(texture, m_config.presentationFilter == 1
+                                         ? SDL_ScaleModeLinear
+                                         : SDL_ScaleModeNearest);
+#endif
     m_sdlRenderer = renderer;
     m_sdlTexture = texture;
     return true;
@@ -978,7 +1085,8 @@ bool SoftwareBackend::InitPresentationSurface() {
     uint32_t pixH = m_guestHeight;
     m_surfaceHost.GetDrawableSize(pixW, pixH);
     m_x11Presenter = std::make_unique<X11Presenter>();
-    if (!m_x11Presenter->Attach(x11Dpy, x11Win, pixW, pixH)) {
+    if (!m_x11Presenter->Attach(x11Dpy, x11Win, pixW, pixH,
+                                m_config.presentationFilter == 1)) {
       m_x11Presenter.reset();
       return false;
     }
@@ -994,7 +1102,8 @@ bool SoftwareBackend::InitPresentationSurface() {
             static_cast<wl_surface*>(m_surfaceHost.GetWaylandSurface()),
             static_cast<wl_shm*>(m_surfaceHost.GetWaylandShm()),
             static_cast<wl_event_queue*>(
-                m_surfaceHost.GetWaylandEventQueue()))) {
+                m_surfaceHost.GetWaylandEventQueue()),
+            m_config.presentationFilter == 1)) {
       m_wlShmPresenter.reset();
       return false;
     }

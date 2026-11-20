@@ -10177,7 +10177,8 @@ TEST_CASE("M12.5 Compatibility Catalog INI Presets & Directory Integrity",
         cfg));
     CHECK(cfg.model == GlideWrapper::CardModel::VoodooGraphics);
     CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_48);
-    CHECK(std::fabs(cfg.gammaOverride - 1.7f) < 0.001f);
+    CHECK(cfg.presentationFilter == 0u);
+    CHECK(cfg.gammaOverride <= 0.0f);
   }
   {
     GlideWrapper::WrapperConfig cfg;
@@ -10186,9 +10187,10 @@ TEST_CASE("M12.5 Compatibility Catalog INI Presets & Directory Integrity",
         cfg));
     CHECK(cfg.model == GlideWrapper::CardModel::Voodoo2);
     CHECK(cfg.msaaSamples == 4u);
-    CHECK(cfg.presentationFilter == 1u);
-    CHECK(cfg.forceTrilinear == true);
+    CHECK(cfg.presentationFilter == 0u);
+    CHECK(cfg.forceTrilinear == false);
     CHECK(cfg.noDitherSub == true);
+    CHECK(cfg.gammaOverride <= 0.0f);
   }
   {
     GlideWrapper::WrapperConfig cfg;
@@ -10494,6 +10496,111 @@ TEST_CASE("MSAA Centroid Interpolation Prevents Rotated Sprite UV-Wrap Fringes",
       }
     }
     CHECK(fringePixels == 0u);
+
+    be->DetachWindow();
+    bm.ShutdownBackend();
+    reg.GetConfig() = savedCfg;
+  }
+}
+
+TEST_CASE("MSAA Non-Centroid Gradients Prevent Quad-Diagonal Mipmap LOD Spikes",
+          "[MSAA][Mipmap][Centroid]") {
+  using namespace GlideWrapper;
+
+  // Build a 128x256 RGB_565 2-level mipmap texture (matching Tomb Raider's
+  // 128x256 title tiles with largeLod=0, smallLod=1, aspect=GR_ASPECT_1x2):
+  //  - Mip 0 (128x256): pure bright green (RGB565 = 0x07E0)
+  //  - Mip 1 (64x128):  pure bright red   (RGB565 = 0xF800)
+  // Rendering a 1:1 128x256 2-triangle quad under 4x MSAA with trilinear
+  // mipmapping must stay 100% on Mip 0 across the entire interior including
+  // the internal triangle diagonal. Computing dFdx/dFdy on centroid varyings
+  // shifts samples off pixel centers along the diagonal and spikes into Mip 1.
+  std::vector<uint16_t> tex(128u * 256u + 64u * 128u);
+  std::fill(tex.begin(), tex.begin() + 128u * 256u, static_cast<uint16_t>(0x07E0u));
+  std::fill(tex.begin() + 128u * 256u, tex.end(), static_cast<uint16_t>(0xF800u));
+
+  for (const char* beName : {"vulkan", "opengl_es", "software"}) {
+    auto& reg = EmulationRegistry::GetInstance();
+    auto savedCfg = reg.GetConfig();
+    auto& bm = BackendManager::GetInstance();
+    auto& tm = TextureManager::GetInstance();
+
+    WrapperConfig cfg = savedCfg;
+    cfg.backend = beName;
+    cfg.forceNoWindow = true;
+    cfg.model = CardModel::Voodoo2;
+    cfg.tmuMemoryMb = 16;
+    cfg.fbiMemoryMb = 16;
+    cfg.msaaSamples = 4;
+    if (std::string(beName) == "software") {
+      cfg.swAaMode = "ssaa";
+    }
+    reg.GetConfig() = cfg;
+    REQUIRE(bm.EstablishBackend(cfg));
+    auto* be = bm.GetBackend();
+    REQUIRE(be != nullptr);
+    REQUIRE(be->AttachWindow(nullptr, 128, 256, false));
+
+    tm.Reset();
+    tm.SetTmuMemoryLimitMb(0, 16);
+    // lodMin=0 (256), lodMax=1 (128), aspect=4 (GR_ASPECT_1x2), format=10 (RGB_565)
+    REQUIRE(tm.DownloadMipMap(0u, 0x10000u, 0, 1, 4u, 10u, tex.data(), true));
+
+    be->SetSstOrigin(0u);
+    be->SetClipWindow(0u, 0u, 128u, 256u);
+    be->SetDepthState(0u, 7u, false, 0);
+    be->SetBlendState(4u, 0u, 4u, 0u);  // ONE, ZERO
+    be->SetAlphaTestState(7u, 0u);      // GR_CMP_ALWAYS
+    be->SetColorCombineExt(0u);
+    be->SetTexCombinerMode(0u, 1u, 0u, 1u, 0u, false, false);
+    be->SetCombinerMode(3u, 8u, 2u, 1u, false, 3u, 8u, 2u, 1u, false);
+    // Clamp + Bilinear + Trilinear mipmapping (GR_MIPMAP_NEAREST, lodBlend=true)
+    be->SetTexMipMapMode(0u, 1u, true);
+    be->SetTexLodBias(0u, 0.0f);
+    be->BindTexture(0u, 0x10000u, 1u, 1u, 1u, 1u);
+
+    be->ClearBuffer(0xFF000000u, 255u, 1.0f, 3u);
+
+    auto makeV = [](float x, float y, float s, float t) {
+      ModernVertex mv{};
+      mv.pos = {x, y, 0.5f, 1.0f};
+      mv.color = {1.0f, 1.0f, 1.0f, 1.0f};
+      mv.tex = {s, t, 0.0f, 0.0f};
+      mv.tmu_oow = {1.0f, 1.0f};
+      return mv;
+    };
+
+    // 1:1 full-viewport 128x256 quad split into 2 triangles along (0,0)-(128,256)
+    // Glide 1x2 aspect uses s in [0..128], t in [0..256].
+    ModernVertex vTL = makeV(0.0f, 0.0f, 0.0f, 0.0f);
+    ModernVertex vTR = makeV(128.0f, 0.0f, 128.0f, 0.0f);
+    ModernVertex vBR = makeV(128.0f, 256.0f, 128.0f, 256.0f);
+    ModernVertex vBL = makeV(0.0f, 256.0f, 0.0f, 256.0f);
+    be->DrawTriangle(vTL, vTR, vBR);
+    be->DrawTriangle(vTL, vBR, vBL);
+    be->FlushBins();
+
+    std::vector<uint32_t> fb(128u * 256u, 0u);
+    REQUIRE(be->ReadLFB(1u, 0u, 0u, 128u, 256u, 128u * 4u, fb.data()));
+
+    INFO("backend=" << beName);
+    uint32_t redSpikePixels = 0u;
+    uint32_t nonGreenPixels = 0u;
+    for (uint32_t y = 2u; y < 254u; ++y) {
+      for (uint32_t x = 2u; x < 126u; ++x) {
+        const uint32_t px = fb[y * 128u + x];
+        const uint32_t r = px & 0xFFu;
+        const uint32_t g = (px >> 8) & 0xFFu;
+        if (r > 20u) {
+          ++redSpikePixels;
+        }
+        if (g < 220u) {
+          ++nonGreenPixels;
+        }
+      }
+    }
+    CHECK(redSpikePixels == 0u);
+    CHECK(nonGreenPixels == 0u);
 
     be->DetachWindow();
     bm.ShutdownBackend();

@@ -1957,10 +1957,13 @@ bool VulkanBackend::SwapBuffers() {
           vk::Offset3D(dst.x + static_cast<int32_t>(dst.width),
                        dst.y + static_cast<int32_t>(dst.height), 1);
 
+      const vk::Filter presentFilter =
+          (m_config.presentationFilter == 1) ? vk::Filter::eLinear
+                                             : vk::Filter::eNearest;
       m_commandBuffer->blitImage(
           presentSrcImage, vk::ImageLayout::eTransferSrcOptimal,
           m_swapchainImages[imageIdx], vk::ImageLayout::eTransferDstOptimal, 1,
-          &blitRegion, vk::Filter::eLinear);
+          &blitRegion, presentFilter);
     }
 
     // Transition offscreen guest framebuffer back to ColorAttachmentOptimal
