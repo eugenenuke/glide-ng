@@ -10617,6 +10617,55 @@ TEST_CASE("M12.5 Compatibility Catalog INI Presets & Directory Integrity",
     CHECK(cfg.noDitherSub == true);
     CHECK(cfg.noSplash == false);
   }
+  // Diablo II (2000, Win32 Glide 3.x — D2Glide.dll -> glide3x.dll)
+  {
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load(
+        (catalogDir / "games" / "diablo-2" / "glide-ng.ini").string(), cfg));
+    CHECK(cfg.backend == "vulkan");
+    CHECK(cfg.model == GlideWrapper::CardModel::Voodoo2);
+    CHECK(cfg.glide3ApiVersion == GlideWrapper::ApiVersion::GLIDE_3_03);
+    CHECK(cfg.msaaSamples == 1u);
+    CHECK(cfg.presentationFilter == 0u);
+    CHECK(cfg.noDitherSub == true);
+    CHECK(cfg.noSplash == false);
+  }
+  {
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load(
+        (catalogDir / "games" / "diablo-2" / "glide-ng.hq.ini").string(), cfg));
+    CHECK(cfg.backend == "vulkan");
+    CHECK(cfg.model == GlideWrapper::CardModel::Voodoo2);
+    CHECK(cfg.glide3ApiVersion == GlideWrapper::ApiVersion::GLIDE_3_03);
+    CHECK(cfg.msaaSamples == 4u);
+    CHECK(cfg.presentationFilter == 1u);
+    CHECK(cfg.noDitherSub == true);
+    CHECK(cfg.noSplash == false);
+  }
+  {
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load(
+        (catalogDir / "games" / "diablo-2" / "glide-ng.voodoo3.ini").string(),
+        cfg));
+    CHECK(cfg.backend == "vulkan");
+    CHECK(cfg.model == GlideWrapper::CardModel::Voodoo3);
+    CHECK(cfg.glide3ApiVersion == GlideWrapper::ApiVersion::GLIDE_3_10);
+    CHECK(cfg.msaaSamples == 1u);
+    CHECK(cfg.noDitherSub == true);
+    CHECK(cfg.noSplash == false);
+  }
+  {
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load(
+        (catalogDir / "games" / "diablo-2" / "glide-ng.software.ini").string(),
+        cfg));
+    CHECK(cfg.backend == "software");
+    CHECK(cfg.model == GlideWrapper::CardModel::Voodoo2);
+    CHECK(cfg.glide3ApiVersion == GlideWrapper::ApiVersion::GLIDE_3_03);
+    CHECK(cfg.msaaSamples == 1u);
+    CHECK(cfg.noDitherSub == true);
+    CHECK(cfg.noSplash == false);
+  }
 }
 
 TEST_CASE("Automatic One-Shot Startup Splash Policy on grSstWinOpen",
@@ -11864,4 +11913,196 @@ TEST_CASE("SoftwareBackend lazy ThreadPool lifecycle across probe and reopen",
   }
   bm.ShutdownBackend();
   reg.GetConfig() = savedCfg;
+}
+
+TEST_CASE("Glide 3.x grTexDownloadTable broadcasts palette across both TMUs "
+          "and preserves out-of-range entries on partial updates",
+          "[Glide3][Texture][PaletteBroadcast]") {
+#ifdef __linux__
+  void* handle = OpenGlide3Handle();
+  REQUIRE(handle != nullptr);
+
+  auto glideInit = reinterpret_cast<void (*)()>(dlsym(handle, "grGlideInit"));
+  auto glideShutdown =
+      reinterpret_cast<void (*)()>(dlsym(handle, "grGlideShutdown"));
+  auto sstSelect =
+      reinterpret_cast<void (*)(int)>(dlsym(handle, "grSstSelect"));
+  auto winOpen = reinterpret_cast<GrContext_t (*)(
+      FxU32, GrScreenResolution_t, GrScreenRefresh_t, GrColorFormat_t,
+      GrOriginLocation_t, int, int)>(dlsym(handle, "grSstWinOpen"));
+  auto winClose =
+      reinterpret_cast<FxBool (*)(GrContext_t)>(dlsym(handle, "grSstWinClose"));
+  auto vtxLayout = reinterpret_cast<void (*)(FxU32, FxI32, FxU32)>(
+      dlsym(handle, "grVertexLayout"));
+  auto reset = reinterpret_cast<FxBool (*)(FxU32)>(dlsym(handle, "grReset"));
+  auto bufClear = reinterpret_cast<void (*)(GrColor_t, GrAlpha_t, FxU32)>(
+      dlsym(handle, "grBufferClear"));
+  auto texMinAddr = reinterpret_cast<FxU32 (*)(GrChipID_t)>(
+      dlsym(handle, "grTexMinAddress"));
+  auto texDownload =
+      reinterpret_cast<void (*)(GrChipID_t, FxU32, FxU32, GrTexInfo*)>(
+          dlsym(handle, "grTexDownloadMipMap"));
+  auto texSource =
+      reinterpret_cast<void (*)(GrChipID_t, FxU32, FxU32, GrTexInfo*)>(
+          dlsym(handle, "grTexSource"));
+  auto texDownloadTable = reinterpret_cast<void (*)(GrTexTable_t, void*)>(
+      dlsym(handle, "grTexDownloadTable"));
+  auto texDownloadTablePartial =
+      reinterpret_cast<void (*)(GrTexTable_t, void*, int, int)>(
+          dlsym(handle, "grTexDownloadTablePartial"));
+  auto texCombine = reinterpret_cast<void (*)(
+      GrChipID_t, GrCombineFunction_t, GrCombineFactor_t, GrCombineFunction_t,
+      GrCombineFactor_t, FxBool, FxBool)>(dlsym(handle, "grTexCombine"));
+  auto colorCombine = reinterpret_cast<void (*)(
+      GrCombineFunction_t, GrCombineFactor_t, GrCombineLocal_t,
+      GrCombineOther_t, FxBool)>(dlsym(handle, "grColorCombine"));
+  auto alphaCombine = reinterpret_cast<void (*)(
+      GrCombineFunction_t, GrCombineFactor_t, GrCombineLocal_t,
+      GrCombineOther_t, FxBool)>(dlsym(handle, "grAlphaCombine"));
+  auto drawTri = reinterpret_cast<void (*)(const void*, const void*,
+                                           const void*)>(
+      dlsym(handle, "grDrawTriangle"));
+  auto readRegion = reinterpret_cast<FxBool (*)(
+      GrBuffer_t, FxU32, FxU32, FxU32, FxU32, FxU32, void*)>(
+      dlsym(handle, "grLfbReadRegion"));
+  auto depthMode = reinterpret_cast<void (*)(GrDepthBufferMode_t)>(
+      dlsym(handle, "grDepthBufferMode"));
+  auto alphaBlend = reinterpret_cast<void (*)(
+      GrAlphaBlendFnc_t, GrAlphaBlendFnc_t, GrAlphaBlendFnc_t,
+      GrAlphaBlendFnc_t)>(dlsym(handle, "grAlphaBlendFunction"));
+  REQUIRE(glideInit != nullptr);
+  REQUIRE(texDownloadTable != nullptr);
+  REQUIRE(texDownloadTablePartial != nullptr);
+
+  struct Vtx {
+    float x, y;
+    float oow;
+    float s0, t0;
+    float s1, t1;
+  };
+  auto drawQuad = [&](float x0, float y0, float x1, float y1) {
+    Vtx a{x0, y0, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+    Vtx b{x1, y0, 1.0f, 255.0f, 0.0f, 255.0f, 0.0f};
+    Vtx c{x1, y1, 1.0f, 255.0f, 255.0f, 255.0f, 255.0f};
+    Vtx d{x0, y1, 1.0f, 0.0f, 255.0f, 0.0f, 255.0f};
+    drawTri(&a, &b, &c);
+    drawTri(&a, &c, &d);
+  };
+  auto rgb565R = [](uint16_t p) -> uint32_t {
+    return ((p >> 11) & 0x1Fu) * 255u / 31u;
+  };
+  auto rgb565G = [](uint16_t p) -> uint32_t {
+    return ((p >> 5) & 0x3Fu) * 255u / 63u;
+  };
+  auto rgb565B = [](uint16_t p) -> uint32_t {
+    return (p & 0x1Fu) * 255u / 31u;
+  };
+
+  std::vector<uint8_t> idx5(8 * 8, 5u);
+  std::vector<uint8_t> idx11(8 * 8, 11u);
+  for (const char* be : {"software", "vulkan", "opengl_es"}) {
+    ::setenv("GLIDE_NG_HEADLESS", "1", 1);
+    ::setenv("GLIDE_NG_BACKEND", be, 1);
+    ::setenv("FX_GLIDE_NO_SPLASH", "1", 1);
+    glideInit();
+    sstSelect(0);
+    GrContext_t ctx = winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                              GR_COLORFORMAT_ARGB, GR_ORIGIN_UPPER_LEFT, 2, 1);
+    if (!ctx) {
+      glideShutdown();
+      continue;
+    }
+
+    reset(GR_VERTEX_PARAMETER);
+    vtxLayout(GR_PARAM_XY, 0, GR_PARAM_ENABLE);
+    vtxLayout(GR_PARAM_W, 8, GR_PARAM_ENABLE);
+    vtxLayout(GR_PARAM_ST0, 12, GR_PARAM_ENABLE);
+    vtxLayout(GR_PARAM_ST1, 20, GR_PARAM_ENABLE);
+    depthMode(GR_DEPTHBUFFER_DISABLE);
+    alphaBlend(GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_ONE, GR_BLEND_ZERO);
+    bufClear(0xFF000000u, 0, 0xFFFFu);
+
+    // Download two distinct P_8 textures on TMU1 BEFORE uploading the palette
+    // (mirrors Diablo II D2Glide.dll's P_8 atlas split on TMU1 vs TMU0).
+    uint32_t pal[256]{};
+    pal[5] = 0x000000FFu;   // pure blue
+    pal[11] = 0x00FF0000u;  // pure red
+
+    const FxU32 base1 = texMinAddr(GR_TMU1);
+    GrTexInfo t5{};
+    t5.smallLodLog2 = GR_LOD_LOG2_8;
+    t5.largeLodLog2 = GR_LOD_LOG2_8;
+    t5.aspectRatioLog2 = GR_ASPECT_LOG2_1x1;
+    t5.format = GR_TEXFMT_P_8;
+    t5.data = idx5.data();
+    GrTexInfo t11 = t5;
+    t11.data = idx11.data();
+
+    texDownload(GR_TMU1, base1, GR_MIPMAPLEVELMASK_BOTH, &t5);
+    texDownload(GR_TMU1, base1 + 1024u, GR_MIPMAPLEVELMASK_BOTH, &t11);
+
+    // Broadcast palette with NO TMU argument (Glide 3.x spec) — MUST populate
+    // BOTH GR_TMU0 and GR_TMU1!
+    texDownloadTable(GR_TEXTABLE_PALETTE, pal);
+
+    // Route TMU1 through TMU0 (PASS_OTHER = LOCAL on TMU1 -> OTHER on TMU0)
+    texCombine(GR_TMU1, GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+               GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE, FXFALSE,
+               FXFALSE);
+    texCombine(GR_TMU0, GR_COMBINE_FUNCTION_SCALE_OTHER, GR_COMBINE_FACTOR_ONE,
+               GR_COMBINE_FUNCTION_SCALE_OTHER, GR_COMBINE_FACTOR_ONE, FXFALSE,
+               FXFALSE);
+    colorCombine(GR_COMBINE_FUNCTION_SCALE_OTHER, GR_COMBINE_FACTOR_ONE,
+                 GR_COMBINE_LOCAL_NONE, GR_COMBINE_OTHER_TEXTURE, FXFALSE);
+    alphaCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+                 GR_COMBINE_LOCAL_CONSTANT, GR_COMBINE_OTHER_NONE, FXFALSE);
+
+    texSource(GR_TMU1, base1, GR_MIPMAPLEVELMASK_BOTH, &t5);
+    drawQuad(10.0f, 10.0f, 50.0f, 50.0f);
+    texSource(GR_TMU1, base1 + 1024u, GR_MIPMAPLEVELMASK_BOTH, &t11);
+    drawQuad(60.0f, 10.0f, 100.0f, 50.0f);
+
+    uint16_t pxBlue = 0, pxRed = 0;
+    REQUIRE(readRegion(GR_BUFFER_BACKBUFFER, 30, 30, 1, 1, 2, &pxBlue) == FXTRUE);
+    REQUIRE(readRegion(GR_BUFFER_BACKBUFFER, 80, 30, 1, 1, 2, &pxRed) == FXTRUE);
+    INFO("backend=" << be << " full blue=0x" << std::hex << pxBlue
+                    << " red=0x" << pxRed);
+    CHECK(rgb565B(pxBlue) > 200u);
+    CHECK(rgb565R(pxBlue) < 25u);
+    CHECK(rgb565R(pxRed) > 200u);
+    CHECK(rgb565B(pxRed) < 25u);
+
+    // Partial palette update: change ONLY indices [10..12] -> index 11 becomes
+    // pure GREEN, while index 5 outside [10..12] MUST stay pure BLUE (even if
+    // palPartial[5] is overwritten with junk magenta!).
+    uint32_t palPartial[256]{};
+    palPartial[5] = 0x00FF00FFu;   // must NOT be applied
+    palPartial[11] = 0x0000FF00u;  // pure green (inside 10..12)
+    texDownloadTablePartial(GR_TEXTABLE_PALETTE, palPartial, 10, 12);
+
+    texSource(GR_TMU1, base1, GR_MIPMAPLEVELMASK_BOTH, &t5);
+    drawQuad(10.0f, 70.0f, 50.0f, 110.0f);
+    texSource(GR_TMU1, base1 + 1024u, GR_MIPMAPLEVELMASK_BOTH, &t11);
+    drawQuad(60.0f, 70.0f, 100.0f, 110.0f);
+
+    uint16_t pxKeepBlue = 0, pxGreen = 0;
+    REQUIRE(readRegion(GR_BUFFER_BACKBUFFER, 30, 90, 1, 1, 2, &pxKeepBlue) ==
+            FXTRUE);
+    REQUIRE(readRegion(GR_BUFFER_BACKBUFFER, 80, 90, 1, 1, 2, &pxGreen) ==
+            FXTRUE);
+    INFO("backend=" << be << " partial keepBlue=0x" << std::hex << pxKeepBlue
+                    << " green=0x" << pxGreen);
+    CHECK(rgb565B(pxKeepBlue) > 200u);
+    CHECK(rgb565R(pxKeepBlue) < 25u);
+    CHECK(rgb565G(pxGreen) > 200u);
+    CHECK(rgb565R(pxGreen) < 25u);
+
+    winClose(ctx);
+    glideShutdown();
+    ::unsetenv("GLIDE_NG_BACKEND");
+    ::unsetenv("GLIDE_NG_HEADLESS");
+    ::unsetenv("FX_GLIDE_NO_SPLASH");
+  }
+  ::dlclose(handle);
+#endif
 }
