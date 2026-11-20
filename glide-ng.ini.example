@@ -44,8 +44,11 @@ vsync = true
 max_fps = 60
 # Integer window scale factor (1..8)
 window_scale = 1
-# Borderless desktop fullscreen override (expands standalone & Win32 host windows with 4:3 pillarbox/letterbox)
-fullscreen = false
+# Borderless desktop fullscreen mode: auto | true | false
+#   auto (default): borderless fullscreen on Win32/Wine (matching authentic 3dfx hardware), windowed on Linux standalone
+#   true:  always expand to borderless desktop fullscreen with 4:3 pillarbox/letterbox
+#   false: always stay windowed at the application's native resolution
+fullscreen = auto
 # Presentation scaling filter: nearest | linear
 presentation_filter = nearest
 # Multisample anti-aliasing samples: 1 | 2 | 4 | 8 | 16

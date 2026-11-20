@@ -21,6 +21,18 @@ namespace GlideWrapper {
 #define GR_PARAM_ST1 7
 #endif
 
+namespace {
+
+// High bit in GrVParamInfo::mode inside Glide3VertexLayout tags canonical
+// implicit defaults populated by ResetToGlide3Canonical() (OOZ at +8, OOW at
+// +12) so GetLayoutState()/SetLayoutState() round-trips (including grSplash()
+// and grGlideGetVertexLayout/grGlideSetVertexLayout) do not falsely promote
+// untouched defaults into explicit GR_PARAM_Z / GR_PARAM_W bindings under
+// GR_CLIP_COORDS (which would break clip-space W-buffer apps like Hitman 47).
+constexpr uint32_t kParamModeImplicitDefault = 0x80000000u;
+
+}  // namespace
+
 VertexLayout& VertexLayout::GetInstance() {
   static VertexLayout instance;
   return instance;
@@ -85,10 +97,10 @@ void VertexLayout::ResetToGlide3Canonical() {
   m_glide3LayoutState.vertexInfo.mode = 1;  // ENABLE
 
   m_glide3LayoutState.zInfo.offset = 8;  // canonical depth is OOZ at offset 8
-  m_glide3LayoutState.zInfo.mode = 1;
+  m_glide3LayoutState.zInfo.mode = 1u | kParamModeImplicitDefault;
 
   m_glide3LayoutState.wInfo.offset = 12;
-  m_glide3LayoutState.wInfo.mode = 1;
+  m_glide3LayoutState.wInfo.mode = 1u | kParamModeImplicitDefault;
 
   m_glide3LayoutState.rgbInfo.offset = 16;
   m_glide3LayoutState.rgbInfo.mode = 1;
@@ -198,13 +210,15 @@ void VertexLayout::SetParamOffsetGlide3(uint32_t param, int32_t offset,
       m_offsetOOZ = -1;
       m_glide3ExplicitZ = (mode != 0);
       m_glide3LayoutState.zInfo.offset = offset;
-      m_glide3LayoutState.zInfo.mode = mode;
+      m_glide3LayoutState.zInfo.mode =
+          (mode == 0) ? 0u : ((mode & ~kParamModeImplicitDefault) ? (mode & ~kParamModeImplicitDefault) : 1u);
       break;
     case 0x03:  // GR_PARAM_W (homogeneous clip W in GR_CLIP_COORDS, or OOW)
       m_offsetOOW = offset;
       m_glide3ExplicitW = (mode != 0);
       m_glide3LayoutState.wInfo.offset = offset;
-      m_glide3LayoutState.wInfo.mode = mode;
+      m_glide3LayoutState.wInfo.mode =
+          (mode == 0) ? 0u : ((mode & ~kParamModeImplicitDefault) ? (mode & ~kParamModeImplicitDefault) : 1u);
       break;
     case 0x04:  // GR_PARAM_Q (independent from GR_PARAM_W in GR_CLIP_COORDS)
       m_offsetQ = offset;
@@ -550,12 +564,32 @@ void VertexLayout::SetLayoutState(const void* layoutState) {
     return (info.mode == 0) ? -1 : info.offset;
   };
   m_offsetXY = resolveOff(m_glide3LayoutState.vertexInfo);
-  m_offsetZ = resolveOff(m_glide3LayoutState.zInfo);
-  m_offsetOOZ = -1;  // Reset OOZ and map depth to offsetZ for Glide 3.x consistency
-  m_glide3ExplicitZ = (m_offsetZ >= 0);
+  if (m_glide3LayoutState.zInfo.mode == 0) {
+    m_offsetZ = -1;
+    m_offsetOOZ = -1;
+    m_glide3ExplicitZ = false;
+  } else if ((m_glide3LayoutState.zInfo.mode & kParamModeImplicitDefault) !=
+             0u) {
+    m_offsetZ = -1;
+    m_offsetOOZ = m_glide3LayoutState.zInfo.offset;
+    m_glide3ExplicitZ = false;
+  } else {
+    m_offsetZ = m_glide3LayoutState.zInfo.offset;
+    m_offsetOOZ = -1;
+    m_glide3ExplicitZ = (m_offsetZ >= 0);
+  }
 
-  m_offsetOOW = resolveOff(m_glide3LayoutState.wInfo);
-  m_glide3ExplicitW = (m_offsetOOW >= 0);
+  if (m_glide3LayoutState.wInfo.mode == 0) {
+    m_offsetOOW = -1;
+    m_glide3ExplicitW = false;
+  } else if ((m_glide3LayoutState.wInfo.mode & kParamModeImplicitDefault) !=
+             0u) {
+    m_offsetOOW = m_glide3LayoutState.wInfo.offset;
+    m_glide3ExplicitW = false;
+  } else {
+    m_offsetOOW = m_glide3LayoutState.wInfo.offset;
+    m_glide3ExplicitW = (m_offsetOOW >= 0);
+  }
   m_offsetQ = resolveOff(m_glide3LayoutState.qInfo);
   m_offsetA = resolveOff(m_glide3LayoutState.aInfo);
   m_offsetRGB = resolveOff(m_glide3LayoutState.rgbInfo);

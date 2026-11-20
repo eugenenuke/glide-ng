@@ -70,6 +70,18 @@ class NativeSurfaceHost {
                                         uint32_t hostW, uint32_t hostH,
                                         bool preserveAspect = true);
 
+  /**
+   * @brief Inverse-maps a client-space host pointer coordinate inside a scaled
+   *        aspect-preserving surface back into guest Glide pixel space
+   *        `[0, guestW - 1] x [0, guestH - 1]`, clamping coordinates falling
+   *        inside letterbox/pillarbox bars to the nearest guest edge.
+   */
+  static void MapHostPointToGuest(int32_t hostX, int32_t hostY,
+                                  uint32_t guestW, uint32_t guestH,
+                                  uint32_t hostW, uint32_t hostH,
+                                  int32_t& outGuestX, int32_t& outGuestY,
+                                  bool preserveAspect = true);
+
   static const char* ModeToString(Mode mode);
 
   /**
@@ -128,6 +140,16 @@ class NativeSurfaceHost {
    * re-entrancy deadlocks.
    */
   void NotifyWin32PassthruReclaimed();
+
+  /**
+   * @brief Marks whether a Win32Embedded host window is currently yielded to
+   *        VGA pass-through (grSstPassthruMode SHOW_VGA).
+   *
+   * While suspended, our borderless-fullscreen WndProc guard acts as a pure
+   * pass-through and SyncBounds() refrains from resizing the host window so
+   * DirectDraw/AVI intro playback is undisturbed.
+   */
+  void SetWin32PassthruSuspended(bool suspended);
 
   /**
    * @brief Returns and clears whether the embedded Win32 host window underwent
@@ -216,6 +238,9 @@ class NativeSurfaceHost {
   bool AttachWin32Embedded(void* parentHwnd);
   bool ApplyWin32EmbeddedFullscreenIfNeeded();
   void RestoreWin32EmbeddedFullscreenIfSaved();
+  void InstallWin32FullscreenSubclass();
+  void UninstallWin32FullscreenSubclass();
+  void SyncWin32SubclassState();
   void QueryStandaloneDrawableSize(uint32_t& outW, uint32_t& outH) const;
 
   Mode m_mode = Mode::Detached;
@@ -257,7 +282,10 @@ class NativeSurfaceHost {
   bool m_inWin32FullscreenAdjust = false;
   bool m_inWin32ForegroundRaise = false;
   bool m_win32SurfaceInvalidated = false;
+  bool m_win32SubclassInstalled = false;
+  std::atomic<bool> m_win32PassthruSuspended{false};
   std::atomic<bool> m_win32PendingForeground{false};
+  std::atomic<bool> m_win32PendingInitialFocus{false};
   std::atomic<bool> m_win32ResetFullscreenTracking{false};
   intptr_t m_win32LastStyle = 0;
   intptr_t m_win32LastExStyle = 0;

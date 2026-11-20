@@ -1354,6 +1354,7 @@ void VulkanBackend::SetPassthruMode(bool show3dfx) {
       DestroySwapchain_Locked();
       m_surface.reset();
       m_passthruSuspended = true;
+      m_surfaceHost.SetWin32PassthruSuspended(true);
       GLIDE_LOG(INFO, "Vulkan",
                 "Yielded Win32Embedded presentation surface for VGA "
                 "pass-through (SHOW_VGA).");
@@ -1361,6 +1362,7 @@ void VulkanBackend::SetPassthruMode(bool show3dfx) {
   } else {
     if (m_passthruSuspended || !m_surface) {
       m_passthruSuspended = false;
+      m_surfaceHost.NotifyWin32PassthruReclaimed();
       uint32_t hostW = 0;
       uint32_t hostH = 0;
       {
@@ -1374,7 +1376,6 @@ void VulkanBackend::SetPassthruMode(bool show3dfx) {
         RecreateSurfaceAndSwapchain_Locked(hostW, hostH);
       }
       (void)m_surfaceHost.ConsumeSurfaceInvalidated();
-      m_surfaceHost.NotifyWin32PassthruReclaimed();
       GLIDE_LOG(INFO, "Vulkan",
                 "Reclaimed Win32Embedded presentation surface for 3dfx "
                 "output (SHOW_SST1).");

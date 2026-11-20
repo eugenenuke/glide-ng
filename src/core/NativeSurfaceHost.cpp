@@ -20,6 +20,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#if defined(_WIN32)
+#include <unordered_map>
+#endif
 
 #include "core/Logger.h"
 
@@ -224,6 +227,210 @@ bool GetWin32MonitorRect(HWND hwnd, RECT& outRc) {
     return true;
   }
   return false;
+}
+
+// Per-HWND subclass metadata so Win32Embedded borderless fullscreen stays
+// re-entrancy-safe across diverse legacy game WndProcs without pulling in
+// comctl32.dll (SetWindowSubclass):
+// - Bypasses WM_GETMINMAXINFO size clamps (e.g. CyberGladiators capping window
+//   max size to 640x480 and max position to (-200,-200)).
+// - Suppresses WM_WINDOWPOSCHANGED / WM_DISPLAYCHANGE / synthetic fullscreen
+//   WM_SIZE so resizing a 640x480/800x600 window to 1920x1080 or 2560x1600
+//   does not trigger re-entrant paint/resize crashes (e.g. Unreal FMemCache)
+//   or unexpected mode resets inside the game's WndProc.
+// - During our synchronous SetWindowLong/SetWindowPos mutation window only
+//   (`inAdjust == true`), suppresses transient style/focus/activation fallout
+//   so Wine/X11/Wayland does not fire spurious WM_ACTIVATEAPP(FALSE) (which
+//   would mute DirectSound or close the Glide context in Hitman 47 /
+//   CyberGladiators). Real user Alt+Tab events outside `inAdjust` always flow
+//   straight through to the game's original WndProc.
+struct Win32FullscreenSubclassEntry {
+  WNDPROC origProc = nullptr;
+  bool isUnicode = false;
+  bool active = false;
+  bool passthruSuspended = false;
+  bool inAdjust = false;
+  bool relativeMouseDetected = false;
+  uint32_t guestW = 0;
+  uint32_t guestH = 0;
+  int32_t appliedW = 0;
+  int32_t appliedH = 0;
+};
+
+inline bool IsWin32ClientMouseMessage(UINT msg) {
+  switch (msg) {
+    case WM_MOUSEMOVE:
+    case WM_LBUTTONDOWN:
+    case WM_LBUTTONUP:
+    case WM_LBUTTONDBLCLK:
+    case WM_RBUTTONDOWN:
+    case WM_RBUTTONUP:
+    case WM_RBUTTONDBLCLK:
+    case WM_MBUTTONDOWN:
+    case WM_MBUTTONUP:
+    case WM_MBUTTONDBLCLK:
+    case WM_XBUTTONDOWN:
+    case WM_XBUTTONUP:
+    case WM_XBUTTONDBLCLK:
+      return true;
+    default:
+      return false;
+  }
+}
+
+std::mutex g_win32SubclassMutex;
+std::unordered_map<HWND, Win32FullscreenSubclassEntry> g_win32Subclasses;
+
+LRESULT CALLBACK GlideWin32EmbeddedSubclassProc(HWND hwnd, UINT msg,
+                                                WPARAM wParam, LPARAM lParam) {
+  Win32FullscreenSubclassEntry entry{};
+  bool found = false;
+  {
+    std::lock_guard<std::mutex> lock(g_win32SubclassMutex);
+    auto it = g_win32Subclasses.find(hwnd);
+    if (it != g_win32Subclasses.end()) {
+      entry = it->second;
+      found = true;
+      if (msg == WM_NCDESTROY) {
+        g_win32Subclasses.erase(it);
+      }
+    }
+  }
+
+  auto callDef = [hwnd, msg, wParam, lParam, &entry]() -> LRESULT {
+    return entry.isUnicode ? DefWindowProcW(hwnd, msg, wParam, lParam)
+                           : DefWindowProcA(hwnd, msg, wParam, lParam);
+  };
+  auto callOrig = [hwnd, msg, wParam, lParam, &entry]() -> LRESULT {
+    if (!entry.origProc) {
+      return entry.isUnicode ? DefWindowProcW(hwnd, msg, wParam, lParam)
+                             : DefWindowProcA(hwnd, msg, wParam, lParam);
+    }
+    return entry.isUnicode
+               ? CallWindowProcW(entry.origProc, hwnd, msg, wParam, lParam)
+               : CallWindowProcA(entry.origProc, hwnd, msg, wParam, lParam);
+  };
+
+  if (!found || !entry.origProc) {
+    return IsWindowUnicode(hwnd) ? DefWindowProcW(hwnd, msg, wParam, lParam)
+                                 : DefWindowProcA(hwnd, msg, wParam, lParam);
+  }
+
+  if (msg == WM_NCDESTROY || !entry.active || entry.passthruSuspended) {
+    return callOrig();
+  }
+
+  if (entry.inAdjust) {
+    switch (msg) {
+      case WM_GETMINMAXINFO:
+      case WM_WINDOWPOSCHANGING:
+        return callDef();
+      case WM_WINDOWPOSCHANGED:
+      case WM_SIZE:
+      case WM_MOVE:
+      case WM_STYLECHANGING:
+      case WM_STYLECHANGED:
+      case WM_DISPLAYCHANGE:
+      case WM_ACTIVATE:
+      case WM_ACTIVATEAPP:
+      case WM_KILLFOCUS:
+        return 0;
+      case WM_NCACTIVATE:
+        return TRUE;
+      case WM_ERASEBKGND:
+        return 1;
+      default:
+        break;
+    }
+    return callOrig();
+  }
+
+  switch (msg) {
+    case WM_GETMINMAXINFO:
+      // Bypass legacy game min/max clamps (e.g. 640x480 fixed border clamp)
+      // so the window can expand cleanly to the full monitor rectangle.
+      return callDef();
+    case WM_DISPLAYCHANGE:
+      return 0;
+    case WM_WINDOWPOSCHANGED:
+      // Swallowing WM_WINDOWPOSCHANGED stops DefWindowProc from synthesizing
+      // fake WM_SIZE/WM_MOVE events at the desktop resolution when a 3dfx app
+      // opened a 640x480/800x600 Glide context.
+      return 0;
+    case WM_SIZE:
+      if (wParam != SIZE_MINIMIZED && entry.appliedW > 0 &&
+          entry.appliedH > 0) {
+        const int32_t szW = static_cast<int32_t>(LOWORD(lParam));
+        const int32_t szH = static_cast<int32_t>(HIWORD(lParam));
+        if ((static_cast<uint32_t>(entry.appliedW) != entry.guestW ||
+             static_cast<uint32_t>(entry.appliedH) != entry.guestH) &&
+            szW == entry.appliedW && szH == entry.appliedH) {
+          return 0;
+        }
+      }
+      break;
+    case WM_ERASEBKGND:
+      return 1;
+    default:
+      break;
+  }
+
+  // Inverse-scale client-space mouse messages from the centered borderless
+  // fullscreen viewport back into guest Glide coordinates (e.g. Diablo II
+  // reading WM_MOUSEMOVE/WM_LBUTTONDOWN expecting 800x600 inside a 2560x1600
+  // monitor). Automatically falls back to raw 1:1 pass-through if the game
+  // calls SetCursorPos() inside WM_MOUSEMOVE (relative mouselook warp, e.g.
+  // Hitman: Codename 47 / Unreal).
+  if (IsWin32ClientMouseMessage(msg) && !entry.relativeMouseDetected &&
+      entry.guestW > 0 && entry.guestH > 0) {
+    RECT clientRc{};
+    if (GetClientRect(hwnd, &clientRc) && clientRc.right > clientRc.left &&
+        clientRc.bottom > clientRc.top) {
+      const uint32_t hostW =
+          static_cast<uint32_t>(clientRc.right - clientRc.left);
+      const uint32_t hostH =
+          static_cast<uint32_t>(clientRc.bottom - clientRc.top);
+      if (hostW != entry.guestW || hostH != entry.guestH) {
+        const int32_t hx = static_cast<int16_t>(LOWORD(lParam));
+        const int32_t hy = static_cast<int16_t>(HIWORD(lParam));
+        int32_t gx = hx;
+        int32_t gy = hy;
+        NativeSurfaceHost::MapHostPointToGuest(
+            hx, hy, entry.guestW, entry.guestH, hostW, hostH, gx, gy,
+            /*preserveAspect=*/true);
+        const LPARAM mappedLp = MAKELPARAM(gx, gy);
+
+        POINT prePt{};
+        const bool checkWarp =
+            (msg == WM_MOUSEMOVE) && (GetCursorPos(&prePt) != FALSE);
+        const LRESULT res =
+            entry.isUnicode
+                ? CallWindowProcW(entry.origProc, hwnd, msg, wParam, mappedLp)
+                : CallWindowProcA(entry.origProc, hwnd, msg, wParam, mappedLp);
+        if (checkWarp) {
+          POINT postPt{};
+          if (GetCursorPos(&postPt) &&
+              (postPt.x != prePt.x || postPt.y != prePt.y)) {
+            std::lock_guard<std::mutex> lock(g_win32SubclassMutex);
+            auto it = g_win32Subclasses.find(hwnd);
+            if (it != g_win32Subclasses.end() &&
+                !it->second.relativeMouseDetected) {
+              it->second.relativeMouseDetected = true;
+              GLIDE_LOG(INFO, "WSI",
+                        "NativeSurfaceHost: detected relative cursor warp on "
+                        "HWND "
+                            << hwnd
+                            << "; switching mouse coordinates to 1:1 "
+                               "pass-through.");
+            }
+          }
+        }
+        return res;
+      }
+    }
+  }
+
+  return callOrig();
 }
 #endif
 
@@ -728,6 +935,52 @@ PresentRect NativeSurfaceHost::ComputePresentRect(uint32_t guestW,
   return PresentRect{0, 0, hostW, hostH};
 }
 
+void NativeSurfaceHost::MapHostPointToGuest(int32_t hostX, int32_t hostY,
+                                            uint32_t guestW, uint32_t guestH,
+                                            uint32_t hostW, uint32_t hostH,
+                                            int32_t& outGuestX,
+                                            int32_t& outGuestY,
+                                            bool preserveAspect) {
+  if (guestW == 0 || guestH == 0 || hostW == 0 || hostH == 0) {
+    outGuestX = hostX;
+    outGuestY = hostY;
+    return;
+  }
+  const PresentRect dst =
+      ComputePresentRect(guestW, guestH, hostW, hostH, preserveAspect);
+  if (dst.width == 0 || dst.height == 0) {
+    outGuestX = hostX;
+    outGuestY = hostY;
+    return;
+  }
+  if (dst.x == 0 && dst.y == 0 && dst.width == guestW &&
+      dst.height == guestH) {
+    outGuestX = hostX;
+    outGuestY = hostY;
+    return;
+  }
+  const int64_t relX = static_cast<int64_t>(hostX) - dst.x;
+  const int64_t relY = static_cast<int64_t>(hostY) - dst.y;
+  const int64_t maxX = static_cast<int64_t>(guestW) - 1;
+  const int64_t maxY = static_cast<int64_t>(guestH) - 1;
+  const int64_t gx =
+      (relX <= 0)
+          ? 0
+          : (relX >= static_cast<int64_t>(dst.width)
+                 ? maxX
+                 : (relX * static_cast<int64_t>(guestW)) /
+                       static_cast<int64_t>(dst.width));
+  const int64_t gy =
+      (relY <= 0)
+          ? 0
+          : (relY >= static_cast<int64_t>(dst.height)
+                 ? maxY
+                 : (relY * static_cast<int64_t>(guestH)) /
+                       static_cast<int64_t>(dst.height));
+  outGuestX = static_cast<int32_t>(std::clamp<int64_t>(gx, 0, maxX));
+  outGuestY = static_cast<int32_t>(std::clamp<int64_t>(gy, 0, maxY));
+}
+
 bool NativeSurfaceHost::Attach(void* hostHandle, uint32_t guestW,
                                uint32_t guestH, bool /*windowed*/,
                                bool forceNoWindow, const std::string& title,
@@ -1028,13 +1281,22 @@ bool NativeSurfaceHost::AttachWin32Embedded(void* parentHwndPtr) {
   m_win32OwnsHwnd = false;
   m_mode = Mode::Win32Embedded;
 
+  m_win32SurfaceInvalidated = false;
+  m_win32PassthruSuspended.store(false, std::memory_order_relaxed);
+  m_win32PendingForeground.store(false, std::memory_order_relaxed);
+  m_win32PendingInitialFocus.store(false, std::memory_order_relaxed);
+  m_win32ResetFullscreenTracking.store(false, std::memory_order_relaxed);
+
+  bool appliedAtAttach = false;
   if (m_fullscreen) {
-    ApplyWin32EmbeddedFullscreenIfNeeded();
+    appliedAtAttach = ApplyWin32EmbeddedFullscreenIfNeeded();
   }
   RefreshWin32SurfaceFingerprint();
-  m_win32SurfaceInvalidated = false;
-  m_win32PendingForeground.store(false, std::memory_order_relaxed);
-  m_win32ResetFullscreenTracking.store(false, std::memory_order_relaxed);
+  if (appliedAtAttach) {
+    // Schedule a one-shot deferred focus/foreground check outside grSstWinOpen
+    // so the host WM delivers keyboard/audio focus to the expanded HWND.
+    m_win32PendingInitialFocus.store(true, std::memory_order_relaxed);
+  }
 
   RECT rc{};
   GetClientRect(parent, &rc);
@@ -1060,10 +1322,153 @@ bool NativeSurfaceHost::AttachWin32Embedded(void* parentHwndPtr) {
 #endif
 }
 
+void NativeSurfaceHost::InstallWin32FullscreenSubclass() {
+#if defined(_WIN32)
+  if (!m_fullscreen || m_mode != Mode::Win32Embedded || !m_win32ParentHwnd) {
+    return;
+  }
+  HWND hwnd = static_cast<HWND>(m_win32ParentHwnd);
+  if (!IsWindow(hwnd)) {
+    return;
+  }
+  DWORD pid = 0;
+  GetWindowThreadProcessId(hwnd, &pid);
+  if (pid != GetCurrentProcessId()) {
+    return;
+  }
+  const LONG_PTR targetProc =
+      reinterpret_cast<LONG_PTR>(&GlideWin32EmbeddedSubclassProc);
+  const bool isUnicode = (IsWindowUnicode(hwnd) != FALSE);
+  const LONG_PTR curProc = isUnicode ? GetWindowLongPtrW(hwnd, GWLP_WNDPROC)
+                                     : GetWindowLongPtrA(hwnd, GWLP_WNDPROC);
+  if (curProc == targetProc) {
+    m_win32SubclassInstalled = true;
+    SyncWin32SubclassState();
+    return;
+  }
+  {
+    std::lock_guard<std::mutex> lock(g_win32SubclassMutex);
+    auto it = g_win32Subclasses.find(hwnd);
+    if (it != g_win32Subclasses.end() && it->second.origProc != nullptr) {
+      // Our subclass is already underneath a chained foreign hook (e.g.
+      // Wine DirectDraw/wined3d). Never double-hook and risk a recursion cycle.
+      it->second.active = true;
+      it->second.passthruSuspended =
+          m_win32PassthruSuspended.load(std::memory_order_relaxed);
+      it->second.guestW = m_guestWidth;
+      it->second.guestH = m_guestHeight;
+      m_win32SubclassInstalled = true;
+      return;
+    }
+    Win32FullscreenSubclassEntry e{};
+    e.origProc = reinterpret_cast<WNDPROC>(curProc);
+    e.isUnicode = isUnicode;
+    e.active = true;
+    e.passthruSuspended =
+        m_win32PassthruSuspended.load(std::memory_order_relaxed);
+    e.inAdjust = m_inWin32FullscreenAdjust;
+    e.guestW = m_guestWidth;
+    e.guestH = m_guestHeight;
+    g_win32Subclasses[hwnd] = e;
+  }
+  SetLastError(0);
+  const LONG_PTR prev =
+      isUnicode ? SetWindowLongPtrW(hwnd, GWLP_WNDPROC, targetProc)
+                : SetWindowLongPtrA(hwnd, GWLP_WNDPROC, targetProc);
+  if (prev == 0 && GetLastError() != 0) {
+    std::lock_guard<std::mutex> lock(g_win32SubclassMutex);
+    g_win32Subclasses.erase(hwnd);
+    return;
+  }
+  if (prev != targetProc && prev != 0) {
+    std::lock_guard<std::mutex> lock(g_win32SubclassMutex);
+    auto it = g_win32Subclasses.find(hwnd);
+    if (it != g_win32Subclasses.end()) {
+      it->second.origProc = reinterpret_cast<WNDPROC>(prev);
+    }
+  }
+  m_win32SubclassInstalled = true;
+#endif
+}
+
+void NativeSurfaceHost::UninstallWin32FullscreenSubclass() {
+#if defined(_WIN32)
+  if (!m_win32ParentHwnd) {
+    m_win32SubclassInstalled = false;
+    return;
+  }
+  HWND hwnd = static_cast<HWND>(m_win32ParentHwnd);
+  WNDPROC origProc = nullptr;
+  bool isUnicode = false;
+  bool found = false;
+  {
+    std::lock_guard<std::mutex> lock(g_win32SubclassMutex);
+    auto it = g_win32Subclasses.find(hwnd);
+    if (it != g_win32Subclasses.end()) {
+      origProc = it->second.origProc;
+      isUnicode = it->second.isUnicode;
+      it->second.active = false;
+      it->second.inAdjust = false;
+      found = true;
+    }
+  }
+  if (found && IsWindow(hwnd) && origProc != nullptr) {
+    const LONG_PTR curProc = isUnicode ? GetWindowLongPtrW(hwnd, GWLP_WNDPROC)
+                                       : GetWindowLongPtrA(hwnd, GWLP_WNDPROC);
+    const LONG_PTR ourProc =
+        reinterpret_cast<LONG_PTR>(&GlideWin32EmbeddedSubclassProc);
+    if (curProc == ourProc) {
+      if (isUnicode) {
+        SetWindowLongPtrW(hwnd, GWLP_WNDPROC,
+                          reinterpret_cast<LONG_PTR>(origProc));
+      } else {
+        SetWindowLongPtrA(hwnd, GWLP_WNDPROC,
+                          reinterpret_cast<LONG_PTR>(origProc));
+      }
+      std::lock_guard<std::mutex> lock(g_win32SubclassMutex);
+      g_win32Subclasses.erase(hwnd);
+    }
+    // If another DLL (e.g. wined3d) chained a WndProc above ours, leave the
+    // map entry alive with `active = false` so GlideWin32EmbeddedSubclassProc
+    // stays a transparent pass-through until WM_NCDESTROY!
+  } else if (found) {
+    std::lock_guard<std::mutex> lock(g_win32SubclassMutex);
+    g_win32Subclasses.erase(hwnd);
+  }
+  m_win32SubclassInstalled = false;
+#endif
+}
+
+void NativeSurfaceHost::SyncWin32SubclassState() {
+#if defined(_WIN32)
+  if (!m_win32ParentHwnd || !m_win32SubclassInstalled) {
+    return;
+  }
+  HWND hwnd = static_cast<HWND>(m_win32ParentHwnd);
+  std::lock_guard<std::mutex> lock(g_win32SubclassMutex);
+  auto it = g_win32Subclasses.find(hwnd);
+  if (it != g_win32Subclasses.end()) {
+    it->second.active = m_fullscreen;
+    it->second.passthruSuspended =
+        m_win32PassthruSuspended.load(std::memory_order_relaxed);
+    it->second.inAdjust = m_inWin32FullscreenAdjust;
+    it->second.guestW = m_guestWidth;
+    it->second.guestH = m_guestHeight;
+    if (m_win32FullscreenApplied) {
+      it->second.appliedW =
+          m_win32AppliedMonRect[2] - m_win32AppliedMonRect[0];
+      it->second.appliedH =
+          m_win32AppliedMonRect[3] - m_win32AppliedMonRect[1];
+    }
+  }
+#endif
+}
+
 bool NativeSurfaceHost::ApplyWin32EmbeddedFullscreenIfNeeded() {
 #if defined(_WIN32)
   if (!m_fullscreen || m_mode != Mode::Win32Embedded || !m_win32ParentHwnd ||
-      m_inWin32FullscreenAdjust) {
+      m_inWin32FullscreenAdjust ||
+      m_win32PassthruSuspended.load(std::memory_order_relaxed)) {
     return false;
   }
   HWND hwnd = static_cast<HWND>(m_win32ParentHwnd);
@@ -1096,7 +1501,7 @@ bool NativeSurfaceHost::ApplyWin32EmbeddedFullscreenIfNeeded() {
 
   constexpr DWORD kChromeStyleMask =
       WS_CAPTION | WS_THICKFRAME | WS_BORDER | WS_DLGFRAME |
-      WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU;
+      WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU | WS_MAXIMIZE;
   constexpr DWORD kChromeExStyleMask =
       WS_EX_DLGMODALFRAME | WS_EX_CLIENTEDGE | WS_EX_STATICEDGE |
       WS_EX_WINDOWEDGE;
@@ -1110,7 +1515,12 @@ bool NativeSurfaceHost::ApplyWin32EmbeddedFullscreenIfNeeded() {
       (curRc.left != monRc.left || curRc.top != monRc.top ||
        curRc.right != monRc.right || curRc.bottom != monRc.bottom);
 
+  // Even when the game window already occupies the exact monitor rectangle
+  // (e.g. inside a 800x600 virtual desktop), keep our subclass state fresh.
   if (!needStyleFix && !needRectFix) {
+    if (m_win32SubclassInstalled) {
+      SyncWin32SubclassState();
+    }
     return false;
   }
 
@@ -1134,16 +1544,32 @@ bool NativeSurfaceHost::ApplyWin32EmbeddedFullscreenIfNeeded() {
     }
   }
 
+  // Install the re-entrancy-safe WndProc subclass BEFORE mutating styles or
+  // resizing so WM_GETMINMAXINFO clamps and re-entrant WM_WINDOWPOSCHANGED /
+  // WM_SIZE callbacks (e.g. Unreal FMemCache, CyberGladiators, Hitman 47) are
+  // intercepted cleanly on the very first SetWindowPos().
+  InstallWin32FullscreenSubclass();
+
   struct ReentrancyGuard {
+    NativeSurfaceHost& host;
     bool& flag;
-    explicit ReentrancyGuard(bool& f) : flag(f) { flag = true; }
-    ~ReentrancyGuard() { flag = false; }
-  } guard(m_inWin32FullscreenAdjust);
+    explicit ReentrancyGuard(NativeSurfaceHost& h, bool& f)
+        : host(h), flag(f) {
+      flag = true;
+      host.SyncWin32SubclassState();
+    }
+    ~ReentrancyGuard() {
+      flag = false;
+      host.SyncWin32SubclassState();
+    }
+  } guard(*this, m_inWin32FullscreenAdjust);
 
   if (needStyleFix) {
     // Preserve existing WS_VISIBLE state so we do not prematurely show or
     // activate a window before the host application calls ShowWindow().
-    const DWORD newStyle = (uStyle & ~kChromeStyleMask) | WS_POPUP;
+    const DWORD newStyle =
+        (uStyle & ~kChromeStyleMask) | WS_POPUP | WS_CLIPSIBLINGS |
+        WS_CLIPCHILDREN;
     const DWORD newExStyle = (uExStyle & ~kChromeExStyleMask);
     SetWindowLongA(hwnd, GWL_STYLE, static_cast<LONG>(newStyle));
     SetWindowLongA(hwnd, GWL_EXSTYLE, static_cast<LONG>(newExStyle));
@@ -1151,11 +1577,33 @@ bool NativeSurfaceHost::ApplyWin32EmbeddedFullscreenIfNeeded() {
 
   const int monW = monRc.right - monRc.left;
   const int monH = monRc.bottom - monRc.top;
-  // Pass SWP_NOACTIVATE (and omit SWP_SHOWWINDOW) so SetWindowPos does not
-  // synchronously trigger WM_ACTIVATE -> grSstPassthruMode() inside the
-  // foreign host WndProc while Glide is attaching or swapping.
+  const int prevW = curRc.right - curRc.left;
+  const int prevH = curRc.bottom - curRc.top;
+  // Pass SWP_NOZORDER | SWP_NOACTIVATE (matching nGlide/dgVoodoo2 window setup
+  // safety) so existing HWND_TOPMOST flags are preserved and SetWindowPos does
+  // not synchronously re-enter WM_ACTIVATE inside grSstWinOpen.
   SetWindowPos(hwnd, HWND_TOP, monRc.left, monRc.top, monW, monH,
-               SWP_FRAMECHANGED | SWP_NOOWNERZORDER | SWP_NOACTIVATE);
+               SWP_NOZORDER | SWP_FRAMECHANGED | SWP_NOOWNERZORDER |
+                   SWP_NOACTIVATE);
+
+  // Release any undersized pre-fullscreen ClipCursor trap installed before
+  // grSstWinOpen (e.g. Hitman: Codename 47 confining cursor to (0,0)-(800,600)
+  // on a 2560x1600 monitor), matching nGlide's fullscreen cursor behavior.
+  if (monW > prevW || monH > prevH) {
+    RECT clipRc{};
+    if (GetClipCursor(&clipRc)) {
+      const int clipW = clipRc.right - clipRc.left;
+      const int clipH = clipRc.bottom - clipRc.top;
+      if (clipW > 0 && clipH > 0 && (clipW < monW || clipH < monH)) {
+        ClipCursor(nullptr);
+        GLIDE_LOG(INFO, "WSI",
+                  "NativeSurfaceHost: cleared undersized ClipCursor ("
+                      << clipRc.left << "," << clipRc.top << ")-("
+                      << clipRc.right << "," << clipRc.bottom << ") for "
+                      << monW << "x" << monH << " fullscreen.");
+      }
+    }
+  }
 
   RECT settledRc{};
   GetWindowRect(hwnd, &settledRc);
@@ -1168,6 +1616,7 @@ bool NativeSurfaceHost::ApplyWin32EmbeddedFullscreenIfNeeded() {
   m_win32SettledRect[2] = static_cast<int32_t>(settledRc.right);
   m_win32SettledRect[3] = static_cast<int32_t>(settledRc.bottom);
   m_win32FullscreenApplied = true;
+  SyncWin32SubclassState();
 
   GLIDE_LOG(INFO, "WSI",
             "NativeSurfaceHost: enforced borderless fullscreen on Win32 "
@@ -1184,27 +1633,41 @@ void NativeSurfaceHost::RestoreWin32EmbeddedFullscreenIfSaved() {
 #if defined(_WIN32)
   if (!m_win32FullscreenSaved || m_win32OwnsHwnd || !m_win32ParentHwnd ||
       m_inWin32FullscreenAdjust) {
+    UninstallWin32FullscreenSubclass();
     m_win32FullscreenSaved = false;
     return;
   }
-  struct ReentrancyGuard {
-    bool& flag;
-    explicit ReentrancyGuard(bool& f) : flag(f) { flag = true; }
-    ~ReentrancyGuard() { flag = false; }
-  } guard(m_inWin32FullscreenAdjust);
+  {
+    struct ReentrancyGuard {
+      NativeSurfaceHost& host;
+      bool& flag;
+      explicit ReentrancyGuard(NativeSurfaceHost& h, bool& f)
+          : host(h), flag(f) {
+        flag = true;
+        host.SyncWin32SubclassState();
+      }
+      ~ReentrancyGuard() {
+        flag = false;
+        host.SyncWin32SubclassState();
+      }
+    } guard(*this, m_inWin32FullscreenAdjust);
 
-  HWND hwnd = static_cast<HWND>(m_win32ParentHwnd);
-  if (IsWindow(hwnd)) {
-    SetWindowLongA(hwnd, GWL_STYLE, static_cast<LONG>(m_win32SavedStyle));
-    SetWindowLongA(hwnd, GWL_EXSTYLE, static_cast<LONG>(m_win32SavedExStyle));
-    const int w = m_win32SavedRect[2] - m_win32SavedRect[0];
-    const int h = m_win32SavedRect[3] - m_win32SavedRect[1];
-    if (w > 0 && h > 0) {
-      SetWindowPos(hwnd, HWND_NOTOPMOST, m_win32SavedRect[0],
-                   m_win32SavedRect[1], w, h,
-                   SWP_FRAMECHANGED | SWP_NOOWNERZORDER | SWP_NOACTIVATE);
+    HWND hwnd = static_cast<HWND>(m_win32ParentHwnd);
+    if (IsWindow(hwnd)) {
+      SetWindowLongA(hwnd, GWL_STYLE, static_cast<LONG>(m_win32SavedStyle));
+      SetWindowLongA(hwnd, GWL_EXSTYLE,
+                     static_cast<LONG>(m_win32SavedExStyle));
+      const int w = m_win32SavedRect[2] - m_win32SavedRect[0];
+      const int h = m_win32SavedRect[3] - m_win32SavedRect[1];
+      if (w > 0 && h > 0) {
+        SetWindowPos(hwnd, HWND_NOTOPMOST, m_win32SavedRect[0],
+                     m_win32SavedRect[1], w, h,
+                     SWP_NOZORDER | SWP_FRAMECHANGED | SWP_NOOWNERZORDER |
+                         SWP_NOACTIVATE);
+      }
     }
   }
+  UninstallWin32FullscreenSubclass();
   m_win32FullscreenSaved = false;
 #endif
 }
@@ -1733,7 +2196,10 @@ void NativeSurfaceHost::Detach() {
   m_inWin32FullscreenAdjust = false;
   m_inWin32ForegroundRaise = false;
   m_win32SurfaceInvalidated = false;
+  m_win32SubclassInstalled = false;
+  m_win32PassthruSuspended.store(false, std::memory_order_relaxed);
   m_win32PendingForeground.store(false, std::memory_order_relaxed);
+  m_win32PendingInitialFocus.store(false, std::memory_order_relaxed);
   m_win32ResetFullscreenTracking.store(false, std::memory_order_relaxed);
   m_win32LastStyle = 0;
   m_win32LastExStyle = 0;
@@ -1933,8 +2399,9 @@ bool NativeSurfaceHost::SyncBounds(uint32_t& outPixelW, uint32_t& outPixelH) {
         WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
     const LONG preStyle = GetWindowLongA(parent, GWL_STYLE);
     const LONG preExStyle = GetWindowLongA(parent, GWL_EXSTYLE);
-    const intptr_t curWndProc =
-        static_cast<intptr_t>(GetWindowLongPtrA(parent, GWLP_WNDPROC));
+    const intptr_t curWndProc = static_cast<intptr_t>(
+        IsWindowUnicode(parent) ? GetWindowLongPtrW(parent, GWLP_WNDPROC)
+                                : GetWindowLongPtrA(parent, GWLP_WNDPROC));
     int curPixelFormat = m_win32LastPixelFormat;
     if (HDC hdc = GetDC(parent)) {
       curPixelFormat = GetPixelFormat(hdc);
@@ -1976,11 +2443,15 @@ bool NativeSurfaceHost::SyncBounds(uint32_t& outPixelW, uint32_t& outPixelH) {
     // iconic or hidden behind the launching terminal. Never runs on steady
     // frames so Alt+Tab works normally during gameplay.
     const bool wantInitialFullscreenRaise =
-        (appliedFullscreen && !hadAppliedFullscreen);
+        (appliedFullscreen && !hadAppliedFullscreen) ||
+        (!m_win32PassthruSuspended.load(std::memory_order_relaxed) &&
+         m_win32PendingInitialFocus.exchange(false, std::memory_order_relaxed));
     const bool wantPassthruRaise =
+        !m_win32PassthruSuspended.load(std::memory_order_relaxed) &&
         m_win32PendingForeground.exchange(false, std::memory_order_relaxed);
     if ((wantPassthruRaise || wantInitialFullscreenRaise) &&
-        !m_inWin32ForegroundRaise && !m_inWin32FullscreenAdjust) {
+        !m_inWin32ForegroundRaise && !m_inWin32FullscreenAdjust &&
+        !m_win32PassthruSuspended.load(std::memory_order_relaxed)) {
       struct RaiseGuard {
         bool& flag;
         explicit RaiseGuard(bool& f) : flag(f) { flag = true; }
@@ -1993,19 +2464,24 @@ bool NativeSurfaceHost::SyncBounds(uint32_t& outPixelW, uint32_t& outPixelH) {
         ShowWindow(parent, SW_SHOW);
       }
       SetWindowPos(parent, HWND_TOP, 0, 0, 0, 0,
-                   SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+                   SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW |
+                       SWP_NOOWNERZORDER);
       BringWindowToTop(parent);
       SetForegroundWindow(parent);
+      SetFocus(parent);
       GLIDE_LOG(INFO, "WSI",
-                "NativeSurfaceHost: restored & raised Win32 HWND "
+                "NativeSurfaceHost: restored & focused Win32 HWND "
                     << m_win32ParentHwnd
                     << (wantInitialFullscreenRaise
                             ? " after entering borderless fullscreen."
-                            : " after reclaiming 3dfx output from VGA."));
+                            : " after reclaiming 3dfx output."));
     }
 
     const LONG postStyle = GetWindowLongA(parent, GWL_STYLE);
     const LONG postExStyle = GetWindowLongA(parent, GWL_EXSTYLE);
+    const intptr_t postWndProc = static_cast<intptr_t>(
+        IsWindowUnicode(parent) ? GetWindowLongPtrW(parent, GWLP_WNDPROC)
+                                : GetWindowLongPtrA(parent, GWLP_WNDPROC));
     if (appliedFullscreen ||
         ((static_cast<DWORD>(postStyle) & kStructuralStyleMask) !=
          (static_cast<DWORD>(m_win32LastStyle) & kStructuralStyleMask)) ||
@@ -2015,7 +2491,7 @@ bool NativeSurfaceHost::SyncBounds(uint32_t& outPixelW, uint32_t& outPixelH) {
     }
     m_win32LastStyle = static_cast<intptr_t>(postStyle);
     m_win32LastExStyle = static_cast<intptr_t>(postExStyle);
-    m_win32LastWndProc = curWndProc;
+    m_win32LastWndProc = postWndProc;
     m_win32LastPixelFormat = curPixelFormat;
     if (!IsWindowVisible(parent) || IsIconic(parent)) {
       // Skip WSI surface/swapchain recreation while the host HWND is hidden,
@@ -2063,9 +2539,22 @@ bool NativeSurfaceHost::SyncBounds(uint32_t& outPixelW, uint32_t& outPixelH) {
 void NativeSurfaceHost::NotifyWin32PassthruReclaimed() {
 #if defined(_WIN32)
   if (m_mode == Mode::Win32Embedded && m_win32ParentHwnd) {
+    m_win32PassthruSuspended.store(false, std::memory_order_relaxed);
     m_win32PendingForeground.store(true, std::memory_order_relaxed);
     m_win32ResetFullscreenTracking.store(true, std::memory_order_relaxed);
+    SyncWin32SubclassState();
   }
+#endif
+}
+
+void NativeSurfaceHost::SetWin32PassthruSuspended(bool suspended) {
+#if defined(_WIN32)
+  if (m_mode == Mode::Win32Embedded && m_win32ParentHwnd) {
+    m_win32PassthruSuspended.store(suspended, std::memory_order_relaxed);
+    SyncWin32SubclassState();
+  }
+#else
+  (void)suspended;
 #endif
 }
 
@@ -2083,8 +2572,9 @@ void NativeSurfaceHost::RefreshWin32SurfaceFingerprint() {
       m_win32LastStyle = static_cast<intptr_t>(GetWindowLongA(parent, GWL_STYLE));
       m_win32LastExStyle =
           static_cast<intptr_t>(GetWindowLongA(parent, GWL_EXSTYLE));
-      m_win32LastWndProc =
-          static_cast<intptr_t>(GetWindowLongPtrA(parent, GWLP_WNDPROC));
+      m_win32LastWndProc = static_cast<intptr_t>(
+          IsWindowUnicode(parent) ? GetWindowLongPtrW(parent, GWLP_WNDPROC)
+                                  : GetWindowLongPtrA(parent, GWLP_WNDPROC));
       if (HDC hdc = GetDC(parent)) {
         m_win32LastPixelFormat = GetPixelFormat(hdc);
         ReleaseDC(parent, hdc);

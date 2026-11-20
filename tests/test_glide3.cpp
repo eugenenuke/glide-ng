@@ -12306,3 +12306,238 @@ TEST_CASE("Glide 3.x grTexDownloadTable broadcasts palette across both TMUs "
   ::dlclose(handle);
 #endif
 }
+
+TEST_CASE(
+    "grSplash preserves implicit Glide 3.x vertex layout defaults for "
+    "GR_CLIP_COORDS W-buffer apps (Hitman 47)",
+    "[Glide3][Splash][VertexLayout][ClipCoords]") {
+  SECTION("VertexLayout GetLayoutState/SetLayoutState preserves implicit default Z/W flags") {
+    auto& vl = GlideWrapper::VertexLayout::GetInstance();
+    vl.ResetToGlide3Canonical();
+    CHECK_FALSE(vl.HasExplicitZ());
+
+    GlideWrapper::Glide3VertexLayout saved{};
+    vl.GetLayoutState(&saved);
+    vl.ResetToGlide2Canonical();
+    vl.SetLayoutState(&saved);
+
+    // Must NOT falsely promote canonical OOZ at +8 to explicit GR_PARAM_Z.
+    CHECK_FALSE(vl.HasExplicitZ());
+
+    // Simulate a Hitman 47 vertex with unused garbage float at offset +8.
+    struct HitmanLikeVert {
+      float x, y;
+      float garbageZ;  // byte offset +8: NOT registered with GR_PARAM_Z
+      float w;         // byte offset +12
+      float q;         // byte offset +16
+      float r, g, b;   // byte offset +20
+      float a;         // byte offset +32
+      float s0, t0;    // byte offset +36
+      float q0;        // byte offset +44
+    };
+    vl.SetParamOffsetGlide3(0x01, 0, 1);   // GR_PARAM_XY
+    vl.SetParamOffsetGlide3(0x03, 12, 1);  // GR_PARAM_W
+    vl.SetParamOffsetGlide3(0x04, 16, 1);  // GR_PARAM_Q
+    vl.SetParamOffsetGlide3(0x20, 20, 1);  // GR_PARAM_RGB
+    vl.SetParamOffsetGlide3(0x10, 32, 1);  // GR_PARAM_A
+    vl.SetParamOffsetGlide3(0x40, 36, 1);  // GR_PARAM_ST0
+    vl.SetParamOffsetGlide3(0x50, 44, 1);  // GR_PARAM_Q0
+
+    HitmanLikeVert v{};
+    v.x = 0.0f;
+    v.y = 0.0f;
+    v.garbageZ = -9999.0f;
+    v.w = 2.0f;
+    v.q = 0.5f;
+    v.r = 1.0f;
+    v.g = 0.5f;
+    v.b = 0.25f;
+    v.a = 1.0f;
+    const auto cv = vl.DecodeClipVertex(&v);
+    CHECK_FALSE(vl.HasExplicitZ());
+    CHECK(cv.z == 0.0f);
+    CHECK(cv.w == 2.0f);
+    CHECK(cv.q == 0.5f);
+
+    // Explicit GR_PARAM_Z must still survive a layout save/restore round-trip.
+    vl.SetParamOffsetGlide3(0x02, 8, 1);  // GR_PARAM_Z explicit enable
+    CHECK(vl.HasExplicitZ());
+    vl.GetLayoutState(&saved);
+    vl.ResetAllParamsDisabled();
+    CHECK_FALSE(vl.HasExplicitZ());
+    vl.SetLayoutState(&saved);
+    CHECK(vl.HasExplicitZ());
+    v.garbageZ = 1.25f;
+    CHECK(vl.DecodeClipVertex(&v).z == 1.25f);
+
+    // Implicit canonical W cleared when only GR_PARAM_Q is touched after restore.
+    vl.ResetToGlide3Canonical();
+    vl.GetLayoutState(&saved);
+    vl.ResetToGlide2Canonical();
+    vl.SetLayoutState(&saved);
+    vl.SetParamOffsetGlide3(0x04, 12, 0);  // disable GR_PARAM_Q clears default W
+    CHECK(vl.DecodeClipVertex(&v).w == 1.0f);
+
+    vl.ResetToGlide2Canonical();
+  }
+
+#ifdef __linux__
+  SECTION("Multi-backend grSplash() + GR_CLIP_COORDS draw without GR_PARAM_Z") {
+    void* handle = OpenGlide3Handle();
+    REQUIRE(handle != nullptr);
+
+    using InitFunc = void (*)();
+    using ShutdownFunc = void (*)();
+    using WinOpenFunc = FxU32 (*)(FxU32, FxU32, FxU32, FxU32, FxU32, int, int);
+    using WinCloseFunc = FxBool (*)(FxU32);
+    using SelectCtxFunc = FxBool (*)(FxU32);
+    using SplashFunc = void (*)(float, float, float, float, FxU32);
+    using ClearFunc = void (*)(FxU32, FxU32, FxU32);
+    using CoordSpaceFunc = void (*)(FxU32);
+    using ViewportFunc = void (*)(FxI32, FxI32, FxI32, FxI32);
+    using LayoutFunc = void (*)(FxU32, FxI32, FxU32);
+    using ColorCombineFunc = void (*)(FxI32, FxI32, FxI32, FxI32, FxBool);
+    using AlphaBlendFunc = void (*)(FxI32, FxI32, FxI32, FxI32);
+    using DepthModeFunc = void (*)(FxI32);
+    using CullFunc = void (*)(FxI32);
+    using DrawTriFunc = void (*)(const void*, const void*, const void*);
+    using ReadRegionFunc = FxBool (*)(FxU32, FxU32, FxU32, FxU32, FxU32, FxU32, void*);
+
+    auto glideInit = reinterpret_cast<InitFunc>(::dlsym(handle, "grGlideInit"));
+    auto glideShutdown = reinterpret_cast<ShutdownFunc>(::dlsym(handle, "grGlideShutdown"));
+    auto winOpen = reinterpret_cast<WinOpenFunc>(::dlsym(handle, "grSstWinOpen"));
+    auto winClose = reinterpret_cast<WinCloseFunc>(::dlsym(handle, "grSstWinClose"));
+    auto selectCtx = reinterpret_cast<SelectCtxFunc>(::dlsym(handle, "grSelectContext"));
+    auto splash = reinterpret_cast<SplashFunc>(::dlsym(handle, "grSplash"));
+    auto bufClear = reinterpret_cast<ClearFunc>(::dlsym(handle, "grBufferClear"));
+    auto coordSpace = reinterpret_cast<CoordSpaceFunc>(::dlsym(handle, "grCoordinateSpace"));
+    auto viewport = reinterpret_cast<ViewportFunc>(::dlsym(handle, "grViewport"));
+    auto vtxLayout = reinterpret_cast<LayoutFunc>(::dlsym(handle, "grVertexLayout"));
+    auto colorCombine = reinterpret_cast<ColorCombineFunc>(::dlsym(handle, "grColorCombine"));
+    auto alphaBlend = reinterpret_cast<AlphaBlendFunc>(::dlsym(handle, "grAlphaBlendFunction"));
+    auto depthMode = reinterpret_cast<DepthModeFunc>(::dlsym(handle, "grDepthBufferMode"));
+    auto cullMode = reinterpret_cast<CullFunc>(::dlsym(handle, "grCullMode"));
+    auto drawTri = reinterpret_cast<DrawTriFunc>(::dlsym(handle, "grDrawTriangle"));
+    auto readRegion = reinterpret_cast<ReadRegionFunc>(::dlsym(handle, "grLfbReadRegion"));
+    REQUIRE((glideInit && glideShutdown && winOpen && winClose && selectCtx &&
+             splash && bufClear && coordSpace && viewport && vtxLayout &&
+             colorCombine && alphaBlend && depthMode && cullMode && drawTri &&
+             readRegion));
+
+    struct ClipNoZVert {
+      float x, y;
+      float garbageZ;  // byte +8: intentionally outside [-w, +w]
+      float w;
+      float q;
+      float r, g, b;
+      float a;
+    };
+
+    for (const char* be : {"software", "vulkan", "opengl_es"}) {
+      ::setenv("GLIDE_NG_BACKEND", be, 1);
+      ::setenv("GLIDE_NG_HEADLESS", "1", 1);
+      ::unsetenv("FX_GLIDE_NO_SPLASH");
+      ::unsetenv("GLIDE_NG_NO_SPLASH");
+
+      glideInit();
+      const FxU32 ctx = winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                                GR_COLORFORMAT_ARGB, GR_ORIGIN_UPPER_LEFT, 2, 1);
+      REQUIRE(ctx != 0);
+      selectCtx(ctx);
+
+      // Explicitly invoke grSplash (single frame) to exercise its layout
+      // save/restore right before configuring a W-buffered GR_CLIP_COORDS layout.
+      splash(0.0f, 0.0f, 640.0f, 480.0f, 1u);
+
+      coordSpace(1 /*GR_CLIP_COORDS*/);
+      viewport(0, 0, 640, 480);
+      depthMode(GR_DEPTHBUFFER_DISABLE);
+      cullMode(GR_CULL_DISABLE);
+      alphaBlend(GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_ONE, GR_BLEND_ZERO);
+      colorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+                   GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_NONE, FXFALSE);
+
+      // Exact Hitman 47 Render3DFX.dll pattern: never binds GR_PARAM_Z.
+      vtxLayout(0x01 /*XY*/, 0, 1);
+      vtxLayout(0x03 /*W*/, 12, 1);
+      vtxLayout(0x04 /*Q*/, 16, 1);
+      vtxLayout(0x20 /*RGB*/, 20, 1);
+      vtxLayout(0x10 /*A*/, 32, 1);
+
+      bufClear(0xFF000020u, 0, 0xFFFF);
+
+      ClipNoZVert v0{-0.8f,  0.8f, -9999.0f, 1.0f, 1.0f, 0.1f, 0.95f, 0.1f, 1.0f};
+      ClipNoZVert v1{ 0.8f,  0.8f, +9999.0f, 1.0f, 1.0f, 0.1f, 0.95f, 0.1f, 1.0f};
+      ClipNoZVert v2{ 0.0f, -0.8f, -5000.0f, 1.0f, 1.0f, 0.1f, 0.95f, 0.1f, 1.0f};
+      drawTri(&v0, &v1, &v2);
+
+      uint16_t px = 0;
+      REQUIRE(readRegion(GR_BUFFER_BACKBUFFER, 320, 240, 1, 1, 2, &px) == FXTRUE);
+      const uint32_t g = ((px >> 5) & 0x3Fu) * 255u / 63u;
+      const uint32_t b = (px & 0x1Fu) * 255u / 31u;
+      INFO("backend=" << be << " center px=0x" << std::hex << px);
+      CHECK(g > 180u);
+      CHECK(b < 60u);
+
+      winClose(ctx);
+      glideShutdown();
+      ::unsetenv("GLIDE_NG_BACKEND");
+      ::unsetenv("GLIDE_NG_HEADLESS");
+    }
+    ::dlclose(handle);
+  }
+#endif
+}
+
+TEST_CASE("NativeSurfaceHost fullscreen pointer inverse mapping and auto config",
+          "[WSI][Display][Config]") {
+  // 800x600 inside 2560x1600 (16:10 laptop display): pillarboxed (213,0,2133x1600)
+  int32_t gx = -1, gy = -1;
+  const auto rect1600 =
+      GlideWrapper::NativeSurfaceHost::ComputePresentRect(800, 600, 2560, 1600, true);
+  CHECK(rect1600.x == 213);
+  CHECK(rect1600.y == 0);
+  CHECK(rect1600.width == 2133);
+  CHECK(rect1600.height == 1600);
+
+  GlideWrapper::NativeSurfaceHost::MapHostPointToGuest(
+      1280, 800, 800, 600, 2560, 1600, gx, gy, true);
+  CHECK(gx == 400);
+  CHECK(gy == 300);
+
+  // Left & right pillarbox black bar clamping
+  GlideWrapper::NativeSurfaceHost::MapHostPointToGuest(
+      50, 0, 800, 600, 2560, 1600, gx, gy, true);
+  CHECK(gx == 0);
+  CHECK(gy == 0);
+  GlideWrapper::NativeSurfaceHost::MapHostPointToGuest(
+      2500, 1599, 800, 600, 2560, 1600, gx, gy, true);
+  CHECK(gx == 799);
+  CHECK(gy == 599);
+
+  // 800x600 inside 1280x800 (16:10): exact center maps to (400, 300)
+  GlideWrapper::NativeSurfaceHost::MapHostPointToGuest(
+      640, 400, 800, 600, 1280, 800, gx, gy, true);
+  CHECK(gx == 400);
+  CHECK(gy == 300);
+
+  // 1:1 desktop identity fast path
+  GlideWrapper::NativeSurfaceHost::MapHostPointToGuest(
+      123, 456, 800, 600, 800, 600, gx, gy, true);
+  CHECK(gx == 123);
+  CHECK(gy == 456);
+
+  // Config fullscreen = auto parses cleanly in both INI and env overrides
+  const std::string iniPath = "/tmp/glide_ng_fullscreen_auto_test.ini";
+  {
+    std::ofstream out(iniPath);
+    out << "[display]\nfullscreen = auto\n";
+  }
+  GlideWrapper::IniConfigLoader loader;
+  GlideWrapper::WrapperConfig cfg;
+  REQUIRE(loader.Load(iniPath, cfg));
+  CHECK(cfg.fullscreen == GlideWrapper::WrapperConfig::DefaultFullscreenForPlatform());
+  CHECK(cfg.settingSources["fullscreen"] == "ini");
+  CHECK(cfg.invalidConfigValues.empty());
+  std::remove(iniPath.c_str());
+}
