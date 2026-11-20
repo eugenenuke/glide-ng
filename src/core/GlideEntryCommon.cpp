@@ -1333,6 +1333,9 @@ bool MaybeRunAutoStartupSplash(uint32_t width, uint32_t height,
                 << "; suppress with FX_GLIDE_NO_SPLASH=1 or GLIDE_NG_NO_SPLASH=1).");
   invokeSplash(width, height);
   s_inAutoSplash = false;
+  if (auto* backend = BackendManager::GetInstance().GetBackend()) {
+    backend->ReleaseThreadContext();
+  }
   return true;
 }
 

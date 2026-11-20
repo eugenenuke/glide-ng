@@ -39,6 +39,12 @@ class IGraphicsBackend {
   // to yield the presentation surface cleanly during SHOW_VGA and reclaim it
   // when 3dfx rendering resumes.
   virtual void SetPassthruMode(bool /*show3dfx*/) {}
+  // Releases any thread-affine graphics context (e.g. Win32 WGL HGLRC) held on
+  // the calling thread after a one-shot initialization phase (such as the
+  // automatic startup splash inside grSstWinOpen) so applications that open the
+  // Glide window on a worker thread and render on another thread can cleanly
+  // bind the context without ERROR_BUSY (170).
+  virtual void ReleaseThreadContext() {}
   virtual uint32_t GetWidth() const = 0;
   virtual uint32_t GetHeight() const = 0;
   virtual uint32_t GetGuestWidth() const { return GetWidth(); }

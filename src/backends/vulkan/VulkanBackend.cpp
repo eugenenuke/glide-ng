@@ -1016,6 +1016,7 @@ bool VulkanBackend::CreatePresentationSurface() {
             static_cast<HINSTANCE>(m_surfaceHost.GetWin32Hinstance()),
             static_cast<HWND>(m_surfaceHost.GetWin32Hwnd()));
         m_surface = m_instance->createWin32SurfaceKHRUnique(info);
+        m_surfaceHost.RefreshWin32SurfaceFingerprint();
         GLIDE_LOG(INFO, "Vulkan",
                   "Created VK_KHR_win32_surface on HWND "
                       << m_surfaceHost.GetWin32Hwnd());

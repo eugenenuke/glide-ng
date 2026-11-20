@@ -131,10 +131,21 @@ class NativeSurfaceHost {
 
   /**
    * @brief Returns and clears whether the embedded Win32 host window underwent
-   *        a structural style change (e.g. WS_POPUP <-> WS_CAPTION or
-   *        WS_VISIBLE toggle) that requires WSI surface recreation.
+   *        a structural mutation (e.g. WS_POPUP <-> WS_CAPTION, WS_VISIBLE
+   *        toggle, GWLP_WNDPROC subclassing, or pixel format change installed
+   *        by DirectDraw/wined3d SetCooperativeLevel) that requires WSI
+   *        surface recreation.
    */
   bool ConsumeSurfaceInvalidated();
+
+  /**
+   * @brief Re-baselines the cached Win32 host HWND fingerprint (style, extended
+   *        style, WndProc, and pixel format) after the wrapper itself mutates
+   *        the surface (e.g. SetPixelFormat or vkCreateWin32SurfaceKHR) so the
+   *        next SyncBounds() check does not treat its own attachment as a
+   *        foreign window takeover.
+   */
+  void RefreshWin32SurfaceFingerprint();
 
   /**
    * @brief Pumps window events ONLY in `StandaloneSDL2` mode.
@@ -249,6 +260,9 @@ class NativeSurfaceHost {
   std::atomic<bool> m_win32PendingForeground{false};
   std::atomic<bool> m_win32ResetFullscreenTracking{false};
   intptr_t m_win32LastStyle = 0;
+  intptr_t m_win32LastExStyle = 0;
+  intptr_t m_win32LastWndProc = 0;
+  int m_win32LastPixelFormat = 0;
   intptr_t m_win32SavedStyle = 0;
   intptr_t m_win32SavedExStyle = 0;
   int32_t m_win32SavedRect[4] = {0, 0, 0, 0};

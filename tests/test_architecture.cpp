@@ -3067,24 +3067,26 @@ TEST_CASE("PALETTE6666 Unpacking, Loading, and Swizzling Unit Tests",
   auto& tm = GlideWrapper::TextureManager::GetInstance();
   tm.Reset();
 
-  SECTION("Direct validation of COLOR24_6666TOCOLOR32 unpacking logic") {
-    uint32_t packed6666 = (0x3F << 18) | (0x2A << 12) | (0x15 << 6) | 0x0B;
-
-    uint32_t unpacked32 =
-        (((packed6666 & 0x3F) << 2) | ((packed6666 >> 4) & 0x3)) |
-        ((((packed6666 >> 6) & 0x3F) << 10) |
-         (((packed6666 >> 10) & 0x3) << 8)) |
-        ((((packed6666 >> 12) & 0x3F) << 18) |
-         (((packed6666 >> 16) & 0x3) << 16)) |
-        ((((packed6666 >> 18) & 0x3F) << 26) |
-         (((packed6666 >> 22) & 0x3) << 24));
-
-    CHECK(unpacked32 == 0xFFAA552C);
+  SECTION("Authentic ARGB8888 -> A6R6G6B6 quantization with bit replication") {
+    auto expand6666 = [](uint32_t val) -> uint32_t {
+      const uint32_t a6 = (val >> 26) & 0x3Fu;
+      const uint32_t r6 = (val >> 18) & 0x3Fu;
+      const uint32_t g6 = (val >> 10) & 0x3Fu;
+      const uint32_t b6 = (val >> 2) & 0x3Fu;
+      return (((a6 << 2) | (a6 >> 4)) << 24) |
+             (((r6 << 2) | (r6 >> 4)) << 16) |
+             (((g6 << 2) | (g6 >> 4)) << 8) |
+             ((b6 << 2) | (b6 >> 4));
+    };
+    CHECK(expand6666(0x00FFFFFFu) == 0x00FFFFFFu);  // Transparent white glyph bg
+    CHECK(expand6666(0xFCFFFFFCu) == 0xFFFFFFFFu);  // Opaque white max 6-bit
+    CHECK(expand6666(0xFFA8542Cu) == 0xFFAA552Cu);  // 6-bit LSB replication
+    CHECK(expand6666(0x00000000u) == 0x00000000u);  // Transparent black
   }
 
   SECTION("Download PALETTE6666 table and swizzle GR_TEXFMT_P_8_6666 texture") {
-    std::vector<uint8_t> rawIndices = {0, 1, 0, 1, 1, 0, 1, 0,
-                                       0, 1, 0, 1, 1, 0, 1, 0};
+    std::vector<uint8_t> rawIndices = {0, 1, 2, 1, 1, 0, 2, 0,
+                                       0, 1, 0, 1, 1, 0, 1, 2};
 
     bool dl_ok =
         tm.DownloadMipMap(0, 0x00010000, 6, 6, 3, 6, rawIndices.data());
@@ -3099,16 +3101,20 @@ TEST_CASE("PALETTE6666 Unpacking, Loading, and Swizzling Unit Tests",
     CHECK(tex->swizzledMipLevels[0][0] == 0xFF000000);
     CHECK(tex->swizzledMipLevels[0][1] == 0xFF010101);
 
+    // 3dfx Glide 3.x GR_TEXTABLE_PALETTE_6666_EXT passes standard 32-bit
+    // ARGB8888 (0xAARRGGBB) entries; hardware keeps top 6 bits per channel.
     std::vector<uint32_t> mockPalette(256, 0);
-    mockPalette[0] = (63 << 18) | (63 << 12);  // Red
-    mockPalette[1] = (63 << 18) | (63 << 6);   // Green
+    mockPalette[0] = 0xFFFF0000u;  // Opaque red
+    mockPalette[1] = 0xFF00FF00u;  // Opaque green
+    mockPalette[2] = 0x00FFFFFFu;  // Fully transparent white (alpha=0!)
 
     bool tbl_ok = tm.DownloadTable(0, 3, mockPalette.data());
     REQUIRE(tbl_ok == true);
 
-    CHECK(tex->swizzledMipLevels[0][0] == 0xFFFF0000);
-    CHECK(tex->swizzledMipLevels[0][1] == 0xFF00FF00);
-    CHECK(tex->swizzledMipLevels[0][4] == 0xFF00FF00);
+    CHECK(tex->swizzledMipLevels[0][0] == 0xFFFF0000u);
+    CHECK(tex->swizzledMipLevels[0][1] == 0xFF00FF00u);
+    CHECK(tex->swizzledMipLevels[0][2] == 0x00FFFFFFu);
+    CHECK(tex->swizzledMipLevels[0][4] == 0xFF00FF00u);
   }
 }
 
