@@ -149,7 +149,7 @@ All captures below show *Unreal* (`v226f` at `800×600`, plus retail `v200` and 
 ## Quirks, Known Issues & Controls
 
 ### Installation & Engine Notes
-* **Keep `[display] fullscreen = false` (`GLIDE_NG_FULLSCREEN` unset):** *Unreal*'s `WinDrv.WindowsClient` owns its window bounds lifecycle. Triggering an extra resize inside `grSstWinOpen` causes a re-entrant `WM_SIZE` repaint before `FMemCache` completes initialization (`Assertion failed: Initialized [UnCache.cpp]`). Let `Unreal.ini`'s `StartupFullscreen=True` size the window instead.
+* **Borderless fullscreen vs. windowed mode:** On Win32/Wine, `glide-ng` defaults to borderless fullscreen (`[display] fullscreen = auto`) filling the desktop with aspect-preserving 4:3 letterboxing/pillarboxing. Set `fullscreen = false` (or `GLIDE_NG_FULLSCREEN=0`) to keep *Unreal* in a windowed viewport matching `FullscreenViewportX × FullscreenViewportY`.
 * **Wine virtual desktop height:** When using `wine explorer /desktop=...` at `800×600`, keep the virtual desktop larger than the game viewport (`1024x768`) so the title bar does not clip ~22 px off the lower green `Unreal` logo.
 * **No-CD asset path (`CdPath=..\`):** Both retail `v200` and patched `v226f` probe `Palettes.utx` beneath `CdPath`. Adding `CdPath=..\` under both `[Engine.Engine]` and `[Core.System]` allows disc-free startup when all assets live on disk.
 * **Startup splash:** Uncomment `no_splash = true` in `glide-ng.ini` (or pass `FX_GLIDE_NO_SPLASH=1`) to skip the one-shot startup splash on launch.

@@ -443,8 +443,12 @@ void GlideSplashAnimator::Render(float x, float y, float w, float h, FxU32 frame
         vpY = static_cast<float>(winHeight) - y - h;
     }
 
-    GrState oldState;
-    grGlideGetState(&oldState);
+    // Glide 3.x GlideWrapperState is currently 512 bytes (ABI pad <= 1024 B),
+    // whereas Glide 2.x's GrState struct is 528 bytes. Use an aligned 1024-byte
+    // buffer so state save/restore has generous headroom across all frontends.
+    alignas(16) uint8_t oldStateBuf[1024]{};
+    auto* oldState = reinterpret_cast<GrState*>(oldStateBuf);
+    grGlideGetState(oldState);
 
     grSstOrigin(GR_ORIGIN_UPPER_LEFT);
     grClipWindow(0, 0, winWidth, winHeight);
@@ -482,7 +486,7 @@ void GlideSplashAnimator::Render(float x, float y, float w, float h, FxU32 frame
         RenderSingleFrame(x, vpY, w, h, f, true);
     }
 
-    grGlideSetState(&oldState);
+    grGlideSetState(oldState);
 }
 
 void GlideSplashAnimator::BuildBannerRgb565(uint16_t* dst) {

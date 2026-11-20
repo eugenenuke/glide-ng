@@ -54,7 +54,7 @@ See [Hardware Profiles & Glide Versions](hardware-and-versions.md) for the compl
 | `GLIDE_NG_MAX_FPS` | `[display] max_fps` | Float `>= 0` (`0` = uncapped) | `60.0` | Software frame-rate limiter in FPS. Set `0` to uncap frame pacing. |
 | `GLIDE_NG_MSAA` | `[display] msaa` *(or `msaa_samples`)* | `1`, `2`, `4`, `8`, `16` | `1` *(disabled)* | Multi-sample anti-aliasing sample count (invalid values normalize to `1`). |
 | `GLIDE_NG_WINDOW_SCALE` | `[display] window_scale` | Integer `1`..`8` | `1` | Integer window scaling factor for standalone windows (`hWnd == 0`). |
-| `GLIDE_NG_FULLSCREEN` | `[display] fullscreen` | `0`/`1`, `true`/`false`, `on`/`off`, `yes`/`no` | `false` | Forces borderless desktop fullscreen with aspect-preserving letterboxing/pillarboxing (SDL2 standalone, Win32 standalone, and Win32 embedded host windows such as Wine/Windows Glide titles). |
+| `GLIDE_NG_FULLSCREEN` | `[display] fullscreen` | `auto`, `0`/`1`, `true`/`false`, `on`/`off`, `yes`/`no` | `auto` *(Win32/Wine: `true`, Linux standalone: `false`)* | Controls borderless desktop fullscreen with aspect-preserving letterboxing/pillarboxing. Defaults to `true` on Win32/Wine (matching authentic 3dfx hardware pass-through, `nGlide`, and `dgVoodoo2`) with automatic `WndProc` clamp protection and cursor coordinate scaling; set `false` (`GLIDE_NG_FULLSCREEN=0`) to run windowed. Linux embedded DOSBox surfaces remain controlled by DOSBox's own window/fullscreen setting. |
 | `GLIDE_NG_PRESENTATION_FILTER` | `[display] presentation_filter` | `nearest` (`0`), `linear` (`1`) | `nearest` (`0`) | Sampling filter used when scaling the guest framebuffer to the presentation surface. |
 
 ### 1.4 Splash & Watermark Overrides

@@ -120,8 +120,22 @@ struct WrapperConfig {
     bool vsync{true};              // Swapchain vertical sync
     bool vsyncStrictFifo{false};   // Opt-in strict FIFO on Wayland (GLIDE_NG_VSYNC=fifo)
     int swapInterval{-1};          // -1 = app-controlled, 0 = off, >=1 = interval (FX_GLIDE_SWAPINTERVAL)
+    static constexpr bool DefaultFullscreenForPlatform() noexcept {
+#if defined(_WIN32)
+        // Authentic 3dfx Win32/Wine default: borderless desktop fullscreen
+        // with centered aspect-ratio presentation (matches real pass-through
+        // hardware, nGlide, and dgVoodoo2). Override via `[display]
+        // fullscreen = false` or `GLIDE_NG_FULLSCREEN=0` for windowed mode.
+        return true;
+#else
+        // On Linux/Unix, DOSBox owns window/fullscreen sizing for embedded
+        // X11/Wayland child surfaces, and standalone demos default windowed.
+        return false;
+#endif
+    }
+
     uint32_t windowScale{1};       // 1..8
-    bool fullscreen{false};        // Borderless fullscreen override ([display] fullscreen / GLIDE_NG_FULLSCREEN)
+    bool fullscreen{DefaultFullscreenForPlatform()}; // [display] fullscreen / GLIDE_NG_FULLSCREEN (auto|true|false)
     uint32_t presentationFilter{0}; // 0 = Nearest-Neighbor, 1 = Linear/Bilinear
 
     // Logging & diagnostics

@@ -42,6 +42,7 @@ class SoftwareBackend : public SoftwareBackendBase {
   void SetPassthruMode(bool show3dfx) override {
     if (!show3dfx) {
       m_passthruSuspended.store(true, std::memory_order_relaxed);
+      m_surfaceHost.SetWin32PassthruSuspended(true);
     } else if (m_passthruSuspended.exchange(false, std::memory_order_relaxed)) {
       m_surfaceHost.NotifyWin32PassthruReclaimed();
     }

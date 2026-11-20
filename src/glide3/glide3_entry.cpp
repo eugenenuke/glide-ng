@@ -3177,20 +3177,25 @@ FX_ENTRY void FX_CALL grSplash(float x, float y, float w, float h,
   EnsureEngineInitialized();
   g_inSplash = true;
 
-  // Save current Glide 3.x vertex layout and coordinate space state
+  // Save current Glide 3.x vertex layout, STW hint mask, and coordinate space
+  auto& vl = GlideWrapper::VertexLayout::GetInstance();
   GlideWrapper::Glide3VertexLayout savedLayout;
-  GlideWrapper::VertexLayout::GetInstance().GetLayoutState(&savedLayout);
+  vl.GetLayoutState(&savedLayout);
+  const uint32_t savedStwHint = vl.GetSTWHintMask();
   const uint32_t savedCoordSpace = s_coordSpace;
 
   // Reset to Glide 2 canonical window-space layout for GlideSplashAnimator
-  GlideWrapper::VertexLayout::GetInstance().ResetToGlide2Canonical();
+  vl.ResetToGlide2Canonical();
   s_coordSpace = 0;
 
   EntryCommon::RenderSplash(x, y, w, h, frame, nullptr);
 
   // Restore the game's active Glide 3.x vertex layout and coordinate space
   s_coordSpace = savedCoordSpace;
-  GlideWrapper::VertexLayout::GetInstance().SetLayoutState(&savedLayout);
+  vl.SetLayoutState(&savedLayout);
+  if (savedStwHint != vl.GetSTWHintMask()) {
+    vl.SetSTWHintMask(savedStwHint);
+  }
 
   g_inSplash = false;
 }
