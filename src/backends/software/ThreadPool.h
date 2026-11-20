@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstring>
 #include <functional>
 #include <thread>
 #include <vector>
@@ -40,11 +41,35 @@ class ThreadPool {
 
   ~ThreadPool() {
 #if defined(_WIN32)
+    // During Win32 ExitProcess / DLL unload, CRT static destructors execute
+    // while the OS loader lock is held and worker threads may already have been
+    // terminated by the kernel. Joining inside RtlDllShutdownInProgress() can
+    // deadlock or block on loader_section; detach only in that terminal case.
+    using RtlShutdownFn = unsigned char(__stdcall*)();
+    bool processTerminating = false;
+    if (HMODULE ntdll = GetModuleHandleA("ntdll.dll")) {
+      const FARPROC proc = GetProcAddress(ntdll, "RtlDllShutdownInProgress");
+      RtlShutdownFn fn = nullptr;
+      if (proc) {
+        std::memcpy(&fn, &proc, sizeof(fn));
+        if (fn() != 0) {
+          processTerminating = true;
+        }
+      }
+    }
     AcquireSRWLockExclusive(&m_srwLock);
     m_shutdown.store(true, std::memory_order_release);
     ReleaseSRWLockExclusive(&m_srwLock);
     WakeAllConditionVariable(&m_cvStart);
     WakeAllConditionVariable(&m_cvEnd);
+    for (auto& t : m_threads) {
+      if (!t.joinable()) continue;
+      if (processTerminating) {
+        t.detach();
+      } else {
+        t.join();
+      }
+    }
 #else
     {
       std::unique_lock<std::mutex> lock(m_mutex);
@@ -52,10 +77,10 @@ class ThreadPool {
     }
     m_cvStart.notify_all();
     m_cvEnd.notify_all();
-#endif
     for (auto& t : m_threads) {
       if (t.joinable()) t.join();
     }
+#endif
   }
 
   void ParallelFor(int totalTasks, const std::function<void(int)>& taskFunc) {

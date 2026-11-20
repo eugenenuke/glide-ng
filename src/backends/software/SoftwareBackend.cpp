@@ -928,11 +928,12 @@ bool SoftwareBackend::Initialize(const WrapperConfig& config) {
   int numThreads = (m_config.swThreads > 0)
                        ? static_cast<int>(m_config.swThreads)
                        : logicalCores;
-  m_threadPool = std::make_unique<ThreadPool>(numThreads - 1);
-  GLIDE_LOG(INFO, "Software",
-            "Initialized Lock-Free Thread Pool with "
-                << (numThreads - 1)
-                << " worker threads (Total threads: " << numThreads << ").");
+  m_configuredThreads = static_cast<uint32_t>(std::max(1, numThreads));
+  // Defer spawning worker threads until AttachWindow() / rasterization so
+  // probe-only LoadLibrary() -> grSstQueryHardware() -> FreeLibrary() cycles
+  // (e.g. plugin enumeration under Win32) never hold live threads across the
+  // Windows loader lock during DLL_PROCESS_DETACH.
+  m_threadPool.reset();
 
   uint32_t rawTileSize = std::max<uint32_t>(16, m_config.swTileSize);
   m_tileSize = 1;
@@ -950,6 +951,16 @@ bool SoftwareBackend::Initialize(const WrapperConfig& config) {
   GLIDE_LOG(INFO, "Software",
             "Pure Software translation backend initialized successfully.");
   return true;
+}
+
+void SoftwareBackend::EnsureThreadPool_Locked() {
+  if (m_threadPool) return;
+  const uint32_t totalThreads = std::max<uint32_t>(1u, m_configuredThreads);
+  m_threadPool = std::make_unique<ThreadPool>(totalThreads - 1u);
+  GLIDE_LOG(INFO, "Software",
+            "Initialized Lock-Free Thread Pool with "
+                << (totalThreads - 1u)
+                << " worker threads (Total threads: " << totalThreads << ").");
 }
 
 void SoftwareBackend::Shutdown() {
@@ -1248,6 +1259,8 @@ bool SoftwareBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
   m_hudOverlay.Configure(m_config, {"SW", width, height});
   m_hudPresentBuffer.clear();
 
+  EnsureThreadPool_Locked();
+
   m_windowAttached = true;
   return true;
 }
@@ -1272,6 +1285,10 @@ void SoftwareBackend::DetachWindow_Locked() {
 
   m_hudOverlay.Reset();
   m_hudPresentBuffer.clear();
+
+  // Shut down worker threads outside the OS loader lock so a subsequent
+  // FreeLibrary() does not join live threads from inside DLL_PROCESS_DETACH.
+  m_threadPool.reset();
 
   m_windowAttached = false;
   m_headlessMode = false;

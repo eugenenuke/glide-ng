@@ -148,7 +148,10 @@ class SoftwareBackend : public SoftwareBackendBase {
   bool m_useSimd{false};
   bool m_simdLogged{false};
 
+  void EnsureThreadPool_Locked();
+
   std::unique_ptr<ThreadPool> m_threadPool;
+  uint32_t m_configuredThreads{1};
   std::vector<DrawCommand> m_binnedCommands;
   std::vector<RasterizerState> m_stateCatalog;
   std::vector<Tile> m_tiles;

@@ -10525,6 +10525,54 @@ TEST_CASE("M12.5 Compatibility Catalog INI Presets & Directory Integrity",
     CHECK(cfg.msaaSamples == 1u);
     CHECK(cfg.noSplash == false);
   }
+  // MechWarrior 2: 31st Century Combat — Titanium Edition (1998, Win32 Glide 2.x)
+  {
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load(
+        (catalogDir / "games" / "mechwarrior-2" / "glide-ng.ini").string(),
+        cfg));
+    CHECK(cfg.backend == "vulkan");
+    CHECK(cfg.model == GlideWrapper::CardModel::Voodoo2);
+    CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_56);
+    CHECK(cfg.msaaSamples == 1u);
+    CHECK(cfg.noSplash == false);
+  }
+  {
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load(
+        (catalogDir / "games" / "mechwarrior-2" / "glide-ng.hq.ini").string(),
+        cfg));
+    CHECK(cfg.model == GlideWrapper::CardModel::Voodoo2);
+    CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_56);
+    CHECK(cfg.msaaSamples == 4u);
+    CHECK(cfg.presentationFilter == 1u);
+    CHECK(cfg.noDitherSub == true);
+    CHECK(cfg.noSplash == false);
+  }
+  {
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load(
+        (catalogDir / "games" / "mechwarrior-2" / "glide-ng.voodoo1.ini")
+            .string(),
+        cfg));
+    CHECK(cfg.model == GlideWrapper::CardModel::VoodooGraphics);
+    CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_48);
+    CHECK(cfg.msaaSamples == 1u);
+    CHECK(cfg.noSplash == false);
+  }
+  {
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load(
+        (catalogDir / "games" / "mechwarrior-2" / "glide-ng.software.ini")
+            .string(),
+        cfg));
+    CHECK(cfg.backend == "software");
+    CHECK(cfg.model == GlideWrapper::CardModel::Voodoo2);
+    CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_56);
+    CHECK(cfg.msaaSamples == 1u);
+    CHECK(cfg.noDitherSub == true);
+    CHECK(cfg.noSplash == false);
+  }
 }
 
 TEST_CASE("Automatic One-Shot Startup Splash Policy on grSstWinOpen",
@@ -11724,4 +11772,52 @@ TEST_CASE(
   }
   ::dlclose(handle);
 #endif
+}
+
+TEST_CASE("SoftwareBackend lazy ThreadPool lifecycle across probe and reopen",
+          "[Software][ThreadPool][Lifecycle]") {
+  using namespace GlideWrapper;
+  auto& reg = EmulationRegistry::GetInstance();
+  const auto savedCfg = reg.GetConfig();
+  auto& bm = BackendManager::GetInstance();
+
+  WrapperConfig cfg = savedCfg;
+  cfg.backend = "software";
+  cfg.forceNoWindow = true;
+  cfg.model = CardModel::Voodoo2;
+  cfg.swThreads = 4;
+  reg.GetConfig() = cfg;
+
+  // 1. Probe-only cycle: Initialize -> Shutdown with NO AttachWindow() (mirrors
+  //    Win32 plugin LoadLibrary -> grSstQueryHardware -> FreeLibrary).
+  REQUIRE(bm.EstablishBackend(cfg));
+  REQUIRE(bm.GetBackend() != nullptr);
+  bm.ShutdownBackend();
+
+  // 2. Repeated AttachWindow -> DrawTriangle -> DetachWindow reopen cycles must
+  //    spawn, run, and cleanly join the lazy ThreadPool on each cycle.
+  REQUIRE(bm.EstablishBackend(cfg));
+  auto* be = bm.GetBackend();
+  REQUIRE(be != nullptr);
+  for (int cycle = 0; cycle < 2; ++cycle) {
+    REQUIRE(be->AttachWindow(nullptr, 128, 128, false));
+    be->ClearBuffer(0xFF000000u, 0u, 0.0f, 1u);
+    be->SetDepthState(0u, 7u, false, 0);
+    be->SetCombinerMode(1u, 0u, 0u, 0u, false, 1u, 0u, 0u, 0u, false);
+    ModernVertex v0{}, v1{}, v2{};
+    v0.pos = {16.0f, 16.0f, 0.5f, 1.0f};
+    v1.pos = {112.0f, 16.0f, 0.5f, 1.0f};
+    v2.pos = {16.0f, 112.0f, 0.5f, 1.0f};
+    v0.color = v1.color = v2.color = {0.0f, 1.0f, 0.0f, 1.0f};
+    be->DrawTriangle(v0, v1, v2);
+    be->FlushBins();
+    std::vector<uint32_t> fb(128u * 128u, 0u);
+    REQUIRE(be->ReadLFB(1u, 0u, 0u, 128u, 128u, 128u * 4u, fb.data()));
+    const uint32_t px = fb[32u * 128u + 32u];
+    CHECK(((px >> 8) & 0xFFu) > 200u);
+    CHECK((px & 0xFFu) < 25u);
+    be->DetachWindow();
+  }
+  bm.ShutdownBackend();
+  reg.GetConfig() = savedCfg;
 }
