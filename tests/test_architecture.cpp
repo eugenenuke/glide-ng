@@ -3118,6 +3118,96 @@ TEST_CASE("PALETTE6666 Unpacking, Loading, and Swizzling Unit Tests",
   }
 }
 
+TEST_CASE("DownloadMipMapPartial auto-allocation and tight VRAM packing",
+          "[Core][DownloadMipMapPartial]") {
+  auto& tm = GlideWrapper::TextureManager::GetInstance();
+  tm.Reset();
+
+  // Internal LOD 2 = 64x64, aspect 3 = 1x1, format 0xa = GR_TEXFMT_RGB_565 (2 bpp).
+  constexpr uint32_t kWidth = 64u;
+  constexpr int32_t kLod64 = 2;
+  constexpr int32_t kLod32 = 3;
+  constexpr uint32_t kAspect1x1 = 3u;
+  constexpr uint32_t kFmtRgb565 = 0xau;
+  constexpr uint32_t kRows = 4u;
+  constexpr uint32_t kAddrA = 0x5560u;
+  constexpr uint32_t kCompactBytes = kWidth * kRows * 2u;  // 512 bytes
+  constexpr uint32_t kAddrB = kAddrA + kCompactBytes;      // 0x5760
+
+  SECTION("Auto-allocates without prior DownloadMipMap and keeps tight neighbors") {
+    std::vector<uint16_t> redRows(kWidth * kRows, 0xF800u);   // Pure red
+    std::vector<uint16_t> blueRows(kWidth * kRows, 0x001Fu);  // Pure blue
+
+    REQUIRE(tm.DownloadMipMapPartial(0, kAddrA, kLod64, kLod64, kAspect1x1,
+                                     kFmtRgb565, redRows.data(), 0,
+                                     static_cast<int>(kRows)));
+    REQUIRE(tm.DownloadMipMapPartial(0, kAddrB, kLod64, kLod64, kAspect1x1,
+                                     kFmtRgb565, blueRows.data(), 0,
+                                     static_cast<int>(kRows)));
+
+    // Both tightly-packed neighbors must stay resident (not falsely evicted by
+    // inflating allocatedByteSize to full 64x64 = 8192 bytes).
+    auto* texA = tm.GetTexture(0, kAddrA);
+    auto* texB = tm.GetTexture(0, kAddrB);
+    REQUIRE(texA != nullptr);
+    REQUIRE(texB != nullptr);
+    CHECK(texA->allocatedByteSize == kCompactBytes);
+    CHECK(texB->allocatedByteSize == kCompactBytes);
+    CHECK((texA->swizzledMipLevels[0][0] & 0x00FF0000u) == 0x00FF0000u);
+    CHECK((texA->swizzledMipLevels[0][0] & 0x000000FFu) == 0x00000000u);
+    CHECK((texB->swizzledMipLevels[0][0] & 0x000000FFu) == 0x000000FFu);
+    CHECK((texB->swizzledMipLevels[0][0] & 0x00FF0000u) == 0x00000000u);
+
+    // Extending texA to rows [4..8) grows footprint from 512 -> 1024 bytes,
+    // which overlaps kAddrB and must evict texB cleanly while keeping rows 0..3.
+    std::vector<uint16_t> greenRows(kWidth * kRows, 0x07E0u);  // Pure green
+    REQUIRE(tm.DownloadMipMapPartial(0, kAddrA, kLod64, kLod64, kAspect1x1,
+                                     kFmtRgb565, greenRows.data(),
+                                     static_cast<int>(kRows),
+                                     static_cast<int>(kRows * 2u)));
+    CHECK(tm.GetTexture(0, kAddrB) == nullptr);
+    texA = tm.GetTexture(0, kAddrA);
+    REQUIRE(texA != nullptr);
+    CHECK(texA->allocatedByteSize == kCompactBytes * 2u);
+    CHECK((texA->swizzledMipLevels[0][0] & 0x00FF0000u) == 0x00FF0000u);
+    CHECK((texA->swizzledMipLevels[0][kWidth * kRows] & 0x0000FF00u) ==
+          0x0000FF00u);
+  }
+
+  SECTION("Expands mip chain when coarser LOD streams in via partial download") {
+    std::vector<uint16_t> redRows(kWidth * kRows, 0xF800u);
+    std::vector<uint16_t> blueMip(32u * 2u, 0x001Fu);
+    REQUIRE(tm.DownloadMipMapPartial(0, kAddrA, kLod64, kLod64, kAspect1x1,
+                                     kFmtRgb565, redRows.data(), 0,
+                                     static_cast<int>(kRows)));
+    REQUIRE(tm.DownloadMipMapPartial(0, kAddrA, kLod32, kLod64, kAspect1x1,
+                                     kFmtRgb565, blueMip.data(), 0, 2));
+    auto* tex = tm.GetTexture(0, kAddrA);
+    REQUIRE(tex != nullptr);
+    REQUIRE(tex->swizzledMipLevels.size() == 2u);
+    CHECK(tex->largeLod == kLod64);
+    CHECK(tex->smallLod == kLod32);
+    CHECK((tex->swizzledMipLevels[0][0] & 0x00FF0000u) == 0x00FF0000u);
+    CHECK((tex->swizzledMipLevels[1][0] & 0x000000FFu) == 0x000000FFu);
+  }
+
+  SECTION("Replaces stale entry when format changes at same startAddress") {
+    std::vector<uint16_t> red565(kWidth * kRows, 0xF800u);
+    REQUIRE(tm.DownloadMipMapPartial(0, kAddrA, kLod64, kLod64, kAspect1x1,
+                                     kFmtRgb565, red565.data(), 0,
+                                     static_cast<int>(kRows)));
+    // Format 0xc = GR_TEXFMT_ARGB_4444
+    std::vector<uint16_t> cyan4444(kWidth * kRows, 0xF0FFu);
+    REQUIRE(tm.DownloadMipMapPartial(0, kAddrA, kLod64, kLod64, kAspect1x1,
+                                     0xcu, cyan4444.data(), 0,
+                                     static_cast<int>(kRows)));
+    auto* tex = tm.GetTexture(0, kAddrA);
+    REQUIRE(tex != nullptr);
+    CHECK(tex->format == 0xcu);
+    CHECK(tex->swizzledMipLevels[0][0] == 0xFF00FFFFu);
+  }
+}
+
 TEST_CASE("Glide 2.x ABGR Framebuffer Clear & LFB Readback Parity",
           "[Glide2][Clear]") {
 #ifdef __linux__

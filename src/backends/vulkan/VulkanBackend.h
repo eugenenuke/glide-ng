@@ -694,10 +694,12 @@ class VulkanBackend : public GlideStateTracker {
   vk::UniqueDeviceMemory m_texStagingMemory;
   void* m_texStagingMap{nullptr};
   uint32_t m_texStagingOffsets[2]{0, 0};
-  // 4 MB/slot (8 MB total) on 32-bit builds to conserve virtual address space
-  // (e.g. Win32/Wine32 2-4 GB VA limit); 32 MB/slot (64 MB total) on 64-bit.
+  // 16 MB/slot (32 MB total) on 32-bit builds fits streaming lightmap/procedural
+  // texture bursts (e.g. Unreal Engine 1) without per-frame mid-frame stalls
+  // while staying well inside the Win32/Wine32 2-4 GB VA limit; 32 MB/slot on
+  // 64-bit.
   const uint32_t m_texStagingSlotSize{
-      (sizeof(void*) <= 4) ? (4u * 1024u * 1024u) : (32u * 1024u * 1024u)};
+      (sizeof(void*) <= 4) ? (16u * 1024u * 1024u) : (32u * 1024u * 1024u)};
   uint32_t m_msaaSamples{1};
 
   // Lazily-allocated CPU LFB staging (0 bytes until first LFB operation)
