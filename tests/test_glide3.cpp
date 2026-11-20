@@ -10721,6 +10721,55 @@ TEST_CASE("M12.5 Compatibility Catalog INI Presets & Directory Integrity",
     CHECK(cfg.noDitherSub == true);
     CHECK(cfg.noSplash == false);
   }
+  // Unreal (1998, Win32 Glide 2.x — GlideDrv.dll -> glide2x.dll)
+  {
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load(
+        (catalogDir / "games" / "unreal" / "glide-ng.ini").string(), cfg));
+    CHECK(cfg.backend == "vulkan");
+    CHECK(cfg.model == GlideWrapper::CardModel::Voodoo2);
+    CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_56);
+    CHECK(cfg.msaaSamples == 1u);
+    CHECK(cfg.presentationFilter == 0u);
+    CHECK(cfg.noDitherSub == true);
+    CHECK(cfg.noSplash == false);
+  }
+  {
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load(
+        (catalogDir / "games" / "unreal" / "glide-ng.hq.ini").string(), cfg));
+    CHECK(cfg.backend == "vulkan");
+    CHECK(cfg.model == GlideWrapper::CardModel::Voodoo2);
+    CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_56);
+    CHECK(cfg.msaaSamples == 4u);
+    CHECK(cfg.presentationFilter == 1u);
+    CHECK(cfg.noDitherSub == true);
+    CHECK(cfg.noSplash == false);
+  }
+  {
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load(
+        (catalogDir / "games" / "unreal" / "glide-ng.voodoo1.ini").string(),
+        cfg));
+    CHECK(cfg.backend == "vulkan");
+    CHECK(cfg.model == GlideWrapper::CardModel::VoodooGraphics);
+    CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_48);
+    CHECK(cfg.msaaSamples == 1u);
+    CHECK(cfg.noDitherSub == true);
+    CHECK(cfg.noSplash == false);
+  }
+  {
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load(
+        (catalogDir / "games" / "unreal" / "glide-ng.software.ini").string(),
+        cfg));
+    CHECK(cfg.backend == "software");
+    CHECK(cfg.model == GlideWrapper::CardModel::Voodoo2);
+    CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_56);
+    CHECK(cfg.msaaSamples == 1u);
+    CHECK(cfg.noDitherSub == true);
+    CHECK(cfg.noSplash == false);
+  }
 }
 
 TEST_CASE("Automatic One-Shot Startup Splash Policy on grSstWinOpen",
@@ -12187,6 +12236,66 @@ TEST_CASE("Glide 3.x grTexDownloadTable broadcasts palette across both TMUs "
     CHECK(rgb565R(pxTransp) < 25u);
     CHECK(rgb565R(pxOpaque) > 200u);
     CHECK(rgb565G(pxOpaque) < 25u);
+
+    // Unreal Engine 1 regression: grTexDownloadMipMapLevelPartial without any
+    // prior grTexDownloadMipMap call, tightly packing two 64x64 RGB565 textures
+    // (each 4 rows = 512 bytes) side by side in TMU0 linear VRAM.
+    auto texDlPartial = reinterpret_cast<FxBool (*)(
+        GrChipID_t, FxU32, GrLOD_t, GrLOD_t, GrAspectRatio_t,
+        GrTextureFormat_t, FxU32, void*, int, int)>(
+        dlsym(handle, "grTexDownloadMipMapLevelPartial"));
+    REQUIRE(texDlPartial != nullptr);
+
+    const FxU32 addrA = texMinAddr(GR_TMU0) + 0x2000u;
+    const FxU32 addrB = addrA + (64u * 4u * 2u);  // Tight 512-byte packing
+    std::vector<uint16_t> redRows(64u * 4u, 0xF800u);   // Pure red RGB565
+    std::vector<uint16_t> blueRows(64u * 4u, 0x001Fu);  // Pure blue RGB565
+    REQUIRE(texDlPartial(GR_TMU0, addrA, GR_LOD_LOG2_64, GR_LOD_LOG2_64,
+                         GR_ASPECT_LOG2_1x1, GR_TEXFMT_RGB_565,
+                         GR_MIPMAPLEVELMASK_BOTH, redRows.data(), 0,
+                         3) == FXTRUE);
+    REQUIRE(texDlPartial(GR_TMU0, addrB, GR_LOD_LOG2_64, GR_LOD_LOG2_64,
+                         GR_ASPECT_LOG2_1x1, GR_TEXFMT_RGB_565,
+                         GR_MIPMAPLEVELMASK_BOTH, blueRows.data(), 0,
+                         3) == FXTRUE);
+
+    GrTexInfo partialInfo{};
+    partialInfo.smallLodLog2 = GR_LOD_LOG2_64;
+    partialInfo.largeLodLog2 = GR_LOD_LOG2_64;
+    partialInfo.aspectRatioLog2 = GR_ASPECT_LOG2_1x1;
+    partialInfo.format = GR_TEXFMT_RGB_565;
+
+    // Sample straight from TMU0 with row t inside the uploaded top band [0..3]
+    alphaBlend(GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_ONE, GR_BLEND_ZERO);
+    texCombine(GR_TMU0, GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+               GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE, FXFALSE,
+               FXFALSE);
+    auto drawTopBand = [&](float x0, float y0, float x1, float y1) {
+      // Rows 0..3 out of 64 -> t in [0..16] out of 256 (s=128, t=6 safely inside!)
+      Vtx a{x0, y0, 1.0f, 128.0f, 6.0f, 128.0f, 6.0f};
+      Vtx b{x1, y0, 1.0f, 128.0f, 6.0f, 128.0f, 6.0f};
+      Vtx c{x1, y1, 1.0f, 128.0f, 6.0f, 128.0f, 6.0f};
+      Vtx d{x0, y1, 1.0f, 128.0f, 6.0f, 128.0f, 6.0f};
+      drawTri(&a, &b, &c);
+      drawTri(&a, &c, &d);
+    };
+    bufClear(0xFF000000u, 0, 0xFFFF);
+    texSource(GR_TMU0, addrA, GR_MIPMAPLEVELMASK_BOTH, &partialInfo);
+    drawTopBand(10.0f, 120.0f, 50.0f, 160.0f);
+    texSource(GR_TMU0, addrB, GR_MIPMAPLEVELMASK_BOTH, &partialInfo);
+    drawTopBand(60.0f, 120.0f, 100.0f, 160.0f);
+
+    uint16_t pxPartialRed = 0, pxPartialBlue = 0;
+    REQUIRE(readRegion(GR_BUFFER_BACKBUFFER, 30, 140, 1, 1, 2,
+                       &pxPartialRed) == FXTRUE);
+    REQUIRE(readRegion(GR_BUFFER_BACKBUFFER, 80, 140, 1, 1, 2,
+                       &pxPartialBlue) == FXTRUE);
+    INFO("backend=" << be << " partial red=0x" << std::hex << pxPartialRed
+                    << " blue=0x" << pxPartialBlue);
+    CHECK(rgb565R(pxPartialRed) > 200u);
+    CHECK(rgb565B(pxPartialRed) < 25u);
+    CHECK(rgb565B(pxPartialBlue) > 200u);
+    CHECK(rgb565R(pxPartialBlue) < 25u);
 
     winClose(ctx);
     glideShutdown();
