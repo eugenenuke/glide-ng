@@ -12,6 +12,7 @@
 #include "hud_frag.spv.h"
 #include "hud_vert.spv.h"
 #include "lfb_depth_frag.spv.h"
+#include "msaa_depth_resolve_frag.spv.h"
 
 namespace GlideWrapper {
 
@@ -306,6 +307,9 @@ void VulkanBackend::DestroyLfbOverlayResources_Locked() {
   m_lfbOverlayTexW = 0;
   m_lfbOverlayTexH = 0;
 
+  m_msaaDepthResolvePipeline.reset();
+  m_msaaDepthResolveDescSet = vk::DescriptorSet{};
+  m_msaaDepthResolveDescPool.reset();
   m_lfbDepthPipeline.reset();
   m_lfbDepthPipelineMsaa.reset();
   m_lfbOverlayPipeline.reset();
@@ -319,6 +323,7 @@ void VulkanBackend::DestroyLfbOverlayResources_Locked() {
   m_auxDepthShadow16.clear();
   m_auxDepthShadow16.shrink_to_fit();
   m_auxDepthShadowValid = false;
+  m_msaaDepthDirty = false;
   m_lfbReadCacheValid[0] = false;
   m_lfbReadCacheValid[1] = false;
   m_frontBufferNeedsPresent = false;
@@ -479,7 +484,17 @@ bool VulkanBackend::WriteAuxDepthLFB_Locked(
   if (modifiedCount == 0) {
     return true;
   }
-  m_auxDepthShadowValid = true;
+  const bool coversFullUnmasked =
+      (dstX == 0u && dstY == 0u && copyW == m_headlessWidth &&
+       copyH == m_headlessHeight && refData == nullptr);
+  if (coversFullUnmasked) {
+    m_auxDepthShadowValid = true;
+    m_msaaDepthDirty = false;
+  }
+  // If m_auxDepthShadowValid was already true, every modified pixel was updated
+  // in m_auxDepthShadow16 above so it remains valid. If it was false and only a
+  // sparse sub-rect changed, keep it false so the next ReadLFB(AUXBUFFER) pulls
+  // the complete combined depth attachment instead of stale background fill.
 
   if (!EnsureLfbOverlayResources_Locked(m_headlessWidth, m_headlessHeight,
                                         rectRowsBytes)) {
@@ -868,6 +883,317 @@ bool VulkanBackend::WriteLFB(uint32_t buffer, uint32_t dstX, uint32_t dstY,
   return ok;
 }
 
+bool VulkanBackend::InitMsaaDepthResolvePipeline_Locked() {
+  if (!m_device || m_msaaSamples <= 1 || !m_msaaDepthSampleable ||
+      !m_msaaDepthSampleView || !m_singleSampleRenderPass) {
+    return false;
+  }
+  if (m_msaaDepthResolvePipeline && m_msaaDepthResolveDescSet) {
+    return true;
+  }
+  if (!InitLfbOverlayPipeline_Locked()) {
+    return false;
+  }
+
+  try {
+    if (!m_msaaDepthResolveDescPool) {
+      vk::DescriptorPoolSize poolSize(
+          vk::DescriptorType::eCombinedImageSampler, 1);
+      vk::DescriptorPoolCreateInfo poolInfo{};
+      poolInfo.maxSets = 1;
+      poolInfo.poolSizeCount = 1;
+      poolInfo.pPoolSizes = &poolSize;
+      m_msaaDepthResolveDescPool = m_device->createDescriptorPoolUnique(poolInfo);
+
+      vk::DescriptorSetLayout setLayout = m_lfbOverlayDescSetLayout.get();
+      vk::DescriptorSetAllocateInfo allocInfo{};
+      allocInfo.descriptorPool = m_msaaDepthResolveDescPool.get();
+      allocInfo.descriptorSetCount = 1;
+      allocInfo.pSetLayouts = &setLayout;
+      auto sets = m_device->allocateDescriptorSets(allocInfo);
+      m_msaaDepthResolveDescSet = sets[0];
+
+      vk::DescriptorImageInfo descImg(m_lfbOverlaySampler.get(),
+                                      m_msaaDepthSampleView.get(),
+                                      vk::ImageLayout::eShaderReadOnlyOptimal);
+      vk::WriteDescriptorSet write{};
+      write.dstSet = m_msaaDepthResolveDescSet;
+      write.dstBinding = 0;
+      write.descriptorCount = 1;
+      write.descriptorType = vk::DescriptorType::eCombinedImageSampler;
+      write.pImageInfo = &descImg;
+      m_device->updateDescriptorSets(1, &write, 0, nullptr);
+    }
+
+    vk::UniqueShaderModule vertMod = m_device->createShaderModuleUnique(
+        vk::ShaderModuleCreateInfo({}, hud_vert_spv_size, hud_vert_spv));
+    vk::UniqueShaderModule fragMod = m_device->createShaderModuleUnique(
+        vk::ShaderModuleCreateInfo({}, msaa_depth_resolve_frag_spv_size,
+                                   msaa_depth_resolve_frag_spv));
+
+    std::array<vk::PipelineShaderStageCreateInfo, 2> stages = {
+        vk::PipelineShaderStageCreateInfo({}, vk::ShaderStageFlagBits::eVertex,
+                                          vertMod.get(), "main"),
+        vk::PipelineShaderStageCreateInfo({},
+                                          vk::ShaderStageFlagBits::eFragment,
+                                          fragMod.get(), "main"),
+    };
+
+    vk::PipelineVertexInputStateCreateInfo vertexInput{};
+    vk::PipelineInputAssemblyStateCreateInfo inputAsm(
+        {}, vk::PrimitiveTopology::eTriangleStrip, VK_FALSE);
+    vk::PipelineViewportStateCreateInfo viewportState({}, 1, nullptr, 1,
+                                                      nullptr);
+    std::array<vk::DynamicState, 2> dynStates = {vk::DynamicState::eViewport,
+                                                 vk::DynamicState::eScissor};
+    vk::PipelineDynamicStateCreateInfo dynamicState(
+        {}, static_cast<uint32_t>(dynStates.size()), dynStates.data());
+
+    vk::PipelineRasterizationStateCreateInfo raster{};
+    raster.polygonMode = vk::PolygonMode::eFill;
+    raster.cullMode = vk::CullModeFlagBits::eNone;
+    raster.frontFace = vk::FrontFace::eClockwise;
+    raster.lineWidth = 1.0f;
+
+    vk::PipelineMultisampleStateCreateInfo multisample{};
+    multisample.rasterizationSamples = vk::SampleCountFlagBits::e1;
+
+    vk::PipelineDepthStencilStateCreateInfo depthStencil{};
+    depthStencil.depthTestEnable = VK_TRUE;
+    depthStencil.depthWriteEnable = VK_TRUE;
+    depthStencil.depthCompareOp = vk::CompareOp::eAlways;
+
+    vk::PipelineColorBlendAttachmentState blendAtt{};
+    blendAtt.blendEnable = VK_FALSE;
+    blendAtt.colorWriteMask = vk::ColorComponentFlags{};
+
+    vk::PipelineColorBlendStateCreateInfo colorBlend{};
+    colorBlend.attachmentCount = 1;
+    colorBlend.pAttachments = &blendAtt;
+
+    vk::GraphicsPipelineCreateInfo pipeInfo{};
+    pipeInfo.stageCount = static_cast<uint32_t>(stages.size());
+    pipeInfo.pStages = stages.data();
+    pipeInfo.pVertexInputState = &vertexInput;
+    pipeInfo.pInputAssemblyState = &inputAsm;
+    pipeInfo.pViewportState = &viewportState;
+    pipeInfo.pRasterizationState = &raster;
+    pipeInfo.pMultisampleState = &multisample;
+    pipeInfo.pDepthStencilState = &depthStencil;
+    pipeInfo.pColorBlendState = &colorBlend;
+    pipeInfo.pDynamicState = &dynamicState;
+    pipeInfo.layout = m_lfbOverlayPipelineLayout.get();
+    pipeInfo.renderPass = m_singleSampleRenderPass.get();
+    pipeInfo.subpass = 0;
+
+    auto res = m_device->createGraphicsPipelineUnique(
+        m_vkPipelineCache ? m_vkPipelineCache.get() : vk::PipelineCache{},
+        pipeInfo);
+    if (res.result != vk::Result::eSuccess) {
+      GLIDE_LOG(WARN, "Vulkan",
+                "Failed to create MSAA depth resolve pipeline: "
+                    << vk::to_string(res.result));
+      return false;
+    }
+    m_msaaDepthResolvePipeline = std::move(res.value);
+    return true;
+  } catch (const std::exception& e) {
+    GLIDE_LOG(WARN, "Vulkan",
+              "Failed to initialize MSAA depth resolve pipeline: " << e.what());
+    return false;
+  }
+}
+
+bool VulkanBackend::ResolveMsaaDepthToSingle_Locked() {
+  if (m_msaaSamples <= 1 || !m_msaaDepthDirty || !m_msaaDepthImage ||
+      !m_depthImage || !m_singleSampleRenderPass ||
+      !m_singleSampleFramebuffers[0]) {
+    return false;
+  }
+  if (!InitMsaaDepthResolvePipeline_Locked()) {
+    return false;
+  }
+
+  // Transition the multisampled depth attachment to shader-read so sample 0
+  // can be copied into the single-sampled depth attachment via texelFetch.
+  vk::ImageSubresourceRange dsRange(DepthStencilAspectMask(), 0, 1, 0, 1);
+  TransitionImageLayout(*m_commandBuffer, m_msaaDepthImage.get(),
+                        vk::ImageLayout::eDepthStencilAttachmentOptimal,
+                        vk::ImageLayout::eShaderReadOnlyOptimal, dsRange);
+
+  vk::RenderPassBeginInfo rpBegin(
+      m_singleSampleRenderPass.get(), m_singleSampleFramebuffers[0].get(),
+      vk::Rect2D({0, 0}, {m_headlessWidth, m_headlessHeight}), 0, nullptr);
+  m_commandBuffer->beginRenderPass(rpBegin, vk::SubpassContents::eInline);
+  m_commandBuffer->bindPipeline(vk::PipelineBindPoint::eGraphics,
+                                m_msaaDepthResolvePipeline.get());
+  m_commandBuffer->bindDescriptorSets(
+      vk::PipelineBindPoint::eGraphics, m_lfbOverlayPipelineLayout.get(), 0, 1,
+      &m_msaaDepthResolveDescSet, 0, nullptr);
+  vk::Viewport vp(0.0f, 0.0f, static_cast<float>(m_headlessWidth),
+                  static_cast<float>(m_headlessHeight), 0.0f, 1.0f);
+  m_commandBuffer->setViewport(0, 1, &vp);
+  vk::Rect2D sc({0, 0}, {m_headlessWidth, m_headlessHeight});
+  m_commandBuffer->setScissor(0, 1, &sc);
+  const float rectNdc[4] = {-1.0f, -1.0f, 1.0f, 1.0f};
+  m_commandBuffer->pushConstants(m_lfbOverlayPipelineLayout.get(),
+                                 vk::ShaderStageFlagBits::eVertex, 0,
+                                 sizeof(rectNdc), rectNdc);
+  m_commandBuffer->draw(4, 1, 0, 0);
+  m_commandBuffer->endRenderPass();
+
+  TransitionImageLayout(*m_commandBuffer, m_msaaDepthImage.get(),
+                        vk::ImageLayout::eShaderReadOnlyOptimal,
+                        vk::ImageLayout::eDepthStencilAttachmentOptimal,
+                        dsRange);
+
+  m_clearDepthPendingSingle[0] = false;
+  m_clearDepthPendingSingle[1] = false;
+  m_msaaDepthDirty = false;
+  return true;
+}
+
+bool VulkanBackend::ReadbackAuxDepthToShadow_Locked() {
+  if (!m_depthImage || !m_commandBuffer || m_headlessWidth == 0 ||
+      m_headlessHeight == 0) {
+    return false;
+  }
+  const size_t totalPx =
+      static_cast<size_t>(m_headlessWidth) * m_headlessHeight;
+  if (m_auxDepthShadow16.size() != totalPx) {
+    m_auxDepthShadow16.resize(totalPx);
+  }
+
+  // Flush any pending 3D draws so the depth buffer reflects exact API order.
+  if (m_batchedVertexCount > 0) {
+    FlushBatch();
+  }
+
+  const uint32_t activeIdx = GetActiveGpuBufferIdx();
+
+  // Zero-stall fast path: a full-screen depth clear was queued outside a render
+  // pass and no geometry has executed since, so every pixel holds the exact
+  // clear depth value.
+  if (!m_inRenderPass && !m_msaaDepthDirty) {
+    const bool singleCleared =
+        (m_msaaSamples > 1) ? m_clearDepthPendingSingle[activeIdx]
+                            : m_clearDepthPending[activeIdx];
+    const bool msaaCleared =
+        (m_msaaSamples > 1) ? m_clearDepthPending[activeIdx] : true;
+    if (singleCleared && msaaCleared) {
+      const uint16_t packed = EncodeNormDepthToAux16(
+          m_clearDepthValue[activeIdx], m_depthMode, m_depthNear, m_depthFar);
+      std::fill(m_auxDepthShadow16.begin(), m_auxDepthShadow16.end(), packed);
+      m_auxDepthShadowValid = true;
+      return true;
+    }
+  }
+
+  if (m_inRenderPass) {
+    m_commandBuffer->endRenderPass();
+    m_inRenderPass = false;
+  }
+
+  if (m_msaaSamples > 1 && m_msaaDepthDirty) {
+    if (!ResolveMsaaDepthToSingle_Locked()) {
+      GLIDE_LOG(WARN, "Vulkan",
+                "MSAA depth resolve unavailable; falling back to 1x depth "
+                "readback.");
+    }
+  }
+
+  // Materialize any lingering single-sample pending depth clear when no MSAA
+  // resolve overwrote m_depthImage (e.g., mixed AA toggle within one frame).
+  for (uint32_t i = 0; i < 2; ++i) {
+    bool& dp =
+        (m_msaaSamples > 1) ? m_clearDepthPendingSingle[i] : m_clearDepthPending[i];
+    if (dp) {
+      vk::RenderPass rp =
+          (m_msaaSamples > 1 && m_singleSampleRenderPass)
+              ? m_singleSampleRenderPass.get()
+              : m_renderPass.get();
+      vk::Framebuffer fb =
+          (m_msaaSamples > 1 && m_singleSampleFramebuffers[i])
+              ? m_singleSampleFramebuffers[i].get()
+              : m_headlessFramebuffers[i].get();
+      vk::RenderPassBeginInfo rpBegin(
+          rp, fb, vk::Rect2D({0, 0}, {m_headlessWidth, m_headlessHeight}), 0,
+          nullptr);
+      m_commandBuffer->beginRenderPass(rpBegin, vk::SubpassContents::eInline);
+      vk::ClearAttachment ca(
+          vk::ImageAspectFlagBits::eDepth, 0,
+          vk::ClearValue(vk::ClearDepthStencilValue(m_clearDepthValue[i], 0)));
+      vk::ClearRect cr(
+          vk::Rect2D({0, 0}, {m_headlessWidth, m_headlessHeight}), 0, 1);
+      m_commandBuffer->clearAttachments(1, &ca, 1, &cr);
+      m_commandBuffer->endRenderPass();
+      dp = false;
+    }
+  }
+
+  const uint32_t slot = m_currentFrameSlot;
+  vk::ImageSubresourceRange dsRange(DepthStencilAspectMask(), 0, 1, 0, 1);
+  TransitionImageLayout(*m_commandBuffer, m_depthImage.get(),
+                        vk::ImageLayout::eDepthStencilAttachmentOptimal,
+                        vk::ImageLayout::eTransferSrcOptimal, dsRange);
+
+  vk::BufferImageCopy region{};
+  region.imageSubresource =
+      vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eDepth, 0, 0, 1);
+  region.imageExtent = vk::Extent3D(m_headlessWidth, m_headlessHeight, 1);
+  m_commandBuffer->copyImageToBuffer(
+      m_depthImage.get(), vk::ImageLayout::eTransferSrcOptimal,
+      m_headlessPixelBuffers[slot].get(), 1, &region);
+
+  SubmitMidFrameAndWaitIdle_Locked(false);
+
+  const void* src = m_gpuStagingMaps[slot];
+  if (src) {
+    const uint32_t depthMode = m_depthMode;
+    const float depthNear = m_depthNear;
+    const float depthFar = m_depthFar;
+    if (m_depthFormat == vk::Format::eD32Sfloat ||
+        m_depthFormat == vk::Format::eD32SfloatS8Uint) {
+      const auto* fSrc = reinterpret_cast<const float*>(src);
+      for (size_t i = 0; i < totalPx; ++i) {
+        m_auxDepthShadow16[i] =
+            EncodeNormDepthToAux16(fSrc[i], depthMode, depthNear, depthFar);
+      }
+    } else if (m_depthFormat == vk::Format::eD24UnormS8Uint ||
+               m_depthFormat == vk::Format::eX8D24UnormPack32) {
+      const auto* uSrc = reinterpret_cast<const uint32_t*>(src);
+      constexpr float kInvD24 = 1.0f / 16777215.0f;
+      for (size_t i = 0; i < totalPx; ++i) {
+        const float dNorm = static_cast<float>(uSrc[i] & 0x00FFFFFFu) * kInvD24;
+        m_auxDepthShadow16[i] =
+            EncodeNormDepthToAux16(dNorm, depthMode, depthNear, depthFar);
+      }
+    } else if (m_depthFormat == vk::Format::eD16Unorm ||
+               m_depthFormat == vk::Format::eD16UnormS8Uint) {
+      const auto* u16Src = reinterpret_cast<const uint16_t*>(src);
+      constexpr float kInvD16 = 1.0f / 65535.0f;
+      for (size_t i = 0; i < totalPx; ++i) {
+        const float dNorm = static_cast<float>(u16Src[i]) * kInvD16;
+        m_auxDepthShadow16[i] =
+            EncodeNormDepthToAux16(dNorm, depthMode, depthNear, depthFar);
+      }
+    } else {
+      std::fill(m_auxDepthShadow16.begin(), m_auxDepthShadow16.end(),
+                static_cast<uint16_t>(0xFFFFu));
+    }
+    m_auxDepthShadowValid = true;
+  }
+
+  m_commandBuffer->reset({});
+  m_commandBuffer->begin(vk::CommandBufferBeginInfo(
+      vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
+  TransitionImageLayout(*m_commandBuffer, m_depthImage.get(),
+                        vk::ImageLayout::eTransferSrcOptimal,
+                        vk::ImageLayout::eDepthStencilAttachmentOptimal,
+                        dsRange);
+  return m_auxDepthShadowValid;
+}
+
 bool VulkanBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
                             uint32_t srcWidth, uint32_t srcHeight,
                             uint32_t dstStride, void* dstData) {
@@ -876,6 +1202,16 @@ bool VulkanBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
 
   if (buffer == 2u) {
     if (!dstData || srcWidth == 0 || srcHeight == 0) return true;
+    // Flush any buffered 3D vertices BEFORE checking cache validity so newly
+    // submitted triangles invalidate m_auxDepthShadowValid first.
+    if (m_batchedVertexCount > 0) {
+      FlushBatch();
+    }
+    const size_t totalPx =
+        static_cast<size_t>(m_headlessWidth) * m_headlessHeight;
+    if (!m_auxDepthShadowValid || m_auxDepthShadow16.size() != totalPx) {
+      (void)ReadbackAuxDepthToShadow_Locked();
+    }
     auto* outBase = reinterpret_cast<uint8_t*>(dstData);
     const uint32_t copyW =
         (srcX < m_headlessWidth) ? std::min(srcWidth, m_headlessWidth - srcX) : 0u;
@@ -884,9 +1220,7 @@ bool VulkanBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
     for (uint32_t y = 0; y < copyH; ++y) {
       auto* rowOut = reinterpret_cast<uint16_t*>(
           outBase + static_cast<size_t>(y) * dstStride);
-      if (m_auxDepthShadowValid &&
-          m_auxDepthShadow16.size() ==
-              static_cast<size_t>(m_headlessWidth) * m_headlessHeight) {
+      if (m_auxDepthShadowValid && m_auxDepthShadow16.size() == totalPx) {
         const uint16_t* sRow = m_auxDepthShadow16.data() +
                                static_cast<size_t>(srcY + y) * m_headlessWidth;
         std::memcpy(rowOut, sRow + srcX, static_cast<size_t>(copyW) * sizeof(uint16_t));

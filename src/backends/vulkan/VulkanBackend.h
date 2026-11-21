@@ -518,6 +518,9 @@ class VulkanBackend : public GlideStateTracker {
   vk::UniqueImage m_msaaDepthImage;
   vk::UniqueDeviceMemory m_msaaDepthImageMemory;
   vk::UniqueImageView m_msaaDepthImageView;
+  vk::UniqueImageView m_msaaDepthSampleView;  // Depth-only aspect view for MSAA resolve
+  bool m_msaaDepthSampleable{false};
+  bool m_msaaDepthDirty{false};
 
   // VSA-100 TEXTUREBUFFER zero-readback GPU RTT backbuffer scratch image
   vk::UniqueImage m_rttSaveImage;
@@ -724,7 +727,13 @@ class VulkanBackend : public GlideStateTracker {
   vk::UniquePipeline m_lfbOverlayPipeline;
   vk::UniquePipeline m_lfbDepthPipeline;
   vk::UniquePipeline m_lfbDepthPipelineMsaa;
+  vk::UniqueDescriptorPool m_msaaDepthResolveDescPool;
+  vk::DescriptorSet m_msaaDepthResolveDescSet;
+  vk::UniquePipeline m_msaaDepthResolvePipeline;
   bool InitLfbDepthPipeline_Locked(bool msaa);
+  bool InitMsaaDepthResolvePipeline_Locked();
+  bool ResolveMsaaDepthToSingle_Locked();
+  bool ReadbackAuxDepthToShadow_Locked();
   bool WriteAuxDepthLFB_Locked(uint32_t dstX, uint32_t dstY, uint32_t srcWidth,
                                uint32_t srcHeight, int32_t srcStride,
                                const void* srcData, const void* refData);

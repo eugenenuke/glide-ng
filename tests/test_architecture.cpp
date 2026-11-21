@@ -10156,3 +10156,140 @@ TEST_CASE(
   }
 #endif
 }
+
+TEST_CASE(
+    "GR_BUFFER_AUXBUFFER depth readback reflects live GPU depth attachment",
+    "[Glide2][AuxDepth][Readback][Regression]") {
+#ifdef __linux__
+  struct EnvGuard {
+    std::string key;
+    bool had{false};
+    std::string saved;
+    explicit EnvGuard(const char* k) : key(k) {
+      if (const char* v = std::getenv(k)) {
+        had = true;
+        saved = v;
+      }
+    }
+    ~EnvGuard() {
+      if (had) {
+        ::setenv(key.c_str(), saved.c_str(), 1);
+      } else {
+        ::unsetenv(key.c_str());
+      }
+    }
+  };
+  EnvGuard backendGuard("GLIDE_NG_BACKEND");
+  EnvGuard msaaGuard("GLIDE_NG_MSAA");
+
+  struct Case {
+    const char* backend;
+    const char* msaa;
+  };
+  const Case cases[] = {
+      {"software", "1"},
+      {"vulkan", "1"},
+      {"vulkan", "4"},
+      {"opengl_es", "1"},
+      {"opengl_es", "4"},
+  };
+
+  auto makeVtx = [](float x, float y, float ooz, float r, float g, float b) {
+    GrVertex v{};
+    v.x = x;
+    v.y = y;
+    v.z = 0.0f;
+    v.ooz = ooz;
+    v.oow = 1.0f;
+    v.r = r;
+    v.g = g;
+    v.b = b;
+    v.a = 255.0f;
+    return v;
+  };
+
+  for (const auto& tc : cases) {
+    CAPTURE(tc.backend, tc.msaa);
+    ::setenv("GLIDE_NG_BACKEND", tc.backend, 1);
+    ::setenv("GLIDE_NG_MSAA", tc.msaa, 1);
+
+    grGlideInit();
+    FxBool opened =
+        grSstWinOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                     GR_COLORFORMAT_ARGB, GR_ORIGIN_UPPER_LEFT, 2, 1);
+    REQUIRE(opened == FXTRUE);
+
+    grColorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+                   GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_NONE, FXFALSE);
+    grDepthBufferMode(GR_DEPTHBUFFER_ZBUFFER);
+    grDepthMask(FXTRUE);
+
+    // 1. Inverted Z-buffer (depth cleared to 0 = far, GEQUAL — Motorhead style)
+    grDepthBufferFunction(GR_CMP_GEQUAL);
+    grBufferClear(0xFF000000u, 0, 0u);
+
+    uint16_t clearedDepth = 0xBEEFu;
+    REQUIRE(grLfbReadRegion(GR_BUFFER_AUXBUFFER, 320, 240, 1, 1, 2,
+                            &clearedDepth) == FXTRUE);
+    CHECK(clearedDepth == 0u);
+
+    // Draw a triangle covering (160..480, 100..400) at ooz = 32768 (~0.5)
+    GrVertex a = makeVtx(160.0f, 100.0f, 32768.0f, 255.0f, 0.0f, 0.0f);
+    GrVertex b = makeVtx(480.0f, 100.0f, 32768.0f, 255.0f, 0.0f, 0.0f);
+    GrVertex c = makeVtx(320.0f, 400.0f, 32768.0f, 255.0f, 0.0f, 0.0f);
+    grDrawTriangle(&a, &b, &c);
+
+    // Full-frame grLfbLock(READ_ONLY, AUXBUFFER) occlusion probe (unoccluded
+    // sky must read 0, NOT 0xFFFF; triangle interior must read ~32768).
+    GrLfbInfo_t lfb{};
+    lfb.size = sizeof(GrLfbInfo_t);
+    REQUIRE(grLfbLock(GR_LFB_READ_ONLY, GR_BUFFER_AUXBUFFER,
+                      GR_LFBWRITEMODE_ANY, GR_ORIGIN_UPPER_LEFT, FXFALSE,
+                      &lfb) == FXTRUE);
+    REQUIRE(lfb.lfbPtr != nullptr);
+    const auto* base = static_cast<const uint8_t*>(lfb.lfbPtr);
+    const uint16_t skyZ =
+        reinterpret_cast<const uint16_t*>(base + 20u * lfb.strideInBytes)[20u];
+    const uint16_t triZ = reinterpret_cast<const uint16_t*>(
+        base + 220u * lfb.strideInBytes)[320u];
+    REQUIRE(grLfbUnlock(GR_LFB_READ_ONLY, GR_BUFFER_AUXBUFFER) == FXTRUE);
+    CHECK(skyZ <= 4u);
+    CHECK(triZ >= 32600u);
+    CHECK(triZ <= 32900u);
+
+    // Draw an additive billboard with depth write disabled; cached depth must
+    // still read identical sky=0 / triangle=~32768.
+    grDepthMask(FXFALSE);
+    GrVertex f0 = makeVtx(10.0f, 10.0f, 60000.0f, 0.0f, 255.0f, 0.0f);
+    GrVertex f1 = makeVtx(40.0f, 10.0f, 60000.0f, 0.0f, 255.0f, 0.0f);
+    GrVertex f2 = makeVtx(25.0f, 40.0f, 60000.0f, 0.0f, 255.0f, 0.0f);
+    grDrawTriangle(&f0, &f1, &f2);
+    uint16_t skyAfterNoWrite = 0xBEEFu;
+    REQUIRE(grLfbReadRegion(GR_BUFFER_AUXBUFFER, 20, 20, 1, 1, 2,
+                            &skyAfterNoWrite) == FXTRUE);
+    CHECK(skyAfterNoWrite <= 4u);
+
+    // 2. Standard Z-buffer (cleared to 0xFFFF = far, LESS)
+    grDepthMask(FXTRUE);
+    grDepthBufferFunction(GR_CMP_LESS);
+    grBufferClear(0xFF000000u, 0, 0xFFFFu);
+    GrVertex s0 = makeVtx(160.0f, 100.0f, 16384.0f, 0.0f, 0.0f, 255.0f);
+    GrVertex s1 = makeVtx(480.0f, 100.0f, 16384.0f, 0.0f, 0.0f, 255.0f);
+    GrVertex s2 = makeVtx(320.0f, 400.0f, 16384.0f, 0.0f, 0.0f, 255.0f);
+    grDrawTriangle(&s0, &s1, &s2);
+
+    uint16_t stdSky = 0u;
+    uint16_t stdTri = 0u;
+    REQUIRE(grLfbReadRegion(GR_BUFFER_AUXBUFFER, 20, 20, 1, 1, 2, &stdSky) ==
+            FXTRUE);
+    REQUIRE(grLfbReadRegion(GR_BUFFER_AUXBUFFER, 320, 220, 1, 1, 2, &stdTri) ==
+            FXTRUE);
+    CHECK(stdSky >= 0xFFFBu);
+    CHECK(stdTri >= 16250u);
+    CHECK(stdTri <= 16520u);
+
+    grSstWinClose();
+    grGlideShutdown();
+  }
+#endif
+}

@@ -442,9 +442,12 @@ void VulkanBackend::Shutdown() {
     m_msaaColorImageMemories[i].reset();
     m_msaaColorImages[i].reset();
   }
+  m_msaaDepthSampleView.reset();
   m_msaaDepthImageView.reset();
   m_msaaDepthImageMemory.reset();
   m_msaaDepthImage.reset();
+  m_msaaDepthSampleable = false;
+  m_msaaDepthDirty = false;
 
   m_rttSaveImage.reset();
   m_rttSaveImageMemory.reset();
@@ -532,6 +535,7 @@ void VulkanBackend::ResetState_Locked() {
   m_lfbReadCacheValid[0] = false;
   m_lfbReadCacheValid[1] = false;
   m_auxDepthShadowValid = false;
+  m_msaaDepthDirty = false;
   m_frontBufferNeedsPresent = false;
   m_pipelineStateDirty = true;
   m_descriptorStateDirty = true;
@@ -884,9 +888,12 @@ void VulkanBackend::DetachWindow_Locked(std::unique_lock<std::mutex>& lock) {
     m_msaaColorImageMemories[i].reset();
     m_msaaColorImages[i].reset();
   }
+  m_msaaDepthSampleView.reset();
   m_msaaDepthImageView.reset();
   m_msaaDepthImageMemory.reset();
   m_msaaDepthImage.reset();
+  m_msaaDepthSampleable = false;
+  m_msaaDepthDirty = false;
 
   m_rttSaveImage.reset();
   m_rttSaveImageMemory.reset();
@@ -2545,6 +2552,7 @@ bool VulkanBackend::CreateHeadlessRenderTarget(uint32_t width,
       {}, vk::ImageType::e2D, m_depthFormat, vk::Extent3D(width, height, 1), 1,
       1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal,
       vk::ImageUsageFlagBits::eDepthStencilAttachment |
+          vk::ImageUsageFlagBits::eTransferSrc |
           vk::ImageUsageFlagBits::eTransferDst);
   m_depthImage = m_device->createImageUnique(depthImageInfo);
 
@@ -2561,12 +2569,26 @@ bool VulkanBackend::CreateHeadlessRenderTarget(uint32_t width,
   m_depthImageView = m_device->createImageViewUnique(depthViewInfo);
 
   // 1.1 Allocate Multi-sampled Depth image if MSAA is enabled
+  m_msaaDepthSampleable = false;
+  m_msaaDepthSampleView.reset();
+  m_msaaDepthDirty = false;
   if (m_msaaSamples > 1) {
+    const auto depthFmtProps = m_physicalDevice.getFormatProperties(m_depthFormat);
+    const auto devProps = m_physicalDevice.getProperties();
+    const bool canSampleMsaaDepth =
+        static_cast<bool>(depthFmtProps.optimalTilingFeatures &
+                          vk::FormatFeatureFlagBits::eSampledImage) &&
+        static_cast<bool>(devProps.limits.sampledImageDepthSampleCounts &
+                          samples);
+    vk::ImageUsageFlags msaaDepthUsage =
+        vk::ImageUsageFlagBits::eDepthStencilAttachment |
+        vk::ImageUsageFlagBits::eTransferDst;
+    if (canSampleMsaaDepth) {
+      msaaDepthUsage |= vk::ImageUsageFlagBits::eSampled;
+    }
     vk::ImageCreateInfo msaaDepthInfo(
         {}, vk::ImageType::e2D, m_depthFormat, vk::Extent3D(width, height, 1),
-        1, 1, samples, vk::ImageTiling::eOptimal,
-        vk::ImageUsageFlagBits::eDepthStencilAttachment |
-            vk::ImageUsageFlagBits::eTransferDst);
+        1, 1, samples, vk::ImageTiling::eOptimal, msaaDepthUsage);
     m_msaaDepthImage = m_device->createImageUnique(msaaDepthInfo);
 
     auto msaaDepthMemReqs =
@@ -2584,6 +2606,15 @@ bool VulkanBackend::CreateHeadlessRenderTarget(uint32_t width,
         {}, m_msaaDepthImage.get(), vk::ImageViewType::e2D, m_depthFormat, {},
         {DepthStencilAspectMask(), 0, 1, 0, 1});
     m_msaaDepthImageView = m_device->createImageViewUnique(msaaDepthViewInfo);
+
+    if (canSampleMsaaDepth) {
+      // Single-aspect depth view required by Vulkan spec for sampler2DMS.
+      vk::ImageViewCreateInfo sampleViewInfo(
+          {}, m_msaaDepthImage.get(), vk::ImageViewType::e2D, m_depthFormat, {},
+          {vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1});
+      m_msaaDepthSampleView = m_device->createImageViewUnique(sampleViewInfo);
+      m_msaaDepthSampleable = true;
+    }
   }
 
   // 2. Allocate Double-Buffered Color Images and Framebuffers (i=0 for BACK,
