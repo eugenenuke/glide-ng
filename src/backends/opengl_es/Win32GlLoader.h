@@ -16,9 +16,53 @@
 
 #include <cstdint>
 
+// OpenGL 1.1 and WGL base entry points loaded dynamically from the system
+// %SystemRoot%\System32\opengl32.dll via LoadLibraryA() so glide*.dll carries
+// zero static PE import against opengl32.dll. This avoids circular DLL loader
+// dependencies and missing-export crashes when legacy games place a 3dfx MiniGL
+// or standalone ICD renamed as opengl32.dll beside the executable (e.g. GLQuake).
+#define GLIDE_WIN32_WGL_BASE_FUNCS_X(X)                         \
+  X(decltype(&::wglCreateContext), wglCreateContext)            \
+  X(decltype(&::wglDeleteContext), wglDeleteContext)            \
+  X(decltype(&::wglGetCurrentContext), wglGetCurrentContext)    \
+  X(decltype(&::wglGetCurrentDC), wglGetCurrentDC)              \
+  X(decltype(&::wglGetProcAddress), wglGetProcAddress)          \
+  X(decltype(&::wglMakeCurrent), wglMakeCurrent)
+
+#define GLIDE_WIN32_GL11_BASE_FUNCS_X(X)                        \
+  X(decltype(&::glBindTexture), glBindTexture)                  \
+  X(decltype(&::glClear), glClear)                              \
+  X(decltype(&::glClearColor), glClearColor)                    \
+  X(decltype(&::glClearDepth), glClearDepth)                    \
+  X(decltype(&::glClearStencil), glClearStencil)                \
+  X(decltype(&::glColorMask), glColorMask)                      \
+  X(decltype(&::glCullFace), glCullFace)                        \
+  X(decltype(&::glDeleteTextures), glDeleteTextures)            \
+  X(decltype(&::glDepthFunc), glDepthFunc)                      \
+  X(decltype(&::glDepthMask), glDepthMask)                      \
+  X(decltype(&::glDisable), glDisable)                          \
+  X(decltype(&::glDrawArrays), glDrawArrays)                    \
+  X(decltype(&::glEnable), glEnable)                            \
+  X(decltype(&::glFinish), glFinish)                            \
+  X(decltype(&::glFrontFace), glFrontFace)                      \
+  X(decltype(&::glGenTextures), glGenTextures)                  \
+  X(decltype(&::glGetError), glGetError)                        \
+  X(decltype(&::glGetIntegerv), glGetIntegerv)                  \
+  X(decltype(&::glGetString), glGetString)                      \
+  X(decltype(&::glPixelStorei), glPixelStorei)                  \
+  X(decltype(&::glReadPixels), glReadPixels)                    \
+  X(decltype(&::glScissor), glScissor)                          \
+  X(decltype(&::glStencilFunc), glStencilFunc)                  \
+  X(decltype(&::glStencilMask), glStencilMask)                  \
+  X(decltype(&::glStencilOp), glStencilOp)                      \
+  X(decltype(&::glTexImage2D), glTexImage2D)                    \
+  X(decltype(&::glTexParameteri), glTexParameteri)              \
+  X(decltype(&::glTexSubImage2D), glTexSubImage2D)              \
+  X(decltype(&::glViewport), glViewport)
+
 // All non-OpenGL-1.1 entry points used by OpenGLESBackend / Draw / Shaders /
 // Textures. Loaded at WGL context creation via wglGetProcAddress() with
-// opengl32.dll GetProcAddress() fallback — zero external loader dependencies.
+// system opengl32.dll GetProcAddress() fallback — zero external loader deps.
 #define GLIDE_WIN32_GL_FUNCS_X(X)                                      \
   X(PFNGLACTIVETEXTUREPROC, glActiveTexture)                           \
   X(PFNGLATTACHSHADERPROC, glAttachShader)                             \
@@ -83,16 +127,65 @@
 namespace GlideWrapper {
 namespace Win32Gl {
 
+#define GLIDE_W32_TYPEDEF_(pfnType, name) using Pfn_##name = pfnType;
+GLIDE_WIN32_WGL_BASE_FUNCS_X(GLIDE_W32_TYPEDEF_)
+GLIDE_WIN32_GL11_BASE_FUNCS_X(GLIDE_W32_TYPEDEF_)
+#undef GLIDE_W32_TYPEDEF_
+
+#define GLIDE_W32_BASE_DECL_(pfnType, name) extern Pfn_##name pfn_##name;
+GLIDE_WIN32_WGL_BASE_FUNCS_X(GLIDE_W32_BASE_DECL_)
+GLIDE_WIN32_GL11_BASE_FUNCS_X(GLIDE_W32_BASE_DECL_)
+#undef GLIDE_W32_BASE_DECL_
+
 #define GLIDE_W32_DECL_(pfnType, name) extern pfnType pfn_##name;
 GLIDE_WIN32_GL_FUNCS_X(GLIDE_W32_DECL_)
 #undef GLIDE_W32_DECL_
 
+bool LoadBaseFunctions();
 bool LoadCoreFunctions();
 
 }  // namespace Win32Gl
 }  // namespace GlideWrapper
 
-// Route calls cleanly to loaded pointers without colliding with GL headers.
+// Route WGL, OpenGL 1.1, and OpenGL 3.3 Core calls through dynamically loaded
+// pointers from the system opengl32.dll without colliding with GL headers.
+#define wglCreateContext          ::GlideWrapper::Win32Gl::pfn_wglCreateContext
+#define wglDeleteContext          ::GlideWrapper::Win32Gl::pfn_wglDeleteContext
+#define wglGetCurrentContext      ::GlideWrapper::Win32Gl::pfn_wglGetCurrentContext
+#define wglGetCurrentDC           ::GlideWrapper::Win32Gl::pfn_wglGetCurrentDC
+#define wglGetProcAddress         ::GlideWrapper::Win32Gl::pfn_wglGetProcAddress
+#define wglMakeCurrent            ::GlideWrapper::Win32Gl::pfn_wglMakeCurrent
+
+#define glBindTexture             ::GlideWrapper::Win32Gl::pfn_glBindTexture
+#define glClear                   ::GlideWrapper::Win32Gl::pfn_glClear
+#define glClearColor              ::GlideWrapper::Win32Gl::pfn_glClearColor
+#define glClearDepth              ::GlideWrapper::Win32Gl::pfn_glClearDepth
+#define glClearStencil            ::GlideWrapper::Win32Gl::pfn_glClearStencil
+#define glColorMask               ::GlideWrapper::Win32Gl::pfn_glColorMask
+#define glCullFace                ::GlideWrapper::Win32Gl::pfn_glCullFace
+#define glDeleteTextures          ::GlideWrapper::Win32Gl::pfn_glDeleteTextures
+#define glDepthFunc               ::GlideWrapper::Win32Gl::pfn_glDepthFunc
+#define glDepthMask               ::GlideWrapper::Win32Gl::pfn_glDepthMask
+#define glDisable                 ::GlideWrapper::Win32Gl::pfn_glDisable
+#define glDrawArrays              ::GlideWrapper::Win32Gl::pfn_glDrawArrays
+#define glEnable                  ::GlideWrapper::Win32Gl::pfn_glEnable
+#define glFinish                  ::GlideWrapper::Win32Gl::pfn_glFinish
+#define glFrontFace               ::GlideWrapper::Win32Gl::pfn_glFrontFace
+#define glGenTextures             ::GlideWrapper::Win32Gl::pfn_glGenTextures
+#define glGetError                ::GlideWrapper::Win32Gl::pfn_glGetError
+#define glGetIntegerv             ::GlideWrapper::Win32Gl::pfn_glGetIntegerv
+#define glGetString               ::GlideWrapper::Win32Gl::pfn_glGetString
+#define glPixelStorei             ::GlideWrapper::Win32Gl::pfn_glPixelStorei
+#define glReadPixels              ::GlideWrapper::Win32Gl::pfn_glReadPixels
+#define glScissor                 ::GlideWrapper::Win32Gl::pfn_glScissor
+#define glStencilFunc             ::GlideWrapper::Win32Gl::pfn_glStencilFunc
+#define glStencilMask             ::GlideWrapper::Win32Gl::pfn_glStencilMask
+#define glStencilOp               ::GlideWrapper::Win32Gl::pfn_glStencilOp
+#define glTexImage2D              ::GlideWrapper::Win32Gl::pfn_glTexImage2D
+#define glTexParameteri           ::GlideWrapper::Win32Gl::pfn_glTexParameteri
+#define glTexSubImage2D           ::GlideWrapper::Win32Gl::pfn_glTexSubImage2D
+#define glViewport                ::GlideWrapper::Win32Gl::pfn_glViewport
+
 #define glActiveTexture           ::GlideWrapper::Win32Gl::pfn_glActiveTexture
 #define glAttachShader            ::GlideWrapper::Win32Gl::pfn_glAttachShader
 #define glBindBuffer              ::GlideWrapper::Win32Gl::pfn_glBindBuffer

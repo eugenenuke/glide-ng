@@ -63,13 +63,62 @@ namespace GlideWrapper {
 #if defined(_WIN32)
 namespace Win32Gl {
 
+#define GLIDE_W32_BASE_DEF_(pfnType, name) Pfn_##name pfn_##name = nullptr;
+GLIDE_WIN32_WGL_BASE_FUNCS_X(GLIDE_W32_BASE_DEF_)
+GLIDE_WIN32_GL11_BASE_FUNCS_X(GLIDE_W32_BASE_DEF_)
+#undef GLIDE_W32_BASE_DEF_
 #define GLIDE_W32_DEF_(pfnType, name) pfnType pfn_##name = nullptr;
 GLIDE_WIN32_GL_FUNCS_X(GLIDE_W32_DEF_)
 #undef GLIDE_W32_DEF_
 
 namespace {
+HMODULE g_opengl32Mod = nullptr;
+
+bool IsSamePathInsensitive(const char* a, const char* b) {
+  if (!a || !b) return false;
+  while (*a && *b) {
+    char ca = (*a >= 'A' && *a <= 'Z') ? static_cast<char>(*a + 32) : *a;
+    char cb = (*b >= 'A' && *b <= 'Z') ? static_cast<char>(*b + 32) : *b;
+    if (ca == '/') ca = '\\';
+    if (cb == '/') cb = '\\';
+    if (ca != cb) return false;
+    ++a;
+    ++b;
+  }
+  return *a == '\0' && *b == '\0';
+}
+
+HMODULE EnsureSystemOpenGL32() {
+  if (g_opengl32Mod) return g_opengl32Mod;
+  char sysDir[MAX_PATH] = {};
+  UINT len = GetSystemDirectoryA(sysDir, MAX_PATH);
+  std::string sysPath;
+  if (len > 0 && len < MAX_PATH - 16) {
+    sysPath = std::string(sysDir) + "\\opengl32.dll";
+    g_opengl32Mod = LoadLibraryA(sysPath.c_str());
+  }
+  if (!g_opengl32Mod) {
+    g_opengl32Mod = LoadLibraryA("opengl32.dll");
+  }
+  if (g_opengl32Mod && !sysPath.empty()) {
+    char loadedPath[MAX_PATH] = {};
+    if (GetModuleFileNameA(g_opengl32Mod, loadedPath, MAX_PATH) > 0 &&
+        !IsSamePathInsensitive(loadedPath, sysPath.c_str())) {
+      // Detect when Windows/Wine redirected LoadLibraryA to an app-local
+      // 3dfx MiniGL / ICD shim (e.g. GLQuake's opengl32.dll -> glide2x.dll),
+      // which would cause recursive WGL failures if called as the host driver.
+      GLIDE_LOG(WARN, "GLES",
+                "System opengl32.dll load resolved to non-system module '"
+                    << loadedPath << "' instead of '" << sysPath
+                    << "'. If this is a 3dfx MiniGL shim, use backend=vulkan "
+                       "or backend=software instead of backend=opengl_es.");
+    }
+  }
+  return g_opengl32Mod;
+}
+
 void* ResolveWin32GlSymbol(HMODULE opengl32Mod, const char* name) {
-  PROC proc = wglGetProcAddress(name);
+  PROC proc = pfn_wglGetProcAddress ? pfn_wglGetProcAddress(name) : nullptr;
   const uintptr_t addr = reinterpret_cast<uintptr_t>(proc);
   if (addr == 0 || addr == 1 || addr == 2 || addr == 3 ||
       addr == static_cast<uintptr_t>(-1)) {
@@ -83,8 +132,34 @@ void* ResolveWin32GlSymbol(HMODULE opengl32Mod, const char* name) {
 }
 }  // namespace
 
+bool LoadBaseFunctions() {
+  HMODULE opengl32Mod = EnsureSystemOpenGL32();
+  if (!opengl32Mod) {
+    GLIDE_LOG(CRITICAL, "GLES",
+              "Failed to load system opengl32.dll (err=" << GetLastError()
+                                                         << ").");
+    return false;
+  }
+  bool allOk = true;
+#define GLIDE_W32_BASE_(pfnType, name)                                        \
+  do {                                                                        \
+    FARPROC sym = GetProcAddress(opengl32Mod, #name);                         \
+    if (!sym) {                                                               \
+      GLIDE_LOG(CRITICAL, "GLES",                                             \
+                "opengl32.dll missing required base symbol: " << #name);      \
+      allOk = false;                                                          \
+    } else {                                                                  \
+      std::memcpy(&pfn_##name, &sym, sizeof(pfn_##name));                     \
+    }                                                                         \
+  } while (0);
+  GLIDE_WIN32_WGL_BASE_FUNCS_X(GLIDE_W32_BASE_)
+  GLIDE_WIN32_GL11_BASE_FUNCS_X(GLIDE_W32_BASE_)
+#undef GLIDE_W32_BASE_
+  return allOk;
+}
+
 bool LoadCoreFunctions() {
-  HMODULE opengl32Mod = GetModuleHandleA("opengl32.dll");
+  HMODULE opengl32Mod = EnsureSystemOpenGL32();
   bool allOk = true;
 #define GLIDE_W32_LOAD_(pfnType, name)                                     \
   do {                                                                     \
@@ -2349,6 +2424,9 @@ bool OpenGLESBackend::CreateStandaloneSdlGlContext() {
 
 bool OpenGLESBackend::CreateWin32WglContext() {
 #if defined(_WIN32)
+  if (!Win32Gl::LoadBaseFunctions()) {
+    return false;
+  }
   const auto mode = m_surfaceHost.GetMode();
   HWND targetHwnd = nullptr;
   if (mode == NativeSurfaceHost::Mode::Headless) {

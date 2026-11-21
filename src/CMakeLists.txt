@@ -98,7 +98,7 @@ if(WIN32)
         # Protect 32-bit AVX2/SSE code from 4-byte-aligned 1990s Win32 caller stacks
         target_compile_options(GlideWrapperCore PUBLIC -mstackrealign)
     endif()
-    target_link_libraries(GlideWrapperCore PUBLIC user32 gdi32 opengl32)
+    target_link_libraries(GlideWrapperCore PUBLIC user32 gdi32)
 else()
     target_link_libraries(GlideWrapperCore PUBLIC Vulkan::Vulkan SDL2::SDL2 GLESv2 OpenMP::OpenMP_CXX ${CMAKE_DL_LIBS})
 endif()
