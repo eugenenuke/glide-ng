@@ -1612,13 +1612,14 @@ FX_ENTRY void FX_CALL guTexMemReset(void) {
   s_currentMipMap[0] = s_currentMipMap[1] = GR_NULL_MIPMAP_HANDLE;
   s_mpMipMap[0] = s_mpMipMap[1] = GR_NULL_MIPMAP_HANDLE;
   s_state.boundTex[0] = s_state.boundTex[1] = 0xFFFFFFFFu;
-  s_state.clampS[0] = s_state.clampS[1] = 0;
-  s_state.clampT[0] = s_state.clampT[1] = 0;
-  s_state.minFilter[0] = s_state.minFilter[1] = 0;
-  s_state.magFilter[0] = s_state.magFilter[1] = 0;
 
-  // Authentic Glide 2.x guTexMemReset clears texture allocations and current
-  // mipmap bindings without wiping hardware TMU palette or NCC tables.
+  // Authentic Glide 2.x guTexMemReset() resets only the utility mipmap
+  // allocator and current mipmap bindings. It MUST NOT wipe hardware TMU
+  // register state: palette/NCC tables, filter modes (minFilter/magFilter),
+  // or clamp modes (clampS/clampT) survive until changed via grTexFilterMode/
+  // grTexClampMode/guTexSource. Games such as Extreme Assault probe/configure
+  // TMU state via guTexSource(0), call guTexMemReset(), then upload textures
+  // with grTexDownloadMipMap() + grTexSource() without re-issuing filter/clamp.
   GlideWrapper::TextureManager::GetInstance().ClearTextures();
   if (auto* b = GlideWrapper::BackendManager::GetInstance().GetBackend()) {
     EntryCommon::BindTexSource(s_state, 0, 0xFFFFFFFFu);
@@ -1776,8 +1777,16 @@ FX_ENTRY FxBool FX_CALL grLfbLock(GrLock_t type, GrBuffer_t buffer,
   if (!GlideWrapper::LfbManager::IsWriteLockType(type)) {
     EntryCommon::FlushActiveLfbWriteLock(s_state);
   }
+  // Authentic 3dfx SST-1 (Voodoo Graphics) and CVG (Voodoo2) hardware exposes
+  // a fixed 1024-pixel LFB row stride (2048 B for 16-bit, 4096 B for 32-bit)
+  // for all resolutions <= 1024 px wide. Several DOS and Win32 Glide 2.x games
+  // (e.g. Extreme Assault) follow the 3dfx Glide 2.x Programming Guide and
+  // index locked pointers by hardcoded `y * 1024` rather than reading
+  // `info->strideInBytes`; a tight `width * pixelSize` staging allocation
+  // would cause out-of-bounds heap overwrites past `info->lfbPtr`.
   return GlideWrapper::LfbManager::GetInstance().Lock(
-             type, buffer, writeMode, origin, pixelPipeline != 0, info)
+             type, buffer, writeMode, origin, pixelPipeline != 0, info,
+             /*forcedStridePixels=*/1024u)
              ? FXTRUE
              : FXFALSE;
 }
