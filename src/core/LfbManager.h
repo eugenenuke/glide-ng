@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/IGraphicsBackend.h"
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <vector>
@@ -69,6 +70,17 @@ public:
             (forcedStridePixels > width) ? forcedStridePixels : width;
         const uint32_t stride = stridePixels * pixelSize;
         const size_t byteSize = static_cast<size_t>(stride) * height;
+        // Authentic 3dfx SST-1/CVG linear framebuffers map a full vertical
+        // aperture past the last visible scanline (1024 rows: 2 MiB @ 16-bit,
+        // 4 MiB @ 32-bit). Keep a trailing guard region on the backing staging
+        // vector so guest off-by-one loops (e.g. writing y == height), unclipped
+        // HUD/cockpit blits, or tile-rounded clears past the bottom edge cannot
+        // corrupt adjacent heap chunks. `originalBuffer` and dirty-band upload
+        // remain strictly bounded to the visible `byteSize = stride * height`.
+        const uint32_t minApertureRows =
+            (forcedStridePixels >= 1024u) ? 1024u : (height + 64u);
+        const uint32_t allocRows = std::max(height + 64u, minApertureRows);
+        const size_t allocBytes = static_cast<size_t>(stride) * allocRows;
 
         if (IsWriteLockType(type)) {
             const uint32_t slotIdx = WriteSlotForBuffer(buffer);
@@ -82,7 +94,7 @@ public:
                 slot.width == width && slot.height == height &&
                 slot.stride == stride && slot.writeMode == resolvedMode &&
                 slot.origin == origin &&
-                slot.stagingBuffer.size() == byteSize) {
+                slot.stagingBuffer.size() >= allocBytes) {
                 ++slot.lockCount;
                 slot.pixelPipeline = slot.pixelPipeline || pixelPipeline;
                 info->size = sizeof(*info);
@@ -119,8 +131,8 @@ public:
                 slot.originalSentinelPixelSize = pixelSize;
                 slot.stagingClean = false;
             }
-            if (!slot.stagingClean || slot.stagingBuffer.size() != byteSize) {
-                slot.stagingBuffer.resize(byteSize);
+            if (!slot.stagingClean || slot.stagingBuffer.size() < allocBytes) {
+                slot.stagingBuffer.resize(allocBytes, 0u);
                 std::memcpy(slot.stagingBuffer.data(),
                             slot.originalBuffer.data(), byteSize);
             }
@@ -152,7 +164,7 @@ public:
         m_readLock.height = height;
         m_readLock.pixelSize = pixelSize;
         m_readLock.stride = stride;
-        m_readLock.stagingBuffer.assign(byteSize, 0u);
+        m_readLock.stagingBuffer.assign(allocBytes, 0u);
 
         if (stridePixels > width) {
             // Read packed rows first so CpuLfbStaging's stride-based 16/32-bit
