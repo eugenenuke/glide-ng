@@ -1577,6 +1577,131 @@ TEST_CASE("Glide 2.x Coordinate Unsnapping Verification", "[Glide2][Unsnap][Glid
 #endif
 }
 
+TEST_CASE("Glide 2.x 12.4 Fixed-Point Wrap, guTexChangeAttributes, and DELTA0 Combine",
+          "[Glide2][Unsnap][Formula1]") {
+#ifdef __linux__
+    void* handle = OpenGlide2Handle();
+    REQUIRE(handle != nullptr);
+
+    using InitFunc = void(*)(void);
+    using WinOpenFunc = FxBool(*)(FxU32, GrScreenResolution_t, GrScreenRefresh_t,
+                                  GrColorFormat_t, GrOriginLocation_t, int, int);
+    using BufferClearFunc = void(*)(GrColor_t, GrAlpha_t, FxU32);
+    using ColorCombineFunc = void(*)(GrCombineFunction_t, GrCombineFactor_t,
+                                     GrCombineLocal_t, GrCombineOther_t, FxBool);
+    using GuColorCombineFunc = void(*)(GrColorCombineFnc_t);
+    using ConstColorFunc = void(*)(GrColor_t);
+    using DrawTriFunc = void(*)(const void*, const void*, const void*);
+    using ReadLfbFunc = FxBool(*)(GrBuffer_t, FxU32, FxU32, FxU32, FxU32, FxU32, void*);
+    using TexAllocFunc = FxI32(*)(int, FxU8, int, int, FxU32, FxI32, FxI32, FxI32,
+                                  FxI32, FxI32, FxI32, FxI32, FxI32, float, FxBool);
+    using TexChangeFunc = FxBool(*)(FxI32, int, int, FxU32, FxI32, FxI32, FxI32,
+                                    FxI32, FxI32, FxI32, FxI32, FxI32);
+    using TexInfoFunc = void*(*)(FxI32);
+    using WinCloseFunc = FxBool(*)(void);
+    using ShutdownFunc = void(*)(void);
+
+    auto glideInit = reinterpret_cast<InitFunc>(::dlsym(handle, "grGlideInit"));
+    auto winOpen = reinterpret_cast<WinOpenFunc>(::dlsym(handle, "grSstWinOpen"));
+    auto bufferClear = reinterpret_cast<BufferClearFunc>(::dlsym(handle, "grBufferClear"));
+    auto colorCombine = reinterpret_cast<ColorCombineFunc>(::dlsym(handle, "grColorCombine"));
+    auto guColorCombine = reinterpret_cast<GuColorCombineFunc>(::dlsym(handle, "guColorCombineFunction"));
+    auto constColor = reinterpret_cast<ConstColorFunc>(::dlsym(handle, "grConstantColorValue"));
+    auto drawTri = reinterpret_cast<DrawTriFunc>(::dlsym(handle, "grDrawTriangle"));
+    auto readLfb = reinterpret_cast<ReadLfbFunc>(::dlsym(handle, "grLfbReadRegion"));
+    auto texAlloc = reinterpret_cast<TexAllocFunc>(::dlsym(handle, "guTexAllocateMemory"));
+    auto texChange = reinterpret_cast<TexChangeFunc>(::dlsym(handle, "guTexChangeAttributes"));
+    auto texInfo = reinterpret_cast<TexInfoFunc>(::dlsym(handle, "guTexGetMipMapInfo"));
+    auto winClose = reinterpret_cast<WinCloseFunc>(::dlsym(handle, "grSstWinClose"));
+    auto shutdown = reinterpret_cast<ShutdownFunc>(::dlsym(handle, "grGlideShutdown"));
+    REQUIRE((glideInit != nullptr && winOpen != nullptr &&
+             bufferClear != nullptr && colorCombine != nullptr &&
+             guColorCombine != nullptr && constColor != nullptr &&
+             drawTri != nullptr && readLfb != nullptr &&
+             texAlloc != nullptr && texChange != nullptr &&
+             texInfo != nullptr && winClose != nullptr &&
+             shutdown != nullptr));
+
+    ::setenv("GLIDE_NG_BACKEND", "SOFTWARE", 1);
+    ::setenv("GLIDE_NG_HEADLESS", "1", 1);
+    glideInit();
+    REQUIRE(winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                    GR_COLORFORMAT_ABGR, GR_ORIGIN_UPPER_LEFT, 2, 1) == FXTRUE);
+
+    struct GrVertex2 {
+        float x, y, z, r, g, b, ooz, a, oow, sow, tow, oow_tmu;
+    };
+
+    // 1. Coherent signed 12.4 fixed-point wrap: triangle shifted by (-5*4096, +5*4096)
+    //    = (-20480, +20480) wraps cleanly back into screen coords [100..200, 100..200].
+    colorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+                 GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_NONE, FXFALSE);
+    bufferClear(0, 0, 0);
+    GrVertex2 a{}, b{}, c{};
+    a.x = -20480.0f + 100.0f; a.y = 20480.0f + 100.0f; a.oow = 1.0f; a.r = 255.0f; a.a = 255.0f;
+    b.x = -20480.0f + 200.0f; b.y = 20480.0f + 100.0f; b.oow = 1.0f; b.r = 255.0f; b.a = 255.0f;
+    c.x = -20480.0f + 100.0f; c.y = 20480.0f + 200.0f; c.oow = 1.0f; c.r = 255.0f; c.a = 255.0f;
+    drawTri(&a, &b, &c);
+    uint32_t px = 0;
+    REQUIRE(readLfb(GR_BUFFER_BACKBUFFER, 120, 120, 1, 1, 4, &px) == FXTRUE);
+    CHECK((px & 0xFFu) > 240u);
+
+    // 2. Wide unclipped frustum triangle crossing X=-2500..+320 must NOT wrap or invert.
+    bufferClear(0, 0, 0);
+    GrVertex2 w0{}, w1{}, w2{};
+    w0.x = -2500.0f; w0.y = 100.0f; w0.oow = 1.0f; w0.g = 255.0f; w0.a = 255.0f;
+    w1.x = 320.0f;   w1.y = 100.0f; w1.oow = 1.0f; w1.g = 255.0f; w1.a = 255.0f;
+    w2.x = 320.0f;   w2.y = 300.0f; w2.oow = 1.0f; w2.g = 255.0f; w2.a = 255.0f;
+    drawTri(&w0, &w1, &w2);
+    uint32_t pxInside = 0, pxRight = 0;
+    REQUIRE(readLfb(GR_BUFFER_BACKBUFFER, 280, 140, 1, 1, 4, &pxInside) == FXTRUE);
+    REQUIRE(readLfb(GR_BUFFER_BACKBUFFER, 400, 140, 1, 1, 4, &pxRight) == FXTRUE);
+    CHECK(((pxInside >> 8) & 0xFFu) > 240u);
+    CHECK(((pxRight >> 8) & 0xFFu) == 0u);
+
+    // 3. guColorCombineFunction(GR_COLORCOMBINE_ITRGB_DELTA0) must read ITERATED color,
+    //    not CONSTANT color (set constant color to 0 to detect mis-binding).
+    bufferClear(0, 0, 0);
+    constColor(0xFF000000u);
+    guColorCombine(GR_COLORCOMBINE_ITRGB_DELTA0);
+    GrVertex2 d0{}, d1{}, d2{};
+    d0.x = 10.0f; d0.y = 10.0f; d0.oow = 1.0f; d0.b = 255.0f; d0.a = 255.0f;
+    d1.x = 90.0f; d1.y = 10.0f; d1.oow = 1.0f; d1.b = 255.0f; d1.a = 255.0f;
+    d2.x = 10.0f; d2.y = 90.0f; d2.oow = 1.0f; d2.b = 255.0f; d2.a = 255.0f;
+    drawTri(&d0, &d1, &d2);
+    uint32_t pxBlue = 0;
+    REQUIRE(readLfb(GR_BUFFER_BACKBUFFER, 30, 30, 1, 1, 4, &pxBlue) == FXTRUE);
+    CHECK(((pxBlue >> 16) & 0xFFu) > 240u);
+
+    // 4. guTexChangeAttributes(-1) sentinel must preserve existing attributes.
+    const FxI32 mmid = texAlloc(0, 0x3, 256, 256, 0xB /*ARGB_1555*/, 1, 0, 0, 3,
+                                0, 0, 0, 0, 0.0f, FXFALSE);
+    REQUIRE(mmid >= 0);
+    REQUIRE(texChange(mmid, -1, -1, static_cast<FxU32>(-1), -1, -1, -1, -1,
+                      -1, -1, 1 /*BILINEAR*/, 1 /*BILINEAR*/) == FXTRUE);
+    struct MinimalMipInfo {
+        int sst; FxBool valid; int width; int height;
+        int aspect_ratio; void* data; FxU32 format; int mipmap_mode;
+        int magfilter_mode; int minfilter_mode; int s_clamp_mode; int t_clamp_mode;
+    };
+    auto* info = static_cast<MinimalMipInfo*>(texInfo(mmid));
+    REQUIRE(info != nullptr);
+    CHECK(info->width == 256);
+    CHECK(info->height == 256);
+    CHECK(info->format == 0xBu);
+    CHECK(info->aspect_ratio == 3);
+    CHECK(info->mipmap_mode == 1);
+    CHECK(info->minfilter_mode == 1);
+    CHECK(info->magfilter_mode == 1);
+
+    winClose();
+    shutdown();
+    ::dlclose(handle);
+    ::unsetenv("GLIDE_NG_BACKEND");
+    ::unsetenv("GLIDE_NG_HEADLESS");
+#endif
+}
+
 TEST_CASE("Glide FOGCOORD Extension and Fog Mode Mapping Verification", "[Glide][Fog][FOGCOORD]") {
     // 1. Glide 3.x Verification
     SECTION("Glide 3.x FOGCOORD Support") {

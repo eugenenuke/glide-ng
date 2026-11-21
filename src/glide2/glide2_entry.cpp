@@ -1539,17 +1539,17 @@ FX_ENTRY FxBool FX_CALL guTexChangeAttributes(
   }
 
   auto& tex = s_guTextures[id];
-  tex.width = width;
-  tex.height = height;
-  tex.format = fmt;
-  tex.mipmap_mode = mm_mode;
-  tex.lod_min = smallest_lod;
-  tex.lod_max = largest_lod;
-  tex.aspect_ratio = aspect;
-  tex.s_clamp_mode = s_clamp_mode;
-  tex.t_clamp_mode = t_clamp_mode;
-  tex.minfilter_mode = minfilter_mode;
-  tex.magfilter_mode = magfilter_mode;
+  if (width != -1) tex.width = width;
+  if (height != -1) tex.height = height;
+  if (static_cast<int32_t>(fmt) != -1) tex.format = fmt;
+  if (static_cast<int32_t>(mm_mode) != -1) tex.mipmap_mode = mm_mode;
+  if (static_cast<int32_t>(smallest_lod) != -1) tex.lod_min = smallest_lod;
+  if (static_cast<int32_t>(largest_lod) != -1) tex.lod_max = largest_lod;
+  if (static_cast<int32_t>(aspect) != -1) tex.aspect_ratio = aspect;
+  if (static_cast<int32_t>(s_clamp_mode) != -1) tex.s_clamp_mode = s_clamp_mode;
+  if (static_cast<int32_t>(t_clamp_mode) != -1) tex.t_clamp_mode = t_clamp_mode;
+  if (static_cast<int32_t>(minfilter_mode) != -1) tex.minfilter_mode = minfilter_mode;
+  if (static_cast<int32_t>(magfilter_mode) != -1) tex.magfilter_mode = magfilter_mode;
 
   return FXTRUE;
 }
@@ -1972,7 +1972,7 @@ FX_ENTRY void FX_CALL guColorCombineFunction(GrColorCombineFnc_t fnc) {
 
     case GR_COLORCOMBINE_ITRGB_DELTA0:
       grColorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
-                     GR_COMBINE_LOCAL_CONSTANT, GR_COMBINE_OTHER_NONE, FXFALSE);
+                     GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_NONE, FXFALSE);
       break;
 
     case GR_COLORCOMBINE_ITRGB:
@@ -1993,7 +1993,7 @@ FX_ENTRY void FX_CALL guColorCombineFunction(GrColorCombineFnc_t fnc) {
 
     case GR_COLORCOMBINE_TEXTURE_TIMES_ITRGB_DELTA0:
       grColorCombine(GR_COMBINE_FUNCTION_SCALE_OTHER, GR_COMBINE_FACTOR_LOCAL,
-                     GR_COMBINE_LOCAL_CONSTANT, GR_COMBINE_OTHER_TEXTURE,
+                     GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_TEXTURE,
                      FXFALSE);
       break;
 
