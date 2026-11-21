@@ -712,7 +712,13 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
               uint32_t a_val = blendMip(24);
               tWord1 = (a_val << 24) | (r << 16) | (g << 8) | b;
             } else {  // Nearest Mipmap
-              int level = static_cast<int>(std::round(clampedLod1));
+              // Authentic 3dfx GR_MIPMAP_NEAREST (mode 1) truncates LOD via
+              // floor (>> 8 on SST-1 8.8 fixed point); GR_MIPMAP_NEAREST_DITHER
+              // (mode 2) adds a 4x4 matrix in [0, 15/16] (~mean 0.5) before
+              // truncation, so round() tracks its spatial midpoint.
+              int level = (state.texMipMapMode[1] == 1)
+                              ? static_cast<int>(std::floor(clampedLod1))
+                              : static_cast<int>(std::round(clampedLod1));
               int lodIdx = std::clamp(level, 0, maxMipIdx1);
               tWord1 = SampleTextureLevel(tex1, lodIdx, trueS1, trueT1, clampS1,
                                           clampT1, minFilter1, 1u, state);
@@ -833,7 +839,11 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
                 uint32_t a_val = blendMip(24);
                 tWord = (a_val << 24) | (r << 16) | (g << 8) | b;
               } else {  // Nearest Mipmap
-                int level = static_cast<int>(std::round(clampedLod));
+                // Authentic 3dfx GR_MIPMAP_NEAREST (mode 1) truncates (floors) LOD;
+                // GR_MIPMAP_NEAREST_DITHER (mode 2) centers near k + 0.5.
+                int level = (state.texMipMapMode[0] == 1)
+                                ? static_cast<int>(std::floor(clampedLod))
+                                : static_cast<int>(std::round(clampedLod));
                 int lodIdx = std::clamp(level, 0, maxMipIdx);
                 tWord = SampleTextureLevel(tex, lodIdx, trueS, trueT, clampS,
                                            clampT, minFilter, 0u, state);

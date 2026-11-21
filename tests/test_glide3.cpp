@@ -12541,3 +12541,225 @@ TEST_CASE("NativeSurfaceHost fullscreen pointer inverse mapping and auto config"
   CHECK(cfg.invalidConfigValues.empty());
   std::remove(iniPath.c_str());
 }
+
+TEST_CASE("Authentic 3dfx GR_MIPMAP_NEAREST truncates LOD across all 3 backends",
+          "[Glide3][Mipmap][LOD]") {
+#ifdef __linux__
+  void* handle = OpenGlide3Handle();
+  REQUIRE(handle != nullptr);
+
+  using InitFunc = void (*)();
+  using ShutdownFunc = void (*)();
+  using WinOpenFunc = FxU32 (*)(FxU32, FxU32, FxU32, FxU32, FxU32, int, int);
+  using WinCloseFunc = FxBool (*)(FxU32);
+  using SelectCtxFunc = FxBool (*)(FxU32);
+  using ClearFunc = void (*)(FxU32, FxU32, FxU32);
+  using LayoutFunc = void (*)(FxU32, FxI32, FxU32);
+  using ColorCombineFunc = void (*)(FxI32, FxI32, FxI32, FxI32, FxBool);
+  using TexCombineFunc = void (*)(FxU32, FxI32, FxI32, FxI32, FxI32, FxBool, FxBool);
+  using AlphaBlendFunc = void (*)(FxI32, FxI32, FxI32, FxI32);
+  using DepthModeFunc = void (*)(FxI32);
+  using CullFunc = void (*)(FxI32);
+  using TexMinAddrFunc = FxU32 (*)(FxU32);
+  using TexDownloadFunc = void (*)(FxU32, FxU32, FxU32, GrTexInfo*);
+  using TexSourceFunc = void (*)(FxU32, FxU32, FxU32, GrTexInfo*);
+  using TexMipMapFunc = void (*)(FxU32, FxU32, FxBool);
+  using TexFilterFunc = void (*)(FxU32, FxU32, FxU32);
+  using TexClampFunc = void (*)(FxU32, FxU32, FxU32);
+  using TexLodBiasFunc = void (*)(FxU32, float);
+  using DrawTriFunc = void (*)(const void*, const void*, const void*);
+  using ReadRegionFunc = FxBool (*)(FxU32, FxU32, FxU32, FxU32, FxU32, FxU32, void*);
+
+  auto glideInit = reinterpret_cast<InitFunc>(::dlsym(handle, "grGlideInit"));
+  auto glideShutdown = reinterpret_cast<ShutdownFunc>(::dlsym(handle, "grGlideShutdown"));
+  auto winOpen = reinterpret_cast<WinOpenFunc>(::dlsym(handle, "grSstWinOpen"));
+  auto winClose = reinterpret_cast<WinCloseFunc>(::dlsym(handle, "grSstWinClose"));
+  auto selectCtx = reinterpret_cast<SelectCtxFunc>(::dlsym(handle, "grSelectContext"));
+  auto bufClear = reinterpret_cast<ClearFunc>(::dlsym(handle, "grBufferClear"));
+  auto vtxLayout = reinterpret_cast<LayoutFunc>(::dlsym(handle, "grVertexLayout"));
+  auto colorCombine = reinterpret_cast<ColorCombineFunc>(::dlsym(handle, "grColorCombine"));
+  auto texCombine = reinterpret_cast<TexCombineFunc>(::dlsym(handle, "grTexCombine"));
+  auto alphaBlend = reinterpret_cast<AlphaBlendFunc>(::dlsym(handle, "grAlphaBlendFunction"));
+  auto depthMode = reinterpret_cast<DepthModeFunc>(::dlsym(handle, "grDepthBufferMode"));
+  auto cullMode = reinterpret_cast<CullFunc>(::dlsym(handle, "grCullMode"));
+  auto texMinAddr = reinterpret_cast<TexMinAddrFunc>(::dlsym(handle, "grTexMinAddress"));
+  auto texDownload = reinterpret_cast<TexDownloadFunc>(::dlsym(handle, "grTexDownloadMipMap"));
+  auto texSource = reinterpret_cast<TexSourceFunc>(::dlsym(handle, "grTexSource"));
+  auto texMipMap = reinterpret_cast<TexMipMapFunc>(::dlsym(handle, "grTexMipMapMode"));
+  auto texFilter = reinterpret_cast<TexFilterFunc>(::dlsym(handle, "grTexFilterMode"));
+  auto texClamp = reinterpret_cast<TexClampFunc>(::dlsym(handle, "grTexClampMode"));
+  auto texLodBias = reinterpret_cast<TexLodBiasFunc>(::dlsym(handle, "grTexLodBiasValue"));
+  auto drawTri = reinterpret_cast<DrawTriFunc>(::dlsym(handle, "grDrawTriangle"));
+  auto readRegion = reinterpret_cast<ReadRegionFunc>(::dlsym(handle, "grLfbReadRegion"));
+  REQUIRE((glideInit && glideShutdown && winOpen && winClose && selectCtx &&
+           bufClear && vtxLayout && colorCombine && texCombine && alphaBlend &&
+           depthMode && cullMode && texMinAddr && texDownload && texSource &&
+           texMipMap && texFilter && texClamp && texLodBias && drawTri &&
+           readRegion));
+
+  // Build 64x64..1x1 RGB565 mip chain with distinct solid colors per level:
+  //   mip 0 (64x64): RED   (0xF800)
+  //   mip 1 (32x32): GREEN (0x07E0)
+  //   mip 2 (16x16): BLUE  (0x001F)
+  //   mip 3..6     : WHITE (0xFFFF)
+  std::vector<uint16_t> mipData;
+  auto pushLevel = [&](int dim, uint16_t color565) {
+    mipData.insert(mipData.end(), static_cast<size_t>(dim * dim), color565);
+  };
+  pushLevel(64, 0xF800u);
+  pushLevel(32, 0x07E0u);
+  pushLevel(16, 0x001Fu);
+  pushLevel(8, 0xFFFFu);
+  pushLevel(4, 0xFFFFu);
+  pushLevel(2, 0xFFFFu);
+  pushLevel(1, 0xFFFFu);
+
+  struct SimpleTexVert {
+    float x, y;
+    float q;
+    float s, t;
+  };
+
+  for (const char* be : {"software", "vulkan", "opengl_es"}) {
+    ::setenv("GLIDE_NG_BACKEND", be, 1);
+    ::setenv("GLIDE_NG_HEADLESS", "1", 1);
+    ::setenv("FX_GLIDE_NO_SPLASH", "1", 1);
+
+    glideInit();
+    const FxU32 ctx = winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                              GR_COLORFORMAT_ARGB, GR_ORIGIN_UPPER_LEFT, 2, 1);
+    REQUIRE(ctx != 0);
+    selectCtx(ctx);
+
+    vtxLayout(GR_PARAM_XY, 0, GR_PARAM_ENABLE);
+    vtxLayout(GR_PARAM_Q, 8, GR_PARAM_ENABLE);
+    vtxLayout(GR_PARAM_ST0, 12, GR_PARAM_ENABLE);
+    depthMode(GR_DEPTHBUFFER_DISABLE);
+    cullMode(GR_CULL_DISABLE);
+    alphaBlend(GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_ONE, GR_BLEND_ZERO);
+    texCombine(GR_TMU0, GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+               GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE, FXFALSE,
+               FXFALSE);
+    colorCombine(GR_COMBINE_FUNCTION_SCALE_OTHER, GR_COMBINE_FACTOR_ONE,
+                 GR_COMBINE_LOCAL_NONE, GR_COMBINE_OTHER_TEXTURE, FXFALSE);
+
+    GrTexInfo info{};
+    info.smallLodLog2 = 0;   // GR_LOD_LOG2_1
+    info.largeLodLog2 = 6;   // GR_LOD_LOG2_64
+    info.aspectRatioLog2 = GR_ASPECT_LOG2_1x1;
+    info.format = GR_TEXFMT_RGB_565;
+    info.data = mipData.data();
+
+    const FxU32 addr = texMinAddr(GR_TMU0);
+    texDownload(GR_TMU0, addr, GR_MIPMAPLEVELMASK_BOTH, &info);
+    texSource(GR_TMU0, addr, GR_MIPMAPLEVELMASK_BOTH, &info);
+    texClamp(GR_TMU0, GR_TEXTURECLAMP_WRAP, GR_TEXTURECLAMP_WRAP);
+    texFilter(GR_TMU0, GR_TEXTUREFILTER_BILINEAR, GR_TEXTUREFILTER_BILINEAR);
+
+    auto sampleRatio = [&](float minRatio, FxU32 mmMode, FxBool lodBlend,
+                           float bias) -> uint16_t {
+      bufClear(0xFF000000u, 0, 0xFFFF);
+      texMipMap(GR_TMU0, mmMode, lodBlend);
+      texLodBias(GR_TMU0, bias);
+      // 32x32 screen quad centered at (160, 160). Texture is 64x64 mapped across
+      // Glide [0, 256] (so span = 4 * minRatio * 32 = 128 * minRatio).
+      const float span = 32.0f * (256.0f / 64.0f) * minRatio;
+      SimpleTexVert v0{144.0f, 144.0f, 1.0f, 0.0f, 0.0f};
+      SimpleTexVert v1{176.0f, 144.0f, 1.0f, span, 0.0f};
+      SimpleTexVert v2{176.0f, 176.0f, 1.0f, span, span};
+      SimpleTexVert v3{144.0f, 176.0f, 1.0f, 0.0f, span};
+      drawTri(&v0, &v1, &v2);
+      drawTri(&v0, &v2, &v3);
+      uint16_t px = 0;
+      REQUIRE(readRegion(GR_BUFFER_BACKBUFFER, 160, 160, 1, 1, 2, &px) == FXTRUE);
+      return px;
+    };
+    auto chR = [](uint16_t p) { return ((p >> 11) & 0x1Fu) * 255u / 31u; };
+    auto chG = [](uint16_t p) { return ((p >> 5) & 0x3Fu) * 255u / 63u; };
+    auto chB = [](uint16_t p) { return (p & 0x1Fu) * 255u / 31u; };
+
+    INFO("backend=" << be);
+    // 1) GR_MIPMAP_NEAREST truncates (floor): ratio 1.68x (rawLod=0.75) -> mip 0 (RED)
+    {
+      const uint16_t px = sampleRatio(1.68179f, GR_MIPMAP_NEAREST, FXFALSE, 0.0f);
+      CHECK(chR(px) >= 240u);
+      CHECK(chG(px) <= 15u);
+      CHECK(chB(px) <= 15u);
+    }
+    // 2) Authentic 3dfx rounding recipe: bias=+0.5 at rawLod=0.75 -> mip 1 (GREEN)
+    {
+      const uint16_t px = sampleRatio(1.68179f, GR_MIPMAP_NEAREST, FXFALSE, 0.5f);
+      CHECK(chR(px) <= 15u);
+      CHECK(chG(px) >= 240u);
+      CHECK(chB(px) <= 15u);
+    }
+    // 3) Bias=+0.5 must NOT double-round at rawLod=0.25 (1.19x -> floor(0.75)=0 RED)
+    {
+      const uint16_t px = sampleRatio(1.18921f, GR_MIPMAP_NEAREST, FXFALSE, 0.5f);
+      CHECK(chR(px) >= 240u);
+      CHECK(chG(px) <= 15u);
+      CHECK(chB(px) <= 15u);
+    }
+    // 4) Exact 2x minification (rawLod=1.0) -> mip 1 (GREEN)
+    {
+      const uint16_t px = sampleRatio(2.0f, GR_MIPMAP_NEAREST, FXFALSE, 0.0f);
+      CHECK(chR(px) <= 15u);
+      CHECK(chG(px) >= 240u);
+      CHECK(chB(px) <= 15u);
+    }
+    // 5) Ratio 3.36x (rawLod=1.75) truncates to mip 1 (GREEN), NOT mip 2 (BLUE)
+    {
+      const uint16_t px = sampleRatio(3.36359f, GR_MIPMAP_NEAREST, FXFALSE, 0.0f);
+      CHECK(chR(px) <= 15u);
+      CHECK(chG(px) >= 240u);
+      CHECK(chB(px) <= 15u);
+    }
+    // 6) Exact 4x minification (rawLod=2.0) -> mip 2 (BLUE)
+    {
+      const uint16_t px = sampleRatio(4.0f, GR_MIPMAP_NEAREST, FXFALSE, 0.0f);
+      CHECK(chR(px) <= 15u);
+      CHECK(chG(px) <= 15u);
+      CHECK(chB(px) >= 240u);
+    }
+    // 7) Trilinear (lodBlend=FXTRUE) must remain UNSHIFTED: rawLod=0.5 blends 50/50 RED+GREEN
+    {
+      const uint16_t px = sampleRatio(1.41421f, GR_MIPMAP_NEAREST, FXTRUE, 0.0f);
+      CHECK(chR(px) >= 90u);
+      CHECK(chR(px) <= 165u);
+      CHECK(chG(px) >= 90u);
+      CHECK(chG(px) <= 165u);
+      CHECK(chB(px) <= 15u);
+    }
+    // 8) GR_MIPMAP_NEAREST_DITHER centers transition near k+0.5: rawLod=0.75 -> mip 1 (GREEN)
+    {
+      const uint16_t px =
+          sampleRatio(1.68179f, GR_MIPMAP_NEAREST_DITHER, FXFALSE, 0.0f);
+      CHECK(chR(px) <= 15u);
+      CHECK(chG(px) >= 240u);
+      CHECK(chB(px) <= 15u);
+    }
+    // 9) GR_TEXCOMBINE_FACTOR_LOD_FRACTION must stay unshifted under GR_MIPMAP_NEAREST
+    //    (rawLod=0.5, bias=0 -> lodFrac = 0.5; blend local RED * (1 - 0.5) ~ 128)
+    {
+      texCombine(GR_TMU0, GR_COMBINE_FUNCTION_BLEND_LOCAL,
+                 GR_COMBINE_FACTOR_LOD_FRACTION, GR_COMBINE_FUNCTION_LOCAL,
+                 GR_COMBINE_FACTOR_NONE, FXFALSE, FXFALSE);
+      const uint16_t px = sampleRatio(1.41421f, GR_MIPMAP_NEAREST, FXFALSE, 0.0f);
+      CHECK(chR(px) >= 95u);
+      CHECK(chR(px) <= 165u);
+      CHECK(chG(px) <= 15u);
+      CHECK(chB(px) <= 15u);
+      texCombine(GR_TMU0, GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+                 GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE, FXFALSE,
+                 FXFALSE);
+    }
+
+    winClose(ctx);
+    glideShutdown();
+    ::unsetenv("GLIDE_NG_BACKEND");
+    ::unsetenv("GLIDE_NG_HEADLESS");
+    ::unsetenv("FX_GLIDE_NO_SPLASH");
+  }
+  ::dlclose(handle);
+#endif
+}

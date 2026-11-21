@@ -148,6 +148,7 @@ uniform int uTextureEnabled[2]; // Array of size 2
 uniform sampler2D uTexture0;
 uniform sampler2D uTexture1;
 uniform float uTexLodBias[2];
+uniform float uTexSampleLodBias[2];
 uniform int uTexDetailBias[2];
 uniform int uTexDetailScale[2];
 uniform float uTexDetailMax[2];
@@ -268,7 +269,7 @@ vec4 sampleTextureGLES(sampler2D tex, vec2 uv, vec2 dUvDx, vec2 dUvDy,
         vec4 c1 = mix(c01, c11, f.x);
         return mix(c0, c1, f.y);
     } else {
-        float biasScale = exp2(uTexLodBias[tmuIdx]);
+        float biasScale = exp2(uTexSampleLodBias[tmuIdx]);
         return textureGrad(tex, finalUv, dUvDx * aspectScale * biasScale,
                            dUvDy * aspectScale * biasScale);
     }
@@ -992,6 +993,8 @@ bool OpenGLESBackend::CreateGeomShaders() {
   m_uTexChromaMinLoc = glGetUniformLocation(m_geomProgram, "uTexChromaMin");
   m_uTexChromaMaxLoc = glGetUniformLocation(m_geomProgram, "uTexChromaMax");
   m_uTexLodBiasLoc = glGetUniformLocation(m_geomProgram, "uTexLodBias");
+  m_uTexSampleLodBiasLoc =
+      glGetUniformLocation(m_geomProgram, "uTexSampleLodBias");
   m_uTexDetailBiasLoc = glGetUniformLocation(m_geomProgram, "uTexDetailBias");
   m_uTexDetailScaleLoc =
       glGetUniformLocation(m_geomProgram, "uTexDetailScale");
@@ -1119,6 +1122,26 @@ void OpenGLESBackend::PopulateUniforms(uint32_t dirtyMask) {
   if (dirtyMask & kGlesDirtyTexBinding) {
     float lodBias[2] = {m_texLodBias[0], m_texLodBias[1]};
     glUniform1fv(m_uTexLodBiasLoc, 2, lodBias);
+  }
+
+  if (dirtyMask & (kGlesDirtyTexBinding | kGlesDirtyTexSampler0 |
+                   kGlesDirtyTexSampler1)) {
+    // Authentic 3dfx GR_MIPMAP_NEAREST truncates (floors) LOD rather than
+    // rounding like GL_*_MIPMAP_NEAREST; keep uTexLodBias untouched for the
+    // LOD_FRACTION combiner factor and offset only textureGrad sampling by
+    // -127/256 (~-0.4961, within 1 LSB of SST-1 8.8 fixed-point LOD).
+    float sampleLodBias[2] = {
+        m_texLodBias[0] -
+            ((m_texMipMapMode[0] == 1 && !m_texLodBlend[0])
+                 ? (127.0f / 256.0f)
+                 : 0.0f),
+        m_texLodBias[1] -
+            ((m_texMipMapMode[1] == 1 && !m_texLodBlend[1])
+                 ? (127.0f / 256.0f)
+                 : 0.0f)};
+    if (m_uTexSampleLodBiasLoc != -1) {
+      glUniform1fv(m_uTexSampleLodBiasLoc, 2, sampleLodBias);
+    }
   }
 
   if (dirtyMask & kGlesDirtyTexDetail) {

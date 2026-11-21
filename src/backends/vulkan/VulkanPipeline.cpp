@@ -583,6 +583,7 @@ vk::Sampler VulkanBackend::GetOrCreateSampler(uint32_t clampS, uint32_t clampT,
   // lodBlend parameters
   vk::SamplerMipmapMode vkMipmapMode = vk::SamplerMipmapMode::eNearest;
   float maxLod = 0.0f;
+  float effectiveLodBias = lodBias;
 
   if (mipmapMode != 0) {  // GR_MIPMAP_DISABLE is 0
     maxLod = 15.0f;
@@ -590,10 +591,27 @@ vk::Sampler VulkanBackend::GetOrCreateSampler(uint32_t clampS, uint32_t clampT,
       vkMipmapMode = vk::SamplerMipmapMode::eLinear;
     } else {
       vkMipmapMode = vk::SamplerMipmapMode::eNearest;
+      // Per the official 3dfx Glide 2.4/3.0 Reference Manuals (grTexMipMapMode)
+      // and SST-1/CVG silicon (>> 8 fixed-point truncation), GR_MIPMAP_NEAREST
+      // truncates (floors) the computed LOD rather than rounding to nearest
+      // (whereas GR_MIPMAP_NEAREST_DITHER adds a 4x4 matrix in [0, 15/16],
+      // centering transitions near k + 0.5). Vulkan's VK_SAMPLER_MIPMAP_MODE_NEAREST
+      // rounds via ceil(lambda + 0.5) - 1, so subtract 127/256 (~0.4961, within
+      // 1 LSB of SST-1 8.8 fixed-point LOD) so [k, k + 0.996) truncates to mip k
+      // while exact integer ratios (2x -> 1.0, 4x -> 2.0) select mip k.
+      if (mipmapMode == 1) {
+        effectiveLodBias = lodBias - (127.0f / 256.0f);
+      }
     }
   } else {
     maxLod = 0.0f;
     vkMipmapMode = vk::SamplerMipmapMode::eNearest;
+  }
+
+  if (m_physicalDevice) {
+    const float maxBias =
+        m_physicalDevice.getProperties().limits.maxSamplerLodBias;
+    effectiveLodBias = std::clamp(effectiveLodBias, -maxBias, maxBias);
   }
 
   vk::SamplerCreateInfo samplerInfo;
@@ -609,7 +627,7 @@ vk::Sampler VulkanBackend::GetOrCreateSampler(uint32_t clampS, uint32_t clampT,
   samplerInfo.compareEnable = false;
   samplerInfo.compareOp = vk::CompareOp::eAlways;
   samplerInfo.mipmapMode = vkMipmapMode;
-  samplerInfo.mipLodBias = lodBias;
+  samplerInfo.mipLodBias = effectiveLodBias;
   samplerInfo.minLod = 0.0f;
   samplerInfo.maxLod = maxLod;
 

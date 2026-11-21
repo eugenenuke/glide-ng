@@ -399,6 +399,7 @@ class OpenGLESBackend : public GlideStateTracker {
   int m_uTexChromaMinLoc{-1};
   int m_uTexChromaMaxLoc{-1};
   int m_uTexLodBiasLoc{-1};
+  int m_uTexSampleLodBiasLoc{-1};
   int m_uTexDetailBiasLoc{-1};
   int m_uTexDetailScaleLoc{-1};
   int m_uTexDetailMaxLoc{-1};

@@ -928,8 +928,12 @@ void RasterizeTriangleLoopsTraits(
               tmu1Color.b = Fma(c1_m.b - c0_m.b, frac, c0_m.b);
               tmu1Color.a = Fma(c1_m.a - c0_m.a, frac, c0_m.a);
             } else {
-              int lodIdx = std::clamp(
-                  static_cast<int>(clampedLod1 + 0.5f), 0, maxMipIdx1);
+              // Authentic 3dfx GR_MIPMAP_NEAREST (mode 1) truncates LOD (floor);
+              // GR_MIPMAP_NEAREST_DITHER (mode 2) averages near k + 0.5.
+              int rawIdx = (state.texMipMapMode[1] == 1)
+                               ? static_cast<int>(std::floor(clampedLod1))
+                               : static_cast<int>(clampedLod1 + 0.5f);
+              int lodIdx = std::clamp(rawIdx, 0, maxMipIdx1);
               tmu1Color = SampleMipLevelSIMD<SimdF, SimdI, SimdM>(
                   tex1, lodIdx, trueS1, trueT1, scaleU1, scaleV1, clampS1,
                   clampT1, minFilter1, tex1ChromaEnabled, 1u, state);
@@ -1071,8 +1075,12 @@ void RasterizeTriangleLoopsTraits(
               tmu0Color.b = Fma(c1_m.b - c0_m.b, frac, c0_m.b);
               tmu0Color.a = Fma(c1_m.a - c0_m.a, frac, c0_m.a);
             } else {
-              int lodIdx = std::clamp(
-                  static_cast<int>(clampedLod + 0.5f), 0, maxMipIdx);
+              // Authentic 3dfx GR_MIPMAP_NEAREST (mode 1) truncates LOD (floor);
+              // GR_MIPMAP_NEAREST_DITHER (mode 2) averages near k + 0.5.
+              int rawIdx = (state.texMipMapMode[0] == 1)
+                               ? static_cast<int>(std::floor(clampedLod))
+                               : static_cast<int>(clampedLod + 0.5f);
+              int lodIdx = std::clamp(rawIdx, 0, maxMipIdx);
               tmu0Color = SampleMipLevelSIMD<SimdF, SimdI, SimdM>(
                   tex, lodIdx, trueS, trueT, scaleU, scaleV, clampS, clampT,
                   minFilter, tex0ChromaEnabled, 0u, state);
