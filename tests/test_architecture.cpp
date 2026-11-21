@@ -10084,3 +10084,75 @@ TEST_CASE(
   }
 #endif
 }
+
+TEST_CASE(
+    "Software backend RAMDAC gamma LUT is non-destructive across buffer swaps",
+    "[Glide2][Software][Gamma][Regression]") {
+#ifdef __linux__
+  const char* prevBackend = std::getenv("GLIDE_NG_BACKEND");
+  const bool hadPrevBackend = (prevBackend != nullptr);
+  const std::string savedBackend = hadPrevBackend ? prevBackend : "";
+  ::setenv("GLIDE_NG_BACKEND", "software", 1);
+
+  grGlideInit();
+  REQUIRE(grSstWinOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                       GR_COLORFORMAT_ARGB, GR_ORIGIN_UPPER_LEFT, 2, 1) ==
+          FXTRUE);
+
+  // Fill both double buffers once with neutral mid-grey (simulating a static
+  // cockpit bezel drawn once without per-frame grBufferClear, e.g. Longbow 2).
+  grGammaCorrectionValue(1.0f);
+  grBufferClear(0xFF808080u, 0xFF, GR_WDEPTHVALUE_FARTHEST);
+  grBufferSwap(0);
+  grBufferClear(0xFF808080u, 0xFF, GR_WDEPTHVALUE_FARTHEST);
+  grBufferSwap(0);
+
+  // Darkening gamma (< 1.0): 12 consecutive swaps must NEVER decay retained VRAM
+  // toward black.
+  grGammaCorrectionValue(0.5f);
+  for (int i = 0; i < 12; ++i) {
+    grBufferSwap(0);
+  }
+  uint32_t frontPx = 0;
+  uint32_t backPx = 0;
+  REQUIRE(grLfbReadRegion(GR_BUFFER_FRONTBUFFER, 320, 240, 1, 1, 4,
+                          &frontPx) == FXTRUE);
+  REQUIRE(grLfbReadRegion(GR_BUFFER_BACKBUFFER, 320, 240, 1, 1, 4,
+                          &backPx) == FXTRUE);
+  CHECK(((frontPx >> 16) & 0xFFu) == 0x80u);
+  CHECK(((frontPx >> 8) & 0xFFu) == 0x80u);
+  CHECK((frontPx & 0xFFu) == 0x80u);
+  CHECK(((backPx >> 16) & 0xFFu) == 0x80u);
+  CHECK(((backPx >> 8) & 0xFFu) == 0x80u);
+  CHECK((backPx & 0xFFu) == 0x80u);
+
+  // Brightening gamma (> 1.0): 12 consecutive swaps must NEVER wash retained
+  // VRAM toward white.
+  grGammaCorrectionValue(2.0f);
+  for (int i = 0; i < 12; ++i) {
+    grBufferSwap(0);
+  }
+  frontPx = 0;
+  backPx = 0;
+  REQUIRE(grLfbReadRegion(GR_BUFFER_FRONTBUFFER, 320, 240, 1, 1, 4,
+                          &frontPx) == FXTRUE);
+  REQUIRE(grLfbReadRegion(GR_BUFFER_BACKBUFFER, 320, 240, 1, 1, 4,
+                          &backPx) == FXTRUE);
+  CHECK(((frontPx >> 16) & 0xFFu) == 0x80u);
+  CHECK(((frontPx >> 8) & 0xFFu) == 0x80u);
+  CHECK((frontPx & 0xFFu) == 0x80u);
+  CHECK(((backPx >> 16) & 0xFFu) == 0x80u);
+  CHECK(((backPx >> 8) & 0xFFu) == 0x80u);
+  CHECK((backPx & 0xFFu) == 0x80u);
+
+  grGammaCorrectionValue(1.0f);
+  grSstWinClose();
+  grGlideShutdown();
+
+  if (hadPrevBackend) {
+    ::setenv("GLIDE_NG_BACKEND", savedBackend.c_str(), 1);
+  } else {
+    ::unsetenv("GLIDE_NG_BACKEND");
+  }
+#endif
+}

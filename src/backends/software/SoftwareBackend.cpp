@@ -1297,10 +1297,46 @@ void SoftwareBackend::DetachWindow_Locked() {
 
 void SoftwareBackend::ResolveFrontBuffer(const uint32_t*& outPixels,
                                          uint32_t& outW, uint32_t& outH) {
-  const uint32_t* fullSrc =
-      reinterpret_cast<const uint32_t*>(m_cpuBuffers[m_frontBufferIdx].data());
+  const auto& front = m_cpuBuffers[m_frontBufferIdx];
+  if (front.empty()) {
+    outPixels = nullptr;
+    outW = 0;
+    outH = 0;
+    return;
+  }
+  const uint32_t* fullSrc = reinterpret_cast<const uint32_t*>(front.data());
+  const auto& kernels = GetSimdKernels();
+
+  // Apply the RAMDAC Gamma LUT non-destructively into m_resolvedBuffer during
+  // scanout so m_cpuBuffers stays linear pre-DAC VRAM across buffer flips.
+  // Games that draw static HUD/cockpit bezels once without calling
+  // grBufferClear each frame (e.g. Jane's Longbow 2) would otherwise compound
+  // gamma on every swap and fade static pixels to pure black or white.
   if (m_ssaaScale <= 1) {
-    outPixels = fullSrc;
+    if (!m_useGammaLut) {
+      outPixels = fullSrc;
+      outW = m_headlessWidth;
+      outH = m_headlessHeight;
+      return;
+    }
+    const size_t totalPixels =
+        static_cast<size_t>(m_headlessWidth) * m_headlessHeight;
+    m_resolvedBuffer.resize(totalPixels * 4);
+    uint32_t* resolvedData =
+        reinterpret_cast<uint32_t*>(m_resolvedBuffer.data());
+    std::memcpy(resolvedData, fullSrc, totalPixels * sizeof(uint32_t));
+    constexpr uint32_t kNumChunks = 16u;
+    const size_t chunkSize = (totalPixels + kNumChunks - 1u) / kNumChunks;
+#ifdef _OPENMP
+#pragma omp parallel for if (totalPixels > 64000)
+#endif
+    for (uint32_t c = 0; c < kNumChunks; ++c) {
+      const size_t start = static_cast<size_t>(c) * chunkSize;
+      if (start >= totalPixels) continue;
+      const size_t len = std::min(chunkSize, totalPixels - start);
+      kernels.ApplyGammaLut(resolvedData + start, len, m_lutR, m_lutG, m_lutB);
+    }
+    outPixels = resolvedData;
     outW = m_headlessWidth;
     outH = m_headlessHeight;
     return;
@@ -1312,7 +1348,6 @@ void SoftwareBackend::ResolveFrontBuffer(const uint32_t*& outPixels,
   uint32_t* resolvedData =
       reinterpret_cast<uint32_t*>(m_resolvedBuffer.data());
 
-  const auto& kernels = GetSimdKernels();
   const uint32_t srcStride = m_headlessWidth;
 #ifdef _OPENMP
 #pragma omp parallel for if (dstH * dstW > 64000)
@@ -1323,6 +1358,9 @@ void SoftwareBackend::ResolveFrontBuffer(const uint32_t*& outPixels,
         fullSrc + static_cast<size_t>(2u * y + 1u) * srcStride;
     uint32_t* dRow = resolvedData + static_cast<size_t>(y) * dstW;
     kernels.ResolveSsaa2x2Row(sRow0, sRow1, dRow, dstW);
+    if (m_useGammaLut) {
+      kernels.ApplyGammaLut(dRow, dstW, m_lutR, m_lutG, m_lutB);
+    }
   }
 
   outPixels = resolvedData;
@@ -1448,25 +1486,8 @@ bool SoftwareBackend::SwapBuffers() {
     m_headlessPixelMap = m_cpuBuffers[m_backBufferIdx].data();
   }
 
-  // 2.5 Apply CPU-level Gamma LUT in-place on the front buffer if active
-  if (m_useGammaLut && !m_cpuBuffers[m_frontBufferIdx].empty()) {
-    auto* pixels =
-        reinterpret_cast<uint32_t*>(m_cpuBuffers[m_frontBufferIdx].data());
-    const size_t totalPixels =
-        static_cast<size_t>(m_headlessWidth) * m_headlessHeight;
-    const auto& kernels = GetSimdKernels();
-    constexpr uint32_t kNumChunks = 16u;
-    const size_t chunkSize = (totalPixels + kNumChunks - 1u) / kNumChunks;
-#ifdef _OPENMP
-#pragma omp parallel for if (totalPixels > 64000)
-#endif
-    for (uint32_t c = 0; c < kNumChunks; ++c) {
-      const size_t start = static_cast<size_t>(c) * chunkSize;
-      if (start >= totalPixels) continue;
-      const size_t len = std::min(chunkSize, totalPixels - start);
-      kernels.ApplyGammaLut(pixels + start, len, m_lutR, m_lutG, m_lutB);
-    }
-  }
+  // 2.5 Gamma LUT is applied non-destructively inside ResolveFrontBuffer()
+  // during scanout so m_cpuBuffers stays linear pre-DAC VRAM across swaps.
 
   // 3. Present to active native surface (no-op in Headless mode).
   if (m_surfaceHost.GetMode() != NativeSurfaceHost::Mode::Headless &&
