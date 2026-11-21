@@ -156,6 +156,7 @@ void OpenGLESBackend::ResetState_Locked() {
   m_lfbReadCacheValid[0] = false;
   m_lfbReadCacheValid[1] = false;
   m_auxDepthShadowValid = false;
+  m_msaaDepthDirty = false;
   m_geomVBOOffset = 0;
   m_is2DGeometry = true;
   m_gammaCorrectionValue = 1.0f;
@@ -252,12 +253,33 @@ bool OpenGLESBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
   // Milestone 1: Setup Offscreen Framebuffer Objects (FBOs) for GPU-native
   // rendering (Double-Buffered 1x resolved/aliased targets)
   glGenFramebuffers(2, m_headlessFBOs);
+#if defined(_WIN32)
+  // Desktop OpenGL 3.3 Core supports glReadPixels(GL_DEPTH_COMPONENT, GL_FLOAT)
+  // directly on a GL_DEPTH24_STENCIL8 renderbuffer attachment.
   glGenRenderbuffers(1, &m_sharedDepthRenderbuffer);
-
-  // Allocate single shared packed depth24+stencil8 renderbuffer with the
-  // active context dimensions (supports VSA-100 PIXEXT hardware stencil).
   glBindRenderbuffer(GL_RENDERBUFFER, m_sharedDepthRenderbuffer);
   glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, width, height);
+#else
+  // OpenGL ES 3.2 forbids glReadPixels(GL_DEPTH_COMPONENT), so attach a shared
+  // GL_DEPTH24_STENCIL8 texture that can also be sampled during AUXBUFFER LFB
+  // readback via a tiny RGBA8 depth-pack pass.
+  glGenTextures(1, &m_sharedDepthTexture);
+  glActiveTexture(GL_TEXTURE0);
+  glBindTexture(GL_TEXTURE_2D, m_sharedDepthTexture);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_NONE);
+#ifdef GL_DEPTH_STENCIL_TEXTURE_MODE
+  glTexParameteri(GL_TEXTURE_2D, GL_DEPTH_STENCIL_TEXTURE_MODE,
+                  GL_DEPTH_COMPONENT);
+#endif
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH24_STENCIL8,
+               static_cast<GLsizei>(width), static_cast<GLsizei>(height), 0,
+               GL_DEPTH_STENCIL, GL_UNSIGNED_INT_24_8, nullptr);
+  glBindTexture(GL_TEXTURE_2D, 0);
+#endif
 
   for (int i = 0; i < 2; ++i) {
     glBindFramebuffer(GL_FRAMEBUFFER, m_headlessFBOs[i]);
@@ -266,9 +288,14 @@ bool OpenGLESBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
                            m_fboTextures[i], 0);
 
-    // Attach the single shared depth+stencil renderbuffer to both FBOs
+    // Attach the single shared depth+stencil attachment to both FBOs
+#if defined(_WIN32)
     glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT,
                               GL_RENDERBUFFER, m_sharedDepthRenderbuffer);
+#else
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT,
+                           GL_TEXTURE_2D, m_sharedDepthTexture, 0);
+#endif
 
     // Verify FBO completeness
     if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
@@ -920,7 +947,13 @@ bool OpenGLESBackend::WriteAuxDepthLFB_Locked(
     }
   }
   if (modified == 0) return true;
-  m_auxDepthShadowValid = true;
+  const bool coversFullUnmasked =
+      (dstX == 0u && dstY == 0u && copyW == m_headlessWidth &&
+       copyH == m_headlessHeight && refData == nullptr);
+  if (coversFullUnmasked) {
+    m_auxDepthShadowValid = true;
+    m_msaaDepthDirty = false;
+  }
 
   if (!InitLfbDepthProgram_Locked()) return false;
 
@@ -1290,6 +1323,197 @@ void OpenGLESBackend::FlushLFBToGPU_Locked() {
   InvalidateGlBindingCache();
 }
 
+bool OpenGLESBackend::InitDepthReadProgram_Locked() {
+  if (m_glDepthReadProgram != 0) return true;
+#if !defined(_WIN32)
+  const char* depthReadFs = R"(#version 300 es
+precision highp float;
+precision highp int;
+in vec2 fragTex;
+uniform highp sampler2D uTex;
+out vec4 outColor;
+void main() {
+    float d = clamp(texture(uTex, fragTex).r, 0.0, 1.0);
+    if (d >= 1.0) {
+        outColor = vec4(1.0, 1.0, 1.0, 1.0);
+        return;
+    }
+    highp uint u24 = min(uint(d * 16777215.0 + 0.5), 16777215u);
+    outColor = vec4(
+        float((u24 >> 16u) & 0xFFu) / 255.0,
+        float((u24 >> 8u) & 0xFFu) / 255.0,
+        float(u24 & 0xFFu) / 255.0,
+        1.0);
+}
+)";
+  auto compile = [](GLenum type, const char* src) -> GLuint {
+    GLuint s = glCreateShader(type);
+    glShaderSource(s, 1, &src, nullptr);
+    glCompileShader(s);
+    GLint ok = 0;
+    glGetShaderiv(s, GL_COMPILE_STATUS, &ok);
+    if (!ok) {
+      char log[512];
+      glGetShaderInfoLog(s, 512, nullptr, log);
+      GLIDE_LOG(WARN, "GLES", "Depth readback shader compile failed: " << log);
+      glDeleteShader(s);
+      return 0;
+    }
+    return s;
+  };
+  GLuint vs = compile(GL_VERTEX_SHADER, vsSource);
+  GLuint fs = compile(GL_FRAGMENT_SHADER, depthReadFs);
+  if (!vs || !fs) {
+    if (vs) glDeleteShader(vs);
+    if (fs) glDeleteShader(fs);
+    return false;
+  }
+  m_glDepthReadProgram = glCreateProgram();
+  glAttachShader(m_glDepthReadProgram, vs);
+  glAttachShader(m_glDepthReadProgram, fs);
+  glLinkProgram(m_glDepthReadProgram);
+  glDeleteShader(vs);
+  glDeleteShader(fs);
+  GLint linked = 0;
+  glGetProgramiv(m_glDepthReadProgram, GL_LINK_STATUS, &linked);
+  if (!linked) {
+    glDeleteProgram(m_glDepthReadProgram);
+    m_glDepthReadProgram = 0;
+    return false;
+  }
+  m_uDepthReadTexLoc = glGetUniformLocation(m_glDepthReadProgram, "uTex");
+  m_uDepthReadFlipYLoc = glGetUniformLocation(m_glDepthReadProgram, "uFlipY");
+  glUseProgram(m_glDepthReadProgram);
+  if (m_uDepthReadTexLoc != -1) glUniform1i(m_uDepthReadTexLoc, 0);
+  glUseProgram(0);
+  return true;
+#else
+  return false;
+#endif
+}
+
+bool OpenGLESBackend::ReadbackAuxDepthToShadow_Locked() {
+  if (m_headlessWidth == 0 || m_headlessHeight == 0) return false;
+  if (!m_batchVertices.empty()) {
+    FlushBatch();
+  }
+
+  const uint32_t w = m_headlessWidth;
+  const uint32_t h = m_headlessHeight;
+  const size_t totalPx = static_cast<size_t>(w) * h;
+  if (m_auxDepthShadow16.size() != totalPx) {
+    m_auxDepthShadow16.resize(totalPx);
+  }
+
+  GLint previousFBO = 0;
+  glGetIntegerv(GL_FRAMEBUFFER_BINDING, &previousFBO);
+
+  // If MSAA rendering wrote into m_msaaDepthRBO, resolve depth (nearest /
+  // sample 0) into the single-sampled FBO attachment before readback.
+  if (m_msaaSamples > 1 && m_msaaDepthDirty && m_msaaFBOs[0] != 0 &&
+      m_headlessFBOs[0] != 0) {
+    glDisable(GL_SCISSOR_TEST);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, m_msaaFBOs[0]);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, m_headlessFBOs[0]);
+    glBlitFramebuffer(0, 0, static_cast<GLint>(w), static_cast<GLint>(h), 0, 0,
+                      static_cast<GLint>(w), static_cast<GLint>(h),
+                      GL_DEPTH_BUFFER_BIT, GL_NEAREST);
+    checkGLError("ReadbackAuxDepth glBlitFramebuffer");
+    m_msaaDepthDirty = false;
+    m_glesDirtyMask |= kGlesDirtyScissor;
+  }
+
+  const uint32_t depthMode = m_depthMode;
+  const float depthNear = m_depthNear;
+  const float depthFar = m_depthFar;
+
+#if defined(_WIN32)
+  if (m_auxDepthFloatScratch.size() < totalPx) {
+    m_auxDepthFloatScratch.resize(totalPx);
+  }
+  glBindFramebuffer(GL_FRAMEBUFFER, m_headlessFBOs[0]);
+  glPixelStorei(GL_PACK_ALIGNMENT, 4);
+  glReadPixels(0, 0, static_cast<GLsizei>(w), static_cast<GLsizei>(h),
+               GL_DEPTH_COMPONENT, GL_FLOAT, m_auxDepthFloatScratch.data());
+  checkGLError("ReadbackAuxDepth glReadPixels");
+  for (size_t i = 0; i < totalPx; ++i) {
+    m_auxDepthShadow16[i] = EncodeNormDepthToAux16(
+        m_auxDepthFloatScratch[i], depthMode, depthNear, depthFar);
+  }
+  m_auxDepthShadowValid = true;
+#else
+  if (m_sharedDepthTexture != 0 && InitDepthReadProgram_Locked()) {
+    if (m_depthReadFbo == 0 || m_depthReadWidth != w ||
+        m_depthReadHeight != h) {
+      if (m_depthReadTex == 0) glGenTextures(1, &m_depthReadTex);
+      glActiveTexture(GL_TEXTURE0);
+      glBindSampler(0, 0);
+      glBindTexture(GL_TEXTURE_2D, m_depthReadTex);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+      glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, static_cast<GLsizei>(w),
+                   static_cast<GLsizei>(h), 0, GL_RGBA, GL_UNSIGNED_BYTE,
+                   nullptr);
+      if (m_depthReadFbo == 0) glGenFramebuffers(1, &m_depthReadFbo);
+      glBindFramebuffer(GL_FRAMEBUFFER, m_depthReadFbo);
+      glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                             GL_TEXTURE_2D, m_depthReadTex, 0);
+      m_depthReadWidth = w;
+      m_depthReadHeight = h;
+    }
+
+    glBindFramebuffer(GL_FRAMEBUFFER, m_depthReadFbo);
+    glViewport(0, 0, static_cast<GLsizei>(w), static_cast<GLsizei>(h));
+    glDisable(GL_SCISSOR_TEST);
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_STENCIL_TEST);
+    glDepthMask(GL_FALSE);
+    glDisable(GL_CULL_FACE);
+    glDisable(GL_BLEND);
+    if (m_supportsSampleMask) glDisable(GL_SAMPLE_MASK);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindSampler(0, 0);
+    glBindTexture(GL_TEXTURE_2D, m_sharedDepthTexture);
+    glUseProgram(m_glDepthReadProgram);
+    if (m_uDepthReadFlipYLoc != -1) glUniform1i(m_uDepthReadFlipYLoc, 0);
+    glBindVertexArray(m_glVAO);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    if (m_auxDepthScratch.size() < totalPx) {
+      m_auxDepthScratch.resize(totalPx);
+    }
+    glPixelStorei(GL_PACK_ALIGNMENT, 4);
+    glReadPixels(0, 0, static_cast<GLsizei>(w), static_cast<GLsizei>(h),
+                 GL_RGBA, GL_UNSIGNED_BYTE, m_auxDepthScratch.data());
+    checkGLError("ReadbackAuxDepth GLES pack");
+
+    const auto* bytes = reinterpret_cast<const uint8_t*>(m_auxDepthScratch.data());
+    constexpr float kInvD24 = 1.0f / 16777215.0f;
+    for (size_t i = 0; i < totalPx; ++i) {
+      const uint32_t u24 = (static_cast<uint32_t>(bytes[i * 4 + 0]) << 16u) |
+                           (static_cast<uint32_t>(bytes[i * 4 + 1]) << 8u) |
+                           static_cast<uint32_t>(bytes[i * 4 + 2]);
+      const float dNorm = static_cast<float>(u24) * kInvD24;
+      m_auxDepthShadow16[i] =
+          EncodeNormDepthToAux16(dNorm, depthMode, depthNear, depthFar);
+    }
+    m_auxDepthShadowValid = true;
+    m_glesDirtyMask |= kGlesDirtyScissor | kGlesDirtyColorMask |
+                       kGlesDirtyDepth | kGlesDirtyStencil | kGlesDirtyCull |
+                       kGlesDirtyBlend | kGlesDirtySampleMask;
+  }
+#endif
+
+  glBindFramebuffer(GL_FRAMEBUFFER, previousFBO);
+  InvalidateGlBindingCache();
+  return m_auxDepthShadowValid;
+}
+
 bool OpenGLESBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
                               uint32_t srcWidth, uint32_t srcHeight,
                               uint32_t dstStride, void* dstData) {
@@ -1300,6 +1524,16 @@ bool OpenGLESBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
 
   if (buffer == 2u) {
     if (!dstData || srcWidth == 0 || srcHeight == 0) return true;
+    // Flush any buffered 3D vertices BEFORE checking cache validity so newly
+    // submitted triangles invalidate m_auxDepthShadowValid first.
+    if (!m_batchVertices.empty()) {
+      FlushBatch();
+    }
+    const size_t totalPx =
+        static_cast<size_t>(m_headlessWidth) * m_headlessHeight;
+    if (!m_auxDepthShadowValid || m_auxDepthShadow16.size() != totalPx) {
+      (void)ReadbackAuxDepthToShadow_Locked();
+    }
     auto* outBase = reinterpret_cast<uint8_t*>(dstData);
     const uint32_t copyW =
         (srcX < m_headlessWidth) ? std::min(srcWidth, m_headlessWidth - srcX) : 0u;
@@ -1308,9 +1542,7 @@ bool OpenGLESBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
     for (uint32_t y = 0; y < copyH; ++y) {
       auto* rowOut = reinterpret_cast<uint16_t*>(
           outBase + static_cast<size_t>(y) * dstStride);
-      if (m_auxDepthShadowValid &&
-          m_auxDepthShadow16.size() ==
-              static_cast<size_t>(m_headlessWidth) * m_headlessHeight) {
+      if (m_auxDepthShadowValid && m_auxDepthShadow16.size() == totalPx) {
         const uint16_t* sRow = m_auxDepthShadow16.data() +
                                static_cast<size_t>(srcY + y) * m_headlessWidth;
         std::memcpy(rowOut, sRow + srcX, static_cast<size_t>(copyW) * sizeof(uint16_t));
@@ -2496,14 +2728,34 @@ void OpenGLESBackend::DestroyGLContext() {
       glDeleteProgram(m_glLfbDepthProgram);
       m_glLfbDepthProgram = 0;
     }
+    if (m_glDepthReadProgram) {
+      glDeleteProgram(m_glDepthReadProgram);
+      m_glDepthReadProgram = 0;
+    }
+    if (m_depthReadFbo) {
+      glDeleteFramebuffers(1, &m_depthReadFbo);
+      m_depthReadFbo = 0;
+    }
+    if (m_depthReadTex) {
+      glDeleteTextures(1, &m_depthReadTex);
+      m_depthReadTex = 0;
+    }
+    m_depthReadWidth = 0;
+    m_depthReadHeight = 0;
     m_lfbReadCacheValid[0] = false;
     m_lfbReadCacheValid[1] = false;
     m_auxDepthShadowValid = false;
+    m_msaaDepthDirty = false;
     m_auxDepthShadow16.clear();
     m_auxDepthScratch.clear();
+    m_auxDepthFloatScratch.clear();
     if (m_sharedDepthRenderbuffer) {
       glDeleteRenderbuffers(1, &m_sharedDepthRenderbuffer);
       m_sharedDepthRenderbuffer = 0;
+    }
+    if (m_sharedDepthTexture) {
+      glDeleteTextures(1, &m_sharedDepthTexture);
+      m_sharedDepthTexture = 0;
     }
     if (m_headlessFBOs[0]) {
       glDeleteFramebuffers(2, m_headlessFBOs);
@@ -2562,6 +2814,13 @@ void OpenGLESBackend::DestroyGLContext() {
     m_glVAO = 0;
     m_glProgram = 0;
     m_sharedDepthRenderbuffer = 0;
+    m_sharedDepthTexture = 0;
+    m_depthReadFbo = 0;
+    m_depthReadTex = 0;
+    m_depthReadWidth = 0;
+    m_depthReadHeight = 0;
+    m_glDepthReadProgram = 0;
+    m_msaaDepthDirty = false;
     m_headlessFBOs[0] = m_headlessFBOs[1] = 0;
     m_msaaDepthRBO = 0;
     m_msaaColorRBOs[0] = m_msaaColorRBOs[1] = 0;

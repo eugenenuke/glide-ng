@@ -125,16 +125,23 @@ void VulkanBackend::ClearBufferExt(uint32_t color, uint32_t alpha, float z,
     DrawMaskedClearQuad_Locked(r, g, b, a, z, stencil, doColorClear,
                                doDepthClear, doStencilClear, passSampleMask,
                                clipRect, useSingle);
-    if (m_msaaSamples > 1 && fullClip && !isSampleMaskedClear) {
-      const uint32_t activeIdx = GetActiveGpuBufferIdx();
-      if (doDepthClear) {
+    if (m_msaaSamples > 1 && doDepthClear) {
+      if (fullClip && !isSampleMaskedClear) {
+        const uint32_t activeIdx = GetActiveGpuBufferIdx();
         m_clearDepthValue[activeIdx] = z;
         if (m_activePassIsSingleSample) {
           m_clearDepthPending[activeIdx] = true;
+          m_msaaDepthDirty = false;
         } else {
           m_clearDepthPendingSingle[activeIdx] = true;
+          m_msaaDepthDirty = true;
         }
+      } else if (!useSingle) {
+        m_msaaDepthDirty = true;
       }
+    }
+    if (m_msaaSamples > 1 && fullClip && !isSampleMaskedClear) {
+      const uint32_t activeIdx = GetActiveGpuBufferIdx();
       if (doStencilClear && !isStencilMaskedClear) {
         m_clearStencilValue[activeIdx] = stencil;
         if (m_activePassIsSingleSample) {
@@ -183,6 +190,7 @@ void VulkanBackend::ClearBufferExt(uint32_t color, uint32_t alpha, float z,
       m_clearDepthPending[activeIdx] = true;
       if (m_msaaSamples > 1) {
         m_clearDepthPendingSingle[activeIdx] = true;
+        m_msaaDepthDirty = false;
       }
     }
     if (doStencilClear) {
@@ -213,12 +221,18 @@ void VulkanBackend::ClearBufferExt(uint32_t color, uint32_t alpha, float z,
         m_singleSampleColorDirty[activeIdx] = false;
       }
     }
-    if (fullClip && doDepthClear) {
-      m_clearDepthValue[activeIdx] = z;
-      if (m_activePassIsSingleSample) {
-        m_clearDepthPending[activeIdx] = true;
+    if (doDepthClear) {
+      if (fullClip) {
+        m_clearDepthValue[activeIdx] = z;
+        if (m_activePassIsSingleSample) {
+          m_clearDepthPending[activeIdx] = true;
+          m_msaaDepthDirty = false;
+        } else {
+          m_clearDepthPendingSingle[activeIdx] = true;
+          m_msaaDepthDirty = true;
+        }
       } else {
-        m_clearDepthPendingSingle[activeIdx] = true;
+        m_msaaDepthDirty = !m_activePassIsSingleSample;
       }
     }
     if (fullClip && doStencilClear) {
@@ -659,6 +673,9 @@ void VulkanBackend::FlushBatch(bool fromStateFlush) {
   m_lfbReadCacheValid[(m_activeRenderBuffer == 0) ? 0u : 1u] = false;
   if (m_depthMode != 0 && m_depthMask) {
     m_auxDepthShadowValid = false;
+    if (m_msaaSamples > 1) {
+      m_msaaDepthDirty = !m_activePassIsSingleSample;
+    }
   }
 
   if (m_batchedDescSet != m_boundDescSetInPass) {

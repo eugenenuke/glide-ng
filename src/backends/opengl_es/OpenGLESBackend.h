@@ -270,7 +270,15 @@ class OpenGLESBackend : public GlideStateTracker {
   // Double-buffered offscreen GPU rendering targets (1x resolved/aliased)
   uint32_t m_headlessFBOs[2]{0, 0};       // GLuint
   uint32_t m_fboTextures[2]{0, 0};        // GLuint
-  uint32_t m_sharedDepthRenderbuffer{0};  // GLuint
+  uint32_t m_sharedDepthRenderbuffer{0};  // GLuint (Win32 desktop GL RBO)
+  uint32_t m_sharedDepthTexture{0};       // GLuint (GLES 3.2 sampleable D24S8)
+  uint32_t m_depthReadFbo{0};             // GLuint (lazy RGBA8 depth pack FBO)
+  uint32_t m_depthReadTex{0};             // GLuint (lazy RGBA8 depth pack tex)
+  uint32_t m_depthReadWidth{0};
+  uint32_t m_depthReadHeight{0};
+  uint32_t m_glDepthReadProgram{0};       // GLuint
+  int m_uDepthReadTexLoc{-1};
+  int m_uDepthReadFlipYLoc{-1};
 
   // Double-buffered offscreen MSAA rendering targets (allocated when
   // m_msaaSamples > 1; supports live GR_AA_MULTI_SAMPLE + T-Buffer masks)
@@ -348,9 +356,13 @@ class OpenGLESBackend : public GlideStateTracker {
   bool m_lfbReadCacheValid[2]{false, false};
   std::vector<uint16_t> m_auxDepthShadow16;
   std::vector<uint32_t> m_auxDepthScratch;
+  std::vector<float> m_auxDepthFloatScratch;
   bool m_auxDepthShadowValid{false};
+  bool m_msaaDepthDirty{false};
   std::chrono::steady_clock::time_point m_lastFrontPresentTime{};
   bool InitLfbDepthProgram_Locked();
+  bool InitDepthReadProgram_Locked();
+  bool ReadbackAuxDepthToShadow_Locked();
   bool WriteAuxDepthLFB_Locked(uint32_t dstX, uint32_t dstY, uint32_t srcWidth,
                                uint32_t srcHeight, int32_t srcStride,
                                const void* srcData, const void* refData);

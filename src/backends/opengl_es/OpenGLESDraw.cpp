@@ -80,6 +80,9 @@ void OpenGLESBackend::ClearBufferExt(uint32_t color, uint32_t alpha, float z,
     }
     DrawMaskedClearQuadGLES_Locked(r, g, b, a, z, stencil, doColorClear,
                                    doDepthClear, doStencilClear, effSampleMask);
+    if (doDepthClear) {
+      m_msaaDepthDirty = true;
+    }
     return;
   }
 
@@ -155,6 +158,9 @@ void OpenGLESBackend::ClearBufferExt(uint32_t color, uint32_t alpha, float z,
     if (doDepthClear) dsMask |= GL_DEPTH_BUFFER_BIT;
     if (doStencilClear) dsMask |= GL_STENCIL_BUFFER_BIT;
     glClear(dsMask);
+    if (doDepthClear && fullClip) {
+      m_msaaDepthDirty = false;
+    }
   }
 
   if (m_msaaSamples > 1 && doColorClear) {
@@ -872,6 +878,9 @@ void OpenGLESBackend::FlushBatch(bool fromStateFlush) {
   m_lfbReadCacheValid[(m_activeRenderBuffer == 0u) ? 0u : 1u] = false;
   if (m_depthMode != 0 && m_depthMask) {
     m_auxDepthShadowValid = false;
+    if (m_msaaSamples > 1 && m_msaaFBOs[0] != 0) {
+      m_msaaDepthDirty = !useSingle;
+    }
   }
 
   uint32_t vertexCount = m_batchVertices.size();
