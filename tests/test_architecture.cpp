@@ -9972,3 +9972,108 @@ TEST_CASE(
   }
 #endif
 }
+
+TEST_CASE(
+    "Glide 2.x grLfbLock absorbs off-by-one vertical aperture overdraw safely",
+    "[Glide2][LFB][Aperture]") {
+#if defined(HAVE_GLIDE2_WRAPPER_SYMBOLS) || !defined(_WIN32)
+  const char* prevBackend = std::getenv("GLIDE_NG_BACKEND");
+  const bool hadPrevBackend = (prevBackend != nullptr);
+  const std::string savedBackend = hadPrevBackend ? prevBackend : "";
+
+  ::setenv("GLIDE_NG_BACKEND", "software", 1);
+  grGlideInit();
+  grSstSelect(0);
+  REQUIRE(grSstWinOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                       GR_COLORFORMAT_ARGB, GR_ORIGIN_UPPER_LEFT, 2,
+                       1) == FXTRUE);
+  grBufferClear(0x00000000u, 0, GR_WDEPTHVALUE_FARTHEST);
+
+  // 16-bit write lock (RGB565, fixed 1024-pixel stride -> 2048 B/row).
+  // Authentic SST-1/CVG exposes at least 1024 rows (2 MiB @ 16-bit). Guest code
+  // with off-by-one LFB blit loops (e.g. y == 480) or full-aperture clears up
+  // to y == 1023 must NOT corrupt adjacent heap chunks or visible scanlines.
+  GrLfbInfo_t info16{};
+  info16.size = sizeof(GrLfbInfo_t);
+  REQUIRE(grLfbLock(GR_LFB_WRITE_ONLY, GR_BUFFER_BACKBUFFER,
+                    GR_LFBWRITEMODE_565, GR_ORIGIN_UPPER_LEFT, FXTRUE,
+                    &info16) == FXTRUE);
+  REQUIRE(info16.lfbPtr != nullptr);
+  REQUIRE(info16.strideInBytes == 2048u);
+
+  auto* fb16 = static_cast<uint16_t*>(info16.lfbPtr);
+  // Visible bottom scanline (y = 479) and off-by-one scanline (y = 480) plus
+  // the last SST-1 16-bit aperture scanline (y = 1023).
+  for (uint32_t x = 0; x < 640u; ++x) {
+    fb16[479u * 1024u + x] = 0x07E0u;   // Bright green visible bottom row
+    fb16[480u * 1024u + x] = 0x10A2u;   // Off-by-one row (must be absorbed)
+    fb16[1023u * 1024u + x] = 0xF800u;  // Last 2 MiB aperture row
+  }
+  REQUIRE(grLfbUnlock(GR_LFB_WRITE_ONLY, GR_BUFFER_BACKBUFFER) == FXTRUE);
+
+  // Nested re-entrant 16-bit lock should retain pointer & aperture guard.
+  GrLfbInfo_t infoNestedA{}, infoNestedB{};
+  infoNestedA.size = sizeof(GrLfbInfo_t);
+  infoNestedB.size = sizeof(GrLfbInfo_t);
+  REQUIRE(grLfbLock(GR_LFB_WRITE_ONLY, GR_BUFFER_BACKBUFFER,
+                    GR_LFBWRITEMODE_565, GR_ORIGIN_UPPER_LEFT, FXFALSE,
+                    &infoNestedA) == FXTRUE);
+  REQUIRE(grLfbLock(GR_LFB_WRITE_ONLY, GR_BUFFER_BACKBUFFER,
+                    GR_LFBWRITEMODE_565, GR_ORIGIN_UPPER_LEFT, FXFALSE,
+                    &infoNestedB) == FXTRUE);
+  CHECK(infoNestedA.lfbPtr == infoNestedB.lfbPtr);
+  static_cast<uint16_t*>(infoNestedB.lfbPtr)[480u * 1024u + 10u] = 0x55AAu;
+  REQUIRE(grLfbUnlock(GR_LFB_WRITE_ONLY, GR_BUFFER_BACKBUFFER) == FXTRUE);
+  REQUIRE(grLfbUnlock(GR_LFB_WRITE_ONLY, GR_BUFFER_BACKBUFFER) == FXTRUE);
+
+  // Visible bottom scanline must survive swap intact.
+  grBufferSwap(0);
+  uint32_t pxVisible = 0;
+  REQUIRE(grLfbReadRegion(GR_BUFFER_FRONTBUFFER, 320, 479, 1, 1, 4,
+                          &pxVisible) == FXTRUE);
+  CHECK(((pxVisible >> 8) & 0xFFu) >= 240);
+  CHECK(((pxVisible >> 16) & 0xFFu) <= 15);
+  CHECK((pxVisible & 0xFFu) <= 15);
+
+  // Read-only lock also guards trailing off-by-one reads as zero.
+  GrLfbInfo_t infoRead{};
+  infoRead.size = sizeof(GrLfbInfo_t);
+  REQUIRE(grLfbLock(GR_LFB_READ_ONLY, GR_BUFFER_FRONTBUFFER,
+                    GR_LFBWRITEMODE_565, GR_ORIGIN_UPPER_LEFT, FXFALSE,
+                    &infoRead) == FXTRUE);
+  REQUIRE(infoRead.lfbPtr != nullptr);
+  const auto* rd16 = static_cast<const uint16_t*>(infoRead.lfbPtr);
+  CHECK(rd16[480u * 1024u + 0u] == 0u);
+  CHECK(rd16[1023u * 1024u + 639u] == 0u);
+  REQUIRE(grLfbUnlock(GR_LFB_READ_ONLY, GR_BUFFER_FRONTBUFFER) == FXTRUE);
+
+  // 32-bit write lock (8888, fixed 1024-pixel stride -> 4096 B/row -> 4 MiB).
+  GrLfbInfo_t info32{};
+  info32.size = sizeof(GrLfbInfo_t);
+  REQUIRE(grLfbLock(GR_LFB_WRITE_ONLY, GR_BUFFER_BACKBUFFER,
+                    GR_LFBWRITEMODE_8888, GR_ORIGIN_UPPER_LEFT, FXFALSE,
+                    &info32) == FXTRUE);
+  REQUIRE(info32.lfbPtr != nullptr);
+  REQUIRE(info32.strideInBytes == 4096u);
+  auto* fb32 = static_cast<uint32_t*>(info32.lfbPtr);
+  fb32[480u * 1024u + 0u] = 0xDEADBEEFu;
+  fb32[1023u * 1024u + 639u] = 0xCAFEBABEu;
+  REQUIRE(grLfbUnlock(GR_LFB_WRITE_ONLY, GR_BUFFER_BACKBUFFER) == FXTRUE);
+
+  // Churn large heap allocations matching CpuLfbStaging overlay size to prove
+  // allocator metadata was not corrupted.
+  std::vector<uint8_t> churnA(640u * 480u * 4u, 0x11u);
+  std::vector<uint8_t> churnB(640u * 480u * 4u, 0x22u);
+  CHECK(churnA.back() == 0x11u);
+  CHECK(churnB.front() == 0x22u);
+
+  grSstWinClose();
+  grGlideShutdown();
+
+  if (hadPrevBackend) {
+    ::setenv("GLIDE_NG_BACKEND", savedBackend.c_str(), 1);
+  } else {
+    ::unsetenv("GLIDE_NG_BACKEND");
+  }
+#endif
+}
