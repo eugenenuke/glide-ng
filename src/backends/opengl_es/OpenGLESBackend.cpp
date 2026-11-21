@@ -790,6 +790,10 @@ bool OpenGLESBackend::SwapBuffers() {
   // Restore any foreign host EGL context so host OpenGL rendering (e.g.
   // DOSBox-X output=opengl on Wayland) runs cleanly between Glide frames.
   RestoreHostContextIfSaved();
+  // Release Win32 WGL context between frames so multi-threaded games that draw
+  // initial loading frames on the UI thread and render gameplay frames on a
+  // separate thread (e.g. Turok 2) do not hit ERROR_BUSY (170).
+  ReleaseWglContextOnCurrentThread_Locked();
 
   const auto presentUs = std::chrono::duration_cast<std::chrono::microseconds>(
                              std::chrono::steady_clock::now() - presentStart)
@@ -1061,6 +1065,7 @@ void OpenGLESBackend::PresentFrontBufferGLES_Locked() {
                      kGlesDirtyStencil | kGlesDirtyCull | kGlesDirtyBlend |
                      kGlesDirtySampleMask;
   m_lastFrontPresentTime = std::chrono::steady_clock::now();
+  ReleaseWglContextOnCurrentThread_Locked();
 }
 
 bool OpenGLESBackend::WriteLFB(uint32_t buffer, uint32_t dstX, uint32_t dstY,

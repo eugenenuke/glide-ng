@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 struct SDL_Window;
 
@@ -241,6 +242,8 @@ class NativeSurfaceHost {
   void InstallWin32FullscreenSubclass();
   void UninstallWin32FullscreenSubclass();
   void SyncWin32SubclassState();
+  void HideWin32EmbeddedChildren();
+  void RestoreWin32EmbeddedChildren();
   void QueryStandaloneDrawableSize(uint32_t& outW, uint32_t& outH) const;
 
   Mode m_mode = Mode::Detached;
@@ -296,6 +299,7 @@ class NativeSurfaceHost {
   int32_t m_win32SavedRect[4] = {0, 0, 0, 0};
   int32_t m_win32AppliedMonRect[4] = {0, 0, 0, 0};
   int32_t m_win32SettledRect[4] = {0, 0, 0, 0};
+  std::vector<void*> m_hiddenWin32Children;
 };
 
 }  // namespace GlideWrapper

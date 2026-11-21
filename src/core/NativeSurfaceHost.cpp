@@ -1291,6 +1291,7 @@ bool NativeSurfaceHost::AttachWin32Embedded(void* parentHwndPtr) {
   if (m_fullscreen) {
     appliedAtAttach = ApplyWin32EmbeddedFullscreenIfNeeded();
   }
+  HideWin32EmbeddedChildren();
   RefreshWin32SurfaceFingerprint();
   if (appliedAtAttach) {
     // Schedule a one-shot deferred focus/foreground check outside grSstWinOpen
@@ -2144,6 +2145,7 @@ void NativeSurfaceHost::Detach() {
   if ((m_mode == Mode::Win32Window || m_mode == Mode::Win32Embedded) &&
       m_win32Hwnd) {
     if (m_mode == Mode::Win32Embedded) {
+      RestoreWin32EmbeddedChildren();
       RestoreWin32EmbeddedFullscreenIfSaved();
     }
     HWND hwnd = static_cast<HWND>(m_win32Hwnd);
@@ -2547,11 +2549,71 @@ void NativeSurfaceHost::NotifyWin32PassthruReclaimed() {
 #endif
 }
 
+void NativeSurfaceHost::HideWin32EmbeddedChildren() {
+#if defined(_WIN32)
+  if (m_mode != Mode::Win32Embedded || m_win32OwnsHwnd || !m_win32ParentHwnd) {
+    return;
+  }
+  HWND parent = static_cast<HWND>(m_win32ParentHwnd);
+  if (!IsWindow(parent)) return;
+  const DWORD selfPid = GetCurrentProcessId();
+  const DWORD curTid = GetCurrentThreadId();
+  uint32_t newlyHidden = 0;
+  for (HWND child = GetWindow(parent, GW_CHILD); child != nullptr;
+       child = GetWindow(child, GW_HWNDNEXT)) {
+    if (child == static_cast<HWND>(m_win32Hwnd)) continue;
+    DWORD childPid = 0;
+    const DWORD childTid = GetWindowThreadProcessId(child, &childPid);
+    if (childPid != selfPid || !IsWindowVisible(child)) continue;
+    void* raw = static_cast<void*>(child);
+    if (std::find(m_hiddenWin32Children.begin(), m_hiddenWin32Children.end(),
+                  raw) == m_hiddenWin32Children.end()) {
+      m_hiddenWin32Children.push_back(raw);
+    }
+    if (childTid == curTid) {
+      ShowWindow(child, SW_HIDE);
+    } else {
+      ShowWindowAsync(child, SW_HIDE);
+    }
+    ++newlyHidden;
+  }
+  if (newlyHidden > 0) {
+    GLIDE_LOG(INFO, "WSI",
+              "NativeSurfaceHost: hid " << newlyHidden
+                  << " visible Win32 child control(s) inside HWND "
+                  << m_win32ParentHwnd << " during active 3dfx presentation.");
+  }
+#endif
+}
+
+void NativeSurfaceHost::RestoreWin32EmbeddedChildren() {
+#if defined(_WIN32)
+  if (m_hiddenWin32Children.empty()) return;
+  const DWORD curTid = GetCurrentThreadId();
+  for (void* raw : m_hiddenWin32Children) {
+    HWND child = static_cast<HWND>(raw);
+    if (!child || !IsWindow(child)) continue;
+    const DWORD childTid = GetWindowThreadProcessId(child, nullptr);
+    if (childTid == curTid) {
+      ShowWindow(child, SW_SHOWNOACTIVATE);
+    } else {
+      ShowWindowAsync(child, SW_SHOWNOACTIVATE);
+    }
+  }
+  m_hiddenWin32Children.clear();
+#endif
+}
+
 void NativeSurfaceHost::SetWin32PassthruSuspended(bool suspended) {
 #if defined(_WIN32)
   if (m_mode == Mode::Win32Embedded && m_win32ParentHwnd) {
     m_win32PassthruSuspended.store(suspended, std::memory_order_relaxed);
     SyncWin32SubclassState();
+    if (suspended) {
+      RestoreWin32EmbeddedChildren();
+    } else {
+      HideWin32EmbeddedChildren();
+    }
   }
 #else
   (void)suspended;
