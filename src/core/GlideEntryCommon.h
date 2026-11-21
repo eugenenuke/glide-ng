@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <cmath>
 #include <cstdint>
 
 #include "core/BackendManager.h"
@@ -271,6 +272,30 @@ inline void SanitizeVertex(const SharedFrontendState& st, ModernVertex& mv) {
   }
 }
 
+inline void UnwrapCoherent12x4Axis(float& a, float& b, float& c) noexcept {
+  // Authentic 3dfx SST-1 (Voodoo Graphics) / CVG (Voodoo2) hardware writes
+  // screen-space vertex coordinates into 16-bit signed 12.4 fixed-point
+  // registers (range [-2048.0, +2047.9375], wrap period 4096.0 px). Only
+  // unwrap an axis when all three vertices fit inside a single 2048 px span
+  // shifted by a non-zero integer multiple of 4096 px (leaving large unclipped
+  // frustum triangles intact while faithfully recovering wrapped HUD/menu
+  // quads such as Formula 1's +/-20480 px font glyphs).
+  constexpr float kPeriod = 4096.0f;
+  constexpr float kHalf = 2048.0f;
+  const float lo = (a < b) ? ((a < c) ? a : c) : ((b < c) ? b : c);
+  const float hi = (a > b) ? ((a > c) ? a : c) : ((b > c) ? b : c);
+  if (__builtin_expect(lo >= -kHalf && hi < kHalf, 1)) return;
+  if ((hi - lo) >= kHalf) return;
+  const float mid = 0.5f * (lo + hi);
+  const float period = std::floor((mid + kHalf) / kPeriod);
+  if (period != 0.0f && std::fabs(period) <= 128.0f) {
+    const float shift = period * kPeriod;
+    a -= shift;
+    b -= shift;
+    c -= shift;
+  }
+}
+
 inline void SanitizeTriangle(const SharedFrontendState& st, ModernVertex& va,
                              ModernVertex& vb, ModernVertex& vc) {
   if (__builtin_expect(g_boundsCheckEnabled.load(std::memory_order_relaxed), 0)) {
@@ -278,6 +303,8 @@ inline void SanitizeTriangle(const SharedFrontendState& st, ModernVertex& va,
     CheckVertexBoundsSlow(st, vb);
     CheckVertexBoundsSlow(st, vc);
   }
+  UnwrapCoherent12x4Axis(va.pos[0], vb.pos[0], vc.pos[0]);
+  UnwrapCoherent12x4Axis(va.pos[1], vb.pos[1], vc.pos[1]);
   if (st.depthMode == 0) {
     va.pos[2] = 0.0f;
     vb.pos[2] = 0.0f;
