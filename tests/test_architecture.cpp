@@ -9813,3 +9813,162 @@ TEST_CASE(
   }
 #endif
 }
+
+TEST_CASE(
+    "Combiner-gated TMU activation preserves untextured draws with stale "
+    "texture/alpha combine and non-positive or subnormal oow",
+    "[Glide2][Combiner][SubnormalOow]") {
+#ifdef __linux__
+  const char* prevBackend = std::getenv("GLIDE_NG_BACKEND");
+  std::string savedBackend = prevBackend ? prevBackend : "";
+  const bool hadPrevBackend = (prevBackend != nullptr);
+
+  ::setenv("GLIDE_NG_FORCE_NO_WINDOW", "1", 1);
+  ::setenv("GLIDE_NG_NO_SPLASH", "1", 1);
+
+  int testedBackends = 0;
+  for (const char* backendName : {"software", "vulkan", "opengl_es"}) {
+    ::setenv("GLIDE_NG_BACKEND", backendName, 1);
+    grGlideInit();
+    grSstSelect(0);
+    if (grSstWinOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                     GR_COLORFORMAT_ARGB, GR_ORIGIN_UPPER_LEFT, 2,
+                     1) == FXFALSE) {
+      grGlideShutdown();
+      continue;
+    }
+    ++testedBackends;
+
+    // Upload a uniform 16x16 ALPHA_8 texture with alpha = 0x80 (~50%).
+    std::vector<uint8_t> alphaTex(16 * 16, 0x80u);
+    GrTexInfo tInfo{};
+    tInfo.smallLod = GR_LOD_16;
+    tInfo.largeLod = GR_LOD_16;
+    tInfo.aspectRatio = GR_ASPECT_1x1;
+    tInfo.format = GR_TEXFMT_ALPHA_8;
+    tInfo.data = alphaTex.data();
+    const FxU32 addr = grTexMinAddress(GR_TMU0);
+    grTexDownloadMipMap(GR_TMU0, addr, GR_MIPMAPLEVELMASK_BOTH, &tInfo);
+    grTexSource(GR_TMU0, addr, GR_MIPMAPLEVELMASK_BOTH, &tInfo);
+    grTexCombine(GR_TMU0, GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+                 GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE, FXFALSE,
+                 FXFALSE);
+
+    grDepthBufferMode(GR_DEPTHBUFFER_DISABLE);
+    grCullMode(GR_CULL_DISABLE);
+    grFogMode(GR_FOG_DISABLE);
+    grChromakeyMode(GR_CHROMAKEY_DISABLE);
+    grAlphaTestFunction(GR_CMP_ALWAYS);
+    grColorMask(FXTRUE, FXFALSE);
+    grAlphaCombine(GR_COMBINE_FUNCTION_SCALE_OTHER, GR_COMBINE_FACTOR_LOCAL,
+                   GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_TEXTURE,
+                   FXFALSE);
+    grColorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+                   GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_CONSTANT,
+                   FXFALSE);
+    grAlphaBlendFunction(GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_ONE,
+                         GR_BLEND_ZERO);
+    grBufferClear(0xFF000000u, 0, GR_WDEPTHVALUE_FARTHEST);
+
+    auto drawQuad = [](float x0, float y0, float x1, float y1, float r, float g,
+                       float b, float a, float oow) {
+      auto mk = [&](float x, float y, float s, float t) {
+        GrVertex v{};
+        v.x = x;
+        v.y = y;
+        v.oow = oow;
+        v.r = r;
+        v.g = g;
+        v.b = b;
+        v.a = a;
+        v.tmuvtx[0].sow = s * oow;
+        v.tmuvtx[0].tow = t * oow;
+        return v;
+      };
+      GrVertex q[4] = {
+          mk(x0, y0, 0.0f, 0.0f),
+          mk(x1, y0, 255.0f, 0.0f),
+          mk(x1, y1, 255.0f, 255.0f),
+          mk(x0, y1, 0.0f, 255.0f),
+      };
+      grDrawPolygonVertexList(4, q);
+    };
+
+    // Untextured sky-gradient style strips with stale grTexSource + stale
+    // grAlphaCombine(..., TEXTURE) and subnormal / zero / negative vertex oow.
+    drawQuad(0.0f, 0.0f, 300.0f, 100.0f, 20.0f, 60.0f, 200.0f, 255.0f,
+             6.63809e-39f);
+    drawQuad(0.0f, 120.0f, 100.0f, 220.0f, 20.0f, 60.0f, 200.0f, 255.0f, 0.0f);
+    drawQuad(0.0f, 240.0f, 100.0f, 340.0f, 20.0f, 60.0f, 200.0f, 255.0f, -1.0f);
+
+    // Without re-binding grTexSource, enable src-alpha blending (e.g. ALPHA_8
+    // cloud sheets). TMU0 must resume sampling and blend ~50% white over blue.
+    grAlphaBlendFunction(GR_BLEND_SRC_ALPHA, GR_BLEND_ONE_MINUS_SRC_ALPHA,
+                         GR_BLEND_ONE, GR_BLEND_ZERO);
+    drawQuad(100.0f, 0.0f, 200.0f, 100.0f, 255.0f, 255.0f, 255.0f, 255.0f,
+             1.0f);
+
+    // Without re-binding grTexSource, switch to opaque blend + alpha test
+    // (> 0xC0). The ALPHA_8 texel (0x80) must fail and discard the red quad.
+    grAlphaBlendFunction(GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_ONE,
+                         GR_BLEND_ZERO);
+    grAlphaTestFunction(GR_CMP_GREATER);
+    grAlphaTestReferenceValue(0xC0);
+    drawQuad(200.0f, 0.0f, 300.0f, 100.0f, 255.0f, 0.0f, 0.0f, 255.0f, 1.0f);
+
+    // Disable alpha test again and verify a subnormal-oow green quad renders.
+    grAlphaTestFunction(GR_CMP_ALWAYS);
+    drawQuad(200.0f, 120.0f, 300.0f, 220.0f, 10.0f, 220.0f, 30.0f, 255.0f,
+             2.94736e-39f);
+
+    grBufferSwap(0);
+
+    auto readPx = [](uint32_t x, uint32_t y) {
+      uint32_t px = 0;
+      REQUIRE(grLfbReadRegion(GR_BUFFER_FRONTBUFFER, x, y, 1, 1, 4, &px) ==
+              FXTRUE);
+      return px;
+    };
+    const uint32_t pSub = readPx(50, 50);
+    const uint32_t pZero = readPx(50, 170);
+    const uint32_t pNeg = readPx(50, 290);
+    const uint32_t pCloud = readPx(150, 50);
+    const uint32_t pAlphaTest = readPx(250, 50);
+    const uint32_t pGreen = readPx(250, 170);
+
+    INFO("Backend=" << backendName << " pSub=0x" << std::hex << pSub
+                    << " pZero=0x" << pZero << " pNeg=0x" << pNeg
+                    << " pCloud=0x" << pCloud << " pAlphaTest=0x" << pAlphaTest
+                    << " pGreen=0x" << pGreen << std::dec);
+
+    // Pure blue strips: none may be discarded to cleared black!
+    for (uint32_t p : {pSub, pZero, pNeg}) {
+      CHECK(((p >> 16) & 0xFFu) <= 35);
+      CHECK(((p >> 8) & 0xFFu) >= 45);
+      CHECK((p & 0xFFu) >= 185);
+    }
+    // ~50% blended white over (20, 60, 200) -> approx (138, 158, 228).
+    CHECK(((pCloud >> 16) & 0xFFu) >= 115);
+    CHECK(((pCloud >> 16) & 0xFFu) <= 165);
+    CHECK(((pCloud >> 8) & 0xFFu) >= 135);
+    CHECK(((pCloud >> 8) & 0xFFu) <= 185);
+    // Alpha-tested red quad discarded -> underlying blue preserved.
+    CHECK(((pAlphaTest >> 16) & 0xFFu) <= 35);
+    CHECK((pAlphaTest & 0xFFu) >= 185);
+    // Restored untextured green quad with subnormal oow rendered solidly.
+    CHECK(((pGreen >> 16) & 0xFFu) <= 30);
+    CHECK(((pGreen >> 8) & 0xFFu) >= 200);
+    CHECK((pGreen & 0xFFu) <= 50);
+
+    grSstWinClose();
+    grGlideShutdown();
+  }
+  CHECK(testedBackends >= 1);
+
+  if (hadPrevBackend) {
+    ::setenv("GLIDE_NG_BACKEND", savedBackend.c_str(), 1);
+  } else {
+    ::unsetenv("GLIDE_NG_BACKEND");
+  }
+#endif
+}

@@ -1854,17 +1854,20 @@ void SoftwareBackend::ResolveActiveState() {
   state.stencilZFailOp = m_stencilZFailOp;
   state.stencilZPassOp = m_stencilZPassOp;
 
-  state.boundTexAddress[0] = m_boundTexAddress[0];
-  state.boundTexAddress[1] = m_boundTexAddress[1];
+  const bool combinerReadsTex = DoesCombinerReadTexture_Locked();
+  state.boundTexAddress[0] =
+      combinerReadsTex ? m_boundTexAddress[0] : 0xFFFFFFFFu;
+  state.boundTexAddress[1] =
+      combinerReadsTex ? m_boundTexAddress[1] : 0xFFFFFFFFu;
   state.boundTex[0] =
-      (m_boundTexAddress[0] != 0xFFFFFFFFu)
+      (state.boundTexAddress[0] != 0xFFFFFFFFu)
           ? TextureManager::GetInstance().GetTextureSnapshot(
-                0, m_boundTexAddress[0])
+                0, state.boundTexAddress[0])
           : nullptr;
   state.boundTex[1] =
-      (m_boundTexAddress[1] != 0xFFFFFFFFu)
+      (state.boundTexAddress[1] != 0xFFFFFFFFu)
           ? TextureManager::GetInstance().GetTextureSnapshot(
-                1, m_boundTexAddress[1])
+                1, state.boundTexAddress[1])
           : nullptr;
   state.texClampS[0] = m_texClampS[0];
   state.texClampS[1] = m_texClampS[1];

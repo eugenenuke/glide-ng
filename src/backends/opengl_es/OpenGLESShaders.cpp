@@ -1104,10 +1104,19 @@ void OpenGLESBackend::PopulateUniforms(uint32_t dirtyMask) {
     glUniform1i(m_uAlphaInvertLoc, m_alphaCombinerInvert ? 1 : 0);
   }
 
-  if (dirtyMask & kGlesDirtyTexBinding) {
-    int texEnabled[2] = {(m_boundTexAddress[0] != 0xFFFFFFFF) ? 1 : 0,
-                         (m_boundTexAddress[1] != 0xFFFFFFFF) ? 1 : 0};
+  constexpr uint32_t kTexEnableDeps =
+      kGlesDirtyTexBinding | kGlesDirtyColorCombiner | kGlesDirtyExtCombine |
+      kGlesDirtyChromakey | kGlesDirtyTexChromakey | kGlesDirtyAlphaTest |
+      kGlesDirtyBlend | kGlesDirtyColorMask;
+  if (dirtyMask & kTexEnableDeps) {
+    const bool combinerReadsTex = DoesCombinerReadTexture_Locked();
+    int texEnabled[2] = {
+        (combinerReadsTex && m_boundTexAddress[0] != 0xFFFFFFFF) ? 1 : 0,
+        (combinerReadsTex && m_boundTexAddress[1] != 0xFFFFFFFF) ? 1 : 0};
     glUniform1iv(m_uTextureEnabledLoc, 2, texEnabled);
+  }
+
+  if (dirtyMask & kGlesDirtyTexBinding) {
     float lodBias[2] = {m_texLodBias[0], m_texLodBias[1]};
     glUniform1fv(m_uTexLodBiasLoc, 2, lodBias);
   }
