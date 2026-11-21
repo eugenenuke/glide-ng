@@ -743,7 +743,12 @@ TEST_CASE("Architectural Core Validation", "[Architecture]") {
     // 3. Validate status & pacing APIs
     REQUIRE(grSstIsBusy() == FXFALSE);
     REQUIRE(grBufferNumPending() == 0);
-    REQUIRE(grSstStatus() == 0x3FF);
+    FxU32 status = grSstStatus();
+    REQUIRE((status & 0x0000003Fu) == 0x3Fu);        // PCI FIFO empty (63 free)
+    REQUIRE((status & 0x00000380u) == 0u);           // FBI/TMU/SST idle
+    REQUIRE((status & 0x0FFFF000u) == 0x0FFFF000u);  // Memory FIFO empty (0xFFFF)
+    REQUIRE((status & 0xF0000000u) == 0u);           // 0 swaps pending, no IRQ
+    REQUIRE((status & ~0x00000040u) == 0x0FFFF03Fu); // Only bit 6 (active-low VRetrace) varies
     REQUIRE_NOTHROW(grCheckForRoom(10));
 
     // 4. Validate pacing simulation

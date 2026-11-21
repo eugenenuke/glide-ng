@@ -2150,10 +2150,21 @@ FX_ENTRY FxBool FX_CALL grSstIsBusy(void) {
 
 FX_ENTRY FxU32 FX_CALL grSstStatus(void) {
   EnsureEngineInitialized();
-  // Return status register bits indicating:
-  // - PCI FIFO has plenty of room (0x3FF free slots)
-  // - Card is not busy / rasterizer is idle
-  return 0x3FF;
+  // Authentic 3dfx SST-1/CVG status register layout (idle hardware):
+  //   bits  5:0  (0x0000003F) - PCI FIFO freespace (0x3F = empty / idle)
+  //   bit   6    (0x00000040) - Vertical retrace (active-low: 0 = in retrace)
+  //   bit   7    (0x00000080) - FBI graphics engine busy (0 = idle)
+  //   bit   8    (0x00000100) - TMU/TREX busy (0 = idle)
+  //   bit   9    (0x00000200) - SST-1/CVG busy (0 = idle)
+  //   bits 11:10 (0x00000C00) - Displayed buffer index (0)
+  //   bits 27:12 (0x0FFFF000) - Memory FIFO freespace (0xFFFF = empty / idle)
+  //   bits 30:28 (0x70000000) - Swap buffers pending (0)
+  //   bit  31    (0x80000000) - PCI interrupt generated (0)
+  FxU32 status = 0x0FFFF03Fu;
+  if (grSstVRetraceOn() == FXFALSE) {
+    status |= 0x40u;
+  }
+  return status;
 }
 
 FX_ENTRY FxU32 FX_CALL grSstVideoLine(void) {
