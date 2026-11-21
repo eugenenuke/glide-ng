@@ -7093,7 +7093,9 @@ TEST_CASE(
 
     // Map full 64x64 texture onto a 16x16 screen quad -> minification ratio =
     // 4x -> relative LOD = log2(4) = 2.0 -> MUST sample mip 2 (GREEN), NOT mip
-    // 0 (RED).
+    // 0 (RED). (Using 256.0f spans the exact Glide [0, 256] normalized domain;
+    // 255.0f would yield ratio 3.984x -> log2 = 1.994 which authentic SST-1
+    // GR_MIPMAP_NEAREST truncation maps to mip 1.)
     GrVertex a{}, b{}, c{}, d{};
     a.x = 100.0f;
     a.y = 200.0f;
@@ -7103,18 +7105,18 @@ TEST_CASE(
     b.x = 116.0f;
     b.y = 200.0f;
     b.oow = 1.0f;
-    b.tmuvtx[0].sow = 255.0f;
+    b.tmuvtx[0].sow = 256.0f;
     b.tmuvtx[0].tow = 0.0f;
     c.x = 116.0f;
     c.y = 216.0f;
     c.oow = 1.0f;
-    c.tmuvtx[0].sow = 255.0f;
-    c.tmuvtx[0].tow = 255.0f;
+    c.tmuvtx[0].sow = 256.0f;
+    c.tmuvtx[0].tow = 256.0f;
     d.x = 100.0f;
     d.y = 216.0f;
     d.oow = 1.0f;
     d.tmuvtx[0].sow = 0.0f;
-    d.tmuvtx[0].tow = 255.0f;
+    d.tmuvtx[0].tow = 256.0f;
     grDrawTriangle(&a, &b, &c);
     grDrawTriangle(&a, &c, &d);
 
