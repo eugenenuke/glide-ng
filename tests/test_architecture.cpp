@@ -9620,3 +9620,196 @@ TEST_CASE(
   }
 #endif
 }
+
+TEST_CASE(
+    "Glide 2.x SST-1/CVG LFB 1024px Stride and guTexMemReset Filter/Clamp "
+    "Persistence",
+    "[Glide2][LfbStride][TexMemReset]") {
+#ifdef __linux__
+  const char* prevBackend = std::getenv("GLIDE_NG_BACKEND");
+  std::string savedBackend = prevBackend ? prevBackend : "";
+  const bool hadPrevBackend = (prevBackend != nullptr);
+
+  ::setenv("GLIDE_NG_FORCE_NO_WINDOW", "1", 1);
+  ::setenv("GLIDE_NG_SPLASH", "0", 1);
+
+  SECTION("grLfbLock exposes authentic 1024-pixel SST-1/CVG stride at 640x480") {
+    ::setenv("GLIDE_NG_BACKEND", "software", 1);
+    grGlideInit();
+    grSstSelect(0);
+    REQUIRE(grSstWinOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                         GR_COLORFORMAT_ARGB, GR_ORIGIN_UPPER_LEFT, 2,
+                         1) == FXTRUE);
+    grBufferClear(0x00000000u, 0, GR_WDEPTHVALUE_FARTHEST);
+
+    // 16-bit write mode (RGB565): fixed stride = 1024 * 2 = 2048 bytes.
+    GrLfbInfo_t info16{};
+    info16.size = sizeof(GrLfbInfo_t);
+    REQUIRE(grLfbLock(GR_LFB_WRITE_ONLY, GR_BUFFER_BACKBUFFER,
+                      GR_LFBWRITEMODE_565, GR_ORIGIN_UPPER_LEFT, FXFALSE,
+                      &info16) == FXTRUE);
+    REQUIRE(info16.lfbPtr != nullptr);
+    CHECK(info16.strideInBytes == 2048u);
+
+    // Write using hardcoded y * 1024 + x indexing all the way to bottom row
+    // y = 479 without relying on info16.strideInBytes (mirrors 1997 Glide 2.x
+    // Programming Guide callers such as Extreme Assault).
+    auto* fb16 = static_cast<uint16_t*>(info16.lfbPtr);
+    for (uint32_t y = 0; y < 480; ++y) {
+      fb16[y * 1024u + 0u] = 0xF800u;    // Red left border
+      fb16[y * 1024u + 639u] = 0x07E0u;  // Green right border
+    }
+    fb16[479u * 1024u + 320u] = 0x001Fu;  // Blue bottom-center pixel
+    REQUIRE(grLfbUnlock(GR_LFB_WRITE_ONLY, GR_BUFFER_BACKBUFFER) == FXTRUE);
+
+    grBufferSwap(0);
+    uint32_t pxLeft = 0, pxRight = 0, pxBottom = 0;
+    REQUIRE(grLfbReadRegion(GR_BUFFER_FRONTBUFFER, 0, 479, 1, 1, 4, &pxLeft) ==
+            FXTRUE);
+    REQUIRE(grLfbReadRegion(GR_BUFFER_FRONTBUFFER, 639, 479, 1, 1, 4,
+                            &pxRight) == FXTRUE);
+    REQUIRE(grLfbReadRegion(GR_BUFFER_FRONTBUFFER, 320, 479, 1, 1, 4,
+                            &pxBottom) == FXTRUE);
+    CHECK(((pxLeft >> 16) & 0xFFu) >= 240);
+    CHECK(((pxLeft >> 8) & 0xFFu) <= 15);
+    CHECK(((pxRight >> 8) & 0xFFu) >= 240);
+    CHECK((pxRight & 0xFFu) <= 15);
+    CHECK((pxBottom & 0xFFu) >= 240);
+    CHECK(((pxBottom >> 16) & 0xFFu) <= 15);
+
+    // 32-bit write mode (8888): fixed stride = 1024 * 4 = 4096 bytes.
+    GrLfbInfo_t info32{};
+    info32.size = sizeof(GrLfbInfo_t);
+    REQUIRE(grLfbLock(GR_LFB_WRITE_ONLY, GR_BUFFER_BACKBUFFER,
+                      GR_LFBWRITEMODE_8888, GR_ORIGIN_UPPER_LEFT, FXFALSE,
+                      &info32) == FXTRUE);
+    REQUIRE(info32.lfbPtr != nullptr);
+    CHECK(info32.strideInBytes == 4096u);
+    auto* fb32 = static_cast<uint32_t*>(info32.lfbPtr);
+    fb32[479u * 1024u + 100u] = 0xFFFF00FFu;
+    REQUIRE(grLfbUnlock(GR_LFB_WRITE_ONLY, GR_BUFFER_BACKBUFFER) == FXTRUE);
+
+    grSstWinClose();
+    grGlideShutdown();
+  }
+
+  SECTION(
+      "guTexMemReset preserves TMU bilinear filter and clamp register state") {
+    for (const char* backendName : {"software", "vulkan", "opengl_es"}) {
+      ::setenv("GLIDE_NG_BACKEND", backendName, 1);
+      grGlideInit();
+      grSstSelect(0);
+      if (grSstWinOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                       GR_COLORFORMAT_ARGB, GR_ORIGIN_UPPER_LEFT, 2,
+                       1) == FXFALSE) {
+        grGlideShutdown();
+        continue;
+      }
+
+      // Configure TMU0 via guTexSource(0) with bilinear + clamp, then call
+      // guTexMemReset() just like Extreme Assault does before switching to
+      // direct grTexDownloadMipMap() + grTexSource().
+      GrMipMapId_t probeId = guTexAllocateMemory(
+          GR_TMU0, GR_MIPMAPLEVELMASK_BOTH, 16, 16, GR_TEXFMT_RGB_565,
+          GR_MIPMAP_DISABLE, GR_LOD_16, GR_LOD_16, GR_ASPECT_1x1,
+          GR_TEXTURECLAMP_CLAMP, GR_TEXTURECLAMP_CLAMP,
+          GR_TEXTUREFILTER_BILINEAR, GR_TEXTUREFILTER_BILINEAR, 0.0f, FXFALSE);
+      REQUIRE(probeId != GR_NULL_MIPMAP_HANDLE);
+      guTexSource(probeId);
+      guTexMemReset();
+
+      // Upload a 2x2 texel checkerboard via low-level grTexDownloadMipMap
+      // (left column black 0x0000, right column white 0xFFFF) stored inside a
+      // 16x16 RGB565 texture (left half x<8 black, right half x>=8 white).
+      std::vector<uint16_t> tex(16 * 16, 0x0000u);
+      for (int y = 0; y < 16; ++y) {
+        for (int x = 8; x < 16; ++x) {
+          tex[static_cast<size_t>(y) * 16 + x] = 0xFFFFu;
+        }
+      }
+      GrTexInfo tInfo{};
+      tInfo.smallLod = GR_LOD_16;
+      tInfo.largeLod = GR_LOD_16;
+      tInfo.aspectRatio = GR_ASPECT_1x1;
+      tInfo.format = GR_TEXFMT_RGB_565;
+      tInfo.data = tex.data();
+      const FxU32 addr = grTexMinAddress(GR_TMU0);
+      grTexDownloadMipMap(GR_TMU0, addr, GR_MIPMAPLEVELMASK_BOTH, &tInfo);
+      grTexSource(GR_TMU0, addr, GR_MIPMAPLEVELMASK_BOTH, &tInfo);
+      grTexCombine(GR_TMU0, GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+                   GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE, FXFALSE,
+                   FXFALSE);
+      grColorCombine(GR_COMBINE_FUNCTION_SCALE_OTHER, GR_COMBINE_FACTOR_ONE,
+                     GR_COMBINE_LOCAL_NONE, GR_COMBINE_OTHER_TEXTURE, FXFALSE);
+      grDepthBufferMode(GR_DEPTHBUFFER_DISABLE);
+      grCullMode(GR_CULL_DISABLE);
+      grBufferClear(0x00000000u, 0, GR_WDEPTHVALUE_FARTHEST);
+
+      // Draw a wide magnified quad spanning [0..320] x [0..160] mapped tightly
+      // across the black->white seam between texel 7 and texel 8.
+      // With BILINEAR preserved, pixels inside the transition band contain
+      // smooth intermediate grays (40..215). With broken POINT_SAMPLED reset,
+      // every single pixel snaps to either 0 or 255!
+      auto mkV = [](float x, float y, float s, float t) {
+        GrVertex v{};
+        v.x = x;
+        v.y = y;
+        v.oow = 1.0f;
+        v.tmuvtx[0].sow = s;
+        v.tmuvtx[0].tow = t;
+        return v;
+      };
+      GrVertex q[4] = {
+          mkV(0.0f, 0.0f, 0.0f, 0.0f),
+          mkV(320.0f, 0.0f, 255.0f, 0.0f),
+          mkV(320.0f, 160.0f, 255.0f, 255.0f),
+          mkV(0.0f, 160.0f, 0.0f, 255.0f),
+      };
+      grDrawPolygonVertexList(4, q);
+
+      // Draw a second quad at [0..160] x [200..300] sampling s in [256..512]
+      // (outside [0..255]!). With CLAMP preserved, every texel remains WHITE
+      // (~255). If guTexMemReset wiped clamp to WRAP, left half would wrap to
+      // BLACK (0).
+      GrVertex qc[4] = {
+          mkV(0.0f, 200.0f, 260.0f, 128.0f),
+          mkV(160.0f, 200.0f, 380.0f, 128.0f),
+          mkV(160.0f, 300.0f, 380.0f, 128.0f),
+          mkV(0.0f, 300.0f, 260.0f, 128.0f),
+      };
+      grDrawPolygonVertexList(4, qc);
+      grBufferSwap(0);
+
+      int intermediateCount = 0;
+      for (uint32_t x = 130; x < 190; ++x) {
+        uint32_t px = 0;
+        REQUIRE(grLfbReadRegion(GR_BUFFER_FRONTBUFFER, x, 80, 1, 1, 4, &px) ==
+                FXTRUE);
+        const uint32_t r = (px >> 16) & 0xFFu;
+        if (r >= 40 && r <= 215) {
+          ++intermediateCount;
+        }
+      }
+      INFO("Backend=" << backendName
+                      << " intermediateCount=" << intermediateCount);
+      CHECK(intermediateCount >= 4);
+
+      uint32_t pxClamp = 0;
+      REQUIRE(grLfbReadRegion(GR_BUFFER_FRONTBUFFER, 40, 250, 1, 1, 4,
+                              &pxClamp) == FXTRUE);
+      INFO("Backend=" << backendName << " pxClamp=0x" << std::hex << pxClamp
+                      << std::dec);
+      CHECK(((pxClamp >> 16) & 0xFFu) >= 240);
+
+      grSstWinClose();
+      grGlideShutdown();
+    }
+  }
+
+  if (hadPrevBackend) {
+    ::setenv("GLIDE_NG_BACKEND", savedBackend.c_str(), 1);
+  } else {
+    ::unsetenv("GLIDE_NG_BACKEND");
+  }
+#endif
+}
