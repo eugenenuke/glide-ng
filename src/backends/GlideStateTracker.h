@@ -322,6 +322,59 @@ class GlideStateTracker : public IGraphicsBackend {
     return ComputeClipRectTopDown_Locked(x0, y0, x1, y1) && x0 == 0 &&
            y0 == 0 && x1 == m_headlessWidth && y1 == m_headlessHeight;
   }
+  // Returns true when the active FBI color/alpha combiner, chromakey stage, or
+  // downstream alpha consumer (alpha test, alpha-buffer write, or src-alpha
+  // RGB blending) actually observes TMU output (`texColor`). Legacy Glide
+  // titles frequently switch `grColorCombine` to an untextured mode (e.g.
+  // `GR_COMBINE_FUNCTION_LOCAL` / iterated RGB) while leaving a previous
+  // `grTexSource()` bound and a stale `grAlphaCombine(..., TEXTURE)` armed
+  // with `grAlphaBlendFunction(ONE, ZERO, ...)` and `grColorMask(RGB, FALSE)`,
+  // and omit initializing `v.oow` on the vertices (yielding 0, negative, or
+  // IEEE-754 subnormal floats that GPU FTZ/DAZ flushes to 0.0). Gating TMU
+  // activation on this helper avoids both redundant sampling and false
+  // `divW <= 0.0` fragment discards on untextured primitives.
+  bool DoesCombinerReadTexture_Locked() const noexcept {
+    if (m_chromakeyMode != 0u) return true;
+    if (m_texChromaMode[0] != 0u || m_texChromaMode[1] != 0u) return true;
+    if ((m_extColorCombine & 0x80000000u) != 0u ||
+        (m_extAlphaCombine & 0x80000000u) != 0u) {
+      return true;
+    }
+
+    const bool colorUsesFactor =
+        (m_colorCombinerFunc >= 3u && m_colorCombinerFunc <= 9u) ||
+        m_colorCombinerFunc == 16u;
+    const bool colorOtherReadsTex =
+        (m_colorCombinerFunc >= 3u && m_colorCombinerFunc <= 8u) &&
+        m_colorCombinerOther == 1u;
+    const bool colorFactorReadsTex =
+        colorUsesFactor &&
+        (m_colorCombinerFactor == 4u || m_colorCombinerFactor == 5u ||
+         m_colorCombinerFactor == 12u ||
+         ((m_colorCombinerFactor == 2u || m_colorCombinerFactor == 10u) &&
+          m_alphaCombinerOther == 1u));
+    if (colorOtherReadsTex || colorFactorReadsTex) return true;
+
+    const bool rgbBlendReadsSrcAlpha =
+        (m_rgbSrcBlend == 1u || m_rgbSrcBlend == 5u || m_rgbSrcBlend == 15u ||
+         m_rgbDstBlend == 1u || m_rgbDstBlend == 5u);
+    const bool alphaConsumed =
+        (m_alphaTestOp != 7u) || m_colorMaskAlpha || rgbBlendReadsSrcAlpha;
+    if (!alphaConsumed) return false;
+
+    const bool alphaUsesFactor =
+        (m_alphaCombinerFunc >= 3u && m_alphaCombinerFunc <= 9u) ||
+        m_alphaCombinerFunc == 16u;
+    const bool alphaOtherReadsTex =
+        (m_alphaCombinerFunc >= 3u && m_alphaCombinerFunc <= 8u) &&
+        m_alphaCombinerOther == 1u;
+    const bool alphaFactorReadsTex =
+        alphaUsesFactor &&
+        (m_alphaCombinerFactor == 4u || m_alphaCombinerFactor == 12u ||
+         ((m_alphaCombinerFactor == 2u || m_alphaCombinerFactor == 10u) &&
+          m_alphaCombinerOther == 1u));
+    return alphaOtherReadsTex || alphaFactorReadsTex;
+  }
   void SetSstOrigin_Locked(uint32_t origin);
   void SetColorMask_Locked(bool rgb, bool alpha);
   void SetColorMaskExt_Locked(bool r, bool g, bool b, bool a);

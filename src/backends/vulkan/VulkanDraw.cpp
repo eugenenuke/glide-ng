@@ -946,8 +946,13 @@ void VulkanBackend::PopulatePushConstants(PushConstants& pcs) {
   pcs.alphaOther = m_alphaCombinerOther;
 
   uint32_t textureEnabled = 0;
-  if (m_boundTexAddress[0] != 0xFFFFFFFF) textureEnabled |= (1u << 0);
-  if (m_boundTexAddress[1] != 0xFFFFFFFF) textureEnabled |= (1u << 1);
+  const bool combinerReadsTex = DoesCombinerReadTexture_Locked();
+  if (combinerReadsTex && m_boundTexAddress[0] != 0xFFFFFFFF) {
+    textureEnabled |= (1u << 0);
+  }
+  if (combinerReadsTex && m_boundTexAddress[1] != 0xFFFFFFFF) {
+    textureEnabled |= (1u << 1);
+  }
   if (m_texCombinerRgbInvert[0]) textureEnabled |= (1u << 2);
   if (m_texCombinerAlphaInvert[0]) textureEnabled |= (1u << 3);
   if (m_texCombinerRgbInvert[1]) textureEnabled |= (1u << 4);
