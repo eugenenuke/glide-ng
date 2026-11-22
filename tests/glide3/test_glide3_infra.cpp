@@ -1985,6 +1985,17 @@ TEST_CASE("Diagnostics: Tiered Logger, Telemetry & On-Screen HUD", "[Logger][Tel
     CHECK(std::fabs(cfg.hudScale - 4.0f) < 1e-4f);
     CHECK(std::fabs(cfg.hudOpacity - 1.0f) < 1e-4f);
 
+    // Verify default opacity is 0.0 (borderless text+shadow) and scale accepts 0.25
+    {
+      WrapperConfig defCfg;
+      CHECK(defCfg.hudOpacity == 0.0f);
+      CHECK(defCfg.hudScale == 1.0f);
+    }
+    ::setenv("GLIDE_NG_HUD", "fps,scale=0.1,opacity=-0.5", 1);
+    REQUIRE(loader.Load(cfgPath, cfg));
+    CHECK(std::fabs(cfg.hudScale - 0.25f) < 1e-4f);
+    CHECK(std::fabs(cfg.hudOpacity - 0.0f) < 1e-4f);
+
     std::remove(cfgPath.c_str());
   }
 
@@ -2048,6 +2059,32 @@ TEST_CASE("Diagnostics: Tiered Logger, Telemetry & On-Screen HUD", "[Logger][Tel
     CHECK(y == 8);
     CHECK(dw == w);
     CHECK(dh == h);
+
+    // Proportional scaling parity: 1280x960 host viewport (2x guest 640x480)
+    // matches SoftwareBackend's 2x upscaled HUD height and margin.
+    hud.ComputePlacement(0, 0, 1280, 960, x, y, dw, dh);
+    CHECK(x == 16);
+    CHECK(y == 16);
+    CHECK(dw == w * 2u);
+    CHECK(dh == h * 2u);
+
+    // Transparent HUD (opacity=0.0): zero dark backdrop pill or border, and
+    // frametime graph area keeps alpha == 0 (no stuck 120/255 box floor).
+    {
+      WrapperConfig clearCfg = cfg;
+      clearCfg.hudOpacity = 0.0f;
+      HudOverlay clearHud;
+      clearHud.Configure(clearCfg, {"VK", 640, 480});
+      clearHud.ForceRender(m, 60.0f);
+      const uint8_t* td = clearHud.GetRgbaTopDown();
+      const uint32_t cw = clearHud.GetWidth();
+      const uint32_t ch = clearHud.GetHeight();
+      CHECK(td[3] == 0u);  // Top-left corner (no border/backdrop pill)
+      // Empty top-left cell inside frametime graph region must stay transparent
+      const size_t graphRow = ch - 5u - 16u;
+      const size_t graphCol = cw - 8u;
+      CHECK(td[(graphRow * cw + graphCol) * 4u + 3u] == 0u);
+    }
 
     cfg.hudPosition = HudPosition::BOTTOM_RIGHT;
     hud.Configure(cfg, {"VK", 640, 480});

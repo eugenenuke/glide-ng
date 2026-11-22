@@ -88,7 +88,7 @@ class HudOverlay {
   uint32_t m_mask{HUD_NONE};
   HudPosition m_position{HudPosition::TOP_LEFT};
   float m_scale{1.0f};
-  float m_opacity{0.78f};
+  float m_opacity{0.0f};
 
   std::string m_backendShort{"VK"};
   std::string m_cardShort{"Voodoo2"};

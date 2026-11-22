@@ -146,7 +146,7 @@ void HudOverlay::Configure(const WrapperConfig& config,
   m_mask = config.hudMask;
   m_enabled = (m_mask != HUD_NONE);
   m_position = config.hudPosition;
-  m_scale = std::clamp(config.hudScale, 0.5f, 4.0f);
+  m_scale = std::clamp(config.hudScale, 0.25f, 4.0f);
   m_opacity = std::clamp(config.hudOpacity, 0.0f, 1.0f);
 
   m_backendShort = runtime.backendShort ? runtime.backendShort : "VK";
@@ -439,8 +439,10 @@ void HudOverlay::RebuildSurface(const FrameMetrics& metrics, float displayFps) {
     const int32_t gy = y + 2;
     const int32_t gw = contentW;
     const int32_t gh = kGraphHeight;
-    FillRect(gx, gy, gw, gh, 6, 8, 12,
-             static_cast<uint8_t>(std::max<int>(120, bgAlpha)));
+    if (bgAlpha > 0) {
+      FillRect(gx, gy, gw, gh, 6, 8, 12,
+               static_cast<uint8_t>(std::min<int>(255, static_cast<int>(bgAlpha) + 20)));
+    }
     // 16.67ms (60 FPS) subtle reference line (~1/3 height from bottom)
     const int32_t ref60Y = gy + gh - 1 - (gh * 17) / 50;
     FillRect(gx, ref60Y, gw, 1, 70, 95, 120, 180);
@@ -493,13 +495,31 @@ void HudOverlay::ComputePlacement(int32_t presentX, int32_t presentY,
     return;
   }
 
-  uint32_t drawW =
-      std::max<uint32_t>(1u, static_cast<uint32_t>(std::lround(m_width * m_scale)));
-  uint32_t drawH =
-      std::max<uint32_t>(1u, static_cast<uint32_t>(std::lround(m_height * m_scale)));
+  // Scale proportionally when the host presentation rectangle is larger than
+  // the guest framebuffer (window_scale > 1, HiDPI, fullscreen) so Vulkan,
+  // OpenGL ES, and Software backends render identical HUD glyph sizes and
+  // corner margins relative to the game frame.
+  float viewScale = 1.0f;
+  if (m_guestWidth > 0 && m_guestHeight > 0 &&
+      presentW >= m_guestWidth && presentH >= m_guestHeight) {
+    const float sx =
+        static_cast<float>(presentW) / static_cast<float>(m_guestWidth);
+    const float sy =
+        static_cast<float>(presentH) / static_cast<float>(m_guestHeight);
+    viewScale = std::min(sx, sy);
+  }
+
+  const float effectiveScale = m_scale * viewScale;
+  uint32_t drawW = std::max<uint32_t>(
+      1u, static_cast<uint32_t>(std::lround(m_width * effectiveScale)));
+  uint32_t drawH = std::max<uint32_t>(
+      1u, static_cast<uint32_t>(std::lround(m_height * effectiveScale)));
 
   const uint32_t margin =
-      (presentW > 64 && presentH > 64) ? static_cast<uint32_t>(kMargin) : 2u;
+      (presentW > 64 && presentH > 64)
+          ? static_cast<uint32_t>(std::max<long>(
+                1L, std::lround(static_cast<float>(kMargin) * viewScale)))
+          : 2u;
   const uint32_t maxW = (presentW > margin * 2) ? (presentW - margin * 2) : presentW;
   const uint32_t maxH = (presentH > margin * 2) ? (presentH - margin * 2) : presentH;
 

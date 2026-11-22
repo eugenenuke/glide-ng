@@ -571,11 +571,11 @@ bool ParseHudString(const std::string& raw,
                 if (key == "scale") {
                     double d = 1.0;
                     if (ParseDoubleString(val, d)) {
-                        scale = static_cast<float>(std::clamp(d, 0.5, 4.0));
+                        scale = static_cast<float>(std::clamp(d, 0.25, 4.0));
                         recognizedAny = true;
                     }
                 } else if (key == "opacity") {
-                    double d = 0.78;
+                    double d = 0.0;
                     if (ParseDoubleString(val, d)) {
                         opacity = static_cast<float>(std::clamp(d, 0.0, 1.0));
                         recognizedAny = true;
@@ -897,7 +897,7 @@ bool IniConfigLoader::LoadWithDefaults(const std::string& configFilePath,
             } else if (sec == "hud" && key == "scale") {
                 handled = true;
                 if (ParseDoubleString(val, dblVal)) {
-                    outConfig.hudScale = static_cast<float>(std::clamp(dblVal, 0.5, 4.0));
+                    outConfig.hudScale = static_cast<float>(std::clamp(dblVal, 0.25, 4.0));
                     hudSubOptionSet = true;
                     outConfig.settingSources["hud"] = "ini";
                 }

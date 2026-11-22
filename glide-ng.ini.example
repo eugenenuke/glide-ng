@@ -69,12 +69,15 @@ categories = all
 # perf_log = /tmp/glide-ng-perf.csv
 
 [hud]
-# DXVK-style on-screen HUD elements: off | fps | frametimes | backend | api |
-#                                    drawcalls | lfb | full
+# DXVK-style on-screen HUD elements (key alias: `hud`, comma/semicolon-separated):
+#   off | none | 0 | false | fps | 1 | on | true | frametimes | frametime |
+#   backend | devinfo | api | drawcalls | draws | lfb | full | all
+#   (also accepts inline options, e.g. `full,pos=br,scale=1.5,opacity=0.65`)
 # elements = fps,frametimes,backend
-# position = top-left        # top-left (tl) | top-right (tr) | bottom-left (bl) | bottom-right (br)
-# scale = 1.0                # 0.5 .. 4.0
-# opacity = 0.78             # 0.0 .. 1.0
+# Corner placement (key alias: `pos`):
+# position = top-left        # tl/top-left/topleft | tr/top-right/topright | bl/bottom-left/bottomleft | br/bottom-right/bottomright
+# scale = 1.0                # 0.25 .. 4.0 (clamped, relative to guest resolution)
+# opacity = 0.0              # 0.0 (borderless text+shadow, default) .. 1.0 (opaque) (clamped)
 
 [glide]
 # Authentic 3dfx overrides (equivalent to FX_GLIDE_* / SST_* / SSTV2_* / SSTH3_* env vars)

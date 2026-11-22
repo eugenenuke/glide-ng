@@ -91,27 +91,32 @@ GLIDE_NG_LOG_LEVEL=trace GLIDE_NG_LOG_CATEGORIES=api,lfb,perf \
 
 | Environment Variable | INI Key (`section.key`) | Accepted Values | Default | Description |
 | :--- | :--- | :--- | :--- | :--- |
-| `GLIDE_NG_HUD` | `[hud] elements` *(plus `position`, `scale`, `opacity`)* | `0`/`false`/`off`, `1`/`fps`, `full`/`all`, or comma-separated tokens below | `0` *(disabled)* | DXVK-style performance overlay rendered in each backend's post-scene presentation pass with zero Glide state or guest framebuffer mutation. |
+| `GLIDE_NG_HUD` | `[hud] elements` *(alias: `hud`; plus `position`/`pos`, `scale`, `opacity`)* | `0`/`false`/`off`/`none`, `1`/`true`/`on`/`fps`, `full`/`all`, or comma/semicolon-separated tokens below | `0` *(disabled)* | DXVK-style performance overlay rendered in each backend's post-scene presentation pass with zero Glide state or guest framebuffer mutation. *(Passing only options such as `pos=br,scale=1.5` implicitly enables `fps`.)* |
 
 | HUD Token | Effect |
 | :--- | :--- |
-| `fps` *(or `1`)* | Rolling FPS counter and frame-pacing status (`60cap`, `VSync`, `Uncap`). |
+| `off` / `none` / `0` / `false` | Disables the HUD overlay. |
+| `fps` *(or `1` / `on` / `true`)* | Rolling FPS counter and frame-pacing status (`60cap`, `VSync`, `Uncap`). |
 | `frametimes` *(or `frametime`)* | Frame / render / present timing breakdown (ms) and a 64-frame bar graph. |
 | `backend` *(or `devinfo`)* | Active backend (`VK`, `GLES`, `SW`), emulated card model, guest resolution, and MSAA factor. |
 | `api` | Active frontend (`Glide2x` / `Glide3x`) and reported API version. |
 | `drawcalls` *(or `draws`)* | Per-frame draw calls, mid-frame state flushes, and drawn triangles. |
 | `lfb` | Per-frame LFB read/write counts and texture upload counts. |
 | `full` *(or `all`)* | Enables all HUD elements (`fps,frametimes,backend,api,drawcalls,lfb`). |
-| `scale=<0.5..4.0>` | Scale multiplier (default `1.0`). |
-| `position=<corner>` *(or `pos=`)* | Corner placement: `tl`/`top-left` (default), `tr`/`top-right`, `bl`/`bottom-left`, `br`/`bottom-right`. |
-| `opacity=<0.0..1.0>` | Backdrop opacity (default `0.78`). |
+| `scale=<0.25..4.0>` | Scale multiplier relative to the guest frame height (default `1.0`, clamped to `[0.25, 4.0]`; automatically scaled to match `Software`, `Vulkan`, and `OpenGL ES` identically across `window_scale`, HiDPI, and fullscreen). |
+| `position=<corner>` *(or `pos=`)* | Corner placement: `tl` / `top-left` / `topleft` *(default)*, `tr` / `top-right` / `topright`, `bl` / `bottom-left` / `bottomleft`, `br` / `bottom-right` / `bottomright`. |
+| `opacity=<0.0..1.0>` | Backdrop pill opacity (default `0.0` — borderless drop-shadowed text only; text glyphs always remain opaque; clamped to `[0.0, 1.0]`). Set e.g. `0.45`–`0.5` for a translucent dark box behind text and the frametime graph. |
 
 ```bash
 # Minimal top-left FPS and backend readout
 GLIDE_NG_HUD=fps,backend ./build_release/bin/glide3_cube
 
-# Full HUD in bottom-right corner at 1.5x scale
-GLIDE_NG_HUD=full,position=br,scale=1.5 ./build_release/bin/glide3_cube
+# Full HUD in bottom-right corner at 1.5x scale with semi-transparent backdrop
+GLIDE_NG_HUD=full,pos=br,scale=1.5,opacity=0.65 ./build_release/bin/glide3_cube
+
+# Custom subset using explicit element names in the top-right corner
+GLIDE_NG_HUD=fps,frametimes,backend,api,drawcalls,lfb,position=top-right,scale=1.25,opacity=0.85 \
+  ./build_release/bin/glide3_cube
 ```
 
 ### 1.7 Backend-Specific Tuning
@@ -186,6 +191,37 @@ no_splash = false
 level = info
 console = false
 file = glide-ng.log
+
+[hud]
+# Elements (comma/semicolon-separated; key alias: `hud`):
+#   off | none | 0 | false           (disable HUD; default)
+#   fps | 1 | on | true              (FPS + frame-pacing tag)
+#   frametimes | frametime           (ms breakdown + 64-frame bar graph)
+#   backend | devinfo                (backend, card model, resolution, MSAA)
+#   api                              (Glide 2.x/3.x frontend & version)
+#   drawcalls | draws                (draw calls, state flushes, triangles)
+#   lfb                              (LFB read/write & texture upload counts)
+#   full | all                       (enable all elements above)
+# Inline options are also accepted inside `elements`, e.g.:
+#   elements = full,pos=br,scale=1.5,opacity=0.65
+elements = fps,frametimes,backend,api,drawcalls,lfb
+
+# Corner placement (key alias: `pos`):
+#   tl | top-left | topleft          (default)
+#   tr | top-right | topright
+#   bl | bottom-left | bottomleft
+#   br | bottom-right | bottomright
+position = top-left
+
+# Text/graph scale multiplier relative to guest frame, clamped to 0.25 .. 4.0 (default: 1.0)
+# (use e.g. 0.5 for a smaller readout on large/fullscreen windows)
+scale = 1.0
+
+# Backdrop opacity, clamped to 0.0 (borderless text+shadow, default) .. 1.0 (opaque)
+# Suggested: 0.0 (clean floating text) or 0.45–0.5 (translucent dark pill)
+opacity = 0.0
 ```
+
+> **Tip:** To disable the HUD in `glide-ng.ini`, remove the `[hud]` section or set `elements = off` (you can still enable it per launch via `GLIDE_NG_HUD=...`). To test inline `GLIDE_NG_HUD` strings and all options live, any token accepted by `GLIDE_NG_HUD` works in `[hud] elements` as well (`position`/`pos`, `scale`, and `opacity` also work as separate keys, with later lines taking precedence).
 
 To verify how any combination of INI settings and authentic 3dfx environment variables behaves on the active backend, run `glide2_envtest` or `glide3_envtest` — see [`docs/catalog/tools/glide-envtest/README.md`](../catalog/tools/glide-envtest/README.md).

@@ -154,8 +154,8 @@ struct WrapperConfig {
     // On-screen HUD overlay (DXVK-style GLIDE_NG_HUD / INI [hud])
     uint32_t hudMask{HUD_NONE};            // Bitmask of HudElementFlags
     HudPosition hudPosition{HudPosition::TOP_LEFT};
-    float hudScale{1.0f};                  // 0.5 .. 4.0
-    float hudOpacity{0.78f};               // Backdrop opacity 0.0 .. 1.0
+    float hudScale{1.0f};                  // 0.25 .. 4.0 (relative to guest resolution)
+    float hudOpacity{0.0f};                // Backdrop opacity 0.0 (borderless text+shadow) .. 1.0
     std::string hudSpec{""};               // Raw/normalized HUD spec for summary
     std::string activeFrontendApi{""};     // Populated at InitGlide ("Glide 2.x" / "Glide 3.x")
 

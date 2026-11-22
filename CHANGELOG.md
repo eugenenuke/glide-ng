@@ -25,6 +25,9 @@ For the pre-beta engineering narrative covering early architecture decisions and
   - Updated Glide 3.x `grGetString(GR_HARDWARE)` to return retail `glide3x.dll` 3.10 strings with the trailing trademark tag: `"Voodoo Banshee (tm)"`, `"Voodoo3 (tm)"`, `"Voodoo4 (tm)"`, and `"Voodoo5 (tm)"` (all `<= 19` bytes, fitting legacy fixed-size stack buffers).
   - Updated Glide 2.x/3.x `grGet(GR_REVISION_FB)` on `Voodoo2` to return authentic CVG **`0x102`** (dual-TMU) / **`0x82`** (single-TMU) instead of `2` (matching `3.01`/`3.03` CVG instead of `SST-1`).
   - Forwarded `enableSli` (`sliDetect`) on `VoodooGraphics` (`SST-1` SLI / Quantum3D Obsidian) inside `grSstQueryHardware()`.
+- **Cross-Backend HUD Scaling Parity & Default Opacity (`HudOverlay`)**:
+  - Updated `HudOverlay::ComputePlacement()` to scale glyphs and margins proportionally with `presentRect / guestResolution` so **`Vulkan`**, **`OpenGL ES`**, and **`Software`** backends render identical HUD text height and corner placement across `window_scale`, HiDPI displays, and desktop fullscreen (and lowered the minimum `scale` clamp from `0.5` → **`0.25`** for compact overlays on large windows).
+  - Changed the default `[hud] opacity` from `0.78` to **`0.0`** (borderless, opaque drop-shadowed text with no backdrop pill) and removed the hardcoded `120/255` alpha floor on the frametime graph box so low opacities (`0.0`–`0.4`) stay genuinely transparent.
 
 ---
 
