@@ -165,6 +165,7 @@ RT_DIR="${STAGE}/runtime/glide-ng-${VERSION}-runtime"
 TOOLS_DIR="${STAGE}/tools/glide-ng-${VERSION}-tools"
 DBG_DIR="${STAGE}/debug/glide-ng-${VERSION}-debug-symbols"
 mkdir -p "${RT_DIR}" "${TOOLS_DIR}" "${DBG_DIR}" "${OUT_DIR}"
+OUT_DIR="$(cd "${OUT_DIR}" && pwd)"
 
 cp "${REPO_ROOT}/LICENSE" "${REPO_ROOT}/THIRD_PARTY_NOTICES.md" "${REPO_ROOT}/glide-ng.ini.example" "${RT_DIR}/"
 cp "${REPO_ROOT}/LICENSE" "${REPO_ROOT}/THIRD_PARTY_NOTICES.md" "${TOOLS_DIR}/"
@@ -317,8 +318,8 @@ ${FLAVOR_SUMMARY}
 
 WHICH LINUX FOLDER SHOULD I PICK?
 ---------------------------------
-  - Ubuntu / Debian / Linux Mint / Pop!_OS -> linux-x86_64-ubuntu-22.04/ (or ubuntu-24.04)
-  - Fedora / Nobara / RHEL / Bazzite       -> linux-x86_64-fedora/
+  - Ubuntu / Debian / Linux Mint / Pop!_OS -> linux-x86_64-ubuntu-22.04/ (or ubuntu-24.04/)
+  - Fedora / Nobara / RHEL / Bazzite       -> linux-x86_64-fedora-41/
   - Arch / CachyOS / EndeavourOS / Manjaro -> linux-x86_64-arch/
   (Pick the directory matching your OS or whose BUILD_INFO.txt GLIBC floor is <= your
    system's \`ldd --version\`.)
