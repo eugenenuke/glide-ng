@@ -151,7 +151,8 @@ TEST_CASE("Architectural Core Validation", "[Architecture]") {
     FxBool success = queryHw(&hw);
     REQUIRE(success == FXTRUE);
     REQUIRE(hw.num_sst == 1);
-    REQUIRE(hw.SSTs[0].type == GR_SSTTYPE_Voodoo2);
+    REQUIRE(hw.SSTs[0].type == GR_SSTTYPE_VOODOO);
+    CHECK(hw.SSTs[0].sstBoard.Voodoo2Config.fbiRev == 0x102);
     CHECK(hw.SSTs[0].sstBoard.Voodoo2Config.fbRam > 0);
     CHECK(hw.SSTs[0].sstBoard.Voodoo2Config.nTexelfx >= 1);
     CHECK(hw.SSTs[0].sstBoard.Voodoo2Config.tmuConfig[0].tmuRam > 0);
@@ -5975,11 +5976,20 @@ TEST_CASE("Glide 2.x Dynamic Version and Hardware Gating", "[Glide2][Gating]") {
     getVersion(verBuf);
     REQUIRE(std::string(verBuf) == "2.56");
 
-    // Hardware query check: Voodoo 2 config
+    // Hardware query check: Voodoo2 CVG reports GR_SSTTYPE_VOODOO with fbiRev=0x102
+    // unless FX_GLIDE_REPORT_REAL_HW is set (matching 3dfx glide2x 2.50-2.56).
     GrHwConfiguration hwconfig;
+    ::unsetenv("FX_GLIDE_REPORT_REAL_HW");
+    REQUIRE(sstQueryHardware(&hwconfig) == FXTRUE);
+    REQUIRE(hwconfig.SSTs[0].type == GR_SSTTYPE_VOODOO);
+    REQUIRE(hwconfig.SSTs[0].sstBoard.Voodoo2Config.fbiRev == 0x102);
+    REQUIRE(hwconfig.SSTs[0].sstBoard.Voodoo2Config.fbRam == 16);
+
+    ::setenv("FX_GLIDE_REPORT_REAL_HW", "1", 1);
     REQUIRE(sstQueryHardware(&hwconfig) == FXTRUE);
     REQUIRE(hwconfig.SSTs[0].type == GR_SSTTYPE_Voodoo2);
-    REQUIRE(hwconfig.SSTs[0].sstBoard.Voodoo2Config.fbRam == 16);
+    REQUIRE(hwconfig.SSTs[0].sstBoard.Voodoo2Config.fbiRev == 0x102);
+    ::unsetenv("FX_GLIDE_REPORT_REAL_HW");
 
     shutdown();
   }
@@ -8284,7 +8294,8 @@ TEST_CASE("Glide 2.x Hardware & Version Override Consistency (M6.2)",
     GrHwConfiguration hw;
     std::memset(&hw, 0, sizeof(hw));
     REQUIRE(grSstQueryHardware(&hw) == FXTRUE);
-    CHECK(hw.SSTs[0].type == GR_SSTTYPE_Voodoo2);
+    CHECK(hw.SSTs[0].type == GR_SSTTYPE_VOODOO);
+    CHECK(hw.SSTs[0].sstBoard.Voodoo2Config.fbiRev == 0x102);
     CHECK(hw.SSTs[0].sstBoard.Voodoo2Config.fbRam == 12);
     CHECK(hw.SSTs[0].sstBoard.Voodoo2Config.nTexelfx == 2);
     CHECK(hw.SSTs[0].sstBoard.Voodoo2Config.sliDetect == FXTRUE);
@@ -8343,6 +8354,8 @@ TEST_CASE("Glide 2.x Phase-2 Authentic 3dfx Env Vars Runtime Verification (M8.2)
     GrHwConfiguration hw;
     std::memset(&hw, 0, sizeof(hw));
     REQUIRE(grSstQueryHardware(&hw) == FXTRUE);
+    CHECK(hw.SSTs[0].type == GR_SSTTYPE_VOODOO);
+    CHECK(hw.SSTs[0].sstBoard.Voodoo2Config.fbiRev == 0x82);
     CHECK(hw.SSTs[0].sstBoard.Voodoo2Config.fbRam == 4);
     CHECK(hw.SSTs[0].sstBoard.Voodoo2Config.nTexelfx == 1);
     CHECK(hw.SSTs[0].sstBoard.Voodoo2Config.tmuConfig[0].tmuRam == 8);
@@ -8958,7 +8971,7 @@ TEST_CASE("M10.7 Pure Glide 2.x ABI, Bare Versions, and grTBufferWriteMaskExt",
   const CardExpect cases[] = {
       {"voodoo1", "2.48", GR_SSTTYPE_VOODOO, 2},
       {"rush",    "2.48", GR_SSTTYPE_SST96,  0},
-      {"voodoo2", "2.56", GR_SSTTYPE_Voodoo2, 2},
+      {"voodoo2", "2.56", GR_SSTTYPE_VOODOO, 0x102},
       {"banshee", "2.61", GR_SSTTYPE_VOODOO, 0x1002},
       {"voodoo3", "2.61", GR_SSTTYPE_VOODOO, 0x11002},
       {"voodoo4", "2.61", GR_SSTTYPE_VOODOO, 0x11002},

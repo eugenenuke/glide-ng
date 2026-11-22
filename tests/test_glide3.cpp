@@ -1659,19 +1659,22 @@ TEST_CASE("Glide 2.x 12.4 Fixed-Point Wrap, guTexChangeAttributes, and DELTA0 Co
     CHECK(((pxInside >> 8) & 0xFFu) > 240u);
     CHECK(((pxRight >> 8) & 0xFFu) == 0u);
 
-    // 3. guColorCombineFunction(GR_COLORCOMBINE_ITRGB_DELTA0) must read ITERATED color,
-    //    not CONSTANT color (set constant color to 0 to detect mis-binding).
+    // 3. guColorCombineFunction(GR_COLORCOMBINE_ITRGB_DELTA0) matches authentic
+    //    3dfx cc_delta0mode: uses grConstantColorValue (ignoring vertex RGB).
     bufferClear(0, 0, 0);
-    constColor(0xFF000000u);
+    constColor(0xFF0000FFu);  // ABGR/RGB blue: 0xFF0000FF -> readback checks R/B
     guColorCombine(GR_COLORCOMBINE_ITRGB_DELTA0);
     GrVertex2 d0{}, d1{}, d2{};
-    d0.x = 10.0f; d0.y = 10.0f; d0.oow = 1.0f; d0.b = 255.0f; d0.a = 255.0f;
-    d1.x = 90.0f; d1.y = 10.0f; d1.oow = 1.0f; d1.b = 255.0f; d1.a = 255.0f;
-    d2.x = 10.0f; d2.y = 90.0f; d2.oow = 1.0f; d2.b = 255.0f; d2.a = 255.0f;
+    d0.x = 10.0f; d0.y = 10.0f; d0.oow = 1.0f; d0.r = 255.0f; d0.g = 255.0f; d0.a = 255.0f;
+    d1.x = 90.0f; d1.y = 10.0f; d1.oow = 1.0f; d1.r = 255.0f; d1.g = 255.0f; d1.a = 255.0f;
+    d2.x = 10.0f; d2.y = 90.0f; d2.oow = 1.0f; d2.r = 255.0f; d2.g = 255.0f; d2.a = 255.0f;
     drawTri(&d0, &d1, &d2);
-    uint32_t pxBlue = 0;
-    REQUIRE(readLfb(GR_BUFFER_BACKBUFFER, 30, 30, 1, 1, 4, &pxBlue) == FXTRUE);
-    CHECK(((pxBlue >> 16) & 0xFFu) > 240u);
+    uint32_t pxConst = 0;
+    REQUIRE(readLfb(GR_BUFFER_BACKBUFFER, 30, 30, 1, 1, 4, &pxConst) == FXTRUE);
+    CHECK(((pxConst >> 8) & 0xFFu) == 0u);  // Green from vertex must be ignored
+    const bool hasConstChannel =
+        ((pxConst & 0xFFu) > 240u) || (((pxConst >> 16) & 0xFFu) > 240u);
+    CHECK(hasConstChannel);
 
     // 4. guTexChangeAttributes(-1) sentinel must preserve existing attributes.
     const FxI32 mmid = texAlloc(0, 0x3, 256, 256, 0xB /*ARGB_1555*/, 1, 0, 0, 3,

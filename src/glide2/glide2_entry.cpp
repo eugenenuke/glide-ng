@@ -700,10 +700,20 @@ FX_ENTRY FxBool FX_CALL grSstQueryHardware(GrHwConfiguration* hwconfig) {
     r.tmuConfig.tmuRev = 1;
     r.tmuConfig.tmuRam = static_cast<int>(config.tmuMemoryMb);
   } else if (config.model == GlideWrapper::CardModel::Voodoo2) {
-    hwconfig->SSTs[0].type = GR_SSTTYPE_Voodoo2;
+    // Authentic 3dfx CVG Glide 2.50-2.56 behavior: grSstQueryHardware
+    // translates GR_SSTTYPE_Voodoo2 (3) to GR_SSTTYPE_VOODOO (0) unless
+    // FX_GLIDE_REPORT_REAL_HW is set, so legacy SST-1 apps and all 3dfx
+    // MiniGL drivers (GLQuake, Quake II, Half-Life) accept Voodoo2 boards.
+    // The chip is identified as CVG via fbiRev (0x100|rev dual-TMU, 0x80|rev
+    // single-TMU). Note GrVoodoo2Config_t is a typedef of GrVoodooConfig_t.
+    const char* reportRealHw = std::getenv("FX_GLIDE_REPORT_REAL_HW");
+    const bool reportRawType =
+        (reportRealHw != nullptr && reportRealHw[0] != '\0');
+    hwconfig->SSTs[0].type =
+        reportRawType ? GR_SSTTYPE_Voodoo2 : GR_SSTTYPE_VOODOO;
     auto& v2 = hwconfig->SSTs[0].sstBoard.Voodoo2Config;
     v2.fbRam = static_cast<int>(config.fbiMemoryMb);
-    v2.fbiRev = 2;
+    v2.fbiRev = (tmuCount >= 2) ? 0x102 : 0x82;
     v2.nTexelfx = tmuCount;
     v2.sliDetect = config.enableSli ? FXTRUE : FXFALSE;
     for (int i = 0; i < clampedTmus; ++i) {
@@ -1971,8 +1981,10 @@ FX_ENTRY void FX_CALL guColorCombineFunction(GrColorCombineFnc_t fnc) {
       break;
 
     case GR_COLORCOMBINE_ITRGB_DELTA0:
+      // Authentic 3dfx cc_delta0mode latches startR/G/B from grConstantColorValue
+      // with zero deltas (dRGB/dX = dRGB/dY = 0) and skips per-vertex RGB.
       grColorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
-                     GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_NONE, FXFALSE);
+                     GR_COMBINE_LOCAL_CONSTANT, GR_COMBINE_OTHER_NONE, FXFALSE);
       break;
 
     case GR_COLORCOMBINE_ITRGB:
@@ -1992,8 +2004,9 @@ FX_ENTRY void FX_CALL guColorCombineFunction(GrColorCombineFnc_t fnc) {
       break;
 
     case GR_COLORCOMBINE_TEXTURE_TIMES_ITRGB_DELTA0:
+      // Authentic 3dfx cc_delta0mode: texture * constantColor (0x38c..0x394).
       grColorCombine(GR_COMBINE_FUNCTION_SCALE_OTHER, GR_COMBINE_FACTOR_LOCAL,
-                     GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_TEXTURE,
+                     GR_COMBINE_LOCAL_CONSTANT, GR_COMBINE_OTHER_TEXTURE,
                      FXFALSE);
       break;
 

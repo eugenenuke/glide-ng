@@ -186,12 +186,14 @@ ToolRunConfig InitializeAndParse(
                 sysConfig.boardName = "Voodoo3 / VSA-100 (H3+)";
             } else if ((rev & 0x01000) == 0x01000) {
                 sysConfig.boardName = "Voodoo Banshee (H3)";
+            } else if ((rev & 0x180) != 0) {
+                sysConfig.boardName = "Voodoo2 (CVG)";
             } else {
                 sysConfig.boardName = "Voodoo Graphics (SST-1)";
             }
             sysConfig.fbiMemMb = hwconfig.SSTs[0].sstBoard.VoodooConfig.fbRam;
             sysConfig.tmuCount = hwconfig.SSTs[0].sstBoard.VoodooConfig.nTexelfx;
-            sysConfig.sli = false;
+            sysConfig.sli = hwconfig.SSTs[0].sstBoard.VoodooConfig.sliDetect ? true : false;
         } else if (hwconfig.SSTs[0].type == GR_SSTTYPE_SST96) {
             sysConfig.boardName = "Voodoo Rush (SST-96)";
             sysConfig.fbiMemMb = hwconfig.SSTs[0].sstBoard.SST96Config.fbRam;

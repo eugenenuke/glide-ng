@@ -582,6 +582,8 @@ int main(int argc, char** argv) {
         snprintf(hw_str, sizeof(hw_str), "Voodoo3 / VSA-100 (H3+)");
       } else if ((rev & 0x01000) == 0x01000) {
         snprintf(hw_str, sizeof(hw_str), "Voodoo Banshee (H3)");
+      } else if ((rev & 0x180) != 0) {
+        snprintf(hw_str, sizeof(hw_str), "Voodoo2 (CVG)");
       } else {
         snprintf(hw_str, sizeof(hw_str), "Voodoo Graphics (SST-1)");
       }
