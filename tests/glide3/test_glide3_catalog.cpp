@@ -809,6 +809,53 @@ TEST_CASE("Catalog: Compatibility INI Presets & Directory Integrity", "[Catalog]
     CHECK(cfg.noDitherSub == true);
     CHECK(cfg.noSplash == false);
   }
+  // Screamer 2 (1996, DOS/32 dynamic GLIDE2X.OVL — s2_3dfx.exe)
+  {
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load(
+        (catalogDir / "games" / "screamer-2" / "glide-ng.ini").string(), cfg));
+    CHECK(cfg.backend == "vulkan");
+    CHECK(cfg.model == GlideWrapper::CardModel::Voodoo2);
+    CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_56);
+    CHECK(cfg.msaaSamples == 1u);
+    CHECK(cfg.noSplash == false);
+  }
+  {
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load(
+        (catalogDir / "games" / "screamer-2" / "glide-ng.hq.ini").string(),
+        cfg));
+    CHECK(cfg.backend == "vulkan");
+    CHECK(cfg.model == GlideWrapper::CardModel::Voodoo2);
+    CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_56);
+    CHECK(cfg.msaaSamples == 4u);
+    CHECK(cfg.presentationFilter == 1u);
+    CHECK(cfg.noDitherSub == true);
+    CHECK(cfg.noSplash == false);
+  }
+  {
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load(
+        (catalogDir / "games" / "screamer-2" / "glide-ng.voodoo1.ini").string(),
+        cfg));
+    CHECK(cfg.backend == "vulkan");
+    CHECK(cfg.model == GlideWrapper::CardModel::VoodooGraphics);
+    CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_48);
+    CHECK(cfg.msaaSamples == 1u);
+    CHECK(cfg.noSplash == false);
+  }
+  {
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load(
+        (catalogDir / "games" / "screamer-2" / "glide-ng.software.ini")
+            .string(),
+        cfg));
+    CHECK(cfg.backend == "software");
+    CHECK(cfg.model == GlideWrapper::CardModel::Voodoo2);
+    CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_56);
+    CHECK(cfg.msaaSamples == 1u);
+    CHECK(cfg.noSplash == false);
+  }
 }
 
 TEST_CASE("Build: Single-Source SemVer Version & Metadata", "[Version]") {

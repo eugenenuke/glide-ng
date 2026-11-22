@@ -10,6 +10,10 @@ For the pre-beta engineering narrative covering early architecture decisions and
 
 ## [Unreleased]
 
+### Added
+- **Screamer 2 Catalog Entry (`42` Total Commercial Games)**: Verified the dynamic `GLIDE2X.OVL` Voodoo2+ DOS patch (`s2_3dfx.exe`, `1,055,262` B) across **Vulkan** (`1×` & `4× MSAA`), **OpenGL ES 3.2**, and **Software** backends (England, Egypt, and California stages, menus, camera modes, plus `START65H.EXE` SVGA comparison) with drop-in `glide-ng*.ini` presets under `docs/catalog/games/screamer-2/`.
+- **Automated Release Notes Generation**: Added [`scripts/generate_release_notes.py`](scripts/generate_release_notes.py) and wired it into [`.github/workflows/release.yml`](.github/workflows/release.yml) so future tag pushes auto-populate GitHub Release pages from `CHANGELOG.md`, archive sizes/`GLIBC` floors, and `SHA256SUMS.txt`.
+
 ---
 
 ## [0.9.0] - 2026-11-22
