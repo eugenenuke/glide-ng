@@ -20,7 +20,7 @@ Each profile defaults to the maximum authentic Glide 2.x and Glide 3.x version s
 
 ### Why `Voodoo2` Is the Default Profile
 
-- **Broadest classic recognition**: Most 1996–2000 Glide 2.x titles and 3dfx MiniGL drivers (*GLQuake*, *Quake II*, *Half-Life*) expect `GR_SSTTYPE_VOODOO` from `grSstQueryHardware()`. Matching authentic 3dfx CVG `glide2x.dll` (2.50–2.56), the `Voodoo2` profile reports `GR_SSTTYPE_VOODOO` with **`fbiRev = 0x102`** (dual-TMU, `0x82` single-TMU) unless **`FX_GLIDE_REPORT_REAL_HW=1`** is set, which returns the raw `GR_SSTTYPE_Voodoo2` (`3`) enum. With 2 TMUs enabled, titles take fast single-pass multitexturing/lightmapping paths, whereas single-TMU boards (`VoodooGraphics`, `VoodooRush`, `VoodooBanshee`) trigger multi-pass fallbacks.
+- **Broadest classic recognition**: Most 1996–2000 Glide 2.x titles and 3dfx MiniGL drivers (*GLQuake*, *Quake II*, *Half-Life*) expect `GR_SSTTYPE_VOODOO` from `grSstQueryHardware()`. Matching authentic 3dfx CVG `glide2x.dll` (2.50–2.56), the `Voodoo2` profile reports `GR_SSTTYPE_VOODOO` with **`fbiRev = 0x102`** (dual-TMU, `0x82` single-TMU) unless **`FX_GLIDE_REPORT_REAL_HW`** is defined (strict 3dfx `!= NULL` check: **any** defined value, including `0`, returns the raw `GR_SSTTYPE_Voodoo2` (`3`) enum; unset the variable to disable, or configure `[glide] report_real_hw` in `glide-ng.ini`). With 2 TMUs enabled, titles take fast single-pass multitexturing/lightmapping paths, whereas single-TMU boards (`VoodooGraphics`, `VoodooRush`, `VoodooBanshee`) trigger multi-pass fallbacks.
 - **No VSA-100 surprises for older titles**: Defaulting to `Voodoo4`/`Voodoo5` advertises `PIXEXT`/`COMBINE`/`TEXFMT`, 2048×2048 textures, and H3 `fbiRev = 0x11002`, which can trigger unintended multi-sample T-Buffer or 32-bit paths in older titles.
 - **Explicit opt-in for VSA-100 features**: Titles requiring Voodoo4/5 Spatial AA, T-Buffer effects, hardware Stencil, FXT1/DXT textures, or 2048×2048 textures select `GLIDE_NG_CARD_MODEL=voodoo4` or `GLIDE_NG_CARD_MODEL=voodoo5`.
 
@@ -39,8 +39,8 @@ Each profile defaults to the maximum authentic Glide 2.x and Glide 3.x version s
 | **2.11** | Voodoo Graphics (SST-1) | Original `glide.dll` launch ABI (`grSstOpen`, `grSstPassthruMode`, fixed-1024-stride `grLfbBegin`/`End`, `guFbReadRegion`/`WriteRegion`). Incompatible binary ABI with `glide2x.dll`. |
 | **2.30** | Voodoo Graphics (SST-1) | First `glide2x` ABI (`grSstWinOpen`/`WinClose`, `grSstControl`, `grLfbLock`/`Unlock`, `grLfbReadRegion`/`WriteRegion`, `ConvertAndDownloadRle`, `guEncodeRLE16`). |
 | **2.42 – 2.48** | SST-1 & Voodoo Rush (SST-96) | Added `grTexMultibase`, `grTexMultibaseAddress`, partial mipmap/table downloads, `grTriStats`, `grSstPerfStats`. `2.48` is the final SST-1/Rush Glide 2.x release. |
-| **2.50 – 2.56** | Voodoo2 (CVG) | Introduced dual-TMU single-pass multitexturing, SLI, `SSTV2_*` variables, and 1024×768 SLI support. Reports `GR_SSTTYPE_VOODOO` with `fbiRev = 0x102` (dual-TMU) / `0x82` (single-TMU) by default (`GR_SSTTYPE_Voodoo2` when `FX_GLIDE_REPORT_REAL_HW=1` is set). `2.56` is the final Voodoo2 Glide 2.x release. |
-| **2.60 – 2.61** | Banshee, Voodoo3, Voodoo4, Voodoo5 | Unified H3/VSA-100 Glide 2.x driver. Reports `GR_SSTTYPE_VOODOO` with `fbiRev = 0x1002` (Banshee, 1 TMU) or `fbiRev = 0x11002` (Voodoo3/4/5, 2 TMUs) for legacy compatibility. |
+| **2.50 – 2.56** | Voodoo2 (CVG) | Introduced dual-TMU single-pass multitexturing, SLI, `SSTV2_*` variables, and 1024×768 SLI support. Reports `GR_SSTTYPE_VOODOO` with `fbiRev = 0x102` (dual-TMU) / `0x82` (single-TMU) by default (`GR_SSTTYPE_Voodoo2` when `FX_GLIDE_REPORT_REAL_HW` is defined — strict `!= NULL`, including `=0`; or `[glide] report_real_hw = true`). `2.56` is the final Voodoo2 Glide 2.x release. |
+| **2.60 – 2.61** | Banshee, Voodoo3, Voodoo4, Voodoo5 | Unified H3/VSA-100 Glide 2.x driver. Reports `GR_SSTTYPE_VOODOO` with `fbiRev = 0x1002` (Banshee, 1 TMU) or `fbiRev = 0x11002` (Voodoo3/4/5, 2 TMUs) for legacy compatibility, or `GR_SSTTYPE_SST96` when `FX_GLIDE_EMUL_RUSH=1` (or `[glide] emul_rush = true`). |
 
 ---
 
@@ -52,8 +52,8 @@ Glide 3.x introduced `grGet`, `grGetString`, `grGetProcAddress`, `grQueryResolut
 | :--- | :--- | :--- | :--- |
 | **3.00 / 3.02 / 3.04** | Voodoo Graphics / Rush | `"Voodoo Graphics"` / `"Voodoo Rush"` | Core Glide 3.x + `FOGALPHA`, `CHROMARANGE`, `FOGCOORD`. `3.04` is final for SST-1/Rush. |
 | **3.01 / 3.03** | Voodoo2 (CVG) | `"Voodoo2"` | Adds 2-TMU & SLI support; `CHROMARANGE`, `TEXCHROMA`, `TEXMIRROR`, `PALETTE6666`, `FOGCOORD`, `RESOLUTION`. `3.03` is final for Voodoo2. *(Unimplemented private ICD tokens `SURFACE` and `COMMAND_TRANSPORT` are omitted from `GR_EXTENSION`.)* |
-| **3.10** | Banshee / Voodoo3 | `"Voodoo Banshee"` / `"Voodoo3"` | Adds `GETGAMMA`, `TEXUMA`, `TEXTUREBUFFER`, `grSetNumPendingBuffers`, `grSstConfigPipeline`. |
-| **3.10** | Voodoo4 / Voodoo5 (VSA-100) | `"Voodoo4"` / `"Voodoo5"` | Additionally exposes **`PIXEXT`** (Spatial AA, T-Buffer, 8-bit hardware Stencil, per-channel `grColorMaskExt`), **`COMBINE`** (`gr*CombineExt`, `grAlphaBlendFunctionExt`, `grConstantColorValueExt`), **`TEXFMT`** (`ARGB_8888`, `RGB_888`, `YUYV`/`UYVY`/`AYUV`, `FXT1`, `DXT1`–`DXT5`), and **2048×2048** max textures. |
+| **3.10** | Banshee / Voodoo3 | `"Voodoo Banshee (tm)"` / `"Voodoo3 (tm)"` | Adds `GETGAMMA`, `TEXUMA`, `TEXTUREBUFFER`, `grSetNumPendingBuffers`, `grSstConfigPipeline`. |
+| **3.10** | Voodoo4 / Voodoo5 (VSA-100) | `"Voodoo4 (tm)"` / `"Voodoo5 (tm)"` | Additionally exposes **`PIXEXT`** (Spatial AA, T-Buffer, 8-bit hardware Stencil, per-channel `grColorMaskExt`), **`COMBINE`** (`gr*CombineExt`, `grAlphaBlendFunctionExt`, `grConstantColorValueExt`), **`TEXFMT`** (`ARGB_8888`, `RGB_888`, `YUYV`/`UYVY`/`AYUV`, `FXT1`, `DXT1`–`DXT5`), and **2048×2048** max textures. |
 
 ---
 
@@ -64,6 +64,7 @@ Glide 3.x introduced `grGet`, `grGetString`, `grGetProcAddress`, `grQueryResolut
 - **`GR_MAX_TEXTURE_SIZE`**: `256` on `VoodooGraphics`, `VoodooRush`, `Voodoo2`, `VoodooBanshee`, and `Voodoo3`; **`2048`** exclusively on `Voodoo4` and `Voodoo5`.
 - **`GR_BITS_RGBA`**: `{5, 6, 5, 0}` for RGB565 modes, `{5, 5, 5, 1}` for ARGB1555 modes, and `{8, 8, 8, 8}` for VSA-100 32-bit `ARGB_8888` modes opened via `grSstWinOpenExt`.
 - **`GR_BITS_DEPTH`**: `16` in 16-bit color modes; `32` (24-bit depth + 8-bit stencil) in VSA-100 32-bit `ARGB_8888` modes.
+- **`GR_REVISION_FB` / `GR_REVISION_TMU`**: `VoodooGraphics`: `2` / `1`; `VoodooRush`: `1` / `1`; `Voodoo2`: **`0x102`** (2 TMUs) or **`0x82`** (1 TMU) / `1` (matching `3.01`/`3.03` CVG); `VoodooBanshee`: `0x1000`; `Voodoo3`: `0x11100`; `Voodoo4` / `Voodoo5`: `0x11104` / `0x11105` *(note: retail 3dfx `glide3x.dll` 3.10 fell through to `0` on VSA-100; `glide-ng` returns distinct nonzero revision tokens)*.
 - **`GR_SUPPORTS_PASSTHRU`**: `FXTRUE` on add-in 3D-only boards (`VoodooGraphics`, `Voodoo2`); `FXFALSE` on integrated 2D/3D boards (`VoodooRush`, `VoodooBanshee`, `Voodoo3`, `Voodoo4`, `Voodoo5`).
 - **`GR_TEXTURE_ALIGN`**: `8` bytes on SST-1/Rush/CVG; `16` bytes on Banshee/Voodoo3/Voodoo4/Voodoo5.
 - **`grQueryResolutions(resTemplate, output)`**: Returns byte size (`matchCount * 16`) and filters modes by both card resolution tier and available framebuffer VRAM (`w * h * 2 * (colorBufs + auxBufs) <= availFbBytes`, with 2× FB for Voodoo2 SLI and a 2 MB minimum texture reservation on UMA boards).

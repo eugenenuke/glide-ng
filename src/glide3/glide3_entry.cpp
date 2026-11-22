@@ -1366,7 +1366,12 @@ FX_ENTRY FxU32 FX_CALL grGet(FxU32 pname, FxU32 plength, FxI32* params) {
           *params = 1;
           break;
         case GlideWrapper::CardModel::Voodoo2:
-          *params = (pname == GR_REVISION_FB) ? 2 : 1;
+          // Authentic 3dfx CVG Glide 3.01/3.03 behavior (gpci.c:517 +
+          // diget.c:542): fbiRev carries +0x100 (dual-TMU) or +0x80
+          // (single-TMU "Voodoo 1.5") so apps distinguish CVG from SST-1.
+          *params = (pname == GR_REVISION_FB)
+                        ? ((config.tmuCount >= 2u) ? 0x102 : 0x82)
+                        : 1;
           break;
         case GlideWrapper::CardModel::VoodooBanshee:
           *params = 0x1000;
@@ -1374,6 +1379,9 @@ FX_ENTRY FxU32 FX_CALL grGet(FxU32 pname, FxU32 plength, FxI32* params) {
         case GlideWrapper::CardModel::Voodoo3:
           *params = 0x11100;
           break;
+        // Note: authentic glide3x.dll 3.10 (h5/diget.c:634-644) omitted a
+        // case for VSA-100 / Napalm and fell through to default (0).
+        // glide-ng intentionally retains distinct nonzero revision tokens.
         case GlideWrapper::CardModel::Voodoo4:
           *params = 0x11104;
           break;
@@ -1616,6 +1624,10 @@ FX_ENTRY const char* FX_CALL grGetString(FxU32 pname) {
       return GlideWrapper::FormatApiVersionString(
           reg.GetConfig().glide3ApiVersion);
     case GR_HARDWARE: {
+      // Exact authentic 3dfx glide3x.dll GR_HARDWARE strings verified against
+      // retail 3.00-3.10 DLLs (sst1/cvg/h3/h5 diget.c): 3.10 returns trailing
+      // " (tm)" for Banshee/Voodoo3/Voodoo4/Voodoo5 (all <= 19 chars, fitting
+      // safely inside legacy fixed-size stack buffers such as aademo.exe).
       switch (reg.GetConfig().model) {
         case GlideWrapper::CardModel::VoodooGraphics:
           return "Voodoo Graphics";
@@ -1624,13 +1636,13 @@ FX_ENTRY const char* FX_CALL grGetString(FxU32 pname) {
         case GlideWrapper::CardModel::Voodoo2:
           return "Voodoo2";
         case GlideWrapper::CardModel::VoodooBanshee:
-          return "Voodoo Banshee";
+          return "Voodoo Banshee (tm)";
         case GlideWrapper::CardModel::Voodoo3:
-          return "Voodoo3";
+          return "Voodoo3 (tm)";
         case GlideWrapper::CardModel::Voodoo4:
-          return "Voodoo4";
+          return "Voodoo4 (tm)";
         case GlideWrapper::CardModel::Voodoo5:
-          return "Voodoo5";
+          return "Voodoo5 (tm)";
         default:
           return "Voodoo2";
       }
@@ -3120,7 +3132,7 @@ FX_ENTRY void FX_CALL guGammaCorrectionRGB(FxFloat red, FxFloat green,
   GLIDE_LOG(DEBUG, "Frontend",
             "guGammaCorrectionRGB (Glide 3.x): red="
                 << red << ", green=" << green << ", blue=" << blue);
-  GlideWrapper::MathUtils::GammaCorrectionRGB(red, green, blue);
+  EntryCommon::SetGammaCorrectionRGB(red, green, blue);
 }
 
 FX_ENTRY void FX_CALL grDisableAllEffects(void) {

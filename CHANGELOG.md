@@ -13,6 +13,18 @@ For the pre-beta engineering narrative covering early architecture decisions and
 ### Added
 - **Screamer 2 Catalog Entry (`42` Total Commercial Games)**: Verified the dynamic `GLIDE2X.OVL` Voodoo2+ DOS patch (`s2_3dfx.exe`, `1,055,262` B) across **Vulkan** (`1×` & `4× MSAA`), **OpenGL ES 3.2**, and **Software** backends (England, Egypt, and California stages, menus, camera modes, plus `START65H.EXE` SVGA comparison) with drop-in `glide-ng*.ini` presets under `docs/catalog/games/screamer-2/`.
 - **Automated Release Notes Generation**: Added [`scripts/generate_release_notes.py`](scripts/generate_release_notes.py) and wired it into [`.github/workflows/release.yml`](.github/workflows/release.yml) so future tag pushes auto-populate GitHub Release pages from `CHANGELOG.md`, archive sizes/`GLIBC` floors, and `SHA256SUMS.txt`.
+- **Authentic 3dfx Environment Variables (`20 → 48` Registered) & `SSTH3_` Scan Prefix**: Expanded [`include/glide_ng/env_vars.h`](include/glide_ng/env_vars.h), `IniConfigLoader`, `glide-ng.ini.example`, and [`docs/user-guide/configuration.md`](docs/user-guide/configuration.md) with full family-alias & INI support:
+  - Registered **`FX_GLIDE_REPORT_REAL_HW`** (`[glide] report_real_hw`, preserving strict 3dfx `!= NULL` semantics so any set value including `=0` reports raw `GR_SSTTYPE_Voodoo2` while unset stays `GR_SSTTYPE_VOODOO`).
+  - Added **`FX_GLIDE_EMUL_RUSH`** (`[glide] emul_rush`) so `VoodooBanshee`/`Voodoo3`/`Voodoo4`/`Voodoo5` can report `GR_SSTTYPE_SST96` from `grSstQueryHardware()`.
+  - Added authentic card-family aliases **`FX_GLIDE_NUM_TMU`**, **`SST_FBIMEM_SIZE`**, **`SSTV2_FBI_MEMSIZE`**, **`SSTH3_FBRAM`**, **`SST_TMUMEM_SIZE`**, **`SSTV2_TMU_MEMSIZE`**, **`SSTV2_ALLOC_COLOR`**, **`SSTV2_ALLOC_AUX`**, **`SST_TRIPLE_BUFFER`**, **`SSTV2_TEXMAP_DISABLE`**, **`SST_SLIDETECT`**, **`SSTV2_SLIDETECT`**, **`FX_GLIDE_REFRESH`**, **`FX_GLIDE_AA_SAMPLE`**, and **`FX_GLIDE_TEXTURE_UMA`** (`[glide] texture_uma`).
+  - Added per-channel RGB gamma overrides **`SST_{R,G,B}GAMMA`**, **`SSTV2_{R,G,B}GAMMA`**, **`SSTH3_{R,G,B}GAMMA`**, **`FX_GLIDE_GAMMARGB`**, and **`FX_GLIDE_USE_APP_GAMMA`** (`[glide] gamma_{r,g,b,rgb}`, `use_app_gamma`), wired across `grGammaCorrectionValue`, `guGammaCorrectionRGB`, and `grLoadGammaTable` on all three backends.
+  - Added **`SSTH3_`** to `GLIDE_ENV_SCAN_PREFIXES_X` so `glide2_info`/`glide3_info` automatically detect user-set Banshee/Voodoo3/4/5 variables.
+
+### Changed
+- **Authentic `GR_HARDWARE` & Hardware Revision Parity (`glide3x` / `glide2x`)**:
+  - Updated Glide 3.x `grGetString(GR_HARDWARE)` to return retail `glide3x.dll` 3.10 strings with the trailing trademark tag: `"Voodoo Banshee (tm)"`, `"Voodoo3 (tm)"`, `"Voodoo4 (tm)"`, and `"Voodoo5 (tm)"` (all `<= 19` bytes, fitting legacy fixed-size stack buffers).
+  - Updated Glide 2.x/3.x `grGet(GR_REVISION_FB)` on `Voodoo2` to return authentic CVG **`0x102`** (dual-TMU) / **`0x82`** (single-TMU) instead of `2` (matching `3.01`/`3.03` CVG instead of `SST-1`).
+  - Forwarded `enableSli` (`sliDetect`) on `VoodooGraphics` (`SST-1` SLI / Quantum3D Obsidian) inside `grSstQueryHardware()`.
 
 ---
 

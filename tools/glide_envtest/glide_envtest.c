@@ -479,9 +479,10 @@ static void print_active_env_vars(void) {
   printf(" Active Env Vars:\n");
   for (i = 0; i < count; ++i) {
     const char* val = getenv(kGlideKnownEnvVars[i].envName);
-    if (val && val[0]) {
+    if (val && (val[0] || strcmp(kGlideKnownEnvVars[i].envName,
+                                 GLIDE_FX_ENV_REPORT_REAL_HW) == 0)) {
       printf("   %-28s = %s  [%s]\n",
-             kGlideKnownEnvVars[i].envName, val,
+             kGlideKnownEnvVars[i].envName, val[0] ? val : "(empty)",
              kGlideKnownEnvVars[i].isAuthentic3dfx ? "3dfx" : "glide-ng");
       printed++;
     }

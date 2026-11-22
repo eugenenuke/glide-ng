@@ -411,13 +411,13 @@ TEST_CASE("Glide 3.x: State Control, Hardware Identity & grGet Queries", "[Glide
       {"voodoo1", "Voodoo Graphics"},
       {"rush", "Voodoo Rush"},
       {"voodoo2", "Voodoo2"},
-      {"banshee", "Voodoo Banshee"},
-      {"voodoo_banshee", "Voodoo Banshee"},
-      {"voodoo3", "Voodoo3"},
-      {"voodoo4", "Voodoo4"},
-      {"vsa100", "Voodoo4"},
-      {"h4", "Voodoo4"},
-      {"voodoo5", "Voodoo5"},
+      {"banshee", "Voodoo Banshee (tm)"},
+      {"voodoo_banshee", "Voodoo Banshee (tm)"},
+      {"voodoo3", "Voodoo3 (tm)"},
+      {"voodoo4", "Voodoo4 (tm)"},
+      {"vsa100", "Voodoo4 (tm)"},
+      {"h4", "Voodoo4 (tm)"},
+      {"voodoo5", "Voodoo5 (tm)"},
   };
 
   const char* origCard = std::getenv("GLIDE_NG_CARD_MODEL");
@@ -454,6 +454,59 @@ TEST_CASE("Glide 3.x: State Control, Hardware Identity & grGet Queries", "[Glide
 
     glideShutdown();
     ::dlclose(handle);
+  }
+
+  // Verify authentic GR_REVISION_FB / GR_REVISION_TMU values across profiles,
+  // including CVG dual-TMU (0x102) and single-TMU "Voodoo 1.5" (0x82).
+  struct RevExpectation {
+    const char* card;
+    const char* tmus;
+    FxI32 expectedFbRev;
+    FxI32 expectedTmuRev;
+  };
+  const RevExpectation revCases[] = {
+      {"voodoo1", nullptr, 2, 1},
+      {"rush", nullptr, 1, 1},
+      {"voodoo2", "2", 0x102, 1},
+      {"voodoo2", "1", 0x82, 1},
+      {"banshee", nullptr, 0x1000, 0x1000},
+      {"voodoo3", nullptr, 0x11100, 0x11100},
+      {"voodoo4", nullptr, 0x11104, 0x11104},
+      {"voodoo5", nullptr, 0x11105, 0x11105},
+  };
+  const char* origTmu = std::getenv("GLIDE_NG_TMU_COUNT");
+  std::string savedTmu = origTmu ? origTmu : "";
+  for (const auto& rc : revCases) {
+    ::setenv("GLIDE_NG_CARD_MODEL", rc.card, 1);
+    if (rc.tmus) {
+      ::setenv("GLIDE_NG_TMU_COUNT", rc.tmus, 1);
+    } else {
+      ::unsetenv("GLIDE_NG_TMU_COUNT");
+    }
+    void* handle = OpenGlide3Handle();
+    REQUIRE(handle != nullptr);
+    auto glideInit = reinterpret_cast<void (*)(void)>(::dlsym(handle, "grGlideInit"));
+    auto grGetFn =
+        reinterpret_cast<FxU32 (*)(FxU32, FxU32, FxI32*)>(::dlsym(handle, "grGet"));
+    auto glideShutdown =
+        reinterpret_cast<void (*)(void)>(::dlsym(handle, "grGlideShutdown"));
+    REQUIRE(glideInit != nullptr);
+    REQUIRE(grGetFn != nullptr);
+    REQUIRE(glideShutdown != nullptr);
+    glideInit();
+    FxI32 fbRev = -1;
+    FxI32 tmuRev = -1;
+    REQUIRE(grGetFn(GR_REVISION_FB, 4, &fbRev) == 4);
+    REQUIRE(grGetFn(GR_REVISION_TMU, 4, &tmuRev) == 4);
+    CHECK(fbRev == rc.expectedFbRev);
+    CHECK(tmuRev == rc.expectedTmuRev);
+    glideShutdown();
+    ::dlclose(handle);
+  }
+  if (origTmu) {
+    ::setenv("GLIDE_NG_TMU_COUNT", savedTmu.c_str(), 1);
+  } else {
+    ::unsetenv("GLIDE_NG_TMU_COUNT");
   }
 
   if (origCard) {

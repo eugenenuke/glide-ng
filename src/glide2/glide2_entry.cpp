@@ -2,8 +2,11 @@
 #include <cctype>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
+
+#include "glide_ng/env_vars.h"
 
 #include "core/3dfParser.h"
 #include "core/BackendManager.h"
@@ -687,7 +690,7 @@ FX_ENTRY FxBool FX_CALL grSstQueryHardware(GrHwConfiguration* hwconfig) {
     v.fbRam = static_cast<int>(config.fbiMemoryMb);
     v.fbiRev = 2;
     v.nTexelfx = tmuCount;
-    v.sliDetect = FXFALSE;
+    v.sliDetect = config.enableSli ? FXTRUE : FXFALSE;
     for (int i = 0; i < clampedTmus; ++i) {
       v.tmuConfig[i].tmuRev = 1;
       v.tmuConfig[i].tmuRam = static_cast<int>(config.tmuMemoryMb);
@@ -700,15 +703,17 @@ FX_ENTRY FxBool FX_CALL grSstQueryHardware(GrHwConfiguration* hwconfig) {
     r.tmuConfig.tmuRev = 1;
     r.tmuConfig.tmuRam = static_cast<int>(config.tmuMemoryMb);
   } else if (config.model == GlideWrapper::CardModel::Voodoo2) {
-    // Authentic 3dfx CVG Glide 2.50-2.56 behavior: grSstQueryHardware
-    // translates GR_SSTTYPE_Voodoo2 (3) to GR_SSTTYPE_VOODOO (0) unless
-    // FX_GLIDE_REPORT_REAL_HW is set, so legacy SST-1 apps and all 3dfx
-    // MiniGL drivers (GLQuake, Quake II, Half-Life) accept Voodoo2 boards.
-    // The chip is identified as CVG via fbiRev (0x100|rev dual-TMU, 0x80|rev
-    // single-TMU). Note GrVoodoo2Config_t is a typedef of GrVoodooConfig_t.
-    const char* reportRealHw = std::getenv("FX_GLIDE_REPORT_REAL_HW");
+    // Authentic 3dfx CVG Glide 2.50-2.56 behavior (disst.c:147):
+    // grSstQueryHardware translates GR_SSTTYPE_Voodoo2 (3) to GR_SSTTYPE_VOODOO
+    // (0) unless FX_GLIDE_REPORT_REAL_HW is defined (strict != NULL check, so
+    // any set value including "0" enables raw reporting; unset to disable).
+    // Legacy SST-1 apps and 3dfx MiniGL drivers (GLQuake, Quake II, Half-Life)
+    // expect GR_SSTTYPE_VOODOO and identify CVG via fbiRev (0x100|rev dual-TMU,
+    // 0x80|rev single-TMU). Note GrVoodoo2Config_t is a typedef of
+    // GrVoodooConfig_t.
     const bool reportRawType =
-        (reportRealHw != nullptr && reportRealHw[0] != '\0');
+        (std::getenv(GLIDE_FX_ENV_REPORT_REAL_HW) != nullptr) ||
+        config.reportRealHwFromIni;
     hwconfig->SSTs[0].type =
         reportRawType ? GR_SSTTYPE_Voodoo2 : GR_SSTTYPE_VOODOO;
     auto& v2 = hwconfig->SSTs[0].sstBoard.Voodoo2Config;
@@ -721,21 +726,43 @@ FX_ENTRY FxBool FX_CALL grSstQueryHardware(GrHwConfiguration* hwconfig) {
       v2.tmuConfig[i].tmuRam = static_cast<int>(config.tmuMemoryMb);
     }
   } else {
-    // Authentic 3dfx H3/H5 Glide 2.60/2.61 encoding (gpci.c):
-    // Banshee/Voodoo3/Voodoo4/Voodoo5 report GR_SSTTYPE_VOODOO with
-    // fbiRev = 0x1002 (Banshee) or 0x11002 (Voodoo3/VSA-100).
-    hwconfig->SSTs[0].type = GR_SSTTYPE_VOODOO;
-    auto& v = hwconfig->SSTs[0].sstBoard.VoodooConfig;
-    v.fbRam = static_cast<int>(config.fbiMemoryMb);
+    // Authentic 3dfx H3/H5 Glide 2.60/2.61 encoding (gpci.c:763-803):
+    // Banshee/Voodoo3/Voodoo4/Voodoo5 report GR_SSTTYPE_VOODOO (or
+    // GR_SSTTYPE_SST96 when FX_GLIDE_EMUL_RUSH is enabled) with
+    // fbiRev/tmuRev = 0x1002 (Banshee) or 0x11002 (Voodoo3/VSA-100).
     const int revBase =
         (config.model == GlideWrapper::CardModel::VoodooBanshee) ? 0x1002
                                                                  : 0x11002;
-    v.fbiRev = revBase;
-    v.nTexelfx = tmuCount;
-    v.sliDetect = FXFALSE;
-    for (int i = 0; i < clampedTmus; ++i) {
-      v.tmuConfig[i].tmuRev = revBase;
-      v.tmuConfig[i].tmuRam = static_cast<int>(config.tmuMemoryMb);
+    bool reportRush = config.emulRushFromIni;
+    if (const char* envRush = std::getenv(GLIDE_FX_ENV_EMUL_RUSH)) {
+      if (envRush[0] != '\0') {
+        std::string val(envRush);
+        std::transform(val.begin(), val.end(), val.begin(),
+                       [](unsigned char c) {
+                         return static_cast<char>(std::tolower(c));
+                       });
+        reportRush = !(val == "0" || val == "false" || val == "off" ||
+                       val == "no");
+      }
+    }
+    if (reportRush) {
+      hwconfig->SSTs[0].type = GR_SSTTYPE_SST96;
+      auto& r = hwconfig->SSTs[0].sstBoard.SST96Config;
+      r.fbRam = static_cast<int>(config.fbiMemoryMb);
+      r.nTexelfx = tmuCount;
+      r.tmuConfig.tmuRev = revBase;
+      r.tmuConfig.tmuRam = static_cast<int>(config.tmuMemoryMb);
+    } else {
+      hwconfig->SSTs[0].type = GR_SSTTYPE_VOODOO;
+      auto& v = hwconfig->SSTs[0].sstBoard.VoodooConfig;
+      v.fbRam = static_cast<int>(config.fbiMemoryMb);
+      v.fbiRev = revBase;
+      v.nTexelfx = tmuCount;
+      v.sliDetect = FXFALSE;
+      for (int i = 0; i < clampedTmus; ++i) {
+        v.tmuConfig[i].tmuRev = revBase;
+        v.tmuConfig[i].tmuRam = static_cast<int>(config.tmuMemoryMb);
+      }
     }
   }
 
@@ -828,6 +855,36 @@ FX_ENTRY void FX_CALL grGet(FxU32 pname, FxU32 plength, FxI32* params) {
     case GR_GAMMA_TABLE_ENTRIES:
       if (plength >= 4) {
         params[0] = 256;
+      }
+      break;
+    case GR_REVISION_FB:
+    case GR_REVISION_TMU:
+      if (plength >= 4) {
+        switch (card) {
+          case GlideWrapper::CardModel::VoodooGraphics:
+            params[0] = (pname == GR_REVISION_FB) ? 2 : 1;
+            break;
+          case GlideWrapper::CardModel::VoodooRush:
+            params[0] = 1;
+            break;
+          case GlideWrapper::CardModel::Voodoo2:
+            params[0] = (pname == GR_REVISION_FB)
+                            ? ((config.tmuCount >= 2u) ? 0x102 : 0x82)
+                            : 1;
+            break;
+          case GlideWrapper::CardModel::VoodooBanshee:
+            params[0] = 0x1000;
+            break;
+          case GlideWrapper::CardModel::Voodoo3:
+            params[0] = 0x11100;
+            break;
+          case GlideWrapper::CardModel::Voodoo4:
+            params[0] = 0x11104;
+            break;
+          case GlideWrapper::CardModel::Voodoo5:
+            params[0] = 0x11105;
+            break;
+        }
       }
       break;
     case GR_IS_BUSY:
@@ -2445,7 +2502,7 @@ FX_ENTRY void FX_CALL guGammaCorrectionRGB(FxFloat red, FxFloat green,
   GLIDE_LOG(DEBUG, "Frontend",
             "guGammaCorrectionRGB: red=" << red << ", green=" << green
                                          << ", blue=" << blue);
-  GlideWrapper::MathUtils::GammaCorrectionRGB(red, green, blue);
+  EntryCommon::SetGammaCorrectionRGB(red, green, blue);
 }
 
 FX_ENTRY FxBool FX_CALL grSstControl(FxU32 code) {

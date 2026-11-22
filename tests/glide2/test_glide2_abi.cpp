@@ -1951,7 +1951,8 @@ TEST_CASE("Glide 2.x: Hardware Profile & Version Gating", "[Glide2][Gating]") {
     REQUIRE(std::string(verBuf) == "2.56");
 
     // Hardware query check: Voodoo2 CVG reports GR_SSTTYPE_VOODOO with fbiRev=0x102
-    // unless FX_GLIDE_REPORT_REAL_HW is set (matching 3dfx glide2x 2.50-2.56).
+    // unless FX_GLIDE_REPORT_REAL_HW is defined (strict 3dfx != NULL check: any
+    // defined value including "0" or "" enables GR_SSTTYPE_Voodoo2).
     GrHwConfiguration hwconfig;
     ::unsetenv("FX_GLIDE_REPORT_REAL_HW");
     REQUIRE(sstQueryHardware(&hwconfig) == FXTRUE);
@@ -1963,27 +1964,47 @@ TEST_CASE("Glide 2.x: Hardware Profile & Version Gating", "[Glide2][Gating]") {
     REQUIRE(sstQueryHardware(&hwconfig) == FXTRUE);
     REQUIRE(hwconfig.SSTs[0].type == GR_SSTTYPE_Voodoo2);
     REQUIRE(hwconfig.SSTs[0].sstBoard.Voodoo2Config.fbiRev == 0x102);
+
+    ::setenv("FX_GLIDE_REPORT_REAL_HW", "0", 1);
+    REQUIRE(sstQueryHardware(&hwconfig) == FXTRUE);
+    REQUIRE(hwconfig.SSTs[0].type == GR_SSTTYPE_Voodoo2);
+
+    ::setenv("FX_GLIDE_REPORT_REAL_HW", "", 1);
+    REQUIRE(sstQueryHardware(&hwconfig) == FXTRUE);
+    REQUIRE(hwconfig.SSTs[0].type == GR_SSTTYPE_Voodoo2);
     ::unsetenv("FX_GLIDE_REPORT_REAL_HW");
 
     shutdown();
   }
 
   SECTION("Case B: Voodoo1 Legacy Profile (Voodoo Graphics, default 2.48)") {
+    ::unsetenv("SST_SLIDETECT");
+    ::unsetenv("SSTV2_SLIDETECT");
+    ::unsetenv("GLIDE_NG_SLI");
     init_with_profile("voodoo1", nullptr);
     char verBuf[80] = {};
     getVersion(verBuf);
     REQUIRE(std::string(verBuf) == "2.48");
 
-    // Hardware query check: Voodoo Graphics config
+    // Hardware query check: Voodoo Graphics config (SLI off by default)
     GrHwConfiguration hwconfig;
     REQUIRE(sstQueryHardware(&hwconfig) == FXTRUE);
     REQUIRE(hwconfig.SSTs[0].type == GR_SSTTYPE_VOODOO);
     REQUIRE(hwconfig.SSTs[0].sstBoard.VoodooConfig.fbiRev == 2);
-
+    REQUIRE(hwconfig.SSTs[0].sstBoard.VoodooConfig.sliDetect == FXFALSE);
     shutdown();
+
+    // Optional SST-1 SLI passthrough (e.g. Quantum3D Obsidian) via SST_SLIDETECT=1
+    ::setenv("SST_SLIDETECT", "1", 1);
+    init_with_profile("voodoo1", nullptr);
+    REQUIRE(sstQueryHardware(&hwconfig) == FXTRUE);
+    REQUIRE(hwconfig.SSTs[0].sstBoard.VoodooConfig.sliDetect == FXTRUE);
+    shutdown();
+    ::unsetenv("SST_SLIDETECT");
   }
 
-  SECTION("Case C: Banshee & Voodoo3 Interop Profile (authentic H3 fbiRev + 2.61)") {
+  SECTION("Case C: Banshee & Voodoo3 Interop Profile (authentic H3 fbiRev + 2.61 + FX_GLIDE_EMUL_RUSH)") {
+    ::unsetenv("FX_GLIDE_EMUL_RUSH");
     init_with_profile("banshee", nullptr);
     char verBuf[80] = {};
     getVersion(verBuf);
@@ -1993,6 +2014,13 @@ TEST_CASE("Glide 2.x: Hardware Profile & Version Gating", "[Glide2][Gating]") {
     REQUIRE(hwBanshee.SSTs[0].type == GR_SSTTYPE_VOODOO);
     REQUIRE(hwBanshee.SSTs[0].sstBoard.VoodooConfig.fbiRev == 0x1002);
     REQUIRE(hwBanshee.SSTs[0].sstBoard.VoodooConfig.nTexelfx == 1);
+
+    // Authentic 2.60/2.61 FX_GLIDE_EMUL_RUSH reports GR_SSTTYPE_SST96
+    ::setenv("FX_GLIDE_EMUL_RUSH", "1", 1);
+    REQUIRE(sstQueryHardware(&hwBanshee) == FXTRUE);
+    REQUIRE(hwBanshee.SSTs[0].type == GR_SSTTYPE_SST96);
+    REQUIRE(hwBanshee.SSTs[0].sstBoard.SST96Config.tmuConfig.tmuRev == 0x1002);
+    ::unsetenv("FX_GLIDE_EMUL_RUSH");
     shutdown();
 
     init_with_profile("voodoo3", "2.61");
@@ -2003,6 +2031,13 @@ TEST_CASE("Glide 2.x: Hardware Profile & Version Gating", "[Glide2][Gating]") {
     REQUIRE(hwV3.SSTs[0].type == GR_SSTTYPE_VOODOO);
     REQUIRE(hwV3.SSTs[0].sstBoard.VoodooConfig.fbiRev == 0x11002);
     REQUIRE(hwV3.SSTs[0].sstBoard.VoodooConfig.nTexelfx == 2);
+
+    ::setenv("FX_GLIDE_EMUL_RUSH", "1", 1);
+    REQUIRE(sstQueryHardware(&hwV3) == FXTRUE);
+    REQUIRE(hwV3.SSTs[0].type == GR_SSTTYPE_SST96);
+    REQUIRE(hwV3.SSTs[0].sstBoard.SST96Config.nTexelfx == 2);
+    REQUIRE(hwV3.SSTs[0].sstBoard.SST96Config.tmuConfig.tmuRev == 0x11002);
+    ::unsetenv("FX_GLIDE_EMUL_RUSH");
     shutdown();
   }
 

@@ -398,10 +398,12 @@ static void add_active_env(ReportData* r, const char* name, const char* val,
   e->tag = tag;
 }
 
-/* Dynamically gather ONLY active (set & non-empty) Glide-related env vars:
+/* Dynamically gather active Glide-related env vars:
  * 1) Check every single var registered in include/glide_ng/env_vars.h
+ *    (FX_GLIDE_REPORT_REAL_HW follows strict 3dfx != NULL semantics, so an
+ *    explicitly empty value is still active and shown as "(empty)").
  * 2) Scan process environ for any additional FX_GLIDE_ / SST_ / SSTV2_ /
- *    GLIDE_NG_ variables so authentic 3dfx / third-party vars appear too.
+ *    SSTH3_ / GLIDE_NG_ variables so authentic 3dfx / third-party vars appear.
  */
 static void collect_active_envs(ReportData* r) {
   size_t i;
@@ -414,8 +416,11 @@ static void collect_active_envs(ReportData* r) {
 
   for (i = 0; i < known_count; ++i) {
     const char* v = getenv(kGlideKnownEnvVars[i].envName);
-    if (v && v[0] != '\0') {
-      add_active_env(r, kGlideKnownEnvVars[i].envName, v,
+    if (v && (v[0] != '\0' ||
+              strcmp(kGlideKnownEnvVars[i].envName,
+                     GLIDE_FX_ENV_REPORT_REAL_HW) == 0)) {
+      add_active_env(r, kGlideKnownEnvVars[i].envName,
+                     v[0] != '\0' ? v : "(empty)",
                      kGlideKnownEnvVars[i].isAuthentic3dfx ? "3dfx" : "wrapper");
     }
   }
@@ -483,12 +488,15 @@ static void collect_glide_info(ReportData* r) {
         }
       } else if (hw.SSTs[b].type == GR_SSTTYPE_SST96) {
         const GrSst96Config_t* rc = &hw.SSTs[b].sstBoard.SST96Config;
+        int k;
         r->fb_ram_mb[b] = rc->fbRam;
-        r->fbi_rev[b] = 1;
+        r->fbi_rev[b] = (rc->tmuConfig.tmuRev >= 0x1000) ? rc->tmuConfig.tmuRev : 1;
         r->num_tmus[b] = rc->nTexelfx > 0 ? rc->nTexelfx : 1;
         r->sli_detect[b] = 0;
-        r->tmu_ram_mb[b][0] = rc->tmuConfig.tmuRam;
-        r->tmu_rev[b][0] = rc->tmuConfig.tmuRev;
+        for (k = 0; k < r->num_tmus[b] && k < GLIDE_NUM_TMU; ++k) {
+          r->tmu_ram_mb[b][k] = rc->tmuConfig.tmuRam;
+          r->tmu_rev[b][k] = rc->tmuConfig.tmuRev;
+        }
       } else if (hw.SSTs[b].type == GR_SSTTYPE_Voodoo2) {
         const GrVoodoo2Config_t* v2 = &hw.SSTs[b].sstBoard.Voodoo2Config;
         int k;

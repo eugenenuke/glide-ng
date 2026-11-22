@@ -380,6 +380,36 @@ bool ParsePerfLogString(const std::string& raw, bool& outEnabled, std::string& o
     return true;
 }
 
+bool ParseGammaRgbString(const std::string& raw, float& outR, float& outG, float& outB) {
+    // Split on whitespace, comma, or semicolon (matches authentic 3dfx
+    // FX_GLIDE_GAMMARGB="r g b" space-separated format as well as "r,g,b").
+    std::vector<std::string> tokens;
+    std::string cur;
+    for (char c : raw) {
+        if (std::isspace(static_cast<unsigned char>(c)) || c == ',' || c == ';') {
+            if (!cur.empty()) {
+                tokens.push_back(cur);
+                cur.clear();
+            }
+        } else {
+            cur.push_back(c);
+        }
+    }
+    if (!cur.empty()) tokens.push_back(cur);
+    if (tokens.size() != 3) return false;
+
+    double r = 0.0, g = 0.0, b = 0.0;
+    if (!ParseDoubleString(tokens[0], r) || r <= 0.0 ||
+        !ParseDoubleString(tokens[1], g) || g <= 0.0 ||
+        !ParseDoubleString(tokens[2], b) || b <= 0.0) {
+        return false;
+    }
+    outR = static_cast<float>(std::clamp(r, 0.1, 10.0));
+    outG = static_cast<float>(std::clamp(g, 0.1, 10.0));
+    outB = static_cast<float>(std::clamp(b, 0.1, 10.0));
+    return true;
+}
+
 bool ParseSnapshotString(const std::string& raw, bool& outEnabled,
                          uint64_t& outFrame, std::string& outPath) {
     std::string trimmed = Trim(raw);
@@ -912,6 +942,42 @@ bool IniConfigLoader::LoadWithDefaults(const std::string& configFilePath,
                     outConfig.gammaOverride = static_cast<float>(std::clamp(dblVal, 0.1, 10.0));
                     outConfig.settingSources["gamma"] = "ini";
                 }
+            } else if ((SectionMatches(sec, "glide") || sec == "display") && key == "gamma_r") {
+                handled = true;
+                if (ParseDoubleString(val, dblVal) && dblVal > 0.0) {
+                    outConfig.gammaOverrideR = static_cast<float>(std::clamp(dblVal, 0.1, 10.0));
+                    outConfig.settingSources["gammaR"] = "ini";
+                }
+            } else if ((SectionMatches(sec, "glide") || sec == "display") && key == "gamma_g") {
+                handled = true;
+                if (ParseDoubleString(val, dblVal) && dblVal > 0.0) {
+                    outConfig.gammaOverrideG = static_cast<float>(std::clamp(dblVal, 0.1, 10.0));
+                    outConfig.settingSources["gammaG"] = "ini";
+                }
+            } else if ((SectionMatches(sec, "glide") || sec == "display") && key == "gamma_b") {
+                handled = true;
+                if (ParseDoubleString(val, dblVal) && dblVal > 0.0) {
+                    outConfig.gammaOverrideB = static_cast<float>(std::clamp(dblVal, 0.1, 10.0));
+                    outConfig.settingSources["gammaB"] = "ini";
+                }
+            } else if ((SectionMatches(sec, "glide") || sec == "display") && key == "gamma_rgb") {
+                handled = true;
+                float r = 0.0f, g = 0.0f, b = 0.0f;
+                if (ParseGammaRgbString(val, r, g, b)) {
+                    outConfig.gammaOverrideR = r;
+                    outConfig.gammaOverrideG = g;
+                    outConfig.gammaOverrideB = b;
+                    outConfig.settingSources["gammaR"] = "ini";
+                    outConfig.settingSources["gammaG"] = "ini";
+                    outConfig.settingSources["gammaB"] = "ini";
+                }
+            } else if ((SectionMatches(sec, "glide") || sec == "display") &&
+                       key == "use_app_gamma") {
+                handled = true;
+                if (ParseBoolString(val, boolVal)) {
+                    outConfig.useAppGamma = boolVal;
+                    outConfig.settingSources["useAppGamma"] = "ini";
+                }
             } else if ((SectionMatches(sec, "glide") || sec == "display") &&
                        key == "screen_refresh") {
                 handled = true;
@@ -976,6 +1042,29 @@ bool IniConfigLoader::LoadWithDefaults(const std::string& configFilePath,
                 if (ParseSnapshotString(val, outConfig.snapshotEnabled,
                                         outConfig.snapshotFrame, outConfig.snapshotPath)) {
                     outConfig.settingSources["snapshot"] = "ini";
+                }
+            } else if (SectionMatches(sec, "glide") && key == "report_real_hw") {
+                handled = true;
+                if (ParseBoolString(val, boolVal)) {
+                    outConfig.reportRealHw = boolVal;
+                    outConfig.reportRealHwFromIni = boolVal;
+                    outConfig.settingSources["reportRealHw"] = "ini";
+                }
+            } else if (SectionMatches(sec, "glide") && key == "emul_rush") {
+                handled = true;
+                if (ParseBoolString(val, boolVal)) {
+                    outConfig.emulRush = boolVal;
+                    outConfig.emulRushFromIni = boolVal;
+                    outConfig.settingSources["emulRush"] = "ini";
+                }
+            } else if (SectionMatches(sec, "glide") && key == "texture_uma") {
+                handled = true;
+                if (ParseBoolString(val, boolVal)) {
+                    outConfig.textureUmaMode = boolVal ? 1 : 0;
+                    outConfig.settingSources["textureUma"] = "ini";
+                } else if (ParseIntString(val, intVal)) {
+                    outConfig.textureUmaMode = (intVal < 0) ? -1 : (intVal != 0 ? 1 : 0);
+                    outConfig.settingSources["textureUma"] = "ini";
                 }
             }
             // [software]
@@ -1188,27 +1277,58 @@ bool IniConfigLoader::LoadWithDefaults(const std::string& configFilePath,
     }
 
     // Layer 3 (Phase 2): Authentic hardware sizing, display, compatibility & diagnostic env vars
-    if (const char* envVal = GetNonEmptyEnv(GLIDE_FX_ENV_FBRAM)) {
-        int v = 0;
-        if (ParseIntString(envVal, v) && v > 0) {
-            outConfig.fbiMemoryMb = static_cast<uint32_t>(v);
-            outConfig.settingSources["fbiMemoryMb"] = GLIDE_FX_ENV_FBRAM;
+    // Ordering within a setting runs lowest-to-highest: SST_ < SSTV2_ < SSTH3_ < FX_GLIDE_.
+    auto applyPosIntEnv = [&](const char* envName, const char* sourceKey, uint32_t& target) {
+        if (const char* envVal = GetNonEmptyEnv(envName)) {
+            int v = 0;
+            if (ParseIntString(envVal, v) && v > 0) {
+                target = static_cast<uint32_t>(v);
+                outConfig.settingSources[sourceKey] = envName;
+            }
         }
-    }
+    };
+    applyPosIntEnv(GLIDE_FX_ENV_SST_FBIMEM_SIZE, "fbiMemoryMb", outConfig.fbiMemoryMb);
+    applyPosIntEnv(GLIDE_FX_ENV_V2_FBI_MEMSIZE, "fbiMemoryMb", outConfig.fbiMemoryMb);
+    applyPosIntEnv(GLIDE_FX_ENV_H3_FBRAM, "fbiMemoryMb", outConfig.fbiMemoryMb);
+    applyPosIntEnv(GLIDE_FX_ENV_FBRAM, "fbiMemoryMb", outConfig.fbiMemoryMb);
 
-    if (const char* envVal = GetNonEmptyEnv(GLIDE_FX_ENV_TMU_MEMSIZE)) {
-        int v = 0;
-        if (ParseIntString(envVal, v) && v > 0) {
-            outConfig.tmuMemoryMb = static_cast<uint32_t>(v);
-            outConfig.settingSources["tmuMemoryMb"] = GLIDE_FX_ENV_TMU_MEMSIZE;
+    applyPosIntEnv(GLIDE_FX_ENV_SST_TMUMEM_SIZE, "tmuMemoryMb", outConfig.tmuMemoryMb);
+    applyPosIntEnv(GLIDE_FX_ENV_V2_TMU_MEMSIZE, "tmuMemoryMb", outConfig.tmuMemoryMb);
+    applyPosIntEnv(GLIDE_FX_ENV_TMU_MEMSIZE, "tmuMemoryMb", outConfig.tmuMemoryMb);
+
+    auto applyTmuCountEnv = [&](const char* envName) {
+        if (const char* envVal = GetNonEmptyEnv(envName)) {
+            int v = 0;
+            if (ParseIntString(envVal, v) && v >= 1 && v <= 3) {
+                outConfig.tmuCount = static_cast<uint32_t>(v);
+                outConfig.settingSources["tmuCount"] = envName;
+            }
         }
-    }
+    };
+    applyTmuCountEnv(GLIDE_FX_ENV_NUM_TMUS);
+    applyTmuCountEnv(GLIDE_FX_ENV_NUM_TMU);
 
-    if (const char* envVal = GetNonEmptyEnv(GLIDE_FX_ENV_NUM_TMUS)) {
+    auto applyFxBoolEnv = [&](const char* envName, const char* sourceKey, bool& target) {
+        if (const char* envVal = GetNonEmptyEnv(envName)) {
+            bool b = true;
+            if (!ParseBoolString(envVal, b)) {
+                int n = 1;
+                b = ParseIntString(envVal, n) ? (n != 0) : true;
+            }
+            target = b;
+            outConfig.settingSources[sourceKey] = envName;
+        }
+    };
+
+    applyFxBoolEnv(GLIDE_FX_ENV_SLIDETECT, "enableSli", outConfig.enableSli);
+    applyFxBoolEnv(GLIDE_FX_ENV_V2_SLIDETECT, "enableSli", outConfig.enableSli);
+
+    if (const char* envVal = GetNonEmptyEnv(GLIDE_FX_ENV_AA_SAMPLE)) {
         int v = 0;
-        if (ParseIntString(envVal, v) && v >= 1 && v <= 3) {
-            outConfig.tmuCount = static_cast<uint32_t>(v);
-            outConfig.settingSources["tmuCount"] = GLIDE_FX_ENV_NUM_TMUS;
+        if (ParseIntString(envVal, v) &&
+            (v == 1 || v == 2 || v == 4 || v == 8 || v == 16)) {
+            outConfig.msaaSamples = static_cast<uint32_t>(v);
+            outConfig.settingSources["msaaSamples"] = GLIDE_FX_ENV_AA_SAMPLE;
         }
     }
 
@@ -1224,6 +1344,37 @@ bool IniConfigLoader::LoadWithDefaults(const std::string& configFilePath,
     applyGammaEnv(GLIDE_FX_ENV_GAMMA);
     applyGammaEnv(GLIDE_FX_ENV_V2_GAMMA);
 
+    auto applyChannelGammaEnv = [&](const char* envName, const char* sourceKey, float& target) {
+        if (const char* envVal = GetNonEmptyEnv(envName)) {
+            double g = 0.0;
+            if (ParseDoubleString(envVal, g) && g > 0.0) {
+                target = static_cast<float>(std::clamp(g, 0.1, 10.0));
+                outConfig.settingSources[sourceKey] = envName;
+            }
+        }
+    };
+    applyChannelGammaEnv(GLIDE_FX_ENV_RGAMMA, "gammaR", outConfig.gammaOverrideR);
+    applyChannelGammaEnv(GLIDE_FX_ENV_GGAMMA, "gammaG", outConfig.gammaOverrideG);
+    applyChannelGammaEnv(GLIDE_FX_ENV_BGAMMA, "gammaB", outConfig.gammaOverrideB);
+    applyChannelGammaEnv(GLIDE_FX_ENV_V2_RGAMMA, "gammaR", outConfig.gammaOverrideR);
+    applyChannelGammaEnv(GLIDE_FX_ENV_V2_GGAMMA, "gammaG", outConfig.gammaOverrideG);
+    applyChannelGammaEnv(GLIDE_FX_ENV_V2_BGAMMA, "gammaB", outConfig.gammaOverrideB);
+    applyChannelGammaEnv(GLIDE_FX_ENV_H3_RGAMMA, "gammaR", outConfig.gammaOverrideR);
+    applyChannelGammaEnv(GLIDE_FX_ENV_H3_GGAMMA, "gammaG", outConfig.gammaOverrideG);
+    applyChannelGammaEnv(GLIDE_FX_ENV_H3_BGAMMA, "gammaB", outConfig.gammaOverrideB);
+    if (const char* envVal = GetNonEmptyEnv(GLIDE_FX_ENV_GAMMARGB)) {
+        float r = 0.0f, g = 0.0f, b = 0.0f;
+        if (ParseGammaRgbString(envVal, r, g, b)) {
+            outConfig.gammaOverrideR = r;
+            outConfig.gammaOverrideG = g;
+            outConfig.gammaOverrideB = b;
+            outConfig.settingSources["gammaR"] = GLIDE_FX_ENV_GAMMARGB;
+            outConfig.settingSources["gammaG"] = GLIDE_FX_ENV_GAMMARGB;
+            outConfig.settingSources["gammaB"] = GLIDE_FX_ENV_GAMMARGB;
+        }
+    }
+    applyFxBoolEnv(GLIDE_FX_ENV_USE_APP_GAMMA, "useAppGamma", outConfig.useAppGamma);
+
     auto applyRefreshEnv = [&](const char* envName) {
         if (const char* envVal = GetNonEmptyEnv(envName)) {
             int hz = 0;
@@ -1237,40 +1388,71 @@ bool IniConfigLoader::LoadWithDefaults(const std::string& configFilePath,
     };
     applyRefreshEnv(GLIDE_FX_ENV_SCREENREFRESH);
     applyRefreshEnv(GLIDE_FX_ENV_V2_SCREENREFRESH);
+    applyRefreshEnv(GLIDE_FX_ENV_REFRESH);
 
-    auto applyFxBoolEnv = [&](const char* envName, const char* sourceKey, bool& target) {
-        if (const char* envVal = GetNonEmptyEnv(envName)) {
-            bool b = true;
-            if (!ParseBoolString(envVal, b)) {
-                int n = 1;
-                b = ParseIntString(envVal, n) ? (n != 0) : true;
-            }
-            target = b;
-            outConfig.settingSources[sourceKey] = envName;
-        }
-    };
     applyFxBoolEnv(GLIDE_FX_ENV_IGNORE_REOPEN, "ignoreReopen", outConfig.ignoreReopen);
     applyFxBoolEnv(GLIDE_FX_ENV_NO_DITHER_SUB, "noDitherSub", outConfig.noDitherSub);
     applyFxBoolEnv(GLIDE_FX_ENV_FORCE_BILINEAR, "forceBilinear", outConfig.forceBilinear);
     applyFxBoolEnv(GLIDE_FX_ENV_FORCE_TRILINEAR, "forceTrilinear", outConfig.forceTrilinear);
     applyFxBoolEnv(GLIDE_FX_ENV_TEXMAP_DISABLE, "texmapDisable", outConfig.texmapDisable);
+    applyFxBoolEnv(GLIDE_FX_ENV_V2_TEXMAP_DISABLE, "texmapDisable", outConfig.texmapDisable);
     applyFxBoolEnv(GLIDE_FX_ENV_BOUNDS_CHECK, "boundsCheck", outConfig.boundsCheck);
 
-    if (const char* envVal = GetNonEmptyEnv(GLIDE_FX_ENV_ALLOC_COLOR)) {
-        int v = 0;
-        if (ParseIntString(envVal, v) && (v == 2 || v == 3)) {
-            outConfig.allocColorBuffers = v;
-            outConfig.settingSources["allocColor"] = GLIDE_FX_ENV_ALLOC_COLOR;
-        }
+    // Authentic 3dfx strict `GETENV("FX_GLIDE_REPORT_REAL_HW") != NULL` check
+    // (glide2x/cvg/glide/src/disst.c:147): off by default; *any* defined
+    // variable value (including "0" or empty string) enables raw Voodoo2
+    // GR_SSTTYPE_Voodoo2 (3) reporting. Unset the variable to disable.
+    if (std::getenv(GLIDE_FX_ENV_REPORT_REAL_HW) != nullptr) {
+        outConfig.reportRealHw = true;
+        outConfig.settingSources["reportRealHw"] = GLIDE_FX_ENV_REPORT_REAL_HW;
     }
 
-    if (const char* envVal = GetNonEmptyEnv(GLIDE_FX_ENV_ALLOC_AUX)) {
-        int v = 0;
-        if (ParseIntString(envVal, v) && (v == 0 || v == 1)) {
-            outConfig.allocAuxBuffers = v;
-            outConfig.settingSources["allocAux"] = GLIDE_FX_ENV_ALLOC_AUX;
+    applyFxBoolEnv(GLIDE_FX_ENV_EMUL_RUSH, "emulRush", outConfig.emulRush);
+
+    if (const char* envVal = GetNonEmptyEnv(GLIDE_FX_ENV_TEXTURE_UMA)) {
+        bool b = false;
+        if (!ParseBoolString(envVal, b)) {
+            int n = 0;
+            b = ParseIntString(envVal, n) ? (n != 0) : false;
+        }
+        outConfig.textureUmaMode = b ? 1 : 0;
+        outConfig.settingSources["textureUma"] = GLIDE_FX_ENV_TEXTURE_UMA;
+    }
+
+    if (const char* envVal = GetNonEmptyEnv(GLIDE_FX_ENV_TRIPLE_BUFFER)) {
+        bool b = true;
+        if (!ParseBoolString(envVal, b)) {
+            int n = 1;
+            b = ParseIntString(envVal, n) ? (n != 0) : true;
+        }
+        if (b) {
+            outConfig.allocColorBuffers = 3;
+            outConfig.settingSources["allocColor"] = GLIDE_FX_ENV_TRIPLE_BUFFER;
         }
     }
+    auto applyAllocColorEnv = [&](const char* envName) {
+        if (const char* envVal = GetNonEmptyEnv(envName)) {
+            int v = 0;
+            if (ParseIntString(envVal, v) && (v == 2 || v == 3)) {
+                outConfig.allocColorBuffers = v;
+                outConfig.settingSources["allocColor"] = envName;
+            }
+        }
+    };
+    applyAllocColorEnv(GLIDE_FX_ENV_V2_ALLOC_COLOR);
+    applyAllocColorEnv(GLIDE_FX_ENV_ALLOC_COLOR);
+
+    auto applyAllocAuxEnv = [&](const char* envName) {
+        if (const char* envVal = GetNonEmptyEnv(envName)) {
+            int v = 0;
+            if (ParseIntString(envVal, v) && (v == 0 || v == 1)) {
+                outConfig.allocAuxBuffers = v;
+                outConfig.settingSources["allocAux"] = envName;
+            }
+        }
+    };
+    applyAllocAuxEnv(GLIDE_FX_ENV_V2_ALLOC_AUX);
+    applyAllocAuxEnv(GLIDE_FX_ENV_ALLOC_AUX);
 
     auto applySnapshotEnv = [&](const char* envName) {
         if (const char* envVal = GetNonEmptyEnv(envName)) {

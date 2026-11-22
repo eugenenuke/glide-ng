@@ -371,14 +371,27 @@ TEST_CASE("Config: IniConfigLoader & Authentic 3dfx Env Var Precedence", "[Confi
     std::vector<std::string> keys = {
         "GLIDE_NG_CONFIG", "GLIDE_NG_HEADLESS", "GLIDE_NG_CARD_MODEL",
         "GLIDE_NG_FBI_MEM_MB", "GLIDE_NG_TMU_MEM_MB", "GLIDE_NG_TMU_COUNT",
-        "GLIDE_NG_MAX_FPS", "GLIDE_NG_VSYNC", "GLIDE_NG_LOG_LEVEL",
-        "GLIDE_NG_LOG_FILE", "GLIDE_NG_NO_SPLASH",
-        "FX_GLIDE_FBRAM", "FX_GLIDE_TMU_MEMSIZE", "SSTV2_NUM_TMUS",
-        "SST_GAMMA", "SSTV2_GAMMA", "SST_SCREENREFRESH", "SSTV2_SCREENREFRESH",
+        "GLIDE_NG_SLI", "GLIDE_NG_MSAA", "GLIDE_NG_MAX_FPS", "GLIDE_NG_VSYNC",
+        "GLIDE_NG_LOG_LEVEL", "GLIDE_NG_LOG_FILE", "GLIDE_NG_NO_SPLASH",
+        "FX_GLIDE_FBRAM", "SST_FBIMEM_SIZE", "SSTV2_FBI_MEMSIZE", "SSTH3_FBRAM",
+        "FX_GLIDE_TMU_MEMSIZE", "SST_TMUMEM_SIZE", "SSTV2_TMU_MEMSIZE",
+        "SSTV2_NUM_TMUS", "FX_GLIDE_NUM_TMU",
+        "SST_SLIDETECT", "SSTV2_SLIDETECT",
+        "SST_GAMMA", "SSTV2_GAMMA",
+        "SST_RGAMMA", "SST_GGAMMA", "SST_BGAMMA",
+        "SSTV2_RGAMMA", "SSTV2_GGAMMA", "SSTV2_BGAMMA",
+        "SSTH3_RGAMMA", "SSTH3_GGAMMA", "SSTH3_BGAMMA",
+        "FX_GLIDE_GAMMARGB", "FX_GLIDE_USE_APP_GAMMA",
+        "SST_SCREENREFRESH", "SSTV2_SCREENREFRESH", "FX_GLIDE_REFRESH",
         "FX_GLIDE_IGNORE_REOPEN", "FX_GLIDE_NO_DITHER_SUB",
-        "SSTV2_FORCE_BILINEAR", "SSTV2_FORCE_TRILINEAR", "SST_TEXMAP_DISABLE",
-        "FX_GLIDE_BOUNDS_CHECK", "FX_GLIDE_ALLOC_COLOR", "FX_GLIDE_ALLOC_AUX",
-        "FX_GLIDE_SNAPSHOT", "FX_SNAPSHOT"};
+        "SSTV2_FORCE_BILINEAR", "SSTV2_FORCE_TRILINEAR",
+        "SST_TEXMAP_DISABLE", "SSTV2_TEXMAP_DISABLE",
+        "FX_GLIDE_BOUNDS_CHECK",
+        "FX_GLIDE_ALLOC_COLOR", "SSTV2_ALLOC_COLOR", "SST_TRIPLE_BUFFER",
+        "FX_GLIDE_ALLOC_AUX", "SSTV2_ALLOC_AUX",
+        "FX_GLIDE_SNAPSHOT", "FX_SNAPSHOT",
+        "FX_GLIDE_REPORT_REAL_HW", "FX_GLIDE_EMUL_RUSH",
+        "FX_GLIDE_AA_SAMPLE", "FX_GLIDE_TEXTURE_UMA"};
     std::vector<std::pair<std::string, std::string>> saved;
     ScopedEnvM8() {
       for (const auto& k : keys) {
@@ -540,6 +553,224 @@ TEST_CASE("Config: IniConfigLoader & Authentic 3dfx Env Var Precedence", "[Confi
 
     std::remove(iniPath.c_str());
   }
+
+  SECTION("Authentic card-family aliases, per-channel RGB gamma, and strict FX_GLIDE_REPORT_REAL_HW") {
+    const std::string iniPath = "/tmp/glide_ng_tier_a_test.ini";
+    {
+      std::ofstream out(iniPath);
+      out << "[glide]\n"
+          << "gamma_r = 1.2\n"
+          << "gamma_g = 1.3\n"
+          << "gamma_b = 1.4\n"
+          << "use_app_gamma = false\n"
+          << "report_real_hw = true\n"
+          << "emul_rush = true\n"
+          << "texture_uma = true\n";
+    }
+    GlideWrapper::IniConfigLoader loader;
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load(iniPath, cfg));
+    CHECK(std::fabs(cfg.gammaOverrideR - 1.2f) < 1e-4f);
+    CHECK(std::fabs(cfg.gammaOverrideG - 1.3f) < 1e-4f);
+    CHECK(std::fabs(cfg.gammaOverrideB - 1.4f) < 1e-4f);
+    CHECK(cfg.HasPerChannelGammaOverride() == true);
+    CHECK(cfg.useAppGamma == false);
+    CHECK(cfg.reportRealHw == true);
+    CHECK(cfg.reportRealHwFromIni == true);
+    CHECK(cfg.emulRush == true);
+    CHECK(cfg.emulRushFromIni == true);
+    CHECK(cfg.textureUmaMode == 1);
+    std::remove(iniPath.c_str());
+
+    // Family alias ordering: SST_ < SSTV2_ < SSTH3_ < FX_GLIDE_ < GLIDE_NG_
+    ::setenv("SST_FBIMEM_SIZE", "4", 1);
+    REQUIRE(loader.Load("nonexistent.ini", cfg));
+    CHECK(cfg.fbiMemoryMb == 4u);
+    CHECK(cfg.settingSources.at("fbiMemoryMb") == "SST_FBIMEM_SIZE");
+
+    ::setenv("SSTV2_FBI_MEMSIZE", "8", 1);
+    REQUIRE(loader.Load("nonexistent.ini", cfg));
+    CHECK(cfg.fbiMemoryMb == 8u);
+    CHECK(cfg.settingSources.at("fbiMemoryMb") == "SSTV2_FBI_MEMSIZE");
+
+    ::setenv("SSTH3_FBRAM", "16", 1);
+    REQUIRE(loader.Load("nonexistent.ini", cfg));
+    CHECK(cfg.fbiMemoryMb == 16u);
+    CHECK(cfg.settingSources.at("fbiMemoryMb") == "SSTH3_FBRAM");
+
+    ::setenv("FX_GLIDE_FBRAM", "32", 1);
+    REQUIRE(loader.Load("nonexistent.ini", cfg));
+    CHECK(cfg.fbiMemoryMb == 32u);
+    CHECK(cfg.settingSources.at("fbiMemoryMb") == "FX_GLIDE_FBRAM");
+
+    ::setenv("SST_TMUMEM_SIZE", "2", 1);
+    ::setenv("SSTV2_TMU_MEMSIZE", "4", 1);
+    REQUIRE(loader.Load("nonexistent.ini", cfg));
+    CHECK(cfg.tmuMemoryMb == 4u);
+    CHECK(cfg.settingSources.at("tmuMemoryMb") == "SSTV2_TMU_MEMSIZE");
+
+    ::setenv("SSTV2_NUM_TMUS", "1", 1);
+    ::setenv("FX_GLIDE_NUM_TMU", "2", 1);
+    REQUIRE(loader.Load("nonexistent.ini", cfg));
+    CHECK(cfg.tmuCount == 2u);
+    CHECK(cfg.settingSources.at("tmuCount") == "FX_GLIDE_NUM_TMU");
+
+    ::setenv("SST_SLIDETECT", "1", 1);
+    REQUIRE(loader.Load("nonexistent.ini", cfg));
+    CHECK(cfg.enableSli == true);
+    CHECK(cfg.settingSources.at("enableSli") == "SST_SLIDETECT");
+
+    ::setenv("SSTV2_SLIDETECT", "0", 1);
+    REQUIRE(loader.Load("nonexistent.ini", cfg));
+    CHECK(cfg.enableSli == false);
+    CHECK(cfg.settingSources.at("enableSli") == "SSTV2_SLIDETECT");
+
+    ::setenv("GLIDE_NG_SLI", "1", 1);
+    REQUIRE(loader.Load("nonexistent.ini", cfg));
+    CHECK(cfg.enableSli == true);
+    CHECK(cfg.settingSources.at("enableSli") == "GLIDE_NG_SLI");
+
+    ::setenv("FX_GLIDE_AA_SAMPLE", "4", 1);
+    REQUIRE(loader.Load("nonexistent.ini", cfg));
+    CHECK(cfg.msaaSamples == 4u);
+    CHECK(cfg.settingSources.at("msaaSamples") == "FX_GLIDE_AA_SAMPLE");
+
+    ::setenv("GLIDE_NG_MSAA", "2", 1);
+    REQUIRE(loader.Load("nonexistent.ini", cfg));
+    CHECK(cfg.msaaSamples == 2u);
+    CHECK(cfg.settingSources.at("msaaSamples") == "GLIDE_NG_MSAA");
+
+    ::setenv("SST_TRIPLE_BUFFER", "1", 1);
+    REQUIRE(loader.Load("nonexistent.ini", cfg));
+    CHECK(cfg.allocColorBuffers == 3);
+    CHECK(cfg.settingSources.at("allocColor") == "SST_TRIPLE_BUFFER");
+
+    ::setenv("SSTV2_ALLOC_COLOR", "2", 1);
+    REQUIRE(loader.Load("nonexistent.ini", cfg));
+    CHECK(cfg.allocColorBuffers == 2);
+    CHECK(cfg.settingSources.at("allocColor") == "SSTV2_ALLOC_COLOR");
+
+    ::setenv("SSTV2_ALLOC_AUX", "0", 1);
+    REQUIRE(loader.Load("nonexistent.ini", cfg));
+    CHECK(cfg.allocAuxBuffers == 0);
+    CHECK(cfg.settingSources.at("allocAux") == "SSTV2_ALLOC_AUX");
+
+    ::setenv("SSTV2_TEXMAP_DISABLE", "1", 1);
+    REQUIRE(loader.Load("nonexistent.ini", cfg));
+    CHECK(cfg.texmapDisable == true);
+    CHECK(cfg.settingSources.at("texmapDisable") == "SSTV2_TEXMAP_DISABLE");
+
+    ::setenv("SSTV2_SCREENREFRESH", "75", 1);
+    ::setenv("FX_GLIDE_REFRESH", "100", 1);
+    REQUIRE(loader.Load("nonexistent.ini", cfg));
+    CHECK(cfg.screenRefreshHz == 100u);
+    CHECK(cfg.maxFps == 100.0f);
+    CHECK(cfg.settingSources.at("screenRefresh") == "FX_GLIDE_REFRESH");
+
+    // Per-channel gamma precedence: SST_ < SSTV2_ < SSTH3_ < FX_GLIDE_GAMMARGB
+    ::setenv("SST_RGAMMA", "1.1", 1);
+    ::setenv("SSTV2_RGAMMA", "1.5", 1);
+    ::setenv("SSTH3_RGAMMA", "1.9", 1);
+    ::setenv("SSTH3_GGAMMA", "1.3", 1);
+    ::setenv("SSTH3_BGAMMA", "0.9", 1);
+    REQUIRE(loader.Load("nonexistent.ini", cfg));
+    CHECK(std::fabs(cfg.gammaOverrideR - 1.9f) < 1e-4f);
+    CHECK(std::fabs(cfg.gammaOverrideG - 1.3f) < 1e-4f);
+    CHECK(std::fabs(cfg.gammaOverrideB - 0.9f) < 1e-4f);
+    CHECK(cfg.settingSources.at("gammaR") == "SSTH3_RGAMMA");
+
+    ::setenv("FX_GLIDE_GAMMARGB", "2.0 1.6 1.2", 1);
+    REQUIRE(loader.Load("nonexistent.ini", cfg));
+    CHECK(std::fabs(cfg.gammaOverrideR - 2.0f) < 1e-4f);
+    CHECK(std::fabs(cfg.gammaOverrideG - 1.6f) < 1e-4f);
+    CHECK(std::fabs(cfg.gammaOverrideB - 1.2f) < 1e-4f);
+    CHECK(cfg.settingSources.at("gammaR") == "FX_GLIDE_GAMMARGB");
+
+    // Strict 3dfx != NULL check on FX_GLIDE_REPORT_REAL_HW ("0" still enables it!)
+    ::unsetenv("FX_GLIDE_REPORT_REAL_HW");
+    REQUIRE(loader.Load("nonexistent.ini", cfg));
+    CHECK(cfg.reportRealHw == false);
+    ::setenv("FX_GLIDE_REPORT_REAL_HW", "0", 1);
+    REQUIRE(loader.Load("nonexistent.ini", cfg));
+    CHECK(cfg.reportRealHw == true);
+    CHECK(cfg.reportRealHwFromIni == false);
+    CHECK(cfg.settingSources.at("reportRealHw") == "FX_GLIDE_REPORT_REAL_HW");
+
+    ::setenv("FX_GLIDE_EMUL_RUSH", "1", 1);
+    ::setenv("FX_GLIDE_TEXTURE_UMA", "1", 1);
+    ::setenv("FX_GLIDE_USE_APP_GAMMA", "0", 1);
+    REQUIRE(loader.Load("nonexistent.ini", cfg));
+    CHECK(cfg.emulRush == true);
+    CHECK(cfg.textureUmaMode == 1);
+    CHECK(cfg.useAppGamma == false);
+  }
+
+#ifdef __linux__
+  SECTION("Runtime per-channel RGB gamma, FX_GLIDE_USE_APP_GAMMA=0, and FX_GLIDE_TEXTURE_UMA=1") {
+    ::setenv("GLIDE_NG_HEADLESS", "1", 1);
+    ::setenv("GLIDE_NG_CARD_MODEL", "voodoo3", 1);
+    ::setenv("GLIDE_NG_TMU_COUNT", "2", 1);
+    ::setenv("GLIDE_NG_TMU_MEM_MB", "4", 1);
+    ::setenv("FX_GLIDE_GAMMARGB", "2.0 1.0 0.5", 1);
+    ::setenv("FX_GLIDE_TEXTURE_UMA", "1", 1);
+
+    void* handle = OpenGlide3Handle();
+    REQUIRE(handle != nullptr);
+    auto glideInit = reinterpret_cast<void (*)()>(::dlsym(handle, "grGlideInit"));
+    auto glideShutdown = reinterpret_cast<void (*)()>(::dlsym(handle, "grGlideShutdown"));
+    auto winOpen = reinterpret_cast<FxU32 (*)(FxU32, FxU32, FxU32, FxU32, FxU32, int, int)>(
+        ::dlsym(handle, "grSstWinOpen"));
+    auto winClose = reinterpret_cast<FxBool (*)(FxU32)>(::dlsym(handle, "grSstWinClose"));
+    auto texMaxAddr = reinterpret_cast<FxU32 (*)(GrChipID_t)>(::dlsym(handle, "grTexMaxAddress"));
+    auto loadGamma = reinterpret_cast<void (*)(FxU32, FxU32*, FxU32*, FxU32*)>(
+        ::dlsym(handle, "grLoadGammaTable"));
+    auto getGammaExt = reinterpret_cast<void (*)(FxU32, FxU32*, FxU32*, FxU32*)>(
+        ::dlsym(handle, "grGetGammaTableExt"));
+    REQUIRE(glideInit != nullptr);
+    REQUIRE(winOpen != nullptr);
+    REQUIRE(getGammaExt != nullptr);
+
+    glideInit();
+    // FX_GLIDE_TEXTURE_UMA=1 pools both 4 MB TMUs right at init -> 8 MB on TMU0
+    CHECK(texMaxAddr(GR_TMU0) == 8u * 1024u * 1024u);
+
+    FxU32 ctx = winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                        GR_COLORFORMAT_ABGR, GR_ORIGIN_UPPER_LEFT, 2, 1);
+    REQUIRE(ctx != 0);
+
+    FxU32 rOut[256] = {}, gOut[256] = {}, bOut[256] = {};
+    getGammaExt(256, rOut, gOut, bOut);
+    // At mid-level 128: R gamma 2.0 lifts (~181), G gamma 1.0 stays 128, B gamma 0.5 drops (~64)
+    CHECK(rOut[128] > 165u);
+    CHECK(gOut[128] == 128u);
+    CHECK(bOut[128] < 80u);
+
+    winClose(ctx);
+    glideShutdown();
+
+    // Now test FX_GLIDE_USE_APP_GAMMA=0 ignoring app grLoadGammaTable
+    ::unsetenv("FX_GLIDE_GAMMARGB");
+    ::unsetenv("FX_GLIDE_TEXTURE_UMA");
+    ::setenv("FX_GLIDE_USE_APP_GAMMA", "0", 1);
+    glideInit();
+    CHECK(texMaxAddr(GR_TMU0) == 4u * 1024u * 1024u);
+    ctx = winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                  GR_COLORFORMAT_ABGR, GR_ORIGIN_UPPER_LEFT, 2, 1);
+    REQUIRE(ctx != 0);
+
+    FxU32 custom[256];
+    for (FxU32 i = 0; i < 256; ++i) custom[i] = 255u - i;
+    loadGamma(256, custom, custom, custom);
+    getGammaExt(256, rOut, gOut, bOut);
+    CHECK(rOut[128] == 128u);
+    CHECK(rOut[0] == 0u);
+    CHECK(rOut[255] == 255u);
+
+    winClose(ctx);
+    glideShutdown();
+    ::dlclose(handle);
+  }
+#endif
 
 #ifdef __linux__
   SECTION("End-to-end Glide 3.x runtime verification (sizing, aux=0, no_dither, texmap_disable, reopen, bounds, gamma, PPM snapshot)") {

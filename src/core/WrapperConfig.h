@@ -159,22 +159,40 @@ struct WrapperConfig {
     std::string hudSpec{""};               // Raw/normalized HUD spec for summary
     std::string activeFrontendApi{""};     // Populated at InitGlide ("Glide 2.x" / "Glide 3.x")
 
-    // Authentic 3dfx Glide overrides (Phase 1 & Phase 2)
+    // Authentic 3dfx Glide overrides
     bool noSplash{false};          // FX_GLIDE_NO_SPLASH / GLIDE_NG_NO_SPLASH
     int shamelessPlugMode{-1};     // -1 = app-controlled, 0 = force off, 1 = force on
     float gammaOverride{0.0f};     // <= 0 = app-controlled, > 0 = SST_GAMMA / SSTV2_GAMMA
-    uint32_t screenRefreshHz{0};   // 0 = unset, > 0 = SST_SCREENREFRESH / SSTV2_SCREENREFRESH
+    float gammaOverrideR{0.0f};    // <= 0 = inherit gammaOverride, > 0 = SST*_RGAMMA / FX_GLIDE_GAMMARGB
+    float gammaOverrideG{0.0f};    // <= 0 = inherit gammaOverride, > 0 = SST*_GGAMMA / FX_GLIDE_GAMMARGB
+    float gammaOverrideB{0.0f};    // <= 0 = inherit gammaOverride, > 0 = SST*_BGAMMA / FX_GLIDE_GAMMARGB
+    bool useAppGamma{true};        // FX_GLIDE_USE_APP_GAMMA (false ignores app gamma writes)
+    uint32_t screenRefreshHz{0};   // 0 = unset, > 0 = SST*_SCREENREFRESH / FX_GLIDE_REFRESH
     bool ignoreReopen{false};      // FX_GLIDE_IGNORE_REOPEN
     bool noDitherSub{false};       // FX_GLIDE_NO_DITHER_SUB
     bool forceBilinear{false};     // SSTV2_FORCE_BILINEAR
     bool forceTrilinear{false};    // SSTV2_FORCE_TRILINEAR
-    bool texmapDisable{false};     // SST_TEXMAP_DISABLE
+    bool texmapDisable{false};     // SST_TEXMAP_DISABLE / SSTV2_TEXMAP_DISABLE
     bool boundsCheck{false};       // FX_GLIDE_BOUNDS_CHECK
-    int allocColorBuffers{-1};     // -1 = app-controlled, 2 or 3 (FX_GLIDE_ALLOC_COLOR)
-    int allocAuxBuffers{-1};       // -1 = app-controlled, 0 or 1 (FX_GLIDE_ALLOC_AUX)
+    int allocColorBuffers{-1};     // -1 = app-controlled, 2 or 3 (FX_GLIDE_ALLOC_COLOR / SSTV2_ALLOC_COLOR / SST_TRIPLE_BUFFER)
+    int allocAuxBuffers{-1};       // -1 = app-controlled, 0 or 1 (FX_GLIDE_ALLOC_AUX / SSTV2_ALLOC_AUX)
     bool snapshotEnabled{false};   // FX_GLIDE_SNAPSHOT / FX_SNAPSHOT
     uint64_t snapshotFrame{0};     // 0-indexed frame to capture
     std::string snapshotPath{""};  // Explicit output PPM path (empty = auto glide_snapshot_NNNNNN.ppm)
+    bool reportRealHw{false};      // FX_GLIDE_REPORT_REAL_HW (off by default; Voodoo2 CVG raw enum toggle)
+    bool reportRealHwFromIni{false}; // True only when enabled via glide-ng.ini [glide] report_real_hw
+    bool emulRush{false};          // FX_GLIDE_EMUL_RUSH (off by default; H3/VSA-100 reports GR_SSTTYPE_SST96)
+    bool emulRushFromIni{false};   // True only when enabled via glide-ng.ini [glide] emul_rush
+    int textureUmaMode{-1};        // -1 = app-controlled, 0 = off at init, 1 = on at init (FX_GLIDE_TEXTURE_UMA)
+
+    bool HasGammaOverride() const noexcept {
+        return gammaOverride > 0.0f || gammaOverrideR > 0.0f ||
+               gammaOverrideG > 0.0f || gammaOverrideB > 0.0f;
+    }
+    bool HasPerChannelGammaOverride() const noexcept {
+        return gammaOverrideR > 0.0f || gammaOverrideG > 0.0f ||
+               gammaOverrideB > 0.0f;
+    }
 
     // Backend-specific tuning (unified; zero direct std::getenv() in backends)
     uint32_t swThreads{0};         // 0 = auto (hardware_concurrency)

@@ -171,6 +171,7 @@ void ApplySharedStateToBackend(const SharedFrontendState& st,
 void ApplyPostWinOpenOverrides(SharedFrontendState& st, uint32_t colorFormat,
                                int reqColBuffers, int reqAuxBuffers);
 void SetGammaCorrection(float value);
+void SetGammaCorrectionRGB(float red, float green, float blue);
 uint64_t GetBoundsCheckViolationCount();
 void SetClipWindow(SharedFrontendState& st, uint32_t minx, uint32_t miny,
                    uint32_t maxx, uint32_t maxy);

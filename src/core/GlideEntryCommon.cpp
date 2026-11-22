@@ -294,10 +294,14 @@ ResolutionDims ResolveResolution(uint32_t resolutionEnum) {
 
 void ConfigureTmuMemoryLimits() {
   auto& reg = EmulationRegistry::GetInstance();
-  for (uint32_t tmu = 0; tmu < reg.GetConfig().tmuCount; ++tmu) {
-    TextureManager::GetInstance().SetTmuMemoryLimitMb(
-        tmu, reg.GetConfig().tmuMemoryMb);
+  const auto& cfg = reg.GetConfig();
+  for (uint32_t tmu = 0; tmu < cfg.tmuCount; ++tmu) {
+    TextureManager::GetInstance().SetTmuMemoryLimitMb(tmu, cfg.tmuMemoryMb);
   }
+  // Authentic FX_GLIDE_TEXTURE_UMA / [glide] texture_uma initial state
+  // (mirrors glide3x/h5/glide3/src/gpci.c:1204). Reset to disabled when
+  // app-controlled so stale state does not leak across grGlideInit calls.
+  TextureManager::GetInstance().SetUmaMode(cfg.textureUmaMode == 1);
 }
 
 void InitGlide(const char* apiTag, void (*resetFrontendState)(),
@@ -466,6 +470,40 @@ void ApplySharedStateToBackend(const SharedFrontendState& st,
   }
 }
 
+namespace {
+void UploadGammaRgbLut(IGraphicsBackend* b, float red, float green,
+                       float blue) {
+  if (!b) return;
+  const float gr = (red > 0.0f) ? red : 1.0f;
+  const float gg = (green > 0.0f) ? green : 1.0f;
+  const float gb = (blue > 0.0f) ? blue : 1.0f;
+  uint32_t rTable[256], gTable[256], bTable[256];
+  for (int i = 0; i < 256; ++i) {
+    rTable[i] = static_cast<uint32_t>(
+        std::pow(i / 255.0f, 1.0f / gr) * 255.0f + 0.5f);
+    gTable[i] = static_cast<uint32_t>(
+        std::pow(i / 255.0f, 1.0f / gg) * 255.0f + 0.5f);
+    bTable[i] = static_cast<uint32_t>(
+        std::pow(i / 255.0f, 1.0f / gb) * 255.0f + 0.5f);
+  }
+  b->LoadGammaTable(256, rTable, gTable, bTable);
+}
+
+void ApplyConfiguredGammaToBackend(IGraphicsBackend* b,
+                                   const WrapperConfig& cfg) {
+  if (!b) return;
+  if (cfg.HasPerChannelGammaOverride()) {
+    const float base = (cfg.gammaOverride > 0.0f) ? cfg.gammaOverride : 1.0f;
+    const float gr = (cfg.gammaOverrideR > 0.0f) ? cfg.gammaOverrideR : base;
+    const float gg = (cfg.gammaOverrideG > 0.0f) ? cfg.gammaOverrideG : base;
+    const float gb = (cfg.gammaOverrideB > 0.0f) ? cfg.gammaOverrideB : base;
+    UploadGammaRgbLut(b, gr, gg, gb);
+  } else if (cfg.gammaOverride > 0.0f) {
+    b->SetGamma(cfg.gammaOverride);
+  }
+}
+}  // namespace
+
 void ApplyPostWinOpenOverrides(SharedFrontendState& st, uint32_t colorFormat,
                                int reqColBuffers, int reqAuxBuffers) {
   const auto& cfg = EmulationRegistry::GetInstance().GetConfig();
@@ -497,10 +535,20 @@ void ApplyPostWinOpenOverrides(SharedFrontendState& st, uint32_t colorFormat,
   auto* b = BackendManager::GetInstance().GetBackend();
   if (!b) return;
 
-  if (cfg.gammaOverride > 0.0f) {
-    GLIDE_LOG(INFO, "Frontend",
-              "Applying authentic gamma override: " << cfg.gammaOverride);
-    b->SetGamma(cfg.gammaOverride);
+  if (cfg.HasGammaOverride()) {
+    if (cfg.HasPerChannelGammaOverride()) {
+      const float base = (cfg.gammaOverride > 0.0f) ? cfg.gammaOverride : 1.0f;
+      const float gr = (cfg.gammaOverrideR > 0.0f) ? cfg.gammaOverrideR : base;
+      const float gg = (cfg.gammaOverrideG > 0.0f) ? cfg.gammaOverrideG : base;
+      const float gb = (cfg.gammaOverrideB > 0.0f) ? cfg.gammaOverrideB : base;
+      GLIDE_LOG(INFO, "Frontend",
+                "Applying authentic RGB gamma override: R=" << gr << " G=" << gg
+                                                            << " B=" << gb);
+    } else {
+      GLIDE_LOG(INFO, "Frontend",
+                "Applying authentic gamma override: " << cfg.gammaOverride);
+    }
+    ApplyConfiguredGammaToBackend(b, cfg);
   }
   if (cfg.noDitherSub) {
     b->SetDitherMode(0u);
@@ -526,16 +574,45 @@ void ApplyPostWinOpenOverrides(SharedFrontendState& st, uint32_t colorFormat,
 
 void SetGammaCorrection(float value) {
   const auto& cfg = EmulationRegistry::GetInstance().GetConfig();
-  const float effective = (cfg.gammaOverride > 0.0f) ? cfg.gammaOverride : value;
-  if (cfg.gammaOverride > 0.0f && std::fabs(value - cfg.gammaOverride) > 1e-4f) {
+  if (cfg.HasGammaOverride()) {
     GLIDE_LOG(DEBUG, "Frontend",
               "App requested gamma=" << value
-                                     << ", keeping SST_GAMMA/SSTV2_GAMMA override="
-                                     << cfg.gammaOverride);
+                                     << ", preserving configured gamma override.");
+    ApplyConfiguredGammaToBackend(BackendManager::GetInstance().GetBackend(),
+                                  cfg);
+    return;
+  }
+  if (!cfg.useAppGamma) {
+    GLIDE_LOG(DEBUG, "Frontend",
+              "Ignoring app grGammaCorrectionValue(" << value
+                                                     << ") due to "
+                                                        "FX_GLIDE_USE_APP_GAMMA=0.");
+    return;
   }
   if (auto* b = BackendManager::GetInstance().GetBackend()) {
-    b->SetGamma(effective);
+    b->SetGamma(value);
   }
+}
+
+void SetGammaCorrectionRGB(float red, float green, float blue) {
+  const auto& cfg = EmulationRegistry::GetInstance().GetConfig();
+  if (cfg.HasGammaOverride()) {
+    GLIDE_LOG(DEBUG, "Frontend",
+              "App requested guGammaCorrectionRGB("
+                  << red << "," << green << "," << blue
+                  << "), preserving configured gamma override.");
+    ApplyConfiguredGammaToBackend(BackendManager::GetInstance().GetBackend(),
+                                  cfg);
+    return;
+  }
+  if (!cfg.useAppGamma) {
+    GLIDE_LOG(DEBUG, "Frontend",
+              "Ignoring app guGammaCorrectionRGB due to "
+              "FX_GLIDE_USE_APP_GAMMA=0.");
+    return;
+  }
+  UploadGammaRgbLut(BackendManager::GetInstance().GetBackend(), red, green,
+                    blue);
 }
 
 uint64_t GetBoundsCheckViolationCount() {
@@ -1013,13 +1090,18 @@ void DisableAllEffects(SharedFrontendState& st, bool clearCachedFogMode) {
 void LoadGammaTable(uint32_t nentries, uint32_t* red, uint32_t* green,
                     uint32_t* blue) {
   const auto& cfg = EmulationRegistry::GetInstance().GetConfig();
-  if (cfg.gammaOverride > 0.0f) {
+  if (cfg.HasGammaOverride()) {
     GLIDE_LOG(DEBUG, "Frontend",
-              "App called grLoadGammaTable, keeping SST_GAMMA/SSTV2_GAMMA "
-              "override=" << cfg.gammaOverride);
-    if (auto* b = BackendManager::GetInstance().GetBackend()) {
-      b->SetGamma(cfg.gammaOverride);
-    }
+              "App called grLoadGammaTable, preserving configured gamma "
+              "override.");
+    ApplyConfiguredGammaToBackend(BackendManager::GetInstance().GetBackend(),
+                                  cfg);
+    return;
+  }
+  if (!cfg.useAppGamma) {
+    GLIDE_LOG(DEBUG, "Frontend",
+              "Ignoring app grLoadGammaTable due to "
+              "FX_GLIDE_USE_APP_GAMMA=0.");
     return;
   }
   if (auto* b = BackendManager::GetInstance().GetBackend()) {

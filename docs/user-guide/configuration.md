@@ -1,6 +1,6 @@
 # Configuration & Environment Variables
 
-`glide-ng` is configured through a human-readable INI file (`glide-ng.ini`), authentic 3dfx environment variables (`FX_GLIDE_*`, `SST_*`, `SSTV2_*`), and wrapper-specific environment overrides (`GLIDE_NG_*`).
+`glide-ng` is configured through a human-readable INI file (`glide-ng.ini`), authentic 3dfx environment variables (`FX_GLIDE_*`, `SST_*`, `SSTV2_*`, `SSTH3_*`), and wrapper-specific environment overrides (`GLIDE_NG_*`).
 
 A commented template is provided at [`glide-ng.ini.example`](../../glide-ng.ini.example), and all recognized environment variables are defined in a single header at [`include/glide_ng/env_vars.h`](../../include/glide_ng/env_vars.h).
 
@@ -12,7 +12,7 @@ Settings resolve in strict order from lowest to highest priority:
 
 1. **Built-in defaults** (plus hardware defaults derived from the selected `card_model`)
 2. **INI file** (`./glide-ng.ini`, or the file path specified by `GLIDE_NG_CONFIG`)
-3. **Authentic 3dfx environment variables** (`FX_GLIDE_*`, `SST_*`, `SSTV2_*`)
+3. **Authentic 3dfx environment variables** (`FX_GLIDE_*`, `SST_*`, `SSTV2_*`, `SSTH3_*` — within a setting, `SST_` < `SSTV2_` < `SSTH3_` < `FX_GLIDE_`)
 4. **Wrapper environment variables** (`GLIDE_NG_*` — highest priority)
 
 When a card model is selected, its hardware defaults (`api_version`, `fbi_memory_mb`, `tmu_count`, `tmu_memory_mb`) populate only fields not explicitly overridden by INI or environment variables. On startup, `glide-ng` records the active profile and the exact source (`default`, `ini`, `FX_GLIDE_*`/`SST_*`, `GLIDE_NG_*`) of every override in `glide-ng.log` and emits `[WARN]` for unrecognized INI keys or invalid values.
@@ -40,7 +40,7 @@ All wrapper-specific environment variables use the canonical `GLIDE_NG_*` prefix
 | `GLIDE_NG_FBI_MEM_MB` | `[hardware] fbi_memory_mb` | Positive integer (MB) | Derived from card (`16` for `Voodoo2`) | Overrides reported Frame Buffer Interface (FBI) memory in MB. |
 | `GLIDE_NG_TMU_COUNT` | `[hardware] tmu_count` | `1`, `2`, `3` | Derived from card (`2` for `Voodoo2`) | Overrides number of reported Texture Mapping Units (TMUs). |
 | `GLIDE_NG_TMU_MEM_MB` | `[hardware] tmu_memory_mb` | Positive integer (MB) | Derived from card (`16` for `Voodoo2`) | Overrides texture memory per TMU in MB. |
-| `GLIDE_NG_SLI` | `[hardware] sli` | `0`/`1`, `true`/`false` | `false` | Reports Voodoo2 SLI capability via hardware query APIs. |
+| `GLIDE_NG_SLI` | `[hardware] sli` | `0`/`1`, `true`/`false` | `false` | Reports SLI capability (`sliDetect`) via hardware query APIs on Voodoo Graphics (`SST-1`) and Voodoo2 (`CVG`). Overrides `SST_SLIDETECT` / `SSTV2_SLIDETECT`. |
 | `GLIDE_NG_VENDOR` | `[hardware] vendor` | Arbitrary string | `3Dfx Interactive` | Overrides `grGetString(GR_VENDOR)`. |
 | `GLIDE_NG_RENDERER` | `[hardware] renderer` | Arbitrary string | *(backend default)* | Overrides `grGetString(GR_RENDERER)`. |
 
@@ -127,31 +127,39 @@ GLIDE_NG_HUD=full,position=br,scale=1.5 ./build_release/bin/glide3_cube
 
 ---
 
-## 2. Authentic 3dfx Environment Variables (`FX_GLIDE_*` / `SST_*` / `SSTV2_*`)
+## 2. Authentic 3dfx Environment Variables (`FX_GLIDE_*` / `SST_*` / `SSTV2_*` / `SSTH3_*`)
 
-`glide-ng` implements 20 user-facing 3dfx environment variables with full `glide-ng.ini` parity:
+`glide-ng` registers **48** authentic/legacy 3dfx environment variables (including card-generation aliases from `SST-1`, `CVG`, `H3`, and `H5` drivers) with full `glide-ng.ini` parity. Within a setting family, more recent driver prefixes override older ones (`SST_*` < `SSTV2_*` < `SSTH3_*` < `FX_GLIDE_*`), and `GLIDE_NG_*` always overrides all of them.
 
-| Variable | INI Equivalent | Accepted Values | Default | Behavior & Precedence |
+| Variable(s) | INI Equivalent | Accepted Values | Default | Behavior & Precedence |
 | :--- | :--- | :--- | :--- | :--- |
 | `FX_GLIDE_NO_SPLASH` | `[glide] no_splash` | `0`/`false`, non-zero/`true` | Unset | Suppresses automatic `grSstWinOpen()` startup splash and explicit `grSplash()` calls. Overridden by `GLIDE_NG_NO_SPLASH`. |
 | `FX_GLIDE_SHAMELESS_PLUG` | `[glide] shameless_plug` | `0`/`false` (off), non-zero/`true` (on) | Unset | Forces 3dfx watermark badge on or off. Overridden by `GLIDE_NG_SHAMELESS_PLUG`. |
 | `FX_GLIDE_SWAPINTERVAL` | `[glide] swap_interval` | Integer `>= 0` (`0` = VSync off, `>= 1` = VSync on) | Unset | Controls swap synchronization. Overridden by `GLIDE_NG_VSYNC`. |
-| `FX_GLIDE_FBRAM` | `[hardware] fbi_memory_mb` | Positive integer (MB) | Card default | Overrides reported FBI memory. Overridden by `GLIDE_NG_FBI_MEM_MB`. |
-| `FX_GLIDE_TMU_MEMSIZE` | `[hardware] tmu_memory_mb` | Positive integer (MB) | Card default | Overrides TMU texture memory budget. Overridden by `GLIDE_NG_TMU_MEM_MB`. |
-| `SSTV2_NUM_TMUS` | `[hardware] tmu_count` | `1`, `2`, `3` | Card default | Overrides reported TMU count (`1` zeroes `GR_TMU1` address space). Overridden by `GLIDE_NG_TMU_COUNT`. |
-| `SST_GAMMA` / `SSTV2_GAMMA` | `[glide] gamma` *(or `[display] gamma`)* | Float `0.1`..`10.0` | Unset *(app-controlled)* | Forces RAMDAC gamma LUT correction across `grSstWinOpen` and app gamma calls (`SSTV2_GAMMA` beats `SST_GAMMA`). |
-| `SST_SCREENREFRESH` / `SSTV2_SCREENREFRESH` | `[glide] screen_refresh` *(or `[display] screen_refresh`)* | Positive integer (Hz) | Unset | Sets frame-rate pacing target (`SSTV2_SCREENREFRESH` beats `SST_SCREENREFRESH`). Overridden by `GLIDE_NG_MAX_FPS`. |
+| `SST_FBIMEM_SIZE` / `SSTV2_FBI_MEMSIZE` / `SSTH3_FBRAM` / `FX_GLIDE_FBRAM` | `[hardware] fbi_memory_mb` | Positive integer (MB) | Card default | Overrides reported FBI memory (`SST_FBIMEM_SIZE` < `SSTV2_FBI_MEMSIZE` < `SSTH3_FBRAM` < `FX_GLIDE_FBRAM`). Overridden by `GLIDE_NG_FBI_MEM_MB`. |
+| `SST_TMUMEM_SIZE` / `SSTV2_TMU_MEMSIZE` / `FX_GLIDE_TMU_MEMSIZE` | `[hardware] tmu_memory_mb` | Positive integer (MB) | Card default | Overrides TMU texture memory budget (`SST_TMUMEM_SIZE` < `SSTV2_TMU_MEMSIZE` < `FX_GLIDE_TMU_MEMSIZE`). Overridden by `GLIDE_NG_TMU_MEM_MB`. |
+| `SSTV2_NUM_TMUS` / `FX_GLIDE_NUM_TMU` | `[hardware] tmu_count` | `1`, `2`, `3` | Card default | Overrides reported TMU count (`1` zeroes `GR_TMU1` address space; `FX_GLIDE_NUM_TMU` beats `SSTV2_NUM_TMUS`). Overridden by `GLIDE_NG_TMU_COUNT`. |
+| `SST_SLIDETECT` / `SSTV2_SLIDETECT` | `[hardware] sli` | `0`/`1`, `true`/`false` | `false` | Enables/disables reported SLI detection (`sliDetect`) on Voodoo Graphics (`SST-1`) and Voodoo2 (`CVG`). `SSTV2_SLIDETECT` beats `SST_SLIDETECT`. Overridden by `GLIDE_NG_SLI`. |
+| `FX_GLIDE_AA_SAMPLE` | `[display] msaa` | `1`, `2`, `4`, `8`, `16` | `1` *(disabled)* | Overrides MSAA/FSAA sample count (from 3dfx `glide3x.dll` 3.10). Overridden by `GLIDE_NG_MSAA`. |
+| `SST_GAMMA` / `SSTV2_GAMMA` | `[glide] gamma` *(or `[display] gamma`)* | Float `0.1`..`10.0` | Unset *(app-controlled)* | Forces uniform scalar RAMDAC gamma LUT correction across `grSstWinOpen` and app gamma calls (`SSTV2_GAMMA` beats `SST_GAMMA`). |
+| `SST_{R,G,B}GAMMA` / `SSTV2_{R,G,B}GAMMA` / `SSTH3_{R,G,B}GAMMA` | `[glide] gamma_r`, `gamma_g`, `gamma_b` *(or `[display]`)* | Float `0.1`..`10.0` | Unset *(inherits `gamma`)* | Per-channel red/green/blue RAMDAC gamma LUT override (`SST_*` < `SSTV2_*` < `SSTH3_*` < `FX_GLIDE_GAMMARGB`). Unspecified channels inherit scalar `gamma` (or `1.0`). |
+| `FX_GLIDE_GAMMARGB` | `[glide] gamma_rgb` *(or `[display] gamma_rgb`)* | Three floats `0.1`..`10.0` separated by space, `,`, or `;` *(e.g. `"1.6 1.4 1.2"`)* | Unset | Combined per-channel RGB gamma LUT override; supersedes `SST*_{R,G,B}GAMMA`. |
+| `FX_GLIDE_USE_APP_GAMMA` | `[glide] use_app_gamma` *(or `[display]`)* | `0`/`1`, `true`/`false` | `true` | When `0`/`false`, ignores application calls to `grGammaCorrectionValue`, `guGammaCorrectionRGB`, and `grLoadGammaTable` so host/configured gamma remains unchanged. |
+| `SST_SCREENREFRESH` / `SSTV2_SCREENREFRESH` / `FX_GLIDE_REFRESH` | `[glide] screen_refresh` *(or `[display] screen_refresh`)* | Positive integer (Hz) | Unset | Sets frame-rate pacing target (`SST_SCREENREFRESH` < `SSTV2_SCREENREFRESH` < `FX_GLIDE_REFRESH`). Overridden by `GLIDE_NG_MAX_FPS`. |
 | `FX_GLIDE_IGNORE_REOPEN` | `[glide] ignore_reopen` | `0`/`1`, `true`/`false` | `false` | Treats redundant `grSstWinOpen` calls while a window is active as a safe no-op preserving the framebuffer and state. |
 | `FX_GLIDE_NO_DITHER_SUB` | `[glide] no_dither_sub` | `0`/`1`, `true`/`false` | `false` | Disables 16-bit 2×2 / 4×4 color dithering across all backends. |
-| `SSTV2_FORCE_BILINEAR` | `[glide] force_bilinear` | `0`/`1`, `true`/`false` | `false` | Forces bilinear min/mag texture filtering regardless of `grTexFilterMode`. |
-| `SSTV2_FORCE_TRILINEAR` | `[glide] force_trilinear` | `0`/`1`, `true`/`false` | `false` | Forces bilinear filtering plus trilinear mipmap blending (`lodBlend = true`). |
-| `SST_TEXMAP_DISABLE` | `[glide] texmap_disable` | `0`/`1`, `true`/`false` | `false` | Bypasses texture sampling so all TMU stages pass through iterated color (diagnostic switch). |
+| `SSTV2_FORCE_BILINEAR` | `[glide] force_bilinear` | `0`/`1`, `true`/`false` | `false` | Forces bilinear min/mag texture filtering regardless of `grTexFilterMode` *(tweaker/wrapper convention; not present in retail 3dfx DLLs)*. |
+| `SSTV2_FORCE_TRILINEAR` | `[glide] force_trilinear` | `0`/`1`, `true`/`false` | `false` | Forces bilinear filtering plus trilinear mipmap blending (`lodBlend = true`) *(tweaker/wrapper convention; not present in retail 3dfx DLLs)*. |
+| `SST_TEXMAP_DISABLE` / `SSTV2_TEXMAP_DISABLE` | `[glide] texmap_disable` | `0`/`1`, `true`/`false` | `false` | Bypasses texture sampling so all TMU stages pass through iterated color (`SSTV2_TEXMAP_DISABLE` beats `SST_TEXMAP_DISABLE`). |
 | `FX_GLIDE_BOUNDS_CHECK` | `[glide] bounds_check` | `0`/`1`, `true`/`false` | `false` | Validates submitted vertices against viewport bounds, finiteness, and `oow > 0`; logs up to 16 `[WARN] [BoundsCheck]` lines plus a session total. Zero overhead when off. |
-| `FX_GLIDE_ALLOC_COLOR` | `[glide] alloc_color` | `2`, `3` | App-requested | Overrides color buffer count (double vs. triple buffering). |
-| `FX_GLIDE_ALLOC_AUX` | `[glide] alloc_aux` | `0`, `1` | App-requested | Overrides aux/depth buffer allocation (`0` disables depth tests and depth writes). |
+| `SST_TRIPLE_BUFFER` / `SSTV2_ALLOC_COLOR` / `FX_GLIDE_ALLOC_COLOR` | `[glide] alloc_color` | `2`, `3` *(for `SST_TRIPLE_BUFFER`: bool/non-zero forces `3`)* | App-requested | Overrides color buffer count (`SST_TRIPLE_BUFFER` < `SSTV2_ALLOC_COLOR` < `FX_GLIDE_ALLOC_COLOR`). |
+| `SSTV2_ALLOC_AUX` / `FX_GLIDE_ALLOC_AUX` | `[glide] alloc_aux` | `0`, `1` | App-requested | Overrides aux/depth buffer allocation (`0` disables depth tests and depth writes; `FX_GLIDE_ALLOC_AUX` beats `SSTV2_ALLOC_AUX`). |
+| `FX_GLIDE_REPORT_REAL_HW` | `[glide] report_real_hw` | **Any defined value** *(see note below)*; INI accepts `true`/`false` | Unset (`false`) | On `Voodoo2` (CVG), makes Glide 2.x `grSstQueryHardware()` return raw **`GR_SSTTYPE_Voodoo2` (`3`)** instead of masking it as **`GR_SSTTYPE_VOODOO` (`0`)**. **Strict 3dfx `!= NULL` rule:** matching real `glide2x.dll` 2.50–2.56 (`disst.c`), *any* defined value in the environment — including **`FX_GLIDE_REPORT_REAL_HW=0`** or an empty string — **enables** raw reporting; **unset** the variable to restore default `GR_SSTTYPE_VOODOO` (`0`) behavior. |
+| `FX_GLIDE_EMUL_RUSH` | `[glide] emul_rush` | `0`/`1`, `true`/`false` | `false` | On `VoodooBanshee`, `Voodoo3`, `Voodoo4`, and `Voodoo5` profiles, makes Glide 2.x `grSstQueryHardware()` report **`GR_SSTTYPE_SST96` (`1`, Voodoo Rush)** with `tmuRev = 0x1002` / `0x11002` (matching `glide2x.dll` 2.60/2.61). |
+| `FX_GLIDE_TEXTURE_UMA` | `[glide] texture_uma` | `0`/`1`, `true`/`false` *(INI also accepts `-1` app-controlled)* | `-1` *(app-controlled)* | Sets the initial unified texture memory (`TEXUMA` / `GR_TEXTURE_UMA_EXT`) mode on `grGlideInit()` (`1` enables cross-TMU pooling from startup). |
 | `FX_GLIDE_SNAPSHOT` / `FX_SNAPSHOT` | `[glide] snapshot` | `0`/`off`, `1`/`true` (frame 0), `@N` or `N>=2` (frame `N`), `<path>`, or `<path>@N` | Unset | Captures the backbuffer before `grBufferSwap` on frame `N` as an uncompressed binary `P6` `.ppm` image (`glide_snapshot_NNNNNN.ppm` by default). `FX_GLIDE_SNAPSHOT` beats `FX_SNAPSHOT`. |
 
-Low-level hardware timing, PCI FIFO, SDRAM, clock-delay, and VGA pass-through variables (`SST_GRXCLK`, `SST_FT_CLK_DEL`, `SST_MEMFIFO*`, `SST_BACKPORCH`, `SST_VGA_PASS`, etc.) target physical Voodoo silicon registers and are intentionally out of scope.
+Low-level hardware timing, CRT sync, PCI FIFO, SDRAM, clock-delay, and VGA pass-through variables (`SST_GRXCLK`, `SST_FT_CLK_DEL`, `SST_MEMFIFO*`, `SST_HSYNC`, `SST_VSYNC` / `SSTV2_VSYNC` *[raw CRT sync pulse width, **not** swap VSync — use `FX_GLIDE_SWAPINTERVAL`]*, `SST_BACKPORCH`, `SST_VGA_PASS`, `SSTH3_SGRAM_*`, etc.) target physical Voodoo silicon registers and are intentionally out of scope.
 
 ---
 

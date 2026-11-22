@@ -431,13 +431,23 @@ void Logger::LogExecutionSummary(const WrapperConfig& config) {
        << (config.presentationFilter == 1 ? "Linear" : "Nearest")
        << "\n  Splash / Plug Policy : Splash=" << (config.noSplash ? "SUPPRESSED" : "ENABLED")
        << ", Plug=" << (config.shamelessPlugMode < 0 ? "APP" : (config.shamelessPlugMode > 0 ? "FORCED_ON" : "FORCED_OFF"));
-    if (config.gammaOverride > 0.0f || config.screenRefreshHz > 0 ||
-        config.ignoreReopen || config.noDitherSub || config.forceBilinear ||
-        config.forceTrilinear || config.texmapDisable || config.boundsCheck ||
+    if (config.HasGammaOverride() || !config.useAppGamma ||
+        config.screenRefreshHz > 0 || config.ignoreReopen ||
+        config.noDitherSub || config.forceBilinear || config.forceTrilinear ||
+        config.texmapDisable || config.boundsCheck ||
         config.allocColorBuffers >= 2 || config.allocAuxBuffers >= 0 ||
-        config.snapshotEnabled) {
+        config.snapshotEnabled || config.reportRealHw || config.emulRush ||
+        config.textureUmaMode >= 0) {
         ss << "\n  Authentic 3dfx Flags :";
         if (config.gammaOverride > 0.0f) ss << " gamma=" << config.gammaOverride;
+        if (config.HasPerChannelGammaOverride()) {
+            const float base = (config.gammaOverride > 0.0f) ? config.gammaOverride : 1.0f;
+            const float gr = (config.gammaOverrideR > 0.0f) ? config.gammaOverrideR : base;
+            const float gg = (config.gammaOverrideG > 0.0f) ? config.gammaOverrideG : base;
+            const float gb = (config.gammaOverrideB > 0.0f) ? config.gammaOverrideB : base;
+            ss << " gamma_rgb=" << gr << "," << gg << "," << gb;
+        }
+        if (!config.useAppGamma) ss << " use_app_gamma=0";
         if (config.screenRefreshHz > 0) ss << " refresh=" << config.screenRefreshHz << "Hz";
         if (config.ignoreReopen) ss << " ignore_reopen=1";
         if (config.noDitherSub) ss << " no_dither_sub=1";
@@ -447,6 +457,9 @@ void Logger::LogExecutionSummary(const WrapperConfig& config) {
         if (config.boundsCheck) ss << " bounds_check=1";
         if (config.allocColorBuffers >= 2) ss << " alloc_color=" << config.allocColorBuffers;
         if (config.allocAuxBuffers >= 0) ss << " alloc_aux=" << config.allocAuxBuffers;
+        if (config.reportRealHw) ss << " report_real_hw=1";
+        if (config.emulRush) ss << " emul_rush=1";
+        if (config.textureUmaMode >= 0) ss << " texture_uma=" << config.textureUmaMode;
         if (config.snapshotEnabled) {
             ss << " snapshot=" << (config.snapshotPath.empty() ? "auto" : config.snapshotPath)
                << "@" << config.snapshotFrame;
@@ -494,7 +507,7 @@ void Logger::LogExecutionSummary(const WrapperConfig& config) {
         ResolveEffectiveSimdLevel(config.swSimdLevel, nullptr);
     const SwSimdLevel hostMaxSimd = DetectHostMaxSimdLevel();
 
-    ss << "\n  Voodoo2 SLI Mode     : " << (config.enableSli ? "ENABLED" : "DISABLED")
+    ss << "\n  SLI Mode             : " << (config.enableSli ? "ENABLED" : "DISABLED")
        << "\n  Reported API Base    : " << apiBaseStr
        << " (2.x=" << FormatApiVersionString(config.apiVersion)
        << ", 3.x=" << FormatApiVersionString(config.glide3ApiVersion) << ")"
