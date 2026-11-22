@@ -4,6 +4,9 @@
 
 It runs classic 1990s and early-2000s DOS (via DOSBox pass-through), Win32 (via Wine/Proton or Windows), and native Linux Glide applications across seven emulated 3dfx hardware profiles — from **Voodoo Graphics (SST-1)** to **Voodoo5 (VSA-100)**.
 
+> [!NOTE]
+> **AI-Assisted Development Disclosure:** The source code, tests, shaders, and documentation in this repository were largely drafted using **Google Gemini** under human architectural guidance, issue triage, and hands-on testing. All changes are verified through strict zero-warning multi-distro CI builds (`-Werror`), the self-contained Catch2 test suite, and empirical testing across dozens of commercial Glide titles (see [`docs/catalog/`](docs/catalog/README.md)). That said, rough edges and non-idiomatic patterns are still possible — bug reports, code reviews, and pull requests are welcome.
+
 ---
 
 ## Highlights
