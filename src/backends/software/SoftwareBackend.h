@@ -39,14 +39,7 @@ class SoftwareBackend : public SoftwareBackendBase {
   bool AttachWindow(void* nativeWindowHandle, uint32_t width, uint32_t height,
                     bool windowed) override;
   void DetachWindow() override;
-  void SetPassthruMode(bool show3dfx) override {
-    if (!show3dfx) {
-      m_passthruSuspended.store(true, std::memory_order_relaxed);
-      m_surfaceHost.SetWin32PassthruSuspended(true);
-    } else if (m_passthruSuspended.exchange(false, std::memory_order_relaxed)) {
-      m_surfaceHost.NotifyWin32PassthruReclaimed();
-    }
-  }
+  void SetPassthruMode(bool show3dfx) override;
 
   bool SwapBuffers() override;
   void PollEvents() override;

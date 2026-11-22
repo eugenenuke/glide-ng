@@ -527,6 +527,7 @@ bool OpenGLESBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
   m_hudUploadedRev = 0;
 
   m_windowAttached = true;
+  m_passthruSuspended.store(false, std::memory_order_relaxed);
 
   // Preserve any foreign host EGL context (e.g. DOSBox-X output=opengl on
   // Wayland) when returning from grSstWinOpen, and release any Win32 WGL
@@ -536,6 +537,59 @@ bool OpenGLESBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
   RestoreHostContextIfSaved();
   ReleaseWglContextOnCurrentThread_Locked();
   return true;
+}
+
+void OpenGLESBackend::SetPassthruMode(bool show3dfx) {
+  std::unique_lock<std::mutex> lock(m_mutex);
+  if (!show3dfx) {
+    const bool wasSuspended =
+        m_passthruSuspended.exchange(true, std::memory_order_relaxed);
+    // Unbind the WGL context before yielding to Win32 GDI menus / modal dialogs
+    // so GDI owns the HWND cleanly and another thread (e.g. exit cleanup) will
+    // not encounter ERROR_BUSY (170).
+    ReleaseWglContextOnCurrentThread_Locked();
+    if (!wasSuspended && m_windowAttached &&
+        m_surfaceHost.GetMode() == NativeSurfaceHost::Mode::Win32Embedded) {
+      lock.unlock();
+      m_surfaceHost.SetWin32PassthruSuspended(true);
+      lock.lock();
+      GLIDE_LOG(INFO, "GLES",
+                "Yielded Win32Embedded presentation surface for VGA "
+                "pass-through (SHOW_VGA).");
+    }
+    return;
+  }
+
+  if (!m_passthruSuspended.exchange(false, std::memory_order_relaxed)) {
+    return;
+  }
+  if (!m_initialized || !m_windowAttached ||
+      m_surfaceHost.GetMode() != NativeSurfaceHost::Mode::Win32Embedded) {
+    return;
+  }
+
+  // Synchronously restore borderless fullscreen and reclaim foreground focus
+  // inside grSstPassthruMode(SHOW_SST1) — outside m_mutex so Win32 WndProc
+  // callbacks cannot self-deadlock — so titles whose pause loop waits for
+  // WM_ACTIVATEAPP(TRUE) (e.g. Pandemonium!) wake before reaching SwapBuffers.
+  uint32_t hostW = 0;
+  uint32_t hostH = 0;
+  lock.unlock();
+  m_surfaceHost.NotifyWin32PassthruReclaimed();
+  m_surfaceHost.SyncBounds(hostW, hostH);
+  lock.lock();
+  if (!m_initialized || !m_windowAttached ||
+      m_passthruSuspended.load(std::memory_order_relaxed)) {
+    return;
+  }
+  (void)m_surfaceHost.ConsumeSurfaceInvalidated();
+  // Refresh the Win32 WGL HDC immediately after a SHOW_VGA menu/dialog cycle
+  // (e.g. SetMenu / WS_SYSMENU changes), leaving the HGLRC unbound until the
+  // next Glide draw call acquires it via EnsureContextCurrent().
+  RebindWglHdc_Locked(/*rebindCurrent=*/false);
+  GLIDE_LOG(INFO, "GLES",
+            "Reclaimed Win32Embedded presentation surface for 3dfx "
+            "output (SHOW_SST1).");
 }
 
 void OpenGLESBackend::ReleaseThreadContext() {
@@ -551,6 +605,41 @@ void OpenGLESBackend::ReleaseWglContextOnCurrentThread_Locked() {
       wglMakeCurrent(nullptr, nullptr);
     }
   }
+#endif
+}
+
+void OpenGLESBackend::RebindWglHdc_Locked(bool rebindCurrent) {
+#if defined(_WIN32)
+  if (!m_useWgl || !m_wglTargetHwnd || !m_wglContext || m_wglDummyHwnd) {
+    return;
+  }
+  HWND hwnd = static_cast<HWND>(m_wglTargetHwnd);
+  if (!IsWindow(hwnd)) {
+    return;
+  }
+  ReleaseWglContextOnCurrentThread_Locked();
+  if (m_wglHdc) {
+    ReleaseDC(hwnd, static_cast<HDC>(m_wglHdc));
+    m_wglHdc = nullptr;
+  }
+  HDC newHdc = GetDC(hwnd);
+  if (newHdc) {
+    m_wglHdc = static_cast<void*>(newHdc);
+    if (rebindCurrent) {
+      if (!wglMakeCurrent(newHdc, static_cast<HGLRC>(m_wglContext))) {
+        GLIDE_LOG(WARN, "GLES",
+                  "WGL re-bind after host HWND mutation failed: err="
+                      << GetLastError());
+      } else {
+        GLIDE_LOG(INFO, "GLES",
+                  "Re-bound Win32 WGL HDC after host HWND surface "
+                  "mutation.");
+      }
+    }
+  }
+  m_surfaceHost.RefreshWin32SurfaceFingerprint();
+#else
+  (void)rebindCurrent;
 #endif
 }
 
@@ -592,6 +681,7 @@ void OpenGLESBackend::DetachWindow_Locked() {
   m_swizzleBuffer.shrink_to_fit();
 
   m_windowAttached = false;
+  m_passthruSuspended.store(false, std::memory_order_relaxed);
 }
 
 void OpenGLESBackend::PresentToWindowSurface(uint32_t hostW, uint32_t hostH) {
@@ -751,41 +841,24 @@ bool OpenGLESBackend::SwapBuffers() {
   if (m_surfaceHost.GetMode() != NativeSurfaceHost::Mode::Headless) {
     uint32_t hostW = 0;
     uint32_t hostH = 0;
-    const bool resized = m_surfaceHost.SyncBounds(hostW, hostH);
+    bool resized = false;
+    {
+      lock.unlock();
+      resized = m_surfaceHost.SyncBounds(hostW, hostH);
+      lock.lock();
+    }
+    if (!m_initialized || !m_windowAttached) return false;
     const bool surfaceInvalidated = m_surfaceHost.ConsumeSurfaceInvalidated();
     if (hostW == 0 || hostH == 0) {
       m_surfaceHost.GetDrawableSize(hostW, hostH);
     }
 
-#if defined(_WIN32)
-    if (surfaceInvalidated && m_useWgl && m_wglTargetHwnd && m_wglContext &&
-        !m_wglDummyHwnd) {
-      HWND hwnd = static_cast<HWND>(m_wglTargetHwnd);
-      if (IsWindow(hwnd)) {
-        wglMakeCurrent(nullptr, nullptr);
-        if (m_wglHdc) {
-          ReleaseDC(hwnd, static_cast<HDC>(m_wglHdc));
-          m_wglHdc = nullptr;
-        }
-        HDC newHdc = GetDC(hwnd);
-        if (newHdc) {
-          m_wglHdc = static_cast<void*>(newHdc);
-          if (!wglMakeCurrent(newHdc, static_cast<HGLRC>(m_wglContext))) {
-            GLIDE_LOG(WARN, "GLES",
-                      "WGL re-bind after host HWND mutation failed: err="
-                          << GetLastError());
-          } else {
-            GLIDE_LOG(INFO, "GLES",
-                      "Re-bound Win32 WGL HDC after host HWND surface "
-                      "mutation.");
-          }
-        }
-        m_surfaceHost.RefreshWin32SurfaceFingerprint();
-      }
+    if (surfaceInvalidated) {
+      RebindWglHdc_Locked(/*rebindCurrent=*/true);
     }
-#else
-    (void)surfaceInvalidated;
-#endif
+    if (!EnsureContextCurrent()) {
+      return false;
+    }
 
 #if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_WAYLAND_EGL)
     if (resized && m_wlEglWindow && hostW > 0 && hostH > 0) {

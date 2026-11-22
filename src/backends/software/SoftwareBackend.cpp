@@ -1262,7 +1262,51 @@ bool SoftwareBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
   EnsureThreadPool_Locked();
 
   m_windowAttached = true;
+  m_passthruSuspended.store(false, std::memory_order_relaxed);
   return true;
+}
+
+void SoftwareBackend::SetPassthruMode(bool show3dfx) {
+  std::unique_lock<std::mutex> lock(m_mutex);
+  if (!show3dfx) {
+    const bool wasSuspended =
+        m_passthruSuspended.exchange(true, std::memory_order_relaxed);
+    if (!wasSuspended && m_windowAttached &&
+        m_surfaceHost.GetMode() == NativeSurfaceHost::Mode::Win32Embedded) {
+      lock.unlock();
+      m_surfaceHost.SetWin32PassthruSuspended(true);
+      lock.lock();
+      GLIDE_LOG(INFO, "Software",
+                "Yielded Win32Embedded presentation surface for VGA "
+                "pass-through (SHOW_VGA).");
+    }
+    return;
+  }
+
+  if (!m_passthruSuspended.exchange(false, std::memory_order_relaxed)) {
+    return;
+  }
+  if (!m_initialized || !m_windowAttached ||
+      m_surfaceHost.GetMode() != NativeSurfaceHost::Mode::Win32Embedded) {
+    return;
+  }
+
+  // Synchronously restore borderless fullscreen and reclaim foreground focus
+  // inside grSstPassthruMode(SHOW_SST1) — outside m_mutex so Win32 WndProc
+  // callbacks cannot self-deadlock — matching VulkanBackend::SetPassthruMode.
+  uint32_t hostW = 0;
+  uint32_t hostH = 0;
+  lock.unlock();
+  m_surfaceHost.NotifyWin32PassthruReclaimed();
+  m_surfaceHost.SyncBounds(hostW, hostH);
+  lock.lock();
+  if (m_windowAttached &&
+      !m_passthruSuspended.load(std::memory_order_relaxed)) {
+    (void)m_surfaceHost.ConsumeSurfaceInvalidated();
+    GLIDE_LOG(INFO, "Software",
+              "Reclaimed Win32Embedded presentation surface for 3dfx "
+              "output (SHOW_SST1).");
+  }
 }
 
 void SoftwareBackend::DetachWindow() {
@@ -1292,6 +1336,7 @@ void SoftwareBackend::DetachWindow_Locked() {
 
   m_windowAttached = false;
   m_headlessMode = false;
+  m_passthruSuspended.store(false, std::memory_order_relaxed);
   GLIDE_LOG(INFO, "Software", "Detached Software Backend.");
 }
 

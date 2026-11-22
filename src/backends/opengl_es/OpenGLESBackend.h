@@ -30,14 +30,7 @@ class OpenGLESBackend : public GlideStateTracker {
   bool AttachWindow(void* nativeWindowHandle, uint32_t width, uint32_t height,
                     bool windowed) override;
   void DetachWindow() override;
-  void SetPassthruMode(bool show3dfx) override {
-    if (!show3dfx) {
-      m_passthruSuspended.store(true, std::memory_order_relaxed);
-      m_surfaceHost.SetWin32PassthruSuspended(true);
-    } else if (m_passthruSuspended.exchange(false, std::memory_order_relaxed)) {
-      m_surfaceHost.NotifyWin32PassthruReclaimed();
-    }
-  }
+  void SetPassthruMode(bool show3dfx) override;
   void ReleaseThreadContext() override;
   uint32_t GetMsaaSamples() const override { return m_msaaSamples; }
   bool HasAllocatedCpuLfbStaging() const { return m_lfbStaging.IsAllocated(); }
@@ -155,6 +148,7 @@ class OpenGLESBackend : public GlideStateTracker {
   bool CreateStandaloneSdlGlContext();
   bool CreateWin32WglContext();
   void ReleaseWglContextOnCurrentThread_Locked();
+  void RebindWglHdc_Locked(bool rebindCurrent);
   void UploadGammaLutIfDirty_Locked();
   bool EnsureContextCurrent();
   void SaveCurrentHostEglContext();

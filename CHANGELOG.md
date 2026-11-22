@@ -40,6 +40,10 @@ For the pre-beta engineering narrative covering early architecture decisions and
   - Aligned disabled `GR_PARAM_FOG_EXT` fallback to FBI `oow` (`pos[3]`) inside `VertexLayout` (`DecodeVertexSlow` / `DecodeGlide2CanonicalInto`) and projected `GR_PARAM_FOG_EXT` by `1/w` in `GR_CLIP_COORDS` (`ProjectClipVertex`, matching `h5/glide3/src/fxcmd.h`).
 - **Software Point/Line Extended Texture Combiner Parity (`SoftwareCombiner.cpp`)**:
   - Moved `grTexColorCombineExt` / `grTexAlphaCombineExt` evaluation outside the `if (hasTex*)` texture-bound guards in `WritePixelPipeline()` (and initialized unbound `TMU1` output to `iteratedColor`), matching the triangle rasterizers, Vulkan, and OpenGL ES shaders so unbound-TMU constant/iterated combiner passes evaluate consistently on points and lines.
+- **Win32 `grSstPassthruMode()` Surface & Focus Reclaim Parity (`OpenGLESBackend`, `SoftwareBackend`, `NativeSurfaceHost`)**:
+  - Brought **`OpenGLESBackend::SetPassthruMode()`** and **`SoftwareBackend::SetPassthruMode()`** into parity with **`VulkanBackend`** by synchronously reclaiming the Win32 window (re-applying borderless fullscreen bounds, raising, and focusing `HWND` via `SyncBounds()` outside `m_mutex`) inside `grSstPassthruMode(GR_PASSTHRU_SHOW_SST1)` instead of deferring until the next `SwapBuffers()`. Titles whose own pause/focus loop blocks on `WM_ACTIVATEAPP(TRUE)` immediately after closing a Win32 menu or modal dialog (e.g. *Pandemonium!*) no longer hang on a black window before rendering the next frame.
+  - Released the active Win32 WGL `HGLRC` on `SHOW_VGA` (`ReleaseWglContextOnCurrentThread_Locked()`) so GDI menus/dialogs own the `HWND` cleanly without leaving the context pinned across threads (`ERROR_BUSY` / `170` on shutdown), and refreshed the WGL `HDC` (`ReleaseDC`/`GetDC`) when reclaiming `SHOW_SST1`.
+  - Released `m_mutex` around `m_surfaceHost.SyncBounds()` inside `OpenGLESBackend::SwapBuffers()` to prevent synchronous Win32 `WndProc` re-entrancy deadlocks, and re-hid restored same-process child controls in `NativeSurfaceHost::NotifyWin32PassthruReclaimed()`.
 
 ---
 

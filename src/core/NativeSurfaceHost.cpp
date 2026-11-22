@@ -2545,6 +2545,7 @@ void NativeSurfaceHost::NotifyWin32PassthruReclaimed() {
     m_win32PendingForeground.store(true, std::memory_order_relaxed);
     m_win32ResetFullscreenTracking.store(true, std::memory_order_relaxed);
     SyncWin32SubclassState();
+    HideWin32EmbeddedChildren();
   }
 #endif
 }
