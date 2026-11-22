@@ -93,17 +93,47 @@ All captures below are taken from `PANDY3.EXE` running under Wine32 + `glide-ng`
 
 * **Flavour verdict (3dfx Glide vs. Software):** The **3dfx Glide 2.11 (`PANDY3.EXE`)** edition is strongly preferred over the DirectDraw software renderer (`PANDY.EXE`) — it adds hardware bilinear texture filtering, smooth translucent particle/orb blending, and clean **`4× MSAA`** anti-aliasing (`glide-ng.hq.ini`) across all three `glide-ng` backends.
 * **Gamma (`1.0` default):** The retail CD's `PANDY3.BAT` explicitly sets `SST_RGAMMA=1.0`, `SST_GGAMMA=1.0`, and `SST_BGAMMA=1.0`. Leaving gamma unset in `glide-ng.ini` preserves the exact linear `1.0` default.
-* **Timing & VSync:** Keep `vsync = true` and `max_fps = 60` enabled to maintain authentic platforming speed.
+* **Timing & VSync (`30 FPS`):** *Pandemonium!* natively targets **`30 FPS`** (alternating `33 ms` / `34 ms` frame steps). Retail `PANDY3.EXE` calibrates its timer via 32-bit `RDTSC` and can divide-overflow on fast CPUs; community `timeGetTime`-patched executables preserve `30 FPS` pacing natively, whereas common No-CD executables stub out the timer and run uncapped. All bundled presets set `max_fps = 30` with `vsync = true` so gameplay speed stays authentic under both builds.
 
 ---
 
 ## Quirks, Known Issues & Controls
 
 ### Installation & Engine Notes
-* **Mixed-mode CD-ROM audio check under Wine:** Unmodified `PANDY3.EXE` (and `PANDY.EXE`) checks the mixed-mode retail CD via Windows MCI (`sysinfo cdaudio name 1 wait`) immediately after `LOGOS.AVI`. Under Wine without a mounted physical or virtual mixed-mode audio disc (`cdemu`), use a No-CD patched `PANDY3.EXE` or mount the complete mixed-mode disc image.
-* **Native Win32 menu bar (`SHOW_VGA` ↔ `SHOW_SST1`):** Pressing **`Esc`** invokes `grSstPassthruMode(GR_PASSTHRU_SHOW_VGA)` to expose the native Windows menu bar (`Game | Options | Password`). `glide-ng` yields the embedded presentation surface cleanly for GDI dialogs (`Volumes`, `Keyboard Setup`) and reclaims it automatically when resuming play.
+* **CD-ROM check & `CDPath` registry entry under Wine:** Unmodified `PANDY3.EXE` (including timer-patched builds) checks for the disc by reading the **`CDPath`** string value (`REG_SZ`) first from `HKCU\SOFTWARE\Crystal Dynamics\Pandemonium` (no `\1.00`) and falling back to `HKLM\SOFTWARE\Crystal Dynamics\Pandemonium\1.00`. It concatenates `PANDY.EXE` / `.AVI` directly onto `CDPath` (`CDPath` **must** end with a trailing backslash, e.g. `D:\`), requires `GetDriveTypeA()` to return **`DRIVE_CDROM` (`5`)**, and verifies `PANDY.EXE` exists via `SearchPathA()`. *(Windows MCI `sysinfo cdaudio name 1 wait` is separate and used only for Redbook CD audio music.)*
+
+  With a physical or virtual (`cdemu`) disc mounted under Linux, map the mount root to `d:` (and optionally the block device to `d::` for CD audio) and register `CDPath`:
+
+  ```bash
+  export WINEPREFIX=/path/to/wineprefix
+  ln -sfn /path/to/cdemu/mount "$WINEPREFIX/dosdevices/d:"
+  # Optional, for Redbook CD audio via MCI:
+  ln -sfn /dev/sr0 "$WINEPREFIX/dosdevices/d::"
+
+  cat <<'EOF' > /tmp/pandy_cd.reg
+  Windows Registry Editor Version 5.00
+
+  [HKEY_LOCAL_MACHINE\Software\Wine\Drives]
+  "d:"="cdrom"
+
+  [HKEY_CURRENT_USER\Software\Crystal Dynamics\Pandemonium]
+  "CDPath"="D:\\"
+
+  [HKEY_LOCAL_MACHINE\Software\Crystal Dynamics\Pandemonium\1.00]
+  "CDPath"="D:\\"
+  EOF
+
+  wine regedit /tmp/pandy_cd.reg
+  ```
+
+  *(Using a `.reg` file avoids shell/`reg.exe` trailing-backslash quoting quirks; setting `HKCU` also works identically in both 32-bit and 64-bit Wine prefixes.)*
+* **Delayed stop after holding a movement key (engine message-pump quirk):** `PANDY3.EXE`'s own Win32 loop calls `if (PeekMessageA(...))` (not `while`), so it drains **at most 1 queued message per rendered frame** (`30 msgs/s` at `30 FPS`). Under modern Linux/Wine typematic key-repeat (`25–33+ Hz`), holding a printable movement key (`A`/`S`) emits both `WM_KEYDOWN` and a `TranslateMessage`-synthesized `WM_CHAR` (**`50–66+ msgs/s`**), backing up the thread queue ahead of `WM_KEYUP` so the character continues running briefly (or for several seconds after a long hold) once you let go. Recommended fixes:
+  * **Rebind movement to non-character keys *(Verified)*:** Press **`Esc` → Options → Keyboard** (`Keyboard Setup`) and rebind **Left / Right / Up / Down** to the **Arrow keys** (and optionally avoid printable letters for held actions). Non-character keys do not emit `WM_CHAR` via `TranslateMessage`, cutting queue inflow in half so `WM_KEYUP` drains promptly at `30 FPS`.
+  * **Use a joystick / gamepad:** Press **`Esc` → Options → Joystick** (`Joystick Setup`) to map up to 4 buttons (`JOY1`–`JOY4`). *Pandemonium!* polls gamepads directly via WinMM `joyGetPosEx`, bypassing the Win32 message queue entirely. *(Configure/test controllers under Wine with `wine control joy.cpl` if needed.)*
+  * **Optional X11 fallback (if keeping `A`/`S`):** Disable or slow keyboard auto-repeat while playing (`xset r off` or `xset r rate 500 10`, restoring with `xset r on` afterward).
+* **Native Win32 menu bar (`SHOW_VGA` ↔ `SHOW_SST1`):** Pressing **`Esc`** invokes `grSstPassthruMode(GR_PASSTHRU_SHOW_VGA)` to expose the native Windows menu bar (`Game | Options | Password`). `glide-ng` yields the embedded presentation surface cleanly for GDI dialogs (`Volumes`, `Keyboard Setup`, `Joystick Setup`) and reclaims it automatically when resuming play.
 * **Startup splash:** `glide-ng` plays its procedural startup splash once automatically on `grSstOpen()`. Uncomment `no_splash = true` in `glide-ng.ini` (or pass `FX_GLIDE_NO_SPLASH=1`) to skip it.
 
 ### Useful Controls
-Default bindings (rebindable via `Esc` → **Options → Keyboard**):
-* `A` / `S` — Move Left / Right · `PgUp` / `X` — Move Up / Down (also swaps between Nikki and Fargus on the hub island) · `Space` — Jump / Enter highlighted level · `Ctrl` — Fire / Attack · `Z` — Special (Nikki double-jump / Fargus spin attack) · `Esc` — Pause & open native Win32 menu bar
+* **Keyboard (`Esc` → Options → Keyboard):** Default bindings are `A` / `S` (Move Left / Right), `PgUp` / `X` (Move Up / Down — also swaps between Nikki and Fargus on the hub island), `Space` (Jump / Enter highlighted level), `Ctrl` (Fire / Attack), `Z` (Special: Nikki double-jump / Fargus spin attack), and `Esc` (Pause & toggle Win32 menu bar). **Rebinding movement to the Arrow keys** is strongly recommended at `30 FPS` to avoid queued `WM_CHAR` input lag when holding directions. Saved under `HKCU\SOFTWARE\Crystal Dynamics\Pandemonium` (`KbdControls`).
+* **Joystick / Gamepad (`Esc` → Options → Joystick):** Supported natively through `winmm.dll` (`joyGetPosEx`, axes + `JOY1`–`JOY4`). Saved under `HKCU\SOFTWARE\Crystal Dynamics\Pandemonium` (`JoyControls`). If Wine fails to detect a gamepad, verify it is listed and enabled under `wine control joy.cpl`.
