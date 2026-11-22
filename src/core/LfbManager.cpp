@@ -275,6 +275,40 @@ bool LfbManager::FlushActiveWriteLock(const LfbPipelineConfig& config) {
     return anyFlushed;
 }
 
+bool LfbManager::ReconfigureActiveWriteLock(uint32_t buffer, uint32_t newWriteMode,
+                                            uint32_t newOrigin, bool newPixelPipeline,
+                                            const LfbPipelineConfig& flushConfig) {
+    GLIDE_CPU_SCOPE(CpuBucket::Lfb);
+    std::lock_guard<std::mutex> lock(m_mutex);
+    const uint32_t slotIdx = WriteSlotForBuffer(buffer);
+    WriteLockState& slot = m_writeLocks[slotIdx];
+    if (!slot.isLocked) {
+        return false;
+    }
+
+    const uint32_t resolvedMode = (newWriteMode == 0xFFu) ? 0u : newWriteMode;
+    const uint32_t newPixelSize = PixelSizeForWriteMode(resolvedMode);
+    if (newPixelSize == 0u || newPixelSize != slot.pixelSize) {
+        return false;
+    }
+
+    if (slot.writeMode == resolvedMode && slot.origin == newOrigin &&
+        slot.pixelPipeline == newPixelPipeline) {
+        return true;
+    }
+
+    // Flush any pending writes under the previous mode/origin/bypass state
+    // before switching interpretation of the staging pointer in-place.
+    LfbPipelineConfig prevCfg = flushConfig;
+    prevCfg.pixelPipeline = slot.pixelPipeline;
+    SubmitWriteLock_Locked(slot, prevCfg, /*keepLocked=*/true);
+
+    slot.writeMode = resolvedMode;
+    slot.origin = newOrigin;
+    slot.pixelPipeline = newPixelPipeline;
+    return true;
+}
+
 void LfbManager::Reset() {
     std::lock_guard<std::mutex> lock(m_mutex);
     for (auto& slot : m_writeLocks) {
