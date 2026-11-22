@@ -102,6 +102,42 @@ void CommitGlide211WriteLockIfActive() {
   s_lfb211WritePtr = nullptr;
 }
 
+void UpdateGlide211WriteLockModeIfActive() {
+  if (!s_lfb211WriteLockActive) return;
+  auto& lfb = GlideWrapper::LfbManager::GetInstance();
+  if (!lfb.IsWriteLocked()) {
+    s_lfb211WriteLockActive = false;
+    s_lfb211WritePtr = nullptr;
+    return;
+  }
+  if (s_lfb211LockedWriteMode == s_lfb211WriteMode &&
+      s_lfb211LockedOrigin == s_lfb211Origin &&
+      s_lfb211LockedBypass == s_lfb211BypassMode) {
+    return;
+  }
+  // On SST-1 hardware, grLfbGetWritePtr() returns a fixed PCI BAR0 aperture
+  // address that games cache once at startup (e.g. MechWarrior 2 3Dfx Edition).
+  // Reconfigure the active staging lock in-place after flushing dirty bands
+  // under the previous mode so cached pointers remain valid across subsequent
+  // grLfbWriteMode/grLfbOrigin/grLfbBypassMode calls of matching pixel width.
+  GlideWrapper::LfbPipelineConfig cfg;
+  cfg.pixelPipeline = (s_lfb211LockedBypass == GR_LFBBYPASS_DISABLE);
+  cfg.chromakeyEnabled = (s_state.chromakeyMode != 0);
+  cfg.chromakeyValue = s_state.chromakeyValue;
+  cfg.constantAlpha = s_state.lfbConstantAlpha;
+  cfg.rgbSrcBlend = s_state.rgbSrcBlend;
+  cfg.rgbDstBlend = s_state.rgbDstBlend;
+  const bool newPixelPipeline = (s_lfb211BypassMode == GR_LFBBYPASS_DISABLE);
+  if (lfb.ReconfigureActiveWriteLock(s_lfb211LockedWriteBuf, s_lfb211WriteMode,
+                                     s_lfb211Origin, newPixelPipeline, cfg)) {
+    s_lfb211LockedWriteMode = s_lfb211WriteMode;
+    s_lfb211LockedOrigin = s_lfb211Origin;
+    s_lfb211LockedBypass = s_lfb211BypassMode;
+    return;
+  }
+  CommitGlide211WriteLockIfActive();
+}
+
 void ReleaseGlide211ReadLockIfActive() {
   if (!s_lfb211ReadLockActive) return;
   EntryCommon::LfbUnlockWithState(s_state, GR_LFB_READ_ONLY,
@@ -157,30 +193,24 @@ FX_ENTRY void FX_CALL grLfbWriteMode(GrLfbWriteMode_t mode) {
   GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::Lfb);
   EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend", "grLfbWriteMode (Glide 2.11): mode=" << mode);
-  if (s_lfb211WriteLockActive && s_lfb211LockedWriteMode != mode) {
-    CommitGlide211WriteLockIfActive();
-  }
   s_lfb211WriteMode = mode;
+  UpdateGlide211WriteLockModeIfActive();
 }
 
 FX_ENTRY void FX_CALL grLfbOrigin(GrOriginLocation_t origin) {
   GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::Lfb);
   EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend", "grLfbOrigin (Glide 2.11): origin=" << origin);
-  if (s_lfb211WriteLockActive && s_lfb211LockedOrigin != origin) {
-    CommitGlide211WriteLockIfActive();
-  }
   s_lfb211Origin = origin;
+  UpdateGlide211WriteLockModeIfActive();
 }
 
 FX_ENTRY void FX_CALL grLfbBypassMode(GrLfbBypassMode_t mode) {
   GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::Lfb);
   EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend", "grLfbBypassMode (Glide 2.11): mode=" << mode);
-  if (s_lfb211WriteLockActive && s_lfb211LockedBypass != mode) {
-    CommitGlide211WriteLockIfActive();
-  }
   s_lfb211BypassMode = mode;
+  UpdateGlide211WriteLockModeIfActive();
 }
 
 FX_ENTRY void FX_CALL grLfbBegin(void) {

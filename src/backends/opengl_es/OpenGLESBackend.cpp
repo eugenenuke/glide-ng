@@ -1230,6 +1230,13 @@ void OpenGLESBackend::FlushLFBToGPU_Locked() {
   GLIDE_CPU_SCOPE(CpuBucket::Lfb);
   if (!EnsureContextCurrent()) return;
 
+  // Flush any earlier batched 3D primitives BEFORE compositing pending CPU LFB
+  // writes so interleaved DrawTriangle() -> WriteLFB() -> DrawLine() preserves
+  // authentic submission order (matching VulkanBackend::FlushLFBToGPU_Locked).
+  if (!m_batchVertices.empty()) {
+    FlushBatch();
+  }
+
   glActiveTexture(GL_TEXTURE0);
 
   // Mapping invariant (matching GetActiveGpuFbo() & ReadLFB()):

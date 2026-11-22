@@ -261,6 +261,39 @@ TEST_CASE("M14 Glide 2.11 Legacy LFB (1024-px Stride) & guFbRead/WriteRegion",
   CHECK(g < 30);
   CHECK(b < 30);
 
+  // 2b. Reconfigure cached 16-bit writePtr16 in-place (565 -> 555 + bypass
+  //     mode toggle) without calling grLfbGetWritePtr() again (e.g.
+  //     MechWarrior 2 3Dfx Edition caches grLfbGetWritePtr() once at init,
+  //     switches to GR_LFBWRITEMODE_555, then brackets HUD writes inside
+  //     grLfbBegin / grLfbBypassMode(ENABLE) / write / grLfbBypassMode(DISABLE)
+  //     / grLfbEnd).
+  grLfbWriteMode(GR_LFBWRITEMODE_555);
+  grLfbBegin();
+  grLfbBypassMode(GR_LFBBYPASS_ENABLE);
+  // RGB555 pure bright green (0x03E0: R=0, G=31, B=0) and pure red (0x7C00)
+  writePtr16[70 * GR_LFB_STRIDE_PIXELS_211 + 90] = 0x03E0u;
+  writePtr16[70 * GR_LFB_STRIDE_PIXELS_211 + 91] = 0x7C00u;
+  grLfbBypassMode(GR_LFBBYPASS_DISABLE);
+  grLfbEnd();
+
+  // Cached pointer address must remain identical across 16-bit mode switches.
+  grLfbBypassMode(GR_LFBBYPASS_ENABLE);
+  auto* samePtr16 =
+      static_cast<uint16_t*>(grLfbGetWritePtr(GR_BUFFER_BACKBUFFER));
+  CHECK(samePtr16 == writePtr16);
+
+  readPtr16 =
+      static_cast<const uint16_t*>(grLfbGetReadPtr(GR_BUFFER_BACKBUFFER));
+  REQUIRE(readPtr16 != nullptr);
+  UnpackRgb565(readPtr16[70 * GR_LFB_STRIDE_PIXELS_211 + 90], r, g, b);
+  CHECK(r < 30);
+  CHECK(g > 220);
+  CHECK(b < 30);
+  UnpackRgb565(readPtr16[70 * GR_LFB_STRIDE_PIXELS_211 + 91], r, g, b);
+  CHECK(r > 220);
+  CHECK(g < 30);
+  CHECK(b < 30);
+
   // 3. 32-bit ARGB8888 write with GR_ORIGIN_LOWER_LEFT at (20, 10) -> upper-left
   //    (20, kHeight - 1 - 10) == (20, 373).
   grLfbWriteMode(GR_LFBWRITEMODE_8888);
@@ -312,6 +345,58 @@ TEST_CASE("M14 Glide 2.11 Legacy LFB (1024-px Stride) & guFbRead/WriteRegion",
   grColorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
                  GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_NONE, FXFALSE);
   guDrawTriangleWithClip(&v0, &v1, &v2);
+
+  // 5. Verify unsigned 12.4 (1<<19 = 524288.0f) and 13.3 (1<<20 = 1048576.0f)
+  //    vertex snap biases unsnap cleanly on grDrawLine (e.g. MechWarrior 2
+  //    1996 3Dfx Edition snaps all lines and polygons with 524288.0f).
+  constexpr float kSnapBias19 = 524288.0f;
+  constexpr float kSnapBias20 = 1048576.0f;
+  GrVertex l0{}, l1{};
+  l0.x = kSnapBias19 + 40.5f;  l0.y = kSnapBias19 + 180.5f; l0.oow = 1.0f;
+  l0.r = 0.0f; l0.g = 255.0f; l0.b = 0.0f; l0.a = 255.0f;
+  l1.x = kSnapBias19 + 140.5f; l1.y = kSnapBias19 + 180.5f; l1.oow = 1.0f;
+  l1.r = 0.0f; l1.g = 255.0f; l1.b = 0.0f; l1.a = 255.0f;
+  grDrawLine(&l0, &l1);
+
+  GrVertex l2{}, l3{};
+  l2.x = kSnapBias20 + 40.5f;  l2.y = kSnapBias20 + 200.5f; l2.oow = 1.0f;
+  l2.r = 255.0f; l2.g = 0.0f; l2.b = 0.0f; l2.a = 255.0f;
+  l3.x = kSnapBias20 + 140.5f; l3.y = kSnapBias20 + 200.5f; l3.oow = 1.0f;
+  l3.r = 255.0f; l3.g = 0.0f; l3.b = 0.0f; l3.a = 255.0f;
+  grDrawLine(&l2, &l3);
+
+  // Also test DrawTriangle -> LFB Write -> DrawLine interleaved submission order
+  // across Vulkan, OpenGL ES, and Software (regression test for
+  // OpenGLESBackend::FlushLFBToGPU_Locked flushing batched geometry first).
+  GrVertex t0{}, t1{}, t2{};
+  t0.x = 360.0f; t0.y = 220.0f; t0.oow = 1.0f; t0.r = 0.0f; t0.g = 0.0f; t0.b = 0.0f; t0.a = 255.0f;
+  t1.x = 420.0f; t1.y = 220.0f; t1.oow = 1.0f; t1.r = 0.0f; t1.g = 0.0f; t1.b = 0.0f; t1.a = 255.0f;
+  t2.x = 390.0f; t2.y = 270.0f; t2.oow = 1.0f; t2.r = 0.0f; t2.g = 0.0f; t2.b = 0.0f; t2.a = 255.0f;
+  grDrawTriangle(&t0, &t1, &t2);
+  const uint16_t hudGreen = 0x07E0u;
+  grLfbWriteMode(GR_LFBWRITEMODE_565);
+  guFbWriteRegion(388, 232, 4, 4, std::vector<uint16_t>(16, hudGreen).data(), 8);
+  GrVertex d0{}, d1{};
+  d0.x = 10.5f; d0.y = 10.5f; d0.oow = 1.0f; d0.r = 255.0f; d0.a = 255.0f;
+  d1.x = 20.5f; d1.y = 10.5f; d1.oow = 1.0f; d1.r = 255.0f; d1.a = 255.0f;
+  grDrawLine(&d0, &d1);
+
+  readPtr16 =
+      static_cast<const uint16_t*>(grLfbGetReadPtr(GR_BUFFER_BACKBUFFER));
+  REQUIRE(readPtr16 != nullptr);
+  UnpackRgb565(readPtr16[180 * GR_LFB_STRIDE_PIXELS_211 + 90], r, g, b);
+  CHECK(r < 30);
+  CHECK(g > 220);
+  CHECK(b < 30);
+  UnpackRgb565(readPtr16[200 * GR_LFB_STRIDE_PIXELS_211 + 90], r, g, b);
+  CHECK(r > 220);
+  CHECK(g < 30);
+  CHECK(b < 30);
+  UnpackRgb565(readPtr16[233 * GR_LFB_STRIDE_PIXELS_211 + 389], r, g, b);
+  CHECK(r < 30);
+  CHECK(g > 220);
+  CHECK(b < 30);
+
   grBufferSwap(0);
 
   grSstWinClose();

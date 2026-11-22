@@ -31,7 +31,8 @@ Only the **16-bit Titanium Edition (`Install/16bit`)** contains the **`plugin/zg
 | **`plugin/dx5draw.dll`** *(16-bit Titanium Direct3D 5)* | DirectDraw / Direct3D 5 (`DDRAW.dll`) | No (Comparison) | Runs under Wine 10 `wined3d`, but suffers a severe full-height black clipping strip down the left column above the target MFD plus hard fog-band edges along the horizon. |
 | **`plugin/zredline.dll`** *(Rendition Verite)* | Rendition Redline | No | Legacy third-party Redline driver (`redline.dll` required). |
 | **`Install/8bit/MW2WIN.EXE`** *(8-bit Software)* | DirectDraw 8-bit CPU | No (No Glide support) | Alternate 256-color software edition shipped on the Titanium disc (`Install/8bit`). |
-| **Original DOS Edition** *(`MECH2.EXE` / `MW2.EXE`)* | DOS 8-bit Software (`DOS/4GW`) | No (No Glide in 1.1) | Pure software DOS release (separate from the earlier OEM *3dfx Interactive Edition* DOS build). |
+| **[3Dfx Edition (Oct 1996 OEM, `MW2.DLL`)](../mechwarrior-2-3dfx/README.md)** | **Glide 2.11 (`glide.dll`)** | **Yes (Separate Card)** | Earlier 1996 `Voodoo Graphics` (`SST-1`) Win32 release built against **`glide.dll`** (`MW2.MIP` + `SKYGND.PAR`). Covered on its own [catalog entry](../mechwarrior-2-3dfx/README.md). |
+| **Original DOS Edition** *(`MECH2.EXE` / `MW2.EXE`)* | DOS 8-bit Software (`DOS/4GW`) | No (No Glide in 1.1) | Pure software DOS release (unaccelerated 256-color `DOS/4GW` renderer). |
 
 ---
 
