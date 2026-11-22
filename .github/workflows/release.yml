@@ -290,10 +290,23 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="${GITHUB_REF_NAME}"
+          NOTES_FILE="${RUNNER_TEMP}/release_notes_${TAG}.md"
+          python3 scripts/generate_release_notes.py \
+            --version "${TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --changelog CHANGELOG.md \
+            --dist-dir dist \
+            --output "${NOTES_FILE}"
+          EXTRA_ARGS=()
+          if [[ "${TAG}" == *-* ]]; then
+            EXTRA_ARGS+=(--prerelease)
+          fi
           if gh release view "${TAG}" >/dev/null 2>&1; then
             gh release upload "${TAG}" dist/* --clobber
+            gh release edit "${TAG}" --title "glide-ng ${TAG}" --notes-file "${NOTES_FILE}" "${EXTRA_ARGS[@]}"
           else
             gh release create "${TAG}" dist/* \
               --title "glide-ng ${TAG}" \
-              --generate-notes
+              --notes-file "${NOTES_FILE}" \
+              "${EXTRA_ARGS[@]}"
           fi

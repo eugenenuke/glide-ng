@@ -68,6 +68,8 @@ Pushing any `v*` tag triggers [`.github/workflows/release.yml`](../../.github/wo
 - **Fedora 41**
 - **Arch Linux / CachyOS** (rolling)
 
+The workflow automatically builds the GitHub Release description via [`scripts/generate_release_notes.py`](../../scripts/generate_release_notes.py) from the matching `## [<ver>]` entry in [`CHANGELOG.md`](../../CHANGELOG.md), archive sizes and `GLIBC` floors inside `dist/`, and `SHA256SUMS.txt` (marking pre-release tags containing `-` automatically with `--prerelease`).
+
 Locally, [`scripts/package_release.sh`](../../scripts/package_release.sh) runs the exact same packaging logic and emits stripped binaries (via `strip --strip-unneeded` / `i686-w64-mingw32-strip --strip-unneeded`) into `dist/` (git-ignored):
 
 | Archive | Contents |
