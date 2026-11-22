@@ -4,7 +4,8 @@
 #include <iostream>
 #include <algorithm>
 
-TEST_CASE("SIMD Float Vector (Simd8f) Operations", "[SIMD][Simd8f]") {
+TEST_CASE("SIMD: Low-Level AVX2 Vector Primitives (Simd8f / Simd8i / Mask)", "[SIMD][Vector]") {
+  SECTION("Float vector (Simd8f) operations") {
     // 1. Construction and element access
     Simd8f f1(1.5f);
     for (int i = 0; i < 8; ++i) {
@@ -47,9 +48,9 @@ TEST_CASE("SIMD Float Vector (Simd8f) Operations", "[SIMD][Simd8f]") {
     for (int i = 0; i < 8; ++i) {
         REQUIRE(max_val[i] == std::max(static_cast<float>(i), 3.0f));
     }
-}
+  }
 
-TEST_CASE("SIMD Integer Vector (Simd8i) Operations", "[SIMD][Simd8i]") {
+  SECTION("Integer vector (Simd8i) operations") {
     // 1. Construction and element access
     Simd8i i1(42);
     for (int i = 0; i < 8; ++i) {
@@ -118,9 +119,9 @@ TEST_CASE("SIMD Integer Vector (Simd8i) Operations", "[SIMD][Simd8i]") {
     for (int i = 0; i < 8; ++i) {
         REQUIRE(static_cast<uint32_t>(shr[i]) == 0x0F000000);
     }
-}
+  }
 
-TEST_CASE("SIMD Mask & Selection (SimdMask) Operations", "[SIMD][SimdMask]") {
+  SECTION("Mask & selection (SimdMask) operations") {
     Simd8f a(1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f);
     Simd8f b(5.0f);
 
@@ -168,9 +169,9 @@ TEST_CASE("SIMD Mask & Selection (SimdMask) Operations", "[SIMD][SimdMask]") {
             REQUIRE(select_i[i] == 0);
         }
     }
-}
+  }
 
-TEST_CASE("SIMD 2x4 Pixel Block Memory Operations (Load2x4 / Store2x4)", "[SIMD][LoadStore2x4]") {
+  SECTION("2x4 pixel block memory load/store") {
     SECTION("Floating-point depth buffers (Simd8f)") {
         alignas(32) std::vector<float> buffer(20, 0.0f);
         // Row 0: elements 3, 4, 5, 6
@@ -276,9 +277,9 @@ TEST_CASE("SIMD 2x4 Pixel Block Memory Operations (Load2x4 / Store2x4)", "[SIMD]
         REQUIRE(out_buffer[14] == 0);
         REQUIRE(out_buffer[15] == 0);
     }
-}
+  }
 
-TEST_CASE("SIMD Precomputed Dither Vector Tables", "[SIMD][DitherTable]") {
+  SECTION("Precomputed dither vector tables") {
     // 1. Verify 4x4 dither vector loader for y mod 4 = 0..3
     for (int y = 0; y < 10; ++y) {
         Simd8i dither = GetDitherVector4x4(y);
@@ -312,4 +313,7 @@ TEST_CASE("SIMD Precomputed Dither Vector Tables", "[SIMD][DitherTable]") {
             REQUIRE(dither[4] == 2); REQUIRE(dither[5] == 10); REQUIRE(dither[6] == 2); REQUIRE(dither[7] == 10);
         }
     }
+  }
+
 }
+
