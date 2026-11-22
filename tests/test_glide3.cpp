@@ -8493,6 +8493,13 @@ TEST_CASE("M10.6 VSA-100 COMBINE, grAlphaBlendFunctionExt, and TEXTUREBUFFER",
       const std::string ext(extStr);
       CHECK((ext.find("TEXTUREBUFFER") != std::string::npos) == expectTexBuf);
       CHECK((ext.find("COMBINE") != std::string::npos) == expectCombine);
+      // Never advertise unimplemented private ICD extensions whose
+      // grGetProcAddress() lookups return NULL (breaks 3dfxVGL/3dfxOGL ICDs).
+      CHECK(ext.find("SURFACE") == std::string::npos);
+      CHECK(ext.find("COMMAND_TRANSPORT") == std::string::npos);
+      REQUIRE(!ext.empty());
+      CHECK(ext.front() == ' ');
+      CHECK(ext.back() == ' ');
 
       const char* texBufProcs[] = {"grTextureBufferExt",
                                    "grTextureAuxBufferExt", "grAuxBufferExt"};

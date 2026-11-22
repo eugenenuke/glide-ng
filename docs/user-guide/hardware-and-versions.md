@@ -51,8 +51,8 @@ Glide 3.x introduced `grGet`, `grGetString`, `grGetProcAddress`, `grQueryResolut
 | Version | Target Hardware | `GR_HARDWARE` | Advertised `GR_EXTENSION` Tokens & Additions |
 | :--- | :--- | :--- | :--- |
 | **3.00 / 3.02 / 3.04** | Voodoo Graphics / Rush | `"Voodoo Graphics"` / `"Voodoo Rush"` | Core Glide 3.x + `FOGALPHA`, `CHROMARANGE`, `FOGCOORD`. `3.04` is final for SST-1/Rush. |
-| **3.01 / 3.03** | Voodoo2 (CVG) | `"Voodoo2"` | Adds 2-TMU & SLI support; `CHROMARANGE`, `TEXCHROMA`, `TEXMIRROR`, `PALETTE6666`, `FOGCOORD`, `COMMAND_TRANSPORT`. `3.03` is final for Voodoo2. |
-| **3.10** | Banshee / Voodoo3 | `"Voodoo Banshee"` / `"Voodoo3"` | Adds `GETGAMMA`, `TEXUMA`, `TEXTUREBUFFER`, `SURFACE`, `grSetNumPendingBuffers`, `grSstConfigPipeline`. |
+| **3.01 / 3.03** | Voodoo2 (CVG) | `"Voodoo2"` | Adds 2-TMU & SLI support; `CHROMARANGE`, `TEXCHROMA`, `TEXMIRROR`, `PALETTE6666`, `FOGCOORD`, `RESOLUTION`. `3.03` is final for Voodoo2. *(Unimplemented private ICD tokens `SURFACE` and `COMMAND_TRANSPORT` are omitted from `GR_EXTENSION`.)* |
+| **3.10** | Banshee / Voodoo3 | `"Voodoo Banshee"` / `"Voodoo3"` | Adds `GETGAMMA`, `TEXUMA`, `TEXTUREBUFFER`, `grSetNumPendingBuffers`, `grSstConfigPipeline`. |
 | **3.10** | Voodoo4 / Voodoo5 (VSA-100) | `"Voodoo4"` / `"Voodoo5"` | Additionally exposes **`PIXEXT`** (Spatial AA, T-Buffer, 8-bit hardware Stencil, per-channel `grColorMaskExt`), **`COMBINE`** (`gr*CombineExt`, `grAlphaBlendFunctionExt`, `grConstantColorValueExt`), **`TEXFMT`** (`ARGB_8888`, `RGB_888`, `YUYV`/`UYVY`/`AYUV`, `FXT1`, `DXT1`–`DXT5`), and **2048×2048** max textures. |
 
 ---

@@ -1640,25 +1640,31 @@ FX_ENTRY const char* FX_CALL grGetString(FxU32 pname) {
     case GR_RENDERER:
       return EntryCommon::GetRendererString();
     case GR_EXTENSION: {
+      // Advertise only extension tokens backed by implemented runtime paths
+      // and grGetProcAddress() entries. Unimplemented private ICD extensions
+      // (SURFACE / COMMAND_TRANSPORT) are intentionally omitted so 3dfx
+      // OpenGL ICDs (3dfxVGL.dll / 3dfxOGL.dll) fall back to standard
+      // grSstWinOpen() instead of calling NULL grSurface*Ext pointers.
+      // Leading and trailing spaces match authentic 3dfx glide3x.dll 3.10
+      // formatting for `strstr(ext, " TOKEN ")` substring checks.
       switch (reg.GetConfig().model) {
         case GlideWrapper::CardModel::VoodooGraphics:
         case GlideWrapper::CardModel::VoodooRush:
-          return "CHROMARANGE FOGCOORD";
+          return " CHROMARANGE FOGCOORD ";
         case GlideWrapper::CardModel::Voodoo2:
-          return "CHROMARANGE FOGCOORD TEXCHROMA RESOLUTION SURFACE "
-                 "COMMAND_TRANSPORT";
+          return " CHROMARANGE FOGCOORD TEXCHROMA TEXMIRROR PALETTE6666 "
+                 "RESOLUTION ";
         case GlideWrapper::CardModel::VoodooBanshee:
         case GlideWrapper::CardModel::Voodoo3:
-          return "CHROMARANGE FOGCOORD GETGAMMA TEXCHROMA TEXMIRROR "
-                 "PALETTE6666 RESOLUTION SURFACE COMMAND_TRANSPORT "
-                 "TEXTUREBUFFER TEXUMA";
+          return " CHROMARANGE FOGCOORD GETGAMMA TEXCHROMA TEXMIRROR "
+                 "PALETTE6666 RESOLUTION TEXTUREBUFFER TEXUMA ";
         case GlideWrapper::CardModel::Voodoo4:
         case GlideWrapper::CardModel::Voodoo5:
-          return "CHROMARANGE FOGCOORD GETGAMMA TEXCHROMA TEXMIRROR "
-                 "PALETTE6666 RESOLUTION SURFACE COMMAND_TRANSPORT PIXEXT "
-                 "COMBINE TEXFMT TEXTUREBUFFER TEXUMA";
+          return " CHROMARANGE FOGCOORD GETGAMMA TEXCHROMA TEXMIRROR "
+                 "PALETTE6666 RESOLUTION PIXEXT COMBINE TEXFMT "
+                 "TEXTUREBUFFER TEXUMA ";
         default:
-          return "CHROMARANGE FOGCOORD";
+          return " CHROMARANGE FOGCOORD ";
       }
     }
     default:
