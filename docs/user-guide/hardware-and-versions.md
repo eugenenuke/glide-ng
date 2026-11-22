@@ -20,7 +20,7 @@ Each profile defaults to the maximum authentic Glide 2.x and Glide 3.x version s
 
 ### Why `Voodoo2` Is the Default Profile
 
-- **Broadest classic recognition**: Most 1996–2000 Glide 2.x titles detect `GR_SSTTYPE_Voodoo2` with 2 TMUs and take fast single-pass multitexturing/lightmapping paths, whereas single-TMU boards (`VoodooGraphics`, `VoodooRush`, `VoodooBanshee`) trigger multi-pass fallbacks.
+- **Broadest classic recognition**: Most 1996–2000 Glide 2.x titles and 3dfx MiniGL drivers (*GLQuake*, *Quake II*, *Half-Life*) expect `GR_SSTTYPE_VOODOO` from `grSstQueryHardware()`. Matching authentic 3dfx CVG `glide2x.dll` (2.50–2.56), the `Voodoo2` profile reports `GR_SSTTYPE_VOODOO` with **`fbiRev = 0x102`** (dual-TMU, `0x82` single-TMU) unless **`FX_GLIDE_REPORT_REAL_HW=1`** is set, which returns the raw `GR_SSTTYPE_Voodoo2` (`3`) enum. With 2 TMUs enabled, titles take fast single-pass multitexturing/lightmapping paths, whereas single-TMU boards (`VoodooGraphics`, `VoodooRush`, `VoodooBanshee`) trigger multi-pass fallbacks.
 - **No VSA-100 surprises for older titles**: Defaulting to `Voodoo4`/`Voodoo5` advertises `PIXEXT`/`COMBINE`/`TEXFMT`, 2048×2048 textures, and H3 `fbiRev = 0x11002`, which can trigger unintended multi-sample T-Buffer or 32-bit paths in older titles.
 - **Explicit opt-in for VSA-100 features**: Titles requiring Voodoo4/5 Spatial AA, T-Buffer effects, hardware Stencil, FXT1/DXT textures, or 2048×2048 textures select `GLIDE_NG_CARD_MODEL=voodoo4` or `GLIDE_NG_CARD_MODEL=voodoo5`.
 
@@ -39,7 +39,7 @@ Each profile defaults to the maximum authentic Glide 2.x and Glide 3.x version s
 | **2.11** | Voodoo Graphics (SST-1) | Original `glide.dll` launch ABI (`grSstOpen`, `grSstPassthruMode`, fixed-1024-stride `grLfbBegin`/`End`, `guFbReadRegion`/`WriteRegion`). Incompatible binary ABI with `glide2x.dll`. |
 | **2.30** | Voodoo Graphics (SST-1) | First `glide2x` ABI (`grSstWinOpen`/`WinClose`, `grSstControl`, `grLfbLock`/`Unlock`, `grLfbReadRegion`/`WriteRegion`, `ConvertAndDownloadRle`, `guEncodeRLE16`). |
 | **2.42 – 2.48** | SST-1 & Voodoo Rush (SST-96) | Added `grTexMultibase`, `grTexMultibaseAddress`, partial mipmap/table downloads, `grTriStats`, `grSstPerfStats`. `2.48` is the final SST-1/Rush Glide 2.x release. |
-| **2.50 – 2.56** | Voodoo2 (CVG) | Introduced `GR_SSTTYPE_Voodoo2`, dual-TMU single-pass multitexturing, SLI, `SSTV2_*` variables, and 1024×768 SLI support. `2.56` is the final Voodoo2 Glide 2.x release. |
+| **2.50 – 2.56** | Voodoo2 (CVG) | Introduced dual-TMU single-pass multitexturing, SLI, `SSTV2_*` variables, and 1024×768 SLI support. Reports `GR_SSTTYPE_VOODOO` with `fbiRev = 0x102` (dual-TMU) / `0x82` (single-TMU) by default (`GR_SSTTYPE_Voodoo2` when `FX_GLIDE_REPORT_REAL_HW=1` is set). `2.56` is the final Voodoo2 Glide 2.x release. |
 | **2.60 – 2.61** | Banshee, Voodoo3, Voodoo4, Voodoo5 | Unified H3/VSA-100 Glide 2.x driver. Reports `GR_SSTTYPE_VOODOO` with `fbiRev = 0x1002` (Banshee, 1 TMU) or `fbiRev = 0x11002` (Voodoo3/4/5, 2 TMUs) for legacy compatibility. |
 
 ---

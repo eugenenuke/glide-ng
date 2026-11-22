@@ -311,6 +311,7 @@ static const char* sst_type_name(int type, int fbi_rev) {
     case GR_SSTTYPE_VOODOO:
       if ((fbi_rev & 0x11000) == 0x11000) return "Voodoo3 / VSA-100 (H3+)";
       if ((fbi_rev & 0x01000) == 0x01000) return "Voodoo Banshee (H3)";
+      if ((fbi_rev & 0x180) != 0) return "Voodoo2 (CVG)";
       return "Voodoo Graphics (SST-1)";
     case GR_SSTTYPE_SST96:   return "Voodoo Rush (SST-96)";
     case GR_SSTTYPE_AT3D:    return "Alliance AT3D";
@@ -321,7 +322,7 @@ static const char* sst_type_name(int type, int fbi_rev) {
 #endif
 
 static void format_rev(char* out, size_t out_sz, int rev) {
-  if (rev >= 0x1000) {
+  if (rev >= 0x80) {
     snprintf(out, out_sz, "0x%X", (unsigned)rev);
   } else {
     snprintf(out, out_sz, "%d", rev);
