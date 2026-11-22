@@ -1,10 +1,57 @@
 # Building & Installing glide-ng
 
-This guide covers prerequisites, compiling `glide-ng` for Linux, cross-compiling 32-bit Win32 DLLs (`glide.dll`, `glide2x.dll`, and `glide3x.dll`) for Wine/Proton or Windows, optional DOS/32 tool builds, and installing the wrapper for games and emulators.
+This guide covers **installing pre-built release binaries** (with minimal end-user runtime requirements), as well as compiling `glide-ng` from source on Linux, cross-compiling 32-bit Win32 DLLs (`glide.dll`, `glide2x.dll`, and `glide3x.dll`) for Wine/Proton or Windows, and optional DOS/32 tool builds.
 
 ---
 
-## 1. Prerequisites
+## 0. Using Pre-Built Release Binaries (End Users)
+
+Pre-built archives are published free of charge on the repository's [GitHub Releases](https://github.com/eugenenuke/glide-ng-alpha/releases) page:
+
+- **`glide-ng-<ver>-runtime.zip`** *(or **`runtime.tar.xz`** for smaller downloads & native Linux symlink preservation)* — Contains only the drop-in stripped runtime libraries (`win32/glide*.dll`, `dos/GLIDE2X.OVL`, `linux-x86_64-<distro>/libglide*.so`).
+- **`glide-ng-<ver>-tools.zip`** — Diagnostic & benchmark tools (`glide_info`, `glide_bench`, `glide_envtest`, `glidecube`, `glidegears`, and showcase demos).
+- **`glide-ng-<ver>-debug-symbols.zip`** — Optional detached `*.debug` files for `gdb` / `addr2line` crash backtraces (not needed to run games).
+- **`SHA256SUMS.txt`** — Verification checksums for all archives.
+
+### Choosing the Right Platform & Linux Flavor
+
+Inside the runtime archive, pick the folder matching your OS / emulator:
+
+| Operating System / Distro | Archive Folder | Notes |
+| :--- | :--- | :--- |
+| **Windows / Wine / Steam Proton** | `win32/` | Self-contained 32-bit DLLs (`glide.dll`, `glide2x.dll`, `glide3x.dll`). Zero external DLL requirements beyond built-in Windows/Wine system DLLs. |
+| **DOSBox-X / DOSBox-SVN (Guest DOS)** | `dos/` | Copy `GLIDE2X.OVL` (~13 KB) into the DOS game folder or `PATH`. Pair with your matching Linux `libglide2x.so` (or Win32 `glide2x.dll`). |
+| **Ubuntu / Debian / Mint / Pop!_OS** | `linux-x86_64-ubuntu-22.04/` *(or `ubuntu-24.04/`)* | `ubuntu-22.04` is the widest LTS baseline (`glibc 2.35+`, compatible with Debian 12+, Ubuntu 22.04+, Linux Mint 21+). |
+| **Fedora / Nobara / RHEL / Bazzite** | `linux-x86_64-fedora-41/` | Built natively on Fedora 41 x86_64. |
+| **Arch / CachyOS / EndeavourOS / Manjaro / SteamOS** | `linux-x86_64-arch/` | Built natively against current Arch rolling libraries. |
+
+Every Linux flavor directory includes a `BUILD_INFO.txt` noting the exact maximum `GLIBC_*` symbol version required (check your system via `ldd --version`). If extracting `.zip` on Linux, use `unzip` (to preserve `libglide*.so` SONAME symlinks), or extract `glide-ng-<ver>-runtime.tar.xz` with `tar -xJf`.
+
+### Minimal Non-Developer Runtime Packages (Linux End Users)
+
+Only runtime libraries are needed to run pre-built Linux `.so` binaries (**no compilers, CMake, or `-dev` packages required**):
+
+- **Debian / Ubuntu / Linux Mint / Pop!_OS**:
+  ```bash
+  sudo apt-get update
+  sudo apt-get install -y libvulkan1 libsdl2-2.0-0 libegl1 libgles2 libgomp1 \
+    libx11-6 libxext6 libwayland-client0 libwayland-egl1
+  ```
+- **Arch Linux / CachyOS / EndeavourOS / Manjaro**:
+  ```bash
+  sudo pacman -S --needed vulkan-icd-loader sdl2 mesa gcc-libs libx11 libxext wayland
+  ```
+- **Fedora / Nobara / RHEL derivatives**:
+  ```bash
+  sudo dnf install -y vulkan-loader SDL2 mesa-libEGL mesa-libGLES libgomp \
+    libX11 libXext wayland-libs-client
+  ```
+
+*(For 32-bit Windows games under Wine/Proton using the Vulkan backend, also ensure your distro's 32-bit Vulkan ICD is installed — e.g. `mesa-vulkan-drivers:i386`, `lib32-vulkan-radeon`, `lib32-vulkan-intel`, or `lib32-nvidia-utils`.)*
+
+---
+
+## 1. Prerequisites (Building from Source)
 
 `glide-ng` requires a C++20 compiler (GCC 10+, Clang 12+, or MSVC 2019+), CMake 3.20+, Python 3 (for SPIR-V header embedding), and `glslangValidator` (from `glslang-tools` or the Vulkan SDK).
 
@@ -58,7 +105,7 @@ For running the Vulkan backend under 32-bit Wine, ensure a 32-bit Vulkan ICD is 
 DOS/32 diagnostic and benchmark executables (`glide_info.exe`, `glide_bench.exe`, `glide_envtest.exe`) and `glide-ng`'s clean-room GPL-3.0 DOSBox pass-through overlay (`glide2x.ovl`) are optional; CMake skips them automatically when Open Watcom v2 is absent.
 
 To enable DOS/32 cross-builds (no root required):
-1. Download a Linux x64 release archive from [Open Watcom v2 Releases](https://github.com/open-watcom/open-watcom-v2/releases) (for example, `open-watcom-2_0-c-linux-x64.tar.xz`).
+1. Download the snapshot archive from [Open Watcom v2 Releases](https://github.com/open-watcom/open-watcom-v2/releases) (`ow-snapshot.tar.xz` under `Current-build`).
 2. Extract it into `./vendor/watcom/` (git-ignored) so `./vendor/watcom/binl64/wcc386` exists, or set the `WATCOM` environment variable to an existing Open Watcom installation.
 3. Re-run CMake configure. When detected, the `dos_tools` target builds self-contained CauseWay DOS/32 executables and the clean-room `glide2x.ovl` (exporting all 130 DOSBox bridge functions plus Glide 2.11 `guFb*` compatibility wrappers) into `<build>/dos/`.
 
@@ -91,22 +138,24 @@ cmake --build build -j$(nproc)
 
 | Path | Contents |
 | :--- | :--- |
-| `<build>/lib/libglide2x.so` | Linux Glide 2.x shared library |
-| `<build>/lib/libglide3x.so` | Linux Glide 3.x shared library |
-| `<build>/bin/` | Linux tools (`glide2_info`, `glide3_info`, `glide2_bench`, `glide3_bench`, `glide2_envtest`, `glide3_envtest`, `glide2_cube`, `glide3_cube`, `glide2_gears`, `glide3_gears`), standalone demos, and Catch2 test runners |
-| `<build>/win32/bin/` | Auto-built 32-bit Win32 `glide2x.dll`, `glide3x.dll`, and Win32 `.exe` tools (when MinGW-w64 is detected) |
-| `<build>/dos/` | Auto-built DOS/32 `glide_info.exe`, `glide_bench.exe`, `glide_envtest.exe` (when Open Watcom v2 is detected) |
+| `<build>/lib/libglide.so` | Linux Glide 2.11 shared library (161 ABI exports; internal symbols hidden) |
+| `<build>/lib/libglide2x.so` | Linux Glide 2.x shared library (152 ABI exports; internal symbols hidden) |
+| `<build>/lib/libglide3x.so` | Linux Glide 3.x shared library (129 ABI exports; internal symbols hidden) |
+| `<build>/bin/` | Linux tools (`glide2_info`, `glide3_info`, `glide2_bench`, `glide3_bench`, `glide2_envtest`, `glide3_envtest`, `glide2_cube`, `glide3_cube`, `glide2_gears`, `glide3_gears`), standalone demos, and Catch2 test runners (`Glide211WrapperTests`, `Glide2xWrapperTests`, `Glide3xWrapperTests`) |
+| `<build>/win32/bin/` | Auto-built 32-bit Win32 `glide.dll`, `glide2x.dll`, `glide3x.dll`, and Win32 `.exe` tools (when MinGW-w64 is detected) |
+| `<build>/dos/` | Auto-built DOS/32 `glide2x.ovl`, `glide_info.exe`, `glide_bench.exe`, `glide_envtest.exe` (when Open Watcom v2 is detected) |
 
 ### Useful CMake Options & Targets
 
 | Option / Target | Effect |
 | :--- | :--- |
 | `-DGLIDE_BUILD_WIN32=OFF` | Disable automatic MinGW-w64 Win32 sub-build during Linux builds. |
+| `-DGLIDE_STATIC_CPP_RUNTIME=ON` | Statically link `libstdc++` and `libgcc` into Linux `libglide*.so` (default **`OFF`**: dynamic linking when building from source). |
 | `-DGLIDE_STRICT_WARNINGS=OFF` | Disable `-Werror` on project targets if testing an unreleased compiler. |
 | `-DENABLE_TELEMETRY=ON` | Enable fine-grained internal profiling macros in addition to always-on frame telemetry. |
-| `--target win32_dlls` | Build only 32-bit `glide2x.dll` and `glide3x.dll`. |
+| `--target win32_dlls` | Build only 32-bit `glide.dll`, `glide2x.dll`, and `glide3x.dll`. |
 | `--target win32_tools` | Build all 32-bit Win32 DLLs and tools. |
-| `--target dos_tools` | Build all Open Watcom DOS/32 executables. |
+| `--target dos_tools` | Build all Open Watcom DOS/32 executables and `glide2x.ovl`. |
 
 ---
 
@@ -121,7 +170,7 @@ cmake -S . -B build_win32 \
 cmake --build build_win32 -j$(nproc)
 ```
 
-Produced Win32 binaries (`build_win32/bin/` or `build_release/win32/bin/`) are statically linked against MinGW runtimes and carry **zero external runtime DLL dependencies** — importing only standard Windows/Wine system DLLs (`KERNEL32.dll`, `msvcrt.dll`, `USER32.dll`, `GDI32.dll`, `OPENGL32.dll`), with `vulkan-1.dll` loaded dynamically at runtime when the Vulkan backend is active.
+Produced Win32 binaries (`build_win32/bin/` or `build_release/win32/bin/`) are statically linked against MinGW runtimes and carry **zero external runtime DLL dependencies** — importing only 4 built-in Windows/Wine system DLLs (`KERNEL32.dll`, `msvcrt.dll`, `USER32.dll`, `GDI32.dll`). Both `vulkan-1.dll` and `%SystemRoot%\System32\opengl32.dll` are loaded dynamically at runtime so local 3dfx MiniGL `opengl32.dll` shims never cause circular loader imports.
 
 Each DLL exports:
 - Canonical 3dfx Win32 `__stdcall` decorated names (`_grFoo@N`) for 1990s MSVC/Watcom executables.
@@ -189,7 +238,7 @@ LD_LIBRARY_PATH="$PWD/build_release/lib:${LD_LIBRARY_PATH:-}" \
 ```
 
 > **Choosing the right `GLIDE2X.OVL` (Pass-Through vs. Software Voodoo):**
-> - **Glide pass-through (`glide = true` → `glide-ng`):** Use the DOSBox HLE pass-through `GLIDE2X.OVL` (~31 KB). Authentic hardware OVLs will not talk to the `0x600` pass-through port.
+> - **Glide pass-through (`glide = true` → `glide-ng`):** Use `glide-ng`'s clean-room HLE pass-through `GLIDE2X.OVL` (~13 KB, shipped in the release `dos/` folder and built at `<build>/dos/glide2x.ovl`). Authentic hardware OVLs will not talk to the `0x600` pass-through port.
 > - **Built-in Software Voodoo (`voodoo_card = software` in DOSBox-X, or `voodoo = on` in DOSBox-Staging):** These emulators implement **Voodoo Graphics (SST-1)** hardware (PCI `121A:0001`), *not* pass-through to `glide-ng`. Running DOS games or `glide_info.exe` / `glide_bench.exe` against Software Voodoo requires an authentic **SST-1** hardware `GLIDE2X.OVL` — specifically **Glide 2.42 (SST-1)** (recommended) or **2.30**. Voodoo Rush (`SST-96`), Voodoo2 (`2.5x`), Banshee/Voodoo3 (`2.6x`), and HLE pass-through OVLs will report 0 boards or mismatch errors; Glide `2.43`/`2.46` fail DOSBox's SST-1 PCI init and `2.48` faults on Ring-0 `RDMSR`.
 > - **`PATH` lookup:** `glide_info.exe`, `glide_bench.exe`, and `glide_envtest.exe` search the current directory, then every directory in DOS `PATH`, then `Z:\` fallbacks, and support both HLE pass-through and authentic 3dfx Watcom `GLIDE2X.OVL` binaries (`2.3`–`2.61`).
 

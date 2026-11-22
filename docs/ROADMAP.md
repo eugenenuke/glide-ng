@@ -56,7 +56,9 @@ Forward-looking engineering roadmap for `glide-ng`. Completed pre-beta work is a
 
 ## Path to `1.0.0`
 
-Criteria for graduating from `0.x` beta to `1.0.0`:
+**Current milestone: `v0.9.0` (41 verified commercial games across DOS, Glide 2.11, Glide 2.x, Glide 3.x, 3dfx MiniGL, and `3dfxVGL.dll` ICD; modular zero-warning Catch2 test suite; multi-distro binary release packaging).**
+
+Criteria for graduating from `0.9.x` to `1.0.0`:
 1. Full Glide 2.11 (`glide.dll`), Glide 2.x (`glide2x.dll`/`libglide2x.so`), and Glide 3.x (`glide3x.dll`/`libglide3x.so`) ABI coverage verified on real commercial titles.
 2. Stable `glide-ng.ini` schema and `GLIDE_NG_*` / `FX_GLIDE_*` configuration contract.
 3. Reproducible CI builds and headless multi-backend regression tests across Linux and Win32/Wine targets.

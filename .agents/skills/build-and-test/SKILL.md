@@ -24,17 +24,17 @@ cmake --build build -j$(nproc) --target Glide2xWrapperTests Glide3xWrapperTests
 cmake --build build_release -j$(nproc) --target win32_dlls
 ```
 
-- Linux libraries: `<build>/lib/libglide2x.so` and `<build>/lib/libglide3x.so`.
-- Linux tools & tests: `<build>/bin/` (`Glide2xWrapperTests`, `Glide3xWrapperTests`, `sw_validate`, `glide2_info`, `glide3_info`, `glide2_bench`, `glide3_bench`, `glide2_envtest`, `glide3_envtest`, `glide2_cube`, `glide3_cube`, `glide2_gears`, `glide3_gears`, demos).
-- Auto-built Win32 binaries: `<build>/win32/bin/` (`glide2x.dll`, `glide3x.dll`, `glide*_info.exe`, `glide*_bench.exe`, `glide*_envtest.exe`).
-- Auto-built DOS/32 binaries (when Open Watcom v2 is installed): `<build>/dos/` (`glide_info.exe`, `glide_bench.exe`, `glide_envtest.exe`).
+- Linux libraries: `<build>/lib/libglide.so`, `<build>/lib/libglide2x.so`, and `<build>/lib/libglide3x.so`.
+- Linux tools & tests: `<build>/bin/` (`Glide211WrapperTests`, `Glide2xWrapperTests`, `Glide3xWrapperTests`, `glide2_info`, `glide3_info`, `glide2_bench`, `glide3_bench`, `glide2_envtest`, `glide3_envtest`, `glide2_cube`, `glide3_cube`, `glide2_gears`, `glide3_gears`, demos).
+- Auto-built Win32 binaries: `<build>/win32/bin/` (`glide.dll`, `glide2x.dll`, `glide3x.dll`, `glide*_info.exe`, `glide*_bench.exe`, `glide*_envtest.exe`).
+- Auto-built DOS/32 binaries (when Open Watcom v2 is installed): `<build>/dos/` (`glide2x.ovl`, `glide_info.exe`, `glide_bench.exe`, `glide_envtest.exe`).
 
 ## 2. Automated Unit Tests (Headless)
 
 Always use canonical `GLIDE_NG_*` environment variables with `GLIDE_NG_HEADLESS=1`:
 
 ```bash
-# Discover all registered Catch2 tests (106 tests total)
+# Discover all registered Catch2 tests (64 domain test cases total)
 ctest --test-dir build -N
 
 # Run all Catch2 tests via CTest on Software backend
@@ -49,15 +49,12 @@ done
 GLIDE_NG_BACKEND=software GLIDE_NG_HEADLESS=1 ./build/bin/Glide3xWrapperTests
 
 # Validate catalog presets & version macros
-GLIDE_NG_BACKEND=software GLIDE_NG_HEADLESS=1 ./build/bin/Glide3xWrapperTests "[M12][Catalog],[M13][Version]"
+GLIDE_NG_BACKEND=software GLIDE_NG_HEADLESS=1 ./build/bin/Glide3xWrapperTests "[Catalog],[Version]"
 ```
 
 ## 3. Benchmarks & Verification Tools
 
 ```bash
-# Software rasterizer self-validation
-GLIDE_NG_HEADLESS=1 ./build/bin/sw_validate
-
 # Automated INI / authentic 3dfx env var verification
 GLIDE_NG_HEADLESS=1 ./build/bin/glide2_envtest --verify --test-reopen
 GLIDE_NG_HEADLESS=1 ./build/bin/glide3_envtest --verify --test-reopen

@@ -33,7 +33,7 @@ Technical references for contributors working on the wrapper core, frontends, ba
 | **[Architecture](developer-guide/architecture.md)** | Core/Frontend/Backend layering, `NativeSurfaceHost` WSI hosting, `GlideStateTracker`, `TextureManager`, `LfbManager`, and runtime SIMD dispatch. |
 | **[API Coverage & ABI](developer-guide/api-coverage.md)** | Glide 2.x (152 exports) and Glide 3.x (129 exports) surface summary, VSA-100 extensions, Win32 `__stdcall` export conventions, and API wrapping vs. register-level emulation. |
 | **[Rendering Backends](developer-guide/backends.md)** | Vulkan SPIR-V/Early-Z/BCn/GPU-RTT pipeline, OpenGL ES 3.2 / WGL 3.3 Core backend, and Software AVX2/AVX-512 tiled rasterizer invariants. |
-| **[Testing & Verification](developer-guide/testing.md)** | Self-contained Catch2 test suites (`Glide2xWrapperTests`, `Glide3xWrapperTests`), `ctest`, `sw_validate`, `glide_envtest`, and catalog INI validation. |
+| **[Testing & Verification](developer-guide/testing.md)** | Modular self-contained Catch2 test suites (`Glide211WrapperTests`, `Glide2xWrapperTests`, `Glide3xWrapperTests`), `ctest`, `glide_envtest`, and catalog INI validation. |
 | **[Versioning & Releasing](developer-guide/releasing.md)** | SemVer 2.0 policy, single-source `VERSION`, tag-aware `build_version.h`, Win32 PE `VS_VERSION_INFO`, `scripts/bump_version.sh`, and release tagging workflow. |
 
 ---

@@ -23,17 +23,19 @@ This document is the authoritative system-level manifest for AI coding agents co
 ├── include/                          # Public Glide headers (3dfx/, glide2/, glide3/, glide_ng/)
 ├── src/
 │   ├── core/                         # Config, Logger, NativeSurfaceHost, VertexLayout, Textures, LFB, SIMD
+│   ├── glide211/                     # Glide 2.11 C ABI exports (libglide.so / glide.dll)
 │   ├── glide2/                       # Glide 2.x C ABI exports (libglide2x.so / glide2x.dll)
 │   ├── glide3/                       # Glide 3.x C ABI exports (libglide3x.so / glide3x.dll)
+│   ├── dos_ovl/                      # Clean-room GPL-3.0 DOS/32 GLIDE2X.OVL bridge
 │   └── backends/
 │       ├── vulkan/                   # Primary GPU backend (Vulkan / SPIR-V)
 │       ├── opengl_es/                # Secondary GPU backend (EGL OpenGL ES 3.2 / Win32 WGL 3.3 Core)
 │       └── software/                 # CPU reference rasterizer (Scalar / AVX2 / AVX-512)
-├── tests/                            # Self-contained Catch2 suites (106 tests) & sw_validate
+├── tests/                            # Modular self-contained Catch2 suites (glide211/, glide2/, glide3/)
 ├── demos/                            # Standalone Glide 2/3 visual & validation demos
 ├── tools/                            # Portable C99 tools (glide_info, glide_bench, glide_envtest, cube/gears)
 ├── cmake/                            # Cross-build integrations (MinGW-w64 Win32, Open Watcom DOS/32)
-├── scripts/                          # Release & maintenance utilities (bump_version.sh)
+├── scripts/                          # Release & maintenance utilities (bump_version.sh, package_release.sh)
 ├── VERSION                           # Single source of truth for SemVer 2.0 version
 └── vendor/                           # Local git-ignored toolchains, games, demos, & optional reference clones
 ```
@@ -54,7 +56,7 @@ When working from [docs/ROADMAP.md](../docs/ROADMAP.md) or any milestone tracker
 - Prefer `git revert` / `git bisect` over layering speculative workarounds when a regression appears.
 
 ### Policy C: Catch2 TDD Mandate
-- Every bug fix, config parser change, state addition, or math/geometry helper **must** be accompanied by a Catch2 unit test in [tests/test_glide3.cpp](../tests/test_glide3.cpp) or [tests/test_architecture.cpp](../tests/test_architecture.cpp).
+- Every bug fix, config parser change, state addition, or math/geometry helper **must** be accompanied by a Catch2 unit test under [tests/glide211/](../tests/glide211/), [tests/glide2/](../tests/glide2/), or [tests/glide3/](../tests/glide3/).
 - Run headless verification with `GLIDE_NG_HEADLESS=1 GLIDE_NG_BACKEND=software ctest --test-dir build --output-on-failure` (see the `build-and-test` skill for exact commands).
 
 ### Policy D: Local Third-Party Directories (`vendor/` and `ext_tests/`)

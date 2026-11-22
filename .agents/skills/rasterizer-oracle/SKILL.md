@@ -35,4 +35,4 @@ Activate this skill when analyzing, modifying, or debugging the CPU reference ra
 ## 4. Performance & Threading
 
 - Keep tiled rasterization (`ThreadPool`, SIMD `SimdVec.h` AVX2 loops, OpenMP) free of per-pixel heap allocations and data races.
-- Validate SIMD/rasterizer changes with `tests/test_simd_vec.cpp`, `./build/bin/sw_validate`, and `./build/bin/sw_benchmark`.
+- Validate SIMD/rasterizer changes with `tests/glide3/test_glide3_simd_vec.cpp`, `tests/glide3/test_glide3_simd.cpp`, `Glide3xWrapperTests "[SIMD]"`, and `glide3_bench`.
