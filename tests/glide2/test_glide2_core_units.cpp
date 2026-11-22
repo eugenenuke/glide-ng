@@ -616,6 +616,7 @@ TEST_CASE("Core: Texture Decoders, PALETTE6666 & Partial Mipmap Packing", "[Core
   SECTION("LFB Blending and Chroma Keying Simulation") {
     GlideWrapper::SoftwareBackend backend;
     GlideWrapper::WrapperConfig cfg;
+    cfg.forceNoWindow = true;
     bool ok = backend.Initialize(cfg);
     REQUIRE(ok == true);
 

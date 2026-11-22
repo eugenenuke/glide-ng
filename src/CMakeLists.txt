@@ -110,6 +110,8 @@ if(WIN32)
     target_compile_definitions(GlideWrapperCore PUBLIC
         VULKAN_HPP_DISPATCH_LOADER_DYNAMIC=1
         VULKAN_HPP_NO_SPACESHIP_OPERATOR
+        _WIN32_WINNT=0x0600
+        WINVER=0x0600
         WIN32_LEAN_AND_MEAN
         NOMINMAX
     )
@@ -120,6 +122,7 @@ if(WIN32)
     target_link_libraries(GlideWrapperCore PUBLIC user32 gdi32)
 else()
     target_link_libraries(GlideWrapperCore PUBLIC Vulkan::Vulkan SDL2::SDL2 GLESv2 OpenMP::OpenMP_CXX ${CMAKE_DL_LIBS})
+    target_compile_definitions(GlideWrapperCore PUBLIC VULKAN_HPP_NO_SPACESHIP_OPERATOR)
 endif()
 if(UNIX AND NOT APPLE)
     target_link_libraries(GlideWrapperCore PUBLIC X11::X11 X11::Xext)

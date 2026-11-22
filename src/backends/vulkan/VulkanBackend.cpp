@@ -106,7 +106,11 @@ void Logger::LogHostVulkanCapabilities() {
           "Vulkan Host Polling unavailable: vulkan-1.dll not found.");
       return;
     }
-    vk::detail::DispatchLoaderDynamic localDisp(gipa);
+#if defined(VULKAN_HPP_DISPATCH_LOADER_DYNAMIC_TYPE)
+    VULKAN_HPP_DISPATCH_LOADER_DYNAMIC_TYPE localDisp(gipa);
+#else
+    vk::DispatchLoaderDynamic localDisp(gipa);
+#endif
     vk::ApplicationInfo appInfo("glide-ng", 1, "glide-ng", 1,
                                 VK_API_VERSION_1_2);
     vk::InstanceCreateInfo createInfo({}, &appInfo);
@@ -1842,7 +1846,8 @@ bool VulkanBackend::SwapBuffers() {
   ResolveMsaaToSingle_Locked(activeIdx);
 
   const auto presentStart = std::chrono::steady_clock::now();
-  bool useSwapchain = (m_swapchain.get() != nullptr);
+  bool useSwapchain =
+      (static_cast<VkSwapchainKHR>(m_swapchain.get()) != VK_NULL_HANDLE);
   uint32_t imageIdx = 0;
 
   if (useSwapchain) {

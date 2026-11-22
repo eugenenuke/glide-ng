@@ -984,10 +984,21 @@ static void print_compact_report(FILE* out, const ReportData* r) {
         line[0] = '\0';
         if (line_count >= 2) break;
       }
-      if (line[0] != '\0') {
-        strncat(line, ", ", sizeof(line) - strlen(line) - 1);
+      {
+        size_t len = strlen(line);
+        size_t avail = sizeof(line) - 1 - len;
+        if (len > 0 && avail >= 2) {
+          memcpy(line + len, ", ", 2);
+          len += 2;
+          avail -= 2;
+        }
+        {
+          size_t plen = strlen(pair);
+          if (plen > avail) plen = avail;
+          if (plen > 0) memcpy(line + len, pair, plen);
+          line[len + plen] = '\0';
+        }
       }
-      strncat(line, pair, sizeof(line) - strlen(line) - 1);
       shown++;
     }
     if (line[0] != '\0') {
