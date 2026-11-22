@@ -245,13 +245,13 @@ bool VulkanBackend::Initialize(const WrapperConfig& config) {
       {}, static_cast<uint32_t>(bindings.size()), bindings.data());
   m_descriptorSetLayout = m_device->createDescriptorSetLayoutUnique(layoutInfo);
 
-  // Create descriptor pool (raised capacity for complex games)
-  std::array<vk::DescriptorPoolSize, 1> poolSizes = {
-      vk::DescriptorPoolSize(vk::DescriptorType::eCombinedImageSampler, 8192)};
-  vk::DescriptorPoolCreateInfo poolInfo(
-      vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet, 4096,
-      static_cast<uint32_t>(poolSizes.size()), poolSizes.data());
-  m_descriptorPool = m_device->createDescriptorPoolUnique(poolInfo);
+  // Create initial texture descriptor pool (overflow pools allocated on demand
+  // inside GetOrCreateDescriptorSet so dual-TMU / long sessions never exhaust
+  // pool capacity or throw uncaught vk::OutOfPoolMemoryError).
+  m_descriptorPools.clear();
+  m_activeDescriptorPoolIdx = CreateTextureDescriptorPool_Locked();
+  vk::DescriptorPool initialDescPool =
+      m_descriptorPools[m_activeDescriptorPoolIdx].pool.get();
 
   // Create 1x1 dummy white texture
   {
@@ -342,10 +342,11 @@ bool VulkanBackend::Initialize(const WrapperConfig& config) {
     m_dummySampler = m_device->createSamplerUnique(samplerInfo);
 
     // Descriptor Set
-    vk::DescriptorSetAllocateInfo setAlloc(m_descriptorPool.get(), 1,
+    vk::DescriptorSetAllocateInfo setAlloc(initialDescPool, 1,
                                            &m_descriptorSetLayout.get());
     auto sets = m_device->allocateDescriptorSets(setAlloc);
     m_dummyDescriptorSet = sets[0];
+    ++m_descriptorPools[m_activeDescriptorPoolIdx].allocatedSets;
 
     std::array<vk::DescriptorImageInfo, 2> imageInfos = {
         vk::DescriptorImageInfo(m_dummySampler.get(),
@@ -416,7 +417,9 @@ void VulkanBackend::Shutdown() {
   m_dummySampler.reset();
   m_dummyTexture.memory.reset();
   m_dummyTexture.image.reset();
-  m_descriptorPool.reset();
+  m_dummyDescriptorSet = vk::DescriptorSet{};
+  m_descriptorPools.clear();
+  m_activeDescriptorPoolIdx = 0;
   m_descriptorSetLayout.reset();
 
   // 3. Explicitly destroy all device-owned buffers and memories
@@ -1866,6 +1869,12 @@ bool VulkanBackend::SwapBuffers() {
       GLIDE_LOG(CRITICAL, "Vulkan",
                 "acquireNextImageKHR failed with Vulkan error: " << e.what());
       Logger::GetInstance().Flush();
+      try {
+        SubmitPendingUploadsAndWaitIdle_Locked();
+      } catch (const std::exception&) {
+        m_uploadCmdHasWork[m_currentFrameSlot] = false;
+      }
+      ReopenCommandBuffer_Locked();
       return false;
     }
 
@@ -1899,6 +1908,13 @@ bool VulkanBackend::SwapBuffers() {
       GLIDE_LOG(
           CRITICAL, "Vulkan",
           "Failed to acquire swapchain image: " << vk::to_string(acquireRes));
+      Logger::GetInstance().Flush();
+      try {
+        SubmitPendingUploadsAndWaitIdle_Locked();
+      } catch (const std::exception&) {
+        m_uploadCmdHasWork[m_currentFrameSlot] = false;
+      }
+      ReopenCommandBuffer_Locked();
       return false;
     }
 
@@ -2032,6 +2048,11 @@ bool VulkanBackend::SwapBuffers() {
       GLIDE_LOG(CRITICAL, "Vulkan",
                 "vkQueueSubmit failed with Vulkan error: " << e.what());
       Logger::GetInstance().Flush();
+      // Keep the slot fence signaled and command buffer reopened so subsequent
+      // SwapBuffers/draw calls never deadlock in waitForFences(..., UINT64_MAX)
+      // or record into an ended command buffer.
+      ResetFrameFenceSignaled_Locked(m_currentFrameSlot);
+      ReopenCommandBuffer_Locked();
       return false;
     }
 
@@ -2051,6 +2072,14 @@ bool VulkanBackend::SwapBuffers() {
       GLIDE_LOG(CRITICAL, "Vulkan",
                 "vkQueuePresentKHR failed with Vulkan error: " << e.what());
       Logger::GetInstance().Flush();
+      if (m_fences[m_currentFrameSlot]) {
+        try {
+          (void)m_device->waitForFences(1, &m_fences[m_currentFrameSlot].get(),
+                                        VK_TRUE, UINT64_MAX);
+        } catch (const std::exception&) {
+        }
+      }
+      ReopenCommandBuffer_Locked();
       return false;
     }
 
@@ -2078,6 +2107,15 @@ bool VulkanBackend::SwapBuffers() {
       GLIDE_LOG(
           CRITICAL, "Vulkan",
           "Failed to present swapchain image: " << vk::to_string(presentRes));
+      Logger::GetInstance().Flush();
+      if (m_fences[m_currentFrameSlot]) {
+        try {
+          (void)m_device->waitForFences(1, &m_fences[m_currentFrameSlot].get(),
+                                        VK_TRUE, UINT64_MAX);
+        } catch (const std::exception&) {
+        }
+      }
+      ReopenCommandBuffer_Locked();
       return false;
     }
 
@@ -2912,10 +2950,71 @@ void VulkanBackend::SubmitMidFrameAndWaitIdle_Locked(bool reopenDrawCmd) {
   m_graphicsQueue.submit(submitInfo, {});
   m_device->waitIdle();
 
+  // The entire GPU queue is now idle across both frame slots; immediately
+  // reclaim retired textures and descriptor sets so mid-frame upload bursts do
+  // not hold pool slots captive until the next SwapBuffers().
+  ReclaimRetiredResources_Locked(0);
+  ReclaimRetiredResources_Locked(1);
+
   if (reopenDrawCmd) {
     m_commandBuffer->reset({});
     m_commandBuffer->begin(vk::CommandBufferBeginInfo(
         vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
+  }
+}
+
+size_t VulkanBackend::CreateTextureDescriptorPool_Locked() {
+  std::array<vk::DescriptorPoolSize, 1> poolSizes = {
+      vk::DescriptorPoolSize(vk::DescriptorType::eCombinedImageSampler,
+                             kDescriptorPoolChunkSets * 2u)};
+  vk::DescriptorPoolCreateInfo poolInfo(
+      vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet,
+      kDescriptorPoolChunkSets, static_cast<uint32_t>(poolSizes.size()),
+      poolSizes.data());
+  DescriptorPoolChunk chunk;
+  chunk.pool = m_device->createDescriptorPoolUnique(poolInfo);
+  chunk.allocatedSets = 0;
+  m_descriptorPools.push_back(std::move(chunk));
+  return m_descriptorPools.size() - 1;
+}
+
+void VulkanBackend::ReleaseDescriptorSet_Locked(TrackedDescriptorSet& entry) {
+  if (!entry.set) return;
+  const size_t poolIdx = entry.poolIdx;
+  entry.set.reset();
+  if (poolIdx < m_descriptorPools.size() &&
+      m_descriptorPools[poolIdx].allocatedSets > 0u) {
+    --m_descriptorPools[poolIdx].allocatedSets;
+  }
+}
+
+void VulkanBackend::ResetFrameFenceSignaled_Locked(uint32_t slot) {
+  if (!m_device || slot >= 2) return;
+  try {
+    m_device->waitIdle();
+  } catch (const std::exception&) {
+  }
+  try {
+    m_fences[slot] = m_device->createFenceUnique(
+        vk::FenceCreateInfo(vk::FenceCreateFlagBits::eSignaled));
+  } catch (const std::exception& e) {
+    GLIDE_LOG(CRITICAL, "Vulkan",
+              "Failed to recreate signaled fence for slot " << slot << ": "
+                                                            << e.what());
+  }
+}
+
+void VulkanBackend::ReopenCommandBuffer_Locked() {
+  if (!m_device || !m_commandBuffer) return;
+  try {
+    m_commandBuffer = &m_commandBuffers[m_currentFrameSlot].get();
+    m_commandBuffer->reset({});
+    m_commandBuffer->begin(vk::CommandBufferBeginInfo(
+        vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
+    m_inRenderPass = false;
+  } catch (const std::exception& e) {
+    GLIDE_LOG(CRITICAL, "Vulkan",
+              "Failed to reopen Vulkan command buffer: " << e.what());
   }
 }
 

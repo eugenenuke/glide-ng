@@ -104,16 +104,35 @@ void VulkanBackend::EvictDescriptorsForView_Locked(vk::ImageView view,
   auto vit = m_viewToDescriptorKeys.find(viewHandle);
   if (vit == m_viewToDescriptorKeys.end()) return;
 
+  const vk::ImageView dummyView = m_dummyTexture.imageView.get();
   for (const auto& dkey : vit->second) {
+    // Unlink the reverse-index entry on the partner VkImageView so long-lived
+    // textures paired with transient views never accumulate stale keys.
+    auto unlinkPartner = [&](vk::ImageView partner) {
+      if (!partner || partner == view || partner == dummyView) return;
+      const uint64_t ph = VkHandleToU64(static_cast<VkImageView>(partner));
+      auto pit = m_viewToDescriptorKeys.find(ph);
+      if (pit != m_viewToDescriptorKeys.end()) {
+        pit->second.erase(dkey);
+        if (pit->second.empty()) {
+          m_viewToDescriptorKeys.erase(pit);
+        }
+      }
+    };
+    unlinkPartner(dkey.imageView0);
+    unlinkPartner(dkey.imageView1);
+
     auto dit = m_descriptorCache.find(dkey);
     if (dit != m_descriptorCache.end()) {
-      if (m_cachedDescSet == dit->second.get()) {
+      if (m_cachedDescSet == dit->second.set.get()) {
         m_cachedDescSet = vk::DescriptorSet{};
         m_descriptorStateDirty = true;
       }
       if (deferDestruction) {
         m_retiredDescriptorSets[m_currentFrameSlot].push_back(
             std::move(dit->second));
+      } else {
+        ReleaseDescriptorSet_Locked(dit->second);
       }
       m_descriptorCache.erase(dit);
     }
@@ -144,6 +163,9 @@ void VulkanBackend::RetireTextureAtAddress_Locked(uint32_t tmu,
 void VulkanBackend::ReclaimRetiredResources_Locked(uint32_t slot) {
   if (slot >= 2) return;
   // Release retired descriptor sets first so no set references reclaimed views.
+  for (auto& entry : m_retiredDescriptorSets[slot]) {
+    ReleaseDescriptorSet_Locked(entry);
+  }
   m_retiredDescriptorSets[slot].clear();
   for (auto& tex : m_retiredTextures[slot]) {
     if (m_texturePool.size() < kMaxPooledTextures && tex.image && tex.memory &&
@@ -242,11 +264,12 @@ void VulkanBackend::UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
   }
 
   // Check if we have enough space in the active slot's staging buffer segment
+  const bool useOneShotStaging = (totalBytes > m_texStagingSlotSize);
   uint32_t slotBase = m_currentFrameSlot * m_texStagingSlotSize;
   uint32_t slotEnd = (m_currentFrameSlot + 1) * m_texStagingSlotSize;
   uint32_t alignedStart = (m_texStagingOffsets[m_currentFrameSlot] + 15u) & ~15u;
 
-  if (alignedStart + totalBytes > slotEnd) {
+  if (!useOneShotStaging && alignedStart + totalBytes > slotEnd) {
     GLIDE_LOG(WARN, "Vulkan",
               "Texture staging slot size exceeded! Flushing mid-frame and "
               "wrapping around...");
@@ -255,7 +278,7 @@ void VulkanBackend::UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
     alignedStart = (slotBase + 15u) & ~15u;
   }
 
-  uint32_t currentOffset = alignedStart;
+  uint32_t currentOffset = useOneShotStaging ? 0u : alignedStart;
 
   try {
     VulkanTexture vulkanTex;
@@ -305,10 +328,33 @@ void VulkanBackend::UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
       vulkanTex.mipLevels = mipCount;
     }
 
-    // 3. Copy all mipmap levels data into our persistent HOST_COHERENT staging
-    //    memory map (no flushMappedMemoryRanges needed).
-    uint8_t* mappedData =
-        static_cast<uint8_t*>(m_texStagingMap) + currentOffset;
+    // 3. Copy all mipmap levels into the persistent HOST_COHERENT staging
+    //    ring (or a dedicated one-shot staging buffer if this single texture
+    //    exceeds the per-slot staging budget, e.g. 2048x2048 RGBA8 on Win32).
+    vk::UniqueBuffer oneShotStagingBuffer;
+    vk::UniqueDeviceMemory oneShotStagingMemory;
+    uint8_t* mappedData = nullptr;
+    vk::Buffer stagingSrcBuffer = m_texStagingBuffer.get();
+    if (useOneShotStaging) {
+      oneShotStagingBuffer = m_device->createBufferUnique(vk::BufferCreateInfo(
+          {}, static_cast<vk::DeviceSize>(totalBytes),
+          vk::BufferUsageFlagBits::eTransferSrc));
+      const auto sReqs =
+          m_device->getBufferMemoryRequirements(oneShotStagingBuffer.get());
+      const uint32_t sTypeIdx = FindMemoryType(
+          sReqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eHostVisible |
+                                    vk::MemoryPropertyFlagBits::eHostCoherent);
+      oneShotStagingMemory = m_device->allocateMemoryUnique(
+          vk::MemoryAllocateInfo(sReqs.size, sTypeIdx));
+      m_device->bindBufferMemory(oneShotStagingBuffer.get(),
+                                 oneShotStagingMemory.get(), 0);
+      mappedData = static_cast<uint8_t*>(
+          m_device->mapMemory(oneShotStagingMemory.get(), 0,
+                              static_cast<vk::DeviceSize>(totalBytes)));
+      stagingSrcBuffer = oneShotStagingBuffer.get();
+    } else {
+      mappedData = static_cast<uint8_t*>(m_texStagingMap) + currentOffset;
+    }
     size_t offset = 0;
     constexpr size_t kMaxStackMips = 16;
     std::array<size_t, kMaxStackMips> stackLevelOffsets{};
@@ -353,9 +399,13 @@ void VulkanBackend::UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
       lh = std::max(1u, lh / 2);
     }
 
-    // 4. Update the offset in the staging buffer
-    m_texStagingOffsets[m_currentFrameSlot] =
-        static_cast<uint32_t>(currentOffset + totalBytes);
+    // 4. Update the offset in the persistent staging buffer (when used)
+    if (useOneShotStaging) {
+      m_device->unmapMemory(oneShotStagingMemory.get());
+    } else {
+      m_texStagingOffsets[m_currentFrameSlot] =
+          static_cast<uint32_t>(currentOffset + totalBytes);
+    }
 
     // 5. Record copy commands into the per-frame pre-render upload command
     //    buffer! Because UploadTexture_Locked is Copy-on-Write (every upload
@@ -401,7 +451,7 @@ void VulkanBackend::UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
     }
 
     uploadCmd.copyBufferToImage(
-        m_texStagingBuffer.get(), vulkanTex.image.get(),
+        stagingSrcBuffer, vulkanTex.image.get(),
         vk::ImageLayout::eTransferDstOptimal, mipCount, copyRegionsPtr);
 
     // Transition entire image to ShaderReadOnlyOptimal
@@ -409,6 +459,11 @@ void VulkanBackend::UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
                           vk::ImageLayout::eTransferDstOptimal,
                           vk::ImageLayout::eShaderReadOnlyOptimal,
                           entireImageRange);
+
+    if (useOneShotStaging) {
+      // Wait for copy completion before releasing oneShotStagingBuffer.
+      SubmitPendingUploadsAndWaitIdle_Locked();
+    }
 
     // 6. Save in texture cache map
     vulkanTex.clampS = m_texClampS[tmu];
@@ -558,6 +613,10 @@ void VulkanBackend::UploadTexturePartial(uint32_t tmu, uint32_t startAddress,
   uint32_t numRows = endRow - startRow;
   size_t rowBytes = w * sizeof(uint32_t);
   size_t partialBytes = numRows * rowBytes;
+  if (partialBytes > m_texStagingSlotSize) {
+    UploadTexture_Locked(tmu, startAddress, tex);
+    return;
+  }
 
   uint32_t slotBase = m_currentFrameSlot * m_texStagingSlotSize;
   uint32_t slotEnd = (m_currentFrameSlot + 1) * m_texStagingSlotSize;

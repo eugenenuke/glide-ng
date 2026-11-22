@@ -733,14 +733,31 @@ void VulkanBackend::PresentFrontBuffer_Locked() {
   (void)m_device->resetFences(1, &m_fences[m_currentFrameSlot].get());
   vk::SubmitInfo submitInfo(1, &waitSem, waitStages, submitCmdCount, submitCmds,
                             1, &sigSem);
+  bool submitted = false;
   try {
     m_graphicsQueue.submit(submitInfo, m_fences[m_currentFrameSlot].get());
-    vk::SwapchainKHR sc = m_swapchain.get();
-    vk::PresentInfoKHR pInfo(1, &sigSem, 1, &sc, &imageIdx, nullptr);
-    (void)m_graphicsQueue.presentKHR(pInfo);
-    (void)m_device->waitForFences(1, &m_fences[m_currentFrameSlot].get(),
-                                  VK_TRUE, UINT64_MAX);
-  } catch (...) {
+    submitted = true;
+  } catch (const std::exception& e) {
+    GLIDE_LOG(CRITICAL, "Vulkan",
+              "PresentFrontBuffer vkQueueSubmit failed: " << e.what());
+    Logger::GetInstance().Flush();
+    ResetFrameFenceSignaled_Locked(m_currentFrameSlot);
+  }
+  if (submitted) {
+    try {
+      vk::SwapchainKHR sc = m_swapchain.get();
+      vk::PresentInfoKHR pInfo(1, &sigSem, 1, &sc, &imageIdx, nullptr);
+      (void)m_graphicsQueue.presentKHR(pInfo);
+    } catch (const std::exception&) {
+      // OutOfDate/Suboptimal/SurfaceLostKHR will be handled cleanly on the
+      // next SwapBuffers() cycle; still wait on the fence below before
+      // resetting the in-flight command buffer.
+    }
+    try {
+      (void)m_device->waitForFences(1, &m_fences[m_currentFrameSlot].get(),
+                                    VK_TRUE, UINT64_MAX);
+    } catch (const std::exception&) {
+    }
   }
 
   m_lfbOverlayStagingOffsets[m_currentFrameSlot] = 0;

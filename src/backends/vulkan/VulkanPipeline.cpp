@@ -631,10 +631,19 @@ vk::Sampler VulkanBackend::GetOrCreateSampler(uint32_t clampS, uint32_t clampT,
   samplerInfo.minLod = 0.0f;
   samplerInfo.maxLod = maxLod;
 
-  auto sampler = m_device->createSamplerUnique(samplerInfo);
-  vk::Sampler res = sampler.get();
-  m_samplerCache.emplace(key, std::move(sampler));
-  return res;
+  try {
+    auto sampler = m_device->createSamplerUnique(samplerInfo);
+    vk::Sampler res = sampler.get();
+    m_samplerCache.emplace(key, std::move(sampler));
+    return res;
+  } catch (const std::exception& e) {
+    GLIDE_LOG(CRITICAL, "Vulkan",
+              "GetOrCreateSampler failed ("
+                  << m_samplerCache.size()
+                  << " cached samplers): " << e.what());
+    Logger::GetInstance().Flush();
+    return m_dummySampler.get();
+  }
 }
 
 vk::DescriptorSet VulkanBackend::GetOrCreateDescriptorSet(
@@ -643,15 +652,91 @@ vk::DescriptorSet VulkanBackend::GetOrCreateDescriptorSet(
   DescriptorKey key{imageView0, sampler0, imageView1, sampler1};
   auto it = m_descriptorCache.find(key);
   if (it != m_descriptorCache.end()) {
-    return it->second.get();
+    return it->second.set.get();
   }
 
-  // Allocate Descriptor Set
-  vk::DescriptorSetAllocateInfo setAlloc(m_descriptorPool.get(), 1,
-                                         &m_descriptorSetLayout.get());
-  auto sets = m_device->allocateDescriptorSetsUnique(setAlloc);
-  vk::UniqueDescriptorSet descriptorSet = std::move(sets[0]);
-  vk::DescriptorSet rawSet = descriptorSet.get();
+  auto tryAllocFromPool = [&](size_t poolIdx,
+                              TrackedDescriptorSet& outEntry) -> bool {
+    if (poolIdx >= m_descriptorPools.size() || !m_descriptorPools[poolIdx].pool) {
+      return false;
+    }
+    auto& chunk = m_descriptorPools[poolIdx];
+    // Respect exact per-pool maxSets even on drivers (e.g. lavapipe) that
+    // silently over-allocate without returning VK_ERROR_OUT_OF_POOL_MEMORY.
+    if (chunk.allocatedSets >= kDescriptorPoolChunkSets) {
+      return false;
+    }
+    vk::DescriptorSetAllocateInfo setAlloc(chunk.pool.get(), 1,
+                                           &m_descriptorSetLayout.get());
+    try {
+      auto sets = m_device->allocateDescriptorSetsUnique(setAlloc);
+      if (sets.empty()) return false;
+      outEntry.set = std::move(sets[0]);
+      outEntry.poolIdx = poolIdx;
+      ++chunk.allocatedSets;
+      m_activeDescriptorPoolIdx = poolIdx;
+      return true;
+    } catch (const vk::OutOfPoolMemoryError&) {
+      return false;
+    } catch (const vk::FragmentedPoolError&) {
+      return false;
+    }
+  };
+
+  TrackedDescriptorSet descriptorEntry;
+  try {
+    bool allocated = false;
+    if (!m_descriptorPools.empty()) {
+      const size_t startIdx =
+          (m_activeDescriptorPoolIdx < m_descriptorPools.size())
+              ? m_activeDescriptorPoolIdx
+              : 0u;
+      allocated = tryAllocFromPool(startIdx, descriptorEntry);
+      if (!allocated) {
+        // Retry any existing pool that may have regained free slots via
+        // fence-reclaimed vkFreeDescriptorSets.
+        for (size_t i = 0; i < m_descriptorPools.size(); ++i) {
+          if (i == startIdx) continue;
+          if (tryAllocFromPool(i, descriptorEntry)) {
+            allocated = true;
+            break;
+          }
+        }
+      }
+    }
+
+    if (!allocated) {
+      // Dynamically grow a fresh descriptor pool chunk (zero frame stall,
+      // supports dual-TMU/high-texture scenes exceeding 4,096 unique pairs).
+      const size_t newIdx = CreateTextureDescriptorPool_Locked();
+      GLIDE_LOG(INFO, "Vulkan",
+                "Allocated overflow texture descriptor pool #"
+                    << m_descriptorPools.size() << " (+"
+                    << kDescriptorPoolChunkSets
+                    << " sets; cached=" << m_descriptorCache.size()
+                    << ", retired=[" << m_retiredDescriptorSets[0].size()
+                    << "," << m_retiredDescriptorSets[1].size() << "]).");
+      allocated = tryAllocFromPool(newIdx, descriptorEntry);
+    }
+
+    if (!allocated || !descriptorEntry.set) {
+      GLIDE_LOG(CRITICAL, "Vulkan",
+                "Failed to allocate texture descriptor set from overflow pool; "
+                "falling back to dummy descriptor.");
+      Logger::GetInstance().Flush();
+      return m_dummyDescriptorSet;
+    }
+  } catch (const std::exception& e) {
+    GLIDE_LOG(CRITICAL, "Vulkan",
+              "GetOrCreateDescriptorSet failed (cached="
+                  << m_descriptorCache.size()
+                  << ", pools=" << m_descriptorPools.size()
+                  << "): " << e.what());
+    Logger::GetInstance().Flush();
+    return m_dummyDescriptorSet;
+  }
+
+  vk::DescriptorSet rawSet = descriptorEntry.set.get();
 
   // Update Descriptor Set for both bindings
   std::array<vk::DescriptorImageInfo, 2> imageInfos = {
@@ -669,15 +754,15 @@ vk::DescriptorSet VulkanBackend::GetOrCreateDescriptorSet(
   m_device->updateDescriptorSets(static_cast<uint32_t>(descriptorWrites.size()),
                                  descriptorWrites.data(), 0, nullptr);
 
-  m_descriptorCache.emplace(key, std::move(descriptorSet));
+  m_descriptorCache.emplace(key, std::move(descriptorEntry));
   const vk::ImageView dummyView = m_dummyTexture.imageView.get();
   if (imageView0 && imageView0 != dummyView) {
     const uint64_t h0 = VkHandleToU64(static_cast<VkImageView>(imageView0));
-    m_viewToDescriptorKeys[h0].push_back(key);
+    m_viewToDescriptorKeys[h0].insert(key);
   }
   if (imageView1 && imageView1 != imageView0 && imageView1 != dummyView) {
     const uint64_t h1 = VkHandleToU64(static_cast<VkImageView>(imageView1));
-    m_viewToDescriptorKeys[h1].push_back(key);
+    m_viewToDescriptorKeys[h1].insert(key);
   }
   return rawSet;
 }

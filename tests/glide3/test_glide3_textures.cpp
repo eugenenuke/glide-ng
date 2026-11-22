@@ -310,6 +310,94 @@ TEST_CASE("Glide 3.x: .3df Loading, LOD & Aspect Bounds", "[Glide3][Texture]") {
       backend.Shutdown();
     }
   }
+
+  SECTION("VulkanBackend grows descriptor pools past 4096 dual-TMU pairs") {
+    GlideWrapper::WrapperConfig config;
+    config.backend = "vulkan";
+    config.forceNoWindow = true;
+    config.maxFps = 0.0;
+
+    GlideWrapper::VulkanBackend backend;
+    if (backend.Initialize(config) &&
+        backend.AttachWindow(nullptr, 64, 64, true)) {
+      auto makeTex4x4 = [](uint32_t argb, uint64_t rawHash) {
+        GlideWrapper::VirtualTexture vt;
+        vt.baseWidth = 4;
+        vt.baseHeight = 4;
+        vt.format = 0xAu;
+        vt.rawDataHash = rawHash;
+        vt.swizzledMipLevels.emplace_back(4 * 4, argb);
+        return vt;
+      };
+
+      // Upload 66 unique 4x4 textures on TMU0 and 66 unique 4x4 textures on
+      // TMU1: 66 * 66 = 4,356 unique (view0, sampler0, view1, sampler1) pairs
+      // exceeding the initial 4,096-set VkDescriptorPool chunk without
+      // overwriting any startAddress.
+      constexpr uint32_t kCount = 66u;
+      for (uint32_t i = 0; i < kCount; ++i) {
+        const uint32_t color0 = (i == kCount - 1u)
+                                    ? 0xFF00FF00u
+                                    : (0xFF000000u | ((i + 1u) * 3u));
+        const uint32_t color1 = 0xFFFFFFFFu;
+        backend.UploadTexture(0u, i * 64u,
+                              makeTex4x4(color0, 0xA000u + i));
+        backend.UploadTexture(1u, i * 64u,
+                              makeTex4x4(color1, 0xB000u + i));
+      }
+
+      backend.ClearBuffer(0x00000000u, 0xFFu, 1.0f, 0x3u);
+      // Output TMU0 * TMU1 (diffuse modulated by white TMU1).
+      backend.SetCombinerMode(3, 8, 1, 1, false, 1, 0, 1, 2, false);
+      backend.SetTexCombinerMode(1, 1, 0, 1, 0, false, false);
+      backend.SetTexCombinerMode(0, 3, 1, 1, 1, false, false);
+
+      GlideWrapper::ModernVertex v0{}, v1{}, v2{}, v3{};
+      auto setV = [](GlideWrapper::ModernVertex& v, float x, float y, float s,
+                     float t) {
+        v.pos[0] = x;
+        v.pos[1] = y;
+        v.pos[2] = 0.5f;
+        v.pos[3] = 1.0f;
+        v.color[0] = v.color[1] = v.color[2] = v.color[3] = 1.0f;
+        v.tex[0] = s;
+        v.tex[1] = t;
+        v.tex[2] = s;
+        v.tex[3] = t;
+        v.tmu_oow[0] = 1.0f;
+        v.tmu_oow[1] = 1.0f;
+      };
+      setV(v0, 0.0f, 0.0f, 0.0f, 0.0f);
+      setV(v1, 64.0f, 0.0f, 255.0f, 0.0f);
+      setV(v2, 64.0f, 64.0f, 255.0f, 255.0f);
+      setV(v3, 0.0f, 64.0f, 0.0f, 255.0f);
+
+      for (uint32_t i = 0; i < kCount; ++i) {
+        backend.BindTexture(0u, i * 64u, 1u, 1u, 0u, 0u);
+        for (uint32_t j = 0; j < kCount; ++j) {
+          backend.BindTexture(1u, j * 64u, 1u, 1u, 0u, 0u);
+          backend.DrawTriangle(v0, v1, v2);
+          backend.DrawTriangle(v0, v2, v3);
+        }
+      }
+      CHECK(backend.GetDescriptorPoolCount() >= 2u);
+      REQUIRE(backend.SwapBuffers());
+
+      // Final (i=65, j=65) draw uses pure green (0xFF00FF00 * 0xFFFFFFFF).
+      uint16_t px565 = 0;
+      REQUIRE(backend.ReadLFB(0u, 32u, 32u, 1u, 1u, 2u, &px565));
+      CHECK(px565 == 0x07E0u);
+
+      // Overwrite a TMU0 texture under high-water pressure so bidirectional
+      // descriptor eviction & deferred pool free executes cleanly across pools.
+      backend.UploadTexture(0u, 0u, makeTex4x4(0xFFFF0000u, 0xC000u));
+      REQUIRE(backend.SwapBuffers());
+      REQUIRE(backend.SwapBuffers());
+
+      backend.DetachWindow();
+      backend.Shutdown();
+    }
+  }
 #endif
   }
 

@@ -6,6 +6,7 @@
 #include <mutex>
 #include <type_traits>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
@@ -311,6 +312,7 @@ class VulkanBackend : public GlideStateTracker {
   uint32_t GetMsaaSamples() const override { return m_msaaSamples; }
   bool HasAllocatedCpuLfbStaging() const { return m_lfbStaging.IsAllocated(); }
   uint64_t GetTexturePoolReuseCount() const { return m_texturePoolReuses; }
+  size_t GetDescriptorPoolCount() const { return m_descriptorPools.size(); }
 
   // Selects an optimal Vulkan swapchain present mode.
   // On Wayland, prefers Mailbox even when VSync is enabled because Wayland
@@ -650,7 +652,19 @@ class VulkanBackend : public GlideStateTracker {
   void PopulatePushConstants(PushConstants& pcs);
 
   vk::UniqueDescriptorSetLayout m_descriptorSetLayout;
-  vk::UniqueDescriptorPool m_descriptorPool;
+  static constexpr uint32_t kDescriptorPoolChunkSets = 4096u;
+  struct DescriptorPoolChunk {
+    vk::UniqueDescriptorPool pool;
+    uint32_t allocatedSets{0};
+  };
+  struct TrackedDescriptorSet {
+    vk::UniqueDescriptorSet set;
+    size_t poolIdx{0};
+  };
+  size_t CreateTextureDescriptorPool_Locked();
+  void ReleaseDescriptorSet_Locked(TrackedDescriptorSet& entry);
+  std::vector<DescriptorPoolChunk> m_descriptorPools;
+  size_t m_activeDescriptorPoolIdx{0};
   std::unordered_map<uint32_t, VulkanTexture> m_vulkanTextures[2];
   VulkanTexture m_dummyTexture;
   vk::UniqueSampler m_dummySampler;
@@ -669,12 +683,19 @@ class VulkanBackend : public GlideStateTracker {
 
   std::unordered_map<SamplerKey, vk::UniqueSampler, SamplerKeyHash>
       m_samplerCache;
-  std::unordered_map<DescriptorKey, vk::UniqueDescriptorSet, DescriptorKeyHash>
+  std::unordered_map<DescriptorKey, TrackedDescriptorSet, DescriptorKeyHash>
       m_descriptorCache;
   // Reverse index from non-dummy VkImageView handle -> DescriptorKeys for O(1)
-  // descriptor set retirement in RetireTextureAtAddress_Locked.
-  std::unordered_map<uint64_t, std::vector<DescriptorKey>>
+  // bidirectional descriptor set retirement in RetireTextureAtAddress_Locked.
+  std::unordered_map<uint64_t,
+                     std::unordered_set<DescriptorKey, DescriptorKeyHash>>
       m_viewToDescriptorKeys;
+
+  // Helpers to keep command buffers and per-slot fences valid after errors so
+  // subsequent frames never append to an ended command buffer or deadlock in
+  // waitForFences(..., UINT64_MAX).
+  void ResetFrameFenceSignaled_Locked(uint32_t slot);
+  void ReopenCommandBuffer_Locked();
 
   // Deferred per-frame-slot retirement queues so overwritten/purged textures
   // and descriptor sets stay alive until the GPU fence for that slot signals.
@@ -684,7 +705,7 @@ class VulkanBackend : public GlideStateTracker {
   void ReclaimRetiredResources_Locked(uint32_t slot);
   static constexpr size_t kDescriptorCacheHighWater = 3072;
   std::vector<VulkanTexture> m_retiredTextures[2];
-  std::vector<vk::UniqueDescriptorSet> m_retiredDescriptorSets[2];
+  std::vector<TrackedDescriptorSet> m_retiredDescriptorSets[2];
 
   // Bounded free-list of fence-reclaimed textures for zero-allocation reuse on
   // same-dimension uploads during TMU cache churn.
