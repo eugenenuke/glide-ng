@@ -428,11 +428,14 @@ ModernVertex VertexLayout::DecodeVertexSlow(const void* gameVertex) const {
     }
   }
 
-  // Parse Custom Fog Coordinate
+  // Parse Custom Fog Coordinate (reciprocal 1/W_fog per 3dfx FOGCOORD spec).
+  // When disabled, fall back to FBI oow (pos[3]) mirroring gglide.c:5931.
   if (m_offsetFog >= 0) {
     float fog = 0.0f;
     std::memcpy(&fog, rawBytes + m_offsetFog, sizeof(float));
     v.fog = SanitizeFiniteZero(fog);
+  } else {
+    v.fog = v.pos[3];
   }
 
   return v;

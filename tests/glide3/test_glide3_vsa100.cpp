@@ -3294,3 +3294,341 @@ TEST_CASE("GPU: Zero-Readback TEXTUREBUFFER RTT (Origins & MSAA)", "[Glide3][RTT
   }
 }
 
+TEST_CASE("VSA-100: TEXUMA Pre-WinOpen Retention & FOGCOORD Cross-Backend Parity",
+          "[Glide3][VSA100][TEXUMA][FOGCOORD]") {
+  SECTION("grEnable(GR_TEXTURE_UMA_EXT) persists across grSstWinOpenExt") {
+#ifdef __linux__
+    const char* origCard = std::getenv("GLIDE_NG_CARD_MODEL");
+    const char* origBe = std::getenv("GLIDE_NG_BACKEND");
+    const char* origUma = std::getenv("FX_GLIDE_TEXTURE_UMA");
+    std::string savedCard = origCard ? origCard : "";
+    std::string savedBe = origBe ? origBe : "";
+    std::string savedUma = origUma ? origUma : "";
+    bool hadCard = (origCard != nullptr);
+    bool hadBe = (origBe != nullptr);
+    bool hadUma = (origUma != nullptr);
+    auto restoreEnv = [&]() {
+      if (hadCard) ::setenv("GLIDE_NG_CARD_MODEL", savedCard.c_str(), 1);
+      else ::unsetenv("GLIDE_NG_CARD_MODEL");
+      if (hadBe) ::setenv("GLIDE_NG_BACKEND", savedBe.c_str(), 1);
+      else ::unsetenv("GLIDE_NG_BACKEND");
+      if (hadUma) ::setenv("FX_GLIDE_TEXTURE_UMA", savedUma.c_str(), 1);
+      else ::unsetenv("FX_GLIDE_TEXTURE_UMA");
+    };
+
+    ::setenv("GLIDE_NG_CARD_MODEL", "voodoo5", 1);
+    ::setenv("GLIDE_NG_BACKEND", "software", 1);
+    ::unsetenv("FX_GLIDE_TEXTURE_UMA");
+
+    void* handle = GlideTestHelpers::OpenGlideLibrary("libglide3x.so");
+    REQUIRE(handle != nullptr);
+
+    using InitFn = void (*)();
+    using GetFn = FxU32 (*)(FxU32, FxU32, FxI32*);
+    using GetProcFn = GrProc (*)(char*);
+    using EnableFn = void (*)(FxU32);
+    using WinOpenExtFn = FxU32 (*)(FxU32, GrScreenResolution_t,
+                                   GrScreenRefresh_t, GrColorFormat_t,
+                                   GrOriginLocation_t, FxU32, int, int);
+    using WinCloseFn = FxBool (*)(FxU32);
+    using MaxAddrFn = FxU32 (*)(GrChipID_t);
+    using TexDlFn = void (*)(GrChipID_t, FxU32, FxU32, GrTexInfo*);
+    using TexSrcFn = void (*)(GrChipID_t, FxU32, FxU32, GrTexInfo*);
+    using TexCombFn = void (*)(GrChipID_t, GrCombineFunction_t,
+                               GrCombineFactor_t, GrCombineFunction_t,
+                               GrCombineFactor_t, FxBool, FxBool);
+    using ColorCombFn = void (*)(GrCombineFunction_t, GrCombineFactor_t,
+                                 GrCombineLocal_t, GrCombineOther_t, FxBool);
+    using VertLayoutFn = void (*)(FxU32, FxI32, FxU32);
+    using DrawTriFn = void (*)(const void*, const void*, const void*);
+    using ClearFn = void (*)(GrColor_t, GrAlpha_t, FxU32);
+    using LfbReadFn = FxBool (*)(GrBuffer_t, FxU32, FxU32, FxU32, FxU32, FxU32,
+                                 void*);
+
+    auto glideInit = reinterpret_cast<InitFn>(::dlsym(handle, "grGlideInit"));
+    auto glideShutdown =
+        reinterpret_cast<InitFn>(::dlsym(handle, "grGlideShutdown"));
+    auto grGetFn = reinterpret_cast<GetFn>(::dlsym(handle, "grGet"));
+    auto getProc =
+        reinterpret_cast<GetProcFn>(::dlsym(handle, "grGetProcAddress"));
+    auto enableFn = reinterpret_cast<EnableFn>(::dlsym(handle, "grEnable"));
+    auto winClose =
+        reinterpret_cast<WinCloseFn>(::dlsym(handle, "grSstWinClose"));
+    auto texMax =
+        reinterpret_cast<MaxAddrFn>(::dlsym(handle, "grTexMaxAddress"));
+    auto texDl =
+        reinterpret_cast<TexDlFn>(::dlsym(handle, "grTexDownloadMipMap"));
+    auto texSrc = reinterpret_cast<TexSrcFn>(::dlsym(handle, "grTexSource"));
+    auto texComb =
+        reinterpret_cast<TexCombFn>(::dlsym(handle, "grTexCombine"));
+    auto colorComb =
+        reinterpret_cast<ColorCombFn>(::dlsym(handle, "grColorCombine"));
+    auto vertexLayout =
+        reinterpret_cast<VertLayoutFn>(::dlsym(handle, "grVertexLayout"));
+    auto drawTri =
+        reinterpret_cast<DrawTriFn>(::dlsym(handle, "grDrawTriangle"));
+    auto bufClear = reinterpret_cast<ClearFn>(::dlsym(handle, "grBufferClear"));
+    auto lfbRead =
+        reinterpret_cast<LfbReadFn>(::dlsym(handle, "grLfbReadRegion"));
+    REQUIRE(glideInit != nullptr);
+    REQUIRE(glideShutdown != nullptr);
+    REQUIRE(grGetFn != nullptr);
+    REQUIRE(getProc != nullptr);
+    REQUIRE(enableFn != nullptr);
+
+    glideInit();
+    FxI32 tmuMemBefore = 0;
+    REQUIRE(grGetFn(GR_MEMORY_TMU, 4, &tmuMemBefore) == 4);
+    const FxU32 maxBefore = texMax(GR_TMU0);
+    CHECK(static_cast<FxU32>(tmuMemBefore) == maxBefore);
+
+    // Authentic 3dfx TEXUMA sequence: grEnable(GR_TEXTURE_UMA_EXT) BEFORE
+    // grSstWinOpenExt(). Window open must NOT reset UMA back to disabled.
+    enableFn(0x06u /* GR_TEXTURE_UMA_EXT */);
+    FxI32 tmuMemUmaPre = 0;
+    REQUIRE(grGetFn(GR_MEMORY_TMU, 4, &tmuMemUmaPre) == 4);
+    CHECK(tmuMemUmaPre == tmuMemBefore * 2);
+    CHECK(texMax(GR_TMU0) == maxBefore * 2u);
+
+    char openExtName[] = "grSstWinOpenExt";
+    auto winOpenExt = GlideTestHelpers::CastProc<WinOpenExtFn>(
+        getProc(openExtName));
+    REQUIRE(winOpenExt != nullptr);
+    const FxU32 ctx = winOpenExt(0u, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                                 GR_COLORFORMAT_ARGB, GR_ORIGIN_UPPER_LEFT,
+                                 0x3u /* GR_PIXFMT_RGB_565 */, 2, 1);
+    REQUIRE(ctx != 0u);
+
+    FxI32 tmuMemUmaPost = 0;
+    REQUIRE(grGetFn(GR_MEMORY_TMU, 4, &tmuMemUmaPost) == 4);
+    CHECK(tmuMemUmaPost == tmuMemBefore * 2);
+    CHECK(texMax(GR_TMU0) == maxBefore * 2u);
+
+    // Download magenta RGB565 texture to TMU0, then sample it from TMU1 via
+    // unified address space (TMU0 passes OTHER = TMU1 output).
+    uint16_t texData[16 * 16];
+    for (uint16_t& px : texData) px = 0xF81Fu;  // RGB565 magenta (255,0,255)
+    GrTexInfo info{};
+    info.smallLodLog2 = 4;   // GR_LOD_LOG2_16
+    info.largeLodLog2 = 4;
+    info.aspectRatioLog2 = 0;  // GR_ASPECT_LOG2_1x1
+    info.format = GR_TEXFMT_RGB_565;
+    info.data = texData;
+    const FxU32 addr = 0x1000u;
+    texDl(GR_TMU0, addr, GR_MIPMAPLEVELMASK_BOTH, &info);
+    texSrc(GR_TMU1, addr, GR_MIPMAPLEVELMASK_BOTH, &info);
+    texComb(GR_TMU1, GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+            GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE, FXFALSE,
+            FXFALSE);
+    texComb(GR_TMU0, GR_COMBINE_FUNCTION_SCALE_OTHER, GR_COMBINE_FACTOR_ONE,
+            GR_COMBINE_FUNCTION_SCALE_OTHER, GR_COMBINE_FACTOR_ONE, FXFALSE,
+            FXFALSE);
+    colorComb(GR_COMBINE_FUNCTION_SCALE_OTHER, GR_COMBINE_FACTOR_ONE,
+              GR_COMBINE_LOCAL_NONE, GR_COMBINE_OTHER_TEXTURE, FXFALSE);
+
+    struct UmaVtx {
+      float x, y, oow, s1, t1;
+    };
+    vertexLayout(0x01u /* XY */, offsetof(UmaVtx, x), 1);
+    vertexLayout(0x04u /* Q */, offsetof(UmaVtx, oow), 1);
+    vertexLayout(0x41u /* ST1 */, offsetof(UmaVtx, s1), 1);
+    bufClear(0xFF000000u, 0xFF, 0xFFFF);
+    UmaVtx v0{0.0f, 0.0f, 1.0f, 0.0f, 0.0f};
+    UmaVtx v1{64.0f, 0.0f, 1.0f, 255.0f, 0.0f};
+    UmaVtx v2{64.0f, 64.0f, 1.0f, 255.0f, 255.0f};
+    UmaVtx v3{0.0f, 64.0f, 1.0f, 0.0f, 255.0f};
+    drawTri(&v0, &v1, &v2);
+    drawTri(&v0, &v2, &v3);
+
+    uint32_t fbRow[64]{};
+    REQUIRE(lfbRead(GR_BUFFER_BACKBUFFER, 0, 32, 64, 1, sizeof(fbRow), fbRow));
+    const uint32_t sample = fbRow[32];
+    // ARGB8888 returned by LFB read: expect magenta (~255, 0, 255), NOT white!
+    const int sr = static_cast<int>((sample >> 16) & 0xFFu);
+    const int sg = static_cast<int>((sample >> 8) & 0xFFu);
+    const int sb = static_cast<int>(sample & 0xFFu);
+    CHECK(sr >= 245);
+    CHECK(sg <= 10);
+    CHECK(sb >= 245);
+
+    winClose(ctx);
+    glideShutdown();
+
+    // Fresh grGlideInit() must reset UMA back to disabled (no stale leak).
+    glideInit();
+    FxI32 tmuMemReset = 0;
+    REQUIRE(grGetFn(GR_MEMORY_TMU, 4, &tmuMemReset) == 4);
+    CHECK(tmuMemReset == tmuMemBefore);
+    glideShutdown();
+
+    ::dlclose(handle);
+    restoreEnv();
+#endif
+  }
+
+  SECTION("GR_FOG_WITH_TABLE_ON_FOGCOORD_EXT uses reciprocal 1/W_fog on all backends") {
+    using namespace GlideWrapper;
+
+    uint8_t fogTbl[64];
+    for (int i = 0; i < 64; ++i) {
+      // Linearly ramping factor in table index: low near W=1, ~128 mid, 255 far.
+      fogTbl[i] = static_cast<uint8_t>((i * 255) / 63);
+    }
+
+    auto makeV = [](float x, float y, float fogOow) {
+      ModernVertex v{};
+      v.pos = {x, y, 0.5f, 1.0f};  // Fixed pos[3]=1.0 (oow=1 => eyeW=1, idx=0!)
+      v.color = {1.0f, 0.0f, 0.0f, 1.0f};  // Pure RED
+      v.fog = fogOow;                       // Authentic reciprocal 1/W_fog
+      return v;
+    };
+
+    for (const char* beName : {"software", "vulkan", "opengl_es"}) {
+      auto& reg = EmulationRegistry::GetInstance();
+      const WrapperConfig savedCfg = reg.GetConfig();
+      WrapperConfig cfg{};
+      cfg.backend = beName;
+      cfg.model = CardModel::Voodoo5;
+      cfg.tmuCount = 2;
+      cfg.forceNoWindow = true;
+      cfg.msaaSamples = 1;
+      cfg.windowScale = 1;
+      reg.GetConfig() = cfg;
+
+      auto& bm = BackendManager::GetInstance();
+      bm.ShutdownBackend();
+      bm.EstablishBackend(cfg);
+      IGraphicsBackend* be = bm.GetBackend();
+      if (!be) {
+        reg.GetConfig() = savedCfg;
+        continue;
+      }
+      if (!be->AttachWindow(nullptr, 96u, 32u, /*windowed=*/true)) {
+        bm.ShutdownBackend();
+        reg.GetConfig() = savedCfg;
+        continue;
+      }
+
+      be->SetSstOrigin(0u);
+      be->SetPixelFormat(1u);  // GR_COLORFORMAT_ABGR (R in byte 0)
+      be->SetClipWindow(0u, 0u, 96u, 32u);
+      be->SetDitherMode(0u);
+      be->SetDepthState(0u, 7u, false, 0);
+      be->SetCullState(0u);
+      be->SetColorMaskExt(true, true, true, true);
+      be->SetCombinerMode(1u, 0u, 0u, 0u, false, 1u, 0u, 0u, 0u, false);
+      be->SetBlendState(4u, 0u, 4u, 0u);  // ONE, ZERO
+      be->ClearBuffer(0xFF000000u, 0xFFu, 1.0f, 3u);
+
+      be->SetFogTable(fogTbl);
+      be->SetFogColor(0xFF00FF00u);  // Green in ABGR/ARGB
+      be->SetFogMode(1u);            // GR_FOG_WITH_TABLE_ON_FOGCOORD_EXT (0x1)
+
+      auto drawBand = [&](float x0, float x1, float fogOow) {
+        ModernVertex a = makeV(x0, 0.0f, fogOow);
+        ModernVertex b = makeV(x1, 0.0f, fogOow);
+        ModernVertex c = makeV(x1, 32.0f, fogOow);
+        ModernVertex d = makeV(x0, 32.0f, fogOow);
+        be->DrawTriangle(a, b, c);
+        be->DrawTriangle(a, c, d);
+      };
+
+      // Near (W_fog = 1.0 -> fog = 1.0): fogTbl[0] = 0 -> pure RED (255, 0, 0)
+      drawBand(0.0f, 32.0f, 1.0f);
+      // Mid (W_fog = 256.0 -> fog = 1/256): fogTbl[32] = 129 -> ~50/50 RED+GREEN
+      drawBand(32.0f, 64.0f, 1.0f / 256.0f);
+      // Far (W_fog = 65535.0 -> fog = 1/65535): fogTbl[63] = 255 -> pure GREEN
+      drawBand(64.0f, 96.0f, 1.0f / 65535.0f);
+
+      // Point primitive at pixel center (48.5, 28.5) on far fog (verifies
+      // point-list fog on Vulkan/GLES + WritePixelPipeline on Software)
+      ModernVertex pt = makeV(48.5f, 28.5f, 1.0f / 65535.0f);
+      be->DrawPoint(pt);
+      be->FlushBins();
+
+      std::vector<uint32_t> fb(96u * 32u, 0u);
+      REQUIRE(be->ReadLFB(1u, 0u, 0u, 96u, 32u, 96u * 4u, fb.data()));
+
+      auto getRg = [&](uint32_t x, uint32_t y, int& r, int& g) {
+        const uint32_t px = fb[y * 96u + x];
+        r = static_cast<int>(px & 0xFFu);
+        g = static_cast<int>((px >> 8) & 0xFFu);
+      };
+
+      int nearR = 0, nearG = 0, midR = 0, midG = 0, farR = 0, farG = 0;
+      getRg(16u, 16u, nearR, nearG);
+      getRg(48u, 16u, midR, midG);
+      getRg(80u, 16u, farR, farG);
+      INFO("backend=" << beName << " near=(" << nearR << "," << nearG << ")"
+                      << " mid=(" << midR << "," << midG << ")"
+                      << " far=(" << farR << "," << farG << ")");
+      CHECK(nearR >= 250);
+      CHECK(nearG <= 5);
+      CHECK(midR >= 118);
+      CHECK(midR <= 136);
+      CHECK(midG >= 120);
+      CHECK(midG <= 138);
+      CHECK(farR <= 5);
+      CHECK(farG >= 250);
+
+      int ptR = 0, ptG = 0;
+      getRg(48u, 28u, ptR, ptG);
+      INFO("backend=" << beName << " point=(" << ptR << "," << ptG << ")");
+      CHECK(ptR <= 5);
+      CHECK(ptG >= 250);
+
+      be->DetachWindow();
+      bm.ShutdownBackend();
+      reg.GetConfig() = savedCfg;
+    }
+  }
+
+  SECTION("Software WritePixelPipeline executes extTexColorCombine when unbound") {
+    using namespace GlideWrapper;
+    WrapperConfig cfg{};
+    cfg.backend = "software";
+    cfg.model = CardModel::Voodoo5;
+    cfg.forceNoWindow = true;
+    SoftwareBackend be;
+    REQUIRE(be.Initialize(cfg));
+    REQUIRE(be.AttachWindow(nullptr, 16u, 16u, /*windowed=*/true));
+    be.SetPixelFormat(1u);  // ABGR (R=bits 0..7)
+    be.SetClipWindow(0u, 0u, 16u, 16u);
+    be.SetDitherMode(0u);
+    be.SetDepthState(0u, 7u, false, 0);
+    be.SetColorMaskExt(true, true, true, true);
+    be.SetBlendState(4u, 0u, 4u, 0u);
+    be.ClearBuffer(0xFF000000u, 0xFFu, 1.0f, 3u);
+
+    // No texture bound on TMU0 or TMU1; TMU0 ext combiner returns TMU_CCOLOR
+    // (0x11 = GR_CMBX_TMU_CCOLOR) using bit-packed formula (A + 0) * 1 + 0.
+    be.SetTmuConstantColor(0u, 0xFFAA4020u);  // ABGR: R=0x20, G=0x40, B=0xAA
+    be.SetTexColorCombineExt(
+        0u, IGraphicsBackend::PackCombineExt(
+                0x11u /* GR_CMBX_TMU_CCOLOR */, 1u /* MODE_X */,
+                0x00u /* ZERO */, 0u /* MODE_ZERO */, 0x00u /* ZERO */,
+                true /* invert -> 1.0 */, 0x00u /* ZERO */, false, 0u, false));
+    be.SetCombinerMode(3u /* SCALE_OTHER */, 8u /* ONE */, 0u, 1u /* TEX */,
+                       false, 1u, 0u, 0u, 0u, false);
+
+    ModernVertex pt{};
+    pt.pos = {8.0f, 8.0f, 0.5f, 1.0f};
+    pt.color = {1.0f, 1.0f, 1.0f, 1.0f};
+    be.DrawPoint(pt);
+    be.FlushBins();
+
+    std::vector<uint32_t> fb(16u * 16u, 0u);
+    REQUIRE(be.ReadLFB(1u, 0u, 0u, 16u, 16u, 16u * 4u, fb.data()));
+    const uint32_t px = fb[8u * 16u + 8u];
+    const int r = static_cast<int>(px & 0xFFu);
+    const int g = static_cast<int>((px >> 8) & 0xFFu);
+    const int b = static_cast<int>((px >> 16) & 0xFFu);
+    CHECK(std::abs(r - 0x20) <= 2);
+    CHECK(std::abs(g - 0x40) <= 2);
+    CHECK(std::abs(b - 0xAA) <= 2);
+
+    be.DetachWindow();
+    be.Shutdown();
+  }
+}
+

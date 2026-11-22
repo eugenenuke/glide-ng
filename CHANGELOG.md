@@ -29,6 +29,18 @@ For the pre-beta engineering narrative covering early architecture decisions and
   - Updated `HudOverlay::ComputePlacement()` to scale glyphs and margins proportionally with `presentRect / guestResolution` so **`Vulkan`**, **`OpenGL ES`**, and **`Software`** backends render identical HUD text height and corner placement across `window_scale`, HiDPI displays, and desktop fullscreen (and lowered the minimum `scale` clamp from `0.5` → **`0.25`** for compact overlays on large windows).
   - Changed the default `[hud] opacity` from `0.78` to **`0.0`** (borderless, opaque drop-shadowed text with no backdrop pill) and removed the hardcoded `120/255` alpha floor on the frametime graph box so low opacities (`0.0`–`0.4`) stay genuinely transparent.
 
+### Fixed
+- **`TEXUMA` (`GR_TEXTURE_UMA_EXT`) Pre-Window Retention (`glide3x` / `GlideEntryCommon`)**:
+  - Stopped `ConfigureTmuMemoryLimits()` from resetting `TextureManager::SetUmaMode()` inside `grSstWinOpen()` / `grSstWinOpenExt()`. Applications that follow the 3dfx `TEXUMA` spec and call `grEnable(GR_TEXTURE_UMA_EXT)` between `grGlideInit()` and `grSstWinOpen*()` now retain unified texture memory instead of having it reset to disabled on window attach (eliminating cross-TMU cache misses that fell back to the 1×1 white placeholder texture). Initial `FX_GLIDE_TEXTURE_UMA` / `[glide] texture_uma` state is still applied once at `grGlideInit()` time so stale state does not leak across sessions.
+  - Updated `grGet(GR_MEMORY_TMU)` on Glide 3.x to double the reported TMU size when `TEXUMA` is active on dual-TMU profiles (matching `grTexMaxAddress()` and `h5/glide3/src/gsst.c` / `diget.c`).
+  - Updated mid-mode `TEXTUREBUFFER` auto-commit in `grTexSource()` to trigger cross-TMU when `TEXUMA` is active, and ensured `grEnable()`/`grDisable()` invoke `EnsureEngineInitialized()` before reading the active card model.
+- **`FOGCOORD` (`GR_FOG_WITH_TABLE_ON_FOGCOORD_EXT` / `GR_PARAM_FOG_EXT`) Across All Backends**:
+  - Fixed the fog-table coordinate scale on **`Vulkan`** (`color.frag`), **`OpenGL ES 3.2`** (`OpenGLESShaders.cpp`), and **`Software`** points/lines (`SoftwareCombiner.cpp`): `GR_PARAM_FOG_EXT` supplies the reciprocal **`1 / W_fog`** (`eyeW = 1.0 / max(fogCoord, 1e-6)`), matching real 3dfx silicon (`h5/glide3/tests/test34.c` & `gglide.c`). Passing the raw value directly previously clamped valid coordinates in `(0, 1]` to `eyeW = 1.0` (index `0`, dropping table fog completely).
+  - Implemented `GR_FOG_WITH_TABLE_ON_FOGCOORD_EXT` (`fogSource == 1`) interpolation in both the **`Software`** scalar (`SoftwareRasterizer.cpp`) and vectorized AVX2/AVX-512 (`SoftwareRasterizerSimdImpl.inl`) triangle rasterizers instead of indexing the table with `oow` (`pos[3]`), and aligned the active-fog guard (`(fogMode & 0x0F) != 0`) across all backends.
+  - Aligned disabled `GR_PARAM_FOG_EXT` fallback to FBI `oow` (`pos[3]`) inside `VertexLayout` (`DecodeVertexSlow` / `DecodeGlide2CanonicalInto`) and projected `GR_PARAM_FOG_EXT` by `1/w` in `GR_CLIP_COORDS` (`ProjectClipVertex`, matching `h5/glide3/src/fxcmd.h`).
+- **Software Point/Line Extended Texture Combiner Parity (`SoftwareCombiner.cpp`)**:
+  - Moved `grTexColorCombineExt` / `grTexAlphaCombineExt` evaluation outside the `if (hasTex*)` texture-bound guards in `WritePixelPipeline()` (and initialized unbound `TMU1` output to `iteratedColor`), matching the triangle rasterizers, Vulkan, and OpenGL ES shaders so unbound-TMU constant/iterated combiner passes evaluate consistently on points and lines.
+
 ---
 
 ## [0.9.0] - 2026-11-22

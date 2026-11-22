@@ -767,7 +767,8 @@ void main() {
         } else { // Table-based fog
             float eyeW;
             if (fogSource == 1) { // UNIFIED_FOG_WITH_TABLE_ON_FOGCOORD
-                eyeW = fragFogCoord;
+                // Authentic 3dfx GR_PARAM_FOG_EXT supplies reciprocal 1/W_fog.
+                eyeW = 1.0 / max(fragFogCoord, 1e-6);
             } else { // UNIFIED_FOG_WITH_TABLE_ON_W
                 eyeW = 1.0 / max(fragOOW, 1e-6);
             }

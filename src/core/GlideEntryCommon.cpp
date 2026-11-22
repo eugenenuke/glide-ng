@@ -298,10 +298,6 @@ void ConfigureTmuMemoryLimits() {
   for (uint32_t tmu = 0; tmu < cfg.tmuCount; ++tmu) {
     TextureManager::GetInstance().SetTmuMemoryLimitMb(tmu, cfg.tmuMemoryMb);
   }
-  // Authentic FX_GLIDE_TEXTURE_UMA / [glide] texture_uma initial state
-  // (mirrors glide3x/h5/glide3/src/gpci.c:1204). Reset to disabled when
-  // app-controlled so stale state does not leak across grGlideInit calls.
-  TextureManager::GetInstance().SetUmaMode(cfg.textureUmaMode == 1);
 }
 
 void InitGlide(const char* apiTag, void (*resetFrontendState)(),
@@ -324,6 +320,11 @@ void InitGlide(const char* apiTag, void (*resetFrontendState)(),
   logger.LogExecutionSummary(cfg);
   BackendManager::GetInstance().EstablishBackend(cfg);
   ConfigureTmuMemoryLimits();
+  // Authentic FX_GLIDE_TEXTURE_UMA / [glide] texture_uma initial state
+  // (mirrors glide3x/h5/glide3/src/gpci.c:1204). Applied once at init time so
+  // stale state does not leak across grGlideInit calls, while preserving any
+  // grEnable(GR_TEXTURE_UMA_EXT) called before grSstWinOpen/grSstWinOpenExt.
+  TextureManager::GetInstance().SetUmaMode(cfg.textureUmaMode == 1);
 }
 
 void EnsureEngineInitializedSlow(void (*resetFrontendState)(),
@@ -346,6 +347,7 @@ void EnsureEngineInitializedSlow(void (*resetFrontendState)(),
     logger.LogExecutionSummary(cfg);
     bm.EstablishBackend(cfg);
     ConfigureTmuMemoryLimits();
+    TextureManager::GetInstance().SetUmaMode(cfg.textureUmaMode == 1);
     GLIDE_LOG(INFO, "Frontend", "Implicit grGlideInit executed seamlessly.");
   }
 }

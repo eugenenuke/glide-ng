@@ -1280,13 +1280,17 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
         const float preFogB = blue;
 
         // Fog Stage
-        if (keepPixel && (fogMode != 0)) {
+        if (keepPixel && ((fogMode & 0x0Fu) != 0u)) {
           uint32_t fogSource = fogMode & 0x0F;
           float f = 0.0f;
           if (fogSource == 4) {  // UNIFIED_FOG_WITH_ITERATED_ALPHA
             f = w0 * a.color[3] + w1 * b.color[3] + w2 * c.color[3];
           } else {  // Table-based fog
-            float eyeW = 1.0f / std::max(wVal, 1e-6f);
+            const float invDepth =
+                (fogSource == 1)
+                    ? (a.fog + w1 * (b.fog - a.fog) + w2 * (c.fog - a.fog))
+                    : wVal;
+            float eyeW = 1.0f / std::max(invDepth, 1e-6f);
             if (eyeW < 1.0f) eyeW = 1.0f;
 
             int idx = 0;

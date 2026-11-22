@@ -308,8 +308,9 @@ TEST_CASE("SIMD: Bit-Exact Kernels, Vectorized Fog/Stipple/Stencil & Multi-ISA P
       be.SetDepthState(0, 7, false, 0);
       be.ClearBufferExt(0x00102030u, 255u, 1.0f, 0u, 0x3u);
 
-      // Strip 1: Standard Table Fog (mode=1) sweeping oow across 1.2 -> 1e-6
-      be.SetFogMode(1u);
+      // Strip 1: Standard W-table fog (GR_FOG_WITH_TABLE_ON_W = 0x2) sweeping
+      // oow across 1.2 -> 1e-6.
+      be.SetFogMode(2u);
       for (int band = 0; band < 16; ++band) {
         const float y0 = static_cast<float>(band * 3);
         const float y1 = static_cast<float>((band + 1) * 3);
@@ -326,8 +327,8 @@ TEST_CASE("SIMD: Bit-Exact Kernels, Vectorized Fog/Stipple/Stencil & Multi-ISA P
         be.DrawTriangle(v0, v2, v3);
       }
 
-      // Strip 2: Multi-pass GR_FOG_MULT2 (0x201) + GR_FOG_ADD2 (0x101)
-      be.SetFogMode(0x201u);
+      // Strip 2: Multi-pass GR_FOG_ADD2 (0x202) + GR_FOG_MULT2 (0x102)
+      be.SetFogMode(0x202u);
       be.SetBlendState(4, 0, 4, 0);
       {
         ModernVertex v0 = makeVert(0.0f, 48.0f, 0.5f, 0.8f, 0.8f, 0.5f, 0.3f, 1.0f);
@@ -339,7 +340,7 @@ TEST_CASE("SIMD: Bit-Exact Kernels, Vectorized Fog/Stipple/Stencil & Multi-ISA P
             makeVert(0.0f, static_cast<float>(H), 0.5f, 0.5f, 0.9f, 0.8f, 0.1f, 1.0f);
         be.DrawTriangle(v0, v1, v2);
         be.DrawTriangle(v0, v2, v3);
-        be.SetFogMode(0x101u);
+        be.SetFogMode(0x102u);
         be.SetBlendState(4, 4, 4, 0);  // ONE, ONE additive pass
         be.DrawTriangle(v0, v1, v2);
         be.DrawTriangle(v0, v2, v3);
@@ -367,7 +368,7 @@ TEST_CASE("SIMD: Bit-Exact Kernels, Vectorized Fog/Stipple/Stencil & Multi-ISA P
           makeVert(static_cast<float>(W) * 0.5f, static_cast<float>(H) - 1.0f,
                    0.5f, 1.0f, 0.9f, 0.1f, 0.9f, 1.0f);
       be.DrawTriangle(u0, u1, u2);
-    } else {
+    } else if (mode == 2) {
       // Hardware Stencil: exercise ALL 8 compare ops, ALL 8 stencil ops,
       // partial readMask/writeMask, and simultaneous sfail/zfail/zpass in quads.
       be.SetStencilMode(true);
@@ -403,6 +404,37 @@ TEST_CASE("SIMD: Bit-Exact Kernels, Vectorized Fog/Stipple/Stencil & Multi-ISA P
                                    1.0f, 0.3f, 0.5f, 0.1f * op, 1.0f);
         be.DrawTriangle(v0, v1, v2);
       }
+    } else if (mode == 3) {
+      // FOGCOORD table fog (GR_FOG_WITH_TABLE_ON_FOGCOORD_EXT = 0x1):
+      // keep vertex pos[3] (oow) fixed at 1.0 so ONLY v.fog drives the table.
+      uint8_t fogTbl[64];
+      for (int i = 0; i < 64; ++i) {
+        fogTbl[i] = static_cast<uint8_t>(((i * 37 + (i & 1 ? 120 : 10)) & 0xFF));
+      }
+      be.SetFogTable(fogTbl);
+      be.SetFogColor(0x004090E0u);
+      be.SetDepthState(0, 7, false, 0);
+      be.ClearBufferExt(0x00102030u, 255u, 1.0f, 0u, 0x3u);
+      be.SetFogMode(1u);
+      for (int band = 0; band < 16; ++band) {
+        const float y0 = static_cast<float>(band * 3);
+        const float y1 = static_cast<float>((band + 1) * 3);
+        const float fogL = 1.2f / static_cast<float>(1u << band);
+        const float fogR =
+            std::max(1e-6f, 0.45f / static_cast<float>(1u << band));
+        ModernVertex v0 = makeVert(0.0f, y0, 0.5f, 1.0f, 0.9f, 0.2f, 0.1f, 1.0f);
+        ModernVertex v1 =
+            makeVert(static_cast<float>(W), y0, 0.5f, 1.0f, 0.1f, 0.9f, 0.3f, 1.0f);
+        ModernVertex v2 =
+            makeVert(static_cast<float>(W), y1, 0.5f, 1.0f, 0.2f, 0.3f, 0.9f, 1.0f);
+        ModernVertex v3 = makeVert(0.0f, y1, 0.5f, 1.0f, 0.8f, 0.7f, 0.2f, 1.0f);
+        v0.fog = fogL;
+        v1.fog = fogR;
+        v2.fog = fogR;
+        v3.fog = fogL;
+        be.DrawTriangle(v0, v1, v2);
+        be.DrawTriangle(v0, v2, v3);
+      }
     }
 
     be.FlushBins();
@@ -422,7 +454,7 @@ TEST_CASE("SIMD: Bit-Exact Kernels, Vectorized Fog/Stipple/Stencil & Multi-ISA P
   // Test both standard (64x64) and non-divisible-by-4 height (64x50)
   for (uint32_t H : {64u, 50u}) {
     const uint32_t W = 64u;
-    for (int mode = 0; mode < 3; ++mode) {
+    for (int mode = 0; mode < 4; ++mode) {
       std::vector<uint32_t> refColor;
       std::vector<uint8_t> refStencil;
       renderScenario(SwSimdLevel::Scalar, W, H, refColor, refStencil, mode);
@@ -446,7 +478,7 @@ TEST_CASE("SIMD: Bit-Exact Kernels, Vectorized Fog/Stipple/Stencil & Multi-ISA P
         }
         INFO("mode=" << mode << " H=" << H << " diffPixels=" << diffPixels
                      << " maxDiff=" << maxDiff);
-        if (mode == 0) {
+        if (mode == 0 || mode == 3) {
           // Table Fog must stay strictly bit-exact (0-LSB diff across all 64 intervals)
           CHECK(maxDiff == 0);
           CHECK(diffPixels == 0);

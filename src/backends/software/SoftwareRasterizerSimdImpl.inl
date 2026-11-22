@@ -623,6 +623,7 @@ void RasterizeTriangleLoopsTraits(
   const SimdF invArea_vec(invArea);
   const SimdF a_oow(a.pos[3]), db_oow(b.pos[3] - a.pos[3]),
       dc_oow(c.pos[3] - a.pos[3]);
+  const SimdF a_fog(a.fog), db_fog(b.fog - a.fog), dc_fog(c.fog - a.fog);
   const SimdF a_z(a.pos[2]), db_z(b.pos[2] - a.pos[2]),
       dc_z(c.pos[2] - a.pos[2]);
   const SimdF a_r(a.color[0]), b_r(b.color[0]), c_r(c.color[0]);
@@ -1565,11 +1566,15 @@ void RasterizeTriangleLoopsTraits(
       const SimdF preFogB = blue;
 
       // 11. Fog Stage (fully vectorized table fog — 0-mismatch index vs scalar)
-      if (fogMode != 0) {
+      if ((fogMode & 0x0Fu) != 0u) {
         SimdF f_vec = zero_vec;
         uint32_t fogSource = fogMode & 0x0F;
         if (fogSource == 4) {
           f_vec = iterA;
+        } else if (fogSource == 1) {
+          const SimdF fogVal =
+              Fma(w2_vec, dc_fog, Fma(w1_vec, db_fog, a_fog));
+          f_vec = EvaluateTableFogVec<SimdF, SimdI, SimdM>(fogVal, fogTableF);
         } else {
           f_vec = EvaluateTableFogVec<SimdF, SimdI, SimdM>(wVal, fogTableF);
         }

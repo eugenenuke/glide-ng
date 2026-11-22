@@ -78,7 +78,7 @@ void SoftwareBackend::WritePixelPipeline(int x, int y, const ModernVertex& v,
 
   // Upstream TMU 1 stage
   TmuColor tmu1Color = {1.0f, 1.0f, 1.0f, 1.0f};
-  TmuColor tmu1Out = {1.0f, 1.0f, 1.0f, 1.0f};
+  TmuColor tmu1Out = iteratedColor;
   if (hasTex1) {
     const float invW1 = (divW1 > 0.0f) ? (1.0f / divW1) : 1.0f;
     const uint32_t tWord1 = SampleTextureLevelSlow(
@@ -100,26 +100,27 @@ void SoftwareBackend::WritePixelPipeline(int x, int y, const ModernVertex& v,
           state.texCombinerRgbInvert[1], state.texCombinerAlphaInvert[1],
           tmu1Color, iteratedColor, iteratedColor, 0.0f, 0.0f);
     }
-    if ((state.extTexColorCombine[1] & 0x80000000u) != 0u) {
-      EvaluateExtTmuRgbScalar(state.extTexColorCombine[1], tmu1Color,
-                              iteratedColor, tmuConst1, iteratedColor, 0.0f,
-                              0.0f, tmu1Out.r, tmu1Out.g, tmu1Out.b);
-    }
-    if ((state.extTexAlphaCombine[1] & 0x80000000u) != 0u) {
-      tmu1Out.a = EvaluateExtTmuAlphaScalar(
-          state.extTexAlphaCombine[1], tmu1Color, iteratedColor, tmuConst1,
-          iteratedColor, 0.0f, 0.0f);
-    }
+  }
+  if ((state.extTexColorCombine[1] & 0x80000000u) != 0u) {
+    EvaluateExtTmuRgbScalar(state.extTexColorCombine[1], tmu1Color,
+                            iteratedColor, tmuConst1, iteratedColor, 0.0f,
+                            0.0f, tmu1Out.r, tmu1Out.g, tmu1Out.b);
+  }
+  if ((state.extTexAlphaCombine[1] & 0x80000000u) != 0u) {
+    tmu1Out.a = EvaluateExtTmuAlphaScalar(
+        state.extTexAlphaCombine[1], tmu1Color, iteratedColor, tmuConst1,
+        iteratedColor, 0.0f, 0.0f);
   }
 
   // Downstream TMU 0 stage
+  TmuColor tmu0Color = {1.0f, 1.0f, 1.0f, 1.0f};
   TmuColor tmu0Out = tmu1Out;
   if (hasTex0) {
     const float invW0 = (divW0 > 0.0f) ? (1.0f / divW0) : 1.0f;
     const uint32_t tWord0 = SampleTextureLevelSlow(
         tex0, 0, v.tex[0] * invW0, v.tex[1] * invW0, state.texClampS[0],
         state.texClampT[0], state.texMinFilter[0], 0u, state);
-    TmuColor tmu0Color = {
+    tmu0Color = {
         ((tWord0 >> 16) & 0xFFu) / 255.0f,
         ((tWord0 >> 8) & 0xFFu) / 255.0f,
         (tWord0 & 0xFFu) / 255.0f,
@@ -137,16 +138,16 @@ void SoftwareBackend::WritePixelPipeline(int x, int y, const ModernVertex& v,
           state.texCombinerRgbInvert[0], state.texCombinerAlphaInvert[0],
           tmu0Color, tmu1Out, iteratedColor, 0.0f, 0.0f);
     }
-    if ((state.extTexColorCombine[0] & 0x80000000u) != 0u) {
-      EvaluateExtTmuRgbScalar(state.extTexColorCombine[0], tmu0Color, tmu1Out,
-                              tmuConst0, iteratedColor, 0.0f, 0.0f, tmu0Out.r,
-                              tmu0Out.g, tmu0Out.b);
-    }
-    if ((state.extTexAlphaCombine[0] & 0x80000000u) != 0u) {
-      tmu0Out.a = EvaluateExtTmuAlphaScalar(
-          state.extTexAlphaCombine[0], tmu0Color, tmu1Out, tmuConst0,
-          iteratedColor, 0.0f, 0.0f);
-    }
+  }
+  if ((state.extTexColorCombine[0] & 0x80000000u) != 0u) {
+    EvaluateExtTmuRgbScalar(state.extTexColorCombine[0], tmu0Color, tmu1Out,
+                            tmuConst0, iteratedColor, 0.0f, 0.0f, tmu0Out.r,
+                            tmu0Out.g, tmu0Out.b);
+  }
+  if ((state.extTexAlphaCombine[0] & 0x80000000u) != 0u) {
+    tmu0Out.a = EvaluateExtTmuAlphaScalar(
+        state.extTexAlphaCombine[0], tmu0Color, tmu1Out, tmuConst0,
+        iteratedColor, 0.0f, 0.0f);
   }
 
   const float texR = tmu0Out.r;
@@ -379,9 +380,10 @@ void SoftwareBackend::WritePixelPipeline(int x, int y, const ModernVertex& v,
     } else {
       float eyeW = 0.0f;
       if (fogSource == 1) {
-        eyeW = v.fog;
+        // Authentic 3dfx GR_PARAM_FOG_EXT supplies reciprocal 1/W_fog.
+        eyeW = 1.0f / std::max(v.fog, 1e-6f);
       } else {
-        eyeW = 1.0f / v.pos[3];
+        eyeW = 1.0f / std::max(v.pos[3], 1e-6f);
       }
       if (eyeW < 1.0f) eyeW = 1.0f;
 

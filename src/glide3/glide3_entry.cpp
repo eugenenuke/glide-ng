@@ -416,7 +416,10 @@ inline GlideWrapper::ModernVertex ProjectClipVertex(
       std::max((layout.HasParamQ0() ? cv.q0 : 1.0f) * invW, kMinFbiOow);
   mv.tmu_oow[1] =
       std::max((layout.HasParamQ1() ? cv.q1 : 1.0f) * invW, kMinFbiOow);
-  mv.fog = cv.fog;
+  // Project GR_PARAM_FOG_EXT by 1/w into the hardware FBI oow iterator in
+  // GR_CLIP_COORDS (matching 3dfx h5/glide3/src/fxcmd.h:1595-1602); fall back
+  // to projected FBI oow (mv.pos[3]) when disabled.
+  mv.fog = layout.HasParamFog() ? (cv.fog * invW) : mv.pos[3];
 
   EntryCommon::SanitizeVertex(s_state, mv);
   return mv;
@@ -1269,10 +1272,15 @@ FX_ENTRY FxU32 FX_CALL grGet(FxU32 pname, FxU32 plength, FxI32* params) {
       *params = static_cast<FxI32>(std::max(1u, config.fbiMemoryMb) * 1024u *
                                    1024u);
       return 4;
-    case GR_MEMORY_TMU:
-      *params = static_cast<FxI32>(std::max(1u, config.tmuMemoryMb) * 1024u *
-                                   1024u);
+    case GR_MEMORY_TMU: {
+      uint32_t tmuBytes = std::max(1u, config.tmuMemoryMb) * 1024u * 1024u;
+      if (GlideWrapper::TextureManager::GetInstance().IsUmaMode() &&
+          config.tmuCount >= 2u) {
+        tmuBytes *= config.tmuCount;
+      }
+      *params = static_cast<FxI32>(tmuBytes);
       return 4;
+    }
     case GR_MEMORY_UMA:
       *params = (config.model >= GlideWrapper::CardModel::VoodooBanshee)
                     ? static_cast<FxI32>(std::max(1u, config.fbiMemoryMb) *
@@ -2663,13 +2671,13 @@ FX_ENTRY void FX_CALL grTexSource(GrChipID_t tmu, FxU32 startAddress,
   (void)evenOdd;
   GLIDE_LOG(DEBUG, "Frontend",
             "grTexSource (Glide 3.x) invoked for TMU=" << tmu);
+  auto& tm = GlideWrapper::TextureManager::GetInstance();
   if (s_texBuf.active && s_texBuf.configured &&
-      static_cast<uint32_t>(tmu) == s_texBuf.tmu &&
+      (static_cast<uint32_t>(tmu) == s_texBuf.tmu || tm.IsUmaMode()) &&
       static_cast<uint32_t>(startAddress) == s_texBuf.startAddress) {
     CommitActiveTextureBuffer();
   }
   uint32_t bindAddr = startAddress;
-  auto& tm = GlideWrapper::TextureManager::GetInstance();
   uint32_t g2Aspect = 3u;
   if (info) {
     g2Aspect = g_inSplash ? static_cast<uint32_t>(info->aspectRatioLog2)
@@ -2882,6 +2890,7 @@ FX_ENTRY void FX_CALL grDepthRange(FxFloat n, FxFloat f) {
 
 FX_ENTRY void FX_CALL grEnable(GrEnableMode_t mode) {
   GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
+  EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend", "grEnable (Glide 3.x) mode=" << mode);
   switch (mode) {
     case GR_AA_ORDERED:
@@ -2931,6 +2940,7 @@ FX_ENTRY void FX_CALL grEnable(GrEnableMode_t mode) {
 
 FX_ENTRY void FX_CALL grDisable(GrEnableMode_t mode) {
   GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
+  EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend", "grDisable (Glide 3.x) mode=" << mode);
   switch (mode) {
     case GR_AA_ORDERED:

@@ -92,6 +92,7 @@ public:
     bool HasParamQ() const { return m_offsetQ >= 0; }
     bool HasParamQ0() const { return m_offsetQ0 >= 0; }
     bool HasParamQ1() const { return m_offsetQ1 >= 0; }
+    bool HasParamFog() const { return m_offsetFog >= 0; }
 
     ModernVertex DecodeVertex(const void* gameVertex) const {
         ModernVertex v;
@@ -202,7 +203,7 @@ private:
                                ? SanitizePositiveOow(loadF(56))
                                : 1.0f;
         }
-        v.fog = 0.0f;
+        v.fog = v.pos[3];
     }
 #if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC diagnostic pop
