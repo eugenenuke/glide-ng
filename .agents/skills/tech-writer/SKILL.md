@@ -67,6 +67,6 @@ Never copy numbers, defaults, CLI flags, INI keys, or symbol counts from older d
 Run these checks before committing any documentation change:
 
 1. **Link & anchor audit**: Verify every relative Markdown link and `#heading-anchor` resolves to an existing file and heading.
-2. **Catalog INI validation**: Run `GLIDE_NG_HEADLESS=1 GLIDE_NG_BACKEND=software ./build/bin/Glide3xWrapperTests "[M12][Catalog]"` whenever touching `glide-ng.ini.example` or `docs/catalog/`.
+2. **Catalog INI validation**: Run `GLIDE_NG_HEADLESS=1 GLIDE_NG_BACKEND=software ./build/bin/Glide3xWrapperTests "[Catalog]"` whenever touching `glide-ng.ini.example` or `docs/catalog/`.
 3. **PII / local-path scan**: Confirm zero matches for local user paths or machine identifiers across all tracked Markdown files.
 4. **Voice check**: Confirm zero conversational `"we/I"` narration or stale milestone references leaked into `docs/user-guide/` or `docs/developer-guide/`.

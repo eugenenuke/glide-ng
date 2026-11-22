@@ -16,7 +16,7 @@ Activate this skill when running visual regression suites, capturing cross-backe
 | **LFB & Texture Parsing** (`LfbManager.cpp`, `3dfParser.cpp`) | `test12_replica_demo`, `large_texture_showcase`, `perspective_mipmapping_showcase` |
 | **Splash & Banner Animation** (`src/core/GlideSplashAnimator.cpp`) | `splash_showcase_demo` |
 | **Gamma LUT & Blending** (`VulkanBackend.cpp`, `OpenGLESBackend.cpp`) | `gamma_showcase_demo`, `chromakey_range_demo`, `fog_showcase_demo` |
-| **Windowing / Child Surface Injection** (`NativeSurfaceHost.cpp`) | `child_surface_embed_test` (X11 + Wayland), DOSBox-X (windowed + fullscreen), SVN DOSBox (`dosbox-0`) |
+| **Windowing / Child Surface Injection** (`NativeSurfaceHost.cpp`) | `Glide3xWrapperTests "[NativeSurfaceHost]"`, DOSBox-X (windowed + fullscreen), SVN DOSBox (`dosbox-0`) |
 
 ## 2. Timed Stdin Piping for Interactive Legacy Tests
 
@@ -32,7 +32,7 @@ Many legacy 3dfx SDK tests cycle modes via keyboard (`F`, `SPACE`, etc.). Automa
 ## 3. Capture Methods & Wayland vs. XWayland Caveats
 
 1. **Preferred Headless / Wayland-Safe Method (`FX_GLIDE_SNAPSHOT`)**:
-   - Capture exact backbuffer frames directly from any backend (Vulkan, OpenGL ES, Software) independent of X11/Wayland compositors using `FX_GLIDE_SNAPSHOT=/tmp/snap.ppm@<frame>` (writes uncompressed binary `P6` `.ppm` before `grBufferSwap`), or run `glide2_envtest`/`glide3_envtest --verify` and `sw_validate`.
+   - Capture exact backbuffer frames directly from any backend (Vulkan, OpenGL ES, Software) independent of X11/Wayland compositors using `FX_GLIDE_SNAPSHOT=/tmp/snap.ppm@<frame>` (writes uncompressed binary `P6` `.ppm` before `grBufferSwap`), or run `glide2_envtest`/`glide3_envtest --verify`.
 2. **X11 / XWayland Window Capture (`import`)**:
    - Dynamically resolve runtime directory and Mutter XWayland auth (**never** hardcode a numeric UID):
      ```bash
@@ -46,4 +46,4 @@ Many legacy 3dfx SDK tests cycle modes via keyboard (`F`, `SPACE`, etc.). Automa
      ```bash
      timeout 5s import -window "$WIN_TITLE" "$OUTPUT_PNG"
      ```
-   - **Important Caveat**: ImageMagick `import -window` only sees X11/XWayland top-level windows. On native Wayland, or when embedded as a native child surface inside DOSBox, the top-level window title belongs to DOSBox (not the wrapper) and Wayland subsurfaces cannot be scraped via X11 `import`. Use `-d` dumps, `sw_validate`, or ask the user for live visual confirmation on native Wayland / fullscreen DOSBox runs.
+   - **Important Caveat**: ImageMagick `import -window` only sees X11/XWayland top-level windows. On native Wayland, or when embedded as a native child surface inside DOSBox, the top-level window title belongs to DOSBox (not the wrapper) and Wayland subsurfaces cannot be scraped via X11 `import`. Use `FX_GLIDE_SNAPSHOT`, `-d` dumps, or live visual confirmation on native Wayland / fullscreen DOSBox runs.

@@ -142,6 +142,27 @@ inline uint16_t PackArgb4444(uint8_t a, uint8_t r, uint8_t g, uint8_t b) {
                                ((g >> 4) << 4) | (b >> 4));
 }
 
+
+#ifdef __linux__
+// Open the running test executable handle so white-box tests combining dlsym()
+// with internal C++ singletons (BackendManager, TextureManager, Logger, etc.)
+// share the exact same in-process GlideWrapperCore instance without crossing
+// the private hidden symbol boundary of libglide*.so.
+inline void* OpenGlideSelfHandle(int flags = RTLD_LAZY) {
+  return ::dlopen(nullptr, flags);
+}
+#endif
+
+// Safe type-pun for grGetProcAddress() function pointers without triggering
+// -Wcast-function-type or ISO C++ -Wpedantic warnings.
+template <typename Fn, typename SrcFn>
+inline Fn CastProc(SrcFn proc) noexcept {
+  Fn out = nullptr;
+  static_assert(sizeof(out) == sizeof(proc), "Function pointer size mismatch");
+  std::memcpy(&out, &proc, sizeof(out));
+  return out;
+}
+
 }  // namespace GlideTestHelpers
 
 // Clean-room minimal 2D screen scaling & 3D row-vector transform helpers

@@ -22,7 +22,7 @@
 #include <glide.h>
 
 #include "core/WrapperConfig.h"
-#include "test_helpers.h"
+#include "common/test_helpers.h"
 
 namespace {
 
@@ -71,8 +71,7 @@ void UnpackRgb565(uint16_t p, int& r, int& g, int& b) {
 
 }  // namespace
 
-TEST_CASE("M14 Glide 2.11 Default SST-1 Profile & Hardware Identity",
-          "[M14][Glide211][Profile]") {
+TEST_CASE("Glide 2.11: Default SST-1 Profile & Hardware Identity", "[Glide211][Profile]") {
   ScopedEnvOverride env;
   env.Set("GLIDE_NG_CONFIG", "/dev/null");
   env.Set("GLIDE_NG_HEADLESS", "1");
@@ -121,8 +120,7 @@ TEST_CASE("M14 Glide 2.11 Default SST-1 Profile & Hardware Identity",
   grGlideShutdown();
 }
 
-TEST_CASE("M14 Glide 2.11 guTexAllocateMemory Enforces TMU0 VRAM Budget",
-          "[M14][Glide211][Textures]") {
+TEST_CASE("Glide 2.11: TMU0 VRAM Budget Enforcement (guTexAllocateMemory)", "[Glide211][Textures]") {
   ScopedEnvOverride env;
   env.Set("GLIDE_NG_CONFIG", "/dev/null");
   env.Set("GLIDE_NG_HEADLESS", "1");
@@ -180,8 +178,7 @@ TEST_CASE("M14 Glide 2.11 guTexAllocateMemory Enforces TMU0 VRAM Budget",
   grGlideShutdown();
 }
 
-TEST_CASE("M14 Glide 2.11 Legacy LFB (1024-px Stride) & guFbRead/WriteRegion",
-          "[M14][Glide211][LFB]") {
+TEST_CASE("Glide 2.11: Legacy LFB (1024-px Stride), Snap Biases & Line Interleave", "[Glide211][LFB]") {
   const std::string backend = GENERATE(std::string("vulkan"),
                                        std::string("opengl_es"),
                                        std::string("software"));
@@ -402,3 +399,4 @@ TEST_CASE("M14 Glide 2.11 Legacy LFB (1024-px Stride) & guFbRead/WriteRegion",
   grSstWinClose();
   grGlideShutdown();
 }
+

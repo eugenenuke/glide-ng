@@ -1,0 +1,9 @@
+{
+  global:
+    gr*;
+    gu*;
+    setConfig;
+    setConfigRes;
+  local:
+    *;
+};

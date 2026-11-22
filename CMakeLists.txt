@@ -47,7 +47,7 @@ if(WIN32)
     # - Native Win32 HWND windowing (user32.dll, zero SDL2 dependency)
 else()
     find_package(Vulkan REQUIRED)
-    find_package(Catch2 QUIET)
+    find_package(Catch2 3 QUIET)
     find_package(OpenMP REQUIRED)
     find_package(SDL2 REQUIRED)
 

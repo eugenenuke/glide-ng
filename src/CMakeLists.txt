@@ -2,6 +2,13 @@ if(GLIDE_STRICT_WARNINGS AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     add_compile_options(-Werror)
 endif()
 
+# Keep default source builds dynamically linked against system runtimes.
+# Packaging scripts/CI may enable this option on Linux to avoid hard-pinning
+# libstdc++/libgcc versions on older host distributions.
+option(GLIDE_STATIC_CPP_RUNTIME
+    "Statically link libstdc++ and libgcc into Linux libglide*.so release libraries"
+    OFF)
+
 # 1. Define Core Sources
 set(CORE_SOURCES
     core/WrapperConfig.cpp
@@ -57,6 +64,18 @@ set_source_files_properties(
     PROPERTIES COMPILE_FLAGS "-mavx512f -mavx512dq -mavx512bw -mavx512vl"
 )
 set_target_properties(GlideWrapperCore PROPERTIES POSITION_INDEPENDENT_CODE ON)
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(GlideWrapperCore PRIVATE
+        -ffunction-sections
+        -fdata-sections
+    )
+    if(NOT WIN32)
+        target_compile_options(GlideWrapperCore PRIVATE
+            -fvisibility=hidden
+            -fvisibility-inlines-hidden
+        )
+    endif()
+endif()
 target_include_directories(GlideWrapperCore PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}"
     "${CMAKE_CURRENT_SOURCE_DIR}/core"
@@ -143,6 +162,39 @@ if(UNIX AND NOT APPLE)
 endif()
 
 
+# Apply shared linker export/dead-code stripping options to frontend DSOs/DLLs.
+function(configure_glide_shared_frontend TARGET_NAME VERSION_SCRIPT)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(${TARGET_NAME} PRIVATE
+            -ffunction-sections
+            -fdata-sections
+        )
+    endif()
+    if(WIN32)
+        if(MINGW)
+            target_link_options(${TARGET_NAME} PRIVATE
+                -static
+                -mstackrealign
+                -Wl,--gc-sections
+            )
+        endif()
+    elseif(UNIX AND NOT APPLE)
+        target_link_options(${TARGET_NAME} PRIVATE
+            "-Wl,--version-script=${VERSION_SCRIPT}"
+            -Wl,-Bsymbolic-functions
+            -Wl,--gc-sections
+            -Wl,--exclude-libs,ALL
+        )
+        set_property(TARGET ${TARGET_NAME} APPEND PROPERTY LINK_DEPENDS "${VERSION_SCRIPT}")
+        if(GLIDE_STATIC_CPP_RUNTIME AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+            target_link_options(${TARGET_NAME} PRIVATE
+                -static-libstdc++
+                -static-libgcc
+            )
+        endif()
+    endif()
+endfunction()
+
 # 2. Glide 2.11 Frontend Export Library (libglide.so / glide.dll)
 set(GLIDE211_SOURCES glide211/glide211_entry.cpp)
 if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/glide211/glide.def")
@@ -155,12 +207,10 @@ endif()
 add_library(glide SHARED ${GLIDE211_SOURCES})
 if(WIN32)
     set_target_properties(glide PROPERTIES PREFIX "" OUTPUT_NAME "glide")
-    if(MINGW)
-        target_link_options(glide PRIVATE -static -mstackrealign)
-    endif()
 else()
     set_target_properties(glide PROPERTIES VERSION 2.11.0 SOVERSION 0)
 endif()
+configure_glide_shared_frontend(glide "${CMAKE_CURRENT_SOURCE_DIR}/glide211/libglide.ver")
 target_include_directories(glide PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/../include/glide211"
     "${CMAKE_CURRENT_SOURCE_DIR}/../include/glide2"
@@ -181,12 +231,10 @@ endif()
 add_library(glide2x SHARED ${GLIDE2_SOURCES})
 if(WIN32)
     set_target_properties(glide2x PROPERTIES PREFIX "" OUTPUT_NAME "glide2x")
-    if(MINGW)
-        target_link_options(glide2x PRIVATE -static -mstackrealign)
-    endif()
 else()
     set_target_properties(glide2x PROPERTIES VERSION 2.0.0 SOVERSION 0)
 endif()
+configure_glide_shared_frontend(glide2x "${CMAKE_CURRENT_SOURCE_DIR}/glide2/libglide2x.ver")
 target_include_directories(glide2x PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/../include/glide2"
     "${CMAKE_CURRENT_SOURCE_DIR}/../include/3dfx"
@@ -194,7 +242,7 @@ target_include_directories(glide2x PRIVATE
 target_link_libraries(glide2x PRIVATE GlideWrapperCore)
 
 
-# 5. Glide 3 Frontend Export Library (libglide3x.so / glide3x.dll)
+# 4. Glide 3 Frontend Export Library (libglide3x.so / glide3x.dll)
 set(GLIDE3_SOURCES glide3/glide3_entry.cpp)
 if(WIN32 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/glide3/glide3x.def")
     list(APPEND GLIDE3_SOURCES glide3/glide3x.def)
@@ -206,12 +254,10 @@ endif()
 add_library(glide3x SHARED ${GLIDE3_SOURCES})
 if(WIN32)
     set_target_properties(glide3x PROPERTIES PREFIX "" OUTPUT_NAME "glide3x")
-    if(MINGW)
-        target_link_options(glide3x PRIVATE -static -mstackrealign)
-    endif()
 else()
     set_target_properties(glide3x PROPERTIES VERSION 3.0.0 SOVERSION 0)
 endif()
+configure_glide_shared_frontend(glide3x "${CMAKE_CURRENT_SOURCE_DIR}/glide3/libglide3x.ver")
 target_include_directories(glide3x PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/../include/glide3"
     "${CMAKE_CURRENT_SOURCE_DIR}/../include/3dfx"

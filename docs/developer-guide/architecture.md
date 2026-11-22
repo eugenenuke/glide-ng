@@ -40,15 +40,16 @@
 | `include/3dfx/`, `include/glide211/`, `include/glide2/`, `include/glide3/` | Clean-room GPL-3.0 public 3dfx C headers (`3dfx.h`, `glide.h`, `glidesys.h`, `glideutl.h`, `sst1vid.h`, `g3ext.h`). |
 | `include/glide_ng/env_vars.h` | Single C/C++ X-macro source of truth for all `GLIDE_NG_*` and authentic `FX_GLIDE_*`/`SST_*`/`SSTV2_*` variables. |
 | `src/core/` | Shared configuration, logging, WSI hosting, texture pool, LFB manager, vertex decoding, HUD overlay, telemetry, splash animator, and runtime SIMD kernels. |
-| `src/glide211/` | Glide 2.11 (pre-2.3 SST-1) C ABI exports (`glide211_entry.cpp`, `glide.def`, `glide.rc.in`). |
-| `src/glide2/` | Glide 2.x C ABI exports (`glide2_entry.cpp`, `glide2x.def`, `glide2x.rc.in`). |
-| `src/glide3/` | Glide 3.x C ABI exports (`glide3_entry.cpp`, `glide3x.def`, `glide3x.rc.in`). |
+| `src/glide211/` | Glide 2.11 (pre-2.3 SST-1) C ABI exports (`glide211_entry.cpp`, `glide.def`, `libglide.ver`, `glide.rc.in`). |
+| `src/glide2/` | Glide 2.x C ABI exports (`glide2_entry.cpp`, `glide2x.def`, `libglide2x.ver`, `glide2x.rc.in`). |
+| `src/glide3/` | Glide 3.x C ABI exports (`glide3_entry.cpp`, `glide3x.def`, `libglide3x.ver`, `glide3x.rc.in`). |
+| `src/dos_ovl/` | Clean-room GPL-3.0 DOS/32 `GLIDE2X.OVL` pass-through overlay (`glide2x_ovl.c`, `glide2x_ovl.lnk`). |
 | `src/backends/` | `GlideStateTracker`, `CpuLfbStaging`, `SoftwareBackendBase`, and the `vulkan/`, `opengl_es/`, and `software/` backend implementations. |
-| `tests/` | Self-contained Catch2 integration/unit test suites (`Glide211WrapperTests`, `Glide2xWrapperTests`, `Glide3xWrapperTests`) and `sw_validate`. |
+| `tests/` | Modular self-contained Catch2 integration/unit test suites (`tests/glide211/`, `tests/glide2/`, `tests/glide3/`, shared `tests/common/test_helpers.h`). |
 | `tools/` | Pure C99 portable tools (`glide_info`, `glide_bench`, `glide_envtest`), interactive tools (`glidecube`, `glidegears`), build scripts (`gen_version_header.cmake`, `spv_to_hex.py`). |
 | `demos/` | Standalone Glide 2.x and Glide 3.x showcase and validation demos. |
 | `cmake/` | Cross-compilation toolchains and integrations (`MinGwWin32.cmake`, `OpenWatcomDos.cmake`, `toolchains/mingw-w64-i686.cmake`). |
-| `scripts/` | Maintenance and release utilities (`bump_version.sh`). |
+| `scripts/` | Maintenance and release utilities (`bump_version.sh`, `package_release.sh`). |
 
 ---
 

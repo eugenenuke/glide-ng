@@ -122,4 +122,4 @@ See [Configuration & Environment Variables](../user-guide/configuration.md), [Ha
 1. Copy [`_template/`](./_template/README.md) to `docs/catalog/<games|demos|tools>/<slug>/`.
 2. Fill in `README.md` with verified findings (editions/patches, launch commands, quirks, controls) and tune `glide-ng.ini` using authentic card-to-version pairs (or omit `api_version` to inherit the card's authentic default).
 3. Add a row to the appropriate table in this index (`docs/catalog/README.md`).
-4. Run the automated Catch2 catalog validator (`GLIDE_NG_HEADLESS=1 ./build/bin/Glide3xWrapperTests "[M12][Catalog]"`) to confirm every catalog `.ini` parses with zero unknown keys, zero invalid values, and zero card/version warnings.
+4. Run the automated Catch2 catalog validator (`GLIDE_NG_HEADLESS=1 ./build/bin/Glide3xWrapperTests "[Catalog]"`) to confirm every catalog `.ini` parses with zero unknown keys, zero invalid values, and zero card/version warnings.
