@@ -1,0 +1,10 @@
+{
+  global:
+    ConvertAndDownloadRle;
+    gr*;
+    gu*;
+    setConfig;
+    setConfigRes;
+  local:
+    *;
+};
