@@ -2,7 +2,7 @@
 
 This document is the authoritative system-level manifest for AI coding agents collaborating on the **`glide-ng` (3dfx Glide 2.11 / 2.x / 3.x Modernization Wrapper)** repository.
 
-> **Active Roadmap**: See [docs/ROADMAP.md](../docs/ROADMAP.md) for current and upcoming milestones, and [docs/HISTORY.md](../docs/HISTORY.md) / [CHANGELOG.md](../CHANGELOG.md) for completed work.
+> **Active Roadmap**: See [docs/ROADMAP.md](docs/ROADMAP.md) for current and upcoming milestones, and [docs/HISTORY.md](docs/HISTORY.md) / [CHANGELOG.md](CHANGELOG.md) for completed work.
 
 ---
 
@@ -10,8 +10,8 @@ This document is the authoritative system-level manifest for AI coding agents co
 
 ```text
 glide-ng/
-├── .agents/                          # Authoritative agent rules & domain skills
-│   ├── AGENTS.md                     # This manifest
+├── AGENTS.md                         # This manifest (workspace rules & skill routing)
+├── .agents/
 │   └── skills/                       # Specialized skills (loaded on demand)
 ├── docs/                             # Structured documentation
 │   ├── README.md                     # Documentation hub
@@ -45,7 +45,7 @@ glide-ng/
 ## 2. Mandatory Execution & Tracking Policies
 
 ### Policy A: Strict 3-State Task Confirmation Gate
-When working from [docs/ROADMAP.md](../docs/ROADMAP.md) or any milestone tracker:
+When working from [docs/ROADMAP.md](docs/ROADMAP.md) or any milestone tracker:
 - `[ ] PENDING` — Not started.
 - `[~] IMPLEMENTED — AWAITING USER VERIFICATION` — Code compiles cleanly and automated tests pass. **Agents MUST stop at this state and ask the developer to confirm.**
 - `[x] DONE (USER CONFIRMED — YYYY-MM-DD)` — **NEVER** mark a task `DONE` until the developer explicitly confirms it works as intended.
@@ -56,7 +56,7 @@ When working from [docs/ROADMAP.md](../docs/ROADMAP.md) or any milestone tracker
 - Prefer `git revert` / `git bisect` over layering speculative workarounds when a regression appears.
 
 ### Policy C: Catch2 TDD Mandate
-- Every bug fix, config parser change, state addition, or math/geometry helper **must** be accompanied by a Catch2 unit test under [tests/glide211/](../tests/glide211/), [tests/glide2/](../tests/glide2/), or [tests/glide3/](../tests/glide3/).
+- Every bug fix, config parser change, state addition, or math/geometry helper **must** be accompanied by a Catch2 unit test under [tests/glide211/](tests/glide211/), [tests/glide2/](tests/glide2/), or [tests/glide3/](tests/glide3/).
 - Run headless verification with `GLIDE_NG_HEADLESS=1 GLIDE_NG_BACKEND=software ctest --test-dir build --output-on-failure` (see the `build-and-test` skill for exact commands).
 
 ### Policy D: Local Third-Party Directories (`vendor/` and `ext_tests/`)
@@ -94,8 +94,8 @@ Load the relevant skill under `.agents/skills/` before modifying files in its do
 ## 4. Review & Verification Workflow
 
 For non-trivial changes, follow this disciplined loop:
-1. **Plan & Scope**: Confirm the exact milestone/task in [docs/ROADMAP.md](../docs/ROADMAP.md) and keep edits strictly within scope.
+1. **Plan & Scope**: Confirm the exact milestone/task in [docs/ROADMAP.md](docs/ROADMAP.md) and keep edits strictly within scope.
 2. **Implement**: Load relevant domain skill(s), write minimal clean C++20, and add/update Catch2 unit tests.
 3. **Self-Audit**: Check DRYness, state serialization symmetry (`grGlideGetState`/`SetState`), resource ownership/teardown order, and compiler warnings (`-Wall -Wextra -Wpedantic -Werror`).
 4. **Verify**: Build cleanly and run automated tests (`ctest` / `Glide211WrapperTests` / `Glide2xWrapperTests` / `Glide3xWrapperTests` / `glide_envtest`).
-5. **Commit & Hand Off**: Create isolated commits, mark tasks `[~] IMPLEMENTED — AWAITING USER VERIFICATION` in [docs/ROADMAP.md](../docs/ROADMAP.md), and provide exact manual test commands for developer sign-off.
+5. **Commit & Hand Off**: Create isolated commits, mark tasks `[~] IMPLEMENTED — AWAITING USER VERIFICATION` in [docs/ROADMAP.md](docs/ROADMAP.md), and provide exact manual test commands for developer sign-off.
