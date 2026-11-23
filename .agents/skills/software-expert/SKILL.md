@@ -1,11 +1,11 @@
 ---
-name: rasterizer-oracle
-description: Software reference rasterizer, winding math, SIMD (AVX2 / AVX-512), LFB coordinate mapping, and headless validation rules.
+name: software-expert
+description: Specialized CPU software reference rasterizer backend expert covering winding math, SIMD (AVX2 / AVX-512), LFB coordinate mapping, compilation sharding, and headless validation rules.
 ---
 
-# Workspace Skill: Software Reference Rasterizer
+# Workspace Skill: Software Reference Rasterizer Backend Expert
 
-Activate this skill when analyzing, modifying, or debugging the CPU reference rasterizer inside [src/backends/software/](../../../src/backends/software/) or [src/backends/SoftwareBackendBase.h](../../../src/backends/SoftwareBackendBase.h).
+Activate this skill when analyzing, modifying, or debugging the CPU reference rasterizer inside [src/backends/software/](../../../src/backends/software/), [src/backends/SoftwareBackendBase.h](../../../src/backends/SoftwareBackendBase.h), or shared CPU SIMD kernels inside `src/core/SimdDispatch.{h,cpp}` and `src/core/SimdKernels*.cpp`.
 
 ## 1. Ground-Truth Reference & Math
 
@@ -35,9 +35,9 @@ Activate this skill when analyzing, modifying, or debugging the CPU reference ra
 ## 4. SIMD Tiers, Compilation Sharding & Threading
 
 - Tiled software rasterization runs across `ThreadPool.h` / OpenMP with three selectable SIMD tiers (`GLIDE_NG_SW_SIMD=scalar|avx2|avx512|auto`):
-  - **Scalar:** `SoftwareRasterizer.cpp`
-  - **AVX2 + FMA:** `SimdVec.h` + `SoftwareRasterizerSimd.cpp` + `SoftwareRasterizerSimdImpl.inl` (`-mavx2 -mfma`)
-  - **AVX-512:** `SimdVec512.h` + `SoftwareRasterizerAvx512.cpp` (`-mavx512f -mavx512dq -mavx512bw -mavx512vl`, 16-pixel `4×4` kernel)
+  - **Scalar:** `SoftwareRasterizer.cpp` (+ `src/core/SimdKernels.cpp`)
+  - **AVX2 + FMA:** `SimdVec.h` + `SoftwareRasterizerSimd.cpp` + `SoftwareRasterizerSimdImpl.inl` + `src/core/SimdKernelsAvx2.cpp` (`-mavx2 -mfma`)
+  - **AVX-512:** `SimdVec512.h` + `SoftwareRasterizerAvx512.cpp` + `src/core/SimdKernelsAvx512.cpp` (`-mavx512f -mavx512dq -mavx512bw -mavx512vl`, 16-pixel `4×4` kernel)
 - **Parallel Compilation Sharding (`src/CMakeLists.txt`):** Heavy rasterizer templates are auto-sharded via generated wrapper files using **`GLIDE_RAST_SHARD`** (**8** scalar, **4** AVX2, **4** AVX-512 shards) to parallelize builds; these shards set `SKIP_PRECOMPILE_HEADERS ON` to avoid ISA flag mismatch with GCC PCH.
 - Keep inner rasterization loops free of per-pixel heap allocations and data races.
 - Validate SIMD/rasterizer edits with `Glide3xWrapperTests "[SIMD]"`, `tests/glide3/test_glide3_simd_vec.cpp`, `tests/glide3/test_glide3_simd.cpp`, and `glide3_bench`.

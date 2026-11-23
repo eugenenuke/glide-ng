@@ -1,6 +1,6 @@
 # Workspace Rules & Agent Manifest (`AGENTS.md`)
 
-This document is the authoritative system-level manifest for AI coding agents collaborating on the **`glide-ng` (3dfx Glide 2.x / 3.x Modernization Wrapper)** repository.
+This document is the authoritative system-level manifest for AI coding agents collaborating on the **`glide-ng` (3dfx Glide 2.11 / 2.x / 3.x Modernization Wrapper)** repository.
 
 > **Active Roadmap**: See [docs/ROADMAP.md](../docs/ROADMAP.md) for current and upcoming milestones, and [docs/HISTORY.md](../docs/HISTORY.md) / [CHANGELOG.md](../CHANGELOG.md) for completed work.
 
@@ -9,7 +9,7 @@ This document is the authoritative system-level manifest for AI coding agents co
 ## 1. Repository Architecture
 
 ```text
-3dfx/
+glide-ng/
 ├── .agents/                          # Authoritative agent rules & domain skills
 │   ├── AGENTS.md                     # This manifest
 │   └── skills/                       # Specialized skills (loaded on demand)
@@ -17,10 +17,10 @@ This document is the authoritative system-level manifest for AI coding agents co
 │   ├── README.md                     # Documentation hub
 │   ├── ROADMAP.md                    # Active & upcoming milestones
 │   ├── HISTORY.md                    # Concise pre-beta retrospective
-│   ├── user-guide/                   # End-user manuals
+│   ├── user-guide/                   # End-user manuals (incl. reporting-bugs.md)
 │   ├── developer-guide/              # Contributor technical references
 │   └── catalog/                      # Per-title guides & drop-in glide-ng.ini presets
-├── include/                          # Public Glide headers (3dfx/, glide2/, glide3/, glide_ng/)
+├── include/                          # Public Glide headers (3dfx/, glide211/, glide2/, glide3/, glide_ng/)
 ├── src/
 │   ├── core/                         # Config, Logger, NativeSurfaceHost, VertexLayout, Textures, LFB, SIMD
 │   ├── glide211/                     # Glide 2.11 C ABI exports (libglide.so / glide.dll)
@@ -35,7 +35,7 @@ This document is the authoritative system-level manifest for AI coding agents co
 ├── demos/                            # Standalone Glide 2/3 visual & validation demos
 ├── tools/                            # Portable C99 tools (glide_info, glide_bench, glide_envtest, cube/gears)
 ├── cmake/                            # Cross-build integrations (MinGW-w64 Win32, Open Watcom DOS/32)
-├── scripts/                          # Release & maintenance utilities (bump_version.sh, package_release.sh)
+├── scripts/                          # Release & maintenance utilities (bump_version.sh, generate_release_notes.py, package_release.sh)
 ├── VERSION                           # Single source of truth for SemVer 2.0 version
 └── vendor/                           # Local git-ignored toolchains, games, demos, & optional reference clones
 ```
@@ -80,12 +80,14 @@ Load the relevant skill under `.agents/skills/` before modifying files in its do
 | :--- | :--- |
 | `tech-writer` | Authoring, refactoring, or reviewing any Markdown documentation (`README.md`, `CHANGELOG.md`, `docs/**`). |
 | `wsi-window-injection` | Modifying `NativeSurfaceHost`, X11 child windows, Wayland subsurfaces, Win32 `HWND` hosting, aspect-ratio blitting, or DOSBox-X / SVN DOSBox integration. |
-| `build-and-test` | Configuring CMake, running `ctest`, `Glide2xWrapperTests`, `Glide3xWrapperTests`, `glide_bench`, Win32/DOS cross-builds, or launching DOSBox/Wine against build outputs. |
-| `3dfx-expert` | Modifying `src/glide2/`, `src/glide3/`, state serialization (`grGlideGetState`/`SetState`), Glide ABI exports, or verifying 3dfx hardware specs. |
-| `vulkan-expert` | Modifying `src/backends/vulkan/` (swapchain, PSOs, shaders, SPIR-V build, barriers, LFB, GPU RTT). |
+| `build-and-test` | Configuring CMake (`-G Ninja`, PCH, Win32 options), running `ctest`, `Glide211WrapperTests`, `Glide2xWrapperTests`, `Glide3xWrapperTests`, `glide_bench`, Win32/DOS cross-builds, or launching DOSBox/Wine against build outputs. |
+| `3dfx-expert` | Modifying `src/glide211/`, `src/glide2/`, `src/glide3/`, state serialization (`grGlideGetState`/`SetState`), Glide ABI exports, `env_vars.h`, or verifying 3dfx hardware specs. |
+| `vulkan-expert` | Modifying `src/backends/vulkan/` (swapchain, PSOs, shaders, SPIR-V build, barriers, LFB, GPU RTT, descriptor pools). |
 | `gles-expert` | Modifying `src/backends/opengl_es/` (EGL/WGL surface/context, GLSL ES 3.20 / GL 3.30 shaders, Gamma LUT presentation). |
-| `rasterizer-oracle` | Modifying `src/backends/software/` or `src/core/SimdKernels*` (reference rasterizer, AVX2/AVX-512 SIMD, LFB row flipping). |
+| `software-expert` | Modifying `src/backends/software/` or `src/core/SimdKernels*` (CPU reference rasterizer, scalar/AVX2/AVX-512 SIMD, compilation sharding, LFB row flipping). |
 | `visual-validator` | Capturing cross-backend visual parity snapshots (`FX_GLIDE_SNAPSHOT`) or running interactive demos and verification harnesses. |
+| `game-collector` | Guiding classic Glide game testing, read-only binary recon, isolated per-backend log/telemetry capture, screenshot validation, and copyright-clean report bundles (`Standard` default / opt-in `Deep` mode). |
+| `release-manager` | Bumping `VERSION`, updating `CHANGELOG.md` comparison links, dry-running `generate_release_notes.py`, packaging `dist/`, tagging, and verifying `.github/workflows/release.yml`. |
 
 ---
 
@@ -95,5 +97,5 @@ For non-trivial changes, follow this disciplined loop:
 1. **Plan & Scope**: Confirm the exact milestone/task in [docs/ROADMAP.md](../docs/ROADMAP.md) and keep edits strictly within scope.
 2. **Implement**: Load relevant domain skill(s), write minimal clean C++20, and add/update Catch2 unit tests.
 3. **Self-Audit**: Check DRYness, state serialization symmetry (`grGlideGetState`/`SetState`), resource ownership/teardown order, and compiler warnings (`-Wall -Wextra -Wpedantic -Werror`).
-4. **Verify**: Build cleanly and run automated tests (`ctest` / `Glide2xWrapperTests` / `Glide3xWrapperTests` / `glide_envtest`).
+4. **Verify**: Build cleanly and run automated tests (`ctest` / `Glide211WrapperTests` / `Glide2xWrapperTests` / `Glide3xWrapperTests` / `glide_envtest`).
 5. **Commit & Hand Off**: Create isolated commits, mark tasks `[~] IMPLEMENTED — AWAITING USER VERIFICATION` in [docs/ROADMAP.md](../docs/ROADMAP.md), and provide exact manual test commands for developer sign-off.
