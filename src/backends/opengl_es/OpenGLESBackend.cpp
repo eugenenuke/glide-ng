@@ -199,11 +199,11 @@ bool OpenGLESBackend::Initialize(const WrapperConfig& config) {
 }
 
 void OpenGLESBackend::Shutdown() {
-  std::lock_guard<std::mutex> lock(m_mutex);
+  std::unique_lock<std::mutex> lock(m_mutex);
   if (!m_initialized) return;
 
   GLIDE_LOG(INFO, "GLES", "Shutting down OpenGL ES 3.2 staging context.");
-  DetachWindow_Locked();
+  DetachWindow_Locked(lock);
   m_initialized = false;
 }
 
@@ -232,6 +232,8 @@ void OpenGLESBackend::ResetState_Locked() {
   m_lfbReadCacheValid[1] = false;
   m_auxDepthShadowValid = false;
   m_msaaDepthDirty = false;
+  m_frontBufferNeedsPresent = false;
+  m_frontFlushTimer.Clear();
   m_geomVBOOffset = 0;
   m_is2DGeometry = true;
   m_gammaCorrectionValue = 1.0f;
@@ -247,12 +249,12 @@ void OpenGLESBackend::ResetState_Locked() {
 
 bool OpenGLESBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
                                    uint32_t height, bool windowed) {
-  std::lock_guard<std::mutex> lock(m_mutex);
+  std::unique_lock<std::mutex> lock(m_mutex);
   if (!m_initialized) {
     GLIDE_LOG(CRITICAL, "GLES", "AttachWindow failed: !m_initialized");
     return false;
   }
-  if (m_windowAttached) DetachWindow_Locked();
+  if (m_windowAttached) DetachWindow_Locked(lock);
 
   GLIDE_LOG(INFO, "GLES",
             "Attaching OpenGL ES window surface ("
@@ -526,6 +528,8 @@ bool OpenGLESBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
   m_hudOverlay.Configure(m_config, {"GLES", width, height});
   m_hudUploadedRev = 0;
 
+  m_frontFlushTimer.ResetForAttach();
+  m_frontBufferNeedsPresent = false;
   m_windowAttached = true;
   m_passthruSuspended.store(false, std::memory_order_relaxed);
 
@@ -665,12 +669,20 @@ void OpenGLESBackend::UploadGammaLutIfDirty_Locked() {
 }
 
 void OpenGLESBackend::DetachWindow() {
-  std::lock_guard<std::mutex> lock(m_mutex);
-  DetachWindow_Locked();
+  std::unique_lock<std::mutex> lock(m_mutex);
+  DetachWindow_Locked(lock);
 }
 
-void OpenGLESBackend::DetachWindow_Locked() {
+void OpenGLESBackend::DetachWindow_Locked(std::unique_lock<std::mutex>& lock) {
   if (!m_windowAttached) return;
+  m_windowAttached = false;
+  m_frontBufferNeedsPresent = false;
+  m_frontFlushTimer.Clear();
+  if (m_frontFlushTimer.HasWorker()) {
+    lock.unlock();
+    m_frontFlushTimer.Stop();
+    lock.lock();
+  }
   GLIDE_LOG(INFO, "GLES",
             "Detaching OpenGL ES window surface and freeing buffers.");
 
@@ -813,10 +825,13 @@ bool OpenGLESBackend::SwapBuffers() {
   if (m_surfaceHost.IsStandaloneMode() && m_surfaceHost.WasQuitRequested()) {
     GLIDE_LOG(INFO, "GLES",
               "Standalone window close requested; exiting cleanly.");
-    DetachWindow_Locked();
+    DetachWindow_Locked(lock);
     lock.unlock();
     std::exit(0);
   }
+
+  m_frontBufferNeedsPresent = false;
+  m_frontFlushTimer.Clear();
 
   if (!EnsureContextCurrent()) {
     return false;
@@ -980,6 +995,9 @@ void OpenGLESBackend::SstIdle() {
     // Blocks the host CPU until all GLES commands and drawing dispatches
     // have been fully processed by the hardware GPU!
     glFinish();
+    if (m_frontBufferNeedsPresent) {
+      ReleaseFrontPresentContext_Locked();
+    }
   }
 }
 
@@ -1177,11 +1195,37 @@ bool OpenGLESBackend::WriteAuxDepthLFB_Locked(
   return true;
 }
 
+void OpenGLESBackend::ReleaseFrontPresentContext_Locked() {
+  if (m_useWgl) {
+    ReleaseWglContextOnCurrentThread_Locked();
+    return;
+  }
+#if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_EGL)
+  if (m_useDirectEgl && m_eglDisplay && m_eglContext) {
+    EGLDisplay dpy = static_cast<EGLDisplay>(m_eglDisplay);
+    const EGLenum prevApi = eglQueryAPI();
+    if (prevApi != EGL_OPENGL_ES_API) {
+      eglBindAPI(EGL_OPENGL_ES_API);
+    }
+    if (eglGetCurrentContext() == static_cast<EGLContext>(m_eglContext)) {
+      eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+    }
+    if (prevApi == EGL_OPENGL_API || prevApi == EGL_OPENVG_API) {
+      eglBindAPI(prevApi);
+    }
+  }
+#endif
+}
+
 void OpenGLESBackend::PresentFrontBufferGLES_Locked() {
   if (m_surfaceHost.GetMode() == NativeSurfaceHost::Mode::Headless ||
       m_config.forceNoWindow || m_passthruSuspended) {
     return;
   }
+  // Clear dirty state up front so internal FlushBatch() does not release the
+  // GL context mid-present.
+  m_frontBufferNeedsPresent = false;
+  m_frontFlushTimer.Clear();
   if (!EnsureContextCurrent()) return;
   FlushBatch();
   FlushLFBToGPU_Locked();
@@ -1189,7 +1233,10 @@ void OpenGLESBackend::PresentFrontBufferGLES_Locked() {
   uint32_t hostW = m_headlessWidth;
   uint32_t hostH = m_headlessHeight;
   m_surfaceHost.SyncBounds(hostW, hostH);
-  if (hostW == 0 || hostH == 0) return;
+  if (hostW == 0 || hostH == 0) {
+    ReleaseFrontPresentContext_Locked();
+    return;
+  }
   std::swap(m_fboTextures[0], m_fboTextures[1]);
   PresentToWindowSurface(hostW, hostH);
   std::swap(m_fboTextures[0], m_fboTextures[1]);
@@ -1218,7 +1265,59 @@ void OpenGLESBackend::PresentFrontBufferGLES_Locked() {
                      kGlesDirtyStencil | kGlesDirtyCull | kGlesDirtyBlend |
                      kGlesDirtySampleMask;
   m_lastFrontPresentTime = std::chrono::steady_clock::now();
-  ReleaseWglContextOnCurrentThread_Locked();
+  ReleaseFrontPresentContext_Locked();
+}
+
+void OpenGLESBackend::NoteFrontBufferMutation_Locked(bool forceImmediate) {
+  if (m_surfaceHost.GetMode() == NativeSurfaceHost::Mode::Headless ||
+      m_config.forceNoWindow || m_passthruSuspended || !m_windowAttached) {
+    return;
+  }
+  if (forceImmediate) {
+    PresentFrontBufferGLES_Locked();
+    return;
+  }
+  constexpr auto kFrontPresentInterval = std::chrono::milliseconds(33);
+  constexpr auto kBurstCoalesceDelay = std::chrono::milliseconds(16);
+  const auto now = std::chrono::steady_clock::now();
+  const bool hasPrev = (m_lastFrontPresentTime.time_since_epoch().count() != 0);
+  const bool canUseAsyncThread = (m_useWgl || m_useDirectEgl);
+  if ((!canUseAsyncThread &&
+       (!hasPrev || (now - m_lastFrontPresentTime) >= kFrontPresentInterval)) ||
+      (m_frontBufferNeedsPresent &&
+       (!hasPrev || (now - m_lastFrontPresentTime) >= kFrontPresentInterval))) {
+    PresentFrontBufferGLES_Locked();
+    return;
+  }
+  m_frontBufferNeedsPresent = true;
+  if (!hasPrev) {
+    m_lastFrontPresentTime = now;
+  }
+  if (canUseAsyncThread) {
+    // Release the context on the caller thread so the timer thread can claim
+    // it without EGL_BAD_ACCESS / WGL ERROR_BUSY if the guest stops calling
+    // Glide while idle in a menu or briefing prompt.
+    ReleaseFrontPresentContext_Locked();
+    const auto nextDue =
+        (hasPrev && (now - m_lastFrontPresentTime) < kFrontPresentInterval)
+            ? (m_lastFrontPresentTime + kFrontPresentInterval)
+            : (now + kBurstCoalesceDelay);
+    m_frontFlushTimer.Arm(nextDue);
+  }
+}
+
+void OpenGLESBackend::OnFrontBufferFlushTimer() {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (!m_initialized || !m_windowAttached || m_passthruSuspended ||
+      !m_frontBufferNeedsPresent) {
+    return;
+  }
+  if (m_surfaceHost.GetMode() == NativeSurfaceHost::Mode::Headless ||
+      m_config.forceNoWindow) {
+    m_frontBufferNeedsPresent = false;
+    return;
+  }
+  PresentFrontBufferGLES_Locked();
 }
 
 bool OpenGLESBackend::WriteLFB(uint32_t buffer, uint32_t dstX, uint32_t dstY,
@@ -1230,8 +1329,12 @@ bool OpenGLESBackend::WriteLFB(uint32_t buffer, uint32_t dstX, uint32_t dstY,
   if (!m_initialized || !m_windowAttached) return false;
 
   if (buffer == 2u || srcFmt == 0x0fu) {
-    return WriteAuxDepthLFB_Locked(dstX, dstY, srcWidth, srcHeight, srcStride,
-                                   srcData, refData);
+    const bool depthOk = WriteAuxDepthLFB_Locked(
+        dstX, dstY, srcWidth, srcHeight, srcStride, srcData, refData);
+    if (m_frontBufferNeedsPresent) {
+      ReleaseFrontPresentContext_Locked();
+    }
+    return depthOk;
   }
 
   const uint32_t logicalSlot = (buffer == 0u) ? 0u : 1u;
@@ -1287,18 +1390,12 @@ bool OpenGLESBackend::WriteLFB(uint32_t buffer, uint32_t dstX, uint32_t dstY,
   if (ok && buffer == 0u &&
       m_surfaceHost.GetMode() != NativeSurfaceHost::Mode::Headless &&
       !m_config.forceNoWindow && !m_passthruSuspended) {
-    const auto now = std::chrono::steady_clock::now();
     const bool isFullFrame =
         (dstX == 0u && dstY == 0u && srcWidth >= m_headlessWidth &&
          srcHeight >= m_headlessHeight);
-    const bool elapsed =
-        (m_lastFrontPresentTime.time_since_epoch().count() == 0) ||
-        (std::chrono::duration_cast<std::chrono::milliseconds>(
-             now - m_lastFrontPresentTime)
-             .count() >= 33);
-    if (isFullFrame || elapsed) {
-      PresentFrontBufferGLES_Locked();
-    }
+    NoteFrontBufferMutation_Locked(/*forceImmediate=*/isFullFrame);
+  } else if (m_frontBufferNeedsPresent) {
+    ReleaseFrontPresentContext_Locked();
   }
   return ok;
 }
@@ -1683,6 +1780,7 @@ bool OpenGLESBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
                               uint32_t srcWidth, uint32_t srcHeight,
                               uint32_t dstStride, void* dstData) {
   std::lock_guard<std::mutex> lock(m_mutex);
+  ScopedFrontContextRelease releaseGuard{*this};
   if (!m_initialized || !m_windowAttached || !EnsureContextCurrent()) {
     return false;
   }
@@ -3195,6 +3293,7 @@ void OpenGLESBackend::SetTmuConstantColor(uint32_t tmu, uint32_t color) {
 
 void OpenGLESBackend::SetRenderBuffer(uint32_t target) {
   std::lock_guard<std::mutex> lock(m_mutex);
+  ScopedFrontContextRelease releaseGuard{*this};
   if (m_activeRenderBuffer == target) return;
   FlushBatch(true);
   GlideStateTracker::SetRenderBuffer_Locked(target);

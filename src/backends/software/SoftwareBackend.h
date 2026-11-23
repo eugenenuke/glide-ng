@@ -8,6 +8,7 @@
 #include <thread>
 #include <vector>
 
+#include "backends/FrontBufferFlushTimer.h"
 #include "backends/SoftwareBackendBase.h"
 #include "backends/software/RasterizerState.h"
 #include "backends/software/ThreadPool.h"
@@ -45,6 +46,10 @@ class SoftwareBackend : public SoftwareBackendBase {
   void PollEvents() override;
   void FlushBins() override;
 
+  void ClearBuffer(uint32_t color, uint32_t alpha, float z,
+                   uint32_t clearMask) override;
+  void ClearBufferExt(uint32_t color, uint32_t alpha, float z, uint8_t stencil,
+                      uint32_t clearMask) override;
   void DrawTriangle(const ModernVertex& a, const ModernVertex& b,
                     const ModernVertex& c) override;
   void DrawLine(const ModernVertex& v1, const ModernVertex& v2) override;
@@ -68,7 +73,10 @@ class SoftwareBackend : public SoftwareBackendBase {
   void FlushBins_Locked() override;
 
  private:
-  void DetachWindow_Locked();
+  void DetachWindow_Locked(std::unique_lock<std::mutex>& lock);
+  void PresentFrontBuffer_Locked();
+  void NoteFrontBufferMutation_Locked(bool forceImmediate = false);
+  void OnFrontBufferFlushTimer();
   void InitTileGrid();
   void BinTriangle(uint32_t cmdIdx, const ModernVertex& a,
                    const ModernVertex& b, const ModernVertex& c);
@@ -175,9 +183,13 @@ class SoftwareBackend : public SoftwareBackendBase {
   std::unique_ptr<WaylandShmPresenter> m_wlShmPresenter;
   std::unique_ptr<Win32GdiPresenter> m_win32Presenter;
   HudOverlay m_hudOverlay;
-  int64_t m_lastFrontPresentMs{0};
+  bool m_frontBufferNeedsPresent{false};
+  std::chrono::steady_clock::time_point m_lastFrontPresentTime{};
   std::vector<uint32_t> m_hudPresentBuffer;
   std::atomic<bool> m_passthruSuspended{false};
+
+  FrontBufferFlushTimer m_frontFlushTimer{
+      [this]() { OnFrontBufferFlushTimer(); }};
 };
 
 }  // namespace GlideWrapper

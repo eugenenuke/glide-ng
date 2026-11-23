@@ -151,6 +151,9 @@ void VulkanBackend::ClearBufferExt(uint32_t color, uint32_t alpha, float z,
         }
       }
     }
+    if (doColorClear && m_activeRenderBuffer == 0u) {
+      NoteFrontBufferMutation_Locked();
+    }
     return;
   }
 
@@ -200,6 +203,9 @@ void VulkanBackend::ClearBufferExt(uint32_t color, uint32_t alpha, float z,
         m_clearStencilPendingSingle[activeIdx] = true;
       }
     }
+    if (doColorClear && m_activeRenderBuffer == 0u) {
+      NoteFrontBufferMutation_Locked();
+    }
     return;
   }
 
@@ -243,6 +249,9 @@ void VulkanBackend::ClearBufferExt(uint32_t color, uint32_t alpha, float z,
         m_clearStencilPendingSingle[activeIdx] = true;
       }
     }
+  }
+  if (doColorClear && m_activeRenderBuffer == 0u) {
+    NoteFrontBufferMutation_Locked();
   }
 }
 
@@ -476,6 +485,9 @@ void VulkanBackend::DrawPoint(const ModernVertex& pt) {
   // 4. Update batch & offset tracking
   m_batchedVertexCount += 1;
   m_vertexBufferOffset += sizeof(ModernVertex);
+  if (__builtin_expect(m_activeRenderBuffer == 0u, 0)) {
+    NoteFrontBufferMutation_Locked();
+  }
 }
 
 void VulkanBackend::DrawLine(const ModernVertex& v1, const ModernVertex& v2) {
@@ -543,6 +555,9 @@ void VulkanBackend::DrawLine(const ModernVertex& v1, const ModernVertex& v2) {
   // 4. Update batch & offset tracking
   m_batchedVertexCount += 2;
   m_vertexBufferOffset += 2 * sizeof(ModernVertex);
+  if (__builtin_expect(m_activeRenderBuffer == 0u, 0)) {
+    NoteFrontBufferMutation_Locked();
+  }
 }
 
 void VulkanBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
@@ -592,6 +607,9 @@ void VulkanBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
     }
     m_batchedVertexCount += 3;
     m_vertexBufferOffset += 3 * sizeof(ModernVertex);
+    if (__builtin_expect(m_activeRenderBuffer == 0u, 0)) {
+      NoteFrontBufferMutation_Locked();
+    }
     return;
   }
 
@@ -650,6 +668,9 @@ void VulkanBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
   // 4. Update batch & offset tracking
   m_batchedVertexCount += 3;
   m_vertexBufferOffset += 3 * sizeof(ModernVertex);
+  if (__builtin_expect(m_activeRenderBuffer == 0u, 0)) {
+    NoteFrontBufferMutation_Locked();
+  }
 }
 
 void VulkanBackend::FlushBatch(bool fromStateFlush) {

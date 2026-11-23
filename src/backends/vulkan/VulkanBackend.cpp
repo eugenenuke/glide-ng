@@ -561,6 +561,7 @@ void VulkanBackend::ResetState_Locked() {
   m_auxDepthShadowValid = false;
   m_msaaDepthDirty = false;
   m_frontBufferNeedsPresent = false;
+  m_frontFlushTimer.Clear();
   m_pipelineStateDirty = true;
   m_descriptorStateDirty = true;
   m_cachedPipeline = vk::Pipeline{};
@@ -813,6 +814,7 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
   m_commandBuffer->begin(vk::CommandBufferBeginInfo(
       vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
 
+  m_frontFlushTimer.ResetForAttach();
   m_windowAttached = true;
   return true;
 }
@@ -828,6 +830,12 @@ void VulkanBackend::DetachWindow_Locked(std::unique_lock<std::mutex>& lock) {
   // (e.g. SetWindowPos inside m_surfaceHost.Detach() triggering
   // grSstPassthruMode) treats the window as detached and never rebuilds WSI.
   m_windowAttached = false;
+  m_frontBufferNeedsPresent = false;
+  m_frontFlushTimer.Clear();
+  if (m_frontFlushTimer.HasWorker()) {
+    ScopedMutexUnlock unlockGuard(lock);
+    m_frontFlushTimer.Stop();
+  }
   GLIDE_LOG(INFO, "Vulkan", "Detaching Hybrid Vulkan window resources.");
 
   // Strict WSI teardown order:
@@ -2385,6 +2393,7 @@ bool VulkanBackend::SwapBuffers() {
   m_lfbStaging.SwapBuffers();
   std::swap(m_lfbReadCacheValid[0], m_lfbReadCacheValid[1]);
   m_frontBufferNeedsPresent = false;
+  m_frontFlushTimer.Clear();
 
   // Swap the GPU color targets for physical double-buffering
   std::swap(m_headlessImages[0], m_headlessImages[1]);

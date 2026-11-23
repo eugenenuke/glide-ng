@@ -15,6 +15,7 @@
 
 #include <SDL2/SDL.h>
 
+#include "backends/FrontBufferFlushTimer.h"
 #include "backends/GlideStateTracker.h"
 #include "core/BackendManager.h"
 #include "core/GlideEntryCommon.h"
@@ -2277,5 +2278,112 @@ TEST_CASE("Diagnostics: Tiered Logger, Telemetry & On-Screen HUD", "[Logger][Tel
 #endif
   }
 
+}
+
+TEST_CASE("Infra: FrontBufferFlushTimer lazy spawn, coalescing, cancel, and reset",
+          "[Infra][FrontBuffer]") {
+  using Clock = GlideWrapper::FrontBufferFlushTimer::Clock;
+  using Ms = std::chrono::milliseconds;
+
+  SECTION("Unused timer spawns zero worker threads") {
+    int fires = 0;
+    GlideWrapper::FrontBufferFlushTimer timer([&]() { ++fires; });
+    CHECK_FALSE(timer.HasWorker());
+    timer.Clear();
+    CHECK_FALSE(timer.HasWorker());
+    timer.Stop();
+    CHECK_FALSE(timer.HasWorker());
+    CHECK(fires == 0);
+  }
+
+  SECTION("Coalesces rapid bursts into one callback and allows re-arming") {
+    std::mutex mu;
+    std::condition_variable cv;
+    int fires = 0;
+
+    GlideWrapper::FrontBufferFlushTimer timer([&]() {
+      {
+        std::lock_guard<std::mutex> lock(mu);
+        ++fires;
+      }
+      cv.notify_all();
+    });
+
+    const auto d1 = Clock::now() + Ms(20);
+    for (int i = 0; i < 64; ++i) {
+      timer.Arm(d1 + Ms(i));
+    }
+    CHECK(timer.HasWorker());
+
+    {
+      std::unique_lock<std::mutex> lock(mu);
+      REQUIRE(cv.wait_for(lock, Ms(1000), [&]() { return fires == 1; }));
+    }
+    // Brief settle window to confirm the other 63 coalesced Arm() calls do not
+    // double-fire.
+    std::this_thread::sleep_for(Ms(35));
+    {
+      std::lock_guard<std::mutex> lock(mu);
+      CHECK(fires == 1);
+    }
+
+    // Re-arm after completion.
+    timer.Arm(Clock::now() + Ms(15));
+    {
+      std::unique_lock<std::mutex> lock(mu);
+      REQUIRE(cv.wait_for(lock, Ms(1000), [&]() { return fires == 2; }));
+    }
+
+    timer.Stop();
+    CHECK_FALSE(timer.HasWorker());
+  }
+
+  SECTION("Clear cancels pending flush before deadline") {
+    std::atomic<int> fires{0};
+    GlideWrapper::FrontBufferFlushTimer timer(
+        [&]() { fires.fetch_add(1, std::memory_order_relaxed); });
+
+    timer.Arm(Clock::now() + Ms(30));
+    CHECK(timer.HasWorker());
+    timer.Clear();
+    std::this_thread::sleep_for(Ms(70));
+    CHECK(fires.load(std::memory_order_relaxed) == 0);
+
+    timer.Stop();
+    CHECK_FALSE(timer.HasWorker());
+  }
+
+  SECTION("Stop and ResetForAttach supports re-attaching a new window") {
+    std::mutex mu;
+    std::condition_variable cv;
+    int fires = 0;
+
+    GlideWrapper::FrontBufferFlushTimer timer([&]() {
+      {
+        std::lock_guard<std::mutex> lock(mu);
+        ++fires;
+      }
+      cv.notify_all();
+    });
+
+    timer.Arm(Clock::now() + Ms(500));
+    REQUIRE(timer.HasWorker());
+    timer.Stop();
+    CHECK_FALSE(timer.HasWorker());
+
+    // Arm() while stopped is ignored until ResetForAttach().
+    timer.Arm(Clock::now() + Ms(5));
+    CHECK_FALSE(timer.HasWorker());
+    CHECK(fires == 0);
+
+    timer.ResetForAttach();
+    timer.Arm(Clock::now() + Ms(15));
+    CHECK(timer.HasWorker());
+    {
+      std::unique_lock<std::mutex> lock(mu);
+      REQUIRE(cv.wait_for(lock, Ms(1000), [&]() { return fires == 1; }));
+    }
+    timer.Stop();
+  }
 }
 

@@ -51,6 +51,7 @@ void OpenGLESBackend::UploadTexture(uint32_t tmu, uint32_t startAddress,
 
 void OpenGLESBackend::UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
                                            const struct VirtualTexture& tex) {
+  ScopedFrontContextRelease releaseGuard{*this};
   FlushBatch();
   if (tmu >= 2) return;
   GLenum compressedFmt = 0;
@@ -215,6 +216,7 @@ void OpenGLESBackend::UploadTexturePartial(uint32_t tmu, uint32_t startAddress,
   GLIDE_PROFILE_SCOPE("GLES::UploadTexturePartial");
 
   if (tmu >= 2) return;
+  ScopedFrontContextRelease releaseGuard{*this};
 
   // 1. Check if the texture exists. If not, promote to a full upload!
   auto it = m_glesTextures[tmu].find(startAddress);
@@ -321,6 +323,9 @@ void OpenGLESBackend::PurgeTextures() {
   m_cachedBoundTex[0] = 0xFFFFFFFFu;
   m_cachedBoundTex[1] = 0xFFFFFFFFu;
   m_glesDirtyMask |= kGlesDirtyTexBinding;
+  if (m_frontBufferNeedsPresent) {
+    ReleaseFrontPresentContext_Locked();
+  }
 }
 
 void OpenGLESBackend::BindTexture(uint32_t tmu, uint32_t startAddress,

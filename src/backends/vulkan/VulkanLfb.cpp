@@ -648,6 +648,14 @@ void VulkanBackend::PresentFrontBuffer_Locked() {
 
   // Front buffer physically lives in m_headlessImages[1].
   constexpr uint32_t kFrontIdx = 1u;
+  if (m_clearColorPending[kFrontIdx]) {
+    const uint32_t origActive = m_activeRenderBuffer;
+    m_activeRenderBuffer = 0u;  // GR_BUFFER_FRONTBUFFER
+    EnsureRenderPassActive(ShouldUseSingleSamplePass_Locked());
+    m_commandBuffer->endRenderPass();
+    m_inRenderPass = false;
+    m_activeRenderBuffer = origActive;
+  }
   ResolveMsaaToSingle_Locked(kFrontIdx);
 
   uint32_t imageIdx = 0;
@@ -754,8 +762,17 @@ void VulkanBackend::PresentFrontBuffer_Locked() {
       // resetting the in-flight command buffer.
     }
     try {
-      (void)m_device->waitForFences(1, &m_fences[m_currentFrameSlot].get(),
-                                    VK_TRUE, UINT64_MAX);
+      const vk::Result waitRes = m_device->waitForFences(
+          1, &m_fences[m_currentFrameSlot].get(), VK_TRUE, UINT64_MAX);
+      if (waitRes == vk::Result::eSuccess) {
+        // Every draw/upload submitted in m_currentFrameSlot is now retired;
+        // recycle vertex, texture-staging, and retired descriptor pools so
+        // un-swapped GR_BUFFER_FRONTBUFFER menu loops never overflow slots.
+        m_texStagingOffsets[m_currentFrameSlot] =
+            m_currentFrameSlot * m_texStagingSlotSize;
+        m_vertexBufferOffset = m_currentFrameSlot * kVertexSlotBytes;
+        ReclaimRetiredResources_Locked(m_currentFrameSlot);
+      }
     } catch (const std::exception&) {
     }
   }
@@ -765,7 +782,45 @@ void VulkanBackend::PresentFrontBuffer_Locked() {
   m_commandBuffer->begin(vk::CommandBufferBeginInfo(
       vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
   m_frontBufferNeedsPresent = false;
+  m_frontFlushTimer.Clear();
   m_lastFrontPresentTime = std::chrono::steady_clock::now();
+}
+
+void VulkanBackend::NoteFrontBufferMutation_Locked(bool forceImmediate) {
+  if (!m_swapchain || m_passthruSuspended || !m_windowAttached) {
+    return;
+  }
+  if (forceImmediate) {
+    PresentFrontBuffer_Locked();
+    return;
+  }
+  constexpr auto kFrontPresentInterval = std::chrono::milliseconds(33);
+  constexpr auto kBurstCoalesceDelay = std::chrono::milliseconds(16);
+  const auto now = std::chrono::steady_clock::now();
+  const bool hasPrev = (m_lastFrontPresentTime.time_since_epoch().count() != 0);
+  if (m_frontBufferNeedsPresent &&
+      (!hasPrev || (now - m_lastFrontPresentTime) >= kFrontPresentInterval)) {
+    PresentFrontBuffer_Locked();
+    return;
+  }
+  m_frontBufferNeedsPresent = true;
+  if (!hasPrev) {
+    m_lastFrontPresentTime = now;
+  }
+  const auto nextDue =
+      (hasPrev && (now - m_lastFrontPresentTime) < kFrontPresentInterval)
+          ? (m_lastFrontPresentTime + kFrontPresentInterval)
+          : (now + kBurstCoalesceDelay);
+  m_frontFlushTimer.Arm(nextDue);
+}
+
+void VulkanBackend::OnFrontBufferFlushTimer() {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (!m_initialized || !m_windowAttached || m_passthruSuspended ||
+      !m_frontBufferNeedsPresent || !m_swapchain) {
+    return;
+  }
+  PresentFrontBuffer_Locked();
 }
 
 void VulkanBackend::ReadbackGpuToStaging_Locked(uint32_t buffer) {
@@ -880,22 +935,13 @@ bool VulkanBackend::WriteLFB(uint32_t buffer, uint32_t dstX, uint32_t dstY,
 
   // On real 3dfx hardware, direct writes to GR_BUFFER_FRONTBUFFER (buffer == 0)
   // appear immediately via the RAMDAC without requiring grBufferSwap(). Present
-  // full-frame uploads and throttled (~30 Hz) incremental updates onto the
-  // swapchain (no-op in headless test mode).
+  // full-frame uploads immediately (video playback), coalesce partial bursts via
+  // the trailing-edge flush timer, and stream continuous loops at ~30 Hz.
   if (ok && buffer == 0u && m_swapchain && !m_passthruSuspended) {
-    m_frontBufferNeedsPresent = true;
-    const auto now = std::chrono::steady_clock::now();
     const bool isFullFrame =
         (dstX == 0u && dstY == 0u && srcWidth >= m_headlessWidth &&
          srcHeight >= m_headlessHeight);
-    const bool elapsed =
-        (m_lastFrontPresentTime.time_since_epoch().count() == 0) ||
-        (std::chrono::duration_cast<std::chrono::milliseconds>(
-             now - m_lastFrontPresentTime)
-             .count() >= 33);
-    if (isFullFrame || elapsed) {
-      PresentFrontBuffer_Locked();
-    }
+    NoteFrontBufferMutation_Locked(/*forceImmediate=*/isFullFrame);
   }
   return ok;
 }

@@ -18,6 +18,7 @@ void OpenGLESBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z,
 void OpenGLESBackend::ClearBufferExt(uint32_t color, uint32_t alpha, float z,
                                      uint8_t stencil, uint32_t clearMask) {
   std::lock_guard<std::mutex> lock(m_mutex);
+  ScopedFrontContextRelease releaseGuard{*this};
   if (!m_initialized || !m_windowAttached || !EnsureContextCurrent()) return;
   if (clearMask & 1u) {
     m_lfbReadCacheValid[(m_activeRenderBuffer == 0u) ? 0u : 1u] = false;
@@ -82,6 +83,9 @@ void OpenGLESBackend::ClearBufferExt(uint32_t color, uint32_t alpha, float z,
                                    doDepthClear, doStencilClear, effSampleMask);
     if (doDepthClear) {
       m_msaaDepthDirty = true;
+    }
+    if (doColorClear && m_activeRenderBuffer == 0u) {
+      NoteFrontBufferMutation_Locked();
     }
     return;
   }
@@ -181,6 +185,9 @@ void OpenGLESBackend::ClearBufferExt(uint32_t color, uint32_t alpha, float z,
   glBindFramebuffer(GL_FRAMEBUFFER, 0);
   m_glesDirtyMask |= kGlesDirtySampleMask;
   InvalidateGlBindingCache();
+  if (doColorClear && m_activeRenderBuffer == 0u) {
+    NoteFrontBufferMutation_Locked();
+  }
 }
 
 void OpenGLESBackend::DrawMaskedClearQuadGLES_Locked(
@@ -382,6 +389,11 @@ void OpenGLESBackend::DrawPoint(const ModernVertex& pt) {
   }
 
   m_batchVertices.push_back(pt);
+  if (__builtin_expect(m_activeRenderBuffer == 0u, 0)) {
+    NoteFrontBufferMutation_Locked();
+  } else if (__builtin_expect(m_frontBufferNeedsPresent, 0)) {
+    ReleaseFrontPresentContext_Locked();
+  }
 }
 
 void OpenGLESBackend::DrawLine(const ModernVertex& v0, const ModernVertex& v1) {
@@ -413,6 +425,11 @@ void OpenGLESBackend::DrawLine(const ModernVertex& v0, const ModernVertex& v1) {
 
   m_batchVertices.push_back(v0);
   m_batchVertices.push_back(v1);
+  if (__builtin_expect(m_activeRenderBuffer == 0u, 0)) {
+    NoteFrontBufferMutation_Locked();
+  } else if (__builtin_expect(m_frontBufferNeedsPresent, 0)) {
+    ReleaseFrontPresentContext_Locked();
+  }
 }
 
 void OpenGLESBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
@@ -437,6 +454,11 @@ void OpenGLESBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
     m_batchVertices.push_back(a);
     m_batchVertices.push_back(b);
     m_batchVertices.push_back(c);
+    if (__builtin_expect(m_activeRenderBuffer == 0u, 0)) {
+      NoteFrontBufferMutation_Locked();
+    } else if (__builtin_expect(m_frontBufferNeedsPresent, 0)) {
+      ReleaseFrontPresentContext_Locked();
+    }
     return;
   }
 
@@ -461,6 +483,11 @@ void OpenGLESBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
   m_batchVertices.push_back(a);
   m_batchVertices.push_back(b);
   m_batchVertices.push_back(c);
+  if (__builtin_expect(m_activeRenderBuffer == 0u, 0)) {
+    NoteFrontBufferMutation_Locked();
+  } else if (__builtin_expect(m_frontBufferNeedsPresent, 0)) {
+    ReleaseFrontPresentContext_Locked();
+  }
 }
 
 void OpenGLESBackend::SyncDepthState() {
@@ -954,6 +981,9 @@ void OpenGLESBackend::FlushBatch(bool fromStateFlush) {
   m_batchPrimitiveMode = BatchPrimitiveMode::None;
 
   checkGLError("FlushBatch");
+  if (__builtin_expect(fromStateFlush && m_frontBufferNeedsPresent, 0)) {
+    ReleaseFrontPresentContext_Locked();
+  }
 }
 
 }  // namespace GlideWrapper

@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "backends/CpuLfbStaging.h"
+#include "backends/FrontBufferFlushTimer.h"
 #include "backends/GlideStateTracker.h"
 #include "core/HudOverlay.h"
 #include "core/NativeSurfaceHost.h"
@@ -136,7 +137,7 @@ class OpenGLESBackend : public GlideStateTracker {
   void ResetState_Locked() override;
 
  private:
-  void DetachWindow_Locked();
+  void DetachWindow_Locked(std::unique_lock<std::mutex>& lock);
   void UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
                             const struct VirtualTexture& tex);
   void LoadGammaTable_Locked(uint32_t nentries, const uint32_t* rTable,
@@ -364,6 +365,18 @@ class OpenGLESBackend : public GlideStateTracker {
                                uint32_t srcHeight, int32_t srcStride,
                                const void* srcData, const void* refData);
   void PresentFrontBufferGLES_Locked();
+  void NoteFrontBufferMutation_Locked(bool forceImmediate = false);
+  void ReleaseFrontPresentContext_Locked();
+  struct ScopedFrontContextRelease {
+    OpenGLESBackend& self;
+    ~ScopedFrontContextRelease() {
+      if (self.m_frontBufferNeedsPresent) {
+        self.ReleaseFrontPresentContext_Locked();
+      }
+    }
+  };
+  void OnFrontBufferFlushTimer();
+  bool m_frontBufferNeedsPresent{false};
 
   // Cached Uniform Locations for geomProgram
   int m_uSstOriginLoc{-1};
@@ -422,6 +435,9 @@ class OpenGLESBackend : public GlideStateTracker {
   int m_uTmuConstantColorLoc{-1};
   uint32_t m_glesSamplers[2]{0, 0};  // GLuint sampler objects for TMU0/1
   std::atomic<bool> m_passthruSuspended{false};
+
+  FrontBufferFlushTimer m_frontFlushTimer{
+      [this]() { OnFrontBufferFlushTimer(); }};
 };
 
 }  // namespace GlideWrapper

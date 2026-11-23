@@ -25,6 +25,7 @@
 #include <vulkan/vulkan.hpp>
 
 #include "backends/CpuLfbStaging.h"
+#include "backends/FrontBufferFlushTimer.h"
 #include "backends/GlideStateTracker.h"
 #include "core/HudOverlay.h"
 #include "core/NativeSurfaceHost.h"
@@ -774,6 +775,8 @@ class VulkanBackend : public GlideStateTracker {
                                uint32_t srcHeight, int32_t srcStride,
                                const void* srcData, const void* refData);
   void PresentFrontBuffer_Locked();
+  void NoteFrontBufferMutation_Locked(bool forceImmediate = false);
+  void OnFrontBufferFlushTimer();
   bool m_lfbReadCacheValid[2]{false, false};
   bool m_frontBufferNeedsPresent{false};
   std::chrono::steady_clock::time_point m_lastFrontPresentTime{};
@@ -856,6 +859,9 @@ class VulkanBackend : public GlideStateTracker {
   vk::UniqueDeviceMemory m_hudStagingMemories[2];
   void* m_hudStagingMaps[2]{nullptr, nullptr};
   vk::DeviceSize m_hudStagingSizes[2]{0, 0};
+
+  FrontBufferFlushTimer m_frontFlushTimer{
+      [this]() { OnFrontBufferFlushTimer(); }};
 };
 
 }  // namespace GlideWrapper

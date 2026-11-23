@@ -967,11 +967,11 @@ void SoftwareBackend::EnsureThreadPool_Locked() {
 }
 
 void SoftwareBackend::Shutdown() {
-  std::lock_guard<std::mutex> lock(m_mutex);
+  std::unique_lock<std::mutex> lock(m_mutex);
   if (!m_initialized) return;
 
   GLIDE_LOG(INFO, "Software", "Shutting down Pure Software backend.");
-  DetachWindow_Locked();
+  DetachWindow_Locked(lock);
   m_threadPool.reset();
 
   m_initialized = false;
@@ -1156,9 +1156,9 @@ void SoftwareBackend::ShutdownPresentationSurface() {
 
 bool SoftwareBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
                                    uint32_t height, bool windowed) {
-  std::lock_guard<std::mutex> lock(m_mutex);
+  std::unique_lock<std::mutex> lock(m_mutex);
   if (!m_initialized) return false;
-  if (m_windowAttached) DetachWindow_Locked();
+  if (m_windowAttached) DetachWindow_Locked(lock);
 
   GLIDE_LOG(INFO, "Software",
             "Attaching software execution window ("
@@ -1271,6 +1271,8 @@ bool SoftwareBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
 
   EnsureThreadPool_Locked();
 
+  m_frontFlushTimer.ResetForAttach();
+  m_frontBufferNeedsPresent = false;
   m_windowAttached = true;
   m_passthruSuspended.store(false, std::memory_order_relaxed);
   return true;
@@ -1320,12 +1322,20 @@ void SoftwareBackend::SetPassthruMode(bool show3dfx) {
 }
 
 void SoftwareBackend::DetachWindow() {
-  std::lock_guard<std::mutex> lock(m_mutex);
-  DetachWindow_Locked();
+  std::unique_lock<std::mutex> lock(m_mutex);
+  DetachWindow_Locked(lock);
 }
 
-void SoftwareBackend::DetachWindow_Locked() {
+void SoftwareBackend::DetachWindow_Locked(std::unique_lock<std::mutex>& lock) {
   if (!m_windowAttached) return;
+  m_windowAttached = false;
+  m_frontBufferNeedsPresent = false;
+  m_frontFlushTimer.Clear();
+  if (m_frontFlushTimer.HasWorker()) {
+    lock.unlock();
+    m_frontFlushTimer.Stop();
+    lock.lock();
+  }
 
   // Strict WSI teardown order: destroy presenter objects BEFORE detaching the
   // underlying X11 child window / Wayland subsurface / SDL_Window.
@@ -1523,10 +1533,13 @@ bool SoftwareBackend::SwapBuffers() {
   if (m_surfaceHost.IsStandaloneMode() && m_surfaceHost.WasQuitRequested()) {
     GLIDE_LOG(INFO, "Software",
               "Standalone window quit requested; shutting down cleanly.");
-    DetachWindow_Locked();
+    DetachWindow_Locked(lock);
     lock.unlock();
     std::exit(0);
   }
+
+  m_frontBufferNeedsPresent = false;
+  m_frontFlushTimer.Clear();
 
   GLIDE_LOG(DEBUG, "Software", "Executing SwapBuffers presentation dispatch.");
 
@@ -1595,8 +1608,27 @@ void SoftwareBackend::PollEvents() {
   m_surfaceHost.PollEvents(/*force=*/false);
 }
 
+void SoftwareBackend::ClearBuffer(uint32_t color, uint32_t alpha, float z,
+                                  uint32_t clearMask) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  ClearBufferExt_Locked(color, alpha, z, 0u, clearMask & ~0x4u);
+  if ((clearMask & 1u) != 0u && m_activeRenderBuffer == 0u) {
+    NoteFrontBufferMutation_Locked();
+  }
+}
+
+void SoftwareBackend::ClearBufferExt(uint32_t color, uint32_t alpha, float z,
+                                     uint8_t stencil, uint32_t clearMask) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  ClearBufferExt_Locked(color, alpha, z, stencil, clearMask);
+  if ((clearMask & 1u) != 0u && m_activeRenderBuffer == 0u) {
+    NoteFrontBufferMutation_Locked();
+  }
+}
+
 void SoftwareBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
                                    const ModernVertex& c) {
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (!m_windowAttached || !m_headlessPixelMap) return;
 
   // 1. Evaluate backface culling
@@ -1641,9 +1673,13 @@ void SoftwareBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
 
   BinTriangle(cmdIdx, a_final, b_final, c_final);
   GLIDE_INCREMENT_TRIANGLES_DRAWN(1);
+  if (__builtin_expect(m_activeRenderBuffer == 0u, 0)) {
+    NoteFrontBufferMutation_Locked();
+  }
 }
 
 void SoftwareBackend::DrawLine(const ModernVertex& v1, const ModernVertex& v2) {
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (!m_windowAttached || !m_headlessPixelMap) return;
 
   ModernVertex v1_final = v1;
@@ -1673,9 +1709,13 @@ void SoftwareBackend::DrawLine(const ModernVertex& v1, const ModernVertex& v2) {
   uint32_t cmdIdx = m_binnedCommands.size() - 1;
 
   BinLine(cmdIdx, v1_final, v2_final);
+  if (__builtin_expect(m_activeRenderBuffer == 0u, 0)) {
+    NoteFrontBufferMutation_Locked();
+  }
 }
 
 void SoftwareBackend::DrawPoint(const ModernVertex& pt) {
+  std::lock_guard<std::mutex> lock(m_mutex);
   if (!m_windowAttached || !m_headlessPixelMap) return;
 
   ModernVertex pt_final = pt;
@@ -1700,6 +1740,9 @@ void SoftwareBackend::DrawPoint(const ModernVertex& pt) {
   uint32_t cmdIdx = m_binnedCommands.size() - 1;
 
   BinPoint(cmdIdx, pt_final);
+  if (__builtin_expect(m_activeRenderBuffer == 0u, 0)) {
+    NoteFrontBufferMutation_Locked();
+  }
 }
 
 void SoftwareBackend::InitTileGrid() {
@@ -2058,6 +2101,72 @@ void SoftwareBackend::PurgeTextures() {
   m_textureUploadRevision.fetch_add(1, std::memory_order_release);
 }
 
+void SoftwareBackend::PresentFrontBuffer_Locked() {
+  if (m_surfaceHost.GetMode() == NativeSurfaceHost::Mode::Headless ||
+      m_config.forceNoWindow || m_passthruSuspended ||
+      m_cpuBuffers[m_frontBufferIdx].empty()) {
+    m_frontBufferNeedsPresent = false;
+    m_frontFlushTimer.Clear();
+    return;
+  }
+  FlushBins_Locked();
+  MaterializeLazyCpuClear_Locked(m_frontBufferIdx);
+  const uint32_t* pixels = nullptr;
+  uint32_t pw = 0, ph = 0;
+  ResolveFrontBuffer(pixels, pw, ph);
+  if (pixels && pw > 0 && ph > 0) {
+    PresentFrame(pixels, pw, ph);
+  }
+  m_frontBufferNeedsPresent = false;
+  m_frontFlushTimer.Clear();
+  m_lastFrontPresentTime = std::chrono::steady_clock::now();
+}
+
+void SoftwareBackend::NoteFrontBufferMutation_Locked(bool forceImmediate) {
+  const auto mode = m_surfaceHost.GetMode();
+  if (mode == NativeSurfaceHost::Mode::Headless || m_config.forceNoWindow ||
+      m_passthruSuspended || !m_windowAttached) {
+    return;
+  }
+  if (forceImmediate) {
+    PresentFrontBuffer_Locked();
+    return;
+  }
+  constexpr auto kFrontPresentInterval = std::chrono::milliseconds(33);
+  constexpr auto kBurstCoalesceDelay = std::chrono::milliseconds(16);
+  const auto now = std::chrono::steady_clock::now();
+  const bool hasPrev = (m_lastFrontPresentTime.time_since_epoch().count() != 0);
+  const bool canUseAsyncThread =
+      (mode != NativeSurfaceHost::Mode::StandaloneSDL2);
+  if ((!canUseAsyncThread &&
+       (!hasPrev || (now - m_lastFrontPresentTime) >= kFrontPresentInterval)) ||
+      (m_frontBufferNeedsPresent &&
+       (!hasPrev || (now - m_lastFrontPresentTime) >= kFrontPresentInterval))) {
+    PresentFrontBuffer_Locked();
+    return;
+  }
+  m_frontBufferNeedsPresent = true;
+  if (!hasPrev) {
+    m_lastFrontPresentTime = now;
+  }
+  if (canUseAsyncThread) {
+    const auto nextDue =
+        (hasPrev && (now - m_lastFrontPresentTime) < kFrontPresentInterval)
+            ? (m_lastFrontPresentTime + kFrontPresentInterval)
+            : (now + kBurstCoalesceDelay);
+    m_frontFlushTimer.Arm(nextDue);
+  }
+}
+
+void SoftwareBackend::OnFrontBufferFlushTimer() {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (!m_initialized || !m_windowAttached || m_passthruSuspended ||
+      !m_frontBufferNeedsPresent) {
+    return;
+  }
+  PresentFrontBuffer_Locked();
+}
+
 bool SoftwareBackend::WriteLFB(uint32_t buffer, uint32_t dstX, uint32_t dstY,
                                uint32_t srcWidth, uint32_t srcHeight,
                                int32_t srcStride, uint32_t srcFmt,
@@ -2069,24 +2178,12 @@ bool SoftwareBackend::WriteLFB(uint32_t buffer, uint32_t dstX, uint32_t dstY,
   if (ok && buffer == 0u && srcFmt != 0x0fu &&
       m_surfaceHost.GetMode() != NativeSurfaceHost::Mode::Headless &&
       !m_config.forceNoWindow && !m_passthruSuspended) {
-    const int64_t nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-                              std::chrono::steady_clock::now().time_since_epoch())
-                              .count();
     const uint32_t gw = (m_guestWidth > 0) ? m_guestWidth : m_headlessWidth;
     const uint32_t gh = (m_guestHeight > 0) ? m_guestHeight : m_headlessHeight;
     const bool isFullFrame =
         (dstX == 0u && dstY == 0u && srcWidth >= gw && srcHeight >= gh);
-    if (isFullFrame || m_lastFrontPresentMs == 0 ||
-        (nowMs - m_lastFrontPresentMs) >= 33) {
-      std::lock_guard<std::mutex> lock(m_mutex);
-      const uint32_t* pixels = nullptr;
-      uint32_t pw = 0, ph = 0;
-      ResolveFrontBuffer(pixels, pw, ph);
-      if (pixels && pw > 0 && ph > 0) {
-        PresentFrame(pixels, pw, ph);
-        m_lastFrontPresentMs = nowMs;
-      }
-    }
+    std::lock_guard<std::mutex> lock(m_mutex);
+    NoteFrontBufferMutation_Locked(/*forceImmediate=*/isFullFrame);
   }
   return ok;
 }
