@@ -15,6 +15,7 @@
 
 #include <SDL2/SDL.h>
 
+#include "build_version.h"
 #include "backends/GlideStateTracker.h"
 #include "core/BackendManager.h"
 #include "core/GlideEntryCommon.h"
@@ -28,9 +29,6 @@
 #include "core/TextureManager.h"
 #include "core/VertexLayout.h"
 #include "core/WrapperConfig.h"
-#include "opengl_es/OpenGLESBackend.h"
-#include "software/SoftwareBackend.h"
-#include "vulkan/VulkanBackend.h"
 #include "common/test_helpers.h"
 
 #ifdef __linux__

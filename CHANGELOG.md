@@ -24,6 +24,10 @@ For the pre-beta engineering narrative covering early architecture decisions and
   - Added **`SSTH3_`** to `GLIDE_ENV_SCAN_PREFIXES_X` so `glide2_info`/`glide3_info` automatically detect user-set Banshee/Voodoo3/4/5 variables.
 
 ### Changed
+- **Build System & Compilation Speedups (`CMakeLists.txt`, `src/`, `tests/`)**:
+  - Decoupled generated `build_version.h` from `src/core/WrapperConfig.h` (moving `WRAPPER_VERSION` / `WRAPPER_VERSION_BASE` definitions out-of-line into `src/core/WrapperConfig.cpp`), reducing `build_version.h` dependents from **59 → 3** translation units so post-commit rebuilds compile only `WrapperConfig.cpp`, `Logger.cpp`, and `test_glide3_catalog.cpp`.
+  - Sharded the 16 explicit triangle-rasterizer loop specializations into parallel generated wrapper units (**8** scalar shards + **4** AVX2 shards + **4** AVX-512 shards) and marked the scalar loop out-of-line in `SoftwareRasterizer.cpp` to eliminate GCC's monolithic 16-way inline expansion (`280.90 s → 85.01 s` clean Make / **`59.47 s`** clean Ninja on 24 cores).
+  - Added opt-out **`GLIDE_USE_PCH`** (`ON` by default) precompiled headers for `<vulkan/vulkan.hpp>` (applied strictly to the 7 Vulkan-consuming core TUs) and Catch2 test headers, and removed unused `VulkanBackend.h` / `OpenGLESBackend.h` includes from 5 Glide 3.x test units.
 - **Interactive Showcase Demos Cleanup & Naming (`demos/`, `scripts/package_release.sh`)**:
   - Removed obsolete early-milestone/replica demos and stale capture scripts superseded by Catch2 tests and `tools/` (`test10_replica_demo`, `test12_replica_demo`, `phase1_validation_demo`, `phase2_validation_demo`, `phase4_showcase` / `Glide3xShowcaseDemo`, `glide2_compat_demo`, `splash_showcase_demo`, `large_texture_showcase`, `chromakey_range_demo`, `capture_showcase.sh`, `run_mipmap_comparison.sh`).
   - Renamed the 5 remaining interactive showcase demos to match the `tools/` `glide{2,3}_<name>` convention: **`glide2_fog`**, **`glide2_gamma`**, **`glide2_mipmap`**, **`glide3_state`**, and **`glide3_extensions`**.

@@ -45,24 +45,90 @@ set(CORE_SOURCES
     backends/software/SoftwareBackend.cpp
     backends/software/SoftwareCombiner.cpp
     backends/software/SoftwareRasterizer.cpp
-    backends/software/SoftwareRasterizerSimd.cpp
-    backends/software/SoftwareRasterizerAvx512.cpp
+)
+
+# Generate thin shard wrapper TUs for the 16 explicit template instantiations
+# of each triangle rasterizer tier (scalar, AVX2, AVX-512), splitting compilation
+# across 4 parallel jobs per tier instead of 1 monolithic TU. Only rewritten if
+# contents differ so CMake re-configure never forces spurious rebuilds.
+set(_RAST_SHARD_DIR "${CMAKE_CURRENT_BINARY_DIR}/raster_shards")
+file(MAKE_DIRECTORY "${_RAST_SHARD_DIR}")
+function(glide_add_raster_shards OUT_LIST PREFIX INCLUDE_REL COUNT EXTRA_FLAGS)
+    math(EXPR _last "${COUNT} - 1")
+    set(_result "")
+    foreach(_idx RANGE 0 ${_last})
+        set(_path "${_RAST_SHARD_DIR}/${PREFIX}_${_idx}.cpp")
+        set(_content "// Generated rasterizer shard ${_idx}/${COUNT} (compile parallelism only).\n#define GLIDE_RAST_SHARD ${_idx}\n#include \"${CMAKE_CURRENT_SOURCE_DIR}/${INCLUDE_REL}\"\n")
+        set(_write_needed TRUE)
+        if(EXISTS "${_path}")
+            file(READ "${_path}" _existing)
+            if(_existing STREQUAL _content)
+                set(_write_needed FALSE)
+            endif()
+        endif()
+        if(_write_needed)
+            file(WRITE "${_path}" "${_content}")
+        endif()
+        if(EXTRA_FLAGS)
+            set_source_files_properties("${_path}" PROPERTIES COMPILE_FLAGS "${EXTRA_FLAGS}")
+        endif()
+        list(APPEND _result "${_path}")
+    endforeach()
+    set(${OUT_LIST} "${_result}" PARENT_SCOPE)
+endfunction()
+
+glide_add_raster_shards(_RAST_SCALAR_SHARDS "raster_scalar" "backends/software/SoftwareRasterizer.cpp" 8 "")
+glide_add_raster_shards(_RAST_AVX2_SHARDS   "raster_avx2"   "backends/software/SoftwareRasterizerSimd.cpp" 4 "-mavx2 -mfma")
+glide_add_raster_shards(_RAST_AVX512_SHARDS "raster_avx512" "backends/software/SoftwareRasterizerAvx512.cpp" 4 "-mavx512f -mavx512dq -mavx512bw -mavx512vl")
+
+set_source_files_properties(
+    backends/software/SoftwareRasterizer.cpp
+    PROPERTIES COMPILE_DEFINITIONS "GLIDE_RAST_DISPATCH_ONLY=1"
 )
 
 # --- TARGET 1: Universal GlideWrapperCore ---
-add_library(GlideWrapperCore STATIC ${CORE_SOURCES})
+add_library(GlideWrapperCore STATIC
+    ${CORE_SOURCES}
+    ${_RAST_SCALAR_SHARDS}
+    ${_RAST_AVX2_SHARDS}
+    ${_RAST_AVX512_SHARDS}
+)
 # Strict per-TU ISA isolation: baseline core/scalar TUs never emit AVX2/AVX-512
 # instructions, keeping runtime CPUID dispatch 100% safe across all x86 CPUs.
 set_source_files_properties(
     core/SimdKernelsAvx2.cpp
-    backends/software/SoftwareRasterizerSimd.cpp
     PROPERTIES COMPILE_FLAGS "-mavx2 -mfma"
 )
 set_source_files_properties(
     core/SimdKernelsAvx512.cpp
-    backends/software/SoftwareRasterizerAvx512.cpp
     PROPERTIES COMPILE_FLAGS "-mavx512f -mavx512dq -mavx512bw -mavx512vl"
 )
+
+if(GLIDE_USE_PCH)
+    # Precompile <vulkan/vulkan.hpp> once for the 7 TUs that consume VulkanBackend.h.
+    # All other TUs skip the PCH to avoid header pollution and per-TU ISA flag
+    # mismatches (GCC rejects PCH compiled without -mavx2 / -mavx512f).
+    target_precompile_headers(GlideWrapperCore PRIVATE
+        <vulkan/vulkan.hpp>
+    )
+    set(_PCH_SKIP_SOURCES
+        ${CORE_SOURCES}
+        ${_RAST_SCALAR_SHARDS}
+        ${_RAST_AVX2_SHARDS}
+        ${_RAST_AVX512_SHARDS}
+    )
+    list(REMOVE_ITEM _PCH_SKIP_SOURCES
+        core/BackendManager.cpp
+        backends/vulkan/VulkanBackend.cpp
+        backends/vulkan/VulkanPipeline.cpp
+        backends/vulkan/VulkanTextures.cpp
+        backends/vulkan/VulkanLfb.cpp
+        backends/vulkan/VulkanDraw.cpp
+        backends/vulkan/VulkanHud.cpp
+    )
+    set_source_files_properties(${_PCH_SKIP_SOURCES}
+        PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
+endif()
 set_target_properties(GlideWrapperCore PROPERTIES POSITION_INDEPENDENT_CODE ON)
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(GlideWrapperCore PRIVATE
@@ -108,6 +174,7 @@ if(WIN32)
     endif()
     target_include_directories(GlideWrapperCore SYSTEM PUBLIC "${_WIN32_VK_STAGE}")
     target_compile_definitions(GlideWrapperCore PUBLIC
+        VK_USE_PLATFORM_WIN32_KHR
         VULKAN_HPP_DISPATCH_LOADER_DYNAMIC=1
         VULKAN_HPP_NO_SPACESHIP_OPERATOR
         _WIN32_WINNT=0x0600

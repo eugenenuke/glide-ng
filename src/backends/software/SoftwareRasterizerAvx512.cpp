@@ -160,22 +160,30 @@ void SoftwareBackend::RasterizeTriangleLoopsAvx512(
       int, int, int, const RasterizerState&, float, float, float, float,      \
       float, float, float, float, float, float);
 
+#if !defined(GLIDE_RAST_SHARD) || GLIDE_RAST_SHARD == 0
 GLIDE_INSTANTIATE_AVX512_LOOP(false, false, false, true)
 GLIDE_INSTANTIATE_AVX512_LOOP(false, false, false, false)
 GLIDE_INSTANTIATE_AVX512_LOOP(false, false, true, true)
 GLIDE_INSTANTIATE_AVX512_LOOP(false, false, true, false)
+#endif
+#if !defined(GLIDE_RAST_SHARD) || GLIDE_RAST_SHARD == 1
 GLIDE_INSTANTIATE_AVX512_LOOP(false, true, false, true)
 GLIDE_INSTANTIATE_AVX512_LOOP(false, true, false, false)
 GLIDE_INSTANTIATE_AVX512_LOOP(false, true, true, true)
 GLIDE_INSTANTIATE_AVX512_LOOP(false, true, true, false)
+#endif
+#if !defined(GLIDE_RAST_SHARD) || GLIDE_RAST_SHARD == 2
 GLIDE_INSTANTIATE_AVX512_LOOP(true, false, false, true)
 GLIDE_INSTANTIATE_AVX512_LOOP(true, false, false, false)
 GLIDE_INSTANTIATE_AVX512_LOOP(true, false, true, true)
 GLIDE_INSTANTIATE_AVX512_LOOP(true, false, true, false)
+#endif
+#if !defined(GLIDE_RAST_SHARD) || GLIDE_RAST_SHARD == 3
 GLIDE_INSTANTIATE_AVX512_LOOP(true, true, false, true)
 GLIDE_INSTANTIATE_AVX512_LOOP(true, true, false, false)
 GLIDE_INSTANTIATE_AVX512_LOOP(true, true, true, true)
 GLIDE_INSTANTIATE_AVX512_LOOP(true, true, true, false)
+#endif
 
 #undef GLIDE_INSTANTIATE_AVX512_LOOP
 

@@ -65,6 +65,21 @@ if(Catch2_FOUND)
         -lm
     )
     add_dependencies(Glide2xWrapperTests glide2x glide3x)
+    if(GLIDE_USE_PCH)
+        target_precompile_headers(Glide2xWrapperTests PRIVATE
+            <catch2/catch_test_macros.hpp>
+            <algorithm>
+            <cmath>
+            <cstdint>
+            <cstring>
+            <string>
+            <vector>
+        )
+        set_source_files_properties(
+            "${CMAKE_SOURCE_DIR}/src/glide2/glide2_entry.cpp"
+            PROPERTIES SKIP_PRECOMPILE_HEADERS ON
+        )
+    endif()
 
     # --- Glide 3.x (libglide3x.so / glide3x.dll) Catch2 Test Suite ---
     add_executable(Glide3xWrapperTests
@@ -100,6 +115,22 @@ if(Catch2_FOUND)
         -lm
     )
     add_dependencies(Glide3xWrapperTests glide2x glide3x)
+    if(GLIDE_USE_PCH)
+        target_precompile_headers(Glide3xWrapperTests PRIVATE
+            <catch2/catch_test_macros.hpp>
+            <algorithm>
+            <cmath>
+            <cstdint>
+            <cstring>
+            <string>
+            <vector>
+        )
+        set_source_files_properties(
+            glide3/test_glide3_simd_vec.cpp
+            "${CMAKE_SOURCE_DIR}/src/glide3/glide3_entry.cpp"
+            PROPERTIES SKIP_PRECOMPILE_HEADERS ON
+        )
+    endif()
 
     include(CTest)
     include(Catch)

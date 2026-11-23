@@ -28,9 +28,7 @@
 #include "core/TextureManager.h"
 #include "core/VertexLayout.h"
 #include "core/WrapperConfig.h"
-#include "opengl_es/OpenGLESBackend.h"
 #include "software/SoftwareBackend.h"
-#include "vulkan/VulkanBackend.h"
 #include "common/test_helpers.h"
 
 #ifdef __linux__

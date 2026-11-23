@@ -5,14 +5,15 @@
 #include <string>
 #include <vector>
 
-#include "build_version.h"
-
 namespace GlideWrapper {
 
-// Authoritative Wrapper Project Identity
+// Authoritative Wrapper Project Identity.
+// WRAPPER_VERSION / WRAPPER_VERSION_BASE are defined out-of-line in
+// WrapperConfig.cpp so changing build_version.h on each git commit does not
+// force all headers/TUs including WrapperConfig.h to recompile.
 constexpr const char* WRAPPER_PROJECT_NAME = "glide-ng";
-constexpr const char* WRAPPER_VERSION      = GLIDE_VERSION_STRING;
-constexpr const char* WRAPPER_VERSION_BASE = GLIDE_VERSION_BASE;
+extern const char* const WRAPPER_VERSION;
+extern const char* const WRAPPER_VERSION_BASE;
 constexpr const char* WRAPPER_FULL_NAME    = "3dfx glide-ng (Glide Next Generation) Modernization Wrapper";
 
 // Unified Default Runtime Filenames

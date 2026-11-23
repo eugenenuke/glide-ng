@@ -174,6 +174,7 @@ inline uint32_t SoftwareBackend::SampleTextureLevel(
   }
 }
 
+#if !defined(GLIDE_RAST_SHARD)
 uint32_t SoftwareBackend::SampleTextureLevelSlow(
     const struct VirtualTexture* targetTex, int lodIdx, float levelTrueS,
     float levelTrueT, uint32_t targetClampS, uint32_t targetClampT,
@@ -277,10 +278,12 @@ inline void SoftwareBackend::RasterizeTriangleTemplate(
     }
   }
 }
+#endif  // !GLIDE_RAST_SHARD
 
+#if !defined(GLIDE_RAST_DISPATCH_ONLY)
 template <bool HasTexture, bool BlendEnabled, bool DitherEnabled,
           bool Clockwise>
-inline void SoftwareBackend::RasterizeTriangleLoops(
+void SoftwareBackend::RasterizeTriangleLoops(
     const ModernVertex& a, const ModernVertex& b, const ModernVertex& c,
     int minX, int maxX, int minY, int maxY, const RasterizerState& state,
     float invArea, float a0, float b0, float c0, float a1, float b1, float c1,
@@ -1441,6 +1444,46 @@ inline void SoftwareBackend::RasterizeTriangleLoops(
   }
 }
 
+#if defined(GLIDE_RAST_SHARD)
+#define GLIDE_INSTANTIATE_SCALAR_LOOP(T, B, D, C)                         \
+  template void SoftwareBackend::RasterizeTriangleLoops<T, B, D, C>(      \
+      const ModernVertex&, const ModernVertex&, const ModernVertex&, int, \
+      int, int, int, const RasterizerState&, float, float, float, float,  \
+      float, float, float, float, float, float);
+
+#if GLIDE_RAST_SHARD == 0
+GLIDE_INSTANTIATE_SCALAR_LOOP(false, false, false, true)
+GLIDE_INSTANTIATE_SCALAR_LOOP(false, false, false, false)
+#elif GLIDE_RAST_SHARD == 1
+GLIDE_INSTANTIATE_SCALAR_LOOP(false, false, true, true)
+GLIDE_INSTANTIATE_SCALAR_LOOP(false, false, true, false)
+#elif GLIDE_RAST_SHARD == 2
+GLIDE_INSTANTIATE_SCALAR_LOOP(false, true, false, true)
+GLIDE_INSTANTIATE_SCALAR_LOOP(false, true, false, false)
+#elif GLIDE_RAST_SHARD == 3
+GLIDE_INSTANTIATE_SCALAR_LOOP(false, true, true, true)
+GLIDE_INSTANTIATE_SCALAR_LOOP(false, true, true, false)
+#elif GLIDE_RAST_SHARD == 4
+GLIDE_INSTANTIATE_SCALAR_LOOP(true, false, false, true)
+GLIDE_INSTANTIATE_SCALAR_LOOP(true, false, false, false)
+#elif GLIDE_RAST_SHARD == 5
+GLIDE_INSTANTIATE_SCALAR_LOOP(true, false, true, true)
+GLIDE_INSTANTIATE_SCALAR_LOOP(true, false, true, false)
+#elif GLIDE_RAST_SHARD == 6
+GLIDE_INSTANTIATE_SCALAR_LOOP(true, true, false, true)
+GLIDE_INSTANTIATE_SCALAR_LOOP(true, true, false, false)
+#elif GLIDE_RAST_SHARD == 7
+GLIDE_INSTANTIATE_SCALAR_LOOP(true, true, true, true)
+GLIDE_INSTANTIATE_SCALAR_LOOP(true, true, true, false)
+#else
+#error "Unknown GLIDE_RAST_SHARD index"
+#endif
+
+#undef GLIDE_INSTANTIATE_SCALAR_LOOP
+#endif  // GLIDE_RAST_SHARD
+#endif  // !GLIDE_RAST_DISPATCH_ONLY
+
+#if !defined(GLIDE_RAST_SHARD)
 void SoftwareBackend::RasterizeSoftwareTriangleTile(
     const ModernVertex& a, const ModernVertex& b, const ModernVertex& c,
     int minX, int maxX, int minY, int maxY, const RasterizerState& state) {
@@ -1487,5 +1530,6 @@ void SoftwareBackend::RasterizeSoftwareTriangleTile(
       break;
   }
 }
+#endif  // !GLIDE_RAST_SHARD
 
 }  // namespace GlideWrapper

@@ -1,11 +1,15 @@
 #include "WrapperConfig.h"
 #include "IniConfigLoader.h"
+#include "build_version.h"
 #include <algorithm>
 #include <cctype>
 #include <string>
 #include <unordered_map>
 
 namespace GlideWrapper {
+
+const char* const WRAPPER_VERSION      = GLIDE_VERSION_STRING;
+const char* const WRAPPER_VERSION_BASE = GLIDE_VERSION_BASE;
 
 const char* FormatSwSimdLevel(SwSimdLevel level) {
     switch (level) {
