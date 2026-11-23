@@ -4,6 +4,8 @@ Thank you for helping improve `glide-ng`! Because classic 3dfx titles vary widel
 
 > **Important — Do NOT upload copyrighted game files.** Never attach commercial `.exe`/`.dll` binaries, `.iso`/`.bin` disc images, data archives (`.hog`, `.mpq`, `.pak`, `.wad`, etc.), or full sound/video files to a GitHub issue. Plain-text logs, `.ini`/`.cfg` files, CSV telemetry, and screenshots are all we need.
 
+> **Optional AI-assisted collection:** Contributors using an AI coding CLI (or running the standalone Python 3 stdlib scripts directly) can use the [`game-collector`](../../.agents/skills/game-collector/SKILL.md) skill to run read-only binary recon, generate isolated per-backend launchers, deduplicate `glide-ng.log` / `perf.csv` summaries, sanity-check screenshots, and pack a copyright-clean report archive.
+
 ---
 
 ## Before You Open an Issue (30-Second Checklist)
