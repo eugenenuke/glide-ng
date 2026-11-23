@@ -1,19 +1,21 @@
 ---
 name: rasterizer-oracle
-description: Software reference rasterizer, winding math, LFB coordinate mapping, and headless oracle guidelines.
+description: Software reference rasterizer, winding math, SIMD (AVX2 / AVX-512), LFB coordinate mapping, and headless validation rules.
 ---
 
-# Workspace Skill: Software Backend & Rasterizer Oracle
+# Workspace Skill: Software Reference Rasterizer
 
 Activate this skill when analyzing, modifying, or debugging the CPU reference rasterizer inside [src/backends/software/](../../../src/backends/software/) or [src/backends/SoftwareBackendBase.h](../../../src/backends/SoftwareBackendBase.h).
 
-## 1. Ground-Truth Oracle & Math
+## 1. Ground-Truth Reference & Math
 
-- **Authoritative Reference**: The Software backend must remain 100% compliant with 3dfx Voodoo 1/2 specifications so Vulkan and OpenGL ES outputs can always be validated against it.
+- **Authoritative Parity Baseline**: The Software backend serves as the ground-truth reference implementing 3dfx Voodoo specs (`VulkanBackend` and `OpenGLESBackend` parity is validated against it).
 - **Winding & Backface Culling**:
   - Evaluate backface culling on the **logical, pre-flipped** coordinates supplied by the application before display origin Y-flipping:
     $$\text{Area} = (x_B - x_A)(y_C - y_A) - (y_B - y_A)(x_C - x_A)$$
   - Discard or accept based on the sign matching active `grCullMode`.
+- **Non-Destructive RAMDAC Gamma Scanout**:
+  - Keep raw 16-bit/32-bit framebuffer contents untouched by the gamma LUT so LFB readbacks return unmodified pixel values. Apply the gamma table non-destructively inside **`SoftwareBackend::ResolveFrontBuffer()`** during scanout/presentation.
 
 ## 2. Linear Frame Buffer (LFB) Coordinate Mapping
 
@@ -22,17 +24,20 @@ Activate this skill when analyzing, modifying, or debugging the CPU reference ra
   $$\text{PhysicalRow} = \text{ScreenHeight} - 1 - \text{LogicalRow}$$
 - Symmetrically flip on both LFB lock/read and unlock/write so readbacks remain spatially consistent.
 
-## 3. Headless Execution, Presentation & Base-Class Coupling
+## 3. Architecture & Class Hierarchy
 
-- **Headless Mode (`forceNoWindow`)**:
-  - `SoftwareBackend::AttachWindow()` MUST respect `m_config.forceNoWindow` (`GLIDE_NG_HEADLESS=1`) and skip all OS window/SDL/EGL initialization. Never call `SDL_PumpEvents()` when headless.
-- **Presentation (`NativeSurfaceHost`)**:
-  - Do not hijack DOSBox's `SDL_Window*` / `SDL_Renderer*`. Present `m_resolvedBuffer` through `NativeSurfaceHost` (`XPutImage`/`XShmPutImage` on X11 child windows, `wl_shm` on Wayland subsurfaces, SDL2 only in standalone `hWnd == 0` mode) with aspect-ratio letterboxing.
-  - Always track resource ownership flags (`m_sdlWindowOwned`, `m_sdlRendererOwned`) cleanly on standalone paths.
-- **`SoftwareBackendBase` Coupling Warning**:
-  - Until `T3.1` extracts `GlideStateTracker`, `VulkanBackend` and `OpenGLESBackend` still inherit from `SoftwareBackendBase`. Any edit to `SoftwareBackendBase.{h,cpp}` affects all three backends — rebuild and test all three when touching it.
+- `GlideStateTracker` ([src/backends/GlideStateTracker.h](../../../src/backends/GlideStateTracker.h)) holds shared Glide render state for **all three backends**. `VulkanBackend` and `OpenGLESBackend` inherit directly from **`GlideStateTracker`**, **not** `SoftwareBackendBase`.
+- `SoftwareBackendBase` owns CPU framebuffer/LFB backing buffers solely for `SoftwareBackend` (plus shared helpers in `CpuLfbStaging`).
+- **Headless Mode (`forceNoWindow`):** `SoftwareBackend::AttachWindow()` must respect `m_config.forceNoWindow` (`GLIDE_NG_HEADLESS=1`) and skip all OS window/SDL/GDI/X11/Wayland calls. Never call `SDL_PumpEvents()` when headless.
+- **Presentation (`NativeSurfaceHost`):** Present resolved pixels through `NativeSurfaceHost` (`XPutImage`/`XShmPutImage` on X11, `wl_shm` on Wayland, `StretchDIBits` on Win32, SDL2 only in standalone `hWnd == 0` mode) with aspect-ratio letterboxing. Track standalone ownership (`m_sdlWindowOwned`, `m_sdlRendererOwned`).
+- **Un-swapped Front-Buffer Writes (`FrontBufferFlushTimer`):** Trailing-edge timer flushes un-swapped `GR_BUFFER_FRONTBUFFER` writes so classic menus update reliably without spinning the render loop.
 
-## 4. Performance & Threading
+## 4. SIMD Tiers, Compilation Sharding & Threading
 
-- Keep tiled rasterization (`ThreadPool`, SIMD `SimdVec.h` AVX2 loops, OpenMP) free of per-pixel heap allocations and data races.
-- Validate SIMD/rasterizer changes with `tests/glide3/test_glide3_simd_vec.cpp`, `tests/glide3/test_glide3_simd.cpp`, `Glide3xWrapperTests "[SIMD]"`, and `glide3_bench`.
+- Tiled software rasterization runs across `ThreadPool.h` / OpenMP with three selectable SIMD tiers (`GLIDE_NG_SW_SIMD=scalar|avx2|avx512|auto`):
+  - **Scalar:** `SoftwareRasterizer.cpp`
+  - **AVX2 + FMA:** `SimdVec.h` + `SoftwareRasterizerSimd.cpp` + `SoftwareRasterizerSimdImpl.inl` (`-mavx2 -mfma`)
+  - **AVX-512:** `SimdVec512.h` + `SoftwareRasterizerAvx512.cpp` (`-mavx512f -mavx512dq -mavx512bw -mavx512vl`, 16-pixel `4×4` kernel)
+- **Parallel Compilation Sharding (`src/CMakeLists.txt`):** Heavy rasterizer templates are auto-sharded via generated wrapper files using **`GLIDE_RAST_SHARD`** (**8** scalar, **4** AVX2, **4** AVX-512 shards) to parallelize builds; these shards set `SKIP_PRECOMPILE_HEADERS ON` to avoid ISA flag mismatch with GCC PCH.
+- Keep inner rasterization loops free of per-pixel heap allocations and data races.
+- Validate SIMD/rasterizer edits with `Glide3xWrapperTests "[SIMD]"`, `tests/glide3/test_glide3_simd_vec.cpp`, `tests/glide3/test_glide3_simd.cpp`, and `glide3_bench`.

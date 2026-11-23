@@ -18,7 +18,7 @@ Every document in the repository has one clear audience and lifecycle. Never ble
 | [`README.md`](../../../README.md) | First-time visitors & users | Crisp landing page: what `glide-ng` is, supported platforms/backends, quick-start build & run, links to docs. |
 | [`CHANGELOG.md`](../../../CHANGELOG.md) | Users & packagers | Keep-a-Changelog format (`[Unreleased]`, `[X.Y.Z] - YYYY-MM-DD`). Concise release notes from `0.8.0-beta.1` onward. |
 | [`docs/README.md`](../../../docs/README.md) | All readers | Top-level documentation index linking User Guide, Developer Guide, Catalog, History, and Roadmap. |
-| `docs/user-guide/` | Players, testers & benchmarkers | Present-tense, task-oriented manuals: building, configuring (`glide-ng.ini` / env vars), hardware/version selection, benchmarking, and troubleshooting. |
+| `docs/user-guide/` | Players, testers & benchmarkers | Present-tense, task-oriented manuals: building, configuring (`glide-ng.ini` / env vars), hardware/version selection, benchmarking, troubleshooting, and bug reporting ([`reporting-bugs.md`](../../../docs/user-guide/reporting-bugs.md)). |
 | `docs/developer-guide/` | Contributors & maintainers | Present-tense technical reference: architecture, API coverage, backend internals, testing workflow, and releasing. |
 | `docs/catalog/` | Players & testers | Per-title compatibility pages (`games/`, `demos/`, `tools/`) paired with validated drop-in `glide-ng.ini` presets. |
 | [`docs/HISTORY.md`](../../../docs/HISTORY.md) | Curious readers & maintainers | Concise retrospective of pre-beta milestones, architectural pivots, and design decisions. Past tense is appropriate **only** here and in `CHANGELOG.md`. |
@@ -43,7 +43,7 @@ Never copy numbers, defaults, CLI flags, INI keys, or symbol counts from older d
 
 - **Environment variables & INI keys**: Verify against [`include/glide_ng/env_vars.h`](../../../include/glide_ng/env_vars.h), [`src/core/IniConfigLoader.cpp`](../../../src/core/IniConfigLoader.cpp), and [`glide-ng.ini.example`](../../../glide-ng.ini.example).
 - **Hardware profiles & API versions**: Verify against [`src/core/WrapperConfig.h`](../../../src/core/WrapperConfig.h) and `src/core/WrapperConfig.cpp`.
-- **ABI exports**: Verify exact counts via `src/glide2/glide2x.def`, `src/glide3/glide3x.def`, and `nm -D --defined-only build/lib/libglide{2,3}x.so`.
+- **ABI exports**: Verify exact counts via `src/glide211/glide.def`, `src/glide2/glide2x.def`, `src/glide3/glide3x.def`, and `nm -D --defined-only build/lib/libglide*.so` (`libglide.so`, `libglide2x.so`, `libglide3x.so`).
 - **Version strings & release flow**: Verify against root [`VERSION`](../../../VERSION), [`tools/gen_version_header.cmake`](../../../tools/gen_version_header.cmake), and [`scripts/bump_version.sh`](../../../scripts/bump_version.sh).
 - **Commands**: Only include build, test, Wine, or DOSBox commands that match current CMake targets and binary names.
 
