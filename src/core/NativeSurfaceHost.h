@@ -224,12 +224,34 @@ class NativeSurfaceHost {
   void* GetX11Display() const { return m_x11Display; }
   unsigned long GetX11Window() const { return m_x11ChildWindow; }
   /**
+   * @brief Returns true if attached in `X11Child` mode and `DestroyNotify` was
+   *        observed on the host's parent X11 window.
+   */
+  bool IsX11ParentDestroyed() const {
+    return m_mode == Mode::X11Child && m_x11ParentDestroyed;
+  }
+  /**
+   * @brief Performs a synchronous, error-trapped geometry check on the host
+   *        X11 parent window when attached in `X11Child` mode.
+   *
+   * Used during teardown before touching borrowed host X11/GLX drawables so a
+   * parent window destroyed right before `grGlideShutdown()` is detected
+   * without waiting for an unread `DestroyNotify` event.
+   */
+  bool ProbeX11ParentAlive();
+  /**
+   * @brief Returns false if attached in `WaylandSubsurface` mode and the host
+   *        SDL video subsystem that owns the borrowed `wl_display*` has
+   *        already shut down (`SDL_Quit()` / `SDL_QuitSubSystem()`).
+   */
+  bool IsHostWaylandDisplayAlive() const;
+  /**
    * @brief Recreates the owned X11 child window using a specific X11 VisualID
    *        and matching depth/colormap (preserving click-through ShapeInput).
    *
-   * Needed by Direct EGL on X11 when the parent host window uses a visual
-   * (e.g., DirectColor or GLX-chosen visual) that has no matching OpenGL ES 3.x
-   * EGLConfig, preventing strict real-GPU drivers from returning EGL_BAD_CONFIG.
+   * Needed by Vulkan, Direct EGL, and Software presentation on X11 when the
+   * parent host window uses a visual (e.g., DirectColor or GLX-chosen visual)
+   * that is non-TrueColor or lacks a compatible driver visual/config.
    */
   bool RecreateX11ChildForVisual(unsigned long visualId);
   void* GetWaylandDisplay() const { return m_wlDisplay; }

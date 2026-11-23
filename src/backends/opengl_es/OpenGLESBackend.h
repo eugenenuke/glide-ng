@@ -152,7 +152,8 @@ class OpenGLESBackend : public GlideStateTracker {
   void UploadGammaLutIfDirty_Locked();
   bool EnsureContextCurrent();
   void SaveCurrentHostEglContext();
-  void RestoreHostContextIfSaved();
+  void RestoreHostContextIfSaved(bool hostParentAlive = true,
+                                 bool syncGlxErrors = false);
   void PresentToWindowSurface(uint32_t hostW, uint32_t hostH);
   void SyncDepthState();
   void SyncStencilStateGLES_Locked();
@@ -244,6 +245,7 @@ class OpenGLESBackend : public GlideStateTracker {
   // Saved foreign host EGL or GLX context (preserves DOSBox-X output=opengl on
   // both Wayland EGL and X11 GLX when host and wrapper share the same thread).
   bool m_hasSavedHostEgl{false};
+  bool m_savedHostEglFromSdl{false};
   uint32_t m_savedHostEglApi{0};
   void* m_savedHostEglDisplay{nullptr};
   void* m_savedHostEglDraw{nullptr};
@@ -251,6 +253,7 @@ class OpenGLESBackend : public GlideStateTracker {
   void* m_savedHostEglContext{nullptr};
 
   bool m_hasSavedHostGlx{false};
+  bool m_savedHostGlxFromSdl{false};
   void* m_savedHostGlxDisplay{nullptr};
   unsigned long m_savedHostGlxDraw{0};
   unsigned long m_savedHostGlxRead{0};

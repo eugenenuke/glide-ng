@@ -322,6 +322,20 @@ class VulkanBackend : public GlideStateTracker {
       const std::vector<vk::PresentModeKHR>& availableModes, bool vsyncEnabled,
       bool isWaylandSurface, bool forceStrictFifo = false);
 
+  // Descriptor for a candidate X11 visual used to select a Vulkan-presentable
+  // TrueColor visual when an attached X11Child inherits a non-TrueColor visual
+  // (e.g. DirectColor from sdl12-compat / sdl2-compat) or a visual rejected by
+  // vkGetPhysicalDeviceXlibPresentationSupportKHR.
+  struct X11VisualCandidate {
+    unsigned long visualId{0};
+    int depth{0};
+    bool isTrueColor{false};
+    bool isDefault{false};
+    bool presentSupported{false};
+  };
+  static unsigned long SelectPreferredX11Visual(
+      const std::vector<X11VisualCandidate>& candidates);
+
   // GPU-Driven Clearing & Swapchain Presentation
   void ClearBuffer(uint32_t color, uint32_t alpha, float z,
                    uint32_t clearMask) override;
@@ -541,6 +555,7 @@ class VulkanBackend : public GlideStateTracker {
   bool CreatePresentationSurface();
   void RecreateSurfaceAndSwapchain_Locked(uint32_t width, uint32_t height);
   bool m_passthruSuspended{false};
+  bool m_detachedDeadWaylandWsi{false};
 
   vk::UniqueSurfaceKHR
       m_surface;  // Vulkan presentation surface backed by m_surfaceHost

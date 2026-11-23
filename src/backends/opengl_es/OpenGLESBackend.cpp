@@ -838,6 +838,7 @@ bool OpenGLESBackend::SwapBuffers() {
   GLIDE_PROFILE_SCOPE("GLES::SwapBuffers");
 
   const auto presentStart = std::chrono::steady_clock::now();
+  bool hostSurfaceDead = false;
   if (m_surfaceHost.GetMode() != NativeSurfaceHost::Mode::Headless) {
     uint32_t hostW = 0;
     uint32_t hostH = 0;
@@ -849,56 +850,60 @@ bool OpenGLESBackend::SwapBuffers() {
     }
     if (!m_initialized || !m_windowAttached) return false;
     const bool surfaceInvalidated = m_surfaceHost.ConsumeSurfaceInvalidated();
-    if (hostW == 0 || hostH == 0) {
-      m_surfaceHost.GetDrawableSize(hostW, hostH);
-    }
+    hostSurfaceDead = m_surfaceHost.IsX11ParentDestroyed() ||
+                      !m_surfaceHost.IsHostWaylandDisplayAlive();
+    if (!hostSurfaceDead) {
+      if (hostW == 0 || hostH == 0) {
+        m_surfaceHost.GetDrawableSize(hostW, hostH);
+      }
 
-    if (surfaceInvalidated) {
-      RebindWglHdc_Locked(/*rebindCurrent=*/true);
-    }
-    if (!EnsureContextCurrent()) {
-      return false;
-    }
+      if (surfaceInvalidated) {
+        RebindWglHdc_Locked(/*rebindCurrent=*/true);
+      }
+      if (!EnsureContextCurrent()) {
+        return false;
+      }
 
 #if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_WAYLAND_EGL)
-    if (resized && m_wlEglWindow && hostW > 0 && hostH > 0) {
-      wl_egl_window_resize(static_cast<wl_egl_window*>(m_wlEglWindow),
-                           static_cast<int>(hostW), static_cast<int>(hostH), 0,
-                           0);
-    }
+      if (resized && m_wlEglWindow && hostW > 0 && hostH > 0) {
+        wl_egl_window_resize(static_cast<wl_egl_window*>(m_wlEglWindow),
+                             static_cast<int>(hostW), static_cast<int>(hostH),
+                             0, 0);
+      }
 #else
-    (void)resized;
+      (void)resized;
 #endif
 
-    PresentToWindowSurface(hostW, hostH);
+      PresentToWindowSurface(hostW, hostH);
 
-    // Swap the presentation surface.
-    if (m_useWgl) {
+      // Swap the presentation surface.
+      if (m_useWgl) {
 #if defined(_WIN32)
-      if (m_wglHdc) {
-        if (!::SwapBuffers(static_cast<HDC>(m_wglHdc))) {
-          GLIDE_LOG(WARN, "GLES",
-                    "Win32 SwapBuffers failed: err=" << GetLastError());
+        if (m_wglHdc) {
+          if (!::SwapBuffers(static_cast<HDC>(m_wglHdc))) {
+            GLIDE_LOG(WARN, "GLES",
+                      "Win32 SwapBuffers failed: err=" << GetLastError());
+          }
         }
-      }
 #endif
-    } else if (m_useDirectEgl) {
+      } else if (m_useDirectEgl) {
 #if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_EGL)
-      if (m_eglDisplay && m_eglSurface) {
-        if (!eglSwapBuffers(static_cast<EGLDisplay>(m_eglDisplay),
-                            static_cast<EGLSurface>(m_eglSurface))) {
-          GLIDE_LOG(WARN, "GLES",
-                    "eglSwapBuffers failed: 0x" << std::hex << eglGetError()
-                                                << std::dec);
+        if (m_eglDisplay && m_eglSurface) {
+          if (!eglSwapBuffers(static_cast<EGLDisplay>(m_eglDisplay),
+                              static_cast<EGLSurface>(m_eglSurface))) {
+            GLIDE_LOG(WARN, "GLES",
+                      "eglSwapBuffers failed: 0x" << std::hex << eglGetError()
+                                                  << std::dec);
+          }
         }
+#endif
+      }
+#if !defined(_WIN32)
+      else if (m_surfaceHost.GetSDLWindow()) {
+        SDL_GL_SwapWindow(m_surfaceHost.GetSDLWindow());
       }
 #endif
     }
-#if !defined(_WIN32)
-    else if (m_surfaceHost.GetSDLWindow()) {
-      SDL_GL_SwapWindow(m_surfaceHost.GetSDLWindow());
-    }
-#endif
   } else {
     // Headless mode: ensure offscreen GPU work completes without forcing an
     // eager CPU readback (ReadLFB reads directly from the GPU FBO on demand).
@@ -937,7 +942,7 @@ bool OpenGLESBackend::SwapBuffers() {
 
   // Restore any foreign host EGL context so host OpenGL rendering (e.g.
   // DOSBox-X output=opengl on Wayland) runs cleanly between Glide frames.
-  RestoreHostContextIfSaved();
+  RestoreHostContextIfSaved(/*hostParentAlive=*/!hostSurfaceDead);
   // Release Win32 WGL context between frames so multi-threaded games that draw
   // initial loading frames on the UI thread and render gameplay frames on a
   // separate thread (e.g. Turok 2) do not hit ERROR_BUSY (170).
@@ -1879,6 +1884,7 @@ void OpenGLESBackend::SaveCurrentHostEglContext() {
       m_savedHostEglRead = eglGetCurrentSurface(EGL_READ);
       m_savedHostEglContext = curCtx;
       m_hasSavedHostEgl = true;
+      m_savedHostEglFromSdl = (SDL_WasInit(SDL_INIT_VIDEO) != 0);
     }
   }
 #if defined(HAVE_X11)
@@ -1902,6 +1908,7 @@ void OpenGLESBackend::SaveCurrentHostEglContext() {
         m_savedHostGlxRead = glxRead;
         m_savedHostGlxContext = glxCtx;
         m_hasSavedHostGlx = true;
+        m_savedHostGlxFromSdl = (SDL_WasInit(SDL_INIT_VIDEO) != 0);
         if (glxDpy) {
           if (glx.makeContextCurrent) {
             glx.makeContextCurrent(glxDpy, 0, 0, nullptr);
@@ -1916,8 +1923,11 @@ void OpenGLESBackend::SaveCurrentHostEglContext() {
 #endif
 }
 
-void OpenGLESBackend::RestoreHostContextIfSaved() {
+void OpenGLESBackend::RestoreHostContextIfSaved(bool hostParentAlive,
+                                                bool syncGlxErrors) {
   InvalidateGlBindingCache();
+  (void)hostParentAlive;
+  (void)syncGlxErrors;
 #if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_EGL)
   if (m_hasSavedHostEgl) {
     const EGLenum api = static_cast<EGLenum>(m_savedHostEglApi);
@@ -1925,13 +1935,17 @@ void OpenGLESBackend::RestoreHostContextIfSaved() {
     const EGLSurface draw = static_cast<EGLSurface>(m_savedHostEglDraw);
     const EGLSurface read = static_cast<EGLSurface>(m_savedHostEglRead);
     const EGLContext ctx = static_cast<EGLContext>(m_savedHostEglContext);
+    const bool fromSdl = m_savedHostEglFromSdl;
     m_hasSavedHostEgl = false;
+    m_savedHostEglFromSdl = false;
     m_savedHostEglApi = 0;
     m_savedHostEglDisplay = nullptr;
     m_savedHostEglDraw = nullptr;
     m_savedHostEglRead = nullptr;
     m_savedHostEglContext = nullptr;
-    if (dpy != EGL_NO_DISPLAY && ctx != EGL_NO_CONTEXT) {
+    const bool sdlShutDown = fromSdl && (SDL_WasInit(SDL_INIT_VIDEO) == 0);
+    if (hostParentAlive && !sdlShutDown && dpy != EGL_NO_DISPLAY &&
+        ctx != EGL_NO_CONTEXT) {
       if (api == EGL_OPENGL_API || api == EGL_OPENGL_ES_API ||
           api == EGL_OPENVG_API) {
         eglBindAPI(api);
@@ -1945,7 +1959,9 @@ void OpenGLESBackend::RestoreHostContextIfSaved() {
     const unsigned long glxDraw = m_savedHostGlxDraw;
     const unsigned long glxRead = m_savedHostGlxRead;
     void* glxCtx = m_savedHostGlxContext;
+    const bool fromSdl = m_savedHostGlxFromSdl;
     m_hasSavedHostGlx = false;
+    m_savedHostGlxFromSdl = false;
     m_savedHostGlxDisplay = nullptr;
     m_savedHostGlxDraw = 0;
     m_savedHostGlxRead = 0;
@@ -1958,12 +1974,33 @@ void OpenGLESBackend::RestoreHostContextIfSaved() {
       eglMakeCurrent(static_cast<EGLDisplay>(m_eglDisplay), EGL_NO_SURFACE,
                      EGL_NO_SURFACE, EGL_NO_CONTEXT);
     }
+    // If the host SDL video subsystem has already shut down (SDL_Quit()),
+    // XCloseDisplay() freed glxDpy and glXDestroyContext() destroyed glxCtx.
+    // Never dereference freed GLX/Xlib pointers during late teardown.
+    const bool sdlShutDown = fromSdl && (SDL_WasInit(SDL_INIT_VIDEO) == 0);
+    if (!hostParentAlive || sdlShutDown) {
+      return;
+    }
     auto& glx = GetGlxInterop();
     if (glx.Available() && glxDpy && glxCtx) {
-      if (glx.makeContextCurrent) {
-        glx.makeContextCurrent(glxDpy, glxDraw, glxRead, glxCtx);
-      } else if (glx.makeCurrent) {
-        glx.makeCurrent(glxDpy, glxDraw, glxCtx);
+      if (syncGlxErrors) {
+        static std::mutex s_glxTrapMutex;
+        std::lock_guard<std::mutex> trapLock(s_glxTrapMutex);
+        auto prevHandler = XSetErrorHandler(
+            [](Display*, XErrorEvent*) -> int { return 0; });
+        if (glx.makeContextCurrent) {
+          glx.makeContextCurrent(glxDpy, glxDraw, glxRead, glxCtx);
+        } else if (glx.makeCurrent) {
+          glx.makeCurrent(glxDpy, glxDraw, glxCtx);
+        }
+        XSync(static_cast<Display*>(glxDpy), False);
+        XSetErrorHandler(prevHandler);
+      } else {
+        if (glx.makeContextCurrent) {
+          glx.makeContextCurrent(glxDpy, glxDraw, glxRead, glxCtx);
+        } else if (glx.makeCurrent) {
+          glx.makeCurrent(glxDpy, glxDraw, glxCtx);
+        }
       }
     }
   }
@@ -2841,8 +2878,13 @@ bool OpenGLESBackend::CreateGLContext(void* nativeWindowHandle, uint32_t width,
 }
 
 void OpenGLESBackend::DestroyGLContext() {
-  // 1. Delete all GL objects while our context is still current.
-  if (EnsureContextCurrent()) {
+  const bool hostWaylandAlive = m_surfaceHost.IsHostWaylandDisplayAlive();
+  const bool x11ParentAlive = m_surfaceHost.ProbeX11ParentAlive();
+  const bool hostDisplayAlive = hostWaylandAlive && x11ParentAlive;
+
+  // 1. Delete all GL objects while our context is still current (skip when
+  // the host already disconnected our borrowed Wayland wl_display*).
+  if (hostWaylandAlive && EnsureContextCurrent()) {
     for (uint32_t t = 0; t < 2; ++t) {
       for (auto& pair : m_glesTextures[t]) {
         if (pair.second.id) {
@@ -3018,24 +3060,30 @@ void OpenGLESBackend::DestroyGLContext() {
 #endif
   } else if (m_useDirectEgl) {
 #if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_EGL)
-    EGLDisplay dpy = static_cast<EGLDisplay>(m_eglDisplay);
-    if (dpy != EGL_NO_DISPLAY) {
-      eglBindAPI(EGL_OPENGL_ES_API);
-      eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
-      if (m_eglContext) {
-        eglDestroyContext(dpy, static_cast<EGLContext>(m_eglContext));
+    if (hostWaylandAlive) {
+      EGLDisplay dpy = static_cast<EGLDisplay>(m_eglDisplay);
+      if (dpy != EGL_NO_DISPLAY) {
+        eglBindAPI(EGL_OPENGL_ES_API);
+        eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+        if (m_eglContext) {
+          eglDestroyContext(dpy, static_cast<EGLContext>(m_eglContext));
+        }
+        if (m_eglSurface) {
+          eglDestroySurface(dpy, static_cast<EGLSurface>(m_eglSurface));
+        }
       }
-      if (m_eglSurface) {
-        eglDestroySurface(dpy, static_cast<EGLSurface>(m_eglSurface));
-      }
-    }
 #if defined(HAVE_WAYLAND_EGL)
-    if (m_wlEglWindow) {
-      wl_egl_window_destroy(static_cast<wl_egl_window*>(m_wlEglWindow));
-    }
+      if (m_wlEglWindow) {
+        wl_egl_window_destroy(static_cast<wl_egl_window*>(m_wlEglWindow));
+      }
 #endif
-    if (dpy != EGL_NO_DISPLAY && m_eglDisplayOwned) {
-      eglTerminate(dpy);
+      if (dpy != EGL_NO_DISPLAY && m_eglDisplayOwned) {
+        eglTerminate(dpy);
+      }
+    } else {
+      GLIDE_LOG(WARN, "GLES",
+                "Host Wayland display disconnected prior to EGL teardown; "
+                "skipping borrowed EGLDisplay cleanup to avoid UAF.");
     }
 #endif
   }
@@ -3062,8 +3110,11 @@ void OpenGLESBackend::DestroyGLContext() {
   // 3. Detach native child surface / standalone SDL window LAST.
   m_surfaceHost.Detach();
 
-  // 4. Restore any saved foreign host EGL context (e.g. DOSBox-X OpenGL).
-  RestoreHostContextIfSaved();
+  // 4. Restore any saved foreign host EGL/GLX context only if the host window
+  // and display connection are still alive (with X11 error trapping so a
+  // racing parent-window teardown never triggers a fatal GLXBadDrawable).
+  RestoreHostContextIfSaved(/*hostParentAlive=*/hostDisplayAlive,
+                            /*syncGlxErrors=*/true);
 }
 
 void OpenGLESBackend::SetBlendState(uint32_t rgbSrcFactor,

@@ -638,10 +638,13 @@ struct SoftwareBackend::WaylandShmPresenter {
     }
   }
 
-  static void DestroySlot(std::unique_ptr<ShmSlot>& slot) {
+  static void DestroySlot(std::unique_ptr<ShmSlot>& slot,
+                          bool destroyWaylandProxy = true) {
     if (!slot) return;
     if (slot->buffer) {
-      wl_buffer_destroy(slot->buffer);
+      if (destroyWaylandProxy) {
+        wl_buffer_destroy(slot->buffer);
+      }
       slot->buffer = nullptr;
     }
     if (slot->pixels && slot->byteSize > 0) {
@@ -806,12 +809,12 @@ struct SoftwareBackend::WaylandShmPresenter {
     wl_display_flush(display);
   }
 
-  void Detach() {
+  void Detach(bool displayAlive = true) {
     for (auto& s : slots) {
-      DestroySlot(s);
+      DestroySlot(s, displayAlive);
     }
     for (auto& r : retired) {
-      DestroySlot(r);
+      DestroySlot(r, displayAlive);
     }
     retired.clear();
     display = nullptr;
@@ -1140,7 +1143,14 @@ void SoftwareBackend::ShutdownPresentationSurface() {
   }
 #endif
   m_x11Presenter.reset();
+#if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_WAYLAND)
+  if (m_wlShmPresenter) {
+    m_wlShmPresenter->Detach(m_surfaceHost.IsHostWaylandDisplayAlive());
+    m_wlShmPresenter.reset();
+  }
+#else
   m_wlShmPresenter.reset();
+#endif
   m_win32Presenter.reset();
 }
 
@@ -1424,6 +1434,9 @@ void SoftwareBackend::PresentFrame(const uint32_t* srcPixels, uint32_t srcW,
   uint32_t hostW = m_guestWidth;
   uint32_t hostH = m_guestHeight;
   m_surfaceHost.SyncBounds(hostW, hostH);
+  if (hostW == 0 || hostH == 0) {
+    return;
+  }
 
 #if !defined(_WIN32)
   if (mode == NativeSurfaceHost::Mode::StandaloneSDL2) {

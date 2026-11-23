@@ -741,6 +741,16 @@ void DestroyWaylandSubsurfaceState(WaylandSubsurfaceState* state,
     return;
   }
 
+  // If the borrowed wl_display* belonged to an SDL host window and SDL's video
+  // subsystem has already shut down (e.g. host called SDL_Quit() before
+  // grGlideShutdown() or static ~BackendManager()), wl_display_disconnect() has
+  // already freed hostDisplay. Marshaling Wayland proxy destroys into a freed
+  // wl_display* triggers a SIGSEGV inside libwayland-client.
+  if (state->hostSdlWindow != nullptr && SDL_WasInit(SDL_INIT_VIDEO) == 0) {
+    delete state;
+    return;
+  }
+
   // Destroy surface-attached extensions BEFORE childSurface.
   if (state->fractionalScale) {
     WpFractionalScaleDestroy(state->fractionalScale);
@@ -2352,49 +2362,66 @@ bool NativeSurfaceHost::SyncBounds(uint32_t& outPixelW, uint32_t& outPixelH) {
   }
 
 #if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_X11)
-  if (m_mode == Mode::X11Child && m_x11Display && m_x11ChildWindow != 0 &&
-      !m_x11ParentDestroyed) {
-    Display* dpy = static_cast<Display*>(m_x11Display);
-    uint32_t targetW = m_pixelWidth;
-    uint32_t targetH = m_pixelHeight;
-    bool sawConfigure = false;
-
-    while (XEventsQueued(dpy, QueuedAfterReading) > 0) {
-      XEvent ev;
-      XNextEvent(dpy, &ev);
-      if (ev.type == ConfigureNotify &&
-          ev.xconfigure.window == static_cast<Window>(m_x11ParentWindow)) {
-        if (ev.xconfigure.width > 0 && ev.xconfigure.height > 0) {
-          targetW = static_cast<uint32_t>(ev.xconfigure.width);
-          targetH = static_cast<uint32_t>(ev.xconfigure.height);
-          sawConfigure = true;
-        }
-      } else if (ev.type == DestroyNotify &&
-                 ev.xdestroywindow.window ==
-                     static_cast<Window>(m_x11ParentWindow)) {
-        m_x11ParentDestroyed = true;
-      }
+  if (m_mode == Mode::X11Child) {
+    if (m_x11ParentDestroyed) {
+      outPixelW = 0;
+      outPixelH = 0;
+      return false;
     }
+    if (m_x11Display && m_x11ChildWindow != 0) {
+      Display* dpy = static_cast<Display*>(m_x11Display);
+      uint32_t targetW = m_pixelWidth;
+      uint32_t targetH = m_pixelHeight;
+      bool sawConfigure = false;
 
-    if (!m_x11ParentDestroyed && sawConfigure &&
-        (targetW != m_pixelWidth || targetH != m_pixelHeight)) {
-      {
-        ScopedX11ErrorTrap trap;
-        XMoveResizeWindow(dpy, static_cast<Window>(m_x11ChildWindow), 0, 0,
-                          targetW, targetH);
-        XFlush(dpy);
+      while (XEventsQueued(dpy, QueuedAfterReading) > 0) {
+        XEvent ev;
+        XNextEvent(dpy, &ev);
+        if (ev.type == ConfigureNotify &&
+            ev.xconfigure.window == static_cast<Window>(m_x11ParentWindow)) {
+          if (ev.xconfigure.width > 0 && ev.xconfigure.height > 0) {
+            targetW = static_cast<uint32_t>(ev.xconfigure.width);
+            targetH = static_cast<uint32_t>(ev.xconfigure.height);
+            sawConfigure = true;
+          }
+        } else if (ev.type == DestroyNotify &&
+                   ev.xdestroywindow.window ==
+                       static_cast<Window>(m_x11ParentWindow)) {
+          m_x11ParentDestroyed = true;
+        }
       }
-      m_pixelWidth = targetW;
-      m_pixelHeight = targetH;
-      outPixelW = m_pixelWidth;
-      outPixelH = m_pixelHeight;
-      return true;
+
+      if (m_x11ParentDestroyed) {
+        outPixelW = 0;
+        outPixelH = 0;
+        return false;
+      }
+
+      if (sawConfigure &&
+          (targetW != m_pixelWidth || targetH != m_pixelHeight)) {
+        {
+          ScopedX11ErrorTrap trap;
+          XMoveResizeWindow(dpy, static_cast<Window>(m_x11ChildWindow), 0, 0,
+                            targetW, targetH);
+          XFlush(dpy);
+        }
+        m_pixelWidth = targetW;
+        m_pixelHeight = targetH;
+        outPixelW = m_pixelWidth;
+        outPixelH = m_pixelHeight;
+        return true;
+      }
     }
   }
 #endif
 
 #if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_WAYLAND)
   if (m_mode == Mode::WaylandSubsurface && m_wlState) {
+    if (!IsHostWaylandDisplayAlive()) {
+      outPixelW = 0;
+      outPixelH = 0;
+      return false;
+    }
     auto* state = static_cast<WaylandSubsurfaceState*>(m_wlState);
     if (state->hostDisplay && state->queue) {
       wl_display_dispatch_queue_pending(state->hostDisplay, state->queue);
@@ -2843,6 +2870,49 @@ void* NativeSurfaceHost::GetWaylandEventQueue() const {
   }
 #endif
   return nullptr;
+}
+
+bool NativeSurfaceHost::ProbeX11ParentAlive() {
+#if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_X11)
+  if (m_mode != Mode::X11Child) {
+    return true;
+  }
+  if (m_x11ParentDestroyed || !m_x11Display || m_x11ParentWindow == 0) {
+    return false;
+  }
+  Display* dpy = static_cast<Display*>(m_x11Display);
+  Window root = 0;
+  int x = 0;
+  int y = 0;
+  unsigned int w = 0;
+  unsigned int h = 0;
+  unsigned int bw = 0;
+  unsigned int depth = 0;
+  ScopedX11ErrorTrap trap;
+  const int ok =
+      XGetGeometry(dpy, static_cast<Window>(m_x11ParentWindow), &root, &x, &y,
+                   &w, &h, &bw, &depth);
+  XSync(dpy, False);
+  if (!ok || trap.ErrorOccurred()) {
+    m_x11ParentDestroyed = true;
+    return false;
+  }
+  return true;
+#else
+  return true;
+#endif
+}
+
+bool NativeSurfaceHost::IsHostWaylandDisplayAlive() const {
+#if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_WAYLAND)
+  if (m_mode == Mode::WaylandSubsurface && m_wlState) {
+    const auto* state = static_cast<const WaylandSubsurfaceState*>(m_wlState);
+    if (state->hostSdlWindow != nullptr && SDL_WasInit(SDL_INIT_VIDEO) == 0) {
+      return false;
+    }
+  }
+#endif
+  return true;
 }
 
 }  // namespace GlideWrapper

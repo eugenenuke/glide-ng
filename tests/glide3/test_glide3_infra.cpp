@@ -1051,6 +1051,66 @@ TEST_CASE("WSI: NativeSurfaceHost, Present Modes & DOSBox Handshake", "[WSI][Nat
         vk::PresentModeKHR::eFifo);
   }
 
+  SECTION("Vulkan X11 visual preference avoids DirectColor and unsupported visuals") {
+    using Candidate = GlideWrapper::VulkanBackend::X11VisualCandidate;
+
+    // Empty list yields 0.
+    CHECK(GlideWrapper::VulkanBackend::SelectPreferredX11Visual({}) == 0UL);
+
+    // DirectColor (isTrueColor=false) and non-presentable visuals are skipped in
+    // favor of the default 24-bit TrueColor visual (e.g. 0x21).
+    const std::vector<Candidate> mixed = {
+        {0x1ea, 24, false, false, true},   // DirectColor inherited from SDL
+        {0x20, 32, true, false, true},     // 32-bit TrueColor
+        {0x22, 24, true, false, true},     // Non-default 24-bit TrueColor
+        {0x21, 24, true, true, true},      // Default 24-bit TrueColor
+    };
+    CHECK(GlideWrapper::VulkanBackend::SelectPreferredX11Visual(mixed) == 0x21UL);
+
+    // If the default 24-bit TrueColor visual lacks presentation support, select
+    // another supported 24-bit TrueColor visual before falling back to 32-bit.
+    const std::vector<Candidate> defUnsupported = {
+        {0x21, 24, true, true, false},
+        {0x30, 32, true, false, true},
+        {0x22, 24, true, false, true},
+    };
+    CHECK(GlideWrapper::VulkanBackend::SelectPreferredX11Visual(defUnsupported) ==
+          0x22UL);
+
+    // When no 24-bit TrueColor visual is supported, pick default TrueColor,
+    // then 32-bit TrueColor, then any other presentable TrueColor depth.
+    const std::vector<Candidate> depth32Default = {
+        {0x1f4, 24, false, false, true},
+        {0x40, 32, true, false, true},
+        {0x41, 16, true, true, true},
+    };
+    CHECK(GlideWrapper::VulkanBackend::SelectPreferredX11Visual(depth32Default) ==
+          0x41UL);
+
+    const std::vector<Candidate> depth32Only = {
+        {0x1f4, 24, false, false, true},
+        {0x40, 32, true, false, true},
+        {0x42, 16, true, false, true},
+    };
+    CHECK(GlideWrapper::VulkanBackend::SelectPreferredX11Visual(depth32Only) ==
+          0x40UL);
+
+    // Last resort: fall back to a presentable non-TrueColor visual only when no
+    // TrueColor visual supports presentation.
+    const std::vector<Candidate> directOnly = {
+        {0x21, 24, true, true, false},
+        {0x1ea, 24, false, false, true},
+    };
+    CHECK(GlideWrapper::VulkanBackend::SelectPreferredX11Visual(directOnly) ==
+          0x1eaUL);
+
+    // Headless / detached NativeSurfaceHost liveness defaults.
+    GlideWrapper::NativeSurfaceHost host;
+    CHECK_FALSE(host.IsX11ParentDestroyed());
+    CHECK(host.ProbeX11ParentAlive());
+    CHECK(host.IsHostWaylandDisplayAlive());
+  }
+
   SECTION("Aspect-ratio-preserving presentation rect calculation") {
   using GlideWrapper::NativeSurfaceHost;
   using GlideWrapper::PresentRect;

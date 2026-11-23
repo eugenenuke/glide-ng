@@ -7,6 +7,7 @@
 
 #if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_X11)
 #include <X11/Xlib.h>
+#include <X11/Xutil.h>
 #ifdef None
 #undef None
 #endif
@@ -15,6 +16,12 @@
 #endif
 #ifdef Status
 #undef Status
+#endif
+#ifdef Success
+#undef Success
+#endif
+#ifdef Always
+#undef Always
 #endif
 #include <vulkan/vulkan_xlib.h>
 #endif
@@ -194,6 +201,7 @@ bool VulkanBackend::Initialize(const WrapperConfig& config) {
   GLIDE_LOG(INFO, "Vulkan",
             "Initializing Hybrid hardware Vulkan GPU context...");
   m_config = config;
+  m_detachedDeadWaylandWsi = false;
   m_msaaSamples = config.msaaSamples;
   for (int i = 0; i < 256; ++i) {
     m_lutR[i] = static_cast<uint8_t>(i);
@@ -524,8 +532,17 @@ void VulkanBackend::Shutdown() {
   m_texStagingMemory.reset();
 
   // 6. Now it is 100% safe to destroy the logical device and instance!
-  m_device.reset();
-  m_instance.reset();
+  if (m_detachedDeadWaylandWsi) {
+    // Mesa WSI binds a wl_proxy wrapper to the host wl_display* and tears it
+    // down inside vkDestroyInstance(); skip calling vkDestroyInstance() when
+    // SDL already called wl_display_disconnect() to avoid a UAF deadlock/crash.
+    m_device.reset();
+    (void)m_instance.release();
+    m_detachedDeadWaylandWsi = false;
+  } else {
+    m_device.reset();
+    m_instance.reset();
+  }
 
   m_initialized = false;
 }
@@ -839,19 +856,53 @@ void VulkanBackend::DetachWindow_Locked(std::unique_lock<std::mutex>& lock) {
     m_commandBuffer->reset({});
   }
 
-  DestroySwapchain_Locked();
-  DestroyHudResources_Locked();
-  DestroyGammaPresentResources_Locked();
-  DestroyLfbOverlayResources_Locked();
-  DestroyMsaaCopyResources_Locked();
-  ReclaimRetiredResources_Locked(0);
-  ReclaimRetiredResources_Locked(1);
-  m_pipelineStateDirty = true;
-  m_descriptorStateDirty = true;
-  m_cachedPipeline = vk::Pipeline{};
-  m_cachedDescSet = vk::DescriptorSet{};
-  m_hudOverlay.Reset();
-  m_surface.reset();
+  const bool hostWaylandDisconnected =
+      (m_surfaceHost.GetMode() == NativeSurfaceHost::Mode::WaylandSubsurface &&
+       !m_surfaceHost.IsHostWaylandDisplayAlive());
+  if (hostWaylandDisconnected) {
+    // The host SDL video subsystem disconnected our borrowed wl_display*
+    // before grGlideShutdown() ran; invoking vkDestroySwapchainKHR /
+    // vkDestroySurfaceKHR into Mesa WSI would call wl_display_roundtrip_queue
+    // on a freed wl_display* and SIGSEGV.
+    GLIDE_LOG(WARN, "Vulkan",
+              "Host Wayland display disconnected prior to Vulkan teardown; "
+              "skipping WSI swapchain/surface destruction to avoid UAF.");
+    m_detachedDeadWaylandWsi = true;
+    DestroyHudSwapchainFramebuffers_Locked();
+    for (int i = 0; i < 2; ++i) {
+      if (m_imageAvailableSemaphores[i]) m_imageAvailableSemaphores[i].reset();
+    }
+    m_renderFinishedSemaphores.clear();
+    m_swapchainImageViews.clear();
+    m_swapchainImages.clear();
+    (void)m_swapchain.release();
+    DestroyHudResources_Locked();
+    DestroyGammaPresentResources_Locked();
+    DestroyLfbOverlayResources_Locked();
+    DestroyMsaaCopyResources_Locked();
+    ReclaimRetiredResources_Locked(0);
+    ReclaimRetiredResources_Locked(1);
+    m_pipelineStateDirty = true;
+    m_descriptorStateDirty = true;
+    m_cachedPipeline = vk::Pipeline{};
+    m_cachedDescSet = vk::DescriptorSet{};
+    m_hudOverlay.Reset();
+    (void)m_surface.release();
+  } else {
+    DestroySwapchain_Locked();
+    DestroyHudResources_Locked();
+    DestroyGammaPresentResources_Locked();
+    DestroyLfbOverlayResources_Locked();
+    DestroyMsaaCopyResources_Locked();
+    ReclaimRetiredResources_Locked(0);
+    ReclaimRetiredResources_Locked(1);
+    m_pipelineStateDirty = true;
+    m_descriptorStateDirty = true;
+    m_cachedPipeline = vk::Pipeline{};
+    m_cachedDescSet = vk::DescriptorSet{};
+    m_hudOverlay.Reset();
+    m_surface.reset();
+  }
   {
     ScopedMutexUnlock unlock(lock);
     m_surfaceHost.Detach();
@@ -912,6 +963,46 @@ void VulkanBackend::DetachWindow_Locked(std::unique_lock<std::mutex>& lock) {
   m_headlessMode = false;
 }
 
+unsigned long VulkanBackend::SelectPreferredX11Visual(
+    const std::vector<X11VisualCandidate>& candidates) {
+  auto pick = [&](auto pred) -> unsigned long {
+    for (const auto& c : candidates) {
+      if (c.visualId != 0 && pred(c)) {
+        return c.visualId;
+      }
+    }
+    return 0;
+  };
+
+  if (unsigned long id = pick([](const X11VisualCandidate& c) {
+        return c.presentSupported && c.isTrueColor && c.isDefault &&
+               c.depth == 24;
+      })) {
+    return id;
+  }
+  if (unsigned long id = pick([](const X11VisualCandidate& c) {
+        return c.presentSupported && c.isTrueColor && c.depth == 24;
+      })) {
+    return id;
+  }
+  if (unsigned long id = pick([](const X11VisualCandidate& c) {
+        return c.presentSupported && c.isTrueColor && c.isDefault;
+      })) {
+    return id;
+  }
+  if (unsigned long id = pick([](const X11VisualCandidate& c) {
+        return c.presentSupported && c.isTrueColor && c.depth == 32;
+      })) {
+    return id;
+  }
+  if (unsigned long id = pick([](const X11VisualCandidate& c) {
+        return c.presentSupported && c.isTrueColor;
+      })) {
+    return id;
+  }
+  return pick([](const X11VisualCandidate& c) { return c.presentSupported; });
+}
+
 bool VulkanBackend::CreatePresentationSurface() {
   m_surface.reset();
   switch (m_surfaceHost.GetMode()) {
@@ -921,6 +1012,14 @@ bool VulkanBackend::CreatePresentationSurface() {
 
     case NativeSurfaceHost::Mode::X11Child: {
 #if defined(__unix__) && !defined(__APPLE__) && defined(HAVE_X11)
+      Display* x11Dpy = static_cast<Display*>(m_surfaceHost.GetX11Display());
+      Window x11Win = static_cast<Window>(m_surfaceHost.GetX11Window());
+      if (!x11Dpy || x11Win == 0) {
+        GLIDE_LOG(CRITICAL, "Vulkan",
+                  "Missing X11 display or child window for VK_KHR_xlib_surface.");
+        return false;
+      }
+
       auto createXlibSurface = reinterpret_cast<PFN_vkCreateXlibSurfaceKHR>(
           m_instance->getProcAddr("vkCreateXlibSurfaceKHR"));
       if (!createXlibSurface) {
@@ -929,10 +1028,103 @@ bool VulkanBackend::CreatePresentationSurface() {
         return false;
       }
 
+      // Ensure our X11Child uses a TrueColor visual supported by Vulkan Xlib
+      // presentation. SDL1/SDL2 (sdl12-compat / sdl2-compat) frequently creates
+      // parent windows with a DirectColor visual (class=5), which strict real-
+      // GPU Vulkan drivers may reject during presentation support queries or
+      // display with an unpopulated DirectColor LUT.
+      {
+        static std::mutex s_x11TrapMutex;
+        static bool s_x11TrapHit = false;
+        XWindowAttributes wa{};
+        bool haveAttrs = false;
+        {
+          std::lock_guard<std::mutex> trapLock(s_x11TrapMutex);
+          s_x11TrapHit = false;
+          auto prevHandler = XSetErrorHandler(
+              [](Display*, XErrorEvent*) -> int {
+                s_x11TrapHit = true;
+                return 0;
+              });
+          haveAttrs = (XGetWindowAttributes(x11Dpy, x11Win, &wa) != 0);
+          XSync(x11Dpy, False);
+          XSetErrorHandler(prevHandler);
+          if (s_x11TrapHit) haveAttrs = false;
+        }
+
+        if (haveAttrs && wa.visual != nullptr) {
+          const VisualID curVid = XVisualIDFromVisual(wa.visual);
+          const int curClass = wa.visual->c_class;
+          auto getXlibPresentSupport =
+              reinterpret_cast<PFN_vkGetPhysicalDeviceXlibPresentationSupportKHR>(
+                  m_instance->getProcAddr(
+                      "vkGetPhysicalDeviceXlibPresentationSupportKHR"));
+          const bool curSupported =
+              !getXlibPresentSupport ||
+              (getXlibPresentSupport(
+                   static_cast<VkPhysicalDevice>(m_physicalDevice),
+                   m_graphicsQueueFamilyIndex, x11Dpy, curVid) == VK_TRUE);
+
+          if (curClass != TrueColor || !curSupported) {
+            const int screen = wa.screen ? XScreenNumberOfScreen(wa.screen)
+                                         : DefaultScreen(x11Dpy);
+            Visual* defVis = DefaultVisual(x11Dpy, screen);
+            const VisualID defVid = defVis ? XVisualIDFromVisual(defVis) : 0;
+
+            XVisualInfo tmpl{};
+            tmpl.screen = screen;
+            int numVisuals = 0;
+            XVisualInfo* visuals = XGetVisualInfo(
+                x11Dpy, VisualScreenMask, &tmpl, &numVisuals);
+            std::vector<X11VisualCandidate> candidates;
+            if (visuals && numVisuals > 0) {
+              candidates.reserve(static_cast<size_t>(numVisuals));
+              for (int i = 0; i < numVisuals; ++i) {
+                const XVisualInfo& vi = visuals[i];
+                const bool supported =
+                    !getXlibPresentSupport ||
+                    (getXlibPresentSupport(
+                         static_cast<VkPhysicalDevice>(m_physicalDevice),
+                         m_graphicsQueueFamilyIndex, x11Dpy,
+                         vi.visualid) == VK_TRUE);
+                X11VisualCandidate cand{};
+                cand.visualId = static_cast<unsigned long>(vi.visualid);
+                cand.depth = vi.depth;
+                cand.isTrueColor = (vi.c_class == TrueColor);
+                cand.isDefault = (vi.visualid == defVid);
+                cand.presentSupported = supported;
+                candidates.push_back(cand);
+              }
+              XFree(visuals);
+            } else if (visuals) {
+              XFree(visuals);
+            }
+
+            const unsigned long targetVid =
+                SelectPreferredX11Visual(candidates);
+            if (targetVid != 0 &&
+                targetVid != static_cast<unsigned long>(curVid)) {
+              GLIDE_LOG(INFO, "Vulkan",
+                        "X11Child inherited visual 0x"
+                            << std::hex << curVid << std::dec
+                            << " (class=" << curClass
+                            << ", xlibPresent="
+                            << (curSupported ? "yes" : "no")
+                            << "); recreating X11Child with TrueColor visual "
+                               "0x"
+                            << std::hex << targetVid << std::dec << ".");
+              if (m_surfaceHost.RecreateX11ChildForVisual(targetVid)) {
+                x11Win = static_cast<Window>(m_surfaceHost.GetX11Window());
+              }
+            }
+          }
+        }
+      }
+
       VkXlibSurfaceCreateInfoKHR info{};
       info.sType = VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR;
-      info.dpy = static_cast<Display*>(m_surfaceHost.GetX11Display());
-      info.window = static_cast<Window>(m_surfaceHost.GetX11Window());
+      info.dpy = x11Dpy;
+      info.window = x11Win;
 
       VkSurfaceKHR rawSurface = VK_NULL_HANDLE;
       VkResult res = createXlibSurface(
@@ -946,7 +1138,7 @@ bool VulkanBackend::CreatePresentationSurface() {
       m_surface = vk::UniqueSurfaceKHR(rawSurface, m_instance.get());
       GLIDE_LOG(INFO, "Vulkan",
                 "Created VK_KHR_xlib_surface on X11 child window 0x"
-                    << std::hex << m_surfaceHost.GetX11Window() << std::dec);
+                    << std::hex << x11Win << std::dec);
       return true;
 #else
       GLIDE_LOG(CRITICAL, "Vulkan",
