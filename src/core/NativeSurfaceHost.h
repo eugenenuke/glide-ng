@@ -97,6 +97,53 @@ class NativeSurfaceHost {
                                                   uintptr_t wParam,
                                                   intptr_t& outResult);
 
+  /**
+   * @brief Returns true if a `WM_WINDOWPOSCHANGING` message on an attached
+   *        Win32Embedded host window should have `SWP_NOACTIVATE` forced onto
+   *        `WINDOWPOS::flags`.
+   *
+   * Legacy Win32 fullscreen games (e.g. Hitman: Codename 47) commonly call
+   * `SetWindowPos(hwnd, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE)`
+   * inside `WM_ACTIVATEAPP(FALSE)` without `SWP_NOACTIVATE`. Under Wine, that
+   * synchronously re-activates the window, firing a nested
+   * `WM_ACTIVATEAPP(TRUE)` (re-applying `HWND_TOPMOST` and stealing focus back
+   * from the desktop) right before the outer `WM_ACTIVATEAPP(FALSE)` calls
+   * `grSstWinClose()`.
+   */
+  static bool ShouldForceWin32SwpNoActivate(bool inDeactivating,
+                                            uintptr_t hwndInsertAfter,
+                                            uint32_t swpFlags);
+
+  /**
+   * @brief Computes the `GWL_STYLE` / `GWL_EXSTYLE` values to restore when
+   *        detaching a borderless-fullscreen Win32Embedded host window.
+   *
+   * Preserves live runtime state bits (`WS_VISIBLE`, `WS_MINIMIZE`,
+   * `WS_DISABLED`, and live `WS_EX_TOPMOST`) instead of blindly re-applying
+   * stale startup flags (such as `WS_EX_TOPMOST` after the app moved its own
+   * window to `HWND_BOTTOM` on Alt+Tab). When `forceDropTopmost` is true,
+   * `WS_EX_TOPMOST` is explicitly cleared.
+   */
+  static void ComputeRestoredWin32Styles(uint32_t savedStyle,
+                                         uint32_t savedExStyle,
+                                         uint32_t curStyle,
+                                         uint32_t curExStyle,
+                                         bool forceDropTopmost,
+                                         uint32_t& outStyle,
+                                         uint32_t& outExStyle);
+
+  /**
+   * @brief Marks whether a blocking automatic startup splash is currently
+   *        running synchronously inside `grSstWinOpen()`.
+   *
+   * On `Win32Embedded` under Wine/Wayland/XWayland, `PollEvents()` uses this
+   * flag to call non-destructive `PeekMessage(PM_NOREMOVE)` under our WndProc
+   * adjust guard so the compositor commits the borderless-fullscreen resize
+   * during the splash instead of deferring it until `grSstWinOpen()` returns.
+   */
+  static void SetAutoSplashActive(bool active);
+  static bool IsAutoSplashActive();
+
   static const char* ModeToString(Mode mode);
 
   /**
@@ -273,7 +320,7 @@ class NativeSurfaceHost {
   bool AttachWin32Standalone(uint32_t guestW, uint32_t guestH,
                              const std::string& title, uint32_t windowScale);
   bool AttachWin32Embedded(void* parentHwnd);
-  bool ApplyWin32EmbeddedFullscreenIfNeeded();
+  bool ApplyWin32EmbeddedFullscreenIfNeeded(bool restoreIfIconic = false);
   void RestoreWin32EmbeddedFullscreenIfSaved();
   void InstallWin32FullscreenSubclass();
   void UninstallWin32FullscreenSubclass();

@@ -961,12 +961,15 @@ TEST_CASE("Config: IniConfigLoader & Authentic 3dfx Env Var Precedence", "[Confi
   static int s_calls = 0;
   static uint32_t s_lastW = 0, s_lastH = 0;
   static bool s_plugAllowedDuringSplash = true;
+  static bool s_wsiAutoSplashActiveDuringSplash = false;
   auto spy = [](uint32_t w, uint32_t h) {
     ++s_calls;
     s_lastW = w;
     s_lastH = h;
     s_plugAllowedDuringSplash =
         GlideWrapper::EntryCommon::ShouldRenderShamelessPlug(true);
+    s_wsiAutoSplashActiveDuringSplash =
+        GlideWrapper::NativeSurfaceHost::IsAutoSplashActive();
   };
 
   // 1. Plays once when !noSplash && !headless, suppresses shameless plug inside
@@ -974,14 +977,18 @@ TEST_CASE("Config: IniConfigLoader & Authentic 3dfx Env Var Precedence", "[Confi
   s_calls = 0;
   s_lastW = s_lastH = 0;
   s_plugAllowedDuringSplash = true;
+  s_wsiAutoSplashActiveDuringSplash = false;
   cfg.noSplash = false;
   cfg.forceNoWindow = false;
   cfg.shamelessPlugMode = 1;
+  CHECK_FALSE(GlideWrapper::NativeSurfaceHost::IsAutoSplashActive());
   CHECK(GlideWrapper::EntryCommon::MaybeRunAutoStartupSplash(640, 480, spy));
   CHECK(s_calls == 1);
   CHECK(s_lastW == 640u);
   CHECK(s_lastH == 480u);
   CHECK(s_plugAllowedDuringSplash == false);
+  CHECK(s_wsiAutoSplashActiveDuringSplash == true);
+  CHECK_FALSE(GlideWrapper::NativeSurfaceHost::IsAutoSplashActive());
   // Shameless plug resumes after auto-splash exits
   CHECK(GlideWrapper::EntryCommon::ShouldRenderShamelessPlug(true) == true);
 
@@ -1393,6 +1400,50 @@ TEST_CASE("WSI: NativeSurfaceHost, Present Modes & DOSBox Handshake", "[WSI][Nat
   CHECK_FALSE(
       GlideWrapper::NativeSurfaceHost::ShouldSuppressWin32DeactivateBounce(
           0x0010u /* WM_CLOSE */, 0u, lr));
+
+  // Deactivation SWP_NOACTIVATE guard (prevents SetWindowPos(HWND_BOTTOM)
+  // inside WM_ACTIVATEAPP(FALSE) from stealing foreground focus back).
+  CHECK(GlideWrapper::NativeSurfaceHost::ShouldForceWin32SwpNoActivate(
+      /*inDeactivating=*/true, /*hwndInsertAfter=*/1u /* HWND_BOTTOM */,
+      0x0003u /* SWP_NOMOVE | SWP_NOSIZE */));
+  CHECK(GlideWrapper::NativeSurfaceHost::ShouldForceWin32SwpNoActivate(
+      /*inDeactivating=*/false, /*hwndInsertAfter=*/1u /* HWND_BOTTOM */,
+      0x0003u /* SWP_NOMOVE | SWP_NOSIZE */));
+  CHECK_FALSE(GlideWrapper::NativeSurfaceHost::ShouldForceWin32SwpNoActivate(
+      /*inDeactivating=*/true, /*hwndInsertAfter=*/1u /* HWND_BOTTOM */,
+      0x0013u /* SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE */));
+  CHECK_FALSE(GlideWrapper::NativeSurfaceHost::ShouldForceWin32SwpNoActivate(
+      /*inDeactivating=*/false, /*hwndInsertAfter=*/0u /* HWND_TOP */,
+      0x0003u /* SWP_NOMOVE | SWP_NOSIZE */));
+  CHECK_FALSE(GlideWrapper::NativeSurfaceHost::ShouldForceWin32SwpNoActivate(
+      /*inDeactivating=*/false, /*hwndInsertAfter=*/1u /* HWND_BOTTOM */,
+      0x0007u /* SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER */));
+
+  // Style restoration preserves live WS_VISIBLE/WS_MINIMIZE/WS_EX_TOPMOST
+  // instead of re-applying stale startup WS_EX_TOPMOST after Alt+Tab.
+  uint32_t outStyle = 0u;
+  uint32_t outExStyle = 0u;
+  GlideWrapper::NativeSurfaceHost::ComputeRestoredWin32Styles(
+      /*savedStyle=*/0x96000000u /* WS_POPUP | WS_VISIBLE | WS_CLIPSIBLINGS | WS_CLIPCHILDREN */,
+      /*savedExStyle=*/0x00000008u /* WS_EX_TOPMOST */,
+      /*curStyle=*/0x96000000u,
+      /*curExStyle=*/0x00000000u /* app cleared WS_EX_TOPMOST via HWND_BOTTOM */,
+      /*forceDropTopmost=*/false, outStyle, outExStyle);
+  CHECK(outStyle == 0x96000000u);
+  CHECK((outExStyle & 0x00000008u) == 0u);
+
+  // Explicit dropTopmost clears WS_EX_TOPMOST even if still set on curExStyle,
+  // while preserving live WS_MINIMIZE and non-topmost extended styles.
+  GlideWrapper::NativeSurfaceHost::ComputeRestoredWin32Styles(
+      /*savedStyle=*/0x10CF0000u /* WS_VISIBLE | WS_OVERLAPPEDWINDOW */,
+      /*savedExStyle=*/0x00040108u /* WS_EX_APPWINDOW | WS_EX_WINDOWEDGE | WS_EX_TOPMOST */,
+      /*curStyle=*/0xB6000000u /* WS_POPUP | WS_MINIMIZE | WS_VISIBLE | ... */,
+      /*curExStyle=*/0x00040008u /* WS_EX_APPWINDOW | WS_EX_TOPMOST */,
+      /*forceDropTopmost=*/true, outStyle, outExStyle);
+  CHECK((outStyle & 0x20000000u /* WS_MINIMIZE */) != 0u);
+  CHECK((outStyle & 0x00CF0000u /* chrome */) == 0x00CF0000u);
+  CHECK((outExStyle & 0x00000008u /* WS_EX_TOPMOST */) == 0u);
+  CHECK((outExStyle & 0x00040100u /* WS_EX_APPWINDOW | WS_EX_WINDOWEDGE */) == 0x00040100u);
   }
 
 }

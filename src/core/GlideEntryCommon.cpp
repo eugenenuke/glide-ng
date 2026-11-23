@@ -15,6 +15,7 @@
 #include "core/IniConfigLoader.h"
 #include "core/LfbManager.h"
 #include "core/Logger.h"
+#include "core/NativeSurfaceHost.h"
 #include "core/Telemetry.h"
 #include "core/TextureManager.h"
 #include "core/WrapperConfig.h"
@@ -1400,6 +1401,7 @@ void RenderSplash(float x, float y, float w, float h, uint32_t frame,
 void ResetAutoSplashState() {
   s_autoSplashPlayed = false;
   s_inAutoSplash = false;
+  NativeSurfaceHost::SetAutoSplashActive(false);
 }
 
 bool MaybeRunAutoStartupSplash(uint32_t width, uint32_t height,
@@ -1410,13 +1412,21 @@ bool MaybeRunAutoStartupSplash(uint32_t width, uint32_t height,
     return false;
   }
   s_autoSplashPlayed = true;
-  s_inAutoSplash = true;
+  struct AutoSplashGuard {
+    AutoSplashGuard() {
+      s_inAutoSplash = true;
+      NativeSurfaceHost::SetAutoSplashActive(true);
+    }
+    ~AutoSplashGuard() {
+      s_inAutoSplash = false;
+      NativeSurfaceHost::SetAutoSplashActive(false);
+    }
+  } splashGuard;
   GLIDE_LOG(INFO, "Frontend",
             "Playing automatic startup splash on grSstWinOpen ("
                 << width << "x" << height
                 << "; suppress with FX_GLIDE_NO_SPLASH=1 or GLIDE_NG_NO_SPLASH=1).");
   invokeSplash(width, height);
-  s_inAutoSplash = false;
   if (auto* backend = BackendManager::GetInstance().GetBackend()) {
     backend->ReleaseThreadContext();
   }

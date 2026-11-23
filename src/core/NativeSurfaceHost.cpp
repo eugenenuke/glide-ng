@@ -264,6 +264,7 @@ struct Win32FullscreenSubclassEntry {
   bool hasDeactivateGrace = false;
   bool loggedDeactivateGrace = false;
   bool relativeMouseDetected = false;
+  uint32_t deactivateDepth = 0;
   std::chrono::steady_clock::time_point deactivateGraceUntil{};
   uint32_t guestW = 0;
   uint32_t guestH = 0;
@@ -290,6 +291,97 @@ inline bool IsWin32ClientMouseMessage(UINT msg) {
     default:
       return false;
   }
+}
+
+const char* Win32TraceMsgName(UINT msg) {
+  switch (msg) {
+    case WM_DESTROY:
+      return "WM_DESTROY";
+    case WM_MOVE:
+      return "WM_MOVE";
+    case WM_SIZE:
+      return "WM_SIZE";
+    case WM_ACTIVATE:
+      return "WM_ACTIVATE";
+    case WM_SETFOCUS:
+      return "WM_SETFOCUS";
+    case WM_KILLFOCUS:
+      return "WM_KILLFOCUS";
+    case WM_CLOSE:
+      return "WM_CLOSE";
+    case WM_SHOWWINDOW:
+      return "WM_SHOWWINDOW";
+    case WM_ACTIVATEAPP:
+      return "WM_ACTIVATEAPP";
+    case WM_CANCELMODE:
+      return "WM_CANCELMODE";
+    case WM_WINDOWPOSCHANGING:
+      return "WM_WINDOWPOSCHANGING";
+    case WM_WINDOWPOSCHANGED:
+      return "WM_WINDOWPOSCHANGED";
+    case WM_STYLECHANGING:
+      return "WM_STYLECHANGING";
+    case WM_STYLECHANGED:
+      return "WM_STYLECHANGED";
+    case WM_DISPLAYCHANGE:
+      return "WM_DISPLAYCHANGE";
+    case WM_NCDESTROY:
+      return "WM_NCDESTROY";
+    case WM_NCACTIVATE:
+      return "WM_NCACTIVATE";
+    case WM_SYSCOMMAND:
+      return "WM_SYSCOMMAND";
+    case WM_CAPTURECHANGED:
+      return "WM_CAPTURECHANGED";
+    default:
+      return nullptr;
+  }
+}
+
+struct Win32DebugDumpCtx {
+  DWORD selfPid;
+  HWND attached;
+};
+
+BOOL CALLBACK LogWin32ProcessWindowProc(HWND w, LPARAM lp) {
+  auto* c = reinterpret_cast<Win32DebugDumpCtx*>(lp);
+  DWORD pid = 0;
+  const DWORD tid = GetWindowThreadProcessId(w, &pid);
+  if (pid != c->selfPid) {
+    return TRUE;
+  }
+  char cls[64] = {};
+  GetClassNameA(w, cls, static_cast<int>(sizeof(cls)));
+  RECT rc{};
+  GetWindowRect(w, &rc);
+  const DWORD style = static_cast<DWORD>(GetWindowLongA(w, GWL_STYLE));
+  const DWORD exStyle = static_cast<DWORD>(GetWindowLongA(w, GWL_EXSTYLE));
+  const LONG_PTR proc = IsWindowUnicode(w) ? GetWindowLongPtrW(w, GWLP_WNDPROC)
+                                           : GetWindowLongPtrA(w, GWLP_WNDPROC);
+  GLIDE_LOG(DEBUG, "WSI",
+            "  proc-hwnd=" << static_cast<void*>(w)
+                << (w == c->attached ? " [ATTACHED]" : "") << " tid=" << tid
+                << " cls='" << cls << "' vis=" << (IsWindowVisible(w) ? 1 : 0)
+                << " iconic=" << (IsIconic(w) ? 1 : 0) << " style=0x"
+                << std::hex << style << " exStyle=0x" << exStyle
+                << " wndProc=0x" << static_cast<uintptr_t>(proc) << std::dec
+                << " rect=(" << rc.left << "," << rc.top << ")-(" << rc.right
+                << "," << rc.bottom << ")");
+  return TRUE;
+}
+
+void LogWin32ProcessWindowsDebug(HWND attachedHwnd, const char* context) {
+  if (!Logger::GetInstance().ShouldLog(LogLevel::DEBUG, LOG_CAT_WSI)) {
+    return;
+  }
+  Win32DebugDumpCtx ctx{GetCurrentProcessId(), attachedHwnd};
+  GLIDE_LOG(DEBUG, "WSI",
+            "Win32 focus snapshot (" << context << "): attached="
+                << static_cast<void*>(attachedHwnd)
+                << " fg=" << static_cast<void*>(GetForegroundWindow())
+                << " active=" << static_cast<void*>(GetActiveWindow())
+                << " focus=" << static_cast<void*>(GetFocus()));
+  EnumWindows(LogWin32ProcessWindowProc, reinterpret_cast<LPARAM>(&ctx));
 }
 
 std::mutex g_win32SubclassMutex;
@@ -325,12 +417,40 @@ LRESULT CALLBACK GlideWin32EmbeddedSubclassProc(HWND hwnd, UINT msg,
                : CallWindowProcA(entry.origProc, hwnd, msg, wParam, lParam);
   };
 
+  const char* traceMsgName = Win32TraceMsgName(msg);
+  auto traceMsg = [&](const char* action) {
+    if (traceMsgName != nullptr &&
+        Logger::GetInstance().ShouldLog(LogLevel::TRACE, LOG_CAT_WSI)) {
+      long long graceRemMs = -1;
+      if (entry.hasDeactivateGrace) {
+        graceRemMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                         entry.deactivateGraceUntil -
+                         std::chrono::steady_clock::now())
+                         .count();
+      }
+      GLIDE_LOG(TRACE, "WSI",
+                "WndProc[" << action << "] hwnd=" << static_cast<void*>(hwnd)
+                    << " msg=" << traceMsgName << "(0x" << std::hex << msg
+                    << ") wParam=0x" << static_cast<uintptr_t>(wParam)
+                    << " lParam=0x" << static_cast<uintptr_t>(lParam) << std::dec
+                    << " active=" << (entry.active ? 1 : 0)
+                    << " passthru=" << (entry.passthruSuspended ? 1 : 0)
+                    << " inAdjust=" << (entry.inAdjust ? 1 : 0)
+                    << " grace=" << (entry.hasDeactivateGrace ? 1 : 0)
+                    << "(" << graceRemMs << "ms)"
+                    << " fg=" << static_cast<void*>(GetForegroundWindow())
+                    << " focus=" << static_cast<void*>(GetFocus()));
+    }
+  };
+
   if (!found || !entry.origProc) {
+    traceMsg("untracked-def");
     return IsWindowUnicode(hwnd) ? DefWindowProcW(hwnd, msg, wParam, lParam)
                                  : DefWindowProcA(hwnd, msg, wParam, lParam);
   }
 
   if (msg == WM_NCDESTROY || !entry.active || entry.passthruSuspended) {
+    traceMsg("passthrough");
     return callOrig();
   }
 
@@ -338,6 +458,7 @@ LRESULT CALLBACK GlideWin32EmbeddedSubclassProc(HWND hwnd, UINT msg,
     switch (msg) {
       case WM_GETMINMAXINFO:
       case WM_WINDOWPOSCHANGING:
+        traceMsg("inAdjust-def");
         return callDef();
       case WM_WINDOWPOSCHANGED:
       case WM_SIZE:
@@ -347,15 +468,19 @@ LRESULT CALLBACK GlideWin32EmbeddedSubclassProc(HWND hwnd, UINT msg,
       case WM_DISPLAYCHANGE:
       case WM_ACTIVATE:
       case WM_ACTIVATEAPP:
+      case WM_SETFOCUS:
       case WM_KILLFOCUS:
+        traceMsg("inAdjust-swallow");
         return 0;
       case WM_NCACTIVATE:
+        traceMsg("inAdjust-ncactivate");
         return TRUE;
       case WM_ERASEBKGND:
         return 1;
       default:
         break;
     }
+    traceMsg("inAdjust-orig");
     return callOrig();
   }
 
@@ -366,6 +491,7 @@ LRESULT CALLBACK GlideWin32EmbeddedSubclassProc(HWND hwnd, UINT msg,
       if (NativeSurfaceHost::ShouldSuppressWin32DeactivateBounce(
               static_cast<uint32_t>(msg), static_cast<uintptr_t>(wParam),
               suppressedResult)) {
+        traceMsg("grace-swallow");
         bool shouldLog = false;
         if (!entry.loggedDeactivateGrace) {
           std::lock_guard<std::mutex> lock(g_win32SubclassMutex);
@@ -402,11 +528,37 @@ LRESULT CALLBACK GlideWin32EmbeddedSubclassProc(HWND hwnd, UINT msg,
       // so the window can expand cleanly to the full monitor rectangle.
       return callDef();
     case WM_DISPLAYCHANGE:
+      traceMsg("swallow-displaychange");
       return 0;
+    case WM_WINDOWPOSCHANGING:
+      if (lParam != 0) {
+        auto* wp = reinterpret_cast<WINDOWPOS*>(lParam);
+        if (NativeSurfaceHost::ShouldForceWin32SwpNoActivate(
+                entry.deactivateDepth > 0,
+                reinterpret_cast<uintptr_t>(wp->hwndInsertAfter),
+                static_cast<uint32_t>(wp->flags))) {
+          wp->flags |= SWP_NOACTIVATE;
+          GLIDE_LOG(DEBUG, "WSI",
+                    "NativeSurfaceHost: added SWP_NOACTIVATE to "
+                    "WM_WINDOWPOSCHANGING on HWND "
+                        << static_cast<void*>(hwnd) << " (insertAfter=0x"
+                        << std::hex
+                        << reinterpret_cast<uintptr_t>(wp->hwndInsertAfter)
+                        << ", flags=0x" << wp->flags << std::dec
+                        << ", deactivateDepth=" << entry.deactivateDepth
+                        << ").");
+          traceMsg("windowposchanging-noactivate");
+          const LRESULT res = callOrig();
+          wp->flags |= SWP_NOACTIVATE;
+          return res;
+        }
+      }
+      break;
     case WM_WINDOWPOSCHANGED:
       // Swallowing WM_WINDOWPOSCHANGED stops DefWindowProc from synthesizing
       // fake WM_SIZE/WM_MOVE events at the desktop resolution when a 3dfx app
       // opened a 640x480/800x600 Glide context.
+      traceMsg("swallow-windowposchanged");
       return 0;
     case WM_SIZE:
       if (wParam != SIZE_MINIMIZED && entry.appliedW > 0 &&
@@ -416,6 +568,7 @@ LRESULT CALLBACK GlideWin32EmbeddedSubclassProc(HWND hwnd, UINT msg,
         if ((static_cast<uint32_t>(entry.appliedW) != entry.guestW ||
              static_cast<uint32_t>(entry.appliedH) != entry.guestH) &&
             szW == entry.appliedW && szH == entry.appliedH) {
+          traceMsg("swallow-fullscreen-size");
           return 0;
         }
       }
@@ -481,6 +634,33 @@ LRESULT CALLBACK GlideWin32EmbeddedSubclassProc(HWND hwnd, UINT msg,
     }
   }
 
+  const bool isDeactivateMsg =
+      (msg == WM_ACTIVATEAPP && wParam == 0) ||
+      (msg == WM_ACTIVATE && LOWORD(wParam) == WA_INACTIVE) ||
+      (msg == WM_KILLFOCUS);
+  if (isDeactivateMsg) {
+    struct DeactivateDepthGuard {
+      HWND target;
+      explicit DeactivateDepthGuard(HWND w) : target(w) {
+        std::lock_guard<std::mutex> lock(g_win32SubclassMutex);
+        auto it = g_win32Subclasses.find(target);
+        if (it != g_win32Subclasses.end()) {
+          ++it->second.deactivateDepth;
+        }
+      }
+      ~DeactivateDepthGuard() {
+        std::lock_guard<std::mutex> lock(g_win32SubclassMutex);
+        auto it = g_win32Subclasses.find(target);
+        if (it != g_win32Subclasses.end() && it->second.deactivateDepth > 0) {
+          --it->second.deactivateDepth;
+        }
+      }
+    } deactivateGuard(hwnd);
+    traceMsg("forward-deactivate");
+    return callOrig();
+  }
+
+  traceMsg("forward-orig");
   return callOrig();
 }
 #endif
@@ -927,9 +1107,19 @@ void QueryWaylandHostSizes(SDL_Window* hostWin, uint32_t fallbackW,
 }
 #endif
 
+std::atomic<bool> g_autoSplashActive{false};
+
 }  // namespace
 
 NativeSurfaceHost::~NativeSurfaceHost() { Detach(); }
+
+void NativeSurfaceHost::SetAutoSplashActive(bool active) {
+  g_autoSplashActive.store(active, std::memory_order_release);
+}
+
+bool NativeSurfaceHost::IsAutoSplashActive() {
+  return g_autoSplashActive.load(std::memory_order_acquire);
+}
 
 const char* NativeSurfaceHost::ModeToString(Mode mode) {
   switch (mode) {
@@ -1081,6 +1271,44 @@ bool NativeSurfaceHost::ShouldSuppressWin32DeactivateBounce(
     default:
       return false;
   }
+}
+
+bool NativeSurfaceHost::ShouldForceWin32SwpNoActivate(bool inDeactivating,
+                                                      uintptr_t hwndInsertAfter,
+                                                      uint32_t swpFlags) {
+  constexpr uint32_t kSwpNoZOrder = 0x0004u;
+  constexpr uint32_t kSwpNoActivate = 0x0010u;
+  constexpr uintptr_t kHwndBottom = 1u;
+#if defined(_WIN32)
+  static_assert(kSwpNoZOrder == SWP_NOZORDER, "SWP_NOZORDER mismatch");
+  static_assert(kSwpNoActivate == SWP_NOACTIVATE, "SWP_NOACTIVATE mismatch");
+#endif
+  if ((swpFlags & kSwpNoActivate) != 0u) {
+    return false;
+  }
+  if (inDeactivating) {
+    return true;
+  }
+  return (swpFlags & kSwpNoZOrder) == 0u && hwndInsertAfter == kHwndBottom;
+}
+
+void NativeSurfaceHost::ComputeRestoredWin32Styles(
+    uint32_t savedStyle, uint32_t savedExStyle, uint32_t curStyle,
+    uint32_t curExStyle, bool forceDropTopmost, uint32_t& outStyle,
+    uint32_t& outExStyle) {
+  constexpr uint32_t kLiveStyleMask =
+      0x10000000u /* WS_VISIBLE */ | 0x20000000u /* WS_MINIMIZE */ |
+      0x08000000u /* WS_DISABLED */;
+  constexpr uint32_t kWsExTopmost = 0x00000008u;
+#if defined(_WIN32)
+  static_assert(kLiveStyleMask == (WS_VISIBLE | WS_MINIMIZE | WS_DISABLED),
+                "Live style mask mismatch");
+  static_assert(kWsExTopmost == WS_EX_TOPMOST, "WS_EX_TOPMOST mismatch");
+#endif
+  outStyle = (savedStyle & ~kLiveStyleMask) | (curStyle & kLiveStyleMask);
+  const uint32_t liveTopmost =
+      forceDropTopmost ? 0u : (curExStyle & kWsExTopmost);
+  outExStyle = (savedExStyle & ~kWsExTopmost) | liveTopmost;
 }
 
 bool NativeSurfaceHost::Attach(void* hostHandle, uint32_t guestW,
@@ -1391,7 +1619,8 @@ bool NativeSurfaceHost::AttachWin32Embedded(void* parentHwndPtr) {
 
   bool appliedAtAttach = false;
   if (m_fullscreen) {
-    appliedAtAttach = ApplyWin32EmbeddedFullscreenIfNeeded();
+    appliedAtAttach =
+        ApplyWin32EmbeddedFullscreenIfNeeded(/*restoreIfIconic=*/true);
   }
   HideWin32EmbeddedChildren();
   RefreshWin32SurfaceFingerprint();
@@ -1418,6 +1647,12 @@ bool NativeSurfaceHost::AttachWin32Embedded(void* parentHwndPtr) {
                 << ", fullscreen=" << (m_fullscreen ? "yes" : "no")
                 << ", drawable=" << m_pixelWidth << "x" << m_pixelHeight
                 << ").");
+  LogWin32ProcessWindowsDebug(parent, "post-AttachWin32Embedded");
+  // Post a benign WM_NULL so games sleeping in WaitMessage() while deactivated
+  // (where WM_ACTIVATEAPP/WM_SETFOCUS are dispatched synchronously as sent
+  // messages and call grSstWinOpen() without causing WaitMessage() to return)
+  // immediately wake up and render their first frame upon Alt+Tab return.
+  PostMessageA(parent, WM_NULL, 0, 0);
   return true;
 #else
   (void)parentHwndPtr;
@@ -1481,6 +1716,9 @@ void NativeSurfaceHost::InstallWin32FullscreenSubclass() {
       isUnicode ? SetWindowLongPtrW(hwnd, GWLP_WNDPROC, targetProc)
                 : SetWindowLongPtrA(hwnd, GWLP_WNDPROC, targetProc);
   if (prev == 0 && GetLastError() != 0) {
+    GLIDE_LOG(WARN, "WSI",
+              "InstallWin32FullscreenSubclass: SetWindowLongPtr failed on HWND "
+                  << static_cast<void*>(hwnd) << " err=" << GetLastError());
     std::lock_guard<std::mutex> lock(g_win32SubclassMutex);
     g_win32Subclasses.erase(hwnd);
     return;
@@ -1493,6 +1731,13 @@ void NativeSurfaceHost::InstallWin32FullscreenSubclass() {
     }
   }
   m_win32SubclassInstalled = true;
+  GLIDE_LOG(DEBUG, "WSI",
+            "InstallWin32FullscreenSubclass: installed on HWND "
+                << static_cast<void*>(hwnd) << " unicode=" << (isUnicode ? 1 : 0)
+                << " origProc=0x" << std::hex
+                << static_cast<uintptr_t>(prev != 0 ? prev : curProc)
+                << " targetProc=0x" << static_cast<uintptr_t>(targetProc)
+                << std::dec);
 #endif
 }
 
@@ -1534,6 +1779,17 @@ void NativeSurfaceHost::UninstallWin32FullscreenSubclass() {
       }
       std::lock_guard<std::mutex> lock(g_win32SubclassMutex);
       g_win32Subclasses.erase(hwnd);
+      GLIDE_LOG(DEBUG, "WSI",
+                "UninstallWin32FullscreenSubclass: restored origProc=0x"
+                    << std::hex << reinterpret_cast<uintptr_t>(origProc)
+                    << std::dec << " on HWND " << static_cast<void*>(hwnd));
+    } else {
+      GLIDE_LOG(DEBUG, "WSI",
+                "UninstallWin32FullscreenSubclass: foreign curProc=0x"
+                    << std::hex << static_cast<uintptr_t>(curProc)
+                    << " != ourProc=0x" << static_cast<uintptr_t>(ourProc)
+                    << std::dec << " on HWND " << static_cast<void*>(hwnd)
+                    << "; left passive passthrough entry.");
     }
     // If another DLL (e.g. wined3d) chained a WndProc above ours, leave the
     // map entry alive with `active = false` so GlideWin32EmbeddedSubclassProc
@@ -1571,7 +1827,8 @@ void NativeSurfaceHost::SyncWin32SubclassState() {
 #endif
 }
 
-bool NativeSurfaceHost::ApplyWin32EmbeddedFullscreenIfNeeded() {
+bool NativeSurfaceHost::ApplyWin32EmbeddedFullscreenIfNeeded(
+    bool restoreIfIconic) {
 #if defined(_WIN32)
   if (!m_fullscreen || m_mode != Mode::Win32Embedded || !m_win32ParentHwnd ||
       m_inWin32FullscreenAdjust ||
@@ -1581,8 +1838,12 @@ bool NativeSurfaceHost::ApplyWin32EmbeddedFullscreenIfNeeded() {
   HWND hwnd = static_cast<HWND>(m_win32ParentHwnd);
   if (!IsWindow(hwnd) || !IsWindowVisible(hwnd)) {
     // Defer fullscreen resizing until the host application actually shows its
-    // window (avoids flashing a premature black fullscreen canvas when titles
-    // call grSstOpen() before ShowWindow() or before an intro AVI).
+    // window (avoids flashing a premature black canvas).
+    return false;
+  }
+  const bool wasIconic = (IsIconic(hwnd) != FALSE);
+  if (wasIconic && !restoreIfIconic) {
+    // Never fight a user-minimized window during steady-state SyncBounds().
     return false;
   }
 
@@ -1591,18 +1852,24 @@ bool NativeSurfaceHost::ApplyWin32EmbeddedFullscreenIfNeeded() {
     return false;
   }
 
-  const LONG curStyle = GetWindowLongA(hwnd, GWL_STYLE);
-  const LONG curExStyle = GetWindowLongA(hwnd, GWL_EXSTYLE);
+  LONG curStyle = GetWindowLongA(hwnd, GWL_STYLE);
+  LONG curExStyle = GetWindowLongA(hwnd, GWL_EXSTYLE);
   RECT curRc{};
   GetWindowRect(hwnd, &curRc);
+  WINDOWPLACEMENT wp{};
+  wp.length = sizeof(wp);
+  const bool hasWp = wasIconic && (GetWindowPlacement(hwnd, &wp) != FALSE);
 
   if (!m_win32FullscreenSaved) {
-    m_win32SavedStyle = static_cast<intptr_t>(curStyle);
+    const DWORD savedStyleBits =
+        static_cast<DWORD>(curStyle) & (wasIconic ? ~WS_MINIMIZE : ~0u);
+    const RECT savedRc = hasWp ? wp.rcNormalPosition : curRc;
+    m_win32SavedStyle = static_cast<intptr_t>(savedStyleBits);
     m_win32SavedExStyle = static_cast<intptr_t>(curExStyle);
-    m_win32SavedRect[0] = static_cast<int32_t>(curRc.left);
-    m_win32SavedRect[1] = static_cast<int32_t>(curRc.top);
-    m_win32SavedRect[2] = static_cast<int32_t>(curRc.right);
-    m_win32SavedRect[3] = static_cast<int32_t>(curRc.bottom);
+    m_win32SavedRect[0] = static_cast<int32_t>(savedRc.left);
+    m_win32SavedRect[1] = static_cast<int32_t>(savedRc.top);
+    m_win32SavedRect[2] = static_cast<int32_t>(savedRc.right);
+    m_win32SavedRect[3] = static_cast<int32_t>(savedRc.bottom);
     m_win32FullscreenSaved = true;
   }
 
@@ -1613,12 +1880,13 @@ bool NativeSurfaceHost::ApplyWin32EmbeddedFullscreenIfNeeded() {
       WS_EX_DLGMODALFRAME | WS_EX_CLIENTEDGE | WS_EX_STATICEDGE |
       WS_EX_WINDOWEDGE;
 
-  const DWORD uStyle = static_cast<DWORD>(curStyle);
-  const DWORD uExStyle = static_cast<DWORD>(curExStyle);
-  const bool needStyleFix =
+  DWORD uStyle = static_cast<DWORD>(curStyle);
+  DWORD uExStyle = static_cast<DWORD>(curExStyle);
+  bool needStyleFix =
       ((uStyle & kChromeStyleMask) != 0u) || ((uStyle & WS_POPUP) == 0u) ||
       ((uExStyle & kChromeExStyleMask) != 0u);
   const bool needRectFix =
+      wasIconic ||
       (curRc.left != monRc.left || curRc.top != monRc.top ||
        curRc.right != monRc.right || curRc.bottom != monRc.bottom);
 
@@ -1635,7 +1903,7 @@ bool NativeSurfaceHost::ApplyWin32EmbeddedFullscreenIfNeeded() {
   // (e.g. a top panel or tiling WM) and neither the monitor rect nor the
   // window's settled rect/style has changed since then, accept the clamped
   // geometry instead of spamming SetWindowPos on every SwapBuffers() frame.
-  if (!needStyleFix && m_win32FullscreenApplied) {
+  if (!wasIconic && !needStyleFix && m_win32FullscreenApplied) {
     const bool sameMon =
         (monRc.left == m_win32AppliedMonRect[0] &&
          monRc.top == m_win32AppliedMonRect[1] &&
@@ -1651,10 +1919,11 @@ bool NativeSurfaceHost::ApplyWin32EmbeddedFullscreenIfNeeded() {
     }
   }
 
-  // Install the re-entrancy-safe WndProc subclass BEFORE mutating styles or
-  // resizing so WM_GETMINMAXINFO clamps and re-entrant WM_WINDOWPOSCHANGED /
-  // WM_SIZE callbacks (e.g. Unreal FMemCache, CyberGladiators, Hitman 47) are
-  // intercepted cleanly on the very first SetWindowPos().
+  // Install the re-entrancy-safe WndProc subclass BEFORE un-minimizing,
+  // mutating styles, or resizing so WM_GETMINMAXINFO clamps and re-entrant
+  // WM_ACTIVATE / WM_SETFOCUS / WM_WINDOWPOSCHANGED / WM_SIZE callbacks (e.g.
+  // Unreal FMemCache, CyberGladiators, Hitman 47) are intercepted cleanly on
+  // the very first window transition.
   InstallWin32FullscreenSubclass();
 
   struct ReentrancyGuard {
@@ -1670,6 +1939,29 @@ bool NativeSurfaceHost::ApplyWin32EmbeddedFullscreenIfNeeded() {
       host.SyncWin32SubclassState();
     }
   } guard(*this, m_inWin32FullscreenAdjust);
+
+  if (wasIconic) {
+    // Restore minimized windows directly to the target fullscreen monitor rect
+    // under the inAdjust guard so (1) the window does not visibly flash its
+    // small pre-fullscreen rect first and (2) synchronous WM_ACTIVATE /
+    // WM_SETFOCUS cannot re-enter grSstWinOpen().
+    if (hasWp) {
+      wp.flags = 0;
+      wp.showCmd = SW_SHOWNORMAL;
+      wp.rcNormalPosition = monRc;
+      SetWindowPlacement(hwnd, &wp);
+    }
+    if (IsIconic(hwnd)) {
+      ShowWindow(hwnd, SW_RESTORE);
+    }
+    curStyle = GetWindowLongA(hwnd, GWL_STYLE);
+    curExStyle = GetWindowLongA(hwnd, GWL_EXSTYLE);
+    uStyle = static_cast<DWORD>(curStyle);
+    uExStyle = static_cast<DWORD>(curExStyle);
+    needStyleFix =
+        ((uStyle & kChromeStyleMask) != 0u) || ((uStyle & WS_POPUP) == 0u) ||
+        ((uExStyle & kChromeExStyleMask) != 0u);
+  }
 
   if (needStyleFix) {
     // Preserve existing WS_VISIBLE state so we do not prematurely show or
@@ -1696,7 +1988,7 @@ bool NativeSurfaceHost::ApplyWin32EmbeddedFullscreenIfNeeded() {
   // Release any undersized pre-fullscreen ClipCursor trap installed before
   // grSstWinOpen (e.g. Hitman: Codename 47 confining cursor to (0,0)-(800,600)
   // on a 2560x1600 monitor), matching nGlide's fullscreen cursor behavior.
-  if (monW > prevW || monH > prevH) {
+  if (wasIconic || monW > prevW || monH > prevH) {
     RECT clipRc{};
     if (GetClipCursor(&clipRc)) {
       const int clipW = clipRc.right - clipRc.left;
@@ -1711,6 +2003,11 @@ bool NativeSurfaceHost::ApplyWin32EmbeddedFullscreenIfNeeded() {
       }
     }
   }
+
+  // Non-destructive event pump so Wine's X11/Wayland driver immediately flushes
+  // pending ConfigureNotify / xdg_toplevel configure events for the resize.
+  MSG peekMsg{};
+  PeekMessageA(&peekMsg, nullptr, 0, 0, PM_NOREMOVE);
 
   RECT settledRc{};
   GetWindowRect(hwnd, &settledRc);
@@ -1735,6 +2032,21 @@ bool NativeSurfaceHost::ApplyWin32EmbeddedFullscreenIfNeeded() {
     }
   }
 
+  GLIDE_LOG(DEBUG, "WSI",
+            "ApplyWin32EmbeddedFullscreen: HWND "
+                << m_win32ParentHwnd << " savedStyle=0x" << std::hex
+                << static_cast<DWORD>(m_win32SavedStyle) << " savedExStyle=0x"
+                << static_cast<DWORD>(m_win32SavedExStyle) << " curStyle=0x"
+                << static_cast<DWORD>(GetWindowLongA(hwnd, GWL_STYLE))
+                << " curExStyle=0x"
+                << static_cast<DWORD>(GetWindowLongA(hwnd, GWL_EXSTYLE))
+                << std::dec << " prevRect=(" << curRc.left << "," << curRc.top
+                << ")-(" << curRc.right << "," << curRc.bottom
+                << ") settledRect=(" << settledRc.left << "," << settledRc.top
+                << ")-(" << settledRc.right << "," << settledRc.bottom
+                << ") subclass=" << (m_win32SubclassInstalled ? 1 : 0)
+                << " fg=" << static_cast<void*>(GetForegroundWindow())
+                << " focus=" << static_cast<void*>(GetFocus()));
   GLIDE_LOG(INFO, "WSI",
             "NativeSurfaceHost: enforced borderless fullscreen on Win32 "
             "HWND "
@@ -1742,6 +2054,7 @@ bool NativeSurfaceHost::ApplyWin32EmbeddedFullscreenIfNeeded() {
                 << monRc.left << "," << monRc.top << ").");
   return true;
 #else
+  (void)restoreIfIconic;
   return false;
 #endif
 }
@@ -1771,17 +2084,94 @@ void NativeSurfaceHost::RestoreWin32EmbeddedFullscreenIfSaved() {
 
     HWND hwnd = static_cast<HWND>(m_win32ParentHwnd);
     if (IsWindow(hwnd)) {
-      SetWindowLongA(hwnd, GWL_STYLE, static_cast<LONG>(m_win32SavedStyle));
-      SetWindowLongA(hwnd, GWL_EXSTYLE,
-                     static_cast<LONG>(m_win32SavedExStyle));
+      bool wasDeactivating = false;
+      {
+        std::lock_guard<std::mutex> lock(g_win32SubclassMutex);
+        auto it = g_win32Subclasses.find(hwnd);
+        if (it != g_win32Subclasses.end() && it->second.deactivateDepth > 0) {
+          wasDeactivating = true;
+        }
+      }
+      const DWORD preStyle = static_cast<DWORD>(GetWindowLongA(hwnd, GWL_STYLE));
+      const DWORD preExStyle =
+          static_cast<DWORD>(GetWindowLongA(hwnd, GWL_EXSTYLE));
+      const bool dropTopmost =
+          wasDeactivating || (GetForegroundWindow() != hwnd);
+      uint32_t restoredStyle = 0;
+      uint32_t restoredExStyle = 0;
+      ComputeRestoredWin32Styles(static_cast<uint32_t>(m_win32SavedStyle),
+                                 static_cast<uint32_t>(m_win32SavedExStyle),
+                                 static_cast<uint32_t>(preStyle),
+                                 static_cast<uint32_t>(preExStyle), dropTopmost,
+                                 restoredStyle, restoredExStyle);
+      GLIDE_LOG(DEBUG, "WSI",
+                "RestoreWin32EmbeddedFullscreen: HWND "
+                    << m_win32ParentHwnd << " preStyle=0x" << std::hex
+                    << preStyle << " preExStyle=0x" << preExStyle
+                    << " -> restoredStyle=0x" << restoredStyle
+                    << " restoredExStyle=0x" << restoredExStyle << std::dec
+                    << " wasDeactivating=" << (wasDeactivating ? 1 : 0)
+                    << " dropTopmost=" << (dropTopmost ? 1 : 0)
+                    << " savedRect=(" << m_win32SavedRect[0] << ","
+                    << m_win32SavedRect[1] << ")-(" << m_win32SavedRect[2]
+                    << "," << m_win32SavedRect[3] << ") fg="
+                    << static_cast<void*>(GetForegroundWindow())
+                    << " focus=" << static_cast<void*>(GetFocus()));
+      if (restoredStyle != static_cast<uint32_t>(preStyle)) {
+        SetWindowLongA(hwnd, GWL_STYLE, static_cast<LONG>(restoredStyle));
+      }
+      if (restoredExStyle != static_cast<uint32_t>(preExStyle)) {
+        SetWindowLongA(hwnd, GWL_EXSTYLE, static_cast<LONG>(restoredExStyle));
+      }
+      const bool clearedTopmost =
+          ((preExStyle & WS_EX_TOPMOST) != 0u) &&
+          ((restoredExStyle & WS_EX_TOPMOST) == 0u);
       const int w = m_win32SavedRect[2] - m_win32SavedRect[0];
       const int h = m_win32SavedRect[3] - m_win32SavedRect[1];
-      if (w > 0 && h > 0) {
+      const bool shouldMinimizeOnDeactivate =
+          wasDeactivating && IsWindowVisible(hwnd) && !IsIconic(hwnd);
+      if (shouldMinimizeOnDeactivate) {
+        // Drop topmost z-order without resizing, then minimize immediately so
+        // the window does not visibly flash its smaller pre-fullscreen rect
+        // before leaving the desktop.
+        if (clearedTopmost) {
+          SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
+                       SWP_NOMOVE | SWP_NOSIZE | SWP_FRAMECHANGED |
+                           SWP_NOOWNERZORDER | SWP_NOACTIVATE);
+        }
+        ShowWindow(hwnd, SW_SHOWMINNOACTIVE);
+        if (IsIconic(hwnd)) {
+          if (w > 0 && h > 0) {
+            WINDOWPLACEMENT wp{};
+            wp.length = sizeof(wp);
+            if (GetWindowPlacement(hwnd, &wp)) {
+              wp.flags = 0;
+              wp.showCmd = SW_SHOWMINNOACTIVE;
+              wp.rcNormalPosition =
+                  RECT{m_win32SavedRect[0], m_win32SavedRect[1],
+                       m_win32SavedRect[2], m_win32SavedRect[3]};
+              SetWindowPlacement(hwnd, &wp);
+            }
+          }
+        } else if (w > 0 && h > 0) {
+          SetWindowPos(hwnd, HWND_NOTOPMOST, m_win32SavedRect[0],
+                       m_win32SavedRect[1], w, h,
+                       SWP_FRAMECHANGED | SWP_NOOWNERZORDER | SWP_NOACTIVATE |
+                           (clearedTopmost ? 0u : SWP_NOZORDER));
+        }
+      } else if (w > 0 && h > 0) {
+        UINT swpFlags = SWP_FRAMECHANGED | SWP_NOOWNERZORDER | SWP_NOACTIVATE;
+        if (!clearedTopmost) {
+          swpFlags |= SWP_NOZORDER;
+        }
         SetWindowPos(hwnd, HWND_NOTOPMOST, m_win32SavedRect[0],
-                     m_win32SavedRect[1], w, h,
-                     SWP_NOZORDER | SWP_FRAMECHANGED | SWP_NOOWNERZORDER |
-                         SWP_NOACTIVATE);
+                     m_win32SavedRect[1], w, h, swpFlags);
+      } else if (clearedTopmost) {
+        SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_FRAMECHANGED |
+                         SWP_NOOWNERZORDER | SWP_NOACTIVATE);
       }
+      LogWin32ProcessWindowsDebug(hwnd, "post-RestoreWin32EmbeddedFullscreen");
     }
   }
   UninstallWin32FullscreenSubclass();
@@ -2584,14 +2974,34 @@ bool NativeSurfaceHost::SyncBounds(uint32_t& outPixelW, uint32_t& outPixelH) {
     const bool wantPassthruRaise =
         !m_win32PassthruSuspended.load(std::memory_order_relaxed) &&
         m_win32PendingForeground.exchange(false, std::memory_order_relaxed);
-    if ((wantPassthruRaise || wantInitialFullscreenRaise) &&
+    const bool alreadyActiveFocused =
+        IsWindowVisible(parent) && !IsIconic(parent) &&
+        GetForegroundWindow() == parent && GetFocus() == parent;
+    if ((wantPassthruRaise ||
+         (wantInitialFullscreenRaise && !alreadyActiveFocused)) &&
         !m_inWin32ForegroundRaise && !m_inWin32FullscreenAdjust &&
         !m_win32PassthruSuspended.load(std::memory_order_relaxed)) {
       struct RaiseGuard {
-        bool& flag;
-        explicit RaiseGuard(bool& f) : flag(f) { flag = true; }
-        ~RaiseGuard() { flag = false; }
-      } guard(m_inWin32ForegroundRaise);
+        NativeSurfaceHost& host;
+        bool& raiseFlag;
+        bool guardAdjust;
+        explicit RaiseGuard(NativeSurfaceHost& h, bool& f, bool guardAdj)
+            : host(h), raiseFlag(f), guardAdjust(guardAdj) {
+          raiseFlag = true;
+          if (guardAdjust) {
+            host.m_inWin32FullscreenAdjust = true;
+            host.SyncWin32SubclassState();
+          }
+        }
+        ~RaiseGuard() {
+          if (guardAdjust) {
+            host.m_inWin32FullscreenAdjust = false;
+            host.SyncWin32SubclassState();
+          }
+          raiseFlag = false;
+        }
+      } guard(*this, m_inWin32ForegroundRaise,
+              wantInitialFullscreenRaise && IsAutoSplashActive());
 
       if (IsIconic(parent)) {
         ShowWindow(parent, SW_RESTORE);
@@ -2782,6 +3192,34 @@ void NativeSurfaceHost::RefreshWin32SurfaceFingerprint() {
 
 void NativeSurfaceHost::PollEvents(bool force) {
 #if defined(_WIN32)
+  // During the blocking automatic startup splash inside grSstWinOpen(), the
+  // host application has not yet returned to its own message loop. Call
+  // non-destructive PeekMessage(PM_NOREMOVE) under our WndProc adjust guard so
+  // Wine's X11/Wayland driver processes pending ConfigureNotify / xdg_toplevel
+  // configure events for our borderless-fullscreen resize without stealing any
+  // posted input/window messages from the app's queue.
+  if (m_mode == Mode::Win32Embedded && m_win32ParentHwnd &&
+      IsAutoSplashActive()) {
+    if (!m_inWin32FullscreenAdjust) {
+      struct SplashPumpGuard {
+        NativeSurfaceHost& host;
+        bool& flag;
+        explicit SplashPumpGuard(NativeSurfaceHost& h, bool& f)
+            : host(h), flag(f) {
+          flag = true;
+          host.SyncWin32SubclassState();
+        }
+        ~SplashPumpGuard() {
+          flag = false;
+          host.SyncWin32SubclassState();
+        }
+      } guard(*this, m_inWin32FullscreenAdjust);
+      MSG msg{};
+      PeekMessageA(&msg, nullptr, 0, 0, PM_NOREMOVE);
+    }
+    return;
+  }
+
   // Strictly isolated to Win32Window so foreign game HWND loops are untouched.
   if (m_mode != Mode::Win32Window || !m_win32Hwnd) {
     return;
