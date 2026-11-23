@@ -6,7 +6,7 @@ This guide covers **installing pre-built release binaries** (with minimal end-us
 
 ## 0. Using Pre-Built Release Binaries (End Users)
 
-Pre-built archives are published free of charge on the repository's [GitHub Releases](https://github.com/eugenenuke/glide-ng-alpha/releases) page:
+Pre-built archives are published free of charge on the repository's [GitHub Releases](https://github.com/eugenenuke/glide-ng/releases) page:
 
 - **`glide-ng-<ver>-runtime.zip`** *(or **`runtime.tar.xz`** for smaller downloads & native Linux symlink preservation)* — Contains only the drop-in stripped runtime libraries (`win32/glide*.dll`, `dos/GLIDE2X.OVL`, `linux-x86_64-<distro>/libglide*.so`).
 - **`glide-ng-<ver>-tools.zip`** — Diagnostic & benchmark tools (`glide_info`, `glide_bench`, `glide_envtest`, `glidecube`, `glidegears`, and showcase demos).

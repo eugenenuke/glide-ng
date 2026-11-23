@@ -356,7 +356,7 @@ QUICK START
            dosbox-x -conf dosbox.conf
 
 Full documentation & per-game catalog presets:
-  https://github.com/eugenenuke/glide-ng-alpha/tree/main/docs
+  https://github.com/eugenenuke/glide-ng/tree/main/docs
 EOF
 
 cat > "${TOOLS_DIR}/README.txt" <<EOF

@@ -856,6 +856,106 @@ TEST_CASE("Catalog: Compatibility INI Presets & Directory Integrity", "[Catalog]
     CHECK(cfg.msaaSamples == 1u);
     CHECK(cfg.noSplash == false);
   }
+  // Descent (1995, D1_3Dfx Beta 01 — Win32 glide2x.dll)
+  {
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load(
+        (catalogDir / "games" / "descent" / "glide-ng.ini").string(), cfg));
+    CHECK(cfg.backend == "vulkan");
+    CHECK(cfg.model == GlideWrapper::CardModel::Voodoo2);
+    CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_56);
+    CHECK(cfg.msaaSamples == 1u);
+    CHECK(cfg.maxFps == 60.0f);
+    CHECK(cfg.noSplash == false);
+  }
+  {
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load(
+        (catalogDir / "games" / "descent" / "glide-ng.hq.ini").string(), cfg));
+    CHECK(cfg.backend == "vulkan");
+    CHECK(cfg.model == GlideWrapper::CardModel::Voodoo2);
+    CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_56);
+    CHECK(cfg.msaaSamples == 4u);
+    CHECK(cfg.presentationFilter == 1u);
+    CHECK(cfg.noDitherSub == true);
+    CHECK(cfg.maxFps == 60.0f);
+    CHECK(cfg.noSplash == false);
+  }
+  {
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load(
+        (catalogDir / "games" / "descent" / "glide-ng.voodoo1.ini").string(),
+        cfg));
+    CHECK(cfg.backend == "vulkan");
+    CHECK(cfg.model == GlideWrapper::CardModel::VoodooGraphics);
+    CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_48);
+    CHECK(cfg.msaaSamples == 1u);
+    CHECK(cfg.maxFps == 60.0f);
+    CHECK(cfg.noSplash == false);
+  }
+  {
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load(
+        (catalogDir / "games" / "descent" / "glide-ng.software.ini").string(),
+        cfg));
+    CHECK(cfg.backend == "software");
+    CHECK(cfg.model == GlideWrapper::CardModel::Voodoo2);
+    CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_56);
+    CHECK(cfg.msaaSamples == 1u);
+    CHECK(cfg.maxFps == 60.0f);
+    CHECK(cfg.noSplash == false);
+  }
+  // Descent II (1996, DOS/32 dynamic GLIDE2X.OVL — D2_3DFX.EXE)
+  {
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load(
+        (catalogDir / "games" / "descent-2" / "glide-ng.ini").string(), cfg));
+    CHECK(cfg.backend == "vulkan");
+    CHECK(cfg.model == GlideWrapper::CardModel::Voodoo2);
+    CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_56);
+    CHECK(cfg.msaaSamples == 1u);
+    CHECK(cfg.maxFps == 60.0f);
+    CHECK(cfg.noSplash == false);
+  }
+  {
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load(
+        (catalogDir / "games" / "descent-2" / "glide-ng.hq.ini").string(),
+        cfg));
+    CHECK(cfg.backend == "vulkan");
+    CHECK(cfg.model == GlideWrapper::CardModel::Voodoo2);
+    CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_56);
+    CHECK(cfg.msaaSamples == 4u);
+    CHECK(cfg.presentationFilter == 1u);
+    CHECK(cfg.noDitherSub == true);
+    CHECK(cfg.maxFps == 60.0f);
+    CHECK(cfg.noSplash == false);
+  }
+  {
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load(
+        (catalogDir / "games" / "descent-2" / "glide-ng.voodoo1.ini").string(),
+        cfg));
+    CHECK(cfg.backend == "vulkan");
+    CHECK(cfg.model == GlideWrapper::CardModel::VoodooGraphics);
+    CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_48);
+    CHECK(cfg.msaaSamples == 1u);
+    CHECK(cfg.maxFps == 60.0f);
+    CHECK(cfg.noSplash == false);
+  }
+  {
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load(
+        (catalogDir / "games" / "descent-2" / "glide-ng.software.ini")
+            .string(),
+        cfg));
+    CHECK(cfg.backend == "software");
+    CHECK(cfg.model == GlideWrapper::CardModel::Voodoo2);
+    CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_56);
+    CHECK(cfg.msaaSamples == 1u);
+    CHECK(cfg.maxFps == 60.0f);
+    CHECK(cfg.noSplash == false);
+  }
 }
 
 TEST_CASE("Build: Single-Source SemVer Version & Metadata", "[Version]") {

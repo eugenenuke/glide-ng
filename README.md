@@ -26,7 +26,7 @@ It runs classic 1990s and early-2000s DOS (via DOSBox pass-through), Win32 (via 
 
 ### 0. Download Pre-Built Release Binaries (No Compiler Needed)
 
-Ready-to-use stripped archives (`runtime.zip` / `runtime.tar.xz`, `tools.zip`, optional `debug-symbols.zip`, and `SHA256SUMS.txt`) for **Windows/Wine/Proton (`win32/glide*.dll`)**, **DOSBox (`dos/GLIDE2X.OVL`)**, and **Linux x86_64** (`ubuntu-22.04`, `ubuntu-24.04`, `fedora-41`, and `arch` / CachyOS flavors) are published on [GitHub Releases](https://github.com/eugenenuke/glide-ng-alpha/releases). See [Pre-Built Release Binaries & End-User Runtime Packages](docs/user-guide/building-and-installing.md#0-using-pre-built-release-binaries-end-users) for distro selection and minimal non-dev package commands.
+Ready-to-use stripped archives (`runtime.zip` / `runtime.tar.xz`, `tools.zip`, optional `debug-symbols.zip`, and `SHA256SUMS.txt`) for **Windows/Wine/Proton (`win32/glide*.dll`)**, **DOSBox (`dos/GLIDE2X.OVL`)**, and **Linux x86_64** (`ubuntu-22.04`, `ubuntu-24.04`, `fedora-41`, and `arch` / CachyOS flavors) are published on [GitHub Releases](https://github.com/eugenenuke/glide-ng/releases). See [Pre-Built Release Binaries & End-User Runtime Packages](docs/user-guide/building-and-installing.md#0-using-pre-built-release-binaries-end-users) for distro selection and minimal non-dev package commands.
 
 ### 1. Build on Linux (plus Automatic Win32 DLLs if MinGW-w64 Is Installed)
 

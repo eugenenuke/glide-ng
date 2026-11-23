@@ -11,6 +11,9 @@ For the pre-beta engineering narrative covering early architecture decisions and
 ## [Unreleased]
 
 ### Added
+- **Descent & Descent II Catalog Entries (`44` Total Commercial Games)**:
+  - ***Descent* (`1995`, `docs/catalog/games/descent/`)**: Verified `D1_3Dfx` V1.0 Beta 01 (`D1_3DFX.EXE`, Win32 `glide2x.dll` under Wine, v1.0 → v1.5 → `D13DINST.EXE`) at **`640×480`** and **`800×600`** (`VideoMode=1`) across **Vulkan** (`1×` & `4× MSAA`), **OpenGL 3.3 Core (WGL)**, and **Software** backends (main menu, briefing, Level 1, `DESCENT.DEM` combat with translucent plasma fireballs, `Tab` wireframe automap), with drop-in `glide-ng*.ini` presets.
+  - ***Descent II* (`1996`, `docs/catalog/games/descent-2/`)**: Verified the dynamic `GLIDE2X.OVL` 3dfx patch (`D2_3DFX.EXE` Release 6, `1,374,737` B on retail `v1.2`) across **Vulkan** (`1×` & `4× MSAA`), **OpenGL ES 3.2**, and **Software** backends (`640×480` menus, `INTRO-H.MVL` FMV, briefing, Level 1, `DESCENT2.DEM` reactor/combat with live `REAR` camera inset, `Tab` wireframe automap, plus native DOS VGA `DESCENT2.EXE` baseline), with drop-in `glide-ng*.ini` presets capped at **`max_fps = 60`**.
 - **Screamer 2 Catalog Entry (`42` Total Commercial Games)**: Verified the dynamic `GLIDE2X.OVL` Voodoo2+ DOS patch (`s2_3dfx.exe`, `1,055,262` B) across **Vulkan** (`1×` & `4× MSAA`), **OpenGL ES 3.2**, and **Software** backends (England, Egypt, and California stages, menus, camera modes, plus `START65H.EXE` SVGA comparison) with drop-in `glide-ng*.ini` presets under `docs/catalog/games/screamer-2/`.
 - **Automated Release Notes Generation**: Added [`scripts/generate_release_notes.py`](scripts/generate_release_notes.py) and wired it into [`.github/workflows/release.yml`](.github/workflows/release.yml) so future tag pushes auto-populate GitHub Release pages from `CHANGELOG.md`, archive sizes/`GLIBC` floors, and `SHA256SUMS.txt`.
 - **Authentic 3dfx Environment Variables (`20 → 48` Registered) & `SSTH3_` Scan Prefix**: Expanded [`include/glide_ng/env_vars.h`](include/glide_ng/env_vars.h), `IniConfigLoader`, `glide-ng.ini.example`, and [`docs/user-guide/configuration.md`](docs/user-guide/configuration.md) with full family-alias & INI support:
@@ -30,6 +33,12 @@ For the pre-beta engineering narrative covering early architecture decisions and
   - Changed the default `[hud] opacity` from `0.78` to **`0.0`** (borderless, opaque drop-shadowed text with no backdrop pill) and removed the hardcoded `120/255` alpha floor on the frametime graph box so low opacities (`0.0`–`0.4`) stay genuinely transparent.
 
 ### Fixed
+- **Direct `GR_BUFFER_FRONTBUFFER` Trailing-Edge Scanout (`FrontBufferFlushTimer`, `VulkanBackend`, `OpenGLESBackend`, `SoftwareBackend`)**:
+  - Added lazy-spawned trailing-edge timer [`src/backends/FrontBufferFlushTimer.h`](src/backends/FrontBufferFlushTimer.h) (`zero` background threads for headless or double-buffered games) wired into front-buffer mutations (`WriteLFB`, `ClearBufferExt`, `DrawPoint`, `DrawLine`, `DrawTriangle`) across **Vulkan**, **OpenGL ES / WGL**, and **Software** backends. Titles that render menus, cursor highlights, and typewriter briefings directly into `GR_BUFFER_FRONTBUFFER` without calling `grBufferSwap()` (e.g. *Descent II* `D2_3DFX.EXE`) now present bursts cleanly within ~33 ms instead of sitting blank until the next swap.
+  - Updated `VulkanBackend::PresentFrontBuffer_Locked()` to materialize deferred clear state before blitting and recycle the completed frame slot's staging/vertex-ring offsets and retired textures after `waitForFences`, preventing `Dynamic Vertex Buffer slot overflow` stalls inside un-swapped menu loops.
+  - Added cross-thread EGL/WGL context release guards (`ScopedFrontContextRelease` / `ReleaseFrontPresentContext_Locked()`, saving/restoring `eglBindAPI()`) in `OpenGLESBackend` so the background flush thread never hits `EGL_BAD_ACCESS` (`0x3002`) / `ERROR_BUSY` when taking over presentation.
+- **Subnormal IEEE-754 `oow` Sanitization (`VertexLayout::SanitizePositiveOow`)**:
+  - Tightened `VertexLayout::SanitizePositiveOow(float)` from `f > 0.0f` to **`f >= FLT_MIN`** (`~1.175e-38f`). Uninitialized stack integers left in `GrVertex.oow` (e.g., `14` → `1.93715e-41f`) previously passed the CPU `> 0.0f` check and were then flushed to `0.0` by GPU FTZ/DAZ on **Vulkan** and **OpenGL ES**, causing the `divW0 <= 0.0` fragment guard to discard *Descent II*'s `Tab` 3D wireframe automap tunnels and diagonally clip HUD shield readout boxes (`grColorMask(FXTRUE, FXTRUE)` with stale `grAlphaCombine(..., TEXTURE)`).
 - **`TEXUMA` (`GR_TEXTURE_UMA_EXT`) Pre-Window Retention (`glide3x` / `GlideEntryCommon`)**:
   - Stopped `ConfigureTmuMemoryLimits()` from resetting `TextureManager::SetUmaMode()` inside `grSstWinOpen()` / `grSstWinOpenExt()`. Applications that follow the 3dfx `TEXUMA` spec and call `grEnable(GR_TEXTURE_UMA_EXT)` between `grGlideInit()` and `grSstWinOpen*()` now retain unified texture memory instead of having it reset to disabled on window attach (eliminating cross-TMU cache misses that fell back to the 1×1 white placeholder texture). Initial `FX_GLIDE_TEXTURE_UMA` / `[glide] texture_uma` state is still applied once at `grGlideInit()` time so stale state does not leak across sessions.
   - Updated `grGet(GR_MEMORY_TMU)` on Glide 3.x to double the reported TMU size when `TEXUMA` is active on dual-TMU profiles (matching `grTexMaxAddress()` and `h5/glide3/src/gsst.c` / `diget.c`).
@@ -169,9 +178,9 @@ First structured beta release of `glide-ng`, establishing a self-contained repos
 
 ---
 
-[Unreleased]: https://github.com/eugenenuke/glide-ng-alpha/compare/v0.9.0...HEAD
-[0.9.0]: https://github.com/eugenenuke/glide-ng-alpha/compare/v0.8.0-beta.4...v0.9.0
-[0.8.0-beta.4]: https://github.com/eugenenuke/glide-ng-alpha/compare/v0.8.0-beta.3...v0.8.0-beta.4
-[0.8.0-beta.3]: https://github.com/eugenenuke/glide-ng-alpha/compare/v0.8.0-beta.2...v0.8.0-beta.3
-[0.8.0-beta.2]: https://github.com/eugenenuke/glide-ng-alpha/compare/v0.8.0-beta.1...v0.8.0-beta.2
-[0.8.0-beta.1]: https://github.com/eugenenuke/glide-ng-alpha/releases/tag/v0.8.0-beta.1
+[Unreleased]: https://github.com/eugenenuke/glide-ng/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/eugenenuke/glide-ng/compare/v0.8.0-beta.4...v0.9.0
+[0.8.0-beta.4]: https://github.com/eugenenuke/glide-ng/compare/v0.8.0-beta.3...v0.8.0-beta.4
+[0.8.0-beta.3]: https://github.com/eugenenuke/glide-ng/compare/v0.8.0-beta.2...v0.8.0-beta.3
+[0.8.0-beta.2]: https://github.com/eugenenuke/glide-ng/compare/v0.8.0-beta.1...v0.8.0-beta.2
+[0.8.0-beta.1]: https://github.com/eugenenuke/glide-ng/releases/tag/v0.8.0-beta.1
