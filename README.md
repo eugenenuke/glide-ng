@@ -81,6 +81,7 @@ Browse the full [Documentation Hub](docs/README.md), or jump directly to a guide
   - [Hardware Profiles & Glide Versions](docs/user-guide/hardware-and-versions.md)
   - [Benchmarking & Performance](docs/user-guide/benchmarking.md)
   - [Troubleshooting](docs/user-guide/troubleshooting.md)
+  - [Reporting Bugs & Compatibility Issues](docs/user-guide/reporting-bugs.md)
 - **Compatibility Catalog**
   - [Game, Demo & Benchmark Compatibility Catalog](docs/catalog/README.md)
 - **Developer Guide**

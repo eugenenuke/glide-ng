@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Compatibility Catalog
+    url: https://github.com/eugenenuke/glide-ng/blob/main/docs/catalog/README.md
+    about: Check per-game presets, patches, and known quirks before reporting an issue.
+  - name: Troubleshooting Guide
+    url: https://github.com/eugenenuke/glide-ng/blob/main/docs/user-guide/troubleshooting.md
+    about: Quick fixes for dark gamma, frame caps, Wine overrides, and windowing quirks.
+  - name: Bug Reporting Guide
+    url: https://github.com/eugenenuke/glide-ng/blob/main/docs/user-guide/reporting-bugs.md
+    about: How to collect logs, backend comparison shots, perf CSVs, and backtraces.

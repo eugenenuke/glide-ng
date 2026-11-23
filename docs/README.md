@@ -15,6 +15,7 @@ Task-oriented guides for building, configuring, running, benchmarking, and troub
 | **[Hardware Profiles & Glide Versions](user-guide/hardware-and-versions.md)** | All 7 emulated 3dfx board profiles (`VoodooGraphics` through `Voodoo5`), authentic Glide 2.x (`2.11`–`2.61`) and Glide 3.x (`3.00`–`3.10`) matrices, capability queries, and feature gating. |
 | **[Benchmarking & Performance](user-guide/benchmarking.md)** | Running `glide2_bench` / `glide3_bench`, Software SIMD tiers (`scalar`/`avx2`/`avx512`), comparing against Mesa `llvmpipe`, reference Ryzen 9 7945HX + RTX 4070 results, and backend trade-offs. |
 | **[Troubleshooting](user-guide/troubleshooting.md)** | Diagnosing missing DLLs, Wine/Proton overrides, Wayland/X11 windowing, dark SST-1 gamma, performance bottlenecks, frame snapshots (`FX_GLIDE_SNAPSHOT`), and log capture recipes. |
+| **[Reporting Bugs](user-guide/reporting-bugs.md)** | Step-by-step instructions for collecting `glide-ng.log`, cross-backend checks, screenshots, crash/hang backtraces, and new game catalog submissions when filing a GitHub issue. |
 
 ---
 

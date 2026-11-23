@@ -1,0 +1,71 @@
+name: Game Compatibility / Catalog Entry
+description: Share verified settings, logs, and screenshots for a Glide game not yet in the catalog (or update an existing entry).
+title: "[Catalog]: "
+labels: ["compatibility"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for testing a title on `glide-ng`! See the [Compatibility Catalog template](https://github.com/eugenenuke/glide-ng/blob/main/docs/catalog/_template/README.md) and [Reporting Bugs guide](https://github.com/eugenenuke/glide-ng/blob/main/docs/user-guide/reporting-bugs.md#submitting-a-new-compatibility-report--catalog-card).
+        **Do NOT upload copyrighted game files** (`.exe`, `.dll`, `.iso`, archives, etc.).
+
+  - type: input
+    id: title_year
+    attributes:
+      label: Game Title & Release Year
+      placeholder: "e.g. Descent II (1996)"
+    validations:
+      required: true
+
+  - type: textarea
+    id: edition
+    attributes:
+      label: Edition, Patch Order & Executables
+      description: Retail/GOG/Steam edition, official/community patches applied, and exact filename + byte size of the 3dfx executable.
+      placeholder: |
+        - Edition: Retail CD v1.1 patched to v1.2 (`D2PTCH12.EXE`)
+        - Executable: `D2_3DFX.EXE` (1,374,737 bytes, dynamic `GLIDE2X.OVL`)
+        - Launcher flags / quirks: e.g. `-3dfx`, `memsize = 31`, `ems = false`, Wine `win98`
+    validations:
+      required: true
+
+  - type: input
+    id: glide_version
+    attributes:
+      label: glide-ng Build (`Wrapper Build` line from `glide-ng.log`)
+      placeholder: "e.g. v0.9.0+gf0e1034"
+    validations:
+      required: true
+
+  - type: textarea
+    id: backend_status
+    attributes:
+      label: Backend & Card Profile Results
+      value: |
+        - `vulkan` (`1x`): Pass / Fail / Quirk / Untested
+        - `vulkan` (`4x MSAA`): Pass / Fail / Seams? / Untested
+        - `opengl_es` / WGL: Pass / Fail / Needed `renderer=no3d`? / Untested
+        - `software`: Pass / Fail / Untested
+        - Recommended card profile: `Voodoo2` / `VoodooGraphics` / `Voodoo3` / `Voodoo5`
+        - Tested resolutions: `640x480` / `800x600` / ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: preset
+    attributes:
+      label: Recommended `glide-ng.ini` Preset & DOSBox / Wine Overrides
+      description: Paste the minimal `glide-ng.ini` settings (and `dosbox.conf` / Wine overrides if needed).
+      render: ini
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Known Quirks, Tuning & Useful Controls
+      description: Gamma/brightness notes, FPS cap requirements (`max_fps`), audio/CD audio quirks, MSAA notes, and key in-game controls.
+
+  - type: textarea
+    id: media
+    attributes:
+      label: Logs & Screenshots
+      description: Drag and drop clean lossless `.png` shots (with HUD off — menu, gameplay across backends, effects/automap, optional native software baseline) and `glide-ng.log` files.

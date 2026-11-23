@@ -7,7 +7,7 @@ Practical steps for diagnosing startup, windowing, visual, and performance issue
 ## 1. Verify the Active Configuration First
 
 Every `glide-ng` session writes a startup banner to `glide-ng.log` (or `stdout` when `GLIDE_NG_LOG_CONSOLE=1`). Check it first to confirm:
-- Which library binary was actually loaded (`Module: ...`).
+- Which library binary and build were actually loaded (`Wrapper Build: ...` and `Loaded Module: ...`).
 - Whether `glide-ng.ini` was found and loaded (and whether any unrecognized keys triggered `[WARN]`).
 - Active backend (`vulkan`, `opengl_es`, `software`), emulated card model, reported API version, and frame-pacing settings (`vsync`, `max_fps`).
 
@@ -121,3 +121,9 @@ Inspect the CSV columns:
 - High `lfb_reads` / `lfb_cpu_ms` on Vulkan/GLES: Game performs synchronous framebuffer readbacks; test `GLIDE_NG_BACKEND=software` (`GLIDE_NG_SW_SIMD=avx512` on AVX-512 CPUs) to avoid PCIe readback stalls.
 - High `pso_builds` on early frames: One-time Vulkan pipeline compilation; verify `.glide-ng-vkcache.bin` is writable so subsequent runs reuse cached pipelines.
 - High `cap_sleep_ms`: Frame rate is being intentionally paced by `max_fps`.
+
+---
+
+## 4. Still Stuck? Filing a Bug Report
+
+If the checks above don't resolve your issue, see the **[Reporting Bugs & Compatibility Issues Guide](reporting-bugs.md)** for exact instructions on collecting `glide-ng.log`, backend comparison screenshots, hang backtraces, or scoped frame traces before opening a GitHub issue.

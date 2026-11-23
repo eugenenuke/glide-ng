@@ -1,0 +1,127 @@
+name: Bug / Regression Report
+description: Report a crash, hang, visual glitch, black screen, windowing bug, or performance problem.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please read the [Reporting Bugs guide](https://github.com/eugenenuke/glide-ng/blob/main/docs/user-guide/reporting-bugs.md) before submitting.
+        **Do NOT upload copyrighted game files** (`.exe`, `.dll`, `.iso`, `.hog`, `.mpq`, etc.) — attach only logs, configs, CSVs, and screenshots.
+
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Pre-flight checklist
+      options:
+        - label: Checked the [Compatibility Catalog](https://github.com/eugenenuke/glide-ng/blob/main/docs/catalog/README.md) and [Troubleshooting Guide](https://github.com/eugenenuke/glide-ng/blob/main/docs/user-guide/troubleshooting.md) first
+          required: true
+        - label: Confirmed `Wrapper Build` and `Loaded Module` inside `glide-ng.log` match the expected updated binary
+          required: true
+        - label: Confirmed no copyrighted game binaries/archives are attached to this issue
+          required: true
+
+  - type: input
+    id: game
+    attributes:
+      label: Game / Application & Patch Version
+      description: Release source (CD/GOG/Steam), patch version, and exact executable launched (optional byte size).
+      placeholder: "e.g. Descent II v1.2 + D2_3DFX.EXE Release 6 (1,374,737 B)"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: glide_api
+    attributes:
+      label: Glide API / Wrapper Entry
+      options:
+        - "DOS/32 — GLIDE2X.OVL (DOSBox pass-through)"
+        - "Win32 — glide.dll (Glide 2.11)"
+        - "Win32 — glide2x.dll (Glide 2.x)"
+        - "Win32 — glide3x.dll (Glide 3.x)"
+        - "Win32 — 3dfx MiniGL (3dfxgl.dll / opengl32.dll)"
+        - "Win32 — 3dfx OpenGL ICD (3dfxVGL.dll)"
+        - "Native Linux (libglide / libglide2x / libglide3x)"
+        - "Other / Unsure"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: symptom
+    attributes:
+      label: Symptom Type
+      options:
+        - "Visual / rendering glitch (colors, fog, lines, HUD, flicker)"
+        - "Freeze / hang / deadlock"
+        - "Crash / immediate exit / access violation"
+        - "Blank / black / stale screen (e.g. menus not refreshing)"
+        - "Windowing / fullscreen / focus / Alt+Tab / scaling"
+        - "Performance / stutter / memory leak / pacing"
+        - "Other"
+    validations:
+      required: true
+
+  - type: input
+    id: build_version
+    attributes:
+      label: glide-ng Build (`Wrapper Build` line from `glide-ng.log`)
+      placeholder: "e.g. v0.9.0+gf0e1034 (branch:main, Release)"
+    validations:
+      required: true
+
+  - type: textarea
+    id: host_env
+    attributes:
+      label: Host Environment & Launcher
+      description: OS/distro, session type (X11 / Wayland / Windows), GPU & driver version, monitor resolution/DPI scale, Wine/Proton/Lutris or DOSBox version.
+      placeholder: |
+        - OS / Session: Fedora 41, Wayland (KDE), 2560x1440 @ 100%
+        - GPU / Driver: AMD RX 7800 XT (Mesa RADV)
+        - Launcher: Lutris / Wine 9.x (or DOSBox-SVN / DOSBox-X / Windows 11)
+    validations:
+      required: true
+
+  - type: textarea
+    id: backend_matrix
+    attributes:
+      label: Quick Backend A/B Check
+      description: Testing more than one backend isolates GPU/driver bugs from shared Glide core bugs.
+      value: |
+        - `vulkan` (`msaa = 1`): Works / Broken / Crash / Untested
+        - `vulkan` (`msaa = 4`): Works / Broken / Crash / Untested
+        - `opengl_es`: Works / Broken / Crash / Untested
+        - `software`: Works / Broken / Crash / Untested
+        - Card profile tested: Voodoo2 (default) / VoodooGraphics / Voodoo3 / Voodoo5
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to Reproduce & Frequency
+      description: Exact steps to reach the failure (include whether it happens always, intermittently, or after N minutes).
+      placeholder: |
+        1. Launch game with ...
+        2. Start mission / enter level transition ...
+        3. Observe ...
+
+        Frequency: Always / Intermittent (~X of Y runs)
+    validations:
+      required: true
+
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Actual vs. Expected Behavior
+      description: Describe what went wrong vs. what you expected. For hangs, note CPU usage (~0% vs 100%), audio state, and whether Alt+Tab / Esc still responds.
+    validations:
+      required: true
+
+  - type: textarea
+    id: attachments
+    attributes:
+      label: Logs, Configs & Screenshots
+      description: |
+        Drag and drop compressed logs (`.zip`/`.tar.gz`), `glide-ng.ini`, `dosbox.conf`, `perf.csv`, live backtraces, or `.png` screenshots below.
+        Remember to save `glide-ng.log` before restarting the game!
+      placeholder: "Paste excerpts or drag-and-drop zipped logs and lossless .png comparison shots here."
