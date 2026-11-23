@@ -138,8 +138,8 @@ int main(int argc, char* argv[]) {
     tlSetScreen((float)runConfig.width, (float)runConfig.height);
 
     // Enforce default profile variables in the environment to ensure a robust test surface
-    if (!std::getenv("GLIDE_NG_API_VERSION")) {
-        ::setenv("GLIDE_NG_API_VERSION", "3.0", 1);
+    if (!std::getenv("GLIDE_NG_API_VERSION") && !std::getenv("GLIDE_NG_CARD_MODEL")) {
+        ::setenv("GLIDE_NG_API_VERSION", "3.03", 1);
     }
     if (!std::getenv("GLIDE_NG_BACKEND")) {
         ::setenv("GLIDE_NG_BACKEND", "software", 1); // Default to software rasterizer

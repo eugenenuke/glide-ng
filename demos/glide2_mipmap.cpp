@@ -179,11 +179,9 @@ int main(int argc, char** argv) {
     std::cout << "======================================================================\r\n";
 
     // Initialize environment overrides if not present
-    if (!std::getenv("GLIDE_NG_API_VERSION")) {
-        ::setenv("GLIDE_NG_API_VERSION", "2.43", 1);
-    }
-    if (!std::getenv("GLIDE_NG_CARD_MODEL")) {
+    if (!std::getenv("GLIDE_NG_API_VERSION") && !std::getenv("GLIDE_NG_CARD_MODEL")) {
         ::setenv("GLIDE_NG_CARD_MODEL", "Voodoo2", 1);
+        ::setenv("GLIDE_NG_API_VERSION", "2.56", 1);
     }
 
     // Initialize Glide
@@ -286,8 +284,8 @@ int main(int argc, char** argv) {
         if (headless) {
             std::vector<uint32_t> pixels(s_screenWidth * s_screenHeight);
             if (grLfbReadRegion(GR_BUFFER_BACKBUFFER, 0, 0, s_screenWidth, s_screenHeight, s_screenWidth * 4, pixels.data())) {
-                SaveTGA("perspective_mipmapping_showcase_output.tga", s_screenWidth, s_screenHeight, pixels.data());
-                std::cout << "\n[INFO] Headless screenshot captured to perspective_mipmapping_showcase_output.tga\n";
+                SaveTGA("glide2_mipmap_output.tga", s_screenWidth, s_screenHeight, pixels.data());
+                std::cout << "\n[INFO] Headless screenshot captured to glide2_mipmap_output.tga\n";
             } else {
                 std::cerr << "\n[ERROR] Failed to read back framebuffer for screenshot!\n";
             }

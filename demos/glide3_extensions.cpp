@@ -256,8 +256,10 @@ void DrawBackgroundStripes(int screenWidth, int screenHeight) {
 
 int main(int argc, char* argv[]) {
   // 1. Setup default environments if not present
-  if (!std::getenv("GLIDE_NG_API_VERSION")) {
-    ::setenv("GLIDE_NG_API_VERSION", "3.0", 1);
+  if (!std::getenv("GLIDE_NG_API_VERSION") &&
+      !std::getenv("GLIDE_NG_CARD_MODEL")) {
+    ::setenv("GLIDE_NG_CARD_MODEL", "Voodoo3", 1);
+    ::setenv("GLIDE_NG_API_VERSION", "3.10", 1);
   }
   if (!std::getenv("GLIDE_NG_BACKEND")) {
     ::setenv("GLIDE_NG_BACKEND", "vulkan", 1);

@@ -24,6 +24,9 @@ For the pre-beta engineering narrative covering early architecture decisions and
   - Added **`SSTH3_`** to `GLIDE_ENV_SCAN_PREFIXES_X` so `glide2_info`/`glide3_info` automatically detect user-set Banshee/Voodoo3/4/5 variables.
 
 ### Changed
+- **Interactive Showcase Demos Cleanup & Naming (`demos/`, `scripts/package_release.sh`)**:
+  - Removed obsolete early-milestone/replica demos and stale capture scripts superseded by Catch2 tests and `tools/` (`test10_replica_demo`, `test12_replica_demo`, `phase1_validation_demo`, `phase2_validation_demo`, `phase4_showcase` / `Glide3xShowcaseDemo`, `glide2_compat_demo`, `splash_showcase_demo`, `large_texture_showcase`, `chromakey_range_demo`, `capture_showcase.sh`, `run_mipmap_comparison.sh`).
+  - Renamed the 5 remaining interactive showcase demos to match the `tools/` `glide{2,3}_<name>` convention: **`glide2_fog`**, **`glide2_gamma`**, **`glide2_mipmap`**, **`glide3_state`**, and **`glide3_extensions`**.
 - **Authentic `GR_HARDWARE` & Hardware Revision Parity (`glide3x` / `glide2x`)**:
   - Updated Glide 3.x `grGetString(GR_HARDWARE)` to return retail `glide3x.dll` 3.10 strings with the trailing trademark tag: `"Voodoo Banshee (tm)"`, `"Voodoo3 (tm)"`, `"Voodoo4 (tm)"`, and `"Voodoo5 (tm)"` (all `<= 19` bytes, fitting legacy fixed-size stack buffers).
   - Updated Glide 2.x/3.x `grGet(GR_REVISION_FB)` on `Voodoo2` to return authentic CVG **`0x102`** (dual-TMU) / **`0x82`** (single-TMU) instead of `2` (matching `3.01`/`3.03` CVG instead of `SST-1`).

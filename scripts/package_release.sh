@@ -214,12 +214,8 @@ LINUX_CORE_TOOLS=(
   glide2_gears glide3_gears
 )
 LINUX_DEMOS=(
-  chromakey_range_demo fog_showcase_demo gamma_showcase_demo
-  glide2_compat_demo glide3_extensions_demo glide3_state_demo
-  Glide3xShowcaseDemo large_texture_showcase
-  perspective_mipmapping_showcase phase1_validation_demo_g2
-  phase1_validation_demo_g3 phase2_validation_demo
-  splash_showcase_demo test10_replica_demo test12_replica_demo
+  glide2_fog glide2_gamma glide2_mipmap
+  glide3_state glide3_extensions
 )
 
 for spec in "${LINUX_FLAVORS[@]}"; do

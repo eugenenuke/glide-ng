@@ -11,11 +11,11 @@ Activate this skill when running visual regression suites, capturing cross-backe
 
 | Modified Component | Target Verification Tests / Demos |
 | :--- | :--- |
-| **State Reset & Combiners** (`glide2_entry.cpp`, `glide3_entry.cpp`) | `Glide2xWrapperTests`, `Glide3xWrapperTests`, `test10_replica_demo`, `fog_showcase_demo` |
+| **State Reset & Combiners** (`glide2_entry.cpp`, `glide3_entry.cpp`) | `Glide2xWrapperTests`, `Glide3xWrapperTests`, `glide3_state`, `glide2_fog` |
 | **Vertex Decoding & Layouts** (`src/core/VertexLayout.cpp`) | `Glide3xWrapperTests`, `glide3_cube`, `glide3_gears` |
-| **LFB & Texture Parsing** (`LfbManager.cpp`, `3dfParser.cpp`) | `test12_replica_demo`, `large_texture_showcase`, `perspective_mipmapping_showcase` |
-| **Splash & Banner Animation** (`src/core/GlideSplashAnimator.cpp`) | `splash_showcase_demo` |
-| **Gamma LUT & Blending** (`VulkanBackend.cpp`, `OpenGLESBackend.cpp`) | `gamma_showcase_demo`, `chromakey_range_demo`, `fog_showcase_demo` |
+| **LFB & Texture Parsing** (`LfbManager.cpp`, `3dfParser.cpp`) | `Glide3xWrapperTests`, `glide3_envtest`, `glide2_mipmap` |
+| **Splash & Banner Animation** (`src/core/GlideSplashAnimator.cpp`) | `Glide2xWrapperTests`, `glide2_cube` |
+| **Gamma LUT & Blending** (`VulkanBackend.cpp`, `OpenGLESBackend.cpp`) | `glide2_gamma`, `glide3_extensions`, `glide2_fog` |
 | **Windowing / Child Surface Injection** (`NativeSurfaceHost.cpp`) | `Glide3xWrapperTests "[NativeSurfaceHost]"`, DOSBox-X (windowed + fullscreen), SVN DOSBox (`dosbox-0`) |
 
 ## 2. Timed Stdin Piping for Interactive Legacy Tests
