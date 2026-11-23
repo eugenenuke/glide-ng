@@ -848,6 +848,96 @@ TEST_CASE("Glide 2.x: Combiner-Gated TMU Activation & Subnormal OOW", "[Glide2][
     CHECK(((pGreen >> 8) & 0xFFu) >= 200);
     CHECK((pGreen & 0xFFu) <= 50);
 
+    // Descent II (D2_3DFX.EXE) leaves default grColorMask(FXTRUE, FXTRUE) and
+    // stale grAlphaCombine(..., TEXTURE) active while issuing flat wireframe
+    // grDrawLine() / HUD erase polygons with uninitialized stack integers in
+    // GrVertex.oow (e.g. 14 -> 1.93715e-41f, subnormal < FLT_MIN). GPU FTZ/DAZ
+    // would flush 1.93715e-41f to 0.0f and discard fragments if not sanitized.
+    {
+      constexpr float kSubnormalInt14 = 1.93715e-41f;
+      grColorMask(FXTRUE, FXTRUE);
+      grBufferClear(0xFF000000u, 0, GR_WDEPTHVALUE_FARTHEST);
+      grColorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+                     GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_CONSTANT,
+                     FXFALSE);
+      grAlphaCombine(GR_COMBINE_FUNCTION_SCALE_OTHER, GR_COMBINE_FACTOR_LOCAL,
+                     GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_TEXTURE,
+                     FXFALSE);
+      grAlphaBlendFunction(GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_ONE,
+                           GR_BLEND_ZERO);
+
+      // 1. Horizontal grDrawLine with mixed subnormal / 1.0f oow (automap).
+      GrVertex la{}, lb{};
+      la.x = 40.0f;
+      la.y = 60.0f;
+      la.oow = kSubnormalInt14;
+      la.r = 240.0f;
+      la.g = 240.0f;
+      la.b = 240.0f;
+      la.a = 255.0f;
+      lb.x = 200.0f;
+      lb.y = 60.0f;
+      lb.oow = kSubnormalInt14;
+      lb.r = 240.0f;
+      lb.g = 240.0f;
+      lb.b = 240.0f;
+      lb.a = 255.0f;
+      grDrawLine(&la, &lb);
+
+      // 2. Quad with one subnormal vertex and three 1.0f vertices (HUD shield
+      // box clear quad), plus fully-subnormal quad.
+      GrVertex qMix[4]{};
+      qMix[0].x = 40.0f;  qMix[0].y = 120.0f; qMix[0].oow = kSubnormalInt14;
+      qMix[1].x = 140.0f; qMix[1].y = 120.0f; qMix[1].oow = 1.0f;
+      qMix[2].x = 140.0f; qMix[2].y = 200.0f; qMix[2].oow = 1.0f;
+      qMix[3].x = 40.0f;  qMix[3].y = 200.0f; qMix[3].oow = 1.0f;
+      for (auto& v : qMix) {
+        v.r = 220.0f;
+        v.g = 180.0f;
+        v.b = 40.0f;
+        v.a = 255.0f;
+      }
+      grDrawPolygonVertexList(4, qMix);
+      drawQuad(200.0f, 120.0f, 300.0f, 200.0f, 40.0f, 220.0f, 220.0f, 255.0f,
+               kSubnormalInt14);
+
+      grBufferSwap(0);
+
+      // Scan row band y in [59..61] so minor line rasterizer rounding matches
+      // across Software, Vulkan, and OpenGL ES.
+      bool sawWhiteLine = false;
+      for (uint32_t y = 59; y <= 61; ++y) {
+        const uint32_t lp = readPx(120, y);
+        if (((lp >> 16) & 0xFFu) >= 200 && ((lp >> 8) & 0xFFu) >= 200 &&
+            (lp & 0xFFu) >= 200) {
+          sawWhiteLine = true;
+        }
+      }
+      CHECK(sawWhiteLine);
+
+      // Both halves of the mixed-oow quad must survive (not diagonally split).
+      const uint32_t pMixTL = readPx(55, 135);
+      const uint32_t pMixBR = readPx(125, 185);
+      CHECK(((pMixTL >> 16) & 0xFFu) >= 195);
+      CHECK(((pMixTL >> 8) & 0xFFu) >= 155);
+      CHECK(((pMixBR >> 16) & 0xFFu) >= 195);
+      CHECK(((pMixBR >> 8) & 0xFFu) >= 155);
+
+      const uint32_t pFullSub = readPx(250, 160);
+      CHECK(((pFullSub >> 8) & 0xFFu) >= 195);
+      CHECK((pFullSub & 0xFFu) >= 195);
+
+      // Smoke check: direct un-swapped GR_BUFFER_FRONTBUFFER draw & LFB write
+      // in headless mode does not crash or corrupt pixels.
+      grRenderBuffer(GR_BUFFER_FRONTBUFFER);
+      grBufferClear(0xFF102030u, 0, GR_WDEPTHVALUE_FARTHEST);
+      drawQuad(10.0f, 10.0f, 40.0f, 40.0f, 200.0f, 50.0f, 200.0f, 255.0f, 1.0f);
+      const uint32_t pFront = readPx(25, 25);
+      CHECK(((pFront >> 16) & 0xFFu) >= 175);
+      CHECK((pFront & 0xFFu) >= 175);
+      grRenderBuffer(GR_BUFFER_BACKBUFFER);
+    }
+
     grSstWinClose();
     grGlideShutdown();
   }

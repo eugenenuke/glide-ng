@@ -1,5 +1,6 @@
 #pragma once
 #include <array>
+#include <cfloat>
 #include <cstdint>
 #include <cstring>
 
@@ -156,7 +157,11 @@ public:
     }
 
     static inline float SanitizePositiveOow(float f) noexcept {
-        return __builtin_expect(IsFiniteFloat(f) && f > 0.0f, 1) ? f : 1.0f;
+        // Subnormal floats (< FLT_MIN ~= 1.175e-38f) flush to 0.0 under GPU
+        // FTZ/DAZ, tripping `divW <= 0.0` discards inside Vulkan/GLES shaders
+        // when legacy titles leave stack integers in an uninitialized `oow`
+        // (e.g. Descent II D2_3DFX.EXE automap lines with `oow = 1.937e-41`).
+        return __builtin_expect(IsFiniteFloat(f) && f >= FLT_MIN, 1) ? f : 1.0f;
     }
 
 private:
