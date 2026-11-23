@@ -10,6 +10,12 @@ For the pre-beta engineering narrative covering early architecture decisions and
 
 ## [Unreleased]
 
+---
+
+## [0.9.1] - 2026-11-23
+
+Maintenance and compatibility release expanding the verified commercial catalog from **41 → 44 games** (*Screamer 2*, *Descent*, *Descent II*), adding **28 more authentic 3dfx environment variables (`20 → 48`)**, tightening Vulkan/GLES/Software parity and stability (*Hitman: Codename 47*, *Pandemonium!*, *Descent II*), cleaning up legacy demos, and accelerating clean C++ source builds **`3.3×`–`4.7×`**.
+
 ### Added
 - **Descent & Descent II Catalog Entries (`44` Total Commercial Games)**:
   - ***Descent* (`1995`, `docs/catalog/games/descent/`)**: Verified `D1_3Dfx` V1.0 Beta 01 (`D1_3DFX.EXE`, Win32 `glide2x.dll` under Wine, v1.0 → v1.5 → `D13DINST.EXE`) at **`640×480`** and **`800×600`** (`VideoMode=1`) across **Vulkan** (`1×` & `4× MSAA`), **OpenGL 3.3 Core (WGL)**, and **Software** backends (main menu, briefing, Level 1, `DESCENT.DEM` combat with translucent plasma fireballs, `Tab` wireframe automap), with drop-in `glide-ng*.ini` presets.
@@ -185,7 +191,8 @@ First structured beta release of `glide-ng`, establishing a self-contained repos
 
 ---
 
-[Unreleased]: https://github.com/eugenenuke/glide-ng/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/eugenenuke/glide-ng/compare/v0.9.1...HEAD
+[0.9.1]: https://github.com/eugenenuke/glide-ng/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/eugenenuke/glide-ng/compare/v0.8.0-beta.4...v0.9.0
 [0.8.0-beta.4]: https://github.com/eugenenuke/glide-ng/compare/v0.8.0-beta.3...v0.8.0-beta.4
 [0.8.0-beta.3]: https://github.com/eugenenuke/glide-ng/compare/v0.8.0-beta.2...v0.8.0-beta.3
