@@ -1296,6 +1296,42 @@ TEST_CASE("WSI: NativeSurfaceHost, Present Modes & DOSBox Handshake", "[WSI][Nat
   CHECK(cfg.settingSources["fullscreen"] == "ini");
   CHECK(cfg.invalidConfigValues.empty());
   std::remove(iniPath.c_str());
+
+  // Post-fullscreen Win32 settle-window deactivation filter
+  intptr_t lr = -1;
+  CHECK(GlideWrapper::NativeSurfaceHost::ShouldSuppressWin32DeactivateBounce(
+      0x001Cu /* WM_ACTIVATEAPP */, 0u /* FALSE */, lr));
+  CHECK(lr == 0);
+  CHECK_FALSE(
+      GlideWrapper::NativeSurfaceHost::ShouldSuppressWin32DeactivateBounce(
+          0x001Cu /* WM_ACTIVATEAPP */, 1u /* TRUE */, lr));
+  CHECK(GlideWrapper::NativeSurfaceHost::ShouldSuppressWin32DeactivateBounce(
+      0x0008u /* WM_KILLFOCUS */, 0u, lr));
+  CHECK(lr == 0);
+  CHECK_FALSE(
+      GlideWrapper::NativeSurfaceHost::ShouldSuppressWin32DeactivateBounce(
+          0x0007u /* WM_SETFOCUS */, 0u, lr));
+  CHECK(GlideWrapper::NativeSurfaceHost::ShouldSuppressWin32DeactivateBounce(
+      0x0006u /* WM_ACTIVATE */, 0u /* WA_INACTIVE */, lr));
+  CHECK(lr == 0);
+  CHECK(GlideWrapper::NativeSurfaceHost::ShouldSuppressWin32DeactivateBounce(
+      0x0006u /* WM_ACTIVATE */, 0x00010000u /* minimized | WA_INACTIVE */, lr));
+  CHECK(lr == 0);
+  CHECK_FALSE(
+      GlideWrapper::NativeSurfaceHost::ShouldSuppressWin32DeactivateBounce(
+          0x0006u /* WM_ACTIVATE */, 1u /* WA_ACTIVE */, lr));
+  CHECK_FALSE(
+      GlideWrapper::NativeSurfaceHost::ShouldSuppressWin32DeactivateBounce(
+          0x0006u /* WM_ACTIVATE */, 2u /* WA_CLICKACTIVE */, lr));
+  CHECK(GlideWrapper::NativeSurfaceHost::ShouldSuppressWin32DeactivateBounce(
+      0x0086u /* WM_NCACTIVATE */, 0u /* FALSE */, lr));
+  CHECK(lr == 1);
+  CHECK_FALSE(
+      GlideWrapper::NativeSurfaceHost::ShouldSuppressWin32DeactivateBounce(
+          0x0086u /* WM_NCACTIVATE */, 1u /* TRUE */, lr));
+  CHECK_FALSE(
+      GlideWrapper::NativeSurfaceHost::ShouldSuppressWin32DeactivateBounce(
+          0x0010u /* WM_CLOSE */, 0u, lr));
   }
 
 }

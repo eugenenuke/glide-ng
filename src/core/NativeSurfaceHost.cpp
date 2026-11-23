@@ -244,13 +244,27 @@ bool GetWin32MonitorRect(HWND hwnd, RECT& outRc) {
 //   would mute DirectSound or close the Glide context in Hitman 47 /
 //   CyberGladiators). Real user Alt+Tab events outside `inAdjust` always flow
 //   straight through to the game's original WndProc.
+// Brief settle window after applying borderless fullscreen via
+// SetWindowLong/SetWindowPos(SWP_FRAMECHANGED). On Wine/X11/XWayland, toggling
+// window chrome and geometry to monitor dimensions triggers a delayed
+// transient deactivation burst (WM_ACTIVATEAPP(FALSE), WM_KILLFOCUS,
+// WM_ACTIVATE(WA_INACTIVE)) ~1 ms *after* grSstWinOpen() returns. Titles that
+// react to WM_ACTIVATEAPP/WM_KILLFOCUS with grSstWinClose() (e.g. Hitman:
+// Codename 47) otherwise immediately close the just-opened context and ping-
+// pong back to a small unscaled top-left window on every Alt+Tab return.
+constexpr auto kWin32FullscreenDeactivateGrace =
+    std::chrono::milliseconds(400);
+
 struct Win32FullscreenSubclassEntry {
   WNDPROC origProc = nullptr;
   bool isUnicode = false;
   bool active = false;
   bool passthruSuspended = false;
   bool inAdjust = false;
+  bool hasDeactivateGrace = false;
+  bool loggedDeactivateGrace = false;
   bool relativeMouseDetected = false;
+  std::chrono::steady_clock::time_point deactivateGraceUntil{};
   uint32_t guestW = 0;
   uint32_t guestH = 0;
   int32_t appliedW = 0;
@@ -343,6 +357,43 @@ LRESULT CALLBACK GlideWin32EmbeddedSubclassProc(HWND hwnd, UINT msg,
         break;
     }
     return callOrig();
+  }
+
+  if (entry.hasDeactivateGrace) {
+    const auto now = std::chrono::steady_clock::now();
+    if (now < entry.deactivateGraceUntil) {
+      intptr_t suppressedResult = 0;
+      if (NativeSurfaceHost::ShouldSuppressWin32DeactivateBounce(
+              static_cast<uint32_t>(msg), static_cast<uintptr_t>(wParam),
+              suppressedResult)) {
+        bool shouldLog = false;
+        if (!entry.loggedDeactivateGrace) {
+          std::lock_guard<std::mutex> lock(g_win32SubclassMutex);
+          auto it = g_win32Subclasses.find(hwnd);
+          if (it != g_win32Subclasses.end() &&
+              !it->second.loggedDeactivateGrace) {
+            it->second.loggedDeactivateGrace = true;
+            shouldLog = true;
+          }
+        }
+        if (shouldLog) {
+          GLIDE_LOG(INFO, "WSI",
+                    "NativeSurfaceHost: suppressed transient deactivation "
+                    "message 0x"
+                        << std::hex << msg << std::dec << " on HWND "
+                        << static_cast<void*>(hwnd)
+                        << " during post-fullscreen settle window.");
+        }
+        return static_cast<LRESULT>(suppressedResult);
+      }
+    } else {
+      std::lock_guard<std::mutex> lock(g_win32SubclassMutex);
+      auto it = g_win32Subclasses.find(hwnd);
+      if (it != g_win32Subclasses.end() && it->second.hasDeactivateGrace &&
+          now >= it->second.deactivateGraceUntil) {
+        it->second.hasDeactivateGrace = false;
+      }
+    }
   }
 
   switch (msg) {
@@ -981,6 +1032,47 @@ void NativeSurfaceHost::MapHostPointToGuest(int32_t hostX, int32_t hostY,
   outGuestY = static_cast<int32_t>(std::clamp<int64_t>(gy, 0, maxY));
 }
 
+bool NativeSurfaceHost::ShouldSuppressWin32DeactivateBounce(
+    uint32_t msg, uintptr_t wParam, intptr_t& outResult) {
+  constexpr uint32_t kWmActivate = 0x0006u;
+  constexpr uint32_t kWmKillFocus = 0x0008u;
+  constexpr uint32_t kWmActivateApp = 0x001Cu;
+  constexpr uint32_t kWmNcActivate = 0x0086u;
+  constexpr uintptr_t kWaInactive = 0u;
+#if defined(_WIN32)
+  static_assert(kWmActivate == WM_ACTIVATE, "WM_ACTIVATE mismatch");
+  static_assert(kWmKillFocus == WM_KILLFOCUS, "WM_KILLFOCUS mismatch");
+  static_assert(kWmActivateApp == WM_ACTIVATEAPP, "WM_ACTIVATEAPP mismatch");
+  static_assert(kWmNcActivate == WM_NCACTIVATE, "WM_NCACTIVATE mismatch");
+  static_assert(kWaInactive == WA_INACTIVE, "WA_INACTIVE mismatch");
+#endif
+  switch (msg) {
+    case kWmActivateApp:
+      if (wParam == 0u) {
+        outResult = 0;
+        return true;
+      }
+      return false;
+    case kWmKillFocus:
+      outResult = 0;
+      return true;
+    case kWmActivate:
+      if ((wParam & 0xFFFFu) == kWaInactive) {
+        outResult = 0;
+        return true;
+      }
+      return false;
+    case kWmNcActivate:
+      if (wParam == 0u) {
+        outResult = 1;
+        return true;
+      }
+      return false;
+    default:
+      return false;
+  }
+}
+
 bool NativeSurfaceHost::Attach(void* hostHandle, uint32_t guestW,
                                uint32_t guestH, bool /*windowed*/,
                                bool forceNoWindow, const std::string& title,
@@ -1354,6 +1446,8 @@ void NativeSurfaceHost::InstallWin32FullscreenSubclass() {
       // Our subclass is already underneath a chained foreign hook (e.g.
       // Wine DirectDraw/wined3d). Never double-hook and risk a recursion cycle.
       it->second.active = true;
+      it->second.hasDeactivateGrace = false;
+      it->second.loggedDeactivateGrace = false;
       it->second.passthruSuspended =
           m_win32PassthruSuspended.load(std::memory_order_relaxed);
       it->second.guestW = m_guestWidth;
@@ -1410,6 +1504,8 @@ void NativeSurfaceHost::UninstallWin32FullscreenSubclass() {
       isUnicode = it->second.isUnicode;
       it->second.active = false;
       it->second.inAdjust = false;
+      it->second.hasDeactivateGrace = false;
+      it->second.loggedDeactivateGrace = false;
       found = true;
     }
   }
@@ -1618,6 +1714,16 @@ bool NativeSurfaceHost::ApplyWin32EmbeddedFullscreenIfNeeded() {
   m_win32SettledRect[3] = static_cast<int32_t>(settledRc.bottom);
   m_win32FullscreenApplied = true;
   SyncWin32SubclassState();
+  if (m_win32SubclassInstalled) {
+    std::lock_guard<std::mutex> lock(g_win32SubclassMutex);
+    auto it = g_win32Subclasses.find(hwnd);
+    if (it != g_win32Subclasses.end()) {
+      it->second.hasDeactivateGrace = true;
+      it->second.loggedDeactivateGrace = false;
+      it->second.deactivateGraceUntil =
+          std::chrono::steady_clock::now() + kWin32FullscreenDeactivateGrace;
+    }
+  }
 
   GLIDE_LOG(INFO, "WSI",
             "NativeSurfaceHost: enforced borderless fullscreen on Win32 "

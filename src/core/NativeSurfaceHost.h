@@ -83,6 +83,20 @@ class NativeSurfaceHost {
                                   int32_t& outGuestX, int32_t& outGuestY,
                                   bool preserveAspect = true);
 
+  /**
+   * @brief Returns true if a Win32 message is a transient deactivation /
+   *        focus-loss notification (`WM_ACTIVATEAPP(FALSE)`, `WM_KILLFOCUS`,
+   *        `WM_ACTIVATE(WA_INACTIVE)`, or `WM_NCACTIVATE(FALSE)`) that should
+   *        be swallowed during the brief borderless-fullscreen settle window
+   *        following `SetWindowPos(SWP_FRAMECHANGED)`.
+   *
+   * On true return, `outResult` holds the Win32 `LRESULT` to return (`0`, or
+   * `1` for `WM_NCACTIVATE`). Activation notifications always pass through.
+   */
+  static bool ShouldSuppressWin32DeactivateBounce(uint32_t msg,
+                                                  uintptr_t wParam,
+                                                  intptr_t& outResult);
+
   static const char* ModeToString(Mode mode);
 
   /**
