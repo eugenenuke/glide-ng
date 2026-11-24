@@ -854,6 +854,59 @@ TEST_CASE("Catalog: Compatibility INI Presets & Directory Integrity", "[Catalog]
     CHECK(cfg.msaaSamples == 1u);
     CHECK(cfg.noSplash == false);
   }
+  // Screamer Rally (1997, DOS/32 dynamic GLIDE2X.OVL — SR3DFX2.EXE / STRT3FX.EXE)
+  {
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load(
+        (catalogDir / "games" / "screamer-rally" / "glide-ng.ini").string(),
+        cfg));
+    CHECK(cfg.backend == "vulkan");
+    CHECK(cfg.model == GlideWrapper::CardModel::Voodoo2);
+    CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_56);
+    CHECK(cfg.msaaSamples == 1u);
+    CHECK(cfg.maxFps == 60.0f);
+    CHECK(cfg.noSplash == false);
+  }
+  {
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load(
+        (catalogDir / "games" / "screamer-rally" / "glide-ng.hq.ini").string(),
+        cfg));
+    CHECK(cfg.backend == "vulkan");
+    CHECK(cfg.model == GlideWrapper::CardModel::Voodoo2);
+    CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_56);
+    CHECK(cfg.msaaSamples == 4u);
+    CHECK(cfg.presentationFilter == 1u);
+    CHECK(cfg.noDitherSub == true);
+    CHECK(cfg.maxFps == 60.0f);
+    CHECK(cfg.noSplash == false);
+  }
+  {
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load(
+        (catalogDir / "games" / "screamer-rally" / "glide-ng.voodoo1.ini")
+            .string(),
+        cfg));
+    CHECK(cfg.backend == "vulkan");
+    CHECK(cfg.model == GlideWrapper::CardModel::VoodooGraphics);
+    CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_48);
+    CHECK(cfg.msaaSamples == 1u);
+    CHECK(cfg.maxFps == 60.0f);
+    CHECK(cfg.noSplash == false);
+  }
+  {
+    GlideWrapper::WrapperConfig cfg;
+    REQUIRE(loader.Load(
+        (catalogDir / "games" / "screamer-rally" / "glide-ng.software.ini")
+            .string(),
+        cfg));
+    CHECK(cfg.backend == "software");
+    CHECK(cfg.model == GlideWrapper::CardModel::Voodoo2);
+    CHECK(cfg.apiVersion == GlideWrapper::ApiVersion::GLIDE_2_56);
+    CHECK(cfg.msaaSamples == 1u);
+    CHECK(cfg.maxFps == 60.0f);
+    CHECK(cfg.noSplash == false);
+  }
   // Descent (1995, D1_3Dfx Beta 01 — Win32 glide2x.dll)
   {
     GlideWrapper::WrapperConfig cfg;
