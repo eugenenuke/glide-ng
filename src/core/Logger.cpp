@@ -462,7 +462,26 @@ void Logger::LogExecutionSummary(const WrapperConfig& config) {
         if (config.textureUmaMode >= 0) ss << " texture_uma=" << config.textureUmaMode;
         if (config.snapshotEnabled) {
             ss << " snapshot=" << (config.snapshotPath.empty() ? "auto" : config.snapshotPath)
-               << "@" << config.snapshotFrame;
+               << "@";
+            if (config.snapshotInterval > 0) {
+                ss << config.snapshotFrame << "+" << config.snapshotInterval;
+                if (config.snapshotMaxCount > 0) {
+                    ss << ":" << config.snapshotMaxCount;
+                }
+            } else if (config.snapshotFrames.size() > 1) {
+                const size_t n = config.snapshotFrames.size();
+                if (n <= 6) {
+                    for (size_t i = 0; i < n; ++i) {
+                        if (i > 0) ss << ",";
+                        ss << config.snapshotFrames[i];
+                    }
+                } else {
+                    ss << config.snapshotFrames.front() << ",..(" << n << " frames)..,"
+                       << config.snapshotFrames.back();
+                }
+            } else {
+                ss << config.snapshotFrame;
+            }
         }
     }
     ss << "\n  Log Output           : " << config.logFile

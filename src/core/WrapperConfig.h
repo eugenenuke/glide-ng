@@ -177,9 +177,16 @@ struct WrapperConfig {
     bool boundsCheck{false};       // FX_GLIDE_BOUNDS_CHECK
     int allocColorBuffers{-1};     // -1 = app-controlled, 2 or 3 (FX_GLIDE_ALLOC_COLOR / SSTV2_ALLOC_COLOR / SST_TRIPLE_BUFFER)
     int allocAuxBuffers{-1};       // -1 = app-controlled, 0 or 1 (FX_GLIDE_ALLOC_AUX / SSTV2_ALLOC_AUX)
-    bool snapshotEnabled{false};   // FX_GLIDE_SNAPSHOT / FX_SNAPSHOT
-    uint64_t snapshotFrame{0};     // 0-indexed frame to capture
-    std::string snapshotPath{""};  // Explicit output PPM path (empty = auto glide_snapshot_NNNNNN.ppm)
+    bool snapshotEnabled{false};            // FX_GLIDE_SNAPSHOT / FX_SNAPSHOT
+    uint64_t snapshotFrame{0};              // 0-indexed single or periodic start frame
+    std::string snapshotPath{""};           // Output PPM path or prefix (empty = auto glide_snapshot_NNNNNN.ppm)
+    std::vector<uint64_t> snapshotFrames{}; // Sorted unique explicit frames (@A,B,C)
+    uint64_t snapshotInterval{0};           // Periodic stride in frames (0 = off; >0 = @START+STEP[:MAX])
+    uint32_t snapshotMaxCount{0};           // Periodic capture limit (0 = unlimited)
+
+    bool IsMultiFrameSnapshot() const noexcept {
+        return snapshotInterval > 0 || snapshotFrames.size() > 1;
+    }
     bool reportRealHw{false};      // FX_GLIDE_REPORT_REAL_HW (off by default; Voodoo2 CVG raw enum toggle)
     bool reportRealHwFromIni{false}; // True only when enabled via glide-ng.ini [glide] report_real_hw
     bool emulRush{false};          // FX_GLIDE_EMUL_RUSH (off by default; H3/VSA-100 reports GR_SSTTYPE_SST96)

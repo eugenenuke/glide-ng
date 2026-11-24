@@ -410,60 +410,187 @@ bool ParseGammaRgbString(const std::string& raw, float& outR, float& outG, float
     return true;
 }
 
-bool ParseSnapshotString(const std::string& raw, bool& outEnabled,
-                         uint64_t& outFrame, std::string& outPath) {
+bool ParseSnapshotFrameSpec(const std::string& specRaw, uint64_t& outStartFrame,
+                            std::vector<uint64_t>& outFrames,
+                            uint64_t& outInterval, uint32_t& outMaxCount) {
+    const std::string spec = Trim(specRaw);
+    if (spec.empty()) return false;
+
+    outStartFrame = 0;
+    outFrames.clear();
+    outInterval = 0;
+    outMaxCount = 0;
+
+    const size_t plusPos = spec.find('+');
+    if (plusPos != std::string::npos) {
+        // Periodic syntax: [START]+STEP[:MAX] (cannot combine '+' with ',' or second '+')
+        if (spec.find('+') != spec.rfind('+') || spec.find(',') != std::string::npos) {
+            return false;
+        }
+        const std::string startPart = Trim(spec.substr(0, plusPos));
+        const std::string restPart = Trim(spec.substr(plusPos + 1));
+        if (restPart.empty()) return false;
+
+        uint64_t startFrame = 0;
+        if (!startPart.empty() && !ParseUint64String(startPart, startFrame)) {
+            return false;
+        }
+
+        const size_t colonPos = restPart.find(':');
+        if (colonPos != std::string::npos &&
+            restPart.find(':', colonPos + 1) != std::string::npos) {
+            return false;
+        }
+
+        const std::string stepPart =
+            Trim(colonPos == std::string::npos ? restPart : restPart.substr(0, colonPos));
+        uint64_t interval = 0;
+        if (!ParseUint64String(stepPart, interval) || interval == 0) {
+            return false;
+        }
+
+        uint32_t maxCount = 0;
+        if (colonPos != std::string::npos) {
+            const std::string maxPart = Trim(restPart.substr(colonPos + 1));
+            uint64_t maxParsed = 0;
+            if (!ParseUint64String(maxPart, maxParsed) || maxParsed == 0 ||
+                maxParsed > UINT32_MAX) {
+                return false;
+            }
+            maxCount = static_cast<uint32_t>(maxParsed);
+        }
+
+        outStartFrame = startFrame;
+        outInterval = interval;
+        outMaxCount = maxCount;
+        return true;
+    }
+
+    if (spec.find(':') != std::string::npos) {
+        return false;
+    }
+
+    if (spec.find(',') != std::string::npos) {
+        std::vector<uint64_t> frames;
+        size_t pos = 0;
+        while (pos <= spec.size()) {
+            const size_t commaPos = spec.find(',', pos);
+            const std::string tok = Trim(commaPos == std::string::npos
+                                             ? spec.substr(pos)
+                                             : spec.substr(pos, commaPos - pos));
+            uint64_t f = 0;
+            if (!ParseUint64String(tok, f)) {
+                return false;
+            }
+            frames.push_back(f);
+            if (commaPos == std::string::npos) break;
+            pos = commaPos + 1;
+        }
+        if (frames.empty()) return false;
+        std::sort(frames.begin(), frames.end());
+        frames.erase(std::unique(frames.begin(), frames.end()), frames.end());
+        outStartFrame = frames.front();
+        if (frames.size() > 1) {
+            outFrames = std::move(frames);
+        }
+        return true;
+    }
+
+    uint64_t single = 0;
+    if (!ParseUint64String(spec, single)) return false;
+    outStartFrame = single;
+    return true;
+}
+
+bool IsStrictNumericSnapshotSpecCandidate(const std::string& raw) {
+    if (raw.empty()) return false;
+    for (char c : raw) {
+        const unsigned char uc = static_cast<unsigned char>(c);
+        if (!std::isdigit(uc) && c != ',' && c != '+' && c != ':') {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool ParseSnapshotString(const std::string& raw, WrapperConfig& outConfig) {
     std::string trimmed = Trim(raw);
     if (trimmed.empty()) return false;
 
+    auto commitSnapshot = [&](bool enabled, uint64_t frame, std::string path,
+                              std::vector<uint64_t> frames, uint64_t interval,
+                              uint32_t maxCount) {
+        outConfig.snapshotEnabled = enabled;
+        outConfig.snapshotFrame = frame;
+        outConfig.snapshotPath = std::move(path);
+        outConfig.snapshotFrames = std::move(frames);
+        outConfig.snapshotInterval = interval;
+        outConfig.snapshotMaxCount = maxCount;
+    };
+
     std::string lower = ToLower(trimmed);
     if (lower == "0" || lower == "false" || lower == "off" || lower == "no" || lower == "none") {
-        outEnabled = false;
-        outFrame = 0;
-        outPath.clear();
+        commitSnapshot(false, 0, "", {}, 0, 0);
         return true;
     }
     if (lower == "1" || lower == "true" || lower == "on" || lower == "yes") {
-        outEnabled = true;
-        outFrame = 0;
-        outPath.clear();
+        commitSnapshot(true, 0, "", {}, 0, 0);
         return true;
     }
 
-    // "@N" -> capture frame N to auto-generated path
+    // "@SPEC" -> capture frame(s) to auto-generated path
     if (trimmed[0] == '@') {
-        uint64_t frame = 0;
-        if (!ParseUint64String(trimmed.substr(1), frame)) return false;
-        outEnabled = true;
-        outFrame = frame;
-        outPath.clear();
+        uint64_t startFrame = 0;
+        std::vector<uint64_t> frames;
+        uint64_t interval = 0;
+        uint32_t maxCount = 0;
+        if (!ParseSnapshotFrameSpec(trimmed.substr(1), startFrame, frames,
+                                    interval, maxCount)) {
+            return false;
+        }
+        commitSnapshot(true, startFrame, "", std::move(frames), interval, maxCount);
         return true;
     }
 
-    // Pure integer >= 2 -> capture frame N to auto-generated path
-    uint64_t numericFrame = 0;
-    if (ParseUint64String(trimmed, numericFrame)) {
-        outEnabled = true;
-        outFrame = numericFrame;
-        outPath.clear();
+    // Pure integer / multi-frame numeric spec -> capture to auto-generated path
+    uint64_t numericStart = 0;
+    std::vector<uint64_t> numericFrames;
+    uint64_t numericInterval = 0;
+    uint32_t numericMax = 0;
+    if (ParseSnapshotFrameSpec(trimmed, numericStart, numericFrames,
+                               numericInterval, numericMax)) {
+        commitSnapshot(true, numericStart, "", std::move(numericFrames),
+                       numericInterval, numericMax);
         return true;
     }
 
-    // "<path>@N" -> capture frame N to <path>
+    // Reject malformed trailing '@' (e.g. "snap.ppm@")
+    if (trimmed.back() == '@') {
+        return false;
+    }
+
+    // "<path>@<spec>" -> capture frame(s) to <path>
     size_t atPos = trimmed.rfind('@');
     if (atPos != std::string::npos && atPos > 0 && atPos + 1 < trimmed.size()) {
-        uint64_t frame = 0;
-        if (ParseUint64String(trimmed.substr(atPos + 1), frame)) {
-            outEnabled = true;
-            outFrame = frame;
-            outPath = trimmed.substr(0, atPos);
+        const std::string pathPart = Trim(trimmed.substr(0, atPos));
+        const std::string suffix = trimmed.substr(atPos + 1);
+        uint64_t startFrame = 0;
+        std::vector<uint64_t> frames;
+        uint64_t interval = 0;
+        uint32_t maxCount = 0;
+        if (ParseSnapshotFrameSpec(suffix, startFrame, frames, interval, maxCount)) {
+            if (pathPart.empty()) return false;
+            commitSnapshot(true, startFrame, pathPart, std::move(frames),
+                           interval, maxCount);
             return true;
+        }
+        if (IsStrictNumericSnapshotSpecCandidate(Trim(suffix))) {
+            return false;
         }
     }
 
     // Plain file path -> capture frame 0 to <path>
-    outEnabled = true;
-    outFrame = 0;
-    outPath = trimmed;
+    commitSnapshot(true, 0, trimmed, {}, 0, 0);
     return true;
 }
 
@@ -1039,9 +1166,12 @@ bool IniConfigLoader::LoadWithDefaults(const std::string& configFilePath,
                 }
             } else if (SectionMatches(sec, "glide") && key == "snapshot") {
                 handled = true;
-                if (ParseSnapshotString(val, outConfig.snapshotEnabled,
-                                        outConfig.snapshotFrame, outConfig.snapshotPath)) {
+                if (ParseSnapshotString(val, outConfig)) {
                     outConfig.settingSources["snapshot"] = "ini";
+                } else {
+                    outConfig.invalidConfigValues.push_back(
+                        "Invalid [glide] snapshot spec '" + val +
+                        "' (expected: 0|1|@N|@A,B,C|@[START]+STEP[:MAX]|path[@spec]).");
                 }
             } else if (SectionMatches(sec, "glide") && key == "report_real_hw") {
                 handled = true;
@@ -1456,9 +1586,12 @@ bool IniConfigLoader::LoadWithDefaults(const std::string& configFilePath,
 
     auto applySnapshotEnv = [&](const char* envName) {
         if (const char* envVal = GetNonEmptyEnv(envName)) {
-            if (ParseSnapshotString(envVal, outConfig.snapshotEnabled,
-                                    outConfig.snapshotFrame, outConfig.snapshotPath)) {
+            if (ParseSnapshotString(envVal, outConfig)) {
                 outConfig.settingSources["snapshot"] = envName;
+            } else {
+                GLIDE_LOG(WARN, "Config",
+                          "Ignoring invalid " << envName << " snapshot spec: '"
+                                              << envVal << "'");
             }
         }
     };

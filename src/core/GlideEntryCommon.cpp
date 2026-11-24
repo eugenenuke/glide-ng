@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <string>
 #include <vector>
@@ -43,7 +44,9 @@ std::atomic<uint64_t> s_boundsWarnEmitted{0};
 constexpr uint64_t kMaxBoundsWarnings = 16;
 
 uint64_t s_snapshotFrameCounter = 0;
-bool s_snapshotCaptured = false;
+uint32_t s_snapshotCaptureCount = 0;
+size_t s_snapshotListCursor = 0;
+bool s_snapshotDone = false;
 uint32_t s_activeColorFormat = 0;
 bool s_autoSplashPlayed = false;
 bool s_inAutoSplash = false;
@@ -76,14 +79,68 @@ inline uint32_t ResolveEffectiveDither(uint32_t mode,
   return cfg.noDitherSub ? 0u : mode;
 }
 
+std::string FormatSnapshotOutputPath(const WrapperConfig& cfg, uint64_t frameIdx) {
+  char frameBuf[32];
+  std::snprintf(frameBuf, sizeof(frameBuf), "%06llu",
+                static_cast<unsigned long long>(frameIdx));
+  const std::string frameTag(frameBuf);
+
+  if (cfg.snapshotPath.empty()) {
+    return "glide_snapshot_" + frameTag + ".ppm";
+  }
+
+  const char lastCh = cfg.snapshotPath.back();
+  if (lastCh == '/' || lastCh == '\\') {
+    return cfg.snapshotPath + "glide_snapshot_" + frameTag + ".ppm";
+  }
+
+  if (!cfg.IsMultiFrameSnapshot()) {
+    return cfg.snapshotPath;
+  }
+
+  const size_t lastSep = cfg.snapshotPath.find_last_of("/\\");
+  const size_t lastDot = cfg.snapshotPath.rfind('.');
+  const bool hasExtension =
+      (lastDot != std::string::npos) &&
+      (lastSep == std::string::npos ? lastDot > 0 : lastDot > lastSep + 1);
+  if (hasExtension) {
+    return cfg.snapshotPath.substr(0, lastDot) + "_" + frameTag +
+           cfg.snapshotPath.substr(lastDot);
+  }
+  return cfg.snapshotPath + "_" + frameTag + ".ppm";
+}
+
 void MaybeCaptureSnapshot(IGraphicsBackend* backend) {
   if (s_inAutoSplash) {
     return;
   }
   const auto& cfg = EmulationRegistry::GetInstance().GetConfig();
   const uint64_t frameIdx = s_snapshotFrameCounter++;
-  if (!cfg.snapshotEnabled || s_snapshotCaptured ||
-      frameIdx != cfg.snapshotFrame || !backend) {
+  if (!cfg.snapshotEnabled || s_snapshotDone || !backend) {
+    return;
+  }
+
+  bool shouldCapture = false;
+  if (cfg.snapshotInterval > 0) {
+    if (frameIdx >= cfg.snapshotFrame &&
+        ((frameIdx - cfg.snapshotFrame) % cfg.snapshotInterval == 0)) {
+      shouldCapture = true;
+    }
+  } else if (!cfg.snapshotFrames.empty()) {
+    while (s_snapshotListCursor < cfg.snapshotFrames.size() &&
+           cfg.snapshotFrames[s_snapshotListCursor] < frameIdx) {
+      ++s_snapshotListCursor;
+    }
+    if (s_snapshotListCursor < cfg.snapshotFrames.size() &&
+        cfg.snapshotFrames[s_snapshotListCursor] == frameIdx) {
+      shouldCapture = true;
+      ++s_snapshotListCursor;
+    }
+  } else if (frameIdx == cfg.snapshotFrame) {
+    shouldCapture = true;
+  }
+
+  if (!shouldCapture) {
     return;
   }
 
@@ -97,23 +154,22 @@ void MaybeCaptureSnapshot(IGraphicsBackend* backend) {
     GLIDE_LOG(WARN, "Snapshot",
               "FX_GLIDE_SNAPSHOT failed to read backbuffer on frame "
                   << frameIdx);
-    s_snapshotCaptured = true;
+    s_snapshotDone = true;
     return;
   }
 
-  std::string outPath = cfg.snapshotPath;
-  if (outPath.empty()) {
-    char nameBuf[64];
-    std::snprintf(nameBuf, sizeof(nameBuf), "glide_snapshot_%06llu.ppm",
-                  static_cast<unsigned long long>(frameIdx));
-    outPath = nameBuf;
+  const std::string outPath = FormatSnapshotOutputPath(cfg, frameIdx);
+  std::error_code dirEc;
+  const std::filesystem::path fsOut(outPath);
+  if (fsOut.has_parent_path() && !fsOut.parent_path().empty()) {
+    std::filesystem::create_directories(fsOut.parent_path(), dirEc);
   }
 
   std::ofstream out(outPath, std::ios::binary | std::ios::trunc);
   if (!out.is_open()) {
     GLIDE_LOG(WARN, "Snapshot",
               "FX_GLIDE_SNAPSHOT could not open output file: " << outPath);
-    s_snapshotCaptured = true;
+    s_snapshotDone = true;
     return;
   }
 
@@ -144,7 +200,17 @@ void MaybeCaptureSnapshot(IGraphicsBackend* backend) {
               static_cast<std::streamsize>(rgbRow.size()));
   }
   out.close();
-  s_snapshotCaptured = true;
+
+  ++s_snapshotCaptureCount;
+  const bool isPeriodic = (cfg.snapshotInterval > 0);
+  const bool isList = (!cfg.snapshotFrames.empty());
+  if ((!isPeriodic && !isList) ||
+      (isList && s_snapshotListCursor >= cfg.snapshotFrames.size()) ||
+      (isPeriodic && cfg.snapshotMaxCount > 0 &&
+       s_snapshotCaptureCount >= cfg.snapshotMaxCount)) {
+    s_snapshotDone = true;
+  }
+
   GLIDE_LOG(INFO, "Snapshot",
             "Saved " << w << "x" << h << " backbuffer snapshot (frame "
                      << frameIdx << ") to " << outPath);
@@ -533,7 +599,9 @@ void ApplyPostWinOpenOverrides(SharedFrontendState& st, uint32_t colorFormat,
   s_boundsWarnEmitted.store(0, std::memory_order_relaxed);
   g_boundsCheckEnabled.store(cfg.boundsCheck, std::memory_order_relaxed);
   s_snapshotFrameCounter = 0;
-  s_snapshotCaptured = false;
+  s_snapshotCaptureCount = 0;
+  s_snapshotListCursor = 0;
+  s_snapshotDone = false;
 
   auto* b = BackendManager::GetInstance().GetBackend();
   if (!b) return;

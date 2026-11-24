@@ -102,7 +102,7 @@ no_splash = false            # Suppress 3dfx startup splash animation
 # report_real_hw = false     # Voodoo2 grSstQueryHardware: true returns GR_SSTTYPE_Voodoo2 (3); env FX_GLIDE_REPORT_REAL_HW uses strict != NULL (any set value, incl. 0, enables it)
 # emul_rush = false          # Banshee/V3/V4/V5 grSstQueryHardware: true returns GR_SSTTYPE_SST96 (FX_GLIDE_EMUL_RUSH)
 # texture_uma = -1           # -1 = app-controlled | 0 = off at init | 1 = on at init (FX_GLIDE_TEXTURE_UMA)
-# snapshot = /tmp/snap.ppm   # Capture PPM framebuffer snapshot: 1 | @N | path | path@N
+# snapshot = /tmp/snap.ppm   # Capture pre-RAMDAC PPM framebuffer snapshot(s): 1 | @N | @A,B,C | @[START]+STEP[:MAX] | path[@spec]
 
 [software]
 # Worker threads for Software backend (0 = auto-detect hardware concurrency)

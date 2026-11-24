@@ -1,6 +1,7 @@
 // Auto-modularized Glide 3.x Catch2 test suite unit.
 #include <catch2/catch_test_macros.hpp>
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -525,17 +526,116 @@ TEST_CASE("Config: IniConfigLoader & Authentic 3dfx Env Var Precedence", "[Confi
     CHECK(cfg.settingSources.at("screenRefresh") == "SSTV2_SCREENREFRESH");
     CHECK(cfg.settingSources.at("snapshot") == "FX_GLIDE_SNAPSHOT");
 
-    // Verify numeric-only and @N snapshot formats
+    // Verify numeric-only, @N, frame list, and periodic interval snapshot formats
     ::unsetenv("FX_GLIDE_SNAPSHOT");
     ::setenv("FX_SNAPSHOT", "@3", 1);
     REQUIRE(loader.Load("nonexistent.ini", cfg));
     CHECK(cfg.snapshotEnabled == true);
     CHECK(cfg.snapshotFrame == 3u);
+    CHECK(cfg.snapshotFrames.empty());
+    CHECK(cfg.snapshotInterval == 0u);
+    CHECK(cfg.snapshotMaxCount == 0u);
+    CHECK(cfg.IsMultiFrameSnapshot() == false);
     CHECK(cfg.snapshotPath.empty());
 
+    ::setenv("FX_GLIDE_SNAPSHOT", "@10,30,20,10", 1);
+    REQUIRE(loader.Load("nonexistent.ini", cfg));
+    CHECK(cfg.snapshotEnabled == true);
+    CHECK(cfg.snapshotFrame == 10u);
+    CHECK(cfg.snapshotFrames == std::vector<uint64_t>({10u, 20u, 30u}));
+    CHECK(cfg.snapshotInterval == 0u);
+    CHECK(cfg.snapshotMaxCount == 0u);
+    CHECK(cfg.IsMultiFrameSnapshot() == true);
+    CHECK(cfg.snapshotPath.empty());
+
+    ::setenv("FX_GLIDE_SNAPSHOT", "/tmp/sr.ppm@300,600,900", 1);
+    REQUIRE(loader.Load("nonexistent.ini", cfg));
+    CHECK(cfg.snapshotEnabled == true);
+    CHECK(cfg.snapshotFrame == 300u);
+    CHECK(cfg.snapshotFrames == std::vector<uint64_t>({300u, 600u, 900u}));
+    CHECK(cfg.snapshotPath == "/tmp/sr.ppm");
+    CHECK(cfg.IsMultiFrameSnapshot() == true);
+
+    ::setenv("FX_GLIDE_SNAPSHOT", "@+60", 1);
+    REQUIRE(loader.Load("nonexistent.ini", cfg));
+    CHECK(cfg.snapshotEnabled == true);
+    CHECK(cfg.snapshotFrame == 0u);
+    CHECK(cfg.snapshotFrames.empty());
+    CHECK(cfg.snapshotInterval == 60u);
+    CHECK(cfg.snapshotMaxCount == 0u);
+    CHECK(cfg.IsMultiFrameSnapshot() == true);
+    CHECK(cfg.snapshotPath.empty());
+
+    ::setenv("FX_GLIDE_SNAPSHOT", "@300+120", 1);
+    REQUIRE(loader.Load("nonexistent.ini", cfg));
+    CHECK(cfg.snapshotEnabled == true);
+    CHECK(cfg.snapshotFrame == 300u);
+    CHECK(cfg.snapshotInterval == 120u);
+    CHECK(cfg.snapshotMaxCount == 0u);
+    CHECK(cfg.snapshotPath.empty());
+
+    ::setenv("FX_GLIDE_SNAPSHOT", "@300+120:5", 1);
+    REQUIRE(loader.Load("nonexistent.ini", cfg));
+    CHECK(cfg.snapshotEnabled == true);
+    CHECK(cfg.snapshotFrame == 300u);
+    CHECK(cfg.snapshotInterval == 120u);
+    CHECK(cfg.snapshotMaxCount == 5u);
+    CHECK(cfg.snapshotPath.empty());
+
+    ::setenv("FX_GLIDE_SNAPSHOT", "/tmp/shots/@+30", 1);
+    REQUIRE(loader.Load("nonexistent.ini", cfg));
+    CHECK(cfg.snapshotEnabled == true);
+    CHECK(cfg.snapshotFrame == 0u);
+    CHECK(cfg.snapshotInterval == 30u);
+    CHECK(cfg.snapshotMaxCount == 0u);
+    CHECK(cfg.snapshotPath == "/tmp/shots/");
+    CHECK(cfg.IsMultiFrameSnapshot() == true);
+
+    ::setenv("FX_GLIDE_SNAPSHOT", "/tmp/user@host.ppm", 1);
+    REQUIRE(loader.Load("nonexistent.ini", cfg));
+    CHECK(cfg.snapshotEnabled == true);
+    CHECK(cfg.snapshotFrame == 0u);
+    CHECK(cfg.snapshotFrames.empty());
+    CHECK(cfg.snapshotInterval == 0u);
+    CHECK(cfg.snapshotPath == "/tmp/user@host.ppm");
+    CHECK(cfg.IsMultiFrameSnapshot() == false);
+
+    // Malformed specs must be rejected (ignored on env without overwriting INI/alias)
+    for (const char* badSpec : {"@+0", "@10+0", "@10+5:0", "@10,", "@,10", "/tmp/sr.ppm@+0"}) {
+      INFO("Rejecting invalid snapshot spec: " << badSpec);
+      ::setenv("FX_SNAPSHOT", "@9", 1);
+      ::setenv("FX_GLIDE_SNAPSHOT", badSpec, 1);
+      REQUIRE(loader.Load("nonexistent.ini", cfg));
+      CHECK(cfg.snapshotEnabled == true);
+      CHECK(cfg.snapshotFrame == 9u);
+      CHECK(cfg.snapshotInterval == 0u);
+      CHECK(cfg.settingSources.at("snapshot") == "FX_SNAPSHOT");
+
+      const std::string badIniPath = "/tmp/glide_ng_bad_snap.ini";
+      {
+        std::ofstream badOut(badIniPath);
+        badOut << "[glide]\nsnapshot = " << badSpec << "\n";
+      }
+      ::unsetenv("FX_SNAPSHOT");
+      ::unsetenv("FX_GLIDE_SNAPSHOT");
+      ::unsetenv("GLIDE_NG_CONFIG");
+      GlideWrapper::WrapperConfig badCfg;
+      REQUIRE(loader.Load(badIniPath, badCfg));
+      CHECK(badCfg.configFileLoaded == true);
+      CHECK(badCfg.snapshotEnabled == false);
+      CHECK(!badCfg.invalidConfigValues.empty());
+      std::remove(badIniPath.c_str());
+    }
+    ::setenv("GLIDE_NG_CONFIG", iniPath.c_str(), 1);
+
+    ::unsetenv("FX_GLIDE_SNAPSHOT");
     ::setenv("FX_SNAPSHOT", "0", 1);
     REQUIRE(loader.Load("nonexistent.ini", cfg));
     CHECK(cfg.snapshotEnabled == false);
+    CHECK(cfg.snapshotFrames.empty());
+    CHECK(cfg.snapshotInterval == 0u);
+    CHECK(cfg.snapshotMaxCount == 0u);
+    CHECK(cfg.snapshotPath.empty());
 
     // Layer 4: GLIDE_NG_* overrides authentic 3dfx vars
     ::setenv("GLIDE_NG_FBI_MEM_MB", "32", 1);
@@ -951,6 +1051,134 @@ TEST_CASE("Config: IniConfigLoader & Authentic 3dfx Env Var Precedence", "[Confi
   }
 #endif
   }
+
+#ifdef __linux__
+  SECTION("Multi-frame list and periodic interval FX_GLIDE_SNAPSHOT runtime capture") {
+    namespace fs = std::filesystem;
+
+    auto readPpmRgb = [](const fs::path& p, uint32_t x, uint32_t y) {
+      std::ifstream in(p, std::ios::binary);
+      REQUIRE(in.is_open());
+      std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(in)),
+                                 std::istreambuf_iterator<char>());
+      const std::string hdr = "P6\n640 480\n255\n";
+      REQUIRE(bytes.size() == hdr.size() + 640u * 480u * 3u);
+      REQUIRE(std::string(bytes.begin(), bytes.begin() + hdr.size()) == hdr);
+      const size_t off = hdr.size() + (y * 640u + x) * 3u;
+      return std::array<uint8_t, 3>{bytes[off + 0], bytes[off + 1], bytes[off + 2]};
+    };
+
+    auto runFramesWithSpec = [](const std::string& snapSpec, int numFrames) {
+      ::setenv("GLIDE_NG_BACKEND", "software", 1);
+      ::setenv("GLIDE_NG_HEADLESS", "1", 1);
+      ::setenv("GLIDE_NG_MAX_FPS", "0", 1);
+      ::setenv("GLIDE_NG_VSYNC", "0", 1);
+      ::setenv("GLIDE_NG_NO_SPLASH", "1", 1);
+      ::setenv("GLIDE_NG_LOG_LEVEL", "warn", 1);
+      ::setenv("FX_GLIDE_SNAPSHOT", snapSpec.c_str(), 1);
+
+      void* handle = OpenGlide3Handle();
+      REQUIRE(handle != nullptr);
+
+      auto glideInit = reinterpret_cast<void (*)()>(::dlsym(handle, "grGlideInit"));
+      auto glideShutdown = reinterpret_cast<void (*)()>(::dlsym(handle, "grGlideShutdown"));
+      auto winOpen = reinterpret_cast<FxU32 (*)(FxU32, FxU32, FxU32, FxU32, FxU32, int, int)>(
+          ::dlsym(handle, "grSstWinOpen"));
+      auto winClose = reinterpret_cast<FxBool (*)(FxU32)>(::dlsym(handle, "grSstWinClose"));
+      auto vertexLayout = reinterpret_cast<void (*)(FxU32, FxI32, FxU32)>(::dlsym(handle, "grVertexLayout"));
+      auto bufferClear = reinterpret_cast<void (*)(GrColor_t, GrAlpha_t, FxU32)>(::dlsym(handle, "grBufferClear"));
+      auto colorCombine = reinterpret_cast<void (*)(GrCombineFunction_t, GrCombineFactor_t,
+                                                    GrCombineLocal_t, GrCombineOther_t, FxBool)>(
+          ::dlsym(handle, "grColorCombine"));
+      auto drawTri = reinterpret_cast<void (*)(const void*, const void*, const void*)>(
+          ::dlsym(handle, "grDrawTriangle"));
+      auto bufferSwap = reinterpret_cast<void (*)(FxU32)>(::dlsym(handle, "grBufferSwap"));
+
+      glideInit();
+      FxU32 ctx = winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                          GR_COLORFORMAT_ARGB, GR_ORIGIN_UPPER_LEFT, 2, 0);
+      REQUIRE(ctx != 0);
+
+      vertexLayout(0x01, 0, 1);
+      vertexLayout(0x02, 8, 1);
+      vertexLayout(0x20, 12, 1);
+      vertexLayout(0x10, 28, 1);
+      vertexLayout(0x03, 32, 1);
+      colorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+                   GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_NONE, FXFALSE);
+
+      for (int f = 0; f < numFrames; ++f) {
+        bufferClear(0xFF000000u, 0xFF, 0xFFFF);
+        const float r = (f == 0 || f == 1) ? 240.0f : 16.0f;
+        const float g = (f == 2 || f == 3) ? 240.0f : 16.0f;
+        const float b = (f >= 4) ? 240.0f : 16.0f;
+        StandardVert tl = {80.0f, 80.0f, 0.0f, r, g, b, 0.0f, 255.0f, 1.0f, 0.0f, 0.0f, 1.0f};
+        StandardVert tr = {200.0f, 80.0f, 0.0f, r, g, b, 0.0f, 255.0f, 1.0f, 0.0f, 0.0f, 1.0f};
+        StandardVert br = {200.0f, 200.0f, 0.0f, r, g, b, 0.0f, 255.0f, 1.0f, 0.0f, 0.0f, 1.0f};
+        StandardVert bl = {80.0f, 200.0f, 0.0f, r, g, b, 0.0f, 255.0f, 1.0f, 0.0f, 0.0f, 1.0f};
+        drawTri(&tl, &tr, &br);
+        drawTri(&tl, &br, &bl);
+        bufferSwap(0);
+      }
+
+      winClose(ctx);
+      glideShutdown();
+      ::dlclose(handle);
+    };
+
+    // 1. Explicit list with auto-created directory
+    const fs::path listDir = "/tmp/glide_ng_snap_list";
+    std::error_code ec;
+    fs::remove_all(listDir, ec);
+    runFramesWithSpec((listDir / "multi.ppm@0,2,4").string(), 5);
+
+    CHECK(fs::is_regular_file(listDir / "multi_000000.ppm"));
+    CHECK(!fs::exists(listDir / "multi_000001.ppm"));
+    CHECK(fs::is_regular_file(listDir / "multi_000002.ppm"));
+    CHECK(!fs::exists(listDir / "multi_000003.ppm"));
+    CHECK(fs::is_regular_file(listDir / "multi_000004.ppm"));
+    CHECK(!fs::exists(listDir / "multi.ppm"));
+
+    const auto rgb0 = readPpmRgb(listDir / "multi_000000.ppm", 140, 140);
+    CHECK(rgb0[0] > 200);
+    CHECK(rgb0[1] < 40);
+    CHECK(rgb0[2] < 40);
+
+    const auto rgb2 = readPpmRgb(listDir / "multi_000002.ppm", 140, 140);
+    CHECK(rgb2[0] < 40);
+    CHECK(rgb2[1] > 200);
+    CHECK(rgb2[2] < 40);
+
+    const auto rgb4 = readPpmRgb(listDir / "multi_000004.ppm", 140, 140);
+    CHECK(rgb4[0] < 40);
+    CHECK(rgb4[1] < 40);
+    CHECK(rgb4[2] > 200);
+
+    fs::remove_all(listDir, ec);
+
+    // 2. Periodic interval with max cap (@1+2:3 -> frames 1, 3, 5 only; 7 skipped)
+    const fs::path periodicDir = "/tmp/glide_ng_snap_periodic";
+    fs::remove_all(periodicDir, ec);
+    runFramesWithSpec(periodicDir.string() + "/@1+2:3", 8);
+
+    CHECK(!fs::exists(periodicDir / "glide_snapshot_000000.ppm"));
+    CHECK(fs::is_regular_file(periodicDir / "glide_snapshot_000001.ppm"));
+    CHECK(!fs::exists(periodicDir / "glide_snapshot_000002.ppm"));
+    CHECK(fs::is_regular_file(periodicDir / "glide_snapshot_000003.ppm"));
+    CHECK(!fs::exists(periodicDir / "glide_snapshot_000004.ppm"));
+    CHECK(fs::is_regular_file(periodicDir / "glide_snapshot_000005.ppm"));
+    CHECK(!fs::exists(periodicDir / "glide_snapshot_000007.ppm"));
+
+    const auto per1 = readPpmRgb(periodicDir / "glide_snapshot_000001.ppm", 140, 140);
+    CHECK(per1[0] > 200);
+    const auto per3 = readPpmRgb(periodicDir / "glide_snapshot_000003.ppm", 140, 140);
+    CHECK(per3[1] > 200);
+    const auto per5 = readPpmRgb(periodicDir / "glide_snapshot_000005.ppm", 140, 140);
+    CHECK(per5[2] > 200);
+
+    fs::remove_all(periodicDir, ec);
+  }
+#endif
 
   SECTION("Automatic one-shot startup splash policy") {
   auto& cfg = GlideWrapper::EmulationRegistry::GetInstance().GetConfig();
