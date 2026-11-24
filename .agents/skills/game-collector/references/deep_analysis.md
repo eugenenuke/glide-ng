@@ -30,9 +30,9 @@ When reviewing screenshots visually, compare **`vk_1x` vs `sw`** and **`gles` vs
 
 ---
 
-## 2. Frame-Windowed API Trace & PPM Snapshot
+## 2. Frame-Windowed API Trace, Multi-Frame Snapshots & Visual Diffs
 
-Full `trace` logs grow fast because every triangle is printed individually. Always identify the problem frame number **`[FNNNNNN]`** from the `info`/`debug` run (`summarize_log.py` highlights top spike/warn frames), then capture a **2–5 frame window** plus a deterministic `.ppm` snapshot:
+Full `trace` logs grow fast because every triangle is printed individually. Always identify the problem frame number **`[FNNNNNN]`** from the `info`/`debug` run (`summarize_log.py` highlights top spike/warn frames), then capture a **2–5 frame window** plus deterministic `.ppm` snapshot(s):
 
 ```bash
 GLIDE_NG_BACKEND=vulkan \
@@ -40,8 +40,27 @@ GLIDE_NG_BACKEND=vulkan \
   GLIDE_NG_TRACE_FRAMES=1419-1422 \
   GLIDE_NG_LOG_CATEGORIES=api,state,tex,lfb,draw \
   GLIDE_NG_LOG_FILE=logs/trace_1419_1422.log \
-  FX_GLIDE_SNAPSHOT=screens/frame_1420.ppm@1420 \
+  FX_GLIDE_SNAPSHOT=screens/frame.ppm@1419,1420,1421 \
   <launch_command>
+```
+
+For single-run progression galleries across `vulkan`, `opengl_es`, and `software`, use periodic interval syntax (`@<start>+<step>[:<max>]` or `<dir>/@<start>+<step>[:<max>]`):
+
+```bash
+# Capture every 120 frames starting at frame 300 (up to 6 shots) into screens/vk/
+FX_GLIDE_SNAPSHOT=screens/vk/@300+120:6 <launch_command>
+
+# Periodic X11 window capture (OpenGLide / non-glide-ng DOSBox):
+python3 scripts/gallery_tool.py capture --out screens/og --match "DOSBox" --interval 2.0 --skip-black --skip-dup
+
+# Extract sampled frames from a DOSBox-X / Staging ZMBV AVI capture:
+python3 scripts/gallery_tool.py extract capture/game_000.avi --out screens/dbx-sw --fps 0.5 --skip-black
+
+# Compare candidate captures against Software baseline (+ side-by-side amplified diff montages):
+python3 scripts/gallery_tool.py compare screens/sw screens/vk --diff-dir screens/diff --montage --gain 4
+
+# Convert raw .ppm / .png shots into compact WebP or PNG assets:
+python3 scripts/gallery_tool.py pack screens/vk --out docs/catalog/games/<slug>/screenshots
 ```
 
 For longer state/texture runs without triangle spam, drop `draw`:
@@ -51,7 +70,7 @@ GLIDE_NG_LOG_LEVEL=debug GLIDE_NG_LOG_CATEGORIES=-draw \
   GLIDE_NG_LOG_FILE=logs/nodraw.log <launch_command>
 ```
 
-Convert raw `.ppm` snapshots to `.png` before attaching to issues (`ffmpeg -i frame.ppm frame.png` or `magick`/`pnmtopng`). `pack_bundle.py` inspects `P6` `.ppm` headers too.
+`pack_bundle.py` inspects `P6` `.ppm`, `.png`, and `.webp` headers as well.
 
 ---
 

@@ -151,11 +151,11 @@ GLIDE_NG_LOG_LEVEL=trace \
   GLIDE_NG_TRACE_FRAMES=1419-1422 \
   GLIDE_NG_LOG_CATEGORIES=api,state,tex,lfb,draw \
   GLIDE_NG_LOG_FILE=trace.log \
-  FX_GLIDE_SNAPSHOT=frame.ppm@1420 \
+  FX_GLIDE_SNAPSHOT=frame.ppm@1419,1420 \
   <game_command>
 ```
 
-If you need a longer debug run without a huge file, drop triangle draw logs using `-draw`:
+To capture multiple evenly spaced frames across a run (for comparing `vulkan`, `opengl_es`, and `software`), use periodic snapshot syntax (`FX_GLIDE_SNAPSHOT=shots/@300+120:6`, creating parent folders automatically). For a longer debug run without per-triangle spam, drop triangle draw logs using `-draw`:
 
 ```bash
 GLIDE_NG_LOG_LEVEL=debug GLIDE_NG_LOG_CATEGORIES=-draw \
@@ -201,7 +201,7 @@ On Linux kernel GPU hangs/resets, also check the tail of `dmesg`: `dmesg -T | ta
 <summary><strong>5. RenderDoc captures &amp; archive compression</strong></summary>
 
 * If a bug affects **only** Vulkan or OpenGL ES (while `software` is clean), a single-frame **RenderDoc** `.rdc` capture lets maintainers inspect every draw call, texture, and shader without needing the game installed.
-* Compress large plain-text logs with `.zip`, `.tar.gz`, or `.zst` (text logs typically shrink 15×–30×) and convert raw `.ppm` snapshots to `.png` before uploading to GitHub.
+* Compress large plain-text logs with `.zip`, `.tar.gz`, or `.zst` (text logs typically shrink 15×–30×) and convert raw `.ppm` snapshots to `.png` or `.webp` before uploading (e.g., `python3 scripts/gallery_tool.py pack shots/ --format png`). You can also measure cross-backend differences with `python3 scripts/gallery_tool.py compare shots/sw shots/vk --diff-dir shots/diff --montage`.
 
 </details>
 
