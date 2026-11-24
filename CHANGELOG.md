@@ -10,6 +10,21 @@ For the pre-beta engineering narrative covering early architecture decisions and
 
 ## [Unreleased]
 
+### Added
+- **Screamer Rally Catalog Entry (`45` Total Commercial Games)**: Verified both the April 1998 Voodoo2 update (**`SR3DFX2.EXE`**, `0x1ff000` TMU0 clamp & post-unlock LFB fix) and retail **`STRT3FX.EXE`** via dynamic `GLIDE2X.OVL` across **Vulkan** (`1×` & `4× MSAA`), **OpenGL ES 3.2**, and **Software** backends (`640×480` track selection, China starting grid & race, native DOS SVGA `START65H.EXE` baseline, and DOSBox-X software Voodoo reference parity), with drop-in `glide-ng*.ini` presets under `docs/catalog/games/screamer-rally/`.
+- **Multi-Frame & Periodic Snapshot Captures (`FX_GLIDE_SNAPSHOT` / `[diagnostics] snapshot`)**:
+  - Extended `FX_GLIDE_SNAPSHOT` (`GLIDE_NG_SNAPSHOT` / `[diagnostics] snapshot`) beyond single-frame `@N` triggers to support explicit frame lists (**`@A,B,C`**) and periodic intervals (**`@[START]+STEP[:MAX]`**), plus directory prefixes (`dir/@...`) with automatic parent-directory creation and auto-numbered `frame_NNNNNN.ppm` filenames (`WrapperConfig`, `IniConfigLoader`, `GlideEntryCommon`, `Logger`).
+  - Read back the pre-RAMDAC backbuffer via `ReadbackFrame()` immediately before `SwapBuffers()` so automated multi-frame captures work consistently across **Vulkan**, **OpenGL ES**, and **Software** backends.
+- **Visual Gallery & Bug-Report Helper Tools (`scripts/gallery_tool.py`, `game-collector`)**:
+  - Added pure Python 3 stdlib [`scripts/gallery_tool.py`](scripts/gallery_tool.py) with four subcommands — `capture` (periodic X11/XWayland window capture tracking recreated DOSBox windows with black/duplicate frame filtering), `extract` (multi-video ZMBV `.avi` sampling via `ffmpeg`), `compare` (`MAE`, `RMSE`, `PSNR`, `Diff%`, and diff heatmaps/montages), and `pack` (lossless/near-lossless `.webp`/`.png` catalog packing) — cross-linked from [`docs/user-guide/reporting-bugs.md`](docs/user-guide/reporting-bugs.md).
+  - Added the dual-mode [`game-collector`](.agents/skills/game-collector/SKILL.md) skill and four zero-dependency Python 3 stdlib helper scripts (`glide_recon.py`, `gen_launchers.py`, `summarize_log.py`, `pack_bundle.py`) for read-only binary recon, per-backend launcher generation, log/telemetry summaries, and copyright-clean report bundles.
+
+### Fixed
+- **Win32 Embedded `Alt+Tab` Focus/Minimize, `WaitMessage()` Wakeup & Startup Splash Resize (`NativeSurfaceHost`, `GlideEntryCommon`)**:
+  - Added `NativeSurfaceHost::ShouldForceWin32SwpNoActivate()` in `WM_WINDOWPOSCHANGING` to force `SWP_NOACTIVATE` when deactivated fullscreen titles call `SetWindowPos(HWND_BOTTOM)` without it (preventing synchronous focus re-activation loops), and `ComputeRestoredWin32Styles()` to preserve live `WS_VISIBLE` / `WS_MINIMIZE` / `WS_EX_TOPMOST` state on detach instead of restoring stale startup topmost flags.
+  - Posted a benign `WM_NULL` message on reactivation so games sleeping in `WaitMessage()` wake up immediately after synchronous `WM_ACTIVATEAPP` / `WM_SETFOCUS` dispatch, and avoided unexpectedly restoring minimized (`WS_MINIMIZE`) windows unless explicitly re-activated (`restoreIfIconic`).
+  - Tracked blocking automatic startup splashes via `NativeSurfaceHost::SetAutoSplashActive()` so `PollEvents()` pumps non-destructive `PeekMessage(PM_NOREMOVE)` under Wine/Wayland/XWayland and commits the borderless-fullscreen resize during the splash instead of deferring until `grSstWinOpen()` returns.
+
 ---
 
 ## [0.9.1] - 2026-11-23
