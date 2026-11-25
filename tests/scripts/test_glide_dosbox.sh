@@ -440,6 +440,78 @@ grep -qE '^[[:space:]]*use dynamic core with fpu[[:space:]]*=[[:space:]]*true$' 
   || fail "dosbox-x-sw.conf missing use dynamic core with fpu = true"
 pass
 
+# Validate every catalog game.sh preset (syntax, PII hygiene, init --catalog, --dry-run, --list-variants, doctor).
+FAKE_CATALOG_CUE="${TMP_ROOT}/fake_catalog.cue"
+FAKE_CATALOG_PATCH="${TMP_ROOT}/fake_catalog_patches"
+: > "$FAKE_CATALOG_CUE"
+mkdir -p "$FAKE_CATALOG_PATCH"
+CATALOG_COUNT=0
+for cat_sh in "${REPO_ROOT}/docs/catalog/games/"*/game.sh; do
+  [[ -f "$cat_sh" ]] || continue
+  CATALOG_COUNT=$((CATALOG_COUNT + 1))
+  cat_dir="$(dirname "$cat_sh")"
+  slug="$(basename "$cat_dir")"
+
+  bash -n "$cat_sh"
+  pass
+
+  if grep -nE '/home/|/Users/|C:\\Users\\|3DFX/|\.tar\.zst' "$cat_sh" >/dev/null 2>&1; then
+    fail "PII/personal path check failed for ${cat_sh}"
+  else
+    pass
+  fi
+  if [[ -f "${cat_dir}/dosbox-override.conf" ]]; then
+    if grep -nE '/home/|/Users/|C:\\Users\\|3DFX/|\.tar\.zst' "${cat_dir}/dosbox-override.conf" >/dev/null 2>&1; then
+      fail "PII check failed for ${cat_dir}/dosbox-override.conf"
+    else
+      pass
+    fi
+  fi
+
+  CAT_INST="${TMP_ROOT}/cat_init_${slug}"
+  "${STABLE_BIN}/glide-dosbox/glide-dosbox" init \
+    --game-dir="$CAT_INST" \
+    --catalog="$slug" \
+    --cdimg="$FAKE_CATALOG_CUE" \
+    --patch-dir="$FAKE_CATALOG_PATCH" \
+    --mode=gng >/dev/null
+
+  assert_file_exists "${CAT_INST}/game.sh" "catalog ${slug} game.sh"
+  assert_file_exists "${CAT_INST}/run.sh" "catalog ${slug} run.sh"
+  assert_file_exists "${CAT_INST}/glide-ng.ini" "catalog ${slug} glide-ng.ini"
+  if [[ -f "${cat_dir}/dosbox-override.conf" ]]; then
+    assert_file_exists "${CAT_INST}/dosbox-override.conf" "catalog ${slug} dosbox-override.conf"
+  else
+    if [[ -e "${CAT_INST}/dosbox-override.conf" ]]; then
+      fail "catalog ${slug}: unexpected dosbox-override.conf copied"
+    else
+      pass
+    fi
+  fi
+
+  grep -qF "CDIMG=\"${FAKE_CATALOG_CUE}\"" "${CAT_INST}/game.sh" \
+    || fail "catalog ${slug}: --cdimg did not update CDIMG in game.sh"
+  pass
+  grep -qF "PATCH_DIR=\"${FAKE_CATALOG_PATCH}\"" "${CAT_INST}/game.sh" \
+    || fail "catalog ${slug}: --patch-dir did not update PATCH_DIR in game.sh"
+  pass
+  grep -qE '^DEFAULT_MODE="gng"$' "${CAT_INST}/game.sh" \
+    || fail "catalog ${slug}: --mode=gng did not override DEFAULT_MODE in game.sh"
+  pass
+
+  OUT="$("${CAT_INST}/run.sh" --dry-run 2>/dev/null)"
+  assert_contains "$OUT" "imgmount\\ d" "catalog ${slug} --dry-run mounts D:"
+  "${CAT_INST}/run.sh" --list-variants >/dev/null
+  pass
+  OUT="$("${CAT_INST}/run.sh" doctor)"
+  assert_contains "$OUT" "0 warnings" "catalog ${slug} doctor clean"
+done
+if (( CATALOG_COUNT < 9 )); then
+  fail "expected at least 9 catalog game.sh presets, found ${CATALOG_COUNT}"
+else
+  pass
+fi
+
 if (( FAIL_COUNT > 0 )); then
   echo "test_glide_dosbox.sh: ${PASS_COUNT} passed, ${FAIL_COUNT} failed." >&2
   exit 1

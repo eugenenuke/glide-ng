@@ -8,7 +8,7 @@ A curated per-title catalog of real-world 3dfx Glide games, official 3dfx tech d
 
 ## How Drop-In `glide-ng.ini` Presets Work
 
-1. **Copy the title's `glide-ng.ini`** (from its catalog directory below) into the same folder as the game or demo executable — or point to it directly without copying via `GLIDE_NG_CONFIG=/path/to/glide-ng.ini`.
+1. **Copy the title's `glide-ng.ini`** (from its catalog directory below) into the same folder as the game or demo executable — or point to it directly without copying via `GLIDE_NG_CONFIG=/path/to/glide-ng.ini`. Verified DOSBox catalog titles that include a portable `game.sh` (and optional `dosbox-override.conf`) can scaffold the entire game folder in one command via `glide-dosbox init --catalog=<slug> --cdimg=/path/to/disc.cue` (see the [DOSBox Glide Launcher Guide](../user-guide/dosbox-launcher.md)).
 2. **Ensure `glide-ng` is available**:
    - **Linux / DOSBox pass-through**: Install `glide-ng` system-wide (no loader overrides needed), or set `LD_LIBRARY_PATH=/path/to/glide-ng/lib` when running directly from a local build directory (see [Building & Installing](../user-guide/building-and-installing.md)).
    - **Win32 / Wine / Proton**: Copy `glide-ng`'s `glide.dll` (Glide 2.11), `glide2x.dll`, and/or `glide3x.dll` next to the `.exe` and pass `WINEDLLOVERRIDES="glide,glide2x,glide3x=n"`.
