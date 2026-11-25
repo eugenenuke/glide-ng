@@ -88,6 +88,8 @@ memsize = 32
 
 [cpu]
 cycles = max
+# DOSBox-X defaults auto to false, exiting dynamic_rec on every x87 FPU op (~7-9x slower)
+use dynamic core with fpu = true
 
 [voodoo]
 glide = true
@@ -131,6 +133,7 @@ memsize = 32
 
 [cpu]
 cycles = max
+use dynamic core with fpu = true
 
 [voodoo]
 voodoo_card = software
@@ -179,6 +182,8 @@ All captures below depict the *Moghs* (*Svesda Wostock*) instant action mission 
 * **Original `GLIDE2X.OVL` vs. pass-through:** The `VRUSH\` directory inside the 3dfx patch is not required under `glide-ng`. Back up the original SST-1 `GLIDE2X.OVL` and drop `glide-ng`'s `build/dos/glide2x.ovl` into `C:\BLUEBYTE\AD\` when using DOSBox Glide pass-through.
 * **No `LORES_TEXTURE=1` needed:** Leave `LORES_TEXTURE` unset with `memsize = 32` so all submarine hulls and underwater stations load at full texture resolution.
 * **Startup splash:** Uncomment `no_splash = true` in `glide-ng.ini` (or pass `FX_GLIDE_NO_SPLASH=1`) to skip the one-shot startup splash on `grSstWinOpen()`.
+* **DOSBox-X x87 FPU dynamic core (`use dynamic core with fpu = true`):** DOSBox-X's default `use dynamic core with fpu = auto` disables FPU translation in `dynamic_rec`, bouncing every x87 instruction in `FIGHT3.EXE` to the normal interpreter (~14 FPS instead of 100+ FPS). Enable `use dynamic core with fpu = true` under `[cpu]` (included in `tools/glide-dosbox/configs/dosbox-x.conf`).
+* **DOSBox-SVN (`sdl12-compat`) 2D menu cursor capture (`DESKTOP3.EXE`):** On Linux/Wayland systems running DOSBox-SVN through `sdl12-compat` → `sdl2-compat` → `SDL3`, the 2D hub cursor may initially stay clamped to a corner region. Press **`Ctrl+F10`** to release mouse capture and click back inside the window to re-lock relative mouse input across the full screen. If pointer travel feels slow on HiDPI displays, raise `[sdl] sensitivity` in a local override config; keep `output = opengl` in `dosbox-svn.conf` to avoid `SDL_UpdateRects` crashes under `sdl12-compat`.
 
 ### Useful Controls
 * `Arrow keys` / Mouse — Pitch & Turn · `+` / `-` (or `1`–`9`) — Throttle · `Ctrl` / `Space` — Primary cannon / Fire torpedo · `Tab` — Target nearest / cycle · `F1` — Cockpit view · `Numpad 0` (`KP_0`) — Chase view · **`Shift+F1`** — Toggle bilinear texture filtering · **`Shift+F2`** — Cycle dithering (`Off` / `2×2` / `4×4`) · **`Shift+F3`** — Cycle 3dfx gamma correction (unsupported on Voodoo Rush) · `P` — Pause · `Esc` — Abort / Quit mission
