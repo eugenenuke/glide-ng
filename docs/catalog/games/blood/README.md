@@ -9,6 +9,7 @@
 | **Recommended Card Profile** | `VoodooGraphics` (authentic SST-1, default) · `Voodoo2` |
 | **Verified Backends** | Vulkan · OpenGL ES · Software (AVX2 / AVX-512 / Scalar) |
 | **Preset File(s)** | [`glide-ng.ini`](./glide-ng.ini) (Authentic SST-1, `1×`) · [`glide-ng.software.ini`](./glide-ng.software.ini) (CPU Software) |
+| **Frame Pacing** | Uncapped (`max_fps = 60` optional; DOSBox CPU-bound on GPU) |
 | **Status** | Verified |
 
 ---

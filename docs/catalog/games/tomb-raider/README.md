@@ -9,6 +9,7 @@
 | **Recommended Card Profile** | `VoodooGraphics` (authentic SST-1) · `Voodoo2` (for enhanced preset) |
 | **Verified Backends** | Vulkan · OpenGL ES · Software (AVX2 / AVX-512 / Scalar) |
 | **Preset File(s)** | [`glide-ng.ini`](./glide-ng.ini) (Recommended SST-1) · [`glide-ng.hq.ini`](./glide-ng.hq.ini) (4× MSAA + No-Dither) · [`glide-ng.software.ini`](./glide-ng.software.ini) (CPU Software) |
+| **Frame Pacing** | `30 FPS` (internal engine cap) |
 | **Status** | Verified |
 
 ---
@@ -154,7 +155,7 @@ All captures below are `640×480` via patched DOSBox-SVN (Software `320×200` sc
 * **Darker modern-LCD look:** Wrappers and emulators that do not apply RAMDAC gamma (such as OpenGlide under Wayland or DOSBox-X software Voodoo) display effective `gamma = 1.0`. To match that darker look, either lower the in-game Gamma setting or uncomment `gamma = 1.0` in the preset (or launch with `SST_GAMMA=1.0`). Note that an explicit `[glide] gamma` override locks gamma to a fixed value and overrides in-game fades and the Gamma slider.
 
 ### Speed & Backend Selection
-* **GPU hosts:** `backend = vulkan` (or `opengl_es`) easily sustains locked 60 FPS even with `msaa = 4`.
+* **GPU hosts:** `backend = vulkan` (or `opengl_es`) easily sustains the game's locked **`30 FPS`** internal engine cadence even with `msaa = 4`.
 * **CPU-only hosts / VMs:** [`glide-ng.software.ini`](./glide-ng.software.ini) (`backend = software`, `simd = auto`) uses `glide-ng`'s multi-threaded AVX2/AVX-512 tiled rasterizer, which runs **5.5×–10.1× faster** in wall-clock FPS than DOSBox-X's synchronous software Voodoo emulation across the 9-scene `glide_bench` suite.
 
 ---

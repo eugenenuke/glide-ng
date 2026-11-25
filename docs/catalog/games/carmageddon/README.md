@@ -9,6 +9,7 @@
 | **Recommended Card Profile** | `Voodoo2` (default, for `Voodo2C.exe` / `voodo2S.exe`) · `VoodooGraphics` (authentic SST-1, for `CARMAV.EXE`) |
 | **Verified Backends** | Vulkan · OpenGL ES · Software (AVX2 / AVX-512 / Scalar) |
 | **Preset File(s)** | [`glide-ng.ini`](./glide-ng.ini) (Voodoo2) · [`glide-ng.hq.ini`](./glide-ng.hq.ini) (4× MSAA + Linear) · [`glide-ng.voodoo1.ini`](./glide-ng.voodoo1.ini) (SST-1) · [`glide-ng.software.ini`](./glide-ng.software.ini) (CPU Software) |
+| **Frame Pacing** | Uncapped (`max_fps = 60` recommended for steady pacing) |
 | **Status** | Verified |
 
 ---

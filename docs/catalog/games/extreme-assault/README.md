@@ -9,6 +9,7 @@
 | **Recommended Card Profile** | `Voodoo2` (default) · `VoodooGraphics` (authentic SST-1) |
 | **Verified Backends** | Vulkan · OpenGL ES · Software (AVX2 / AVX-512 / Scalar) |
 | **Preset File(s)** | [`glide-ng.ini`](./glide-ng.ini) (Voodoo2) · [`glide-ng.hq.ini`](./glide-ng.hq.ini) (4× MSAA + Linear) · [`glide-ng.voodoo1.ini`](./glide-ng.voodoo1.ini) (SST-1) · [`glide-ng.software.ini`](./glide-ng.software.ini) (CPU Software) |
+| **Frame Pacing** | `30 FPS` (internal simulation tick) |
 | **Status** | Verified |
 
 ---
@@ -137,13 +138,13 @@ All captures below are native `640×480` frames of *Extreme Assault* under patch
 ## Visual Quality & Performance Tuning
 
 ### Anti-Aliasing & Texture Filtering
-* **Vulkan / OpenGL ES:** [`glide-ng.hq.ini`](./glide-ng.hq.ini) enables **`msaa = 4`**, **`presentation_filter = linear`**, and **`no_dither_sub = true`** to clean up sloped missile silhouettes, hangar bay frame struts, and smooth the tinted lighting bands on tarmac ramps and hillsides.
+* **Vulkan / OpenGL ES:** [`glide-ng.hq.ini`](./glide-ng.hq.ini) enables **`msaa = 4`**, **`presentation_filter = linear`**, and **`no_dither_sub = true`** to clean up sloped missile silhouettes, hangar bay frame struts, smooth tinted lighting bands on tarmac ramps and hillsides, and soften occasional 1-pixel horizon dots along native CPU-clipped LOD terrain T-junction seams (also present on authentic 3dfx hardware and software Voodoo emulation).
 * **Software `2×2 SSAA`:** On `glide-ng`'s CPU Software backend, `aa = ssaa` smooths thin diagonal weapon pylons, rotor struts, and frame contours while keeping the `RGB565` LFB bezel sharp.
 * **Gamma (`1.0` default):** Hangar interiors, cockpit monitors, and glowing red/green beacons match reference SST-1 contrast out of the box.
 
 ### Performance Notes
-* **Heavy per-frame bezel LFB uploads:** *Extreme Assault* locks the `640×480` backbuffer each frame to composite the steel cockpit frame (`~911 KB/frame` average LFB write with sparse pixel masking).
-* **Lightweight 3D geometry:** `~962` average / `~1,053` peak triangles/frame. On CPU-only hosts under `software` AVX2 (`1×`), wrapper rasterization averages **`~2.0 ms/frame`** while staying locked to the game's internal **`30 FPS`** simulation tick.
+* **Heavy per-frame bezel LFB uploads:** *Extreme Assault* locks the `640×480` backbuffer each frame to composite the steel cockpit bezel along with additive (`ONE, ONE`) and multiplicative (`ZERO, PREFOG_COLOR`) HUD overlays. Vulkan and OpenGL ES composite these LFB overlays directly on GPU without full-frame readbacks, keeping wrapper LFB overhead around **`~2 ms/frame`**.
+* **Lightweight 3D geometry:** `~962` average / `~1,053` peak triangles/frame. All backends stay locked to the game's internal **`30 FPS`** simulation tick even with VSync and wrapper caps disabled; on CPU-only hosts under `software` AVX2 (`1×`), wrapper rasterization averages **`~2.0 ms/frame`**.
 
 ---
 

@@ -9,6 +9,7 @@
 | **Recommended Card Profile** | `Voodoo2` (default) · `VoodooGraphics` (authentic SST-1) |
 | **Verified Backends** | Vulkan · OpenGL ES · Software (AVX2 / AVX-512 / Scalar) |
 | **Preset File(s)** | [`glide-ng.ini`](./glide-ng.ini) (Voodoo2) · [`glide-ng.hq.ini`](./glide-ng.hq.ini) (4× MSAA + Linear) · [`glide-ng.voodoo1.ini`](./glide-ng.voodoo1.ini) (SST-1) · [`glide-ng.software.ini`](./glide-ng.software.ini) (CPU Software) |
+| **Frame Pacing** | `50 FPS` (internal engine cap) |
 | **Status** | Verified |
 
 ---
@@ -143,6 +144,7 @@ All captures below are native `640×480` frames of *Burnout: Championship Drag R
 * **Gamma (`1.0` default):** Bright daytime sky and asphalt contrast match native output without forcing a higher RAMDAC LUT.
 
 ### Performance Notes
+* **Internal `50 FPS` cap:** `BURNOUT.EXE` paces track rendering internally to **`50 FPS`** (`~20.0 ms/frame`) even with `vsync = false` and `max_fps = 0`. Both Vulkan and OpenGL ES hold locked `50 FPS` with sub-millisecond wrapper CPU overhead (`< 0.7 ms/frame`).
 * **Lightweight geometry:** `~944` average / `~2,056` peak triangles/frame with zero LFB lock stalls during track racing. On CPU-only hosts running `software` AVX2 (`1×`), wrapper rasterization averages **`~4.2 ms/frame`**.
 
 ---
