@@ -36,7 +36,7 @@ Under Glide 2.x, Rockingham Dragway and the 3D engine-hoist garage swap the flat
 
 Keep the DOSBox configuration minimal — only non-default overrides are shown below.
 
-> **Mount `C:` with `-freesize 512` and `[dosbox] memsize = 63`:**
+> **Mount `C:` with `-freesize 512` and `[dosbox] memsize = 32`:**
 > Ensure the CD image (or extracted ISO) is mounted as `D:` **and** place a `BURNOUT.CFG` containing `D:\` inside the game folder so `BURNOUT.EXE` skips the `CD NOT FOUND. CONTINUE?` prompt.
 
 Place `glide-ng`'s clean-room HLE pass-through `GLIDE2X.OVL` (`build/dos/glide2x.ovl`) directly next to `BURNOUT.EXE`.
@@ -46,7 +46,7 @@ Place `glide-ng`'s clean-room HLE pass-through `GLIDE2X.OVL` (`build/dos/glide2x
 ```ini
 # dosbox-svn.conf (minimal overrides)
 [dosbox]
-memsize = 63
+memsize = 32
 
 [sdl]
 # Avoids SDL_UpdateRects SIGSEGV under sdl12-compat on modern Linux
@@ -73,7 +73,7 @@ GLIDE_NG_CONFIG=/path/to/glide-ng.ini \
 ```ini
 # dosbox-x-pass.conf (minimal overrides)
 [dosbox]
-memsize = 63
+memsize = 32
 
 [cpu]
 cycles = max
@@ -110,7 +110,7 @@ GLIDE_NG_CONFIG=/path/to/glide-ng.hq.ini \
 ```ini
 # dosbox-x-sw.conf
 [dosbox]
-memsize = 63
+memsize = 32
 
 [cpu]
 cycles = max

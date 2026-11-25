@@ -35,7 +35,7 @@ Both versions composite the textured 3D mission viewport inside a brushed-steel 
 
 Keep the DOSBox configuration minimal — only non-default overrides are shown below.
 
-> **Mount the CD-ROM CUE/BIN image (`-t iso`) with `-freesize 512` and `[dosbox] memsize = 63`:**
+> **Mount the CD-ROM CUE/BIN image (`-t iso`) with `-freesize 512` and `[dosbox] memsize = 32`:**
 > *Extreme Assault* verifies CD audio tracks on `D:` before unlocking `New Game` / campaign missions. Mount the full `.cue` sheet (not a stripped data-only image) as `D:`.
 
 Replace the game directory's `GLIDE2X.OVL` with `glide-ng`'s clean-room HLE pass-through **`build/dos/glide2x.ovl`**.
@@ -45,7 +45,7 @@ Replace the game directory's `GLIDE2X.OVL` with `glide-ng`'s clean-room HLE pass
 ```ini
 # dosbox-svn.conf (minimal overrides)
 [dosbox]
-memsize = 63
+memsize = 32
 
 [sdl]
 # Avoids SDL_UpdateRects SIGSEGV under sdl12-compat on modern Linux
@@ -72,7 +72,7 @@ GLIDE_NG_CONFIG=/path/to/glide-ng.ini \
 ```ini
 # dosbox-x-pass.conf (minimal overrides)
 [dosbox]
-memsize = 63
+memsize = 32
 
 [cpu]
 cycles = max
@@ -109,7 +109,7 @@ GLIDE_NG_CONFIG=/path/to/glide-ng.hq.ini \
 ```ini
 # dosbox-x-sw.conf
 [dosbox]
-memsize = 63
+memsize = 32
 
 [cpu]
 cycles = max
