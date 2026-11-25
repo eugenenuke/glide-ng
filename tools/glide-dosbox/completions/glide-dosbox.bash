@@ -1,5 +1,38 @@
 # Bash completion for glide-dosbox (glide-dosbox / ./run.sh / launch.sh)
 
+_glide_dosbox_extract_game_variants() {
+  local cmd="${1:-}"
+  local target_dir=""
+  local j
+  for (( j = 1; j < ${#COMP_WORDS[@]}; ++j )); do
+    case "${COMP_WORDS[j]}" in
+      -C|--game-dir)
+        (( j + 1 < ${#COMP_WORDS[@]} )) && target_dir="${COMP_WORDS[j+1]}"
+        ;;
+      --game-dir=*)
+        target_dir="${COMP_WORDS[j]#*=}"
+        ;;
+    esac
+  done
+  if [[ -z "$target_dir" ]]; then
+    if [[ "$(basename -- "$cmd")" != "glide-dosbox" && "$cmd" == */* ]]; then
+      target_dir="$(cd "$(dirname -- "$cmd")" 2>/dev/null && pwd || echo "$PWD")"
+    else
+      target_dir="$PWD"
+    fi
+  fi
+
+  local game_sh="${target_dir}/game.sh"
+  [[ -f "$game_sh" ]] || return 0
+  {
+    grep -oE '^[[:space:]]*RUN_CMD_[A-Za-z0-9_]+=' "$game_sh" 2>/dev/null \
+      | sed -E 's/^[[:space:]]*RUN_CMD_//; s/=$//'
+    if grep -qE '^[[:space:]]*RUN_CMD=\(' "$game_sh" 2>/dev/null; then
+      echo "default"
+    fi
+  } | LC_ALL=C sort -u
+}
+
 _glide_dosbox_complete() {
   local cmd="${COMP_WORDS[0]}"
   local cur="${COMP_WORDS[COMP_CWORD]}"
@@ -67,6 +100,9 @@ _glide_dosbox_complete() {
       --mode)
         vals="gng og dbx dbx-og sw dbx-sw st staging"
         ;;
+      --variant|--flavor|--flavour)
+        vals="$(_glide_dosbox_extract_game_variants "$cmd" | tr '\n' ' ')"
+        ;;
       --catalog)
         if [[ -n "$repo_root" && -d "${repo_root}/docs/catalog/games" ]]; then
           local d
@@ -100,11 +136,17 @@ _glide_dosbox_complete() {
       mapfile -t COMPREPLY < <(compgen -d -- "$cur")
       return 0
       ;;
+    --variant|--flavor|--flavour)
+      local vvals
+      vvals="$(_glide_dosbox_extract_game_variants "$cmd" | tr '\n' ' ')"
+      mapfile -t COMPREPLY < <(compgen -W "$vvals" -- "$cur")
+      return 0
+      ;;
   esac
 
   local actions="run shell sh dos exec install patch setup conf reconfigure init doctor info"
   local profiles="gng og dbx dbx-og sw dbx-sw st staging"
-  local opts="--emu= --wrapper= --gpu= --vk --vulkan --gl --gles --sw --software --backend= --exec --no-exit --cd --no-patch --extract --cdimg= --patch-dir= --catalog= --mode= --force --no-symlink --game-dir= --debug --debug= --hud --hud= --perf --perf= --log --log= --log-file= --tag= --suffix= --console --trace= --snap= -w --windowed --uncap --msaa= --no-splash --card= --tmu-mem= --dry-run --install-completion --enable-completion -h --help"
+  local opts="--variant= --flavor= --flavour= --list-variants --emu= --wrapper= --gpu= --vk --vulkan --gl --gles --sw --software --backend= --exec --no-exit --cd --no-patch --extract --cdimg= --patch-dir= --catalog= --mode= --force --no-symlink --game-dir= --debug --debug= --hud --hud= --perf --perf= --log --log= --log-file= --tag= --suffix= --console --trace= --snap= -w --windowed --uncap --msaa= --no-splash --card= --tmu-mem= --dry-run --install-completion --enable-completion -h --help"
   local dosbox_flags="-c -conf --conf -fs -fullscreen -exit --exit"
 
   if (( COMP_CWORD == 1 )); then

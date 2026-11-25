@@ -3,6 +3,7 @@
 capture_cli_env_overrides() {
   CLI_DEFAULT_MODE="${DEFAULT_MODE-}"
   CLI_DEFAULT_ADMIN_MODE="${DEFAULT_ADMIN_MODE-}"
+  CLI_DEFAULT_VARIANT="${DEFAULT_VARIANT-}"
   CLI_GNG_LIBS="${GNG_LIBS-}"
   CLI_GNG_OVL_DIR="${GNG_OVL_DIR-}"
   CLI_OG_LIBS="${OG_LIBS-${OGLIBS-}}"
@@ -130,6 +131,7 @@ load_global_config() {
 }
 
 reset_game_vars() {
+  DEFAULT_VARIANT=""
   CDIMG=""
   PATCH_DIR=""
   PATCH_ARCHIVE=""
@@ -141,6 +143,12 @@ reset_game_vars() {
   SHELL_CMD=()
   RUN_CMD=()
   GAME_ENV=()
+  local pfx v
+  for pfx in RUN_CMD_ RUN_ENV_ RUN_MODE_; do
+    while IFS= read -r v; do
+      [[ -n "$v" ]] && unset "$v"
+    done < <(compgen -A variable "$pfx" || true)
+  done
 }
 
 load_game_config() {
@@ -153,7 +161,8 @@ load_game_config() {
   # shellcheck disable=SC1091
   source ./game.sh
 
-  # Environment DEFAULT_MODE / DEFAULT_ADMIN_MODE overrides per-game defaults.
+  # Environment DEFAULT_MODE / DEFAULT_ADMIN_MODE / DEFAULT_VARIANT overrides per-game defaults.
   [[ -n "$CLI_DEFAULT_MODE" ]] && DEFAULT_MODE="$CLI_DEFAULT_MODE"
-  [[ -n "$CLI_DEFAULT_ADMIN_MODE" ]] && DEFAULT_ADMIN_MODE="$CLI_DEFAULT_ADMIN_MODE" || true
+  [[ -n "$CLI_DEFAULT_ADMIN_MODE" ]] && DEFAULT_ADMIN_MODE="$CLI_DEFAULT_ADMIN_MODE"
+  [[ -n "$CLI_DEFAULT_VARIANT" ]] && DEFAULT_VARIANT="$CLI_DEFAULT_VARIANT" || true
 }

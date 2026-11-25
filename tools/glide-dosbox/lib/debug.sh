@@ -37,6 +37,7 @@ ensure_logs_parent() {
 
 resolve_debug_and_cli_env() {
   local tag_prefix="$1"
+  local variant_tag="${2:-}"
 
   SCENARIO_LABEL=""
   if [[ -n "$OPT_DEBUG" ]]; then
@@ -110,7 +111,7 @@ resolve_debug_and_cli_env() {
     [[ -z "$OPT_LOG_FILE" ]] && OPT_LOG_FILE="__AUTO_TRACE__" || true
   fi
 
-  TAG="${tag_prefix}${OPT_BACKEND_TAG:+_${OPT_BACKEND_TAG}}${OPT_TAG:+_${OPT_TAG}}"
+  TAG="${tag_prefix}${OPT_BACKEND_TAG:+_${OPT_BACKEND_TAG}}${variant_tag:+_${variant_tag}}${OPT_TAG:+_${OPT_TAG}}"
   [[ "$OPT_PERF" == "__AUTO__" ]] && OPT_PERF="./logs/perf_${TAG}.csv"
   [[ "$OPT_LOG_FILE" == "__AUTO__" ]] && OPT_LOG_FILE="./logs/${TAG}.log"
   [[ "$OPT_LOG_FILE" == "__AUTO_TRACE__" ]] && OPT_LOG_FILE="./logs/trace_${TAG}.log"

@@ -114,6 +114,24 @@ glide-dosbox doctor -C /path/to/game
 glide-dosbox shell --game-dir=/path/to/game --cd
 ```
 
+### Runtime Variants (`--variant` / `RUN_CMD_*`)
+
+When a game ships multiple executables or launch modes (for example a 3dfx executable, a Voodoo2 patch binary, and a software VGA hi-res executable or flag), define `RUN_CMD_<NAME>` arrays in `./game.sh` and switch between them cleanly at launch:
+
+```bash
+# Inspect available variants defined in ./game.sh (* marks default)
+./run.sh --list-variants
+
+# Launch the default variant (`DEFAULT_VARIANT`, or `RUN_CMD` when unset)
+./run.sh
+
+# Switch variants on the command line (`--flavor=` / `--flavour=` are aliases)
+./run.sh --variant=vga_hires --dry-run
+./run.sh --variant=v1 --vk --debug=1
+```
+
+Explicit `--variant=NAME` selections append `<NAME>` to auto-generated `./logs/*_<tag>.*` filenames so variant captures do not overwrite default logs. Passing `DEFAULT_VARIANT=<NAME> ./run.sh` overrides `./game.sh`'s default for a single shell invocation.
+
 ---
 
 ## 4. Profiles & Orthogonal Overrides
@@ -199,9 +217,11 @@ Each game directory contains a small Bash config file (`./game.sh`; see `tools/g
 | Variable | Type | Purpose |
 | :--- | :--- | :--- |
 | `DEFAULT_MODE`, `DEFAULT_ADMIN_MODE` | String | Per-game default profile (`gng`, `og`, `dbx`, `dbx-og`, `sw`, `staging`) for `run` and admin actions (`install`, `patch`, `setup`, `shell`). |
+| `DEFAULT_VARIANT` | String | Default key for `run` when `RUN_CMD_<NAME>` variants are defined (overridable via `DEFAULT_VARIANT=<NAME>` in env or `--variant=NAME`). |
 | `CDIMG` | String | Path to ISO/CUE image mounted as `D:` (`imgmount d "..." -t iso`). Optional `MEDIA_DIR` from `dosbox-launcher.conf` is available inside `game.sh`. |
 | `PATCH_DIR` | String | Host directory mounted as `P:` during `install`, `patch`, and `shell`. |
 | `INST_CMD`, `CONF_CMD`, `PATCH_CMD`, `SHELL_CMD`, `RUN_CMD` | Arrays | DOSBox `-c` commands for each action (`SHELL_CMD=()` defaults to empty so `shell` drops directly to `C:\` or `D:\`). |
+| `RUN_CMD_<NAME>`, `RUN_ENV_<NAME>`, `RUN_MODE_<NAME>` | Arrays / String | Named runtime variants selected by `--variant=NAME` or `DEFAULT_VARIANT`, with optional per-variant env overrides (applied after `GAME_ENV`) and default profile override. |
 | `PATCH_ARCHIVE` / `PATCH_ARCHIVES`, `PATCH_DEST` | String / Array | Optional archives extracted when `./run.sh patch --extract` is used. |
 | `GAME_ENV` | Array | Persistent environment variables (`KEY=VAL`) passed across every launcher mode (prefer `./glide-ng.ini` for `glide-ng` settings). |
 
@@ -252,6 +272,7 @@ The implementation under `tools/glide-dosbox/` is split into focused modules so 
 | `tools/glide-dosbox/lib/gpu.sh` | `--gpu=` parsing and Linux GLVND/PRIME/Mesa ICD lookup |
 | `tools/glide-dosbox/lib/debug.sh` | `--debug=` scenario defaults, `./logs/` path formatting, `GLIDE_NG_*` CLI env generation |
 | `tools/glide-dosbox/lib/helpers.sh` | Hook utilities (`extract_patch`, `backup_file`, `strip_glide_ovl`), exit stripping, local OVL checks |
+| `tools/glide-dosbox/lib/variants.sh` | Runtime variant discovery, lookup, and `RUN_CMD_*` / `RUN_ENV_*` / `RUN_MODE_*` resolution |
 | `tools/glide-dosbox/lib/commands.sh` | `--help`, `--install-completion`, `init`, and `doctor` |
 | `tools/glide-dosbox/configs/` | Minimal shared DOSBox configs (`dosbox-svn.conf`, `dosbox-x.conf`, `dosbox-x-sw.conf`, `dosbox-staging.conf`, `dosbox-windowed.conf`) |
 | `tools/glide-dosbox/completions/glide-dosbox.bash` | Context-aware Bash completion including dynamic `--catalog=` lookup |

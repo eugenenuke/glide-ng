@@ -20,7 +20,14 @@ INST_CMD=()   # e.g. (-c "INSTALL.EXE")
 CONF_CMD=()   # e.g. (-c "cd GAME" -c "SETSOUND.EXE" -c "exit")
 PATCH_CMD=()  # e.g. (-c "cd GAME" -c "PATCH12.EXE" -c "exit")
 SHELL_CMD=()  # Optional dir setup for `shell`, e.g. (-c "cd GAME") — leave () for C:\
-RUN_CMD=()    # e.g. (-c "cd GAME" -c "GAME3DFX.EXE" -c "exit")
+RUN_CMD=()    # Default launch command, e.g. (-c "cd GAME" -c "GAME3DFX.EXE" -c "exit")
+
+# Optional runtime variants selected via `--variant=NAME` (or `DEFAULT_VARIANT`):
+# DEFAULT_VARIANT="3dfx"
+# RUN_CMD_3dfx=(-c "cd GAME" -c "GAME3DFX.EXE" -c "exit")
+# RUN_CMD_hires=(-c "cd GAME" -c "GAME.EXE -hires" -c "exit")
+# RUN_ENV_3dfx=(GLIDE_NG_CARD_MODEL=Voodoo2)  # optional extra env vars for this variant
+# RUN_MODE_hires="gng"                        # optional default profile for this variant
 
 # Optional extra environment variables applied to this game across modes.
 # Prefer ./glide-ng.ini for persistent glide-ng settings (backend, gpu, card_model, vsync, msaa, ...).

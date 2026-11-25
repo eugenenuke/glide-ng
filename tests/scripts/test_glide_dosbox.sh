@@ -316,6 +316,111 @@ assert_contains "$OUT" "LD_LIBRARY_PATH=${FAKE_OG_LIBS}" "legacy OGLIBS alias"
 OUT="$(GLIDE_DOSBOX_CONF="$LEGACY_CONF" "${GAME_DIR}/run.sh" st --dry-run 2>/dev/null)"
 assert_contains "$OUT" "${FAKE_BIN}/dosbox-staging" "legacy DOSBOX_ST alias"
 
+# 9. Runtime variants (DEFAULT_VARIANT, --variant/--flavor/--flavour, RUN_ENV_*, RUN_MODE_*, --list-variants, completion).
+VAR_GAME="${TMP_ROOT}/variant_game"
+mkdir -p "${VAR_GAME}/GAME"
+ln -sf "${STABLE_BIN}/glide-dosbox/glide-dosbox" "${VAR_GAME}/run.sh"
+cat > "${VAR_GAME}/game.sh" <<'EOF'
+DEFAULT_VARIANT="3dfx"
+RUN_CMD_3dfx=(-c "cd GAME" -c "GAME3DFX.EXE" -c "exit")
+RUN_CMD_v1=(-c "cd GAME" -c "GAMEV1.EXE" -c "exit")
+RUN_CMD_vga_hires=(-c "cd GAME" -c "GAMEVGA.EXE -hires" -c "exit")
+GAME_ENV=(SHARED_VAR=1 GLIDE_NG_CARD_MODEL=Voodoo2)
+RUN_ENV_v1=(GLIDE_NG_CARD_MODEL=VoodooGraphics VARIANT_VAR=v1)
+RUN_MODE_v1="dbx"
+EOF
+
+# Default picks DEFAULT_VARIANT without cluttering base tag.
+OUT="$("${VAR_GAME}/run.sh" --dry-run)"
+assert_contains "$OUT" "variant=3dfx" "DEFAULT_VARIANT sets active variant"
+assert_contains "$OUT" "tag=gng variant=3dfx" "DEFAULT_VARIANT keeps default tag"
+assert_contains "$OUT" "GAME3DFX.EXE" "DEFAULT_VARIANT runs RUN_CMD_3dfx"
+
+# Explicit --variant with hyphen/case aliases, tag isolation, and --list-variants.
+OUT="$("${VAR_GAME}/run.sh" --variant=vga_hires --vk --debug=1 --dry-run)"
+assert_contains "$OUT" "variant=vga_hires" "--variant=vga_hires active"
+assert_contains "$OUT" "tag=gng_vk_vga_hires" "explicit variant isolates debug tag"
+assert_contains "$OUT" "GLIDE_NG_PERF_LOG=./logs/perf_gng_vk_vga_hires.csv" "explicit variant isolates perf log"
+assert_contains "$OUT" "GAMEVGA.EXE\\ -hires" "explicit variant keeps CLI flag args"
+
+OUT="$("${VAR_GAME}/run.sh" --variant=vga-hires --dry-run)"
+assert_contains "$OUT" "GAMEVGA.EXE\\ -hires" "--variant hyphen normalizes to underscore"
+
+OUT="$("${VAR_GAME}/run.sh" --flavor=VGA_HIRES --dry-run)"
+assert_contains "$OUT" "GAMEVGA.EXE\\ -hires" "--flavor case-insensitive lookup"
+
+OUT="$("${VAR_GAME}/run.sh" --flavour v1 --dry-run)"
+assert_contains "$OUT" "variant=v1" "--flavour space-separated form"
+assert_contains "$OUT" "profile=dbx emu=dbx" "RUN_MODE_v1 overrides default profile"
+assert_contains "$OUT" "GLIDE_NG_CARD_MODEL=VoodooGraphics VARIANT_VAR=v1" "RUN_ENV_v1 overrides GAME_ENV"
+assert_contains "$OUT" "GAMEV1.EXE" "--flavour v1 runs RUN_CMD_v1"
+
+# CLI profile & CLI --card still override RUN_MODE_* and RUN_ENV_*.
+OUT="$("${VAR_GAME}/run.sh" gng --variant=v1 --card=Voodoo3 --dry-run)"
+assert_contains "$OUT" "profile=gng emu=svn" "CLI profile overrides RUN_MODE_v1"
+assert_contains "$OUT" "GLIDE_NG_CARD_MODEL=Voodoo3" "CLI --card overrides RUN_ENV_v1"
+
+# Env DEFAULT_VARIANT override.
+OUT="$(DEFAULT_VARIANT=v1 "${VAR_GAME}/run.sh" --dry-run)"
+assert_contains "$OUT" "variant=v1" "env DEFAULT_VARIANT overrides game.sh"
+
+# --list-variants and doctor variant listing.
+OUT="$("${VAR_GAME}/run.sh" --list-variants)"
+assert_contains "$OUT" "* 3dfx" "--list-variants marks default variant"
+assert_contains "$OUT" "v1" "--list-variants shows v1"
+assert_contains "$OUT" "[mode: dbx]" "--list-variants shows RUN_MODE_v1"
+
+OUT="$("${VAR_GAME}/run.sh" doctor)"
+assert_contains "$OUT" "Variants" "doctor displays variants row"
+assert_contains "$OUT" "3dfx (default)" "doctor marks default variant"
+
+# Error on unknown variant.
+if "${VAR_GAME}/run.sh" --variant=missing --dry-run >/dev/null 2>&1; then
+  fail "expected --variant=missing to fail"
+else
+  pass
+fi
+
+# Hybrid game (RUN_CMD default + optional RUN_CMD_vga) + --variant=default + unset default error.
+HYB_GAME="${TMP_ROOT}/hybrid_game"
+mkdir -p "$HYB_GAME"
+ln -sf "${STABLE_BIN}/glide-dosbox/glide-dosbox" "${HYB_GAME}/run.sh"
+cat > "${HYB_GAME}/game.sh" <<'EOF'
+RUN_CMD=(-c "MAIN3DFX.EXE")
+RUN_CMD_vga=(-c "MAINVGA.EXE")
+EOF
+OUT="$("${HYB_GAME}/run.sh" --dry-run)"
+assert_contains "$OUT" "MAIN3DFX.EXE" "hybrid default uses RUN_CMD"
+OUT="$("${HYB_GAME}/run.sh" --variant=vga --dry-run)"
+assert_contains "$OUT" "MAINVGA.EXE" "hybrid --variant=vga uses RUN_CMD_vga"
+OUT="$("${HYB_GAME}/run.sh" --variant=default --dry-run)"
+assert_contains "$OUT" "MAIN3DFX.EXE" "hybrid --variant=default selects RUN_CMD"
+
+# Error if RUN_CMD and DEFAULT_VARIANT are both unset while variants exist.
+UNSET_GAME="${TMP_ROOT}/unset_var_game"
+mkdir -p "$UNSET_GAME"
+ln -sf "${STABLE_BIN}/glide-dosbox/glide-dosbox" "${UNSET_GAME}/run.sh"
+cat > "${UNSET_GAME}/game.sh" <<'EOF'
+RUN_CMD_3dfx=(-c "GAME3DFX.EXE")
+RUN_CMD_vga=(-c "GAMEVGA.EXE")
+EOF
+if "${UNSET_GAME}/run.sh" --dry-run >/dev/null 2>&1; then
+  fail "expected unset RUN_CMD and DEFAULT_VARIANT with RUN_CMD_* to fail"
+else
+  pass
+fi
+OUT="$("${UNSET_GAME}/run.sh" --exec "DIR" --dry-run)"
+assert_contains "$OUT" "-c DIR" "--exec succeeds even when DEFAULT_VARIANT is unset"
+
+# Bash completion variant extraction helper works read-only without executing game.sh.
+OUT="$(
+  source "${LAUNCHER_DIR}/completions/glide-dosbox.bash"
+  COMP_WORDS=("${VAR_GAME}/run.sh" "--variant=")
+  _glide_dosbox_extract_game_variants "${VAR_GAME}/run.sh"
+)"
+assert_contains "$OUT" "3dfx" "completion extracts 3dfx"
+assert_contains "$OUT" "vga_hires" "completion extracts vga_hires"
+
 if (( FAIL_COUNT > 0 )); then
   echo "test_glide_dosbox.sh: ${PASS_COUNT} passed, ${FAIL_COUNT} failed." >&2
   exit 1

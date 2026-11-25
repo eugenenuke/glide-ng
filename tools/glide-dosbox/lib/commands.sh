@@ -35,6 +35,8 @@ GPU & Backend Selection:
   --gpu=GPU                Select host GPU (default | discrete | integrated | llvmpipe | name:<substr>)
 
 Execution & Shell Control:
+  --variant=NAME           Select per-game runtime variant from RUN_CMD_<NAME> (`--flavor=`, `--flavour=`)
+  --list-variants          List runtime variants defined in ./game.sh and exit
   --exec CMD               Replace DOS commands with `-c CMD` (repeatable)
   --no-exit                Strip trailing `-c exit` so DOSBox stays open after commands finish
   --cd                     In `shell` (or `--exec`), start on D: when CDIMG is set
@@ -82,6 +84,7 @@ Configuration Paths & Notes:
 
 Examples:
   ./run.sh --vk --debug=1
+  ./run.sh --variant=hires
   ./run.sh og --emu=dbx
   ./run.sh shell --cd
   ./run.sh --exec "dir /w" --no-exit
@@ -330,6 +333,25 @@ cmd_doctor() {
     [[ -f "${GAME_DIR}/dosbox-override.conf" ]] \
       && print_check_row "OK" "dosbox-override" "present" \
       || print_check_row "INFO" "dosbox-override" "(absent)"
+
+    local variant_keys=()
+    mapfile -t variant_keys < <(list_defined_variants)
+    if (( ${#variant_keys[@]} > 0 )); then
+      local vdef=""
+      [[ -n "${DEFAULT_VARIANT:-}" ]] && vdef="$(find_variant_key "$DEFAULT_VARIANT" || true)"
+      local formatted=() vk
+      for vk in "${variant_keys[@]}"; do
+        if [[ "$vk" == "$vdef" ]]; then
+          formatted+=("${vk} (default)")
+        else
+          formatted+=("$vk")
+        fi
+      done
+      local vjoined=""
+      local IFS=", "
+      vjoined="${formatted[*]}"
+      print_check_row "OK" "Variants" "$vjoined"
+    fi
 
     local ovls
     ovls="$(find_local_glide_ovls "$GAME_DIR")"

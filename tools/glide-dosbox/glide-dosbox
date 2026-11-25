@@ -24,6 +24,8 @@ source "${TOOL_DIR}/lib/gpu.sh"
 source "${TOOL_DIR}/lib/debug.sh"
 # shellcheck source=lib/helpers.sh
 source "${TOOL_DIR}/lib/helpers.sh"
+# shellcheck source=lib/variants.sh
+source "${TOOL_DIR}/lib/variants.sh"
 # shellcheck source=lib/commands.sh
 source "${TOOL_DIR}/lib/commands.sh"
 
@@ -51,7 +53,7 @@ scan_meta_flags() {
     fi
     case "$arg" in
       --) break ;;
-      -c|-conf|--conf|-C|--exec) expect_dosbox_val=1 ;;
+      -c|-conf|--conf|-C|--exec|--variant|--flavor|--flavour) expect_dosbox_val=1 ;;
       -h|--help)
         usage
         exit 0
@@ -73,6 +75,8 @@ EXEC_CMDS=()
 OPT_EMU=""
 OPT_WRAPPER=""
 OPT_GPU=""
+OPT_VARIANT=""
+OPT_LIST_VARIANTS=0
 OPT_NO_EXIT=0
 OPT_SHELL_CD=0
 OPT_NO_PATCH=0
@@ -164,6 +168,24 @@ while [[ $# -gt 0 ]]; do
     --gpu)
       echo "Error: use --gpu=default|discrete|integrated|llvmpipe|name:<substr>." >&2
       exit 1
+      ;;
+    --variant=*|--flavor=*|--flavour=*)
+      OPT_VARIANT="${arg#*=}"
+      require_flag_val "${arg%%=*}" "$OPT_VARIANT"
+      shift
+      ;;
+    --variant|--flavor|--flavour)
+      shift
+      if [[ $# -eq 0 || -z "$1" || "$1" == -* ]]; then
+        echo "Error: use --variant=NAME (or --list-variants)." >&2
+        exit 1
+      fi
+      OPT_VARIANT="$1"
+      shift
+      ;;
+    --list-variants|--variants)
+      OPT_LIST_VARIANTS=1
+      shift
       ;;
     --vk|--vulkan)
       OPT_BACKEND="vulkan"
@@ -407,8 +429,18 @@ fi
 cd "$GAME_DIR"
 load_game_config
 
+if (( OPT_LIST_VARIANTS )); then
+  cmd_list_variants
+  exit 0
+fi
+
+resolve_run_variant "$ACTION" "$OPT_VARIANT" "${#EXEC_CMDS[@]}"
+if [[ -z "$PROFILE_EXPLICIT" && -n "$VARIANT_MODE" ]]; then
+  DEFAULT_MODE="$VARIANT_MODE"
+fi
+
 resolve_runtime_profile "$PROFILE_EXPLICIT" "$ACTION" "$OPT_EMU" "$OPT_WRAPPER"
-resolve_debug_and_cli_env "$PROFILE_TAG"
+resolve_debug_and_cli_env "$PROFILE_TAG" "$ACTIVE_VARIANT_TAG"
 append_gpu_env "$OPT_GPU"
 
 build_and_run_dosbox() {
@@ -458,6 +490,7 @@ build_and_run_dosbox() {
   local env_vars=(
     ${WRAPPER_ENV[@]+"${WRAPPER_ENV[@]}"}
     ${GAME_ENV[@]+"${GAME_ENV[@]}"}
+    ${VARIANT_ENV[@]+"${VARIANT_ENV[@]}"}
     ${GPU_ENV[@]+"${GPU_ENV[@]}"}
     ${CLI_ENV[@]+"${CLI_ENV[@]}"}
   )
@@ -474,7 +507,7 @@ build_and_run_dosbox() {
   )
 
   if (( OPT_DRY_RUN )); then
-    echo "[dry-run] cwd=${GAME_DIR} action=${phase_action} profile=${PROFILE_TAG} emu=${EMU} wrapper=${WRAPPER} tag=${TAG}${SCENARIO_LABEL:+ debug=$SCENARIO_LABEL}${OPT_GPU:+ gpu=$OPT_GPU}"
+    echo "[dry-run] cwd=${GAME_DIR} action=${phase_action} profile=${PROFILE_TAG} emu=${EMU} wrapper=${WRAPPER} tag=${TAG}${ACTIVE_VARIANT:+ variant=$ACTIVE_VARIANT}${SCENARIO_LABEL:+ debug=$SCENARIO_LABEL}${OPT_GPU:+ gpu=$OPT_GPU}"
     if [[ -z "$BIN" ]]; then
       echo "[dry-run] Note: emulator binary for '${EMU}' not configured or not found on PATH; showing placeholder '${bin_cmd}'." >&2
     fi
@@ -498,12 +531,13 @@ build_and_run_dosbox() {
     exit 1
   fi
 
-  if (( ${#CLI_ENV[@]} )) || (( OPT_WINDOWED )) || [[ -n "$SCENARIO_LABEL" ]] || [[ -n "$OPT_GPU" ]]; then
+  if (( ${#CLI_ENV[@]} )) || (( ${#VARIANT_ENV[@]} )) || (( OPT_WINDOWED )) || [[ -n "$SCENARIO_LABEL" ]] || [[ -n "$OPT_GPU" ]] || [[ -n "$OPT_VARIANT" ]]; then
     ensure_logs_parent "$OPT_PERF"
     ensure_logs_parent "$OPT_LOG_FILE"
     ensure_logs_parent "$OPT_SNAP"
 
     local summary="action=${phase_action} profile=${PROFILE_TAG}"
+    [[ -n "$ACTIVE_VARIANT" ]] && summary+=" variant=${ACTIVE_VARIANT}"
     [[ -n "$OPT_BACKEND" ]] && summary+=" backend=${OPT_BACKEND}"
     [[ -n "$OPT_GPU" ]] && summary+=" gpu=${OPT_GPU}"
     [[ -n "$OPT_TAG" ]] && summary+=" tag=${OPT_TAG}"
@@ -600,7 +634,7 @@ case "$ACTION" in
     if (( ${#EXEC_CMDS[@]} > 0 )); then
       ACTIVE_CMD=("${EXEC_CMDS[@]}")
     else
-      ACTIVE_CMD=(${RUN_CMD[@]+"${RUN_CMD[@]}"})
+      ACTIVE_CMD=(${VARIANT_CMD[@]+"${VARIANT_CMD[@]}"})
     fi
     build_and_run_dosbox "run" "$START_DRIVE" 0 ${ACTIVE_CMD[@]+"${ACTIVE_CMD[@]}"}
     ;;
