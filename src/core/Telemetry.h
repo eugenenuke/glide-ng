@@ -169,11 +169,20 @@ class TelemetryManager {
   static bool IsPerfTimingEnabledFast() noexcept {
     return s_perfTimingEnabled.load(std::memory_order_relaxed);
   }
-  void RecordCpuBucketNs(CpuBucket bucket, int64_t ns) {
-    if (ns <= 0) return;
+  static bool UseTscClockFast() noexcept {
+    return s_useTscClock.load(std::memory_order_relaxed);
+  }
+  bool IsUsingTscClock() const noexcept {
+    return s_useTscClock.load(std::memory_order_relaxed);
+  }
+  double GetTscNsPerTick() const noexcept {
+    return m_tscNsPerTick.load(std::memory_order_relaxed);
+  }
+  void RecordCpuBucketTicks(CpuBucket bucket, int64_t ticks) {
+    if (ticks <= 0) return;
     const size_t idx = static_cast<size_t>(bucket);
     if (idx < static_cast<size_t>(CpuBucket::Count)) {
-      m_frameCpuBucketNs[idx].fetch_add(ns, std::memory_order_relaxed);
+      m_frameCpuBucketTicks[idx].fetch_add(ticks, std::memory_order_relaxed);
     }
   }
 
@@ -194,6 +203,7 @@ class TelemetryManager {
 
   void ResetFrameCounters();
   void EmitPerfSummaryLocked();
+  void EnsureClockCalibratedLocked();
 
 #ifdef ENABLE_TELEMETRY
   std::mutex m_mutex;
@@ -218,14 +228,22 @@ class TelemetryManager {
   std::atomic<uint64_t> m_frameTexUploadBytes{0};
   std::atomic<uint32_t> m_framePsoBuilds{0};
   std::atomic<int64_t> m_framePresentUs{0};
-  std::atomic<int64_t> m_frameCpuBucketNs[static_cast<size_t>(CpuBucket::Count)]{};
+  std::atomic<int64_t>
+      m_frameCpuBucketTicks[static_cast<size_t>(CpuBucket::Count)]{};
   std::atomic<bool> m_perfTimingEnabled{false};
   inline static std::atomic<bool> s_perfTimingEnabled{false};
+  inline static std::atomic<bool> s_useTscClock{false};
+  std::atomic<double> m_tscNsPerTick{1.0};
   std::atomic<uint64_t> m_frameIndex{0};
 
   // Perf logging, CSV writer, and last-frame snapshot
   mutable std::mutex m_perfMutex;
   bool m_perfLogEnabled{false};
+  bool m_tscProbed{false};
+  bool m_tscAvailable{false};
+  bool m_hasCalibAnchor{false};
+  std::chrono::steady_clock::time_point m_lastCalibWall{};
+  uint64_t m_lastCalibTsc{0};
   std::ofstream m_csvFile;
   uint64_t m_csvRowsSinceFlush{0};
   FrameMetrics m_lastFrameMetrics{};
@@ -266,30 +284,33 @@ class CpuBucketScope {
     auto& tm = TelemetryManager::GetInstance();
     ActiveState& state = CurrentState();
     if (state.active && state.bucket == bucket) return;
-    const int64_t nowNs = NowNs();
+    const int64_t nowTicks = NowTicks();
     if (state.active) {
-      const int64_t parentSliceNs = std::max<int64_t>(0, nowNs - state.resumeNs);
-      tm.RecordCpuBucketNs(state.bucket, parentSliceNs);
+      const int64_t parentSliceTicks =
+          std::max<int64_t>(0, nowTicks - state.resumeTicks);
+      tm.RecordCpuBucketTicks(state.bucket, parentSliceTicks);
       m_prevActive = true;
       m_prevBucket = state.bucket;
     }
     state.active = true;
     state.bucket = bucket;
-    state.resumeNs = nowNs;
+    state.resumeTicks = nowTicks;
     m_bucket = bucket;
     m_active = true;
   }
 
   ~CpuBucketScope() noexcept {
     if (!m_active) return;
-    const int64_t nowNs = NowNs();
+    const int64_t nowTicks = NowTicks();
     ActiveState& state = CurrentState();
-    const int64_t selfSliceNs = std::max<int64_t>(0, nowNs - state.resumeNs);
-    TelemetryManager::GetInstance().RecordCpuBucketNs(m_bucket, selfSliceNs);
+    const int64_t selfSliceTicks =
+        std::max<int64_t>(0, nowTicks - state.resumeTicks);
+    TelemetryManager::GetInstance().RecordCpuBucketTicks(m_bucket,
+                                                         selfSliceTicks);
     if (m_prevActive) {
       state.active = true;
       state.bucket = m_prevBucket;
-      state.resumeNs = nowNs;
+      state.resumeTicks = nowTicks;
     } else {
       state.active = false;
     }
@@ -302,10 +323,19 @@ class CpuBucketScope {
   struct ActiveState {
     bool active{false};
     CpuBucket bucket{CpuBucket::Draw};
-    int64_t resumeNs{0};
+    int64_t resumeTicks{0};
   };
 
-  static int64_t NowNs() noexcept {
+  static int64_t NowTicks() noexcept {
+#if (defined(__x86_64__) || defined(__i386__)) && \
+    (defined(__GNUC__) || defined(__clang__))
+    if (__builtin_expect(TelemetryManager::UseTscClockFast(), 1)) {
+      uint32_t lo = 0;
+      uint32_t hi = 0;
+      __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
+      return static_cast<int64_t>((static_cast<uint64_t>(hi) << 32) | lo);
+    }
+#endif
     return std::chrono::duration_cast<std::chrono::nanoseconds>(
                std::chrono::steady_clock::now().time_since_epoch())
         .count();

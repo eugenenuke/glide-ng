@@ -21,11 +21,71 @@
 #include <immintrin.h>
 #endif
 
+#if (defined(__x86_64__) || defined(__i386__)) && \
+    (defined(__GNUC__) || defined(__clang__))
+#include <cpuid.h>
+#define GLIDE_HAS_X86_TSC 1
+#else
+#define GLIDE_HAS_X86_TSC 0
+#endif
+
 #include "Logger.h"
 
 namespace GlideWrapper {
 
 namespace {
+uint64_t ReadTscRaw() noexcept {
+#if GLIDE_HAS_X86_TSC
+  uint32_t lo = 0;
+  uint32_t hi = 0;
+  __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
+  return (static_cast<uint64_t>(hi) << 32) | static_cast<uint64_t>(lo);
+#else
+  return 0ULL;
+#endif
+}
+
+bool ProbeInvariantTsc() noexcept {
+#if GLIDE_HAS_X86_TSC
+  if (__get_cpuid_max(0x80000000u, nullptr) < 0x80000007u) {
+    return false;
+  }
+  unsigned int eax = 0, ebx = 0, ecx = 0, edx = 0;
+  __cpuid(0x80000007u, eax, ebx, ecx, edx);
+  return (edx & (1u << 8)) != 0u;
+#else
+  return false;
+#endif
+}
+
+bool TryReadCpuidTscFrequency(double& outNsPerTick) noexcept {
+#if GLIDE_HAS_X86_TSC
+  if (__get_cpuid_max(0u, nullptr) < 0x15u) {
+    return false;
+  }
+  unsigned int eax = 0, ebx = 0, ecx = 0, edx = 0;
+  __cpuid(0x15u, eax, ebx, ecx, edx);
+  if (eax == 0u || ebx == 0u || ecx == 0u) {
+    return false;
+  }
+  const double tscHz =
+      (static_cast<double>(ecx) * static_cast<double>(ebx)) /
+      static_cast<double>(eax);
+  if (tscHz <= 0.0) {
+    return false;
+  }
+  const double nsPerTick = 1.0e9 / tscHz;
+  if (nsPerTick < 0.05 || nsPerTick > 10.0) {
+    return false;
+  }
+  outNsPerTick = nsPerTick;
+  return true;
+#else
+  (void)outNsPerTick;
+  return false;
+#endif
+}
+
 // Precision hybrid sleep+spin frame pacer.
 // On Win32/MinGW-w64, bypasses winpthreads' nanosleep() (which has a known
 // double-sleep bug in newer MinGW-w64 releases where sleep_for(15ms) sleeps
@@ -172,8 +232,49 @@ void TelemetryManager::ResetFrameCounters() {
   m_frameTexUploadBytes.store(0, std::memory_order_relaxed);
   m_framePsoBuilds.store(0, std::memory_order_relaxed);
   m_framePresentUs.store(0, std::memory_order_relaxed);
-  for (auto& ns : m_frameCpuBucketNs) {
-    ns.store(0, std::memory_order_relaxed);
+  for (auto& ticks : m_frameCpuBucketTicks) {
+    ticks.store(0, std::memory_order_relaxed);
+  }
+}
+
+void TelemetryManager::EnsureClockCalibratedLocked() {
+  if (m_tscProbed) return;
+  m_tscProbed = true;
+
+  if (!ProbeInvariantTsc()) {
+    m_tscAvailable = false;
+    m_tscNsPerTick.store(1.0, std::memory_order_relaxed);
+    s_useTscClock.store(false, std::memory_order_release);
+    return;
+  }
+
+  double nsPerTick = 0.0;
+  bool calibrated = TryReadCpuidTscFrequency(nsPerTick);
+  if (!calibrated) {
+    const auto wallStart = std::chrono::steady_clock::now();
+    const uint64_t tscStart = ReadTscRaw();
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    const uint64_t tscEnd = ReadTscRaw();
+    const auto wallEnd = std::chrono::steady_clock::now();
+    const int64_t wallNs =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(wallEnd -
+                                                              wallStart)
+            .count();
+    if (wallNs > 0 && tscEnd > tscStart) {
+      nsPerTick =
+          static_cast<double>(wallNs) / static_cast<double>(tscEnd - tscStart);
+      calibrated = (nsPerTick >= 0.05 && nsPerTick <= 10.0);
+    }
+  }
+
+  if (calibrated) {
+    m_tscAvailable = true;
+    m_tscNsPerTick.store(nsPerTick, std::memory_order_relaxed);
+    s_useTscClock.store(true, std::memory_order_release);
+  } else {
+    m_tscAvailable = false;
+    m_tscNsPerTick.store(1.0, std::memory_order_relaxed);
+    s_useTscClock.store(false, std::memory_order_release);
   }
 }
 
@@ -183,6 +284,19 @@ void TelemetryManager::ConfigurePerfLog(bool enabled,
   if (m_csvFile.is_open()) {
     m_csvFile.flush();
     m_csvFile.close();
+  }
+
+  if (enabled) {
+    EnsureClockCalibratedLocked();
+    if (m_tscAvailable) {
+      m_lastCalibWall = std::chrono::steady_clock::now();
+      m_lastCalibTsc = ReadTscRaw();
+      m_hasCalibAnchor = true;
+    } else {
+      m_hasCalibAnchor = false;
+    }
+  } else {
+    m_hasCalibAnchor = false;
   }
 
   m_perfLogEnabled = enabled;
@@ -324,32 +438,65 @@ void TelemetryManager::OnFrameComplete(int64_t intervalUs, int64_t activeUs,
   const uint64_t texUploadBytes = m_frameTexUploadBytes.exchange(0, std::memory_order_relaxed);
   const uint32_t psoBuilds = m_framePsoBuilds.exchange(0, std::memory_order_relaxed);
   const int64_t presentUs = m_framePresentUs.exchange(0, std::memory_order_relaxed);
-  const int64_t drawNs =
-      m_frameCpuBucketNs[static_cast<size_t>(CpuBucket::Draw)].exchange(
+  const int64_t drawTicks =
+      m_frameCpuBucketTicks[static_cast<size_t>(CpuBucket::Draw)].exchange(
           0, std::memory_order_relaxed);
-  const int64_t texNs =
-      m_frameCpuBucketNs[static_cast<size_t>(CpuBucket::Tex)].exchange(
+  const int64_t texTicks =
+      m_frameCpuBucketTicks[static_cast<size_t>(CpuBucket::Tex)].exchange(
           0, std::memory_order_relaxed);
-  const int64_t lfbNs =
-      m_frameCpuBucketNs[static_cast<size_t>(CpuBucket::Lfb)].exchange(
+  const int64_t lfbTicks =
+      m_frameCpuBucketTicks[static_cast<size_t>(CpuBucket::Lfb)].exchange(
           0, std::memory_order_relaxed);
-  const int64_t stateNs =
-      m_frameCpuBucketNs[static_cast<size_t>(CpuBucket::State)].exchange(
+  const int64_t stateTicks =
+      m_frameCpuBucketTicks[static_cast<size_t>(CpuBucket::State)].exchange(
           0, std::memory_order_relaxed);
 
   const uint64_t completedFrame = m_frameIndex.fetch_add(1, std::memory_order_relaxed);
   // Advance Logger frame ID for the upcoming frame
   Logger::GetInstance().SetCurrentFrame(completedFrame + 1);
 
+  const auto now = std::chrono::steady_clock::now();
+
+  std::lock_guard<std::mutex> lock(m_perfMutex);
+  if (m_tscAvailable) {
+    if (!m_hasCalibAnchor) {
+      m_lastCalibWall = now;
+      m_lastCalibTsc = ReadTscRaw();
+      m_hasCalibAnchor = true;
+    } else {
+      const int64_t wallDeltaNs =
+          std::chrono::duration_cast<std::chrono::nanoseconds>(now -
+                                                                m_lastCalibWall)
+              .count();
+      if (wallDeltaNs >= 250000000LL) {
+        const uint64_t tscNow = ReadTscRaw();
+        if (tscNow > m_lastCalibTsc) {
+          const double measured = static_cast<double>(wallDeltaNs) /
+                                  static_cast<double>(tscNow - m_lastCalibTsc);
+          const double cur = m_tscNsPerTick.load(std::memory_order_relaxed);
+          if (measured >= 0.05 && measured <= 10.0 &&
+              measured >= cur * 0.9 && measured <= cur * 1.1) {
+            m_tscNsPerTick.store(cur * 0.8 + measured * 0.2,
+                                 std::memory_order_relaxed);
+          }
+        }
+        m_lastCalibWall = now;
+        m_lastCalibTsc = tscNow;
+      }
+    }
+  }
+
   const int64_t renderUs = std::max<int64_t>(0, activeUs - presentUs);
-  const double drawMs = static_cast<double>(drawNs) / 1e6;
-  const double texMs = static_cast<double>(texNs) / 1e6;
-  const double lfbMs = static_cast<double>(lfbNs) / 1e6;
-  const double stateMs = static_cast<double>(stateNs) / 1e6;
+  const double tickToMs =
+      m_tscAvailable ? (m_tscNsPerTick.load(std::memory_order_relaxed) / 1.0e6)
+                     : (1.0 / 1.0e6);
+  const double drawMs = static_cast<double>(drawTicks) * tickToMs;
+  const double texMs = static_cast<double>(texTicks) * tickToMs;
+  const double lfbMs = static_cast<double>(lfbTicks) * tickToMs;
+  const double stateMs = static_cast<double>(stateTicks) * tickToMs;
   const double wrapperMs = drawMs + texMs + lfbMs + stateMs;
   const double renderMs = static_cast<double>(renderUs) / 1000.0;
   const double appMs = std::max(0.0, renderMs - wrapperMs);
-  const auto now = std::chrono::steady_clock::now();
 
   FrameMetrics m{};
   m.frameIndex = completedFrame;
@@ -380,7 +527,6 @@ void TelemetryManager::OnFrameComplete(int64_t intervalUs, int64_t activeUs,
   m.lfbCpuMs = static_cast<float>(lfbMs);
   m.stateCpuMs = static_cast<float>(stateMs);
 
-  std::lock_guard<std::mutex> lock(m_perfMutex);
   m_lastFrameMetrics = m;
 
   if (!m_perfLogEnabled) return;

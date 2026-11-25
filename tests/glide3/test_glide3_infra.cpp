@@ -2142,6 +2142,43 @@ TEST_CASE("Diagnostics: Tiered Logger, Telemetry & On-Screen HUD", "[Logger][Tel
     CHECK_FALSE(tm.IsPerfTimingEnabled());
   }
 
+  SECTION("CpuBucketScope TSC fast path stays calibrated and low-overhead over 10k scopes") {
+    tm.ConfigurePerfLog(true, "");
+    REQUIRE(tm.IsPerfTimingEnabled());
+
+    const auto tStart = std::chrono::steady_clock::now();
+    for (int i = 0; i < 10000; ++i) {
+      GLIDE_CPU_SCOPE(CpuBucket::Draw);
+    }
+    const double loopElapsedMs =
+        std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - tStart)
+            .count();
+
+    if (tm.IsUsingTscClock()) {
+      CHECK(tm.GetTscNsPerTick() >= 0.05);
+      CHECK(tm.GetTscNsPerTick() <= 10.0);
+      CHECK(loopElapsedMs < 15.0);
+    }
+
+    {
+      GLIDE_CPU_SCOPE(CpuBucket::Tex);
+      std::this_thread::sleep_for(std::chrono::milliseconds(3));
+    }
+    const int64_t elapsedUs =
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - tStart)
+            .count();
+    tm.OnFrameComplete(elapsedUs, elapsedUs, 0, 0.0f);
+    const FrameMetrics m = tm.GetLastFrameMetrics();
+    CHECK(m.drawCpuMs >= 0.0f);
+    CHECK(m.texCpuMs >= 2.0f);
+    CHECK(m.texCpuMs <= 20.0f);
+
+    tm.ShutdownPerfLog();
+    CHECK_FALSE(tm.IsPerfTimingEnabled());
+  }
+
 #ifdef __linux__
   SECTION("End-to-end Glide 3.x session splits app_cpu_ms from wrapper buckets in CSV") {
     const std::string csvPath = "/tmp/glide_ng_m6_cpu_split.csv";
