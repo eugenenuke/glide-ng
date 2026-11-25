@@ -11,6 +11,7 @@ Task-oriented guides for building, configuring, running, benchmarking, and troub
 | Guide | Topics Covered |
 | :--- | :--- |
 | **[Building & Installing](user-guide/building-and-installing.md)** | Prerequisites (Debian/Ubuntu, Arch, Fedora, Windows), Linux builds, automatic & standalone 32-bit Win32 MinGW-w64 DLL builds, optional Open Watcom v2 DOS/32 tools, and Wine/Proton + DOSBox setup. |
+| **[DOSBox Glide Launcher](user-guide/dosbox-launcher.md)** | Modular `glide-dosbox` / `./run.sh` launcher for DOSBox-SVN, DOSBox-X, and DOSBox Staging (`init`, `install`, `patch`, `setup`, `shell`, `doctor`, `--emu` × `--wrapper`, `--gpu`, and debug scenarios). |
 | **[Configuration & Overrides](user-guide/configuration.md)** | Precedence rules, `glide-ng.ini` sections, all `GLIDE_NG_*` overrides, authentic `FX_GLIDE_*`/`SST_*`/`SSTV2_*` environment variables, logging, CSV telemetry, and on-screen HUD (`GLIDE_NG_HUD`). |
 | **[Hardware Profiles & Glide Versions](user-guide/hardware-and-versions.md)** | All 7 emulated 3dfx board profiles (`VoodooGraphics` through `Voodoo5`), authentic Glide 2.x (`2.11`–`2.61`) and Glide 3.x (`3.00`–`3.10`) matrices, capability queries, and feature gating. |
 | **[Benchmarking & Performance](user-guide/benchmarking.md)** | Running `glide2_bench` / `glide3_bench`, Software SIMD tiers (`scalar`/`avx2`/`avx512`), comparing against Mesa `llvmpipe`, reference Ryzen 9 7945HX + RTX 4070 results, and backend trade-offs. |

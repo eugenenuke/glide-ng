@@ -242,7 +242,7 @@ LD_LIBRARY_PATH="$PWD/build_release/lib:${LD_LIBRARY_PATH:-}" \
 > - **Built-in Software Voodoo (`voodoo_card = software` in DOSBox-X, or `voodoo = on` in DOSBox-Staging):** These emulators implement **Voodoo Graphics (SST-1)** hardware (PCI `121A:0001`), *not* pass-through to `glide-ng`. Running DOS games or `glide_info.exe` / `glide_bench.exe` against Software Voodoo requires an authentic **SST-1** hardware `GLIDE2X.OVL` — specifically **Glide 2.42 (SST-1)** (recommended) or **2.30**. Voodoo Rush (`SST-96`), Voodoo2 (`2.5x`), Banshee/Voodoo3 (`2.6x`), and HLE pass-through OVLs will report 0 boards or mismatch errors; Glide `2.43`/`2.46` fail DOSBox's SST-1 PCI init and `2.48` faults on Ring-0 `RDMSR`.
 > - **`PATH` lookup:** `glide_info.exe`, `glide_bench.exe`, and `glide_envtest.exe` search the current directory, then every directory in DOS `PATH`, then `Z:\` fallbacks, and support both HLE pass-through and authentic 3dfx Watcom `GLIDE2X.OVL` binaries (`2.3`–`2.61`).
 
-For per-game DOSBox and `GLIDE2X.OVL` recipes (such as *Carmageddon* and *Tomb Raider*), see the [Compatibility Catalog](../catalog/README.md).
+For per-game DOSBox and `GLIDE2X.OVL` recipes (such as *Carmageddon* and *Tomb Raider*), see the [Compatibility Catalog](../catalog/README.md). To automate multi-emulator launches (`DOSBox-SVN`, `DOSBox-X`, `DOSBox Staging`), `GLIDE2X.OVL` mounting, game installation/patching, GPU selection, and debug capture scenarios via per-game `game.sh` files, see the [DOSBox Glide Launcher (`glide-dosbox`)](dosbox-launcher.md).
 
 ### Native Linux Applications & Demos
 

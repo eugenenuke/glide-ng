@@ -69,6 +69,8 @@ LD_LIBRARY_PATH="$PWD/build_release/lib:${LD_LIBRARY_PATH:-}" \
   GLIDE_NG_BACKEND=vulkan dosbox-x -conf dosbox.conf
 ```
 
+For multi-game management, install/patch automation, interactive DOS shells, and preset debugging scenarios across DOSBox-SVN, DOSBox-X, and DOSBox Staging, use the bundled [`glide-dosbox`](docs/user-guide/dosbox-launcher.md) launcher (`tools/glide-dosbox/glide-dosbox`).
+
 ---
 
 ## Documentation
@@ -77,6 +79,7 @@ Browse the full [Documentation Hub](docs/README.md), or jump directly to a guide
 
 - **User Guide**
   - [Building & Installing](docs/user-guide/building-and-installing.md)
+  - [DOSBox Glide Launcher (`glide-dosbox`)](docs/user-guide/dosbox-launcher.md)
   - [Configuration & Environment Variables](docs/user-guide/configuration.md) ([`glide-ng.ini.example`](glide-ng.ini.example))
   - [Hardware Profiles & Glide Versions](docs/user-guide/hardware-and-versions.md)
   - [Benchmarking & Performance](docs/user-guide/benchmarking.md)

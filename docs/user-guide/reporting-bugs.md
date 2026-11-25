@@ -47,6 +47,8 @@ GLIDE_NG_LOG_LEVEL=debug GLIDE_NG_LOG_CONSOLE=1 \
   stdbuf -oL -eL dosbox -conf dosbox.conf 2>&1 | tee console.log
 ```
 
+If using the [DOSBox Glide Launcher (`glide-dosbox`)](dosbox-launcher.md), `./run.sh --debug=2` (diagnostics + console log), `./run.sh --debug=3` (frame API/LFB/texture trace), `./run.sh --debug=4` (periodic snapshots), or `./run.sh --debug=wsi` populates `./logs/` automatically.
+
 ### Linux — Standalone Wine / Steam Proton
 ```bash
 # Standalone Wine (swap glide2x for glide or glide3x as needed)
