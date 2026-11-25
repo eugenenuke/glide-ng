@@ -1890,7 +1890,8 @@ TEST_CASE(
           ? std::string(envBackend)
           : GlideWrapper::EmulationRegistry::GetInstance().GetConfig().backend;
   const bool hasBackendCache =
-      (activeBackend == "vulkan" || activeBackend == "opengl_es");
+      (activeBackend == "vulkan" || activeBackend == "opengl_es" ||
+       activeBackend == "software");
 
   grColorCombine(GR_COMBINE_FUNCTION_SCALE_OTHER, GR_COMBINE_FACTOR_ONE,
                  GR_COMBINE_LOCAL_NONE, GR_COMBINE_OTHER_TEXTURE, FXFALSE);

@@ -3,9 +3,11 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <list>
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 #include "backends/FrontBufferFlushTimer.h"
@@ -56,6 +58,11 @@ class SoftwareBackend : public SoftwareBackendBase {
   void DrawPoint(const ModernVertex& pt) override;
   void UploadTexture(uint32_t tmu, uint32_t startAddress,
                      const struct VirtualTexture& tex) override;
+  bool TryBindCachedTexture(uint32_t tmu, uint32_t startAddress,
+                            const struct VirtualTexture& tex) override;
+  uint64_t GetTextureContentCacheHitCount() const {
+    return m_swTexContentCacheHits.load(std::memory_order_relaxed);
+  }
   void UploadTexturePartial(uint32_t tmu, uint32_t startAddress,
                             const struct VirtualTexture& tex, uint32_t lodLevel,
                             uint32_t startRow, uint32_t endRow) override;
@@ -161,6 +168,54 @@ class SoftwareBackend : public SoftwareBackendBase {
   uint32_t m_activeStateId{0};
   std::atomic<uint64_t> m_textureUploadRevision{0};
   uint64_t m_resolvedTextureRevision{0};
+
+  // Content-addressed CPU decoded-mipmap cache (bounded LRU) shared across
+  // TMU address rotations and shade-palette switches.
+  // Lock-order invariant: m_swTexMutex is strictly a LEAF mutex; never acquire
+  // SoftwareBackend::m_mutex or call into TextureManager while holding it.
+  struct SwTexContentKey {
+    uint64_t dataHash{0};
+    uint32_t format{0};
+    uint32_t width{0};
+    uint32_t height{0};
+    uint32_t mipLevels{0};
+    bool operator==(const SwTexContentKey&) const = default;
+  };
+  struct SwTexContentKeyHash {
+    size_t operator()(const SwTexContentKey& k) const noexcept {
+      // 32-bit golden-ratio hash_combine constant floor(2^32 / phi).
+      constexpr uint32_t kHashCombineGolden32 = 0x9E3779B9u;
+      size_t h = std::hash<uint64_t>{}(k.dataHash);
+      auto combine = [&](uint32_t v) {
+        h ^= std::hash<uint32_t>{}(v) + kHashCombineGolden32 + (h << 6) +
+             (h >> 2);
+      };
+      combine(k.format);
+      combine(k.width);
+      combine(k.height);
+      combine(k.mipLevels);
+      return h;
+    }
+  };
+  struct SwTexCacheEntry {
+    std::shared_ptr<const VirtualTexture> tex;
+    size_t byteSize{0};
+    std::list<SwTexContentKey>::iterator lruIt;
+  };
+  static constexpr size_t kMaxCachedSwTextures = 1024;
+  static constexpr size_t kMaxCachedSwTextureBytes =
+      (sizeof(void*) <= 4) ? (64ull * 1024ull * 1024ull)
+                           : (128ull * 1024ull * 1024ull);
+  void ClearSwTextureCache();
+
+  mutable std::mutex m_swTexMutex;
+  std::unordered_map<uint32_t, std::shared_ptr<const VirtualTexture>>
+      m_swTextures[2];
+  std::unordered_map<SwTexContentKey, SwTexCacheEntry, SwTexContentKeyHash>
+      m_swTexCache;
+  std::list<SwTexContentKey> m_swTexLru;
+  size_t m_swTexCacheBytes{0};
+  std::atomic<uint64_t> m_swTexContentCacheHits{0};
   uint32_t m_tileSize{32};
   uint32_t m_tileShift{5};
   uint32_t m_tileCols{0};

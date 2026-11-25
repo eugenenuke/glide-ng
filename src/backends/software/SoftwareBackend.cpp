@@ -973,6 +973,7 @@ void SoftwareBackend::Shutdown() {
   GLIDE_LOG(INFO, "Software", "Shutting down Pure Software backend.");
   DetachWindow_Locked(lock);
   m_threadPool.reset();
+  ClearSwTextureCache();
 
   m_initialized = false;
 }
@@ -1353,6 +1354,7 @@ void SoftwareBackend::DetachWindow_Locked(std::unique_lock<std::mutex>& lock) {
   // Shut down worker threads outside the OS loader lock so a subsequent
   // FreeLibrary() does not join live threads from inside DLL_PROCESS_DETACH.
   m_threadPool.reset();
+  ClearSwTextureCache();
 
   m_windowAttached = false;
   m_headlessMode = false;
@@ -1981,16 +1983,21 @@ void SoftwareBackend::ResolveActiveState() {
       combinerReadsTex ? m_boundTexAddress[0] : 0xFFFFFFFFu;
   state.boundTexAddress[1] =
       combinerReadsTex ? m_boundTexAddress[1] : 0xFFFFFFFFu;
-  state.boundTex[0] =
-      (state.boundTexAddress[0] != 0xFFFFFFFFu)
-          ? TextureManager::GetInstance().GetTextureSnapshot(
-                0, state.boundTexAddress[0])
-          : nullptr;
-  state.boundTex[1] =
-      (state.boundTexAddress[1] != 0xFFFFFFFFu)
-          ? TextureManager::GetInstance().GetTextureSnapshot(
-                1, state.boundTexAddress[1])
-          : nullptr;
+  auto resolveBoundTex =
+      [this](uint32_t tmu,
+             uint32_t addr) -> std::shared_ptr<const VirtualTexture> {
+    if (addr == 0xFFFFFFFFu) return nullptr;
+    {
+      std::lock_guard<std::mutex> texLock(m_swTexMutex);
+      auto it = m_swTextures[tmu].find(addr);
+      if (it != m_swTextures[tmu].end() && it->second) {
+        return it->second;
+      }
+    }
+    return TextureManager::GetInstance().GetTextureSnapshot(tmu, addr);
+  };
+  state.boundTex[0] = resolveBoundTex(0u, state.boundTexAddress[0]);
+  state.boundTex[1] = resolveBoundTex(1u, state.boundTexAddress[1]);
   state.texClampS[0] = m_texClampS[0];
   state.texClampS[1] = m_texClampS[1];
   state.texClampT[0] = m_texClampT[0];
@@ -2075,12 +2082,150 @@ void SoftwareBackend::ResolveActiveState() {
   m_stateCacheDirty = false;
 }
 
+namespace {
+std::shared_ptr<VirtualTexture> MakeImmutableSwTextureCopy(
+    const VirtualTexture& tex) {
+  auto copy = std::make_shared<VirtualTexture>();
+  copy->startAddress = tex.startAddress;
+  copy->format = tex.format;
+  copy->aspectRatio = tex.aspectRatio;
+  copy->baseWidth = tex.baseWidth;
+  copy->baseHeight = tex.baseHeight;
+  copy->smallLod = tex.smallLod;
+  copy->largeLod = tex.largeLod;
+  copy->swizzledMipLevels = tex.swizzledMipLevels;
+  copy->rawDataHash = tex.rawDataHash;
+  copy->swizzledTableHash = tex.swizzledTableHash;
+  copy->swizzledWithTable = tex.swizzledWithTable;
+  return copy;
+}
+
+size_t CalcSwTextureBytes(const VirtualTexture& tex) {
+  size_t total = 0u;
+  for (const auto& level : tex.swizzledMipLevels) {
+    total += level.size() * sizeof(uint32_t);
+  }
+  return total;
+}
+}  // namespace
+
+void SoftwareBackend::ClearSwTextureCache() {
+  std::lock_guard<std::mutex> texLock(m_swTexMutex);
+  m_swTextures[0].clear();
+  m_swTextures[1].clear();
+  m_swTexCache.clear();
+  m_swTexLru.clear();
+  m_swTexCacheBytes = 0u;
+}
+
+bool SoftwareBackend::TryBindCachedTexture(uint32_t tmu, uint32_t startAddress,
+                                           const struct VirtualTexture& tex) {
+  if (tmu >= 2u || tex.rawDataHash == 0u || tex.baseWidth == 0u ||
+      tex.baseHeight == 0u) {
+    return false;
+  }
+  const uint32_t mipCount =
+      ResolveVirtualTextureMipCount(tex, /*useCompressed=*/false);
+  if (mipCount == 0u) {
+    return false;
+  }
+
+  const uint64_t dataHash = CalculateVirtualTextureHash(tex, mipCount);
+  const SwTexContentKey key{dataHash, tex.format, tex.baseWidth, tex.baseHeight,
+                            mipCount};
+
+  // Strict leaf mutex: never acquire SoftwareBackend::m_mutex or call into
+  // TextureManager here (AB-BA deadlock avoidance).
+  std::lock_guard<std::mutex> texLock(m_swTexMutex);
+  auto it = m_swTexCache.find(key);
+  if (it == m_swTexCache.end() || !it->second.tex) {
+    return false;
+  }
+  m_swTexLru.splice(m_swTexLru.begin(), m_swTexLru, it->second.lruIt);
+
+  auto& boundMap = m_swTextures[tmu];
+  auto curIt = boundMap.find(startAddress);
+  if (curIt != boundMap.end() && curIt->second == it->second.tex) {
+    return true;
+  }
+  boundMap[startAddress] = it->second.tex;
+  m_textureUploadRevision.fetch_add(1, std::memory_order_release);
+  m_swTexContentCacheHits.fetch_add(1, std::memory_order_relaxed);
+  return true;
+}
+
 void SoftwareBackend::UploadTexture(uint32_t tmu, uint32_t startAddress,
                                     const struct VirtualTexture& tex) {
-  (void)tmu;
-  (void)startAddress;
-  (void)tex;
-  // Lock-free atomic bump avoids AB-BA lock inversion with TextureManager::m_mutex.
+  if (tmu >= 2u || tex.baseWidth == 0u || tex.baseHeight == 0u ||
+      tex.swizzledMipLevels.empty()) {
+    m_textureUploadRevision.fetch_add(1, std::memory_order_release);
+    return;
+  }
+
+  const uint32_t mipCount =
+      static_cast<uint32_t>(tex.swizzledMipLevels.size());
+  const uint64_t dataHash = CalculateVirtualTextureHash(tex, mipCount);
+  const SwTexContentKey key{dataHash, tex.format, tex.baseWidth, tex.baseHeight,
+                            mipCount};
+
+  {
+    std::lock_guard<std::mutex> texLock(m_swTexMutex);
+    auto cachedIt = m_swTexCache.find(key);
+    if (cachedIt != m_swTexCache.end() && cachedIt->second.tex) {
+      m_swTexLru.splice(m_swTexLru.begin(), m_swTexLru,
+                        cachedIt->second.lruIt);
+      auto& boundMap = m_swTextures[tmu];
+      auto curIt = boundMap.find(startAddress);
+      if (curIt == boundMap.end() || curIt->second != cachedIt->second.tex) {
+        boundMap[startAddress] = cachedIt->second.tex;
+        m_textureUploadRevision.fetch_add(1, std::memory_order_release);
+      }
+      return;
+    }
+  }
+
+  std::shared_ptr<VirtualTexture> copy = MakeImmutableSwTextureCopy(tex);
+  const size_t bytes = CalcSwTextureBytes(*copy);
+  std::shared_ptr<const VirtualTexture> constCopy = std::move(copy);
+
+  {
+    std::lock_guard<std::mutex> texLock(m_swTexMutex);
+    m_swTextures[tmu][startAddress] = constCopy;
+    if (dataHash != 0u && bytes <= kMaxCachedSwTextureBytes) {
+      auto existingIt = m_swTexCache.find(key);
+      if (existingIt != m_swTexCache.end()) {
+        m_swTexLru.splice(m_swTexLru.begin(), m_swTexLru,
+                          existingIt->second.lruIt);
+        const size_t oldBytes = existingIt->second.byteSize;
+        m_swTexCacheBytes = (m_swTexCacheBytes >= oldBytes)
+                                ? (m_swTexCacheBytes - oldBytes)
+                                : 0u;
+        existingIt->second.tex = std::move(constCopy);
+        existingIt->second.byteSize = bytes;
+        m_swTexCacheBytes += bytes;
+      } else {
+        m_swTexLru.push_front(key);
+        SwTexCacheEntry entry{std::move(constCopy), bytes, m_swTexLru.begin()};
+        m_swTexCache.emplace(key, std::move(entry));
+        m_swTexCacheBytes += bytes;
+      }
+
+      while (m_swTexCache.size() > kMaxCachedSwTextures ||
+             m_swTexCacheBytes > kMaxCachedSwTextureBytes) {
+        if (m_swTexLru.empty()) break;
+        const SwTexContentKey victimKey = m_swTexLru.back();
+        m_swTexLru.pop_back();
+        auto vit = m_swTexCache.find(victimKey);
+        if (vit != m_swTexCache.end()) {
+          const size_t vBytes = vit->second.byteSize;
+          m_swTexCacheBytes = (m_swTexCacheBytes >= vBytes)
+                                  ? (m_swTexCacheBytes - vBytes)
+                                  : 0u;
+          m_swTexCache.erase(vit);
+        }
+      }
+    }
+  }
   m_textureUploadRevision.fetch_add(1, std::memory_order_release);
 }
 
@@ -2088,16 +2233,22 @@ void SoftwareBackend::UploadTexturePartial(uint32_t tmu, uint32_t startAddress,
                                            const struct VirtualTexture& tex,
                                            uint32_t lodLevel, uint32_t startRow,
                                            uint32_t endRow) {
-  (void)tmu;
-  (void)startAddress;
-  (void)tex;
   (void)lodLevel;
   (void)startRow;
   (void)endRow;
+  if (tmu < 2u && !tex.swizzledMipLevels.empty()) {
+    // Preserve COW immutability for binned commands and cached snapshots by
+    // binding a fresh immutable copy at (tmu, startAddress) only.
+    std::shared_ptr<const VirtualTexture> copy =
+        MakeImmutableSwTextureCopy(tex);
+    std::lock_guard<std::mutex> texLock(m_swTexMutex);
+    m_swTextures[tmu][startAddress] = std::move(copy);
+  }
   m_textureUploadRevision.fetch_add(1, std::memory_order_release);
 }
 
 void SoftwareBackend::PurgeTextures() {
+  ClearSwTextureCache();
   m_textureUploadRevision.fetch_add(1, std::memory_order_release);
 }
 
