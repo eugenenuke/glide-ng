@@ -1078,6 +1078,287 @@ static void lfb_read_teardown(BenchContext* ctx) {
   ctx->scene_state = NULL;
 }
 
+/* =========================================================================
+ * Scene 10 (Ext): tex_churn - 2 MB TMU Address-Rotation & Palette Working Set
+ * ========================================================================= */
+#define CHURN_P8_COUNT     128
+#define CHURN_P8_DIM       128
+#define CHURN_565_COUNT    64
+#define CHURN_565_DIM      64
+#define CHURN_TOTAL_QUADS  (CHURN_P8_COUNT + CHURN_565_COUNT)
+#define CHURN_PAL_COUNT    4
+#define CHURN_MAX_RING     64
+
+typedef struct TexChurnState {
+  FxU8*  p8_data;
+  FxU16* rgb565_data;
+  GrTexInfo p8_ti[CHURN_P8_COUNT];
+  GrTexInfo rgb565_ti[CHURN_565_COUNT];
+  FxU32 palettes[CHURN_PAL_COUNT][256];
+  FxU32 ring_addr[CHURN_MAX_RING];
+  int   ring_slots;
+  BenchVertex quads[CHURN_TOTAL_QUADS][4];
+} TexChurnState;
+
+static int tex_churn_setup(BenchContext* ctx) {
+  TexChurnState* st = (TexChurnState*)calloc(1, sizeof(TexChurnState));
+  FxU32 slot_stride, avail;
+  int i, p, y, x;
+  float w = (float)ctx->width;
+  float h = (float)ctx->height;
+  float cell_w = w / 16.0f;
+  float cell_h = (h - 56.0f) / 12.0f;
+  if (!st) return 0;
+
+  st->p8_data = (FxU8*)malloc((size_t)CHURN_P8_COUNT * CHURN_P8_DIM * CHURN_P8_DIM);
+  st->rgb565_data = (FxU16*)malloc(
+      (size_t)CHURN_565_COUNT * CHURN_565_DIM * CHURN_565_DIM * sizeof(FxU16));
+  if (!st->p8_data || !st->rgb565_data) {
+    free(st->p8_data);
+    free(st->rgb565_data);
+    free(st);
+    return 0;
+  }
+
+  for (p = 0; p < CHURN_PAL_COUNT; ++p) {
+    for (i = 0; i < 256; ++i) {
+      unsigned r = (unsigned)((i + p * 53) & 255);
+      unsigned g = (unsigned)(((i * 3) + p * 37) & 255);
+      unsigned b = (unsigned)((255 - i + p * 29) & 255);
+      st->palettes[p][i] =
+          (0xFFUL << 24) | ((FxU32)r << 16) | ((FxU32)g << 8) | (FxU32)b;
+    }
+  }
+  bench_download_palette(st->palettes[0]);
+
+  for (i = 0; i < CHURN_P8_COUNT; ++i) {
+    FxU8* dst = st->p8_data + (size_t)i * CHURN_P8_DIM * CHURN_P8_DIM;
+    for (y = 0; y < CHURN_P8_DIM; ++y) {
+      for (x = 0; x < CHURN_P8_DIM; ++x) {
+        dst[y * CHURN_P8_DIM + x] =
+            (FxU8)(((x ^ y) + i * 11 + ((x + y) >> 1)) & 255);
+      }
+    }
+    bench_init_tex_info(&st->p8_ti[i], BENCH_LOD_128, BENCH_LOD_128,
+                        BENCH_ASPECT_1x1, GR_TEXFMT_P_8, dst);
+  }
+
+  for (i = 0; i < CHURN_565_COUNT; ++i) {
+    FxU16* dst = st->rgb565_data + (size_t)i * CHURN_565_DIM * CHURN_565_DIM;
+    FxU16 c0 = (FxU16)((((i * 5) & 31) << 11) | (((i * 9) & 63) << 5) |
+                       (31 - (i & 31)));
+    FxU16 c1 = (FxU16)((((31 - (i & 31)) << 11) | (((i * 3) & 63) << 5) |
+                       ((i * 7) & 31)));
+    gen_checker_rgb565(dst, CHURN_565_DIM, 8, c0, c1, i & 7);
+    bench_init_tex_info(&st->rgb565_ti[i], BENCH_LOD_64, BENCH_LOD_64,
+                        BENCH_ASPECT_1x1, GR_TEXFMT_RGB_565, dst);
+  }
+
+  slot_stride =
+      (grTexTextureMemRequired(GR_MIPMAPLEVELMASK_BOTH, &st->p8_ti[0]) + 7U) &
+      ~7U;
+  if (slot_stride == 0 || ctx->scene_tmu_limit <= ctx->tmu0_min) {
+    free(st->p8_data);
+    free(st->rgb565_data);
+    free(st);
+    return 0;
+  }
+  avail = ctx->scene_tmu_limit - ctx->tmu0_min;
+  st->ring_slots = (int)(avail / slot_stride);
+  if (st->ring_slots > CHURN_MAX_RING) st->ring_slots = CHURN_MAX_RING;
+  if (st->ring_slots < 4) {
+    free(st->p8_data);
+    free(st->rgb565_data);
+    free(st);
+    return 0;
+  }
+  for (i = 0; i < st->ring_slots; ++i) {
+    st->ring_addr[i] = ctx->tmu0_min + (FxU32)i * slot_stride;
+  }
+
+  for (i = 0; i < CHURN_TOTAL_QUADS; ++i) {
+    int col = i & 15;
+    int row = i >> 4;
+    float x0 = (float)col * cell_w + 1.0f;
+    float y0 = 52.0f + (float)row * cell_h + 1.0f;
+    float x1 = x0 + cell_w - 2.0f;
+    float y1 = y0 + cell_h - 2.0f;
+    bench_set_vert(&st->quads[i][0], x0, y0, 0.0f, 1.0f, 255.0f, 255.0f, 255.0f, 255.0f, 0.0f,   0.0f);
+    bench_set_vert(&st->quads[i][1], x1, y0, 0.0f, 1.0f, 255.0f, 255.0f, 255.0f, 255.0f, 255.0f, 0.0f);
+    bench_set_vert(&st->quads[i][2], x1, y1, 0.0f, 1.0f, 255.0f, 255.0f, 255.0f, 255.0f, 255.0f, 255.0f);
+    bench_set_vert(&st->quads[i][3], x0, y1, 0.0f, 1.0f, 255.0f, 255.0f, 255.0f, 255.0f, 0.0f,   255.0f);
+  }
+
+  ctx->scene_state = st;
+  return 1;
+}
+
+static void tex_churn_render(BenchContext* ctx, int frame_idx, double t_sec,
+                             double* out_work_units) {
+  TexChurnState* st = (TexChurnState*)ctx->scene_state;
+  int i;
+  (void)t_sec;
+
+  bench_reset_pipeline(ctx->width, ctx->height);
+  grBufferClear(0x00080C14UL, 0xFF, GR_WDEPTHVALUE_FARTHEST);
+  grTexCombine(GR_TMU0, GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+               GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+               FXFALSE, FXFALSE);
+  grColorCombine(GR_COMBINE_FUNCTION_SCALE_OTHER, GR_COMBINE_FACTOR_ONE,
+                 GR_COMBINE_LOCAL_NONE, GR_COMBINE_OTHER_TEXTURE, FXFALSE);
+
+  for (i = 0; i < CHURN_TOTAL_QUADS; ++i) {
+    int slot;
+    FxU32 addr;
+    GrTexInfo* ti;
+    if ((i & 31) == 0) {
+      int pal_idx = ((i >> 5) + frame_idx) & (CHURN_PAL_COUNT - 1);
+      bench_download_palette(st->palettes[pal_idx]);
+    }
+    slot = (i + frame_idx * 7) % st->ring_slots;
+    addr = st->ring_addr[slot];
+    if ((i % 3) == 2) {
+      ti = &st->rgb565_ti[i / 3];
+    } else {
+      ti = &st->p8_ti[i - (i / 3)];
+    }
+    grTexDownloadMipMap(GR_TMU0, addr, GR_MIPMAPLEVELMASK_BOTH, ti);
+    grTexSource(GR_TMU0, addr, GR_MIPMAPLEVELMASK_BOTH, ti);
+    bench_draw_quad(&st->quads[i][0], &st->quads[i][1],
+                    &st->quads[i][2], &st->quads[i][3]);
+  }
+
+  /* Decoded BGRA8 texture volume per frame (128x 128^2 + 64x 64^2 = 9.0 MB) */
+  *out_work_units =
+      ((double)CHURN_P8_COUNT * CHURN_P8_DIM * CHURN_P8_DIM * 4.0 +
+       (double)CHURN_565_COUNT * CHURN_565_DIM * CHURN_565_DIM * 4.0) /
+      (1024.0 * 1024.0);
+}
+
+static void tex_churn_teardown(BenchContext* ctx) {
+  TexChurnState* st = (TexChurnState*)ctx->scene_state;
+  if (st) {
+    free(st->p8_data);
+    free(st->rgb565_data);
+    free(st);
+  }
+  ctx->scene_state = NULL;
+}
+
+/* =========================================================================
+ * Scene 11 (Ext): poly_fan - 768x 8-Vertex Convex Polygons (4,608 tris/frame)
+ * ========================================================================= */
+#define POLYFAN_COUNT   768
+#define POLYFAN_SIDES   8
+#define POLYFAN_PHASES  8
+
+typedef struct PolyFanState {
+  FxU16 tex[128 * 128];
+  GrTexInfo ti;
+  FxU32 tex_addr;
+  BenchVertex* phases[POLYFAN_PHASES]; /* [POLYFAN_COUNT * POLYFAN_SIDES] */
+} PolyFanState;
+
+static int poly_fan_setup(BenchContext* ctx) {
+  PolyFanState* st = (PolyFanState*)calloc(1, sizeof(PolyFanState));
+  int p, i, k;
+  float w = (float)ctx->width;
+  float h = (float)ctx->height;
+  float cell_w = (w * 0.92f) / 32.0f;
+  float cell_h = (h * 0.80f) / 24.0f;
+  float rad = (cell_w < cell_h ? cell_w : cell_h) * 0.48f;
+  if (!st) return 0;
+
+  gen_checker_rgb565(st->tex, 128, 16, 0xE69CU, 0x39E7U, 0);
+  bench_init_tex_info(&st->ti, BENCH_LOD_128, BENCH_LOD_128,
+                      BENCH_ASPECT_1x1, GR_TEXFMT_RGB_565, st->tex);
+  st->tex_addr = ctx->tmu0_min;
+  grTexDownloadMipMap(GR_TMU0, st->tex_addr, GR_MIPMAPLEVELMASK_BOTH, &st->ti);
+
+  for (p = 0; p < POLYFAN_PHASES; ++p) {
+    float phase_angle = (float)p * (2.0f * (float)M_PI / (float)POLYFAN_PHASES);
+    st->phases[p] = (BenchVertex*)calloc(
+        (size_t)POLYFAN_COUNT * POLYFAN_SIDES, sizeof(BenchVertex));
+    if (!st->phases[p]) {
+      int j;
+      for (j = 0; j < p; ++j) free(st->phases[j]);
+      free(st);
+      return 0;
+    }
+    for (i = 0; i < POLYFAN_COUNT; ++i) {
+      int col = i & 31;
+      int row = i >> 5;
+      float cx = w * 0.04f + ((float)col + 0.5f) * cell_w;
+      float cy = h * 0.12f + ((float)row + 0.5f) * cell_h;
+      float z_cam = 2.0f + ((float)row / 24.0f) * 2.5f;
+      float oow = 1.0f / z_cam;
+      float ooz = 65535.0f * oow;
+      BenchVertex* poly = &st->phases[p][i * POLYFAN_SIDES];
+      for (k = 0; k < POLYFAN_SIDES; ++k) {
+        float ang = phase_angle +
+                    (float)k * (2.0f * (float)M_PI / (float)POLYFAN_SIDES);
+        float ca = (float)cos((double)ang);
+        float sa = (float)sin((double)ang);
+        float vx = cx + rad * ca;
+        float vy = cy + rad * sa;
+        float u = 127.5f + 127.5f * ca;
+        float v = 127.5f + 127.5f * sa;
+        float cr = 160.0f + 90.0f * (0.5f + 0.5f * ca);
+        float cg = 140.0f + 100.0f * ((float)col / 31.0f);
+        float cb = 160.0f + 90.0f * (0.5f + 0.5f * sa);
+        bench_set_vert(&poly[k], vx, vy, ooz, oow, cr, cg, cb, 255.0f,
+                       u * oow, v * oow);
+      }
+    }
+  }
+
+  ctx->scene_state = st;
+  return 1;
+}
+
+static void poly_fan_render(BenchContext* ctx, int frame_idx, double t_sec,
+                            double* out_work_units) {
+  PolyFanState* st = (PolyFanState*)ctx->scene_state;
+  BenchVertex* verts = st->phases[(frame_idx >> 1) & (POLYFAN_PHASES - 1)];
+  int i;
+  (void)t_sec;
+
+  bench_reset_pipeline(ctx->width, ctx->height);
+  grDepthBufferMode(GR_DEPTHBUFFER_WBUFFER);
+  grDepthBufferFunction(GR_CMP_LESS);
+  grDepthMask(FXTRUE);
+  grBufferClear(0x00101824UL, 0xFF, GR_WDEPTHVALUE_FARTHEST);
+
+  grTexSource(GR_TMU0, st->tex_addr, GR_MIPMAPLEVELMASK_BOTH, &st->ti);
+  grTexCombine(GR_TMU0, GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+               GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+               FXFALSE, FXFALSE);
+  grColorCombine(GR_COMBINE_FUNCTION_SCALE_OTHER, GR_COMBINE_FACTOR_LOCAL,
+                 GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_TEXTURE, FXFALSE);
+
+  for (i = 0; i < POLYFAN_COUNT; ++i) {
+    BenchVertex* poly = &verts[i * POLYFAN_SIDES];
+#if GLIDE_VERSION == 3
+    grDrawVertexArrayContiguous(GR_POLYGON, POLYFAN_SIDES, poly,
+                                (FxU32)sizeof(BenchVertex));
+#else
+    grDrawPolygonVertexList(POLYFAN_SIDES, poly);
+#endif
+  }
+
+  *out_work_units = (double)(POLYFAN_COUNT * (POLYFAN_SIDES - 2)) / 1000.0;
+}
+
+static void poly_fan_teardown(BenchContext* ctx) {
+  PolyFanState* st = (PolyFanState*)ctx->scene_state;
+  int p;
+  if (st) {
+    for (p = 0; p < POLYFAN_PHASES; ++p) free(st->phases[p]);
+    free(st);
+  }
+  ctx->scene_state = NULL;
+}
+
 #if GLIDE_VERSION == 3
 
 /* =========================================================================
@@ -1644,7 +1925,9 @@ static const BenchScene kBenchScenes[] = {
   /* Extended Glide 2.x + 3.x scenes */
   { "fog",         "Table Fog (12x Full-Screen W-Fog)",  "MPix/s",  1.0, 30.0, BENCH_CAT_EXT,    0, fog_setup,       fog_render,       fog_teardown       },
   { "multitex",    "Dual-TMU (10x TMU0*TMU1 Bilinear)",  "MPix/s",  1.0, 30.0, BENCH_CAT_EXT,    0, multitex_setup,  multitex_render,  multitex_teardown  },
-  { "lfb_read",    "LFB Roundtrip (Full-Frame 565 R+W)", "MB/s",    1.0, 30.0, BENCH_CAT_EXT,    0, lfb_read_setup,  lfb_read_render,  lfb_read_teardown  }
+  { "lfb_read",    "LFB Roundtrip (Full-Frame 565 R+W)", "MB/s",    1.0, 30.0, BENCH_CAT_EXT,    0, lfb_read_setup,  lfb_read_render,  lfb_read_teardown  },
+  { "tex_churn",   "TMU Churn (192x Rotated P8/565+Pal)","MB/s",    1.0, 30.0, BENCH_CAT_EXT,    0, tex_churn_setup, tex_churn_render, tex_churn_teardown },
+  { "poly_fan",    "Polygon Fans (768x 8-Vert Polys)",   "KTri/s",  1.0, 30.0, BENCH_CAT_EXT,    0, poly_fan_setup,  poly_fan_render,  poly_fan_teardown  }
 #if GLIDE_VERSION == 3
   ,
   /* Glide 3.x H3 / VSA-100 extension scenes */
