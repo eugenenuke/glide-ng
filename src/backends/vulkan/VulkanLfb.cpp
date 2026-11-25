@@ -9,9 +9,9 @@
 #include "core/Logger.h"
 #include "core/Telemetry.h"
 
-#include "hud_frag.spv.h"
 #include "hud_vert.spv.h"
 #include "lfb_depth_frag.spv.h"
+#include "lfb_overlay_frag.spv.h"
 #include "msaa_depth_resolve_frag.spv.h"
 
 namespace GlideWrapper {
@@ -22,11 +22,16 @@ void* VulkanBackend::GetLfbWritePtr() {
   return m_lfbStaging.GetWritePtr(m_activeRenderBuffer);
 }
 
-bool VulkanBackend::InitLfbOverlayPipeline_Locked() {
+bool VulkanBackend::InitLfbOverlayPipeline_Locked(
+    CpuLfbStaging::OverlayBlendMode mode) {
   if (!m_device || !m_renderPass) {
     return false;
   }
-  if (m_lfbOverlayPipeline) {
+  const size_t modeIdx = static_cast<size_t>(mode);
+  if (modeIdx >= m_lfbOverlayPipelines.size()) {
+    return false;
+  }
+  if (m_lfbOverlayPipelines[modeIdx]) {
     return true;
   }
 
@@ -93,7 +98,8 @@ bool VulkanBackend::InitLfbOverlayPipeline_Locked() {
     vk::UniqueShaderModule vertMod = m_device->createShaderModuleUnique(
         vk::ShaderModuleCreateInfo({}, hud_vert_spv_size, hud_vert_spv));
     vk::UniqueShaderModule fragMod = m_device->createShaderModuleUnique(
-        vk::ShaderModuleCreateInfo({}, hud_frag_spv_size, hud_frag_spv));
+        vk::ShaderModuleCreateInfo({}, lfb_overlay_frag_spv_size,
+                                   lfb_overlay_frag_spv));
 
     std::array<vk::PipelineShaderStageCreateInfo, 2> stages = {
         vk::PipelineShaderStageCreateInfo({}, vk::ShaderStageFlagBits::eVertex,
@@ -130,12 +136,35 @@ bool VulkanBackend::InitLfbOverlayPipeline_Locked() {
 
     vk::PipelineColorBlendAttachmentState blendAtt{};
     blendAtt.blendEnable = VK_TRUE;
-    blendAtt.srcColorBlendFactor = vk::BlendFactor::eSrcAlpha;
-    blendAtt.dstColorBlendFactor = vk::BlendFactor::eOneMinusSrcAlpha;
     blendAtt.colorBlendOp = vk::BlendOp::eAdd;
-    blendAtt.srcAlphaBlendFactor = vk::BlendFactor::eOne;
-    blendAtt.dstAlphaBlendFactor = vk::BlendFactor::eOneMinusSrcAlpha;
     blendAtt.alphaBlendOp = vk::BlendOp::eAdd;
+    switch (mode) {
+      case CpuLfbStaging::OverlayBlendMode::Additive:
+        blendAtt.srcColorBlendFactor = vk::BlendFactor::eOne;
+        blendAtt.dstColorBlendFactor = vk::BlendFactor::eOne;
+        blendAtt.srcAlphaBlendFactor = vk::BlendFactor::eOne;
+        blendAtt.dstAlphaBlendFactor = vk::BlendFactor::eZero;
+        break;
+      case CpuLfbStaging::OverlayBlendMode::Multiply:
+        blendAtt.srcColorBlendFactor = vk::BlendFactor::eZero;
+        blendAtt.dstColorBlendFactor = vk::BlendFactor::eSrcColor;
+        blendAtt.srcAlphaBlendFactor = vk::BlendFactor::eOne;
+        blendAtt.dstAlphaBlendFactor = vk::BlendFactor::eZero;
+        break;
+      case CpuLfbStaging::OverlayBlendMode::Screen:
+        blendAtt.srcColorBlendFactor = vk::BlendFactor::eOne;
+        blendAtt.dstColorBlendFactor = vk::BlendFactor::eOneMinusSrcColor;
+        blendAtt.srcAlphaBlendFactor = vk::BlendFactor::eOne;
+        blendAtt.dstAlphaBlendFactor = vk::BlendFactor::eZero;
+        break;
+      case CpuLfbStaging::OverlayBlendMode::AlphaOver:
+      default:
+        blendAtt.srcColorBlendFactor = vk::BlendFactor::eSrcAlpha;
+        blendAtt.dstColorBlendFactor = vk::BlendFactor::eOneMinusSrcAlpha;
+        blendAtt.srcAlphaBlendFactor = vk::BlendFactor::eOne;
+        blendAtt.dstAlphaBlendFactor = vk::BlendFactor::eOneMinusSrcAlpha;
+        break;
+    }
     blendAtt.colorWriteMask =
         vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
         vk::ColorComponentFlagBits::eB | vk::ColorComponentFlagBits::eA;
@@ -170,7 +199,7 @@ bool VulkanBackend::InitLfbOverlayPipeline_Locked() {
                     << vk::to_string(res.result));
       return false;
     }
-    m_lfbOverlayPipeline = std::move(res.value);
+    m_lfbOverlayPipelines[modeIdx] = std::move(res.value);
     return true;
   } catch (const std::exception& e) {
     GLIDE_LOG(WARN, "Vulkan",
@@ -180,15 +209,16 @@ bool VulkanBackend::InitLfbOverlayPipeline_Locked() {
 }
 
 bool VulkanBackend::EnsureLfbOverlayResources_Locked(
-    uint32_t width, uint32_t height, vk::DeviceSize requiredBytes) {
+    uint32_t width, uint32_t height, vk::DeviceSize requiredBytes,
+    CpuLfbStaging::OverlayBlendMode mode) {
   if (!m_device || width == 0 || height == 0) return false;
-  if (!InitLfbOverlayPipeline_Locked()) return false;
+  if (!InitLfbOverlayPipeline_Locked(mode)) return false;
 
   const uint32_t slot = m_currentFrameSlot;
   const vk::DeviceSize fullFrameBytes =
       static_cast<vk::DeviceSize>(width) * height * 4;
   const vk::DeviceSize desiredSlotBytes =
-      std::max(requiredBytes, fullFrameBytes * 4);
+      std::max(requiredBytes, fullFrameBytes * 8);
 
   try {
     if (!m_lfbOverlayStagingBuffers[slot] ||
@@ -312,7 +342,9 @@ void VulkanBackend::DestroyLfbOverlayResources_Locked() {
   m_msaaDepthResolveDescPool.reset();
   m_lfbDepthPipeline.reset();
   m_lfbDepthPipelineMsaa.reset();
-  m_lfbOverlayPipeline.reset();
+  for (auto& pipe : m_lfbOverlayPipelines) {
+    pipe.reset();
+  }
   m_lfbOverlayPipelineLayout.reset();
   m_lfbOverlayDescSet = vk::DescriptorSet{};
   m_lfbOverlayDescPool.reset();
@@ -906,7 +938,15 @@ bool VulkanBackend::WriteLFB(uint32_t buffer, uint32_t dstX, uint32_t dstY,
   // inside the active command buffer (zero waitIdle(), preserves 3D scene!).
   // Internal lossless RGBA8888 restore (srcFmt == 0x100u) uses full-buffer copy
   // to preserve all 4 channels (including alpha) verbatim.
-  if (srcFmt != 0x100u && CpuLfbStaging::CanUseOverlayQuad(config)) {
+  CpuLfbStaging::OverlayBlendMode overlayMode =
+      CpuLfbStaging::OverlayBlendMode::AlphaOver;
+  if (srcFmt != 0x100u &&
+      CpuLfbStaging::ResolveOverlayBlendMode(config, overlayMode)) {
+    if (m_lfbStaging.IsFullBufferDirty(buffer) ||
+        (m_lfbStaging.IsOverlayDirty(buffer) &&
+         m_lfbStaging.GetOverlayBlendMode(buffer) != overlayMode)) {
+      FlushLFBToGPU_Locked();
+    }
     ok = m_lfbStaging.WriteOverlayLFB(buffer, dstX, dstY, srcWidth, srcHeight,
                                       srcStride, srcFmt, srcData, refData,
                                       config, m_pixelFormatOverride);
@@ -922,6 +962,9 @@ bool VulkanBackend::WriteLFB(uint32_t buffer, uint32_t dstX, uint32_t dstY,
     // GPU color target once so CPU blending has authentic destination pixels.
     if (m_batchedVertexCount > 0) {
       FlushBatch();
+    }
+    if (m_lfbStaging.IsOverlayDirty(buffer)) {
+      FlushLFBToGPU_Locked();
     }
     if (!m_lfbReadCacheValid[logicalSlot] &&
         !m_lfbStaging.IsFullBufferDirty(buffer)) {
@@ -1329,7 +1372,7 @@ bool VulkanBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
 void VulkanBackend::CompositeLfbOverlay_Locked(
     uint32_t /*buffer*/, uint32_t targetGpuIdx, const uint32_t* pixels,
     uint32_t width, uint32_t height, const CpuLfbStaging::DirtyBand* bands,
-    size_t bandCount) {
+    size_t bandCount, CpuLfbStaging::OverlayBlendMode blendMode) {
   if (!pixels || !bands || bandCount == 0 || width == 0 || height == 0) {
     return;
   }
@@ -1347,7 +1390,7 @@ void VulkanBackend::CompositeLfbOverlay_Locked(
   }
   if (validCount == 0 || totalBytes == 0) return;
 
-  if (!EnsureLfbOverlayResources_Locked(width, height, totalBytes)) {
+  if (!EnsureLfbOverlayResources_Locked(width, height, totalBytes, blendMode)) {
     return;
   }
 
@@ -1477,8 +1520,17 @@ void VulkanBackend::CompositeLfbOverlay_Locked(
     }
   }
 
+  const size_t modeIdx = static_cast<size_t>(blendMode);
+  vk::Pipeline overlayPipeline =
+      (modeIdx < m_lfbOverlayPipelines.size())
+          ? m_lfbOverlayPipelines[modeIdx].get()
+          : vk::Pipeline{};
+  if (!overlayPipeline) {
+    m_commandBuffer->endRenderPass();
+    return;
+  }
   m_commandBuffer->bindPipeline(vk::PipelineBindPoint::eGraphics,
-                                m_lfbOverlayPipeline.get());
+                                overlayPipeline);
   m_commandBuffer->bindDescriptorSets(vk::PipelineBindPoint::eGraphics,
                                       m_lfbOverlayPipelineLayout.get(), 0, 1,
                                       &m_lfbOverlayDescSet, 0, nullptr);
@@ -1521,9 +1573,13 @@ void VulkanBackend::FlushLFBToGPU_Locked() {
     return;
   }
 
+  // Flush batched 3D vertices BEFORE terminating any active render pass so
+  // 3D draws queued while !m_inRenderPass always rasterize prior to overlays.
+  if (m_batchedVertexCount > 0) {
+    FlushBatch();
+  }
   // Terminate any active render pass so transfers / overlay passes can run.
   if (m_inRenderPass) {
-    FlushBatch();
     m_commandBuffer->endRenderPass();
     m_inRenderPass = false;
   }
@@ -1598,10 +1654,12 @@ void VulkanBackend::FlushLFBToGPU_Locked() {
       size_t bandCount = 0;
       const uint32_t* overlayPixels =
           m_lfbStaging.GetOverlayBandsForGpuUpload(buf, bands, bandCount);
+      const auto overlayMode = m_lfbStaging.GetOverlayBlendMode(buf);
       if (overlayPixels && bands && bandCount > 0) {
         CompositeLfbOverlay_Locked(buf, targetGpuIdx, overlayPixels,
                                    m_lfbStaging.GetWidth(),
-                                   m_lfbStaging.GetHeight(), bands, bandCount);
+                                   m_lfbStaging.GetHeight(), bands, bandCount,
+                                   overlayMode);
       }
       m_lfbStaging.ClearOverlay(buf);
     }

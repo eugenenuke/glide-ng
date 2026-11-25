@@ -6,5 +6,9 @@ layout(location = 0) in vec2 vUV;
 layout(location = 0) out vec4 outColor;
 
 void main() {
-  outColor = texture(uHudTex, vUV);
+  vec4 c = texture(uHudTex, vUV);
+#ifdef DISCARD_ZERO_ALPHA
+  if (c.a == 0.0) discard;
+#endif
+  outColor = c;
 }

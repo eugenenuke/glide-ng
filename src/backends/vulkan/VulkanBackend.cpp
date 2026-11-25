@@ -595,7 +595,9 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
     m_msaaSamples = effectiveMsaa;
     m_pipelineCache.clear();
     DestroyMsaaCopyResources_Locked();
-    m_lfbOverlayPipeline.reset();
+    for (auto& pipe : m_lfbOverlayPipelines) {
+      pipe.reset();
+    }
     if (!CreateRenderPass()) {
       GLIDE_LOG(CRITICAL, "Vulkan",
                 "Failed to rebuild Vulkan render passes for MSAA="

@@ -38,6 +38,9 @@ class OpenGLESBackend : public GlideStateTracker {
   void ReleaseThreadContext() override;
   uint32_t GetMsaaSamples() const override { return m_msaaSamples; }
   bool HasAllocatedCpuLfbStaging() const { return m_lfbStaging.IsAllocated(); }
+  bool HasAllocatedFullCpuLfbStaging() const {
+    return m_lfbStaging.IsFullStagingAllocated();
+  }
 
   bool SwapBuffers() override;
   void PollEvents() override;
@@ -416,6 +419,7 @@ class OpenGLESBackend : public GlideStateTracker {
   uint64_t m_makeCurrentFailCount{0};
   int m_uUseGammaLutLoc{-1};
   int m_uPreserveAlphaLoc{-1};
+  int m_uDiscardZeroAlphaLoc{-1};
   int m_uFlipYLoc{-1};
 
   // On-screen HUD Overlay Resources

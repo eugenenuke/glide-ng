@@ -1690,6 +1690,57 @@ TEST_CASE("Architecture: GPU Backend GlideStateTracker Separation", "[Architectu
   static_assert(std::is_base_of_v<GlideWrapper::SoftwareBackendBase,
                                   GlideWrapper::SoftwareBackend>);
 
+  auto verifyZeroFullStagingOverlay = [](auto& backend) {
+    // Re-attach cleanly so previous ReadLFB in the basic test didn't allocate
+    // full staging buffers; then run all 7 overlay blend modes back-to-back
+    // before ANY ReadLFB call.
+    backend.DetachWindow();
+    REQUIRE(backend.AttachWindow(nullptr, 64, 64, true));
+    backend.ClearBuffer(0x0050A060u, 0xFFu, 1.0f, 0x3u);
+
+    struct BlendProbe {
+      uint32_t x;
+      uint32_t y;
+      uint32_t srcBlend;
+      uint32_t dstBlend;
+      int expR;
+      int expG;
+      int expB;
+    };
+    // Clear = (80, 160, 96), Source 0x8410 = RGB565 ~(131, 130, 131), alpha=128
+    const BlendProbe probes[] = {
+        {8, 8, 4u, 4u, 211, 255, 227},    // Additive (ONE, ONE)
+        {10, 8, 1u, 4u, 146, 225, 162},   // Additive (SRC_ALPHA, ONE)
+        {12, 8, 0u, 15u, 41, 82, 49},     // Multiply (ZERO, PREFOG)
+        {14, 8, 0u, 2u, 41, 82, 49},      // Multiply (ZERO, SRC_COLOR)
+        {16, 8, 2u, 0u, 41, 82, 49},      // Multiply (DST_COLOR, ZERO)
+        {18, 8, 4u, 6u, 170, 209, 178},   // Screen (ONE, 1-SRC_COLOR)
+        {20, 8, 6u, 4u, 170, 209, 178},   // Screen (1-DST_COLOR, ONE)
+    };
+    const uint16_t src565 = 0x8410u;
+    GlideWrapper::LfbPipelineConfig cfg;
+    cfg.pixelPipeline = true;
+    cfg.constantAlpha = 128u;
+    for (const auto& p : probes) {
+      cfg.rgbSrcBlend = p.srcBlend;
+      cfg.rgbDstBlend = p.dstBlend;
+      REQUIRE(backend.WriteLFB(1u, p.x, p.y, 1u, 1u, 2, 0u, &src565, nullptr,
+                               cfg));
+    }
+    REQUIRE(backend.SwapBuffers());
+    CHECK(backend.HasAllocatedCpuLfbStaging());
+    CHECK_FALSE(backend.HasAllocatedFullCpuLfbStaging());
+
+    for (const auto& p : probes) {
+      uint32_t outPx = 0u;
+      REQUIRE(backend.ReadLFB(0u, p.x, p.y, 1u, 1u, 4u, &outPx));
+      CAPTURE(p.srcBlend, p.dstBlend, outPx);
+      CHECK(std::abs(static_cast<int>((outPx >> 16) & 0xFFu) - p.expR) <= 2);
+      CHECK(std::abs(static_cast<int>((outPx >> 8) & 0xFFu) - p.expG) <= 2);
+      CHECK(std::abs(static_cast<int>(outPx & 0xFFu) - p.expB) <= 2);
+    }
+  };
+
   SECTION("VulkanBackend allocates zero CPU LFB staging until LFB is touched") {
     GlideWrapper::WrapperConfig config;
     config.backend = "vulkan";
@@ -1716,6 +1767,8 @@ TEST_CASE("Architecture: GPU Backend GlideStateTracker Separation", "[Architectu
       uint16_t readPx = 0;
       REQUIRE(backend.ReadLFB(1, 4, 4, 1, 1, 2, &readPx));
       CHECK(readPx == 0xFFFF);
+
+      verifyZeroFullStagingOverlay(backend);
 
       backend.DetachWindow();
       CHECK_FALSE(backend.HasAllocatedCpuLfbStaging());
@@ -1749,6 +1802,8 @@ TEST_CASE("Architecture: GPU Backend GlideStateTracker Separation", "[Architectu
       uint16_t readPx = 0;
       REQUIRE(backend.ReadLFB(1, 4, 4, 1, 1, 2, &readPx));
       CHECK(readPx == 0xFFFF);
+
+      verifyZeroFullStagingOverlay(backend);
 
       backend.DetachWindow();
       CHECK_FALSE(backend.HasAllocatedCpuLfbStaging());

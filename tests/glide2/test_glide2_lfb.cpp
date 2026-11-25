@@ -1170,3 +1170,251 @@ TEST_CASE("Glide 2.x: Auxiliary Buffer Depth Readback (AUXBUFFER)", "[Glide2][LF
 #endif
 }
 
+TEST_CASE("Glide 2.x: Blended LFB Overlay Quads Cross-Backend Parity",
+          "[Glide2][LFB][Blend]") {
+#ifdef __linux__
+  struct EnvGuard {
+    std::string key;
+    bool had{false};
+    std::string saved;
+    explicit EnvGuard(const char* k) : key(k) {
+      if (const char* v = std::getenv(k)) {
+        had = true;
+        saved = v;
+      }
+    }
+    ~EnvGuard() {
+      if (had) {
+        ::setenv(key.c_str(), saved.c_str(), 1);
+      } else {
+        ::unsetenv(key.c_str());
+      }
+    }
+  };
+  EnvGuard backendGuard("GLIDE_NG_BACKEND");
+  EnvGuard msaaGuard("GLIDE_NG_MSAA");
+
+  struct BackendCase {
+    const char* backend;
+    const char* msaa;
+  };
+  const BackendCase cases[] = {
+      {"software", "1"},
+      {"vulkan", "1"},
+      {"vulkan", "4"},
+      {"opengl_es", "1"},
+      {"opengl_es", "4"},
+  };
+
+  auto makeTriVtx = [](float x, float y, float r, float g, float b) {
+    GrVertex v{};
+    v.x = x;
+    v.y = y;
+    v.z = 0.5f;
+    v.ooz = 32768.0f;
+    v.oow = 1.0f;
+    v.r = r;
+    v.g = g;
+    v.b = b;
+    v.a = 255.0f;
+    return v;
+  };
+
+  auto writeBox565 = [](uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1,
+                        uint16_t color565) {
+    GrLfbInfo_t info{};
+    info.size = sizeof(GrLfbInfo_t);
+    REQUIRE(grLfbLock(GR_LFB_WRITE_ONLY, GR_BUFFER_BACKBUFFER,
+                      GR_LFBWRITEMODE_565, GR_ORIGIN_UPPER_LEFT, FXTRUE,
+                      &info) == FXTRUE);
+    REQUIRE(info.lfbPtr != nullptr);
+    auto* base = static_cast<uint8_t*>(info.lfbPtr);
+    for (uint32_t y = y0; y < y1; ++y) {
+      auto* row = reinterpret_cast<uint16_t*>(base + y * info.strideInBytes);
+      for (uint32_t x = x0; x < x1; ++x) {
+        row[x] = color565;
+      }
+    }
+    REQUIRE(grLfbUnlock(GR_LFB_WRITE_ONLY, GR_BUFFER_BACKBUFFER) == FXTRUE);
+  };
+
+  auto readPixelArgb = [](uint32_t x, uint32_t y) -> uint32_t {
+    uint32_t px = 0u;
+    REQUIRE(grLfbReadRegion(GR_BUFFER_FRONTBUFFER, x, y, 1, 1, 4, &px) ==
+            FXTRUE);
+    return px;
+  };
+
+  auto drawBackground = [&](uint32_t clearColor) {
+    grAlphaBlendFunction(GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_ONE,
+                         GR_BLEND_ZERO);
+    grChromakeyMode(GR_CHROMAKEY_DISABLE);
+    grBufferClear(clearColor, 0xFFu, 0xFFFFu);
+    // Large solid triangle covering [80..560, 80..400] with R=100, G=160, B=80.
+    GrVertex v0 = makeTriVtx(80.0f, 80.0f, 100.0f, 160.0f, 80.0f);
+    GrVertex v1 = makeTriVtx(600.0f, 80.0f, 100.0f, 160.0f, 80.0f);
+    GrVertex v2 = makeTriVtx(80.0f, 440.0f, 100.0f, 160.0f, 80.0f);
+    grDrawTriangle(&v0, &v1, &v2);
+  };
+
+  // Probe points: {x, y}
+  struct ProbePoint {
+    const char* name;
+    uint32_t x;
+    uint32_t y;
+  };
+  const ProbePoint probes[] = {
+      {"untouched_clear", 20, 20},
+      {"untouched_tri", 110, 110},
+      {"add1_only", 135, 135},
+      {"add_overlap", 175, 160},
+      {"add2_only", 215, 185},
+      {"add_alpha", 250, 135},
+      {"mul_prefog", 135, 225},
+      {"mul_prefog_chroma_hole", 145, 225},
+      {"mul_src_color", 215, 225},
+      {"mul_dst_color", 275, 225},
+      {"screen_4_6", 135, 285},
+      {"screen_6_4", 215, 285},
+      {"interleaved_add_a", 135, 340},
+      {"interleaved_opaque", 175, 340},
+      {"interleaved_add_coal", 215, 340},
+      {"interleaved_mul", 255, 340},
+      {"interleaved_opaque_end", 295, 340},
+  };
+  constexpr size_t kNumProbes = sizeof(probes) / sizeof(probes[0]);
+  std::vector<uint32_t> swRefPixels;
+
+  for (size_t cIdx = 0; cIdx < sizeof(cases) / sizeof(cases[0]); ++cIdx) {
+    const auto& tc = cases[cIdx];
+    CAPTURE(tc.backend, tc.msaa);
+    ::setenv("GLIDE_NG_BACKEND", tc.backend, 1);
+    ::setenv("GLIDE_NG_MSAA", tc.msaa, 1);
+
+    grGlideInit();
+    REQUIRE(grSstWinOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                         GR_COLORFORMAT_ARGB, GR_ORIGIN_UPPER_LEFT, 2,
+                         1) == FXTRUE);
+
+    grColorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+                   GR_COMBINE_LOCAL_ITERATED, GR_COMBINE_OTHER_NONE, FXFALSE);
+    grDepthBufferMode(GR_DEPTHBUFFER_DISABLE);
+    grDitherMode(GR_DITHER_DISABLE);
+
+    std::vector<uint32_t> actual(kNumProbes, 0u);
+
+    // Frame A: Additive, Alpha-Additive, Multiply variants, Screen variants
+    // Clear = ARGB(FF, 28, 3C, 50) = (40, 60, 80)
+    drawBackground(0xFF283C50u);
+
+    // 1) Additive (ONE, ONE): single + overlapping stacked writes before flush
+    grAlphaBlendFunction(GR_BLEND_ONE, GR_BLEND_ONE, GR_BLEND_ONE,
+                         GR_BLEND_ZERO);
+    writeBox565(120, 120, 190, 175, 0x318Cu);  // ~ (49, 48, 99)
+    writeBox565(160, 145, 230, 200, 0x2948u);  // ~ (41, 40, 66)
+
+    // 2) Alpha-scaled additive (SRC_ALPHA, ONE) with constantAlpha=128
+    grLfbConstantAlpha(128u);
+    grAlphaBlendFunction(GR_BLEND_SRC_ALPHA, GR_BLEND_ONE, GR_BLEND_ONE,
+                         GR_BLEND_ZERO);
+    writeBox565(240, 120, 270, 150, 0xF800u);  // ~ 50% of Red (128, 0, 0)
+
+    // 3) Multiply (ZERO, PREFOG_COLOR=15) with chromakey hole at (145, 225)
+    grChromakeyMode(GR_CHROMAKEY_ENABLE);
+    grChromakeyValue(0xFF00FF00u);  // pure green key (expands to 0x07E0)
+    grAlphaBlendFunction(GR_BLEND_ZERO, GR_BLEND_PREFOG_COLOR, GR_BLEND_ONE,
+                         GR_BLEND_ZERO);
+    {
+      GrLfbInfo_t info{};
+      info.size = sizeof(GrLfbInfo_t);
+      REQUIRE(grLfbLock(GR_LFB_WRITE_ONLY, GR_BUFFER_BACKBUFFER,
+                        GR_LFBWRITEMODE_565, GR_ORIGIN_UPPER_LEFT, FXTRUE,
+                        &info) == FXTRUE);
+      auto* base = static_cast<uint8_t*>(info.lfbPtr);
+      for (uint32_t y = 215; y < 245; ++y) {
+        auto* row = reinterpret_cast<uint16_t*>(base + y * info.strideInBytes);
+        for (uint32_t x = 120; x < 160; ++x) {
+          row[x] = (x == 145u && y == 225u) ? 0x07E0u : 0x8410u;  // key vs ~50% grey
+        }
+      }
+      REQUIRE(grLfbUnlock(GR_LFB_WRITE_ONLY, GR_BUFFER_BACKBUFFER) == FXTRUE);
+    }
+    grChromakeyMode(GR_CHROMAKEY_DISABLE);
+
+    // 4) Multiply (ZERO, SRC_COLOR=2) & (DST_COLOR=2, ZERO)
+    grAlphaBlendFunction(GR_BLEND_ZERO, GR_BLEND_SRC_COLOR, GR_BLEND_ONE,
+                         GR_BLEND_ZERO);
+    writeBox565(200, 215, 235, 245, 0xFC0Fu);  // ~(255, 130, 123)
+    grAlphaBlendFunction(GR_BLEND_DST_COLOR, GR_BLEND_ZERO, GR_BLEND_ONE,
+                         GR_BLEND_ZERO);
+    writeBox565(260, 215, 295, 245, 0x87E0u);  // ~(131, 255, 0)
+
+    // 5) Screen (ONE, ONE_MINUS_SRC_COLOR=6) & (ONE_MINUS_DST_COLOR=6, ONE)
+    grAlphaBlendFunction(GR_BLEND_ONE, GR_BLEND_ONE_MINUS_SRC_COLOR,
+                         GR_BLEND_ONE, GR_BLEND_ZERO);
+    writeBox565(120, 270, 160, 300, 0x4208u);  // ~ (66, 65, 66)
+    grAlphaBlendFunction(GR_BLEND_ONE_MINUS_DST_COLOR, GR_BLEND_ONE,
+                         GR_BLEND_ONE, GR_BLEND_ZERO);
+    writeBox565(200, 270, 240, 300, 0x8410u);  // ~ (131, 130, 131)
+
+    grBufferSwap(0);
+    for (size_t i = 0; i < 12; ++i) {
+      actual[i] = readPixelArgb(probes[i].x, probes[i].y);
+    }
+
+    // Frame B: Interleaved Extreme Assault sequence
+    drawBackground(0xFF283C50u);
+    grAlphaBlendFunction(GR_BLEND_ONE, GR_BLEND_ONE, GR_BLEND_ONE,
+                         GR_BLEND_ZERO);
+    writeBox565(120, 325, 155, 355, 0x318Cu);  // add A
+    grAlphaBlendFunction(GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_ONE,
+                         GR_BLEND_ZERO);
+    writeBox565(160, 325, 195, 355, 0xF800u);  // opaque
+    grAlphaBlendFunction(GR_BLEND_ONE, GR_BLEND_ONE, GR_BLEND_ONE,
+                         GR_BLEND_ZERO);
+    writeBox565(200, 325, 235, 355, 0x2000u);  // coalesced add 1
+    writeBox565(200, 325, 235, 355, 0x0400u);  // coalesced add 2
+    writeBox565(200, 325, 235, 355, 0x0010u);  // coalesced add 3
+    grAlphaBlendFunction(GR_BLEND_ZERO, GR_BLEND_PREFOG_COLOR, GR_BLEND_ONE,
+                         GR_BLEND_ZERO);
+    writeBox565(240, 325, 275, 355, 0x8410u);  // multiply
+    grAlphaBlendFunction(GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_ONE,
+                         GR_BLEND_ZERO);
+    writeBox565(280, 325, 315, 355, 0x07E0u);  // opaque end
+    grBufferSwap(0);
+
+    for (size_t i = 12; i < kNumProbes; ++i) {
+      actual[i] = readPixelArgb(probes[i].x, probes[i].y);
+    }
+
+    if (cIdx == 0u) {
+      swRefPixels = actual;
+      // Sanity-check key analytical outcomes on Software reference:
+      // untouched_clear = (40, 60, 80)
+      CHECK(std::abs(static_cast<int>((actual[0] >> 16) & 0xFFu) - 40) <= 1);
+      // mul_prefog darkened triangle (not black 0!)
+      CHECK(((actual[6] >> 16) & 0xFFu) >= 45u);
+      CHECK(((actual[6] >> 8) & 0xFFu) >= 75u);
+      // mul_prefog_chroma_hole still shows intact 3D triangle (R~100, G~160, B~80)
+      CHECK(std::abs(static_cast<int>((actual[7] >> 16) & 0xFFu) - 100) <= 2);
+      CHECK(std::abs(static_cast<int>((actual[7] >> 8) & 0xFFu) - 160) <= 2);
+      // add_overlap > tri alone
+      CHECK(((actual[3] >> 16) & 0xFFu) > 170u);
+    } else {
+      for (size_t i = 0; i < kNumProbes; ++i) {
+        CAPTURE(probes[i].name, actual[i], swRefPixels[i]);
+        for (int shift : {16, 8, 0}) {
+          const int a = static_cast<int>((actual[i] >> shift) & 0xFFu);
+          const int e = static_cast<int>((swRefPixels[i] >> shift) & 0xFFu);
+          CHECK(std::abs(a - e) <= 2);
+        }
+      }
+    }
+
+    grSstWinClose();
+    grGlideShutdown();
+  }
+#endif
+}
+
+

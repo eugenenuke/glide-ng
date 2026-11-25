@@ -28,8 +28,12 @@ uniform sampler2D uTex;
 uniform sampler2D uGammaLut;
 uniform bool uUseGammaLut;
 uniform bool uPreserveAlpha;
+uniform bool uDiscardZeroAlpha;
 void main() {
     vec4 texColor = texture(uTex, fragTex);
+    if (uDiscardZeroAlpha && texColor.a == 0.0) {
+        discard;
+    }
     float outAlpha = uPreserveAlpha ? texColor.a : 1.0;
     if (uUseGammaLut) {
         vec3 corrected;

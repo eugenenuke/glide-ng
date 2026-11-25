@@ -75,6 +75,14 @@ struct AlignedAllocator {
  */
 class CpuLfbStaging {
  public:
+  enum class OverlayBlendMode : uint8_t {
+    AlphaOver = 0,
+    Additive = 1,
+    Multiply = 2,
+    Screen = 3,
+  };
+  static constexpr size_t kOverlayBlendModeCount = 4;
+
   void Configure(uint32_t width, uint32_t height, bool allocateEagerly = false);
   void Release();
   void ResetPendingAndDirty();
@@ -82,6 +90,7 @@ class CpuLfbStaging {
   bool IsAllocated() const {
     return !m_buffers[0].empty() || !m_overlayBuffers[0].empty();
   }
+  bool IsFullStagingAllocated() const { return !m_buffers[0].empty(); }
   uint32_t GetWidth() const { return m_width; }
   uint32_t GetHeight() const { return m_height; }
 
@@ -129,9 +138,14 @@ class CpuLfbStaging {
   void ClearOverlay(uint32_t logicalBuffer);
 
   // Returns true if the given LFB pipeline configuration can be composited
-  // directly onto a GPU framebuffer via a standard (SRC_ALPHA, ONE_MINUS_SRC_ALPHA)
-  // overlay quad without reading back the GPU framebuffer.
+  // directly onto a GPU framebuffer via a hardware-blended overlay quad
+  // without reading back the GPU framebuffer, and outputs the resolved mode.
+  static bool ResolveOverlayBlendMode(const LfbPipelineConfig& config,
+                                      OverlayBlendMode& outMode);
   static bool CanUseOverlayQuad(const LfbPipelineConfig& config);
+  OverlayBlendMode GetOverlayBlendMode(uint32_t logicalBuffer) const {
+    return m_overlayBlendMode[(logicalBuffer == 0u) ? 0u : 1u];
+  }
 
   // Write modified/non-chromakeyed pixels into a sparse ARGB overlay buffer
   // (untouched pixels keep alpha=0) for zero-readback GPU compositing.
@@ -225,6 +239,8 @@ class CpuLfbStaging {
   bool m_dirty{false};
   bool m_bufferDirty[2]{false, false};
   bool m_overlayDirty[2]{false, false};
+  OverlayBlendMode m_overlayBlendMode[2]{OverlayBlendMode::AlphaOver,
+                                         OverlayBlendMode::AlphaOver};
   DirtyBand m_overlayBands[2][kMaxOverlayBands]{};
   size_t m_overlayBandCount[2]{0, 0};
   PendingColorClear m_pendingClear[2];

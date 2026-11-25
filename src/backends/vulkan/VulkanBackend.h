@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <functional>
@@ -372,6 +373,9 @@ class VulkanBackend : public GlideStateTracker {
   void SetPassthruMode(bool show3dfx) override;
   uint32_t GetMsaaSamples() const override { return m_msaaSamples; }
   bool HasAllocatedCpuLfbStaging() const { return m_lfbStaging.IsAllocated(); }
+  bool HasAllocatedFullCpuLfbStaging() const {
+    return m_lfbStaging.IsFullStagingAllocated();
+  }
   uint64_t GetTexturePoolReuseCount() const { return m_texturePoolReuses; }
   uint64_t GetTextureContentCacheHitCount() const {
     return m_textureContentCacheHits;
@@ -856,22 +860,28 @@ class VulkanBackend : public GlideStateTracker {
   CpuLfbStaging m_lfbStaging;
 
   // --- M5: Sparse LFB Overlay Compositing Resources (lazily allocated) ---
-  bool InitLfbOverlayPipeline_Locked();
-  bool EnsureLfbOverlayResources_Locked(uint32_t width, uint32_t height,
-                                        vk::DeviceSize requiredBytes);
+  bool InitLfbOverlayPipeline_Locked(
+      CpuLfbStaging::OverlayBlendMode mode =
+          CpuLfbStaging::OverlayBlendMode::AlphaOver);
+  bool EnsureLfbOverlayResources_Locked(
+      uint32_t width, uint32_t height, vk::DeviceSize requiredBytes,
+      CpuLfbStaging::OverlayBlendMode mode =
+          CpuLfbStaging::OverlayBlendMode::AlphaOver);
   void DestroyLfbOverlayResources_Locked();
   void ReadbackGpuToStaging_Locked(uint32_t buffer);
   void CompositeLfbOverlay_Locked(uint32_t buffer, uint32_t targetGpuIdx,
                                   const uint32_t* pixels, uint32_t width,
                                   uint32_t height,
                                   const CpuLfbStaging::DirtyBand* bands,
-                                  size_t bandCount);
+                                  size_t bandCount,
+                                  CpuLfbStaging::OverlayBlendMode blendMode);
   vk::UniqueSampler m_lfbOverlaySampler;
   vk::UniqueDescriptorSetLayout m_lfbOverlayDescSetLayout;
   vk::UniqueDescriptorPool m_lfbOverlayDescPool;
   vk::DescriptorSet m_lfbOverlayDescSet;
   vk::UniquePipelineLayout m_lfbOverlayPipelineLayout;
-  vk::UniquePipeline m_lfbOverlayPipeline;
+  std::array<vk::UniquePipeline, CpuLfbStaging::kOverlayBlendModeCount>
+      m_lfbOverlayPipelines;
   vk::UniquePipeline m_lfbDepthPipeline;
   vk::UniquePipeline m_lfbDepthPipelineMsaa;
   vk::UniqueDescriptorPool m_msaaDepthResolveDescPool;

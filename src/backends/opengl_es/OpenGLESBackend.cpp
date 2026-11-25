@@ -743,6 +743,9 @@ void OpenGLESBackend::PresentToWindowSurface(uint32_t hostW, uint32_t hostH) {
   if (m_uPreserveAlphaLoc != -1) {
     glUniform1i(m_uPreserveAlphaLoc, 0);
   }
+  if (m_uDiscardZeroAlphaLoc != -1) {
+    glUniform1i(m_uDiscardZeroAlphaLoc, 0);
+  }
   if (m_uFlipYLoc != -1) {
     // Offscreen FBOs are stored top-down (row 0 = top); flip Y when presenting
     // onto the bottom-up OpenGL ES default window surface.
@@ -798,6 +801,9 @@ void OpenGLESBackend::PresentToWindowSurface(uint32_t hostW, uint32_t hostH) {
         }
         if (m_uPreserveAlphaLoc != -1) {
           glUniform1i(m_uPreserveAlphaLoc, 1);
+        }
+        if (m_uDiscardZeroAlphaLoc != -1) {
+          glUniform1i(m_uDiscardZeroAlphaLoc, 0);
         }
         if (m_uFlipYLoc != -1) {
           glUniform1i(m_uFlipYLoc, 0);
@@ -1365,12 +1371,20 @@ bool OpenGLESBackend::WriteLFB(uint32_t buffer, uint32_t dstX, uint32_t dstY,
   const uint32_t logicalSlot = (buffer == 0u) ? 0u : 1u;
   bool ok = false;
 
-  // Fast path: opaque LFB writes and standard (SRC_ALPHA, ONE_MINUS_SRC_ALPHA)
-  // overlays composite directly onto the GPU FBO via a single alpha-blended
-  // quad with ZERO GPU readback stalls, preserving any 3D geometry underneath!
+  // Fast path: opaque LFB writes and GPU-representable blended overlays
+  // composite directly onto the GPU FBO via a single blended quad with ZERO
+  // GPU readback stalls, preserving any 3D geometry underneath!
   // Internal lossless RGBA8888 restore (srcFmt == 0x100u) uses full-buffer upload
   // to preserve all 4 channels (including alpha) verbatim.
-  if (srcFmt != 0x100u && CpuLfbStaging::CanUseOverlayQuad(config)) {
+  CpuLfbStaging::OverlayBlendMode overlayMode =
+      CpuLfbStaging::OverlayBlendMode::AlphaOver;
+  if (srcFmt != 0x100u &&
+      CpuLfbStaging::ResolveOverlayBlendMode(config, overlayMode)) {
+    if (m_lfbStaging.IsFullBufferDirty(buffer) ||
+        (m_lfbStaging.IsOverlayDirty(buffer) &&
+         m_lfbStaging.GetOverlayBlendMode(buffer) != overlayMode)) {
+      FlushLFBToGPU_Locked();
+    }
     ok = m_lfbStaging.WriteOverlayLFB(buffer, dstX, dstY, srcWidth, srcHeight,
                                       srcStride, srcFmt, srcData, refData,
                                       config, m_pixelFormatOverride);
@@ -1380,11 +1394,13 @@ bool OpenGLESBackend::WriteLFB(uint32_t buffer, uint32_t dstX, uint32_t dstY,
                                           refData, config, m_pixelFormatOverride);
     }
   } else {
-    // Fallback for exotic LFB blend modes (e.g., additive/multiply): snapshot
-    // the current GPU FBO into CpuLfbStaging once so CPU blending sees the 3D
-    // scene.
+    // Fallback for exotic LFB blend modes: snapshot the current GPU FBO into
+    // CpuLfbStaging once so CPU blending sees the 3D scene.
     if (!m_batchVertices.empty() && EnsureContextCurrent()) {
       FlushBatch();
+    }
+    if (m_lfbStaging.IsOverlayDirty(buffer)) {
+      FlushLFBToGPU_Locked();
     }
     if (!m_lfbReadCacheValid[logicalSlot] &&
         !m_lfbStaging.IsFullBufferDirty(buffer) && EnsureContextCurrent()) {
@@ -1548,6 +1564,7 @@ void OpenGLESBackend::FlushLFBToGPU_Locked() {
                         m_swizzleBuffer.data());
       }
 
+      const auto overlayMode = m_lfbStaging.GetOverlayBlendMode(buf);
       glBindFramebuffer(GL_FRAMEBUFFER, gpuFbos[buf]);
       if (!overlayStateBound) {
         glViewport(0, 0, static_cast<GLsizei>(m_headlessWidth),
@@ -1562,8 +1579,7 @@ void OpenGLESBackend::FlushLFBToGPU_Locked() {
         }
         glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
         glEnable(GL_BLEND);
-        glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE,
-                            GL_ONE_MINUS_SRC_ALPHA);
+        glBlendEquationSeparate(GL_FUNC_ADD, GL_FUNC_ADD);
         glUseProgram(m_glProgram);
         if (m_uUseGammaLutLoc != -1) {
           glUniform1i(m_uUseGammaLutLoc, 0);
@@ -1571,11 +1587,31 @@ void OpenGLESBackend::FlushLFBToGPU_Locked() {
         if (m_uPreserveAlphaLoc != -1) {
           glUniform1i(m_uPreserveAlphaLoc, 1);
         }
+        if (m_uDiscardZeroAlphaLoc != -1) {
+          glUniform1i(m_uDiscardZeroAlphaLoc, 1);
+        }
         if (m_uFlipYLoc != -1) {
           glUniform1i(m_uFlipYLoc, 0);
         }
         glBindVertexArray(m_glVAO);
         overlayStateBound = true;
+      }
+
+      switch (overlayMode) {
+        case CpuLfbStaging::OverlayBlendMode::Additive:
+          glBlendFuncSeparate(GL_ONE, GL_ONE, GL_ONE, GL_ZERO);
+          break;
+        case CpuLfbStaging::OverlayBlendMode::Multiply:
+          glBlendFuncSeparate(GL_ZERO, GL_SRC_COLOR, GL_ONE, GL_ZERO);
+          break;
+        case CpuLfbStaging::OverlayBlendMode::Screen:
+          glBlendFuncSeparate(GL_ONE, GL_ONE_MINUS_SRC_COLOR, GL_ONE, GL_ZERO);
+          break;
+        case CpuLfbStaging::OverlayBlendMode::AlphaOver:
+        default:
+          glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE,
+                              GL_ONE_MINUS_SRC_ALPHA);
+          break;
       }
 
       // Composite each dirty band tightly with scissor so untouched rows in
@@ -2932,6 +2968,8 @@ bool OpenGLESBackend::CreateGLContext(void* nativeWindowHandle, uint32_t width,
 
   m_uUseGammaLutLoc = glGetUniformLocation(m_glProgram, "uUseGammaLut");
   m_uPreserveAlphaLoc = glGetUniformLocation(m_glProgram, "uPreserveAlpha");
+  m_uDiscardZeroAlphaLoc =
+      glGetUniformLocation(m_glProgram, "uDiscardZeroAlpha");
   m_uFlipYLoc = glGetUniformLocation(m_glProgram, "uFlipY");
 
   // Fullscreen triangle-strip quad sampling the bottom-up offscreen FBO texture
@@ -3053,6 +3091,10 @@ void OpenGLESBackend::DestroyGLContext() {
       glDeleteProgram(m_glProgram);
       m_glProgram = 0;
     }
+    m_uUseGammaLutLoc = -1;
+    m_uPreserveAlphaLoc = -1;
+    m_uDiscardZeroAlphaLoc = -1;
+    m_uFlipYLoc = -1;
     if (m_glLfbDepthProgram) {
       glDeleteProgram(m_glLfbDepthProgram);
       m_glLfbDepthProgram = 0;
@@ -3144,6 +3186,10 @@ void OpenGLESBackend::DestroyGLContext() {
     m_glVBO = 0;
     m_glVAO = 0;
     m_glProgram = 0;
+    m_uUseGammaLutLoc = -1;
+    m_uPreserveAlphaLoc = -1;
+    m_uDiscardZeroAlphaLoc = -1;
+    m_uFlipYLoc = -1;
     m_sharedDepthRenderbuffer = 0;
     m_sharedDepthTexture = 0;
     m_depthReadFbo = 0;
@@ -3444,6 +3490,9 @@ void OpenGLESBackend::CopySingleToMsaa_Locked(uint32_t slot) {
   }
   if (m_uPreserveAlphaLoc != -1) {
     glUniform1i(m_uPreserveAlphaLoc, 1);
+  }
+  if (m_uDiscardZeroAlphaLoc != -1) {
+    glUniform1i(m_uDiscardZeroAlphaLoc, 0);
   }
   if (m_uFlipYLoc != -1) {
     glUniform1i(m_uFlipYLoc, 0);

@@ -327,8 +327,8 @@ struct LfbRowProcessor {
   }
 };
 
-template <uint32_t SrcFmt, bool ChromakeyEnabled, bool AlphaBlendOverlay,
-          bool HasRefData>
+template <uint32_t SrcFmt, bool ChromakeyEnabled,
+          CpuLfbStaging::OverlayBlendMode Mode, bool HasRefData>
 struct LfbOverlayRowProcessor {
   static inline void ProcessRow(uint32_t y, uint32_t dstX, uint32_t dstY,
                                 uint32_t srcWidth, uint32_t fbWidth,
@@ -374,19 +374,24 @@ struct LfbOverlayRowProcessor {
     }
 
     uint32_t* dstRow = overlay + static_cast<size_t>(writeY) * fbWidth;
-    if constexpr (!ChromakeyEnabled && !AlphaBlendOverlay && !HasRefData) {
-      if constexpr (SrcFmt == 0) {
-        GetSimdKernels().ConvertRgb565ToBgra32(
-            reinterpret_cast<const uint16_t*>(rowIn), dstRow + dstX,
-            activeWidth);
-        rowModifiedCount += activeWidth;
-        return;
-      } else if constexpr (SrcFmt == 1 || SrcFmt == 2) {
-        GetSimdKernels().ConvertArgb1555ToBgra32(
-            reinterpret_cast<const uint16_t*>(rowIn), dstRow + dstX,
-            activeWidth, /*preserveAlpha=*/false);
-        rowModifiedCount += activeWidth;
-        return;
+    if constexpr (Mode == CpuLfbStaging::OverlayBlendMode::AlphaOver &&
+                  !ChromakeyEnabled && !HasRefData) {
+      const bool alphaBlendOverlay =
+          config.pixelPipeline && (config.rgbSrcBlend == 1u);
+      if (!alphaBlendOverlay) {
+        if constexpr (SrcFmt == 0) {
+          GetSimdKernels().ConvertRgb565ToBgra32(
+              reinterpret_cast<const uint16_t*>(rowIn), dstRow + dstX,
+              activeWidth);
+          rowModifiedCount += activeWidth;
+          return;
+        } else if constexpr (SrcFmt == 1 || SrcFmt == 2) {
+          GetSimdKernels().ConvertArgb1555ToBgra32(
+              reinterpret_cast<const uint16_t*>(rowIn), dstRow + dstX,
+              activeWidth, /*preserveAlpha=*/false);
+          rowModifiedCount += activeWidth;
+          return;
+        }
       }
     }
     for (uint32_t x = 0; x < activeWidth; ++x) {
@@ -457,50 +462,104 @@ struct LfbOverlayRowProcessor {
         a = (SrcFmt == 4 || SrcFmt == 15) ? 255 : ((c32 >> 24) & 0xFF);
       }
 
-      uint32_t outA = 255;
-      if constexpr (AlphaBlendOverlay) {
-        if constexpr (SrcFmt == 0 || SrcFmt == 1 || SrcFmt == 4 ||
-                      SrcFmt == 12 || SrcFmt == 13 || SrcFmt == 15) {
-          outA = config.constantAlpha;
-        } else {
-          outA = a;
-        }
-      }
-
-      if (outA == 0) {
-        continue;
-      }
-
       const uint32_t existing = dstRow[writeX];
-      const uint32_t existingA = (existing >> 24) & 0xFF;
-      if (outA == 255 || existingA == 0) {
-        dstRow[writeX] = (outA << 24) | (r << 16) | (g << 8) | b;
+      const uint32_t existingA = (existing >> 24) & 0xFFu;
+
+      if constexpr (Mode == CpuLfbStaging::OverlayBlendMode::AlphaOver) {
+        uint32_t outA = 255u;
+        if (config.pixelPipeline && config.rgbSrcBlend == 1u) {
+          if constexpr (SrcFmt == 0 || SrcFmt == 1 || SrcFmt == 4 ||
+                        SrcFmt == 12 || SrcFmt == 13 || SrcFmt == 15) {
+            outA = config.constantAlpha;
+          } else {
+            outA = a;
+          }
+        }
+        if (outA == 0u) {
+          continue;
+        }
+        if (outA == 255u || existingA == 0u) {
+          dstRow[writeX] = (outA << 24) | (r << 16) | (g << 8) | b;
+        } else {
+          // Porter-Duff SRC OVER DST when stacking two LFB overlays before
+          // flush (e.g., persistent guest LFB write followed by grShamelessPlug).
+          const float sa = outA / 255.0f;
+          const float da = existingA / 255.0f;
+          const float resA = sa + da * (1.0f - sa);
+          const float invResA = (resA > 0.0f) ? (1.0f / resA) : 0.0f;
+          const uint32_t er = (existing >> 16) & 0xFFu;
+          const uint32_t eg = (existing >> 8) & 0xFFu;
+          const uint32_t eb = existing & 0xFFu;
+          const uint32_t rr = std::min(
+              255u,
+              static_cast<uint32_t>((r * sa + er * da * (1.0f - sa)) * invResA +
+                                    0.5f));
+          const uint32_t rg = std::min(
+              255u,
+              static_cast<uint32_t>((g * sa + eg * da * (1.0f - sa)) * invResA +
+                                    0.5f));
+          const uint32_t rb = std::min(
+              255u,
+              static_cast<uint32_t>((b * sa + eb * da * (1.0f - sa)) * invResA +
+                                    0.5f));
+          const uint32_t ra =
+              std::min(255u, static_cast<uint32_t>(resA * 255.0f + 0.5f));
+          dstRow[writeX] = (ra << 24) | (rr << 16) | (rg << 8) | rb;
+        }
+      } else if constexpr (Mode == CpuLfbStaging::OverlayBlendMode::Additive) {
+        if (config.rgbSrcBlend == 1u) {
+          const uint32_t sa =
+              (SrcFmt == 0 || SrcFmt == 1 || SrcFmt == 4 || SrcFmt == 12 ||
+               SrcFmt == 13 || SrcFmt == 15)
+                  ? config.constantAlpha
+                  : a;
+          if (sa == 0u) {
+            continue;
+          }
+          if (sa < 255u) {
+            r = (r * sa + 127u) / 255u;
+            g = (g * sa + 127u) / 255u;
+            b = (b * sa + 127u) / 255u;
+          }
+        }
+        if (existingA == 0u) {
+          dstRow[writeX] = 0xFF000000u | (r << 16) | (g << 8) | b;
+        } else {
+          const uint32_t rr = std::min(255u, ((existing >> 16) & 0xFFu) + r);
+          const uint32_t rg = std::min(255u, ((existing >> 8) & 0xFFu) + g);
+          const uint32_t rb = std::min(255u, (existing & 0xFFu) + b);
+          dstRow[writeX] = 0xFF000000u | (rr << 16) | (rg << 8) | rb;
+        }
+      } else if constexpr (Mode == CpuLfbStaging::OverlayBlendMode::Multiply) {
+        if (existingA == 0u) {
+          dstRow[writeX] = 0xFF000000u | (r << 16) | (g << 8) | b;
+        } else {
+          const uint32_t rr = (((existing >> 16) & 0xFFu) * r + 127u) / 255u;
+          const uint32_t rg = (((existing >> 8) & 0xFFu) * g + 127u) / 255u;
+          const uint32_t rb = ((existing & 0xFFu) * b + 127u) / 255u;
+          dstRow[writeX] = 0xFF000000u | (rr << 16) | (rg << 8) | rb;
+        }
       } else {
-        // Porter-Duff SRC OVER DST when stacking two LFB overlays before flush
-        // (e.g., persistent guest LFB write followed by grShamelessPlug).
-        const float sa = outA / 255.0f;
-        const float da = existingA / 255.0f;
-        const float resA = sa + da * (1.0f - sa);
-        const float invResA = (resA > 0.0f) ? (1.0f / resA) : 0.0f;
-        const uint32_t er = (existing >> 16) & 0xFF;
-        const uint32_t eg = (existing >> 8) & 0xFF;
-        const uint32_t eb = existing & 0xFF;
-        const uint32_t rr = std::min(
-            255u, static_cast<uint32_t>((r * sa + er * da * (1.0f - sa)) * invResA + 0.5f));
-        const uint32_t rg = std::min(
-            255u, static_cast<uint32_t>((g * sa + eg * da * (1.0f - sa)) * invResA + 0.5f));
-        const uint32_t rb = std::min(
-            255u, static_cast<uint32_t>((b * sa + eb * da * (1.0f - sa)) * invResA + 0.5f));
-        const uint32_t ra = std::min(255u, static_cast<uint32_t>(resA * 255.0f + 0.5f));
-        dstRow[writeX] = (ra << 24) | (rr << 16) | (rg << 8) | rb;
+        // Screen: (ONE, ONE_MINUS_SRC_COLOR) or (ONE_MINUS_DST_COLOR, ONE).
+        if (existingA == 0u) {
+          dstRow[writeX] = 0xFF000000u | (r << 16) | (g << 8) | b;
+        } else {
+          const uint32_t er = (existing >> 16) & 0xFFu;
+          const uint32_t eg = (existing >> 8) & 0xFFu;
+          const uint32_t eb = existing & 0xFFu;
+          const uint32_t rr = std::min(255u, er + r - (er * r + 127u) / 255u);
+          const uint32_t rg = std::min(255u, eg + g - (eg * g + 127u) / 255u);
+          const uint32_t rb = std::min(255u, eb + b - (eb * b + 127u) / 255u);
+          dstRow[writeX] = 0xFF000000u | (rr << 16) | (rg << 8) | rb;
+        }
       }
       rowModifiedCount++;
     }
   }
 };
 
-template <uint32_t SrcFmt, bool ChromakeyEnabled, bool AlphaBlendOverlay,
-          bool HasRefData>
+template <uint32_t SrcFmt, bool ChromakeyEnabled,
+          CpuLfbStaging::OverlayBlendMode Mode, bool HasRefData>
 void RunWriteOverlayParallel(uint32_t srcHeight, uint32_t dstX, uint32_t dstY,
                              uint32_t srcWidth, uint32_t fbWidth,
                              uint32_t fbHeight, uint32_t pixelFormatOverride,
@@ -528,7 +587,7 @@ void RunWriteOverlayParallel(uint32_t srcHeight, uint32_t dstX, uint32_t dstY,
   };
   for (uint32_t y = 0; y < srcHeight; ++y) {
     uint32_t rowModifiedCount = 0;
-    LfbOverlayRowProcessor<SrcFmt, ChromakeyEnabled, AlphaBlendOverlay,
+    LfbOverlayRowProcessor<SrcFmt, ChromakeyEnabled, Mode,
                            HasRefData>::ProcessRow(y, dstX, dstY, srcWidth,
                                                    fbWidth, fbHeight,
                                                    pixelFormatOverride, overlay,
@@ -551,6 +610,85 @@ void RunWriteOverlayParallel(uint32_t srcHeight, uint32_t dstX, uint32_t dstY,
   }
   if (inBand) {
     pushBand(bandStart, bandEnd);
+  }
+}
+
+template <uint32_t SrcFmt, CpuLfbStaging::OverlayBlendMode Mode>
+void DispatchOverlayFormatMode(bool chromakeyEnabled, bool hasRefData,
+                               uint32_t srcHeight, uint32_t dstX, uint32_t dstY,
+                               uint32_t srcWidth, uint32_t fbWidth,
+                               uint32_t fbHeight, uint32_t pixelFormatOverride,
+                               uint32_t* overlay, const uint8_t* inBytes,
+                               const uint8_t* refBytes, int32_t srcStride,
+                               const LfbPipelineConfig& config,
+                               uint32_t& modifiedCount,
+                               CpuLfbStaging::DirtyBand* outBands,
+                               size_t& outBandCount) {
+  if (chromakeyEnabled) {
+    if (hasRefData) {
+      RunWriteOverlayParallel<SrcFmt, true, Mode, true>(
+          srcHeight, dstX, dstY, srcWidth, fbWidth, fbHeight,
+          pixelFormatOverride, overlay, inBytes, refBytes, srcStride, config,
+          modifiedCount, outBands, outBandCount);
+    } else {
+      RunWriteOverlayParallel<SrcFmt, true, Mode, false>(
+          srcHeight, dstX, dstY, srcWidth, fbWidth, fbHeight,
+          pixelFormatOverride, overlay, inBytes, refBytes, srcStride, config,
+          modifiedCount, outBands, outBandCount);
+    }
+  } else {
+    if (hasRefData) {
+      RunWriteOverlayParallel<SrcFmt, false, Mode, true>(
+          srcHeight, dstX, dstY, srcWidth, fbWidth, fbHeight,
+          pixelFormatOverride, overlay, inBytes, refBytes, srcStride, config,
+          modifiedCount, outBands, outBandCount);
+    } else {
+      RunWriteOverlayParallel<SrcFmt, false, Mode, false>(
+          srcHeight, dstX, dstY, srcWidth, fbWidth, fbHeight,
+          pixelFormatOverride, overlay, inBytes, refBytes, srcStride, config,
+          modifiedCount, outBands, outBandCount);
+    }
+  }
+}
+
+template <uint32_t SrcFmt>
+void DispatchOverlayFormat(CpuLfbStaging::OverlayBlendMode mode,
+                           bool chromakeyEnabled, bool hasRefData,
+                           uint32_t srcHeight, uint32_t dstX, uint32_t dstY,
+                           uint32_t srcWidth, uint32_t fbWidth,
+                           uint32_t fbHeight, uint32_t pixelFormatOverride,
+                           uint32_t* overlay, const uint8_t* inBytes,
+                           const uint8_t* refBytes, int32_t srcStride,
+                           const LfbPipelineConfig& config,
+                           uint32_t& modifiedCount,
+                           CpuLfbStaging::DirtyBand* outBands,
+                           size_t& outBandCount) {
+  switch (mode) {
+    case CpuLfbStaging::OverlayBlendMode::Additive:
+      DispatchOverlayFormatMode<SrcFmt, CpuLfbStaging::OverlayBlendMode::Additive>(
+          chromakeyEnabled, hasRefData, srcHeight, dstX, dstY, srcWidth,
+          fbWidth, fbHeight, pixelFormatOverride, overlay, inBytes, refBytes,
+          srcStride, config, modifiedCount, outBands, outBandCount);
+      return;
+    case CpuLfbStaging::OverlayBlendMode::Multiply:
+      DispatchOverlayFormatMode<SrcFmt, CpuLfbStaging::OverlayBlendMode::Multiply>(
+          chromakeyEnabled, hasRefData, srcHeight, dstX, dstY, srcWidth,
+          fbWidth, fbHeight, pixelFormatOverride, overlay, inBytes, refBytes,
+          srcStride, config, modifiedCount, outBands, outBandCount);
+      return;
+    case CpuLfbStaging::OverlayBlendMode::Screen:
+      DispatchOverlayFormatMode<SrcFmt, CpuLfbStaging::OverlayBlendMode::Screen>(
+          chromakeyEnabled, hasRefData, srcHeight, dstX, dstY, srcWidth,
+          fbWidth, fbHeight, pixelFormatOverride, overlay, inBytes, refBytes,
+          srcStride, config, modifiedCount, outBands, outBandCount);
+      return;
+    case CpuLfbStaging::OverlayBlendMode::AlphaOver:
+    default:
+      DispatchOverlayFormatMode<SrcFmt, CpuLfbStaging::OverlayBlendMode::AlphaOver>(
+          chromakeyEnabled, hasRefData, srcHeight, dstX, dstY, srcWidth,
+          fbWidth, fbHeight, pixelFormatOverride, overlay, inBytes, refBytes,
+          srcStride, config, modifiedCount, outBands, outBandCount);
+      return;
   }
 }
 
@@ -591,6 +729,8 @@ void CpuLfbStaging::Configure(uint32_t width, uint32_t height,
   m_bufferDirty[1] = false;
   m_overlayDirty[0] = false;
   m_overlayDirty[1] = false;
+  m_overlayBlendMode[0] = OverlayBlendMode::AlphaOver;
+  m_overlayBlendMode[1] = OverlayBlendMode::AlphaOver;
   m_overlayBandCount[0] = 0;
   m_overlayBandCount[1] = 0;
   m_pendingClear[0] = {};
@@ -631,6 +771,8 @@ void CpuLfbStaging::Release() {
   m_bufferDirty[1] = false;
   m_overlayDirty[0] = false;
   m_overlayDirty[1] = false;
+  m_overlayBlendMode[0] = OverlayBlendMode::AlphaOver;
+  m_overlayBlendMode[1] = OverlayBlendMode::AlphaOver;
   m_overlayBandCount[0] = 0;
   m_overlayBandCount[1] = 0;
   m_pendingClear[0] = {};
@@ -658,6 +800,8 @@ bool CpuLfbStaging::EnsureOverlayAllocated() {
   m_overlayBuffers[1].assign(totalPixels, 0u);
   m_overlayDirty[0] = false;
   m_overlayDirty[1] = false;
+  m_overlayBlendMode[0] = OverlayBlendMode::AlphaOver;
+  m_overlayBlendMode[1] = OverlayBlendMode::AlphaOver;
   m_overlayBandCount[0] = 0;
   m_overlayBandCount[1] = 0;
   GLIDE_LOG(INFO, "CpuLfbStaging",
@@ -738,15 +882,40 @@ void CpuLfbStaging::ClearOverlay(uint32_t logicalBuffer) {
     }
   }
   m_overlayDirty[idx] = false;
+  m_overlayBlendMode[idx] = OverlayBlendMode::AlphaOver;
   m_overlayBandCount[idx] = 0;
 }
 
-bool CpuLfbStaging::CanUseOverlayQuad(const LfbPipelineConfig& config) {
-  if (!config.pixelPipeline) return true;
-  // Opaque replacement (ONE, ZERO) or standard alpha blend (SRC_ALPHA, ONE_MINUS_SRC_ALPHA).
-  if (config.rgbSrcBlend == 4u && config.rgbDstBlend == 0u) return true;
-  if (config.rgbSrcBlend == 1u && config.rgbDstBlend == 5u) return true;
+bool CpuLfbStaging::ResolveOverlayBlendMode(const LfbPipelineConfig& config,
+                                            OverlayBlendMode& outMode) {
+  if (!config.pixelPipeline) {
+    outMode = OverlayBlendMode::AlphaOver;
+    return true;
+  }
+  const uint32_t s = config.rgbSrcBlend;
+  const uint32_t d = config.rgbDstBlend;
+  if ((s == 4u && d == 0u) || (s == 1u && d == 5u)) {
+    outMode = OverlayBlendMode::AlphaOver;
+    return true;
+  }
+  if ((s == 4u && d == 4u) || (s == 1u && d == 4u)) {
+    outMode = OverlayBlendMode::Additive;
+    return true;
+  }
+  if ((s == 0u && d == 2u) || (s == 0u && d == 15u) || (s == 2u && d == 0u)) {
+    outMode = OverlayBlendMode::Multiply;
+    return true;
+  }
+  if ((s == 4u && d == 6u) || (s == 6u && d == 4u)) {
+    outMode = OverlayBlendMode::Screen;
+    return true;
+  }
   return false;
+}
+
+bool CpuLfbStaging::CanUseOverlayQuad(const LfbPipelineConfig& config) {
+  OverlayBlendMode unusedMode = OverlayBlendMode::AlphaOver;
+  return ResolveOverlayBlendMode(config, unusedMode);
 }
 
 bool CpuLfbStaging::WriteOverlayLFB(uint32_t logicalBuffer, uint32_t dstX,
@@ -762,6 +931,10 @@ bool CpuLfbStaging::WriteOverlayLFB(uint32_t logicalBuffer, uint32_t dstX,
               "Invalid or undefined LFB source format: " << srcFmt);
     return false;
   }
+  OverlayBlendMode mode = OverlayBlendMode::AlphaOver;
+  if (!ResolveOverlayBlendMode(config, mode)) {
+    return false;
+  }
   if (!EnsureOverlayAllocated()) return false;
 
   const uint32_t idx = (logicalBuffer == 0) ? 0u : 1u;
@@ -770,70 +943,19 @@ bool CpuLfbStaging::WriteOverlayLFB(uint32_t logicalBuffer, uint32_t dstX,
   const auto* refBytes = reinterpret_cast<const uint8_t*>(refData);
 
   const bool chromakeyEnabled = config.pixelPipeline && config.chromakeyEnabled;
-  const bool alphaBlendOverlay =
-      config.pixelPipeline &&
-      (config.rgbSrcBlend == 1u && config.rgbDstBlend == 5u);
   const bool hasRefData = (refBytes != nullptr);
 
   uint32_t modifiedCount = 0;
   DirtyBand localBands[kMaxOverlayBands]{};
   size_t localBandCount = 0;
 
-#define DISPATCH_OVERLAY_CASE(Fmt)                                           \
-  case Fmt:                                                                  \
-    if (chromakeyEnabled) {                                                  \
-      if (alphaBlendOverlay) {                                               \
-        if (hasRefData) {                                                    \
-          RunWriteOverlayParallel<Fmt, true, true, true>(                    \
-              srcHeight, dstX, dstY, srcWidth, m_width, m_height,            \
-              pixelFormatOverride, overlay, inBytes, refBytes, srcStride,    \
-              config, modifiedCount, localBands, localBandCount);            \
-        } else {                                                             \
-          RunWriteOverlayParallel<Fmt, true, true, false>(                   \
-              srcHeight, dstX, dstY, srcWidth, m_width, m_height,            \
-              pixelFormatOverride, overlay, inBytes, refBytes, srcStride,    \
-              config, modifiedCount, localBands, localBandCount);            \
-        }                                                                    \
-      } else {                                                               \
-        if (hasRefData) {                                                    \
-          RunWriteOverlayParallel<Fmt, true, false, true>(                   \
-              srcHeight, dstX, dstY, srcWidth, m_width, m_height,            \
-              pixelFormatOverride, overlay, inBytes, refBytes, srcStride,    \
-              config, modifiedCount, localBands, localBandCount);            \
-        } else {                                                             \
-          RunWriteOverlayParallel<Fmt, true, false, false>(                  \
-              srcHeight, dstX, dstY, srcWidth, m_width, m_height,            \
-              pixelFormatOverride, overlay, inBytes, refBytes, srcStride,    \
-              config, modifiedCount, localBands, localBandCount);            \
-        }                                                                    \
-      }                                                                      \
-    } else {                                                                 \
-      if (alphaBlendOverlay) {                                               \
-        if (hasRefData) {                                                    \
-          RunWriteOverlayParallel<Fmt, false, true, true>(                   \
-              srcHeight, dstX, dstY, srcWidth, m_width, m_height,            \
-              pixelFormatOverride, overlay, inBytes, refBytes, srcStride,    \
-              config, modifiedCount, localBands, localBandCount);            \
-        } else {                                                             \
-          RunWriteOverlayParallel<Fmt, false, true, false>(                  \
-              srcHeight, dstX, dstY, srcWidth, m_width, m_height,            \
-              pixelFormatOverride, overlay, inBytes, refBytes, srcStride,    \
-              config, modifiedCount, localBands, localBandCount);            \
-        }                                                                    \
-      } else {                                                               \
-        if (hasRefData) {                                                    \
-          RunWriteOverlayParallel<Fmt, false, false, true>(                  \
-              srcHeight, dstX, dstY, srcWidth, m_width, m_height,            \
-              pixelFormatOverride, overlay, inBytes, refBytes, srcStride,    \
-              config, modifiedCount, localBands, localBandCount);            \
-        } else {                                                             \
-          RunWriteOverlayParallel<Fmt, false, false, false>(                 \
-              srcHeight, dstX, dstY, srcWidth, m_width, m_height,            \
-              pixelFormatOverride, overlay, inBytes, refBytes, srcStride,    \
-              config, modifiedCount, localBands, localBandCount);            \
-        }                                                                    \
-      }                                                                      \
-    }                                                                        \
+#define DISPATCH_OVERLAY_CASE(Fmt)                                             \
+  case Fmt:                                                                    \
+    DispatchOverlayFormat<Fmt>(mode, chromakeyEnabled, hasRefData, srcHeight,  \
+                               dstX, dstY, srcWidth, m_width, m_height,        \
+                               pixelFormatOverride, overlay, inBytes,          \
+                               refBytes, srcStride, config, modifiedCount,     \
+                               localBands, localBandCount);                    \
     break;
 
   switch (srcFmt) {
@@ -853,6 +975,7 @@ bool CpuLfbStaging::WriteOverlayLFB(uint32_t logicalBuffer, uint32_t dstX,
 #undef DISPATCH_OVERLAY_CASE
 
   if (modifiedCount > 0) {
+    m_overlayBlendMode[idx] = mode;
     for (size_t i = 0; i < localBandCount; ++i) {
       AddOverlayBand(idx, localBands[i].minY, localBands[i].maxY);
     }
