@@ -29,7 +29,17 @@ All wrapper-specific environment variables use the canonical `GLIDE_NG_*` prefix
 | :--- | :--- | :--- | :--- | :--- |
 | `GLIDE_NG_CONFIG` | *(env only)* | File path | `./glide-ng.ini` | Path to an alternate INI configuration file. |
 | `GLIDE_NG_BACKEND` | `[core] backend` | `vulkan` (`vk`), `opengl_es` (`gles`), `software` (`sw`) | `vulkan` | Selects the rendering backend (case-insensitive). |
+| `GLIDE_NG_GPU` | `[core] gpu` *(or `gpu_preference`)* | `default` (`auto`, `os`), `discrete` (`dgpu`), `integrated` (`igpu`), `llvmpipe` (`llvm`, `cpu`), `name:<substr>` | `default` | Selects physical GPU policy. `default` respects OS/loader order; explicit targets fall back safely to `software` if unavailable. |
 | `GLIDE_NG_HEADLESS` | `[core] headless` | `0`/`1`, `true`/`false`, `on`/`off`, `yes`/`no` | `false` | Runs off-screen without creating a visible OS window (for CI, tests, and benchmarks). |
+
+#### GPU Selection & OS Environment Variables
+
+When `GLIDE_NG_GPU` (`[core] gpu`) is `default`, `glide-ng` uses the OS/driver default device (`devices[0]` in Vulkan loader order and the default EGL/GLX/WGL display context). Standard Vulkan and OpenGL environment variables remain fully honored, and `glide-dosbox --gpu=` sets both `GLIDE_NG_GPU` and the relevant Linux GLVND/PRIME variables automatically:
+
+- **Vulkan**: `MESA_VK_DEVICE_SELECT`, `VK_DRIVER_FILES` / `VK_ICD_FILENAMES`, `__VK_LAYER_NV_optimus=NVIDIA_only`
+- **Linux OpenGL ES / EGL / GLX**: `__NV_PRIME_RENDER_OFFLOAD=1` + `__EGL_VENDOR_LIBRARY_FILENAMES=.../10_nvidia.json` (NVIDIA discrete), `DRI_PRIME=1` (Mesa PRIME discrete), `DRI_PRIME=0` (Mesa iGPU), `LIBGL_ALWAYS_SOFTWARE=1` + `__EGL_VENDOR_LIBRARY_FILENAMES=.../50_mesa.json` (Mesa `llvmpipe`)
+
+If an explicit GPU preference (`discrete`, `integrated`, `llvmpipe`, or `name:<substr>`) cannot be satisfied or a GPU backend fails initialization/window attachment, `glide-ng` logs a `[WARN]` and falls back automatically to the CPU **Software** backend.
 
 ### 1.2 Emulated 3dfx Hardware Profile
 
@@ -173,6 +183,7 @@ Low-level hardware timing, CRT sync, PCI FIFO, SDRAM, clock-delay, and VGA pass-
 ```ini
 [core]
 backend = vulkan
+gpu = default
 
 [hardware]
 card_model = Voodoo2

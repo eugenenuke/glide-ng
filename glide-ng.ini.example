@@ -13,6 +13,8 @@
 [core]
 # Rendering backend: vulkan (vk) | opengl_es (gles) | software (sw)
 backend = vulkan
+# GPU selection policy: default (OS/loader order) | discrete | integrated | llvmpipe | name:<substr>
+gpu = default
 # Run off-screen without creating a visible window (useful for CI/benchmarks)
 headless = false
 

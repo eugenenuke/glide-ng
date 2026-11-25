@@ -41,6 +41,7 @@
 #include <thread>
 #include <vector>
 
+#include "core/GpuSelection.h"
 #include "core/Logger.h"
 #include "core/SimdKernels.h"
 #include "core/Telemetry.h"
@@ -2902,6 +2903,15 @@ bool OpenGLESBackend::CreateGLContext(void* nativeWindowHandle, uint32_t width,
       reinterpret_cast<const char*>(glGetString(GL_RENDERER));
   const char* glVersion =
       reinterpret_cast<const char*>(glGetString(GL_VERSION));
+
+  std::string gpuRejectReason;
+  if (!ValidateGlesRendererForGpuPreference(
+          glRenderer, glVendor, m_config.gpuPreference, m_config.gpuNameMatch,
+          gpuRejectReason)) {
+    GLIDE_LOG(WARN, "GLES", gpuRejectReason);
+    DestroyGLContext();
+    return false;
+  }
 
   std::cout << "Info: InitialiseOpenGLWindow(wnd=" << nativeWindowHandle
             << ", res=" << width << "x" << height << ")\r\n";

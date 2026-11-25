@@ -301,10 +301,14 @@ FX_ENTRY FxBool FX_CALL grSstWinOpen(AnyPtr hWnd,
   s_alphaControlsITRGBLighting = false;
   s_gammaCorrectionValue = 1.0f;
 
-  backend->SetRequestedMsaaSamples(0u);
-  bool attached = backend->AttachWindow(
-      reinterpret_cast<void*>(static_cast<uintptr_t>(hWnd)), width, height,
-      hWnd != 0);
+  bool attached = GlideWrapper::BackendManager::GetInstance()
+                      .AttachWindowWithFallback(
+                          cfg,
+                          reinterpret_cast<void*>(static_cast<uintptr_t>(hWnd)),
+                          width, height, hWnd != 0, /*requestedMsaaSamples=*/0u,
+                          s_stwHintMask);
+  backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
+  if (!backend) return FXFALSE;
   backend->SetPixelFormat(format);
   if (attached) {
     s_windowOpen = true;

@@ -835,6 +835,24 @@ bool IniConfigLoader::LoadWithDefaults(const std::string& configFilePath,
                     outConfig.settingSources["backend"] = "ini";
                 }
             } else if (SectionMatches(sec, "core") &&
+                       (key == "gpu" || key == "gpu_preference")) {
+                handled = true;
+                GpuPreference pref = GpuPreference::Default;
+                std::string nameMatch;
+                if (ParseGpuPreference(val, pref, nameMatch)) {
+                    outConfig.gpuPreference = pref;
+                    outConfig.gpuNameMatch = nameMatch;
+                    outConfig.settingSources["gpu"] = "ini";
+                } else if (!val.empty()) {
+                    outConfig.invalidConfigValues.push_back(
+                        "Unrecognized core.gpu='" + val +
+                        "' (valid: default, discrete, integrated, llvmpipe, "
+                        "name:<substr>); keeping '" +
+                        FormatGpuPreferenceFull(outConfig.gpuPreference,
+                                                outConfig.gpuNameMatch) +
+                        "'.");
+                }
+            } else if (SectionMatches(sec, "core") &&
                        (key == "headless" || key == "force_no_window")) {
                 handled = true;
                 if (ParseBoolString(val, boolVal)) {
@@ -1602,6 +1620,24 @@ bool IniConfigLoader::LoadWithDefaults(const std::string& configFilePath,
     if (const char* envVal = GetNonEmptyEnv(GLIDE_NG_ENV_BACKEND)) {
         outConfig.backend = NormalizeBackendString(envVal);
         outConfig.settingSources["backend"] = GLIDE_NG_ENV_BACKEND;
+    }
+
+    if (const char* envVal = GetNonEmptyEnv(GLIDE_NG_ENV_GPU)) {
+        GpuPreference pref = GpuPreference::Default;
+        std::string nameMatch;
+        if (ParseGpuPreference(envVal, pref, nameMatch)) {
+            outConfig.gpuPreference = pref;
+            outConfig.gpuNameMatch = nameMatch;
+            outConfig.settingSources["gpu"] = GLIDE_NG_ENV_GPU;
+        } else {
+            outConfig.invalidConfigValues.push_back(
+                "Unrecognized GLIDE_NG_GPU value '" + std::string(envVal) +
+                "' (valid: default, discrete, integrated, llvmpipe, "
+                "name:<substr>); keeping '" +
+                FormatGpuPreferenceFull(outConfig.gpuPreference,
+                                        outConfig.gpuNameMatch) +
+                "'.");
+        }
     }
 
     if (const char* envVal = GetNonEmptyEnv(GLIDE_NG_ENV_HEADLESS)) {

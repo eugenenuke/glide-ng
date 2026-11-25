@@ -51,6 +51,85 @@ bool ParseSwSimdLevel(const std::string& raw, SwSimdLevel& out) {
     return false;
 }
 
+const char* FormatGpuPreference(GpuPreference pref) {
+    switch (pref) {
+        case GpuPreference::Default:    return "default";
+        case GpuPreference::Discrete:   return "discrete";
+        case GpuPreference::Integrated: return "integrated";
+        case GpuPreference::LlvmPipe:   return "llvmpipe";
+        case GpuPreference::NameMatch:  return "name";
+    }
+    return "default";
+}
+
+std::string FormatGpuPreferenceFull(GpuPreference pref,
+                                    const std::string& nameMatch) {
+    if (pref == GpuPreference::NameMatch) {
+        return "name:" + nameMatch;
+    }
+    return FormatGpuPreference(pref);
+}
+
+bool ParseGpuPreference(const std::string& raw, GpuPreference& outPref,
+                        std::string& outNameMatch) {
+    size_t start = 0;
+    size_t end = raw.size();
+    while (start < end &&
+           std::isspace(static_cast<unsigned char>(raw[start]))) {
+        ++start;
+    }
+    while (end > start &&
+           std::isspace(static_cast<unsigned char>(raw[end - 1]))) {
+        --end;
+    }
+    const std::string trimmed = raw.substr(start, end - start);
+    if (trimmed.empty()) return false;
+
+    std::string lower;
+    lower.reserve(trimmed.size());
+    for (unsigned char ch : trimmed) {
+        lower.push_back(static_cast<char>(std::tolower(ch)));
+    }
+
+    if (lower == "default" || lower == "auto" || lower == "os" ||
+        lower == "system") {
+        outPref = GpuPreference::Default;
+        outNameMatch.clear();
+        return true;
+    }
+    if (lower == "discrete" || lower == "dgpu" || lower == "dedicated") {
+        outPref = GpuPreference::Discrete;
+        outNameMatch.clear();
+        return true;
+    }
+    if (lower == "integrated" || lower == "igpu") {
+        outPref = GpuPreference::Integrated;
+        outNameMatch.clear();
+        return true;
+    }
+    if (lower == "llvmpipe" || lower == "llvm" || lower == "lavapipe" ||
+        lower == "cpu") {
+        outPref = GpuPreference::LlvmPipe;
+        outNameMatch.clear();
+        return true;
+    }
+    if (lower.rfind("name:", 0) == 0) {
+        std::string sub = trimmed.substr(5);
+        size_t s = 0;
+        size_t e = sub.size();
+        while (s < e && std::isspace(static_cast<unsigned char>(sub[s]))) ++s;
+        while (e > s && std::isspace(static_cast<unsigned char>(sub[e - 1]))) {
+            --e;
+        }
+        sub = sub.substr(s, e - s);
+        if (sub.empty()) return false;
+        outPref = GpuPreference::NameMatch;
+        outNameMatch = sub;
+        return true;
+    }
+    return false;
+}
+
 struct GatingRule {
     ApiVersion minVersion;
     CardModel minCard;

@@ -11,6 +11,7 @@
 #include <thread>
 
 #include "core/BackendManager.h"
+#include "core/GpuSelection.h"
 #include "core/IniConfigLoader.h"
 #include "core/LfbManager.h"
 #include "core/Logger.h"
@@ -618,6 +619,194 @@ TEST_CASE("Software: Multi-Threaded Tile Scaling", "[Software][Scaling]") {
   }
 
   ::dlclose(handle);
+#endif
+}
+
+TEST_CASE("Core: GPU Preference Selection & Safe Software Fallback",
+          "[Glide2][Config][EnvVars][GPU]") {
+#ifdef __linux__
+  using namespace GlideWrapper;
+
+  SECTION("ParseGpuPreference and FormatGpuPreferenceFull cover all aliases") {
+    GpuPreference pref = GpuPreference::Default;
+    std::string nameMatch;
+
+    CHECK(ParseGpuPreference("default", pref, nameMatch));
+    CHECK(pref == GpuPreference::Default);
+    CHECK(FormatGpuPreferenceFull(pref, nameMatch) == "default");
+
+    CHECK(ParseGpuPreference(" auto ", pref, nameMatch));
+    CHECK(pref == GpuPreference::Default);
+
+    CHECK(ParseGpuPreference("dgpu", pref, nameMatch));
+    CHECK(pref == GpuPreference::Discrete);
+    CHECK(FormatGpuPreferenceFull(pref, nameMatch) == "discrete");
+
+    CHECK(ParseGpuPreference("IGPU", pref, nameMatch));
+    CHECK(pref == GpuPreference::Integrated);
+    CHECK(FormatGpuPreferenceFull(pref, nameMatch) == "integrated");
+
+    CHECK(ParseGpuPreference("llvm", pref, nameMatch));
+    CHECK(pref == GpuPreference::LlvmPipe);
+    CHECK(FormatGpuPreferenceFull(pref, nameMatch) == "llvmpipe");
+
+    CHECK(ParseGpuPreference("lavapipe", pref, nameMatch));
+    CHECK(pref == GpuPreference::LlvmPipe);
+
+    CHECK(ParseGpuPreference("name:Radeon 610M", pref, nameMatch));
+    CHECK(pref == GpuPreference::NameMatch);
+    CHECK(nameMatch == "Radeon 610M");
+    CHECK(FormatGpuPreferenceFull(pref, nameMatch) == "name:Radeon 610M");
+
+    CHECK_FALSE(ParseGpuPreference("", pref, nameMatch));
+    CHECK_FALSE(ParseGpuPreference("name:   ", pref, nameMatch));
+    CHECK_FALSE(ParseGpuPreference("bogus_gpu", pref, nameMatch));
+  }
+
+  SECTION("IniConfigLoader resolves default < INI [core] gpu < GLIDE_NG_GPU") {
+    struct ScopedGpuEnv {
+      bool had = false;
+      std::string prev;
+      ScopedGpuEnv() {
+        if (const char* v = std::getenv("GLIDE_NG_GPU")) {
+          had = true;
+          prev = v;
+        }
+        ::unsetenv("GLIDE_NG_GPU");
+      }
+      ~ScopedGpuEnv() {
+        if (had) {
+          ::setenv("GLIDE_NG_GPU", prev.c_str(), 1);
+        } else {
+          ::unsetenv("GLIDE_NG_GPU");
+        }
+      }
+    } guard;
+
+    const std::string iniPath = "/tmp/glide_ng_gpu_pref_test.ini";
+    {
+      FILE* fp = std::fopen(iniPath.c_str(), "w");
+      REQUIRE(fp != nullptr);
+      std::fputs("[core]\nbackend = vulkan\ngpu = discrete\n", fp);
+      std::fclose(fp);
+    }
+
+    IniConfigLoader loader;
+    {
+      WrapperConfig cfg;
+      REQUIRE(loader.Load(iniPath, cfg));
+      CHECK(cfg.gpuPreference == GpuPreference::Discrete);
+      CHECK(cfg.settingSources["gpu"] == "ini");
+    }
+
+    ::setenv("GLIDE_NG_GPU", "integrated", 1);
+    {
+      WrapperConfig cfg;
+      REQUIRE(loader.Load(iniPath, cfg));
+      CHECK(cfg.gpuPreference == GpuPreference::Integrated);
+      CHECK(cfg.settingSources["gpu"] == "GLIDE_NG_GPU");
+    }
+
+    std::remove(iniPath.c_str());
+  }
+
+  SECTION("Vulkan candidate selection honors OS loader order and explicit policies") {
+    const std::vector<VulkanDeviceCandidate> hybrid{
+        {"AMD Radeon 610M (RADV)", VulkanDeviceKind::IntegratedGpu, true},
+        {"NVIDIA GeForce RTX 4070", VulkanDeviceKind::DiscreteGpu, true},
+        {"llvmpipe (LLVM 23)", VulkanDeviceKind::Cpu, true},
+    };
+
+    // Default preserves loader order (OS default GPU0)
+    CHECK(SelectVulkanDeviceCandidate(hybrid, GpuPreference::Default, "") == 0);
+    CHECK(SelectVulkanDeviceCandidate(hybrid, GpuPreference::Integrated, "") == 0);
+    CHECK(SelectVulkanDeviceCandidate(hybrid, GpuPreference::Discrete, "") == 1);
+    CHECK(SelectVulkanDeviceCandidate(hybrid, GpuPreference::LlvmPipe, "") == 2);
+    CHECK(SelectVulkanDeviceCandidate(hybrid, GpuPreference::NameMatch, "4070") == 1);
+    CHECK(SelectVulkanDeviceCandidate(hybrid, GpuPreference::NameMatch, "missing") == -1);
+
+    // Non-graphics device at index 0 is skipped even under Default
+    const std::vector<VulkanDeviceCandidate> computeFirst{
+        {"Compute Only Accelerator", VulkanDeviceKind::DiscreteGpu, false},
+        {"AMD Radeon 610M (RADV)", VulkanDeviceKind::IntegratedGpu, true},
+    };
+    CHECK(SelectVulkanDeviceCandidate(computeFirst, GpuPreference::Default, "") == 1);
+    CHECK(SelectVulkanDeviceCandidate(computeFirst, GpuPreference::Discrete, "") == -1);
+  }
+
+  SECTION("GLES renderer validation enforces explicit GPU constraints") {
+    std::string reason;
+    CHECK(ValidateGlesRendererForGpuPreference(
+        "AMD Radeon 610M (radeonsi)", "AMD", GpuPreference::Default, "", reason));
+    CHECK(ValidateGlesRendererForGpuPreference(
+        "llvmpipe (LLVM 23)", "Mesa", GpuPreference::LlvmPipe, "", reason));
+    CHECK_FALSE(ValidateGlesRendererForGpuPreference(
+        "NVIDIA GeForce RTX 4070/PCIe/SSE2", "NVIDIA Corporation",
+        GpuPreference::LlvmPipe, "", reason));
+    CHECK_FALSE(ValidateGlesRendererForGpuPreference(
+        "llvmpipe (LLVM 23)", "Mesa", GpuPreference::Discrete, "", reason));
+    CHECK_FALSE(ValidateGlesRendererForGpuPreference(
+        "AMD Radeon 610M (radeonsi, raphael_mendocino)", "AMD",
+        GpuPreference::Discrete, "", reason));
+    CHECK_FALSE(ValidateGlesRendererForGpuPreference(
+        "NVIDIA GeForce RTX 4070/PCIe/SSE2", "NVIDIA Corporation",
+        GpuPreference::Integrated, "", reason));
+    CHECK(ValidateGlesRendererForGpuPreference(
+        "AMD Radeon 610M (radeonsi, raphael_mendocino)", "AMD",
+        GpuPreference::NameMatch, "610M", reason));
+    CHECK_FALSE(ValidateGlesRendererForGpuPreference(
+        "AMD Radeon 610M (radeonsi)", "AMD",
+        GpuPreference::NameMatch, "GeForce", reason));
+  }
+
+  SECTION("Vulkan and GLES fall back cleanly to Software when requested GPU is absent") {
+    struct ScopedFallbackEnv {
+      std::vector<std::string> keys{"GLIDE_NG_HEADLESS", "GLIDE_NG_BACKEND",
+                                    "GLIDE_NG_GPU", "GLIDE_NG_MAX_FPS",
+                                    "GLIDE_NG_NO_SPLASH"};
+      std::vector<std::pair<std::string, std::string>> saved;
+      ScopedFallbackEnv() {
+        for (const auto& k : keys) {
+          const char* v = std::getenv(k.c_str());
+          saved.emplace_back(k, v ? std::string(v) : std::string("\x01UNSET"));
+        }
+      }
+      ~ScopedFallbackEnv() {
+        for (const auto& kv : saved) {
+          if (kv.second == "\x01UNSET") {
+            ::unsetenv(kv.first.c_str());
+          } else {
+            ::setenv(kv.first.c_str(), kv.second.c_str(), 1);
+          }
+        }
+      }
+    } guard;
+
+    for (const char* requestedBackend : {"vulkan", "opengl_es"}) {
+      INFO("Testing fallback from " << requestedBackend);
+      ::setenv("GLIDE_NG_HEADLESS", "1", 1);
+      ::setenv("GLIDE_NG_BACKEND", requestedBackend, 1);
+      ::setenv("GLIDE_NG_GPU", "name:__nonexistent_gpu_adapter__", 1);
+      ::setenv("GLIDE_NG_MAX_FPS", "0", 1);
+      ::setenv("GLIDE_NG_NO_SPLASH", "1", 1);
+
+      grGlideInit();
+      grSstSelect(0);
+      REQUIRE(grSstWinOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                           GR_COLORFORMAT_ARGB, GR_ORIGIN_UPPER_LEFT, 2,
+                           1) == FXTRUE);
+      CHECK(BackendManager::GetInstance().GetActiveBackendName() == "software");
+
+      grBufferClear(0xFF123456u, 0xFF, 0xFFFF);
+      std::vector<uint32_t> px(640u * 480u, 0u);
+      REQUIRE(grLfbReadRegion(GR_BUFFER_BACKBUFFER, 0, 0, 640, 480, 640 * 4,
+                              px.data()) == FXTRUE);
+      CHECK((px[0] & 0x00FFFFFFu) == 0x00123456u);
+
+      grSstWinClose();
+      grGlideShutdown();
+    }
+  }
 #endif
 }
 

@@ -99,6 +99,23 @@ enum class SwSimdLevel : uint32_t {
 const char* FormatSwSimdLevel(SwSimdLevel level);
 bool ParseSwSimdLevel(const std::string& raw, SwSimdLevel& out);
 
+// Physical GPU selection preference (GLIDE_NG_GPU / [core] gpu).
+// Default respects OS / Vulkan loader enumeration order; explicit values
+// enforce a specific device class or fall back to SoftwareBackend if absent.
+enum class GpuPreference : uint32_t {
+    Default = 0,
+    Discrete = 1,
+    Integrated = 2,
+    LlvmPipe = 3,
+    NameMatch = 4
+};
+
+const char* FormatGpuPreference(GpuPreference pref);
+std::string FormatGpuPreferenceFull(GpuPreference pref,
+                                    const std::string& nameMatch);
+bool ParseGpuPreference(const std::string& raw, GpuPreference& outPref,
+                        std::string& outNameMatch);
+
 struct WrapperConfig {
     // Emulated hardware profile
     CardModel model{CardModel::Voodoo2};
@@ -114,6 +131,8 @@ struct WrapperConfig {
 
     // Core & presentation
     std::string backend{"vulkan"}; // "vulkan", "opengl_es", or "software"
+    GpuPreference gpuPreference{GpuPreference::Default};
+    std::string gpuNameMatch{};
     bool forceNoWindow{false};     // Headless offscreen CI mode (GLIDE_NG_HEADLESS)
     float maxFps{60.0f};           // 0 = uncapped
     float drawCallDelayUs{0.0f};   // Stub / planned AGP bus delay

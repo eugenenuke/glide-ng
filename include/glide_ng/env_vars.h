@@ -13,6 +13,7 @@
 /* Implemented glide-ng wrapper environment variable names */
 #define GLIDE_NG_ENV_CONFIG              "GLIDE_NG_CONFIG"
 #define GLIDE_NG_ENV_BACKEND             "GLIDE_NG_BACKEND"
+#define GLIDE_NG_ENV_GPU                 "GLIDE_NG_GPU"
 #define GLIDE_NG_ENV_HEADLESS            "GLIDE_NG_HEADLESS"
 #define GLIDE_NG_ENV_CARD_MODEL          "GLIDE_NG_CARD_MODEL"
 #define GLIDE_NG_ENV_API_VERSION         "GLIDE_NG_API_VERSION"
@@ -100,6 +101,7 @@
 #define GLIDE_NG_ENV_VARS_X(X)                                                                      \
   X(CONFIG,              GLIDE_NG_ENV_CONFIG,              "core.config",              "core")      \
   X(BACKEND,             GLIDE_NG_ENV_BACKEND,             "core.backend",             "core")      \
+  X(GPU,                 GLIDE_NG_ENV_GPU,                 "core.gpu",                 "core")      \
   X(HEADLESS,            GLIDE_NG_ENV_HEADLESS,            "core.headless",            "core")      \
   X(CARD_MODEL,          GLIDE_NG_ENV_CARD_MODEL,          "hardware.card_model",      "hardware")  \
   X(API_VERSION,         GLIDE_NG_ENV_API_VERSION,         "hardware.api_version",     "hardware")  \

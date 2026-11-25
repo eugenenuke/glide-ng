@@ -45,6 +45,22 @@ bool BackendManager::EstablishBackend(const WrapperConfig& config) {
     if (m_backend) {
         if (m_activeBackendName == requested) {
             GLIDE_LOG(INFO, "Backend", "Re-initializing active " << m_activeBackendName << " backend to reset state.");
+            if (m_backend->Initialize(config)) {
+                return true;
+            }
+            if (requested == "software") {
+                return false;
+            }
+            GLIDE_LOG(WARN, "Backend",
+                      "Active backend '" << requested << "' (gpu='"
+                          << FormatGpuPreferenceFull(config.gpuPreference,
+                                                     config.gpuNameMatch)
+                          << "') failed to re-initialize; falling back safely to SoftwareBackend.");
+            auto savedSplash = std::move(m_splashAnimator);
+            ShutdownBackend_Locked();
+            m_backend = std::make_unique<SoftwareBackend>();
+            m_activeBackendName = "software";
+            m_splashAnimator = std::move(savedSplash);
             return m_backend->Initialize(config);
         } else {
             GLIDE_LOG(INFO, "Backend", "Switching backend: shutting down active " << m_activeBackendName << " to establish " << requested << ".");
@@ -71,7 +87,61 @@ bool BackendManager::EstablishBackend(const WrapperConfig& config) {
             return false;
         }
     }
-    return m_backend->Initialize(config);
+    if (m_backend->Initialize(config)) {
+        return true;
+    }
+    if (m_activeBackendName != "software") {
+        GLIDE_LOG(WARN, "Backend",
+                  "Requested backend '" << m_activeBackendName << "' (gpu='"
+                      << FormatGpuPreferenceFull(config.gpuPreference,
+                                                 config.gpuNameMatch)
+                      << "') failed to initialize; falling back safely to SoftwareBackend.");
+        auto savedSplash = std::move(m_splashAnimator);
+        ShutdownBackend_Locked();
+        m_backend = std::make_unique<SoftwareBackend>();
+        m_activeBackendName = "software";
+        m_splashAnimator = std::move(savedSplash);
+        return m_backend->Initialize(config);
+    }
+    return false;
+}
+
+bool BackendManager::AttachWindowWithFallback(
+    const WrapperConfig& config, void* nativeWindowHandle, uint32_t width,
+    uint32_t height, bool windowed, uint32_t requestedMsaaSamples,
+    uint32_t stwHintMask) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    if (!m_backend) {
+        return false;
+    }
+    m_backend->SetSTWHintState(stwHintMask);
+    m_backend->SetRequestedMsaaSamples(requestedMsaaSamples);
+    if (m_backend->AttachWindow(nativeWindowHandle, width, height, windowed)) {
+        return true;
+    }
+    if (m_activeBackendName == "software") {
+        return false;
+    }
+
+    GLIDE_LOG(WARN, "Backend",
+              "Active backend '" << m_activeBackendName << "' (gpu='"
+                  << FormatGpuPreferenceFull(config.gpuPreference,
+                                             config.gpuNameMatch)
+                  << "') failed to attach window; falling back safely to SoftwareBackend.");
+    auto savedSplash = std::move(m_splashAnimator);
+    ShutdownBackend_Locked();
+    m_backend = std::make_unique<SoftwareBackend>();
+    m_activeBackendName = "software";
+    m_splashAnimator = std::move(savedSplash);
+    if (!m_backend->Initialize(config)) {
+        GLIDE_LOG(CRITICAL, "Backend",
+                  "Fallback SoftwareBackend initialization failed.");
+        ShutdownBackend_Locked();
+        return false;
+    }
+    m_backend->SetSTWHintState(stwHintMask);
+    m_backend->SetRequestedMsaaSamples(requestedMsaaSamples);
+    return m_backend->AttachWindow(nativeWindowHandle, width, height, windowed);
 }
 
 void BackendManager::ShutdownBackend_Locked() {

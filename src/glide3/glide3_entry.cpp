@@ -801,12 +801,14 @@ static GrContext_t OpenWindowGlide3(AnyPtr hWnd,
   auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
   if (!backend) return 0;
 
-  backend->SetSTWHintState(0u);
-
-  backend->SetRequestedMsaaSamples(requestedSamples);
-  bool attached = backend->AttachWindow(
-      reinterpret_cast<void*>(static_cast<uintptr_t>(hWnd)), width, height,
-      hWnd != 0);
+  bool attached = GlideWrapper::BackendManager::GetInstance()
+                      .AttachWindowWithFallback(
+                          cfg,
+                          reinterpret_cast<void*>(static_cast<uintptr_t>(hWnd)),
+                          width, height, hWnd != 0, requestedSamples,
+                          /*stwHintMask=*/0u);
+  backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
+  if (!backend) return 0;
   backend->SetPixelFormat(format);
   s_sstOrigin = origin;
   backend->SetSstOrigin(origin);

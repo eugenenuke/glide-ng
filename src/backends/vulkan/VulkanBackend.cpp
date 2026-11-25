@@ -1,4 +1,5 @@
 #include "VulkanBackend.h"
+#include "core/GpuSelection.h"
 
 #if !defined(_WIN32)
 #include <SDL2/SDL.h>
@@ -2523,54 +2524,80 @@ bool VulkanBackend::SelectPhysicalDevice() {
     return false;
   }
 
-  // Prefer Discrete GPU > Integrated GPU > Virtual GPU > CPU while preserving
-  // loader order within the same tier (so VK_DRIVER_FILES / lvp_icd overrides
-  // still work seamlessly).
-  auto deviceScore = [](const vk::PhysicalDevice& dev) -> int {
+  auto mapDeviceKind = [](vk::PhysicalDeviceType t) -> VulkanDeviceKind {
+    switch (t) {
+      case vk::PhysicalDeviceType::eIntegratedGpu:
+        return VulkanDeviceKind::IntegratedGpu;
+      case vk::PhysicalDeviceType::eDiscreteGpu:
+        return VulkanDeviceKind::DiscreteGpu;
+      case vk::PhysicalDeviceType::eVirtualGpu:
+        return VulkanDeviceKind::VirtualGpu;
+      case vk::PhysicalDeviceType::eCpu:
+        return VulkanDeviceKind::Cpu;
+      default:
+        return VulkanDeviceKind::Other;
+    }
+  };
+
+  std::vector<VulkanDeviceCandidate> candidates;
+  candidates.reserve(devices.size());
+  for (size_t i = 0; i < devices.size(); ++i) {
+    const auto props = devices[i].getProperties();
     bool hasGraphics = false;
-    for (const auto& q : dev.getQueueFamilyProperties()) {
+    for (const auto& q : devices[i].getQueueFamilyProperties()) {
       if (q.queueFlags & vk::QueueFlagBits::eGraphics) {
         hasGraphics = true;
         break;
       }
     }
-    if (!hasGraphics) return -1;
-    switch (dev.getProperties().deviceType) {
-      case vk::PhysicalDeviceType::eDiscreteGpu:
-        return 1000;
-      case vk::PhysicalDeviceType::eIntegratedGpu:
-        return 500;
-      case vk::PhysicalDeviceType::eVirtualGpu:
-        return 200;
-      case vk::PhysicalDeviceType::eCpu:
-        return 10;
-      default:
-        return 100;
-    }
-  };
-
-  vk::PhysicalDevice bestDevice = devices[0];
-  int bestScore = deviceScore(devices[0]);
-  for (size_t i = 1; i < devices.size(); ++i) {
-    const int score = deviceScore(devices[i]);
-    if (score > bestScore) {
-      bestScore = score;
-      bestDevice = devices[i];
-    }
+    VulkanDeviceCandidate cand;
+    cand.name = props.deviceName.data();
+    cand.kind = mapDeviceKind(props.deviceType);
+    cand.hasGraphicsQueue = hasGraphics;
+    GLIDE_LOG(DEBUG, "Vulkan",
+              "Enumerated Adapter [" << i << "] : " << cand.name << " ("
+                  << vk::to_string(props.deviceType)
+                  << ", graphics=" << (hasGraphics ? "yes" : "no") << ")");
+    candidates.push_back(std::move(cand));
   }
-  m_physicalDevice = bestDevice;
+
+  const int chosenIdx = SelectVulkanDeviceCandidate(
+      candidates, m_config.gpuPreference, m_config.gpuNameMatch);
+  if (chosenIdx < 0 || static_cast<size_t>(chosenIdx) >= devices.size()) {
+    std::ostringstream availSs;
+    for (size_t i = 0; i < candidates.size(); ++i) {
+      if (i > 0) availSs << "; ";
+      availSs << "[" << i << "] " << candidates[i].name << " ("
+              << vk::to_string(devices[i].getProperties().deviceType) << ")";
+    }
+    GLIDE_LOG(WARN, "Vulkan",
+              "No graphics-capable Vulkan adapter matches gpu='"
+                  << FormatGpuPreferenceFull(m_config.gpuPreference,
+                                             m_config.gpuNameMatch)
+                  << "' (enumerated: " << availSs.str()
+                  << "). Hint: check VK_DRIVER_FILES / MESA_VK_DEVICE_SELECT "
+                     "or use gpu=default.");
+    return false;
+  }
+
+  m_physicalDevice = devices[static_cast<size_t>(chosenIdx)];
   vk::PhysicalDeviceProperties props = m_physicalDevice.getProperties();
   m_isCpuVulkanDevice = (props.deviceType == vk::PhysicalDeviceType::eCpu);
 
   std::ostringstream logStream;
   logStream << "\n--- Active Vulkan Execution Adapter ---\n"
-            << "  Adapter     : " << props.deviceName.data() << "\n"
+            << "  Adapter     : [" << chosenIdx << "] "
+            << props.deviceName.data() << "\n"
             << "    API Ver   : " << VK_VERSION_MAJOR(props.apiVersion) << "."
             << VK_VERSION_MINOR(props.apiVersion) << "."
             << VK_VERSION_PATCH(props.apiVersion) << "\n"
             << "    Dev Type  : " << vk::to_string(props.deviceType) << "\n"
+            << "    Policy    : "
+            << FormatGpuPreferenceFull(m_config.gpuPreference,
+                                       m_config.gpuNameMatch)
+            << "\n"
             << "----------------------------------------";
-  GLIDE_LOG(DEBUG, "Vulkan", logStream.str());
+  GLIDE_LOG(INFO, "Vulkan", logStream.str());
 
   if (m_isCpuVulkanDevice && sizeof(void*) <= 4) {
     GLIDE_LOG(INFO, "Vulkan",

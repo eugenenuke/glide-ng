@@ -128,7 +128,7 @@ done
 
 ## 5. Comparing Mesa `llvmpipe` (Vulkan and OpenGL ES) vs. `glide-ng` Software
 
-Because `glide-ng` automatically selects discrete/integrated GPUs over CPU devices in Vulkan, and NVIDIA's proprietary GLVND EGL driver ignores `LIBGL_ALWAYS_SOFTWARE=1` on its own, you must explicitly point the loader at Mesa's software ICDs to benchmark Mesa **`llvmpipe`** (CPU LLVM JIT rasterizer) apples-to-apples against `glide-ng`'s native **Software** backend.
+When testing CPU-only adapters directly against `glide-ng`'s native **Software** backend, pass `GLIDE_NG_GPU=llvmpipe` alongside Mesa's software loader variables (on hybrid-GPU systems, `default` uses the OS/loader default adapter, and NVIDIA's proprietary GLVND EGL driver ignores `LIBGL_ALWAYS_SOFTWARE=1` unless routed to `50_mesa.json`):
 
 ### Step 1 — Install Mesa Software Drivers (If Not Already Installed)
 

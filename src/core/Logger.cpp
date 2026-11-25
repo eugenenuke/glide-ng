@@ -531,6 +531,8 @@ void Logger::LogExecutionSummary(const WrapperConfig& config) {
        << " (2.x=" << FormatApiVersionString(config.apiVersion)
        << ", 3.x=" << FormatApiVersionString(config.glide3ApiVersion) << ")"
        << "\n  Active Emulation     : " << backendPretty
+       << "\n  GPU Preference       : "
+       << FormatGpuPreferenceFull(config.gpuPreference, config.gpuNameMatch)
        << "\n  Software SIMD        : " << FormatSwSimdLevel(config.swSimdLevel)
        << " (active: " << FormatResolvedSimdIsa(resolvedSimd)
        << ", host max: " << FormatResolvedSimdIsa(hostMaxSimd) << ")";

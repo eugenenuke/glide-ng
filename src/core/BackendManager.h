@@ -18,7 +18,15 @@ public:
     static BackendManager& GetInstance();
 
     IGraphicsBackend* GetBackend() const { return m_backend.get(); }
+    const std::string& GetActiveBackendName() const {
+        return m_activeBackendName;
+    }
     bool EstablishBackend(const WrapperConfig& config);
+    bool AttachWindowWithFallback(const WrapperConfig& config,
+                                  void* nativeWindowHandle, uint32_t width,
+                                  uint32_t height, bool windowed,
+                                  uint32_t requestedMsaaSamples = 0u,
+                                  uint32_t stwHintMask = 0u);
     void ShutdownBackend();
 
     // Context-bound Splash Animator lifecycle
