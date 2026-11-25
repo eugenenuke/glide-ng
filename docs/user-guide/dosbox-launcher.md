@@ -278,3 +278,5 @@ The implementation under `tools/glide-dosbox/` is split into focused modules so 
 | `tools/glide-dosbox/completions/glide-dosbox.bash` | Context-aware Bash completion including dynamic `--catalog=` lookup |
 
 > Note: On Linux distributions where `dosbox-x` or `dosbox-svn` carries file capabilities (such as `cap_net_admin,cap_net_raw=eip`), `glide-dosbox doctor` reports a `[WARN]` because glibc `AT_SECURE=1` strips `LD_LIBRARY_PATH` and causes dynamic wrapper selection (`GNG_LIBS` / `OG_LIBS`) to fall back to the system library.
+
+Additionally, `configs/dosbox-x.conf` and `configs/dosbox-x-sw.conf` enable `use dynamic core with fpu = true` because DOSBox-X's default `auto` disables x87 FPU translation in `dynamic_rec`, forcing every FPU instruction in 3D DOS Glide games back to the normal interpreter.

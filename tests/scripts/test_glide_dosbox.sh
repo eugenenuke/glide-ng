@@ -432,6 +432,14 @@ assert_contains "$OUT" "${LAUNCHER_DIR}/configs/dosbox-svn-og.conf" "og selects 
 grep -qE '^[[:space:]]*lfb[[:space:]]*=[[:space:]]*full_noaux$' "${LAUNCHER_DIR}/configs/dosbox-svn-og.conf" || fail "dosbox-svn-og.conf missing lfb = full_noaux"
 pass
 
+# DOSBox-X configs enable dynamic core FPU for pure-DOS 3D performance.
+grep -qE '^[[:space:]]*use dynamic core with fpu[[:space:]]*=[[:space:]]*true$' "${LAUNCHER_DIR}/configs/dosbox-x.conf" \
+  || fail "dosbox-x.conf missing use dynamic core with fpu = true"
+pass
+grep -qE '^[[:space:]]*use dynamic core with fpu[[:space:]]*=[[:space:]]*true$' "${LAUNCHER_DIR}/configs/dosbox-x-sw.conf" \
+  || fail "dosbox-x-sw.conf missing use dynamic core with fpu = true"
+pass
+
 if (( FAIL_COUNT > 0 )); then
   echo "test_glide_dosbox.sh: ${PASS_COUNT} passed, ${FAIL_COUNT} failed." >&2
   exit 1

@@ -223,6 +223,8 @@ lfb = full
 ```ini
 [cpu]
 cycles = max
+# Required for full dynamic_rec speed in FPU-heavy 3D DOS games (auto disables FPU JIT)
+use dynamic core with fpu = true
 
 [voodoo]
 glide = true
