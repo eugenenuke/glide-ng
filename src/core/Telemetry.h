@@ -176,9 +176,43 @@ class TelemetryManager {
   bool IsUsingTscClock() const noexcept {
     return s_useTscClock.load(std::memory_order_relaxed);
   }
+  static constexpr size_t kMaxTrackedCpus = 256;
+
   double GetTscNsPerTick() const noexcept {
     return m_tscNsPerTick.load(std::memory_order_relaxed);
   }
+  // Compute a monotonic delta from two offset-normalized TSC samples.
+  static constexpr int64_t ComputeAdjustedTscDelta(int64_t startTicks,
+                                                   int64_t startOffset,
+                                                   int64_t endTicks,
+                                                   int64_t endOffset) noexcept {
+    const int64_t adjStart = startTicks - startOffset;
+    const int64_t adjEnd = endTicks - endOffset;
+    return (adjEnd > adjStart) ? (adjEnd - adjStart) : 0;
+  }
+  // Same-CPU fast path uses raw TSC difference directly; cross-CPU migrations
+  // subtract each core's calibrated TSC offset (canceling dual-CCD skew) or
+  // return 0 if either core's offset is unknown.
+  static int64_t ComputeSafeTscDelta(int64_t startTicks, uint32_t startCpu,
+                                     int64_t endTicks, uint32_t endCpu,
+                                     bool usingTsc) noexcept {
+    if (!usingTsc || startCpu == endCpu) {
+      return (endTicks > startTicks) ? (endTicks - startTicks) : 0;
+    }
+    if (startCpu < kMaxTrackedCpus && endCpu < kMaxTrackedCpus &&
+        s_cpuTscOffsetKnown[startCpu].load(std::memory_order_acquire) != 0u &&
+        s_cpuTscOffsetKnown[endCpu].load(std::memory_order_acquire) != 0u) {
+      return ComputeAdjustedTscDelta(
+          startTicks, s_cpuTscOffset[startCpu].load(std::memory_order_relaxed),
+          endTicks, s_cpuTscOffset[endCpu].load(std::memory_order_relaxed));
+    }
+    return 0;
+  }
+  static bool IsCpuOffsetKnownFast(uint32_t cpuIdx) noexcept {
+    return cpuIdx < kMaxTrackedCpus &&
+           s_cpuTscOffsetKnown[cpuIdx].load(std::memory_order_acquire) != 0u;
+  }
+  void EnsureCpuOffsetCalibrated(uint32_t cpuIdx);
   void RecordCpuBucketTicks(CpuBucket bucket, int64_t ticks) {
     if (ticks <= 0) return;
     const size_t idx = static_cast<size_t>(bucket);
@@ -234,6 +268,8 @@ class TelemetryManager {
   std::atomic<bool> m_perfTimingEnabled{false};
   inline static std::atomic<bool> s_perfTimingEnabled{false};
   inline static std::atomic<bool> s_useTscClock{false};
+  inline static std::atomic<int64_t> s_cpuTscOffset[kMaxTrackedCpus]{};
+  inline static std::atomic<uint8_t> s_cpuTscOffsetKnown[kMaxTrackedCpus]{};
   std::atomic<double> m_tscNsPerTick{1.0};
   std::atomic<uint64_t> m_frameIndex{0};
 
@@ -243,8 +279,12 @@ class TelemetryManager {
   bool m_tscProbed{false};
   bool m_tscAvailable{false};
   bool m_hasCalibAnchor{false};
+  std::chrono::steady_clock::time_point m_tscAnchorWall{};
+  uint64_t m_tscAnchorTicks{0};
+  double m_tscAnchorNsPerTick{1.0};
   std::chrono::steady_clock::time_point m_lastCalibWall{};
   uint64_t m_lastCalibTsc{0};
+  uint32_t m_lastCalibCpu{0};
   std::ofstream m_csvFile;
   uint64_t m_csvRowsSinceFlush{0};
   FrameMetrics m_lastFrameMetrics{};
@@ -285,33 +325,37 @@ class CpuBucketScope {
     auto& tm = TelemetryManager::GetInstance();
     ActiveState& state = CurrentState();
     if (state.active && state.bucket == bucket) return;
-    const int64_t nowTicks = NowTicks();
+    const bool useTsc = TelemetryManager::UseTscClockFast();
+    const Sample now = NowSample(useTsc);
     if (state.active) {
-      const int64_t parentSliceTicks =
-          std::max<int64_t>(0, nowTicks - state.resumeTicks);
+      const int64_t parentSliceTicks = TelemetryManager::ComputeSafeTscDelta(
+          state.resumeTicks, state.resumeCpu, now.ticks, now.cpuId, useTsc);
       tm.RecordCpuBucketTicks(state.bucket, parentSliceTicks);
       m_prevActive = true;
       m_prevBucket = state.bucket;
     }
     state.active = true;
     state.bucket = bucket;
-    state.resumeTicks = nowTicks;
+    state.resumeTicks = now.ticks;
+    state.resumeCpu = now.cpuId;
     m_bucket = bucket;
+    m_useTsc = useTsc;
     m_active = true;
   }
 
   ~CpuBucketScope() noexcept {
     if (!m_active) return;
-    const int64_t nowTicks = NowTicks();
+    const Sample now = NowSample(m_useTsc);
     ActiveState& state = CurrentState();
-    const int64_t selfSliceTicks =
-        std::max<int64_t>(0, nowTicks - state.resumeTicks);
+    const int64_t selfSliceTicks = TelemetryManager::ComputeSafeTscDelta(
+        state.resumeTicks, state.resumeCpu, now.ticks, now.cpuId, m_useTsc);
     TelemetryManager::GetInstance().RecordCpuBucketTicks(m_bucket,
                                                          selfSliceTicks);
     if (m_prevActive) {
       state.active = true;
       state.bucket = m_prevBucket;
-      state.resumeTicks = nowTicks;
+      state.resumeTicks = now.ticks;
+      state.resumeCpu = now.cpuId;
     } else {
       state.active = false;
     }
@@ -321,25 +365,43 @@ class CpuBucketScope {
   CpuBucketScope& operator=(const CpuBucketScope&) = delete;
 
  private:
+  struct Sample {
+    int64_t ticks{0};
+    uint32_t cpuId{0};
+  };
+
   struct ActiveState {
     bool active{false};
     CpuBucket bucket{CpuBucket::Draw};
     int64_t resumeTicks{0};
+    uint32_t resumeCpu{0};
   };
 
-  static int64_t NowTicks() noexcept {
+  static Sample NowSample(bool useTsc) noexcept {
 #if (defined(__x86_64__) || defined(__i386__)) && \
     (defined(__GNUC__) || defined(__clang__))
-    if (__builtin_expect(TelemetryManager::UseTscClockFast(), 1)) {
+    if (__builtin_expect(useTsc, 1)) {
       uint32_t lo = 0;
       uint32_t hi = 0;
-      __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
-      return static_cast<int64_t>((static_cast<uint64_t>(hi) << 32) | lo);
+      uint32_t aux = 0;
+      __asm__ volatile("rdtscp" : "=a"(lo), "=d"(hi), "=c"(aux));
+      const uint32_t cpuIdx = aux & 0xFFFu;
+      if (__builtin_expect(
+              cpuIdx < TelemetryManager::kMaxTrackedCpus &&
+                  !TelemetryManager::IsCpuOffsetKnownFast(cpuIdx),
+              0)) {
+        TelemetryManager::GetInstance().EnsureCpuOffsetCalibrated(cpuIdx);
+      }
+      return {static_cast<int64_t>((static_cast<uint64_t>(hi) << 32) | lo),
+              cpuIdx};
     }
+#else
+    (void)useTsc;
 #endif
-    return std::chrono::duration_cast<std::chrono::nanoseconds>(
-               std::chrono::steady_clock::now().time_since_epoch())
-        .count();
+    return {std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now().time_since_epoch())
+                .count(),
+            0u};
   }
 
   static ActiveState& CurrentState() noexcept {
@@ -351,6 +413,7 @@ class CpuBucketScope {
   CpuBucket m_prevBucket{CpuBucket::Draw};
   bool m_active{false};
   bool m_prevActive{false};
+  bool m_useTsc{false};
 };
 
 #ifdef ENABLE_TELEMETRY

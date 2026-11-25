@@ -34,28 +34,37 @@
 namespace GlideWrapper {
 
 namespace {
-uint64_t ReadTscRaw() noexcept {
+uint64_t ReadTscWithCpu(uint32_t& outCpu) noexcept {
 #if GLIDE_HAS_X86_TSC
   uint32_t lo = 0;
   uint32_t hi = 0;
-  __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
+  uint32_t aux = 0;
+  __asm__ volatile("rdtscp" : "=a"(lo), "=d"(hi), "=c"(aux));
+  outCpu = aux;
   return (static_cast<uint64_t>(hi) << 32) | static_cast<uint64_t>(lo);
 #else
+  outCpu = 0u;
   return 0ULL;
 #endif
 }
 
-bool ProbeInvariantTsc() noexcept {
+bool ProbeInvariantTscAndRdtscp() noexcept {
 #if GLIDE_HAS_X86_TSC
-  // x86 extended CPUID leaves: 0x80000000 (max extended leaf), 0x80000007
-  // (Advanced Power Management; EDX bit 8 = Invariant TSC).
+  // x86 extended CPUID leaves: 0x80000000 (max extended leaf),
+  // 0x80000001 (EDX bit 27 = RDTSCP), 0x80000007 (EDX bit 8 = Invariant TSC).
   constexpr unsigned int kCpuidExtMaxLeaf = 0x80000000u;
+  constexpr unsigned int kCpuidExtFeaturesLeaf = 0x80000001u;
   constexpr unsigned int kCpuidExtPowerMgmtLeaf = 0x80000007u;
+  constexpr unsigned int kCpuidRdtscpBit = 1u << 27;
   constexpr unsigned int kCpuidInvariantTscBit = 1u << 8;
   if (__get_cpuid_max(kCpuidExtMaxLeaf, nullptr) < kCpuidExtPowerMgmtLeaf) {
     return false;
   }
   unsigned int eax = 0, ebx = 0, ecx = 0, edx = 0;
+  __cpuid(kCpuidExtFeaturesLeaf, eax, ebx, ecx, edx);
+  if ((edx & kCpuidRdtscpBit) == 0u) {
+    return false;
+  }
   __cpuid(kCpuidExtPowerMgmtLeaf, eax, ebx, ecx, edx);
   return (edx & kCpuidInvariantTscBit) != 0u;
 #else
@@ -246,40 +255,134 @@ void TelemetryManager::EnsureClockCalibratedLocked() {
   if (m_tscProbed) return;
   m_tscProbed = true;
 
-  if (!ProbeInvariantTsc()) {
+  if (!ProbeInvariantTscAndRdtscp()) {
     m_tscAvailable = false;
     m_tscNsPerTick.store(1.0, std::memory_order_relaxed);
     s_useTscClock.store(false, std::memory_order_release);
+    GLIDE_LOG_CAT(INFO, LOG_CAT_PERF, "Perf",
+                  "Clocksource: RDTSCP/Invariant-TSC unavailable; using steady_clock");
     return;
   }
 
   double nsPerTick = 0.0;
   bool calibrated = TryReadCpuidTscFrequency(nsPerTick);
   if (!calibrated) {
-    const auto wallStart = std::chrono::steady_clock::now();
-    const uint64_t tscStart = ReadTscRaw();
-    std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    const uint64_t tscEnd = ReadTscRaw();
-    const auto wallEnd = std::chrono::steady_clock::now();
-    const int64_t wallNs =
-        std::chrono::duration_cast<std::chrono::nanoseconds>(wallEnd -
-                                                              wallStart)
-            .count();
-    if (wallNs > 0 && tscEnd > tscStart) {
-      nsPerTick =
-          static_cast<double>(wallNs) / static_cast<double>(tscEnd - tscStart);
-      calibrated = (nsPerTick >= 0.05 && nsPerTick <= 10.0);
+    // Busy-wait short 2 ms windows on the same logical CPU so cross-CCD
+    // sleep migrations cannot corrupt initial TSC calibration.
+    constexpr size_t kTargetSamples = 3;
+    constexpr int kMaxAttempts = 12;
+    constexpr int64_t kCalibWindowNs = 2000000LL;
+    std::vector<double> samples;
+    samples.reserve(kTargetSamples);
+
+    for (int attempt = 0;
+         attempt < kMaxAttempts && samples.size() < kTargetSamples; ++attempt) {
+      uint32_t cpuStart = 0;
+      const auto wallStart = std::chrono::steady_clock::now();
+      const uint64_t tscStart = ReadTscWithCpu(cpuStart);
+      while (std::chrono::duration_cast<std::chrono::nanoseconds>(
+                 std::chrono::steady_clock::now() - wallStart)
+                 .count() < kCalibWindowNs) {
+#if defined(__x86_64__) || defined(__i386__)
+        _mm_pause();
+#endif
+      }
+      uint32_t cpuEnd = 0;
+      const uint64_t tscEnd = ReadTscWithCpu(cpuEnd);
+      const auto wallEnd = std::chrono::steady_clock::now();
+      const int64_t wallNs =
+          std::chrono::duration_cast<std::chrono::nanoseconds>(wallEnd -
+                                                                wallStart)
+              .count();
+      if (cpuEnd == cpuStart && wallNs > 0 && tscEnd > tscStart) {
+        const double candidate =
+            static_cast<double>(wallNs) / static_cast<double>(tscEnd - tscStart);
+        if (candidate >= 0.05 && candidate <= 10.0) {
+          samples.push_back(candidate);
+        }
+      }
+    }
+
+    if (!samples.empty()) {
+      std::sort(samples.begin(), samples.end());
+      nsPerTick = samples[samples.size() / 2];
+      calibrated = true;
     }
   }
 
   if (calibrated) {
     m_tscAvailable = true;
     m_tscNsPerTick.store(nsPerTick, std::memory_order_relaxed);
+    for (size_t i = 0; i < kMaxTrackedCpus; ++i) {
+      s_cpuTscOffset[i].store(0, std::memory_order_relaxed);
+      s_cpuTscOffsetKnown[i].store(0u, std::memory_order_relaxed);
+    }
+    uint32_t anchorAux = 0;
+    m_tscAnchorWall = std::chrono::steady_clock::now();
+    m_tscAnchorTicks = ReadTscWithCpu(anchorAux);
+    m_tscAnchorNsPerTick = nsPerTick;
+    const uint32_t anchorIdx = anchorAux & 0xFFFu;
+    if (anchorIdx < kMaxTrackedCpus) {
+      s_cpuTscOffset[anchorIdx].store(0, std::memory_order_relaxed);
+      s_cpuTscOffsetKnown[anchorIdx].store(1u, std::memory_order_release);
+    }
     s_useTscClock.store(true, std::memory_order_release);
+    char msg[128];
+    std::snprintf(msg, sizeof(msg),
+                  "RDTSCP calibrated (%.4f ns/tick, %.1f MHz)",
+                  nsPerTick, 1000.0 / nsPerTick);
+    GLIDE_LOG_CAT(INFO, LOG_CAT_PERF, "Perf", msg);
   } else {
     m_tscAvailable = false;
     m_tscNsPerTick.store(1.0, std::memory_order_relaxed);
     s_useTscClock.store(false, std::memory_order_release);
+    GLIDE_LOG_CAT(INFO, LOG_CAT_PERF, "Perf",
+                  "RDTSCP calibration failed; falling back to steady_clock");
+  }
+}
+
+void TelemetryManager::EnsureCpuOffsetCalibrated(uint32_t cpuIdx) {
+  if (cpuIdx >= kMaxTrackedCpus) return;
+  std::lock_guard<std::mutex> lock(m_perfMutex);
+  if (!m_tscAvailable ||
+      s_cpuTscOffsetKnown[cpuIdx].load(std::memory_order_relaxed) != 0u) {
+    return;
+  }
+  const int64_t maxBracketTicks =
+      static_cast<int64_t>(500000.0 / m_tscAnchorNsPerTick);
+  for (int attempt = 0; attempt < 4; ++attempt) {
+    uint32_t aux0 = 0;
+    uint32_t aux1 = 0;
+    const uint64_t t0 = ReadTscWithCpu(aux0);
+    const auto wallNow = std::chrono::steady_clock::now();
+    const uint64_t t1 = ReadTscWithCpu(aux1);
+    const uint32_t idx0 = aux0 & 0xFFFu;
+    const uint32_t idx1 = aux1 & 0xFFFu;
+    if (idx0 != idx1 || idx0 >= kMaxTrackedCpus) continue;
+    if (t1 >= t0 && (t1 - t0) > static_cast<uint64_t>(maxBracketTicks) &&
+        attempt < 3) {
+      continue;
+    }
+    if (s_cpuTscOffsetKnown[idx0].load(std::memory_order_relaxed) != 0u) {
+      return;
+    }
+    const uint64_t tscMid = t0 + ((t1 >= t0) ? ((t1 - t0) / 2ULL) : 0ULL);
+    const double wallDeltaNs = static_cast<double>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(wallNow -
+                                                             m_tscAnchorWall)
+            .count());
+    const int64_t expectedTsc =
+        static_cast<int64_t>(m_tscAnchorTicks) +
+        static_cast<int64_t>(wallDeltaNs / m_tscAnchorNsPerTick);
+    int64_t rawOffset = static_cast<int64_t>(tscMid) - expectedTsc;
+    // Snap sub-0.5 ms jitter to exact 0 so sibling cores on the same CCD
+    // (hardware-synchronized TSC) incur zero cross-core offset error.
+    if (rawOffset > -maxBracketTicks && rawOffset < maxBracketTicks) {
+      rawOffset = 0;
+    }
+    s_cpuTscOffset[idx0].store(rawOffset, std::memory_order_relaxed);
+    s_cpuTscOffsetKnown[idx0].store(1u, std::memory_order_release);
+    return;
   }
 }
 
@@ -295,7 +398,7 @@ void TelemetryManager::ConfigurePerfLog(bool enabled,
     EnsureClockCalibratedLocked();
     if (m_tscAvailable) {
       m_lastCalibWall = std::chrono::steady_clock::now();
-      m_lastCalibTsc = ReadTscRaw();
+      m_lastCalibTsc = ReadTscWithCpu(m_lastCalibCpu);
       m_hasCalibAnchor = true;
     } else {
       m_hasCalibAnchor = false;
@@ -466,7 +569,7 @@ void TelemetryManager::OnFrameComplete(int64_t intervalUs, int64_t activeUs,
   if (m_tscAvailable) {
     if (!m_hasCalibAnchor) {
       m_lastCalibWall = now;
-      m_lastCalibTsc = ReadTscRaw();
+      m_lastCalibTsc = ReadTscWithCpu(m_lastCalibCpu);
       m_hasCalibAnchor = true;
     } else {
       const int64_t wallDeltaNs =
@@ -475,19 +578,34 @@ void TelemetryManager::OnFrameComplete(int64_t intervalUs, int64_t activeUs,
               .count();
       constexpr int64_t kTscCalibMinWindowNs = 250000000LL;  // 250 ms
       if (wallDeltaNs >= kTscCalibMinWindowNs) {
-        const uint64_t tscNow = ReadTscRaw();
-        if (tscNow > m_lastCalibTsc) {
+        uint32_t cpuNow = 0;
+        const uint64_t tscNow = ReadTscWithCpu(cpuNow);
+        const uint32_t cpuIdxNow = cpuNow & 0xFFFu;
+        if (cpuNow == m_lastCalibCpu && tscNow > m_lastCalibTsc) {
           const double measured = static_cast<double>(wallDeltaNs) /
                                   static_cast<double>(tscNow - m_lastCalibTsc);
           const double cur = m_tscNsPerTick.load(std::memory_order_relaxed);
           if (measured >= 0.05 && measured <= 10.0 &&
               measured >= cur * 0.9 && measured <= cur * 1.1) {
-            m_tscNsPerTick.store(cur * 0.8 + measured * 0.2,
-                                 std::memory_order_relaxed);
+            const double refined = cur * 0.8 + measured * 0.2;
+            m_tscNsPerTick.store(refined, std::memory_order_relaxed);
+            m_tscAnchorNsPerTick = refined;
           }
+        }
+        // Keep the reference anchor fresh (< 1 s old) using cpuIdxNow's known
+        // offset so newly-touched CPUs later in a long session stay accurate.
+        if (cpuIdxNow < kMaxTrackedCpus &&
+            s_cpuTscOffsetKnown[cpuIdxNow].load(std::memory_order_relaxed) !=
+                0u) {
+          const int64_t knownOffset =
+              s_cpuTscOffset[cpuIdxNow].load(std::memory_order_relaxed);
+          m_tscAnchorWall = now;
+          m_tscAnchorTicks =
+              static_cast<uint64_t>(static_cast<int64_t>(tscNow) - knownOffset);
         }
         m_lastCalibWall = now;
         m_lastCalibTsc = tscNow;
+        m_lastCalibCpu = cpuNow;
       }
     }
   }

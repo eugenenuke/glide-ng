@@ -2161,6 +2161,25 @@ TEST_CASE("Diagnostics: Tiered Logger, Telemetry & On-Screen HUD", "[Logger][Tel
       CHECK(loopElapsedMs < 15.0);
     }
 
+    // Verify cross-CPU / cross-CCD skew normalization and unknown-CPU fallback
+    CHECK(TelemetryManager::ComputeSafeTscDelta(1000, 3u, 2500, 3u, true) ==
+          1500);
+    CHECK(TelemetryManager::ComputeSafeTscDelta(2500, 3u, 1000, 3u, true) ==
+          0);
+    // Unknown out-of-range CPU IDs safely return 0 under TSC mode
+    CHECK(TelemetryManager::ComputeSafeTscDelta(1000, 0u, 9000000000LL, 999u,
+                                                true) == 0);
+    CHECK(TelemetryManager::ComputeSafeTscDelta(1000, 0u, 2500, 999u, false) ==
+          1500);
+    // Offset-adjusted cross-CCD delta cancels a +6.55e9 tick (~2.63 s) CCD skew
+    constexpr int64_t kCcdSkew = 6550000000LL;
+    CHECK(TelemetryManager::ComputeAdjustedTscDelta(
+              1000000LL, 0LL, 1007500LL + kCcdSkew, kCcdSkew) == 7500LL);
+    CHECK(TelemetryManager::ComputeAdjustedTscDelta(
+              1000000LL + kCcdSkew, kCcdSkew, 1007500LL, 0LL) == 7500LL);
+    CHECK(TelemetryManager::ComputeAdjustedTscDelta(
+              1007500LL, 0LL, 1000000LL, 0LL) == 0LL);
+
     {
       GLIDE_CPU_SCOPE(CpuBucket::Tex);
       std::this_thread::sleep_for(std::chrono::milliseconds(3));
