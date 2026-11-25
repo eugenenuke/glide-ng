@@ -757,11 +757,13 @@ void VulkanBackend::DrawTriangleFan(const ModernVertex* verts,
       }
     } else {
       for (uint32_t k = 0; k < chunkTris; ++k, ++i) {
+        ModernVertex v1 = verts[i];
+        v1.pos[1] = h - v1.pos[1];
+        ModernVertex v2 = verts[i + 1u];
+        v2.pos[1] = h - v2.pos[1];
         dest[0] = v0;
-        dest[1] = verts[i];
-        dest[1].pos[1] = h - dest[1].pos[1];
-        dest[2] = verts[i + 1u];
-        dest[2].pos[1] = h - dest[2].pos[1];
+        dest[1] = v1;
+        dest[2] = v2;
         dest += 3;
       }
     }
@@ -855,8 +857,9 @@ void VulkanBackend::DrawTriangleList(const ModernVertex* verts,
       std::memcpy(dest, src, addedVerts * sizeof(ModernVertex));
     } else {
       for (uint32_t v = 0; v < addedVerts; ++v) {
-        dest[v] = src[v];
-        dest[v].pos[1] = h - dest[v].pos[1];
+        ModernVertex mv = src[v];
+        mv.pos[1] = h - mv.pos[1];
+        dest[v] = mv;
       }
     }
 

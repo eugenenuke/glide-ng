@@ -2533,6 +2533,8 @@ TEST_CASE("Glide 3.x: Batched VertexArray Triangle, Strip, Fan & Polygon Parity"
   using DrawVertArrayContigFunc = void (*)(FxU32, FxU32, void*, FxU32);
   using ReadRegionFunc =
       FxBool (*)(FxU32, FxU32, FxU32, FxU32, FxU32, FxU32, void*);
+  using BufSwapFunc = void (*)(FxU32);
+  using SstOriginFunc = void (*)(GrOriginLocation_t);
 
   auto glideInit = reinterpret_cast<InitFunc>(::dlsym(handle, "grGlideInit"));
   auto sstSelect =
@@ -2564,6 +2566,9 @@ TEST_CASE("Glide 3.x: Batched VertexArray Triangle, Strip, Fan & Polygon Parity"
       ::dlsym(handle, "grDrawVertexArrayContiguous"));
   auto readRegion =
       reinterpret_cast<ReadRegionFunc>(::dlsym(handle, "grLfbReadRegion"));
+  auto bufSwap = reinterpret_cast<BufSwapFunc>(::dlsym(handle, "grBufferSwap"));
+  auto sstOrigin =
+      reinterpret_cast<SstOriginFunc>(::dlsym(handle, "grSstOrigin"));
 
   REQUIRE(glideInit != nullptr);
   REQUIRE(sstSelect != nullptr);
@@ -2581,6 +2586,8 @@ TEST_CASE("Glide 3.x: Batched VertexArray Triangle, Strip, Fan & Polygon Parity"
   REQUIRE(vtxLayout != nullptr);
   REQUIRE(drawVertArrayContig != nullptr);
   REQUIRE(readRegion != nullptr);
+  REQUIRE(bufSwap != nullptr);
+  REQUIRE(sstOrigin != nullptr);
 
   struct SimpleVtx {
     float x, y;
@@ -2704,6 +2711,61 @@ TEST_CASE("Glide 3.x: Batched VertexArray Triangle, Strip, Fan & Polygon Parity"
     CHECK(g565(pxPoly) >= 58u);
     CHECK(b565(pxPoly) <= 4u);
 
+    // 5. Headless swap + on-demand GR_BUFFER_FRONTBUFFER readback parity
+    auto readFrontPx = [&](FxU32 x, FxU32 y) -> uint16_t {
+      uint16_t px = 0u;
+      REQUIRE(readRegion(GR_BUFFER_FRONTBUFFER, x, y, 1, 1, 2, &px) == FXTRUE);
+      return px;
+    };
+    bufSwap(0);
+    const uint16_t frontTri = readFrontPx(80u, 80u);
+    CHECK(r565(frontTri) >= 28u);
+    CHECK(g565(frontTri) <= 4u);
+    CHECK(b565(frontTri) <= 4u);
+    const uint16_t frontFan = readFrontPx(400u, 120u);
+    CHECK(r565(frontFan) <= 4u);
+    CHECK(g565(frontFan) <= 4u);
+    CHECK(b565(frontFan) >= 28u);
+
+    // 6. GR_ORIGIN_LOWER_LEFT Y-flip + multi-frame headless swap across ring
+    sstOrigin(GR_ORIGIN_LOWER_LEFT);
+    cullMode(GR_CULL_DISABLE);
+    SimpleVtx lowerPoly[8];
+    for (int i = 0; i < 8; ++i) {
+      const float a = kTwoPi * static_cast<float>(i) / 8.0f;
+      lowerPoly[i] = {400.0f + 50.0f * std::cos(a),
+                      100.0f + 50.0f * std::sin(a)};
+    }
+    for (int frame = 0; frame < 4; ++frame) {
+      bufClear(0xFF000000u, 0, 0xFFFFu);
+      constColor(0xFFFF0000u);
+      drawVertArrayContig(GR_TRIANGLES, 6, tris, sizeof(SimpleVtx));
+      constColor(0xFF0000FFu);
+      drawVertArrayContig(GR_POLYGON, 8, lowerPoly, sizeof(SimpleVtx));
+      bufSwap(0);
+    }
+
+    const uint16_t lowerTri = readFrontPx(80u, 400u);
+    CHECK(r565(lowerTri) >= 28u);
+    CHECK(g565(lowerTri) <= 4u);
+    CHECK(b565(lowerTri) <= 4u);
+
+    const uint16_t lowerPolyPx = readFrontPx(400u, 380u);
+    CHECK(r565(lowerPolyPx) <= 4u);
+    CHECK(g565(lowerPolyPx) <= 4u);
+    CHECK(b565(lowerPolyPx) >= 28u);
+
+    const uint16_t unflippedTri = readFrontPx(80u, 80u);
+    CHECK(r565(unflippedTri) <= 4u);
+    CHECK(g565(unflippedTri) <= 4u);
+    CHECK(b565(unflippedTri) <= 4u);
+
+    const uint16_t unflippedPoly = readFrontPx(400u, 100u);
+    CHECK(r565(unflippedPoly) <= 4u);
+    CHECK(g565(unflippedPoly) <= 4u);
+    CHECK(b565(unflippedPoly) <= 4u);
+
+    sstOrigin(GR_ORIGIN_UPPER_LEFT);
     winClose(ctx);
     glideShutdown();
   }

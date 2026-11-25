@@ -2333,26 +2333,11 @@ bool VulkanBackend::SwapBuffers() {
     ReclaimRetiredResources_Locked(m_currentFrameSlot);
 
   } else {
-    // Headless fallback (pure offscreen render copy to CPU staging)
-    GLIDE_PROFILE_SCOPE("Vulkan::SwapBuffers_HeadlessCopy");
-    vk::ImageSubresourceRange range(vk::ImageAspectFlagBits::eColor, 0, 1, 0,
-                                    1);
-    TransitionImageLayout(*m_commandBuffer, m_headlessImages[activeIdx].get(),
-                          vk::ImageLayout::eColorAttachmentOptimal,
-                          vk::ImageLayout::eTransferSrcOptimal, range);
-
-    vk::BufferImageCopy region;
-    region.imageSubresource =
-        vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
-    region.imageExtent = vk::Extent3D(m_headlessWidth, m_headlessHeight, 1);
-
-    m_commandBuffer->copyImageToBuffer(
-        m_headlessImages[activeIdx].get(), vk::ImageLayout::eTransferSrcOptimal,
-        m_headlessPixelBuffers[m_currentFrameSlot].get(), 1, &region);
-
-    TransitionImageLayout(*m_commandBuffer, m_headlessImages[activeIdx].get(),
-                          vk::ImageLayout::eTransferSrcOptimal,
-                          vk::ImageLayout::eColorAttachmentOptimal, range);
+    // Headless fallback: submit rendered work without an eager per-frame
+    // copyImageToBuffer readback. m_headlessPixelBuffers is populated on demand
+    // by VulkanLfb.cpp (ReadbackGpuToStaging_Locked, ReadAuxDepthLFB_Locked,
+    // FlushLFBToGPU_Locked) whenever LFB readback or FX_GLIDE_SNAPSHOT occurs.
+    GLIDE_PROFILE_SCOPE("Vulkan::SwapBuffers_HeadlessSubmit");
 
     m_commandBuffer->end();
 
