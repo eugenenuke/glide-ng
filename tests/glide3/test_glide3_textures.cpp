@@ -311,6 +311,107 @@ TEST_CASE("Glide 3.x: .3df Loading, LOD & Aspect Bounds", "[Glide3][Texture]") {
     }
   }
 
+  SECTION("VulkanBackend content-addressed cache and >128 high-churn pool reuse") {
+    GlideWrapper::WrapperConfig config;
+    config.backend = "vulkan";
+    config.forceNoWindow = true;
+    config.maxFps = 0.0;
+
+    GlideWrapper::VulkanBackend backend;
+    if (backend.Initialize(config) &&
+        backend.AttachWindow(nullptr, 64, 64, true)) {
+      auto makeTex = [](uint32_t argb, uint64_t rawHash) {
+        GlideWrapper::VirtualTexture vt;
+        vt.baseWidth = 32;
+        vt.baseHeight = 32;
+        vt.format = 0x5;
+        vt.rawDataHash = rawHash;
+        vt.swizzledTableHash = 1;
+        vt.swizzledWithTable = true;
+        vt.swizzledMipLevels.emplace_back(32 * 32, argb);
+        return vt;
+      };
+
+      GlideWrapper::ModernVertex v0{}, v1{}, v2{}, v3{};
+      auto setV = [](GlideWrapper::ModernVertex& v, float x, float y, float s,
+                     float t) {
+        v.pos[0] = x;
+        v.pos[1] = y;
+        v.pos[2] = 0.5f;
+        v.pos[3] = 1.0f;
+        v.color[0] = v.color[1] = v.color[2] = v.color[3] = 1.0f;
+        v.tex[0] = s;
+        v.tex[1] = t;
+        v.tmu_oow[0] = 1.0f;
+      };
+      setV(v0, 0.0f, 0.0f, 0.0f, 0.0f);
+      setV(v1, 64.0f, 0.0f, 255.0f, 0.0f);
+      setV(v2, 64.0f, 64.0f, 255.0f, 255.0f);
+      setV(v3, 0.0f, 64.0f, 0.0f, 255.0f);
+
+      auto drawBoundTexAndReadCenter = [&](uint32_t addr) -> uint16_t {
+        backend.ClearBuffer(0x00000000u, 0xFFu, 1.0f, 0x3u);
+        backend.SetCombinerMode(3, 8, 1, 1, false, 1, 0, 1, 2, false);
+        backend.SetTexCombinerMode(0, 1, 0, 1, 0, false, false);
+        backend.BindTexture(0, addr, 1, 1, 0, 0);
+        backend.DrawTriangle(v0, v1, v2);
+        backend.DrawTriangle(v0, v2, v3);
+        REQUIRE(backend.SwapBuffers());
+        uint16_t px565 = 0;
+        REQUIRE(backend.ReadLFB(0, 32, 32, 1, 1, 2, &px565));
+        return px565;
+      };
+
+      // 1. Live/in-flight content hit: red -> green -> red on same slot.
+      backend.UploadTexture(0u, 0u, makeTex(0xFFFF0000u, 0x1111u));
+      backend.UploadTexture(0u, 0u, makeTex(0xFF00FF00u, 0x2222u));
+      const uint64_t liveHitsBefore = backend.GetTextureContentCacheHitCount();
+      backend.UploadTexture(0u, 0u, makeTex(0xFFFF0000u, 0x1111u));
+      CHECK(backend.GetTextureContentCacheHitCount() == liveHitsBefore + 1u);
+      CHECK(drawBoundTexAndReadCenter(0u) == 0xF800u);  // Pure Red
+
+      // 2. Idle pooled content hit across TMU addresses: swap once more so
+      //    slot 0's fence completes and retired green moves to m_texturePool.
+      REQUIRE(backend.SwapBuffers());
+      const uint64_t idleHitsBefore = backend.GetTextureContentCacheHitCount();
+      backend.UploadTexture(0u, 0x1000u, makeTex(0xFF00FF00u, 0x2222u));
+      CHECK(backend.GetTextureContentCacheHitCount() == idleHitsBefore + 1u);
+      CHECK(drawBoundTexAndReadCenter(0x1000u) == 0x07E0u);  // Pure Green
+
+      // 3. Shared-texture COW safety during UploadTexturePartial: share red at
+      //    addr=0 and addr=0x2000, partially overwrite addr=0 with blue, and
+      //    verify addr=0x2000 stays untouched red.
+      const uint64_t cowHitsBefore = backend.GetTextureContentCacheHitCount();
+      backend.UploadTexture(0u, 0x2000u, makeTex(0xFFFF0000u, 0x1111u));
+      CHECK(backend.GetTextureContentCacheHitCount() == cowHitsBefore + 1u);
+      auto bluePartial = makeTex(0xFF0000FFu, 0u);
+      backend.UploadTexturePartial(0u, 0u, bluePartial, 0u, 0u, 32u);
+      CHECK(drawBoundTexAndReadCenter(0u) == 0x001Fu);       // Blue at addr=0
+      CHECK(drawBoundTexAndReadCenter(0x2000u) == 0xF800u);  // Still Red
+
+      // 4. High-churn > 128 uploads/frame (Blood shade-table burst): retire
+      //    199 distinct 32x32 textures, reclaim after two swaps, and verify
+      //    next frame reuses >= 199 pooled images without hitting the old 128 cap.
+      for (uint32_t i = 0; i < 200u; ++i) {
+        backend.UploadTexture(
+            0u, 0u,
+            makeTex(0xFF000000u | ((i + 1u) & 0xFFu), 0xD0000u + i));
+      }
+      REQUIRE(backend.SwapBuffers());
+      REQUIRE(backend.SwapBuffers());
+      const uint64_t reusesBefore = backend.GetTexturePoolReuseCount();
+      for (uint32_t i = 0; i < 199u; ++i) {
+        backend.UploadTexture(
+            0u, 0u,
+            makeTex(0xFF000000u | (((i + 1u) & 0xFFu) << 8), 0xE0000u + i));
+      }
+      CHECK(backend.GetTexturePoolReuseCount() >= reusesBefore + 199u);
+
+      backend.DetachWindow();
+      backend.Shutdown();
+    }
+  }
+
   SECTION("VulkanBackend grows descriptor pools past 4096 dual-TMU pairs") {
     GlideWrapper::WrapperConfig config;
     config.backend = "vulkan";

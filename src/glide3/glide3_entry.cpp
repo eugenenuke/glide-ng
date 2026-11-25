@@ -2626,6 +2626,7 @@ FX_ENTRY void FX_CALL
 grTexDownloadMipMapLevel(GrChipID_t tmu, FxU32 startAddress, GrLOD_t thisLod,
                          GrLOD_t largeLod, GrAspectRatio_t aspectRatio,
                          GrTextureFormat_t format, FxU32 evenOdd, void* data) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::Tex);
   GLIDE_LOG(DEBUG, "Frontend",
             "grTexDownloadMipMapLevel (Glide 3.x) invoked for TMU="
                 << tmu << ", LOD=" << thisLod);

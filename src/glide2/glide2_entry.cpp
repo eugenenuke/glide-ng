@@ -1285,6 +1285,7 @@ FX_ENTRY void FX_CALL
 grTexDownloadMipMapLevel(GrChipID_t tmu, FxU32 startAddress, GrLOD_t thisLod,
                          GrLOD_t largeLod, GrAspectRatio_t aspectRatio,
                          GrTextureFormat_t format, FxU32 evenOdd, void* data) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::Tex);
   GLIDE_LOG(DEBUG, "Frontend",
             "grTexDownloadMipMapLevel invoked for TMU=" << tmu
                                                         << ", LOD=" << thisLod);
@@ -2646,6 +2647,7 @@ FX_ENTRY void FX_CALL guMPTexCombineFunction(GrMPTextureCombineFnc_t tc_fnc) {
 
 FX_ENTRY void FX_CALL guMPTexSource(GrChipID_t virtual_tmu,
                                     GrMipMapId_t mmid) {
+  GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::Tex);
   EnsureEngineInitialized();
   if (virtual_tmu >= 0 && virtual_tmu < GLIDE_NUM_VIRTUAL_TMU) {
     s_mpMipMap[virtual_tmu] = mmid;

@@ -39,62 +39,208 @@ static bool ResolveVulkanCompressedFormat(const struct VirtualTexture& tex,
 }
 
 static uint64_t CalculateTextureHash(const struct VirtualTexture& tex) {
+  auto mix64 = [](uint64_t h, const uint8_t* data, size_t len) noexcept {
+    constexpr uint64_t kMul = 0x9E3779B97F4A7C15ULL;
+    constexpr uint64_t kMul2 = 0xBF58476D1CE4E5B9ULL;
+    size_t i = 0;
+    for (; i + 8 <= len; i += 8) {
+      uint64_t w = 0;
+      std::memcpy(&w, data + i, sizeof(w));
+      h ^= w * kMul;
+      h = (h ^ (h >> 27)) * kMul2;
+    }
+    if (i < len) {
+      uint64_t tail = 0;
+      std::memcpy(&tail, data + i, len - i);
+      h ^= (tail ^ static_cast<uint64_t>(len)) * kMul;
+      h = (h ^ (h >> 27)) * kMul2;
+    }
+    h ^= (h >> 31);
+    return h;
+  };
+
   uint64_t hash = 14695981039346656037ULL;
-  const uint64_t prime = 1099511628211ULL;
-
-  // Hash dimensions and mipmap count to protect against collisions
-  auto hash_u32 = [&](uint32_t val) {
-    for (int i = 0; i < 4; ++i) {
-      hash ^= (val & 0xFF);
-      hash *= prime;
-      val >>= 8;
-    }
-  };
-  auto hash_u64 = [&](uint64_t val) {
-    for (int i = 0; i < 8; ++i) {
-      hash ^= (val & 0xFF);
-      hash *= prime;
-      val >>= 8;
-    }
-  };
-
   const uint32_t mipCount = static_cast<uint32_t>(
       !tex.swizzledMipLevels.empty() ? tex.swizzledMipLevels.size()
                                      : tex.rawCompressedMipLevels.size());
-  hash_u32(tex.baseWidth);
-  hash_u32(tex.baseHeight);
-  hash_u32(mipCount);
+  const uint32_t header[4] = {tex.baseWidth, tex.baseHeight, mipCount,
+                              tex.format};
+  hash = mix64(hash, reinterpret_cast<const uint8_t*>(header), sizeof(header));
 
   // Fast O(1) path when TextureManager already hashed the full raw mipmap chain
   // (rawDataHash == 0 after partial sub-updates or direct unit-test setup).
   if (tex.rawDataHash != 0) {
-    hash_u32(tex.format);
-    hash_u32(tex.swizzledWithTable ? 1u : 0u);
-    hash_u64(tex.rawDataHash);
-    hash_u64(tex.swizzledTableHash);
-    return hash;
+    const uint64_t fastData[3] = {tex.swizzledWithTable ? 1ULL : 0ULL,
+                                  tex.rawDataHash, tex.swizzledTableHash};
+    hash = mix64(hash, reinterpret_cast<const uint8_t*>(fastData),
+                 sizeof(fastData));
+    return (hash == 0) ? 1ULL : hash;
   }
 
   if (!tex.swizzledMipLevels.empty()) {
-    // Fallback: hash raw swizzled mipmap pixel data
     for (const auto& level : tex.swizzledMipLevels) {
-      const uint8_t* byteData = reinterpret_cast<const uint8_t*>(level.data());
-      size_t byteLength = level.size() * sizeof(uint32_t);
-      for (size_t i = 0; i < byteLength; ++i) {
-        hash ^= byteData[i];
-        hash *= prime;
-      }
+      const auto* byteData = reinterpret_cast<const uint8_t*>(level.data());
+      hash = mix64(hash, byteData, level.size() * sizeof(uint32_t));
     }
   } else {
-    hash_u32(tex.format);
     for (const auto& level : tex.rawCompressedMipLevels) {
-      for (uint8_t byte : level) {
-        hash ^= byte;
-        hash *= prime;
+      hash = mix64(hash, level.data(), level.size());
+    }
+  }
+  return (hash == 0) ? 1ULL : hash;
+}
+
+void VulkanBackend::EraseFromLiveContentMap_Locked(const VulkanTexture& tex) {
+  if (tex.dataHash == 0) return;
+  const TextureContentKey key{tex.dataHash, tex.format, tex.width, tex.height,
+                                tex.mipLevels};
+  auto it = m_liveContentMap.find(key);
+  if (it != m_liveContentMap.end()) {
+    auto existing = it->second.lock();
+    if (!existing || existing.get() == &tex) {
+      m_liveContentMap.erase(it);
+    }
+  }
+}
+
+std::shared_ptr<VulkanTexture> VulkanBackend::TakeFromPoolById_Locked(
+    uint64_t id) {
+  auto it = m_poolNodes.find(id);
+  if (it == m_poolNodes.end()) return nullptr;
+
+  PoolNode& node = it->second;
+  m_poolLru.erase(node.lruIt);
+
+  auto bit = m_poolBuckets.find(node.poolKey);
+  if (bit != m_poolBuckets.end()) {
+    bit->second.erase(node.bucketIt);
+    if (bit->second.empty()) {
+      m_poolBuckets.erase(bit);
+    }
+  }
+
+  if (node.hasContentKey) {
+    auto cit = m_idleContentMap.find(node.contentKey);
+    if (cit != m_idleContentMap.end() && cit->second == id) {
+      m_idleContentMap.erase(cit);
+    }
+  }
+
+  const size_t bytes = node.tex ? node.tex->gpuByteSize : 0u;
+  m_texturePoolBytes =
+      (m_texturePoolBytes >= bytes) ? (m_texturePoolBytes - bytes) : 0u;
+
+  std::shared_ptr<VulkanTexture> tex = std::move(node.tex);
+  m_poolNodes.erase(it);
+  return tex;
+}
+
+void VulkanBackend::InsertIntoPool_Locked(std::shared_ptr<VulkanTexture> tex) {
+  if (!tex || !tex->image || !tex->memory || !tex->imageView ||
+      tex->width == 0 || tex->height == 0 || tex->mipLevels == 0 ||
+      tex->gpuByteSize > kMaxPooledTextureBytes) {
+    if (tex && tex->imageView) {
+      EvictDescriptorsForView_Locked(tex->imageView.get(), false);
+    }
+    return;
+  }
+
+  const uint64_t id = m_nextPoolNodeId++;
+  PoolNode node;
+  node.poolKey = TexturePoolKey{tex->format, tex->width, tex->height,
+                                tex->mipLevels};
+  if (tex->dataHash != 0) {
+    node.contentKey = TextureContentKey{tex->dataHash, tex->format, tex->width,
+                                        tex->height, tex->mipLevels};
+    node.hasContentKey = true;
+    auto cit = m_idleContentMap.find(node.contentKey);
+    if (cit != m_idleContentMap.end()) {
+      auto oldIt = m_poolNodes.find(cit->second);
+      if (oldIt != m_poolNodes.end()) {
+        oldIt->second.hasContentKey = false;
+      }
+    }
+    m_idleContentMap[node.contentKey] = id;
+  }
+
+  m_poolLru.push_front(id);
+  node.lruIt = m_poolLru.begin();
+
+  auto& bucket = m_poolBuckets[node.poolKey];
+  bucket.push_back(id);
+  node.bucketIt = std::prev(bucket.end());
+
+  m_texturePoolBytes += tex->gpuByteSize;
+  node.tex = std::move(tex);
+  m_poolNodes.emplace(id, std::move(node));
+
+  while (m_poolNodes.size() > kMaxPooledTextures ||
+         m_texturePoolBytes > kMaxPooledTextureBytes) {
+    if (m_poolLru.empty()) break;
+    const uint64_t victimId = m_poolLru.back();
+    auto victim = TakeFromPoolById_Locked(victimId);
+    if (victim && victim->imageView) {
+      EvictDescriptorsForView_Locked(victim->imageView.get(), false);
+    }
+  }
+}
+
+std::shared_ptr<VulkanTexture>
+VulkanBackend::TryAcquireContentCachedTexture_Locked(
+    const TextureContentKey& key) {
+  if (key.dataHash == 0) return nullptr;
+
+  auto lit = m_liveContentMap.find(key);
+  if (lit != m_liveContentMap.end()) {
+    if (auto existing = lit->second.lock()) {
+      if (existing->image && existing->imageView &&
+          existing->dataHash == key.dataHash && existing->format == key.format &&
+          existing->width == key.width && existing->height == key.height &&
+          existing->mipLevels == key.mipLevels) {
+        return existing;
+      }
+    } else {
+      m_liveContentMap.erase(lit);
+    }
+  }
+
+  auto iit = m_idleContentMap.find(key);
+  if (iit != m_idleContentMap.end()) {
+    auto pooled = TakeFromPoolById_Locked(iit->second);
+    if (pooled && pooled->image && pooled->imageView) {
+      m_liveContentMap[key] = pooled;
+      return pooled;
+    }
+  }
+
+  return nullptr;
+}
+
+std::shared_ptr<VulkanTexture> VulkanBackend::TryAcquirePooledTexture_Locked(
+    const TexturePoolKey& key) {
+  auto bit = m_poolBuckets.find(key);
+  if (bit == m_poolBuckets.end() || bit->second.empty()) return nullptr;
+  const uint64_t id = bit->second.front();
+  auto tex = TakeFromPoolById_Locked(id);
+  if (tex) {
+    ++m_texturePoolReuses;
+  }
+  return tex;
+}
+
+void VulkanBackend::ClearTexturePool_Locked(bool evictDescriptors) {
+  if (evictDescriptors) {
+    for (auto& kv : m_poolNodes) {
+      if (kv.second.tex && kv.second.tex->imageView) {
+        EvictDescriptorsForView_Locked(kv.second.tex->imageView.get(), false);
       }
     }
   }
-  return hash;
+  m_poolNodes.clear();
+  m_poolLru.clear();
+  m_poolBuckets.clear();
+  m_idleContentMap.clear();
+  m_texturePoolBytes = 0;
 }
 
 void VulkanBackend::EvictDescriptorsForView_Locked(vk::ImageView view,
@@ -151,8 +297,9 @@ void VulkanBackend::RetireTextureAtAddress_Locked(uint32_t tmu,
   // m_retiredTextures into m_texturePool so pooled texture reuse hits
   // m_descriptorCache with zero vkAllocateDescriptorSets/vkUpdateDescriptorSets
   // calls. Only evict early if approaching descriptor pool capacity.
-  if (m_descriptorCache.size() >= kDescriptorCacheHighWater) {
-    EvictDescriptorsForView_Locked(it->second.imageView.get(), true);
+  if (m_descriptorCache.size() >= kDescriptorCacheHighWater && it->second &&
+      it->second->imageView) {
+    EvictDescriptorsForView_Locked(it->second->imageView.get(), true);
   }
 
   m_retiredTextures[m_currentFrameSlot].push_back(std::move(it->second));
@@ -167,17 +314,19 @@ void VulkanBackend::ReclaimRetiredResources_Locked(uint32_t slot) {
     ReleaseDescriptorSet_Locked(entry);
   }
   m_retiredDescriptorSets[slot].clear();
-  for (auto& tex : m_retiredTextures[slot]) {
-    if (m_texturePool.size() < kMaxPooledTextures && tex.image && tex.memory &&
-        tex.imageView && tex.width > 0 && tex.height > 0 && tex.mipLevels > 0) {
-      m_texturePool.push_back(std::move(tex));
-    } else if (tex.imageView) {
-      // Texture is not pooled and will be destroyed immediately below (its
-      // GPU fence already signaled), so evict its cached descriptor sets now.
-      EvictDescriptorsForView_Locked(tex.imageView.get(), false);
+
+  // Move out elements one by one so duplicate shared_ptrs within the same
+  // retirement vector still collapse to use_count() == 1 on the last entry.
+  auto retired = std::move(m_retiredTextures[slot]);
+  m_retiredTextures[slot].clear();
+  for (auto& tex : retired) {
+    if (!tex) continue;
+    auto owned = std::move(tex);
+    if (owned.use_count() == 1) {
+      EraseFromLiveContentMap_Locked(*owned);
+      InsertIntoPool_Locked(std::move(owned));
     }
   }
-  m_retiredTextures[slot].clear();
   m_lfbOverlayStagingOffsets[slot] = 0;
 }
 
@@ -197,23 +346,6 @@ void VulkanBackend::UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
     return;
   }
 
-  // 1. Calculate incoming texture hash
-  uint64_t incomingHash = CalculateTextureHash(tex);
-
-  // 2. Check if texture already exists at this address and has matching data
-  auto& tmuMap = m_vulkanTextures[tmu];
-  auto it = tmuMap.find(startAddress);
-  if (it != tmuMap.end()) {
-    if (it->second.dataHash == incomingHash) {
-      GLIDE_LOG(DEBUG, "Vulkan",
-                "UploadTexture: Address=0x"
-                    << std::hex << startAddress << std::dec
-                    << " data unmodified (hash match: 0x" << std::hex
-                    << incomingHash << std::dec << "). Bypassing upload!");
-      return;
-    }
-  }
-
   vk::Format targetFormat = vk::Format::eB8G8R8A8Unorm;
   uint32_t bcBlockBytes = 0u;
   const bool useCompressed = ResolveVulkanCompressedFormat(
@@ -223,6 +355,43 @@ void VulkanBackend::UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
                     : tex.swizzledMipLevels.size());
 
   if (tex.baseWidth == 0 || tex.baseHeight == 0 || mipCount == 0) {
+    return;
+  }
+
+  // 1. Calculate incoming texture content hash
+  const uint64_t incomingHash = CalculateTextureHash(tex);
+
+  // 2. Check if identical texture is already bound at this TMU address
+  auto& tmuMap = m_vulkanTextures[tmu];
+  auto it = tmuMap.find(startAddress);
+  if (it != tmuMap.end() && it->second &&
+      it->second->dataHash == incomingHash &&
+      it->second->width == tex.baseWidth &&
+      it->second->height == tex.baseHeight &&
+      it->second->mipLevels == mipCount &&
+      it->second->format == targetFormat) {
+    GLIDE_LOG(DEBUG, "Vulkan",
+              "UploadTexture: Address=0x"
+                  << std::hex << startAddress << std::dec
+                  << " data unmodified (hash match: 0x" << std::hex
+                  << incomingHash << std::dec << "). Bypassing upload!");
+    return;
+  }
+
+  // 3. Check content-addressed VkImage cache across live/in-flight & idle
+  //    pooled textures to eliminate re-upload/alloc thrash on shade-table or
+  //    TMU address rotation.
+  const TextureContentKey contentKey{incomingHash, targetFormat, tex.baseWidth,
+                                     tex.baseHeight, mipCount};
+  if (auto cachedTex = TryAcquireContentCachedTexture_Locked(contentKey)) {
+    if (it != tmuMap.end() && it->second == cachedTex) {
+      return;
+    }
+    FlushBatch();
+    RetireTextureAtAddress_Locked(tmu, startAddress);
+    tmuMap[startAddress] = std::move(cachedTex);
+    m_descriptorStateDirty = true;
+    ++m_textureContentCacheHits;
     return;
   }
 
@@ -281,24 +450,12 @@ void VulkanBackend::UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
   uint32_t currentOffset = useOneShotStaging ? 0u : alignedStart;
 
   try {
-    VulkanTexture vulkanTex;
-    bool reusedFromPool = false;
-
-    // 1. Try to reuse a fence-reclaimed VkImage/DeviceMemory/ImageView of the
-    //    exact same dimensions, mip count, and format before allocating new GPU
-    //    memory.
-    for (auto pit = m_texturePool.begin(); pit != m_texturePool.end(); ++pit) {
-      if (pit->width == tex.baseWidth && pit->height == tex.baseHeight &&
-          pit->mipLevels == mipCount && pit->format == targetFormat) {
-        vulkanTex = std::move(*pit);
-        m_texturePool.erase(pit);
-        reusedFromPool = true;
-        ++m_texturePoolReuses;
-        break;
-      }
-    }
+    std::shared_ptr<VulkanTexture> vulkanTex = TryAcquirePooledTexture_Locked(
+        TexturePoolKey{targetFormat, tex.baseWidth, tex.baseHeight, mipCount});
+    const bool reusedFromPool = (vulkanTex != nullptr);
 
     if (!reusedFromPool) {
+      vulkanTex = std::make_shared<VulkanTexture>();
       // Create vk::Image
       vk::ImageCreateInfo imageInfo(
           {}, vk::ImageType::e2D, targetFormat,
@@ -306,26 +463,28 @@ void VulkanBackend::UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
           vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal,
           vk::ImageUsageFlagBits::eSampled |
               vk::ImageUsageFlagBits::eTransferDst);
-      vulkanTex.image = m_device->createImageUnique(imageInfo);
+      vulkanTex->image = m_device->createImageUnique(imageInfo);
 
       // Allocate and bind memory
-      auto memReqs = m_device->getImageMemoryRequirements(vulkanTex.image.get());
+      auto memReqs =
+          m_device->getImageMemoryRequirements(vulkanTex->image.get());
       uint32_t typeIndex = FindMemoryType(
           memReqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal);
       vk::MemoryAllocateInfo allocInfo(memReqs.size, typeIndex);
-      vulkanTex.memory = m_device->allocateMemoryUnique(allocInfo);
-      m_device->bindImageMemory(vulkanTex.image.get(), vulkanTex.memory.get(),
+      vulkanTex->memory = m_device->allocateMemoryUnique(allocInfo);
+      m_device->bindImageMemory(vulkanTex->image.get(), vulkanTex->memory.get(),
                                 0);
 
       // Create Image View
       vk::ImageViewCreateInfo viewInfo(
-          {}, vulkanTex.image.get(), vk::ImageViewType::e2D, targetFormat, {},
+          {}, vulkanTex->image.get(), vk::ImageViewType::e2D, targetFormat, {},
           {vk::ImageAspectFlagBits::eColor, 0, mipCount, 0, 1});
-      vulkanTex.imageView = m_device->createImageViewUnique(viewInfo);
-      vulkanTex.format = targetFormat;
-      vulkanTex.width = tex.baseWidth;
-      vulkanTex.height = tex.baseHeight;
-      vulkanTex.mipLevels = mipCount;
+      vulkanTex->imageView = m_device->createImageViewUnique(viewInfo);
+      vulkanTex->format = targetFormat;
+      vulkanTex->width = tex.baseWidth;
+      vulkanTex->height = tex.baseHeight;
+      vulkanTex->mipLevels = mipCount;
+      vulkanTex->gpuByteSize = static_cast<size_t>(memReqs.size);
     }
 
     // 3. Copy all mipmap levels into the persistent HOST_COHERENT staging
@@ -418,7 +577,7 @@ void VulkanBackend::UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
     // previous contents for pooled images, which we fully overwrite below)
     vk::ImageSubresourceRange entireImageRange(vk::ImageAspectFlagBits::eColor,
                                                0, mipCount, 0, 1);
-    TransitionImageLayout(uploadCmd, vulkanTex.image.get(),
+    TransitionImageLayout(uploadCmd, vulkanTex->image.get(),
                           vk::ImageLayout::eUndefined,
                           vk::ImageLayout::eTransferDstOptimal,
                           entireImageRange);
@@ -451,11 +610,11 @@ void VulkanBackend::UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
     }
 
     uploadCmd.copyBufferToImage(
-        stagingSrcBuffer, vulkanTex.image.get(),
+        stagingSrcBuffer, vulkanTex->image.get(),
         vk::ImageLayout::eTransferDstOptimal, mipCount, copyRegionsPtr);
 
     // Transition entire image to ShaderReadOnlyOptimal
-    TransitionImageLayout(uploadCmd, vulkanTex.image.get(),
+    TransitionImageLayout(uploadCmd, vulkanTex->image.get(),
                           vk::ImageLayout::eTransferDstOptimal,
                           vk::ImageLayout::eShaderReadOnlyOptimal,
                           entireImageRange);
@@ -465,12 +624,13 @@ void VulkanBackend::UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
       SubmitPendingUploadsAndWaitIdle_Locked();
     }
 
-    // 6. Save in texture cache map
-    vulkanTex.clampS = m_texClampS[tmu];
-    vulkanTex.clampT = m_texClampT[tmu];
-    vulkanTex.minFilter = m_texMinFilter[tmu];
-    vulkanTex.magFilter = m_texMagFilter[tmu];
-    vulkanTex.dataHash = incomingHash;
+    // 6. Save in texture cache map and register live content lookup
+    vulkanTex->clampS = m_texClampS[tmu];
+    vulkanTex->clampT = m_texClampT[tmu];
+    vulkanTex->minFilter = m_texMinFilter[tmu];
+    vulkanTex->magFilter = m_texMagFilter[tmu];
+    vulkanTex->dataHash = incomingHash;
+    m_liveContentMap[contentKey] = vulkanTex;
 
     tmuMap[startAddress] = std::move(vulkanTex);
     m_descriptorStateDirty = true;
@@ -511,8 +671,8 @@ void VulkanBackend::BindTexture(uint32_t tmu, uint32_t startAddress,
   if (startAddress == 0xFFFFFFFF) return;
 
   auto it = m_vulkanTextures[tmu].find(startAddress);
-  if (it != m_vulkanTextures[tmu].end()) {
-    auto& tex = it->second;
+  if (it != m_vulkanTextures[tmu].end() && it->second) {
+    auto& tex = *it->second;
     tex.clampS = clampS;
     tex.clampT = clampT;
     tex.minFilter = minFilter;
@@ -580,7 +740,7 @@ void VulkanBackend::UploadTexturePartial(uint32_t tmu, uint32_t startAddress,
   }
 
   auto it = m_vulkanTextures[tmu].find(startAddress);
-  if (it == m_vulkanTextures[tmu].end()) {
+  if (it == m_vulkanTextures[tmu].end() || !it->second) {
     GLIDE_LOG(WARN, "Vulkan",
               "UploadTexturePartial: texture at address 0x"
                   << std::hex << startAddress << std::dec
@@ -589,11 +749,14 @@ void VulkanBackend::UploadTexturePartial(uint32_t tmu, uint32_t startAddress,
     return;
   }
 
-  auto& vTex = it->second;
-  if (vTex.format != vk::Format::eB8G8R8A8Unorm) {
+  auto& vTexPtr = it->second;
+  if (vTexPtr->format != vk::Format::eB8G8R8A8Unorm ||
+      vTexPtr.use_count() > 1) {
+    // Shared/in-flight or compressed texture: preserve immutability via COW.
     UploadTexture_Locked(tmu, startAddress, tex);
     return;
   }
+  auto& vTex = *vTexPtr;
 
   if (lodLevel >= tex.swizzledMipLevels.size()) {
     GLIDE_LOG(WARN, "Vulkan",
@@ -644,6 +807,9 @@ void VulkanBackend::UploadTexturePartial(uint32_t tmu, uint32_t startAddress,
 
   m_texStagingOffsets[m_currentFrameSlot] += partialBytes;
 
+  // Remove stale content-key mapping before mutating exclusively owned VkImage.
+  EraseFromLiveContentMap_Locked(vTex);
+
   if (m_inRenderPass) {
     FlushBatch();
     m_commandBuffer->endRenderPass();
@@ -674,6 +840,11 @@ void VulkanBackend::UploadTexturePartial(uint32_t tmu, uint32_t startAddress,
                         vk::ImageLayout::eShaderReadOnlyOptimal, levelRange);
 
   vTex.dataHash = CalculateTextureHash(tex);
+  if (vTex.dataHash != 0) {
+    const TextureContentKey newKey{vTex.dataHash, vTex.format, vTex.width,
+                                   vTex.height, vTex.mipLevels};
+    m_liveContentMap[newKey] = vTexPtr;
+  }
 
   GLIDE_LOG(DEBUG, "Vulkan",
             "UploadTexturePartial: Completed successfully for address 0x"
@@ -695,12 +866,8 @@ void VulkanBackend::PurgeTextures() {
 
   // Evict descriptor sets for idle pooled textures before destroying them so
   // no descriptor set ever outlives its VkImageView.
-  for (auto& tex : m_texturePool) {
-    if (tex.imageView) {
-      EvictDescriptorsForView_Locked(tex.imageView.get(), false);
-    }
-  }
-  m_texturePool.clear();
+  ClearTexturePool_Locked(/*evictDescriptors=*/true);
+  m_liveContentMap.clear();
 
   for (auto& kv : m_descriptorCache) {
     m_retiredDescriptorSets[m_currentFrameSlot].push_back(std::move(kv.second));
@@ -874,62 +1041,55 @@ bool VulkanBackend::CommitGpuTextureBuffer(
   auto& tmuMap = m_vulkanTextures[tmu];
   auto it = tmuMap.find(startAddress);
   const bool reuseInPlace =
-      (it != tmuMap.end() && it->second.image &&
-       it->second.width == baseWidth && it->second.height == baseHeight &&
-       it->second.mipLevels == totalMipLevels &&
-       it->second.format == m_colorFormat);
+      (it != tmuMap.end() && it->second && it->second.use_count() == 1 &&
+       it->second->image && it->second->width == baseWidth &&
+       it->second->height == baseHeight &&
+       it->second->mipLevels == totalMipLevels &&
+       it->second->format == m_colorFormat);
 
   vk::Image dstImage;
   if (reuseInPlace) {
-    dstImage = it->second.image.get();
-    it->second.dataHash = 0;
+    EraseFromLiveContentMap_Locked(*it->second);
+    dstImage = it->second->image.get();
+    it->second->dataHash = 0;
   } else {
     RetireTextureAtAddress_Locked(tmu, startAddress);
     try {
-      VulkanTexture vulkanTex;
-      bool reusedFromPool = false;
-      for (auto pit = m_texturePool.begin(); pit != m_texturePool.end();
-           ++pit) {
-        if (pit->width == baseWidth && pit->height == baseHeight &&
-            pit->mipLevels == totalMipLevels && pit->format == m_colorFormat) {
-          vulkanTex = std::move(*pit);
-          m_texturePool.erase(pit);
-          reusedFromPool = true;
-          ++m_texturePoolReuses;
-          break;
-        }
-      }
-      if (!reusedFromPool) {
+      std::shared_ptr<VulkanTexture> vulkanTex = TryAcquirePooledTexture_Locked(
+          TexturePoolKey{m_colorFormat, baseWidth, baseHeight, totalMipLevels});
+      if (!vulkanTex) {
+        vulkanTex = std::make_shared<VulkanTexture>();
         vk::ImageCreateInfo imageInfo(
             {}, vk::ImageType::e2D, m_colorFormat,
             vk::Extent3D(baseWidth, baseHeight, 1), totalMipLevels, 1,
             vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal,
             vk::ImageUsageFlagBits::eSampled |
                 vk::ImageUsageFlagBits::eTransferDst);
-        vulkanTex.image = m_device->createImageUnique(imageInfo);
+        vulkanTex->image = m_device->createImageUnique(imageInfo);
         auto memReqs =
-            m_device->getImageMemoryRequirements(vulkanTex.image.get());
+            m_device->getImageMemoryRequirements(vulkanTex->image.get());
         const uint32_t typeIndex = FindMemoryType(
             memReqs.memoryTypeBits, vk::MemoryPropertyFlagBits::eDeviceLocal);
-        vulkanTex.memory = m_device->allocateMemoryUnique(
+        vulkanTex->memory = m_device->allocateMemoryUnique(
             vk::MemoryAllocateInfo(memReqs.size, typeIndex));
-        m_device->bindImageMemory(vulkanTex.image.get(), vulkanTex.memory.get(),
-                                  0);
+        m_device->bindImageMemory(vulkanTex->image.get(),
+                                  vulkanTex->memory.get(), 0);
         vk::ImageViewCreateInfo viewInfo(
-            {}, vulkanTex.image.get(), vk::ImageViewType::e2D, m_colorFormat,
+            {}, vulkanTex->image.get(), vk::ImageViewType::e2D, m_colorFormat,
             {}, {vk::ImageAspectFlagBits::eColor, 0, totalMipLevels, 0, 1});
-        vulkanTex.imageView = m_device->createImageViewUnique(viewInfo);
-        vulkanTex.format = m_colorFormat;
-        vulkanTex.width = baseWidth;
-        vulkanTex.height = baseHeight;
-        vulkanTex.mipLevels = totalMipLevels;
+        vulkanTex->imageView = m_device->createImageViewUnique(viewInfo);
+        vulkanTex->format = m_colorFormat;
+        vulkanTex->width = baseWidth;
+        vulkanTex->height = baseHeight;
+        vulkanTex->mipLevels = totalMipLevels;
+        vulkanTex->gpuByteSize = static_cast<size_t>(memReqs.size);
       }
-      vulkanTex.clampS = m_texClampS[tmu];
-      vulkanTex.clampT = m_texClampT[tmu];
-      vulkanTex.minFilter = m_texMinFilter[tmu];
-      vulkanTex.magFilter = m_texMagFilter[tmu];
-      vulkanTex.dataHash = 0;
-      dstImage = vulkanTex.image.get();
+      vulkanTex->clampS = m_texClampS[tmu];
+      vulkanTex->clampT = m_texClampT[tmu];
+      vulkanTex->minFilter = m_texMinFilter[tmu];
+      vulkanTex->magFilter = m_texMagFilter[tmu];
+      vulkanTex->dataHash = 0;
+      dstImage = vulkanTex->image.get();
       tmuMap[startAddress] = std::move(vulkanTex);
       m_descriptorStateDirty = true;
     } catch (const std::exception& e) {

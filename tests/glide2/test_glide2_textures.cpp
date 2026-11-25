@@ -1804,3 +1804,55 @@ TEST_CASE("Glide 2.x: Partial Mipmaps, Coplanar W-Buffer & Combiner Clamping", "
 #endif
 }
 
+TEST_CASE("Glide 2.x: grTexDownloadMipMapLevel Telemetry Attribution",
+          "[Glide2][Texture][Perf]") {
+#ifdef __linux__
+  void* handle = OpenGlide2Handle();
+  REQUIRE(handle != nullptr);
+
+  auto glideInit = reinterpret_cast<void (*)(void)>(dlsym(handle, "grGlideInit"));
+  auto sstSelect = reinterpret_cast<void (*)(int)>(dlsym(handle, "grSstSelect"));
+  auto winOpen = reinterpret_cast<FxBool (*)(
+      FxU32, GrScreenResolution_t, GrScreenRefresh_t, GrColorFormat_t,
+      GrOriginLocation_t, int, int)>(dlsym(handle, "grSstWinOpen"));
+  auto texDownloadLevel = reinterpret_cast<void (*)(
+      GrChipID_t, FxU32, GrLOD_t, GrLOD_t, GrAspectRatio_t, GrTextureFormat_t,
+      FxU32, void*)>(dlsym(handle, "grTexDownloadMipMapLevel"));
+  auto bufferSwap =
+      reinterpret_cast<void (*)(int)>(dlsym(handle, "grBufferSwap"));
+  auto winClose =
+      reinterpret_cast<void (*)(void)>(dlsym(handle, "grSstWinClose"));
+  auto shutdown =
+      reinterpret_cast<void (*)(void)>(dlsym(handle, "grGlideShutdown"));
+
+  REQUIRE(glideInit != nullptr);
+  REQUIRE(sstSelect != nullptr);
+  REQUIRE(winOpen != nullptr);
+  REQUIRE(texDownloadLevel != nullptr);
+  REQUIRE(bufferSwap != nullptr);
+  REQUIRE(winClose != nullptr);
+  REQUIRE(shutdown != nullptr);
+
+  glideInit();
+  sstSelect(0);
+  REQUIRE(winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                  GR_COLORFORMAT_ABGR, GR_ORIGIN_UPPER_LEFT, 2, 1) == FXTRUE);
+
+  auto& tm = GlideWrapper::TelemetryManager::GetInstance();
+  tm.ConfigurePerfLog(true, "");
+
+  std::vector<uint16_t> texels(16u * 16u, 0xF800u);
+  texDownloadLevel(GR_TMU0, 0u, GR_LOD_16, GR_LOD_16, GR_ASPECT_1x1,
+                   GR_TEXFMT_RGB_565, GR_MIPMAPLEVELMASK_BOTH, texels.data());
+  bufferSwap(0);
+
+  const auto metrics = tm.GetLastFrameMetrics();
+  CHECK(metrics.texUploads >= 1u);
+  CHECK(metrics.texCpuMs > 0.0f);
+
+  tm.ShutdownPerfLog();
+  winClose();
+  shutdown();
+#endif
+}
+

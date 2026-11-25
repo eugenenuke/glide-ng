@@ -3,6 +3,8 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <list>
+#include <memory>
 #include <mutex>
 #include <type_traits>
 #include <unordered_map>
@@ -119,11 +121,64 @@ struct VulkanTexture {
   uint32_t width{0};
   uint32_t height{0};
   uint32_t mipLevels{0};
+  size_t gpuByteSize{0};
   uint32_t clampS{0};
   uint32_t clampT{0};
   uint32_t minFilter{0};
   uint32_t magFilter{0};
   uint64_t dataHash{0};
+};
+
+struct TexturePoolKey {
+  vk::Format format{vk::Format::eUndefined};
+  uint32_t width{0};
+  uint32_t height{0};
+  uint32_t mipLevels{0};
+  bool operator==(const TexturePoolKey& other) const {
+    return format == other.format && width == other.width &&
+           height == other.height && mipLevels == other.mipLevels;
+  }
+};
+
+struct TexturePoolKeyHash {
+  std::size_t operator()(const TexturePoolKey& k) const {
+    std::size_t h = 0;
+    auto combine = [&h](std::size_t val) {
+      h ^= val + 0x9e3779b9u + (h << 6) + (h >> 2);
+    };
+    combine(static_cast<std::size_t>(static_cast<uint32_t>(k.format)));
+    combine(static_cast<std::size_t>(k.width));
+    combine(static_cast<std::size_t>(k.height));
+    combine(static_cast<std::size_t>(k.mipLevels));
+    return h;
+  }
+};
+
+struct TextureContentKey {
+  uint64_t dataHash{0};
+  vk::Format format{vk::Format::eUndefined};
+  uint32_t width{0};
+  uint32_t height{0};
+  uint32_t mipLevels{0};
+  bool operator==(const TextureContentKey& other) const {
+    return dataHash == other.dataHash && format == other.format &&
+           width == other.width && height == other.height &&
+           mipLevels == other.mipLevels;
+  }
+};
+
+struct TextureContentKeyHash {
+  std::size_t operator()(const TextureContentKey& k) const {
+    std::size_t h = std::hash<uint64_t>{}(k.dataHash);
+    auto combine = [&h](std::size_t val) {
+      h ^= val + 0x9e3779b9u + (h << 6) + (h >> 2);
+    };
+    combine(static_cast<std::size_t>(static_cast<uint32_t>(k.format)));
+    combine(static_cast<std::size_t>(k.width));
+    combine(static_cast<std::size_t>(k.height));
+    combine(static_cast<std::size_t>(k.mipLevels));
+    return h;
+  }
 };
 
 struct SamplerKey {
@@ -313,6 +368,9 @@ class VulkanBackend : public GlideStateTracker {
   uint32_t GetMsaaSamples() const override { return m_msaaSamples; }
   bool HasAllocatedCpuLfbStaging() const { return m_lfbStaging.IsAllocated(); }
   uint64_t GetTexturePoolReuseCount() const { return m_texturePoolReuses; }
+  uint64_t GetTextureContentCacheHitCount() const {
+    return m_textureContentCacheHits;
+  }
   size_t GetDescriptorPoolCount() const { return m_descriptorPools.size(); }
 
   // Selects an optimal Vulkan swapchain present mode.
@@ -681,7 +739,8 @@ class VulkanBackend : public GlideStateTracker {
   void ReleaseDescriptorSet_Locked(TrackedDescriptorSet& entry);
   std::vector<DescriptorPoolChunk> m_descriptorPools;
   size_t m_activeDescriptorPoolIdx{0};
-  std::unordered_map<uint32_t, VulkanTexture> m_vulkanTextures[2];
+  std::unordered_map<uint32_t, std::shared_ptr<VulkanTexture>>
+      m_vulkanTextures[2];
   VulkanTexture m_dummyTexture;
   vk::UniqueSampler m_dummySampler;
   vk::DescriptorSet m_dummyDescriptorSet;
@@ -720,14 +779,51 @@ class VulkanBackend : public GlideStateTracker {
   void RetireTextureAtAddress_Locked(uint32_t tmu, uint32_t startAddress);
   void ReclaimRetiredResources_Locked(uint32_t slot);
   static constexpr size_t kDescriptorCacheHighWater = 3072;
-  std::vector<VulkanTexture> m_retiredTextures[2];
+  std::vector<std::shared_ptr<VulkanTexture>> m_retiredTextures[2];
   std::vector<TrackedDescriptorSet> m_retiredDescriptorSets[2];
 
-  // Bounded free-list of fence-reclaimed textures for zero-allocation reuse on
-  // same-dimension uploads during TMU cache churn.
-  static constexpr size_t kMaxPooledTextures = 128;
-  std::vector<VulkanTexture> m_texturePool;
+  // Bounded O(1) bucketed free-list + content-addressed cache for zero-alloc
+  // VkImage reuse across high-churn paletted workloads and TMU evictions.
+  static constexpr size_t kMaxPooledTextures = 1024;
+  static constexpr size_t kMaxPooledTextureBytes =
+      (sizeof(void*) <= 4) ? (64ull * 1024ull * 1024ull)
+                           : (128ull * 1024ull * 1024ull);
+
+  struct PoolNode {
+    std::shared_ptr<VulkanTexture> tex;
+    TexturePoolKey poolKey{};
+    TextureContentKey contentKey{};
+    bool hasContentKey{false};
+    std::list<uint64_t>::iterator lruIt;
+    std::list<uint64_t>::iterator bucketIt;
+  };
+
+  std::shared_ptr<VulkanTexture> TryAcquireContentCachedTexture_Locked(
+      const TextureContentKey& key);
+  std::shared_ptr<VulkanTexture> TryAcquirePooledTexture_Locked(
+      const TexturePoolKey& key);
+  void InsertIntoPool_Locked(std::shared_ptr<VulkanTexture> tex);
+  std::shared_ptr<VulkanTexture> TakeFromPoolById_Locked(uint64_t id);
+  void ClearTexturePool_Locked(bool evictDescriptors);
+  void EraseFromLiveContentMap_Locked(const VulkanTexture& tex);
+
+  // Non-owning index of live/in-flight textures (owned by m_vulkanTextures or
+  // m_retiredTextures). Weak refs keep use_count() exact for GPU-idle checks.
+  std::unordered_map<TextureContentKey, std::weak_ptr<VulkanTexture>,
+                     TextureContentKeyHash>
+      m_liveContentMap;
+  // Idle (fence-completed) texture pool: O(1) lookup by content key or
+  // (format, width, height, mipLevels) bucket, bounded by count & byte LRU.
+  std::unordered_map<uint64_t, PoolNode> m_poolNodes;
+  std::list<uint64_t> m_poolLru;  // front = MRU, back = LRU eviction victim
+  std::unordered_map<TexturePoolKey, std::list<uint64_t>, TexturePoolKeyHash>
+      m_poolBuckets;  // front = oldest reusable in bucket, back = newest
+  std::unordered_map<TextureContentKey, uint64_t, TextureContentKeyHash>
+      m_idleContentMap;
+  uint64_t m_nextPoolNodeId{1};
+  size_t m_texturePoolBytes{0};
   uint64_t m_texturePoolReuses{0};
+  uint64_t m_textureContentCacheHits{0};
 
   // Persistent Texture Staging Buffer (Asynchronous Uploads)
   vk::UniqueBuffer m_texStagingBuffer;

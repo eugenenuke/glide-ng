@@ -392,8 +392,8 @@ void VulkanBackend::ResolveDrawState_Locked(vk::PrimitiveTopology topology,
     vk::Sampler sampler0 = m_dummySampler.get();
     if (m_boundTexAddress[0] != 0xFFFFFFFF) {
       auto it = m_vulkanTextures[0].find(m_boundTexAddress[0]);
-      if (it != m_vulkanTextures[0].end()) {
-        view0 = it->second.imageView.get();
+      if (it != m_vulkanTextures[0].end() && it->second) {
+        view0 = it->second->imageView.get();
         sampler0 = GetOrCreateSampler(m_texClampS[0], m_texClampT[0],
                                       m_texMinFilter[0], m_texMagFilter[0],
                                       m_texLodBias[0], m_texMipMapMode[0],
@@ -405,8 +405,8 @@ void VulkanBackend::ResolveDrawState_Locked(vk::PrimitiveTopology topology,
     vk::Sampler sampler1 = m_dummySampler.get();
     if (m_boundTexAddress[1] != 0xFFFFFFFF) {
       auto it = m_vulkanTextures[1].find(m_boundTexAddress[1]);
-      if (it != m_vulkanTextures[1].end()) {
-        view1 = it->second.imageView.get();
+      if (it != m_vulkanTextures[1].end() && it->second) {
+        view1 = it->second->imageView.get();
         sampler1 = GetOrCreateSampler(m_texClampS[1], m_texClampT[1],
                                       m_texMinFilter[1], m_texMagFilter[1],
                                       m_texLodBias[1], m_texMipMapMode[1],
