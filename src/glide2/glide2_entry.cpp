@@ -495,9 +495,7 @@ static void DrawPolygonHelper(const int nverts, const GrVertex vlist[]) {
                 << verts[0].pos[1] << ",z=" << verts[0].pos[2]
                 << ",oow=" << verts[0].pos[3] << ",st0=" << verts[0].tex[0]
                 << "," << verts[0].tex[1] << ")");
-  for (int i = 1; i < nverts - 1; ++i) {
-    backend->DrawTriangle(verts[0], verts[i], verts[i + 1]);
-  }
+  backend->DrawTriangleFan(verts, static_cast<uint32_t>(nverts));
 }
 
 static void DrawPolygonIndexedHelper(const int nverts, const int ilist[],
@@ -528,9 +526,7 @@ static void DrawPolygonIndexedHelper(const int nverts, const int ilist[],
                 << verts[0].pos[1] << ",z=" << verts[0].pos[2]
                 << ",oow=" << verts[0].pos[3] << ",st0=" << verts[0].tex[0]
                 << "," << verts[0].tex[1] << ")");
-  for (int i = 1; i < nverts - 1; ++i) {
-    backend->DrawTriangle(verts[0], verts[i], verts[i + 1]);
-  }
+  backend->DrawTriangleFan(verts, static_cast<uint32_t>(nverts));
 }
 
 // =============================================================================

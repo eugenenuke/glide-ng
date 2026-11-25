@@ -454,6 +454,8 @@ class VulkanBackend : public GlideStateTracker {
   void DrawLine(const ModernVertex& v1, const ModernVertex& v2) override;
   void DrawTriangle(const ModernVertex& a, const ModernVertex& b,
                     const ModernVertex& c) override;
+  void DrawTriangleFan(const ModernVertex* verts, uint32_t count) override;
+  void DrawTriangleList(const ModernVertex* verts, uint32_t count) override;
   void BindTexture(uint32_t tmu, uint32_t startAddress, uint32_t clampS,
                    uint32_t clampT, uint32_t minFilter,
                    uint32_t magFilter) override;

@@ -1680,6 +1680,160 @@ void SoftwareBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
   }
 }
 
+void SoftwareBackend::DrawTriangleFan(const ModernVertex* verts,
+                                      uint32_t count) {
+  if (!verts || count < 3u) return;
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (!m_windowAttached || !m_headlessPixelMap) return;
+
+  const uint32_t cullMode = m_cullMode;
+  const uint32_t ssaaScale = m_ssaaScale;
+  const bool flipY = (m_sstOrigin == 1);
+  const float fbH = static_cast<float>(m_headlessHeight);
+  auto transformVert = [ssaaScale, flipY, fbH](const ModernVertex& v) {
+    ModernVertex out = v;
+    if (ssaaScale > 1u) {
+      const float s = static_cast<float>(ssaaScale);
+      out.pos[0] *= s;
+      out.pos[1] *= s;
+    }
+    if (flipY) {
+      out.pos[1] = fbH - out.pos[1];
+    }
+    return out;
+  };
+
+  bool stateResolved = false;
+  bool v0Ready = false;
+  ModernVertex v0{};
+  ModernVertex vPrev{};
+  uint32_t prevTransformedIdx = count;
+
+  m_binnedCommands.reserve(m_binnedCommands.size() + (count - 2u));
+  uint64_t emitted = 0u;
+  const ModernVertex& aRaw = verts[0];
+
+  for (uint32_t i = 1u; i + 1u < count; ++i) {
+    const ModernVertex& bRaw = verts[i];
+    const ModernVertex& cRaw = verts[i + 1u];
+
+    if (cullMode != 0u) {
+      const float area = (bRaw.pos[0] - aRaw.pos[0]) *
+                             (cRaw.pos[1] - aRaw.pos[1]) -
+                         (bRaw.pos[1] - aRaw.pos[1]) *
+                             (cRaw.pos[0] - aRaw.pos[0]);
+      if (cullMode == 1u && area < 0.0f) continue;
+      if (cullMode == 2u && area > 0.0f) continue;
+    }
+
+    if (!stateResolved) {
+      ResolveActiveState();
+      stateResolved = true;
+    }
+    if (!v0Ready) {
+      v0 = transformVert(aRaw);
+      v0Ready = true;
+    }
+    const ModernVertex vb =
+        (prevTransformedIdx == i) ? vPrev : transformVert(bRaw);
+    const ModernVertex vc = transformVert(cRaw);
+    vPrev = vc;
+    prevTransformedIdx = i + 1u;
+
+    DrawCommand cmd;
+    cmd.type = CommandType::TRIANGLE;
+    cmd.stateId = m_activeStateId;
+    cmd.vertices[0] = v0;
+    cmd.vertices[1] = vb;
+    cmd.vertices[2] = vc;
+
+    m_binnedCommands.push_back(cmd);
+    const uint32_t cmdIdx = static_cast<uint32_t>(m_binnedCommands.size() - 1u);
+    BinTriangle(cmdIdx, v0, vb, vc);
+    ++emitted;
+  }
+
+  if (emitted > 0u) {
+    GLIDE_INCREMENT_TRIANGLES_DRAWN(emitted);
+    if (__builtin_expect(m_activeRenderBuffer == 0u, 0)) {
+      NoteFrontBufferMutation_Locked();
+    }
+  }
+}
+
+void SoftwareBackend::DrawTriangleList(const ModernVertex* verts,
+                                       uint32_t count) {
+  if (!verts || count < 3u) return;
+  const uint32_t numTris = count / 3u;
+  if (numTris == 0u) return;
+
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (!m_windowAttached || !m_headlessPixelMap) return;
+
+  const uint32_t cullMode = m_cullMode;
+  const uint32_t ssaaScale = m_ssaaScale;
+  const bool flipY = (m_sstOrigin == 1);
+  const float fbH = static_cast<float>(m_headlessHeight);
+  auto transformVert = [ssaaScale, flipY, fbH](const ModernVertex& v) {
+    ModernVertex out = v;
+    if (ssaaScale > 1u) {
+      const float s = static_cast<float>(ssaaScale);
+      out.pos[0] *= s;
+      out.pos[1] *= s;
+    }
+    if (flipY) {
+      out.pos[1] = fbH - out.pos[1];
+    }
+    return out;
+  };
+
+  bool stateResolved = false;
+  m_binnedCommands.reserve(m_binnedCommands.size() + numTris);
+  uint64_t emitted = 0u;
+
+  for (uint32_t t = 0u; t < numTris; ++t) {
+    const ModernVertex& aRaw = verts[t * 3u + 0u];
+    const ModernVertex& bRaw = verts[t * 3u + 1u];
+    const ModernVertex& cRaw = verts[t * 3u + 2u];
+
+    if (cullMode != 0u) {
+      const float area = (bRaw.pos[0] - aRaw.pos[0]) *
+                             (cRaw.pos[1] - aRaw.pos[1]) -
+                         (bRaw.pos[1] - aRaw.pos[1]) *
+                             (cRaw.pos[0] - aRaw.pos[0]);
+      if (cullMode == 1u && area < 0.0f) continue;
+      if (cullMode == 2u && area > 0.0f) continue;
+    }
+
+    if (!stateResolved) {
+      ResolveActiveState();
+      stateResolved = true;
+    }
+    const ModernVertex va = transformVert(aRaw);
+    const ModernVertex vb = transformVert(bRaw);
+    const ModernVertex vc = transformVert(cRaw);
+
+    DrawCommand cmd;
+    cmd.type = CommandType::TRIANGLE;
+    cmd.stateId = m_activeStateId;
+    cmd.vertices[0] = va;
+    cmd.vertices[1] = vb;
+    cmd.vertices[2] = vc;
+
+    m_binnedCommands.push_back(cmd);
+    const uint32_t cmdIdx = static_cast<uint32_t>(m_binnedCommands.size() - 1u);
+    BinTriangle(cmdIdx, va, vb, vc);
+    ++emitted;
+  }
+
+  if (emitted > 0u) {
+    GLIDE_INCREMENT_TRIANGLES_DRAWN(emitted);
+    if (__builtin_expect(m_activeRenderBuffer == 0u, 0)) {
+      NoteFrontBufferMutation_Locked();
+    }
+  }
+}
+
 void SoftwareBackend::DrawLine(const ModernVertex& v1, const ModernVertex& v2) {
   std::lock_guard<std::mutex> lock(m_mutex);
   if (!m_windowAttached || !m_headlessPixelMap) return;

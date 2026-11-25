@@ -54,6 +54,8 @@ class SoftwareBackend : public SoftwareBackendBase {
                       uint32_t clearMask) override;
   void DrawTriangle(const ModernVertex& a, const ModernVertex& b,
                     const ModernVertex& c) override;
+  void DrawTriangleFan(const ModernVertex* verts, uint32_t count) override;
+  void DrawTriangleList(const ModernVertex* verts, uint32_t count) override;
   void DrawLine(const ModernVertex& v1, const ModernVertex& v2) override;
   void DrawPoint(const ModernVertex& pt) override;
   void UploadTexture(uint32_t tmu, uint32_t startAddress,

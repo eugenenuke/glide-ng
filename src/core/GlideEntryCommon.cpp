@@ -1256,24 +1256,36 @@ void DrawVertexList(uint32_t mode, uint32_t count, const ModernVertex* vertices,
   if (count < 3) return;
 
   if (mode == kGrTriangles) {
-    GLIDE_INCREMENT_TRIANGLES_PROCESSED(count / 3);
-    for (uint32_t i = 0; i + 2 < count; i += 3) {
-      backend->DrawTriangle(vertices[i], vertices[i + 1], vertices[i + 2]);
+    const uint32_t usableVerts = (count / 3u) * 3u;
+    if (usableVerts >= 3u) {
+      GLIDE_INCREMENT_TRIANGLES_PROCESSED(usableVerts / 3u);
+      backend->DrawTriangleList(vertices, usableVerts);
     }
   } else if (mode == kGrTriangleStrip) {
-    GLIDE_INCREMENT_TRIANGLES_PROCESSED(count > 2 ? count - 2 : 0);
-    for (uint32_t i = 0; i + 2 < count; ++i) {
-      if (i % 2 == 0) {
-        backend->DrawTriangle(vertices[i], vertices[i + 1], vertices[i + 2]);
+    GLIDE_INCREMENT_TRIANGLES_PROCESSED(count - 2u);
+    constexpr uint32_t kStripChunkTris = 32u;
+    ModernVertex chunk[kStripChunkTris * 3u];
+    uint32_t chunkVerts = 0u;
+    for (uint32_t i = 0u; i + 2u < count; ++i) {
+      chunk[chunkVerts++] = vertices[i];
+      if ((i & 1u) == 0u) {
+        chunk[chunkVerts++] = vertices[i + 1u];
+        chunk[chunkVerts++] = vertices[i + 2u];
       } else {
-        backend->DrawTriangle(vertices[i], vertices[i + 2], vertices[i + 1]);
+        chunk[chunkVerts++] = vertices[i + 2u];
+        chunk[chunkVerts++] = vertices[i + 1u];
+      }
+      if (chunkVerts == kStripChunkTris * 3u) {
+        backend->DrawTriangleList(chunk, chunkVerts);
+        chunkVerts = 0u;
       }
     }
-  } else if (mode == kGrTriangleFan || mode == kGrPolygon) {
-    GLIDE_INCREMENT_TRIANGLES_PROCESSED(count > 2 ? count - 2 : 0);
-    for (uint32_t i = 1; i + 1 < count; ++i) {
-      backend->DrawTriangle(vertices[0], vertices[i], vertices[i + 1]);
+    if (chunkVerts > 0u) {
+      backend->DrawTriangleList(chunk, chunkVerts);
     }
+  } else if (mode == kGrTriangleFan || mode == kGrPolygon) {
+    GLIDE_INCREMENT_TRIANGLES_PROCESSED(count - 2u);
+    backend->DrawTriangleFan(vertices, count);
   }
 }
 

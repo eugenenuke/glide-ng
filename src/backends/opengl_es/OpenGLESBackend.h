@@ -58,6 +58,8 @@ class OpenGLESBackend : public GlideStateTracker {
   void DrawLine(const ModernVertex& v0, const ModernVertex& v1) override;
   void DrawTriangle(const ModernVertex& a, const ModernVertex& b,
                     const ModernVertex& c) override;
+  void DrawTriangleFan(const ModernVertex* verts, uint32_t count) override;
+  void DrawTriangleList(const ModernVertex* verts, uint32_t count) override;
   void UploadTexture(uint32_t tmu, uint32_t startAddress,
                      const struct VirtualTexture& tex) override;
   bool TryBindCachedTexture(uint32_t tmu, uint32_t startAddress,
@@ -145,6 +147,8 @@ class OpenGLESBackend : public GlideStateTracker {
 
  private:
   void DetachWindow_Locked(std::unique_lock<std::mutex>& lock);
+  void DrawTriangle_Locked(const ModernVertex& a, const ModernVertex& b,
+                           const ModernVertex& c);
   void UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
                             const struct VirtualTexture& tex);
   void LoadGammaTable_Locked(uint32_t nentries, const uint32_t* rTable,

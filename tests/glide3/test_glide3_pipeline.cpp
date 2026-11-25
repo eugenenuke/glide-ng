@@ -2507,3 +2507,207 @@ TEST_CASE("Glide 3.x: Textured Lines & Points Combiner Parity", "[Glide3][Lines]
 #endif
 }
 
+TEST_CASE("Glide 3.x: Batched VertexArray Triangle, Strip, Fan & Polygon Parity",
+          "[Glide3][Geometry][VertexArray]") {
+#ifdef __linux__
+  void* handle = OpenGlide3Handle();
+  REQUIRE(handle != nullptr);
+
+  using InitFunc = void (*)(void);
+  using SstSelectFunc = void (*)(int);
+  using WinOpenFunc = FxU32 (*)(FxU32, FxU32, FxU32, FxU32, FxU32, int, int);
+  using WinCloseFunc = FxBool (*)(FxU32);
+  using ShutdownFunc = void (*)(void);
+  using BufClearFunc = void (*)(FxU32, FxU32, FxU32);
+  using ColorCombFunc = void (*)(GrCombineFunction_t, GrCombineFactor_t,
+                                 GrCombineLocal_t, GrCombineOther_t, FxBool);
+  using ConstColorFunc = void (*)(FxU32);
+  using CullModeFunc = void (*)(GrCullMode_t);
+  using DepthModeFunc = void (*)(GrDepthBufferMode_t);
+  using AlphaCombFunc = void (*)(GrCombineFunction_t, GrCombineFactor_t,
+                                 GrCombineLocal_t, GrCombineOther_t, FxBool);
+  using AlphaBlendFunc = void (*)(GrAlphaBlendFnc_t, GrAlphaBlendFnc_t,
+                                  GrAlphaBlendFnc_t, GrAlphaBlendFnc_t);
+  using ResetFunc = FxBool (*)(FxU32);
+  using VtxLayoutFunc = void (*)(FxU32, FxI32, FxU32);
+  using DrawVertArrayContigFunc = void (*)(FxU32, FxU32, void*, FxU32);
+  using ReadRegionFunc =
+      FxBool (*)(FxU32, FxU32, FxU32, FxU32, FxU32, FxU32, void*);
+
+  auto glideInit = reinterpret_cast<InitFunc>(::dlsym(handle, "grGlideInit"));
+  auto sstSelect =
+      reinterpret_cast<SstSelectFunc>(::dlsym(handle, "grSstSelect"));
+  auto winOpen =
+      reinterpret_cast<WinOpenFunc>(::dlsym(handle, "grSstWinOpen"));
+  auto winClose =
+      reinterpret_cast<WinCloseFunc>(::dlsym(handle, "grSstWinClose"));
+  auto glideShutdown =
+      reinterpret_cast<ShutdownFunc>(::dlsym(handle, "grGlideShutdown"));
+  auto bufClear =
+      reinterpret_cast<BufClearFunc>(::dlsym(handle, "grBufferClear"));
+  auto colorCombine =
+      reinterpret_cast<ColorCombFunc>(::dlsym(handle, "grColorCombine"));
+  auto constColor =
+      reinterpret_cast<ConstColorFunc>(::dlsym(handle, "grConstantColorValue"));
+  auto cullMode =
+      reinterpret_cast<CullModeFunc>(::dlsym(handle, "grCullMode"));
+  auto depthMode =
+      reinterpret_cast<DepthModeFunc>(::dlsym(handle, "grDepthBufferMode"));
+  auto alphaCombine =
+      reinterpret_cast<AlphaCombFunc>(::dlsym(handle, "grAlphaCombine"));
+  auto alphaBlend =
+      reinterpret_cast<AlphaBlendFunc>(::dlsym(handle, "grAlphaBlendFunction"));
+  auto resetFn = reinterpret_cast<ResetFunc>(::dlsym(handle, "grReset"));
+  auto vtxLayout =
+      reinterpret_cast<VtxLayoutFunc>(::dlsym(handle, "grVertexLayout"));
+  auto drawVertArrayContig = reinterpret_cast<DrawVertArrayContigFunc>(
+      ::dlsym(handle, "grDrawVertexArrayContiguous"));
+  auto readRegion =
+      reinterpret_cast<ReadRegionFunc>(::dlsym(handle, "grLfbReadRegion"));
+
+  REQUIRE(glideInit != nullptr);
+  REQUIRE(sstSelect != nullptr);
+  REQUIRE(winOpen != nullptr);
+  REQUIRE(winClose != nullptr);
+  REQUIRE(glideShutdown != nullptr);
+  REQUIRE(bufClear != nullptr);
+  REQUIRE(colorCombine != nullptr);
+  REQUIRE(constColor != nullptr);
+  REQUIRE(cullMode != nullptr);
+  REQUIRE(depthMode != nullptr);
+  REQUIRE(alphaCombine != nullptr);
+  REQUIRE(alphaBlend != nullptr);
+  REQUIRE(resetFn != nullptr);
+  REQUIRE(vtxLayout != nullptr);
+  REQUIRE(drawVertArrayContig != nullptr);
+  REQUIRE(readRegion != nullptr);
+
+  struct SimpleVtx {
+    float x, y;
+  };
+  struct EnvGuard {
+    bool hadBe;
+    std::string beVal;
+    bool hadHl;
+    std::string hlVal;
+    ~EnvGuard() {
+      if (hadBe)
+        ::setenv("GLIDE_NG_BACKEND", beVal.c_str(), 1);
+      else
+        ::unsetenv("GLIDE_NG_BACKEND");
+      if (hadHl)
+        ::setenv("GLIDE_NG_HEADLESS", hlVal.c_str(), 1);
+      else
+        ::unsetenv("GLIDE_NG_HEADLESS");
+    }
+  } envGuard{std::getenv("GLIDE_NG_BACKEND") != nullptr,
+             std::getenv("GLIDE_NG_BACKEND") ? std::getenv("GLIDE_NG_BACKEND")
+                                             : "",
+             std::getenv("GLIDE_NG_HEADLESS") != nullptr,
+             std::getenv("GLIDE_NG_HEADLESS") ? std::getenv("GLIDE_NG_HEADLESS")
+                                              : ""};
+
+  for (const char* be : {"software", "vulkan", "opengl_es"}) {
+    INFO("Backend: " << be);
+    ::setenv("GLIDE_NG_HEADLESS", "1", 1);
+    ::setenv("GLIDE_NG_BACKEND", be, 1);
+
+    glideInit();
+    sstSelect(0);
+    GrContext_t ctx = winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                              GR_COLORFORMAT_ARGB, GR_ORIGIN_UPPER_LEFT, 2, 1);
+    if (!ctx) {
+      glideShutdown();
+      continue;
+    }
+
+    REQUIRE(resetFn(GR_VERTEX_PARAMETER) == FXTRUE);
+    vtxLayout(GR_PARAM_XY, 0, GR_PARAM_ENABLE);
+    depthMode(GR_DEPTHBUFFER_DISABLE);
+    alphaCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+                 GR_COMBINE_LOCAL_CONSTANT, GR_COMBINE_OTHER_NONE, FXFALSE);
+    alphaBlend(GR_BLEND_ONE, GR_BLEND_ZERO, GR_BLEND_ONE, GR_BLEND_ZERO);
+    colorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+                 GR_COMBINE_LOCAL_CONSTANT, GR_COMBINE_OTHER_NONE, FXFALSE);
+    cullMode(GR_CULL_NEGATIVE);
+    bufClear(0xFF000000u, 0, 0xFFFFu);
+
+    // 1. GR_TRIANGLES (CW square at [40..120, 40..120]) -> Red
+    SimpleVtx tris[6] = {
+        {40.0f, 40.0f},   {120.0f, 40.0f},  {120.0f, 120.0f},
+        {40.0f, 40.0f},   {120.0f, 120.0f}, {40.0f, 120.0f},
+    };
+    constColor(0xFFFF0000u);
+    drawVertArrayContig(GR_TRIANGLES, 6, tris, sizeof(SimpleVtx));
+
+    // 2. GR_TRIANGLE_STRIP across both even (i=0) and odd (i=1) triangles
+    //    starting CW so all strip triangles have positive screen area under
+    //    GR_CULL_NEGATIVE ([160..280, 40..120]) -> Green
+    SimpleVtx strip[6] = {
+        {160.0f, 120.0f}, {160.0f, 40.0f}, {200.0f, 120.0f},
+        {200.0f, 40.0f},  {240.0f, 120.0f}, {240.0f, 40.0f},
+    };
+    constColor(0xFF00FF00u);
+    drawVertArrayContig(GR_TRIANGLE_STRIP, 6, strip, sizeof(SimpleVtx));
+
+    // 3. GR_TRIANGLE_FAN (CW hexagon at center (400, 120)) -> Blue
+    SimpleVtx fan[8];
+    fan[0] = {400.0f, 120.0f};
+    constexpr float kTwoPi = 6.28318530718f;
+    for (int i = 0; i <= 6; ++i) {
+      const float a = kTwoPi * static_cast<float>(i) / 6.0f;
+      fan[1 + i] = {400.0f + 50.0f * std::cos(a),
+                    120.0f + 50.0f * std::sin(a)};
+    }
+    constColor(0xFF0000FFu);
+    drawVertArrayContig(GR_TRIANGLE_FAN, 8, fan, sizeof(SimpleVtx));
+
+    // 4. GR_POLYGON (CW 8-vert octagon at center (320, 320)) -> Yellow
+    SimpleVtx poly[8];
+    for (int i = 0; i < 8; ++i) {
+      const float a = kTwoPi * static_cast<float>(i) / 8.0f;
+      poly[i] = {320.0f + 60.0f * std::cos(a), 320.0f + 60.0f * std::sin(a)};
+    }
+    constColor(0xFFFFFF00u);
+    drawVertArrayContig(GR_POLYGON, 8, poly, sizeof(SimpleVtx));
+
+    auto readPx = [&](FxU32 x, FxU32 y) -> uint16_t {
+      uint16_t px = 0u;
+      REQUIRE(readRegion(GR_BUFFER_BACKBUFFER, x, y, 1, 1, 2, &px) == FXTRUE);
+      return px;
+    };
+    auto r565 = [](uint16_t p) { return (p >> 11) & 0x1Fu; };
+    auto g565 = [](uint16_t p) { return (p >> 5) & 0x3Fu; };
+    auto b565 = [](uint16_t p) { return p & 0x1Fu; };
+
+    const uint16_t pxTri = readPx(80u, 80u);
+    CHECK(r565(pxTri) >= 28u);
+    CHECK(g565(pxTri) <= 4u);
+    CHECK(b565(pxTri) <= 4u);
+
+    const uint16_t pxStripEven = readPx(170u, 80u);
+    const uint16_t pxStripOdd = readPx(190u, 70u);
+    const uint16_t pxStripTail = readPx(225u, 70u);
+    for (uint16_t spx : {pxStripEven, pxStripOdd, pxStripTail}) {
+      CHECK(r565(spx) <= 4u);
+      CHECK(g565(spx) >= 58u);
+      CHECK(b565(spx) <= 4u);
+    }
+
+    const uint16_t pxFan = readPx(400u, 120u);
+    CHECK(r565(pxFan) <= 4u);
+    CHECK(g565(pxFan) <= 4u);
+    CHECK(b565(pxFan) >= 28u);
+
+    const uint16_t pxPoly = readPx(320u, 320u);
+    CHECK(r565(pxPoly) >= 28u);
+    CHECK(g565(pxPoly) >= 58u);
+    CHECK(b565(pxPoly) <= 4u);
+
+    winClose(ctx);
+    glideShutdown();
+  }
+  ::dlclose(handle);
+#endif
+}
+

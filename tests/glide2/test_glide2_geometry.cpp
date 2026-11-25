@@ -1128,3 +1128,187 @@ TEST_CASE("Glide 2.x: Coordinate Unsnapping & 12.4 Fixed-Point Wrapping", "[Glid
 
 }
 
+TEST_CASE("Glide 2.x: Batched Polygon Fan & Indexed Polygon Parity",
+          "[Glide2][Geometry][Polygon]") {
+#ifdef __linux__
+  void* handle = OpenGlide2Handle();
+  REQUIRE(handle != nullptr);
+
+  using GlideInitFunc = void (*)(void);
+  using SstSelectFunc = void (*)(int);
+  using WinOpenFunc = FxBool (*)(FxU32, GrScreenResolution_t, GrScreenRefresh_t,
+                                 GrColorFormat_t, GrOriginLocation_t, int, int);
+  using WinCloseFunc = void (*)(void);
+  using GlideShutdownFunc = void (*)(void);
+  using BufferClearFunc = void (*)(GrColor_t, GrAlpha_t, FxU16);
+  using ColorCombineFunc = void (*)(GrCombineFunction_t, GrCombineFactor_t,
+                                    GrCombineLocal_t, GrCombineOther_t, FxBool);
+  using ConstantColorValueFunc = void (*)(GrColor_t);
+  using CullModeFunc = void (*)(GrCullMode_t);
+  using SstOriginFunc = void (*)(GrOriginLocation_t);
+  using DrawPolygonFunc = void (*)(int, const int[], const GrVertex[]);
+  using DrawPolygonVertListFunc = void (*)(int, const GrVertex[]);
+  using LfbReadRegionFunc =
+      FxBool (*)(GrBuffer_t, FxU32, FxU32, FxU32, FxU32, FxU32, void*);
+  using TriStatsFunc = void (*)(FxU32*, FxU32*);
+  using ResetTriStatsFunc = void (*)(void);
+
+  auto glideInit = (GlideInitFunc)dlsym(handle, "grGlideInit");
+  auto sstSelect = (SstSelectFunc)dlsym(handle, "grSstSelect");
+  auto winOpen = (WinOpenFunc)dlsym(handle, "grSstWinOpen");
+  auto winClose = (WinCloseFunc)dlsym(handle, "grSstWinClose");
+  auto shutdown = (GlideShutdownFunc)dlsym(handle, "grGlideShutdown");
+  auto bufferClear = (BufferClearFunc)dlsym(handle, "grBufferClear");
+  auto colorCombine = (ColorCombineFunc)dlsym(handle, "grColorCombine");
+  auto constColor = (ConstantColorValueFunc)dlsym(handle, "grConstantColorValue");
+  auto cullMode = (CullModeFunc)dlsym(handle, "grCullMode");
+  auto sstOrigin = (SstOriginFunc)dlsym(handle, "grSstOrigin");
+  auto drawPoly = (DrawPolygonFunc)dlsym(handle, "grDrawPolygon");
+  auto drawPolyList =
+      (DrawPolygonVertListFunc)dlsym(handle, "grDrawPolygonVertexList");
+  auto readLfb = (LfbReadRegionFunc)dlsym(handle, "grLfbReadRegion");
+  auto triStats = (TriStatsFunc)dlsym(handle, "grTriStats");
+  auto resetTriStats = (ResetTriStatsFunc)dlsym(handle, "grResetTriStats");
+
+  REQUIRE(glideInit != nullptr);
+  REQUIRE(sstSelect != nullptr);
+  REQUIRE(winOpen != nullptr);
+  REQUIRE(winClose != nullptr);
+  REQUIRE(shutdown != nullptr);
+  REQUIRE(bufferClear != nullptr);
+  REQUIRE(colorCombine != nullptr);
+  REQUIRE(constColor != nullptr);
+  REQUIRE(cullMode != nullptr);
+  REQUIRE(sstOrigin != nullptr);
+  REQUIRE(drawPoly != nullptr);
+  REQUIRE(drawPolyList != nullptr);
+  REQUIRE(readLfb != nullptr);
+  REQUIRE(triStats != nullptr);
+  REQUIRE(resetTriStats != nullptr);
+
+  struct EnvGuard {
+    bool hadBe;
+    std::string beVal;
+    bool hadHl;
+    std::string hlVal;
+    ~EnvGuard() {
+      if (hadBe)
+        ::setenv("GLIDE_NG_BACKEND", beVal.c_str(), 1);
+      else
+        ::unsetenv("GLIDE_NG_BACKEND");
+      if (hadHl)
+        ::setenv("GLIDE_NG_HEADLESS", hlVal.c_str(), 1);
+      else
+        ::unsetenv("GLIDE_NG_HEADLESS");
+    }
+  } envGuard{std::getenv("GLIDE_NG_BACKEND") != nullptr,
+             std::getenv("GLIDE_NG_BACKEND") ? std::getenv("GLIDE_NG_BACKEND")
+                                             : "",
+             std::getenv("GLIDE_NG_HEADLESS") != nullptr,
+             std::getenv("GLIDE_NG_HEADLESS") ? std::getenv("GLIDE_NG_HEADLESS")
+                                              : ""};
+
+  for (const char* be : {"software", "vulkan", "opengl_es"}) {
+    INFO("Backend: " << be);
+    ::setenv("GLIDE_NG_HEADLESS", "1", 1);
+    ::setenv("GLIDE_NG_BACKEND", be, 1);
+
+    glideInit();
+    sstSelect(0);
+    if (!winOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz, GR_COLORFORMAT_ABGR,
+                 GR_ORIGIN_UPPER_LEFT, 2, 1)) {
+      shutdown();
+      continue;
+    }
+
+    colorCombine(GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+                 GR_COMBINE_LOCAL_CONSTANT, GR_COMBINE_OTHER_NONE, FXFALSE);
+
+    auto makeGon = [](float cx, float cy, float radius, int nverts,
+                      bool ccwScreen) {
+      std::vector<GrVertex> verts(static_cast<size_t>(nverts));
+      constexpr float kTwoPi = 6.28318530718f;
+      for (int i = 0; i < nverts; ++i) {
+        const float angle = kTwoPi * static_cast<float>(i) /
+                            static_cast<float>(nverts) *
+                            (ccwScreen ? -1.0f : 1.0f);
+        verts[static_cast<size_t>(i)] = {};
+        verts[static_cast<size_t>(i)].x = cx + radius * std::cos(angle);
+        verts[static_cast<size_t>(i)].y = cy + radius * std::sin(angle);
+        verts[static_cast<size_t>(i)].oow = 1.0f;
+      }
+      return verts;
+    };
+
+    // 1. 8-vert CW octagon on left (200, 240) + >32-vert (40-vert) CW ngon on right (460, 240)
+    bufferClear(0x00, 0, 0);
+    cullMode(GR_CULL_NEGATIVE);
+    sstOrigin(GR_ORIGIN_UPPER_LEFT);
+    resetTriStats();
+
+    const std::vector<GrVertex> octCw = makeGon(200.0f, 240.0f, 70.0f, 8, false);
+    const std::vector<GrVertex> gon40Cw =
+        makeGon(460.0f, 240.0f, 70.0f, 40, false);
+
+    constColor(0x000000FFu);  // Red (ABGR)
+    drawPolyList(8, octCw.data());
+
+    std::vector<int> idx40(40);
+    for (int i = 0; i < 40; ++i) idx40[static_cast<size_t>(i)] = i;
+    constColor(0x0000FF00u);  // Green (ABGR)
+    drawPoly(40, idx40.data(), gon40Cw.data());
+
+    std::vector<uint32_t> fb(640u * 480u, 0u);
+    REQUIRE(readLfb(GR_BUFFER_BACKBUFFER, 0, 0, 640, 480, 640 * 4, fb.data()) ==
+            FXTRUE);
+    CHECK((fb[240u * 640u + 200u] & 0x00FFFFFFu) == 0x000000FFu);
+    CHECK((fb[240u * 640u + 460u] & 0x00FFFFFFu) == 0x0000FF00u);
+    CHECK((fb[10u * 640u + 10u] & 0x00FFFFFFu) == 0x00000000u);
+
+    FxU32 proc = 0, drawn = 0;
+    triStats(&proc, &drawn);
+    CHECK(proc == (8u - 2u) + (40u - 2u));
+    if (std::string(be) == "software") {
+      CHECK(drawn == (8u - 2u) + (40u - 2u));
+    }
+
+    // 2. Backface culling parity across GR_CULL_NEGATIVE / GR_CULL_POSITIVE
+    const std::vector<GrVertex> octCcw = makeGon(200.0f, 240.0f, 70.0f, 8, true);
+    bufferClear(0x00, 0, 0);
+    constColor(0x00FF0000u);  // Blue (ABGR)
+    cullMode(GR_CULL_NEGATIVE);
+    drawPolyList(8, octCcw.data());  // CCW culled under GR_CULL_NEGATIVE
+    REQUIRE(readLfb(GR_BUFFER_BACKBUFFER, 0, 0, 640, 480, 640 * 4, fb.data()) ==
+            FXTRUE);
+    CHECK((fb[240u * 640u + 200u] & 0x00FFFFFFu) == 0x00000000u);
+
+    bufferClear(0x00, 0, 0);
+    cullMode(GR_CULL_POSITIVE);
+    drawPolyList(8, octCcw.data());  // CCW drawn under GR_CULL_POSITIVE
+    drawPolyList(8, gon40Cw.data()); // 40-vert CW at (460,240) culled under GR_CULL_POSITIVE
+    REQUIRE(readLfb(GR_BUFFER_BACKBUFFER, 0, 0, 640, 480, 640 * 4, fb.data()) ==
+            FXTRUE);
+    CHECK((fb[240u * 640u + 200u] & 0x00FFFFFFu) == 0x00FF0000u);
+    CHECK((fb[240u * 640u + 460u] & 0x00FFFFFFu) == 0x00000000u);
+
+    // 3. GR_ORIGIN_LOWER_LEFT Y-flip check (vertex y=100 appears near screen bottom y=380)
+    bufferClear(0x00, 0, 0);
+    cullMode(GR_CULL_DISABLE);
+    sstOrigin(GR_ORIGIN_LOWER_LEFT);
+    const std::vector<GrVertex> octLower =
+        makeGon(320.0f, 100.0f, 50.0f, 8, false);
+    constColor(0x0000FFFFu);  // Yellow (ABGR)
+    drawPolyList(8, octLower.data());
+    REQUIRE(readLfb(GR_BUFFER_BACKBUFFER, 0, 0, 640, 480, 640 * 4, fb.data()) ==
+            FXTRUE);
+    CHECK((fb[380u * 640u + 320u] & 0x00FFFFFFu) == 0x0000FFFFu);
+    CHECK((fb[100u * 640u + 320u] & 0x00FFFFFFu) == 0x00000000u);
+
+    sstOrigin(GR_ORIGIN_UPPER_LEFT);
+    winClose();
+    shutdown();
+  }
+  ::dlclose(handle);
+#endif
+}
+

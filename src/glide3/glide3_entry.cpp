@@ -466,13 +466,11 @@ void DrawClipTriangle(GlideWrapper::IGraphicsBackend* backend,
   }
   if (count < 3) return;
 
-  const auto v0 = ProjectClipVertex(src[0], layout);
-  auto vPrev = ProjectClipVertex(src[1], layout);
-  for (int i = 2; i < count; ++i) {
-    const auto vCurr = ProjectClipVertex(src[i], layout);
-    backend->DrawTriangle(v0, vPrev, vCurr);
-    vPrev = vCurr;
+  GlideWrapper::ModernVertex projected[kMaxClipVerts];
+  for (int i = 0; i < count; ++i) {
+    projected[i] = ProjectClipVertex(src[i], layout);
   }
+  backend->DrawTriangleFan(projected, static_cast<uint32_t>(count));
 }
 
 void DrawClipLine(GlideWrapper::IGraphicsBackend* backend,

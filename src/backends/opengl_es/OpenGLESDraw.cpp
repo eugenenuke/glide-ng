@@ -432,15 +432,9 @@ void OpenGLESBackend::DrawLine(const ModernVertex& v0, const ModernVertex& v1) {
   }
 }
 
-void OpenGLESBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
-                                   const ModernVertex& c) {
-  std::lock_guard<std::mutex> lock(m_mutex);
-  if (__builtin_expect(!m_initialized || !m_windowAttached, 0)) return;
-
-  if (__builtin_expect(m_lfbStaging.IsDirty(), 0)) {
-    FlushLFBToGPU_Locked();
-  }
-
+void OpenGLESBackend::DrawTriangle_Locked(const ModernVertex& a,
+                                          const ModernVertex& b,
+                                          const ModernVertex& c) {
   const bool incomingIs2D =
       (a.pos[3] == 1.0f && b.pos[3] == 1.0f && c.pos[3] == 1.0f);
   const size_t curVerts = m_batchVertices.size();
@@ -454,11 +448,6 @@ void OpenGLESBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
     m_batchVertices.push_back(a);
     m_batchVertices.push_back(b);
     m_batchVertices.push_back(c);
-    if (__builtin_expect(m_activeRenderBuffer == 0u, 0)) {
-      NoteFrontBufferMutation_Locked();
-    } else if (__builtin_expect(m_frontBufferNeedsPresent, 0)) {
-      ReleaseFrontPresentContext_Locked();
-    }
     return;
   }
 
@@ -483,6 +472,169 @@ void OpenGLESBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
   m_batchVertices.push_back(a);
   m_batchVertices.push_back(b);
   m_batchVertices.push_back(c);
+}
+
+void OpenGLESBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
+                                   const ModernVertex& c) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (__builtin_expect(!m_initialized || !m_windowAttached, 0)) return;
+
+  if (__builtin_expect(m_lfbStaging.IsDirty(), 0)) {
+    FlushLFBToGPU_Locked();
+  }
+
+  DrawTriangle_Locked(a, b, c);
+  if (__builtin_expect(m_activeRenderBuffer == 0u, 0)) {
+    NoteFrontBufferMutation_Locked();
+  } else if (__builtin_expect(m_frontBufferNeedsPresent, 0)) {
+    ReleaseFrontPresentContext_Locked();
+  }
+}
+
+void OpenGLESBackend::DrawTriangleFan(const ModernVertex* verts,
+                                      uint32_t count) {
+  if (!verts || count < 3u) return;
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (__builtin_expect(!m_initialized || !m_windowAttached, 0)) return;
+
+  if (__builtin_expect(m_lfbStaging.IsDirty(), 0)) {
+    FlushLFBToGPU_Locked();
+  }
+
+  const uint32_t numTris = count - 2u;
+  bool uniform = true;
+  bool uniformIs2D = (verts[0].pos[3] == 1.0f);
+  if (uniformIs2D) {
+    for (uint32_t k = 1u; k < count; ++k) {
+      if (verts[k].pos[3] != 1.0f) {
+        uniform = false;
+        break;
+      }
+    }
+  }
+
+  if (__builtin_expect(!uniform, 0)) {
+    for (uint32_t i = 1u; i + 1u < count; ++i) {
+      DrawTriangle_Locked(verts[0], verts[i], verts[i + 1u]);
+    }
+  } else {
+    uint32_t triIdx = 0u;
+    while (triIdx < numTris) {
+      if (m_batchPrimitiveMode != BatchPrimitiveMode::Triangles ||
+          m_batchIs2DGeometry != uniformIs2D) {
+        if (m_batchPrimitiveMode != BatchPrimitiveMode::None) {
+          FlushBatch(/*fromStateFlush=*/true);
+        }
+        m_batchPrimitiveMode = BatchPrimitiveMode::Triangles;
+        m_batchIs2DGeometry = uniformIs2D;
+      }
+
+      const size_t curBytes =
+          m_geomVBOOffset + m_batchVertices.size() * sizeof(ModernVertex);
+      size_t roomVerts = 0u;
+      if (curBytes + 3u * sizeof(ModernVertex) <= m_geomVBOSizeConfigured) {
+        roomVerts = (m_geomVBOSizeConfigured - curBytes) / sizeof(ModernVertex);
+      } else if (m_batchVertices.empty()) {
+        // FlushBatch orphans & wraps m_geomVBOOffset = 0 when upload exceeds end
+        roomVerts = m_geomVBOSizeConfigured / sizeof(ModernVertex);
+      } else {
+        FlushBatch(false);
+        continue;
+      }
+
+      const uint32_t chunkTris = std::min<uint32_t>(
+          numTris - triIdx,
+          static_cast<uint32_t>(std::max<size_t>(1u, roomVerts / 3u)));
+      const size_t oldSize = m_batchVertices.size();
+      m_batchVertices.resize(oldSize + static_cast<size_t>(chunkTris) * 3u);
+      ModernVertex* dst = m_batchVertices.data() + oldSize;
+      const ModernVertex v0 = verts[0];
+      uint32_t vIdx = triIdx + 1u;
+      for (uint32_t k = 0; k < chunkTris; ++k, ++vIdx) {
+        dst[0] = v0;
+        dst[1] = verts[vIdx];
+        dst[2] = verts[vIdx + 1u];
+        dst += 3;
+      }
+      triIdx += chunkTris;
+    }
+  }
+
+  if (__builtin_expect(m_activeRenderBuffer == 0u, 0)) {
+    NoteFrontBufferMutation_Locked();
+  } else if (__builtin_expect(m_frontBufferNeedsPresent, 0)) {
+    ReleaseFrontPresentContext_Locked();
+  }
+}
+
+void OpenGLESBackend::DrawTriangleList(const ModernVertex* verts,
+                                       uint32_t count) {
+  if (!verts || count < 3u) return;
+  const uint32_t numTris = count / 3u;
+  if (numTris == 0u) return;
+
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (__builtin_expect(!m_initialized || !m_windowAttached, 0)) return;
+
+  if (__builtin_expect(m_lfbStaging.IsDirty(), 0)) {
+    FlushLFBToGPU_Locked();
+  }
+
+  auto triIs2D = [](const ModernVertex& a, const ModernVertex& b,
+                    const ModernVertex& c) {
+    return (a.pos[3] == 1.0f && b.pos[3] == 1.0f && c.pos[3] == 1.0f);
+  };
+  const bool uniformIs2D = triIs2D(verts[0], verts[1], verts[2]);
+  bool uniform = true;
+  for (uint32_t t = 1u; t < numTris; ++t) {
+    const ModernVertex* tri = verts + t * 3u;
+    if (triIs2D(tri[0], tri[1], tri[2]) != uniformIs2D) {
+      uniform = false;
+      break;
+    }
+  }
+
+  if (__builtin_expect(!uniform, 0)) {
+    for (uint32_t t = 0u; t < numTris; ++t) {
+      const ModernVertex* tri = verts + t * 3u;
+      DrawTriangle_Locked(tri[0], tri[1], tri[2]);
+    }
+  } else {
+    uint32_t triIdx = 0u;
+    while (triIdx < numTris) {
+      if (m_batchPrimitiveMode != BatchPrimitiveMode::Triangles ||
+          m_batchIs2DGeometry != uniformIs2D) {
+        if (m_batchPrimitiveMode != BatchPrimitiveMode::None) {
+          FlushBatch(/*fromStateFlush=*/true);
+        }
+        m_batchPrimitiveMode = BatchPrimitiveMode::Triangles;
+        m_batchIs2DGeometry = uniformIs2D;
+      }
+
+      const size_t curBytes =
+          m_geomVBOOffset + m_batchVertices.size() * sizeof(ModernVertex);
+      size_t roomVerts = 0u;
+      if (curBytes + 3u * sizeof(ModernVertex) <= m_geomVBOSizeConfigured) {
+        roomVerts = (m_geomVBOSizeConfigured - curBytes) / sizeof(ModernVertex);
+      } else if (m_batchVertices.empty()) {
+        roomVerts = m_geomVBOSizeConfigured / sizeof(ModernVertex);
+      } else {
+        FlushBatch(false);
+        continue;
+      }
+
+      const uint32_t chunkTris = std::min<uint32_t>(
+          numTris - triIdx,
+          static_cast<uint32_t>(std::max<size_t>(1u, roomVerts / 3u)));
+      const size_t chunkVerts = static_cast<size_t>(chunkTris) * 3u;
+      const size_t oldSize = m_batchVertices.size();
+      m_batchVertices.resize(oldSize + chunkVerts);
+      std::memcpy(m_batchVertices.data() + oldSize, verts + triIdx * 3u,
+                  chunkVerts * sizeof(ModernVertex));
+      triIdx += chunkTris;
+    }
+  }
+
   if (__builtin_expect(m_activeRenderBuffer == 0u, 0)) {
     NoteFrontBufferMutation_Locked();
   } else if (__builtin_expect(m_frontBufferNeedsPresent, 0)) {

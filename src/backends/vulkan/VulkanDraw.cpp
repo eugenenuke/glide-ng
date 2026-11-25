@@ -673,6 +673,203 @@ void VulkanBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
   }
 }
 
+void VulkanBackend::DrawTriangleFan(const ModernVertex* verts,
+                                    uint32_t count) {
+  if (!verts || count < 3u) return;
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (__builtin_expect(!m_initialized || !m_windowAttached, 0)) return;
+
+  if (__builtin_expect(m_lfbStaging.IsDirty(), 0)) {
+    FlushLFBToGPU_Locked();
+  }
+
+  vk::Pipeline reqPipeline;
+  vk::DescriptorSet reqDescSet;
+  if (__builtin_expect(
+          !m_pipelineStateDirty && !m_descriptorStateDirty &&
+              m_batchedVertexCount > 0 &&
+              m_cachedTopology == vk::PrimitiveTopology::eTriangleList &&
+              m_batchedPipeline == m_cachedPipeline &&
+              m_batchedDescSet == m_cachedDescSet,
+          1)) {
+    reqPipeline = m_cachedPipeline;
+    reqDescSet = m_cachedDescSet;
+  } else {
+    ResolveDrawState_Locked(vk::PrimitiveTopology::eTriangleList, reqPipeline,
+                            reqDescSet);
+    const bool stateChanged =
+        (reqPipeline != m_batchedPipeline || reqDescSet != m_batchedDescSet);
+    const bool batchEmpty = (m_batchedVertexCount == 0);
+    if (stateChanged) {
+      FlushBatch(true);
+    }
+    if (stateChanged || batchEmpty) {
+      m_batchedPipeline = reqPipeline;
+      m_batchedDescSet = reqDescSet;
+      m_batchedTopology = vk::PrimitiveTopology::eTriangleList;
+      m_batchedFirstVertex = m_vertexBufferOffset / sizeof(ModernVertex);
+    }
+  }
+
+  if (!m_vertexBufferMap) {
+    GLIDE_LOG(CRITICAL, "Vulkan",
+              "Vertex buffer map is null during DrawTriangleFan!");
+    return;
+  }
+
+  const uint32_t slotBase = m_currentFrameSlot * kVertexSlotBytes;
+  const uint32_t slotEnd = slotBase + kVertexSlotBytes;
+  const bool flipY = (m_sstOrigin == 1);
+  const float h = static_cast<float>(m_headlessHeight);
+  ModernVertex v0 = verts[0];
+  if (flipY) {
+    v0.pos[1] = h - v0.pos[1];
+  }
+
+  uint32_t i = 1u;
+  while (i + 1u < count) {
+    if (m_vertexBufferOffset + 3u * sizeof(ModernVertex) > slotEnd) {
+      FlushBatch(false);
+      GLIDE_LOG(WARN, "Vulkan",
+                "Dynamic Vertex Buffer slot overflow during DrawTriangleFan! "
+                "Stalling GPU to prevent geometry corruption.");
+      SubmitMidFrameAndWaitIdle_Locked(true);
+      m_vertexBufferOffset = slotBase;
+      m_batchedPipeline = reqPipeline;
+      m_batchedDescSet = reqDescSet;
+      m_batchedTopology = vk::PrimitiveTopology::eTriangleList;
+      m_batchedFirstVertex = m_vertexBufferOffset / sizeof(ModernVertex);
+    }
+
+    const uint32_t availTris =
+        (slotEnd - m_vertexBufferOffset) / (3u * sizeof(ModernVertex));
+    const uint32_t remTris = (count - 1u) - i;
+    const uint32_t chunkTris = std::min(availTris, remTris);
+    auto* dest = reinterpret_cast<ModernVertex*>(
+        reinterpret_cast<uint8_t*>(m_vertexBufferMap) + m_vertexBufferOffset);
+
+    if (!flipY) {
+      for (uint32_t k = 0; k < chunkTris; ++k, ++i) {
+        dest[0] = v0;
+        dest[1] = verts[i];
+        dest[2] = verts[i + 1u];
+        dest += 3;
+      }
+    } else {
+      for (uint32_t k = 0; k < chunkTris; ++k, ++i) {
+        dest[0] = v0;
+        dest[1] = verts[i];
+        dest[1].pos[1] = h - dest[1].pos[1];
+        dest[2] = verts[i + 1u];
+        dest[2].pos[1] = h - dest[2].pos[1];
+        dest += 3;
+      }
+    }
+
+    const uint32_t addedVerts = chunkTris * 3u;
+    m_batchedVertexCount += addedVerts;
+    m_vertexBufferOffset += addedVerts * sizeof(ModernVertex);
+  }
+
+  if (__builtin_expect(m_activeRenderBuffer == 0u, 0)) {
+    NoteFrontBufferMutation_Locked();
+  }
+}
+
+void VulkanBackend::DrawTriangleList(const ModernVertex* verts,
+                                     uint32_t count) {
+  if (!verts || count < 3u) return;
+  const uint32_t numTris = count / 3u;
+  if (numTris == 0u) return;
+
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (__builtin_expect(!m_initialized || !m_windowAttached, 0)) return;
+
+  if (__builtin_expect(m_lfbStaging.IsDirty(), 0)) {
+    FlushLFBToGPU_Locked();
+  }
+
+  vk::Pipeline reqPipeline;
+  vk::DescriptorSet reqDescSet;
+  if (__builtin_expect(
+          !m_pipelineStateDirty && !m_descriptorStateDirty &&
+              m_batchedVertexCount > 0 &&
+              m_cachedTopology == vk::PrimitiveTopology::eTriangleList &&
+              m_batchedPipeline == m_cachedPipeline &&
+              m_batchedDescSet == m_cachedDescSet,
+          1)) {
+    reqPipeline = m_cachedPipeline;
+    reqDescSet = m_cachedDescSet;
+  } else {
+    ResolveDrawState_Locked(vk::PrimitiveTopology::eTriangleList, reqPipeline,
+                            reqDescSet);
+    const bool stateChanged =
+        (reqPipeline != m_batchedPipeline || reqDescSet != m_batchedDescSet);
+    const bool batchEmpty = (m_batchedVertexCount == 0);
+    if (stateChanged) {
+      FlushBatch(true);
+    }
+    if (stateChanged || batchEmpty) {
+      m_batchedPipeline = reqPipeline;
+      m_batchedDescSet = reqDescSet;
+      m_batchedTopology = vk::PrimitiveTopology::eTriangleList;
+      m_batchedFirstVertex = m_vertexBufferOffset / sizeof(ModernVertex);
+    }
+  }
+
+  if (!m_vertexBufferMap) {
+    GLIDE_LOG(CRITICAL, "Vulkan",
+              "Vertex buffer map is null during DrawTriangleList!");
+    return;
+  }
+
+  const uint32_t slotBase = m_currentFrameSlot * kVertexSlotBytes;
+  const uint32_t slotEnd = slotBase + kVertexSlotBytes;
+  const bool flipY = (m_sstOrigin == 1);
+  const float h = static_cast<float>(m_headlessHeight);
+
+  uint32_t triIdx = 0u;
+  while (triIdx < numTris) {
+    if (m_vertexBufferOffset + 3u * sizeof(ModernVertex) > slotEnd) {
+      FlushBatch(false);
+      GLIDE_LOG(WARN, "Vulkan",
+                "Dynamic Vertex Buffer slot overflow during DrawTriangleList! "
+                "Stalling GPU to prevent geometry corruption.");
+      SubmitMidFrameAndWaitIdle_Locked(true);
+      m_vertexBufferOffset = slotBase;
+      m_batchedPipeline = reqPipeline;
+      m_batchedDescSet = reqDescSet;
+      m_batchedTopology = vk::PrimitiveTopology::eTriangleList;
+      m_batchedFirstVertex = m_vertexBufferOffset / sizeof(ModernVertex);
+    }
+
+    const uint32_t availTris =
+        (slotEnd - m_vertexBufferOffset) / (3u * sizeof(ModernVertex));
+    const uint32_t chunkTris = std::min(availTris, numTris - triIdx);
+    const uint32_t addedVerts = chunkTris * 3u;
+    auto* dest = reinterpret_cast<ModernVertex*>(
+        reinterpret_cast<uint8_t*>(m_vertexBufferMap) + m_vertexBufferOffset);
+    const ModernVertex* src = verts + triIdx * 3u;
+
+    if (!flipY) {
+      std::memcpy(dest, src, addedVerts * sizeof(ModernVertex));
+    } else {
+      for (uint32_t v = 0; v < addedVerts; ++v) {
+        dest[v] = src[v];
+        dest[v].pos[1] = h - dest[v].pos[1];
+      }
+    }
+
+    triIdx += chunkTris;
+    m_batchedVertexCount += addedVerts;
+    m_vertexBufferOffset += addedVerts * sizeof(ModernVertex);
+  }
+
+  if (__builtin_expect(m_activeRenderBuffer == 0u, 0)) {
+    NoteFrontBufferMutation_Locked();
+  }
+}
+
 void VulkanBackend::FlushBatch(bool fromStateFlush) {
   if (m_batchedVertexCount == 0) return;
 

@@ -71,6 +71,18 @@ class IGraphicsBackend {
   // Phase 3: Immediate Primitive Rasterization
   virtual void DrawTriangle(const ModernVertex& a, const ModernVertex& b,
                             const ModernVertex& c) = 0;
+  virtual void DrawTriangleFan(const ModernVertex* verts, uint32_t count) {
+    if (!verts || count < 3u) return;
+    for (uint32_t i = 1u; i + 1u < count; ++i) {
+      DrawTriangle(verts[0], verts[i], verts[i + 1u]);
+    }
+  }
+  virtual void DrawTriangleList(const ModernVertex* verts, uint32_t count) {
+    if (!verts || count < 3u) return;
+    for (uint32_t i = 0u; i + 2u < count; i += 3u) {
+      DrawTriangle(verts[i], verts[i + 1u], verts[i + 2u]);
+    }
+  }
   virtual void DrawLine(const ModernVertex& v1, const ModernVertex& v2) = 0;
   virtual void DrawPoint(const ModernVertex& pt) = 0;
 
