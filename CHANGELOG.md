@@ -10,10 +10,17 @@ For the pre-beta engineering narrative covering early architecture decisions and
 
 ## [Unreleased]
 
+---
+
+## [0.9.2] - 2026-11-25
+
+Feature, performance, and tooling release introducing content-addressed texture caching with zero-CPU-decode fast paths across **Vulkan**, **OpenGL ES**, and **Software**, hardware-blended GPU LFB overlay quads, batched polygon-fan/vertex-array submission, `FrontBufferPacer` burst coalescing, OS-default GPU selection with explicit `GLIDE_NG_GPU` overrides and safe `SoftwareBackend` fallback, the modular **`glide-dosbox`** launcher with 9 portable catalog `game.sh` presets, multi-frame `FX_GLIDE_SNAPSHOT` captures, `rdtscp` dual-CCD telemetry calibration, CMOS RTC drift detection in DOS `glide_bench.exe`, and the **45th** verified commercial game (*Screamer Rally*).
+
 ### Added
 - **Modular DOSBox Glide Launcher (`tools/glide-dosbox/`, `docs/user-guide/dosbox-launcher.md`)**:
   - Promoted and modularized the multi-emulator DOSBox Glide launcher (`glide-dosbox` entrypoint + `lib/{config,profiles,gpu,debug,helpers,variants,commands}.sh`, `configs/`, `templates/`, `completions/glide-dosbox.bash`, and CTest `GlideDosboxLauncherSmoke` via `tests/scripts/test_glide_dosbox.sh`).
   - Added orthogonal emulator/wrapper overrides (`--emu=svn|dbx|staging` × `--wrapper=gng|og|hw`, plus `dbx-og` preset), per-game runtime variants (`--variant` / `--flavor` / `DEFAULT_VARIANT` with `RUN_CMD_<name>`, `RUN_ENV_<name>`, `RUN_MODE_<name>`, and `--list-variants`), `shell` interactive prompt (`SHELL_CMD=()`), `patch` lifecycle (`PATCH_CMD`, `PATCH_DIR` as `P:\`, `pre_patch`/`post_patch`, auto-chained into `install` unless `--no-patch`), built-in hook utilities (`extract_patch`, `backup_file`, `strip_glide_ovl`), `--exec`/`--no-exit`/`--cd`, `init` (`--catalog=` scaffolding catalog `game.sh`, `glide-ng.ini`, and `dosbox-override.conf`), `doctor` (including `getcap` `AT_SECURE` checks), `--gpu=`, explicit `lfb = full` (`dosbox-svn.conf`) vs. `lfb = full_noaux` (`dosbox-svn-og.conf`), `use dynamic core with fpu = true` (`dosbox-x.conf` / `dosbox-x-sw.conf`), local `GLIDE2X.OVL` conflict warnings, and XDG user config auto-discovery (`~/.config/glide-ng/dosbox-launcher.conf`).
+  - Added 9 verified, portable catalog `game.sh` (and minimal `dosbox-override.conf`) presets under `docs/catalog/games/` (`archimedean-dynasty`, `blood`, `burnout`, `carmageddon`, `descent-2`, `extreme-assault`, `gta`, `screamer-rally`, `tomb-raider`) and documented DOSBox-X x87 FPU dynamic-core and DOSBox-SVN mouse-capture tuning in [`docs/catalog/games/archimedean-dynasty/README.md`](docs/catalog/games/archimedean-dynasty/README.md).
 - **Explicit Host GPU Selector & Safe `SoftwareBackend` Fallback (`GLIDE_NG_GPU`, `GpuSelection.h`, `BackendManager`)**:
   - Registered `GLIDE_NG_GPU` / `[core] gpu` (`gpu_preference`) supporting `default` (`os`, `auto`), `discrete` (`dgpu`), `integrated` (`igpu`), `llvmpipe` (`llvm`, `cpu`), and `name:<substr>`.
   - Added `BackendManager::AttachWindowWithFallback()` across Glide 2.11, Glide 2.x, and Glide 3.x so unsatisfied GPU preferences or backend/window initialization failures fall back cleanly to the CPU `SoftwareBackend` rather than aborting startup.
@@ -43,6 +50,7 @@ For the pre-beta engineering narrative covering early architecture decisions and
 - **Low-Overhead Invariant-TSC Telemetry Clock (`TelemetryManager`, `CpuBucketScope`)**: Switched `CpuBucketScope` on x86/x86_64 hosts with architectural Invariant TSC (`CPUID 0x80000007` EDX bit 8) from per-call `std::chrono::steady_clock::now()` to inline `rdtsc` tick accumulation calibrated against `steady_clock` (with automatic fallback on non-x86/non-invariant CPUs). Eliminates `~17×` `GLIDE_NG_PERF_LOG` observer slowdown on Linux systems running the `hpet` clocksource while keeping zero startup cost when perf logging is disabled.
 
 ### Fixed
+- **Front-Buffer Multi-Write Burst Coalescing (`FrontBufferFlushTimer.h`, `VulkanBackend`, `OpenGLESBackend`, `SoftwareBackend`)**: Introduced `FrontBufferPacer` to replace mid-frame synchronous `PresentFrontBuffer()` flushes on multi-write bursts with trailing-edge coalescing synchronized to `SwapBuffers()`, eliminating periodic `~4.4 ms` Vulkan LFB spikes in direct front-buffer HUD/briefing titles (e.g. *Archimedean Dynasty*).
 - **Small-Region OpenMP Guard & Extended Blend Factors in `CpuLfbStaging`**: Guarded `CpuLfbStaging::RunWriteLFBParallel` with an explicit pixel-count threshold (`> 64000` pixels, matching `SoftwareBackendBase` / `SoftwareBackend`) to eliminate cross-CCD OpenMP thread-wake futex/barrier storms on small LFB HUD strips, and added `EvalRgbBlendFactor` handling for `GR_BLEND_PREFOG_COLOR` (`15`), `GR_BLEND_ALPHA_SATURATE` (`15`), `GR_BLEND_SAME_COLOR_EXT` (`8`), and `GR_BLEND_ONE_MINUS_SAME_COLOR_EXT` (`9`).
 - **Dual-CCD `rdtscp` Telemetry Calibration & Per-CPU Offset Normalization (`TelemetryManager`, `CpuBucketScope`)**: Replaced bare `rdtsc` with `rdtscp` (`EDX` + `ECX` processor ID) paired with short same-CPU spin-wait median calibration and lazy per-CPU TSC offset normalization in `TelemetryManager` / `CpuBucketScope`. Eliminates false calibration rejects on multi-CCD CPUs (which caused fallback to slow OS `hpet` clocksource reads under `GLIDE_NG_PERF_LOG`) as well as multi-second frame spikes from cross-CCD thread migrations.
 - **Win32 Embedded `Alt+Tab` Focus/Minimize, `WaitMessage()` Wakeup & Startup Splash Resize (`NativeSurfaceHost`, `GlideEntryCommon`)**:
@@ -231,7 +239,8 @@ First structured beta release of `glide-ng`, establishing a self-contained repos
 
 ---
 
-[Unreleased]: https://github.com/eugenenuke/glide-ng/compare/v0.9.1...HEAD
+[Unreleased]: https://github.com/eugenenuke/glide-ng/compare/v0.9.2...HEAD
+[0.9.2]: https://github.com/eugenenuke/glide-ng/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/eugenenuke/glide-ng/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/eugenenuke/glide-ng/compare/v0.8.0-beta.4...v0.9.0
 [0.8.0-beta.4]: https://github.com/eugenenuke/glide-ng/compare/v0.8.0-beta.3...v0.8.0-beta.4
