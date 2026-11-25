@@ -12,6 +12,7 @@
 
 #include "backends/FrontBufferFlushTimer.h"
 #include "backends/SoftwareBackendBase.h"
+#include "core/HashUtils.h"
 #include "backends/software/RasterizerState.h"
 #include "backends/software/ThreadPool.h"
 #include "core/HudOverlay.h"
@@ -185,17 +186,11 @@ class SoftwareBackend : public SoftwareBackendBase {
   };
   struct SwTexContentKeyHash {
     size_t operator()(const SwTexContentKey& k) const noexcept {
-      // 32-bit golden-ratio hash_combine constant floor(2^32 / phi).
-      constexpr uint32_t kHashCombineGolden32 = 0x9E3779B9u;
       size_t h = std::hash<uint64_t>{}(k.dataHash);
-      auto combine = [&](uint32_t v) {
-        h ^= std::hash<uint32_t>{}(v) + kHashCombineGolden32 + (h << 6) +
-             (h >> 2);
-      };
-      combine(k.format);
-      combine(k.width);
-      combine(k.height);
-      combine(k.mipLevels);
+      Hash::HashCombine(h, std::hash<uint32_t>{}(k.format));
+      Hash::HashCombine(h, std::hash<uint32_t>{}(k.width));
+      Hash::HashCombine(h, std::hash<uint32_t>{}(k.height));
+      Hash::HashCombine(h, std::hash<uint32_t>{}(k.mipLevels));
       return h;
     }
   };

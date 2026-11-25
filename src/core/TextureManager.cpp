@@ -101,37 +101,11 @@ uint32_t swizzleAp88(uint16_t val, const uint32_t* palette) {
 }
 
 uint64_t HashTableBytes(const void* data, size_t len) {
-  uint64_t h = 14695981039346656037ULL;
-  constexpr uint64_t kPrime = 1099511628211ULL;
-  const auto* bytes = static_cast<const uint8_t*>(data);
-  for (size_t i = 0; i < len; ++i) {
-    h ^= bytes[i];
-    h *= kPrime;
-  }
-  return (h == 0) ? 1ULL : h;
+  return Hash::Fnv1aBytes64(data, len);
 }
 
-// Fast 64-bit word-at-a-time hash for raw texture mipmap deduplication.
-// Processes 8 bytes per iteration (aligned or unaligned via memcpy) and mixes
-// with a 64-bit odd multiplier + xorshift for strong avalanche.
 inline uint64_t FastHashBytes64(uint64_t h, const uint8_t* data, size_t len) {
-  constexpr uint64_t kMul = 0x9E3779B97F4A7C15ULL;
-  constexpr uint64_t kMul2 = 0xBF58476D1CE4E5B9ULL;
-  size_t i = 0;
-  for (; i + 8 <= len; i += 8) {
-    uint64_t w = 0;
-    std::memcpy(&w, data + i, sizeof(w));
-    h ^= w * kMul;
-    h = (h ^ (h >> 27)) * kMul2;
-  }
-  if (i < len) {
-    uint64_t tail = 0;
-    std::memcpy(&tail, data + i, len - i);
-    h ^= (tail ^ static_cast<uint64_t>(len)) * kMul;
-    h = (h ^ (h >> 27)) * kMul2;
-  }
-  h ^= (h >> 31);
-  return (h == 0) ? 1ULL : h;
+  return Hash::NonZeroHash64(Hash::MixBytes64(h, data, len));
 }
 
 template <size_t N, uint32_t MaxVal>
@@ -1038,13 +1012,13 @@ bool TextureManager::DownloadMipMap(uint32_t tmu, uint32_t startAddress,
       true);  // Use packed unaligned size for raw input data hashing!
 
   // 1. Fast 64-bit word hash of metadata + raw input mipmap bytes
-  uint64_t metaSeed = 14695981039346656037ULL;
+  uint64_t metaSeed = Hash::kFnv1aOffsetBasis64;
   metaSeed ^= (static_cast<uint64_t>(static_cast<uint32_t>(lodMin)) << 32) |
               static_cast<uint64_t>(static_cast<uint32_t>(lodMax));
-  metaSeed *= 0x9E3779B97F4A7C15ULL;
+  metaSeed *= Hash::kGoldenRatio64;
   metaSeed ^= (static_cast<uint64_t>(aspect) << 32) |
               static_cast<uint64_t>(format);
-  metaSeed = (metaSeed ^ (metaSeed >> 27)) * 0xBF58476D1CE4E5B9ULL;
+  metaSeed = (metaSeed ^ (metaSeed >> 27)) * Hash::kSplitMix64Mul1;
 
   const uint8_t* byteData = reinterpret_cast<const uint8_t*>(data);
   const uint64_t incomingHash = FastHashBytes64(metaSeed, byteData, rawBytes);
@@ -2204,7 +2178,7 @@ uint32_t TextureManager::ResolveMultibaseSource(uint32_t tmu,
   const uint32_t numLevels = static_cast<uint32_t>(end - start + 1);
   comp->swizzledMipLevels.resize(numLevels);
 
-  uint64_t compHash = 14695981039346656037ULL;
+  uint64_t compHash = Hash::kFnv1aOffsetBasis64;
   bool anyMatched = false;
   for (int32_t L = start; L <= end; ++L) {
     uint32_t lw = 1, lh = 1;

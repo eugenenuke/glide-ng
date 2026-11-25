@@ -29,6 +29,7 @@
 #include "backends/CpuLfbStaging.h"
 #include "backends/FrontBufferFlushTimer.h"
 #include "backends/GlideStateTracker.h"
+#include "core/HashUtils.h"
 #include "core/HudOverlay.h"
 #include "core/NativeSurfaceHost.h"
 
@@ -143,13 +144,10 @@ struct TexturePoolKey {
 struct TexturePoolKeyHash {
   std::size_t operator()(const TexturePoolKey& k) const {
     std::size_t h = 0;
-    auto combine = [&h](std::size_t val) {
-      h ^= val + 0x9e3779b9u + (h << 6) + (h >> 2);
-    };
-    combine(static_cast<std::size_t>(static_cast<uint32_t>(k.format)));
-    combine(static_cast<std::size_t>(k.width));
-    combine(static_cast<std::size_t>(k.height));
-    combine(static_cast<std::size_t>(k.mipLevels));
+    Hash::HashCombine(h, static_cast<std::size_t>(static_cast<uint32_t>(k.format)));
+    Hash::HashCombine(h, static_cast<std::size_t>(k.width));
+    Hash::HashCombine(h, static_cast<std::size_t>(k.height));
+    Hash::HashCombine(h, static_cast<std::size_t>(k.mipLevels));
     return h;
   }
 };
@@ -170,13 +168,10 @@ struct TextureContentKey {
 struct TextureContentKeyHash {
   std::size_t operator()(const TextureContentKey& k) const {
     std::size_t h = std::hash<uint64_t>{}(k.dataHash);
-    auto combine = [&h](std::size_t val) {
-      h ^= val + 0x9e3779b9u + (h << 6) + (h >> 2);
-    };
-    combine(static_cast<std::size_t>(static_cast<uint32_t>(k.format)));
-    combine(static_cast<std::size_t>(k.width));
-    combine(static_cast<std::size_t>(k.height));
-    combine(static_cast<std::size_t>(k.mipLevels));
+    Hash::HashCombine(h, static_cast<std::size_t>(static_cast<uint32_t>(k.format)));
+    Hash::HashCombine(h, static_cast<std::size_t>(k.width));
+    Hash::HashCombine(h, static_cast<std::size_t>(k.height));
+    Hash::HashCombine(h, static_cast<std::size_t>(k.mipLevels));
     return h;
   }
 };
@@ -200,21 +195,18 @@ struct SamplerKey {
 struct SamplerKeyHash {
   std::size_t operator()(const SamplerKey& k) const {
     std::size_t h = 0;
-    auto combine = [&h](std::size_t val) {
-      h ^= val + 0x9e3779b9 + (h << 6) + (h >> 2);
-    };
-    combine(k.clampS);
-    combine(k.clampT);
-    combine(k.minFilter);
-    combine(k.magFilter);
+    Hash::HashCombine(h, k.clampS);
+    Hash::HashCombine(h, k.clampT);
+    Hash::HashCombine(h, k.minFilter);
+    Hash::HashCombine(h, k.magFilter);
     union {
       float f;
       uint32_t u;
     } u;
     u.f = k.lodBias;
-    combine(u.u);
-    combine(k.mipmapMode);
-    combine(k.lodBlend ? 1 : 0);
+    Hash::HashCombine(h, u.u);
+    Hash::HashCombine(h, k.mipmapMode);
+    Hash::HashCombine(h, k.lodBlend ? 1u : 0u);
     return h;
   }
 };
@@ -242,14 +234,18 @@ inline uint64_t VkHandleToU64(VkHandle h) {
 struct DescriptorKeyHash {
   std::size_t operator()(const DescriptorKey& k) const {
     std::size_t h = 0;
-    auto combine = [&h](uint64_t val) {
-      std::size_t hv = std::hash<uint64_t>{}(val);
-      h ^= hv + 0x9e3779b9 + (h << 6) + (h >> 2);
-    };
-    combine(VkHandleToU64(static_cast<VkImageView>(k.imageView0)));
-    combine(VkHandleToU64(static_cast<VkSampler>(k.sampler0)));
-    combine(VkHandleToU64(static_cast<VkImageView>(k.imageView1)));
-    combine(VkHandleToU64(static_cast<VkSampler>(k.sampler1)));
+    Hash::HashCombine(
+        h, std::hash<uint64_t>{}(
+               VkHandleToU64(static_cast<VkImageView>(k.imageView0))));
+    Hash::HashCombine(
+        h, std::hash<uint64_t>{}(
+               VkHandleToU64(static_cast<VkSampler>(k.sampler0))));
+    Hash::HashCombine(
+        h, std::hash<uint64_t>{}(
+               VkHandleToU64(static_cast<VkImageView>(k.imageView1))));
+    Hash::HashCombine(
+        h, std::hash<uint64_t>{}(
+               VkHandleToU64(static_cast<VkSampler>(k.sampler1))));
     return h;
   }
 };
@@ -301,29 +297,26 @@ struct PipelineStateKey {
 struct PipelineStateKeyHash {
   std::size_t operator()(const PipelineStateKey& k) const {
     std::size_t h = 0;
-    auto combine = [&h](std::size_t val) {
-      h ^= val + 0x9e3779b9 + (h << 6) + (h >> 2);
-    };
-    combine(k.cullMode);
-    combine(k.sstOrigin);
-    combine(k.depthMode);
-    combine(k.depthMask ? 1 : 0);
-    combine(k.depthCompareOp);
-    combine(k.rgbSrcBlend);
-    combine(k.rgbDstBlend);
-    combine(k.rgbBlendOp);
-    combine(k.alphaSrcBlend);
-    combine(k.alphaDstBlend);
-    combine(k.alphaBlendOp);
-    combine(k.colorWriteMask);
-    combine(k.singleSample ? 1 : 0);
-    combine(k.sampleMask);
-    combine(k.stencilEnabled ? 1 : 0);
-    combine(k.stencilCompareOp);
-    combine(k.stencilFailOp);
-    combine(k.stencilZFailOp);
-    combine(k.stencilZPassOp);
-    combine(k.compareToBiasPass);
+    Hash::HashCombine(h, k.cullMode);
+    Hash::HashCombine(h, k.sstOrigin);
+    Hash::HashCombine(h, k.depthMode);
+    Hash::HashCombine(h, k.depthMask ? 1u : 0u);
+    Hash::HashCombine(h, k.depthCompareOp);
+    Hash::HashCombine(h, k.rgbSrcBlend);
+    Hash::HashCombine(h, k.rgbDstBlend);
+    Hash::HashCombine(h, k.rgbBlendOp);
+    Hash::HashCombine(h, k.alphaSrcBlend);
+    Hash::HashCombine(h, k.alphaDstBlend);
+    Hash::HashCombine(h, k.alphaBlendOp);
+    Hash::HashCombine(h, k.colorWriteMask);
+    Hash::HashCombine(h, k.singleSample ? 1u : 0u);
+    Hash::HashCombine(h, k.sampleMask);
+    Hash::HashCombine(h, k.stencilEnabled ? 1u : 0u);
+    Hash::HashCombine(h, k.stencilCompareOp);
+    Hash::HashCombine(h, k.stencilFailOp);
+    Hash::HashCombine(h, k.stencilZFailOp);
+    Hash::HashCombine(h, k.stencilZPassOp);
+    Hash::HashCombine(h, k.compareToBiasPass);
     return h;
   }
 };
@@ -339,8 +332,7 @@ struct PipelineCacheKey {
 struct PipelineCacheKeyHash {
   std::size_t operator()(const PipelineCacheKey& k) const {
     std::size_t h = PipelineStateKeyHash{}(k.state);
-    h ^= static_cast<std::size_t>(k.topology) + 0x9e3779b9 + (h << 6) +
-         (h >> 2);
+    Hash::HashCombine(h, static_cast<std::size_t>(k.topology));
     return h;
   }
 };

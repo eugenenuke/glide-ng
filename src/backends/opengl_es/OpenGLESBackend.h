@@ -10,6 +10,7 @@
 #include "backends/CpuLfbStaging.h"
 #include "backends/FrontBufferFlushTimer.h"
 #include "backends/GlideStateTracker.h"
+#include "core/HashUtils.h"
 #include "core/HudOverlay.h"
 #include "core/NativeSurfaceHost.h"
 
@@ -341,13 +342,10 @@ class OpenGLESBackend : public GlideStateTracker {
   struct GlesTexContentKeyHash {
     size_t operator()(const GlesTexContentKey& k) const noexcept {
       size_t h = std::hash<uint64_t>{}(k.dataHash);
-      auto combine = [&](uint32_t v) {
-        h ^= std::hash<uint32_t>{}(v) + 0x9e3779b9u + (h << 6) + (h >> 2);
-      };
-      combine(k.internalFormat);
-      combine(k.width);
-      combine(k.height);
-      combine(k.mipLevels);
+      Hash::HashCombine(h, std::hash<uint32_t>{}(k.internalFormat));
+      Hash::HashCombine(h, std::hash<uint32_t>{}(k.width));
+      Hash::HashCombine(h, std::hash<uint32_t>{}(k.height));
+      Hash::HashCombine(h, std::hash<uint32_t>{}(k.mipLevels));
       return h;
     }
   };

@@ -821,5 +821,35 @@ TEST_CASE("Core: Texture Decoders, PALETTE6666 & Partial Mipmap Packing", "[Core
   }
   }
 
+  SECTION("HashUtils: FNV-1a, MixBytes64 & HashCombine") {
+    using namespace GlideWrapper::Hash;
+    // Standard FNV-1a 64-bit empty & "foobar" test vectors
+    CHECK(kFnv1aOffsetBasis64 == 0xCBF29CE484222325ULL);
+    CHECK(kFnv1aPrime64 == 0x00000100000001B3ULL);
+    CHECK(Fnv1aBytes64("", 0) == kFnv1aOffsetBasis64);
+    const char* sample = "foobar";
+    CHECK(Fnv1aBytes64(sample, 6) == 0x85944171F73967E8ULL);
+    CHECK(NonZeroHash64(0ULL) == 1ULL);
+    CHECK(NonZeroHash64(42ULL) == 42ULL);
+
+    // MixBytes64 handles aligned 8-byte blocks + unaligned tails deterministically
+    const uint8_t bufA[13] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13};
+    uint8_t bufB[13] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14};
+    const uint64_t hA = MixBytes64(kFnv1aOffsetBasis64, bufA, sizeof(bufA));
+    const uint64_t hA2 = MixBytes64(kFnv1aOffsetBasis64, bufA, sizeof(bufA));
+    const uint64_t hB = MixBytes64(kFnv1aOffsetBasis64, bufB, sizeof(bufB));
+    CHECK(hA == hA2);
+    CHECK(hA != hB);
+
+    // HashCombine is deterministic and order-sensitive
+    std::size_t s1 = 0, s2 = 0;
+    HashCombine(s1, 10u);
+    HashCombine(s1, 20u);
+    HashCombine(s2, 20u);
+    HashCombine(s2, 10u);
+    CHECK(s1 != 0u);
+    CHECK(s1 != s2);
+  }
+
 }
 
