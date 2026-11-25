@@ -235,8 +235,7 @@ class SoftwareBackend : public SoftwareBackendBase {
   std::unique_ptr<WaylandShmPresenter> m_wlShmPresenter;
   std::unique_ptr<Win32GdiPresenter> m_win32Presenter;
   HudOverlay m_hudOverlay;
-  bool m_frontBufferNeedsPresent{false};
-  std::chrono::steady_clock::time_point m_lastFrontPresentTime{};
+  FrontBufferPacer m_frontPacer{};
   std::vector<uint32_t> m_hudPresentBuffer;
   std::atomic<bool> m_passthruSuspended{false};
 

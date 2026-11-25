@@ -1273,7 +1273,7 @@ bool SoftwareBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
   EnsureThreadPool_Locked();
 
   m_frontFlushTimer.ResetForAttach();
-  m_frontBufferNeedsPresent = false;
+  m_frontPacer.Reset();
   m_windowAttached = true;
   m_passthruSuspended.store(false, std::memory_order_relaxed);
   return true;
@@ -1330,7 +1330,7 @@ void SoftwareBackend::DetachWindow() {
 void SoftwareBackend::DetachWindow_Locked(std::unique_lock<std::mutex>& lock) {
   if (!m_windowAttached) return;
   m_windowAttached = false;
-  m_frontBufferNeedsPresent = false;
+  m_frontPacer.Reset();
   m_frontFlushTimer.Clear();
   if (m_frontFlushTimer.HasWorker()) {
     lock.unlock();
@@ -1540,7 +1540,7 @@ bool SoftwareBackend::SwapBuffers() {
     std::exit(0);
   }
 
-  m_frontBufferNeedsPresent = false;
+  m_frontPacer.OnSwapBuffers(std::chrono::steady_clock::now());
   m_frontFlushTimer.Clear();
 
   GLIDE_LOG(DEBUG, "Software", "Executing SwapBuffers presentation dispatch.");
@@ -2410,7 +2410,7 @@ void SoftwareBackend::PresentFrontBuffer_Locked() {
   if (m_surfaceHost.GetMode() == NativeSurfaceHost::Mode::Headless ||
       m_config.forceNoWindow || m_passthruSuspended ||
       m_cpuBuffers[m_frontBufferIdx].empty()) {
-    m_frontBufferNeedsPresent = false;
+    m_frontPacer.ClearPending();
     m_frontFlushTimer.Clear();
     return;
   }
@@ -2422,9 +2422,8 @@ void SoftwareBackend::PresentFrontBuffer_Locked() {
   if (pixels && pw > 0 && ph > 0) {
     PresentFrame(pixels, pw, ph);
   }
-  m_frontBufferNeedsPresent = false;
+  m_frontPacer.OnPresented(std::chrono::steady_clock::now());
   m_frontFlushTimer.Clear();
-  m_lastFrontPresentTime = std::chrono::steady_clock::now();
 }
 
 void SoftwareBackend::NoteFrontBufferMutation_Locked(bool forceImmediate) {
@@ -2433,40 +2432,23 @@ void SoftwareBackend::NoteFrontBufferMutation_Locked(bool forceImmediate) {
       m_passthruSuspended || !m_windowAttached) {
     return;
   }
-  if (forceImmediate) {
-    PresentFrontBuffer_Locked();
-    return;
-  }
-  constexpr auto kFrontPresentInterval = std::chrono::milliseconds(33);
-  constexpr auto kBurstCoalesceDelay = std::chrono::milliseconds(16);
-  const auto now = std::chrono::steady_clock::now();
-  const bool hasPrev = (m_lastFrontPresentTime.time_since_epoch().count() != 0);
   const bool canUseAsyncThread =
       (mode != NativeSurfaceHost::Mode::StandaloneSDL2);
-  if ((!canUseAsyncThread &&
-       (!hasPrev || (now - m_lastFrontPresentTime) >= kFrontPresentInterval)) ||
-      (m_frontBufferNeedsPresent &&
-       (!hasPrev || (now - m_lastFrontPresentTime) >= kFrontPresentInterval))) {
+  const auto d = m_frontPacer.OnMutation(std::chrono::steady_clock::now(),
+                                         forceImmediate, canUseAsyncThread);
+  if (d.presentNow) {
     PresentFrontBuffer_Locked();
     return;
   }
-  m_frontBufferNeedsPresent = true;
-  if (!hasPrev) {
-    m_lastFrontPresentTime = now;
-  }
-  if (canUseAsyncThread) {
-    const auto nextDue =
-        (hasPrev && (now - m_lastFrontPresentTime) < kFrontPresentInterval)
-            ? (m_lastFrontPresentTime + kFrontPresentInterval)
-            : (now + kBurstCoalesceDelay);
-    m_frontFlushTimer.Arm(nextDue);
+  if (d.armTimer) {
+    m_frontFlushTimer.Arm(d.deadline);
   }
 }
 
 void SoftwareBackend::OnFrontBufferFlushTimer() {
   std::lock_guard<std::mutex> lock(m_mutex);
   if (!m_initialized || !m_windowAttached || m_passthruSuspended ||
-      !m_frontBufferNeedsPresent) {
+      !m_frontPacer.NeedsPresent()) {
     return;
   }
   PresentFrontBuffer_Locked();

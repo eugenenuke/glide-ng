@@ -562,7 +562,7 @@ void VulkanBackend::ResetState_Locked() {
   m_lfbReadCacheValid[1] = false;
   m_auxDepthShadowValid = false;
   m_msaaDepthDirty = false;
-  m_frontBufferNeedsPresent = false;
+  m_frontPacer.Reset();
   m_frontFlushTimer.Clear();
   m_pipelineStateDirty = true;
   m_descriptorStateDirty = true;
@@ -818,6 +818,7 @@ bool VulkanBackend::AttachWindow(void* nativeWindowHandle, uint32_t width,
   m_commandBuffer->begin(vk::CommandBufferBeginInfo(
       vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
 
+  m_frontPacer.Reset();
   m_frontFlushTimer.ResetForAttach();
   m_windowAttached = true;
   return true;
@@ -834,7 +835,7 @@ void VulkanBackend::DetachWindow_Locked(std::unique_lock<std::mutex>& lock) {
   // (e.g. SetWindowPos inside m_surfaceHost.Detach() triggering
   // grSstPassthruMode) treats the window as detached and never rebuilds WSI.
   m_windowAttached = false;
-  m_frontBufferNeedsPresent = false;
+  m_frontPacer.Reset();
   m_frontFlushTimer.Clear();
   if (m_frontFlushTimer.HasWorker()) {
     ScopedMutexUnlock unlockGuard(lock);
@@ -2381,7 +2382,7 @@ bool VulkanBackend::SwapBuffers() {
   // Swap CPU LFB staging indices for double-buffering (zero-cost when unused)
   m_lfbStaging.SwapBuffers();
   std::swap(m_lfbReadCacheValid[0], m_lfbReadCacheValid[1]);
-  m_frontBufferNeedsPresent = false;
+  m_frontPacer.OnSwapBuffers(std::chrono::steady_clock::now());
   m_frontFlushTimer.Clear();
 
   // Swap the GPU color targets for physical double-buffering

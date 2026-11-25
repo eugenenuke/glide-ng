@@ -898,8 +898,7 @@ class VulkanBackend : public GlideStateTracker {
   void NoteFrontBufferMutation_Locked(bool forceImmediate = false);
   void OnFrontBufferFlushTimer();
   bool m_lfbReadCacheValid[2]{false, false};
-  bool m_frontBufferNeedsPresent{false};
-  std::chrono::steady_clock::time_point m_lastFrontPresentTime{};
+  FrontBufferPacer m_frontPacer{};
   std::vector<uint32_t> m_auxDepthScratch;
   std::vector<uint16_t> m_auxDepthShadow16;
   bool m_auxDepthShadowValid{false};

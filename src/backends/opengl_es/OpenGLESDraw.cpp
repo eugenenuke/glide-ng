@@ -394,7 +394,7 @@ void OpenGLESBackend::DrawPoint(const ModernVertex& pt) {
   m_batchVertices.push_back(pt);
   if (__builtin_expect(m_activeRenderBuffer == 0u, 0)) {
     NoteFrontBufferMutation_Locked();
-  } else if (__builtin_expect(m_frontBufferNeedsPresent, 0)) {
+  } else if (__builtin_expect(m_frontPacer.NeedsPresent(), 0)) {
     ReleaseFrontPresentContext_Locked();
   }
 }
@@ -430,7 +430,7 @@ void OpenGLESBackend::DrawLine(const ModernVertex& v0, const ModernVertex& v1) {
   m_batchVertices.push_back(v1);
   if (__builtin_expect(m_activeRenderBuffer == 0u, 0)) {
     NoteFrontBufferMutation_Locked();
-  } else if (__builtin_expect(m_frontBufferNeedsPresent, 0)) {
+  } else if (__builtin_expect(m_frontPacer.NeedsPresent(), 0)) {
     ReleaseFrontPresentContext_Locked();
   }
 }
@@ -489,7 +489,7 @@ void OpenGLESBackend::DrawTriangle(const ModernVertex& a, const ModernVertex& b,
   DrawTriangle_Locked(a, b, c);
   if (__builtin_expect(m_activeRenderBuffer == 0u, 0)) {
     NoteFrontBufferMutation_Locked();
-  } else if (__builtin_expect(m_frontBufferNeedsPresent, 0)) {
+  } else if (__builtin_expect(m_frontPacer.NeedsPresent(), 0)) {
     ReleaseFrontPresentContext_Locked();
   }
 }
@@ -565,7 +565,7 @@ void OpenGLESBackend::DrawTriangleFan(const ModernVertex* verts,
 
   if (__builtin_expect(m_activeRenderBuffer == 0u, 0)) {
     NoteFrontBufferMutation_Locked();
-  } else if (__builtin_expect(m_frontBufferNeedsPresent, 0)) {
+  } else if (__builtin_expect(m_frontPacer.NeedsPresent(), 0)) {
     ReleaseFrontPresentContext_Locked();
   }
 }
@@ -640,7 +640,7 @@ void OpenGLESBackend::DrawTriangleList(const ModernVertex* verts,
 
   if (__builtin_expect(m_activeRenderBuffer == 0u, 0)) {
     NoteFrontBufferMutation_Locked();
-  } else if (__builtin_expect(m_frontBufferNeedsPresent, 0)) {
+  } else if (__builtin_expect(m_frontPacer.NeedsPresent(), 0)) {
     ReleaseFrontPresentContext_Locked();
   }
 }
@@ -1135,7 +1135,7 @@ void OpenGLESBackend::FlushBatch(bool fromStateFlush) {
   m_batchPrimitiveMode = BatchPrimitiveMode::None;
 
   checkGLError("FlushBatch");
-  if (__builtin_expect(fromStateFlush && m_frontBufferNeedsPresent, 0)) {
+  if (__builtin_expect(fromStateFlush && m_frontPacer.NeedsPresent(), 0)) {
     ReleaseFrontPresentContext_Locked();
   }
 }

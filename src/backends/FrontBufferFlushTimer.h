@@ -175,4 +175,95 @@ class FrontBufferFlushTimer {
   std::atomic<bool> m_started{false};
 };
 
+// Shared state machine governing RAMDAC-style front-buffer presentation pacing
+// across Vulkan, OpenGL ES, and Software backends. Coalesces multi-write
+// bursts within kBurstCoalesceDelay (16 ms) without mid-frame stalls, while
+// capping continuous un-swapped streaming loops to ~30 Hz (33 ms).
+struct FrontBufferPacer {
+  using Clock = FrontBufferFlushTimer::Clock;
+  static constexpr auto kFrontPresentInterval = std::chrono::milliseconds(33);
+  static constexpr auto kBurstCoalesceDelay = std::chrono::milliseconds(16);
+
+  struct Decision {
+    bool presentNow{false};
+    bool armTimer{false};
+    Clock::time_point deadline{};
+  };
+
+  Decision OnMutation(Clock::time_point now, bool forceImmediate,
+                      bool canUseAsyncThread) {
+    if (forceImmediate) {
+      return Decision{true, false, {}};
+    }
+    const bool hasPrev = (m_lastPresentTime.time_since_epoch().count() != 0);
+    const bool intervalElapsed =
+        !hasPrev || (now - m_lastPresentTime) >= kFrontPresentInterval;
+
+    if (!m_needsPresent) {
+      if (!canUseAsyncThread && intervalElapsed) {
+        return Decision{true, false, {}};
+      }
+      m_needsPresent = true;
+      m_burstStart = now;
+      if (!hasPrev) {
+        m_lastPresentTime = now;
+      }
+      if (!canUseAsyncThread) {
+        return Decision{false, false, {}};
+      }
+      const auto deadline =
+          (hasPrev && (now - m_lastPresentTime) < kFrontPresentInterval)
+              ? (m_lastPresentTime + kFrontPresentInterval)
+              : (now + kBurstCoalesceDelay);
+      return Decision{false, true, deadline};
+    }
+
+    // Already in an active burst: only trigger synchronous inline streaming
+    // presentation once the un-swapped burst itself spans >= 33 ms (never on
+    // back-to-back writes within the same frame's burst).
+    const bool burstStreaming = (now - m_burstStart) >= kFrontPresentInterval;
+    if (burstStreaming && intervalElapsed) {
+      return Decision{true, false, {}};
+    }
+    if (!canUseAsyncThread) {
+      return Decision{false, false, {}};
+    }
+    const auto deadline =
+        (hasPrev && (now - m_lastPresentTime) < kFrontPresentInterval)
+            ? (m_lastPresentTime + kFrontPresentInterval)
+            : (m_burstStart + kBurstCoalesceDelay);
+    return Decision{false, true, deadline};
+  }
+
+  void ClearPending() {
+    m_needsPresent = false;
+    m_burstStart = {};
+  }
+
+  void OnPresented(Clock::time_point now) {
+    m_needsPresent = false;
+    m_burstStart = {};
+    m_lastPresentTime = now;
+  }
+
+  void OnSwapBuffers(Clock::time_point now) {
+    m_needsPresent = false;
+    m_burstStart = {};
+    m_lastPresentTime = now;
+  }
+
+  void Reset() {
+    m_needsPresent = false;
+    m_burstStart = {};
+    m_lastPresentTime = {};
+  }
+
+  bool NeedsPresent() const { return m_needsPresent; }
+
+ private:
+  bool m_needsPresent{false};
+  Clock::time_point m_burstStart{};
+  Clock::time_point m_lastPresentTime{};
+};
+
 }  // namespace GlideWrapper

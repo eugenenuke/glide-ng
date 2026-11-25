@@ -644,7 +644,7 @@ void OpenGLESBackend::PurgeTextures() {
   if (ctxOk) {
     checkGLError("PurgeTextures");
   }
-  if (m_frontBufferNeedsPresent) {
+  if (m_frontPacer.NeedsPresent()) {
     ReleaseFrontPresentContext_Locked();
   }
 }

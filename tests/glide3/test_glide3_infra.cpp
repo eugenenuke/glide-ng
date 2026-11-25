@@ -2775,5 +2775,59 @@ TEST_CASE("Infra: FrontBufferFlushTimer lazy spawn, coalescing, cancel, and rese
     }
     timer.Stop();
   }
+
+  SECTION("FrontBufferPacer coalesces bursts without mid-frame stalls") {
+    GlideWrapper::FrontBufferPacer pacer;
+    const auto t0 = Clock::time_point(Ms(1000));
+
+    // Seed an older presentation and simulate slow frames (50 ms > 33 ms).
+    pacer.OnPresented(t0);
+    pacer.OnSwapBuffers(t0 + Ms(100));
+    const auto frameStart = t0 + Ms(150);  // 50 ms since last swap
+
+    // First front-buffer write in a multi-write burst arms timer, no inline stall.
+    const auto d1 = pacer.OnMutation(frameStart, false, true);
+    CHECK_FALSE(d1.presentNow);
+    CHECK(d1.armTimer);
+    CHECK(d1.deadline == frameStart + Ms(16));
+    CHECK(pacer.NeedsPresent());
+
+    // Subsequent writes within the same burst (hundreds of us apart) MUST NOT
+    // stall with synchronous present even though >= 33 ms passed since SwapBuffers.
+    for (int i = 1; i <= 4; ++i) {
+      const auto dn = pacer.OnMutation(frameStart + Ms(i), false, true);
+      CHECK_FALSE(dn.presentNow);
+      CHECK(dn.armTimer);
+      CHECK(dn.deadline == frameStart + Ms(16));
+    }
+
+    // SwapBuffers cancels pending timer and records presentation timestamp.
+    pacer.OnSwapBuffers(frameStart + Ms(5));
+    CHECK_FALSE(pacer.NeedsPresent());
+
+    // Fast frame (< 33 ms since SwapBuffers): arms at lastPresentTime + 33 ms.
+    const auto dFast = pacer.OnMutation(frameStart + Ms(10), false, true);
+    CHECK_FALSE(dFast.presentNow);
+    CHECK(dFast.armTimer);
+    CHECK(dFast.deadline == frameStart + Ms(5) + Ms(33));
+
+    // Continuous un-swapped streaming past 33 ms triggers synchronous 30 Hz present.
+    const auto streamStart = t0 + Ms(500);
+    pacer.OnPresented(streamStart - Ms(40));
+    CHECK_FALSE(pacer.OnMutation(streamStart, false, true).presentNow);
+    CHECK_FALSE(pacer.OnMutation(streamStart + Ms(32), false, true).presentNow);
+    CHECK(pacer.OnMutation(streamStart + Ms(33), false, true).presentNow);
+
+    // Full-frame forceImmediate always presents immediately.
+    CHECK(pacer.OnMutation(streamStart + Ms(34), true, true).presentNow);
+
+    // Synchronous fallback mode (canUseAsyncThread == false) presents once per
+    // 33 ms without spamming on back-to-back writes.
+    pacer.Reset();
+    CHECK(pacer.OnMutation(streamStart, false, false).presentNow);
+    pacer.OnPresented(streamStart);
+    CHECK_FALSE(pacer.OnMutation(streamStart + Ms(1), false, false).presentNow);
+    CHECK_FALSE(pacer.OnMutation(streamStart + Ms(10), false, false).presentNow);
+  }
 }
 

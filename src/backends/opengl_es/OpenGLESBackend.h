@@ -440,7 +440,7 @@ class OpenGLESBackend : public GlideStateTracker {
   std::vector<float> m_auxDepthFloatScratch;
   bool m_auxDepthShadowValid{false};
   bool m_msaaDepthDirty{false};
-  std::chrono::steady_clock::time_point m_lastFrontPresentTime{};
+  FrontBufferPacer m_frontPacer{};
   bool InitLfbDepthProgram_Locked();
   bool InitDepthReadProgram_Locked();
   bool ReadbackAuxDepthToShadow_Locked();
@@ -453,13 +453,12 @@ class OpenGLESBackend : public GlideStateTracker {
   struct ScopedFrontContextRelease {
     OpenGLESBackend& self;
     ~ScopedFrontContextRelease() {
-      if (self.m_frontBufferNeedsPresent) {
+      if (self.m_frontPacer.NeedsPresent()) {
         self.ReleaseFrontPresentContext_Locked();
       }
     }
   };
   void OnFrontBufferFlushTimer();
-  bool m_frontBufferNeedsPresent{false};
 
   // Cached Uniform Locations for geomProgram
   int m_uSstOriginLoc{-1};

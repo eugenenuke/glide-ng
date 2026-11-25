@@ -358,7 +358,7 @@ void VulkanBackend::DestroyLfbOverlayResources_Locked() {
   m_msaaDepthDirty = false;
   m_lfbReadCacheValid[0] = false;
   m_lfbReadCacheValid[1] = false;
-  m_frontBufferNeedsPresent = false;
+  m_frontPacer.ClearPending();
 }
 
 bool VulkanBackend::InitLfbDepthPipeline_Locked(bool msaa) {
@@ -813,43 +813,30 @@ void VulkanBackend::PresentFrontBuffer_Locked() {
   m_commandBuffer->reset({});
   m_commandBuffer->begin(vk::CommandBufferBeginInfo(
       vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
-  m_frontBufferNeedsPresent = false;
+  m_frontPacer.OnPresented(std::chrono::steady_clock::now());
   m_frontFlushTimer.Clear();
-  m_lastFrontPresentTime = std::chrono::steady_clock::now();
 }
 
 void VulkanBackend::NoteFrontBufferMutation_Locked(bool forceImmediate) {
   if (!m_swapchain || m_passthruSuspended || !m_windowAttached) {
     return;
   }
-  if (forceImmediate) {
+  const auto d = m_frontPacer.OnMutation(std::chrono::steady_clock::now(),
+                                         forceImmediate,
+                                         /*canUseAsyncThread=*/true);
+  if (d.presentNow) {
     PresentFrontBuffer_Locked();
     return;
   }
-  constexpr auto kFrontPresentInterval = std::chrono::milliseconds(33);
-  constexpr auto kBurstCoalesceDelay = std::chrono::milliseconds(16);
-  const auto now = std::chrono::steady_clock::now();
-  const bool hasPrev = (m_lastFrontPresentTime.time_since_epoch().count() != 0);
-  if (m_frontBufferNeedsPresent &&
-      (!hasPrev || (now - m_lastFrontPresentTime) >= kFrontPresentInterval)) {
-    PresentFrontBuffer_Locked();
-    return;
+  if (d.armTimer) {
+    m_frontFlushTimer.Arm(d.deadline);
   }
-  m_frontBufferNeedsPresent = true;
-  if (!hasPrev) {
-    m_lastFrontPresentTime = now;
-  }
-  const auto nextDue =
-      (hasPrev && (now - m_lastFrontPresentTime) < kFrontPresentInterval)
-          ? (m_lastFrontPresentTime + kFrontPresentInterval)
-          : (now + kBurstCoalesceDelay);
-  m_frontFlushTimer.Arm(nextDue);
 }
 
 void VulkanBackend::OnFrontBufferFlushTimer() {
   std::lock_guard<std::mutex> lock(m_mutex);
   if (!m_initialized || !m_windowAttached || m_passthruSuspended ||
-      !m_frontBufferNeedsPresent || !m_swapchain) {
+      !m_frontPacer.NeedsPresent() || !m_swapchain) {
     return;
   }
   PresentFrontBuffer_Locked();
