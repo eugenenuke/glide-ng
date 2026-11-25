@@ -14,7 +14,7 @@ Actions:
   install                  Run INST_CMD (D: if CDIMG set), post_install(), then auto-patch (unless --no-patch)
   patch                    Run pre_patch(), PATCH_CMD (mounts P: if PATCH_DIR set), and post_patch()
   setup, conf, reconfigure Run CONF_CMD using admin profile
-  init                     Create starter ./game.sh (+ ./run.sh symlink, optional ./glide-ng.ini)
+  init                     Create starter ./game.sh (+ ./run.sh symlink; --catalog copies game.sh, glide-ng.ini, dosbox-override.conf)
   doctor, info             Check binaries, OVL/shared libraries, GPU ICDs, and ./game.sh health
 
 Profiles & Orthogonal Overrides:
@@ -136,6 +136,54 @@ escape_dquote() {
   echo "$s"
 }
 
+set_or_prepend_sh_var() {
+  local file="$1" var="$2" val="$3"
+  local q_val tmp_file replaced=0 line
+  q_val="$(escape_dquote "$val")"
+  tmp_file="$(mktemp "${file}.tmp.XXXXXX")"
+
+  # Pass 1: replace existing uncommented assignment if present.
+  if grep -qE "^${var}=" "$file"; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      if [[ "$replaced" -eq 0 && "$line" =~ ^${var}= ]]; then
+        printf '%s="%s"\n' "$var" "$q_val"
+        replaced=1
+      else
+        printf '%s\n' "$line"
+      fi
+    done < "$file" > "$tmp_file"
+    mv "$tmp_file" "$file"
+    return 0
+  fi
+
+  # Pass 2: uncomment and replace existing commented assignment if present.
+  if grep -qE "^#[[:space:]]*${var}=" "$file"; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      if [[ "$replaced" -eq 0 && "$line" =~ ^#[[:space:]]*${var}= ]]; then
+        printf '%s="%s"\n' "$var" "$q_val"
+        replaced=1
+      else
+        printf '%s\n' "$line"
+      fi
+    done < "$file" > "$tmp_file"
+    mv "$tmp_file" "$file"
+    return 0
+  fi
+
+  # Pass 3: prepend after leading comment/blank header lines.
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$replaced" -eq 0 && ! "$line" =~ ^[[:space:]]*(#.*)?$ ]]; then
+      printf '%s="%s"\n' "$var" "$q_val"
+      replaced=1
+    fi
+    printf '%s\n' "$line"
+  done < "$file" > "$tmp_file"
+  if [[ "$replaced" -eq 0 ]]; then
+    printf '%s="%s"\n' "$var" "$q_val" >> "$tmp_file"
+  fi
+  mv "$tmp_file" "$file"
+}
+
 cmd_init() {
   local cdimg="" patch_dir="" catalog="" mode="" force=0 no_symlink=0
   local arg
@@ -168,23 +216,22 @@ cmd_init() {
     exit 1
   fi
 
-  cp "${TOOL_DIR}/templates/game.sh.template" ./game.sh
-
-  if [[ -n "$cdimg" ]]; then
-    local q_cdimg
-    q_cdimg="$(escape_dquote "$cdimg")"
-    sed -i "s|^CDIMG=\"\"|CDIMG=\"${q_cdimg}\"|" ./game.sh
-  fi
-  if [[ -n "$patch_dir" ]]; then
-    local q_pdir
-    q_pdir="$(escape_dquote "$patch_dir")"
-    sed -i "s|^# PATCH_DIR=\"\"|PATCH_DIR=\"${q_pdir}\"|" ./game.sh
-  fi
-  if [[ -n "$mode" ]]; then
-    sed -i "s|^# DEFAULT_MODE=\"gng\"|DEFAULT_MODE=\"${mode}\"|" ./game.sh
+  local catalog_dir=""
+  if [[ -n "$catalog" && -n "$REPO_ROOT" ]]; then
+    catalog_dir="${REPO_ROOT}/docs/catalog/games/${catalog}"
   fi
 
-  echo "Created ${GAME_DIR}/game.sh"
+  if [[ -n "$catalog_dir" && -f "${catalog_dir}/game.sh" ]]; then
+    cp "${catalog_dir}/game.sh" ./game.sh
+    echo "Copied catalog game.sh docs/catalog/games/${catalog}/game.sh -> ${GAME_DIR}/game.sh"
+  else
+    cp "${TOOL_DIR}/templates/game.sh.template" ./game.sh
+    echo "Created ${GAME_DIR}/game.sh"
+  fi
+
+  [[ -n "$cdimg" ]] && set_or_prepend_sh_var ./game.sh CDIMG "$cdimg"
+  [[ -n "$patch_dir" ]] && set_or_prepend_sh_var ./game.sh PATCH_DIR "$patch_dir"
+  [[ -n "$mode" ]] && set_or_prepend_sh_var ./game.sh DEFAULT_MODE "$mode"
 
   if [[ "$no_symlink" -eq 0 ]]; then
     local link_target
@@ -205,12 +252,25 @@ cmd_init() {
   fi
 
   if [[ -n "$catalog" ]]; then
-    if [[ -n "$REPO_ROOT" && -f "${REPO_ROOT}/docs/catalog/games/${catalog}/glide-ng.ini" ]]; then
-      if [[ -f ./glide-ng.ini && "$force" -eq 0 ]]; then
-        echo "Note: ${GAME_DIR}/glide-ng.ini already exists; left untouched."
+    if [[ -n "$catalog_dir" && -d "$catalog_dir" ]]; then
+      if [[ -f "${catalog_dir}/glide-ng.ini" ]]; then
+        if [[ -f ./glide-ng.ini && "$force" -eq 0 ]]; then
+          echo "Note: ${GAME_DIR}/glide-ng.ini already exists; left untouched."
+        else
+          cp "${catalog_dir}/glide-ng.ini" ./glide-ng.ini
+          echo "Copied catalog preset docs/catalog/games/${catalog}/glide-ng.ini -> ${GAME_DIR}/glide-ng.ini"
+        fi
       else
-        cp "${REPO_ROOT}/docs/catalog/games/${catalog}/glide-ng.ini" ./glide-ng.ini
-        echo "Copied catalog preset docs/catalog/games/${catalog}/glide-ng.ini -> ${GAME_DIR}/glide-ng.ini"
+        echo "Warning: catalog glide-ng.ini not found for '${catalog}'." >&2
+      fi
+
+      if [[ -f "${catalog_dir}/dosbox-override.conf" ]]; then
+        if [[ -f ./dosbox-override.conf && "$force" -eq 0 ]]; then
+          echo "Note: ${GAME_DIR}/dosbox-override.conf already exists; left untouched."
+        else
+          cp "${catalog_dir}/dosbox-override.conf" ./dosbox-override.conf
+          echo "Copied catalog override docs/catalog/games/${catalog}/dosbox-override.conf -> ${GAME_DIR}/dosbox-override.conf"
+        fi
       fi
     else
       echo "Warning: catalog preset not found for '${catalog}'." >&2

@@ -66,7 +66,7 @@ Settings resolve in ascending precedence:
 Initialize a new game folder and step through install, patch, sound setup, troubleshooting, and launch:
 
 ```bash
-# Scaffold ./game.sh, link ./run.sh, and copy a validated catalog glide-ng.ini if desired
+# Scaffold ./game.sh, link ./run.sh, and copy catalog game.sh / glide-ng.ini / dosbox-override.conf if available
 mkdir -p ~/Games/tomb-raider && cd ~/Games/tomb-raider
 ~/bin/glide-dosbox/glide-dosbox init \
   --cdimg="/path/to/TOMBENG.cue" \
@@ -95,7 +95,7 @@ mkdir -p ~/Games/tomb-raider && cd ~/Games/tomb-raider
 | `install` | — | Run `INST_CMD`, invoke `post_install()`, then chain `patch` unless `--no-patch` is set | `C:`, `D:`, `P:`, `V:` | `D:` if `CDIMG` set, else `C:` |
 | `patch` | — | Run optional `--extract` / `pre_patch()`, `PATCH_CMD`, then `post_patch()` | `C:`, `D:`, `P:`, `V:` | `C:` (or `D:` with `--cd`) |
 | `setup` | `conf`, `reconfigure` | Run `CONF_CMD` (sound/controller setup) using `DEFAULT_ADMIN_MODE` | `C:`, `D:`, `V:` | `C:` |
-| `init` | — | Generate starter `./game.sh`, `./run.sh` symlink, and optional catalog `glide-ng.ini` | — | — |
+| `init` | — | Generate `./game.sh` (or copy catalog `game.sh`, `glide-ng.ini`, and optional `dosbox-override.conf` via `--catalog`) plus `./run.sh` symlink | — | — |
 | `doctor` | `info` | Inspect emulator binaries, libraries, OVL directories, EGL ICDs, and `./game.sh` health | — | — |
 
 ### Ad-Hoc Command Execution (`--exec` & `--no-exit`)
