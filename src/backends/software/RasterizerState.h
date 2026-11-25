@@ -55,7 +55,7 @@ struct RasterizerState {
   uint32_t stencilZPassOp{0u};
 
   // TMU 0 and 1
-  uint32_t boundTexAddress[2]{0xFFFFFFFF, 0xFFFFFFFF};
+  uint32_t boundTexAddress[2]{kUnboundTexAddress, kUnboundTexAddress};
   // Immutable copy-on-write texture snapshots captured at bin time so
   // mid-frame TMU overwrites or palette swaps never corrupt earlier triangles.
   std::shared_ptr<const VirtualTexture> boundTex[2];

@@ -1117,8 +1117,8 @@ void OpenGLESBackend::PopulateUniforms(uint32_t dirtyMask) {
   if (dirtyMask & kTexEnableDeps) {
     const bool combinerReadsTex = DoesCombinerReadTexture_Locked();
     const int texEnabled[2] = {
-        (combinerReadsTex && m_boundTexAddress[0] != 0xFFFFFFFF) ? 1 : 0,
-        (combinerReadsTex && m_boundTexAddress[1] != 0xFFFFFFFF) ? 1 : 0};
+        (combinerReadsTex && m_boundTexAddress[0] != kUnboundTexAddress) ? 1 : 0,
+        (combinerReadsTex && m_boundTexAddress[1] != kUnboundTexAddress) ? 1 : 0};
     if (texEnabled[0] != m_cachedUniformTexEnabled[0] ||
         texEnabled[1] != m_cachedUniformTexEnabled[1]) {
       glUniform1iv(m_uTextureEnabledLoc, 2, texEnabled);

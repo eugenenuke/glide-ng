@@ -474,7 +474,7 @@ bool VulkanBackend::WriteAuxDepthLFB_Locked(
       const float dNorm =
           DecodeAuxDepth16ToNorm(d16, m_depthMode, m_depthNear, m_depthFar);
       const uint32_t u24 = std::min(
-          16777215u, static_cast<uint32_t>(dNorm * 16777215.0f + 0.5f));
+          kDepth24MaxU32, static_cast<uint32_t>(dNorm * kDepth24MaxF + 0.5f));
       // B8G8R8A8_UNORM little-endian 0xAARRGGBB: R=[23:16], G=[15:8], B=[7:0]
       dstRow[dstX + x] = 0xFF000000u | (u24 & 0x00FFFFFFu);
       ++modifiedCount;
@@ -894,7 +894,7 @@ bool VulkanBackend::WriteLFB(uint32_t buffer, uint32_t dstX, uint32_t dstY,
 
   // GR_BUFFER_AUXBUFFER (2) / GR_LFB_SRC_FMT_ZA16 (0x0f): upload 16-bit depth
   // values to the hardware depth attachment(s), never the color framebuffer!
-  if (buffer == 2u || srcFmt == 0x0fu) {
+  if (buffer == kLfbBufferAux || srcFmt == kLfbSrcFmtZa16) {
     return WriteAuxDepthLFB_Locked(dstX, dstY, srcWidth, srcHeight, srcStride,
                                    srcData, refData);
   }
@@ -1225,9 +1225,9 @@ bool VulkanBackend::ReadbackAuxDepthToShadow_Locked() {
     } else if (m_depthFormat == vk::Format::eD24UnormS8Uint ||
                m_depthFormat == vk::Format::eX8D24UnormPack32) {
       const auto* uSrc = reinterpret_cast<const uint32_t*>(src);
-      constexpr float kInvD24 = 1.0f / 16777215.0f;
       for (size_t i = 0; i < totalPx; ++i) {
-        const float dNorm = static_cast<float>(uSrc[i] & 0x00FFFFFFu) * kInvD24;
+        const float dNorm =
+            static_cast<float>(uSrc[i] & kDepth24MaxU32) * kInvDepth24MaxF;
         m_auxDepthShadow16[i] =
             EncodeNormDepthToAux16(dNorm, depthMode, depthNear, depthFar);
       }
@@ -1263,7 +1263,7 @@ bool VulkanBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
   std::lock_guard<std::mutex> lock(m_mutex);
   if (!m_initialized || !m_windowAttached) return false;
 
-  if (buffer == 2u) {
+  if (buffer == kLfbBufferAux) {
     if (!dstData || srcWidth == 0 || srcHeight == 0) return true;
     // Flush any buffered 3D vertices BEFORE checking cache validity so newly
     // submitted triangles invalidate m_auxDepthShadowValid first.

@@ -336,7 +336,7 @@ bool SoftwareBackendBase::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
 
   // GR_BUFFER_AUXBUFFER (2): read back the 16-bit depth/ZA16 buffer instead of
   // falling through into the color backbuffer!
-  if (buffer == 2u) {
+  if (buffer == kLfbBufferAux) {
     MaterializeLazyCpuDepthClear_Locked();
     if (m_headlessDepthBuffer.empty()) {
       for (uint32_t y = 0; y < srcHeight; ++y) {
@@ -422,7 +422,7 @@ bool SoftwareBackendBase::WriteLFB(uint32_t buffer, uint32_t dstX,
 
   // GR_BUFFER_AUXBUFFER (2) / GR_LFB_SRC_FMT_ZA16 (0x0f): write 16-bit depth
   // values into the depth buffer directly instead of corrupting the color buffer!
-  if (buffer == 2u || srcFmt == 0x0fu) {
+  if (buffer == kLfbBufferAux || srcFmt == kLfbSrcFmtZa16) {
     if (m_headlessDepthBuffer.empty()) return true;
     MaterializeLazyCpuDepthClear_Locked();
     const uint32_t guestW = (m_guestWidth > 0) ? m_guestWidth : m_headlessWidth;

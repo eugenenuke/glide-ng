@@ -114,28 +114,37 @@ public:
     int32_t GetMaxActiveOffset() const;
 
     static inline bool IsFiniteFloat(float f) noexcept {
+        constexpr uint32_t kFloat32ExponentMask = 0x7F800000u;
         uint32_t bits;
         std::memcpy(&bits, &f, sizeof(bits));
-        return (bits & 0x7F800000u) != 0x7F800000u;
+        return (bits & kFloat32ExponentMask) != kFloat32ExponentMask;
     }
 
     static inline float UnsnapAndSanitizeXY(float c) noexcept {
         if (__builtin_expect(!IsFiniteFloat(c), 0)) return 0.0f;
         // Unsnap 3dfx IEEE-754 vertex coordinate snap biases (each +/-2048 px
-        // hardware 12.4 window):
+        // hardware 12.4/13.3 window):
         //   1<<19 =  524288.0f (0x49000000): Glide 2.11 unsigned 12.4 (1/16 px)
         //   3<<18 =  786432.0f (0x49400000): Glide 2.x/3.x signed 12.4 (1/16 px)
         //   1<<20 = 1048576.0f (0x49800000): unsigned 13.3 (1/8 px)
         //   3<<19 = 1572864.0f (0x49C00000): signed 13.3 (1/8 px)
-        if (__builtin_expect(c >= 522240.0f, 0)) {
-            if (c <= 526336.0f) {
-                c -= 524288.0f;
-            } else if (c >= 784384.0f && c <= 788480.0f) {
-                c -= 786432.0f;
-            } else if (c >= 1046528.0f && c <= 1050624.0f) {
-                c -= 1048576.0f;
-            } else if (c >= 1570816.0f && c <= 1574912.0f) {
-                c -= 1572864.0f;
+        constexpr float kSnapHalfWindowPx = 2048.0f;
+        constexpr float kSnapBiasU12_4 = 524288.0f;
+        constexpr float kSnapBiasS12_4 = 786432.0f;
+        constexpr float kSnapBiasU13_3 = 1048576.0f;
+        constexpr float kSnapBiasS13_3 = 1572864.0f;
+        if (__builtin_expect(c >= kSnapBiasU12_4 - kSnapHalfWindowPx, 0)) {
+            if (c <= kSnapBiasU12_4 + kSnapHalfWindowPx) {
+                c -= kSnapBiasU12_4;
+            } else if (c >= kSnapBiasS12_4 - kSnapHalfWindowPx &&
+                       c <= kSnapBiasS12_4 + kSnapHalfWindowPx) {
+                c -= kSnapBiasS12_4;
+            } else if (c >= kSnapBiasU13_3 - kSnapHalfWindowPx &&
+                       c <= kSnapBiasU13_3 + kSnapHalfWindowPx) {
+                c -= kSnapBiasU13_3;
+            } else if (c >= kSnapBiasS13_3 - kSnapHalfWindowPx &&
+                       c <= kSnapBiasS13_3 + kSnapHalfWindowPx) {
+                c -= kSnapBiasS13_3;
             }
         }
         return c;

@@ -336,8 +336,8 @@ class GlideStateTracker : public IGraphicsBackend {
   bool DoesCombinerReadTexture_Locked() const noexcept {
     if (m_chromakeyMode != 0u) return true;
     if (m_texChromaMode[0] != 0u || m_texChromaMode[1] != 0u) return true;
-    if ((m_extColorCombine & 0x80000000u) != 0u ||
-        (m_extAlphaCombine & 0x80000000u) != 0u) {
+    if ((m_extColorCombine & kExtCombineActiveBit) != 0u ||
+        (m_extAlphaCombine & kExtCombineActiveBit) != 0u) {
       return true;
     }
 
@@ -483,7 +483,7 @@ class GlideStateTracker : public IGraphicsBackend {
   }
   uint32_t m_texMipMapMode[2] = {0, 0};
   bool m_texLodBlend[2] = {false, false};
-  uint32_t m_boundTexAddress[2] = {0xFFFFFFFF, 0xFFFFFFFF};
+  uint32_t m_boundTexAddress[2] = {kUnboundTexAddress, kUnboundTexAddress};
   uint32_t m_texClampS[2] = {0, 0};
   uint32_t m_texClampT[2] = {0, 0};
   uint32_t m_texMinFilter[2] = {0, 0};

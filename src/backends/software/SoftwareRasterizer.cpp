@@ -441,7 +441,7 @@ void SoftwareBackend::RasterizeTriangleLoops(
   }
 
   // TMU 1 Setup (Upstream - runtime resolved)
-  bool hasTexture1 = (state.boundTexAddress[1] != 0xFFFFFFFF);
+  bool hasTexture1 = (state.boundTexAddress[1] != kUnboundTexAddress);
   uint32_t texW1 = 0;
   uint32_t texH1 = 0;
   uint32_t clampS1 = 0;
@@ -757,13 +757,13 @@ void SoftwareBackend::RasterizeTriangleLoops(
                   lodFrac1);
             }
           }
-          if ((extTexColorCombine1 & 0x80000000u) != 0u) {
+          if ((extTexColorCombine1 & kExtCombineActiveBit) != 0u) {
             EvaluateExtTmuRgbScalar(extTexColorCombine1, tmu1Color,
                                     iteratedColor, tmuConst1, iteratedColor,
                                     detailFactor1, lodFrac1, tmu1Out.r,
                                     tmu1Out.g, tmu1Out.b);
           }
-          if ((extTexAlphaCombine1 & 0x80000000u) != 0u) {
+          if ((extTexAlphaCombine1 & kExtCombineActiveBit) != 0u) {
             tmu1Out.a = EvaluateExtTmuAlphaScalar(
                 extTexAlphaCombine1, tmu1Color, iteratedColor, tmuConst1,
                 iteratedColor, detailFactor1, lodFrac1);
@@ -880,12 +880,12 @@ void SoftwareBackend::RasterizeTriangleLoops(
                   tmu0Color, tmu1Out, iteratedColor, detailFactor0, lodFrac0);
             }
           }
-          if ((extTexColorCombine0 & 0x80000000u) != 0u) {
+          if ((extTexColorCombine0 & kExtCombineActiveBit) != 0u) {
             EvaluateExtTmuRgbScalar(extTexColorCombine0, tmu0Color, tmu1Out,
                                     tmuConst0, iteratedColor, detailFactor0,
                                     lodFrac0, tmu0Out.r, tmu0Out.g, tmu0Out.b);
           }
-          if ((extTexAlphaCombine0 & 0x80000000u) != 0u) {
+          if ((extTexAlphaCombine0 & kExtCombineActiveBit) != 0u) {
             tmu0Out.a = EvaluateExtTmuAlphaScalar(
                 extTexAlphaCombine0, tmu0Color, tmu1Out, tmuConst0,
                 iteratedColor, detailFactor0, lodFrac0);
@@ -915,7 +915,7 @@ void SoftwareBackend::RasterizeTriangleLoops(
           float aLocal = 1.0f;
           float aOther = 1.0f;
           float finalA = 0.0f;
-          if ((extAlphaCombine & 0x80000000u) != 0u) {
+          if ((extAlphaCombine & kExtCombineActiveBit) != 0u) {
             finalA = EvaluateExtFbiAlphaScalar(extAlphaCombine, iterA,
                                                constantAlpha, texA, aLocal,
                                                aOther);
@@ -983,7 +983,7 @@ void SoftwareBackend::RasterizeTriangleLoops(
           float finalR = 0.0f;
           float finalG = 0.0f;
           float finalB = 0.0f;
-          if ((extColorCombine & 0x80000000u) != 0u) {
+          if ((extColorCombine & kExtCombineActiveBit) != 0u) {
             cOtherR = texR;
             cOtherG = texG;
             cOtherB = texB;
@@ -1487,7 +1487,7 @@ GLIDE_INSTANTIATE_SCALAR_LOOP(true, true, true, false)
 void SoftwareBackend::RasterizeSoftwareTriangleTile(
     const ModernVertex& a, const ModernVertex& b, const ModernVertex& c,
     int minX, int maxX, int minY, int maxY, const RasterizerState& state) {
-  bool hasTexture = (state.boundTexAddress[0] != 0xFFFFFFFF);
+  bool hasTexture = (state.boundTexAddress[0] != kUnboundTexAddress);
   bool blendEnabled =
       (state.rgbSrcBlend != 4 || state.rgbDstBlend != 0 ||
        state.rgbBlendOp != 0 || state.alphaSrcBlend != 4 ||

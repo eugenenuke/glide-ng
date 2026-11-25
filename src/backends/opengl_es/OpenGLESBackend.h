@@ -223,15 +223,18 @@ class OpenGLESBackend : public GlideStateTracker {
   };
   uint32_t m_glesDirtyMask{kGlesDirtyAll};
 
+  // Sentinel for uninitialized / invalidated cached GL object bindings.
+  static constexpr uint32_t kInvalidGlHandle = 0xFFFFFFFFu;
+
   // Cached GL object bindings to avoid redundant bind/unbind churn across
   // consecutive FlushBatch calls within a frame.
-  uint32_t m_cachedBoundFbo{0xFFFFFFFFu};
-  uint32_t m_cachedBoundProgram{0xFFFFFFFFu};
-  uint32_t m_cachedBoundVao{0xFFFFFFFFu};
-  uint32_t m_cachedBoundVbo{0xFFFFFFFFu};
-  uint32_t m_cachedBoundTex[2]{0xFFFFFFFFu, 0xFFFFFFFFu};
-  uint32_t m_cachedBoundSampler[2]{0xFFFFFFFFu, 0xFFFFFFFFu};
-  uint32_t m_cachedActiveTexUnit{0xFFFFFFFFu};
+  uint32_t m_cachedBoundFbo{kInvalidGlHandle};
+  uint32_t m_cachedBoundProgram{kInvalidGlHandle};
+  uint32_t m_cachedBoundVao{kInvalidGlHandle};
+  uint32_t m_cachedBoundVbo{kInvalidGlHandle};
+  uint32_t m_cachedBoundTex[2]{kInvalidGlHandle, kInvalidGlHandle};
+  uint32_t m_cachedBoundSampler[2]{kInvalidGlHandle, kInvalidGlHandle};
+  uint32_t m_cachedActiveTexUnit{kInvalidGlHandle};
   bool m_cachedViewportValid{false};
   int m_cachedUniformTexEnabled[2]{-1, -1};
   void* m_headlessFrameFences[2]{nullptr, nullptr};  // GLsync

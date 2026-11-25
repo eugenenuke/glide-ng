@@ -111,7 +111,7 @@ void OpenGLESBackend::FlushPendingGlesTexDeletes_Locked() {
     if (rawId == 0u) continue;
     for (uint32_t t = 0; t < 2u; ++t) {
       if (m_cachedBoundTex[t] == rawId) {
-        m_cachedBoundTex[t] = 0xFFFFFFFFu;
+        m_cachedBoundTex[t] = kInvalidGlHandle;
         m_glesDirtyMask |= kGlesDirtyTexBinding;
       }
     }
@@ -265,8 +265,8 @@ void OpenGLESBackend::ClearAllGlesTextures_Locked(bool deleteGlObjects) {
   m_glesIdleLru.clear();
   m_glesIdleContentMap.clear();
   m_glesIdleBytes = 0u;
-  m_cachedBoundTex[0] = 0xFFFFFFFFu;
-  m_cachedBoundTex[1] = 0xFFFFFFFFu;
+  m_cachedBoundTex[0] = kInvalidGlHandle;
+  m_cachedBoundTex[1] = kInvalidGlHandle;
   m_glesDirtyMask |= kGlesDirtyTexBinding;
 }
 
@@ -660,8 +660,8 @@ void OpenGLESBackend::BindTexture(uint32_t tmu, uint32_t startAddress,
   }
   FlushBatch(true);
   const bool enabledChanged =
-      (tmu < 2u && ((m_boundTexAddress[tmu] == 0xFFFFFFFFu) !=
-                    (startAddress == 0xFFFFFFFFu)));
+      (tmu < 2u && ((m_boundTexAddress[tmu] == kUnboundTexAddress) !=
+                    (startAddress == kUnboundTexAddress)));
   const bool samplerChanged =
       (tmu < 2 && (m_texClampS[tmu] != clampS || m_texClampT[tmu] != clampT ||
                    m_texMinFilter[tmu] != minFilter ||

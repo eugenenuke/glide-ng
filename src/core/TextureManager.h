@@ -12,6 +12,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "core/GlideConstants.h"
 #include "core/HashUtils.h"
 
 #include "core/Logger.h"

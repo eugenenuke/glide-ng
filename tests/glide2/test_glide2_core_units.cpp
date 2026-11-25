@@ -849,6 +849,17 @@ TEST_CASE("Core: Texture Decoders, PALETTE6666 & Partial Mipmap Packing", "[Core
     HashCombine(s2, 10u);
     CHECK(s1 != 0u);
     CHECK(s1 != s2);
+
+    // GlideConstants ABI/hardware invariants
+    CHECK(GlideWrapper::kUnboundTexAddress == 0xFFFFFFFFu);
+    CHECK(GlideWrapper::kExtCombineActiveBit == 0x80000000u);
+    CHECK(GlideWrapper::kLfbBufferFront == 0u);
+    CHECK(GlideWrapper::kLfbBufferBack == 1u);
+    CHECK(GlideWrapper::kLfbBufferAux == 2u);
+    CHECK(GlideWrapper::kLfbSrcFmtZa16 == 0x0Fu);
+    CHECK(GlideWrapper::kDepth24MaxU32 == 16777215u);
+    CHECK(GlideWrapper::kRgbByteBroadcast * 0xABu == 0x00ABABABu);
+    CHECK(GlideWrapper::kRgbaByteBroadcast * 0xCDu == 0xCDCDCDCDu);
   }
 
 }

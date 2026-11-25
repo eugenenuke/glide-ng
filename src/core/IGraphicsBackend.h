@@ -2,6 +2,7 @@
 
 #include <cstdint>
 
+#include "core/GlideConstants.h"
 #include "core/VertexLayout.h"
 #include "core/WrapperConfig.h"
 

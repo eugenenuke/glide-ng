@@ -390,7 +390,7 @@ void VulkanBackend::ResolveDrawState_Locked(vk::PrimitiveTopology topology,
   if (m_descriptorStateDirty || !m_cachedDescSet) {
     vk::ImageView view0 = m_dummyTexture.imageView.get();
     vk::Sampler sampler0 = m_dummySampler.get();
-    if (m_boundTexAddress[0] != 0xFFFFFFFF) {
+    if (m_boundTexAddress[0] != kUnboundTexAddress) {
       auto it = m_vulkanTextures[0].find(m_boundTexAddress[0]);
       if (it != m_vulkanTextures[0].end() && it->second) {
         view0 = it->second->imageView.get();
@@ -403,7 +403,7 @@ void VulkanBackend::ResolveDrawState_Locked(vk::PrimitiveTopology topology,
 
     vk::ImageView view1 = m_dummyTexture.imageView.get();
     vk::Sampler sampler1 = m_dummySampler.get();
-    if (m_boundTexAddress[1] != 0xFFFFFFFF) {
+    if (m_boundTexAddress[1] != kUnboundTexAddress) {
       auto it = m_vulkanTextures[1].find(m_boundTexAddress[1]);
       if (it != m_vulkanTextures[1].end() && it->second) {
         view1 = it->second->imageView.get();
@@ -942,7 +942,7 @@ void VulkanBackend::FlushBatch(bool fromStateFlush) {
     // Pass 1: depth compare against biasNorm -> stamp stencil bit 0x80
     PushConstants pcs1 = pcs;
     pcs1.depthBias = biasNorm;
-    pcs1.flags |= (1u << 13u);
+    pcs1.flags |= VkPushFlag::kCompareToBiasPass1;
     m_commandBuffer->bindPipeline(vk::PipelineBindPoint::eGraphics, pass1Pipe);
     m_commandBuffer->pushConstants<PushConstants>(
         m_pipelineLayout.get(),
@@ -958,7 +958,7 @@ void VulkanBackend::FlushBatch(bool fromStateFlush) {
 
     // Pass 2: stencil-gated color + true Z/W depth write, clearing bit 0x80
     PushConstants pcs2 = pcs;
-    pcs2.flags &= ~(1u << 13u);
+    pcs2.flags &= ~VkPushFlag::kCompareToBiasPass1;
     m_commandBuffer->bindPipeline(vk::PipelineBindPoint::eGraphics, pass2Pipe);
     m_commandBuffer->pushConstants<PushConstants>(
         m_pipelineLayout.get(),
@@ -1185,10 +1185,10 @@ void VulkanBackend::PopulatePushConstants(PushConstants& pcs) {
 
   uint32_t textureEnabled = 0;
   const bool combinerReadsTex = DoesCombinerReadTexture_Locked();
-  if (combinerReadsTex && m_boundTexAddress[0] != 0xFFFFFFFF) {
+  if (combinerReadsTex && m_boundTexAddress[0] != kUnboundTexAddress) {
     textureEnabled |= (1u << 0);
   }
-  if (combinerReadsTex && m_boundTexAddress[1] != 0xFFFFFFFF) {
+  if (combinerReadsTex && m_boundTexAddress[1] != kUnboundTexAddress) {
     textureEnabled |= (1u << 1);
   }
   if (m_texCombinerRgbInvert[0]) textureEnabled |= (1u << 2);
@@ -1261,27 +1261,27 @@ void VulkanBackend::PopulatePushConstants(PushConstants& pcs) {
   pcs.stipplePattern = m_stipplePattern;
 
   uint32_t flags = 0;
-  if (m_colorCombinerInvert) flags |= (1u << 0);
-  if (m_alphaCombinerInvert) flags |= (1u << 1);
-  if (m_chromakeyMode != 0) flags |= (1u << 2);
+  if (m_colorCombinerInvert) flags |= VkPushFlag::kColorCombineInvert;
+  if (m_alphaCombinerInvert) flags |= VkPushFlag::kAlphaCombineInvert;
+  if (m_chromakeyMode != 0) flags |= VkPushFlag::kChromakeyEnable;
 
   uint32_t useTmuOow = 0;
   if (m_stwHintMask & 0x2) useTmuOow |= (1u << 0);
   if (m_stwHintMask & 0x8) useTmuOow |= (1u << 1);
-  flags |= (useTmuOow & 3u) << 3;
+  flags |= (useTmuOow & 3u) << VkPushFlag::kUseTmuOowShift;
 
   uint32_t texChromaEnabled = 0;
   if (m_texChromaMode[0] != 0) texChromaEnabled |= (1u << 0);
   if (m_texChromaMode[1] != 0) texChromaEnabled |= (1u << 1);
-  flags |= (texChromaEnabled & 3u) << 5;
+  flags |= (texChromaEnabled & 3u) << VkPushFlag::kTexChromaEnableShift;
 
   uint32_t texChromaRangeMode = 0;
   if (m_texChromaRangeMode[0] != 0) texChromaRangeMode |= (1u << 0);
   if (m_texChromaRangeMode[1] != 0) texChromaRangeMode |= (1u << 1);
-  flags |= (texChromaRangeMode & 3u) << 7;
+  flags |= (texChromaRangeMode & 3u) << VkPushFlag::kTexChromaRangeShift;
 
-  flags |= (m_ditherMode & 3u) << 9;
-  flags |= (m_stippleMode & 3u) << 11;
+  flags |= (m_ditherMode & 3u) << VkPushFlag::kDitherModeShift;
+  flags |= (m_stippleMode & 3u) << VkPushFlag::kStippleModeShift;
 
   pcs.flags = flags;
   pcs.texDetail0 = PackTexDetail_Locked(0);

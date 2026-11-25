@@ -47,12 +47,17 @@ uint64_t ReadTscRaw() noexcept {
 
 bool ProbeInvariantTsc() noexcept {
 #if GLIDE_HAS_X86_TSC
-  if (__get_cpuid_max(0x80000000u, nullptr) < 0x80000007u) {
+  // x86 extended CPUID leaves: 0x80000000 (max extended leaf), 0x80000007
+  // (Advanced Power Management; EDX bit 8 = Invariant TSC).
+  constexpr unsigned int kCpuidExtMaxLeaf = 0x80000000u;
+  constexpr unsigned int kCpuidExtPowerMgmtLeaf = 0x80000007u;
+  constexpr unsigned int kCpuidInvariantTscBit = 1u << 8;
+  if (__get_cpuid_max(kCpuidExtMaxLeaf, nullptr) < kCpuidExtPowerMgmtLeaf) {
     return false;
   }
   unsigned int eax = 0, ebx = 0, ecx = 0, edx = 0;
-  __cpuid(0x80000007u, eax, ebx, ecx, edx);
-  return (edx & (1u << 8)) != 0u;
+  __cpuid(kCpuidExtPowerMgmtLeaf, eax, ebx, ecx, edx);
+  return (edx & kCpuidInvariantTscBit) != 0u;
 #else
   return false;
 #endif
@@ -468,7 +473,8 @@ void TelemetryManager::OnFrameComplete(int64_t intervalUs, int64_t activeUs,
           std::chrono::duration_cast<std::chrono::nanoseconds>(now -
                                                                 m_lastCalibWall)
               .count();
-      if (wallDeltaNs >= 250000000LL) {
+      constexpr int64_t kTscCalibMinWindowNs = 250000000LL;  // 250 ms
+      if (wallDeltaNs >= kTscCalibMinWindowNs) {
         const uint64_t tscNow = ReadTscRaw();
         if (tscNow > m_lastCalibTsc) {
           const double measured = static_cast<double>(wallDeltaNs) /

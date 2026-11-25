@@ -678,7 +678,7 @@ void VulkanBackend::BindTexture(uint32_t tmu, uint32_t startAddress,
 
   if (tmu >= 2) return;
 
-  if (startAddress == 0xFFFFFFFF) return;
+  if (startAddress == kUnboundTexAddress) return;
 
   auto it = m_vulkanTextures[tmu].find(startAddress);
   if (it != m_vulkanTextures[tmu].end() && it->second) {

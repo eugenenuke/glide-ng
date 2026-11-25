@@ -114,6 +114,19 @@ static_assert(sizeof(PushConstants) == 240,
 static_assert(sizeof(PushConstants) <= 256,
               "Vulkan PushConstants exceed 256-byte hardware limit!");
 
+// Bit layout of PushConstants::flags (shared with Vulkan GLSL shaders).
+namespace VkPushFlag {
+inline constexpr uint32_t kColorCombineInvert = 1u << 0u;
+inline constexpr uint32_t kAlphaCombineInvert = 1u << 1u;
+inline constexpr uint32_t kChromakeyEnable = 1u << 2u;
+inline constexpr uint32_t kUseTmuOowShift = 3u;       // 2 bits: TMU0, TMU1
+inline constexpr uint32_t kTexChromaEnableShift = 5u; // 2 bits: TMU0, TMU1
+inline constexpr uint32_t kTexChromaRangeShift = 7u;  // 2 bits: TMU0, TMU1
+inline constexpr uint32_t kDitherModeShift = 9u;      // 2 bits
+inline constexpr uint32_t kStippleModeShift = 11u;    // 2 bits
+inline constexpr uint32_t kCompareToBiasPass1 = 1u << 13u;
+}  // namespace VkPushFlag
+
 struct VulkanTexture {
   vk::UniqueImage image;
   vk::UniqueDeviceMemory memory;

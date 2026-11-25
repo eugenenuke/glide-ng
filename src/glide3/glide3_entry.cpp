@@ -2891,6 +2891,8 @@ FX_ENTRY void FX_CALL grEnable(GrEnableMode_t mode) {
   GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend", "grEnable (Glide 3.x) mode=" << mode);
+  constexpr FxU32 kGrMultirenderingExt = 0x09u;
+  constexpr FxU32 kGrCombineExtMode = 0x80000001u;  // GR_COMBINEEXT_MODE (VSA-100 / Napalm)
   switch (mode) {
     case GR_AA_ORDERED:
       s_aaOrdered = true;
@@ -2909,8 +2911,8 @@ FX_ENTRY void FX_CALL grEnable(GrEnableMode_t mode) {
     case GR_PASSTHRU:
     case GR_VIDEO_SMOOTHING:
     case GR_OPENGL_MODE_EXT:
-    case 0x09:        // GR_MULTIRENDERING_EXT
-    case 0x80000001u: // GR_COMBINEEXT_MODE (VSA-100 / Napalm)
+    case kGrMultirenderingExt:
+    case kGrCombineExtMode:
       break;
     case GR_TEXTURE_UMA_EXT: {
       const auto model =
@@ -2941,6 +2943,8 @@ FX_ENTRY void FX_CALL grDisable(GrEnableMode_t mode) {
   GLIDE_CPU_SCOPE(GlideWrapper::CpuBucket::State);
   EnsureEngineInitialized();
   GLIDE_LOG(DEBUG, "Frontend", "grDisable (Glide 3.x) mode=" << mode);
+  constexpr FxU32 kGrMultirenderingExt = 0x09u;
+  constexpr FxU32 kGrCombineExtMode = 0x80000001u;  // GR_COMBINEEXT_MODE (VSA-100 / Napalm)
   switch (mode) {
     case GR_AA_ORDERED:
       s_aaOrdered = false;
@@ -2959,8 +2963,8 @@ FX_ENTRY void FX_CALL grDisable(GrEnableMode_t mode) {
     case GR_PASSTHRU:
     case GR_VIDEO_SMOOTHING:
     case GR_OPENGL_MODE_EXT:
-    case 0x09:        // GR_MULTIRENDERING_EXT
-    case 0x80000001u: // GR_COMBINEEXT_MODE (VSA-100 / Napalm)
+    case kGrMultirenderingExt:
+    case kGrCombineExtMode:
       break;
     case GR_TEXTURE_UMA_EXT:
       GlideWrapper::TextureManager::GetInstance().SetUmaMode(false);

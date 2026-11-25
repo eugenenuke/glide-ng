@@ -294,7 +294,7 @@ static inline uint8_t ApplyStencilOp(uint32_t op, uint8_t bufVal,
 // Check if a packed VSA-100 COMBINE register references DETAIL_FACTOR (0x07) or
 // LOD_FRAC (0x0C) so software rasterizers compute mip/detail derivatives.
 static inline bool ExtCombineUsesLod(uint32_t packed) {
-  if ((packed & 0x80000000u) == 0u) return false;
+  if ((packed & kExtCombineActiveBit) == 0u) return false;
   const uint32_t a = packed & 0x1Fu;
   const uint32_t b = (packed >> 8u) & 0x1Fu;
   const uint32_t c = (packed >> 16u) & 0x1Fu;

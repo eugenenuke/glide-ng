@@ -13,9 +13,10 @@ namespace GlideWrapper {
 
 #ifdef ENABLE_TELEMETRY
 struct ScopeStats {
+  static constexpr int64_t kUnsetMinDurationUs = 999999999;
   uint64_t callCount{0};
   int64_t totalDurationUs{0};
-  int64_t minDurationUs{999999999};
+  int64_t minDurationUs{kUnsetMinDurationUs};
   int64_t maxDurationUs{0};
 };
 #endif

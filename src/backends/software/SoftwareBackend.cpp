@@ -2134,9 +2134,9 @@ void SoftwareBackend::ResolveActiveState() {
 
   const bool combinerReadsTex = DoesCombinerReadTexture_Locked();
   state.boundTexAddress[0] =
-      combinerReadsTex ? m_boundTexAddress[0] : 0xFFFFFFFFu;
+      combinerReadsTex ? m_boundTexAddress[0] : kUnboundTexAddress;
   state.boundTexAddress[1] =
-      combinerReadsTex ? m_boundTexAddress[1] : 0xFFFFFFFFu;
+      combinerReadsTex ? m_boundTexAddress[1] : kUnboundTexAddress;
   auto resolveBoundTex =
       [this](uint32_t tmu,
              uint32_t addr) -> std::shared_ptr<const VirtualTexture> {

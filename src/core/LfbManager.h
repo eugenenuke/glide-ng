@@ -240,9 +240,9 @@ public:
 private:
     static constexpr uint32_t kNumWriteLockSlots = 3u;  // 0=FRONT, 1=BACK, 2=AUX
     static constexpr uint32_t WriteSlotForBuffer(uint32_t buffer) {
-        if (buffer == 0u) return 0u;
-        if (buffer == 2u) return 2u;
-        return 1u;
+        if (buffer == kLfbBufferFront) return kLfbBufferFront;
+        if (buffer == kLfbBufferAux) return kLfbBufferAux;
+        return kLfbBufferBack;
     }
 
     LfbManager() = default;

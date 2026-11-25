@@ -213,15 +213,15 @@ void OpenGLESBackend::ResetState() {
 }
 
 void OpenGLESBackend::InvalidateGlBindingCache() {
-  m_cachedBoundFbo = 0xFFFFFFFFu;
-  m_cachedBoundProgram = 0xFFFFFFFFu;
-  m_cachedBoundVao = 0xFFFFFFFFu;
-  m_cachedBoundVbo = 0xFFFFFFFFu;
-  m_cachedBoundTex[0] = 0xFFFFFFFFu;
-  m_cachedBoundTex[1] = 0xFFFFFFFFu;
-  m_cachedBoundSampler[0] = 0xFFFFFFFFu;
-  m_cachedBoundSampler[1] = 0xFFFFFFFFu;
-  m_cachedActiveTexUnit = 0xFFFFFFFFu;
+  m_cachedBoundFbo = kInvalidGlHandle;
+  m_cachedBoundProgram = kInvalidGlHandle;
+  m_cachedBoundVao = kInvalidGlHandle;
+  m_cachedBoundVbo = kInvalidGlHandle;
+  m_cachedBoundTex[0] = kInvalidGlHandle;
+  m_cachedBoundTex[1] = kInvalidGlHandle;
+  m_cachedBoundSampler[0] = kInvalidGlHandle;
+  m_cachedBoundSampler[1] = kInvalidGlHandle;
+  m_cachedActiveTexUnit = kInvalidGlHandle;
   m_cachedViewportValid = false;
 }
 
@@ -1137,7 +1137,7 @@ bool OpenGLESBackend::WriteAuxDepthLFB_Locked(
       const float dNorm =
           DecodeAuxDepth16ToNorm(d16, m_depthMode, m_depthNear, m_depthFar);
       const uint32_t u24 = std::min(
-          16777215u, static_cast<uint32_t>(dNorm * 16777215.0f + 0.5f));
+          kDepth24MaxU32, static_cast<uint32_t>(dNorm * kDepth24MaxF + 0.5f));
       // GL_RGBA/GL_UNSIGNED_BYTE little-endian bytes: [0]=R, [1]=G, [2]=B, [3]=A
       const uint32_t r = (u24 >> 16u) & 0xFFu;
       const uint32_t g = (u24 >> 8u) & 0xFFu;
@@ -1353,7 +1353,7 @@ bool OpenGLESBackend::WriteLFB(uint32_t buffer, uint32_t dstX, uint32_t dstY,
   std::lock_guard<std::mutex> lock(m_mutex);
   if (!m_initialized || !m_windowAttached) return false;
 
-  if (buffer == 2u || srcFmt == 0x0fu) {
+  if (buffer == kLfbBufferAux || srcFmt == kLfbSrcFmtZa16) {
     const bool depthOk = WriteAuxDepthLFB_Locked(
         dstX, dstY, srcWidth, srcHeight, srcStride, srcData, refData);
     if (m_frontBufferNeedsPresent) {
@@ -1780,7 +1780,7 @@ bool OpenGLESBackend::ReadbackAuxDepthToShadow_Locked() {
     checkGLError("ReadbackAuxDepth GLES pack");
 
     const auto* bytes = reinterpret_cast<const uint8_t*>(m_auxDepthScratch.data());
-    constexpr float kInvD24 = 1.0f / 16777215.0f;
+    constexpr float kInvD24 = kInvDepth24MaxF;
     for (size_t i = 0; i < totalPx; ++i) {
       const uint32_t u24 = (static_cast<uint32_t>(bytes[i * 4 + 0]) << 16u) |
                            (static_cast<uint32_t>(bytes[i * 4 + 1]) << 8u) |
@@ -1810,7 +1810,7 @@ bool OpenGLESBackend::ReadLFB(uint32_t buffer, uint32_t srcX, uint32_t srcY,
     return false;
   }
 
-  if (buffer == 2u) {
+  if (buffer == kLfbBufferAux) {
     if (!dstData || srcWidth == 0 || srcHeight == 0) return true;
     // Flush any buffered 3D vertices BEFORE checking cache validity so newly
     // submitted triangles invalidate m_auxDepthShadowValid first.
@@ -3330,7 +3330,7 @@ void OpenGLESBackend::SetRenderBuffer(uint32_t target) {
     glBindFramebuffer(GL_FRAMEBUFFER, activeFbo);
     m_cachedBoundFbo = activeFbo;
   } else {
-    m_cachedBoundFbo = 0xFFFFFFFFu;
+    m_cachedBoundFbo = kInvalidGlHandle;
   }
 }
 

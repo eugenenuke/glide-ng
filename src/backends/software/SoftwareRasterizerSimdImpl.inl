@@ -436,7 +436,7 @@ void RasterizeTriangleLoopsTraits(
   }
 
   // TMU 1 Setup
-  bool hasTexture1 = (state.boundTexAddress[1] != 0xFFFFFFFF);
+  bool hasTexture1 = (state.boundTexAddress[1] != kUnboundTexAddress);
   uint32_t texW1 = 0;
   uint32_t texH1 = 0;
   uint32_t clampS1 = 0;

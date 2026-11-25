@@ -451,8 +451,9 @@ void ClearBufferExt(uint32_t color, uint8_t alpha, uint32_t depth,
                     uint8_t stencil) {
   if (auto* backend = BackendManager::GetInstance().GetBackend()) {
     const float normDepth =
-        (depth > 65535u) ? (static_cast<float>(depth & 0xFFFFFFu) / 16777215.0f)
-                         : (static_cast<float>(depth) / 65535.0f);
+        (depth > 65535u)
+            ? (static_cast<float>(depth & kDepth24MaxU32) / kDepth24MaxF)
+            : (static_cast<float>(depth) / 65535.0f);
     backend->ClearBufferExt(color, alpha, normDepth, stencil, 0x7u);
   }
 }

@@ -63,11 +63,11 @@ void SoftwareBackend::WritePixelPipeline(int x, int y, const ModernVertex& v,
   const TmuColor tmuConst1 = unpackTmuConst(state.tmuConstantColor[1]);
 
   const VirtualTexture* tex0 =
-      (state.boundTexAddress[0] != 0xFFFFFFFFu) ? state.boundTex[0].get()
+      (state.boundTexAddress[0] != kUnboundTexAddress) ? state.boundTex[0].get()
                                                 : nullptr;
   const bool hasTex0 = (tex0 != nullptr && !tex0->swizzledMipLevels.empty());
   const VirtualTexture* tex1 =
-      (state.boundTexAddress[1] != 0xFFFFFFFFu) ? state.boundTex[1].get()
+      (state.boundTexAddress[1] != kUnboundTexAddress) ? state.boundTex[1].get()
                                                 : nullptr;
   const bool hasTex1 = (tex1 != nullptr && !tex1->swizzledMipLevels.empty());
 
@@ -101,12 +101,12 @@ void SoftwareBackend::WritePixelPipeline(int x, int y, const ModernVertex& v,
           tmu1Color, iteratedColor, iteratedColor, 0.0f, 0.0f);
     }
   }
-  if ((state.extTexColorCombine[1] & 0x80000000u) != 0u) {
+  if ((state.extTexColorCombine[1] & kExtCombineActiveBit) != 0u) {
     EvaluateExtTmuRgbScalar(state.extTexColorCombine[1], tmu1Color,
                             iteratedColor, tmuConst1, iteratedColor, 0.0f,
                             0.0f, tmu1Out.r, tmu1Out.g, tmu1Out.b);
   }
-  if ((state.extTexAlphaCombine[1] & 0x80000000u) != 0u) {
+  if ((state.extTexAlphaCombine[1] & kExtCombineActiveBit) != 0u) {
     tmu1Out.a = EvaluateExtTmuAlphaScalar(
         state.extTexAlphaCombine[1], tmu1Color, iteratedColor, tmuConst1,
         iteratedColor, 0.0f, 0.0f);
@@ -139,12 +139,12 @@ void SoftwareBackend::WritePixelPipeline(int x, int y, const ModernVertex& v,
           tmu0Color, tmu1Out, iteratedColor, 0.0f, 0.0f);
     }
   }
-  if ((state.extTexColorCombine[0] & 0x80000000u) != 0u) {
+  if ((state.extTexColorCombine[0] & kExtCombineActiveBit) != 0u) {
     EvaluateExtTmuRgbScalar(state.extTexColorCombine[0], tmu0Color, tmu1Out,
                             tmuConst0, iteratedColor, 0.0f, 0.0f, tmu0Out.r,
                             tmu0Out.g, tmu0Out.b);
   }
-  if ((state.extTexAlphaCombine[0] & 0x80000000u) != 0u) {
+  if ((state.extTexAlphaCombine[0] & kExtCombineActiveBit) != 0u) {
     tmu0Out.a = EvaluateExtTmuAlphaScalar(
         state.extTexAlphaCombine[0], tmu0Color, tmu1Out, tmuConst0,
         iteratedColor, 0.0f, 0.0f);
@@ -159,7 +159,7 @@ void SoftwareBackend::WritePixelPipeline(int x, int y, const ModernVertex& v,
   float aLocal = 1.0f;
   float aOther = 1.0f;
   float finalAlphaF = 0.0f;
-  if ((state.extAlphaCombine & 0x80000000u) != 0u) {
+  if ((state.extAlphaCombine & kExtCombineActiveBit) != 0u) {
     finalAlphaF = EvaluateExtFbiAlphaScalar(
         state.extAlphaCombine, iterA, constantAlpha, texA, aLocal, aOther);
   } else {
@@ -195,7 +195,7 @@ void SoftwareBackend::WritePixelPipeline(int x, int y, const ModernVertex& v,
 
   // Color Combiner Stage (CCU)
   float finalRF = 0.0f, finalGF = 0.0f, finalBF = 0.0f;
-  if ((state.extColorCombine & 0x80000000u) != 0u) {
+  if ((state.extColorCombine & kExtCombineActiveBit) != 0u) {
     EvaluateExtFbiColorScalar(state.extColorCombine, iteratedColor, constantCol,
                               tmu0Out, aLocal, aOther, finalRF, finalGF,
                               finalBF);

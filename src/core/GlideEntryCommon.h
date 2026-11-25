@@ -45,7 +45,7 @@ struct SharedFrontendState {
   uint32_t texAlphaFactor[2]{0, 0};
   bool texRgbInvert[2]{false, false};
   bool texAlphaInvert[2]{false, false};
-  uint32_t boundTex[2]{0xFFFFFFFFu, 0xFFFFFFFFu};
+  uint32_t boundTex[2]{kUnboundTexAddress, kUnboundTexAddress};
 
   struct TexChromaState {
     uint32_t mode{0};
@@ -267,7 +267,8 @@ inline void SanitizeVertex(const SharedFrontendState& st, ModernVertex& mv) {
   if (st.depthMode == 0) {
     mv.pos[2] = 0.0f;
   }
-  if (st.boundTex[0] == 0xFFFFFFFFu && st.boundTex[1] == 0xFFFFFFFFu &&
+  if (st.boundTex[0] == kUnboundTexAddress &&
+      st.boundTex[1] == kUnboundTexAddress &&
       st.fogMode == 0 && st.depthMode != 2 && st.depthMode != 4) {
     mv.pos[3] = 1.0f;
   }
@@ -311,7 +312,8 @@ inline void SanitizeTriangle(const SharedFrontendState& st, ModernVertex& va,
     vb.pos[2] = 0.0f;
     vc.pos[2] = 0.0f;
   }
-  if (st.boundTex[0] == 0xFFFFFFFFu && st.boundTex[1] == 0xFFFFFFFFu &&
+  if (st.boundTex[0] == kUnboundTexAddress &&
+      st.boundTex[1] == kUnboundTexAddress &&
       st.fogMode == 0 && st.depthMode != 2 && st.depthMode != 4) {
     va.pos[3] = 1.0f;
     vb.pos[3] = 1.0f;

@@ -561,7 +561,7 @@ void DecodeTexelsToBgra(uint32_t format, const uint8_t* rawSrc, uint32_t width,
         const uint16_t val = src16[i];
         const uint32_t a = (val >> 8) & 0xFFu;
         const uint32_t intensity = val & 0xFFu;
-        dstBgra[i] = (a << 24) | (intensity * 0x00010101u);
+        dstBgra[i] = (a << 24) | (intensity * kRgbByteBroadcast);
       }
       return;
     }
@@ -601,7 +601,7 @@ void DecodeTexelsToBgra(uint32_t format, const uint8_t* rawSrc, uint32_t width,
           const uint16_t val = src16[i];
           const uint32_t a = (val >> 8) & 0xFFu;
           const uint32_t idx = val & 0xFFu;
-          dstBgra[i] = (a << 24) | (idx * 0x00010101u);
+          dstBgra[i] = (a << 24) | (idx * kRgbByteBroadcast);
         }
       }
       return;
@@ -616,7 +616,7 @@ void DecodeTexelsToBgra(uint32_t format, const uint8_t* rawSrc, uint32_t width,
       } else {
         for (size_t i = 0; i < count; ++i) {
           const uint32_t val = rawSrc[i];
-          dstBgra[i] = 0xFF000000u | (val * 0x00010101u);
+          dstBgra[i] = 0xFF000000u | (val * kRgbByteBroadcast);
         }
       }
       return;
@@ -624,14 +624,14 @@ void DecodeTexelsToBgra(uint32_t format, const uint8_t* rawSrc, uint32_t width,
     case 0x2: {  // ALPHA_8
       for (size_t i = 0; i < count; ++i) {
         const uint32_t val = rawSrc[i];
-        dstBgra[i] = val * 0x01010101u;
+        dstBgra[i] = val * kRgbaByteBroadcast;
       }
       return;
     }
     case 0x3: {  // INTENSITY_8
       for (size_t i = 0; i < count; ++i) {
         const uint32_t val = rawSrc[i];
-        dstBgra[i] = 0xFF000000u | (val * 0x00010101u);
+        dstBgra[i] = 0xFF000000u | (val * kRgbByteBroadcast);
       }
       return;
     }
@@ -659,7 +659,7 @@ void DecodeTexelsToBgra(uint32_t format, const uint8_t* rawSrc, uint32_t width,
         const uint8_t val = rawSrc[i];
         const uint32_t a = ((val >> 4) & 0xFu) * 17u;
         const uint32_t intensity = (val & 0xFu) * 17u;
-        dstBgra[i] = (a << 24) | (intensity * 0x00010101u);
+        dstBgra[i] = (a << 24) | (intensity * kRgbByteBroadcast);
       }
       return;
     }
@@ -670,7 +670,7 @@ void DecodeTexelsToBgra(uint32_t format, const uint8_t* rawSrc, uint32_t width,
       } else {
         for (size_t i = 0; i < count; ++i) {
           const uint32_t val = rawSrc[i];
-          dstBgra[i] = 0xFF000000u | (val * 0x00010101u);
+          dstBgra[i] = 0xFF000000u | (val * kRgbByteBroadcast);
         }
       }
       return;
@@ -2129,7 +2129,7 @@ uint32_t TextureManager::ResolveMultibaseSource(uint32_t tmu,
 
   auto pickCandidate = [&](uint32_t maxDim, int32_t lod)
       -> std::shared_ptr<VirtualTexture> {
-    uint32_t cands[3] = {0xFFFFFFFFu, 0xFFFFFFFFu, startAddress};
+    uint32_t cands[3] = {kUnboundTexAddress, kUnboundTexAddress, startAddress};
     if (maxDim >= 2048u) {
       cands[0] = m_tmus[tmu].multibaseAddr[7];  // GR_TEXBASE_2048
       cands[1] = m_tmus[tmu].multibaseAddr[3];  // GR_TEXBASE_256 (test39 style)
@@ -2153,7 +2153,7 @@ uint32_t TextureManager::ResolveMultibaseSource(uint32_t tmu,
       cands[1] = m_tmus[tmu].multibaseAddr[4];
     }
     for (uint32_t addr : cands) {
-      if (addr == 0xFFFFFFFFu) continue;
+      if (addr == kUnboundTexAddress) continue;
       auto it = texMap.find(addr);
       if (it == texMap.end()) continue;
       auto& src = it->second;
@@ -2253,7 +2253,7 @@ VirtualTexture* TextureManager::GetTexture(uint32_t tmu,
 std::shared_ptr<const VirtualTexture> TextureManager::GetTextureSnapshot(
     uint32_t tmu, uint32_t startAddress) {
   std::lock_guard<std::mutex> lock(m_mutex);
-  if (tmu >= 2 || startAddress == 0xFFFFFFFFu) return nullptr;
+  if (tmu >= 2 || startAddress == kUnboundTexAddress) return nullptr;
   const uint32_t storeTmu = StorageTmu_Locked(tmu);
   auto it = m_tmus[storeTmu].textures.find(startAddress);
   if (it == m_tmus[storeTmu].textures.end()) return nullptr;
@@ -2275,7 +2275,7 @@ void TextureManager::PrepareTextureForBind(uint32_t tmu,
   std::lock_guard<std::mutex> lock(m_mutex);
   if (tmu >= 2) return;
   m_tmus[tmu].boundAddress = startAddress;
-  if (startAddress == 0xFFFFFFFFu) return;
+  if (startAddress == kUnboundTexAddress) return;
   const uint32_t storeTmu = StorageTmu_Locked(tmu);
   auto it = m_tmus[storeTmu].textures.find(startAddress);
   if (it != m_tmus[storeTmu].textures.end()) {
@@ -2293,7 +2293,7 @@ void TextureManager::SyncBoundTextures() {
       continue;
     }
     const uint32_t addr = m_tmus[tmu].boundAddress;
-    if (addr == 0xFFFFFFFFu) continue;
+    if (addr == kUnboundTexAddress) continue;
     const uint32_t storeTmu = StorageTmu_Locked(tmu);
     auto it = m_tmus[storeTmu].textures.find(addr);
     if (it != m_tmus[storeTmu].textures.end()) {
@@ -2309,9 +2309,9 @@ void TextureManager::ClearTextures() {
   for (int i = 0; i < 2; ++i) {
     m_tmus[i].allocatedBytes = 0;
     m_tmus[i].textures.clear();
-    m_tmus[i].boundAddress = 0xFFFFFFFFu;
+    m_tmus[i].boundAddress = kUnboundTexAddress;
     for (int r = 0; r < 8; ++r) {
-      m_tmus[i].multibaseAddr[r] = 0xFFFFFFFFu;
+      m_tmus[i].multibaseAddr[r] = kUnboundTexAddress;
     }
     m_tmuTableDirty[i].store(false, std::memory_order_release);
   }

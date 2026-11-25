@@ -80,8 +80,8 @@ void GlideStateTracker::ResetState_Locked() {
   m_texDetailBias[0] = m_texDetailBias[1] = 0;
   m_texDetailScale[0] = m_texDetailScale[1] = 0;
   m_texDetailMax[0] = m_texDetailMax[1] = 0.0f;
-  m_boundTexAddress[0] = 0xFFFFFFFF;
-  m_boundTexAddress[1] = 0xFFFFFFFF;
+  m_boundTexAddress[0] = kUnboundTexAddress;
+  m_boundTexAddress[1] = kUnboundTexAddress;
   m_texClampS[0] = 0;
   m_texClampS[1] = 0;
   m_texClampT[0] = 0;
