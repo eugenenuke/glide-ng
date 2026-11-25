@@ -33,7 +33,7 @@ glide-ng/
 │       └── software/                 # CPU reference rasterizer (Scalar / AVX2 / AVX-512)
 ├── tests/                            # Modular self-contained Catch2 suites (glide211/, glide2/, glide3/)
 ├── demos/                            # Standalone Glide 2/3 visual & validation demos
-├── tools/                            # Portable C99 tools (glide_info, glide_bench, glide_envtest, cube/gears)
+├── tools/                            # Portable C99 tools (glide_info, glide_bench, glide_envtest, cube/gears) & glide-dosbox launcher
 ├── cmake/                            # Cross-build integrations (MinGW-w64 Win32, Open Watcom DOS/32)
 ├── scripts/                          # Release & maintenance utilities (bump_version.sh, generate_release_notes.py, package_release.sh)
 ├── VERSION                           # Single source of truth for SemVer 2.0 version
@@ -80,13 +80,13 @@ Load the relevant skill under `.agents/skills/` before modifying files in its do
 | :--- | :--- |
 | `tech-writer` | Authoring, refactoring, or reviewing any Markdown documentation (`README.md`, `CHANGELOG.md`, `docs/**`). |
 | `wsi-window-injection` | Modifying `NativeSurfaceHost`, X11 child windows, Wayland subsurfaces, Win32 `HWND` hosting, aspect-ratio blitting, or DOSBox-X / SVN DOSBox integration. |
-| `build-and-test` | Configuring CMake (`-G Ninja`, PCH, Win32 options), running `ctest`, `Glide211WrapperTests`, `Glide2xWrapperTests`, `Glide3xWrapperTests`, `glide_bench`, Win32/DOS cross-builds, or launching DOSBox/Wine against build outputs. |
+| `build-and-test` | Configuring CMake (`-G Ninja`, PCH, Win32 options), running `ctest` (incl. `GlideDosboxLauncherSmoke`), `Glide211WrapperTests`, `Glide2xWrapperTests`, `Glide3xWrapperTests`, `glide_bench`, Win32/DOS cross-builds, or launching DOSBox (`tools/glide-dosbox/glide-dosbox`) / Wine against build outputs. |
 | `3dfx-expert` | Modifying `src/glide211/`, `src/glide2/`, `src/glide3/`, state serialization (`grGlideGetState`/`SetState`), Glide ABI exports, `env_vars.h`, or verifying 3dfx hardware specs. |
 | `vulkan-expert` | Modifying `src/backends/vulkan/` (swapchain, PSOs, shaders, SPIR-V build, barriers, LFB, GPU RTT, descriptor pools). |
 | `gles-expert` | Modifying `src/backends/opengl_es/` (EGL/WGL surface/context, GLSL ES 3.20 / GL 3.30 shaders, Gamma LUT presentation). |
 | `software-expert` | Modifying `src/backends/software/` or `src/core/SimdKernels*` (CPU reference rasterizer, scalar/AVX2/AVX-512 SIMD, compilation sharding, LFB row flipping). |
 | `visual-validator` | Capturing cross-backend visual parity snapshots (`FX_GLIDE_SNAPSHOT`) or running interactive demos and verification harnesses. |
-| `game-collector` | Guiding classic Glide game testing, read-only binary recon, isolated per-backend log/telemetry capture, screenshot validation, and copyright-clean report bundles (`Standard` default / opt-in `Deep` mode). |
+| `game-collector` | Guiding classic Glide game testing, read-only binary recon, Linux DOSBox lifecycle/triage via `glide-dosbox` (`init --catalog`, `doctor`, `--debug=`), isolated per-backend log/telemetry capture, screenshot validation, and copyright-clean report bundles (`Standard` default / opt-in `Deep` mode). |
 | `release-manager` | Bumping `VERSION`, updating `CHANGELOG.md` comparison links, dry-running `generate_release_notes.py`, packaging `dist/`, tagging, and verifying `.github/workflows/release.yml`. |
 
 ---

@@ -50,6 +50,10 @@ For single-run progression galleries across `vulkan`, `opengl_es`, and `software
 # Capture every 120 frames starting at frame 300 (up to 6 shots) into screens/vk/
 FX_GLIDE_SNAPSHOT=screens/vk/@300+120:6 <launch_command>
 
+# Equivalent glide-dosbox one-liners for DOS titles (writes under ./logs/)
+./run.sh --vk --debug=3:1419-1422 --snap=logs/frame.ppm@1419,1420,1421 --tag=<label>
+./run.sh --vk --debug=4 --tag=<label>
+
 # Periodic X11 window capture (OpenGLide / non-glide-ng DOSBox):
 python3 scripts/gallery_tool.py capture --out screens/og --match "DOSBox" --interval 2.0 --skip-black --skip-dup
 

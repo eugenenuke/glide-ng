@@ -47,6 +47,9 @@ Read **only the compact stdout digest** (and any OEM/wrapper DLL warnings). Imme
 
 Generate isolated per-backend launchers so `glide-ng.log` is never overwritten:
 
+- **DOSBox on Linux (`glide-dosbox` fast path):** Check whether `<game_dir>` already contains `./game.sh` and `./run.sh`, or scaffold supported catalog titles with `tools/glide-dosbox/glide-dosbox init --catalog=<slug> --cdimg=/path/to/disc.cue` (copies catalog `game.sh`, `glide-ng.ini`, and optional `dosbox-override.conf`; see [`docs/user-guide/dosbox-launcher.md`](../../../docs/user-guide/dosbox-launcher.md)). Before handing commands to the human, run read-only launcher checks (`./run.sh doctor`, `./run.sh --dry-run`, `./run.sh --list-variants`) to flag missing libraries/OVLs, `getcap` `AT_SECURE` `LD_LIBRARY_PATH` stripping, or local `GLIDE2X.OVL` shadowing.
+- **Win32 / Wine / Windows (or standalone DOSBox without `glide-dosbox`):** Emit standalone per-backend wrapper scripts via `gen_launchers.py`:
+
 ```bash
 python3 scripts/gen_launchers.py \
   --out-dir <bundle> \
@@ -60,13 +63,13 @@ Optional flags: `--dll-override 'glide,glide2x,glide3x=n'` (Wine), `--wine-deskt
 
 ### Turn 2 — Hand Off Execution to the Human
 
-Give the human a **short numbered checklist** to run the generated scripts, play 30–60 s (menu + 1 gameplay scene), and save lossless `.png` shots under `<bundle>/screens/`:
+Give the human a **short numbered checklist** to run the generated scripts (or `./run.sh` flags below for `glide-dosbox`), play 30–60 s (menu + 1 gameplay scene), and save lossless `.png` shots under `<bundle>/screens/`:
 
-1. `run_01_vk_1x` (`vulkan`, `msaa=1`, `nearest`, writes `logs/vk_1x.log` + perf CSV) → screenshot `01_vk_menu.png`, `02_vk_game.png`
-2. `run_02_vk_hq` (`vulkan`, `msaa=4`, `linear`, `FX_GLIDE_NO_DITHER_SUB=1`) → screenshot `03_vk_hq.png` *(only if clean or testing MSAA seams)*
-3. `run_03_gles` (`opengl_es`, `msaa=1`) → screenshot `04_gles_game.png`
-4. `run_04_sw` (`software`, reference rasterizer, `msaa=1`) → screenshot `05_sw_game.png`
-5. *(Optional)* `run_05_<alt_card>` (e.g. `voodoo1` or `voodoo5`) if probing card identity quirks.
+1. `run_01_vk_1x` (`vulkan`, `msaa=1`, `nearest`, writes `logs/vk_1x.log` + perf CSV) · *or `./run.sh --vk --msaa=1 --debug=1`* → screenshot `01_vk_menu.png`, `02_vk_game.png`
+2. `run_02_vk_hq` (`vulkan`, `msaa=4`, `linear`, `FX_GLIDE_NO_DITHER_SUB=1`) · *or `./run.sh --vk --msaa=4 --debug=1 --tag=hq`* → screenshot `03_vk_hq.png` *(only if clean or testing MSAA seams)*
+3. `run_03_gles` (`opengl_es`, `msaa=1`) · *or `./run.sh --gl --msaa=1 --debug=1`* → screenshot `04_gles_game.png`
+4. `run_04_sw` (`software`, reference rasterizer, `msaa=1`) · *or `./run.sh --sw --msaa=1 --debug=1`* → screenshot `05_sw_game.png`
+5. *(Optional)* `run_05_<alt_card>` · *or `./run.sh --card=VoodooGraphics --variant=<name>` / `./run.sh dbx-sw` / `./run.sh install` / `patch` / `setup` / `shell --cd`* when probing card quirks, variants, or DOS lifecycle steps.
 6. If any run **fails, hangs, crashes, or shows a blank screen**, run `run_debug_capture` and **load [`references/triage_table.md`](references/triage_table.md)** for targeted fixes (max 3–4 probe iterations before escalating).
 
 Record brief host environment specs once into `<bundle>/host_env.txt` (`uname -a`, GPU/driver, X11/Wayland, Wine/DOSBox version — see [`docs/user-guide/reporting-bugs.md`](../../../docs/user-guide/reporting-bugs.md)).

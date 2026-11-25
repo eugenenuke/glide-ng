@@ -43,11 +43,17 @@ cmake --build build_release -j$(nproc) --target win32_dlls
 Always use canonical `GLIDE_NG_*` environment variables with `GLIDE_NG_HEADLESS=1`:
 
 ```bash
-# Discover all registered Catch2 tests (66 domain test cases total)
+# Discover all registered CTest tests (74 tests including GlideDosboxLauncherSmoke)
 ctest --test-dir build -N
 
-# Run all Catch2 tests in parallel via CTest on Software backend
+# Run all CTest tests in parallel on Software backend
 GLIDE_NG_BACKEND=software GLIDE_NG_HEADLESS=1 ctest --test-dir build -j4 --output-on-failure
+
+# Use -j2 when running CTest with Vulkan to avoid concurrent GPU context contention
+GLIDE_NG_BACKEND=vulkan GLIDE_NG_HEADLESS=1 ctest --test-dir build -j2 --output-on-failure
+
+# Run the glide-dosbox launcher & catalog game.sh smoke suite directly
+bash tests/scripts/test_glide_dosbox.sh
 
 # Run Glide 2.11 / 2.x / 3.x Catch2 suites directly
 GLIDE_NG_BACKEND=software GLIDE_NG_HEADLESS=1 ./build/bin/Glide211WrapperTests
@@ -90,6 +96,14 @@ VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation GLIDE_NG_BACKEND=vulkan ./build/b
 # Launch DOSBox-X against build_release/lib
 LD_LIBRARY_PATH="$PWD/build_release/lib:${LD_LIBRARY_PATH:-}" \
   GLIDE_NG_BACKEND=vulkan dosbox-x -conf dosbox.conf
+
+# Or manage DOS titles via glide-dosbox (auto-discovers build_release/ or build/ libs + OVL)
+./tools/glide-dosbox/glide-dosbox doctor
+./tools/glide-dosbox/glide-dosbox init --game-dir=/path/to/game --catalog=tomb-raider --cdimg=/path/to/disc.cue
+./run.sh --dry-run
+./run.sh --vk --debug=1 --gpu=default
+./run.sh --gl --msaa=4 --variant=<name>
+./run.sh shell --cd
 
 # Launch Win32 title under Wine (with glide.dll/glide2x.dll/glide3x.dll next to the .exe)
 WINEDLLOVERRIDES="glide,glide2x,glide3x=n" GLIDE_NG_BACKEND=vulkan wine ./game.exe
