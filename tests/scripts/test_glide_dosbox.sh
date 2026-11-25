@@ -124,6 +124,7 @@ assert_contains "$OUT" "--install-completion" "--help completion"
 OUT="$(cd "$TMP_ROOT" && "$LAUNCHER_BIN" doctor)"
 assert_contains "$OUT" "[OK  ] DOSBOX_SVN" "doctor checks DOSBOX_SVN"
 assert_contains "$OUT" "[OK  ] GNG_LIBS" "doctor checks GNG_LIBS"
+assert_contains "$OUT" "User config   : ${CONF_FILE} (loaded)" "doctor formats loaded user config"
 assert_contains "$OUT" "0 warnings" "doctor outside game dir clean"
 
 # 5. init + catalog preset copy + symlink invocation + non-overwrite guard.

@@ -223,10 +223,12 @@ print_check_row() {
 cmd_doctor() {
   local issues=0
 
+  local conf_status="not found, using defaults"
+  [[ -n "$LAUNCHER_CONF_LOADED" ]] && conf_status="loaded"
   echo "glide-dosbox doctor"
   echo "  Tool dir      : ${TOOL_DIR}"
   echo "  Game dir      : ${GAME_DIR}"
-  echo "  User config   : ${LAUNCHER_CONF}${LAUNCHER_CONF_LOADED:+ (loaded)}${LAUNCHER_CONF_LOADED:- (not found, using defaults)}"
+  echo "  User config   : ${LAUNCHER_CONF} (${conf_status})"
   [[ -n "$REPO_ROOT" ]] && echo "  Repo root     : ${REPO_ROOT}"
 
   echo ""
