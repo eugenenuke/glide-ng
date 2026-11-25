@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -59,6 +60,74 @@ struct VirtualTexture {
   bool uploadedToBackendPerTmu[2]{false, false};
   uint64_t uploadedTableHashPerTmu[2]{0, 0};
 };
+
+// Shared canonical mip-count and content-hash helpers used by Vulkan, OpenGL ES,
+// and Software content-addressed texture caches so metadata-only probes
+// (empty swizzledMipLevels) match full uploads byte-for-byte.
+inline uint32_t ResolveVirtualTextureMipCount(const VirtualTexture& tex,
+                                              bool useCompressed) {
+  if (useCompressed && !tex.rawCompressedMipLevels.empty()) {
+    return static_cast<uint32_t>(tex.rawCompressedMipLevels.size());
+  }
+  if (!useCompressed && !tex.swizzledMipLevels.empty()) {
+    return static_cast<uint32_t>(tex.swizzledMipLevels.size());
+  }
+  if (tex.smallLod >= tex.largeLod) {
+    return static_cast<uint32_t>(tex.smallLod - tex.largeLod + 1);
+  }
+  return 0u;
+}
+
+inline uint64_t CalculateVirtualTextureHash(const VirtualTexture& tex,
+                                            uint32_t mipCount) {
+  auto mix64 = [](uint64_t h, const uint8_t* data, size_t len) noexcept {
+    // 64-bit golden-ratio Weyl constant floor(2^64 / phi) & SplitMix64 mixing
+    // multiplier for fast word-level bit avalanche.
+    constexpr uint64_t kGoldenRatio64 = 0x9E3779B97F4A7C15ULL;
+    constexpr uint64_t kSplitMix64Mul1 = 0xBF58476D1CE4E5B9ULL;
+    size_t i = 0;
+    for (; i + 8 <= len; i += 8) {
+      uint64_t w = 0;
+      std::memcpy(&w, data + i, sizeof(w));
+      h ^= w * kGoldenRatio64;
+      h = (h ^ (h >> 27)) * kSplitMix64Mul1;
+    }
+    if (i < len) {
+      uint64_t tail = 0;
+      std::memcpy(&tail, data + i, len - i);
+      h ^= (tail ^ static_cast<uint64_t>(len)) * kGoldenRatio64;
+      h = (h ^ (h >> 27)) * kSplitMix64Mul1;
+    }
+    h ^= (h >> 31);
+    return h;
+  };
+
+  constexpr uint64_t kFnv1aOffsetBasis64 = 14695981039346656037ULL;
+  uint64_t hash = kFnv1aOffsetBasis64;
+  const uint32_t header[4] = {tex.baseWidth, tex.baseHeight, mipCount,
+                              tex.format};
+  hash = mix64(hash, reinterpret_cast<const uint8_t*>(header), sizeof(header));
+
+  if (tex.rawDataHash != 0) {
+    const uint64_t fastData[3] = {tex.swizzledWithTable ? 1ULL : 0ULL,
+                                  tex.rawDataHash, tex.swizzledTableHash};
+    hash = mix64(hash, reinterpret_cast<const uint8_t*>(fastData),
+                 sizeof(fastData));
+    return (hash == 0) ? 1ULL : hash;
+  }
+
+  if (!tex.swizzledMipLevels.empty()) {
+    for (const auto& level : tex.swizzledMipLevels) {
+      const auto* byteData = reinterpret_cast<const uint8_t*>(level.data());
+      hash = mix64(hash, byteData, level.size() * sizeof(uint32_t));
+    }
+  } else {
+    for (const auto& level : tex.rawCompressedMipLevels) {
+      hash = mix64(hash, level.data(), level.size());
+    }
+  }
+  return (hash == 0) ? 1ULL : hash;
+}
 
 class TextureManager {
  public:

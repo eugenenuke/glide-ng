@@ -43,70 +43,6 @@ static bool ResolveVulkanCompressedFormat(const struct VirtualTexture& tex,
   return ResolveVulkanBcnFormat(tex.format, outFormat, outBlockBytes);
 }
 
-static uint32_t ResolveTextureMipCount(const struct VirtualTexture& tex,
-                                       bool useCompressed) {
-  if (useCompressed && !tex.rawCompressedMipLevels.empty()) {
-    return static_cast<uint32_t>(tex.rawCompressedMipLevels.size());
-  }
-  if (!useCompressed && !tex.swizzledMipLevels.empty()) {
-    return static_cast<uint32_t>(tex.swizzledMipLevels.size());
-  }
-  if (tex.smallLod >= tex.largeLod) {
-    return static_cast<uint32_t>(tex.smallLod - tex.largeLod + 1);
-  }
-  return 0u;
-}
-
-static uint64_t CalculateTextureHash(const struct VirtualTexture& tex,
-                                     uint32_t mipCount) {
-  auto mix64 = [](uint64_t h, const uint8_t* data, size_t len) noexcept {
-    constexpr uint64_t kMul = 0x9E3779B97F4A7C15ULL;
-    constexpr uint64_t kMul2 = 0xBF58476D1CE4E5B9ULL;
-    size_t i = 0;
-    for (; i + 8 <= len; i += 8) {
-      uint64_t w = 0;
-      std::memcpy(&w, data + i, sizeof(w));
-      h ^= w * kMul;
-      h = (h ^ (h >> 27)) * kMul2;
-    }
-    if (i < len) {
-      uint64_t tail = 0;
-      std::memcpy(&tail, data + i, len - i);
-      h ^= (tail ^ static_cast<uint64_t>(len)) * kMul;
-      h = (h ^ (h >> 27)) * kMul2;
-    }
-    h ^= (h >> 31);
-    return h;
-  };
-
-  uint64_t hash = 14695981039346656037ULL;
-  const uint32_t header[4] = {tex.baseWidth, tex.baseHeight, mipCount,
-                              tex.format};
-  hash = mix64(hash, reinterpret_cast<const uint8_t*>(header), sizeof(header));
-
-  // Fast O(1) path when TextureManager already hashed the full raw mipmap chain
-  // (rawDataHash == 0 after partial sub-updates or direct unit-test setup).
-  if (tex.rawDataHash != 0) {
-    const uint64_t fastData[3] = {tex.swizzledWithTable ? 1ULL : 0ULL,
-                                  tex.rawDataHash, tex.swizzledTableHash};
-    hash = mix64(hash, reinterpret_cast<const uint8_t*>(fastData),
-                 sizeof(fastData));
-    return (hash == 0) ? 1ULL : hash;
-  }
-
-  if (!tex.swizzledMipLevels.empty()) {
-    for (const auto& level : tex.swizzledMipLevels) {
-      const auto* byteData = reinterpret_cast<const uint8_t*>(level.data());
-      hash = mix64(hash, byteData, level.size() * sizeof(uint32_t));
-    }
-  } else {
-    for (const auto& level : tex.rawCompressedMipLevels) {
-      hash = mix64(hash, level.data(), level.size());
-    }
-  }
-  return (hash == 0) ? 1ULL : hash;
-}
-
 void VulkanBackend::EraseFromLiveContentMap_Locked(const VulkanTexture& tex) {
   if (tex.dataHash == 0) return;
   const TextureContentKey key{tex.dataHash, tex.format, tex.width, tex.height,
@@ -418,12 +354,12 @@ bool VulkanBackend::TryBindCachedTexture(uint32_t tmu, uint32_t startAddress,
   const bool useCompressed =
       canUseCompressed &&
       ResolveVulkanBcnFormat(tex.format, targetFormat, bcBlockBytes);
-  const uint32_t mipCount = ResolveTextureMipCount(tex, useCompressed);
+  const uint32_t mipCount = ResolveVirtualTextureMipCount(tex, useCompressed);
   if (mipCount == 0) {
     return false;
   }
 
-  const uint64_t incomingHash = CalculateTextureHash(tex, mipCount);
+  const uint64_t incomingHash = CalculateVirtualTextureHash(tex, mipCount);
   return TryBindContentCachedTexture_Locked(tmu, startAddress, targetFormat,
                                             mipCount, tex.baseWidth,
                                             tex.baseHeight, incomingHash);
@@ -458,7 +394,7 @@ void VulkanBackend::UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
   }
 
   // 1. Calculate incoming texture content hash and check live/pooled caches
-  const uint64_t incomingHash = CalculateTextureHash(tex, mipCount);
+  const uint64_t incomingHash = CalculateVirtualTextureHash(tex, mipCount);
   if (TryBindContentCachedTexture_Locked(tmu, startAddress, targetFormat,
                                          mipCount, tex.baseWidth,
                                          tex.baseHeight, incomingHash)) {
@@ -913,7 +849,7 @@ void VulkanBackend::UploadTexturePartial(uint32_t tmu, uint32_t startAddress,
                         vk::ImageLayout::eTransferDstOptimal,
                         vk::ImageLayout::eShaderReadOnlyOptimal, levelRange);
 
-  vTex.dataHash = CalculateTextureHash(tex, vTex.mipLevels);
+  vTex.dataHash = CalculateVirtualTextureHash(tex, vTex.mipLevels);
   if (vTex.dataHash != 0) {
     const TextureContentKey newKey{vTex.dataHash, vTex.format, vTex.width,
                                    vTex.height, vTex.mipLevels};

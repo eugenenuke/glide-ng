@@ -17,12 +17,9 @@ constexpr GLenum kGlCompressedRgbaS3tcDxt1Ext = 0x83F1u;
 constexpr GLenum kGlCompressedRgbaS3tcDxt3Ext = 0x83F2u;
 constexpr GLenum kGlCompressedRgbaS3tcDxt5Ext = 0x83F3u;
 
-bool ResolveGlesCompressedFormat(const VirtualTexture& tex, bool s3tcEnabled,
-                                 GLenum& outFormat, uint32_t& outBlockBytes) {
-  if (!s3tcEnabled || tex.rawCompressedMipLevels.empty()) {
-    return false;
-  }
-  switch (tex.format) {
+bool ResolveGlesBcnFormat(uint32_t glideFormat, GLenum& outFormat,
+                         uint32_t& outBlockBytes) {
+  switch (glideFormat) {
     case 0x16u:  // GR_TEXFMT_ARGB_CMP_DXT1
       outFormat = kGlCompressedRgbaS3tcDxt1Ext;
       outBlockBytes = 8u;
@@ -41,7 +38,304 @@ bool ResolveGlesCompressedFormat(const VirtualTexture& tex, bool s3tcEnabled,
       return false;
   }
 }
+
+bool ResolveGlesCompressedFormat(const VirtualTexture& tex, bool s3tcEnabled,
+                                 GLenum& outFormat, uint32_t& outBlockBytes) {
+  if (!s3tcEnabled || tex.rawCompressedMipLevels.empty()) {
+    return false;
+  }
+  return ResolveGlesBcnFormat(tex.format, outFormat, outBlockBytes);
+}
+
+size_t EstimateGlesTextureBytes(uint32_t baseW, uint32_t baseH,
+                                uint32_t mipCount, bool useCompressed,
+                                uint32_t bcBlockBytes) {
+  size_t totalBytes = 0u;
+  uint32_t w = baseW;
+  uint32_t h = baseH;
+  for (uint32_t i = 0; i < mipCount; ++i) {
+    if (useCompressed) {
+      totalBytes += static_cast<size_t>((w + 3u) / 4u) * ((h + 3u) / 4u) *
+                    bcBlockBytes;
+    } else {
+      totalBytes += static_cast<size_t>(w) * h * sizeof(uint32_t);
+    }
+    w = std::max(1u, w / 2u);
+    h = std::max(1u, h / 2u);
+  }
+  return totalBytes;
+}
 }  // namespace
+
+void OpenGLESBackend::EraseFromGlesLiveContentMap_Locked(
+    const GlesTexture& tex) {
+  if (tex.dataHash == 0u) return;
+  const GlesTexContentKey key{tex.dataHash, tex.internalFormat, tex.width,
+                              tex.height, tex.mipLevels};
+  auto it = m_glesLiveContentMap.find(key);
+  if (it != m_glesLiveContentMap.end()) {
+    auto existing = it->second.lock();
+    if (!existing || existing.get() == &tex) {
+      m_glesLiveContentMap.erase(it);
+    }
+  }
+}
+
+std::shared_ptr<OpenGLESBackend::GlesTexture>
+OpenGLESBackend::TakeGlesFromIdleById_Locked(uint64_t id) {
+  auto it = m_glesIdleNodes.find(id);
+  if (it == m_glesIdleNodes.end()) return nullptr;
+
+  GlesIdleNode& node = it->second;
+  m_glesIdleLru.erase(node.lruIt);
+
+  if (node.hasContentKey) {
+    auto cit = m_glesIdleContentMap.find(node.contentKey);
+    if (cit != m_glesIdleContentMap.end() && cit->second == id) {
+      m_glesIdleContentMap.erase(cit);
+    }
+  }
+
+  const size_t bytes = node.tex ? node.tex->gpuByteSize : 0u;
+  m_glesIdleBytes =
+      (m_glesIdleBytes >= bytes) ? (m_glesIdleBytes - bytes) : 0u;
+
+  std::shared_ptr<GlesTexture> tex = std::move(node.tex);
+  m_glesIdleNodes.erase(it);
+  return tex;
+}
+
+void OpenGLESBackend::FlushPendingGlesTexDeletes_Locked() {
+  if (m_pendingDeleteGlesTexIds.empty()) return;
+  for (uint32_t rawId : m_pendingDeleteGlesTexIds) {
+    if (rawId == 0u) continue;
+    for (uint32_t t = 0; t < 2u; ++t) {
+      if (m_cachedBoundTex[t] == rawId) {
+        m_cachedBoundTex[t] = 0xFFFFFFFFu;
+        m_glesDirtyMask |= kGlesDirtyTexBinding;
+      }
+    }
+    GLuint glId = static_cast<GLuint>(rawId);
+    glDeleteTextures(1, &glId);
+  }
+  m_pendingDeleteGlesTexIds.clear();
+}
+
+void OpenGLESBackend::InsertGlesIntoIdleCache_Locked(
+    std::shared_ptr<GlesTexture> tex) {
+  if (!tex || tex->id == 0u) return;
+  if (tex->width == 0u || tex->height == 0u || tex->mipLevels == 0u ||
+      tex->gpuByteSize > kMaxCachedGlesTextureBytes) {
+    m_pendingDeleteGlesTexIds.push_back(tex->id);
+    tex->id = 0u;
+    return;
+  }
+
+  const uint64_t id = m_nextGlesIdleId++;
+  GlesIdleNode node;
+  if (tex->dataHash != 0u) {
+    node.contentKey =
+        GlesTexContentKey{tex->dataHash, tex->internalFormat, tex->width,
+                          tex->height, tex->mipLevels};
+    node.hasContentKey = true;
+    auto cit = m_glesIdleContentMap.find(node.contentKey);
+    if (cit != m_glesIdleContentMap.end()) {
+      auto oldIt = m_glesIdleNodes.find(cit->second);
+      if (oldIt != m_glesIdleNodes.end()) {
+        oldIt->second.hasContentKey = false;
+      }
+    }
+    m_glesIdleContentMap[node.contentKey] = id;
+  }
+
+  m_glesIdleLru.push_front(id);
+  node.lruIt = m_glesIdleLru.begin();
+  m_glesIdleBytes += tex->gpuByteSize;
+  node.tex = std::move(tex);
+  m_glesIdleNodes.emplace(id, std::move(node));
+
+  while (m_glesIdleNodes.size() > kMaxCachedGlesTextures ||
+         m_glesIdleBytes > kMaxCachedGlesTextureBytes) {
+    if (m_glesIdleLru.empty()) break;
+    const uint64_t victimId = m_glesIdleLru.back();
+    auto victim = TakeGlesFromIdleById_Locked(victimId);
+    if (victim && victim->id != 0u) {
+      m_pendingDeleteGlesTexIds.push_back(victim->id);
+      victim->id = 0u;
+    }
+  }
+}
+
+void OpenGLESBackend::RetireGlesTextureAtAddress_Locked(uint32_t tmu,
+                                                       uint32_t startAddress) {
+  if (tmu >= 2u) return;
+  auto& tmuMap = m_glesTextures[tmu];
+  auto it = tmuMap.find(startAddress);
+  if (it == tmuMap.end()) return;
+
+  std::shared_ptr<GlesTexture> oldTex = std::move(it->second);
+  tmuMap.erase(it);
+  if (oldTex && oldTex.use_count() == 1) {
+    EraseFromGlesLiveContentMap_Locked(*oldTex);
+    InsertGlesIntoIdleCache_Locked(std::move(oldTex));
+  }
+}
+
+std::shared_ptr<OpenGLESBackend::GlesTexture>
+OpenGLESBackend::TryAcquireGlesContentCached_Locked(
+    const GlesTexContentKey& key) {
+  if (key.dataHash == 0u) return nullptr;
+
+  auto lit = m_glesLiveContentMap.find(key);
+  if (lit != m_glesLiveContentMap.end()) {
+    if (auto existing = lit->second.lock()) {
+      if (existing->id != 0u && existing->dataHash == key.dataHash &&
+          existing->internalFormat == key.internalFormat &&
+          existing->width == key.width && existing->height == key.height &&
+          existing->mipLevels == key.mipLevels) {
+        return existing;
+      }
+    } else {
+      m_glesLiveContentMap.erase(lit);
+    }
+  }
+
+  auto iit = m_glesIdleContentMap.find(key);
+  if (iit != m_glesIdleContentMap.end()) {
+    auto cached = TakeGlesFromIdleById_Locked(iit->second);
+    if (cached && cached->id != 0u) {
+      m_glesLiveContentMap[key] = cached;
+      return cached;
+    }
+  }
+
+  return nullptr;
+}
+
+std::shared_ptr<OpenGLESBackend::GlesTexture>
+OpenGLESBackend::TryAcquireGlesIdleForReuse_Locked(size_t estimatedBytes) {
+  if (m_glesIdleLru.empty()) return nullptr;
+
+  // Preserve warm content-addressed GL textures in m_glesIdleContentMap while
+  // cache capacity headroom remains so multi-palette / multi-room working sets
+  // do not cannibalize their own cache.
+  const size_t reuseHighWaterBytes = (kMaxCachedGlesTextureBytes * 7u) / 8u;
+  const bool cacheAtCapacity =
+      (m_glesIdleNodes.size() >= kMaxCachedGlesTextures) ||
+      (m_glesIdleBytes + estimatedBytes > reuseHighWaterBytes);
+  const uint64_t victimId = m_glesIdleLru.back();
+  if (!cacheAtCapacity) {
+    auto nit = m_glesIdleNodes.find(victimId);
+    if (nit == m_glesIdleNodes.end() || nit->second.hasContentKey) {
+      return nullptr;
+    }
+  }
+  return TakeGlesFromIdleById_Locked(victimId);
+}
+
+void OpenGLESBackend::ClearAllGlesTextures_Locked(bool deleteGlObjects) {
+  for (uint32_t t = 0; t < 2u; ++t) {
+    for (auto& pair : m_glesTextures[t]) {
+      if (pair.second && pair.second->id != 0u) {
+        if (deleteGlObjects) {
+          GLuint glId = static_cast<GLuint>(pair.second->id);
+          glDeleteTextures(1, &glId);
+        }
+        pair.second->id = 0u;
+      }
+    }
+    m_glesTextures[t].clear();
+  }
+  for (auto& pair : m_glesIdleNodes) {
+    if (pair.second.tex && pair.second.tex->id != 0u) {
+      if (deleteGlObjects) {
+        GLuint glId = static_cast<GLuint>(pair.second.tex->id);
+        glDeleteTextures(1, &glId);
+      }
+      pair.second.tex->id = 0u;
+    }
+  }
+  if (deleteGlObjects) {
+    FlushPendingGlesTexDeletes_Locked();
+  } else {
+    m_pendingDeleteGlesTexIds.clear();
+  }
+  m_glesLiveContentMap.clear();
+  m_glesIdleNodes.clear();
+  m_glesIdleLru.clear();
+  m_glesIdleContentMap.clear();
+  m_glesIdleBytes = 0u;
+  m_cachedBoundTex[0] = 0xFFFFFFFFu;
+  m_cachedBoundTex[1] = 0xFFFFFFFFu;
+  m_glesDirtyMask |= kGlesDirtyTexBinding;
+}
+
+bool OpenGLESBackend::TryBindContentCachedTexture_Locked(
+    uint32_t tmu, uint32_t startAddress, uint32_t targetInternalFmt,
+    uint32_t mipCount, uint32_t width, uint32_t height, uint64_t incomingHash) {
+  auto& tmuMap = m_glesTextures[tmu];
+  auto it = tmuMap.find(startAddress);
+  if (it != tmuMap.end() && it->second && it->second->id != 0u &&
+      it->second->dataHash == incomingHash &&
+      it->second->internalFormat == targetInternalFmt &&
+      it->second->width == width && it->second->height == height &&
+      it->second->mipLevels == mipCount) {
+    return true;
+  }
+
+  const GlesTexContentKey key{incomingHash, targetInternalFmt, width, height,
+                              mipCount};
+  if (auto cachedTex = TryAcquireGlesContentCached_Locked(key)) {
+    if (it != tmuMap.end() && it->second == cachedTex) {
+      return true;
+    }
+    // Only flush active draw batch if this TMU address is currently referenced
+    // by queued vertices, matching VulkanBackend cache swap semantics.
+    if (!m_batchVertices.empty() && m_boundTexAddress[tmu] == startAddress) {
+      ScopedFrontContextRelease releaseGuard{*this};
+      FlushBatch();
+    }
+    RetireGlesTextureAtAddress_Locked(tmu, startAddress);
+    tmuMap[startAddress] = std::move(cachedTex);
+    m_glesDirtyMask |=
+        kGlesDirtyTexBinding |
+        (tmu == 0u ? kGlesDirtyTexSampler0 : kGlesDirtyTexSampler1);
+    ++m_glesTexContentCacheHits;
+    return true;
+  }
+  return false;
+}
+
+bool OpenGLESBackend::TryBindCachedTexture(uint32_t tmu, uint32_t startAddress,
+                                           const struct VirtualTexture& tex) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (!m_initialized || (!m_windowAttached && !m_headlessMode) || tmu >= 2u ||
+      tex.rawDataHash == 0u || tex.baseWidth == 0u || tex.baseHeight == 0u) {
+    return false;
+  }
+
+  GLenum compressedFmt = 0;
+  uint32_t bcBlockBytes = 0u;
+  const bool canUseCompressed =
+      m_supportsS3tc &&
+      (tex.swizzledMipLevels.empty() || !tex.rawCompressedMipLevels.empty());
+  const bool useCompressed =
+      canUseCompressed &&
+      ResolveGlesBcnFormat(tex.format, compressedFmt, bcBlockBytes);
+  const uint32_t mipCount = ResolveVirtualTextureMipCount(tex, useCompressed);
+  if (mipCount == 0u) {
+    return false;
+  }
+
+  const uint32_t targetInternalFmt =
+      useCompressed ? static_cast<uint32_t>(compressedFmt)
+                    : static_cast<uint32_t>(GL_RGBA);
+  const uint64_t incomingHash = CalculateVirtualTextureHash(tex, mipCount);
+  return TryBindContentCachedTexture_Locked(tmu, startAddress,
+                                            targetInternalFmt, mipCount,
+                                            tex.baseWidth, tex.baseHeight,
+                                            incomingHash);
+}
 
 void OpenGLESBackend::UploadTexture(uint32_t tmu, uint32_t startAddress,
                                     const struct VirtualTexture& tex) {
@@ -51,9 +345,7 @@ void OpenGLESBackend::UploadTexture(uint32_t tmu, uint32_t startAddress,
 
 void OpenGLESBackend::UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
                                            const struct VirtualTexture& tex) {
-  ScopedFrontContextRelease releaseGuard{*this};
-  FlushBatch();
-  if (tmu >= 2) return;
+  if (!m_initialized || tmu >= 2u) return;
   GLenum compressedFmt = 0;
   uint32_t bcBlockBytes = 0;
   const bool useCompressed = ResolveGlesCompressedFormat(
@@ -61,7 +353,7 @@ void OpenGLESBackend::UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
   const uint32_t mipCount = static_cast<uint32_t>(
       useCompressed ? tex.rawCompressedMipLevels.size()
                     : tex.swizzledMipLevels.size());
-  if (tex.baseWidth == 0 || tex.baseHeight == 0 || mipCount == 0) {
+  if (tex.baseWidth == 0u || tex.baseHeight == 0u || mipCount == 0u) {
     return;
   }
   if (!m_windowAttached && !m_headlessMode) {
@@ -70,51 +362,67 @@ void OpenGLESBackend::UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
               "ignoring.");
     return;
   }
-  if (!EnsureContextCurrent()) return;
-
-  GLIDE_PROFILE_SCOPE("GLES::UploadTexture");
 
   const uint32_t targetInternalFmt =
       useCompressed ? static_cast<uint32_t>(compressedFmt)
                     : static_cast<uint32_t>(GL_RGBA);
-  auto& tmuMap = m_glesTextures[tmu];
-  GLuint texId = 0;
+  const uint64_t incomingHash = CalculateVirtualTextureHash(tex, mipCount);
+  if (TryBindContentCachedTexture_Locked(tmu, startAddress, targetInternalFmt,
+                                         mipCount, tex.baseWidth,
+                                         tex.baseHeight, incomingHash)) {
+    return;
+  }
+
+  ScopedFrontContextRelease releaseGuard{*this};
+  FlushBatch();
+  if (!EnsureContextCurrent()) return;
+  FlushPendingGlesTexDeletes_Locked();
+
+  GLIDE_PROFILE_SCOPE("GLES::UploadTexture");
+
+  RetireGlesTextureAtAddress_Locked(tmu, startAddress);
+
+  const uint32_t baseW = tex.baseWidth;
+  const uint32_t baseH = tex.baseHeight;
+  const size_t estimatedBytes = EstimateGlesTextureBytes(
+      baseW, baseH, mipCount, useCompressed, bcBlockBytes);
+
+  std::shared_ptr<GlesTexture> glesTex =
+      TryAcquireGlesIdleForReuse_Locked(estimatedBytes);
   bool canSubImage = false;
-  auto it = tmuMap.find(startAddress);
-  if (it == tmuMap.end()) {
-    glGenTextures(1, &texId);
-    it = tmuMap.emplace(startAddress, GlesTexEntry{texId, 0, 0, 0, 0}).first;
-    GLIDE_LOG(DEBUG, "GLES",
-              "Generated new GLES Texture ID " << texId << " for TMU" << tmu
-                                               << " Address 0x" << std::hex
-                                               << startAddress << std::dec);
-  } else {
-    texId = it->second.id;
+  if (glesTex && glesTex->id != 0u) {
     const bool fmtMatches =
-        (it->second.internalFormat == targetInternalFmt) ||
+        (glesTex->internalFormat == targetInternalFmt) ||
         (!useCompressed &&
-         it->second.internalFormat == static_cast<uint32_t>(GL_RGBA8));
-    canSubImage = (it->second.width == tex.baseWidth &&
-                   it->second.height == tex.baseHeight &&
-                   it->second.mipLevels == mipCount && fmtMatches);
+         (glesTex->internalFormat == static_cast<uint32_t>(GL_RGBA) ||
+          glesTex->internalFormat == static_cast<uint32_t>(GL_RGBA8)));
+    canSubImage = (glesTex->width == baseW && glesTex->height == baseH &&
+                   glesTex->mipLevels == mipCount && fmtMatches);
     GLIDE_LOG(DEBUG, "GLES",
-              "Re-uploading to existing GLES Texture ID "
-                  << texId << " for TMU" << tmu << " Address 0x" << std::hex
-                  << startAddress << std::dec
+              "Reusing cached GLES Texture ID "
+                  << glesTex->id << " for TMU" << tmu << " Address 0x"
+                  << std::hex << startAddress << std::dec
                   << (canSubImage ? " (SubImage)" : " (TexImage)"));
+  } else {
+    glesTex = std::make_shared<GlesTexture>();
+    GLuint newId = 0;
+    glGenTextures(1, &newId);
+    glesTex->id = static_cast<uint32_t>(newId);
+    GLIDE_LOG(DEBUG, "GLES",
+              "Generated new GLES Texture ID "
+                  << glesTex->id << " for TMU" << tmu << " Address 0x"
+                  << std::hex << startAddress << std::dec);
   }
+  const GLuint texId = static_cast<GLuint>(glesTex->id);
 
-  if (m_cachedActiveTexUnit != 0) {
+  if (m_cachedActiveTexUnit != 0u) {
     glActiveTexture(GL_TEXTURE0);
-    m_cachedActiveTexUnit = 0;
+    m_cachedActiveTexUnit = 0u;
   }
-  if (m_cachedBoundTex[0] != texId) {
+  if (m_cachedBoundTex[0] != glesTex->id) {
     glBindTexture(GL_TEXTURE_2D, texId);
-    m_cachedBoundTex[0] = texId;
+    m_cachedBoundTex[0] = glesTex->id;
   }
-
-  uint32_t baseW = tex.baseWidth;
-  uint32_t baseH = tex.baseHeight;
 
   if (useCompressed) {
     for (uint32_t i = 0; i < mipCount; ++i) {
@@ -181,11 +489,14 @@ void OpenGLESBackend::UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
     }
   }
 
+  glesTex->width = baseW;
+  glesTex->height = baseH;
+  glesTex->mipLevels = mipCount;
+  glesTex->internalFormat = targetInternalFmt;
+  glesTex->dataHash = incomingHash;
+  glesTex->gpuByteSize = estimatedBytes;
+
   if (!canSubImage) {
-    it->second.width = baseW;
-    it->second.height = baseH;
-    it->second.mipLevels = mipCount;
-    it->second.internalFormat = targetInternalFmt;
     // Set default wrap/filter parameters so texture is complete
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
                     mipCount > 1 ? GL_NEAREST_MIPMAP_NEAREST : GL_NEAREST);
@@ -196,6 +507,13 @@ void OpenGLESBackend::UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
     }
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+  }
+
+  m_glesTextures[tmu][startAddress] = glesTex;
+  if (incomingHash != 0u) {
+    const GlesTexContentKey key{incomingHash, targetInternalFmt, baseW, baseH,
+                                mipCount};
+    m_glesLiveContentMap[key] = glesTex;
   }
 
   m_glesDirtyMask |=
@@ -212,25 +530,29 @@ void OpenGLESBackend::UploadTexturePartial(uint32_t tmu, uint32_t startAddress,
   FlushBatch();
   if (!m_windowAttached && !m_headlessMode) return;
   if (!EnsureContextCurrent()) return;
+  FlushPendingGlesTexDeletes_Locked();
 
   GLIDE_PROFILE_SCOPE("GLES::UploadTexturePartial");
 
   if (tmu >= 2) return;
   ScopedFrontContextRelease releaseGuard{*this};
 
-  // 1. Check if the texture exists. If not, promote to a full upload!
+  // 1. Check if the texture exists and is exclusively owned; COW shared cache
+  //    hits promote cleanly to a full upload so other TMUs/aliases are untouched.
   auto it = m_glesTextures[tmu].find(startAddress);
-  if (it == m_glesTextures[tmu].end()) {
+  if (it == m_glesTextures[tmu].end() || !it->second || it->second->id == 0u ||
+      it->second.use_count() > 1) {
     GLIDE_LOG(INFO, "GLES",
               "UploadTexturePartial: Texture at 0x"
                   << std::hex << startAddress << std::dec
-                  << " not found. Promoting to full upload.");
+                  << " missing or shared (COW). Promoting to full upload.");
     UploadTexture_Locked(tmu, startAddress, tex);
     return;
   }
-  GLuint texId = it->second.id;
-  if (it->second.internalFormat != static_cast<uint32_t>(GL_RGBA) &&
-      it->second.internalFormat != static_cast<uint32_t>(GL_RGBA8)) {
+  std::shared_ptr<GlesTexture> glesTex = it->second;
+  const GLuint texId = static_cast<GLuint>(glesTex->id);
+  if (glesTex->internalFormat != static_cast<uint32_t>(GL_RGBA) &&
+      glesTex->internalFormat != static_cast<uint32_t>(GL_RGBA8)) {
     UploadTexture_Locked(tmu, startAddress, tex);
     return;
   }
@@ -268,6 +590,9 @@ void OpenGLESBackend::UploadTexturePartial(uint32_t tmu, uint32_t startAddress,
     return;
   }
 
+  EraseFromGlesLiveContentMap_Locked(*glesTex);
+  glesTex->dataHash = 0u;
+
   if (m_cachedActiveTexUnit != 0) {
     glActiveTexture(GL_TEXTURE0);
     m_cachedActiveTexUnit = 0;
@@ -292,6 +617,16 @@ void OpenGLESBackend::UploadTexturePartial(uint32_t tmu, uint32_t startAddress,
                   static_cast<GLsizei>(numRows), GL_RGBA, GL_UNSIGNED_BYTE,
                   dst);
 
+  const uint64_t newHash =
+      CalculateVirtualTextureHash(tex, glesTex->mipLevels);
+  glesTex->dataHash = newHash;
+  if (newHash != 0u) {
+    const GlesTexContentKey newKey{newHash, glesTex->internalFormat,
+                                   glesTex->width, glesTex->height,
+                                   glesTex->mipLevels};
+    m_glesLiveContentMap[newKey] = glesTex;
+  }
+
   GLIDE_LOG(DEBUG, "GLES",
             "UploadTexturePartial TMU"
                 << tmu << ": Address=0x" << std::hex << startAddress << std::dec
@@ -304,25 +639,17 @@ void OpenGLESBackend::UploadTexturePartial(uint32_t tmu, uint32_t startAddress,
 void OpenGLESBackend::PurgeTextures() {
   std::lock_guard<std::mutex> lock(m_mutex);
   FlushBatch();
-  const size_t total = m_glesTextures[0].size() + m_glesTextures[1].size();
+  const size_t total = m_glesTextures[0].size() + m_glesTextures[1].size() +
+                       m_glesIdleNodes.size() +
+                       m_pendingDeleteGlesTexIds.size();
   if (total == 0) return;
   GLIDE_LOG(DEBUG, "GLES",
             "PurgeTextures: deleting " << total << " textures from GPU.");
-  if (EnsureContextCurrent()) {
-    for (uint32_t t = 0; t < 2; ++t) {
-      for (auto& pair : m_glesTextures[t]) {
-        if (pair.second.id) {
-          glDeleteTextures(1, &pair.second.id);
-        }
-      }
-    }
+  const bool ctxOk = EnsureContextCurrent();
+  ClearAllGlesTextures_Locked(ctxOk);
+  if (ctxOk) {
     checkGLError("PurgeTextures");
   }
-  m_glesTextures[0].clear();
-  m_glesTextures[1].clear();
-  m_cachedBoundTex[0] = 0xFFFFFFFFu;
-  m_cachedBoundTex[1] = 0xFFFFFFFFu;
-  m_glesDirtyMask |= kGlesDirtyTexBinding;
   if (m_frontBufferNeedsPresent) {
     ReleaseFrontPresentContext_Locked();
   }
@@ -473,6 +800,7 @@ bool OpenGLESBackend::CommitGpuTextureBuffer(
     return false;
   }
   if (!EnsureContextCurrent()) return false;
+  FlushPendingGlesTexDeletes_Locked();
 
   GLIDE_PROFILE_SCOPE("GLES::CommitGpuTextureBuffer");
   FlushBatch();
@@ -480,22 +808,34 @@ bool OpenGLESBackend::CommitGpuTextureBuffer(
   ResolveMsaaToSingle_Locked(0);
 
   auto& tmuMap = m_glesTextures[tmu];
-  GLuint texId = 0;
-  auto it = tmuMap.find(startAddress);
+  std::shared_ptr<GlesTexture> glesTex;
   bool needsAlloc = false;
-  if (it == tmuMap.end()) {
-    glGenTextures(1, &texId);
-    it = tmuMap.emplace(startAddress, GlesTexEntry{texId, 0, 0, 0, 0}).first;
+  auto it = tmuMap.find(startAddress);
+  if (it != tmuMap.end() && it->second && it->second->id != 0u) {
+    if (it->second.use_count() > 1) {
+      RetireGlesTextureAtAddress_Locked(tmu, startAddress);
+    } else {
+      glesTex = it->second;
+      EraseFromGlesLiveContentMap_Locked(*glesTex);
+      glesTex->dataHash = 0u;
+    }
+  }
+  if (!glesTex) {
+    glesTex = std::make_shared<GlesTexture>();
+    GLuint newId = 0;
+    glGenTextures(1, &newId);
+    glesTex->id = static_cast<uint32_t>(newId);
+    tmuMap[startAddress] = glesTex;
     needsAlloc = true;
   } else {
-    texId = it->second.id;
     const bool isRgba =
-        (it->second.internalFormat == static_cast<uint32_t>(GL_RGBA8) ||
-         it->second.internalFormat == static_cast<uint32_t>(GL_RGBA));
-    needsAlloc = (it->second.width != baseWidth ||
-                  it->second.height != baseHeight ||
-                  it->second.mipLevels != totalMipLevels || !isRgba);
+        (glesTex->internalFormat == static_cast<uint32_t>(GL_RGBA8) ||
+         glesTex->internalFormat == static_cast<uint32_t>(GL_RGBA));
+    needsAlloc = (glesTex->width != baseWidth ||
+                  glesTex->height != baseHeight ||
+                  glesTex->mipLevels != totalMipLevels || !isRgba);
   }
+  const GLuint texId = static_cast<GLuint>(glesTex->id);
 
   if (needsAlloc) {
     glActiveTexture(GL_TEXTURE0);
@@ -514,10 +854,12 @@ bool OpenGLESBackend::CommitGpuTextureBuffer(
                     static_cast<GLint>(totalMipLevels - 1));
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-    it->second.width = baseWidth;
-    it->second.height = baseHeight;
-    it->second.mipLevels = totalMipLevels;
-    it->second.internalFormat = static_cast<uint32_t>(GL_RGBA8);
+    glesTex->width = baseWidth;
+    glesTex->height = baseHeight;
+    glesTex->mipLevels = totalMipLevels;
+    glesTex->internalFormat = static_cast<uint32_t>(GL_RGBA8);
+    glesTex->gpuByteSize = EstimateGlesTextureBytes(
+        baseWidth, baseHeight, totalMipLevels, false, 0u);
   }
 
   if (m_rttCommitFbo == 0) {

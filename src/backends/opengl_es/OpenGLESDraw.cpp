@@ -741,6 +741,7 @@ void OpenGLESBackend::FlushBatch(bool fromStateFlush) {
     m_batchPrimitiveMode = BatchPrimitiveMode::None;
     return;
   }
+  FlushPendingGlesTexDeletes_Locked();
 
   TelemetryManager::GetInstance().RecordDrawCall(fromStateFlush);
 
@@ -800,8 +801,8 @@ void OpenGLESBackend::FlushBatch(bool fromStateFlush) {
     uint32_t addr = m_boundTexAddress[tmu];
     if (addr != 0xFFFFFFFF) {
       auto it = m_glesTextures[tmu].find(addr);
-      if (it != m_glesTextures[tmu].end()) {
-        const uint32_t texId = it->second.id;
+      if (it != m_glesTextures[tmu].end() && it->second && it->second->id != 0) {
+        const uint32_t texId = it->second->id;
         if (m_cachedBoundTex[tmu] != texId) {
           if (m_cachedActiveTexUnit != tmu) {
             glActiveTexture(GL_TEXTURE0 + tmu);
@@ -844,7 +845,7 @@ void OpenGLESBackend::FlushBatch(bool fromStateFlush) {
       uint32_t addr = m_boundTexAddress[tmu];
       if (addr != 0xFFFFFFFF) {
         auto it = m_glesTextures[tmu].find(addr);
-        if (it != m_glesTextures[tmu].end()) {
+        if (it != m_glesTextures[tmu].end() && it->second) {
           GLint wrapS = GL_REPEAT;
           if (m_texClampS[tmu] == 1) {
             wrapS = GL_CLAMP_TO_EDGE;

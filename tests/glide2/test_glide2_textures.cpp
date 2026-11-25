@@ -1885,10 +1885,12 @@ TEST_CASE(
   auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
   REQUIRE(backend != nullptr);
   const char* envBackend = std::getenv("GLIDE_NG_BACKEND");
-  const bool isVulkan =
-      (envBackend && std::string(envBackend) == "vulkan") ||
-      GlideWrapper::EmulationRegistry::GetInstance().GetConfig().backend ==
-          "vulkan";
+  const std::string activeBackend =
+      (envBackend && *envBackend)
+          ? std::string(envBackend)
+          : GlideWrapper::EmulationRegistry::GetInstance().GetConfig().backend;
+  const bool hasBackendCache =
+      (activeBackend == "vulkan" || activeBackend == "opengl_es");
 
   grColorCombine(GR_COMBINE_FUNCTION_SCALE_OTHER, GR_COMBINE_FACTOR_ONE,
                  GR_COMBINE_LOCAL_NONE, GR_COMBINE_OTHER_TEXTURE, FXFALSE);
@@ -1995,7 +1997,7 @@ TEST_CASE(
   drawRectTex(addr0, p8Info, 0.0f, 640.0f);
   grBufferSwap(0);
   const auto metricsA = telMgr.GetLastFrameMetrics();
-  if (isVulkan) {
+  if (hasBackendCache) {
     CHECK(texMgr.GetSkippedCpuDecodeCount() >= skipsBeforeA + 1u);
     CHECK(metricsA.texUploads == 0u);
   } else {
@@ -2032,7 +2034,7 @@ TEST_CASE(
   const uint64_t skipsBeforeB = texMgr.GetSkippedCpuDecodeCount();
   grTexDownloadMipMap(GR_TMU0, addr0, GR_MIPMAPLEVELMASK_BOTH, &rgbInfo);
   grTexDownloadMipMap(GR_TMU0, addr1, GR_MIPMAPLEVELMASK_BOTH, &p8Info);
-  if (isVulkan) {
+  if (hasBackendCache) {
     CHECK(texMgr.GetSkippedCpuDecodeCount() >= skipsBeforeB + 2u);
   }
   grBufferClear(0, 0, GR_WDEPTHVALUE_FARTHEST);
@@ -2040,7 +2042,7 @@ TEST_CASE(
   drawRectTex(addr1, p8Info, 320.0f, 640.0f);
   grBufferSwap(0);
   const auto metricsB = telMgr.GetLastFrameMetrics();
-  if (isVulkan) {
+  if (hasBackendCache) {
     CHECK(metricsB.texUploads == 0u);
   }
   checkBlue565(readPixel565(160u, 240u));

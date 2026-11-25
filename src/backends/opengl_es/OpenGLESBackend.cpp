@@ -238,8 +238,7 @@ void OpenGLESBackend::ResetState_Locked() {
   m_is2DGeometry = true;
   m_gammaCorrectionValue = 1.0f;
   m_useGammaLut = false;
-  m_glesTextures[0].clear();  // Clear stale texture caches to prevent reusing
-  m_glesTextures[1].clear();  // dead GL texture IDs in new contexts!
+  ClearAllGlesTextures_Locked(/*deleteGlObjects=*/false);  // Clear stale texture caches!
   m_batchVertices.clear();
   m_batchPrimitiveMode = BatchPrimitiveMode::None;
   m_batchIs2DGeometry = false;
@@ -2983,14 +2982,7 @@ void OpenGLESBackend::DestroyGLContext() {
   // 1. Delete all GL objects while our context is still current (skip when
   // the host already disconnected our borrowed Wayland wl_display*).
   if (hostWaylandAlive && EnsureContextCurrent()) {
-    for (uint32_t t = 0; t < 2; ++t) {
-      for (auto& pair : m_glesTextures[t]) {
-        if (pair.second.id) {
-          glDeleteTextures(1, &pair.second.id);
-        }
-      }
-      m_glesTextures[t].clear();
-    }
+    ClearAllGlesTextures_Locked(/*deleteGlObjects=*/true);
 
     if (m_glesSamplers[0] != 0) {
       glDeleteSamplers(2, m_glesSamplers);
@@ -3103,8 +3095,7 @@ void OpenGLESBackend::DestroyGLContext() {
       m_geomProgram = 0;
     }
   } else {
-    m_glesTextures[0].clear();
-    m_glesTextures[1].clear();
+    ClearAllGlesTextures_Locked(/*deleteGlObjects=*/false);
     m_glesSamplers[0] = m_glesSamplers[1] = 0;
     m_glGammaLutTex = 0;
     m_glHudTex = 0;

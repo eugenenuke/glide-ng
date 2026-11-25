@@ -2,6 +2,8 @@
 
 #include <atomic>
 #include <chrono>
+#include <list>
+#include <memory>
 #include <unordered_map>
 #include <vector>
 
@@ -58,6 +60,11 @@ class OpenGLESBackend : public GlideStateTracker {
                     const ModernVertex& c) override;
   void UploadTexture(uint32_t tmu, uint32_t startAddress,
                      const struct VirtualTexture& tex) override;
+  bool TryBindCachedTexture(uint32_t tmu, uint32_t startAddress,
+                            const struct VirtualTexture& tex) override;
+  uint64_t GetTextureContentCacheHitCount() const {
+    return m_glesTexContentCacheHits;
+  }
   bool SupportsCompressedBcnTextures() const override { return m_supportsS3tc; }
   bool BeginGpuTextureBufferMode() override;
   bool CommitGpuTextureBuffer(uint32_t tmu, uint32_t startAddress,
@@ -305,14 +312,76 @@ class OpenGLESBackend : public GlideStateTracker {
   uint32_t m_geomVBOOffset{0};
   uint32_t m_geomVBOSizeConfigured{
       8 * 1024 * 1024};  // Configurable dynamic ring buffer size in bytes
-  struct GlesTexEntry {
+  struct GlesTexture {
     uint32_t id{0};
     uint32_t width{0};
     uint32_t height{0};
     uint32_t mipLevels{0};
     uint32_t internalFormat{0};
+    uint64_t dataHash{0};
+    size_t gpuByteSize{0};
   };
-  std::unordered_map<uint32_t, GlesTexEntry> m_glesTextures[2];
+  struct GlesTexContentKey {
+    uint64_t dataHash{0};
+    uint32_t internalFormat{0};
+    uint32_t width{0};
+    uint32_t height{0};
+    uint32_t mipLevels{0};
+    bool operator==(const GlesTexContentKey&) const = default;
+  };
+  struct GlesTexContentKeyHash {
+    size_t operator()(const GlesTexContentKey& k) const noexcept {
+      size_t h = std::hash<uint64_t>{}(k.dataHash);
+      auto combine = [&](uint32_t v) {
+        h ^= std::hash<uint32_t>{}(v) + 0x9e3779b9u + (h << 6) + (h >> 2);
+      };
+      combine(k.internalFormat);
+      combine(k.width);
+      combine(k.height);
+      combine(k.mipLevels);
+      return h;
+    }
+  };
+  struct GlesIdleNode {
+    std::shared_ptr<GlesTexture> tex;
+    GlesTexContentKey contentKey{};
+    bool hasContentKey{false};
+    std::list<uint64_t>::iterator lruIt;
+  };
+
+  static constexpr size_t kMaxCachedGlesTextures = 1024;
+  static constexpr size_t kMaxCachedGlesTextureBytes =
+      (sizeof(void*) <= 4) ? (64ull * 1024ull * 1024ull)
+                           : (128ull * 1024ull * 1024ull);
+
+  void EraseFromGlesLiveContentMap_Locked(const GlesTexture& tex);
+  std::shared_ptr<GlesTexture> TakeGlesFromIdleById_Locked(uint64_t id);
+  void InsertGlesIntoIdleCache_Locked(std::shared_ptr<GlesTexture> tex);
+  void RetireGlesTextureAtAddress_Locked(uint32_t tmu, uint32_t startAddress);
+  std::shared_ptr<GlesTexture> TryAcquireGlesContentCached_Locked(
+      const GlesTexContentKey& key);
+  std::shared_ptr<GlesTexture> TryAcquireGlesIdleForReuse_Locked(
+      size_t estimatedBytes);
+  bool TryBindContentCachedTexture_Locked(uint32_t tmu, uint32_t startAddress,
+                                          uint32_t targetInternalFmt,
+                                          uint32_t mipCount, uint32_t width,
+                                          uint32_t height,
+                                          uint64_t incomingHash);
+  void FlushPendingGlesTexDeletes_Locked();
+  void ClearAllGlesTextures_Locked(bool deleteGlObjects);
+
+  std::unordered_map<uint32_t, std::shared_ptr<GlesTexture>> m_glesTextures[2];
+  std::unordered_map<GlesTexContentKey, std::weak_ptr<GlesTexture>,
+                     GlesTexContentKeyHash>
+      m_glesLiveContentMap;
+  std::unordered_map<uint64_t, GlesIdleNode> m_glesIdleNodes;
+  std::list<uint64_t> m_glesIdleLru;
+  std::unordered_map<GlesTexContentKey, uint64_t, GlesTexContentKeyHash>
+      m_glesIdleContentMap;
+  uint64_t m_nextGlesIdleId{1};
+  size_t m_glesIdleBytes{0};
+  std::vector<uint32_t> m_pendingDeleteGlesTexIds;
+  uint64_t m_glesTexContentCacheHits{0};
   std::vector<uint32_t> m_texUploadScratch;
 
   // Geometry Batching State
