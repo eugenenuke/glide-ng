@@ -94,6 +94,41 @@ inline void EvalRgbBlendFactor(uint32_t factorEnum, bool isSrc, uint32_t srcA,
     case 7:  // GR_BLEND_ONE_MINUS_DST_ALPHA
       fR = fG = fB = 1.0f - (dstA / 255.0f);
       return;
+    case 8:  // GR_BLEND_SAME_COLOR_EXT
+      if (isSrc) {
+        fR = srcR / 255.0f;
+        fG = srcG / 255.0f;
+        fB = srcB / 255.0f;
+      } else {
+        fR = dstR / 255.0f;
+        fG = dstG / 255.0f;
+        fB = dstB / 255.0f;
+      }
+      return;
+    case 9:  // GR_BLEND_ONE_MINUS_SAME_COLOR_EXT
+      if (isSrc) {
+        fR = 1.0f - (srcR / 255.0f);
+        fG = 1.0f - (srcG / 255.0f);
+        fB = 1.0f - (srcB / 255.0f);
+      } else {
+        fR = 1.0f - (dstR / 255.0f);
+        fG = 1.0f - (dstG / 255.0f);
+        fB = 1.0f - (dstB / 255.0f);
+      }
+      return;
+    case 15:  // GR_BLEND_ALPHA_SATURATE (src) / GR_BLEND_PREFOG_COLOR (dst)
+      if (isSrc) {
+        const uint32_t invDstA = (dstA < 255u) ? (255u - dstA) : 0u;
+        const float f = std::min(srcA, invDstA) / 255.0f;
+        fR = fG = fB = f;
+      } else {
+        // LFB pixel-pipeline writes bypass vertex/table fog, so pre-fog
+        // color equals the incoming source RGB pixel.
+        fR = srcR / 255.0f;
+        fG = srcG / 255.0f;
+        fB = srcB / 255.0f;
+      }
+      return;
     default:
       fR = fG = fB = isSrc ? 1.0f : 0.0f;
       return;
@@ -528,7 +563,8 @@ void RunWriteLFBParallel(uint32_t srcHeight, uint32_t dstX, uint32_t dstY,
                          int32_t srcStride, const LfbPipelineConfig& config,
                          uint32_t& modifiedCount) {
 #ifdef _OPENMP
-#pragma omp parallel for reduction(+ : modifiedCount)
+#pragma omp parallel for reduction(+ : modifiedCount) \
+    if (static_cast<size_t>(srcHeight) * srcWidth > 64000u)
 #endif
   for (uint32_t y = 0; y < srcHeight; ++y) {
     uint32_t rowModifiedCount = 0;

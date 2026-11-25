@@ -10,6 +10,7 @@
 #include <iostream>
 #include <thread>
 
+#include "backends/CpuLfbStaging.h"
 #include "core/BackendManager.h"
 #include "core/IniConfigLoader.h"
 #include "core/LfbManager.h"
@@ -860,6 +861,102 @@ TEST_CASE("Core: Texture Decoders, PALETTE6666 & Partial Mipmap Packing", "[Core
     CHECK(GlideWrapper::kDepth24MaxU32 == 16777215u);
     CHECK(GlideWrapper::kRgbByteBroadcast * 0xABu == 0x00ABABABu);
     CHECK(GlideWrapper::kRgbaByteBroadcast * 0xCDu == 0xCDCDCDCDu);
+  }
+
+  SECTION("CpuLfbStaging::WritePixelsRegion extended blend factors & OMP guard") {
+    using namespace GlideWrapper;
+    auto checkClose = [](uint32_t actual, uint32_t expected) {
+      for (int shift : {16, 8, 0}) {
+        const int a = static_cast<int>((actual >> shift) & 0xFFu);
+        const int e = static_cast<int>((expected >> shift) & 0xFFu);
+        CHECK(std::abs(a - e) <= 1);
+      }
+    };
+
+    // 1. (GR_BLEND_ZERO=0, GR_BLEND_PREFOG_COLOR=15): dst * srcRGB (modulate).
+    {
+      constexpr uint32_t kW = 640u;
+      constexpr uint32_t kH = 6u;  // 3840 px (< 64000 OMP threshold)
+      std::vector<uint32_t> fb(kW * kH, 0xFF80C040u);  // R=128, G=192, B=64
+      // RGB565 ~(R=255, G=130, B=123): 0xF800 | (0x20 << 5) | 0x0F = 0xFC0F
+      // With kExpand5[31]=255, kExpand6[32]=130, kExpand5[15]=123
+      std::vector<uint16_t> src(kW * kH, 0xFC0Fu);
+      LfbPipelineConfig cfg{};
+      cfg.pixelPipeline = true;
+      cfg.rgbSrcBlend = 0u;   // GR_BLEND_ZERO
+      cfg.rgbDstBlend = 15u;  // GR_BLEND_PREFOG_COLOR
+
+      const uint32_t mod = CpuLfbStaging::WritePixelsRegion(
+          fb.data(), kW, kH, 0, 0, kW, kH, static_cast<int32_t>(kW * 2u), 0u,
+          src.data(), nullptr, cfg, 1u);
+      CHECK(mod == kW * kH);
+      // Expected: R = 128 * 255/255 = 128, G = 192 * 130/255 = 98, B = 64 * 123/255 = 31
+      checkClose(fb[0], 0xFF80621Fu);
+      checkClose(fb[kW * kH - 1u], 0xFF80621Fu);
+    }
+
+    // 2. Large block (> 64000 px) under (0, 15) matches small strip identically.
+    {
+      constexpr uint32_t kW = 640u;
+      constexpr uint32_t kH = 120u;  // 76800 px (> 64000 OMP threshold)
+      std::vector<uint32_t> fb(kW * kH, 0xFF80C040u);
+      std::vector<uint16_t> src(kW * kH, 0xFC0Fu);
+      LfbPipelineConfig cfg{};
+      cfg.pixelPipeline = true;
+      cfg.rgbSrcBlend = 0u;
+      cfg.rgbDstBlend = 15u;
+
+      const uint32_t mod = CpuLfbStaging::WritePixelsRegion(
+          fb.data(), kW, kH, 0, 0, kW, kH, static_cast<int32_t>(kW * 2u), 0u,
+          src.data(), nullptr, cfg, 1u);
+      CHECK(mod == kW * kH);
+      checkClose(fb[0], 0xFF80621Fu);
+      checkClose(fb[kW * (kH / 2u) + 320u], 0xFF80621Fu);
+      checkClose(fb[kW * kH - 1u], 0xFF80621Fu);
+    }
+
+    // 3. (GR_BLEND_ALPHA_SATURATE=15, GR_BLEND_ZERO=0): min(srcA, 1 - dstA) * srcRGB
+    {
+      uint32_t fb = 0x80FFFFFFu;  // dstA = 128 -> 1 - dstA = 127/255
+      uint16_t src = 0xFFFFu;     // white RGB565 (255, 255, 255)
+      LfbPipelineConfig cfg{};
+      cfg.pixelPipeline = true;
+      cfg.constantAlpha = 255u;
+      cfg.rgbSrcBlend = 15u;  // GR_BLEND_ALPHA_SATURATE
+      cfg.rgbDstBlend = 0u;   // GR_BLEND_ZERO
+      CHECK(CpuLfbStaging::WritePixelsRegion(&fb, 1, 1, 0, 0, 1, 1, 2, 0u, &src,
+                                             nullptr, cfg, 1u) == 1u);
+      checkClose(fb, 0xFF7F7F7Fu);
+    }
+
+    // 4. (GR_BLEND_SAME_COLOR_EXT=8, GR_BLEND_ZERO=0): src * src
+    {
+      uint32_t fb = 0xFF102030u;
+      uint16_t src = 0x8410u;  // (~132, ~130, ~132) -> (16>>5=16:132, 32:130, 16:132)
+      // Explicitly compute expected: kExpand5[16]=131, kExpand6[32]=130, kExpand5[16]=131
+      // (131*131)/255 = 67, (130*130)/255 = 66
+      LfbPipelineConfig cfg{};
+      cfg.pixelPipeline = true;
+      cfg.rgbSrcBlend = 8u;  // GR_BLEND_SAME_COLOR_EXT
+      cfg.rgbDstBlend = 0u;  // GR_BLEND_ZERO
+      CHECK(CpuLfbStaging::WritePixelsRegion(&fb, 1, 1, 0, 0, 1, 1, 2, 0u, &src,
+                                             nullptr, cfg, 1u) == 1u);
+      checkClose(fb, 0xFF434243u);
+    }
+
+    // 5. (GR_BLEND_ZERO=0, GR_BLEND_ONE_MINUS_SAME_COLOR_EXT=9): dst * (1 - dst)
+    {
+      uint32_t fb = 0xFF8040C0u;  // R=128 (0.502), G=64 (0.251), B=192 (0.753)
+      // R*(1-R)=64, G*(1-G)=48, B*(1-B)=48
+      uint16_t src = 0xFFFFu;
+      LfbPipelineConfig cfg{};
+      cfg.pixelPipeline = true;
+      cfg.rgbSrcBlend = 0u;
+      cfg.rgbDstBlend = 9u;  // GR_BLEND_ONE_MINUS_SAME_COLOR_EXT
+      CHECK(CpuLfbStaging::WritePixelsRegion(&fb, 1, 1, 0, 0, 1, 1, 2, 0u, &src,
+                                             nullptr, cfg, 1u) == 1u);
+      checkClose(fb, 0xFF403030u);
+    }
   }
 
 }
