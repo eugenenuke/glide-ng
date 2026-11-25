@@ -93,6 +93,8 @@ Copy `glide_bench.exe` (alongside your `GLIDE2X.OVL`, or with `GLIDE2X.OVL` on D
 glide_bench.exe --no-hud --seconds 3 --scene all
 ```
 
+`glide_bench.exe` cross-checks DOSBox's emulated PIT timer against the host-backed CMOS RTC wall clock around each scene. If synchronous host wrapper stalls cause DOSBox virtual time to drift away from real time, affected scene names are marked with `*` and a footnote reports the estimated real-time FPS.
+
 ---
 
 ## 4. Benchmarking Software SIMD Tiers (`scalar` vs. `avx2` vs. `avx512`)

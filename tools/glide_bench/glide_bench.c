@@ -24,6 +24,10 @@ typedef struct SceneResult {
   double p99_ms;
   double throughput;
   double score;
+  int cmos_wall_s;
+  int clock_drift;
+  double wall_ratio;
+  double wall_fps;
 } SceneResult;
 
 static int cmp_double(const void* a, const void* b) {
@@ -106,6 +110,8 @@ static int run_single_scene(BenchContext* ctx,
                             SceneResult* out_res,
                             int* out_aborted) {
   double t_start, t_prev, t_now;
+  int cmos_start = -1;
+  int cmos_end = -1;
   double total_work = 0.0;
   double inst_fps = 0.0;
   double avg_ms = 0.0;
@@ -115,6 +121,8 @@ static int run_single_scene(BenchContext* ctx,
 
   memset(out_res, 0, sizeof(*out_res));
   out_res->scene = scene;
+  out_res->cmos_wall_s = -1;
+  out_res->wall_ratio = 1.0;
 
   if (!scene->setup(ctx)) {
     return 0;
@@ -133,6 +141,7 @@ static int run_single_scene(BenchContext* ctx,
   grSstIdle();
 #endif
 
+  cmos_start = gtool_dos_cmos_wall_sec();
   t_start = gtool_time_sec();
   t_prev = t_start;
 
@@ -182,6 +191,7 @@ static int run_single_scene(BenchContext* ctx,
     }
   }
 
+  cmos_end = gtool_dos_cmos_wall_sec();
   scene->teardown(ctx);
 
   {
@@ -193,6 +203,12 @@ static int run_single_scene(BenchContext* ctx,
     out_res->avg_fps = (double)frames / total_s;
     out_res->avg_ms = (total_s * 1000.0) / (double)frames;
     out_res->throughput = total_work / total_s;
+    out_res->cmos_wall_s = gtool_cmos_delta_sec(cmos_start, cmos_end);
+    out_res->clock_drift = gtool_check_clock_drift(
+        total_s, out_res->cmos_wall_s, &out_res->wall_ratio);
+    out_res->wall_fps = (out_res->cmos_wall_s > 0)
+                            ? ((double)frames / (double)out_res->cmos_wall_s)
+                            : 0.0;
 
     if (sample_count > 0) {
       int p99_idx;
@@ -225,6 +241,7 @@ static void print_summary(FILE* out,
   int ran_count = 0;
   int core_count = 0;
   int near_60_count = 0;
+  int drifted_count = 0;
   double log_fps_sum = 0.0;
   double log_score_sum = 0.0;
   double weight_sum = 0.0;
@@ -252,6 +269,7 @@ static void print_summary(FILE* out,
 
   for (i = 0; i < num_results; ++i) {
     char tp_buf[32];
+    char name_buf[16];
     if (!results[i].scene) {
       continue;
     }
@@ -260,10 +278,16 @@ static void print_summary(FILE* out,
               results[i].scene->name);
       continue;
     }
+    if (results[i].clock_drift != 0) {
+      snprintf(name_buf, sizeof(name_buf), "%.10s*", results[i].scene->name);
+      drifted_count++;
+    } else {
+      snprintf(name_buf, sizeof(name_buf), "%.11s", results[i].scene->name);
+    }
     snprintf(tp_buf, sizeof(tp_buf), "%7.1f %-7s",
              results[i].throughput, results[i].scene->metric_unit);
     fprintf(out, " %-11s %8.1f %8.1f %8.2f %8.2f %16s %8.0f\n",
-            results[i].scene->name,
+            name_buf,
             results[i].avg_fps,
             results[i].p1_low_fps,
             results[i].avg_ms,
@@ -309,6 +333,29 @@ static void print_summary(FILE* out,
   if (ran_count > 0 && (near_60_count >= 2 ||
                         (ran_count == 1 && near_60_count == 1))) {
     fprintf(out, " Note: FPS near 60 Hz (check VSync / GLIDE_NG_VSYNC=0, GLIDE_NG_MAX_FPS=0).\n");
+  }
+  if (drifted_count > 0) {
+    fprintf(out, " * DOS virtual clock drift detected (emulated PIT vs. CMOS RTC wall clock):\n");
+    for (i = 0; i < num_results; ++i) {
+      if (!results[i].scene || !results[i].ran || results[i].clock_drift == 0) {
+        continue;
+      }
+      if (results[i].clock_drift > 0) {
+        fprintf(out,
+                "   - %-11s: %.1fs virt took ~%ds wall (est. ~%.1f FPS real; reported ~%.1fx high)\n",
+                results[i].scene->name, results[i].elapsed_s,
+                results[i].cmos_wall_s, results[i].wall_fps,
+                results[i].wall_ratio);
+      } else {
+        double low_factor =
+            (results[i].wall_ratio > 1e-6) ? (1.0 / results[i].wall_ratio) : 0.0;
+        fprintf(out,
+                "   - %-11s: %.1fs virt took ~%ds wall (est. ~%.1f FPS real; reported ~%.1fx low)\n",
+                results[i].scene->name, results[i].elapsed_s,
+                results[i].cmos_wall_s, results[i].wall_fps,
+                low_factor);
+      }
+    }
   }
   fprintf(out, "==============================================================================\n");
 }

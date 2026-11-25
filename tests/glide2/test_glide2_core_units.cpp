@@ -28,6 +28,9 @@
 #include <glide.h>
 #include "common/test_helpers.h"
 
+#define GLIDE_TOOL_CMOS_HELPERS_ONLY 1
+#include "../../tools/common/glide_tool_platform.h"
+
 namespace {
 [[maybe_unused]] inline void* OpenGlide2Handle(int flags = RTLD_LAZY) {
   return GlideTestHelpers::OpenGlideSelfHandle(flags);
@@ -957,6 +960,41 @@ TEST_CASE("Core: Texture Decoders, PALETTE6666 & Partial Mipmap Packing", "[Core
                                              nullptr, cfg, 1u) == 1u);
       checkClose(fb, 0xFF403030u);
     }
+  }
+
+  SECTION("DOS CMOS RTC decode, rollover, and virtual clock drift detection") {
+    // 24h BCD mode (status_b = 0x02): 23:59:55 -> 86395 s
+    CHECK(gtool_cmos_decode_time_sec(0x55u, 0x59u, 0x23u, 0x02u) == 86395);
+    // 24h binary mode (status_b = 0x06): 14:05:09 -> 50709 s
+    CHECK(gtool_cmos_decode_time_sec(9u, 5u, 14u, 0x06u) == 50709);
+    // 12h BCD mode (status_b = 0x00): 12:00:05 AM -> 5 s, 12:00:05 PM -> 43205 s,
+    // 03:15:30 PM -> 54930 s
+    CHECK(gtool_cmos_decode_time_sec(0x05u, 0x00u, 0x12u, 0x00u) == 5);
+    CHECK(gtool_cmos_decode_time_sec(0x05u, 0x00u, 0x92u, 0x00u) == 43205);
+    CHECK(gtool_cmos_decode_time_sec(0x30u, 0x15u, 0x83u, 0x00u) == 54930);
+    // Invalid RTC fields return -1
+    CHECK(gtool_cmos_decode_time_sec(0x60u, 0x00u, 0x00u, 0x02u) == -1);
+    CHECK(gtool_cmos_decode_time_sec(0x00u, 0x00u, 0x24u, 0x02u) == -1);
+
+    // Midnight rollover & error propagation
+    CHECK(gtool_cmos_delta_sec(86395, 5) == 10);
+    CHECK(gtool_cmos_delta_sec(100, 105) == 5);
+    CHECK(gtool_cmos_delta_sec(-1, 105) == -1);
+    CHECK(gtool_cmos_delta_sec(100, -1) == -1);
+
+    // Quantization noise (5.0s PIT vs 4s/5s/6s CMOS wall clock) -> 0 (no drift)
+    double ratio = 0.0;
+    CHECK(gtool_check_clock_drift(5.0, 4, &ratio) == 0);
+    CHECK(gtool_check_clock_drift(5.0, 5, &ratio) == 0);
+    CHECK(gtool_check_clock_drift(5.0, 6, &ratio) == 0);
+    // Short run -> ignore 1s quantization
+    CHECK(gtool_check_clock_drift(0.5, 2, &ratio) == 0);
+    // Slow emulated PIT clock (5.0s virtual took 35s wall) -> +1 (reported FPS high)
+    CHECK(gtool_check_clock_drift(5.0, 35, &ratio) == 1);
+    CHECK(ratio == 7.0);
+    // Fast emulated PIT clock (5.0s virtual took 2s wall) -> -1 (reported FPS low)
+    CHECK(gtool_check_clock_drift(5.0, 2, &ratio) == -1);
+    CHECK(ratio == 0.4);
   }
 
 }

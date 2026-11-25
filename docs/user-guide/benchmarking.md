@@ -28,6 +28,8 @@ for be in vulkan opengl_es software; do
 done
 ```
 
+> **DOSBox Virtual Clock Drift Detection (`glide_bench.exe`)**: Under DOSBox (`cycles = max`), heavy synchronous host Glide wrappers can stall DOSBox's emulated PIT timer behind real wall-clock time, causing scenes such as `tex_churn` or `poly_fan` to report artificially inflated FPS. `glide_bench.exe` samples the host-backed CMOS RTC wall clock around each scene, marks drifted scenes with `*` in the summary table, and prints the estimated real wall-clock FPS in a footnote.
+
 ### Benchmarking Software SIMD Tiers (`scalar` vs. `avx2` vs. `avx512`)
 
 ```bash
