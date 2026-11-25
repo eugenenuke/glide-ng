@@ -421,6 +421,17 @@ OUT="$(
 assert_contains "$OUT" "3dfx" "completion extracts 3dfx"
 assert_contains "$OUT" "vga_hires" "completion extracts vga_hires"
 
+# DOSBox-SVN config separation: gng uses lfb=full (dosbox-svn.conf), og uses lfb=full_noaux (dosbox-svn-og.conf).
+OUT="$("${GAME_DIR}/run.sh" gng --dry-run 2>/dev/null)"
+assert_contains "$OUT" "${LAUNCHER_DIR}/configs/dosbox-svn.conf" "gng selects dosbox-svn.conf"
+grep -qE '^[[:space:]]*lfb[[:space:]]*=[[:space:]]*full$' "${LAUNCHER_DIR}/configs/dosbox-svn.conf" || fail "dosbox-svn.conf missing lfb = full"
+pass
+
+OUT="$("${GAME_DIR}/run.sh" og --dry-run 2>/dev/null)"
+assert_contains "$OUT" "${LAUNCHER_DIR}/configs/dosbox-svn-og.conf" "og selects dosbox-svn-og.conf"
+grep -qE '^[[:space:]]*lfb[[:space:]]*=[[:space:]]*full_noaux$' "${LAUNCHER_DIR}/configs/dosbox-svn-og.conf" || fail "dosbox-svn-og.conf missing lfb = full_noaux"
+pass
+
 if (( FAIL_COUNT > 0 )); then
   echo "test_glide_dosbox.sh: ${PASS_COUNT} passed, ${FAIL_COUNT} failed." >&2
   exit 1

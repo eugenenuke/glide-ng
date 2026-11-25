@@ -223,6 +223,18 @@ print_check_row() {
   printf '  [%-4s] %-18s %s\n' "$status" "$label" "$detail"
 }
 
+check_binary_caps() {
+  local label="$1" bin_path="$2"
+  command -v getcap >/dev/null 2>&1 || return 0
+  local caps=""
+  caps="$(getcap -- "$bin_path" 2>/dev/null || true)"
+  [[ -z "$caps" ]] && return 0
+  caps="${caps#"$bin_path"}"
+  caps="${caps#"${caps%%[![:space:]]*}"}"
+  print_check_row "WARN" "${label} caps" "file capabilities set (${caps}); glibc AT_SECURE strips LD_LIBRARY_PATH, ignoring GNG_LIBS/OG_LIBS"
+  return 1
+}
+
 cmd_doctor() {
   local issues=0
 
@@ -238,6 +250,7 @@ cmd_doctor() {
   echo "Emulators & Wrappers:"
   if [[ -n "$DOSBOX_SVN" && -x "$DOSBOX_SVN" ]]; then
     print_check_row "OK" "DOSBOX_SVN" "$DOSBOX_SVN"
+    check_binary_caps "DOSBOX_SVN" "$DOSBOX_SVN" || issues=$((issues + 1))
   else
     print_check_row "WARN" "DOSBOX_SVN" "${DOSBOX_SVN:-not found}"
     issues=$((issues + 1))
@@ -245,6 +258,7 @@ cmd_doctor() {
 
   if [[ -n "$DOSBOX_X" && -x "$DOSBOX_X" ]]; then
     print_check_row "OK" "DOSBOX_X" "$DOSBOX_X"
+    check_binary_caps "DOSBOX_X" "$DOSBOX_X" || issues=$((issues + 1))
   else
     print_check_row "WARN" "DOSBOX_X" "${DOSBOX_X:-not found}"
   fi

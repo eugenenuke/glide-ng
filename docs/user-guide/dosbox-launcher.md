@@ -140,8 +140,8 @@ Profiles combine an emulator (`svn`, `dbx`, `staging`) with a Glide wrapper targ
 
 | Profile Preset | Emulator | Wrapper / Target | Config Template | Notes |
 | :--- | :--- | :--- | :--- | :--- |
-| `gng` | `svn` (`DOSBOX_SVN`) | `gng` (`GNG_LIBS` + `GNG_OVL_DIR`) | `configs/dosbox-svn.conf` | Default profile unless overridden |
-| `og` | `svn` (`DOSBOX_SVN`) | `og` (`OG_LIBS` + `OG_OVL_DIR`) | `configs/dosbox-svn.conf` | Reference comparison against OpenGLide |
+| `gng` | `svn` (`DOSBOX_SVN`) | `gng` (`GNG_LIBS` + `GNG_OVL_DIR`) | `configs/dosbox-svn.conf` | Default profile (`lfb = full` for aux depth/backbuffer LFB) |
+| `og` | `svn` (`DOSBOX_SVN`) | `og` (`OG_LIBS` + `OG_OVL_DIR`) | `configs/dosbox-svn-og.conf` | Reference comparison against OpenGLide (`lfb = full_noaux`) |
 | `dbx` | `dbx` (`DOSBOX_X`) | `gng` (`GNG_LIBS` + `GNG_OVL_DIR`) | `configs/dosbox-x.conf` | Sets `SDL_VIDEODRIVER=x11` by default (`DBX_SDL_VIDEODRIVER=wayland` to override) |
 | `dbx-og` | `dbx` (`DOSBOX_X`) | `og` (`OG_LIBS` + `OG_OVL_DIR`) | `configs/dosbox-x.conf` | Run OpenGLide inside DOSBox-X |
 | `sw`, `dbx-sw` | `dbx` (`DOSBOX_X`) | `hw` (`HW_OVL_DIR`, built-in SST-1) | `configs/dosbox-x-sw.conf` | DOSBox-X built-in software Voodoo (no `glide-ng`) |
@@ -274,5 +274,7 @@ The implementation under `tools/glide-dosbox/` is split into focused modules so 
 | `tools/glide-dosbox/lib/helpers.sh` | Hook utilities (`extract_patch`, `backup_file`, `strip_glide_ovl`), exit stripping, local OVL checks |
 | `tools/glide-dosbox/lib/variants.sh` | Runtime variant discovery, lookup, and `RUN_CMD_*` / `RUN_ENV_*` / `RUN_MODE_*` resolution |
 | `tools/glide-dosbox/lib/commands.sh` | `--help`, `--install-completion`, `init`, and `doctor` |
-| `tools/glide-dosbox/configs/` | Minimal shared DOSBox configs (`dosbox-svn.conf`, `dosbox-x.conf`, `dosbox-x-sw.conf`, `dosbox-staging.conf`, `dosbox-windowed.conf`) |
+| `tools/glide-dosbox/configs/` | Minimal shared DOSBox configs (`dosbox-svn.conf`, `dosbox-svn-og.conf`, `dosbox-x.conf`, `dosbox-x-sw.conf`, `dosbox-staging.conf`, `dosbox-windowed.conf`) |
 | `tools/glide-dosbox/completions/glide-dosbox.bash` | Context-aware Bash completion including dynamic `--catalog=` lookup |
+
+> Note: On Linux distributions where `dosbox-x` or `dosbox-svn` carries file capabilities (such as `cap_net_admin,cap_net_raw=eip`), `glide-dosbox doctor` reports a `[WARN]` because glibc `AT_SECURE=1` strips `LD_LIBRARY_PATH` and causes dynamic wrapper selection (`GNG_LIBS` / `OG_LIBS`) to fall back to the system library.

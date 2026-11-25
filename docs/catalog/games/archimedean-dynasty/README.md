@@ -66,6 +66,7 @@ cycles = max
 
 [glide]
 glide = true
+lfb = full
 ```
 
 ```bash

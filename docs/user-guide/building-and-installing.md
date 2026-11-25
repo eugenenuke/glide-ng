@@ -216,6 +216,7 @@ cycles = max
 
 [glide]
 glide = true
+lfb = full
 ```
 
 **DOSBox-X (`dosbox-x.conf`, minimal overrides):**

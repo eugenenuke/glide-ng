@@ -145,7 +145,7 @@ resolve_runtime_profile() {
       ;;
     svn:og)
       BIN="$DOSBOX_SVN"
-      BASE_CONF="${TOOL_DIR}/configs/dosbox-svn.conf"
+      BASE_CONF="${TOOL_DIR}/configs/dosbox-svn-og.conf"
       OVL_DIR="${OG_OVL_DIR:-$GNG_OVL_DIR}"
       [[ -n "$OG_LIBS" ]] && WRAPPER_ENV=(LD_LIBRARY_PATH="${OG_LIBS}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}")
       ;;
