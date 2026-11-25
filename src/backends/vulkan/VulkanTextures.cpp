@@ -11,14 +11,9 @@
 
 namespace GlideWrapper {
 
-static bool ResolveVulkanCompressedFormat(const struct VirtualTexture& tex,
-                                          bool bcEnabled,
-                                          vk::Format& outFormat,
-                                          uint32_t& outBlockBytes) {
-  if (!bcEnabled || tex.rawCompressedMipLevels.empty()) {
-    return false;
-  }
-  switch (tex.format) {
+static bool ResolveVulkanBcnFormat(uint32_t glideFormat, vk::Format& outFormat,
+                                   uint32_t& outBlockBytes) {
+  switch (glideFormat) {
     case 0x16u:  // GR_TEXFMT_ARGB_CMP_DXT1
       outFormat = vk::Format::eBc1RgbaUnormBlock;
       outBlockBytes = 8u;
@@ -38,7 +33,32 @@ static bool ResolveVulkanCompressedFormat(const struct VirtualTexture& tex,
   }
 }
 
-static uint64_t CalculateTextureHash(const struct VirtualTexture& tex) {
+static bool ResolveVulkanCompressedFormat(const struct VirtualTexture& tex,
+                                          bool bcEnabled,
+                                          vk::Format& outFormat,
+                                          uint32_t& outBlockBytes) {
+  if (!bcEnabled || tex.rawCompressedMipLevels.empty()) {
+    return false;
+  }
+  return ResolveVulkanBcnFormat(tex.format, outFormat, outBlockBytes);
+}
+
+static uint32_t ResolveTextureMipCount(const struct VirtualTexture& tex,
+                                       bool useCompressed) {
+  if (useCompressed && !tex.rawCompressedMipLevels.empty()) {
+    return static_cast<uint32_t>(tex.rawCompressedMipLevels.size());
+  }
+  if (!useCompressed && !tex.swizzledMipLevels.empty()) {
+    return static_cast<uint32_t>(tex.swizzledMipLevels.size());
+  }
+  if (tex.smallLod >= tex.largeLod) {
+    return static_cast<uint32_t>(tex.smallLod - tex.largeLod + 1);
+  }
+  return 0u;
+}
+
+static uint64_t CalculateTextureHash(const struct VirtualTexture& tex,
+                                     uint32_t mipCount) {
   auto mix64 = [](uint64_t h, const uint8_t* data, size_t len) noexcept {
     constexpr uint64_t kMul = 0x9E3779B97F4A7C15ULL;
     constexpr uint64_t kMul2 = 0xBF58476D1CE4E5B9ULL;
@@ -60,9 +80,6 @@ static uint64_t CalculateTextureHash(const struct VirtualTexture& tex) {
   };
 
   uint64_t hash = 14695981039346656037ULL;
-  const uint32_t mipCount = static_cast<uint32_t>(
-      !tex.swizzledMipLevels.empty() ? tex.swizzledMipLevels.size()
-                                     : tex.rawCompressedMipLevels.size());
   const uint32_t header[4] = {tex.baseWidth, tex.baseHeight, mipCount,
                               tex.format};
   hash = mix64(hash, reinterpret_cast<const uint8_t*>(header), sizeof(header));
@@ -217,10 +234,28 @@ VulkanBackend::TryAcquireContentCachedTexture_Locked(
 }
 
 std::shared_ptr<VulkanTexture> VulkanBackend::TryAcquirePooledTexture_Locked(
-    const TexturePoolKey& key) {
+    const TexturePoolKey& key, size_t estimatedBytes) {
   auto bit = m_poolBuckets.find(key);
   if (bit == m_poolBuckets.end() || bit->second.empty()) return nullptr;
   const uint64_t id = bit->second.front();
+
+  // Preserve warm content-addressed VkImages in m_idleContentMap while pool
+  // capacity headroom remains, so multi-palette / multi-room working sets
+  // (e.g. Blood shade tables) do not cannibalize their own cache.
+  const size_t totalIdleOrRetired = m_poolNodes.size() +
+                                    m_retiredTextures[0].size() +
+                                    m_retiredTextures[1].size();
+  const size_t reuseHighWaterBytes = (kMaxPooledTextureBytes * 7u) / 8u;
+  const bool poolAtCapacity =
+      (totalIdleOrRetired >= kMaxPooledTextures) ||
+      (m_texturePoolBytes + estimatedBytes > reuseHighWaterBytes);
+  if (!poolAtCapacity) {
+    auto nit = m_poolNodes.find(id);
+    if (nit == m_poolNodes.end() || nit->second.hasContentKey) {
+      return nullptr;
+    }
+  }
+
   auto tex = TakeFromPoolById_Locked(id);
   if (tex) {
     ++m_texturePoolReuses;
@@ -330,6 +365,70 @@ void VulkanBackend::ReclaimRetiredResources_Locked(uint32_t slot) {
   m_lfbOverlayStagingOffsets[slot] = 0;
 }
 
+bool VulkanBackend::TryBindContentCachedTexture_Locked(
+    uint32_t tmu, uint32_t startAddress, vk::Format targetFormat,
+    uint32_t mipCount, uint32_t width, uint32_t height, uint64_t incomingHash) {
+  // Check if identical texture is already bound at this TMU address.
+  auto& tmuMap = m_vulkanTextures[tmu];
+  auto it = tmuMap.find(startAddress);
+  if (it != tmuMap.end() && it->second &&
+      it->second->dataHash == incomingHash && it->second->width == width &&
+      it->second->height == height && it->second->mipLevels == mipCount &&
+      it->second->format == targetFormat) {
+    GLIDE_LOG(DEBUG, "Vulkan",
+              "UploadTexture: Address=0x"
+                  << std::hex << startAddress << std::dec
+                  << " data unmodified (hash match: 0x" << std::hex
+                  << incomingHash << std::dec << "). Bypassing upload!");
+    return true;
+  }
+
+  // Check content-addressed VkImage cache across live/in-flight & idle pooled
+  // textures to eliminate re-upload/alloc thrash on shade-table or TMU address
+  // rotation.
+  const TextureContentKey contentKey{incomingHash, targetFormat, width, height,
+                                     mipCount};
+  if (auto cachedTex = TryAcquireContentCachedTexture_Locked(contentKey)) {
+    if (it != tmuMap.end() && it->second == cachedTex) {
+      return true;
+    }
+    FlushBatch();
+    RetireTextureAtAddress_Locked(tmu, startAddress);
+    tmuMap[startAddress] = std::move(cachedTex);
+    m_descriptorStateDirty = true;
+    ++m_textureContentCacheHits;
+    return true;
+  }
+  return false;
+}
+
+bool VulkanBackend::TryBindCachedTexture(uint32_t tmu, uint32_t startAddress,
+                                         const struct VirtualTexture& tex) {
+  std::lock_guard<std::mutex> lock(m_mutex);
+  if (!m_initialized || !m_device || tmu >= 2 || tex.rawDataHash == 0 ||
+      tex.baseWidth == 0 || tex.baseHeight == 0) {
+    return false;
+  }
+
+  vk::Format targetFormat = vk::Format::eB8G8R8A8Unorm;
+  uint32_t bcBlockBytes = 0u;
+  const bool canUseCompressed =
+      m_textureCompressionBcEnabled &&
+      (tex.swizzledMipLevels.empty() || !tex.rawCompressedMipLevels.empty());
+  const bool useCompressed =
+      canUseCompressed &&
+      ResolveVulkanBcnFormat(tex.format, targetFormat, bcBlockBytes);
+  const uint32_t mipCount = ResolveTextureMipCount(tex, useCompressed);
+  if (mipCount == 0) {
+    return false;
+  }
+
+  const uint64_t incomingHash = CalculateTextureHash(tex, mipCount);
+  return TryBindContentCachedTexture_Locked(tmu, startAddress, targetFormat,
+                                            mipCount, tex.baseWidth,
+                                            tex.baseHeight, incomingHash);
+}
+
 void VulkanBackend::UploadTexture(uint32_t tmu, uint32_t startAddress,
                                   const struct VirtualTexture& tex) {
   std::lock_guard<std::mutex> lock(m_mutex);
@@ -358,42 +457,16 @@ void VulkanBackend::UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
     return;
   }
 
-  // 1. Calculate incoming texture content hash
-  const uint64_t incomingHash = CalculateTextureHash(tex);
-
-  // 2. Check if identical texture is already bound at this TMU address
-  auto& tmuMap = m_vulkanTextures[tmu];
-  auto it = tmuMap.find(startAddress);
-  if (it != tmuMap.end() && it->second &&
-      it->second->dataHash == incomingHash &&
-      it->second->width == tex.baseWidth &&
-      it->second->height == tex.baseHeight &&
-      it->second->mipLevels == mipCount &&
-      it->second->format == targetFormat) {
-    GLIDE_LOG(DEBUG, "Vulkan",
-              "UploadTexture: Address=0x"
-                  << std::hex << startAddress << std::dec
-                  << " data unmodified (hash match: 0x" << std::hex
-                  << incomingHash << std::dec << "). Bypassing upload!");
+  // 1. Calculate incoming texture content hash and check live/pooled caches
+  const uint64_t incomingHash = CalculateTextureHash(tex, mipCount);
+  if (TryBindContentCachedTexture_Locked(tmu, startAddress, targetFormat,
+                                         mipCount, tex.baseWidth,
+                                         tex.baseHeight, incomingHash)) {
     return;
   }
-
-  // 3. Check content-addressed VkImage cache across live/in-flight & idle
-  //    pooled textures to eliminate re-upload/alloc thrash on shade-table or
-  //    TMU address rotation.
+  auto& tmuMap = m_vulkanTextures[tmu];
   const TextureContentKey contentKey{incomingHash, targetFormat, tex.baseWidth,
                                      tex.baseHeight, mipCount};
-  if (auto cachedTex = TryAcquireContentCachedTexture_Locked(contentKey)) {
-    if (it != tmuMap.end() && it->second == cachedTex) {
-      return;
-    }
-    FlushBatch();
-    RetireTextureAtAddress_Locked(tmu, startAddress);
-    tmuMap[startAddress] = std::move(cachedTex);
-    m_descriptorStateDirty = true;
-    ++m_textureContentCacheHits;
-    return;
-  }
 
   GLIDE_PROFILE_SCOPE("Vulkan::UploadTexture");
 
@@ -451,7 +524,8 @@ void VulkanBackend::UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
 
   try {
     std::shared_ptr<VulkanTexture> vulkanTex = TryAcquirePooledTexture_Locked(
-        TexturePoolKey{targetFormat, tex.baseWidth, tex.baseHeight, mipCount});
+        TexturePoolKey{targetFormat, tex.baseWidth, tex.baseHeight, mipCount},
+        totalBytes);
     const bool reusedFromPool = (vulkanTex != nullptr);
 
     if (!reusedFromPool) {
@@ -839,7 +913,7 @@ void VulkanBackend::UploadTexturePartial(uint32_t tmu, uint32_t startAddress,
                         vk::ImageLayout::eTransferDstOptimal,
                         vk::ImageLayout::eShaderReadOnlyOptimal, levelRange);
 
-  vTex.dataHash = CalculateTextureHash(tex);
+  vTex.dataHash = CalculateTextureHash(tex, vTex.mipLevels);
   if (vTex.dataHash != 0) {
     const TextureContentKey newKey{vTex.dataHash, vTex.format, vTex.width,
                                    vTex.height, vTex.mipLevels};
@@ -1056,7 +1130,8 @@ bool VulkanBackend::CommitGpuTextureBuffer(
     RetireTextureAtAddress_Locked(tmu, startAddress);
     try {
       std::shared_ptr<VulkanTexture> vulkanTex = TryAcquirePooledTexture_Locked(
-          TexturePoolKey{m_colorFormat, baseWidth, baseHeight, totalMipLevels});
+          TexturePoolKey{m_colorFormat, baseWidth, baseHeight, totalMipLevels},
+          static_cast<size_t>(baseWidth) * baseHeight * 4u);
       if (!vulkanTex) {
         vulkanTex = std::make_shared<VulkanTexture>();
         vk::ImageCreateInfo imageInfo(

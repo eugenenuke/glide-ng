@@ -459,6 +459,8 @@ class VulkanBackend : public GlideStateTracker {
                    uint32_t magFilter) override;
   void UploadTexture(uint32_t tmu, uint32_t startAddress,
                      const struct VirtualTexture& tex) override;
+  bool TryBindCachedTexture(uint32_t tmu, uint32_t startAddress,
+                            const struct VirtualTexture& tex) override;
   bool SupportsCompressedBcnTextures() const override {
     return m_textureCompressionBcEnabled;
   }
@@ -798,10 +800,15 @@ class VulkanBackend : public GlideStateTracker {
     std::list<uint64_t>::iterator bucketIt;
   };
 
+  bool TryBindContentCachedTexture_Locked(uint32_t tmu, uint32_t startAddress,
+                                          vk::Format targetFormat,
+                                          uint32_t mipCount, uint32_t width,
+                                          uint32_t height,
+                                          uint64_t incomingHash);
   std::shared_ptr<VulkanTexture> TryAcquireContentCachedTexture_Locked(
       const TextureContentKey& key);
   std::shared_ptr<VulkanTexture> TryAcquirePooledTexture_Locked(
-      const TexturePoolKey& key);
+      const TexturePoolKey& key, size_t estimatedBytes);
   void InsertIntoPool_Locked(std::shared_ptr<VulkanTexture> tex);
   std::shared_ptr<VulkanTexture> TakeFromPoolById_Locked(uint64_t id);
   void ClearTexturePool_Locked(bool evictDescriptors);

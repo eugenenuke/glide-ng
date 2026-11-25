@@ -847,20 +847,94 @@ void TextureManager::EnsureCompressedSwizzled_Locked(VirtualTexture& tex) {
   }
 }
 
+void TextureManager::EnsureUncompressedSwizzled_Locked(VirtualTexture& tex) {
+  if (!tex.swizzledMipLevels.empty() || tex.rawUncompressedMipLevels.empty()) {
+    return;
+  }
+  const size_t nLevels = tex.rawUncompressedMipLevels.size();
+  tex.swizzledMipLevels.resize(nLevels);
+  for (size_t i = 0; i < nLevels; ++i) {
+    uint32_t lw = std::max(1u, tex.baseWidth >> i);
+    uint32_t lh = std::max(1u, tex.baseHeight >> i);
+    const size_t texelCount = static_cast<size_t>(lw) * lh;
+    tex.swizzledMipLevels[i].resize(texelCount, 0u);
+    const auto& rawLvl = tex.rawUncompressedMipLevels[i];
+    if (rawLvl.size() >= CalculateLevelByteSize(lw, lh, tex.format)) {
+      DecodeTexelsToBgra(tex.format, rawLvl.data(), lw, lh,
+                         tex.swizzledMipLevels[i].data(), false, nullptr,
+                         nullptr, nullptr, nullptr, nullptr, nullptr);
+    }
+  }
+  tex.swizzledWithTable = true;
+}
+
 void TextureManager::EnsureTextureReady_Locked(
     uint32_t tmu, std::shared_ptr<VirtualTexture>& texPtr,
     bool uploadToBackend) {
   if (!texPtr || tmu >= 2) return;
 
-  if (texPtr->isPaletted || texPtr->isNcc) {
-    const auto& state = TableState_Locked(tmu);
-    const uint64_t activeHash = GetActiveTableHash_Locked(state, *texPtr);
+  const bool usesTable = (texPtr->isPaletted || texPtr->isNcc);
+  const TmuState* tableStatePtr = usesTable ? &TableState_Locked(tmu) : nullptr;
+  const uint64_t activeHash =
+      usesTable ? GetActiveTableHash_Locked(*tableStatePtr, *texPtr) : 0ULL;
+  const bool activeTableLoaded =
+      !usesTable ||
+      (texPtr->isPaletted
+           ? tableStatePtr->paletteTableLoaded
+           : tableStatePtr->nccTablesLoaded[tableStatePtr->activeNccTable]);
 
+  if (uploadToBackend) {
+    // Fast path 1: already uploaded/bound on this TMU with active table.
+    const bool tmuUpToDate =
+        texPtr->uploadedToBackendPerTmu[tmu] &&
+        (!usesTable ||
+         (texPtr->uploadedTableHashPerTmu[tmu] == activeHash &&
+          (!texPtr->isPaletted || tableStatePtr->paletteTableLoaded)));
+    if (tmuUpToDate) {
+      return;
+    }
+
+    // Fast path 2: backend content-addressed GPU cache already holds this
+    // texture under activeHash — bind without CPU reswizzle or BGRA decode.
+    if (texPtr->rawDataHash != 0 &&
+        (!texPtr->isPaletted || tableStatePtr->paletteTableLoaded)) {
+      if (auto* b = BackendManager::GetInstance().GetBackend()) {
+        VirtualTexture probe;
+        probe.startAddress = texPtr->startAddress;
+        probe.format = texPtr->format;
+        probe.aspectRatio = texPtr->aspectRatio;
+        probe.baseWidth = texPtr->baseWidth;
+        probe.baseHeight = texPtr->baseHeight;
+        probe.smallLod = texPtr->smallLod;
+        probe.largeLod = texPtr->largeLod;
+        probe.isPaletted = texPtr->isPaletted;
+        probe.isNcc = texPtr->isNcc;
+        probe.rawDataHash = texPtr->rawDataHash;
+        probe.swizzledWithTable = activeTableLoaded;
+        probe.swizzledTableHash = activeHash;
+        if (b->TryBindCachedTexture(tmu, texPtr->startAddress, probe)) {
+          texPtr->uploadedToBackend = true;
+          texPtr->uploadedTableHash = activeHash;
+          texPtr->uploadedToBackendPerTmu[tmu] = true;
+          texPtr->uploadedTableHashPerTmu[tmu] = activeHash;
+          m_skippedCpuDecodeCount.fetch_add(1, std::memory_order_relaxed);
+          return;
+        }
+      }
+    }
+  }
+
+  // Slow path: ensure CPU swizzledMipLevels exist for CPU readers/upload.
+  if (usesTable) {
     const bool needsSwizzle =
-        (texPtr->isPaletted && state.paletteTableLoaded &&
-         (!texPtr->swizzledWithTable ||
-          texPtr->swizzledTableHash != activeHash)) ||
-        (texPtr->isNcc && (texPtr->swizzledTableHash != activeHash));
+        (texPtr->isPaletted &&
+         (texPtr->swizzledMipLevels.empty() ||
+          (tableStatePtr->paletteTableLoaded &&
+           (!texPtr->swizzledWithTable ||
+            texPtr->swizzledTableHash != activeHash)))) ||
+        (texPtr->isNcc &&
+         (texPtr->swizzledMipLevels.empty() ||
+          texPtr->swizzledTableHash != activeHash));
 
     if (needsSwizzle) {
       // Copy-on-write: never mutate a VirtualTexture snapshot still held by
@@ -868,15 +942,21 @@ void TextureManager::EnsureTextureReady_Locked(
       if (texPtr.use_count() > 1) {
         texPtr = std::make_shared<VirtualTexture>(*texPtr);
       }
-      ReswizzleTexture_Locked(state, *texPtr);
+      ReswizzleTexture_Locked(*tableStatePtr, *texPtr);
     }
+  } else if (texPtr->swizzledMipLevels.empty() &&
+             !texPtr->rawUncompressedMipLevels.empty()) {
+    if (texPtr.use_count() > 1) {
+      texPtr = std::make_shared<VirtualTexture>(*texPtr);
+    }
+    EnsureUncompressedSwizzled_Locked(*texPtr);
   }
 
   if (uploadToBackend) {
     const bool hasCpuData = !texPtr->swizzledMipLevels.empty() ||
                             !texPtr->rawCompressedMipLevels.empty();
     const bool tableChanged =
-        (texPtr->isPaletted || texPtr->isNcc) &&
+        usesTable &&
         (texPtr->uploadedTableHashPerTmu[tmu] != texPtr->swizzledTableHash);
     if (hasCpuData && (!texPtr->uploadedToBackendPerTmu[tmu] || tableChanged)) {
       if (auto* b = BackendManager::GetInstance().GetBackend()) {
@@ -1062,6 +1142,145 @@ bool TextureManager::DownloadMipMap(uint32_t tmu, uint32_t startAddress,
     return false;
   }
 
+  uint32_t numLevels = static_cast<uint32_t>(newSmall - newLarge + 1);
+  auto* activeBackend = BackendManager::GetInstance().GetBackend();
+  const bool isHwBcn = IsHardwareBcnFormat(format);
+  const bool useNativeBcn =
+      isHwBcn && activeBackend != nullptr &&
+      activeBackend->SupportsCompressedBcnTextures();
+
+  // Zero-CPU-decode fast path: when the backend already caches an uploaded GPU
+  // image matching (incomingHash, activeTableHash, dims, mips, format), bind it
+  // immediately and keep only the compact raw source bytes for lazy CPU use.
+  const bool isPalettedFmt =
+      (format == 0x5 || format == 0x6 || format == 0xe);
+  const bool isNccFmt = (format == 0x1 || format == 0x9);
+  const bool tableReady =
+      isPalettedFmt
+          ? tableState.paletteTableLoaded
+          : (isNccFmt ? tableState.nccTablesLoaded[tableState.activeNccTable]
+                      : true);
+  if (activeBackend != nullptr && !existingToMerge && incomingHash != 0 &&
+      tableReady) {
+    uint32_t baseW = 1, baseH = 1;
+    ComputeLodDimensions(newLarge, aspect, baseW, baseH);
+
+    VirtualTexture probe;
+    probe.startAddress = startAddress;
+    probe.format = format;
+    probe.aspectRatio = aspect;
+    probe.baseWidth = baseW;
+    probe.baseHeight = baseH;
+    probe.largeLod = newLarge;
+    probe.smallLod = newSmall;
+    probe.isPaletted = isPalettedFmt;
+    probe.isNcc = isNccFmt;
+    probe.rawDataHash = incomingHash;
+    probe.swizzledWithTable = true;
+    const uint64_t activeTableHash =
+        GetActiveTableHash_Locked(tableState, probe);
+    probe.swizzledTableHash = activeTableHash;
+
+    if (activeBackend->TryBindCachedTexture(tmu, startAddress, probe)) {
+      auto tex = std::make_shared<VirtualTexture>();
+      tex->startAddress = startAddress;
+      tex->format = format;
+      tex->aspectRatio = aspect;
+      tex->baseWidth = baseW;
+      tex->baseHeight = baseH;
+      tex->largeLod = newLarge;
+      tex->smallLod = newSmall;
+      tex->declaredLargeLod = effectiveDeclaredLarge;
+      tex->allocatedByteSize = newBytes;
+      tex->isPaletted = isPalettedFmt;
+      tex->isNcc = isNccFmt;
+
+      if (isHwBcn) {
+        tex->rawCompressedMipLevels.resize(numLevels);
+      } else if (format == 0x5 || format == 0x6) {
+        tex->raw8BitMipLevels.resize(numLevels);
+      } else if (format == 0x1) {
+        tex->rawYiqMipLevels.resize(numLevels);
+      } else if (format == 0x9) {
+        tex->rawAyiqMipLevels.resize(numLevels);
+      } else if (format == 0xe) {
+        tex->rawAp88MipLevels.resize(numLevels);
+      } else {
+        tex->rawUncompressedMipLevels.resize(numLevels);
+      }
+
+      const auto* rawData = reinterpret_cast<const uint8_t*>(data);
+      size_t byteOffset = 0;
+      for (int32_t i = start; i <= end; ++i) {
+        uint32_t w = 1, h = 1;
+        ComputeLodDimensions(i, aspect, w, h);
+        const uint32_t levelBytes = CalculateLevelByteSize(w, h, format);
+        const uint32_t destIdx = static_cast<uint32_t>(i - newLarge);
+        const size_t texelCount = static_cast<size_t>(w) * h;
+
+        if (isHwBcn) {
+          tex->rawCompressedMipLevels[destIdx].resize(levelBytes);
+          std::memcpy(tex->rawCompressedMipLevels[destIdx].data(),
+                      rawData + byteOffset, levelBytes);
+        } else if (format == 0x5 || format == 0x6) {
+          tex->raw8BitMipLevels[destIdx].resize(texelCount);
+          std::memcpy(tex->raw8BitMipLevels[destIdx].data(),
+                      rawData + byteOffset,
+                      std::min<size_t>(levelBytes, texelCount));
+        } else if (format == 0x1) {
+          tex->rawYiqMipLevels[destIdx].resize(texelCount);
+          std::memcpy(tex->rawYiqMipLevels[destIdx].data(),
+                      rawData + byteOffset,
+                      std::min<size_t>(levelBytes, texelCount));
+        } else if (format == 0x9) {
+          tex->rawAyiqMipLevels[destIdx].resize(texelCount);
+          std::memcpy(tex->rawAyiqMipLevels[destIdx].data(),
+                      rawData + byteOffset,
+                      std::min<size_t>(levelBytes,
+                                       texelCount * sizeof(uint16_t)));
+        } else if (format == 0xe) {
+          tex->rawAp88MipLevels[destIdx].resize(texelCount);
+          std::memcpy(tex->rawAp88MipLevels[destIdx].data(),
+                      rawData + byteOffset,
+                      std::min<size_t>(levelBytes,
+                                       texelCount * sizeof(uint16_t)));
+        } else {
+          tex->rawUncompressedMipLevels[destIdx].resize(levelBytes);
+          std::memcpy(tex->rawUncompressedMipLevels[destIdx].data(),
+                      rawData + byteOffset, levelBytes);
+        }
+        byteOffset += levelBytes;
+      }
+
+      tex->rawDataHash = incomingHash;
+      tex->swizzledWithTable = false;
+      tex->swizzledTableHash = 0ULL;
+      tex->uploadedToBackend = true;
+      tex->uploadedTableHash = activeTableHash;
+      tex->uploadedToBackendPerTmu[0] = (tmu == 0);
+      tex->uploadedToBackendPerTmu[1] = (tmu == 1);
+      tex->uploadedTableHashPerTmu[tmu] = activeTableHash;
+
+      for (size_t oi = 0; oi < overlapStackCount; ++oi) {
+        m_tmus[storeTmu].textures.erase(overlapStack[oi]);
+      }
+      for (uint32_t addr : overlapOverflow) {
+        m_tmus[storeTmu].textures.erase(addr);
+      }
+      m_tmus[storeTmu].allocatedBytes =
+          static_cast<uint32_t>(usedAfterEvict + newBytes);
+      m_tmus[storeTmu].textures[startAddress] = std::move(tex);
+      m_skippedCpuDecodeCount.fetch_add(1, std::memory_order_relaxed);
+
+      GLIDE_LOG(DEBUG, "TextureManager",
+                "DownloadMipMap Address=0x"
+                    << std::hex << startAddress << std::dec
+                    << " hit backend cache (hash=0x" << std::hex << incomingHash
+                    << std::dec << "). Skipped CPU decode and GPU upload!");
+      return true;
+    }
+  }
+
   // Always construct a fresh VirtualTexture instance so active copy-on-write
   // snapshots held by SoftwareBackend's deferred tile bins remain immutable.
   auto tex = std::make_shared<VirtualTexture>();
@@ -1070,13 +1289,6 @@ bool TextureManager::DownloadMipMap(uint32_t tmu, uint32_t startAddress,
   tex->aspectRatio = aspect;
   tex->declaredLargeLod = effectiveDeclaredLarge;
   tex->allocatedByteSize = newBytes;
-
-  uint32_t numLevels = static_cast<uint32_t>(newSmall - newLarge + 1);
-  auto* activeBackend = BackendManager::GetInstance().GetBackend();
-  const bool isHwBcn = IsHardwareBcnFormat(format);
-  const bool useNativeBcn =
-      isHwBcn && activeBackend != nullptr &&
-      activeBackend->SupportsCompressedBcnTextures();
 
   std::vector<std::vector<uint32_t>> newSwizzled;
   if (!useNativeBcn) newSwizzled.resize(numLevels);
@@ -1095,9 +1307,15 @@ bool TextureManager::DownloadMipMap(uint32_t tmu, uint32_t startAddress,
   if (existingToMerge) {
     tex->isPaletted = existingToMerge->isPaletted;
     tex->isNcc = existingToMerge->isNcc;
-    if (!useNativeBcn && existingToMerge->swizzledMipLevels.empty() &&
-        !existingToMerge->rawCompressedMipLevels.empty()) {
-      EnsureCompressedSwizzled_Locked(*existingToMerge);
+    if (!useNativeBcn && existingToMerge->swizzledMipLevels.empty()) {
+      if (!existingToMerge->rawCompressedMipLevels.empty()) {
+        if (existingToMerge.use_count() > 1) {
+          existingToMerge = std::make_shared<VirtualTexture>(*existingToMerge);
+        }
+        EnsureCompressedSwizzled_Locked(*existingToMerge);
+      } else {
+        EnsureTextureReady_Locked(tmu, existingToMerge, false);
+      }
     }
     for (int32_t L = existingToMerge->largeLod; L <= existingToMerge->smallLod;
          ++L) {
@@ -1495,9 +1713,16 @@ bool TextureManager::DownloadMipMapPartial(uint32_t tmu, uint32_t startAddress,
       it->second = std::make_shared<VirtualTexture>(*it->second);
     }
     tex = it->second;
-    if (tex->swizzledMipLevels.empty() && !tex->rawCompressedMipLevels.empty()) {
-      EnsureCompressedSwizzled_Locked(*tex);
-      tex->rawCompressedMipLevels.clear();
+    if (tex->swizzledMipLevels.empty()) {
+      if (!tex->rawCompressedMipLevels.empty()) {
+        EnsureCompressedSwizzled_Locked(*tex);
+        tex->rawCompressedMipLevels.clear();
+      } else if (tex->isPaletted || tex->isNcc) {
+        ReswizzleTexture_Locked(tableState, *tex);
+      } else if (!tex->rawUncompressedMipLevels.empty()) {
+        EnsureUncompressedSwizzled_Locked(*tex);
+        tex->rawUncompressedMipLevels.clear();
+      }
     }
     // Expand mip chain cleanly if a new finer or coarser LOD streams in.
     if (thisLod < tex->largeLod || thisLod > tex->smallLod) {
@@ -2039,7 +2264,9 @@ VirtualTexture* TextureManager::GetTexture(uint32_t tmu,
   const uint32_t storeTmu = StorageTmu_Locked(tmu);
   auto it = m_tmus[storeTmu].textures.find(startAddress);
   if (it == m_tmus[storeTmu].textures.end()) return nullptr;
-  if (it->second->isPaletted || it->second->isNcc) {
+  if (it->second->isPaletted || it->second->isNcc ||
+      (it->second->swizzledMipLevels.empty() &&
+       !it->second->rawUncompressedMipLevels.empty())) {
     EnsureTextureReady_Locked(tmu, it->second, false);
   }
   if (it->second->swizzledMipLevels.empty() &&
@@ -2056,7 +2283,9 @@ std::shared_ptr<const VirtualTexture> TextureManager::GetTextureSnapshot(
   const uint32_t storeTmu = StorageTmu_Locked(tmu);
   auto it = m_tmus[storeTmu].textures.find(startAddress);
   if (it == m_tmus[storeTmu].textures.end()) return nullptr;
-  if (it->second->isPaletted || it->second->isNcc) {
+  if (it->second->isPaletted || it->second->isNcc ||
+      (it->second->swizzledMipLevels.empty() &&
+       !it->second->rawUncompressedMipLevels.empty())) {
     EnsureTextureReady_Locked(tmu, it->second, false);
   }
   if (it->second->swizzledMipLevels.empty() &&
@@ -2122,6 +2351,7 @@ void TextureManager::Reset() {
   m_umaEnabled.store(false, std::memory_order_release);
   s_anyTableDirty.store(false, std::memory_order_release);
   EntryCommon::g_anyTmuTableDirty.store(false, std::memory_order_release);
+  m_skippedCpuDecodeCount.store(0, std::memory_order_relaxed);
   for (int i = 0; i < 2; ++i) {
     m_tmus[i].allocatedBytes = 0;
     m_tmus[i].textures.clear();
@@ -2226,6 +2456,16 @@ bool TextureManager::CommitRenderedTexture(
   const uint32_t numLevels = static_cast<uint32_t>(newSmall - newLarge + 1);
   tex->swizzledMipLevels.resize(numLevels);
   if (existingToMerge) {
+    if (existingToMerge->swizzledMipLevels.empty()) {
+      if (!existingToMerge->rawCompressedMipLevels.empty()) {
+        if (existingToMerge.use_count() > 1) {
+          existingToMerge = std::make_shared<VirtualTexture>(*existingToMerge);
+        }
+        EnsureCompressedSwizzled_Locked(*existingToMerge);
+      } else {
+        EnsureTextureReady_Locked(tmu, existingToMerge, false);
+      }
+    }
     for (int32_t L = existingToMerge->largeLod; L <= existingToMerge->smallLod;
          ++L) {
       const uint32_t oldIdx =
@@ -2334,7 +2574,8 @@ bool TextureManager::CommitGpuRenderedTexture(
       existingToMerge->baseWidth == baseW &&
       existingToMerge->baseHeight == baseH &&
       existingToMerge->swizzledMipLevels.empty() &&
-      existingToMerge->rawCompressedMipLevels.empty()) {
+      existingToMerge->rawCompressedMipLevels.empty() &&
+      existingToMerge->rawUncompressedMipLevels.empty()) {
     existingToMerge->rawDataHash = 0;
     existingToMerge->uploadedToBackend = true;
     existingToMerge->uploadedToBackendPerTmu[tmu] = true;

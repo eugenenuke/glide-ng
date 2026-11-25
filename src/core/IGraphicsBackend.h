@@ -150,6 +150,17 @@ class IGraphicsBackend {
                            uint32_t magFilter) = 0;
   virtual void UploadTexture(uint32_t tmu, uint32_t startAddress,
                              const struct VirtualTexture& tex) = 0;
+  // Fast zero-decode bind path: if the backend already holds an uploaded GPU
+  // texture matching the metadata/hash identity in `tex` (without reading
+  // `tex.swizzledMipLevels`), bind it to `(tmu, startAddress)` and return true.
+  // Backends without a content-addressed GPU texture cache return false.
+  virtual bool TryBindCachedTexture(uint32_t tmu, uint32_t startAddress,
+                                    const struct VirtualTexture& tex) {
+    (void)tmu;
+    (void)startAddress;
+    (void)tex;
+    return false;
+  }
   // Returns true when the backend can upload raw BC1/BC2/BC3 (DXT1..DXT5)
   // compressed texture blocks natively without CPU decompression.
   virtual bool SupportsCompressedBcnTextures() const { return false; }

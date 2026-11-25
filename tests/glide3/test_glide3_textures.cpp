@@ -262,16 +262,35 @@ TEST_CASE("Glide 3.x: .3df Loading, LOD & Aspect Bounds", "[Glide3][Texture]") {
       };
 
       // Frame 0: upload red texture at addr=0, then overwrite with green so the
-      // red VkImage is retired into slot 0's retirement queue.
+      // red VkImage is retired into slot 0's retirement queue. Fill the remaining
+      // idle pool headroom (1023 tiny 4x4 images retired via addr=0x1000) so the
+      // pool reaches kMaxPooledTextures (1024) without prematurely cannibalizing
+      // warm content-keyed entries below capacity.
+      auto makeTex4x4 = [](uint32_t argb, uint64_t rawHash) {
+        GlideWrapper::VirtualTexture vt;
+        vt.baseWidth = 4;
+        vt.baseHeight = 4;
+        vt.format = 0x5;
+        vt.rawDataHash = rawHash;
+        vt.swizzledTableHash = 1;
+        vt.swizzledWithTable = true;
+        vt.swizzledMipLevels.emplace_back(4u * 4u, argb);
+        return vt;
+      };
       backend.UploadTexture(0, 0, makeTex(0xFFFF0000u, 0x1111u));
       backend.UploadTexture(0, 0, makeTex(0xFF00FF00u, 0x2222u));
+      for (uint32_t i = 0; i < 1024u; ++i) {
+        backend.UploadTexture(
+            0, 0x1000u,
+            makeTex4x4(0xFF000000u | (i & 0xFFFFFFu), 0x70000u + i));
+      }
       REQUIRE(backend.SwapBuffers());
       // Frame 1: swap again so slot 0's fence completes and reclaims the
-      // retired 32x32x1 texture into m_texturePool.
+      // retired 32x32x1 + 1023x 4x4 textures into m_texturePool.
       REQUIRE(backend.SwapBuffers());
 
       // Frame 2: upload a blue 32x32x1 texture at addr=0 -> must reuse the
-      // pooled VkImage/DeviceMemory/ImageView!
+      // pooled 32x32x1 VkImage/DeviceMemory/ImageView!
       const uint64_t reusesBefore = backend.GetTexturePoolReuseCount();
       backend.UploadTexture(0, 0, makeTex(0xFF0000FFu, 0x3333u));
       CHECK(backend.GetTexturePoolReuseCount() == reusesBefore + 1);
@@ -389,9 +408,8 @@ TEST_CASE("Glide 3.x: .3df Loading, LOD & Aspect Bounds", "[Glide3][Texture]") {
       CHECK(drawBoundTexAndReadCenter(0u) == 0x001Fu);       // Blue at addr=0
       CHECK(drawBoundTexAndReadCenter(0x2000u) == 0xF800u);  // Still Red
 
-      // 4. High-churn > 128 uploads/frame (Blood shade-table burst): retire
-      //    199 distinct 32x32 textures, reclaim after two swaps, and verify
-      //    next frame reuses >= 199 pooled images without hitting the old 128 cap.
+      // 4. Multi-frame content-cache preservation (no premature cannibalization)
+      //    and zero-alloc bucketed pool reuse at pool cap (1024).
       for (uint32_t i = 0; i < 200u; ++i) {
         backend.UploadTexture(
             0u, 0u,
@@ -399,13 +417,48 @@ TEST_CASE("Glide 3.x: .3df Loading, LOD & Aspect Bounds", "[Glide3][Texture]") {
       }
       REQUIRE(backend.SwapBuffers());
       REQUIRE(backend.SwapBuffers());
-      const uint64_t reusesBefore = backend.GetTexturePoolReuseCount();
-      for (uint32_t i = 0; i < 199u; ++i) {
+      for (uint32_t i = 0; i < 200u; ++i) {
         backend.UploadTexture(
             0u, 0u,
             makeTex(0xFF000000u | (((i + 1u) & 0xFFu) << 8), 0xE0000u + i));
       }
-      CHECK(backend.GetTexturePoolReuseCount() >= reusesBefore + 199u);
+      REQUIRE(backend.SwapBuffers());
+      const uint64_t hitsBeforeA = backend.GetTextureContentCacheHitCount();
+      for (uint32_t i = 0; i < 200u; ++i) {
+        backend.UploadTexture(
+            0u, 0u,
+            makeTex(0xFF000000u | ((i + 1u) & 0xFFu), 0xD0000u + i));
+      }
+      CHECK(backend.GetTextureContentCacheHitCount() >= hitsBeforeA + 200u);
+
+      // Push idle pool to kMaxPooledTextures (1024) with tiny 4x4 textures,
+      // then verify subsequent uploads reuse >= 200 pooled images without
+      // hitting the old 128 cap.
+      auto makeTex4x4 = [](uint32_t argb, uint64_t rawHash) {
+        GlideWrapper::VirtualTexture vt;
+        vt.baseWidth = 4;
+        vt.baseHeight = 4;
+        vt.format = 0x5;
+        vt.rawDataHash = rawHash;
+        vt.swizzledTableHash = 1;
+        vt.swizzledWithTable = true;
+        vt.swizzledMipLevels.emplace_back(4u * 4u, argb);
+        return vt;
+      };
+      for (uint32_t i = 0; i < 1024u; ++i) {
+        backend.UploadTexture(
+            0u, 0u,
+            makeTex4x4(0xFF000000u | (i & 0xFFFFFFu), 0xF0000u + i));
+      }
+      REQUIRE(backend.SwapBuffers());
+      REQUIRE(backend.SwapBuffers());
+      const uint64_t reusesBefore = backend.GetTexturePoolReuseCount();
+      for (uint32_t i = 0; i < 200u; ++i) {
+        backend.UploadTexture(
+            0u, 0u,
+            makeTex4x4(0xFF000000u | ((i + 1u) & 0xFFu), 0x100000u + i));
+      }
+      CHECK(backend.GetTexturePoolReuseCount() >= reusesBefore + 200u);
 
       backend.DetachWindow();
       backend.Shutdown();

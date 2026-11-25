@@ -44,6 +44,10 @@ struct VirtualTexture {
       rawAyiqMipLevels;  // For 16-bit AYIQ_8422 (format 0x9)
   std::vector<std::vector<uint16_t>>
       rawAp88MipLevels;  // For 16-bit AP_88 (format 0xe)
+  std::vector<std::vector<uint8_t>>
+      rawUncompressedMipLevels;  // Compact raw bytes kept on GPU cache hits
+                                 // for non-paletted/non-NCC formats so CPU
+                                 // swizzledMipLevels can materialize lazily.
 
   bool isPaletted = false;
   bool isNcc = false;
@@ -167,6 +171,12 @@ class TextureManager {
   }
   void SyncBoundTextures();
 
+  // Count of DownloadMipMap / EnsureTextureReady CPU decodes skipped via
+  // backend content-addressed GPU texture cache hits (used by perf/unit tests).
+  uint64_t GetSkippedCpuDecodeCount() const {
+    return m_skippedCpuDecodeCount.load(std::memory_order_relaxed);
+  }
+
   // 5. Purge TMU texture allocations while preserving hardware palette & NCC
   // tables (authentic guTexMemReset semantics).
   void ClearTextures();
@@ -219,6 +229,7 @@ class TextureManager {
   static void ReswizzleTexture_Locked(const TmuState& state,
                                       VirtualTexture& tex);
   static void EnsureCompressedSwizzled_Locked(VirtualTexture& tex);
+  static void EnsureUncompressedSwizzled_Locked(VirtualTexture& tex);
   void EnsureTextureReady_Locked(uint32_t tmu,
                                  std::shared_ptr<VirtualTexture>& texPtr,
                                  bool uploadToBackend);
@@ -229,6 +240,7 @@ class TextureManager {
   std::atomic<bool> m_umaEnabled{false};
   std::atomic<bool> m_tmuTableDirty[2]{false, false};
   inline static std::atomic<bool> s_anyTableDirty{false};
+  std::atomic<uint64_t> m_skippedCpuDecodeCount{0};
 };
 
 }  // namespace GlideWrapper

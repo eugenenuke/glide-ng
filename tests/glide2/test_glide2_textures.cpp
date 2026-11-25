@@ -1856,3 +1856,246 @@ TEST_CASE("Glide 2.x: grTexDownloadMipMapLevel Telemetry Attribution",
 #endif
 }
 
+TEST_CASE(
+    "Glide 2.x: Zero-decode backend cache hit skips CPU swizzle and preserves "
+    "lazy CPU fallback",
+    "[Glide2][Texture][Perf]") {
+#ifdef __linux__
+  const char* prevNoSplash = std::getenv("FX_GLIDE_NO_SPLASH");
+  std::string savedNoSplash = prevNoSplash ? prevNoSplash : "";
+  ::setenv("FX_GLIDE_NO_SPLASH", "1", 1);
+  struct EnvRestorer {
+    bool hadSplash;
+    std::string splashVal;
+    ~EnvRestorer() {
+      if (hadSplash)
+        ::setenv("FX_GLIDE_NO_SPLASH", splashVal.c_str(), 1);
+      else
+        ::unsetenv("FX_GLIDE_NO_SPLASH");
+    }
+  } restorer{prevNoSplash != nullptr, savedNoSplash};
+
+  grGlideInit();
+  grSstSelect(0);
+  REQUIRE(grSstWinOpen(0, GR_RESOLUTION_640x480, GR_REFRESH_60Hz,
+                       GR_COLORFORMAT_ARGB, GR_ORIGIN_UPPER_LEFT, 2,
+                       1) == FXTRUE);
+  grDitherMode(GR_DITHER_DISABLE);
+
+  auto* backend = GlideWrapper::BackendManager::GetInstance().GetBackend();
+  REQUIRE(backend != nullptr);
+  const char* envBackend = std::getenv("GLIDE_NG_BACKEND");
+  const bool isVulkan =
+      (envBackend && std::string(envBackend) == "vulkan") ||
+      GlideWrapper::EmulationRegistry::GetInstance().GetConfig().backend ==
+          "vulkan";
+
+  grColorCombine(GR_COMBINE_FUNCTION_SCALE_OTHER, GR_COMBINE_FACTOR_ONE,
+                 GR_COMBINE_LOCAL_NONE, GR_COMBINE_OTHER_TEXTURE, FXFALSE);
+  grTexCombine(GR_TMU0, GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE,
+               GR_COMBINE_FUNCTION_LOCAL, GR_COMBINE_FACTOR_NONE, FXFALSE,
+               FXFALSE);
+
+  auto drawRectTex = [&](uint32_t addr, const GrTexInfo& info, float x0,
+                         float x1) {
+    grTexSource(GR_TMU0, addr, GR_MIPMAPLEVELMASK_BOTH,
+                const_cast<GrTexInfo*>(&info));
+    GrVertex a{}, b{}, c{}, d{};
+    a.x = x0;
+    a.y = 0.0f;
+    a.oow = 1.0f;
+    a.tmuvtx[0].sow = 0.0f;
+    a.tmuvtx[0].tow = 0.0f;
+    b.x = x1;
+    b.y = 0.0f;
+    b.oow = 1.0f;
+    b.tmuvtx[0].sow = 255.0f;
+    b.tmuvtx[0].tow = 0.0f;
+    c.x = x1;
+    c.y = 480.0f;
+    c.oow = 1.0f;
+    c.tmuvtx[0].sow = 255.0f;
+    c.tmuvtx[0].tow = 255.0f;
+    d.x = x0;
+    d.y = 480.0f;
+    d.oow = 1.0f;
+    d.tmuvtx[0].sow = 0.0f;
+    d.tmuvtx[0].tow = 255.0f;
+    grDrawTriangle(&a, &b, &c);
+    grDrawTriangle(&a, &c, &d);
+  };
+
+  auto readPixel565 = [](uint32_t x, uint32_t y) -> uint16_t {
+    uint16_t px565 = 0;
+    REQUIRE(grLfbReadRegion(GR_BUFFER_FRONTBUFFER, x, y, 1u, 1u, 2u, &px565) ==
+            FXTRUE);
+    return px565;
+  };
+  auto checkRed565 = [](uint16_t px) {
+    CHECK(((px >> 11) & 31u) >= 28u);
+    CHECK(((px >> 5) & 63u) <= 4u);
+    CHECK((px & 31u) <= 4u);
+  };
+  auto checkGreen565 = [](uint16_t px) {
+    CHECK(((px >> 11) & 31u) <= 4u);
+    CHECK(((px >> 5) & 63u) >= 58u);
+    CHECK((px & 31u) <= 4u);
+  };
+  auto checkBlue565 = [](uint16_t px) {
+    CHECK(((px >> 11) & 31u) <= 4u);
+    CHECK(((px >> 5) & 63u) <= 4u);
+    CHECK((px & 31u) >= 28u);
+  };
+  auto checkWhite565 = [](uint16_t px) {
+    CHECK(((px >> 11) & 31u) >= 28u);
+    CHECK(((px >> 5) & 63u) >= 58u);
+    CHECK((px & 31u) >= 28u);
+  };
+
+  auto& texMgr = GlideWrapper::TextureManager::GetInstance();
+  auto& telMgr = GlideWrapper::TelemetryManager::GetInstance();
+  const uint32_t addr0 = grTexMinAddress(GR_TMU0);
+  const uint32_t addr1 = addr0 + 0x2000u;
+
+  GuTexPalette pal1{};
+  GuTexPalette pal2{};
+  for (int i = 0; i < 256; ++i) {
+    pal1.data[i] = 0x00000000u;
+    pal2.data[i] = 0x00000000u;
+  }
+  pal1.data[42] = 0x00FF0000u;  // Red
+  pal1.data[77] = 0x00FFFFFFu;  // White
+  pal2.data[42] = 0x0000FF00u;  // Green
+
+  std::vector<uint8_t> p8Data(32u * 32u, 42u);
+  GrTexInfo p8Info{};
+  p8Info.smallLod = GR_LOD_32;
+  p8Info.largeLod = GR_LOD_32;
+  p8Info.aspectRatio = GR_ASPECT_1x1;
+  p8Info.format = GR_TEXFMT_P_8;
+  p8Info.data = p8Data.data();
+
+  // Part A: Palette cycling P1 -> P2 -> P1 at addr0 skips CPU reswizzle on hit
+  grTexDownloadTable(GR_TMU0, GR_TEXTABLE_PALETTE, &pal1);
+  grTexDownloadMipMap(GR_TMU0, addr0, GR_MIPMAPLEVELMASK_BOTH, &p8Info);
+  grBufferClear(0, 0, GR_WDEPTHVALUE_FARTHEST);
+  drawRectTex(addr0, p8Info, 0.0f, 640.0f);
+  grBufferSwap(0);
+  checkRed565(readPixel565(320u, 240u));
+
+  grTexDownloadTable(GR_TMU0, GR_TEXTABLE_PALETTE, &pal2);
+  grBufferClear(0, 0, GR_WDEPTHVALUE_FARTHEST);
+  drawRectTex(addr0, p8Info, 0.0f, 640.0f);
+  grBufferSwap(0);
+  checkGreen565(readPixel565(320u, 240u));
+
+  const uint64_t skipsBeforeA = texMgr.GetSkippedCpuDecodeCount();
+  grTexDownloadTable(GR_TMU0, GR_TEXTABLE_PALETTE, &pal1);
+  grBufferClear(0, 0, GR_WDEPTHVALUE_FARTHEST);
+  drawRectTex(addr0, p8Info, 0.0f, 640.0f);
+  grBufferSwap(0);
+  const auto metricsA = telMgr.GetLastFrameMetrics();
+  if (isVulkan) {
+    CHECK(texMgr.GetSkippedCpuDecodeCount() >= skipsBeforeA + 1u);
+    CHECK(metricsA.texUploads == 0u);
+  } else {
+    CHECK(texMgr.GetSkippedCpuDecodeCount() == skipsBeforeA);
+  }
+  checkRed565(readPixel565(320u, 240u));
+
+  // Lazy CPU snapshot fallback must materialize P1 red pixels cleanly.
+  auto snapA = texMgr.GetTextureSnapshot(0u, addr0);
+  REQUIRE(snapA != nullptr);
+  REQUIRE(snapA->swizzledMipLevels.size() == 1u);
+  REQUIRE(snapA->swizzledMipLevels[0].size() == 32u * 32u);
+  CHECK(snapA->swizzledMipLevels[0][0] == 0xFFFF0000u);
+
+  // Part B: Cross-address DownloadMipMap cache hit for both P_8 and RGB_565
+  std::vector<uint16_t> rgb565Blue(32u * 32u, 0x001Fu);
+  GrTexInfo rgbInfo{};
+  rgbInfo.smallLod = GR_LOD_32;
+  rgbInfo.largeLod = GR_LOD_32;
+  rgbInfo.aspectRatio = GR_ASPECT_1x1;
+  rgbInfo.format = GR_TEXFMT_RGB_565;
+  rgbInfo.data = rgb565Blue.data();
+
+  grTexDownloadMipMap(GR_TMU0, addr1, GR_MIPMAPLEVELMASK_BOTH, &rgbInfo);
+  grBufferClear(0, 0, GR_WDEPTHVALUE_FARTHEST);
+  drawRectTex(addr0, p8Info, 0.0f, 320.0f);
+  drawRectTex(addr1, rgbInfo, 320.0f, 640.0f);
+  grBufferSwap(0);
+  grBufferClear(0, 0, GR_WDEPTHVALUE_FARTHEST);
+  drawRectTex(addr0, p8Info, 0.0f, 320.0f);
+  drawRectTex(addr1, rgbInfo, 320.0f, 640.0f);
+  grBufferSwap(0);
+
+  const uint64_t skipsBeforeB = texMgr.GetSkippedCpuDecodeCount();
+  grTexDownloadMipMap(GR_TMU0, addr0, GR_MIPMAPLEVELMASK_BOTH, &rgbInfo);
+  grTexDownloadMipMap(GR_TMU0, addr1, GR_MIPMAPLEVELMASK_BOTH, &p8Info);
+  if (isVulkan) {
+    CHECK(texMgr.GetSkippedCpuDecodeCount() >= skipsBeforeB + 2u);
+  }
+  grBufferClear(0, 0, GR_WDEPTHVALUE_FARTHEST);
+  drawRectTex(addr0, rgbInfo, 0.0f, 320.0f);
+  drawRectTex(addr1, p8Info, 320.0f, 640.0f);
+  grBufferSwap(0);
+  const auto metricsB = telMgr.GetLastFrameMetrics();
+  if (isVulkan) {
+    CHECK(metricsB.texUploads == 0u);
+  }
+  checkBlue565(readPixel565(160u, 240u));
+  checkRed565(readPixel565(480u, 240u));
+
+  // Part C: Partial updates on lazy-cached RGB_565 & P_8 textures
+  std::vector<uint16_t> rgb565Green(32u * 32u, 0x07E0u);
+  std::vector<uint8_t> p8White(32u * 32u, 77u);
+  REQUIRE(texMgr.DownloadMipMapPartial(0u, addr0, GR_LOD_32, GR_LOD_32,
+                                       GR_ASPECT_1x1, GR_TEXFMT_RGB_565,
+                                       rgb565Green.data(), 0, 32));
+  REQUIRE(texMgr.DownloadMipMapPartial(0u, addr1, GR_LOD_32, GR_LOD_32,
+                                       GR_ASPECT_1x1, GR_TEXFMT_P_8,
+                                       p8White.data(), 0, 32));
+  grBufferClear(0, 0, GR_WDEPTHVALUE_FARTHEST);
+  drawRectTex(addr0, rgbInfo, 0.0f, 320.0f);
+  drawRectTex(addr1, p8Info, 320.0f, 640.0f);
+  grBufferSwap(0);
+  checkGreen565(readPixel565(160u, 240u));
+  checkWhite565(readPixel565(480u, 240u));
+
+  // LOD merge on a lazy-cached RGB_565 mip chain (GR_LOD_32=32x32, GR_LOD_16=16x16)
+  const uint32_t addr2 = addr0 + 0x8000u;
+  const uint32_t addr3 = addr0 + 0x10000u;
+  std::vector<uint16_t> lod16Red(16u * 16u, 0xF800u);
+  std::vector<uint16_t> lod32Green(32u * 32u, 0x07E0u);
+  REQUIRE(texMgr.DownloadMipMap(0u, addr2, GR_LOD_16, GR_LOD_16, GR_ASPECT_1x1,
+                                GR_TEXFMT_RGB_565, lod16Red.data(), false,
+                                GR_LOD_32));
+  grBufferClear(0, 0, GR_WDEPTHVALUE_FARTHEST);
+  GrTexInfo lod16Info{};
+  lod16Info.smallLod = GR_LOD_16;
+  lod16Info.largeLod = GR_LOD_16;
+  lod16Info.aspectRatio = GR_ASPECT_1x1;
+  lod16Info.format = GR_TEXFMT_RGB_565;
+  lod16Info.data = lod16Red.data();
+  drawRectTex(addr2, lod16Info, 0.0f, 640.0f);
+  grBufferSwap(0);
+
+  REQUIRE(texMgr.DownloadMipMap(0u, addr3, GR_LOD_16, GR_LOD_16, GR_ASPECT_1x1,
+                                GR_TEXFMT_RGB_565, lod16Red.data(), false,
+                                GR_LOD_32));
+  REQUIRE(texMgr.DownloadMipMap(0u, addr3, GR_LOD_32, GR_LOD_32, GR_ASPECT_1x1,
+                                GR_TEXFMT_RGB_565, lod32Green.data(), false,
+                                GR_LOD_32));
+  auto mergedSnap = texMgr.GetTextureSnapshot(0u, addr3);
+  REQUIRE(mergedSnap != nullptr);
+  REQUIRE(mergedSnap->swizzledMipLevels.size() == 2u);
+  REQUIRE(mergedSnap->swizzledMipLevels[0].size() == 32u * 32u);
+  REQUIRE(mergedSnap->swizzledMipLevels[1].size() == 16u * 16u);
+  CHECK(mergedSnap->swizzledMipLevels[0][0] == 0xFF00FF00u);
+  CHECK(mergedSnap->swizzledMipLevels[1][0] == 0xFFFF0000u);
+
+  grSstWinClose();
+  grGlideShutdown();
+#endif
+}
+
