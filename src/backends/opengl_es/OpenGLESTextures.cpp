@@ -297,9 +297,6 @@ bool OpenGLESBackend::TryBindContentCachedTexture_Locked(
     }
     RetireGlesTextureAtAddress_Locked(tmu, startAddress);
     tmuMap[startAddress] = std::move(cachedTex);
-    m_glesDirtyMask |=
-        kGlesDirtyTexBinding |
-        (tmu == 0u ? kGlesDirtyTexSampler0 : kGlesDirtyTexSampler1);
     ++m_glesTexContentCacheHits;
     return true;
   }
@@ -516,9 +513,6 @@ void OpenGLESBackend::UploadTexture_Locked(uint32_t tmu, uint32_t startAddress,
     m_glesLiveContentMap[key] = glesTex;
   }
 
-  m_glesDirtyMask |=
-      kGlesDirtyTexBinding |
-      (tmu == 0 ? kGlesDirtyTexSampler0 : kGlesDirtyTexSampler1);
   checkGLError("UploadTexture");
 }
 
@@ -665,14 +659,16 @@ void OpenGLESBackend::BindTexture(uint32_t tmu, uint32_t startAddress,
     return;
   }
   FlushBatch(true);
-  const bool addrChanged = (tmu < 2 && m_boundTexAddress[tmu] != startAddress);
+  const bool enabledChanged =
+      (tmu < 2u && ((m_boundTexAddress[tmu] == 0xFFFFFFFFu) !=
+                    (startAddress == 0xFFFFFFFFu)));
   const bool samplerChanged =
       (tmu < 2 && (m_texClampS[tmu] != clampS || m_texClampT[tmu] != clampT ||
                    m_texMinFilter[tmu] != minFilter ||
                    m_texMagFilter[tmu] != magFilter));
   GlideStateTracker::BindTexture_Locked(tmu, startAddress, clampS, clampT,
                                         minFilter, magFilter);
-  if (addrChanged) {
+  if (enabledChanged) {
     m_glesDirtyMask |= kGlesDirtyTexBinding;
   }
   if (samplerChanged) {
@@ -686,7 +682,7 @@ void OpenGLESBackend::SetTexLodBias(uint32_t tmu, float bias) {
   if (tmu < 2 && m_texLodBias[tmu] == bias) return;
   FlushBatch(true);
   GlideStateTracker::SetTexLodBias_Locked(tmu, bias);
-  m_glesDirtyMask |= kGlesDirtyTexBinding;
+  m_glesDirtyMask |= kGlesDirtyTexLodBias;
 }
 
 void OpenGLESBackend::SetTexDetailControl(uint32_t tmu, int32_t lodBias,

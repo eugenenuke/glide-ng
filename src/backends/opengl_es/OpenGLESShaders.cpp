@@ -1016,6 +1016,8 @@ bool OpenGLESBackend::CreateGeomShaders() {
   }
 
   m_glesDirtyMask = kGlesDirtyAll;
+  m_cachedUniformTexEnabled[0] = -1;
+  m_cachedUniformTexEnabled[1] = -1;
   InvalidateGlBindingCache();
 
   checkGLError("CreateGeomShaders");
@@ -1114,19 +1116,24 @@ void OpenGLESBackend::PopulateUniforms(uint32_t dirtyMask) {
       kGlesDirtyBlend | kGlesDirtyColorMask;
   if (dirtyMask & kTexEnableDeps) {
     const bool combinerReadsTex = DoesCombinerReadTexture_Locked();
-    int texEnabled[2] = {
+    const int texEnabled[2] = {
         (combinerReadsTex && m_boundTexAddress[0] != 0xFFFFFFFF) ? 1 : 0,
         (combinerReadsTex && m_boundTexAddress[1] != 0xFFFFFFFF) ? 1 : 0};
-    glUniform1iv(m_uTextureEnabledLoc, 2, texEnabled);
+    if (texEnabled[0] != m_cachedUniformTexEnabled[0] ||
+        texEnabled[1] != m_cachedUniformTexEnabled[1]) {
+      glUniform1iv(m_uTextureEnabledLoc, 2, texEnabled);
+      m_cachedUniformTexEnabled[0] = texEnabled[0];
+      m_cachedUniformTexEnabled[1] = texEnabled[1];
+    }
   }
 
-  if (dirtyMask & kGlesDirtyTexBinding) {
+  if (dirtyMask & kGlesDirtyTexLodBias) {
     float lodBias[2] = {m_texLodBias[0], m_texLodBias[1]};
     glUniform1fv(m_uTexLodBiasLoc, 2, lodBias);
   }
 
-  if (dirtyMask & (kGlesDirtyTexBinding | kGlesDirtyTexSampler0 |
-                   kGlesDirtyTexSampler1)) {
+  if (dirtyMask &
+      (kGlesDirtyTexLodBias | kGlesDirtyTexSampler0 | kGlesDirtyTexSampler1)) {
     // Authentic 3dfx GR_MIPMAP_NEAREST truncates (floors) LOD rather than
     // rounding like GL_*_MIPMAP_NEAREST; keep uTexLodBias untouched for the
     // LOD_FRACTION combiner factor and offset only textureGrad sampling by

@@ -44,6 +44,7 @@
   X(decltype(&::glDrawArrays), glDrawArrays)                    \
   X(decltype(&::glEnable), glEnable)                            \
   X(decltype(&::glFinish), glFinish)                            \
+  X(decltype(&::glFlush), glFlush)                              \
   X(decltype(&::glFrontFace), glFrontFace)                      \
   X(decltype(&::glGenTextures), glGenTextures)                  \
   X(decltype(&::glGetError), glGetError)                        \
@@ -78,6 +79,7 @@
   X(PFNGLBUFFERDATAPROC, glBufferData)                                 \
   X(PFNGLBUFFERSUBDATAPROC, glBufferSubData)                           \
   X(PFNGLCHECKFRAMEBUFFERSTATUSPROC, glCheckFramebufferStatus)         \
+  X(PFNGLCLIENTWAITSYNCPROC, glClientWaitSync)                         \
   X(PFNGLCOMPILESHADERPROC, glCompileShader)                           \
   X(PFNGLCOMPRESSEDTEXIMAGE2DPROC, glCompressedTexImage2D)             \
   X(PFNGLCOMPRESSEDTEXSUBIMAGE2DPROC, glCompressedTexSubImage2D)       \
@@ -89,8 +91,10 @@
   X(PFNGLDELETERENDERBUFFERSPROC, glDeleteRenderbuffers)               \
   X(PFNGLDELETESAMPLERSPROC, glDeleteSamplers)                         \
   X(PFNGLDELETESHADERPROC, glDeleteShader)                             \
+  X(PFNGLDELETESYNCPROC, glDeleteSync)                                 \
   X(PFNGLDELETEVERTEXARRAYSPROC, glDeleteVertexArrays)                 \
   X(PFNGLENABLEVERTEXATTRIBARRAYPROC, glEnableVertexAttribArray)       \
+  X(PFNGLFENCESYNCPROC, glFenceSync)                                   \
   X(PFNGLFRAMEBUFFERRENDERBUFFERPROC, glFramebufferRenderbuffer)       \
   X(PFNGLFRAMEBUFFERTEXTURE2DPROC, glFramebufferTexture2D)             \
   X(PFNGLGENBUFFERSPROC, glGenBuffers)                                 \
@@ -170,6 +174,7 @@ bool LoadCoreFunctions();
 #define glDrawArrays              ::GlideWrapper::Win32Gl::pfn_glDrawArrays
 #define glEnable                  ::GlideWrapper::Win32Gl::pfn_glEnable
 #define glFinish                  ::GlideWrapper::Win32Gl::pfn_glFinish
+#define glFlush                   ::GlideWrapper::Win32Gl::pfn_glFlush
 #define glFrontFace               ::GlideWrapper::Win32Gl::pfn_glFrontFace
 #define glGenTextures             ::GlideWrapper::Win32Gl::pfn_glGenTextures
 #define glGetError                ::GlideWrapper::Win32Gl::pfn_glGetError
@@ -200,6 +205,7 @@ bool LoadCoreFunctions();
 #define glBufferData              ::GlideWrapper::Win32Gl::pfn_glBufferData
 #define glBufferSubData           ::GlideWrapper::Win32Gl::pfn_glBufferSubData
 #define glCheckFramebufferStatus  ::GlideWrapper::Win32Gl::pfn_glCheckFramebufferStatus
+#define glClientWaitSync          ::GlideWrapper::Win32Gl::pfn_glClientWaitSync
 #define glCompileShader           ::GlideWrapper::Win32Gl::pfn_glCompileShader
 #define glCompressedTexImage2D    ::GlideWrapper::Win32Gl::pfn_glCompressedTexImage2D
 #define glCompressedTexSubImage2D ::GlideWrapper::Win32Gl::pfn_glCompressedTexSubImage2D
@@ -211,8 +217,10 @@ bool LoadCoreFunctions();
 #define glDeleteRenderbuffers     ::GlideWrapper::Win32Gl::pfn_glDeleteRenderbuffers
 #define glDeleteSamplers          ::GlideWrapper::Win32Gl::pfn_glDeleteSamplers
 #define glDeleteShader            ::GlideWrapper::Win32Gl::pfn_glDeleteShader
+#define glDeleteSync              ::GlideWrapper::Win32Gl::pfn_glDeleteSync
 #define glDeleteVertexArrays      ::GlideWrapper::Win32Gl::pfn_glDeleteVertexArrays
 #define glEnableVertexAttribArray ::GlideWrapper::Win32Gl::pfn_glEnableVertexAttribArray
+#define glFenceSync               ::GlideWrapper::Win32Gl::pfn_glFenceSync
 #define glFramebufferRenderbuffer ::GlideWrapper::Win32Gl::pfn_glFramebufferRenderbuffer
 #define glFramebufferTexture2D    ::GlideWrapper::Win32Gl::pfn_glFramebufferTexture2D
 #define glGenBuffers              ::GlideWrapper::Win32Gl::pfn_glGenBuffers

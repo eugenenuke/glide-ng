@@ -311,6 +311,8 @@ void OpenGLESBackend::DrawMaskedClearQuadGLES_Locked(
   }
 
   m_glesDirtyMask = kGlesDirtyAll;
+  m_cachedUniformTexEnabled[0] = -1;
+  m_cachedUniformTexEnabled[1] = -1;
   InvalidateGlBindingCache();
 }
 
@@ -324,6 +326,7 @@ bool OpenGLESBackend::CreateGeomBuffers() {
   // Allocate configurable dynamic ring buffer
   glBufferData(GL_ARRAY_BUFFER, m_geomVBOSizeConfigured, nullptr,
                GL_DYNAMIC_DRAW);
+  m_geomVboNeedsOrphan = false;
 
   // Map ModernVertex attributes:
   // Location 0: inPos (pos) -> vec4 (16 bytes)
@@ -918,11 +921,13 @@ void OpenGLESBackend::FlushBatch(bool fromStateFlush) {
   }
 
   // Handle VBO ring buffer wrapping and orphaning
-  if (m_geomVBOOffset + uploadSize > m_geomVBOSizeConfigured) {
+  if (m_geomVboNeedsOrphan ||
+      m_geomVBOOffset + uploadSize > m_geomVBOSizeConfigured) {
     GLIDE_LOG(DEBUG, "GLES",
               "Dynamic Geometry VBO ring buffer wrap-around & orphaning! "
               "Offset reset to 0.");
     m_geomVBOOffset = 0;
+    m_geomVboNeedsOrphan = false;
     glBufferData(GL_ARRAY_BUFFER, m_geomVBOSizeConfigured, nullptr,
                  GL_DYNAMIC_DRAW);
   }
@@ -994,45 +999,41 @@ void OpenGLESBackend::FlushBatch(bool fromStateFlush) {
       const uint32_t samplerBit =
           (tmu == 0) ? kGlesDirtyTexSampler0 : kGlesDirtyTexSampler1;
       if (!(dirty & samplerBit)) continue;
-      uint32_t addr = m_boundTexAddress[tmu];
-      if (addr != 0xFFFFFFFF) {
-        auto it = m_glesTextures[tmu].find(addr);
-        if (it != m_glesTextures[tmu].end() && it->second) {
-          GLint wrapS = GL_REPEAT;
-          if (m_texClampS[tmu] == 1) {
-            wrapS = GL_CLAMP_TO_EDGE;
-          } else if (m_texClampS[tmu] == 2) {
-            wrapS = GL_MIRRORED_REPEAT;
-          }
-
-          GLint wrapT = GL_REPEAT;
-          if (m_texClampT[tmu] == 1) {
-            wrapT = GL_CLAMP_TO_EDGE;
-          } else if (m_texClampT[tmu] == 2) {
-            wrapT = GL_MIRRORED_REPEAT;
-          }
-
-          glSamplerParameteri(m_glesSamplers[tmu], GL_TEXTURE_WRAP_S, wrapS);
-          glSamplerParameteri(m_glesSamplers[tmu], GL_TEXTURE_WRAP_T, wrapT);
-
-          GLint minFilter = GL_NEAREST;
-          if (m_texMipMapMode[tmu] == 0) {  // Mipmap Disabled
-            minFilter = (m_texMinFilter[tmu] == 1) ? GL_LINEAR : GL_NEAREST;
-          } else {                           // Mipmap Enabled
-            if (m_texMinFilter[tmu] == 1) {  // Bilinear
-              minFilter = m_texLodBlend[tmu] ? GL_LINEAR_MIPMAP_LINEAR
-                                             : GL_LINEAR_MIPMAP_NEAREST;
-            } else {  // Point
-              minFilter = m_texLodBlend[tmu] ? GL_NEAREST_MIPMAP_LINEAR
-                                             : GL_NEAREST_MIPMAP_NEAREST;
-            }
-          }
-          GLint magFilter = (m_texMagFilter[tmu] == 1) ? GL_LINEAR : GL_NEAREST;
-          glSamplerParameteri(m_glesSamplers[tmu], GL_TEXTURE_MIN_FILTER,
-                              minFilter);
-          glSamplerParameteri(m_glesSamplers[tmu], GL_TEXTURE_MAG_FILTER,
-                              magFilter);
+      if (m_glesSamplers[tmu] != 0u) {
+        GLint wrapS = GL_REPEAT;
+        if (m_texClampS[tmu] == 1) {
+          wrapS = GL_CLAMP_TO_EDGE;
+        } else if (m_texClampS[tmu] == 2) {
+          wrapS = GL_MIRRORED_REPEAT;
         }
+
+        GLint wrapT = GL_REPEAT;
+        if (m_texClampT[tmu] == 1) {
+          wrapT = GL_CLAMP_TO_EDGE;
+        } else if (m_texClampT[tmu] == 2) {
+          wrapT = GL_MIRRORED_REPEAT;
+        }
+
+        glSamplerParameteri(m_glesSamplers[tmu], GL_TEXTURE_WRAP_S, wrapS);
+        glSamplerParameteri(m_glesSamplers[tmu], GL_TEXTURE_WRAP_T, wrapT);
+
+        GLint minFilter = GL_NEAREST;
+        if (m_texMipMapMode[tmu] == 0) {  // Mipmap Disabled
+          minFilter = (m_texMinFilter[tmu] == 1) ? GL_LINEAR : GL_NEAREST;
+        } else {                           // Mipmap Enabled
+          if (m_texMinFilter[tmu] == 1) {  // Bilinear
+            minFilter = m_texLodBlend[tmu] ? GL_LINEAR_MIPMAP_LINEAR
+                                           : GL_LINEAR_MIPMAP_NEAREST;
+          } else {  // Point
+            minFilter = m_texLodBlend[tmu] ? GL_NEAREST_MIPMAP_LINEAR
+                                           : GL_NEAREST_MIPMAP_NEAREST;
+          }
+        }
+        GLint magFilter = (m_texMagFilter[tmu] == 1) ? GL_LINEAR : GL_NEAREST;
+        glSamplerParameteri(m_glesSamplers[tmu], GL_TEXTURE_MIN_FILTER,
+                            minFilter);
+        glSamplerParameteri(m_glesSamplers[tmu], GL_TEXTURE_MAG_FILTER,
+                            magFilter);
       }
     }
     m_glesDirtyMask = 0;

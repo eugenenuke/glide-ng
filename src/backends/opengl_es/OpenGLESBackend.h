@@ -217,6 +217,7 @@ class OpenGLESBackend : public GlideStateTracker {
     kGlesDirtyTexDetail         = 1u << 22,
     kGlesDirtyStencil           = 1u << 23,
     kGlesDirtyExtCombine        = 1u << 24,
+    kGlesDirtyTexLodBias        = 1u << 25,
     kGlesDirtyAll               = 0xFFFFFFFFu,
   };
   uint32_t m_glesDirtyMask{kGlesDirtyAll};
@@ -231,6 +232,10 @@ class OpenGLESBackend : public GlideStateTracker {
   uint32_t m_cachedBoundSampler[2]{0xFFFFFFFFu, 0xFFFFFFFFu};
   uint32_t m_cachedActiveTexUnit{0xFFFFFFFFu};
   bool m_cachedViewportValid{false};
+  int m_cachedUniformTexEnabled[2]{-1, -1};
+  void* m_headlessFrameFences[2]{nullptr, nullptr};  // GLsync
+  uint32_t m_headlessFenceSlot{0u};
+  bool m_geomVboNeedsOrphan{false};
 
   // Unified native OS surface host (Option A: Headless / StandaloneSDL2 /
   // X11Child / WaylandSubsurface).

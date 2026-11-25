@@ -235,6 +235,7 @@ void OpenGLESBackend::ResetState_Locked() {
   m_frontBufferNeedsPresent = false;
   m_frontFlushTimer.Clear();
   m_geomVBOOffset = 0;
+  m_geomVboNeedsOrphan = true;
   m_is2DGeometry = true;
   m_gammaCorrectionValue = 1.0f;
   m_useGammaLut = false;
@@ -243,6 +244,8 @@ void OpenGLESBackend::ResetState_Locked() {
   m_batchPrimitiveMode = BatchPrimitiveMode::None;
   m_batchIs2DGeometry = false;
   m_glesDirtyMask = kGlesDirtyAll;
+  m_cachedUniformTexEnabled[0] = -1;
+  m_cachedUniformTexEnabled[1] = -1;
   InvalidateGlBindingCache();
 }
 
@@ -919,9 +922,32 @@ bool OpenGLESBackend::SwapBuffers() {
 #endif
     }
   } else {
-    // Headless mode: ensure offscreen GPU work completes without forcing an
-    // eager CPU readback (ReadLFB reads directly from the GPU FBO on demand).
-    glFinish();
+    // Headless mode: pipeline 2 frames in flight using a GLsync fence ring
+    // (matching Vulkan's double-buffered frame fences) instead of a synchronous
+    // glFinish() stall on every SwapBuffers().
+    if (m_headlessFrameFences[m_headlessFenceSlot] != nullptr) {
+      glDeleteSync(
+          static_cast<GLsync>(m_headlessFrameFences[m_headlessFenceSlot]));
+      m_headlessFrameFences[m_headlessFenceSlot] = nullptr;
+    }
+    GLsync curSync = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0u);
+    m_headlessFrameFences[m_headlessFenceSlot] = static_cast<void*>(curSync);
+    glFlush();
+
+    const uint32_t nextSlot = (m_headlessFenceSlot + 1u) & 1u;
+    if (m_headlessFrameFences[nextSlot] != nullptr) {
+      constexpr GLuint64 kFenceTimeoutNs = 1000000000ULL;
+      GLsync prevSync = static_cast<GLsync>(m_headlessFrameFences[nextSlot]);
+      GLenum waitRes =
+          glClientWaitSync(prevSync, GL_SYNC_FLUSH_COMMANDS_BIT,
+                           kFenceTimeoutNs);
+      while (waitRes == GL_TIMEOUT_EXPIRED) {
+        waitRes = glClientWaitSync(prevSync, 0u, kFenceTimeoutNs);
+      }
+      glDeleteSync(prevSync);
+      m_headlessFrameFences[nextSlot] = nullptr;
+    }
+    m_headlessFenceSlot = nextSlot;
   }
 
   // Swap CPU LFB staging indices for double-buffering (zero-cost when unused)
@@ -2984,6 +3010,14 @@ void OpenGLESBackend::DestroyGLContext() {
   if (hostWaylandAlive && EnsureContextCurrent()) {
     ClearAllGlesTextures_Locked(/*deleteGlObjects=*/true);
 
+    for (uint32_t i = 0; i < 2u; ++i) {
+      if (m_headlessFrameFences[i] != nullptr) {
+        glDeleteSync(static_cast<GLsync>(m_headlessFrameFences[i]));
+        m_headlessFrameFences[i] = nullptr;
+      }
+    }
+    m_headlessFenceSlot = 0u;
+
     if (m_glesSamplers[0] != 0) {
       glDeleteSamplers(2, m_glesSamplers);
       m_glesSamplers[0] = m_glesSamplers[1] = 0;
@@ -3096,6 +3130,9 @@ void OpenGLESBackend::DestroyGLContext() {
     }
   } else {
     ClearAllGlesTextures_Locked(/*deleteGlObjects=*/false);
+    m_headlessFrameFences[0] = nullptr;
+    m_headlessFrameFences[1] = nullptr;
+    m_headlessFenceSlot = 0u;
     m_glesSamplers[0] = m_glesSamplers[1] = 0;
     m_glGammaLutTex = 0;
     m_glHudTex = 0;
