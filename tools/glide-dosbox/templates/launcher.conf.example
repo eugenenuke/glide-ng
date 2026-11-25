@@ -1,0 +1,28 @@
+# User configuration for glide-dosbox
+# Default location: ${XDG_CONFIG_HOME:-$HOME/.config}/glide-ng/dosbox-launcher.conf
+# Override location with GLIDE_DOSBOX_CONF=/path/to/dosbox-launcher.conf.
+#
+# Leave variables unset to rely on automatic repository/PATH discovery.
+
+# glide-ng host shared libraries (containing libglide2x.so) and DOS pass-through GLIDE2X.OVL:
+# GNG_LIBS="/path/to/glide-ng/build_release/lib"
+# GNG_OVL_DIR="/path/to/glide-ng/build_release/dos"
+
+# Optional OpenGLide host library directory and matching GLIDE2X.OVL directory:
+# OG_LIBS="/path/to/openglide/.libs"
+# OG_OVL_DIR="/path/to/ovl/og"
+
+# Optional authentic SST-1 hardware GLIDE2X.OVL (e.g. Glide 2.42) for DOSBox software Voodoo:
+# HW_OVL_DIR="/path/to/ovl/hw"
+
+# Emulator binaries (auto-discovered on PATH if omitted):
+# DOSBOX_SVN="dosbox_openglide"
+# DOSBOX_X="dosbox-x"
+# DOSBOX_STAGING="dosbox-staging"
+
+# Optional base media directory referenced by game.sh files (exported as MEDIA_DIR):
+# MEDIA_DIR=""
+
+# Default launcher profiles when omitted on CLI (gng | og | dbx | dbx-og | sw | staging):
+# DEFAULT_MODE="gng"
+# DEFAULT_ADMIN_MODE="gng"

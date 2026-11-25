@@ -137,6 +137,14 @@ if(Catch2_FOUND)
     catch_discover_tests(Glide211WrapperTests)
     catch_discover_tests(Glide2xWrapperTests)
     catch_discover_tests(Glide3xWrapperTests)
+
+    find_program(GLIDE_BASH_EXECUTABLE bash)
+    if(GLIDE_BASH_EXECUTABLE)
+        add_test(
+            NAME GlideDosboxLauncherSmoke
+            COMMAND "${GLIDE_BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/scripts/test_glide_dosbox.sh"
+        )
+    endif()
 else()
     message(STATUS "Catch2 not found; skipping automated Catch2 test suites")
 endif()

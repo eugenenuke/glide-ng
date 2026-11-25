@@ -1,0 +1,46 @@
+# Per-game DOSBox Glide launcher configuration (game.sh)
+# Quick setup in a game directory:
+#   glide-dosbox init --cdimg "/path/to/disc.cue"
+# Or manually:
+#   cp <repo>/tools/glide-dosbox/templates/game.sh.template ./game.sh
+#   ln -s glide-dosbox ./run.sh
+
+# Optional per-game override of default profile (gng | og | dbx | dbx-og | sw | st):
+# DEFAULT_MODE="gng"
+# DEFAULT_ADMIN_MODE="gng"
+
+# Path to ISO/CUE image if needed (mounted as D: across run/install/patch/shell):
+CDIMG=""
+
+# Optional host directory containing patch archives/EXEs (mounted as P: in install/patch/shell):
+# PATCH_DIR=""
+
+# DOSBox commands (`-c "..."`) for each lifecycle action:
+INST_CMD=()   # e.g. (-c "INSTALL.EXE")
+CONF_CMD=()   # e.g. (-c "cd GAME" -c "SETSOUND.EXE" -c "exit")
+PATCH_CMD=()  # e.g. (-c "cd GAME" -c "PATCH12.EXE" -c "exit")
+SHELL_CMD=()  # Optional dir setup for `shell`, e.g. (-c "cd GAME") — leave () for C:\
+RUN_CMD=()    # e.g. (-c "cd GAME" -c "GAME3DFX.EXE" -c "exit")
+
+# Optional extra environment variables applied to this game across modes.
+# Prefer ./glide-ng.ini for persistent glide-ng settings (backend, gpu, card_model, vsync, msaa, ...).
+GAME_ENV=()
+
+# Optional hooks executed by `install` and `patch`.
+# Available built-in helpers:
+#   extract_patch <archive> <dest_dir>   # extracts .tar.*, .zip, .7z, .rar
+#   backup_file <path>                   # idempotent one-time <path>.bak backup
+#   strip_glide_ovl [dir]                # removes local GLIDE2X.OVL so V:\ takes effect
+#
+# post_install() {
+#   strip_glide_ovl ./GAME
+# }
+#
+# pre_patch() {
+#   backup_file ./GAME/GAME3DFX.EXE
+#   extract_patch "/path/to/patch.tar.zst" ./GAME
+# }
+#
+# post_patch() {
+#   strip_glide_ovl ./GAME
+# }

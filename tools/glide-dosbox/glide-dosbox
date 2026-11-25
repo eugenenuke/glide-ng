@@ -1,0 +1,653 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+INVOKED_SCRIPT="${BASH_SOURCE[0]}"
+INVOKED_BASE="$(basename "$INVOKED_SCRIPT")"
+INVOKED_TOOL_DIR="$(cd "$(dirname "$INVOKED_SCRIPT")" && pwd)"
+INVOKED_DIR_PHYS="$(cd -P "$(dirname "$INVOKED_SCRIPT")" && pwd)"
+TOOL_DIR="$(cd -P "$(dirname "$(readlink -f "$INVOKED_SCRIPT")")" && pwd)"
+
+if [[ "$INVOKED_DIR_PHYS" == "$TOOL_DIR" || "$INVOKED_BASE" == "glide-dosbox" ]]; then
+  GAME_DIR="$PWD"
+else
+  GAME_DIR="$INVOKED_TOOL_DIR"
+fi
+
+# Source modular subsystems.
+# shellcheck source=lib/config.sh
+source "${TOOL_DIR}/lib/config.sh"
+# shellcheck source=lib/profiles.sh
+source "${TOOL_DIR}/lib/profiles.sh"
+# shellcheck source=lib/gpu.sh
+source "${TOOL_DIR}/lib/gpu.sh"
+# shellcheck source=lib/debug.sh
+source "${TOOL_DIR}/lib/debug.sh"
+# shellcheck source=lib/helpers.sh
+source "${TOOL_DIR}/lib/helpers.sh"
+# shellcheck source=lib/commands.sh
+source "${TOOL_DIR}/lib/commands.sh"
+
+capture_cli_env_overrides
+
+is_action_word() {
+  case "$1" in
+    run|shell|sh|dos|exec|install|patch|setup|conf|reconfigure|init|doctor|info)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+# Handle standalone help/completion before loading game config.
+scan_meta_flags() {
+  local expect_dosbox_val=0
+  local arg
+  for arg in "$@"; do
+    if (( expect_dosbox_val )); then
+      expect_dosbox_val=0
+      continue
+    fi
+    case "$arg" in
+      --) break ;;
+      -c|-conf|--conf|-C|--exec) expect_dosbox_val=1 ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      --install-completion|--enable-completion)
+        install_completion
+        exit 0
+        ;;
+    esac
+  done
+}
+scan_meta_flags "$@"
+
+ACTION_EXPLICIT=""
+PROFILE_EXPLICIT=""
+INIT_ARGS=()
+EXTRA_ARGS=()
+EXEC_CMDS=()
+OPT_EMU=""
+OPT_WRAPPER=""
+OPT_GPU=""
+OPT_NO_EXIT=0
+OPT_SHELL_CD=0
+OPT_NO_PATCH=0
+OPT_EXTRACT=0
+OPT_GAME_DIR=""
+OPT_BACKEND=""
+OPT_BACKEND_TAG=""
+OPT_TAG=""
+OPT_DEBUG=""
+OPT_HUD=""
+OPT_PERF=""
+OPT_LOG_LEVEL=""
+OPT_LOG_FILE=""
+OPT_LOG_CATS=""
+OPT_CONSOLE=0
+OPT_TRACE_FRAMES=""
+OPT_SNAP=""
+OPT_WINDOWED=0
+OPT_UNCAP=0
+OPT_MSAA=""
+OPT_NO_SPLASH=0
+OPT_CARD=""
+OPT_TMU_MEM=""
+OPT_DRY_RUN=0
+
+require_flag_val() {
+  local flag="$1" val="$2"
+  if [[ -z "$val" ]]; then
+    echo "Error: $flag requires a non-empty value (use ${flag%%=*}=VALUE)." >&2
+    exit 1
+  fi
+}
+
+while [[ $# -gt 0 ]]; do
+  arg="$1"
+  case "$arg" in
+    --)
+      shift
+      while [[ $# -gt 0 ]]; do
+        EXTRA_ARGS+=("$1")
+        shift
+      done
+      break
+      ;;
+    -c|-conf|--conf)
+      EXTRA_ARGS+=("$1")
+      shift
+      if [[ $# -gt 0 ]]; then
+        EXTRA_ARGS+=("$1")
+        shift
+      fi
+      ;;
+    -C)
+      shift
+      if [[ $# -eq 0 ]]; then
+        echo "Error: -C requires a game directory argument." >&2
+        exit 1
+      fi
+      OPT_GAME_DIR="$1"
+      shift
+      ;;
+    --game-dir=*)
+      OPT_GAME_DIR="${arg#*=}"
+      require_flag_val "--game-dir" "$OPT_GAME_DIR"
+      shift
+      ;;
+    --emu=*)
+      OPT_EMU="${arg#*=}"
+      require_flag_val "--emu" "$OPT_EMU"
+      shift
+      ;;
+    --emu)
+      echo "Error: use --emu=svn|dbx|staging." >&2
+      exit 1
+      ;;
+    --wrapper=*)
+      OPT_WRAPPER="${arg#*=}"
+      require_flag_val "--wrapper" "$OPT_WRAPPER"
+      shift
+      ;;
+    --wrapper)
+      echo "Error: use --wrapper=gng|og|hw." >&2
+      exit 1
+      ;;
+    --gpu=*)
+      parse_gpu_val "${arg#*=}"
+      shift
+      ;;
+    --gpu)
+      echo "Error: use --gpu=default|discrete|integrated|llvmpipe|name:<substr>." >&2
+      exit 1
+      ;;
+    --vk|--vulkan)
+      OPT_BACKEND="vulkan"
+      OPT_BACKEND_TAG="vk"
+      shift
+      ;;
+    --gl|--gles)
+      OPT_BACKEND="opengl_es"
+      OPT_BACKEND_TAG="gl"
+      shift
+      ;;
+    --sw|--software)
+      OPT_BACKEND="software"
+      OPT_BACKEND_TAG="sw"
+      shift
+      ;;
+    --backend=*)
+      parse_backend_val "${arg#*=}"
+      shift
+      ;;
+    --backend)
+      echo "Error: use --backend=vk|gl|sw." >&2
+      exit 1
+      ;;
+    --exec=*)
+      val="${arg#*=}"
+      require_flag_val "--exec" "$val"
+      EXEC_CMDS+=(-c "$val")
+      shift
+      ;;
+    --exec)
+      shift
+      if [[ $# -eq 0 || -z "$1" ]]; then
+        echo "Error: --exec requires a DOS command string (e.g. --exec \"dir /w\")." >&2
+        exit 1
+      fi
+      EXEC_CMDS+=(-c "$1")
+      shift
+      ;;
+    --no-exit)
+      OPT_NO_EXIT=1
+      shift
+      ;;
+    --cd)
+      OPT_SHELL_CD=1
+      shift
+      ;;
+    --no-patch)
+      OPT_NO_PATCH=1
+      shift
+      ;;
+    --extract)
+      OPT_EXTRACT=1
+      shift
+      ;;
+    --cdimg=*|--patch-dir=*|--catalog=*|--mode=*|--force|--no-symlink)
+      INIT_ARGS+=("$arg")
+      shift
+      ;;
+    --cdimg|--patch-dir|--catalog|--mode)
+      echo "Error: use ${arg}=VALUE." >&2
+      exit 1
+      ;;
+    --debug)
+      OPT_DEBUG="perf"
+      shift
+      ;;
+    --debug=*)
+      OPT_DEBUG="${arg#*=}"
+      require_flag_val "--debug" "$OPT_DEBUG"
+      shift
+      ;;
+    --hud)
+      OPT_HUD="full"
+      shift
+      ;;
+    --hud=*)
+      OPT_HUD="${arg#*=}"
+      require_flag_val "--hud" "$OPT_HUD"
+      shift
+      ;;
+    --perf)
+      OPT_PERF="__AUTO__"
+      shift
+      ;;
+    --perf=*)
+      OPT_PERF="${arg#*=}"
+      require_flag_val "--perf" "$OPT_PERF"
+      shift
+      ;;
+    --log)
+      OPT_LOG_LEVEL="debug"
+      [[ -z "$OPT_LOG_FILE" ]] && OPT_LOG_FILE="__AUTO__"
+      shift
+      ;;
+    --log=*)
+      OPT_LOG_LEVEL="${arg#*=}"
+      require_flag_val "--log" "$OPT_LOG_LEVEL"
+      [[ -z "$OPT_LOG_FILE" ]] && OPT_LOG_FILE="__AUTO__"
+      shift
+      ;;
+    --log-file=*)
+      OPT_LOG_FILE="${arg#*=}"
+      require_flag_val "--log-file" "$OPT_LOG_FILE"
+      shift
+      ;;
+    --log-file)
+      echo "Error: use --log-file=PATH." >&2
+      exit 1
+      ;;
+    --tag=*|--suffix=*)
+      OPT_TAG="${arg#*=}"
+      OPT_TAG="${OPT_TAG#_}"
+      require_flag_val "${arg%%=*}" "$OPT_TAG"
+      if [[ "$OPT_TAG" == */* ]]; then
+        echo "Error: ${arg%%=*} value '$OPT_TAG' must not contain '/'." >&2
+        exit 1
+      fi
+      shift
+      ;;
+    --tag|--suffix)
+      echo "Error: use $arg=SUFFIX (e.g. $arg=e1m1)." >&2
+      exit 1
+      ;;
+    --console)
+      OPT_CONSOLE=1
+      shift
+      ;;
+    --trace=*)
+      OPT_TRACE_FRAMES="${arg#*=}"
+      require_flag_val "--trace" "$OPT_TRACE_FRAMES"
+      shift
+      ;;
+    --trace)
+      echo "Error: use --trace=A-B (e.g. --trace=100-105)." >&2
+      exit 1
+      ;;
+    --snap=*)
+      OPT_SNAP="${arg#*=}"
+      require_flag_val "--snap" "$OPT_SNAP"
+      shift
+      ;;
+    --snap)
+      echo "Error: use --snap=SPEC (e.g. --snap=shots/@60+60:15)." >&2
+      exit 1
+      ;;
+    -w|--windowed)
+      OPT_WINDOWED=1
+      shift
+      ;;
+    --uncap)
+      OPT_UNCAP=1
+      shift
+      ;;
+    --msaa=*)
+      OPT_MSAA="${arg#*=}"
+      require_flag_val "--msaa" "$OPT_MSAA"
+      shift
+      ;;
+    --msaa)
+      echo "Error: use --msaa=N (e.g. --msaa=1 or --msaa=4)." >&2
+      exit 1
+      ;;
+    --no-splash)
+      OPT_NO_SPLASH=1
+      shift
+      ;;
+    --card=*)
+      OPT_CARD="${arg#*=}"
+      require_flag_val "--card" "$OPT_CARD"
+      shift
+      ;;
+    --card)
+      echo "Error: use --card=MODEL (e.g. --card=Voodoo2)." >&2
+      exit 1
+      ;;
+    --tmu-mem=*)
+      OPT_TMU_MEM="${arg#*=}"
+      require_flag_val "--tmu-mem" "$OPT_TMU_MEM"
+      shift
+      ;;
+    --tmu-mem)
+      echo "Error: use --tmu-mem=MB (e.g. --tmu-mem=4)." >&2
+      exit 1
+      ;;
+    --dry-run)
+      OPT_DRY_RUN=1
+      shift
+      ;;
+    -*)
+      EXTRA_ARGS+=("$1")
+      shift
+      ;;
+    *)
+      if [[ -z "$ACTION_EXPLICIT" ]] && is_action_word "$1"; then
+        ACTION_EXPLICIT="$1"
+      elif [[ -z "$PROFILE_EXPLICIT" ]] && is_known_profile "$1"; then
+        PROFILE_EXPLICIT="$1"
+      elif [[ -z "$ACTION_EXPLICIT" && -z "$PROFILE_EXPLICIT" && ${#EXTRA_ARGS[@]} -eq 0 ]]; then
+        echo "Error: unknown action or profile '$1'." >&2
+        usage >&2
+        exit 1
+      else
+        EXTRA_ARGS+=("$1")
+      fi
+      shift
+      ;;
+  esac
+done
+
+if [[ -n "$OPT_GAME_DIR" ]]; then
+  if [[ "$ACTION_EXPLICIT" == "init" ]]; then
+    mkdir -p "$OPT_GAME_DIR"
+  elif [[ ! -d "$OPT_GAME_DIR" ]]; then
+    echo "Error: game directory does not exist: $OPT_GAME_DIR" >&2
+    exit 1
+  fi
+  GAME_DIR="$(cd "$OPT_GAME_DIR" && pwd)"
+fi
+
+load_global_config
+
+ACTION="${ACTION_EXPLICIT:-run}"
+
+case "$ACTION" in
+  init)
+    cmd_init ${INIT_ARGS[@]+"${INIT_ARGS[@]}"} ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}
+    exit 0
+    ;;
+  doctor|info)
+    cmd_doctor
+    exit 0
+    ;;
+esac
+
+if (( ${#INIT_ARGS[@]} > 0 )); then
+  echo "Error: init-only options (${INIT_ARGS[*]}) are only valid with 'init'." >&2
+  exit 1
+fi
+
+cd "$GAME_DIR"
+load_game_config
+
+resolve_runtime_profile "$PROFILE_EXPLICIT" "$ACTION" "$OPT_EMU" "$OPT_WRAPPER"
+resolve_debug_and_cli_env "$PROFILE_TAG"
+append_gpu_env "$OPT_GPU"
+
+build_and_run_dosbox() {
+  local phase_action="$1"
+  local start_drive="$2"
+  local include_patch_dir="$3"
+  shift 3
+  local phase_cmds=("$@")
+
+  if (( OPT_NO_EXIT )) && (( ${#phase_cmds[@]} > 0 )); then
+    strip_trailing_dosbox_exit phase_cmds
+  fi
+
+  local conf_args=("$CONF_FLAG" "$BASE_CONF")
+  if [[ -f ./dosbox-override.conf ]]; then
+    conf_args+=("$CONF_FLAG" "./dosbox-override.conf")
+  fi
+  if (( OPT_WINDOWED )); then
+    conf_args+=("$CONF_FLAG" "${TOOL_DIR}/configs/dosbox-windowed.conf")
+  fi
+
+  local mount_args=(-c "mount c .")
+  if [[ -n "${CDIMG:-}" ]]; then
+    mount_args+=(-c "imgmount d \"${CDIMG}\" -t iso")
+  fi
+  if (( include_patch_dir )) && [[ -n "${PATCH_DIR:-}" ]]; then
+    if [[ ! -d "$PATCH_DIR" ]]; then
+      echo "Warning: PATCH_DIR does not exist: $PATCH_DIR" >&2
+    fi
+    mount_args+=(-c "mount p \"${PATCH_DIR}\"")
+  fi
+
+  local ovl_args=()
+  if [[ -n "$OVL_DIR" ]]; then
+    ovl_args=(-c "mount v \"${OVL_DIR}\"" -c "set PATH=%PATH%;V:\\")
+    if (( ! OPT_DRY_RUN )) && [[ -z "$(discover_first_ovl_dir "$OVL_DIR")" ]]; then
+      echo "Warning: GLIDE2X.OVL not found in ${OVL_DIR}" >&2
+    fi
+  else
+    echo "Warning: OVL directory is unset for profile '${PROFILE_TAG}' (V:\\ will not be mounted)." >&2
+  fi
+
+  if [[ "$WRAPPER" == "gng" || "$WRAPPER" == "og" ]] && [[ "$phase_action" == "run" || "$phase_action" == "shell" ]]; then
+    warn_local_glide_ovl "$GAME_DIR"
+  fi
+
+  local env_vars=(
+    ${WRAPPER_ENV[@]+"${WRAPPER_ENV[@]}"}
+    ${GAME_ENV[@]+"${GAME_ENV[@]}"}
+    ${GPU_ENV[@]+"${GPU_ENV[@]}"}
+    ${CLI_ENV[@]+"${CLI_ENV[@]}"}
+  )
+
+  local bin_cmd="${BIN:-dosbox}"
+  local final_cmd=(
+    "$bin_cmd"
+    "${conf_args[@]}"
+    "${mount_args[@]}"
+    ${ovl_args[@]+"${ovl_args[@]}"}
+    -c "$start_drive"
+    ${phase_cmds[@]+"${phase_cmds[@]}"}
+    ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}
+  )
+
+  if (( OPT_DRY_RUN )); then
+    echo "[dry-run] cwd=${GAME_DIR} action=${phase_action} profile=${PROFILE_TAG} emu=${EMU} wrapper=${WRAPPER} tag=${TAG}${SCENARIO_LABEL:+ debug=$SCENARIO_LABEL}${OPT_GPU:+ gpu=$OPT_GPU}"
+    if [[ -z "$BIN" ]]; then
+      echo "[dry-run] Note: emulator binary for '${EMU}' not configured or not found on PATH; showing placeholder '${bin_cmd}'." >&2
+    fi
+    if (( ${#env_vars[@]} )); then
+      printf 'env'
+      printf ' %q' "${env_vars[@]}"
+      printf ' \\\n  '
+    fi
+    printf '%q' "${final_cmd[0]}"
+    local i
+    for (( i = 1; i < ${#final_cmd[@]}; ++i )); do
+      printf ' %q' "${final_cmd[i]}"
+    done
+    printf '\n'
+    return 0
+  fi
+
+  if [[ -z "$BIN" || ! -x "$BIN" ]]; then
+    echo "Error: emulator binary not found or not executable for '${EMU}': '${BIN:-<unset>}'." >&2
+    echo "Run 'glide-dosbox doctor' or configure DOSBOX_* in ${LAUNCHER_CONF}." >&2
+    exit 1
+  fi
+
+  if (( ${#CLI_ENV[@]} )) || (( OPT_WINDOWED )) || [[ -n "$SCENARIO_LABEL" ]] || [[ -n "$OPT_GPU" ]]; then
+    ensure_logs_parent "$OPT_PERF"
+    ensure_logs_parent "$OPT_LOG_FILE"
+    ensure_logs_parent "$OPT_SNAP"
+
+    local summary="action=${phase_action} profile=${PROFILE_TAG}"
+    [[ -n "$OPT_BACKEND" ]] && summary+=" backend=${OPT_BACKEND}"
+    [[ -n "$OPT_GPU" ]] && summary+=" gpu=${OPT_GPU}"
+    [[ -n "$OPT_TAG" ]] && summary+=" tag=${OPT_TAG}"
+    [[ -n "$SCENARIO_LABEL" ]] && summary+=" debug=${SCENARIO_LABEL}"
+    [[ -n "$OPT_HUD" ]] && summary+=" hud=${OPT_HUD}"
+    [[ -n "$OPT_PERF" ]] && summary+=" perf=${OPT_PERF}"
+    [[ -n "$OPT_LOG_FILE" ]] && summary+=" log=${OPT_LOG_FILE}"
+    [[ -n "$OPT_LOG_LEVEL" ]] && summary+=" level=${OPT_LOG_LEVEL}"
+    [[ -n "$OPT_TRACE_FRAMES" ]] && summary+=" trace=${OPT_TRACE_FRAMES}"
+    [[ -n "$OPT_SNAP" ]] && summary+=" snap=${OPT_SNAP}"
+    (( OPT_WINDOWED )) && summary+=" windowed=1"
+    (( OPT_UNCAP )) && summary+=" uncap=1"
+    [[ -n "$OPT_MSAA" ]] && summary+=" msaa=${OPT_MSAA}"
+    (( OPT_NO_SPLASH )) && summary+=" no_splash=1"
+    [[ -n "$OPT_CARD" ]] && summary+=" card=${OPT_CARD}"
+    [[ -n "$OPT_TMU_MEM" ]] && summary+=" tmu_mem=${OPT_TMU_MEM}MB"
+    echo "[glide-dosbox] ${summary}" >&2
+  fi
+
+  env ${env_vars[@]+"${env_vars[@]}"} "${final_cmd[@]}"
+}
+
+run_patch_extract_if_requested() {
+  (( OPT_EXTRACT )) || return 0
+  local dest="${PATCH_DEST:-.}"
+  local extracted=0
+  if [[ -n "${PATCH_ARCHIVE:-}" ]]; then
+    extract_patch "$PATCH_ARCHIVE" "$dest"
+    extracted=1
+  fi
+  if (( ${#PATCH_ARCHIVES[@]} > 0 )); then
+    local arc
+    for arc in "${PATCH_ARCHIVES[@]}"; do
+      extract_patch "$arc" "$dest"
+      extracted=1
+    done
+  fi
+  if (( ! extracted )) && ! declare -F pre_patch >/dev/null; then
+    echo "Warning: --extract requested, but PATCH_ARCHIVE, PATCH_ARCHIVES, and pre_patch() are empty." >&2
+  fi
+}
+
+run_patch_phase() {
+  local has_pre=0 has_cmd=0 has_post=0 has_archives=0
+  declare -F pre_patch >/dev/null && has_pre=1
+  (( ${#PATCH_CMD[@]} > 0 || ${#EXEC_CMDS[@]} > 0 )) && has_cmd=1
+  declare -F post_patch >/dev/null && has_post=1
+  [[ -n "${PATCH_ARCHIVE:-}" ]] && has_archives=1
+  (( ${#PATCH_ARCHIVES[@]} > 0 )) && has_archives=1
+
+  if (( ! has_pre && ! has_cmd && ! has_post && ! has_archives )); then
+    return 1
+  fi
+
+  local patch_cmds=()
+  if (( ${#EXEC_CMDS[@]} > 0 )); then
+    patch_cmds=("${EXEC_CMDS[@]}")
+  elif (( ${#PATCH_CMD[@]} > 0 )); then
+    patch_cmds=("${PATCH_CMD[@]}")
+  fi
+
+  if (( OPT_DRY_RUN )); then
+    (( has_pre )) && echo "[dry-run] would invoke hook pre_patch()"
+    if (( ${#patch_cmds[@]} > 0 )); then
+      local drive="c:"
+      (( OPT_SHELL_CD )) && [[ -n "${CDIMG:-}" ]] && drive="d:"
+      build_and_run_dosbox "patch" "$drive" 1 "${patch_cmds[@]}"
+    else
+      echo "[dry-run] patch phase has no PATCH_CMD; shell hooks only."
+    fi
+    (( has_post )) && echo "[dry-run] would invoke hook post_patch()"
+    return 0
+  fi
+
+  run_patch_extract_if_requested
+  if (( has_pre )); then
+    pre_patch
+  fi
+  if (( ${#patch_cmds[@]} > 0 )); then
+    local drive="c:"
+    (( OPT_SHELL_CD )) && [[ -n "${CDIMG:-}" ]] && drive="d:"
+    build_and_run_dosbox "patch" "$drive" 1 "${patch_cmds[@]}"
+  fi
+  if (( has_post )); then
+    post_patch
+  fi
+  return 0
+}
+
+case "$ACTION" in
+  run)
+    START_DRIVE="c:"
+    (( OPT_SHELL_CD )) && [[ -n "${CDIMG:-}" ]] && START_DRIVE="d:"
+    if (( ${#EXEC_CMDS[@]} > 0 )); then
+      ACTIVE_CMD=("${EXEC_CMDS[@]}")
+    else
+      ACTIVE_CMD=(${RUN_CMD[@]+"${RUN_CMD[@]}"})
+    fi
+    build_and_run_dosbox "run" "$START_DRIVE" 0 ${ACTIVE_CMD[@]+"${ACTIVE_CMD[@]}"}
+    ;;
+  shell|sh|dos|exec)
+    START_DRIVE="c:"
+    (( OPT_SHELL_CD )) && [[ -n "${CDIMG:-}" ]] && START_DRIVE="d:"
+    if (( ${#EXEC_CMDS[@]} > 0 )); then
+      ACTIVE_CMD=("${EXEC_CMDS[@]}")
+    else
+      ACTIVE_CMD=(${SHELL_CMD[@]+"${SHELL_CMD[@]}"})
+    fi
+    build_and_run_dosbox "shell" "$START_DRIVE" 1 ${ACTIVE_CMD[@]+"${ACTIVE_CMD[@]}"}
+    ;;
+  setup|conf|reconfigure)
+    START_DRIVE="c:"
+    if (( ${#EXEC_CMDS[@]} > 0 )); then
+      ACTIVE_CMD=("${EXEC_CMDS[@]}")
+    else
+      ACTIVE_CMD=(${CONF_CMD[@]+"${CONF_CMD[@]}"})
+    fi
+    build_and_run_dosbox "setup" "$START_DRIVE" 0 ${ACTIVE_CMD[@]+"${ACTIVE_CMD[@]}"}
+    ;;
+  install)
+    START_DRIVE="$([[ -n "${CDIMG:-}" ]] && echo 'd:' || echo 'c:')"
+    if (( ${#EXEC_CMDS[@]} > 0 )); then
+      ACTIVE_CMD=("${EXEC_CMDS[@]}")
+    else
+      ACTIVE_CMD=(${INST_CMD[@]+"${INST_CMD[@]}"})
+    fi
+    build_and_run_dosbox "install" "$START_DRIVE" 1 ${ACTIVE_CMD[@]+"${ACTIVE_CMD[@]}"}
+    if (( OPT_DRY_RUN )); then
+      declare -F post_install >/dev/null && echo "[dry-run] would invoke hook post_install()"
+      if (( ! OPT_NO_PATCH )); then
+        run_patch_phase || true
+      fi
+    else
+      if declare -F post_install >/dev/null; then
+        post_install
+      fi
+      if (( ! OPT_NO_PATCH )); then
+        run_patch_phase || true
+      fi
+    fi
+    ;;
+  patch)
+    if ! run_patch_phase; then
+      echo "Note: no PATCH_CMD, pre_patch(), post_patch(), or PATCH_ARCHIVE defined in ${GAME_DIR}/game.sh." >&2
+    fi
+    ;;
+esac
